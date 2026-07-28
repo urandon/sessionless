@@ -1,0 +1,13 @@
+.build/
+.env
+.env.*
+!.env.example
+
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+.terraform.lock.hcl
+
+.DS_Store
+coverage.out

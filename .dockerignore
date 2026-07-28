@@ -1,0 +1,9 @@
+.git
+.gitcode
+.build
+.env
+.env.*
+.terraform
+*.tfstate
+*.tfplan
+coverage.out

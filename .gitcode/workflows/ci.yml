@@ -1,0 +1,23 @@
+name: repository-foundation
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  verify:
+    runs-on: euleros-2.10.1
+    steps:
+      - uses: checkout-action@0.0.1
+      - name: Configure pinned Go
+        uses: setup-go@0.0.1
+        with:
+          go-version: "1.26.4"
+      - name: Verify source and build binaries
+        run: cd repo_workspace && make ci
+      - name: Build runtime images
+        run: cd repo_workspace && make images

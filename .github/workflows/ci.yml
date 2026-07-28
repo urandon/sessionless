@@ -18,13 +18,14 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout mirrored commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up pinned Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-          cache: true
+          # The foundation has no external modules and therefore no go.sum yet.
+          cache: false
 
       - name: Run repository CI contract
         run: make ci
@@ -36,7 +37,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout mirrored commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Build control-plane and worker images
         run: make images

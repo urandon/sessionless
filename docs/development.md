@@ -86,8 +86,13 @@ make dev-down
 ```
 
 At foundation stage there are no schema files, so `make migrate-local` reports
-that fact and exits successfully. Once migrations exist, it fails closed until
-the YDB migration ledger and runner are present.
+that fact and exits successfully. Once migrations exist, it invokes the pinned
+Goose YDB support with `-env=none` and requires `YDB_CONNECTION_STRING`.
+
+YDB's official Goose integration uses scripting mode and transaction emulation
+because YDB does not support schema transactions. MVP-03 must therefore add a
+YDB-backed single-flight lock, idempotent migration rules, and checksum/drift
+validation before this command is used in cloud deployments.
 
 To delete local Compose volumes, use the guarded command:
 

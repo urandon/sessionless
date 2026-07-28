@@ -1,0 +1,8 @@
+{
+  "schema": "sessionless.queue.v1",
+  "message_id": "msg-0002",
+  "kind": "deliver.telegram",
+  "tenant_id": "tenant-a",
+  "subject_id": "delivery-0001",
+  "enqueued_at": "2026-07-28T12:01:00Z"
+}

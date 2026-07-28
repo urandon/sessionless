@@ -6,7 +6,7 @@ The Telegram chat is the product source of truth: users talk to the bot, send te
 
 This repository currently contains the MVP foundation: Go component boundaries,
 an executable control API skeleton, isolated worker packaging, pinned developer
-tools, local Compose commands, and GitCode CI.
+tools, local Compose commands, and GitHub Actions CI fed by the GitCode mirror.
 
 ## Components
 

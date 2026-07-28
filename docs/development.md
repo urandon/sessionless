@@ -114,5 +114,17 @@ The control plane uses a small distroless runtime. The worker has a separate
 Dockerfile so a later harness decision can add OpenCode, Codex, or another CLI
 without expanding the webhook/control-plane attack surface.
 
-GitCode CI runs `make ci` and `make images` on pushes and pull requests to
-`main`. The workflow is `.gitcode/workflows/ci.yml`.
+GitCode is the source of truth for branches and merge requests. Its push mirror
+replicates every commit to `github.com/urandon/sessionless`, where GitHub Actions
+runs `make ci` and `make images` for every mirrored branch or tag push. The
+workflow is `.github/workflows/ci.yml`; a GitHub pull request is not required.
+
+When reviewing a GitCode merge request, match the GitHub Actions run to the
+GitCode head commit SHA. Automatic propagation of that status back into the
+GitCode merge-request UI is a separate integration; until it exists, this SHA
+check is the merge gate.
+
+Publishing GitHub release artifacts back into GitCode is intentionally outside
+this CI workflow and tracked separately in
+[issue #15](https://gitcode.com/urandon/sessionless/issues/15). Branch CI does
+not receive a GitCode publication token.

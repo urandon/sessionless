@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/ydbclient"
 	"gitcode.com/urandon/sessionless/internal/ydbmigrate"
+	"gitcode.com/urandon/sessionless/internal/ydbpartition"
 	"gitcode.com/urandon/sessionless/internal/ydbstore"
 	ydbmigrations "gitcode.com/urandon/sessionless/migrations/ydb"
 )
@@ -35,6 +37,22 @@ func TestMigrationsAreRepeatable(t *testing.T) {
 		if err := migrator.Up(context.Background()); err != nil {
 			t.Fatalf("migration run %d failed: %v", run, err)
 		}
+	}
+}
+
+func TestPartitioningContractMatchesYDBLocal(t *testing.T) {
+	_, client := openStore(t)
+	report, err := ydbpartition.Inspect(context.Background(), client.Table())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Valid {
+		for _, table := range report.Tables {
+			if !table.MatchesContract {
+				t.Errorf("%s: %v", table.PhysicalTable, table.ContractViolations)
+			}
+		}
+		t.FailNow()
 	}
 }
 
@@ -85,6 +103,7 @@ func TestConcurrentDuplicateTelegramUpdateCreatesOneRunAndOutbox(t *testing.T) {
 	assertCount(t, client, "attempts", tenantID, 1)
 	assertCount(t, client, "dispatch_outbox", tenantID, 1)
 	assertCount(t, client, "dispatch_ready", tenantID, 1)
+	assertCount(t, client, "dispatch_ready_v2", tenantID, 1)
 	assertCount(t, client, "telegram_updates", tenantID, 1)
 }
 
@@ -139,6 +158,23 @@ func TestConcurrentLeaseClaimHasExactlyOneWinner(t *testing.T) {
 	}
 	assertCount(t, client, "lease_heads", tenantID, 1)
 	assertCount(t, client, "lease_expiry", tenantID, 1)
+	assertCount(t, client, "lease_expiry_v2", tenantID, 1)
+	bucket, err := ydbpartition.BucketV1(string(ingress.Run.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expired, err := store.ListExpiredLeasesByBucket(
+		context.Background(),
+		bucket,
+		now.Add(2*time.Minute),
+		10,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(expired) != 1 || expired[0].TenantID != tenantID {
+		t.Fatalf("bucket lease result = %+v", expired)
+	}
 }
 
 func TestTenantScopedReadsCannotCrossTenant(t *testing.T) {
@@ -163,6 +199,77 @@ func TestTenantScopedReadsCannotCrossTenant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestQuotaAndDeliveryDualWriteBucketedReadyTables(t *testing.T) {
+	store, client := openStore(t)
+	tenantID := domain.TenantID(uniqueID("tenant-ready"))
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	ingress := ingressFixture(tenantID, uniqueID("run-ready"), 8811, now)
+	if _, err := store.IngestTelegram(context.Background(), ingress); err != nil {
+		t.Fatal(err)
+	}
+	reservation := domain.QuotaReservation{
+		ID:       domain.QuotaReservationID(uniqueID("reservation")),
+		TenantID: tenantID, RunID: ingress.Run.ID,
+		SubscriptionConnectionID: ingress.Run.SubscriptionConnectionID,
+		Status:                   domain.ReservationHeld, CapacityUnits: 1,
+		HeldAt: now, ExpiresAt: now.Add(5 * time.Minute), UpdatedAt: now,
+	}
+	delivery := domain.TelegramDeliveryOutbox{
+		ID:       domain.TelegramDeliveryID(uniqueID("delivery")),
+		TenantID: tenantID, RunID: ingress.Run.ID,
+		Chat:             domain.TelegramChatRef{TenantID: tenantID, ChatID: 442211},
+		ReplyToMessageID: 19,
+		Payload: domain.BlobRef{
+			TenantID: tenantID,
+			Key:      domain.TenantObjectPrefix(tenantID) + "results/reply.json",
+			SHA256:   strings.Repeat("00", 32),
+		},
+		Status:         domain.DeliveryPending,
+		IdempotencyKey: domain.IdempotencyKey(uniqueID("delivery-key")),
+		CreatedAt:      now, UpdatedAt: now,
+	}
+	err := store.Transact(context.Background(), tenantID, func(tx ports.StateTx) error {
+		if err := tx.PutQuotaReservation(context.Background(), reservation); err != nil {
+			return err
+		}
+		return tx.PutTelegramDeliveryOutbox(context.Background(), delivery)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCount(t, client, "quota_expiry", tenantID, 1)
+	assertCount(t, client, "quota_expiry_v2", tenantID, 1)
+	assertCount(t, client, "telegram_delivery_ready", tenantID, 1)
+	assertCount(t, client, "telegram_delivery_ready_v2", tenantID, 1)
+
+	if err := store.TransitionTelegramDelivery(
+		context.Background(), tenantID, delivery.ID,
+		domain.DeliverySending, now.Add(time.Second), nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+	retryAt := now.Add(time.Minute)
+	if err := store.TransitionTelegramDelivery(
+		context.Background(), tenantID, delivery.ID,
+		domain.DeliveryRetryWait, now.Add(2*time.Second), &retryAt,
+	); err != nil {
+		t.Fatal(err)
+	}
+	assertCount(t, client, "telegram_delivery_ready", tenantID, 1)
+	assertCount(t, client, "telegram_delivery_ready_v2", tenantID, 1)
+
+	if _, err := ydbpartition.BackfillReadyExpiryV2(
+		context.Background(),
+		client.DB,
+		false,
+	); err != nil {
+		t.Fatal(err)
+	}
+	assertCount(t, client, "dispatch_ready_v2", tenantID, 1)
+	assertCount(t, client, "quota_expiry_v2", tenantID, 1)
+	assertCount(t, client, "telegram_delivery_ready_v2", tenantID, 1)
 }
 
 func openStore(t *testing.T) (*ydbstore.Store, *ydbclient.Client) {

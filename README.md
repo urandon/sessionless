@@ -44,6 +44,9 @@ execution, and the end-to-end product flow remain later implementation slices.
   ingress/lease/quota/outbox procedures;
 - `internal/ydbmigrate`: embedded Goose migrations with a YDB lease and
   checksum drift protection;
+- `internal/idgen`: cryptographically random, non-time-sortable operational IDs;
+- `internal/ydbpartition`: versioned bucket derivation, physical table policy,
+  backfill, and live partition inspection;
 - `internal/s3store`: tenant-enforcing S3-compatible blob adapter for MinIO and
   Yandex Object Storage;
 - `internal/sqsqueue`: at-least-once SQS-compatible queue adapter for ElasticMQ
@@ -70,6 +73,9 @@ make build
 make dev-up
 make dev-seed
 make migrate-local
+make migration-status
+make partition-status
+make partition-backfill
 make integration
 make ydb-integration
 make local-integration
@@ -80,6 +86,9 @@ See [docs/development.md](docs/development.md) for prerequisites, secret
 injection, image builds, the guarded reset procedure, and exact local behavior.
 YDB keys, TTL, and atomic procedures are documented in
 [docs/ydb-state-store.md](docs/ydb-state-store.md).
+The primary-key distribution, bucketed ready/expiry layout, migration procedure,
+and cloud measurement gate are documented in
+[docs/ydb-partitioning.md](docs/ydb-partitioning.md).
 The local topology, ports, persistence semantics, adapter configuration, and
 reset procedure are documented in
 [docs/local-development-stand.md](docs/local-development-stand.md).

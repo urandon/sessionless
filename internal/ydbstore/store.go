@@ -14,6 +14,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/ydbpartition"
 )
 
 const (
@@ -227,6 +228,10 @@ func (tx *stateTx) PutLease(ctx context.Context, lease domain.Lease) error {
 	if err != nil {
 		return err
 	}
+	bucket, err := ydbpartition.BucketV1(string(lease.RunID))
+	if err != nil {
+		return err
+	}
 	previous, found, err := readJSON[domain.Lease](ctx, tx.sqlTx,
 		`SELECT payload FROM leases WHERE tenant_id = $1 AND lease_id = $2`,
 		lease.TenantID, lease.ID,
@@ -235,10 +240,22 @@ func (tx *stateTx) PutLease(ctx context.Context, lease domain.Lease) error {
 		return err
 	}
 	if found {
+		previousBucket, err := ydbpartition.BucketV1(string(previous.RunID))
+		if err != nil {
+			return err
+		}
 		if _, err := tx.sqlTx.ExecContext(ctx,
 			`DELETE FROM lease_expiry
 			 WHERE tenant_id = $1 AND expires_at = $2 AND run_id = $3`,
 			previous.TenantID, previous.ExpiresAt, previous.RunID,
+		); err != nil {
+			return err
+		}
+		if _, err := tx.sqlTx.ExecContext(ctx,
+			`DELETE FROM lease_expiry_v2
+			 WHERE shard_bucket = $1 AND expires_at = $2
+			 AND tenant_id = $3 AND run_id = $4`,
+			previousBucket, previous.ExpiresAt, previous.TenantID, previous.RunID,
 		); err != nil {
 			return err
 		}
@@ -260,6 +277,15 @@ func (tx *stateTx) PutLease(ctx context.Context, lease domain.Lease) error {
 		 (tenant_id, expires_at, run_id, lease_id, fence_token)
 		 VALUES ($1, $2, $3, $4, $5)`,
 		lease.TenantID, lease.ExpiresAt, lease.RunID, lease.ID, lease.FenceToken,
+	)
+	if err != nil {
+		return err
+	}
+	_, err = tx.sqlTx.ExecContext(ctx,
+		`UPSERT INTO lease_expiry_v2
+		 (shard_bucket, expires_at, tenant_id, run_id, lease_id, fence_token)
+		 VALUES ($1, $2, $3, $4, $5, $6)`,
+		bucket, lease.ExpiresAt, lease.TenantID, lease.RunID, lease.ID, lease.FenceToken,
 	)
 	return err
 }
@@ -305,6 +331,10 @@ func (tx *stateTx) PutQuotaReservation(
 	if err != nil {
 		return err
 	}
+	bucket, err := ydbpartition.BucketV1(string(reservation.ID))
+	if err != nil {
+		return err
+	}
 	previous, found, err := readJSON[domain.QuotaReservation](ctx, tx.sqlTx,
 		`SELECT payload FROM quota_reservations
 		 WHERE tenant_id = $1 AND quota_reservation_id = $2`,
@@ -314,10 +344,22 @@ func (tx *stateTx) PutQuotaReservation(
 		return err
 	}
 	if found {
+		previousBucket, err := ydbpartition.BucketV1(string(previous.ID))
+		if err != nil {
+			return err
+		}
 		if _, err := tx.sqlTx.ExecContext(ctx,
 			`DELETE FROM quota_expiry
 			 WHERE tenant_id = $1 AND expires_at = $2 AND quota_reservation_id = $3`,
 			previous.TenantID, previous.ExpiresAt, previous.ID,
+		); err != nil {
+			return err
+		}
+		if _, err := tx.sqlTx.ExecContext(ctx,
+			`DELETE FROM quota_expiry_v2
+			 WHERE shard_bucket = $1 AND expires_at = $2
+			 AND tenant_id = $3 AND quota_reservation_id = $4`,
+			previousBucket, previous.ExpiresAt, previous.TenantID, previous.ID,
 		); err != nil {
 			return err
 		}
@@ -340,6 +382,17 @@ func (tx *stateTx) PutQuotaReservation(
 		 (tenant_id, expires_at, quota_reservation_id, run_id, subscription_connection_id)
 		 VALUES ($1, $2, $3, $4, $5)`,
 		reservation.TenantID, reservation.ExpiresAt, reservation.ID,
+		reservation.RunID, reservation.SubscriptionConnectionID,
+	)
+	if err != nil {
+		return err
+	}
+	_, err = tx.sqlTx.ExecContext(ctx,
+		`UPSERT INTO quota_expiry_v2
+		 (shard_bucket, expires_at, tenant_id, quota_reservation_id,
+		  run_id, subscription_connection_id)
+		 VALUES ($1, $2, $3, $4, $5, $6)`,
+		bucket, reservation.ExpiresAt, reservation.TenantID, reservation.ID,
 		reservation.RunID, reservation.SubscriptionConnectionID,
 	)
 	return err
@@ -422,10 +475,22 @@ func (tx *stateTx) PutDispatchOutbox(
 	if err != nil {
 		return err
 	}
+	bucket, err := ydbpartition.BucketV1(string(outbox.ID))
+	if err != nil {
+		return err
+	}
 	if _, err := tx.sqlTx.ExecContext(ctx,
 		`DELETE FROM dispatch_ready
 		 WHERE tenant_id = $1 AND available_at = $2 AND dispatch_outbox_id = $3`,
 		outbox.TenantID, outbox.CreatedAt, outbox.ID,
+	); err != nil {
+		return err
+	}
+	if _, err := tx.sqlTx.ExecContext(ctx,
+		`DELETE FROM dispatch_ready_v2
+		 WHERE shard_bucket = $1 AND available_at = $2
+		 AND tenant_id = $3 AND dispatch_outbox_id = $4`,
+		bucket, outbox.CreatedAt, outbox.TenantID, outbox.ID,
 	); err != nil {
 		return err
 	}
@@ -447,6 +512,15 @@ func (tx *stateTx) PutDispatchOutbox(
 		 VALUES ($1, $2, $3, $4, $5)`,
 		outbox.TenantID, outbox.CreatedAt, outbox.ID, outbox.RunID, outbox.AttemptID,
 	)
+	if err != nil {
+		return err
+	}
+	_, err = tx.sqlTx.ExecContext(ctx,
+		`UPSERT INTO dispatch_ready_v2
+		 (shard_bucket, available_at, tenant_id, dispatch_outbox_id, run_id, attempt_id)
+		 VALUES ($1, $2, $3, $4, $5, $6)`,
+		bucket, outbox.CreatedAt, outbox.TenantID, outbox.ID, outbox.RunID, outbox.AttemptID,
+	)
 	return err
 }
 
@@ -455,6 +529,10 @@ func (tx *stateTx) PutTelegramDeliveryOutbox(
 	outbox domain.TelegramDeliveryOutbox,
 ) error {
 	run, err := tx.owningRun(ctx, outbox.TenantID, outbox.RunID)
+	if err != nil {
+		return err
+	}
+	bucket, err := ydbpartition.BucketV1(string(outbox.ID))
 	if err != nil {
 		return err
 	}
@@ -489,6 +567,18 @@ func (tx *stateTx) PutTelegramDeliveryOutbox(
 		); err != nil {
 			return err
 		}
+		previousBucket, err := ydbpartition.BucketV1(string(previous.ID))
+		if err != nil {
+			return err
+		}
+		if _, err := tx.sqlTx.ExecContext(ctx,
+			`DELETE FROM telegram_delivery_ready_v2
+			 WHERE shard_bucket = $1 AND available_at = $2
+			 AND tenant_id = $3 AND telegram_delivery_id = $4`,
+			previousBucket, previousAvailableAt, previous.TenantID, previous.ID,
+		); err != nil {
+			return err
+		}
 	}
 	_, err = tx.sqlTx.ExecContext(ctx,
 		`UPSERT INTO telegram_delivery_outbox
@@ -514,6 +604,15 @@ func (tx *stateTx) PutTelegramDeliveryOutbox(
 		 (tenant_id, available_at, telegram_delivery_id, run_id)
 		 VALUES ($1, $2, $3, $4)`,
 		outbox.TenantID, availableAt, outbox.ID, outbox.RunID,
+	)
+	if err != nil {
+		return err
+	}
+	_, err = tx.sqlTx.ExecContext(ctx,
+		`UPSERT INTO telegram_delivery_ready_v2
+		 (shard_bucket, available_at, tenant_id, telegram_delivery_id, run_id)
+		 VALUES ($1, $2, $3, $4, $5)`,
+		bucket, availableAt, outbox.TenantID, outbox.ID, outbox.RunID,
 	)
 	return err
 }

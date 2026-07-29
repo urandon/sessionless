@@ -11,6 +11,7 @@ import (
 
 	environ "github.com/ydb-platform/ydb-go-sdk-auth-environ"
 	ydb "github.com/ydb-platform/ydb-go-sdk/v3"
+	"github.com/ydb-platform/ydb-go-sdk/v3/table"
 )
 
 // Client keeps both layers alive. Call Close once during process shutdown.
@@ -82,6 +83,10 @@ func (client *Client) Close(ctx context.Context) error {
 		result = errors.Join(result, client.driver.Close(ctx))
 	}
 	return result
+}
+
+func (client *Client) Table() table.Client {
+	return client.driver.Table()
 }
 
 // DataDSN removes database/sql behavior flags that are needed by Goose DDL

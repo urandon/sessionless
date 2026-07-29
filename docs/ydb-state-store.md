@@ -7,9 +7,15 @@ references, and delivery state rather than inventing a competing chat history.
 
 ## Partitioning and access paths
 
-Every application table starts its primary key with `tenant_id`. The adapter
-requires an internal tenant ID for every transaction and rejects domain objects
-whose tenant does not match it.
+The complete physical-key inventory, high-entropy ID contract, explicit table
+settings, bucketed ready/expiry layout, and cloud measurement gate are in
+[ydb-partitioning.md](ydb-partitioning.md).
+
+Tenant entity tables start their primary key with `tenant_id`. The four global
+ready/expiry tables start with a bounded physical bucket and time, but retain
+`tenant_id` in both the key and every authorization/mutation path. The adapter
+requires an internal tenant ID for tenant-scoped transactions and rejects
+domain objects whose tenant does not match it.
 
 | Table | Primary key | Hot-path operation |
 | --- | --- | --- |
@@ -24,21 +30,22 @@ whose tenant does not match it.
 | `attempts` | `(tenant_id, attempt_id)` | point-read/update one attempt |
 | `lease_heads` | `(tenant_id, run_id)` | serializable contention point and fence allocation |
 | `leases` | `(tenant_id, lease_id)` | point-read a lease and its immutable fence |
-| `lease_expiry` | `(tenant_id, expires_at, run_id)` | bounded recovery range by tenant/time |
+| `lease_expiry_v2` | `(shard_bucket, expires_at, tenant_id, run_id)` | bounded global recovery range by bucket/time |
 | `checkpoints` | `(tenant_id, attempt_id, sequence)` | prefix-read ordered checkpoints |
 | `quota_reservations` | `(tenant_id, quota_reservation_id)` | point transition held/committed/released/expired |
-| `quota_expiry` | `(tenant_id, expires_at, quota_reservation_id)` | bounded expiry range by tenant/time |
+| `quota_expiry_v2` | `(shard_bucket, expires_at, tenant_id, quota_reservation_id)` | bounded global expiry range by bucket/time |
 | `usage_observations` | `(tenant_id, subscription_connection_id, observed_at, usage_observation_id)` | bounded time-prefix read per subscription |
 | `artifact_manifests` | `(tenant_id, artifact_manifest_id)` | point-read immutable result references |
 | `dispatch_outbox` | `(tenant_id, dispatch_outbox_id)` | point publish/ack |
-| `dispatch_ready` | `(tenant_id, available_at, dispatch_outbox_id)` | bounded pending dispatch range |
+| `dispatch_ready_v2` | `(shard_bucket, available_at, tenant_id, dispatch_outbox_id)` | bounded global pending dispatch range |
 | `telegram_delivery_outbox` | `(tenant_id, telegram_delivery_id)` | point delivery transition |
-| `telegram_delivery_ready` | `(tenant_id, available_at, telegram_delivery_id)` | bounded pending/retry delivery range |
+| `telegram_delivery_ready_v2` | `(shard_bucket, available_at, tenant_id, telegram_delivery_id)` | bounded global pending/retry delivery range |
 | `audit_events` | `(tenant_id, occurred_at, audit_event_id)` | bounded tenant/time audit reads |
 
-There is no global sequence or shared per-user counter. Opaque IDs are generated
-outside YDB; lease fences are monotonic only within a single tenant/run head.
-This avoids a cross-tenant hot partition.
+There is no global sequence or shared per-user counter. Production opaque IDs
+come from 128 random bits; lease fences are monotonic only within a single
+tenant/run head. Ready/expiry rows use a stable 16-way object-ID hash so a
+global reconciler has bounded fan-out without concentrating an elephant tenant.
 
 Operational search fields are first-class columns. `JsonDocument` payloads
 preserve exact domain round trips, but schedulers, reconcilers, quota monitors,

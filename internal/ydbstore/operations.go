@@ -17,28 +17,16 @@ var (
 	ErrLeaseLost = errors.New("lease fence no longer owns the run")
 )
 
-type TelegramIngress struct {
-	TenantID domain.TenantID
-	SourceID string
-	UpdateID int64
-	ExpireAt time.Time
-	Run      domain.Run
-	Attempt  domain.Attempt
-	Dispatch domain.DispatchOutbox
-}
-
-type TelegramIngressResult struct {
-	RunID   domain.RunID
-	Created bool
-}
+type TelegramIngress = ports.TelegramIngress
+type TelegramIngressResult = ports.TelegramIngressResult
 
 // IngestTelegram atomically deduplicates the frontend update and writes the
 // initial run, attempt, and dispatch outbox rows. A duplicate returns the
 // already-associated run without emitting a second outbox row.
 func (store *Store) IngestTelegram(
 	ctx context.Context,
-	request TelegramIngress,
-) (result TelegramIngressResult, err error) {
+	request ports.TelegramIngress,
+) (result ports.TelegramIngressResult, err error) {
 	if err := request.TenantID.Validate(); err != nil {
 		return result, err
 	}
@@ -65,7 +53,7 @@ func (store *Store) IngestTelegram(
 		).Scan(&existing)
 		switch {
 		case queryErr == nil:
-			result = TelegramIngressResult{RunID: domain.RunID(existing), Created: false}
+			result = ports.TelegramIngressResult{RunID: domain.RunID(existing), Created: false}
 			return nil
 		case !errors.Is(queryErr, sql.ErrNoRows):
 			return queryErr
@@ -74,6 +62,9 @@ func (store *Store) IngestTelegram(
 			return err
 		}
 		if err := state.PutAttempt(ctx, request.Attempt); err != nil {
+			return err
+		}
+		if err := state.PutArtifactManifest(ctx, request.InputManifest); err != nil {
 			return err
 		}
 		if err := state.PutDispatchOutbox(ctx, request.Dispatch); err != nil {
@@ -88,10 +79,117 @@ func (store *Store) IngestTelegram(
 		); err != nil {
 			return err
 		}
-		result = TelegramIngressResult{RunID: request.Run.ID, Created: true}
+		result = ports.TelegramIngressResult{RunID: request.Run.ID, Created: true}
 		return nil
 	})
 	return result, err
+}
+
+// EnsureTelegramIdentity materializes the deterministic Telegram identity
+// mapping and returns the conversation's current context generation.
+func (store *Store) EnsureTelegramIdentity(
+	ctx context.Context,
+	request ports.TelegramIdentityRequest,
+) (result ports.TelegramIdentityState, err error) {
+	if err := validateTelegramIdentity(request); err != nil {
+		return result, err
+	}
+	err = store.Transact(ctx, request.TenantID, func(state ports.StateTx) error {
+		tx := state.(*stateTx)
+		var epoch uint64
+		queryErr := tx.sqlTx.QueryRowContext(ctx,
+			`SELECT current_context_epoch FROM conversations
+			 WHERE tenant_id = $1 AND conversation_id = $2`,
+			request.TenantID, request.Conversation.ID,
+		).Scan(&epoch)
+		switch {
+		case errors.Is(queryErr, sql.ErrNoRows):
+			epoch = uint64(domain.InitialContextEpoch)
+		case queryErr != nil:
+			return queryErr
+		}
+		if _, err := tx.sqlTx.ExecContext(ctx,
+			`UPSERT INTO tenants
+			 (tenant_id, status, created_at, updated_at)
+			 VALUES ($1, $2, $3, $4)`,
+			request.TenantID, "active", request.ObservedAt, request.ObservedAt,
+		); err != nil {
+			return err
+		}
+		if _, err := tx.sqlTx.ExecContext(ctx,
+			`UPSERT INTO actors
+			 (tenant_id, actor_id, frontend, external_id, created_at, updated_at)
+			 VALUES ($1, $2, $3, $4, $5, $6)`,
+			request.TenantID, request.Actor.ID, request.Actor.Frontend,
+			request.Actor.ExternalID, request.ObservedAt, request.ObservedAt,
+		); err != nil {
+			return err
+		}
+		if _, err := tx.sqlTx.ExecContext(ctx,
+			`UPSERT INTO conversations
+			 (tenant_id, conversation_id, frontend, external_id,
+			  current_context_epoch, created_at, updated_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+			request.TenantID, request.Conversation.ID, request.Conversation.Frontend,
+			request.Conversation.ExternalID, epoch, request.ObservedAt, request.ObservedAt,
+		); err != nil {
+			return err
+		}
+		var existingConnection string
+		connectionErr := tx.sqlTx.QueryRowContext(ctx,
+			`SELECT subscription_connection_id FROM subscription_connections
+			 WHERE tenant_id = $1 AND subscription_connection_id = $2`,
+			request.TenantID, request.SubscriptionConnectionID,
+		).Scan(&existingConnection)
+		switch {
+		case errors.Is(connectionErr, sql.ErrNoRows):
+			if _, err := tx.sqlTx.ExecContext(ctx,
+				`INSERT INTO subscription_connections
+				 (tenant_id, subscription_connection_id, actor_id, provider,
+				  credential_ref, entitlement_state, quota_state, observed_at,
+				  created_at, updated_at)
+				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+				request.TenantID, request.SubscriptionConnectionID, request.Actor.ID,
+				request.Provider, "", "disconnected", "unknown", request.ObservedAt,
+				request.ObservedAt, request.ObservedAt,
+			); err != nil {
+				return err
+			}
+		case connectionErr != nil:
+			return connectionErr
+		}
+		result.ContextEpoch = domain.ContextEpoch(epoch)
+		return nil
+	})
+	return result, err
+}
+
+func validateTelegramIdentity(request ports.TelegramIdentityRequest) error {
+	if err := request.TenantID.Validate(); err != nil {
+		return err
+	}
+	if err := request.Actor.Validate(); err != nil {
+		return err
+	}
+	if err := request.Conversation.Validate(); err != nil {
+		return err
+	}
+	if err := domain.EnsureSameTenant(request.TenantID, request.Actor.TenantID); err != nil {
+		return err
+	}
+	if err := domain.EnsureSameTenant(request.TenantID, request.Conversation.TenantID); err != nil {
+		return err
+	}
+	if err := request.SubscriptionConnectionID.Validate(); err != nil {
+		return err
+	}
+	if err := domain.ValidateOpaqueID("provider", request.Provider); err != nil {
+		return err
+	}
+	if request.ObservedAt.IsZero() {
+		return domain.ValidationError{Field: "observed_at", Reason: "must not be zero"}
+	}
+	return nil
 }
 
 type LeaseClaim struct {
@@ -344,6 +442,114 @@ func (store *Store) TransitionTelegramDelivery(
 		}
 		return state.PutTelegramDeliveryOutbox(ctx, delivery)
 	})
+}
+
+func (store *Store) ListReadyTelegramDeliveries(
+	ctx context.Context,
+	bucket uint32,
+	before time.Time,
+	limit uint64,
+) (result []ports.TelegramDeliveryReady, err error) {
+	if bucket >= ydbpartition.BucketCountV1 {
+		return nil, domain.ValidationError{
+			Field: "Telegram delivery bucket", Reason: "must be within the v1 bucket range",
+		}
+	}
+	if before.IsZero() || limit == 0 {
+		return nil, domain.ValidationError{
+			Field: "Telegram delivery listing", Reason: "requires a non-zero time and positive limit",
+		}
+	}
+	rows, err := store.db.QueryContext(ctx,
+		`SELECT tenant_id, telegram_delivery_id
+		 FROM telegram_delivery_ready_v2
+		 WHERE shard_bucket = $1 AND available_at <= $2
+		 ORDER BY available_at, tenant_id, telegram_delivery_id
+		 LIMIT $3`,
+		bucket, before, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var item ports.TelegramDeliveryReady
+		if err := rows.Scan(&item.TenantID, &item.DeliveryID); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+func (store *Store) ClaimTelegramDelivery(
+	ctx context.Context,
+	tenantID domain.TenantID,
+	deliveryID domain.TelegramDeliveryID,
+	at time.Time,
+) (result domain.TelegramDeliveryOutbox, claimed bool, err error) {
+	if at.IsZero() {
+		return result, false, domain.ValidationError{
+			Field: "Telegram delivery claim time", Reason: "must not be zero",
+		}
+	}
+	err = store.Transact(ctx, tenantID, func(state ports.StateTx) error {
+		tx := state.(*stateTx)
+		delivery, found, err := readJSON[domain.TelegramDeliveryOutbox](ctx, tx.sqlTx,
+			`SELECT payload FROM telegram_delivery_outbox
+			 WHERE tenant_id = $1 AND telegram_delivery_id = $2`,
+			tenantID, deliveryID,
+		)
+		if err != nil || !found {
+			return err
+		}
+		switch delivery.Status {
+		case domain.DeliveryPending, domain.DeliveryRetryWait:
+			if delivery.NextAttemptAt != nil && delivery.NextAttemptAt.After(at) {
+				return nil
+			}
+			if err := delivery.Transition(domain.DeliverySending, at, nil); err != nil {
+				return err
+			}
+		case domain.DeliverySending:
+			if delivery.UpdatedAt.Add(telegramDeliveryClaimTimeout).After(at) {
+				return nil
+			}
+			delivery.AttemptCount++
+			delivery.UpdatedAt = at
+		default:
+			return nil
+		}
+		if err := state.PutTelegramDeliveryOutbox(ctx, delivery); err != nil {
+			return err
+		}
+		result, claimed = delivery, true
+		return nil
+	})
+	return result, claimed, err
+}
+
+func (store *Store) GetArtifactManifest(
+	ctx context.Context,
+	tenantID domain.TenantID,
+	manifestID domain.ArtifactManifestID,
+) (result domain.ArtifactManifest, found bool, err error) {
+	if err := tenantID.Validate(); err != nil {
+		return result, false, err
+	}
+	if err := manifestID.Validate(); err != nil {
+		return result, false, err
+	}
+	err = store.Transact(ctx, tenantID, func(state ports.StateTx) error {
+		result, found, err = readJSON[domain.ArtifactManifest](
+			ctx, state.(*stateTx).sqlTx,
+			`SELECT payload FROM artifact_manifests
+			 WHERE tenant_id = $1 AND artifact_manifest_id = $2`,
+			tenantID, manifestID,
+		)
+		return err
+	})
+	return result, found, err
 }
 
 type ExpiredLease struct {

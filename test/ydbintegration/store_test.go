@@ -109,6 +109,39 @@ func TestConcurrentDuplicateTelegramUpdateCreatesOneRunAndOutbox(t *testing.T) {
 	assertCount(t, client, "dispatch_ready", tenantID, 1)
 	assertCount(t, client, "dispatch_ready_v2", tenantID, 1)
 	assertCount(t, client, "telegram_updates", tenantID, 1)
+	assertCount(t, client, "artifact_manifests", tenantID, 1)
+}
+
+func TestTelegramIdentityInitializationIsIdempotent(t *testing.T) {
+	store, client := openStore(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	tenantID := domain.TenantID(uniqueID("tenant-identity"))
+	request := ports.TelegramIdentityRequest{
+		TenantID: tenantID,
+		Actor: domain.ActorRef{
+			TenantID: tenantID, Frontend: domain.FrontendTelegram,
+			ExternalID: "2001", ID: domain.ActorID(uniqueID("actor")),
+		},
+		Conversation: domain.ConversationRef{
+			TenantID: tenantID, Frontend: domain.FrontendTelegram,
+			ExternalID: "1001", ID: domain.ConversationID(uniqueID("conversation")),
+		},
+		SubscriptionConnectionID: domain.SubscriptionConnectionID(uniqueID("subscription")),
+		Provider:                 "codex", ObservedAt: now,
+	}
+	for run := 0; run < 2; run++ {
+		state, err := store.EnsureTelegramIdentity(context.Background(), request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state.ContextEpoch != domain.InitialContextEpoch {
+			t.Fatalf("context epoch = %d", state.ContextEpoch)
+		}
+	}
+	assertCount(t, client, "tenants", tenantID, 1)
+	assertCount(t, client, "actors", tenantID, 1)
+	assertCount(t, client, "conversations", tenantID, 1)
+	assertCount(t, client, "subscription_connections", tenantID, 1)
 }
 
 func TestConcurrentLeaseClaimHasExactlyOneWinner(t *testing.T) {
@@ -247,13 +280,27 @@ func TestQuotaAndDeliveryDualWriteBucketedReadyTables(t *testing.T) {
 	assertCount(t, client, "quota_expiry_v2", tenantID, 1)
 	assertCount(t, client, "telegram_delivery_ready", tenantID, 1)
 	assertCount(t, client, "telegram_delivery_ready_v2", tenantID, 1)
-
-	if err := store.TransitionTelegramDelivery(
-		context.Background(), tenantID, delivery.ID,
-		domain.DeliverySending, now.Add(time.Second), nil,
-	); err != nil {
+	bucket, err := ydbpartition.BucketV1(string(delivery.ID))
+	if err != nil {
 		t.Fatal(err)
 	}
+	ready, err := store.ListReadyTelegramDeliveries(
+		context.Background(), bucket, now.Add(time.Second), 10,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ready) != 1 || ready[0].TenantID != tenantID || ready[0].DeliveryID != delivery.ID {
+		t.Fatalf("ready deliveries = %+v", ready)
+	}
+	claimed, ok, err := store.ClaimTelegramDelivery(
+		context.Background(), tenantID, delivery.ID, now.Add(time.Second),
+	)
+	if err != nil || !ok || claimed.Status != domain.DeliverySending ||
+		claimed.AttemptCount != 1 {
+		t.Fatalf("delivery claim = %+v, %t, %v", claimed, ok, err)
+	}
+
 	retryAt := now.Add(time.Minute)
 	if err := store.TransitionTelegramDelivery(
 		context.Background(), tenantID, delivery.ID,
@@ -263,6 +310,17 @@ func TestQuotaAndDeliveryDualWriteBucketedReadyTables(t *testing.T) {
 	}
 	assertCount(t, client, "telegram_delivery_ready", tenantID, 1)
 	assertCount(t, client, "telegram_delivery_ready_v2", tenantID, 1)
+	readyAfterRetry, err := store.ListReadyTelegramDeliveries(
+		context.Background(), bucket, now.Add(3*time.Minute), 10,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(readyAfterRetry) != 1 ||
+		readyAfterRetry[0].TenantID != tenantID ||
+		readyAfterRetry[0].DeliveryID != delivery.ID {
+		t.Fatalf("ready deliveries after retry transition = %+v", readyAfterRetry)
+	}
 
 	if _, err := ydbpartition.BackfillReadyExpiryV2(
 		context.Background(),
@@ -344,9 +402,14 @@ func ingressFixture(
 		IdempotencyKey: domain.IdempotencyKey("dispatch-key-" + runID),
 		CreatedAt:      now, UpdatedAt: now,
 	}
+	manifest := domain.ArtifactManifest{
+		ID: domain.ArtifactManifestID("manifest-" + runID), TenantID: tenantID,
+		RunID: run.ID, CreatedAt: now,
+	}
 	return ydbstore.TelegramIngress{
 		TenantID: tenantID, SourceID: "telegram-bot-primary", UpdateID: updateID,
-		ExpireAt: now.Add(24 * time.Hour), Run: run, Attempt: attempt, Dispatch: dispatch,
+		ExpireAt: now.Add(24 * time.Hour), Run: run, Attempt: attempt,
+		InputManifest: manifest, Dispatch: dispatch,
 	}
 }
 

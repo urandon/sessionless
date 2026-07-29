@@ -38,6 +38,45 @@ type IDGenerator interface {
 	NewID(ctx context.Context, kind IDKind) (string, error)
 }
 
+type TelegramIdentityRequest struct {
+	TenantID                 domain.TenantID
+	Actor                    domain.ActorRef
+	Conversation             domain.ConversationRef
+	SubscriptionConnectionID domain.SubscriptionConnectionID
+	Provider                 string
+	ObservedAt               time.Time
+}
+
+type TelegramIdentityState struct {
+	ContextEpoch domain.ContextEpoch
+}
+
+type TelegramIngress struct {
+	TenantID      domain.TenantID
+	SourceID      string
+	UpdateID      int64
+	ExpireAt      time.Time
+	Run           domain.Run
+	Attempt       domain.Attempt
+	InputManifest domain.ArtifactManifest
+	Dispatch      domain.DispatchOutbox
+}
+
+type TelegramIngressResult struct {
+	RunID   domain.RunID
+	Created bool
+}
+
+// TelegramIngressStore owns the frontend-specific identity and idempotent
+// ingress transactions while keeping Telegram types out of the core domain.
+type TelegramIngressStore interface {
+	EnsureTelegramIdentity(
+		ctx context.Context,
+		request TelegramIdentityRequest,
+	) (TelegramIdentityState, error)
+	IngestTelegram(ctx context.Context, request TelegramIngress) (TelegramIngressResult, error)
+}
+
 // StateStore provides the transaction boundary required for atomic state and
 // outbox writes. Adapters must reject tenant mismatches before mutation.
 type StateStore interface {
@@ -102,6 +141,39 @@ type TelegramSendResult struct {
 // TelegramClient is a frontend adapter port, not a core session abstraction.
 type TelegramClient interface {
 	Send(ctx context.Context, request TelegramSendRequest) (TelegramSendResult, error)
+}
+
+type TelegramDeliveryReady struct {
+	TenantID   domain.TenantID
+	DeliveryID domain.TelegramDeliveryID
+}
+
+type TelegramDeliveryStore interface {
+	ListReadyTelegramDeliveries(
+		ctx context.Context,
+		bucket uint32,
+		before time.Time,
+		limit uint64,
+	) ([]TelegramDeliveryReady, error)
+	ClaimTelegramDelivery(
+		ctx context.Context,
+		tenantID domain.TenantID,
+		deliveryID domain.TelegramDeliveryID,
+		at time.Time,
+	) (domain.TelegramDeliveryOutbox, bool, error)
+	TransitionTelegramDelivery(
+		ctx context.Context,
+		tenantID domain.TenantID,
+		deliveryID domain.TelegramDeliveryID,
+		to domain.DeliveryStatus,
+		at time.Time,
+		retryAt *time.Time,
+	) error
+	GetArtifactManifest(
+		ctx context.Context,
+		tenantID domain.TenantID,
+		manifestID domain.ArtifactManifestID,
+	) (domain.ArtifactManifest, bool, error)
 }
 
 type CredentialRequest struct {

@@ -23,17 +23,19 @@ control plane in isolated workers with explicitly granted credentials, blobs,
 and MCP access.
 
 The repository currently contains the Go component boundaries, harness-neutral
-domain/runtime contracts, the authoritative YDB state store and migrations, a
+domain/runtime contracts, the authoritative YDB state store and migrations,
+authenticated Telegram webhook ingestion, durable Telegram delivery, a
 reproducible local development stand, isolated worker packaging, pinned
-developer tools, and GitHub Actions CI fed by the GitCode mirror. Production
-Telegram ingestion/delivery, cloud queue wiring, subscription-backed harness
-execution, and the end-to-end product flow remain later implementation slices.
+developer tools, and GitHub Actions CI fed by the GitCode mirror. Cloud queue
+publication, subscription command flows, subscription-backed harness execution,
+and the complete worker result path remain later implementation slices.
 
 ## Components
 
-- `control-api`: dependency-light HTTP entrypoint with health and build metadata;
+- `control-api`: HTTP entrypoint with health/build metadata and the authenticated
+  Telegram webhook adapter;
 - `reconciler`: placeholder for durable frontend-update reconciliation and run scheduling;
-- `telegram-sender`: first frontend adapter boundary for ordered Telegram delivery;
+- `telegram-sender`: durable, retrying Telegram delivery outbox consumer;
 - `telegram-fake`: deterministic Telegram Bot API capture/update service for local development;
 - `worker-runtime`: separately packaged, harness-neutral worker boundary;
 - `internal/domain`: tenant-scoped identities, state machines, quota/usage
@@ -51,6 +53,10 @@ execution, and the end-to-end product flow remain later implementation slices.
   Yandex Object Storage;
 - `internal/sqsqueue`: at-least-once SQS-compatible queue adapter for ElasticMQ
   and YMQ;
+- `internal/telegramingress`: webhook authentication, opaque deterministic
+  identity resolution, normalized input/blob handling, and idempotent run creation;
+- `internal/telegramdelivery`: bounded YDB-ready traversal, transactional delivery
+  claims, retry policy, and Telegram Bot API sending;
 - `internal/queuecontract`: versioned queue envelopes containing opaque IDs only.
 
 The remaining component placeholders are explicit and exit after emitting a
@@ -92,4 +98,6 @@ and cloud measurement gate are documented in
 The local topology, ports, persistence semantics, adapter configuration, and
 reset procedure are documented in
 [docs/local-development-stand.md](docs/local-development-stand.md).
+Telegram webhook, identity, attachment, and delivery procedures are documented
+in [docs/telegram.md](docs/telegram.md).
 Contribution boundaries are in [CONTRIBUTING.md](CONTRIBUTING.md).

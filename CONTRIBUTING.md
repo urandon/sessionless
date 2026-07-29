@@ -21,7 +21,6 @@ credentials, service-account keys, Terraform state, or real chat data. A change
 that needs a secret must accept it through the process environment or the
 deployment platform's secret mechanism.
 
-Foundation placeholders must say that they are placeholders. Do not expose a
-route, command, or document that implies Telegram delivery, quota enforcement,
-YDB persistence, or an AI harness works before its implementation issue is
-complete.
+Placeholders must say that they are placeholders. Do not expose a route,
+command, or document that implies Telegram delivery, quota enforcement, or an
+AI harness works before its implementation issue is complete.

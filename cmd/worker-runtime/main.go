@@ -8,7 +8,7 @@ import (
 )
 
 func main() {
-	if err := skeleton.Run("worker-codex", os.Stdout); err != nil {
+	if err := skeleton.Run("worker-runtime", os.Stdout); err != nil {
 		log.Fatal(err)
 	}
 }

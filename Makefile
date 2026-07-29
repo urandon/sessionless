@@ -82,7 +82,7 @@ images:
 dev-up:
 	docker compose --project-name sessionless-dev up --build --detach ydb-local control-api
 
-migrate-local:
+migrate-local: prepare
 	@./scripts/migrate-local.sh
 
 migration-status: prepare

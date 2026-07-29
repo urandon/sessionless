@@ -18,16 +18,20 @@ type Clock interface {
 type IDKind string
 
 const (
-	IDRun              IDKind = "run"
-	IDAttempt          IDKind = "attempt"
-	IDLease            IDKind = "lease"
-	IDCheckpoint       IDKind = "checkpoint"
-	IDQuotaReservation IDKind = "quota_reservation"
-	IDUsageObservation IDKind = "usage_observation"
-	IDArtifactManifest IDKind = "artifact_manifest"
-	IDDispatchOutbox   IDKind = "dispatch_outbox"
-	IDTelegramDelivery IDKind = "telegram_delivery"
-	IDQueueMessage     IDKind = "queue_message"
+	IDTenant                 IDKind = "tenant"
+	IDActor                  IDKind = "actor"
+	IDConversation           IDKind = "conversation"
+	IDSubscriptionConnection IDKind = "subscription_connection"
+	IDRun                    IDKind = "run"
+	IDAttempt                IDKind = "attempt"
+	IDLease                  IDKind = "lease"
+	IDCheckpoint             IDKind = "checkpoint"
+	IDQuotaReservation       IDKind = "quota_reservation"
+	IDUsageObservation       IDKind = "usage_observation"
+	IDArtifactManifest       IDKind = "artifact_manifest"
+	IDDispatchOutbox         IDKind = "dispatch_outbox"
+	IDTelegramDelivery       IDKind = "telegram_delivery"
+	IDQueueMessage           IDKind = "queue_message"
 )
 
 type IDGenerator interface {

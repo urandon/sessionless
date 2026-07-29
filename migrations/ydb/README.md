@@ -14,6 +14,8 @@ recovery ambiguous.
 ```text
 make migrate-local
 make migration-status
+make partition-status
+make partition-backfill
 ```
 
 Both commands require `YDB_CONNECTION_STRING`. Authentication is selected by

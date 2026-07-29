@@ -9,6 +9,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/ydbpartition"
 )
 
 var (
@@ -147,10 +148,22 @@ func (store *Store) ClaimLease(
 			return queryErr
 		}
 		if queryErr == nil {
+			bucket, err := ydbpartition.BucketV1(string(claim.RunID))
+			if err != nil {
+				return err
+			}
 			if _, err := tx.sqlTx.ExecContext(ctx,
 				`DELETE FROM lease_expiry
 				 WHERE tenant_id = $1 AND expires_at = $2 AND run_id = $3`,
 				claim.TenantID, expiresAt, claim.RunID,
+			); err != nil {
+				return err
+			}
+			if _, err := tx.sqlTx.ExecContext(ctx,
+				`DELETE FROM lease_expiry_v2
+				 WHERE shard_bucket = $1 AND expires_at = $2
+				 AND tenant_id = $3 AND run_id = $4`,
+				bucket, expiresAt, claim.TenantID, claim.RunID,
 			); err != nil {
 				return err
 			}
@@ -334,10 +347,52 @@ func (store *Store) TransitionTelegramDelivery(
 }
 
 type ExpiredLease struct {
+	TenantID  domain.TenantID
 	RunID     domain.RunID
 	LeaseID   domain.LeaseID
 	Fence     uint64
 	ExpiresAt time.Time
+}
+
+// ListExpiredLeasesByBucket is the scheduler-facing bounded global traversal.
+// A complete pass fans out over exactly BucketCountV1 buckets and never scans
+// arbitrary tenant prefixes.
+func (store *Store) ListExpiredLeasesByBucket(
+	ctx context.Context,
+	bucket uint32,
+	before time.Time,
+	limit uint64,
+) (result []ExpiredLease, err error) {
+	if bucket >= ydbpartition.BucketCountV1 {
+		return nil, domain.ValidationError{
+			Field: "lease expiry bucket", Reason: "must be within the v1 bucket range",
+		}
+	}
+	if limit == 0 {
+		return nil, domain.ValidationError{Field: "lease expiry limit", Reason: "must be positive"}
+	}
+	rows, err := store.db.QueryContext(ctx,
+		`SELECT tenant_id, run_id, lease_id, fence_token, expires_at
+		 FROM lease_expiry_v2
+		 WHERE shard_bucket = $1 AND expires_at <= $2
+		 ORDER BY expires_at, tenant_id, run_id
+		 LIMIT $3`,
+		bucket, before, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var item ExpiredLease
+		if err := rows.Scan(
+			&item.TenantID, &item.RunID, &item.LeaseID, &item.Fence, &item.ExpiresAt,
+		); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
 }
 
 // ListExpiredLeases uses the tenant/time primary-key range; it never scans
@@ -370,6 +425,7 @@ func (store *Store) ListExpiredLeases(
 			if err := rows.Scan(&item.RunID, &item.LeaseID, &item.Fence, &item.ExpiresAt); err != nil {
 				return err
 			}
+			item.TenantID = tenantID
 			result = append(result, item)
 		}
 		return rows.Err()

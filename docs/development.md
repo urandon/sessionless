@@ -60,9 +60,10 @@ make integration
 ```
 
 `make test` checks formatting, runs `go vet`, unit tests, and the race detector.
-`make build` writes six binaries to `.build/bin`: `control-api`,
+`make build` writes eight binaries to `.build/bin`: `control-api`,
 `reconciler`, `telegram-sender`, `telegram-fake`, `worker-runtime`, and
-`schema-migrate`.
+`schema-migrate`, plus the operator-only `schema-inspect` and
+`schema-backfill` tools.
 
 ## Local stack
 
@@ -101,6 +102,7 @@ export YDB_CONNECTION_STRING='grpc://localhost:2136/local?go_query_mode=scriptin
 export YDB_ANONYMOUS_CREDENTIALS=1
 make migrate-local
 make migration-status
+make partition-status
 make ydb-integration
 ```
 
@@ -109,6 +111,12 @@ library. It adds a YDB-backed fenced lock, pre-execution checksums, one
 idempotent DDL operation per file, and a forward-only production policy. See
 `migrations/ydb/README.md` for crash repair and `docs/ydb-state-store.md` for
 keys and transaction procedures.
+
+`make partition-status` emits the live primary keys, partition settings, counts,
+and contract drift as JSON. The bucketed ready/expiry expand/backfill/cutover
+procedure is documented in
+[ydb-partitioning.md](ydb-partitioning.md). `make partition-backfill` is a
+deployment migration command, not a normal serving operation.
 
 Local defaults use `YDB_ANONYMOUS_CREDENTIALS=1`. Cloud deployments use the
 YDB environment credential chain and metadata credentials; do not place access

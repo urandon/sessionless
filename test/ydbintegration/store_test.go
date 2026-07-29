@@ -42,7 +42,11 @@ func TestMigrationsAreRepeatable(t *testing.T) {
 
 func TestPartitioningContractMatchesYDBLocal(t *testing.T) {
 	_, client := openStore(t)
-	report, err := ydbpartition.Inspect(context.Background(), client.Table())
+	report, err := ydbpartition.Inspect(
+		context.Background(),
+		client.Table(),
+		client.DatabasePath(),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

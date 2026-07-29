@@ -3,7 +3,9 @@ package ydbpartition
 import (
 	"context"
 	"fmt"
+	"path"
 	"slices"
+	"strings"
 
 	"github.com/ydb-platform/ydb-go-sdk/v3/table/options"
 )
@@ -41,9 +43,17 @@ type TableInspection struct {
 	Rationale          string     `json:"rationale"`
 }
 
-func Inspect(ctx context.Context, client TableDescriber) (Inspection, error) {
+func Inspect(
+	ctx context.Context,
+	client TableDescriber,
+	databasePath string,
+) (Inspection, error) {
 	if client == nil {
 		return Inspection{}, fmt.Errorf("YDB table describer must not be nil")
+	}
+	databasePath = path.Clean(strings.TrimSpace(databasePath))
+	if databasePath == "." || !strings.HasPrefix(databasePath, "/") {
+		return Inspection{}, fmt.Errorf("YDB database path must be absolute")
 	}
 	result := Inspection{
 		ContractVersion: ContractVersion,
@@ -53,7 +63,7 @@ func Inspect(ctx context.Context, client TableDescriber) (Inspection, error) {
 	for _, policy := range Policies() {
 		description, err := client.DescribeTable(
 			ctx,
-			policy.PhysicalTable,
+			path.Join(databasePath, policy.PhysicalTable),
 			options.WithTableStats(),
 			options.WithPartitionStats(),
 			options.WithShardKeyBounds(),

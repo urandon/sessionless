@@ -1,0 +1,8 @@
+{
+  "schema": "sessionless.queue.v1",
+  "message_id": "msg-0001",
+  "kind": "dispatch.run",
+  "tenant_id": "tenant-a",
+  "subject_id": "dispatch-0001",
+  "enqueued_at": "2026-07-28T12:00:00Z"
+}

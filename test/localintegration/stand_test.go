@@ -27,6 +27,7 @@ func TestLocalStandContracts(t *testing.T) {
 	t.Run("S3 tenant isolation", testS3TenantIsolation)
 	t.Run("SQS at least once and dead letter", testSQS)
 	t.Run("Telegram capture", testTelegramFake)
+	t.Run("Telegram webhook deduplication", testTelegramWebhook)
 }
 
 func testYDB(t *testing.T) {
@@ -185,6 +186,56 @@ func testTelegramFake(t *testing.T) {
 	}
 	if captures.Result[0].Method != "sendMessage" || captures.Result[0].ChatID != 777001 {
 		t.Fatalf("capture = %#v", captures.Result[0])
+	}
+}
+
+func testTelegramWebhook(t *testing.T) {
+	baseURL := envOrDefault("SESSIONLESS_BASE_URL", "http://localhost:8080")
+	secret := envOrDefault("TELEGRAM_WEBHOOK_SECRET", "local-webhook-secret")
+	fixture, err := os.ReadFile(filepath.Join("..", "fixtures", "telegram", "text-message.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	for attempt := 0; attempt < 2; attempt++ {
+		request, err := http.NewRequest(
+			http.MethodPost, baseURL+"/telegram/webhook", bytes.NewReader(fixture),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("X-Telegram-Bot-Api-Secret-Token", secret)
+		response, err := client.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("webhook attempt %d status = %d", attempt+1, response.StatusCode)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	ydb, err := ydbclient.Open(ctx, envOrDefault(
+		"YDB_CONNECTION_STRING",
+		"grpc://localhost:2136/local?go_query_mode=scripting&go_fake_tx=scripting&go_query_bind=declare,numeric",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ydb.Close(context.Background())
+	var count uint64
+	if err := ydb.DB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM telegram_updates
+		 WHERE source_id = $1 AND update_id = $2`,
+		"bot-primary", int64(100000001),
+	).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("Telegram update count = %d, want 1", count)
 	}
 }
 

@@ -18,8 +18,9 @@ import (
 )
 
 const (
-	defaultIdempotencyRetention = 30 * 24 * time.Hour
-	defaultOperationalRetention = 90 * 24 * time.Hour
+	defaultIdempotencyRetention  = 30 * 24 * time.Hour
+	defaultOperationalRetention  = 90 * 24 * time.Hour
+	telegramDeliveryClaimTimeout = 2 * time.Minute
 )
 
 var ErrIdempotencyConflict = errors.New("idempotency key already belongs to another run")
@@ -592,12 +593,16 @@ func (tx *stateTx) PutTelegramDeliveryOutbox(
 	if err != nil {
 		return err
 	}
-	if outbox.Status != domain.DeliveryPending && outbox.Status != domain.DeliveryRetryWait {
+	if outbox.Status != domain.DeliveryPending &&
+		outbox.Status != domain.DeliveryRetryWait &&
+		outbox.Status != domain.DeliverySending {
 		return nil
 	}
 	availableAt := outbox.UpdatedAt
 	if outbox.NextAttemptAt != nil {
 		availableAt = *outbox.NextAttemptAt
+	} else if outbox.Status == domain.DeliverySending {
+		availableAt = outbox.UpdatedAt.Add(telegramDeliveryClaimTimeout)
 	}
 	_, err = tx.sqlTx.ExecContext(ctx,
 		`UPSERT INTO telegram_delivery_ready

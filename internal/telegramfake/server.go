@@ -24,6 +24,12 @@ type Capture struct {
 	CapturedAt time.Time       `json:"captured_at"`
 }
 
+type storedFile struct {
+	name      string
+	mediaType string
+	data      []byte
+}
+
 type Server struct {
 	token  string
 	logger *slog.Logger
@@ -32,6 +38,7 @@ type Server struct {
 	mu            sync.Mutex
 	updates       map[int64]json.RawMessage
 	updateOrder   []int64
+	files         map[string]storedFile
 	captures      []Capture
 	nextMessageID int64
 }
@@ -42,12 +49,14 @@ func NewHandler(token string, logger *slog.Logger) http.Handler {
 		logger:        logger,
 		now:           time.Now,
 		updates:       make(map[int64]json.RawMessage),
+		files:         make(map[string]storedFile),
 		nextMessageID: 1000,
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", server.health)
 	mux.HandleFunc("POST /test/updates", server.addUpdate)
+	mux.HandleFunc("POST /test/files/{fileID}", server.addFile)
 	mux.HandleFunc("GET /test/captures", server.listCaptures)
 	mux.HandleFunc("POST /test/reset", server.reset)
 	mux.HandleFunc("/", server.botAPI)
@@ -98,6 +107,7 @@ func (server *Server) reset(w http.ResponseWriter, _ *http.Request) {
 	server.mu.Lock()
 	server.updates = make(map[int64]json.RawMessage)
 	server.updateOrder = nil
+	server.files = make(map[string]storedFile)
 	server.captures = nil
 	server.nextMessageID = 1000
 	server.mu.Unlock()
@@ -110,6 +120,11 @@ func (server *Server) botAPI(w http.ResponseWriter, request *http.Request) {
 		return
 	}
 
+	filePrefix := "/file/bot" + server.token + "/"
+	if strings.HasPrefix(request.URL.Path, filePrefix) {
+		server.downloadFile(w, strings.TrimPrefix(request.URL.Path, filePrefix))
+		return
+	}
 	prefix := "/bot" + server.token + "/"
 	if server.token == "" || !strings.HasPrefix(request.URL.Path, prefix) {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{
@@ -129,6 +144,8 @@ func (server *Server) botAPI(w http.ResponseWriter, request *http.Request) {
 		})
 	case "getUpdates":
 		server.getUpdates(w, request)
+	case "getFile":
+		server.getFile(w, request)
 	case "sendMessage", "sendDocument", "sendPhoto":
 		server.captureSend(w, request, method)
 	default:
@@ -138,6 +155,81 @@ func (server *Server) botAPI(w http.ResponseWriter, request *http.Request) {
 			"description": "Method not implemented by telegram-fake",
 		})
 	}
+}
+
+func (server *Server) addFile(w http.ResponseWriter, request *http.Request) {
+	fileID := request.PathValue("fileID")
+	if fileID == "" || strings.Contains(fileID, "/") {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid file ID"))
+		return
+	}
+	data, err := io.ReadAll(io.LimitReader(request.Body, maxRequestBytes+1))
+	if err != nil || len(data) > maxRequestBytes {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid file body"))
+		return
+	}
+	name := request.URL.Query().Get("name")
+	if name == "" {
+		name = "attachment.bin"
+	}
+	mediaType := request.Header.Get("Content-Type")
+	if mediaType == "" {
+		mediaType = "application/octet-stream"
+	}
+	server.mu.Lock()
+	server.files[fileID] = storedFile{
+		name: name, mediaType: mediaType, data: append([]byte(nil), data...),
+	}
+	server.mu.Unlock()
+	writeTelegramResult(w, true)
+}
+
+func (server *Server) getFile(w http.ResponseWriter, request *http.Request) {
+	var payload struct {
+		FileID string `json:"file_id"`
+	}
+	if request.Method == http.MethodPost &&
+		strings.HasPrefix(request.Header.Get("Content-Type"), "application/json") {
+		raw, err := readBody(request)
+		if err != nil || json.Unmarshal(raw, &payload) != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid getFile request"))
+			return
+		}
+	} else {
+		payload.FileID = request.URL.Query().Get("file_id")
+	}
+	server.mu.Lock()
+	file, ok := server.files[payload.FileID]
+	server.mu.Unlock()
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"ok": false, "error_code": 400, "description": "file not found",
+		})
+		return
+	}
+	writeTelegramResult(w, map[string]any{
+		"file_id": payload.FileID, "file_size": len(file.data),
+		"file_path": "files/" + payload.FileID + "/" + file.name,
+	})
+}
+
+func (server *Server) downloadFile(w http.ResponseWriter, filePath string) {
+	parts := strings.SplitN(filePath, "/", 3)
+	if len(parts) != 3 || parts[0] != "files" {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	server.mu.Lock()
+	file, ok := server.files[parts[1]]
+	server.mu.Unlock()
+	if !ok || file.name != parts[2] {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", file.mediaType)
+	w.Header().Set("Content-Length", strconv.Itoa(len(file.data)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(file.data)
 }
 
 func (server *Server) getUpdates(w http.ResponseWriter, request *http.Request) {

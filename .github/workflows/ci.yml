@@ -24,15 +24,68 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-          # The foundation has no external modules and therefore no go.sum yet.
-          cache: false
+          cache-dependency-path: go.sum
 
       - name: Run repository CI contract
         run: make ci
 
+  ydb:
+    name: YDB schema and state store
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      YDB_CONNECTION_STRING: grpc://localhost:2136/local?go_query_mode=scripting&go_fake_tx=scripting&go_query_bind=declare,numeric
+      YDB_ANONYMOUS_CREDENTIALS: "1"
+    steps:
+      - name: Checkout mirrored commit
+        uses: actions/checkout@v6
+
+      - name: Set up pinned Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Start pinned YDB Local
+        run: |
+          . tools/versions.env
+          docker run --detach --rm --name sessionless-ydb \
+            --hostname localhost \
+            --publish 2136:2136 \
+            --publish 8765:8765 \
+            --env YDB_USE_IN_MEMORY_PDISKS=true \
+            "ydbplatform/local-ydb:${YDB_LOCAL_IMAGE_VERSION}"
+
+      - name: Wait for YDB Local
+        run: |
+          for attempt in $(seq 1 90); do
+            if curl --fail --silent --show-error \
+              http://localhost:8765/monitoring/cluster >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs sessionless-ydb
+          exit 1
+
+      - name: Apply schema twice
+        run: |
+          make migrate-local
+          make migrate-local
+
+      - name: Run YDB integration suite
+        run: make ydb-integration
+
+      - name: Stop YDB Local
+        if: always()
+        run: docker stop sessionless-ydb || true
+
   images:
     name: Runtime images
-    needs: verify
+    needs:
+      - verify
+      - ydb
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

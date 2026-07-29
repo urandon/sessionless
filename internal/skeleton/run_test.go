@@ -10,7 +10,7 @@ func TestRun(t *testing.T) {
 	t.Parallel()
 
 	var output bytes.Buffer
-	if err := Run("worker-codex", &output); err != nil {
+	if err := Run("worker-runtime", &output); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 
@@ -23,7 +23,7 @@ func TestRun(t *testing.T) {
 	if err := json.Unmarshal(output.Bytes(), &event); err != nil {
 		t.Fatalf("decode output: %v", err)
 	}
-	if event.Status != "skeleton_ready" || event.Build.Component != "worker-codex" {
+	if event.Status != "skeleton_ready" || event.Build.Component != "worker-runtime" {
 		t.Fatalf("unexpected event: %+v", event)
 	}
 }

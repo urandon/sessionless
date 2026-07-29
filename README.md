@@ -34,12 +34,15 @@ are not implemented yet.
 - `control-api`: dependency-light HTTP entrypoint with health and build metadata;
 - `reconciler`: placeholder for durable frontend-update reconciliation and run scheduling;
 - `telegram-sender`: first frontend adapter boundary for ordered Telegram delivery;
-- `worker-codex`: current separately packaged worker-adapter skeleton; its name
-  does not commit the core architecture to Codex;
+- `worker-runtime`: separately packaged, harness-neutral worker boundary;
 - `internal/domain`: tenant-scoped identities, state machines, quota/usage
   semantics, outboxes, artifacts, and explicit context epochs;
 - `internal/ports`: YDB/queue/blob/frontend/credential/harness-neutral runtime
   interfaces;
+- `internal/ydbstore`: serializable tenant-scoped YDB state and atomic
+  ingress/lease/quota/outbox procedures;
+- `internal/ydbmigrate`: embedded Goose migrations with a YDB lease and
+  checksum drift protection;
 - `internal/queuecontract`: versioned queue envelopes containing opaque IDs only.
 
 The placeholders are explicit and exit after emitting a readiness event. They
@@ -61,9 +64,12 @@ make build
 make dev-up
 make migrate-local
 make integration
+make ydb-integration
 make dev-down
 ```
 
 See [docs/development.md](docs/development.md) for prerequisites, secret
 injection, image builds, the guarded reset procedure, and exact local behavior.
+YDB keys, TTL, and atomic procedures are documented in
+[docs/ydb-state-store.md](docs/ydb-state-store.md).
 Contribution boundaries are in [CONTRIBUTING.md](CONTRIBUTING.md).

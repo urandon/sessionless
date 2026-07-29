@@ -4,7 +4,7 @@ BIN_DIR := .build/bin
 GO_CACHE_DIR := $(CURDIR)/.build/cache/go-build
 GO_MOD_CACHE_DIR := $(CURDIR)/.build/cache/go-mod
 GO_TMP_DIR := $(CURDIR)/.build/tmp
-COMPONENTS := control-api reconciler telegram-sender worker-codex
+COMPONENTS := control-api reconciler telegram-sender worker-runtime schema-migrate
 VERSION ?= dev
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || printf unknown)
 BUILT_AT ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -17,8 +17,8 @@ LDFLAGS := -s -w \
 	-X gitcode.com/urandon/sessionless/internal/buildinfo.Commit=$(COMMIT) \
 	-X gitcode.com/urandon/sessionless/internal/buildinfo.BuiltAt=$(BUILT_AT)
 
-.PHONY: help prepare tools generate fmt fmt-check lint test build integration ci \
-	compose-config images dev-up migrate-local dev-down dev-reset clean
+.PHONY: help prepare tools generate fmt fmt-check lint test build integration ydb-integration ci \
+	compose-config images dev-up migrate-local migration-status dev-down dev-reset clean
 
 help:
 	@printf '%s\n' \
@@ -27,9 +27,11 @@ help:
 		'make test           formatting, static analysis, unit tests, race detector' \
 		'make build          build all component binaries' \
 		'make integration    run foundation integration tests' \
+		'make ydb-integration run YDB Local schema and concurrency tests' \
 		'make images         build control-plane and worker images' \
 		'make dev-up         build and start the local control API' \
-		'make migrate-local  apply local YDB migrations when the runner exists' \
+		'make migrate-local  apply embedded YDB migrations' \
+		'make migration-status inspect Goose and checksum state' \
 		'make dev-down       stop the local stack' \
 		'make dev-reset      guarded deletion of local Compose volumes'
 
@@ -65,6 +67,9 @@ build: prepare
 integration: prepare
 	go test -race -tags=integration ./test/integration/...
 
+ydb-integration: prepare
+	go test -race -tags=ydbintegration ./test/ydbintegration/...
+
 ci: generate test build integration
 
 compose-config:
@@ -72,13 +77,16 @@ compose-config:
 
 images:
 	docker build --build-arg TARGET=control-api -f build/control.Dockerfile -t sessionless/control-api:dev .
-	docker build -f build/worker-codex.Dockerfile -t sessionless/worker-codex:dev .
+	docker build -f build/worker-runtime.Dockerfile -t sessionless/worker-runtime:dev .
 
 dev-up:
-	docker compose --project-name sessionless-dev up --build --detach control-api
+	docker compose --project-name sessionless-dev up --build --detach ydb-local control-api
 
 migrate-local:
 	@./scripts/migrate-local.sh
+
+migration-status: prepare
+	go run ./cmd/schema-migrate status
 
 dev-down:
 	docker compose --project-name sessionless-dev down --remove-orphans

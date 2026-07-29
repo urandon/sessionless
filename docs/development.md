@@ -60,8 +60,8 @@ make integration
 ```
 
 `make test` checks formatting, runs `go vet`, unit tests, and the race detector.
-`make build` writes four binaries to `.build/bin`: `control-api`,
-`reconciler`, `telegram-sender`, and `worker-codex`.
+`make build` writes five binaries to `.build/bin`: `control-api`,
+`reconciler`, `telegram-sender`, `worker-runtime`, and `schema-migrate`.
 
 ## Local stack
 
@@ -73,10 +73,9 @@ curl http://127.0.0.1:8080/healthz
 curl http://127.0.0.1:8080/version
 ```
 
-The initial Compose stack deliberately starts only the foundation control API.
-YDB, fake Telegram, Object Storage, and queue emulators belong to their
-respective implementation issues and will be added without changing these
-top-level commands.
+The Compose stack starts the foundation control API and the pinned YDB Local
+image. Fake Telegram, Object Storage, and queue emulators remain in their
+respective implementation issues.
 
 Apply migrations and stop the stack:
 
@@ -85,14 +84,25 @@ make migrate-local
 make dev-down
 ```
 
-At foundation stage there are no schema files, so `make migrate-local` reports
-that fact and exits successfully. Once migrations exist, it invokes the pinned
-Goose YDB support with `-env=none` and requires `YDB_CONNECTION_STRING`.
+After the YDB monitoring endpoint is ready, apply or inspect the schema:
 
-YDB's official Goose integration uses scripting mode and transaction emulation
-because YDB does not support schema transactions. MVP-03 must therefore add a
-YDB-backed single-flight lock, idempotent migration rules, and checksum/drift
-validation before this command is used in cloud deployments.
+```sh
+export YDB_CONNECTION_STRING='grpc://localhost:2136/local?go_query_mode=scripting&go_fake_tx=scripting&go_query_bind=declare,numeric'
+export YDB_ANONYMOUS_CREDENTIALS=1
+make migrate-local
+make migration-status
+make ydb-integration
+```
+
+The repository-owned migration binary embeds the SQL set and uses Goose as a
+library. It adds a YDB-backed fenced lock, pre-execution checksums, one
+idempotent DDL operation per file, and a forward-only production policy. See
+`migrations/ydb/README.md` for crash repair and `docs/ydb-state-store.md` for
+keys and transaction procedures.
+
+Local defaults use `YDB_ANONYMOUS_CREDENTIALS=1`. Cloud deployments use the
+YDB environment credential chain and metadata credentials; do not place access
+tokens in the connection string or command line.
 
 To delete local Compose volumes, use the guarded command:
 

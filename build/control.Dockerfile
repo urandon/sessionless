@@ -4,7 +4,7 @@ ARG GO_VERSION=1.26.4
 FROM golang:${GO_VERSION}-alpine AS build
 
 WORKDIR /src
-COPY go.mod ./
+COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 

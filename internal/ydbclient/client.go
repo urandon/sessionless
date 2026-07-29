@@ -89,6 +89,16 @@ func (client *Client) Table() table.Client {
 	return client.driver.Table()
 }
 
+// DatabasePath returns the absolute YDB database path used by native scheme
+// operations. Unlike SQL queries, DescribeTable does not resolve table names
+// relative to the connection database.
+func (client *Client) DatabasePath() string {
+	if client == nil || client.driver == nil {
+		return ""
+	}
+	return client.driver.Name()
+}
+
 // DataDSN removes database/sql behavior flags that are needed by Goose DDL
 // scripting but would disable real transactions in the state store.
 func DataDSN(connectionString string) (string, error) {

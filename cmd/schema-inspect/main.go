@@ -37,7 +37,7 @@ func run() error {
 		return err
 	}
 	defer client.Close(context.Background())
-	report, err := ydbpartition.Inspect(ctx, client.Table())
+	report, err := ydbpartition.Inspect(ctx, client.Table(), client.DatabasePath())
 	if err != nil {
 		return err
 	}

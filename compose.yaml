@@ -3,14 +3,77 @@ name: sessionless-dev
 services:
   ydb-local:
     image: ydbplatform/local-ydb:${YDB_LOCAL_IMAGE_VERSION:-25.3.1.25}
+    platform: ${YDB_PLATFORM:-linux/amd64}
     hostname: localhost
     environment:
-      YDB_USE_IN_MEMORY_PDISKS: "true"
       GRPC_PORT: "2136"
       MON_PORT: "8765"
+      YDB_PDISK_SIZE: ${YDB_PDISK_SIZE:-4GB}
+      YDB_USE_IN_MEMORY_PDISKS: ${YDB_USE_IN_MEMORY_PDISKS:-false}
     ports:
       - "${YDB_GRPC_PORT:-2136}:2136"
       - "${YDB_MONITORING_PORT:-8765}:8765"
+    volumes:
+      - ydb-data:/ydb_data
+      - ydb-certs:/ydb_certs
+    restart: unless-stopped
+
+  object-storage-local:
+    image: minio/minio:${MINIO_IMAGE_VERSION:-RELEASE.2025-09-07T16-13-09Z}
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY_ID:-sessionless-local}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_ACCESS_KEY:-sessionless-local-secret}
+    ports:
+      - "${S3_API_PORT:-9000}:9000"
+      - "${S3_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - object-storage-data:/data
+    restart: unless-stopped
+
+  object-storage-init:
+    image: minio/mc:${MINIO_MC_IMAGE_VERSION:-RELEASE.2025-08-13T08-35-41Z}
+    profiles:
+      - tools
+    environment:
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-sessionless-local}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-sessionless-local-secret}
+      S3_BUCKET: ${S3_BUCKET:-sessionless-local}
+    entrypoint:
+      - /bin/sh
+      - -eu
+      - -c
+      - |
+        mc alias set local http://object-storage-local:9000 "$${S3_ACCESS_KEY_ID}" "$${S3_SECRET_ACCESS_KEY}"
+        mc mb --ignore-existing "local/$${S3_BUCKET}"
+
+  queue-local:
+    image: softwaremill/elasticmq-native:${ELASTICMQ_IMAGE_VERSION:-1.6.16}
+    ports:
+      - "${QUEUE_API_PORT:-9324}:9324"
+      - "${QUEUE_UI_PORT:-9325}:9325"
+    volumes:
+      - ./infra/local/elasticmq.conf:/opt/elasticmq.conf:ro
+    restart: unless-stopped
+
+  telegram-fake:
+    build:
+      context: .
+      dockerfile: build/control.Dockerfile
+      args:
+        GO_VERSION: ${GO_VERSION:-1.26.4}
+        TARGET: telegram-fake
+    environment:
+      PORT: "8081"
+      TELEGRAM_FAKE_TOKEN: ${TELEGRAM_FAKE_TOKEN:-local-test-token}
+    ports:
+      - "${TELEGRAM_FAKE_PORT:-8081}:8081"
+    init: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
     restart: unless-stopped
 
   control-api:
@@ -33,3 +96,8 @@ services:
     tmpfs:
       - /tmp:size=16m,mode=1777
     restart: unless-stopped
+
+volumes:
+  ydb-data:
+  ydb-certs:
+  object-storage-data:

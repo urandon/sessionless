@@ -22,18 +22,19 @@ tenant-partitioned Object Storage. Harness processes execute outside the
 control plane in isolated workers with explicitly granted credentials, blobs,
 and MCP access.
 
-This repository currently contains the MVP foundation: Go component boundaries,
-an executable control API skeleton, harness-neutral domain/runtime contracts,
-isolated worker packaging, pinned developer tools, local Compose commands, and
-GitHub Actions CI fed by the GitCode mirror. Telegram ingestion, YDB adapters,
-cloud queues, subscription-backed harness execution, and end-to-end delivery
-are not implemented yet.
+The repository currently contains the Go component boundaries, harness-neutral
+domain/runtime contracts, the authoritative YDB state store and migrations, a
+reproducible local development stand, isolated worker packaging, pinned
+developer tools, and GitHub Actions CI fed by the GitCode mirror. Production
+Telegram ingestion/delivery, cloud queue wiring, subscription-backed harness
+execution, and the end-to-end product flow remain later implementation slices.
 
 ## Components
 
 - `control-api`: dependency-light HTTP entrypoint with health and build metadata;
 - `reconciler`: placeholder for durable frontend-update reconciliation and run scheduling;
 - `telegram-sender`: first frontend adapter boundary for ordered Telegram delivery;
+- `telegram-fake`: deterministic Telegram Bot API capture/update service for local development;
 - `worker-runtime`: separately packaged, harness-neutral worker boundary;
 - `internal/domain`: tenant-scoped identities, state machines, quota/usage
   semantics, outboxes, artifacts, and explicit context epochs;
@@ -43,10 +44,15 @@ are not implemented yet.
   ingress/lease/quota/outbox procedures;
 - `internal/ydbmigrate`: embedded Goose migrations with a YDB lease and
   checksum drift protection;
+- `internal/s3store`: tenant-enforcing S3-compatible blob adapter for MinIO and
+  Yandex Object Storage;
+- `internal/sqsqueue`: at-least-once SQS-compatible queue adapter for ElasticMQ
+  and YMQ;
 - `internal/queuecontract`: versioned queue envelopes containing opaque IDs only.
 
-The placeholders are explicit and exit after emitting a readiness event. They
-do not claim that the cloud adapters or product flow already exist.
+The remaining component placeholders are explicit and exit after emitting a
+readiness event. They do not claim that the product flow or a concrete agent
+harness already exists.
 
 The contract invariants and transition tables are documented in
 [docs/contracts.md](docs/contracts.md). The architecture source of truth is
@@ -62,9 +68,11 @@ make generate
 make test
 make build
 make dev-up
+make dev-seed
 make migrate-local
 make integration
 make ydb-integration
+make local-integration
 make dev-down
 ```
 
@@ -72,4 +80,7 @@ See [docs/development.md](docs/development.md) for prerequisites, secret
 injection, image builds, the guarded reset procedure, and exact local behavior.
 YDB keys, TTL, and atomic procedures are documented in
 [docs/ydb-state-store.md](docs/ydb-state-store.md).
+The local topology, ports, persistence semantics, adapter configuration, and
+reset procedure are documented in
+[docs/local-development-stand.md](docs/local-development-stand.md).
 Contribution boundaries are in [CONTRIBUTING.md](CONTRIBUTING.md).

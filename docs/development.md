@@ -60,29 +60,39 @@ make integration
 ```
 
 `make test` checks formatting, runs `go vet`, unit tests, and the race detector.
-`make build` writes five binaries to `.build/bin`: `control-api`,
-`reconciler`, `telegram-sender`, `worker-runtime`, and `schema-migrate`.
+`make build` writes six binaries to `.build/bin`: `control-api`,
+`reconciler`, `telegram-sender`, `telegram-fake`, `worker-runtime`, and
+`schema-migrate`.
 
 ## Local stack
 
-Start the control API:
+Start and initialize the complete local stand:
 
 ```sh
 make dev-up
 curl http://127.0.0.1:8080/healthz
-curl http://127.0.0.1:8080/version
+curl http://127.0.0.1:8081/healthz
 ```
 
-The Compose stack starts the foundation control API and the pinned YDB Local
-image. Fake Telegram, Object Storage, and queue emulators remain in their
-respective implementation issues.
+`make dev-up` starts pinned YDB Local, MinIO, ElasticMQ, the deterministic
+Telegram fake, and the control API. It waits for every public endpoint, creates
+the local bucket, applies the embedded YDB migrations, and idempotently loads
+the synthetic Telegram fixture. It does not require cloud credentials or a
+real Telegram token.
 
-Apply migrations and stop the stack:
+Run the adapter contracts and stop the stack:
 
 ```sh
 make migrate-local
+make local-integration
 make dev-down
 ```
+
+Normal stop/start preserves the YDB and Object Storage named volumes. ElasticMQ
+and the Telegram fake are intentionally ephemeral transport fixtures. The
+complete topology, endpoint table, local-only credentials, persistence test,
+and Apple Silicon requirements are documented in
+[local-development-stand.md](local-development-stand.md).
 
 After the YDB monitoring endpoint is ready, apply or inspect the schema:
 

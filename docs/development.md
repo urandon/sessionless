@@ -76,10 +76,10 @@ curl http://127.0.0.1:8081/healthz
 ```
 
 `make dev-up` starts pinned YDB Local, MinIO, ElasticMQ, the deterministic
-Telegram fake, and the control API. It waits for every public endpoint, creates
-the local bucket, applies the embedded YDB migrations, and idempotently loads
-the synthetic Telegram fixture. It does not require cloud credentials or a
-real Telegram token.
+Telegram fake, the control API, and the durable Telegram sender. It waits for
+every public endpoint, creates the local bucket, applies the embedded YDB
+migrations, and idempotently loads the synthetic Telegram fixture. It does not
+require cloud credentials or a real Telegram token.
 
 The control API uses the YDB SDK single-connection balancer only inside the
 Compose stand. This keeps the client on the Docker-resolvable `ydb-local`

@@ -68,6 +68,31 @@ type memoryIngressStore struct {
 	identities map[domain.TenantID]ports.TelegramIdentityState
 	updates    map[string]domain.RunID
 	requests   []ports.TelegramIngress
+	commands   []ports.TelegramCommandRequest
+}
+
+func (store *memoryIngressStore) ExecuteTelegramCommand(
+	_ context.Context,
+	request ports.TelegramCommandRequest,
+) (ports.TelegramIngressResult, error) {
+	key := fmt.Sprintf("%s:%s:%d", request.TenantID, request.SourceID, request.UpdateID)
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if existing, ok := store.updates[key]; ok {
+		return ports.TelegramIngressResult{RunID: existing, Created: false}, nil
+	}
+	if request.Kind == ports.TelegramCommandNewContext {
+		state := store.identities[request.TenantID]
+		next, err := state.ContextEpoch.Next()
+		if err != nil {
+			return ports.TelegramIngressResult{}, err
+		}
+		state.ContextEpoch = next
+		store.identities[request.TenantID] = state
+	}
+	store.updates[key] = request.RunID
+	store.commands = append(store.commands, request)
+	return ports.TelegramIngressResult{RunID: request.RunID, Created: true}, nil
 }
 
 func newMemoryIngressStore() *memoryIngressStore {
@@ -174,6 +199,64 @@ func TestProcessorPersistsTenantScopedMessageAndDeduplicatesUpdate(t *testing.T)
 		if !strings.HasPrefix(artifact.Blob.Key, domain.TenantObjectPrefix(request.TenantID)) {
 			t.Fatalf("cross-tenant blob key %q", artifact.Blob.Key)
 		}
+	}
+}
+
+func TestProcessorRoutesCommandsWithoutCreatingAIIngress(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 29, 12, 30, 0, 0, time.UTC)
+	resolver, err := NewIdentityResolver([]byte(strings.Repeat("c", 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	blobs := newMemoryBlobStore()
+	state := newMemoryIngressStore()
+	processor, err := NewProcessor(
+		ProcessorConfig{SourceID: "bot-primary", Provider: "hermes"},
+		resolver, testkit.NewSequenceIDGenerator("command-"),
+		testkit.NewFakeClock(now), blobs, staticFileFetcher{}, state,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	update := Update{
+		UpdateID: 88,
+		Message: &Message{
+			MessageID: 10, From: User{ID: 2002},
+			Chat: Chat{ID: 1002, Type: "private"}, Date: now.Unix(),
+			Text: "/new",
+		},
+	}
+	first, err := processor.Process(context.Background(), update)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := processor.Process(context.Background(), update)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.Created || second.Created || first.RunID != second.RunID {
+		t.Fatalf("command dedup results = %#v then %#v", first, second)
+	}
+	connect := update
+	connect.UpdateID++
+	connect.Message.MessageID++
+	connect.Message.Text = "/connect codex"
+	if _, err := processor.Process(context.Background(), connect); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.commands) != 2 ||
+		state.commands[0].Kind != ports.TelegramCommandNewContext ||
+		state.commands[0].Provider != "hermes" ||
+		state.commands[1].Kind != ports.TelegramCommandConnectCodex ||
+		state.commands[1].Provider != "codex" {
+		t.Fatalf("commands = %#v", state.commands)
+	}
+	if len(state.requests) != 0 {
+		t.Fatalf("AI ingress count = %d, want 0", len(state.requests))
+	}
+	if len(blobs.objects) != 0 {
+		t.Fatalf("command blobs = %d, want 0", len(blobs.objects))
 	}
 }
 

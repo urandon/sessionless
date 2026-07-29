@@ -162,3 +162,9 @@ Ingress-derived commands carry stable idempotency keys. `StateTx` can look up a
 run by that key before creating state. Outbox rows and queue messages use
 separate opaque IDs so an at-least-once redelivery replays the same intended
 transition rather than creating new work.
+
+Telegram control commands use a terminal run without an attempt or dispatch
+row. Update deduplication, subscription/context mutation, run creation, and an
+inline-text delivery outbox row commit in the same tenant-scoped serializable
+transaction. A duplicate update returns the existing command run and cannot
+advance the context epoch or enqueue another logical reply.

@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,6 +21,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/queuecontract"
 	"gitcode.com/urandon/sessionless/internal/s3store"
 	"gitcode.com/urandon/sessionless/internal/sqsqueue"
+	"gitcode.com/urandon/sessionless/internal/telegramingress"
 	"gitcode.com/urandon/sessionless/internal/ydbclient"
 )
 
@@ -28,6 +31,7 @@ func TestLocalStandContracts(t *testing.T) {
 	t.Run("SQS at least once and dead letter", testSQS)
 	t.Run("Telegram capture", testTelegramFake)
 	t.Run("Telegram webhook deduplication", testTelegramWebhook)
+	t.Run("Telegram command state and durable replies", testTelegramCommands)
 }
 
 func testYDB(t *testing.T) {
@@ -236,6 +240,161 @@ func testTelegramWebhook(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("Telegram update count = %d, want 1", count)
+	}
+}
+
+func testTelegramCommands(t *testing.T) {
+	controlURL := envOrDefault("SESSIONLESS_BASE_URL", "http://localhost:8080")
+	telegramURL := envOrDefault("TELEGRAM_API_BASE_URL", "http://localhost:8081")
+	secret := envOrDefault("TELEGRAM_WEBHOOK_SECRET", "local-webhook-secret")
+	client := &http.Client{Timeout: 10 * time.Second}
+	postJSON(t, client, telegramURL+"/test/reset", []byte(`{}`))
+
+	baseUpdateID := int64(1_000_000_000) + time.Now().UTC().UnixMilli()%900_000_000
+	commands := []string{
+		"/connect codex",
+		"/compute status",
+		"/new",
+		"/compute disconnect codex",
+	}
+	for index, command := range commands {
+		fixture, err := json.Marshal(map[string]any{
+			"update_id": baseUpdateID + int64(index),
+			"message": map[string]any{
+				"message_id": baseUpdateID + int64(index),
+				"from":       map[string]any{"id": 99001},
+				"chat":       map[string]any{"id": 99001, "type": "private"},
+				"date":       time.Now().UTC().Unix(),
+				"text":       command,
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		postWebhook(t, client, controlURL+"/telegram/webhook", secret, fixture)
+	}
+
+	var captures struct {
+		OK     bool `json:"ok"`
+		Result []struct {
+			Method  string          `json:"method"`
+			ChatID  int64           `json:"chat_id"`
+			Request json.RawMessage `json:"request"`
+		} `json:"result"`
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		getJSON(t, client, telegramURL+"/test/captures", &captures)
+		if captures.OK && len(captures.Result) == len(commands) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("command reply captures = %#v", captures)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	var sawStatus, sawNewContext, sawDisconnect bool
+	for _, capture := range captures.Result {
+		if capture.Method != "sendMessage" || capture.ChatID != 99001 {
+			t.Fatalf("command capture = %#v", capture)
+		}
+		var payload struct {
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(capture.Request, &payload); err != nil {
+			t.Fatal(err)
+		}
+		sawStatus = sawStatus || strings.Contains(payload.Text, "reauthentication_required")
+		sawNewContext = sawNewContext || strings.Contains(payload.Text, "New clean context started")
+		sawDisconnect = sawDisconnect || strings.Contains(payload.Text, "connection disconnected")
+	}
+	if !sawStatus || !sawNewContext || !sawDisconnect {
+		t.Fatalf(
+			"command replies missing: status=%t new_context=%t disconnect=%t",
+			sawStatus, sawNewContext, sawDisconnect,
+		)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	ydb, err := ydbclient.Open(ctx, envOrDefault(
+		"YDB_CONNECTION_STRING",
+		"grpc://localhost:2136/local?go_query_mode=scripting&go_fake_tx=scripting&go_query_bind=declare,numeric",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ydb.Close(context.Background())
+	resolver, err := telegramingress.NewIdentityResolver([]byte(envOrDefault(
+		"TELEGRAM_IDENTITY_HMAC_KEY",
+		"sessionless-local-identity-key-0001",
+	)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := resolver.ResolvePrivate(99001, 99001, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var commandRuns, contextEvents uint64
+	if err := ydb.DB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM telegram_updates
+		 WHERE tenant_id = $1 AND source_id = $2
+		   AND update_id >= $3 AND update_id < $4`,
+		identity.Tenant, "bot-primary",
+		baseUpdateID, baseUpdateID+int64(len(commands)),
+	).Scan(&commandRuns); err != nil {
+		t.Fatal(err)
+	}
+	if commandRuns != uint64(len(commands)) {
+		t.Fatalf("command update count = %d, want %d", commandRuns, len(commands))
+	}
+	if err := ydb.DB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM context_epochs
+		 WHERE tenant_id = $1 AND conversation_id = $2
+		   AND trigger_message_id = $3`,
+		identity.Tenant, identity.Conversation.ID,
+		strconv.FormatInt(baseUpdateID+2, 10),
+	).Scan(&contextEvents); err != nil {
+		t.Fatal(err)
+	}
+	if contextEvents != 1 {
+		t.Fatalf("clean-context event count = %d, want 1", contextEvents)
+	}
+	var entitlement string
+	if err := ydb.DB.QueryRowContext(ctx,
+		`SELECT entitlement_state FROM subscription_connections
+		 WHERE tenant_id = $1 AND subscription_connection_id = $2`,
+		identity.Tenant, identity.SubscriptionConnection,
+	).Scan(&entitlement); err != nil {
+		t.Fatal(err)
+	}
+	if entitlement != string(domain.EntitlementDisconnected) {
+		t.Fatalf("connection state = %q, want disconnected", entitlement)
+	}
+}
+
+func postWebhook(
+	t *testing.T,
+	client *http.Client,
+	url string,
+	secret string,
+	body []byte,
+) {
+	t.Helper()
+	request, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Telegram-Bot-Api-Secret-Token", secret)
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("webhook status = %d", response.StatusCode)
 	}
 }
 

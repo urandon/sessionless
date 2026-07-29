@@ -108,3 +108,23 @@ func TestTelegramSendRequestRejectsCrossTenantPayload(t *testing.T) {
 		t.Fatal("cross-tenant Telegram payload accepted")
 	}
 }
+
+func TestTelegramSendRequestAcceptsInlineTextOnly(t *testing.T) {
+	t.Parallel()
+
+	request := ports.TelegramSendRequest{
+		TenantID:         "tenant-a",
+		DeliveryID:       "delivery-inline",
+		Chat:             domain.TelegramChatRef{TenantID: "tenant-a", ChatID: 123},
+		ReplyToMessageID: 78,
+		Text:             "command reply",
+		IdempotencyKey:   "delivery-inline",
+	}
+	if err := request.Validate(); err != nil {
+		t.Fatalf("inline Telegram request rejected: %v", err)
+	}
+	request.Payload = portTestBlob("tenant-a")
+	if err := request.Validate(); err == nil {
+		t.Fatal("ambiguous Telegram request content accepted")
+	}
+}

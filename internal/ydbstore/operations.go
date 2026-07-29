@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
@@ -83,6 +84,264 @@ func (store *Store) IngestTelegram(
 		return nil
 	})
 	return result, err
+}
+
+// ExecuteTelegramCommand atomically deduplicates a Telegram update, applies
+// the requested control-plane state change, records a terminal command run,
+// and enqueues its inline Telegram reply. Commands never emit a dispatch row.
+func (store *Store) ExecuteTelegramCommand(
+	ctx context.Context,
+	request ports.TelegramCommandRequest,
+) (result ports.TelegramIngressResult, err error) {
+	if err := validateTelegramCommand(request); err != nil {
+		return result, err
+	}
+	err = store.Transact(ctx, request.TenantID, func(state ports.StateTx) error {
+		tx := state.(*stateTx)
+		var existing string
+		queryErr := tx.sqlTx.QueryRowContext(ctx,
+			`SELECT run_id FROM telegram_updates
+			 WHERE tenant_id = $1 AND source_id = $2 AND update_id = $3`,
+			request.TenantID, request.SourceID, request.UpdateID,
+		).Scan(&existing)
+		switch {
+		case queryErr == nil:
+			result = ports.TelegramIngressResult{
+				RunID: domain.RunID(existing), Created: false,
+			}
+			return nil
+		case !errors.Is(queryErr, sql.ErrNoRows):
+			return queryErr
+		}
+
+		var currentEpoch uint64
+		if err := tx.sqlTx.QueryRowContext(ctx,
+			`SELECT current_context_epoch FROM conversations
+			 WHERE tenant_id = $1 AND conversation_id = $2`,
+			request.TenantID, request.Conversation.ID,
+		).Scan(&currentEpoch); err != nil {
+			return err
+		}
+		epoch := domain.ContextEpoch(currentEpoch)
+		reply, nextEpoch, err := executeTelegramCommandState(ctx, tx, request, epoch)
+		if err != nil {
+			return err
+		}
+		epoch = nextEpoch
+		finishedAt := request.RequestedAt
+		run := domain.Run{
+			ID: request.RunID, TenantID: request.TenantID,
+			Conversation:             request.Conversation,
+			SubscriptionConnectionID: request.SubscriptionConnectionID,
+			ContextEpoch:             epoch, Status: domain.RunSucceeded,
+			IdempotencyKey: request.IdempotencyKey,
+			FinishedAt:     &finishedAt, CreatedAt: request.RequestedAt,
+			UpdatedAt: request.RequestedAt,
+		}
+		if err := state.PutRun(ctx, run); err != nil {
+			return err
+		}
+		delivery := domain.TelegramDeliveryOutbox{
+			ID: request.DeliveryID, TenantID: request.TenantID,
+			RunID: run.ID, Chat: request.Chat,
+			ReplyToMessageID: request.ReplyToMessageID,
+			Text:             reply, Status: domain.DeliveryPending,
+			IdempotencyKey: request.IdempotencyKey,
+			CreatedAt:      request.RequestedAt, UpdatedAt: request.RequestedAt,
+		}
+		if err := state.PutTelegramDeliveryOutbox(ctx, delivery); err != nil {
+			return err
+		}
+		if _, err := tx.sqlTx.ExecContext(ctx,
+			`INSERT INTO telegram_updates
+			 (tenant_id, source_id, update_id, run_id, received_at, expire_at)
+			 VALUES ($1, $2, $3, $4, $5, $6)`,
+			request.TenantID, request.SourceID, request.UpdateID, run.ID,
+			request.RequestedAt, request.ExpireAt,
+		); err != nil {
+			return err
+		}
+		result = ports.TelegramIngressResult{RunID: run.ID, Created: true}
+		return nil
+	})
+	return result, err
+}
+
+func executeTelegramCommandState(
+	ctx context.Context,
+	tx *stateTx,
+	request ports.TelegramCommandRequest,
+	epoch domain.ContextEpoch,
+) (reply string, resultingEpoch domain.ContextEpoch, err error) {
+	resultingEpoch = epoch
+	switch request.Kind {
+	case ports.TelegramCommandConnectCodex:
+		if _, err := tx.sqlTx.ExecContext(ctx,
+			`UPDATE subscription_connections
+			 SET entitlement_state = $1, quota_state = $2,
+			     observed_at = $3, updated_at = $4
+			 WHERE tenant_id = $5 AND subscription_connection_id = $6`,
+			domain.EntitlementReauthRequired, "unknown",
+			request.RequestedAt, request.RequestedAt,
+			request.TenantID, request.SubscriptionConnectionID,
+		); err != nil {
+			return "", epoch, err
+		}
+		return "Codex connection: authorization required. No credential has been stored; provider authorization will be completed by the isolated Codex adapter.", epoch, nil
+	case ports.TelegramCommandComputeStatus:
+		var provider, entitlement, quota string
+		if err := tx.sqlTx.QueryRowContext(ctx,
+			`SELECT provider, entitlement_state, quota_state
+			 FROM subscription_connections
+			 WHERE tenant_id = $1 AND subscription_connection_id = $2`,
+			request.TenantID, request.SubscriptionConnectionID,
+		).Scan(&provider, &entitlement, &quota); err != nil {
+			return "", epoch, err
+		}
+		return fmt.Sprintf(
+			"Compute provider: %s\nConnection: %s\nQuota: %s",
+			provider, entitlement, quota,
+		), epoch, nil
+	case ports.TelegramCommandDisconnectCodex:
+		if _, err := tx.sqlTx.ExecContext(ctx,
+			`UPDATE subscription_connections
+			 SET credential_ref = $1, entitlement_state = $2, quota_state = $3,
+			     observed_at = $4, updated_at = $5
+			 WHERE tenant_id = $6 AND subscription_connection_id = $7`,
+			"", domain.EntitlementDisconnected, "unknown",
+			request.RequestedAt, request.RequestedAt,
+			request.TenantID, request.SubscriptionConnectionID,
+		); err != nil {
+			return "", epoch, err
+		}
+		return "Codex connection disconnected. Stored credential references were removed and no API-billing fallback was enabled.", epoch, nil
+	case ports.TelegramCommandNewContext:
+		next, err := epoch.Next()
+		if err != nil {
+			return "", epoch, err
+		}
+		event := domain.CleanContextEvent{
+			TenantID: request.TenantID, Conversation: request.Conversation,
+			RequestedBy: request.Actor, PreviousEpoch: epoch, NewEpoch: next,
+			TriggerMessageID: strconv.FormatInt(request.ReplyToMessageID, 10),
+			IdempotencyKey:   request.IdempotencyKey,
+			RequestedAt:      request.RequestedAt,
+		}
+		if err := event.Validate(); err != nil {
+			return "", epoch, err
+		}
+		if _, err := tx.sqlTx.ExecContext(ctx,
+			`INSERT INTO context_epochs
+			 (tenant_id, conversation_id, context_epoch, requested_by_actor_id,
+			  trigger_message_id, idempotency_key, context_blob_key, created_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+			event.TenantID, event.Conversation.ID, uint64(event.NewEpoch),
+			event.RequestedBy.ID, event.TriggerMessageID, event.IdempotencyKey,
+			"", event.RequestedAt,
+		); err != nil {
+			return "", epoch, err
+		}
+		if _, err := tx.sqlTx.ExecContext(ctx,
+			`UPDATE conversations
+			 SET current_context_epoch = $1, updated_at = $2
+			 WHERE tenant_id = $3 AND conversation_id = $4`,
+			uint64(event.NewEpoch), event.RequestedAt,
+			event.TenantID, event.Conversation.ID,
+		); err != nil {
+			return "", epoch, err
+		}
+		return fmt.Sprintf(
+			"New clean context started (epoch %d). Telegram history was not deleted; future workloads will use only the new context epoch.",
+			event.NewEpoch,
+		), next, nil
+	case ports.TelegramCommandHelp:
+		return "Supported commands:\n/connect codex\n/compute status\n/compute disconnect codex\n/new", epoch, nil
+	default:
+		return "", epoch, domain.ValidationError{
+			Field: "telegram.command", Reason: "is unknown",
+		}
+	}
+}
+
+func validateTelegramCommand(request ports.TelegramCommandRequest) error {
+	if err := request.TenantID.Validate(); err != nil {
+		return err
+	}
+	if err := domain.ValidateOpaqueID("telegram.source_id", request.SourceID); err != nil {
+		return err
+	}
+	if request.UpdateID <= 0 {
+		return domain.ValidationError{
+			Field: "telegram.update_id", Reason: "must be positive",
+		}
+	}
+	if request.ExpireAt.IsZero() || !request.ExpireAt.After(request.RequestedAt) {
+		return domain.ValidationError{
+			Field: "telegram.expire_at", Reason: "must be after requested_at",
+		}
+	}
+	if !request.Kind.Valid() {
+		return domain.ValidationError{Field: "telegram.command", Reason: "is unknown"}
+	}
+	if err := domain.ValidateOpaqueID("provider", request.Provider); err != nil {
+		return err
+	}
+	if (request.Kind == ports.TelegramCommandConnectCodex ||
+		request.Kind == ports.TelegramCommandComputeStatus ||
+		request.Kind == ports.TelegramCommandDisconnectCodex) &&
+		request.Provider != "codex" {
+		return domain.ValidationError{
+			Field:  "telegram.command.provider",
+			Reason: "must be codex for the requested command",
+		}
+	}
+	if err := request.Actor.Validate(); err != nil {
+		return err
+	}
+	if err := request.Conversation.Validate(); err != nil {
+		return err
+	}
+	if err := domain.EnsureSameTenant(request.TenantID, request.Actor.TenantID); err != nil {
+		return err
+	}
+	if err := domain.EnsureSameTenant(request.TenantID, request.Conversation.TenantID); err != nil {
+		return err
+	}
+	if request.Actor.Frontend != request.Conversation.Frontend {
+		return domain.ValidationError{
+			Field:  "telegram.command.frontend",
+			Reason: "actor and conversation must use the same frontend",
+		}
+	}
+	if err := request.SubscriptionConnectionID.Validate(); err != nil {
+		return err
+	}
+	if err := request.RunID.Validate(); err != nil {
+		return err
+	}
+	if err := request.DeliveryID.Validate(); err != nil {
+		return err
+	}
+	if err := request.Chat.Validate(); err != nil {
+		return err
+	}
+	if err := domain.EnsureSameTenant(request.TenantID, request.Chat.TenantID); err != nil {
+		return err
+	}
+	if request.ReplyToMessageID <= 0 {
+		return domain.ValidationError{
+			Field: "telegram.reply_to_message_id", Reason: "must be positive",
+		}
+	}
+	if err := request.IdempotencyKey.Validate(); err != nil {
+		return err
+	}
+	if request.RequestedAt.IsZero() {
+		return domain.ValidationError{
+			Field: "telegram.requested_at", Reason: "must not be zero",
+		}
+	}
+	return nil
 }
 
 // EnsureTelegramIdentity materializes the deterministic Telegram identity

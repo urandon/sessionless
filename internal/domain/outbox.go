@@ -1,6 +1,10 @@
 package domain
 
-import "time"
+import (
+	"strings"
+	"time"
+	"unicode/utf8"
+)
 
 type DispatchStatus string
 
@@ -113,6 +117,7 @@ type TelegramDeliveryOutbox struct {
 	Chat               TelegramChatRef     `json:"chat"`
 	ReplyToMessageID   int64               `json:"reply_to_message_id"`
 	Payload            BlobRef             `json:"payload"`
+	Text               string              `json:"text,omitempty"`
 	ArtifactManifestID *ArtifactManifestID `json:"artifact_manifest_id,omitempty"`
 	Status             DeliveryStatus      `json:"status"`
 	IdempotencyKey     IdempotencyKey      `json:"idempotency_key"`
@@ -144,11 +149,28 @@ func (delivery TelegramDeliveryOutbox) ValidateForRun(run Run) error {
 	if delivery.ReplyToMessageID == 0 {
 		return ValidationError{Field: "telegram_delivery.reply_to_message_id", Reason: "must not be zero"}
 	}
-	if err := delivery.Payload.Validate(); err != nil {
-		return err
+	hasText := strings.TrimSpace(delivery.Text) != ""
+	hasPayload := delivery.Payload.Key != ""
+	if hasText == hasPayload {
+		return ValidationError{
+			Field:  "telegram_delivery.content",
+			Reason: "must contain exactly one of inline text or a blob payload",
+		}
 	}
-	if err := EnsureSameTenant(run.TenantID, delivery.Payload.TenantID); err != nil {
-		return err
+	if hasText {
+		if utf8.RuneCountInString(delivery.Text) > 4096 {
+			return ValidationError{
+				Field:  "telegram_delivery.text",
+				Reason: "must not exceed 4096 Unicode characters",
+			}
+		}
+	} else {
+		if err := delivery.Payload.Validate(); err != nil {
+			return err
+		}
+		if err := EnsureSameTenant(run.TenantID, delivery.Payload.TenantID); err != nil {
+			return err
+		}
 	}
 	if delivery.ArtifactManifestID != nil {
 		if err := delivery.ArtifactManifestID.Validate(); err != nil {

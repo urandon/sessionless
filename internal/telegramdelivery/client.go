@@ -52,17 +52,17 @@ func (client *Client) Send(
 	ctx context.Context,
 	request ports.TelegramSendRequest,
 ) (ports.TelegramSendResult, error) {
-	if err := request.Chat.Validate(); err != nil {
+	if err := request.Validate(); err != nil {
 		return ports.TelegramSendResult{}, err
 	}
-	if err := domain.EnsureSameTenant(request.TenantID, request.Chat.TenantID); err != nil {
-		return ports.TelegramSendResult{}, err
+	text := request.Text
+	if text == "" {
+		payload, err := client.readBlob(ctx, request.TenantID, request.Payload)
+		if err != nil {
+			return ports.TelegramSendResult{}, err
+		}
+		text = decodeReplyText(payload)
 	}
-	payload, err := client.readBlob(ctx, request.TenantID, request.Payload)
-	if err != nil {
-		return ports.TelegramSendResult{}, err
-	}
-	text := decodeReplyText(payload)
 	result, err := client.sendMessage(ctx, request.Chat.ChatID, request.ReplyToMessageID, text)
 	if err != nil {
 		return ports.TelegramSendResult{}, err

@@ -214,6 +214,138 @@ func TestConcurrentLeaseClaimHasExactlyOneWinner(t *testing.T) {
 	}
 }
 
+func TestConcurrentSchedulerAdmissionReservesOneSubscriptionSlot(t *testing.T) {
+	store, client := openStore(t)
+	tenantID := domain.TenantID(uniqueID("tenant-scheduler"))
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	connectionID := domain.SubscriptionConnectionID("subscription-" + string(tenantID))
+	actor := domain.ActorRef{
+		TenantID: tenantID, Frontend: domain.FrontendTelegram,
+		ExternalID: "scheduler-user", ID: domain.ActorID(uniqueID("actor")),
+	}
+	conversation := domain.ConversationRef{
+		TenantID: tenantID, Frontend: domain.FrontendTelegram,
+		ExternalID: "scheduler-chat", ID: domain.ConversationID("conversation-" + string(tenantID)),
+	}
+	if _, err := store.EnsureTelegramIdentity(context.Background(), ports.TelegramIdentityRequest{
+		TenantID: tenantID, Actor: actor, Conversation: conversation,
+		SubscriptionConnectionID: connectionID, Provider: "codex",
+		ObservedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.DB.ExecContext(context.Background(),
+		`UPDATE subscription_connections
+		 SET entitlement_state = $1, quota_state = $2, updated_at = $3
+		 WHERE tenant_id = $4 AND subscription_connection_id = $5`,
+		domain.EntitlementActive, domain.ProviderQuotaUnknown, now,
+		tenantID, connectionID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.DB.ExecContext(context.Background(),
+		`UPDATE subscription_scheduler_slots
+		 SET state = $1, updated_at = $2
+		 WHERE tenant_id = $3 AND subscription_connection_id = $4`,
+		domain.SchedulerReady, now, tenantID, connectionID,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	first := ingressFixture(tenantID, uniqueID("run-scheduler-a"), 6101, now)
+	second := ingressFixture(tenantID, uniqueID("run-scheduler-b"), 6102, now)
+	for _, ingress := range []ydbstore.TelegramIngress{first, second} {
+		if _, err := store.IngestTelegram(context.Background(), ingress); err != nil {
+			t.Fatal(err)
+		}
+	}
+	limits := domain.ProductLimits{
+		MaxTenantQueueDepth: 8, MaxActiveRuns: 1,
+		MaxRuntime: 15 * time.Minute, MaxTurns: 30,
+		MaxInputBytes: 16 << 20, MaxContextBytes: 64 << 20,
+		MaxArtifacts: 32,
+	}
+	requests := []ports.DispatchAdmissionRequest{
+		admissionFixture(first, domain.QuotaReservationID(uniqueID("reservation-a")), now, limits),
+		admissionFixture(second, domain.QuotaReservationID(uniqueID("reservation-b")), now, limits),
+	}
+	results := make(chan ports.DispatchAdmissionResult, len(requests))
+	errs := make(chan error, len(requests))
+	var wait sync.WaitGroup
+	for _, request := range requests {
+		request := request
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			result, err := store.AdmitDispatch(context.Background(), request)
+			results <- result
+			errs <- err
+		}()
+	}
+	wait.Wait()
+	close(results)
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("scheduler admission failed: %v", err)
+		}
+	}
+	var admitted int
+	var admittedRequest ports.DispatchAdmissionRequest
+	for result := range results {
+		if result.Admitted {
+			admitted++
+			for _, request := range requests {
+				if request.RunID == result.RunID {
+					admittedRequest = request
+				}
+			}
+		}
+	}
+	if admitted != 1 {
+		t.Fatalf("admitted = %d, want exactly one", admitted)
+	}
+	assertCount(t, client, "quota_reservations", tenantID, 1)
+	var queueDepth, activeRuns uint32
+	if err := client.DB.QueryRowContext(context.Background(),
+		`SELECT queue_depth, active_runs FROM tenant_scheduler_counters
+		 WHERE tenant_id = $1`,
+		tenantID,
+	).Scan(&queueDepth, &activeRuns); err != nil {
+		t.Fatal(err)
+	}
+	if queueDepth != 1 || activeRuns != 0 {
+		t.Fatalf("scheduler counters = queue:%d active:%d", queueDepth, activeRuns)
+	}
+
+	bucket, err := ydbpartition.BucketV1(string(admittedRequest.ReservationID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expired, err := store.ListExpiredQuotaReservations(
+		context.Background(), bucket, now.Add(2*time.Minute), 10,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(expired) != 1 {
+		t.Fatalf("expired reservations = %#v", expired)
+	}
+	didExpire, err := store.ExpireQuotaReservation(
+		context.Background(), expired[0], now.Add(2*time.Minute),
+	)
+	if err != nil || !didExpire {
+		t.Fatalf("expire result = %t, %v", didExpire, err)
+	}
+	didExpire, err = store.ExpireQuotaReservation(
+		context.Background(), expired[0], now.Add(2*time.Minute),
+	)
+	if err != nil || didExpire {
+		t.Fatalf("idempotent expire result = %t, %v", didExpire, err)
+	}
+	assertCount(t, client, "quota_expiry_v2", tenantID, 0)
+}
+
 func TestTenantScopedReadsCannotCrossTenant(t *testing.T) {
 	store, _ := openStore(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -235,6 +367,24 @@ func TestTenantScopedReadsCannotCrossTenant(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func admissionFixture(
+	ingress ydbstore.TelegramIngress,
+	reservationID domain.QuotaReservationID,
+	now time.Time,
+	limits domain.ProductLimits,
+) ports.DispatchAdmissionRequest {
+	return ports.DispatchAdmissionRequest{
+		TenantID: ingress.TenantID, OutboxID: ingress.Dispatch.ID,
+		RunID: ingress.Run.ID, AttemptID: ingress.Attempt.ID,
+		ReservationID: reservationID, Now: now.Add(time.Second),
+		HoldUntil: now.Add(time.Minute), Limits: limits,
+		Workload: domain.WorkloadShape{
+			Runtime: 5 * time.Minute, Turns: 1,
+			InputBytes: 1024, ContextBytes: 2048, Artifacts: 1,
+		},
 	}
 }
 

@@ -25,6 +25,8 @@ domain objects whose tenant does not match it.
 | `context_epochs` | `(tenant_id, conversation_id, context_epoch)` | prefix-read a conversation's epochs |
 | `telegram_updates` | `(tenant_id, source_id, update_id)` | point insert/read for Bot API deduplication |
 | `subscription_connections` | `(tenant_id, subscription_connection_id)` | point-read credential reference and observed entitlement |
+| `subscription_scheduler_slots` | `(tenant_id, subscription_connection_id)` | serializable one-subscription admission contention point |
+| `tenant_scheduler_counters` | `(tenant_id)` | point-read/update bounded queue and active-run counters |
 | `runs` | `(tenant_id, run_id)` | point-read/update one run |
 | `run_idempotency` | `(tenant_id, idempotency_key)` | point-resolve an ingress command to a run |
 | `attempts` | `(tenant_id, attempt_id)` | point-read/update one attempt |
@@ -92,7 +94,16 @@ once the head changes, the old worker receives `ErrLeaseLost`.
 
 ### Quota, checkpoints, results, and outboxes
 
-- quota reservations use idempotent row IDs and one-way domain transitions;
+- dispatch admission point-reads the connection, scheduler slot, tenant
+  counters, run, attempt, and outbox in one serializable transaction;
+- one subscription slot can hold only one active run/reservation pair;
+- quota reservations use deterministic row IDs and one-way domain transitions;
+- a successful queue publish acknowledges the durable dispatch outbox; an
+  uncertain acknowledgement may duplicate the payload-free queue envelope but
+  reuses its deterministic message ID;
+- expiry enumerates exactly 16 bucket/time ranges, expires only held
+  reservations, clears the matching slot, and decrements the tenant queue
+  counter idempotently;
 - checkpoint `(attempt_id, sequence)` keys prevent duplicate sequence writes;
 - a completed run, usage observations, artifact manifest, and Telegram
   delivery outbox commit together;
@@ -102,6 +113,14 @@ once the head changes, the old worker receives `ErrLeaseLost`.
 Only YDB errors classified as retryable by the official SDK are retried. Domain
 validation, tenant mismatch, lease ownership, and idempotency conflicts return
 directly without retry.
+
+Provider quota and internal product limits are deliberately separate. An
+unknown provider remaining balance remains unknown; it does not fabricate a
+token number. Admission enforces queue depth, active runs, entitlement, known
+provider exhaustion, a configured reservation workload shape, and the MVP rule
+of one reserved run per user-owned subscription. Replacing the configured
+shape with measured input/context/artifact dimensions at the context-assembly
+boundary remains part of the open MVP-06 issue.
 
 ## TTL and logical expiry
 

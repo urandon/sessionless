@@ -52,10 +52,11 @@ Telegram delivery. This avoids a state-committed/reply-missing crash window.
 `/connect codex` currently moves the deterministic connection to
 `reauthentication_required`. It stores no credential and tells the user that
 the isolated Codex authorization adapter is still required. `/compute status`
-reports only provider, connection, and quota states; it never exposes tokens
-or credential references. `/compute disconnect codex` clears the credential
-reference, marks the connection `disconnected`, resets observed quota to
-`unknown`, and does not enable an API-billing fallback.
+reports only provider, connection, provider-quota, and scheduler states; it
+never exposes tokens or credential references. `/compute disconnect codex`
+clears the credential reference, marks the connection `disconnected`, resets
+observed quota to `unknown`, moves admission to `reauth_required`, and does not
+enable an API-billing fallback.
 
 `/new` is the explicit clean-context action. It atomically appends one
 `context_epochs` event and advances `conversations.current_context_epoch`.

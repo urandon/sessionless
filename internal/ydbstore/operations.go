@@ -187,6 +187,12 @@ func executeTelegramCommandState(
 		); err != nil {
 			return "", epoch, err
 		}
+		if err := setSchedulerSlotState(
+			ctx, tx, request.SubscriptionConnectionID,
+			domain.SchedulerReauthRequired, nil, request.RequestedAt,
+		); err != nil {
+			return "", epoch, err
+		}
 		return "Codex connection: authorization required. No credential has been stored; provider authorization will be completed by the isolated Codex adapter.", epoch, nil
 	case ports.TelegramCommandComputeStatus:
 		var provider, entitlement, quota string
@@ -198,9 +204,17 @@ func executeTelegramCommandState(
 		).Scan(&provider, &entitlement, &quota); err != nil {
 			return "", epoch, err
 		}
+		var schedulerState string
+		if err := tx.sqlTx.QueryRowContext(ctx,
+			`SELECT state FROM subscription_scheduler_slots
+			 WHERE tenant_id = $1 AND subscription_connection_id = $2`,
+			request.TenantID, request.SubscriptionConnectionID,
+		).Scan(&schedulerState); err != nil {
+			return "", epoch, err
+		}
 		return fmt.Sprintf(
-			"Compute provider: %s\nConnection: %s\nQuota: %s",
-			provider, entitlement, quota,
+			"Compute provider: %s\nConnection: %s\nQuota: %s\nScheduler: %s",
+			provider, entitlement, quota, schedulerState,
 		), epoch, nil
 	case ports.TelegramCommandDisconnectCodex:
 		if _, err := tx.sqlTx.ExecContext(ctx,
@@ -211,6 +225,12 @@ func executeTelegramCommandState(
 			"", domain.EntitlementDisconnected, "unknown",
 			request.RequestedAt, request.RequestedAt,
 			request.TenantID, request.SubscriptionConnectionID,
+		); err != nil {
+			return "", epoch, err
+		}
+		if err := setSchedulerSlotState(
+			ctx, tx, request.SubscriptionConnectionID,
+			domain.SchedulerReauthRequired, nil, request.RequestedAt,
 		); err != nil {
 			return "", epoch, err
 		}
@@ -417,10 +437,71 @@ func (store *Store) EnsureTelegramIdentity(
 		case connectionErr != nil:
 			return connectionErr
 		}
+		var existingSlot string
+		slotErr := tx.sqlTx.QueryRowContext(ctx,
+			`SELECT subscription_connection_id FROM subscription_scheduler_slots
+			 WHERE tenant_id = $1 AND subscription_connection_id = $2`,
+			request.TenantID, request.SubscriptionConnectionID,
+		).Scan(&existingSlot)
+		switch {
+		case errors.Is(slotErr, sql.ErrNoRows):
+			if _, err := tx.sqlTx.ExecContext(ctx,
+				`INSERT INTO subscription_scheduler_slots
+				 (tenant_id, subscription_connection_id, state, active_run_id,
+				  active_reservation_id, blocked_until, updated_at)
+				 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+				request.TenantID, request.SubscriptionConnectionID,
+				domain.SchedulerReauthRequired, "", "",
+				time.Unix(0, 0).UTC(), request.ObservedAt,
+			); err != nil {
+				return err
+			}
+		case slotErr != nil:
+			return slotErr
+		}
+		var counterTenant string
+		counterErr := tx.sqlTx.QueryRowContext(ctx,
+			`SELECT tenant_id FROM tenant_scheduler_counters WHERE tenant_id = $1`,
+			request.TenantID,
+		).Scan(&counterTenant)
+		switch {
+		case errors.Is(counterErr, sql.ErrNoRows):
+			if _, err := tx.sqlTx.ExecContext(ctx,
+				`INSERT INTO tenant_scheduler_counters
+				 (tenant_id, queue_depth, active_runs, updated_at)
+				 VALUES ($1, $2, $3, $4)`,
+				request.TenantID, uint32(0), uint32(0), request.ObservedAt,
+			); err != nil {
+				return err
+			}
+		case counterErr != nil:
+			return counterErr
+		}
 		result.ContextEpoch = domain.ContextEpoch(epoch)
 		return nil
 	})
 	return result, err
+}
+
+func setSchedulerSlotState(
+	ctx context.Context,
+	tx *stateTx,
+	connectionID domain.SubscriptionConnectionID,
+	state domain.SchedulerState,
+	blockedUntil *time.Time,
+	at time.Time,
+) error {
+	blocked := time.Unix(0, 0).UTC()
+	if blockedUntil != nil {
+		blocked = *blockedUntil
+	}
+	_, err := tx.sqlTx.ExecContext(ctx,
+		`UPDATE subscription_scheduler_slots
+		 SET state = $1, blocked_until = $2, updated_at = $3
+		 WHERE tenant_id = $4 AND subscription_connection_id = $5`,
+		state, blocked, at, tx.tenantID, connectionID,
+	)
+	return err
 }
 
 func validateTelegramIdentity(request ports.TelegramIdentityRequest) error {

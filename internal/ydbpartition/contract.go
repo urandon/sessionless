@@ -80,6 +80,8 @@ var policies = []Policy{
 	hot("dispatch_outbox", []string{"tenant_id", "dispatch_outbox_id"}, ClassEntity, "high-write entity with random outbox IDs"),
 	hot("telegram_delivery_outbox", []string{"tenant_id", "telegram_delivery_id"}, ClassEntity, "high-write entity with random delivery IDs"),
 	hot("audit_events", []string{"tenant_id", "occurred_at", "audit_event_id"}, ClassAppend, "time is behind a distributed tenant; cloud evidence gates elephant-tenant scale"),
+	hot("subscription_scheduler_slots", []string{"tenant_id", "subscription_connection_id"}, ClassEntity, "one contention row per user-owned subscription connection"),
+	hot("tenant_scheduler_counters", []string{"tenant_id"}, ClassEntity, "one bounded counter row per tenant"),
 	bucketed("lease_expiry", "lease_expiry_v2", "expires_at", "run_id"),
 	bucketed("dispatch_ready", "dispatch_ready_v2", "available_at", "dispatch_outbox_id"),
 	bucketed("telegram_delivery_ready", "telegram_delivery_ready_v2", "available_at", "telegram_delivery_id"),

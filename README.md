@@ -24,18 +24,20 @@ and MCP access.
 
 The repository currently contains the Go component boundaries, harness-neutral
 domain/runtime contracts, the authoritative YDB state store and migrations,
-authenticated Telegram webhook ingestion, durable Telegram delivery, a
-reproducible local development stand, isolated worker packaging, pinned
-developer tools, subscription state commands, explicit clean-context epochs,
-and GitHub Actions CI fed by the GitCode mirror. Cloud queue publication,
-provider authorization, subscription-backed harness execution, and the complete
-worker result path remain later implementation slices.
+authenticated Telegram webhook ingestion, durable Telegram delivery, bounded
+subscription-aware admission and dispatch, a reproducible local development
+stand, isolated worker packaging, pinned developer tools, subscription state
+commands, explicit clean-context epochs, and GitHub Actions CI fed by the
+GitCode mirror. Provider authorization, subscription-backed harness execution,
+lease recovery, cancellation, and the complete worker result path remain later
+implementation slices.
 
 ## Components
 
 - `control-api`: HTTP entrypoint with health/build metadata and the authenticated
   Telegram webhook adapter;
-- `reconciler`: placeholder for durable frontend-update reconciliation and run scheduling;
+- `reconciler`: bounded 16-bucket dispatch publisher and quota-expiry
+  reconciler;
 - `telegram-sender`: durable, retrying Telegram delivery outbox consumer;
 - `telegram-fake`: deterministic Telegram Bot API capture/update service for local development;
 - `worker-runtime`: separately packaged, harness-neutral worker boundary;
@@ -54,6 +56,8 @@ worker result path remain later implementation slices.
   Yandex Object Storage;
 - `internal/sqsqueue`: at-least-once SQS-compatible queue adapter for ElasticMQ
   and YMQ;
+- `internal/scheduler`: injected-clock admission policy, one-subscription
+  reservation enforcement, durable queue publication, and quota expiry;
 - `internal/telegramingress`: webhook authentication, opaque deterministic
   identity resolution, normalized input/blob handling, durable subscription
   commands, explicit clean-context transitions, and idempotent run creation;
@@ -61,9 +65,9 @@ worker result path remain later implementation slices.
   claims, retry policy, and Telegram Bot API sending;
 - `internal/queuecontract`: versioned queue envelopes containing opaque IDs only.
 
-The remaining component placeholders are explicit and exit after emitting a
-readiness event. They do not claim that the product flow or a concrete agent
-harness already exists.
+The remaining worker placeholder is explicit and exits after emitting a
+readiness event. It does not claim that a concrete agent harness already
+exists.
 
 The contract invariants and transition tables are documented in
 [docs/contracts.md](docs/contracts.md). The architecture source of truth is

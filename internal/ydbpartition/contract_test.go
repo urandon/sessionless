@@ -85,7 +85,7 @@ func TestPoliciesCoverLogicalTablesOnce(t *testing.T) {
 			t.Fatalf("%s initial partitions = %d", policy.LogicalName, policy.InitialPartitions)
 		}
 	}
-	if len(seen) != 22 {
-		t.Fatalf("logical table policies = %d, want 22", len(seen))
+	if len(seen) != 24 {
+		t.Fatalf("logical table policies = %d, want 24", len(seen))
 	}
 }

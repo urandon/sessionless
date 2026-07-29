@@ -38,7 +38,8 @@ compose up --build --detach \
 	queue-local \
 	telegram-fake \
 	control-api \
-	telegram-sender
+	telegram-sender \
+	reconciler
 
 wait_http ydb-local "http://127.0.0.1:${YDB_MONITORING_PORT:-8765}/monitoring/cluster"
 wait_http object-storage-local "http://127.0.0.1:${S3_API_PORT:-9000}/minio/health/ready"

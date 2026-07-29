@@ -220,6 +220,75 @@ type TelegramDeliveryStore interface {
 	) (domain.ArtifactManifest, bool, error)
 }
 
+type DispatchReady struct {
+	TenantID  domain.TenantID
+	OutboxID  domain.DispatchOutboxID
+	RunID     domain.RunID
+	AttemptID domain.AttemptID
+}
+
+type DispatchAdmissionRequest struct {
+	TenantID      domain.TenantID
+	OutboxID      domain.DispatchOutboxID
+	RunID         domain.RunID
+	AttemptID     domain.AttemptID
+	ReservationID domain.QuotaReservationID
+	Now           time.Time
+	HoldUntil     time.Time
+	Limits        domain.ProductLimits
+	Workload      domain.WorkloadShape
+}
+
+type DispatchAdmissionResult struct {
+	Admitted  bool
+	State     domain.SchedulerState
+	Code      string
+	RetryAt   *time.Time
+	RunID     domain.RunID
+	AttemptID domain.AttemptID
+}
+
+type ExpiredQuotaReservation struct {
+	TenantID                 domain.TenantID
+	ReservationID            domain.QuotaReservationID
+	RunID                    domain.RunID
+	SubscriptionConnectionID domain.SubscriptionConnectionID
+	ExpiresAt                time.Time
+}
+
+// SchedulerStore exposes only bounded ready/expiry traversals and atomic
+// admission mutations. The queue publisher never reconstructs state by
+// scanning tenant payloads.
+type SchedulerStore interface {
+	ListReadyDispatches(
+		ctx context.Context,
+		bucket uint32,
+		before time.Time,
+		limit uint64,
+	) ([]DispatchReady, error)
+	AdmitDispatch(
+		ctx context.Context,
+		request DispatchAdmissionRequest,
+	) (DispatchAdmissionResult, error)
+	AcknowledgeDispatch(
+		ctx context.Context,
+		tenantID domain.TenantID,
+		outboxID domain.DispatchOutboxID,
+		at time.Time,
+	) error
+	ListExpiredQuotaReservations(
+		ctx context.Context,
+		bucket uint32,
+		before time.Time,
+		limit uint64,
+	) ([]ExpiredQuotaReservation, error)
+	ExpireQuotaReservation(
+		ctx context.Context,
+		candidate ExpiredQuotaReservation,
+		at time.Time,
+	) (bool, error)
+}
+
 type CredentialRequest struct {
 	TenantID                 domain.TenantID
 	SubscriptionConnectionID domain.SubscriptionConnectionID

@@ -32,6 +32,7 @@ func TestLocalStandContracts(t *testing.T) {
 	t.Run("Telegram capture", testTelegramFake)
 	t.Run("Telegram webhook deduplication", testTelegramWebhook)
 	t.Run("Telegram command state and durable replies", testTelegramCommands)
+	t.Run("Subscription admission and dispatch", testSchedulerDispatch)
 }
 
 func testYDB(t *testing.T) {
@@ -371,6 +372,108 @@ func testTelegramCommands(t *testing.T) {
 	}
 	if entitlement != string(domain.EntitlementDisconnected) {
 		t.Fatalf("connection state = %q, want disconnected", entitlement)
+	}
+}
+
+func testSchedulerDispatch(t *testing.T) {
+	controlURL := envOrDefault("SESSIONLESS_BASE_URL", "http://localhost:8080")
+	secret := envOrDefault("TELEGRAM_WEBHOOK_SECRET", "local-webhook-secret")
+	updateID := int64(1_900_000_000) + time.Now().UTC().UnixMilli()%200_000_000
+	chatID := int64(99101)
+	fixture, err := json.Marshal(map[string]any{
+		"update_id": updateID,
+		"message": map[string]any{
+			"message_id": updateID,
+			"from":       map[string]any{"id": chatID},
+			"chat":       map[string]any{"id": chatID, "type": "private"},
+			"date":       time.Now().UTC().Unix(),
+			"text":       "schedule this deterministic local workload",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	postWebhook(
+		t,
+		&http.Client{Timeout: 10 * time.Second},
+		controlURL+"/telegram/webhook",
+		secret,
+		fixture,
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	ydb, err := ydbclient.Open(ctx, envOrDefault(
+		"YDB_CONNECTION_STRING",
+		"grpc://localhost:2136/local?go_query_mode=scripting&go_fake_tx=scripting&go_query_bind=declare,numeric",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ydb.Close(context.Background())
+	resolver, err := telegramingress.NewIdentityResolver([]byte(envOrDefault(
+		"TELEGRAM_IDENTITY_HMAC_KEY",
+		"sessionless-local-identity-key-0001",
+	)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := resolver.ResolvePrivate(chatID, chatID, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runID string
+	if err := ydb.DB.QueryRowContext(ctx,
+		`SELECT run_id FROM telegram_updates
+		 WHERE tenant_id = $1 AND source_id = $2 AND update_id = $3`,
+		identity.Tenant, "bot-primary", updateID,
+	).Scan(&runID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ydb.DB.ExecContext(ctx,
+		`UPDATE subscription_connections
+		 SET entitlement_state = $1, quota_state = $2, updated_at = CurrentUtcTimestamp()
+		 WHERE tenant_id = $3 AND subscription_connection_id = $4`,
+		domain.EntitlementActive, domain.ProviderQuotaUnknown,
+		identity.Tenant, identity.SubscriptionConnection,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ydb.DB.ExecContext(ctx,
+		`UPDATE subscription_scheduler_slots
+		 SET state = $1, blocked_until = $2, updated_at = CurrentUtcTimestamp()
+		 WHERE tenant_id = $3 AND subscription_connection_id = $4`,
+		domain.SchedulerReady, time.Unix(0, 0).UTC(),
+		identity.Tenant, identity.SubscriptionConnection,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	queue := openQueue(t, envOrDefault(
+		"DISPATCH_QUEUE_URL",
+		"http://localhost:9324/000000000000/sessionless-dispatch",
+	), envOrDefault(
+		"DEAD_LETTER_QUEUE_URL",
+		"http://localhost:9324/000000000000/sessionless-dlq",
+	))
+	message := receiveEventually(t, ctx, queue)
+	if message.Envelope.Kind != queuecontract.KindDispatchRun ||
+		message.Envelope.TenantID != identity.Tenant ||
+		message.Envelope.SubjectID != runID {
+		t.Fatalf("scheduler envelope = %#v", message.Envelope)
+	}
+	if err := queue.Ack(ctx, message.ReceiptHandle); err != nil {
+		t.Fatal(err)
+	}
+	var status string
+	if err := ydb.DB.QueryRowContext(ctx,
+		`SELECT status FROM runs WHERE tenant_id = $1 AND run_id = $2`,
+		identity.Tenant, runID,
+	).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != string(domain.RunQueued) {
+		t.Fatalf("run status = %q, want queued", status)
 	}
 }
 

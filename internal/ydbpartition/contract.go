@@ -25,17 +25,13 @@ const (
 )
 
 type Policy struct {
-	LogicalName       string
-	PhysicalTable     string
-	PrimaryKey        []string
-	Class             TableClass
-	LoadPartitioning  bool
-	MinPartitions     uint64
-	MaxPartitions     uint64
-	PartitionSizeMB   uint64
-	InitialPartitions uint64
-	Bucketed          bool
-	Rationale         string
+	LogicalName      string
+	PhysicalTable    string
+	PrimaryKey       []string
+	Class            TableClass
+	LoadPartitioning bool
+	Bucketed         bool
+	Rationale        string
 }
 
 // BucketV1 maps an immutable operational identifier to one of a bounded set of
@@ -91,8 +87,7 @@ var policies = []Policy{
 func entity(name string, key []string, rationale string) Policy {
 	return Policy{
 		LogicalName: name, PhysicalTable: name, PrimaryKey: key, Class: ClassEntity,
-		LoadPartitioning: false, MinPartitions: 1, MaxPartitions: 50,
-		PartitionSizeMB: 2000, Rationale: rationale,
+		LoadPartitioning: false, Rationale: rationale,
 	}
 }
 
@@ -105,8 +100,7 @@ func ordered(name string, key []string, rationale string) Policy {
 func hot(name string, key []string, class TableClass, rationale string) Policy {
 	return Policy{
 		LogicalName: name, PhysicalTable: name, PrimaryKey: key, Class: class,
-		LoadPartitioning: true, MinPartitions: 1, MaxPartitions: 256,
-		PartitionSizeMB: 512, Rationale: rationale,
+		LoadPartitioning: true, Rationale: rationale,
 	}
 }
 
@@ -115,8 +109,7 @@ func bucketed(logical, physical, timeColumn, idColumn string) Policy {
 		LogicalName: logical, PhysicalTable: physical,
 		PrimaryKey: []string{"shard_bucket", timeColumn, "tenant_id", idColumn},
 		Class:      ClassGlobalReady, LoadPartitioning: true,
-		MinPartitions: 16, MaxPartitions: 256, PartitionSizeMB: 512,
-		InitialPartitions: 16, Bucketed: true,
+		Bucketed:  true,
 		Rationale: "bounded 16-way global time traversal; object hash also distributes an elephant tenant",
 	}
 }

@@ -76,8 +76,8 @@ type Queue interface {
 
 type BlobStore interface {
 	Put(ctx context.Context, tenantID domain.TenantID, key string, body io.Reader) (domain.BlobRef, error)
-	Open(ctx context.Context, ref domain.BlobRef) (io.ReadCloser, error)
-	Delete(ctx context.Context, ref domain.BlobRef) error
+	Open(ctx context.Context, tenantID domain.TenantID, ref domain.BlobRef) (io.ReadCloser, error)
+	Delete(ctx context.Context, tenantID domain.TenantID, ref domain.BlobRef) error
 }
 
 type TelegramSendRequest struct {

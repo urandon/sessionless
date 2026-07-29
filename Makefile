@@ -4,7 +4,7 @@ BIN_DIR := .build/bin
 GO_CACHE_DIR := $(CURDIR)/.build/cache/go-build
 GO_MOD_CACHE_DIR := $(CURDIR)/.build/cache/go-mod
 GO_TMP_DIR := $(CURDIR)/.build/tmp
-COMPONENTS := control-api reconciler telegram-sender worker-runtime schema-migrate
+COMPONENTS := control-api reconciler telegram-sender telegram-fake worker-runtime schema-migrate
 VERSION ?= dev
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || printf unknown)
 BUILT_AT ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -17,8 +17,8 @@ LDFLAGS := -s -w \
 	-X gitcode.com/urandon/sessionless/internal/buildinfo.Commit=$(COMMIT) \
 	-X gitcode.com/urandon/sessionless/internal/buildinfo.BuiltAt=$(BUILT_AT)
 
-.PHONY: help prepare tools generate fmt fmt-check lint test build integration ydb-integration ci \
-	compose-config images dev-up migrate-local migration-status dev-down dev-reset clean
+.PHONY: help prepare tools generate fmt fmt-check lint test build integration ydb-integration local-integration ci \
+	compose-config images dev-up dev-seed migrate-local migration-status dev-down dev-reset clean
 
 help:
 	@printf '%s\n' \
@@ -28,8 +28,10 @@ help:
 		'make build          build all component binaries' \
 		'make integration    run foundation integration tests' \
 		'make ydb-integration run YDB Local schema and concurrency tests' \
+		'make local-integration run YDB/S3/SQS/Telegram adapter tests against the local stand' \
 		'make images         build control-plane and worker images' \
-		'make dev-up         build and start the local control API' \
+		'make dev-up         start, initialize, migrate, seed, and verify the local stand' \
+		'make dev-seed       idempotently load synthetic local fixtures' \
 		'make migrate-local  apply embedded YDB migrations' \
 		'make migration-status inspect Goose and checksum state' \
 		'make dev-down       stop the local stack' \
@@ -70,6 +72,11 @@ integration: prepare
 ydb-integration: prepare
 	go test -race -tags=ydbintegration ./test/ydbintegration/...
 
+local-integration: prepare
+	YDB_CONNECTION_STRING="$${YDB_CONNECTION_STRING:-grpc://localhost:2136/local?go_query_mode=scripting&go_fake_tx=scripting&go_query_bind=declare,numeric}" \
+	YDB_ANONYMOUS_CREDENTIALS="$${YDB_ANONYMOUS_CREDENTIALS:-1}" \
+	go test -race -tags=localintegration ./test/localintegration/...
+
 ci: generate test build integration
 
 compose-config:
@@ -80,7 +87,10 @@ images:
 	docker build -f build/worker-runtime.Dockerfile -t sessionless/worker-runtime:dev .
 
 dev-up:
-	docker compose --project-name sessionless-dev up --build --detach ydb-local control-api
+	@./scripts/dev-up.sh
+
+dev-seed:
+	@./scripts/seed-local.sh
 
 migrate-local: prepare
 	@./scripts/migrate-local.sh

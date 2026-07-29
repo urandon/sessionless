@@ -310,6 +310,17 @@ func TestQuotaAndDeliveryDualWriteBucketedReadyTables(t *testing.T) {
 	}
 	assertCount(t, client, "telegram_delivery_ready", tenantID, 1)
 	assertCount(t, client, "telegram_delivery_ready_v2", tenantID, 1)
+	readyAfterRetry, err := store.ListReadyTelegramDeliveries(
+		context.Background(), bucket, now.Add(3*time.Minute), 10,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(readyAfterRetry) != 1 ||
+		readyAfterRetry[0].TenantID != tenantID ||
+		readyAfterRetry[0].DeliveryID != delivery.ID {
+		t.Fatalf("ready deliveries after retry transition = %+v", readyAfterRetry)
+	}
 
 	if _, err := ydbpartition.BackfillReadyExpiryV2(
 		context.Background(),

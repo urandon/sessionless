@@ -557,10 +557,7 @@ func (tx *stateTx) PutTelegramDeliveryOutbox(
 		return err
 	}
 	if found {
-		previousAvailableAt := previous.UpdatedAt
-		if previous.NextAttemptAt != nil {
-			previousAvailableAt = *previous.NextAttemptAt
-		}
+		previousAvailableAt := telegramDeliveryAvailableAt(previous)
 		if _, err := tx.sqlTx.ExecContext(ctx,
 			`DELETE FROM telegram_delivery_ready
 			 WHERE tenant_id = $1 AND available_at = $2 AND telegram_delivery_id = $3`,
@@ -598,12 +595,7 @@ func (tx *stateTx) PutTelegramDeliveryOutbox(
 		outbox.Status != domain.DeliverySending {
 		return nil
 	}
-	availableAt := outbox.UpdatedAt
-	if outbox.NextAttemptAt != nil {
-		availableAt = *outbox.NextAttemptAt
-	} else if outbox.Status == domain.DeliverySending {
-		availableAt = outbox.UpdatedAt.Add(telegramDeliveryClaimTimeout)
-	}
+	availableAt := telegramDeliveryAvailableAt(outbox)
 	_, err = tx.sqlTx.ExecContext(ctx,
 		`UPSERT INTO telegram_delivery_ready
 		 (tenant_id, available_at, telegram_delivery_id, run_id)
@@ -620,6 +612,16 @@ func (tx *stateTx) PutTelegramDeliveryOutbox(
 		bucket, availableAt, outbox.TenantID, outbox.ID, outbox.RunID,
 	)
 	return err
+}
+
+func telegramDeliveryAvailableAt(outbox domain.TelegramDeliveryOutbox) time.Time {
+	if outbox.NextAttemptAt != nil {
+		return *outbox.NextAttemptAt
+	}
+	if outbox.Status == domain.DeliverySending {
+		return outbox.UpdatedAt.Add(telegramDeliveryClaimTimeout)
+	}
+	return outbox.UpdatedAt
 }
 
 func (tx *stateTx) validateTenant(actual domain.TenantID) error {

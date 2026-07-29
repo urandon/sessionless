@@ -81,6 +81,11 @@ the local bucket, applies the embedded YDB migrations, and idempotently loads
 the synthetic Telegram fixture. It does not require cloud credentials or a
 real Telegram token.
 
+The control API uses the YDB SDK single-connection balancer only inside the
+Compose stand. This keeps the client on the Docker-resolvable `ydb-local`
+endpoint instead of replacing it with YDB Local's host-facing discovery
+address. Cloud deployments retain normal endpoint discovery and balancing.
+
 Run the adapter contracts and stop the stack:
 
 ```sh

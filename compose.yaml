@@ -87,7 +87,7 @@ services:
       APP_ENV: ${APP_ENV:-local}
       LOG_LEVEL: ${LOG_LEVEL:-debug}
       PORT: "8080"
-      YDB_CONNECTION_STRING: grpc://ydb-local:2136/local
+      YDB_CONNECTION_STRING: grpc://ydb-local:2136/local?go_balancer=single
       YDB_ANONYMOUS_CREDENTIALS: "1"
       S3_ENDPOINT: http://object-storage-local:9000
       S3_REGION: ${S3_REGION:-us-east-1}

@@ -1,0 +1,162 @@
+package scheduler
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/testkit"
+	"gitcode.com/urandon/sessionless/internal/ydbpartition"
+)
+
+type memorySchedulerStore struct {
+	ready      map[uint32][]ports.DispatchReady
+	decisions  map[domain.DispatchOutboxID]ports.DispatchAdmissionResult
+	acked      []domain.DispatchOutboxID
+	expired    map[uint32][]ports.ExpiredQuotaReservation
+	expireSeen []domain.QuotaReservationID
+}
+
+func (store *memorySchedulerStore) ListReadyDispatches(
+	_ context.Context,
+	bucket uint32,
+	_ time.Time,
+	_ uint64,
+) ([]ports.DispatchReady, error) {
+	return append([]ports.DispatchReady(nil), store.ready[bucket]...), nil
+}
+
+func (store *memorySchedulerStore) AdmitDispatch(
+	_ context.Context,
+	request ports.DispatchAdmissionRequest,
+) (ports.DispatchAdmissionResult, error) {
+	decision, ok := store.decisions[request.OutboxID]
+	if !ok {
+		return ports.DispatchAdmissionResult{}, errors.New("missing admission decision")
+	}
+	if request.ReservationID != stableReservationID(request.OutboxID) {
+		return ports.DispatchAdmissionResult{}, errors.New("reservation ID is not deterministic")
+	}
+	return decision, nil
+}
+
+func (store *memorySchedulerStore) AcknowledgeDispatch(
+	_ context.Context,
+	_ domain.TenantID,
+	outboxID domain.DispatchOutboxID,
+	_ time.Time,
+) error {
+	store.acked = append(store.acked, outboxID)
+	return nil
+}
+
+func (store *memorySchedulerStore) ListExpiredQuotaReservations(
+	_ context.Context,
+	bucket uint32,
+	_ time.Time,
+	_ uint64,
+) ([]ports.ExpiredQuotaReservation, error) {
+	return append([]ports.ExpiredQuotaReservation(nil), store.expired[bucket]...), nil
+}
+
+func (store *memorySchedulerStore) ExpireQuotaReservation(
+	_ context.Context,
+	candidate ports.ExpiredQuotaReservation,
+	_ time.Time,
+) (bool, error) {
+	store.expireSeen = append(store.expireSeen, candidate.ReservationID)
+	return true, nil
+}
+
+func TestDispatcherPublishesOnlyAdmittedRunsAndExpiresReservations(t *testing.T) {
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	admitted := ports.DispatchReady{
+		TenantID: "tenant-1", OutboxID: "dispatch-1",
+		RunID: "run-1", AttemptID: "attempt-1",
+	}
+	blocked := ports.DispatchReady{
+		TenantID: "tenant-2", OutboxID: "dispatch-2",
+		RunID: "run-2", AttemptID: "attempt-2",
+	}
+	bucket, err := ydbpartition.BucketV1(string(admitted.OutboxID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	blockedBucket, err := ydbpartition.BucketV1(string(blocked.OutboxID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiredBucket, err := ydbpartition.BucketV1("reservation-expired")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &memorySchedulerStore{
+		ready: map[uint32][]ports.DispatchReady{
+			bucket:        {admitted},
+			blockedBucket: appendIfDifferent(bucket, blockedBucket, blocked),
+		},
+		decisions: map[domain.DispatchOutboxID]ports.DispatchAdmissionResult{
+			admitted.OutboxID: {Admitted: true, State: domain.SchedulerReady, Code: "admitted"},
+			blocked.OutboxID:  {State: domain.SchedulerPressured, Code: "subscription_slot_busy"},
+		},
+		expired: map[uint32][]ports.ExpiredQuotaReservation{
+			expiredBucket: {{
+				TenantID: "tenant-3", ReservationID: "reservation-expired",
+				RunID: "run-3", SubscriptionConnectionID: "subscription-3",
+				ExpiresAt: now.Add(-time.Second),
+			}},
+		},
+	}
+	if bucket == blockedBucket {
+		store.ready[bucket] = []ports.DispatchReady{admitted, blocked}
+	}
+	queue := testkit.NewMemoryQueue()
+	dispatcher, err := NewDispatcher(Config{
+		BatchSize: 10, ReservationTTL: time.Minute,
+		Limits: testLimits(),
+		DefaultWorkload: domain.WorkloadShape{
+			Runtime: time.Minute, Turns: 1,
+		},
+	}, testkit.NewFakeClock(now), store, queue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := dispatcher.RunOnce(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Considered != 2 || result.Published != 1 ||
+		result.Blocked != 1 || result.Expired != 1 {
+		t.Fatalf("pass result = %#v", result)
+	}
+	message, err := queue.Receive(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message.Envelope.SubjectID != string(admitted.RunID) ||
+		message.Envelope.MessageID != stableMessageID(admitted.OutboxID) {
+		t.Fatalf("envelope = %#v", message.Envelope)
+	}
+	if len(store.acked) != 1 || store.acked[0] != admitted.OutboxID {
+		t.Fatalf("acked = %#v", store.acked)
+	}
+	if len(store.expireSeen) != 1 || store.expireSeen[0] != "reservation-expired" {
+		t.Fatalf("expired = %#v", store.expireSeen)
+	}
+}
+
+func appendIfDifferent(
+	first uint32,
+	second uint32,
+	value ports.DispatchReady,
+) []ports.DispatchReady {
+	if first == second {
+		return nil
+	}
+	return []ports.DispatchReady{value}
+}
+
+var _ ports.SchedulerStore = (*memorySchedulerStore)(nil)

@@ -85,7 +85,34 @@ func TestPoliciesCoverLogicalTablesOnce(t *testing.T) {
 			t.Fatalf("%s initial partitions = %d", policy.LogicalName, policy.InitialPartitions)
 		}
 	}
-	if len(seen) != 22 {
-		t.Fatalf("logical table policies = %d, want 22", len(seen))
+	if len(seen) != 24 {
+		t.Fatalf("logical table policies = %d, want 24", len(seen))
+	}
+}
+
+func TestSchedulerPointTablesUseLoadBasedGrowth(t *testing.T) {
+	want := map[string]bool{
+		"subscription_scheduler_slots": false,
+		"tenant_scheduler_counters":    false,
+	}
+	for _, policy := range Policies() {
+		if _, exists := want[policy.LogicalName]; !exists {
+			continue
+		}
+		want[policy.LogicalName] = true
+		if policy.Bucketed {
+			t.Errorf("%s must remain a tenant-first point table, not a global bucketed index", policy.LogicalName)
+		}
+		if !policy.LoadPartitioning {
+			t.Errorf("%s must enable load-based partitioning", policy.LogicalName)
+		}
+		if policy.MinPartitions != 1 {
+			t.Errorf("%s minimum partitions = %d, want 1", policy.LogicalName, policy.MinPartitions)
+		}
+	}
+	for table, found := range want {
+		if !found {
+			t.Errorf("missing partition policy for %s", table)
+		}
 	}
 }

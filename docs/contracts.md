@@ -90,6 +90,22 @@ An `unknown` observation cannot contain an invented remaining value or reset
 time. Usage observations record provider- or harness-reported token counts
 separately from provider quota state.
 
+The scheduler derives a separate operational state for each user-owned
+subscription connection:
+
+- `ready`: eligible for admission;
+- `pressured`: an internal queue, active-run, workload-shape, or one-slot limit
+  prevents admission;
+- `draining`: operator-directed admission stop;
+- `blocked_until_reset`: a provider throttle/exhaustion is known, with
+  `blocked_until` present only when the provider exposes a trustworthy reset;
+- `reauth_required`: no usable user-owned entitlement is available.
+
+The MVP contention row stores at most one active run/reservation pair per
+subscription. Provider quota can remain `unknown` while deterministic product
+limits and the one-slot rule are still enforced. There is no fallback to
+API-call billing.
+
 ## Delivery and outboxes
 
 State changes and their outbox records are written through one `StateStore`

@@ -41,6 +41,8 @@ a production adapter.
 | `context_epochs` | `(tenant_id, conversation_id, context_epoch)` | per-run ordered | monotonic epoch is behind tenant and conversation |
 | `telegram_updates` | `(tenant_id, source_id, update_id)` | append-heavy | update sequence is behind tenant; load splitting enabled |
 | `subscription_connections` | `(tenant_id, subscription_connection_id)` | tenant entity | low-cardinality point access |
+| `subscription_scheduler_slots` | `(tenant_id, subscription_connection_id)` | tenant entity | one point-contention row per subscription; load splitting enabled |
+| `tenant_scheduler_counters` | `(tenant_id)` | tenant entity | one bounded counter row per tenant; load splitting enabled |
 | `runs` | `(tenant_id, run_id)` | tenant entity | random run ID; load splitting enabled |
 | `run_idempotency` | `(tenant_id, idempotency_key)` | tenant entity | point lookup; load splitting enabled |
 | `attempts` | `(tenant_id, attempt_id)` | tenant entity | random attempt ID; load splitting enabled |
@@ -87,7 +89,7 @@ make partition-status
 
 `schema-inspect` emits machine-readable JSON containing the expected and actual
 primary keys, auto-partition settings, current partition count, row estimate,
-and contract violations for all 22 logical tables. It exits non-zero on drift.
+and contract violations for all 24 logical tables. It exits non-zero on drift.
 
 YDB Local proves key shape, deterministic bucket targeting, bounded fan-out,
 and initial partition settings. It does not prove Yandex Serverless throughput,
@@ -116,6 +118,11 @@ RU consumption, or split/merge latency.
 The current project has no cloud production data. This procedure is still
 executable so cloud-dev and later environments do not invent a different
 primary-key migration protocol.
+
+Migrations `00039` and `00040` add the scheduler slot and tenant counter point
+tables. Both use tenant-first keys and load-aware splitting. They are not
+global ready indexes: the scheduler reaches them only after a bounded
+`dispatch_ready_v2` candidate supplies the authorized tenant and subscription.
 
 ## Structural workloads and cloud gate
 

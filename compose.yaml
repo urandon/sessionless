@@ -146,6 +146,37 @@ services:
       - telegram-fake
     restart: unless-stopped
 
+  reconciler:
+    build:
+      context: .
+      dockerfile: build/control.Dockerfile
+      args:
+        GO_VERSION: ${GO_VERSION:-1.26.4}
+        TARGET: reconciler
+    environment:
+      YDB_CONNECTION_STRING: grpc://ydb-local:2136/local?go_balancer=single
+      YDB_ANONYMOUS_CREDENTIALS: "1"
+      QUEUE_ENDPOINT: http://queue-local:9324
+      QUEUE_REGION: ${QUEUE_REGION:-us-east-1}
+      QUEUE_ACCESS_KEY_ID: ${QUEUE_ACCESS_KEY_ID:-sessionless-local}
+      QUEUE_SECRET_ACCESS_KEY: ${QUEUE_SECRET_ACCESS_KEY:-sessionless-local-secret}
+      DISPATCH_QUEUE_URL: http://queue-local:9324/000000000000/sessionless-dispatch
+      DEAD_LETTER_QUEUE_URL: http://queue-local:9324/000000000000/sessionless-dlq
+      SCHEDULER_POLL_INTERVAL: 250ms
+      SCHEDULER_RESERVATION_TTL: ${SCHEDULER_RESERVATION_TTL:-5m}
+      LIMIT_TENANT_QUEUE_DEPTH: ${LIMIT_TENANT_QUEUE_DEPTH:-8}
+      LIMIT_ACTIVE_RUNS: ${LIMIT_ACTIVE_RUNS:-1}
+    init: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    depends_on:
+      - ydb-local
+      - queue-local
+    restart: unless-stopped
+
 volumes:
   ydb-data:
   ydb-certs:

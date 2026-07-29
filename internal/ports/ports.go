@@ -67,6 +67,45 @@ type TelegramIngressResult struct {
 	Created bool
 }
 
+type TelegramCommandKind string
+
+const (
+	TelegramCommandConnectCodex    TelegramCommandKind = "connect_codex"
+	TelegramCommandComputeStatus   TelegramCommandKind = "compute_status"
+	TelegramCommandDisconnectCodex TelegramCommandKind = "disconnect_codex"
+	TelegramCommandNewContext      TelegramCommandKind = "new_context"
+	TelegramCommandHelp            TelegramCommandKind = "help"
+)
+
+func (kind TelegramCommandKind) Valid() bool {
+	switch kind {
+	case TelegramCommandConnectCodex, TelegramCommandComputeStatus,
+		TelegramCommandDisconnectCodex, TelegramCommandNewContext,
+		TelegramCommandHelp:
+		return true
+	default:
+		return false
+	}
+}
+
+type TelegramCommandRequest struct {
+	TenantID                 domain.TenantID
+	SourceID                 string
+	UpdateID                 int64
+	ExpireAt                 time.Time
+	Kind                     TelegramCommandKind
+	Provider                 string
+	Actor                    domain.ActorRef
+	Conversation             domain.ConversationRef
+	SubscriptionConnectionID domain.SubscriptionConnectionID
+	RunID                    domain.RunID
+	DeliveryID               domain.TelegramDeliveryID
+	Chat                     domain.TelegramChatRef
+	ReplyToMessageID         int64
+	IdempotencyKey           domain.IdempotencyKey
+	RequestedAt              time.Time
+}
+
 // TelegramIngressStore owns the frontend-specific identity and idempotent
 // ingress transactions while keeping Telegram types out of the core domain.
 type TelegramIngressStore interface {
@@ -75,6 +114,10 @@ type TelegramIngressStore interface {
 		request TelegramIdentityRequest,
 	) (TelegramIdentityState, error)
 	IngestTelegram(ctx context.Context, request TelegramIngress) (TelegramIngressResult, error)
+	ExecuteTelegramCommand(
+		ctx context.Context,
+		request TelegramCommandRequest,
+	) (TelegramIngressResult, error)
 }
 
 // StateStore provides the transaction boundary required for atomic state and
@@ -129,6 +172,7 @@ type TelegramSendRequest struct {
 	Chat             domain.TelegramChatRef
 	ReplyToMessageID int64
 	Payload          domain.BlobRef
+	Text             string
 	Artifacts        []domain.Artifact
 	IdempotencyKey   domain.IdempotencyKey
 }

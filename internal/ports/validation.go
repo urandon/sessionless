@@ -2,6 +2,7 @@ package ports
 
 import (
 	"strings"
+	"unicode/utf8"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 )
@@ -22,11 +23,28 @@ func (request TelegramSendRequest) Validate() error {
 	if request.ReplyToMessageID == 0 {
 		return domain.ValidationError{Field: "telegram_send.reply_to_message_id", Reason: "must not be zero"}
 	}
-	if err := request.Payload.Validate(); err != nil {
-		return err
+	hasText := strings.TrimSpace(request.Text) != ""
+	hasPayload := request.Payload.Key != ""
+	if hasText == hasPayload {
+		return domain.ValidationError{
+			Field:  "telegram_send.content",
+			Reason: "must contain exactly one of inline text or a blob payload",
+		}
 	}
-	if err := domain.EnsureSameTenant(request.TenantID, request.Payload.TenantID); err != nil {
-		return err
+	if hasText {
+		if utf8.RuneCountInString(request.Text) > 4096 {
+			return domain.ValidationError{
+				Field:  "telegram_send.text",
+				Reason: "must not exceed 4096 Unicode characters",
+			}
+		}
+	} else {
+		if err := request.Payload.Validate(); err != nil {
+			return err
+		}
+		if err := domain.EnsureSameTenant(request.TenantID, request.Payload.TenantID); err != nil {
+			return err
+		}
 	}
 	for _, artifact := range request.Artifacts {
 		if err := artifact.Validate(); err != nil {

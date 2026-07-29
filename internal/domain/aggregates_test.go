@@ -126,6 +126,21 @@ func TestDispatchAndTelegramOutboxes(t *testing.T) {
 	if err := delivery.Transition(domain.DeliverySent, testTime.Add(2*time.Second), nil); err != nil {
 		t.Fatalf("delivery sent transition rejected: %v", err)
 	}
+
+	inline := domain.TelegramDeliveryOutbox{
+		ID: "delivery-inline", TenantID: run.TenantID, RunID: run.ID,
+		Chat:             domain.TelegramChatRef{TenantID: run.TenantID, ChatID: 123},
+		ReplyToMessageID: 78, Text: "command reply",
+		Status: domain.DeliveryPending, IdempotencyKey: "delivery-inline",
+		CreatedAt: testTime, UpdatedAt: testTime,
+	}
+	if err := inline.ValidateForRun(run); err != nil {
+		t.Fatalf("inline Telegram delivery rejected: %v", err)
+	}
+	inline.Payload = validBlob()
+	if err := inline.ValidateForRun(run); err == nil {
+		t.Fatal("ambiguous Telegram delivery content accepted")
+	}
 }
 
 func TestFrontendAdaptersAndLeaseActivity(t *testing.T) {

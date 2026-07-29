@@ -334,6 +334,110 @@ func TestQuotaAndDeliveryDualWriteBucketedReadyTables(t *testing.T) {
 	assertCount(t, client, "telegram_delivery_ready_v2", tenantID, 1)
 }
 
+func TestTelegramCommandsAreAtomicIdempotentAndDoNotDispatchAIWork(t *testing.T) {
+	store, client := openStore(t)
+	tenantID := domain.TenantID(uniqueID("tenant-command"))
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	actor := domain.ActorRef{
+		TenantID: tenantID, Frontend: domain.FrontendTelegram,
+		ExternalID: "5511", ID: domain.ActorID(uniqueID("actor")),
+	}
+	conversation := domain.ConversationRef{
+		TenantID: tenantID, Frontend: domain.FrontendTelegram,
+		ExternalID: "7711", ID: domain.ConversationID(uniqueID("conversation")),
+	}
+	connectionID := domain.SubscriptionConnectionID(uniqueID("subscription"))
+	if _, err := store.EnsureTelegramIdentity(context.Background(), ports.TelegramIdentityRequest{
+		TenantID: tenantID, Actor: actor, Conversation: conversation,
+		SubscriptionConnectionID: connectionID, Provider: "codex",
+		ObservedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	connect := commandFixture(
+		tenantID, actor, conversation, connectionID,
+		ports.TelegramCommandConnectCodex, 2001, now,
+	)
+	first, err := store.ExecuteTelegramCommand(context.Background(), connect)
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicate, err := store.ExecuteTelegramCommand(context.Background(), connect)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.Created || duplicate.Created || duplicate.RunID != first.RunID {
+		t.Fatalf("connect dedup = %#v then %#v", first, duplicate)
+	}
+
+	status := commandFixture(
+		tenantID, actor, conversation, connectionID,
+		ports.TelegramCommandComputeStatus, 2002, now.Add(time.Second),
+	)
+	if _, err := store.ExecuteTelegramCommand(context.Background(), status); err != nil {
+		t.Fatal(err)
+	}
+	claimedStatus, ok, err := store.ClaimTelegramDelivery(
+		context.Background(), tenantID, status.DeliveryID, now.Add(2*time.Second),
+	)
+	if err != nil || !ok {
+		t.Fatalf("claim status reply = %t, %v", ok, err)
+	}
+	if !strings.Contains(claimedStatus.Text, "reauthentication_required") ||
+		claimedStatus.Payload.Key != "" {
+		t.Fatalf("status reply = %#v", claimedStatus)
+	}
+
+	newContext := commandFixture(
+		tenantID, actor, conversation, connectionID,
+		ports.TelegramCommandNewContext, 2003, now.Add(3*time.Second),
+	)
+	if _, err := store.ExecuteTelegramCommand(context.Background(), newContext); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ExecuteTelegramCommand(context.Background(), newContext); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := store.EnsureTelegramIdentity(context.Background(), ports.TelegramIdentityRequest{
+		TenantID: tenantID, Actor: actor, Conversation: conversation,
+		SubscriptionConnectionID: connectionID, Provider: "codex",
+		ObservedAt: now.Add(4 * time.Second),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identity.ContextEpoch != 2 {
+		t.Fatalf("context epoch = %d, want 2", identity.ContextEpoch)
+	}
+
+	disconnect := commandFixture(
+		tenantID, actor, conversation, connectionID,
+		ports.TelegramCommandDisconnectCodex, 2004, now.Add(5*time.Second),
+	)
+	if _, err := store.ExecuteTelegramCommand(context.Background(), disconnect); err != nil {
+		t.Fatal(err)
+	}
+	var entitlement, credentialRef string
+	if err := client.DB.QueryRowContext(context.Background(),
+		`SELECT entitlement_state, credential_ref FROM subscription_connections
+		 WHERE tenant_id = $1 AND subscription_connection_id = $2`,
+		tenantID, connectionID,
+	).Scan(&entitlement, &credentialRef); err != nil {
+		t.Fatal(err)
+	}
+	if entitlement != string(domain.EntitlementDisconnected) || credentialRef != "" {
+		t.Fatalf("disconnected state = %q, credential ref = %q", entitlement, credentialRef)
+	}
+
+	assertCount(t, client, "telegram_updates", tenantID, 4)
+	assertCount(t, client, "runs", tenantID, 4)
+	assertCount(t, client, "telegram_delivery_outbox", tenantID, 4)
+	assertCount(t, client, "context_epochs", tenantID, 1)
+	assertCount(t, client, "attempts", tenantID, 0)
+	assertCount(t, client, "dispatch_outbox", tenantID, 0)
+}
+
 func openStore(t *testing.T) (*ydbstore.Store, *ydbclient.Client) {
 	t.Helper()
 	connectionString := requireConnectionString(t)
@@ -361,6 +465,33 @@ func openStore(t *testing.T) (*ydbstore.Store, *ydbclient.Client) {
 		t.Fatal(err)
 	}
 	return store, client
+}
+
+func commandFixture(
+	tenantID domain.TenantID,
+	actor domain.ActorRef,
+	conversation domain.ConversationRef,
+	connectionID domain.SubscriptionConnectionID,
+	kind ports.TelegramCommandKind,
+	updateID int64,
+	now time.Time,
+) ports.TelegramCommandRequest {
+	suffix := fmt.Sprintf("%d-%s", updateID, kind)
+	return ports.TelegramCommandRequest{
+		TenantID: tenantID, SourceID: "telegram-bot-primary",
+		UpdateID: updateID, ExpireAt: now.Add(24 * time.Hour),
+		Kind: kind, Provider: "codex", Actor: actor, Conversation: conversation,
+		SubscriptionConnectionID: connectionID,
+		RunID:                    domain.RunID("run-command-" + suffix),
+		DeliveryID:               domain.TelegramDeliveryID("delivery-command-" + suffix),
+		Chat: domain.TelegramChatRef{
+			TenantID: tenantID,
+			ChatID:   7711,
+		},
+		ReplyToMessageID: updateID,
+		IdempotencyKey:   domain.IdempotencyKey("telegram-command-" + suffix),
+		RequestedAt:      now,
+	}
 }
 
 func requireConnectionString(t *testing.T) string {

@@ -26,9 +26,10 @@ The repository currently contains the Go component boundaries, harness-neutral
 domain/runtime contracts, the authoritative YDB state store and migrations,
 authenticated Telegram webhook ingestion, durable Telegram delivery, a
 reproducible local development stand, isolated worker packaging, pinned
-developer tools, and GitHub Actions CI fed by the GitCode mirror. Cloud queue
-publication, subscription command flows, subscription-backed harness execution,
-and the complete worker result path remain later implementation slices.
+developer tools, subscription state commands, explicit clean-context epochs,
+and GitHub Actions CI fed by the GitCode mirror. Cloud queue publication,
+provider authorization, subscription-backed harness execution, and the complete
+worker result path remain later implementation slices.
 
 ## Components
 
@@ -54,7 +55,8 @@ and the complete worker result path remain later implementation slices.
 - `internal/sqsqueue`: at-least-once SQS-compatible queue adapter for ElasticMQ
   and YMQ;
 - `internal/telegramingress`: webhook authentication, opaque deterministic
-  identity resolution, normalized input/blob handling, and idempotent run creation;
+  identity resolution, normalized input/blob handling, durable subscription
+  commands, explicit clean-context transitions, and idempotent run creation;
 - `internal/telegramdelivery`: bounded YDB-ready traversal, transactional delivery
   claims, retry policy, and Telegram Bot API sending;
 - `internal/queuecontract`: versioned queue envelopes containing opaque IDs only.

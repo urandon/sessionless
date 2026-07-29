@@ -19,12 +19,16 @@ flowchart LR
     MinIO["MinIO<br/>S3-compatible blobs"]
     Queue["ElasticMQ<br/>SQS-shaped queues"]
     Telegram["Telegram fake<br/>updates + captures"]
+    Sender["Telegram sender<br/>durable outbox consumer"]
 
     Developer -->|"make dev-up / tests"| Control
     Developer -->|"schema-migrate"| YDB
     Developer -->|"s3store"| MinIO
     Developer -->|"sqsqueue"| Queue
     Developer -->|"Bot API fixture calls"| Telegram
+    Control -->|"command delivery outbox"| YDB
+    Sender -->|"claim / transition"| YDB
+    Sender -->|"sendMessage / sendDocument"| Telegram
 ```
 
 | Service | Container endpoint | Host endpoint | Persistence |
@@ -37,6 +41,7 @@ flowchart LR
 | ElasticMQ UI | `http://queue-local:9325` | `http://localhost:9325` | intentionally ephemeral |
 | Telegram fake | `http://telegram-fake:8081` | `http://localhost:8081` | intentionally ephemeral |
 | Control API | `http://control-api:8080` | `http://localhost:8080` | stateless |
+| Telegram sender | n/a | n/a | stateless outbox consumer |
 
 All image versions are pinned in `tools/versions.env`. Compose loads safe
 defaults when no `.env` file is present. The committed access key, secret, and
@@ -56,7 +61,8 @@ make dev-down
 
 `make dev-up` performs the following fail-fast sequence:
 
-1. Build and start YDB, MinIO, ElasticMQ, Telegram fake, and the control API.
+1. Build and start YDB, MinIO, ElasticMQ, Telegram fake, the control API, and
+   the Telegram sender.
 2. Poll each host endpoint until it is ready or emit scoped service logs.
 3. Idempotently create the `sessionless-local` bucket.
 4. Apply the embedded Goose/YDB migrations.
@@ -101,8 +107,9 @@ make local-integration
 ```
 
 The suite proves YDB connectivity, S3 round-trip and cross-tenant rejection,
-SQS retry/dead-letter behavior, and deterministic Telegram update/capture
-behavior.
+SQS retry/dead-letter behavior, deterministic Telegram update/capture behavior,
+and durable command state/replies for connect, status, disconnect, and a new
+clean context.
 
 ## Apple Silicon
 

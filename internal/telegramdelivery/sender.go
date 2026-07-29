@@ -98,7 +98,7 @@ func (sender *Sender) send(
 	_, err := sender.client.Send(ctx, ports.TelegramSendRequest{
 		TenantID: delivery.TenantID, DeliveryID: delivery.ID,
 		Chat: delivery.Chat, ReplyToMessageID: delivery.ReplyToMessageID,
-		Payload: delivery.Payload, Artifacts: artifacts,
+		Payload: delivery.Payload, Text: delivery.Text, Artifacts: artifacts,
 		IdempotencyKey: delivery.IdempotencyKey,
 	})
 	if err != nil {

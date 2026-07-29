@@ -96,8 +96,15 @@ func (processor *Processor) Process(
 		return ports.TelegramIngressResult{}, fmt.Errorf("%w: %v", ErrUnsupportedUpdate, err)
 	}
 	message := *update.Message
+	command, isCommand := parseCommand(message.Text)
+	provider := processor.config.Provider
+	if isCommand && (command == ports.TelegramCommandConnectCodex ||
+		command == ports.TelegramCommandComputeStatus ||
+		command == ports.TelegramCommandDisconnectCodex) {
+		provider = "codex"
+	}
 	identity, err := processor.identity.ResolvePrivate(
-		message.Chat.ID, message.From.ID, processor.config.Provider,
+		message.Chat.ID, message.From.ID, provider,
 	)
 	if err != nil {
 		return ports.TelegramIngressResult{}, err
@@ -108,11 +115,41 @@ func (processor *Processor) Process(
 		Actor:                    identity.Actor,
 		Conversation:             identity.Conversation,
 		SubscriptionConnectionID: identity.SubscriptionConnection,
-		Provider:                 processor.config.Provider,
+		Provider:                 provider,
 		ObservedAt:               now,
 	})
 	if err != nil {
 		return ports.TelegramIngressResult{}, err
+	}
+	idempotencyKey := domain.IdempotencyKey(
+		"tg:" + processor.config.SourceID + ":" + strconv.FormatInt(update.UpdateID, 10),
+	)
+	if isCommand {
+		runID, err := newTypedID[domain.RunID](ctx, processor.ids, ports.IDRun)
+		if err != nil {
+			return ports.TelegramIngressResult{}, err
+		}
+		deliveryID, err := newTypedID[domain.TelegramDeliveryID](
+			ctx, processor.ids, ports.IDTelegramDelivery,
+		)
+		if err != nil {
+			return ports.TelegramIngressResult{}, err
+		}
+		return processor.store.ExecuteTelegramCommand(ctx, ports.TelegramCommandRequest{
+			TenantID: identity.Tenant, SourceID: processor.config.SourceID,
+			UpdateID: update.UpdateID, ExpireAt: now.Add(processor.config.IdempotencyRetention),
+			Kind: command, Provider: provider,
+			Actor: identity.Actor, Conversation: identity.Conversation,
+			SubscriptionConnectionID: identity.SubscriptionConnection,
+			RunID:                    runID, DeliveryID: deliveryID,
+			Chat: domain.TelegramChatRef{
+				TenantID: identity.Tenant,
+				ChatID:   message.Chat.ID,
+			},
+			ReplyToMessageID: message.MessageID,
+			IdempotencyKey:   idempotencyKey,
+			RequestedAt:      now,
+		})
 	}
 
 	runID, err := newTypedID[domain.RunID](ctx, processor.ids, ports.IDRun)
@@ -156,9 +193,6 @@ func (processor *Processor) Process(
 		Name: "message.json", MediaType: "application/json", Blob: messageBlob,
 	}}
 	artifacts = append(artifacts, attachments...)
-	idempotencyKey := domain.IdempotencyKey(
-		"tg:" + processor.config.SourceID + ":" + strconv.FormatInt(update.UpdateID, 10),
-	)
 	run := domain.Run{
 		ID: runID, TenantID: identity.Tenant, Conversation: identity.Conversation,
 		SubscriptionConnectionID: identity.SubscriptionConnection,

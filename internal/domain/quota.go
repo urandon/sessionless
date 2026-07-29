@@ -191,6 +191,7 @@ func (observation UsageObservation) ValidateForAttempt(run Run, attempt Attempt)
 type EntitlementState string
 
 const (
+	EntitlementDisconnected   EntitlementState = "disconnected"
 	EntitlementUnknown        EntitlementState = "unknown"
 	EntitlementActive         EntitlementState = "active"
 	EntitlementInactive       EntitlementState = "inactive"
@@ -199,7 +200,8 @@ const (
 
 func (state EntitlementState) Valid() bool {
 	switch state {
-	case EntitlementUnknown, EntitlementActive, EntitlementInactive, EntitlementReauthRequired:
+	case EntitlementDisconnected, EntitlementUnknown, EntitlementActive,
+		EntitlementInactive, EntitlementReauthRequired:
 		return true
 	default:
 		return false

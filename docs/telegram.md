@@ -31,6 +31,37 @@ current private-chat MVP. Processing failures return `503` so Telegram retries.
 Logs contain update/run IDs and state only. Message text, captions, file
 contents, bot tokens, webhook secrets, and identity keys are never logged.
 
+## Commands
+
+The private-chat command surface is:
+
+```text
+/connect codex
+/compute status
+/compute disconnect codex
+/new
+```
+
+Any other slash-prefixed message receives the supported-command list and is
+never dispatched as an AI workload. A command is represented by a terminal
+control-plane run with no attempt or dispatch outbox. In one serializable YDB
+transaction the adapter deduplicates the Telegram update, applies the
+subscription/context change, records the command run, and enqueues an inline
+Telegram delivery. This avoids a state-committed/reply-missing crash window.
+
+`/connect codex` currently moves the deterministic connection to
+`reauthentication_required`. It stores no credential and tells the user that
+the isolated Codex authorization adapter is still required. `/compute status`
+reports only provider, connection, and quota states; it never exposes tokens
+or credential references. `/compute disconnect codex` clears the credential
+reference, marks the connection `disconnected`, resets observed quota to
+`unknown`, and does not enable an API-billing fallback.
+
+`/new` is the explicit clean-context action. It atomically appends one
+`context_epochs` event and advances `conversations.current_context_epoch`.
+Telegram history and stored artifacts are not deleted. Subsequent workloads
+bind to the new epoch; the command itself is not sent to an AI worker.
+
 ## Opaque identity resolution
 
 Every replica derives the same IDs with HMAC-SHA-256 and a deployment secret:
@@ -75,7 +106,9 @@ POST /test/files/<file-id>?name=<file-name>
 row and moves it to `sending`; concurrent consumers therefore produce one
 claim winner. A `sending` row remains indexed behind a two-minute visibility
 timeout, so a process crash cannot strand it permanently. The sender reads only
-tenant-authorized payload/artifact blobs.
+tenant-authorized payload/artifact blobs. Control commands use bounded inline
+text in the same outbox model, so they require no object-store write between
+the state transition and durable reply creation.
 
 Successful sends move to `sent`. Failures use bounded exponential backoff and
 move through `retry_wait`; the configured attempt limit ends in `failed`.

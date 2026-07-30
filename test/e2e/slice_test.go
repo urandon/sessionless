@@ -113,7 +113,7 @@ func TestDeterministicLocalMultiUserSlice(t *testing.T) {
 		slice.assertOneTelegramRun(runB)
 		slice.assertUsage(runA, 2)
 		slice.assertUsage(runB, 2)
-		slice.assertInputDocument(runB, "notes.txt")
+		slice.assertInputDocument(runB, "attachment-01-notes.txt")
 		slice.assertTenantArtifacts(runA, runB)
 		slice.assertDeliveryWasRetried(runA, runB)
 

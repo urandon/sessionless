@@ -59,6 +59,51 @@ func TestSendMessageIsCaptured(t *testing.T) {
 	}
 }
 
+func TestInjectedFailureIsBoundedAndNotCaptured(t *testing.T) {
+	handler := NewHandler("test-token", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	response := performRequest(
+		t,
+		handler,
+		http.MethodPost,
+		"/test/failures",
+		[]byte(`{"method":"sendMessage","count":1,"status":429}`),
+	)
+	if response.Code != http.StatusOK {
+		t.Fatalf("failure-plan status = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	first := performRequest(
+		t,
+		handler,
+		http.MethodPost,
+		"/bottest-token/sendMessage",
+		[]byte(`{"chat_id":123,"text":"retry me"}`),
+	)
+	if first.Code != http.StatusTooManyRequests {
+		t.Fatalf("first send status = %d", first.Code)
+	}
+	second := performRequest(
+		t,
+		handler,
+		http.MethodPost,
+		"/bottest-token/sendMessage",
+		[]byte(`{"chat_id":123,"text":"retry me"}`),
+	)
+	if second.Code != http.StatusOK {
+		t.Fatalf("second send status = %d, body = %s", second.Code, second.Body.String())
+	}
+
+	response = performRequest(t, handler, http.MethodGet, "/test/captures", nil)
+	var payload struct {
+		OK     bool      `json:"ok"`
+		Result []Capture `json:"result"`
+	}
+	decodeResponse(t, response, &payload)
+	if !payload.OK || len(payload.Result) != 1 {
+		t.Fatalf("captures = %#v", payload)
+	}
+}
+
 func TestWrongBotTokenIsRejected(t *testing.T) {
 	handler := NewHandler("test-token", slog.New(slog.NewTextHandler(io.Discard, nil)))
 	response := performRequest(t, handler, http.MethodGet, "/botwrong/getMe", nil)

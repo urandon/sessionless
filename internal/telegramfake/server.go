@@ -41,6 +41,12 @@ type Server struct {
 	files         map[string]storedFile
 	captures      []Capture
 	nextMessageID int64
+	failures      map[string]failurePlan
+}
+
+type failurePlan struct {
+	Remaining int
+	Status    int
 }
 
 func NewHandler(token string, logger *slog.Logger) http.Handler {
@@ -50,6 +56,7 @@ func NewHandler(token string, logger *slog.Logger) http.Handler {
 		now:           time.Now,
 		updates:       make(map[int64]json.RawMessage),
 		files:         make(map[string]storedFile),
+		failures:      make(map[string]failurePlan),
 		nextMessageID: 1000,
 	}
 
@@ -58,6 +65,7 @@ func NewHandler(token string, logger *slog.Logger) http.Handler {
 	mux.HandleFunc("POST /test/updates", server.addUpdate)
 	mux.HandleFunc("POST /test/files/{fileID}", server.addFile)
 	mux.HandleFunc("GET /test/captures", server.listCaptures)
+	mux.HandleFunc("POST /test/failures", server.setFailure)
 	mux.HandleFunc("POST /test/reset", server.reset)
 	mux.HandleFunc("/", server.botAPI)
 	return mux
@@ -109,7 +117,53 @@ func (server *Server) reset(w http.ResponseWriter, _ *http.Request) {
 	server.updateOrder = nil
 	server.files = make(map[string]storedFile)
 	server.captures = nil
+	server.failures = make(map[string]failurePlan)
 	server.nextMessageID = 1000
+	server.mu.Unlock()
+	writeTelegramResult(w, true)
+}
+
+func (server *Server) setFailure(w http.ResponseWriter, request *http.Request) {
+	raw, err := readBody(request)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	var plan struct {
+		Method string `json:"method"`
+		Count  int    `json:"count"`
+		Status int    `json:"status"`
+	}
+	if err := json.Unmarshal(raw, &plan); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("decode failure plan: %w", err))
+		return
+	}
+	switch plan.Method {
+	case "sendMessage", "sendDocument", "sendPhoto":
+	default:
+		writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported failure method"))
+		return
+	}
+	if plan.Count < 0 {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("failure count must not be negative"))
+		return
+	}
+	if plan.Status == 0 {
+		plan.Status = http.StatusTooManyRequests
+	}
+	if plan.Status < 400 || plan.Status > 599 {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("failure status must be 4xx or 5xx"))
+		return
+	}
+	server.mu.Lock()
+	if plan.Count == 0 {
+		delete(server.failures, plan.Method)
+	} else {
+		server.failures[plan.Method] = failurePlan{
+			Remaining: plan.Count,
+			Status:    plan.Status,
+		}
+	}
 	server.mu.Unlock()
 	writeTelegramResult(w, true)
 }
@@ -261,6 +315,25 @@ func (server *Server) getUpdates(w http.ResponseWriter, request *http.Request) {
 }
 
 func (server *Server) captureSend(w http.ResponseWriter, request *http.Request, method string) {
+	server.mu.Lock()
+	plan := server.failures[method]
+	if plan.Remaining > 0 {
+		plan.Remaining--
+		if plan.Remaining == 0 {
+			delete(server.failures, method)
+		} else {
+			server.failures[method] = plan
+		}
+		server.mu.Unlock()
+		writeJSON(w, plan.Status, map[string]any{
+			"ok":          false,
+			"error_code":  plan.Status,
+			"description": "Injected deterministic Telegram failure",
+		})
+		return
+	}
+	server.mu.Unlock()
+
 	raw, err := readRequestPayload(request)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)

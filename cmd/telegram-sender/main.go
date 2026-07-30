@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"gitcode.com/urandon/sessionless/internal/portlog"
 	"gitcode.com/urandon/sessionless/internal/s3store"
 	"gitcode.com/urandon/sessionless/internal/telegramdelivery"
 	"gitcode.com/urandon/sessionless/internal/ydbclient"
@@ -57,7 +58,13 @@ func main() {
 		os.Exit(1)
 	}
 	sender, err := telegramdelivery.NewSender(
-		telegramdelivery.Config{}, systemClock{}, state, client,
+		telegramdelivery.Config{
+			BatchSize:   uint64(envUint("TELEGRAM_SENDER_BATCH_SIZE", 25)),
+			MaxAttempts: envUint("TELEGRAM_SENDER_MAX_ATTEMPTS", 5),
+			BaseBackoff: envDuration("TELEGRAM_SENDER_BASE_BACKOFF", 5*time.Second),
+			MaxBackoff:  envDuration("TELEGRAM_SENDER_MAX_BACKOFF", 5*time.Minute),
+		},
+		systemClock{}, state, portlog.NewTelegramClient(logger, client),
 	)
 	if err != nil {
 		logger.Error("create Telegram sender", "error", err)
@@ -92,6 +99,14 @@ func envOrDefault(name, fallback string) string {
 func envBool(name string) bool {
 	value, _ := strconv.ParseBool(os.Getenv(name))
 	return value
+}
+
+func envUint(name string, fallback uint32) uint32 {
+	value, err := strconv.ParseUint(os.Getenv(name), 10, 32)
+	if err != nil || value == 0 {
+		return fallback
+	}
+	return uint32(value)
 }
 
 func envDuration(name string, fallback time.Duration) time.Duration {

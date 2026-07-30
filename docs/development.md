@@ -104,6 +104,7 @@ Run the adapter contracts and stop the stack:
 ```sh
 make migrate-local
 make local-integration
+make e2e-local
 make dev-down
 ```
 
@@ -112,6 +113,9 @@ and the Telegram fake are intentionally ephemeral transport fixtures. The
 complete topology, endpoint table, local-only credentials, persistence test,
 and Apple Silicon requirements are documented in
 [local-development-stand.md](local-development-stand.md).
+The `e2e-local` target starts the stand when needed, builds the isolated worker,
+and executes the two-tenant product flow and recovery scenarios documented in
+[local-e2e.md](local-e2e.md).
 
 After the YDB monitoring endpoint is ready, apply or inspect the schema:
 

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/deterministicharness"
+	"gitcode.com/urandon/sessionless/internal/portlog"
 	"gitcode.com/urandon/sessionless/internal/s3store"
 	"gitcode.com/urandon/sessionless/internal/sqsqueue"
 	"gitcode.com/urandon/sessionless/internal/worker"
@@ -60,10 +61,11 @@ func main() {
 		os.Exit(1)
 	}
 	harness, err := deterministicharness.New(deterministicharness.Config{
-		Turns:         envUint64("DETERMINISTIC_HARNESS_TURNS", 2),
-		Artifacts:     envUint64("DETERMINISTIC_HARNESS_ARTIFACTS", 1),
-		FailAtTurn:    envUint64("DETERMINISTIC_HARNESS_FAIL_AT_TURN", 0),
-		RetryableFail: envBool("DETERMINISTIC_HARNESS_RETRYABLE_FAIL"),
+		Turns:               envUint64("DETERMINISTIC_HARNESS_TURNS", 2),
+		Artifacts:           envUint64("DETERMINISTIC_HARNESS_ARTIFACTS", 1),
+		FailBeforeFirstTurn: envBool("DETERMINISTIC_HARNESS_FAIL_BEFORE_FIRST_TURN"),
+		FailAtTurn:          envUint64("DETERMINISTIC_HARNESS_FAIL_AT_TURN", 0),
+		RetryableFail:       envBool("DETERMINISTIC_HARNESS_RETRYABLE_FAIL"),
 	})
 	if err != nil {
 		logger.Error("create deterministic harness", "error", err)
@@ -76,7 +78,7 @@ func main() {
 		RetryDelay:           envDuration("WORKER_RETRY_DELAY", 5*time.Second),
 		MaxDeliveryCount:     uint32(envUint64("WORKER_MAX_DELIVERY_COUNT", 5)),
 		MaxMaterializedBytes: int64(envUint64("WORKER_MAX_BLOB_BYTES", 64<<20)),
-	}, systemClock{}, queue, state, blobs, harness)
+	}, systemClock{}, portlog.NewQueue(logger, "worker-runtime", queue), state, blobs, harness)
 	if err != nil {
 		logger.Error("create worker manager", "error", err)
 		os.Exit(1)

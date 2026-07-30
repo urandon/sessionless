@@ -195,6 +195,12 @@ func TestProcessorPersistsTenantScopedMessageAndDeduplicatesUpdate(t *testing.T)
 	if len(request.InputManifest.Artifacts) != 2 {
 		t.Fatalf("artifact count = %d, want message plus document", len(request.InputManifest.Artifacts))
 	}
+	if request.InputManifest.Artifacts[1].Name != "attachment-01-report.txt" {
+		t.Fatalf(
+			"document artifact name = %q, want attachment-01-report.txt",
+			request.InputManifest.Artifacts[1].Name,
+		)
+	}
 	for _, artifact := range request.InputManifest.Artifacts {
 		if !strings.HasPrefix(artifact.Blob.Key, domain.TenantObjectPrefix(request.TenantID)) {
 			t.Fatalf("cross-tenant blob key %q", artifact.Blob.Key)

@@ -17,7 +17,7 @@ LDFLAGS := -s -w \
 	-X gitcode.com/urandon/sessionless/internal/buildinfo.Commit=$(COMMIT) \
 	-X gitcode.com/urandon/sessionless/internal/buildinfo.BuiltAt=$(BUILT_AT)
 
-.PHONY: help prepare tools generate fmt fmt-check lint test build integration ydb-integration local-integration ci \
+.PHONY: help prepare tools generate fmt fmt-check lint test build integration ydb-integration local-integration e2e-local ci \
 	compose-config images dev-up dev-seed migrate-local migration-status partition-status partition-backfill \
 	worker-once dev-down dev-reset clean
 
@@ -30,6 +30,7 @@ help:
 		'make integration    run foundation integration tests' \
 		'make ydb-integration run YDB Local schema and concurrency tests' \
 		'make local-integration run YDB/S3/SQS/Telegram adapter tests against the local stand' \
+		'make e2e-local      run the deterministic two-tenant black-box slice' \
 		'make images         build control-plane and worker images' \
 		'make dev-up         start, initialize, migrate, seed, and verify the local stand' \
 		'make dev-seed       idempotently load synthetic local fixtures' \
@@ -80,6 +81,9 @@ local-integration: prepare
 	YDB_CONNECTION_STRING="$${YDB_CONNECTION_STRING:-grpc://localhost:2136/local?go_query_mode=scripting&go_fake_tx=scripting&go_query_bind=declare,numeric}" \
 	YDB_ANONYMOUS_CREDENTIALS="$${YDB_ANONYMOUS_CREDENTIALS:-1}" \
 	go test -race -tags=localintegration ./test/localintegration/...
+
+e2e-local: prepare
+	@./scripts/e2e-local.sh
 
 ci: generate test build integration
 

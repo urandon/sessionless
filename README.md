@@ -32,8 +32,10 @@ GitCode mirror. It also contains the complete isolated worker lifecycle with a
 credential-free deterministic harness: durable job materialization, fenced
 lease renewal, bounded scratch space, checkpoint/resume, usage events,
 content-addressed artifacts, cancellation/timeout handling, and atomic terminal
-delivery. Provider authorization and subscription-backed Codex, OpenCode,
-Claude, or Hermes adapters remain later implementation slices.
+delivery. A credential-free two-tenant black-box suite now composes the full
+local Telegram-to-worker-to-Telegram path and its recovery cases. Provider
+authorization and subscription-backed Codex, OpenCode, Claude, or Hermes
+adapters remain later implementation slices.
 
 ## Components
 
@@ -51,6 +53,8 @@ Claude, or Hermes adapters remain later implementation slices.
   semantics, outboxes, artifacts, and explicit context epochs;
 - `internal/ports`: YDB/queue/blob/frontend/credential/harness-neutral runtime
   interfaces;
+- `internal/portlog`: process-boundary structured correlation logs without
+  payload or credential logging;
 - `internal/ydbstore`: serializable tenant-scoped YDB state and atomic
   ingress/lease/quota/outbox procedures;
 - `internal/ydbmigrate`: embedded Goose migrations with a YDB lease and
@@ -98,6 +102,7 @@ make worker-once
 make integration
 make ydb-integration
 make local-integration
+make e2e-local
 make dev-down
 ```
 
@@ -113,4 +118,6 @@ reset procedure are documented in
 [docs/local-development-stand.md](docs/local-development-stand.md).
 Telegram webhook, identity, attachment, and delivery procedures are documented
 in [docs/telegram.md](docs/telegram.md).
+The deterministic two-tenant black-box flow, fault scenarios, timing boundary,
+and operator queries are documented in [docs/local-e2e.md](docs/local-e2e.md).
 Contribution boundaries are in [CONTRIBUTING.md](CONTRIBUTING.md).

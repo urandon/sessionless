@@ -14,10 +14,11 @@ import (
 )
 
 type Config struct {
-	Turns         uint64
-	Artifacts     uint64
-	FailAtTurn    uint64
-	RetryableFail bool
+	Turns               uint64
+	Artifacts           uint64
+	FailBeforeFirstTurn bool
+	FailAtTurn          uint64
+	RetryableFail       bool
 }
 
 type Driver struct {
@@ -48,6 +49,9 @@ func (driver *Driver) Execute(
 	if sink == nil {
 		return ports.ExecutionResult{}, fmt.Errorf("execution event sink is required")
 	}
+	if driver.config.FailBeforeFirstTurn && request.ResumeCheckpoint == nil {
+		return ports.ExecutionResult{}, driver.failure()
+	}
 	start := uint64(1)
 	if request.ResumeCheckpoint != nil {
 		start = request.ResumeCheckpoint.Sequence + 1
@@ -71,14 +75,7 @@ func (driver *Driver) Execute(
 			return ports.ExecutionResult{}, err
 		}
 		if driver.config.FailAtTurn == turn {
-			kind := domain.ErrorTerminal
-			if driver.config.RetryableFail {
-				kind = domain.ErrorRetryable
-			}
-			return ports.ExecutionResult{}, &domain.ClassifiedError{
-				Kind: kind, Code: "deterministic_failure",
-				Operation: "deterministic_harness.execute",
-			}
+			return ports.ExecutionResult{}, driver.failure()
 		}
 	}
 	result := ports.ExecutionResult{
@@ -100,6 +97,17 @@ func (driver *Driver) Execute(
 		})
 	}
 	return result, nil
+}
+
+func (driver *Driver) failure() error {
+	kind := domain.ErrorTerminal
+	if driver.config.RetryableFail {
+		kind = domain.ErrorRetryable
+	}
+	return &domain.ClassifiedError{
+		Kind: kind, Code: "deterministic_failure",
+		Operation: "deterministic_harness.execute",
+	}
 }
 
 func (*Driver) Cancel(context.Context, ports.ExecutionIdentity) error {

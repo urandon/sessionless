@@ -72,7 +72,7 @@ func TestClientSendsInlineCommandReplyWithoutBlobRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := client.Send(context.Background(), ports.TelegramSendRequest{
-		TenantID: "tenant-a", DeliveryID: "delivery-inline",
+		TenantID: "tenant-a", RunID: "run-inline", DeliveryID: "delivery-inline",
 		Chat:             domain.TelegramChatRef{TenantID: "tenant-a", ChatID: 123},
 		ReplyToMessageID: 78, Text: "command reply",
 		IdempotencyKey: "delivery-inline",

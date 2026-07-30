@@ -169,6 +169,7 @@ type BlobStore interface {
 
 type TelegramSendRequest struct {
 	TenantID         domain.TenantID
+	RunID            domain.RunID
 	DeliveryID       domain.TelegramDeliveryID
 	Chat             domain.TelegramChatRef
 	ReplyToMessageID int64

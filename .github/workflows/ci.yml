@@ -98,7 +98,7 @@ jobs:
 
       - name: Start, initialize, and test the local stand
         run: |
-          make dev-up
+          make e2e-local
           make local-integration
 
       - name: Prove normal stop and restart preserve the stand

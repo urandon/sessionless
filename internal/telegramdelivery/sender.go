@@ -96,7 +96,7 @@ func (sender *Sender) send(
 		artifacts = manifest.Artifacts
 	}
 	_, err := sender.client.Send(ctx, ports.TelegramSendRequest{
-		TenantID: delivery.TenantID, DeliveryID: delivery.ID,
+		TenantID: delivery.TenantID, RunID: delivery.RunID, DeliveryID: delivery.ID,
 		Chat: delivery.Chat, ReplyToMessageID: delivery.ReplyToMessageID,
 		Payload: delivery.Payload, Text: delivery.Text, Artifacts: artifacts,
 		IdempotencyKey: delivery.IdempotencyKey,

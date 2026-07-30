@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/portlog"
 	"gitcode.com/urandon/sessionless/internal/scheduler"
 	"gitcode.com/urandon/sessionless/internal/sqsqueue"
 	"gitcode.com/urandon/sessionless/internal/ydbclient"
@@ -71,7 +72,7 @@ func main() {
 		},
 		systemClock{},
 		state,
-		queue,
+		portlog.NewQueue(logger, "reconciler", queue),
 	)
 	if err != nil {
 		logger.Error("create scheduler", "error", err)

@@ -12,6 +12,9 @@ func (request TelegramSendRequest) Validate() error {
 	if err := request.TenantID.Validate(); err != nil {
 		return err
 	}
+	if err := request.RunID.Validate(); err != nil {
+		return err
+	}
 	if err := request.DeliveryID.Validate(); err != nil {
 		return err
 	}

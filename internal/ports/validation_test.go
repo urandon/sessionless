@@ -100,6 +100,7 @@ func TestTelegramSendRequestRejectsCrossTenantPayload(t *testing.T) {
 
 	request := ports.TelegramSendRequest{
 		TenantID:         "tenant-a",
+		RunID:            "run-1",
 		DeliveryID:       "delivery-1",
 		Chat:             domain.TelegramChatRef{TenantID: "tenant-a", ChatID: -1000123},
 		ReplyToMessageID: 77,
@@ -116,6 +117,7 @@ func TestTelegramSendRequestAcceptsInlineTextOnly(t *testing.T) {
 
 	request := ports.TelegramSendRequest{
 		TenantID:         "tenant-a",
+		RunID:            "run-inline",
 		DeliveryID:       "delivery-inline",
 		Chat:             domain.TelegramChatRef{TenantID: "tenant-a", ChatID: 123},
 		ReplyToMessageID: 78,

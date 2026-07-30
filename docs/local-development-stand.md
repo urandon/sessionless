@@ -66,6 +66,7 @@ From a fresh checkout:
 ```sh
 make dev-up
 make local-integration
+make e2e-local
 make dev-down
 ```
 
@@ -130,6 +131,18 @@ message IDs, bounded dispatch/expiry traversal, and idempotent reservation
 expiry. Worker unit/YDB integration coverage proves tenant-safe materialization,
 checkpoint resume, lease renewal/loss fencing, cancellation, runtime and turn
 limits, exactly-once terminal delivery, and lease-index cleanup.
+
+Run the composed deterministic product slice with:
+
+```sh
+make e2e-local
+```
+
+Unlike the adapter-contract suite, this target drives two Telegram tenants
+through the live control API, reconciler, queue, one-shot worker containers,
+object storage, durable delivery and Telegram capture. It also injects bounded
+queue, worker and Telegram failures. The full scenario list, timing boundary
+and operator queries are documented in [local-e2e.md](local-e2e.md).
 
 ## Apple Silicon
 

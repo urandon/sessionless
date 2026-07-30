@@ -582,7 +582,7 @@ func (slice *localSlice) assertUsage(run runRef, wanted uint64) {
 	var count uint64
 	if err := slice.db.QueryRowContext(
 		slice.ctx,
-		`SELECT COUNT(*) FROM usage_events WHERE tenant_id = $1 AND run_id = $2`,
+		`SELECT COUNT(*) FROM usage_observations WHERE tenant_id = $1 AND run_id = $2`,
 		run.TenantID, run.RunID,
 	).Scan(&count); err != nil {
 		slice.t.Fatal(err)

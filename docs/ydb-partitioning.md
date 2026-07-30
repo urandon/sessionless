@@ -74,12 +74,11 @@ enumerate the fixed bucket list and issue one bounded time-prefix query per
 bucket. The tenant remains in every row and is validated before mutation; the
 bucket is neither an authorization boundary nor a DataShard assignment.
 
-Migrations `00023` through `00026` originally pre-split these tables into 16
-physical ranges. Forward migrations `00041` through `00044` lower the minimum
-partition floor to one so YDB may merge those ranges under low load and split
-them again as load or size grows. The existing split boundaries are retained
-in immutable migration history; they are no longer part of the runtime schema
-contract.
+The baseline migrations create these tables without manual split boundaries,
+partition-count limits, or numeric size thresholds. They enable size- and
+load-based auto-partitioning and otherwise use YDB defaults. Exact thresholds
+may be tuned later from cloud measurements; none of those operational values
+are part of the runtime schema contract.
 
 The four legacy tenant-first ready/expiry tables remain during the compatibility
 window. New code dual-writes legacy and v2 rows. Serving code must use the v2
@@ -108,9 +107,9 @@ throughput, RU consumption, or split/merge latency.
 
 ## Expand, backfill, cut over, contract
 
-1. **Expand:** apply migrations `00023` through `00044`. They create the four
-   v2 tables, enable load-aware settings on expected high-write tables, and
-   remove the original physical partition floor. No primary key is changed in
+1. **Expand:** apply migrations `00023` through `00040`. They create the four
+   v2 tables and enable load-aware settings on expected high-write tables
+   without a manual physical partition floor. No primary key is changed in
    place.
 2. **Dual write:** deploy the control revision that writes both legacy and v2
    ready/expiry rows. The previous revision remains compatible because the

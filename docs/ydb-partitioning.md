@@ -43,6 +43,7 @@ a production adapter.
 | `subscription_connections` | `(tenant_id, subscription_connection_id)` | tenant entity | low-cardinality point access |
 | `subscription_scheduler_slots` | `(tenant_id, subscription_connection_id)` | tenant entity | one point-contention row per subscription; load splitting enabled |
 | `tenant_scheduler_counters` | `(tenant_id)` | tenant entity | one bounded counter row per tenant; load splitting enabled |
+| `worker_jobs` | `(tenant_id, run_id)` | tenant entity | point worker descriptor distributed by tenant and random run ID |
 | `runs` | `(tenant_id, run_id)` | tenant entity | random run ID; load splitting enabled |
 | `run_idempotency` | `(tenant_id, idempotency_key)` | tenant entity | point lookup; load splitting enabled |
 | `attempts` | `(tenant_id, attempt_id)` | tenant entity | random attempt ID; load splitting enabled |
@@ -96,7 +97,7 @@ make partition-status
 
 `schema-inspect` emits machine-readable JSON containing the expected and actual
 primary keys, auto-partition settings, current partition count, row estimate,
-and contract violations for all 24 logical tables. It exits non-zero when a
+and contract violations for all 25 logical tables. It exits non-zero when a
 primary key differs or required automatic size/load partitioning is disabled.
 Minimum, maximum, target size, and current partition count remain telemetry;
 their exact values are capacity tuning, not an application schema invariant.

@@ -133,7 +133,8 @@ Schema `sessionless.queue.v1` contains only:
 - message ID;
 - message kind;
 - tenant ID;
-- an opaque subject ID referring to an outbox row;
+- an opaque, kind-specific subject ID (`run_id` for `dispatch.run`,
+  `telegram_delivery_id` for `deliver.telegram`);
 - enqueue time.
 
 Prompts, frontend messages, attachments, generated content, credential
@@ -158,6 +159,47 @@ The control plane depends on interfaces for:
 `HarnessDriver` receives only authorized, tenant-scoped references:
 context/artifact blobs, an opaque credential handle, and an explicit MCP
 allowlist. Concrete harness processes remain isolated worker adapters.
+
+## Isolated worker lifecycle
+
+Scheduler admission atomically creates a point-addressable `worker_jobs` row.
+It contains immutable references and admitted product limits; the queue carries
+only `tenant_id` plus `run_id`.
+
+```mermaid
+flowchart LR
+    Queue["dispatch.run<br/>tenant_id + run_id"]
+    Job["YDB worker_jobs<br/>references + limits"]
+    Lease["fenced lease<br/>claim + renew"]
+    Scratch["unique 0700 scratch<br/>tenant-scoped blobs"]
+    Harness["HarnessDriver<br/>deterministic today"]
+    Events["checkpoint + usage<br/>fenced transaction"]
+    Terminal["run + attempt + quota<br/>manifest + delivery"]
+
+    Queue --> Job --> Lease --> Scratch --> Harness
+    Harness --> Events --> Harness
+    Harness --> Terminal
+```
+
+One invocation processes at most one queue message. Before materializing data,
+it point-loads the worker job, verifies a held reservation, claims a fenced
+lease, and transitions the run/attempt to running. Context, inputs, optional
+workspace, skills, and the latest checkpoint are copied into a new
+invocation-only directory with tenant, path, size, and SHA-256 checks.
+
+Each harness boundary has a contiguous sequence, renews the lease when needed,
+stores an immutable checkpoint blob, and commits checkpoint metadata plus
+observed usage under the same fence. Limits bound runtime, turns, input/context
+bytes, artifacts, and each materialized blob. Durable cancellation is checked
+before execution and at every boundary.
+
+Success uploads content-addressed output objects and atomically commits the
+terminal run/attempt, quota reservation, artifact manifest, Telegram delivery,
+scheduler counters, and lease-index cleanup. Failure, cancellation, and timeout
+atomically release the reservation and create a same-chat failure delivery.
+At-least-once duplicates observe terminal state and acknowledge without
+executing or delivering twice. Retryable failures retain the latest checkpoint
+for the next delivery.
 
 ## Error taxonomy
 

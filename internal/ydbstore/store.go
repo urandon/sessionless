@@ -461,6 +461,60 @@ func (tx *stateTx) PutArtifactManifest(
 	return err
 }
 
+func (tx *stateTx) PutWorkerJob(ctx context.Context, job domain.WorkerJob) error {
+	run, err := tx.owningRun(ctx, job.TenantID, job.RunID)
+	if err != nil {
+		return err
+	}
+	if err := job.ValidateForRun(run); err != nil {
+		return err
+	}
+	attempt, found, err := tx.GetAttempt(ctx, job.AttemptID)
+	if err != nil {
+		return err
+	}
+	if !found || attempt.RunID != job.RunID {
+		return domain.ValidationError{Field: "worker_job.attempt_id", Reason: "must reference the owning run"}
+	}
+	reservation, found, err := readJSON[domain.QuotaReservation](
+		ctx, tx.sqlTx,
+		`SELECT payload FROM quota_reservations
+		 WHERE tenant_id = $1 AND quota_reservation_id = $2`,
+		job.TenantID, job.ReservationID,
+	)
+	if err != nil {
+		return err
+	}
+	if !found || reservation.RunID != job.RunID {
+		return domain.ValidationError{Field: "worker_job.reservation_id", Reason: "must reference the owning run"}
+	}
+	manifest, found, err := readJSON[domain.ArtifactManifest](
+		ctx, tx.sqlTx,
+		`SELECT payload FROM artifact_manifests
+		 WHERE tenant_id = $1 AND artifact_manifest_id = $2`,
+		job.TenantID, job.InputManifestID,
+	)
+	if err != nil {
+		return err
+	}
+	if !found || manifest.RunID != job.RunID {
+		return domain.ValidationError{Field: "worker_job.input_manifest_id", Reason: "must reference the owning run"}
+	}
+	payload, err := marshal(job)
+	if err != nil {
+		return err
+	}
+	_, err = tx.sqlTx.ExecContext(ctx,
+		`UPSERT INTO worker_jobs
+		 (tenant_id, run_id, attempt_id, reservation_id, created_at,
+		  retention_expire_at, payload)
+		 VALUES ($1, $2, $3, $4, $5, $6, CAST($7 AS JsonDocument))`,
+		job.TenantID, job.RunID, job.AttemptID, job.ReservationID,
+		job.CreatedAt, job.CreatedAt.Add(tx.store.operationalRetention), payload,
+	)
+	return err
+}
+
 func (tx *stateTx) PutDispatchOutbox(
 	ctx context.Context,
 	outbox domain.DispatchOutbox,

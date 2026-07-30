@@ -19,7 +19,7 @@ LDFLAGS := -s -w \
 
 .PHONY: help prepare tools generate fmt fmt-check lint test build integration ydb-integration local-integration ci \
 	compose-config images dev-up dev-seed migrate-local migration-status partition-status partition-backfill \
-	dev-down dev-reset clean
+	worker-once dev-down dev-reset clean
 
 help:
 	@printf '%s\n' \
@@ -37,6 +37,7 @@ help:
 		'make migration-status inspect Goose and checksum state' \
 		'make partition-status inspect physical keys and partition settings as JSON' \
 		'make partition-backfill copy legacy ready/expiry rows into the v2 bucketed layout' \
+		'make worker-once    consume at most one admitted run with the deterministic harness' \
 		'make dev-down       stop the local stack' \
 		'make dev-reset      guarded deletion of local Compose volumes'
 
@@ -106,6 +107,9 @@ partition-status: prepare
 
 partition-backfill: prepare
 	go run ./cmd/schema-backfill
+
+worker-once:
+	docker compose --project-name sessionless-dev --profile worker run --rm worker-runtime
 
 dev-down:
 	docker compose --project-name sessionless-dev down --remove-orphans

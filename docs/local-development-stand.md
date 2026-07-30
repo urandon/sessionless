@@ -21,6 +21,7 @@ flowchart LR
     Telegram["Telegram fake<br/>updates + captures"]
     Sender["Telegram sender<br/>durable outbox consumer"]
     Reconciler["Reconciler<br/>admission + dispatch"]
+    Worker["One-shot worker<br/>deterministic harness"]
 
     Developer -->|"make dev-up / tests"| Control
     Developer -->|"schema-migrate"| YDB
@@ -32,6 +33,10 @@ flowchart LR
     Sender -->|"sendMessage / sendDocument"| Telegram
     Reconciler -->|"slot + quota transaction"| YDB
     Reconciler -->|"payload-free envelope"| Queue
+    Worker -->|"receive / ack / retry"| Queue
+    Worker -->|"fenced lifecycle"| YDB
+    Worker -->|"materialize / artifacts"| MinIO
+    Worker -->|"result delivery outbox"| YDB
 ```
 
 | Service | Container endpoint | Host endpoint | Persistence |
@@ -46,6 +51,7 @@ flowchart LR
 | Control API | `http://control-api:8080` | `http://localhost:8080` | stateless |
 | Telegram sender | n/a | n/a | stateless outbox consumer |
 | Reconciler | n/a | n/a | stateless bounded scheduler pass |
+| Worker runtime | n/a | n/a | one-shot; invocation scratch is tmpfs |
 
 All image versions are pinned in `tools/versions.env`. Compose loads safe
 defaults when no `.env` file is present. The committed access key, secret, and
@@ -71,6 +77,11 @@ make dev-down
 3. Idempotently create the `sessionless-local` bucket.
 4. Apply the embedded Goose/YDB migrations.
 5. Idempotently load `test/fixtures/telegram/text-message.json`.
+
+The default profile leaves the serverless-shaped worker stopped. Run
+`make worker-once` after the reconciler admits a dispatch. Compose starts a
+read-only, nonroot worker with a private tmpfs, consumes zero or one message,
+and removes the container on exit.
 
 `make dev-down` removes containers and the Compose network but preserves named
 volumes. A subsequent `make dev-up` reuses YDB tables and objects, rechecks the
@@ -116,7 +127,9 @@ and durable command state/replies for connect, status, disconnect, and a new
 clean context. Scheduler unit/YDB integration coverage separately proves
 exactly one concurrent reservation per subscription, deterministic queue
 message IDs, bounded dispatch/expiry traversal, and idempotent reservation
-expiry.
+expiry. Worker unit/YDB integration coverage proves tenant-safe materialization,
+checkpoint resume, lease renewal/loss fencing, cancellation, runtime and turn
+limits, exactly-once terminal delivery, and lease-index cleanup.
 
 ## Apple Silicon
 

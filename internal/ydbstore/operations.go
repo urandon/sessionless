@@ -563,7 +563,8 @@ func (store *Store) ClaimLease(
 			claim.TenantID, claim.RunID,
 		).Scan(&currentLeaseID, &currentAttemptID, &currentWorker, &fence, &expiresAt)
 		switch {
-		case queryErr == nil && currentLeaseID == string(claim.LeaseID):
+		case queryErr == nil && currentLeaseID == string(claim.LeaseID) &&
+			expiresAt.After(claim.Now):
 			lease, found, err := readJSON[domain.Lease](ctx, tx.sqlTx,
 				`SELECT payload FROM leases WHERE tenant_id = $1 AND lease_id = $2`,
 				claim.TenantID, claim.LeaseID,

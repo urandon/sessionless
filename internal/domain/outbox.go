@@ -23,14 +23,21 @@ func CanTransitionDispatch(from, to DispatchStatus) bool {
 }
 
 type DispatchOutbox struct {
-	ID             DispatchOutboxID `json:"id"`
-	TenantID       TenantID         `json:"tenant_id"`
-	RunID          RunID            `json:"run_id"`
-	AttemptID      AttemptID        `json:"attempt_id"`
-	Status         DispatchStatus   `json:"status"`
-	IdempotencyKey IdempotencyKey   `json:"idempotency_key"`
-	CreatedAt      time.Time        `json:"created_at"`
-	UpdatedAt      time.Time        `json:"updated_at"`
+	ID                DispatchOutboxID   `json:"id"`
+	TenantID          TenantID           `json:"tenant_id"`
+	RunID             RunID              `json:"run_id"`
+	AttemptID         AttemptID          `json:"attempt_id"`
+	InputManifestID   ArtifactManifestID `json:"input_manifest_id"`
+	ContextSnapshot   BlobRef            `json:"context_snapshot"`
+	WorkspaceSnapshot *BlobRef           `json:"workspace_snapshot,omitempty"`
+	SkillBundle       *BlobRef           `json:"skill_bundle,omitempty"`
+	AllowedMCPServers []string           `json:"allowed_mcp_servers,omitempty"`
+	DeliveryChat      TelegramChatRef    `json:"delivery_chat"`
+	ReplyToMessageID  int64              `json:"reply_to_message_id"`
+	Status            DispatchStatus     `json:"status"`
+	IdempotencyKey    IdempotencyKey     `json:"idempotency_key"`
+	CreatedAt         time.Time          `json:"created_at"`
+	UpdatedAt         time.Time          `json:"updated_at"`
 }
 
 func (outbox DispatchOutbox) ValidateForAttempt(run Run, attempt Attempt) error {
@@ -45,6 +52,31 @@ func (outbox DispatchOutbox) ValidateForAttempt(run Run, attempt Attempt) error 
 	}
 	if outbox.RunID != run.ID || outbox.AttemptID != attempt.ID {
 		return ValidationError{Field: "dispatch_outbox", Reason: "must reference the owning run and attempt"}
+	}
+	if err := outbox.InputManifestID.Validate(); err != nil {
+		return err
+	}
+	if err := validateWorkerBlob(run.TenantID, "dispatch_outbox.context_snapshot", outbox.ContextSnapshot); err != nil {
+		return err
+	}
+	if outbox.WorkspaceSnapshot != nil {
+		if err := validateWorkerBlob(run.TenantID, "dispatch_outbox.workspace_snapshot", *outbox.WorkspaceSnapshot); err != nil {
+			return err
+		}
+	}
+	if outbox.SkillBundle != nil {
+		if err := validateWorkerBlob(run.TenantID, "dispatch_outbox.skill_bundle", *outbox.SkillBundle); err != nil {
+			return err
+		}
+	}
+	if err := outbox.DeliveryChat.Validate(); err != nil {
+		return err
+	}
+	if err := EnsureSameTenant(run.TenantID, outbox.DeliveryChat.TenantID); err != nil {
+		return err
+	}
+	if outbox.ReplyToMessageID == 0 {
+		return ValidationError{Field: "dispatch_outbox.reply_to_message_id", Reason: "must not be zero"}
 	}
 	if !outbox.Status.Valid() {
 		return ValidationError{Field: "dispatch_outbox.status", Reason: "is unknown"}

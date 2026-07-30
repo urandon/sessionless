@@ -18,8 +18,9 @@ RUN CGO_ENABLED=0 go build -trimpath \
       -X gitcode.com/urandon/sessionless/internal/buildinfo.BuiltAt=${BUILT_AT}" \
     -o /out/worker ./cmd/worker-runtime
 
-# The harness runtime deliberately has its own image boundary. Issue MVP-11
-# will add selected subscription-backed CLI adapters and their filesystem contract.
+# The harness runtime deliberately has its own image boundary. The current
+# credential-free deterministic adapter proves lifecycle semantics; issue
+# MVP-10 adds selected subscription-backed CLI adapters to this boundary.
 FROM gcr.io/distroless/base-debian12:nonroot
 
 COPY --from=build /out/worker /worker

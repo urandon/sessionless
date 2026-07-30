@@ -212,6 +212,28 @@ func TestConcurrentLeaseClaimHasExactlyOneWinner(t *testing.T) {
 	if len(expired) != 1 || expired[0].TenantID != tenantID {
 		t.Fatalf("bucket lease result = %+v", expired)
 	}
+	var winningLeaseID domain.LeaseID
+	var winningFence uint64
+	if err := client.DB.QueryRowContext(context.Background(),
+		`SELECT lease_id, fence_token FROM lease_heads
+		 WHERE tenant_id = $1 AND run_id = $2`,
+		tenantID, ingress.Run.ID,
+	).Scan(&winningLeaseID, &winningFence); err != nil {
+		t.Fatal(err)
+	}
+	reclaimed, err := store.ClaimLease(context.Background(), ydbstore.LeaseClaim{
+		TenantID: tenantID, RunID: ingress.Run.ID, AttemptID: ingress.Attempt.ID,
+		LeaseID: winningLeaseID, WorkerID: "worker-recovered",
+		Now: now.Add(2 * time.Minute), ExpiresAt: now.Add(3 * time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reclaimed.FenceToken != winningFence+1 || reclaimed.WorkerID != "worker-recovered" {
+		t.Fatalf("reclaimed lease = %+v, previous fence = %d", reclaimed, winningFence)
+	}
+	assertCount(t, client, "lease_expiry", tenantID, 1)
+	assertCount(t, client, "lease_expiry_v2", tenantID, 1)
 }
 
 func TestConcurrentSchedulerAdmissionReservesOneSubscriptionSlot(t *testing.T) {
@@ -344,6 +366,135 @@ func TestConcurrentSchedulerAdmissionReservesOneSubscriptionSlot(t *testing.T) {
 		t.Fatalf("idempotent expire result = %t, %v", didExpire, err)
 	}
 	assertCount(t, client, "quota_expiry_v2", tenantID, 0)
+}
+
+func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
+	store, client := openStore(t)
+	tenantID := domain.TenantID(uniqueID("tenant-worker"))
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	connectionID := domain.SubscriptionConnectionID("subscription-" + string(tenantID))
+	actor := domain.ActorRef{
+		TenantID: tenantID, Frontend: domain.FrontendTelegram,
+		ExternalID: "worker-user", ID: domain.ActorID(uniqueID("actor")),
+	}
+	conversation := domain.ConversationRef{
+		TenantID: tenantID, Frontend: domain.FrontendTelegram,
+		ExternalID: "worker-chat", ID: domain.ConversationID("conversation-" + string(tenantID)),
+	}
+	if _, err := store.EnsureTelegramIdentity(context.Background(), ports.TelegramIdentityRequest{
+		TenantID: tenantID, Actor: actor, Conversation: conversation,
+		SubscriptionConnectionID: connectionID, Provider: "codex", ObservedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.DB.ExecContext(context.Background(),
+		`UPDATE subscription_connections
+		 SET entitlement_state = $1, quota_state = $2, updated_at = $3
+		 WHERE tenant_id = $4 AND subscription_connection_id = $5`,
+		domain.EntitlementActive, domain.ProviderQuotaUnknown, now,
+		tenantID, connectionID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.DB.ExecContext(context.Background(),
+		`UPDATE subscription_scheduler_slots
+		 SET state = $1, updated_at = $2
+		 WHERE tenant_id = $3 AND subscription_connection_id = $4`,
+		domain.SchedulerReady, now, tenantID, connectionID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	ingress := ingressFixture(tenantID, uniqueID("run-worker"), 6201, now)
+	if _, err := store.IngestTelegram(context.Background(), ingress); err != nil {
+		t.Fatal(err)
+	}
+	reservationID := domain.QuotaReservationID(uniqueID("reservation-worker"))
+	admission, err := store.AdmitDispatch(
+		context.Background(),
+		admissionFixture(ingress, reservationID, now, domain.ProductLimits{
+			MaxTenantQueueDepth: 8, MaxActiveRuns: 1,
+			MaxRuntime: 15 * time.Minute, MaxTurns: 30,
+			MaxInputBytes: 16 << 20, MaxContextBytes: 64 << 20, MaxArtifacts: 32,
+		}),
+	)
+	if err != nil || !admission.Admitted {
+		t.Fatalf("admission = %+v, %v", admission, err)
+	}
+	loaded, found, err := store.LoadWorkerJob(context.Background(), tenantID, ingress.Run.ID)
+	if err != nil || !found {
+		t.Fatalf("load worker job = found:%t error:%v", found, err)
+	}
+	if loaded.Checkpoint != nil || loaded.Job.ReservationID != reservationID {
+		t.Fatalf("initial worker state = %+v", loaded)
+	}
+	lease, err := store.ClaimWorkerLease(context.Background(), ports.WorkerLeaseRequest{
+		TenantID: tenantID, RunID: ingress.Run.ID, AttemptID: ingress.Attempt.ID,
+		LeaseID: domain.LeaseID(uniqueID("lease-worker")), WorkerID: "worker-integration",
+		Now: now.Add(2 * time.Second), ExpiresAt: now.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StartWorkerJob(context.Background(), loaded, lease, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := domain.Checkpoint{
+		ID: domain.CheckpointID(uniqueID("checkpoint")), TenantID: tenantID,
+		RunID: ingress.Run.ID, AttemptID: ingress.Attempt.ID, Sequence: 1,
+		State: domain.BlobRef{
+			TenantID: tenantID,
+			Key:      domain.TenantObjectPrefix(tenantID) + "runs/checkpoint.json",
+			Size:     2, SHA256: strings.Repeat("1", 64),
+		},
+		CreatedAt: now.Add(3 * time.Second),
+	}
+	if err := store.CommitWorkerEvent(context.Background(), ports.WorkerEventCommit{
+		Checkpoint: checkpoint, LeaseID: lease.ID, Fence: lease.FenceToken,
+		At: checkpoint.CreatedAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	lease, err = store.RenewWorkerLease(
+		context.Background(), tenantID, lease.ID, lease.FenceToken,
+		now.Add(30*time.Second), now.Add(2*time.Minute),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finishedAt := now.Add(40 * time.Second)
+	manifest := domain.ArtifactManifest{
+		ID:       domain.ArtifactManifestID(uniqueID("manifest-output")),
+		TenantID: tenantID, RunID: ingress.Run.ID, CreatedAt: finishedAt,
+	}
+	delivery := domain.TelegramDeliveryOutbox{
+		ID:       domain.TelegramDeliveryID(uniqueID("delivery-worker")),
+		TenantID: tenantID, RunID: ingress.Run.ID,
+		Chat: ingress.Dispatch.DeliveryChat, ReplyToMessageID: ingress.Dispatch.ReplyToMessageID,
+		Text: "done", Status: domain.DeliveryPending,
+		IdempotencyKey: domain.IdempotencyKey(uniqueID("delivery-key")),
+		CreatedAt:      finishedAt, UpdatedAt: finishedAt,
+	}
+	if err := store.CompleteWorkerJob(context.Background(), ports.WorkerCompletion{
+		TenantID: tenantID, RunID: ingress.Run.ID, AttemptID: ingress.Attempt.ID,
+		ReservationID: reservationID, LeaseID: lease.ID, Fence: lease.FenceToken,
+		At: finishedAt, Manifest: manifest, Delivery: delivery,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	terminal, found, err := store.LoadWorkerJob(context.Background(), tenantID, ingress.Run.ID)
+	if err != nil || !found {
+		t.Fatalf("load terminal worker job = found:%t error:%v", found, err)
+	}
+	if terminal.Run.Status != domain.RunSucceeded || terminal.Attempt.Status != domain.AttemptSucceeded ||
+		terminal.Reservation.Status != domain.ReservationCommitted ||
+		terminal.Checkpoint == nil || terminal.Checkpoint.Sequence != 1 {
+		t.Fatalf("terminal worker state = %+v", terminal)
+	}
+	assertCount(t, client, "worker_jobs", tenantID, 1)
+	assertCount(t, client, "lease_heads", tenantID, 0)
+	assertCount(t, client, "lease_expiry", tenantID, 0)
+	assertCount(t, client, "lease_expiry_v2", tenantID, 0)
+	assertCount(t, client, "telegram_delivery_outbox", tenantID, 1)
 }
 
 func TestTenantScopedReadsCannotCrossTenant(t *testing.T) {
@@ -680,8 +831,15 @@ func ingressFixture(
 	dispatch := domain.DispatchOutbox{
 		ID: domain.DispatchOutboxID("dispatch-" + runID), TenantID: tenantID,
 		RunID: run.ID, AttemptID: attempt.ID, Status: domain.DispatchPending,
-		IdempotencyKey: domain.IdempotencyKey("dispatch-key-" + runID),
-		CreatedAt:      now, UpdatedAt: now,
+		InputManifestID: domain.ArtifactManifestID("manifest-" + runID),
+		ContextSnapshot: domain.BlobRef{
+			TenantID: tenantID, Key: "tenants/" + string(tenantID) + "/context/" + runID,
+			Size: 1, SHA256: strings.Repeat("0", 64),
+		},
+		DeliveryChat:     domain.TelegramChatRef{TenantID: tenantID, ChatID: 442211},
+		ReplyToMessageID: updateID,
+		IdempotencyKey:   domain.IdempotencyKey("dispatch-key-" + runID),
+		CreatedAt:        now, UpdatedAt: now,
 	}
 	manifest := domain.ArtifactManifest{
 		ID: domain.ArtifactManifestID("manifest-" + runID), TenantID: tenantID,

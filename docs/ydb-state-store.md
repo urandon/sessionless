@@ -27,6 +27,7 @@ domain objects whose tenant does not match it.
 | `subscription_connections` | `(tenant_id, subscription_connection_id)` | point-read credential reference and observed entitlement |
 | `subscription_scheduler_slots` | `(tenant_id, subscription_connection_id)` | serializable one-subscription admission contention point |
 | `tenant_scheduler_counters` | `(tenant_id)` | point-read/update bounded queue and active-run counters |
+| `worker_jobs` | `(tenant_id, run_id)` | point-load immutable worker references and admitted limits |
 | `runs` | `(tenant_id, run_id)` | point-read/update one run |
 | `run_idempotency` | `(tenant_id, idempotency_key)` | point-resolve an ingress command to a run |
 | `attempts` | `(tenant_id, attempt_id)` | point-read/update one attempt |
@@ -95,7 +96,8 @@ once the head changes, the old worker receives `ErrLeaseLost`.
 ### Quota, checkpoints, results, and outboxes
 
 - dispatch admission point-reads the connection, scheduler slot, tenant
-  counters, run, attempt, and outbox in one serializable transaction;
+  counters, run, attempt, and outbox, then writes the reservation and immutable
+  worker job in one serializable transaction;
 - one subscription slot can hold only one active run/reservation pair;
 - quota reservations use deterministic row IDs and one-way domain transitions;
 - a successful queue publish acknowledges the durable dispatch outbox; an
@@ -105,8 +107,12 @@ once the head changes, the old worker receives `ErrLeaseLost`.
   reservations, clears the matching slot, and decrements the tenant queue
   counter idempotently;
 - checkpoint `(attempt_id, sequence)` keys prevent duplicate sequence writes;
-- a completed run, usage observations, artifact manifest, and Telegram
-  delivery outbox commit together;
+- each worker boundary renews ownership when needed and commits its checkpoint
+  plus usage under the current fence;
+- a completed run, attempt, reservation, artifact manifest, Telegram delivery,
+  scheduler counters, and lease-index cleanup commit together;
+- failed, cancelled, or timed-out work releases its reservation and commits a
+  same-chat terminal delivery in the same transaction;
 - dispatch publication acknowledgement transitions the existing outbox row in
   the same tenant transaction.
 
@@ -128,8 +134,9 @@ YDB TTL deletion is asynchronous. Reads whose correctness depends on expiry
 must still compare the timestamp:
 
 - Telegram update and run-idempotency markers: 30 days by default;
-- attempts, historical leases, checkpoints, reservations, usage, and outboxes:
-  90 days after their last relevant timestamp by default;
+- attempts, worker job descriptors, historical leases, checkpoints,
+  reservations, usage, and outboxes: 90 days after their last relevant
+  timestamp by default;
 - audit retention is supplied explicitly by the audit writer.
 
 `lease_heads` has no TTL. An expired head retains the last fence so recovery

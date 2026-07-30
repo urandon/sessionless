@@ -177,6 +177,52 @@ services:
       - queue-local
     restart: unless-stopped
 
+  worker-runtime:
+    profiles:
+      - worker
+    build:
+      context: .
+      dockerfile: build/worker-runtime.Dockerfile
+      args:
+        GO_VERSION: ${GO_VERSION:-1.26.4}
+    environment:
+      YDB_CONNECTION_STRING: grpc://ydb-local:2136/local?go_balancer=single
+      YDB_ANONYMOUS_CREDENTIALS: "1"
+      S3_ENDPOINT: http://object-storage-local:9000
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-sessionless-local}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-sessionless-local}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-sessionless-local-secret}
+      S3_FORCE_PATH_STYLE: "true"
+      QUEUE_ENDPOINT: http://queue-local:9324
+      QUEUE_REGION: ${QUEUE_REGION:-us-east-1}
+      QUEUE_ACCESS_KEY_ID: ${QUEUE_ACCESS_KEY_ID:-sessionless-local}
+      QUEUE_SECRET_ACCESS_KEY: ${QUEUE_SECRET_ACCESS_KEY:-sessionless-local-secret}
+      DISPATCH_QUEUE_URL: http://queue-local:9324/000000000000/sessionless-dispatch
+      DEAD_LETTER_QUEUE_URL: http://queue-local:9324/000000000000/sessionless-dlq
+      WORKER_ID: ${WORKER_ID:-worker-runtime-local}
+      WORKER_SCRATCH_ROOT: /tmp/sessionless-worker
+      WORKER_LEASE_TTL: ${WORKER_LEASE_TTL:-2m}
+      WORKER_RETRY_DELAY: ${WORKER_RETRY_DELAY:-5s}
+      WORKER_QUEUE_WAIT: ${WORKER_QUEUE_WAIT:-2s}
+      WORKER_MAX_DELIVERY_COUNT: ${WORKER_MAX_DELIVERY_COUNT:-5}
+      WORKER_MAX_BLOB_BYTES: ${WORKER_MAX_BLOB_BYTES:-67108864}
+      DETERMINISTIC_HARNESS_TURNS: ${DETERMINISTIC_HARNESS_TURNS:-2}
+      DETERMINISTIC_HARNESS_ARTIFACTS: ${DETERMINISTIC_HARNESS_ARTIFACTS:-1}
+      DETERMINISTIC_HARNESS_FAIL_AT_TURN: ${DETERMINISTIC_HARNESS_FAIL_AT_TURN:-0}
+      DETERMINISTIC_HARNESS_RETRYABLE_FAIL: ${DETERMINISTIC_HARNESS_RETRYABLE_FAIL:-false}
+    init: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp/sessionless-worker:size=128m,mode=0700,uid=65532,gid=65532
+    depends_on:
+      - ydb-local
+      - object-storage-local
+      - queue-local
+    restart: "no"
+
 volumes:
   ydb-data:
   ydb-certs:

@@ -209,7 +209,12 @@ func (processor *Processor) Process(
 	}
 	dispatch := domain.DispatchOutbox{
 		ID: dispatchID, TenantID: identity.Tenant, RunID: runID, AttemptID: attemptID,
-		Status: domain.DispatchPending, IdempotencyKey: idempotencyKey,
+		InputManifestID: manifestID, ContextSnapshot: messageBlob,
+		DeliveryChat: domain.TelegramChatRef{
+			TenantID: identity.Tenant, ChatID: message.Chat.ID,
+		},
+		ReplyToMessageID: message.MessageID,
+		Status:           domain.DispatchPending, IdempotencyKey: idempotencyKey,
 		CreatedAt: now, UpdatedAt: now,
 	}
 	return processor.store.IngestTelegram(ctx, ports.TelegramIngress{

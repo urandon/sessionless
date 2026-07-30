@@ -139,6 +139,7 @@ type StateTx interface {
 	PutQuotaReservation(ctx context.Context, reservation domain.QuotaReservation) error
 	AppendUsageObservation(ctx context.Context, observation domain.UsageObservation) error
 	PutArtifactManifest(ctx context.Context, manifest domain.ArtifactManifest) error
+	PutWorkerJob(ctx context.Context, job domain.WorkerJob) error
 
 	PutDispatchOutbox(ctx context.Context, outbox domain.DispatchOutbox) error
 	PutTelegramDeliveryOutbox(ctx context.Context, outbox domain.TelegramDeliveryOutbox) error
@@ -315,15 +316,20 @@ type ExecutionRequest struct {
 	TenantID          domain.TenantID
 	RunID             domain.RunID
 	AttemptID         domain.AttemptID
+	WorkDir           string
 	ContextSnapshot   domain.BlobRef
 	InputArtifacts    []domain.Artifact
+	ResumeCheckpoint  *domain.Checkpoint
 	Credential        CredentialHandle
 	AllowedMCPServers []string
 }
 
 type ExecutionEvent struct {
-	Checkpoint *domain.Checkpoint
-	Usage      *domain.UsageObservation
+	Sequence        uint64
+	Boundary        string
+	CheckpointState []byte
+	InputTokens     *uint64
+	OutputTokens    *uint64
 }
 
 type ExecutionEventSink interface {
@@ -331,8 +337,14 @@ type ExecutionEventSink interface {
 }
 
 type ExecutionResult struct {
-	Manifest domain.ArtifactManifest
-	Usage    []domain.UsageObservation
+	Summary string
+	Outputs []ExecutionOutput
+}
+
+type ExecutionOutput struct {
+	Name         string
+	MediaType    string
+	RelativePath string
 }
 
 type ExecutionIdentity struct {
@@ -367,5 +379,78 @@ type QuotaObserver interface {
 // CancellationObserver reads durable cancellation state. context cancellation
 // is still required for in-process shutdown and deadlines.
 type CancellationObserver interface {
+	CancellationRequested(ctx context.Context, tenantID domain.TenantID, runID domain.RunID) (bool, error)
+}
+
+type WorkerJobState struct {
+	Job           domain.WorkerJob
+	Run           domain.Run
+	Attempt       domain.Attempt
+	Reservation   domain.QuotaReservation
+	InputManifest domain.ArtifactManifest
+	Checkpoint    *domain.Checkpoint
+}
+
+type WorkerLeaseRequest struct {
+	TenantID  domain.TenantID
+	RunID     domain.RunID
+	AttemptID domain.AttemptID
+	LeaseID   domain.LeaseID
+	WorkerID  string
+	Now       time.Time
+	ExpiresAt time.Time
+}
+
+type WorkerEventCommit struct {
+	Checkpoint domain.Checkpoint
+	Usage      *domain.UsageObservation
+	LeaseID    domain.LeaseID
+	Fence      uint64
+	At         time.Time
+}
+
+type WorkerCompletion struct {
+	TenantID      domain.TenantID
+	RunID         domain.RunID
+	AttemptID     domain.AttemptID
+	ReservationID domain.QuotaReservationID
+	LeaseID       domain.LeaseID
+	Fence         uint64
+	At            time.Time
+	Manifest      domain.ArtifactManifest
+	Delivery      domain.TelegramDeliveryOutbox
+	Usage         []domain.UsageObservation
+}
+
+type WorkerFailure struct {
+	TenantID      domain.TenantID
+	RunID         domain.RunID
+	AttemptID     domain.AttemptID
+	ReservationID domain.QuotaReservationID
+	LeaseID       domain.LeaseID
+	Fence         uint64
+	At            time.Time
+	Cancelled     bool
+	Code          string
+	Delivery      domain.TelegramDeliveryOutbox
+}
+
+// WorkerStateStore exposes the durable lifecycle boundary required by one
+// isolated, concurrency-one worker invocation.
+type WorkerStateStore interface {
+	LoadWorkerJob(ctx context.Context, tenantID domain.TenantID, runID domain.RunID) (WorkerJobState, bool, error)
+	ClaimWorkerLease(ctx context.Context, request WorkerLeaseRequest) (domain.Lease, error)
+	StartWorkerJob(ctx context.Context, state WorkerJobState, lease domain.Lease, at time.Time) error
+	RenewWorkerLease(
+		ctx context.Context,
+		tenantID domain.TenantID,
+		leaseID domain.LeaseID,
+		fence uint64,
+		now time.Time,
+		newExpiry time.Time,
+	) (domain.Lease, error)
+	CommitWorkerEvent(ctx context.Context, event WorkerEventCommit) error
+	CompleteWorkerJob(ctx context.Context, completion WorkerCompletion) error
+	FailWorkerJob(ctx context.Context, failure WorkerFailure) error
 	CancellationRequested(ctx context.Context, tenantID domain.TenantID, runID domain.RunID) (bool, error)
 }

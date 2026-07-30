@@ -86,14 +86,18 @@ func TestDispatchAndTelegramOutboxes(t *testing.T) {
 	run := validRun()
 	attempt := validAttempt()
 	dispatch := domain.DispatchOutbox{
-		ID:             "dispatch-1",
-		TenantID:       run.TenantID,
-		RunID:          run.ID,
-		AttemptID:      attempt.ID,
-		Status:         domain.DispatchPending,
-		IdempotencyKey: "dispatch-run-1-attempt-1",
-		CreatedAt:      testTime,
-		UpdatedAt:      testTime,
+		ID:               "dispatch-1",
+		TenantID:         run.TenantID,
+		RunID:            run.ID,
+		AttemptID:        attempt.ID,
+		InputManifestID:  "manifest-1",
+		ContextSnapshot:  validBlob(),
+		DeliveryChat:     domain.TelegramChatRef{TenantID: run.TenantID, ChatID: -1000123},
+		ReplyToMessageID: 77,
+		Status:           domain.DispatchPending,
+		IdempotencyKey:   "dispatch-run-1-attempt-1",
+		CreatedAt:        testTime,
+		UpdatedAt:        testTime,
 	}
 	if err := dispatch.ValidateForAttempt(run, attempt); err != nil {
 		t.Fatalf("valid dispatch outbox rejected: %v", err)

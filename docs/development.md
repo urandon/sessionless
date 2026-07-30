@@ -82,6 +82,18 @@ applies the embedded YDB
 migrations, and idempotently loads the synthetic Telegram fixture. It does not
 require cloud credentials or a real Telegram token.
 
+The worker is a one-shot serverless-shaped process, so it is intentionally not
+kept alive by the default Compose profile. After an admitted run is present:
+
+```sh
+make worker-once
+```
+
+This starts the isolated `worker-runtime` profile, consumes at most one queue
+message with the deterministic harness, stores checkpoints/artifacts/results,
+then exits. An empty queue is a successful no-op. Scratch is a private tmpfs
+and the container runs read-only as the distroless nonroot user.
+
 The control API uses the YDB SDK single-connection balancer only inside the
 Compose stand. This keeps the client on the Docker-resolvable `ydb-local`
 endpoint instead of replacing it with YDB Local's host-facing discovery
@@ -145,8 +157,9 @@ make ci
 ```
 
 The control plane uses a small distroless runtime. The worker has a separate
-Dockerfile so a later harness decision can add OpenCode, Codex, or another CLI
-without expanding the webhook/control-plane attack surface.
+Dockerfile. Its deterministic harness validates lifecycle behavior now; a
+later decision can add OpenCode, Codex, Claude, Hermes, or another CLI without
+expanding the webhook/control-plane attack surface.
 
 GitCode is the source of truth for branches and merge requests. Its push mirror
 replicates every commit to `github.com/urandon/sessionless`, where GitHub Actions

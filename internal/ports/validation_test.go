@@ -27,6 +27,7 @@ func TestExecutionRequestRejectsCrossTenantBlob(t *testing.T) {
 		TenantID:        "tenant-a",
 		RunID:           "run-1",
 		AttemptID:       "attempt-1",
+		WorkDir:         "/tmp/sessionless-test",
 		ContextSnapshot: portTestBlob("tenant-b"),
 		Credential: ports.CredentialHandle{
 			TenantID:                 "tenant-a",
@@ -49,6 +50,7 @@ func TestExecutionRequestAcceptsHarnessNeutralReferences(t *testing.T) {
 		TenantID:        "tenant-a",
 		RunID:           "run-1",
 		AttemptID:       "attempt-1",
+		WorkDir:         "/tmp/sessionless-test",
 		ContextSnapshot: portTestBlob("tenant-a"),
 		InputArtifacts: []domain.Artifact{{
 			Name:      "input.txt",

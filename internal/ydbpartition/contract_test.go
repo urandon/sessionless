@@ -82,8 +82,8 @@ func TestPoliciesCoverLogicalTablesOnce(t *testing.T) {
 		}
 		seen[policy.LogicalName] = struct{}{}
 	}
-	if len(seen) != 24 {
-		t.Fatalf("logical table policies = %d, want 24", len(seen))
+	if len(seen) != 25 {
+		t.Fatalf("logical table policies = %d, want 25", len(seen))
 	}
 }
 

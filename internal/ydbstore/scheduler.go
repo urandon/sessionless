@@ -215,6 +215,21 @@ func (store *Store) AdmitDispatch(
 		if err := state.PutQuotaReservation(ctx, reservation); err != nil {
 			return err
 		}
+		if err := state.PutWorkerJob(ctx, domain.WorkerJob{
+			TenantID: request.TenantID, RunID: request.RunID,
+			AttemptID: request.AttemptID, ReservationID: request.ReservationID,
+			InputManifestID:   outbox.InputManifestID,
+			ContextSnapshot:   outbox.ContextSnapshot,
+			WorkspaceSnapshot: outbox.WorkspaceSnapshot,
+			SkillBundle:       outbox.SkillBundle,
+			AllowedMCPServers: append([]string(nil), outbox.AllowedMCPServers...),
+			Limits:            request.Limits,
+			DeliveryChat:      outbox.DeliveryChat,
+			ReplyToMessageID:  outbox.ReplyToMessageID,
+			CreatedAt:         request.Now,
+		}); err != nil {
+			return err
+		}
 		slot.State = domain.SchedulerPressured
 		slot.ActiveRunID = request.RunID
 		slot.ActiveReservationID = request.ReservationID

@@ -1,6 +1,7 @@
 package ports
 
 import (
+	"path/filepath"
 	"strings"
 	"unicode/utf8"
 
@@ -105,20 +106,25 @@ func (request ExecutionRequest) Validate() error {
 	if err := request.AttemptID.Validate(); err != nil {
 		return err
 	}
+	if !filepath.IsAbs(request.WorkDir) || filepath.Clean(request.WorkDir) != request.WorkDir {
+		return domain.ValidationError{Field: "execution.work_dir", Reason: "must be a normalized absolute path"}
+	}
 	if err := request.ContextSnapshot.Validate(); err != nil {
 		return err
 	}
 	if err := domain.EnsureSameTenant(request.TenantID, request.ContextSnapshot.TenantID); err != nil {
 		return err
 	}
-	if err := domain.EnsureSameTenant(request.TenantID, request.Credential.TenantID); err != nil {
-		return err
-	}
-	if err := domain.ValidateOpaqueID("credential.handle", request.Credential.Handle); err != nil {
-		return err
-	}
-	if request.Credential.ExpiresAt.IsZero() {
-		return domain.ValidationError{Field: "credential.expires_at", Reason: "must not be zero"}
+	if request.Credential.Handle != "" {
+		if err := domain.EnsureSameTenant(request.TenantID, request.Credential.TenantID); err != nil {
+			return err
+		}
+		if err := domain.ValidateOpaqueID("credential.handle", request.Credential.Handle); err != nil {
+			return err
+		}
+		if request.Credential.ExpiresAt.IsZero() {
+			return domain.ValidationError{Field: "credential.expires_at", Reason: "must not be zero"}
+		}
 	}
 	for _, artifact := range request.InputArtifacts {
 		if err := artifact.Validate(); err != nil {
@@ -126,6 +132,18 @@ func (request ExecutionRequest) Validate() error {
 		}
 		if err := domain.EnsureSameTenant(request.TenantID, artifact.Blob.TenantID); err != nil {
 			return err
+		}
+	}
+	if request.ResumeCheckpoint != nil {
+		if err := domain.EnsureSameTenant(request.TenantID, request.ResumeCheckpoint.TenantID); err != nil {
+			return err
+		}
+		if request.ResumeCheckpoint.RunID != request.RunID ||
+			request.ResumeCheckpoint.AttemptID != request.AttemptID {
+			return domain.ValidationError{
+				Field:  "execution.resume_checkpoint",
+				Reason: "must reference the requested run and attempt",
+			}
 		}
 	}
 	seen := make(map[string]struct{}, len(request.AllowedMCPServers))

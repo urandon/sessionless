@@ -28,9 +28,12 @@ authenticated Telegram webhook ingestion, durable Telegram delivery, bounded
 subscription-aware admission and dispatch, a reproducible local development
 stand, isolated worker packaging, pinned developer tools, subscription state
 commands, explicit clean-context epochs, and GitHub Actions CI fed by the
-GitCode mirror. Provider authorization, subscription-backed harness execution,
-lease recovery, cancellation, and the complete worker result path remain later
-implementation slices.
+GitCode mirror. It also contains the complete isolated worker lifecycle with a
+credential-free deterministic harness: durable job materialization, fenced
+lease renewal, bounded scratch space, checkpoint/resume, usage events,
+content-addressed artifacts, cancellation/timeout handling, and atomic terminal
+delivery. Provider authorization and subscription-backed Codex, OpenCode,
+Claude, or Hermes adapters remain later implementation slices.
 
 ## Components
 
@@ -40,7 +43,10 @@ implementation slices.
   reconciler;
 - `telegram-sender`: durable, retrying Telegram delivery outbox consumer;
 - `telegram-fake`: deterministic Telegram Bot API capture/update service for local development;
-- `worker-runtime`: separately packaged, harness-neutral worker boundary;
+- `worker-runtime`: one-shot, concurrency-one isolated worker process;
+- `internal/worker`: durable materialize/execute/checkpoint/finalize lifecycle;
+- `internal/deterministicharness`: credential-free adapter that proves the
+  worker contract before a subscription CLI is selected;
 - `internal/domain`: tenant-scoped identities, state machines, quota/usage
   semantics, outboxes, artifacts, and explicit context epochs;
 - `internal/ports`: YDB/queue/blob/frontend/credential/harness-neutral runtime
@@ -65,9 +71,9 @@ implementation slices.
   claims, retry policy, and Telegram Bot API sending;
 - `internal/queuecontract`: versioned queue envelopes containing opaque IDs only.
 
-The remaining worker placeholder is explicit and exits after emitting a
-readiness event. It does not claim that a concrete agent harness already
-exists.
+The worker image deliberately contains only the deterministic adapter today.
+This proves orchestration semantics without implying that a permanent harness
+or subscription credential protocol has already been selected.
 
 The contract invariants and transition tables are documented in
 [docs/contracts.md](docs/contracts.md). The architecture source of truth is
@@ -88,6 +94,7 @@ make migrate-local
 make migration-status
 make partition-status
 make partition-backfill
+make worker-once
 make integration
 make ydb-integration
 make local-integration

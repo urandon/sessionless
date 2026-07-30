@@ -49,16 +49,37 @@ func TestInspectPolicyRejectsPartitionDrift(t *testing.T) {
 		PrimaryKey: policy.PrimaryKey,
 		PartitioningSettings: options.PartitioningSettings{
 			PartitioningBySize: options.FeatureEnabled,
-			PartitionSizeMb:    policy.PartitionSizeMB,
+			PartitionSizeMb:    333,
 			PartitioningByLoad: options.FeatureDisabled,
-			MinPartitionsCount: policy.MinPartitions,
-			MaxPartitionsCount: policy.MaxPartitions,
+			MinPartitionsCount: 3,
+			MaxPartitionsCount: 512,
 		},
-		Stats: &options.TableStats{Partitions: policy.InitialPartitions},
+		Stats: &options.TableStats{Partitions: 7},
 	}
 	result := inspectPolicy(policy, description)
 	if result.MatchesContract {
 		t.Fatal("disabled load partitioning was accepted")
+	}
+}
+
+func TestInspectPolicyTreatsPartitionCountsAsOperationalTelemetry(t *testing.T) {
+	policy := bucketed("dispatch_ready", "dispatch_ready_v2", "available_at", "dispatch_outbox_id")
+	result := inspectPolicy(policy, &options.Description{
+		PrimaryKey: policy.PrimaryKey,
+		PartitioningSettings: options.PartitioningSettings{
+			PartitioningBySize: options.FeatureEnabled,
+			PartitionSizeMb:    333,
+			PartitioningByLoad: options.FeatureEnabled,
+			MinPartitionsCount: 3,
+			MaxPartitionsCount: 512,
+		},
+		Stats: &options.TableStats{Partitions: 7},
+	})
+	if !result.MatchesContract {
+		t.Fatalf("operational partition tuning rejected as schema drift: %v", result.ContractViolations)
+	}
+	if result.ActualPartitions != 7 || result.MinPartitions != 3 || result.MaxPartitions != 512 {
+		t.Fatalf("partition telemetry was not preserved: %#v", result)
 	}
 }
 

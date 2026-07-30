@@ -66,12 +66,20 @@ The four v2 tables use SHA-256 bucket derivation from the immutable object ID:
 bucket_v1(id) = big_endian_uint32(sha256(id)[0:4]) mod 16
 ```
 
-This distributes one elephant tenant as well as many small tenants. Each table
-starts with 16 explicit key ranges (`0` through `15`), enables size and load
-partitioning, keeps at least 16 partitions, allows growth to 256, and uses a
-512 MB size target. Global consumers enumerate the fixed bucket list and issue
-one bounded time-prefix query per bucket. The tenant remains in every row and
-is validated before mutation; the bucket is not an authorization boundary.
+This distributes one elephant tenant as well as many small tenants. The 16
+logical buckets bound consumer fan-out; they are not a requested physical
+partition count. Size- and load-based auto-partitioning are enabled, and YDB
+decides when primary-key ranges should split or merge. Global consumers
+enumerate the fixed bucket list and issue one bounded time-prefix query per
+bucket. The tenant remains in every row and is validated before mutation; the
+bucket is neither an authorization boundary nor a DataShard assignment.
+
+Migrations `00023` through `00026` originally pre-split these tables into 16
+physical ranges. Forward migrations `00041` through `00044` lower the minimum
+partition floor to one so YDB may merge those ranges under low load and split
+them again as load or size grows. The existing split boundaries are retained
+in immutable migration history; they are no longer part of the runtime schema
+contract.
 
 The four legacy tenant-first ready/expiry tables remain during the compatibility
 window. New code dual-writes legacy and v2 rows. Serving code must use the v2
@@ -89,17 +97,21 @@ make partition-status
 
 `schema-inspect` emits machine-readable JSON containing the expected and actual
 primary keys, auto-partition settings, current partition count, row estimate,
-and contract violations for all 24 logical tables. It exits non-zero on drift.
+and contract violations for all 24 logical tables. It exits non-zero when a
+primary key differs or required automatic size/load partitioning is disabled.
+Minimum, maximum, target size, and current partition count remain telemetry;
+their exact values are capacity tuning, not an application schema invariant.
 
 YDB Local proves key shape, deterministic bucket targeting, bounded fan-out,
-and initial partition settings. It does not prove Yandex Serverless throughput,
-RU consumption, or split/merge latency.
+and enabled auto-partitioning features. It does not prove Yandex Serverless
+throughput, RU consumption, or split/merge latency.
 
 ## Expand, backfill, cut over, contract
 
-1. **Expand:** apply migrations `00023` through `00038`. They create the four
-   v2 tables and enable explicit load-aware settings on expected high-write
-   tables. No primary key is changed in place.
+1. **Expand:** apply migrations `00023` through `00044`. They create the four
+   v2 tables, enable load-aware settings on expected high-write tables, and
+   remove the original physical partition floor. No primary key is changed in
+   place.
 2. **Dual write:** deploy the control revision that writes both legacy and v2
    ready/expiry rows. The previous revision remains compatible because the
    legacy tables are untouched.
@@ -144,5 +156,10 @@ Cloud-dev and release-candidate tests must add:
 - partition count and headroom to the configured maximum;
 - split/merge activity and retry latency;
 - RU, throttling, retry rate, and cross-partition transaction count.
+
+Capacity tests may justify a non-default minimum or different maximum/size
+threshold for a specific environment. Such tuning must be backed by the
+measured traffic profile and revisited when topology changes; application
+correctness and CI must not depend on an exact physical partition count.
 
 No local measurement is reported as a cloud throughput claim.

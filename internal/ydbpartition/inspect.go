@@ -107,18 +107,6 @@ func inspectPolicy(policy Policy, description *options.Description) TableInspect
 		if settings.PartitioningBySize != options.FeatureEnabled {
 			item.ContractViolations = append(item.ContractViolations, "size partitioning is not enabled")
 		}
-		if settings.PartitionSizeMb != policy.PartitionSizeMB {
-			item.ContractViolations = append(item.ContractViolations, "partition size threshold differs")
-		}
-		if settings.MinPartitionsCount != policy.MinPartitions {
-			item.ContractViolations = append(item.ContractViolations, "minimum partition count differs")
-		}
-		if settings.MaxPartitionsCount != policy.MaxPartitions {
-			item.ContractViolations = append(item.ContractViolations, "maximum partition count differs")
-		}
-	}
-	if policy.InitialPartitions > 0 && item.ActualPartitions < policy.InitialPartitions {
-		item.ContractViolations = append(item.ContractViolations, "actual partition count is below the initial scale floor")
 	}
 	item.MatchesContract = len(item.ContractViolations) == 0
 	return item

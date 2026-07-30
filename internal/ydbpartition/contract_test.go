@@ -81,16 +81,13 @@ func TestPoliciesCoverLogicalTablesOnce(t *testing.T) {
 			t.Fatalf("duplicate policy for %s", policy.LogicalName)
 		}
 		seen[policy.LogicalName] = struct{}{}
-		if policy.Bucketed && policy.InitialPartitions != uint64(BucketCountV1) {
-			t.Fatalf("%s initial partitions = %d", policy.LogicalName, policy.InitialPartitions)
-		}
 	}
 	if len(seen) != 24 {
 		t.Fatalf("logical table policies = %d, want 24", len(seen))
 	}
 }
 
-func TestSchedulerPointTablesUseLoadBasedGrowth(t *testing.T) {
+func TestSchedulerPointTablesUseAutomaticLoadBasedGrowth(t *testing.T) {
 	want := map[string]bool{
 		"subscription_scheduler_slots": false,
 		"tenant_scheduler_counters":    false,
@@ -105,9 +102,6 @@ func TestSchedulerPointTablesUseLoadBasedGrowth(t *testing.T) {
 		}
 		if !policy.LoadPartitioning {
 			t.Errorf("%s must enable load-based partitioning", policy.LogicalName)
-		}
-		if policy.MinPartitions != 1 {
-			t.Errorf("%s minimum partitions = %d, want 1", policy.LogicalName, policy.MinPartitions)
 		}
 	}
 	for table, found := range want {

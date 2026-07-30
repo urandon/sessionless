@@ -1,4 +1,4 @@
-// Package ydbmigrations exposes the immutable YDB migration set to the
+// Package ydbmigrations exposes the versioned YDB migration set to the
 // repository-owned schema migrator.
 package ydbmigrations
 

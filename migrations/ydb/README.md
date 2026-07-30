@@ -4,10 +4,27 @@ The application owns its YDB tables. Terraform may provision a database and
 IAM bindings, but it must not manage the tables in this directory.
 
 The ordered SQL files are embedded into `schema-migrate` and executed through
-the Goose library. Every file is immutable after application and contains
-exactly one idempotent schema operation. YDB does not support transactional
-DDL, so grouping multiple operations into one migration would make crash
-recovery ambiguous.
+the Goose library. Every file contains exactly one idempotent schema operation.
+YDB does not support transactional DDL, so grouping multiple operations into
+one migration would make crash recovery ambiguous.
+
+## Baseline freeze
+
+Before the first persistent environment exists, the migration baseline may be
+rebased in a reviewed change. Ephemeral local and CI databases contain no
+durable state and must be recreated from the revised baseline.
+
+The first deployment to a persistent cloud-dev or production database freezes
+every migration present in that deployment. Record the deployed commit and
+migration head in the deployment evidence. From that point onward:
+
+- never edit, renumber, or delete an applied migration;
+- make every correction through a new forward migration;
+- verify checksum history before application rollout.
+
+A baseline rebase must run the complete migration set twice against a clean YDB
+Local instance and must explicitly confirm that no persistent environment has
+applied the changed files.
 
 ## Commands
 

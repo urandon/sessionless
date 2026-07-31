@@ -1,0 +1,4 @@
+bucket = "replace-with-bootstrap-state-bucket"
+key    = "sessionless/cloud-dev/terraform.tfstate"
+
+# Credentials are read from AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY.

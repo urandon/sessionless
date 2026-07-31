@@ -112,7 +112,7 @@ jobs:
         run: CONFIRM_LOCAL_RESET=sessionless-dev make dev-reset
 
   terraform:
-    name: Terraform bootstrap
+    name: Terraform environments
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 15

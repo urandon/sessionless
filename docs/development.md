@@ -60,10 +60,10 @@ make integration
 ```
 
 `make test` checks formatting, runs `go vet`, unit tests, and the race detector.
-`make build` writes eight binaries to `.build/bin`: `control-api`,
+`make build` writes nine binaries to `.build/bin`: `control-api`,
 `reconciler`, `telegram-sender`, `telegram-fake`, `worker-runtime`, and
 `schema-migrate`, plus the operator-only `schema-inspect` and
-`schema-backfill` tools.
+`schema-backfill` tools and the `deployment-lock` Terraform wrapper.
 
 ## Local stack
 
@@ -82,8 +82,10 @@ applies the embedded YDB
 migrations, and idempotently loads the synthetic Telegram fixture. It does not
 require cloud credentials or a real Telegram token.
 
-The worker is a one-shot serverless-shaped process, so it is intentionally not
-kept alive by the default Compose profile. After an admitted run is present:
+The worker is intentionally not kept alive by the default Compose profile.
+Local mode consumes at most one queue message and exits; cloud mode serves one
+bounded trigger-delivered batch per HTTP request. After an admitted local run
+is present:
 
 ```sh
 make worker-once
@@ -179,3 +181,9 @@ Publishing GitHub release artifacts back into GitCode is intentionally outside
 this CI workflow and tracked separately in
 [issue #15](https://gitcode.com/urandon/sessionless/issues/15). Branch CI does
 not receive a GitCode publication token.
+
+Cloud development environment procedures are documented in
+[cloud-development.md](cloud-development.md). They use separate bootstrap and
+environment state, a folder-scoped external budget gate, immutable image tags,
+Lockbox payload injection outside Terraform, and blue/green API Gateway
+promotion.

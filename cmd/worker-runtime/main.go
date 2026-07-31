@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -12,9 +13,12 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/deterministicharness"
 	"gitcode.com/urandon/sessionless/internal/portlog"
+	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/s3store"
+	"gitcode.com/urandon/sessionless/internal/serverlesshttp"
 	"gitcode.com/urandon/sessionless/internal/sqsqueue"
 	"gitcode.com/urandon/sessionless/internal/worker"
+	"gitcode.com/urandon/sessionless/internal/yandextriggers"
 	"gitcode.com/urandon/sessionless/internal/ydbclient"
 	"gitcode.com/urandon/sessionless/internal/ydbstore"
 )
@@ -50,16 +54,6 @@ func main() {
 		logger.Error("create worker blob store", "error", err)
 		os.Exit(1)
 	}
-	queue, err := sqsqueue.New(ctx, sqsqueue.Config{
-		Endpoint: os.Getenv("QUEUE_ENDPOINT"), Region: envOrDefault("QUEUE_REGION", "ru-central1"),
-		QueueURL: os.Getenv("DISPATCH_QUEUE_URL"), DeadLetterURL: os.Getenv("DEAD_LETTER_QUEUE_URL"),
-		AccessKeyID: os.Getenv("QUEUE_ACCESS_KEY_ID"), SecretAccessKey: os.Getenv("QUEUE_SECRET_ACCESS_KEY"),
-		WaitTime: envDuration("WORKER_QUEUE_WAIT", 2*time.Second),
-	})
-	if err != nil {
-		logger.Error("create worker queue", "error", err)
-		os.Exit(1)
-	}
 	harness, err := deterministicharness.New(deterministicharness.Config{
 		Turns:               envUint64("DETERMINISTIC_HARNESS_TURNS", 2),
 		Artifacts:           envUint64("DETERMINISTIC_HARNESS_ARTIFACTS", 1),
@@ -71,14 +65,61 @@ func main() {
 		logger.Error("create deterministic harness", "error", err)
 		os.Exit(1)
 	}
-	manager, err := worker.New(worker.Config{
+	managerConfig := worker.Config{
 		ScratchRoot:          envOrDefault("WORKER_SCRATCH_ROOT", "/tmp/sessionless-worker"),
 		WorkerID:             envOrDefault("WORKER_ID", defaultWorkerID()),
 		LeaseTTL:             envDuration("WORKER_LEASE_TTL", 2*time.Minute),
 		RetryDelay:           envDuration("WORKER_RETRY_DELAY", 5*time.Second),
 		MaxDeliveryCount:     uint32(envUint64("WORKER_MAX_DELIVERY_COUNT", 5)),
 		MaxMaterializedBytes: int64(envUint64("WORKER_MAX_BLOB_BYTES", 64<<20)),
-	}, systemClock{}, portlog.NewQueue(logger, "worker-runtime", queue), state, blobs, harness)
+	}
+	newManager := func(queue ports.Queue) (*worker.Manager, error) {
+		return worker.New(
+			managerConfig, systemClock{}, portlog.NewQueue(logger, "worker-runtime", queue),
+			state, blobs, harness,
+		)
+	}
+	if envBool("SERVERLESS_TRIGGER_HTTP") {
+		err = serverlesshttp.Serve(
+			ctx, ":"+envOrDefault("PORT", "8080"), logger,
+			func(invocationCtx context.Context, request *http.Request) (any, error) {
+				queue, parseErr := yandextriggers.NewYMQQueue(request.Body, 10)
+				if parseErr != nil {
+					return nil, parseErr
+				}
+				manager, managerErr := newManager(queue)
+				if managerErr != nil {
+					return nil, managerErr
+				}
+				outcomes := make([]worker.Outcome, 0, queue.Remaining())
+				for queue.Remaining() > 0 {
+					outcome, runErr := manager.RunOnce(invocationCtx)
+					if runErr != nil {
+						return nil, runErr
+					}
+					outcomes = append(outcomes, outcome)
+				}
+				return map[string]any{"processed": len(outcomes), "outcomes": outcomes}, nil
+			},
+		)
+		if err != nil {
+			logger.Error("worker trigger server stopped", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	queue, err := sqsqueue.New(ctx, sqsqueue.Config{
+		Endpoint: os.Getenv("QUEUE_ENDPOINT"), Region: envOrDefault("QUEUE_REGION", "ru-central1"),
+		QueueURL: os.Getenv("DISPATCH_QUEUE_URL"), DeadLetterURL: os.Getenv("DEAD_LETTER_QUEUE_URL"),
+		AccessKeyID: os.Getenv("QUEUE_ACCESS_KEY_ID"), SecretAccessKey: os.Getenv("QUEUE_SECRET_ACCESS_KEY"),
+		WaitTime: envDuration("WORKER_QUEUE_WAIT", 2*time.Second),
+	})
+	if err != nil {
+		logger.Error("create worker queue", "error", err)
+		os.Exit(1)
+	}
+	manager, err := newManager(queue)
 	if err != nil {
 		logger.Error("create worker manager", "error", err)
 		os.Exit(1)

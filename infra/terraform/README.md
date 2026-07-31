@@ -21,8 +21,7 @@ Terraform's S3 backend lockfile remains enabled as the authoritative state-file
 mutex. The YDB lease is a second, environment-aware deployment gate used by the
 repository deployment wrapper; it prevents two operators from promoting
 different plans for the same environment even when they use different state
-keys. The wrapper is added with the cloud-dev environment root rather than to
-the bootstrap root.
+keys. The `deployment-lock` wrapper is used by `scripts/cloud-terraform.sh`.
 
 ## Credentials
 
@@ -65,3 +64,17 @@ metadata.
   small storage ceiling.
 - The lock row TTL is recovery hygiene, not permission to steal a live lock;
   the deployment wrapper uses owner and fence tokens.
+
+## Cloud development root
+
+`cloud-dev/` composes the reusable `foundation`, `runtime`, and `edge` modules.
+It creates a dedicated folder, least-privilege runtime identities, YDB
+Serverless, bounded queues and DLQs, tenant-safe Object Storage, Container
+Registry, KMS/Lockbox metadata, private HTTP containers, timer/YMQ triggers,
+managed DNS/certificate records, and blue/green API Gateway routing.
+
+Billing budgets and Monitoring alerts are required external guardrails because
+the pinned Yandex provider does not expose those resources. The exact
+folder-first bootstrap, budget verification, secret loading, saved-plan apply,
+canary, rollback, and protected destroy procedures are in
+[`docs/cloud-development.md`](../../docs/cloud-development.md).

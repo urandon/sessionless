@@ -5,7 +5,7 @@ BIN_DIR := .build/bin
 GO_CACHE_DIR := $(CURDIR)/.build/cache/go-build
 GO_MOD_CACHE_DIR := $(CURDIR)/.build/cache/go-mod
 GO_TMP_DIR := $(CURDIR)/.build/tmp
-COMPONENTS := control-api reconciler telegram-sender telegram-fake worker-runtime schema-migrate schema-inspect schema-backfill
+COMPONENTS := control-api reconciler telegram-sender telegram-fake worker-runtime schema-migrate schema-inspect schema-backfill deployment-lock
 VERSION ?= dev
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || printf unknown)
 BUILT_AT ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -93,12 +93,16 @@ terraform-ci:
 	$(TERRAFORM) fmt -recursive -check -diff infra/terraform
 	$(TERRAFORM) -chdir=infra/terraform/bootstrap init -backend=false -input=false
 	$(TERRAFORM) -chdir=infra/terraform/bootstrap validate
+	$(TERRAFORM) -chdir=infra/terraform/cloud-dev init -backend=false -input=false
+	$(TERRAFORM) -chdir=infra/terraform/cloud-dev validate
 
 compose-config:
 	docker compose --project-name sessionless-dev config --quiet
 
 images:
 	docker build --build-arg TARGET=control-api -f build/control.Dockerfile -t sessionless/control-api:dev .
+	docker build --build-arg TARGET=reconciler -f build/control.Dockerfile -t sessionless/reconciler:dev .
+	docker build --build-arg TARGET=telegram-sender -f build/control.Dockerfile -t sessionless/telegram-sender:dev .
 	docker build -f build/worker-runtime.Dockerfile -t sessionless/worker-runtime:dev .
 
 dev-up:

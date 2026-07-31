@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/portlog"
 	"gitcode.com/urandon/sessionless/internal/scheduler"
+	"gitcode.com/urandon/sessionless/internal/serverlesshttp"
 	"gitcode.com/urandon/sessionless/internal/sqsqueue"
 	"gitcode.com/urandon/sessionless/internal/ydbclient"
 	"gitcode.com/urandon/sessionless/internal/ydbstore"
@@ -78,6 +80,23 @@ func main() {
 		logger.Error("create scheduler", "error", err)
 		os.Exit(1)
 	}
+	if envBool("SERVERLESS_TRIGGER_HTTP") {
+		err = serverlesshttp.Serve(
+			ctx, ":"+envOrDefault("PORT", "8080"), logger,
+			func(invocationCtx context.Context, _ *http.Request) (any, error) {
+				result, runErr := dispatcher.RunOnce(invocationCtx)
+				if runErr != nil {
+					return nil, runErr
+				}
+				return result, nil
+			},
+		)
+		if err != nil {
+			logger.Error("reconciler trigger server stopped", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	interval := envDuration("SCHEDULER_POLL_INTERVAL", time.Second)
 	ticker := time.NewTicker(interval)
@@ -116,6 +135,11 @@ func envDuration(name string, fallback time.Duration) time.Duration {
 	if err != nil || value <= 0 {
 		return fallback
 	}
+	return value
+}
+
+func envBool(name string) bool {
+	value, _ := strconv.ParseBool(os.Getenv(name))
 	return value
 }
 

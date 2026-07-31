@@ -45,7 +45,10 @@ adapters remain later implementation slices.
   reconciler;
 - `telegram-sender`: durable, retrying Telegram delivery outbox consumer;
 - `telegram-fake`: deterministic Telegram Bot API capture/update service for local development;
-- `worker-runtime`: one-shot, concurrency-one isolated worker process;
+- `worker-runtime`: concurrency-one isolated worker; local mode consumes one
+  message, while cloud mode handles one trigger-delivered batch per request;
+- `deployment-lock`: operator-only fenced YDB lease wrapper for Terraform
+  plan/apply serialization;
 - `internal/worker`: durable materialize/execute/checkpoint/finalize lifecycle;
 - `internal/deterministicharness`: credential-free adapter that proves the
   worker contract before a subscription CLI is selected;
@@ -74,6 +77,8 @@ adapters remain later implementation slices.
 - `internal/telegramdelivery`: bounded YDB-ready traversal, transactional delivery
   claims, retry policy, and Telegram Bot API sending;
 - `internal/queuecontract`: versioned queue envelopes containing opaque IDs only.
+- `internal/serverlesshttp` and `internal/yandextriggers`: bounded HTTP
+  invocation and normalized Yandex trigger-event adapters.
 
 The worker image deliberately contains only the deterministic adapter today.
 This proves orchestration semantics without implying that a permanent harness
@@ -103,6 +108,7 @@ make integration
 make ydb-integration
 make local-integration
 make e2e-local
+make terraform-ci
 make dev-down
 ```
 
@@ -120,4 +126,7 @@ Telegram webhook, identity, attachment, and delivery procedures are documented
 in [docs/telegram.md](docs/telegram.md).
 The deterministic two-tenant black-box flow, fault scenarios, timing boundary,
 and operator queries are documented in [docs/local-e2e.md](docs/local-e2e.md).
+The isolated Yandex Cloud development topology, budget gate, deployment,
+canary, rollback, and destroy procedures are documented in
+[docs/cloud-development.md](docs/cloud-development.md).
 Contribution boundaries are in [CONTRIBUTING.md](CONTRIBUTING.md).

@@ -1,0 +1,17 @@
+output "folder_id" { value = module.foundation.folder_id }
+output "registry_id" { value = module.foundation.registry_id }
+output "repository_names" { value = module.foundation.repository_names }
+output "ydb_connection_string" { value = module.foundation.ydb_connection_string }
+output "artifact_bucket_name" { value = module.foundation.artifact_bucket_name }
+output "dispatch_queue_url" { value = module.foundation.dispatch_queue_url }
+output "delivery_queue_url" { value = module.foundation.delivery_queue_url }
+output "telegram_secret_id" { value = module.foundation.telegram_secret_id }
+output "api_fqdn" { value = module.edge.api_fqdn }
+output "api_url" { value = module.edge.api_url }
+output "gateway_id" { value = module.edge.gateway_id }
+output "control_slots" { value = module.runtime.control_container_ids }
+output "control_slot_urls" { value = module.runtime.control_container_urls }
+output "stable_slot" { value = module.edge.stable_slot }
+output "candidate_slot" { value = module.edge.candidate_slot }
+output "canary_weight" { value = module.edge.canary_weight }
+output "budget_id" { value = var.budget_id }

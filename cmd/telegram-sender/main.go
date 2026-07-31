@@ -12,6 +12,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/portlog"
 	"gitcode.com/urandon/sessionless/internal/s3store"
+	"gitcode.com/urandon/sessionless/internal/serverlesshttp"
 	"gitcode.com/urandon/sessionless/internal/telegramdelivery"
 	"gitcode.com/urandon/sessionless/internal/ydbclient"
 	"gitcode.com/urandon/sessionless/internal/ydbstore"
@@ -69,6 +70,23 @@ func main() {
 	if err != nil {
 		logger.Error("create Telegram sender", "error", err)
 		os.Exit(1)
+	}
+	if envBool("SERVERLESS_TRIGGER_HTTP") {
+		err = serverlesshttp.Serve(
+			ctx, ":"+envOrDefault("PORT", "8080"), logger,
+			func(invocationCtx context.Context, _ *http.Request) (any, error) {
+				processed, runErr := sender.RunOnce(invocationCtx)
+				if runErr != nil {
+					return nil, runErr
+				}
+				return map[string]int{"processed": processed}, nil
+			},
+		)
+		if err != nil {
+			logger.Error("Telegram sender trigger server stopped", "error", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	interval := envDuration("TELEGRAM_SENDER_POLL_INTERVAL", time.Second)

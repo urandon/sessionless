@@ -1,10 +1,11 @@
 SHELL := /bin/sh
+TERRAFORM ?= terraform
 
 BIN_DIR := .build/bin
 GO_CACHE_DIR := $(CURDIR)/.build/cache/go-build
 GO_MOD_CACHE_DIR := $(CURDIR)/.build/cache/go-mod
 GO_TMP_DIR := $(CURDIR)/.build/tmp
-COMPONENTS := control-api reconciler telegram-sender telegram-fake worker-runtime schema-migrate schema-inspect schema-backfill
+COMPONENTS := control-api reconciler telegram-sender telegram-fake worker-runtime schema-migrate schema-inspect schema-backfill deployment-lock
 VERSION ?= dev
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || printf unknown)
 BUILT_AT ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -17,7 +18,7 @@ LDFLAGS := -s -w \
 	-X gitcode.com/urandon/sessionless/internal/buildinfo.Commit=$(COMMIT) \
 	-X gitcode.com/urandon/sessionless/internal/buildinfo.BuiltAt=$(BUILT_AT)
 
-.PHONY: help prepare tools generate fmt fmt-check lint test build integration ydb-integration local-integration e2e-local ci \
+.PHONY: help prepare tools generate fmt fmt-check lint test build integration ydb-integration local-integration e2e-local ci terraform-ci \
 	compose-config images dev-up dev-seed migrate-local migration-status partition-status partition-backfill \
 	worker-once dev-down dev-reset clean
 
@@ -31,6 +32,7 @@ help:
 		'make ydb-integration run YDB Local schema and concurrency tests' \
 		'make local-integration run YDB/S3/SQS/Telegram adapter tests against the local stand' \
 		'make e2e-local      run the deterministic two-tenant black-box slice' \
+		'make terraform-ci   format-check and validate Terraform roots' \
 		'make images         build control-plane and worker images' \
 		'make dev-up         start, initialize, migrate, seed, and verify the local stand' \
 		'make dev-seed       idempotently load synthetic local fixtures' \
@@ -87,11 +89,20 @@ e2e-local: prepare
 
 ci: generate test build integration
 
+terraform-ci:
+	$(TERRAFORM) fmt -recursive -check -diff infra/terraform
+	$(TERRAFORM) -chdir=infra/terraform/bootstrap init -backend=false -input=false
+	$(TERRAFORM) -chdir=infra/terraform/bootstrap validate
+	$(TERRAFORM) -chdir=infra/terraform/cloud-dev init -backend=false -input=false
+	$(TERRAFORM) -chdir=infra/terraform/cloud-dev validate
+
 compose-config:
 	docker compose --project-name sessionless-dev config --quiet
 
 images:
 	docker build --build-arg TARGET=control-api -f build/control.Dockerfile -t sessionless/control-api:dev .
+	docker build --build-arg TARGET=reconciler -f build/control.Dockerfile -t sessionless/reconciler:dev .
+	docker build --build-arg TARGET=telegram-sender -f build/control.Dockerfile -t sessionless/telegram-sender:dev .
 	docker build -f build/worker-runtime.Dockerfile -t sessionless/worker-runtime:dev .
 
 dev-up:

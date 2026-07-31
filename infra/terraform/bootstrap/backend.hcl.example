@@ -1,0 +1,5 @@
+bucket = "replace-with-bootstrap-output-state-bucket-name"
+key    = "bootstrap/terraform.tfstate"
+
+# Credentials are intentionally absent. Inject AWS_ACCESS_KEY_ID and
+# AWS_SECRET_ACCESS_KEY from the operator credential store.

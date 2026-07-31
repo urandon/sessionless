@@ -1,0 +1,19 @@
+cloud_id          = "replace-cloud-id"
+base_domain       = "example.com"
+dns_zone_id       = "replace-yandex-dns-zone-id"
+artifact_bucket_name = "replace-globally-unique-sessionless-dev-bucket"
+
+# First create the Lockbox payload outside Terraform, then copy only its version ID.
+telegram_secret_version_id = "replace-secret-version-id"
+
+# Immutable commit SHA tags are preferred. Both control slots may initially point to the same SHA.
+control_blue_image_tag  = "replace-commit-sha"
+control_green_image_tag = "replace-commit-sha"
+runtime_image_tag       = "replace-commit-sha"
+
+stable_slot  = "blue"
+canary_weight = 0
+deletion_protection = true
+
+billing_account_id = "replace-billing-account-id"
+budget_id          = "replace-folder-scoped-budget-id"

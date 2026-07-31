@@ -1,0 +1,8 @@
+cloud_id            = "replace-with-cloud-id"
+management_folder_id = "replace-with-management-folder-id"
+state_bucket_name    = "replace-with-globally-unique-sessionless-tfstate"
+
+labels = {
+  owner       = "replace-with-team"
+  environment = "management"
+}

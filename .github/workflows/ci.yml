@@ -111,12 +111,30 @@ jobs:
         if: always()
         run: CONFIRM_LOCAL_RESET=sessionless-dev make dev-reset
 
+  terraform:
+    name: Terraform environments
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout mirrored commit
+        uses: actions/checkout@v6
+
+      - name: Set up pinned Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: 1.15.5
+
+      - name: Validate infrastructure contract
+        run: make terraform-ci
+
   images:
     name: Runtime images
     needs:
       - verify
       - ydb
       - local-stand
+      - terraform
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

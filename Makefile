@@ -1,4 +1,5 @@
 SHELL := /bin/sh
+TERRAFORM ?= terraform
 
 BIN_DIR := .build/bin
 GO_CACHE_DIR := $(CURDIR)/.build/cache/go-build
@@ -17,7 +18,7 @@ LDFLAGS := -s -w \
 	-X gitcode.com/urandon/sessionless/internal/buildinfo.Commit=$(COMMIT) \
 	-X gitcode.com/urandon/sessionless/internal/buildinfo.BuiltAt=$(BUILT_AT)
 
-.PHONY: help prepare tools generate fmt fmt-check lint test build integration ydb-integration local-integration e2e-local ci \
+.PHONY: help prepare tools generate fmt fmt-check lint test build integration ydb-integration local-integration e2e-local ci terraform-ci \
 	compose-config images dev-up dev-seed migrate-local migration-status partition-status partition-backfill \
 	worker-once dev-down dev-reset clean
 
@@ -31,6 +32,7 @@ help:
 		'make ydb-integration run YDB Local schema and concurrency tests' \
 		'make local-integration run YDB/S3/SQS/Telegram adapter tests against the local stand' \
 		'make e2e-local      run the deterministic two-tenant black-box slice' \
+		'make terraform-ci   format-check and validate Terraform roots' \
 		'make images         build control-plane and worker images' \
 		'make dev-up         start, initialize, migrate, seed, and verify the local stand' \
 		'make dev-seed       idempotently load synthetic local fixtures' \
@@ -86,6 +88,11 @@ e2e-local: prepare
 	@./scripts/e2e-local.sh
 
 ci: generate test build integration
+
+terraform-ci:
+	$(TERRAFORM) fmt -recursive -check -diff infra/terraform
+	$(TERRAFORM) -chdir=infra/terraform/bootstrap init -backend=false -input=false
+	$(TERRAFORM) -chdir=infra/terraform/bootstrap validate
 
 compose-config:
 	docker compose --project-name sessionless-dev config --quiet

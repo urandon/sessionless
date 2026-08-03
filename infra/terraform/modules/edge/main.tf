@@ -67,28 +67,37 @@ resource "yandex_api_gateway" "api" {
           operationId: health
           responses:
             '200': { description: Healthy }
-          x-yc-apigateway-integration: &control
+          x-yc-apigateway-integration:
             type: serverless_containers
-            container_id: $${apigw.control_container_id}
+            container_id: $${var.control_container_id}
             service_account_id: "${var.gateway_service_account_id}"
       /readyz:
         get:
           operationId: ready
           responses:
             '200': { description: Ready }
-          x-yc-apigateway-integration: *control
+          x-yc-apigateway-integration:
+            type: serverless_containers
+            container_id: $${var.control_container_id}
+            service_account_id: "${var.gateway_service_account_id}"
       /version:
         get:
           operationId: version
           responses:
             '200': { description: Runtime version }
-          x-yc-apigateway-integration: *control
+          x-yc-apigateway-integration:
+            type: serverless_containers
+            container_id: $${var.control_container_id}
+            service_account_id: "${var.gateway_service_account_id}"
       /telegram/webhook:
         post:
           operationId: telegramWebhook
           responses:
             '200': { description: Update accepted }
-          x-yc-apigateway-integration: *control
+          x-yc-apigateway-integration:
+            type: serverless_containers
+            container_id: $${var.control_container_id}
+            service_account_id: "${var.gateway_service_account_id}"
   YAML
 
   depends_on = [yandex_dns_recordset.certificate_challenge]

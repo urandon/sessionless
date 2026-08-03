@@ -138,7 +138,15 @@ func renewLoop(
 }
 
 func renew(ctx context.Context, db *sql.DB, environment, owner string, fence uint64, ttl time.Duration) error {
-	result, err := db.ExecContext(ctx,
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := verifyFence(ctx, tx, environment, owner, fence); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx,
 		`UPDATE terraform_locks SET expires_at = $1
 		 WHERE environment = $2 AND owner_id = $3 AND fence_token = $4`,
 		time.Now().UTC().Add(ttl), environment, owner, fence,
@@ -146,18 +154,19 @@ func renew(ctx context.Context, db *sql.DB, environment, owner string, fence uin
 	if err != nil {
 		return err
 	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if rows != 1 {
-		return fmt.Errorf("deployment lock fence was lost")
-	}
-	return nil
+	return tx.Commit()
 }
 
 func release(ctx context.Context, db *sql.DB, environment, owner string, fence uint64) error {
-	result, err := db.ExecContext(ctx,
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := verifyFence(ctx, tx, environment, owner, fence); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx,
 		`DELETE FROM terraform_locks
 		 WHERE environment = $1 AND owner_id = $2 AND fence_token = $3`,
 		environment, owner, fence,
@@ -165,12 +174,24 @@ func release(ctx context.Context, db *sql.DB, environment, owner string, fence u
 	if err != nil {
 		return err
 	}
-	rows, err := result.RowsAffected()
+	return tx.Commit()
+}
+
+func verifyFence(ctx context.Context, tx *sql.Tx, environment, owner string, fence uint64) error {
+	var currentOwner string
+	var currentFence uint64
+	err := tx.QueryRowContext(ctx,
+		`SELECT owner_id, fence_token FROM terraform_locks WHERE environment = $1`,
+		environment,
+	).Scan(&currentOwner, &currentFence)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("deployment lock fence was lost")
+	}
 	if err != nil {
 		return err
 	}
-	if rows != 1 {
-		return fmt.Errorf("deployment lock fence was lost before release")
+	if currentOwner != owner || currentFence != fence {
+		return fmt.Errorf("deployment lock fence ownership changed")
 	}
 	return nil
 }

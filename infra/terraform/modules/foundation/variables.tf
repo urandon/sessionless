@@ -1,6 +1,15 @@
 variable "cloud_id" { type = string }
 variable "folder_name" { type = string }
 variable "name_prefix" { type = string }
+variable "base_domain" {
+  description = "Delegated public DNS zone owned by this environment."
+  type        = string
+
+  validation {
+    condition     = length(trimspace(trimsuffix(var.base_domain, "."))) > 0
+    error_message = "base_domain must not be empty."
+  }
+}
 variable "artifact_bucket_name" { type = string }
 variable "artifact_bucket_max_size_bytes" { type = number }
 variable "artifact_retention_days" { type = number }

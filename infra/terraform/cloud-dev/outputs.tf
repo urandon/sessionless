@@ -1,4 +1,6 @@
 output "folder_id" { value = module.foundation.folder_id }
+output "dns_zone_id" { value = module.foundation.dns_zone_id }
+output "dns_zone_name" { value = module.foundation.dns_zone_name }
 output "registry_id" { value = module.foundation.registry_id }
 output "repository_names" { value = module.foundation.repository_names }
 output "ydb_connection_string" { value = module.foundation.ydb_connection_string }
@@ -6,6 +8,10 @@ output "artifact_bucket_name" { value = module.foundation.artifact_bucket_name }
 output "dispatch_queue_url" { value = module.foundation.dispatch_queue_url }
 output "delivery_queue_url" { value = module.foundation.delivery_queue_url }
 output "telegram_secret_id" { value = module.foundation.telegram_secret_id }
+output "queue_provisioner_secret_id" { value = module.foundation.queue_provisioner_secret_id }
+output "queue_provisioner_secret_version_id" { value = module.foundation.queue_provisioner_secret_version_id }
+output "scheduler_ymq_secret_id" { value = module.foundation.scheduler_ymq_secret_id }
+output "scheduler_ymq_secret_version_id" { value = module.foundation.scheduler_ymq_secret_version_id }
 output "api_fqdn" { value = module.edge.api_fqdn }
 output "api_url" { value = module.edge.api_url }
 output "gateway_id" { value = module.edge.gateway_id }

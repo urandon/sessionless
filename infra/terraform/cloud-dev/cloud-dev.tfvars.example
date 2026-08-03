@@ -1,6 +1,5 @@
 cloud_id          = "replace-cloud-id"
-base_domain       = "example.com"
-dns_zone_id       = "replace-yandex-dns-zone-id"
+base_domain       = "sessionless.example.com"
 artifact_bucket_name = "replace-globally-unique-sessionless-dev-bucket"
 
 # First create the Lockbox payload outside Terraform, then copy only its version ID.

@@ -32,6 +32,10 @@ func Open(ctx context.Context, connectionString string) (*Client, error) {
 		return nil, err
 	}
 	return open(ctx, dataDSN,
+		// Keep OLTP on the stable Table service explicitly. Newer SDK releases
+		// default database/sql to Query service, which is not enabled on every
+		// YDB Serverless endpoint and can time out while creating a session.
+		ydb.WithQueryService(false),
 		ydb.WithAutoDeclare(),
 		ydb.WithNumericArgs(),
 	)
@@ -48,6 +52,7 @@ func OpenScripting(ctx context.Context, connectionString string) (*Client, error
 		return nil, err
 	}
 	return open(ctx, dataDSN,
+		ydb.WithQueryService(false),
 		ydb.WithDefaultQueryMode(ydb.ScriptingQueryMode),
 		ydb.WithFakeTx(ydb.ScriptingQueryMode),
 		ydb.WithAutoDeclare(),

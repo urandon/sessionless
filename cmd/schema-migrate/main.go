@@ -22,6 +22,10 @@ func main() {
 		slog.Error("YDB migration failed", "error", err)
 		os.Exit(1)
 	}
+	if slices.Contains(os.Args[1:], "status") {
+		slog.Info("YDB schema status reported")
+		return
+	}
 	slog.Info("YDB schema is current")
 }
 

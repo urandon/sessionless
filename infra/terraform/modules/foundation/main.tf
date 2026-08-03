@@ -4,14 +4,15 @@ locals {
     environment = "dev"
     managed-by  = "terraform"
   })
-  account_names = toset(["deploy", "api", "scheduler", "worker", "telegram-sender", "trigger", "gateway"])
+  account_names = toset(["deploy", "api", "scheduler", "worker", "telegram-sender", "trigger", "gateway", "queue-provisioner"])
   account_roles = {
-    api             = ["logging.writer"]
-    scheduler       = ["ymq.writer", "logging.writer"]
-    worker          = ["logging.writer"]
-    telegram-sender = ["logging.writer"]
-    trigger         = ["ymq.reader", "ymq.writer", "logging.writer"]
-    gateway         = ["logging.writer"]
+    api               = ["logging.writer"]
+    scheduler         = ["ymq.writer", "logging.writer"]
+    worker            = ["logging.writer"]
+    telegram-sender   = ["logging.writer"]
+    trigger           = ["ymq.reader", "ymq.writer", "logging.writer"]
+    gateway           = ["logging.writer"]
+    queue-provisioner = ["ymq.admin"]
     deploy = [
       "iam.serviceAccounts.user", "container-registry.admin", "serverless.containers.admin",
       "api-gateway.admin", "ydb.admin", "storage.admin", "ymq.admin", "lockbox.admin",
@@ -30,6 +31,16 @@ resource "yandex_resourcemanager_folder" "environment" {
   name        = var.folder_name
   description = "Isolated Sessionless cloud development environment"
   labels      = local.labels
+}
+
+resource "yandex_dns_zone" "environment" {
+  folder_id           = yandex_resourcemanager_folder.environment.id
+  name                = "${var.name_prefix}-public"
+  description         = "Delegated public DNS zone for Sessionless dev"
+  zone                = "${trimsuffix(var.base_domain, ".")}."
+  public              = true
+  deletion_protection = var.deletion_protection
+  labels              = local.labels
 }
 
 resource "yandex_iam_service_account" "runtime" {
@@ -149,6 +160,14 @@ resource "yandex_container_registry" "application" {
   labels    = local.labels
 }
 
+resource "yandex_container_registry_iam_binding" "runtime_puller" {
+  registry_id = yandex_container_registry.application.id
+  role        = "container-registry.images.puller"
+  members = [for name in ["api", "scheduler", "worker", "telegram-sender"] :
+    "serviceAccount:${yandex_iam_service_account.runtime[name].id}"
+  ]
+}
+
 resource "yandex_container_repository" "runtime" {
   for_each = toset(["control-api", "reconciler", "telegram-sender", "worker-runtime"])
   name     = "${yandex_container_registry.application.id}/${each.key}"
@@ -161,6 +180,7 @@ resource "yandex_container_repository_lifecycle_policy" "runtime" {
   status        = "active"
   rule {
     description   = "Retain the ten newest images and expire older images after 30 days"
+    tag_regexp    = ".*"
     retained_top  = 10
     expire_period = "720h"
   }
@@ -189,6 +209,67 @@ resource "yandex_lockbox_secret_iam_member" "telegram" {
   secret_id = yandex_lockbox_secret.telegram.id
   role      = "lockbox.payloadViewer"
   member    = "serviceAccount:${yandex_iam_service_account.runtime[each.key].id}"
+}
+
+resource "yandex_lockbox_secret" "queue_provisioner" {
+  folder_id           = yandex_resourcemanager_folder.environment.id
+  name                = "${var.name_prefix}-queue-provisioner"
+  description         = "Terraform-only YMQ provisioning credentials generated directly into Lockbox"
+  kms_key_id          = yandex_kms_symmetric_key.secrets.id
+  deletion_protection = var.deletion_protection
+  labels              = local.labels
+}
+
+resource "yandex_lockbox_secret" "scheduler_ymq" {
+  folder_id           = yandex_resourcemanager_folder.environment.id
+  name                = "${var.name_prefix}-scheduler-ymq"
+  description         = "Least-privilege YMQ writer credentials for the scheduler runtime"
+  kms_key_id          = yandex_kms_symmetric_key.secrets.id
+  deletion_protection = var.deletion_protection
+  labels              = local.labels
+}
+
+resource "yandex_iam_service_account_static_access_key" "queue_provisioner" {
+  service_account_id = yandex_iam_service_account.runtime["queue-provisioner"].id
+  description        = "Terraform YMQ provisioning; payload is written directly to Lockbox"
+
+  output_to_lockbox {
+    secret_id            = yandex_lockbox_secret.queue_provisioner.id
+    entry_for_access_key = "access-key"
+    entry_for_secret_key = "secret-key"
+  }
+
+  depends_on = [
+    yandex_resourcemanager_folder_iam_member.runtime["queue-provisioner:ymq.admin"],
+  ]
+}
+
+resource "yandex_iam_service_account_static_access_key" "scheduler_ymq" {
+  service_account_id = yandex_iam_service_account.runtime["scheduler"].id
+  description        = "Scheduler YMQ writer; payload is written directly to Lockbox"
+
+  output_to_lockbox {
+    secret_id            = yandex_lockbox_secret.scheduler_ymq.id
+    entry_for_access_key = "access-key"
+    entry_for_secret_key = "secret-key"
+  }
+
+  depends_on = [
+    yandex_resourcemanager_folder_iam_member.runtime["scheduler:ymq.writer"],
+  ]
+}
+
+resource "yandex_lockbox_secret_iam_member" "scheduler_ymq" {
+  secret_id = yandex_lockbox_secret.scheduler_ymq.id
+  role      = "lockbox.payloadViewer"
+  member    = "serviceAccount:${yandex_iam_service_account.runtime["scheduler"].id}"
+}
+
+resource "yandex_kms_symmetric_key_iam_member" "runtime_secret_decrypter" {
+  for_each         = toset(["api", "scheduler", "telegram-sender"])
+  symmetric_key_id = yandex_kms_symmetric_key.secrets.id
+  role             = "kms.keys.encrypterDecrypter"
+  member           = "serviceAccount:${yandex_iam_service_account.runtime[each.key].id}"
 }
 
 resource "yandex_logging_group" "application" {

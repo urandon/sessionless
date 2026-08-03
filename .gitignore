@@ -4,6 +4,7 @@
 !.env.example
 
 .terraform/
+infra/terraform/bootstrap/backend.s3.tf
 *.tfstate
 *.tfstate.*
 *.tfplan

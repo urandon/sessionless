@@ -41,8 +41,9 @@ func main() {
 	blobs, err := s3store.New(ctx, s3store.Config{
 		Endpoint: os.Getenv("S3_ENDPOINT"), Region: os.Getenv("S3_REGION"),
 		Bucket: os.Getenv("S3_BUCKET"), AccessKeyID: os.Getenv("S3_ACCESS_KEY_ID"),
-		SecretAccessKey: os.Getenv("S3_SECRET_ACCESS_KEY"),
-		ForcePathStyle:  envBool("S3_FORCE_PATH_STYLE"),
+		SecretAccessKey:        os.Getenv("S3_SECRET_ACCESS_KEY"),
+		ForcePathStyle:         envBool("S3_FORCE_PATH_STYLE"),
+		IAMMetadataCredentials: envBool("S3_IAM_METADATA_CREDENTIALS"),
 	})
 	if err != nil {
 		logger.Error("open object storage", "error", err)

@@ -1,4 +1,5 @@
 bucket = "replace-with-bootstrap-state-bucket"
 key    = "sessionless/cloud-dev/terraform.tfstate"
 
-# Credentials are read from AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY.
+# Credentials are read from the external AWS credentials profile selected by
+# AWS_SHARED_CREDENTIALS_FILE and AWS_PROFILE.

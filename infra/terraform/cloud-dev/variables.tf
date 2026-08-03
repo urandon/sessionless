@@ -15,10 +15,14 @@ variable "name_prefix" {
   type    = string
   default = "sessionless-dev"
 }
-variable "base_domain" { type = string }
-variable "dns_zone_id" {
-  description = "Existing public Yandex Cloud DNS zone containing base_domain."
+variable "base_domain" {
+  description = "Public subdomain delegated to this environment's Yandex Cloud DNS zone."
   type        = string
+
+  validation {
+    condition     = length(trimspace(trimsuffix(var.base_domain, "."))) > 0
+    error_message = "base_domain must not be empty."
+  }
 }
 variable "artifact_bucket_name" { type = string }
 variable "telegram_secret_version_id" {

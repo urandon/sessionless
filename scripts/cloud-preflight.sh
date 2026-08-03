@@ -29,7 +29,7 @@ trap 'rm -rf "$preflight_tmp"' EXIT HUP INT TERM
 chmod 700 "$preflight_tmp"
 
 iam_token="$(yc iam create-token)"
-chmod 600 "$preflight_tmp"
+chmod 700 "$preflight_tmp"
 printf 'url = "https://billing.api.cloud.yandex.net/billing/v1/budgets/%s"\n' "$BUDGET_ID" >"$preflight_tmp/curl.conf"
 printf 'header = "Authorization: Bearer %s"\n' "$iam_token" >>"$preflight_tmp/curl.conf"
 printf 'fail\nsilent\nshow-error\n' >>"$preflight_tmp/curl.conf"

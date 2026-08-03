@@ -12,6 +12,7 @@ module "foundation" {
   cloud_id                         = var.cloud_id
   folder_name                      = var.folder_name
   name_prefix                      = var.name_prefix
+  base_domain                      = var.base_domain
   artifact_bucket_name             = var.artifact_bucket_name
   artifact_bucket_max_size_bytes   = var.artifact_bucket_max_size_bytes
   artifact_retention_days          = var.artifact_retention_days
@@ -38,21 +39,25 @@ module "runtime" {
     telegram-sender = "cr.yandex/${module.foundation.repository_names["telegram-sender"]}:${var.runtime_image_tag}"
     worker-runtime  = "cr.yandex/${module.foundation.repository_names["worker-runtime"]}:${var.runtime_image_tag}"
   }
-  ydb_connection_string      = module.foundation.ydb_connection_string
-  artifact_bucket_name       = module.foundation.artifact_bucket_name
-  dispatch_queue_url         = module.foundation.dispatch_queue_url
-  dispatch_queue_arn         = module.foundation.dispatch_queue_arn
-  dispatch_dlq_arn           = module.foundation.dispatch_dlq_arn
-  delivery_dlq_arn           = module.foundation.delivery_dlq_arn
-  telegram_secret_id         = module.foundation.telegram_secret_id
-  telegram_secret_version_id = var.telegram_secret_version_id
-  log_group_id               = module.foundation.log_group_id
-  labels                     = local.labels
-  control_memory_mb          = var.control_memory_mb
-  worker_memory_mb           = var.worker_memory_mb
-  worker_timeout             = var.worker_timeout
-  reconciler_cron            = var.reconciler_cron
-  telegram_sender_cron       = var.telegram_sender_cron
+  ydb_connection_string           = module.foundation.ydb_connection_string
+  artifact_bucket_name            = module.foundation.artifact_bucket_name
+  dispatch_queue_url              = module.foundation.dispatch_queue_url
+  dispatch_queue_arn              = module.foundation.dispatch_queue_arn
+  dispatch_dlq_arn                = module.foundation.dispatch_dlq_arn
+  delivery_dlq_arn                = module.foundation.delivery_dlq_arn
+  telegram_secret_id              = module.foundation.telegram_secret_id
+  telegram_secret_version_id      = var.telegram_secret_version_id
+  scheduler_ymq_secret_id         = module.foundation.scheduler_ymq_secret_id
+  scheduler_ymq_secret_version_id = module.foundation.scheduler_ymq_secret_version_id
+  log_group_id                    = module.foundation.log_group_id
+  labels                          = local.labels
+  control_memory_mb               = var.control_memory_mb
+  worker_memory_mb                = var.worker_memory_mb
+  worker_timeout                  = var.worker_timeout
+  reconciler_cron                 = var.reconciler_cron
+  telegram_sender_cron            = var.telegram_sender_cron
+
+  depends_on = [module.foundation]
 }
 
 module "edge" {
@@ -61,7 +66,7 @@ module "edge" {
   folder_id                  = module.foundation.folder_id
   name_prefix                = var.name_prefix
   base_domain                = var.base_domain
-  dns_zone_id                = var.dns_zone_id
+  dns_zone_id                = module.foundation.dns_zone_id
   gateway_service_account_id = module.foundation.service_account_ids["gateway"]
   control_container_ids      = module.runtime.control_container_ids
   stable_slot                = var.stable_slot

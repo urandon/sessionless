@@ -1,10 +1,16 @@
 locals {
   common_environment = {
     YDB_CONNECTION_STRING = var.ydb_connection_string
-    S3_ENDPOINT           = "https://storage.yandexcloud.net"
-    S3_REGION             = "ru-central1"
-    S3_BUCKET             = var.artifact_bucket_name
-    S3_FORCE_PATH_STYLE   = "true"
+    # ydb-go-sdk-auth-environ otherwise falls back to anonymous credentials.
+    # Serverless Containers exposes the revision service account through its
+    # metadata service, so opt every YDB-using runtime into that credential
+    # source explicitly instead of injecting short-lived IAM tokens.
+    YDB_METADATA_CREDENTIALS    = "1"
+    S3_ENDPOINT                 = "https://storage.yandexcloud.net"
+    S3_REGION                   = "ru-central1"
+    S3_BUCKET                   = var.artifact_bucket_name
+    S3_FORCE_PATH_STYLE         = "true"
+    S3_IAM_METADATA_CREDENTIALS = "true"
   }
   trigger_member = "serviceAccount:${var.service_account_ids["trigger"]}"
   gateway_member = "serviceAccount:${var.service_account_ids["gateway"]}"
@@ -28,6 +34,7 @@ resource "yandex_serverless_container" "control" {
     url = var.images["control-${each.key}"]
     environment = merge(local.common_environment, {
       DEFAULT_COMPUTE_PROVIDER = "deterministic"
+      DEPLOYMENT_IMAGE         = var.images["control-${each.key}"]
       TELEGRAM_SOURCE_ID       = "bot-primary"
     })
   }
@@ -74,16 +81,30 @@ resource "yandex_serverless_container" "reconciler" {
   image {
     url = var.images["reconciler"]
     environment = {
-      SERVERLESS_TRIGGER_HTTP = "true"
-      YDB_CONNECTION_STRING   = var.ydb_connection_string
-      QUEUE_ENDPOINT          = "https://message-queue.api.cloud.yandex.net"
-      QUEUE_REGION            = "ru-central1"
-      DISPATCH_QUEUE_URL      = var.dispatch_queue_url
+      DEPLOYMENT_IMAGE         = var.images["reconciler"]
+      SERVERLESS_TRIGGER_HTTP  = "true"
+      YDB_CONNECTION_STRING    = var.ydb_connection_string
+      YDB_METADATA_CREDENTIALS = "1"
+      QUEUE_ENDPOINT           = "https://message-queue.api.cloud.yandex.net"
+      QUEUE_REGION             = "ru-central1"
+      DISPATCH_QUEUE_URL       = var.dispatch_queue_url
     }
   }
   metadata_options {
     aws_v1_http_endpoint = 1
     gce_http_endpoint    = 1
+  }
+  secrets {
+    id                   = var.scheduler_ymq_secret_id
+    version_id           = var.scheduler_ymq_secret_version_id
+    key                  = "access-key"
+    environment_variable = "AWS_ACCESS_KEY_ID"
+  }
+  secrets {
+    id                   = var.scheduler_ymq_secret_id
+    version_id           = var.scheduler_ymq_secret_version_id
+    key                  = "secret-key"
+    environment_variable = "AWS_SECRET_ACCESS_KEY"
   }
   log_options {
     log_group_id = var.log_group_id
@@ -106,6 +127,7 @@ resource "yandex_serverless_container" "worker" {
   image {
     url = var.images["worker-runtime"]
     environment = merge(local.common_environment, {
+      DEPLOYMENT_IMAGE          = var.images["worker-runtime"]
       SERVERLESS_TRIGGER_HTTP   = "true"
       WORKER_ID                 = "serverless-worker"
       WORKER_LEASE_TTL          = "2m"
@@ -142,6 +164,7 @@ resource "yandex_serverless_container" "telegram_sender" {
   image {
     url = var.images["telegram-sender"]
     environment = merge(local.common_environment, {
+      DEPLOYMENT_IMAGE        = var.images["telegram-sender"]
       SERVERLESS_TRIGGER_HTTP = "true"
       TELEGRAM_API_BASE_URL   = "https://api.telegram.org"
     })

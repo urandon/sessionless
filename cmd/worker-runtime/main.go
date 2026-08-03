@@ -46,9 +46,10 @@ func main() {
 	blobs, err := s3store.New(ctx, s3store.Config{
 		Endpoint: os.Getenv("S3_ENDPOINT"), Region: envOrDefault("S3_REGION", "ru-central1"),
 		Bucket: os.Getenv("S3_BUCKET"), AccessKeyID: os.Getenv("S3_ACCESS_KEY_ID"),
-		SecretAccessKey: os.Getenv("S3_SECRET_ACCESS_KEY"),
-		ForcePathStyle:  envBool("S3_FORCE_PATH_STYLE"),
-		MaxObjectBytes:  int64(envUint64("WORKER_MAX_BLOB_BYTES", 64<<20)),
+		SecretAccessKey:        os.Getenv("S3_SECRET_ACCESS_KEY"),
+		ForcePathStyle:         envBool("S3_FORCE_PATH_STYLE"),
+		IAMMetadataCredentials: envBool("S3_IAM_METADATA_CREDENTIALS"),
+		MaxObjectBytes:         int64(envUint64("WORKER_MAX_BLOB_BYTES", 64<<20)),
 	})
 	if err != nil {
 		logger.Error("create worker blob store", "error", err)

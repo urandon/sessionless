@@ -254,14 +254,12 @@ func workerFixture(
 	suffix := strings.TrimPrefix(string(tenant), "tenant-")
 	run := domain.Run{
 		ID: domain.RunID("run-" + suffix), TenantID: tenant,
-		Conversation: domain.ConversationRef{
-			TenantID: tenant, Frontend: domain.FrontendTelegram,
-			ExternalID: "chat-" + suffix, ID: domain.ConversationID("conversation-" + suffix),
-		},
+		SessionID:                domain.SessionID("session-" + suffix),
+		TriggerEventID:           domain.SessionEventID("event-" + suffix),
 		SubscriptionConnectionID: domain.SubscriptionConnectionID("subscription-" + suffix),
-		ContextEpoch:             domain.InitialContextEpoch, Status: domain.RunQueued,
-		IdempotencyKey: domain.IdempotencyKey("run-key-" + suffix),
-		CreatedAt:      at, UpdatedAt: at,
+		Status:                   domain.RunQueued,
+		IdempotencyKey:           domain.IdempotencyKey("run-key-" + suffix),
+		CreatedAt:                at, UpdatedAt: at,
 	}
 	attempt := domain.Attempt{
 		ID: domain.AttemptID("attempt-" + suffix), TenantID: tenant,
@@ -286,6 +284,7 @@ func workerFixture(
 	}
 	job := domain.WorkerJob{
 		TenantID: tenant, RunID: run.ID, AttemptID: attempt.ID,
+		SessionID: run.SessionID, TriggerEventID: run.TriggerEventID,
 		ReservationID: reservation.ID, InputManifestID: manifest.ID,
 		ContextSnapshot:   contextRef,
 		AllowedMCPServers: []string{"docs"},

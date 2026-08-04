@@ -26,6 +26,8 @@ func TestExecutionRequestRejectsCrossTenantBlob(t *testing.T) {
 	request := ports.ExecutionRequest{
 		TenantID:        "tenant-a",
 		RunID:           "run-1",
+		SessionID:       "session-1",
+		TriggerEventID:  "event-1",
 		AttemptID:       "attempt-1",
 		WorkDir:         "/tmp/sessionless-test",
 		ContextSnapshot: portTestBlob("tenant-b"),
@@ -49,6 +51,8 @@ func TestExecutionRequestAcceptsHarnessNeutralReferences(t *testing.T) {
 	request := ports.ExecutionRequest{
 		TenantID:        "tenant-a",
 		RunID:           "run-1",
+		SessionID:       "session-1",
+		TriggerEventID:  "event-1",
 		AttemptID:       "attempt-1",
 		WorkDir:         "/tmp/sessionless-test",
 		ContextSnapshot: portTestBlob("tenant-a"),

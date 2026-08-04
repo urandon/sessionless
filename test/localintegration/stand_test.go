@@ -294,7 +294,7 @@ func testTelegramCommands(t *testing.T) {
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	var sawStatus, sawNewContext, sawDisconnect bool
+	var sawStatus, sawNewSession, sawDisconnect bool
 	for _, capture := range captures.Result {
 		if capture.Method != "sendMessage" || capture.ChatID != 99001 {
 			t.Fatalf("command capture = %#v", capture)
@@ -306,13 +306,13 @@ func testTelegramCommands(t *testing.T) {
 			t.Fatal(err)
 		}
 		sawStatus = sawStatus || strings.Contains(payload.Text, "reauthentication_required")
-		sawNewContext = sawNewContext || strings.Contains(payload.Text, "New clean context started")
+		sawNewSession = sawNewSession || strings.Contains(payload.Text, "new session was created")
 		sawDisconnect = sawDisconnect || strings.Contains(payload.Text, "connection disconnected")
 	}
-	if !sawStatus || !sawNewContext || !sawDisconnect {
+	if !sawStatus || !sawNewSession || !sawDisconnect {
 		t.Fatalf(
-			"command replies missing: status=%t new_context=%t disconnect=%t",
-			sawStatus, sawNewContext, sawDisconnect,
+			"command replies missing: status=%t new_session=%t disconnect=%t",
+			sawStatus, sawNewSession, sawDisconnect,
 		)
 	}
 
@@ -337,7 +337,7 @@ func testTelegramCommands(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var commandRuns, contextEvents uint64
+	var commandRuns, legacyBindingEvents uint64
 	if err := ydb.DB.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM telegram_updates
 		 WHERE tenant_id = $1 AND source_id = $2
@@ -356,11 +356,11 @@ func testTelegramCommands(t *testing.T) {
 		   AND trigger_message_id = $3`,
 		identity.Tenant, identity.Conversation.ID,
 		strconv.FormatInt(baseUpdateID+2, 10),
-	).Scan(&contextEvents); err != nil {
+	).Scan(&legacyBindingEvents); err != nil {
 		t.Fatal(err)
 	}
-	if contextEvents != 1 {
-		t.Fatalf("clean-context event count = %d, want 1", contextEvents)
+	if legacyBindingEvents != 1 {
+		t.Fatalf("legacy binding-switch ledger count = %d, want 1", legacyBindingEvents)
 	}
 	var entitlement string
 	if err := ydb.DB.QueryRowContext(ctx,

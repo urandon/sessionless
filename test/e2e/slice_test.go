@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/queuecontract"
 	"gitcode.com/urandon/sessionless/internal/s3store"
 	"gitcode.com/urandon/sessionless/internal/sqsqueue"
@@ -57,6 +58,7 @@ type runRef struct {
 	Conversation domain.ConversationRef
 	ConnectionID domain.SubscriptionConnectionID
 	RunID        domain.RunID
+	SessionID    domain.SessionID
 }
 
 type capture struct {
@@ -185,34 +187,39 @@ func TestDeterministicLocalMultiUserSlice(t *testing.T) {
 	})
 
 	t.Run("admitted dispatch is republished after a queue outage", func(t *testing.T) {
+		setupRun := slice.postMessage(base+140, userA, "prepare ready subscription")
+		slice.setConnectionReady(setupRun)
+		slice.waitRunStatus(setupRun, domain.RunQueued)
+		slice.runWorker(nil)
+		slice.waitRunStatus(setupRun, domain.RunSucceeded)
 		slice.compose("stop", "queue-local")
 		run := slice.postMessage(base+14, userA, "repair dispatch publication gap")
-		slice.setConnectionReady(run)
 		slice.waitRunStatus(run, domain.RunQueued)
 		slice.compose("start", "queue-local")
 		slice.waitHTTP("http://127.0.0.1:9324/?Action=ListQueues&Version=2012-11-05")
-		time.Sleep(500 * time.Millisecond)
+		slice.waitDispatchStatus(run, domain.DispatchPublished)
 		slice.runWorker(nil)
 		slice.waitRunStatus(run, domain.RunSucceeded)
 	})
 
-	t.Run("explicit clean context advances the frontend context epoch", func(t *testing.T) {
+	t.Run("explicit new switches the frontend to a new canonical session", func(t *testing.T) {
 		before := len(slice.capturesForChat(userA))
 		command := slice.postMessage(base+15, userA, "/new")
 		slice.waitRunStatus(command, domain.RunSucceeded)
 		slice.waitCaptureIncrease(userA, before)
-		var epoch uint64
-		if err := slice.db.QueryRowContext(
-			slice.ctx,
-			`SELECT current_context_epoch FROM conversations
-			 WHERE tenant_id = $1 AND conversation_id = $2`,
-			command.TenantID, command.Conversation.ID,
-		).Scan(&epoch); err != nil {
-			t.Fatal(err)
+		resetAt := time.Now().UTC().Add(10 * time.Minute)
+		slice.setConnectionState(
+			command,
+			domain.EntitlementActive,
+			domain.ProviderQuotaExhausted,
+			domain.SchedulerBlockedUntilReset,
+			&resetAt,
+		)
+		after := slice.postMessage(base+16, userA, "first message in the new session")
+		if after.SessionID == command.SessionID {
+			t.Fatalf("/new retained session_id %s", after.SessionID)
 		}
-		if epoch == 0 {
-			t.Fatal("explicit clean context did not advance the context epoch")
-		}
+		slice.waitRunStatus(after, domain.RunQuotaBlocked)
 	})
 }
 
@@ -380,10 +387,26 @@ func (slice *localSlice) postUpdate(
 	).Scan(&runID); err != nil {
 		slice.t.Fatal(err)
 	}
+	var persistedRun domain.Run
+	if err := slice.state.Transact(slice.ctx, identity.Tenant, func(tx ports.StateTx) error {
+		var found bool
+		var err error
+		persistedRun, found, err = tx.GetRun(slice.ctx, runID)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return fmt.Errorf("run %s not found", runID)
+		}
+		return nil
+	}); err != nil {
+		slice.t.Fatal(err)
+	}
 	ref := runRef{
 		UpdateID: updateID, MessageID: updateID, ChatID: chatID,
 		TenantID: identity.Tenant, Conversation: identity.Conversation,
 		ConnectionID: identity.SubscriptionConnection, RunID: runID,
+		SessionID: persistedRun.SessionID,
 	}
 	slice.t.Logf(
 		"correlation update_id=%d tenant_id=%s run_id=%s chat_id=%d",
@@ -469,6 +492,30 @@ func (slice *localSlice) waitRunStatus(run runRef, wanted domain.RunStatus) {
 		}
 		if time.Now().After(deadline) {
 			slice.t.Fatalf("run %s status = %q, want %q (last error: %v)", run.RunID, status, wanted, err)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func (slice *localSlice) waitDispatchStatus(run runRef, wanted domain.DispatchStatus) {
+	slice.t.Helper()
+	deadline := time.Now().Add(35 * time.Second)
+	for {
+		var status domain.DispatchStatus
+		err := slice.db.QueryRowContext(
+			slice.ctx,
+			`SELECT status FROM dispatch_outbox
+			 WHERE tenant_id = $1 AND run_id = $2`,
+			run.TenantID, run.RunID,
+		).Scan(&status)
+		if err == nil && status == wanted {
+			return
+		}
+		if time.Now().After(deadline) {
+			slice.t.Fatalf(
+				"run %s dispatch status = %q, want %q (last error: %v)",
+				run.RunID, status, wanted, err,
+			)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}

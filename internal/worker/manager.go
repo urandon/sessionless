@@ -159,6 +159,7 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 	}
 	request := ports.ExecutionRequest{
 		TenantID: loaded.Run.TenantID, RunID: loaded.Run.ID,
+		SessionID: loaded.Run.SessionID, TriggerEventID: loaded.Run.TriggerEventID,
 		AttemptID: loaded.Attempt.ID, WorkDir: workDir,
 		ContextSnapshot:   loaded.Job.ContextSnapshot,
 		InputArtifacts:    loaded.InputManifest.Artifacts,

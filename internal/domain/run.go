@@ -57,9 +57,9 @@ func CanTransitionRun(from, to RunStatus) bool {
 type Run struct {
 	ID                       RunID                    `json:"id"`
 	TenantID                 TenantID                 `json:"tenant_id"`
-	Conversation             ConversationRef          `json:"conversation"`
+	SessionID                SessionID                `json:"session_id"`
+	TriggerEventID           SessionEventID           `json:"trigger_event_id"`
 	SubscriptionConnectionID SubscriptionConnectionID `json:"subscription_connection_id"`
-	ContextEpoch             ContextEpoch             `json:"context_epoch"`
 	Status                   RunStatus                `json:"status"`
 	IdempotencyKey           IdempotencyKey           `json:"idempotency_key"`
 	CancellationRequestedAt  *time.Time               `json:"cancellation_requested_at,omitempty"`
@@ -76,16 +76,13 @@ func (run Run) Validate() error {
 	if err := run.TenantID.Validate(); err != nil {
 		return err
 	}
-	if err := run.Conversation.Validate(); err != nil {
+	if err := run.SessionID.Validate(); err != nil {
 		return err
 	}
-	if err := EnsureSameTenant(run.TenantID, run.Conversation.TenantID); err != nil {
+	if err := run.TriggerEventID.Validate(); err != nil {
 		return err
 	}
 	if err := run.SubscriptionConnectionID.Validate(); err != nil {
-		return err
-	}
-	if err := run.ContextEpoch.Validate(); err != nil {
 		return err
 	}
 	if !run.Status.Valid() {

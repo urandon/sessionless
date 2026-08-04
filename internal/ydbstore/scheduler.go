@@ -217,6 +217,7 @@ func (store *Store) AdmitDispatch(
 		}
 		if err := state.PutWorkerJob(ctx, domain.WorkerJob{
 			TenantID: request.TenantID, RunID: request.RunID,
+			SessionID: run.SessionID, TriggerEventID: run.TriggerEventID,
 			AttemptID: request.AttemptID, ReservationID: request.ReservationID,
 			InputManifestID:   outbox.InputManifestID,
 			ContextSnapshot:   outbox.ContextSnapshot,

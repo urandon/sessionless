@@ -1,23 +1,36 @@
 # AGENTS.md
 
 ## Product direction
-- Build a Telegram chatbot that acts as a proxy over isolated OpenCode sessions.
-- Telegram chat history and Telegram Bot API semantics are the source of truth; do not invent a separate primary session model that conflicts with the chat.
-- Users may not know what a session is; expose “new clean context” only as an explicit user command.
-- Support user messages with images/files and return AI processing results back in the same Telegram chat.
+- Build a multi-frontend product whose canonical conversation state is an
+  append-only `Session` event stream owned by Sessionless.
+- Telegram is the first frontend adapter, not the source of truth. WebUI and
+  later frontends bind external conversations to the same canonical sessions.
+- `/new` creates a new session and atomically switches the current frontend
+  binding. It never mutates or truncates an existing session.
+- Support user messages with images/files and project AI results back to every
+  bound frontend without making transport identifiers product identities.
 
 ## Execution model
-- AI work should run in isolated OpenCode workers with access only to chat-provided data and explicitly allowed MCP servers.
-- The serverless bot backend should route work to a pool of OpenCode workers rather than running all AI processing inline.
+- AI work runs in isolated, harness-pluggable workers with access only to
+  authorized session material and explicitly allowed MCP servers.
+- The serverless control plane routes work to workers rather than processing AI
+  work inline.
 - Assume hosting targets Yandex Cloud serverless primitives unless requirements change.
-- Persist required data in cloud storage such as S3 buckets; partition storage so one Telegram chat/user cannot accidentally see another’s data.
-- Prefer a serverless database compatible with Yandex Cloud, e.g. YDB, for operational state.
+- Persist canonical and operational state in YDB and large immutable payloads
+  in Object Storage. Partition and authorize both by tenant.
 
 ## Implementation preferences
 - Backend language priority: Go first, then TypeScript, then Python.
 - Keep infrastructure choices friendly to Yandex Cloud serverless and YDB support.
-- Include a minimal admin surface for worker health and consumed-token monitoring.
+- Include WebUI/admin surfaces for sessions, worker health, and consumed-token
+  monitoring. Membership, not an identity-provider claim alone, grants tenant access.
 
-## Current repo state
-- This repository is currently empty: no manifests, scripts, CI, tests, or existing instruction files were present when this file was created.
-- Do not claim build/test/lint commands until they exist in executable config.
+## Current repository state
+- The repository contains a Go control plane, YDB migrations/state adapters,
+  queue and blob adapters, a local/cloud development stand, a deterministic
+  worker harness, Telegram adapters, tests, and CI.
+- Canonical session domain and port contracts are present. Persistence migration
+  and frontend adaptation are tracked separately; do not describe legacy
+  conversation/context tables as the canonical model.
+- Use only commands backed by the Makefile and documented in `README.md` and
+  `docs/development.md`.

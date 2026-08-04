@@ -3,13 +3,13 @@
 Sessionless is a serverless, cloud-hosted control plane for routing
 conversation-backed work to isolated AI-agent workers.
 
-The core is frontend-aware but not frontend-specific. Telegram is the first
-frontend and its chat history provides the authoritative conversation context
-for the initial product slice. Additional frontends can be added through
-transport adapters without redefining runs, scheduling, quota accounting, or
-worker isolation. A new clean context is always an explicit frontend action
-that advances a context epoch; it does not create a hidden primary session
-model or delete the frontend's history.
+Sessionless owns the canonical conversation model: an append-only, strictly
+ordered `SessionEvent` stream with immutable snapshots as optional context
+materializations. Telegram is the first frontend adapter, and WebUI is the next;
+both bind external conversations to canonical sessions without redefining runs,
+scheduling, quota accounting, or worker isolation. A `/new` action creates a
+new session and switches the frontend binding atomically. Existing sessions and
+their history remain intact.
 
 The control plane is also harness-neutral. Codex, OpenCode, Claude, and
 Hermes-style runtimes are candidates for isolated worker adapters, not
@@ -24,18 +24,22 @@ and MCP access.
 
 The repository currently contains the Go component boundaries, harness-neutral
 domain/runtime contracts, the authoritative YDB state store and migrations,
-authenticated Telegram webhook ingestion, durable Telegram delivery, bounded
+authenticated Telegram webhook ingestion, durable Telegram delivery, canonical
+session domain and port contracts, bounded
 subscription-aware admission and dispatch, a reproducible local development
 stand, isolated worker packaging, pinned developer tools, subscription state
-commands, explicit clean-context epochs, and GitHub Actions CI fed by the
+commands, and GitHub Actions CI fed by the
 GitCode mirror. It also contains the complete isolated worker lifecycle with a
 credential-free deterministic harness: durable job materialization, fenced
 lease renewal, bounded scratch space, checkpoint/resume, usage events,
 content-addressed artifacts, cancellation/timeout handling, and atomic terminal
 delivery. A credential-free two-tenant black-box suite now composes the full
 local Telegram-to-worker-to-Telegram path and its recovery cases. Provider
-authorization and subscription-backed Codex, OpenCode, Claude, or Hermes
-adapters remain later implementation slices.
+authorization, canonical-session persistence, frontend projection, and
+subscription-backed Codex, OpenCode, Claude, or Hermes adapters remain later
+implementation slices. The current Telegram/YDB adapter still carries a private
+legacy revision until those persistence and adapter migrations land; it is not
+part of the product contract.
 
 ## Components
 
@@ -52,8 +56,8 @@ adapters remain later implementation slices.
 - `internal/worker`: durable materialize/execute/checkpoint/finalize lifecycle;
 - `internal/deterministicharness`: credential-free adapter that proves the
   worker contract before a subscription CLI is selected;
-- `internal/domain`: tenant-scoped identities, state machines, quota/usage
-  semantics, outboxes, artifacts, and explicit context epochs;
+- `internal/domain`: canonical sessions/events/bindings/snapshots, tenant-scoped
+  identities, state machines, quota/usage semantics, outboxes, and artifacts;
 - `internal/ports`: YDB/queue/blob/frontend/credential/harness-neutral runtime
   interfaces;
 - `internal/portlog`: process-boundary structured correlation logs without
@@ -73,7 +77,7 @@ adapters remain later implementation slices.
   reservation enforcement, durable queue publication, and quota expiry;
 - `internal/telegramingress`: webhook authentication, opaque deterministic
   identity resolution, normalized input/blob handling, durable subscription
-  commands, explicit clean-context transitions, and idempotent run creation;
+  commands, transitional binding compatibility, and idempotent run creation;
 - `internal/telegramdelivery`: bounded YDB-ready traversal, transactional delivery
   claims, retry policy, and Telegram Bot API sending;
 - `internal/queuecontract`: versioned queue envelopes containing opaque IDs only.

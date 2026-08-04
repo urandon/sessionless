@@ -73,7 +73,8 @@ The suite proves:
 - replaying a terminal queue message produces no re-execution, charge, or
   delivery;
 - output artifact keys and reads remain tenant-scoped;
-- `/new` advances the frontend conversation context epoch explicitly.
+- `/new` changes the next workload to a new canonical `session_id` while the
+  previous session remains intact.
 
 The lower-level worker, YDB, S3, queue, ingress, and delivery suites retain
 their focused concurrency, fencing, path traversal, size-limit, and

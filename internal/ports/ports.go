@@ -19,6 +19,11 @@ type IDKind string
 
 const (
 	IDTenant                 IDKind = "tenant"
+	IDUser                   IDKind = "user"
+	IDSession                IDKind = "session"
+	IDSessionEvent           IDKind = "session_event"
+	IDFrontendBinding        IDKind = "frontend_binding"
+	IDSessionSnapshot        IDKind = "session_snapshot"
 	IDActor                  IDKind = "actor"
 	IDConversation           IDKind = "conversation"
 	IDSubscriptionConnection IDKind = "subscription_connection"
@@ -48,7 +53,9 @@ type TelegramIdentityRequest struct {
 }
 
 type TelegramIdentityState struct {
-	ContextEpoch domain.ContextEpoch
+	// LegacyContextRevision is private compatibility state for the pre-session
+	// YDB schema. It is removed with the canonical persistence migration in #21.
+	LegacyContextRevision uint64
 }
 
 type TelegramIngress struct {
@@ -99,6 +106,8 @@ type TelegramCommandRequest struct {
 	Conversation             domain.ConversationRef
 	SubscriptionConnectionID domain.SubscriptionConnectionID
 	RunID                    domain.RunID
+	SessionID                domain.SessionID
+	TriggerEventID           domain.SessionEventID
 	DeliveryID               domain.TelegramDeliveryID
 	Chat                     domain.TelegramChatRef
 	ReplyToMessageID         int64
@@ -143,6 +152,20 @@ type StateTx interface {
 
 	PutDispatchOutbox(ctx context.Context, outbox domain.DispatchOutbox) error
 	PutTelegramDeliveryOutbox(ctx context.Context, outbox domain.TelegramDeliveryOutbox) error
+}
+
+// SessionStore is the frontend-neutral canonical conversation boundary.
+// Implementations must make append and binding switches transactional.
+type SessionStore interface {
+	CreateSession(ctx context.Context, session domain.Session, owner domain.SessionParticipant) error
+	CreateAndSwitchSession(ctx context.Context, session domain.Session, owner domain.SessionParticipant, bindingID domain.FrontendBindingID, expectedRevision uint64, at time.Time) (domain.FrontendBinding, error)
+	BindFrontend(ctx context.Context, binding domain.FrontendBinding) error
+	SwitchFrontendBinding(ctx context.Context, bindingID domain.FrontendBindingID, expectedRevision uint64, sessionID domain.SessionID, at time.Time) (domain.FrontendBinding, error)
+	AppendSessionEvent(ctx context.Context, event domain.SessionEvent) (created bool, err error)
+	ArchiveSession(ctx context.Context, tenantID domain.TenantID, sessionID domain.SessionID, at time.Time) error
+	UnarchiveSession(ctx context.Context, tenantID domain.TenantID, sessionID domain.SessionID, at time.Time) error
+	ListSessions(ctx context.Context, tenantID domain.TenantID, userID domain.UserID, limit uint64) ([]domain.Session, error)
+	ListSessionHistory(ctx context.Context, tenantID domain.TenantID, sessionID domain.SessionID, afterSequence uint64, limit uint64) ([]domain.SessionEvent, error)
 }
 
 type ReceivedMessage struct {
@@ -316,6 +339,8 @@ type CredentialVault interface {
 type ExecutionRequest struct {
 	TenantID          domain.TenantID
 	RunID             domain.RunID
+	SessionID         domain.SessionID
+	TriggerEventID    domain.SessionEventID
 	AttemptID         domain.AttemptID
 	WorkDir           string
 	ContextSnapshot   domain.BlobRef

@@ -83,11 +83,7 @@ func (store *memoryIngressStore) ExecuteTelegramCommand(
 	}
 	if request.Kind == ports.TelegramCommandNewContext {
 		state := store.identities[request.TenantID]
-		next, err := state.ContextEpoch.Next()
-		if err != nil {
-			return ports.TelegramIngressResult{}, err
-		}
-		state.ContextEpoch = next
+		state.LegacyContextRevision++
 		store.identities[request.TenantID] = state
 	}
 	store.updates[key] = request.RunID
@@ -110,7 +106,7 @@ func (store *memoryIngressStore) EnsureTelegramIdentity(
 	defer store.mu.Unlock()
 	state, ok := store.identities[request.TenantID]
 	if !ok {
-		state.ContextEpoch = domain.InitialContextEpoch
+		state.LegacyContextRevision = 1
 		store.identities[request.TenantID] = state
 	}
 	return state, nil

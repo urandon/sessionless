@@ -10,6 +10,8 @@ import (
 type WorkerJob struct {
 	TenantID          TenantID           `json:"tenant_id"`
 	RunID             RunID              `json:"run_id"`
+	SessionID         SessionID          `json:"session_id"`
+	TriggerEventID    SessionEventID     `json:"trigger_event_id"`
 	AttemptID         AttemptID          `json:"attempt_id"`
 	ReservationID     QuotaReservationID `json:"reservation_id"`
 	InputManifestID   ArtifactManifestID `json:"input_manifest_id"`
@@ -32,6 +34,9 @@ func (job WorkerJob) ValidateForRun(run Run) error {
 	}
 	if job.RunID != run.ID {
 		return ValidationError{Field: "worker_job.run_id", Reason: "must reference the owning run"}
+	}
+	if job.SessionID != run.SessionID || job.TriggerEventID != run.TriggerEventID {
+		return ValidationError{Field: "worker_job.session", Reason: "must reference the owning run session and trigger event"}
 	}
 	if err := job.AttemptID.Validate(); err != nil {
 		return err

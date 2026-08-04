@@ -72,12 +72,20 @@ make dev-down
 
 `make dev-up` performs the following fail-fast sequence:
 
-1. Build and start YDB, MinIO, ElasticMQ, Telegram fake, the control API,
-   Telegram sender, and reconciler.
-2. Poll each host endpoint until it is ready or emit scoped service logs.
+1. Build and start only infrastructure services: YDB, MinIO, ElasticMQ, and
+   the Telegram fake.
+2. Poll their host endpoints until they are ready or emit scoped service logs.
 3. Idempotently create the `sessionless-local` bucket.
-4. Apply the embedded Goose/YDB migrations.
-5. Idempotently load `test/fixtures/telegram/text-message.json`.
+4. Apply the embedded Goose/YDB migrations before any schema-dependent
+   service starts. YDB Local's narrow storage-pool initialization state is
+   retried; all other migration failures remain fail-fast.
+5. Build and start the control API, Telegram sender, and reconciler, then wait
+   for the control API readiness endpoint.
+6. Idempotently load `test/fixtures/telegram/text-message.json`.
+
+This phase barrier prevents application logs from being polluted by expected
+`table does not exist` errors while a fresh YDB volume is still being
+migrated.
 
 The default profile leaves the serverless-shaped worker stopped. Run
 `make worker-once` after the reconciler admits a dispatch. Compose starts a
@@ -125,7 +133,7 @@ make local-integration
 The suite proves YDB connectivity, S3 round-trip and cross-tenant rejection,
 SQS retry/dead-letter behavior, deterministic Telegram update/capture behavior,
 and durable command state/replies for connect, status, disconnect, and a new
-clean context. Scheduler unit/YDB integration coverage separately proves
+canonical session binding. Scheduler unit/YDB integration coverage separately proves
 exactly one concurrent reservation per subscription, deterministic queue
 message IDs, bounded dispatch/expiry traversal, and idempotent reservation
 expiry. Worker unit/YDB integration coverage proves tenant-safe materialization,

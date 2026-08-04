@@ -53,6 +53,11 @@ func (generator *Generator) NewID(ctx context.Context, kind ports.IDKind) (strin
 
 var prefixes = map[ports.IDKind]string{
 	ports.IDTenant:                 "ten_",
+	ports.IDUser:                   "usr_",
+	ports.IDSession:                "ses_",
+	ports.IDSessionEvent:           "sev_",
+	ports.IDFrontendBinding:        "fbd_",
+	ports.IDSessionSnapshot:        "ssn_",
 	ports.IDActor:                  "act_",
 	ports.IDConversation:           "con_",
 	ports.IDSubscriptionConnection: "sub_",

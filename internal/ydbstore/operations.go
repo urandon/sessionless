@@ -122,20 +122,20 @@ func (store *Store) ExecuteTelegramCommand(
 		).Scan(&currentEpoch); err != nil {
 			return err
 		}
-		epoch := domain.ContextEpoch(currentEpoch)
-		reply, nextEpoch, err := executeTelegramCommandState(ctx, tx, request, epoch)
+		reply, nextEpoch, err := executeTelegramCommandState(ctx, tx, request, currentEpoch)
 		if err != nil {
 			return err
 		}
-		epoch = nextEpoch
+		currentEpoch = nextEpoch
 		finishedAt := request.RequestedAt
 		run := domain.Run{
 			ID: request.RunID, TenantID: request.TenantID,
-			Conversation:             request.Conversation,
+			SessionID:                request.SessionID,
+			TriggerEventID:           request.TriggerEventID,
 			SubscriptionConnectionID: request.SubscriptionConnectionID,
-			ContextEpoch:             epoch, Status: domain.RunSucceeded,
-			IdempotencyKey: request.IdempotencyKey,
-			FinishedAt:     &finishedAt, CreatedAt: request.RequestedAt,
+			Status:                   domain.RunSucceeded,
+			IdempotencyKey:           request.IdempotencyKey,
+			FinishedAt:               &finishedAt, CreatedAt: request.RequestedAt,
 			UpdatedAt: request.RequestedAt,
 		}
 		if err := state.PutRun(ctx, run); err != nil {
@@ -171,9 +171,9 @@ func executeTelegramCommandState(
 	ctx context.Context,
 	tx *stateTx,
 	request ports.TelegramCommandRequest,
-	epoch domain.ContextEpoch,
-) (reply string, resultingEpoch domain.ContextEpoch, err error) {
-	resultingEpoch = epoch
+	revision uint64,
+) (reply string, resultingRevision uint64, err error) {
+	resultingRevision = revision
 	switch request.Kind {
 	case ports.TelegramCommandConnectCodex:
 		if _, err := tx.sqlTx.ExecContext(ctx,
@@ -185,15 +185,15 @@ func executeTelegramCommandState(
 			request.RequestedAt, request.RequestedAt,
 			request.TenantID, request.SubscriptionConnectionID,
 		); err != nil {
-			return "", epoch, err
+			return "", revision, err
 		}
 		if err := setSchedulerSlotState(
 			ctx, tx, request.SubscriptionConnectionID,
 			domain.SchedulerReauthRequired, nil, request.RequestedAt,
 		); err != nil {
-			return "", epoch, err
+			return "", revision, err
 		}
-		return "Codex connection: authorization required. No credential has been stored; provider authorization will be completed by the isolated Codex adapter.", epoch, nil
+		return "Codex connection: authorization required. No credential has been stored; provider authorization will be completed by the isolated Codex adapter.", revision, nil
 	case ports.TelegramCommandComputeStatus:
 		var provider, entitlement, quota string
 		if err := tx.sqlTx.QueryRowContext(ctx,
@@ -202,7 +202,7 @@ func executeTelegramCommandState(
 			 WHERE tenant_id = $1 AND subscription_connection_id = $2`,
 			request.TenantID, request.SubscriptionConnectionID,
 		).Scan(&provider, &entitlement, &quota); err != nil {
-			return "", epoch, err
+			return "", revision, err
 		}
 		var schedulerState string
 		if err := tx.sqlTx.QueryRowContext(ctx,
@@ -210,12 +210,12 @@ func executeTelegramCommandState(
 			 WHERE tenant_id = $1 AND subscription_connection_id = $2`,
 			request.TenantID, request.SubscriptionConnectionID,
 		).Scan(&schedulerState); err != nil {
-			return "", epoch, err
+			return "", revision, err
 		}
 		return fmt.Sprintf(
 			"Compute provider: %s\nConnection: %s\nQuota: %s\nScheduler: %s",
 			provider, entitlement, quota, schedulerState,
-		), epoch, nil
+		), revision, nil
 	case ports.TelegramCommandDisconnectCodex:
 		if _, err := tx.sqlTx.ExecContext(ctx,
 			`UPDATE subscription_connections
@@ -226,58 +226,45 @@ func executeTelegramCommandState(
 			request.RequestedAt, request.RequestedAt,
 			request.TenantID, request.SubscriptionConnectionID,
 		); err != nil {
-			return "", epoch, err
+			return "", revision, err
 		}
 		if err := setSchedulerSlotState(
 			ctx, tx, request.SubscriptionConnectionID,
 			domain.SchedulerReauthRequired, nil, request.RequestedAt,
 		); err != nil {
-			return "", epoch, err
+			return "", revision, err
 		}
-		return "Codex connection disconnected. Stored credential references were removed and no API-billing fallback was enabled.", epoch, nil
+		return "Codex connection disconnected. Stored credential references were removed and no API-billing fallback was enabled.", revision, nil
 	case ports.TelegramCommandNewContext:
-		next, err := epoch.Next()
-		if err != nil {
-			return "", epoch, err
+		if revision == ^uint64(0) {
+			return "", revision, domain.ValidationError{Field: "legacy_context_revision", Reason: "cannot overflow"}
 		}
-		event := domain.CleanContextEvent{
-			TenantID: request.TenantID, Conversation: request.Conversation,
-			RequestedBy: request.Actor, PreviousEpoch: epoch, NewEpoch: next,
-			TriggerMessageID: strconv.FormatInt(request.ReplyToMessageID, 10),
-			IdempotencyKey:   request.IdempotencyKey,
-			RequestedAt:      request.RequestedAt,
-		}
-		if err := event.Validate(); err != nil {
-			return "", epoch, err
-		}
+		next := revision + 1
 		if _, err := tx.sqlTx.ExecContext(ctx,
 			`INSERT INTO context_epochs
 			 (tenant_id, conversation_id, context_epoch, requested_by_actor_id,
 			  trigger_message_id, idempotency_key, context_blob_key, created_at)
 			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-			event.TenantID, event.Conversation.ID, uint64(event.NewEpoch),
-			event.RequestedBy.ID, event.TriggerMessageID, event.IdempotencyKey,
-			"", event.RequestedAt,
+			request.TenantID, request.Conversation.ID, next,
+			request.Actor.ID, strconv.FormatInt(request.ReplyToMessageID, 10), request.IdempotencyKey,
+			"", request.RequestedAt,
 		); err != nil {
-			return "", epoch, err
+			return "", revision, err
 		}
 		if _, err := tx.sqlTx.ExecContext(ctx,
 			`UPDATE conversations
 			 SET current_context_epoch = $1, updated_at = $2
 			 WHERE tenant_id = $3 AND conversation_id = $4`,
-			uint64(event.NewEpoch), event.RequestedAt,
-			event.TenantID, event.Conversation.ID,
+			next, request.RequestedAt,
+			request.TenantID, request.Conversation.ID,
 		); err != nil {
-			return "", epoch, err
+			return "", revision, err
 		}
-		return fmt.Sprintf(
-			"New clean context started (epoch %d). Telegram history was not deleted; future workloads will use only the new context epoch.",
-			event.NewEpoch,
-		), next, nil
+		return "A new session was created and this Telegram chat now points to it.", next, nil
 	case ports.TelegramCommandHelp:
-		return "Supported commands:\n/connect codex\n/compute status\n/compute disconnect codex\n/new", epoch, nil
+		return "Supported commands:\n/connect codex\n/compute status\n/compute disconnect codex\n/new", revision, nil
 	default:
-		return "", epoch, domain.ValidationError{
+		return "", revision, domain.ValidationError{
 			Field: "telegram.command", Reason: "is unknown",
 		}
 	}
@@ -339,6 +326,12 @@ func validateTelegramCommand(request ports.TelegramCommandRequest) error {
 	if err := request.RunID.Validate(); err != nil {
 		return err
 	}
+	if err := request.SessionID.Validate(); err != nil {
+		return err
+	}
+	if err := request.TriggerEventID.Validate(); err != nil {
+		return err
+	}
 	if err := request.DeliveryID.Validate(); err != nil {
 		return err
 	}
@@ -383,7 +376,7 @@ func (store *Store) EnsureTelegramIdentity(
 		).Scan(&epoch)
 		switch {
 		case errors.Is(queryErr, sql.ErrNoRows):
-			epoch = uint64(domain.InitialContextEpoch)
+			epoch = 1
 		case queryErr != nil:
 			return queryErr
 		}
@@ -477,7 +470,7 @@ func (store *Store) EnsureTelegramIdentity(
 		case counterErr != nil:
 			return counterErr
 		}
-		result.ContextEpoch = domain.ContextEpoch(epoch)
+		result.LegacyContextRevision = epoch
 		return nil
 	})
 	return result, err

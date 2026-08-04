@@ -134,8 +134,8 @@ func TestTelegramIdentityInitializationIsIdempotent(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if state.ContextEpoch != domain.InitialContextEpoch {
-			t.Fatalf("context epoch = %d", state.ContextEpoch)
+		if state.LegacyContextRevision != 1 {
+			t.Fatalf("legacy context revision = %d", state.LegacyContextRevision)
 		}
 	}
 	assertCount(t, client, "tenants", tenantID, 1)
@@ -708,8 +708,8 @@ func TestTelegramCommandsAreAtomicIdempotentAndDoNotDispatchAIWork(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if identity.ContextEpoch != 2 {
-		t.Fatalf("context epoch = %d, want 2", identity.ContextEpoch)
+	if identity.LegacyContextRevision != 2 {
+		t.Fatalf("legacy context revision = %d, want 2", identity.LegacyContextRevision)
 	}
 
 	disconnect := commandFixture(
@@ -784,6 +784,8 @@ func commandFixture(
 		Kind: kind, Provider: "codex", Actor: actor, Conversation: conversation,
 		SubscriptionConnectionID: connectionID,
 		RunID:                    domain.RunID("run-command-" + suffix),
+		SessionID:                domain.SessionID("session-command-" + suffix),
+		TriggerEventID:           domain.SessionEventID("event-command-" + suffix),
 		DeliveryID:               domain.TelegramDeliveryID("delivery-command-" + suffix),
 		Chat: domain.TelegramChatRef{
 			TenantID: tenantID,
@@ -811,14 +813,11 @@ func ingressFixture(
 	now time.Time,
 ) ydbstore.TelegramIngress {
 	run := domain.Run{
-		ID:       domain.RunID(runID),
-		TenantID: tenantID,
-		Conversation: domain.ConversationRef{
-			TenantID: tenantID, Frontend: domain.FrontendTelegram,
-			ExternalID: "442211", ID: domain.ConversationID("conversation-" + string(tenantID)),
-		},
+		ID:                       domain.RunID(runID),
+		TenantID:                 tenantID,
+		SessionID:                domain.SessionID("session-" + runID),
+		TriggerEventID:           domain.SessionEventID("event-" + runID),
 		SubscriptionConnectionID: domain.SubscriptionConnectionID("subscription-" + string(tenantID)),
-		ContextEpoch:             domain.InitialContextEpoch,
 		Status:                   domain.RunCreated,
 		IdempotencyKey:           domain.IdempotencyKey(fmt.Sprintf("telegram-%s-%d", tenantID, updateID)),
 		CreatedAt:                now,

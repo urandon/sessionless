@@ -106,6 +106,12 @@ func (request ExecutionRequest) Validate() error {
 	if err := request.RunID.Validate(); err != nil {
 		return err
 	}
+	if err := request.SessionID.Validate(); err != nil {
+		return err
+	}
+	if err := request.TriggerEventID.Validate(); err != nil {
+		return err
+	}
 	if err := request.AttemptID.Validate(); err != nil {
 		return err
 	}

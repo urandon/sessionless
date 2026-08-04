@@ -165,8 +165,8 @@ func (tx *stateTx) PutRun(ctx context.Context, run domain.Run) error {
 		 (tenant_id, run_id, conversation_id, subscription_connection_id,
 		  context_epoch, status, created_at, updated_at, payload)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CAST($9 AS JsonDocument))`,
-		run.TenantID, run.ID, run.Conversation.ID, run.SubscriptionConnectionID,
-		uint64(run.ContextEpoch), run.Status, run.CreatedAt, run.UpdatedAt, payload,
+		run.TenantID, run.ID, run.SessionID, run.SubscriptionConnectionID,
+		uint64(0), run.Status, run.CreatedAt, run.UpdatedAt, payload,
 	); err != nil {
 		return err
 	}

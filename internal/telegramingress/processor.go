@@ -3,6 +3,7 @@ package telegramingress
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -124,6 +125,8 @@ func (processor *Processor) Process(
 	idempotencyKey := domain.IdempotencyKey(
 		"tg:" + processor.config.SourceID + ":" + strconv.FormatInt(update.UpdateID, 10),
 	)
+	sessionID := legacySessionID(identity.Conversation.ID, state.LegacyContextRevision)
+	triggerEventID := legacyTriggerEventID(processor.config.SourceID, update.UpdateID)
 	if isCommand {
 		runID, err := newTypedID[domain.RunID](ctx, processor.ids, ports.IDRun)
 		if err != nil {
@@ -142,6 +145,7 @@ func (processor *Processor) Process(
 			Actor: identity.Actor, Conversation: identity.Conversation,
 			SubscriptionConnectionID: identity.SubscriptionConnection,
 			RunID:                    runID, DeliveryID: deliveryID,
+			SessionID: sessionID, TriggerEventID: triggerEventID,
 			Chat: domain.TelegramChatRef{
 				TenantID: identity.Tenant,
 				ChatID:   message.Chat.ID,
@@ -194,10 +198,11 @@ func (processor *Processor) Process(
 	}}
 	artifacts = append(artifacts, attachments...)
 	run := domain.Run{
-		ID: runID, TenantID: identity.Tenant, Conversation: identity.Conversation,
+		ID: runID, TenantID: identity.Tenant,
+		SessionID: sessionID, TriggerEventID: triggerEventID,
 		SubscriptionConnectionID: identity.SubscriptionConnection,
-		ContextEpoch:             state.ContextEpoch, Status: domain.RunCreated,
-		IdempotencyKey: idempotencyKey, CreatedAt: now, UpdatedAt: now,
+		Status:                   domain.RunCreated,
+		IdempotencyKey:           idempotencyKey, CreatedAt: now, UpdatedAt: now,
 	}
 	attempt := domain.Attempt{
 		ID: attemptID, TenantID: identity.Tenant, RunID: runID, Number: 1,
@@ -222,6 +227,18 @@ func (processor *Processor) Process(
 		UpdateID: update.UpdateID, ExpireAt: now.Add(processor.config.IdempotencyRetention),
 		Run: run, Attempt: attempt, InputManifest: manifest, Dispatch: dispatch,
 	})
+}
+
+// These deterministic IDs bridge the pre-session Telegram schema while #21
+// and #36 replace it with persisted canonical sessions and frontend bindings.
+func legacySessionID(conversationID domain.ConversationID, revision uint64) domain.SessionID {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("telegram-session:%s:%d", conversationID, revision)))
+	return domain.SessionID(fmt.Sprintf("legacy-session:%x", sum[:16]))
+}
+
+func legacyTriggerEventID(sourceID string, updateID int64) domain.SessionEventID {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("telegram-event:%s:%d", sourceID, updateID)))
+	return domain.SessionEventID(fmt.Sprintf("legacy-event:%x", sum[:16]))
 }
 
 func (processor *Processor) storeAttachments(

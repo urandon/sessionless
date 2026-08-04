@@ -32,7 +32,8 @@ func TestFailBeforeFirstTurnLeavesNoCheckpointAndResumeCanProceed(t *testing.T) 
 		t.Fatal(err)
 	}
 	request := ports.ExecutionRequest{
-		TenantID: "tenant-a", RunID: "run-a", AttemptID: "attempt-a",
+		TenantID: "tenant-a", RunID: "run-a", SessionID: "session-a",
+		TriggerEventID: "event-a", AttemptID: "attempt-a",
 		WorkDir: workDir,
 		ContextSnapshot: domain.BlobRef{
 			TenantID: "tenant-a", Key: "tenants/tenant-a/context.json",

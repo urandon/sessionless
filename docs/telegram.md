@@ -1,9 +1,9 @@
 # Telegram frontend adapter
 
 Telegram is the first frontend, not the control plane's primary session model.
-The Bot API update and the chat history remain authoritative frontend facts.
-The control plane persists only the operational state, normalized tenant-scoped
-inputs, explicit context epoch, run state, and delivery state required to
+The Bot API update and chat history remain authoritative transport facts, while
+Sessionless owns canonical session history. The adapter persists normalized
+tenant-scoped inputs plus the operational run and delivery state required to
 execute work safely.
 
 ## Webhook contract
@@ -46,7 +46,7 @@ Any other slash-prefixed message receives the supported-command list and is
 never dispatched as an AI workload. A command is represented by a terminal
 control-plane run with no attempt or dispatch outbox. In one serializable YDB
 transaction the adapter deduplicates the Telegram update, applies the
-subscription/context change, records the command run, and enqueues an inline
+subscription or binding change, records the command run, and enqueues an inline
 Telegram delivery. This avoids a state-committed/reply-missing crash window.
 
 `/connect codex` currently moves the deterministic connection to
@@ -58,10 +58,12 @@ clears the credential reference, marks the connection `disconnected`, resets
 observed quota to `unknown`, moves admission to `reauth_required`, and does not
 enable an API-billing fallback.
 
-`/new` is the explicit clean-context action. It atomically appends one
-`context_epochs` event and advances `conversations.current_context_epoch`.
-Telegram history and stored artifacts are not deleted. Subsequent workloads
-bind to the new epoch; the command itself is not sent to an AI worker.
+`/new` creates a new canonical session and switches this Telegram conversation
+to it. Telegram history, stored artifacts, and the previous session are not
+deleted. Until #21 and #36 persist canonical bindings directly, the adapter
+records this switch in the legacy `context_epochs` ledger and derives a new
+temporary `session_id` from that revision. The legacy revision is not a product
+API; the command itself is not sent to an AI worker.
 
 ## Opaque identity resolution
 

@@ -11,18 +11,12 @@ import (
 var testTime = time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
 
 func validRun() domain.Run {
-	conversation := domain.ConversationRef{
-		TenantID:   "tenant-a",
-		Frontend:   domain.FrontendTelegram,
-		ExternalID: "-1000123",
-		ID:         "conversation-1",
-	}
 	return domain.Run{
 		ID:                       "run-1",
 		TenantID:                 "tenant-a",
-		Conversation:             conversation,
+		SessionID:                "session-1",
+		TriggerEventID:           "event-1",
 		SubscriptionConnectionID: "subscription-1",
-		ContextEpoch:             domain.InitialContextEpoch,
 		Status:                   domain.RunCreated,
 		IdempotencyKey:           "telegram-update-1",
 		CreatedAt:                testTime,
@@ -72,45 +66,6 @@ func TestBlobMustRemainInsideTenantPrefix(t *testing.T) {
 	blob.Key = "tenants/tenant-b/runs/run-1/context.json"
 	if err := blob.Validate(); err == nil {
 		t.Fatal("BlobRef.Validate() succeeded for a cross-tenant key")
-	}
-}
-
-func TestCleanContextRequiresExplicitNextEpochAndMatchingTenant(t *testing.T) {
-	t.Parallel()
-
-	event := domain.CleanContextEvent{
-		TenantID: "tenant-a",
-		Conversation: domain.ConversationRef{
-			TenantID:   "tenant-a",
-			Frontend:   domain.FrontendTelegram,
-			ExternalID: "-1000123",
-			ID:         "conversation-1",
-		},
-		RequestedBy: domain.ActorRef{
-			TenantID:   "tenant-a",
-			Frontend:   domain.FrontendTelegram,
-			ExternalID: "1234",
-			ID:         "actor-1",
-		},
-		PreviousEpoch:    1,
-		NewEpoch:         2,
-		TriggerMessageID: "telegram-message-7",
-		IdempotencyKey:   "telegram-update-7",
-		RequestedAt:      testTime,
-	}
-	if err := event.Validate(); err != nil {
-		t.Fatalf("valid CleanContextEvent rejected: %v", err)
-	}
-
-	event.NewEpoch = 3
-	if err := event.Validate(); err == nil {
-		t.Fatal("CleanContextEvent.Validate() accepted a skipped epoch")
-	}
-
-	event.NewEpoch = 2
-	event.RequestedBy.TenantID = "tenant-b"
-	if err := event.Validate(); err == nil {
-		t.Fatal("CleanContextEvent.Validate() accepted a cross-tenant actor")
 	}
 }
 

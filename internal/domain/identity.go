@@ -15,6 +15,11 @@ var opaqueIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]*$`)
 
 type (
 	TenantID                 string
+	UserID                   string
+	SessionID                string
+	SessionEventID           string
+	FrontendBindingID        string
+	SessionSnapshotID        string
 	ConversationID           string
 	ActorID                  string
 	RunID                    string
@@ -32,6 +37,15 @@ type (
 )
 
 func (id TenantID) Validate() error       { return ValidateOpaqueID("tenant_id", string(id)) }
+func (id UserID) Validate() error         { return ValidateOpaqueID("user_id", string(id)) }
+func (id SessionID) Validate() error      { return ValidateOpaqueID("session_id", string(id)) }
+func (id SessionEventID) Validate() error { return ValidateOpaqueID("session_event_id", string(id)) }
+func (id FrontendBindingID) Validate() error {
+	return ValidateOpaqueID("frontend_binding_id", string(id))
+}
+func (id SessionSnapshotID) Validate() error {
+	return ValidateOpaqueID("session_snapshot_id", string(id))
+}
 func (id ConversationID) Validate() error { return ValidateOpaqueID("conversation_id", string(id)) }
 func (id ActorID) Validate() error        { return ValidateOpaqueID("actor_id", string(id)) }
 func (id RunID) Validate() error          { return ValidateOpaqueID("run_id", string(id)) }

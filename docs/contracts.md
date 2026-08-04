@@ -17,24 +17,48 @@ harness.
 Domain and queue packages import no Telegram, Yandex Cloud, or harness-specific
 SDK.
 
-## Frontends and context epochs
+## Canonical sessions and frontend bindings
 
-`ConversationRef` and `ActorRef` use a generic frontend plus an external
-identifier. `TelegramChatRef` and `TelegramUserRef` are first-frontend adapters
-that produce those generic references.
+`Session` is the product conversation and Sessionless is its source of truth.
+It belongs to one tenant, records its creator and lifecycle, and owns a strictly
+increasing event sequence. A session is either `active` or `archived`;
+unarchiving preserves the same identity and history.
 
-Telegram history remains authoritative for the initial product slice. The
-control plane persists operational state and derived context artifacts, but
-does not invent a competing primary session history.
+`SessionEvent` is append-only and tenant/session scoped. Its stable kinds are
+`user_message`, `assistant_message`, `tool_call`, `tool_result`, and
+`system_notice`. Each event has an opaque ID, a per-session sequence, a stable
+idempotency key, an immutable tenant-scoped payload reference, and optional
+author/run references. Exact retries are no-ops; reusing an idempotency key for
+different immutable event identity is a conflict. A new append must claim
+exactly `last_event_sequence + 1` in the same transaction that advances the
+session row. User messages require an author user; assistant and tool events
+require the run that produced them.
 
-The initial context epoch is `1`. A clean-context action creates a validated
-`CleanContextEvent` that:
+`FrontendBinding` maps `(tenant, frontend, external conversation)` to one
+canonical session. Binding switches use an expected revision so stale tabs,
+webhooks, or retries cannot redirect a conversation after a newer switch. A
+new-context action creates a new session and atomically switches the binding;
+it does not delete, truncate, or rewrite the former session.
 
-- was explicitly triggered by a frontend message;
-- belongs to the same tenant, frontend, conversation, and actor;
-- advances the epoch by exactly one;
-- carries an idempotency key;
-- does not delete frontend history.
+The frontend-neutral `SessionStore` exposes create, create-and-switch, bind,
+optimistic switch, append, archive, unarchive, list, and ordered-history
+operations. `CreateAndSwitchSession` is the `/new` transaction boundary: a
+failure cannot leave either an orphan product session or a half-switched
+frontend conversation.
+
+`SessionParticipant` grants `owner`, `member`, or `viewer` access to an active
+tenant membership. Tenant, session, and user must all match before access is
+allowed; viewers cannot append. Authentication establishes a user identity,
+while tenant membership is the authorization boundary.
+
+`SessionSnapshot` is an immutable, versioned materialization through a specific
+event sequence. It is only an optimization: canonical context is the snapshot
+plus the contiguous ordered event range after it. There is no mutable
+`context_epoch` product API.
+
+`ConversationRef`, `ActorRef`, and the old YDB context revision remain only in
+the transitional Telegram persistence adapter. They must not cross into new
+session, run, scheduling, or worker contracts and are removed by #21/#36.
 
 ## Tenant isolation
 
@@ -70,6 +94,26 @@ deadlines and shutdown still use `context.Context`.
 Each attempt belongs to exactly one run. Leases carry monotonically assigned
 fence tokens and a bounded validity interval. Checkpoints are sequenced,
 tenant-scoped blob references attached to one attempt.
+
+Every run references the canonical `session_id` and the `trigger_event_id`
+that caused it. Worker jobs and harness execution requests repeat those IDs for
+correlation and authorization. Harness-native conversation identifiers are
+attempt metadata only and never become product session identities.
+
+## Canonical finalization and frontend projection
+
+User ingestion first appends the canonical user event, then creates a run whose
+`trigger_event_id` references it. Assistant and tool output is finalized by
+appending canonical events under the same fenced terminal transaction as the
+run result. A frontend projection references the finalized event and records
+its own delivery/idempotency state; delivery success never determines whether
+the canonical event exists. Retrying or adding a frontend therefore cannot
+duplicate or rewrite canonical history.
+
+Until #23 migrates worker finalization, the existing Telegram delivery outbox
+is a compatibility projection. Until #22/#36 migrate ingestion, the existing
+Telegram update transaction is a compatibility ingress path. Neither changes
+the canonical contract above.
 
 ## Quota and usage
 
@@ -221,8 +265,9 @@ run by that key before creating state. Outbox rows and queue messages use
 separate opaque IDs so an at-least-once redelivery replays the same intended
 transition rather than creating new work.
 
-Telegram control commands use a terminal run without an attempt or dispatch
-row. Update deduplication, subscription/context mutation, run creation, and an
-inline-text delivery outbox row commit in the same tenant-scoped serializable
-transaction. A duplicate update returns the existing command run and cannot
-advance the context epoch or enqueue another logical reply.
+Telegram control commands currently use a terminal run without an attempt or
+dispatch row. Update deduplication, subscription or binding-compatibility
+mutation, run creation, and an inline-text delivery outbox row commit in the
+same tenant-scoped serializable transaction. A duplicate update returns the
+existing command run and cannot switch the effective session twice or enqueue
+another logical reply.

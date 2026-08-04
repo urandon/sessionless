@@ -75,12 +75,14 @@ curl http://127.0.0.1:8080/healthz
 curl http://127.0.0.1:8081/healthz
 ```
 
-`make dev-up` starts pinned YDB Local, MinIO, ElasticMQ, the deterministic
-Telegram fake, the control API, durable Telegram sender, and bounded
-reconciler. It waits for every public endpoint, creates the local bucket,
-applies the embedded YDB
-migrations, and idempotently loads the synthetic Telegram fixture. It does not
-require cloud credentials or a real Telegram token.
+`make dev-up` first starts pinned YDB Local, MinIO, ElasticMQ, and the
+deterministic Telegram fake. It waits for the infrastructure endpoints,
+creates the local bucket, and applies the embedded YDB migrations. Only after
+that schema barrier does it start the control API, durable Telegram sender,
+and bounded reconciler, then idempotently loads the synthetic Telegram
+fixture. A fresh-volume YDB storage-pool initialization is retried without
+starting schema consumers; all other migration failures remain fail-fast. The
+stand does not require cloud credentials or a real Telegram token.
 
 The worker is intentionally not kept alive by the default Compose profile.
 Local mode consumes at most one queue message and exits; cloud mode serves one

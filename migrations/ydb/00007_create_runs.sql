@@ -2,9 +2,9 @@
 CREATE TABLE IF NOT EXISTS `runs` (
     tenant_id Utf8,
     run_id Utf8,
-    conversation_id Utf8,
+    session_id Utf8,
+    trigger_event_id Utf8,
     subscription_connection_id Utf8,
-    context_epoch Uint64,
     status Utf8,
     created_at Timestamp,
     updated_at Timestamp,

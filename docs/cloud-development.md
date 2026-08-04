@@ -263,7 +263,41 @@ creates a valid registry object but revision deployment cannot use it.
 
 Set the three image-tag variables in the tfvars file to that immutable SHA.
 
-### 7. Apply schema and complete environment
+### 7. Reset disposable application data after a baseline rebase
+
+Skip this step for an ordinary forward migration. Use it only while cloud-dev
+is explicitly disposable and a reviewed change has rebased an already-applied
+pre-production migration baseline.
+
+The plan resolves the folder, YDB database, and artifact bucket from the
+selected cloud-dev Terraform state. It fails if supplied environment values do
+not match those outputs and prints the exact application-table allowlist and
+the `tenants/` object prefix. It does not modify anything:
+
+```sh
+make cloud-app-reset-plan
+```
+
+Review that JSON, then derive the typed confirmation from the same Terraform
+outputs and execute with a short-lived IAM token:
+
+```sh
+export CLOUD_DEV_FOLDER_ID="$(./scripts/cloud-terraform.sh output -raw folder_id)"
+export S3_BUCKET="$(./scripts/cloud-terraform.sh output -raw artifact_bucket_name)"
+export YC_TOKEN="$(yc iam create-token)"
+export CONFIRM_CLOUD_APP_RESET="reset-sessionless-cloud-dev:${CLOUD_DEV_FOLDER_ID}:${S3_BUCKET}"
+make cloud-app-reset
+unset CONFIRM_CLOUD_APP_RESET YC_TOKEN S3_BUCKET CLOUD_DEV_FOLDER_ID
+```
+
+The command deletes only objects below `tenants/` in the resolved cloud-dev
+artifact bucket and drops only repository-owned application and migration
+metadata tables in the resolved cloud-dev YDB. It preserves the folder,
+database resource, bucket, Terraform state, bootstrap/deployment lock, queues,
+registry, IAM, KMS, Lockbox, DNS, certificates, and unrelated bucket prefixes.
+Never substitute manual recursive bucket deletion or a broad YDB cleanup.
+
+### 8. Apply schema and complete environment
 
 Use a short-lived operator IAM token only in the child process environment:
 
@@ -292,7 +326,7 @@ stateless container resource. This one-time recovery is allowed only before
 traffic is routed and must contain no replacement of YDB, buckets, Lockbox,
 queues, or other state-bearing resources.
 
-### 8. Verify the Yandex foundation
+### 9. Verify the Yandex foundation
 
 ```sh
 export CLOUD_API_URL="$(./scripts/cloud-terraform.sh output -raw api_url)"

@@ -2,6 +2,7 @@
 CREATE TABLE IF NOT EXISTS `actors` (
     tenant_id Utf8,
     actor_id Utf8,
+	user_id Utf8,
     frontend Utf8,
     external_id Utf8,
     created_at Timestamp,

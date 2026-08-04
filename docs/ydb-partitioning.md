@@ -24,8 +24,9 @@ bits and a fixed kind prefix. They contain no timestamp, sequence, tenant
 payload, or frontend identifier. The first symbol after the prefix therefore
 has 32-way Base32 entropy instead of a moving lexicographic edge.
 
-This applies to tenant, actor, conversation, subscription, run, attempt, lease,
-checkpoint, quota, usage, manifest, outbox, delivery, and queue-message IDs.
+This applies to tenant, actor, user, session, event, binding, snapshot,
+subscription, run, attempt, lease, checkpoint, quota, usage, manifest, outbox,
+delivery, and queue-message IDs.
 Timestamps used for ordering remain separate columns.
 
 Test-only sequence IDs stay in `internal/testkit`; they must never be wired into
@@ -37,14 +38,21 @@ a production adapter.
 | --- | --- | --- | --- |
 | `tenants` | `(tenant_id)` | tenant entity | distributed tenant ID; low-volume default partition policy |
 | `actors` | `(tenant_id, actor_id)` | tenant entity | point access under tenant |
-| `conversations` | `(tenant_id, conversation_id)` | tenant entity | point access under tenant |
-| `context_epochs` | `(tenant_id, conversation_id, context_epoch)` | per-run ordered | monotonic epoch is behind tenant and conversation |
+| `sessions` | `(tenant_id, session_id)` | tenant entity | random session ID; load splitting enabled |
+| `session_events` | `(tenant_id, session_id, sequence)` | per-session ordered | sequence grows only behind a random session prefix |
+| `session_event_idempotency` | `(tenant_id, session_id, idempotency_key)` | tenant entity | point lookup behind a random session prefix |
+| `frontend_bindings` | `(tenant_id, binding_id)` | tenant entity | random binding ID; load splitting enabled |
+| `frontend_binding_keys` | `(tenant_id, frontend, external_conversation_id)` | tenant entity | point lookup under an already authorized tenant |
+| `session_participants` | `(tenant_id, session_id, user_id)` | tenant entity | membership is behind a random session prefix |
+| `session_snapshots` | `(tenant_id, session_id, version)` | per-session ordered | version grows only behind a random session prefix |
+| `session_activity` | `(tenant_id, user_id, status, activity_bucket, updated_at, session_id)` | append-heavy | fixed 16-way per-user fan-out avoids one chronological write edge |
 | `telegram_updates` | `(tenant_id, source_id, update_id)` | append-heavy | update sequence is behind tenant; load splitting enabled |
 | `subscription_connections` | `(tenant_id, subscription_connection_id)` | tenant entity | low-cardinality point access |
 | `subscription_scheduler_slots` | `(tenant_id, subscription_connection_id)` | tenant entity | one point-contention row per subscription; load splitting enabled |
 | `tenant_scheduler_counters` | `(tenant_id)` | tenant entity | one bounded counter row per tenant; load splitting enabled |
 | `worker_jobs` | `(tenant_id, run_id)` | tenant entity | point worker descriptor distributed by tenant and random run ID |
 | `runs` | `(tenant_id, run_id)` | tenant entity | random run ID; load splitting enabled |
+| `runs_by_session` | `(tenant_id, session_id, created_at, run_id)` | per-session ordered | time ordering remains behind a random session prefix |
 | `run_idempotency` | `(tenant_id, idempotency_key)` | tenant entity | point lookup; load splitting enabled |
 | `attempts` | `(tenant_id, attempt_id)` | tenant entity | random attempt ID; load splitting enabled |
 | `lease_heads` | `(tenant_id, run_id)` | tenant entity | contention distributed by random run ID |
@@ -97,7 +105,7 @@ make partition-status
 
 `schema-inspect` emits machine-readable JSON containing the expected and actual
 primary keys, auto-partition settings, current partition count, row estimate,
-and contract violations for all 25 logical tables. It exits non-zero when a
+and contract violations for all 32 logical tables. It exits non-zero when a
 primary key differs or required automatic size/load partitioning is disabled.
 Minimum, maximum, target size, and current partition count remain telemetry;
 their exact values are capacity tuning, not an application schema invariant.

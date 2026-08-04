@@ -1,9 +1,9 @@
 # YDB state store
 
-MVP-03 makes YDB the authoritative operational store. Telegram remains the
-first frontend and the initial authoritative conversation context; the tables
-below persist ingestion idempotency, scheduling, quota observations, artifact
-references, and delivery state rather than inventing a competing chat history.
+YDB is the authoritative store for both the canonical Sessionless conversation
+stream and operational control-plane state. Telegram is only the first frontend
+adapter. Its external conversations resolve through revisioned bindings to the
+same sessions that WebUI and later frontends will read and append.
 
 ## Partitioning and access paths
 
@@ -21,14 +21,21 @@ domain objects whose tenant does not match it.
 | --- | --- | --- |
 | `tenants` | `(tenant_id)` | point-read tenant status |
 | `actors` | `(tenant_id, actor_id)` | point-read internal actor |
-| `conversations` | `(tenant_id, conversation_id)` | point-read current context epoch |
-| `context_epochs` | `(tenant_id, conversation_id, context_epoch)` | prefix-read a conversation's epochs |
+| `sessions` | `(tenant_id, session_id)` | point-read canonical session metadata and allocate its next event sequence |
+| `session_events` | `(tenant_id, session_id, sequence)` | bounded prefix-read immutable, ordered canonical history |
+| `session_event_idempotency` | `(tenant_id, session_id, idempotency_key)` | point-resolve an append retry to its existing event |
+| `frontend_bindings` | `(tenant_id, binding_id)` | point-read/switch a revisioned frontend binding |
+| `frontend_binding_keys` | `(tenant_id, frontend, external_conversation_id)` | point-resolve an external conversation without a scan |
+| `session_participants` | `(tenant_id, session_id, user_id)` | point-authorize tenant membership and session role |
+| `session_snapshots` | `(tenant_id, session_id, version)` | bounded prefix-read immutable context materializations |
+| `session_activity` | `(tenant_id, user_id, status, activity_bucket, updated_at, session_id)` | fixed 16-query recent-session fan-out per member |
 | `telegram_updates` | `(tenant_id, source_id, update_id)` | point insert/read for Bot API deduplication |
 | `subscription_connections` | `(tenant_id, subscription_connection_id)` | point-read credential reference and observed entitlement |
 | `subscription_scheduler_slots` | `(tenant_id, subscription_connection_id)` | serializable one-subscription admission contention point |
 | `tenant_scheduler_counters` | `(tenant_id)` | point-read/update bounded queue and active-run counters |
 | `worker_jobs` | `(tenant_id, run_id)` | point-load immutable worker references and admitted limits |
-| `runs` | `(tenant_id, run_id)` | point-read/update one run |
+| `runs` | `(tenant_id, run_id)` | point-read/update one run with explicit session/event correlation |
+| `runs_by_session` | `(tenant_id, session_id, created_at, run_id)` | bounded recent-run read for one session |
 | `run_idempotency` | `(tenant_id, idempotency_key)` | point-resolve an ingress command to a run |
 | `attempts` | `(tenant_id, attempt_id)` | point-read/update one attempt |
 | `lease_heads` | `(tenant_id, run_id)` | serializable contention point and fence allocation |
@@ -54,7 +61,43 @@ Operational search fields are first-class columns. `JsonDocument` payloads
 preserve exact domain round trips, but schedulers, reconcilers, quota monitors,
 and admin tooling must not scan or filter arbitrary JSON.
 
+Canonical payloads use a second tenant/session authorization boundary in Object
+Storage:
+
+```text
+tenants/<tenant-id>/sessions/<session-id>/events/<event-id>/...
+tenants/<tenant-id>/sessions/<session-id>/snapshots/<snapshot-id>/...
+```
+
+An event or snapshot is rejected if its `BlobRef` points to another tenant,
+session, event, or snapshot prefix.
+
 ## Atomic procedures
+
+### Canonical session append and frontend switch
+
+```text
+append event (serializable transaction)
+  point-read sessions(tenant, session)
+  point-read session_event_idempotency(tenant, session, key)
+  if exact retry: return the existing event without a write
+  sequence = session.last_event_sequence + 1
+  insert immutable session event + idempotency row
+  advance session sequence and fixed-fan-out activity rows
+commit
+
+/new or equivalent frontend action (serializable transaction)
+  point-read frontend binding and require expected revision
+  create new session + active owner membership + activity row
+  switch binding to the new session and increment revision
+commit
+```
+
+Concurrent appends serialize on one session row and produce a gap-free sequence.
+There is deliberately no global event sequence. An uncertain
+create-and-switch response is safe to retry with the original binding revision,
+new session ID, and timestamp; a different request receives a stale-binding or
+content-conflict error.
 
 ### Telegram ingestion
 
@@ -129,6 +172,12 @@ shape with measured input/context/artifact dimensions at the context-assembly
 boundary remains part of the open MVP-06 issue.
 
 ## TTL and logical expiry
+
+Canonical `sessions`, `session_events`, `session_event_idempotency`,
+`frontend_bindings`, `session_participants`, and `session_snapshots` have no
+TTL. Archiving changes visibility/status; it does not delete or truncate
+history. Retention of canonical history requires a separate explicit product
+policy and migration.
 
 YDB TTL deletion is asynchronous. Reads whose correctness depends on expiry
 must still compare the timestamp:

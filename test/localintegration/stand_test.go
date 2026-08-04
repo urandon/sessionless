@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -337,7 +336,7 @@ func testTelegramCommands(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var commandRuns, legacyBindingEvents uint64
+	var commandRuns, switchedBindings uint64
 	if err := ydb.DB.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM telegram_updates
 		 WHERE tenant_id = $1 AND source_id = $2
@@ -351,16 +350,16 @@ func testTelegramCommands(t *testing.T) {
 		t.Fatalf("command update count = %d, want %d", commandRuns, len(commands))
 	}
 	if err := ydb.DB.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM context_epochs
-		 WHERE tenant_id = $1 AND conversation_id = $2
-		   AND trigger_message_id = $3`,
-		identity.Tenant, identity.Conversation.ID,
-		strconv.FormatInt(baseUpdateID+2, 10),
-	).Scan(&legacyBindingEvents); err != nil {
+		`SELECT COUNT(*) FROM frontend_bindings
+		 WHERE tenant_id = $1 AND frontend = $2
+		   AND external_conversation_id = $3 AND revision = $4`,
+		identity.Tenant, domain.FrontendTelegram,
+		identity.Conversation.ExternalID, uint64(2),
+	).Scan(&switchedBindings); err != nil {
 		t.Fatal(err)
 	}
-	if legacyBindingEvents != 1 {
-		t.Fatalf("legacy binding-switch ledger count = %d, want 1", legacyBindingEvents)
+	if switchedBindings != 1 {
+		t.Fatalf("canonical switched binding count = %d, want 1", switchedBindings)
 	}
 	var entitlement string
 	if err := ydb.DB.QueryRowContext(ctx,

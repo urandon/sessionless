@@ -46,8 +46,8 @@ func TestEmbeddedMigrationsAreSingleOperationAndOrdered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 41 {
-		t.Fatalf("embedded migration count = %d, want 41", len(migrations))
+	if len(migrations) != 48 {
+		t.Fatalf("embedded migration count = %d, want 48", len(migrations))
 	}
 	for index, migration := range migrations {
 		want := int64(index + 1)

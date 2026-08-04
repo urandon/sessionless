@@ -125,9 +125,15 @@ func (processor *Processor) Process(
 	idempotencyKey := domain.IdempotencyKey(
 		"tg:" + processor.config.SourceID + ":" + strconv.FormatInt(update.UpdateID, 10),
 	)
-	sessionID := legacySessionID(identity.Conversation.ID, state.LegacyContextRevision)
-	triggerEventID := legacyTriggerEventID(processor.config.SourceID, update.UpdateID)
+	sessionID := state.SessionID
+	triggerEventID := telegramTriggerEventID(processor.config.SourceID, update.UpdateID)
 	if isCommand {
+		if command == ports.TelegramCommandNewContext {
+			sessionID, err = newTypedID[domain.SessionID](ctx, processor.ids, ports.IDSession)
+			if err != nil {
+				return ports.TelegramIngressResult{}, err
+			}
+		}
 		runID, err := newTypedID[domain.RunID](ctx, processor.ids, ports.IDRun)
 		if err != nil {
 			return ports.TelegramIngressResult{}, err
@@ -229,16 +235,11 @@ func (processor *Processor) Process(
 	})
 }
 
-// These deterministic IDs bridge the pre-session Telegram schema while #21
-// and #36 replace it with persisted canonical sessions and frontend bindings.
-func legacySessionID(conversationID domain.ConversationID, revision uint64) domain.SessionID {
-	sum := sha256.Sum256([]byte(fmt.Sprintf("telegram-session:%s:%d", conversationID, revision)))
-	return domain.SessionID(fmt.Sprintf("legacy-session:%x", sum[:16]))
-}
-
-func legacyTriggerEventID(sourceID string, updateID int64) domain.SessionEventID {
+// Telegram updates keep a stable trigger identity until SESSION-03 persists
+// the corresponding canonical user event atomically with run creation.
+func telegramTriggerEventID(sourceID string, updateID int64) domain.SessionEventID {
 	sum := sha256.Sum256([]byte(fmt.Sprintf("telegram-event:%s:%d", sourceID, updateID)))
-	return domain.SessionEventID(fmt.Sprintf("legacy-event:%x", sum[:16]))
+	return domain.SessionEventID(fmt.Sprintf("telegram-event:%x", sum[:16]))
 }
 
 func (processor *Processor) storeAttachments(

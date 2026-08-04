@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
@@ -95,6 +96,72 @@ func TestIAMObjectClientUsesBearerTokenForObjectLifecycle(t *testing.T) {
 	}
 	if requestCount != 3 {
 		t.Fatalf("request count = %d, want 3", requestCount)
+	}
+}
+
+func TestDeletePrefixListsAndDeletesOnlySessionlessOwnedObjects(t *testing.T) {
+	const listing = `<?xml version="1.0" encoding="UTF-8"?>
+<ListBucketResult>
+  <IsTruncated>false</IsTruncated>
+  <Contents><Key>tenants/tenant-a/sessions/session-a/event.json</Key></Contents>
+  <Contents><Key>tenants/tenant-b/sessions/session-b/snapshot.json</Key></Contents>
+</ListBucketResult>`
+	deleted := map[string]bool{}
+	httpClient := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Header.Get("Authorization") != "Bearer reset-token" {
+			t.Fatalf("Authorization = %q", request.Header.Get("Authorization"))
+		}
+		response := &http.Response{Header: make(http.Header), Body: http.NoBody}
+		switch request.Method {
+		case http.MethodGet:
+			if request.URL.EscapedPath() != "/artifact-bucket" ||
+				request.URL.Query().Get("list-type") != "2" ||
+				request.URL.Query().Get("prefix") != "tenants/" {
+				t.Fatalf("unexpected listing URL: %s", request.URL)
+			}
+			response.StatusCode = http.StatusOK
+			response.Body = io.NopCloser(bytes.NewBufferString(listing))
+		case http.MethodDelete:
+			key := strings.TrimPrefix(request.URL.EscapedPath(), "/artifact-bucket/")
+			if !strings.HasPrefix(key, "tenants/") {
+				t.Fatalf("delete escaped tenants prefix: %q", key)
+			}
+			deleted[key] = true
+			response.StatusCode = http.StatusNoContent
+		default:
+			t.Fatalf("method = %s", request.Method)
+		}
+		return response, nil
+	})}
+	endpoint, err := url.Parse("https://storage.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &Store{
+		bucket: "artifact-bucket",
+		iamClient: &iamObjectClient{
+			endpoint: endpoint,
+			tokens: tokenProviderFunc(func(context.Context) (string, error) {
+				return "reset-token", nil
+			}),
+			http: httpClient,
+		},
+	}
+	count, err := store.DeletePrefix(context.Background(), "tenants/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 || len(deleted) != 2 {
+		t.Fatalf("deleted count = %d, keys = %#v", count, deleted)
+	}
+}
+
+func TestDeletePrefixRejectsBroadOrNonSessionlessPrefixes(t *testing.T) {
+	store := &Store{}
+	for _, prefix := range []string{"", "/", "shared/", "tenants", "tenants/../shared/"} {
+		if _, err := store.DeletePrefix(context.Background(), prefix); err == nil {
+			t.Fatalf("prefix %q was accepted", prefix)
+		}
 	}
 }
 

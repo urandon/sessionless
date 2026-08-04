@@ -285,10 +285,7 @@ func (event SessionEvent) Validate() error {
 	if err := event.IdempotencyKey.Validate(); err != nil {
 		return err
 	}
-	if err := event.Payload.Validate(); err != nil {
-		return err
-	}
-	if err := EnsureSameTenant(event.TenantID, event.Payload.TenantID); err != nil {
+	if err := ValidateSessionEventBlob(event.TenantID, event.SessionID, event.ID, event.Payload); err != nil {
 		return err
 	}
 	if event.CreatedAt.IsZero() {
@@ -380,10 +377,7 @@ func (snapshot SessionSnapshot) Validate() error {
 	if snapshot.Version == 0 {
 		return ValidationError{Field: "session_snapshot.version", Reason: "must be positive"}
 	}
-	if err := snapshot.Payload.Validate(); err != nil {
-		return err
-	}
-	if err := EnsureSameTenant(snapshot.TenantID, snapshot.Payload.TenantID); err != nil {
+	if err := ValidateSessionSnapshotBlob(snapshot.TenantID, snapshot.SessionID, snapshot.ID, snapshot.Payload); err != nil {
 		return err
 	}
 	if snapshot.CreatedAt.IsZero() {

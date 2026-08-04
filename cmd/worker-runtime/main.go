@@ -67,10 +67,13 @@ func main() {
 		os.Exit(1)
 	}
 	managerConfig := worker.Config{
-		ScratchRoot:          envOrDefault("WORKER_SCRATCH_ROOT", "/tmp/sessionless-worker"),
-		WorkerID:             envOrDefault("WORKER_ID", defaultWorkerID()),
-		LeaseTTL:             envDuration("WORKER_LEASE_TTL", 2*time.Minute),
-		RetryDelay:           envDuration("WORKER_RETRY_DELAY", 5*time.Second),
+		ScratchRoot: envOrDefault("WORKER_SCRATCH_ROOT", "/tmp/sessionless-worker"),
+		WorkerID:    envOrDefault("WORKER_ID", defaultWorkerID()),
+		LeaseTTL:    envDuration("WORKER_LEASE_TTL", 2*time.Minute),
+		RetryDelay:  envDuration("WORKER_RETRY_DELAY", 5*time.Second),
+		RetryObserver: func(cause error) {
+			logger.Warn("worker invocation scheduled for retry", "error", cause)
+		},
 		MaxDeliveryCount:     uint32(envUint64("WORKER_MAX_DELIVERY_COUNT", 5)),
 		MaxMaterializedBytes: int64(envUint64("WORKER_MAX_BLOB_BYTES", 64<<20)),
 	}

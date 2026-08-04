@@ -61,6 +61,13 @@ type runRef struct {
 	SessionID    domain.SessionID
 }
 
+type durableRunState struct {
+	Checkpoints uint64
+	Usage       uint64
+	Manifests   uint64
+	Deliveries  uint64
+}
+
 type capture struct {
 	MessageID int64           `json:"message_id"`
 	Method    string          `json:"method"`
@@ -77,8 +84,8 @@ func TestDeterministicLocalMultiUserSlice(t *testing.T) {
 	slice.reset()
 
 	base := time.Now().UTC().UnixMilli()
-	userA := int64(881_001)
-	userB := int64(881_002)
+	userA := base*2 + 1
+	userB := base*2 + 2
 
 	t.Run("interleaved tenants, duplicate update, delivery retry and duplicate queue delivery", func(t *testing.T) {
 		slice.injectTelegramFailure("sendMessage", 1, http.StatusTooManyRequests)
@@ -120,9 +127,10 @@ func TestDeterministicLocalMultiUserSlice(t *testing.T) {
 		slice.assertDeliveryWasRetried(runA, runB)
 
 		before := len(slice.captures())
+		beforeState := slice.terminalState(runA)
 		slice.publishDuplicate(runA)
 		slice.runWorker(nil)
-		time.Sleep(750 * time.Millisecond)
+		slice.assertTerminalState(runA, beforeState)
 		if after := len(slice.captures()); after != before {
 			t.Fatalf("duplicate terminal delivery produced captures: before=%d after=%d", before, after)
 		}
@@ -137,9 +145,7 @@ func TestDeterministicLocalMultiUserSlice(t *testing.T) {
 			"DETERMINISTIC_HARNESS_RETRYABLE_FAIL":         "true",
 		})
 		slice.assertCheckpointCount(run, 0)
-		time.Sleep(1200 * time.Millisecond)
-		slice.runWorker(nil)
-		slice.waitRunStatus(run, domain.RunSucceeded)
+		slice.runWorkerUntilStatus(run, domain.RunSucceeded)
 		slice.assertCheckpointCount(run, 2)
 	})
 
@@ -152,9 +158,7 @@ func TestDeterministicLocalMultiUserSlice(t *testing.T) {
 			"DETERMINISTIC_HARNESS_RETRYABLE_FAIL": "true",
 		})
 		slice.assertCheckpointCount(run, 1)
-		time.Sleep(1200 * time.Millisecond)
-		slice.runWorker(nil)
-		slice.waitRunStatus(run, domain.RunSucceeded)
+		slice.runWorkerUntilStatus(run, domain.RunSucceeded)
 		slice.assertCheckpointCount(run, 2)
 	})
 
@@ -164,8 +168,7 @@ func TestDeterministicLocalMultiUserSlice(t *testing.T) {
 		slice.waitRunStatus(run, domain.RunQueued)
 		before := len(slice.capturesForChat(userA))
 		slice.requestCancellation(run)
-		slice.runWorker(nil)
-		slice.waitRunStatus(run, domain.RunCancelled)
+		slice.runWorkerUntilStatus(run, domain.RunCancelled)
 		slice.waitCaptureIncrease(userA, before)
 	})
 
@@ -481,12 +484,7 @@ func (slice *localSlice) waitRunStatus(run runRef, wanted domain.RunStatus) {
 	slice.t.Helper()
 	deadline := time.Now().Add(35 * time.Second)
 	for {
-		var status domain.RunStatus
-		err := slice.db.QueryRowContext(
-			slice.ctx,
-			`SELECT status FROM runs WHERE tenant_id = $1 AND run_id = $2`,
-			run.TenantID, run.RunID,
-		).Scan(&status)
+		status, err := slice.runStatus(run)
 		if err == nil && status == wanted {
 			return
 		}
@@ -495,6 +493,42 @@ func (slice *localSlice) waitRunStatus(run runRef, wanted domain.RunStatus) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+func (slice *localSlice) runWorkerUntilStatus(run runRef, wanted domain.RunStatus) {
+	slice.t.Helper()
+	deadline := time.Now().Add(35 * time.Second)
+	invocations := 0
+	for {
+		slice.runWorker(nil)
+		invocations++
+		status, err := slice.runStatus(run)
+		if err == nil && status == wanted {
+			return
+		}
+		if err == nil && status.Terminal() {
+			slice.t.Fatalf(
+				"run %s reached terminal status %q while waiting for %q after %d worker invocations",
+				run.RunID, status, wanted, invocations,
+			)
+		}
+		if time.Now().After(deadline) {
+			slice.t.Fatalf(
+				"run %s status = %q, want %q after %d worker invocations (last error: %v)",
+				run.RunID, status, wanted, invocations, err,
+			)
+		}
+	}
+}
+
+func (slice *localSlice) runStatus(run runRef) (domain.RunStatus, error) {
+	var status domain.RunStatus
+	err := slice.db.QueryRowContext(
+		slice.ctx,
+		`SELECT status FROM runs WHERE tenant_id = $1 AND run_id = $2`,
+		run.TenantID, run.RunID,
+	).Scan(&status)
+	return status, err
 }
 
 func (slice *localSlice) waitDispatchStatus(run runRef, wanted domain.DispatchStatus) {
@@ -575,7 +609,16 @@ func (slice *localSlice) requestCancellation(ref runRef) {
 	if err := json.Unmarshal([]byte(payload), &run); err != nil {
 		slice.t.Fatal(err)
 	}
-	now := time.Now().UTC()
+	var now time.Time
+	if err := slice.db.QueryRowContext(
+		slice.ctx, `SELECT CurrentUtcTimestamp()`,
+	).Scan(&now); err != nil {
+		slice.t.Fatal(err)
+	}
+	now = now.UTC()
+	if now.Before(run.UpdatedAt) {
+		now = run.UpdatedAt
+	}
 	run.CancellationRequestedAt = &now
 	run.UpdatedAt = now
 	updated, err := json.Marshal(run)
@@ -626,17 +669,56 @@ func (slice *localSlice) assertCheckpointCount(run runRef, wanted uint64) {
 
 func (slice *localSlice) assertUsage(run runRef, wanted uint64) {
 	slice.t.Helper()
-	var count uint64
-	if err := slice.db.QueryRowContext(
-		slice.ctx,
+	count := slice.countRunRows(
+		run,
 		`SELECT COUNT(*) FROM usage_observations WHERE tenant_id = $1 AND run_id = $2`,
-		run.TenantID, run.RunID,
-	).Scan(&count); err != nil {
-		slice.t.Fatal(err)
-	}
+	)
 	if count != wanted {
 		slice.t.Fatalf("run %s usage rows = %d, want %d", run.RunID, count, wanted)
 	}
+}
+
+func (slice *localSlice) terminalState(run runRef) durableRunState {
+	slice.t.Helper()
+	return durableRunState{
+		Checkpoints: slice.countRunRows(
+			run,
+			`SELECT COUNT(*) FROM checkpoints WHERE tenant_id = $1 AND run_id = $2`,
+		),
+		Usage: slice.countRunRows(
+			run,
+			`SELECT COUNT(*) FROM usage_observations WHERE tenant_id = $1 AND run_id = $2`,
+		),
+		Manifests: slice.countRunRows(
+			run,
+			`SELECT COUNT(*) FROM artifact_manifests WHERE tenant_id = $1 AND run_id = $2`,
+		),
+		Deliveries: slice.countRunRows(
+			run,
+			`SELECT COUNT(*) FROM telegram_delivery_outbox WHERE tenant_id = $1 AND run_id = $2`,
+		),
+	}
+}
+
+func (slice *localSlice) assertTerminalState(run runRef, wanted durableRunState) {
+	slice.t.Helper()
+	if got := slice.terminalState(run); got != wanted {
+		slice.t.Fatalf(
+			"duplicate terminal delivery changed durable state for run %s: got=%+v want=%+v",
+			run.RunID, got, wanted,
+		)
+	}
+}
+
+func (slice *localSlice) countRunRows(run runRef, query string) uint64 {
+	slice.t.Helper()
+	var count uint64
+	if err := slice.db.QueryRowContext(
+		slice.ctx, query, run.TenantID, run.RunID,
+	).Scan(&count); err != nil {
+		slice.t.Fatal(err)
+	}
+	return count
 }
 
 func (slice *localSlice) assertTenantArtifacts(runA, runB runRef) {

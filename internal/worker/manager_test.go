@@ -128,9 +128,12 @@ func TestWorkerResumesAfterRetryableFailureAndDeduplicatesDelivery(t *testing.T)
 	harness, _ := deterministicharness.New(deterministicharness.Config{
 		Turns: 2, Artifacts: 1, FailAtTurn: 1, RetryableFail: true,
 	})
+	var retryCause error
 	manager, err := worker.New(worker.Config{
 		ScratchRoot: t.TempDir(), WorkerID: "worker-test",
-		RetryDelay: time.Millisecond, MaxDeliveryCount: 3,
+		RetryDelay:       time.Millisecond,
+		RetryObserver:    func(cause error) { retryCause = cause },
+		MaxDeliveryCount: 3,
 	}, clock, queue, state, blobs, harness)
 	if err != nil {
 		t.Fatal(err)
@@ -138,6 +141,9 @@ func TestWorkerResumesAfterRetryableFailureAndDeduplicatesDelivery(t *testing.T)
 	outcome, err := manager.RunOnce(ctx)
 	if err != nil || outcome != worker.OutcomeRetried {
 		t.Fatalf("first outcome/error = %q/%v, want retried/nil", outcome, err)
+	}
+	if retryCause == nil {
+		t.Fatal("retry observer did not receive the retry cause")
 	}
 	if state.jobs[key].Checkpoint == nil || state.jobs[key].Checkpoint.Sequence != 1 {
 		t.Fatalf("checkpoint after failure = %#v, want sequence 1", state.jobs[key].Checkpoint)

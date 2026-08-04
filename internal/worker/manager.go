@@ -25,6 +25,7 @@ type Config struct {
 	WorkerID             string
 	LeaseTTL             time.Duration
 	RetryDelay           time.Duration
+	RetryObserver        func(error)
 	MaxDeliveryCount     uint32
 	MaxMaterializedBytes int64
 }
@@ -557,6 +558,9 @@ func (manager *Manager) retry(
 	message ports.ReceivedMessage,
 	cause error,
 ) (Outcome, error) {
+	if manager.config.RetryObserver != nil {
+		manager.config.RetryObserver(cause)
+	}
 	if message.DeliveryCount >= manager.config.MaxDeliveryCount {
 		if err := manager.queue.DeadLetter(ctx, message.ReceiptHandle, "retry_exhausted"); err != nil {
 			return "", errors.Join(cause, err)

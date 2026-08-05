@@ -206,8 +206,12 @@ func TestDeterministicLocalMultiUserSlice(t *testing.T) {
 	})
 
 	t.Run("explicit new switches the frontend to a new canonical session", func(t *testing.T) {
+		previousSession := slice.currentSession(userA)
 		before := len(slice.capturesForChat(userA))
 		command := slice.postMessage(base+15, userA, "/new")
+		if command.SessionID == previousSession {
+			t.Fatalf("/new retained previous session_id %s", previousSession)
+		}
 		slice.waitRunStatus(command, domain.RunSucceeded)
 		slice.waitCaptureIncrease(userA, before)
 		resetAt := time.Now().UTC().Add(10 * time.Minute)
@@ -219,11 +223,33 @@ func TestDeterministicLocalMultiUserSlice(t *testing.T) {
 			&resetAt,
 		)
 		after := slice.postMessage(base+16, userA, "first message in the new session")
-		if after.SessionID == command.SessionID {
-			t.Fatalf("/new retained session_id %s", after.SessionID)
+		if after.SessionID != command.SessionID {
+			t.Fatalf("message session_id = %s, want switched session %s", after.SessionID, command.SessionID)
 		}
 		slice.waitRunStatus(after, domain.RunQuotaBlocked)
 	})
+}
+
+func (slice *localSlice) currentSession(chatID int64) domain.SessionID {
+	slice.t.Helper()
+	resolver, err := telegramingress.NewIdentityResolver([]byte(identityKey))
+	if err != nil {
+		slice.t.Fatal(err)
+	}
+	identity, err := resolver.ResolvePrivate(chatID, chatID, "codex")
+	if err != nil {
+		slice.t.Fatal(err)
+	}
+	binding, found, err := slice.state.ResolveFrontendBinding(
+		slice.ctx, identity.Tenant, identity.Conversation.Frontend, identity.Conversation.ExternalID,
+	)
+	if err != nil {
+		slice.t.Fatal(err)
+	}
+	if !found {
+		slice.t.Fatalf("Telegram binding for chat %d not found", chatID)
+	}
+	return binding.SessionID
 }
 
 func newLocalSlice(t *testing.T) *localSlice {

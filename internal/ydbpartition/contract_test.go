@@ -82,8 +82,33 @@ func TestPoliciesCoverLogicalTablesOnce(t *testing.T) {
 		}
 		seen[policy.LogicalName] = struct{}{}
 	}
-	if len(seen) != 25 {
-		t.Fatalf("logical table policies = %d, want 25", len(seen))
+	if len(seen) != 32 {
+		t.Fatalf("logical table policies = %d, want 32", len(seen))
+	}
+}
+
+func TestCanonicalSessionIndexesRemainBoundedAndTenantScoped(t *testing.T) {
+	want := map[string][]string{
+		"sessions":         {"tenant_id", "session_id"},
+		"session_events":   {"tenant_id", "session_id", "sequence"},
+		"session_activity": {"tenant_id", "user_id", "status", "activity_bucket", "updated_at", "session_id"},
+		"runs_by_session":  {"tenant_id", "session_id", "created_at", "run_id"},
+	}
+	for _, policy := range Policies() {
+		key, exists := want[policy.LogicalName]
+		if !exists {
+			continue
+		}
+		delete(want, policy.LogicalName)
+		if fmt.Sprint(policy.PrimaryKey) != fmt.Sprint(key) {
+			t.Errorf("%s key = %v, want %v", policy.LogicalName, policy.PrimaryKey, key)
+		}
+		if !policy.LoadPartitioning {
+			t.Errorf("%s must leave load-aware splitting enabled", policy.LogicalName)
+		}
+	}
+	for table := range want {
+		t.Errorf("missing canonical partition policy for %s", table)
 	}
 }
 

@@ -10,21 +10,28 @@ one migration would make crash recovery ambiguous.
 
 ## Baseline freeze
 
-Before the first persistent environment exists, the migration baseline may be
-rebased in a reviewed change. Ephemeral local and CI databases contain no
-durable state and must be recreated from the revised baseline.
+Before the first production deployment, the migration baseline may be rebased
+in a reviewed change. Local, CI, and the current pre-production `cloud-dev`
+database contain disposable development data and must be recreated from the
+revised baseline. A cloud-dev rebase must use the repository-owned guarded
+`make cloud-app-reset-plan` / `make cloud-app-reset` procedure; manual table or
+bucket deletion is not an accepted migration step.
 
-The first deployment to a persistent cloud-dev or production database freezes
-every migration present in that deployment. Record the deployed commit and
-migration head in the deployment evidence. From that point onward:
+The first production deployment freezes every migration present in that
+deployment. Record the deployed commit and migration head in the deployment
+evidence. From that point onward:
 
 - never edit, renumber, or delete an applied migration;
 - make every correction through a new forward migration;
 - verify checksum history before application rollout.
 
 A baseline rebase must run the complete migration set twice against a clean YDB
-Local instance and must explicitly confirm that no persistent environment has
-applied the changed files.
+Local instance and reset every affected disposable environment before applying
+the revised files. The guarded cloud-dev reset drops only the explicit
+Sessionless application-table allowlist and deletes only the `tenants/` Object
+Storage prefix. It preserves Terraform state, bootstrap/deployment-lock YDB,
+IAM, Lockbox, KMS, queues, registry, bucket configuration, and unrelated object
+prefixes.
 
 ## Commands
 
@@ -33,6 +40,8 @@ make migrate-local
 make migration-status
 make partition-status
 make partition-backfill
+make cloud-app-reset-plan
+make cloud-app-reset
 ```
 
 Both commands require `YDB_CONNECTION_STRING`. Authentication is selected by

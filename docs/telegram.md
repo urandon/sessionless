@@ -60,16 +60,15 @@ enable an API-billing fallback.
 
 `/new` creates a new canonical session and switches this Telegram conversation
 to it. Telegram history, stored artifacts, and the previous session are not
-deleted. Until #21 and #36 persist canonical bindings directly, the adapter
-records this switch in the legacy `context_epochs` ledger and derives a new
-temporary `session_id` from that revision. The legacy revision is not a product
-API; the command itself is not sent to an AI worker.
+deleted. Session creation, active owner membership, and the expected-revision
+binding switch commit in one YDB transaction. An old webhook or retry cannot
+overwrite a newer binding. The command itself is not sent to an AI worker.
 
 ## Opaque identity resolution
 
 Every replica derives the same IDs with HMAC-SHA-256 and a deployment secret:
 
-- tenant and conversation from the private Telegram chat ID;
+- tenant and frontend binding from the private Telegram chat ID;
 - actor from the tenant chat plus Telegram user ID;
 - subscription connection from the tenant chat, user ID, and provider name.
 
@@ -79,8 +78,8 @@ required. Rotating `TELEGRAM_IDENTITY_HMAC_KEY` changes the mapping and therefor
 requires an explicit migration; it must not be rotated like an ordinary
 short-lived credential.
 
-The raw frontend IDs remain only in the tenant-scoped actor/conversation rows
-needed to address Telegram and reconcile frontend facts.
+The raw frontend IDs remain only in tenant-scoped actor and frontend-binding
+records needed to address Telegram and reconcile frontend facts.
 
 ## Object layout
 

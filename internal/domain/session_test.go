@@ -19,7 +19,12 @@ func canonicalEvent(sequence uint64) domain.SessionEvent {
 		TenantID: "tenant-a", SessionID: "session-1", Sequence: sequence,
 		Kind: domain.SessionEventUserMessage, AuthorUserID: &author,
 		IdempotencyKey: domain.IdempotencyKey("append-" + time.Unix(int64(sequence), 0).UTC().Format("150405")),
-		Payload:        validBlob(), CreatedAt: testTime.Add(time.Duration(sequence) * time.Second),
+		Payload: domain.BlobRef{
+			TenantID: "tenant-a",
+			Key:      "tenants/tenant-a/sessions/session-1/events/event-" + time.Unix(int64(sequence), 0).UTC().Format("150405") + "/payload.json",
+			Size:     42,
+			SHA256:   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		}, CreatedAt: testTime.Add(time.Duration(sequence) * time.Second),
 	}
 }
 
@@ -37,11 +42,12 @@ func TestAppendSessionEventIsStrictlyOrderedAndIdempotent(t *testing.T) {
 	}
 	conflict := event
 	conflict.ID = "event-conflict"
+	conflict.Payload.Key = "tenants/tenant-a/sessions/session-1/events/event-conflict/payload.json"
 	if _, err := domain.AppendSessionEvent(&session, conflict, &event); !errors.Is(err, domain.ErrEventIdempotencyConflict) {
 		t.Fatalf("conflict error = %v", err)
 	}
 	payloadConflict := event
-	payloadConflict.Payload.Key = "tenants/tenant-a/runs/run-1/other-context.json"
+	payloadConflict.Payload.Key = "tenants/tenant-a/sessions/session-1/events/" + string(event.ID) + "/other-payload.json"
 	if _, err := domain.AppendSessionEvent(&session, payloadConflict, &event); !errors.Is(err, domain.ErrEventIdempotencyConflict) {
 		t.Fatalf("payload conflict error = %v", err)
 	}
@@ -62,6 +68,29 @@ func TestProducedEventsRequireOwningRun(t *testing.T) {
 	event.RunID = &runID
 	if err := event.Validate(); err != nil {
 		t.Fatalf("assistant event with run rejected: %v", err)
+	}
+}
+
+func TestCanonicalPayloadsCannotCrossSessionBoundaries(t *testing.T) {
+	t.Parallel()
+	event := canonicalEvent(1)
+	event.Payload.Key = "tenants/tenant-a/sessions/session-other/events/" + string(event.ID) + "/payload.json"
+	if err := event.Validate(); err == nil {
+		t.Fatal("event accepted another session's object prefix")
+	}
+
+	snapshot := domain.SessionSnapshot{
+		ID: "snapshot-1", TenantID: "tenant-a", SessionID: "session-1",
+		Version: 1, ThroughSequence: 1, CreatedAt: testTime,
+		Payload: domain.BlobRef{
+			TenantID: "tenant-a",
+			Key:      "tenants/tenant-a/sessions/session-other/snapshots/snapshot-1/context.json.zst",
+			Size:     42,
+			SHA256:   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		},
+	}
+	if err := snapshot.Validate(); err == nil {
+		t.Fatal("snapshot accepted another session's object prefix")
 	}
 }
 
@@ -111,7 +140,7 @@ func TestFrontendBindingRejectsStaleSwitch(t *testing.T) {
 
 func TestSessionContextRequiresContiguousEventsAfterSnapshot(t *testing.T) {
 	t.Parallel()
-	snapshot := domain.SessionSnapshot{ID: "snapshot-1", TenantID: "tenant-a", SessionID: "session-1", Version: 1, ThroughSequence: 2, Payload: validBlob(), CreatedAt: testTime}
+	snapshot := domain.SessionSnapshot{ID: "snapshot-1", TenantID: "tenant-a", SessionID: "session-1", Version: 1, ThroughSequence: 2, Payload: domain.BlobRef{TenantID: "tenant-a", Key: "tenants/tenant-a/sessions/session-1/snapshots/snapshot-1/context.json.zst", Size: 42, SHA256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}, CreatedAt: testTime}
 	input := domain.SessionContextInput{TenantID: "tenant-a", SessionID: "session-1", Snapshot: &snapshot, Events: []domain.SessionEvent{canonicalEvent(3)}}
 	if err := input.Validate(); err != nil {
 		t.Fatalf("valid context rejected: %v", err)

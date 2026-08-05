@@ -2,10 +2,10 @@ package ydbstore
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
-	"strconv"
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
@@ -114,19 +114,21 @@ func (store *Store) ExecuteTelegramCommand(
 			return queryErr
 		}
 
-		var currentEpoch uint64
-		if err := tx.sqlTx.QueryRowContext(ctx,
-			`SELECT current_context_epoch FROM conversations
-			 WHERE tenant_id = $1 AND conversation_id = $2`,
-			request.TenantID, request.Conversation.ID,
-		).Scan(&currentEpoch); err != nil {
-			return err
-		}
-		reply, nextEpoch, err := executeTelegramCommandState(ctx, tx, request, currentEpoch)
+		bindingID := telegramBindingID(request.Conversation.ID)
+		binding, found, err := readBindingTx(ctx, tx, bindingID)
 		if err != nil {
 			return err
 		}
-		currentEpoch = nextEpoch
+		if !found {
+			return fmt.Errorf("Telegram frontend binding %q not found", bindingID)
+		}
+		if request.Kind != ports.TelegramCommandNewContext {
+			request.SessionID = binding.SessionID
+		}
+		reply, err := executeTelegramCommandState(ctx, tx, request, binding)
+		if err != nil {
+			return err
+		}
 		finishedAt := request.RequestedAt
 		run := domain.Run{
 			ID: request.RunID, TenantID: request.TenantID,
@@ -171,9 +173,8 @@ func executeTelegramCommandState(
 	ctx context.Context,
 	tx *stateTx,
 	request ports.TelegramCommandRequest,
-	revision uint64,
-) (reply string, resultingRevision uint64, err error) {
-	resultingRevision = revision
+	binding domain.FrontendBinding,
+) (reply string, err error) {
 	switch request.Kind {
 	case ports.TelegramCommandConnectCodex:
 		if _, err := tx.sqlTx.ExecContext(ctx,
@@ -185,15 +186,15 @@ func executeTelegramCommandState(
 			request.RequestedAt, request.RequestedAt,
 			request.TenantID, request.SubscriptionConnectionID,
 		); err != nil {
-			return "", revision, err
+			return "", err
 		}
 		if err := setSchedulerSlotState(
 			ctx, tx, request.SubscriptionConnectionID,
 			domain.SchedulerReauthRequired, nil, request.RequestedAt,
 		); err != nil {
-			return "", revision, err
+			return "", err
 		}
-		return "Codex connection: authorization required. No credential has been stored; provider authorization will be completed by the isolated Codex adapter.", revision, nil
+		return "Codex connection: authorization required. No credential has been stored; provider authorization will be completed by the isolated Codex adapter.", nil
 	case ports.TelegramCommandComputeStatus:
 		var provider, entitlement, quota string
 		if err := tx.sqlTx.QueryRowContext(ctx,
@@ -202,7 +203,7 @@ func executeTelegramCommandState(
 			 WHERE tenant_id = $1 AND subscription_connection_id = $2`,
 			request.TenantID, request.SubscriptionConnectionID,
 		).Scan(&provider, &entitlement, &quota); err != nil {
-			return "", revision, err
+			return "", err
 		}
 		var schedulerState string
 		if err := tx.sqlTx.QueryRowContext(ctx,
@@ -210,12 +211,12 @@ func executeTelegramCommandState(
 			 WHERE tenant_id = $1 AND subscription_connection_id = $2`,
 			request.TenantID, request.SubscriptionConnectionID,
 		).Scan(&schedulerState); err != nil {
-			return "", revision, err
+			return "", err
 		}
 		return fmt.Sprintf(
 			"Compute provider: %s\nConnection: %s\nQuota: %s\nScheduler: %s",
 			provider, entitlement, quota, schedulerState,
-		), revision, nil
+		), nil
 	case ports.TelegramCommandDisconnectCodex:
 		if _, err := tx.sqlTx.ExecContext(ctx,
 			`UPDATE subscription_connections
@@ -226,45 +227,40 @@ func executeTelegramCommandState(
 			request.RequestedAt, request.RequestedAt,
 			request.TenantID, request.SubscriptionConnectionID,
 		); err != nil {
-			return "", revision, err
+			return "", err
 		}
 		if err := setSchedulerSlotState(
 			ctx, tx, request.SubscriptionConnectionID,
 			domain.SchedulerReauthRequired, nil, request.RequestedAt,
 		); err != nil {
-			return "", revision, err
+			return "", err
 		}
-		return "Codex connection disconnected. Stored credential references were removed and no API-billing fallback was enabled.", revision, nil
+		return "Codex connection disconnected. Stored credential references were removed and no API-billing fallback was enabled.", nil
 	case ports.TelegramCommandNewContext:
-		if revision == ^uint64(0) {
-			return "", revision, domain.ValidationError{Field: "legacy_context_revision", Reason: "cannot overflow"}
+		userID := telegramUserID(request.Actor.ID)
+		session := domain.Session{
+			ID: request.SessionID, TenantID: request.TenantID, CreatedBy: userID,
+			Status: domain.SessionActive, CreatedAt: request.RequestedAt, UpdatedAt: request.RequestedAt,
 		}
-		next := revision + 1
-		if _, err := tx.sqlTx.ExecContext(ctx,
-			`INSERT INTO context_epochs
-			 (tenant_id, conversation_id, context_epoch, requested_by_actor_id,
-			  trigger_message_id, idempotency_key, context_blob_key, created_at)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-			request.TenantID, request.Conversation.ID, next,
-			request.Actor.ID, strconv.FormatInt(request.ReplyToMessageID, 10), request.IdempotencyKey,
-			"", request.RequestedAt,
-		); err != nil {
-			return "", revision, err
+		owner := domain.SessionParticipant{
+			TenantID: request.TenantID, SessionID: request.SessionID, UserID: userID,
+			Role: domain.SessionParticipantOwner, Status: domain.SessionParticipantActive,
+			CreatedAt: request.RequestedAt, UpdatedAt: request.RequestedAt,
 		}
-		if _, err := tx.sqlTx.ExecContext(ctx,
-			`UPDATE conversations
-			 SET current_context_epoch = $1, updated_at = $2
-			 WHERE tenant_id = $3 AND conversation_id = $4`,
-			next, request.RequestedAt,
-			request.TenantID, request.Conversation.ID,
-		); err != nil {
-			return "", revision, err
+		if err := createSessionTx(ctx, tx, session, owner); err != nil {
+			return "", err
 		}
-		return "A new session was created and this Telegram chat now points to it.", next, nil
+		if err := binding.Switch(binding.Revision, request.SessionID, request.RequestedAt); err != nil {
+			return "", err
+		}
+		if err := writeBindingTx(ctx, tx, binding); err != nil {
+			return "", err
+		}
+		return "A new session was created and this Telegram chat now points to it.", nil
 	case ports.TelegramCommandHelp:
-		return "Supported commands:\n/connect codex\n/compute status\n/compute disconnect codex\n/new", revision, nil
+		return "Supported commands:\n/connect codex\n/compute status\n/compute disconnect codex\n/new", nil
 	default:
-		return "", revision, domain.ValidationError{
+		return "", domain.ValidationError{
 			Field: "telegram.command", Reason: "is unknown",
 		}
 	}
@@ -357,8 +353,8 @@ func validateTelegramCommand(request ports.TelegramCommandRequest) error {
 	return nil
 }
 
-// EnsureTelegramIdentity materializes the deterministic Telegram identity
-// mapping and returns the conversation's current context generation.
+// EnsureTelegramIdentity materializes the deterministic Telegram identity and
+// resolves the frontend conversation to its current canonical session.
 func (store *Store) EnsureTelegramIdentity(
 	ctx context.Context,
 	request ports.TelegramIdentityRequest,
@@ -368,18 +364,8 @@ func (store *Store) EnsureTelegramIdentity(
 	}
 	err = store.Transact(ctx, request.TenantID, func(state ports.StateTx) error {
 		tx := state.(*stateTx)
-		var epoch uint64
-		queryErr := tx.sqlTx.QueryRowContext(ctx,
-			`SELECT current_context_epoch FROM conversations
-			 WHERE tenant_id = $1 AND conversation_id = $2`,
-			request.TenantID, request.Conversation.ID,
-		).Scan(&epoch)
-		switch {
-		case errors.Is(queryErr, sql.ErrNoRows):
-			epoch = 1
-		case queryErr != nil:
-			return queryErr
-		}
+		userID := telegramUserID(request.Actor.ID)
+		bindingID := telegramBindingID(request.Conversation.ID)
 		if _, err := tx.sqlTx.ExecContext(ctx,
 			`UPSERT INTO tenants
 			 (tenant_id, status, created_at, updated_at)
@@ -390,22 +376,39 @@ func (store *Store) EnsureTelegramIdentity(
 		}
 		if _, err := tx.sqlTx.ExecContext(ctx,
 			`UPSERT INTO actors
-			 (tenant_id, actor_id, frontend, external_id, created_at, updated_at)
-			 VALUES ($1, $2, $3, $4, $5, $6)`,
-			request.TenantID, request.Actor.ID, request.Actor.Frontend,
+			 (tenant_id, actor_id, user_id, frontend, external_id, created_at, updated_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+			request.TenantID, request.Actor.ID, userID, request.Actor.Frontend,
 			request.Actor.ExternalID, request.ObservedAt, request.ObservedAt,
 		); err != nil {
 			return err
 		}
-		if _, err := tx.sqlTx.ExecContext(ctx,
-			`UPSERT INTO conversations
-			 (tenant_id, conversation_id, frontend, external_id,
-			  current_context_epoch, created_at, updated_at)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-			request.TenantID, request.Conversation.ID, request.Conversation.Frontend,
-			request.Conversation.ExternalID, epoch, request.ObservedAt, request.ObservedAt,
-		); err != nil {
+		binding, found, err := readBindingTx(ctx, tx, bindingID)
+		if err != nil {
 			return err
+		}
+		if !found {
+			sessionID := telegramInitialSessionID(request.Conversation.ID)
+			session := domain.Session{
+				ID: sessionID, TenantID: request.TenantID, CreatedBy: userID,
+				Status: domain.SessionActive, CreatedAt: request.ObservedAt, UpdatedAt: request.ObservedAt,
+			}
+			owner := domain.SessionParticipant{
+				TenantID: request.TenantID, SessionID: sessionID, UserID: userID,
+				Role: domain.SessionParticipantOwner, Status: domain.SessionParticipantActive,
+				CreatedAt: request.ObservedAt, UpdatedAt: request.ObservedAt,
+			}
+			if err := createSessionTx(ctx, tx, session, owner); err != nil {
+				return err
+			}
+			binding = domain.FrontendBinding{
+				ID: bindingID, TenantID: request.TenantID, Frontend: request.Conversation.Frontend,
+				ExternalConversationID: request.Conversation.ExternalID, SessionID: sessionID,
+				Revision: 1, CreatedAt: request.ObservedAt, UpdatedAt: request.ObservedAt,
+			}
+			if err := writeBindingTx(ctx, tx, binding); err != nil {
+				return err
+			}
 		}
 		var existingConnection string
 		connectionErr := tx.sqlTx.QueryRowContext(ctx,
@@ -470,10 +473,30 @@ func (store *Store) EnsureTelegramIdentity(
 		case counterErr != nil:
 			return counterErr
 		}
-		result.LegacyContextRevision = epoch
+		result = ports.TelegramIdentityState{
+			UserID: userID, SessionID: binding.SessionID,
+			BindingID: binding.ID, BindingRevision: binding.Revision,
+		}
 		return nil
 	})
 	return result, err
+}
+
+func telegramUserID(actorID domain.ActorID) domain.UserID {
+	return domain.UserID(stableCanonicalID("usr_", string(actorID)))
+}
+
+func telegramBindingID(conversationID domain.ConversationID) domain.FrontendBindingID {
+	return domain.FrontendBindingID(stableCanonicalID("fbd_", string(conversationID)))
+}
+
+func telegramInitialSessionID(conversationID domain.ConversationID) domain.SessionID {
+	return domain.SessionID(stableCanonicalID("ses_", "initial:"+string(conversationID)))
+}
+
+func stableCanonicalID(prefix, material string) string {
+	digest := sha256.Sum256([]byte(material))
+	return fmt.Sprintf("%s%x", prefix, digest[:16])
 }
 
 func setSchedulerSlotState(

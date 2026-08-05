@@ -157,6 +157,21 @@ CONFIRM_LOCAL_RESET=sessionless-dev make dev-reset
 The reset target affects only the fixed `sessionless-dev` Compose project. It
 does not remove source directories or arbitrary Docker resources.
 
+After a reviewed pre-production migration-baseline rebase, inspect and execute
+the separately guarded cloud-dev application-data reset:
+
+```sh
+make cloud-app-reset-plan
+CONFIRM_CLOUD_APP_RESET='reset-sessionless-cloud-dev:<folder-id>:<artifact-bucket>' \
+  make cloud-app-reset
+```
+
+The command resolves its target from the selected Terraform state and preserves
+cloud infrastructure and unrelated object prefixes. The complete prerequisites,
+typed-confirmation derivation, and preservation boundary are documented in
+[cloud-development.md](cloud-development.md). It is not a production migration
+or an ordinary deployment step.
+
 ## Images and CI
 
 ```sh

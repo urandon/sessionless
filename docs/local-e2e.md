@@ -106,7 +106,7 @@ They are not a cloud cold-start or product latency qualification.
 Use the opaque `tenant_id` and `run_id` printed by the test:
 
 ```sql
-SELECT status, context_epoch, created_at, updated_at
+SELECT status, session_id, trigger_event_id, created_at, updated_at
 FROM runs
 WHERE tenant_id = $tenant_id AND run_id = $run_id;
 
@@ -120,7 +120,7 @@ WHERE tenant_id = $tenant_id AND run_id = $run_id
 ORDER BY sequence;
 
 SELECT source, input_tokens, output_tokens, observed_at
-FROM usage_events
+FROM usage_observations
 WHERE tenant_id = $tenant_id AND run_id = $run_id;
 
 SELECT status, next_attempt_at, updated_at, payload

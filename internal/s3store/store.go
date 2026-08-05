@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
@@ -36,6 +37,7 @@ type Config struct {
 	SecretAccessKey        string
 	ForcePathStyle         bool
 	IAMMetadataCredentials bool
+	IAMToken               string
 	MaxObjectBytes         int64
 }
 
@@ -66,14 +68,17 @@ func New(ctx context.Context, config Config) (*Store, error) {
 	if (config.AccessKeyID == "") != (config.SecretAccessKey == "") {
 		return nil, fmt.Errorf("S3 access key and secret must be supplied together")
 	}
-	if config.IAMMetadataCredentials && config.AccessKeyID != "" {
-		return nil, fmt.Errorf("S3 IAM metadata and static credentials are mutually exclusive")
+	if (config.IAMMetadataCredentials || config.IAMToken != "") && config.AccessKeyID != "" {
+		return nil, fmt.Errorf("S3 IAM credentials and static credentials are mutually exclusive")
+	}
+	if config.IAMMetadataCredentials && config.IAMToken != "" {
+		return nil, fmt.Errorf("S3 IAM metadata and injected token are mutually exclusive")
 	}
 	if config.MaxObjectBytes <= 0 {
 		config.MaxObjectBytes = defaultMaxObjectBytes
 	}
 	store := &Store{bucket: config.Bucket, maxObjectBytes: config.MaxObjectBytes}
-	if config.IAMMetadataCredentials {
+	if config.IAMMetadataCredentials || config.IAMToken != "" {
 		if strings.TrimSpace(config.Endpoint) == "" {
 			return nil, fmt.Errorf("S3 endpoint is required for IAM metadata credentials")
 		}
@@ -84,9 +89,13 @@ func New(ctx context.Context, config Config) (*Store, error) {
 		if endpoint.Scheme != "http" && endpoint.Scheme != "https" {
 			return nil, fmt.Errorf("S3 endpoint must use http or https")
 		}
+		var tokens tokenProvider = metadata.NewInstanceServiceAccount()
+		if config.IAMToken != "" {
+			tokens = fixedToken(config.IAMToken)
+		}
 		store.iamClient = &iamObjectClient{
 			endpoint: endpoint,
-			tokens:   metadata.NewInstanceServiceAccount(),
+			tokens:   tokens,
 			http:     &http.Client{Timeout: 30 * time.Second},
 		}
 		return store, nil
@@ -114,6 +123,15 @@ func New(ctx context.Context, config Config) (*Store, error) {
 		}
 	})
 	return store, nil
+}
+
+type fixedToken string
+
+func (token fixedToken) Token(context.Context) (string, error) {
+	if strings.TrimSpace(string(token)) == "" {
+		return "", fmt.Errorf("injected IAM token must not be empty")
+	}
+	return string(token), nil
 }
 
 func (store *Store) Put(
@@ -199,6 +217,77 @@ func (store *Store) Delete(ctx context.Context, tenantID domain.TenantID, ref do
 	return nil
 }
 
+// DeletePrefix is intentionally outside the BlobStore port. It exists only
+// for the guarded pre-production reset command and refuses bucket-root or
+// non-Sessionless prefixes.
+func (store *Store) DeletePrefix(ctx context.Context, prefix string) (uint64, error) {
+	if prefix != "tenants/" && !strings.HasPrefix(prefix, "tenants/") {
+		return 0, fmt.Errorf("reset prefix must remain under tenants/")
+	}
+	if path.Clean(prefix) == "." || strings.HasPrefix(prefix, "/") ||
+		!strings.HasSuffix(prefix, "/") || hasTraversalSegment(prefix) {
+		return 0, fmt.Errorf("reset prefix must be a normalized directory prefix")
+	}
+	var deleted uint64
+	continuation := ""
+	for {
+		keys, next, err := store.listPrefix(ctx, prefix, continuation)
+		if err != nil {
+			return deleted, err
+		}
+		for _, key := range keys {
+			if !strings.HasPrefix(key, prefix) {
+				return deleted, fmt.Errorf("object listing escaped reset prefix: %q", key)
+			}
+			if store.iamClient != nil {
+				err = store.iamClient.delete(ctx, store.bucket, key)
+			} else {
+				_, err = store.s3Client.DeleteObject(ctx, &s3.DeleteObjectInput{
+					Bucket: aws.String(store.bucket), Key: aws.String(key),
+				})
+			}
+			if err != nil {
+				return deleted, fmt.Errorf("delete reset object %q: %w", key, err)
+			}
+			deleted++
+		}
+		if next == "" {
+			return deleted, nil
+		}
+		continuation = next
+	}
+}
+
+func (store *Store) listPrefix(ctx context.Context, prefix, continuation string) ([]string, string, error) {
+	if store.iamClient != nil {
+		return store.iamClient.list(ctx, store.bucket, prefix, continuation)
+	}
+	input := &s3.ListObjectsV2Input{
+		Bucket: aws.String(store.bucket), Prefix: aws.String(prefix),
+	}
+	if continuation != "" {
+		input.ContinuationToken = aws.String(continuation)
+	}
+	result, err := store.s3Client.ListObjectsV2(ctx, input)
+	if err != nil {
+		return nil, "", fmt.Errorf("list S3 prefix: %w", err)
+	}
+	keys := make([]string, 0, len(result.Contents))
+	for _, object := range result.Contents {
+		if object.Key != nil {
+			keys = append(keys, *object.Key)
+		}
+	}
+	next := ""
+	if result.IsTruncated != nil && *result.IsTruncated {
+		if result.NextContinuationToken == nil || *result.NextContinuationToken == "" {
+			return nil, "", fmt.Errorf("list S3 prefix: truncated response omitted continuation token")
+		}
+		next = *result.NextContinuationToken
+	}
+	return keys, next, nil
+}
+
 func (client *iamObjectClient) put(ctx context.Context, bucket, key string, data []byte) error {
 	response, err := client.do(ctx, http.MethodPut, bucket, key, bytes.NewReader(data), int64(len(data)))
 	if err != nil {
@@ -233,6 +322,60 @@ func (client *iamObjectClient) delete(ctx context.Context, bucket, key string) e
 		return objectResponseError(response)
 	}
 	return nil
+}
+
+func (client *iamObjectClient) list(
+	ctx context.Context,
+	bucket, prefix, continuation string,
+) ([]string, string, error) {
+	token, err := client.tokens.Token(ctx)
+	if err != nil {
+		return nil, "", fmt.Errorf("get Object Storage IAM token: %w", err)
+	}
+	endpoint := *client.endpoint
+	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/" + bucket
+	query := endpoint.Query()
+	query.Set("list-type", "2")
+	query.Set("prefix", prefix)
+	if continuation != "" {
+		query.Set("continuation-token", continuation)
+	}
+	endpoint.RawQuery = query.Encode()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("create Object Storage list request: %w", err)
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	response, err := client.http.Do(request)
+	if err != nil {
+		return nil, "", fmt.Errorf("Object Storage list: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, "", objectResponseError(response)
+	}
+	var result struct {
+		Contents []struct {
+			Key string `xml:"Key"`
+		} `xml:"Contents"`
+		IsTruncated           bool   `xml:"IsTruncated"`
+		NextContinuationToken string `xml:"NextContinuationToken"`
+	}
+	if err := xml.NewDecoder(io.LimitReader(response.Body, 16<<20)).Decode(&result); err != nil {
+		return nil, "", fmt.Errorf("decode Object Storage listing: %w", err)
+	}
+	keys := make([]string, 0, len(result.Contents))
+	for _, object := range result.Contents {
+		keys = append(keys, object.Key)
+	}
+	next := ""
+	if result.IsTruncated {
+		next = result.NextContinuationToken
+		if next == "" {
+			return nil, "", fmt.Errorf("truncated Object Storage listing omitted continuation token")
+		}
+	}
+	return keys, next, nil
 }
 
 func (client *iamObjectClient) do(

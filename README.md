@@ -35,11 +35,10 @@ lease renewal, bounded scratch space, checkpoint/resume, usage events,
 content-addressed artifacts, cancellation/timeout handling, and atomic terminal
 delivery. A credential-free two-tenant black-box suite now composes the full
 local Telegram-to-worker-to-Telegram path and its recovery cases. Provider
-authorization, canonical-session persistence, frontend projection, and
-subscription-backed Codex, OpenCode, Claude, or Hermes adapters remain later
-implementation slices. The current Telegram/YDB adapter still carries a private
-legacy revision until those persistence and adapter migrations land; it is not
-part of the product contract.
+authorization, full multi-frontend projection, and subscription-backed Codex,
+OpenCode, Claude, or Hermes adapters remain later implementation slices.
+Canonical sessions, ordered events, memberships, snapshots, activity indexes,
+and revisioned frontend bindings are persisted directly in YDB.
 
 ## Components
 
@@ -107,6 +106,8 @@ make migrate-local
 make migration-status
 make partition-status
 make partition-backfill
+make cloud-app-reset-plan
+make cloud-app-reset
 make worker-once
 make integration
 make ydb-integration

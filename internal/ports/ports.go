@@ -53,9 +53,10 @@ type TelegramIdentityRequest struct {
 }
 
 type TelegramIdentityState struct {
-	// LegacyContextRevision is private compatibility state for the pre-session
-	// YDB schema. It is removed with the canonical persistence migration in #21.
-	LegacyContextRevision uint64
+	UserID          domain.UserID
+	SessionID       domain.SessionID
+	BindingID       domain.FrontendBindingID
+	BindingRevision uint64
 }
 
 type TelegramIngress struct {
@@ -159,13 +160,18 @@ type StateTx interface {
 type SessionStore interface {
 	CreateSession(ctx context.Context, session domain.Session, owner domain.SessionParticipant) error
 	CreateAndSwitchSession(ctx context.Context, session domain.Session, owner domain.SessionParticipant, bindingID domain.FrontendBindingID, expectedRevision uint64, at time.Time) (domain.FrontendBinding, error)
+	GetSession(ctx context.Context, tenantID domain.TenantID, sessionID domain.SessionID) (domain.Session, bool, error)
 	BindFrontend(ctx context.Context, binding domain.FrontendBinding) error
-	SwitchFrontendBinding(ctx context.Context, bindingID domain.FrontendBindingID, expectedRevision uint64, sessionID domain.SessionID, at time.Time) (domain.FrontendBinding, error)
+	ResolveFrontendBinding(ctx context.Context, tenantID domain.TenantID, frontend domain.Frontend, externalConversationID string) (domain.FrontendBinding, bool, error)
+	SwitchFrontendBinding(ctx context.Context, tenantID domain.TenantID, bindingID domain.FrontendBindingID, expectedRevision uint64, sessionID domain.SessionID, at time.Time) (domain.FrontendBinding, error)
 	AppendSessionEvent(ctx context.Context, event domain.SessionEvent) (created bool, err error)
+	PutSessionSnapshot(ctx context.Context, snapshot domain.SessionSnapshot) error
+	ListSessionSnapshots(ctx context.Context, tenantID domain.TenantID, sessionID domain.SessionID, afterVersion uint64, limit uint64) ([]domain.SessionSnapshot, error)
 	ArchiveSession(ctx context.Context, tenantID domain.TenantID, sessionID domain.SessionID, at time.Time) error
 	UnarchiveSession(ctx context.Context, tenantID domain.TenantID, sessionID domain.SessionID, at time.Time) error
 	ListSessions(ctx context.Context, tenantID domain.TenantID, userID domain.UserID, limit uint64) ([]domain.Session, error)
 	ListSessionHistory(ctx context.Context, tenantID domain.TenantID, sessionID domain.SessionID, afterSequence uint64, limit uint64) ([]domain.SessionEvent, error)
+	ListRunsBySession(ctx context.Context, tenantID domain.TenantID, sessionID domain.SessionID, limit uint64) ([]domain.Run, error)
 }
 
 type ReceivedMessage struct {

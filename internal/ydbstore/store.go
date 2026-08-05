@@ -156,17 +156,36 @@ func (tx *stateTx) PutRun(ctx context.Context, run domain.Run) error {
 	if err == nil && existing != string(run.ID) {
 		return fmt.Errorf("%w: tenant=%s key=%s", ErrIdempotencyConflict, tx.tenantID, run.IdempotencyKey)
 	}
+	stored, found, err := tx.GetRun(ctx, run.ID)
+	if err != nil {
+		return err
+	}
+	if found && (stored.SessionID != run.SessionID ||
+		stored.TriggerEventID != run.TriggerEventID ||
+		stored.SubscriptionConnectionID != run.SubscriptionConnectionID ||
+		stored.IdempotencyKey != run.IdempotencyKey ||
+		!stored.CreatedAt.Equal(run.CreatedAt)) {
+		return domain.ValidationError{Field: "run", Reason: "immutable identity fields cannot change"}
+	}
 	payload, err := marshal(run)
 	if err != nil {
 		return err
 	}
 	if _, err := tx.sqlTx.ExecContext(ctx,
 		`UPSERT INTO runs
-		 (tenant_id, run_id, conversation_id, subscription_connection_id,
-		  context_epoch, status, created_at, updated_at, payload)
+		 (tenant_id, run_id, session_id, trigger_event_id,
+		  subscription_connection_id, status, created_at, updated_at, payload)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CAST($9 AS JsonDocument))`,
-		run.TenantID, run.ID, run.SessionID, run.SubscriptionConnectionID,
-		uint64(0), run.Status, run.CreatedAt, run.UpdatedAt, payload,
+		run.TenantID, run.ID, run.SessionID, run.TriggerEventID,
+		run.SubscriptionConnectionID, run.Status, run.CreatedAt, run.UpdatedAt, payload,
+	); err != nil {
+		return err
+	}
+	if _, err := tx.sqlTx.ExecContext(ctx,
+		`UPSERT INTO runs_by_session
+		 (tenant_id, session_id, created_at, run_id, trigger_event_id, status)
+		 VALUES ($1, $2, $3, $4, $5, $6)`,
+		run.TenantID, run.SessionID, run.CreatedAt, run.ID, run.TriggerEventID, run.Status,
 	); err != nil {
 		return err
 	}
@@ -755,4 +774,5 @@ func readJSON[T any](
 }
 
 var _ ports.StateStore = (*Store)(nil)
+var _ ports.SessionStore = (*Store)(nil)
 var _ ports.StateTx = (*stateTx)(nil)

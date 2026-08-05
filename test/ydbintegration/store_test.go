@@ -129,18 +129,26 @@ func TestTelegramIdentityInitializationIsIdempotent(t *testing.T) {
 		SubscriptionConnectionID: domain.SubscriptionConnectionID(uniqueID("subscription")),
 		Provider:                 "codex", ObservedAt: now,
 	}
+	var first ports.TelegramIdentityState
 	for run := 0; run < 2; run++ {
 		state, err := store.EnsureTelegramIdentity(context.Background(), request)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if state.LegacyContextRevision != 1 {
-			t.Fatalf("legacy context revision = %d", state.LegacyContextRevision)
+		if state.SessionID == "" || state.UserID == "" || state.BindingID == "" || state.BindingRevision != 1 {
+			t.Fatalf("canonical Telegram identity = %#v", state)
+		}
+		if run == 0 {
+			first = state
+		} else if state != first {
+			t.Fatalf("identity changed across retry: %#v then %#v", first, state)
 		}
 	}
 	assertCount(t, client, "tenants", tenantID, 1)
 	assertCount(t, client, "actors", tenantID, 1)
-	assertCount(t, client, "conversations", tenantID, 1)
+	assertCount(t, client, "sessions", tenantID, 1)
+	assertCount(t, client, "frontend_bindings", tenantID, 1)
+	assertCount(t, client, "session_participants", tenantID, 1)
 	assertCount(t, client, "subscription_connections", tenantID, 1)
 }
 
@@ -249,11 +257,12 @@ func TestConcurrentSchedulerAdmissionReservesOneSubscriptionSlot(t *testing.T) {
 		TenantID: tenantID, Frontend: domain.FrontendTelegram,
 		ExternalID: "scheduler-chat", ID: domain.ConversationID("conversation-" + string(tenantID)),
 	}
-	if _, err := store.EnsureTelegramIdentity(context.Background(), ports.TelegramIdentityRequest{
+	_, err := store.EnsureTelegramIdentity(context.Background(), ports.TelegramIdentityRequest{
 		TenantID: tenantID, Actor: actor, Conversation: conversation,
 		SubscriptionConnectionID: connectionID, Provider: "codex",
 		ObservedAt: now,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := client.DB.ExecContext(context.Background(),
@@ -648,11 +657,12 @@ func TestTelegramCommandsAreAtomicIdempotentAndDoNotDispatchAIWork(t *testing.T)
 		ExternalID: "7711", ID: domain.ConversationID(uniqueID("conversation")),
 	}
 	connectionID := domain.SubscriptionConnectionID(uniqueID("subscription"))
-	if _, err := store.EnsureTelegramIdentity(context.Background(), ports.TelegramIdentityRequest{
+	initialIdentity, err := store.EnsureTelegramIdentity(context.Background(), ports.TelegramIdentityRequest{
 		TenantID: tenantID, Actor: actor, Conversation: conversation,
 		SubscriptionConnectionID: connectionID, Provider: "codex",
 		ObservedAt: now,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -708,8 +718,8 @@ func TestTelegramCommandsAreAtomicIdempotentAndDoNotDispatchAIWork(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if identity.LegacyContextRevision != 2 {
-		t.Fatalf("legacy context revision = %d, want 2", identity.LegacyContextRevision)
+	if identity.BindingRevision != 2 || identity.SessionID != newContext.SessionID || identity.SessionID == initialIdentity.SessionID {
+		t.Fatalf("canonical binding after /new = %#v, initial = %#v", identity, initialIdentity)
 	}
 
 	disconnect := commandFixture(
@@ -734,7 +744,9 @@ func TestTelegramCommandsAreAtomicIdempotentAndDoNotDispatchAIWork(t *testing.T)
 	assertCount(t, client, "telegram_updates", tenantID, 4)
 	assertCount(t, client, "runs", tenantID, 4)
 	assertCount(t, client, "telegram_delivery_outbox", tenantID, 4)
-	assertCount(t, client, "context_epochs", tenantID, 1)
+	assertCount(t, client, "sessions", tenantID, 2)
+	assertCount(t, client, "frontend_bindings", tenantID, 1)
+	assertCount(t, client, "session_participants", tenantID, 2)
 	assertCount(t, client, "attempts", tenantID, 0)
 	assertCount(t, client, "dispatch_outbox", tenantID, 0)
 }

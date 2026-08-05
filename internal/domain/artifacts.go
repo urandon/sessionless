@@ -19,6 +19,72 @@ func TenantObjectPrefix(tenantID TenantID) string {
 	return "tenants/" + string(tenantID) + "/"
 }
 
+// SessionObjectPrefix is the authorization and lifecycle boundary for
+// canonical conversation payloads. Operational run/checkpoint objects use
+// separate prefixes and must never be referenced by canonical events or
+// snapshots.
+func SessionObjectPrefix(tenantID TenantID, sessionID SessionID) string {
+	return TenantObjectPrefix(tenantID) + "sessions/" + string(sessionID) + "/"
+}
+
+func SessionEventObjectPrefix(tenantID TenantID, sessionID SessionID, eventID SessionEventID) string {
+	return SessionObjectPrefix(tenantID, sessionID) + "events/" + string(eventID) + "/"
+}
+
+func SessionSnapshotObjectPrefix(tenantID TenantID, sessionID SessionID, snapshotID SessionSnapshotID) string {
+	return SessionObjectPrefix(tenantID, sessionID) + "snapshots/" + string(snapshotID) + "/"
+}
+
+func ValidateSessionEventBlob(
+	tenantID TenantID,
+	sessionID SessionID,
+	eventID SessionEventID,
+	ref BlobRef,
+) error {
+	if err := ref.Validate(); err != nil {
+		return err
+	}
+	if err := EnsureSameTenant(tenantID, ref.TenantID); err != nil {
+		return err
+	}
+	if err := sessionID.Validate(); err != nil {
+		return err
+	}
+	if err := eventID.Validate(); err != nil {
+		return err
+	}
+	prefix := SessionEventObjectPrefix(tenantID, sessionID, eventID)
+	if !strings.HasPrefix(ref.Key, prefix) {
+		return ValidationError{Field: "session_event.payload.key", Reason: fmt.Sprintf("must be under %q", prefix)}
+	}
+	return nil
+}
+
+func ValidateSessionSnapshotBlob(
+	tenantID TenantID,
+	sessionID SessionID,
+	snapshotID SessionSnapshotID,
+	ref BlobRef,
+) error {
+	if err := ref.Validate(); err != nil {
+		return err
+	}
+	if err := EnsureSameTenant(tenantID, ref.TenantID); err != nil {
+		return err
+	}
+	if err := sessionID.Validate(); err != nil {
+		return err
+	}
+	if err := snapshotID.Validate(); err != nil {
+		return err
+	}
+	prefix := SessionSnapshotObjectPrefix(tenantID, sessionID, snapshotID)
+	if !strings.HasPrefix(ref.Key, prefix) {
+		return ValidationError{Field: "session_snapshot.payload.key", Reason: fmt.Sprintf("must be under %q", prefix)}
+	}
+	return nil
+}
+
 func (ref BlobRef) Validate() error {
 	if err := ref.TenantID.Validate(); err != nil {
 		return err

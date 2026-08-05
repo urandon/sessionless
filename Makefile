@@ -5,7 +5,7 @@ BIN_DIR := .build/bin
 GO_CACHE_DIR := $(CURDIR)/.build/cache/go-build
 GO_MOD_CACHE_DIR := $(CURDIR)/.build/cache/go-mod
 GO_TMP_DIR := $(CURDIR)/.build/tmp
-COMPONENTS := control-api reconciler telegram-sender telegram-fake worker-runtime schema-migrate schema-inspect schema-backfill deployment-lock
+COMPONENTS := control-api reconciler telegram-sender telegram-fake worker-runtime schema-migrate schema-inspect schema-backfill preprod-reset deployment-lock
 VERSION ?= dev
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || printf unknown)
 BUILT_AT ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -19,7 +19,7 @@ LDFLAGS := -s -w \
 	-X gitcode.com/urandon/sessionless/internal/buildinfo.BuiltAt=$(BUILT_AT)
 
 .PHONY: help prepare tools generate fmt fmt-check lint test build integration ydb-integration local-integration e2e-local ci terraform-ci \
-	compose-config images dev-up dev-seed migrate-local migration-status partition-status partition-backfill \
+	compose-config images dev-up dev-seed migrate-local migration-status partition-status partition-backfill cloud-app-reset-plan cloud-app-reset \
 	worker-once dev-down dev-reset clean
 
 help:
@@ -40,6 +40,8 @@ help:
 		'make migration-status inspect Goose and checksum state' \
 		'make partition-status inspect physical keys and partition settings as JSON' \
 		'make partition-backfill copy legacy ready/expiry rows into the v2 bucketed layout' \
+		'make cloud-app-reset-plan inspect the exact guarded cloud-dev reset target' \
+		'make cloud-app-reset execute the typed-confirmed cloud-dev application reset' \
 		'make worker-once    consume at most one admitted run with the deterministic harness' \
 		'make dev-down       stop the local stack' \
 		'make dev-reset      guarded deletion of local Compose volumes'
@@ -122,6 +124,12 @@ partition-status: prepare
 
 partition-backfill: prepare
 	go run ./cmd/schema-backfill
+
+cloud-app-reset-plan: prepare
+	@./scripts/cloud-app-reset.sh plan
+
+cloud-app-reset: prepare
+	@./scripts/cloud-app-reset.sh execute
 
 worker-once:
 	docker compose --project-name sessionless-dev --profile worker run --rm worker-runtime

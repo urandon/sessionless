@@ -58,6 +58,8 @@ var prefixes = map[ports.IDKind]string{
 	ports.IDSessionEvent:           "sev_",
 	ports.IDFrontendBinding:        "fbd_",
 	ports.IDSessionSnapshot:        "ssn_",
+	ports.IDTenantInvitation:       "tiv_",
+	ports.IDUploadIntent:           "upl_",
 	ports.IDActor:                  "act_",
 	ports.IDConversation:           "con_",
 	ports.IDSubscriptionConnection: "sub_",

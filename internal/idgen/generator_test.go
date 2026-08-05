@@ -53,6 +53,24 @@ func TestGeneratorRejectsUnknownKind(t *testing.T) {
 	}
 }
 
+func TestGeneratorSupportsWebContractIDs(t *testing.T) {
+	generator := newWithReader(&counterHashReader{})
+	invitation, err := generator.NewID(context.Background(), ports.IDTenantInvitation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := domain.TenantInvitationID(invitation).Validate(); err != nil || !strings.HasPrefix(invitation, "tiv_") {
+		t.Fatalf("invitation ID = %q, err = %v", invitation, err)
+	}
+	upload, err := generator.NewID(context.Background(), ports.IDUploadIntent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := domain.UploadIntentID(upload).Validate(); err != nil || !strings.HasPrefix(upload, "upl_") {
+		t.Fatalf("upload ID = %q, err = %v", upload, err)
+	}
+}
+
 type counterHashReader struct {
 	counter uint64
 	buffer  []byte

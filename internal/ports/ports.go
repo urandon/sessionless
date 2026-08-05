@@ -24,6 +24,8 @@ const (
 	IDSessionEvent           IDKind = "session_event"
 	IDFrontendBinding        IDKind = "frontend_binding"
 	IDSessionSnapshot        IDKind = "session_snapshot"
+	IDTenantInvitation       IDKind = "tenant_invitation"
+	IDUploadIntent           IDKind = "upload_intent"
 	IDActor                  IDKind = "actor"
 	IDConversation           IDKind = "conversation"
 	IDSubscriptionConnection IDKind = "subscription_connection"

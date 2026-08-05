@@ -39,14 +39,19 @@ authorization, full multi-frontend projection, and subscription-backed Codex,
 OpenCode, Claude, or Hermes adapters remain later implementation slices.
 Canonical sessions, ordered events, session participants, snapshots, activity indexes,
 and revisioned frontend bindings are persisted directly in YDB. The repository
-also freezes the WebUI OIDC, explicit enrollment, membership authorization,
-revocable web-session, CSRF, same-origin API, and upload-intent contracts; the
-Web BFF and its auth persistence remain the next implementation slice.
+also implements the Go Web BFF for Telegram OIDC Authorization Code + PKCE,
+explicit tenant enrollment, membership authorization, revocable first-party
+sessions, CSRF protection, and active-tenant session rotation. The browser UI
+and upload-intent implementation remain separate slices.
 
 ## Components
 
 - `control-api`: HTTP entrypoint with health/build metadata and the authenticated
   Telegram webhook adapter;
+- `web-bff`: same-origin Go backend-for-frontend for Telegram OIDC, membership-
+  authorized tenant selection, and revocable opaque browser sessions;
+- `oidc-fake`: deterministic Telegram-shaped OIDC fixture that is hard-disabled
+  outside the local environment;
 - `reconciler`: bounded 16-bucket dispatch publisher and quota-expiry
   reconciler;
 - `telegram-sender`: durable, retrying Telegram delivery outbox consumer;
@@ -64,6 +69,10 @@ Web BFF and its auth persistence remain the next implementation slice.
   interfaces;
 - `internal/webcontract`: same-origin WebUI request/response, secure-cookie,
   CSRF, and tenant-selector contracts without browser-side tenant authority;
+- `internal/webbff`: authorization-code callback, first-party session, CSRF,
+  logout, identity, membership, and active-tenant HTTP flows;
+- `internal/telegramoidc`: Telegram OIDC Authorization Code + PKCE client with
+  pinned RS256 verification and bounded JWKS refresh;
 - `internal/portlog`: process-boundary structured correlation logs without
   payload or credential logging;
 - `internal/ydbstore`: serializable tenant-scoped YDB state and atomic
@@ -116,6 +125,7 @@ make partition-status
 make partition-backfill
 make cloud-app-reset-plan
 make cloud-app-reset
+make web-bootstrap
 make worker-once
 make integration
 make ydb-integration
@@ -127,6 +137,8 @@ make dev-down
 
 See [docs/development.md](docs/development.md) for prerequisites, secret
 injection, image builds, the guarded reset procedure, and exact local behavior.
+The Web BFF, OIDC settings, YDB access paths, enrollment boundary, and audited
+cloud-dev bootstrap are documented in [docs/web-bff.md](docs/web-bff.md).
 YDB keys, TTL, and atomic procedures are documented in
 [docs/ydb-state-store.md](docs/ydb-state-store.md).
 The primary-key distribution, bucketed ready/expiry layout, migration procedure,

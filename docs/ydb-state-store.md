@@ -29,6 +29,13 @@ domain objects whose tenant does not match it.
 | `session_participants` | `(tenant_id, session_id, user_id)` | point-authorize tenant membership and session role |
 | `session_snapshots` | `(tenant_id, session_id, version)` | bounded prefix-read immutable context materializations |
 | `session_activity` | `(tenant_id, user_id, status, activity_bucket, updated_at, session_id)` | fixed 16-query recent-session fan-out per member |
+| `external_identities` | `(shard_bucket, provider, subject)` | point-resolve a verified frontend identity to one internal user |
+| `external_identities_by_user` | `(user_bucket, user_id, provider, subject)` | bounded reverse identity lookup |
+| `tenant_memberships` | `(user_bucket, user_id, tenant_id)` | bounded membership list and point authorization |
+| `tenant_invitations` | `(tenant_id, invitation_id)` | point-consume a one-time enrollment grant |
+| `oidc_login_challenges` | `(shard_bucket, state_digest)` | point-consume one browser-bound OIDC transaction |
+| `web_sessions` | `(shard_bucket, session_digest)` | point-authorize, rotate, or revoke a first-party browser session |
+| `development_bootstrap_grants` | `(tenant_id, user_id)` | exact cloud-dev bootstrap idempotency and audit ledger |
 | `telegram_updates` | `(tenant_id, source_id, update_id)` | point insert/read for Bot API deduplication |
 | `subscription_connections` | `(tenant_id, subscription_connection_id)` | point-read credential reference and observed entitlement |
 | `subscription_scheduler_slots` | `(tenant_id, subscription_connection_id)` | serializable one-subscription admission contention point |
@@ -182,6 +189,10 @@ policy and migration.
 YDB TTL deletion is asynchronous. Reads whose correctness depends on expiry
 must still compare the timestamp:
 
+- OIDC login challenges: ten minutes or less;
+- Web sessions: seven-day absolute lifetime or less, with a server-enforced
+  12-hour sliding idle lifetime;
+- tenant invitations: their explicit grant expiry;
 - Telegram update and run-idempotency markers: 30 days by default;
 - attempts, worker job descriptors, historical leases, checkpoints,
   reservations, usage, and outboxes: 90 days after their last relevant

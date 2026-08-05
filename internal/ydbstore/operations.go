@@ -383,6 +383,38 @@ func (store *Store) EnsureTelegramIdentity(
 		); err != nil {
 			return err
 		}
+		externalIdentity, _, err := resolveOrCreateExternalIdentityTx(
+			ctx,
+			tx.sqlTx,
+			domain.ExternalSubject{
+				Provider: domain.IdentityProviderTelegram,
+				Subject:  request.Actor.ExternalID,
+			},
+			userID,
+			request.ObservedAt,
+		)
+		if err != nil {
+			return err
+		}
+		if externalIdentity.UserID != userID {
+			return domain.ErrExternalIdentityConflict
+		}
+		membership, membershipFound, err := readMembershipTx(
+			ctx, tx.sqlTx, externalIdentity.UserID, request.TenantID,
+		)
+		if err != nil {
+			return err
+		}
+		if !membershipFound {
+			membership = domain.TenantMembership{
+				TenantID: request.TenantID, UserID: externalIdentity.UserID,
+				Role: domain.TenantMembershipOwner, Status: domain.TenantMembershipActive,
+				SecurityVersion: 1, CreatedAt: request.ObservedAt, UpdatedAt: request.ObservedAt,
+			}
+			if err := putMembershipTx(ctx, tx.sqlTx, membership); err != nil {
+				return err
+			}
+		}
 		binding, found, err := readBindingTx(ctx, tx, bindingID)
 		if err != nil {
 			return err

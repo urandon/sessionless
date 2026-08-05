@@ -60,10 +60,11 @@ make integration
 ```
 
 `make test` checks formatting, runs `go vet`, unit tests, and the race detector.
-`make build` writes nine binaries to `.build/bin`: `control-api`,
-`reconciler`, `telegram-sender`, `telegram-fake`, `worker-runtime`, and
-`schema-migrate`, plus the operator-only `schema-inspect` and
-`schema-backfill` tools and the `deployment-lock` Terraform wrapper.
+`make build` writes every component declared by the Makefile to `.build/bin`.
+This includes the control plane, Web BFF, local fixtures, isolated worker, and
+operator-only schema, reset, deployment-lock, and Web bootstrap commands. The
+Makefile is the authoritative component inventory; documentation deliberately
+does not duplicate a count that drifts as slices are added.
 
 ## Local stack
 
@@ -102,6 +103,28 @@ The control API uses the YDB SDK single-connection balancer only inside the
 Compose stand. This keeps the client on the Docker-resolvable `ydb-local`
 endpoint instead of replacing it with YDB Local's host-facing discovery
 address. Cloud deployments retain normal endpoint discovery and balancing.
+
+## Web authentication development
+
+The Web BFF and Telegram-shaped OIDC fixture are separate Go processes. The
+fixture generates an ephemeral RS256 key at process start and refuses to start
+unless `SESSIONLESS_ENVIRONMENT=local`. Production and cloud-development
+processes always use Telegram's real issuer and receive the client secret from
+the process environment or Lockbox.
+
+Build the binaries and run their focused tests without credentials:
+
+```sh
+make build
+go test -race ./internal/oidcfixture ./internal/telegramoidc ./internal/webbff
+```
+
+Secure browser cookies and exact-origin checks are never weakened for local
+development. A manual browser flow therefore needs a local HTTPS reverse proxy
+for `https://web.localhost`; the fixture endpoints may remain loopback HTTP and
+are accepted only when the BFF itself runs in the local environment. See
+[web-bff.md](web-bff.md) for the route contract, environment variables,
+bootstrap procedure, and threat boundary.
 
 Run the adapter contracts and stop the stack:
 

@@ -106,6 +106,13 @@ func containsProduction(value string) bool {
 }
 
 var applicationTables = []string{
+	"web_sessions",
+	"oidc_login_challenges",
+	"development_bootstrap_grants",
+	"tenant_invitations",
+	"tenant_memberships",
+	"external_identities_by_user",
+	"external_identities",
 	"telegram_delivery_ready_v2",
 	"telegram_delivery_ready",
 	"telegram_delivery_outbox",

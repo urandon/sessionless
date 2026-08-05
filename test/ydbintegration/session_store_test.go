@@ -12,6 +12,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/ydbstore"
 )
 
 const canonicalDigest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -28,6 +29,11 @@ func TestCanonicalSessionCreateBindSwitchAndTenantIsolation(t *testing.T) {
 	}
 	if err := store.CreateSession(ctx, first, firstOwner); err != nil {
 		t.Fatalf("exact create retry failed: %v", err)
+	}
+	conflictingOwner := firstOwner
+	conflictingOwner.UpdatedAt = conflictingOwner.UpdatedAt.Add(time.Second)
+	if err := store.CreateSession(ctx, first, conflictingOwner); !errors.Is(err, ydbstore.ErrSessionConflict) {
+		t.Fatalf("create retry with conflicting owner error = %v, want %v", err, ydbstore.ErrSessionConflict)
 	}
 	binding := domain.FrontendBinding{
 		ID: domain.FrontendBindingID(uniqueID("binding")), TenantID: tenantID,
@@ -79,6 +85,29 @@ func TestCanonicalSessionCreateBindSwitchAndTenantIsolation(t *testing.T) {
 	}
 	if len(sessions) != 2 || sessions[0].Status != domain.SessionArchived {
 		t.Fatalf("sessions after archive = %#v", sessions)
+	}
+
+	archived, archivedOwner := canonicalSessionFixture(
+		tenantID, userID, domain.SessionID(uniqueID("session-archived")), now.Add(3*time.Second),
+	)
+	if err := store.CreateSession(ctx, archived, archivedOwner); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ArchiveSession(ctx, tenantID, archived.ID, now.Add(4*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	archived, found, err = store.GetSession(ctx, tenantID, archived.ID)
+	if err != nil || !found {
+		t.Fatalf("archived session found=%t err=%v", found, err)
+	}
+	if _, err := store.CreateAndSwitchSession(
+		ctx, archived, archivedOwner, binding.ID, switched.Revision, now.Add(5*time.Second),
+	); err == nil {
+		t.Fatal("create-and-switch accepted an archived session")
+	}
+	resolved, found, err = store.ResolveFrontendBinding(ctx, tenantID, binding.Frontend, binding.ExternalConversationID)
+	if err != nil || !found || resolved != switched {
+		t.Fatalf("binding changed after rejected archived switch = %#v, found=%t, err=%v", resolved, found, err)
 	}
 
 	otherTenant := domain.TenantID(uniqueID("tenant-other"))

@@ -48,6 +48,12 @@ func (store *Store) CreateAndSwitchSession(
 	if err := validateSessionOwner(session, owner); err != nil {
 		return result, err
 	}
+	if session.Status != domain.SessionActive {
+		return result, domain.ValidationError{
+			Field:  "frontend_binding.session_id",
+			Reason: "must reference an active session",
+		}
+	}
 	if err := bindingID.Validate(); err != nil {
 		return result, err
 	}
@@ -604,10 +610,17 @@ func createSessionTx(ctx context.Context, tx *stateTx, session domain.Session, o
 		return err
 	}
 	if found {
-		if reflect.DeepEqual(existing, session) {
-			return nil
+		if !reflect.DeepEqual(existing, session) {
+			return ErrSessionConflict
 		}
-		return ErrSessionConflict
+		matches, err := sessionOwnerMatchesTx(ctx, tx, owner)
+		if err != nil {
+			return err
+		}
+		if !matches {
+			return ErrSessionConflict
+		}
+		return nil
 	}
 	record, err := marshal(session)
 	if err != nil {
@@ -650,6 +663,14 @@ func sessionAndOwnerMatchTx(
 	if err != nil || !found || !reflect.DeepEqual(existingSession, session) {
 		return false, err
 	}
+	return sessionOwnerMatchesTx(ctx, tx, owner)
+}
+
+func sessionOwnerMatchesTx(
+	ctx context.Context,
+	tx *stateTx,
+	owner domain.SessionParticipant,
+) (bool, error) {
 	existingOwner, found, err := readJSON[domain.SessionParticipant](ctx, tx.sqlTx,
 		`SELECT record FROM session_participants
 		 WHERE tenant_id = $1 AND session_id = $2 AND user_id = $3`,

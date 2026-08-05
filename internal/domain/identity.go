@@ -20,6 +20,8 @@ type (
 	SessionEventID           string
 	FrontendBindingID        string
 	SessionSnapshotID        string
+	TenantInvitationID       string
+	UploadIntentID           string
 	ConversationID           string
 	ActorID                  string
 	RunID                    string
@@ -45,6 +47,12 @@ func (id FrontendBindingID) Validate() error {
 }
 func (id SessionSnapshotID) Validate() error {
 	return ValidateOpaqueID("session_snapshot_id", string(id))
+}
+func (id TenantInvitationID) Validate() error {
+	return ValidateOpaqueID("tenant_invitation_id", string(id))
+}
+func (id UploadIntentID) Validate() error {
+	return ValidateOpaqueID("upload_intent_id", string(id))
 }
 func (id ConversationID) Validate() error { return ValidateOpaqueID("conversation_id", string(id)) }
 func (id ActorID) Validate() error        { return ValidateOpaqueID("actor_id", string(id)) }

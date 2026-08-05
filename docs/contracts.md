@@ -58,7 +58,8 @@ plus the contiguous ordered event range after it. There is no mutable
 
 `ConversationRef`, `ActorRef`, and the old YDB context revision remain only in
 the transitional Telegram persistence adapter. They must not cross into new
-session, run, scheduling, or worker contracts and are removed by #21/#36.
+session, run, scheduling, or worker contracts; #36 removes them from the
+Telegram ingress path.
 
 ## Tenant isolation
 
@@ -73,6 +74,28 @@ tenants/<tenant-id>/
 ```
 
 This is a domain invariant in addition to adapter-side IAM and bucket policy.
+
+## Web identity and authorization
+
+The WebUI contracts separate authentication from authorization. An OIDC
+provider subject maps immutably to one internal user, while an active
+server-side `TenantMembership` grants tenant access. Login cannot silently
+create a tenant or membership. Enrollment requires an existing authorized
+frontend grant, a one-time invitation, or an audited `cloud-dev` bootstrap.
+
+Browser sessions are opaque first-party capabilities stored by SHA-256 digest.
+They are idle/absolute-expiring, revocable, rotated after login and tenant
+switch, and bound to a membership security version. Every mutation requires an
+exact HTTPS Origin and a session-bound CSRF token. Browser tenant, session, run,
+and upload IDs are selectors that are reauthorized server-side.
+
+`internal/webcontract` defines the same-origin DTO boundary without embedding
+tenant authority in normal mutation bodies. Upload intents are tenant, user,
+session, size, digest, key, and expiry bound; commit trusts Object Storage
+metadata rather than browser claims. Detailed flows, defaults, operator
+bootstrap requirements, and the threat model are in
+[web-auth-contracts.md](web-auth-contracts.md) and
+[web-threat-model.md](web-threat-model.md).
 
 ## Run state machine
 

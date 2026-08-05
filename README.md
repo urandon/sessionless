@@ -37,8 +37,11 @@ delivery. A credential-free two-tenant black-box suite now composes the full
 local Telegram-to-worker-to-Telegram path and its recovery cases. Provider
 authorization, full multi-frontend projection, and subscription-backed Codex,
 OpenCode, Claude, or Hermes adapters remain later implementation slices.
-Canonical sessions, ordered events, memberships, snapshots, activity indexes,
-and revisioned frontend bindings are persisted directly in YDB.
+Canonical sessions, ordered events, session participants, snapshots, activity indexes,
+and revisioned frontend bindings are persisted directly in YDB. The repository
+also freezes the WebUI OIDC, explicit enrollment, membership authorization,
+revocable web-session, CSRF, same-origin API, and upload-intent contracts; the
+Web BFF and its auth persistence remain the next implementation slice.
 
 ## Components
 
@@ -59,6 +62,8 @@ and revisioned frontend bindings are persisted directly in YDB.
   identities, state machines, quota/usage semantics, outboxes, and artifacts;
 - `internal/ports`: YDB/queue/blob/frontend/credential/harness-neutral runtime
   interfaces;
+- `internal/webcontract`: same-origin WebUI request/response, secure-cookie,
+  CSRF, and tenant-selector contracts without browser-side tenant authority;
 - `internal/portlog`: process-boundary structured correlation logs without
   payload or credential logging;
 - `internal/ydbstore`: serializable tenant-scoped YDB state and atomic
@@ -88,7 +93,10 @@ This proves orchestration semantics without implying that a permanent harness
 or subscription credential protocol has already been selected.
 
 The contract invariants and transition tables are documented in
-[docs/contracts.md](docs/contracts.md). The architecture source of truth is
+[docs/contracts.md](docs/contracts.md). Web authentication and its focused
+threat model are documented in
+[docs/web-auth-contracts.md](docs/web-auth-contracts.md) and
+[docs/web-threat-model.md](docs/web-threat-model.md). The architecture source of truth is
 [design issue #1](https://gitcode.com/urandon/sessionless/issues/1), and delivery
 order is maintained in
 [implementation epic #6](https://gitcode.com/urandon/sessionless/issues/6).

@@ -405,17 +405,38 @@ secret appears in process argv. Wrangler receives only the temporary file path,
 and the file is deleted on every exit. Do not publish the URL in an issue, log,
 shell trace, or CI output.
 
+The first run creates the fixed
+`sessionless-dev-telegram-ingress-external` name with immutable ownership
+labels. It never updates an existing workflow by name. On later deployments,
+resolve and verify the non-secret workflow ID, then bind both authorization and
+the update to that ID:
+
+```sh
+export YANDEX_WORKFLOW_ID='verified immutable workflow ID'
+export CONFIRM_YANDEX_WORKFLOW_UPDATE="sessionless:telegram-ingress:${YANDEX_WORKFLOW_ID}"
+./scripts/cloudflare-telegram-edge.sh
+unset YANDEX_WORKFLOW_ID CONFIRM_YANDEX_WORKFLOW_UPDATE
+```
+
+The script refuses the update unless the ID, fixed name, and all ownership
+labels match. A first-run name collision is also a hard failure and requires
+manual identity review before using the ID-bound update path.
+
 Cloud-dev once had a Terraform-managed workflow. Before the first apply of the
 external-ownership configuration, detach exactly that resource under the
 deployment lock:
 
 ```sh
-export CONFIRM_WORKFLOW_STATE_RELEASE='sessionless-dev:telegram-ingress'
+export LEGACY_TELEGRAM_WORKFLOW_ID='verified immutable legacy workflow ID'
+export CONFIRM_WORKFLOW_STATE_RELEASE="sessionless-dev:telegram-ingress:${LEGACY_TELEGRAM_WORKFLOW_ID}"
 ./scripts/cloud-terraform.sh workflow-state-release
-unset CONFIRM_WORKFLOW_STATE_RELEASE
+unset LEGACY_TELEGRAM_WORKFLOW_ID CONFIRM_WORKFLOW_STATE_RELEASE
 ```
 
-This state operation does not delete the live workflow. Deploy the new
+The command reads both the selected remote state and the live Yandex resource.
+It refuses to detach unless the exact state address, supplied immutable ID,
+fixed legacy name, and live identity all agree. The state operation does not
+delete the live workflow. Deploy the new
 `sessionless-dev-telegram-ingress-external` workflow and Worker with the command
 above, verify a successful handoff, then delete the old
 `sessionless-dev-telegram-ingress` workflow. Deletion revokes the capability

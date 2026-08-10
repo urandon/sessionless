@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -179,13 +180,18 @@ func (service *Service) Ingest(ctx context.Context, input UserInput) (ports.Cano
 		ExternalEventID: input.ExternalEventID,
 	}
 	prefix := domain.SessionEventObjectPrefix(input.Actor.TenantID, state.Session.ID, eventID)
+	uploadToken, err := newUploadToken()
+	if err != nil {
+		return ports.CanonicalUserEventResult{}, err
+	}
+	uploadPrefix := prefix + "uploads/" + uploadToken + "/"
 	artifacts := make([]domain.Artifact, 0, len(input.Attachments)+1)
 	descriptors := make([]eventAttachment, 0, len(input.Attachments))
 	for index, attachment := range input.Attachments {
 		name := safeName(attachment.Name, fmt.Sprintf("attachment-%02d.bin", index+1))
 		ref, err := service.blobs.Put(
 			ctx, input.Actor.TenantID,
-			fmt.Sprintf("%sattachments/%02d-%s", prefix, index+1, name), attachment.Body,
+			fmt.Sprintf("%sattachments/%02d-%s", uploadPrefix, index+1, name), attachment.Body,
 		)
 		if err != nil {
 			return ports.CanonicalUserEventResult{}, fmt.Errorf("store canonical attachment: %w", err)
@@ -202,7 +208,7 @@ func (service *Service) Ingest(ctx context.Context, input UserInput) (ports.Cano
 		return ports.CanonicalUserEventResult{}, fmt.Errorf("encode canonical event envelope: %w", err)
 	}
 	payloadRef, err := service.blobs.Put(
-		ctx, input.Actor.TenantID, prefix+"message.json", bytes.NewReader(payload),
+		ctx, input.Actor.TenantID, uploadPrefix+"message.json", bytes.NewReader(payload),
 	)
 	if err != nil {
 		return ports.CanonicalUserEventResult{}, fmt.Errorf("store canonical event envelope: %w", err)
@@ -225,6 +231,14 @@ func (service *Service) Ingest(ctx context.Context, input UserInput) (ports.Cano
 		AllowedMCPServers:        append([]string(nil), input.AllowedMCPServers...),
 		CommittedAt:              input.ReceivedAt.UTC(),
 	})
+}
+
+func newUploadToken() (string, error) {
+	var token [16]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		return "", fmt.Errorf("generate immutable upload namespace: %w", err)
+	}
+	return hex.EncodeToString(token[:]), nil
 }
 
 func validateInput(input UserInput) error {

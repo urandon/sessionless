@@ -57,9 +57,15 @@ session-scoped idempotency row remains the invariant for direct event appends.
 Message envelopes and attachments are written before the YDB transaction to:
 
 ```text
-tenants/<tenant-id>/sessions/<session-id>/events/<event-id>/message.json
-tenants/<tenant-id>/sessions/<session-id>/events/<event-id>/attachments/...
+tenants/<tenant-id>/sessions/<session-id>/events/<event-id>/uploads/<upload-token>/message.json
+tenants/<tenant-id>/sessions/<session-id>/events/<event-id>/uploads/<upload-token>/attachments/...
 ```
+
+Each ingestion attempt receives a cryptographically random upload namespace.
+Two concurrent deliveries that both miss the preflight idempotency lookup
+therefore cannot overwrite each other's bytes, even when their stable event
+and run IDs are identical. The winning YDB transaction makes only its upload
+references canonical; a losing attempt leaves separate unreferenced objects.
 
 Every referenced object is revalidated against the tenant/session/event prefix
 inside the transaction. A failed object write prevents the YDB operation from
@@ -69,8 +75,9 @@ run, attempt, manifest, dispatch outbox, and session-sequence update together.
 An object write followed by a rejected or uncertain YDB transaction may leave
 an unreferenced immutable object. It is not canonical state and must be removed
 by prefix lifecycle/garbage collection after the idempotency uncertainty
-window. The ingress service does not eagerly delete it because a concurrent
-retry may already have committed the same deterministic object key.
+window. The ingress service does not eagerly delete it because transaction
+outcome may be uncertain, while the per-attempt namespace prevents it from
+damaging the committed payload.
 
 ## Transitional worker origin
 

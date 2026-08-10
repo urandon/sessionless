@@ -108,6 +108,58 @@ func TestObjectFailureDoesNotReachCanonicalTransaction(t *testing.T) {
 	}
 }
 
+func TestConcurrentPreflightMissCannotOverwriteCanonicalBlob(t *testing.T) {
+	baseStore := newMemoryCanonicalStore()
+	store := &alwaysMissCanonicalStore{memoryCanonicalStore: baseStore}
+	blobs := newMemoryBlobs()
+	service, err := sessioningress.New(
+		sessioningress.Config{IDKey: []byte(strings.Repeat("r", 32))}, store, blobs,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := sessioningress.UserInput{
+		Actor: sessioningress.Actor{
+			TenantID: "tenant-a", UserID: "user-a", Frontend: syntheticfrontend.Frontend,
+			ExternalConversationID: "conversation-a",
+		},
+		ExternalEventID:          "racing-delivery",
+		ReceivedAt:               time.Date(2026, 8, 10, 10, 0, 0, 0, time.UTC),
+		Text:                     "winning payload",
+		SubscriptionConnectionID: "subscription-a",
+	}
+	first, err := service.Ingest(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input.Text = "losing payload"
+	input.ReceivedAt = input.ReceivedAt.Add(time.Second)
+	second, err := service.Ingest(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.Created || second.Created || first.EventID != second.EventID || first.RunID != second.RunID {
+		t.Fatalf("first=%#v second=%#v", first, second)
+	}
+	if len(baseStore.commits) != 1 || len(blobs.objects) != 2 {
+		t.Fatalf("commits=%d objects=%d, want one canonical commit and two isolated uploads", len(baseStore.commits), len(blobs.objects))
+	}
+	canonical := baseStore.commits[0].Payload
+	canonicalBytes := blobs.objects[canonical.Key]
+	if !bytes.Contains(canonicalBytes, []byte("winning payload")) || bytes.Contains(canonicalBytes, []byte("losing payload")) {
+		t.Fatalf("canonical payload was overwritten: %s", canonicalBytes)
+	}
+	digest := sha256.Sum256(canonicalBytes)
+	if canonical.SHA256 != hex.EncodeToString(digest[:]) {
+		t.Fatalf("canonical digest=%s actual=%s", canonical.SHA256, hex.EncodeToString(digest[:]))
+	}
+	for key := range blobs.objects {
+		if !strings.Contains(key, "/uploads/") {
+			t.Fatalf("object key %q is outside an immutable upload namespace", key)
+		}
+	}
+}
+
 func TestAttachmentsStayInsideTheCanonicalEventPrefix(t *testing.T) {
 	store := newMemoryCanonicalStore()
 	blobs := newMemoryBlobs()
@@ -238,6 +290,15 @@ func (store *memoryCanonicalStore) LookupCanonicalUserEvent(
 	}
 	result.Created = false
 	return ports.CanonicalUserEventLookupResult{Result: result, Found: true}, nil
+}
+
+type alwaysMissCanonicalStore struct{ *memoryCanonicalStore }
+
+func (*alwaysMissCanonicalStore) LookupCanonicalUserEvent(
+	context.Context,
+	ports.CanonicalUserEventLookup,
+) (ports.CanonicalUserEventLookupResult, error) {
+	return ports.CanonicalUserEventLookupResult{}, nil
 }
 
 type memoryBlobs struct {

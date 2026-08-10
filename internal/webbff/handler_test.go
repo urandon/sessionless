@@ -63,6 +63,12 @@ func TestLoginTenantSwitchCSRFAndLogout(t *testing.T) {
 	if badResponse.Code != http.StatusForbidden {
 		t.Fatalf("bad CSRF status = %d", badResponse.Code)
 	}
+	securityEvents := store.recordedSecurityEvents()
+	if len(securityEvents) != 1 || securityEvents[0].Action != domain.WebSecurityCSRFRejected ||
+		securityEvents[0].TenantID != "ten_alpha" || securityEvents[0].UserID != userID ||
+		securityEvents[0].MembershipSecurityVersion != 1 || securityEvents[0].ReasonCode != "cookie_header_mismatch" {
+		t.Fatalf("CSRF audit events = %+v", securityEvents)
+	}
 
 	switchRequest := tenantSwitchRequest(sessionCookie, csrfCookie, "ten_beta", csrfCookie.Value)
 	switchResponse := httptest.NewRecorder()
@@ -123,6 +129,29 @@ func TestUnknownTelegramIdentityGetsDeterministicRecoveryWithoutSession(t *testi
 		if cookie.Name == webcontract.SessionCookieName && cookie.Value != "" {
 			t.Fatal("unknown identity received a web session")
 		}
+	}
+	securityEvents := store.recordedSecurityEvents()
+	if len(securityEvents) != 1 || securityEvents[0].Action != domain.WebSecurityLoginFailed ||
+		securityEvents[0].ReasonCode != "membership_missing" || securityEvents[0].UserID == "" ||
+		securityEvents[0].SubjectFingerprint == "" {
+		t.Fatalf("login failure audit events = %+v", securityEvents)
+	}
+}
+
+func TestCSRFRejectionFailsClosedWhenAuditCannotPersist(t *testing.T) {
+	store := newMemoryAuthStore()
+	subject := domain.ExternalSubject{Provider: domain.IdentityProviderTelegram, Subject: "424242"}
+	userID := domain.UserID("usr_known_user")
+	store.identities[subject] = domain.ExternalIdentity{Subject: subject, UserID: userID, CreatedAt: bffTestTime, UpdatedAt: bffTestTime}
+	store.memberships[userID] = []domain.TenantMembership{membership("ten_alpha", userID, domain.TenantMembershipOwner)}
+	handler := newTestHandler(t, store, subject.Subject)
+	sessionCookie, csrfCookie := performLogin(t, handler, "/sessions")
+	store.securityEventErr = errors.New("audit unavailable")
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, tenantSwitchRequest(sessionCookie, csrfCookie, "ten_alpha", "wrong-token"))
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("audit failure status = %d body=%s", response.Code, response.Body.String())
 	}
 }
 
@@ -251,11 +280,13 @@ type fixedClock struct{ now time.Time }
 func (clock fixedClock) Now() time.Time { return clock.now }
 
 type memoryAuthStore struct {
-	mu          sync.Mutex
-	challenges  map[domain.SecretDigest]domain.OIDCLoginChallenge
-	identities  map[domain.ExternalSubject]domain.ExternalIdentity
-	memberships map[domain.UserID][]domain.TenantMembership
-	sessions    map[domain.SecretDigest]domain.WebSession
+	mu               sync.Mutex
+	challenges       map[domain.SecretDigest]domain.OIDCLoginChallenge
+	identities       map[domain.ExternalSubject]domain.ExternalIdentity
+	memberships      map[domain.UserID][]domain.TenantMembership
+	sessions         map[domain.SecretDigest]domain.WebSession
+	securityEvents   []domain.WebSecurityAuditEvent
+	securityEventErr error
 }
 
 func newMemoryAuthStore() *memoryAuthStore {
@@ -265,6 +296,25 @@ func newMemoryAuthStore() *memoryAuthStore {
 		memberships: make(map[domain.UserID][]domain.TenantMembership),
 		sessions:    make(map[domain.SecretDigest]domain.WebSession),
 	}
+}
+
+func (store *memoryAuthStore) RecordWebSecurityEvent(_ context.Context, event domain.WebSecurityAuditEvent) error {
+	if err := event.Validate(); err != nil {
+		return err
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.securityEventErr != nil {
+		return store.securityEventErr
+	}
+	store.securityEvents = append(store.securityEvents, event)
+	return nil
+}
+
+func (store *memoryAuthStore) recordedSecurityEvents() []domain.WebSecurityAuditEvent {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return append([]domain.WebSecurityAuditEvent(nil), store.securityEvents...)
 }
 
 func (store *memoryAuthStore) CreateLoginChallenge(_ context.Context, challenge domain.OIDCLoginChallenge) error {

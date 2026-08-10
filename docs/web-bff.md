@@ -40,10 +40,10 @@ sequenceDiagram
 | `GET` | `/healthz`, `/readyz`, `/version` | Process health and build metadata |
 | `GET` | `/auth/telegram/start` | Create a one-time login challenge and redirect to Telegram |
 | `GET` | `/auth/telegram/callback` | Consume the challenge, verify Telegram OIDC, and create a Web session |
-| `POST` | `/api/auth/logout` | Revoke the current Web session |
-| `GET` | `/api/me` | Return the current identity and active tenant |
-| `GET` | `/api/tenants` | Return the caller's active memberships |
-| `POST` | `/api/active-tenant` | Rotate the Web session into another authorized tenant |
+| `POST` | `/auth/logout` | Revoke the current Web session |
+| `GET` | `/api/web/v1/me` | Return the current identity and active tenant |
+| `GET` | `/api/web/v1/tenants` | Return the caller's active memberships |
+| `POST` | `/api/web/v1/active-tenant` | Rotate the Web session into another authorized tenant |
 
 Mutation routes require an exact `Origin` match and a double-submit CSRF value
 whose digest must also match the current server-side session. Switching tenants
@@ -110,6 +110,7 @@ the production Web BFF image.
 | `tenant_invitations` | `(tenant_id, invitation_id)` | Point consume with TTL |
 | `oidc_login_challenges` | `(shard_bucket, state_digest)` | One-time point consume with TTL |
 | `web_sessions` | `(shard_bucket, session_digest)` | Point authorize, rotate, and revoke with TTL |
+| `web_security_audit_events` | `(shard_bucket, occurred_at, request_id)` | Durable login-failure and CSRF-rejection audit without requiring a resolved tenant |
 | `development_bootstrap_grants` | `(tenant_id, user_id)` | Exact idempotency ledger for cloud-dev grants |
 
 The leading buckets are stable hashes of the point-lookup identity. They avoid
@@ -161,6 +162,12 @@ go test -race ./internal/oidcfixture ./internal/telegramoidc ./internal/webbff
 make ydb-integration
 ```
 
+Login failures and CSRF rejections are synchronously persisted to
+`web_security_audit_events`; a failed audit write fails the request with
+`503 temporarily_unavailable`. Pre-authentication events contain the provider
+and, only after verification, a one-way external-subject fingerprint. They
+never contain raw claims or browser credentials.
+
 Request logs contain only request ID, method, path, and status. Query strings,
-cookies, authorization codes, tokens, state, nonce, PKCE values, and provider
-response bodies are excluded.
+cookies, authorization codes, tokens, state, nonce, PKCE values, provider
+response bodies, and raw security errors are excluded.

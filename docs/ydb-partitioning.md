@@ -71,6 +71,7 @@ a production adapter.
 | `dispatch_outbox` | `(tenant_id, dispatch_outbox_id)` | tenant entity | random outbox ID; load splitting enabled |
 | `telegram_delivery_outbox` | `(tenant_id, telegram_delivery_id)` | tenant entity | random delivery ID; load splitting enabled |
 | `audit_events` | `(tenant_id, occurred_at, audit_event_id)` | append-heavy | time is behind tenant; elephant-tenant throughput is a cloud gate |
+| `web_security_audit_events` | `(shard_bucket, occurred_at, request_id)` | append-heavy | request hashes spread pre-auth events that have no resolved tenant; bounded time reads fan out across 16 buckets |
 | `lease_expiry` | `(shard_bucket, expires_at, tenant_id, run_id)` in `lease_expiry_v2` | global expiry | bounded 16-bucket time traversal |
 | `dispatch_ready` | `(shard_bucket, available_at, tenant_id, dispatch_outbox_id)` in `dispatch_ready_v2` | global ready | bounded 16-bucket time traversal |
 | `telegram_delivery_ready` | `(shard_bucket, available_at, tenant_id, telegram_delivery_id)` in `telegram_delivery_ready_v2` | global ready | bounded 16-bucket time traversal |

@@ -39,7 +39,7 @@ func main() {
 	defer closeDependencies()
 
 	server := &http.Server{
-		Addr:              ":" + envOrDefault("PORT", "8080"),
+		Addr:              webListenAddress(),
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
@@ -59,6 +59,10 @@ func main() {
 		logger.Error("web BFF stopped", "component", component, "error", err)
 		os.Exit(1)
 	}
+}
+
+func webListenAddress() string {
+	return ":" + envOrDefault("WEB_PORT", "8083")
 }
 
 func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(), error) {

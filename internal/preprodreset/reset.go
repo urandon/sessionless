@@ -106,6 +106,7 @@ func containsProduction(value string) bool {
 }
 
 var applicationTables = []string{
+	"web_security_audit_events",
 	"web_sessions",
 	"oidc_login_challenges",
 	"development_bootstrap_grants",

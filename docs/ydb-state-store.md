@@ -58,6 +58,7 @@ domain objects whose tenant does not match it.
 | `telegram_delivery_outbox` | `(tenant_id, telegram_delivery_id)` | point delivery transition |
 | `telegram_delivery_ready_v2` | `(shard_bucket, available_at, tenant_id, telegram_delivery_id)` | bounded global pending/retry delivery range |
 | `audit_events` | `(tenant_id, occurred_at, audit_event_id)` | bounded tenant/time audit reads |
+| `web_security_audit_events` | `(shard_bucket, occurred_at, request_id)` | bounded 16-way time reads for pre-auth and CSRF security events |
 
 There is no global sequence or shared per-user counter. Production opaque IDs
 come from 128 random bits; lease fences are monotonic only within a single

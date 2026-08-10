@@ -104,6 +104,7 @@ func (handler *Handler) ServeHTTP(w http.ResponseWriter, request *http.Request) 
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 	w.Header().Set("Cache-Control", "no-store")
+	request = request.WithContext(context.WithValue(request.Context(), requestIDKey{}, requestID))
 	response := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 	handler.mux.ServeHTTP(response, request)
 	handler.config.Logger.Info("web request completed",
@@ -142,7 +143,7 @@ func (handler *Handler) startLogin(w http.ResponseWriter, request *http.Request)
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	start := webcontract.OIDCStartRequest{ReturnTo: request.URL.Query().Get("return_to")}
 	if err := start.Validate(); err != nil {
-		handler.writeFailure(w, request, webcontract.ErrorInvalidRequest, "The login request is invalid.")
+		handler.writeLoginFailure(w, request, "invalid_login_request", webcontract.ErrorInvalidRequest, "The login request is invalid.", nil, "")
 		return
 	}
 	if start.ReturnTo == "" {
@@ -150,22 +151,22 @@ func (handler *Handler) startLogin(w http.ResponseWriter, request *http.Request)
 	}
 	state, err := handler.secret("state_", 32)
 	if err != nil {
-		handler.writeError(w, request, err)
+		handler.writeLoginError(w, request, "challenge_generation_failed", err, nil, "")
 		return
 	}
 	browserBinding, err := handler.secret("binding_", 32)
 	if err != nil {
-		handler.writeError(w, request, err)
+		handler.writeLoginError(w, request, "challenge_generation_failed", err, nil, "")
 		return
 	}
 	verifier, err := handler.secret("pkce_", 32)
 	if err != nil {
-		handler.writeError(w, request, err)
+		handler.writeLoginError(w, request, "challenge_generation_failed", err, nil, "")
 		return
 	}
 	nonce, err := handler.secret("nonce_", 32)
 	if err != nil {
-		handler.writeError(w, request, err)
+		handler.writeLoginError(w, request, "challenge_generation_failed", err, nil, "")
 		return
 	}
 	now := handler.config.Clock.Now().UTC()
@@ -175,7 +176,7 @@ func (handler *Handler) startLogin(w http.ResponseWriter, request *http.Request)
 		CreatedAt: now, ExpiresAt: now.Add(handler.config.ChallengeTTL),
 	}
 	if err := handler.config.Store.CreateLoginChallenge(request.Context(), challenge); err != nil {
-		handler.writeError(w, request, err)
+		handler.writeLoginError(w, request, "challenge_persistence_failed", err, nil, "")
 		return
 	}
 	digest := sha256.Sum256([]byte(verifier))
@@ -185,7 +186,7 @@ func (handler *Handler) startLogin(w http.ResponseWriter, request *http.Request)
 		Scopes: []string{"openid", "profile"},
 	})
 	if err != nil {
-		handler.writeError(w, request, err)
+		handler.writeLoginError(w, request, "provider_authorization_failed", err, nil, "")
 		return
 	}
 	http.SetCookie(w, loginBindingCookie(browserBinding, handler.config.ChallengeTTL))
@@ -200,12 +201,12 @@ func (handler *Handler) loginCallback(w http.ResponseWriter, request *http.Reque
 		Error: request.URL.Query().Get("error"), ErrorDescription: request.URL.Query().Get("error_description"),
 	}
 	if err := callback.Validate(); err != nil {
-		handler.writeFailure(w, request, webcontract.ErrorInvalidRequest, "The login callback is invalid.")
+		handler.writeLoginFailure(w, request, "invalid_callback", webcontract.ErrorInvalidRequest, "The login callback is invalid.", nil, "")
 		return
 	}
 	bindingCookie, err := request.Cookie(LoginBindingCookieName)
 	if err != nil || bindingCookie.Value == "" {
-		handler.writeFailure(w, request, webcontract.ErrorAccessDenied, "The login transaction could not be verified.")
+		handler.writeLoginFailure(w, request, "browser_binding_missing", webcontract.ErrorAccessDenied, "The login transaction could not be verified.", nil, "")
 		return
 	}
 	http.SetCookie(w, clearCookie(LoginBindingCookieName, true))
@@ -214,11 +215,11 @@ func (handler *Handler) loginCallback(w http.ResponseWriter, request *http.Reque
 		request.Context(), domain.DigestSecret(callback.State), bindingCookie.Value, now,
 	)
 	if err != nil {
-		handler.writeFailure(w, request, webcontract.ErrorAccessDenied, "The login transaction could not be verified.")
+		handler.writeLoginFailure(w, request, "login_challenge_rejected", webcontract.ErrorAccessDenied, "The login transaction could not be verified.", nil, "")
 		return
 	}
 	if callback.Error != "" {
-		handler.writeFailure(w, request, webcontract.ErrorAccessDenied, "Telegram login was not completed.")
+		handler.writeLoginFailure(w, request, "provider_denied", webcontract.ErrorAccessDenied, "Telegram login was not completed.", nil, "")
 		return
 	}
 	claims, err := handler.config.Provider.ExchangeAndVerify(request.Context(), ports.OIDCTokenRequest{
@@ -227,39 +228,40 @@ func (handler *Handler) loginCallback(w http.ResponseWriter, request *http.Reque
 		ExpectedNonce: challenge.Nonce, Policy: handler.config.OIDCPolicy, Now: now,
 	})
 	if err != nil {
-		handler.writeFailure(w, request, webcontract.ErrorAccessDenied, "Telegram login could not be verified.")
+		handler.writeLoginFailure(w, request, "provider_verification_failed", webcontract.ErrorAccessDenied, "Telegram login could not be verified.", nil, "")
 		return
 	}
+	verifiedSubject := domain.ExternalSubject{Provider: domain.IdentityProviderTelegram, Subject: claims.Subject}
 	candidate, err := handler.config.IDs.NewID(request.Context(), ports.IDUser)
 	if err != nil {
-		handler.writeError(w, request, err)
+		handler.writeLoginError(w, request, "user_id_generation_failed", err, &verifiedSubject, "")
 		return
 	}
 	identity, _, err := handler.config.Store.ResolveOrCreateExternalIdentity(
 		request.Context(),
-		domain.ExternalSubject{Provider: domain.IdentityProviderTelegram, Subject: claims.Subject},
+		verifiedSubject,
 		domain.UserID(candidate), now,
 	)
 	if err != nil {
-		handler.writeError(w, request, err)
+		handler.writeLoginError(w, request, "identity_resolution_failed", err, &verifiedSubject, "")
 		return
 	}
 	memberships, err := handler.activeMemberships(request.Context(), identity.UserID)
 	if err != nil {
-		handler.writeError(w, request, err)
+		handler.writeLoginError(w, request, "membership_lookup_failed", err, &identity.Subject, identity.UserID)
 		return
 	}
 	if len(memberships) == 0 {
-		handler.writeFailure(w, request, webcontract.ErrorAccessDenied, "No Sessionless tenant is linked to this Telegram account.")
+		handler.writeLoginFailure(w, request, "membership_missing", webcontract.ErrorAccessDenied, "No Sessionless tenant is linked to this Telegram account.", &identity.Subject, identity.UserID)
 		return
 	}
 	rawSession, rawCSRF, session, err := handler.newSession(identity, memberships[0], now)
 	if err != nil {
-		handler.writeError(w, request, err)
+		handler.writeLoginError(w, request, "session_generation_failed", err, &identity.Subject, identity.UserID)
 		return
 	}
 	if err := handler.config.Store.CreateWebSession(request.Context(), session); err != nil {
-		handler.writeError(w, request, err)
+		handler.writeLoginError(w, request, "session_persistence_failed", err, &identity.Subject, identity.UserID)
 		return
 	}
 	handler.setSessionCookies(w, rawSession, rawCSRF)
@@ -383,15 +385,25 @@ func (handler *Handler) authorizeMutation(request *http.Request, permission doma
 	csrfCookie, err := request.Cookie(webcontract.CSRFCookieName)
 	presented := request.Header.Get(webcontract.CSRFHeaderName)
 	if err != nil || presented == "" || subtle.ConstantTimeCompare([]byte(csrfCookie.Value), []byte(presented)) != 1 {
-		return ports.WebAuthorization{}, errCSRF
+		return ports.WebAuthorization{}, handler.rejectCSRF(request, authorization, "cookie_header_mismatch")
 	}
 	if err := webcontract.ValidateMutationSecurity(
 		handler.config.BaseURL, request.Header.Get("Origin"), presented,
 		authorization.Session.CSRFTokenDigest,
 	); err != nil {
-		return ports.WebAuthorization{}, errCSRF
+		return ports.WebAuthorization{}, handler.rejectCSRF(request, authorization, "origin_or_session_digest_mismatch")
 	}
 	return authorization, nil
+}
+
+func (handler *Handler) rejectCSRF(request *http.Request, authorization ports.WebAuthorization, reason string) error {
+	event := handler.securityEvent(request, domain.WebSecurityCSRFRejected, reason,
+		&authorization.Session.AuthenticatedSubject, authorization.Session.ActiveTenantID,
+		authorization.Session.UserID, authorization.Session.MembershipSecurityVersion)
+	if err := handler.config.Store.RecordWebSecurityEvent(request.Context(), event); err != nil {
+		return err
+	}
+	return errCSRF
 }
 
 func (handler *Handler) activeMemberships(ctx context.Context, userID domain.UserID) ([]domain.TenantMembership, error) {
@@ -481,6 +493,68 @@ func (handler *Handler) writeError(w http.ResponseWriter, request *http.Request,
 	}
 }
 
+func (handler *Handler) writeLoginError(
+	w http.ResponseWriter,
+	request *http.Request,
+	reason string,
+	err error,
+	subject *domain.ExternalSubject,
+	userID domain.UserID,
+) {
+	if auditErr := handler.recordLoginFailure(request, reason, subject, userID); auditErr != nil {
+		handler.writeFailure(w, request, webcontract.ErrorTemporarilyUnavailable, "The service is temporarily unavailable.")
+		return
+	}
+	handler.writeError(w, request, err)
+}
+
+func (handler *Handler) writeLoginFailure(
+	w http.ResponseWriter,
+	request *http.Request,
+	reason string,
+	code webcontract.ErrorCode,
+	message string,
+	subject *domain.ExternalSubject,
+	userID domain.UserID,
+) {
+	if err := handler.recordLoginFailure(request, reason, subject, userID); err != nil {
+		handler.writeFailure(w, request, webcontract.ErrorTemporarilyUnavailable, "The service is temporarily unavailable.")
+		return
+	}
+	handler.writeFailure(w, request, code, message)
+}
+
+func (handler *Handler) recordLoginFailure(
+	request *http.Request,
+	reason string,
+	subject *domain.ExternalSubject,
+	userID domain.UserID,
+) error {
+	event := handler.securityEvent(request, domain.WebSecurityLoginFailed, reason, subject, "", userID, 0)
+	return handler.config.Store.RecordWebSecurityEvent(request.Context(), event)
+}
+
+func (handler *Handler) securityEvent(
+	request *http.Request,
+	action domain.WebSecurityAuditAction,
+	reason string,
+	subject *domain.ExternalSubject,
+	tenantID domain.TenantID,
+	userID domain.UserID,
+	membershipVersion uint64,
+) domain.WebSecurityAuditEvent {
+	event := domain.WebSecurityAuditEvent{
+		RequestID: requestIDFrom(request), Action: action,
+		Provider: domain.IdentityProviderTelegram, TenantID: tenantID, UserID: userID,
+		MembershipSecurityVersion: membershipVersion, ReasonCode: reason,
+		OccurredAt: handler.config.Clock.Now().UTC(),
+	}
+	if subject != nil {
+		event.SubjectFingerprint = domain.DigestSecret(subject.String())
+	}
+	return event
+}
+
 func (handler *Handler) writeFailure(w http.ResponseWriter, request *http.Request, code webcontract.ErrorCode, message string) {
 	requestID := w.Header().Get("X-Request-ID")
 	handler.writeJSON(w, code.HTTPStatus(), webcontract.ErrorEnvelope{Error: webcontract.Error{
@@ -533,5 +607,12 @@ func (recorder *statusRecorder) WriteHeader(status int) {
 }
 
 var errCSRF = errors.New("web mutation CSRF validation failed")
+
+type requestIDKey struct{}
+
+func requestIDFrom(request *http.Request) string {
+	requestID, _ := request.Context().Value(requestIDKey{}).(string)
+	return requestID
+}
 
 var _ http.Handler = (*Handler)(nil)

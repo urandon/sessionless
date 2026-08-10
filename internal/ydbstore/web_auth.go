@@ -21,6 +21,35 @@ import (
 
 const maxWebMemberships = uint64(200)
 
+func (store *Store) RecordWebSecurityEvent(ctx context.Context, event domain.WebSecurityAuditEvent) error {
+	if err := event.Validate(); err != nil {
+		return err
+	}
+	bucket, err := webBucket(event.RequestID)
+	if err != nil {
+		return err
+	}
+	payload, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	return store.authTx(ctx, "web_auth.record_security_event", func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx,
+			`UPSERT INTO web_security_audit_events
+			 (shard_bucket, occurred_at, request_id, action, provider,
+			  subject_fingerprint, tenant_id, user_id,
+			  membership_security_version, reason_code, record, expire_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+			         CAST($11 AS JsonDocument), $12)`,
+			bucket, event.OccurredAt, event.RequestID, event.Action, event.Provider,
+			event.SubjectFingerprint, event.TenantID, event.UserID,
+			event.MembershipSecurityVersion, event.ReasonCode, string(payload),
+			event.OccurredAt.Add(store.operationalRetention),
+		)
+		return err
+	})
+}
+
 func (store *Store) CreateLoginChallenge(ctx context.Context, challenge domain.OIDCLoginChallenge) error {
 	if err := challenge.Validate(); err != nil {
 		return err

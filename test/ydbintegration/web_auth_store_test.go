@@ -15,6 +15,34 @@ import (
 	"gitcode.com/urandon/sessionless/internal/ydbpartition"
 )
 
+func TestPreAuthenticationSecurityAuditPersistsWithoutTenant(t *testing.T) {
+	store, client := openStore(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	event := domain.WebSecurityAuditEvent{
+		RequestID: uniqueID("request-web-security"), Action: domain.WebSecurityLoginFailed,
+		Provider: domain.IdentityProviderTelegram, ReasonCode: "invalid_callback", OccurredAt: now,
+	}
+	if err := store.RecordWebSecurityEvent(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	bucket, err := ydbpartition.BucketV1(event.RequestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var action, reason, tenantID, userID string
+	if err := client.DB.QueryRowContext(context.Background(),
+		`SELECT action, reason_code, tenant_id, user_id
+		 FROM web_security_audit_events
+		 WHERE shard_bucket = $1 AND occurred_at = $2 AND request_id = $3`,
+		bucket, event.OccurredAt, event.RequestID,
+	).Scan(&action, &reason, &tenantID, &userID); err != nil {
+		t.Fatal(err)
+	}
+	if action != string(domain.WebSecurityLoginFailed) || reason != event.ReasonCode || tenantID != "" || userID != "" {
+		t.Fatalf("security audit row action=%q reason=%q tenant=%q user=%q", action, reason, tenantID, userID)
+	}
+}
+
 func TestLoginChallengeConsumptionHasExactlyOneWinner(t *testing.T) {
 	store, _ := openStore(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)

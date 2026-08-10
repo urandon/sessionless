@@ -9,6 +9,12 @@ if test "${#image_tag}" -ne 40; then
   printf '%s\n' 'CLOUD_IMAGE_TAG must be a full commit SHA' >&2
   exit 1
 fi
+checkout_sha=$(git rev-parse HEAD)
+if test "$image_tag" != "$checkout_sha"; then
+  printf 'CLOUD_IMAGE_TAG must match the checked-out commit: expected %s, got %s\n' \
+    "$checkout_sha" "$image_tag" >&2
+  exit 1
+fi
 
 registry_id="$(terraform -chdir=infra/terraform/cloud-dev output -raw registry_id)"
 manifest_path="${CLOUD_IMAGE_MANIFEST_PATH:-.build/deployment-images-${image_tag}.json}"

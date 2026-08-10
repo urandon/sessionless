@@ -234,6 +234,6 @@ not receive a GitCode publication token.
 
 Cloud development environment procedures are documented in
 [cloud-development.md](cloud-development.md). They use separate bootstrap and
-environment state, a folder-scoped external budget gate, immutable image tags,
-Lockbox payload injection outside Terraform, and blue/green API Gateway
-promotion.
+environment state, a folder-scoped external budget gate, immutable image
+digests with guarded commit-SHA tags, Lockbox payload injection outside
+Terraform, and blue/green API Gateway promotion.

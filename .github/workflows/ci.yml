@@ -156,6 +156,9 @@ jobs:
       - cloudflare-edge
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    concurrency:
+      group: runtime-images-${{ github.repository }}-${{ github.ref }}
+      cancel-in-progress: false
     permissions:
       contents: read
       id-token: write

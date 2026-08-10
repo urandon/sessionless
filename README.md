@@ -21,7 +21,7 @@ Go control-plane services, YDB operational state, at-least-once queues, and
 tenant-partitioned Object Storage. A stateless Cloudflare Worker is the narrow
 Telegram reachability edge after live tests showed Telegram timing out against
 Yandex public endpoints; accepted updates are immediately handed to durable
-Yandex Workflows. Harness processes execute outside the control plane in
+operator-managed Yandex Workflows. Harness processes execute outside the control plane in
 isolated workers with explicitly granted credentials, blobs, and MCP access.
 
 The repository currently contains the Go component boundaries, harness-neutral

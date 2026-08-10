@@ -73,7 +73,6 @@ module "edge" {
   base_domain                = var.base_domain
   dns_zone_id                = module.foundation.dns_zone_id
   gateway_service_account_id = module.foundation.service_account_ids["gateway"]
-  telegram_secret_id         = module.foundation.telegram_secret_id
   control_container_ids      = module.runtime.control_container_ids
   stable_slot                = var.stable_slot
   canary_weight              = var.canary_weight

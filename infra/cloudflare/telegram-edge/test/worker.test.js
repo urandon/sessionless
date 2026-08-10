@@ -78,6 +78,34 @@ test("rejects oversized updates from declared and actual length", async () => {
   assert.equal((await handle(actual, env)).status, 413);
 });
 
+test("bounds a chunked request before retaining the complete body", async () => {
+  let cancelled = false;
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new Uint8Array(700000));
+      controller.enqueue(new Uint8Array(700000));
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+  const streamed = new Request(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Telegram-Bot-Api-Secret-Token": env.TELEGRAM_WEBHOOK_SECRET,
+    },
+    body: stream,
+    duplex: "half",
+  });
+
+  const result = await handle(streamed, env, async () => {
+    assert.fail("oversized body must not reach the upstream workflow");
+  });
+  assert.equal(result.status, 413);
+  assert.equal(cancelled, true);
+});
+
 test("turns upstream errors and invalid acknowledgements into retries", async () => {
   const rejected = await handle(request(), env, async () => new Response(null, { status: 503 }));
   assert.equal(rejected.status, 502);

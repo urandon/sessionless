@@ -24,6 +24,9 @@ Rules for future changes:
 
 `infra/cloudflare/telegram-edge` contains no operational state or business
 logic. Pinned Wrangler deploys it with two secret bindings supplied from the
-operator environment; neither binding is managed by Terraform.
+operator environment. The Yandex Workflows bridge is also created by that
+operator procedure rather than Terraform, because its public execution URL is
+an unguessable capability and Terraform would persist computed resource
+attributes in state. Neither live binding is managed by Terraform.
 
 The pinned Terraform and `yc` versions live in `tools/versions.env`.

@@ -21,6 +21,13 @@ forwards the unchanged body to a Yandex Workflows capability URL held in a
 second secret binding. It returns `204` only after Workflows returns a valid
 execution ID; a handoff failure becomes `502` so Telegram retries.
 
+The workflow and Worker are one operator-managed edge unit. Terraform grants
+the required service-account permissions but does not manage the workflow:
+otherwise its computed public execution URL would be persisted in Terraform
+state. The deployment script obtains the URL directly from `yc`, keeps it only
+in process memory and a mode-0600 temporary secrets file, and passes only that
+file path to Wrangler.
+
 Workflows durably records the update, then forwards it to
 `POST /telegram/webhook`, injects `X-Telegram-Bot-Api-Secret-Token` from
 Lockbox, and retries selected transient HTTP, timeout, and quota failures.

@@ -67,6 +67,17 @@ case "$action" in
       -target=module.foundation.yandex_iam_service_account_static_access_key.queue_provisioner \
       -target=module.foundation.yandex_iam_service_account_static_access_key.scheduler_ymq
     ;;
+  workflow-state-release)
+    expected="sessionless-dev:telegram-ingress"
+    if test "${CONFIRM_WORKFLOW_STATE_RELEASE:-}" != "$expected"; then
+      printf 'refusing workflow state release; set CONFIRM_WORKFLOW_STATE_RELEASE=%s\n' "$expected" >&2
+      exit 1
+    fi
+    ./scripts/cloud-preflight.sh
+    exec go run ./cmd/deployment-lock with -- \
+      terraform -chdir=infra/terraform/cloud-dev state rm \
+      'module.edge.yandex_serverless_workflow.telegram_ingress'
+    ;;
   plan)
     ./scripts/cloud-preflight.sh
     load_ymq_provider_credentials

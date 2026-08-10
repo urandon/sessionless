@@ -3,7 +3,6 @@ variable "name_prefix" { type = string }
 variable "base_domain" { type = string }
 variable "dns_zone_id" { type = string }
 variable "gateway_service_account_id" { type = string }
-variable "telegram_secret_id" { type = string }
 variable "control_container_ids" { type = map(string) }
 variable "stable_slot" {
   type = string

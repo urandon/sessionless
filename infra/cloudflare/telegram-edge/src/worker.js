@@ -52,6 +52,40 @@ function isTelegramUpdate(body) {
   }
 }
 
+async function readBodyBounded(request, limit) {
+  if (request.body === null) {
+    return new Uint8Array();
+  }
+
+  const reader = request.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      total += value.byteLength;
+      if (total > limit) {
+        await reader.cancel("request body exceeds the configured limit");
+        return null;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const body = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return body;
+}
+
 export async function handle(request, env, fetchImpl = fetch) {
   const url = new URL(request.url);
   if (url.pathname !== WEBHOOK_PATH) {
@@ -83,8 +117,8 @@ export async function handle(request, env, fetchImpl = fetch) {
     }
   }
 
-  const body = await request.arrayBuffer();
-  if (body.byteLength > MAX_UPDATE_BYTES) {
+  const body = await readBodyBounded(request, MAX_UPDATE_BYTES);
+  if (body === null) {
     return response(413, "update too large");
   }
   if (!isTelegramUpdate(body)) {
@@ -96,7 +130,7 @@ export async function handle(request, env, fetchImpl = fetch) {
     upstream = await fetchImpl(env.YANDEX_WORKFLOW_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body,
+      body: body.buffer,
       signal: AbortSignal.timeout(HANDOFF_TIMEOUT_MS),
     });
   } catch {

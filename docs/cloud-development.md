@@ -90,8 +90,9 @@ bucket reads four times per day instead of every minute.
 | Dev folder, YDB, queues, bucket, registry, KMS, Lockbox, log group | `cloud-dev` foundation module | Terraform |
 | Serverless containers and triggers | runtime module | Terraform |
 | Delegated public DNS zone | foundation module | Terraform; parent-zone NS delegation is external |
-| Managed certificate, DNS records, API Gateway, Workflows Telegram ingress and canary variables | edge module | Terraform |
-| Telegram-facing Cloudflare Worker and `dev-api-sessionless.triborg.dev` custom domain | `infra/cloudflare/telegram-edge` | Pinned Wrangler; explicit operator deployment |
+| Managed certificate, DNS records, API Gateway and canary variables | edge module | Terraform |
+| Yandex Workflows Telegram ingress | `infra/yandex/workflows` | Explicit `yc` operator deployment; capability URL never enters Terraform |
+| Telegram-facing Cloudflare Worker and `dev-api-sessionless.triborg.dev` custom domain | `infra/cloudflare/telegram-edge` | Pinned Wrangler; same explicit operator deployment as the workflow |
 | Cloudflare Worker secrets | Operator credential store and `cloudflare-telegram-edge.sh` | Secret bindings; never Terraform state or repository files |
 | Lockbox payload values | Operator credential store and `cloud-secret-load.sh` | Outside Terraform state |
 | YMQ static access keys | Dedicated least-privilege service accounts; generated directly into KMS-backed Lockbox | Terraform metadata only; payload never enters state |
@@ -375,9 +376,15 @@ export CONTROL_CONTAINER_URL="$(./scripts/cloud-terraform.sh output -json contro
 export CLOUDFLARE_ACCOUNT_ID='loaded from the Cloudflare account metadata'
 export CLOUDFLARE_API_TOKEN='loaded by credential-store command'
 export TELEGRAM_WEBHOOK_SECRET='loaded by credential-store command'
-export YANDEX_WORKFLOW_URL="$(./scripts/cloud-terraform.sh output -raw telegram_workflow_execution_url)"
+export CLOUD_DEV_FOLDER_ID="$(./scripts/cloud-terraform.sh output -raw folder_id)"
+export YANDEX_API_FQDN="$(./scripts/cloud-terraform.sh output -raw api_fqdn)"
+export YANDEX_GATEWAY_SERVICE_ACCOUNT_ID="$(./scripts/cloud-terraform.sh output -raw gateway_service_account_id)"
+export YANDEX_LOG_GROUP_ID="$(./scripts/cloud-terraform.sh output -raw runtime_log_group_id)"
+export YANDEX_TELEGRAM_SECRET_ID="$(./scripts/cloud-terraform.sh output -raw telegram_secret_id)"
 ./scripts/cloudflare-telegram-edge.sh
-unset CLOUDFLARE_API_TOKEN TELEGRAM_WEBHOOK_SECRET YANDEX_WORKFLOW_URL
+unset CLOUDFLARE_API_TOKEN TELEGRAM_WEBHOOK_SECRET
+unset CLOUD_DEV_FOLDER_ID YANDEX_API_FQDN YANDEX_GATEWAY_SERVICE_ACCOUNT_ID
+unset YANDEX_LOG_GROUP_ID YANDEX_TELEGRAM_SECRET_ID
 
 export TELEGRAM_BOT_TOKEN='loaded by credential-store command'
 export TELEGRAM_WEBHOOK_SECRET='loaded by credential-store command'
@@ -388,11 +395,33 @@ unset TELEGRAM_EDGE_URL TELEGRAM_BOT_TOKEN TELEGRAM_WEBHOOK_SECRET
 unset CONFIRM_EXTERNAL_TELEGRAM_EDGE
 ```
 
-`telegram_workflow_execution_url` is a sensitive Terraform output because the
-public workflow execution URL is an unguessable capability. The deployment
-script writes it and the Telegram secret into a mode-0600 temporary JSON file,
-passes that file to one Wrangler deployment, and deletes it on every exit. Do
-not publish the output in an issue, log, shell trace, or CI output.
+The workflow is deliberately outside Terraform because its public execution
+URL is an unguessable capability and a Terraform provider stores computed
+resource attributes in state even when an output is marked `sensitive`. The
+operator script creates or updates the workflow through `yc`, reads the URL
+without printing it, and writes it with the Telegram secret into a mode-0600
+temporary JSON file. `jq` reads both values from its environment, so neither
+secret appears in process argv. Wrangler receives only the temporary file path,
+and the file is deleted on every exit. Do not publish the URL in an issue, log,
+shell trace, or CI output.
+
+Cloud-dev once had a Terraform-managed workflow. Before the first apply of the
+external-ownership configuration, detach exactly that resource under the
+deployment lock:
+
+```sh
+export CONFIRM_WORKFLOW_STATE_RELEASE='sessionless-dev:telegram-ingress'
+./scripts/cloud-terraform.sh workflow-state-release
+unset CONFIRM_WORKFLOW_STATE_RELEASE
+```
+
+This state operation does not delete the live workflow. Deploy the new
+`sessionless-dev-telegram-ingress-external` workflow and Worker with the command
+above, verify a successful handoff, then delete the old
+`sessionless-dev-telegram-ingress` workflow. Deletion revokes the capability
+that was present in historical versioned state; current and future state
+contain no live workflow URL. Resolve and compare both workflow IDs before the
+deletion rather than relying on a name prefix.
 
 After registration, verify redacted `getWebhookInfo` metadata: the destination
 host must be `dev-api-sessionless.triborg.dev`, pending updates must drain to

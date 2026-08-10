@@ -67,6 +67,37 @@ case "$action" in
       -target=module.foundation.yandex_iam_service_account_static_access_key.queue_provisioner \
       -target=module.foundation.yandex_iam_service_account_static_access_key.scheduler_ymq
     ;;
+  workflow-state-release)
+    : "${LEGACY_TELEGRAM_WORKFLOW_ID:?set the exact legacy workflow ID after resolving it from state and Yandex Cloud}"
+    case "$LEGACY_TELEGRAM_WORKFLOW_ID" in
+      *[!a-z0-9]*|'') printf '%s\n' 'invalid LEGACY_TELEGRAM_WORKFLOW_ID' >&2; exit 2 ;;
+    esac
+    expected="sessionless-dev:telegram-ingress:${LEGACY_TELEGRAM_WORKFLOW_ID}"
+    if test "${CONFIRM_WORKFLOW_STATE_RELEASE:-}" != "$expected"; then
+      printf 'refusing workflow state release; set CONFIRM_WORKFLOW_STATE_RELEASE=%s\n' "$expected" >&2
+      exit 1
+    fi
+    ./scripts/cloud-preflight.sh
+    state_identity=$(terraform -chdir=infra/terraform/cloud-dev show -json |
+      jq -cer '.. | objects | select(.address? == "module.edge.yandex_serverless_workflow.telegram_ingress") | .values | {id, name}')
+    state_id=$(printf '%s' "$state_identity" | jq -er '.id')
+    state_name=$(printf '%s' "$state_identity" | jq -er '.name')
+    if test "$state_id" != "$LEGACY_TELEGRAM_WORKFLOW_ID" || test "$state_name" != 'sessionless-dev-telegram-ingress'; then
+      printf '%s\n' 'refusing workflow state release: remote state identity does not match the expected legacy workflow' >&2
+      exit 1
+    fi
+    live_identity=$(yc serverless workflow get --folder-id "$CLOUD_DEV_FOLDER_ID" --id "$LEGACY_TELEGRAM_WORKFLOW_ID" --format json |
+      jq -cer '.workflow | {id, name}')
+    live_id=$(printf '%s' "$live_identity" | jq -er '.id')
+    live_name=$(printf '%s' "$live_identity" | jq -er '.name')
+    if test "$live_id" != "$state_id" || test "$live_name" != "$state_name"; then
+      printf '%s\n' 'refusing workflow state release: live Yandex identity does not match remote state' >&2
+      exit 1
+    fi
+    exec go run ./cmd/deployment-lock with -- \
+      terraform -chdir=infra/terraform/cloud-dev state rm \
+      'module.edge.yandex_serverless_workflow.telegram_ingress'
+    ;;
   plan)
     ./scripts/cloud-preflight.sh
     load_ymq_provider_credentials

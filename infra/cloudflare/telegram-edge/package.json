@@ -1,0 +1,13 @@
+{
+  "name": "@sessionless/telegram-edge",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "check": "npm test && mkdir -p ../../../.build/wrangler-config && XDG_CONFIG_HOME=../../../.build/wrangler-config WRANGLER_LOG_PATH=../../../.build/wrangler.log WRANGLER_SEND_METRICS=false wrangler deploy --dry-run --outdir ../../../.build/cloudflare-telegram-edge"
+  },
+  "devDependencies": {
+    "wrangler": "4.120.1"
+  }
+}

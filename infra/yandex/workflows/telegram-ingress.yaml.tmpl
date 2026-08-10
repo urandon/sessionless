@@ -1,0 +1,30 @@
+yawl: "0.1"
+start: forward_update
+steps:
+  forward_update:
+    httpCall:
+      url: https://__API_FQDN__/telegram/webhook
+      method: POST
+      timeout: 10s
+      retryPolicy:
+        errorList:
+          - HTTP_CALL_408
+          - HTTP_CALL_425
+          - HTTP_CALL_429
+          - HTTP_CALL_500
+          - HTTP_CALL_502
+          - HTTP_CALL_503
+          - HTTP_CALL_504
+          - HTTP_CALL_520
+          - HTTP_CALL_521
+          - HTTP_CALL_522
+          - HTTP_CALL_523
+          - HTTP_CALL_524
+        initialDelay: 1s
+        backoffRate: 2.0
+        retryCount: 5
+        maxDelay: 30s
+      headers:
+        Content-Type: application/json
+        X-Telegram-Bot-Api-Secret-Token: '\(lockboxPayload("__TELEGRAM_SECRET_ID__"; "webhook-secret"))'
+      body: '\(.input)'

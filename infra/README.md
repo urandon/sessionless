@@ -9,10 +9,10 @@ destroy them.
 See [terraform/README.md](terraform/README.md) for the bootstrap, plan, apply,
 and recovery procedures. Local emulators remain under `infra/local`.
 
-This directory is the boundary for Yandex Cloud Terraform modules and
-environment roots. Infrastructure code is intentionally not invented in the
-repository-foundation issue: the deployment issues will add modules only after
-the control-plane contracts and IAM boundaries exist.
+This directory contains the Yandex Cloud Terraform modules and the minimal
+Cloudflare Telegram reachability edge. Infrastructure changes must preserve the
+control-plane contracts, least-privilege IAM boundaries, and scale-to-zero
+deployment model documented by the implementation issues.
 
 Rules for future changes:
 
@@ -21,5 +21,12 @@ Rules for future changes:
 - inject credentials from CI workload identity or the operator environment;
 - never commit service-account keys, Terraform state, or generated plans;
 - preserve YDB as the operational database to avoid a cross-cloud dependency.
+
+`infra/cloudflare/telegram-edge` contains no operational state or business
+logic. Pinned Wrangler deploys it with two secret bindings supplied from the
+operator environment. The Yandex Workflows bridge is also created by that
+operator procedure rather than Terraform, because its public execution URL is
+an unguessable capability and Terraform would persist computed resource
+attributes in state. Neither live binding is managed by Terraform.
 
 The pinned Terraform and `yc` versions live in `tools/versions.env`.

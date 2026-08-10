@@ -1,0 +1,9 @@
+name = "sessionless-dev-telegram-ingress"
+main = "src/worker.js"
+compatibility_date = "2026-08-03"
+workers_dev = false
+preview_urls = false
+
+[[routes]]
+pattern = "dev-api-sessionless.triborg.dev"
+custom_domain = true

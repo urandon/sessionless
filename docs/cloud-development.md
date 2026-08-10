@@ -1,18 +1,21 @@
-# Yandex Cloud development environment
+# Cloud development environment
 
-The `cloud-dev` Terraform root creates an isolated, scale-to-zero development
-environment. It is intentionally separate from the permanent Terraform-state
-bootstrap root. GitCode is the source repository; immutable commit SHA images
-are built by an operator and stored in Yandex Container Registry.
+The `cloud-dev` Terraform root creates an isolated, scale-to-zero Yandex Cloud
+environment. A minimal Cloudflare Worker is the only external runtime
+component: it crosses the live Telegram-to-Yandex public-edge reachability gap
+and hands accepted updates to Yandex Workflows. The environment is intentionally
+separate from the permanent Terraform-state bootstrap root. GitCode is the
+source repository; immutable commit SHA images are built by an operator and
+stored in Yandex Container Registry.
 
 ## Runtime topology
 
 ```mermaid
 flowchart LR
-    Operator["Operator and cloud contract tests"] -->|"HTTPS"| Gateway["Yandex API Gateway<br/>dev-api.example.com"]
-    Telegram["Telegram Bot API"] -.->|"implemented by #17"| Cloudflare["External Telegram edge<br/>Cloudflare Worker"]
-    Cloudflare -.->|"durable handoff"| Workflow["Yandex Workflows"]
-    Workflow -.-> Gateway
+    Operator["Operator and cloud contract tests"] -->|"HTTPS"| Gateway
+    Telegram["Telegram Bot API"] -->|"HTTPS webhook<br/>Telegram secret"| CF["Cloudflare Worker<br/>thin reachability edge"]
+    CF -->|"unchanged JSON<br/>private capability URL"| Workflow["Yandex Workflows<br/>durable ingress bridge"]
+    Workflow -->|"retrying HTTP forward<br/>Lockbox secret header"| Gateway["API Gateway<br/>dev-api.example.com"]
     Gateway -->|"stable/canary variables"| Blue["control-api blue<br/>private container"]
     Gateway -.->|"weighted canary"| Green["control-api green<br/>private container"]
     Blue --> YDB["YDB Serverless<br/>authoritative state"]
@@ -39,16 +42,29 @@ flowchart LR
     Lockbox -.-> Green
     Lockbox -.-> Sender
     Lockbox -.-> Reconciler
+    Lockbox -.-> Workflow
 ```
 
-Issue #12 provisions and verifies the Yandex foundation through private IAM
-invocation and direct operator smoke tests. Telegram cannot reliably reach the
-tested Yandex API Gateway or public Workflows endpoints: Telegram timed out
-before a request appeared in Yandex logs while independent IPv4 clients
-reached the same endpoints successfully. Do not register either native Yandex
-endpoint as the Telegram webhook. The external edge and durable handoff are
-implemented by issue #17; live text/image proof plus canary rollback belong to
-issue #18.
+The Cloudflare Worker is the Telegram-facing ingress. It verifies Telegram's
+secret header, rejects malformed or oversized updates, and forwards unchanged
+JSON to the private-capability Yandex Workflows execution URL. It returns
+success only after Workflows returns an execution ID; otherwise Telegram sees a
+non-2xx response and retries. The Worker contains no business state and logs no
+payload or credential data.
+
+Workflows durably records the accepted execution, forwards the update to API
+Gateway, injects the internal webhook secret from Lockbox, and retries selected
+HTTP, timeout, and quota failures with bounded exponential backoff. The
+control-plane update transaction remains idempotent, so a repeated workflow
+call is safe.
+
+Live cloud-dev testing established this extra boundary: Telegram timed out
+before reaching both API Gateway and the native public Workflows execution URL,
+while independent IPv4 clients completed the same TLS and HTTP requests and a
+synthetic workflow execution finished normally. A second Yandex-hosted public
+primitive therefore did not solve ingress reachability. The external Worker
+crosses only that network boundary; all durable state and processing remain in
+Yandex Cloud.
 
 The control slots are private and invocable only by the gateway service
 account. Recovery-timer and YMQ triggers use a separate invoker identity. Runtime
@@ -75,7 +91,9 @@ bucket reads four times per day instead of every minute.
 | Serverless containers and triggers | runtime module | Terraform |
 | Delegated public DNS zone | foundation module | Terraform; parent-zone NS delegation is external |
 | Managed certificate, DNS records, API Gateway and canary variables | edge module | Terraform |
-| Telegram-facing Cloudflare edge and Yandex Workflows handoff | Issue #17 | Wrangler plus Yandex infrastructure; not part of #12 |
+| Yandex Workflows Telegram ingress | `infra/yandex/workflows` | Explicit `yc` operator deployment; capability URL never enters Terraform |
+| Telegram-facing Cloudflare Worker and `dev-api-sessionless.triborg.dev` custom domain | `infra/cloudflare/telegram-edge` | Pinned Wrangler; same explicit operator deployment as the workflow |
+| Cloudflare Worker secrets | Operator credential store and `cloudflare-telegram-edge.sh` | Secret bindings; never Terraform state or repository files |
 | Lockbox payload values | Operator credential store and `cloud-secret-load.sh` | Outside Terraform state |
 | YMQ static access keys | Dedicated least-privilege service accounts; generated directly into KMS-backed Lockbox | Terraform metadata only; payload never enters state |
 | Runtime Object Storage authentication | Revision service accounts through metadata-issued IAM bearer tokens | Renewable; no S3 static key or Lockbox payload |
@@ -117,6 +135,11 @@ from its own Lockbox secret into the reconciler, control, and worker revisions.
 It can publish dispatch and wake messages but cannot consume queues. The
 Telegram secret remains separate and is never shared with the worker or
 reconciler.
+
+The Cloudflare API token is also external. Use a token restricted to the one
+account and the `triborg.dev` zone with Account/Workers Scripts Write and
+Zone/Workers Routes Write. Load it into `CLOUDFLARE_API_TOKEN` only for the
+Wrangler deployment process. Do not use a Global API Key.
 
 For example, before bootstrap or environment operations:
 
@@ -244,9 +267,12 @@ base_domain. NS ns2.yandexcloud.net.
 ```
 
 Wait until both authoritative name servers answer for the delegated zone
-before applying the edge resources. Cloudflare proxy/CDN certificates are not
-used for this delegated zone; Certificate Manager terminates TLS at API
-Gateway.
+before applying the Yandex edge resources. Cloudflare proxy/CDN certificates
+are not used inside this delegated zone; Certificate Manager terminates TLS at
+API Gateway. The Telegram edge hostname is intentionally outside the delegated
+child zone: `dev-api-sessionless.triborg.dev` remains a first-level hostname in
+the Cloudflare-managed `triborg.dev` parent zone. Wrangler creates its Worker
+custom-domain DNS record and edge certificate.
 
 ### 6. Load secret payload and build images
 
@@ -346,25 +372,98 @@ queues, or other state-bearing resources.
 export CLOUD_API_URL="$(./scripts/cloud-terraform.sh output -raw api_url)"
 export CONTROL_CONTAINER_URL="$(./scripts/cloud-terraform.sh output -json control_slot_urls | jq -r .blue)"
 ./scripts/cloud-smoke.sh
-```
 
-Record the Git commit, image digests, migration head, reviewed plan, Terraform
-outputs, and smoke-test result as deployment evidence. Do not attach plans or
-secret-bearing command output to a public issue.
+export CLOUDFLARE_ACCOUNT_ID='loaded from the Cloudflare account metadata'
+export CLOUDFLARE_API_TOKEN='loaded by credential-store command'
+export TELEGRAM_WEBHOOK_SECRET='loaded by credential-store command'
+export CLOUD_DEV_FOLDER_ID="$(./scripts/cloud-terraform.sh output -raw folder_id)"
+export YANDEX_API_FQDN="$(./scripts/cloud-terraform.sh output -raw api_fqdn)"
+export YANDEX_GATEWAY_SERVICE_ACCOUNT_ID="$(./scripts/cloud-terraform.sh output -raw gateway_service_account_id)"
+export YANDEX_LOG_GROUP_ID="$(./scripts/cloud-terraform.sh output -raw runtime_log_group_id)"
+export YANDEX_TELEGRAM_SECRET_ID="$(./scripts/cloud-terraform.sh output -raw telegram_secret_id)"
+./scripts/cloudflare-telegram-edge.sh
+unset CLOUDFLARE_API_TOKEN TELEGRAM_WEBHOOK_SECRET
+unset CLOUD_DEV_FOLDER_ID YANDEX_API_FQDN YANDEX_GATEWAY_SERVICE_ACCOUNT_ID
+unset YANDEX_LOG_GROUP_ID YANDEX_TELEGRAM_SECRET_ID
 
-Do **not** pass the Terraform `api_url` to `cloud-webhook.sh`. After issue #17
-has deployed and verified the external edge, register that independently
-managed HTTPS URL explicitly:
-
-```sh
-export TELEGRAM_EDGE_URL='https://external-edge.example.com'
 export TELEGRAM_BOT_TOKEN='loaded by credential-store command'
 export TELEGRAM_WEBHOOK_SECRET='loaded by credential-store command'
+export TELEGRAM_EDGE_URL='https://dev-api-sessionless.triborg.dev'
 export CONFIRM_EXTERNAL_TELEGRAM_EDGE='sessionless-external-edge'
 ./scripts/cloud-webhook.sh
 unset TELEGRAM_EDGE_URL TELEGRAM_BOT_TOKEN TELEGRAM_WEBHOOK_SECRET
 unset CONFIRM_EXTERNAL_TELEGRAM_EDGE
 ```
+
+The workflow is deliberately outside Terraform because its public execution
+URL is an unguessable capability and a Terraform provider stores computed
+resource attributes in state even when an output is marked `sensitive`. The
+operator script creates or updates the workflow through `yc`, reads the URL
+without printing it, and writes it with the Telegram secret into a mode-0600
+temporary JSON file. `jq` reads both values from its environment, so neither
+secret appears in process argv. Wrangler receives only the temporary file path,
+and the file is deleted on every exit. Do not publish the URL in an issue, log,
+shell trace, or CI output.
+
+The first run creates the fixed
+`sessionless-dev-telegram-ingress-external` name with immutable ownership
+labels. It never updates an existing workflow by name. On later deployments,
+resolve and verify the non-secret workflow ID, then bind both authorization and
+the update to that ID:
+
+```sh
+export YANDEX_WORKFLOW_ID='verified immutable workflow ID'
+export CONFIRM_YANDEX_WORKFLOW_UPDATE="sessionless:telegram-ingress:${YANDEX_WORKFLOW_ID}"
+./scripts/cloudflare-telegram-edge.sh
+unset YANDEX_WORKFLOW_ID CONFIRM_YANDEX_WORKFLOW_UPDATE
+```
+
+The script refuses the update unless the ID, fixed name, and all ownership
+labels match. A first-run name collision is also a hard failure and requires
+manual identity review before using the ID-bound update path.
+
+Cloud-dev once had a Terraform-managed workflow. Before the first apply of the
+external-ownership configuration, detach exactly that resource under the
+deployment lock:
+
+```sh
+export LEGACY_TELEGRAM_WORKFLOW_ID='verified immutable legacy workflow ID'
+export CONFIRM_WORKFLOW_STATE_RELEASE="sessionless-dev:telegram-ingress:${LEGACY_TELEGRAM_WORKFLOW_ID}"
+./scripts/cloud-terraform.sh workflow-state-release
+unset LEGACY_TELEGRAM_WORKFLOW_ID CONFIRM_WORKFLOW_STATE_RELEASE
+```
+
+The command reads both the selected remote state and the live Yandex resource.
+It refuses to detach unless the exact state address, supplied immutable ID,
+fixed legacy name, and live identity all agree. The state operation does not
+delete the live workflow. Deploy the new
+`sessionless-dev-telegram-ingress-external` workflow and Worker with the command
+above, verify a successful handoff, then delete the old
+`sessionless-dev-telegram-ingress` workflow. Deletion revokes the capability
+that was present in historical versioned state; current and future state
+contain no live workflow URL. Resolve and compare both workflow IDs before the
+deletion rather than relying on a name prefix.
+
+After registration, verify redacted `getWebhookInfo` metadata: the destination
+host must be `dev-api-sessionless.triborg.dev`, pending updates must drain to
+zero, and no new delivery error may appear. Then send a fresh text update and a
+fresh image update. Each must create a Workflows execution and complete the
+YDB/YMQ/worker/delivery path. Never inspect or publish message or attachment
+contents as evidence.
+
+Cloudflare Workers Free currently includes 100,000 requests per day with 10 ms
+CPU per request; outbound `fetch()` wait time is not CPU time. The thin edge is
+therefore expected to remain at zero cost for rare cloud-dev traffic and inside
+the 100 RUB/month budget. A quota-exhausted Worker returns a failure and leaves
+Telegram to retry; it is not a hidden API-compute fallback.
+
+Record the Git commit, image digests, migration head, reviewed plan, Terraform
+outputs, and smoke-test result as deployment evidence. Do not attach plans or
+secret-bearing command output to a public issue.
+
+Do **not** pass the Terraform `api_url` to `cloud-webhook.sh`; Telegram must be
+registered only against the independently managed Cloudflare edge URL shown
+above.
 
 ## Follow-up canary and rollback procedure (#18)
 
@@ -372,7 +471,7 @@ The infrastructure supports the following promotion procedure, but the live
 traffic evidence and rollback acceptance gate belong to issue #18 rather than
 the #12 bootstrap:
 
-1. Run `make ci` and `make terraform-ci` locally and wait for mirrored GitHub
+1. Run `make ci`, `make terraform-ci`, and `make cloudflare-edge-ci` locally and wait for mirrored GitHub
    Actions to pass for the same commit SHA.
 2. Push immutable images with `cloud-images.sh`.
 3. Set the inactive control slot to the new SHA and apply a reviewed plan with
@@ -394,6 +493,7 @@ migration as an application rollback.
 Issue #19 configures and tests external Monitoring alerts before release. Its
 inventory includes:
 
+- Cloudflare Worker 5xx/exception rate and Yandex handoff failures;
 - control API 5xx rate and latency;
 - trigger errors, retry growth, and DLQ message count;
 - container execution errors, timeout, and concurrency saturation;
@@ -425,16 +525,20 @@ unset CONFIRM_CLOUD_DESTROY
 ```
 
 The state bucket and deployment-lock database belong to `bootstrap/` and are
-not destroyed by this procedure.
+not destroyed by this procedure. The Cloudflare Worker is also external to the
+Yandex Terraform destroy. First remove the Telegram webhook, then explicitly
+delete the Worker/custom domain with Wrangler under a separately reviewed
+operator action if the whole cloud-dev environment is being decommissioned.
 
 ## Local verification boundary
 
 `make terraform-ci` formats and validates both roots without cloud credentials.
-`make test` covers normalized trigger events and HTTP success/failure
-semantics. `make images` builds every runtime image. These checks prove the
-configuration contract, not Yandex Cloud behavior. Issue #12 additionally
-proves the reviewed apply, budget scope, schema migration, workload metadata
-authentication, private IAM invocation, direct API Gateway health and
-provisioned YDB/YMQ/Object Storage/Lockbox/runtime resources. External Telegram
-reachability is #17, live queue/worker/delivery and canary rollback are #18,
-and alert delivery is #19.
+`make cloudflare-edge-ci` tests the secret, shape, size, handoff, and failure
+contracts and produces a Wrangler dry-run bundle without deploying. `make test`
+covers normalized trigger events and HTTP success/failure semantics. `make
+images` builds every runtime image. These checks prove the configuration
+contract, not live vendor behavior. The first real cloud-dev deployment must
+additionally prove Telegram-to-Cloudflare reachability, a durable Workflows
+execution, IAM-only private invocation, YMQ retry/DLQ, timer triggers,
+certificate/DNS propagation, schema migration, canary routing, budget scope,
+alert delivery, and a rollback to the previous slot.

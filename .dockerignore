@@ -4,6 +4,7 @@
 .env
 .env.*
 .terraform
+**/.terraform
 *.tfstate
 *.tfplan
 coverage.out

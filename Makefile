@@ -18,7 +18,7 @@ LDFLAGS := -s -w \
 	-X gitcode.com/urandon/sessionless/internal/buildinfo.Commit=$(COMMIT) \
 	-X gitcode.com/urandon/sessionless/internal/buildinfo.BuiltAt=$(BUILT_AT)
 
-.PHONY: help prepare tools generate fmt fmt-check lint test build integration ydb-integration local-integration e2e-local ci terraform-ci \
+.PHONY: help prepare tools generate fmt fmt-check lint test build integration ydb-integration local-integration e2e-local ci terraform-ci cloudflare-edge-ci \
 	compose-config images dev-up dev-seed migrate-local migration-status partition-status partition-backfill cloud-app-reset-plan cloud-app-reset \
 	worker-once web-bootstrap dev-down dev-reset clean
 
@@ -33,6 +33,7 @@ help:
 		'make local-integration run YDB/S3/SQS/Telegram adapter tests against the local stand' \
 		'make e2e-local      run the deterministic two-tenant black-box slice' \
 		'make terraform-ci   format-check and validate Terraform roots' \
+		'make cloudflare-edge-ci test and dry-run bundle the Telegram edge Worker' \
 		'make images         build control-plane and worker images' \
 		'make dev-up         start, initialize, migrate, seed, and verify the local stand' \
 		'make dev-seed       idempotently load synthetic local fixtures' \
@@ -98,6 +99,10 @@ terraform-ci:
 	$(TERRAFORM) -chdir=infra/terraform/bootstrap validate
 	$(TERRAFORM) -chdir=infra/terraform/cloud-dev init -backend=false -input=false
 	$(TERRAFORM) -chdir=infra/terraform/cloud-dev validate
+
+cloudflare-edge-ci:
+	npm --prefix infra/cloudflare/telegram-edge ci
+	npm --prefix infra/cloudflare/telegram-edge run check
 
 compose-config:
 	docker compose --project-name sessionless-dev config --quiet

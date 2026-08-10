@@ -21,4 +21,8 @@ output "control_slot_urls" { value = module.runtime.control_container_urls }
 output "stable_slot" { value = module.edge.stable_slot }
 output "candidate_slot" { value = module.edge.candidate_slot }
 output "canary_weight" { value = module.edge.canary_weight }
+output "telegram_workflow_execution_url" {
+  value     = module.edge.telegram_workflow_execution_url
+  sensitive = true
+}
 output "budget_id" { value = var.budget_id }

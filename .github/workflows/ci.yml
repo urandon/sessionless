@@ -128,6 +128,24 @@ jobs:
       - name: Validate infrastructure contract
         run: make terraform-ci
 
+  cloudflare-edge:
+    name: Telegram edge Worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout mirrored commit
+        uses: actions/checkout@v6
+
+      - name: Set up pinned Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: infra/cloudflare/telegram-edge/package-lock.json
+
+      - name: Verify Worker contract and bundle
+        run: make cloudflare-edge-ci
+
   images:
     name: Runtime images
     needs:
@@ -135,6 +153,7 @@ jobs:
       - ydb
       - local-stand
       - terraform
+      - cloudflare-edge
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

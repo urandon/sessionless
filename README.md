@@ -18,9 +18,11 @@ runtime yet.
 
 The target deployment is a scale-to-zero Yandex Cloud serverless environment:
 Go control-plane services, YDB operational state, at-least-once queues, and
-tenant-partitioned Object Storage. Harness processes execute outside the
-control plane in isolated workers with explicitly granted credentials, blobs,
-and MCP access.
+tenant-partitioned Object Storage. A stateless Cloudflare Worker is the narrow
+Telegram reachability edge after live tests showed Telegram timing out against
+Yandex public endpoints; accepted updates are immediately handed to durable
+Yandex Workflows. Harness processes execute outside the control plane in
+isolated workers with explicitly granted credentials, blobs, and MCP access.
 
 The repository currently contains the Go component boundaries, harness-neutral
 domain/runtime contracts, the authoritative YDB state store and migrations,
@@ -140,6 +142,7 @@ make ydb-integration
 make local-integration
 make e2e-local
 make terraform-ci
+make cloudflare-edge-ci
 make dev-down
 ```
 

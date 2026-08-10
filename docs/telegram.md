@@ -14,8 +14,23 @@ The endpoint is:
 POST /telegram/webhook
 ```
 
-`X-Telegram-Bot-Api-Secret-Token` is compared in constant time before the JSON
-body is processed. A private message is acknowledged with `200` only after:
+In cloud-dev, Telegram posts to a minimal Cloudflare Worker at
+`dev-api-sessionless.triborg.dev`. The Worker accepts only the webhook path,
+verifies Telegram's secret binding, validates JSON and a one-MiB ceiling, and
+forwards the unchanged body to a Yandex Workflows capability URL held in a
+second secret binding. It returns `204` only after Workflows returns a valid
+execution ID; a handoff failure becomes `502` so Telegram retries.
+
+Workflows durably records the update, then forwards it to
+`POST /telegram/webhook`, injects `X-Telegram-Bot-Api-Secret-Token` from
+Lockbox, and retries selected transient HTTP, timeout, and quota failures.
+Direct Telegram delivery to either API Gateway or the native public Workflows
+URL is not used because live tests timed out before reaching both otherwise
+healthy Yandex public endpoints.
+
+The internal endpoint compares `X-Telegram-Bot-Api-Secret-Token` in constant
+time before processing the JSON body. The forwarded update returns `200` only
+after:
 
 1. its opaque identity mapping has been materialized in YDB;
 2. message content and downloaded attachments have been written below the
@@ -30,6 +45,8 @@ current private-chat MVP. Processing failures return `503` so Telegram retries.
 
 Logs contain update/run IDs and state only. Message text, captions, file
 contents, bot tokens, webhook secrets, and identity keys are never logged.
+The Cloudflare Worker also emits no application logs and never forwards the
+Telegram secret header or the Workflows capability URL.
 
 ## Commands
 

@@ -15,7 +15,7 @@ locals {
     queue-provisioner = ["ymq.admin"]
     deploy = [
       "iam.serviceAccounts.user", "container-registry.admin", "serverless.containers.admin",
-      "api-gateway.admin", "ydb.admin", "storage.admin", "ymq.admin", "lockbox.admin",
+      "api-gateway.admin", "serverless.workflows.admin", "ydb.admin", "storage.admin", "ymq.admin", "lockbox.admin",
       "kms.admin", "logging.admin", "dns.admin", "certificate-manager.admin",
     ]
   }
@@ -223,7 +223,7 @@ resource "yandex_lockbox_secret" "telegram" {
 }
 
 resource "yandex_lockbox_secret_iam_member" "telegram" {
-  for_each  = toset(["api", "telegram-sender"])
+  for_each  = toset(["api", "gateway", "telegram-sender"])
   secret_id = yandex_lockbox_secret.telegram.id
   role      = "lockbox.payloadViewer"
   member    = "serviceAccount:${yandex_iam_service_account.runtime[each.key].id}"
@@ -285,7 +285,7 @@ resource "yandex_lockbox_secret_iam_member" "scheduler_ymq" {
 }
 
 resource "yandex_kms_symmetric_key_iam_member" "runtime_secret_decrypter" {
-  for_each         = toset(["api", "scheduler", "telegram-sender", "worker"])
+  for_each         = toset(["api", "gateway", "scheduler", "telegram-sender", "worker"])
   symmetric_key_id = yandex_kms_symmetric_key.secrets.id
   role             = "kms.keys.encrypterDecrypter"
   member           = "serviceAccount:${yandex_iam_service_account.runtime[each.key].id}"

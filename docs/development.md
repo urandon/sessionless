@@ -9,7 +9,7 @@ make tools
 ```
 
 The check is exact and fails with an actionable list when a tool is absent or
-has drifted. The current foundation expects Go, Docker Compose, Terraform,
+has drifted. The current foundation expects Go, Docker Compose, Docker Buildx, Terraform,
 Yandex Cloud CLI (`yc`), YDB CLI, and Goose. Cloud tools are validated here even
 though the first local process only needs Go and Docker.
 
@@ -17,9 +17,10 @@ though the first local process only needs Go and Docker.
 | --- | ---: | --- |
 | Go | 1.26.4 | [go.dev/dl](https://go.dev/dl/) |
 | Docker Compose | 5.3.1 | [Docker Compose install](https://docs.docker.com/compose/install/) |
+| Docker Buildx | 0.36.0 | [Docker Buildx install](https://docs.docker.com/build/install-buildx/) |
 | Terraform | 1.15.5 | [HashiCorp releases](https://releases.hashicorp.com/terraform/1.15.5/) |
-| Yandex Cloud CLI | 1.20.0 | [Yandex Cloud CLI install](https://yandex.cloud/en/docs/cli/operations/install-cli) |
-| YDB CLI | 2.31.0 | [YDB CLI downloads](https://ydb.tech/docs/en/downloads/ydb-cli) |
+| Yandex Cloud CLI | 1.22.0 | [Yandex Cloud CLI install](https://yandex.cloud/en/docs/cli/operations/install-cli) |
+| YDB CLI | 2.33.0 | [YDB CLI downloads](https://ydb.tech/docs/en/downloads/ydb-cli) |
 | Goose | 3.27.1 | [Goose releases](https://github.com/pressly/goose/releases/tag/v3.27.1) |
 
 For Goose, the reproducible Go installation command is:
@@ -211,6 +212,15 @@ GitCode is the source of truth for branches and merge requests. Its push mirror
 replicates every commit to `github.com/urandon/sessionless`, where GitHub Actions
 runs `make ci` and `make images` for every mirrored branch or tag push. The
 workflow is `.github/workflows/ci.yml`; a GitHub pull request is not required.
+
+After every required job succeeds on mirrored `main`, the image job can use
+GitHub OIDC workload identity federation to publish the four already-built
+deployment images to Yandex Container Registry. Publishing is disabled until
+the exact claim, Terraform-managed federation, and non-secret GitHub variables
+are installed. No branch, tag, pull request, or fork identity is accepted by
+Yandex. The resulting artifact maps the GitCode commit SHA to immutable image
+digests; deployment consumes that artifact without rebuilding on a developer
+workstation. See [cloud-development.md](cloud-development.md).
 
 When reviewing a GitCode merge request, match the GitHub Actions run to the
 GitCode head commit SHA. Automatic propagation of that status back into the

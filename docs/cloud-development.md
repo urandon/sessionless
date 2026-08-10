@@ -1,12 +1,12 @@
 # Cloud development environment
 
 The `cloud-dev` Terraform root creates an isolated, scale-to-zero Yandex Cloud
-environment. A minimal Cloudflare Worker is the only external runtime
-component: it crosses the live Telegram-to-Yandex public-edge reachability gap
-and hands accepted updates to Yandex Workflows. The environment is intentionally
-separate from the permanent Terraform-state bootstrap root. GitCode is the
-source repository; immutable commit SHA images are built by an operator and
-stored in Yandex Container Registry.
+environment. The optional Telegram reachability edge uses a minimal Cloudflare
+Worker, but that frontend-specific deployment is deferred and is not required
+for the Yandex-only control plane. The environment is intentionally separate
+from the permanent Terraform-state bootstrap root. GitCode is the source
+repository; its GitHub push mirror builds verified immutable images on hosted
+runners and publishes them to Yandex Container Registry.
 
 ## Runtime topology
 
@@ -88,6 +88,7 @@ bucket reads four times per day instead of every minute.
 | --- | --- | --- |
 | Terraform state bucket and deployment-lock YDB | `bootstrap/` root | Permanent; never part of environment destroy |
 | Dev folder, YDB, queues, bucket, registry, KMS, Lockbox, log group | `cloud-dev` foundation module | Terraform |
+| GitHub image-publisher service account, OIDC federation and repository-scoped push grants | `cloud-dev` foundation module | Terraform; no authorized key |
 | Serverless containers and triggers | runtime module | Terraform |
 | Delegated public DNS zone | foundation module | Terraform; parent-zone NS delegation is external |
 | Managed certificate, DNS records, API Gateway and canary variables | edge module | Terraform |
@@ -188,6 +189,23 @@ export TERRAFORM_LOCK_YDB_CONNECTION_STRING='grpcs://...bootstrap lock database.
 export DEPLOYMENT_ENVIRONMENT=cloud-dev
 ```
 
+Before the first foundation plan, run the safe claim-inspection workflow from
+the GitHub mirror after it exists on mirrored `main`:
+
+```sh
+gh workflow run oidc-claims.yml --repo urandon/sessionless --ref main
+gh run list --repo urandon/sessionless --workflow oidc-claims.yml --limit 1
+gh run view --repo urandon/sessionless replace-run-id --log
+```
+
+The workflow prints only selected non-secret claims, never the JWT. Copy the
+exact `subject` value into `github_oidc_subject` in the external tfvars file.
+Do not derive it from names: GitHub repositories created after 2026-07-15 can
+include immutable owner and repository IDs in `sub`. Terraform binds that exact
+subject, the `main` ref, and the configured audience to a dedicated service
+account. The account receives only `container-registry.images.pusher` on the
+four runtime repositories.
+
 ## First deployment
 
 ### 1. Bootstrap only the folder
@@ -274,7 +292,7 @@ child zone: `dev-api-sessionless.triborg.dev` remains a first-level hostname in
 the Cloudflare-managed `triborg.dev` parent zone. Wrangler creates its Worker
 custom-domain DNS record and edge certificate.
 
-### 6. Load secret payload and build images
+### 6. Load secret payload and publish images from GitHub
 
 Load values from the operator credential store into environment variables,
 then stream them to Lockbox. The script never puts payload values in argv or
@@ -289,19 +307,63 @@ export TELEGRAM_IDENTITY_HMAC_KEY='loaded by credential-store command'
 unset TELEGRAM_BOT_TOKEN TELEGRAM_WEBHOOK_SECRET TELEGRAM_IDENTITY_HMAC_KEY
 ```
 
-Copy the returned version ID into the external tfvars file. Configure Docker
-authentication and push all four images under the current commit SHA:
+Copy the returned version ID into the external tfvars file. After the
+foundation apply, configure the GitHub mirror with Terraform's non-secret
+outputs:
+
+```sh
+gh variable set YANDEX_OIDC_AUDIENCE --repo urandon/sessionless \
+  --body "$(./scripts/cloud-terraform.sh output -raw github_oidc_audience)"
+gh variable set YANDEX_GITHUB_OIDC_SUBJECT --repo urandon/sessionless \
+  --body "$(./scripts/cloud-terraform.sh output -raw github_oidc_subject)"
+gh variable set YANDEX_IMAGE_PUBLISHER_SERVICE_ACCOUNT_ID --repo urandon/sessionless \
+  --body "$(./scripts/cloud-terraform.sh output -raw image_publisher_service_account_id)"
+gh variable set YANDEX_CONTAINER_REGISTRY_ID --repo urandon/sessionless \
+  --body "$(./scripts/cloud-terraform.sh output -raw registry_id)"
+gh variable set YANDEX_IMAGE_PUBLISH_ENABLED --repo urandon/sessionless --body true
+```
+
+The flag is deliberately absent during bootstrap, so the first CI run remains
+green before the federation exists. Once enabled, rerun the `CI` workflow on
+mirrored `main`. Its final job builds the images once, requests a GitHub OIDC
+JWT, verifies its exact safe claims, exchanges it for a short-lived Yandex IAM
+token, and pushes the four already-built `linux/amd64` images. It uploads
+`deployment-images-<full-sha>` containing immutable registry digests. No GitHub
+secret, authorized service-account key, Lockbox access, or Terraform credential
+is used.
+
+Download the manifest and convert it into a separate non-secret Terraform
+variable file:
+
+```sh
+gh run download replace-green-run-id --repo urandon/sessionless \
+  --name "deployment-images-$(git rev-parse HEAD)" \
+  --dir /secure/path/sessionless-images
+export EXPECTED_SOURCE_SHA="$(git rev-parse HEAD)"
+export EXPECTED_REGISTRY_ID="$(./scripts/cloud-terraform.sh output -raw registry_id)"
+./scripts/cloud-image-tfvars.sh \
+  /secure/path/sessionless-images/deployment-images.json \
+  >/secure/path/cloud-dev-images.tfvars.json
+export CLOUD_DEV_IMAGE_TFVARS=/secure/path/cloud-dev-images.tfvars.json
+unset EXPECTED_SOURCE_SHA EXPECTED_REGISTRY_ID
+```
+
+`cloud-terraform.sh plan` automatically adds this digest-only variable file.
+The base tfvars retains SHA tags solely for the explicit local fallback and for
+compatibility with previously deployed revisions. Normal plans use the
+manifest's `cr.yandex/...@sha256:...` references.
+
+For emergency local publication only, configure Docker authentication and run:
 
 ```sh
 yc container registry configure-docker
 CLOUD_IMAGE_TAG="$(git rev-parse HEAD)" ./scripts/cloud-images.sh
 ```
 
-The publication script always builds and verifies `linux/amd64` images. Yandex
-Serverless Containers runs AMD64 only; publishing a native Apple Silicon image
-creates a valid registry object but revision deployment cannot use it.
-
-Set the three image-tag variables in the tfvars file to that immutable SHA.
+The fallback uses the same deterministic build metadata, platform checks,
+registry push, and manifest format as CI. Yandex Serverless Containers runs
+AMD64 only; publishing a native Apple Silicon image creates a valid registry
+object but revision deployment cannot use it.
 
 ### 7. Reset disposable application data after a baseline rebase
 
@@ -473,7 +535,8 @@ the #12 bootstrap:
 
 1. Run `make ci`, `make terraform-ci`, and `make cloudflare-edge-ci` locally and wait for mirrored GitHub
    Actions to pass for the same commit SHA.
-2. Push immutable images with `cloud-images.sh`.
+2. Download the green mirrored-main image manifest and generate the digest-only
+   Terraform variable file with `cloud-image-tfvars.sh`.
 3. Set the inactive control slot to the new SHA and apply a reviewed plan with
    `canary_weight = 0`.
 4. Smoke-test the inactive slot through its private IAM URL.

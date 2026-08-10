@@ -7,8 +7,8 @@ GO_MOD_CACHE_DIR := $(CURDIR)/.build/cache/go-mod
 GO_TMP_DIR := $(CURDIR)/.build/tmp
 COMPONENTS := control-api web-bff reconciler telegram-sender telegram-fake oidc-fake worker-runtime schema-migrate schema-inspect schema-backfill preprod-reset deployment-lock web-bootstrap
 VERSION ?= dev
-COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || printf unknown)
-BUILT_AT ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null || printf unknown)
+BUILT_AT ?= $(shell git show -s --format=%cI HEAD 2>/dev/null || printf unknown)
 export GOCACHE := $(GO_CACHE_DIR)
 export GOMODCACHE := $(GO_MOD_CACHE_DIR)
 export GOTMPDIR := $(GO_TMP_DIR)
@@ -108,11 +108,7 @@ compose-config:
 	docker compose --project-name sessionless-dev config --quiet
 
 images:
-	docker build --build-arg TARGET=control-api -f build/control.Dockerfile -t sessionless/control-api:dev .
-	docker build --build-arg TARGET=web-bff -f build/control.Dockerfile -t sessionless/web-bff:dev .
-	docker build --build-arg TARGET=reconciler -f build/control.Dockerfile -t sessionless/reconciler:dev .
-	docker build --build-arg TARGET=telegram-sender -f build/control.Dockerfile -t sessionless/telegram-sender:dev .
-	docker build -f build/worker-runtime.Dockerfile -t sessionless/worker-runtime:dev .
+	@VERSION="$(VERSION)" COMMIT="$(COMMIT)" BUILT_AT="$(BUILT_AT)" ./scripts/build-runtime-images.sh
 
 dev-up:
 	@./scripts/dev-up.sh

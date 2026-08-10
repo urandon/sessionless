@@ -101,6 +101,13 @@ case "$action" in
   plan)
     ./scripts/cloud-preflight.sh
     load_ymq_provider_credentials
+    if test -n "${CLOUD_DEV_IMAGE_TFVARS:-}"; then
+      test -f "$CLOUD_DEV_IMAGE_TFVARS" || {
+        printf 'CLOUD_DEV_IMAGE_TFVARS does not exist: %s\n' "$CLOUD_DEV_IMAGE_TFVARS" >&2
+        exit 1
+      }
+      set -- "-var-file=$CLOUD_DEV_IMAGE_TFVARS" "$@"
+    fi
     exec go run ./cmd/deployment-lock with -- \
       terraform -chdir=infra/terraform/cloud-dev plan \
       -var-file="$CLOUD_DEV_TFVARS" "$@"

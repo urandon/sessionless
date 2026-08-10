@@ -31,8 +31,10 @@ session domain and port contracts, membership-gated frontend-neutral user-event
 ingestion with a deterministic synthetic adapter, bounded
 subscription-aware admission and dispatch, a reproducible local development
 stand, isolated worker packaging, pinned developer tools, subscription state
-commands, and GitHub Actions CI fed by the
-GitCode mirror. It also contains the complete isolated worker lifecycle with a
+commands, and GitHub Actions CI fed by the GitCode mirror. A green mirrored
+`main` build can publish immutable deployment-image digests directly to Yandex
+Container Registry through short-lived OIDC federation, keeping developer
+laptops out of the normal image-build path. It also contains the complete isolated worker lifecycle with a
 credential-free deterministic harness: durable job materialization, fenced
 lease renewal, bounded scratch space, checkpoint/resume, usage events,
 content-addressed artifacts, cancellation/timeout handling, and atomic terminal

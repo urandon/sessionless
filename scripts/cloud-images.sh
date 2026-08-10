@@ -4,39 +4,19 @@ set -eu
 : "${CLOUD_DEV_BACKEND_CONFIG:?set CLOUD_DEV_BACKEND_CONFIG}"
 : "${CLOUD_DEV_TFVARS:?set CLOUD_DEV_TFVARS}"
 image_tag="${CLOUD_IMAGE_TAG:-$(git rev-parse HEAD)}"
-case "$image_tag" in *[!a-zA-Z0-9_.-]*) printf 'invalid image tag\n' >&2; exit 1;; esac
-target_platform="linux/amd64"
+case "$image_tag" in *[!0-9a-f]*) printf 'invalid image tag\n' >&2; exit 1;; esac
+if test "${#image_tag}" -ne 40; then
+  printf '%s\n' 'CLOUD_IMAGE_TAG must be a full commit SHA' >&2
+  exit 1
+fi
 
-repositories="$(terraform -chdir=infra/terraform/cloud-dev output -json repository_names)"
-control_repository="$(printf '%s' "$repositories" | jq -r '."control-api"')"
-reconciler_repository="$(printf '%s' "$repositories" | jq -r '.reconciler')"
-sender_repository="$(printf '%s' "$repositories" | jq -r '."telegram-sender"')"
-worker_repository="$(printf '%s' "$repositories" | jq -r '."worker-runtime"')"
+registry_id="$(terraform -chdir=infra/terraform/cloud-dev output -raw registry_id)"
+manifest_path="${CLOUD_IMAGE_MANIFEST_PATH:-.build/deployment-images-${image_tag}.json}"
+built_at="$(git show -s --format=%cI "$image_tag")"
 
-docker build --platform "$target_platform" --provenance=false --load \
-  --build-arg TARGET=control-api -f build/control.Dockerfile \
-  -t "cr.yandex/${control_repository}:${image_tag}" .
-docker build --platform "$target_platform" --provenance=false --load \
-  --build-arg TARGET=reconciler -f build/control.Dockerfile \
-  -t "cr.yandex/${reconciler_repository}:${image_tag}" .
-docker build --platform "$target_platform" --provenance=false --load \
-  --build-arg TARGET=telegram-sender -f build/control.Dockerfile \
-  -t "cr.yandex/${sender_repository}:${image_tag}" .
-docker build --platform "$target_platform" --provenance=false --load \
-  -f build/worker-runtime.Dockerfile \
-  -t "cr.yandex/${worker_repository}:${image_tag}" .
-
-for image in \
-  "cr.yandex/${control_repository}:${image_tag}" \
-  "cr.yandex/${reconciler_repository}:${image_tag}" \
-  "cr.yandex/${sender_repository}:${image_tag}" \
-  "cr.yandex/${worker_repository}:${image_tag}"; do
-  actual_platform="$(docker image inspect "$image" --format '{{.Os}}/{{.Architecture}}')"
-  if test "$actual_platform" != "$target_platform"; then
-    printf 'refusing to push %s image %s; Yandex Serverless Containers requires %s\n' \
-      "$actual_platform" "$image" "$target_platform" >&2
-    exit 1
-  fi
-  docker push "$image"
-done
-printf 'pushed immutable deployment tag %s for %s\n' "$image_tag" "$target_platform"
+VERSION="$image_tag" COMMIT="$image_tag" BUILT_AT="$built_at" IMAGE_PLATFORM=linux/amd64 make images
+YANDEX_CONTAINER_REGISTRY_ID="$registry_id" \
+  CLOUD_IMAGE_TAG="$image_tag" \
+  CLOUD_IMAGE_MANIFEST_PATH="$manifest_path" \
+  SOURCE_BUILT_AT="$built_at" \
+  ./scripts/publish-cloud-images.sh

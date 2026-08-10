@@ -20,6 +20,19 @@ variable "queue_retention_seconds" { type = number }
 variable "queue_max_receive_count" { type = number }
 variable "log_retention" { type = string }
 variable "deletion_protection" { type = bool }
+variable "github_oidc_audience" {
+  description = "Audience requested by the trusted GitHub Actions workload."
+  type        = string
+}
+variable "github_oidc_subject" {
+  description = "Exact GitHub Actions OIDC subject observed from the trusted mirrored-main workflow."
+  type        = string
+
+  validation {
+    condition     = startswith(var.github_oidc_subject, "repo:") && endswith(var.github_oidc_subject, ":ref:refs/heads/main")
+    error_message = "github_oidc_subject must be the exact repository subject for refs/heads/main."
+  }
+}
 variable "labels" {
   type    = map(string)
   default = {}

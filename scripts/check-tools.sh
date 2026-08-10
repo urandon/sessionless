@@ -38,8 +38,15 @@ if command -v docker >/dev/null 2>&1; then
 	else
 		report_missing "Docker Compose" "$DOCKER_COMPOSE_VERSION"
 	fi
+	actual=$(docker buildx version 2>/dev/null | awk '{sub(/^v/, "", $2); print $2}')
+	if [ -n "$actual" ]; then
+		report_version "Docker Buildx" "$DOCKER_BUILDX_VERSION" "$actual"
+	else
+		report_missing "Docker Buildx" "$DOCKER_BUILDX_VERSION"
+	fi
 else
 	report_missing "Docker Compose" "$DOCKER_COMPOSE_VERSION"
+	report_missing "Docker Buildx" "$DOCKER_BUILDX_VERSION"
 fi
 
 if command -v terraform >/dev/null 2>&1; then

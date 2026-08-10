@@ -32,6 +32,51 @@ variable "telegram_secret_version_id" {
 variable "control_blue_image_tag" { type = string }
 variable "control_green_image_tag" { type = string }
 variable "runtime_image_tag" { type = string }
+variable "control_blue_image_ref" {
+  description = "Optional immutable control image reference generated from a publication manifest."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition     = var.control_blue_image_ref == null || can(regex("^cr\\.yandex/.+@sha256:[0-9a-f]{64}$", var.control_blue_image_ref))
+    error_message = "control_blue_image_ref must be an immutable cr.yandex digest reference."
+  }
+}
+variable "control_green_image_ref" {
+  description = "Optional immutable control image reference generated from a publication manifest."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition     = var.control_green_image_ref == null || can(regex("^cr\\.yandex/.+@sha256:[0-9a-f]{64}$", var.control_green_image_ref))
+    error_message = "control_green_image_ref must be an immutable cr.yandex digest reference."
+  }
+}
+variable "runtime_image_refs" {
+  description = "Optional immutable reconciler, sender, and worker digest references generated from a publication manifest."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition = alltrue([
+      for name, ref in var.runtime_image_refs :
+      contains(["reconciler", "telegram-sender", "worker-runtime"], name) &&
+      can(regex("^cr\\.yandex/.+@sha256:[0-9a-f]{64}$", ref))
+    ])
+    error_message = "runtime_image_refs accepts only immutable reconciler, telegram-sender, and worker-runtime digest references."
+  }
+}
+variable "github_oidc_audience" {
+  description = "Audience used for the GitHub-to-Yandex workload identity exchange."
+  type        = string
+  default     = "https://github.com/urandon"
+}
+variable "github_oidc_subject" {
+  description = "Exact subject printed by the safe GitHub OIDC claim-inspection workflow."
+  type        = string
+}
 variable "stable_slot" {
   type    = string
   default = "blue"

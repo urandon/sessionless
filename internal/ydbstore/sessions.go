@@ -290,34 +290,7 @@ func (store *Store) AppendSessionEvent(
 		if err != nil {
 			return err
 		}
-		record, err := marshal(candidate)
-		if err != nil {
-			return err
-		}
-		authorID, runID := "", ""
-		if candidate.AuthorUserID != nil {
-			authorID = string(*candidate.AuthorUserID)
-		}
-		if candidate.RunID != nil {
-			runID = string(*candidate.RunID)
-		}
-		if _, err := tx.sqlTx.ExecContext(ctx,
-			`INSERT INTO session_events
-			 (tenant_id, session_id, sequence, event_id, kind, author_user_id,
-			  run_id, idempotency_key, blob_key, created_at, record)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CAST($11 AS JsonDocument))`,
-			candidate.TenantID, candidate.SessionID, candidate.Sequence, candidate.ID, candidate.Kind,
-			authorID, runID, candidate.IdempotencyKey, candidate.Payload.Key, candidate.CreatedAt, record,
-		); err != nil {
-			return err
-		}
-		if _, err := tx.sqlTx.ExecContext(ctx,
-			`INSERT INTO session_event_idempotency
-			 (tenant_id, session_id, idempotency_key, sequence, event_id, created_at)
-			 VALUES ($1, $2, $3, $4, $5, $6)`,
-			candidate.TenantID, candidate.SessionID, candidate.IdempotencyKey,
-			candidate.Sequence, candidate.ID, candidate.CreatedAt,
-		); err != nil {
+		if err := insertSessionEventTx(ctx, tx, candidate); err != nil {
 			return err
 		}
 		return updateSessionTx(ctx, tx, previous, session)

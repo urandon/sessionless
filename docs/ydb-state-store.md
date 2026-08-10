@@ -26,6 +26,7 @@ domain objects whose tenant does not match it.
 | `session_event_idempotency` | `(tenant_id, session_id, idempotency_key)` | point-resolve an append retry to its existing event |
 | `frontend_bindings` | `(tenant_id, binding_id)` | point-read/switch a revisioned frontend binding |
 | `frontend_binding_keys` | `(tenant_id, frontend, external_conversation_id)` | point-resolve an external conversation without a scan |
+| `frontend_ingress_idempotency` | `(tenant_id, binding_id, idempotency_key)` | point-resolve a frontend duplicate to its original session event and run, including after a binding switch |
 | `session_participants` | `(tenant_id, session_id, user_id)` | point-authorize tenant membership and session role |
 | `session_snapshots` | `(tenant_id, session_id, version)` | bounded prefix-read immutable context materializations |
 | `session_activity` | `(tenant_id, user_id, status, activity_bucket, updated_at, session_id)` | fixed 16-query recent-session fan-out per member |
@@ -95,13 +96,26 @@ append event (serializable transaction)
 commit
 
 /new or equivalent frontend action (serializable transaction)
+  require active tenant write membership and current session participation
   point-read frontend binding and require expected revision
   create new session + active owner membership + activity row
   switch binding to the new session and increment revision
 commit
+
+frontend-neutral user input (serializable transaction)
+  point-read frontend_ingress_idempotency(tenant, binding, key)
+  if present: return its original session event and run, even after /new
+  require active tenant write membership and current session participation
+  point-read binding and require its expected revision
+  allocate the next sequence inside the bound active session
+  insert canonical user event + both idempotency rows
+  put run + initial attempt + input manifest + dispatch outbox
+  advance session sequence/activity rows
+commit
 ```
 
-Concurrent appends serialize on one session row and produce a gap-free sequence.
+Concurrent appends and canonical ingress serialize on one session row and
+produce a gap-free sequence.
 There is deliberately no global event sequence. An uncertain
 create-and-switch response is safe to retry with the original binding revision,
 new session ID, and timestamp; a different request receives a stale-binding or
@@ -194,7 +208,7 @@ must still compare the timestamp:
 - Web sessions: seven-day absolute lifetime or less, with a server-enforced
   12-hour sliding idle lifetime;
 - tenant invitations: their explicit grant expiry;
-- Telegram update and run-idempotency markers: 30 days by default;
+- frontend ingress, Telegram update, and run-idempotency markers: 30 days by default;
 - attempts, worker job descriptors, historical leases, checkpoints,
   reservations, usage, and outboxes: 90 days after their last relevant
   timestamp by default;

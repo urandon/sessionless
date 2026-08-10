@@ -8,21 +8,24 @@ import (
 // WorkerJob is the durable, point-addressable materialization contract for one
 // admitted run. Queue messages carry only its tenant/run routing identity.
 type WorkerJob struct {
-	TenantID          TenantID           `json:"tenant_id"`
-	RunID             RunID              `json:"run_id"`
-	SessionID         SessionID          `json:"session_id"`
-	TriggerEventID    SessionEventID     `json:"trigger_event_id"`
-	AttemptID         AttemptID          `json:"attempt_id"`
-	ReservationID     QuotaReservationID `json:"reservation_id"`
-	InputManifestID   ArtifactManifestID `json:"input_manifest_id"`
-	ContextSnapshot   BlobRef            `json:"context_snapshot"`
-	WorkspaceSnapshot *BlobRef           `json:"workspace_snapshot,omitempty"`
-	SkillBundle       *BlobRef           `json:"skill_bundle,omitempty"`
-	AllowedMCPServers []string           `json:"allowed_mcp_servers,omitempty"`
-	Limits            ProductLimits      `json:"limits"`
-	DeliveryChat      TelegramChatRef    `json:"delivery_chat"`
-	ReplyToMessageID  int64              `json:"reply_to_message_id"`
-	CreatedAt         time.Time          `json:"created_at"`
+	TenantID          TenantID             `json:"tenant_id"`
+	RunID             RunID                `json:"run_id"`
+	SessionID         SessionID            `json:"session_id"`
+	TriggerEventID    SessionEventID       `json:"trigger_event_id"`
+	AttemptID         AttemptID            `json:"attempt_id"`
+	ReservationID     QuotaReservationID   `json:"reservation_id"`
+	InputManifestID   ArtifactManifestID   `json:"input_manifest_id"`
+	ContextSnapshot   BlobRef              `json:"context_snapshot"`
+	WorkspaceSnapshot *BlobRef             `json:"workspace_snapshot,omitempty"`
+	SkillBundle       *BlobRef             `json:"skill_bundle,omitempty"`
+	AllowedMCPServers []string             `json:"allowed_mcp_servers,omitempty"`
+	Limits            ProductLimits        `json:"limits"`
+	Origin            *FrontendEventOrigin `json:"origin,omitempty"`
+	// Compatibility bridge for Telegram until #36 projects results from the
+	// canonical session stream.
+	DeliveryChat     TelegramChatRef `json:"delivery_chat"`
+	ReplyToMessageID int64           `json:"reply_to_message_id"`
+	CreatedAt        time.Time       `json:"created_at"`
 }
 
 func (job WorkerJob) ValidateForRun(run Run) error {
@@ -76,14 +79,24 @@ func (job WorkerJob) ValidateForRun(run Run) error {
 	if uint64(job.ContextSnapshot.Size) > job.Limits.MaxContextBytes {
 		return ValidationError{Field: "worker_job.context_snapshot", Reason: "exceeds the admitted context limit"}
 	}
-	if err := job.DeliveryChat.Validate(); err != nil {
-		return err
+	if job.Origin == nil && job.DeliveryChat.ChatID == 0 {
+		return ValidationError{Field: "worker_job.origin", Reason: "a frontend origin or legacy delivery target is required"}
 	}
-	if err := EnsureSameTenant(run.TenantID, job.DeliveryChat.TenantID); err != nil {
-		return err
+	if job.Origin != nil {
+		if err := job.Origin.Validate(); err != nil {
+			return err
+		}
 	}
-	if job.ReplyToMessageID == 0 {
-		return ValidationError{Field: "worker_job.reply_to_message_id", Reason: "must not be zero"}
+	if job.DeliveryChat.ChatID != 0 {
+		if err := job.DeliveryChat.Validate(); err != nil {
+			return err
+		}
+		if err := EnsureSameTenant(run.TenantID, job.DeliveryChat.TenantID); err != nil {
+			return err
+		}
+		if job.ReplyToMessageID == 0 {
+			return ValidationError{Field: "worker_job.reply_to_message_id", Reason: "must not be zero for a legacy delivery target"}
+		}
 	}
 	if job.CreatedAt.IsZero() || job.CreatedAt.Before(run.CreatedAt) {
 		return ValidationError{Field: "worker_job.created_at", Reason: "must not precede the owning run"}

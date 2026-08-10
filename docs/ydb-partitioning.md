@@ -43,6 +43,7 @@ a production adapter.
 | `session_event_idempotency` | `(tenant_id, session_id, idempotency_key)` | tenant entity | point lookup behind a random session prefix |
 | `frontend_bindings` | `(tenant_id, binding_id)` | tenant entity | random binding ID; load splitting enabled |
 | `frontend_binding_keys` | `(tenant_id, frontend, external_conversation_id)` | tenant entity | point lookup under an already authorized tenant |
+| `frontend_ingress_idempotency` | `(tenant_id, binding_id, idempotency_key)` | tenant entity | point deduplication behind a random binding prefix, independent of the binding's current session |
 | `session_participants` | `(tenant_id, session_id, user_id)` | tenant entity | membership is behind a random session prefix |
 | `session_snapshots` | `(tenant_id, session_id, version)` | per-session ordered | version grows only behind a random session prefix |
 | `session_activity` | `(tenant_id, user_id, status, activity_bucket, updated_at, session_id)` | append-heavy | fixed 16-way per-user fan-out avoids one chronological write edge |

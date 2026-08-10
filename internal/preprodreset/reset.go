@@ -144,6 +144,7 @@ var applicationTables = []string{
 	"session_participants",
 	"frontend_binding_keys",
 	"frontend_bindings",
+	"frontend_ingress_idempotency",
 	"session_event_idempotency",
 	"session_events",
 	"sessions",

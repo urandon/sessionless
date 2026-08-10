@@ -53,9 +53,10 @@ and upload-intent implementation remain separate slices.
   authorized tenant selection, and revocable opaque browser sessions;
 - `oidc-fake`: deterministic Telegram-shaped OIDC fixture that is hard-disabled
   outside the local environment;
-- `reconciler`: bounded 16-bucket dispatch publisher and quota-expiry
-  reconciler;
-- `telegram-sender`: durable, retrying Telegram delivery outbox consumer;
+- `reconciler`: queue-driven point scheduler with bounded 16-bucket dispatch
+  and quota-expiry recovery;
+- `telegram-sender`: queue-driven, durable, retrying Telegram delivery outbox
+  consumer with bounded recovery;
 - `telegram-fake`: deterministic Telegram Bot API capture/update service for local development;
 - `worker-runtime`: concurrency-one isolated worker; local mode consumes one
   message, while cloud mode handles one trigger-delivered batch per request;

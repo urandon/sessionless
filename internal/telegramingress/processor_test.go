@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/outboxwake"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/testkit"
 )
@@ -161,8 +162,14 @@ func TestProcessorPersistsTenantScopedMessageAndDeduplicatesUpdate(t *testing.T)
 	}
 	blobs := newMemoryBlobStore()
 	state := newMemoryIngressStore()
+	dispatchQueue, deliveryQueue := testkit.NewMemoryQueue(), testkit.NewMemoryQueue()
+	dispatchPublisher, _ := outboxwake.NewPublisher(dispatchQueue)
+	deliveryPublisher, _ := outboxwake.NewPublisher(deliveryQueue)
 	processor, err := NewProcessor(
-		ProcessorConfig{SourceID: "bot-primary", Provider: "codex"},
+		ProcessorConfig{
+			SourceID: "bot-primary", Provider: "codex",
+			DispatchWakePublisher: dispatchPublisher, DeliveryWakePublisher: deliveryPublisher,
+		},
 		resolver, testkit.NewSequenceIDGenerator("test-"),
 		testkit.NewFakeClock(now), blobs, staticFileFetcher{}, state,
 	)
@@ -191,6 +198,12 @@ func TestProcessorPersistsTenantScopedMessageAndDeduplicatesUpdate(t *testing.T)
 	if len(state.requests) != 1 {
 		t.Fatalf("committed ingress count = %d, want 1", len(state.requests))
 	}
+	for index := 0; index < 2; index++ {
+		message, err := dispatchQueue.Receive(context.Background())
+		if err != nil || message.Envelope.SubjectID != string(outboxwake.DispatchOutboxID(first.RunID)) {
+			t.Fatalf("dispatch wake %d = %#v, %v", index, message, err)
+		}
+	}
 	request := state.requests[0]
 	if len(request.InputManifest.Artifacts) != 2 {
 		t.Fatalf("artifact count = %d, want message plus document", len(request.InputManifest.Artifacts))
@@ -217,8 +230,14 @@ func TestProcessorRoutesCommandsWithoutCreatingAIIngress(t *testing.T) {
 	}
 	blobs := newMemoryBlobStore()
 	state := newMemoryIngressStore()
+	dispatchQueue, deliveryQueue := testkit.NewMemoryQueue(), testkit.NewMemoryQueue()
+	dispatchPublisher, _ := outboxwake.NewPublisher(dispatchQueue)
+	deliveryPublisher, _ := outboxwake.NewPublisher(deliveryQueue)
 	processor, err := NewProcessor(
-		ProcessorConfig{SourceID: "bot-primary", Provider: "hermes"},
+		ProcessorConfig{
+			SourceID: "bot-primary", Provider: "hermes",
+			DispatchWakePublisher: dispatchPublisher, DeliveryWakePublisher: deliveryPublisher,
+		},
 		resolver, testkit.NewSequenceIDGenerator("command-"),
 		testkit.NewFakeClock(now), blobs, staticFileFetcher{}, state,
 	)

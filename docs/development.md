@@ -79,8 +79,8 @@ curl http://127.0.0.1:8081/healthz
 `make dev-up` first starts pinned YDB Local, MinIO, ElasticMQ, and the
 deterministic Telegram fake. It waits for the infrastructure endpoints,
 creates the local bucket, and applies the embedded YDB migrations. Only after
-that schema barrier does it start the control API, durable Telegram sender,
-and bounded reconciler, then idempotently loads the synthetic Telegram
+that schema barrier does it start the control API, queue-driven Telegram
+sender, and queue-driven reconciler, then idempotently loads the synthetic Telegram
 fixture. A fresh-volume YDB storage-pool initialization is retried without
 starting schema consumers; all other migration failures remain fail-fast. The
 stand does not require cloud credentials or a real Telegram token.

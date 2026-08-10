@@ -19,10 +19,13 @@ type Kind string
 const (
 	KindDispatchRun     Kind = "dispatch.run"
 	KindDeliverTelegram Kind = "deliver.telegram"
+	KindWakeDispatch    Kind = "wake.dispatch"
+	KindWakeTelegram    Kind = "wake.telegram"
 )
 
 func (kind Kind) Valid() bool {
-	return kind == KindDispatchRun || kind == KindDeliverTelegram
+	return kind == KindDispatchRun || kind == KindDeliverTelegram ||
+		kind == KindWakeDispatch || kind == KindWakeTelegram
 }
 
 // Envelope intentionally contains opaque identifiers only. Prompts,

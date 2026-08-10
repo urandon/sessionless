@@ -19,13 +19,20 @@ flowchart LR
     Green --> YDB
     Blue --> Objects["Object Storage<br/>tenant-prefixed artifacts"]
     Green --> Objects
-    Timer["Timer trigger"] --> Reconciler["bounded reconciler container"]
+    Blue -->|"post-commit wake"| SchedulerWake["YMQ scheduler wake + DLQ"]
+    Green -->|"post-commit wake"| SchedulerWake
+    SchedulerWake -->|"YMQ trigger<br/>batch size 1"| Reconciler["targeted scheduler container"]
+    Recovery["6-hour recovery timers"] -.-> Reconciler
     Reconciler --> YDB
     Reconciler --> Dispatch["YMQ dispatch queue + DLQ"]
     Dispatch -->|"YMQ trigger<br/>batch size 1"| Worker["isolated worker container<br/>concurrency 1"]
     Worker --> YDB
     Worker --> Objects
-    Timer --> Sender["bounded Telegram sender container"]
+    Worker -->|"post-commit wake"| Delivery["YMQ delivery queue + DLQ"]
+    Blue -->|"command-reply wake"| Delivery
+    Green -->|"command-reply wake"| Delivery
+    Delivery -->|"YMQ trigger<br/>batch size 1"| Sender["targeted Telegram sender container"]
+    Recovery -.-> Sender
     Sender --> YDB
     Sender --> Telegram
     Lockbox["Lockbox + KMS"] -.-> Blue
@@ -44,15 +51,20 @@ implemented by issue #17; live text/image proof plus canary rollback belong to
 issue #18.
 
 The control slots are private and invocable only by the gateway service
-account. Timer and YMQ triggers use a separate invoker identity. Runtime
+account. Recovery-timer and YMQ triggers use a separate invoker identity. Runtime
 service accounts are split by responsibility. The worker accepts a normalized
 YMQ trigger event over HTTP; it does not long-poll YMQ inside a serverless
 container. A successful HTTP response acknowledges the trigger delivery, while
 a non-2xx response leaves retry and DLQ behavior to the trigger.
 
-The delivery queue is provisioned for the future push-driven sender. The MVP
-sender remains a bounded timer-driven scan of the ready index, which preserves
-the transactional YDB delivery claim contract already exercised locally.
+Normal dispatch and Telegram delivery are queue-driven. Producers write the
+durable YDB outbox first and then publish a payload-free wake containing only
+`tenant_id` and `outbox_id`. Consumers perform a primary-key point read and an
+idempotent claim; missing or terminal rows are acknowledged as duplicate
+no-ops. A failed post-commit publish is repaired by producer retry or by the
+bounded recovery scan. The two recovery timers run every six hours by default,
+so an idle environment performs 16 dispatch, 16 quota-expiry, and 16 delivery
+bucket reads four times per day instead of every minute.
 
 ## Resources and ownership
 
@@ -100,9 +112,11 @@ Lockbox](https://yandex.cloud/en/docs/terraform/resources/iam_service_account_st
 Never put IAM tokens, access keys, Telegram secrets, or subscription
 credentials into Terraform variables, plans, shell history, or repository
 files. The wrapper reads the provisioning key from Lockbox into the Terraform
-provider process environment only. The scheduler key is mounted from its own
-Lockbox secret into the reconciler revision; it is not shared with the
-Telegram secret or any other runtime identity.
+provider process environment only. The writer-only runtime YMQ key is mounted
+from its own Lockbox secret into the reconciler, control, and worker revisions.
+It can publish dispatch and wake messages but cannot consume queues. The
+Telegram secret remains separate and is never shared with the worker or
+reconciler.
 
 For example, before bootstrap or environment operations:
 

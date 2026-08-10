@@ -21,12 +21,16 @@ sequenceDiagram
     Fixture->>API: signed Telegram update
     API->>Blob: normalized message and attachments
     API->>DB: update + run + attempt + manifest + dispatch outbox
+    API->>Queue: wake.dispatch(tenant_id, outbox_id)
+    Queue->>Scheduler: targeted wake
     Scheduler->>DB: tenant-scoped admission + quota reservation + worker job
     Scheduler->>Queue: tenant_id + run_id
     Worker->>Queue: receive one dispatch
     Worker->>DB: fenced lease + checkpoints + usage
     Worker->>Blob: content-addressed outputs
     Worker->>DB: terminal state + manifest + delivery outbox
+    Worker->>Queue: wake.telegram(tenant_id, delivery_id)
+    Queue->>Sender: targeted wake
     Sender->>Telegram: same-chat text and documents
     Sender->>DB: sent or retry-wait transition
 ```
@@ -63,8 +67,8 @@ The suite proves:
   explicitly `unknown` without any API-billing fallback;
 - provider quota `exhausted` and `blocked_until_reset` recover only after an
   explicit observation/state change;
-- an admitted dispatch whose first queue publication fails is republished by
-  the reconciler after the queue recovers;
+- a committed dispatch whose first wake or worker-queue publication fails is
+  republished without duplicating admission or execution;
 - retryable worker failures before the first checkpoint and after checkpoint
   one resume without duplicate terminal state;
 - durable cancellation releases the reservation and creates a same-chat reply;

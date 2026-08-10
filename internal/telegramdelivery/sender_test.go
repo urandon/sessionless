@@ -7,7 +7,9 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/outboxwake"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/queuecontract"
 	"gitcode.com/urandon/sessionless/internal/testkit"
 )
 
@@ -15,6 +17,17 @@ type senderStore struct {
 	delivery    domain.TelegramDeliveryOutbox
 	listed      bool
 	transitions []domain.DeliveryStatus
+}
+
+func (store *senderStore) GetTelegramDelivery(
+	_ context.Context,
+	tenantID domain.TenantID,
+	deliveryID domain.TelegramDeliveryID,
+) (domain.TelegramDeliveryOutbox, bool, error) {
+	if store.delivery.TenantID != tenantID || store.delivery.ID != deliveryID {
+		return domain.TelegramDeliveryOutbox{}, false, nil
+	}
+	return store.delivery, true, nil
 }
 
 func (store *senderStore) ListReadyTelegramDeliveries(
@@ -38,6 +51,10 @@ func (store *senderStore) ClaimTelegramDelivery(
 	_ domain.TelegramDeliveryID,
 	at time.Time,
 ) (domain.TelegramDeliveryOutbox, bool, error) {
+	if store.delivery.Status.Terminal() ||
+		(store.delivery.NextAttemptAt != nil && store.delivery.NextAttemptAt.After(at)) {
+		return domain.TelegramDeliveryOutbox{}, false, nil
+	}
 	if err := store.delivery.Transition(domain.DeliverySending, at, nil); err != nil {
 		return domain.TelegramDeliveryOutbox{}, false, err
 	}
@@ -114,6 +131,72 @@ func TestSenderRetriesThenMarksSent(t *testing.T) {
 	}
 	if store.delivery.Status != domain.DeliverySent {
 		t.Fatalf("status = %s, want sent", store.delivery.Status)
+	}
+}
+
+func TestSenderWakeTargetsOneDeliveryAndTreatsTerminalDuplicateAsNoop(t *testing.T) {
+	now := time.Date(2026, 8, 10, 13, 0, 0, 0, time.UTC)
+	tenantID := domain.TenantID("tenant-a")
+	store := &senderStore{delivery: domain.TelegramDeliveryOutbox{
+		ID: "delivery-a", TenantID: tenantID, RunID: "run-a",
+		Chat:             domain.TelegramChatRef{TenantID: tenantID, ChatID: 10},
+		ReplyToMessageID: 20, Text: "done", Status: domain.DeliveryPending,
+		IdempotencyKey: "reply-a", CreatedAt: now, UpdatedAt: now,
+	}}
+	wakeQueue := testkit.NewMemoryQueue()
+	publisher, err := outboxwake.NewPublisher(wakeQueue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock := testkit.NewFakeClock(now.Add(time.Second))
+	sender, err := NewSender(Config{}, clock, store, &senderClient{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := publisher.PublishTelegramDeliveryWake(
+			context.Background(), tenantID, store.delivery.ID, clock.Now(),
+		); err != nil {
+			t.Fatal(err)
+		}
+		result, err := sender.RunWake(context.Background(), wakeQueue)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "sent"
+		if attempt == 1 {
+			want = "noop"
+		}
+		if result.Outcome != want {
+			t.Fatalf("wake %d outcome = %q, want %q", attempt, result.Outcome, want)
+		}
+	}
+	if store.delivery.Status != domain.DeliverySent {
+		t.Fatalf("delivery status = %s", store.delivery.Status)
+	}
+}
+
+func TestSenderWakeDeadLettersUnexpectedEnvelopeKind(t *testing.T) {
+	now := time.Date(2026, 8, 10, 13, 0, 0, 0, time.UTC)
+	sender, err := NewSender(
+		Config{}, testkit.NewFakeClock(now), &senderStore{}, &senderClient{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wakeQueue := testkit.NewMemoryQueue()
+	if err := wakeQueue.Publish(context.Background(), queuecontract.Envelope{
+		Schema: queuecontract.SchemaV1, MessageID: "msg-unexpected",
+		Kind: queuecontract.KindWakeDispatch, TenantID: "tenant-1",
+		SubjectID: "dispatch-1", EnqueuedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sender.RunWake(context.Background(), wakeQueue); err != nil {
+		t.Fatal(err)
+	}
+	if wakeQueue.DeadLetterCount() != 1 {
+		t.Fatalf("dead letters = %d, want 1", wakeQueue.DeadLetterCount())
 	}
 }
 

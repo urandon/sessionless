@@ -22,15 +22,19 @@ import (
 )
 
 type Config struct {
-	IdempotencyRetention time.Duration
-	IDKey                []byte
+	IdempotencyRetention  time.Duration
+	IDKey                 []byte
+	DispatchWakePublisher ports.DispatchWakePublisher
+	WakePublishError      func(error)
 }
 
 type Service struct {
-	store     ports.CanonicalIngressStore
-	blobs     ports.BlobStore
-	retention time.Duration
-	idKey     []byte
+	store        ports.CanonicalIngressStore
+	blobs        ports.BlobStore
+	retention    time.Duration
+	idKey        []byte
+	dispatchWake ports.DispatchWakePublisher
+	wakeError    func(error)
 }
 
 func New(config Config, store ports.CanonicalIngressStore, blobs ports.BlobStore) (*Service, error) {
@@ -45,7 +49,8 @@ func New(config Config, store ports.CanonicalIngressStore, blobs ports.BlobStore
 	}
 	return &Service{
 		store: store, blobs: blobs, retention: config.IdempotencyRetention,
-		idKey: append([]byte(nil), config.IDKey...),
+		idKey: append([]byte(nil), config.IDKey...), dispatchWake: config.DispatchWakePublisher,
+		wakeError: config.WakePublishError,
 	}, nil
 }
 
@@ -158,6 +163,7 @@ func (service *Service) Ingest(ctx context.Context, input UserInput) (ports.Cano
 	))
 	eventID := domain.SessionEventID(service.stableID("event", input.Actor.TenantID, bindingID, idempotencyKey))
 	runID := domain.RunID(service.stableID("run", input.Actor.TenantID, bindingID, idempotencyKey))
+	dispatchID := domain.DispatchOutboxID(service.stableID("dispatch", input.Actor.TenantID, runID))
 	existing, err := service.store.LookupCanonicalUserEvent(ctx, ports.CanonicalUserEventLookup{
 		TenantID: input.Actor.TenantID, UserID: input.Actor.UserID,
 		BindingID: bindingID, Frontend: input.Actor.Frontend,
@@ -168,6 +174,13 @@ func (service *Service) Ingest(ctx context.Context, input UserInput) (ports.Cano
 		return ports.CanonicalUserEventResult{}, err
 	}
 	if existing.Found {
+		if service.dispatchWake != nil {
+			if err := service.dispatchWake.PublishDispatchWake(
+				ctx, input.Actor.TenantID, dispatchID, input.ReceivedAt.UTC(),
+			); err != nil {
+				service.reportWakePublishError(err)
+			}
+		}
 		return existing.Result, nil
 	}
 	state, err := service.EnsureSession(ctx, input.Actor, input.ReceivedAt)
@@ -216,7 +229,7 @@ func (service *Service) Ingest(ctx context.Context, input UserInput) (ports.Cano
 	artifacts = append([]domain.Artifact{{
 		Name: "message.json", MediaType: "application/json", Blob: payloadRef,
 	}}, artifacts...)
-	return service.store.CommitCanonicalUserEvent(ctx, ports.CanonicalUserEventCommit{
+	result, err := service.store.CommitCanonicalUserEvent(ctx, ports.CanonicalUserEventCommit{
 		TenantID: input.Actor.TenantID, UserID: input.Actor.UserID,
 		BindingID: state.Binding.ID, ExpectedBindingRevision: state.Binding.Revision,
 		Origin: origin, IdempotencyKey: idempotencyKey,
@@ -227,10 +240,27 @@ func (service *Service) Ingest(ctx context.Context, input UserInput) (ports.Cano
 		SubscriptionConnectionID: input.SubscriptionConnectionID,
 		ManifestID:               domain.ArtifactManifestID(service.stableID("manifest", input.Actor.TenantID, runID)),
 		Artifacts:                artifacts,
-		DispatchID:               domain.DispatchOutboxID(service.stableID("dispatch", input.Actor.TenantID, runID)),
+		DispatchID:               dispatchID,
 		AllowedMCPServers:        append([]string(nil), input.AllowedMCPServers...),
 		CommittedAt:              input.ReceivedAt.UTC(),
 	})
+	if err != nil {
+		return ports.CanonicalUserEventResult{}, err
+	}
+	if service.dispatchWake != nil {
+		if err := service.dispatchWake.PublishDispatchWake(
+			ctx, input.Actor.TenantID, dispatchID, input.ReceivedAt.UTC(),
+		); err != nil {
+			service.reportWakePublishError(err)
+		}
+	}
+	return result, nil
+}
+
+func (service *Service) reportWakePublishError(err error) {
+	if service.wakeError != nil {
+		service.wakeError(err)
+	}
 }
 
 func newUploadToken() (string, error) {

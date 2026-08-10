@@ -15,7 +15,9 @@ import (
 	"gitcode.com/urandon/sessionless/internal/buildinfo"
 	"gitcode.com/urandon/sessionless/internal/controlapi"
 	"gitcode.com/urandon/sessionless/internal/idgen"
+	"gitcode.com/urandon/sessionless/internal/outboxwake"
 	"gitcode.com/urandon/sessionless/internal/s3store"
+	"gitcode.com/urandon/sessionless/internal/sqsqueue"
 	"gitcode.com/urandon/sessionless/internal/telegramingress"
 	"gitcode.com/urandon/sessionless/internal/ydbclient"
 	"gitcode.com/urandon/sessionless/internal/ydbstore"
@@ -113,10 +115,43 @@ func buildHandler(
 		closeYDB()
 		return nil, func() {}, err
 	}
+	queueConfig := func(queueURL string) sqsqueue.Config {
+		return sqsqueue.Config{
+			Endpoint: os.Getenv("QUEUE_ENDPOINT"), Region: envOrDefault("QUEUE_REGION", "ru-central1"),
+			QueueURL:        queueURL,
+			AccessKeyID:     firstNonEmpty(os.Getenv("OUTBOX_QUEUE_ACCESS_KEY_ID"), os.Getenv("QUEUE_ACCESS_KEY_ID")),
+			SecretAccessKey: firstNonEmpty(os.Getenv("OUTBOX_QUEUE_SECRET_ACCESS_KEY"), os.Getenv("QUEUE_SECRET_ACCESS_KEY")),
+		}
+	}
+	dispatchWakeQueue, err := sqsqueue.New(ctx, queueConfig(os.Getenv("SCHEDULER_WAKE_QUEUE_URL")))
+	if err != nil {
+		closeYDB()
+		return nil, func() {}, fmt.Errorf("open scheduler wake queue: %w", err)
+	}
+	deliveryWakeQueue, err := sqsqueue.New(ctx, queueConfig(os.Getenv("DELIVERY_QUEUE_URL")))
+	if err != nil {
+		closeYDB()
+		return nil, func() {}, fmt.Errorf("open delivery wake queue: %w", err)
+	}
+	dispatchWakePublisher, err := outboxwake.NewPublisher(dispatchWakeQueue)
+	if err != nil {
+		closeYDB()
+		return nil, func() {}, err
+	}
+	deliveryWakePublisher, err := outboxwake.NewPublisher(deliveryWakeQueue)
+	if err != nil {
+		closeYDB()
+		return nil, func() {}, err
+	}
 	processor, err := telegramingress.NewProcessor(
 		telegramingress.ProcessorConfig{
-			SourceID: envOrDefault("TELEGRAM_SOURCE_ID", "bot-primary"),
-			Provider: envOrDefault("DEFAULT_COMPUTE_PROVIDER", "codex"),
+			SourceID:              envOrDefault("TELEGRAM_SOURCE_ID", "bot-primary"),
+			Provider:              envOrDefault("DEFAULT_COMPUTE_PROVIDER", "codex"),
+			DispatchWakePublisher: dispatchWakePublisher,
+			DeliveryWakePublisher: deliveryWakePublisher,
+			WakePublishError: func(publishErr error) {
+				logger.Warn("durable outbox wake publication deferred to recovery", "error", publishErr)
+			},
 		},
 		identity, idgen.New(), systemClock{}, blobs, fileClient, state,
 	)
@@ -132,6 +167,15 @@ func buildHandler(
 	return controlapi.NewHandlerWithOptions(logger, info, controlapi.Options{
 		TelegramWebhook: webhook,
 	}), closeYDB, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func envOrDefault(name, fallback string) string {

@@ -101,6 +101,12 @@ services:
       TELEGRAM_IDENTITY_HMAC_KEY: ${TELEGRAM_IDENTITY_HMAC_KEY:-sessionless-local-identity-key-0001}
       TELEGRAM_SOURCE_ID: ${TELEGRAM_SOURCE_ID:-bot-primary}
       DEFAULT_COMPUTE_PROVIDER: ${DEFAULT_COMPUTE_PROVIDER:-codex}
+      QUEUE_ENDPOINT: http://queue-local:9324
+      QUEUE_REGION: ${QUEUE_REGION:-us-east-1}
+      OUTBOX_QUEUE_ACCESS_KEY_ID: ${QUEUE_ACCESS_KEY_ID:-sessionless-local}
+      OUTBOX_QUEUE_SECRET_ACCESS_KEY: ${QUEUE_SECRET_ACCESS_KEY:-sessionless-local-secret}
+      SCHEDULER_WAKE_QUEUE_URL: http://queue-local:9324/000000000000/sessionless-scheduler-wake
+      DELIVERY_QUEUE_URL: http://queue-local:9324/000000000000/sessionless-delivery
     ports:
       - "${SESSIONLESS_HTTP_PORT:-8080}:8080"
     init: true
@@ -113,6 +119,7 @@ services:
       - ydb-local
       - object-storage-local
       - telegram-fake
+      - queue-local
     restart: unless-stopped
 
   telegram-sender:
@@ -133,9 +140,14 @@ services:
       S3_FORCE_PATH_STYLE: "true"
       TELEGRAM_API_BASE_URL: http://telegram-fake:8081
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_FAKE_TOKEN:-local-test-token}
-      TELEGRAM_SENDER_POLL_INTERVAL: 250ms
       TELEGRAM_SENDER_BASE_BACKOFF: ${TELEGRAM_SENDER_BASE_BACKOFF:-250ms}
       TELEGRAM_SENDER_MAX_BACKOFF: ${TELEGRAM_SENDER_MAX_BACKOFF:-2s}
+      QUEUE_ENDPOINT: http://queue-local:9324
+      QUEUE_REGION: ${QUEUE_REGION:-us-east-1}
+      QUEUE_ACCESS_KEY_ID: ${QUEUE_ACCESS_KEY_ID:-sessionless-local}
+      QUEUE_SECRET_ACCESS_KEY: ${QUEUE_SECRET_ACCESS_KEY:-sessionless-local-secret}
+      DELIVERY_QUEUE_URL: http://queue-local:9324/000000000000/sessionless-delivery
+      DELIVERY_DEAD_LETTER_QUEUE_URL: http://queue-local:9324/000000000000/sessionless-dlq
     init: true
     read_only: true
     security_opt:
@@ -146,6 +158,7 @@ services:
       - ydb-local
       - object-storage-local
       - telegram-fake
+      - queue-local
     restart: unless-stopped
 
   reconciler:
@@ -164,7 +177,10 @@ services:
       QUEUE_SECRET_ACCESS_KEY: ${QUEUE_SECRET_ACCESS_KEY:-sessionless-local-secret}
       DISPATCH_QUEUE_URL: http://queue-local:9324/000000000000/sessionless-dispatch
       DEAD_LETTER_QUEUE_URL: http://queue-local:9324/000000000000/sessionless-dlq
-      SCHEDULER_POLL_INTERVAL: 250ms
+      SCHEDULER_WAKE_QUEUE_URL: http://queue-local:9324/000000000000/sessionless-scheduler-wake
+      SCHEDULER_WAKE_DEAD_LETTER_QUEUE_URL: http://queue-local:9324/000000000000/sessionless-dlq
+      SCHEDULER_WAKE_RETRY_DELAY: ${SCHEDULER_WAKE_RETRY_DELAY:-250ms}
+      SCHEDULER_WAKE_MAX_DELIVERY_COUNT: ${SCHEDULER_WAKE_MAX_DELIVERY_COUNT:-8}
       SCHEDULER_RESERVATION_TTL: ${SCHEDULER_RESERVATION_TTL:-5m}
       LIMIT_TENANT_QUEUE_DEPTH: ${LIMIT_TENANT_QUEUE_DEPTH:-8}
       LIMIT_ACTIVE_RUNS: ${LIMIT_ACTIVE_RUNS:-1}
@@ -202,6 +218,9 @@ services:
       QUEUE_SECRET_ACCESS_KEY: ${QUEUE_SECRET_ACCESS_KEY:-sessionless-local-secret}
       DISPATCH_QUEUE_URL: http://queue-local:9324/000000000000/sessionless-dispatch
       DEAD_LETTER_QUEUE_URL: http://queue-local:9324/000000000000/sessionless-dlq
+      DELIVERY_QUEUE_URL: http://queue-local:9324/000000000000/sessionless-delivery
+      OUTBOX_QUEUE_ACCESS_KEY_ID: ${QUEUE_ACCESS_KEY_ID:-sessionless-local}
+      OUTBOX_QUEUE_SECRET_ACCESS_KEY: ${QUEUE_SECRET_ACCESS_KEY:-sessionless-local-secret}
       WORKER_ID: ${WORKER_ID:-worker-runtime-local}
       WORKER_SCRATCH_ROOT: /tmp/sessionless-worker
       WORKER_LEASE_TTL: ${WORKER_LEASE_TTL:-2m}

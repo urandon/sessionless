@@ -103,14 +103,18 @@ POST /test/files/<file-id>?name=<file-name>
 
 ## Durable delivery
 
-`telegram-sender` fans out over the fixed 16-bucket
-`telegram_delivery_ready_v2` table. A serializable transaction re-reads a ready
-row and moves it to `sending`; concurrent consumers therefore produce one
-claim winner. A `sending` row remains indexed behind a two-minute visibility
-timeout, so a process crash cannot strand it permanently. The sender reads only
-tenant-authorized payload/artifact blobs. Control commands use bounded inline
-text in the same outbox model, so they require no object-store write between
-the state transition and durable reply creation.
+After a Telegram delivery outbox commits, its producer publishes a payload-free
+`wake.telegram` envelope. The YMQ-triggered `telegram-sender` point-reads the
+row by `(tenant_id, telegram_delivery_id)`. A serializable transaction then
+re-reads the delivery and moves it to `sending`; concurrent or duplicate wake
+deliveries therefore produce one claim winner and terminal duplicates are
+no-ops. The fixed 16-bucket `telegram_delivery_ready_v2` traversal is reserved
+for startup and six-hour recovery, not the normal delivery path. A `sending`
+row remains indexed behind a two-minute visibility timeout, so a process crash
+cannot strand it permanently. The sender reads only tenant-authorized
+payload/artifact blobs. Control commands use bounded inline text in the same
+outbox model, so they require no object-store write between the state
+transition and durable reply creation.
 
 Successful sends move to `sent`. Failures use bounded exponential backoff and
 move through `retry_wait`; the configured attempt limit ends in `failed`.
@@ -127,7 +131,7 @@ Non-secret settings:
 - `TELEGRAM_API_BASE_URL`;
 - `TELEGRAM_SOURCE_ID`;
 - `DEFAULT_COMPUTE_PROVIDER`;
-- `TELEGRAM_SENDER_POLL_INTERVAL`.
+- `DELIVERY_QUEUE_URL`.
 
 Secrets are injected through the process environment or workload secret store:
 

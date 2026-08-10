@@ -154,6 +154,24 @@ resource "yandex_message_queue" "delivery" {
   tags = local.labels
 }
 
+resource "yandex_message_queue" "scheduler_wake_dlq" {
+  name                      = "${var.name_prefix}-scheduler-wake-dlq"
+  message_retention_seconds = var.queue_retention_seconds
+  tags                      = local.labels
+}
+
+resource "yandex_message_queue" "scheduler_wake" {
+  name                       = "${var.name_prefix}-scheduler-wake"
+  message_retention_seconds  = var.queue_retention_seconds
+  visibility_timeout_seconds = 120
+  receive_wait_time_seconds  = 20
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = yandex_message_queue.scheduler_wake_dlq.arn
+    maxReceiveCount     = var.queue_max_receive_count
+  })
+  tags = local.labels
+}
+
 resource "yandex_container_registry" "application" {
   folder_id = yandex_resourcemanager_folder.environment.id
   name      = "${var.name_prefix}-runtime"
@@ -260,13 +278,14 @@ resource "yandex_iam_service_account_static_access_key" "scheduler_ymq" {
 }
 
 resource "yandex_lockbox_secret_iam_member" "scheduler_ymq" {
+  for_each  = toset(["api", "scheduler", "worker"])
   secret_id = yandex_lockbox_secret.scheduler_ymq.id
   role      = "lockbox.payloadViewer"
-  member    = "serviceAccount:${yandex_iam_service_account.runtime["scheduler"].id}"
+  member    = "serviceAccount:${yandex_iam_service_account.runtime[each.key].id}"
 }
 
 resource "yandex_kms_symmetric_key_iam_member" "runtime_secret_decrypter" {
-  for_each         = toset(["api", "scheduler", "telegram-sender"])
+  for_each         = toset(["api", "scheduler", "telegram-sender", "worker"])
   symmetric_key_id = yandex_kms_symmetric_key.secrets.id
   role             = "kms.keys.encrypterDecrypter"
   member           = "serviceAccount:${yandex_iam_service_account.runtime[each.key].id}"

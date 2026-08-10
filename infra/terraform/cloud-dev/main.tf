@@ -44,7 +44,12 @@ module "runtime" {
   dispatch_queue_url              = module.foundation.dispatch_queue_url
   dispatch_queue_arn              = module.foundation.dispatch_queue_arn
   dispatch_dlq_arn                = module.foundation.dispatch_dlq_arn
+  delivery_queue_url              = module.foundation.delivery_queue_url
+  delivery_queue_arn              = module.foundation.delivery_queue_arn
   delivery_dlq_arn                = module.foundation.delivery_dlq_arn
+  scheduler_wake_queue_url        = module.foundation.scheduler_wake_queue_url
+  scheduler_wake_queue_arn        = module.foundation.scheduler_wake_queue_arn
+  scheduler_wake_dlq_arn          = module.foundation.scheduler_wake_dlq_arn
   telegram_secret_id              = module.foundation.telegram_secret_id
   telegram_secret_version_id      = var.telegram_secret_version_id
   scheduler_ymq_secret_id         = module.foundation.scheduler_ymq_secret_id

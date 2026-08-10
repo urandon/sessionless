@@ -22,6 +22,24 @@ func TestRetryDelayBounds(t *testing.T) {
 	}
 }
 
+func TestRetryVisibilityRoundsPositiveSubsecondDelayUp(t *testing.T) {
+	tests := []struct {
+		delay time.Duration
+		want  int32
+	}{
+		{delay: 0, want: 0},
+		{delay: time.Nanosecond, want: 1},
+		{delay: 250 * time.Millisecond, want: 1},
+		{delay: time.Second, want: 1},
+		{delay: time.Second + time.Nanosecond, want: 2},
+	}
+	for _, test := range tests {
+		if got := retryVisibilitySeconds(test.delay); got != test.want {
+			t.Fatalf("retryVisibilitySeconds(%s) = %d, want %d", test.delay, got, test.want)
+		}
+	}
+}
+
 func TestNoMessageSentinel(t *testing.T) {
 	if !errors.Is(ErrNoMessage, ErrNoMessage) {
 		t.Fatal("ErrNoMessage must be usable with errors.Is")

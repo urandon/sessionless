@@ -16,6 +16,31 @@ import (
 	"gitcode.com/urandon/sessionless/internal/ydbpartition"
 )
 
+func (store *Store) GetDispatch(
+	ctx context.Context,
+	tenantID domain.TenantID,
+	outboxID domain.DispatchOutboxID,
+) (result ports.DispatchReady, status domain.DispatchStatus, found bool, err error) {
+	if err := tenantID.Validate(); err != nil {
+		return result, status, false, err
+	}
+	if err := outboxID.Validate(); err != nil {
+		return result, status, false, err
+	}
+	outbox, found, err := readJSON[domain.DispatchOutbox](ctx, store.db,
+		`SELECT payload FROM dispatch_outbox
+		 WHERE tenant_id = $1 AND dispatch_outbox_id = $2`,
+		tenantID, outboxID,
+	)
+	if err != nil || !found {
+		return result, status, found, err
+	}
+	return ports.DispatchReady{
+		TenantID: tenantID, OutboxID: outboxID,
+		RunID: outbox.RunID, AttemptID: outbox.AttemptID,
+	}, outbox.Status, true, nil
+}
+
 func (store *Store) ListReadyDispatches(
 	ctx context.Context,
 	bucket uint32,

@@ -29,6 +29,9 @@ flowchart LR
     Developer -->|"sqsqueue"| Queue
     Developer -->|"Bot API fixture calls"| Telegram
     Control -->|"command delivery outbox"| YDB
+    Control -->|"dispatch / delivery wake"| Queue
+    Queue -->|"targeted wake"| Sender
+    Queue -->|"targeted wake"| Reconciler
     Sender -->|"claim / transition"| YDB
     Sender -->|"sendMessage / sendDocument"| Telegram
     Reconciler -->|"slot + quota transaction"| YDB
@@ -37,6 +40,7 @@ flowchart LR
     Worker -->|"fenced lifecycle"| YDB
     Worker -->|"materialize / artifacts"| MinIO
     Worker -->|"result delivery outbox"| YDB
+    Worker -->|"delivery wake"| Queue
 ```
 
 | Service | Container endpoint | Host endpoint | Persistence |
@@ -50,7 +54,7 @@ flowchart LR
 | Telegram fake | `http://telegram-fake:8081` | `http://localhost:8081` | intentionally ephemeral |
 | Control API | `http://control-api:8080` | `http://localhost:8080` | stateless |
 | Telegram sender | n/a | n/a | stateless outbox consumer |
-| Reconciler | n/a | n/a | stateless bounded scheduler pass |
+| Reconciler | n/a | n/a | stateless targeted scheduler consumer plus startup recovery |
 | Worker runtime | n/a | n/a | one-shot; invocation scratch is tmpfs |
 
 All image versions are pinned in `tools/versions.env`. Compose loads safe
@@ -114,7 +118,9 @@ operation. Relative keys are placed under `tenants/<tenant-id>/`; already
 prefixed keys for another tenant and path traversal are rejected before any S3
 request. Returned references include size and SHA-256.
 
-`internal/sqsqueue` uses versioned, payload-free queue envelopes. It models
+`internal/sqsqueue` uses versioned, payload-free queue envelopes. `wake.dispatch`
+and `wake.telegram` address one durable outbox row; `dispatch.run` addresses one
+admitted worker job. The adapter models
 at-least-once receive, explicit acknowledgement, visibility-based retry, and
 application-controlled dead-letter publication. Queue and DLQ URLs are injected
 explicitly, so no emulator hostname leaks into the domain.
@@ -134,9 +140,9 @@ The suite proves YDB connectivity, S3 round-trip and cross-tenant rejection,
 SQS retry/dead-letter behavior, deterministic Telegram update/capture behavior,
 and durable command state/replies for connect, status, disconnect, and a new
 canonical session binding. Scheduler unit/YDB integration coverage separately proves
-exactly one concurrent reservation per subscription, deterministic queue
-message IDs, bounded dispatch/expiry traversal, and idempotent reservation
-expiry. Worker unit/YDB integration coverage proves tenant-safe materialization,
+exactly one concurrent reservation per subscription, deterministic wake and
+dispatch message IDs, point-read wake handling, bounded recovery traversal,
+and idempotent reservation expiry. Worker unit/YDB integration coverage proves tenant-safe materialization,
 checkpoint resume, lease renewal/loss fencing, cancellation, runtime and turn
 limits, exactly-once terminal delivery, and lease-index cleanup.
 

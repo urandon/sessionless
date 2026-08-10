@@ -16,18 +16,20 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/outboxwake"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/queuecontract"
 )
 
 type Config struct {
-	ScratchRoot          string
-	WorkerID             string
-	LeaseTTL             time.Duration
-	RetryDelay           time.Duration
-	RetryObserver        func(error)
-	MaxDeliveryCount     uint32
-	MaxMaterializedBytes int64
+	ScratchRoot           string
+	WorkerID              string
+	LeaseTTL              time.Duration
+	RetryDelay            time.Duration
+	RetryObserver         func(error)
+	MaxDeliveryCount      uint32
+	MaxMaterializedBytes  int64
+	DeliveryWakePublisher ports.TelegramDeliveryWakePublisher
 }
 
 type Outcome string
@@ -78,7 +80,8 @@ func New(
 		return nil, err
 	}
 	config.ScratchRoot = root
-	if clock == nil || queue == nil || state == nil || blobs == nil || harness == nil {
+	if clock == nil || queue == nil || state == nil || blobs == nil || harness == nil ||
+		config.DeliveryWakePublisher == nil {
 		return nil, fmt.Errorf("worker dependencies must not be nil")
 	}
 	return &Manager{
@@ -109,6 +112,12 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 		return manager.deadLetter(ctx, message, "worker_job_not_found")
 	}
 	if loaded.Run.Status.Terminal() {
+		if err := manager.config.DeliveryWakePublisher.PublishTelegramDeliveryWake(
+			ctx, loaded.Run.TenantID, outboxwake.TelegramDeliveryID(loaded.Run.ID),
+			manager.clock.Now().UTC(),
+		); err != nil {
+			return manager.retry(ctx, message, err)
+		}
 		if err := manager.queue.Ack(ctx, message.ReceiptHandle); err != nil {
 			return "", err
 		}
@@ -220,7 +229,7 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 		return manager.retry(ctx, message, err)
 	}
 	delivery := domain.TelegramDeliveryOutbox{
-		ID:       domain.TelegramDeliveryID(stableID("tdl", string(loaded.Run.ID))),
+		ID:       outboxwake.TelegramDeliveryID(loaded.Run.ID),
 		TenantID: loaded.Run.TenantID, RunID: loaded.Run.ID,
 		Chat: loaded.Job.DeliveryChat, ReplyToMessageID: loaded.Job.ReplyToMessageID,
 		Text: normalizedSummary(result.Summary), ArtifactManifestID: &manifest.ID,
@@ -234,6 +243,11 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 		LeaseID: lease.ID, Fence: lease.FenceToken, At: finishedAt,
 		Manifest: manifest, Delivery: delivery,
 	}); err != nil {
+		return manager.retry(ctx, message, err)
+	}
+	if err := manager.config.DeliveryWakePublisher.PublishTelegramDeliveryWake(
+		ctx, loaded.Run.TenantID, delivery.ID, finishedAt,
+	); err != nil {
 		return manager.retry(ctx, message, err)
 	}
 	if err := manager.queue.Ack(ctx, message.ReceiptHandle); err != nil {
@@ -502,6 +516,11 @@ func (manager *Manager) finishFailure(
 	}); err != nil {
 		return manager.retry(ctx, message, err)
 	}
+	if err := manager.config.DeliveryWakePublisher.PublishTelegramDeliveryWake(
+		ctx, loaded.Run.TenantID, outboxwake.TelegramDeliveryID(loaded.Run.ID), failedAt,
+	); err != nil {
+		return manager.retry(ctx, message, err)
+	}
 	if err := manager.queue.Ack(ctx, message.ReceiptHandle); err != nil {
 		return "", err
 	}
@@ -540,7 +559,7 @@ func failureDelivery(
 		text += " Reference: " + code
 	}
 	return domain.TelegramDeliveryOutbox{
-		ID:               domain.TelegramDeliveryID(stableID("tdl", string(loaded.Run.ID))),
+		ID:               outboxwake.TelegramDeliveryID(loaded.Run.ID),
 		TenantID:         loaded.Run.TenantID,
 		RunID:            loaded.Run.ID,
 		Chat:             loaded.Job.DeliveryChat,

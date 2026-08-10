@@ -129,6 +129,42 @@ func (frontend Frontend) Validate() error {
 	return ValidateOpaqueID("frontend", string(frontend))
 }
 
+// FrontendEventOrigin identifies the immutable frontend delivery that caused a
+// canonical event. It deliberately uses opaque strings: transport adapters own
+// their concrete chat, message, thread, or request identifier types.
+type FrontendEventOrigin struct {
+	BindingID              FrontendBindingID `json:"binding_id"`
+	BindingRevision        uint64            `json:"binding_revision"`
+	Frontend               Frontend          `json:"frontend"`
+	ExternalConversationID string            `json:"external_conversation_id"`
+	ExternalEventID        string            `json:"external_event_id"`
+}
+
+func (origin FrontendEventOrigin) Validate() error {
+	if err := origin.BindingID.Validate(); err != nil {
+		return err
+	}
+	if origin.BindingRevision == 0 {
+		return ValidationError{Field: "frontend_event_origin.binding_revision", Reason: "must be positive"}
+	}
+	if err := origin.Frontend.Validate(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(origin.ExternalConversationID) == "" {
+		return ValidationError{Field: "frontend_event_origin.external_conversation_id", Reason: "must not be empty"}
+	}
+	if len(origin.ExternalConversationID) > maxOpaqueIDLength {
+		return ValidationError{Field: "frontend_event_origin.external_conversation_id", Reason: fmt.Sprintf("must not exceed %d bytes", maxOpaqueIDLength)}
+	}
+	if strings.TrimSpace(origin.ExternalEventID) == "" {
+		return ValidationError{Field: "frontend_event_origin.external_event_id", Reason: "must not be empty"}
+	}
+	if len(origin.ExternalEventID) > maxOpaqueIDLength {
+		return ValidationError{Field: "frontend_event_origin.external_event_id", Reason: fmt.Sprintf("must not exceed %d bytes", maxOpaqueIDLength)}
+	}
+	return nil
+}
+
 // ConversationRef identifies a frontend-owned conversation without making a
 // transport-specific identifier the core scheduling identity.
 type ConversationRef struct {

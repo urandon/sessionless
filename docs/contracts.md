@@ -46,6 +46,19 @@ operations. `CreateAndSwitchSession` is the `/new` transaction boundary: a
 failure cannot leave either an orphan product session or a half-switched
 frontend conversation.
 
+`CanonicalIngressStore` is the application persistence boundary shared by all
+frontends. An authenticated adapter supplies an internal user, opaque frontend
+and external conversation/event identifiers, and a stable delivery time. The
+store requires active tenant membership and a writable session participant,
+then commits the frontend deduplication fact, canonical user event, run,
+initial attempt, input manifest, and dispatch outbox in one serializable YDB
+transaction. No Telegram update, chat, or message type crosses this contract.
+
+Frontend deduplication is keyed by tenant, binding, and the normalized delivery
+key rather than the current session. Therefore a delayed duplicate received
+after a clean-context binding switch still resolves to the original event and
+run instead of being appended to the newer session.
+
 `SessionParticipant` grants `owner`, `member`, or `viewer` access to an active
 tenant membership. Tenant, session, and user must all match before access is
 allowed; viewers cannot append. Authentication establishes a user identity,
@@ -134,9 +147,9 @@ the canonical event exists. Retrying or adding a frontend therefore cannot
 duplicate or rewrite canonical history.
 
 Until #23 migrates worker finalization, the existing Telegram delivery outbox
-is a compatibility projection. Until #22/#36 migrate ingestion, the existing
-Telegram update transaction is a compatibility ingress path. Neither changes
-the canonical contract above.
+is a compatibility projection. Until #36 adapts Telegram to
+`CanonicalIngressStore`, the existing Telegram update transaction is a
+compatibility ingress path. Neither changes the canonical contract above.
 
 ## Quota and usage
 

@@ -4,6 +4,8 @@ package ydbintegration
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -12,6 +14,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/ydbpartition"
 	"gitcode.com/urandon/sessionless/internal/ydbstore"
 )
 
@@ -240,6 +243,198 @@ func TestCanonicalSnapshotsAndRunsUseBoundedSessionPrefixes(t *testing.T) {
 	runs, err := store.ListRunsBySession(ctx, tenantID, session.ID, 10)
 	if err != nil || len(runs) != 1 || runs[0].ID != run.ID {
 		t.Fatalf("runs by session = %#v, err=%v", runs, err)
+	}
+}
+
+func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
+	store, client := openStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	tenantID := domain.TenantID(uniqueID("tenant-ingress"))
+	userID := domain.UserID(uniqueID("user-ingress"))
+	seedCanonicalMembership(t, client.DB, tenantID, userID, now)
+
+	frontend := domain.Frontend("synthetic")
+	bindingID := domain.FrontendBindingID(uniqueID("binding-ingress"))
+	initialSessionID := domain.SessionID(uniqueID("session-ingress-initial"))
+	state, err := store.EnsureFrontendSession(ctx, ports.FrontendSessionRequest{
+		TenantID: tenantID, UserID: userID, Frontend: frontend,
+		ExternalConversationID: "synthetic-conversation", BindingID: bindingID,
+		SessionID: initialSessionID, At: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstSession := state.Session
+	secondID := domain.SessionID(uniqueID("session-ingress-second"))
+	state, err = store.CreateAndSwitchFrontendSession(ctx, ports.CanonicalSessionSwitchRequest{
+		TenantID: tenantID, UserID: userID, BindingID: bindingID,
+		ExpectedRevision: state.Binding.Revision, SessionID: secondID, At: now.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	thirdID := domain.SessionID(uniqueID("session-ingress-third"))
+	state, err = store.CreateAndSwitchFrontendSession(ctx, ports.CanonicalSessionSwitchRequest{
+		TenantID: tenantID, UserID: userID, BindingID: bindingID,
+		ExpectedRevision: state.Binding.Revision, SessionID: thirdID, At: now.Add(2 * time.Second),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := store.GetSession(ctx, tenantID, firstSession.ID); err != nil || !found {
+		t.Fatalf("previous session found=%t err=%v", found, err)
+	}
+	if _, err := store.CreateAndSwitchFrontendSession(ctx, ports.CanonicalSessionSwitchRequest{
+		TenantID: tenantID, UserID: userID, BindingID: bindingID,
+		ExpectedRevision: 1, SessionID: domain.SessionID(uniqueID("stale-session")), At: now.Add(3 * time.Second),
+	}); err == nil {
+		t.Fatal("stale binding switch succeeded")
+	}
+
+	committedAt := now.Add(3 * time.Second)
+	eventID := domain.SessionEventID(uniqueID("event-ingress"))
+	runID := domain.RunID(uniqueID("run-ingress"))
+	payload := domain.BlobRef{
+		TenantID: tenantID,
+		Key:      domain.SessionEventObjectPrefix(tenantID, state.Session.ID, eventID) + "message.json",
+		Size:     32, SHA256: canonicalDigest,
+	}
+	request := ports.CanonicalUserEventCommit{
+		TenantID: tenantID, UserID: userID, BindingID: bindingID,
+		ExpectedBindingRevision: state.Binding.Revision,
+		Origin: domain.FrontendEventOrigin{
+			BindingID: bindingID, BindingRevision: state.Binding.Revision,
+			Frontend: frontend, ExternalConversationID: "synthetic-conversation",
+			ExternalEventID: "delivery-1",
+		},
+		IdempotencyKey: domain.IdempotencyKey(uniqueID("ingress-key")),
+		ExpireAt:       committedAt.Add(24 * time.Hour), EventID: eventID, Payload: payload,
+		RunID: runID, AttemptID: domain.AttemptID(uniqueID("attempt-ingress")),
+		SubscriptionConnectionID: domain.SubscriptionConnectionID(uniqueID("subscription-ingress")),
+		ManifestID:               domain.ArtifactManifestID(uniqueID("manifest-ingress")),
+		Artifacts:                []domain.Artifact{{Name: "message.json", MediaType: "application/json", Blob: payload}},
+		DispatchID:               domain.DispatchOutboxID(uniqueID("dispatch-ingress")),
+		CommittedAt:              committedAt,
+	}
+	start := make(chan struct{})
+	results := make(chan ports.CanonicalUserEventResult, 2)
+	errorsByCommit := make(chan error, 2)
+	for range 2 {
+		go func() {
+			<-start
+			result, err := store.CommitCanonicalUserEvent(ctx, request)
+			results <- result
+			errorsByCommit <- err
+		}()
+	}
+	close(start)
+	var created ports.CanonicalUserEventResult
+	createdCount := 0
+	for range 2 {
+		result, err := <-results, <-errorsByCommit
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Created {
+			created, createdCount = result, createdCount+1
+		}
+	}
+	if createdCount != 1 || created.SessionID != thirdID || created.Sequence != 1 {
+		t.Fatalf("created count=%d result=%#v", createdCount, created)
+	}
+	fourthID := domain.SessionID(uniqueID("session-ingress-fourth"))
+	state, err = store.CreateAndSwitchFrontendSession(ctx, ports.CanonicalSessionSwitchRequest{
+		TenantID: tenantID, UserID: userID, BindingID: bindingID,
+		ExpectedRevision: state.Binding.Revision, SessionID: fourthID, At: committedAt.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicate, err := store.CommitCanonicalUserEvent(ctx, request)
+	if err != nil || duplicate.Created || duplicate.RunID != created.RunID {
+		t.Fatalf("duplicate=%#v err=%v", duplicate, err)
+	}
+	if duplicate.SessionID != thirdID || state.Session.ID != fourthID {
+		t.Fatalf("duplicate session=%s current session=%s", duplicate.SessionID, state.Session.ID)
+	}
+	for _, table := range []string{
+		"frontend_ingress_idempotency", "session_events", "runs", "attempts", "artifact_manifests", "dispatch_outbox",
+	} {
+		assertCount(t, client, table, tenantID, 1)
+	}
+
+	bad := request
+	bad.IdempotencyKey = domain.IdempotencyKey(uniqueID("ingress-bad"))
+	bad.EventID = domain.SessionEventID(uniqueID("event-bad"))
+	bad.RunID = domain.RunID(uniqueID("run-bad"))
+	bad.AttemptID = domain.AttemptID(uniqueID("attempt-bad"))
+	bad.ManifestID = domain.ArtifactManifestID(uniqueID("manifest-bad"))
+	bad.DispatchID = domain.DispatchOutboxID(uniqueID("dispatch-bad"))
+	bad.ExpectedBindingRevision = state.Binding.Revision
+	bad.Origin.BindingRevision = state.Binding.Revision
+	bad.Payload.Key = domain.SessionEventObjectPrefix(tenantID, state.Session.ID, bad.EventID) + "message.json"
+	bad.Artifacts = []domain.Artifact{{
+		Name: "escape.bin", MediaType: "application/octet-stream",
+		Blob: domain.BlobRef{TenantID: tenantID, Key: domain.TenantObjectPrefix(tenantID) + "wrong-prefix/escape.bin", Size: 1, SHA256: canonicalDigest},
+	}}
+	if _, err := store.CommitCanonicalUserEvent(ctx, bad); err == nil {
+		t.Fatal("commit accepted an artifact outside the session/event prefix")
+	}
+	for _, table := range []string{"session_events", "runs", "attempts", "dispatch_outbox"} {
+		assertCount(t, client, table, tenantID, 1)
+	}
+
+	otherTenant := domain.TenantID(uniqueID("tenant-ingress-other"))
+	otherUser := domain.UserID(uniqueID("user-ingress-other"))
+	seedCanonicalMembership(t, client.DB, otherTenant, otherUser, now)
+	cross := request
+	cross.TenantID, cross.UserID = otherTenant, otherUser
+	cross.Payload.TenantID = otherTenant
+	cross.Payload.Key = domain.TenantObjectPrefix(otherTenant) + "cross-tenant/message.json"
+	cross.Origin.ExternalEventID = "cross-tenant"
+	if _, err := store.CommitCanonicalUserEvent(ctx, cross); err == nil {
+		t.Fatal("cross-tenant binding access succeeded")
+	}
+	assertCount(t, client, "frontend_ingress_idempotency", otherTenant, 0)
+}
+
+func seedCanonicalMembership(
+	t *testing.T,
+	db *sql.DB,
+	tenantID domain.TenantID,
+	userID domain.UserID,
+	at time.Time,
+) {
+	t.Helper()
+	if _, err := db.ExecContext(context.Background(),
+		`UPSERT INTO tenants (tenant_id, status, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4)`,
+		tenantID, "active", at, at,
+	); err != nil {
+		t.Fatal(err)
+	}
+	membership := domain.TenantMembership{
+		TenantID: tenantID, UserID: userID, Role: domain.TenantMembershipOwner,
+		Status: domain.TenantMembershipActive, SecurityVersion: 1, CreatedAt: at, UpdatedAt: at,
+	}
+	payload, err := json.Marshal(membership)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bucket, err := ydbpartition.BucketV1(string(userID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(context.Background(),
+		`UPSERT INTO tenant_memberships
+		 (user_bucket, user_id, tenant_id, role, status, security_version,
+		  created_at, updated_at, record)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CAST($9 AS JsonDocument))`,
+		bucket, userID, tenantID, membership.Role, membership.Status,
+		membership.SecurityVersion, at, at, string(payload),
+	); err != nil {
+		t.Fatal(err)
 	}
 }
 

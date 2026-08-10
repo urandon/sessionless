@@ -25,7 +25,8 @@ and MCP access.
 The repository currently contains the Go component boundaries, harness-neutral
 domain/runtime contracts, the authoritative YDB state store and migrations,
 authenticated Telegram webhook ingestion, durable Telegram delivery, canonical
-session domain and port contracts, bounded
+session domain and port contracts, membership-gated frontend-neutral user-event
+ingestion with a deterministic synthetic adapter, bounded
 subscription-aware admission and dispatch, a reproducible local development
 stand, isolated worker packaging, pinned developer tools, subscription state
 commands, and GitHub Actions CI fed by the
@@ -67,6 +68,10 @@ and upload-intent implementation remain separate slices.
   identities, state machines, quota/usage semantics, outboxes, and artifacts;
 - `internal/ports`: YDB/queue/blob/frontend/credential/harness-neutral runtime
   interfaces;
+- `internal/sessioningress`: frontend-neutral session resolution, clean-context,
+  canonical object-envelope, and atomic event/run ingestion application service;
+- `internal/syntheticfrontend`: deterministic non-Telegram adapter proving the
+  canonical ingress boundary without a transport SDK;
 - `internal/webcontract`: same-origin WebUI request/response, secure-cookie,
   CSRF, and tenant-selector contracts without browser-side tenant authority;
 - `internal/webbff`: authorization-code callback, first-party session, CSRF,
@@ -102,7 +107,9 @@ This proves orchestration semantics without implying that a permanent harness
 or subscription credential protocol has already been selected.
 
 The contract invariants and transition tables are documented in
-[docs/contracts.md](docs/contracts.md). Web authentication and its focused
+[docs/contracts.md](docs/contracts.md). Canonical frontend ingestion and its
+object/transaction failure boundary are documented in
+[docs/canonical-ingress.md](docs/canonical-ingress.md). Web authentication and its focused
 threat model are documented in
 [docs/web-auth-contracts.md](docs/web-auth-contracts.md) and
 [docs/web-threat-model.md](docs/web-threat-model.md). The architecture source of truth is

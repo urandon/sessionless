@@ -65,6 +65,7 @@ var policies = []Policy{
 	hot("session_event_idempotency", []string{"tenant_id", "session_id", "idempotency_key"}, ClassEntity, "point idempotency lookup inside a random session prefix"),
 	hot("frontend_bindings", []string{"tenant_id", "binding_id"}, ClassEntity, "point access through random binding IDs"),
 	hot("frontend_binding_keys", []string{"tenant_id", "frontend", "external_conversation_id"}, ClassEntity, "bounded frontend identity lookup under an authorized tenant"),
+	hot("frontend_ingress_idempotency", []string{"tenant_id", "binding_id", "idempotency_key"}, ClassEntity, "frontend delivery deduplication remains behind a random binding prefix"),
 	hot("session_participants", []string{"tenant_id", "session_id", "user_id"}, ClassEntity, "authorization rows remain behind a random session prefix"),
 	hot("session_snapshots", []string{"tenant_id", "session_id", "version"}, ClassOrdered, "immutable versions are ordered inside a random session prefix"),
 	hot("session_activity", []string{"tenant_id", "user_id", "status", "activity_bucket", "updated_at", "session_id"}, ClassAppend, "fixed 16-way per-user fan-out avoids a global chronological write edge"),

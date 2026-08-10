@@ -23,21 +23,25 @@ func CanTransitionDispatch(from, to DispatchStatus) bool {
 }
 
 type DispatchOutbox struct {
-	ID                DispatchOutboxID   `json:"id"`
-	TenantID          TenantID           `json:"tenant_id"`
-	RunID             RunID              `json:"run_id"`
-	AttemptID         AttemptID          `json:"attempt_id"`
-	InputManifestID   ArtifactManifestID `json:"input_manifest_id"`
-	ContextSnapshot   BlobRef            `json:"context_snapshot"`
-	WorkspaceSnapshot *BlobRef           `json:"workspace_snapshot,omitempty"`
-	SkillBundle       *BlobRef           `json:"skill_bundle,omitempty"`
-	AllowedMCPServers []string           `json:"allowed_mcp_servers,omitempty"`
-	DeliveryChat      TelegramChatRef    `json:"delivery_chat"`
-	ReplyToMessageID  int64              `json:"reply_to_message_id"`
-	Status            DispatchStatus     `json:"status"`
-	IdempotencyKey    IdempotencyKey     `json:"idempotency_key"`
-	CreatedAt         time.Time          `json:"created_at"`
-	UpdatedAt         time.Time          `json:"updated_at"`
+	ID                DispatchOutboxID     `json:"id"`
+	TenantID          TenantID             `json:"tenant_id"`
+	RunID             RunID                `json:"run_id"`
+	AttemptID         AttemptID            `json:"attempt_id"`
+	InputManifestID   ArtifactManifestID   `json:"input_manifest_id"`
+	ContextSnapshot   BlobRef              `json:"context_snapshot"`
+	WorkspaceSnapshot *BlobRef             `json:"workspace_snapshot,omitempty"`
+	SkillBundle       *BlobRef             `json:"skill_bundle,omitempty"`
+	AllowedMCPServers []string             `json:"allowed_mcp_servers,omitempty"`
+	Origin            *FrontendEventOrigin `json:"origin,omitempty"`
+	// DeliveryChat and ReplyToMessageID are the compatibility bridge for the
+	// pre-canonical Telegram worker flow. New ingress paths use Origin; #36
+	// removes this bridge when Telegram projects canonical assistant events.
+	DeliveryChat     TelegramChatRef `json:"delivery_chat"`
+	ReplyToMessageID int64           `json:"reply_to_message_id"`
+	Status           DispatchStatus  `json:"status"`
+	IdempotencyKey   IdempotencyKey  `json:"idempotency_key"`
+	CreatedAt        time.Time       `json:"created_at"`
+	UpdatedAt        time.Time       `json:"updated_at"`
 }
 
 func (outbox DispatchOutbox) ValidateForAttempt(run Run, attempt Attempt) error {
@@ -69,14 +73,24 @@ func (outbox DispatchOutbox) ValidateForAttempt(run Run, attempt Attempt) error 
 			return err
 		}
 	}
-	if err := outbox.DeliveryChat.Validate(); err != nil {
-		return err
+	if outbox.Origin == nil && outbox.DeliveryChat.ChatID == 0 {
+		return ValidationError{Field: "dispatch_outbox.origin", Reason: "a frontend origin or legacy delivery target is required"}
 	}
-	if err := EnsureSameTenant(run.TenantID, outbox.DeliveryChat.TenantID); err != nil {
-		return err
+	if outbox.Origin != nil {
+		if err := outbox.Origin.Validate(); err != nil {
+			return err
+		}
 	}
-	if outbox.ReplyToMessageID == 0 {
-		return ValidationError{Field: "dispatch_outbox.reply_to_message_id", Reason: "must not be zero"}
+	if outbox.DeliveryChat.ChatID != 0 {
+		if err := outbox.DeliveryChat.Validate(); err != nil {
+			return err
+		}
+		if err := EnsureSameTenant(run.TenantID, outbox.DeliveryChat.TenantID); err != nil {
+			return err
+		}
+		if outbox.ReplyToMessageID == 0 {
+			return ValidationError{Field: "dispatch_outbox.reply_to_message_id", Reason: "must not be zero for a legacy delivery target"}
+		}
 	}
 	if !outbox.Status.Valid() {
 		return ValidationError{Field: "dispatch_outbox.status", Reason: "is unknown"}

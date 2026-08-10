@@ -225,6 +225,7 @@ func (store *Store) AdmitDispatch(
 			SkillBundle:       outbox.SkillBundle,
 			AllowedMCPServers: append([]string(nil), outbox.AllowedMCPServers...),
 			Limits:            request.Limits,
+			Origin:            outbox.Origin,
 			DeliveryChat:      outbox.DeliveryChat,
 			ReplyToMessageID:  outbox.ReplyToMessageID,
 			CreatedAt:         request.Now,

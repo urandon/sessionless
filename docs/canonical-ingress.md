@@ -79,3 +79,17 @@ delivery fields remain an explicitly marked compatibility bridge for the
 existing Telegram worker/result path. Issue #36 moves Telegram input to this
 contract, while the canonical finalization/projection slice removes the worker
 dependency on a Telegram reply target.
+
+Ingress performs an authorized idempotency lookup before writing immutable
+objects. A delayed duplicate resolves to the original session even when the
+frontend binding has since switched to a newer session, and it does not write
+new objects. If concurrent deliveries both miss that preflight lookup, the
+transactional deduplication row still makes the first committed payload,
+origin, and timestamp canonical; the retry may not rewrite them.
+
+Until SESSION-04 issue #23 implements canonical assistant/tool finalization and
+frontend-neutral projection work, the scheduler deliberately leaves
+origin-only dispatch outboxes pending with `canonical_projection_pending`.
+Executing them through the legacy worker would otherwise make successful
+harness work fail during terminal commit when no Telegram delivery target
+exists. Telegram-targeted compatibility jobs remain admissible.

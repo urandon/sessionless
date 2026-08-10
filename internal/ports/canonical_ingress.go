@@ -116,10 +116,32 @@ type CanonicalUserEventResult struct {
 	Created   bool
 }
 
+// CanonicalUserEventLookup resolves an already committed frontend delivery
+// before the application writes immutable objects. A hit is returned only
+// after current tenant and original-session write authorization succeeds.
+// Binding revision is deliberately absent: delayed duplicates remain bound to
+// the session in which the original event committed.
+type CanonicalUserEventLookup struct {
+	TenantID               domain.TenantID
+	UserID                 domain.UserID
+	BindingID              domain.FrontendBindingID
+	Frontend               domain.Frontend
+	ExternalConversationID string
+	IdempotencyKey         domain.IdempotencyKey
+	EventID                domain.SessionEventID
+	RunID                  domain.RunID
+}
+
+type CanonicalUserEventLookupResult struct {
+	Result CanonicalUserEventResult
+	Found  bool
+}
+
 // CanonicalIngressStore is the persistence boundary used by every frontend.
 // Transport update/message types are intentionally excluded.
 type CanonicalIngressStore interface {
 	EnsureFrontendSession(context.Context, FrontendSessionRequest) (FrontendSessionState, error)
 	CreateAndSwitchFrontendSession(context.Context, CanonicalSessionSwitchRequest) (FrontendSessionState, error)
+	LookupCanonicalUserEvent(context.Context, CanonicalUserEventLookup) (CanonicalUserEventLookupResult, error)
 	CommitCanonicalUserEvent(context.Context, CanonicalUserEventCommit) (CanonicalUserEventResult, error)
 }

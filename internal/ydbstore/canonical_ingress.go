@@ -145,6 +145,80 @@ func (store *Store) CreateAndSwitchFrontendSession(
 	return result, err
 }
 
+func (store *Store) LookupCanonicalUserEvent(
+	ctx context.Context,
+	request ports.CanonicalUserEventLookup,
+) (result ports.CanonicalUserEventLookupResult, err error) {
+	if err := validateCanonicalLookup(request); err != nil {
+		return result, err
+	}
+	err = store.Transact(ctx, request.TenantID, func(state ports.StateTx) error {
+		tx := state.(*stateTx)
+		if err := authorizeTenantWriteTx(ctx, tx, request.UserID); err != nil {
+			return err
+		}
+		var sessionID string
+		var sequence uint64
+		var eventID, runID string
+		err := tx.sqlTx.QueryRowContext(ctx,
+			`SELECT session_id, sequence, event_id, run_id
+			 FROM frontend_ingress_idempotency
+			 WHERE tenant_id = $1 AND binding_id = $2 AND idempotency_key = $3
+			 AND expire_at > CurrentUtcTimestamp()`,
+			request.TenantID, request.BindingID, request.IdempotencyKey,
+		).Scan(&sessionID, &sequence, &eventID, &runID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+
+		binding, found, err := readBindingTx(ctx, tx, request.BindingID)
+		if err != nil {
+			return err
+		}
+		if !found || binding.Frontend != request.Frontend ||
+			binding.ExternalConversationID != request.ExternalConversationID {
+			return domain.ErrEventIdempotencyConflict
+		}
+		originalSessionID := domain.SessionID(sessionID)
+		if err := authorizeSessionWriteTx(ctx, tx, originalSessionID, request.UserID); err != nil {
+			return err
+		}
+		event, found, err := readJSON[domain.SessionEvent](ctx, tx.sqlTx,
+			`SELECT record FROM session_events
+			 WHERE tenant_id = $1 AND session_id = $2 AND sequence = $3`,
+			request.TenantID, originalSessionID, sequence,
+		)
+		if err != nil {
+			return err
+		}
+		if !found || event.ID != domain.SessionEventID(eventID) || event.ID != request.EventID ||
+			event.AuthorUserID == nil || *event.AuthorUserID != request.UserID ||
+			event.RunID == nil || *event.RunID != request.RunID ||
+			event.IdempotencyKey != request.IdempotencyKey {
+			return domain.ErrEventIdempotencyConflict
+		}
+		run, found, err := tx.GetRun(ctx, domain.RunID(runID))
+		if err != nil {
+			return err
+		}
+		if !found || run.ID != request.RunID || run.TriggerEventID != event.ID {
+			return fmt.Errorf("frontend ingress idempotency index is inconsistent")
+		}
+		result = ports.CanonicalUserEventLookupResult{
+			Found: true,
+			Result: ports.CanonicalUserEventResult{
+				SessionID: event.SessionID, EventID: event.ID, Sequence: event.Sequence,
+				RunID: run.ID, Created: false,
+			},
+		}
+		return nil
+	})
+	return result, err
+}
+
 func (store *Store) CommitCanonicalUserEvent(
 	ctx context.Context,
 	request ports.CanonicalUserEventCommit,
@@ -154,18 +228,26 @@ func (store *Store) CommitCanonicalUserEvent(
 	}
 	err = store.Transact(ctx, request.TenantID, func(state ports.StateTx) error {
 		tx := state.(*stateTx)
+		if err := authorizeTenantWriteTx(ctx, tx, request.UserID); err != nil {
+			return err
+		}
 		var existingSessionID string
 		var existingSequence uint64
-		var existingEventID, existingRunID, existingOriginDigest string
+		var existingEventID, existingRunID string
 		lookupErr := tx.sqlTx.QueryRowContext(ctx,
-			`SELECT session_id, sequence, event_id, run_id, origin_digest
+			`SELECT session_id, sequence, event_id, run_id
 			 FROM frontend_ingress_idempotency
 			 WHERE tenant_id = $1 AND binding_id = $2 AND idempotency_key = $3
 			 AND expire_at > CurrentUtcTimestamp()`,
 			request.TenantID, request.BindingID, request.IdempotencyKey,
-		).Scan(&existingSessionID, &existingSequence, &existingEventID, &existingRunID, &existingOriginDigest)
+		).Scan(&existingSessionID, &existingSequence, &existingEventID, &existingRunID)
 		switch {
 		case lookupErr == nil:
+			if err := authorizeSessionWriteTx(
+				ctx, tx, domain.SessionID(existingSessionID), request.UserID,
+			); err != nil {
+				return err
+			}
 			event, found, err := readJSON[domain.SessionEvent](ctx, tx.sqlTx,
 				`SELECT record FROM session_events
 				 WHERE tenant_id = $1 AND session_id = $2 AND sequence = $3`,
@@ -175,11 +257,13 @@ func (store *Store) CommitCanonicalUserEvent(
 				return err
 			}
 			if !found || event.ID != domain.SessionEventID(existingEventID) || event.ID != request.EventID ||
-				event.Payload != request.Payload || event.AuthorUserID == nil || *event.AuthorUserID != request.UserID ||
-				event.RunID == nil || *event.RunID != request.RunID || event.IdempotencyKey != request.IdempotencyKey ||
-				!event.CreatedAt.Equal(request.CommittedAt) || existingOriginDigest != frontendOriginDigest(request.Origin) {
+				event.AuthorUserID == nil || *event.AuthorUserID != request.UserID ||
+				event.RunID == nil || *event.RunID != request.RunID || event.IdempotencyKey != request.IdempotencyKey {
 				return domain.ErrEventIdempotencyConflict
 			}
+			// The original payload, origin, and commit timestamp remain canonical.
+			// This path also closes the race where two deliveries both miss the
+			// application-level lookup before the first transaction commits.
 			run, found, err := tx.GetRun(ctx, domain.RunID(existingRunID))
 			if err != nil {
 				return err
@@ -196,9 +280,6 @@ func (store *Store) CommitCanonicalUserEvent(
 			return lookupErr
 		}
 
-		if err := authorizeTenantWriteTx(ctx, tx, request.UserID); err != nil {
-			return err
-		}
 		binding, found, err := readBindingTx(ctx, tx, request.BindingID)
 		if err != nil {
 			return err
@@ -402,6 +483,24 @@ func validateCanonicalCommit(request ports.CanonicalUserEventCommit) error {
 	}
 	if err := request.Payload.Validate(); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateCanonicalLookup(request ports.CanonicalUserEventLookup) error {
+	for _, validate := range []error{
+		request.TenantID.Validate(), request.UserID.Validate(), request.BindingID.Validate(),
+		request.Frontend.Validate(), request.IdempotencyKey.Validate(),
+		request.EventID.Validate(), request.RunID.Validate(),
+	} {
+		if validate != nil {
+			return validate
+		}
+	}
+	if request.ExternalConversationID == "" {
+		return domain.ValidationError{
+			Field: "external_conversation_id", Reason: "must not be empty",
+		}
 	}
 	return nil
 }

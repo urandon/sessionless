@@ -363,6 +363,23 @@ func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 	} {
 		assertCount(t, client, table, tenantID, 1)
 	}
+	admission, err := store.AdmitDispatch(ctx, ports.DispatchAdmissionRequest{
+		TenantID: tenantID, OutboxID: request.DispatchID, RunID: request.RunID,
+		AttemptID:     request.AttemptID,
+		ReservationID: domain.QuotaReservationID(uniqueID("canonical-reservation")),
+		Now:           committedAt, HoldUntil: committedAt.Add(time.Minute),
+		Limits: domain.ProductLimits{
+			MaxTenantQueueDepth: 8, MaxActiveRuns: 1,
+			MaxRuntime: 15 * time.Minute, MaxTurns: 30,
+			MaxInputBytes: 16 << 20, MaxContextBytes: 64 << 20, MaxArtifacts: 32,
+		},
+		Workload: domain.WorkloadShape{Runtime: time.Minute, Turns: 1},
+	})
+	if err != nil || admission.Admitted || admission.Code != "canonical_projection_pending" {
+		t.Fatalf("canonical admission=%#v err=%v", admission, err)
+	}
+	assertCount(t, client, "worker_jobs", tenantID, 0)
+	assertCount(t, client, "quota_reservations", tenantID, 0)
 
 	bad := request
 	bad.IdempotencyKey = domain.IdempotencyKey(uniqueID("ingress-bad"))
@@ -397,6 +414,58 @@ func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 		t.Fatal("cross-tenant binding access succeeded")
 	}
 	assertCount(t, client, "frontend_ingress_idempotency", otherTenant, 0)
+
+	lookup := ports.CanonicalUserEventLookup{
+		TenantID: tenantID, UserID: userID, BindingID: bindingID,
+		Frontend: frontend, ExternalConversationID: "synthetic-conversation",
+		IdempotencyKey: request.IdempotencyKey, EventID: request.EventID,
+		RunID: request.RunID,
+	}
+	resolved, err := store.LookupCanonicalUserEvent(ctx, lookup)
+	if err != nil || !resolved.Found || resolved.Result.SessionID != thirdID {
+		t.Fatalf("canonical lookup=%#v err=%v", resolved, err)
+	}
+	membershipBucket, err := ydbpartition.BucketV1(string(userID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.DB.ExecContext(ctx,
+		`DELETE FROM tenant_memberships
+		 WHERE user_bucket = $1 AND user_id = $2 AND tenant_id = $3`,
+		membershipBucket, userID, tenantID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.LookupCanonicalUserEvent(ctx, lookup); !errors.Is(err, domain.ErrMembershipDenied) {
+		t.Fatalf("revoked lookup error=%v, want membership denied", err)
+	}
+	if _, err := store.CommitCanonicalUserEvent(ctx, request); !errors.Is(err, domain.ErrMembershipDenied) {
+		t.Fatalf("revoked duplicate commit error=%v, want membership denied", err)
+	}
+	seedCanonicalMembership(t, client.DB, tenantID, userID, now)
+	removed := domain.SessionParticipant{
+		TenantID: tenantID, SessionID: thirdID, UserID: userID,
+		Role: domain.SessionParticipantOwner, Status: domain.SessionParticipantRemoved,
+		CreatedAt: now.Add(2 * time.Second), UpdatedAt: committedAt.Add(2 * time.Second),
+	}
+	removedRecord, err := json.Marshal(removed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.DB.ExecContext(ctx,
+		`UPDATE session_participants
+		 SET status = $1, updated_at = $2, record = CAST($3 AS JsonDocument)
+		 WHERE tenant_id = $4 AND session_id = $5 AND user_id = $6`,
+		removed.Status, removed.UpdatedAt, string(removedRecord), tenantID, thirdID, userID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.LookupCanonicalUserEvent(ctx, lookup); err == nil {
+		t.Fatal("removed session participant resolved a duplicate")
+	}
+	if _, err := store.CommitCanonicalUserEvent(ctx, request); err == nil {
+		t.Fatal("removed session participant committed a duplicate")
+	}
 }
 
 func seedCanonicalMembership(

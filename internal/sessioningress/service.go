@@ -147,16 +147,32 @@ func (service *Service) Ingest(ctx context.Context, input UserInput) (ports.Cano
 	if err := validateInput(input); err != nil {
 		return ports.CanonicalUserEventResult{}, err
 	}
-	state, err := service.EnsureSession(ctx, input.Actor, input.ReceivedAt)
-	if err != nil {
-		return ports.CanonicalUserEventResult{}, err
-	}
+	bindingID := domain.FrontendBindingID(service.stableID(
+		"binding", input.Actor.TenantID, input.Actor.Frontend,
+		input.Actor.ExternalConversationID,
+	))
 	idempotencyKey := domain.IdempotencyKey(service.stableID(
 		"ingress", input.Actor.TenantID, input.Actor.Frontend,
 		input.Actor.ExternalConversationID, input.ExternalEventID,
 	))
-	eventID := domain.SessionEventID(service.stableID("event", input.Actor.TenantID, state.Binding.ID, idempotencyKey))
-	runID := domain.RunID(service.stableID("run", input.Actor.TenantID, state.Binding.ID, idempotencyKey))
+	eventID := domain.SessionEventID(service.stableID("event", input.Actor.TenantID, bindingID, idempotencyKey))
+	runID := domain.RunID(service.stableID("run", input.Actor.TenantID, bindingID, idempotencyKey))
+	existing, err := service.store.LookupCanonicalUserEvent(ctx, ports.CanonicalUserEventLookup{
+		TenantID: input.Actor.TenantID, UserID: input.Actor.UserID,
+		BindingID: bindingID, Frontend: input.Actor.Frontend,
+		ExternalConversationID: input.Actor.ExternalConversationID,
+		IdempotencyKey:         idempotencyKey, EventID: eventID, RunID: runID,
+	})
+	if err != nil {
+		return ports.CanonicalUserEventResult{}, err
+	}
+	if existing.Found {
+		return existing.Result, nil
+	}
+	state, err := service.EnsureSession(ctx, input.Actor, input.ReceivedAt)
+	if err != nil {
+		return ports.CanonicalUserEventResult{}, err
+	}
 	origin := domain.FrontendEventOrigin{
 		BindingID: state.Binding.ID, BindingRevision: state.Binding.Revision,
 		Frontend: input.Actor.Frontend, ExternalConversationID: input.Actor.ExternalConversationID,

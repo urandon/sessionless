@@ -51,12 +51,25 @@ func TestSyntheticFrontendCreatesSwitchesAndIngestsCanonicalSessions(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	objectCount := len(blobs.objects)
+	fourth, err := adapter.NewSession(
+		ctx, third.Binding.Revision, "reset-after-delivery", now.Add(4*time.Second),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
 	duplicate, err := adapter.Send(ctx, "delivery-1", "hello from synthetic", "subscription-a", now.Add(3*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !first.Created || duplicate.Created || first.RunID != duplicate.RunID || first.EventID != duplicate.EventID {
 		t.Fatalf("first=%#v duplicate=%#v", first, duplicate)
+	}
+	if duplicate.SessionID != third.Session.ID || fourth.Session.ID == duplicate.SessionID {
+		t.Fatalf("duplicate session=%s current session=%s", duplicate.SessionID, fourth.Session.ID)
+	}
+	if len(blobs.objects) != objectCount {
+		t.Fatalf("duplicate wrote immutable objects: before=%d after=%d", objectCount, len(blobs.objects))
 	}
 	if len(store.commits) != 1 {
 		t.Fatalf("canonical commits = %d, want 1", len(store.commits))
@@ -212,6 +225,19 @@ func (store *memoryCanonicalStore) CommitCanonicalUserEvent(
 	store.commits = append(store.commits, request)
 	store.results[key] = result
 	return result, nil
+}
+
+func (store *memoryCanonicalStore) LookupCanonicalUserEvent(
+	_ context.Context,
+	request ports.CanonicalUserEventLookup,
+) (ports.CanonicalUserEventLookupResult, error) {
+	key := string(request.BindingID) + "/" + string(request.IdempotencyKey)
+	result, found := store.results[key]
+	if !found {
+		return ports.CanonicalUserEventLookupResult{}, nil
+	}
+	result.Created = false
+	return ports.CanonicalUserEventLookupResult{Result: result, Found: true}, nil
 }
 
 type memoryBlobs struct {

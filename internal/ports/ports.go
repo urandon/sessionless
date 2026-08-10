@@ -192,6 +192,17 @@ type Queue interface {
 	DeadLetter(ctx context.Context, receiptHandle, reasonCode string) error
 }
 
+// DispatchWakePublisher and TelegramDeliveryWakePublisher emit payload-free
+// hints only after a durable outbox transaction commits. The outbox remains
+// canonical; duplicate and lost hints are handled by point reads and recovery.
+type DispatchWakePublisher interface {
+	PublishDispatchWake(context.Context, domain.TenantID, domain.DispatchOutboxID, time.Time) error
+}
+
+type TelegramDeliveryWakePublisher interface {
+	PublishTelegramDeliveryWake(context.Context, domain.TenantID, domain.TelegramDeliveryID, time.Time) error
+}
+
 type BlobStore interface {
 	Put(ctx context.Context, tenantID domain.TenantID, key string, body io.Reader) (domain.BlobRef, error)
 	Open(ctx context.Context, tenantID domain.TenantID, ref domain.BlobRef) (io.ReadCloser, error)
@@ -226,6 +237,11 @@ type TelegramDeliveryReady struct {
 }
 
 type TelegramDeliveryStore interface {
+	GetTelegramDelivery(
+		ctx context.Context,
+		tenantID domain.TenantID,
+		deliveryID domain.TelegramDeliveryID,
+	) (domain.TelegramDeliveryOutbox, bool, error)
 	ListReadyTelegramDeliveries(
 		ctx context.Context,
 		bucket uint32,
@@ -293,6 +309,11 @@ type ExpiredQuotaReservation struct {
 // admission mutations. The queue publisher never reconstructs state by
 // scanning tenant payloads.
 type SchedulerStore interface {
+	GetDispatch(
+		ctx context.Context,
+		tenantID domain.TenantID,
+		outboxID domain.DispatchOutboxID,
+	) (DispatchReady, domain.DispatchStatus, bool, error)
 	ListReadyDispatches(
 		ctx context.Context,
 		bucket uint32,

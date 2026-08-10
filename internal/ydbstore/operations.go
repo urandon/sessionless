@@ -871,6 +871,25 @@ func (store *Store) ListReadyTelegramDeliveries(
 	return result, rows.Err()
 }
 
+func (store *Store) GetTelegramDelivery(
+	ctx context.Context,
+	tenantID domain.TenantID,
+	deliveryID domain.TelegramDeliveryID,
+) (result domain.TelegramDeliveryOutbox, found bool, err error) {
+	if err := tenantID.Validate(); err != nil {
+		return result, false, err
+	}
+	if err := deliveryID.Validate(); err != nil {
+		return result, false, err
+	}
+	result, found, err = readJSON[domain.TelegramDeliveryOutbox](ctx, store.db,
+		`SELECT payload FROM telegram_delivery_outbox
+		 WHERE tenant_id = $1 AND telegram_delivery_id = $2`,
+		tenantID, deliveryID,
+	)
+	return result, found, err
+}
+
 func (store *Store) ClaimTelegramDelivery(
 	ctx context.Context,
 	tenantID domain.TenantID,

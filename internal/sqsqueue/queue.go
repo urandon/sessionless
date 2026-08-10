@@ -172,13 +172,20 @@ func (queue *Queue) Retry(ctx context.Context, receiptHandle string, delay time.
 	_, err := queue.client.ChangeMessageVisibility(ctx, &sqs.ChangeMessageVisibilityInput{
 		QueueUrl:          aws.String(queue.queueURL),
 		ReceiptHandle:     aws.String(receiptHandle),
-		VisibilityTimeout: int32(delay / time.Second),
+		VisibilityTimeout: retryVisibilitySeconds(delay),
 	})
 	if err != nil {
 		return fmt.Errorf("retry queue message: %w", err)
 	}
 	queue.forget(receiptHandle)
 	return nil
+}
+
+func retryVisibilitySeconds(delay time.Duration) int32 {
+	if delay <= 0 {
+		return 0
+	}
+	return int32((delay + time.Second - 1) / time.Second)
 }
 
 func (queue *Queue) DeadLetter(ctx context.Context, receiptHandle, reasonCode string) error {

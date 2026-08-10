@@ -36,6 +36,10 @@ resource "yandex_serverless_container" "control" {
       DEFAULT_COMPUTE_PROVIDER = "deterministic"
       DEPLOYMENT_IMAGE         = var.images["control-${each.key}"]
       TELEGRAM_SOURCE_ID       = "bot-primary"
+      QUEUE_ENDPOINT           = "https://message-queue.api.cloud.yandex.net"
+      QUEUE_REGION             = "ru-central1"
+      SCHEDULER_WAKE_QUEUE_URL = var.scheduler_wake_queue_url
+      DELIVERY_QUEUE_URL       = var.delivery_queue_url
     })
   }
   metadata_options {
@@ -47,6 +51,18 @@ resource "yandex_serverless_container" "control" {
     version_id           = var.telegram_secret_version_id
     key                  = "bot-token"
     environment_variable = "TELEGRAM_BOT_TOKEN"
+  }
+  secrets {
+    id                   = var.scheduler_ymq_secret_id
+    version_id           = var.scheduler_ymq_secret_version_id
+    key                  = "access-key"
+    environment_variable = "OUTBOX_QUEUE_ACCESS_KEY_ID"
+  }
+  secrets {
+    id                   = var.scheduler_ymq_secret_id
+    version_id           = var.scheduler_ymq_secret_version_id
+    key                  = "secret-key"
+    environment_variable = "OUTBOX_QUEUE_SECRET_ACCESS_KEY"
   }
   secrets {
     id                   = var.telegram_secret_id
@@ -69,7 +85,7 @@ resource "yandex_serverless_container" "control" {
 resource "yandex_serverless_container" "reconciler" {
   folder_id          = var.folder_id
   name               = "${var.name_prefix}-reconciler"
-  description        = "Timer-driven bounded scheduler and recovery pass"
+  description        = "Queue-driven scheduler with bounded recovery passes"
   memory             = 256
   cores              = 1
   core_fraction      = 100
@@ -81,13 +97,15 @@ resource "yandex_serverless_container" "reconciler" {
   image {
     url = var.images["reconciler"]
     environment = {
-      DEPLOYMENT_IMAGE         = var.images["reconciler"]
-      SERVERLESS_TRIGGER_HTTP  = "true"
-      YDB_CONNECTION_STRING    = var.ydb_connection_string
-      YDB_METADATA_CREDENTIALS = "1"
-      QUEUE_ENDPOINT           = "https://message-queue.api.cloud.yandex.net"
-      QUEUE_REGION             = "ru-central1"
-      DISPATCH_QUEUE_URL       = var.dispatch_queue_url
+      DEPLOYMENT_IMAGE                  = var.images["reconciler"]
+      SERVERLESS_TRIGGER_HTTP           = "true"
+      YDB_CONNECTION_STRING             = var.ydb_connection_string
+      YDB_METADATA_CREDENTIALS          = "1"
+      QUEUE_ENDPOINT                    = "https://message-queue.api.cloud.yandex.net"
+      QUEUE_REGION                      = "ru-central1"
+      DISPATCH_QUEUE_URL                = var.dispatch_queue_url
+      SCHEDULER_WAKE_RETRY_DELAY        = "30s"
+      SCHEDULER_WAKE_MAX_DELIVERY_COUNT = "5"
     }
   }
   metadata_options {
@@ -132,6 +150,9 @@ resource "yandex_serverless_container" "worker" {
       WORKER_ID                 = "serverless-worker"
       WORKER_LEASE_TTL          = "2m"
       WORKER_MAX_DELIVERY_COUNT = "5"
+      QUEUE_ENDPOINT            = "https://message-queue.api.cloud.yandex.net"
+      QUEUE_REGION              = "ru-central1"
+      DELIVERY_QUEUE_URL        = var.delivery_queue_url
     })
   }
   metadata_options {
@@ -143,6 +164,18 @@ resource "yandex_serverless_container" "worker" {
     mode             = "rw"
     ephemeral_disk { size_gb = 1 }
   }
+  secrets {
+    id                   = var.scheduler_ymq_secret_id
+    version_id           = var.scheduler_ymq_secret_version_id
+    key                  = "access-key"
+    environment_variable = "OUTBOX_QUEUE_ACCESS_KEY_ID"
+  }
+  secrets {
+    id                   = var.scheduler_ymq_secret_id
+    version_id           = var.scheduler_ymq_secret_version_id
+    key                  = "secret-key"
+    environment_variable = "OUTBOX_QUEUE_SECRET_ACCESS_KEY"
+  }
   log_options {
     log_group_id = var.log_group_id
     min_level    = "INFO"
@@ -152,7 +185,7 @@ resource "yandex_serverless_container" "worker" {
 resource "yandex_serverless_container" "telegram_sender" {
   folder_id          = var.folder_id
   name               = "${var.name_prefix}-telegram-sender"
-  description        = "Timer-driven bounded Telegram delivery pass"
+  description        = "Queue-driven Telegram delivery with bounded recovery passes"
   memory             = 256
   cores              = 1
   core_fraction      = 100
@@ -223,44 +256,84 @@ resource "yandex_function_trigger" "worker" {
   depends_on = [yandex_serverless_container_iam_binding.trigger_invoker]
 }
 
-resource "yandex_function_trigger" "reconciler" {
+resource "yandex_function_trigger" "reconciler_wake" {
   folder_id   = var.folder_id
-  name        = "${var.name_prefix}-reconciler"
-  description = "Run a bounded scheduler/recovery pass"
+  name        = "${var.name_prefix}-reconciler-wake"
+  description = "Wake the scheduler for one durable dispatch outbox"
   labels      = var.labels
   container {
     id                 = yandex_serverless_container.reconciler.id
-    path               = "/invoke"
+    path               = "/wake"
+    service_account_id = var.service_account_ids["trigger"]
+  }
+  message_queue {
+    queue_id           = var.scheduler_wake_queue_arn
+    service_account_id = var.service_account_ids["trigger"]
+    batch_cutoff       = "1"
+    batch_size         = "1"
+    visibility_timeout = "30"
+  }
+  depends_on = [yandex_serverless_container_iam_binding.trigger_invoker]
+}
+
+resource "yandex_function_trigger" "reconciler_recovery" {
+  folder_id   = var.folder_id
+  name        = "${var.name_prefix}-reconciler-recovery"
+  description = "Run the bounded dispatch and quota recovery scan every six hours"
+  labels      = var.labels
+  container {
+    id                 = yandex_serverless_container.reconciler.id
+    path               = "/recovery"
     service_account_id = var.service_account_ids["trigger"]
     retry_attempts     = "3"
     retry_interval     = "10"
   }
   timer {
     cron_expression = var.reconciler_cron
-    payload         = "{\"source\":\"timer\"}"
+    payload         = "{\"source\":\"recovery\"}"
   }
   dlq {
-    queue_id           = var.dispatch_dlq_arn
+    queue_id           = var.scheduler_wake_dlq_arn
     service_account_id = var.service_account_ids["trigger"]
   }
   depends_on = [yandex_serverless_container_iam_binding.trigger_invoker]
 }
 
-resource "yandex_function_trigger" "telegram_sender" {
+resource "yandex_function_trigger" "telegram_sender_wake" {
   folder_id   = var.folder_id
-  name        = "${var.name_prefix}-telegram-sender"
-  description = "Run a bounded Telegram delivery pass"
+  name        = "${var.name_prefix}-telegram-sender-wake"
+  description = "Wake the Telegram sender for one durable delivery outbox"
   labels      = var.labels
   container {
     id                 = yandex_serverless_container.telegram_sender.id
-    path               = "/invoke"
+    path               = "/wake"
+    service_account_id = var.service_account_ids["trigger"]
+  }
+  message_queue {
+    queue_id           = var.delivery_queue_arn
+    service_account_id = var.service_account_ids["trigger"]
+    batch_cutoff       = "1"
+    batch_size         = "1"
+    visibility_timeout = "120"
+  }
+  depends_on = [yandex_serverless_container_iam_binding.trigger_invoker]
+}
+
+resource "yandex_function_trigger" "telegram_sender_recovery" {
+  folder_id   = var.folder_id
+  name        = "${var.name_prefix}-telegram-sender-recovery"
+  description = "Run the bounded Telegram delivery recovery scan every six hours"
+  labels      = var.labels
+  container {
+    id                 = yandex_serverless_container.telegram_sender.id
+    path               = "/recovery"
     service_account_id = var.service_account_ids["trigger"]
     retry_attempts     = "3"
     retry_interval     = "10"
   }
   timer {
     cron_expression = var.telegram_sender_cron
-    payload         = "{\"source\":\"timer\"}"
+    payload         = "{\"source\":\"recovery\"}"
   }
   dlq {
     queue_id           = var.delivery_dlq_arn

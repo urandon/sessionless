@@ -10,6 +10,9 @@ output "dispatch_dlq_arn" { value = yandex_message_queue.dispatch_dlq.arn }
 output "delivery_queue_url" { value = yandex_message_queue.delivery.id }
 output "delivery_queue_arn" { value = yandex_message_queue.delivery.arn }
 output "delivery_dlq_arn" { value = yandex_message_queue.delivery_dlq.arn }
+output "scheduler_wake_queue_url" { value = yandex_message_queue.scheduler_wake.id }
+output "scheduler_wake_queue_arn" { value = yandex_message_queue.scheduler_wake.arn }
+output "scheduler_wake_dlq_arn" { value = yandex_message_queue.scheduler_wake_dlq.arn }
 output "registry_id" { value = yandex_container_registry.application.id }
 output "repository_names" { value = { for name, repository in yandex_container_repository.runtime : name => repository.name } }
 output "telegram_secret_id" { value = yandex_lockbox_secret.telegram.id }

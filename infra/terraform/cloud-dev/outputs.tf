@@ -7,6 +7,7 @@ output "ydb_connection_string" { value = module.foundation.ydb_connection_string
 output "artifact_bucket_name" { value = module.foundation.artifact_bucket_name }
 output "dispatch_queue_url" { value = module.foundation.dispatch_queue_url }
 output "delivery_queue_url" { value = module.foundation.delivery_queue_url }
+output "scheduler_wake_queue_url" { value = module.foundation.scheduler_wake_queue_url }
 output "telegram_secret_id" { value = module.foundation.telegram_secret_id }
 output "queue_provisioner_secret_id" { value = module.foundation.queue_provisioner_secret_id }
 output "queue_provisioner_secret_version_id" { value = module.foundation.queue_provisioner_secret_version_id }

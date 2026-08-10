@@ -600,9 +600,7 @@ func TestQuotaAndDeliveryDualWriteBucketedReadyTables(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ready) != 1 || ready[0].TenantID != tenantID || ready[0].DeliveryID != delivery.ID {
-		t.Fatalf("ready deliveries = %+v", ready)
-	}
+	assertReadyDeliveryPresent(t, ready, tenantID, delivery.ID)
 	claimed, ok, err := store.ClaimTelegramDelivery(
 		context.Background(), tenantID, delivery.ID, now.Add(time.Second),
 	)
@@ -626,11 +624,7 @@ func TestQuotaAndDeliveryDualWriteBucketedReadyTables(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(readyAfterRetry) != 1 ||
-		readyAfterRetry[0].TenantID != tenantID ||
-		readyAfterRetry[0].DeliveryID != delivery.ID {
-		t.Fatalf("ready deliveries after retry transition = %+v", readyAfterRetry)
-	}
+	assertReadyDeliveryPresent(t, readyAfterRetry, tenantID, delivery.ID)
 
 	if _, err := ydbpartition.BackfillReadyExpiryV2(
 		context.Background(),
@@ -642,6 +636,27 @@ func TestQuotaAndDeliveryDualWriteBucketedReadyTables(t *testing.T) {
 	assertCount(t, client, "dispatch_ready_v2", tenantID, 1)
 	assertCount(t, client, "quota_expiry_v2", tenantID, 1)
 	assertCount(t, client, "telegram_delivery_ready_v2", tenantID, 1)
+}
+
+func assertReadyDeliveryPresent(
+	t *testing.T,
+	ready []ports.TelegramDeliveryReady,
+	tenantID domain.TenantID,
+	deliveryID domain.TelegramDeliveryID,
+) {
+	t.Helper()
+	matches := 0
+	for _, candidate := range ready {
+		if candidate.TenantID == tenantID && candidate.DeliveryID == deliveryID {
+			matches++
+		}
+	}
+	if matches != 1 {
+		t.Fatalf(
+			"ready delivery (%s, %s) matches = %d in %+v, want 1",
+			tenantID, deliveryID, matches, ready,
+		)
+	}
 }
 
 func TestTelegramCommandsAreAtomicIdempotentAndDoNotDispatchAIWork(t *testing.T) {

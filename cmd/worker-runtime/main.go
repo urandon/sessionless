@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/deterministicharness"
+	"gitcode.com/urandon/sessionless/internal/outboxwake"
 	"gitcode.com/urandon/sessionless/internal/portlog"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/s3store"
@@ -35,6 +36,21 @@ func main() {
 	ydb, err := ydbclient.Open(ctx, os.Getenv("YDB_CONNECTION_STRING"))
 	if err != nil {
 		logger.Error("open YDB", "error", err)
+		os.Exit(1)
+	}
+	deliveryWakeQueue, err := sqsqueue.New(ctx, sqsqueue.Config{
+		Endpoint: os.Getenv("QUEUE_ENDPOINT"), Region: envOrDefault("QUEUE_REGION", "ru-central1"),
+		QueueURL:        os.Getenv("DELIVERY_QUEUE_URL"),
+		AccessKeyID:     firstNonEmpty(os.Getenv("OUTBOX_QUEUE_ACCESS_KEY_ID"), os.Getenv("QUEUE_ACCESS_KEY_ID")),
+		SecretAccessKey: firstNonEmpty(os.Getenv("OUTBOX_QUEUE_SECRET_ACCESS_KEY"), os.Getenv("QUEUE_SECRET_ACCESS_KEY")),
+	})
+	if err != nil {
+		logger.Error("create delivery wake queue", "error", err)
+		os.Exit(1)
+	}
+	deliveryWakePublisher, err := outboxwake.NewPublisher(deliveryWakeQueue)
+	if err != nil {
+		logger.Error("create delivery wake publisher", "error", err)
 		os.Exit(1)
 	}
 	defer ydb.Close(context.Background())
@@ -74,8 +90,9 @@ func main() {
 		RetryObserver: func(cause error) {
 			logger.Warn("worker invocation scheduled for retry", "error", cause)
 		},
-		MaxDeliveryCount:     uint32(envUint64("WORKER_MAX_DELIVERY_COUNT", 5)),
-		MaxMaterializedBytes: int64(envUint64("WORKER_MAX_BLOB_BYTES", 64<<20)),
+		MaxDeliveryCount:      uint32(envUint64("WORKER_MAX_DELIVERY_COUNT", 5)),
+		MaxMaterializedBytes:  int64(envUint64("WORKER_MAX_BLOB_BYTES", 64<<20)),
+		DeliveryWakePublisher: deliveryWakePublisher,
 	}
 	newManager := func(queue ports.Queue) (*worker.Manager, error) {
 		return worker.New(
@@ -138,6 +155,15 @@ func main() {
 		os.Exit(1)
 	}
 	logger.Info("worker invocation finished", "outcome", outcome)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func envOrDefault(name, fallback string) string {

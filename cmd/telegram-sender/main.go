@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -13,7 +15,9 @@ import (
 	"gitcode.com/urandon/sessionless/internal/portlog"
 	"gitcode.com/urandon/sessionless/internal/s3store"
 	"gitcode.com/urandon/sessionless/internal/serverlesshttp"
+	"gitcode.com/urandon/sessionless/internal/sqsqueue"
 	"gitcode.com/urandon/sessionless/internal/telegramdelivery"
+	"gitcode.com/urandon/sessionless/internal/yandextriggers"
 	"gitcode.com/urandon/sessionless/internal/ydbclient"
 	"gitcode.com/urandon/sessionless/internal/ydbstore"
 )
@@ -75,12 +79,31 @@ func main() {
 	if envBool("SERVERLESS_TRIGGER_HTTP") {
 		err = serverlesshttp.Serve(
 			ctx, ":"+envOrDefault("PORT", "8080"), logger,
-			func(invocationCtx context.Context, _ *http.Request) (any, error) {
-				processed, runErr := sender.RunOnce(invocationCtx)
-				if runErr != nil {
-					return nil, runErr
+			func(invocationCtx context.Context, request *http.Request) (any, error) {
+				switch request.URL.Path {
+				case "/wake":
+					wakeQueue, parseErr := yandextriggers.NewYMQQueue(request.Body, 10)
+					if parseErr != nil {
+						return nil, parseErr
+					}
+					results := make([]telegramdelivery.WakeResult, 0, wakeQueue.Remaining())
+					for wakeQueue.Remaining() > 0 {
+						result, runErr := sender.RunWake(invocationCtx, wakeQueue)
+						if runErr != nil {
+							return nil, runErr
+						}
+						results = append(results, result)
+					}
+					return map[string]any{"processed": len(results), "results": results}, nil
+				case "/recovery":
+					processed, runErr := sender.RunOnce(invocationCtx)
+					if runErr != nil {
+						return nil, runErr
+					}
+					return map[string]int{"processed": processed}, nil
+				default:
+					return nil, fmt.Errorf("unsupported trigger path %q", request.URL.Path)
 				}
-				return map[string]int{"processed": processed}, nil
 			},
 		)
 		if err != nil {
@@ -90,21 +113,49 @@ func main() {
 		return
 	}
 
-	interval := envDuration("TELEGRAM_SENDER_POLL_INTERVAL", time.Second)
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	wakeQueue, err := sqsqueue.New(ctx, sqsqueue.Config{
+		Endpoint: os.Getenv("QUEUE_ENDPOINT"), Region: envOrDefault("QUEUE_REGION", "ru-central1"),
+		QueueURL:      os.Getenv("DELIVERY_QUEUE_URL"),
+		DeadLetterURL: os.Getenv("DELIVERY_DEAD_LETTER_QUEUE_URL"),
+		AccessKeyID:   os.Getenv("QUEUE_ACCESS_KEY_ID"), SecretAccessKey: os.Getenv("QUEUE_SECRET_ACCESS_KEY"),
+		WaitTime: envDuration("TELEGRAM_SENDER_QUEUE_WAIT", 2*time.Second),
+	})
+	if err != nil {
+		logger.Error("create Telegram delivery wake queue", "error", err)
+		os.Exit(1)
+	}
+	if processed, runErr := sender.RunOnce(ctx); runErr != nil && ctx.Err() == nil {
+		logger.Error("Telegram delivery startup recovery failed", "error", runErr)
+	} else if processed > 0 {
+		logger.Info("Telegram delivery startup recovery completed", "processed", processed)
+	}
 	for {
-		processed, runErr := sender.RunOnce(ctx)
-		if runErr != nil && ctx.Err() == nil {
-			logger.Error("Telegram delivery pass failed", "error", runErr)
-		} else if processed > 0 {
-			logger.Info("Telegram delivery pass completed", "processed", processed)
+		result, runErr := sender.RunWake(ctx, wakeQueue)
+		if errors.Is(runErr, sqsqueue.ErrNoMessage) {
+			continue
 		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
+		if runErr != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			logger.Error("Telegram delivery wake failed", "error", runErr)
+			if !waitForRetry(ctx, time.Second) {
+				return
+			}
+			continue
 		}
+		logger.Info("Telegram delivery wake completed", "outcome", result.Outcome, "code", result.Code)
+	}
+}
+
+func waitForRetry(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
 	}
 }
 

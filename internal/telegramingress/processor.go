@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/outboxwake"
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
 
@@ -29,9 +30,12 @@ type FileFetcher interface {
 }
 
 type ProcessorConfig struct {
-	SourceID             string
-	Provider             string
-	IdempotencyRetention time.Duration
+	SourceID              string
+	Provider              string
+	IdempotencyRetention  time.Duration
+	DispatchWakePublisher ports.DispatchWakePublisher
+	DeliveryWakePublisher ports.TelegramDeliveryWakePublisher
+	WakePublishError      func(error)
 }
 
 type Processor struct {
@@ -62,7 +66,8 @@ func NewProcessor(
 	if config.IdempotencyRetention <= 0 {
 		config.IdempotencyRetention = 30 * 24 * time.Hour
 	}
-	if identity == nil || ids == nil || clock == nil || blobs == nil || store == nil {
+	if identity == nil || ids == nil || clock == nil || blobs == nil || store == nil ||
+		config.DispatchWakePublisher == nil || config.DeliveryWakePublisher == nil {
 		return nil, errors.New("Telegram processor dependencies must not be nil")
 	}
 	return &Processor{
@@ -138,13 +143,8 @@ func (processor *Processor) Process(
 		if err != nil {
 			return ports.TelegramIngressResult{}, err
 		}
-		deliveryID, err := newTypedID[domain.TelegramDeliveryID](
-			ctx, processor.ids, ports.IDTelegramDelivery,
-		)
-		if err != nil {
-			return ports.TelegramIngressResult{}, err
-		}
-		return processor.store.ExecuteTelegramCommand(ctx, ports.TelegramCommandRequest{
+		deliveryID := outboxwake.TelegramDeliveryID(runID)
+		result, err := processor.store.ExecuteTelegramCommand(ctx, ports.TelegramCommandRequest{
 			TenantID: identity.Tenant, SourceID: processor.config.SourceID,
 			UpdateID: update.UpdateID, ExpireAt: now.Add(processor.config.IdempotencyRetention),
 			Kind: command, Provider: provider,
@@ -160,6 +160,15 @@ func (processor *Processor) Process(
 			IdempotencyKey:   idempotencyKey,
 			RequestedAt:      now,
 		})
+		if err != nil {
+			return ports.TelegramIngressResult{}, err
+		}
+		if err := processor.config.DeliveryWakePublisher.PublishTelegramDeliveryWake(
+			ctx, identity.Tenant, outboxwake.TelegramDeliveryID(result.RunID), now,
+		); err != nil {
+			processor.reportWakePublishError(err)
+		}
+		return result, nil
 	}
 
 	runID, err := newTypedID[domain.RunID](ctx, processor.ids, ports.IDRun)
@@ -174,10 +183,7 @@ func (processor *Processor) Process(
 	if err != nil {
 		return ports.TelegramIngressResult{}, err
 	}
-	dispatchID, err := newTypedID[domain.DispatchOutboxID](ctx, processor.ids, ports.IDDispatchOutbox)
-	if err != nil {
-		return ports.TelegramIngressResult{}, err
-	}
+	dispatchID := outboxwake.DispatchOutboxID(runID)
 
 	normalized := normalizedMessage{
 		Frontend: "telegram", UpdateID: update.UpdateID, MessageID: message.MessageID,
@@ -228,11 +234,26 @@ func (processor *Processor) Process(
 		Status:           domain.DispatchPending, IdempotencyKey: idempotencyKey,
 		CreatedAt: now, UpdatedAt: now,
 	}
-	return processor.store.IngestTelegram(ctx, ports.TelegramIngress{
+	result, err := processor.store.IngestTelegram(ctx, ports.TelegramIngress{
 		TenantID: identity.Tenant, SourceID: processor.config.SourceID,
 		UpdateID: update.UpdateID, ExpireAt: now.Add(processor.config.IdempotencyRetention),
 		Run: run, Attempt: attempt, InputManifest: manifest, Dispatch: dispatch,
 	})
+	if err != nil {
+		return ports.TelegramIngressResult{}, err
+	}
+	if err := processor.config.DispatchWakePublisher.PublishDispatchWake(
+		ctx, identity.Tenant, outboxwake.DispatchOutboxID(result.RunID), now,
+	); err != nil {
+		processor.reportWakePublishError(err)
+	}
+	return result, nil
+}
+
+func (processor *Processor) reportWakePublishError(err error) {
+	if processor.config.WakePublishError != nil {
+		processor.config.WakePublishError(err)
+	}
 }
 
 // Telegram updates keep a stable trigger identity until SESSION-03 persists

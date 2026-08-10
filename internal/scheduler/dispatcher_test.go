@@ -7,7 +7,9 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/outboxwake"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/queuecontract"
 	"gitcode.com/urandon/sessionless/internal/testkit"
 	"gitcode.com/urandon/sessionless/internal/ydbpartition"
 )
@@ -18,6 +20,21 @@ type memorySchedulerStore struct {
 	acked      []domain.DispatchOutboxID
 	expired    map[uint32][]ports.ExpiredQuotaReservation
 	expireSeen []domain.QuotaReservationID
+}
+
+func (store *memorySchedulerStore) GetDispatch(
+	_ context.Context,
+	tenantID domain.TenantID,
+	outboxID domain.DispatchOutboxID,
+) (ports.DispatchReady, domain.DispatchStatus, bool, error) {
+	for _, candidates := range store.ready {
+		for _, candidate := range candidates {
+			if candidate.TenantID == tenantID && candidate.OutboxID == outboxID {
+				return candidate, domain.DispatchPending, true, nil
+			}
+		}
+	}
+	return ports.DispatchReady{}, "", false, nil
 }
 
 func (store *memorySchedulerStore) ListReadyDispatches(
@@ -145,6 +162,135 @@ func TestDispatcherPublishesOnlyAdmittedRunsAndExpiresReservations(t *testing.T)
 	}
 	if len(store.expireSeen) != 1 || store.expireSeen[0] != "reservation-expired" {
 		t.Fatalf("expired = %#v", store.expireSeen)
+	}
+}
+
+func TestDispatcherWakeUsesPointLookupAndAcknowledgesDuplicate(t *testing.T) {
+	now := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	candidate := ports.DispatchReady{
+		TenantID: "tenant-1", OutboxID: "dispatch-1",
+		RunID: "run-1", AttemptID: "attempt-1",
+	}
+	store := &memorySchedulerStore{
+		ready: map[uint32][]ports.DispatchReady{0: {candidate}},
+		decisions: map[domain.DispatchOutboxID]ports.DispatchAdmissionResult{
+			candidate.OutboxID: {Admitted: true, Code: "admitted"},
+		},
+	}
+	dispatchQueue := testkit.NewMemoryQueue()
+	dispatcher, err := NewDispatcher(Config{
+		Limits:          testLimits(),
+		DefaultWorkload: domain.WorkloadShape{Runtime: time.Minute, Turns: 1},
+	}, testkit.NewFakeClock(now), store, dispatchQueue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wakeQueue := testkit.NewMemoryQueue()
+	publisher, err := outboxwake.NewPublisher(wakeQueue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := publisher.PublishDispatchWake(
+		context.Background(), candidate.TenantID, candidate.OutboxID, now,
+	); err != nil {
+		t.Fatal(err)
+	}
+	result, err := dispatcher.RunWake(context.Background(), wakeQueue)
+	if err != nil || result.Outcome != "published" {
+		t.Fatalf("wake result = %#v, %v", result, err)
+	}
+	if len(store.acked) != 1 || store.acked[0] != candidate.OutboxID {
+		t.Fatalf("acked = %#v", store.acked)
+	}
+
+	missingQueue := testkit.NewMemoryQueue()
+	missingPublisher, _ := outboxwake.NewPublisher(missingQueue)
+	if err := missingPublisher.PublishDispatchWake(
+		context.Background(), candidate.TenantID, "dispatch-missing", now,
+	); err != nil {
+		t.Fatal(err)
+	}
+	result, err = dispatcher.RunWake(context.Background(), missingQueue)
+	if err != nil || result.Outcome != "noop" {
+		t.Fatalf("duplicate result = %#v, %v", result, err)
+	}
+}
+
+func TestDispatcherWakeParksPersistentlyBlockedOutboxAfterBoundedRetries(t *testing.T) {
+	now := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	candidate := ports.DispatchReady{
+		TenantID: "tenant-1", OutboxID: "dispatch-1",
+		RunID: "run-1", AttemptID: "attempt-1",
+	}
+	store := &memorySchedulerStore{
+		ready: map[uint32][]ports.DispatchReady{0: {candidate}},
+		decisions: map[domain.DispatchOutboxID]ports.DispatchAdmissionResult{
+			candidate.OutboxID: {
+				State: domain.SchedulerReauthRequired,
+				Code:  "subscription_reauthentication_required",
+			},
+		},
+	}
+	dispatcher, err := NewDispatcher(Config{
+		WakeRetryDelay:       time.Millisecond,
+		MaxWakeDeliveryCount: 3,
+		Limits:               testLimits(),
+		DefaultWorkload:      domain.WorkloadShape{Runtime: time.Minute, Turns: 1},
+	}, testkit.NewFakeClock(now), store, testkit.NewMemoryQueue())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wakeQueue := testkit.NewMemoryQueue()
+	publisher, err := outboxwake.NewPublisher(wakeQueue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := publisher.PublishDispatchWake(
+		context.Background(), candidate.TenantID, candidate.OutboxID, now,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	for delivery := 1; delivery <= 3; delivery++ {
+		result, runErr := dispatcher.RunWake(context.Background(), wakeQueue)
+		if runErr != nil {
+			t.Fatal(runErr)
+		}
+		wantOutcome := "retry"
+		if delivery == 3 {
+			wantOutcome = "parked"
+		}
+		if result.Outcome != wantOutcome || result.Code != "subscription_reauthentication_required" {
+			t.Fatalf("delivery %d result = %#v, want outcome %q", delivery, result, wantOutcome)
+		}
+	}
+	if _, err := wakeQueue.Receive(context.Background()); err == nil {
+		t.Fatal("parked wake remained queued after the retry budget")
+	}
+}
+
+func TestDispatcherWakeDeadLettersUnexpectedEnvelopeKind(t *testing.T) {
+	now := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	dispatcher, err := NewDispatcher(Config{
+		Limits:          testLimits(),
+		DefaultWorkload: domain.WorkloadShape{Runtime: time.Minute, Turns: 1},
+	}, testkit.NewFakeClock(now), &memorySchedulerStore{}, testkit.NewMemoryQueue())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wakeQueue := testkit.NewMemoryQueue()
+	if err := wakeQueue.Publish(context.Background(), queuecontract.Envelope{
+		Schema: queuecontract.SchemaV1, MessageID: "msg-unexpected",
+		Kind: queuecontract.KindWakeTelegram, TenantID: "tenant-1",
+		SubjectID: "delivery-1", EnqueuedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dispatcher.RunWake(context.Background(), wakeQueue); err != nil {
+		t.Fatal(err)
+	}
+	if wakeQueue.DeadLetterCount() != 1 {
+		t.Fatalf("dead letters = %d, want 1", wakeQueue.DeadLetterCount())
 	}
 }
 

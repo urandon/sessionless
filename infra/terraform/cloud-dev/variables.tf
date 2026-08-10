@@ -91,11 +91,11 @@ variable "worker_timeout" {
 }
 variable "reconciler_cron" {
   type    = string
-  default = "* * * * ? *"
+  default = "0 */6 * * ? *"
 }
 variable "telegram_sender_cron" {
   type    = string
-  default = "* * * * ? *"
+  default = "0 */6 * * ? *"
 }
 variable "labels" {
   type    = map(string)

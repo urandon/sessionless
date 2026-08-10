@@ -15,6 +15,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/deterministicharness"
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/outboxwake"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/queuecontract"
 	"gitcode.com/urandon/sessionless/internal/testkit"
@@ -42,7 +43,7 @@ func TestWorkerCompletesOnceAndCleansReusedScratch(t *testing.T) {
 	scratch := t.TempDir()
 	manager, err := worker.New(worker.Config{
 		ScratchRoot: scratch, WorkerID: "worker-test",
-		LeaseTTL: time.Minute,
+		LeaseTTL: time.Minute, DeliveryWakePublisher: newDeliveryWakePublisher(t),
 	}, clock, queue, state, blobs, harness)
 	if err != nil {
 		t.Fatal(err)
@@ -99,6 +100,7 @@ func TestWorkerRejectsTraversalAndCrossTenantReferences(t *testing.T) {
 		scratch := t.TempDir()
 		manager, err := worker.New(worker.Config{
 			ScratchRoot: scratch, WorkerID: "worker-test",
+			DeliveryWakePublisher: newDeliveryWakePublisher(t),
 		}, clock, queue, state, blobs, harness)
 		if err != nil {
 			t.Fatal(err)
@@ -131,9 +133,10 @@ func TestWorkerResumesAfterRetryableFailureAndDeduplicatesDelivery(t *testing.T)
 	var retryCause error
 	manager, err := worker.New(worker.Config{
 		ScratchRoot: t.TempDir(), WorkerID: "worker-test",
-		RetryDelay:       time.Millisecond,
-		RetryObserver:    func(cause error) { retryCause = cause },
-		MaxDeliveryCount: 3,
+		RetryDelay:            time.Millisecond,
+		RetryObserver:         func(cause error) { retryCause = cause },
+		MaxDeliveryCount:      3,
+		DeliveryWakePublisher: newDeliveryWakePublisher(t),
 	}, clock, queue, state, blobs, harness)
 	if err != nil {
 		t.Fatal(err)
@@ -177,6 +180,7 @@ func TestWorkerPersistsDurableCancellation(t *testing.T) {
 	harness, _ := deterministicharness.New(deterministicharness.Config{})
 	manager, err := worker.New(worker.Config{
 		ScratchRoot: t.TempDir(), WorkerID: "worker-test",
+		DeliveryWakePublisher: newDeliveryWakePublisher(t),
 	}, clock, queue, state, blobs, harness)
 	if err != nil {
 		t.Fatal(err)
@@ -205,6 +209,7 @@ func TestWorkerRenewsLeaseAtDurableBoundary(t *testing.T) {
 	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
 	manager, err := worker.New(worker.Config{
 		ScratchRoot: t.TempDir(), WorkerID: "worker-test", LeaseTTL: time.Minute,
+		DeliveryWakePublisher: newDeliveryWakePublisher(t),
 	}, clock, queue, state, blobs, advancingHarness{clock: clock})
 	if err != nil {
 		t.Fatal(err)
@@ -232,6 +237,7 @@ func TestWorkerEnforcesRuntimeLimitAndCancelsHarness(t *testing.T) {
 	harness := &blockingHarness{}
 	manager, err := worker.New(worker.Config{
 		ScratchRoot: t.TempDir(), WorkerID: "worker-test",
+		DeliveryWakePublisher: newDeliveryWakePublisher(t),
 	}, clock, queue, state, blobs, harness)
 	if err != nil {
 		t.Fatal(err)
@@ -247,6 +253,15 @@ func TestWorkerEnforcesRuntimeLimitAndCancelsHarness(t *testing.T) {
 			harness.cancelCalls, state.failures, state.deliveries,
 		)
 	}
+}
+
+func newDeliveryWakePublisher(t *testing.T) ports.TelegramDeliveryWakePublisher {
+	t.Helper()
+	publisher, err := outboxwake.NewPublisher(testkit.NewMemoryQueue())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return publisher
 }
 
 func workerFixture(

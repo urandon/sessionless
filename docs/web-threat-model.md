@@ -2,9 +2,9 @@
 
 ## Scope and assets
 
-This model covers the future same-origin WebUI, Go BFF, Telegram OIDC callback,
-YDB auth records, canonical-session API, and direct-to-Object-Storage upload
-flow. Telegram message ingress, worker sandbox escape, provider-subscription
+This model covers the implemented Go BFF, Telegram OIDC callback, and YDB auth
+records, plus the planned same-origin WebUI, canonical-session API, and
+direct-to-Object-Storage upload flow. Telegram message ingress, worker sandbox escape, provider-subscription
 automation, and general tenant administration are covered by their own tracks.
 
 Protected assets are tenant memberships, canonical sessions/events, uploaded

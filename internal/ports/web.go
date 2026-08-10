@@ -56,6 +56,7 @@ type WebAuthorization struct {
 // single serializable operations. Selectors supplied by a browser never bypass
 // the membership lookup performed by AuthorizeWebSession or SwitchTenant.
 type WebAuthStore interface {
+	RecordWebSecurityEvent(ctx context.Context, event domain.WebSecurityAuditEvent) error
 	CreateLoginChallenge(ctx context.Context, challenge domain.OIDCLoginChallenge) error
 	ConsumeLoginChallenge(
 		ctx context.Context,

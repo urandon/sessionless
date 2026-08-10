@@ -46,6 +46,13 @@ a production adapter.
 | `session_participants` | `(tenant_id, session_id, user_id)` | tenant entity | membership is behind a random session prefix |
 | `session_snapshots` | `(tenant_id, session_id, version)` | per-session ordered | version grows only behind a random session prefix |
 | `session_activity` | `(tenant_id, user_id, status, activity_bucket, updated_at, session_id)` | append-heavy | fixed 16-way per-user fan-out avoids one chronological write edge |
+| `external_identities` | `(shard_bucket, provider, subject)` | global entity | a stable subject hash provides distributed point lookup without trusting provider ordering |
+| `external_identities_by_user` | `(user_bucket, user_id, provider, subject)` | global entity | a stable internal-user hash bounds reverse lookup |
+| `tenant_memberships` | `(user_bucket, user_id, tenant_id)` | global entity | membership listing stays behind a distributed internal-user prefix |
+| `tenant_invitations` | `(tenant_id, invitation_id)` | tenant entity | random invitation ID and point consumption |
+| `oidc_login_challenges` | `(shard_bucket, state_digest)` | global entity | random state digest distributes pre-authentication writes |
+| `web_sessions` | `(shard_bucket, session_digest)` | global entity | random opaque-session digest distributes authorization reads |
+| `development_bootstrap_grants` | `(tenant_id, user_id)` | tenant entity | low-volume, point-addressable operator ledger |
 | `telegram_updates` | `(tenant_id, source_id, update_id)` | append-heavy | update sequence is behind tenant; load splitting enabled |
 | `subscription_connections` | `(tenant_id, subscription_connection_id)` | tenant entity | low-cardinality point access |
 | `subscription_scheduler_slots` | `(tenant_id, subscription_connection_id)` | tenant entity | one point-contention row per subscription; load splitting enabled |
@@ -64,6 +71,7 @@ a production adapter.
 | `dispatch_outbox` | `(tenant_id, dispatch_outbox_id)` | tenant entity | random outbox ID; load splitting enabled |
 | `telegram_delivery_outbox` | `(tenant_id, telegram_delivery_id)` | tenant entity | random delivery ID; load splitting enabled |
 | `audit_events` | `(tenant_id, occurred_at, audit_event_id)` | append-heavy | time is behind tenant; elephant-tenant throughput is a cloud gate |
+| `web_security_audit_events` | `(shard_bucket, occurred_at, request_id)` | append-heavy | request hashes spread pre-auth events that have no resolved tenant; bounded time reads fan out across 16 buckets |
 | `lease_expiry` | `(shard_bucket, expires_at, tenant_id, run_id)` in `lease_expiry_v2` | global expiry | bounded 16-bucket time traversal |
 | `dispatch_ready` | `(shard_bucket, available_at, tenant_id, dispatch_outbox_id)` in `dispatch_ready_v2` | global ready | bounded 16-bucket time traversal |
 | `telegram_delivery_ready` | `(shard_bucket, available_at, tenant_id, telegram_delivery_id)` in `telegram_delivery_ready_v2` | global ready | bounded 16-bucket time traversal |
@@ -105,7 +113,7 @@ make partition-status
 
 `schema-inspect` emits machine-readable JSON containing the expected and actual
 primary keys, auto-partition settings, current partition count, row estimate,
-and contract violations for all 32 logical tables. It exits non-zero when a
+and contract violations for every registered logical table. It exits non-zero when a
 primary key differs or required automatic size/load partitioning is disabled.
 Minimum, maximum, target size, and current partition count remain telemetry;
 their exact values are capacity tuning, not an application schema invariant.

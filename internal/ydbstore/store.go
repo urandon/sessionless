@@ -20,6 +20,7 @@ import (
 const (
 	defaultIdempotencyRetention  = 30 * 24 * time.Hour
 	defaultOperationalRetention  = 90 * 24 * time.Hour
+	defaultWebSessionIdleTTL     = 12 * time.Hour
 	telegramDeliveryClaimTimeout = 2 * time.Minute
 )
 
@@ -28,12 +29,14 @@ var ErrIdempotencyConflict = errors.New("idempotency key already belongs to anot
 type Options struct {
 	IdempotencyRetention time.Duration
 	OperationalRetention time.Duration
+	WebSessionIdleTTL    time.Duration
 }
 
 type Store struct {
 	db                   *sql.DB
 	idempotencyRetention time.Duration
 	operationalRetention time.Duration
+	webSessionIdleTTL    time.Duration
 }
 
 func New(db *sql.DB, options Options) (*Store, error) {
@@ -46,10 +49,14 @@ func New(db *sql.DB, options Options) (*Store, error) {
 	if options.OperationalRetention <= 0 {
 		options.OperationalRetention = defaultOperationalRetention
 	}
+	if options.WebSessionIdleTTL <= 0 {
+		options.WebSessionIdleTTL = defaultWebSessionIdleTTL
+	}
 	return &Store{
 		db:                   db,
 		idempotencyRetention: options.IdempotencyRetention,
 		operationalRetention: options.OperationalRetention,
+		webSessionIdleTTL:    options.WebSessionIdleTTL,
 	}, nil
 }
 

@@ -5,7 +5,7 @@ BIN_DIR := .build/bin
 GO_CACHE_DIR := $(CURDIR)/.build/cache/go-build
 GO_MOD_CACHE_DIR := $(CURDIR)/.build/cache/go-mod
 GO_TMP_DIR := $(CURDIR)/.build/tmp
-COMPONENTS := control-api reconciler telegram-sender telegram-fake worker-runtime schema-migrate schema-inspect schema-backfill preprod-reset deployment-lock
+COMPONENTS := control-api web-bff reconciler telegram-sender telegram-fake oidc-fake worker-runtime schema-migrate schema-inspect schema-backfill preprod-reset deployment-lock web-bootstrap
 VERSION ?= dev
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || printf unknown)
 BUILT_AT ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -20,7 +20,7 @@ LDFLAGS := -s -w \
 
 .PHONY: help prepare tools generate fmt fmt-check lint test build integration ydb-integration local-integration e2e-local ci terraform-ci \
 	compose-config images dev-up dev-seed migrate-local migration-status partition-status partition-backfill cloud-app-reset-plan cloud-app-reset \
-	worker-once dev-down dev-reset clean
+	worker-once web-bootstrap dev-down dev-reset clean
 
 help:
 	@printf '%s\n' \
@@ -43,6 +43,7 @@ help:
 		'make cloud-app-reset-plan inspect the exact guarded cloud-dev reset target' \
 		'make cloud-app-reset execute the typed-confirmed cloud-dev application reset' \
 		'make worker-once    consume at most one admitted run with the deterministic harness' \
+		'make web-bootstrap  create an audited, confirmed cloud-dev Web membership' \
 		'make dev-down       stop the local stack' \
 		'make dev-reset      guarded deletion of local Compose volumes'
 
@@ -103,6 +104,7 @@ compose-config:
 
 images:
 	docker build --build-arg TARGET=control-api -f build/control.Dockerfile -t sessionless/control-api:dev .
+	docker build --build-arg TARGET=web-bff -f build/control.Dockerfile -t sessionless/web-bff:dev .
 	docker build --build-arg TARGET=reconciler -f build/control.Dockerfile -t sessionless/reconciler:dev .
 	docker build --build-arg TARGET=telegram-sender -f build/control.Dockerfile -t sessionless/telegram-sender:dev .
 	docker build -f build/worker-runtime.Dockerfile -t sessionless/worker-runtime:dev .
@@ -133,6 +135,9 @@ cloud-app-reset: prepare
 
 worker-once:
 	docker compose --project-name sessionless-dev --profile worker run --rm worker-runtime
+
+web-bootstrap: prepare
+	go run ./cmd/web-bootstrap
 
 dev-down:
 	docker compose --project-name sessionless-dev down --remove-orphans

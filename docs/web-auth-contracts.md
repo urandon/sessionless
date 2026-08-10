@@ -1,8 +1,8 @@
 # Web authentication and API contracts
 
-This document freezes the WEB-01 contracts. It is an implementation input for
-WEB-02 and WEB-03; it does not claim that the Web BFF, YDB auth tables, or
-browser application already exist.
+This document freezes the WEB-01 contracts. WEB-02 now implements the Go BFF,
+Telegram OIDC adapter, YDB auth tables, and operator bootstrap described here.
+The canonical resource API and browser application remain WEB-03 and WEB-04.
 
 The WebUI is a projection over canonical Sessionless sessions and events.
 Telegram is the first identity provider for the WebUI, but Telegram chats,
@@ -121,8 +121,8 @@ expiry, role, and optional provider/subject restriction. Consumption and
 membership creation are one serializable transaction; expiry, subject mismatch,
 replay, and competing consumption fail closed.
 
-The development bootstrap exists only for `cloud-dev`. WEB-02 must expose it as
-an operator-only binary or Make-backed target with these requirements:
+The development bootstrap exists only for `cloud-dev`. `make web-bootstrap`
+exposes it as an operator-only command with these requirements:
 
 - use the normal YDB metadata/environment credential chain; never accept a YDB
   IAM token, invitation secret, or service-account key on the command line;

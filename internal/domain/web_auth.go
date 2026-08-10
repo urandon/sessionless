@@ -461,6 +461,72 @@ type OIDCIdentityClaims struct {
 	ExpiresAt time.Time
 }
 
+type WebSecurityAuditAction string
+
+const (
+	WebSecurityLoginFailed  WebSecurityAuditAction = "web.login.failed"
+	WebSecurityCSRFRejected WebSecurityAuditAction = "web.csrf.rejected"
+)
+
+// WebSecurityAuditEvent is the redacted, durable record for authentication
+// failures that do not necessarily have a tenant-scoped audit destination.
+// SubjectFingerprint is a one-way digest of the verified provider subject;
+// raw claims and browser credentials never cross this boundary.
+type WebSecurityAuditEvent struct {
+	RequestID                 string                 `json:"request_id"`
+	Action                    WebSecurityAuditAction `json:"action"`
+	Provider                  IdentityProvider       `json:"provider"`
+	SubjectFingerprint        SecretDigest           `json:"subject_fingerprint,omitempty"`
+	TenantID                  TenantID               `json:"tenant_id,omitempty"`
+	UserID                    UserID                 `json:"user_id,omitempty"`
+	MembershipSecurityVersion uint64                 `json:"membership_security_version,omitempty"`
+	ReasonCode                string                 `json:"reason_code"`
+	OccurredAt                time.Time              `json:"occurred_at"`
+}
+
+func (event WebSecurityAuditEvent) Validate() error {
+	if err := ValidateOpaqueID("web_security_audit.request_id", event.RequestID); err != nil {
+		return err
+	}
+	switch event.Action {
+	case WebSecurityLoginFailed, WebSecurityCSRFRejected:
+	default:
+		return ValidationError{Field: "web_security_audit.action", Reason: "is unknown"}
+	}
+	if err := event.Provider.Validate(); err != nil {
+		return err
+	}
+	if event.SubjectFingerprint != "" {
+		if err := event.SubjectFingerprint.Validate("web_security_audit.subject_fingerprint"); err != nil {
+			return err
+		}
+	}
+	if event.TenantID != "" {
+		if err := event.TenantID.Validate(); err != nil {
+			return err
+		}
+	}
+	if event.UserID != "" {
+		if err := event.UserID.Validate(); err != nil {
+			return err
+		}
+	}
+	if event.MembershipSecurityVersion > 0 && (event.TenantID == "" || event.UserID == "") {
+		return ValidationError{Field: "web_security_audit.membership_security_version", Reason: "requires tenant and user"}
+	}
+	if err := ValidateOpaqueID("web_security_audit.reason_code", event.ReasonCode); err != nil {
+		return err
+	}
+	if event.OccurredAt.IsZero() {
+		return ValidationError{Field: "web_security_audit.occurred_at", Reason: "must not be zero"}
+	}
+	if event.Action == WebSecurityCSRFRejected &&
+		(event.TenantID == "" || event.UserID == "" || event.MembershipSecurityVersion == 0) {
+		return ValidationError{Field: "web_security_audit.csrf", Reason: "requires authorized tenant, user, and membership version"}
+	}
+	return nil
+}
+
 // Verify checks claims only after an OIDC adapter has verified the JWT
 // signature against a bounded JWKS cache and an allowed algorithm.
 func (claims OIDCIdentityClaims) Verify(policy OIDCVerificationPolicy, expectedNonce string, now time.Time) error {

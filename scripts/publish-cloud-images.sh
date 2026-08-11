@@ -83,8 +83,14 @@ for name in control-api reconciler telegram-sender worker-runtime; do
   fi
 
   : >"$inspect_error"
-  if remote_manifest=$(docker buildx imagetools inspect "$tagged_reference" --format '{{json .Manifest}}' 2>"$inspect_error"); then
-    existing_digest=$(printf '%s' "$remote_manifest" | jq -er '.digest // .Digest')
+  if remote_descriptor=$(docker buildx imagetools inspect "$tagged_reference" --format '{{json .Manifest}}' 2>"$inspect_error"); then
+    if ! remote_manifest=$(docker buildx imagetools inspect "$tagged_reference" --raw 2>>"$inspect_error"); then
+      printf 'could not inspect the raw registry manifest for %s:\n' "$tagged_reference" >&2
+      cat "$inspect_error" >&2
+      rm -f "$inspect_error"
+      exit 1
+    fi
+    existing_digest=$(printf '%s' "$remote_descriptor" | jq -er '.digest // .Digest')
     existing_config_digest=$(printf '%s' "$remote_manifest" | jq -er '.config.digest // .Config.digest')
     if ! printf '%s' "$existing_digest" | jq -Re 'test("^sha256:[0-9a-f]{64}$")' >/dev/null ||
       ! printf '%s' "$existing_config_digest" | jq -Re 'test("^sha256:[0-9a-f]{64}$")' >/dev/null; then
@@ -114,8 +120,9 @@ for name in control-api reconciler telegram-sender worker-runtime; do
   fi
   rm -f "$inspect_error"
 
-  remote_manifest=$(docker buildx imagetools inspect "$tagged_reference" --format '{{json .Manifest}}')
-  digest=$(printf '%s' "$remote_manifest" | jq -er '.digest // .Digest')
+  remote_descriptor=$(docker buildx imagetools inspect "$tagged_reference" --format '{{json .Manifest}}')
+  remote_manifest=$(docker buildx imagetools inspect "$tagged_reference" --raw)
+  digest=$(printf '%s' "$remote_descriptor" | jq -er '.digest // .Digest')
   remote_config_digest=$(printf '%s' "$remote_manifest" | jq -er '.config.digest // .Config.digest')
   if ! printf '%s' "$digest" | jq -Re 'test("^sha256:[0-9a-f]{64}$")' >/dev/null; then
     printf 'registry returned a non-SHA-256 digest for %s\n' "$name" >&2

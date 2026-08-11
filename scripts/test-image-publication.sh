@@ -50,17 +50,14 @@ if test "$1" = buildx && test "$2" = imagetools && test "$3" = inspect; then
   key=$(printf '%s' "$reference" | tr '/:' '__')
   case "$FAKE_REMOTE_MODE" in
     same)
-      jq -n --arg digest "$FAKE_REMOTE_MANIFEST_DIGEST" --arg config "$FAKE_CANDIDATE_CONFIG_DIGEST" \
-        '{digest: $digest, config: {digest: $config}}'
+      config_digest=$FAKE_CANDIDATE_CONFIG_DIGEST
       ;;
     mismatch)
-      jq -n --arg digest "$FAKE_REMOTE_MANIFEST_DIGEST" --arg config "$FAKE_CONFLICTING_CONFIG_DIGEST" \
-        '{digest: $digest, config: {digest: $config}}'
+      config_digest=$FAKE_CONFLICTING_CONFIG_DIGEST
       ;;
     absent)
       if test -f "$FAKE_DOCKER_STATE/$key"; then
-        jq -n --arg digest "$FAKE_REMOTE_MANIFEST_DIGEST" --arg config "$FAKE_CANDIDATE_CONFIG_DIGEST" \
-          '{digest: $digest, config: {digest: $config}}'
+        config_digest=$FAKE_CANDIDATE_CONFIG_DIGEST
       else
         printf '%s\n' 'manifest unknown' >&2
         exit 1
@@ -72,6 +69,18 @@ if test "$1" = buildx && test "$2" = imagetools && test "$3" = inspect; then
       ;;
     *)
       printf 'unsupported FAKE_REMOTE_MODE: %s\n' "$FAKE_REMOTE_MODE" >&2
+      exit 2
+      ;;
+  esac
+  case "${5:-}" in
+    --format)
+      jq -n --arg digest "$FAKE_REMOTE_MANIFEST_DIGEST" '{digest: $digest}'
+      ;;
+    --raw)
+      jq -n --arg config "$config_digest" '{config: {digest: $config}}'
+      ;;
+    *)
+      printf 'unsupported imagetools inspect arguments: %s\n' "$*" >&2
       exit 2
       ;;
   esac
@@ -138,6 +147,10 @@ fi
 run_publish same >/dev/null
 if grep -q '^push ' "$fake_log"; then
   printf '%s\n' 'publisher pushed an already matching commit tag' >&2
+  exit 1
+fi
+if ! grep -q -- ' --raw$' "$fake_log"; then
+  printf '%s\n' 'publisher did not read the raw registry manifest for config identity' >&2
   exit 1
 fi
 

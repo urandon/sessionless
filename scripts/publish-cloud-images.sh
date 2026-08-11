@@ -50,7 +50,8 @@ jq -n \
 
 for name in control-api reconciler telegram-sender worker-runtime; do
   local_image="sessionless/${name}:dev"
-  tagged_reference="cr.yandex/${YANDEX_CONTAINER_REGISTRY_ID}/${name}:${CLOUD_IMAGE_TAG}"
+  registry_repository="cr.yandex/${YANDEX_CONTAINER_REGISTRY_ID}/${name}"
+  tagged_reference="${registry_repository}:${CLOUD_IMAGE_TAG}"
   metadata_file="$metadata_dir/$name.json"
   source_file="$metadata_dir/$name.source-sha"
 
@@ -83,11 +84,21 @@ for name in control-api reconciler telegram-sender worker-runtime; do
   fi
 
   : >"$inspect_error"
-  if remote_manifest=$(docker buildx imagetools inspect "$tagged_reference" --format '{{json .Manifest}}' 2>"$inspect_error"); then
-    existing_digest=$(printf '%s' "$remote_manifest" | jq -er '.digest // .Digest')
+  if remote_descriptor=$(docker buildx imagetools inspect "$tagged_reference" --format '{{json .Manifest}}' 2>"$inspect_error"); then
+    existing_digest=$(printf '%s' "$remote_descriptor" | jq -er '.digest // .Digest')
+    if ! printf '%s' "$existing_digest" | jq -Re 'test("^sha256:[0-9a-f]{64}$")' >/dev/null; then
+      printf 'registry returned invalid manifest identity for %s\n' "$name" >&2
+      exit 1
+    fi
+    existing_reference="${registry_repository}@${existing_digest}"
+    if ! remote_manifest=$(docker buildx imagetools inspect "$existing_reference" --raw 2>>"$inspect_error"); then
+      printf 'could not inspect the raw registry manifest for %s:\n' "$existing_reference" >&2
+      cat "$inspect_error" >&2
+      rm -f "$inspect_error"
+      exit 1
+    fi
     existing_config_digest=$(printf '%s' "$remote_manifest" | jq -er '.config.digest // .Config.digest')
-    if ! printf '%s' "$existing_digest" | jq -Re 'test("^sha256:[0-9a-f]{64}$")' >/dev/null ||
-      ! printf '%s' "$existing_config_digest" | jq -Re 'test("^sha256:[0-9a-f]{64}$")' >/dev/null; then
+    if ! printf '%s' "$existing_config_digest" | jq -Re 'test("^sha256:[0-9a-f]{64}$")' >/dev/null; then
       printf 'registry returned invalid manifest identity for %s\n' "$name" >&2
       exit 1
     fi
@@ -114,13 +125,15 @@ for name in control-api reconciler telegram-sender worker-runtime; do
   fi
   rm -f "$inspect_error"
 
-  remote_manifest=$(docker buildx imagetools inspect "$tagged_reference" --format '{{json .Manifest}}')
-  digest=$(printf '%s' "$remote_manifest" | jq -er '.digest // .Digest')
-  remote_config_digest=$(printf '%s' "$remote_manifest" | jq -er '.config.digest // .Config.digest')
+  remote_descriptor=$(docker buildx imagetools inspect "$tagged_reference" --format '{{json .Manifest}}')
+  digest=$(printf '%s' "$remote_descriptor" | jq -er '.digest // .Digest')
   if ! printf '%s' "$digest" | jq -Re 'test("^sha256:[0-9a-f]{64}$")' >/dev/null; then
     printf 'registry returned a non-SHA-256 digest for %s\n' "$name" >&2
     exit 1
   fi
+  immutable_reference="${registry_repository}@${digest}"
+  remote_manifest=$(docker buildx imagetools inspect "$immutable_reference" --raw)
+  remote_config_digest=$(printf '%s' "$remote_manifest" | jq -er '.config.digest // .Config.digest')
   if ! printf '%s' "$remote_config_digest" | jq -Re 'test("^sha256:[0-9a-f]{64}$")' >/dev/null; then
     printf 'registry returned a non-SHA-256 config digest for %s\n' "$name" >&2
     exit 1
@@ -130,8 +143,6 @@ for name in control-api reconciler telegram-sender worker-runtime; do
       "$name" "$candidate_config_digest" "$remote_config_digest" >&2
     exit 1
   fi
-  immutable_reference="cr.yandex/${YANDEX_CONTAINER_REGISTRY_ID}/${name}@${digest}"
-
   jq \
     --arg name "$name" \
     --arg tagged_reference "$tagged_reference" \

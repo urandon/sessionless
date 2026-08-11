@@ -362,13 +362,16 @@ CLOUD_IMAGE_TAG="$(git rev-parse HEAD)" ./scripts/cloud-images.sh
 
 The fallback uses the same deterministic build metadata, platform checks,
 registry push, and manifest format as CI. It refuses a source SHA other than the
-checked-out commit. Before publishing, both paths compare Buildx's candidate
-manifest digest with any existing commit tag: an exact match is a no-op and a
-different digest fails before push. The final remote digest is verified again
-after a first publication. Same-ref GitHub image jobs are serialized to close
-the CI race window. Yandex Serverless Containers runs AMD64 only; publishing a
-native Apple Silicon image creates a valid registry object but revision
-deployment cannot use it.
+checked-out commit. Before publishing, both paths compare the local image config
+digest with the config digest behind any existing commit tag: an exact content
+match is a no-op and a different config fails before push. This deliberately
+does not compare Buildx's load/export manifest digest with the registry manifest
+digest because Docker can normalize the outer manifest during push. The final
+remote config digest is verified again after a first publication, while the
+registry's canonical manifest digest is recorded in the deployment reference.
+Same-ref GitHub image jobs are serialized to close the CI race window. Yandex
+Serverless Containers runs AMD64 only; publishing a native Apple Silicon image
+creates a valid registry object but revision deployment cannot use it.
 
 ### 7. Reset disposable application data after a baseline rebase
 

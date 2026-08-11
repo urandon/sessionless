@@ -7,8 +7,10 @@ trap 'rm -rf "$test_root"' EXIT HUP INT TERM
 
 source_sha=$(git -C "$repo_root" rev-parse HEAD)
 other_sha=0000000000000000000000000000000000000000
-candidate_digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-conflicting_digest=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+build_digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+conflicting_config_digest=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+candidate_config_digest=sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+remote_manifest_digest=sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 metadata_dir="$test_root/metadata"
 fake_bin="$test_root/bin"
 fake_state="$test_root/state"
@@ -17,7 +19,7 @@ manifest_path="$test_root/deployment-images.json"
 mkdir -p "$metadata_dir" "$fake_bin" "$fake_state"
 
 for name in control-api reconciler telegram-sender worker-runtime; do
-  jq -n --arg digest "$candidate_digest" \
+  jq -n --arg digest "$build_digest" \
     '{"containerimage.digest": $digest}' >"$metadata_dir/$name.json"
   printf '%s\n' "$source_sha" >"$metadata_dir/$name.source-sha"
 done
@@ -28,7 +30,11 @@ set -eu
 printf '%s\n' "$*" >>"$FAKE_DOCKER_LOG"
 
 if test "$1" = image && test "$2" = inspect; then
-  printf '%s\n' linux/amd64
+  case "$5" in
+    '{{.Os}}/{{.Architecture}}') printf '%s\n' linux/amd64 ;;
+    '{{.Id}}') printf '%s\n' "$FAKE_CANDIDATE_CONFIG_DIGEST" ;;
+    *) printf 'unsupported image inspect format: %s\n' "$5" >&2; exit 2 ;;
+  esac
   exit 0
 fi
 if test "$1" = tag; then
@@ -44,14 +50,17 @@ if test "$1" = buildx && test "$2" = imagetools && test "$3" = inspect; then
   key=$(printf '%s' "$reference" | tr '/:' '__')
   case "$FAKE_REMOTE_MODE" in
     same)
-      jq -n --arg digest "$FAKE_CANDIDATE_DIGEST" '{digest: $digest}'
+      jq -n --arg digest "$FAKE_REMOTE_MANIFEST_DIGEST" --arg config "$FAKE_CANDIDATE_CONFIG_DIGEST" \
+        '{digest: $digest, config: {digest: $config}}'
       ;;
     mismatch)
-      jq -n --arg digest "$FAKE_CONFLICTING_DIGEST" '{digest: $digest}'
+      jq -n --arg digest "$FAKE_REMOTE_MANIFEST_DIGEST" --arg config "$FAKE_CONFLICTING_CONFIG_DIGEST" \
+        '{digest: $digest, config: {digest: $config}}'
       ;;
     absent)
       if test -f "$FAKE_DOCKER_STATE/$key"; then
-        jq -n --arg digest "$FAKE_CANDIDATE_DIGEST" '{digest: $digest}'
+        jq -n --arg digest "$FAKE_REMOTE_MANIFEST_DIGEST" --arg config "$FAKE_CANDIDATE_CONFIG_DIGEST" \
+          '{digest: $digest, config: {digest: $config}}'
       else
         printf '%s\n' 'manifest unknown' >&2
         exit 1
@@ -80,8 +89,9 @@ run_publish() {
     FAKE_DOCKER_LOG="$fake_log" \
     FAKE_DOCKER_STATE="$fake_state" \
     FAKE_REMOTE_MODE="$mode" \
-    FAKE_CANDIDATE_DIGEST="$candidate_digest" \
-    FAKE_CONFLICTING_DIGEST="$conflicting_digest" \
+    FAKE_CANDIDATE_CONFIG_DIGEST="$candidate_config_digest" \
+    FAKE_CONFLICTING_CONFIG_DIGEST="$conflicting_config_digest" \
+    FAKE_REMOTE_MANIFEST_DIGEST="$remote_manifest_digest" \
     YANDEX_CONTAINER_REGISTRY_ID=crptestregistry \
     CLOUD_IMAGE_TAG="$source_sha" \
     CLOUD_IMAGE_METADATA_DIR="$metadata_dir" \
@@ -141,7 +151,7 @@ if test "$push_count" -ne 4; then
 fi
 jq -e \
   --arg sha "$source_sha" \
-  --arg digest "$candidate_digest" \
+  --arg digest "$remote_manifest_digest" \
   '.source_sha == $sha and (.images | length) == 4 and all(.images[]; .digest == $digest)' \
   "$manifest_path" >/dev/null
 

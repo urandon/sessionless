@@ -64,8 +64,8 @@ for name in control-api reconciler telegram-sender worker-runtime; do
       "$name" "$built_source_sha" "$CLOUD_IMAGE_TAG" >&2
     exit 1
   fi
-  candidate_digest=$(jq -er '."containerimage.digest"' "$metadata_file")
-  if ! printf '%s' "$candidate_digest" | jq -Re 'test("^sha256:[0-9a-f]{64}$")' >/dev/null; then
+  build_digest=$(jq -er '."containerimage.digest"' "$metadata_file")
+  if ! printf '%s' "$build_digest" | jq -Re 'test("^sha256:[0-9a-f]{64}$")' >/dev/null; then
     printf 'build metadata contains a non-SHA-256 digest for %s\n' "$name" >&2
     exit 1
   fi
@@ -76,17 +76,28 @@ for name in control-api reconciler telegram-sender worker-runtime; do
       "$actual_platform" "$local_image" "$target_platform" >&2
     exit 1
   fi
+  candidate_config_digest=$(docker image inspect "$local_image" --format '{{.Id}}')
+  if ! printf '%s' "$candidate_config_digest" | jq -Re 'test("^sha256:[0-9a-f]{64}$")' >/dev/null; then
+    printf 'local image has a non-SHA-256 config digest for %s\n' "$name" >&2
+    exit 1
+  fi
 
   : >"$inspect_error"
   if remote_manifest=$(docker buildx imagetools inspect "$tagged_reference" --format '{{json .Manifest}}' 2>"$inspect_error"); then
     existing_digest=$(printf '%s' "$remote_manifest" | jq -er '.digest // .Digest')
-    if test "$existing_digest" != "$candidate_digest"; then
-      printf 'refusing to overwrite %s: registry has %s, build produced %s\n' \
-        "$tagged_reference" "$existing_digest" "$candidate_digest" >&2
+    existing_config_digest=$(printf '%s' "$remote_manifest" | jq -er '.config.digest // .Config.digest')
+    if ! printf '%s' "$existing_digest" | jq -Re 'test("^sha256:[0-9a-f]{64}$")' >/dev/null ||
+      ! printf '%s' "$existing_config_digest" | jq -Re 'test("^sha256:[0-9a-f]{64}$")' >/dev/null; then
+      printf 'registry returned invalid manifest identity for %s\n' "$name" >&2
+      exit 1
+    fi
+    if test "$existing_config_digest" != "$candidate_config_digest"; then
+      printf 'refusing to overwrite %s: registry config is %s, build config is %s\n' \
+        "$tagged_reference" "$existing_config_digest" "$candidate_config_digest" >&2
       rm -f "$inspect_error"
       exit 1
     fi
-    printf 'registry tag already matches build digest; skipping push: %s\n' "$tagged_reference"
+    printf 'registry tag already matches build config; skipping push: %s\n' "$tagged_reference"
   else
     inspect_message=$(tr '[:upper:]' '[:lower:]' <"$inspect_error")
     case "$inspect_message" in
@@ -105,13 +116,18 @@ for name in control-api reconciler telegram-sender worker-runtime; do
 
   remote_manifest=$(docker buildx imagetools inspect "$tagged_reference" --format '{{json .Manifest}}')
   digest=$(printf '%s' "$remote_manifest" | jq -er '.digest // .Digest')
+  remote_config_digest=$(printf '%s' "$remote_manifest" | jq -er '.config.digest // .Config.digest')
   if ! printf '%s' "$digest" | jq -Re 'test("^sha256:[0-9a-f]{64}$")' >/dev/null; then
     printf 'registry returned a non-SHA-256 digest for %s\n' "$name" >&2
     exit 1
   fi
-  if test "$digest" != "$candidate_digest"; then
-    printf 'registry digest mismatch for %s: expected %s, got %s\n' \
-      "$name" "$candidate_digest" "$digest" >&2
+  if ! printf '%s' "$remote_config_digest" | jq -Re 'test("^sha256:[0-9a-f]{64}$")' >/dev/null; then
+    printf 'registry returned a non-SHA-256 config digest for %s\n' "$name" >&2
+    exit 1
+  fi
+  if test "$remote_config_digest" != "$candidate_config_digest"; then
+    printf 'registry config mismatch for %s: expected %s, got %s\n' \
+      "$name" "$candidate_config_digest" "$remote_config_digest" >&2
     exit 1
   fi
   immutable_reference="cr.yandex/${YANDEX_CONTAINER_REGISTRY_ID}/${name}@${digest}"

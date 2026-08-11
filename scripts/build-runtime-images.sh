@@ -5,6 +5,7 @@ version=${VERSION:-dev}
 commit=${COMMIT:-$(git rev-parse HEAD)}
 built_at=${BUILT_AT:-$(git show -s --format=%cI HEAD)}
 source_date_epoch=${SOURCE_DATE_EPOCH:-$(git show -s --format=%ct HEAD)}
+export SOURCE_DATE_EPOCH="$source_date_epoch"
 platform=${IMAGE_PLATFORM:-}
 cache_mode=${DOCKER_BUILD_CACHE:-none}
 cache_suffix=$(printf '%s' "${DOCKER_CACHE_SCOPE_SUFFIX:-local}" | tr -c 'A-Za-z0-9_.-' '-')

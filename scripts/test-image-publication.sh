@@ -37,6 +37,29 @@ if test "$1" = image && test "$2" = inspect; then
   esac
   exit 0
 fi
+if test "$1" = buildx && test "$2" = build; then
+  if test "${SOURCE_DATE_EPOCH:-}" != "$FAKE_EXPECTED_SOURCE_DATE_EPOCH"; then
+    printf 'docker did not inherit SOURCE_DATE_EPOCH: expected %s, got %s\n' \
+      "$FAKE_EXPECTED_SOURCE_DATE_EPOCH" "${SOURCE_DATE_EPOCH:-<unset>}" >&2
+    exit 2
+  fi
+  metadata_file=
+  while test "$#" -gt 0; do
+    if test "$1" = --metadata-file; then
+      metadata_file=$2
+      shift 2
+    else
+      shift
+    fi
+  done
+  if test -z "$metadata_file"; then
+    printf '%s\n' 'buildx invocation did not provide --metadata-file' >&2
+    exit 2
+  fi
+  jq -n --arg digest "$FAKE_BUILD_DIGEST" \
+    '{"containerimage.digest": $digest}' >"$metadata_file"
+  exit 0
+fi
 if test "$1" = tag; then
   exit 0
 fi
@@ -95,6 +118,24 @@ printf 'unexpected docker invocation: %s\n' "$*" >&2
 exit 2
 EOF
 chmod 755 "$fake_bin/docker"
+
+expected_source_date_epoch=$(git -C "$repo_root" show -s --format=%ct HEAD)
+: >"$fake_log"
+(
+  unset SOURCE_DATE_EPOCH
+  PATH="$fake_bin:$PATH" \
+    FAKE_DOCKER_LOG="$fake_log" \
+    FAKE_EXPECTED_SOURCE_DATE_EPOCH="$expected_source_date_epoch" \
+    FAKE_BUILD_DIGEST="$build_digest" \
+    IMAGE_METADATA_DIR="$metadata_dir" \
+    DOCKER_BUILD_CACHE=none \
+    "$repo_root/scripts/build-runtime-images.sh"
+)
+build_count=$(grep -c '^buildx build ' "$fake_log")
+if test "$build_count" -ne 5; then
+  printf 'expected five reproducible image builds, got %s\n' "$build_count" >&2
+  exit 1
+fi
 
 run_publish() {
   mode=$1

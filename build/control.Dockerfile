@@ -12,6 +12,7 @@ ARG TARGET=control-api
 ARG VERSION=dev
 ARG COMMIT=unknown
 ARG BUILT_AT=unknown
+ARG SOURCE_DATE_EPOCH=0
 RUN CGO_ENABLED=0 go build -trimpath \
     -ldflags="-s -w \
       -X gitcode.com/urandon/sessionless/internal/buildinfo.Version=${VERSION} \

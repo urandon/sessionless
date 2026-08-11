@@ -15,6 +15,9 @@ output "scheduler_wake_queue_arn" { value = yandex_message_queue.scheduler_wake.
 output "scheduler_wake_dlq_arn" { value = yandex_message_queue.scheduler_wake_dlq.arn }
 output "registry_id" { value = yandex_container_registry.application.id }
 output "repository_names" { value = { for name, repository in yandex_container_repository.runtime : name => repository.name } }
+output "image_publisher_service_account_id" { value = yandex_iam_service_account.runtime["image-publisher"].id }
+output "github_oidc_audience" { value = var.github_oidc_audience }
+output "github_oidc_subject" { value = var.github_oidc_subject }
 output "telegram_secret_id" { value = yandex_lockbox_secret.telegram.id }
 output "queue_provisioner_secret_id" { value = yandex_lockbox_secret.queue_provisioner.id }
 output "queue_provisioner_secret_version_id" { value = yandex_iam_service_account_static_access_key.queue_provisioner.output_to_lockbox_version_id }

@@ -23,6 +23,8 @@ module "foundation" {
   queue_max_receive_count          = var.queue_max_receive_count
   log_retention                    = var.log_retention
   deletion_protection              = var.deletion_protection
+  github_oidc_audience             = var.github_oidc_audience
+  github_oidc_subject              = var.github_oidc_subject
   labels                           = local.labels
 }
 
@@ -33,11 +35,11 @@ module "runtime" {
   name_prefix         = var.name_prefix
   service_account_ids = module.foundation.service_account_ids
   images = {
-    control-blue    = "cr.yandex/${module.foundation.repository_names["control-api"]}:${var.control_blue_image_tag}"
-    control-green   = "cr.yandex/${module.foundation.repository_names["control-api"]}:${var.control_green_image_tag}"
-    reconciler      = "cr.yandex/${module.foundation.repository_names["reconciler"]}:${var.runtime_image_tag}"
-    telegram-sender = "cr.yandex/${module.foundation.repository_names["telegram-sender"]}:${var.runtime_image_tag}"
-    worker-runtime  = "cr.yandex/${module.foundation.repository_names["worker-runtime"]}:${var.runtime_image_tag}"
+    control-blue    = coalesce(var.control_blue_image_ref, "cr.yandex/${module.foundation.repository_names["control-api"]}:${var.control_blue_image_tag}")
+    control-green   = coalesce(var.control_green_image_ref, "cr.yandex/${module.foundation.repository_names["control-api"]}:${var.control_green_image_tag}")
+    reconciler      = lookup(var.runtime_image_refs, "reconciler", "cr.yandex/${module.foundation.repository_names["reconciler"]}:${var.runtime_image_tag}")
+    telegram-sender = lookup(var.runtime_image_refs, "telegram-sender", "cr.yandex/${module.foundation.repository_names["telegram-sender"]}:${var.runtime_image_tag}")
+    worker-runtime  = lookup(var.runtime_image_refs, "worker-runtime", "cr.yandex/${module.foundation.repository_names["worker-runtime"]}:${var.runtime_image_tag}")
   }
   ydb_connection_string           = module.foundation.ydb_connection_string
   artifact_bucket_name            = module.foundation.artifact_bucket_name

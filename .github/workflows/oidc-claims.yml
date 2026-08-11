@@ -1,0 +1,25 @@
+name: Inspect GitHub OIDC claims
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    name: Safe claim inspection
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout mirrored main
+        uses: actions/checkout@v6
+
+      - name: Print non-secret OIDC claims
+        env:
+          OIDC_CLAIM_ONLY: "1"
+          YANDEX_OIDC_AUDIENCE: https://github.com/urandon
+        run: node scripts/github-yandex-registry-login.mjs

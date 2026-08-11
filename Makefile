@@ -7,8 +7,8 @@ GO_MOD_CACHE_DIR := $(CURDIR)/.build/cache/go-mod
 GO_TMP_DIR := $(CURDIR)/.build/tmp
 COMPONENTS := control-api web-bff reconciler telegram-sender telegram-fake oidc-fake worker-runtime schema-migrate schema-inspect schema-backfill preprod-reset deployment-lock web-bootstrap
 VERSION ?= dev
-COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || printf unknown)
-BUILT_AT ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null || printf unknown)
+BUILT_AT ?= $(shell git show -s --format=%cI HEAD 2>/dev/null || printf unknown)
 export GOCACHE := $(GO_CACHE_DIR)
 export GOMODCACHE := $(GO_MOD_CACHE_DIR)
 export GOTMPDIR := $(GO_TMP_DIR)
@@ -18,7 +18,7 @@ LDFLAGS := -s -w \
 	-X gitcode.com/urandon/sessionless/internal/buildinfo.Commit=$(COMMIT) \
 	-X gitcode.com/urandon/sessionless/internal/buildinfo.BuiltAt=$(BUILT_AT)
 
-.PHONY: help prepare tools generate fmt fmt-check lint test build integration ydb-integration local-integration e2e-local ci terraform-ci cloudflare-edge-ci \
+.PHONY: help prepare tools generate fmt fmt-check lint test build integration ydb-integration local-integration e2e-local ci image-publication-test terraform-ci cloudflare-edge-ci \
 	compose-config images dev-up dev-seed migrate-local migration-status partition-status partition-backfill cloud-app-reset-plan cloud-app-reset \
 	worker-once web-bootstrap dev-down dev-reset clean
 
@@ -32,6 +32,7 @@ help:
 		'make ydb-integration run YDB Local schema and concurrency tests' \
 		'make local-integration run YDB/S3/SQS/Telegram adapter tests against the local stand' \
 		'make e2e-local      run the deterministic two-tenant black-box slice' \
+		'make image-publication-test validate immutable image publication guards' \
 		'make terraform-ci   format-check and validate Terraform roots' \
 		'make cloudflare-edge-ci test and dry-run bundle the Telegram edge Worker' \
 		'make images         build control-plane and worker images' \
@@ -91,7 +92,10 @@ local-integration: prepare
 e2e-local: prepare
 	@./scripts/e2e-local.sh
 
-ci: generate test build integration
+ci: generate test build integration image-publication-test
+
+image-publication-test:
+	@./scripts/test-image-publication.sh
 
 terraform-ci:
 	$(TERRAFORM) fmt -recursive -check -diff infra/terraform
@@ -108,11 +112,7 @@ compose-config:
 	docker compose --project-name sessionless-dev config --quiet
 
 images:
-	docker build --build-arg TARGET=control-api -f build/control.Dockerfile -t sessionless/control-api:dev .
-	docker build --build-arg TARGET=web-bff -f build/control.Dockerfile -t sessionless/web-bff:dev .
-	docker build --build-arg TARGET=reconciler -f build/control.Dockerfile -t sessionless/reconciler:dev .
-	docker build --build-arg TARGET=telegram-sender -f build/control.Dockerfile -t sessionless/telegram-sender:dev .
-	docker build -f build/worker-runtime.Dockerfile -t sessionless/worker-runtime:dev .
+	@VERSION="$(VERSION)" COMMIT="$(COMMIT)" BUILT_AT="$(BUILT_AT)" ./scripts/build-runtime-images.sh
 
 dev-up:
 	@./scripts/dev-up.sh

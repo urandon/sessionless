@@ -4,7 +4,7 @@ locals {
     environment = "dev"
     managed-by  = "terraform"
   })
-  account_names = toset(["deploy", "api", "scheduler", "worker", "telegram-sender", "trigger", "gateway", "queue-provisioner"])
+  account_names = toset(["deploy", "api", "scheduler", "worker", "telegram-sender", "trigger", "gateway", "queue-provisioner", "image-publisher"])
   account_roles = {
     api               = ["logging.writer"]
     scheduler         = ["ymq.writer", "logging.writer"]
@@ -189,6 +189,30 @@ resource "yandex_container_registry_iam_binding" "runtime_puller" {
 resource "yandex_container_repository" "runtime" {
   for_each = toset(["control-api", "reconciler", "telegram-sender", "worker-runtime"])
   name     = "${yandex_container_registry.application.id}/${each.key}"
+}
+
+resource "yandex_container_repository_iam_binding" "image_publisher" {
+  for_each      = yandex_container_repository.runtime
+  repository_id = each.value.id
+  role          = "container-registry.images.pusher"
+  members       = ["serviceAccount:${yandex_iam_service_account.runtime["image-publisher"].id}"]
+}
+
+resource "yandex_iam_workload_identity_oidc_federation" "github_images" {
+  folder_id   = yandex_resourcemanager_folder.environment.id
+  name        = "${var.name_prefix}-github-images"
+  description = "GitHub Actions identity for immutable Sessionless image publication"
+  disabled    = false
+  audiences   = [var.github_oidc_audience]
+  issuer      = "https://token.actions.githubusercontent.com"
+  jwks_url    = "https://token.actions.githubusercontent.com/.well-known/jwks"
+  labels      = local.labels
+}
+
+resource "yandex_iam_workload_identity_federated_credential" "github_images" {
+  service_account_id  = yandex_iam_service_account.runtime["image-publisher"].id
+  federation_id       = yandex_iam_workload_identity_oidc_federation.github_images.id
+  external_subject_id = var.github_oidc_subject
 }
 
 resource "yandex_container_repository_lifecycle_policy" "runtime" {

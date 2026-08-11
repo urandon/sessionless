@@ -5,6 +5,7 @@
 .env.*
 .terraform
 **/.terraform
+**/node_modules
 *.tfstate
 *.tfplan
 coverage.out

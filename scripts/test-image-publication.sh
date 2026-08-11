@@ -48,6 +48,10 @@ fi
 if test "$1" = buildx && test "$2" = imagetools && test "$3" = inspect; then
   reference=$4
   key=$(printf '%s' "$reference" | tr '/:' '__')
+  case "$reference" in
+    *@sha256:*) immutable_reference=1 ;;
+    *) immutable_reference=0 ;;
+  esac
   case "$FAKE_REMOTE_MODE" in
     same)
       config_digest=$FAKE_CANDIDATE_CONFIG_DIGEST
@@ -56,7 +60,7 @@ if test "$1" = buildx && test "$2" = imagetools && test "$3" = inspect; then
       config_digest=$FAKE_CONFLICTING_CONFIG_DIGEST
       ;;
     absent)
-      if test -f "$FAKE_DOCKER_STATE/$key"; then
+      if test "$immutable_reference" -eq 1 || test -f "$FAKE_DOCKER_STATE/$key"; then
         config_digest=$FAKE_CANDIDATE_CONFIG_DIGEST
       else
         printf '%s\n' 'manifest unknown' >&2
@@ -149,8 +153,12 @@ if grep -q '^push ' "$fake_log"; then
   printf '%s\n' 'publisher pushed an already matching commit tag' >&2
   exit 1
 fi
-if ! grep -q -- ' --raw$' "$fake_log"; then
-  printf '%s\n' 'publisher did not read the raw registry manifest for config identity' >&2
+if ! grep -q -- "@${remote_manifest_digest} --raw$" "$fake_log"; then
+  printf '%s\n' 'publisher did not bind raw inspection to the immutable manifest digest' >&2
+  exit 1
+fi
+if grep -q -- ":${source_sha} --raw$" "$fake_log"; then
+  printf '%s\n' 'publisher inspected a raw manifest through the mutable commit tag' >&2
   exit 1
 fi
 

@@ -11,6 +11,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.106.1
 	github.com/aws/aws-sdk-go-v2/service/sqs v1.46.1
 	github.com/golang-jwt/jwt/v4 v4.5.2
+	github.com/klauspost/compress v1.18.5
 	github.com/pressly/goose/v3 v3.27.1
 	github.com/ydb-platform/ydb-go-sdk-auth-environ v0.5.2
 	github.com/ydb-platform/ydb-go-sdk/v3 v3.135.0

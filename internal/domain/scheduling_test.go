@@ -32,6 +32,9 @@ func TestLegacyProductLimitsRemainValidWithFiniteToolEventBudget(t *testing.T) {
 	if maxEvents != 60 || maxBytes != 64<<20 {
 		t.Fatalf("effective tool-event limits = %d/%d, want %d/%d", maxEvents, maxBytes, 60, 64<<20)
 	}
+	if maxContextEvents := limits.EffectiveMaxContextEvents(); maxContextEvents != 120 {
+		t.Fatalf("effective context event limit = %d, want 120", maxContextEvents)
+	}
 }
 
 func TestProductLimitsRejectPartialToolEventBudget(t *testing.T) {

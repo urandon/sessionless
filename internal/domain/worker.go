@@ -8,19 +8,20 @@ import (
 // WorkerJob is the durable, point-addressable materialization contract for one
 // admitted run. Queue messages carry only its tenant/run routing identity.
 type WorkerJob struct {
-	TenantID          TenantID             `json:"tenant_id"`
-	RunID             RunID                `json:"run_id"`
-	SessionID         SessionID            `json:"session_id"`
-	TriggerEventID    SessionEventID       `json:"trigger_event_id"`
-	AttemptID         AttemptID            `json:"attempt_id"`
-	ReservationID     QuotaReservationID   `json:"reservation_id"`
-	InputManifestID   ArtifactManifestID   `json:"input_manifest_id"`
-	ContextSnapshot   BlobRef              `json:"context_snapshot"`
-	WorkspaceSnapshot *BlobRef             `json:"workspace_snapshot,omitempty"`
-	SkillBundle       *BlobRef             `json:"skill_bundle,omitempty"`
-	AllowedMCPServers []string             `json:"allowed_mcp_servers,omitempty"`
-	Limits            ProductLimits        `json:"limits"`
-	Origin            *FrontendEventOrigin `json:"origin,omitempty"`
+	TenantID          TenantID              `json:"tenant_id"`
+	RunID             RunID                 `json:"run_id"`
+	SessionID         SessionID             `json:"session_id"`
+	TriggerEventID    SessionEventID        `json:"trigger_event_id"`
+	AttemptID         AttemptID             `json:"attempt_id"`
+	ReservationID     QuotaReservationID    `json:"reservation_id"`
+	InputManifestID   ArtifactManifestID    `json:"input_manifest_id"`
+	ContextSnapshot   BlobRef               `json:"context_snapshot"`
+	ContextWindow     *SessionContextWindow `json:"context_window,omitempty"`
+	WorkspaceSnapshot *BlobRef              `json:"workspace_snapshot,omitempty"`
+	SkillBundle       *BlobRef              `json:"skill_bundle,omitempty"`
+	AllowedMCPServers []string              `json:"allowed_mcp_servers,omitempty"`
+	Limits            ProductLimits         `json:"limits"`
+	Origin            *FrontendEventOrigin  `json:"origin,omitempty"`
 	// Compatibility bridge for Telegram until #36 projects results from the
 	// canonical session stream.
 	DeliveryChat     TelegramChatRef `json:"delivery_chat"`
@@ -50,8 +51,14 @@ func (job WorkerJob) ValidateForRun(run Run) error {
 	if err := job.InputManifestID.Validate(); err != nil {
 		return err
 	}
-	if err := validateWorkerBlob(run.TenantID, "worker_job.context_snapshot", job.ContextSnapshot); err != nil {
-		return err
+	if job.ContextWindow != nil {
+		if err := job.ContextWindow.Validate(); err != nil {
+			return err
+		}
+	} else {
+		if err := validateWorkerBlob(run.TenantID, "worker_job.context_snapshot", job.ContextSnapshot); err != nil {
+			return err
+		}
 	}
 	if job.WorkspaceSnapshot != nil {
 		if err := validateWorkerBlob(run.TenantID, "worker_job.workspace_snapshot", *job.WorkspaceSnapshot); err != nil {
@@ -76,7 +83,7 @@ func (job WorkerJob) ValidateForRun(run Run) error {
 	if err := job.Limits.Validate(); err != nil {
 		return err
 	}
-	if uint64(job.ContextSnapshot.Size) > job.Limits.MaxContextBytes {
+	if job.ContextWindow == nil && uint64(job.ContextSnapshot.Size) > job.Limits.MaxContextBytes {
 		return ValidationError{Field: "worker_job.context_snapshot", Reason: "exceeds the admitted context limit"}
 	}
 	if job.Origin == nil && job.DeliveryChat.ChatID == 0 {

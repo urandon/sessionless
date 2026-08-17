@@ -240,12 +240,17 @@ func (store *Store) AdmitDispatch(
 		if err := state.PutQuotaReservation(ctx, reservation); err != nil {
 			return err
 		}
+		contextWindow, err := selectAdmittedContextWindow(ctx, tx, run.SessionID, outbox.ContextWindow)
+		if err != nil {
+			return err
+		}
 		if err := state.PutWorkerJob(ctx, domain.WorkerJob{
 			TenantID: request.TenantID, RunID: request.RunID,
 			SessionID: run.SessionID, TriggerEventID: run.TriggerEventID,
 			AttemptID: request.AttemptID, ReservationID: request.ReservationID,
 			InputManifestID:   outbox.InputManifestID,
 			ContextSnapshot:   outbox.ContextSnapshot,
+			ContextWindow:     contextWindow,
 			WorkspaceSnapshot: outbox.WorkspaceSnapshot,
 			SkillBundle:       outbox.SkillBundle,
 			AllowedMCPServers: append([]string(nil), outbox.AllowedMCPServers...),
@@ -282,6 +287,56 @@ func (store *Store) AdmitDispatch(
 		)
 	})
 	return result, err
+}
+
+func selectAdmittedContextWindow(
+	ctx context.Context,
+	tx *stateTx,
+	sessionID domain.SessionID,
+	requested *domain.SessionContextWindow,
+) (*domain.SessionContextWindow, error) {
+	if requested == nil {
+		return nil, nil
+	}
+	window := *requested
+	if err := window.Validate(); err != nil {
+		return nil, err
+	}
+	// Snapshot selection belongs to admission; callers may only pin the trigger
+	// boundary, not smuggle a preselected snapshot into the durable job.
+	window.SnapshotVersion = nil
+	window.AfterSequence = 0
+	rows, err := tx.sqlTx.QueryContext(ctx,
+		`SELECT record FROM session_snapshots
+		 WHERE tenant_id = $1 AND session_id = $2 AND through_sequence <= $3
+		 ORDER BY version DESC LIMIT $4`,
+		tx.tenantID, sessionID, window.ThroughSequence, uint64(16),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var payload []byte
+		if err := rows.Scan(&payload); err != nil {
+			return nil, err
+		}
+		var snapshot domain.SessionSnapshot
+		if err := json.Unmarshal(payload, &snapshot); err != nil || snapshot.Validate() != nil {
+			continue
+		}
+		if snapshot.TenantID != tx.tenantID || snapshot.SessionID != sessionID {
+			continue
+		}
+		version := snapshot.Version
+		window.SnapshotVersion = &version
+		window.AfterSequence = snapshot.ThroughSequence
+		return &window, nil
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return &window, nil
 }
 
 func (store *Store) ListExpiredQuotaReservations(

@@ -373,10 +373,23 @@ type ExecutionRequest struct {
 	AttemptID         domain.AttemptID
 	WorkDir           string
 	ContextSnapshot   domain.BlobRef
+	ContextWindow     *domain.SessionContextWindow
 	InputArtifacts    []domain.Artifact
 	ResumeCheckpoint  *domain.Checkpoint
 	Credential        CredentialHandle
 	AllowedMCPServers []string
+}
+
+// WorkerContextRequest addresses an immutable, bounded canonical history
+// window. AtOrBeforeSnapshotVersion permits corruption fallback to an older
+// snapshot without changing the pinned ThroughSequence.
+type WorkerContextRequest struct {
+	TenantID                  domain.TenantID
+	SessionID                 domain.SessionID
+	TriggerEventID            domain.SessionEventID
+	AtOrBeforeSnapshotVersion *uint64
+	ThroughSequence           uint64
+	MaxEvents                 uint64
 }
 
 type ExecutionEvent struct {
@@ -535,6 +548,7 @@ type LegacyTelegramWorkerFailure struct {
 // isolated, concurrency-one worker invocation.
 type WorkerStateStore interface {
 	LoadWorkerJob(ctx context.Context, tenantID domain.TenantID, runID domain.RunID) (WorkerJobState, bool, error)
+	LoadWorkerContext(ctx context.Context, request WorkerContextRequest) (domain.SessionContextInput, error)
 	ClaimWorkerLease(ctx context.Context, request WorkerLeaseRequest) (domain.Lease, error)
 	StartWorkerJob(ctx context.Context, state WorkerJobState, lease domain.Lease, at time.Time) error
 	RenewWorkerLease(

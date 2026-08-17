@@ -31,8 +31,8 @@ func SessionEventObjectPrefix(tenantID TenantID, sessionID SessionID, eventID Se
 	return SessionObjectPrefix(tenantID, sessionID) + "events/" + string(eventID) + "/"
 }
 
-func SessionSnapshotObjectPrefix(tenantID TenantID, sessionID SessionID, snapshotID SessionSnapshotID) string {
-	return SessionObjectPrefix(tenantID, sessionID) + "snapshots/" + string(snapshotID) + "/"
+func SessionSnapshotObjectKey(tenantID TenantID, sessionID SessionID, version uint64) string {
+	return fmt.Sprintf("%ssnapshots/%d.jsonl.zst", SessionObjectPrefix(tenantID, sessionID), version)
 }
 
 func ValidateSessionEventBlob(
@@ -63,7 +63,7 @@ func ValidateSessionEventBlob(
 func ValidateSessionSnapshotBlob(
 	tenantID TenantID,
 	sessionID SessionID,
-	snapshotID SessionSnapshotID,
+	version uint64,
 	ref BlobRef,
 ) error {
 	if err := ref.Validate(); err != nil {
@@ -75,12 +75,12 @@ func ValidateSessionSnapshotBlob(
 	if err := sessionID.Validate(); err != nil {
 		return err
 	}
-	if err := snapshotID.Validate(); err != nil {
-		return err
+	if version == 0 {
+		return ValidationError{Field: "session_snapshot.version", Reason: "must be positive"}
 	}
-	prefix := SessionSnapshotObjectPrefix(tenantID, sessionID, snapshotID)
-	if !strings.HasPrefix(ref.Key, prefix) {
-		return ValidationError{Field: "session_snapshot.payload.key", Reason: fmt.Sprintf("must be under %q", prefix)}
+	key := SessionSnapshotObjectKey(tenantID, sessionID, version)
+	if ref.Key != key {
+		return ValidationError{Field: "session_snapshot.payload.key", Reason: fmt.Sprintf("must equal %q", key)}
 	}
 	return nil
 }

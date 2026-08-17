@@ -92,6 +92,7 @@ func main() {
 		},
 		MaxDeliveryCount:      uint32(envUint64("WORKER_MAX_DELIVERY_COUNT", 5)),
 		MaxMaterializedBytes:  int64(envUint64("WORKER_MAX_BLOB_BYTES", 64<<20)),
+		MaxSnapshotFallbacks:  uint32(envUint64("WORKER_MAX_SNAPSHOT_FALLBACKS", 4)),
 		DeliveryWakePublisher: deliveryWakePublisher,
 	}
 	newManager := func(queue ports.Queue) (*worker.Manager, error) {

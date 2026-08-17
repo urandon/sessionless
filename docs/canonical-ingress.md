@@ -108,6 +108,23 @@ isolated behind `LegacyTelegramWorkerStateStore`; the canonical
 `WorkerStateStore` completion/failure contracts and their shared YDB
 finalization helpers contain no transport-specific delivery value.
 
+## Stateless worker context
+
+Canonical ingress records the trigger event sequence as the context boundary.
+Admission selects the newest compatible immutable snapshot at or before that
+sequence and persists its version plus covered sequence on the worker job.
+Workers reconstruct `context/history.jsonl` from the verified snapshot and
+contiguous event tail. If snapshot metadata or bytes are missing, corrupt, or
+incompatible, reconstruction retries an older snapshot and finally replays the
+bounded canonical event prefix. The replay output is byte-identical to the
+snapshot-plus-tail output.
+
+`LIMIT_CONTEXT_EVENTS` is required for newly admitted jobs alongside the byte
+and tool-event budgets. Jobs persisted before this field existed retain a
+finite compatibility bound derived from their admitted turn limit. Event,
+byte, historical tool-event, payload digest, tenant, session, and trigger
+checks all complete before a harness adapter is invoked.
+
 ## Canonical terminal finalization
 
 Harness progress boundaries remain operational checkpoints. They are not

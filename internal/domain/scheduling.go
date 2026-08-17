@@ -32,6 +32,7 @@ type ProductLimits struct {
 	MaxTurns            uint32        `json:"max_turns"`
 	MaxInputBytes       uint64        `json:"max_input_bytes"`
 	MaxContextBytes     uint64        `json:"max_context_bytes"`
+	MaxContextEvents    uint64        `json:"max_context_events"`
 	MaxArtifacts        uint32        `json:"max_artifacts"`
 	MaxToolEvents       uint32        `json:"max_tool_events"`
 	MaxToolEventBytes   uint64        `json:"max_tool_event_bytes"`
@@ -65,8 +66,8 @@ func (limits ProductLimits) Validate() error {
 	return nil
 }
 
-// ValidateForAdmission requires the explicit tool-event budget written by new
-// schedulers. Validate alone also accepts the all-zero legacy representation so
+// ValidateForAdmission requires the explicit context and tool-event budgets
+// written by new schedulers. Validate alone accepts their legacy zero values so
 // workers can load jobs persisted before these fields were introduced.
 func (limits ProductLimits) ValidateForAdmission() error {
 	if err := limits.Validate(); err != nil {
@@ -78,7 +79,22 @@ func (limits ProductLimits) ValidateForAdmission() error {
 			Reason: "count and byte limits must be positive for admission",
 		}
 	}
+	if limits.MaxContextEvents == 0 {
+		return ValidationError{
+			Field:  "limits.max_context_events",
+			Reason: "must be positive for admission",
+		}
+	}
 	return nil
+}
+
+// EffectiveMaxContextEvents preserves finite bounds for worker jobs admitted
+// before MaxContextEvents was persisted explicitly.
+func (limits ProductLimits) EffectiveMaxContextEvents() uint64 {
+	if limits.MaxContextEvents != 0 {
+		return limits.MaxContextEvents
+	}
+	return uint64(limits.MaxTurns) * 4
 }
 
 // EffectiveToolEventLimits returns the explicitly admitted tool-event budget.

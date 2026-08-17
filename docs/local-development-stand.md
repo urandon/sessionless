@@ -142,9 +142,11 @@ and durable command state/replies for connect, status, disconnect, and a new
 canonical session binding. Scheduler unit/YDB integration coverage separately proves
 exactly one concurrent reservation per subscription, deterministic wake and
 dispatch message IDs, point-read wake handling, bounded recovery traversal,
-and idempotent reservation expiry. Worker unit/YDB integration coverage proves tenant-safe materialization,
-checkpoint resume, lease renewal/loss fencing, cancellation, runtime and turn
-limits, exactly-once terminal delivery, and lease-index cleanup.
+and idempotent reservation expiry. Worker unit/YDB integration coverage proves
+tenant-safe replay and snapshot-plus-tail materialization, corrupt-snapshot
+fallback, attachment materialization, checkpoint resume, lease renewal/loss
+fencing, cancellation, runtime/context/turn limits, exactly-once terminal
+delivery, and lease-index cleanup.
 
 Run the composed deterministic product slice with:
 

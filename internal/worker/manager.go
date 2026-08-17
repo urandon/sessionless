@@ -30,6 +30,7 @@ type Config struct {
 	RetryObserver         func(error)
 	MaxDeliveryCount      uint32
 	MaxMaterializedBytes  int64
+	MaxSnapshotFallbacks  uint32
 	DeliveryWakePublisher ports.TelegramDeliveryWakePublisher
 }
 
@@ -72,6 +73,9 @@ func New(
 	}
 	if config.MaxMaterializedBytes <= 0 {
 		config.MaxMaterializedBytes = 64 << 20
+	}
+	if config.MaxSnapshotFallbacks == 0 {
+		config.MaxSnapshotFallbacks = 4
 	}
 	if err := domain.ValidateOpaqueID("worker.worker_id", config.WorkerID); err != nil {
 		return nil, err
@@ -175,6 +179,7 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 		SessionID: loaded.Run.SessionID, TriggerEventID: loaded.Run.TriggerEventID,
 		AttemptID: loaded.Attempt.ID, WorkDir: workDir,
 		ContextSnapshot:   loaded.Job.ContextSnapshot,
+		ContextWindow:     loaded.Job.ContextWindow,
 		InputArtifacts:    loaded.InputManifest.Artifacts,
 		ResumeCheckpoint:  loaded.Checkpoint,
 		AllowedMCPServers: append([]string(nil), loaded.Job.AllowedMCPServers...),
@@ -380,11 +385,17 @@ func (manager *Manager) materialize(
 		}
 		inputBytes += uint64(artifact.Blob.Size)
 	}
-	if err := manager.writeBlob(
-		ctx, loaded.Run.TenantID, loaded.Job.ContextSnapshot,
-		filepath.Join(workDir, "context", "snapshot"),
-	); err != nil {
-		return err
+	if loaded.Job.ContextWindow != nil {
+		if err := manager.materializeCanonicalContext(ctx, loaded, workDir); err != nil {
+			return err
+		}
+	} else {
+		if err := manager.writeBlob(
+			ctx, loaded.Run.TenantID, loaded.Job.ContextSnapshot,
+			filepath.Join(workDir, "context", "snapshot"),
+		); err != nil {
+			return err
+		}
 	}
 	for _, artifact := range loaded.InputManifest.Artifacts {
 		if err := validateFilename(artifact.Name); err != nil {
@@ -456,6 +467,31 @@ func (manager *Manager) writeBlob(
 		return fmt.Errorf("materialized blob does not match its immutable reference")
 	}
 	return nil
+}
+
+func (manager *Manager) readBlob(
+	ctx context.Context,
+	tenantID domain.TenantID,
+	ref domain.BlobRef,
+	maxBytes int64,
+) ([]byte, error) {
+	if maxBytes < 0 || ref.Size < 0 || ref.Size > maxBytes {
+		return nil, domain.ValidationError{Field: "blob.size", Reason: "exceeds the materialization limit"}
+	}
+	reader, err := manager.blobs.Open(ctx, tenantID, ref)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+	body, err := io.ReadAll(io.LimitReader(reader, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	hash := sha256.Sum256(body)
+	if int64(len(body)) != ref.Size || hex.EncodeToString(hash[:]) != ref.SHA256 {
+		return nil, fmt.Errorf("materialized blob does not match its immutable reference")
+	}
+	return body, nil
 }
 
 func (manager *Manager) uploadOutputs(

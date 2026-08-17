@@ -355,14 +355,23 @@ func equalRunID(left, right *RunID) bool {
 }
 
 type SessionSnapshot struct {
-	ID              SessionSnapshotID `json:"id"`
-	TenantID        TenantID          `json:"tenant_id"`
-	SessionID       SessionID         `json:"session_id"`
-	Version         uint64            `json:"version"`
-	ThroughSequence uint64            `json:"through_sequence"`
-	Payload         BlobRef           `json:"payload"`
-	CreatedAt       time.Time         `json:"created_at"`
+	ID               SessionSnapshotID `json:"id"`
+	TenantID         TenantID          `json:"tenant_id"`
+	SessionID        SessionID         `json:"session_id"`
+	Version          uint64            `json:"version"`
+	ThroughSequence  uint64            `json:"through_sequence"`
+	FormatVersion    uint32            `json:"format_version"`
+	Compression      string            `json:"compression"`
+	EventCount       uint64            `json:"event_count"`
+	UncompressedSize uint64            `json:"uncompressed_size"`
+	Payload          BlobRef           `json:"payload"`
+	CreatedAt        time.Time         `json:"created_at"`
 }
+
+const (
+	SessionSnapshotFormatV1             uint32 = 1
+	SessionSnapshotCompressionZstandard        = "zstd"
+)
 
 func (snapshot SessionSnapshot) Validate() error {
 	if err := snapshot.ID.Validate(); err != nil {
@@ -377,11 +386,60 @@ func (snapshot SessionSnapshot) Validate() error {
 	if snapshot.Version == 0 {
 		return ValidationError{Field: "session_snapshot.version", Reason: "must be positive"}
 	}
-	if err := ValidateSessionSnapshotBlob(snapshot.TenantID, snapshot.SessionID, snapshot.ID, snapshot.Payload); err != nil {
+	if snapshot.ThroughSequence == 0 || snapshot.EventCount != snapshot.ThroughSequence {
+		return ValidationError{
+			Field:  "session_snapshot.event_count",
+			Reason: "format v1 must cover every event through the declared sequence",
+		}
+	}
+	if snapshot.FormatVersion != SessionSnapshotFormatV1 {
+		return ValidationError{Field: "session_snapshot.format_version", Reason: "is unsupported"}
+	}
+	if snapshot.Compression != SessionSnapshotCompressionZstandard {
+		return ValidationError{Field: "session_snapshot.compression", Reason: "is unsupported"}
+	}
+	if snapshot.UncompressedSize == 0 {
+		return ValidationError{Field: "session_snapshot.uncompressed_size", Reason: "must be positive"}
+	}
+	if err := ValidateSessionSnapshotBlob(snapshot.TenantID, snapshot.SessionID, snapshot.Version, snapshot.Payload); err != nil {
 		return err
 	}
 	if snapshot.CreatedAt.IsZero() {
 		return ValidationError{Field: "session_snapshot.created_at", Reason: "must not be zero"}
+	}
+	return nil
+}
+
+// SessionContextWindow pins the immutable history boundary admitted for a
+// worker invocation. AfterSequence is the sequence covered by SnapshotVersion;
+// zero means replay from the first canonical event.
+type SessionContextWindow struct {
+	SnapshotVersion *uint64 `json:"snapshot_version,omitempty"`
+	AfterSequence   uint64  `json:"after_sequence"`
+	ThroughSequence uint64  `json:"through_sequence"`
+}
+
+func (window SessionContextWindow) Validate() error {
+	if window.ThroughSequence == 0 {
+		return ValidationError{Field: "session_context_window.through_sequence", Reason: "must be positive"}
+	}
+	if window.AfterSequence > window.ThroughSequence {
+		return ValidationError{Field: "session_context_window.after_sequence", Reason: "must not exceed through_sequence"}
+	}
+	if window.SnapshotVersion == nil {
+		if window.AfterSequence != 0 {
+			return ValidationError{
+				Field:  "session_context_window.after_sequence",
+				Reason: "requires a snapshot version when positive",
+			}
+		}
+		return nil
+	}
+	if *window.SnapshotVersion == 0 || window.AfterSequence == 0 {
+		return ValidationError{
+			Field:  "session_context_window.snapshot_version",
+			Reason: "snapshot version and covered sequence must be positive together",
+		}
 	}
 	return nil
 }

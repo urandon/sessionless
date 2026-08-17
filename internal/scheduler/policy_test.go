@@ -77,7 +77,7 @@ func testLimits() domain.ProductLimits {
 	return domain.ProductLimits{
 		MaxTenantQueueDepth: 4, MaxActiveRuns: 1,
 		MaxRuntime: 10 * time.Minute, MaxTurns: 20,
-		MaxInputBytes: 1 << 20, MaxContextBytes: 4 << 20,
+		MaxInputBytes: 1 << 20, MaxContextBytes: 4 << 20, MaxContextEvents: 128,
 		MaxArtifacts: 16, MaxToolEvents: 64, MaxToolEventBytes: 4 << 20,
 	}
 }

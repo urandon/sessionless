@@ -77,11 +77,11 @@ Storage:
 
 ```text
 tenants/<tenant-id>/sessions/<session-id>/events/<event-id>/...
-tenants/<tenant-id>/sessions/<session-id>/snapshots/<snapshot-id>/...
+tenants/<tenant-id>/sessions/<session-id>/snapshots/<version>.jsonl.zst
 ```
 
 An event or snapshot is rejected if its `BlobRef` points to another tenant,
-session, event, or snapshot prefix.
+session, event prefix, or the snapshot key for its exact immutable version.
 
 ## Atomic procedures
 
@@ -164,7 +164,9 @@ once the head changes, the old worker receives `ErrLeaseLost`.
 
 - dispatch admission point-reads the connection, scheduler slot, tenant
   counters, run, attempt, and outbox, then writes the reservation and immutable
-  worker job in one serializable transaction;
+  worker job in one serializable transaction; canonical jobs also pin the
+  newest compatible snapshot at/before their trigger and the bounded tail
+  through that trigger;
 - one subscription slot can hold only one active run/reservation pair;
 - quota reservations use deterministic row IDs and one-way domain transitions;
 - a successful queue publish acknowledges the durable dispatch outbox; an
@@ -176,6 +178,9 @@ once the head changes, the old worker receives `ErrLeaseLost`.
 - checkpoint `(attempt_id, sequence)` keys prevent duplicate sequence writes;
 - each worker boundary renews ownership when needed and commits its checkpoint
   plus usage under the current fence;
+- worker context reads are tenant/session scoped and bounded by the admitted
+  event count; they verify contiguous sequence coverage through the pinned
+  trigger before any harness starts;
 - a completed run, attempt, reservation, artifact manifest, Telegram delivery,
   scheduler counters, and lease-index cleanup commit together;
 - failed, cancelled, or timed-out work releases its reservation and commits a

@@ -81,10 +81,12 @@ func TestCanonicalPayloadsCannotCrossSessionBoundaries(t *testing.T) {
 
 	snapshot := domain.SessionSnapshot{
 		ID: "snapshot-1", TenantID: "tenant-a", SessionID: "session-1",
-		Version: 1, ThroughSequence: 1, CreatedAt: testTime,
+		Version: 1, ThroughSequence: 1, FormatVersion: domain.SessionSnapshotFormatV1,
+		Compression: domain.SessionSnapshotCompressionZstandard,
+		EventCount:  1, UncompressedSize: 128, CreatedAt: testTime,
 		Payload: domain.BlobRef{
 			TenantID: "tenant-a",
-			Key:      "tenants/tenant-a/sessions/session-other/snapshots/snapshot-1/context.json.zst",
+			Key:      domain.SessionSnapshotObjectKey("tenant-a", "session-other", 1),
 			Size:     42,
 			SHA256:   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		},
@@ -140,7 +142,7 @@ func TestFrontendBindingRejectsStaleSwitch(t *testing.T) {
 
 func TestSessionContextRequiresContiguousEventsAfterSnapshot(t *testing.T) {
 	t.Parallel()
-	snapshot := domain.SessionSnapshot{ID: "snapshot-1", TenantID: "tenant-a", SessionID: "session-1", Version: 1, ThroughSequence: 2, Payload: domain.BlobRef{TenantID: "tenant-a", Key: "tenants/tenant-a/sessions/session-1/snapshots/snapshot-1/context.json.zst", Size: 42, SHA256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}, CreatedAt: testTime}
+	snapshot := domain.SessionSnapshot{ID: "snapshot-1", TenantID: "tenant-a", SessionID: "session-1", Version: 1, ThroughSequence: 2, FormatVersion: domain.SessionSnapshotFormatV1, Compression: domain.SessionSnapshotCompressionZstandard, EventCount: 2, UncompressedSize: 128, Payload: domain.BlobRef{TenantID: "tenant-a", Key: domain.SessionSnapshotObjectKey("tenant-a", "session-1", 1), Size: 42, SHA256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}, CreatedAt: testTime}
 	input := domain.SessionContextInput{TenantID: "tenant-a", SessionID: "session-1", Snapshot: &snapshot, Events: []domain.SessionEvent{canonicalEvent(3)}}
 	if err := input.Validate(); err != nil {
 		t.Fatalf("valid context rejected: %v", err)

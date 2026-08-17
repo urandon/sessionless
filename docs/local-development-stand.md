@@ -148,6 +148,12 @@ fallback, attachment materialization, checkpoint resume, lease renewal/loss
 fencing, cancellation, runtime/context/turn limits, exactly-once terminal
 delivery, and lease-index cleanup.
 
+The reconciler also owns best-effort snapshot maintenance after an admitted
+canonical dispatch is published and acknowledged. Local defaults create a new
+version every 128 covered events and scan at most 32 versions; override
+`SNAPSHOT_INTERVAL_EVENTS` and `SNAPSHOT_MAX_VERSIONS` when exercising smaller
+fixtures. Context event and byte limits bound each build.
+
 Run the composed deterministic product slice with:
 
 ```sh

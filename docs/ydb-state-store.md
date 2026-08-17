@@ -172,6 +172,9 @@ once the head changes, the old worker receives `ErrLeaseLost`.
 - a successful queue publish acknowledges the durable dispatch outbox; an
   uncertain acknowledgement may duplicate the payload-free queue envelope but
   reuses its deterministic message ID;
+- after canonical publish and acknowledgement, reconciler best-effort snapshot
+  maintenance creates a new immutable version only at the configured event
+  interval; bounded failures leave replay authoritative and are retried later;
 - expiry enumerates exactly 16 bucket/time ranges, expires only held
   reservations, clears the matching slot, and decrements the tenant queue
   counter idempotently;

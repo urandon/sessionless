@@ -67,6 +67,14 @@ func (builder *SnapshotBuilder) Create(
 			}
 		}
 		for _, event := range page {
+			if err := event.Validate(); err != nil {
+				return domain.SessionSnapshot{}, err
+			}
+			if event.TenantID != request.TenantID || event.SessionID != request.SessionID {
+				return domain.SessionSnapshot{}, domain.ValidationError{
+					Field: "session_snapshot.events", Reason: "crosses the requested tenant or session boundary",
+				}
+			}
 			if event.Sequence != after+1 || event.Sequence > request.ThroughSequence {
 				return domain.SessionSnapshot{}, domain.ValidationError{
 					Field: "session_snapshot.events", Reason: "must be contiguous through the requested boundary",

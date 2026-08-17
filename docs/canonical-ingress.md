@@ -119,6 +119,17 @@ incompatible, reconstruction retries an older snapshot and finally replays the
 bounded canonical event prefix. The replay output is byte-identical to the
 snapshot-plus-tail output.
 
+After a canonical dispatch has been published and its outbox acknowledged, the
+reconciler runs best-effort snapshot maintenance for that pinned boundary. It
+creates a new immutable version only when at least
+`SNAPSHOT_INTERVAL_EVENTS` (128 by default) are covered beyond the latest
+snapshot. Catalog traversal is bounded by `SNAPSHOT_MAX_VERSIONS` (32 by
+default), and snapshot event/byte work is bounded by the admitted
+`LIMIT_CONTEXT_EVENTS` and `LIMIT_CONTEXT_BYTES`. The just-published job keeps
+its already-pinned context; later jobs can select the new snapshot. Maintenance
+failure is logged but does not fail dispatch: canonical replay remains the
+correctness path and a later dispatch can retry the deterministic build.
+
 `LIMIT_CONTEXT_EVENTS` is required for newly admitted jobs alongside the byte
 and tool-event budgets. Jobs persisted before this field existed retain a
 finite compatibility bound derived from their admitted turn limit. Event,

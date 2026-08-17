@@ -289,12 +289,14 @@ type DispatchAdmissionRequest struct {
 }
 
 type DispatchAdmissionResult struct {
-	Admitted  bool
-	State     domain.SchedulerState
-	Code      string
-	RetryAt   *time.Time
-	RunID     domain.RunID
-	AttemptID domain.AttemptID
+	Admitted        bool
+	State           domain.SchedulerState
+	Code            string
+	RetryAt         *time.Time
+	RunID           domain.RunID
+	AttemptID       domain.AttemptID
+	SessionID       domain.SessionID
+	ThroughSequence uint64
 }
 
 type ExpiredQuotaReservation struct {

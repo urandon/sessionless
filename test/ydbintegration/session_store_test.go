@@ -425,6 +425,9 @@ func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 	if err != nil || !admission.Admitted || admission.Code != "admitted" {
 		t.Fatalf("canonical admission=%#v err=%v", admission, err)
 	}
+	if admission.SessionID != thirdID || admission.ThroughSequence != 1 {
+		t.Fatalf("canonical admission context boundary=%#v", admission)
+	}
 	assertCount(t, client, "worker_jobs", tenantID, 1)
 	assertCount(t, client, "quota_reservations", tenantID, 1)
 	secondaryBinding := domain.FrontendBinding{

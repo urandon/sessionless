@@ -14,8 +14,10 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/portlog"
+	"gitcode.com/urandon/sessionless/internal/s3store"
 	"gitcode.com/urandon/sessionless/internal/scheduler"
 	"gitcode.com/urandon/sessionless/internal/serverlesshttp"
+	"gitcode.com/urandon/sessionless/internal/sessioncontext"
 	"gitcode.com/urandon/sessionless/internal/sqsqueue"
 	"gitcode.com/urandon/sessionless/internal/yandextriggers"
 	"gitcode.com/urandon/sessionless/internal/ydbclient"
@@ -54,23 +56,57 @@ func main() {
 		logger.Error("create dispatch queue", "error", err)
 		os.Exit(1)
 	}
+	limits := domain.ProductLimits{
+		MaxTenantQueueDepth: envUint("LIMIT_TENANT_QUEUE_DEPTH", 8),
+		MaxActiveRuns:       envUint("LIMIT_ACTIVE_RUNS", 1),
+		MaxRuntime:          envDuration("LIMIT_RUNTIME", 15*time.Minute),
+		MaxTurns:            envUint("LIMIT_TURNS", 30),
+		MaxInputBytes:       uint64(envUint("LIMIT_INPUT_BYTES", 16<<20)),
+		MaxContextBytes:     uint64(envUint("LIMIT_CONTEXT_BYTES", 64<<20)),
+		MaxContextEvents:    uint64(envUint("LIMIT_CONTEXT_EVENTS", 512)),
+		MaxArtifacts:        envUint("LIMIT_ARTIFACTS", 32),
+		MaxToolEvents:       envUint("LIMIT_TOOL_EVENTS", 128),
+		MaxToolEventBytes:   uint64(envUint("LIMIT_TOOL_EVENT_BYTES", 16<<20)),
+	}
+	snapshotBlobs, err := s3store.New(ctx, s3store.Config{
+		Endpoint: os.Getenv("S3_ENDPOINT"), Region: envOrDefault("S3_REGION", "ru-central1"),
+		Bucket: os.Getenv("S3_BUCKET"), AccessKeyID: os.Getenv("S3_ACCESS_KEY_ID"),
+		SecretAccessKey:        os.Getenv("S3_SECRET_ACCESS_KEY"),
+		ForcePathStyle:         envBool("S3_FORCE_PATH_STYLE"),
+		IAMMetadataCredentials: envBool("S3_IAM_METADATA_CREDENTIALS"),
+		MaxObjectBytes:         int64(limits.MaxContextBytes),
+	})
+	if err != nil {
+		logger.Error("create snapshot blob store", "error", err)
+		os.Exit(1)
+	}
+	snapshotBuilder, err := sessioncontext.NewSnapshotBuilder(state, snapshotBlobs)
+	if err != nil {
+		logger.Error("create snapshot builder", "error", err)
+		os.Exit(1)
+	}
+	snapshotMaintainer, err := sessioncontext.NewMaintainer(
+		state, snapshotBuilder, sessioncontext.MaintenancePolicy{
+			IntervalEvents: uint64(envUint("SNAPSHOT_INTERVAL_EVENTS", 128)),
+			MaxEvents:      limits.MaxContextEvents,
+			MaxBytes:       limits.MaxContextBytes,
+			MaxVersions:    uint64(envUint("SNAPSHOT_MAX_VERSIONS", 32)),
+		},
+	)
+	if err != nil {
+		logger.Error("create snapshot maintainer", "error", err)
+		os.Exit(1)
+	}
 	dispatcher, err := scheduler.NewDispatcher(
 		scheduler.Config{
 			BatchSize:            uint64(envUint("SCHEDULER_BATCH_SIZE", 25)),
 			ReservationTTL:       envDuration("SCHEDULER_RESERVATION_TTL", 5*time.Minute),
 			WakeRetryDelay:       envDuration("SCHEDULER_WAKE_RETRY_DELAY", time.Second),
 			MaxWakeDeliveryCount: envUint("SCHEDULER_WAKE_MAX_DELIVERY_COUNT", 5),
-			Limits: domain.ProductLimits{
-				MaxTenantQueueDepth: envUint("LIMIT_TENANT_QUEUE_DEPTH", 8),
-				MaxActiveRuns:       envUint("LIMIT_ACTIVE_RUNS", 1),
-				MaxRuntime:          envDuration("LIMIT_RUNTIME", 15*time.Minute),
-				MaxTurns:            envUint("LIMIT_TURNS", 30),
-				MaxInputBytes:       uint64(envUint("LIMIT_INPUT_BYTES", 16<<20)),
-				MaxContextBytes:     uint64(envUint("LIMIT_CONTEXT_BYTES", 64<<20)),
-				MaxContextEvents:    uint64(envUint("LIMIT_CONTEXT_EVENTS", 512)),
-				MaxArtifacts:        envUint("LIMIT_ARTIFACTS", 32),
-				MaxToolEvents:       envUint("LIMIT_TOOL_EVENTS", 128),
-				MaxToolEventBytes:   uint64(envUint("LIMIT_TOOL_EVENT_BYTES", 16<<20)),
+			Limits:               limits,
+			SnapshotMaintainer:   snapshotMaintainer,
+			SnapshotObserver: func(cause error) {
+				logger.Warn("snapshot maintenance deferred to canonical replay", "error", cause)
 			},
 			DefaultWorkload: domain.WorkloadShape{
 				Runtime:      envDuration("DEFAULT_WORKLOAD_RUNTIME", 5*time.Minute),

@@ -49,6 +49,66 @@ func TestSnapshotBuilderIsRetryDeterministic(t *testing.T) {
 	}
 }
 
+func TestSnapshotBuilderRejectsCrossSessionEventBeforeOpeningPayload(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	item := contextEvent(t, 1, domain.SessionEventUserMessage, []byte(`{"version":1,"text":"wrong session"}`))
+	item.Event.SessionID = "session-b"
+	item.Event.Payload.Key = domain.SessionEventObjectPrefix(
+		item.Event.TenantID, item.Event.SessionID, item.Event.ID,
+	) + "payload.json"
+	store := &snapshotStore{events: []domain.SessionEvent{item.Event}}
+	blobs := &snapshotBlobs{data: map[string][]byte{item.Event.Payload.Key: item.Payload}}
+	builder, err := sessioncontext.NewSnapshotBuilder(store, blobs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = builder.Create(ctx, sessioncontext.SnapshotRequest{
+		TenantID: "tenant-a", SessionID: "session-a", Version: 1,
+		ThroughSequence: 1, MaxEvents: 10, MaxBytes: 1 << 20,
+	})
+	if err == nil {
+		t.Fatal("cross-session event was accepted")
+	}
+	if len(blobs.opens) != 0 {
+		t.Fatalf("cross-session payload was opened before rejection: %v", blobs.opens)
+	}
+}
+
+func TestSnapshotMaintainerCreatesAtPolicyBoundaryAndSkipsCoveredHistory(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	items := []sessioncontext.EventPayload{
+		contextEvent(t, 1, domain.SessionEventUserMessage, []byte(`{"version":1,"text":"one"}`)),
+		contextEvent(t, 2, domain.SessionEventSystemNotice, []byte(`{"schema":"notice.v1"}`)),
+	}
+	store := &snapshotStore{events: []domain.SessionEvent{items[0].Event, items[1].Event}}
+	blobs := &snapshotBlobs{data: make(map[string][]byte)}
+	for _, item := range items {
+		blobs.data[item.Event.Payload.Key] = append([]byte(nil), item.Payload...)
+	}
+	builder, err := sessioncontext.NewSnapshotBuilder(store, blobs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	maintainer, err := sessioncontext.NewMaintainer(store, builder, sessioncontext.MaintenancePolicy{
+		IntervalEvents: 2, MaxEvents: 10, MaxBytes: 1 << 20, MaxVersions: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, created, err := maintainer.MaybeCreate(ctx, "tenant-a", "session-a", 1); err != nil || created {
+		t.Fatalf("below-boundary maintenance = created=%t err=%v", created, err)
+	}
+	snapshot, created, err := maintainer.MaybeCreate(ctx, "tenant-a", "session-a", 2)
+	if err != nil || !created || snapshot.ThroughSequence != 2 {
+		t.Fatalf("boundary maintenance = snapshot=%#v created=%t err=%v", snapshot, created, err)
+	}
+	if _, created, err := maintainer.MaybeCreate(ctx, "tenant-a", "session-a", 2); err != nil || created {
+		t.Fatalf("covered maintenance = created=%t err=%v", created, err)
+	}
+}
+
 type snapshotStore struct {
 	events   []domain.SessionEvent
 	snapshot *domain.SessionSnapshot
@@ -82,8 +142,23 @@ func (store *snapshotStore) PutSessionSnapshot(_ context.Context, snapshot domai
 	return nil
 }
 
+func (store *snapshotStore) ListSessionSnapshots(
+	_ context.Context,
+	tenantID domain.TenantID,
+	sessionID domain.SessionID,
+	afterVersion uint64,
+	limit uint64,
+) ([]domain.SessionSnapshot, error) {
+	if store.snapshot == nil || store.snapshot.TenantID != tenantID || store.snapshot.SessionID != sessionID ||
+		store.snapshot.Version <= afterVersion || limit == 0 {
+		return nil, nil
+	}
+	return []domain.SessionSnapshot{*store.snapshot}, nil
+}
+
 type snapshotBlobs struct {
-	data map[string][]byte
+	data  map[string][]byte
+	opens []string
 }
 
 func (store *snapshotBlobs) Put(
@@ -116,6 +191,7 @@ func (store *snapshotBlobs) Open(
 	if !ok {
 		return nil, errors.New("blob not found")
 	}
+	store.opens = append(store.opens, ref.Key)
 	return io.NopCloser(bytes.NewReader(data)), nil
 }
 

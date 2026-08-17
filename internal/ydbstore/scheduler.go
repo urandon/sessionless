@@ -119,6 +119,10 @@ func (store *Store) AdmitDispatch(
 		if !found {
 			return fmt.Errorf("run %q not found", request.RunID)
 		}
+		result.SessionID = run.SessionID
+		if outbox.ContextWindow != nil {
+			result.ThroughSequence = outbox.ContextWindow.ThroughSequence
+		}
 		if _, found, err := state.GetAttempt(ctx, request.AttemptID); err != nil {
 			return err
 		} else if !found {

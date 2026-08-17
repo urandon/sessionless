@@ -281,6 +281,12 @@ bridge until Telegram migration issue #36. Inputs, optional workspace, skills,
 and the latest checkpoint are copied into the same new invocation-only
 directory with tenant, path, size, and SHA-256 checks.
 
+Snapshot creation is owned by reconciler maintenance after successful canonical
+dispatch publication and acknowledgement. The maintenance trigger is an event
+interval, with bounded catalog versions, event count, and bytes. It is
+best-effort and never changes dispatch correctness; a failed deterministic
+build is retried by a later dispatch while workers retain canonical replay.
+
 Each harness boundary has a contiguous sequence, renews the lease when needed,
 stores an immutable checkpoint blob, and commits checkpoint metadata plus
 observed usage under the same fence. Limits bound runtime, turns, context

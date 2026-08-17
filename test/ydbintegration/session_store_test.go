@@ -384,6 +384,7 @@ func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 			MaxTenantQueueDepth: 8, MaxActiveRuns: 1,
 			MaxRuntime: 15 * time.Minute, MaxTurns: 30,
 			MaxInputBytes: 16 << 20, MaxContextBytes: 64 << 20, MaxArtifacts: 32,
+			MaxToolEvents: 128, MaxToolEventBytes: 16 << 20,
 		},
 		Workload: domain.WorkloadShape{Runtime: time.Minute, Turns: 1},
 	})
@@ -433,6 +434,21 @@ func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 		},
 		Events: terminalEvents,
 	}
+	missingAssistant := completion
+	missingAssistant.Events = append([]domain.SessionEventDraft(nil), terminalEvents[:2]...)
+	if err := store.CompleteWorkerJob(ctx, missingAssistant); err == nil {
+		t.Fatal("canonical success without an assistant event succeeded")
+	}
+	multipleAssistants := completion
+	multipleAssistants.Events = append(
+		append([]domain.SessionEventDraft(nil), terminalEvents...),
+		canonicalTerminalDraft(
+			tenantID, thirdID, "second-assistant", domain.SessionEventAssistantMessage, finishedAt,
+		),
+	)
+	if err := store.CompleteWorkerJob(ctx, multipleAssistants); err == nil {
+		t.Fatal("canonical success with multiple assistant events succeeded")
+	}
 	stale := completion
 	stale.Fence++
 	if err := store.CompleteWorkerJob(ctx, stale); !errors.Is(err, ydbstore.ErrLeaseLost) {
@@ -451,6 +467,13 @@ func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 	assertCount(t, client, "frontend_projection_outbox", tenantID, 1)
 	assertCount(t, client, "run_finalizations", tenantID, 1)
 	assertCount(t, client, "telegram_delivery_outbox", tenantID, 0)
+	manifestConflict := completion
+	manifestConflict.Manifest.Artifacts = []domain.Artifact{{
+		Name: "changed.json", MediaType: "application/json", Blob: terminalEvents[0].Payload,
+	}}
+	if err := store.CompleteWorkerJob(ctx, manifestConflict); !errors.Is(err, ydbstore.ErrRunFinalizationConflict) {
+		t.Fatalf("conflicting canonical manifest error=%v", err)
+	}
 	conflict := completion
 	conflict.Events = append([]domain.SessionEventDraft(nil), completion.Events...)
 	conflict.Events[2].Payload.SHA256 = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
@@ -625,6 +648,7 @@ func TestCanonicalFailureAndCancellationFinalizationAreAtomicAndIdempotent(t *te
 					MaxTenantQueueDepth: 8, MaxActiveRuns: 1,
 					MaxRuntime: time.Minute, MaxTurns: 4,
 					MaxInputBytes: 1 << 20, MaxContextBytes: 1 << 20, MaxArtifacts: 4,
+					MaxToolEvents: 16, MaxToolEventBytes: 1 << 20,
 				},
 				Workload: domain.WorkloadShape{Runtime: time.Minute, Turns: 1},
 			})
@@ -658,6 +682,16 @@ func TestCanonicalFailureAndCancellationFinalizationAreAtomicAndIdempotent(t *te
 						domain.SessionEventSystemNotice, failedAt,
 					),
 				},
+			}
+			invalidFailure := failure
+			invalidFailure.Events = []domain.SessionEventDraft{
+				canonicalTerminalDraft(
+					tenantID, sessionID, testCase.name+"-tool-only",
+					domain.SessionEventToolResult, failedAt,
+				),
+			}
+			if err := store.FailWorkerJob(ctx, invalidFailure); err == nil {
+				t.Fatal("canonical failure without exactly one system notice succeeded")
 			}
 			stale := failure
 			stale.Fence++

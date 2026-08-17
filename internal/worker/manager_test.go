@@ -173,6 +173,76 @@ func TestCanonicalWorkerFinalizesCancellationNoticeWithoutTelegramDelivery(t *te
 	}
 }
 
+func TestCanonicalWorkerRejectsToolEventsOutsideAdmittedBudgetBeforeUpload(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		maxEvents  uint32
+		maxBytes   uint64
+		toolEvents []ports.ExecutionToolEvent
+	}{
+		{
+			name: "count", maxEvents: 1, maxBytes: 1 << 20,
+			toolEvents: []ports.ExecutionToolEvent{
+				{Kind: domain.SessionEventToolCall, CallID: "call-1", ToolName: "lookup", Payload: []byte(`{"query":"one"}`)},
+				{Kind: domain.SessionEventToolResult, CallID: "call-1", ToolName: "lookup", Payload: []byte(`{"result":"two"}`)},
+			},
+		},
+		{
+			name: "bytes", maxEvents: 2, maxBytes: 8,
+			toolEvents: []ports.ExecutionToolEvent{
+				{Kind: domain.SessionEventToolCall, CallID: "call-1", ToolName: "lookup", Payload: []byte(`{"query":"too-large"}`)},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			clock := testkit.NewFakeClock(workerTestTime)
+			queue := testkit.NewMemoryQueue()
+			blobs := newMemoryBlobs()
+			state := newWorkerState()
+			loaded := workerFixture(t, ctx, blobs, "tenant-a", workerTestTime)
+			loaded.Job.Origin = &domain.FrontendEventOrigin{
+				BindingID: "binding-1", BindingRevision: 1,
+				Frontend: domain.Frontend("synthetic"), ExternalConversationID: "conversation-1",
+				ExternalEventID: "external-event-1",
+			}
+			loaded.Job.Limits.MaxToolEvents = test.maxEvents
+			loaded.Job.Limits.MaxToolEventBytes = test.maxBytes
+			state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
+			publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
+			manager, err := worker.New(worker.Config{
+				ScratchRoot: t.TempDir(), WorkerID: "worker-tool-budget",
+				DeliveryWakePublisher: newDeliveryWakePublisher(t),
+			}, clock, queue, state, blobs, resultHarness{
+				result: ports.ExecutionResult{Summary: "must not complete", ToolEvents: test.toolEvents},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			outcome, err := manager.RunOnce(ctx)
+			if err != nil || outcome != worker.OutcomeFailed {
+				t.Fatalf("outcome/error = %q/%v, want failed/nil", outcome, err)
+			}
+			if state.completions != 0 || state.failures != 1 || len(state.events) != 1 ||
+				state.events[0].Kind != domain.SessionEventSystemNotice {
+				t.Fatalf("terminal state completions/failures/events = %d/%d/%+v", state.completions, state.failures, state.events)
+			}
+			eventObjects := 0
+			for key := range blobs.data {
+				if strings.HasPrefix(key, domain.SessionObjectPrefix(loaded.Run.TenantID, loaded.Run.SessionID)+"events/") {
+					eventObjects++
+				}
+			}
+			if eventObjects != 1 {
+				t.Fatalf("canonical event objects = %d, want only the terminal notice", eventObjects)
+			}
+		})
+	}
+}
+
 func TestWorkerRejectsTraversalAndCrossTenantReferences(t *testing.T) {
 	t.Parallel()
 	for _, mutate := range []func(*ports.WorkerJobState){
@@ -409,7 +479,7 @@ func workerFixture(
 		Limits: domain.ProductLimits{
 			MaxTenantQueueDepth: 8, MaxActiveRuns: 1, MaxRuntime: time.Minute,
 			MaxTurns: 10, MaxInputBytes: 1 << 20, MaxContextBytes: 1 << 20,
-			MaxArtifacts: 10,
+			MaxArtifacts: 10, MaxToolEvents: 20, MaxToolEventBytes: 1 << 20,
 		},
 		DeliveryChat: domain.TelegramChatRef{
 			TenantID: tenant, ChatID: int64(len(suffix) + 1),
@@ -832,6 +902,22 @@ func (canonicalHarness) Execute(
 func (canonicalHarness) Cancel(context.Context, ports.ExecutionIdentity) error { return nil }
 
 var _ ports.HarnessDriver = canonicalHarness{}
+
+type resultHarness struct {
+	result ports.ExecutionResult
+}
+
+func (harness resultHarness) Execute(
+	context.Context,
+	ports.ExecutionRequest,
+	ports.ExecutionEventSink,
+) (ports.ExecutionResult, error) {
+	return harness.result, nil
+}
+
+func (resultHarness) Cancel(context.Context, ports.ExecutionIdentity) error { return nil }
+
+var _ ports.HarnessDriver = resultHarness{}
 
 type blockingHarness struct {
 	cancelCalls int

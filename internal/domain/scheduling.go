@@ -33,6 +33,8 @@ type ProductLimits struct {
 	MaxInputBytes       uint64        `json:"max_input_bytes"`
 	MaxContextBytes     uint64        `json:"max_context_bytes"`
 	MaxArtifacts        uint32        `json:"max_artifacts"`
+	MaxToolEvents       uint32        `json:"max_tool_events"`
+	MaxToolEventBytes   uint64        `json:"max_tool_event_bytes"`
 }
 
 func (limits ProductLimits) Validate() error {
@@ -53,6 +55,9 @@ func (limits ProductLimits) Validate() error {
 	}
 	if limits.MaxArtifacts == 0 {
 		return ValidationError{Field: "limits.max_artifacts", Reason: "must be positive"}
+	}
+	if limits.MaxToolEvents == 0 || limits.MaxToolEventBytes == 0 {
+		return ValidationError{Field: "limits.tool_events", Reason: "count and byte limits must be positive"}
 	}
 	return nil
 }

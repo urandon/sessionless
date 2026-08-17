@@ -24,7 +24,7 @@ type finalizationEventIdentity struct {
 
 func runFinalizationDigest(
 	status domain.RunStatus,
-	manifestID domain.ArtifactManifestID,
+	manifest *domain.ArtifactManifest,
 	events []domain.SessionEventDraft,
 ) (string, error) {
 	identities := make([]finalizationEventIdentity, 0, len(events))
@@ -34,15 +34,52 @@ func runFinalizationDigest(
 		})
 	}
 	payload, err := json.Marshal(struct {
-		Status     domain.RunStatus            `json:"status"`
-		ManifestID domain.ArtifactManifestID   `json:"manifest_id,omitempty"`
-		Events     []finalizationEventIdentity `json:"events"`
-	}{Status: status, ManifestID: manifestID, Events: identities})
+		Status   domain.RunStatus            `json:"status"`
+		Manifest *domain.ArtifactManifest    `json:"manifest,omitempty"`
+		Events   []finalizationEventIdentity `json:"events"`
+	}{Status: status, Manifest: manifest, Events: identities})
 	if err != nil {
 		return "", err
 	}
 	digest := sha256.Sum256(payload)
 	return hex.EncodeToString(digest[:]), nil
+}
+
+func validateCanonicalFinalizationEvents(
+	status domain.RunStatus,
+	events []domain.SessionEventDraft,
+) error {
+	switch status {
+	case domain.RunSucceeded:
+		assistantCount := 0
+		for _, event := range events {
+			switch event.Kind {
+			case domain.SessionEventAssistantMessage:
+				assistantCount++
+			case domain.SessionEventToolCall, domain.SessionEventToolResult:
+			default:
+				return domain.ValidationError{
+					Field: "worker_completion.events", Reason: "may contain only tool and assistant events",
+				}
+			}
+		}
+		if assistantCount != 1 {
+			return domain.ValidationError{
+				Field: "worker_completion.events", Reason: "must contain exactly one assistant event",
+			}
+		}
+	case domain.RunFailed, domain.RunCancelled:
+		if len(events) != 1 || events[0].Kind != domain.SessionEventSystemNotice {
+			return domain.ValidationError{
+				Field: "worker_failure.events", Reason: "must contain exactly one system notice",
+			}
+		}
+	default:
+		return domain.ValidationError{
+			Field: "worker_finalization.status", Reason: "must be a terminal worker status",
+		}
+	}
+	return nil
 }
 
 func matchingRunFinalizationTx(

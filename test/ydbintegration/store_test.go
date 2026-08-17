@@ -294,7 +294,7 @@ func TestConcurrentSchedulerAdmissionReservesOneSubscriptionSlot(t *testing.T) {
 		MaxTenantQueueDepth: 8, MaxActiveRuns: 1,
 		MaxRuntime: 15 * time.Minute, MaxTurns: 30,
 		MaxInputBytes: 16 << 20, MaxContextBytes: 64 << 20,
-		MaxArtifacts: 32,
+		MaxArtifacts: 32, MaxToolEvents: 128, MaxToolEventBytes: 16 << 20,
 	}
 	requests := []ports.DispatchAdmissionRequest{
 		admissionFixture(first, domain.QuotaReservationID(uniqueID("reservation-a")), now, limits),
@@ -424,6 +424,7 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 			MaxTenantQueueDepth: 8, MaxActiveRuns: 1,
 			MaxRuntime: 15 * time.Minute, MaxTurns: 30,
 			MaxInputBytes: 16 << 20, MaxContextBytes: 64 << 20, MaxArtifacts: 32,
+			MaxToolEvents: 128, MaxToolEventBytes: 16 << 20,
 		}),
 	)
 	if err != nil || !admission.Admitted {

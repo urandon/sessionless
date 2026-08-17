@@ -533,6 +533,12 @@ type failureEventEnvelope struct {
 	Cancelled bool   `json:"cancelled"`
 }
 
+type preparedToolEvent struct {
+	Kind    domain.SessionEventKind
+	CallID  string
+	Payload []byte
+}
+
 func (manager *Manager) canonicalCompletionEvents(
 	ctx context.Context,
 	loaded ports.WorkerJobState,
@@ -540,8 +546,20 @@ func (manager *Manager) canonicalCompletionEvents(
 	manifest domain.ArtifactManifest,
 	at time.Time,
 ) ([]domain.SessionEventDraft, error) {
-	events := make([]domain.SessionEventDraft, 0, len(result.ToolEvents)+1)
-	for index, tool := range result.ToolEvents {
+	if uint64(len(result.ToolEvents)) > uint64(loaded.Job.Limits.MaxToolEvents) {
+		return nil, domain.ValidationError{
+			Field: "execution_result.tool_events", Reason: "exceeds the admitted event count limit",
+		}
+	}
+	prepared := make([]preparedToolEvent, 0, len(result.ToolEvents))
+	var rawBytes, encodedBytes uint64
+	for _, tool := range result.ToolEvents {
+		if uint64(len(tool.Payload)) > loaded.Job.Limits.MaxToolEventBytes-rawBytes {
+			return nil, domain.ValidationError{
+				Field: "execution_result.tool_events", Reason: "exceeds the admitted byte limit",
+			}
+		}
+		rawBytes += uint64(len(tool.Payload))
 		if tool.Kind != domain.SessionEventToolCall && tool.Kind != domain.SessionEventToolResult {
 			return nil, domain.ValidationError{Field: "execution_tool_event.kind", Reason: "must be tool_call or tool_result"}
 		}
@@ -558,11 +576,23 @@ func (manager *Manager) canonicalCompletionEvents(
 		if err != nil {
 			return nil, err
 		}
+		if uint64(len(payload)) > loaded.Job.Limits.MaxToolEventBytes-encodedBytes {
+			return nil, domain.ValidationError{
+				Field: "execution_result.tool_events", Reason: "exceeds the admitted byte limit",
+			}
+		}
+		encodedBytes += uint64(len(payload))
+		prepared = append(prepared, preparedToolEvent{
+			Kind: tool.Kind, CallID: tool.CallID, Payload: payload,
+		})
+	}
+	events := make([]domain.SessionEventDraft, 0, len(result.ToolEvents)+1)
+	for index, tool := range prepared {
 		eventID := domain.SessionEventID(stableID(
 			"evt", string(loaded.Run.ID), fmt.Sprintf("tool-%04d", index+1),
 			string(tool.Kind), tool.CallID,
 		))
-		draft, err := manager.putCanonicalEventDraft(ctx, loaded, eventID, tool.Kind, payload, at)
+		draft, err := manager.putCanonicalEventDraft(ctx, loaded, eventID, tool.Kind, tool.Payload, at)
 		if err != nil {
 			return nil, err
 		}

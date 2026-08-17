@@ -230,8 +230,14 @@ func (store *Store) CompleteWorkerJob(
 		if err != nil {
 			return err
 		}
+		if err := validateCanonicalFinalizationEvents(domain.RunSucceeded, completion.Events); err != nil {
+			return err
+		}
+		if err := completion.Manifest.ValidateForRun(run); err != nil {
+			return err
+		}
 		finalizationDigest, err := runFinalizationDigest(
-			domain.RunSucceeded, completion.Manifest.ID, completion.Events,
+			domain.RunSucceeded, &completion.Manifest, completion.Events,
 		)
 		if err != nil {
 			return err
@@ -361,7 +367,10 @@ func (store *Store) FailWorkerJob(ctx context.Context, failure ports.WorkerFailu
 		if failure.Cancelled {
 			runStatus, attemptStatus = domain.RunCancelled, domain.AttemptCancelled
 		}
-		finalizationDigest, err := runFinalizationDigest(runStatus, "", failure.Events)
+		if err := validateCanonicalFinalizationEvents(runStatus, failure.Events); err != nil {
+			return err
+		}
+		finalizationDigest, err := runFinalizationDigest(runStatus, nil, failure.Events)
 		if err != nil {
 			return err
 		}

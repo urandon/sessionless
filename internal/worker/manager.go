@@ -546,7 +546,8 @@ func (manager *Manager) canonicalCompletionEvents(
 	manifest domain.ArtifactManifest,
 	at time.Time,
 ) ([]domain.SessionEventDraft, error) {
-	if uint64(len(result.ToolEvents)) > uint64(loaded.Job.Limits.MaxToolEvents) {
+	maxToolEvents, maxToolEventBytes := loaded.Job.Limits.EffectiveToolEventLimits()
+	if uint64(len(result.ToolEvents)) > uint64(maxToolEvents) {
 		return nil, domain.ValidationError{
 			Field: "execution_result.tool_events", Reason: "exceeds the admitted event count limit",
 		}
@@ -554,7 +555,7 @@ func (manager *Manager) canonicalCompletionEvents(
 	prepared := make([]preparedToolEvent, 0, len(result.ToolEvents))
 	var rawBytes, encodedBytes uint64
 	for _, tool := range result.ToolEvents {
-		if uint64(len(tool.Payload)) > loaded.Job.Limits.MaxToolEventBytes-rawBytes {
+		if uint64(len(tool.Payload)) > maxToolEventBytes-rawBytes {
 			return nil, domain.ValidationError{
 				Field: "execution_result.tool_events", Reason: "exceeds the admitted byte limit",
 			}
@@ -576,7 +577,7 @@ func (manager *Manager) canonicalCompletionEvents(
 		if err != nil {
 			return nil, err
 		}
-		if uint64(len(payload)) > loaded.Job.Limits.MaxToolEventBytes-encodedBytes {
+		if uint64(len(payload)) > maxToolEventBytes-encodedBytes {
 			return nil, domain.ValidationError{
 				Field: "execution_result.tool_events", Reason: "exceeds the admitted byte limit",
 			}

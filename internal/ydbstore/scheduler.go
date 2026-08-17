@@ -570,7 +570,7 @@ func validateAdmissionRequest(request ports.DispatchAdmissionRequest) error {
 			Field: "dispatch admission hold", Reason: "must end after a non-zero admission time",
 		}
 	}
-	if err := request.Limits.Validate(); err != nil {
+	if err := request.Limits.ValidateForAdmission(); err != nil {
 		return err
 	}
 	return request.Workload.Validate()

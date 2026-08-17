@@ -121,6 +121,10 @@ payloads below the owning session/event prefix and submits, in order:
 Tool event count and the total encoded tool-event payload bytes are bounded by
 the limits admitted with the worker job. The worker validates and prepares the
 whole tool-event batch before uploading any canonical tool payload.
+Worker jobs persisted before those explicit limits were introduced remain
+loadable during rolling upgrades: they use a finite compatibility budget of two
+tool events per admitted turn and the admitted context-byte limit. All newly
+admitted jobs persist explicit tool-event limits.
 
 Terminal failure and cancellation append one structured `system_notice` with
 the stable failure code and cancellation flag. Tool events are retained for

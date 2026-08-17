@@ -4,6 +4,7 @@ package ydbintegration
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -436,6 +437,45 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 	}
 	if loaded.Checkpoint != nil || loaded.Job.ReservationID != reservationID {
 		t.Fatalf("initial worker state = %+v", loaded)
+	}
+	legacyPayload, err := json.Marshal(loaded.Job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacyRecord map[string]any
+	if err := json.Unmarshal(legacyPayload, &legacyRecord); err != nil {
+		t.Fatal(err)
+	}
+	legacyLimits, ok := legacyRecord["limits"].(map[string]any)
+	if !ok {
+		t.Fatalf("worker job limits = %#v", legacyRecord["limits"])
+	}
+	delete(legacyLimits, "max_tool_events")
+	delete(legacyLimits, "max_tool_event_bytes")
+	legacyPayload, err = json.Marshal(legacyRecord)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.DB.ExecContext(context.Background(),
+		`UPDATE worker_jobs
+		 SET payload = CAST($1 AS JsonDocument)
+		 WHERE tenant_id = $2 AND run_id = $3`,
+		legacyPayload, tenantID, ingress.Run.ID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	loaded, found, err = store.LoadWorkerJob(context.Background(), tenantID, ingress.Run.ID)
+	if err != nil || !found {
+		t.Fatalf("load legacy worker job = found:%t error:%v", found, err)
+	}
+	maxToolEvents, maxToolEventBytes := loaded.Job.Limits.EffectiveToolEventLimits()
+	if maxToolEvents != 2*loaded.Job.Limits.MaxTurns ||
+		maxToolEventBytes != loaded.Job.Limits.MaxContextBytes {
+		t.Fatalf(
+			"legacy tool-event limits = %d/%d, want %d/%d",
+			maxToolEvents, maxToolEventBytes,
+			2*loaded.Job.Limits.MaxTurns, loaded.Job.Limits.MaxContextBytes,
+		)
 	}
 	lease, err := store.ClaimWorkerLease(context.Background(), ports.WorkerLeaseRequest{
 		TenantID: tenantID, RunID: ingress.Run.ID, AttemptID: ingress.Attempt.ID,

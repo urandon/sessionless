@@ -76,6 +76,103 @@ func TestWorkerCompletesOnceAndCleansReusedScratch(t *testing.T) {
 	}
 }
 
+func TestCanonicalWorkerFinalizesToolAndAssistantEventsWithoutTelegramDelivery(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	clock := testkit.NewFakeClock(workerTestTime)
+	queue := testkit.NewMemoryQueue()
+	blobs := newMemoryBlobs()
+	state := newWorkerState()
+	loaded := workerFixture(t, ctx, blobs, "tenant-a", workerTestTime)
+	loaded.Job.Origin = &domain.FrontendEventOrigin{
+		BindingID: "binding-1", BindingRevision: 1,
+		Frontend: domain.Frontend("synthetic"), ExternalConversationID: "conversation-1",
+		ExternalEventID: "external-event-1",
+	}
+	loaded.Job.DeliveryChat = domain.TelegramChatRef{}
+	loaded.Job.ReplyToMessageID = 0
+	state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
+	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
+	manager, err := worker.New(worker.Config{
+		ScratchRoot: t.TempDir(), WorkerID: "worker-canonical",
+		DeliveryWakePublisher: newDeliveryWakePublisher(t),
+	}, clock, queue, state, blobs, canonicalHarness{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := manager.RunOnce(ctx)
+	if err != nil || outcome != worker.OutcomeCompleted {
+		t.Fatalf("outcome/error = %q/%v", outcome, err)
+	}
+	if len(state.events) != 3 {
+		t.Fatalf("canonical events = %d, want tool call/result and assistant", len(state.events))
+	}
+	if len(state.deliveries) != 0 {
+		t.Fatalf("canonical worker created Telegram deliveries: %+v", state.deliveries)
+	}
+	for index, event := range state.events {
+		if event.Payload.TenantID != loaded.Run.TenantID ||
+			!strings.HasPrefix(event.Payload.Key, domain.SessionEventObjectPrefix(
+				loaded.Run.TenantID, loaded.Run.SessionID, event.ID,
+			)) {
+			t.Fatalf("event %d has non-canonical payload: %+v", index, event.Payload)
+		}
+		if _, found := blobs.data[event.Payload.Key]; !found {
+			t.Fatalf("event %d payload was not stored", index)
+		}
+	}
+	if state.events[0].Kind != domain.SessionEventToolCall ||
+		state.events[1].Kind != domain.SessionEventToolResult ||
+		state.events[2].Kind != domain.SessionEventAssistantMessage {
+		t.Fatalf("canonical event order = %+v", state.events)
+	}
+}
+
+func TestCanonicalWorkerFinalizesCancellationNoticeWithoutTelegramDelivery(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	clock := testkit.NewFakeClock(workerTestTime)
+	queue := testkit.NewMemoryQueue()
+	blobs := newMemoryBlobs()
+	state := newWorkerState()
+	loaded := workerFixture(t, ctx, blobs, "tenant-a", workerTestTime)
+	loaded.Job.Origin = &domain.FrontendEventOrigin{
+		BindingID: "binding-1", BindingRevision: 1,
+		Frontend: domain.Frontend("synthetic"), ExternalConversationID: "conversation-1",
+		ExternalEventID: "external-event-1",
+	}
+	loaded.Job.DeliveryChat = domain.TelegramChatRef{}
+	loaded.Job.ReplyToMessageID = 0
+	key := jobKey(loaded.Run.TenantID, loaded.Run.ID)
+	state.jobs[key] = loaded
+	state.cancelled[key] = true
+	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
+	harness, err := deterministicharness.New(deterministicharness.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := worker.New(worker.Config{
+		ScratchRoot: t.TempDir(), WorkerID: "worker-canonical-cancelled",
+		DeliveryWakePublisher: newDeliveryWakePublisher(t),
+	}, clock, queue, state, blobs, harness)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := manager.RunOnce(ctx)
+	if err != nil || outcome != worker.OutcomeCancelled {
+		t.Fatalf("outcome/error = %q/%v, want cancelled/nil", outcome, err)
+	}
+	if len(state.events) != 1 || state.events[0].Kind != domain.SessionEventSystemNotice {
+		t.Fatalf("canonical cancellation events = %+v, want one system notice", state.events)
+	}
+	if len(state.deliveries) != 0 {
+		t.Fatalf("canonical cancellation created Telegram deliveries: %+v", state.deliveries)
+	}
+	if _, found := blobs.data[state.events[0].Payload.Key]; !found {
+		t.Fatal("canonical cancellation payload was not stored")
+	}
+}
+
 func TestWorkerRejectsTraversalAndCrossTenantReferences(t *testing.T) {
 	t.Parallel()
 	for _, mutate := range []func(*ports.WorkerJobState){
@@ -451,6 +548,7 @@ type workerState struct {
 	checkpoints []domain.Checkpoint
 	usage       []domain.UsageObservation
 	manifests   []domain.ArtifactManifest
+	events      []domain.SessionEventDraft
 	deliveries  []domain.TelegramDeliveryOutbox
 	completions int
 	failures    int
@@ -581,12 +679,66 @@ func (state *workerState) CompleteWorkerJob(
 	}
 	state.jobs[key] = current
 	state.manifests = append(state.manifests, completion.Manifest)
+	state.events = append(state.events, completion.Events...)
+	state.completions++
+	return nil
+}
+
+func (state *workerState) CompleteLegacyTelegramWorkerJob(
+	_ context.Context,
+	completion ports.LegacyTelegramWorkerCompletion,
+) error {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	key := jobKey(completion.TenantID, completion.RunID)
+	current := state.jobs[key]
+	if current.Run.Status == domain.RunSucceeded {
+		return nil
+	}
+	if err := current.Run.Transition(domain.RunSucceeded, completion.At); err != nil {
+		return err
+	}
+	if err := current.Attempt.Transition(domain.AttemptSucceeded, completion.At); err != nil {
+		return err
+	}
+	if err := current.Reservation.Transition(domain.ReservationCommitted, completion.At); err != nil {
+		return err
+	}
+	state.jobs[key] = current
+	state.manifests = append(state.manifests, completion.Manifest)
 	state.deliveries = append(state.deliveries, completion.Delivery)
 	state.completions++
 	return nil
 }
 
 func (state *workerState) FailWorkerJob(_ context.Context, failure ports.WorkerFailure) error {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	key := jobKey(failure.TenantID, failure.RunID)
+	current := state.jobs[key]
+	runStatus, attemptStatus := domain.RunFailed, domain.AttemptFailed
+	if failure.Cancelled {
+		runStatus, attemptStatus = domain.RunCancelled, domain.AttemptCancelled
+	}
+	if err := current.Run.Transition(runStatus, failure.At); err != nil {
+		return err
+	}
+	if err := current.Attempt.Transition(attemptStatus, failure.At); err != nil {
+		return err
+	}
+	if err := current.Reservation.Transition(domain.ReservationReleased, failure.At); err != nil {
+		return err
+	}
+	state.jobs[key] = current
+	state.events = append(state.events, failure.Events...)
+	state.failures++
+	return nil
+}
+
+func (state *workerState) FailLegacyTelegramWorkerJob(
+	_ context.Context,
+	failure ports.LegacyTelegramWorkerFailure,
+) error {
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	key := jobKey(failure.TenantID, failure.RunID)
@@ -625,8 +777,9 @@ func jobKey(tenant domain.TenantID, runID domain.RunID) string {
 }
 
 var (
-	_ ports.BlobStore        = (*memoryBlobs)(nil)
-	_ ports.WorkerStateStore = (*workerState)(nil)
+	_ ports.BlobStore                      = (*memoryBlobs)(nil)
+	_ ports.WorkerStateStore               = (*workerState)(nil)
+	_ ports.LegacyTelegramWorkerStateStore = (*workerState)(nil)
 )
 
 type advancingHarness struct {
@@ -654,6 +807,31 @@ func (advancingHarness) Cancel(context.Context, ports.ExecutionIdentity) error {
 }
 
 var _ ports.HarnessDriver = advancingHarness{}
+
+type canonicalHarness struct{}
+
+func (canonicalHarness) Execute(
+	ctx context.Context,
+	_ ports.ExecutionRequest,
+	sink ports.ExecutionEventSink,
+) (ports.ExecutionResult, error) {
+	if err := sink.Emit(ctx, ports.ExecutionEvent{
+		Sequence: 1, Boundary: "tool-boundary", CheckpointState: []byte(`{"turn":1}`),
+	}); err != nil {
+		return ports.ExecutionResult{}, err
+	}
+	return ports.ExecutionResult{
+		Summary: "canonical result",
+		ToolEvents: []ports.ExecutionToolEvent{
+			{Kind: domain.SessionEventToolCall, CallID: "call-1", ToolName: "fixture", Payload: []byte(`{"arguments":{"value":1}}`)},
+			{Kind: domain.SessionEventToolResult, CallID: "call-1", ToolName: "fixture", Payload: []byte(`{"result":{"value":2}}`)},
+		},
+	}, nil
+}
+
+func (canonicalHarness) Cancel(context.Context, ports.ExecutionIdentity) error { return nil }
+
+var _ ports.HarnessDriver = canonicalHarness{}
 
 type blockingHarness struct {
 	cancelCalls int

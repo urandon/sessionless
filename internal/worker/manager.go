@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -112,11 +113,13 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 		return manager.deadLetter(ctx, message, "worker_job_not_found")
 	}
 	if loaded.Run.Status.Terminal() {
-		if err := manager.config.DeliveryWakePublisher.PublishTelegramDeliveryWake(
-			ctx, loaded.Run.TenantID, outboxwake.TelegramDeliveryID(loaded.Run.ID),
-			manager.clock.Now().UTC(),
-		); err != nil {
-			return manager.retry(ctx, message, err)
+		if loaded.Job.Origin == nil {
+			if err := manager.config.DeliveryWakePublisher.PublishTelegramDeliveryWake(
+				ctx, loaded.Run.TenantID, outboxwake.TelegramDeliveryID(loaded.Run.ID),
+				manager.clock.Now().UTC(),
+			); err != nil {
+				return manager.retry(ctx, message, err)
+			}
 		}
 		if err := manager.queue.Ack(ctx, message.ReceiptHandle); err != nil {
 			return "", err
@@ -228,27 +231,54 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 	if err != nil {
 		return manager.retry(ctx, message, err)
 	}
-	delivery := domain.TelegramDeliveryOutbox{
-		ID:       outboxwake.TelegramDeliveryID(loaded.Run.ID),
-		TenantID: loaded.Run.TenantID, RunID: loaded.Run.ID,
-		Chat: loaded.Job.DeliveryChat, ReplyToMessageID: loaded.Job.ReplyToMessageID,
-		Text: normalizedSummary(result.Summary), ArtifactManifestID: &manifest.ID,
-		Status:         domain.DeliveryPending,
-		IdempotencyKey: domain.IdempotencyKey(stableID("delivery", string(loaded.Run.ID))),
-		CreatedAt:      finishedAt, UpdatedAt: finishedAt,
-	}
-	if err := manager.state.CompleteWorkerJob(ctx, ports.WorkerCompletion{
-		TenantID: loaded.Run.TenantID, RunID: loaded.Run.ID,
-		AttemptID: loaded.Attempt.ID, ReservationID: loaded.Reservation.ID,
-		LeaseID: lease.ID, Fence: lease.FenceToken, At: finishedAt,
-		Manifest: manifest, Delivery: delivery,
-	}); err != nil {
-		return manager.retry(ctx, message, err)
-	}
-	if err := manager.config.DeliveryWakePublisher.PublishTelegramDeliveryWake(
-		ctx, loaded.Run.TenantID, delivery.ID, finishedAt,
-	); err != nil {
-		return manager.retry(ctx, message, err)
+	if loaded.Job.Origin != nil {
+		events, err := manager.canonicalCompletionEvents(
+			executionCtx, loaded, result, manifest, finishedAt,
+		)
+		if err != nil {
+			return manager.finishFailure(ctx, message, loaded, lease, false, "canonical_result_upload_failed")
+		}
+		lease, err = manager.ensureLease(executionCtx, loaded.Run.TenantID, lease)
+		if err != nil {
+			return manager.retry(ctx, message, err)
+		}
+		if err := manager.state.CompleteWorkerJob(ctx, ports.WorkerCompletion{
+			TenantID: loaded.Run.TenantID, RunID: loaded.Run.ID,
+			AttemptID: loaded.Attempt.ID, ReservationID: loaded.Reservation.ID,
+			LeaseID: lease.ID, Fence: lease.FenceToken, At: finishedAt,
+			Manifest: manifest, Events: events,
+		}); err != nil {
+			return manager.retry(ctx, message, err)
+		}
+	} else {
+		delivery := domain.TelegramDeliveryOutbox{
+			ID:       outboxwake.TelegramDeliveryID(loaded.Run.ID),
+			TenantID: loaded.Run.TenantID, RunID: loaded.Run.ID,
+			Chat: loaded.Job.DeliveryChat, ReplyToMessageID: loaded.Job.ReplyToMessageID,
+			Text: normalizedSummary(result.Summary), ArtifactManifestID: &manifest.ID,
+			Status:         domain.DeliveryPending,
+			IdempotencyKey: domain.IdempotencyKey(stableID("delivery", string(loaded.Run.ID))),
+			CreatedAt:      finishedAt, UpdatedAt: finishedAt,
+		}
+		legacyState, err := legacyTelegramWorkerState(manager.state)
+		if err != nil {
+			return manager.retry(ctx, message, err)
+		}
+		if err := legacyState.CompleteLegacyTelegramWorkerJob(
+			ctx, ports.LegacyTelegramWorkerCompletion{
+				TenantID: loaded.Run.TenantID, RunID: loaded.Run.ID,
+				AttemptID: loaded.Attempt.ID, ReservationID: loaded.Reservation.ID,
+				LeaseID: lease.ID, Fence: lease.FenceToken, At: finishedAt,
+				Manifest: manifest, Delivery: delivery,
+			},
+		); err != nil {
+			return manager.retry(ctx, message, err)
+		}
+		if err := manager.config.DeliveryWakePublisher.PublishTelegramDeliveryWake(
+			ctx, loaded.Run.TenantID, delivery.ID, finishedAt,
+		); err != nil {
+			return manager.retry(ctx, message, err)
+		}
 	}
 	if err := manager.queue.Ack(ctx, message.ReceiptHandle); err != nil {
 		return "", err
@@ -484,6 +514,126 @@ func (manager *Manager) uploadOutputs(
 	return manifest, manifest.ValidateForRun(loaded.Run)
 }
 
+type assistantEventEnvelope struct {
+	Schema             string                    `json:"schema"`
+	Summary            string                    `json:"summary"`
+	ArtifactManifestID domain.ArtifactManifestID `json:"artifact_manifest_id"`
+}
+
+type toolEventEnvelope struct {
+	Schema   string          `json:"schema"`
+	CallID   string          `json:"call_id"`
+	ToolName string          `json:"tool_name"`
+	Content  json.RawMessage `json:"content"`
+}
+
+type failureEventEnvelope struct {
+	Schema    string `json:"schema"`
+	Code      string `json:"code"`
+	Cancelled bool   `json:"cancelled"`
+}
+
+func (manager *Manager) canonicalCompletionEvents(
+	ctx context.Context,
+	loaded ports.WorkerJobState,
+	result ports.ExecutionResult,
+	manifest domain.ArtifactManifest,
+	at time.Time,
+) ([]domain.SessionEventDraft, error) {
+	events := make([]domain.SessionEventDraft, 0, len(result.ToolEvents)+1)
+	for index, tool := range result.ToolEvents {
+		if tool.Kind != domain.SessionEventToolCall && tool.Kind != domain.SessionEventToolResult {
+			return nil, domain.ValidationError{Field: "execution_tool_event.kind", Reason: "must be tool_call or tool_result"}
+		}
+		if strings.TrimSpace(tool.CallID) == "" || strings.TrimSpace(tool.ToolName) == "" {
+			return nil, domain.ValidationError{Field: "execution_tool_event", Reason: "requires call and tool names"}
+		}
+		if !json.Valid(tool.Payload) {
+			return nil, domain.ValidationError{Field: "execution_tool_event.payload", Reason: "must be valid JSON"}
+		}
+		payload, err := json.Marshal(toolEventEnvelope{
+			Schema: "sessionless.tool-event.v1", CallID: tool.CallID,
+			ToolName: tool.ToolName, Content: json.RawMessage(tool.Payload),
+		})
+		if err != nil {
+			return nil, err
+		}
+		eventID := domain.SessionEventID(stableID(
+			"evt", string(loaded.Run.ID), fmt.Sprintf("tool-%04d", index+1),
+			string(tool.Kind), tool.CallID,
+		))
+		draft, err := manager.putCanonicalEventDraft(ctx, loaded, eventID, tool.Kind, payload, at)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, draft)
+	}
+	payload, err := json.Marshal(assistantEventEnvelope{
+		Schema:  "sessionless.assistant-message.v1",
+		Summary: normalizedSummary(result.Summary), ArtifactManifestID: manifest.ID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	eventID := domain.SessionEventID(stableID("evt", string(loaded.Run.ID), "assistant"))
+	draft, err := manager.putCanonicalEventDraft(
+		ctx, loaded, eventID, domain.SessionEventAssistantMessage, payload, at,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return append(events, draft), nil
+}
+
+func (manager *Manager) canonicalFailureEvents(
+	ctx context.Context,
+	loaded ports.WorkerJobState,
+	cancelled bool,
+	code string,
+	at time.Time,
+) ([]domain.SessionEventDraft, error) {
+	payload, err := json.Marshal(failureEventEnvelope{
+		Schema: "sessionless.run-terminal-notice.v1", Code: code, Cancelled: cancelled,
+	})
+	if err != nil {
+		return nil, err
+	}
+	eventID := domain.SessionEventID(stableID("evt", string(loaded.Run.ID), "terminal-notice"))
+	draft, err := manager.putCanonicalEventDraft(
+		ctx, loaded, eventID, domain.SessionEventSystemNotice, payload, at,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return []domain.SessionEventDraft{draft}, nil
+}
+
+func (manager *Manager) putCanonicalEventDraft(
+	ctx context.Context,
+	loaded ports.WorkerJobState,
+	eventID domain.SessionEventID,
+	kind domain.SessionEventKind,
+	payload []byte,
+	at time.Time,
+) (domain.SessionEventDraft, error) {
+	digest := digestHex(payload)
+	key := domain.SessionEventObjectPrefix(
+		loaded.Run.TenantID, loaded.Run.SessionID, eventID,
+	) + "payloads/sha256/" + digest + ".json"
+	ref, err := manager.blobs.Put(ctx, loaded.Run.TenantID, key, bytes.NewReader(payload))
+	if err != nil {
+		return domain.SessionEventDraft{}, err
+	}
+	draft := domain.SessionEventDraft{
+		ID: eventID, Kind: kind,
+		IdempotencyKey: domain.IdempotencyKey(stableID(
+			"evtkey", string(loaded.Run.ID), string(eventID),
+		)),
+		Payload: ref, CreatedAt: at,
+	}
+	return draft, draft.ValidateForRun(loaded.Run)
+}
+
 func (manager *Manager) finishFailure(
 	ctx context.Context,
 	message ports.ReceivedMessage,
@@ -507,19 +657,44 @@ func (manager *Manager) finishFailure(
 		return manager.retry(ctx, message, err)
 	}
 	failedAt := manager.clock.Now().UTC()
-	if err := manager.state.FailWorkerJob(ctx, ports.WorkerFailure{
-		TenantID: loaded.Run.TenantID, RunID: loaded.Run.ID,
-		AttemptID: loaded.Attempt.ID, ReservationID: loaded.Reservation.ID,
-		LeaseID: lease.ID, Fence: lease.FenceToken,
-		At: failedAt, Cancelled: cancelled, Code: code,
-		Delivery: failureDelivery(loaded, cancelled, code, failedAt),
-	}); err != nil {
-		return manager.retry(ctx, message, err)
-	}
-	if err := manager.config.DeliveryWakePublisher.PublishTelegramDeliveryWake(
-		ctx, loaded.Run.TenantID, outboxwake.TelegramDeliveryID(loaded.Run.ID), failedAt,
-	); err != nil {
-		return manager.retry(ctx, message, err)
+	if loaded.Job.Origin != nil {
+		events, err := manager.canonicalFailureEvents(ctx, loaded, cancelled, code, failedAt)
+		if err != nil {
+			return manager.retry(ctx, message, err)
+		}
+		lease, err = manager.ensureLease(ctx, loaded.Run.TenantID, lease)
+		if err != nil {
+			return manager.retry(ctx, message, err)
+		}
+		if err := manager.state.FailWorkerJob(ctx, ports.WorkerFailure{
+			TenantID: loaded.Run.TenantID, RunID: loaded.Run.ID,
+			AttemptID: loaded.Attempt.ID, ReservationID: loaded.Reservation.ID,
+			LeaseID: lease.ID, Fence: lease.FenceToken,
+			At: failedAt, Cancelled: cancelled, Code: code, Events: events,
+		}); err != nil {
+			return manager.retry(ctx, message, err)
+		}
+	} else {
+		delivery := failureDelivery(loaded, cancelled, code, failedAt)
+		legacyState, err := legacyTelegramWorkerState(manager.state)
+		if err != nil {
+			return manager.retry(ctx, message, err)
+		}
+		if err := legacyState.FailLegacyTelegramWorkerJob(
+			ctx, ports.LegacyTelegramWorkerFailure{
+				TenantID: loaded.Run.TenantID, RunID: loaded.Run.ID,
+				AttemptID: loaded.Attempt.ID, ReservationID: loaded.Reservation.ID,
+				LeaseID: lease.ID, Fence: lease.FenceToken,
+				At: failedAt, Cancelled: cancelled, Code: code, Delivery: delivery,
+			},
+		); err != nil {
+			return manager.retry(ctx, message, err)
+		}
+		if err := manager.config.DeliveryWakePublisher.PublishTelegramDeliveryWake(
+			ctx, loaded.Run.TenantID, outboxwake.TelegramDeliveryID(loaded.Run.ID), failedAt,
+		); err != nil {
+			return manager.retry(ctx, message, err)
+		}
 	}
 	if err := manager.queue.Ack(ctx, message.ReceiptHandle); err != nil {
 		return "", err
@@ -528,6 +703,16 @@ func (manager *Manager) finishFailure(
 		return OutcomeCancelled, nil
 	}
 	return OutcomeFailed, nil
+}
+
+func legacyTelegramWorkerState(
+	state ports.WorkerStateStore,
+) (ports.LegacyTelegramWorkerStateStore, error) {
+	legacy, ok := state.(ports.LegacyTelegramWorkerStateStore)
+	if !ok {
+		return nil, errors.New("worker state store does not support legacy Telegram finalization")
+	}
+	return legacy, nil
 }
 
 func (manager *Manager) ensureLease(

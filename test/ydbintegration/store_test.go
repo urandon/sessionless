@@ -483,7 +483,7 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 		IdempotencyKey: domain.IdempotencyKey(uniqueID("delivery-key")),
 		CreatedAt:      finishedAt, UpdatedAt: finishedAt,
 	}
-	if err := store.CompleteWorkerJob(context.Background(), ports.WorkerCompletion{
+	if err := store.CompleteLegacyTelegramWorkerJob(context.Background(), ports.LegacyTelegramWorkerCompletion{
 		TenantID: tenantID, RunID: ingress.Run.ID, AttemptID: ingress.Attempt.ID,
 		ReservationID: reservationID, LeaseID: lease.ID, Fence: lease.FenceToken,
 		At: finishedAt, Manifest: manifest, Delivery: delivery,

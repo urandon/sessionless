@@ -112,17 +112,6 @@ func (store *Store) AdmitDispatch(
 			result.Code = "dispatch_not_pending"
 			return nil
 		}
-		// SESSION-04 (#23) owns frontend-neutral assistant/tool finalization and
-		// projection work. Admitting an origin-only job before that boundary
-		// exists would execute successfully and then fail terminal commit while
-		// trying to manufacture a Telegram delivery target. Keep the durable
-		// outbox pending so it can be admitted safely after the projection slice
-		// lands; legacy Telegram-targeted jobs continue through the MVP worker.
-		if outbox.Origin != nil && outbox.DeliveryChat.ChatID == 0 {
-			result.State = domain.SchedulerDraining
-			result.Code = "canonical_projection_pending"
-			return nil
-		}
 		run, found, err := state.GetRun(ctx, request.RunID)
 		if err != nil {
 			return err

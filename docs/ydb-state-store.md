@@ -27,6 +27,7 @@ domain objects whose tenant does not match it.
 | `frontend_bindings` | `(tenant_id, binding_id)` | point-read/switch a revisioned frontend binding |
 | `frontend_binding_keys` | `(tenant_id, frontend, external_conversation_id)` | point-resolve an external conversation without a scan |
 | `frontend_ingress_idempotency` | `(tenant_id, binding_id, idempotency_key)` | point-resolve a frontend duplicate to its original session event and run, including after a binding switch |
+| `frontend_projection_outbox` | `(tenant_id, frontend_projection_id)` | point-read frontend-neutral work referencing a canonical assistant/system event and binding revision |
 | `session_participants` | `(tenant_id, session_id, user_id)` | point-authorize tenant membership and session role |
 | `session_snapshots` | `(tenant_id, session_id, version)` | bounded prefix-read immutable context materializations |
 | `session_activity` | `(tenant_id, user_id, status, activity_bucket, updated_at, session_id)` | fixed 16-query recent-session fan-out per member |
@@ -43,6 +44,7 @@ domain objects whose tenant does not match it.
 | `tenant_scheduler_counters` | `(tenant_id)` | point-read/update bounded queue and active-run counters |
 | `worker_jobs` | `(tenant_id, run_id)` | point-load immutable worker references and admitted limits |
 | `runs` | `(tenant_id, run_id)` | point-read/update one run with explicit session/event correlation |
+| `run_finalizations` | `(tenant_id, run_id)` | point-fence an exact terminal callback digest and reject conflicting retries |
 | `runs_by_session` | `(tenant_id, session_id, created_at, run_id)` | bounded recent-run read for one session |
 | `run_idempotency` | `(tenant_id, idempotency_key)` | point-resolve an ingress command to a run |
 | `attempts` | `(tenant_id, attempt_id)` | point-read/update one attempt |

@@ -44,6 +44,7 @@ a production adapter.
 | `frontend_bindings` | `(tenant_id, binding_id)` | tenant entity | random binding ID; load splitting enabled |
 | `frontend_binding_keys` | `(tenant_id, frontend, external_conversation_id)` | tenant entity | point lookup under an already authorized tenant |
 | `frontend_ingress_idempotency` | `(tenant_id, binding_id, idempotency_key)` | tenant entity | point deduplication behind a random binding prefix, independent of the binding's current session |
+| `frontend_projection_outbox` | `(tenant_id, frontend_projection_id)` | tenant entity | stable event/binding-derived IDs distribute generic projection work |
 | `session_participants` | `(tenant_id, session_id, user_id)` | tenant entity | membership is behind a random session prefix |
 | `session_snapshots` | `(tenant_id, session_id, version)` | per-session ordered | version grows only behind a random session prefix |
 | `session_activity` | `(tenant_id, user_id, status, activity_bucket, updated_at, session_id)` | append-heavy | fixed 16-way per-user fan-out avoids one chronological write edge |
@@ -60,6 +61,7 @@ a production adapter.
 | `tenant_scheduler_counters` | `(tenant_id)` | tenant entity | one bounded counter row per tenant; load splitting enabled |
 | `worker_jobs` | `(tenant_id, run_id)` | tenant entity | point worker descriptor distributed by tenant and random run ID |
 | `runs` | `(tenant_id, run_id)` | tenant entity | random run ID; load splitting enabled |
+| `run_finalizations` | `(tenant_id, run_id)` | tenant entity | one point idempotency fence per terminal run |
 | `runs_by_session` | `(tenant_id, session_id, created_at, run_id)` | per-session ordered | time ordering remains behind a random session prefix |
 | `run_idempotency` | `(tenant_id, idempotency_key)` | tenant entity | point lookup; load splitting enabled |
 | `attempts` | `(tenant_id, attempt_id)` | tenant entity | random attempt ID; load splitting enabled |

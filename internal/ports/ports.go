@@ -392,8 +392,19 @@ type ExecutionEventSink interface {
 }
 
 type ExecutionResult struct {
-	Summary string
-	Outputs []ExecutionOutput
+	Summary    string
+	Outputs    []ExecutionOutput
+	ToolEvents []ExecutionToolEvent
+}
+
+// ExecutionToolEvent is a reconstructable tool boundary returned by a harness.
+// Operational progress/checkpoints remain ExecutionEvent values and are not
+// promoted into canonical history.
+type ExecutionToolEvent struct {
+	Kind     domain.SessionEventKind
+	CallID   string
+	ToolName string
+	Payload  []byte
 }
 
 type ExecutionOutput struct {
@@ -473,11 +484,41 @@ type WorkerCompletion struct {
 	Fence         uint64
 	At            time.Time
 	Manifest      domain.ArtifactManifest
-	Delivery      domain.TelegramDeliveryOutbox
+	Events        []domain.SessionEventDraft
 	Usage         []domain.UsageObservation
 }
 
 type WorkerFailure struct {
+	TenantID      domain.TenantID
+	RunID         domain.RunID
+	AttemptID     domain.AttemptID
+	ReservationID domain.QuotaReservationID
+	LeaseID       domain.LeaseID
+	Fence         uint64
+	At            time.Time
+	Cancelled     bool
+	Code          string
+	Events        []domain.SessionEventDraft
+}
+
+// LegacyTelegramWorkerCompletion and LegacyTelegramWorkerFailure keep the
+// pre-canonical Telegram transaction available while #36/#37 migrate the
+// adapter. They are deliberately outside WorkerStateStore so the canonical
+// finalization boundary contains no transport-specific delivery type.
+type LegacyTelegramWorkerCompletion struct {
+	TenantID      domain.TenantID
+	RunID         domain.RunID
+	AttemptID     domain.AttemptID
+	ReservationID domain.QuotaReservationID
+	LeaseID       domain.LeaseID
+	Fence         uint64
+	At            time.Time
+	Manifest      domain.ArtifactManifest
+	Delivery      domain.TelegramDeliveryOutbox
+	Usage         []domain.UsageObservation
+}
+
+type LegacyTelegramWorkerFailure struct {
 	TenantID      domain.TenantID
 	RunID         domain.RunID
 	AttemptID     domain.AttemptID
@@ -508,4 +549,11 @@ type WorkerStateStore interface {
 	CompleteWorkerJob(ctx context.Context, completion WorkerCompletion) error
 	FailWorkerJob(ctx context.Context, failure WorkerFailure) error
 	CancellationRequested(ctx context.Context, tenantID domain.TenantID, runID domain.RunID) (bool, error)
+}
+
+// LegacyTelegramWorkerStateStore is a temporary adapter boundary for worker
+// jobs created before Telegram uses canonical frontend projections.
+type LegacyTelegramWorkerStateStore interface {
+	CompleteLegacyTelegramWorkerJob(ctx context.Context, completion LegacyTelegramWorkerCompletion) error
+	FailLegacyTelegramWorkerJob(ctx context.Context, failure LegacyTelegramWorkerFailure) error
 }

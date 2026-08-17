@@ -19,6 +19,7 @@ type (
 	SessionID                string
 	SessionEventID           string
 	FrontendBindingID        string
+	FrontendProjectionID     string
 	SessionSnapshotID        string
 	TenantInvitationID       string
 	UploadIntentID           string
@@ -44,6 +45,9 @@ func (id SessionID) Validate() error      { return ValidateOpaqueID("session_id"
 func (id SessionEventID) Validate() error { return ValidateOpaqueID("session_event_id", string(id)) }
 func (id FrontendBindingID) Validate() error {
 	return ValidateOpaqueID("frontend_binding_id", string(id))
+}
+func (id FrontendProjectionID) Validate() error {
+	return ValidateOpaqueID("frontend_projection_id", string(id))
 }
 func (id SessionSnapshotID) Validate() error {
 	return ValidateOpaqueID("session_snapshot_id", string(id))

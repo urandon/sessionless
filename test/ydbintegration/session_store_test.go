@@ -363,10 +363,22 @@ func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 	} {
 		assertCount(t, client, table, tenantID, 1)
 	}
+	if _, err := client.DB.ExecContext(ctx,
+		`INSERT INTO subscription_connections
+		 (tenant_id, subscription_connection_id, actor_id, provider, credential_ref,
+		  entitlement_state, quota_state, observed_at, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		tenantID, request.SubscriptionConnectionID, userID, "deterministic", "",
+		domain.EntitlementActive, domain.ProviderQuotaUnknown,
+		committedAt, committedAt, committedAt,
+	); err != nil {
+		t.Fatal(err)
+	}
+	canonicalReservationID := domain.QuotaReservationID(uniqueID("canonical-reservation"))
 	admission, err := store.AdmitDispatch(ctx, ports.DispatchAdmissionRequest{
 		TenantID: tenantID, OutboxID: request.DispatchID, RunID: request.RunID,
 		AttemptID:     request.AttemptID,
-		ReservationID: domain.QuotaReservationID(uniqueID("canonical-reservation")),
+		ReservationID: canonicalReservationID,
 		Now:           committedAt, HoldUntil: committedAt.Add(time.Minute),
 		Limits: domain.ProductLimits{
 			MaxTenantQueueDepth: 8, MaxActiveRuns: 1,
@@ -375,11 +387,76 @@ func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 		},
 		Workload: domain.WorkloadShape{Runtime: time.Minute, Turns: 1},
 	})
-	if err != nil || admission.Admitted || admission.Code != "canonical_projection_pending" {
+	if err != nil || !admission.Admitted || admission.Code != "admitted" {
 		t.Fatalf("canonical admission=%#v err=%v", admission, err)
 	}
-	assertCount(t, client, "worker_jobs", tenantID, 0)
-	assertCount(t, client, "quota_reservations", tenantID, 0)
+	assertCount(t, client, "worker_jobs", tenantID, 1)
+	assertCount(t, client, "quota_reservations", tenantID, 1)
+	secondaryBinding := domain.FrontendBinding{
+		ID:       domain.FrontendBindingID(uniqueID("binding-secondary")),
+		TenantID: tenantID, Frontend: domain.Frontend("synthetic"),
+		ExternalConversationID: uniqueID("conversation-secondary"),
+		SessionID:              thirdID, Revision: 1,
+		CreatedAt: committedAt.Add(2 * time.Second), UpdatedAt: committedAt.Add(2 * time.Second),
+	}
+	if err := store.BindFrontend(ctx, secondaryBinding); err != nil {
+		t.Fatal(err)
+	}
+	loaded, found, err := store.LoadWorkerJob(ctx, tenantID, request.RunID)
+	if err != nil || !found {
+		t.Fatalf("canonical worker job found=%t err=%v", found, err)
+	}
+	lease, err := store.ClaimWorkerLease(ctx, ports.WorkerLeaseRequest{
+		TenantID: tenantID, RunID: request.RunID, AttemptID: request.AttemptID,
+		LeaseID: domain.LeaseID(uniqueID("canonical-lease")), WorkerID: "canonical-worker",
+		Now: committedAt.Add(3 * time.Second), ExpiresAt: committedAt.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StartWorkerJob(ctx, loaded, lease, committedAt.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	finishedAt := committedAt.Add(4 * time.Second)
+	terminalEvents := []domain.SessionEventDraft{
+		canonicalTerminalDraft(tenantID, thirdID, "tool-call", domain.SessionEventToolCall, finishedAt),
+		canonicalTerminalDraft(tenantID, thirdID, "tool-result", domain.SessionEventToolResult, finishedAt),
+		canonicalTerminalDraft(tenantID, thirdID, "assistant", domain.SessionEventAssistantMessage, finishedAt),
+	}
+	completion := ports.WorkerCompletion{
+		TenantID: tenantID, RunID: request.RunID, AttemptID: request.AttemptID,
+		ReservationID: canonicalReservationID, LeaseID: lease.ID, Fence: lease.FenceToken,
+		At: finishedAt,
+		Manifest: domain.ArtifactManifest{
+			ID:       domain.ArtifactManifestID(uniqueID("canonical-output-manifest")),
+			TenantID: tenantID, RunID: request.RunID, CreatedAt: finishedAt,
+		},
+		Events: terminalEvents,
+	}
+	stale := completion
+	stale.Fence++
+	if err := store.CompleteWorkerJob(ctx, stale); !errors.Is(err, ydbstore.ErrLeaseLost) {
+		t.Fatalf("stale canonical completion error=%v", err)
+	}
+	assertCount(t, client, "session_events", tenantID, 1)
+	assertCount(t, client, "frontend_projection_outbox", tenantID, 0)
+	assertCount(t, client, "run_finalizations", tenantID, 0)
+	if err := store.CompleteWorkerJob(ctx, completion); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CompleteWorkerJob(ctx, completion); err != nil {
+		t.Fatalf("exact canonical completion retry: %v", err)
+	}
+	assertCount(t, client, "session_events", tenantID, 4)
+	assertCount(t, client, "frontend_projection_outbox", tenantID, 1)
+	assertCount(t, client, "run_finalizations", tenantID, 1)
+	assertCount(t, client, "telegram_delivery_outbox", tenantID, 0)
+	conflict := completion
+	conflict.Events = append([]domain.SessionEventDraft(nil), completion.Events...)
+	conflict.Events[2].Payload.SHA256 = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+	if err := store.CompleteWorkerJob(ctx, conflict); !errors.Is(err, ydbstore.ErrRunFinalizationConflict) {
+		t.Fatalf("conflicting canonical completion error=%v", err)
+	}
 
 	bad := request
 	bad.IdempotencyKey = domain.IdempotencyKey(uniqueID("ingress-bad"))
@@ -398,7 +475,8 @@ func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 	if _, err := store.CommitCanonicalUserEvent(ctx, bad); err == nil {
 		t.Fatal("commit accepted an artifact outside the session/event prefix")
 	}
-	for _, table := range []string{"session_events", "runs", "attempts", "dispatch_outbox"} {
+	assertCount(t, client, "session_events", tenantID, 4)
+	for _, table := range []string{"runs", "attempts", "dispatch_outbox"} {
 		assertCount(t, client, table, tenantID, 1)
 	}
 
@@ -465,6 +543,187 @@ func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 	}
 	if _, err := store.CommitCanonicalUserEvent(ctx, request); err == nil {
 		t.Fatal("removed session participant committed a duplicate")
+	}
+}
+
+func TestCanonicalFailureAndCancellationFinalizationAreAtomicAndIdempotent(t *testing.T) {
+	store, client := openStore(t)
+	ctx := context.Background()
+	baseTime := time.Now().UTC().Truncate(time.Microsecond)
+	for index, testCase := range []struct {
+		name          string
+		cancelled     bool
+		runStatus     domain.RunStatus
+		attemptStatus domain.AttemptStatus
+	}{
+		{name: "failure", runStatus: domain.RunFailed, attemptStatus: domain.AttemptFailed},
+		{name: "cancellation", cancelled: true, runStatus: domain.RunCancelled, attemptStatus: domain.AttemptCancelled},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			now := baseTime.Add(time.Duration(index) * time.Hour)
+			tenantID := domain.TenantID(uniqueID("tenant-terminal-" + testCase.name))
+			userID := domain.UserID(uniqueID("user-terminal-" + testCase.name))
+			seedCanonicalMembership(t, client.DB, tenantID, userID, now)
+			frontend := domain.Frontend("synthetic")
+			bindingID := domain.FrontendBindingID(uniqueID("binding-terminal-" + testCase.name))
+			sessionID := domain.SessionID(uniqueID("session-terminal-" + testCase.name))
+			frontendState, err := store.EnsureFrontendSession(ctx, ports.FrontendSessionRequest{
+				TenantID: tenantID, UserID: userID, Frontend: frontend,
+				ExternalConversationID: uniqueID("conversation-terminal-" + testCase.name),
+				BindingID:              bindingID, SessionID: sessionID, At: now,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			committedAt := now.Add(time.Second)
+			eventID := domain.SessionEventID(uniqueID("event-user-terminal-" + testCase.name))
+			runID := domain.RunID(uniqueID("run-terminal-" + testCase.name))
+			payload := domain.BlobRef{
+				TenantID: tenantID,
+				Key: domain.SessionEventObjectPrefix(
+					tenantID, frontendState.Session.ID, eventID,
+				) + "message.json",
+				Size: 2, SHA256: canonicalDigest,
+			}
+			request := ports.CanonicalUserEventCommit{
+				TenantID: tenantID, UserID: userID, BindingID: bindingID,
+				ExpectedBindingRevision: frontendState.Binding.Revision,
+				Origin: domain.FrontendEventOrigin{
+					BindingID: bindingID, BindingRevision: frontendState.Binding.Revision,
+					Frontend: frontend, ExternalConversationID: frontendState.Binding.ExternalConversationID,
+					ExternalEventID: uniqueID("external-terminal-" + testCase.name),
+				},
+				IdempotencyKey: domain.IdempotencyKey(uniqueID("ingress-terminal-key-" + testCase.name)),
+				ExpireAt:       committedAt.Add(24 * time.Hour), EventID: eventID, Payload: payload,
+				RunID: runID, AttemptID: domain.AttemptID(uniqueID("attempt-terminal-" + testCase.name)),
+				SubscriptionConnectionID: domain.SubscriptionConnectionID(uniqueID("subscription-terminal-" + testCase.name)),
+				ManifestID:               domain.ArtifactManifestID(uniqueID("manifest-terminal-" + testCase.name)),
+				Artifacts:                []domain.Artifact{{Name: "message.json", MediaType: "application/json", Blob: payload}},
+				DispatchID:               domain.DispatchOutboxID(uniqueID("dispatch-terminal-" + testCase.name)),
+				CommittedAt:              committedAt,
+			}
+			if _, err := store.CommitCanonicalUserEvent(ctx, request); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := client.DB.ExecContext(ctx,
+				`INSERT INTO subscription_connections
+				 (tenant_id, subscription_connection_id, actor_id, provider, credential_ref,
+				  entitlement_state, quota_state, observed_at, created_at, updated_at)
+				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+				tenantID, request.SubscriptionConnectionID, userID, "deterministic", "",
+				domain.EntitlementActive, domain.ProviderQuotaUnknown,
+				committedAt, committedAt, committedAt,
+			); err != nil {
+				t.Fatal(err)
+			}
+			reservationID := domain.QuotaReservationID(uniqueID("reservation-terminal-" + testCase.name))
+			admission, err := store.AdmitDispatch(ctx, ports.DispatchAdmissionRequest{
+				TenantID: tenantID, OutboxID: request.DispatchID, RunID: request.RunID,
+				AttemptID: request.AttemptID, ReservationID: reservationID,
+				Now: committedAt, HoldUntil: committedAt.Add(10 * time.Minute),
+				Limits: domain.ProductLimits{
+					MaxTenantQueueDepth: 8, MaxActiveRuns: 1,
+					MaxRuntime: time.Minute, MaxTurns: 4,
+					MaxInputBytes: 1 << 20, MaxContextBytes: 1 << 20, MaxArtifacts: 4,
+				},
+				Workload: domain.WorkloadShape{Runtime: time.Minute, Turns: 1},
+			})
+			if err != nil || !admission.Admitted {
+				t.Fatalf("admission=%#v err=%v", admission, err)
+			}
+			loaded, found, err := store.LoadWorkerJob(ctx, tenantID, runID)
+			if err != nil || !found {
+				t.Fatalf("worker job found=%t err=%v", found, err)
+			}
+			lease, err := store.ClaimWorkerLease(ctx, ports.WorkerLeaseRequest{
+				TenantID: tenantID, RunID: runID, AttemptID: request.AttemptID,
+				LeaseID:  domain.LeaseID(uniqueID("lease-terminal-" + testCase.name)),
+				WorkerID: "canonical-terminal-worker", Now: committedAt.Add(time.Second),
+				ExpiresAt: committedAt.Add(5 * time.Minute),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.StartWorkerJob(ctx, loaded, lease, committedAt.Add(time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			failedAt := committedAt.Add(2 * time.Second)
+			failure := ports.WorkerFailure{
+				TenantID: tenantID, RunID: runID, AttemptID: request.AttemptID,
+				ReservationID: reservationID, LeaseID: lease.ID, Fence: lease.FenceToken,
+				At: failedAt, Cancelled: testCase.cancelled, Code: testCase.name + "_fixture",
+				Events: []domain.SessionEventDraft{
+					canonicalTerminalDraft(
+						tenantID, sessionID, testCase.name+"-notice",
+						domain.SessionEventSystemNotice, failedAt,
+					),
+				},
+			}
+			stale := failure
+			stale.Fence++
+			if err := store.FailWorkerJob(ctx, stale); !errors.Is(err, ydbstore.ErrLeaseLost) {
+				t.Fatalf("stale terminal failure error=%v", err)
+			}
+			assertCount(t, client, "session_events", tenantID, 1)
+			assertCount(t, client, "frontend_projection_outbox", tenantID, 0)
+			assertCount(t, client, "run_finalizations", tenantID, 0)
+			if err := store.FailWorkerJob(ctx, failure); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.FailWorkerJob(ctx, failure); err != nil {
+				t.Fatalf("exact terminal failure retry: %v", err)
+			}
+			terminal, found, err := store.LoadWorkerJob(ctx, tenantID, runID)
+			if err != nil || !found {
+				t.Fatalf("terminal worker job found=%t err=%v", found, err)
+			}
+			if terminal.Run.Status != testCase.runStatus ||
+				terminal.Attempt.Status != testCase.attemptStatus ||
+				terminal.Reservation.Status != domain.ReservationReleased {
+				t.Fatalf("terminal state=%#v", terminal)
+			}
+			assertCount(t, client, "session_events", tenantID, 2)
+			assertCount(t, client, "frontend_projection_outbox", tenantID, 1)
+			assertCount(t, client, "run_finalizations", tenantID, 1)
+			assertCount(t, client, "telegram_delivery_outbox", tenantID, 0)
+			conflict := failure
+			conflict.Events = append([]domain.SessionEventDraft(nil), failure.Events...)
+			conflict.Events[0].Payload.SHA256 = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+			if err := store.FailWorkerJob(ctx, conflict); !errors.Is(err, ydbstore.ErrRunFinalizationConflict) {
+				t.Fatalf("conflicting terminal failure error=%v", err)
+			}
+			foreignTenant := domain.TenantID(uniqueID("tenant-foreign-terminal-" + testCase.name))
+			foreign := failure
+			foreign.TenantID = foreignTenant
+			if err := store.FailWorkerJob(ctx, foreign); err == nil {
+				t.Fatal("cross-tenant terminal failure succeeded")
+			}
+			for _, table := range []string{
+				"session_events", "frontend_projection_outbox", "run_finalizations", "telegram_delivery_outbox",
+			} {
+				assertCount(t, client, table, foreignTenant, 0)
+			}
+		})
+	}
+}
+
+func canonicalTerminalDraft(
+	tenantID domain.TenantID,
+	sessionID domain.SessionID,
+	suffix string,
+	kind domain.SessionEventKind,
+	at time.Time,
+) domain.SessionEventDraft {
+	eventID := domain.SessionEventID(uniqueID("event-" + suffix))
+	return domain.SessionEventDraft{
+		ID: eventID, Kind: kind,
+		IdempotencyKey: domain.IdempotencyKey(uniqueID("event-key-" + suffix)),
+		Payload: domain.BlobRef{
+			TenantID: tenantID,
+			Key:      domain.SessionEventObjectPrefix(tenantID, sessionID, eventID) + "payload.json",
+			Size:     2, SHA256: canonicalDigest,
+		},
+		CreatedAt: at,
 	}
 }
 

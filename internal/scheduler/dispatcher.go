@@ -103,8 +103,7 @@ func (dispatcher *Dispatcher) RunWake(ctx context.Context, wakeQueue ports.Queue
 		return WakeResult{}, err
 	}
 	if !admission.Admitted {
-		if admission.Code == "canonical_projection_pending" ||
-			admission.Code == "dispatch_not_pending" {
+		if admission.Code == "dispatch_not_pending" {
 			if err := wakeQueue.Ack(ctx, message.ReceiptHandle); err != nil {
 				return WakeResult{}, err
 			}

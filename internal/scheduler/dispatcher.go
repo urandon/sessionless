@@ -63,7 +63,7 @@ func NewDispatcher(
 	if clock == nil || store == nil || queue == nil {
 		return nil, fmt.Errorf("scheduler dependencies must not be nil")
 	}
-	if err := config.Limits.Validate(); err != nil {
+	if err := config.Limits.ValidateForAdmission(); err != nil {
 		return nil, err
 	}
 	if err := config.DefaultWorkload.Validate(); err != nil {
@@ -103,8 +103,7 @@ func (dispatcher *Dispatcher) RunWake(ctx context.Context, wakeQueue ports.Queue
 		return WakeResult{}, err
 	}
 	if !admission.Admitted {
-		if admission.Code == "canonical_projection_pending" ||
-			admission.Code == "dispatch_not_pending" {
+		if admission.Code == "dispatch_not_pending" {
 			if err := wakeQueue.Ack(ctx, message.ReceiptHandle); err != nil {
 				return WakeResult{}, err
 			}

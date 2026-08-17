@@ -33,6 +33,8 @@ type ProductLimits struct {
 	MaxInputBytes       uint64        `json:"max_input_bytes"`
 	MaxContextBytes     uint64        `json:"max_context_bytes"`
 	MaxArtifacts        uint32        `json:"max_artifacts"`
+	MaxToolEvents       uint32        `json:"max_tool_events"`
+	MaxToolEventBytes   uint64        `json:"max_tool_event_bytes"`
 }
 
 func (limits ProductLimits) Validate() error {
@@ -54,7 +56,45 @@ func (limits ProductLimits) Validate() error {
 	if limits.MaxArtifacts == 0 {
 		return ValidationError{Field: "limits.max_artifacts", Reason: "must be positive"}
 	}
+	if (limits.MaxToolEvents == 0) != (limits.MaxToolEventBytes == 0) {
+		return ValidationError{
+			Field:  "limits.tool_events",
+			Reason: "count and byte limits must be configured together",
+		}
+	}
 	return nil
+}
+
+// ValidateForAdmission requires the explicit tool-event budget written by new
+// schedulers. Validate alone also accepts the all-zero legacy representation so
+// workers can load jobs persisted before these fields were introduced.
+func (limits ProductLimits) ValidateForAdmission() error {
+	if err := limits.Validate(); err != nil {
+		return err
+	}
+	if limits.MaxToolEvents == 0 {
+		return ValidationError{
+			Field:  "limits.tool_events",
+			Reason: "count and byte limits must be positive for admission",
+		}
+	}
+	return nil
+}
+
+// EffectiveToolEventLimits returns the explicitly admitted tool-event budget.
+// Jobs persisted before these fields existed use finite limits derived from the
+// already-admitted turn and context budgets so rolling upgrades remain safe.
+func (limits ProductLimits) EffectiveToolEventLimits() (maxEvents uint32, maxBytes uint64) {
+	if limits.MaxToolEvents != 0 {
+		return limits.MaxToolEvents, limits.MaxToolEventBytes
+	}
+	maxEvents = limits.MaxTurns
+	if maxEvents > ^uint32(0)/2 {
+		maxEvents = ^uint32(0)
+	} else {
+		maxEvents *= 2
+	}
+	return maxEvents, limits.MaxContextBytes
 }
 
 type WorkloadShape struct {

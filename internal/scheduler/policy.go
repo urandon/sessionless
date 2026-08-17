@@ -31,7 +31,7 @@ func Evaluate(
 	if now.IsZero() {
 		return Decision{}, domain.ValidationError{Field: "scheduler.now", Reason: "must not be zero"}
 	}
-	if err := limits.Validate(); err != nil {
+	if err := limits.ValidateForAdmission(); err != nil {
 		return Decision{}, err
 	}
 	if err := shape.Validate(); err != nil {

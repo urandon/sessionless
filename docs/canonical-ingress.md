@@ -94,9 +94,51 @@ new objects. If concurrent deliveries both miss that preflight lookup, the
 transactional deduplication row still makes the first committed payload,
 origin, and timestamp canonical; the retry may not rewrite them.
 
-Until SESSION-04 issue #23 implements canonical assistant/tool finalization and
-frontend-neutral projection work, the scheduler deliberately leaves
-origin-only dispatch outboxes pending with `canonical_projection_pending`.
-Executing them through the legacy worker would otherwise make successful
-harness work fail during terminal commit when no Telegram delivery target
-exists. Telegram-targeted compatibility jobs remain admissible.
+SESSION-04 issue #23 makes origin-only dispatches admissible. Their terminal
+worker transaction appends canonical assistant/tool or terminal-notice events
+and creates generic projection rows for every binding that still targets the
+session. A binding that switched away while the worker was running receives no
+projection; the canonical result remains in the original session. Projection
+consumers must recheck the recorded binding revision before transport work.
+
+Legacy Telegram-targeted jobs remain admissible and continue to create the
+existing Telegram delivery outbox until issues #36 and #37 move that adapter to
+the canonical ingress/projection path. That compatibility transaction is
+isolated behind `LegacyTelegramWorkerStateStore`; the canonical
+`WorkerStateStore` completion/failure contracts and their shared YDB
+finalization helpers contain no transport-specific delivery value.
+
+## Canonical terminal finalization
+
+Harness progress boundaries remain operational checkpoints. They are not
+canonical transcript events. At terminal success, the worker uploads immutable
+payloads below the owning session/event prefix and submits, in order:
+
+1. reconstructable `tool_call` and `tool_result` events returned by the harness;
+2. exactly one `assistant_message` event referencing the result artifact
+   manifest.
+
+Tool event count and the total encoded tool-event payload bytes are bounded by
+the limits admitted with the worker job. The worker validates and prepares the
+whole tool-event batch before uploading any canonical tool payload.
+Worker jobs persisted before those explicit limits were introduced remain
+loadable during rolling upgrades: they use a finite compatibility budget of two
+tool events per admitted turn and the admitted context-byte limit. All newly
+admitted jobs persist explicit tool-event limits.
+
+Terminal failure and cancellation append one structured `system_notice` with
+the stable failure code and cancellation flag. Tool events are retained for
+future stateless context reconstruction but do not automatically create
+frontend delivery work. Assistant messages and terminal notices create one
+`frontend_projection_outbox` row per binding that still targets the session at
+commit time.
+
+The fenced terminal YDB transaction atomically appends the ordered events,
+updates the session sequence, creates projections, records the artifact
+manifest and final run/attempt/quota state, clears scheduling state and writes a
+`run_finalizations` digest. An exact callback retry is a no-op. A callback with
+different event identities, kinds, idempotency keys, payload references or
+validated manifest content fails with a finalization conflict. The YDB boundary
+also enforces the status-specific event shape: one assistant event on success,
+or exactly one system notice on failure/cancellation. A stale lease fails
+before any canonical event or projection is committed.

@@ -68,6 +68,8 @@ func main() {
 				MaxInputBytes:       uint64(envUint("LIMIT_INPUT_BYTES", 16<<20)),
 				MaxContextBytes:     uint64(envUint("LIMIT_CONTEXT_BYTES", 64<<20)),
 				MaxArtifacts:        envUint("LIMIT_ARTIFACTS", 32),
+				MaxToolEvents:       envUint("LIMIT_TOOL_EVENTS", 128),
+				MaxToolEventBytes:   uint64(envUint("LIMIT_TOOL_EVENT_BYTES", 16<<20)),
 			},
 			DefaultWorkload: domain.WorkloadShape{
 				Runtime:      envDuration("DEFAULT_WORKLOAD_RUNTIME", 5*time.Minute),

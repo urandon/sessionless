@@ -217,6 +217,61 @@ func (store *Store) CompleteWorkerJob(
 	ctx context.Context,
 	completion ports.WorkerCompletion,
 ) error {
+	if len(completion.Events) == 0 {
+		return domain.ValidationError{
+			Field: "worker_completion.events", Reason: "must not be empty for canonical finalization",
+		}
+	}
+	return store.Transact(ctx, completion.TenantID, func(state ports.StateTx) error {
+		tx := state.(*stateTx)
+		run, attempt, reservation, err := loadWorkerTerminalState(
+			ctx, state, tx, completion.RunID, completion.AttemptID, completion.ReservationID,
+		)
+		if err != nil {
+			return err
+		}
+		if err := validateCanonicalFinalizationEvents(domain.RunSucceeded, completion.Events); err != nil {
+			return err
+		}
+		if err := completion.Manifest.ValidateForRun(run); err != nil {
+			return err
+		}
+		finalizationDigest, err := runFinalizationDigest(
+			domain.RunSucceeded, &completion.Manifest, completion.Events,
+		)
+		if err != nil {
+			return err
+		}
+		matched, err := matchingRunFinalizationTx(
+			ctx, tx, run.ID, domain.RunSucceeded, finalizationDigest,
+		)
+		if err != nil {
+			return err
+		}
+		if matched {
+			return nil
+		}
+		if run.Status.Terminal() {
+			return ErrRunFinalizationConflict
+		}
+		return completeWorkerSuccessTx(
+			ctx, state, tx, run, attempt, reservation,
+			completion.LeaseID, completion.Fence, completion.At,
+			completion.Manifest, completion.Usage,
+			func(run domain.Run) error {
+				return appendCanonicalFinalizationTx(
+					ctx, tx, run, domain.RunSucceeded, finalizationDigest,
+					completion.Events, completion.At,
+				)
+			},
+		)
+	})
+}
+
+func (store *Store) CompleteLegacyTelegramWorkerJob(
+	ctx context.Context,
+	completion ports.LegacyTelegramWorkerCompletion,
+) error {
 	return store.Transact(ctx, completion.TenantID, func(state ports.StateTx) error {
 		tx := state.(*stateTx)
 		run, attempt, reservation, err := loadWorkerTerminalState(
@@ -228,54 +283,78 @@ func (store *Store) CompleteWorkerJob(
 		if run.Status == domain.RunSucceeded {
 			return nil
 		}
-		if err := requireLeaseOwnership(
-			ctx, tx, completion.RunID, completion.LeaseID, completion.Fence, completion.At,
-		); err != nil {
-			return err
-		}
-		if err := run.Transition(domain.RunSucceeded, completion.At); err != nil {
-			return err
-		}
-		if err := attempt.Transition(domain.AttemptSucceeded, completion.At); err != nil {
-			return err
-		}
-		if err := reservation.Transition(domain.ReservationCommitted, completion.At); err != nil {
-			return err
-		}
-		if err := state.PutRun(ctx, run); err != nil {
-			return err
-		}
-		if err := state.PutAttempt(ctx, attempt); err != nil {
-			return err
-		}
-		if err := state.PutQuotaReservation(ctx, reservation); err != nil {
-			return err
-		}
-		for _, usage := range completion.Usage {
-			if err := state.AppendUsageObservation(ctx, usage); err != nil {
-				return err
-			}
-		}
-		if err := state.PutArtifactManifest(ctx, completion.Manifest); err != nil {
-			return err
-		}
-		if err := state.PutTelegramDeliveryOutbox(ctx, completion.Delivery); err != nil {
-			return err
-		}
-		if err := finishWorkerScheduling(
-			ctx, tx, run, reservation, completion.LeaseID, completion.Fence, completion.At,
-		); err != nil {
-			return err
-		}
-		return appendSchedulerAudit(
-			ctx, tx, completion.At, "worker.succeeded",
-			"run", string(run.ID), "succeeded",
-			map[string]any{"attempt_id": attempt.ID, "manifest_id": completion.Manifest.ID},
+		return completeWorkerSuccessTx(
+			ctx, state, tx, run, attempt, reservation,
+			completion.LeaseID, completion.Fence, completion.At,
+			completion.Manifest, completion.Usage,
+			func(domain.Run) error {
+				return state.PutTelegramDeliveryOutbox(ctx, completion.Delivery)
+			},
 		)
 	})
 }
 
+func completeWorkerSuccessTx(
+	ctx context.Context,
+	state ports.StateTx,
+	tx *stateTx,
+	run domain.Run,
+	attempt domain.Attempt,
+	reservation domain.QuotaReservation,
+	leaseID domain.LeaseID,
+	fence uint64,
+	at time.Time,
+	manifest domain.ArtifactManifest,
+	usage []domain.UsageObservation,
+	finalize func(domain.Run) error,
+) error {
+	if err := requireLeaseOwnership(ctx, tx, run.ID, leaseID, fence, at); err != nil {
+		return err
+	}
+	if err := run.Transition(domain.RunSucceeded, at); err != nil {
+		return err
+	}
+	if err := attempt.Transition(domain.AttemptSucceeded, at); err != nil {
+		return err
+	}
+	if err := reservation.Transition(domain.ReservationCommitted, at); err != nil {
+		return err
+	}
+	if err := state.PutRun(ctx, run); err != nil {
+		return err
+	}
+	if err := state.PutAttempt(ctx, attempt); err != nil {
+		return err
+	}
+	if err := state.PutQuotaReservation(ctx, reservation); err != nil {
+		return err
+	}
+	for _, observation := range usage {
+		if err := state.AppendUsageObservation(ctx, observation); err != nil {
+			return err
+		}
+	}
+	if err := state.PutArtifactManifest(ctx, manifest); err != nil {
+		return err
+	}
+	if err := finalize(run); err != nil {
+		return err
+	}
+	if err := finishWorkerScheduling(ctx, tx, run, reservation, leaseID, fence, at); err != nil {
+		return err
+	}
+	return appendSchedulerAudit(
+		ctx, tx, at, "worker.succeeded", "run", string(run.ID), "succeeded",
+		map[string]any{"attempt_id": attempt.ID, "manifest_id": manifest.ID},
+	)
+}
+
 func (store *Store) FailWorkerJob(ctx context.Context, failure ports.WorkerFailure) error {
+	if len(failure.Events) == 0 {
+		return domain.ValidationError{
+			Field: "worker_failure.events", Reason: "must not be empty for canonical finalization",
+		}
+	}
 	return store.Transact(ctx, failure.TenantID, func(state ports.StateTx) error {
 		tx := state.(*stateTx)
 		run, attempt, reservation, err := loadWorkerTerminalState(
@@ -284,50 +363,114 @@ func (store *Store) FailWorkerJob(ctx context.Context, failure ports.WorkerFailu
 		if err != nil {
 			return err
 		}
-		if run.Status.Terminal() {
+		runStatus, attemptStatus := domain.RunFailed, domain.AttemptFailed
+		if failure.Cancelled {
+			runStatus, attemptStatus = domain.RunCancelled, domain.AttemptCancelled
+		}
+		if err := validateCanonicalFinalizationEvents(runStatus, failure.Events); err != nil {
+			return err
+		}
+		finalizationDigest, err := runFinalizationDigest(runStatus, nil, failure.Events)
+		if err != nil {
+			return err
+		}
+		matched, err := matchingRunFinalizationTx(ctx, tx, run.ID, runStatus, finalizationDigest)
+		if err != nil {
+			return err
+		}
+		if matched {
 			return nil
 		}
-		if err := requireLeaseOwnership(
-			ctx, tx, failure.RunID, failure.LeaseID, failure.Fence, failure.At,
-		); err != nil {
+		if run.Status.Terminal() {
+			return ErrRunFinalizationConflict
+		}
+		return failWorkerTx(
+			ctx, state, tx, run, attempt, reservation, runStatus, attemptStatus,
+			failure.LeaseID, failure.Fence, failure.At, failure.Code,
+			func(run domain.Run) error {
+				return appendCanonicalFinalizationTx(
+					ctx, tx, run, runStatus, finalizationDigest, failure.Events, failure.At,
+				)
+			},
+		)
+	})
+}
+
+func (store *Store) FailLegacyTelegramWorkerJob(
+	ctx context.Context,
+	failure ports.LegacyTelegramWorkerFailure,
+) error {
+	return store.Transact(ctx, failure.TenantID, func(state ports.StateTx) error {
+		tx := state.(*stateTx)
+		run, attempt, reservation, err := loadWorkerTerminalState(
+			ctx, state, tx, failure.RunID, failure.AttemptID, failure.ReservationID,
+		)
+		if err != nil {
 			return err
 		}
 		runStatus, attemptStatus := domain.RunFailed, domain.AttemptFailed
 		if failure.Cancelled {
 			runStatus, attemptStatus = domain.RunCancelled, domain.AttemptCancelled
 		}
-		if err := run.Transition(runStatus, failure.At); err != nil {
-			return err
+		if run.Status.Terminal() {
+			return nil
 		}
-		if err := attempt.Transition(attemptStatus, failure.At); err != nil {
-			return err
-		}
-		if err := reservation.Transition(domain.ReservationReleased, failure.At); err != nil {
-			return err
-		}
-		if err := state.PutRun(ctx, run); err != nil {
-			return err
-		}
-		if err := state.PutAttempt(ctx, attempt); err != nil {
-			return err
-		}
-		if err := state.PutQuotaReservation(ctx, reservation); err != nil {
-			return err
-		}
-		if err := state.PutTelegramDeliveryOutbox(ctx, failure.Delivery); err != nil {
-			return err
-		}
-		if err := finishWorkerScheduling(
-			ctx, tx, run, reservation, failure.LeaseID, failure.Fence, failure.At,
-		); err != nil {
-			return err
-		}
-		return appendSchedulerAudit(
-			ctx, tx, failure.At, "worker."+string(runStatus),
-			"run", string(run.ID), failure.Code,
-			map[string]any{"attempt_id": attempt.ID},
+		return failWorkerTx(
+			ctx, state, tx, run, attempt, reservation, runStatus, attemptStatus,
+			failure.LeaseID, failure.Fence, failure.At, failure.Code,
+			func(domain.Run) error {
+				return state.PutTelegramDeliveryOutbox(ctx, failure.Delivery)
+			},
 		)
 	})
+}
+
+func failWorkerTx(
+	ctx context.Context,
+	state ports.StateTx,
+	tx *stateTx,
+	run domain.Run,
+	attempt domain.Attempt,
+	reservation domain.QuotaReservation,
+	runStatus domain.RunStatus,
+	attemptStatus domain.AttemptStatus,
+	leaseID domain.LeaseID,
+	fence uint64,
+	at time.Time,
+	code string,
+	finalize func(domain.Run) error,
+) error {
+	if err := requireLeaseOwnership(ctx, tx, run.ID, leaseID, fence, at); err != nil {
+		return err
+	}
+	if err := run.Transition(runStatus, at); err != nil {
+		return err
+	}
+	if err := attempt.Transition(attemptStatus, at); err != nil {
+		return err
+	}
+	if err := reservation.Transition(domain.ReservationReleased, at); err != nil {
+		return err
+	}
+	if err := state.PutRun(ctx, run); err != nil {
+		return err
+	}
+	if err := state.PutAttempt(ctx, attempt); err != nil {
+		return err
+	}
+	if err := state.PutQuotaReservation(ctx, reservation); err != nil {
+		return err
+	}
+	if err := finalize(run); err != nil {
+		return err
+	}
+	if err := finishWorkerScheduling(ctx, tx, run, reservation, leaseID, fence, at); err != nil {
+		return err
+	}
+	return appendSchedulerAudit(
+		ctx, tx, at, "worker."+string(runStatus), "run", string(run.ID), code,
+		map[string]any{"attempt_id": attempt.ID},
+	)
 }
 
 func loadWorkerTerminalState(
@@ -473,4 +616,7 @@ func (store *Store) CancellationRequested(
 	return requested, err
 }
 
-var _ ports.WorkerStateStore = (*Store)(nil)
+var (
+	_ ports.WorkerStateStore               = (*Store)(nil)
+	_ ports.LegacyTelegramWorkerStateStore = (*Store)(nil)
+)

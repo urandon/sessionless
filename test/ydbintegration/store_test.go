@@ -4,6 +4,7 @@ package ydbintegration
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -294,7 +295,7 @@ func TestConcurrentSchedulerAdmissionReservesOneSubscriptionSlot(t *testing.T) {
 		MaxTenantQueueDepth: 8, MaxActiveRuns: 1,
 		MaxRuntime: 15 * time.Minute, MaxTurns: 30,
 		MaxInputBytes: 16 << 20, MaxContextBytes: 64 << 20,
-		MaxArtifacts: 32,
+		MaxArtifacts: 32, MaxToolEvents: 128, MaxToolEventBytes: 16 << 20,
 	}
 	requests := []ports.DispatchAdmissionRequest{
 		admissionFixture(first, domain.QuotaReservationID(uniqueID("reservation-a")), now, limits),
@@ -424,6 +425,7 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 			MaxTenantQueueDepth: 8, MaxActiveRuns: 1,
 			MaxRuntime: 15 * time.Minute, MaxTurns: 30,
 			MaxInputBytes: 16 << 20, MaxContextBytes: 64 << 20, MaxArtifacts: 32,
+			MaxToolEvents: 128, MaxToolEventBytes: 16 << 20,
 		}),
 	)
 	if err != nil || !admission.Admitted {
@@ -435,6 +437,45 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 	}
 	if loaded.Checkpoint != nil || loaded.Job.ReservationID != reservationID {
 		t.Fatalf("initial worker state = %+v", loaded)
+	}
+	legacyPayload, err := json.Marshal(loaded.Job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacyRecord map[string]any
+	if err := json.Unmarshal(legacyPayload, &legacyRecord); err != nil {
+		t.Fatal(err)
+	}
+	legacyLimits, ok := legacyRecord["limits"].(map[string]any)
+	if !ok {
+		t.Fatalf("worker job limits = %#v", legacyRecord["limits"])
+	}
+	delete(legacyLimits, "max_tool_events")
+	delete(legacyLimits, "max_tool_event_bytes")
+	legacyPayload, err = json.Marshal(legacyRecord)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.DB.ExecContext(context.Background(),
+		`UPDATE worker_jobs
+		 SET payload = CAST($1 AS JsonDocument)
+		 WHERE tenant_id = $2 AND run_id = $3`,
+		legacyPayload, tenantID, ingress.Run.ID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	loaded, found, err = store.LoadWorkerJob(context.Background(), tenantID, ingress.Run.ID)
+	if err != nil || !found {
+		t.Fatalf("load legacy worker job = found:%t error:%v", found, err)
+	}
+	maxToolEvents, maxToolEventBytes := loaded.Job.Limits.EffectiveToolEventLimits()
+	if maxToolEvents != 2*loaded.Job.Limits.MaxTurns ||
+		maxToolEventBytes != loaded.Job.Limits.MaxContextBytes {
+		t.Fatalf(
+			"legacy tool-event limits = %d/%d, want %d/%d",
+			maxToolEvents, maxToolEventBytes,
+			2*loaded.Job.Limits.MaxTurns, loaded.Job.Limits.MaxContextBytes,
+		)
 	}
 	lease, err := store.ClaimWorkerLease(context.Background(), ports.WorkerLeaseRequest{
 		TenantID: tenantID, RunID: ingress.Run.ID, AttemptID: ingress.Attempt.ID,
@@ -483,7 +524,7 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 		IdempotencyKey: domain.IdempotencyKey(uniqueID("delivery-key")),
 		CreatedAt:      finishedAt, UpdatedAt: finishedAt,
 	}
-	if err := store.CompleteWorkerJob(context.Background(), ports.WorkerCompletion{
+	if err := store.CompleteLegacyTelegramWorkerJob(context.Background(), ports.LegacyTelegramWorkerCompletion{
 		TenantID: tenantID, RunID: ingress.Run.ID, AttemptID: ingress.Attempt.ID,
 		ReservationID: reservationID, LeaseID: lease.ID, Fence: lease.FenceToken,
 		At: finishedAt, Manifest: manifest, Delivery: delivery,

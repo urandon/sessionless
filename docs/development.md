@@ -113,11 +113,11 @@ unless `SESSIONLESS_ENVIRONMENT=local`. Production and cloud-development
 processes always use Telegram's real issuer and receive the client secret from
 the process environment or Lockbox.
 
-Build the binaries and run their focused tests without credentials:
+Build the binaries and run the credential-free repository checks:
 
 ```sh
 make build
-go test -race ./internal/oidcfixture ./internal/telegramoidc ./internal/webbff
+make test
 ```
 
 Secure browser cookies and exact-origin checks are never weakened for local
@@ -126,6 +126,22 @@ for `https://web.localhost`; the fixture endpoints may remain loopback HTTP and
 are accepted only when the BFF itself runs in the local environment. See
 [web-bff.md](web-bff.md) for the route contract, environment variables,
 bootstrap procedure, and threat boundary.
+
+The Web canonical API additionally needs the existing Object Storage and
+scheduler-wake queue coordinates. Local static S3 credentials use MinIO;
+cloud deployments set `S3_IAM_METADATA_CREDENTIALS=true` so both exact-object
+operations and short-lived Yandex Object Storage capabilities use the workload
+service account. `SESSION_API_ID_HMAC_KEY` must be at least 32 bytes and stable
+across replicas because it derives upload, event, run, and dispatch identities.
+`WEB_MAX_UPLOAD_BYTES` configures a positive upload limit (default 32 MiB), and
+`WEB_ALLOWED_MCP_SERVERS` is an optional comma-separated allowlist copied into
+Web-created jobs.
+
+The direct upload sequence is intent, exact presigned `PUT`, commit, and then
+message submission. Reusing an idempotency key retries the same logical
+operation. Poll point runs with the returned ETag and delay headers, and use
+`after_sequence` to project newly appended events. Do not persist capability
+URLs or include them in logs, test snapshots, or browser analytics.
 
 Run the adapter contracts and stop the stack:
 

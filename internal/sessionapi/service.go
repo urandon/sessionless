@@ -193,6 +193,34 @@ func (service *Service) History(
 	if err != nil {
 		return page, err
 	}
+	return service.historyAfter(ctx, tenantID, userID, sessionID, afterSequence, limit)
+}
+
+// HistoryAfter provides the explicit canonical sequence boundary used by
+// polling clients. The returned continuation remains an authenticated cursor.
+func (service *Service) HistoryAfter(
+	ctx context.Context,
+	tenantID domain.TenantID,
+	userID domain.UserID,
+	sessionID domain.SessionID,
+	afterSequence uint64,
+	limit uint32,
+) (Page[Event], error) {
+	if limit == 0 || limit > service.maxPageSize {
+		return Page[Event]{}, domain.ValidationError{Field: "events.limit", Reason: "is outside the configured bound"}
+	}
+	return service.historyAfter(ctx, tenantID, userID, sessionID, afterSequence, limit)
+}
+
+func (service *Service) historyAfter(
+	ctx context.Context,
+	tenantID domain.TenantID,
+	userID domain.UserID,
+	sessionID domain.SessionID,
+	afterSequence uint64,
+	limit uint32,
+) (Page[Event], error) {
+	var page Page[Event]
 	events, err := service.store.ListSessionHistoryForUser(
 		ctx, tenantID, userID, sessionID, afterSequence, uint64(limit)+1,
 	)

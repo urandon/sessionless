@@ -95,6 +95,7 @@ type CanonicalUserEventCommit struct {
 	ExpectedBindingRevision  uint64
 	Origin                   domain.FrontendEventOrigin
 	IdempotencyKey           domain.IdempotencyKey
+	MutationDigest           string
 	ExpireAt                 time.Time
 	EventID                  domain.SessionEventID
 	Payload                  domain.BlobRef
@@ -129,6 +130,7 @@ type CanonicalUserEventLookup struct {
 	Frontend               domain.Frontend
 	ExternalConversationID string
 	IdempotencyKey         domain.IdempotencyKey
+	MutationDigest         string
 	EventID                domain.SessionEventID
 	RunID                  domain.RunID
 }

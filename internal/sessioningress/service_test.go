@@ -200,6 +200,134 @@ func TestAttachmentsStayInsideTheCanonicalEventPrefix(t *testing.T) {
 	}
 }
 
+func TestBoundIngressAcceptsOnlyPromotedEventAttachments(t *testing.T) {
+	store := newMemoryCanonicalStore()
+	blobs := newMemoryBlobs()
+	service, err := sessioningress.New(
+		sessioningress.Config{IDKey: []byte(strings.Repeat("w", 32))}, store, blobs,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	session := domain.Session{
+		ID: "session-web", TenantID: "tenant-a", CreatedBy: "user-a",
+		Status: domain.SessionActive, CreatedAt: now, UpdatedAt: now,
+	}
+	binding := domain.FrontendBinding{
+		ID: "binding-web", TenantID: session.TenantID, Frontend: "web",
+		ExternalConversationID: string(session.ID), SessionID: session.ID,
+		Revision: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	store.sessions[session.ID], store.bindings[binding.ID] = session, binding
+	input := sessioningress.BoundUserInput{
+		Actor: sessioningress.Actor{
+			TenantID: session.TenantID, UserID: "user-a", Frontend: "web",
+			ExternalConversationID: string(session.ID),
+		},
+		Binding: binding, ExternalEventID: "message-1", ReceivedAt: now,
+		Text: "from web", SubscriptionConnectionID: "subscription-a",
+	}
+	plan, err := service.PlanBound(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := plan.AttachmentObjectKey("upl_one", 0, "../photo.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256([]byte("image"))
+	input.Attachments = []sessioningress.StoredAttachment{{
+		Name: "photo.png", MediaType: "image/png",
+		Blob: domain.BlobRef{
+			TenantID: session.TenantID, Key: key, Size: 5,
+			SHA256: hex.EncodeToString(digest[:]),
+		},
+	}}
+	result, err := service.IngestBound(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.EventID != plan.EventID || result.RunID != plan.RunID || result.SessionID != session.ID {
+		t.Fatalf("result=%#v plan=%#v", result, plan)
+	}
+	if len(store.commits) != 1 || len(store.commits[0].Artifacts) != 2 {
+		t.Fatalf("commits=%#v", store.commits)
+	}
+	if store.commits[0].Artifacts[1].Blob.Key != key || strings.Contains(key, "..") {
+		t.Fatalf("promoted attachment key=%q", key)
+	}
+
+	bad := input
+	bad.ExternalEventID = "message-2"
+	if _, err := service.IngestBound(context.Background(), bad); err == nil {
+		t.Fatal("bound ingress accepted an attachment from another event namespace")
+	}
+}
+
+func TestBoundIngressRejectsBrowserForgedBinding(t *testing.T) {
+	service, err := sessioningress.New(
+		sessioningress.Config{IDKey: []byte(strings.Repeat("b", 32))},
+		newMemoryCanonicalStore(), newMemoryBlobs(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	input := sessioningress.BoundUserInput{
+		Actor: sessioningress.Actor{
+			TenantID: "tenant-a", UserID: "user-a", Frontend: "web",
+			ExternalConversationID: "session-a",
+		},
+		Binding: domain.FrontendBinding{
+			ID: "binding-a", TenantID: "tenant-a", Frontend: domain.FrontendTelegram,
+			ExternalConversationID: "telegram-chat", SessionID: "session-a",
+			Revision: 1, CreatedAt: now, UpdatedAt: now,
+		},
+		ExternalEventID: "message-1", ReceivedAt: now, Text: "forged",
+		SubscriptionConnectionID: "subscription-a",
+	}
+	if _, err := service.PlanBound(input); err == nil {
+		t.Fatal("forged frontend binding was accepted")
+	}
+}
+
+func TestBoundIngressNamespacesIdempotencyByUser(t *testing.T) {
+	service, err := sessioningress.New(
+		sessioningress.Config{IDKey: []byte(strings.Repeat("k", 32))},
+		newMemoryCanonicalStore(), newMemoryBlobs(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	binding := domain.FrontendBinding{
+		ID: "binding-web", TenantID: "tenant-a", Frontend: domain.FrontendWeb,
+		ExternalConversationID: "session-a", SessionID: "session-a", Revision: 1,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	input := sessioningress.BoundUserInput{
+		Actor: sessioningress.Actor{
+			TenantID: "tenant-a", UserID: "user-a", Frontend: domain.FrontendWeb,
+			ExternalConversationID: "session-a",
+		},
+		Binding: binding, ExternalEventID: "request-1", ReceivedAt: now,
+		Text: "hello", SubscriptionConnectionID: "connection-a",
+	}
+	first, err := service.PlanBound(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input.Actor.UserID = "user-b"
+	second, err := service.PlanBound(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.IdempotencyKey == second.IdempotencyKey || first.EventID == second.EventID || first.RunID == second.RunID {
+		t.Fatalf("bound idempotency collided across users: first=%+v second=%+v", first, second)
+	}
+}
+
 func TestServiceRequiresAnOpaqueIDSecret(t *testing.T) {
 	if _, err := sessioningress.New(sessioningress.Config{}, newMemoryCanonicalStore(), newMemoryBlobs()); err == nil {
 		t.Fatal("service accepted a missing ID HMAC key")

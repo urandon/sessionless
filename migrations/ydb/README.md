@@ -105,6 +105,14 @@ rows whose canonical event is already absent are skipped so one retired tenant
 cannot block unrelated backfill; no canonical content or replacement run ID is
 invented.
 
+Migrations `00073`-`00074` add the tenant-partitioned Web upload-intent entity
+and its user-scoped creation-idempotency ledger. Upload metadata is stored as
+one bounded JSON document; object bytes remain in Object Storage. Migration
+`00075` adds an optional request-content digest to the canonical frontend
+ingress ledger so new Web messages can reject reuse of an idempotency key with
+changed text or ordered upload selectors before resolving compute or touching
+staged objects. Existing non-Web ingress rows remain compatible.
+
 Automatic production down migrations are intentionally disabled. The `Down`
 sections are comments so neither Goose nor an operator can accidentally drop
 state.

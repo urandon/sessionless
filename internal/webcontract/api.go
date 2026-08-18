@@ -4,6 +4,7 @@
 package webcontract
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/url"
@@ -31,6 +32,8 @@ const (
 	RouteUploads          = "/api/web/v1/uploads"
 	RouteUploadCommit     = "/api/web/v1/uploads/{upload_id}/commit"
 	RouteRun              = "/api/web/v1/runs/{run_id}"
+	RouteEventAttachment  = "/api/web/v1/sessions/{session_id}/events/{sequence}/attachments/{index}"
+	RouteRunArtifact      = "/api/web/v1/sessions/{session_id}/runs/{run_id}/artifact-manifests/{manifest_id}/artifacts/{index}"
 )
 
 const MaxMessageUploadCount = 8
@@ -194,8 +197,9 @@ func (query SessionListQuery) Validate() error {
 }
 
 type EventListQuery struct {
-	Cursor string
-	Limit  uint32
+	Cursor        string
+	AfterSequence *uint64
+	Limit         uint32
 }
 
 type RunListQuery struct {
@@ -219,6 +223,9 @@ func (query EventListQuery) Validate() error {
 	}
 	if len(query.Cursor) > 512 {
 		return domain.ValidationError{Field: "events.cursor", Reason: "must not exceed 512 bytes"}
+	}
+	if query.Cursor != "" && query.AfterSequence != nil {
+		return domain.ValidationError{Field: "events.position", Reason: "cursor and after_sequence are mutually exclusive"}
 	}
 	return nil
 }
@@ -292,15 +299,20 @@ func (request CreateMessageRequest) Validate() error {
 }
 
 type CreateUploadIntentRequest struct {
-	SessionID domain.SessionID `json:"session_id"`
-	Name      string           `json:"name"`
-	MediaType string           `json:"media_type"`
-	Size      int64            `json:"size"`
-	SHA256    string           `json:"sha256"`
+	SessionID      domain.SessionID      `json:"session_id"`
+	IdempotencyKey domain.IdempotencyKey `json:"idempotency_key"`
+	Name           string                `json:"name"`
+	MediaType      string                `json:"media_type"`
+	Size           int64                 `json:"size"`
+	SHA256         string                `json:"sha256"`
+	ContentMD5     string                `json:"content_md5"`
 }
 
 func (request CreateUploadIntentRequest) Validate(maxBytes int64) error {
 	if err := request.SessionID.Validate(); err != nil {
+		return err
+	}
+	if err := request.IdempotencyKey.Validate(); err != nil {
 		return err
 	}
 	if strings.TrimSpace(request.Name) == "" || strings.TrimSpace(request.MediaType) == "" {
@@ -312,7 +324,10 @@ func (request CreateUploadIntentRequest) Validate(maxBytes int64) error {
 	if request.Size <= 0 || maxBytes <= 0 || request.Size > maxBytes {
 		return domain.ValidationError{Field: "upload.size", Reason: "must be positive and within the configured limit"}
 	}
-	return validateDigest(request.SHA256)
+	if err := validateDigest(request.SHA256); err != nil {
+		return err
+	}
+	return validateContentMD5(request.ContentMD5)
 }
 
 // UploadIntentResponse contains a short-lived capability URL. It must be
@@ -334,6 +349,38 @@ type UploadCommitResponse struct {
 	Name      string                `json:"name"`
 	MediaType string                `json:"media_type"`
 	Size      int64                 `json:"size"`
+}
+
+type ComputeConnection struct {
+	Provider    string                    `json:"provider"`
+	Entitlement domain.EntitlementState   `json:"entitlement"`
+	Quota       domain.ProviderQuotaState `json:"quota"`
+	ObservedAt  time.Time                 `json:"observed_at"`
+}
+
+type CreateMessageResponse struct {
+	SessionID domain.SessionID      `json:"session_id"`
+	EventID   domain.SessionEventID `json:"event_id"`
+	Sequence  uint64                `json:"sequence"`
+	RunID     domain.RunID          `json:"run_id"`
+	Created   bool                  `json:"created"`
+	Compute   ComputeConnection     `json:"compute"`
+}
+
+type DownloadCapabilityResponse struct {
+	Method    string            `json:"method"`
+	URL       string            `json:"url"`
+	Headers   map[string]string `json:"headers,omitempty"`
+	ExpiresAt time.Time         `json:"expires_at"`
+}
+
+// ArtifactCapabilityResponse exposes safe display metadata and a short-lived
+// exact-object capability. The backing object key is intentionally absent.
+type ArtifactCapabilityResponse struct {
+	Name      string                     `json:"name"`
+	MediaType string                     `json:"media_type"`
+	Size      int64                      `json:"size"`
+	Download  DownloadCapabilityResponse `json:"download"`
 }
 
 func (request CommitUploadRequest) Validate(pathUploadID domain.UploadIntentID) error {
@@ -368,9 +415,17 @@ type SessionEvent struct {
 }
 
 type EventContent struct {
-	Text        string          `json:"text,omitempty"`
-	Attachments []Attachment    `json:"attachments,omitempty"`
-	Data        json.RawMessage `json:"data,omitempty"`
+	Text             string                     `json:"text,omitempty"`
+	Attachments      []Attachment               `json:"attachments,omitempty"`
+	ArtifactManifest *AssistantArtifactManifest `json:"artifact_manifest,omitempty"`
+	Data             json.RawMessage            `json:"data,omitempty"`
+}
+
+// AssistantArtifactManifest provides only opaque selectors needed by the
+// exact indexed artifact route. It never exposes storage identity or content.
+type AssistantArtifactManifest struct {
+	RunID      domain.RunID              `json:"run_id"`
+	ManifestID domain.ArtifactManifestID `json:"manifest_id"`
 }
 
 type Attachment struct {
@@ -412,6 +467,16 @@ func validateDigest(value string) error {
 	}
 	if err := (domain.BlobRef{TenantID: "validation", Key: "tenants/validation/digest", SHA256: value}).Validate(); err != nil {
 		return domain.ValidationError{Field: "upload.sha256", Reason: "must be a lowercase SHA-256 digest"}
+	}
+	return nil
+}
+
+func validateContentMD5(value string) error {
+	digest, err := base64.StdEncoding.DecodeString(value)
+	if err != nil || len(digest) != 16 || base64.StdEncoding.EncodeToString(digest) != value {
+		return domain.ValidationError{
+			Field: "upload.content_md5", Reason: "must be a canonical standard-base64 MD5 digest",
+		}
 	}
 	return nil
 }

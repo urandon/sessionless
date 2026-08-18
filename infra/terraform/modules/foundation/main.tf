@@ -83,11 +83,15 @@ resource "yandex_ydb_database_iam_binding" "runtime_editor" {
 }
 
 resource "yandex_storage_bucket" "artifacts" {
-  folder_id               = yandex_resourcemanager_folder.environment.id
-  bucket                  = var.artifact_bucket_name
-  max_size                = var.artifact_bucket_max_size_bytes
-  force_destroy           = false
-  disabled_statickey_auth = true
+  folder_id     = yandex_resourcemanager_folder.environment.id
+  bucket        = var.artifact_bucket_name
+  max_size      = var.artifact_bucket_max_size_bytes
+  force_destroy = false
+  # Yandex terminates every pre-signed URL when static-key authentication is
+  # disabled, including URLs created through its IAM-authenticated Presign API.
+  # Keep the bucket private and IAM-scoped, but permit these exact-object,
+  # short-lived capabilities to function.
+  disabled_statickey_auth = false
   tags                    = local.labels
 
   anonymous_access_flags {
@@ -96,6 +100,15 @@ resource "yandex_storage_bucket" "artifacts" {
     config_read = false
   }
   versioning { enabled = true }
+  cors_rule {
+    # Content-Length is signed too, but browsers control that forbidden request
+    # header themselves, so it is not part of Access-Control-Request-Headers.
+    allowed_headers = ["Content-Type", "Content-MD5"]
+    allowed_methods = ["PUT", "GET", "HEAD"]
+    allowed_origins = [var.webui_origin]
+    expose_headers  = ["ETag"]
+    max_age_seconds = 300
+  }
   lifecycle_rule {
     id      = "tier-current-and-expire-noncurrent-artifacts"
     enabled = true

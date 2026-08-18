@@ -146,6 +146,14 @@ func TestEventAndRunCursorsAreScopedAndOpaque(t *testing.T) {
 	if _, err := service.History(context.Background(), "tenant-a", "user-a", "session-2", eventPage.NextCursor, 2); err == nil {
 		t.Fatal("event cursor replayed for another session")
 	}
+	afterEvents, err := service.HistoryAfter(context.Background(), "tenant-a", "user-a", "session-1", 1, 2)
+	if err != nil || len(afterEvents.Items) != 2 || afterEvents.Items[0].Event.Sequence != 2 ||
+		afterEvents.Items[1].Event.Sequence != 3 || afterEvents.NextCursor != "" {
+		t.Fatalf("explicit sequence page = %+v err=%v", afterEvents, err)
+	}
+	if _, err := service.HistoryAfter(context.Background(), "tenant-a", "user-a", "session-1", 0, 101); err == nil {
+		t.Fatal("explicit sequence read accepted an unbounded page")
+	}
 
 	runPage, err := service.Runs(context.Background(), "tenant-a", "user-a", "session-1", "", 2)
 	if err != nil || len(runPage.Items) != 2 || runPage.NextCursor == "" {

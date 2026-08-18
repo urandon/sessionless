@@ -107,3 +107,65 @@ type UploadIntentStore interface {
 		at time.Time,
 	) (domain.UploadIntent, error)
 }
+
+// ObjectCapability is a short-lived, exact-object browser capability. Headers
+// are authenticated by signed headers or provider-generated query fields and
+// therefore must be sent verbatim by the browser. Capability URLs are secrets
+// and must never be logged or persisted.
+type ObjectCapability struct {
+	Method    string
+	URL       string
+	Headers   map[string]string
+	ExpiresAt time.Time
+}
+
+// UploadCapabilityRequest binds a direct browser PUT to immutable intent
+// metadata. SHA256 is the lowercase hexadecimal digest used by the canonical
+// domain. ContentMD5 is the standard base64 encoding of the browser-computed
+// 16-byte MD5 digest and is signed as Content-MD5 so S3-compatible providers
+// reject a corrupted direct upload before storing it. SHA256 is still verified
+// authoritatively from the stored bytes before the upload can be committed.
+type UploadCapabilityRequest struct {
+	TenantID   domain.TenantID
+	ObjectKey  string
+	MediaType  string
+	Size       int64
+	SHA256     string
+	ContentMD5 string
+	ExpiresIn  time.Duration
+}
+
+// ObjectMetadata is authoritative exact-key storage metadata. Implementations
+// must compute Blob.SHA256 from a provider checksum or a bounded conditional
+// read of the stored bytes; HEAD metadata alone is not sufficient. ETag is used
+// as the source precondition during promotion.
+type ObjectMetadata struct {
+	Blob      domain.BlobRef
+	MediaType string
+	ETag      string
+}
+
+// PromoteObjectRequest copies a verified staging object to an immutable final
+// key. SourceETag prevents a browser overwrite between HEAD and COPY, while the
+// destination is created only if it does not already exist.
+type PromoteObjectRequest struct {
+	TenantID   domain.TenantID
+	Source     domain.BlobRef
+	SourceETag string
+	FinalKey   string
+	MediaType  string
+}
+
+// WebObjectStore is deliberately exact-object only: regular web request paths
+// cannot list a bucket or a tenant prefix.
+type WebObjectStore interface {
+	PresignUpload(ctx context.Context, request UploadCapabilityRequest) (ObjectCapability, error)
+	StatObject(ctx context.Context, tenantID domain.TenantID, key string) (ObjectMetadata, error)
+	PromoteObject(ctx context.Context, request PromoteObjectRequest) (domain.BlobRef, error)
+	PresignDownload(
+		ctx context.Context,
+		tenantID domain.TenantID,
+		ref domain.BlobRef,
+		expiresIn time.Duration,
+	) (ObjectCapability, error)
+}

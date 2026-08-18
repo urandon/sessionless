@@ -180,12 +180,13 @@ resolved to a membership before session rotation.
 | `POST /api/web/v1/active-tenant` | `tenant_id` selector | active membership; rotate session |
 | `GET /api/web/v1/sessions` | bounded cursor/limit | active tenant plus participant read grant |
 | `POST /api/web/v1/sessions` | idempotency key | membership write grant; create canonical session |
-| `GET /api/web/v1/sessions/{session_id}/events` | `after_seq`, bounded limit | participant read grant; ordered canonical events |
+| `GET /api/web/v1/sessions/{session_id}/events` | `after_sequence` or cursor, bounded limit | participant read grant; ordered canonical events |
 | `POST /api/web/v1/sessions/{session_id}/archive` | desired state/idempotency | participant write grant |
 | `POST /api/web/v1/sessions/{session_id}/messages` | text, up to 8 committed upload IDs, idempotency key | participant write grant; canonical ingestion port |
-| `POST /api/web/v1/uploads` | session selector, name, media type, size, SHA-256 | participant write grant; short-lived intent |
+| `POST /api/web/v1/uploads` | session selector, idempotency key, name, media type, size, SHA-256 | participant write grant; short-lived intent |
 | `POST /api/web/v1/uploads/{upload_id}/commit` | matching upload selector | reauthorize and verify storage metadata |
 | `GET /api/web/v1/runs/{run_id}` | run selector | run tenant/session participant read grant |
+| `GET /api/web/v1/sessions/{session_id}/events/{sequence}/attachments/{index}` | canonical event and attachment selectors | participant read grant; short-lived exact-object download capability |
 
 Resource-not-found and unauthorized-resource responses have the same public
 shape so tenant/session ID probing cannot distinguish them. Errors use:

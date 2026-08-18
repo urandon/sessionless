@@ -1,6 +1,7 @@
 package domain_test
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -14,7 +15,39 @@ func uploadIntent() domain.UploadIntent {
 		ObjectKey: "tenants/tenant-a/uploads/upload-1/photo.jpg",
 		Name:      "photo.jpg", MediaType: "image/jpeg", ExpectedSize: 42,
 		ExpectedSHA256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		ExpectedMD5:    "AAAAAAAAAAAAAAAAAAAAAA==",
 		Status:         domain.UploadIntentPending, CreatedAt: webTestTime, ExpiresAt: webTestTime.Add(10 * time.Minute),
+	}
+}
+
+func TestUploadIntentRequiresCanonicalStandardBase64MD5AndPersistsIt(t *testing.T) {
+	t.Parallel()
+	intent := uploadIntent()
+	encoded, err := json.Marshal(intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded domain.UploadIntent
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.ExpectedMD5 != intent.ExpectedMD5 {
+		t.Fatalf("persisted expected_md5 = %q, want %q", decoded.ExpectedMD5, intent.ExpectedMD5)
+	}
+
+	for _, invalid := range []string{
+		"",
+		"AAAAAAAAAAAAAAAAAAAAAA",
+		"AAAAAAAAAAAAAAAAAAAAAA=",
+		"AAAAAAAAAAAAAAAAAAAAAA===",
+		"_____________________w==",
+		"AAAAAAAAAAAAAAAAAAAAAAAA",
+	} {
+		candidate := uploadIntent()
+		candidate.ExpectedMD5 = invalid
+		if err := candidate.Validate(); err == nil {
+			t.Fatalf("non-canonical MD5 %q accepted", invalid)
+		}
 	}
 }
 

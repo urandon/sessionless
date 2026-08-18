@@ -68,6 +68,11 @@ metadata.
 - Bucket versioning and noncurrent-version retention make state recovery
   possible after an operator error.
 - Public bucket access is disabled.
+- The application artifact bucket permits pre-signed URLs only because Yandex
+  disables those URLs together with static-key authentication. No persistent
+  Object Storage static key is provisioned; exact-origin CORS and private IAM
+  grants preserve the capability boundary. See the documented tradeoff in
+  [`docs/cloud-development.md`](../../docs/cloud-development.md).
 - YDB is capped at zero provisioned RU, a bounded on-demand RU/s ceiling, and a
   small storage ceiling.
 - The lock row TTL is recovery hygiene, not permission to steal a live lock;

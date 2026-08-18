@@ -25,6 +25,19 @@ variable "base_domain" {
   }
 }
 variable "artifact_bucket_name" { type = string }
+variable "webui_origin" {
+  description = "Exact public HTTPS origin of the first-party WebUI allowed to use object capabilities."
+  type        = string
+
+  validation {
+    condition = (
+      var.webui_origin == trimspace(var.webui_origin) &&
+      can(regex("^https://[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?$", var.webui_origin)) &&
+      !strcontains(var.webui_origin, "*")
+    )
+    error_message = "webui_origin must be one exact HTTPS origin without credentials, path, query, fragment, whitespace, or wildcards."
+  }
+}
 variable "telegram_secret_version_id" {
   description = "Non-secret Lockbox version ID loaded by scripts/cloud-secret-load.sh outside Terraform."
   type        = string

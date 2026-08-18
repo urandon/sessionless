@@ -75,6 +75,8 @@ and upload-intent implementation remain separate slices.
   interfaces;
 - `internal/sessioningress`: frontend-neutral session resolution, clean-context,
   canonical object-envelope, and atomic event/run ingestion application service;
+- `internal/sessionapi`: participant-authorized session metadata, fixed-fan-out
+  listings, scoped pagination, history/run reads, lifecycle, and rebinding operations;
 - `internal/syntheticfrontend`: deterministic non-Telegram adapter proving the
   canonical ingress boundary without a transport SDK;
 - `internal/webcontract`: same-origin WebUI request/response, secure-cookie,
@@ -124,6 +126,9 @@ order is maintained in
 Session archive, storage tiering, legal hold, and the separately confirmed
 single-session deletion procedure are documented in
 [docs/session-lifecycle.md](docs/session-lifecycle.md).
+The participant-authorized session listing/history, scoped pagination,
+frontend rebinding, bounded display metadata, and admin-safe metadata contracts
+are documented in [docs/session-api.md](docs/session-api.md).
 
 ## Commands
 

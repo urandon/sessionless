@@ -8,12 +8,15 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/buildinfo"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/idgen"
+	"gitcode.com/urandon/sessionless/internal/s3store"
+	"gitcode.com/urandon/sessionless/internal/sessionapi"
 	"gitcode.com/urandon/sessionless/internal/telegramoidc"
 	"gitcode.com/urandon/sessionless/internal/webbff"
 	"gitcode.com/urandon/sessionless/internal/webcontract"
@@ -97,6 +100,24 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 		closeYDB()
 		return nil, func() {}, err
 	}
+	blobs, err := s3store.New(ctx, s3store.Config{
+		Endpoint: os.Getenv("S3_ENDPOINT"), Region: os.Getenv("S3_REGION"),
+		Bucket: os.Getenv("S3_BUCKET"), AccessKeyID: os.Getenv("S3_ACCESS_KEY_ID"),
+		SecretAccessKey: os.Getenv("S3_SECRET_ACCESS_KEY"), ForcePathStyle: envBool("S3_FORCE_PATH_STYLE"),
+		IAMMetadataCredentials: envBool("S3_IAM_METADATA_CREDENTIALS"),
+	})
+	if err != nil {
+		closeYDB()
+		return nil, func() {}, fmt.Errorf("open web BFF object storage: %w", err)
+	}
+	sessions, err := sessionapi.New(sessionapi.Config{
+		CursorKey: []byte(os.Getenv("SESSION_API_CURSOR_HMAC_KEY")),
+		IDKey:     []byte(os.Getenv("SESSION_API_ID_HMAC_KEY")),
+	}, store, blobs, systemClock{})
+	if err != nil {
+		closeYDB()
+		return nil, func() {}, err
+	}
 	handler, err := webbff.New(webbff.Config{
 		BaseURL: baseURL, RedirectURI: redirectURI,
 		OIDCPolicy: domain.OIDCVerificationPolicy{
@@ -104,7 +125,7 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 			Audience: os.Getenv("TELEGRAM_OIDC_CLIENT_ID"), AllowedAlgorithms: []string{"RS256"},
 			MaxClockSkew: 30 * time.Second,
 		},
-		Provider: provider, Store: store, IDs: idgen.New(), Clock: systemClock{},
+		Provider: provider, Store: store, Sessions: sessions, IDs: idgen.New(), Clock: systemClock{},
 		Logger: logger, Build: buildinfo.Current(component),
 	})
 	if err != nil {
@@ -112,6 +133,11 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 		return nil, func() {}, err
 	}
 	return handler, closeYDB, nil
+}
+
+func envBool(name string) bool {
+	value, _ := strconv.ParseBool(os.Getenv(name))
+	return value
 }
 
 func envOrDefault(name, fallback string) string {

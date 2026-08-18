@@ -295,6 +295,7 @@ func (event SessionEvent) Validate() error {
 }
 
 var ErrEventIdempotencyConflict = errors.New("session event idempotency conflict")
+var ErrSessionMutationConflict = errors.New("session mutation idempotency conflict")
 
 // AppendSessionEvent applies the in-memory invariant mirrored by persistence:
 // exact retries are no-ops and new events must take the next sequence.

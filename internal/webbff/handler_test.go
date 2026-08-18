@@ -18,6 +18,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/buildinfo"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/sessionapi"
 	"gitcode.com/urandon/sessionless/internal/webbff"
 	"gitcode.com/urandon/sessionless/internal/webcontract"
 )
@@ -184,6 +185,84 @@ func TestRequestLogsExcludeQueryAndAuthenticationSecrets(t *testing.T) {
 	}
 }
 
+func TestSessionRoutesUseWebAuthorizationCSRFAndSafeSelectors(t *testing.T) {
+	auth := newMemoryAuthStore()
+	subject := domain.ExternalSubject{Provider: domain.IdentityProviderTelegram, Subject: "424242"}
+	userID := domain.UserID("usr_known_user")
+	auth.identities[subject] = domain.ExternalIdentity{Subject: subject, UserID: userID, CreatedAt: bffTestTime, UpdatedAt: bffTestTime}
+	auth.memberships[userID] = []domain.TenantMembership{membership("ten_alpha", userID, domain.TenantMembershipOwner)}
+	sessions := &memorySessionAPIStore{records: []ports.SessionRecord{{
+		Session: domain.Session{
+			ID: "session-existing", TenantID: "ten_alpha", CreatedBy: userID,
+			Status: domain.SessionActive, CreatedAt: bffTestTime, UpdatedAt: bffTestTime,
+		},
+		Display: domain.SessionDisplay{
+			TenantID: "ten_alpha", SessionID: "session-existing", Title: "Existing",
+			Preview: "Bounded preview", UpdatedAt: bffTestTime,
+		},
+	}}}
+	handler := newSessionTestHandler(t, auth, subject.Subject, sessions)
+	sessionCookie, csrfCookie := performLogin(t, handler, "/sessions")
+
+	list := httptest.NewRequest(http.MethodGet,
+		"https://web.dev.sessionless.triborg.dev"+webcontract.RouteSessions+"?status=active&limit=1", nil)
+	list.AddCookie(sessionCookie)
+	listResponse := httptest.NewRecorder()
+	handler.ServeHTTP(listResponse, list)
+	if listResponse.Code != http.StatusOK || !strings.Contains(listResponse.Body.String(), `"title":"Existing"`) {
+		t.Fatalf("session list status=%d body=%s", listResponse.Code, listResponse.Body.String())
+	}
+
+	missing := httptest.NewRequest(http.MethodGet,
+		"https://web.dev.sessionless.triborg.dev/api/web/v1/sessions/session-missing", nil)
+	missing.AddCookie(sessionCookie)
+	missingResponse := httptest.NewRecorder()
+	handler.ServeHTTP(missingResponse, missing)
+	if missingResponse.Code != http.StatusNotFound {
+		t.Fatalf("missing selector status=%d body=%s", missingResponse.Code, missingResponse.Body.String())
+	}
+
+	withoutCSRF := httptest.NewRequest(http.MethodPost,
+		"https://web.dev.sessionless.triborg.dev"+webcontract.RouteSessions,
+		strings.NewReader(`{"idempotency_key":"create-1"}`))
+	withoutCSRF.Header.Set("Content-Type", "application/json")
+	withoutCSRF.AddCookie(sessionCookie)
+	withoutCSRFResponse := httptest.NewRecorder()
+	handler.ServeHTTP(withoutCSRFResponse, withoutCSRF)
+	if withoutCSRFResponse.Code != http.StatusForbidden {
+		t.Fatalf("create without CSRF status=%d", withoutCSRFResponse.Code)
+	}
+
+	create := httptest.NewRequest(http.MethodPost,
+		"https://web.dev.sessionless.triborg.dev"+webcontract.RouteSessions,
+		strings.NewReader(`{"idempotency_key":"create-1"}`))
+	create.Header.Set("Content-Type", "application/json")
+	create.Header.Set("Origin", "https://web.dev.sessionless.triborg.dev")
+	create.Header.Set(webcontract.CSRFHeaderName, csrfCookie.Value)
+	create.AddCookie(sessionCookie)
+	create.AddCookie(csrfCookie)
+	createResponse := httptest.NewRecorder()
+	handler.ServeHTTP(createResponse, create)
+	if createResponse.Code != http.StatusCreated {
+		t.Fatalf("authorized create status=%d body=%s", createResponse.Code, createResponse.Body.String())
+	}
+
+	sessions.bindingErr = domain.StaleBindingError{Expected: 1, Actual: 2}
+	bind := httptest.NewRequest(http.MethodPost,
+		"https://web.dev.sessionless.triborg.dev"+webcontract.RouteFrontendBindings,
+		strings.NewReader(`{"frontend":"web","external_conversation_id":"browser-1","session_id":"session-existing","expected_revision":1}`))
+	bind.Header.Set("Content-Type", "application/json")
+	bind.Header.Set("Origin", "https://web.dev.sessionless.triborg.dev")
+	bind.Header.Set(webcontract.CSRFHeaderName, csrfCookie.Value)
+	bind.AddCookie(sessionCookie)
+	bind.AddCookie(csrfCookie)
+	bindResponse := httptest.NewRecorder()
+	handler.ServeHTTP(bindResponse, bind)
+	if bindResponse.Code != http.StatusConflict {
+		t.Fatalf("stale binding status=%d body=%s", bindResponse.Code, bindResponse.Body.String())
+	}
+}
+
 func newTestHandler(t *testing.T, store *memoryAuthStore, subject string) http.Handler {
 	t.Helper()
 	return newTestHandlerWithLogger(t, store, subject, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -200,6 +279,30 @@ func newTestHandlerWithLogger(t *testing.T, store *memoryAuthStore, subject stri
 		Provider: fakeProvider{subject: subject}, Store: store, IDs: fixedIDs{},
 		Clock: fixedClock{now: bffTestTime}, Logger: logger,
 		Build: buildinfo.Current("web-bff-test"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return handler
+}
+
+func newSessionTestHandler(t *testing.T, auth *memoryAuthStore, subject string, store ports.SessionAPIStore) http.Handler {
+	t.Helper()
+	sessions, err := sessionapi.New(sessionapi.Config{
+		CursorKey: bytes.Repeat([]byte("c"), 32), IDKey: bytes.Repeat([]byte("i"), 32),
+	}, store, memorySessionBlobs{}, fixedClock{now: bffTestTime})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := webbff.New(webbff.Config{
+		BaseURL:     "https://web.dev.sessionless.triborg.dev",
+		RedirectURI: "https://web.dev.sessionless.triborg.dev" + webcontract.RouteOIDCCallback,
+		OIDCPolicy: domain.OIDCVerificationPolicy{
+			Issuer: "https://oauth.telegram.org", Audience: "100000", AllowedAlgorithms: []string{"RS256"},
+		},
+		Provider: fakeProvider{subject: subject}, Store: auth, Sessions: sessions, IDs: fixedIDs{},
+		Clock: fixedClock{now: bffTestTime}, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Build: buildinfo.Current("web-bff-session-test"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -438,3 +541,81 @@ func membership(tenantID domain.TenantID, userID domain.UserID, role domain.Tena
 		SecurityVersion: 1, CreatedAt: bffTestTime, UpdatedAt: bffTestTime,
 	}
 }
+
+type memorySessionAPIStore struct {
+	records    []ports.SessionRecord
+	created    map[domain.IdempotencyKey]domain.Session
+	bindingErr error
+}
+
+func (store *memorySessionAPIStore) CreateSessionForUser(_ context.Context, request ports.SessionCreateRequest) (domain.Session, bool, error) {
+	if store.created == nil {
+		store.created = make(map[domain.IdempotencyKey]domain.Session)
+	}
+	if session, found := store.created[request.IdempotencyKey]; found {
+		return session, false, nil
+	}
+	store.created[request.IdempotencyKey] = request.Session
+	store.records = append(store.records, ports.SessionRecord{
+		Session: request.Session,
+		Display: domain.SessionDisplay{TenantID: request.Session.TenantID, SessionID: request.Session.ID, UpdatedAt: request.Session.UpdatedAt},
+	})
+	return request.Session, true, nil
+}
+
+func (store *memorySessionAPIStore) GetSessionForUser(_ context.Context, tenantID domain.TenantID, userID domain.UserID, sessionID domain.SessionID, _ bool) (ports.SessionRecord, bool, error) {
+	for _, record := range store.records {
+		if record.Session.TenantID == tenantID && record.Session.CreatedBy == userID && record.Session.ID == sessionID {
+			return record, true, nil
+		}
+	}
+	return ports.SessionRecord{}, false, nil
+}
+
+func (store *memorySessionAPIStore) ListSessionsForUser(_ context.Context, request ports.SessionListRequest) ([]ports.SessionRecord, error) {
+	var result []ports.SessionRecord
+	for _, record := range store.records {
+		if record.Session.TenantID == request.TenantID && record.Session.CreatedBy == request.UserID && record.Session.Status == request.Status {
+			result = append(result, record)
+		}
+	}
+	if uint64(len(result)) > request.Limit {
+		result = result[:request.Limit]
+	}
+	return result, nil
+}
+
+func (*memorySessionAPIStore) ListSessionHistoryForUser(context.Context, domain.TenantID, domain.UserID, domain.SessionID, uint64, uint64) ([]domain.SessionEvent, error) {
+	return nil, nil
+}
+
+func (*memorySessionAPIStore) ListRunsForUser(context.Context, ports.RunListRequest) ([]ports.RunRecord, error) {
+	return nil, nil
+}
+
+func (store *memorySessionAPIStore) BindOrSwitchFrontendForUser(_ context.Context, request ports.FrontendBindingRequest) (domain.FrontendBinding, error) {
+	if store.bindingErr != nil {
+		return domain.FrontendBinding{}, store.bindingErr
+	}
+	return domain.FrontendBinding{
+		ID: request.BindingID, TenantID: request.TenantID, Frontend: request.Frontend,
+		ExternalConversationID: request.ExternalConversationID, SessionID: request.SessionID,
+		Revision: request.ExpectedRevision + 1, CreatedAt: request.At, UpdatedAt: request.At,
+	}, nil
+}
+
+func (*memorySessionAPIStore) SetSessionArchivedForUser(context.Context, domain.TenantID, domain.UserID, domain.SessionID, bool, domain.IdempotencyKey, time.Time) (domain.Session, error) {
+	return domain.Session{}, errors.New("not implemented")
+}
+
+type memorySessionBlobs struct{}
+
+func (memorySessionBlobs) Put(context.Context, domain.TenantID, string, io.Reader) (domain.BlobRef, error) {
+	return domain.BlobRef{}, errors.New("not implemented")
+}
+
+func (memorySessionBlobs) Open(context.Context, domain.TenantID, domain.BlobRef) (io.ReadCloser, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (memorySessionBlobs) Delete(context.Context, domain.TenantID, domain.BlobRef) error { return nil }

@@ -15,11 +15,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/buildinfo"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/sessionapi"
 	"gitcode.com/urandon/sessionless/internal/telegramoidc"
 	"gitcode.com/urandon/sessionless/internal/webcontract"
 )
@@ -39,6 +41,7 @@ type Config struct {
 	OIDCPolicy   domain.OIDCVerificationPolicy
 	Provider     ports.OIDCProvider
 	Store        ports.WebAuthStore
+	Sessions     *sessionapi.Service
 	IDs          ports.IDGenerator
 	Clock        ports.Clock
 	Random       io.Reader
@@ -125,6 +128,219 @@ func (handler *Handler) routes() {
 	handler.mux.HandleFunc("GET "+webcontract.RouteMe, handler.me)
 	handler.mux.HandleFunc("GET "+webcontract.RouteTenants, handler.tenants)
 	handler.mux.HandleFunc("POST "+webcontract.RouteActiveTenant, handler.switchTenant)
+	if handler.config.Sessions != nil {
+		handler.mux.HandleFunc("GET "+webcontract.RouteSessions, handler.listSessions)
+		handler.mux.HandleFunc("POST "+webcontract.RouteSessions, handler.createSession)
+		handler.mux.HandleFunc("GET "+webcontract.RouteSession, handler.getSession)
+		handler.mux.HandleFunc("GET "+webcontract.RouteSessionEvents, handler.listSessionEvents)
+		handler.mux.HandleFunc("GET "+webcontract.RouteSessionRuns, handler.listSessionRuns)
+		handler.mux.HandleFunc("POST "+webcontract.RouteArchiveSession, handler.setSessionArchived)
+		handler.mux.HandleFunc("POST "+webcontract.RouteFrontendBindings, handler.bindFrontend)
+	}
+}
+
+func (handler *Handler) listSessions(w http.ResponseWriter, request *http.Request) {
+	authorization, err := handler.authorize(request, domain.TenantPermissionRead)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	status := domain.SessionStatus(request.URL.Query().Get("status"))
+	if status == "" {
+		status = domain.SessionActive
+	}
+	query := webcontract.SessionListQuery{
+		Cursor: request.URL.Query().Get("cursor"), Limit: queryLimit(request, 50), Status: status,
+	}
+	if err := query.Validate(); err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	page, err := handler.config.Sessions.List(
+		request.Context(), authorization.Session.ActiveTenantID, authorization.Session.UserID,
+		query.Status, query.Cursor, query.Limit,
+	)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	items := make([]webcontract.SessionSummary, 0, len(page.Items))
+	for _, item := range page.Items {
+		items = append(items, sessionSummary(item))
+	}
+	handler.writeJSON(w, http.StatusOK, webcontract.Page[webcontract.SessionSummary]{
+		Items: items, NextCursor: page.NextCursor,
+	})
+}
+
+func (handler *Handler) createSession(w http.ResponseWriter, request *http.Request) {
+	authorization, err := handler.authorizeMutation(request, domain.TenantPermissionWrite)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	var input webcontract.CreateSessionRequest
+	if err := decodeJSON(request, &input); err != nil || input.Validate() != nil {
+		if err == nil {
+			err = input.Validate()
+		}
+		handler.writeError(w, request, err)
+		return
+	}
+	session, created, err := handler.config.Sessions.Create(
+		request.Context(), authorization.Session.ActiveTenantID, authorization.Session.UserID, input.IdempotencyKey,
+	)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	handler.writeJSON(w, status, webcontract.SessionSummary{
+		SessionID: session.ID, Status: session.Status, LastSeq: session.LastEventSequence,
+		CreatedAt: session.CreatedAt, UpdatedAt: session.UpdatedAt, ArchivedAt: session.ArchivedAt,
+	})
+}
+
+func (handler *Handler) getSession(w http.ResponseWriter, request *http.Request) {
+	authorization, err := handler.authorize(request, domain.TenantPermissionRead)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	record, err := handler.config.Sessions.Get(
+		request.Context(), authorization.Session.ActiveTenantID, authorization.Session.UserID,
+		domain.SessionID(request.PathValue("session_id")),
+	)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	handler.writeJSON(w, http.StatusOK, sessionSummary(record))
+}
+
+func (handler *Handler) listSessionEvents(w http.ResponseWriter, request *http.Request) {
+	authorization, err := handler.authorize(request, domain.TenantPermissionRead)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	query := webcontract.EventListQuery{
+		Cursor: request.URL.Query().Get("cursor"), Limit: queryLimit(request, 50),
+	}
+	if err := query.Validate(); err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	page, err := handler.config.Sessions.History(
+		request.Context(), authorization.Session.ActiveTenantID, authorization.Session.UserID,
+		domain.SessionID(request.PathValue("session_id")), query.Cursor, query.Limit,
+	)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	items := make([]webcontract.SessionEvent, 0, len(page.Items))
+	for _, item := range page.Items {
+		items = append(items, projectEvent(item))
+	}
+	handler.writeJSON(w, http.StatusOK, webcontract.Page[webcontract.SessionEvent]{
+		Items: items, NextCursor: page.NextCursor,
+	})
+}
+
+func (handler *Handler) listSessionRuns(w http.ResponseWriter, request *http.Request) {
+	authorization, err := handler.authorize(request, domain.TenantPermissionRead)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	query := webcontract.RunListQuery{
+		Cursor: request.URL.Query().Get("cursor"), Limit: queryLimit(request, 50),
+	}
+	if err := query.Validate(); err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	page, err := handler.config.Sessions.Runs(
+		request.Context(), authorization.Session.ActiveTenantID, authorization.Session.UserID,
+		domain.SessionID(request.PathValue("session_id")), query.Cursor, query.Limit,
+	)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	items := make([]webcontract.Run, 0, len(page.Items))
+	for _, record := range page.Items {
+		items = append(items, projectRun(record.Run, record.Provider))
+	}
+	handler.writeJSON(w, http.StatusOK, webcontract.Page[webcontract.Run]{
+		Items: items, NextCursor: page.NextCursor,
+	})
+}
+
+func (handler *Handler) bindFrontend(w http.ResponseWriter, request *http.Request) {
+	authorization, err := handler.authorizeMutation(request, domain.TenantPermissionWrite)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	var input webcontract.BindFrontendRequest
+	if err := decodeJSON(request, &input); err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	if err := input.Validate(); err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	binding, err := handler.config.Sessions.BindFrontend(
+		request.Context(), authorization.Session.ActiveTenantID, authorization.Session.UserID,
+		input.Frontend, input.ExternalConversationID, input.SessionID, input.ExpectedRevision,
+	)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	status := http.StatusOK
+	if binding.Revision == 1 && input.ExpectedRevision == 0 {
+		status = http.StatusCreated
+	}
+	handler.writeJSON(w, status, webcontract.FrontendBinding{
+		BindingID: binding.ID, Frontend: binding.Frontend,
+		ExternalConversationID: binding.ExternalConversationID, SessionID: binding.SessionID,
+		Revision: binding.Revision, CreatedAt: binding.CreatedAt, UpdatedAt: binding.UpdatedAt,
+	})
+}
+
+func (handler *Handler) setSessionArchived(w http.ResponseWriter, request *http.Request) {
+	authorization, err := handler.authorizeMutation(request, domain.TenantPermissionWrite)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	var input webcontract.ArchiveSessionRequest
+	if err := decodeJSON(request, &input); err != nil || input.Validate() != nil {
+		if err == nil {
+			err = input.Validate()
+		}
+		handler.writeError(w, request, err)
+		return
+	}
+	session, err := handler.config.Sessions.SetArchived(
+		request.Context(), authorization.Session.ActiveTenantID, authorization.Session.UserID,
+		domain.SessionID(request.PathValue("session_id")), input.Archived, input.IdempotencyKey,
+	)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	handler.writeJSON(w, http.StatusOK, webcontract.SessionSummary{
+		SessionID: session.ID, Status: session.Status, LastSeq: session.LastEventSequence,
+		CreatedAt: session.CreatedAt, UpdatedAt: session.UpdatedAt, ArchivedAt: session.ArchivedAt,
+	})
 }
 
 func (handler *Handler) health(w http.ResponseWriter, _ *http.Request) {
@@ -477,6 +693,10 @@ func (handler *Handler) writeError(w http.ResponseWriter, request *http.Request,
 		handler.writeFailure(w, request, webcontract.ErrorCSRFFailed, "The mutation security check failed.")
 	case errors.Is(err, domain.ErrWebSessionExpired), errors.Is(err, domain.ErrWebSessionRevoked):
 		handler.writeFailure(w, request, webcontract.ErrorUnauthenticated, "Authentication is required.")
+	case errors.Is(err, sessionapi.ErrSessionUnavailable):
+		handler.writeFailure(w, request, webcontract.ErrorNotFound, "The requested session is not available.")
+	case errors.Is(err, domain.ErrSessionMutationConflict):
+		handler.writeFailure(w, request, webcontract.ErrorConflict, "The idempotency key conflicts with an earlier session mutation.")
 	case errors.Is(err, domain.ErrMembershipDenied), errors.Is(err, domain.ErrMembershipVersionChanged),
 		errors.Is(err, domain.ErrExternalIdentityConflict), errors.Is(err, domain.ErrWebSessionRotation):
 		handler.writeFailure(w, request, webcontract.ErrorAccessDenied, "The requested operation is not authorized.")
@@ -484,6 +704,11 @@ func (handler *Handler) writeError(w http.ResponseWriter, request *http.Request,
 		errors.Is(err, telegramoidc.ErrProviderResponse):
 		handler.writeFailure(w, request, webcontract.ErrorAccessDenied, "The login transaction could not be verified.")
 	default:
+		var staleBinding domain.StaleBindingError
+		if errors.As(err, &staleBinding) {
+			handler.writeFailure(w, request, webcontract.ErrorConflict, "The frontend binding has changed.")
+			return
+		}
 		var validation domain.ValidationError
 		if errors.As(err, &validation) {
 			handler.writeFailure(w, request, webcontract.ErrorInvalidRequest, "The request is invalid.")
@@ -580,6 +805,75 @@ func decodeJSON(request *http.Request, target any) error {
 		return errors.New("request body must contain one JSON value")
 	}
 	return nil
+}
+
+func sessionSummary(record ports.SessionRecord) webcontract.SessionSummary {
+	summary := webcontract.SessionSummary{
+		SessionID: record.Session.ID, Status: record.Session.Status,
+		Title: record.Display.Title, Preview: record.Display.Preview,
+		FrontendOrigin: record.Display.Origin, LastSeq: record.Session.LastEventSequence,
+		CreatedAt: record.Session.CreatedAt, UpdatedAt: record.Session.UpdatedAt,
+		ArchivedAt: record.Session.ArchivedAt,
+	}
+	if record.Run != nil {
+		run := projectRun(*record.Run, record.Provider)
+		summary.CurrentRun = &run
+	}
+	return summary
+}
+
+func projectRun(run domain.Run, provider string) webcontract.Run {
+	return webcontract.Run{
+		RunID: run.ID, SessionID: run.SessionID, TriggerID: run.TriggerEventID,
+		SubscriptionConnectionID: run.SubscriptionConnectionID, Provider: provider,
+		Status: run.Status, CreatedAt: run.CreatedAt, UpdatedAt: run.UpdatedAt, FinishedAt: run.FinishedAt,
+	}
+}
+
+func projectEvent(item sessionapi.Event) webcontract.SessionEvent {
+	content := webcontract.EventContent{Data: append(json.RawMessage(nil), item.Payload...)}
+	switch item.Event.Kind {
+	case domain.SessionEventUserMessage:
+		var envelope struct {
+			Text        string `json:"text"`
+			Attachments []struct {
+				Name      string         `json:"name"`
+				MediaType string         `json:"media_type"`
+				Blob      domain.BlobRef `json:"blob"`
+			} `json:"attachments"`
+		}
+		if json.Unmarshal(item.Payload, &envelope) == nil {
+			content.Text, content.Data = envelope.Text, nil
+			for _, attachment := range envelope.Attachments {
+				content.Attachments = append(content.Attachments, webcontract.Attachment{
+					Name: attachment.Name, MediaType: attachment.MediaType, Size: attachment.Blob.Size,
+				})
+			}
+		}
+	case domain.SessionEventAssistantMessage:
+		var envelope struct {
+			Summary string `json:"summary"`
+		}
+		if json.Unmarshal(item.Payload, &envelope) == nil && envelope.Summary != "" {
+			content.Text, content.Data = envelope.Summary, nil
+		}
+	}
+	return webcontract.SessionEvent{
+		EventID: item.Event.ID, Sequence: item.Event.Sequence, Kind: item.Event.Kind,
+		Content: content, CreatedAt: item.Event.CreatedAt,
+	}
+}
+
+func queryLimit(request *http.Request, fallback uint32) uint32 {
+	raw := request.URL.Query().Get("limit")
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.ParseUint(raw, 10, 32)
+	if err != nil {
+		return 0
+	}
+	return uint32(value)
 }
 
 func loginBindingCookie(value string, ttl time.Duration) *http.Cookie {

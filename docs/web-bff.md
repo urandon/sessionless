@@ -44,6 +44,12 @@ sequenceDiagram
 | `GET` | `/api/web/v1/me` | Return the current identity and active tenant |
 | `GET` | `/api/web/v1/tenants` | Return the caller's active memberships |
 | `POST` | `/api/web/v1/active-tenant` | Rotate the Web session into another authorized tenant |
+| `GET`, `POST` | `/api/web/v1/sessions` | Page active/archived sessions or create one idempotently |
+| `GET` | `/api/web/v1/sessions/{session_id}` | Open bounded participant-authorized session metadata |
+| `GET` | `/api/web/v1/sessions/{session_id}/events` | Page ordered canonical event payloads after authorization |
+| `GET` | `/api/web/v1/sessions/{session_id}/runs` | Page provider/harness execution observations |
+| `POST` | `/api/web/v1/sessions/{session_id}/archive` | Archive or unarchive without deleting history |
+| `POST` | `/api/web/v1/frontend-bindings` | Bind or revision-fenced switch an authorized frontend |
 
 Mutation routes require an exact `Origin` match and a double-submit CSRF value
 whose digest must also match the current server-side session. Switching tenants
@@ -90,6 +96,9 @@ Source: [Telegram Login: OIDC integration](https://core.telegram.org/bots/telegr
 | `TELEGRAM_OIDC_CLIENT_ID` | Telegram application client ID |
 | `TELEGRAM_OIDC_CLIENT_SECRET` | Telegram application secret |
 | `YDB_CONNECTION_STRING` | YDB endpoint/database coordinates only |
+| `SESSION_API_CURSOR_HMAC_KEY` | At least 32 secret bytes for scoped opaque continuation tokens |
+| `SESSION_API_ID_HMAC_KEY` | At least 32 secret bytes for deterministic idempotent resource IDs |
+| `S3_*` | Tenant-enforcing Object Storage coordinates and runtime credentials |
 
 The client secret must be injected into the process environment from an OS
 secret store locally and Lockbox in Yandex Cloud. It must not be present in
@@ -171,3 +180,6 @@ never contain raw claims or browser credentials.
 Request logs contain only request ID, method, path, and status. Query strings,
 cookies, authorization codes, tokens, state, nonce, PKCE values, provider
 response bodies, and raw security errors are excluded.
+
+The session route authorization, pagination, consistency, bounded metadata,
+and error contracts are specified in [session-api.md](session-api.md).

@@ -358,6 +358,9 @@ func (store *Store) CommitCanonicalUserEvent(
 		if err := state.PutRun(ctx, run); err != nil {
 			return err
 		}
+		if err := updateSessionDisplayMessageTx(ctx, tx, session, request.DisplayText, &request.Origin, &run); err != nil {
+			return err
+		}
 		if err := state.PutAttempt(ctx, attempt); err != nil {
 			return err
 		}

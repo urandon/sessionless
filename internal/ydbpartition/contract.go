@@ -98,6 +98,7 @@ var policies = []Policy{
 	hot("artifact_manifests_by_run", []string{"tenant_id", "run_id", "artifact_manifest_id"}, ClassEntity, "bounded manifest inventory behind a random run ID"),
 	hot("dispatch_outbox", []string{"tenant_id", "dispatch_outbox_id"}, ClassEntity, "high-write entity with random outbox IDs"),
 	hot("telegram_delivery_outbox", []string{"tenant_id", "telegram_delivery_id"}, ClassEntity, "high-write entity with random delivery IDs"),
+	hot("telegram_deliveries_by_run", []string{"tenant_id", "run_id", "telegram_delivery_id"}, ClassEntity, "bounded delivery cleanup behind a random run ID"),
 	hot("audit_events", []string{"tenant_id", "occurred_at", "audit_event_id"}, ClassAppend, "time is behind a distributed tenant; cloud evidence gates elephant-tenant scale"),
 	hot("subscription_scheduler_slots", []string{"tenant_id", "subscription_connection_id"}, ClassEntity, "one contention row per user-owned subscription connection"),
 	hot("tenant_scheduler_counters", []string{"tenant_id"}, ClassEntity, "one bounded counter row per tenant"),

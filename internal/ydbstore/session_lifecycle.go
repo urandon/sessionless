@@ -13,6 +13,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/ydbpartition"
 )
 
 const maxSessionDeletionRows = uint64(10_000)
@@ -390,6 +391,32 @@ func (store *Store) BuildSessionDeletionInventory(
 				}
 			}
 		}
+		deliveryIDs, err := store.listRunDeliveryIDs(ctx, tenantID, runID, maxRows-rowsUsed+1)
+		if err != nil {
+			return inventory, err
+		}
+		for _, deliveryID := range deliveryIDs {
+			if err := addRow(); err != nil {
+				return inventory, err
+			}
+			delivery, found, err := readJSON[domain.TelegramDeliveryOutbox](ctx, store.db,
+				`SELECT payload FROM telegram_delivery_outbox
+				 WHERE tenant_id = $1 AND telegram_delivery_id = $2`,
+				tenantID, deliveryID,
+			)
+			if err != nil {
+				return inventory, err
+			}
+			if !found || delivery.RunID != runID {
+				return inventory, fmt.Errorf("delivery index references inconsistent delivery %q", deliveryID)
+			}
+			inventory.DeliveryRows++
+			if delivery.Payload.Key != "" {
+				if err := addObject(delivery.Payload); err != nil {
+					return inventory, err
+				}
+			}
+		}
 	}
 	objectKeys := make([]string, 0, len(objects))
 	for key := range objects {
@@ -694,6 +721,40 @@ func deleteSessionRowsTx(ctx context.Context, tx *stateTx, sessionID domain.Sess
 				return err
 			}
 		}
+		deliveryIDs, err := listRunDeliveryIDsTx(ctx, tx, runID, maxSessionDeletionRows+1)
+		if err != nil {
+			return err
+		}
+		for _, deliveryID := range deliveryIDs {
+			delivery, found, err := readJSON[domain.TelegramDeliveryOutbox](ctx, tx.sqlTx,
+				`SELECT payload FROM telegram_delivery_outbox
+				 WHERE tenant_id = $1 AND telegram_delivery_id = $2`,
+				tx.tenantID, deliveryID,
+			)
+			if err != nil {
+				return err
+			}
+			if !found || delivery.RunID != runID {
+				return fmt.Errorf("delivery index references inconsistent delivery %q", deliveryID)
+			}
+			availableAt := telegramDeliveryAvailableAt(delivery)
+			bucket, err := ydbpartition.BucketV1(string(delivery.ID))
+			if err != nil {
+				return err
+			}
+			for _, statement := range []struct {
+				query string
+				args  []any
+			}{
+				{`DELETE FROM telegram_delivery_ready WHERE tenant_id = $1 AND available_at = $2 AND telegram_delivery_id = $3`, []any{tx.tenantID, availableAt, delivery.ID}},
+				{`DELETE FROM telegram_delivery_ready_v2 WHERE shard_bucket = $1 AND available_at = $2 AND tenant_id = $3 AND telegram_delivery_id = $4`, []any{bucket, availableAt, tx.tenantID, delivery.ID}},
+				{`DELETE FROM telegram_delivery_outbox WHERE tenant_id = $1 AND telegram_delivery_id = $2`, []any{tx.tenantID, delivery.ID}},
+			} {
+				if _, err := tx.sqlTx.ExecContext(ctx, statement.query, statement.args...); err != nil {
+					return err
+				}
+			}
+		}
 		run, found, err := readJSON[domain.Run](ctx, tx.sqlTx,
 			`SELECT payload FROM runs WHERE tenant_id = $1 AND run_id = $2`, tx.tenantID, runID)
 		if err != nil {
@@ -709,6 +770,7 @@ func deleteSessionRowsTx(ctx context.Context, tx *stateTx, sessionID domain.Sess
 		}
 		for _, query := range []string{
 			`DELETE FROM artifact_manifests_by_run WHERE tenant_id = $1 AND run_id = $2`,
+			`DELETE FROM telegram_deliveries_by_run WHERE tenant_id = $1 AND run_id = $2`,
 			`DELETE FROM run_finalizations WHERE tenant_id = $1 AND run_id = $2`,
 			`DELETE FROM worker_jobs WHERE tenant_id = $1 AND run_id = $2`,
 			`DELETE FROM runs WHERE tenant_id = $1 AND run_id = $2`,
@@ -795,6 +857,26 @@ func (store *Store) listRunManifestIDs(ctx context.Context, tenantID domain.Tena
 	return ids, rows.Err()
 }
 
+func (store *Store) listRunDeliveryIDs(ctx context.Context, tenantID domain.TenantID, runID domain.RunID, limit uint64) ([]domain.TelegramDeliveryID, error) {
+	rows, err := store.db.QueryContext(ctx,
+		`SELECT telegram_delivery_id FROM telegram_deliveries_by_run
+		 WHERE tenant_id = $1 AND run_id = $2 ORDER BY telegram_delivery_id ASC LIMIT $3`,
+		tenantID, runID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []domain.TelegramDeliveryID
+	for rows.Next() {
+		var id domain.TelegramDeliveryID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 func listRunManifestIDsTx(ctx context.Context, tx *stateTx, runID domain.RunID, limit uint64) ([]domain.ArtifactManifestID, error) {
 	rows, err := tx.sqlTx.QueryContext(ctx,
 		`SELECT artifact_manifest_id FROM artifact_manifests_by_run WHERE tenant_id = $1 AND run_id = $2 ORDER BY artifact_manifest_id ASC LIMIT $3`,
@@ -809,6 +891,29 @@ func listRunManifestIDsTx(ctx context.Context, tx *stateTx, runID domain.RunID, 
 			return nil, domain.ValidationError{Field: "session_deletion.manifests", Reason: "exceeds the hard deletion bound"}
 		}
 		var id domain.ArtifactManifestID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func listRunDeliveryIDsTx(ctx context.Context, tx *stateTx, runID domain.RunID, limit uint64) ([]domain.TelegramDeliveryID, error) {
+	rows, err := tx.sqlTx.QueryContext(ctx,
+		`SELECT telegram_delivery_id FROM telegram_deliveries_by_run
+		 WHERE tenant_id = $1 AND run_id = $2 ORDER BY telegram_delivery_id ASC LIMIT $3`,
+		tx.tenantID, runID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []domain.TelegramDeliveryID
+	for rows.Next() {
+		if uint64(len(ids)) >= maxSessionDeletionRows {
+			return nil, domain.ValidationError{Field: "session_deletion.deliveries", Reason: "exceeds the hard deletion bound"}
+		}
+		var id domain.TelegramDeliveryID
 		if err := rows.Scan(&id); err != nil {
 			return nil, err
 		}

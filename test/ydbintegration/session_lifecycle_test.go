@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/ports"
 )
 
 func TestSessionLifecycleHoldWriteFenceInventoryAndCompletion(t *testing.T) {
@@ -52,6 +53,50 @@ func TestSessionLifecycleHoldWriteFenceInventoryAndCompletion(t *testing.T) {
 	if err := store.PutSessionSnapshot(ctx, snapshot); err != nil {
 		t.Fatal(err)
 	}
+	finishedAt := now.Add(2500 * time.Millisecond)
+	run := domain.Run{
+		ID: domain.RunID(uniqueID("run-lifecycle")), TenantID: tenantID, SessionID: session.ID,
+		TriggerEventID:           event.ID,
+		SubscriptionConnectionID: domain.SubscriptionConnectionID(uniqueID("subscription-lifecycle")),
+		Status:                   domain.RunSucceeded, IdempotencyKey: domain.IdempotencyKey(uniqueID("run-key-lifecycle")),
+		FinishedAt: &finishedAt, CreatedAt: now.Add(2 * time.Second), UpdatedAt: finishedAt,
+	}
+	deliveryBlob := domain.BlobRef{
+		TenantID: tenantID,
+		Key:      domain.SessionObjectPrefix(tenantID, session.ID) + "runs/" + string(run.ID) + "/telegram/reply.json",
+		Size:     17, SHA256: canonicalDigest,
+	}
+	deliveries := []domain.TelegramDeliveryOutbox{
+		{
+			ID: domain.TelegramDeliveryID(uniqueID("delivery-inline-lifecycle")), TenantID: tenantID, RunID: run.ID,
+			Chat: domain.TelegramChatRef{TenantID: tenantID, ChatID: 4411}, ReplyToMessageID: 101,
+			Text: "sensitive inline result", Status: domain.DeliveryPending,
+			IdempotencyKey: domain.IdempotencyKey(uniqueID("delivery-inline-key-lifecycle")),
+			CreatedAt:      finishedAt, UpdatedAt: finishedAt,
+		},
+		{
+			ID: domain.TelegramDeliveryID(uniqueID("delivery-blob-lifecycle")), TenantID: tenantID, RunID: run.ID,
+			Chat: domain.TelegramChatRef{TenantID: tenantID, ChatID: 4411}, ReplyToMessageID: 102,
+			Payload: deliveryBlob, Status: domain.DeliveryPending,
+			IdempotencyKey: domain.IdempotencyKey(uniqueID("delivery-blob-key-lifecycle")),
+			CreatedAt:      finishedAt, UpdatedAt: finishedAt,
+		},
+	}
+	if err := store.Transact(ctx, tenantID, func(tx ports.StateTx) error {
+		if err := tx.PutRun(ctx, run); err != nil {
+			return err
+		}
+		for _, delivery := range deliveries {
+			if err := tx.PutTelegramDeliveryOutbox(ctx, delivery); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertCount(t, client, "telegram_delivery_outbox", tenantID, 2)
+	assertCount(t, client, "telegram_deliveries_by_run", tenantID, 2)
 	archiveAt := now.Add(3 * time.Second)
 	if err := store.ArchiveSession(ctx, tenantID, session.ID, archiveAt); err != nil {
 		t.Fatal(err)
@@ -102,8 +147,9 @@ func TestSessionLifecycleHoldWriteFenceInventoryAndCompletion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if inventory.EventRows != 1 || inventory.SnapshotRows != 1 || len(inventory.Objects) != 2 ||
-		inventory.TotalBytes != uint64(event.Payload.Size+snapshot.Payload.Size) {
+	if inventory.EventRows != 1 || inventory.SnapshotRows != 1 || inventory.RunRows != 1 ||
+		inventory.DeliveryRows != 2 || len(inventory.Objects) != 3 ||
+		inventory.TotalBytes != uint64(event.Payload.Size+snapshot.Payload.Size+deliveryBlob.Size) {
 		t.Fatalf("unexpected deletion inventory: %+v", inventory)
 	}
 	if inventory.Objects[0].Key > inventory.Objects[1].Key {
@@ -160,4 +206,9 @@ func TestSessionLifecycleHoldWriteFenceInventoryAndCompletion(t *testing.T) {
 	assertCount(t, client, "session_deletions", tenantID, 1)
 	assertCount(t, client, "session_events", tenantID, 0)
 	assertCount(t, client, "session_snapshots", tenantID, 0)
+	assertCount(t, client, "runs", tenantID, 0)
+	assertCount(t, client, "telegram_delivery_outbox", tenantID, 0)
+	assertCount(t, client, "telegram_deliveries_by_run", tenantID, 0)
+	assertCount(t, client, "telegram_delivery_ready", tenantID, 0)
+	assertCount(t, client, "telegram_delivery_ready_v2", tenantID, 0)
 }

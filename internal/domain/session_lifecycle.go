@@ -194,6 +194,7 @@ type SessionDeletionInventory struct {
 	SnapshotRows uint64    `json:"snapshot_rows"`
 	RunRows      uint64    `json:"run_rows"`
 	ManifestRows uint64    `json:"manifest_rows"`
+	DeliveryRows uint64    `json:"delivery_rows"`
 	TotalBytes   uint64    `json:"total_bytes"`
 }
 

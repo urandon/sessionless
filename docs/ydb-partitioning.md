@@ -78,6 +78,7 @@ a production adapter.
 | `artifact_manifests_by_run` | `(tenant_id, run_id, artifact_manifest_id)` | per-run inventory | bounded reverse lookup behind a random run ID |
 | `dispatch_outbox` | `(tenant_id, dispatch_outbox_id)` | tenant entity | random outbox ID; load splitting enabled |
 | `telegram_delivery_outbox` | `(tenant_id, telegram_delivery_id)` | tenant entity | random delivery ID; load splitting enabled |
+| `telegram_deliveries_by_run` | `(tenant_id, run_id, telegram_delivery_id)` | per-run inventory | bounded delivery cleanup behind a random run ID |
 | `audit_events` | `(tenant_id, occurred_at, audit_event_id)` | append-heavy | time is behind tenant; elephant-tenant throughput is a cloud gate |
 | `web_security_audit_events` | `(shard_bucket, occurred_at, request_id)` | append-heavy | request hashes spread pre-auth events that have no resolved tenant; bounded time reads fan out across 16 buckets |
 | `lease_expiry` | `(shard_bucket, expires_at, tenant_id, run_id)` in `lease_expiry_v2` | global expiry | bounded 16-bucket time traversal |

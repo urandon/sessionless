@@ -649,6 +649,11 @@ func (tx *stateTx) PutTelegramDeliveryOutbox(
 		return err
 	}
 	if found {
+		if previous.RunID != outbox.RunID {
+			return domain.ValidationError{
+				Field: "telegram_delivery.run_id", Reason: "cannot change after the delivery is created",
+			}
+		}
 		previousAvailableAt := telegramDeliveryAvailableAt(previous)
 		if _, err := tx.sqlTx.ExecContext(ctx,
 			`DELETE FROM telegram_delivery_ready
@@ -680,6 +685,13 @@ func (tx *stateTx) PutTelegramDeliveryOutbox(
 		outbox.UpdatedAt.Add(tx.store.operationalRetention), payload,
 	)
 	if err != nil {
+		return err
+	}
+	if _, err := tx.sqlTx.ExecContext(ctx,
+		`UPSERT INTO telegram_deliveries_by_run
+		 (tenant_id, run_id, telegram_delivery_id) VALUES ($1, $2, $3)`,
+		outbox.TenantID, outbox.RunID, outbox.ID,
+	); err != nil {
 		return err
 	}
 	if outbox.Status != domain.DeliveryPending &&

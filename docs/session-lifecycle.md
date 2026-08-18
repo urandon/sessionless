@@ -113,11 +113,14 @@ a new legal hold is rejected after it starts, so holds must be established
 while the deletion is still `requested`.
 
 Completion removes session metadata, events, snapshots, participants,
-bindings, projections, runs, and manifests. Operational rows governed by
-bounded TTL may age out under their existing policy. Run lease heads remain as
-content-free fencing records so a stale worker fence can never be reused. The
-deletion tombstone, released hold, and lifecycle audit events remain so a
-deleted ID cannot be silently recreated and an incident can be reconstructed.
+bindings, projections, runs, manifests, and frontend delivery payloads. An
+exact per-run delivery index ensures that both inline results and referenced
+objects are included without scanning another tenant's state. Other
+operational rows governed by bounded TTL may age out under their existing
+policy. Run lease heads remain as content-free fencing records so a stale
+worker fence can never be reused. The deletion tombstone, released hold, and
+lifecycle audit events remain so a deleted ID cannot be silently recreated and
+an incident can be reconstructed.
 
 Tenant/account deletion is an orchestration of these single-session state
 machines. It must enumerate authorized session IDs and invoke this exact

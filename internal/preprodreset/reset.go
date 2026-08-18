@@ -117,6 +117,7 @@ var applicationTables = []string{
 	"telegram_delivery_ready_v2",
 	"telegram_delivery_ready",
 	"telegram_delivery_outbox",
+	"telegram_deliveries_by_run",
 	"dispatch_ready_v2",
 	"dispatch_ready",
 	"dispatch_outbox",

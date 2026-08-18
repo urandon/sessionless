@@ -330,8 +330,9 @@ func (sink *eventSink) Emit(ctx context.Context, event ports.ExecutionEvent) err
 	}
 	ref, err := sink.manager.blobs.Put(
 		ctx, sink.loaded.Run.TenantID,
-		fmt.Sprintf("runs/%s/checkpoints/%020d-%s.json",
-			sink.loaded.Run.ID, event.Sequence, digestHex(event.CheckpointState)),
+		fmt.Sprintf("%scheckpoints/%020d-%s.json",
+			domain.SessionRunObjectPrefix(sink.loaded.Run.TenantID, sink.loaded.Run.SessionID, sink.loaded.Run.ID),
+			event.Sequence, digestHex(event.CheckpointState)),
 		bytes.NewReader(event.CheckpointState),
 	)
 	if err != nil {
@@ -537,7 +538,8 @@ func (manager *Manager) uploadOutputs(
 		digest := digestHex(data)
 		ref, err := manager.blobs.Put(
 			ctx, loaded.Run.TenantID,
-			fmt.Sprintf("runs/%s/artifacts/sha256/%s", loaded.Run.ID, digest),
+			domain.SessionRunObjectPrefix(loaded.Run.TenantID, loaded.Run.SessionID, loaded.Run.ID)+
+				"artifacts/sha256/"+digest,
 			bytes.NewReader(data),
 		)
 		if err != nil {

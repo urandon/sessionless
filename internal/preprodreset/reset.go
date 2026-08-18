@@ -118,6 +118,8 @@ var applicationTables = []string{
 	"telegram_delivery_ready",
 	"telegram_delivery_outbox",
 	"telegram_deliveries_by_run",
+	"checkpoint_objects_by_run",
+	"session_lifecycle_backfill_state",
 	"dispatch_ready_v2",
 	"dispatch_ready",
 	"dispatch_outbox",

@@ -190,7 +190,7 @@ func (processor *Processor) Process(
 		ChatID: message.Chat.ID, UserID: message.From.ID, SentAt: message.Date,
 		Text: message.Text, Caption: message.Caption,
 	}
-	attachments, descriptors, err := processor.storeAttachments(ctx, identity.Tenant, runID, message)
+	attachments, descriptors, err := processor.storeAttachments(ctx, identity.Tenant, sessionID, runID, message)
 	if err != nil {
 		return ports.TelegramIngressResult{}, err
 	}
@@ -200,7 +200,9 @@ func (processor *Processor) Process(
 		return ports.TelegramIngressResult{}, fmt.Errorf("encode normalized Telegram message: %w", err)
 	}
 	messageBlob, err := processor.blobs.Put(
-		ctx, identity.Tenant, "inputs/"+string(runID)+"/message.json", bytes.NewReader(payload),
+		ctx, identity.Tenant,
+		domain.SessionRunObjectPrefix(identity.Tenant, sessionID, runID)+"inputs/message.json",
+		bytes.NewReader(payload),
 	)
 	if err != nil {
 		return ports.TelegramIngressResult{}, err
@@ -266,6 +268,7 @@ func telegramTriggerEventID(sourceID string, updateID int64) domain.SessionEvent
 func (processor *Processor) storeAttachments(
 	ctx context.Context,
 	tenantID domain.TenantID,
+	sessionID domain.SessionID,
 	runID domain.RunID,
 	message Message,
 ) ([]domain.Artifact, []normalizedAttachment, error) {
@@ -307,7 +310,8 @@ func (processor *Processor) storeAttachments(
 		}
 		ref, putErr := processor.blobs.Put(
 			ctx, tenantID,
-			fmt.Sprintf("inputs/%s/attachments/%02d-%s", runID, index+1, name),
+			fmt.Sprintf("%sinputs/attachments/%02d-%s",
+				domain.SessionRunObjectPrefix(tenantID, sessionID, runID), index+1, name),
 			fetched.Body,
 		)
 		closeErr := fetched.Body.Close()

@@ -493,8 +493,9 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 		RunID: ingress.Run.ID, AttemptID: ingress.Attempt.ID, Sequence: 1,
 		State: domain.BlobRef{
 			TenantID: tenantID,
-			Key:      domain.TenantObjectPrefix(tenantID) + "runs/checkpoint.json",
-			Size:     2, SHA256: strings.Repeat("1", 64),
+			Key: domain.SessionRunObjectPrefix(tenantID, ingress.Run.SessionID, ingress.Run.ID) +
+				"checkpoints/checkpoint.json",
+			Size: 2, SHA256: strings.Repeat("1", 64),
 		},
 		CreatedAt: now.Add(3 * time.Second),
 	}

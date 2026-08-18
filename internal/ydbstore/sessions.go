@@ -671,7 +671,7 @@ func updateSessionTx(ctx context.Context, tx *stateTx, previous, session domain.
 	if err := ensureSessionWritableTx(ctx, tx, session.ID); err != nil {
 		return err
 	}
-	participants, err := activeSessionParticipants(ctx, tx, session.ID)
+	participants, err := activeSessionParticipants(ctx, tx, session.ID, maxSessionDeletionRows)
 	if err != nil {
 		return err
 	}
@@ -768,17 +768,24 @@ func writeBindingTx(ctx context.Context, tx *stateTx, binding domain.FrontendBin
 	return err
 }
 
-func activeSessionParticipants(ctx context.Context, tx *stateTx, sessionID domain.SessionID) ([]domain.SessionParticipant, error) {
+func activeSessionParticipants(ctx context.Context, tx *stateTx, sessionID domain.SessionID, maxRows uint64) ([]domain.SessionParticipant, error) {
 	rows, err := tx.sqlTx.QueryContext(ctx,
 		`SELECT record FROM session_participants
-		 WHERE tenant_id = $1 AND session_id = $2 AND status = $3`,
-		tx.tenantID, sessionID, domain.SessionParticipantActive,
+		 WHERE tenant_id = $1 AND session_id = $2 AND status = $3 LIMIT $4`,
+		tx.tenantID, sessionID, domain.SessionParticipantActive, maxRows+1,
 	)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	return decodeRows[domain.SessionParticipant](rows)
+	participants, err := decodeRows[domain.SessionParticipant](rows)
+	if err != nil {
+		return nil, err
+	}
+	if uint64(len(participants)) > maxRows {
+		return nil, domain.ValidationError{Field: "session_participants", Reason: "exceeds the configured bound"}
+	}
+	return participants, nil
 }
 
 func insertActivityTx(ctx context.Context, tx *stateTx, session domain.Session, userID domain.UserID) error {

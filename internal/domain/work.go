@@ -1,6 +1,10 @@
 package domain
 
-import "time"
+import (
+	"fmt"
+	"strings"
+	"time"
+)
 
 type AttemptStatus string
 
@@ -171,6 +175,10 @@ func (checkpoint Checkpoint) ValidateForAttempt(run Run, attempt Attempt) error 
 	}
 	if err := EnsureSameTenant(run.TenantID, checkpoint.State.TenantID); err != nil {
 		return err
+	}
+	prefix := SessionRunObjectPrefix(run.TenantID, run.SessionID, run.ID) + "checkpoints/"
+	if !strings.HasPrefix(checkpoint.State.Key, prefix) {
+		return ValidationError{Field: "checkpoint.state.key", Reason: fmt.Sprintf("must be under %q", prefix)}
 	}
 	if checkpoint.CreatedAt.IsZero() {
 		return ValidationError{Field: "checkpoint.created_at", Reason: "must not be zero"}

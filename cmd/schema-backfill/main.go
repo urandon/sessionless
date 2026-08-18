@@ -42,7 +42,7 @@ func run() error {
 		return err
 	}
 	defer client.Close(context.Background())
-	results, err := ydbpartition.BackfillReadyExpiryV2(ctx, client.DB, dryRun)
+	results, err := ydbpartition.BackfillSchemaIndexes(ctx, client.DB, dryRun)
 	if err != nil {
 		return err
 	}

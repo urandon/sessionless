@@ -73,12 +73,16 @@ for an active legal hold and non-terminal runs, records a durable audit event,
 and establishes a write fence. Later canonical events, snapshots, bindings,
 run state, archive transitions, and reuse of the session ID are rejected.
 
-The dry-run walks only tenant/session-keyed indexes, with explicit 10,000-row
-and 10,000-object upper bounds. Every `BlobRef` must belong to the selected
-tenant and remain below `tenants/<tenant-id>/sessions/<session-id>/`. Objects
-are sorted by exact key; the confirmation token includes a digest of the full
-inventory. There is no recursive, root, bucket-wide, glob, or
-unresolved-variable delete path.
+The dry-run walks tenant/session/run-keyed indexes, with one shared explicit
+10,000-row bound across events, snapshots, participants, bindings,
+projections, runs, manifests, deliveries, and checkpoint ledgers, plus a
+10,000-object bound. New `BlobRef` values must belong to the selected tenant
+and remain below `tenants/<tenant-id>/sessions/<session-id>/`. A migrated
+legacy object is accepted only below the exact `runs/<run-id>/` prefix of a
+run proven to belong to that session. Objects are sorted by exact key; the
+confirmation token includes a digest of the full inventory and its proven run
+IDs. There is no recursive, root, bucket-wide, glob, or unresolved-variable
+delete path.
 
 ### Operator procedure
 
@@ -111,6 +115,11 @@ at `deleting`; rerun the plan and the same confirmed command. Already removed
 exact objects are safe to delete again. `deleting` is the irreversible phase:
 a new legal hold is rejected after it starts, so holds must be established
 while the deletion is still `requested`.
+
+Before enabling deletion after an upgrade, complete the expand/migrate/cutover
+procedure in `migrations/ydb/README.md`. Delivery and checkpoint object
+ledgers deliberately have no TTL: operational rows may expire, but exact
+object ownership required for later audited deletion must remain available.
 
 Completion removes session metadata, events, snapshots, participants,
 bindings, projections, runs, manifests, and frontend delivery payloads. An

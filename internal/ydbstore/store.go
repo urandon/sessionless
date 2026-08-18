@@ -343,6 +343,15 @@ func (tx *stateTx) PutCheckpoint(ctx context.Context, checkpoint domain.Checkpoi
 		checkpoint.ID, checkpoint.RunID, checkpoint.State.Key, checkpoint.CreatedAt,
 		checkpoint.CreatedAt.Add(tx.store.operationalRetention), payload,
 	)
+	if err != nil {
+		return err
+	}
+	_, err = tx.sqlTx.ExecContext(ctx,
+		`UPSERT INTO checkpoint_objects_by_run
+		 (tenant_id, run_id, checkpoint_id, record)
+		 VALUES ($1, $2, $3, CAST($4 AS JsonDocument))`,
+		checkpoint.TenantID, checkpoint.RunID, checkpoint.ID, payload,
+	)
 	return err
 }
 
@@ -689,8 +698,9 @@ func (tx *stateTx) PutTelegramDeliveryOutbox(
 	}
 	if _, err := tx.sqlTx.ExecContext(ctx,
 		`UPSERT INTO telegram_deliveries_by_run
-		 (tenant_id, run_id, telegram_delivery_id) VALUES ($1, $2, $3)`,
-		outbox.TenantID, outbox.RunID, outbox.ID,
+		 (tenant_id, run_id, telegram_delivery_id, record)
+		 VALUES ($1, $2, $3, CAST($4 AS JsonDocument))`,
+		outbox.TenantID, outbox.RunID, outbox.ID, payload,
 	); err != nil {
 		return err
 	}

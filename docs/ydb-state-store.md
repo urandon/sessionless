@@ -65,6 +65,8 @@ domain objects whose tenant does not match it.
 | `dispatch_ready_v2` | `(shard_bucket, available_at, tenant_id, dispatch_outbox_id)` | bounded global pending dispatch range |
 | `telegram_delivery_outbox` | `(tenant_id, telegram_delivery_id)` | point delivery transition |
 | `telegram_deliveries_by_run` | `(tenant_id, run_id, telegram_delivery_id)` | bounded delivery inventory and destructive cleanup for one run |
+| `checkpoint_objects_by_run` | `(tenant_id, run_id, checkpoint_id)` | durable exact checkpoint-object inventory after operational checkpoint TTL |
+| `session_lifecycle_backfill_state` | `(backfill_id)` | expand/migrate/cutover completion marker for lifecycle indexes |
 | `telegram_delivery_ready_v2` | `(shard_bucket, available_at, tenant_id, telegram_delivery_id)` | bounded global pending/retry delivery range |
 | `audit_events` | `(tenant_id, occurred_at, audit_event_id)` | bounded tenant/time audit reads |
 | `web_security_audit_events` | `(shard_bucket, occurred_at, request_id)` | bounded 16-way time reads for pre-auth and CSRF security events |

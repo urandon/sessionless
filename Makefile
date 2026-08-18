@@ -41,7 +41,7 @@ help:
 		'make migrate-local  apply embedded YDB migrations' \
 		'make migration-status inspect Goose and checksum state' \
 		'make partition-status inspect physical keys and partition settings as JSON' \
-		'make partition-backfill copy legacy ready/expiry rows into the v2 bucketed layout' \
+		'make partition-backfill copy legacy ready/expiry and lifecycle-index rows, then mark cutover' \
 		'make cloud-app-reset-plan inspect the exact guarded cloud-dev reset target' \
 		'make cloud-app-reset execute the typed-confirmed cloud-dev application reset' \
 		'make session-delete-request record an owner-authorized deletion request' \

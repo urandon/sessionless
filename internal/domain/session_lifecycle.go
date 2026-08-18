@@ -187,15 +187,20 @@ func (hold *SessionLegalHold) Release(userID UserID, at time.Time) error {
 }
 
 type SessionDeletionInventory struct {
-	TenantID     TenantID  `json:"tenant_id"`
-	SessionID    SessionID `json:"session_id"`
-	Objects      []BlobRef `json:"objects"`
-	EventRows    uint64    `json:"event_rows"`
-	SnapshotRows uint64    `json:"snapshot_rows"`
-	RunRows      uint64    `json:"run_rows"`
-	ManifestRows uint64    `json:"manifest_rows"`
-	DeliveryRows uint64    `json:"delivery_rows"`
-	TotalBytes   uint64    `json:"total_bytes"`
+	TenantID        TenantID  `json:"tenant_id"`
+	SessionID       SessionID `json:"session_id"`
+	Objects         []BlobRef `json:"objects"`
+	EventRows       uint64    `json:"event_rows"`
+	SnapshotRows    uint64    `json:"snapshot_rows"`
+	RunRows         uint64    `json:"run_rows"`
+	ManifestRows    uint64    `json:"manifest_rows"`
+	DeliveryRows    uint64    `json:"delivery_rows"`
+	CheckpointRows  uint64    `json:"checkpoint_rows"`
+	ParticipantRows uint64    `json:"participant_rows"`
+	BindingRows     uint64    `json:"binding_rows"`
+	ProjectionRows  uint64    `json:"projection_rows"`
+	RunIDs          []RunID   `json:"run_ids"`
+	TotalBytes      uint64    `json:"total_bytes"`
 }
 
 func (inventory SessionDeletionInventory) Validate(maxObjects uint64) error {
@@ -209,6 +214,18 @@ func (inventory SessionDeletionInventory) Validate(maxObjects uint64) error {
 		return ValidationError{Field: "session_deletion.objects", Reason: "exceeds the configured exact-object bound"}
 	}
 	seen := make(map[string]struct{}, len(inventory.Objects))
+	runPrefixes := make([]string, 0, len(inventory.RunIDs))
+	seenRuns := make(map[RunID]struct{}, len(inventory.RunIDs))
+	for _, runID := range inventory.RunIDs {
+		if err := runID.Validate(); err != nil {
+			return err
+		}
+		if _, duplicate := seenRuns[runID]; duplicate {
+			return ValidationError{Field: "session_deletion.run_ids", Reason: "contains duplicates"}
+		}
+		seenRuns[runID] = struct{}{}
+		runPrefixes = append(runPrefixes, RunObjectPrefix(inventory.TenantID, runID))
+	}
 	var bytes uint64
 	prefix := SessionObjectPrefix(inventory.TenantID, inventory.SessionID)
 	for _, ref := range inventory.Objects {
@@ -218,8 +235,12 @@ func (inventory SessionDeletionInventory) Validate(maxObjects uint64) error {
 		if err := EnsureSameTenant(inventory.TenantID, ref.TenantID); err != nil {
 			return err
 		}
-		if !strings.HasPrefix(ref.Key, prefix) {
-			return ValidationError{Field: "session_deletion.objects", Reason: fmt.Sprintf("must remain under %q", prefix)}
+		allowed := strings.HasPrefix(ref.Key, prefix)
+		for _, runPrefix := range runPrefixes {
+			allowed = allowed || strings.HasPrefix(ref.Key, runPrefix)
+		}
+		if !allowed {
+			return ValidationError{Field: "session_deletion.objects", Reason: fmt.Sprintf("must remain under %q or a proven legacy run prefix", prefix)}
 		}
 		if _, duplicate := seen[ref.Key]; duplicate {
 			return ValidationError{Field: "session_deletion.objects", Reason: "contains duplicate object keys"}

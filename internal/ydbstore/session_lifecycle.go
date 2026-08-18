@@ -3,6 +3,7 @@ package ydbstore
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -18,7 +19,73 @@ import (
 
 const maxSessionDeletionRows = uint64(10_000)
 
+const sessionLifecycleBackfillID = "session-lifecycle-indexes-v1"
+
 var ErrSessionLifecycleConflict = errors.New("session lifecycle request conflicts with durable state")
+
+func sessionLifecycleIndexesReady(ctx context.Context, query rowQuery) (bool, error) {
+	var completedAt time.Time
+	err := query.QueryRowContext(ctx,
+		`SELECT completed_at FROM session_lifecycle_backfill_state WHERE backfill_id = $1`,
+		sessionLifecycleBackfillID,
+	).Scan(&completedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return !completedAt.IsZero(), nil
+}
+
+func readLifecycleDelivery(
+	ctx context.Context,
+	query rowQuery,
+	tenantID domain.TenantID,
+	runID domain.RunID,
+	deliveryID domain.TelegramDeliveryID,
+) (domain.TelegramDeliveryOutbox, bool, error) {
+	delivery, found, err := readJSON[domain.TelegramDeliveryOutbox](ctx, query,
+		`SELECT record FROM telegram_deliveries_by_run
+		 WHERE tenant_id = $1 AND run_id = $2 AND telegram_delivery_id = $3`,
+		tenantID, runID, deliveryID,
+	)
+	if err != nil || found {
+		return delivery, found, err
+	}
+	ready, err := sessionLifecycleIndexesReady(ctx, query)
+	if err != nil || ready {
+		return delivery, false, err
+	}
+	return readJSON[domain.TelegramDeliveryOutbox](ctx, query,
+		`SELECT payload FROM telegram_delivery_outbox
+		 WHERE tenant_id = $1 AND telegram_delivery_id = $2`, tenantID, deliveryID)
+}
+
+func readLifecycleCheckpoint(
+	ctx context.Context,
+	query rowQuery,
+	tenantID domain.TenantID,
+	runID domain.RunID,
+	checkpointID domain.CheckpointID,
+) (domain.Checkpoint, bool, error) {
+	checkpoint, found, err := readJSON[domain.Checkpoint](ctx, query,
+		`SELECT record FROM checkpoint_objects_by_run
+		 WHERE tenant_id = $1 AND run_id = $2 AND checkpoint_id = $3`,
+		tenantID, runID, checkpointID,
+	)
+	if err != nil || found {
+		return checkpoint, found, err
+	}
+	ready, err := sessionLifecycleIndexesReady(ctx, query)
+	if err != nil || ready {
+		return checkpoint, false, err
+	}
+	return readJSON[domain.Checkpoint](ctx, query,
+		`SELECT payload FROM checkpoints
+		 WHERE tenant_id = $1 AND run_id = $2 AND checkpoint_id = $3`,
+		tenantID, runID, checkpointID)
+}
 
 func (store *Store) PutSessionLegalHold(
 	ctx context.Context,
@@ -360,6 +427,37 @@ func (store *Store) BuildSessionDeletionInventory(
 		}
 	}
 
+	participantCount, err := store.countSessionParticipantRows(ctx, tenantID, sessionID, maxRows-rowsUsed)
+	if err != nil {
+		return inventory, err
+	}
+	for range participantCount {
+		if err := addRow(); err != nil {
+			return inventory, err
+		}
+		inventory.ParticipantRows++
+	}
+	bindingIDs, err := store.listSessionBindingIDs(ctx, tenantID, sessionID, maxRows-rowsUsed+1)
+	if err != nil {
+		return inventory, err
+	}
+	for range bindingIDs {
+		if err := addRow(); err != nil {
+			return inventory, err
+		}
+		inventory.BindingRows++
+	}
+	projectionIDs, err := store.listSessionProjectionIDs(ctx, tenantID, sessionID, maxRows-rowsUsed+1)
+	if err != nil {
+		return inventory, err
+	}
+	for range projectionIDs {
+		if err := addRow(); err != nil {
+			return inventory, err
+		}
+		inventory.ProjectionRows++
+	}
+
 	runIDs, err := store.listSessionRunIDs(ctx, tenantID, sessionID, maxRows-rowsUsed+1)
 	if err != nil {
 		return inventory, err
@@ -369,6 +467,7 @@ func (store *Store) BuildSessionDeletionInventory(
 			return inventory, err
 		}
 		inventory.RunRows++
+		inventory.RunIDs = append(inventory.RunIDs, runID)
 		manifestIDs, err := store.listRunManifestIDs(ctx, tenantID, runID, maxRows-rowsUsed+1)
 		if err != nil {
 			return inventory, err
@@ -399,11 +498,7 @@ func (store *Store) BuildSessionDeletionInventory(
 			if err := addRow(); err != nil {
 				return inventory, err
 			}
-			delivery, found, err := readJSON[domain.TelegramDeliveryOutbox](ctx, store.db,
-				`SELECT payload FROM telegram_delivery_outbox
-				 WHERE tenant_id = $1 AND telegram_delivery_id = $2`,
-				tenantID, deliveryID,
-			)
+			delivery, found, err := readLifecycleDelivery(ctx, store.db, tenantID, runID, deliveryID)
 			if err != nil {
 				return inventory, err
 			}
@@ -415,6 +510,26 @@ func (store *Store) BuildSessionDeletionInventory(
 				if err := addObject(delivery.Payload); err != nil {
 					return inventory, err
 				}
+			}
+		}
+		checkpointIDs, err := store.listRunCheckpointIDs(ctx, tenantID, runID, maxRows-rowsUsed+1)
+		if err != nil {
+			return inventory, err
+		}
+		for _, checkpointID := range checkpointIDs {
+			if err := addRow(); err != nil {
+				return inventory, err
+			}
+			checkpoint, found, err := readLifecycleCheckpoint(ctx, store.db, tenantID, runID, checkpointID)
+			if err != nil {
+				return inventory, err
+			}
+			if !found || checkpoint.RunID != runID {
+				return inventory, fmt.Errorf("checkpoint index references inconsistent checkpoint %q", checkpointID)
+			}
+			inventory.CheckpointRows++
+			if err := addObject(checkpoint.State); err != nil {
+				return inventory, err
 			}
 		}
 	}
@@ -641,7 +756,7 @@ func deleteSessionRowsTx(ctx context.Context, tx *stateTx, sessionID domain.Sess
 	if !found {
 		return fmt.Errorf("session %q not found before deletion completion", sessionID)
 	}
-	participants, err := activeSessionParticipants(ctx, tx, sessionID)
+	participants, err := activeSessionParticipants(ctx, tx, sessionID, maxSessionDeletionRows)
 	if err != nil {
 		return err
 	}
@@ -651,7 +766,7 @@ func deleteSessionRowsTx(ctx context.Context, tx *stateTx, sessionID domain.Sess
 		}
 	}
 
-	bindings, err := currentSessionBindingsTx(ctx, tx, sessionID)
+	bindings, err := currentSessionBindingsTx(ctx, tx, sessionID, maxSessionDeletionRows)
 	if err != nil {
 		return err
 	}
@@ -671,29 +786,12 @@ func deleteSessionRowsTx(ctx context.Context, tx *stateTx, sessionID domain.Sess
 		}
 	}
 
-	projectionRows, err := tx.sqlTx.QueryContext(ctx,
-		`SELECT frontend_projection_id FROM frontend_projections_by_session
-		 WHERE tenant_id = $1 AND session_id = $2 LIMIT $3`,
-		tx.tenantID, sessionID, maxSessionDeletionRows+1,
-	)
+	projectionIDs, err := listSessionProjectionIDsTx(ctx, tx, sessionID, maxSessionDeletionRows+1)
 	if err != nil {
 		return err
 	}
-	var projectionIDs []domain.FrontendProjectionID
-	for projectionRows.Next() {
-		if uint64(len(projectionIDs)) >= maxSessionDeletionRows {
-			projectionRows.Close()
-			return domain.ValidationError{Field: "session_deletion.projections", Reason: "exceeds the hard deletion bound"}
-		}
-		var id domain.FrontendProjectionID
-		if err := projectionRows.Scan(&id); err != nil {
-			projectionRows.Close()
-			return err
-		}
-		projectionIDs = append(projectionIDs, id)
-	}
-	if err := projectionRows.Close(); err != nil {
-		return err
+	if uint64(len(projectionIDs)) > maxSessionDeletionRows {
+		return domain.ValidationError{Field: "session_deletion.projections", Reason: "exceeds the hard deletion bound"}
 	}
 	for _, id := range projectionIDs {
 		if _, err := tx.sqlTx.ExecContext(ctx,
@@ -726,11 +824,7 @@ func deleteSessionRowsTx(ctx context.Context, tx *stateTx, sessionID domain.Sess
 			return err
 		}
 		for _, deliveryID := range deliveryIDs {
-			delivery, found, err := readJSON[domain.TelegramDeliveryOutbox](ctx, tx.sqlTx,
-				`SELECT payload FROM telegram_delivery_outbox
-				 WHERE tenant_id = $1 AND telegram_delivery_id = $2`,
-				tx.tenantID, deliveryID,
-			)
+			delivery, found, err := readLifecycleDelivery(ctx, tx.sqlTx, tx.tenantID, runID, deliveryID)
 			if err != nil {
 				return err
 			}
@@ -755,6 +849,25 @@ func deleteSessionRowsTx(ctx context.Context, tx *stateTx, sessionID domain.Sess
 				}
 			}
 		}
+		checkpointIDs, err := listRunCheckpointIDsTx(ctx, tx, runID, maxSessionDeletionRows+1)
+		if err != nil {
+			return err
+		}
+		for _, checkpointID := range checkpointIDs {
+			checkpoint, found, err := readLifecycleCheckpoint(ctx, tx.sqlTx, tx.tenantID, runID, checkpointID)
+			if err != nil {
+				return err
+			}
+			if !found || checkpoint.RunID != runID {
+				return fmt.Errorf("checkpoint index references inconsistent checkpoint %q", checkpointID)
+			}
+			if _, err := tx.sqlTx.ExecContext(ctx,
+				`DELETE FROM checkpoints WHERE tenant_id = $1 AND attempt_id = $2 AND sequence = $3`,
+				tx.tenantID, checkpoint.AttemptID, checkpoint.Sequence,
+			); err != nil {
+				return err
+			}
+		}
 		run, found, err := readJSON[domain.Run](ctx, tx.sqlTx,
 			`SELECT payload FROM runs WHERE tenant_id = $1 AND run_id = $2`, tx.tenantID, runID)
 		if err != nil {
@@ -771,6 +884,7 @@ func deleteSessionRowsTx(ctx context.Context, tx *stateTx, sessionID domain.Sess
 		for _, query := range []string{
 			`DELETE FROM artifact_manifests_by_run WHERE tenant_id = $1 AND run_id = $2`,
 			`DELETE FROM telegram_deliveries_by_run WHERE tenant_id = $1 AND run_id = $2`,
+			`DELETE FROM checkpoint_objects_by_run WHERE tenant_id = $1 AND run_id = $2`,
 			`DELETE FROM run_finalizations WHERE tenant_id = $1 AND run_id = $2`,
 			`DELETE FROM worker_jobs WHERE tenant_id = $1 AND run_id = $2`,
 			`DELETE FROM runs WHERE tenant_id = $1 AND run_id = $2`,
@@ -816,6 +930,119 @@ func (store *Store) listSessionRunIDs(ctx context.Context, tenantID domain.Tenan
 	return ids, rows.Err()
 }
 
+func (store *Store) countSessionParticipantRows(ctx context.Context, tenantID domain.TenantID, sessionID domain.SessionID, maxRows uint64) (uint64, error) {
+	rows, err := store.db.QueryContext(ctx,
+		`SELECT user_id FROM session_participants
+		 WHERE tenant_id = $1 AND session_id = $2 ORDER BY user_id ASC LIMIT $3`,
+		tenantID, sessionID, maxRows+1)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	var count uint64
+	for rows.Next() {
+		count++
+		if count > maxRows {
+			return 0, domain.ValidationError{Field: "session_deletion.participants", Reason: "exceeds the configured inventory bound"}
+		}
+		var userID domain.UserID
+		if err := rows.Scan(&userID); err != nil {
+			return 0, err
+		}
+	}
+	return count, rows.Err()
+}
+
+func (store *Store) listSessionBindingIDs(ctx context.Context, tenantID domain.TenantID, sessionID domain.SessionID, limit uint64) ([]domain.FrontendBindingID, error) {
+	rows, err := store.db.QueryContext(ctx,
+		`SELECT binding_id FROM frontend_bindings_by_session
+		 WHERE tenant_id = $1 AND session_id = $2 ORDER BY binding_id ASC LIMIT $3`,
+		tenantID, sessionID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []domain.FrontendBindingID
+	for rows.Next() {
+		var id domain.FrontendBindingID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	ready, err := sessionLifecycleIndexesReady(ctx, store.db)
+	if err != nil || ready {
+		return ids, err
+	}
+	legacyRows, err := store.db.QueryContext(ctx,
+		`SELECT binding_id FROM frontend_bindings
+		 WHERE tenant_id = $1 AND session_id = $2 LIMIT $3`, tenantID, sessionID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer legacyRows.Close()
+	var legacy []domain.FrontendBindingID
+	for legacyRows.Next() {
+		var id domain.FrontendBindingID
+		if err := legacyRows.Scan(&id); err != nil {
+			return nil, err
+		}
+		legacy = append(legacy, id)
+	}
+	if err := legacyRows.Err(); err != nil {
+		return nil, err
+	}
+	return mergeBoundedStringIDs(ids, legacy, limit), nil
+}
+
+func (store *Store) listSessionProjectionIDs(ctx context.Context, tenantID domain.TenantID, sessionID domain.SessionID, limit uint64) ([]domain.FrontendProjectionID, error) {
+	rows, err := store.db.QueryContext(ctx,
+		`SELECT frontend_projection_id FROM frontend_projections_by_session
+		 WHERE tenant_id = $1 AND session_id = $2 ORDER BY frontend_projection_id ASC LIMIT $3`,
+		tenantID, sessionID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []domain.FrontendProjectionID
+	for rows.Next() {
+		var id domain.FrontendProjectionID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	ready, err := sessionLifecycleIndexesReady(ctx, store.db)
+	if err != nil || ready {
+		return ids, err
+	}
+	legacyRows, err := store.db.QueryContext(ctx,
+		`SELECT frontend_projection_id FROM frontend_projection_outbox
+		 WHERE tenant_id = $1 AND session_id = $2 LIMIT $3`, tenantID, sessionID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer legacyRows.Close()
+	var legacy []domain.FrontendProjectionID
+	for legacyRows.Next() {
+		var id domain.FrontendProjectionID
+		if err := legacyRows.Scan(&id); err != nil {
+			return nil, err
+		}
+		legacy = append(legacy, id)
+	}
+	if err := legacyRows.Err(); err != nil {
+		return nil, err
+	}
+	return mergeBoundedStringIDs(ids, legacy, limit), nil
+}
+
 func listSessionRunIDsTx(ctx context.Context, tx *stateTx, sessionID domain.SessionID, limit uint64) ([]domain.RunID, error) {
 	rows, err := tx.sqlTx.QueryContext(ctx,
 		`SELECT run_id FROM runs_by_session WHERE tenant_id = $1 AND session_id = $2 ORDER BY created_at ASC, run_id ASC LIMIT $3`,
@@ -838,6 +1065,50 @@ func listSessionRunIDsTx(ctx context.Context, tx *stateTx, sessionID domain.Sess
 	return ids, rows.Err()
 }
 
+func listSessionProjectionIDsTx(ctx context.Context, tx *stateTx, sessionID domain.SessionID, limit uint64) ([]domain.FrontendProjectionID, error) {
+	rows, err := tx.sqlTx.QueryContext(ctx,
+		`SELECT frontend_projection_id FROM frontend_projections_by_session
+		 WHERE tenant_id = $1 AND session_id = $2 LIMIT $3`, tx.tenantID, sessionID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []domain.FrontendProjectionID
+	for rows.Next() {
+		var id domain.FrontendProjectionID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	ready, err := sessionLifecycleIndexesReady(ctx, tx.sqlTx)
+	if err != nil || ready {
+		return ids, err
+	}
+	legacyRows, err := tx.sqlTx.QueryContext(ctx,
+		`SELECT frontend_projection_id FROM frontend_projection_outbox
+		 WHERE tenant_id = $1 AND session_id = $2 LIMIT $3`, tx.tenantID, sessionID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer legacyRows.Close()
+	var legacy []domain.FrontendProjectionID
+	for legacyRows.Next() {
+		var id domain.FrontendProjectionID
+		if err := legacyRows.Scan(&id); err != nil {
+			return nil, err
+		}
+		legacy = append(legacy, id)
+	}
+	if err := legacyRows.Err(); err != nil {
+		return nil, err
+	}
+	return mergeBoundedStringIDs(ids, legacy, limit), nil
+}
+
 func (store *Store) listRunManifestIDs(ctx context.Context, tenantID domain.TenantID, runID domain.RunID, limit uint64) ([]domain.ArtifactManifestID, error) {
 	rows, err := store.db.QueryContext(ctx,
 		`SELECT artifact_manifest_id FROM artifact_manifests_by_run WHERE tenant_id = $1 AND run_id = $2 ORDER BY artifact_manifest_id ASC LIMIT $3`,
@@ -854,7 +1125,32 @@ func (store *Store) listRunManifestIDs(ctx context.Context, tenantID domain.Tena
 		}
 		ids = append(ids, id)
 	}
-	return ids, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	ready, err := sessionLifecycleIndexesReady(ctx, store.db)
+	if err != nil || ready {
+		return ids, err
+	}
+	legacyRows, err := store.db.QueryContext(ctx,
+		`SELECT artifact_manifest_id FROM artifact_manifests
+		 WHERE tenant_id = $1 AND run_id = $2 LIMIT $3`, tenantID, runID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer legacyRows.Close()
+	var legacy []domain.ArtifactManifestID
+	for legacyRows.Next() {
+		var id domain.ArtifactManifestID
+		if err := legacyRows.Scan(&id); err != nil {
+			return nil, err
+		}
+		legacy = append(legacy, id)
+	}
+	if err := legacyRows.Err(); err != nil {
+		return nil, err
+	}
+	return mergeBoundedStringIDs(ids, legacy, limit), nil
 }
 
 func (store *Store) listRunDeliveryIDs(ctx context.Context, tenantID domain.TenantID, runID domain.RunID, limit uint64) ([]domain.TelegramDeliveryID, error) {
@@ -874,7 +1170,77 @@ func (store *Store) listRunDeliveryIDs(ctx context.Context, tenantID domain.Tena
 		}
 		ids = append(ids, id)
 	}
-	return ids, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	ready, err := sessionLifecycleIndexesReady(ctx, store.db)
+	if err != nil || ready {
+		return ids, err
+	}
+	legacyRows, err := store.db.QueryContext(ctx,
+		`SELECT telegram_delivery_id FROM telegram_delivery_outbox
+		 WHERE tenant_id = $1 AND run_id = $2 LIMIT $3`, tenantID, runID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer legacyRows.Close()
+	var legacy []domain.TelegramDeliveryID
+	for legacyRows.Next() {
+		var id domain.TelegramDeliveryID
+		if err := legacyRows.Scan(&id); err != nil {
+			return nil, err
+		}
+		legacy = append(legacy, id)
+	}
+	if err := legacyRows.Err(); err != nil {
+		return nil, err
+	}
+	return mergeBoundedStringIDs(ids, legacy, limit), nil
+}
+
+func (store *Store) listRunCheckpointIDs(ctx context.Context, tenantID domain.TenantID, runID domain.RunID, limit uint64) ([]domain.CheckpointID, error) {
+	rows, err := store.db.QueryContext(ctx,
+		`SELECT checkpoint_id FROM checkpoint_objects_by_run
+		 WHERE tenant_id = $1 AND run_id = $2 ORDER BY checkpoint_id ASC LIMIT $3`,
+		tenantID, runID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []domain.CheckpointID
+	for rows.Next() {
+		var id domain.CheckpointID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	ready, err := sessionLifecycleIndexesReady(ctx, store.db)
+	if err != nil || ready {
+		return ids, err
+	}
+	legacyRows, err := store.db.QueryContext(ctx,
+		`SELECT checkpoint_id FROM checkpoints
+		 WHERE tenant_id = $1 AND run_id = $2 LIMIT $3`, tenantID, runID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer legacyRows.Close()
+	var legacy []domain.CheckpointID
+	for legacyRows.Next() {
+		var id domain.CheckpointID
+		if err := legacyRows.Scan(&id); err != nil {
+			return nil, err
+		}
+		legacy = append(legacy, id)
+	}
+	if err := legacyRows.Err(); err != nil {
+		return nil, err
+	}
+	return mergeBoundedStringIDs(ids, legacy, limit), nil
 }
 
 func listRunManifestIDsTx(ctx context.Context, tx *stateTx, runID domain.RunID, limit uint64) ([]domain.ArtifactManifestID, error) {
@@ -896,7 +1262,32 @@ func listRunManifestIDsTx(ctx context.Context, tx *stateTx, runID domain.RunID, 
 		}
 		ids = append(ids, id)
 	}
-	return ids, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	ready, err := sessionLifecycleIndexesReady(ctx, tx.sqlTx)
+	if err != nil || ready {
+		return ids, err
+	}
+	legacyRows, err := tx.sqlTx.QueryContext(ctx,
+		`SELECT artifact_manifest_id FROM artifact_manifests
+		 WHERE tenant_id = $1 AND run_id = $2 LIMIT $3`, tx.tenantID, runID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer legacyRows.Close()
+	var legacy []domain.ArtifactManifestID
+	for legacyRows.Next() {
+		var id domain.ArtifactManifestID
+		if err := legacyRows.Scan(&id); err != nil {
+			return nil, err
+		}
+		legacy = append(legacy, id)
+	}
+	if err := legacyRows.Err(); err != nil {
+		return nil, err
+	}
+	return mergeBoundedStringIDs(ids, legacy, limit), nil
 }
 
 func listRunDeliveryIDsTx(ctx context.Context, tx *stateTx, runID domain.RunID, limit uint64) ([]domain.TelegramDeliveryID, error) {
@@ -919,7 +1310,80 @@ func listRunDeliveryIDsTx(ctx context.Context, tx *stateTx, runID domain.RunID, 
 		}
 		ids = append(ids, id)
 	}
-	return ids, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	ready, err := sessionLifecycleIndexesReady(ctx, tx.sqlTx)
+	if err != nil || ready {
+		return ids, err
+	}
+	legacyRows, err := tx.sqlTx.QueryContext(ctx,
+		`SELECT telegram_delivery_id FROM telegram_delivery_outbox
+		 WHERE tenant_id = $1 AND run_id = $2 LIMIT $3`, tx.tenantID, runID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer legacyRows.Close()
+	var legacy []domain.TelegramDeliveryID
+	for legacyRows.Next() {
+		var id domain.TelegramDeliveryID
+		if err := legacyRows.Scan(&id); err != nil {
+			return nil, err
+		}
+		legacy = append(legacy, id)
+	}
+	if err := legacyRows.Err(); err != nil {
+		return nil, err
+	}
+	return mergeBoundedStringIDs(ids, legacy, limit), nil
+}
+
+func listRunCheckpointIDsTx(ctx context.Context, tx *stateTx, runID domain.RunID, limit uint64) ([]domain.CheckpointID, error) {
+	rows, err := tx.sqlTx.QueryContext(ctx,
+		`SELECT checkpoint_id FROM checkpoint_objects_by_run
+		 WHERE tenant_id = $1 AND run_id = $2 ORDER BY checkpoint_id ASC LIMIT $3`,
+		tx.tenantID, runID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []domain.CheckpointID
+	for rows.Next() {
+		if uint64(len(ids)) >= maxSessionDeletionRows {
+			return nil, domain.ValidationError{Field: "session_deletion.checkpoints", Reason: "exceeds the hard deletion bound"}
+		}
+		var id domain.CheckpointID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	ready, err := sessionLifecycleIndexesReady(ctx, tx.sqlTx)
+	if err != nil || ready {
+		return ids, err
+	}
+	legacyRows, err := tx.sqlTx.QueryContext(ctx,
+		`SELECT checkpoint_id FROM checkpoints
+		 WHERE tenant_id = $1 AND run_id = $2 LIMIT $3`, tx.tenantID, runID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer legacyRows.Close()
+	var legacy []domain.CheckpointID
+	for legacyRows.Next() {
+		var id domain.CheckpointID
+		if err := legacyRows.Scan(&id); err != nil {
+			return nil, err
+		}
+		legacy = append(legacy, id)
+	}
+	if err := legacyRows.Err(); err != nil {
+		return nil, err
+	}
+	return mergeBoundedStringIDs(ids, legacy, limit), nil
 }
 
 func appendSessionLifecycleAuditTx(
@@ -975,6 +1439,26 @@ func lifecyclePageLimit(remaining uint64) uint64 {
 		return maxSessionPageSize
 	}
 	return remaining
+}
+
+func mergeBoundedStringIDs[T ~string](primary []T, fallback []T, limit uint64) []T {
+	seen := make(map[T]struct{}, len(primary)+len(fallback))
+	merged := make([]T, 0, min(int(limit), len(primary)+len(fallback)))
+	for _, ids := range [][]T{primary, fallback} {
+		for _, id := range ids {
+			if _, exists := seen[id]; exists {
+				continue
+			}
+			seen[id] = struct{}{}
+			merged = append(merged, id)
+			if uint64(len(merged)) == limit {
+				sort.Slice(merged, func(i, j int) bool { return merged[i] < merged[j] })
+				return merged
+			}
+		}
+	}
+	sort.Slice(merged, func(i, j int) bool { return merged[i] < merged[j] })
+	return merged
 }
 
 var _ ports.SessionLifecycleStore = (*Store)(nil)

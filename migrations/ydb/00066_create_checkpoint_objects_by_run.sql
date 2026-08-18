@@ -1,10 +1,10 @@
 -- +goose Up
-CREATE TABLE IF NOT EXISTS `telegram_deliveries_by_run` (
+CREATE TABLE IF NOT EXISTS `checkpoint_objects_by_run` (
     tenant_id Utf8,
     run_id Utf8,
-    telegram_delivery_id Utf8,
-	record JsonDocument,
-    PRIMARY KEY (tenant_id, run_id, telegram_delivery_id)
+    checkpoint_id Utf8,
+    record JsonDocument,
+    PRIMARY KEY (tenant_id, run_id, checkpoint_id)
 )
 WITH (
     AUTO_PARTITIONING_BY_SIZE = ENABLED,

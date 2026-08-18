@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
@@ -145,7 +146,7 @@ func appendCanonicalFinalizationTx(
 		seenKeys[draft.IdempotencyKey] = struct{}{}
 	}
 
-	bindings, err := currentSessionBindingsTx(ctx, tx, run.SessionID)
+	bindings, err := currentSessionBindingsTx(ctx, tx, run.SessionID, maxSessionDeletionRows)
 	if err != nil {
 		return err
 	}
@@ -191,11 +192,12 @@ func currentSessionBindingsTx(
 	ctx context.Context,
 	tx *stateTx,
 	sessionID domain.SessionID,
+	maxRows uint64,
 ) ([]domain.FrontendBinding, error) {
 	rows, err := tx.sqlTx.QueryContext(ctx,
 		`SELECT binding_id FROM frontend_bindings_by_session
-		 WHERE tenant_id = $1 AND session_id = $2`,
-		tx.tenantID, sessionID,
+		 WHERE tenant_id = $1 AND session_id = $2 LIMIT $3`,
+		tx.tenantID, sessionID, maxRows+1,
 	)
 	if err != nil {
 		return nil, err
@@ -203,6 +205,9 @@ func currentSessionBindingsTx(
 	defer rows.Close()
 	var bindingIDs []domain.FrontendBindingID
 	for rows.Next() {
+		if uint64(len(bindingIDs)) >= maxRows {
+			return nil, domain.ValidationError{Field: "frontend_bindings", Reason: "exceeds the configured bound"}
+		}
 		var bindingID domain.FrontendBindingID
 		if err := rows.Scan(&bindingID); err != nil {
 			return nil, err
@@ -211,6 +216,43 @@ func currentSessionBindingsTx(
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	ready, err := sessionLifecycleIndexesReady(ctx, tx.sqlTx)
+	if err != nil {
+		return nil, err
+	}
+	if !ready {
+		legacyRows, err := tx.sqlTx.QueryContext(ctx,
+			`SELECT binding_id FROM frontend_bindings
+			 WHERE tenant_id = $1 AND session_id = $2 LIMIT $3`,
+			tx.tenantID, sessionID, maxRows+1,
+		)
+		if err != nil {
+			return nil, err
+		}
+		seen := make(map[domain.FrontendBindingID]struct{}, len(bindingIDs))
+		for _, id := range bindingIDs {
+			seen[id] = struct{}{}
+		}
+		for legacyRows.Next() {
+			var id domain.FrontendBindingID
+			if err := legacyRows.Scan(&id); err != nil {
+				legacyRows.Close()
+				return nil, err
+			}
+			if _, exists := seen[id]; !exists {
+				bindingIDs = append(bindingIDs, id)
+				seen[id] = struct{}{}
+			}
+			if uint64(len(bindingIDs)) > maxRows {
+				legacyRows.Close()
+				return nil, domain.ValidationError{Field: "frontend_bindings", Reason: "exceeds the configured bound"}
+			}
+		}
+		if err := legacyRows.Close(); err != nil {
+			return nil, err
+		}
+		slices.Sort(bindingIDs)
 	}
 	var bindings []domain.FrontendBinding
 	for _, bindingID := range bindingIDs {

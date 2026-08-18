@@ -27,6 +27,17 @@ func SessionObjectPrefix(tenantID TenantID, sessionID SessionID) string {
 	return TenantObjectPrefix(tenantID) + "sessions/" + string(sessionID) + "/"
 }
 
+func SessionRunObjectPrefix(tenantID TenantID, sessionID SessionID, runID RunID) string {
+	return SessionObjectPrefix(tenantID, sessionID) + "runs/" + string(runID) + "/"
+}
+
+// RunObjectPrefix is the pre-canonical worker namespace. New writes use
+// SessionRunObjectPrefix; deletion accepts this exact prefix only after the
+// run has been proven to belong to the selected session.
+func RunObjectPrefix(tenantID TenantID, runID RunID) string {
+	return TenantObjectPrefix(tenantID) + "runs/" + string(runID) + "/"
+}
+
 func SessionEventObjectPrefix(tenantID TenantID, sessionID SessionID, eventID SessionEventID) string {
 	return SessionObjectPrefix(tenantID, sessionID) + "events/" + string(eventID) + "/"
 }
@@ -149,6 +160,12 @@ func (manifest ArtifactManifest) ValidateForRun(run Run) error {
 	for _, artifact := range manifest.Artifacts {
 		if err := artifact.Validate(); err != nil {
 			return err
+		}
+		if !strings.HasPrefix(artifact.Blob.Key, SessionObjectPrefix(run.TenantID, run.SessionID)) {
+			return ValidationError{
+				Field:  "artifact.blob.key",
+				Reason: fmt.Sprintf("must be under session prefix %q", SessionObjectPrefix(run.TenantID, run.SessionID)),
+			}
 		}
 		if err := EnsureSameTenant(run.TenantID, artifact.Blob.TenantID); err != nil {
 			return err

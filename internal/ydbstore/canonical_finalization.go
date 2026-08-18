@@ -21,6 +21,7 @@ type finalizationEventIdentity struct {
 	Kind           domain.SessionEventKind `json:"kind"`
 	IdempotencyKey domain.IdempotencyKey   `json:"idempotency_key"`
 	Payload        domain.BlobRef          `json:"payload"`
+	DisplayText    string                  `json:"display_text,omitempty"`
 }
 
 func runFinalizationDigest(
@@ -31,7 +32,8 @@ func runFinalizationDigest(
 	identities := make([]finalizationEventIdentity, 0, len(events))
 	for _, event := range events {
 		identities = append(identities, finalizationEventIdentity{
-			ID: event.ID, Kind: event.Kind, IdempotencyKey: event.IdempotencyKey, Payload: event.Payload,
+			ID: event.ID, Kind: event.Kind, IdempotencyKey: event.IdempotencyKey,
+			Payload: event.Payload, DisplayText: event.DisplayText,
 		})
 	}
 	payload, err := json.Marshal(struct {
@@ -177,6 +179,20 @@ func appendCanonicalFinalizationTx(
 		}
 	}
 	if err := updateSessionTx(ctx, tx, previous, session); err != nil {
+		return err
+	}
+	displayText := ""
+	for _, draft := range drafts {
+		if draft.DisplayText != "" {
+			displayText = draft.DisplayText
+		}
+	}
+	terminal := run
+	terminal.Status, terminal.UpdatedAt = status, at
+	if status.Terminal() {
+		terminal.FinishedAt = &at
+	}
+	if err := updateSessionDisplayMessageTx(ctx, tx, session, displayText, nil, &terminal); err != nil {
 		return err
 	}
 	_, err = tx.sqlTx.ExecContext(ctx,

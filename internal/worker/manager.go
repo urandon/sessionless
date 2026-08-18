@@ -651,6 +651,7 @@ func (manager *Manager) canonicalCompletionEvents(
 	if err != nil {
 		return nil, err
 	}
+	draft.DisplayText = normalizedSummary(result.Summary)
 	return append(events, draft), nil
 }
 

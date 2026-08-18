@@ -33,6 +33,9 @@ domain objects whose tenant does not match it.
 | `session_participants` | `(tenant_id, session_id, user_id)` | point-authorize tenant membership and session role |
 | `session_snapshots` | `(tenant_id, session_id, version)` | bounded prefix-read immutable context materializations |
 | `session_activity` | `(tenant_id, user_id, status, activity_bucket, updated_at, session_id)` | fixed 16-query recent-session fan-out per member |
+| `session_api_idempotency` | `(tenant_id, user_id, idempotency_key)` | point idempotency for frontend-neutral session creation |
+| `session_api_mutations` | `(tenant_id, user_id, idempotency_key, kind)` | point retry facts for idempotent frontend-neutral mutations |
+| `session_displays` | `(tenant_id, session_id)` | bounded rebuildable title/preview and current-run metadata |
 | `session_legal_holds` | `(tenant_id, session_id)` | point-check durable legal/audit retention before deletion |
 | `session_deletions` | `(tenant_id, session_id)` | point-read write fence and durable requested/deleting/completed tombstone |
 | `external_identities` | `(shard_bucket, provider, subject)` | point-resolve a verified frontend identity to one internal user |

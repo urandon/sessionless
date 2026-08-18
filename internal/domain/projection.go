@@ -10,6 +10,7 @@ type SessionEventDraft struct {
 	Kind           SessionEventKind `json:"kind"`
 	IdempotencyKey IdempotencyKey   `json:"idempotency_key"`
 	Payload        BlobRef          `json:"payload"`
+	DisplayText    string           `json:"display_text,omitempty"`
 	CreatedAt      time.Time        `json:"created_at"`
 }
 
@@ -30,6 +31,9 @@ func (draft SessionEventDraft) ValidateForRun(run Run) error {
 	}
 	if err := ValidateSessionEventBlob(run.TenantID, run.SessionID, draft.ID, draft.Payload); err != nil {
 		return err
+	}
+	if len([]rune(draft.DisplayText)) > 32_000 {
+		return ValidationError{Field: "session_event_draft.display_text", Reason: "must not exceed 32000 Unicode characters"}
 	}
 	if draft.CreatedAt.IsZero() || draft.CreatedAt.Before(run.CreatedAt) {
 		return ValidationError{Field: "session_event_draft.created_at", Reason: "must not precede the owning run"}

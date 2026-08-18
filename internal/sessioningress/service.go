@@ -235,6 +235,7 @@ func (service *Service) Ingest(ctx context.Context, input UserInput) (ports.Cano
 		Origin: origin, IdempotencyKey: idempotencyKey,
 		ExpireAt: input.ReceivedAt.UTC().Add(service.retention),
 		EventID:  eventID, Payload: payloadRef,
+		DisplayText:              input.Text,
 		RunID:                    runID,
 		AttemptID:                domain.AttemptID(service.stableID("attempt", input.Actor.TenantID, runID, "1")),
 		SubscriptionConnectionID: input.SubscriptionConnectionID,

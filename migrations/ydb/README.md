@@ -92,6 +92,10 @@ disappear. The backfill also copies delivery/checkpoint BlobRefs into durable
 non-TTL ledgers. If their operational source row has already expired, stop and
 handle it as a retention incident; an object reference must never be guessed.
 
+Migrations `00068`-`00070` are additive session-API tables: tenant/user-scoped
+create and mutation idempotency ledgers plus a bounded, rebuildable display
+materialization. None contains canonical event payloads or attachment bytes.
+
 Automatic production down migrations are intentionally disabled. The `Down`
 sections are comments so neither Goose nor an operator can accidentally drop
 state.

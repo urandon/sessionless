@@ -50,6 +50,9 @@ a production adapter.
 | `session_participants` | `(tenant_id, session_id, user_id)` | tenant entity | membership is behind a random session prefix |
 | `session_snapshots` | `(tenant_id, session_id, version)` | per-session ordered | version grows only behind a random session prefix |
 | `session_activity` | `(tenant_id, user_id, status, activity_bucket, updated_at, session_id)` | append-heavy | fixed 16-way per-user fan-out avoids one chronological write edge |
+| `session_api_idempotency` | `(tenant_id, user_id, idempotency_key)` | entity | user-scoped point idempotency for session creation |
+| `session_api_mutations` | `(tenant_id, user_id, idempotency_key, kind)` | entity | user-scoped point idempotency for session mutations |
+| `session_displays` | `(tenant_id, session_id)` | entity | bounded rebuildable list metadata |
 | `session_legal_holds` | `(tenant_id, session_id)` | tenant entity | point-addressed durable retention guard |
 | `session_deletions` | `(tenant_id, session_id)` | tenant entity | point-addressed write fence and permanent completion tombstone |
 | `external_identities` | `(shard_bucket, provider, subject)` | global entity | a stable subject hash provides distributed point lookup without trusting provider ordering |

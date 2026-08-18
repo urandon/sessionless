@@ -32,7 +32,7 @@ func TestMutationRequestsDoNotCarryTenantAuthority(t *testing.T) {
 
 func TestPaginationContractsAreBounded(t *testing.T) {
 	t.Parallel()
-	if err := (webcontract.SessionListQuery{Limit: webcontract.MaxPageSize}).Validate(); err != nil {
+	if err := (webcontract.SessionListQuery{Limit: webcontract.MaxPageSize, Status: "active"}).Validate(); err != nil {
 		t.Fatalf("valid session page rejected: %v", err)
 	}
 	if err := (webcontract.SessionListQuery{Limit: webcontract.MaxPageSize + 1}).Validate(); err == nil {

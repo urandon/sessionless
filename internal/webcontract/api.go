@@ -4,6 +4,7 @@
 package webcontract
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"strings"
@@ -14,19 +15,22 @@ import (
 )
 
 const (
-	RouteOIDCStart       = "/auth/telegram/start"
-	RouteOIDCCallback    = "/auth/telegram/callback"
-	RouteLogout          = "/auth/logout"
-	RouteMe              = "/api/web/v1/me"
-	RouteTenants         = "/api/web/v1/tenants"
-	RouteActiveTenant    = "/api/web/v1/active-tenant"
-	RouteSessions        = "/api/web/v1/sessions"
-	RouteSessionEvents   = "/api/web/v1/sessions/{session_id}/events"
-	RouteArchiveSession  = "/api/web/v1/sessions/{session_id}/archive"
-	RouteSessionMessages = "/api/web/v1/sessions/{session_id}/messages"
-	RouteUploads         = "/api/web/v1/uploads"
-	RouteUploadCommit    = "/api/web/v1/uploads/{upload_id}/commit"
-	RouteRun             = "/api/web/v1/runs/{run_id}"
+	RouteOIDCStart        = "/auth/telegram/start"
+	RouteOIDCCallback     = "/auth/telegram/callback"
+	RouteLogout           = "/auth/logout"
+	RouteMe               = "/api/web/v1/me"
+	RouteTenants          = "/api/web/v1/tenants"
+	RouteActiveTenant     = "/api/web/v1/active-tenant"
+	RouteSessions         = "/api/web/v1/sessions"
+	RouteSession          = "/api/web/v1/sessions/{session_id}"
+	RouteSessionEvents    = "/api/web/v1/sessions/{session_id}/events"
+	RouteSessionRuns      = "/api/web/v1/sessions/{session_id}/runs"
+	RouteArchiveSession   = "/api/web/v1/sessions/{session_id}/archive"
+	RouteFrontendBindings = "/api/web/v1/frontend-bindings"
+	RouteSessionMessages  = "/api/web/v1/sessions/{session_id}/messages"
+	RouteUploads          = "/api/web/v1/uploads"
+	RouteUploadCommit     = "/api/web/v1/uploads/{upload_id}/commit"
+	RouteRun              = "/api/web/v1/runs/{run_id}"
 )
 
 const MaxMessageUploadCount = 8
@@ -173,6 +177,7 @@ type CreateSessionRequest struct {
 type SessionListQuery struct {
 	Cursor string
 	Limit  uint32
+	Status domain.SessionStatus
 }
 
 func (query SessionListQuery) Validate() error {
@@ -182,19 +187,67 @@ func (query SessionListQuery) Validate() error {
 	if len(query.Cursor) > 512 {
 		return domain.ValidationError{Field: "sessions.cursor", Reason: "must not exceed 512 bytes"}
 	}
+	if !query.Status.Valid() {
+		return domain.ValidationError{Field: "sessions.status", Reason: "must be active or archived"}
+	}
 	return nil
 }
 
 type EventListQuery struct {
-	AfterSequence uint64
-	Limit         uint32
+	Cursor string
+	Limit  uint32
+}
+
+type RunListQuery struct {
+	Cursor string
+	Limit  uint32
+}
+
+func (query RunListQuery) Validate() error {
+	if query.Limit == 0 || query.Limit > MaxPageSize {
+		return domain.ValidationError{Field: "runs.limit", Reason: "must be between 1 and 100"}
+	}
+	if len(query.Cursor) > 512 {
+		return domain.ValidationError{Field: "runs.cursor", Reason: "must not exceed 512 bytes"}
+	}
+	return nil
 }
 
 func (query EventListQuery) Validate() error {
 	if query.Limit == 0 || query.Limit > MaxPageSize {
 		return domain.ValidationError{Field: "events.limit", Reason: "must be between 1 and 100"}
 	}
+	if len(query.Cursor) > 512 {
+		return domain.ValidationError{Field: "events.cursor", Reason: "must not exceed 512 bytes"}
+	}
 	return nil
+}
+
+type BindFrontendRequest struct {
+	Frontend               domain.Frontend  `json:"frontend"`
+	ExternalConversationID string           `json:"external_conversation_id"`
+	SessionID              domain.SessionID `json:"session_id"`
+	ExpectedRevision       uint64           `json:"expected_revision"`
+}
+
+func (request BindFrontendRequest) Validate() error {
+	if err := request.Frontend.Validate(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(request.ExternalConversationID) == "" || len(request.ExternalConversationID) > 512 {
+		return domain.ValidationError{Field: "external_conversation_id", Reason: "must contain between 1 and 512 bytes"}
+	}
+	return request.SessionID.Validate()
+}
+
+type FrontendBinding struct {
+	BindingID              domain.FrontendBindingID `json:"binding_id"`
+	Frontend               domain.Frontend          `json:"frontend"`
+	ExternalConversationID string                   `json:"external_conversation_id"`
+	SessionID              domain.SessionID         `json:"session_id"`
+	Revision               uint64                   `json:"revision"`
+	CreatedAt              time.Time                `json:"created_at"`
+	UpdatedAt              time.Time                `json:"updated_at"`
 }
 
 type ArchiveSessionRequest struct {
@@ -294,10 +347,16 @@ func (request CommitUploadRequest) Validate(pathUploadID domain.UploadIntentID) 
 }
 
 type SessionSummary struct {
-	SessionID domain.SessionID     `json:"session_id"`
-	Status    domain.SessionStatus `json:"status"`
-	LastSeq   uint64               `json:"last_sequence"`
-	UpdatedAt time.Time            `json:"updated_at"`
+	SessionID      domain.SessionID     `json:"session_id"`
+	Status         domain.SessionStatus `json:"status"`
+	Title          string               `json:"title,omitempty"`
+	Preview        string               `json:"preview,omitempty"`
+	FrontendOrigin *domain.Frontend     `json:"frontend_origin,omitempty"`
+	LastSeq        uint64               `json:"last_sequence"`
+	CreatedAt      time.Time            `json:"created_at"`
+	UpdatedAt      time.Time            `json:"updated_at"`
+	ArchivedAt     *time.Time           `json:"archived_at,omitempty"`
+	CurrentRun     *Run                 `json:"current_run,omitempty"`
 }
 
 type SessionEvent struct {
@@ -309,23 +368,28 @@ type SessionEvent struct {
 }
 
 type EventContent struct {
-	Text        string       `json:"text,omitempty"`
-	Attachments []Attachment `json:"attachments,omitempty"`
+	Text        string          `json:"text,omitempty"`
+	Attachments []Attachment    `json:"attachments,omitempty"`
+	Data        json.RawMessage `json:"data,omitempty"`
 }
 
 type Attachment struct {
 	Name      string `json:"name"`
 	MediaType string `json:"media_type"`
 	Size      int64  `json:"size"`
-	Download  string `json:"download_url"`
+	Download  string `json:"download_url,omitempty"`
 }
 
 type Run struct {
-	RunID     domain.RunID          `json:"run_id"`
-	SessionID domain.SessionID      `json:"session_id"`
-	TriggerID domain.SessionEventID `json:"trigger_event_id"`
-	Status    domain.RunStatus      `json:"status"`
-	UpdatedAt time.Time             `json:"updated_at"`
+	RunID                    domain.RunID                    `json:"run_id"`
+	SessionID                domain.SessionID                `json:"session_id"`
+	TriggerID                domain.SessionEventID           `json:"trigger_event_id"`
+	SubscriptionConnectionID domain.SubscriptionConnectionID `json:"subscription_connection_id"`
+	Provider                 string                          `json:"provider,omitempty"`
+	Status                   domain.RunStatus                `json:"status"`
+	CreatedAt                time.Time                       `json:"created_at"`
+	UpdatedAt                time.Time                       `json:"updated_at"`
+	FinishedAt               *time.Time                      `json:"finished_at,omitempty"`
 }
 
 func SessionCookie(value string, maxAge time.Duration) *http.Cookie {

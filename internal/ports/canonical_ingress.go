@@ -98,6 +98,7 @@ type CanonicalUserEventCommit struct {
 	ExpireAt                 time.Time
 	EventID                  domain.SessionEventID
 	Payload                  domain.BlobRef
+	DisplayText              string
 	RunID                    domain.RunID
 	AttemptID                domain.AttemptID
 	SubscriptionConnectionID domain.SubscriptionConnectionID

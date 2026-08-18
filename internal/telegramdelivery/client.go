@@ -3,6 +3,8 @@ package telegramdelivery
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -83,9 +85,11 @@ func (client *Client) sendMessage(
 	chatID, replyTo int64,
 	text string,
 ) (ports.TelegramSendResult, error) {
-	payload, err := json.Marshal(map[string]any{
-		"chat_id": chatID, "reply_to_message_id": replyTo, "text": text,
-	})
+	requestBody := map[string]any{"chat_id": chatID, "text": text}
+	if replyTo > 0 {
+		requestBody["reply_to_message_id"] = replyTo
+	}
+	payload, err := json.Marshal(requestBody)
 	if err != nil {
 		return ports.TelegramSendResult{}, err
 	}
@@ -188,6 +192,13 @@ func (client *Client) readBlob(
 	if len(data) > maxReplyBytes {
 		return nil, fmt.Errorf("Telegram reply payload exceeds %d bytes", maxReplyBytes)
 	}
+	if int64(len(data)) != ref.Size {
+		return nil, fmt.Errorf("Telegram payload size does not match its immutable reference")
+	}
+	digest := sha256.Sum256(data)
+	if hex.EncodeToString(digest[:]) != ref.SHA256 {
+		return nil, fmt.Errorf("Telegram payload digest does not match its immutable reference")
+	}
 	return data, nil
 }
 
@@ -197,10 +208,30 @@ func (client *Client) methodURL(method string) string {
 
 func decodeReplyText(payload []byte) string {
 	var structured struct {
-		Text string `json:"text"`
+		Schema    string `json:"schema"`
+		Text      string `json:"text"`
+		Summary   string `json:"summary"`
+		Code      string `json:"code"`
+		Cancelled bool   `json:"cancelled"`
 	}
-	if json.Unmarshal(payload, &structured) == nil && structured.Text != "" {
-		return structured.Text
+	if json.Unmarshal(payload, &structured) == nil {
+		switch structured.Schema {
+		case "sessionless.assistant-message.v1":
+			if structured.Summary != "" {
+				return structured.Summary
+			}
+		case "sessionless.run-terminal-notice.v1":
+			if structured.Cancelled {
+				return "Run cancelled."
+			}
+			if structured.Code != "" {
+				return "Run failed. Reference: " + structured.Code
+			}
+		default:
+			if structured.Text != "" {
+				return structured.Text
+			}
+		}
 	}
 	return string(payload)
 }

@@ -72,6 +72,41 @@ type FrontendProjection struct {
 	UpdatedAt       time.Time                `json:"updated_at"`
 }
 
+// TelegramProjectionRef keeps only immutable canonical routing references in
+// the transport delivery row. The sender re-resolves every referenced record
+// before each physical send; payload content remains owned by SessionEvent.
+type TelegramProjectionRef struct {
+	ProjectionID    FrontendProjectionID `json:"projection_id"`
+	SessionID       SessionID            `json:"session_id"`
+	EventID         SessionEventID       `json:"event_id"`
+	EventSequence   uint64               `json:"event_sequence"`
+	BindingID       FrontendBindingID    `json:"binding_id"`
+	BindingRevision uint64               `json:"binding_revision"`
+	TriggerEventID  SessionEventID       `json:"trigger_event_id"`
+}
+
+func (ref TelegramProjectionRef) Validate() error {
+	if err := ref.ProjectionID.Validate(); err != nil {
+		return err
+	}
+	if err := ref.SessionID.Validate(); err != nil {
+		return err
+	}
+	if err := ref.EventID.Validate(); err != nil {
+		return err
+	}
+	if ref.EventSequence == 0 {
+		return ValidationError{Field: "telegram_projection.event_sequence", Reason: "must be positive"}
+	}
+	if err := ref.BindingID.Validate(); err != nil {
+		return err
+	}
+	if ref.BindingRevision == 0 {
+		return ValidationError{Field: "telegram_projection.binding_revision", Reason: "must be positive"}
+	}
+	return ref.TriggerEventID.Validate()
+}
+
 func (projection FrontendProjection) ValidateFor(event SessionEvent, binding FrontendBinding) error {
 	if err := event.Validate(); err != nil {
 		return err

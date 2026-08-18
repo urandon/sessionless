@@ -4,6 +4,7 @@ package ydbintegration
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"testing"
@@ -39,9 +40,12 @@ func TestSessionLifecycleHoldWriteFenceInventoryAndCompletion(t *testing.T) {
 	event := canonicalEventFixture(
 		tenantID, session.ID, userID, domain.SessionEventID(uniqueID("event-lifecycle")), now.Add(time.Second),
 	)
+	runID := domain.RunID(uniqueID("run-lifecycle"))
+	event.RunID = &runID
 	if _, err := store.AppendSessionEvent(ctx, event); err != nil {
 		t.Fatal(err)
 	}
+	event.Sequence = 1
 	snapshot := domain.SessionSnapshot{
 		ID: domain.SessionSnapshotID(uniqueID("snapshot-lifecycle")), TenantID: tenantID, SessionID: session.ID,
 		Version: 1, ThroughSequence: 1, FormatVersion: domain.SessionSnapshotFormatV1,
@@ -57,7 +61,7 @@ func TestSessionLifecycleHoldWriteFenceInventoryAndCompletion(t *testing.T) {
 	}
 	finishedAt := now.Add(2500 * time.Millisecond)
 	run := domain.Run{
-		ID: domain.RunID(uniqueID("run-lifecycle")), TenantID: tenantID, SessionID: session.ID,
+		ID: runID, TenantID: tenantID, SessionID: session.ID,
 		TriggerEventID:           event.ID,
 		SubscriptionConnectionID: domain.SubscriptionConnectionID(uniqueID("subscription-lifecycle")),
 		Status:                   domain.RunSucceeded, IdempotencyKey: domain.IdempotencyKey(uniqueID("run-key-lifecycle")),
@@ -135,13 +139,25 @@ func TestSessionLifecycleHoldWriteFenceInventoryAndCompletion(t *testing.T) {
 	assertCount(t, client, "telegram_deliveries_by_run", tenantID, 2)
 	assertCount(t, client, "checkpoint_objects_by_run", tenantID, 1)
 	projectionID := domain.FrontendProjectionID(uniqueID("projection-lifecycle"))
+	projection := domain.FrontendProjection{
+		ID: projectionID, TenantID: tenantID, SessionID: session.ID,
+		EventID: event.ID, EventSequence: event.Sequence, EventKind: event.Kind,
+		BindingID: binding.ID, BindingRevision: binding.Revision, Frontend: binding.Frontend,
+		Status:         domain.FrontendProjectionPending,
+		IdempotencyKey: domain.IdempotencyKey(uniqueID("projection-key-lifecycle")),
+		CreatedAt:      finishedAt, UpdatedAt: finishedAt,
+	}
+	projectionRecord, err := json.Marshal(projection)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := client.DB.ExecContext(ctx,
 		`UPSERT INTO frontend_projection_outbox
 		 (tenant_id, frontend_projection_id, session_id, event_id, event_sequence,
 		  binding_id, binding_revision, frontend, status, created_at, updated_at, record)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, CAST($12 AS JsonDocument))`,
 		tenantID, projectionID, session.ID, event.ID, event.Sequence, binding.ID, binding.Revision,
-		binding.Frontend, domain.FrontendProjectionPending, finishedAt, finishedAt, `{}`,
+		binding.Frontend, domain.FrontendProjectionPending, finishedAt, finishedAt, string(projectionRecord),
 	); err != nil {
 		t.Fatal(err)
 	}

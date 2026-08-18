@@ -28,10 +28,11 @@ sequenceDiagram
     Worker->>Queue: receive one dispatch
     Worker->>DB: fenced lease + checkpoints + usage
     Worker->>Blob: content-addressed outputs
-    Worker->>DB: terminal state + manifest + delivery outbox
-    Worker->>Queue: wake.telegram(tenant_id, delivery_id)
+    Worker->>DB: terminal state + canonical events + frontend projection
+    Worker->>Queue: wake.frontend_projection(tenant_id, run_id)
     Queue->>Sender: targeted wake
-    Sender->>Telegram: same-chat text and documents
+    Sender->>DB: authorize + materialize transport delivery
+    Sender->>Telegram: canonical text and documents
     Sender->>DB: sent or retry-wait transition
 ```
 
@@ -73,15 +74,17 @@ The suite proves:
   one resume without duplicate terminal state;
 - durable cancellation releases the reservation and appends one canonical
   terminal system event;
-- canonical assistant/tool finalization creates one frontend projection;
+- canonical assistant/tool finalization creates and consumes one authorized
+  Telegram projection while retaining the canonical events;
 - replaying a terminal queue message produces no re-execution, charge,
   canonical event, or projection;
 - output artifact keys and reads remain tenant-scoped;
 - `/new` changes the next workload to a new canonical `session_id` while the
   previous session remains intact.
 
-Command replies still exercise the durable Telegram delivery path. Ordinary
-AI-result delivery/retry moves to projection consumption in TELEGRAM-02 #37.
+Command replies and projected AI results both exercise the durable Telegram
+delivery path; only projected results retain an immutable reference back to
+their canonical event and live binding authorization boundary.
 The lower-level worker, YDB, S3, queue, ingress, and delivery suites retain
 their focused concurrency, fencing, path traversal, size-limit, and
 cross-tenant negative cases. The E2E suite composes those same production

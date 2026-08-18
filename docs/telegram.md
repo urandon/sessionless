@@ -149,10 +149,25 @@ cannot strand it permanently. The sender reads only tenant-authorized
 payload/artifact blobs. Commands use bounded inline text, so they require no
 object-store write between the state transition and durable reply creation.
 
-Ordinary AI results are now canonical assistant/tool events with pending
-frontend projection rows. TELEGRAM-02 #37 adapts `telegram-sender` to consume
-those rows; until then this issue's E2E boundary stops at canonical
-finalization/projection and does not claim Telegram result delivery.
+Ordinary AI results are canonical assistant/system events. Finalization writes
+a frontend-neutral projection plus frontend/run and fixed-bucket recovery
+indexes, then publishes a payload-free `wake.frontend_projection` hint whose
+subject is the run ID. `telegram-sender` first rechecks the live binding,
+session, trigger-user membership, and participation without reading content.
+It then verifies the exact canonical event and trigger BlobRef sizes and
+SHA-256 digests, validates the output manifest against the same run, and
+atomically materializes a Telegram delivery that retains the immutable
+projection reference. The projection is consumed only by the matching
+frontend; WebUI or later frontend work is never claimed by Telegram.
+
+Before every physical send, the delivery claim rechecks the live binding and
+authorization. A missing/stale binding, archived session, revoked membership,
+or removed participant cancels transport work and consumes no canonical
+history. Missing or corrupt canonical records remain retryable operational
+failures. `frontend_projection_ready_v1` provides bounded recovery if a wake is
+lost, while `frontend_projections_by_run` makes the normal run wake a bounded
+frontend-specific lookup. Delivery TTL may remove the transport row later,
+but it cannot remove the referenced canonical event or artifacts.
 
 Successful sends move to `sent`. Failures use bounded exponential backoff and
 move through `retry_wait`; the configured attempt limit ends in `failed`.

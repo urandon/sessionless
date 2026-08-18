@@ -155,8 +155,11 @@ duplicate or rewrite canonical history.
 Telegram ordinary-message ingestion uses `CanonicalIngressStore`; Telegram
 update/message identifiers survive only as frontend origin and payload
 metadata. Control-command replies still use the existing Telegram delivery
-outbox. TELEGRAM-02 #37 replaces the worker-owned compatibility delivery path
-with consumption of canonical frontend projections.
+outbox. Canonical worker finalization emits a payload-free, run-scoped
+projection wake; Telegram resolves the frontend-specific projection, rechecks
+the binding/session/user authorization boundary, verifies canonical blob
+digests, and materializes a transport delivery that points back to the exact
+event. Operational delivery expiry therefore cannot erase canonical history.
 
 ## Quota and usage
 
@@ -221,7 +224,8 @@ Schema `sessionless.queue.v1` contains only:
 - message kind;
 - tenant ID;
 - an opaque, kind-specific subject ID (`run_id` for `dispatch.run`,
-  `telegram_delivery_id` for `deliver.telegram`);
+  `telegram_delivery_id` for `deliver.telegram`/`wake.telegram`, and `run_id`
+  for `wake.frontend_projection`);
 - enqueue time.
 
 Prompts, frontend messages, attachments, generated content, credential
@@ -276,9 +280,9 @@ worker loads that snapshot plus its bounded contiguous tail, verifies every
 event and payload reference, and writes `context/history.jsonl`; referenced
 message attachments are written below `context/attachments/<sequence>/`.
 Missing, incompatible, or corrupt snapshots fall back to an older snapshot and
-finally to bounded replay from event one. Pre-canonical legacy jobs keep their
-single-blob bridge until Telegram projection issue #37. Inputs, optional workspace, skills,
-and the latest checkpoint are copied into the same new invocation-only
+finally to bounded replay from event one. Pre-canonical legacy jobs retain
+their isolated single-blob compatibility bridge. Inputs, optional workspace,
+skills, and the latest checkpoint are copied into the same new invocation-only
 directory with tenant, path, size, and SHA-256 checks.
 
 Snapshot creation is owned by reconciler maintenance after successful canonical

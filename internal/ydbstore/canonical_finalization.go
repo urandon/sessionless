@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/ydbpartition"
 )
 
 var ErrRunFinalizationConflict = errors.New("run finalization conflict")
@@ -297,6 +298,9 @@ func insertFrontendProjectionTx(
 	binding domain.FrontendBinding,
 	at time.Time,
 ) error {
+	if event.RunID == nil {
+		return domain.ValidationError{Field: "frontend_projection.run_id", Reason: "projectable event must reference a run"}
+	}
 	projection := domain.FrontendProjection{
 		ID: domain.FrontendProjectionID(stableCanonicalID(
 			"prj_", string(event.TenantID)+":"+string(event.ID)+":"+string(binding.ID),
@@ -311,6 +315,10 @@ func insertFrontendProjectionTx(
 		CreatedAt: at, UpdatedAt: at,
 	}
 	if err := projection.ValidateFor(event, binding); err != nil {
+		return err
+	}
+	bucket, err := ydbpartition.BucketV1(string(projection.ID))
+	if err != nil {
 		return err
 	}
 	record, err := marshal(projection)
@@ -333,6 +341,23 @@ func insertFrontendProjectionTx(
 		`INSERT INTO frontend_projections_by_session
 		 (tenant_id, session_id, frontend_projection_id) VALUES ($1, $2, $3)`,
 		projection.TenantID, projection.SessionID, projection.ID,
+	)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.sqlTx.ExecContext(ctx,
+		`INSERT INTO frontend_projections_by_run
+		 (tenant_id, run_id, frontend, frontend_projection_id) VALUES ($1, $2, $3, $4)`,
+		projection.TenantID, *event.RunID, projection.Frontend, projection.ID,
+	); err != nil {
+		return err
+	}
+	_, err = tx.sqlTx.ExecContext(ctx,
+		`INSERT INTO frontend_projection_ready_v1
+		 (frontend, shard_bucket, created_at, tenant_id, frontend_projection_id, run_id)
+		 VALUES ($1, $2, $3, $4, $5, $6)`,
+		projection.Frontend, bucket, projection.CreatedAt, projection.TenantID,
+		projection.ID, *event.RunID,
 	)
 	return err
 }

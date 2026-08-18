@@ -158,6 +158,8 @@ var applicationTables = []string{
 	"frontend_ingress_idempotency",
 	"frontend_projection_outbox",
 	"frontend_projections_by_session",
+	"frontend_projections_by_run",
+	"frontend_projection_ready_v1",
 	"session_event_idempotency",
 	"session_events",
 	"sessions",

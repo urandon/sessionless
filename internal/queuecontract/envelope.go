@@ -21,11 +21,12 @@ const (
 	KindDeliverTelegram Kind = "deliver.telegram"
 	KindWakeDispatch    Kind = "wake.dispatch"
 	KindWakeTelegram    Kind = "wake.telegram"
+	KindWakeProjection  Kind = "wake.frontend_projection"
 )
 
 func (kind Kind) Valid() bool {
 	return kind == KindDispatchRun || kind == KindDeliverTelegram ||
-		kind == KindWakeDispatch || kind == KindWakeTelegram
+		kind == KindWakeDispatch || kind == KindWakeTelegram || kind == KindWakeProjection
 }
 
 // Envelope intentionally contains opaque identifiers only. Prompts,

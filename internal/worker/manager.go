@@ -23,15 +23,16 @@ import (
 )
 
 type Config struct {
-	ScratchRoot           string
-	WorkerID              string
-	LeaseTTL              time.Duration
-	RetryDelay            time.Duration
-	RetryObserver         func(error)
-	MaxDeliveryCount      uint32
-	MaxMaterializedBytes  int64
-	MaxSnapshotFallbacks  uint32
-	DeliveryWakePublisher ports.TelegramDeliveryWakePublisher
+	ScratchRoot             string
+	WorkerID                string
+	LeaseTTL                time.Duration
+	RetryDelay              time.Duration
+	RetryObserver           func(error)
+	MaxDeliveryCount        uint32
+	MaxMaterializedBytes    int64
+	MaxSnapshotFallbacks    uint32
+	DeliveryWakePublisher   ports.TelegramDeliveryWakePublisher
+	ProjectionWakePublisher ports.FrontendProjectionWakePublisher
 }
 
 type Outcome string
@@ -77,6 +78,11 @@ func New(
 	if config.MaxSnapshotFallbacks == 0 {
 		config.MaxSnapshotFallbacks = 4
 	}
+	if config.ProjectionWakePublisher == nil {
+		if publisher, ok := config.DeliveryWakePublisher.(ports.FrontendProjectionWakePublisher); ok {
+			config.ProjectionWakePublisher = publisher
+		}
+	}
 	if err := domain.ValidateOpaqueID("worker.worker_id", config.WorkerID); err != nil {
 		return nil, err
 	}
@@ -86,7 +92,7 @@ func New(
 	}
 	config.ScratchRoot = root
 	if clock == nil || queue == nil || state == nil || blobs == nil || harness == nil ||
-		config.DeliveryWakePublisher == nil {
+		config.DeliveryWakePublisher == nil || config.ProjectionWakePublisher == nil {
 		return nil, fmt.Errorf("worker dependencies must not be nil")
 	}
 	return &Manager{
@@ -117,7 +123,13 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 		return manager.deadLetter(ctx, message, "worker_job_not_found")
 	}
 	if loaded.Run.Status.Terminal() {
-		if loaded.Job.Origin == nil {
+		if loaded.Job.Origin != nil {
+			if err := manager.config.ProjectionWakePublisher.PublishFrontendProjectionWake(
+				ctx, loaded.Run.TenantID, loaded.Run.ID, manager.clock.Now().UTC(),
+			); err != nil {
+				return manager.retry(ctx, message, err)
+			}
+		} else {
 			if err := manager.config.DeliveryWakePublisher.PublishTelegramDeliveryWake(
 				ctx, loaded.Run.TenantID, outboxwake.TelegramDeliveryID(loaded.Run.ID),
 				manager.clock.Now().UTC(),
@@ -253,6 +265,11 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 			LeaseID: lease.ID, Fence: lease.FenceToken, At: finishedAt,
 			Manifest: manifest, Events: events,
 		}); err != nil {
+			return manager.retry(ctx, message, err)
+		}
+		if err := manager.config.ProjectionWakePublisher.PublishFrontendProjectionWake(
+			ctx, loaded.Run.TenantID, loaded.Run.ID, finishedAt,
+		); err != nil {
 			return manager.retry(ctx, message, err)
 		}
 	} else {
@@ -742,6 +759,11 @@ func (manager *Manager) finishFailure(
 			LeaseID: lease.ID, Fence: lease.FenceToken,
 			At: failedAt, Cancelled: cancelled, Code: code, Events: events,
 		}); err != nil {
+			return manager.retry(ctx, message, err)
+		}
+		if err := manager.config.ProjectionWakePublisher.PublishFrontendProjectionWake(
+			ctx, loaded.Run.TenantID, loaded.Run.ID, failedAt,
+		); err != nil {
 			return manager.retry(ctx, message, err)
 		}
 	} else {

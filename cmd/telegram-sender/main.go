@@ -70,7 +70,7 @@ func main() {
 			BaseBackoff: envDuration("TELEGRAM_SENDER_BASE_BACKOFF", 5*time.Second),
 			MaxBackoff:  envDuration("TELEGRAM_SENDER_MAX_BACKOFF", 5*time.Minute),
 		},
-		systemClock{}, state, portlog.NewTelegramClient(logger, client),
+		systemClock{}, state, blobs, portlog.NewTelegramClient(logger, client),
 	)
 	if err != nil {
 		logger.Error("create Telegram sender", "error", err)

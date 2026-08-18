@@ -1,8 +1,12 @@
 package telegramdelivery
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"io"
 	"testing"
 	"time"
 
@@ -15,8 +19,37 @@ import (
 
 type senderStore struct {
 	delivery    domain.TelegramDeliveryOutbox
+	manifest    domain.ArtifactManifest
 	listed      bool
 	transitions []domain.DeliveryStatus
+}
+
+func (*senderStore) ListRunTelegramProjections(
+	context.Context,
+	domain.TenantID,
+	domain.RunID,
+	uint64,
+) ([]ports.TelegramProjectionReady, error) {
+	return nil, nil
+}
+
+func (*senderStore) ListReadyTelegramProjections(
+	context.Context,
+	uint32,
+	time.Time,
+	uint64,
+) ([]ports.TelegramProjectionReady, error) {
+	return nil, nil
+}
+
+func (*senderStore) MaterializeTelegramProjection(
+	context.Context,
+	domain.TenantID,
+	domain.FrontendProjectionID,
+	*ports.TelegramProjectionContent,
+	time.Time,
+) (ports.TelegramProjectionResult, error) {
+	return ports.TelegramProjectionResult{Outcome: ports.TelegramProjectionNoop}, nil
 }
 
 func (store *senderStore) GetTelegramDelivery(
@@ -76,23 +109,138 @@ func (store *senderStore) TransitionTelegramDelivery(
 	return nil
 }
 
-func (*senderStore) GetArtifactManifest(
-	context.Context,
-	domain.TenantID,
-	domain.ArtifactManifestID,
+func (store *senderStore) GetArtifactManifest(
+	_ context.Context,
+	tenantID domain.TenantID,
+	manifestID domain.ArtifactManifestID,
 ) (domain.ArtifactManifest, bool, error) {
+	if store.manifest.TenantID == tenantID && store.manifest.ID == manifestID {
+		return store.manifest, true, nil
+	}
 	return domain.ArtifactManifest{}, false, nil
 }
 
 type senderClient struct {
-	err error
+	err      error
+	requests []ports.TelegramSendRequest
 }
 
 func (client *senderClient) Send(
-	context.Context,
-	ports.TelegramSendRequest,
+	_ context.Context,
+	request ports.TelegramSendRequest,
 ) (ports.TelegramSendResult, error) {
+	client.requests = append(client.requests, request)
 	return ports.TelegramSendResult{}, client.err
+}
+
+type projectionSenderStore struct {
+	*senderStore
+	prepared   ports.TelegramProjectionResult
+	candidate  ports.TelegramProjectionReady
+	content    *ports.TelegramProjectionContent
+	terminal   bool
+	listedRun  bool
+	listedScan bool
+}
+
+func (store *projectionSenderStore) ListRunTelegramProjections(
+	_ context.Context,
+	tenantID domain.TenantID,
+	runID domain.RunID,
+	_ uint64,
+) ([]ports.TelegramProjectionReady, error) {
+	if store.listedRun || store.candidate.TenantID != tenantID || store.candidate.RunID != runID {
+		return nil, nil
+	}
+	store.listedRun = true
+	return []ports.TelegramProjectionReady{store.candidate}, nil
+}
+
+func (store *projectionSenderStore) ListReadyTelegramProjections(
+	_ context.Context,
+	_ uint32,
+	_ time.Time,
+	_ uint64,
+) ([]ports.TelegramProjectionReady, error) {
+	if store.listedScan {
+		return nil, nil
+	}
+	store.listedScan = true
+	return []ports.TelegramProjectionReady{store.candidate}, nil
+}
+
+func (store *projectionSenderStore) MaterializeTelegramProjection(
+	_ context.Context,
+	tenantID domain.TenantID,
+	projectionID domain.FrontendProjectionID,
+	content *ports.TelegramProjectionContent,
+	at time.Time,
+) (ports.TelegramProjectionResult, error) {
+	if tenantID != store.candidate.TenantID || projectionID != store.candidate.ProjectionID {
+		return ports.TelegramProjectionResult{}, errors.New("unexpected projection")
+	}
+	if store.terminal {
+		return ports.TelegramProjectionResult{Outcome: ports.TelegramProjectionTerminal, Code: "binding_stale"}, nil
+	}
+	if content == nil {
+		return store.prepared, nil
+	}
+	copy := *content
+	store.content = &copy
+	store.delivery = domain.TelegramDeliveryOutbox{
+		ID: store.prepared.DeliveryID, TenantID: tenantID, RunID: store.prepared.RunID,
+		Chat:             domain.TelegramChatRef{TenantID: tenantID, ChatID: content.TriggerChatID},
+		ReplyToMessageID: content.ReplyToMessageID, Payload: content.EventPayload,
+		ArtifactManifestID: content.ArtifactManifestID,
+		Status:             domain.DeliveryPending, IdempotencyKey: "projection-delivery-key",
+		CreatedAt: at, UpdatedAt: at,
+	}
+	return ports.TelegramProjectionResult{
+		Outcome: ports.TelegramProjectionMaterialized, DeliveryID: store.delivery.ID,
+		RunID: store.delivery.RunID, Created: true,
+	}, nil
+}
+
+type projectionBlobs struct {
+	objects map[string][]byte
+	opens   int
+}
+
+func (store *projectionBlobs) Put(
+	_ context.Context,
+	tenantID domain.TenantID,
+	key string,
+	body io.Reader,
+) (domain.BlobRef, error) {
+	data, err := io.ReadAll(body)
+	if err != nil {
+		return domain.BlobRef{}, err
+	}
+	if store.objects == nil {
+		store.objects = make(map[string][]byte)
+	}
+	store.objects[key] = append([]byte(nil), data...)
+	digest := sha256.Sum256(data)
+	return domain.BlobRef{
+		TenantID: tenantID, Key: key, Size: int64(len(data)), SHA256: hex.EncodeToString(digest[:]),
+	}, nil
+}
+
+func (store *projectionBlobs) Open(
+	_ context.Context,
+	_ domain.TenantID,
+	ref domain.BlobRef,
+) (io.ReadCloser, error) {
+	store.opens++
+	data, ok := store.objects[ref.Key]
+	if !ok {
+		return nil, errors.New("blob not found")
+	}
+	return io.NopCloser(bytes.NewReader(data)), nil
+}
+
+func (*projectionBlobs) Delete(context.Context, domain.TenantID, domain.BlobRef) error {
+	return nil
 }
 
 func TestSenderRetriesThenMarksSent(t *testing.T) {
@@ -113,7 +261,7 @@ func TestSenderRetriesThenMarksSent(t *testing.T) {
 	}}
 	clock := testkit.NewFakeClock(now.Add(time.Second))
 	client := &senderClient{err: errors.New("rate limited")}
-	sender, err := NewSender(Config{BaseBackoff: time.Second}, clock, store, client)
+	sender, err := NewSender(Config{BaseBackoff: time.Second}, clock, store, rejectingBlobStore{}, client)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +297,7 @@ func TestSenderWakeTargetsOneDeliveryAndTreatsTerminalDuplicateAsNoop(t *testing
 		t.Fatal(err)
 	}
 	clock := testkit.NewFakeClock(now.Add(time.Second))
-	sender, err := NewSender(Config{}, clock, store, &senderClient{})
+	sender, err := NewSender(Config{}, clock, store, rejectingBlobStore{}, &senderClient{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +327,7 @@ func TestSenderWakeTargetsOneDeliveryAndTreatsTerminalDuplicateAsNoop(t *testing
 func TestSenderWakeDeadLettersUnexpectedEnvelopeKind(t *testing.T) {
 	now := time.Date(2026, 8, 10, 13, 0, 0, 0, time.UTC)
 	sender, err := NewSender(
-		Config{}, testkit.NewFakeClock(now), &senderStore{}, &senderClient{},
+		Config{}, testkit.NewFakeClock(now), &senderStore{}, rejectingBlobStore{}, &senderClient{},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -200,5 +348,103 @@ func TestSenderWakeDeadLettersUnexpectedEnvelopeKind(t *testing.T) {
 	}
 }
 
+func TestSenderProjectionWakeMaterializesCanonicalPayloadAndRepliesToTrigger(t *testing.T) {
+	now := time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC)
+	tenantID := domain.TenantID("tenant-projection")
+	runID := domain.RunID("run-projection")
+	projectionID := domain.FrontendProjectionID("projection-a")
+	blobs := &projectionBlobs{}
+	eventData := []byte(`{"schema":"sessionless.assistant-message.v1","summary":"canonical reply","artifact_manifest_id":"manifest-output"}`)
+	eventRef, err := blobs.Put(context.Background(), tenantID,
+		domain.SessionEventObjectPrefix(tenantID, "session-a", "event-assistant")+"payload.json",
+		bytes.NewReader(eventData))
+	if err != nil {
+		t.Fatal(err)
+	}
+	triggerData := []byte(`{"version":1,"metadata":{"telegram.chat_id":"7001","telegram.message_id":"91"}}`)
+	triggerRef, err := blobs.Put(context.Background(), tenantID,
+		domain.SessionEventObjectPrefix(tenantID, "session-a", "event-trigger")+"message.json",
+		bytes.NewReader(triggerData))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := &senderStore{manifest: domain.ArtifactManifest{
+		ID: "manifest-output", TenantID: tenantID, RunID: runID, CreatedAt: now,
+	}}
+	store := &projectionSenderStore{
+		senderStore: base,
+		candidate: ports.TelegramProjectionReady{
+			TenantID: tenantID, ProjectionID: projectionID, RunID: runID,
+		},
+		prepared: ports.TelegramProjectionResult{
+			Outcome: ports.TelegramProjectionNeedsContent, RunID: runID,
+			DeliveryID: "delivery-projection", EventKind: domain.SessionEventAssistantMessage,
+			EventPayload: eventRef, TriggerPayload: triggerRef,
+		},
+	}
+	client := &senderClient{}
+	sender, err := NewSender(Config{}, testkit.NewFakeClock(now), store, blobs, client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wakeQueue := testkit.NewMemoryQueue()
+	publisher, err := outboxwake.NewPublisher(wakeQueue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := publisher.PublishFrontendProjectionWake(context.Background(), tenantID, runID, now); err != nil {
+		t.Fatal(err)
+	}
+	result, err := sender.RunWake(context.Background(), wakeQueue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != "sent" || base.delivery.Status != domain.DeliverySent {
+		t.Fatalf("projection wake = %#v delivery=%#v", result, base.delivery)
+	}
+	if store.content == nil || store.content.EventPayload != eventRef ||
+		store.content.TriggerPayload != triggerRef || store.content.TriggerChatID != 7001 ||
+		store.content.ReplyToMessageID != 91 || store.content.ArtifactManifestID == nil ||
+		*store.content.ArtifactManifestID != "manifest-output" {
+		t.Fatalf("materialized content = %#v", store.content)
+	}
+	if len(client.requests) != 1 || client.requests[0].Payload != eventRef ||
+		client.requests[0].ReplyToMessageID != 91 {
+		t.Fatalf("Telegram requests = %#v", client.requests)
+	}
+}
+
+func TestSenderTerminalProjectionDoesNotReadCanonicalContent(t *testing.T) {
+	now := time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC)
+	store := &projectionSenderStore{
+		senderStore: &senderStore{}, terminal: true,
+		candidate: ports.TelegramProjectionReady{
+			TenantID: "tenant-a", ProjectionID: "projection-a", RunID: "run-a",
+		},
+	}
+	blobs := &projectionBlobs{}
+	sender, err := NewSender(Config{}, testkit.NewFakeClock(now), store, blobs, &senderClient{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wakeQueue := testkit.NewMemoryQueue()
+	publisher, err := outboxwake.NewPublisher(wakeQueue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := publisher.PublishFrontendProjectionWake(context.Background(), "tenant-a", "run-a", now); err != nil {
+		t.Fatal(err)
+	}
+	result, err := sender.RunWake(context.Background(), wakeQueue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != "noop" || blobs.opens != 0 {
+		t.Fatalf("terminal projection result=%#v blob opens=%d", result, blobs.opens)
+	}
+}
+
 var _ ports.TelegramDeliveryStore = (*senderStore)(nil)
+var _ ports.TelegramDeliveryStore = (*projectionSenderStore)(nil)
 var _ ports.TelegramClient = (*senderClient)(nil)
+var _ ports.BlobStore = (*projectionBlobs)(nil)

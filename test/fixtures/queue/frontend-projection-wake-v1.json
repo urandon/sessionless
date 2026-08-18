@@ -1,0 +1,8 @@
+{
+  "schema": "sessionless.queue.v1",
+  "message_id": "message-projection-1",
+  "kind": "wake.frontend_projection",
+  "tenant_id": "tenant-a",
+  "subject_id": "run-a",
+  "enqueued_at": "2026-08-18T12:00:00Z"
+}

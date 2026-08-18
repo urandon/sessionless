@@ -83,8 +83,9 @@ damaging the committed payload.
 
 New dispatch outboxes carry `FrontendEventOrigin`. The former Telegram
 delivery fields remain an explicitly marked compatibility bridge for the
-legacy Telegram worker/result path. Telegram input now uses this contract;
-issue #37 removes the remaining worker dependency on a Telegram reply target.
+legacy Telegram worker/result path. Ordinary Telegram input uses origin-only
+canonical dispatch and its worker never receives a Telegram reply target;
+transport routing is resolved later by the projection consumer.
 
 Ingress performs an authorized idempotency lookup before writing immutable
 objects. A delayed duplicate resolves to the original session even when the
@@ -100,12 +101,14 @@ session. A binding that switched away while the worker was running receives no
 projection; the canonical result remains in the original session. Projection
 consumers must recheck the recorded binding revision before transport work.
 
-Legacy Telegram-targeted jobs remain admissible and continue to create the
-existing Telegram delivery outbox until issue #37 completes the adapter's
-move to the canonical projection path. That compatibility transaction is
-isolated behind `LegacyTelegramWorkerStateStore`; the canonical
-`WorkerStateStore` completion/failure contracts and their shared YDB
-finalization helpers contain no transport-specific delivery value.
+Legacy Telegram-targeted jobs remain admissible for upgrade compatibility and
+continue to create the existing Telegram delivery outbox. Canonical
+origin-based jobs publish a run-scoped projection wake after finalization;
+`telegram-sender` consumes only Telegram projections and creates its transport
+delivery after live authorization and canonical BlobRef integrity checks. The
+compatibility transaction remains isolated behind
+`LegacyTelegramWorkerStateStore`; canonical `WorkerStateStore`
+completion/failure contracts contain no transport-specific delivery value.
 
 ## Stateless worker context
 

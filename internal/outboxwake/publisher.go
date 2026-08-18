@@ -46,6 +46,18 @@ func (publisher *Publisher) PublishTelegramDeliveryWake(
 	return publisher.publish(ctx, queuecontract.KindWakeTelegram, tenantID, string(deliveryID), at)
 }
 
+func (publisher *Publisher) PublishFrontendProjectionWake(
+	ctx context.Context,
+	tenantID domain.TenantID,
+	runID domain.RunID,
+	at time.Time,
+) error {
+	if err := runID.Validate(); err != nil {
+		return err
+	}
+	return publisher.publish(ctx, queuecontract.KindWakeProjection, tenantID, string(runID), at)
+}
+
 func (publisher *Publisher) publish(
 	ctx context.Context,
 	kind queuecontract.Kind,
@@ -73,6 +85,10 @@ func TelegramDeliveryID(runID domain.RunID) domain.TelegramDeliveryID {
 	return domain.TelegramDeliveryID(stableIdentifier("tdl", string(runID)))
 }
 
+func TelegramProjectionDeliveryID(projectionID domain.FrontendProjectionID) domain.TelegramDeliveryID {
+	return domain.TelegramDeliveryID(stableIdentifier("tdl", string(projectionID)))
+}
+
 func wakeMessageID(kind queuecontract.Kind, tenantID domain.TenantID, subjectID string) domain.MessageID {
 	return domain.MessageID(stableIdentifier("wke", string(kind)+"\x00"+string(tenantID)+"\x00"+subjectID))
 }
@@ -83,6 +99,7 @@ func stableIdentifier(prefix, value string) string {
 }
 
 var (
-	_ ports.DispatchWakePublisher         = (*Publisher)(nil)
-	_ ports.TelegramDeliveryWakePublisher = (*Publisher)(nil)
+	_ ports.DispatchWakePublisher           = (*Publisher)(nil)
+	_ ports.TelegramDeliveryWakePublisher   = (*Publisher)(nil)
+	_ ports.FrontendProjectionWakePublisher = (*Publisher)(nil)
 )

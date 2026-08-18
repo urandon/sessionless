@@ -164,20 +164,21 @@ func CanTransitionDelivery(from, to DeliveryStatus) bool {
 }
 
 type TelegramDeliveryOutbox struct {
-	ID                 TelegramDeliveryID  `json:"id"`
-	TenantID           TenantID            `json:"tenant_id"`
-	RunID              RunID               `json:"run_id"`
-	Chat               TelegramChatRef     `json:"chat"`
-	ReplyToMessageID   int64               `json:"reply_to_message_id"`
-	Payload            BlobRef             `json:"payload"`
-	Text               string              `json:"text,omitempty"`
-	ArtifactManifestID *ArtifactManifestID `json:"artifact_manifest_id,omitempty"`
-	Status             DeliveryStatus      `json:"status"`
-	IdempotencyKey     IdempotencyKey      `json:"idempotency_key"`
-	AttemptCount       uint32              `json:"attempt_count"`
-	NextAttemptAt      *time.Time          `json:"next_attempt_at,omitempty"`
-	CreatedAt          time.Time           `json:"created_at"`
-	UpdatedAt          time.Time           `json:"updated_at"`
+	ID                 TelegramDeliveryID     `json:"id"`
+	TenantID           TenantID               `json:"tenant_id"`
+	RunID              RunID                  `json:"run_id"`
+	Chat               TelegramChatRef        `json:"chat"`
+	ReplyToMessageID   int64                  `json:"reply_to_message_id"`
+	Payload            BlobRef                `json:"payload"`
+	Text               string                 `json:"text,omitempty"`
+	ArtifactManifestID *ArtifactManifestID    `json:"artifact_manifest_id,omitempty"`
+	Projection         *TelegramProjectionRef `json:"projection,omitempty"`
+	Status             DeliveryStatus         `json:"status"`
+	IdempotencyKey     IdempotencyKey         `json:"idempotency_key"`
+	AttemptCount       uint32                 `json:"attempt_count"`
+	NextAttemptAt      *time.Time             `json:"next_attempt_at,omitempty"`
+	CreatedAt          time.Time              `json:"created_at"`
+	UpdatedAt          time.Time              `json:"updated_at"`
 }
 
 func (delivery TelegramDeliveryOutbox) ValidateForRun(run Run) error {
@@ -199,8 +200,16 @@ func (delivery TelegramDeliveryOutbox) ValidateForRun(run Run) error {
 	if err := EnsureSameTenant(run.TenantID, delivery.Chat.TenantID); err != nil {
 		return err
 	}
-	if delivery.ReplyToMessageID == 0 {
-		return ValidationError{Field: "telegram_delivery.reply_to_message_id", Reason: "must not be zero"}
+	if delivery.ReplyToMessageID < 0 || (delivery.ReplyToMessageID == 0 && delivery.Projection == nil) {
+		return ValidationError{Field: "telegram_delivery.reply_to_message_id", Reason: "must be positive for legacy delivery and non-negative for a projection"}
+	}
+	if delivery.Projection != nil {
+		if err := delivery.Projection.Validate(); err != nil {
+			return err
+		}
+		if delivery.Projection.SessionID != run.SessionID || delivery.Projection.TriggerEventID != run.TriggerEventID {
+			return ValidationError{Field: "telegram_delivery.projection", Reason: "must reference the owning run session and trigger event"}
+		}
 	}
 	hasText := strings.TrimSpace(delivery.Text) != ""
 	hasPayload := delivery.Payload.Key != ""

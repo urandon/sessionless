@@ -96,6 +96,15 @@ Migrations `00068`-`00070` are additive session-API tables: tenant/user-scoped
 create and mutation idempotency ledgers plus a bounded, rebuildable display
 materialization. None contains canonical event payloads or attachment bytes.
 
+Migrations `00071`-`00072` add operational projection indexes only. The
+per-run index includes `frontend` so one adapter cannot claim another
+frontend's work; the ready index uses the stable 16-bucket hash contract for
+lost-wake recovery. `make partition-backfill` derives both from existing
+projection rows and their canonical event run references. Pre-index orphan
+rows whose canonical event is already absent are skipped so one retired tenant
+cannot block unrelated backfill; no canonical content or replacement run ID is
+invented.
+
 Automatic production down migrations are intentionally disabled. The `Down`
 sections are comments so neither Goose nor an operator can accidentally drop
 state.

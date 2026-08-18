@@ -3,6 +3,7 @@ package ydbstore
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -10,6 +11,8 @@ import (
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/ydbpartition"
 )
+
+const workerSnapshotCandidateLimit = 32
 
 func (store *Store) LoadWorkerJob(
 	ctx context.Context,
@@ -79,6 +82,112 @@ func (store *Store) LoadWorkerJob(
 		return validateLoadedWorkerJob(result)
 	})
 	return result, found, err
+}
+
+func (store *Store) LoadWorkerContext(
+	ctx context.Context,
+	request ports.WorkerContextRequest,
+) (domain.SessionContextInput, error) {
+	if err := request.Validate(); err != nil {
+		return domain.SessionContextInput{}, err
+	}
+	result := domain.SessionContextInput{
+		TenantID: request.TenantID, SessionID: request.SessionID,
+	}
+	afterSequence := uint64(0)
+	if request.AtOrBeforeSnapshotVersion != nil {
+		rows, err := store.db.QueryContext(ctx,
+			`SELECT record FROM session_snapshots
+			 WHERE tenant_id = $1 AND session_id = $2
+			   AND version <= $3 AND through_sequence <= $4
+			 ORDER BY version DESC LIMIT $5`,
+			request.TenantID, request.SessionID,
+			*request.AtOrBeforeSnapshotVersion, request.ThroughSequence,
+			workerSnapshotCandidateLimit,
+		)
+		if err != nil {
+			return result, err
+		}
+		for rows.Next() {
+			var record string
+			if err := rows.Scan(&record); err != nil {
+				rows.Close()
+				return result, err
+			}
+			var snapshot domain.SessionSnapshot
+			if err := json.Unmarshal([]byte(record), &snapshot); err != nil || snapshot.Validate() != nil {
+				continue
+			}
+			if snapshot.TenantID != request.TenantID || snapshot.SessionID != request.SessionID {
+				continue
+			}
+			result.Snapshot = &snapshot
+			afterSequence = snapshot.ThroughSequence
+			break
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return result, err
+		}
+		if err := rows.Close(); err != nil {
+			return result, err
+		}
+	}
+	covered := afterSequence
+	if result.Snapshot != nil {
+		covered = result.Snapshot.EventCount
+	}
+	if covered > request.MaxEvents {
+		return result, domain.ValidationError{
+			Field: "worker_context.events", Reason: "snapshot exceeds the admitted event limit",
+		}
+	}
+	remaining := request.MaxEvents - covered
+	queryLimit := remaining
+	if queryLimit < ^uint64(0) {
+		queryLimit++
+	}
+	rows, err := store.db.QueryContext(ctx,
+		`SELECT record FROM session_events
+		 WHERE tenant_id = $1 AND session_id = $2
+		   AND sequence > $3 AND sequence <= $4
+		 ORDER BY sequence ASC LIMIT $5`,
+		request.TenantID, request.SessionID, afterSequence,
+		request.ThroughSequence, queryLimit,
+	)
+	if err != nil {
+		return result, err
+	}
+	result.Events, err = decodeRows[domain.SessionEvent](rows)
+	closeErr := rows.Close()
+	if err != nil {
+		return result, err
+	}
+	if closeErr != nil {
+		return result, closeErr
+	}
+	if uint64(len(result.Events)) > remaining {
+		return result, domain.ValidationError{
+			Field: "worker_context.events", Reason: "exceeds the admitted event limit",
+		}
+	}
+	if err := result.Validate(); err != nil {
+		return result, err
+	}
+	if len(result.Events) == 0 {
+		if afterSequence != request.ThroughSequence {
+			return result, domain.ValidationError{Field: "worker_context.events", Reason: "does not reach the pinned boundary"}
+		}
+	} else {
+		last := result.Events[len(result.Events)-1]
+		if last.Sequence != request.ThroughSequence {
+			return result, domain.ValidationError{Field: "worker_context.events", Reason: "does not reach the pinned boundary"}
+		}
+		if last.ID != request.TriggerEventID {
+			return result, domain.ValidationError{Field: "worker_context.trigger_event_id", Reason: "does not match the pinned boundary event"}
+		}
+	}
+	return result, nil
 }
 
 func validateLoadedWorkerJob(state ports.WorkerJobState) error {

@@ -209,10 +209,12 @@ func TestCanonicalSnapshotsAndRunsUseBoundedSessionPrefixes(t *testing.T) {
 	snapshotID := domain.SessionSnapshotID(uniqueID("snapshot"))
 	snapshot := domain.SessionSnapshot{
 		ID: snapshotID, TenantID: tenantID, SessionID: session.ID,
-		Version: 1, ThroughSequence: 1,
+		Version: 1, ThroughSequence: 1, FormatVersion: domain.SessionSnapshotFormatV1,
+		Compression: domain.SessionSnapshotCompressionZstandard,
+		EventCount:  1, UncompressedSize: 256,
 		Payload: domain.BlobRef{
 			TenantID: tenantID,
-			Key:      domain.SessionSnapshotObjectPrefix(tenantID, session.ID, snapshotID) + "context.json.zst",
+			Key:      domain.SessionSnapshotObjectKey(tenantID, session.ID, 1),
 			Size:     128, SHA256: canonicalDigest,
 		},
 		CreatedAt: now.Add(2 * time.Second),
@@ -226,6 +228,21 @@ func TestCanonicalSnapshotsAndRunsUseBoundedSessionPrefixes(t *testing.T) {
 	snapshots, err := store.ListSessionSnapshots(ctx, tenantID, session.ID, 0, 10)
 	if err != nil || len(snapshots) != 1 || snapshots[0] != snapshot {
 		t.Fatalf("snapshots = %#v, err=%v", snapshots, err)
+	}
+	version := uint64(1)
+	contextFromSnapshot, err := store.LoadWorkerContext(ctx, ports.WorkerContextRequest{
+		TenantID: tenantID, SessionID: session.ID, TriggerEventID: event.ID,
+		AtOrBeforeSnapshotVersion: &version, ThroughSequence: 1, MaxEvents: 1,
+	})
+	if err != nil || contextFromSnapshot.Snapshot == nil || len(contextFromSnapshot.Events) != 0 {
+		t.Fatalf("snapshot context = %#v, err=%v", contextFromSnapshot, err)
+	}
+	contextFromReplay, err := store.LoadWorkerContext(ctx, ports.WorkerContextRequest{
+		TenantID: tenantID, SessionID: session.ID, TriggerEventID: event.ID,
+		ThroughSequence: 1, MaxEvents: 1,
+	})
+	if err != nil || contextFromReplay.Snapshot != nil || len(contextFromReplay.Events) != 1 || contextFromReplay.Events[0].ID != event.ID {
+		t.Fatalf("replayed context = %#v, err=%v", contextFromReplay, err)
 	}
 
 	run := domain.Run{
@@ -363,6 +380,23 @@ func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 	} {
 		assertCount(t, client, table, tenantID, 1)
 	}
+	canonicalSnapshotVersion := uint64(1)
+	if err := store.PutSessionSnapshot(ctx, domain.SessionSnapshot{
+		ID:       domain.SessionSnapshotID(uniqueID("canonical-snapshot")),
+		TenantID: tenantID, SessionID: thirdID,
+		Version: canonicalSnapshotVersion, ThroughSequence: 1,
+		FormatVersion: domain.SessionSnapshotFormatV1,
+		Compression:   domain.SessionSnapshotCompressionZstandard,
+		EventCount:    1, UncompressedSize: 256,
+		Payload: domain.BlobRef{
+			TenantID: tenantID,
+			Key:      domain.SessionSnapshotObjectKey(tenantID, thirdID, canonicalSnapshotVersion),
+			Size:     128, SHA256: canonicalDigest,
+		},
+		CreatedAt: committedAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := client.DB.ExecContext(ctx,
 		`INSERT INTO subscription_connections
 		 (tenant_id, subscription_connection_id, actor_id, provider, credential_ref,
@@ -383,13 +417,16 @@ func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 		Limits: domain.ProductLimits{
 			MaxTenantQueueDepth: 8, MaxActiveRuns: 1,
 			MaxRuntime: 15 * time.Minute, MaxTurns: 30,
-			MaxInputBytes: 16 << 20, MaxContextBytes: 64 << 20, MaxArtifacts: 32,
+			MaxInputBytes: 16 << 20, MaxContextBytes: 64 << 20, MaxContextEvents: 512, MaxArtifacts: 32,
 			MaxToolEvents: 128, MaxToolEventBytes: 16 << 20,
 		},
 		Workload: domain.WorkloadShape{Runtime: time.Minute, Turns: 1},
 	})
 	if err != nil || !admission.Admitted || admission.Code != "admitted" {
 		t.Fatalf("canonical admission=%#v err=%v", admission, err)
+	}
+	if admission.SessionID != thirdID || admission.ThroughSequence != 1 {
+		t.Fatalf("canonical admission context boundary=%#v", admission)
 	}
 	assertCount(t, client, "worker_jobs", tenantID, 1)
 	assertCount(t, client, "quota_reservations", tenantID, 1)
@@ -406,6 +443,13 @@ func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 	loaded, found, err := store.LoadWorkerJob(ctx, tenantID, request.RunID)
 	if err != nil || !found {
 		t.Fatalf("canonical worker job found=%t err=%v", found, err)
+	}
+	if loaded.Job.ContextWindow == nil ||
+		loaded.Job.ContextWindow.SnapshotVersion == nil ||
+		*loaded.Job.ContextWindow.SnapshotVersion != canonicalSnapshotVersion ||
+		loaded.Job.ContextWindow.AfterSequence != 1 ||
+		loaded.Job.ContextWindow.ThroughSequence != 1 {
+		t.Fatalf("admitted context window = %#v", loaded.Job.ContextWindow)
 	}
 	lease, err := store.ClaimWorkerLease(ctx, ports.WorkerLeaseRequest{
 		TenantID: tenantID, RunID: request.RunID, AttemptID: request.AttemptID,
@@ -647,7 +691,7 @@ func TestCanonicalFailureAndCancellationFinalizationAreAtomicAndIdempotent(t *te
 				Limits: domain.ProductLimits{
 					MaxTenantQueueDepth: 8, MaxActiveRuns: 1,
 					MaxRuntime: time.Minute, MaxTurns: 4,
-					MaxInputBytes: 1 << 20, MaxContextBytes: 1 << 20, MaxArtifacts: 4,
+					MaxInputBytes: 1 << 20, MaxContextBytes: 1 << 20, MaxContextEvents: 64, MaxArtifacts: 4,
 					MaxToolEvents: 16, MaxToolEventBytes: 1 << 20,
 				},
 				Workload: domain.WorkloadShape{Runtime: time.Minute, Turns: 1},

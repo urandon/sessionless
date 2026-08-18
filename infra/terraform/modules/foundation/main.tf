@@ -107,7 +107,7 @@ resource "yandex_storage_bucket" "artifacts" {
 resource "yandex_storage_bucket_iam_binding" "runtime_editor" {
   bucket = yandex_storage_bucket.artifacts.bucket
   role   = "storage.editor"
-  members = [for name in ["api", "worker"] :
+  members = [for name in ["api", "scheduler", "worker"] :
     "serviceAccount:${yandex_iam_service_account.runtime[name].id}"
   ]
 }

@@ -5,9 +5,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -18,6 +21,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/outboxwake"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/queuecontract"
+	"gitcode.com/urandon/sessionless/internal/sessioncontext"
 	"gitcode.com/urandon/sessionless/internal/testkit"
 	"gitcode.com/urandon/sessionless/internal/worker"
 )
@@ -126,6 +130,143 @@ func TestCanonicalWorkerFinalizesToolAndAssistantEventsWithoutTelegramDelivery(t
 		state.events[2].Kind != domain.SessionEventAssistantMessage {
 		t.Fatalf("canonical event order = %+v", state.events)
 	}
+}
+
+func TestCanonicalContextReplayMatchesSnapshotTailAndFallsBackFromCorruption(t *testing.T) {
+	t.Parallel()
+	payloads := [][]byte{
+		[]byte(`{"version":1,"text":"first"}`),
+		[]byte(`{"version":1,"text":"second"}`),
+	}
+	fullHistory := runCanonicalContextFixture(t, payloads, false, false)
+	snapshotHistory := runCanonicalContextFixture(t, payloads, true, false)
+	if !bytes.Equal(fullHistory, snapshotHistory) {
+		t.Fatal("snapshot-plus-tail materialization differs from canonical replay")
+	}
+	fallbackHistory := runCanonicalContextFixture(t, payloads, true, true)
+	if !bytes.Equal(fullHistory, fallbackHistory) {
+		t.Fatal("corrupt snapshot fallback differs from canonical replay")
+	}
+}
+
+func runCanonicalContextFixture(
+	t *testing.T,
+	payloads [][]byte,
+	withSnapshot bool,
+	corruptSnapshot bool,
+) []byte {
+	t.Helper()
+	ctx := context.Background()
+	clock := testkit.NewFakeClock(workerTestTime)
+	queue := testkit.NewMemoryQueue()
+	blobs := newMemoryBlobs()
+	state := newWorkerState()
+	loaded := workerFixture(t, ctx, blobs, "tenant-a", workerTestTime)
+	loaded.Job.Origin = &domain.FrontendEventOrigin{
+		BindingID: "binding-1", BindingRevision: 1, Frontend: "synthetic",
+		ExternalConversationID: "conversation-1", ExternalEventID: "external-event-1",
+	}
+	loaded.Job.DeliveryChat = domain.TelegramChatRef{}
+	loaded.Job.ReplyToMessageID = 0
+	loaded.Job.ContextSnapshot = domain.BlobRef{}
+	loaded.Job.Limits.MaxContextEvents = 10
+	events := make([]sessioncontext.EventPayload, 0, len(payloads))
+	for index, payload := range payloads {
+		sequence := uint64(index + 1)
+		eventID := domain.SessionEventID(fmt.Sprintf("event-context-%d", sequence))
+		if index == 0 {
+			attachment := blobs.seed(
+				t, ctx, loaded.Run.TenantID,
+				domain.SessionEventObjectPrefix(loaded.Run.TenantID, loaded.Run.SessionID, eventID)+"uploads/fixture/attachments/01-image.bin",
+				[]byte("image-bytes"),
+			)
+			var err error
+			payload, err = json.Marshal(map[string]any{
+				"version": 1, "text": "first",
+				"attachments": []map[string]any{{
+					"name": "image.bin", "media_type": "application/octet-stream", "blob": attachment,
+				}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		ref := blobs.seed(
+			t, ctx, loaded.Run.TenantID,
+			domain.SessionEventObjectPrefix(loaded.Run.TenantID, loaded.Run.SessionID, eventID)+"payload.json",
+			payload,
+		)
+		author := domain.UserID("user-a")
+		event := domain.SessionEvent{
+			ID: eventID, TenantID: loaded.Run.TenantID, SessionID: loaded.Run.SessionID,
+			Sequence: sequence, Kind: domain.SessionEventUserMessage, AuthorUserID: &author,
+			IdempotencyKey: domain.IdempotencyKey(fmt.Sprintf("context-key-%d", sequence)),
+			Payload:        ref, CreatedAt: workerTestTime.Add(time.Duration(sequence) * time.Second),
+		}
+		events = append(events, sessioncontext.EventPayload{Event: event, Payload: payload})
+	}
+	loaded.Run.TriggerEventID = events[len(events)-1].Event.ID
+	loaded.Job.TriggerEventID = loaded.Run.TriggerEventID
+	window := &domain.SessionContextWindow{ThroughSequence: uint64(len(events))}
+	var snapshot *domain.SessionSnapshot
+	if withSnapshot {
+		compressed, jsonl, err := sessioncontext.EncodeSnapshot(events[:1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if corruptSnapshot {
+			compressed = append([]byte(nil), compressed...)
+			compressed[len(compressed)/2] ^= 0xff
+		}
+		version := uint64(1)
+		ref := blobs.seed(
+			t, ctx, loaded.Run.TenantID,
+			domain.SessionSnapshotObjectKey(loaded.Run.TenantID, loaded.Run.SessionID, version),
+			compressed,
+		)
+		snapshot = &domain.SessionSnapshot{
+			ID: "snapshot-context-1", TenantID: loaded.Run.TenantID, SessionID: loaded.Run.SessionID,
+			Version: version, ThroughSequence: 1,
+			FormatVersion: domain.SessionSnapshotFormatV1,
+			Compression:   domain.SessionSnapshotCompressionZstandard,
+			EventCount:    1, UncompressedSize: uint64(len(jsonl)), Payload: ref,
+			CreatedAt: events[0].Event.CreatedAt,
+		}
+		window.SnapshotVersion = &version
+		window.AfterSequence = 1
+	}
+	loaded.Job.ContextWindow = window
+	state.loadContext = func(request ports.WorkerContextRequest) (domain.SessionContextInput, error) {
+		if snapshot != nil && request.AtOrBeforeSnapshotVersion != nil {
+			return domain.SessionContextInput{
+				TenantID: loaded.Run.TenantID, SessionID: loaded.Run.SessionID,
+				Snapshot: snapshot, Events: []domain.SessionEvent{events[1].Event},
+			}, nil
+		}
+		return domain.SessionContextInput{
+			TenantID: loaded.Run.TenantID, SessionID: loaded.Run.SessionID,
+			Events: []domain.SessionEvent{events[0].Event, events[1].Event},
+		}, nil
+	}
+	state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
+	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
+	var history []byte
+	var attachment []byte
+	manager, err := worker.New(worker.Config{
+		ScratchRoot: t.TempDir(), WorkerID: "worker-context",
+		DeliveryWakePublisher: newDeliveryWakePublisher(t),
+	}, clock, queue, state, blobs, captureContextHarness{history: &history, attachment: &attachment})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := manager.RunOnce(ctx)
+	if err != nil || outcome != worker.OutcomeCompleted {
+		t.Fatalf("outcome/error = %q/%v", outcome, err)
+	}
+	if string(attachment) != "image-bytes" {
+		t.Fatalf("materialized attachment = %q", attachment)
+	}
+	return history
 }
 
 func TestCanonicalWorkerFinalizesCancellationNoticeWithoutTelegramDelivery(t *testing.T) {
@@ -623,6 +764,7 @@ type workerState struct {
 	completions int
 	failures    int
 	renewals    int
+	loadContext func(ports.WorkerContextRequest) (domain.SessionContextInput, error)
 }
 
 func newWorkerState() *workerState {
@@ -642,6 +784,19 @@ func (state *workerState) LoadWorkerJob(
 	defer state.mu.Unlock()
 	loaded, ok := state.jobs[jobKey(tenant, runID)]
 	return loaded, ok, nil
+}
+
+func (state *workerState) LoadWorkerContext(
+	_ context.Context,
+	request ports.WorkerContextRequest,
+) (domain.SessionContextInput, error) {
+	state.mu.Lock()
+	loader := state.loadContext
+	state.mu.Unlock()
+	if loader == nil {
+		return domain.SessionContextInput{}, errors.New("worker context fixture is not configured")
+	}
+	return loader(request)
 }
 
 func (state *workerState) ClaimWorkerLease(
@@ -900,6 +1055,35 @@ func (canonicalHarness) Execute(
 }
 
 func (canonicalHarness) Cancel(context.Context, ports.ExecutionIdentity) error { return nil }
+
+type captureContextHarness struct {
+	history    *[]byte
+	attachment *[]byte
+}
+
+func (harness captureContextHarness) Execute(
+	_ context.Context,
+	request ports.ExecutionRequest,
+	_ ports.ExecutionEventSink,
+) (ports.ExecutionResult, error) {
+	body, err := os.ReadFile(filepath.Join(request.WorkDir, "context", "history.jsonl"))
+	if err != nil {
+		return ports.ExecutionResult{}, err
+	}
+	*harness.history = append([]byte(nil), body...)
+	if harness.attachment != nil {
+		body, err := os.ReadFile(filepath.Join(
+			request.WorkDir, "context", "attachments", "00000000000000000001", "01-image.bin",
+		))
+		if err != nil {
+			return ports.ExecutionResult{}, err
+		}
+		*harness.attachment = append([]byte(nil), body...)
+	}
+	return ports.ExecutionResult{Summary: "context captured"}, nil
+}
+
+func (captureContextHarness) Cancel(context.Context, ports.ExecutionIdentity) error { return nil }
 
 var _ ports.HarnessDriver = canonicalHarness{}
 

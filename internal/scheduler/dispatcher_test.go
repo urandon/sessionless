@@ -22,6 +22,29 @@ type memorySchedulerStore struct {
 	expireSeen []domain.QuotaReservationID
 }
 
+type snapshotMaintenanceCall struct {
+	tenantID        domain.TenantID
+	sessionID       domain.SessionID
+	throughSequence uint64
+}
+
+type memorySnapshotMaintainer struct {
+	calls []snapshotMaintenanceCall
+	err   error
+}
+
+func (maintainer *memorySnapshotMaintainer) MaybeCreate(
+	_ context.Context,
+	tenantID domain.TenantID,
+	sessionID domain.SessionID,
+	throughSequence uint64,
+) (domain.SessionSnapshot, bool, error) {
+	maintainer.calls = append(maintainer.calls, snapshotMaintenanceCall{
+		tenantID: tenantID, sessionID: sessionID, throughSequence: throughSequence,
+	})
+	return domain.SessionSnapshot{}, false, maintainer.err
+}
+
 func (store *memorySchedulerStore) GetDispatch(
 	_ context.Context,
 	tenantID domain.TenantID,
@@ -116,8 +139,11 @@ func TestDispatcherPublishesOnlyAdmittedRunsAndExpiresReservations(t *testing.T)
 			blockedBucket: appendIfDifferent(bucket, blockedBucket, blocked),
 		},
 		decisions: map[domain.DispatchOutboxID]ports.DispatchAdmissionResult{
-			admitted.OutboxID: {Admitted: true, State: domain.SchedulerReady, Code: "admitted"},
-			blocked.OutboxID:  {State: domain.SchedulerPressured, Code: "subscription_slot_busy"},
+			admitted.OutboxID: {
+				Admitted: true, State: domain.SchedulerReady, Code: "admitted",
+				SessionID: "session-1", ThroughSequence: 128,
+			},
+			blocked.OutboxID: {State: domain.SchedulerPressured, Code: "subscription_slot_busy"},
 		},
 		expired: map[uint32][]ports.ExpiredQuotaReservation{
 			expiredBucket: {{
@@ -131,9 +157,15 @@ func TestDispatcherPublishesOnlyAdmittedRunsAndExpiresReservations(t *testing.T)
 		store.ready[bucket] = []ports.DispatchReady{admitted, blocked}
 	}
 	queue := testkit.NewMemoryQueue()
+	maintenanceErr := errors.New("snapshot storage unavailable")
+	maintainer := &memorySnapshotMaintainer{err: maintenanceErr}
+	var observedMaintenanceErr error
 	dispatcher, err := NewDispatcher(Config{
 		BatchSize: 10, ReservationTTL: time.Minute,
-		Limits: testLimits(),
+		Limits: testLimits(), SnapshotMaintainer: maintainer,
+		SnapshotObserver: func(err error) {
+			observedMaintenanceErr = err
+		},
 		DefaultWorkload: domain.WorkloadShape{
 			Runtime: time.Minute, Turns: 1,
 		},
@@ -162,6 +194,14 @@ func TestDispatcherPublishesOnlyAdmittedRunsAndExpiresReservations(t *testing.T)
 	}
 	if len(store.expireSeen) != 1 || store.expireSeen[0] != "reservation-expired" {
 		t.Fatalf("expired = %#v", store.expireSeen)
+	}
+	if len(maintainer.calls) != 1 || maintainer.calls[0] != (snapshotMaintenanceCall{
+		tenantID: admitted.TenantID, sessionID: "session-1", throughSequence: 128,
+	}) {
+		t.Fatalf("snapshot maintenance calls = %#v", maintainer.calls)
+	}
+	if !errors.Is(observedMaintenanceErr, maintenanceErr) {
+		t.Fatalf("observed snapshot maintenance error = %v", observedMaintenanceErr)
 	}
 }
 

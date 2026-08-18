@@ -69,6 +69,13 @@ event sequence. It is only an optimization: canonical context is the snapshot
 plus the contiguous ordered event range after it. There is no mutable
 `context_epoch` product API.
 
+Snapshot format v1 is deterministic newline-delimited JSON compressed with
+single-threaded Zstandard. Each line carries the canonical event metadata and
+the verified JSON payload. The manifest records format/compression versions,
+event count, uncompressed byte count, covered sequence, and the immutable blob
+reference. Rebuilding the same event prefix therefore produces the same bytes
+and SHA-256 digest.
+
 `ConversationRef`, `ActorRef`, and the old YDB context revision remain only in
 the transitional Telegram persistence adapter. They must not cross into new
 session, run, scheduling, or worker contracts; #36 removes them from the
@@ -236,8 +243,8 @@ The control plane depends on interfaces for:
 - subscription entitlement and provider quota observation;
 - durable cancellation observation.
 
-`HarnessDriver` receives only authorized, tenant-scoped references:
-context/artifact blobs, an opaque credential handle, and an explicit MCP
+`HarnessDriver` receives a fresh directory containing only authorized,
+tenant-scoped material, an opaque credential handle, and an explicit MCP
 allowlist. Concrete harness processes remain isolated worker adapters.
 
 ## Isolated worker lifecycle
@@ -263,15 +270,29 @@ flowchart LR
 
 One invocation processes at most one queue message. Before materializing data,
 it point-loads the worker job, verifies a held reservation, claims a fenced
-lease, and transitions the run/attempt to running. Context, inputs, optional
-workspace, skills, and the latest checkpoint are copied into a new
-invocation-only directory with tenant, path, size, and SHA-256 checks.
+lease, and transitions the run/attempt to running. A newly admitted canonical
+job pins the trigger sequence and newest compatible snapshot version. The
+worker loads that snapshot plus its bounded contiguous tail, verifies every
+event and payload reference, and writes `context/history.jsonl`; referenced
+message attachments are written below `context/attachments/<sequence>/`.
+Missing, incompatible, or corrupt snapshots fall back to an older snapshot and
+finally to bounded replay from event one. Legacy jobs keep their single-blob
+bridge until Telegram migration issue #36. Inputs, optional workspace, skills,
+and the latest checkpoint are copied into the same new invocation-only
+directory with tenant, path, size, and SHA-256 checks.
+
+Snapshot creation is owned by reconciler maintenance after successful canonical
+dispatch publication and acknowledgement. The maintenance trigger is an event
+interval, with bounded catalog versions, event count, and bytes. It is
+best-effort and never changes dispatch correctness; a failed deterministic
+build is retried by a later dispatch while workers retain canonical replay.
 
 Each harness boundary has a contiguous sequence, renews the lease when needed,
 stores an immutable checkpoint blob, and commits checkpoint metadata plus
-observed usage under the same fence. Limits bound runtime, turns, input/context
-bytes, artifacts, and each materialized blob. Durable cancellation is checked
-before execution and at every boundary.
+observed usage under the same fence. Limits bound runtime, turns, context
+events, historical tool events, input/context bytes, artifacts, and each
+materialized blob; all context checks finish before harness launch. Durable
+cancellation is checked before execution and at every boundary.
 
 Success uploads content-addressed output objects and atomically commits the
 terminal run/attempt, quota reservation, artifact manifest, Telegram delivery,

@@ -142,9 +142,17 @@ and durable command state/replies for connect, status, disconnect, and a new
 canonical session binding. Scheduler unit/YDB integration coverage separately proves
 exactly one concurrent reservation per subscription, deterministic wake and
 dispatch message IDs, point-read wake handling, bounded recovery traversal,
-and idempotent reservation expiry. Worker unit/YDB integration coverage proves tenant-safe materialization,
-checkpoint resume, lease renewal/loss fencing, cancellation, runtime and turn
-limits, exactly-once terminal delivery, and lease-index cleanup.
+and idempotent reservation expiry. Worker unit/YDB integration coverage proves
+tenant-safe replay and snapshot-plus-tail materialization, corrupt-snapshot
+fallback, attachment materialization, checkpoint resume, lease renewal/loss
+fencing, cancellation, runtime/context/turn limits, exactly-once terminal
+delivery, and lease-index cleanup.
+
+The reconciler also owns best-effort snapshot maintenance after an admitted
+canonical dispatch is published and acknowledged. Local defaults create a new
+version every 128 covered events and scan at most 32 versions; override
+`SNAPSHOT_INTERVAL_EVENTS` and `SNAPSHOT_MAX_VERSIONS` when exercising smaller
+fixtures. Context event and byte limits bound each build.
 
 Run the composed deterministic product slice with:
 

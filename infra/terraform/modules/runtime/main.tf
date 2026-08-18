@@ -96,17 +96,19 @@ resource "yandex_serverless_container" "reconciler" {
   runtime { type = "http" }
   image {
     url = var.images["reconciler"]
-    environment = {
+    environment = merge(local.common_environment, {
       DEPLOYMENT_IMAGE                  = var.images["reconciler"]
       SERVERLESS_TRIGGER_HTTP           = "true"
-      YDB_CONNECTION_STRING             = var.ydb_connection_string
-      YDB_METADATA_CREDENTIALS          = "1"
       QUEUE_ENDPOINT                    = "https://message-queue.api.cloud.yandex.net"
       QUEUE_REGION                      = "ru-central1"
       DISPATCH_QUEUE_URL                = var.dispatch_queue_url
       SCHEDULER_WAKE_RETRY_DELAY        = "30s"
       SCHEDULER_WAKE_MAX_DELIVERY_COUNT = "5"
-    }
+      LIMIT_CONTEXT_BYTES               = "67108864"
+      LIMIT_CONTEXT_EVENTS              = "512"
+      SNAPSHOT_INTERVAL_EVENTS          = "128"
+      SNAPSHOT_MAX_VERSIONS             = "32"
+    })
   }
   metadata_options {
     aws_v1_http_endpoint = 1

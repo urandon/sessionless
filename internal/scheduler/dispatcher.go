@@ -20,6 +20,12 @@ type Config struct {
 	MaxWakeDeliveryCount uint32
 	Limits               domain.ProductLimits
 	DefaultWorkload      domain.WorkloadShape
+	SnapshotMaintainer   SnapshotMaintainer
+	SnapshotObserver     func(error)
+}
+
+type SnapshotMaintainer interface {
+	MaybeCreate(context.Context, domain.TenantID, domain.SessionID, uint64) (domain.SessionSnapshot, bool, error)
 }
 
 type PassResult struct {
@@ -208,6 +214,13 @@ func (dispatcher *Dispatcher) dispatchCandidate(
 		ctx, candidate.TenantID, candidate.OutboxID, now,
 	); err != nil {
 		return ports.DispatchAdmissionResult{}, err
+	}
+	if dispatcher.config.SnapshotMaintainer != nil && admission.SessionID != "" && admission.ThroughSequence != 0 {
+		if _, _, err := dispatcher.config.SnapshotMaintainer.MaybeCreate(
+			ctx, candidate.TenantID, admission.SessionID, admission.ThroughSequence,
+		); err != nil && dispatcher.config.SnapshotObserver != nil {
+			dispatcher.config.SnapshotObserver(err)
+		}
 	}
 	return admission, nil
 }

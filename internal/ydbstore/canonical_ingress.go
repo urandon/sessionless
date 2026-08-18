@@ -350,8 +350,9 @@ func (store *Store) CommitCanonicalUserEvent(
 		dispatch := domain.DispatchOutbox{
 			ID: request.DispatchID, TenantID: request.TenantID, RunID: request.RunID,
 			AttemptID: request.AttemptID, InputManifestID: request.ManifestID,
-			ContextSnapshot: request.Payload, AllowedMCPServers: append([]string(nil), request.AllowedMCPServers...),
-			Origin: &origin, Status: domain.DispatchPending, IdempotencyKey: request.IdempotencyKey,
+			AllowedMCPServers: append([]string(nil), request.AllowedMCPServers...),
+			ContextWindow:     &domain.SessionContextWindow{ThroughSequence: sequence},
+			Origin:            &origin, Status: domain.DispatchPending, IdempotencyKey: request.IdempotencyKey,
 			CreatedAt: request.CommittedAt, UpdatedAt: request.CommittedAt,
 		}
 		if err := state.PutRun(ctx, run); err != nil {

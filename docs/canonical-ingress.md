@@ -108,6 +108,34 @@ isolated behind `LegacyTelegramWorkerStateStore`; the canonical
 `WorkerStateStore` completion/failure contracts and their shared YDB
 finalization helpers contain no transport-specific delivery value.
 
+## Stateless worker context
+
+Canonical ingress records the trigger event sequence as the context boundary.
+Admission selects the newest compatible immutable snapshot at or before that
+sequence and persists its version plus covered sequence on the worker job.
+Workers reconstruct `context/history.jsonl` from the verified snapshot and
+contiguous event tail. If snapshot metadata or bytes are missing, corrupt, or
+incompatible, reconstruction retries an older snapshot and finally replays the
+bounded canonical event prefix. The replay output is byte-identical to the
+snapshot-plus-tail output.
+
+After a canonical dispatch has been published and its outbox acknowledged, the
+reconciler runs best-effort snapshot maintenance for that pinned boundary. It
+creates a new immutable version only when at least
+`SNAPSHOT_INTERVAL_EVENTS` (128 by default) are covered beyond the latest
+snapshot. Catalog traversal is bounded by `SNAPSHOT_MAX_VERSIONS` (32 by
+default), and snapshot event/byte work is bounded by the admitted
+`LIMIT_CONTEXT_EVENTS` and `LIMIT_CONTEXT_BYTES`. The just-published job keeps
+its already-pinned context; later jobs can select the new snapshot. Maintenance
+failure is logged but does not fail dispatch: canonical replay remains the
+correctness path and a later dispatch can retry the deterministic build.
+
+`LIMIT_CONTEXT_EVENTS` is required for newly admitted jobs alongside the byte
+and tool-event budgets. Jobs persisted before this field existed retain a
+finite compatibility bound derived from their admitted turn limit. Event,
+byte, historical tool-event, payload digest, tenant, session, and trigger
+checks all complete before a harness adapter is invoked.
+
 ## Canonical terminal finalization
 
 Harness progress boundaries remain operational checkpoints. They are not

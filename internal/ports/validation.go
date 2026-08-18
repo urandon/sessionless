@@ -118,11 +118,17 @@ func (request ExecutionRequest) Validate() error {
 	if !filepath.IsAbs(request.WorkDir) || filepath.Clean(request.WorkDir) != request.WorkDir {
 		return domain.ValidationError{Field: "execution.work_dir", Reason: "must be a normalized absolute path"}
 	}
-	if err := request.ContextSnapshot.Validate(); err != nil {
-		return err
-	}
-	if err := domain.EnsureSameTenant(request.TenantID, request.ContextSnapshot.TenantID); err != nil {
-		return err
+	if request.ContextWindow != nil {
+		if err := request.ContextWindow.Validate(); err != nil {
+			return err
+		}
+	} else {
+		if err := request.ContextSnapshot.Validate(); err != nil {
+			return err
+		}
+		if err := domain.EnsureSameTenant(request.TenantID, request.ContextSnapshot.TenantID); err != nil {
+			return err
+		}
 	}
 	if request.Credential.Handle != "" {
 		if err := domain.EnsureSameTenant(request.TenantID, request.Credential.TenantID); err != nil {
@@ -164,6 +170,28 @@ func (request ExecutionRequest) Validate() error {
 			return domain.ValidationError{Field: "allowed_mcp_servers", Reason: "must not contain duplicates"}
 		}
 		seen[server] = struct{}{}
+	}
+	return nil
+}
+
+func (request WorkerContextRequest) Validate() error {
+	if err := request.TenantID.Validate(); err != nil {
+		return err
+	}
+	if err := request.SessionID.Validate(); err != nil {
+		return err
+	}
+	if err := request.TriggerEventID.Validate(); err != nil {
+		return err
+	}
+	if request.ThroughSequence == 0 {
+		return domain.ValidationError{Field: "worker_context.through_sequence", Reason: "must be positive"}
+	}
+	if request.MaxEvents == 0 {
+		return domain.ValidationError{Field: "worker_context.max_events", Reason: "must be positive"}
+	}
+	if request.AtOrBeforeSnapshotVersion != nil && *request.AtOrBeforeSnapshotVersion == 0 {
+		return domain.ValidationError{Field: "worker_context.snapshot_version", Reason: "must be positive when set"}
 	}
 	return nil
 }

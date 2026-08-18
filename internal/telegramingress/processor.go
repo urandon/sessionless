@@ -134,6 +134,7 @@ func (processor *Processor) Process(
 			Kind: command, Provider: provider,
 			Actor: identity.Actor, Conversation: identity.Conversation,
 			SubscriptionConnectionID: identity.SubscriptionConnection,
+			ExpectedBindingRevision:  state.BindingRevision,
 			RunID:                    runID, DeliveryID: deliveryID,
 			SessionID: sessionID, TriggerEventID: triggerEventID,
 			Chat: domain.TelegramChatRef{

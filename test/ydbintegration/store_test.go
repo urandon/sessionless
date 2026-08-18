@@ -877,6 +877,219 @@ func TestTelegramCommandsAreAtomicIdempotentAndDoNotDispatchAIWork(t *testing.T)
 	assertCount(t, client, "dispatch_outbox", tenantID, 0)
 }
 
+func TestTelegramCommandsReauthorizeBeforeDuplicateOrMutation(t *testing.T) {
+	store, client := openStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	tenantID := domain.TenantID(uniqueID("tenant-command-reauthorize"))
+	actor := domain.ActorRef{
+		TenantID: tenantID, Frontend: domain.FrontendTelegram,
+		ExternalID: "5611", ID: domain.ActorID(uniqueID("actor")),
+	}
+	conversation := domain.ConversationRef{
+		TenantID: tenantID, Frontend: domain.FrontendTelegram,
+		ExternalID: "7811", ID: domain.ConversationID(uniqueID("conversation")),
+	}
+	connectionID := domain.SubscriptionConnectionID(uniqueID("subscription"))
+	identityRequest := ports.TelegramIdentityRequest{
+		TenantID: tenantID, Actor: actor, Conversation: conversation,
+		SubscriptionConnectionID: connectionID, Provider: "codex", ObservedAt: now,
+	}
+	identity, err := store.EnsureTelegramIdentity(ctx, identityRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := commandFixture(
+		tenantID, actor, conversation, connectionID,
+		ports.TelegramCommandHelp, 2101, now.Add(time.Second),
+	)
+	if _, err := store.ExecuteTelegramCommand(ctx, command); err != nil {
+		t.Fatal(err)
+	}
+
+	suspended := domain.TenantMembership{
+		TenantID: tenantID, UserID: identity.UserID,
+		Role: domain.TenantMembershipOwner, Status: domain.TenantMembershipSuspended,
+		SecurityVersion: 2, CreatedAt: now, UpdatedAt: now.Add(2 * time.Second),
+	}
+	record, err := json.Marshal(suspended)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bucket, err := ydbpartition.BucketV1(string(identity.UserID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.DB.ExecContext(ctx,
+		`UPDATE tenant_memberships
+		 SET status = $1, security_version = $2, updated_at = $3,
+		     record = CAST($4 AS JsonDocument)
+		 WHERE user_bucket = $5 AND user_id = $6 AND tenant_id = $7`,
+		suspended.Status, suspended.SecurityVersion, suspended.UpdatedAt,
+		string(record), bucket, identity.UserID, tenantID,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.ExecuteTelegramCommand(ctx, command); !errors.Is(err, domain.ErrMembershipDenied) {
+		t.Fatalf("revoked duplicate command error = %v, want membership denied", err)
+	}
+	distinct := commandFixture(
+		tenantID, actor, conversation, connectionID,
+		ports.TelegramCommandHelp, 2102, now.Add(3*time.Second),
+	)
+	if _, err := store.ExecuteTelegramCommand(ctx, distinct); !errors.Is(err, domain.ErrMembershipDenied) {
+		t.Fatalf("revoked distinct command error = %v, want membership denied", err)
+	}
+	identityRequest.ObservedAt = now.Add(4 * time.Second)
+	if _, err := store.EnsureTelegramIdentity(ctx, identityRequest); !errors.Is(err, domain.ErrMembershipDenied) {
+		t.Fatalf("revoked identity refresh error = %v, want membership denied", err)
+	}
+	assertCount(t, client, "telegram_updates", tenantID, 1)
+	assertCount(t, client, "runs", tenantID, 1)
+}
+
+func TestTelegramCommandsRequireActiveSessionParticipant(t *testing.T) {
+	store, client := openStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	tenantID := domain.TenantID(uniqueID("tenant-command-participant"))
+	actor := domain.ActorRef{
+		TenantID: tenantID, Frontend: domain.FrontendTelegram,
+		ExternalID: "5711", ID: domain.ActorID(uniqueID("actor")),
+	}
+	conversation := domain.ConversationRef{
+		TenantID: tenantID, Frontend: domain.FrontendTelegram,
+		ExternalID: "7911", ID: domain.ConversationID(uniqueID("conversation")),
+	}
+	connectionID := domain.SubscriptionConnectionID(uniqueID("subscription"))
+	identityRequest := ports.TelegramIdentityRequest{
+		TenantID: tenantID, Actor: actor, Conversation: conversation,
+		SubscriptionConnectionID: connectionID, Provider: "codex", ObservedAt: now,
+	}
+	identity, err := store.EnsureTelegramIdentity(ctx, identityRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	removed := domain.SessionParticipant{
+		TenantID: tenantID, SessionID: identity.SessionID, UserID: identity.UserID,
+		Role: domain.SessionParticipantOwner, Status: domain.SessionParticipantRemoved,
+		CreatedAt: now, UpdatedAt: now.Add(time.Second),
+	}
+	record, err := json.Marshal(removed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.DB.ExecContext(ctx,
+		`UPDATE session_participants
+		 SET status = $1, updated_at = $2, record = CAST($3 AS JsonDocument)
+		 WHERE tenant_id = $4 AND session_id = $5 AND user_id = $6`,
+		removed.Status, removed.UpdatedAt, string(record),
+		tenantID, identity.SessionID, identity.UserID,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	command := commandFixture(
+		tenantID, actor, conversation, connectionID,
+		ports.TelegramCommandHelp, 2201, now.Add(2*time.Second),
+	)
+	if _, err := store.ExecuteTelegramCommand(ctx, command); err == nil {
+		t.Fatal("removed participant executed Telegram command")
+	}
+	identityRequest.ObservedAt = now.Add(3 * time.Second)
+	if _, err := store.EnsureTelegramIdentity(ctx, identityRequest); err == nil {
+		t.Fatal("removed participant refreshed Telegram identity")
+	}
+	assertCount(t, client, "telegram_updates", tenantID, 0)
+	assertCount(t, client, "runs", tenantID, 0)
+}
+
+func TestConcurrentTelegramNewCommandsFenceStaleBindingRevision(t *testing.T) {
+	store, client := openStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	tenantID := domain.TenantID(uniqueID("tenant-command-revision"))
+	actor := domain.ActorRef{
+		TenantID: tenantID, Frontend: domain.FrontendTelegram,
+		ExternalID: "5811", ID: domain.ActorID(uniqueID("actor")),
+	}
+	conversation := domain.ConversationRef{
+		TenantID: tenantID, Frontend: domain.FrontendTelegram,
+		ExternalID: "8011", ID: domain.ConversationID(uniqueID("conversation")),
+	}
+	connectionID := domain.SubscriptionConnectionID(uniqueID("subscription"))
+	identity, err := store.EnsureTelegramIdentity(ctx, ports.TelegramIdentityRequest{
+		TenantID: tenantID, Actor: actor, Conversation: conversation,
+		SubscriptionConnectionID: connectionID, Provider: "codex", ObservedAt: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	commands := []ports.TelegramCommandRequest{
+		commandFixture(tenantID, actor, conversation, connectionID, ports.TelegramCommandNewContext, 2301, now.Add(time.Second)),
+		commandFixture(tenantID, actor, conversation, connectionID, ports.TelegramCommandNewContext, 2302, now.Add(time.Second)),
+	}
+	for index := range commands {
+		commands[index].ExpectedBindingRevision = identity.BindingRevision
+	}
+
+	type outcome struct {
+		index  int
+		result ports.TelegramIngressResult
+		err    error
+	}
+	outcomes := make(chan outcome, len(commands))
+	var wait sync.WaitGroup
+	for index, command := range commands {
+		wait.Add(1)
+		go func(index int, command ports.TelegramCommandRequest) {
+			defer wait.Done()
+			result, err := store.ExecuteTelegramCommand(ctx, command)
+			outcomes <- outcome{index: index, result: result, err: err}
+		}(index, command)
+	}
+	wait.Wait()
+	close(outcomes)
+
+	winner := -1
+	stale := 0
+	for outcome := range outcomes {
+		if outcome.err == nil {
+			if !outcome.result.Created || winner >= 0 {
+				t.Fatalf("unexpected successful outcomes: winner=%d outcome=%#v", winner, outcome)
+			}
+			winner = outcome.index
+			continue
+		}
+		var staleErr domain.StaleBindingError
+		if !errors.As(outcome.err, &staleErr) {
+			t.Fatalf("losing /new error = %v, want stale binding", outcome.err)
+		}
+		stale++
+	}
+	if winner < 0 || stale != 1 {
+		t.Fatalf("concurrent /new winner=%d stale=%d", winner, stale)
+	}
+	retried, err := store.ExecuteTelegramCommand(ctx, commands[winner])
+	if err != nil || retried.Created {
+		t.Fatalf("winning /new retry = %#v err=%v", retried, err)
+	}
+	resolved, found, err := store.ResolveFrontendBinding(
+		ctx, tenantID, conversation.Frontend, conversation.ExternalID,
+	)
+	if err != nil || !found {
+		t.Fatalf("resolve binding after concurrent /new: found=%t err=%v", found, err)
+	}
+	if resolved.SessionID != commands[winner].SessionID || resolved.Revision != identity.BindingRevision+1 {
+		t.Fatalf("binding after concurrent /new = %#v, winner = %#v", resolved, commands[winner])
+	}
+	assertCount(t, client, "sessions", tenantID, 2)
+	assertCount(t, client, "frontend_bindings", tenantID, 1)
+	assertCount(t, client, "telegram_updates", tenantID, 1)
+	assertCount(t, client, "runs", tenantID, 1)
+}
+
 func openStore(t *testing.T) (*ydbstore.Store, *ydbclient.Client) {
 	t.Helper()
 	connectionString := requireConnectionString(t)
@@ -921,6 +1134,7 @@ func commandFixture(
 		UpdateID: updateID, ExpireAt: now.Add(24 * time.Hour),
 		Kind: kind, Provider: "codex", Actor: actor, Conversation: conversation,
 		SubscriptionConnectionID: connectionID,
+		ExpectedBindingRevision:  1,
 		RunID:                    domain.RunID("run-command-" + suffix),
 		SessionID:                domain.SessionID("session-command-" + suffix),
 		TriggerEventID:           domain.SessionEventID("event-command-" + suffix),

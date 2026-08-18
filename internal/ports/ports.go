@@ -108,6 +108,7 @@ type TelegramCommandRequest struct {
 	Actor                    domain.ActorRef
 	Conversation             domain.ConversationRef
 	SubscriptionConnectionID domain.SubscriptionConnectionID
+	ExpectedBindingRevision  uint64
 	RunID                    domain.RunID
 	SessionID                domain.SessionID
 	TriggerEventID           domain.SessionEventID

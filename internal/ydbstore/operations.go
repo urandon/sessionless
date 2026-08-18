@@ -99,6 +99,21 @@ func (store *Store) ExecuteTelegramCommand(
 	}
 	err = store.Transact(ctx, request.TenantID, func(state ports.StateTx) error {
 		tx := state.(*stateTx)
+		userID := telegramUserID(request.Actor.ID)
+		binding, found, err := readTelegramConversationBindingTx(ctx, tx, request.Conversation)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return fmt.Errorf("Telegram frontend binding for conversation %q not found", request.Conversation.ID)
+		}
+		if err := authorizeTenantWriteTx(ctx, tx, userID); err != nil {
+			return err
+		}
+		if err := authorizeSessionWriteTx(ctx, tx, binding.SessionID, userID); err != nil {
+			return err
+		}
+
 		var existing string
 		queryErr := tx.sqlTx.QueryRowContext(ctx,
 			`SELECT run_id FROM telegram_updates
@@ -113,14 +128,6 @@ func (store *Store) ExecuteTelegramCommand(
 			return nil
 		case !errors.Is(queryErr, sql.ErrNoRows):
 			return queryErr
-		}
-
-		binding, found, err := readTelegramConversationBindingTx(ctx, tx, request.Conversation)
-		if err != nil {
-			return err
-		}
-		if !found {
-			return fmt.Errorf("Telegram frontend binding for conversation %q not found", request.Conversation.ID)
 		}
 		if request.Kind != ports.TelegramCommandNewContext {
 			request.SessionID = binding.SessionID
@@ -250,7 +257,7 @@ func executeTelegramCommandState(
 		if err := createSessionTx(ctx, tx, session, owner); err != nil {
 			return "", err
 		}
-		if err := binding.Switch(binding.Revision, request.SessionID, request.RequestedAt); err != nil {
+		if err := binding.Switch(request.ExpectedBindingRevision, request.SessionID, request.RequestedAt); err != nil {
 			return "", err
 		}
 		if err := writeBindingTx(ctx, tx, binding); err != nil {
@@ -314,6 +321,11 @@ func validateTelegramCommand(request ports.TelegramCommandRequest) error {
 		return domain.ValidationError{
 			Field:  "telegram.command.frontend",
 			Reason: "actor and conversation must use the same frontend",
+		}
+	}
+	if request.ExpectedBindingRevision == 0 {
+		return domain.ValidationError{
+			Field: "telegram.command.expected_binding_revision", Reason: "must be positive",
 		}
 	}
 	if err := request.SubscriptionConnectionID.Validate(); err != nil {
@@ -415,11 +427,15 @@ func (store *Store) EnsureTelegramIdentity(
 				return err
 			}
 		}
+		if err := membership.Authorize(userID, request.TenantID, domain.TenantPermissionWrite); err != nil {
+			return err
+		}
 		binding, found, err := readTelegramConversationBindingTx(ctx, tx, request.Conversation)
 		if err != nil {
 			return err
 		}
-		if !found {
+		createdBinding := !found
+		if createdBinding {
 			sessionID := telegramInitialSessionID(request.Conversation.ID)
 			session := domain.Session{
 				ID: sessionID, TenantID: request.TenantID, CreatedBy: userID,
@@ -439,6 +455,11 @@ func (store *Store) EnsureTelegramIdentity(
 				Revision: 1, CreatedAt: request.ObservedAt, UpdatedAt: request.ObservedAt,
 			}
 			if err := writeBindingTx(ctx, tx, binding); err != nil {
+				return err
+			}
+		}
+		if !createdBinding {
+			if err := authorizeSessionWriteTx(ctx, tx, binding.SessionID, userID); err != nil {
 				return err
 			}
 		}

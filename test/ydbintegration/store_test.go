@@ -153,6 +153,75 @@ func TestTelegramIdentityInitializationIsIdempotent(t *testing.T) {
 	assertCount(t, client, "subscription_connections", tenantID, 1)
 }
 
+func TestTelegramIdentityReusesCanonicalConversationBinding(t *testing.T) {
+	store, client := openStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	tenantID := domain.TenantID(uniqueID("tenant-canonical-telegram-binding"))
+	actor := domain.ActorRef{
+		TenantID: tenantID, Frontend: domain.FrontendTelegram,
+		ExternalID: "2201", ID: domain.ActorID(uniqueID("actor")),
+	}
+	bootstrapConversation := domain.ConversationRef{
+		TenantID: tenantID, Frontend: domain.FrontendTelegram,
+		ExternalID: "1201", ID: domain.ConversationID(uniqueID("bootstrap-conversation")),
+	}
+	connectionID := domain.SubscriptionConnectionID(uniqueID("subscription"))
+	bootstrap, err := store.EnsureTelegramIdentity(ctx, ports.TelegramIdentityRequest{
+		TenantID: tenantID, Actor: actor, Conversation: bootstrapConversation,
+		SubscriptionConnectionID: connectionID, Provider: "codex", ObservedAt: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	conversation := domain.ConversationRef{
+		TenantID: tenantID, Frontend: domain.FrontendTelegram,
+		ExternalID: "1202", ID: domain.ConversationID(uniqueID("canonical-conversation")),
+	}
+	canonicalBindingID := domain.FrontendBindingID(uniqueID("canonical-binding"))
+	canonicalSessionID := domain.SessionID(uniqueID("canonical-session"))
+	canonical, err := store.EnsureFrontendSession(ctx, ports.FrontendSessionRequest{
+		TenantID: tenantID, UserID: bootstrap.UserID, Frontend: conversation.Frontend,
+		ExternalConversationID: conversation.ExternalID, BindingID: canonicalBindingID,
+		SessionID: canonicalSessionID, At: now.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	identity, err := store.EnsureTelegramIdentity(ctx, ports.TelegramIdentityRequest{
+		TenantID: tenantID, Actor: actor, Conversation: conversation,
+		SubscriptionConnectionID: connectionID, Provider: "codex", ObservedAt: now.Add(2 * time.Second),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identity.BindingID != canonicalBindingID || identity.SessionID != canonicalSessionID ||
+		identity.BindingRevision != canonical.Binding.Revision {
+		t.Fatalf("Telegram identity = %#v, canonical binding = %#v", identity, canonical.Binding)
+	}
+
+	command := commandFixture(
+		tenantID, actor, conversation, connectionID,
+		ports.TelegramCommandNewContext, 2202, now.Add(3*time.Second),
+	)
+	if _, err := store.ExecuteTelegramCommand(ctx, command); err != nil {
+		t.Fatal(err)
+	}
+	resolved, found, err := store.ResolveFrontendBinding(
+		ctx, tenantID, conversation.Frontend, conversation.ExternalID,
+	)
+	if err != nil || !found {
+		t.Fatalf("resolve canonical Telegram binding: found=%t err=%v", found, err)
+	}
+	if resolved.ID != canonicalBindingID || resolved.SessionID != command.SessionID ||
+		resolved.Revision != canonical.Binding.Revision+1 {
+		t.Fatalf("binding after Telegram /new = %#v", resolved)
+	}
+	assertCount(t, client, "frontend_bindings", tenantID, 2)
+}
+
 func TestConcurrentLeaseClaimHasExactlyOneWinner(t *testing.T) {
 	store, client := openStore(t)
 	tenantID := domain.TenantID(uniqueID("tenant-lease"))

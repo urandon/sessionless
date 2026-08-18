@@ -87,9 +87,7 @@ func TestDeterministicLocalMultiUserSlice(t *testing.T) {
 	userA := base*2 + 1
 	userB := base*2 + 2
 
-	t.Run("interleaved tenants, duplicate update, delivery retry and duplicate queue delivery", func(t *testing.T) {
-		slice.injectTelegramFailure("sendMessage", 1, http.StatusTooManyRequests)
-
+	t.Run("interleaved tenants, duplicate update, canonical finalization and duplicate queue delivery", func(t *testing.T) {
 		// Deliberately deliver the larger update first, then repeat it. Ordering
 		// across users is irrelevant; idempotency is scoped to the Bot API update.
 		runA := slice.postMessage(base+2, userA, "tenant A deterministic request")
@@ -113,27 +111,19 @@ func TestDeterministicLocalMultiUserSlice(t *testing.T) {
 		slice.runWorker(nil)
 		slice.waitRunStatus(runA, domain.RunSucceeded)
 		slice.waitRunStatus(runB, domain.RunSucceeded)
-		slice.waitForChatMethods(map[int64]map[string]int{
-			userA: {"sendMessage": 1, "sendDocument": 1},
-			userB: {"sendMessage": 1, "sendDocument": 1},
-		})
-
 		slice.assertOneTelegramRun(runA)
 		slice.assertOneTelegramRun(runB)
+		slice.assertCanonicalProjection(runA)
+		slice.assertCanonicalProjection(runB)
 		slice.assertUsage(runA, 2)
 		slice.assertUsage(runB, 2)
 		slice.assertInputDocument(runB, "attachment-01-notes.txt")
 		slice.assertTenantArtifacts(runA, runB)
-		slice.assertDeliveryWasRetried(runA, runB)
 
-		before := len(slice.captures())
 		beforeState := slice.terminalState(runA)
 		slice.publishDuplicate(runA)
 		slice.runWorker(nil)
 		slice.assertTerminalState(runA, beforeState)
-		if after := len(slice.captures()); after != before {
-			t.Fatalf("duplicate terminal delivery produced captures: before=%d after=%d", before, after)
-		}
 	})
 
 	t.Run("retry before the first checkpoint", func(t *testing.T) {
@@ -162,14 +152,12 @@ func TestDeterministicLocalMultiUserSlice(t *testing.T) {
 		slice.assertCheckpointCount(run, 2)
 	})
 
-	t.Run("durable cancellation releases the run and replies in the same chat", func(t *testing.T) {
+	t.Run("durable cancellation releases the canonical run", func(t *testing.T) {
 		run := slice.postMessage(base+12, userA, "cancel this run")
 		slice.setConnectionReady(run)
 		slice.waitRunStatus(run, domain.RunQueued)
-		before := len(slice.capturesForChat(userA))
 		slice.requestCancellation(run)
 		slice.runWorkerUntilStatus(run, domain.RunCancelled)
-		slice.waitCaptureIncrease(userA, before)
 	})
 
 	t.Run("provider quota block recovers without API billing fallback", func(t *testing.T) {
@@ -408,13 +396,19 @@ func (slice *localSlice) postUpdate(
 		slice.t.Fatal(err)
 	}
 	var runID domain.RunID
-	if err := slice.db.QueryRowContext(
-		slice.ctx,
-		`SELECT run_id FROM telegram_updates
-		 WHERE tenant_id = $1 AND source_id = $2 AND update_id = $3`,
-		identity.Tenant, telegramSource, updateID,
-	).Scan(&runID); err != nil {
-		slice.t.Fatal(err)
+	if strings.HasPrefix(strings.TrimSpace(text), "/") {
+		if err := slice.db.QueryRowContext(
+			slice.ctx,
+			`SELECT run_id FROM telegram_updates
+			 WHERE tenant_id = $1 AND source_id = $2 AND update_id = $3`,
+			identity.Tenant, telegramSource, updateID,
+		).Scan(&runID); err != nil {
+			slice.t.Fatal(err)
+		}
+	} else {
+		runID = slice.canonicalRunForExternalEvent(
+			identity.Tenant, fmt.Sprintf("%s:%d", telegramSource, updateID),
+		)
 	}
 	var persistedRun domain.Run
 	if err := slice.state.Transact(slice.ctx, identity.Tenant, func(tx ports.StateTx) error {
@@ -442,6 +436,40 @@ func (slice *localSlice) postUpdate(
 		ref.UpdateID, ref.TenantID, ref.RunID, ref.ChatID,
 	)
 	return ref
+}
+
+func (slice *localSlice) canonicalRunForExternalEvent(
+	tenantID domain.TenantID,
+	externalEventID string,
+) domain.RunID {
+	slice.t.Helper()
+	rows, err := slice.db.QueryContext(
+		slice.ctx,
+		`SELECT payload FROM dispatch_outbox WHERE tenant_id = $1`, tenantID,
+	)
+	if err != nil {
+		slice.t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var payload string
+		if err := rows.Scan(&payload); err != nil {
+			slice.t.Fatal(err)
+		}
+		var outbox domain.DispatchOutbox
+		if err := json.Unmarshal([]byte(payload), &outbox); err != nil {
+			slice.t.Fatal(err)
+		}
+		if outbox.Origin != nil && outbox.Origin.Frontend == domain.FrontendTelegram &&
+			outbox.Origin.ExternalEventID == externalEventID {
+			return outbox.RunID
+		}
+	}
+	if err := rows.Err(); err != nil {
+		slice.t.Fatal(err)
+	}
+	slice.t.Fatalf("canonical dispatch for external event %q not found", externalEventID)
+	return ""
 }
 
 func (slice *localSlice) assertInputDocument(run runRef, name string) {
@@ -667,14 +695,14 @@ func (slice *localSlice) assertOneTelegramRun(run runRef) {
 	var count uint64
 	if err := slice.db.QueryRowContext(
 		slice.ctx,
-		`SELECT COUNT(*) FROM telegram_updates
-		 WHERE tenant_id = $1 AND source_id = $2 AND update_id = $3`,
-		run.TenantID, telegramSource, run.UpdateID,
+		`SELECT COUNT(*) FROM frontend_ingress_idempotency
+		 WHERE tenant_id = $1 AND run_id = $2`,
+		run.TenantID, run.RunID,
 	).Scan(&count); err != nil {
 		slice.t.Fatal(err)
 	}
 	if count != 1 {
-		slice.t.Fatalf("update %d rows = %d, want 1", run.UpdateID, count)
+		slice.t.Fatalf("canonical ingress for update %d rows = %d, want 1", run.UpdateID, count)
 	}
 }
 
@@ -690,6 +718,22 @@ func (slice *localSlice) assertCheckpointCount(run runRef, wanted uint64) {
 	}
 	if count != wanted {
 		slice.t.Fatalf("run %s checkpoints = %d, want %d", run.RunID, count, wanted)
+	}
+}
+
+func (slice *localSlice) assertCanonicalProjection(run runRef) {
+	slice.t.Helper()
+	var count uint64
+	if err := slice.db.QueryRowContext(
+		slice.ctx,
+		`SELECT COUNT(*) FROM frontend_projection_outbox
+		 WHERE tenant_id = $1 AND session_id = $2 AND frontend = $3`,
+		run.TenantID, run.SessionID, domain.FrontendTelegram,
+	).Scan(&count); err != nil {
+		slice.t.Fatal(err)
+	}
+	if count != 1 {
+		slice.t.Fatalf("run %s canonical Telegram projections = %d, want 1", run.RunID, count)
 	}
 }
 
@@ -773,18 +817,19 @@ func (slice *localSlice) assertTenantArtifacts(runA, runB runRef) {
 
 func (slice *localSlice) outputManifest(run runRef) domain.ArtifactManifest {
 	slice.t.Helper()
-	delivery := slice.deliveryForRun(run)
-	if delivery.ArtifactManifestID == nil {
-		slice.t.Fatalf("run %s has no terminal artifact manifest", run.RunID)
-	}
-	manifest, found, err := slice.state.GetArtifactManifest(
-		slice.ctx, run.TenantID, *delivery.ArtifactManifestID,
-	)
-	if err != nil {
+	var payload string
+	if err := slice.db.QueryRowContext(
+		slice.ctx,
+		`SELECT payload FROM artifact_manifests
+		 WHERE tenant_id = $1 AND run_id = $2
+		 ORDER BY created_at DESC LIMIT 1`,
+		run.TenantID, run.RunID,
+	).Scan(&payload); err != nil {
 		slice.t.Fatal(err)
 	}
-	if !found {
-		slice.t.Fatalf("manifest %s not found", *delivery.ArtifactManifestID)
+	var manifest domain.ArtifactManifest
+	if err := json.Unmarshal([]byte(payload), &manifest); err != nil {
+		slice.t.Fatal(err)
 	}
 	return manifest
 }

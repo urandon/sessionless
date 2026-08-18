@@ -8,17 +8,77 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/sessioningress"
 	"gitcode.com/urandon/sessionless/internal/ydbpartition"
 	"gitcode.com/urandon/sessionless/internal/ydbstore"
 )
 
 const canonicalDigest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+func TestCanonicalIngressReusesAnExistingTelegramBindingIdentity(t *testing.T) {
+	store, client := openStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	tenantID := domain.TenantID(uniqueID("tenant-telegram-migration"))
+	userID := domain.UserID(uniqueID("user-telegram-migration"))
+	seedCanonicalMembership(t, client.DB, tenantID, userID, now)
+	externalConversationID := "424242"
+	legacyBindingID := domain.FrontendBindingID(uniqueID("legacy-telegram-binding"))
+	legacySessionID := domain.SessionID(uniqueID("legacy-telegram-session"))
+	legacy, err := store.EnsureFrontendSession(ctx, ports.FrontendSessionRequest{
+		TenantID: tenantID, UserID: userID, Frontend: domain.FrontendTelegram,
+		ExternalConversationID: externalConversationID, BindingID: legacyBindingID,
+		SessionID: legacySessionID, At: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := sessioningress.New(sessioningress.Config{
+		IDKey: []byte(strings.Repeat("t", 32)),
+	}, store, newSessionAPITestBlobs())
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor := sessioningress.Actor{
+		TenantID: tenantID, UserID: userID, Frontend: domain.FrontendTelegram,
+		ExternalConversationID: externalConversationID,
+	}
+	result, err := service.Ingest(ctx, sessioningress.UserInput{
+		Actor: actor, ExternalEventID: "bot-primary:1001", ReceivedAt: now.Add(time.Second),
+		Text: "canonical Telegram message", SubscriptionConnectionID: domain.SubscriptionConnectionID(uniqueID("telegram-subscription")),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SessionID != legacySessionID {
+		t.Fatalf("canonical ingress session = %q, want existing %q", result.SessionID, legacySessionID)
+	}
+	switched, err := service.NewSession(ctx, actor, legacy.Binding.Revision, "bot-primary:1002", now.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if switched.Binding.ID != legacyBindingID || switched.Binding.Revision != legacy.Binding.Revision+1 || switched.Session.ID == legacySessionID {
+		t.Fatalf("canonical switch = %#v, legacy binding = %#v", switched, legacy.Binding)
+	}
+	var bindingCount uint64
+	if err := client.DB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM frontend_bindings
+		 WHERE tenant_id = $1 AND frontend = $2 AND external_conversation_id = $3`,
+		tenantID, domain.FrontendTelegram, externalConversationID,
+	).Scan(&bindingCount); err != nil {
+		t.Fatal(err)
+	}
+	if bindingCount != 1 {
+		t.Fatalf("Telegram bindings = %d, want one authoritative binding", bindingCount)
+	}
+}
 
 func TestCanonicalSessionCreateBindSwitchAndTenantIsolation(t *testing.T) {
 	store, _ := openStore(t)

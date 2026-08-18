@@ -21,9 +21,10 @@ var (
 type TelegramIngress = ports.TelegramIngress
 type TelegramIngressResult = ports.TelegramIngressResult
 
-// IngestTelegram atomically deduplicates the frontend update and writes the
-// initial run, attempt, and dispatch outbox rows. A duplicate returns the
-// already-associated run without emitting a second outbox row.
+// IngestTelegram is the pre-canonical compatibility transaction retained for
+// migration and upgrade tests. Production ordinary-message ingress uses
+// CommitCanonicalUserEvent. A duplicate returns the already-associated run
+// without emitting a second outbox row.
 func (store *Store) IngestTelegram(
 	ctx context.Context,
 	request ports.TelegramIngress,
@@ -114,13 +115,12 @@ func (store *Store) ExecuteTelegramCommand(
 			return queryErr
 		}
 
-		bindingID := telegramBindingID(request.Conversation.ID)
-		binding, found, err := readBindingTx(ctx, tx, bindingID)
+		binding, found, err := readTelegramConversationBindingTx(ctx, tx, request.Conversation)
 		if err != nil {
 			return err
 		}
 		if !found {
-			return fmt.Errorf("Telegram frontend binding %q not found", bindingID)
+			return fmt.Errorf("Telegram frontend binding for conversation %q not found", request.Conversation.ID)
 		}
 		if request.Kind != ports.TelegramCommandNewContext {
 			request.SessionID = binding.SessionID
@@ -415,7 +415,7 @@ func (store *Store) EnsureTelegramIdentity(
 				return err
 			}
 		}
-		binding, found, err := readBindingTx(ctx, tx, bindingID)
+		binding, found, err := readTelegramConversationBindingTx(ctx, tx, request.Conversation)
 		if err != nil {
 			return err
 		}
@@ -512,6 +512,34 @@ func (store *Store) EnsureTelegramIdentity(
 		return nil
 	})
 	return result, err
+}
+
+func readTelegramConversationBindingTx(
+	ctx context.Context,
+	tx *stateTx,
+	conversation domain.ConversationRef,
+) (domain.FrontendBinding, bool, error) {
+	var indexedBindingID domain.FrontendBindingID
+	err := tx.sqlTx.QueryRowContext(ctx,
+		`SELECT binding_id FROM frontend_binding_keys
+		 WHERE tenant_id = $1 AND frontend = $2 AND external_conversation_id = $3`,
+		tx.tenantID, conversation.Frontend, conversation.ExternalID,
+	).Scan(&indexedBindingID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return domain.FrontendBinding{}, false, err
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		indexedBindingID = telegramBindingID(conversation.ID)
+	}
+	binding, found, err := readBindingTx(ctx, tx, indexedBindingID)
+	if err != nil || !found {
+		return binding, found, err
+	}
+	if binding.TenantID != tx.tenantID || binding.Frontend != conversation.Frontend ||
+		binding.ExternalConversationID != conversation.ExternalID {
+		return domain.FrontendBinding{}, false, ErrBindingConflict
+	}
+	return binding, true, nil
 }
 
 func telegramUserID(actorID domain.ActorID) domain.UserID {

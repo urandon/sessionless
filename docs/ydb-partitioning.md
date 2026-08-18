@@ -62,7 +62,7 @@ a production adapter.
 | `oidc_login_challenges` | `(shard_bucket, state_digest)` | global entity | random state digest distributes pre-authentication writes |
 | `web_sessions` | `(shard_bucket, session_digest)` | global entity | random opaque-session digest distributes authorization reads |
 | `development_bootstrap_grants` | `(tenant_id, user_id)` | tenant entity | low-volume, point-addressable operator ledger |
-| `telegram_updates` | `(tenant_id, source_id, update_id)` | append-heavy | update sequence is behind tenant; load splitting enabled |
+| `telegram_updates` | `(tenant_id, source_id, update_id)` | command append-heavy | command update sequence is behind tenant; ordinary messages use the generic frontend-ingress index |
 | `subscription_connections` | `(tenant_id, subscription_connection_id)` | tenant entity | low-cardinality point access |
 | `subscription_scheduler_slots` | `(tenant_id, subscription_connection_id)` | tenant entity | one point-contention row per subscription; load splitting enabled |
 | `tenant_scheduler_counters` | `(tenant_id)` | tenant entity | one bounded counter row per tenant; load splitting enabled |

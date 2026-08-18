@@ -1,10 +1,8 @@
 package telegramingress
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +15,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/outboxwake"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/sessioningress"
 )
 
 type File struct {
@@ -33,19 +32,22 @@ type ProcessorConfig struct {
 	SourceID              string
 	Provider              string
 	IdempotencyRetention  time.Duration
-	DispatchWakePublisher ports.DispatchWakePublisher
 	DeliveryWakePublisher ports.TelegramDeliveryWakePublisher
 	WakePublishError      func(error)
 }
 
+type CanonicalIngress interface {
+	Ingest(context.Context, sessioningress.UserInput) (ports.CanonicalUserEventResult, error)
+}
+
 type Processor struct {
-	config   ProcessorConfig
-	identity *IdentityResolver
-	ids      ports.IDGenerator
-	clock    ports.Clock
-	blobs    ports.BlobStore
-	files    FileFetcher
-	store    ports.TelegramIngressStore
+	config    ProcessorConfig
+	identity  *IdentityResolver
+	ids       ports.IDGenerator
+	clock     ports.Clock
+	files     FileFetcher
+	canonical CanonicalIngress
+	store     ports.TelegramControlStore
 }
 
 func NewProcessor(
@@ -53,9 +55,9 @@ func NewProcessor(
 	identity *IdentityResolver,
 	ids ports.IDGenerator,
 	clock ports.Clock,
-	blobs ports.BlobStore,
 	files FileFetcher,
-	store ports.TelegramIngressStore,
+	canonical CanonicalIngress,
+	store ports.TelegramControlStore,
 ) (*Processor, error) {
 	if err := domain.ValidateOpaqueID("telegram.source_id", config.SourceID); err != nil {
 		return nil, err
@@ -66,32 +68,14 @@ func NewProcessor(
 	if config.IdempotencyRetention <= 0 {
 		config.IdempotencyRetention = 30 * 24 * time.Hour
 	}
-	if identity == nil || ids == nil || clock == nil || blobs == nil || store == nil ||
-		config.DispatchWakePublisher == nil || config.DeliveryWakePublisher == nil {
+	if identity == nil || ids == nil || clock == nil || canonical == nil ||
+		store == nil || config.DeliveryWakePublisher == nil {
 		return nil, errors.New("Telegram processor dependencies must not be nil")
 	}
 	return &Processor{
 		config: config, identity: identity, ids: ids, clock: clock,
-		blobs: blobs, files: files, store: store,
+		files: files, canonical: canonical, store: store,
 	}, nil
-}
-
-type normalizedMessage struct {
-	Frontend  string                 `json:"frontend"`
-	UpdateID  int64                  `json:"update_id"`
-	MessageID int64                  `json:"message_id"`
-	ChatID    int64                  `json:"chat_id"`
-	UserID    int64                  `json:"user_id"`
-	SentAt    int64                  `json:"sent_at"`
-	Text      string                 `json:"text,omitempty"`
-	Caption   string                 `json:"caption,omitempty"`
-	Files     []normalizedAttachment `json:"files,omitempty"`
-}
-
-type normalizedAttachment struct {
-	Name      string `json:"name"`
-	MediaType string `json:"media_type"`
-	FileID    string `json:"file_id"`
 }
 
 func (processor *Processor) Process(
@@ -171,85 +155,43 @@ func (processor *Processor) Process(
 		return result, nil
 	}
 
-	runID, err := newTypedID[domain.RunID](ctx, processor.ids, ports.IDRun)
+	attachments, fileMetadata, closeAttachments, err := processor.fetchAttachments(ctx, message)
 	if err != nil {
 		return ports.TelegramIngressResult{}, err
 	}
-	attemptID, err := newTypedID[domain.AttemptID](ctx, processor.ids, ports.IDAttempt)
-	if err != nil {
-		return ports.TelegramIngressResult{}, err
+	defer closeAttachments()
+	metadata := map[string]string{
+		"telegram.source_id":  processor.config.SourceID,
+		"telegram.update_id":  strconv.FormatInt(update.UpdateID, 10),
+		"telegram.message_id": strconv.FormatInt(message.MessageID, 10),
+		"telegram.chat_id":    strconv.FormatInt(message.Chat.ID, 10),
+		"telegram.user_id":    strconv.FormatInt(message.From.ID, 10),
+		"telegram.sent_at":    strconv.FormatInt(message.Date, 10),
 	}
-	manifestID, err := newTypedID[domain.ArtifactManifestID](ctx, processor.ids, ports.IDArtifactManifest)
-	if err != nil {
-		return ports.TelegramIngressResult{}, err
+	if strings.TrimSpace(message.Caption) != "" {
+		metadata["telegram.caption"] = message.Caption
 	}
-	dispatchID := outboxwake.DispatchOutboxID(runID)
-
-	normalized := normalizedMessage{
-		Frontend: "telegram", UpdateID: update.UpdateID, MessageID: message.MessageID,
-		ChatID: message.Chat.ID, UserID: message.From.ID, SentAt: message.Date,
-		Text: message.Text, Caption: message.Caption,
+	for key, value := range fileMetadata {
+		metadata[key] = value
 	}
-	attachments, descriptors, err := processor.storeAttachments(ctx, identity.Tenant, sessionID, runID, message)
-	if err != nil {
-		return ports.TelegramIngressResult{}, err
+	text := message.Text
+	if strings.TrimSpace(text) == "" {
+		text = message.Caption
 	}
-	normalized.Files = descriptors
-	payload, err := json.Marshal(normalized)
-	if err != nil {
-		return ports.TelegramIngressResult{}, fmt.Errorf("encode normalized Telegram message: %w", err)
-	}
-	messageBlob, err := processor.blobs.Put(
-		ctx, identity.Tenant,
-		domain.SessionRunObjectPrefix(identity.Tenant, sessionID, runID)+"inputs/message.json",
-		bytes.NewReader(payload),
-	)
-	if err != nil {
-		return ports.TelegramIngressResult{}, err
-	}
-	artifacts := []domain.Artifact{{
-		Name: "message.json", MediaType: "application/json", Blob: messageBlob,
-	}}
-	artifacts = append(artifacts, attachments...)
-	run := domain.Run{
-		ID: runID, TenantID: identity.Tenant,
-		SessionID: sessionID, TriggerEventID: triggerEventID,
-		SubscriptionConnectionID: identity.SubscriptionConnection,
-		Status:                   domain.RunCreated,
-		IdempotencyKey:           idempotencyKey, CreatedAt: now, UpdatedAt: now,
-	}
-	attempt := domain.Attempt{
-		ID: attemptID, TenantID: identity.Tenant, RunID: runID, Number: 1,
-		Status: domain.AttemptCreated, CreatedAt: now, UpdatedAt: now,
-	}
-	manifest := domain.ArtifactManifest{
-		ID: manifestID, TenantID: identity.Tenant, RunID: runID,
-		Artifacts: artifacts, CreatedAt: now,
-	}
-	dispatch := domain.DispatchOutbox{
-		ID: dispatchID, TenantID: identity.Tenant, RunID: runID, AttemptID: attemptID,
-		InputManifestID: manifestID, ContextSnapshot: messageBlob,
-		DeliveryChat: domain.TelegramChatRef{
-			TenantID: identity.Tenant, ChatID: message.Chat.ID,
+	result, err := processor.canonical.Ingest(ctx, sessioningress.UserInput{
+		Actor: sessioningress.Actor{
+			TenantID: identity.Tenant, UserID: state.UserID,
+			Frontend:               domain.FrontendTelegram,
+			ExternalConversationID: identity.Conversation.ExternalID,
 		},
-		ReplyToMessageID: message.MessageID,
-		Status:           domain.DispatchPending, IdempotencyKey: idempotencyKey,
-		CreatedAt: now, UpdatedAt: now,
-	}
-	result, err := processor.store.IngestTelegram(ctx, ports.TelegramIngress{
-		TenantID: identity.Tenant, SourceID: processor.config.SourceID,
-		UpdateID: update.UpdateID, ExpireAt: now.Add(processor.config.IdempotencyRetention),
-		Run: run, Attempt: attempt, InputManifest: manifest, Dispatch: dispatch,
+		ExternalEventID: fmt.Sprintf("%s:%d", processor.config.SourceID, update.UpdateID),
+		ReceivedAt:      now, Text: text, Metadata: metadata, Attachments: attachments,
+		SubscriptionConnectionID: identity.SubscriptionConnection,
 	})
 	if err != nil {
 		return ports.TelegramIngressResult{}, err
 	}
-	if err := processor.config.DispatchWakePublisher.PublishDispatchWake(
-		ctx, identity.Tenant, outboxwake.DispatchOutboxID(result.RunID), now,
-	); err != nil {
-		processor.reportWakePublishError(err)
-	}
-	return result, nil
+	return ports.TelegramIngressResult{RunID: result.RunID, Created: result.Created}, nil
 }
 
 func (processor *Processor) reportWakePublishError(err error) {
@@ -258,20 +200,18 @@ func (processor *Processor) reportWakePublishError(err error) {
 	}
 }
 
-// Telegram updates keep a stable trigger identity until SESSION-03 persists
-// the corresponding canonical user event atomically with run creation.
+// Telegram control commands use a stable trigger identity for their terminal
+// command run. Ordinary messages receive their event/run identities from the
+// canonical ingress service instead.
 func telegramTriggerEventID(sourceID string, updateID int64) domain.SessionEventID {
 	sum := sha256.Sum256([]byte(fmt.Sprintf("telegram-event:%s:%d", sourceID, updateID)))
 	return domain.SessionEventID(fmt.Sprintf("telegram-event:%x", sum[:16]))
 }
 
-func (processor *Processor) storeAttachments(
+func (processor *Processor) fetchAttachments(
 	ctx context.Context,
-	tenantID domain.TenantID,
-	sessionID domain.SessionID,
-	runID domain.RunID,
 	message Message,
-) ([]domain.Artifact, []normalizedAttachment, error) {
+) ([]sessioningress.Attachment, map[string]string, func(), error) {
 	type pending struct {
 		fileID, name, mediaType string
 	}
@@ -288,48 +228,42 @@ func (processor *Processor) storeAttachments(
 		})
 	}
 	if len(files) > 0 && processor.files == nil {
-		return nil, nil, errors.New("Telegram file fetcher is required for attachment messages")
+		return nil, nil, nil, errors.New("Telegram file fetcher is required for attachment messages")
 	}
-	artifacts := make([]domain.Artifact, 0, len(files))
-	descriptors := make([]normalizedAttachment, 0, len(files))
+	attachments := make([]sessioningress.Attachment, 0, len(files))
+	metadata := make(map[string]string, len(files))
+	closers := make([]io.Closer, 0, len(files))
+	closeAll := func() {
+		for _, closer := range closers {
+			_ = closer.Close()
+		}
+	}
 	for index, pendingFile := range files {
 		if strings.TrimSpace(pendingFile.fileID) == "" {
-			return nil, nil, errors.New("Telegram attachment file_id must not be empty")
+			closeAll()
+			return nil, nil, nil, errors.New("Telegram attachment file_id must not be empty")
 		}
 		fetched, err := processor.files.Fetch(ctx, pendingFile.fileID)
 		if err != nil {
-			return nil, nil, fmt.Errorf("fetch Telegram attachment: %w", err)
+			closeAll()
+			return nil, nil, nil, fmt.Errorf("fetch Telegram attachment: %w", err)
 		}
 		if fetched.Body == nil {
-			return nil, nil, errors.New("Telegram attachment body must not be nil")
+			closeAll()
+			return nil, nil, nil, errors.New("Telegram attachment body must not be nil")
 		}
+		closers = append(closers, fetched.Body)
 		name := safeFileName(fetched.Name, pendingFile.name)
 		contentType := strings.TrimSpace(fetched.MediaType)
 		if contentType == "" {
 			contentType = pendingFile.mediaType
 		}
-		ref, putErr := processor.blobs.Put(
-			ctx, tenantID,
-			fmt.Sprintf("%sinputs/attachments/%02d-%s",
-				domain.SessionRunObjectPrefix(tenantID, sessionID, runID), index+1, name),
-			fetched.Body,
-		)
-		closeErr := fetched.Body.Close()
-		if putErr != nil {
-			return nil, nil, putErr
-		}
-		if closeErr != nil {
-			return nil, nil, closeErr
-		}
-		artifactName := fmt.Sprintf("attachment-%02d-%s", index+1, name)
-		artifacts = append(artifacts, domain.Artifact{
-			Name: artifactName, MediaType: contentType, Blob: ref,
+		attachments = append(attachments, sessioningress.Attachment{
+			Name: name, MediaType: contentType, Body: fetched.Body,
 		})
-		descriptors = append(descriptors, normalizedAttachment{
-			Name: artifactName, MediaType: contentType, FileID: pendingFile.fileID,
-		})
+		metadata[fmt.Sprintf("telegram.attachment.%02d.file_id", index+1)] = pendingFile.fileID
 	}
-	return artifacts, descriptors, nil
+	return attachments, metadata, closeAll, nil
 }
 
 func newTypedID[T ~string](

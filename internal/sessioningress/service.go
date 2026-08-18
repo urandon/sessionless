@@ -141,7 +141,11 @@ func (service *Service) NewSession(
 	if at.IsZero() {
 		return ports.FrontendSessionState{}, domain.ValidationError{Field: "canonical_session_switch.at", Reason: "must not be zero"}
 	}
-	bindingID := domain.FrontendBindingID(service.stableID("binding", actor.TenantID, actor.Frontend, actor.ExternalConversationID))
+	current, err := service.EnsureSession(ctx, actor, at)
+	if err != nil {
+		return ports.FrontendSessionState{}, err
+	}
+	bindingID := current.Binding.ID
 	sessionID := domain.SessionID(service.stableID("session", actor.TenantID, bindingID, "new", externalRequestID))
 	return service.store.CreateAndSwitchFrontendSession(ctx, ports.CanonicalSessionSwitchRequest{
 		TenantID: actor.TenantID, UserID: actor.UserID, BindingID: bindingID,
@@ -153,10 +157,11 @@ func (service *Service) Ingest(ctx context.Context, input UserInput) (ports.Cano
 	if err := validateInput(input); err != nil {
 		return ports.CanonicalUserEventResult{}, err
 	}
-	bindingID := domain.FrontendBindingID(service.stableID(
-		"binding", input.Actor.TenantID, input.Actor.Frontend,
-		input.Actor.ExternalConversationID,
-	))
+	state, err := service.EnsureSession(ctx, input.Actor, input.ReceivedAt)
+	if err != nil {
+		return ports.CanonicalUserEventResult{}, err
+	}
+	bindingID := state.Binding.ID
 	idempotencyKey := domain.IdempotencyKey(service.stableID(
 		"ingress", input.Actor.TenantID, input.Actor.Frontend,
 		input.Actor.ExternalConversationID, input.ExternalEventID,
@@ -182,10 +187,6 @@ func (service *Service) Ingest(ctx context.Context, input UserInput) (ports.Cano
 			}
 		}
 		return existing.Result, nil
-	}
-	state, err := service.EnsureSession(ctx, input.Actor, input.ReceivedAt)
-	if err != nil {
-		return ports.CanonicalUserEventResult{}, err
 	}
 	origin := domain.FrontendEventOrigin{
 		BindingID: state.Binding.ID, BindingRevision: state.Binding.Revision,

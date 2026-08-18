@@ -33,15 +33,17 @@ func (store *Store) EnsureFrontendSession(
 		).Scan(&existingBindingID)
 		switch {
 		case lookupErr == nil:
-			if domain.FrontendBindingID(existingBindingID) != request.BindingID {
-				return ErrBindingConflict
-			}
-			binding, found, err := readBindingTx(ctx, tx, request.BindingID)
+			bindingID := domain.FrontendBindingID(existingBindingID)
+			binding, found, err := readBindingTx(ctx, tx, bindingID)
 			if err != nil {
 				return err
 			}
 			if !found {
-				return fmt.Errorf("frontend binding index references missing binding %q", request.BindingID)
+				return fmt.Errorf("frontend binding index references missing binding %q", bindingID)
+			}
+			if binding.TenantID != request.TenantID || binding.Frontend != request.Frontend ||
+				binding.ExternalConversationID != request.ExternalConversationID {
+				return ErrBindingConflict
 			}
 			if err := authorizeSessionWriteTx(ctx, tx, binding.SessionID, request.UserID); err != nil {
 				return err

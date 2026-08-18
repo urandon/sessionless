@@ -30,6 +30,8 @@ domain objects whose tenant does not match it.
 | `frontend_ingress_idempotency` | `(tenant_id, binding_id, idempotency_key)` | point-resolve a frontend duplicate to its original session event and run, including after a binding switch |
 | `frontend_projection_outbox` | `(tenant_id, frontend_projection_id)` | point-read frontend-neutral work referencing a canonical assistant/system event and binding revision |
 | `frontend_projections_by_session` | `(tenant_id, session_id, frontend_projection_id)` | bounded destructive-retention inventory for one session |
+| `frontend_projections_by_run` | `(tenant_id, run_id, frontend, frontend_projection_id)` | bounded frontend-specific projection lookup for one terminal run wake |
+| `frontend_projection_ready_v1` | `(frontend, shard_bucket, created_at, tenant_id, frontend_projection_id)` | fixed 16-bucket recovery traversal for lost projection wakes |
 | `session_participants` | `(tenant_id, session_id, user_id)` | point-authorize tenant membership and session role |
 | `session_snapshots` | `(tenant_id, session_id, version)` | bounded prefix-read immutable context materializations |
 | `session_activity` | `(tenant_id, user_id, status, activity_bucket, updated_at, session_id)` | fixed 16-query recent-session fan-out per member |

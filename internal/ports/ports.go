@@ -214,7 +214,8 @@ type Queue interface {
 	DeadLetter(ctx context.Context, receiptHandle, reasonCode string) error
 }
 
-// DispatchWakePublisher and TelegramDeliveryWakePublisher emit payload-free
+// DispatchWakePublisher, TelegramDeliveryWakePublisher, and
+// FrontendProjectionWakePublisher emit payload-free
 // hints only after a durable outbox transaction commits. The outbox remains
 // canonical; duplicate and lost hints are handled by point reads and recovery.
 type DispatchWakePublisher interface {
@@ -223,6 +224,10 @@ type DispatchWakePublisher interface {
 
 type TelegramDeliveryWakePublisher interface {
 	PublishTelegramDeliveryWake(context.Context, domain.TenantID, domain.TelegramDeliveryID, time.Time) error
+}
+
+type FrontendProjectionWakePublisher interface {
+	PublishFrontendProjectionWake(context.Context, domain.TenantID, domain.RunID, time.Time) error
 }
 
 type BlobStore interface {
@@ -258,7 +263,63 @@ type TelegramDeliveryReady struct {
 	DeliveryID domain.TelegramDeliveryID
 }
 
+type TelegramProjectionReady struct {
+	TenantID     domain.TenantID
+	ProjectionID domain.FrontendProjectionID
+	RunID        domain.RunID
+}
+
+type TelegramProjectionOutcome string
+
+const (
+	TelegramProjectionNeedsContent TelegramProjectionOutcome = "needs_content"
+	TelegramProjectionMaterialized TelegramProjectionOutcome = "materialized"
+	TelegramProjectionTerminal     TelegramProjectionOutcome = "terminal"
+	TelegramProjectionNoop         TelegramProjectionOutcome = "noop"
+)
+
+// TelegramProjectionContent is derived from integrity-checked canonical blobs.
+// The store rechecks all live authorization and immutable references before it
+// persists a transport delivery.
+type TelegramProjectionContent struct {
+	EventPayload       domain.BlobRef
+	TriggerPayload     domain.BlobRef
+	ArtifactManifestID *domain.ArtifactManifestID
+	TriggerChatID      int64
+	ReplyToMessageID   int64
+}
+
+type TelegramProjectionResult struct {
+	Outcome        TelegramProjectionOutcome
+	Code           string
+	RunID          domain.RunID
+	DeliveryID     domain.TelegramDeliveryID
+	EventKind      domain.SessionEventKind
+	EventPayload   domain.BlobRef
+	TriggerPayload domain.BlobRef
+	Created        bool
+}
+
 type TelegramDeliveryStore interface {
+	ListRunTelegramProjections(
+		ctx context.Context,
+		tenantID domain.TenantID,
+		runID domain.RunID,
+		limit uint64,
+	) ([]TelegramProjectionReady, error)
+	ListReadyTelegramProjections(
+		ctx context.Context,
+		bucket uint32,
+		before time.Time,
+		limit uint64,
+	) ([]TelegramProjectionReady, error)
+	MaterializeTelegramProjection(
+		ctx context.Context,
+		tenantID domain.TenantID,
+		projectionID domain.FrontendProjectionID,
+		content *TelegramProjectionContent,
+		at time.Time,
+	) (TelegramProjectionResult, error)
 	GetTelegramDelivery(
 		ctx context.Context,
 		tenantID domain.TenantID,

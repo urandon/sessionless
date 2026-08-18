@@ -111,10 +111,16 @@ func TestDeterministicLocalMultiUserSlice(t *testing.T) {
 		slice.runWorker(nil)
 		slice.waitRunStatus(runA, domain.RunSucceeded)
 		slice.waitRunStatus(runB, domain.RunSucceeded)
+		manifestA := slice.outputManifest(runA)
+		manifestB := slice.outputManifest(runB)
+		slice.waitForChatMethods(map[int64]map[string]int{
+			userA: {"sendMessage": 1, "sendDocument": len(manifestA.Artifacts)},
+			userB: {"sendMessage": 1, "sendDocument": len(manifestB.Artifacts)},
+		})
 		slice.assertOneTelegramRun(runA)
 		slice.assertOneTelegramRun(runB)
-		slice.assertCanonicalProjection(runA)
-		slice.assertCanonicalProjection(runB)
+		slice.assertCanonicalProjectionDelivered(runA)
+		slice.assertCanonicalProjectionDelivered(runB)
 		slice.assertUsage(runA, 2)
 		slice.assertUsage(runB, 2)
 		slice.assertInputDocument(runB, "attachment-01-notes.txt")
@@ -721,7 +727,7 @@ func (slice *localSlice) assertCheckpointCount(run runRef, wanted uint64) {
 	}
 }
 
-func (slice *localSlice) assertCanonicalProjection(run runRef) {
+func (slice *localSlice) assertCanonicalProjectionDelivered(run runRef) {
 	slice.t.Helper()
 	var count uint64
 	if err := slice.db.QueryRowContext(
@@ -732,8 +738,28 @@ func (slice *localSlice) assertCanonicalProjection(run runRef) {
 	).Scan(&count); err != nil {
 		slice.t.Fatal(err)
 	}
-	if count != 1 {
-		slice.t.Fatalf("run %s canonical Telegram projections = %d, want 1", run.RunID, count)
+	if count != 0 {
+		slice.t.Fatalf("run %s pending canonical Telegram projections = %d, want 0", run.RunID, count)
+	}
+	delivery := slice.deliveryForRun(run)
+	if delivery.Status != domain.DeliverySent || delivery.Projection == nil || delivery.Text != "" {
+		slice.t.Fatalf("run %s projected delivery = %#v", run.RunID, delivery)
+	}
+	var eventRecord string
+	if err := slice.db.QueryRowContext(
+		slice.ctx,
+		`SELECT record FROM session_events
+		 WHERE tenant_id = $1 AND session_id = $2 AND event_id = $3 LIMIT 1`,
+		run.TenantID, run.SessionID, delivery.Projection.EventID,
+	).Scan(&eventRecord); err != nil {
+		slice.t.Fatal(err)
+	}
+	var event domain.SessionEvent
+	if err := json.Unmarshal([]byte(eventRecord), &event); err != nil {
+		slice.t.Fatal(err)
+	}
+	if event.Payload != delivery.Payload || event.Kind != domain.SessionEventAssistantMessage {
+		slice.t.Fatalf("delivery payload=%#v canonical event=%#v", delivery.Payload, event)
 	}
 }
 

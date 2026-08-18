@@ -119,8 +119,9 @@ prefixed keys for another tenant and path traversal are rejected before any S3
 request. Returned references include size and SHA-256.
 
 `internal/sqsqueue` uses versioned, payload-free queue envelopes. `wake.dispatch`
-and `wake.telegram` address one durable outbox row; `dispatch.run` addresses one
-admitted worker job. The adapter models
+and `wake.telegram` address one durable outbox row;
+`wake.frontend_projection` addresses the bounded projections for one run and
+frontend; `dispatch.run` addresses one admitted worker job. The adapter models
 at-least-once receive, explicit acknowledgement, visibility-based retry, and
 application-controlled dead-letter publication. Queue and DLQ URLs are injected
 explicitly, so no emulator hostname leaks into the domain.

@@ -54,6 +54,8 @@ func BackfillSchemaIndexes(ctx context.Context, db *sql.DB, dryRun bool) ([]Back
 		backfillArtifactManifestsByRun,
 		backfillFrontendBindingsBySession,
 		backfillFrontendProjectionsBySession,
+		backfillFrontendProjectionsByRun,
+		backfillFrontendProjectionReady,
 		backfillTelegramDeliveriesByRun,
 		backfillCheckpointObjectsByRun,
 	}
@@ -91,6 +93,103 @@ func backfillFrontendProjectionsBySession(ctx context.Context, db *sql.DB, dryRu
 	return backfillTriples(ctx, db, dryRun, "frontend_projections_by_session",
 		`SELECT tenant_id, session_id, frontend_projection_id FROM frontend_projection_outbox`,
 		`UPSERT INTO frontend_projections_by_session (tenant_id, session_id, frontend_projection_id) VALUES ($1, $2, $3)`)
+}
+
+type projectionBackfillRow struct {
+	tenantID, projectionID, frontend, sessionID, runID string
+	sequence                                           uint64
+	createdAt                                          time.Time
+}
+
+func frontendProjectionBackfillRows(ctx context.Context, db *sql.DB) ([]projectionBackfillRow, error) {
+	rows, err := db.QueryContext(ctx,
+		`SELECT tenant_id, frontend_projection_id, frontend, session_id,
+		        event_sequence, created_at
+		 FROM frontend_projection_outbox`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	var values []projectionBackfillRow
+	for rows.Next() {
+		var value projectionBackfillRow
+		if err := rows.Scan(
+			&value.tenantID, &value.projectionID, &value.frontend,
+			&value.sessionID, &value.sequence, &value.createdAt,
+		); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		values = append(values, value)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	resolved := values[:0]
+	for index := range values {
+		if err := db.QueryRowContext(ctx,
+			`SELECT run_id FROM session_events
+			 WHERE tenant_id = $1 AND session_id = $2 AND sequence = $3`,
+			values[index].tenantID, values[index].sessionID, values[index].sequence,
+		).Scan(&values[index].runID); errors.Is(err, sql.ErrNoRows) {
+			// Pre-index deployments can contain operational orphans after their
+			// canonical session history has already been deleted. They cannot be
+			// recovered into a run index and must not block unrelated tenants.
+			continue
+		} else if err != nil {
+			return nil, fmt.Errorf("resolve projection %s run: %w", values[index].projectionID, err)
+		}
+		if values[index].runID == "" {
+			continue
+		}
+		resolved = append(resolved, values[index])
+	}
+	return resolved, nil
+}
+
+func backfillFrontendProjectionsByRun(ctx context.Context, db *sql.DB, dryRun bool) (BackfillResult, error) {
+	values, err := frontendProjectionBackfillRows(ctx, db)
+	if err != nil {
+		return BackfillResult{}, err
+	}
+	for _, value := range values {
+		if dryRun {
+			continue
+		}
+		if _, err := db.ExecContext(ctx,
+			`UPSERT INTO frontend_projections_by_run
+			 (tenant_id, run_id, frontend, frontend_projection_id) VALUES ($1, $2, $3, $4)`,
+			value.tenantID, value.runID, value.frontend, value.projectionID,
+		); err != nil {
+			return BackfillResult{}, fmt.Errorf("backfill frontend_projections_by_run: %w", err)
+		}
+	}
+	return BackfillResult{Table: "frontend_projections_by_run", Rows: uint64(len(values))}, nil
+}
+
+func backfillFrontendProjectionReady(ctx context.Context, db *sql.DB, dryRun bool) (BackfillResult, error) {
+	values, err := frontendProjectionBackfillRows(ctx, db)
+	if err != nil {
+		return BackfillResult{}, err
+	}
+	for _, value := range values {
+		bucket, err := BucketV1(value.projectionID)
+		if err != nil {
+			return BackfillResult{}, err
+		}
+		if dryRun {
+			continue
+		}
+		if _, err := db.ExecContext(ctx,
+			`UPSERT INTO frontend_projection_ready_v1
+			 (frontend, shard_bucket, created_at, tenant_id, frontend_projection_id, run_id)
+			 VALUES ($1, $2, $3, $4, $5, $6)`,
+			value.frontend, bucket, value.createdAt, value.tenantID, value.projectionID, value.runID,
+		); err != nil {
+			return BackfillResult{}, fmt.Errorf("backfill frontend_projection_ready_v1: %w", err)
+		}
+	}
+	return BackfillResult{Table: "frontend_projection_ready_v1", Rows: uint64(len(values))}, nil
 }
 
 func backfillTelegramDeliveriesByRun(ctx context.Context, db *sql.DB, dryRun bool) (BackfillResult, error) {

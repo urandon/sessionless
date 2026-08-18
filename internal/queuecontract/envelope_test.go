@@ -13,7 +13,11 @@ import (
 func TestVersionedFixturesRoundTrip(t *testing.T) {
 	t.Parallel()
 
-	fixtures := []string{"dispatch-v1.json", "telegram-delivery-v1.json"}
+	fixtures := []string{
+		"dispatch-v1.json",
+		"telegram-delivery-v1.json",
+		"frontend-projection-wake-v1.json",
+	}
 	for _, name := range fixtures {
 		name := name
 		t.Run(name, func(t *testing.T) {

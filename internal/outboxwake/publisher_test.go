@@ -37,9 +37,30 @@ func TestPublisherEmitsDeterministicPayloadFreeHints(t *testing.T) {
 	}
 }
 
+func TestPublisherEmitsRunScopedProjectionWake(t *testing.T) {
+	now := time.Date(2026, 8, 18, 15, 0, 0, 0, time.UTC)
+	queue := testkit.NewMemoryQueue()
+	publisher, err := NewPublisher(queue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := publisher.PublishFrontendProjectionWake(context.Background(), "tenant-a", "run-a", now); err != nil {
+		t.Fatal(err)
+	}
+	message, err := queue.Receive(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message.Envelope.Kind != queuecontract.KindWakeProjection ||
+		message.Envelope.SubjectID != "run-a" || message.Envelope.TenantID != "tenant-a" {
+		t.Fatalf("projection wake = %#v", message.Envelope)
+	}
+}
+
 func TestOperationalOutboxIDsAreStablePerRun(t *testing.T) {
 	if DispatchOutboxID("run-a") != DispatchOutboxID("run-a") ||
 		TelegramDeliveryID("run-a") != TelegramDeliveryID("run-a") ||
+		TelegramProjectionDeliveryID("projection-a") != TelegramProjectionDeliveryID("projection-a") ||
 		DispatchOutboxID("run-a") == DispatchOutboxID("run-b") {
 		t.Fatal("outbox IDs are not stable and run-scoped")
 	}

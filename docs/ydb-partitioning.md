@@ -47,6 +47,8 @@ a production adapter.
 | `frontend_ingress_idempotency` | `(tenant_id, binding_id, idempotency_key)` | tenant entity | point deduplication behind a random binding prefix, independent of the binding's current session |
 | `frontend_projection_outbox` | `(tenant_id, frontend_projection_id)` | tenant entity | stable event/binding-derived IDs distribute generic projection work |
 | `frontend_projections_by_session` | `(tenant_id, session_id, frontend_projection_id)` | per-session inventory | bounded destructive cleanup behind a random session prefix |
+| `frontend_projections_by_run` | `(tenant_id, run_id, frontend, frontend_projection_id)` | per-run inventory | bounded frontend-specific wake lookup behind a random run prefix |
+| `frontend_projection_ready_v1` | `(frontend, shard_bucket, created_at, tenant_id, frontend_projection_id)` | global recovery | fixed 16-way fan-out per frontend avoids an unbounded global scan |
 | `session_participants` | `(tenant_id, session_id, user_id)` | tenant entity | membership is behind a random session prefix |
 | `session_snapshots` | `(tenant_id, session_id, version)` | per-session ordered | version grows only behind a random session prefix |
 | `session_activity` | `(tenant_id, user_id, status, activity_bucket, updated_at, session_id)` | append-heavy | fixed 16-way per-user fan-out avoids one chronological write edge |

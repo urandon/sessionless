@@ -794,10 +794,29 @@ func deleteSessionRowsTx(ctx context.Context, tx *stateTx, sessionID domain.Sess
 		return domain.ValidationError{Field: "session_deletion.projections", Reason: "exceeds the hard deletion bound"}
 	}
 	for _, id := range projectionIDs {
-		if _, err := tx.sqlTx.ExecContext(ctx,
-			`DELETE FROM frontend_projection_outbox WHERE tenant_id = $1 AND frontend_projection_id = $2`,
-			tx.tenantID, id,
-		); err != nil {
+		projection, found, err := readJSON[domain.FrontendProjection](ctx, tx.sqlTx,
+			`SELECT record FROM frontend_projection_outbox
+			 WHERE tenant_id = $1 AND frontend_projection_id = $2`, tx.tenantID, id)
+		if err != nil {
+			return err
+		}
+		if !found {
+			continue
+		}
+		event, found, err := readJSON[domain.SessionEvent](ctx, tx.sqlTx,
+			`SELECT record FROM session_events
+			 WHERE tenant_id = $1 AND session_id = $2 AND sequence = $3`,
+			tx.tenantID, projection.SessionID, projection.EventSequence)
+		if err != nil {
+			return err
+		}
+		if !found || event.RunID == nil {
+			return fmt.Errorf("projection %q has no canonical run during deletion", id)
+		}
+		if err := deleteFrontendProjectionTx(ctx, tx, telegramProjectionContext{
+			projection: projection,
+			run:        domain.Run{ID: *event.RunID},
+		}); err != nil {
 			return err
 		}
 	}
@@ -883,6 +902,7 @@ func deleteSessionRowsTx(ctx context.Context, tx *stateTx, sessionID domain.Sess
 		}
 		for _, query := range []string{
 			`DELETE FROM artifact_manifests_by_run WHERE tenant_id = $1 AND run_id = $2`,
+			`DELETE FROM frontend_projections_by_run WHERE tenant_id = $1 AND run_id = $2`,
 			`DELETE FROM telegram_deliveries_by_run WHERE tenant_id = $1 AND run_id = $2`,
 			`DELETE FROM checkpoint_objects_by_run WHERE tenant_id = $1 AND run_id = $2`,
 			`DELETE FROM run_finalizations WHERE tenant_id = $1 AND run_id = $2`,

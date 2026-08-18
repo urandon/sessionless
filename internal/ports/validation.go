@@ -24,8 +24,8 @@ func (request TelegramSendRequest) Validate() error {
 	if err := domain.EnsureSameTenant(request.TenantID, request.Chat.TenantID); err != nil {
 		return err
 	}
-	if request.ReplyToMessageID == 0 {
-		return domain.ValidationError{Field: "telegram_send.reply_to_message_id", Reason: "must not be zero"}
+	if request.ReplyToMessageID < 0 {
+		return domain.ValidationError{Field: "telegram_send.reply_to_message_id", Reason: "must not be negative"}
 	}
 	hasText := strings.TrimSpace(request.Text) != ""
 	hasPayload := request.Payload.Key != ""

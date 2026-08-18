@@ -69,6 +69,13 @@ var policies = []Policy{
 	hot("frontend_ingress_idempotency", []string{"tenant_id", "binding_id", "idempotency_key"}, ClassEntity, "frontend delivery deduplication remains behind a random binding prefix"),
 	hot("frontend_projection_outbox", []string{"tenant_id", "frontend_projection_id"}, ClassEntity, "generic projection work uses stable high-entropy event and binding identities"),
 	hot("frontend_projections_by_session", []string{"tenant_id", "session_id", "frontend_projection_id"}, ClassEntity, "deletion inventory is bounded behind a random session prefix"),
+	hot("frontend_projections_by_run", []string{"tenant_id", "run_id", "frontend", "frontend_projection_id"}, ClassEntity, "frontend-specific wake processing is bounded behind a random run prefix"),
+	{
+		LogicalName: "frontend_projection_ready_v1", PhysicalTable: "frontend_projection_ready_v1",
+		PrimaryKey: []string{"frontend", "shard_bucket", "created_at", "tenant_id", "frontend_projection_id"},
+		Class:      ClassGlobalReady, LoadPartitioning: true, Bucketed: true,
+		Rationale: "bounded recovery fans out across fixed hash buckets per frontend",
+	},
 	hot("session_participants", []string{"tenant_id", "session_id", "user_id"}, ClassEntity, "authorization rows remain behind a random session prefix"),
 	hot("session_snapshots", []string{"tenant_id", "session_id", "version"}, ClassOrdered, "immutable versions are ordered inside a random session prefix"),
 	hot("session_activity", []string{"tenant_id", "user_id", "status", "activity_bucket", "updated_at", "session_id"}, ClassAppend, "fixed 16-way per-user fan-out avoids a global chronological write edge"),

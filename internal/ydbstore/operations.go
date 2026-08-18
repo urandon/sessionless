@@ -960,6 +960,26 @@ func (store *Store) ClaimTelegramDelivery(
 		if err != nil || !found {
 			return err
 		}
+		if delivery.Projection != nil {
+			terminalCode, err := authorizeTelegramProjectionDeliveryTx(ctx, tx, delivery)
+			if err != nil {
+				return err
+			}
+			if terminalCode != "" {
+				if delivery.Status.Terminal() {
+					result = delivery
+					return nil
+				}
+				if err := delivery.Transition(domain.DeliveryCancelled, at, nil); err != nil {
+					return err
+				}
+				if err := state.PutTelegramDeliveryOutbox(ctx, delivery); err != nil {
+					return err
+				}
+				result = delivery
+				return nil
+			}
+		}
 		switch delivery.Status {
 		case domain.DeliveryPending, domain.DeliveryRetryWait:
 			if delivery.NextAttemptAt != nil && delivery.NextAttemptAt.After(at) {

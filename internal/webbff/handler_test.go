@@ -169,6 +169,41 @@ func TestOIDCProviderDenialRedirectsWithOnlyStableErrorCode(t *testing.T) {
 	}
 }
 
+func TestOIDCCallbackFailureRedirectsToStableUnavailableCodeWhenAuditCannotPersist(t *testing.T) {
+	store := newMemoryAuthStore()
+	handler := newTestHandler(t, store, "424242")
+	start := httptest.NewRequest(http.MethodGet,
+		"https://web.dev.sessionless.triborg.dev"+webcontract.RouteOIDCStart+"?return_to=%2Fsessions", nil)
+	startResponse := httptest.NewRecorder()
+	handler.ServeHTTP(startResponse, start)
+	providerLocation, _ := url.Parse(startResponse.Header().Get("Location"))
+	binding := responseCookie(t, startResponse.Result(), webbff.LoginBindingCookieName)
+	store.securityEventErr = errors.New("audit unavailable")
+
+	callback := httptest.NewRequest(http.MethodGet,
+		"https://web.dev.sessionless.triborg.dev"+webcontract.RouteOIDCCallback+
+			"?error=access_denied&error_description=provider-secret-detail&state="+
+			url.QueryEscape(providerLocation.Query().Get("state")), nil)
+	callback.AddCookie(binding)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, callback)
+
+	if response.Code != http.StatusSeeOther ||
+		response.Header().Get("Location") != "/login?auth_error=temporarily_unavailable" {
+		t.Fatalf("audit failure status=%d location=%q body=%q",
+			response.Code, response.Header().Get("Location"), response.Body.String())
+	}
+	if strings.Contains(response.Header().Get("Location"), "provider-secret-detail") ||
+		response.Body.Len() != 0 {
+		t.Fatalf("provider details escaped: location=%q body=%q",
+			response.Header().Get("Location"), response.Body.String())
+	}
+	cleared := responseCookie(t, response.Result(), webbff.LoginBindingCookieName)
+	if cleared.Value != "" || cleared.MaxAge >= 0 {
+		t.Fatalf("login binding was not cleared: %+v", cleared)
+	}
+}
+
 func TestCSRFRejectionFailsClosedWhenAuditCannotPersist(t *testing.T) {
 	store := newMemoryAuthStore()
 	subject := domain.ExternalSubject{Provider: domain.IdentityProviderTelegram, Subject: "424242"}

@@ -35,6 +35,22 @@ test.describe('authentication boundaries', () => {
       page.getByText(/may not exist, or your active workspace is not a participant/),
     ).toBeVisible();
   });
+
+  test('preserves an unauthenticated session deep link through the login start URL', async ({
+    canonicalApi,
+    page,
+  }) => {
+    canonicalApi.auth = 'unauthenticated';
+    await page.goto(`/sessions/${sessionId}`);
+
+    const signIn = page.getByRole('link', { name: 'Sign in' });
+    await expect(signIn).toHaveAttribute('href', `/login?return_to=%2Fsessions%2F${sessionId}`);
+    await signIn.click();
+    await expect(page.getByRole('link', { name: 'Continue with Telegram' })).toHaveAttribute(
+      'href',
+      `/auth/telegram/start?return_to=%2Fsessions%2F${sessionId}`,
+    );
+  });
 });
 
 test.describe('canonical session workflow', () => {

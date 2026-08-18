@@ -75,6 +75,8 @@
   let events = $state<SessionEvent[]>([]);
   let runs = $state<Run[]>([]);
   let compute = $state<ComputeStatus>();
+  let canWrite = $state(true);
+  let computeUnavailable = $state(false);
   let errorMessage = $state('');
   let pollMessage = $state('');
   let message = $state('');
@@ -99,7 +101,8 @@
   const runByTrigger = $derived(new Map(runs.map((run) => [run.trigger_event_id, run])));
   const computeReady = $derived(computeAllowsSend(compute));
   const canSubmit = $derived(
-    computeReady &&
+    canWrite &&
+      computeReady &&
       !submitting &&
       session?.status === 'active' &&
       (message.trim().length > 0 || selectedFiles.length > 0),
@@ -123,23 +126,48 @@
   async function loadInitial(): Promise<void> {
     view = 'loading';
     errorMessage = '';
+    canWrite = true;
+    computeUnavailable = false;
     try {
       const signal = abortController?.signal;
-      const [sessionResult, eventResult, runResult, computeResult] = await Promise.all([
+      const [sessionResult, eventResult, runResult] = await Promise.all([
         client.getSession(sessionId, undefined, signal),
         client.listEvents(sessionId, { limit: maxEvents, signal }),
         client.listRuns(sessionId, { limit: maxRuns, signal }),
-        client.getComputeStatus(sessionId, signal),
       ]);
       applySession(sessionResult);
       applyEvents(eventResult, true);
       applyRuns(runResult);
-      compute = computeResult;
+      await loadComputeAccess(signal);
       view = 'ready';
       schedulePoll(nextPollDelay(sessionResult, eventResult, runResult));
     } catch (error) {
       if (isAbort(error)) return;
       showLoadFailure(error);
+    }
+  }
+
+  async function loadComputeAccess(signal?: AbortSignal): Promise<void> {
+    try {
+      compute = await client.getComputeStatus(sessionId, signal);
+      canWrite = true;
+      computeUnavailable = false;
+    } catch (error) {
+      if (
+        error instanceof ApiError &&
+        (error.code === 'access_denied' || error.code === 'not_found')
+      ) {
+        // The read routes already proved participant access. The compute probe
+        // is write-authorized, so an opaque denial here means this participant
+        // has a read-only session role.
+        canWrite = false;
+        compute = undefined;
+        computeUnavailable = false;
+        return;
+      }
+      if (isAbort(error)) throw error;
+      compute = undefined;
+      computeUnavailable = true;
     }
   }
 
@@ -230,7 +258,7 @@
   }
 
   async function toggleArchived(): Promise<void> {
-    if (!session || archivePending) return;
+    if (!canWrite || !session || archivePending) return;
     archivePending = true;
     errorMessage = '';
     const desired = session.status === 'active';
@@ -302,7 +330,7 @@
   }
 
   async function send(): Promise<void> {
-    if (submitting || (!canSubmit && !submission)) return;
+    if (!canWrite || submitting || (!canSubmit && !submission)) return;
     submission ??= {
       idempotencyKey: newIdempotencyKey(),
       text: message.trim(),
@@ -463,6 +491,8 @@
   }
 
   function computeLabel(status: ComputeStatus | undefined): string {
+    if (!canWrite) return 'Read-only access · sending and session changes are unavailable.';
+    if (computeUnavailable) return 'Compute status is temporarily unavailable.';
     if (!status) return 'Checking compute and quota…';
     if (status.availability === 'not_configured') return 'No compute connection is configured.';
     if (status.availability === 'ambiguous') return 'Choose one compute connection before sending.';
@@ -474,13 +504,10 @@
   }
 
   async function refreshCompute(): Promise<void> {
-    if (submitting) return;
+    if (!canWrite || submitting) return;
     errorMessage = '';
-    try {
-      compute = await client.getComputeStatus(sessionId, abortController?.signal);
-    } catch (error) {
-      if (!isAbort(error)) errorMessage = publicMessage(error, 'Unable to refresh compute status.');
-    }
+    await loadComputeAccess(abortController?.signal);
+    if (computeUnavailable) errorMessage = 'Unable to refresh compute status.';
   }
 
   function computeAllowsSend(status: ComputeStatus | undefined): boolean {
@@ -546,7 +573,13 @@
     <p class="eyebrow">Sign in required</p>
     <h1 id="sign-in-title">Continue to this conversation</h1>
     <p>Your tenant membership will be checked after authentication.</p>
-    <a class="button primary" href={resolve('/login')}>Sign in</a>
+    <!-- eslint-disable svelte/no-navigation-without-resolve -- route is resolved before the encoded query is appended -->
+    <a
+      class="button primary"
+      href={`${resolve('/login')}?return_to=${encodeURIComponent(`/sessions/${sessionId}`)}`}
+      >Sign in</a
+    >
+    <!-- eslint-enable svelte/no-navigation-without-resolve -->
   </section>
 {:else if view === 'error'}
   <section class="narrow panel" aria-labelledby="load-error-title">
@@ -566,14 +599,16 @@
         <h1 id="conversation-title">{session?.title || 'Conversation'}</h1>
         <p class="resource-id" aria-label="Session identifier">{sessionId}</p>
       </div>
-      <button
-        class="button"
-        type="button"
-        disabled={archivePending}
-        onclick={() => void toggleArchived()}
-      >
-        {archivePending ? 'Saving…' : session?.status === 'active' ? 'Archive' : 'Unarchive'}
-      </button>
+      {#if canWrite}
+        <button
+          class="button"
+          type="button"
+          disabled={archivePending}
+          onclick={() => void toggleArchived()}
+        >
+          {archivePending ? 'Saving…' : session?.status === 'active' ? 'Archive' : 'Unarchive'}
+        </button>
+      {/if}
     </header>
 
     {#if errorMessage}
@@ -585,7 +620,7 @@
         <strong>Compute</strong>
         <span>{computeLabel(compute)}</span>
       </div>
-      {#if !computeReady}
+      {#if canWrite && !computeReady}
         <button
           class="button quiet"
           type="button"
@@ -609,7 +644,9 @@
       {#if events.length === 0}
         <div class="empty-state">
           <h2>No messages yet</h2>
-          <p>Start the canonical conversation below.</p>
+          <p>
+            {canWrite ? 'Start the canonical conversation below.' : 'This session is read-only.'}
+          </p>
         </div>
       {:else}
         <ol class="event-list">
@@ -679,8 +716,12 @@
         rows="4"
         maxlength="32000"
         value={message}
-        disabled={submitting || session?.status !== 'active'}
-        placeholder={session?.status === 'active' ? 'Write a message…' : 'Unarchive to write'}
+        disabled={!canWrite || submitting || session?.status !== 'active'}
+        placeholder={!canWrite
+          ? 'This session is read-only'
+          : session?.status === 'active'
+            ? 'Write a message…'
+            : 'Unarchive to write'}
         oninput={editMessage}
         onkeydown={composerKeydown}></textarea>
 
@@ -714,19 +755,25 @@
       <p class="composer-hint">Ctrl/⌘ + Enter to send · up to 8 files</p>
       {#if transferMessage}<p class="transfer-status" role="status">{transferMessage}</p>{/if}
       <div class="composer-actions">
-        <label class:disabled={submitting || selectedFiles.length >= 8} class="button file-picker">
+        <label
+          class:disabled={!canWrite || submitting || selectedFiles.length >= 8}
+          class="button file-picker"
+        >
           Attach files
           <input
             type="file"
             multiple
-            disabled={submitting || selectedFiles.length >= 8 || session?.status !== 'active'}
+            disabled={!canWrite ||
+              submitting ||
+              selectedFiles.length >= 8 ||
+              session?.status !== 'active'}
             onchange={chooseFiles}
           />
         </label>
         <button
           class="button primary"
           type="submit"
-          disabled={submitting || (!canSubmit && !submission)}
+          disabled={!canWrite || submitting || (!canSubmit && !submission)}
         >
           {submitting ? 'Sending…' : submission ? 'Retry send' : 'Send'}
         </button>

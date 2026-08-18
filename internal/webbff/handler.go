@@ -997,14 +997,20 @@ func (handler *Handler) writeCallbackFailure(
 	subject *domain.ExternalSubject,
 	userID domain.UserID,
 ) {
+	code := webcontract.ErrorAccessDenied
 	if err := handler.recordLoginFailure(request, reason, subject, userID); err != nil {
 		handler.config.Logger.Error("web login failure audit could not be persisted",
 			"request_id", requestIDFrom(request), "reason", reason,
 		)
+		// The callback URL may contain authorization material, so clear it with
+		// the same stable redirect shape while failing the login closed. The UI
+		// receives only a public error code; provider and audit details remain
+		// server-side.
+		code = webcontract.ErrorTemporarilyUnavailable
 	}
 	location := url.URL{Path: webcontract.RouteLogin}
 	query := location.Query()
-	query.Set(webcontract.AuthErrorQueryName, string(webcontract.ErrorAccessDenied))
+	query.Set(webcontract.AuthErrorQueryName, string(code))
 	location.RawQuery = query.Encode()
 	w.Header().Set("Location", location.String())
 	w.WriteHeader(http.StatusSeeOther)

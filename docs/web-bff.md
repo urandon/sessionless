@@ -76,6 +76,11 @@ never reflected into the URL or response body. Membership is created only by
 an existing frontend participant, a validated invitation, or the audited
 cloud-development bootstrap command.
 
+If the callback failure cannot be durably audited, the login still fails
+closed and clears the code/state-bearing callback URL through the stable
+`/login?auth_error=temporarily_unavailable` recovery route. No provider or
+audit-storage detail is reflected to the browser.
+
 ## Telegram provider configuration
 
 The implementation follows Telegram's OIDC Authorization Code flow with PKCE

@@ -1,7 +1,13 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ConditionalResult, EventPage, RunPage, SessionSummary } from '$lib/api/client';
+import {
+  ApiError,
+  type ConditionalResult,
+  type EventPage,
+  type RunPage,
+  type SessionSummary,
+} from '$lib/api/client';
 import SessionDetail, { type SessionDetailApi } from './SessionDetail.svelte';
 
 const session: SessionSummary = {
@@ -80,6 +86,26 @@ describe('SessionDetail', () => {
       'ses-1',
       expect.objectContaining({ limit: 100 }),
     );
+  });
+
+  it('keeps authorized history available while disabling mutations for a read-only participant', async () => {
+    const client = api({
+      getComputeStatus: vi
+        .fn()
+        .mockRejectedValue(
+          new ApiError('not_found', 'The requested resource is not available.', 404),
+        ),
+    });
+
+    render(SessionDetail, { client, sessionId: 'ses-1' });
+
+    expect(
+      await screen.findByRole('heading', { name: 'Canonical planning', level: 1 }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('<img src=x onerror=alert(1)> Safe text')).toBeInTheDocument();
+    expect(screen.getByText(/Read-only access/)).toBeInTheDocument();
+    expect(screen.getByLabelText('Message')).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Archive' })).not.toBeInTheDocument();
   });
 
   it('disables sending when the authoritative compute quota is exhausted', async () => {

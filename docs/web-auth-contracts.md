@@ -173,7 +173,7 @@ resolved to a membership before session rotation.
 | Method and path | Request selector/body | Authorization and result |
 | --- | --- | --- |
 | `GET /auth/telegram/start` | optional local `return_to` | create browser-bound challenge; redirect |
-| `GET /auth/telegram/callback` | exactly one of `code` or `error`, plus `state` | consume challenge; verify claims; resolve enrollment; on any failure redirect to `/login?auth_error=access_denied` without provider details |
+| `GET /auth/telegram/callback` | exactly one of `code` or `error`, plus `state` | consume challenge; verify claims; resolve enrollment; on failure redirect to stable `access_denied`, or `temporarily_unavailable` when durable failure audit cannot be written; never expose provider details |
 | `POST /auth/logout` | none | CSRF; revoke current digest; clear cookies |
 | `GET /api/web/v1/me` | none | resolved identity and memberships |
 | `GET /api/web/v1/tenants` | none | active memberships only |

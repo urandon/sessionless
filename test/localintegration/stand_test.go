@@ -5,8 +5,10 @@ package localintegration
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -16,6 +18,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/outboxwake"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/queuecontract"
 	"gitcode.com/urandon/sessionless/internal/s3store"
@@ -117,23 +120,27 @@ func testSQS(t *testing.T) {
 	))
 	envelope := queuecontract.Envelope{
 		Schema:     queuecontract.SchemaV1,
-		MessageID:  "local-contract-message",
+		MessageID:  domain.MessageID(fmt.Sprintf("local-contract-message-%d", time.Now().UTC().UnixNano())),
 		Kind:       queuecontract.KindDispatchRun,
 		TenantID:   "tenant-a",
-		SubjectID:  "run-local-contract",
+		SubjectID:  fmt.Sprintf("run-local-contract-%d", time.Now().UTC().UnixNano()),
 		EnqueuedAt: time.Now().UTC(),
 	}
 	if err := queue.Publish(ctx, envelope); err != nil {
 		t.Fatal(err)
 	}
-	first := receiveEventually(t, ctx, queue)
+	first := receiveMatching(t, ctx, queue, func(message ports.ReceivedMessage) bool {
+		return message.Envelope.MessageID == envelope.MessageID
+	})
 	if first.Envelope.MessageID != envelope.MessageID || first.DeliveryCount != 1 {
 		t.Fatalf("first delivery = %#v", first)
 	}
 	if err := queue.Retry(ctx, first.ReceiptHandle, 0); err != nil {
 		t.Fatal(err)
 	}
-	second := receiveEventually(t, ctx, queue)
+	second := receiveMatching(t, ctx, queue, func(message ports.ReceivedMessage) bool {
+		return message.Envelope.MessageID == envelope.MessageID
+	})
 	if second.Envelope.MessageID != envelope.MessageID || second.DeliveryCount < 2 {
 		t.Fatalf("second delivery = %#v", second)
 	}
@@ -145,7 +152,9 @@ func testSQS(t *testing.T) {
 		"DEAD_LETTER_QUEUE_URL",
 		"http://localhost:9324/000000000000/sessionless-dlq",
 	), "")
-	moved := receiveEventually(t, ctx, deadLetter)
+	moved := receiveMatching(t, ctx, deadLetter, func(message ports.ReceivedMessage) bool {
+		return message.Envelope.MessageID == envelope.MessageID
+	})
 	if moved.Envelope.MessageID != envelope.MessageID {
 		t.Fatalf("dead-letter envelope = %#v", moved.Envelope)
 	}
@@ -230,16 +239,27 @@ func testTelegramWebhook(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ydb.Close(context.Background())
+	resolver, err := telegramingress.NewIdentityResolver([]byte(envOrDefault(
+		"TELEGRAM_IDENTITY_HMAC_KEY",
+		"sessionless-local-identity-key-0001",
+	)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := resolver.ResolvePrivate(700000001, 700000001, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
 	var count uint64
 	if err := ydb.DB.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM telegram_updates
-		 WHERE source_id = $1 AND update_id = $2`,
-		"bot-primary", int64(100000001),
+		`SELECT COUNT(*) FROM frontend_ingress_idempotency
+		 WHERE tenant_id = $1`,
+		identity.Tenant,
 	).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 1 {
-		t.Fatalf("Telegram update count = %d, want 1", count)
+		t.Fatalf("canonical Telegram ingress count = %d, want 1", count)
 	}
 }
 
@@ -251,6 +271,7 @@ func testTelegramCommands(t *testing.T) {
 	postJSON(t, client, telegramURL+"/test/reset", []byte(`{}`))
 
 	baseUpdateID := int64(1_000_000_000) + time.Now().UTC().UnixMilli()%900_000_000
+	chatID := baseUpdateID
 	commands := []string{
 		"/connect codex",
 		"/compute status",
@@ -262,8 +283,8 @@ func testTelegramCommands(t *testing.T) {
 			"update_id": baseUpdateID + int64(index),
 			"message": map[string]any{
 				"message_id": baseUpdateID + int64(index),
-				"from":       map[string]any{"id": 99001},
-				"chat":       map[string]any{"id": 99001, "type": "private"},
+				"from":       map[string]any{"id": chatID},
+				"chat":       map[string]any{"id": chatID, "type": "private"},
 				"date":       time.Now().UTC().Unix(),
 				"text":       command,
 			},
@@ -295,7 +316,7 @@ func testTelegramCommands(t *testing.T) {
 	}
 	var sawStatus, sawNewSession, sawDisconnect bool
 	for _, capture := range captures.Result {
-		if capture.Method != "sendMessage" || capture.ChatID != 99001 {
+		if capture.Method != "sendMessage" || capture.ChatID != chatID {
 			t.Fatalf("command capture = %#v", capture)
 		}
 		var payload struct {
@@ -332,7 +353,7 @@ func testTelegramCommands(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	identity, err := resolver.ResolvePrivate(99001, 99001, "codex")
+	identity, err := resolver.ResolvePrivate(chatID, chatID, "codex")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -421,30 +442,42 @@ func testSchedulerDispatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var runID string
-	if err := ydb.DB.QueryRowContext(ctx,
-		`SELECT run_id FROM telegram_updates
-		 WHERE tenant_id = $1 AND source_id = $2 AND update_id = $3`,
-		identity.Tenant, "bot-primary", updateID,
-	).Scan(&runID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := ydb.DB.ExecContext(ctx,
+	runID := canonicalRunForExternalEvent(
+		t, ctx, ydb.DB, identity.Tenant, fmt.Sprintf("bot-primary:%d", updateID),
+	)
+	execEventually(t, ctx, ydb.DB,
 		`UPDATE subscription_connections
 		 SET entitlement_state = $1, quota_state = $2, updated_at = CurrentUtcTimestamp()
 		 WHERE tenant_id = $3 AND subscription_connection_id = $4`,
 		domain.EntitlementActive, domain.ProviderQuotaUnknown,
 		identity.Tenant, identity.SubscriptionConnection,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := ydb.DB.ExecContext(ctx,
+	)
+	execEventually(t, ctx, ydb.DB,
 		`UPDATE subscription_scheduler_slots
 		 SET state = $1, blocked_until = $2, updated_at = CurrentUtcTimestamp()
 		 WHERE tenant_id = $3 AND subscription_connection_id = $4`,
 		domain.SchedulerReady, time.Unix(0, 0).UTC(),
 		identity.Tenant, identity.SubscriptionConnection,
-	); err != nil {
+	)
+	var outboxID domain.DispatchOutboxID
+	if err := ydb.DB.QueryRowContext(ctx,
+		`SELECT dispatch_outbox_id FROM dispatch_outbox
+		 WHERE tenant_id = $1 AND run_id = $2`, identity.Tenant, runID,
+	).Scan(&outboxID); err != nil {
+		t.Fatal(err)
+	}
+	wakeQueue := openQueue(t, envOrDefault(
+		"SCHEDULER_WAKE_QUEUE_URL",
+		"http://localhost:9324/000000000000/sessionless-scheduler-wake",
+	), envOrDefault(
+		"DEAD_LETTER_QUEUE_URL",
+		"http://localhost:9324/000000000000/sessionless-dlq",
+	))
+	wakePublisher, err := outboxwake.NewPublisher(wakeQueue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := wakePublisher.PublishDispatchWake(ctx, identity.Tenant, outboxID, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -455,7 +488,10 @@ func testSchedulerDispatch(t *testing.T) {
 		"DEAD_LETTER_QUEUE_URL",
 		"http://localhost:9324/000000000000/sessionless-dlq",
 	))
-	message := receiveEventually(t, ctx, queue)
+	message := receiveMatching(t, ctx, queue, func(message ports.ReceivedMessage) bool {
+		return message.Envelope.Kind == queuecontract.KindDispatchRun &&
+			message.Envelope.TenantID == identity.Tenant && message.Envelope.SubjectID == runID
+	})
 	if message.Envelope.Kind != queuecontract.KindDispatchRun ||
 		message.Envelope.TenantID != identity.Tenant ||
 		message.Envelope.SubjectID != runID {
@@ -474,6 +510,75 @@ func testSchedulerDispatch(t *testing.T) {
 	if status != string(domain.RunQueued) {
 		t.Fatalf("run status = %q, want queued", status)
 	}
+}
+
+func receiveMatching(
+	t *testing.T,
+	ctx context.Context,
+	queue *sqsqueue.Queue,
+	matches func(ports.ReceivedMessage) bool,
+) ports.ReceivedMessage {
+	t.Helper()
+	for {
+		message := receiveEventually(t, ctx, queue)
+		if matches(message) {
+			return message
+		}
+		if err := queue.Retry(ctx, message.ReceiptHandle, time.Second); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func execEventually(t *testing.T, ctx context.Context, db *sql.DB, query string, args ...any) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	var err error
+	for {
+		if _, err = db.ExecContext(ctx, query, args...); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("YDB update did not stabilize: %v", err)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func canonicalRunForExternalEvent(
+	t *testing.T,
+	ctx context.Context,
+	db *sql.DB,
+	tenantID domain.TenantID,
+	externalEventID string,
+) string {
+	t.Helper()
+	rows, err := db.QueryContext(ctx,
+		`SELECT payload FROM dispatch_outbox WHERE tenant_id = $1`, tenantID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var payload string
+		if err := rows.Scan(&payload); err != nil {
+			t.Fatal(err)
+		}
+		var outbox domain.DispatchOutbox
+		if err := json.Unmarshal([]byte(payload), &outbox); err != nil {
+			t.Fatal(err)
+		}
+		if outbox.Origin != nil && outbox.Origin.Frontend == domain.FrontendTelegram &&
+			outbox.Origin.ExternalEventID == externalEventID {
+			return string(outbox.RunID)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	t.Fatalf("canonical dispatch for external event %q not found", externalEventID)
+	return ""
 }
 
 func postWebhook(

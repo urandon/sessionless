@@ -71,15 +71,17 @@ The suite proves:
   republished without duplicating admission or execution;
 - retryable worker failures before the first checkpoint and after checkpoint
   one resume without duplicate terminal state;
-- durable cancellation releases the reservation and creates a same-chat reply;
-- a deterministic Telegram 429 produces a durable delivery retry and one
-  logical captured reply;
-- replaying a terminal queue message produces no re-execution, charge, or
-  delivery;
+- durable cancellation releases the reservation and appends one canonical
+  terminal system event;
+- canonical assistant/tool finalization creates one frontend projection;
+- replaying a terminal queue message produces no re-execution, charge,
+  canonical event, or projection;
 - output artifact keys and reads remain tenant-scoped;
 - `/new` changes the next workload to a new canonical `session_id` while the
   previous session remains intact.
 
+Command replies still exercise the durable Telegram delivery path. Ordinary
+AI-result delivery/retry moves to projection consumption in TELEGRAM-02 #37.
 The lower-level worker, YDB, S3, queue, ingress, and delivery suites retain
 their focused concurrency, fencing, path traversal, size-limit, and
 cross-tenant negative cases. The E2E suite composes those same production

@@ -45,7 +45,7 @@ domain objects whose tenant does not match it.
 | `oidc_login_challenges` | `(shard_bucket, state_digest)` | point-consume one browser-bound OIDC transaction |
 | `web_sessions` | `(shard_bucket, session_digest)` | point-authorize, rotate, or revoke a first-party browser session |
 | `development_bootstrap_grants` | `(tenant_id, user_id)` | exact cloud-dev bootstrap idempotency and audit ledger |
-| `telegram_updates` | `(tenant_id, source_id, update_id)` | point insert/read for Bot API deduplication |
+| `telegram_updates` | `(tenant_id, source_id, update_id)` | point insert/read for Telegram control-command deduplication; ordinary messages use `frontend_ingress_idempotency` |
 | `subscription_connections` | `(tenant_id, subscription_connection_id)` | point-read credential reference and observed entitlement |
 | `subscription_scheduler_slots` | `(tenant_id, subscription_connection_id)` | serializable one-subscription admission contention point |
 | `tenant_scheduler_counters` | `(tenant_id)` | point-read/update bounded queue and active-run counters |
@@ -138,12 +138,12 @@ content-conflict error.
 
 ```text
 serializable transaction
-  point-read telegram_updates(tenant, source, update)
-  if present: return its run_id
-  put run + run_idempotency
-  put initial attempt
-  put dispatch outbox
-  insert telegram update marker
+  authorize active tenant membership and writable session participant
+  point-read frontend_ingress_idempotency(tenant, binding, normalized delivery)
+  if present: return its original session event and run
+  append canonical user event and advance the session sequence
+  put run + initial attempt + input manifest + dispatch outbox
+  insert frontend ingress idempotency fact
 commit
 ```
 

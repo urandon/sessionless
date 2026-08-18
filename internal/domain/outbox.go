@@ -35,7 +35,7 @@ type DispatchOutbox struct {
 	AllowedMCPServers []string              `json:"allowed_mcp_servers,omitempty"`
 	Origin            *FrontendEventOrigin  `json:"origin,omitempty"`
 	// DeliveryChat and ReplyToMessageID are the compatibility bridge for the
-	// pre-canonical Telegram worker flow. New ingress paths use Origin; #36
+	// pre-canonical Telegram worker flow. New ingress paths use Origin; #37
 	// removes this bridge when Telegram projects canonical assistant events.
 	DeliveryChat     TelegramChatRef `json:"delivery_chat"`
 	ReplyToMessageID int64           `json:"reply_to_message_id"`

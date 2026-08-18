@@ -77,9 +77,8 @@ reference. Rebuilding the same event prefix therefore produces the same bytes
 and SHA-256 digest.
 
 `ConversationRef`, `ActorRef`, and the old YDB context revision remain only in
-the transitional Telegram persistence adapter. They must not cross into new
-session, run, scheduling, or worker contracts; #36 removes them from the
-Telegram ingress path.
+Telegram DM enrollment/control-command compatibility code. They do not cross
+ordinary canonical user-event, run, scheduling, or worker contracts.
 
 ## Tenant isolation
 
@@ -153,10 +152,11 @@ its own delivery/idempotency state; delivery success never determines whether
 the canonical event exists. Retrying or adding a frontend therefore cannot
 duplicate or rewrite canonical history.
 
-Until #23 migrates worker finalization, the existing Telegram delivery outbox
-is a compatibility projection. Until #36 adapts Telegram to
-`CanonicalIngressStore`, the existing Telegram update transaction is a
-compatibility ingress path. Neither changes the canonical contract above.
+Telegram ordinary-message ingestion uses `CanonicalIngressStore`; Telegram
+update/message identifiers survive only as frontend origin and payload
+metadata. Control-command replies still use the existing Telegram delivery
+outbox. TELEGRAM-02 #37 replaces the worker-owned compatibility delivery path
+with consumption of canonical frontend projections.
 
 ## Quota and usage
 
@@ -276,8 +276,8 @@ worker loads that snapshot plus its bounded contiguous tail, verifies every
 event and payload reference, and writes `context/history.jsonl`; referenced
 message attachments are written below `context/attachments/<sequence>/`.
 Missing, incompatible, or corrupt snapshots fall back to an older snapshot and
-finally to bounded replay from event one. Legacy jobs keep their single-blob
-bridge until Telegram migration issue #36. Inputs, optional workspace, skills,
+finally to bounded replay from event one. Pre-canonical legacy jobs keep their
+single-blob bridge until Telegram projection issue #37. Inputs, optional workspace, skills,
 and the latest checkpoint are copied into the same new invocation-only
 directory with tenant, path, size, and SHA-256 checks.
 

@@ -17,6 +17,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/idgen"
 	"gitcode.com/urandon/sessionless/internal/outboxwake"
 	"gitcode.com/urandon/sessionless/internal/s3store"
+	"gitcode.com/urandon/sessionless/internal/sessioningress"
 	"gitcode.com/urandon/sessionless/internal/sqsqueue"
 	"gitcode.com/urandon/sessionless/internal/telegramingress"
 	"gitcode.com/urandon/sessionless/internal/ydbclient"
@@ -74,9 +75,8 @@ func buildHandler(
 		logger.Warn("Telegram webhook is disabled", "reason", "TELEGRAM_WEBHOOK_SECRET is unset")
 		return controlapi.NewHandler(logger, info), func() {}, nil
 	}
-	identity, err := telegramingress.NewIdentityResolver(
-		[]byte(os.Getenv("TELEGRAM_IDENTITY_HMAC_KEY")),
-	)
+	identityKey := []byte(os.Getenv("TELEGRAM_IDENTITY_HMAC_KEY"))
+	identity, err := telegramingress.NewIdentityResolver(identityKey)
 	if err != nil {
 		return nil, func() {}, err
 	}
@@ -143,17 +143,27 @@ func buildHandler(
 		closeYDB()
 		return nil, func() {}, err
 	}
+	canonicalIngress, err := sessioningress.New(sessioningress.Config{
+		IDKey:                 identityKey,
+		DispatchWakePublisher: dispatchWakePublisher,
+		WakePublishError: func(publishErr error) {
+			logger.Warn("durable outbox wake publication deferred to recovery", "error", publishErr)
+		},
+	}, state, blobs)
+	if err != nil {
+		closeYDB()
+		return nil, func() {}, err
+	}
 	processor, err := telegramingress.NewProcessor(
 		telegramingress.ProcessorConfig{
 			SourceID:              envOrDefault("TELEGRAM_SOURCE_ID", "bot-primary"),
 			Provider:              envOrDefault("DEFAULT_COMPUTE_PROVIDER", "codex"),
-			DispatchWakePublisher: dispatchWakePublisher,
 			DeliveryWakePublisher: deliveryWakePublisher,
 			WakePublishError: func(publishErr error) {
 				logger.Warn("durable outbox wake publication deferred to recovery", "error", publishErr)
 			},
 		},
-		identity, idgen.New(), systemClock{}, blobs, fileClient, state,
+		identity, idgen.New(), systemClock{}, fileClient, canonicalIngress, state,
 	)
 	if err != nil {
 		closeYDB()

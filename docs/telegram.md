@@ -39,14 +39,19 @@ The internal endpoint compares `X-Telegram-Bot-Api-Secret-Token` in constant
 time before processing the JSON body. The forwarded update returns `200` only
 after:
 
-1. its opaque identity mapping has been materialized in YDB;
+1. its opaque external identity resolves to an active tenant membership and
+   writable canonical-session participant;
 2. message content and downloaded attachments have been written below the
-   tenant object prefix;
-3. the Telegram update, run, initial attempt, input artifact manifest, and
-   dispatch outbox have committed in one serializable YDB transaction.
+   tenant/session/event object prefix;
+3. the frontend idempotency fact, canonical user event, run, initial attempt,
+   input artifact manifest, and dispatch outbox have committed in one
+   serializable YDB transaction.
 
-Duplicate `(tenant_id, source_id, update_id)` deliveries return the canonical
-run and do not create another run, attempt, manifest, or dispatch outbox.
+The normalized external event ID contains the configured bot source and Bot
+API update ID. Duplicate deliveries return the original canonical event and
+run even after `/new` switches the binding, and do not create another event,
+run, attempt, manifest, or dispatch outbox. Telegram update/message IDs remain
+transport metadata; neither becomes a Sessionless session ID.
 Unsupported update kinds and group chats are acknowledged and ignored in the
 current private-chat MVP. Processing failures return `503` so Telegram retries.
 
@@ -90,7 +95,8 @@ overwrite a newer binding. The command itself is not sent to an AI worker.
 
 ## Opaque identity resolution
 
-Every replica derives the same IDs with HMAC-SHA-256 and a deployment secret:
+Every replica derives stable opaque transport and initial-enrollment IDs with
+HMAC-SHA-256 and a deployment secret:
 
 - tenant and frontend binding from the private Telegram chat ID;
 - actor from the tenant chat plus Telegram user ID;
@@ -98,20 +104,23 @@ Every replica derives the same IDs with HMAC-SHA-256 and a deployment secret:
 
 Only a truncated keyed digest is encoded into internal IDs. Telegram numeric
 IDs cannot be recovered from these values, and no global lookup-table scan is
-required. Rotating `TELEGRAM_IDENTITY_HMAC_KEY` changes the mapping and therefore
-requires an explicit migration; it must not be rotated like an ordinary
-short-lived credential.
+required. The mapping only locates the DM enrollment record: active tenant
+membership and session participation grant authority. A chat or user ID alone
+never authorizes access. Rotating `TELEGRAM_IDENTITY_HMAC_KEY` changes the
+mapping and therefore requires an explicit migration; it must not be rotated
+like an ordinary short-lived credential.
 
 The raw frontend IDs remain only in tenant-scoped actor and frontend-binding
 records needed to address Telegram and reconcile frontend facts.
 
 ## Object layout
 
-Normalized input and attachments are stored as:
+Canonical input envelopes and attachments are stored in an immutable upload
+namespace as:
 
 ```text
-tenants/<tenant-id>/inputs/<run-id>/message.json
-tenants/<tenant-id>/inputs/<run-id>/attachments/<ordinal>-<safe-name>
+tenants/<tenant-id>/sessions/<session-id>/events/<event-id>/uploads/<token>/message.json
+tenants/<tenant-id>/sessions/<session-id>/events/<event-id>/uploads/<token>/attachments/<ordinal>-<safe-name>
 ```
 
 The input artifact manifest is committed with the run. A BlobStore adapter
@@ -127,7 +136,8 @@ POST /test/files/<file-id>?name=<file-name>
 
 ## Durable delivery
 
-After a Telegram delivery outbox commits, its producer publishes a payload-free
+Control-command replies continue to use the Telegram delivery outbox. After a
+delivery commits, its producer publishes a payload-free
 `wake.telegram` envelope. The YMQ-triggered `telegram-sender` point-reads the
 row by `(tenant_id, telegram_delivery_id)`. A serializable transaction then
 re-reads the delivery and moves it to `sending`; concurrent or duplicate wake
@@ -136,9 +146,13 @@ no-ops. The fixed 16-bucket `telegram_delivery_ready_v2` traversal is reserved
 for startup and six-hour recovery, not the normal delivery path. A `sending`
 row remains indexed behind a two-minute visibility timeout, so a process crash
 cannot strand it permanently. The sender reads only tenant-authorized
-payload/artifact blobs. Control commands use bounded inline text in the same
-outbox model, so they require no object-store write between the state
-transition and durable reply creation.
+payload/artifact blobs. Commands use bounded inline text, so they require no
+object-store write between the state transition and durable reply creation.
+
+Ordinary AI results are now canonical assistant/tool events with pending
+frontend projection rows. TELEGRAM-02 #37 adapts `telegram-sender` to consume
+those rows; until then this issue's E2E boundary stops at canonical
+finalization/projection and does not claim Telegram result delivery.
 
 Successful sends move to `sent`. Failures use bounded exponential backoff and
 move through `retry_wait`; the configured attempt limit ends in `failed`.

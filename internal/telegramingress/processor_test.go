@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/outboxwake"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/sessioningress"
 	"gitcode.com/urandon/sessionless/internal/testkit"
 )
 
@@ -68,7 +70,6 @@ type memoryIngressStore struct {
 	mu         sync.Mutex
 	identities map[domain.TenantID]ports.TelegramIdentityState
 	updates    map[string]domain.RunID
-	requests   []ports.TelegramIngress
 	commands   []ports.TelegramCommandRequest
 }
 
@@ -117,31 +118,110 @@ func (store *memoryIngressStore) EnsureTelegramIdentity(
 	return state, nil
 }
 
-func (store *memoryIngressStore) IngestTelegram(
+type memoryCanonicalStore struct {
+	mu       sync.Mutex
+	sessions map[domain.SessionID]domain.Session
+	bindings map[string]domain.FrontendBinding
+	commits  []ports.CanonicalUserEventCommit
+	results  map[string]ports.CanonicalUserEventResult
+}
+
+func newMemoryCanonicalStore() *memoryCanonicalStore {
+	return &memoryCanonicalStore{
+		sessions: make(map[domain.SessionID]domain.Session),
+		bindings: make(map[string]domain.FrontendBinding),
+		results:  make(map[string]ports.CanonicalUserEventResult),
+	}
+}
+
+func canonicalBindingKey(tenantID domain.TenantID, frontend domain.Frontend, external string) string {
+	return string(tenantID) + "/" + string(frontend) + "/" + external
+}
+
+func (store *memoryCanonicalStore) EnsureFrontendSession(
 	_ context.Context,
-	request ports.TelegramIngress,
-) (ports.TelegramIngressResult, error) {
-	if err := request.Run.Validate(); err != nil {
-		return ports.TelegramIngressResult{}, err
-	}
-	if err := request.Attempt.ValidateForRun(request.Run); err != nil {
-		return ports.TelegramIngressResult{}, err
-	}
-	if err := request.InputManifest.ValidateForRun(request.Run); err != nil {
-		return ports.TelegramIngressResult{}, err
-	}
-	if err := request.Dispatch.ValidateForAttempt(request.Run, request.Attempt); err != nil {
-		return ports.TelegramIngressResult{}, err
-	}
-	key := fmt.Sprintf("%s:%s:%d", request.TenantID, request.SourceID, request.UpdateID)
+	request ports.FrontendSessionRequest,
+) (ports.FrontendSessionState, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	if existing, ok := store.updates[key]; ok {
-		return ports.TelegramIngressResult{RunID: existing, Created: false}, nil
+	key := canonicalBindingKey(request.TenantID, request.Frontend, request.ExternalConversationID)
+	if binding, found := store.bindings[key]; found {
+		return ports.FrontendSessionState{Session: store.sessions[binding.SessionID], Binding: binding}, nil
 	}
-	store.updates[key] = request.Run.ID
-	store.requests = append(store.requests, request)
-	return ports.TelegramIngressResult{RunID: request.Run.ID, Created: true}, nil
+	session := domain.Session{
+		ID: request.SessionID, TenantID: request.TenantID, CreatedBy: request.UserID,
+		Status: domain.SessionActive, CreatedAt: request.At, UpdatedAt: request.At,
+	}
+	binding := domain.FrontendBinding{
+		ID: request.BindingID, TenantID: request.TenantID, Frontend: request.Frontend,
+		ExternalConversationID: request.ExternalConversationID, SessionID: session.ID,
+		Revision: 1, CreatedAt: request.At, UpdatedAt: request.At,
+	}
+	store.sessions[session.ID], store.bindings[key] = session, binding
+	return ports.FrontendSessionState{Session: session, Binding: binding}, nil
+}
+
+func (store *memoryCanonicalStore) CreateAndSwitchFrontendSession(
+	_ context.Context,
+	request ports.CanonicalSessionSwitchRequest,
+) (ports.FrontendSessionState, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	for key, binding := range store.bindings {
+		if binding.ID != request.BindingID {
+			continue
+		}
+		if err := binding.Switch(request.ExpectedRevision, request.SessionID, request.At); err != nil {
+			return ports.FrontendSessionState{}, err
+		}
+		session := domain.Session{
+			ID: request.SessionID, TenantID: request.TenantID, CreatedBy: request.UserID,
+			Status: domain.SessionActive, CreatedAt: request.At, UpdatedAt: request.At,
+		}
+		store.sessions[session.ID], store.bindings[key] = session, binding
+		return ports.FrontendSessionState{Session: session, Binding: binding}, nil
+	}
+	return ports.FrontendSessionState{}, fmt.Errorf("binding %q not found", request.BindingID)
+}
+
+func (store *memoryCanonicalStore) LookupCanonicalUserEvent(
+	_ context.Context,
+	request ports.CanonicalUserEventLookup,
+) (ports.CanonicalUserEventLookupResult, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	result, found := store.results[string(request.BindingID)+"/"+string(request.IdempotencyKey)]
+	if found {
+		result.Created = false
+	}
+	return ports.CanonicalUserEventLookupResult{Result: result, Found: found}, nil
+}
+
+func (store *memoryCanonicalStore) CommitCanonicalUserEvent(
+	_ context.Context,
+	request ports.CanonicalUserEventCommit,
+) (ports.CanonicalUserEventResult, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	key := string(request.BindingID) + "/" + string(request.IdempotencyKey)
+	if result, found := store.results[key]; found {
+		result.Created = false
+		return result, nil
+	}
+	var sessionID domain.SessionID
+	for _, binding := range store.bindings {
+		if binding.ID == request.BindingID {
+			sessionID = binding.SessionID
+			break
+		}
+	}
+	result := ports.CanonicalUserEventResult{
+		SessionID: sessionID, EventID: request.EventID, Sequence: 1,
+		RunID: request.RunID, Created: true,
+	}
+	store.commits = append(store.commits, request)
+	store.results[key] = result
+	return result, nil
 }
 
 type staticFileFetcher struct{}
@@ -162,16 +242,23 @@ func TestProcessorPersistsTenantScopedMessageAndDeduplicatesUpdate(t *testing.T)
 	}
 	blobs := newMemoryBlobStore()
 	state := newMemoryIngressStore()
+	canonicalStore := newMemoryCanonicalStore()
 	dispatchQueue, deliveryQueue := testkit.NewMemoryQueue(), testkit.NewMemoryQueue()
 	dispatchPublisher, _ := outboxwake.NewPublisher(dispatchQueue)
 	deliveryPublisher, _ := outboxwake.NewPublisher(deliveryQueue)
+	canonical, err := sessioningress.New(sessioningress.Config{
+		IDKey: []byte(strings.Repeat("i", 32)), DispatchWakePublisher: dispatchPublisher,
+	}, canonicalStore, blobs)
+	if err != nil {
+		t.Fatal(err)
+	}
 	processor, err := NewProcessor(
 		ProcessorConfig{
 			SourceID: "bot-primary", Provider: "codex",
-			DispatchWakePublisher: dispatchPublisher, DeliveryWakePublisher: deliveryPublisher,
+			DeliveryWakePublisher: deliveryPublisher,
 		},
 		resolver, testkit.NewSequenceIDGenerator("test-"),
-		testkit.NewFakeClock(now), blobs, staticFileFetcher{}, state,
+		testkit.NewFakeClock(now), staticFileFetcher{}, canonical, state,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -195,26 +282,42 @@ func TestProcessorPersistsTenantScopedMessageAndDeduplicatesUpdate(t *testing.T)
 	if !first.Created || second.Created || second.RunID != first.RunID {
 		t.Fatalf("dedup results = %#v then %#v", first, second)
 	}
-	if len(state.requests) != 1 {
-		t.Fatalf("committed ingress count = %d, want 1", len(state.requests))
+	if len(canonicalStore.commits) != 1 {
+		t.Fatalf("canonical ingress count = %d, want 1", len(canonicalStore.commits))
+	}
+	request := canonicalStore.commits[0]
+	if request.Origin.Frontend != domain.FrontendTelegram ||
+		request.Origin.ExternalConversationID != "1001" ||
+		request.Origin.ExternalEventID != "bot-primary:77" {
+		t.Fatalf("canonical Telegram origin = %#v", request.Origin)
+	}
+	var envelope struct {
+		Metadata map[string]string `json:"metadata"`
+	}
+	if err := json.Unmarshal(blobs.objects[request.Payload.Key], &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Metadata["telegram.update_id"] != "77" ||
+		envelope.Metadata["telegram.message_id"] != "9" ||
+		envelope.Metadata["telegram.attachment.01.file_id"] != "file-1" {
+		t.Fatalf("canonical Telegram metadata = %#v", envelope.Metadata)
 	}
 	for index := 0; index < 2; index++ {
 		message, err := dispatchQueue.Receive(context.Background())
-		if err != nil || message.Envelope.SubjectID != string(outboxwake.DispatchOutboxID(first.RunID)) {
+		if err != nil || message.Envelope.SubjectID != string(request.DispatchID) {
 			t.Fatalf("dispatch wake %d = %#v, %v", index, message, err)
 		}
 	}
-	request := state.requests[0]
-	if len(request.InputManifest.Artifacts) != 2 {
-		t.Fatalf("artifact count = %d, want message plus document", len(request.InputManifest.Artifacts))
+	if len(request.Artifacts) != 2 {
+		t.Fatalf("artifact count = %d, want message plus document", len(request.Artifacts))
 	}
-	if request.InputManifest.Artifacts[1].Name != "attachment-01-report.txt" {
+	if request.Artifacts[1].Name != "attachment-01-report.txt" {
 		t.Fatalf(
 			"document artifact name = %q, want attachment-01-report.txt",
-			request.InputManifest.Artifacts[1].Name,
+			request.Artifacts[1].Name,
 		)
 	}
-	for _, artifact := range request.InputManifest.Artifacts {
+	for _, artifact := range request.Artifacts {
 		if !strings.HasPrefix(artifact.Blob.Key, domain.TenantObjectPrefix(request.TenantID)) {
 			t.Fatalf("cross-tenant blob key %q", artifact.Blob.Key)
 		}
@@ -230,16 +333,23 @@ func TestProcessorRoutesCommandsWithoutCreatingAIIngress(t *testing.T) {
 	}
 	blobs := newMemoryBlobStore()
 	state := newMemoryIngressStore()
+	canonicalStore := newMemoryCanonicalStore()
 	dispatchQueue, deliveryQueue := testkit.NewMemoryQueue(), testkit.NewMemoryQueue()
 	dispatchPublisher, _ := outboxwake.NewPublisher(dispatchQueue)
 	deliveryPublisher, _ := outboxwake.NewPublisher(deliveryQueue)
+	canonical, err := sessioningress.New(sessioningress.Config{
+		IDKey: []byte(strings.Repeat("c", 32)), DispatchWakePublisher: dispatchPublisher,
+	}, canonicalStore, blobs)
+	if err != nil {
+		t.Fatal(err)
+	}
 	processor, err := NewProcessor(
 		ProcessorConfig{
 			SourceID: "bot-primary", Provider: "hermes",
-			DispatchWakePublisher: dispatchPublisher, DeliveryWakePublisher: deliveryPublisher,
+			DeliveryWakePublisher: deliveryPublisher,
 		},
 		resolver, testkit.NewSequenceIDGenerator("command-"),
-		testkit.NewFakeClock(now), blobs, staticFileFetcher{}, state,
+		testkit.NewFakeClock(now), staticFileFetcher{}, canonical, state,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -277,8 +387,8 @@ func TestProcessorRoutesCommandsWithoutCreatingAIIngress(t *testing.T) {
 		state.commands[1].Provider != "codex" {
 		t.Fatalf("commands = %#v", state.commands)
 	}
-	if len(state.requests) != 0 {
-		t.Fatalf("AI ingress count = %d, want 0", len(state.requests))
+	if len(canonicalStore.commits) != 0 {
+		t.Fatalf("AI ingress count = %d, want 0", len(canonicalStore.commits))
 	}
 	if len(blobs.objects) != 0 {
 		t.Fatalf("command blobs = %d, want 0", len(blobs.objects))
@@ -286,4 +396,5 @@ func TestProcessorRoutesCommandsWithoutCreatingAIIngress(t *testing.T) {
 }
 
 var _ ports.BlobStore = (*memoryBlobStore)(nil)
-var _ ports.TelegramIngressStore = (*memoryIngressStore)(nil)
+var _ ports.CanonicalIngressStore = (*memoryCanonicalStore)(nil)
+var _ ports.TelegramControlStore = (*memoryIngressStore)(nil)

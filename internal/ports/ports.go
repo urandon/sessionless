@@ -108,6 +108,7 @@ type TelegramCommandRequest struct {
 	Actor                    domain.ActorRef
 	Conversation             domain.ConversationRef
 	SubscriptionConnectionID domain.SubscriptionConnectionID
+	ExpectedBindingRevision  uint64
 	RunID                    domain.RunID
 	SessionID                domain.SessionID
 	TriggerEventID           domain.SessionEventID
@@ -118,18 +119,26 @@ type TelegramCommandRequest struct {
 	RequestedAt              time.Time
 }
 
-// TelegramIngressStore owns the frontend-specific identity and idempotent
-// ingress transactions while keeping Telegram types out of the core domain.
-type TelegramIngressStore interface {
+// TelegramControlStore owns Telegram DM enrollment and control-command
+// transactions. Ordinary messages use CanonicalIngressStore through the
+// frontend-neutral application service.
+type TelegramControlStore interface {
 	EnsureTelegramIdentity(
 		ctx context.Context,
 		request TelegramIdentityRequest,
 	) (TelegramIdentityState, error)
-	IngestTelegram(ctx context.Context, request TelegramIngress) (TelegramIngressResult, error)
 	ExecuteTelegramCommand(
 		ctx context.Context,
 		request TelegramCommandRequest,
 	) (TelegramIngressResult, error)
+}
+
+// TelegramIngressStore is the legacy pre-canonical transaction retained for
+// migration and upgrade tests. New Telegram application code must depend on
+// TelegramControlStore plus CanonicalIngressStore instead.
+type TelegramIngressStore interface {
+	TelegramControlStore
+	IngestTelegram(ctx context.Context, request TelegramIngress) (TelegramIngressResult, error)
 }
 
 // StateStore provides the transaction boundary required for atomic state and
@@ -530,7 +539,7 @@ type WorkerFailure struct {
 }
 
 // LegacyTelegramWorkerCompletion and LegacyTelegramWorkerFailure keep the
-// pre-canonical Telegram transaction available while #36/#37 migrate the
+// pre-canonical Telegram transaction available while #37 migrates the result
 // adapter. They are deliberately outside WorkerStateStore so the canonical
 // finalization boundary contains no transport-specific delivery type.
 type LegacyTelegramWorkerCompletion struct {

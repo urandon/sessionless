@@ -22,7 +22,7 @@ type WorkerJob struct {
 	AllowedMCPServers []string              `json:"allowed_mcp_servers,omitempty"`
 	Limits            ProductLimits         `json:"limits"`
 	Origin            *FrontendEventOrigin  `json:"origin,omitempty"`
-	// Compatibility bridge for Telegram until #36 projects results from the
+	// Compatibility bridge for legacy Telegram jobs until #37 projects results from the
 	// canonical session stream.
 	DeliveryChat     TelegramChatRef `json:"delivery_chat"`
 	ReplyToMessageID int64           `json:"reply_to_message_id"`

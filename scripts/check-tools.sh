@@ -6,6 +6,15 @@ repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 . "$repo_root/tools/versions.env"
 
 failures=0
+scope=${1:-all}
+
+case "$scope" in
+	all | web) ;;
+	*)
+		printf 'usage: %s [web]\n' "$0" >&2
+		exit 2
+		;;
+esac
 
 report_missing() {
 	printf '%-18s MISSING (expected %s)\n' "$1" "$2"
@@ -23,6 +32,30 @@ report_version() {
 		failures=$((failures + 1))
 	fi
 }
+
+if command -v node >/dev/null 2>&1; then
+	actual=$(node --version | sed 's/^v//')
+	report_version "Node.js" "$NODE_VERSION" "$actual"
+else
+	report_missing "Node.js" "$NODE_VERSION"
+fi
+
+if command -v npm >/dev/null 2>&1; then
+	actual=$(npm --version)
+	report_version "npm" "$NPM_VERSION" "$actual"
+else
+	report_missing "npm" "$NPM_VERSION"
+fi
+
+if [ "$scope" = "web" ]; then
+	if [ "$failures" -ne 0 ]; then
+		printf '\n%d Web tool check(s) failed. See docs/development.md for installation guidance.\n' "$failures"
+		exit 1
+	fi
+
+	printf '\nAll pinned Web tools are available.\n'
+	exit 0
+fi
 
 if command -v go >/dev/null 2>&1; then
 	actual=$(go version | awk '{print $3}' | sed 's/^go//')

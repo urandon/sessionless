@@ -173,7 +173,7 @@ resolved to a membership before session rotation.
 | Method and path | Request selector/body | Authorization and result |
 | --- | --- | --- |
 | `GET /auth/telegram/start` | optional local `return_to` | create browser-bound challenge; redirect |
-| `GET /auth/telegram/callback` | exactly one of `code` or `error`, plus `state` | consume challenge; verify claims; resolve enrollment |
+| `GET /auth/telegram/callback` | exactly one of `code` or `error`, plus `state` | consume challenge; verify claims; resolve enrollment; on any failure redirect to `/login?auth_error=access_denied` without provider details |
 | `POST /auth/logout` | none | CSRF; revoke current digest; clear cookies |
 | `GET /api/web/v1/me` | none | resolved identity and memberships |
 | `GET /api/web/v1/tenants` | none | active memberships only |
@@ -181,6 +181,7 @@ resolved to a membership before session rotation.
 | `GET /api/web/v1/sessions` | bounded cursor/limit | active tenant plus participant read grant |
 | `POST /api/web/v1/sessions` | idempotency key | membership write grant; create canonical session |
 | `GET /api/web/v1/sessions/{session_id}/events` | `after_sequence` or cursor, bounded limit | participant read grant; ordered canonical events |
+| `GET /api/web/v1/sessions/{session_id}/compute` | session selector | participant read grant; credential-free compute selection and quota projection |
 | `POST /api/web/v1/sessions/{session_id}/archive` | desired state/idempotency | participant write grant |
 | `POST /api/web/v1/sessions/{session_id}/messages` | text, up to 8 committed upload IDs, idempotency key | participant write grant; canonical ingestion port |
 | `POST /api/web/v1/uploads` | session selector, idempotency key, name, media type, size, SHA-256 | participant write grant; short-lived intent |
@@ -251,9 +252,11 @@ WEB-02/04 must set at least:
 
 - `Strict-Transport-Security: max-age=31536000; includeSubDomains` after the
   delegated development hostname is HTTPS-only;
-- `Content-Security-Policy` with `default-src 'self'`, `object-src 'none'`,
+- `Content-Security-Policy` with `default-src 'self'`, an exact
+  `connect-src 'self' <WEB_OBJECT_STORAGE_ORIGIN>`, `object-src 'none'`,
   `base-uri 'none'`, and `frame-ancestors 'none'`; narrowly list only verified
-  Telegram/OIDC navigation and Object Storage upload origins;
+  Telegram/OIDC navigation and Object Storage upload origins; wildcard
+  capability origins are rejected at startup;
 - `X-Content-Type-Options: nosniff`;
 - `Referrer-Policy: no-referrer` on auth/capability responses and
   `strict-origin-when-cross-origin` elsewhere;

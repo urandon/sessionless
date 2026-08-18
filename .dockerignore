@@ -6,6 +6,8 @@
 .terraform
 **/.terraform
 **/node_modules
+web/.svelte-kit
+web/build
 *.tfstate
 *.tfplan
 coverage.out

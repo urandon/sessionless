@@ -48,6 +48,7 @@ sequenceDiagram
 | `GET` | `/api/web/v1/sessions/{session_id}` | Open bounded participant-authorized session metadata |
 | `GET` | `/api/web/v1/sessions/{session_id}/events` | Page ordered canonical event payloads after authorization |
 | `GET` | `/api/web/v1/sessions/{session_id}/runs` | Page provider/harness execution observations |
+| `GET` | `/api/web/v1/sessions/{session_id}/compute` | Return participant-authorized safe compute/quota status |
 | `POST` | `/api/web/v1/sessions/{session_id}/archive` | Archive or unarchive without deleting history |
 | `POST` | `/api/web/v1/sessions/{session_id}/messages` | Append an idempotent canonical Web message and create its run |
 | `POST` | `/api/web/v1/uploads` | Create an exact-object direct-upload capability |
@@ -68,8 +69,10 @@ server creates or verifies the binding `(web, session_id)` for the authorized
 canonical session. The generic revision-fenced binding operation remains an
 internal adapter boundary and is deliberately not registered as a Web route.
 
-An authenticated Telegram identity with no active membership receives a stable
-`403 access_denied` response and no Web session. Membership is created only by
+Any failed OIDC callback, including provider denial or missing enrollment,
+redirects to the stable same-origin `/login?auth_error=access_denied` recovery
+route and creates no Web session. Provider error names and descriptions are
+never reflected into the URL or response body. Membership is created only by
 an existing frontend participant, a validated invitation, or the audited
 cloud-development bootstrap command.
 
@@ -99,6 +102,7 @@ Source: [Telegram Login: OIDC integration](https://core.telegram.org/bots/telegr
 | `SESSIONLESS_ENVIRONMENT` | `local`, `cloud-dev`, or production environment name |
 | `WEB_BASE_URL` | Exact public HTTPS origin; callback is derived from it |
 | `WEB_PORT` | BFF listen port |
+| `WEB_OBJECT_STORAGE_ORIGIN` | Exact browser-facing capability origin; required with the Web API, HTTPS except loopback HTTP in `local` |
 | `TELEGRAM_OIDC_ISSUER` | Expected ID-token issuer |
 | `TELEGRAM_OIDC_AUTHORIZATION_ENDPOINT` | Telegram authorization endpoint |
 | `TELEGRAM_OIDC_TOKEN_ENDPOINT` | Server-side token endpoint |
@@ -146,6 +150,12 @@ the serverless BFF:
 5. Poll the returned run ID using `If-None-Match` and the server's
    `Retry-After`/`X-Sessionless-Poll-After-Ms` hints. Fetch new transcript
    events with `after_sequence`; do not combine it with `cursor`.
+
+Before submission, the UI can read
+`GET /api/web/v1/sessions/{session_id}/compute`. It returns `not_configured`,
+`ready`, or `ambiguous`; only `ready` includes provider, entitlement, quota,
+and observation time. Connection IDs, credential references, and tokens are
+not part of the response.
 
 Session/list/event/run reads return representation-derived ETags and answer a
 matching `If-None-Match` with `304`. Attachment and worker-artifact routes

@@ -25,6 +25,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/webapi"
 	"gitcode.com/urandon/sessionless/internal/webbff"
 	"gitcode.com/urandon/sessionless/internal/webcontract"
+	"gitcode.com/urandon/sessionless/internal/webstatic"
 	"gitcode.com/urandon/sessionless/internal/ydbclient"
 	"gitcode.com/urandon/sessionless/internal/ydbstore"
 )
@@ -174,8 +175,10 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 		closeYDB()
 		return nil, func() {}, err
 	}
-	handler, err := webbff.New(webbff.Config{
+	backend, err := webbff.New(webbff.Config{
 		BaseURL: baseURL, RedirectURI: redirectURI,
+		ObjectStorageOrigin:        os.Getenv("WEB_OBJECT_STORAGE_ORIGIN"),
+		AllowLoopbackObjectStorage: allowLocal,
 		OIDCPolicy: domain.OIDCVerificationPolicy{
 			Issuer:   envOrDefault("TELEGRAM_OIDC_ISSUER", telegramoidc.DefaultIssuer),
 			Audience: os.Getenv("TELEGRAM_OIDC_CLIENT_ID"), AllowedAlgorithms: []string{"RS256"},
@@ -183,6 +186,15 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 		},
 		Provider: provider, Store: store, Sessions: sessions, API: api, IDs: idgen.New(), Clock: systemClock{},
 		Logger: logger, Build: buildinfo.Current(component),
+	})
+	if err != nil {
+		closeYDB()
+		return nil, func() {}, err
+	}
+	handler, err := webstatic.New(webstatic.Config{
+		Backend:                    backend,
+		ObjectStorageOrigin:        os.Getenv("WEB_OBJECT_STORAGE_ORIGIN"),
+		AllowLoopbackObjectStorage: allowLocal,
 	})
 	if err != nil {
 		closeYDB()

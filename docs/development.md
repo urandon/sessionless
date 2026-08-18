@@ -9,13 +9,15 @@ make tools
 ```
 
 The check is exact and fails with an actionable list when a tool is absent or
-has drifted. The current foundation expects Go, Docker Compose, Docker Buildx, Terraform,
+has drifted. The current foundation expects Go, Node.js, npm, Docker Compose, Docker Buildx, Terraform,
 Yandex Cloud CLI (`yc`), YDB CLI, and Goose. Cloud tools are validated here even
 though the first local process only needs Go and Docker.
 
 | Tool | Pinned version | Installation source |
 | --- | ---: | --- |
 | Go | 1.26.4 | [go.dev/dl](https://go.dev/dl/) |
+| Node.js | 24.19.0 | [nodejs.org downloads](https://nodejs.org/en/download) |
+| npm | 11.17.0 | `npm install --global npm@11.17.0` |
 | Docker Compose | 5.3.1 | [Docker Compose install](https://docs.docker.com/compose/install/) |
 | Docker Buildx | 0.36.0 | [Docker Buildx install](https://docs.docker.com/build/install-buildx/) |
 | Terraform | 1.15.5 | [HashiCorp releases](https://releases.hashicorp.com/terraform/1.15.5/) |
@@ -54,11 +56,21 @@ subscription credentials into this repository.
 ## Fast path
 
 ```sh
+make web-ci
 make generate
 make test
 make build
 make integration
 ```
+
+`make web-ci` performs a lockfile-only `npm ci`, checks generated OpenAPI types
+for drift, runs Prettier, ESLint, Svelte/TypeScript checks, unit/component tests,
+and builds the static WebUI. The build is copied into the Go Web BFF embed tree
+only after stale generated assets are removed. Node.js and npm are exact pins;
+use `make web-tools` when only the Web toolchain needs validation. The separately
+gated `make web-browser-install` installs pinned Chromium, and
+`make web-browser-test` runs the Playwright end-to-end and axe accessibility
+suites. CI adds Playwright's Linux system dependencies through the same target.
 
 `make test` checks formatting, runs `go vet`, unit tests, and the race detector.
 `make build` writes every component declared by the Makefile to `.build/bin`.
@@ -135,7 +147,11 @@ service account. `SESSION_API_ID_HMAC_KEY` must be at least 32 bytes and stable
 across replicas because it derives upload, event, run, and dispatch identities.
 `WEB_MAX_UPLOAD_BYTES` configures a positive upload limit (default 32 MiB), and
 `WEB_ALLOWED_MCP_SERVERS` is an optional comma-separated allowlist copied into
-Web-created jobs.
+Web-created jobs. `WEB_OBJECT_STORAGE_ORIGIN` is the exact browser-facing
+origin of every direct upload/download capability and is added to CSP
+`connect-src`; wildcards, paths, credentials, query strings, and non-HTTPS
+origins are rejected. Only exact loopback HTTP is accepted when
+`SESSIONLESS_ENVIRONMENT=local` (for example `http://localhost:9000`).
 
 The direct upload sequence is intent, exact presigned `PUT`, commit, and then
 message submission. Reusing an idempotency key retries the same logical
@@ -223,6 +239,11 @@ the resolved inventory and has no prefix-delete mode.
 make images
 make ci
 ```
+
+`make ci` includes the deterministic WebUI checks and static build before Go
+verification and embedding. Go package commands use explicit repository package
+roots so they never descend into `web/node_modules`; a layout guard fails if a
+new project Go root is added without joining that inventory.
 
 The control plane uses a small distroless runtime. The worker has a separate
 Dockerfile. Its deterministic harness validates lifecycle behavior now; a

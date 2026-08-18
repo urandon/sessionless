@@ -140,6 +140,9 @@ are documented in [docs/session-api.md](docs/session-api.md).
 
 ```sh
 make tools
+make web-ci
+make web-browser-install
+make web-browser-test
 make generate
 make test
 make build

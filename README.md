@@ -121,6 +121,9 @@ threat model are documented in
 [design issue #1](https://gitcode.com/urandon/sessionless/issues/1), and delivery
 order is maintained in
 [implementation epic #6](https://gitcode.com/urandon/sessionless/issues/6).
+Session archive, storage tiering, legal hold, and the separately confirmed
+single-session deletion procedure are documented in
+[docs/session-lifecycle.md](docs/session-lifecycle.md).
 
 ## Commands
 
@@ -137,6 +140,11 @@ make partition-status
 make partition-backfill
 make cloud-app-reset-plan
 make cloud-app-reset
+make session-delete-request
+make session-delete-plan
+make session-delete
+make session-hold
+make session-release-hold
 make web-bootstrap
 make worker-once
 make integration

@@ -16,6 +16,8 @@ module "foundation" {
   artifact_bucket_name             = var.artifact_bucket_name
   artifact_bucket_max_size_bytes   = var.artifact_bucket_max_size_bytes
   artifact_retention_days          = var.artifact_retention_days
+  artifact_cold_transition_days    = var.artifact_cold_transition_days
+  artifact_ice_transition_days     = var.artifact_ice_transition_days
   ydb_ru_limit                     = var.ydb_ru_limit
   ydb_storage_gib                  = var.ydb_storage_gib
   queue_visibility_timeout_seconds = var.queue_visibility_timeout_seconds

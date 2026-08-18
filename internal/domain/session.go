@@ -66,8 +66,8 @@ func (session *Session) Archive(at time.Time) error {
 	if err := session.Validate(); err != nil {
 		return err
 	}
-	if session.Status != SessionActive {
-		return ValidationError{Field: "session.status", Reason: "only an active session can be archived"}
+	if session.Status == SessionArchived {
+		return nil
 	}
 	if at.Before(session.UpdatedAt) {
 		return ValidationError{Field: "session.updated_at", Reason: "transition time must not move backwards"}
@@ -83,8 +83,8 @@ func (session *Session) Unarchive(at time.Time) error {
 	if err := session.Validate(); err != nil {
 		return err
 	}
-	if session.Status != SessionArchived {
-		return ValidationError{Field: "session.status", Reason: "only an archived session can be unarchived"}
+	if session.Status == SessionActive {
+		return nil
 	}
 	if at.Before(session.UpdatedAt) {
 		return ValidationError{Field: "session.updated_at", Reason: "transition time must not move backwards"}

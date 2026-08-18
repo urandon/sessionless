@@ -42,12 +42,16 @@ a production adapter.
 | `session_events` | `(tenant_id, session_id, sequence)` | per-session ordered | sequence grows only behind a random session prefix |
 | `session_event_idempotency` | `(tenant_id, session_id, idempotency_key)` | tenant entity | point lookup behind a random session prefix |
 | `frontend_bindings` | `(tenant_id, binding_id)` | tenant entity | random binding ID; load splitting enabled |
+| `frontend_bindings_by_session` | `(tenant_id, session_id, binding_id)` | per-session inventory | bounded reverse lookup behind a random session prefix |
 | `frontend_binding_keys` | `(tenant_id, frontend, external_conversation_id)` | tenant entity | point lookup under an already authorized tenant |
 | `frontend_ingress_idempotency` | `(tenant_id, binding_id, idempotency_key)` | tenant entity | point deduplication behind a random binding prefix, independent of the binding's current session |
 | `frontend_projection_outbox` | `(tenant_id, frontend_projection_id)` | tenant entity | stable event/binding-derived IDs distribute generic projection work |
+| `frontend_projections_by_session` | `(tenant_id, session_id, frontend_projection_id)` | per-session inventory | bounded destructive cleanup behind a random session prefix |
 | `session_participants` | `(tenant_id, session_id, user_id)` | tenant entity | membership is behind a random session prefix |
 | `session_snapshots` | `(tenant_id, session_id, version)` | per-session ordered | version grows only behind a random session prefix |
 | `session_activity` | `(tenant_id, user_id, status, activity_bucket, updated_at, session_id)` | append-heavy | fixed 16-way per-user fan-out avoids one chronological write edge |
+| `session_legal_holds` | `(tenant_id, session_id)` | tenant entity | point-addressed durable retention guard |
+| `session_deletions` | `(tenant_id, session_id)` | tenant entity | point-addressed write fence and permanent completion tombstone |
 | `external_identities` | `(shard_bucket, provider, subject)` | global entity | a stable subject hash provides distributed point lookup without trusting provider ordering |
 | `external_identities_by_user` | `(user_bucket, user_id, provider, subject)` | global entity | a stable internal-user hash bounds reverse lookup |
 | `tenant_memberships` | `(user_bucket, user_id, tenant_id)` | global entity | membership listing stays behind a distributed internal-user prefix |
@@ -71,6 +75,7 @@ a production adapter.
 | `quota_reservations` | `(tenant_id, quota_reservation_id)` | tenant entity | random reservation ID; load splitting enabled |
 | `usage_observations` | `(tenant_id, subscription_connection_id, observed_at, usage_observation_id)` | append-heavy | time is behind tenant/subscription |
 | `artifact_manifests` | `(tenant_id, artifact_manifest_id)` | tenant entity | immutable point access |
+| `artifact_manifests_by_run` | `(tenant_id, run_id, artifact_manifest_id)` | per-run inventory | bounded reverse lookup behind a random run ID |
 | `dispatch_outbox` | `(tenant_id, dispatch_outbox_id)` | tenant entity | random outbox ID; load splitting enabled |
 | `telegram_delivery_outbox` | `(tenant_id, telegram_delivery_id)` | tenant entity | random delivery ID; load splitting enabled |
 | `audit_events` | `(tenant_id, occurred_at, audit_event_id)` | append-heavy | time is behind tenant; elephant-tenant throughput is a cloud gate |

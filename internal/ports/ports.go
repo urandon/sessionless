@@ -176,6 +176,19 @@ type SessionStore interface {
 	ListRunsBySession(ctx context.Context, tenantID domain.TenantID, sessionID domain.SessionID, limit uint64) ([]domain.Run, error)
 }
 
+// SessionLifecycleStore owns legal-retention and destructive-deletion state.
+// Deletion is deliberately separate from reversible SessionStore archiving.
+type SessionLifecycleStore interface {
+	PutSessionLegalHold(ctx context.Context, hold domain.SessionLegalHold) (domain.SessionLegalHold, error)
+	ReleaseSessionLegalHold(ctx context.Context, tenantID domain.TenantID, sessionID domain.SessionID, releasedBy domain.UserID, at time.Time) (domain.SessionLegalHold, error)
+	GetSessionLegalHold(ctx context.Context, tenantID domain.TenantID, sessionID domain.SessionID) (domain.SessionLegalHold, bool, error)
+	RequestSessionDeletion(ctx context.Context, deletion domain.SessionDeletion) (domain.SessionDeletion, error)
+	GetSessionDeletion(ctx context.Context, tenantID domain.TenantID, sessionID domain.SessionID) (domain.SessionDeletion, bool, error)
+	StartSessionDeletion(ctx context.Context, tenantID domain.TenantID, sessionID domain.SessionID, at time.Time) (domain.SessionDeletion, error)
+	BuildSessionDeletionInventory(ctx context.Context, tenantID domain.TenantID, sessionID domain.SessionID, maxRows uint64, maxObjects uint64) (domain.SessionDeletionInventory, error)
+	CompleteSessionDeletion(ctx context.Context, tenantID domain.TenantID, sessionID domain.SessionID, at time.Time, deletedObjects uint64, deletedBytes uint64) (domain.SessionDeletion, error)
+}
+
 type ReceivedMessage struct {
 	Envelope      queuecontract.Envelope
 	ReceiptHandle string

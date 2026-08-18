@@ -196,6 +196,11 @@ typed-confirmation derivation, and preservation boundary are documented in
 [cloud-development.md](cloud-development.md). It is not a production migration
 or an ordinary deployment step.
 
+Single-session archive, legal hold, bounded dry-run, and exact-object deletion
+are documented in [session-lifecycle.md](session-lifecycle.md). Use only the
+Make targets in that runbook; the destructive command requires the digest of
+the resolved inventory and has no prefix-delete mode.
+
 ## Images and CI
 
 ```sh

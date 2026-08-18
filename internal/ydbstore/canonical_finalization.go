@@ -119,6 +119,9 @@ func appendCanonicalFinalizationTx(
 	if len(drafts) == 0 {
 		return domain.ValidationError{Field: "worker_finalization.events", Reason: "must not be empty for a canonical run"}
 	}
+	if err := ensureSessionWritableTx(ctx, tx, run.SessionID); err != nil {
+		return err
+	}
 	session, found, err := readSessionTx(ctx, tx, run.SessionID)
 	if err != nil {
 		return err
@@ -190,7 +193,7 @@ func currentSessionBindingsTx(
 	sessionID domain.SessionID,
 ) ([]domain.FrontendBinding, error) {
 	rows, err := tx.sqlTx.QueryContext(ctx,
-		`SELECT record FROM frontend_bindings
+		`SELECT binding_id FROM frontend_bindings_by_session
 		 WHERE tenant_id = $1 AND session_id = $2`,
 		tx.tenantID, sessionID,
 	)
@@ -198,15 +201,25 @@ func currentSessionBindingsTx(
 		return nil, err
 	}
 	defer rows.Close()
-	var bindings []domain.FrontendBinding
+	var bindingIDs []domain.FrontendBindingID
 	for rows.Next() {
-		var record []byte
-		if err := rows.Scan(&record); err != nil {
+		var bindingID domain.FrontendBindingID
+		if err := rows.Scan(&bindingID); err != nil {
 			return nil, err
 		}
-		var binding domain.FrontendBinding
-		if err := json.Unmarshal(record, &binding); err != nil {
+		bindingIDs = append(bindingIDs, bindingID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var bindings []domain.FrontendBinding
+	for _, bindingID := range bindingIDs {
+		binding, found, err := readBindingTx(ctx, tx, bindingID)
+		if err != nil {
 			return nil, err
+		}
+		if !found {
+			return nil, fmt.Errorf("frontend binding session index references missing binding %q", bindingID)
 		}
 		if err := binding.Validate(); err != nil {
 			return nil, err
@@ -216,7 +229,7 @@ func currentSessionBindingsTx(
 		}
 		bindings = append(bindings, binding)
 	}
-	return bindings, rows.Err()
+	return bindings, nil
 }
 
 func insertFrontendProjectionTx(
@@ -254,6 +267,14 @@ func insertFrontendProjectionTx(
 		projection.TenantID, projection.ID, projection.SessionID, projection.EventID,
 		projection.EventSequence, projection.BindingID, projection.BindingRevision,
 		projection.Frontend, projection.Status, projection.CreatedAt, projection.UpdatedAt, record,
+	)
+	if err != nil {
+		return err
+	}
+	_, err = tx.sqlTx.ExecContext(ctx,
+		`INSERT INTO frontend_projections_by_session
+		 (tenant_id, session_id, frontend_projection_id) VALUES ($1, $2, $3)`,
+		projection.TenantID, projection.SessionID, projection.ID,
 	)
 	return err
 }

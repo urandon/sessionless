@@ -103,14 +103,55 @@ func TestSessionArchiveAndUnarchiveTransitions(t *testing.T) {
 	if err := session.Archive(archivedAt); err != nil {
 		t.Fatal(err)
 	}
+	if err := session.Archive(archivedAt.Add(time.Second)); err != nil {
+		t.Fatalf("idempotent archive: %v", err)
+	}
 	if _, err := domain.AppendSessionEvent(&session, canonicalEvent(1), nil); err == nil {
 		t.Fatal("event appended to archived session")
 	}
 	if err := session.Unarchive(archivedAt.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
+	if err := session.Unarchive(archivedAt.Add(2 * time.Minute)); err != nil {
+		t.Fatalf("idempotent unarchive: %v", err)
+	}
 	if session.Status != domain.SessionActive || session.ArchivedAt != nil {
 		t.Fatalf("unexpected unarchived state: %+v", session)
+	}
+}
+
+func TestSessionDeletionAndLegalHoldStateMachines(t *testing.T) {
+	t.Parallel()
+	deletion := domain.SessionDeletion{
+		TenantID: "tenant-a", SessionID: "session-1", RequestedBy: "user-1",
+		Reason: "user requested erasure", State: domain.SessionDeletionRequested,
+		RequestedAt: testTime,
+	}
+	if err := deletion.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := deletion.Start(testTime.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := deletion.Complete(testTime.Add(2*time.Minute), 3, 42); err != nil {
+		t.Fatal(err)
+	}
+	if err := deletion.Complete(testTime.Add(3*time.Minute), 3, 42); err != nil {
+		t.Fatalf("idempotent completion: %v", err)
+	}
+	if err := deletion.Complete(testTime.Add(3*time.Minute), 4, 42); err == nil {
+		t.Fatal("conflicting completion accepted")
+	}
+
+	hold := domain.SessionLegalHold{
+		TenantID: "tenant-a", SessionID: "session-1", State: domain.SessionLegalHoldActive,
+		Reason: "litigation preservation", SetBy: "user-1", SetAt: testTime,
+	}
+	if err := hold.Release("user-2", testTime.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := hold.Release("user-2", testTime.Add(2*time.Minute)); err != nil {
+		t.Fatalf("idempotent release: %v", err)
 	}
 }
 

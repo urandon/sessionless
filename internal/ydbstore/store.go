@@ -151,6 +151,9 @@ func (tx *stateTx) PutRun(ctx context.Context, run domain.Run) error {
 	if err := run.Validate(); err != nil {
 		return err
 	}
+	if err := ensureSessionWritableTx(ctx, tx, run.SessionID); err != nil {
+		return err
+	}
 	var existing string
 	err := tx.sqlTx.QueryRowContext(ctx,
 		`SELECT run_id FROM run_idempotency
@@ -484,6 +487,15 @@ func (tx *stateTx) PutArtifactManifest(
 		 VALUES ($1, $2, $3, $4, CAST($5 AS JsonDocument))`,
 		manifest.TenantID, manifest.ID, manifest.RunID, manifest.CreatedAt, payload,
 	)
+	if err != nil {
+		return err
+	}
+	_, err = tx.sqlTx.ExecContext(ctx,
+		`UPSERT INTO artifact_manifests_by_run
+		 (tenant_id, run_id, artifact_manifest_id)
+		 VALUES ($1, $2, $3)`,
+		manifest.TenantID, manifest.RunID, manifest.ID,
+	)
 	return err
 }
 
@@ -722,6 +734,9 @@ func (tx *stateTx) owningRun(
 	}
 	if !found {
 		return domain.Run{}, fmt.Errorf("run %q not found in tenant %q", runID, tx.tenantID)
+	}
+	if err := ensureSessionWritableTx(ctx, tx, run.SessionID); err != nil {
+		return domain.Run{}, err
 	}
 	return run, nil
 }

@@ -399,6 +399,9 @@ func authorizeTenantWriteTx(ctx context.Context, tx *stateTx, userID domain.User
 }
 
 func authorizeSessionWriteTx(ctx context.Context, tx *stateTx, sessionID domain.SessionID, userID domain.UserID) error {
+	if err := ensureSessionWritableTx(ctx, tx, sessionID); err != nil {
+		return err
+	}
 	participant, found, err := readJSON[domain.SessionParticipant](ctx, tx.sqlTx,
 		`SELECT record FROM session_participants
 		 WHERE tenant_id = $1 AND session_id = $2 AND user_id = $3`,

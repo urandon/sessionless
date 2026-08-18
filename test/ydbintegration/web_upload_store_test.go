@@ -50,6 +50,11 @@ func TestWebUploadStoreAuthorizationIdempotencyAndClaims(t *testing.T) {
 	if err != nil || fresh || retried.ID != intent.ID {
 		t.Fatalf("retry create = %+v fresh=%t err=%v", retried, fresh, err)
 	}
+	md5Conflict := create
+	md5Conflict.Intent.ExpectedMD5 = "AQEBAQEBAQEBAQEBAQEBAQ=="
+	if _, _, err := store.CreateWebUploadIntent(ctx, md5Conflict); !errors.Is(err, domain.ErrUploadIntentConflict) {
+		t.Fatalf("changed Content-MD5 create error = %v", err)
+	}
 	conflict := create
 	conflict.Intent = webUploadIntentFixture(tenantID, userID, session.ID, now, 10*time.Minute)
 	if _, _, err := store.CreateWebUploadIntent(ctx, conflict); !errors.Is(err, domain.ErrUploadIntentConflict) {
@@ -214,6 +219,24 @@ func TestWebUploadClaimsAreAtomicAndWebResourceReadsAreBounded(t *testing.T) {
 	if err := store.Transact(ctx, tenantID, func(tx ports.StateTx) error { return tx.PutRun(ctx, run) }); err != nil {
 		t.Fatal(err)
 	}
+	manifest := domain.ArtifactManifest{
+		ID:       domain.ArtifactManifestID(uniqueID("manifest-web-resource-output")),
+		TenantID: tenantID, RunID: run.ID, CreatedAt: now.Add(3 * time.Second),
+		Artifacts: []domain.Artifact{{
+			Name: "worker-output.txt", MediaType: "text/plain",
+			Blob: domain.BlobRef{
+				TenantID: tenantID,
+				Key: domain.SessionRunObjectPrefix(tenantID, session.ID, run.ID) +
+					"artifacts/sha256/" + canonicalDigest,
+				Size: 42, SHA256: canonicalDigest,
+			},
+		}},
+	}
+	if err := store.Transact(ctx, tenantID, func(tx ports.StateTx) error {
+		return tx.PutArtifactManifest(ctx, manifest)
+	}); err != nil {
+		t.Fatal(err)
+	}
 	record, found, err := store.GetRunForUser(ctx, tenantID, userID, run.ID)
 	if err != nil || !found || record.Run.ID != run.ID || record.Provider != "codex" {
 		t.Fatalf("point run = %+v found=%t err=%v", record, found, err)
@@ -223,6 +246,42 @@ func TestWebUploadClaimsAreAtomicAndWebResourceReadsAreBounded(t *testing.T) {
 	}
 	if _, found, err := store.GetRunForUser(ctx, tenantID, "forged-user", run.ID); !errors.Is(err, domain.ErrMembershipDenied) || found {
 		t.Fatalf("forged user run found=%t err=%v", found, err)
+	}
+	artifactRequest := ports.WebRunArtifactRequest{
+		TenantID: tenantID, UserID: userID, SessionID: session.ID,
+		RunID: run.ID, ManifestID: manifest.ID, Index: 0,
+	}
+	artifact, found, err := store.GetRunArtifactForUser(ctx, artifactRequest)
+	if err != nil || !found || artifact.Name != "worker-output.txt" ||
+		artifact.MediaType != "text/plain" || artifact.Blob != manifest.Artifacts[0].Blob {
+		t.Fatalf("point worker artifact = %+v found=%t err=%v", artifact, found, err)
+	}
+	for _, mutate := range []func(*ports.WebRunArtifactRequest){
+		func(request *ports.WebRunArtifactRequest) {
+			request.TenantID = domain.TenantID(uniqueID("forged-tenant"))
+		},
+		func(request *ports.WebRunArtifactRequest) { request.UserID = domain.UserID(uniqueID("forged-user")) },
+		func(request *ports.WebRunArtifactRequest) {
+			request.SessionID = domain.SessionID(uniqueID("forged-session"))
+		},
+		func(request *ports.WebRunArtifactRequest) { request.RunID = domain.RunID(uniqueID("forged-run")) },
+		func(request *ports.WebRunArtifactRequest) {
+			request.ManifestID = domain.ArtifactManifestID(uniqueID("forged-manifest"))
+		},
+		func(request *ports.WebRunArtifactRequest) { request.Index = 1 },
+	} {
+		forged := artifactRequest
+		mutate(&forged)
+		_, found, err := store.GetRunArtifactForUser(ctx, forged)
+		if forged.UserID != userID {
+			if !errors.Is(err, domain.ErrMembershipDenied) || found {
+				t.Fatalf("forged participant artifact found=%t err=%v", found, err)
+			}
+			continue
+		}
+		if err != nil || found {
+			t.Fatalf("forged artifact selector = %+v found=%t err=%v", forged, found, err)
+		}
 	}
 	connections, err := store.ResolveComputeConnectionsForUser(ctx, ports.ComputeConnectionResolveRequest{
 		TenantID: tenantID, UserID: userID, SessionID: session.ID,
@@ -250,7 +309,8 @@ func webUploadIntentFixture(
 		ID: uploadID, TenantID: tenantID, UserID: userID, SessionID: sessionID,
 		ObjectKey: domain.UploadIntentObjectPrefix(tenantID, uploadID) + "file.txt",
 		Name:      "file.txt", MediaType: "text/plain", ExpectedSize: 42,
-		ExpectedSHA256: canonicalDigest, Status: domain.UploadIntentPending,
+		ExpectedSHA256: canonicalDigest, ExpectedMD5: "AAAAAAAAAAAAAAAAAAAAAA==",
+		Status:    domain.UploadIntentPending,
 		CreatedAt: at, ExpiresAt: at.Add(ttl),
 	}
 }

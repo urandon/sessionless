@@ -54,6 +54,7 @@ sequenceDiagram
 | `POST` | `/api/web/v1/uploads/{upload_id}/commit` | Verify and commit the exact staged object |
 | `GET` | `/api/web/v1/runs/{run_id}` | Read one participant-authorized run |
 | `GET` | `/api/web/v1/sessions/{session_id}/events/{sequence}/attachments/{index}` | Create a short-lived capability for one canonical attachment |
+| `GET` | `/api/web/v1/sessions/{session_id}/runs/{run_id}/artifact-manifests/{manifest_id}/artifacts/{index}` | Create a short-lived capability for one exact worker artifact |
 
 Mutation routes require an exact `Origin` match and a double-submit CSRF value
 whose digest must also match the current server-side session. Switching tenants
@@ -131,10 +132,11 @@ The browser uploads large objects directly rather than proxying bytes through
 the serverless BFF:
 
 1. Create an upload intent with the target session, a fresh idempotency key,
-   filename, allowed media type, byte count, and lowercase SHA-256.
+   filename, allowed media type, byte count, lowercase SHA-256, and a canonical
+   padded standard-base64 `content_md5` for the same bytes.
 2. Use the returned `PUT` URL once, preserving every returned header exactly.
-   The URL and headers identify one server-generated staging object and expire
-   quickly.
+   The URL and headers, including `Content-MD5`, identify one server-generated
+   staging object and expire quickly.
 3. Commit the same `upload_id`. The BFF reauthorizes the user and verifies
    authoritative size, media type, checksum, key, and ETag from Object Storage.
 4. Submit text and up to eight committed upload IDs to the session message
@@ -146,10 +148,13 @@ the serverless BFF:
    events with `after_sequence`; do not combine it with `cursor`.
 
 Session/list/event/run reads return representation-derived ETags and answer a
-matching `If-None-Match` with `304`. Attachment routes return a short-lived
-exact-object `GET` capability rather than an Object Storage key. All capability
-responses remain `Cache-Control: no-store`; URLs must be redacted from request,
-audit, and analytics logs and must not be persisted in browser storage.
+matching `If-None-Match` with `304`. Attachment and worker-artifact routes
+return a short-lived exact-object `GET` capability rather than an Object
+Storage key. Worker-artifact lookup requires the participant-authorized exact
+session/run/manifest relationship and a bounded index; assistant projections
+publish only the opaque run and manifest selectors. All capability responses
+remain `Cache-Control: no-store`; URLs must be redacted from request, audit,
+and analytics logs and must not be persisted in browser storage.
 
 The default accepted upload size is 32 MiB. The built-in safe media allowlist
 is JSON, PDF, ZIP, GIF, JPEG, PNG, WebP, CSV, Markdown, and plain text. The

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
@@ -162,13 +163,14 @@ func (store *Store) LookupCanonicalUserEvent(
 		var sessionID string
 		var sequence uint64
 		var eventID, runID string
+		var mutationDigest sql.NullString
 		err := tx.sqlTx.QueryRowContext(ctx,
-			`SELECT session_id, sequence, event_id, run_id
+			`SELECT session_id, sequence, event_id, run_id, mutation_digest
 			 FROM frontend_ingress_idempotency
 			 WHERE tenant_id = $1 AND binding_id = $2 AND idempotency_key = $3
 			 AND expire_at > CurrentUtcTimestamp()`,
 			request.TenantID, request.BindingID, request.IdempotencyKey,
-		).Scan(&sessionID, &sequence, &eventID, &runID)
+		).Scan(&sessionID, &sequence, &eventID, &runID, &mutationDigest)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}
@@ -182,6 +184,9 @@ func (store *Store) LookupCanonicalUserEvent(
 		}
 		if !found || binding.Frontend != request.Frontend ||
 			binding.ExternalConversationID != request.ExternalConversationID {
+			return domain.ErrEventIdempotencyConflict
+		}
+		if request.MutationDigest != "" && mutationDigest.String != request.MutationDigest {
 			return domain.ErrEventIdempotencyConflict
 		}
 		originalSessionID := domain.SessionID(sessionID)
@@ -236,15 +241,19 @@ func (store *Store) CommitCanonicalUserEvent(
 		var existingSessionID string
 		var existingSequence uint64
 		var existingEventID, existingRunID string
+		var existingMutationDigest sql.NullString
 		lookupErr := tx.sqlTx.QueryRowContext(ctx,
-			`SELECT session_id, sequence, event_id, run_id
+			`SELECT session_id, sequence, event_id, run_id, mutation_digest
 			 FROM frontend_ingress_idempotency
 			 WHERE tenant_id = $1 AND binding_id = $2 AND idempotency_key = $3
 			 AND expire_at > CurrentUtcTimestamp()`,
 			request.TenantID, request.BindingID, request.IdempotencyKey,
-		).Scan(&existingSessionID, &existingSequence, &existingEventID, &existingRunID)
+		).Scan(&existingSessionID, &existingSequence, &existingEventID, &existingRunID, &existingMutationDigest)
 		switch {
 		case lookupErr == nil:
+			if request.MutationDigest != "" && existingMutationDigest.String != request.MutationDigest {
+				return domain.ErrEventIdempotencyConflict
+			}
 			if err := authorizeSessionWriteTx(
 				ctx, tx, domain.SessionID(existingSessionID), request.UserID,
 			); err != nil {
@@ -375,11 +384,11 @@ func (store *Store) CommitCanonicalUserEvent(
 		if _, err := tx.sqlTx.ExecContext(ctx,
 			`INSERT INTO frontend_ingress_idempotency
 			 (tenant_id, binding_id, idempotency_key, session_id, sequence,
-			  event_id, run_id, origin_digest, created_at, expire_at)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+			  event_id, run_id, origin_digest, mutation_digest, created_at, expire_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
 			request.TenantID, request.BindingID, request.IdempotencyKey, session.ID,
 			sequence, request.EventID, request.RunID, frontendOriginDigest(request.Origin),
-			request.CommittedAt, request.ExpireAt,
+			request.MutationDigest, request.CommittedAt, request.ExpireAt,
 		); err != nil {
 			return err
 		}
@@ -493,7 +502,7 @@ func validateCanonicalCommit(request ports.CanonicalUserEventCommit) error {
 	if err := request.Payload.Validate(); err != nil {
 		return err
 	}
-	return nil
+	return validateMutationDigest(request.MutationDigest)
 }
 
 func validateCanonicalLookup(request ports.CanonicalUserEventLookup) error {
@@ -509,6 +518,19 @@ func validateCanonicalLookup(request ports.CanonicalUserEventLookup) error {
 	if request.ExternalConversationID == "" {
 		return domain.ValidationError{
 			Field: "external_conversation_id", Reason: "must not be empty",
+		}
+	}
+	return validateMutationDigest(request.MutationDigest)
+}
+
+func validateMutationDigest(value string) error {
+	if value == "" {
+		return nil
+	}
+	digest, err := hex.DecodeString(value)
+	if err != nil || len(digest) != sha256.Size || value != strings.ToLower(value) {
+		return domain.ValidationError{
+			Field: "canonical_ingress.mutation_digest", Reason: "must be a lowercase SHA-256 digest",
 		}
 	}
 	return nil

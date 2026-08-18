@@ -16,7 +16,7 @@ func TestMutationRequestsDoNotCarryTenantAuthority(t *testing.T) {
 		webcontract.CreateSessionRequest{IdempotencyKey: "create-1"},
 		webcontract.ArchiveSessionRequest{Archived: true, IdempotencyKey: "archive-1"},
 		webcontract.CreateMessageRequest{IdempotencyKey: "message-1", Text: "hello"},
-		webcontract.CreateUploadIntentRequest{SessionID: "session-1", Name: "a.txt", MediaType: "text/plain", Size: 1, SHA256: strings.Repeat("a", 64)},
+		webcontract.CreateUploadIntentRequest{SessionID: "session-1", Name: "a.txt", MediaType: "text/plain", Size: 1, SHA256: strings.Repeat("a", 64), ContentMD5: "AAAAAAAAAAAAAAAAAAAAAA=="},
 		webcontract.CommitUploadRequest{UploadID: "upload-1"},
 	}
 	for _, request := range requests {
@@ -104,6 +104,7 @@ func TestBoundedMessageAndUploadContracts(t *testing.T) {
 	upload := webcontract.CreateUploadIntentRequest{
 		SessionID: "session-1", IdempotencyKey: "upload-1",
 		Name: "a.txt", MediaType: "text/plain", Size: 1, SHA256: strings.Repeat("a", 64),
+		ContentMD5: "AAAAAAAAAAAAAAAAAAAAAA==",
 	}
 	if err := upload.Validate(1024); err != nil {
 		t.Fatalf("valid upload rejected: %v", err)
@@ -111,5 +112,14 @@ func TestBoundedMessageAndUploadContracts(t *testing.T) {
 	upload.Size = 1025
 	if err := upload.Validate(1024); err == nil {
 		t.Fatal("oversized upload accepted")
+	}
+	upload.Size = 1
+	for _, invalid := range []string{
+		"", "AAAAAAAAAAAAAAAAAAAAAA", "_____________________w==", "AAAAAAAAAAAAAAAAAAAAAAAA",
+	} {
+		upload.ContentMD5 = invalid
+		if err := upload.Validate(1024); err == nil {
+			t.Fatalf("non-canonical Content-MD5 %q accepted", invalid)
+		}
 	}
 }

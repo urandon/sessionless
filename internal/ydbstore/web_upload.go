@@ -187,6 +187,62 @@ func (store *Store) GetRunForUser(
 	return record, found, err
 }
 
+func (store *Store) GetRunArtifactForUser(
+	ctx context.Context,
+	request ports.WebRunArtifactRequest,
+) (result ports.WebRunArtifact, found bool, err error) {
+	for _, validationErr := range []error{
+		request.TenantID.Validate(), request.UserID.Validate(), request.SessionID.Validate(),
+		request.RunID.Validate(), request.ManifestID.Validate(),
+	} {
+		if validationErr != nil {
+			return result, false, validationErr
+		}
+	}
+	if request.Index >= ports.MaxWebRunArtifacts {
+		return result, false, domain.ValidationError{
+			Field: "artifact.index", Reason: "is outside the bounded range",
+		}
+	}
+	err = store.Transact(ctx, request.TenantID, func(state ports.StateTx) error {
+		tx := state.(*stateTx)
+		run, exists, err := readJSON[domain.Run](ctx, tx.sqlTx,
+			`SELECT payload FROM runs WHERE tenant_id = $1 AND run_id = $2`,
+			request.TenantID, request.RunID,
+		)
+		if err != nil || !exists || run.SessionID != request.SessionID {
+			return err
+		}
+		if err := authorizeSessionForUserTx(ctx, tx, run.SessionID, request.UserID, false); err != nil {
+			return err
+		}
+		manifest, exists, err := readJSON[domain.ArtifactManifest](ctx, tx.sqlTx,
+			`SELECT payload FROM artifact_manifests
+			 WHERE tenant_id = $1 AND artifact_manifest_id = $2`,
+			request.TenantID, request.ManifestID,
+		)
+		if err != nil || !exists || manifest.RunID != run.ID {
+			return err
+		}
+		if len(manifest.Artifacts) > ports.MaxWebRunArtifacts {
+			return errors.New("artifact manifest exceeds the Web API read bound")
+		}
+		if err := manifest.ValidateForRun(run); err != nil {
+			return err
+		}
+		if int(request.Index) >= len(manifest.Artifacts) {
+			return nil
+		}
+		artifact := manifest.Artifacts[request.Index]
+		result = ports.WebRunArtifact{
+			Name: artifact.Name, MediaType: artifact.MediaType, Blob: artifact.Blob,
+		}
+		found = true
+		return nil
+	})
+	return result, found, err
+}
+
 func (store *Store) ResolveComputeConnectionsForUser(
 	ctx context.Context,
 	request ports.ComputeConnectionResolveRequest,
@@ -346,7 +402,8 @@ func sameUploadCreation(left, right domain.UploadIntent) bool {
 	return left.ID == right.ID && left.TenantID == right.TenantID && left.UserID == right.UserID &&
 		left.SessionID == right.SessionID && left.ObjectKey == right.ObjectKey && left.Name == right.Name &&
 		left.MediaType == right.MediaType && left.ExpectedSize == right.ExpectedSize &&
-		left.ExpectedSHA256 == right.ExpectedSHA256 && right.Status == domain.UploadIntentPending
+		left.ExpectedSHA256 == right.ExpectedSHA256 && left.ExpectedMD5 == right.ExpectedMD5 &&
+		right.Status == domain.UploadIntentPending
 }
 
 func validateComputeConnectionState(state ports.ComputeConnectionState) error {

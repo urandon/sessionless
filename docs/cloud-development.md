@@ -168,11 +168,33 @@ service account through the container metadata service. Omitting this explicit
 selector makes `ydb-go-sdk-auth-environ` fall back to anonymous credentials and
 causes cloud YDB discovery to fail with `Unauthenticated`.
 
-The artifact bucket rejects static-key authentication. Terraform also sets
-`S3_IAM_METADATA_CREDENTIALS=true` for the API, worker, and sender. The blob
-adapter obtains renewable IAM tokens from the same metadata service and calls
-the Object Storage S3 HTTP API with bearer authentication. Local MinIO remains
-on the AWS SDK path with explicit development credentials.
+The artifact bucket deliberately leaves static-key authentication enabled.
+[Yandex Object Storage terminates all pre-signed URLs when static-key access is
+disabled](https://yandex.cloud/en/docs/storage/operations/buckets/disable-statickey-auth),
+including short-lived URLs created through the IAM-authenticated Presign API.
+This is an explicit capability-versus-hardening tradeoff: Terraform does not
+provision a persistent Object Storage static key, anonymous read/list/config
+access remains disabled, the bucket is reachable only through IAM grants or an
+exact-object signed capability, and runtime roles remain bucket-scoped. A
+leaked static key belonging to a storage-authorized principal would
+nevertheless work against this bucket until that key is revoked, so key
+inventory and revocation remain deployment controls.
+
+Browser capability requests are allowed only from the exact HTTPS
+`webui_origin` supplied to Terraform; wildcards, paths, queries, and fragments
+are rejected. Bucket CORS permits only `PUT`, `GET`, and `HEAD`, accepts only
+the API's `Content-Type` and `Content-MD5` request headers, exposes
+only `ETag`, and caches preflight results for five minutes. `Content-Length` is
+also signature-bound but is a browser-managed forbidden request header, so it
+is not included in the CORS allow-header list. CORS does not grant object
+access: every operation still needs IAM authorization or a valid short-lived
+capability. See the Object Storage
+[CORS configuration contract](https://yandex.cloud/en/docs/storage/operations/buckets/cors).
+
+Terraform sets `S3_IAM_METADATA_CREDENTIALS=true` for the API, worker, and
+sender. The blob adapter obtains renewable IAM tokens from the same metadata
+service and calls the Object Storage S3 HTTP API with bearer authentication.
+Local MinIO remains on the AWS SDK path with explicit development credentials.
 
 The bucket lifecycle keeps immutable `tenants/` payloads in `STANDARD` for 30
 days by default, then moves them to `COLD`, and moves objects at least 365 days

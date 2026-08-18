@@ -177,15 +177,15 @@ func (store *Store) PresignUpload(
 	ctx context.Context,
 	request ports.UploadCapabilityRequest,
 ) (ports.ObjectCapability, error) {
-	objectKey, digest, err := store.validateUploadCapability(request)
+	objectKey, digest, contentMD5, err := store.validateUploadCapability(request)
 	if err != nil {
 		return ports.ObjectCapability{}, err
 	}
 	expiresAt := store.currentTime().Add(request.ExpiresIn)
 	headers := map[string]string{
-		"content-length":        strconv.FormatInt(request.Size, 10),
-		"content-type":          request.MediaType,
-		"x-amz-checksum-sha256": base64.StdEncoding.EncodeToString(digest),
+		"content-length": strconv.FormatInt(request.Size, 10),
+		"content-md5":    contentMD5,
+		"content-type":   request.MediaType,
 	}
 	if store.iamClient != nil {
 		return store.iamClient.presignObject(
@@ -195,10 +195,12 @@ func (store *Store) PresignUpload(
 	if store.s3Presigner == nil {
 		return ports.ObjectCapability{}, fmt.Errorf("S3 presigner is not configured")
 	}
+	headers["x-amz-checksum-sha256"] = base64.StdEncoding.EncodeToString(digest)
 	result, err := store.s3Presigner.PresignPutObject(ctx, &s3.PutObjectInput{
 		Bucket:         aws.String(store.bucket),
 		Key:            aws.String(objectKey),
 		ContentLength:  aws.Int64(request.Size),
+		ContentMD5:     aws.String(contentMD5),
 		ContentType:    aws.String(request.MediaType),
 		ChecksumSHA256: aws.String(headers["x-amz-checksum-sha256"]),
 	}, func(options *s3.PresignOptions) {
@@ -252,7 +254,7 @@ func (store *Store) StatObject(
 		return ports.ObjectMetadata{}, err
 	}
 	if store.iamClient != nil {
-		return store.iamClient.stat(ctx, store.bucket, tenantID, objectKey)
+		return store.iamClient.stat(ctx, store.bucket, tenantID, objectKey, store.maxObjectBytes)
 	}
 	result, err := store.s3Client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(store.bucket), Key: aws.String(objectKey), ChecksumMode: "ENABLED",
@@ -260,10 +262,30 @@ func (store *Store) StatObject(
 	if err != nil {
 		return ports.ObjectMetadata{}, fmt.Errorf("head S3 object: %w", err)
 	}
-	return metadataFromHead(
+	metadata, err := metadataFromHead(
 		tenantID, objectKey, aws.ToInt64(result.ContentLength), aws.ToString(result.ChecksumSHA256),
 		aws.ToString(result.ContentType), aws.ToString(result.ETag),
 	)
+	if err == nil {
+		err = validateStoredObjectSize(metadata.Blob.Size, store.maxObjectBytes)
+	}
+	if err != nil || metadata.Blob.SHA256 != "" {
+		return metadata, err
+	}
+	opened, err := store.s3Client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(store.bucket), Key: aws.String(objectKey),
+		IfMatch: aws.String(quoteETag(metadata.ETag)),
+	})
+	if err != nil {
+		return ports.ObjectMetadata{}, fmt.Errorf("conditionally get S3 object for SHA-256 verification: %w", err)
+	}
+	defer opened.Body.Close()
+	digest, err := hashObjectSHA256(opened.Body, metadata.Blob.Size, store.maxObjectBytes)
+	if err != nil {
+		return ports.ObjectMetadata{}, err
+	}
+	metadata.Blob.SHA256 = digest
+	return metadata, nil
 }
 
 func (store *Store) PromoteObject(
@@ -353,28 +375,32 @@ func promotedObjectMatches(
 
 func (store *Store) validateUploadCapability(
 	request ports.UploadCapabilityRequest,
-) (string, []byte, error) {
+) (string, []byte, string, error) {
 	objectKey, err := tenantObjectKey(request.TenantID, request.ObjectKey)
 	if err != nil {
-		return "", nil, err
+		return "", nil, "", err
 	}
 	if !strings.HasPrefix(objectKey, domain.TenantObjectPrefix(request.TenantID)+"uploads/") {
-		return "", nil, fmt.Errorf("upload capability key must be under upload staging")
+		return "", nil, "", fmt.Errorf("upload capability key must be under upload staging")
 	}
 	if request.Size <= 0 || request.Size > store.maxObjectBytes {
-		return "", nil, fmt.Errorf("upload size must be between 1 and %d bytes", store.maxObjectBytes)
+		return "", nil, "", fmt.Errorf("upload size must be between 1 and %d bytes", store.maxObjectBytes)
 	}
 	if err := validateMediaType(request.MediaType); err != nil {
-		return "", nil, err
+		return "", nil, "", err
 	}
 	digest, err := hex.DecodeString(request.SHA256)
 	if err != nil || len(digest) != sha256.Size || request.SHA256 != strings.ToLower(request.SHA256) {
-		return "", nil, fmt.Errorf("upload SHA-256 must be a lowercase 64-character digest")
+		return "", nil, "", fmt.Errorf("upload SHA-256 must be a lowercase 64-character digest")
+	}
+	md5Digest, err := base64.StdEncoding.Strict().DecodeString(request.ContentMD5)
+	if err != nil || len(md5Digest) != 16 || base64.StdEncoding.EncodeToString(md5Digest) != request.ContentMD5 {
+		return "", nil, "", fmt.Errorf("upload Content-MD5 must be the canonical base64 encoding of a 16-byte digest")
 	}
 	if err := validateCapabilityLifetime(request.ExpiresIn); err != nil {
-		return "", nil, err
+		return "", nil, "", err
 	}
-	return objectKey, digest, nil
+	return objectKey, digest, request.ContentMD5, nil
 }
 
 func (store *Store) currentTime() time.Time {
@@ -651,6 +677,7 @@ func (client *iamObjectClient) stat(
 	bucket string,
 	tenantID domain.TenantID,
 	key string,
+	maxObjectBytes int64,
 ) (ports.ObjectMetadata, error) {
 	response, err := client.do(ctx, http.MethodHead, bucket, key, nil, 0)
 	if err != nil {
@@ -664,10 +691,45 @@ func (client *iamObjectClient) stat(
 	if err != nil || size < 0 {
 		return ports.ObjectMetadata{}, fmt.Errorf("Object Storage HEAD returned invalid Content-Length")
 	}
-	return metadataFromHead(
+	metadata, err := metadataFromHead(
 		tenantID, key, size, response.Header.Get("x-amz-checksum-sha256"),
 		response.Header.Get("Content-Type"), response.Header.Get("ETag"),
 	)
+	if err == nil {
+		err = validateStoredObjectSize(metadata.Blob.Size, maxObjectBytes)
+	}
+	if err != nil || metadata.Blob.SHA256 != "" {
+		return metadata, err
+	}
+	body, err := client.openIfMatch(ctx, bucket, key, metadata.ETag)
+	if err != nil {
+		return ports.ObjectMetadata{}, fmt.Errorf("conditionally get Object Storage object for SHA-256 verification: %w", err)
+	}
+	defer body.Close()
+	digest, err := hashObjectSHA256(body, metadata.Blob.Size, maxObjectBytes)
+	if err != nil {
+		return ports.ObjectMetadata{}, err
+	}
+	metadata.Blob.SHA256 = digest
+	return metadata, nil
+}
+
+func (client *iamObjectClient) openIfMatch(
+	ctx context.Context,
+	bucket, key, etag string,
+) (io.ReadCloser, error) {
+	response, err := client.doWithHeaders(
+		ctx, http.MethodGet, bucket, key, nil, 0,
+		map[string]string{"If-Match": quoteETag(etag)},
+	)
+	if err != nil {
+		return nil, err
+	}
+	if response.StatusCode != http.StatusOK {
+		defer response.Body.Close()
+		return nil, objectResponseError(response)
+	}
+	return response.Body, nil
 }
 
 func (client *iamObjectClient) copyIfAbsent(
@@ -709,11 +771,15 @@ func metadataFromHead(
 	size int64,
 	checksumBase64, mediaType, etag string,
 ) (ports.ObjectMetadata, error) {
-	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(checksumBase64))
-	if err != nil || len(decoded) != sha256.Size {
-		return ports.ObjectMetadata{}, fmt.Errorf("Object Storage HEAD omitted authoritative SHA-256 checksum")
+	digest := ""
+	checksumBase64 = strings.TrimSpace(checksumBase64)
+	if checksumBase64 != "" {
+		decoded, err := base64.StdEncoding.Strict().DecodeString(checksumBase64)
+		if err != nil || len(decoded) != sha256.Size {
+			return ports.ObjectMetadata{}, fmt.Errorf("Object Storage HEAD returned an invalid SHA-256 checksum")
+		}
+		digest = hex.EncodeToString(decoded)
 	}
-	digest := hex.EncodeToString(decoded)
 	if size < 0 {
 		return ports.ObjectMetadata{}, fmt.Errorf("Object Storage HEAD returned invalid object size")
 	}
@@ -726,6 +792,40 @@ func metadataFromHead(
 		MediaType: mediaType,
 		ETag:      etag,
 	}, nil
+}
+
+func hashObjectSHA256(body io.Reader, expectedSize, maxObjectBytes int64) (string, error) {
+	if err := validateStoredObjectSize(expectedSize, maxObjectBytes); err != nil {
+		return "", err
+	}
+	if maxObjectBytes <= 0 {
+		maxObjectBytes = defaultMaxObjectBytes
+	}
+	hash := sha256.New()
+	written, err := io.Copy(hash, io.LimitReader(body, maxObjectBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("read stored object for SHA-256 verification: %w", err)
+	}
+	if written > maxObjectBytes {
+		return "", fmt.Errorf("stored object exceeds %d bytes during SHA-256 verification", maxObjectBytes)
+	}
+	if written != expectedSize {
+		return "", fmt.Errorf(
+			"stored object changed during SHA-256 verification: read %d bytes, expected %d",
+			written, expectedSize,
+		)
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func validateStoredObjectSize(size, maxObjectBytes int64) error {
+	if maxObjectBytes <= 0 {
+		maxObjectBytes = defaultMaxObjectBytes
+	}
+	if size < 0 || size > maxObjectBytes {
+		return fmt.Errorf("stored object size must be between 0 and %d bytes", maxObjectBytes)
+	}
+	return nil
 }
 
 func normalizeETag(etag string) string {
@@ -796,6 +896,16 @@ func (client *iamObjectClient) do(
 	body io.Reader,
 	contentLength int64,
 ) (*http.Response, error) {
+	return client.doWithHeaders(ctx, method, bucket, key, body, contentLength, nil)
+}
+
+func (client *iamObjectClient) doWithHeaders(
+	ctx context.Context,
+	method, bucket, key string,
+	body io.Reader,
+	contentLength int64,
+	headers map[string]string,
+) (*http.Response, error) {
 	token, err := client.tokens.Token(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("get Object Storage IAM token: %w", err)
@@ -807,6 +917,9 @@ func (client *iamObjectClient) do(
 		return nil, fmt.Errorf("create Object Storage request: %w", err)
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
+	for name, value := range headers {
+		request.Header.Set(name, value)
+	}
 	if method == http.MethodHead {
 		request.Header.Set("x-amz-checksum-mode", "ENABLED")
 	}

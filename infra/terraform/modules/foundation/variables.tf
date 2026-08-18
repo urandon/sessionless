@@ -11,6 +11,19 @@ variable "base_domain" {
   }
 }
 variable "artifact_bucket_name" { type = string }
+variable "webui_origin" {
+  description = "Exact public HTTPS origin allowed to use browser object capabilities; paths, wildcards, queries, and fragments are forbidden."
+  type        = string
+
+  validation {
+    condition = (
+      var.webui_origin == trimspace(var.webui_origin) &&
+      can(regex("^https://[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?$", var.webui_origin)) &&
+      !strcontains(var.webui_origin, "*")
+    )
+    error_message = "webui_origin must be one exact HTTPS origin without credentials, path, query, fragment, whitespace, or wildcards."
+  }
+}
 variable "artifact_bucket_max_size_bytes" { type = number }
 variable "artifact_retention_days" { type = number }
 variable "artifact_cold_transition_days" { type = number }

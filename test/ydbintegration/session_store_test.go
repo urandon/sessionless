@@ -386,6 +386,7 @@ func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 			ExternalEventID: "delivery-1",
 		},
 		IdempotencyKey: domain.IdempotencyKey(uniqueID("ingress-key")),
+		MutationDigest: canonicalDigest,
 		ExpireAt:       committedAt.Add(24 * time.Hour), EventID: eventID, Payload: payload,
 		RunID: runID, AttemptID: domain.AttemptID(uniqueID("attempt-ingress")),
 		SubscriptionConnectionID: domain.SubscriptionConnectionID(uniqueID("subscription-ingress")),
@@ -434,6 +435,11 @@ func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 	}
 	if duplicate.SessionID != thirdID || state.Session.ID != fourthID {
 		t.Fatalf("duplicate session=%s current session=%s", duplicate.SessionID, state.Session.ID)
+	}
+	changed := request
+	changed.MutationDigest = strings.Repeat("b", 64)
+	if _, err := store.CommitCanonicalUserEvent(ctx, changed); !errors.Is(err, domain.ErrEventIdempotencyConflict) {
+		t.Fatalf("changed mutation digest error=%v, want idempotency conflict", err)
 	}
 	for _, table := range []string{
 		"frontend_ingress_idempotency", "session_events", "runs", "attempts", "artifact_manifests", "dispatch_outbox",
@@ -623,12 +629,17 @@ func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 	lookup := ports.CanonicalUserEventLookup{
 		TenantID: tenantID, UserID: userID, BindingID: bindingID,
 		Frontend: frontend, ExternalConversationID: "synthetic-conversation",
-		IdempotencyKey: request.IdempotencyKey, EventID: request.EventID,
+		IdempotencyKey: request.IdempotencyKey, MutationDigest: request.MutationDigest, EventID: request.EventID,
 		RunID: request.RunID,
 	}
 	resolved, err := store.LookupCanonicalUserEvent(ctx, lookup)
 	if err != nil || !resolved.Found || resolved.Result.SessionID != thirdID {
 		t.Fatalf("canonical lookup=%#v err=%v", resolved, err)
+	}
+	changedLookup := lookup
+	changedLookup.MutationDigest = strings.Repeat("c", 64)
+	if _, err := store.LookupCanonicalUserEvent(ctx, changedLookup); !errors.Is(err, domain.ErrEventIdempotencyConflict) {
+		t.Fatalf("changed lookup digest error=%v, want idempotency conflict", err)
 	}
 	membershipBucket, err := ydbpartition.BucketV1(string(userID))
 	if err != nil {

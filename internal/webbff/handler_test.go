@@ -257,6 +257,33 @@ func TestSessionRoutesUseWebAuthorizationCSRFAndSafeSelectors(t *testing.T) {
 		t.Fatalf("authorized create status=%d body=%s", createResponse.Code, createResponse.Body.String())
 	}
 
+	for _, test := range []struct {
+		name   string
+		body   string
+		status int
+	}{
+		{name: "malformed", body: `{`, status: http.StatusBadRequest},
+		{name: "unknown field", body: `{"idempotency_key":"create-invalid","unknown":true}`, status: http.StatusBadRequest},
+		{name: "multiple values", body: `{"idempotency_key":"create-invalid"} {"idempotency_key":"other"}`, status: http.StatusBadRequest},
+		{name: "oversized", body: `{"idempotency_key":"create-invalid","padding":"` + strings.Repeat("x", maxTestRequestBytes) + `"}`, status: http.StatusRequestEntityTooLarge},
+	} {
+		t.Run("body "+test.name, func(t *testing.T) {
+			invalid := httptest.NewRequest(http.MethodPost,
+				"https://web.dev.sessionless.triborg.dev"+webcontract.RouteSessions,
+				strings.NewReader(test.body))
+			invalid.Header.Set("Content-Type", "application/json")
+			invalid.Header.Set("Origin", "https://web.dev.sessionless.triborg.dev")
+			invalid.Header.Set(webcontract.CSRFHeaderName, csrfCookie.Value)
+			invalid.AddCookie(sessionCookie)
+			invalid.AddCookie(csrfCookie)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, invalid)
+			if response.Code != test.status {
+				t.Fatalf("status=%d want=%d body=%s", response.Code, test.status, response.Body.String())
+			}
+		})
+	}
+
 	// Browser callers cannot create arbitrary frontend bindings; Web bindings
 	// are server-owned by the message submission path.
 	bind := httptest.NewRequest(http.MethodPost,
@@ -273,6 +300,8 @@ func TestSessionRoutesUseWebAuthorizationCSRFAndSafeSelectors(t *testing.T) {
 		t.Fatalf("browser binding route status=%d body=%s", bindResponse.Code, bindResponse.Body.String())
 	}
 }
+
+const maxTestRequestBytes = 64 << 10
 
 func newTestHandler(t *testing.T, store *memoryAuthStore, subject string) http.Handler {
 	t.Helper()

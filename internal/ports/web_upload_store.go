@@ -9,6 +9,11 @@ import (
 
 const MaxWebMessageUploads = 8
 
+// MaxWebRunArtifacts is the hard public read bound for one worker output
+// manifest. Product plans may admit fewer artifacts; the Web API refuses to
+// index or serve a manifest beyond this independent transport bound.
+const MaxWebRunArtifacts = 100
+
 type WebUploadCreateRequest struct {
 	Intent         domain.UploadIntent
 	IdempotencyKey domain.IdempotencyKey
@@ -53,10 +58,28 @@ type ComputeConnectionResolveRequest struct {
 	SessionID domain.SessionID
 }
 
+type WebRunArtifactRequest struct {
+	TenantID   domain.TenantID
+	UserID     domain.UserID
+	SessionID  domain.SessionID
+	RunID      domain.RunID
+	ManifestID domain.ArtifactManifestID
+	Index      uint32
+}
+
+// WebRunArtifact contains the minimum internal object identity required to
+// mint an exact-object capability. Transport adapters must not serialize Blob.
+type WebRunArtifact struct {
+	Name      string
+	MediaType string
+	Blob      domain.BlobRef
+}
+
 // WebResourceStore combines participant-authorized point run reads with a
 // bounded compute resolver. ComputeConnectionState deliberately has no field
 // capable of carrying credential_ref.
 type WebResourceStore interface {
 	GetRunForUser(context.Context, domain.TenantID, domain.UserID, domain.RunID) (RunRecord, bool, error)
+	GetRunArtifactForUser(context.Context, WebRunArtifactRequest) (WebRunArtifact, bool, error)
 	ResolveComputeConnectionsForUser(context.Context, ComputeConnectionResolveRequest) ([]ComputeConnectionState, error)
 }

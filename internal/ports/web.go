@@ -120,19 +120,25 @@ type ObjectCapability struct {
 }
 
 // UploadCapabilityRequest binds a direct browser PUT to immutable intent
-// metadata. SHA256 is the lowercase hexadecimal digest used by the domain;
-// adapters translate it to the wire representation required by the provider.
+// metadata. SHA256 is the lowercase hexadecimal digest used by the canonical
+// domain. ContentMD5 is the standard base64 encoding of the browser-computed
+// 16-byte MD5 digest and is signed as Content-MD5 so S3-compatible providers
+// reject a corrupted direct upload before storing it. SHA256 is still verified
+// authoritatively from the stored bytes before the upload can be committed.
 type UploadCapabilityRequest struct {
-	TenantID  domain.TenantID
-	ObjectKey string
-	MediaType string
-	Size      int64
-	SHA256    string
-	ExpiresIn time.Duration
+	TenantID   domain.TenantID
+	ObjectKey  string
+	MediaType  string
+	Size       int64
+	SHA256     string
+	ContentMD5 string
+	ExpiresIn  time.Duration
 }
 
-// ObjectMetadata is authoritative storage metadata obtained with an exact-key
-// HEAD. ETag is used as the source precondition during promotion.
+// ObjectMetadata is authoritative exact-key storage metadata. Implementations
+// must compute Blob.SHA256 from a provider checksum or a bounded conditional
+// read of the stored bytes; HEAD metadata alone is not sufficient. ETag is used
+// as the source precondition during promotion.
 type ObjectMetadata struct {
 	Blob      domain.BlobRef
 	MediaType string

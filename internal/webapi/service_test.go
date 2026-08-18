@@ -3,8 +3,11 @@ package webapi_test
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"strings"
@@ -105,14 +108,53 @@ func TestSubmitMessagePromotesCommittedUploadAndDeduplicatesCanonicalEvent(t *te
 	if len(harness.backend.commits) != 1 || len(harness.backend.events) != 1 || len(harness.backend.runs) != 1 {
 		t.Fatalf("commits=%d events=%d runs=%d, want exactly one of each", len(harness.backend.commits), len(harness.backend.events), len(harness.backend.runs))
 	}
-	if len(harness.objects.promotions) != 2 {
-		t.Fatalf("promotion attempts=%d, want one per request with immutable idempotent destination", len(harness.objects.promotions))
+	if len(harness.objects.promotions) != 1 {
+		t.Fatalf("promotion attempts=%d, want retry to return before object work", len(harness.objects.promotions))
 	}
 	for _, promotion := range harness.objects.promotions {
 		prefix := domain.SessionEventObjectPrefix("tenant-a", "session-a", first.EventID)
 		if !strings.HasPrefix(promotion.FinalKey, prefix) || strings.Contains(promotion.FinalKey, "../") {
 			t.Fatalf("final attachment key %q is outside %q", promotion.FinalKey, prefix)
 		}
+	}
+}
+
+func TestSubmitMessageCommittedRetryDoesNotRequireCurrentComputeConnection(t *testing.T) {
+	harness := newHarness(t)
+	request := webcontract.CreateMessageRequest{IdempotencyKey: "message-request-1", Text: "hello"}
+	first, err := harness.service.SubmitMessage(context.Background(), "tenant-a", "user-a", "session-a", request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	harness.backend.connections = nil
+	second, err := harness.service.SubmitMessage(context.Background(), "tenant-a", "user-a", "session-a", request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.Created || second.Created || first.RunID != second.RunID || harness.backend.resolveCalls != 1 {
+		t.Fatalf("first=%+v retry=%+v compute resolutions=%d", first, second, harness.backend.resolveCalls)
+	}
+	if second.Compute.Provider != "codex" || second.Compute.Entitlement != domain.EntitlementUnknown ||
+		second.Compute.Quota != domain.ProviderQuotaUnknown {
+		t.Fatalf("retry compute projection = %+v", second.Compute)
+	}
+}
+
+func TestSubmitMessageRejectsChangedContentForSameIdempotencyKeyBeforeDependencies(t *testing.T) {
+	harness := newHarness(t)
+	request := webcontract.CreateMessageRequest{IdempotencyKey: "message-request-1", Text: "first"}
+	if _, err := harness.service.SubmitMessage(context.Background(), "tenant-a", "user-a", "session-a", request); err != nil {
+		t.Fatal(err)
+	}
+	resolveCalls, commits := harness.backend.resolveCalls, len(harness.backend.commits)
+	request.Text = "changed"
+	_, err := harness.service.SubmitMessage(context.Background(), "tenant-a", "user-a", "session-a", request)
+	if !errors.Is(err, domain.ErrEventIdempotencyConflict) {
+		t.Fatalf("changed retry error = %v, want ErrEventIdempotencyConflict", err)
+	}
+	if harness.backend.resolveCalls != resolveCalls || len(harness.backend.commits) != commits || len(harness.objects.promotions) != 0 {
+		t.Fatalf("changed retry reached dependencies: resolutions=%d commits=%d promotions=%d",
+			harness.backend.resolveCalls, len(harness.backend.commits), len(harness.objects.promotions))
 	}
 }
 
@@ -205,6 +247,77 @@ func TestRunAndDownloadSelectorsRemainParticipantScoped(t *testing.T) {
 	}
 }
 
+func TestWorkerArtifactDownloadIsExactAndParticipantScoped(t *testing.T) {
+	harness := newHarness(t)
+	runID := domain.RunID("run-worker-output")
+	manifestID := domain.ArtifactManifestID("manifest-worker-output")
+	finishedAt := testNow
+	harness.backend.runs[runID] = ports.RunRecord{Run: domain.Run{
+		ID: runID, TenantID: "tenant-a", SessionID: "session-a",
+		TriggerEventID: "event-worker-trigger", SubscriptionConnectionID: "connection-a",
+		Status: domain.RunSucceeded, IdempotencyKey: "worker-output-run",
+		CreatedAt: testNow, UpdatedAt: testNow, FinishedAt: &finishedAt,
+	}}
+	payload := []byte("worker result")
+	key := domain.SessionRunObjectPrefix("tenant-a", "session-a", runID) + "artifacts/sha256/result"
+	harness.objects.put(key, "text/plain", payload, "etag-worker-result")
+	harness.backend.manifests[manifestID] = domain.ArtifactManifest{
+		ID: manifestID, TenantID: "tenant-a", RunID: runID, CreatedAt: testNow,
+		Artifacts: []domain.Artifact{{
+			Name: "result.txt", MediaType: "text/plain", Blob: harness.objects.metadata[key].Blob,
+		}},
+	}
+
+	response, err := harness.service.DownloadRunArtifact(
+		context.Background(), "tenant-a", "user-a", "session-a", runID, manifestID, 0,
+	)
+	if err != nil || response.Name != "result.txt" || response.MediaType != "text/plain" ||
+		response.Size != int64(len(payload)) || response.Download.Method != "GET" {
+		t.Fatalf("worker artifact response = %+v err=%v", response, err)
+	}
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var public map[string]any
+	if err := json.Unmarshal(encoded, &public); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := public["blob"]; exists || public["key"] != nil || public["sha256"] != nil {
+		t.Fatalf("artifact response exposed raw storage fields: %s", encoded)
+	}
+
+	for _, selector := range []struct {
+		name     string
+		tenant   domain.TenantID
+		user     domain.UserID
+		session  domain.SessionID
+		run      domain.RunID
+		manifest domain.ArtifactManifestID
+		index    uint32
+	}{
+		{name: "tenant", tenant: "tenant-b", user: "user-a", session: "session-a", run: runID, manifest: manifestID},
+		{name: "user", tenant: "tenant-a", user: "user-b", session: "session-a", run: runID, manifest: manifestID},
+		{name: "session", tenant: "tenant-a", user: "user-a", session: "session-b", run: runID, manifest: manifestID},
+		{name: "run", tenant: "tenant-a", user: "user-a", session: "session-a", run: "run-forged", manifest: manifestID},
+		{name: "manifest", tenant: "tenant-a", user: "user-a", session: "session-a", run: runID, manifest: "manifest-forged"},
+		{name: "index", tenant: "tenant-a", user: "user-a", session: "session-a", run: runID, manifest: manifestID, index: 1},
+	} {
+		t.Run(selector.name, func(t *testing.T) {
+			before := len(harness.objects.downloads)
+			if _, err := harness.service.DownloadRunArtifact(
+				context.Background(), selector.tenant, selector.user, selector.session,
+				selector.run, selector.manifest, selector.index,
+			); !errors.Is(err, webapi.ErrResourceUnavailable) {
+				t.Fatalf("forged selector error = %v", err)
+			}
+			if len(harness.objects.downloads) != before {
+				t.Fatal("forged selector minted a download capability")
+			}
+		})
+	}
+}
+
 type harness struct {
 	service *webapi.Service
 	backend *fakeBackend
@@ -239,9 +352,11 @@ func newHarness(t *testing.T) *harness {
 
 func uploadRequest(idempotencyKey, name, mediaType string, payload []byte) webcontract.CreateUploadIntentRequest {
 	digest := sha256.Sum256(payload)
+	contentMD5 := md5.Sum(payload)
 	return webcontract.CreateUploadIntentRequest{
 		SessionID: "session-a", IdempotencyKey: domain.IdempotencyKey(idempotencyKey),
 		Name: name, MediaType: mediaType, Size: int64(len(payload)), SHA256: hex.EncodeToString(digest[:]),
+		ContentMD5: base64.StdEncoding.EncodeToString(contentMD5[:]),
 	}
 }
 
@@ -273,17 +388,20 @@ type fixedClock struct{}
 func (fixedClock) Now() time.Time { return testNow }
 
 type fakeBackend struct {
-	sessions    map[domain.SessionID]domain.Session
-	owners      map[domain.SessionID]domain.UserID
-	bindings    map[domain.FrontendBindingID]domain.FrontendBinding
-	intents     map[domain.UploadIntentID]domain.UploadIntent
-	uploadKeys  map[domain.IdempotencyKey]domain.UploadIntentID
-	results     map[string]ports.CanonicalUserEventResult
-	events      []domain.SessionEvent
-	runs        map[domain.RunID]ports.RunRecord
-	commits     []ports.CanonicalUserEventCommit
-	lastCommit  ports.WebUploadCommitRequest
-	connections []ports.ComputeConnectionState
+	sessions      map[domain.SessionID]domain.Session
+	owners        map[domain.SessionID]domain.UserID
+	bindings      map[domain.FrontendBindingID]domain.FrontendBinding
+	intents       map[domain.UploadIntentID]domain.UploadIntent
+	uploadKeys    map[domain.IdempotencyKey]domain.UploadIntentID
+	results       map[string]ports.CanonicalUserEventResult
+	resultDigests map[string]string
+	events        []domain.SessionEvent
+	runs          map[domain.RunID]ports.RunRecord
+	manifests     map[domain.ArtifactManifestID]domain.ArtifactManifest
+	commits       []ports.CanonicalUserEventCommit
+	lastCommit    ports.WebUploadCommitRequest
+	connections   []ports.ComputeConnectionState
+	resolveCalls  int
 }
 
 func newFakeBackend() *fakeBackend {
@@ -292,14 +410,16 @@ func newFakeBackend() *fakeBackend {
 		CreatedAt: testNow, UpdatedAt: testNow,
 	}
 	return &fakeBackend{
-		sessions:    map[domain.SessionID]domain.Session{session.ID: session},
-		owners:      map[domain.SessionID]domain.UserID{session.ID: "user-a"},
-		bindings:    make(map[domain.FrontendBindingID]domain.FrontendBinding),
-		intents:     make(map[domain.UploadIntentID]domain.UploadIntent),
-		uploadKeys:  make(map[domain.IdempotencyKey]domain.UploadIntentID),
-		results:     make(map[string]ports.CanonicalUserEventResult),
-		runs:        make(map[domain.RunID]ports.RunRecord),
-		connections: []ports.ComputeConnectionState{computeConnection("connection-a")},
+		sessions:      map[domain.SessionID]domain.Session{session.ID: session},
+		owners:        map[domain.SessionID]domain.UserID{session.ID: "user-a"},
+		bindings:      make(map[domain.FrontendBindingID]domain.FrontendBinding),
+		intents:       make(map[domain.UploadIntentID]domain.UploadIntent),
+		uploadKeys:    make(map[domain.IdempotencyKey]domain.UploadIntentID),
+		results:       make(map[string]ports.CanonicalUserEventResult),
+		resultDigests: make(map[string]string),
+		runs:          make(map[domain.RunID]ports.RunRecord),
+		manifests:     make(map[domain.ArtifactManifestID]domain.ArtifactManifest),
+		connections:   []ports.ComputeConnectionState{computeConnection("connection-a")},
 	}
 }
 
@@ -352,6 +472,7 @@ func (store *fakeBackend) ClaimWebUploadIntents(_ context.Context, request ports
 }
 
 func (store *fakeBackend) ResolveComputeConnectionsForUser(_ context.Context, request ports.ComputeConnectionResolveRequest) ([]ports.ComputeConnectionState, error) {
+	store.resolveCalls++
 	if !store.authorized(request.TenantID, request.UserID, request.SessionID) {
 		return nil, domain.ErrMembershipDenied
 	}
@@ -367,6 +488,23 @@ func (store *fakeBackend) GetRunForUser(_ context.Context, tenant domain.TenantI
 		return ports.RunRecord{}, false, domain.ErrMembershipDenied
 	}
 	return record, true, nil
+}
+
+func (store *fakeBackend) GetRunArtifactForUser(_ context.Context, request ports.WebRunArtifactRequest) (ports.WebRunArtifact, bool, error) {
+	run, found := store.runs[request.RunID]
+	if !found || run.Run.TenantID != request.TenantID || run.Run.SessionID != request.SessionID {
+		return ports.WebRunArtifact{}, false, nil
+	}
+	if !store.authorized(request.TenantID, request.UserID, request.SessionID) {
+		return ports.WebRunArtifact{}, false, domain.ErrMembershipDenied
+	}
+	manifest, found := store.manifests[request.ManifestID]
+	if !found || manifest.TenantID != request.TenantID || manifest.RunID != request.RunID ||
+		int(request.Index) >= len(manifest.Artifacts) {
+		return ports.WebRunArtifact{}, false, nil
+	}
+	artifact := manifest.Artifacts[request.Index]
+	return ports.WebRunArtifact{Name: artifact.Name, MediaType: artifact.MediaType, Blob: artifact.Blob}, true, nil
 }
 
 func (store *fakeBackend) BindOrSwitchFrontendForUser(_ context.Context, request ports.FrontendBindingRequest) (domain.FrontendBinding, error) {
@@ -386,7 +524,11 @@ func (store *fakeBackend) BindOrSwitchFrontendForUser(_ context.Context, request
 }
 
 func (store *fakeBackend) LookupCanonicalUserEvent(_ context.Context, request ports.CanonicalUserEventLookup) (ports.CanonicalUserEventLookupResult, error) {
-	result, found := store.results[string(request.BindingID)+"/"+string(request.IdempotencyKey)]
+	key := string(request.BindingID) + "/" + string(request.IdempotencyKey)
+	result, found := store.results[key]
+	if found && request.MutationDigest != "" && store.resultDigests[key] != request.MutationDigest {
+		return ports.CanonicalUserEventLookupResult{}, domain.ErrEventIdempotencyConflict
+	}
 	if found {
 		result.Created = false
 	}
@@ -396,6 +538,9 @@ func (store *fakeBackend) LookupCanonicalUserEvent(_ context.Context, request po
 func (store *fakeBackend) CommitCanonicalUserEvent(_ context.Context, request ports.CanonicalUserEventCommit) (ports.CanonicalUserEventResult, error) {
 	key := string(request.BindingID) + "/" + string(request.IdempotencyKey)
 	if result, found := store.results[key]; found {
+		if request.MutationDigest != "" && store.resultDigests[key] != request.MutationDigest {
+			return ports.CanonicalUserEventResult{}, domain.ErrEventIdempotencyConflict
+		}
 		result.Created = false
 		return result, nil
 	}
@@ -421,6 +566,7 @@ func (store *fakeBackend) CommitCanonicalUserEvent(_ context.Context, request po
 	}, Provider: "codex"}
 	store.commits = append(store.commits, request)
 	store.results[key] = result
+	store.resultDigests[key] = request.MutationDigest
 	return result, nil
 }
 

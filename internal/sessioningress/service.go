@@ -103,6 +103,31 @@ type UserInput struct {
 	AllowedMCPServers        []string
 }
 
+// LookupBound returns an already committed bound mutation before callers
+// resolve mutable compute state or touch upload objects. MutationDigest, when
+// present, binds the idempotency key to the original request content.
+func (service *Service) LookupBound(
+	ctx context.Context,
+	input BoundUserInput,
+) (ports.CanonicalUserEventResult, bool, error) {
+	plan, err := service.PlanBound(input)
+	if err != nil {
+		return ports.CanonicalUserEventResult{}, false, err
+	}
+	existing, err := service.store.LookupCanonicalUserEvent(ctx, ports.CanonicalUserEventLookup{
+		TenantID: input.Actor.TenantID, UserID: input.Actor.UserID,
+		BindingID: input.Binding.ID, Frontend: input.Actor.Frontend,
+		ExternalConversationID: input.Actor.ExternalConversationID,
+		IdempotencyKey:         plan.IdempotencyKey, MutationDigest: input.MutationDigest,
+		EventID: plan.EventID, RunID: plan.RunID,
+	})
+	if err != nil || !existing.Found {
+		return ports.CanonicalUserEventResult{}, false, err
+	}
+	service.publishWake(ctx, input.Actor.TenantID, plan.DispatchID, input.ReceivedAt)
+	return existing.Result, true, nil
+}
+
 // BoundUserInput is used by authenticated product frontends whose target
 // Session already exists. Binding authority must come from a server-side
 // participant-authorized operation, never directly from a browser selector.
@@ -110,6 +135,7 @@ type BoundUserInput struct {
 	Actor                    Actor
 	Binding                  domain.FrontendBinding
 	ExternalEventID          string
+	MutationDigest           string
 	ReceivedAt               time.Time
 	Text                     string
 	Metadata                 map[string]string
@@ -239,18 +265,12 @@ func (service *Service) IngestBound(
 	if err != nil {
 		return ports.CanonicalUserEventResult{}, err
 	}
-	existing, err := service.store.LookupCanonicalUserEvent(ctx, ports.CanonicalUserEventLookup{
-		TenantID: input.Actor.TenantID, UserID: input.Actor.UserID,
-		BindingID: input.Binding.ID, Frontend: input.Actor.Frontend,
-		ExternalConversationID: input.Actor.ExternalConversationID,
-		IdempotencyKey:         plan.IdempotencyKey, EventID: plan.EventID, RunID: plan.RunID,
-	})
+	existing, found, err := service.LookupBound(ctx, input)
 	if err != nil {
 		return ports.CanonicalUserEventResult{}, err
 	}
-	if existing.Found {
-		service.publishWake(ctx, input.Actor.TenantID, plan.DispatchID, input.ReceivedAt)
-		return existing.Result, nil
+	if found {
+		return existing, nil
 	}
 
 	origin := domain.FrontendEventOrigin{
@@ -301,7 +321,7 @@ func (service *Service) IngestBound(
 	result, err := service.store.CommitCanonicalUserEvent(ctx, ports.CanonicalUserEventCommit{
 		TenantID: input.Actor.TenantID, UserID: input.Actor.UserID,
 		BindingID: input.Binding.ID, ExpectedBindingRevision: input.Binding.Revision,
-		Origin: origin, IdempotencyKey: plan.IdempotencyKey,
+		Origin: origin, IdempotencyKey: plan.IdempotencyKey, MutationDigest: input.MutationDigest,
 		ExpireAt: input.ReceivedAt.UTC().Add(service.retention),
 		EventID:  plan.EventID, Payload: payloadRef, DisplayText: input.Text,
 		RunID:                    plan.RunID,
@@ -492,6 +512,9 @@ func validateBoundInput(input BoundUserInput) error {
 	if strings.TrimSpace(input.Text) == "" && len(input.Attachments) == 0 {
 		return domain.ValidationError{Field: "user_input", Reason: "text or an attachment is required"}
 	}
+	if err := input.SubscriptionConnectionID.Validate(); err != nil {
+		return err
+	}
 	for _, attachment := range input.Attachments {
 		if strings.TrimSpace(attachment.MediaType) == "" {
 			return domain.ValidationError{Field: "attachment.media_type", Reason: "must not be empty"}
@@ -524,8 +547,11 @@ func validateBoundPlanInput(input BoundUserInput) error {
 	if input.ReceivedAt.IsZero() {
 		return domain.ValidationError{Field: "received_at", Reason: "must not be zero"}
 	}
-	if err := input.SubscriptionConnectionID.Validate(); err != nil {
-		return err
+	if input.MutationDigest != "" {
+		digest, err := hex.DecodeString(input.MutationDigest)
+		if err != nil || len(digest) != sha256.Size || input.MutationDigest != strings.ToLower(input.MutationDigest) {
+			return domain.ValidationError{Field: "mutation_digest", Reason: "must be a lowercase SHA-256 digest"}
+		}
 	}
 	for key := range input.Metadata {
 		if strings.TrimSpace(key) == "" {

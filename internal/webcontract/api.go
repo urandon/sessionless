@@ -4,6 +4,7 @@
 package webcontract
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/url"
@@ -32,6 +33,7 @@ const (
 	RouteUploadCommit     = "/api/web/v1/uploads/{upload_id}/commit"
 	RouteRun              = "/api/web/v1/runs/{run_id}"
 	RouteEventAttachment  = "/api/web/v1/sessions/{session_id}/events/{sequence}/attachments/{index}"
+	RouteRunArtifact      = "/api/web/v1/sessions/{session_id}/runs/{run_id}/artifact-manifests/{manifest_id}/artifacts/{index}"
 )
 
 const MaxMessageUploadCount = 8
@@ -303,6 +305,7 @@ type CreateUploadIntentRequest struct {
 	MediaType      string                `json:"media_type"`
 	Size           int64                 `json:"size"`
 	SHA256         string                `json:"sha256"`
+	ContentMD5     string                `json:"content_md5"`
 }
 
 func (request CreateUploadIntentRequest) Validate(maxBytes int64) error {
@@ -321,7 +324,10 @@ func (request CreateUploadIntentRequest) Validate(maxBytes int64) error {
 	if request.Size <= 0 || maxBytes <= 0 || request.Size > maxBytes {
 		return domain.ValidationError{Field: "upload.size", Reason: "must be positive and within the configured limit"}
 	}
-	return validateDigest(request.SHA256)
+	if err := validateDigest(request.SHA256); err != nil {
+		return err
+	}
+	return validateContentMD5(request.ContentMD5)
 }
 
 // UploadIntentResponse contains a short-lived capability URL. It must be
@@ -368,6 +374,15 @@ type DownloadCapabilityResponse struct {
 	ExpiresAt time.Time         `json:"expires_at"`
 }
 
+// ArtifactCapabilityResponse exposes safe display metadata and a short-lived
+// exact-object capability. The backing object key is intentionally absent.
+type ArtifactCapabilityResponse struct {
+	Name      string                     `json:"name"`
+	MediaType string                     `json:"media_type"`
+	Size      int64                      `json:"size"`
+	Download  DownloadCapabilityResponse `json:"download"`
+}
+
 func (request CommitUploadRequest) Validate(pathUploadID domain.UploadIntentID) error {
 	if err := request.UploadID.Validate(); err != nil {
 		return err
@@ -400,9 +415,17 @@ type SessionEvent struct {
 }
 
 type EventContent struct {
-	Text        string          `json:"text,omitempty"`
-	Attachments []Attachment    `json:"attachments,omitempty"`
-	Data        json.RawMessage `json:"data,omitempty"`
+	Text             string                     `json:"text,omitempty"`
+	Attachments      []Attachment               `json:"attachments,omitempty"`
+	ArtifactManifest *AssistantArtifactManifest `json:"artifact_manifest,omitempty"`
+	Data             json.RawMessage            `json:"data,omitempty"`
+}
+
+// AssistantArtifactManifest provides only opaque selectors needed by the
+// exact indexed artifact route. It never exposes storage identity or content.
+type AssistantArtifactManifest struct {
+	RunID      domain.RunID              `json:"run_id"`
+	ManifestID domain.ArtifactManifestID `json:"manifest_id"`
 }
 
 type Attachment struct {
@@ -444,6 +467,16 @@ func validateDigest(value string) error {
 	}
 	if err := (domain.BlobRef{TenantID: "validation", Key: "tenants/validation/digest", SHA256: value}).Validate(); err != nil {
 		return domain.ValidationError{Field: "upload.sha256", Reason: "must be a lowercase SHA-256 digest"}
+	}
+	return nil
+}
+
+func validateContentMD5(value string) error {
+	digest, err := base64.StdEncoding.DecodeString(value)
+	if err != nil || len(digest) != 16 || base64.StdEncoding.EncodeToString(digest) != value {
+		return domain.ValidationError{
+			Field: "upload.content_md5", Reason: "must be a canonical standard-base64 MD5 digest",
+		}
 	}
 	return nil
 }

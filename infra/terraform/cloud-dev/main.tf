@@ -14,6 +14,7 @@ module "foundation" {
   name_prefix                      = var.name_prefix
   base_domain                      = var.base_domain
   artifact_bucket_name             = var.artifact_bucket_name
+  webui_origin                     = var.webui_origin
   artifact_bucket_max_size_bytes   = var.artifact_bucket_max_size_bytes
   artifact_retention_days          = var.artifact_retention_days
   artifact_cold_transition_days    = var.artifact_cold_transition_days

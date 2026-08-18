@@ -50,6 +50,7 @@ func (service presignServiceFunc) Create(
 
 type fakeS3ObjectAPI struct {
 	head func(*s3.HeadObjectInput) (*s3.HeadObjectOutput, error)
+	get  func(*s3.GetObjectInput) (*s3.GetObjectOutput, error)
 	copy func(*s3.CopyObjectInput) (*s3.CopyObjectOutput, error)
 }
 
@@ -60,8 +61,11 @@ func (fake *fakeS3ObjectAPI) PutObject(
 }
 
 func (fake *fakeS3ObjectAPI) GetObject(
-	context.Context, *s3.GetObjectInput, ...func(*s3.Options),
+	_ context.Context, input *s3.GetObjectInput, _ ...func(*s3.Options),
 ) (*s3.GetObjectOutput, error) {
+	if fake.get != nil {
+		return fake.get(input)
+	}
 	return nil, errors.New("unexpected GetObject")
 }
 
@@ -109,7 +113,8 @@ func TestStaticPresignerBindsExactUploadMetadata(t *testing.T) {
 	const digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	capability, err := store.PresignUpload(context.Background(), ports.UploadCapabilityRequest{
 		TenantID: "tenant-a", ObjectKey: "uploads/upload-a/picture.png",
-		MediaType: "image/png", Size: 123, SHA256: digest, ExpiresIn: 5 * time.Minute,
+		MediaType: "image/png", Size: 123, SHA256: digest,
+		ContentMD5: "Mhw89IbtUJFk7eweGYH+yA==", ExpiresIn: 5 * time.Minute,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -124,11 +129,12 @@ func TestStaticPresignerBindsExactUploadMetadata(t *testing.T) {
 	}
 	if capability.Headers["content-length"] != "123" ||
 		capability.Headers["content-type"] != "image/png" ||
+		capability.Headers["content-md5"] != "Mhw89IbtUJFk7eweGYH+yA==" ||
 		capability.Headers["x-amz-checksum-sha256"] != "ASNFZ4mrze8BI0VniavN7wEjRWeJq83vASNFZ4mrze8=" {
 		t.Fatalf("signed headers = %#v", capability.Headers)
 	}
 	signedHeaders := parsed.Query().Get("X-Amz-SignedHeaders")
-	for _, header := range []string{"content-length", "content-type"} {
+	for _, header := range []string{"content-length", "content-md5", "content-type"} {
 		if !strings.Contains(signedHeaders, header) {
 			t.Fatalf("%s is not signed: %q URL=%s", header, signedHeaders, capability.URL)
 		}
@@ -178,7 +184,8 @@ func TestIAMPresignerUsesBearerTokenAndExactObjectRequest(t *testing.T) {
 					object.Method != http.MethodPut || object.Expires != 90 ||
 					object.Headers["content-length"] != "7" ||
 					object.Headers["content-type"] != "text/plain" ||
-					object.Headers["x-amz-checksum-sha256"] == "" {
+					object.Headers["content-md5"] != "Mhw89IbtUJFk7eweGYH+yA==" ||
+					object.Headers["x-amz-checksum-sha256"] != "" {
 					t.Fatalf("object request = %#v", object)
 				}
 				return &ycstorage.PresignURLsResponse{Urls: []string{
@@ -190,7 +197,8 @@ func TestIAMPresignerUsesBearerTokenAndExactObjectRequest(t *testing.T) {
 	capability, err := store.PresignUpload(context.Background(), ports.UploadCapabilityRequest{
 		TenantID: "tenant-a", ObjectKey: "uploads/upload-a/input.txt", MediaType: "text/plain",
 		Size: 7, SHA256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-		ExpiresIn: 90 * time.Second,
+		ContentMD5: "Mhw89IbtUJFk7eweGYH+yA==",
+		ExpiresIn:  90 * time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -198,6 +206,138 @@ func TestIAMPresignerUsesBearerTokenAndExactObjectRequest(t *testing.T) {
 	if !called || capability.Method != http.MethodPut ||
 		!capability.ExpiresAt.Equal(fixedNow.Add(90*time.Second)) {
 		t.Fatalf("capability = %#v, called = %t", capability, called)
+	}
+}
+
+func TestPresignUploadRejectsMissingOrNonCanonicalContentMD5(t *testing.T) {
+	store := &Store{bucket: "artifact-bucket", maxObjectBytes: 1024, s3Presigner: nil}
+	for _, contentMD5 := range []string{
+		"",
+		"not-base64",
+		base64.StdEncoding.EncodeToString([]byte("too short")),
+		base64.RawStdEncoding.EncodeToString([]byte("sixteen-byte-md5")),
+	} {
+		_, err := store.PresignUpload(context.Background(), ports.UploadCapabilityRequest{
+			TenantID: "tenant-a", ObjectKey: "uploads/upload-a/input.txt",
+			MediaType: "text/plain", Size: 7,
+			SHA256:     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			ContentMD5: contentMD5, ExpiresIn: time.Minute,
+		})
+		if err == nil || !strings.Contains(err.Error(), "Content-MD5") {
+			t.Fatalf("ContentMD5 %q: error = %v", contentMD5, err)
+		}
+	}
+}
+
+func TestIAMStatVerifiesSHA256WithConditionalBoundedGETWhenHEADOmitsChecksum(t *testing.T) {
+	const (
+		payload      = "payload"
+		actualSHA256 = "239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5"
+		claimedSHA   = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	)
+	requestCount := 0
+	httpClient := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requestCount++
+		if request.Header.Get("Authorization") != "Bearer iam-token" {
+			t.Fatalf("Authorization = %q", request.Header.Get("Authorization"))
+		}
+		response := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: http.NoBody}
+		switch request.Method {
+		case http.MethodHead:
+			response.Header.Set("Content-Length", "7")
+			response.Header.Set("Content-Type", "text/plain")
+			response.Header.Set("ETag", `"321c3cf486ed509164edec1e1981fec8"`)
+			// Yandex Object Storage does not promise x-amz-checksum-sha256 on HEAD.
+		case http.MethodGet:
+			if request.Header.Get("If-Match") != `"321c3cf486ed509164edec1e1981fec8"` {
+				t.Fatalf("If-Match = %q", request.Header.Get("If-Match"))
+			}
+			response.Body = io.NopCloser(strings.NewReader(payload))
+		default:
+			t.Fatalf("method = %s", request.Method)
+		}
+		return response, nil
+	})}
+	endpoint, _ := url.Parse("https://storage.yandexcloud.net")
+	store := &Store{bucket: "artifact-bucket", maxObjectBytes: 8, iamClient: &iamObjectClient{
+		endpoint: endpoint, http: httpClient,
+		tokens: tokenProviderFunc(func(context.Context) (string, error) { return "iam-token", nil }),
+	}}
+	metadata, err := store.StatObject(context.Background(), "tenant-a", "uploads/upload-a/input.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.Blob.SHA256 != actualSHA256 || metadata.Blob.Size != int64(len(payload)) ||
+		metadata.ETag != "321c3cf486ed509164edec1e1981fec8" {
+		t.Fatalf("metadata = %#v", metadata)
+	}
+	intent := domain.UploadIntent{
+		ID: "upload-a", TenantID: "tenant-a", UserID: "user-a", SessionID: "session-a",
+		ObjectKey: metadata.Blob.Key, Name: "input.txt", MediaType: "text/plain",
+		ExpectedSize: 7, ExpectedSHA256: claimedSHA, ExpectedMD5: "AAAAAAAAAAAAAAAAAAAAAA==",
+		Status:    domain.UploadIntentPending,
+		CreatedAt: time.Now().Add(-time.Minute), ExpiresAt: time.Now().Add(time.Minute),
+	}
+	if err := intent.RecordObservedMetadata(
+		metadata.Blob, metadata.MediaType, metadata.ETag, time.Now(),
+	); !errors.Is(err, domain.ErrUploadMismatch) {
+		t.Fatalf("tampered browser SHA-256 was not detected: %v", err)
+	}
+	if requestCount != 2 {
+		t.Fatalf("request count = %d, want HEAD + conditional GET", requestCount)
+	}
+}
+
+func TestIAMStatRejectsBodyThatExceedsHEADOrConfiguredBound(t *testing.T) {
+	httpClient := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		response := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: http.NoBody}
+		if request.Method == http.MethodHead {
+			response.Header.Set("Content-Length", "7")
+			response.Header.Set("Content-Type", "text/plain")
+			response.Header.Set("ETag", `"etag-a"`)
+			return response, nil
+		}
+		response.Body = io.NopCloser(strings.NewReader("payload-tampered"))
+		return response, nil
+	})}
+	endpoint, _ := url.Parse("https://storage.yandexcloud.net")
+	store := &Store{bucket: "artifact-bucket", maxObjectBytes: 8, iamClient: &iamObjectClient{
+		endpoint: endpoint, http: httpClient,
+		tokens: tokenProviderFunc(func(context.Context) (string, error) { return "iam-token", nil }),
+	}}
+	_, err := store.StatObject(context.Background(), "tenant-a", "uploads/upload-a/input.txt")
+	if err == nil || !strings.Contains(err.Error(), "exceeds 8 bytes") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestStaticStatVerifiesSHA256WhenMinIOHEADOmitsChecksum(t *testing.T) {
+	const objectKey = "tenants/tenant-a/uploads/upload-a/input.txt"
+	fake := &fakeS3ObjectAPI{
+		head: func(input *s3.HeadObjectInput) (*s3.HeadObjectOutput, error) {
+			if aws.ToString(input.Key) != objectKey || input.ChecksumMode != "ENABLED" {
+				t.Fatalf("HEAD = %#v", input)
+			}
+			return &s3.HeadObjectOutput{
+				ContentLength: aws.Int64(7), ContentType: aws.String("text/plain"),
+				ETag: aws.String(`"321c3cf486ed509164edec1e1981fec8"`),
+			}, nil
+		},
+		get: func(input *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
+			if aws.ToString(input.Key) != objectKey ||
+				aws.ToString(input.IfMatch) != `"321c3cf486ed509164edec1e1981fec8"` {
+				t.Fatalf("conditional GET = %#v", input)
+			}
+			return &s3.GetObjectOutput{Body: io.NopCloser(strings.NewReader("payload"))}, nil
+		},
+	}
+	store := &Store{bucket: "artifact-bucket", maxObjectBytes: 1024, s3Client: fake}
+	metadata, err := store.StatObject(context.Background(), "tenant-a", objectKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.Blob.SHA256 != "239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5" {
+		t.Fatalf("metadata = %#v", metadata)
 	}
 }
 

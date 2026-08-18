@@ -4,6 +4,7 @@
 package webbff
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -144,6 +145,7 @@ func (handler *Handler) routes() {
 		handler.mux.HandleFunc("POST "+webcontract.RouteUploadCommit, handler.commitUpload)
 		handler.mux.HandleFunc("GET "+webcontract.RouteRun, handler.getRun)
 		handler.mux.HandleFunc("GET "+webcontract.RouteEventAttachment, handler.downloadAttachment)
+		handler.mux.HandleFunc("GET "+webcontract.RouteRunArtifact, handler.downloadRunArtifact)
 	}
 }
 
@@ -497,6 +499,31 @@ func (handler *Handler) downloadAttachment(w http.ResponseWriter, request *http.
 	})
 }
 
+func (handler *Handler) downloadRunArtifact(w http.ResponseWriter, request *http.Request) {
+	authorization, err := handler.authorize(request, domain.TenantPermissionRead)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	index, err := strconv.ParseUint(request.PathValue("index"), 10, 32)
+	if err != nil {
+		handler.writeError(w, request, domain.ValidationError{Field: "index", Reason: "must be an unsigned integer"})
+		return
+	}
+	response, err := handler.config.API.DownloadRunArtifact(
+		request.Context(), authorization.Session.ActiveTenantID, authorization.Session.UserID,
+		domain.SessionID(request.PathValue("session_id")),
+		domain.RunID(request.PathValue("run_id")),
+		domain.ArtifactManifestID(request.PathValue("manifest_id")),
+		uint32(index),
+	)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	handler.writeJSON(w, http.StatusOK, response)
+}
+
 func (handler *Handler) health(w http.ResponseWriter, _ *http.Request) {
 	handler.writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
@@ -845,13 +872,15 @@ func (handler *Handler) writeError(w http.ResponseWriter, request *http.Request,
 	switch {
 	case errors.Is(err, errCSRF):
 		handler.writeFailure(w, request, webcontract.ErrorCSRFFailed, "The mutation security check failed.")
+	case errors.Is(err, errRequestTooLarge):
+		handler.writeFailure(w, request, webcontract.ErrorPayloadTooLarge, "The request body exceeds the configured limit.")
 	case errors.Is(err, domain.ErrWebSessionExpired), errors.Is(err, domain.ErrWebSessionRevoked):
 		handler.writeFailure(w, request, webcontract.ErrorUnauthenticated, "Authentication is required.")
 	case errors.Is(err, sessionapi.ErrSessionUnavailable):
 		handler.writeFailure(w, request, webcontract.ErrorNotFound, "The requested session is not available.")
 	case errors.Is(err, webapi.ErrResourceUnavailable):
 		handler.writeFailure(w, request, webcontract.ErrorNotFound, "The requested resource is not available.")
-	case errors.Is(err, domain.ErrSessionMutationConflict):
+	case errors.Is(err, domain.ErrSessionMutationConflict), errors.Is(err, domain.ErrEventIdempotencyConflict):
 		handler.writeFailure(w, request, webcontract.ErrorConflict, "The idempotency key conflicts with an earlier session mutation.")
 	case errors.Is(err, webapi.ErrComputeUnavailable):
 		handler.writeFailure(w, request, webcontract.ErrorConflict, "Exactly one compute connection must be configured before sending a message.")
@@ -985,14 +1014,21 @@ func (handler *Handler) writeJSONConditional(
 }
 
 func decodeJSON(request *http.Request, target any) error {
-	decoder := json.NewDecoder(io.LimitReader(request.Body, maxRequestBytes+1))
+	payload, err := io.ReadAll(io.LimitReader(request.Body, maxRequestBytes+1))
+	if err != nil {
+		return domain.ValidationError{Field: "request.body", Reason: "could not be read"}
+	}
+	if len(payload) > maxRequestBytes {
+		return errRequestTooLarge
+	}
+	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
-		return err
+		return domain.ValidationError{Field: "request.body", Reason: "must contain one valid JSON value with only documented fields"}
 	}
 	var extra any
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		return errors.New("request body must contain one JSON value")
+		return domain.ValidationError{Field: "request.body", Reason: "must contain exactly one JSON value"}
 	}
 	return nil
 }
@@ -1042,10 +1078,16 @@ func projectEvent(item sessionapi.Event) webcontract.SessionEvent {
 		}
 	case domain.SessionEventAssistantMessage:
 		var envelope struct {
-			Summary string `json:"summary"`
+			Summary            string                    `json:"summary"`
+			ArtifactManifestID domain.ArtifactManifestID `json:"artifact_manifest_id"`
 		}
 		if json.Unmarshal(item.Payload, &envelope) == nil && envelope.Summary != "" {
 			content.Text, content.Data = envelope.Summary, nil
+			if item.Event.RunID != nil && envelope.ArtifactManifestID.Validate() == nil {
+				content.ArtifactManifest = &webcontract.AssistantArtifactManifest{
+					RunID: *item.Event.RunID, ManifestID: envelope.ArtifactManifestID,
+				}
+			}
 		}
 	}
 	return webcontract.SessionEvent{
@@ -1131,6 +1173,7 @@ func (recorder *statusRecorder) WriteHeader(status int) {
 }
 
 var errCSRF = errors.New("web mutation CSRF validation failed")
+var errRequestTooLarge = errors.New("web request body exceeds the configured limit")
 
 type requestIDKey struct{}
 

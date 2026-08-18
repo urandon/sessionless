@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -34,6 +35,7 @@ type UploadIntent struct {
 	MediaType         string             `json:"media_type"`
 	ExpectedSize      int64              `json:"expected_size"`
 	ExpectedSHA256    string             `json:"expected_sha256"`
+	ExpectedMD5       string             `json:"expected_md5"`
 	Status            UploadIntentStatus `json:"status"`
 	CreatedAt         time.Time          `json:"created_at"`
 	ExpiresAt         time.Time          `json:"expires_at"`
@@ -76,6 +78,9 @@ func (intent UploadIntent) Validate() error {
 		return ValidationError{Field: "upload_intent.expected_size", Reason: "must be positive"}
 	}
 	if err := validateSHA256("upload_intent.expected_sha256", intent.ExpectedSHA256); err != nil {
+		return err
+	}
+	if err := validateMD5("upload_intent.expected_md5", intent.ExpectedMD5); err != nil {
 		return err
 	}
 	if intent.Status != UploadIntentPending && intent.Status != UploadIntentCommitted {
@@ -200,6 +205,14 @@ func validateSHA256(field, value string) error {
 	digest, err := hex.DecodeString(value)
 	if err != nil || len(digest) != 32 || value != strings.ToLower(value) {
 		return ValidationError{Field: field, Reason: "must be a lowercase 64-character SHA-256 digest"}
+	}
+	return nil
+}
+
+func validateMD5(field, value string) error {
+	digest, err := base64.StdEncoding.DecodeString(value)
+	if err != nil || len(digest) != 16 || base64.StdEncoding.EncodeToString(digest) != value {
+		return ValidationError{Field: field, Reason: "must be a canonical standard-base64 MD5 digest"}
 	}
 	return nil
 }

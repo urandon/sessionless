@@ -29,6 +29,7 @@ frontend's selected session; it does not mutate the previous session.
 | `POST` | `/api/web/v1/uploads/{upload_id}/commit` | Verify and commit the exact staged object |
 | `GET` | `/api/web/v1/runs/{run_id}` | Read one participant-authorized run for polling |
 | `GET` | `/api/web/v1/sessions/{session_id}/events/{sequence}/attachments/{index}` | Create a short-lived download capability for one canonical attachment |
+| `GET` | `/api/web/v1/sessions/{session_id}/runs/{run_id}/artifact-manifests/{manifest_id}/artifacts/{index}` | Create a short-lived capability for one exact worker artifact |
 
 All mutations require the Web BFF's exact-origin and double-submit CSRF
 checks. Session, upload, and message creation use caller-supplied idempotency
@@ -113,10 +114,13 @@ instead of a fixed tight polling loop. Message creation also returns a
 
 An upload starts with `POST /api/web/v1/uploads` containing `session_id`,
 `idempotency_key`, `name`, `media_type`, positive `size`, and a lowercase
-hexadecimal `sha256`. The server validates participant write access, creates a
-tenant/user/session-bound intent, and returns a short-lived `PUT` URL plus the
-exact required headers. The client must send the declared content length,
-media type, and SHA-256 checksum exactly as returned.
+hexadecimal `sha256` plus `content_md5`, the canonical padded standard-base64
+encoding of the 16-byte MD5 digest. The server validates participant write
+access, creates a tenant/user/session-bound intent, and returns a short-lived
+`PUT` URL plus the exact required headers. The client must send the declared
+content length and every returned header, including `Content-MD5`, exactly.
+The MD5 protects the direct Object Storage upload; commit independently checks
+the declared SHA-256 against server-read object bytes.
 
 Commit takes only a body `upload_id` equal to the path selector. The server
 reauthorizes the caller and obtains authoritative Object Storage metadata for
@@ -132,6 +136,12 @@ index. The BFF first authorizes and verifies that exact canonical reference,
 then returns a short-lived `GET` capability. Capability URLs are bearer
 secrets: clients must keep them out of logs, analytics, referrers, and
 persistent browser storage.
+
+Assistant event projections expose only the owning `run_id` and
+`manifest_id`. A worker-artifact read additionally binds both selectors to the
+requested session, checks active participant access, and addresses one bounded
+zero-based manifest index. The response contains safe display metadata and a
+short-lived exact-object capability; it never exposes a BlobRef or storage key.
 
 ## Verification
 

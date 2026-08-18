@@ -131,7 +131,7 @@ func (service *Service) CreateUpload(
 		ID: uploadID, TenantID: tenantID, UserID: userID, SessionID: request.SessionID,
 		ObjectKey: domain.UploadIntentObjectPrefix(tenantID, uploadID) + "object",
 		Name:      strings.TrimSpace(request.Name), MediaType: mediaType,
-		ExpectedSize: request.Size, ExpectedSHA256: request.SHA256,
+		ExpectedSize: request.Size, ExpectedSHA256: request.SHA256, ExpectedMD5: request.ContentMD5,
 		Status: domain.UploadIntentPending, CreatedAt: now, ExpiresAt: now.Add(service.uploadTTL),
 	}
 	stored, created, err := service.uploads.CreateWebUploadIntent(ctx, ports.WebUploadCreateRequest{
@@ -154,7 +154,8 @@ func (service *Service) CreateUpload(
 	capability, err := service.objects.PresignUpload(ctx, ports.UploadCapabilityRequest{
 		TenantID: stored.TenantID, ObjectKey: stored.ObjectKey,
 		MediaType: stored.MediaType, Size: stored.ExpectedSize, SHA256: stored.ExpectedSHA256,
-		ExpiresIn: remaining,
+		ContentMD5: stored.ExpectedMD5,
+		ExpiresIn:  remaining,
 	})
 	if err != nil {
 		return webcontract.UploadIntentResponse{}, false, err
@@ -205,6 +206,35 @@ func (service *Service) SubmitMessage(
 	if err != nil {
 		return webcontract.CreateMessageResponse{}, err
 	}
+	now := service.clock.Now().UTC()
+	mutationDigest, err := messageMutationDigest(request)
+	if err != nil {
+		return webcontract.CreateMessageResponse{}, err
+	}
+	input := sessioningress.BoundUserInput{
+		Actor: sessioningress.Actor{
+			TenantID: tenantID, UserID: userID, Frontend: domain.FrontendWeb,
+			ExternalConversationID: string(sessionID),
+		},
+		Binding: binding, ExternalEventID: string(request.IdempotencyKey),
+		MutationDigest: mutationDigest, ReceivedAt: now, Text: request.Text,
+		AllowedMCPServers: append([]string(nil), service.allowedMCPServers...),
+	}
+	if existing, found, err := service.ingress.LookupBound(ctx, input); err != nil {
+		return webcontract.CreateMessageResponse{}, err
+	} else if found {
+		run, runFound, err := service.resources.GetRunForUser(ctx, tenantID, userID, existing.RunID)
+		if errors.Is(err, domain.ErrMembershipDenied) || !runFound {
+			return webcontract.CreateMessageResponse{}, ErrResourceUnavailable
+		}
+		if err != nil {
+			return webcontract.CreateMessageResponse{}, err
+		}
+		return messageResponse(existing, webcontract.ComputeConnection{
+			Provider: run.Provider, Entitlement: domain.EntitlementUnknown,
+			Quota: domain.ProviderQuotaUnknown, ObservedAt: run.Run.UpdatedAt,
+		}), nil
+	}
 	connections, err := service.resources.ResolveComputeConnectionsForUser(
 		ctx, ports.ComputeConnectionResolveRequest{TenantID: tenantID, UserID: userID, SessionID: sessionID},
 	)
@@ -214,7 +244,7 @@ func (service *Service) SubmitMessage(
 	if len(connections) != 1 {
 		return webcontract.CreateMessageResponse{}, ErrComputeUnavailable
 	}
-	now := service.clock.Now().UTC()
+	input.SubscriptionConnectionID = connections[0].ID
 	var claimed []domain.UploadIntent
 	if len(request.UploadIDs) != 0 {
 		claimed, err = service.uploads.ClaimWebUploadIntents(ctx, ports.WebUploadClaimRequest{
@@ -224,15 +254,6 @@ func (service *Service) SubmitMessage(
 		if err != nil {
 			return webcontract.CreateMessageResponse{}, err
 		}
-	}
-	input := sessioningress.BoundUserInput{
-		Actor: sessioningress.Actor{
-			TenantID: tenantID, UserID: userID, Frontend: domain.FrontendWeb,
-			ExternalConversationID: string(sessionID),
-		},
-		Binding: binding, ExternalEventID: string(request.IdempotencyKey), ReceivedAt: now,
-		Text: request.Text, SubscriptionConnectionID: connections[0].ID,
-		AllowedMCPServers: append([]string(nil), service.allowedMCPServers...),
 	}
 	plan, err := service.ingress.PlanBound(input)
 	if err != nil {
@@ -272,14 +293,33 @@ func (service *Service) SubmitMessage(
 	if err != nil {
 		return webcontract.CreateMessageResponse{}, err
 	}
+	return messageResponse(result, webcontract.ComputeConnection{
+		Provider: connections[0].Provider, Entitlement: connections[0].Entitlement,
+		Quota: connections[0].Quota, ObservedAt: connections[0].ObservedAt,
+	}), nil
+}
+
+func messageMutationDigest(request webcontract.CreateMessageRequest) (string, error) {
+	material, err := json.Marshal(struct {
+		Version   uint8                   `json:"version"`
+		Text      string                  `json:"text"`
+		UploadIDs []domain.UploadIntentID `json:"upload_ids"`
+	}{Version: 1, Text: request.Text, UploadIDs: request.UploadIDs})
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(material)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+func messageResponse(
+	result ports.CanonicalUserEventResult,
+	compute webcontract.ComputeConnection,
+) webcontract.CreateMessageResponse {
 	return webcontract.CreateMessageResponse{
 		SessionID: result.SessionID, EventID: result.EventID, Sequence: result.Sequence,
-		RunID: result.RunID, Created: result.Created,
-		Compute: webcontract.ComputeConnection{
-			Provider: connections[0].Provider, Entitlement: connections[0].Entitlement,
-			Quota: connections[0].Quota, ObservedAt: connections[0].ObservedAt,
-		},
-	}, nil
+		RunID: result.RunID, Created: result.Created, Compute: compute,
+	}
 }
 
 func (service *Service) GetRun(
@@ -326,6 +366,38 @@ func (service *Service) DownloadAttachment(
 		return ports.ObjectCapability{}, err
 	}
 	return service.objects.PresignDownload(ctx, tenantID, ref, service.downloadTTL)
+}
+
+func (service *Service) DownloadRunArtifact(
+	ctx context.Context,
+	tenantID domain.TenantID,
+	userID domain.UserID,
+	sessionID domain.SessionID,
+	runID domain.RunID,
+	manifestID domain.ArtifactManifestID,
+	index uint32,
+) (webcontract.ArtifactCapabilityResponse, error) {
+	artifact, found, err := service.resources.GetRunArtifactForUser(ctx, ports.WebRunArtifactRequest{
+		TenantID: tenantID, UserID: userID, SessionID: sessionID,
+		RunID: runID, ManifestID: manifestID, Index: index,
+	})
+	if errors.Is(err, domain.ErrMembershipDenied) || !found {
+		return webcontract.ArtifactCapabilityResponse{}, ErrResourceUnavailable
+	}
+	if err != nil {
+		return webcontract.ArtifactCapabilityResponse{}, err
+	}
+	capability, err := service.objects.PresignDownload(ctx, tenantID, artifact.Blob, service.downloadTTL)
+	if err != nil {
+		return webcontract.ArtifactCapabilityResponse{}, err
+	}
+	return webcontract.ArtifactCapabilityResponse{
+		Name: artifact.Name, MediaType: artifact.MediaType, Size: artifact.Blob.Size,
+		Download: webcontract.DownloadCapabilityResponse{
+			Method: capability.Method, URL: capability.URL,
+			Headers: capability.Headers, ExpiresAt: capability.ExpiresAt,
+		},
+	}, nil
 }
 
 func (service *Service) stableID(prefix string, values ...any) string {

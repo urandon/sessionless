@@ -83,6 +83,15 @@ type Attachment struct {
 	Body      io.Reader
 }
 
+// StoredAttachment is an already-authorized immutable object promoted into
+// the canonical event namespace. Frontend adapters must not pass staging
+// object references here.
+type StoredAttachment struct {
+	Name      string
+	MediaType string
+	Blob      domain.BlobRef
+}
+
 type UserInput struct {
 	Actor                    Actor
 	ExternalEventID          string
@@ -92,6 +101,47 @@ type UserInput struct {
 	Attachments              []Attachment
 	SubscriptionConnectionID domain.SubscriptionConnectionID
 	AllowedMCPServers        []string
+}
+
+// BoundUserInput is used by authenticated product frontends whose target
+// Session already exists. Binding authority must come from a server-side
+// participant-authorized operation, never directly from a browser selector.
+type BoundUserInput struct {
+	Actor                    Actor
+	Binding                  domain.FrontendBinding
+	ExternalEventID          string
+	ReceivedAt               time.Time
+	Text                     string
+	Metadata                 map[string]string
+	Attachments              []StoredAttachment
+	SubscriptionConnectionID domain.SubscriptionConnectionID
+	AllowedMCPServers        []string
+}
+
+// BoundPlan exposes deterministic identities needed to conditionally promote
+// staged browser uploads before the canonical transaction. IngestBound
+// recomputes and verifies the same plan.
+type BoundPlan struct {
+	TenantID       domain.TenantID
+	SessionID      domain.SessionID
+	BindingID      domain.FrontendBindingID
+	IdempotencyKey domain.IdempotencyKey
+	EventID        domain.SessionEventID
+	RunID          domain.RunID
+	DispatchID     domain.DispatchOutboxID
+}
+
+func (plan BoundPlan) AttachmentObjectKey(uploadID domain.UploadIntentID, index int, name string) (string, error) {
+	if err := uploadID.Validate(); err != nil {
+		return "", err
+	}
+	if index < 0 {
+		return "", domain.ValidationError{Field: "attachment.index", Reason: "must not be negative"}
+	}
+	name = safeName(name, fmt.Sprintf("attachment-%02d.bin", index+1))
+	return fmt.Sprintf("%sattachments/%02d-%s-%s", domain.SessionEventObjectPrefix(
+		plan.TenantID, plan.SessionID, plan.EventID,
+	), index+1, uploadID, name), nil
 }
 
 type eventEnvelope struct {
@@ -151,6 +201,122 @@ func (service *Service) NewSession(
 		TenantID: actor.TenantID, UserID: actor.UserID, BindingID: bindingID,
 		ExpectedRevision: expectedRevision, SessionID: sessionID, At: at.UTC(),
 	})
+}
+
+func (service *Service) PlanBound(input BoundUserInput) (BoundPlan, error) {
+	if err := validateBoundPlanInput(input); err != nil {
+		return BoundPlan{}, err
+	}
+	idempotencyKey := domain.IdempotencyKey(service.stableID(
+		"ingress", input.Actor.TenantID, input.Actor.UserID, input.Actor.Frontend,
+		input.Actor.ExternalConversationID, input.ExternalEventID,
+	))
+	eventID := domain.SessionEventID(service.stableID(
+		"event", input.Actor.TenantID, input.Binding.ID, idempotencyKey,
+	))
+	runID := domain.RunID(service.stableID(
+		"run", input.Actor.TenantID, input.Binding.ID, idempotencyKey,
+	))
+	return BoundPlan{
+		TenantID: input.Actor.TenantID, SessionID: input.Binding.SessionID,
+		BindingID: input.Binding.ID, IdempotencyKey: idempotencyKey,
+		EventID: eventID, RunID: runID,
+		DispatchID: domain.DispatchOutboxID(service.stableID("dispatch", input.Actor.TenantID, runID)),
+	}, nil
+}
+
+// IngestBound commits a canonical user event for an existing, authorized
+// frontend binding. Stored attachments must already be promoted to the exact
+// deterministic event prefix returned by PlanBound.
+func (service *Service) IngestBound(
+	ctx context.Context,
+	input BoundUserInput,
+) (ports.CanonicalUserEventResult, error) {
+	if err := validateBoundInput(input); err != nil {
+		return ports.CanonicalUserEventResult{}, err
+	}
+	plan, err := service.PlanBound(input)
+	if err != nil {
+		return ports.CanonicalUserEventResult{}, err
+	}
+	existing, err := service.store.LookupCanonicalUserEvent(ctx, ports.CanonicalUserEventLookup{
+		TenantID: input.Actor.TenantID, UserID: input.Actor.UserID,
+		BindingID: input.Binding.ID, Frontend: input.Actor.Frontend,
+		ExternalConversationID: input.Actor.ExternalConversationID,
+		IdempotencyKey:         plan.IdempotencyKey, EventID: plan.EventID, RunID: plan.RunID,
+	})
+	if err != nil {
+		return ports.CanonicalUserEventResult{}, err
+	}
+	if existing.Found {
+		service.publishWake(ctx, input.Actor.TenantID, plan.DispatchID, input.ReceivedAt)
+		return existing.Result, nil
+	}
+
+	origin := domain.FrontendEventOrigin{
+		BindingID: input.Binding.ID, BindingRevision: input.Binding.Revision,
+		Frontend: input.Actor.Frontend, ExternalConversationID: input.Actor.ExternalConversationID,
+		ExternalEventID: input.ExternalEventID,
+	}
+	descriptors := make([]eventAttachment, 0, len(input.Attachments))
+	artifacts := make([]domain.Artifact, 0, len(input.Attachments)+1)
+	for index, attachment := range input.Attachments {
+		if err := domain.ValidateSessionEventBlob(
+			input.Actor.TenantID, input.Binding.SessionID, plan.EventID, attachment.Blob,
+		); err != nil {
+			return ports.CanonicalUserEventResult{}, err
+		}
+		name := safeName(attachment.Name, fmt.Sprintf("attachment-%02d.bin", index+1))
+		artifacts = append(artifacts, domain.Artifact{
+			Name:      fmt.Sprintf("attachment-%02d-%s", index+1, name),
+			MediaType: attachment.MediaType, Blob: attachment.Blob,
+		})
+		descriptors = append(descriptors, eventAttachment{
+			Name: name, MediaType: attachment.MediaType, Blob: attachment.Blob,
+		})
+	}
+	payload, err := json.Marshal(eventEnvelope{
+		Version: 1, Origin: origin, Text: input.Text,
+		Metadata: cloneMetadata(input.Metadata), Attachments: descriptors,
+	})
+	if err != nil {
+		return ports.CanonicalUserEventResult{}, fmt.Errorf("encode canonical event envelope: %w", err)
+	}
+	uploadToken, err := newUploadToken()
+	if err != nil {
+		return ports.CanonicalUserEventResult{}, err
+	}
+	payloadRef, err := service.blobs.Put(
+		ctx, input.Actor.TenantID,
+		domain.SessionEventObjectPrefix(input.Actor.TenantID, input.Binding.SessionID, plan.EventID)+
+			"uploads/"+uploadToken+"/message.json",
+		bytes.NewReader(payload),
+	)
+	if err != nil {
+		return ports.CanonicalUserEventResult{}, fmt.Errorf("store canonical event envelope: %w", err)
+	}
+	artifacts = append([]domain.Artifact{{
+		Name: "message.json", MediaType: "application/json", Blob: payloadRef,
+	}}, artifacts...)
+	result, err := service.store.CommitCanonicalUserEvent(ctx, ports.CanonicalUserEventCommit{
+		TenantID: input.Actor.TenantID, UserID: input.Actor.UserID,
+		BindingID: input.Binding.ID, ExpectedBindingRevision: input.Binding.Revision,
+		Origin: origin, IdempotencyKey: plan.IdempotencyKey,
+		ExpireAt: input.ReceivedAt.UTC().Add(service.retention),
+		EventID:  plan.EventID, Payload: payloadRef, DisplayText: input.Text,
+		RunID:                    plan.RunID,
+		AttemptID:                domain.AttemptID(service.stableID("attempt", input.Actor.TenantID, plan.RunID, "1")),
+		SubscriptionConnectionID: input.SubscriptionConnectionID,
+		ManifestID:               domain.ArtifactManifestID(service.stableID("manifest", input.Actor.TenantID, plan.RunID)),
+		Artifacts:                artifacts, DispatchID: plan.DispatchID,
+		AllowedMCPServers: append([]string(nil), input.AllowedMCPServers...),
+		CommittedAt:       input.ReceivedAt.UTC(),
+	})
+	if err != nil {
+		return ports.CanonicalUserEventResult{}, err
+	}
+	service.publishWake(ctx, input.Actor.TenantID, plan.DispatchID, input.ReceivedAt)
+	return result, nil
 }
 
 func (service *Service) Ingest(ctx context.Context, input UserInput) (ports.CanonicalUserEventResult, error) {
@@ -265,6 +431,20 @@ func (service *Service) reportWakePublishError(err error) {
 	}
 }
 
+func (service *Service) publishWake(
+	ctx context.Context,
+	tenantID domain.TenantID,
+	dispatchID domain.DispatchOutboxID,
+	at time.Time,
+) {
+	if service.dispatchWake == nil {
+		return
+	}
+	if err := service.dispatchWake.PublishDispatchWake(ctx, tenantID, dispatchID, at.UTC()); err != nil {
+		service.reportWakePublishError(err)
+	}
+}
+
 func newUploadToken() (string, error) {
 	var token [16]byte
 	if _, err := rand.Read(token[:]); err != nil {
@@ -296,6 +476,56 @@ func validateInput(input UserInput) error {
 		if attachment.Body == nil {
 			return domain.ValidationError{Field: "attachment.body", Reason: "must not be nil"}
 		}
+	}
+	for key := range input.Metadata {
+		if strings.TrimSpace(key) == "" {
+			return domain.ValidationError{Field: "metadata", Reason: "must not contain an empty key"}
+		}
+	}
+	return nil
+}
+
+func validateBoundInput(input BoundUserInput) error {
+	if err := validateBoundPlanInput(input); err != nil {
+		return err
+	}
+	if strings.TrimSpace(input.Text) == "" && len(input.Attachments) == 0 {
+		return domain.ValidationError{Field: "user_input", Reason: "text or an attachment is required"}
+	}
+	for _, attachment := range input.Attachments {
+		if strings.TrimSpace(attachment.MediaType) == "" {
+			return domain.ValidationError{Field: "attachment.media_type", Reason: "must not be empty"}
+		}
+		if err := attachment.Blob.Validate(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateBoundPlanInput validates only the authenticated identity and stable
+// mutation material needed to derive canonical object/event IDs. Attachments
+// may not have been promoted yet; IngestBound validates the completed content.
+func validateBoundPlanInput(input BoundUserInput) error {
+	if err := input.Actor.validate(); err != nil {
+		return err
+	}
+	if err := input.Binding.Validate(); err != nil {
+		return err
+	}
+	if input.Binding.TenantID != input.Actor.TenantID ||
+		input.Binding.Frontend != input.Actor.Frontend ||
+		input.Binding.ExternalConversationID != input.Actor.ExternalConversationID {
+		return domain.ValidationError{Field: "frontend_binding", Reason: "does not match the authenticated actor"}
+	}
+	if strings.TrimSpace(input.ExternalEventID) == "" {
+		return domain.ValidationError{Field: "external_event_id", Reason: "must not be empty"}
+	}
+	if input.ReceivedAt.IsZero() {
+		return domain.ValidationError{Field: "received_at", Reason: "must not be zero"}
+	}
+	if err := input.SubscriptionConnectionID.Validate(); err != nil {
+		return err
 	}
 	for key := range input.Metadata {
 		if strings.TrimSpace(key) == "" {

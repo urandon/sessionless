@@ -23,6 +23,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/sessionapi"
 	"gitcode.com/urandon/sessionless/internal/telegramoidc"
+	"gitcode.com/urandon/sessionless/internal/webapi"
 	"gitcode.com/urandon/sessionless/internal/webcontract"
 )
 
@@ -42,6 +43,7 @@ type Config struct {
 	Provider     ports.OIDCProvider
 	Store        ports.WebAuthStore
 	Sessions     *sessionapi.Service
+	API          *webapi.Service
 	IDs          ports.IDGenerator
 	Clock        ports.Clock
 	Random       io.Reader
@@ -135,7 +137,13 @@ func (handler *Handler) routes() {
 		handler.mux.HandleFunc("GET "+webcontract.RouteSessionEvents, handler.listSessionEvents)
 		handler.mux.HandleFunc("GET "+webcontract.RouteSessionRuns, handler.listSessionRuns)
 		handler.mux.HandleFunc("POST "+webcontract.RouteArchiveSession, handler.setSessionArchived)
-		handler.mux.HandleFunc("POST "+webcontract.RouteFrontendBindings, handler.bindFrontend)
+	}
+	if handler.config.API != nil {
+		handler.mux.HandleFunc("POST "+webcontract.RouteSessionMessages, handler.createMessage)
+		handler.mux.HandleFunc("POST "+webcontract.RouteUploads, handler.createUpload)
+		handler.mux.HandleFunc("POST "+webcontract.RouteUploadCommit, handler.commitUpload)
+		handler.mux.HandleFunc("GET "+webcontract.RouteRun, handler.getRun)
+		handler.mux.HandleFunc("GET "+webcontract.RouteEventAttachment, handler.downloadAttachment)
 	}
 }
 
@@ -168,9 +176,9 @@ func (handler *Handler) listSessions(w http.ResponseWriter, request *http.Reques
 	for _, item := range page.Items {
 		items = append(items, sessionSummary(item))
 	}
-	handler.writeJSON(w, http.StatusOK, webcontract.Page[webcontract.SessionSummary]{
+	handler.writeJSONConditional(w, request, webcontract.Page[webcontract.SessionSummary]{
 		Items: items, NextCursor: page.NextCursor,
-	})
+	}, pollAfterSessions(items))
 }
 
 func (handler *Handler) createSession(w http.ResponseWriter, request *http.Request) {
@@ -218,7 +226,8 @@ func (handler *Handler) getSession(w http.ResponseWriter, request *http.Request)
 		handler.writeError(w, request, err)
 		return
 	}
-	handler.writeJSON(w, http.StatusOK, sessionSummary(record))
+	summary := sessionSummary(record)
+	handler.writeJSONConditional(w, request, summary, pollAfterRun(summary.CurrentRun))
 }
 
 func (handler *Handler) listSessionEvents(w http.ResponseWriter, request *http.Request) {
@@ -227,17 +236,31 @@ func (handler *Handler) listSessionEvents(w http.ResponseWriter, request *http.R
 		handler.writeError(w, request, err)
 		return
 	}
+	afterSequence, err := optionalUint64(request, "after_sequence")
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
 	query := webcontract.EventListQuery{
-		Cursor: request.URL.Query().Get("cursor"), Limit: queryLimit(request, 50),
+		Cursor: request.URL.Query().Get("cursor"), AfterSequence: afterSequence,
+		Limit: queryLimit(request, 50),
 	}
 	if err := query.Validate(); err != nil {
 		handler.writeError(w, request, err)
 		return
 	}
-	page, err := handler.config.Sessions.History(
-		request.Context(), authorization.Session.ActiveTenantID, authorization.Session.UserID,
-		domain.SessionID(request.PathValue("session_id")), query.Cursor, query.Limit,
-	)
+	var page sessionapi.Page[sessionapi.Event]
+	if query.AfterSequence != nil {
+		page, err = handler.config.Sessions.HistoryAfter(
+			request.Context(), authorization.Session.ActiveTenantID, authorization.Session.UserID,
+			domain.SessionID(request.PathValue("session_id")), *query.AfterSequence, query.Limit,
+		)
+	} else {
+		page, err = handler.config.Sessions.History(
+			request.Context(), authorization.Session.ActiveTenantID, authorization.Session.UserID,
+			domain.SessionID(request.PathValue("session_id")), query.Cursor, query.Limit,
+		)
+	}
 	if err != nil {
 		handler.writeError(w, request, err)
 		return
@@ -246,9 +269,9 @@ func (handler *Handler) listSessionEvents(w http.ResponseWriter, request *http.R
 	for _, item := range page.Items {
 		items = append(items, projectEvent(item))
 	}
-	handler.writeJSON(w, http.StatusOK, webcontract.Page[webcontract.SessionEvent]{
+	handler.writeJSONConditional(w, request, webcontract.Page[webcontract.SessionEvent]{
 		Items: items, NextCursor: page.NextCursor,
-	})
+	}, 0)
 }
 
 func (handler *Handler) listSessionRuns(w http.ResponseWriter, request *http.Request) {
@@ -276,9 +299,9 @@ func (handler *Handler) listSessionRuns(w http.ResponseWriter, request *http.Req
 	for _, record := range page.Items {
 		items = append(items, projectRun(record.Run, record.Provider))
 	}
-	handler.writeJSON(w, http.StatusOK, webcontract.Page[webcontract.Run]{
+	handler.writeJSONConditional(w, request, webcontract.Page[webcontract.Run]{
 		Items: items, NextCursor: page.NextCursor,
-	})
+	}, pollAfterRuns(items))
 }
 
 func (handler *Handler) bindFrontend(w http.ResponseWriter, request *http.Request) {
@@ -340,6 +363,137 @@ func (handler *Handler) setSessionArchived(w http.ResponseWriter, request *http.
 	handler.writeJSON(w, http.StatusOK, webcontract.SessionSummary{
 		SessionID: session.ID, Status: session.Status, LastSeq: session.LastEventSequence,
 		CreatedAt: session.CreatedAt, UpdatedAt: session.UpdatedAt, ArchivedAt: session.ArchivedAt,
+	})
+}
+
+func (handler *Handler) createUpload(w http.ResponseWriter, request *http.Request) {
+	authorization, err := handler.authorizeMutation(request, domain.TenantPermissionWrite)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	var input webcontract.CreateUploadIntentRequest
+	if err := decodeJSON(request, &input); err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	response, created, err := handler.config.API.CreateUpload(
+		request.Context(), authorization.Session.ActiveTenantID, authorization.Session.UserID, input,
+	)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	handler.writeJSON(w, status, response)
+}
+
+func (handler *Handler) commitUpload(w http.ResponseWriter, request *http.Request) {
+	authorization, err := handler.authorizeMutation(request, domain.TenantPermissionWrite)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	pathID := domain.UploadIntentID(request.PathValue("upload_id"))
+	var input webcontract.CommitUploadRequest
+	if err := decodeJSON(request, &input); err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	if err := input.Validate(pathID); err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	intent, err := handler.config.API.CommitUpload(
+		request.Context(), authorization.Session.ActiveTenantID, authorization.Session.UserID, pathID,
+	)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	handler.writeJSON(w, http.StatusOK, webcontract.UploadCommitResponse{
+		UploadID: intent.ID, Name: intent.Name, MediaType: intent.MediaType, Size: intent.ExpectedSize,
+	})
+}
+
+func (handler *Handler) createMessage(w http.ResponseWriter, request *http.Request) {
+	authorization, err := handler.authorizeMutation(request, domain.TenantPermissionWrite)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	var input webcontract.CreateMessageRequest
+	if err := decodeJSON(request, &input); err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	response, err := handler.config.API.SubmitMessage(
+		request.Context(), authorization.Session.ActiveTenantID, authorization.Session.UserID,
+		domain.SessionID(request.PathValue("session_id")), input,
+	)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	status := http.StatusOK
+	if response.Created {
+		status = http.StatusCreated
+	}
+	if !response.Compute.Quota.Valid() || response.Compute.Quota == domain.ProviderQuotaUnknown {
+		w.Header().Set("Retry-After", "5")
+	} else {
+		w.Header().Set("Retry-After", "2")
+	}
+	handler.writeJSON(w, status, response)
+}
+
+func (handler *Handler) getRun(w http.ResponseWriter, request *http.Request) {
+	authorization, err := handler.authorize(request, domain.TenantPermissionRead)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	record, err := handler.config.API.GetRun(
+		request.Context(), authorization.Session.ActiveTenantID, authorization.Session.UserID,
+		domain.RunID(request.PathValue("run_id")),
+	)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	run := projectRun(record.Run, record.Provider)
+	handler.writeJSONConditional(w, request, run, pollAfterRun(&run))
+}
+
+func (handler *Handler) downloadAttachment(w http.ResponseWriter, request *http.Request) {
+	authorization, err := handler.authorize(request, domain.TenantPermissionRead)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	sequence, err := strconv.ParseUint(request.PathValue("sequence"), 10, 64)
+	if err != nil {
+		handler.writeError(w, request, domain.ValidationError{Field: "sequence", Reason: "must be an unsigned integer"})
+		return
+	}
+	index, err := strconv.ParseUint(request.PathValue("index"), 10, 32)
+	if err != nil {
+		handler.writeError(w, request, domain.ValidationError{Field: "index", Reason: "must be an unsigned integer"})
+		return
+	}
+	capability, err := handler.config.API.DownloadAttachment(
+		request.Context(), authorization.Session.ActiveTenantID, authorization.Session.UserID,
+		domain.SessionID(request.PathValue("session_id")), sequence, uint32(index),
+	)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	handler.writeJSON(w, http.StatusOK, webcontract.DownloadCapabilityResponse{
+		Method: capability.Method, URL: capability.URL, Headers: capability.Headers, ExpiresAt: capability.ExpiresAt,
 	})
 }
 
@@ -695,8 +849,16 @@ func (handler *Handler) writeError(w http.ResponseWriter, request *http.Request,
 		handler.writeFailure(w, request, webcontract.ErrorUnauthenticated, "Authentication is required.")
 	case errors.Is(err, sessionapi.ErrSessionUnavailable):
 		handler.writeFailure(w, request, webcontract.ErrorNotFound, "The requested session is not available.")
+	case errors.Is(err, webapi.ErrResourceUnavailable):
+		handler.writeFailure(w, request, webcontract.ErrorNotFound, "The requested resource is not available.")
 	case errors.Is(err, domain.ErrSessionMutationConflict):
 		handler.writeFailure(w, request, webcontract.ErrorConflict, "The idempotency key conflicts with an earlier session mutation.")
+	case errors.Is(err, webapi.ErrComputeUnavailable):
+		handler.writeFailure(w, request, webcontract.ErrorConflict, "Exactly one compute connection must be configured before sending a message.")
+	case errors.Is(err, domain.ErrUploadIntentConflict), errors.Is(err, domain.ErrUploadIntentExpired),
+		errors.Is(err, domain.ErrUploadIntentCommitted), errors.Is(err, domain.ErrUploadIntentNotCommitted),
+		errors.Is(err, domain.ErrUploadIntentClaimed), errors.Is(err, domain.ErrUploadMismatch):
+		handler.writeFailure(w, request, webcontract.ErrorConflict, "The upload state conflicts with this request.")
 	case errors.Is(err, domain.ErrMembershipDenied), errors.Is(err, domain.ErrMembershipVersionChanged),
 		errors.Is(err, domain.ErrExternalIdentityConflict), errors.Is(err, domain.ErrWebSessionRotation):
 		handler.writeFailure(w, request, webcontract.ErrorAccessDenied, "The requested operation is not authorized.")
@@ -794,6 +956,34 @@ func (handler *Handler) writeJSON(w http.ResponseWriter, status int, value any) 
 	_ = json.NewEncoder(w).Encode(value)
 }
 
+func (handler *Handler) writeJSONConditional(
+	w http.ResponseWriter,
+	request *http.Request,
+	value any,
+	pollAfter time.Duration,
+) {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		handler.writeFailure(w, request, webcontract.ErrorTemporarilyUnavailable, "The response could not be encoded.")
+		return
+	}
+	digest := sha256.Sum256(payload)
+	etag := `"sha256-` + base64.RawURLEncoding.EncodeToString(digest[:]) + `"`
+	w.Header().Set("ETag", etag)
+	if pollAfter > 0 {
+		seconds := int64((pollAfter + time.Second - 1) / time.Second)
+		w.Header().Set("Retry-After", strconv.FormatInt(seconds, 10))
+		w.Header().Set("X-Sessionless-Poll-After-Ms", strconv.FormatInt(pollAfter.Milliseconds(), 10))
+	}
+	if request.Header.Get("If-None-Match") == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(append(payload, '\n'))
+}
+
 func decodeJSON(request *http.Request, target any) error {
 	decoder := json.NewDecoder(io.LimitReader(request.Body, maxRequestBytes+1))
 	decoder.DisallowUnknownFields()
@@ -874,6 +1064,46 @@ func queryLimit(request *http.Request, fallback uint32) uint32 {
 		return 0
 	}
 	return uint32(value)
+}
+
+func optionalUint64(request *http.Request, name string) (*uint64, error) {
+	raw, exists := request.URL.Query()[name]
+	if !exists {
+		return nil, nil
+	}
+	if len(raw) != 1 || raw[0] == "" {
+		return nil, domain.ValidationError{Field: name, Reason: "must be one unsigned integer"}
+	}
+	value, err := strconv.ParseUint(raw[0], 10, 64)
+	if err != nil {
+		return nil, domain.ValidationError{Field: name, Reason: "must be one unsigned integer"}
+	}
+	return &value, nil
+}
+
+func pollAfterRun(run *webcontract.Run) time.Duration {
+	if run != nil && !run.Status.Terminal() {
+		return 2 * time.Second
+	}
+	return 0
+}
+
+func pollAfterRuns(runs []webcontract.Run) time.Duration {
+	for index := range runs {
+		if delay := pollAfterRun(&runs[index]); delay > 0 {
+			return delay
+		}
+	}
+	return 0
+}
+
+func pollAfterSessions(sessions []webcontract.SessionSummary) time.Duration {
+	for index := range sessions {
+		if delay := pollAfterRun(sessions[index].CurrentRun); delay > 0 {
+			return delay
+		}
+	}
+	return 0
 }
 
 func loginBindingCookie(value string, ttl time.Duration) *http.Cookie {

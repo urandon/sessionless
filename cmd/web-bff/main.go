@@ -9,15 +9,20 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/buildinfo"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/idgen"
+	"gitcode.com/urandon/sessionless/internal/outboxwake"
 	"gitcode.com/urandon/sessionless/internal/s3store"
 	"gitcode.com/urandon/sessionless/internal/sessionapi"
+	"gitcode.com/urandon/sessionless/internal/sessioningress"
+	"gitcode.com/urandon/sessionless/internal/sqsqueue"
 	"gitcode.com/urandon/sessionless/internal/telegramoidc"
+	"gitcode.com/urandon/sessionless/internal/webapi"
 	"gitcode.com/urandon/sessionless/internal/webbff"
 	"gitcode.com/urandon/sessionless/internal/webcontract"
 	"gitcode.com/urandon/sessionless/internal/ydbclient"
@@ -25,6 +30,8 @@ import (
 )
 
 const component = "web-bff"
+
+const defaultWebBlobLimit = int64(64 << 20)
 
 type systemClock struct{}
 
@@ -100,11 +107,21 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 		closeYDB()
 		return nil, func() {}, err
 	}
+	maxUploadBytes, err := envPositiveInt64("WEB_MAX_UPLOAD_BYTES", 32<<20)
+	if err != nil {
+		closeYDB()
+		return nil, func() {}, err
+	}
+	maxBlobBytes := defaultWebBlobLimit
+	if maxUploadBytes > maxBlobBytes {
+		maxBlobBytes = maxUploadBytes
+	}
 	blobs, err := s3store.New(ctx, s3store.Config{
 		Endpoint: os.Getenv("S3_ENDPOINT"), Region: os.Getenv("S3_REGION"),
 		Bucket: os.Getenv("S3_BUCKET"), AccessKeyID: os.Getenv("S3_ACCESS_KEY_ID"),
 		SecretAccessKey: os.Getenv("S3_SECRET_ACCESS_KEY"), ForcePathStyle: envBool("S3_FORCE_PATH_STYLE"),
 		IAMMetadataCredentials: envBool("S3_IAM_METADATA_CREDENTIALS"),
+		MaxObjectBytes:         maxBlobBytes,
 	})
 	if err != nil {
 		closeYDB()
@@ -118,6 +135,45 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 		closeYDB()
 		return nil, func() {}, err
 	}
+	dispatchWakeQueue, err := sqsqueue.New(ctx, sqsqueue.Config{
+		Endpoint: os.Getenv("QUEUE_ENDPOINT"), Region: envOrDefault("QUEUE_REGION", "ru-central1"),
+		QueueURL: os.Getenv("SCHEDULER_WAKE_QUEUE_URL"),
+		AccessKeyID: firstNonEmpty(
+			os.Getenv("OUTBOX_QUEUE_ACCESS_KEY_ID"), os.Getenv("QUEUE_ACCESS_KEY_ID"),
+		),
+		SecretAccessKey: firstNonEmpty(
+			os.Getenv("OUTBOX_QUEUE_SECRET_ACCESS_KEY"), os.Getenv("QUEUE_SECRET_ACCESS_KEY"),
+		),
+	})
+	if err != nil {
+		closeYDB()
+		return nil, func() {}, fmt.Errorf("open web scheduler wake queue: %w", err)
+	}
+	dispatchWakePublisher, err := outboxwake.NewPublisher(dispatchWakeQueue)
+	if err != nil {
+		closeYDB()
+		return nil, func() {}, err
+	}
+	identityKey := []byte(os.Getenv("SESSION_API_ID_HMAC_KEY"))
+	canonicalIngress, err := sessioningress.New(sessioningress.Config{
+		IDKey: identityKey, DispatchWakePublisher: dispatchWakePublisher,
+		WakePublishError: func(publishErr error) {
+			logger.Warn("durable web dispatch wake publication deferred to recovery", "error", publishErr)
+		},
+	}, store, blobs)
+	if err != nil {
+		closeYDB()
+		return nil, func() {}, err
+	}
+	api, err := webapi.New(webapi.Config{
+		IDKey:             identityKey,
+		MaxUploadBytes:    maxUploadBytes,
+		AllowedMCPServers: envCSV("WEB_ALLOWED_MCP_SERVERS"),
+	}, sessions, canonicalIngress, store, store, blobs, systemClock{})
+	if err != nil {
+		closeYDB()
+		return nil, func() {}, err
+	}
 	handler, err := webbff.New(webbff.Config{
 		BaseURL: baseURL, RedirectURI: redirectURI,
 		OIDCPolicy: domain.OIDCVerificationPolicy{
@@ -125,7 +181,7 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 			Audience: os.Getenv("TELEGRAM_OIDC_CLIENT_ID"), AllowedAlgorithms: []string{"RS256"},
 			MaxClockSkew: 30 * time.Second,
 		},
-		Provider: provider, Store: store, Sessions: sessions, IDs: idgen.New(), Clock: systemClock{},
+		Provider: provider, Store: store, Sessions: sessions, API: api, IDs: idgen.New(), Clock: systemClock{},
 		Logger: logger, Build: buildinfo.Current(component),
 	})
 	if err != nil {
@@ -145,4 +201,35 @@ func envOrDefault(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func envPositiveInt64(name string, fallback int64) (int64, error) {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || parsed <= 0 {
+		return 0, fmt.Errorf("%s must be a positive integer", name)
+	}
+	return parsed, nil
+}
+
+func envCSV(name string) []string {
+	var result []string
+	for _, value := range strings.Split(os.Getenv(name), ",") {
+		if value = strings.TrimSpace(value); value != "" {
+			result = append(result, value)
+		}
+	}
+	return result
 }

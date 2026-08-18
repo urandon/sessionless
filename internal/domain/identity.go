@@ -127,7 +127,10 @@ func EnsureSameTenant(expected, actual TenantID) error {
 
 type Frontend string
 
-const FrontendTelegram Frontend = "telegram"
+const (
+	FrontendTelegram Frontend = "telegram"
+	FrontendWeb      Frontend = "web"
+)
 
 func (frontend Frontend) Validate() error {
 	return ValidateOpaqueID("frontend", string(frontend))

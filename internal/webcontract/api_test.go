@@ -41,6 +41,13 @@ func TestPaginationContractsAreBounded(t *testing.T) {
 	if err := (webcontract.EventListQuery{Limit: 0}).Validate(); err == nil {
 		t.Fatal("zero-sized event page accepted")
 	}
+	after := uint64(42)
+	if err := (webcontract.EventListQuery{AfterSequence: &after, Limit: 50}).Validate(); err != nil {
+		t.Fatalf("after_sequence query rejected: %v", err)
+	}
+	if err := (webcontract.EventListQuery{Cursor: "opaque", AfterSequence: &after, Limit: 50}).Validate(); err == nil {
+		t.Fatal("event query accepted cursor and after_sequence together")
+	}
 }
 
 func TestCookieContracts(t *testing.T) {
@@ -95,7 +102,8 @@ func TestBoundedMessageAndUploadContracts(t *testing.T) {
 		t.Fatalf("valid message rejected: %v", err)
 	}
 	upload := webcontract.CreateUploadIntentRequest{
-		SessionID: "session-1", Name: "a.txt", MediaType: "text/plain", Size: 1, SHA256: strings.Repeat("a", 64),
+		SessionID: "session-1", IdempotencyKey: "upload-1",
+		Name: "a.txt", MediaType: "text/plain", Size: 1, SHA256: strings.Repeat("a", 64),
 	}
 	if err := upload.Validate(1024); err != nil {
 		t.Fatalf("valid upload rejected: %v", err)

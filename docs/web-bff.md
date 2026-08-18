@@ -49,7 +49,11 @@ sequenceDiagram
 | `GET` | `/api/web/v1/sessions/{session_id}/events` | Page ordered canonical event payloads after authorization |
 | `GET` | `/api/web/v1/sessions/{session_id}/runs` | Page provider/harness execution observations |
 | `POST` | `/api/web/v1/sessions/{session_id}/archive` | Archive or unarchive without deleting history |
-| `POST` | `/api/web/v1/frontend-bindings` | Bind or revision-fenced switch an authorized frontend |
+| `POST` | `/api/web/v1/sessions/{session_id}/messages` | Append an idempotent canonical Web message and create its run |
+| `POST` | `/api/web/v1/uploads` | Create an exact-object direct-upload capability |
+| `POST` | `/api/web/v1/uploads/{upload_id}/commit` | Verify and commit the exact staged object |
+| `GET` | `/api/web/v1/runs/{run_id}` | Read one participant-authorized run |
+| `GET` | `/api/web/v1/sessions/{session_id}/events/{sequence}/attachments/{index}` | Create a short-lived capability for one canonical attachment |
 
 Mutation routes require an exact `Origin` match and a double-submit CSRF value
 whose digest must also match the current server-side session. Switching tenants
@@ -57,6 +61,11 @@ always revokes the previous session and rotates both opaque values. Cookies use
 the `__Host-` prefix, `Secure`, `HttpOnly` where applicable, `Path=/`, and no
 `Domain` attribute. The default idle lifetime is 12 hours and the absolute
 lifetime is seven days.
+
+Browser code cannot supply raw frontend coordinates. On message submission the
+server creates or verifies the binding `(web, session_id)` for the authorized
+canonical session. The generic revision-fenced binding operation remains an
+internal adapter boundary and is deliberately not registered as a Web route.
 
 An authenticated Telegram identity with no active membership receives a stable
 `403 access_denied` response and no Web session. Membership is created only by
@@ -97,8 +106,15 @@ Source: [Telegram Login: OIDC integration](https://core.telegram.org/bots/telegr
 | `TELEGRAM_OIDC_CLIENT_SECRET` | Telegram application secret |
 | `YDB_CONNECTION_STRING` | YDB endpoint/database coordinates only |
 | `SESSION_API_CURSOR_HMAC_KEY` | At least 32 secret bytes for scoped opaque continuation tokens |
-| `SESSION_API_ID_HMAC_KEY` | At least 32 secret bytes for deterministic idempotent resource IDs |
-| `S3_*` | Tenant-enforcing Object Storage coordinates and runtime credentials |
+| `SESSION_API_ID_HMAC_KEY` | At least 32 secret bytes for deterministic session, upload, event, run, and dispatch IDs |
+| `WEB_MAX_UPLOAD_BYTES` | Optional positive object limit; defaults to `33554432` (32 MiB) |
+| `WEB_ALLOWED_MCP_SERVERS` | Optional comma-separated allowlist copied into Web-created jobs |
+| `QUEUE_ENDPOINT`, `QUEUE_REGION` | Queue coordinates used to publish canonical scheduler wakes |
+| `OUTBOX_QUEUE_ACCESS_KEY_ID`, `OUTBOX_QUEUE_SECRET_ACCESS_KEY` | Optional queue credentials; each falls back to its `QUEUE_*` counterpart locally |
+| `SCHEDULER_WAKE_QUEUE_URL` | Scheduler-wake queue receiving durable ingress wake hints |
+| `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET` | Exact Object Storage coordinates |
+| `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_FORCE_PATH_STYLE` | Static S3-compatible credentials and addressing, used by local MinIO |
+| `S3_IAM_METADATA_CREDENTIALS` | Use the workload service-account IAM token for Yandex Object Storage and its Presign API |
 
 The client secret must be injected into the process environment from an OS
 secret store locally and Lockbox in Yandex Cloud. It must not be present in
@@ -108,6 +124,46 @@ Terraform state, container arguments, images, DSNs, repository files, or logs.
 generates one ephemeral RSA key per process, supports one-time authorization
 codes, and refuses every environment except exact `local`. It is not built into
 the production Web BFF image.
+
+## Canonical message and object flow
+
+The browser uploads large objects directly rather than proxying bytes through
+the serverless BFF:
+
+1. Create an upload intent with the target session, a fresh idempotency key,
+   filename, allowed media type, byte count, and lowercase SHA-256.
+2. Use the returned `PUT` URL once, preserving every returned header exactly.
+   The URL and headers identify one server-generated staging object and expire
+   quickly.
+3. Commit the same `upload_id`. The BFF reauthorizes the user and verifies
+   authoritative size, media type, checksum, key, and ETag from Object Storage.
+4. Submit text and up to eight committed upload IDs to the session message
+   route. The BFF resolves exactly one configured compute connection, promotes
+   each unchanged object into the immutable event namespace, and atomically
+   creates the canonical event/run.
+5. Poll the returned run ID using `If-None-Match` and the server's
+   `Retry-After`/`X-Sessionless-Poll-After-Ms` hints. Fetch new transcript
+   events with `after_sequence`; do not combine it with `cursor`.
+
+Session/list/event/run reads return representation-derived ETags and answer a
+matching `If-None-Match` with `304`. Attachment routes return a short-lived
+exact-object `GET` capability rather than an Object Storage key. All capability
+responses remain `Cache-Control: no-store`; URLs must be redacted from request,
+audit, and analytics logs and must not be persisted in browser storage.
+
+The default accepted upload size is 32 MiB. The built-in safe media allowlist
+is JSON, PDF, ZIP, GIF, JPEG, PNG, WebP, CSV, Markdown, and plain text. The
+upload-intent lifetime is at most ten minutes, an upload capability at most
+five minutes, and a download capability at most two minutes. Staging retention
+is a storage lifecycle concern; an unclaimed staging object never becomes
+canonical session history.
+
+In Yandex workload-IAM mode the adapter authenticates with the service-account
+IAM token and calls the official
+[Object Storage `PresignService.Create`](https://yandex.cloud/en/docs/storage/api-ref/grpc/Presign/create)
+endpoint at `storage.api.cloud.yandex.net:443`. Local static-key mode uses the
+S3-compatible [pre-signed URL](https://yandex.cloud/en/docs/storage/concepts/pre-signed-urls)
+contract through the AWS SDK.
 
 ## YDB data and access paths
 
@@ -121,6 +177,8 @@ the production Web BFF image.
 | `web_sessions` | `(shard_bucket, session_digest)` | Point authorize, rotate, and revoke with TTL |
 | `web_security_audit_events` | `(shard_bucket, occurred_at, request_id)` | Durable login-failure and CSRF-rejection audit without requiring a resolved tenant |
 | `development_bootstrap_grants` | `(tenant_id, user_id)` | Exact idempotency ledger for cloud-dev grants |
+| `web_upload_intents` | `(tenant_id, upload_id)` | Point authorize, commit, and atomic bounded claim |
+| `web_upload_intent_creations` | `(tenant_id, user_id, creation_idempotency_key)` | Exact upload-creation retry ledger |
 
 The leading buckets are stable hashes of the point-lookup identity. They avoid
 monotonic or attacker-selected hot prefixes while preserving deterministic
@@ -164,10 +222,11 @@ YDB integration tests prove exactly one winner for concurrent challenge
 consumption, stable external-identity resolution, tenant isolation, membership
 security-version invalidation, and session rotation.
 
-Run:
+Run the repository-supported checks:
 
 ```sh
-go test -race ./internal/oidcfixture ./internal/telegramoidc ./internal/webbff
+make test
+make build
 make ydb-integration
 ```
 

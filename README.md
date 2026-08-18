@@ -46,15 +46,17 @@ Canonical sessions, ordered events, session participants, snapshots, activity in
 and revisioned frontend bindings are persisted directly in YDB. The repository
 also implements the Go Web BFF for Telegram OIDC Authorization Code + PKCE,
 explicit tenant enrollment, membership authorization, revocable first-party
-sessions, CSRF protection, and active-tenant session rotation. The browser UI
-and upload-intent implementation remain separate slices.
+sessions, CSRF protection, active-tenant session rotation, canonical Web
+message/run ingestion, and exact-object upload/download capabilities. The
+browser UI remains a separate slice.
 
 ## Components
 
 - `control-api`: HTTP entrypoint with health/build metadata and the authenticated
   Telegram webhook adapter;
 - `web-bff`: same-origin Go backend-for-frontend for Telegram OIDC, membership-
-  authorized tenant selection, and revocable opaque browser sessions;
+  authorized tenant selection, revocable opaque browser sessions, canonical
+  message/run operations, and exact-object upload/download capabilities;
 - `oidc-fake`: deterministic Telegram-shaped OIDC fixture that is hard-disabled
   outside the local environment;
 - `reconciler`: queue-driven point scheduler with bounded 16-bucket dispatch
@@ -82,7 +84,11 @@ and upload-intent implementation remain separate slices.
 - `internal/webcontract`: same-origin WebUI request/response, secure-cookie,
   CSRF, and tenant-selector contracts without browser-side tenant authority;
 - `internal/webbff`: authorization-code callback, first-party session, CSRF,
-  logout, identity, membership, and active-tenant HTTP flows;
+  logout, identity, membership, active-tenant, canonical message/run, and
+  object-capability HTTP flows;
+- `internal/webapi`: server-owned Web binding, compute resolution, canonical
+  message ingress, upload intent/commit/promotion, and attachment capability
+  application boundary;
 - `internal/telegramoidc`: Telegram OIDC Authorization Code + PKCE client with
   pinned RS256 verification and bounded JWKS refresh;
 - `internal/portlog`: process-boundary structured correlation logs without

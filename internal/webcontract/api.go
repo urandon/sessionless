@@ -31,6 +31,7 @@ const (
 	RouteUploads          = "/api/web/v1/uploads"
 	RouteUploadCommit     = "/api/web/v1/uploads/{upload_id}/commit"
 	RouteRun              = "/api/web/v1/runs/{run_id}"
+	RouteEventAttachment  = "/api/web/v1/sessions/{session_id}/events/{sequence}/attachments/{index}"
 )
 
 const MaxMessageUploadCount = 8
@@ -194,8 +195,9 @@ func (query SessionListQuery) Validate() error {
 }
 
 type EventListQuery struct {
-	Cursor string
-	Limit  uint32
+	Cursor        string
+	AfterSequence *uint64
+	Limit         uint32
 }
 
 type RunListQuery struct {
@@ -219,6 +221,9 @@ func (query EventListQuery) Validate() error {
 	}
 	if len(query.Cursor) > 512 {
 		return domain.ValidationError{Field: "events.cursor", Reason: "must not exceed 512 bytes"}
+	}
+	if query.Cursor != "" && query.AfterSequence != nil {
+		return domain.ValidationError{Field: "events.position", Reason: "cursor and after_sequence are mutually exclusive"}
 	}
 	return nil
 }
@@ -292,15 +297,19 @@ func (request CreateMessageRequest) Validate() error {
 }
 
 type CreateUploadIntentRequest struct {
-	SessionID domain.SessionID `json:"session_id"`
-	Name      string           `json:"name"`
-	MediaType string           `json:"media_type"`
-	Size      int64            `json:"size"`
-	SHA256    string           `json:"sha256"`
+	SessionID      domain.SessionID      `json:"session_id"`
+	IdempotencyKey domain.IdempotencyKey `json:"idempotency_key"`
+	Name           string                `json:"name"`
+	MediaType      string                `json:"media_type"`
+	Size           int64                 `json:"size"`
+	SHA256         string                `json:"sha256"`
 }
 
 func (request CreateUploadIntentRequest) Validate(maxBytes int64) error {
 	if err := request.SessionID.Validate(); err != nil {
+		return err
+	}
+	if err := request.IdempotencyKey.Validate(); err != nil {
 		return err
 	}
 	if strings.TrimSpace(request.Name) == "" || strings.TrimSpace(request.MediaType) == "" {
@@ -334,6 +343,29 @@ type UploadCommitResponse struct {
 	Name      string                `json:"name"`
 	MediaType string                `json:"media_type"`
 	Size      int64                 `json:"size"`
+}
+
+type ComputeConnection struct {
+	Provider    string                    `json:"provider"`
+	Entitlement domain.EntitlementState   `json:"entitlement"`
+	Quota       domain.ProviderQuotaState `json:"quota"`
+	ObservedAt  time.Time                 `json:"observed_at"`
+}
+
+type CreateMessageResponse struct {
+	SessionID domain.SessionID      `json:"session_id"`
+	EventID   domain.SessionEventID `json:"event_id"`
+	Sequence  uint64                `json:"sequence"`
+	RunID     domain.RunID          `json:"run_id"`
+	Created   bool                  `json:"created"`
+	Compute   ComputeConnection     `json:"compute"`
+}
+
+type DownloadCapabilityResponse struct {
+	Method    string            `json:"method"`
+	URL       string            `json:"url"`
+	Headers   map[string]string `json:"headers,omitempty"`
+	ExpiresAt time.Time         `json:"expires_at"`
 }
 
 func (request CommitUploadRequest) Validate(pathUploadID domain.UploadIntentID) error {

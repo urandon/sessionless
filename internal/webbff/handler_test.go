@@ -212,6 +212,16 @@ func TestSessionRoutesUseWebAuthorizationCSRFAndSafeSelectors(t *testing.T) {
 	if listResponse.Code != http.StatusOK || !strings.Contains(listResponse.Body.String(), `"title":"Existing"`) {
 		t.Fatalf("session list status=%d body=%s", listResponse.Code, listResponse.Body.String())
 	}
+	if listResponse.Header().Get("ETag") == "" {
+		t.Fatal("session list omitted ETag")
+	}
+	unchanged := list.Clone(list.Context())
+	unchanged.Header.Set("If-None-Match", listResponse.Header().Get("ETag"))
+	unchangedResponse := httptest.NewRecorder()
+	handler.ServeHTTP(unchangedResponse, unchanged)
+	if unchangedResponse.Code != http.StatusNotModified || unchangedResponse.Body.Len() != 0 {
+		t.Fatalf("conditional list status=%d body=%s", unchangedResponse.Code, unchangedResponse.Body.String())
+	}
 
 	missing := httptest.NewRequest(http.MethodGet,
 		"https://web.dev.sessionless.triborg.dev/api/web/v1/sessions/session-missing", nil)
@@ -247,7 +257,8 @@ func TestSessionRoutesUseWebAuthorizationCSRFAndSafeSelectors(t *testing.T) {
 		t.Fatalf("authorized create status=%d body=%s", createResponse.Code, createResponse.Body.String())
 	}
 
-	sessions.bindingErr = domain.StaleBindingError{Expected: 1, Actual: 2}
+	// Browser callers cannot create arbitrary frontend bindings; Web bindings
+	// are server-owned by the message submission path.
 	bind := httptest.NewRequest(http.MethodPost,
 		"https://web.dev.sessionless.triborg.dev"+webcontract.RouteFrontendBindings,
 		strings.NewReader(`{"frontend":"web","external_conversation_id":"browser-1","session_id":"session-existing","expected_revision":1}`))
@@ -258,8 +269,8 @@ func TestSessionRoutesUseWebAuthorizationCSRFAndSafeSelectors(t *testing.T) {
 	bind.AddCookie(csrfCookie)
 	bindResponse := httptest.NewRecorder()
 	handler.ServeHTTP(bindResponse, bind)
-	if bindResponse.Code != http.StatusConflict {
-		t.Fatalf("stale binding status=%d body=%s", bindResponse.Code, bindResponse.Body.String())
+	if bindResponse.Code != http.StatusNotFound {
+		t.Fatalf("browser binding route status=%d body=%s", bindResponse.Code, bindResponse.Body.String())
 	}
 }
 

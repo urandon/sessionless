@@ -42,6 +42,145 @@ func BackfillReadyExpiryV2(
 	return results, nil
 }
 
+// BackfillSchemaIndexes performs the complete deployment backfill. Serving
+// code dual-writes these tables; the completion marker is written only after
+// every legacy row visible to this run has been copied.
+func BackfillSchemaIndexes(ctx context.Context, db *sql.DB, dryRun bool) ([]BackfillResult, error) {
+	results, err := BackfillReadyExpiryV2(ctx, db, dryRun)
+	if err != nil {
+		return nil, err
+	}
+	operations := []func(context.Context, *sql.DB, bool) (BackfillResult, error){
+		backfillArtifactManifestsByRun,
+		backfillFrontendBindingsBySession,
+		backfillFrontendProjectionsBySession,
+		backfillTelegramDeliveriesByRun,
+		backfillCheckpointObjectsByRun,
+	}
+	for _, operation := range operations {
+		result, err := operation(ctx, db, dryRun)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, result)
+	}
+	if !dryRun {
+		if _, err := db.ExecContext(ctx,
+			`UPSERT INTO session_lifecycle_backfill_state (backfill_id, completed_at) VALUES ($1, $2)`,
+			"session-lifecycle-indexes-v1", time.Now().UTC(),
+		); err != nil {
+			return nil, fmt.Errorf("mark session lifecycle backfill complete: %w", err)
+		}
+	}
+	return results, nil
+}
+
+func backfillArtifactManifestsByRun(ctx context.Context, db *sql.DB, dryRun bool) (BackfillResult, error) {
+	return backfillTriples(ctx, db, dryRun, "artifact_manifests_by_run",
+		`SELECT tenant_id, run_id, artifact_manifest_id FROM artifact_manifests`,
+		`UPSERT INTO artifact_manifests_by_run (tenant_id, run_id, artifact_manifest_id) VALUES ($1, $2, $3)`)
+}
+
+func backfillFrontendBindingsBySession(ctx context.Context, db *sql.DB, dryRun bool) (BackfillResult, error) {
+	return backfillTriples(ctx, db, dryRun, "frontend_bindings_by_session",
+		`SELECT tenant_id, session_id, binding_id FROM frontend_bindings`,
+		`UPSERT INTO frontend_bindings_by_session (tenant_id, session_id, binding_id) VALUES ($1, $2, $3)`)
+}
+
+func backfillFrontendProjectionsBySession(ctx context.Context, db *sql.DB, dryRun bool) (BackfillResult, error) {
+	return backfillTriples(ctx, db, dryRun, "frontend_projections_by_session",
+		`SELECT tenant_id, session_id, frontend_projection_id FROM frontend_projection_outbox`,
+		`UPSERT INTO frontend_projections_by_session (tenant_id, session_id, frontend_projection_id) VALUES ($1, $2, $3)`)
+}
+
+func backfillTelegramDeliveriesByRun(ctx context.Context, db *sql.DB, dryRun bool) (BackfillResult, error) {
+	return backfillJSONRows(ctx, db, dryRun, "telegram_deliveries_by_run",
+		`SELECT tenant_id, run_id, telegram_delivery_id, payload FROM telegram_delivery_outbox`,
+		`UPSERT INTO telegram_deliveries_by_run
+		 (tenant_id, run_id, telegram_delivery_id, record)
+		 VALUES ($1, $2, $3, CAST($4 AS JsonDocument))`)
+}
+
+func backfillCheckpointObjectsByRun(ctx context.Context, db *sql.DB, dryRun bool) (BackfillResult, error) {
+	return backfillJSONRows(ctx, db, dryRun, "checkpoint_objects_by_run",
+		`SELECT tenant_id, run_id, checkpoint_id, payload FROM checkpoints`,
+		`UPSERT INTO checkpoint_objects_by_run
+		 (tenant_id, run_id, checkpoint_id, record)
+		 VALUES ($1, $2, $3, CAST($4 AS JsonDocument))`)
+}
+
+func backfillTriples(
+	ctx context.Context,
+	db *sql.DB,
+	dryRun bool,
+	table string,
+	selectSQL string,
+	upsertSQL string,
+) (BackfillResult, error) {
+	rows, err := db.QueryContext(ctx, selectSQL)
+	if err != nil {
+		return BackfillResult{}, fmt.Errorf("read %s source: %w", table, err)
+	}
+	defer rows.Close()
+	type triple struct{ first, second, third string }
+	var values []triple
+	for rows.Next() {
+		var value triple
+		if err := rows.Scan(&value.first, &value.second, &value.third); err != nil {
+			return BackfillResult{}, err
+		}
+		values = append(values, value)
+	}
+	if err := rows.Err(); err != nil {
+		return BackfillResult{}, err
+	}
+	for _, value := range values {
+		if dryRun {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, upsertSQL, value.first, value.second, value.third); err != nil {
+			return BackfillResult{}, fmt.Errorf("backfill %s: %w", table, err)
+		}
+	}
+	return BackfillResult{Table: table, Rows: uint64(len(values))}, nil
+}
+
+func backfillJSONRows(
+	ctx context.Context,
+	db *sql.DB,
+	dryRun bool,
+	table string,
+	selectSQL string,
+	upsertSQL string,
+) (BackfillResult, error) {
+	rows, err := db.QueryContext(ctx, selectSQL)
+	if err != nil {
+		return BackfillResult{}, fmt.Errorf("read %s source: %w", table, err)
+	}
+	defer rows.Close()
+	type value struct{ first, second, third, record string }
+	var values []value
+	for rows.Next() {
+		var item value
+		if err := rows.Scan(&item.first, &item.second, &item.third, &item.record); err != nil {
+			return BackfillResult{}, err
+		}
+		values = append(values, item)
+	}
+	if err := rows.Err(); err != nil {
+		return BackfillResult{}, err
+	}
+	for _, item := range values {
+		if dryRun {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, upsertSQL, item.first, item.second, item.third, item.record); err != nil {
+			return BackfillResult{}, fmt.Errorf("backfill %s: %w", table, err)
+		}
+	}
+	return BackfillResult{Table: table, Rows: uint64(len(values))}, nil
+}
+
 func backfillLeaseExpiry(ctx context.Context, db *sql.DB, dryRun bool) (BackfillResult, error) {
 	type row struct {
 		tenantID, runID, leaseID string

@@ -151,6 +151,9 @@ func (tx *stateTx) PutRun(ctx context.Context, run domain.Run) error {
 	if err := run.Validate(); err != nil {
 		return err
 	}
+	if err := ensureSessionWritableTx(ctx, tx, run.SessionID); err != nil {
+		return err
+	}
 	var existing string
 	err := tx.sqlTx.QueryRowContext(ctx,
 		`SELECT run_id FROM run_idempotency
@@ -340,6 +343,15 @@ func (tx *stateTx) PutCheckpoint(ctx context.Context, checkpoint domain.Checkpoi
 		checkpoint.ID, checkpoint.RunID, checkpoint.State.Key, checkpoint.CreatedAt,
 		checkpoint.CreatedAt.Add(tx.store.operationalRetention), payload,
 	)
+	if err != nil {
+		return err
+	}
+	_, err = tx.sqlTx.ExecContext(ctx,
+		`UPSERT INTO checkpoint_objects_by_run
+		 (tenant_id, run_id, checkpoint_id, record)
+		 VALUES ($1, $2, $3, CAST($4 AS JsonDocument))`,
+		checkpoint.TenantID, checkpoint.RunID, checkpoint.ID, payload,
+	)
 	return err
 }
 
@@ -483,6 +495,15 @@ func (tx *stateTx) PutArtifactManifest(
 		 (tenant_id, artifact_manifest_id, run_id, created_at, payload)
 		 VALUES ($1, $2, $3, $4, CAST($5 AS JsonDocument))`,
 		manifest.TenantID, manifest.ID, manifest.RunID, manifest.CreatedAt, payload,
+	)
+	if err != nil {
+		return err
+	}
+	_, err = tx.sqlTx.ExecContext(ctx,
+		`UPSERT INTO artifact_manifests_by_run
+		 (tenant_id, run_id, artifact_manifest_id)
+		 VALUES ($1, $2, $3)`,
+		manifest.TenantID, manifest.RunID, manifest.ID,
 	)
 	return err
 }
@@ -637,6 +658,11 @@ func (tx *stateTx) PutTelegramDeliveryOutbox(
 		return err
 	}
 	if found {
+		if previous.RunID != outbox.RunID {
+			return domain.ValidationError{
+				Field: "telegram_delivery.run_id", Reason: "cannot change after the delivery is created",
+			}
+		}
 		previousAvailableAt := telegramDeliveryAvailableAt(previous)
 		if _, err := tx.sqlTx.ExecContext(ctx,
 			`DELETE FROM telegram_delivery_ready
@@ -668,6 +694,14 @@ func (tx *stateTx) PutTelegramDeliveryOutbox(
 		outbox.UpdatedAt.Add(tx.store.operationalRetention), payload,
 	)
 	if err != nil {
+		return err
+	}
+	if _, err := tx.sqlTx.ExecContext(ctx,
+		`UPSERT INTO telegram_deliveries_by_run
+		 (tenant_id, run_id, telegram_delivery_id, record)
+		 VALUES ($1, $2, $3, CAST($4 AS JsonDocument))`,
+		outbox.TenantID, outbox.RunID, outbox.ID, payload,
+	); err != nil {
 		return err
 	}
 	if outbox.Status != domain.DeliveryPending &&
@@ -722,6 +756,9 @@ func (tx *stateTx) owningRun(
 	}
 	if !found {
 		return domain.Run{}, fmt.Errorf("run %q not found in tenant %q", runID, tx.tenantID)
+	}
+	if err := ensureSessionWritableTx(ctx, tx, run.SessionID); err != nil {
+		return domain.Run{}, err
 	}
 	return run, nil
 }

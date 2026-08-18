@@ -39,7 +39,7 @@ func validAttempt() domain.Attempt {
 func validBlob() domain.BlobRef {
 	return domain.BlobRef{
 		TenantID: "tenant-a",
-		Key:      "tenants/tenant-a/runs/run-1/context.json",
+		Key:      "tenants/tenant-a/sessions/session-1/runs/run-1/checkpoints/context.json",
 		Size:     42,
 		SHA256:   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 	}
@@ -181,5 +181,27 @@ func TestAttemptLeaseAndCheckpointStayOnOwningRun(t *testing.T) {
 	}
 	if err := checkpoint.ValidateForAttempt(run, attempt); err != nil {
 		t.Fatalf("valid checkpoint rejected: %v", err)
+	}
+}
+
+func TestSessionDeletionInventoryAcceptsOnlyProvenLegacyRunObjects(t *testing.T) {
+	t.Parallel()
+
+	legacy := validBlob()
+	legacy.Key = domain.RunObjectPrefix("tenant-a", "run-1") + "output/result.json"
+	inventory := domain.SessionDeletionInventory{
+		TenantID:   "tenant-a",
+		SessionID:  "session-1",
+		Objects:    []domain.BlobRef{legacy},
+		RunIDs:     []domain.RunID{"run-1"},
+		TotalBytes: uint64(legacy.Size),
+	}
+	if err := inventory.Validate(1); err != nil {
+		t.Fatalf("Validate() rejected an object under a proven legacy run prefix: %v", err)
+	}
+
+	inventory.RunIDs = nil
+	if err := inventory.Validate(1); err == nil {
+		t.Fatal("Validate() accepted a legacy run object without a proven owning run")
 	}
 }

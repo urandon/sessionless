@@ -25,12 +25,16 @@ domain objects whose tenant does not match it.
 | `session_events` | `(tenant_id, session_id, sequence)` | bounded prefix-read immutable, ordered canonical history |
 | `session_event_idempotency` | `(tenant_id, session_id, idempotency_key)` | point-resolve an append retry to its existing event |
 | `frontend_bindings` | `(tenant_id, binding_id)` | point-read/switch a revisioned frontend binding |
+| `frontend_bindings_by_session` | `(tenant_id, session_id, binding_id)` | bounded binding inventory and projection fan-out for one session |
 | `frontend_binding_keys` | `(tenant_id, frontend, external_conversation_id)` | point-resolve an external conversation without a scan |
 | `frontend_ingress_idempotency` | `(tenant_id, binding_id, idempotency_key)` | point-resolve a frontend duplicate to its original session event and run, including after a binding switch |
 | `frontend_projection_outbox` | `(tenant_id, frontend_projection_id)` | point-read frontend-neutral work referencing a canonical assistant/system event and binding revision |
+| `frontend_projections_by_session` | `(tenant_id, session_id, frontend_projection_id)` | bounded destructive-retention inventory for one session |
 | `session_participants` | `(tenant_id, session_id, user_id)` | point-authorize tenant membership and session role |
 | `session_snapshots` | `(tenant_id, session_id, version)` | bounded prefix-read immutable context materializations |
 | `session_activity` | `(tenant_id, user_id, status, activity_bucket, updated_at, session_id)` | fixed 16-query recent-session fan-out per member |
+| `session_legal_holds` | `(tenant_id, session_id)` | point-check durable legal/audit retention before deletion |
+| `session_deletions` | `(tenant_id, session_id)` | point-read write fence and durable requested/deleting/completed tombstone |
 | `external_identities` | `(shard_bucket, provider, subject)` | point-resolve a verified frontend identity to one internal user |
 | `external_identities_by_user` | `(user_bucket, user_id, provider, subject)` | bounded reverse identity lookup |
 | `tenant_memberships` | `(user_bucket, user_id, tenant_id)` | bounded membership list and point authorization |
@@ -56,9 +60,13 @@ domain objects whose tenant does not match it.
 | `quota_expiry_v2` | `(shard_bucket, expires_at, tenant_id, quota_reservation_id)` | bounded global expiry range by bucket/time |
 | `usage_observations` | `(tenant_id, subscription_connection_id, observed_at, usage_observation_id)` | bounded time-prefix read per subscription |
 | `artifact_manifests` | `(tenant_id, artifact_manifest_id)` | point-read immutable result references |
+| `artifact_manifests_by_run` | `(tenant_id, run_id, artifact_manifest_id)` | bounded exact-manifest inventory for one session run |
 | `dispatch_outbox` | `(tenant_id, dispatch_outbox_id)` | point publish/ack |
 | `dispatch_ready_v2` | `(shard_bucket, available_at, tenant_id, dispatch_outbox_id)` | bounded global pending dispatch range |
 | `telegram_delivery_outbox` | `(tenant_id, telegram_delivery_id)` | point delivery transition |
+| `telegram_deliveries_by_run` | `(tenant_id, run_id, telegram_delivery_id)` | bounded delivery inventory and destructive cleanup for one run |
+| `checkpoint_objects_by_run` | `(tenant_id, run_id, checkpoint_id)` | durable exact checkpoint-object inventory after operational checkpoint TTL |
+| `session_lifecycle_backfill_state` | `(backfill_id)` | expand/migrate/cutover completion marker for lifecycle indexes |
 | `telegram_delivery_ready_v2` | `(shard_bucket, available_at, tenant_id, telegram_delivery_id)` | bounded global pending/retry delivery range |
 | `audit_events` | `(tenant_id, occurred_at, audit_event_id)` | bounded tenant/time audit reads |
 | `web_security_audit_events` | `(shard_bucket, occurred_at, request_id)` | bounded 16-way time reads for pre-auth and CSRF security events |
@@ -206,10 +214,11 @@ boundary remains part of the open MVP-06 issue.
 ## TTL and logical expiry
 
 Canonical `sessions`, `session_events`, `session_event_idempotency`,
-`frontend_bindings`, `session_participants`, and `session_snapshots` have no
-TTL. Archiving changes visibility/status; it does not delete or truncate
-history. Retention of canonical history requires a separate explicit product
-policy and migration.
+`frontend_bindings`, `session_participants`, `session_snapshots`, lifecycle
+tombstones, and lifecycle audit events have no TTL. Archiving changes
+visibility/status; it does not delete or truncate history. Destructive removal
+uses the separately authorized and audited state machine in
+[session-lifecycle.md](session-lifecycle.md), never YDB TTL.
 
 YDB TTL deletion is asynchronous. Reads whose correctness depends on expiry
 must still compare the timestamp:

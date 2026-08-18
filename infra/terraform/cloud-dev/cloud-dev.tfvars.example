@@ -1,6 +1,8 @@
 cloud_id          = "replace-cloud-id"
 base_domain       = "sessionless.example.com"
 artifact_bucket_name = "replace-globally-unique-sessionless-dev-bucket"
+artifact_cold_transition_days = 30
+artifact_ice_transition_days  = 365
 
 # First create the Lockbox payload outside Terraform, then copy only its version ID.
 telegram_secret_version_id = "replace-secret-version-id"

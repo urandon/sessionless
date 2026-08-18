@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
@@ -119,6 +120,9 @@ func appendCanonicalFinalizationTx(
 	if len(drafts) == 0 {
 		return domain.ValidationError{Field: "worker_finalization.events", Reason: "must not be empty for a canonical run"}
 	}
+	if err := ensureSessionWritableTx(ctx, tx, run.SessionID); err != nil {
+		return err
+	}
 	session, found, err := readSessionTx(ctx, tx, run.SessionID)
 	if err != nil {
 		return err
@@ -142,7 +146,7 @@ func appendCanonicalFinalizationTx(
 		seenKeys[draft.IdempotencyKey] = struct{}{}
 	}
 
-	bindings, err := currentSessionBindingsTx(ctx, tx, run.SessionID)
+	bindings, err := currentSessionBindingsTx(ctx, tx, run.SessionID, maxSessionDeletionRows)
 	if err != nil {
 		return err
 	}
@@ -188,25 +192,76 @@ func currentSessionBindingsTx(
 	ctx context.Context,
 	tx *stateTx,
 	sessionID domain.SessionID,
+	maxRows uint64,
 ) ([]domain.FrontendBinding, error) {
 	rows, err := tx.sqlTx.QueryContext(ctx,
-		`SELECT record FROM frontend_bindings
-		 WHERE tenant_id = $1 AND session_id = $2`,
-		tx.tenantID, sessionID,
+		`SELECT binding_id FROM frontend_bindings_by_session
+		 WHERE tenant_id = $1 AND session_id = $2 LIMIT $3`,
+		tx.tenantID, sessionID, maxRows+1,
 	)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var bindings []domain.FrontendBinding
+	var bindingIDs []domain.FrontendBindingID
 	for rows.Next() {
-		var record []byte
-		if err := rows.Scan(&record); err != nil {
+		if uint64(len(bindingIDs)) >= maxRows {
+			return nil, domain.ValidationError{Field: "frontend_bindings", Reason: "exceeds the configured bound"}
+		}
+		var bindingID domain.FrontendBindingID
+		if err := rows.Scan(&bindingID); err != nil {
 			return nil, err
 		}
-		var binding domain.FrontendBinding
-		if err := json.Unmarshal(record, &binding); err != nil {
+		bindingIDs = append(bindingIDs, bindingID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	ready, err := sessionLifecycleIndexesReady(ctx, tx.sqlTx)
+	if err != nil {
+		return nil, err
+	}
+	if !ready {
+		legacyRows, err := tx.sqlTx.QueryContext(ctx,
+			`SELECT binding_id FROM frontend_bindings
+			 WHERE tenant_id = $1 AND session_id = $2 LIMIT $3`,
+			tx.tenantID, sessionID, maxRows+1,
+		)
+		if err != nil {
 			return nil, err
+		}
+		seen := make(map[domain.FrontendBindingID]struct{}, len(bindingIDs))
+		for _, id := range bindingIDs {
+			seen[id] = struct{}{}
+		}
+		for legacyRows.Next() {
+			var id domain.FrontendBindingID
+			if err := legacyRows.Scan(&id); err != nil {
+				legacyRows.Close()
+				return nil, err
+			}
+			if _, exists := seen[id]; !exists {
+				bindingIDs = append(bindingIDs, id)
+				seen[id] = struct{}{}
+			}
+			if uint64(len(bindingIDs)) > maxRows {
+				legacyRows.Close()
+				return nil, domain.ValidationError{Field: "frontend_bindings", Reason: "exceeds the configured bound"}
+			}
+		}
+		if err := legacyRows.Close(); err != nil {
+			return nil, err
+		}
+		slices.Sort(bindingIDs)
+	}
+	var bindings []domain.FrontendBinding
+	for _, bindingID := range bindingIDs {
+		binding, found, err := readBindingTx(ctx, tx, bindingID)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, fmt.Errorf("frontend binding session index references missing binding %q", bindingID)
 		}
 		if err := binding.Validate(); err != nil {
 			return nil, err
@@ -216,7 +271,7 @@ func currentSessionBindingsTx(
 		}
 		bindings = append(bindings, binding)
 	}
-	return bindings, rows.Err()
+	return bindings, nil
 }
 
 func insertFrontendProjectionTx(
@@ -254,6 +309,14 @@ func insertFrontendProjectionTx(
 		projection.TenantID, projection.ID, projection.SessionID, projection.EventID,
 		projection.EventSequence, projection.BindingID, projection.BindingRevision,
 		projection.Frontend, projection.Status, projection.CreatedAt, projection.UpdatedAt, record,
+	)
+	if err != nil {
+		return err
+	}
+	_, err = tx.sqlTx.ExecContext(ctx,
+		`INSERT INTO frontend_projections_by_session
+		 (tenant_id, session_id, frontend_projection_id) VALUES ($1, $2, $3)`,
+		projection.TenantID, projection.SessionID, projection.ID,
 	)
 	return err
 }

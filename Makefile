@@ -5,7 +5,7 @@ BIN_DIR := .build/bin
 GO_CACHE_DIR := $(CURDIR)/.build/cache/go-build
 GO_MOD_CACHE_DIR := $(CURDIR)/.build/cache/go-mod
 GO_TMP_DIR := $(CURDIR)/.build/tmp
-COMPONENTS := control-api web-bff reconciler telegram-sender telegram-fake oidc-fake worker-runtime schema-migrate schema-inspect schema-backfill preprod-reset deployment-lock web-bootstrap
+COMPONENTS := control-api web-bff reconciler telegram-sender telegram-fake oidc-fake worker-runtime schema-migrate schema-inspect schema-backfill preprod-reset deployment-lock web-bootstrap session-delete
 VERSION ?= dev
 COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null || printf unknown)
 BUILT_AT ?= $(shell git show -s --format=%cI HEAD 2>/dev/null || printf unknown)
@@ -19,7 +19,7 @@ LDFLAGS := -s -w \
 	-X gitcode.com/urandon/sessionless/internal/buildinfo.BuiltAt=$(BUILT_AT)
 
 .PHONY: help prepare tools generate fmt fmt-check lint test build integration ydb-integration local-integration e2e-local ci image-publication-test terraform-ci cloudflare-edge-ci \
-	compose-config images dev-up dev-seed migrate-local migration-status partition-status partition-backfill cloud-app-reset-plan cloud-app-reset \
+	compose-config images dev-up dev-seed migrate-local migration-status partition-status partition-backfill cloud-app-reset-plan cloud-app-reset session-delete-request session-delete-plan session-delete session-hold session-release-hold \
 	worker-once web-bootstrap dev-down dev-reset clean
 
 help:
@@ -41,9 +41,14 @@ help:
 		'make migrate-local  apply embedded YDB migrations' \
 		'make migration-status inspect Goose and checksum state' \
 		'make partition-status inspect physical keys and partition settings as JSON' \
-		'make partition-backfill copy legacy ready/expiry rows into the v2 bucketed layout' \
+		'make partition-backfill copy legacy ready/expiry and lifecycle-index rows, then mark cutover' \
 		'make cloud-app-reset-plan inspect the exact guarded cloud-dev reset target' \
 		'make cloud-app-reset execute the typed-confirmed cloud-dev application reset' \
+		'make session-delete-request record an owner-authorized deletion request' \
+		'make session-delete-plan print the bounded exact-object deletion plan' \
+		'make session-delete execute the exact typed-confirmed session deletion' \
+		'make session-hold set a durable legal hold on one session' \
+		'make session-release-hold release a durable legal hold on one session' \
 		'make worker-once    consume at most one admitted run with the deterministic harness' \
 		'make web-bootstrap  create an audited, confirmed cloud-dev Web membership' \
 		'make dev-down       stop the local stack' \
@@ -137,6 +142,21 @@ cloud-app-reset-plan: prepare
 
 cloud-app-reset: prepare
 	@./scripts/cloud-app-reset.sh execute
+
+session-delete-request: prepare
+	go run ./cmd/session-delete request
+
+session-delete-plan: prepare
+	go run ./cmd/session-delete plan
+
+session-delete: prepare
+	go run ./cmd/session-delete execute
+
+session-hold: prepare
+	go run ./cmd/session-delete hold
+
+session-release-hold: prepare
+	go run ./cmd/session-delete release-hold
 
 worker-once:
 	docker compose --project-name sessionless-dev --profile worker run --rm worker-runtime

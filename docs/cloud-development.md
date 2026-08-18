@@ -174,6 +174,13 @@ adapter obtains renewable IAM tokens from the same metadata service and calls
 the Object Storage S3 HTTP API with bearer authentication. Local MinIO remains
 on the AWS SDK path with explicit development credentials.
 
+The bucket lifecycle keeps immutable `tenants/` payloads in `STANDARD` for 30
+days by default, then moves them to `COLD`, and moves objects at least 365 days
+old to `ICE`. Override `artifact_cold_transition_days` and
+`artifact_ice_transition_days` only in a reviewed cost/retention change; ICE
+has a 12-month minimum billable duration. The lifecycle never expires current
+canonical objects. See [session-lifecycle.md](session-lifecycle.md).
+
 The permanent bootstrap root begins with local state. After its first apply,
 copy `infra/terraform/bootstrap/backend.s3.tf.example` to the ignored
 `backend.s3.tf` file and run `terraform init -migrate-state` with the external

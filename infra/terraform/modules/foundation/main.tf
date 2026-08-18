@@ -97,8 +97,18 @@ resource "yandex_storage_bucket" "artifacts" {
   }
   versioning { enabled = true }
   lifecycle_rule {
-    id      = "expire-noncurrent-artifacts"
+    id      = "tier-current-and-expire-noncurrent-artifacts"
     enabled = true
+    prefix  = "tenants/"
+
+    transition {
+      days          = var.artifact_cold_transition_days
+      storage_class = "COLD"
+    }
+    transition {
+      days          = var.artifact_ice_transition_days
+      storage_class = "ICE"
+    }
     noncurrent_version_expiration { days = var.artifact_retention_days }
     abort_incomplete_multipart_upload_days = 1
   }

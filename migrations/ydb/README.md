@@ -83,6 +83,15 @@ Production changes use three separately deployed phases:
 3. **Contract:** remove obsolete data only in a later release after evidence
    shows that no deployed version depends on it.
 
+For migrations `00062`-`00067`, deploy the expanded schema and dual-write
+code first, run `make partition-backfill` after old writers have drained, and
+only then treat the `session-lifecycle-indexes-v1` marker as cutover evidence.
+Before that marker, serving reads union the new indexes with bounded legacy
+fallback queries, so an existing binding or deletion object cannot silently
+disappear. The backfill also copies delivery/checkpoint BlobRefs into durable
+non-TTL ledgers. If their operational source row has already expired, stop and
+handle it as a retention incident; an object reference must never be guessed.
+
 Automatic production down migrations are intentionally disabled. The `Down`
 sections are comments so neither Goose nor an operator can accidentally drop
 state.

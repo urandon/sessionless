@@ -101,6 +101,26 @@ variable "artifact_retention_days" {
   type    = number
   default = 30
 }
+variable "artifact_cold_transition_days" {
+  description = "Age of immutable tenant payloads before STANDARD-to-COLD transition."
+  type        = number
+  default     = 30
+
+  validation {
+    condition     = var.artifact_cold_transition_days >= 1
+    error_message = "artifact_cold_transition_days must be at least one day."
+  }
+}
+variable "artifact_ice_transition_days" {
+  description = "Age of immutable tenant payloads before COLD-to-ICE transition; ICE has a 12-month minimum billable duration."
+  type        = number
+  default     = 365
+
+  validation {
+    condition     = var.artifact_ice_transition_days >= 365 && var.artifact_ice_transition_days > var.artifact_cold_transition_days
+    error_message = "artifact_ice_transition_days must be at least 365 and later than the COLD transition."
+  }
+}
 variable "queue_visibility_timeout_seconds" {
   type    = number
   default = 900

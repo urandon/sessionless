@@ -22,7 +22,8 @@ mkdir -p "$metadata_dir"
 build_image() {
   name=$1
   dockerfile=$2
-  target=${3:-}
+  component=${3:-}
+  docker_stage=${4:-}
   metadata_file="$metadata_dir/$name.json"
   source_file="$metadata_dir/$name.source-sha"
 
@@ -37,8 +38,11 @@ build_image() {
   if test -n "$platform"; then
     set -- "$@" --platform "$platform"
   fi
-  if test -n "$target"; then
-    set -- "$@" --build-arg "TARGET=$target"
+  if test -n "$component"; then
+    set -- "$@" --build-arg "TARGET=$component"
+  fi
+  if test -n "$docker_stage"; then
+    set -- "$@" --target "$docker_stage"
   fi
   case "$cache_mode" in
     gha)
@@ -59,8 +63,8 @@ build_image() {
   printf '%s\n' "$commit" >"$source_file"
 }
 
-build_image control-api build/control.Dockerfile control-api
-build_image web-bff build/control.Dockerfile web-bff
-build_image reconciler build/control.Dockerfile reconciler
-build_image telegram-sender build/control.Dockerfile telegram-sender
+build_image control-api build/control.Dockerfile control-api runtime
+build_image web-bff build/control.Dockerfile web-bff web-bff-runtime
+build_image reconciler build/control.Dockerfile reconciler runtime
+build_image telegram-sender build/control.Dockerfile telegram-sender runtime
 build_image worker-runtime build/worker-runtime.Dockerfile

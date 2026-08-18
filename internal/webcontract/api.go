@@ -16,6 +16,7 @@ import (
 )
 
 const (
+	RouteLogin            = "/login"
 	RouteOIDCStart        = "/auth/telegram/start"
 	RouteOIDCCallback     = "/auth/telegram/callback"
 	RouteLogout           = "/auth/logout"
@@ -26,6 +27,7 @@ const (
 	RouteSession          = "/api/web/v1/sessions/{session_id}"
 	RouteSessionEvents    = "/api/web/v1/sessions/{session_id}/events"
 	RouteSessionRuns      = "/api/web/v1/sessions/{session_id}/runs"
+	RouteSessionCompute   = "/api/web/v1/sessions/{session_id}/compute"
 	RouteArchiveSession   = "/api/web/v1/sessions/{session_id}/archive"
 	RouteFrontendBindings = "/api/web/v1/frontend-bindings"
 	RouteSessionMessages  = "/api/web/v1/sessions/{session_id}/messages"
@@ -35,6 +37,8 @@ const (
 	RouteEventAttachment  = "/api/web/v1/sessions/{session_id}/events/{sequence}/attachments/{index}"
 	RouteRunArtifact      = "/api/web/v1/sessions/{session_id}/runs/{run_id}/artifact-manifests/{manifest_id}/artifacts/{index}"
 )
+
+const AuthErrorQueryName = "auth_error"
 
 const MaxMessageUploadCount = 8
 const MaxPageSize = uint32(100)
@@ -356,6 +360,22 @@ type ComputeConnection struct {
 	Entitlement domain.EntitlementState   `json:"entitlement"`
 	Quota       domain.ProviderQuotaState `json:"quota"`
 	ObservedAt  time.Time                 `json:"observed_at"`
+}
+
+type ComputeAvailability string
+
+const (
+	ComputeNotConfigured ComputeAvailability = "not_configured"
+	ComputeReady         ComputeAvailability = "ready"
+	ComputeAmbiguous     ComputeAvailability = "ambiguous"
+)
+
+// ComputeStatusResponse is a credential-free projection of the compute
+// selection that would be used for a new message in this exact session. A
+// non-ready selection deliberately omits provider details.
+type ComputeStatusResponse struct {
+	Availability ComputeAvailability `json:"availability"`
+	Connection   *ComputeConnection  `json:"connection,omitempty"`
 }
 
 type CreateMessageResponse struct {

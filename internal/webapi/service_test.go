@@ -202,6 +202,62 @@ func TestSubmitMessageRequiresExactlyOneComputeConnection(t *testing.T) {
 	}
 }
 
+func TestComputeStatusIsSessionScopedAndCredentialFree(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		connections  []ports.ComputeConnectionState
+		availability webcontract.ComputeAvailability
+		wantDetails  bool
+	}{
+		{name: "not configured", availability: webcontract.ComputeNotConfigured},
+		{name: "ready", connections: []ports.ComputeConnectionState{computeConnection("connection-secret-selector")}, availability: webcontract.ComputeReady, wantDetails: true},
+		{name: "ambiguous", connections: []ports.ComputeConnectionState{computeConnection("connection-a"), computeConnection("connection-b")}, availability: webcontract.ComputeAmbiguous},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			harness := newHarness(t)
+			harness.backend.connections = test.connections
+			status, err := harness.service.ComputeStatus(context.Background(), "tenant-a", "user-a", "session-a")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status.Availability != test.availability || (status.Connection != nil) != test.wantDetails {
+				t.Fatalf("compute status = %+v", status)
+			}
+			if status.Connection != nil && (status.Connection.Provider != "codex" ||
+				status.Connection.Entitlement != domain.EntitlementActive ||
+				status.Connection.Quota != domain.ProviderQuotaAvailable) {
+				t.Fatalf("safe connection = %+v", status.Connection)
+			}
+			encoded, err := json.Marshal(status)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, forbidden := range []string{"connection-secret-selector", "credential", "token", "secret_ref"} {
+				if strings.Contains(string(encoded), forbidden) {
+					t.Fatalf("compute status exposed %q: %s", forbidden, encoded)
+				}
+			}
+		})
+	}
+
+	harness := newHarness(t)
+	for _, selector := range []struct {
+		tenant  domain.TenantID
+		user    domain.UserID
+		session domain.SessionID
+	}{
+		{tenant: "tenant-b", user: "user-a", session: "session-a"},
+		{tenant: "tenant-a", user: "user-b", session: "session-a"},
+		{tenant: "tenant-a", user: "user-a", session: "session-b"},
+	} {
+		if _, err := harness.service.ComputeStatus(
+			context.Background(), selector.tenant, selector.user, selector.session,
+		); !errors.Is(err, webapi.ErrResourceUnavailable) {
+			t.Fatalf("forged compute selector %+v error = %v", selector, err)
+		}
+	}
+}
+
 func TestRunAndDownloadSelectorsRemainParticipantScoped(t *testing.T) {
 	harness := newHarness(t)
 	uploadID := prepareCommittedUpload(t, harness, []byte("secret"), "secret.txt", "text/plain")

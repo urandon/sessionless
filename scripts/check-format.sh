@@ -2,7 +2,9 @@
 set -eu
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-files=$(find "$repo_root" -name '*.go' -type f -not -path '*/.git/*' -not -path '*/.build/*')
+files=$(find "$repo_root" \
+	\( -path '*/.git' -o -path '*/.build' -o -path '*/.gitcode' -o -path '*/node_modules' \) -prune -o \
+	-name '*.go' -type f -print)
 
 if [ -z "$files" ]; then
 	exit 0

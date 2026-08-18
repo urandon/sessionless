@@ -299,6 +299,46 @@ func (service *Service) SubmitMessage(
 	}), nil
 }
 
+// ComputeStatus returns only the participant-authorized, credential-free
+// compute projection used by message admission. The bounded resolver returns
+// at most two connections, which is sufficient to distinguish a usable exact
+// selection from missing or ambiguous configuration.
+func (service *Service) ComputeStatus(
+	ctx context.Context,
+	tenantID domain.TenantID,
+	userID domain.UserID,
+	sessionID domain.SessionID,
+) (webcontract.ComputeStatusResponse, error) {
+	if err := sessionID.Validate(); err != nil {
+		return webcontract.ComputeStatusResponse{}, err
+	}
+	connections, err := service.resources.ResolveComputeConnectionsForUser(
+		ctx, ports.ComputeConnectionResolveRequest{
+			TenantID: tenantID, UserID: userID, SessionID: sessionID,
+		},
+	)
+	if errors.Is(err, domain.ErrMembershipDenied) {
+		return webcontract.ComputeStatusResponse{}, ErrResourceUnavailable
+	}
+	if err != nil {
+		return webcontract.ComputeStatusResponse{}, err
+	}
+	switch len(connections) {
+	case 0:
+		return webcontract.ComputeStatusResponse{Availability: webcontract.ComputeNotConfigured}, nil
+	case 1:
+		return webcontract.ComputeStatusResponse{
+			Availability: webcontract.ComputeReady,
+			Connection: &webcontract.ComputeConnection{
+				Provider: connections[0].Provider, Entitlement: connections[0].Entitlement,
+				Quota: connections[0].Quota, ObservedAt: connections[0].ObservedAt,
+			},
+		}, nil
+	default:
+		return webcontract.ComputeStatusResponse{Availability: webcontract.ComputeAmbiguous}, nil
+	}
+}
+
 func messageMutationDigest(request webcontract.CreateMessageRequest) (string, error) {
 	material, err := json.Marshal(struct {
 		Version   uint8                   `json:"version"`

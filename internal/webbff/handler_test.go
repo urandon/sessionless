@@ -116,15 +116,14 @@ func TestUnknownTelegramIdentityGetsDeterministicRecoveryWithoutSession(t *testi
 	callback.AddCookie(binding)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, callback)
-	if response.Code != http.StatusForbidden {
+	if response.Code != http.StatusSeeOther {
 		t.Fatalf("unknown identity status = %d body=%s", response.Code, response.Body.String())
 	}
-	var failure webcontract.ErrorEnvelope
-	if err := json.Unmarshal(response.Body.Bytes(), &failure); err != nil {
-		t.Fatal(err)
+	if location := response.Header().Get("Location"); location != "/login?auth_error=access_denied" {
+		t.Fatalf("recovery location = %q", location)
 	}
-	if failure.Error.Code != webcontract.ErrorAccessDenied || failure.Error.Message != "No Sessionless tenant is linked to this Telegram account." {
-		t.Fatalf("failure = %+v", failure)
+	if response.Body.Len() != 0 {
+		t.Fatalf("callback failure body = %q", response.Body.String())
 	}
 	for _, cookie := range response.Result().Cookies() {
 		if cookie.Name == webcontract.SessionCookieName && cookie.Value != "" {
@@ -136,6 +135,72 @@ func TestUnknownTelegramIdentityGetsDeterministicRecoveryWithoutSession(t *testi
 		securityEvents[0].ReasonCode != "membership_missing" || securityEvents[0].UserID == "" ||
 		securityEvents[0].SubjectFingerprint == "" {
 		t.Fatalf("login failure audit events = %+v", securityEvents)
+	}
+}
+
+func TestOIDCProviderDenialRedirectsWithOnlyStableErrorCode(t *testing.T) {
+	store := newMemoryAuthStore()
+	handler := newTestHandler(t, store, "424242")
+	start := httptest.NewRequest(http.MethodGet,
+		"https://web.dev.sessionless.triborg.dev"+webcontract.RouteOIDCStart+"?return_to=%2Fsessions", nil)
+	startResponse := httptest.NewRecorder()
+	handler.ServeHTTP(startResponse, start)
+	providerLocation, _ := url.Parse(startResponse.Header().Get("Location"))
+	binding := responseCookie(t, startResponse.Result(), webbff.LoginBindingCookieName)
+
+	callback := httptest.NewRequest(http.MethodGet,
+		"https://web.dev.sessionless.triborg.dev"+webcontract.RouteOIDCCallback+
+			"?error=temporarily_unavailable&error_description=provider-secret-detail&state="+
+			url.QueryEscape(providerLocation.Query().Get("state")), nil)
+	callback.AddCookie(binding)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, callback)
+
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/login?auth_error=access_denied" {
+		t.Fatalf("provider denial status=%d location=%q body=%q", response.Code, response.Header().Get("Location"), response.Body.String())
+	}
+	if strings.Contains(response.Header().Get("Location"), "temporarily_unavailable") ||
+		strings.Contains(response.Header().Get("Location"), "provider-secret-detail") || response.Body.Len() != 0 {
+		t.Fatalf("provider details escaped: location=%q body=%q", response.Header().Get("Location"), response.Body.String())
+	}
+	cleared := responseCookie(t, response.Result(), webbff.LoginBindingCookieName)
+	if cleared.Value != "" || cleared.MaxAge >= 0 {
+		t.Fatalf("login binding was not cleared: %+v", cleared)
+	}
+}
+
+func TestOIDCCallbackFailureRedirectsToStableUnavailableCodeWhenAuditCannotPersist(t *testing.T) {
+	store := newMemoryAuthStore()
+	handler := newTestHandler(t, store, "424242")
+	start := httptest.NewRequest(http.MethodGet,
+		"https://web.dev.sessionless.triborg.dev"+webcontract.RouteOIDCStart+"?return_to=%2Fsessions", nil)
+	startResponse := httptest.NewRecorder()
+	handler.ServeHTTP(startResponse, start)
+	providerLocation, _ := url.Parse(startResponse.Header().Get("Location"))
+	binding := responseCookie(t, startResponse.Result(), webbff.LoginBindingCookieName)
+	store.securityEventErr = errors.New("audit unavailable")
+
+	callback := httptest.NewRequest(http.MethodGet,
+		"https://web.dev.sessionless.triborg.dev"+webcontract.RouteOIDCCallback+
+			"?error=access_denied&error_description=provider-secret-detail&state="+
+			url.QueryEscape(providerLocation.Query().Get("state")), nil)
+	callback.AddCookie(binding)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, callback)
+
+	if response.Code != http.StatusSeeOther ||
+		response.Header().Get("Location") != "/login?auth_error=temporarily_unavailable" {
+		t.Fatalf("audit failure status=%d location=%q body=%q",
+			response.Code, response.Header().Get("Location"), response.Body.String())
+	}
+	if strings.Contains(response.Header().Get("Location"), "provider-secret-detail") ||
+		response.Body.Len() != 0 {
+		t.Fatalf("provider details escaped: location=%q body=%q",
+			response.Header().Get("Location"), response.Body.String())
+	}
+	cleared := responseCookie(t, response.Result(), webbff.LoginBindingCookieName)
+	if cleared.Value != "" || cleared.MaxAge >= 0 {
+		t.Fatalf("login binding was not cleared: %+v", cleared)
 	}
 }
 
@@ -182,6 +247,46 @@ func TestRequestLogsExcludeQueryAndAuthenticationSecrets(t *testing.T) {
 		if strings.Contains(logs.String(), secret) {
 			t.Fatalf("request log contains authentication material %q: %s", secret, logs.String())
 		}
+	}
+}
+
+func TestContentSecurityPolicyAllowsOnlyConfiguredObjectStorageOrigin(t *testing.T) {
+	handler := newTestHandler(t, newMemoryAuthStore(), "424242")
+	request := httptest.NewRequest(http.MethodGet, "https://web.dev.sessionless.triborg.dev/healthz", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	want := "default-src 'self'; connect-src 'self' https://artifact-bucket.storage.yandexcloud.net; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+	if got := response.Header().Get("Content-Security-Policy"); got != want || strings.Contains(got, "*") {
+		t.Fatalf("CSP = %q, want %q", got, want)
+	}
+}
+
+func TestObjectStorageOriginValidationRejectsBroadOrInsecureValues(t *testing.T) {
+	base := webbff.Config{
+		BaseURL:     "https://web.dev.sessionless.triborg.dev",
+		RedirectURI: "https://web.dev.sessionless.triborg.dev" + webcontract.RouteOIDCCallback,
+		OIDCPolicy: domain.OIDCVerificationPolicy{
+			Issuer: "https://oauth.telegram.org", Audience: "100000", AllowedAlgorithms: []string{"RS256"},
+		},
+		Provider: fakeProvider{subject: "424242"}, Store: newMemoryAuthStore(), IDs: fixedIDs{},
+		Clock: fixedClock{now: bffTestTime}, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	for _, origin := range []string{
+		"https://*.storage.yandexcloud.net", "http://storage.yandexcloud.net",
+		"https://storage.yandexcloud.net/path", "https://user@storage.yandexcloud.net",
+		" https://storage.yandexcloud.net",
+	} {
+		config := base
+		config.ObjectStorageOrigin = origin
+		if _, err := webbff.New(config); err == nil {
+			t.Fatalf("object storage origin %q was accepted", origin)
+		}
+	}
+	local := base
+	local.ObjectStorageOrigin = "http://127.0.0.1:9000"
+	local.AllowLoopbackObjectStorage = true
+	if _, err := webbff.New(local); err != nil {
+		t.Fatalf("local loopback Object Storage origin rejected: %v", err)
 	}
 }
 
@@ -311,8 +416,9 @@ func newTestHandler(t *testing.T, store *memoryAuthStore, subject string) http.H
 func newTestHandlerWithLogger(t *testing.T, store *memoryAuthStore, subject string, logger *slog.Logger) http.Handler {
 	t.Helper()
 	handler, err := webbff.New(webbff.Config{
-		BaseURL:     "https://web.dev.sessionless.triborg.dev",
-		RedirectURI: "https://web.dev.sessionless.triborg.dev" + webcontract.RouteOIDCCallback,
+		BaseURL:             "https://web.dev.sessionless.triborg.dev",
+		RedirectURI:         "https://web.dev.sessionless.triborg.dev" + webcontract.RouteOIDCCallback,
+		ObjectStorageOrigin: "https://artifact-bucket.storage.yandexcloud.net",
 		OIDCPolicy: domain.OIDCVerificationPolicy{
 			Issuer: "https://oauth.telegram.org", Audience: "100000", AllowedAlgorithms: []string{"RS256"},
 		},

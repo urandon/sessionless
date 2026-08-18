@@ -14,9 +14,11 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/buildinfo"
@@ -38,26 +40,29 @@ const (
 )
 
 type Config struct {
-	BaseURL      string
-	RedirectURI  string
-	OIDCPolicy   domain.OIDCVerificationPolicy
-	Provider     ports.OIDCProvider
-	Store        ports.WebAuthStore
-	Sessions     *sessionapi.Service
-	API          *webapi.Service
-	IDs          ports.IDGenerator
-	Clock        ports.Clock
-	Random       io.Reader
-	Logger       *slog.Logger
-	Build        buildinfo.Info
-	ChallengeTTL time.Duration
-	IdleTTL      time.Duration
-	AbsoluteTTL  time.Duration
+	BaseURL                    string
+	RedirectURI                string
+	ObjectStorageOrigin        string
+	AllowLoopbackObjectStorage bool
+	OIDCPolicy                 domain.OIDCVerificationPolicy
+	Provider                   ports.OIDCProvider
+	Store                      ports.WebAuthStore
+	Sessions                   *sessionapi.Service
+	API                        *webapi.Service
+	IDs                        ports.IDGenerator
+	Clock                      ports.Clock
+	Random                     io.Reader
+	Logger                     *slog.Logger
+	Build                      buildinfo.Info
+	ChallengeTTL               time.Duration
+	IdleTTL                    time.Duration
+	AbsoluteTTL                time.Duration
 }
 
 type Handler struct {
-	config Config
-	mux    *http.ServeMux
+	config         Config
+	mux            *http.ServeMux
+	connectSources string
 }
 
 func New(config Config) (*Handler, error) {
@@ -93,9 +98,48 @@ func New(config Config) (*Handler, error) {
 	if err := config.OIDCPolicy.Validate(); err != nil {
 		return nil, err
 	}
-	handler := &Handler{config: config, mux: http.NewServeMux()}
+	objectStorageOrigin, err := validateObjectStorageOrigin(
+		config.ObjectStorageOrigin, config.AllowLoopbackObjectStorage,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if config.API != nil && objectStorageOrigin == "" {
+		return nil, errors.New("WEB_OBJECT_STORAGE_ORIGIN is required when the Web API is enabled")
+	}
+	connectSources := "'self'"
+	if objectStorageOrigin != "" {
+		connectSources += " " + objectStorageOrigin
+	}
+	handler := &Handler{config: config, mux: http.NewServeMux(), connectSources: connectSources}
 	handler.routes()
 	return handler, nil
+}
+
+func validateObjectStorageOrigin(raw string, allowLoopbackHTTP bool) (string, error) {
+	if raw == "" {
+		return "", nil
+	}
+	if raw != strings.TrimSpace(raw) || strings.Contains(raw, "*") {
+		return "", errors.New("WEB_OBJECT_STORAGE_ORIGIN must be one exact origin without wildcards")
+	}
+	origin, err := url.Parse(raw)
+	if err != nil || origin.Host == "" || origin.User != nil || origin.Path != "" ||
+		origin.RawPath != "" || origin.RawQuery != "" || origin.Fragment != "" {
+		return "", errors.New("WEB_OBJECT_STORAGE_ORIGIN must contain only scheme and authority")
+	}
+	if origin.Scheme != "https" {
+		host := strings.ToLower(origin.Hostname())
+		ip := net.ParseIP(host)
+		loopback := host == "localhost" || (ip != nil && ip.IsLoopback())
+		if origin.Scheme != "http" || !allowLoopbackHTTP || !loopback {
+			return "", errors.New("WEB_OBJECT_STORAGE_ORIGIN must use HTTPS outside local loopback development")
+		}
+	}
+	if origin.String() != raw {
+		return "", errors.New("WEB_OBJECT_STORAGE_ORIGIN must be a canonical exact origin")
+	}
+	return raw, nil
 }
 
 func (handler *Handler) ServeHTTP(w http.ResponseWriter, request *http.Request) {
@@ -106,7 +150,7 @@ func (handler *Handler) ServeHTTP(w http.ResponseWriter, request *http.Request) 
 	}
 	w.Header().Set("X-Request-ID", requestID)
 	w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-	w.Header().Set("Content-Security-Policy", "default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src "+handler.connectSources+"; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 	w.Header().Set("Cache-Control", "no-store")
@@ -141,6 +185,7 @@ func (handler *Handler) routes() {
 	}
 	if handler.config.API != nil {
 		handler.mux.HandleFunc("POST "+webcontract.RouteSessionMessages, handler.createMessage)
+		handler.mux.HandleFunc("GET "+webcontract.RouteSessionCompute, handler.getComputeStatus)
 		handler.mux.HandleFunc("POST "+webcontract.RouteUploads, handler.createUpload)
 		handler.mux.HandleFunc("POST "+webcontract.RouteUploadCommit, handler.commitUpload)
 		handler.mux.HandleFunc("GET "+webcontract.RouteRun, handler.getRun)
@@ -452,6 +497,23 @@ func (handler *Handler) createMessage(w http.ResponseWriter, request *http.Reque
 	handler.writeJSON(w, status, response)
 }
 
+func (handler *Handler) getComputeStatus(w http.ResponseWriter, request *http.Request) {
+	authorization, err := handler.authorize(request, domain.TenantPermissionRead)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	response, err := handler.config.API.ComputeStatus(
+		request.Context(), authorization.Session.ActiveTenantID, authorization.Session.UserID,
+		domain.SessionID(request.PathValue("session_id")),
+	)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	handler.writeJSON(w, http.StatusOK, response)
+}
+
 func (handler *Handler) getRun(w http.ResponseWriter, request *http.Request) {
 	authorization, err := handler.authorize(request, domain.TenantPermissionRead)
 	if err != nil {
@@ -593,30 +655,30 @@ func (handler *Handler) startLogin(w http.ResponseWriter, request *http.Request)
 
 func (handler *Handler) loginCallback(w http.ResponseWriter, request *http.Request) {
 	w.Header().Set("Referrer-Policy", "no-referrer")
+	http.SetCookie(w, clearCookie(LoginBindingCookieName, true))
 	callback := webcontract.OIDCCallback{
 		Code: request.URL.Query().Get("code"), State: request.URL.Query().Get("state"),
 		Error: request.URL.Query().Get("error"), ErrorDescription: request.URL.Query().Get("error_description"),
 	}
 	if err := callback.Validate(); err != nil {
-		handler.writeLoginFailure(w, request, "invalid_callback", webcontract.ErrorInvalidRequest, "The login callback is invalid.", nil, "")
+		handler.writeCallbackFailure(w, request, "invalid_callback", nil, "")
 		return
 	}
 	bindingCookie, err := request.Cookie(LoginBindingCookieName)
 	if err != nil || bindingCookie.Value == "" {
-		handler.writeLoginFailure(w, request, "browser_binding_missing", webcontract.ErrorAccessDenied, "The login transaction could not be verified.", nil, "")
+		handler.writeCallbackFailure(w, request, "browser_binding_missing", nil, "")
 		return
 	}
-	http.SetCookie(w, clearCookie(LoginBindingCookieName, true))
 	now := handler.config.Clock.Now().UTC()
 	challenge, err := handler.config.Store.ConsumeLoginChallenge(
 		request.Context(), domain.DigestSecret(callback.State), bindingCookie.Value, now,
 	)
 	if err != nil {
-		handler.writeLoginFailure(w, request, "login_challenge_rejected", webcontract.ErrorAccessDenied, "The login transaction could not be verified.", nil, "")
+		handler.writeCallbackFailure(w, request, "login_challenge_rejected", nil, "")
 		return
 	}
 	if callback.Error != "" {
-		handler.writeLoginFailure(w, request, "provider_denied", webcontract.ErrorAccessDenied, "Telegram login was not completed.", nil, "")
+		handler.writeCallbackFailure(w, request, "provider_denied", nil, "")
 		return
 	}
 	claims, err := handler.config.Provider.ExchangeAndVerify(request.Context(), ports.OIDCTokenRequest{
@@ -625,13 +687,13 @@ func (handler *Handler) loginCallback(w http.ResponseWriter, request *http.Reque
 		ExpectedNonce: challenge.Nonce, Policy: handler.config.OIDCPolicy, Now: now,
 	})
 	if err != nil {
-		handler.writeLoginFailure(w, request, "provider_verification_failed", webcontract.ErrorAccessDenied, "Telegram login could not be verified.", nil, "")
+		handler.writeCallbackFailure(w, request, "provider_verification_failed", nil, "")
 		return
 	}
 	verifiedSubject := domain.ExternalSubject{Provider: domain.IdentityProviderTelegram, Subject: claims.Subject}
 	candidate, err := handler.config.IDs.NewID(request.Context(), ports.IDUser)
 	if err != nil {
-		handler.writeLoginError(w, request, "user_id_generation_failed", err, &verifiedSubject, "")
+		handler.writeCallbackFailure(w, request, "user_id_generation_failed", &verifiedSubject, "")
 		return
 	}
 	identity, _, err := handler.config.Store.ResolveOrCreateExternalIdentity(
@@ -640,25 +702,25 @@ func (handler *Handler) loginCallback(w http.ResponseWriter, request *http.Reque
 		domain.UserID(candidate), now,
 	)
 	if err != nil {
-		handler.writeLoginError(w, request, "identity_resolution_failed", err, &verifiedSubject, "")
+		handler.writeCallbackFailure(w, request, "identity_resolution_failed", &verifiedSubject, "")
 		return
 	}
 	memberships, err := handler.activeMemberships(request.Context(), identity.UserID)
 	if err != nil {
-		handler.writeLoginError(w, request, "membership_lookup_failed", err, &identity.Subject, identity.UserID)
+		handler.writeCallbackFailure(w, request, "membership_lookup_failed", &identity.Subject, identity.UserID)
 		return
 	}
 	if len(memberships) == 0 {
-		handler.writeLoginFailure(w, request, "membership_missing", webcontract.ErrorAccessDenied, "No Sessionless tenant is linked to this Telegram account.", &identity.Subject, identity.UserID)
+		handler.writeCallbackFailure(w, request, "membership_missing", &identity.Subject, identity.UserID)
 		return
 	}
 	rawSession, rawCSRF, session, err := handler.newSession(identity, memberships[0], now)
 	if err != nil {
-		handler.writeLoginError(w, request, "session_generation_failed", err, &identity.Subject, identity.UserID)
+		handler.writeCallbackFailure(w, request, "session_generation_failed", &identity.Subject, identity.UserID)
 		return
 	}
 	if err := handler.config.Store.CreateWebSession(request.Context(), session); err != nil {
-		handler.writeLoginError(w, request, "session_persistence_failed", err, &identity.Subject, identity.UserID)
+		handler.writeCallbackFailure(w, request, "session_persistence_failed", &identity.Subject, identity.UserID)
 		return
 	}
 	handler.setSessionCookies(w, rawSession, rawCSRF)
@@ -922,6 +984,36 @@ func (handler *Handler) writeLoginError(
 		return
 	}
 	handler.writeError(w, request, err)
+}
+
+// writeCallbackFailure clears the code/state-bearing callback URL with one
+// stable same-origin UI redirect. Provider error names, descriptions, token
+// failures, and enrollment details remain server-side and are never reflected
+// into the browser URL or response body.
+func (handler *Handler) writeCallbackFailure(
+	w http.ResponseWriter,
+	request *http.Request,
+	reason string,
+	subject *domain.ExternalSubject,
+	userID domain.UserID,
+) {
+	code := webcontract.ErrorAccessDenied
+	if err := handler.recordLoginFailure(request, reason, subject, userID); err != nil {
+		handler.config.Logger.Error("web login failure audit could not be persisted",
+			"request_id", requestIDFrom(request), "reason", reason,
+		)
+		// The callback URL may contain authorization material, so clear it with
+		// the same stable redirect shape while failing the login closed. The UI
+		// receives only a public error code; provider and audit details remain
+		// server-side.
+		code = webcontract.ErrorTemporarilyUnavailable
+	}
+	location := url.URL{Path: webcontract.RouteLogin}
+	query := location.Query()
+	query.Set(webcontract.AuthErrorQueryName, string(code))
+	location.RawQuery = query.Encode()
+	w.Header().Set("Location", location.String())
+	w.WriteHeader(http.StatusSeeOther)
 }
 
 func (handler *Handler) writeLoginFailure(

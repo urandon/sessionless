@@ -1,0 +1,699 @@
+{
+  "openapi": "3.1.0",
+  "info": { "title": "Sessionless canonical Web API", "version": "1.0.0" },
+  "servers": [{ "url": "/" }],
+  "paths": {
+    "/api/web/v1/me": {
+      "get": {
+        "operationId": "getIdentity",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Identity" },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/web/v1/tenants": {
+      "get": {
+        "operationId": "listTenants",
+        "responses": {
+          "200": {
+            "description": "Authorized memberships",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/TenantPage" } }
+            }
+          },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/web/v1/active-tenant": {
+      "post": {
+        "operationId": "selectTenant",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/SelectTenantRequest" } }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Identity" },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/auth/logout": {
+      "post": {
+        "operationId": "logout",
+        "responses": {
+          "204": { "description": "Session revoked" },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/web/v1/sessions": {
+      "get": {
+        "operationId": "listSessions",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "schema": { "$ref": "#/components/schemas/SessionStatus" }
+          },
+          { "name": "cursor", "in": "query", "schema": { "type": "string", "maxLength": 512 } },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 50 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Canonical sessions",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/SessionPage" } }
+            }
+          },
+          "304": { "description": "Not modified" },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      },
+      "post": {
+        "operationId": "createSession",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateSessionRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Session" },
+          "201": { "$ref": "#/components/responses/Session" },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/web/v1/sessions/{session_id}": {
+      "get": {
+        "operationId": "getSession",
+        "parameters": [{ "$ref": "#/components/parameters/SessionID" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Session" },
+          "304": { "description": "Not modified" },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/web/v1/sessions/{session_id}/events": {
+      "get": {
+        "operationId": "listEvents",
+        "parameters": [
+          { "$ref": "#/components/parameters/SessionID" },
+          { "name": "cursor", "in": "query", "schema": { "type": "string", "maxLength": 512 } },
+          {
+            "name": "after_sequence",
+            "in": "query",
+            "schema": { "type": "integer", "minimum": 0 }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 50 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Ordered canonical events",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/EventPage" } }
+            }
+          },
+          "304": { "description": "Not modified" },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/web/v1/sessions/{session_id}/runs": {
+      "get": {
+        "operationId": "listRuns",
+        "parameters": [
+          { "$ref": "#/components/parameters/SessionID" },
+          { "name": "cursor", "in": "query", "schema": { "type": "string", "maxLength": 512 } },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 50 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Session runs",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/RunPage" } }
+            }
+          },
+          "304": { "description": "Not modified" },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/web/v1/sessions/{session_id}/archive": {
+      "post": {
+        "operationId": "setSessionArchived",
+        "parameters": [{ "$ref": "#/components/parameters/SessionID" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ArchiveSessionRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Session" },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/web/v1/sessions/{session_id}/messages": {
+      "post": {
+        "operationId": "createMessage",
+        "parameters": [{ "$ref": "#/components/parameters/SessionID" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateMessageRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Message" },
+          "201": { "$ref": "#/components/responses/Message" },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/web/v1/sessions/{session_id}/compute": {
+      "get": {
+        "operationId": "getComputeStatus",
+        "parameters": [{ "$ref": "#/components/parameters/SessionID" }],
+        "responses": {
+          "200": {
+            "description": "Credential-free compute availability for this session",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ComputeStatus" } }
+            }
+          },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/web/v1/uploads": {
+      "post": {
+        "operationId": "createUpload",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/CreateUploadRequest" } }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/UploadIntent" },
+          "201": { "$ref": "#/components/responses/UploadIntent" },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/web/v1/uploads/{upload_id}/commit": {
+      "post": {
+        "operationId": "commitUpload",
+        "parameters": [
+          { "name": "upload_id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/CommitUploadRequest" } }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Committed upload",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/UploadCommit" } }
+            }
+          },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/web/v1/runs/{run_id}": {
+      "get": {
+        "operationId": "getRun",
+        "parameters": [{ "$ref": "#/components/parameters/RunID" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Run" },
+          "304": { "description": "Not modified" },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/web/v1/sessions/{session_id}/events/{sequence}/attachments/{index}": {
+      "get": {
+        "operationId": "getAttachmentCapability",
+        "parameters": [
+          { "$ref": "#/components/parameters/SessionID" },
+          {
+            "name": "sequence",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "minimum": 0 }
+          },
+          {
+            "name": "index",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "minimum": 0 }
+          }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Download" },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/web/v1/sessions/{session_id}/runs/{run_id}/artifact-manifests/{manifest_id}/artifacts/{index}": {
+      "get": {
+        "operationId": "getArtifactCapability",
+        "parameters": [
+          { "$ref": "#/components/parameters/SessionID" },
+          { "$ref": "#/components/parameters/RunID" },
+          { "name": "manifest_id", "in": "path", "required": true, "schema": { "type": "string" } },
+          {
+            "name": "index",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "minimum": 0 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Artifact metadata and capability",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ArtifactCapability" }
+              }
+            }
+          },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "SessionID": {
+        "name": "session_id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string" }
+      },
+      "RunID": { "name": "run_id", "in": "path", "required": true, "schema": { "type": "string" } }
+    },
+    "responses": {
+      "Error": {
+        "description": "Safe public error",
+        "content": {
+          "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+        }
+      },
+      "Identity": {
+        "description": "Current authorized identity",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Identity" } } }
+      },
+      "Session": {
+        "description": "Canonical session",
+        "content": {
+          "application/json": { "schema": { "$ref": "#/components/schemas/SessionSummary" } }
+        }
+      },
+      "Run": {
+        "description": "Run observation",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Run" } } }
+      },
+      "Message": {
+        "description": "Accepted canonical message",
+        "content": {
+          "application/json": { "schema": { "$ref": "#/components/schemas/CreateMessageResponse" } }
+        }
+      },
+      "UploadIntent": {
+        "description": "Ephemeral upload capability",
+        "content": {
+          "application/json": { "schema": { "$ref": "#/components/schemas/UploadIntent" } }
+        }
+      },
+      "Download": {
+        "description": "Ephemeral download capability",
+        "content": {
+          "application/json": { "schema": { "$ref": "#/components/schemas/DownloadCapability" } }
+        }
+      }
+    },
+    "schemas": {
+      "ErrorEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["error"],
+        "properties": { "error": { "$ref": "#/components/schemas/PublicError" } }
+      },
+      "PublicError": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "message", "request_id"],
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": [
+              "invalid_request",
+              "unauthenticated",
+              "access_denied",
+              "csrf_failed",
+              "not_found",
+              "conflict",
+              "payload_too_large",
+              "rate_limited",
+              "temporarily_unavailable"
+            ]
+          },
+          "message": { "type": "string" },
+          "request_id": { "type": "string" }
+        }
+      },
+      "TenantSummary": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tenant_id", "role", "active"],
+        "properties": {
+          "tenant_id": { "type": "string" },
+          "role": { "type": "string", "enum": ["owner", "member", "viewer"] },
+          "active": { "type": "boolean" }
+        }
+      },
+      "TenantPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["items"],
+        "properties": {
+          "items": { "type": "array", "items": { "$ref": "#/components/schemas/TenantSummary" } },
+          "next_cursor": { "type": "string" }
+        }
+      },
+      "Identity": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["user_id", "provider", "tenants"],
+        "properties": {
+          "user_id": { "type": "string" },
+          "provider": { "type": "string" },
+          "tenants": { "type": "array", "items": { "$ref": "#/components/schemas/TenantSummary" } }
+        }
+      },
+      "SelectTenantRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tenant_id"],
+        "properties": { "tenant_id": { "type": "string" } }
+      },
+      "SessionStatus": { "type": "string", "enum": ["active", "archived"] },
+      "SessionSummary": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["session_id", "status", "last_sequence", "created_at", "updated_at"],
+        "properties": {
+          "session_id": { "type": "string" },
+          "status": { "$ref": "#/components/schemas/SessionStatus" },
+          "title": { "type": "string" },
+          "preview": { "type": "string" },
+          "frontend_origin": { "type": "string" },
+          "last_sequence": { "type": "integer", "minimum": 0 },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" },
+          "archived_at": { "type": "string", "format": "date-time" },
+          "current_run": { "$ref": "#/components/schemas/Run" }
+        }
+      },
+      "SessionPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["items"],
+        "properties": {
+          "items": { "type": "array", "items": { "$ref": "#/components/schemas/SessionSummary" } },
+          "next_cursor": { "type": "string" }
+        }
+      },
+      "CreateSessionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["idempotency_key"],
+        "properties": { "idempotency_key": { "type": "string" } }
+      },
+      "ArchiveSessionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["archived", "idempotency_key"],
+        "properties": { "archived": { "type": "boolean" }, "idempotency_key": { "type": "string" } }
+      },
+      "Attachment": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "media_type", "size"],
+        "properties": {
+          "name": { "type": "string" },
+          "media_type": { "type": "string" },
+          "size": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "ArtifactManifest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["run_id", "manifest_id"],
+        "properties": { "run_id": { "type": "string" }, "manifest_id": { "type": "string" } }
+      },
+      "EventContent": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "text": { "type": "string" },
+          "attachments": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Attachment" }
+          },
+          "artifact_manifest": { "$ref": "#/components/schemas/ArtifactManifest" },
+          "data": {}
+        }
+      },
+      "SessionEvent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["event_id", "sequence", "kind", "content", "created_at"],
+        "properties": {
+          "event_id": { "type": "string" },
+          "sequence": { "type": "integer", "minimum": 1 },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "user_message",
+              "assistant_message",
+              "tool_call",
+              "tool_result",
+              "system_notice"
+            ]
+          },
+          "content": { "$ref": "#/components/schemas/EventContent" },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "EventPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["items"],
+        "properties": {
+          "items": { "type": "array", "items": { "$ref": "#/components/schemas/SessionEvent" } },
+          "next_cursor": { "type": "string" }
+        }
+      },
+      "Run": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "run_id",
+          "session_id",
+          "trigger_event_id",
+          "subscription_connection_id",
+          "status",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "run_id": { "type": "string" },
+          "session_id": { "type": "string" },
+          "trigger_event_id": { "type": "string" },
+          "subscription_connection_id": { "type": "string" },
+          "provider": { "type": "string" },
+          "status": {
+            "type": "string",
+            "enum": [
+              "created",
+              "admitted",
+              "queued",
+              "running",
+              "succeeded",
+              "failed",
+              "cancelled",
+              "quota_blocked"
+            ]
+          },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" },
+          "finished_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "RunPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["items"],
+        "properties": {
+          "items": { "type": "array", "items": { "$ref": "#/components/schemas/Run" } },
+          "next_cursor": { "type": "string" }
+        }
+      },
+      "ComputeConnection": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["provider", "entitlement", "quota", "observed_at"],
+        "properties": {
+          "provider": { "type": "string" },
+          "entitlement": {
+            "type": "string",
+            "enum": ["disconnected", "unknown", "active", "inactive", "reauthentication_required"]
+          },
+          "quota": { "type": "string", "enum": ["unknown", "available", "limited", "exhausted"] },
+          "observed_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "ComputeStatus": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["availability"],
+        "properties": {
+          "availability": { "type": "string", "enum": ["not_configured", "ready", "ambiguous"] },
+          "connection": { "$ref": "#/components/schemas/ComputeConnection" }
+        }
+      },
+      "CreateMessageRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["idempotency_key"],
+        "properties": {
+          "idempotency_key": { "type": "string" },
+          "text": { "type": "string", "maxLength": 32000 },
+          "upload_ids": {
+            "type": "array",
+            "maxItems": 8,
+            "uniqueItems": true,
+            "items": { "type": "string" }
+          }
+        }
+      },
+      "CreateMessageResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["session_id", "event_id", "sequence", "run_id", "created", "compute"],
+        "properties": {
+          "session_id": { "type": "string" },
+          "event_id": { "type": "string" },
+          "sequence": { "type": "integer", "minimum": 1 },
+          "run_id": { "type": "string" },
+          "created": { "type": "boolean" },
+          "compute": { "$ref": "#/components/schemas/ComputeConnection" }
+        }
+      },
+      "CreateUploadRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "session_id",
+          "idempotency_key",
+          "name",
+          "media_type",
+          "size",
+          "sha256",
+          "content_md5"
+        ],
+        "properties": {
+          "session_id": { "type": "string" },
+          "idempotency_key": { "type": "string" },
+          "name": { "type": "string", "maxLength": 255 },
+          "media_type": { "type": "string", "maxLength": 127 },
+          "size": { "type": "integer", "minimum": 1 },
+          "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "content_md5": { "type": "string" }
+        }
+      },
+      "UploadIntent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["upload_id", "method", "url", "headers", "expires_at"],
+        "properties": {
+          "upload_id": { "type": "string" },
+          "method": { "type": "string", "const": "PUT" },
+          "url": { "type": "string" },
+          "headers": { "type": "object", "additionalProperties": { "type": "string" } },
+          "expires_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "CommitUploadRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["upload_id"],
+        "properties": { "upload_id": { "type": "string" } }
+      },
+      "UploadCommit": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["upload_id", "name", "media_type", "size"],
+        "properties": {
+          "upload_id": { "type": "string" },
+          "name": { "type": "string" },
+          "media_type": { "type": "string" },
+          "size": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "DownloadCapability": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["method", "url", "expires_at"],
+        "properties": {
+          "method": { "type": "string", "const": "GET" },
+          "url": { "type": "string" },
+          "headers": { "type": "object", "additionalProperties": { "type": "string" } },
+          "expires_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "ArtifactCapability": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "media_type", "size", "download"],
+        "properties": {
+          "name": { "type": "string" },
+          "media_type": { "type": "string" },
+          "size": { "type": "integer", "minimum": 0 },
+          "download": { "$ref": "#/components/schemas/DownloadCapability" }
+        }
+      }
+    }
+  }
+}

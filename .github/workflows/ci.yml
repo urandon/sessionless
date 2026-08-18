@@ -26,8 +26,42 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
+      - name: Set up pinned Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24.19.0
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Set up pinned npm
+        run: npm install --global npm@11.17.0
+
       - name: Run repository CI contract
         run: make ci
+
+  web-browser:
+    name: Web browser and accessibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout mirrored commit
+        uses: actions/checkout@v6
+
+      - name: Set up pinned Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24.19.0
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Set up pinned npm
+        run: npm install --global npm@11.17.0
+
+      - name: Install locked WebUI dependencies and pinned Chromium runtime
+        run: PLAYWRIGHT_INSTALL_ARGS='--with-deps chromium' make web-browser-install
+
+      - name: Run browser and accessibility fixtures
+        run: make web-browser-test
 
   ydb:
     name: YDB schema and state store
@@ -139,9 +173,12 @@ jobs:
       - name: Set up pinned Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: 24
+          node-version: 24.19.0
           cache: npm
           cache-dependency-path: infra/cloudflare/telegram-edge/package-lock.json
+
+      - name: Set up pinned npm
+        run: npm install --global npm@11.17.0
 
       - name: Verify Worker contract and bundle
         run: make cloudflare-edge-ci
@@ -154,6 +191,7 @@ jobs:
       - local-stand
       - terraform
       - cloudflare-edge
+      - web-browser
     runs-on: ubuntu-latest
     timeout-minutes: 20
     concurrency:

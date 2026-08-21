@@ -48,6 +48,15 @@ variable "github_oidc_subject" {
     error_message = "github_oidc_subject must be the exact repository subject for refs/heads/main."
   }
 }
+variable "github_release_oidc_subject" {
+  description = "Exact GitHub Actions OIDC subject for the protected release environment."
+  type        = string
+
+  validation {
+    condition     = startswith(var.github_release_oidc_subject, "repo:") && endswith(var.github_release_oidc_subject, ":environment:release")
+    error_message = "github_release_oidc_subject must be the exact repository subject for the release environment."
+  }
+}
 variable "labels" {
   type    = map(string)
   default = {}

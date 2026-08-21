@@ -20,6 +20,9 @@ web_image_ref = "cr.yandex/bootstrap/web-bff@sha256:0000000000000000000000000000
 # Run the safe GitHub OIDC claim-inspection workflow after the workflow exists
 # on mirrored main, then copy its exact non-secret subject here.
 github_oidc_subject = "repo:replace-observed-immutable-subject:ref:refs/heads/main"
+# The GitHub environment named `release` must permit only protected v* tags.
+# Copy the exact environment-scoped subject from a safe claim-inspection run.
+github_release_oidc_subject = "repo:replace-observed-immutable-subject:environment:release"
 
 stable_slot  = "blue"
 canary_weight = 0

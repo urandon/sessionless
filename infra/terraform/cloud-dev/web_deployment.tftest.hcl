@@ -4,19 +4,20 @@ run "web_deployment_plan" {
   command = plan
 
   variables {
-    cloud_id                   = "cloud-test"
-    base_domain                = "sessionless.triborg.dev"
-    artifact_bucket_name       = "sessionless-test-artifacts"
-    telegram_secret_version_id = "telegram-secret-version"
-    web_bff_secret_version_id  = "web-secret-version"
-    telegram_oidc_client_id    = "123456789"
-    control_blue_image_tag     = "0000000000000000000000000000000000000000"
-    control_green_image_tag    = "0000000000000000000000000000000000000000"
-    runtime_image_tag          = "0000000000000000000000000000000000000000"
-    web_image_ref              = "cr.yandex/crptestregistry/web-bff@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    github_oidc_subject        = "repo:immutable-test-subject:ref:refs/heads/main"
-    billing_account_id         = "billing-test"
-    budget_id                  = "budget-test"
+    cloud_id                    = "cloud-test"
+    base_domain                 = "sessionless.triborg.dev"
+    artifact_bucket_name        = "sessionless-test-artifacts"
+    telegram_secret_version_id  = "telegram-secret-version"
+    web_bff_secret_version_id   = "web-secret-version"
+    telegram_oidc_client_id     = "123456789"
+    control_blue_image_tag      = "0000000000000000000000000000000000000000"
+    control_green_image_tag     = "0000000000000000000000000000000000000000"
+    runtime_image_tag           = "0000000000000000000000000000000000000000"
+    web_image_ref               = "cr.yandex/crptestregistry/web-bff@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    github_oidc_subject         = "repo:immutable-test-subject:ref:refs/heads/main"
+    github_release_oidc_subject = "repo:immutable-test-subject:environment:release"
+    billing_account_id          = "billing-test"
+    budget_id                   = "budget-test"
   }
 
   assert {
@@ -64,6 +65,11 @@ run "web_deployment_plan" {
   assert {
     condition     = module.web.image_ref == var.web_image_ref
     error_message = "the Web deployment must preserve the immutable image reference"
+  }
+
+  assert {
+    condition     = output.github_release_oidc_subject == "repo:immutable-test-subject:environment:release"
+    error_message = "release workload identity must preserve the exact protected-environment subject"
   }
 
   assert {

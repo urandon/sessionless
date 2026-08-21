@@ -463,6 +463,11 @@ coordinated with Terraform through the shared deployment lock. See
 manifest retention, OIDC identity, native lifecycle interaction, and report
 contract.
 
+Version-tag publication uses another service account and federated credential;
+it does not reuse the trusted-main image publisher or registry cleaner. See
+[releases.md](releases.md) for the protected `release` environment, exact OIDC
+subject bootstrap, GitCode tag provenance, and retry procedure.
+
 ### 7. Reset disposable application data after a baseline rebase
 
 Skip this step for an ordinary forward migration. Use it only while cloud-dev

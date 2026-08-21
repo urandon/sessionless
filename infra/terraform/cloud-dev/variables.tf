@@ -135,6 +135,10 @@ variable "github_oidc_subject" {
   description = "Exact subject printed by the safe GitHub OIDC claim-inspection workflow."
   type        = string
 }
+variable "github_release_oidc_subject" {
+  description = "Exact subject printed from the protected GitHub release environment."
+  type        = string
+}
 variable "stable_slot" {
   type    = string
   default = "blue"

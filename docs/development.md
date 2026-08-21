@@ -295,6 +295,11 @@ this CI workflow and tracked separately in
 [issue #15](https://gitcode.com/urandon/sessionless/issues/15). Branch CI does
 not receive a GitCode publication token.
 
+Tag-driven GitHub Releases use a separate protected workflow and a dedicated
+Yandex identity. The tag formats, GitCode/GitHub provenance checks, environment
+gate, five-image asset contract, and same-tag retry procedure are documented in
+[releases.md](releases.md).
+
 Cloud development environment procedures are documented in
 [cloud-development.md](cloud-development.md). They use separate bootstrap and
 environment state, a folder-scoped external budget gate, immutable image

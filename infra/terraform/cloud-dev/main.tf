@@ -29,6 +29,7 @@ module "foundation" {
   deletion_protection              = var.deletion_protection
   github_oidc_audience             = var.github_oidc_audience
   github_oidc_subject              = var.github_oidc_subject
+  github_release_oidc_subject      = var.github_release_oidc_subject
   labels                           = local.labels
 }
 

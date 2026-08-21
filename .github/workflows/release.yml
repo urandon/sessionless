@@ -1,0 +1,262 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate mirrored release tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      valid: ${{ steps.provenance.outputs.valid }}
+      tag: ${{ steps.provenance.outputs.tag }}
+      source_sha: ${{ steps.provenance.outputs.source_sha }}
+      raw_tag_sha: ${{ steps.provenance.outputs.raw_tag_sha }}
+    steps:
+      - name: Checkout the selected tag with full history
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Prove GitCode and GitHub tag identity
+        id: provenance
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          RELEASE_PROVENANCE_OUTPUT="$GITHUB_OUTPUT" sh scripts/verify-release-tag.sh
+          printf 'valid=true\n' >>"$GITHUB_OUTPUT"
+
+  verify:
+    name: Verify clean tagged source
+    needs: validate
+    if: needs.validate.outputs.valid == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout verified tag
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: refs/tags/${{ needs.validate.outputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up pinned Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Set up pinned Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.19.0
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Set up pinned npm
+        run: npm install --global npm@11.17.0
+
+      - name: Recheck provenance before executing tagged source
+        env:
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        run: sh scripts/verify-release-tag.sh
+
+      - name: Run repository verification contract
+        run: make ci
+
+  images:
+    name: Publish or verify release images
+    needs:
+      - validate
+      - verify
+    if: needs.validate.outputs.valid == 'true'
+    environment: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+      RELEASE_SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
+    steps:
+      - name: Checkout verified tag
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: refs/tags/${{ needs.validate.outputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up pinned Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Set up pinned Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.19.0
+
+      - name: Load pinned image toolchain
+        id: pinned-images
+        run: |
+          . build/images.env
+          printf 'buildkit_image=%s\n' "$BUILDKIT_IMAGE" >>"$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+        with:
+          version: v0.36.0
+          driver: docker-container
+          driver-opts: image=${{ steps.pinned-images.outputs.buildkit_image }}
+          platforms: linux/amd64
+
+      - name: Recheck provenance before requesting cloud identity
+        run: sh scripts/verify-release-tag.sh
+
+      - name: Prove reproducibility and retain verified candidates
+        env:
+          IMAGE_REQUIRE_CLEAN_CHECKOUT: "1"
+          IMAGE_REPRODUCIBILITY_RETAIN_REGISTRY: "1"
+        run: make image-reproducibility-test
+
+      - name: Inspect protected release OIDC subject during bootstrap
+        if: vars.YANDEX_RELEASE_PUBLISH_ENABLED != 'true'
+        env:
+          OIDC_CLAIM_ONLY: "1"
+          YANDEX_OIDC_AUDIENCE: ${{ vars.YANDEX_OIDC_AUDIENCE }}
+        run: node scripts/github-yandex-release-login.mjs
+
+      - name: Require provisioned release publication
+        if: vars.YANDEX_RELEASE_PUBLISH_ENABLED != 'true'
+        run: |
+          printf '%s\n' 'release publisher is not provisioned; copy the safe subject above, apply Terraform, enable publication, and rerun this tag' >&2
+          exit 1
+
+      - name: Exchange tag-scoped GitHub identity for Yandex registry access
+        if: vars.YANDEX_RELEASE_PUBLISH_ENABLED == 'true'
+        env:
+          YANDEX_OIDC_AUDIENCE: ${{ vars.YANDEX_OIDC_AUDIENCE }}
+          YANDEX_EXPECTED_OIDC_SUBJECT: ${{ vars.YANDEX_RELEASE_GITHUB_OIDC_SUBJECT }}
+          YANDEX_RELEASE_PUBLISHER_SERVICE_ACCOUNT_ID: ${{ vars.YANDEX_RELEASE_PUBLISHER_SERVICE_ACCOUNT_ID }}
+        run: node scripts/github-yandex-release-login.mjs
+
+      - name: Publish or verify five immutable deployment images
+        if: vars.YANDEX_RELEASE_PUBLISH_ENABLED == 'true'
+        env:
+          YANDEX_CONTAINER_REGISTRY_ID: ${{ vars.YANDEX_CONTAINER_REGISTRY_ID }}
+          CLOUD_IMAGE_TAG: ${{ needs.validate.outputs.source_sha }}
+          CLOUD_IMAGE_MANIFEST_PATH: .build/deployment-images.json
+          CLOUD_IMAGE_RECEIPT_PATH: .build/deployment-images.receipt.json
+          CLOUD_IMAGE_REQUIRE_CLEAN_INPUTS: "1"
+          SOURCE_REPOSITORY: gitcode.com/urandon/sessionless
+          SOURCE_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SOURCE_RUN_ID: ${{ github.run_id }}
+          SOURCE_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: sh scripts/publish-cloud-images.sh
+
+      - name: Generate deterministic release notes
+        if: vars.YANDEX_RELEASE_PUBLISH_ENABLED == 'true'
+        run: |
+          mkdir -p .build/release
+          go run ./cmd/release-notes \
+            --tag "$RELEASE_TAG" \
+            --source-sha "$RELEASE_SOURCE_SHA" \
+            --output .build/release/release-notes.md
+
+      - name: Stage and verify release assets
+        if: vars.YANDEX_RELEASE_PUBLISH_ENABLED == 'true'
+        run: sh scripts/stage-release-assets.sh
+
+      - name: Upload exact release inputs
+        if: vars.YANDEX_RELEASE_PUBLISH_ENABLED == 'true'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: release-inputs-${{ needs.validate.outputs.tag }}-${{ github.run_attempt }}
+          path: .build/release/assets
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Clean up retained candidate registry
+        if: always()
+        run: sh scripts/cleanup-image-candidate-registry.sh
+
+  release:
+    name: Create or verify GitHub Release
+    needs:
+      - validate
+      - images
+    if: needs.validate.outputs.valid == 'true'
+    environment: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+      RELEASE_SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
+    steps:
+      - name: Checkout verified tag without persisted write credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: refs/tags/${{ needs.validate.outputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up pinned Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Download exact release inputs
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: release-inputs-${{ needs.validate.outputs.tag }}-${{ github.run_attempt }}
+          path: .build/release/assets
+
+      - name: Recheck provenance and release asset contract
+        run: |
+          sh scripts/verify-release-tag.sh
+          (cd .build/release/assets && sha256sum --check deployment-images.sha256)
+          jq -e --arg sha "$RELEASE_SOURCE_SHA" '
+            .schema_version == 2 and .source.sha == $sha and
+            (.images | keys | sort) ==
+              ["control-api", "reconciler", "telegram-sender", "web-bff", "worker-runtime"] and
+            all(.images[]; .reference | test("@sha256:[0-9a-f]{64}$"))
+          ' .build/release/assets/deployment-images.json >/dev/null
+          test -s .build/release/assets/release-notes.md
+
+      - name: Create or verify one immutable GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          prerelease_arg=
+          case "$RELEASE_TAG" in
+            *-rc.*) prerelease_arg=--prerelease ;;
+          esac
+          go run ./cmd/github-release \
+            --tag "$RELEASE_TAG" \
+            --source-sha "$RELEASE_SOURCE_SHA" \
+            --notes .build/release/assets/release-notes.md \
+            --asset .build/release/assets/deployment-images.json \
+            --asset .build/release/assets/deployment-images.sha256 \
+            --asset .build/release/assets/release-notes.md \
+            ${prerelease_arg:+"$prerelease_arg"}

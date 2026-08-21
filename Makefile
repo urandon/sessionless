@@ -5,7 +5,7 @@ BIN_DIR := .build/bin
 GO_CACHE_DIR := $(CURDIR)/.build/cache/go-build
 GO_MOD_CACHE_DIR := $(CURDIR)/.build/cache/go-mod
 GO_TMP_DIR := $(CURDIR)/.build/tmp
-COMPONENTS := control-api web-bff reconciler telegram-sender telegram-fake oidc-fake worker-runtime schema-migrate schema-inspect schema-backfill preprod-reset deployment-lock registry-gc web-bootstrap session-delete
+COMPONENTS := control-api web-bff reconciler telegram-sender telegram-fake oidc-fake worker-runtime schema-migrate schema-inspect schema-backfill preprod-reset deployment-lock registry-gc release-notes github-release web-bootstrap session-delete
 GO_PACKAGE_PATTERNS := ./cmd/... ./internal/... ./migrations/...
 WEB_DIR := web
 WEB_BUILD_DIR := $(WEB_DIR)/build
@@ -23,7 +23,7 @@ LDFLAGS := -s -w \
 	-X gitcode.com/urandon/sessionless/internal/buildinfo.Commit=$(COMMIT) \
 	-X gitcode.com/urandon/sessionless/internal/buildinfo.BuiltAt=$(BUILT_AT)
 
-.PHONY: help prepare tools web-tools go-package-layout generate fmt fmt-check lint test build web-install web-openapi-check web-check web-build web-stage web-ci web-browser-install web-browser-test integration ydb-integration local-integration e2e-local ci image-publication-test registry-gc-policy-test budget-policy-test web-deployment-policy-test terraform-ci cloudflare-edge-ci \
+.PHONY: help prepare tools web-tools go-package-layout generate fmt fmt-check lint test build web-install web-openapi-check web-check web-build web-stage web-ci web-browser-install web-browser-test integration ydb-integration local-integration e2e-local ci image-publication-test registry-gc-policy-test release-policy-test budget-policy-test web-deployment-policy-test terraform-ci cloudflare-edge-ci \
 	compose-config images dev-up dev-seed migrate-local migration-status partition-status partition-backfill cloud-app-reset-plan cloud-app-reset session-delete-request session-delete-plan session-delete session-hold session-release-hold \
 	worker-once web-bootstrap dev-down dev-reset clean
 
@@ -42,6 +42,7 @@ help:
 		'make e2e-local      run the deterministic two-tenant black-box slice' \
 		'make image-publication-test validate immutable image publication guards' \
 		'make registry-gc-policy-test validate deployment-aware registry cleanup guards' \
+		'make release-policy-test validate tag provenance, release assets, workflow, and IAM guards' \
 		'make terraform-ci   validate Terraform, run a mocked Web plan, and enforce policies' \
 		'make cloudflare-edge-ci test and dry-run bundle the Telegram edge Worker' \
 		'make images         build control-plane and worker images' \
@@ -152,7 +153,7 @@ local-integration: prepare
 e2e-local: prepare
 	@./scripts/e2e-local.sh
 
-ci: web-ci generate test build integration image-publication-test image-build-inputs-test registry-gc-policy-test
+ci: web-ci generate test build integration image-publication-test image-build-inputs-test registry-gc-policy-test release-policy-test
 
 image-publication-test:
 	@./scripts/test-image-publication.sh
@@ -162,6 +163,10 @@ image-build-inputs-test:
 
 registry-gc-policy-test:
 	@./scripts/test-registry-gc-policy.sh
+
+release-policy-test:
+	@./scripts/test-release-policy.sh
+	@./scripts/test-stage-release-assets.sh
 
 image-reproducibility-test:
 	@./scripts/test-image-reproducibility.sh
@@ -186,6 +191,7 @@ terraform-ci:
 	$(MAKE) web-secret-load-test
 	$(MAKE) web-deployment-policy-test
 	$(MAKE) registry-gc-policy-test
+	$(MAKE) release-policy-test
 
 cloudflare-edge-ci:
 	npm --prefix infra/cloudflare/telegram-edge ci

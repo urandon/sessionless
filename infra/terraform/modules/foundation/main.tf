@@ -4,7 +4,7 @@ locals {
     environment = "dev"
     managed-by  = "terraform"
   })
-  account_names = toset(["deploy", "api", "web-bff", "scheduler", "worker", "telegram-sender", "trigger", "gateway", "web-gateway", "queue-provisioner", "image-publisher", "registry-cleaner"])
+  account_names = toset(["deploy", "api", "web-bff", "scheduler", "worker", "telegram-sender", "trigger", "gateway", "web-gateway", "queue-provisioner", "image-publisher", "release-publisher", "registry-cleaner"])
   account_roles = {
     api               = ["logging.writer"]
     web-bff           = ["logging.writer"]
@@ -221,10 +221,11 @@ resource "yandex_container_repository_iam_binding" "image_publisher" {
   repository_id = each.value.id
   role          = "container-registry.images.pusher"
   # The provider exposes only an authoritative role binding for repositories,
-  # not iam_member. Keep both explicit identities in the single binding so two
-  # Terraform resources cannot overwrite each other for the same role.
+  # not iam_member. Keep every explicit publisher/cleaner identity in the
+  # single binding so Terraform resources cannot overwrite each other.
   members = [
     "serviceAccount:${yandex_iam_service_account.runtime["image-publisher"].id}",
+    "serviceAccount:${yandex_iam_service_account.runtime["release-publisher"].id}",
     "serviceAccount:${yandex_iam_service_account.runtime["registry-cleaner"].id}",
   ]
 }
@@ -244,6 +245,23 @@ resource "yandex_iam_workload_identity_federated_credential" "github_images" {
   service_account_id  = yandex_iam_service_account.runtime["image-publisher"].id
   federation_id       = yandex_iam_workload_identity_oidc_federation.github_images.id
   external_subject_id = var.github_oidc_subject
+}
+
+resource "yandex_iam_workload_identity_oidc_federation" "github_release" {
+  folder_id   = yandex_resourcemanager_folder.environment.id
+  name        = "${var.name_prefix}-github-release"
+  description = "GitHub Actions identity for tag-scoped Sessionless releases"
+  disabled    = false
+  audiences   = [var.github_oidc_audience]
+  issuer      = "https://token.actions.githubusercontent.com"
+  jwks_url    = "https://token.actions.githubusercontent.com/.well-known/jwks"
+  labels      = local.labels
+}
+
+resource "yandex_iam_workload_identity_federated_credential" "github_release" {
+  service_account_id  = yandex_iam_service_account.runtime["release-publisher"].id
+  federation_id       = yandex_iam_workload_identity_oidc_federation.github_release.id
+  external_subject_id = var.github_release_oidc_subject
 }
 
 resource "yandex_iam_workload_identity_oidc_federation" "github_registry_gc" {

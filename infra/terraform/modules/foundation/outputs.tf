@@ -17,6 +17,8 @@ output "registry_id" { value = yandex_container_registry.application.id }
 output "repository_names" { value = { for name, repository in yandex_container_repository.runtime : name => repository.name } }
 output "repository_ids" { value = { for name, repository in yandex_container_repository.runtime : name => repository.id } }
 output "image_publisher_service_account_id" { value = yandex_iam_service_account.runtime["image-publisher"].id }
+output "release_publisher_service_account_id" { value = yandex_iam_service_account.runtime["release-publisher"].id }
+output "release_publisher_federation_id" { value = yandex_iam_workload_identity_oidc_federation.github_release.id }
 output "registry_cleaner_service_account_id" { value = yandex_iam_service_account.runtime["registry-cleaner"].id }
 output "registry_cleaner_federation_id" { value = yandex_iam_workload_identity_oidc_federation.github_registry_gc.id }
 output "registry_lifecycle_policy_statuses" {
@@ -24,6 +26,7 @@ output "registry_lifecycle_policy_statuses" {
 }
 output "github_oidc_audience" { value = var.github_oidc_audience }
 output "github_oidc_subject" { value = var.github_oidc_subject }
+output "github_release_oidc_subject" { value = var.github_release_oidc_subject }
 output "telegram_secret_id" { value = yandex_lockbox_secret.telegram.id }
 output "web_bff_secret_id" { value = yandex_lockbox_secret.web_bff.id }
 output "queue_provisioner_secret_id" { value = yandex_lockbox_secret.queue_provisioner.id }

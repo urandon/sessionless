@@ -174,7 +174,10 @@ jq -e '
   .schema_version == 1 and
   .platform == "linux/amd64" and
   (.images | keys | sort) == ["control-api", "reconciler", "telegram-sender", "web-bff", "worker-runtime"] and
-  all(.images[]; (.manifest.digest | test("^sha256:[0-9a-f]{64}$")))
+  all(.images[];
+    (.manifest.digest | test("^sha256:[0-9a-f]{64}$")) and
+    .buildx_manifest_digest == .manifest.digest
+  )
 ' "$evidence_path" >/dev/null
 
 printf 'five-image clean-room reproducibility evidence written to %s\n' "$evidence_path"

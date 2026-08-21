@@ -76,9 +76,13 @@ func (store *Store) ListRunTelegramDeliveries(
 		`SELECT telegram_delivery_id
 		 FROM telegram_deliveries_by_run
 		 WHERE tenant_id = $1 AND run_id = $2
+		 AND JSON_VALUE(record, "$.status" RETURNING Utf8 ERROR ON EMPTY ERROR ON ERROR)
+		 IN ($3, $4, $5)
 		 ORDER BY telegram_delivery_id
-		 LIMIT $3`,
-		tenantID, runID, limit,
+		 LIMIT $6`,
+		tenantID, runID,
+		domain.DeliveryPending, domain.DeliveryRetryWait, domain.DeliverySending,
+		limit,
 	)
 	if err != nil {
 		return nil, err

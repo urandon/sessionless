@@ -31,9 +31,11 @@ FROM ${NODE_BUILDER_IMAGE} AS web-assets
 ARG NPM_VERSION
 ARG COMMIT=unknown
 WORKDIR /src/web
-RUN npm install --global "npm@${NPM_VERSION}" && test "$(npm --version)" = "${NPM_VERSION}"
+RUN npm install --global --fetch-retries=5 --fetch-retry-mintimeout=1000 \
+      --fetch-retry-maxtimeout=10000 "npm@${NPM_VERSION}" \
+    && test "$(npm --version)" = "${NPM_VERSION}"
 COPY web/package.json web/package-lock.json ./
-RUN npm ci
+RUN npm ci --fetch-retries=5 --fetch-retry-mintimeout=1000 --fetch-retry-maxtimeout=10000
 COPY web/ ./
 RUN SESSIONLESS_WEB_VERSION="${COMMIT}" npm run build
 

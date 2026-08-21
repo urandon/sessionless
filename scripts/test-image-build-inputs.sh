@@ -33,6 +33,21 @@ done
 
 test "$(grep -c -- '-buildvcs=false' "$repo_root/build/control.Dockerfile")" -eq 2
 test "$(grep -c -- '-buildvcs=false' "$repo_root/build/worker-runtime.Dockerfile")" -eq 1
+grep -F 'SESSIONLESS_WEB_VERSION="${COMMIT}" npm run build' "$repo_root/build/control.Dockerfile" >/dev/null
+grep -F "name: process.env.SESSIONLESS_WEB_VERSION || 'dev'" "$repo_root/web/svelte.config.js" >/dev/null
+expected_web_version=0123456789abcdef0123456789abcdef01234567
+actual_web_version=$(
+  cd "$repo_root/web"
+  SESSIONLESS_WEB_VERSION="$expected_web_version" node --input-type=module -e \
+    "const {default: config} = await import('./svelte.config.js'); process.stdout.write(config.kit.version.name)"
+)
+test "$actual_web_version" = "$expected_web_version"
+fallback_web_version=$(
+  cd "$repo_root/web"
+  SESSIONLESS_WEB_VERSION= node --input-type=module -e \
+    "const {default: config} = await import('./svelte.config.js'); process.stdout.write(config.kit.version.name)"
+)
+test "$fallback_web_version" = dev
 
 for required in \
   '--provenance=false' \

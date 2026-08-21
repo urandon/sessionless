@@ -29,12 +29,13 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -trimpath \
 FROM ${NODE_BUILDER_IMAGE} AS web-assets
 
 ARG NPM_VERSION
+ARG COMMIT=unknown
 WORKDIR /src/web
 RUN npm install --global "npm@${NPM_VERSION}" && test "$(npm --version)" = "${NPM_VERSION}"
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
 COPY web/ ./
-RUN npm run build
+RUN SESSIONLESS_WEB_VERSION="${COMMIT}" npm run build
 
 FROM go-source AS web-bff-build
 

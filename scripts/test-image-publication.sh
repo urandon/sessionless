@@ -18,7 +18,7 @@ fake_log="$test_root/docker.log"
 manifest_path="$test_root/deployment-images.json"
 mkdir -p "$metadata_dir" "$fake_bin" "$fake_state"
 
-for name in control-api reconciler telegram-sender worker-runtime; do
+for name in control-api web-bff reconciler telegram-sender worker-runtime; do
   jq -n --arg digest "$build_digest" \
     '{"containerimage.digest": $digest}' >"$metadata_dir/$name.json"
   printf '%s\n' "$source_sha" >"$metadata_dir/$name.source-sha"
@@ -207,15 +207,21 @@ rm -f "$fake_state"/*
 : >"$fake_log"
 run_publish absent >/dev/null
 push_count=$(grep -c '^push ' "$fake_log")
-if test "$push_count" -ne 4; then
-  printf 'expected four first-publication pushes, got %s\n' "$push_count" >&2
+if test "$push_count" -ne 5; then
+  printf 'expected five first-publication pushes, got %s\n' "$push_count" >&2
   exit 1
 fi
 jq -e \
   --arg sha "$source_sha" \
   --arg digest "$remote_manifest_digest" \
-  '.source_sha == $sha and (.images | length) == 4 and all(.images[]; .digest == $digest)' \
+  '.source_sha == $sha and (.images | length) == 5 and .images["web-bff"].reference == "cr.yandex/crptestregistry/web-bff@" + $digest and all(.images[]; .digest == $digest)' \
   "$manifest_path" >/dev/null
+
+EXPECTED_SOURCE_SHA="$source_sha" EXPECTED_REGISTRY_ID=crptestregistry \
+  "$repo_root/scripts/cloud-image-tfvars.sh" "$manifest_path" >"$test_root/images.tfvars.json"
+jq -e --arg digest "$remote_manifest_digest" \
+  '.web_image_ref == "cr.yandex/crptestregistry/web-bff@" + $digest' \
+  "$test_root/images.tfvars.json" >/dev/null
 
 rm -f "$fake_state"/*
 : >"$fake_log"

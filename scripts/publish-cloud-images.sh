@@ -48,7 +48,7 @@ jq -n \
     images: {}
   }' >"$manifest_tmp"
 
-for name in control-api reconciler telegram-sender worker-runtime; do
+for name in control-api web-bff reconciler telegram-sender worker-runtime; do
   local_image="sessionless/${name}:dev"
   registry_repository="cr.yandex/${YANDEX_CONTAINER_REGISTRY_ID}/${name}"
   tagged_reference="${registry_repository}:${CLOUD_IMAGE_TAG}"
@@ -158,9 +158,9 @@ done
 
 jq -e '
   .schema_version == 1 and
-  (.images | keys | sort) == ["control-api", "reconciler", "telegram-sender", "worker-runtime"]
+  (.images | keys | sort) == ["control-api", "reconciler", "telegram-sender", "web-bff", "worker-runtime"]
 ' "$manifest_tmp" >/dev/null
 mv "$manifest_tmp" "$CLOUD_IMAGE_MANIFEST_PATH"
 trap - EXIT HUP INT TERM
 rm -f "$entry_tmp" "$inspect_error"
-printf 'published four immutable deployment images and wrote %s\n' "$CLOUD_IMAGE_MANIFEST_PATH"
+printf 'published five immutable deployment images and wrote %s\n' "$CLOUD_IMAGE_MANIFEST_PATH"

@@ -256,7 +256,7 @@ runs `make ci` and `make images` for every mirrored branch or tag push. The
 workflow is `.github/workflows/ci.yml`; a GitHub pull request is not required.
 
 After every required job succeeds on mirrored `main`, the image job can use
-GitHub OIDC workload identity federation to publish the four already-built
+GitHub OIDC workload identity federation to publish the five already-built
 deployment images to Yandex Container Registry. Publishing is disabled until
 the exact claim, Terraform-managed federation, and non-secret GitHub variables
 are installed. No branch, tag, pull request, or fork identity is accepted by

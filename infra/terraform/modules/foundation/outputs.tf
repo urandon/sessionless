@@ -19,6 +19,7 @@ output "image_publisher_service_account_id" { value = yandex_iam_service_account
 output "github_oidc_audience" { value = var.github_oidc_audience }
 output "github_oidc_subject" { value = var.github_oidc_subject }
 output "telegram_secret_id" { value = yandex_lockbox_secret.telegram.id }
+output "web_bff_secret_id" { value = yandex_lockbox_secret.web_bff.id }
 output "queue_provisioner_secret_id" { value = yandex_lockbox_secret.queue_provisioner.id }
 output "queue_provisioner_secret_version_id" { value = yandex_iam_service_account_static_access_key.queue_provisioner.output_to_lockbox_version_id }
 output "scheduler_ymq_secret_id" { value = yandex_lockbox_secret.scheduler_ymq.id }

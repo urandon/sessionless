@@ -107,6 +107,17 @@ case "$action" in
         exit 1
       }
       set -- "-var-file=$CLOUD_DEV_IMAGE_TFVARS" "$@"
+    else
+      foundation_only=0
+      for argument in "$@"; do
+        if test "$argument" = "-target=module.foundation"; then
+          foundation_only=1
+        fi
+      done
+      if test "$foundation_only" -ne 1; then
+        printf '%s\n' 'CLOUD_DEV_IMAGE_TFVARS is required for every non-foundation plan' >&2
+        exit 1
+      fi
     fi
     exec go run ./cmd/deployment-lock with -- \
       terraform -chdir=infra/terraform/cloud-dev plan \

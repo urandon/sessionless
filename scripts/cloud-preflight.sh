@@ -34,13 +34,23 @@ printf 'url = "https://billing.api.cloud.yandex.net/billing/v1/budgets/%s"\n' "$
 printf 'header = "Authorization: Bearer %s"\n' "$iam_token" >>"$preflight_tmp/curl.conf"
 printf 'fail\nsilent\nshow-error\n' >>"$preflight_tmp/curl.conf"
 curl --config "$preflight_tmp/curl.conf" >"$preflight_tmp/budget.json"
+printf 'url = "https://billing.api.cloud.yandex.net/billing/v1/billingAccounts/%s"\n' "$BILLING_ACCOUNT_ID" >"$preflight_tmp/account-curl.conf"
+printf 'header = "Authorization: Bearer %s"\n' "$iam_token" >>"$preflight_tmp/account-curl.conf"
+printf 'fail\nsilent\nshow-error\n' >>"$preflight_tmp/account-curl.conf"
+curl --config "$preflight_tmp/account-curl.conf" >"$preflight_tmp/account.json"
 unset iam_token
 
+jq -e --arg id "$BILLING_ACCOUNT_ID" \
+  '.id == $id and .active == true and .currency == "RUB"' \
+  "$preflight_tmp/account.json" >/dev/null || {
+    printf '%s\n' 'the billing account is absent, inactive, or not denominated in RUB' >&2
+    exit 1
+  }
+
 jq -e --arg id "$BUDGET_ID" --arg account "$BILLING_ACCOUNT_ID" --arg folder "$CLOUD_DEV_FOLDER_ID" \
-  '(.id == $id and .billingAccountId == $account and .status == "ACTIVE") and
-   any(.. | strings; . == $folder)' \
+  -f scripts/validate-cloud-budget.jq \
   "$preflight_tmp/budget.json" >/dev/null || {
-    printf 'the budget is absent, inactive, belongs to another account, or does not filter the dev folder\n' >&2
+    printf '%s\n' 'budget must be active, monthly, at most 100 RUB, and scoped only to the dev folder across all services' >&2
     exit 1
   }
 

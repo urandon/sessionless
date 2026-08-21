@@ -209,7 +209,7 @@ jobs:
         with:
           version: v0.36.0
 
-      - name: Build control-plane and worker images
+      - name: Build control-plane, Web, and worker images
         env:
           VERSION: ${{ github.sha }}
           IMAGE_PLATFORM: linux/amd64

@@ -159,6 +159,9 @@ image-publication-test:
 budget-policy-test:
 	@./scripts/test-cloud-budget-policy.sh
 
+web-secret-load-test:
+	@./scripts/test-cloud-web-secret-load.sh
+
 web-deployment-policy-test:
 	@./scripts/test-web-deployment-policy.sh
 
@@ -170,6 +173,7 @@ terraform-ci:
 	$(TERRAFORM) -chdir=infra/terraform/cloud-dev validate
 	$(TERRAFORM) -chdir=infra/terraform/cloud-dev test -filter=web_deployment.tftest.hcl
 	$(MAKE) budget-policy-test
+	$(MAKE) web-secret-load-test
 	$(MAKE) web-deployment-policy-test
 
 cloudflare-edge-ci:

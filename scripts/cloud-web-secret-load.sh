@@ -16,11 +16,8 @@ fi
 # The payload is streamed through stdin. Secret values never enter argv,
 # Terraform state, a plan artifact, the repository, or command output.
 jq -cn \
-  --arg oidc "$TELEGRAM_OIDC_CLIENT_SECRET" \
-  --arg cursor "$SESSION_API_CURSOR_HMAC_KEY" \
-  --arg identity "$SESSION_API_ID_HMAC_KEY" \
   '[
-    {key:"oidc-client-secret", text_value:$oidc},
-    {key:"session-cursor-hmac-key", text_value:$cursor},
-    {key:"session-id-hmac-key", text_value:$identity}
+    {key:"oidc-client-secret", text_value:env.TELEGRAM_OIDC_CLIENT_SECRET},
+    {key:"session-cursor-hmac-key", text_value:env.SESSION_API_CURSOR_HMAC_KEY},
+    {key:"session-id-hmac-key", text_value:env.SESSION_API_ID_HMAC_KEY}
   ]' | yc lockbox secret add-version --id "$WEB_BFF_SECRET_ID" --payload - --format json

@@ -234,7 +234,8 @@ Do not derive it from names: GitHub repositories created after 2026-07-15 can
 include immutable owner and repository IDs in `sub`. Terraform binds that exact
 subject, the `main` ref, and the configured audience to a dedicated service
 account. The account receives only `container-registry.images.pusher` on the
-four runtime repositories.
+five runtime repositories: `control-api`, `web-bff`, `reconciler`,
+`telegram-sender`, and `worker-runtime`.
 
 ## First deployment
 

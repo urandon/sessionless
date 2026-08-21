@@ -429,8 +429,9 @@ yc container registry configure-docker
 CLOUD_IMAGE_TAG="$(git rev-parse HEAD)" ./scripts/cloud-images.sh
 ```
 
-The fallback uses the same deterministic build metadata, platform checks,
-registry push, and schema-v2 manifest format as CI. It refuses a source SHA
+The fallback runs the same two-builder, cache-free clean-room gate and uses the
+same deterministic build metadata, platform checks, registry push, and
+schema-v2 manifest format as CI. It refuses a dirty checkout or a source SHA
 other than the checked-out commit. The clean-room gate proves that the explicit
 Docker exporter digest survives load/push normalization. Before publishing,
 both paths therefore compare the complete candidate manifest digest with the

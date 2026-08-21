@@ -19,6 +19,31 @@ for variable_name in \
   fi
 done
 
+for assignment in \
+  "GO_BUILDER_IMAGE=$GO_BUILDER_IMAGE" \
+  "NODE_BUILDER_IMAGE=$NODE_BUILDER_IMAGE" \
+  "DISTROLESS_STATIC_IMAGE=$DISTROLESS_STATIC_IMAGE"; do
+  grep -F "ARG $assignment" "$repo_root/build/control.Dockerfile" >/dev/null || {
+    printf 'control Dockerfile default diverges from build/images.env: %s\n' "$assignment" >&2
+    exit 1
+  }
+done
+for assignment in \
+  "GO_BUILDER_IMAGE=$GO_BUILDER_IMAGE" \
+  "DISTROLESS_BASE_IMAGE=$DISTROLESS_BASE_IMAGE"; do
+  grep -F "ARG $assignment" "$repo_root/build/worker-runtime.Dockerfile" >/dev/null || {
+    printf 'worker Dockerfile default diverges from build/images.env: %s\n' "$assignment" >&2
+    exit 1
+  }
+done
+if grep -F 'GO_VERSION:' "$repo_root/compose.yaml" >/dev/null; then
+  printf '%s\n' 'Compose still passes the removed GO_VERSION Docker build argument' >&2
+  exit 1
+fi
+grep -F 'make image-reproducibility-test' "$repo_root/scripts/cloud-images.sh" >/dev/null
+grep -F 'IMAGE_REQUIRE_CLEAN_CHECKOUT=1' "$repo_root/scripts/cloud-images.sh" >/dev/null
+grep -F 'CLOUD_IMAGE_REQUIRE_CLEAN_INPUTS=1' "$repo_root/scripts/cloud-images.sh" >/dev/null
+
 for dockerfile in build/control.Dockerfile build/worker-runtime.Dockerfile; do
   first_line=$(sed -n '1p' "$repo_root/$dockerfile")
   if test "$first_line" != "# syntax=$DOCKERFILE_FRONTEND_IMAGE"; then

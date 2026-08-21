@@ -19,10 +19,15 @@ fi
 registry_id="$(terraform -chdir=infra/terraform/cloud-dev output -raw registry_id)"
 manifest_path="${CLOUD_IMAGE_MANIFEST_PATH:-.build/deployment-images-${image_tag}.json}"
 built_at="$(git show -s --format=%cI "$image_tag")"
+metadata_dir="${CLOUD_IMAGE_METADATA_DIR:-.build/image-metadata}"
 
-VERSION="$image_tag" COMMIT="$image_tag" BUILT_AT="$built_at" IMAGE_PLATFORM=linux/amd64 make images
+IMAGE_REQUIRE_CLEAN_CHECKOUT=1 \
+  IMAGE_METADATA_DIR="$metadata_dir" \
+  make image-reproducibility-test
 YANDEX_CONTAINER_REGISTRY_ID="$registry_id" \
   CLOUD_IMAGE_TAG="$image_tag" \
+  CLOUD_IMAGE_METADATA_DIR="$metadata_dir" \
   CLOUD_IMAGE_MANIFEST_PATH="$manifest_path" \
+  CLOUD_IMAGE_REQUIRE_CLEAN_INPUTS=1 \
   SOURCE_BUILT_AT="$built_at" \
   ./scripts/publish-cloud-images.sh

@@ -88,7 +88,10 @@ func TestCanonicalSessionCrossFrontendLifecycle(t *testing.T) {
 		t.Fatalf("current Telegram session = %s, want second /new session %s", current, secondNew.SessionID)
 	}
 
-	telegramUser := slice.telegramUser(telegramChat)
+	telegramTenant, telegramUser := slice.telegramPrincipal(telegramChat)
+	if telegramTenant != initial.TenantID {
+		t.Fatalf("Telegram principal tenant = %s, want %s", telegramTenant, initial.TenantID)
+	}
 	clock := &e2eClock{at: time.Now().UTC().Add(time.Minute)}
 	api, err := sessionapi.New(sessionapi.Config{
 		CursorKey: []byte(strings.Repeat("c", 32)),
@@ -192,13 +195,19 @@ func TestCanonicalSessionCrossFrontendLifecycle(t *testing.T) {
 	if err != nil || !historyContainsEvent(sharedHistory, syntheticResult.EventID) {
 		t.Fatalf("shared history does not contain synthetic event %s: items=%d err=%v", syntheticResult.EventID, len(sharedHistory.Items), err)
 	}
+	syntheticRun := runRef{
+		TenantID: initial.TenantID, ConnectionID: initial.ConnectionID,
+		RunID: syntheticResult.RunID, SessionID: syntheticResult.SessionID,
+	}
+	slice.waitRunStatus(syntheticRun, domain.RunQueued)
+	slice.runWorker(nil)
+	slice.waitRunStatus(syntheticRun, domain.RunSucceeded)
 
-	other := slice.postMessage(base+104, otherChat, "cross-tenant sentinel")
-	otherUser := slice.telegramUser(otherChat)
-	if _, err := api.Get(slice.ctx, other.TenantID, otherUser, initial.SessionID); !errors.Is(err, sessionapi.ErrSessionUnavailable) {
+	otherTenant, otherUser := slice.telegramPrincipal(otherChat)
+	if _, err := api.Get(slice.ctx, otherTenant, otherUser, initial.SessionID); !errors.Is(err, sessionapi.ErrSessionUnavailable) {
 		t.Fatalf("cross-tenant open error = %v, want unavailable", err)
 	}
-	if _, err := api.History(slice.ctx, other.TenantID, otherUser, initial.SessionID, "", 10); !errors.Is(err, sessionapi.ErrSessionUnavailable) {
+	if _, err := api.History(slice.ctx, otherTenant, otherUser, initial.SessionID, "", 10); !errors.Is(err, sessionapi.ErrSessionUnavailable) {
 		t.Fatalf("cross-tenant history error = %v, want unavailable", err)
 	}
 	if _, err := api.BindFrontend(
@@ -210,12 +219,12 @@ func TestCanonicalSessionCrossFrontendLifecycle(t *testing.T) {
 	if _, err := api.List(slice.ctx, initial.TenantID, otherUser, domain.SessionActive, "", 20); !errors.Is(err, domain.ErrMembershipDenied) {
 		t.Fatalf("wrong-tenant user list error = %v, want membership denied", err)
 	}
-	otherSessions, err := api.List(slice.ctx, other.TenantID, otherUser, domain.SessionActive, "", 20)
+	otherSessions, err := api.List(slice.ctx, otherTenant, otherUser, domain.SessionActive, "", 20)
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertSessionPageExcludes(t, otherSessions, initial.SessionID, firstNew.SessionID, secondNew.SessionID)
-	if _, err := slice.blobs.Open(slice.ctx, other.TenantID, manifest.Artifacts[0].Blob); err == nil {
+	if _, err := slice.blobs.Open(slice.ctx, otherTenant, manifest.Artifacts[0].Blob); err == nil {
 		t.Fatal("cross-tenant canonical artifact materialization succeeded")
 	} else {
 		var mismatch domain.TenantMismatchError
@@ -233,9 +242,15 @@ func TestCanonicalSessionCrossFrontendLifecycle(t *testing.T) {
 	if _, err := api.Get(slice.ctx, initial.TenantID, telegramUser, initial.SessionID); err != nil {
 		t.Fatalf("negative deletion attempt changed the selected session: %v", err)
 	}
+	slice.assertCount(0,
+		`SELECT COUNT(*) FROM dispatch_outbox WHERE tenant_id = $1 AND status = $2`,
+		initial.TenantID, domain.DispatchPending)
+	slice.assertCount(0,
+		`SELECT COUNT(*) FROM dispatch_outbox WHERE tenant_id = $1 AND status = $2`,
+		otherTenant, domain.DispatchPending)
 }
 
-func (slice *localSlice) telegramUser(chatID int64) domain.UserID {
+func (slice *localSlice) telegramPrincipal(chatID int64) (domain.TenantID, domain.UserID) {
 	slice.t.Helper()
 	resolver, err := telegramingress.NewIdentityResolver([]byte(identityKey))
 	if err != nil {
@@ -253,7 +268,7 @@ func (slice *localSlice) telegramUser(chatID int64) domain.UserID {
 	if err != nil {
 		slice.t.Fatal(err)
 	}
-	return state.UserID
+	return identity.Tenant, state.UserID
 }
 
 func (slice *localSlice) persistedRun(ref runRef) domain.Run {

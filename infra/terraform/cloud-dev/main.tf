@@ -1,4 +1,5 @@
 locals {
+  web_origin = "https://web.dev.${trimsuffix(var.base_domain, ".")}"
   labels = merge(var.labels, {
     application = "sessionless"
     environment = "dev"
@@ -14,7 +15,7 @@ module "foundation" {
   name_prefix                      = var.name_prefix
   base_domain                      = var.base_domain
   artifact_bucket_name             = var.artifact_bucket_name
-  webui_origin                     = var.webui_origin
+  webui_origin                     = local.web_origin
   artifact_bucket_max_size_bytes   = var.artifact_bucket_max_size_bytes
   artifact_retention_days          = var.artifact_retention_days
   artifact_cold_transition_days    = var.artifact_cold_transition_days
@@ -84,6 +85,36 @@ module "edge" {
   log_group_id               = module.foundation.log_group_id
   deletion_protection        = var.deletion_protection
   labels                     = local.labels
+}
+
+module "web" {
+  source = "../modules/web"
+
+  folder_id                       = module.foundation.folder_id
+  name_prefix                     = var.name_prefix
+  base_domain                     = var.base_domain
+  dns_zone_id                     = module.foundation.dns_zone_id
+  service_account_id              = module.foundation.service_account_ids["web-bff"]
+  gateway_service_account_id      = module.foundation.service_account_ids["web-gateway"]
+  image_ref                       = var.web_image_ref
+  ydb_connection_string           = module.foundation.ydb_connection_string
+  artifact_bucket_name            = module.foundation.artifact_bucket_name
+  scheduler_wake_queue_url        = module.foundation.scheduler_wake_queue_url
+  web_secret_id                   = module.foundation.web_bff_secret_id
+  web_secret_version_id           = var.web_bff_secret_version_id
+  scheduler_ymq_secret_id         = module.foundation.scheduler_ymq_secret_id
+  scheduler_ymq_secret_version_id = module.foundation.scheduler_ymq_secret_version_id
+  telegram_oidc_client_id         = var.telegram_oidc_client_id
+  allowed_mcp_servers             = var.web_allowed_mcp_servers
+  max_upload_bytes                = var.web_max_upload_bytes
+  memory_mb                       = var.web_memory_mb
+  concurrency                     = var.web_concurrency
+  execution_timeout               = var.web_execution_timeout
+  log_group_id                    = module.foundation.log_group_id
+  deletion_protection             = var.deletion_protection
+  labels                          = local.labels
+
+  depends_on = [module.foundation]
 }
 
 resource "terraform_data" "external_guardrails" {

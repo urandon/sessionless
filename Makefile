@@ -23,7 +23,7 @@ LDFLAGS := -s -w \
 	-X gitcode.com/urandon/sessionless/internal/buildinfo.Commit=$(COMMIT) \
 	-X gitcode.com/urandon/sessionless/internal/buildinfo.BuiltAt=$(BUILT_AT)
 
-.PHONY: help prepare tools web-tools go-package-layout generate fmt fmt-check lint test build web-install web-openapi-check web-check web-build web-stage web-ci web-browser-install web-browser-test integration ydb-integration local-integration e2e-local ci image-publication-test terraform-ci cloudflare-edge-ci \
+.PHONY: help prepare tools web-tools go-package-layout generate fmt fmt-check lint test build web-install web-openapi-check web-check web-build web-stage web-ci web-browser-install web-browser-test integration ydb-integration local-integration e2e-local ci image-publication-test budget-policy-test web-deployment-policy-test terraform-ci cloudflare-edge-ci \
 	compose-config images dev-up dev-seed migrate-local migration-status partition-status partition-backfill cloud-app-reset-plan cloud-app-reset session-delete-request session-delete-plan session-delete session-hold session-release-hold \
 	worker-once web-bootstrap dev-down dev-reset clean
 
@@ -41,7 +41,7 @@ help:
 		'make local-integration run YDB/S3/SQS/Telegram adapter tests against the local stand' \
 		'make e2e-local      run the deterministic two-tenant black-box slice' \
 		'make image-publication-test validate immutable image publication guards' \
-		'make terraform-ci   format-check and validate Terraform roots' \
+		'make terraform-ci   validate Terraform, run a mocked Web plan, and enforce policies' \
 		'make cloudflare-edge-ci test and dry-run bundle the Telegram edge Worker' \
 		'make images         build control-plane and worker images' \
 		'make dev-up         start, initialize, migrate, seed, and verify the local stand' \
@@ -156,12 +156,21 @@ ci: web-ci generate test build integration image-publication-test
 image-publication-test:
 	@./scripts/test-image-publication.sh
 
+budget-policy-test:
+	@./scripts/test-cloud-budget-policy.sh
+
+web-deployment-policy-test:
+	@./scripts/test-web-deployment-policy.sh
+
 terraform-ci:
 	$(TERRAFORM) fmt -recursive -check -diff infra/terraform
 	$(TERRAFORM) -chdir=infra/terraform/bootstrap init -backend=false -input=false
 	$(TERRAFORM) -chdir=infra/terraform/bootstrap validate
 	$(TERRAFORM) -chdir=infra/terraform/cloud-dev init -backend=false -input=false
 	$(TERRAFORM) -chdir=infra/terraform/cloud-dev validate
+	$(TERRAFORM) -chdir=infra/terraform/cloud-dev test -filter=web_deployment.tftest.hcl
+	$(MAKE) budget-policy-test
+	$(MAKE) web-deployment-policy-test
 
 cloudflare-edge-ci:
 	npm --prefix infra/cloudflare/telegram-edge ci

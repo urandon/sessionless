@@ -4,14 +4,16 @@ locals {
     environment = "dev"
     managed-by  = "terraform"
   })
-  account_names = toset(["deploy", "api", "scheduler", "worker", "telegram-sender", "trigger", "gateway", "queue-provisioner", "image-publisher"])
+  account_names = toset(["deploy", "api", "web-bff", "scheduler", "worker", "telegram-sender", "trigger", "gateway", "web-gateway", "queue-provisioner", "image-publisher"])
   account_roles = {
     api               = ["logging.writer"]
+    web-bff           = ["logging.writer"]
     scheduler         = ["ymq.writer", "logging.writer"]
     worker            = ["logging.writer"]
     telegram-sender   = ["logging.writer"]
     trigger           = ["ymq.reader", "ymq.writer", "logging.writer"]
     gateway           = ["logging.writer"]
+    web-gateway       = ["logging.writer"]
     queue-provisioner = ["ymq.admin"]
     deploy = [
       "iam.serviceAccounts.user", "container-registry.admin", "serverless.containers.admin",
@@ -77,7 +79,7 @@ resource "yandex_ydb_database_serverless" "application" {
 resource "yandex_ydb_database_iam_binding" "runtime_editor" {
   database_id = yandex_ydb_database_serverless.application.id
   role        = "ydb.editor"
-  members = [for name in ["api", "scheduler", "worker", "telegram-sender"] :
+  members = [for name in ["api", "web-bff", "scheduler", "worker", "telegram-sender"] :
     "serviceAccount:${yandex_iam_service_account.runtime[name].id}"
   ]
 }
@@ -130,7 +132,7 @@ resource "yandex_storage_bucket" "artifacts" {
 resource "yandex_storage_bucket_iam_binding" "runtime_editor" {
   bucket = yandex_storage_bucket.artifacts.bucket
   role   = "storage.editor"
-  members = [for name in ["api", "scheduler", "worker"] :
+  members = [for name in ["api", "web-bff", "scheduler", "worker"] :
     "serviceAccount:${yandex_iam_service_account.runtime[name].id}"
   ]
 }
@@ -204,13 +206,13 @@ resource "yandex_container_registry" "application" {
 resource "yandex_container_registry_iam_binding" "runtime_puller" {
   registry_id = yandex_container_registry.application.id
   role        = "container-registry.images.puller"
-  members = [for name in ["api", "scheduler", "worker", "telegram-sender"] :
+  members = [for name in ["api", "web-bff", "scheduler", "worker", "telegram-sender"] :
     "serviceAccount:${yandex_iam_service_account.runtime[name].id}"
   ]
 }
 
 resource "yandex_container_repository" "runtime" {
-  for_each = toset(["control-api", "reconciler", "telegram-sender", "worker-runtime"])
+  for_each = toset(["control-api", "web-bff", "reconciler", "telegram-sender", "worker-runtime"])
   name     = "${yandex_container_registry.application.id}/${each.key}"
 }
 
@@ -269,6 +271,21 @@ resource "yandex_lockbox_secret" "telegram" {
   labels              = local.labels
 }
 
+resource "yandex_lockbox_secret" "web_bff" {
+  folder_id           = yandex_resourcemanager_folder.environment.id
+  name                = "${var.name_prefix}-web-bff"
+  description         = "Metadata only; Web OIDC and signing payload versions are loaded outside Terraform"
+  kms_key_id          = yandex_kms_symmetric_key.secrets.id
+  deletion_protection = var.deletion_protection
+  labels              = local.labels
+}
+
+resource "yandex_lockbox_secret_iam_member" "web_bff" {
+  secret_id = yandex_lockbox_secret.web_bff.id
+  role      = "lockbox.payloadViewer"
+  member    = "serviceAccount:${yandex_iam_service_account.runtime["web-bff"].id}"
+}
+
 resource "yandex_lockbox_secret_iam_member" "telegram" {
   for_each  = toset(["api", "gateway", "telegram-sender"])
   secret_id = yandex_lockbox_secret.telegram.id
@@ -325,14 +342,14 @@ resource "yandex_iam_service_account_static_access_key" "scheduler_ymq" {
 }
 
 resource "yandex_lockbox_secret_iam_member" "scheduler_ymq" {
-  for_each  = toset(["api", "scheduler", "worker"])
+  for_each  = toset(["api", "web-bff", "scheduler", "worker"])
   secret_id = yandex_lockbox_secret.scheduler_ymq.id
   role      = "lockbox.payloadViewer"
   member    = "serviceAccount:${yandex_iam_service_account.runtime[each.key].id}"
 }
 
 resource "yandex_kms_symmetric_key_iam_member" "runtime_secret_decrypter" {
-  for_each         = toset(["api", "gateway", "scheduler", "telegram-sender", "worker"])
+  for_each         = toset(["api", "web-bff", "gateway", "scheduler", "telegram-sender", "worker"])
   symmetric_key_id = yandex_kms_symmetric_key.secrets.id
   role             = "kms.keys.encrypterDecrypter"
   member           = "serviceAccount:${yandex_iam_service_account.runtime[each.key].id}"

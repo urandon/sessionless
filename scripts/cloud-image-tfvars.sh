@@ -21,7 +21,7 @@ if test -n "${EXPECTED_SOURCE_SHA:-}" && test "$source_sha" != "$EXPECTED_SOURCE
   exit 1
 fi
 
-for name in control-api reconciler telegram-sender worker-runtime; do
+for name in control-api web-bff reconciler telegram-sender worker-runtime; do
   reference=$(jq -er --arg name "$name" '.images[$name].reference' "$manifest")
   digest=$(jq -er --arg name "$name" '.images[$name].digest' "$manifest")
   if ! printf '%s' "$digest" | jq -Re 'test("^sha256:[0-9a-f]{64}$")' >/dev/null; then
@@ -44,6 +44,7 @@ done
 jq -S '{
   control_blue_image_ref: .images["control-api"].reference,
   control_green_image_ref: .images["control-api"].reference,
+  web_image_ref: .images["web-bff"].reference,
   runtime_image_refs: {
     reconciler: .images.reconciler.reference,
     "telegram-sender": .images["telegram-sender"].reference,

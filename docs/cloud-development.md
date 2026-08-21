@@ -90,12 +90,13 @@ bucket reads four times per day instead of every minute.
 | Dev folder, YDB, queues, bucket, registry, KMS, Lockbox, log group | `cloud-dev` foundation module | Terraform |
 | GitHub image-publisher service account, OIDC federation and repository-scoped push grants | `cloud-dev` foundation module | Terraform; no authorized key |
 | Serverless containers and triggers | runtime module | Terraform |
+| Private Web BFF container, dedicated gateway, certificate and allowlisted routes | web module | Terraform; separate `web-bff` and `web-gateway` identities |
 | Delegated public DNS zone | foundation module | Terraform; parent-zone NS delegation is external |
 | Managed certificate, DNS records, API Gateway and canary variables | edge module | Terraform |
 | Yandex Workflows Telegram ingress | `infra/yandex/workflows` | Explicit `yc` operator deployment; capability URL never enters Terraform |
 | Telegram-facing Cloudflare Worker and `dev-api-sessionless.triborg.dev` custom domain | `infra/cloudflare/telegram-edge` | Pinned Wrangler; same explicit operator deployment as the workflow |
 | Cloudflare Worker secrets | Operator credential store and `cloudflare-telegram-edge.sh` | Secret bindings; never Terraform state or repository files |
-| Lockbox payload values | Operator credential store and `cloud-secret-load.sh` | Outside Terraform state |
+| Lockbox payload values | Operator credential store and `cloud-secret-load.sh` / `cloud-web-secret-load.sh` | Outside Terraform state |
 | YMQ static access keys | Dedicated least-privilege service accounts; generated directly into KMS-backed Lockbox | Terraform metadata only; payload never enters state |
 | Runtime Object Storage authentication | Revision service accounts through metadata-issued IAM bearer tokens | Renewable; no S3 static key or Lockbox payload |
 | Billing budget | Billing API or console | External prerequisite; provider has no budget resource |
@@ -263,10 +264,11 @@ export BUDGET_ID=replace-folder-scoped-budget-id
 ./scripts/cloud-preflight.sh
 ```
 
-The preflight calls the Billing API and fails unless the budget is active,
-belongs to the configured billing account, and contains the dev folder ID. It
-also initializes and validates the Terraform root. This is an admission gate,
-not a cost cutoff: Yandex Cloud budgets notify but do not automatically stop
+The preflight calls the Billing API and fails unless the account is active and
+RUB-denominated and the budget is active, monthly, no greater than 100 RUB,
+unrestricted by service, and scoped to exactly the dev folder. It also
+initializes and validates the Terraform root. This is an admission gate, not a
+cost cutoff: Yandex Cloud budgets notify but do not automatically stop
 resources.
 
 ### 3. Bootstrap least-privilege YMQ credentials
@@ -336,9 +338,28 @@ export TELEGRAM_IDENTITY_HMAC_KEY='loaded by credential-store command'
 unset TELEGRAM_BOT_TOKEN TELEGRAM_WEBHOOK_SECRET TELEGRAM_IDENTITY_HMAC_KEY
 ```
 
-Copy the returned version ID into the external tfvars file. After the
-foundation apply, configure the GitHub mirror with Terraform's non-secret
-outputs:
+Copy the returned version ID into the external tfvars file. Load the Web-only
+OIDC and signing material into its separate Lockbox secret. The OIDC client ID
+is non-secret configuration; the client secret and both HMAC keys never enter
+Terraform:
+
+```sh
+export WEB_BFF_SECRET_ID="$(./scripts/cloud-terraform.sh output -raw web_bff_secret_id)"
+export TELEGRAM_OIDC_CLIENT_SECRET='loaded by credential-store command'
+export SESSION_API_CURSOR_HMAC_KEY='loaded by credential-store command'
+export SESSION_API_ID_HMAC_KEY='loaded by credential-store command'
+./scripts/cloud-web-secret-load.sh
+unset TELEGRAM_OIDC_CLIENT_SECRET SESSION_API_CURSOR_HMAC_KEY SESSION_API_ID_HMAC_KEY
+```
+
+Copy only the returned Web secret version ID into the external tfvars file. In
+BotFather, register the exact allowed Web URL
+`https://web.dev.sessionless.triborg.dev` and exact callback
+`https://web.dev.sessionless.triborg.dev/auth/telegram/callback`. Wildcards,
+HTTP aliases and direct container URLs are not allowed.
+
+After both secret versions are recorded, configure the GitHub mirror with
+Terraform's non-secret outputs:
 
 ```sh
 gh variable set YANDEX_OIDC_AUDIENCE --repo urandon/sessionless \
@@ -356,7 +377,8 @@ The flag is deliberately absent during bootstrap, so the first CI run remains
 green before the federation exists. Once enabled, rerun the `CI` workflow on
 mirrored `main`. Its final job builds the images once, requests a GitHub OIDC
 JWT, verifies its exact safe claims, exchanges it for a short-lived Yandex IAM
-token, and pushes the four already-built `linux/amd64` images. It uploads
+token, and pushes the five already-built `linux/amd64` images, including
+`web-bff`. It uploads
 `deployment-images-<full-sha>` containing immutable registry digests. No GitHub
 secret, authorized service-account key, Lockbox access, or Terraform credential
 is used.
@@ -378,9 +400,12 @@ unset EXPECTED_SOURCE_SHA EXPECTED_REGISTRY_ID
 ```
 
 `cloud-terraform.sh plan` automatically adds this digest-only variable file.
-The base tfvars retains SHA tags solely for the explicit local fallback and for
-compatibility with previously deployed revisions. Normal plans use the
-manifest's `cr.yandex/...@sha256:...` references.
+The base tfvars retains SHA tags solely for the explicit non-Web local fallback
+and compatibility with previously deployed revisions. The Web container always
+requires the manifest's `cr.yandex/.../web-bff@sha256:...` reference; normal
+plans use digest references for every component. The deployment wrapper refuses
+every non-foundation plan when `CLOUD_DEV_IMAGE_TFVARS` is absent, so the
+bootstrap-only placeholder in the example file cannot reach a Web revision.
 
 For emergency local publication only, configure Docker authentication and run:
 
@@ -455,6 +480,15 @@ terraform -chdir=infra/terraform/cloud-dev show /secure/path/cloud-dev.tfplan
 ./scripts/cloud-terraform.sh apply /secure/path/cloud-dev.tfplan
 ```
 
+The Web container is private and has zero prepared instances. Its dedicated
+gateway identity can invoke only that container; the control gateway identity
+cannot invoke it. The pinned Terraform provider exposes
+`provision_policy.min_instances` but does not expose per-zone instance/request
+limits for Serverless Containers. Keep the declared concurrency at or below
+eight and verify any separately approved folder/revision quota through the
+Yandex API before accepting live traffic; never create a manual replacement
+revision to hide provider drift.
+
 Certificate issuance can remain pending while the managed DNS challenge
 propagates. Wait for the certificate to become issued, rerun the full plan, and
 apply only if the second plan contains the expected edge completion.
@@ -474,6 +508,13 @@ queues, or other state-bearing resources.
 export CLOUD_API_URL="$(./scripts/cloud-terraform.sh output -raw api_url)"
 export CONTROL_CONTAINER_URL="$(./scripts/cloud-terraform.sh output -json control_slot_urls | jq -r .blue)"
 ./scripts/cloud-smoke.sh
+
+export CLOUD_WEB_URL="$(./scripts/cloud-terraform.sh output -raw web_url)"
+export WEB_CONTAINER_URL="$(./scripts/cloud-terraform.sh output -raw web_container_url)"
+export WEB_IMAGE_REF="$(./scripts/cloud-terraform.sh output -raw web_image_ref)"
+export WEB_PREPARED_INSTANCES="$(./scripts/cloud-terraform.sh output -raw web_prepared_instances)"
+export WEB_CONCURRENCY="$(./scripts/cloud-terraform.sh output -raw web_concurrency)"
+./scripts/cloud-web-smoke.sh
 
 export CLOUDFLARE_ACCOUNT_ID='loaded from the Cloudflare account metadata'
 export CLOUDFLARE_API_TOKEN='loaded by credential-store command'
@@ -496,6 +537,15 @@ export CONFIRM_EXTERNAL_TELEGRAM_EDGE='sessionless-external-edge'
 unset TELEGRAM_EDGE_URL TELEGRAM_BOT_TOKEN TELEGRAM_WEBHOOK_SECRET
 unset CONFIRM_EXTERNAL_TELEGRAM_EDGE
 ```
+
+The Web smoke proves anonymous direct invocation is denied, authenticated
+private health works, the managed hostname and certificate are usable, the
+public version is `web-bff`, auth/API cache policy and browser security headers
+survive the gateway, Telegram is the only OIDC redirect target, and unrelated
+mutation routes are not exposed. For an explicit cold-start exercise, set
+`WEB_COLD_START_WAIT_SECONDS` to the approved idle window before running the
+same script and record the printed first-byte latency without publishing auth
+callback material.
 
 The workflow is deliberately outside Terraform because its public execution
 URL is an unguessable capability and a Terraform provider stores computed
@@ -591,6 +641,14 @@ deployment lock, and repeat smoke tests. Database changes remain
 expand/migrate/contract and forward-compatible; never use an automatic down
 migration as an application rollback.
 
+The Web BFF has no blue/green slots. Retain the previous digest-only Web tfvars
+file, create a saved plan that changes only `web_image_ref` back to that
+known-good digest, review it, and apply it under the same deployment lock. Do
+not use an entire old image manifest because that would also roll back control
+and worker components. Repeat `cloud-web-smoke.sh`, including the real OIDC
+login, after rollback; re-promotion is another reviewed saved plan and never a
+rebuild.
+
 ## Follow-up monitoring and operational checks (#19)
 
 Issue #19 configures and tests external Monitoring alerts before release. Its
@@ -598,10 +656,13 @@ inventory includes:
 
 - Cloudflare Worker 5xx/exception rate and Yandex handoff failures;
 - control API 5xx rate and latency;
+- Web gateway request count, 4xx/5xx rate and latency;
+- Web BFF invocation count, execution duration/errors, cold-start latency and concurrency saturation;
 - trigger errors, retry growth, and DLQ message count;
 - container execution errors, timeout, and concurrency saturation;
 - YDB throttling, RU consumption, storage, and transaction errors;
-- Object Storage capacity;
+- Object Storage request/byte volume and capacity, plus Web capability failures;
+- Web Lockbox/KMS access failures and Cloud Logging ingestion/retention;
 - Telegram delivery terminal failures.
 
 Link alert IDs and the budget ID in the private deployment record. The

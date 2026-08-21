@@ -80,16 +80,24 @@ metadata.
 
 ## Cloud development root
 
-`cloud-dev/` composes the reusable `foundation`, `runtime`, and `edge` modules.
+`cloud-dev/` composes the reusable `foundation`, `runtime`, `edge`, and `web`
+modules.
 It creates a dedicated folder, least-privilege runtime identities, YDB
 Serverless, bounded queues and DLQs, tenant-safe Object Storage, Container
 Registry, KMS/Lockbox metadata, private HTTP containers, timer/YMQ triggers,
 a delegated public DNS zone, managed DNS/certificate records, and blue/green
-API Gateway routing. Only the parent-zone NS delegation remains an external
-operator action.
+API Gateway routing. The Web module adds a digest-only, scale-to-zero BFF and a
+dedicated allowlisted gateway/certificate at `web.dev.<base_domain>`; its
+gateway identity cannot invoke the control containers. Only the parent-zone NS
+delegation remains an external operator action.
 
 Billing budgets and Monitoring alerts are required external guardrails because
 the pinned Yandex provider does not expose those resources. The exact
 folder-first bootstrap, budget verification, secret loading, saved-plan apply,
 canary, rollback, and protected destroy procedures are in
 [`docs/cloud-development.md`](../../docs/cloud-development.md).
+
+`make terraform-ci` formats and validates both roots, runs a credential-free
+mocked plan for the Web deployment, and enforces the digest, scale-to-zero,
+gateway-isolation, secret-boundary, route-allowlist, and 100 RUB monthly budget
+policies before a branch can merge.

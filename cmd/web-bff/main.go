@@ -73,7 +73,7 @@ func main() {
 }
 
 func webListenAddress() string {
-	return ":" + envOrDefault("WEB_PORT", "8083")
+	return ":" + firstNonEmpty(os.Getenv("PORT"), os.Getenv("WEB_PORT"), "8083")
 }
 
 func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(), error) {

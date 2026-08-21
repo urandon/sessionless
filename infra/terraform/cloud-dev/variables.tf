@@ -25,22 +25,49 @@ variable "base_domain" {
   }
 }
 variable "artifact_bucket_name" { type = string }
-variable "webui_origin" {
-  description = "Exact public HTTPS origin of the first-party WebUI allowed to use object capabilities."
-  type        = string
-
-  validation {
-    condition = (
-      var.webui_origin == trimspace(var.webui_origin) &&
-      can(regex("^https://[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?$", var.webui_origin)) &&
-      !strcontains(var.webui_origin, "*")
-    )
-    error_message = "webui_origin must be one exact HTTPS origin without credentials, path, query, fragment, whitespace, or wildcards."
-  }
-}
 variable "telegram_secret_version_id" {
   description = "Non-secret Lockbox version ID loaded by scripts/cloud-secret-load.sh outside Terraform."
   type        = string
+}
+variable "web_bff_secret_version_id" {
+  description = "Non-secret Lockbox version ID loaded by scripts/cloud-web-secret-load.sh outside Terraform."
+  type        = string
+}
+variable "telegram_oidc_client_id" {
+  description = "Non-secret numeric Telegram OIDC client identifier registered for the Web hostname."
+  type        = string
+  validation {
+    condition     = can(regex("^[0-9]+$", var.telegram_oidc_client_id))
+    error_message = "telegram_oidc_client_id must contain only decimal digits."
+  }
+}
+variable "web_image_ref" {
+  description = "Required immutable web-bff image reference generated from a publication manifest."
+  type        = string
+  validation {
+    condition     = can(regex("^cr\\.yandex/[^/]+/web-bff@sha256:[0-9a-f]{64}$", var.web_image_ref))
+    error_message = "web_image_ref must be an immutable cr.yandex web-bff digest reference."
+  }
+}
+variable "web_allowed_mcp_servers" {
+  type    = list(string)
+  default = []
+}
+variable "web_max_upload_bytes" {
+  type    = number
+  default = 33554432
+}
+variable "web_memory_mb" {
+  type    = number
+  default = 256
+}
+variable "web_concurrency" {
+  type    = number
+  default = 4
+}
+variable "web_execution_timeout" {
+  type    = string
+  default = "30s"
 }
 variable "control_blue_image_tag" { type = string }
 variable "control_green_image_tag" { type = string }

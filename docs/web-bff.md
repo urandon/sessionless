@@ -107,6 +107,7 @@ Source: [Telegram Login: OIDC integration](https://core.telegram.org/bots/telegr
 | `SESSIONLESS_ENVIRONMENT` | `local`, `cloud-dev`, or production environment name |
 | `WEB_BASE_URL` | Exact public HTTPS origin; callback is derived from it |
 | `WEB_PORT` | BFF listen port |
+| `PORT` | Serverless platform listen port; takes precedence over `WEB_PORT` when set |
 | `WEB_OBJECT_STORAGE_ORIGIN` | Exact browser-facing capability origin; required with the Web API, HTTPS except loopback HTTP in `local` |
 | `TELEGRAM_OIDC_ISSUER` | Expected ID-token issuer |
 | `TELEGRAM_OIDC_AUTHORIZATION_ENDPOINT` | Telegram authorization endpoint |

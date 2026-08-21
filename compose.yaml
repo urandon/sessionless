@@ -61,7 +61,6 @@ services:
       context: .
       dockerfile: build/control.Dockerfile
       args:
-        GO_VERSION: ${GO_VERSION:-1.26.4}
         TARGET: telegram-fake
     environment:
       PORT: "8081"
@@ -81,7 +80,6 @@ services:
       context: .
       dockerfile: build/control.Dockerfile
       args:
-        GO_VERSION: ${GO_VERSION:-1.26.4}
         TARGET: control-api
     environment:
       APP_ENV: ${APP_ENV:-local}
@@ -127,7 +125,6 @@ services:
       context: .
       dockerfile: build/control.Dockerfile
       args:
-        GO_VERSION: ${GO_VERSION:-1.26.4}
         TARGET: telegram-sender
     environment:
       YDB_CONNECTION_STRING: grpc://ydb-local:2136/local?go_balancer=single
@@ -166,7 +163,6 @@ services:
       context: .
       dockerfile: build/control.Dockerfile
       args:
-        GO_VERSION: ${GO_VERSION:-1.26.4}
         TARGET: reconciler
     environment:
       YDB_CONNECTION_STRING: grpc://ydb-local:2136/local?go_balancer=single
@@ -212,8 +208,6 @@ services:
     build:
       context: .
       dockerfile: build/worker-runtime.Dockerfile
-      args:
-        GO_VERSION: ${GO_VERSION:-1.26.4}
     environment:
       YDB_CONNECTION_STRING: grpc://ydb-local:2136/local?go_balancer=single
       YDB_ANONYMOUS_CREDENTIALS: "1"

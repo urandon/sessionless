@@ -7,8 +7,8 @@ test "$#" -eq 1 || {
 }
 manifest=$1
 
-jq -e '.schema_version == 1 and .platform == "linux/amd64"' "$manifest" >/dev/null
-source_sha=$(jq -er '.source_sha' "$manifest")
+jq -e '.schema_version == 2 and .build.platform == "linux/amd64"' "$manifest" >/dev/null
+source_sha=$(jq -er '.source.sha' "$manifest")
 case "$source_sha" in
   *[!0-9a-f]*|'') printf '%s\n' 'manifest source_sha is invalid' >&2; exit 1 ;;
 esac
@@ -23,7 +23,7 @@ fi
 
 for name in control-api web-bff reconciler telegram-sender worker-runtime; do
   reference=$(jq -er --arg name "$name" '.images[$name].reference' "$manifest")
-  digest=$(jq -er --arg name "$name" '.images[$name].digest' "$manifest")
+  digest=$(jq -er --arg name "$name" '.images[$name].manifest_digest' "$manifest")
   if ! printf '%s' "$digest" | jq -Re 'test("^sha256:[0-9a-f]{64}$")' >/dev/null; then
     printf 'manifest contains an invalid SHA-256 digest for %s\n' "$name" >&2
     exit 1

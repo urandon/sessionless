@@ -380,9 +380,9 @@ mirrored `main`. Its final job builds every image twice from the exact Git tree
 with separate pinned BuildKit daemons and empty caches, exports both sets
 directly to a pinned local registry, and compares config digests, ordered rootfs
 diff IDs, ordered compressed layer descriptors, and canonical manifest digests.
-It then pulls and republishes the verified second set through Docker and requires
-that transport to preserve every canonical manifest digest. That set remains
-loaded as the publication candidate. The job
+It then copies the verified second set with pinned Buildx's single-manifest
+registry-native path and requires byte-for-byte preservation of every canonical
+manifest digest. The retained loopback registry remains the publication source. The job
 then requests a GitHub OIDC
 JWT, verifies its exact safe claims, exchanges it for a short-lived Yandex IAM
 token, and pushes the five already-built `linux/amd64` images, including
@@ -436,7 +436,8 @@ same deterministic build metadata, platform checks, registry push, and
 schema-v2 manifest format as CI. It refuses a dirty checkout or a source SHA
 other than the checked-out commit. The clean-room gate makes the direct pinned
 BuildKit registry export the canonical identity, then separately proves that
-Docker pull/tag/push preserves that identity on the active transport engine.
+the pinned single-source registry copy preserves that identity without passing
+through Docker Engine's image store.
 Before publishing, both paths require the canonical registry digest sidecar and
 compare the complete candidate manifest digest with the
 descriptor behind any existing commit tag, then verify its config through the
@@ -448,7 +449,7 @@ config must equal the candidate again.
 `deployment-images.json` is canonical sorted JSON with only commit/tree,
 platform/input-contract, and immutable image identities, so a same-SHA rerun
 must reproduce it byte-for-byte. Wall-clock publication time, workflow URL,
-run/attempt IDs, and per-image `pushed` versus `verified_existing` actions are
+run/attempt IDs, and per-image `copied` versus `verified_existing` actions are
 kept in `deployment-images.receipt.json`. Same-ref GitHub image jobs are
 serialized to close the CI race window. Yandex
 Serverless Containers runs AMD64 only; publishing a native Apple Silicon image

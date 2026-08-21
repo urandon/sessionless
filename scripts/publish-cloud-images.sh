@@ -1,10 +1,18 @@
 #!/bin/sh
 set -eu
 
+repo_root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 : "${YANDEX_CONTAINER_REGISTRY_ID:?set the target Yandex Container Registry ID}"
 : "${CLOUD_IMAGE_TAG:?set the full source commit SHA}"
 : "${CLOUD_IMAGE_MANIFEST_PATH:?set the output manifest path}"
 CLOUD_IMAGE_RECEIPT_PATH=${CLOUD_IMAGE_RECEIPT_PATH:-${CLOUD_IMAGE_MANIFEST_PATH%.json}.receipt.json}
+CLOUD_IMAGE_CANDIDATE_REGISTRY_PATH=${CLOUD_IMAGE_CANDIDATE_REGISTRY_PATH:-.build/image-candidate-registry.json}
+
+cleanup_retained_candidate() {
+  CLOUD_IMAGE_CANDIDATE_REGISTRY_PATH="$CLOUD_IMAGE_CANDIDATE_REGISTRY_PATH" \
+    sh "$repo_root/scripts/cleanup-image-candidate-registry.sh"
+}
+trap cleanup_retained_candidate EXIT HUP INT TERM
 
 case "$YANDEX_CONTAINER_REGISTRY_ID" in
   *[!a-z0-9]*|'') printf '%s\n' 'invalid YANDEX_CONTAINER_REGISTRY_ID' >&2; exit 2 ;;
@@ -15,6 +23,29 @@ esac
 if test "${#CLOUD_IMAGE_TAG}" -ne 40; then
   printf '%s\n' 'CLOUD_IMAGE_TAG must be the full 40-character commit SHA' >&2
   exit 2
+fi
+if test ! -f "$CLOUD_IMAGE_CANDIDATE_REGISTRY_PATH"; then
+  printf 'missing retained candidate registry metadata: %s\n' \
+    "$CLOUD_IMAGE_CANDIDATE_REGISTRY_PATH" >&2
+  exit 1
+fi
+candidate_registry=$(jq -er '.host' "$CLOUD_IMAGE_CANDIDATE_REGISTRY_PATH")
+candidate_namespace=$(jq -er '.namespace' "$CLOUD_IMAGE_CANDIDATE_REGISTRY_PATH")
+candidate_source_sha=$(jq -er '.source_sha' "$CLOUD_IMAGE_CANDIDATE_REGISTRY_PATH")
+case "$candidate_registry" in
+  127.0.0.1:*) ;;
+  *) printf '%s\n' 'candidate registry must use a loopback host and numeric port' >&2; exit 2 ;;
+esac
+candidate_registry_port=${candidate_registry#127.0.0.1:}
+case "$candidate_registry_port" in
+  ''|*[!0-9]*)
+    printf '%s\n' 'candidate registry must use a loopback host and numeric port' >&2
+    exit 2
+    ;;
+esac
+if test "$candidate_namespace" != transport || test "$candidate_source_sha" != "$CLOUD_IMAGE_TAG"; then
+  printf '%s\n' 'candidate registry metadata does not match the publication source' >&2
+  exit 1
 fi
 
 target_platform=linux/amd64
@@ -27,7 +58,18 @@ inspect_error=$(mktemp "$manifest_dir/registry-inspect.XXXXXX")
 actions_tmp=$(mktemp "$manifest_dir/deployment-image-actions.XXXXXX")
 receipt_tmp=$(mktemp "$receipt_dir/deployment-image-receipt.XXXXXX")
 contract_tmp=$(mktemp "$manifest_dir/deployment-image-contract.XXXXXX")
-trap 'rm -f "$manifest_tmp" "$entry_tmp" "$inspect_error" "$actions_tmp" "$receipt_tmp" "$contract_tmp"' EXIT HUP INT TERM
+candidate_manifest_tmp=$(mktemp "$manifest_dir/candidate-manifest.XXXXXX")
+candidate_headers_tmp=$(mktemp "$manifest_dir/candidate-headers.XXXXXX")
+candidate_config_tmp=$(mktemp "$manifest_dir/candidate-config.XXXXXX")
+copy_metadata_tmp=$(mktemp "$manifest_dir/registry-copy-metadata.XXXXXX")
+
+cleanup() {
+  rm -f "$manifest_tmp" "$entry_tmp" "$inspect_error" "$actions_tmp" \
+    "$receipt_tmp" "$contract_tmp" "$candidate_manifest_tmp" \
+    "$candidate_headers_tmp" "$candidate_config_tmp" "$copy_metadata_tmp"
+  cleanup_retained_candidate
+}
+trap cleanup EXIT HUP INT TERM
 
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -70,7 +112,6 @@ jq -S -n \
 jq -S -n '{}' >"$actions_tmp"
 
 for name in control-api web-bff reconciler telegram-sender worker-runtime; do
-  local_image="sessionless/${name}:dev"
   registry_repository="cr.yandex/${YANDEX_CONTAINER_REGISTRY_ID}/${name}"
   tagged_reference="${registry_repository}:${CLOUD_IMAGE_TAG}"
   metadata_file="$metadata_dir/$name.json"
@@ -103,6 +144,48 @@ for name in control-api web-bff reconciler telegram-sender worker-runtime; do
       "$name" "$metadata_digest" "$build_digest" >&2
     exit 1
   fi
+  candidate_repository="$candidate_namespace/$name"
+  candidate_reference="${candidate_registry}/${candidate_repository}@${build_digest}"
+  : >"$candidate_headers_tmp"
+  curl --fail --silent --show-error \
+    --dump-header "$candidate_headers_tmp" \
+    --header 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
+    "http://$candidate_registry/v2/$candidate_repository/manifests/$CLOUD_IMAGE_TAG" \
+    >"$candidate_manifest_tmp"
+  jq -e '
+    .schemaVersion == 2 and
+    .mediaType == "application/vnd.docker.distribution.manifest.v2+json"
+  ' "$candidate_manifest_tmp" >/dev/null || {
+    printf 'candidate registry returned a non-canonical manifest for %s\n' "$name" >&2
+    exit 1
+  }
+  candidate_manifest_digest="sha256:$(sha256_file "$candidate_manifest_tmp")"
+  candidate_reported_digest=$(awk '
+    tolower($1) == "docker-content-digest:" {gsub("\r", "", $2); digest = $2}
+    END {print digest}
+  ' "$candidate_headers_tmp")
+  if test "$candidate_manifest_digest" != "$build_digest" ||
+    test "$candidate_reported_digest" != "$build_digest"; then
+    printf 'candidate registry identity mismatch for %s: expected %s, header %s, body %s\n' \
+      "$name" "$build_digest" "${candidate_reported_digest:-missing}" \
+      "$candidate_manifest_digest" >&2
+    exit 1
+  fi
+  candidate_config_digest=$(jq -er '.config.digest' "$candidate_manifest_tmp")
+  curl --fail --silent --show-error \
+    "http://$candidate_registry/v2/$candidate_repository/blobs/$candidate_config_digest" \
+    >"$candidate_config_tmp"
+  candidate_config_body_digest="sha256:$(sha256_file "$candidate_config_tmp")"
+  if test "$candidate_config_body_digest" != "$candidate_config_digest"; then
+    printf 'candidate config identity mismatch for %s\n' "$name" >&2
+    exit 1
+  fi
+  actual_platform=$(jq -er '.os + "/" + .architecture' "$candidate_config_tmp")
+  if test "$actual_platform" != "$target_platform"; then
+    printf 'refusing to publish %s image %s; expected %s\n' \
+      "$actual_platform" "$candidate_reference" "$target_platform" >&2
+    exit 1
+  fi
   input_digest=$(sed -n '1p' "$inputs_digest_file")
   actual_input_digest="sha256:$(sha256_file "$inputs_file")"
   if test "$input_digest" != "$actual_input_digest"; then
@@ -123,15 +206,8 @@ for name in control-api web-bff reconciler telegram-sender worker-runtime; do
     exit 1
   fi
 
-  actual_platform=$(docker image inspect "$local_image" --format '{{.Os}}/{{.Architecture}}')
-  if test "$actual_platform" != "$target_platform"; then
-    printf 'refusing to publish %s image %s; expected %s\n' \
-      "$actual_platform" "$local_image" "$target_platform" >&2
-    exit 1
-  fi
-  candidate_config_digest=$(docker image inspect "$local_image" --format '{{.Id}}')
   if ! printf '%s' "$candidate_config_digest" | jq -Re 'test("^sha256:[0-9a-f]{64}$")' >/dev/null; then
-    printf 'local image has a non-SHA-256 config digest for %s\n' "$name" >&2
+    printf 'candidate image has a non-SHA-256 config digest for %s\n' "$name" >&2
     exit 1
   fi
 
@@ -179,9 +255,16 @@ for name in control-api web-bff reconciler telegram-sender worker-runtime; do
         exit 1
         ;;
     esac
-    docker tag "$local_image" "$tagged_reference"
-    docker push "$tagged_reference"
-    publication_action=pushed
+    docker buildx imagetools create --prefer-index=false --progress=plain \
+      --metadata-file "$copy_metadata_tmp" \
+      --tag "$tagged_reference" "$candidate_reference"
+    copied_digest=$(jq -er '."containerimage.descriptor".digest' "$copy_metadata_tmp")
+    if test "$copied_digest" != "$build_digest"; then
+      printf 'registry-native copy metadata mismatch for %s: expected %s, got %s\n' \
+        "$name" "$build_digest" "$copied_digest" >&2
+      exit 1
+    fi
+    publication_action=copied
   fi
   rm -f "$inspect_error"
 
@@ -275,7 +358,7 @@ jq -S -n \
     images: $images[0]
   }' >"$receipt_tmp"
 mv "$receipt_tmp" "$CLOUD_IMAGE_RECEIPT_PATH"
+cleanup
 trap - EXIT HUP INT TERM
-rm -f "$entry_tmp" "$inspect_error" "$actions_tmp" "$contract_tmp"
 printf 'verified five immutable deployment images and wrote %s plus %s\n' \
   "$CLOUD_IMAGE_MANIFEST_PATH" "$CLOUD_IMAGE_RECEIPT_PATH"

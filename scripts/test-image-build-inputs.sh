@@ -47,8 +47,17 @@ grep -F 'IMAGE_EXPORTER_MODE=registry' "$repo_root/scripts/test-image-reproducib
 grep -F 'http = true' "$repo_root/scripts/test-image-reproducibility.sh" >/dev/null
 grep -F 'transport_manifest_digest == .manifest.digest' \
   "$repo_root/scripts/test-image-reproducibility.sh" >/dev/null
+grep -F 'docker buildx imagetools create --prefer-index=false' \
+  "$repo_root/scripts/test-image-reproducibility.sh" >/dev/null
 grep -F 'registry-manifest-digest' "$repo_root/scripts/publish-cloud-images.sh" >/dev/null
 grep -F '.exporter == "registry"' "$repo_root/scripts/publish-cloud-images.sh" >/dev/null
+grep -F 'imagetools create --prefer-index=false --progress=plain' \
+  "$repo_root/scripts/publish-cloud-images.sh" >/dev/null
+grep -F '."containerimage.descriptor".digest' \
+  "$repo_root/scripts/publish-cloud-images.sh" >/dev/null
+grep -F 'IMAGE_REPRODUCIBILITY_RETAIN_REGISTRY=1' "$repo_root/scripts/cloud-images.sh" >/dev/null
+grep -F 'if: always()' "$repo_root/.github/workflows/ci.yml" >/dev/null
+grep -F 'cleanup-image-candidate-registry.sh' "$repo_root/.github/workflows/ci.yml" >/dev/null
 
 for dockerfile in build/control.Dockerfile build/worker-runtime.Dockerfile; do
   first_line=$(sed -n '1p' "$repo_root/$dockerfile")

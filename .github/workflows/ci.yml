@@ -221,6 +221,7 @@ jobs:
       - name: Prove reproducibility and retain the verified candidate images
         env:
           IMAGE_REQUIRE_CLEAN_CHECKOUT: "1"
+          IMAGE_REPRODUCIBILITY_RETAIN_REGISTRY: "1"
         run: make image-reproducibility-test
 
       - name: Upload clean-room reproducibility evidence
@@ -274,3 +275,7 @@ jobs:
           path: .build/deployment-images.receipt.json
           if-no-files-found: error
           retention-days: 30
+
+      - name: Clean up retained candidate registry
+        if: always()
+        run: sh scripts/cleanup-image-candidate-registry.sh

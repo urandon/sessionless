@@ -18,12 +18,26 @@ registry_name="sessionless-repro-registry-$suffix"
 network_name="sessionless-repro-network-$suffix"
 builder_a="sessionless-repro-a-$suffix"
 builder_b="sessionless-repro-b-$suffix"
+retain_registry=${IMAGE_REPRODUCIBILITY_RETAIN_REGISTRY:-0}
+candidate_registry_path=${IMAGE_CANDIDATE_REGISTRY_PATH:-.build/image-candidate-registry.json}
+registry_retained=false
+
+case "$retain_registry" in
+  0|1) ;;
+  *) printf '%s\n' 'IMAGE_REPRODUCIBILITY_RETAIN_REGISTRY must be 0 or 1' >&2; exit 2 ;;
+esac
+if test -f "$candidate_registry_path"; then
+  CLOUD_IMAGE_CANDIDATE_REGISTRY_PATH="$candidate_registry_path" \
+    sh "$repo_root/scripts/cleanup-image-candidate-registry.sh"
+fi
 
 cleanup() {
   docker buildx rm "$builder_a" >/dev/null 2>&1 || true
   docker buildx rm "$builder_b" >/dev/null 2>&1 || true
-  docker rm -f "$registry_name" >/dev/null 2>&1 || true
-  docker network rm "$network_name" >/dev/null 2>&1 || true
+  if test "$registry_retained" != true; then
+    docker rm -f "$registry_name" >/dev/null 2>&1 || true
+    docker network rm "$network_name" >/dev/null 2>&1 || true
+  fi
   rm -rf "$test_root"
 }
 trap cleanup EXIT HUP INT TERM
@@ -45,10 +59,15 @@ mkdir -p "$context_dir"
 git archive --format=tar HEAD >"$test_root/context.tar"
 tar -xf "$test_root/context.tar" -C "$context_dir"
 
-docker network create "$network_name" >/dev/null
+docker network create \
+  --label dev.sessionless.candidate-registry=true \
+  --label "dev.sessionless.source-sha=$source_sha" \
+  "$network_name" >/dev/null
 docker run --detach --rm \
   --name "$registry_name" \
   --network "$network_name" \
+  --label dev.sessionless.candidate-registry=true \
+  --label "dev.sessionless.source-sha=$source_sha" \
   --publish 127.0.0.1::5000 \
   "$LOCAL_REGISTRY_IMAGE" >/dev/null
 registry_port=$(docker port "$registry_name" 5000/tcp | sed -n 's/.*://p' | tail -1)
@@ -180,7 +199,9 @@ capture_evidence() {
 
 evidence_path=${IMAGE_REPRODUCIBILITY_EVIDENCE_PATH:-.build/image-reproducibility.json}
 candidate_metadata_dir=${IMAGE_METADATA_DIR:-.build/image-metadata}
-mkdir -p "$(dirname "$evidence_path")" "$candidate_metadata_dir"
+mkdir -p "$(dirname "$evidence_path")" "$candidate_metadata_dir" \
+  "$(dirname "$candidate_registry_path")"
+rm -f "$candidate_registry_path"
 jq -S -n \
   --arg source_sha "$source_sha" \
   --arg source_tree "$source_tree" \
@@ -204,10 +225,19 @@ for name in control-api web-bff reconciler telegram-sender worker-runtime; do
     exit 1
   fi
 
-  docker pull "$registry_host/b/$name:$source_sha" >/dev/null
   transport_reference="$registry_host/transport/$name:$source_sha"
-  docker tag "$registry_host/b/$name:$source_sha" "$transport_reference"
-  docker push "$transport_reference" >/dev/null
+  transport_copy_metadata="$test_root/b/$name.transport-copy-metadata.json"
+  docker buildx imagetools create --prefer-index=false --progress=plain \
+    --metadata-file "$transport_copy_metadata" \
+    --tag "$transport_reference" \
+    "$registry_host/b/$name@$canonical_manifest_digest"
+  copied_manifest_digest=$(jq -er \
+    '."containerimage.descriptor".digest' "$transport_copy_metadata")
+  if test "$copied_manifest_digest" != "$canonical_manifest_digest"; then
+    printf 'registry-native copy metadata mismatch for %s: expected %s, got %s\n' \
+      "$name" "$canonical_manifest_digest" "$copied_manifest_digest" >&2
+    exit 1
+  fi
   transport_manifest_file="$test_root/b/$name.transport-manifest.json"
   transport_manifest_headers="$test_root/b/$name.transport-manifest.headers"
   curl --fail --silent --show-error \
@@ -218,7 +248,7 @@ for name in control-api web-bff reconciler telegram-sender worker-runtime; do
     .schemaVersion == 2 and
     .mediaType == "application/vnd.docker.distribution.manifest.v2+json"
   ' "$transport_manifest_file" >/dev/null || {
-    printf 'Docker transport returned a non-canonical manifest for %s\n' "$name" >&2
+    printf 'registry-native transport returned a non-canonical manifest for %s\n' "$name" >&2
     exit 1
   }
   transport_manifest_digest="sha256:$(sha256_file "$transport_manifest_file")"
@@ -227,16 +257,15 @@ for name in control-api web-bff reconciler telegram-sender worker-runtime; do
     END {print digest}
   ' "$transport_manifest_headers")
   if test "$transport_reported_digest" != "$transport_manifest_digest"; then
-    printf 'Docker transport digest header mismatch for %s: header %s, body %s\n' \
+    printf 'registry-native transport digest header mismatch for %s: header %s, body %s\n' \
       "$name" "${transport_reported_digest:-missing}" "$transport_manifest_digest" >&2
     exit 1
   fi
   if test "$transport_manifest_digest" != "$canonical_manifest_digest"; then
-    printf 'Docker transport changed the canonical manifest for %s: expected %s, got %s\n' \
+    printf 'registry-native transport changed the canonical manifest for %s: expected %s, got %s\n' \
       "$name" "$canonical_manifest_digest" "$transport_manifest_digest" >&2
     exit 1
   fi
-  docker tag "$registry_host/b/$name:$source_sha" "sessionless/$name:dev"
 
   jq --arg transport_manifest_digest "$transport_manifest_digest" \
     '.transport_manifest_digest = $transport_manifest_digest' \
@@ -267,5 +296,23 @@ jq -e '
     .transport_manifest_digest == .manifest.digest
   )
 ' "$evidence_path" >/dev/null
+
+if test "$retain_registry" = 1; then
+  jq -S -n \
+    --arg host "$registry_host" \
+    --arg container "$registry_name" \
+    --arg network "$network_name" \
+    --arg namespace transport \
+    --arg source_sha "$source_sha" \
+    '{
+      schema_version: 1,
+      host: $host,
+      container: $container,
+      network: $network,
+      namespace: $namespace,
+      source_sha: $source_sha
+    }' >"$candidate_registry_path"
+  registry_retained=true
+fi
 
 printf 'five-image clean-room reproducibility evidence written to %s\n' "$evidence_path"

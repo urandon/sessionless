@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"sort"
 	"testing"
 	"time"
 
@@ -137,6 +138,87 @@ func (store *senderStore) GetArtifactManifest(
 type senderClient struct {
 	err      error
 	requests []ports.TelegramSendRequest
+}
+
+type pagedSenderStore struct {
+	*senderStore
+	deliveries map[domain.TelegramDeliveryID]domain.TelegramDeliveryOutbox
+}
+
+func (store *pagedSenderStore) ListRunTelegramDeliveries(
+	_ context.Context,
+	tenantID domain.TenantID,
+	runID domain.RunID,
+	limit uint64,
+) ([]ports.TelegramDeliveryReady, error) {
+	ids := make([]string, 0, len(store.deliveries))
+	for id, delivery := range store.deliveries {
+		if delivery.TenantID == tenantID && delivery.RunID == runID && !delivery.Status.Terminal() {
+			ids = append(ids, string(id))
+		}
+	}
+	sort.Strings(ids)
+	if uint64(len(ids)) > limit {
+		ids = ids[:limit]
+	}
+	result := make([]ports.TelegramDeliveryReady, 0, len(ids))
+	for _, id := range ids {
+		result = append(result, ports.TelegramDeliveryReady{
+			TenantID: tenantID, DeliveryID: domain.TelegramDeliveryID(id),
+		})
+	}
+	return result, nil
+}
+
+func (store *pagedSenderStore) GetTelegramDelivery(
+	_ context.Context,
+	tenantID domain.TenantID,
+	deliveryID domain.TelegramDeliveryID,
+) (domain.TelegramDeliveryOutbox, bool, error) {
+	delivery, found := store.deliveries[deliveryID]
+	if !found || delivery.TenantID != tenantID {
+		return domain.TelegramDeliveryOutbox{}, false, nil
+	}
+	return delivery, true, nil
+}
+
+func (store *pagedSenderStore) ClaimTelegramDelivery(
+	_ context.Context,
+	tenantID domain.TenantID,
+	deliveryID domain.TelegramDeliveryID,
+	at time.Time,
+) (domain.TelegramDeliveryOutbox, bool, error) {
+	delivery, found, err := store.GetTelegramDelivery(context.Background(), tenantID, deliveryID)
+	if err != nil || !found || delivery.Status.Terminal() {
+		return domain.TelegramDeliveryOutbox{}, false, err
+	}
+	if err := delivery.Transition(domain.DeliverySending, at, nil); err != nil {
+		return domain.TelegramDeliveryOutbox{}, false, err
+	}
+	store.deliveries[deliveryID] = delivery
+	return delivery, true, nil
+}
+
+func (store *pagedSenderStore) TransitionTelegramDelivery(
+	_ context.Context,
+	tenantID domain.TenantID,
+	deliveryID domain.TelegramDeliveryID,
+	to domain.DeliveryStatus,
+	at time.Time,
+	retryAt *time.Time,
+) error {
+	delivery, found, err := store.GetTelegramDelivery(context.Background(), tenantID, deliveryID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return errors.New("delivery not found")
+	}
+	if err := delivery.Transition(to, at, retryAt); err != nil {
+		return err
+	}
+	store.deliveries[deliveryID] = delivery
+	return nil
 }
 
 func (client *senderClient) Send(
@@ -335,6 +417,63 @@ func TestSenderWakeTargetsOneDeliveryAndTreatsTerminalDuplicateAsNoop(t *testing
 	}
 	if store.delivery.Status != domain.DeliverySent {
 		t.Fatalf("delivery status = %s", store.delivery.Status)
+	}
+}
+
+func TestProjectionWakeContinuesPastFullNonTerminalRunPage(t *testing.T) {
+	now := time.Date(2026, 8, 21, 21, 0, 0, 0, time.UTC)
+	tenantID := domain.TenantID("tenant-projection-page")
+	runID := domain.RunID("run-projection-page")
+	deliveries := make(map[domain.TelegramDeliveryID]domain.TelegramDeliveryOutbox, 2)
+	for index, id := range []domain.TelegramDeliveryID{"delivery-page-a", "delivery-page-b"} {
+		deliveries[id] = domain.TelegramDeliveryOutbox{
+			ID: id, TenantID: tenantID, RunID: runID,
+			Chat:             domain.TelegramChatRef{TenantID: tenantID, ChatID: int64(7000 + index)},
+			ReplyToMessageID: int64(80 + index), Text: "page delivery",
+			Status: domain.DeliveryPending, IdempotencyKey: domain.IdempotencyKey("page-key-" + id),
+			CreatedAt: now, UpdatedAt: now,
+		}
+	}
+	store := &pagedSenderStore{senderStore: &senderStore{}, deliveries: deliveries}
+	client := &senderClient{}
+	sender, err := NewSender(
+		Config{BatchSize: 1}, testkit.NewFakeClock(now.Add(time.Second)),
+		store, rejectingBlobStore{}, client,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wakeQueue := testkit.NewMemoryQueue()
+	publisher, err := outboxwake.NewPublisher(wakeQueue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := publisher.PublishFrontendProjectionWake(context.Background(), tenantID, runID, now); err != nil {
+		t.Fatal(err)
+	}
+	for page := 0; page < 2; page++ {
+		result, runErr := sender.RunWake(context.Background(), wakeQueue)
+		if runErr != nil {
+			t.Fatal(runErr)
+		}
+		if result.Outcome != "retry" || result.Code != "run_page_continuation" {
+			t.Fatalf("page %d result = %#v", page, result)
+		}
+	}
+	result, err := sender.RunWake(context.Background(), wakeQueue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != "noop" || result.Code != "missing_or_terminal" {
+		t.Fatalf("terminal continuation = %#v", result)
+	}
+	if len(client.requests) != 2 {
+		t.Fatalf("Telegram requests = %#v", client.requests)
+	}
+	for id, delivery := range store.deliveries {
+		if delivery.Status != domain.DeliverySent {
+			t.Fatalf("delivery %s status = %s", id, delivery.Status)
+		}
 	}
 }
 

@@ -282,6 +282,12 @@ func (sender *Sender) runProjectionWake(
 			return WakeResult{Outcome: "retry", Code: "delivery_retry_wait"}, nil
 		}
 	}
+	if uint64(len(deliveries)) == sender.config.BatchSize {
+		if err := wakeQueue.Retry(ctx, message.ReceiptHandle, time.Second); err != nil {
+			return WakeResult{}, err
+		}
+		return WakeResult{Outcome: "retry", Code: "run_page_continuation"}, nil
+	}
 	if err := wakeQueue.Ack(ctx, message.ReceiptHandle); err != nil {
 		return WakeResult{}, err
 	}

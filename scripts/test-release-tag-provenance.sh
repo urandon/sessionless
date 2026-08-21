@@ -101,6 +101,8 @@ fi
 git -C "$source_repo" tag -a v1.3.0 -m gitcode-object "$source_sha"
 git -C "$source_repo" push -q origin v1.3.0
 GIT_COMMITTER_DATE='2030-01-01T00:00:00Z' \
+  GIT_COMMITTER_NAME='Release Test' \
+  GIT_COMMITTER_EMAIL='release-test@example.invalid' \
   git --git-dir="$github" tag -a v1.3.0 -m github-object "$source_sha"
 git -C "$checkout" fetch -q --force --tags
 git -C "$checkout" checkout -q v1.3.0

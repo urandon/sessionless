@@ -54,6 +54,13 @@ resource "yandex_ydb_database_serverless" "terraform_locks" {
   }
 }
 
+resource "yandex_ydb_database_iam_binding" "registry_cleaner" {
+  count       = var.registry_cleaner_service_account_id == "" ? 0 : 1
+  database_id = yandex_ydb_database_serverless.terraform_locks.id
+  role        = "ydb.editor"
+  members     = ["serviceAccount:${var.registry_cleaner_service_account_id}"]
+}
+
 resource "yandex_ydb_table" "terraform_locks" {
   path              = "terraform_locks"
   connection_string = yandex_ydb_database_serverless.terraform_locks.ydb_full_endpoint

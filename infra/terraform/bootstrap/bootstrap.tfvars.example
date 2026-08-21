@@ -2,6 +2,10 @@ cloud_id            = "replace-with-cloud-id"
 management_folder_id = "replace-with-management-folder-id"
 state_bucket_name    = "replace-with-globally-unique-sessionless-tfstate"
 
+# Set only after the cloud-dev foundation has created the dedicated account,
+# then apply a reviewed bootstrap plan to grant deployment-lock DB access.
+# registry_cleaner_service_account_id = "replace-with-20-character-id"
+
 labels = {
   owner       = "replace-with-team"
   environment = "management"

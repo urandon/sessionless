@@ -27,7 +27,11 @@ resource "yandex_serverless_container" "control" {
   concurrency        = 4
   execution_timeout  = "30s"
   service_account_id = var.service_account_ids["api"]
-  labels             = var.labels
+  labels = merge(var.labels, {
+    component     = "control-api"
+    slot          = each.key
+    source-commit = var.image_source_shas["control-${each.key}"]
+  })
 
   runtime { type = "http" }
   image {
@@ -92,7 +96,11 @@ resource "yandex_serverless_container" "reconciler" {
   concurrency        = 1
   execution_timeout  = "60s"
   service_account_id = var.service_account_ids["scheduler"]
-  labels             = var.labels
+  labels = merge(var.labels, {
+    component     = "reconciler"
+    slot          = "singleton"
+    source-commit = var.image_source_shas["reconciler"]
+  })
   runtime { type = "http" }
   image {
     url = var.images["reconciler"]
@@ -142,7 +150,11 @@ resource "yandex_serverless_container" "worker" {
   concurrency        = 1
   execution_timeout  = var.worker_timeout
   service_account_id = var.service_account_ids["worker"]
-  labels             = var.labels
+  labels = merge(var.labels, {
+    component     = "worker-runtime"
+    slot          = "singleton"
+    source-commit = var.image_source_shas["worker-runtime"]
+  })
   runtime { type = "http" }
   image {
     url = var.images["worker-runtime"]
@@ -194,7 +206,11 @@ resource "yandex_serverless_container" "telegram_sender" {
   concurrency        = 1
   execution_timeout  = "60s"
   service_account_id = var.service_account_ids["telegram-sender"]
-  labels             = var.labels
+  labels = merge(var.labels, {
+    component     = "telegram-sender"
+    slot          = "singleton"
+    source-commit = var.image_source_shas["telegram-sender"]
+  })
   runtime { type = "http" }
   image {
     url = var.images["telegram-sender"]
@@ -236,6 +252,24 @@ resource "yandex_serverless_container_iam_binding" "trigger_invoker" {
   container_id = each.value
   role         = "serverless.containers.invoker"
   members      = [local.trigger_member]
+}
+
+resource "yandex_serverless_container_iam_binding" "registry_cleaner_control_auditor" {
+  for_each     = yandex_serverless_container.control
+  container_id = each.value.id
+  role         = "serverless-containers.auditor"
+  members      = ["serviceAccount:${var.registry_cleaner_service_account_id}"]
+}
+
+resource "yandex_serverless_container_iam_binding" "registry_cleaner_runtime_auditor" {
+  for_each = {
+    reconciler      = yandex_serverless_container.reconciler.id
+    worker-runtime  = yandex_serverless_container.worker.id
+    telegram-sender = yandex_serverless_container.telegram_sender.id
+  }
+  container_id = each.value
+  role         = "serverless-containers.auditor"
+  members      = ["serviceAccount:${var.registry_cleaner_service_account_id}"]
 }
 
 resource "yandex_function_trigger" "worker" {

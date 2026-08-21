@@ -4,7 +4,7 @@ locals {
     environment = "dev"
     managed-by  = "terraform"
   })
-  account_names = toset(["deploy", "api", "web-bff", "scheduler", "worker", "telegram-sender", "trigger", "gateway", "web-gateway", "queue-provisioner", "image-publisher"])
+  account_names = toset(["deploy", "api", "web-bff", "scheduler", "worker", "telegram-sender", "trigger", "gateway", "web-gateway", "queue-provisioner", "image-publisher", "registry-cleaner"])
   account_roles = {
     api               = ["logging.writer"]
     web-bff           = ["logging.writer"]
@@ -220,7 +220,13 @@ resource "yandex_container_repository_iam_binding" "image_publisher" {
   for_each      = yandex_container_repository.runtime
   repository_id = each.value.id
   role          = "container-registry.images.pusher"
-  members       = ["serviceAccount:${yandex_iam_service_account.runtime["image-publisher"].id}"]
+  # The provider exposes only an authoritative role binding for repositories,
+  # not iam_member. Keep both explicit identities in the single binding so two
+  # Terraform resources cannot overwrite each other for the same role.
+  members = [
+    "serviceAccount:${yandex_iam_service_account.runtime["image-publisher"].id}",
+    "serviceAccount:${yandex_iam_service_account.runtime["registry-cleaner"].id}",
+  ]
 }
 
 resource "yandex_iam_workload_identity_oidc_federation" "github_images" {
@@ -240,16 +246,36 @@ resource "yandex_iam_workload_identity_federated_credential" "github_images" {
   external_subject_id = var.github_oidc_subject
 }
 
+resource "yandex_iam_workload_identity_oidc_federation" "github_registry_gc" {
+  folder_id   = yandex_resourcemanager_folder.environment.id
+  name        = "${var.name_prefix}-github-registry-gc"
+  description = "GitHub Actions identity for deployment-aware registry cleanup"
+  disabled    = false
+  audiences   = [var.github_oidc_audience]
+  issuer      = "https://token.actions.githubusercontent.com"
+  jwks_url    = "https://token.actions.githubusercontent.com/.well-known/jwks"
+  labels      = local.labels
+}
+
+resource "yandex_iam_workload_identity_federated_credential" "github_registry_gc" {
+  service_account_id  = yandex_iam_service_account.runtime["registry-cleaner"].id
+  federation_id       = yandex_iam_workload_identity_oidc_federation.github_registry_gc.id
+  external_subject_id = var.github_oidc_subject
+}
+
 resource "yandex_container_repository_lifecycle_policy" "runtime" {
   for_each      = yandex_container_repository.runtime
   name          = "${var.name_prefix}-${each.key}-retention"
   repository_id = each.value.id
-  status        = "active"
+  # Native lifecycle rules cannot see Serverless Container revision digests or
+  # protected rollback manifests. Keep the emergency bound reviewable but
+  # disabled; deployment-aware cleanup owns deletion decisions.
+  status = "disabled"
   rule {
-    description   = "Retain the ten newest images and expire older images after 30 days"
+    description   = "Emergency fallback only; retain five images and expire after fourteen days"
     tag_regexp    = ".*"
-    retained_top  = 10
-    expire_period = "720h"
+    retained_top  = 5
+    expire_period = "336h"
   }
 }
 

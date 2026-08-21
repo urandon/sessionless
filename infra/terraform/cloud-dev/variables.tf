@@ -69,9 +69,27 @@ variable "web_execution_timeout" {
   type    = string
   default = "30s"
 }
-variable "control_blue_image_tag" { type = string }
-variable "control_green_image_tag" { type = string }
-variable "runtime_image_tag" { type = string }
+variable "control_blue_image_tag" {
+  type = string
+  validation {
+    condition     = can(regex("^[0-9a-f]{40}$", var.control_blue_image_tag))
+    error_message = "control_blue_image_tag must be a full lowercase commit SHA."
+  }
+}
+variable "control_green_image_tag" {
+  type = string
+  validation {
+    condition     = can(regex("^[0-9a-f]{40}$", var.control_green_image_tag))
+    error_message = "control_green_image_tag must be a full lowercase commit SHA."
+  }
+}
+variable "runtime_image_tag" {
+  type = string
+  validation {
+    condition     = can(regex("^[0-9a-f]{40}$", var.runtime_image_tag))
+    error_message = "runtime_image_tag must be a full lowercase commit SHA."
+  }
+}
 variable "control_blue_image_ref" {
   description = "Optional immutable control image reference generated from a publication manifest."
   type        = string

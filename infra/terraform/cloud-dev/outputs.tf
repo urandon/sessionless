@@ -4,6 +4,8 @@ output "dns_zone_name" { value = module.foundation.dns_zone_name }
 output "registry_id" { value = module.foundation.registry_id }
 output "repository_names" { value = module.foundation.repository_names }
 output "image_publisher_service_account_id" { value = module.foundation.image_publisher_service_account_id }
+output "registry_cleaner_service_account_id" { value = module.foundation.registry_cleaner_service_account_id }
+output "registry_cleaner_federation_id" { value = module.foundation.registry_cleaner_federation_id }
 output "github_oidc_audience" { value = module.foundation.github_oidc_audience }
 output "github_oidc_subject" { value = module.foundation.github_oidc_subject }
 output "ydb_connection_string" { value = module.foundation.ydb_connection_string }
@@ -38,3 +40,22 @@ output "stable_slot" { value = module.edge.stable_slot }
 output "candidate_slot" { value = module.edge.candidate_slot }
 output "canary_weight" { value = module.edge.canary_weight }
 output "budget_id" { value = var.budget_id }
+output "registry_gc_inventory" {
+  value = {
+    schema_version   = 1
+    environment      = "cloud-dev"
+    lock_environment = "cloud-dev"
+    folder_id        = module.foundation.folder_id
+    registry_id      = module.foundation.registry_id
+    stable_slot      = module.edge.stable_slot
+    candidate_slot   = module.edge.candidate_slot
+    repositories = {
+      for name, repository_name in module.foundation.repository_names : name => {
+        id   = module.foundation.repository_ids[name]
+        name = repository_name
+      }
+    }
+    containers              = merge(module.runtime.registry_gc_container_inventory, module.web.registry_gc_container_inventory)
+    lifecycle_policy_status = module.foundation.registry_lifecycle_policy_statuses
+  }
+}

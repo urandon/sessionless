@@ -35,15 +35,23 @@ module "foundation" {
 module "runtime" {
   source = "../modules/runtime"
 
-  folder_id           = module.foundation.folder_id
-  name_prefix         = var.name_prefix
-  service_account_ids = module.foundation.service_account_ids
+  folder_id                           = module.foundation.folder_id
+  name_prefix                         = var.name_prefix
+  service_account_ids                 = module.foundation.service_account_ids
+  registry_cleaner_service_account_id = module.foundation.registry_cleaner_service_account_id
   images = {
     control-blue    = coalesce(var.control_blue_image_ref, "cr.yandex/${module.foundation.repository_names["control-api"]}:${var.control_blue_image_tag}")
     control-green   = coalesce(var.control_green_image_ref, "cr.yandex/${module.foundation.repository_names["control-api"]}:${var.control_green_image_tag}")
     reconciler      = lookup(var.runtime_image_refs, "reconciler", "cr.yandex/${module.foundation.repository_names["reconciler"]}:${var.runtime_image_tag}")
     telegram-sender = lookup(var.runtime_image_refs, "telegram-sender", "cr.yandex/${module.foundation.repository_names["telegram-sender"]}:${var.runtime_image_tag}")
     worker-runtime  = lookup(var.runtime_image_refs, "worker-runtime", "cr.yandex/${module.foundation.repository_names["worker-runtime"]}:${var.runtime_image_tag}")
+  }
+  image_source_shas = {
+    control-blue    = var.control_blue_image_tag
+    control-green   = var.control_green_image_tag
+    reconciler      = var.runtime_image_tag
+    telegram-sender = var.runtime_image_tag
+    worker-runtime  = var.runtime_image_tag
   }
   ydb_connection_string           = module.foundation.ydb_connection_string
   artifact_bucket_name            = module.foundation.artifact_bucket_name
@@ -90,29 +98,31 @@ module "edge" {
 module "web" {
   source = "../modules/web"
 
-  folder_id                       = module.foundation.folder_id
-  name_prefix                     = var.name_prefix
-  base_domain                     = var.base_domain
-  dns_zone_id                     = module.foundation.dns_zone_id
-  service_account_id              = module.foundation.service_account_ids["web-bff"]
-  gateway_service_account_id      = module.foundation.service_account_ids["web-gateway"]
-  image_ref                       = var.web_image_ref
-  ydb_connection_string           = module.foundation.ydb_connection_string
-  artifact_bucket_name            = module.foundation.artifact_bucket_name
-  scheduler_wake_queue_url        = module.foundation.scheduler_wake_queue_url
-  web_secret_id                   = module.foundation.web_bff_secret_id
-  web_secret_version_id           = var.web_bff_secret_version_id
-  scheduler_ymq_secret_id         = module.foundation.scheduler_ymq_secret_id
-  scheduler_ymq_secret_version_id = module.foundation.scheduler_ymq_secret_version_id
-  telegram_oidc_client_id         = var.telegram_oidc_client_id
-  allowed_mcp_servers             = var.web_allowed_mcp_servers
-  max_upload_bytes                = var.web_max_upload_bytes
-  memory_mb                       = var.web_memory_mb
-  concurrency                     = var.web_concurrency
-  execution_timeout               = var.web_execution_timeout
-  log_group_id                    = module.foundation.log_group_id
-  deletion_protection             = var.deletion_protection
-  labels                          = local.labels
+  folder_id                           = module.foundation.folder_id
+  name_prefix                         = var.name_prefix
+  base_domain                         = var.base_domain
+  dns_zone_id                         = module.foundation.dns_zone_id
+  service_account_id                  = module.foundation.service_account_ids["web-bff"]
+  gateway_service_account_id          = module.foundation.service_account_ids["web-gateway"]
+  registry_cleaner_service_account_id = module.foundation.registry_cleaner_service_account_id
+  source_sha                          = var.runtime_image_tag
+  image_ref                           = var.web_image_ref
+  ydb_connection_string               = module.foundation.ydb_connection_string
+  artifact_bucket_name                = module.foundation.artifact_bucket_name
+  scheduler_wake_queue_url            = module.foundation.scheduler_wake_queue_url
+  web_secret_id                       = module.foundation.web_bff_secret_id
+  web_secret_version_id               = var.web_bff_secret_version_id
+  scheduler_ymq_secret_id             = module.foundation.scheduler_ymq_secret_id
+  scheduler_ymq_secret_version_id     = module.foundation.scheduler_ymq_secret_version_id
+  telegram_oidc_client_id             = var.telegram_oidc_client_id
+  allowed_mcp_servers                 = var.web_allowed_mcp_servers
+  max_upload_bytes                    = var.web_max_upload_bytes
+  memory_mb                           = var.web_memory_mb
+  concurrency                         = var.web_concurrency
+  execution_timeout                   = var.web_execution_timeout
+  log_group_id                        = module.foundation.log_group_id
+  deletion_protection                 = var.deletion_protection
+  labels                              = local.labels
 
   depends_on = [module.foundation]
 }

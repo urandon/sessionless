@@ -210,6 +210,14 @@ grep -F 'cron: "17 3 * * 0"' "$repo_root/.github/workflows/registry-gc.yml" >/de
 grep -F 'id-token: write' "$repo_root/.github/workflows/registry-gc.yml" >/dev/null
 grep -F 'if: always()' "$repo_root/.github/workflows/registry-gc.yml" >/dev/null
 grep -F 'cloud-dev:<registry-id>' "$repo_root/.github/workflows/registry-gc.yml" >/dev/null
+grep -F "grep -q '[[:cntrl:]]'" "$repo_root/.github/workflows/registry-gc.yml" >/dev/null
+if grep -E 'uses:[[:space:]]+actions/[^@]+@v[0-9]+' \
+  "$repo_root/.github/workflows/registry-gc.yml" >/dev/null; then
+  printf '%s\n' 'privileged registry GC workflow actions must use immutable commit pins' >&2
+  exit 1
+fi
+test "$(grep -Ec 'uses:[[:space:]]+actions/[^@]+@[0-9a-f]{40}[[:space:]]+# v[0-9]+' \
+  "$repo_root/.github/workflows/registry-gc.yml")" -eq 4
 grep -F 'go run ./cmd/deployment-lock with --' "$repo_root/scripts/registry-gc.sh" >/dev/null
 grep -F '"registry-cleaner"' "$repo_root/infra/terraform/modules/foundation/main.tf" >/dev/null
 grep -F 'resource "yandex_container_repository_iam_binding" "image_publisher"' \

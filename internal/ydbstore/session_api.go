@@ -136,6 +136,11 @@ func (store *Store) ListSessionsForUser(
 			return nil, err
 		}
 	}
+	if err := store.Transact(ctx, request.TenantID, func(state ports.StateTx) error {
+		return authorizeTenantReadTx(ctx, state.(*stateTx), request.UserID)
+	}); err != nil {
+		return nil, err
+	}
 	type candidate struct {
 		id domain.SessionID
 		at time.Time

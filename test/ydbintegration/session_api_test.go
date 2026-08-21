@@ -99,6 +99,11 @@ func TestSessionAPIStoreAuthorizationPaginationAndFrontendBinding(t *testing.T) 
 	if _, found, err := store.GetSessionForUser(ctx, tenantID, "another-user", sessions[1].ID, false); !errors.Is(err, domain.ErrMembershipDenied) || found {
 		t.Fatalf("unauthorized get found=%t err=%v", found, err)
 	}
+	if _, err := store.ListSessionsForUser(ctx, ports.SessionListRequest{
+		TenantID: tenantID, UserID: "another-user", Status: domain.SessionActive, Limit: 10,
+	}); !errors.Is(err, domain.ErrMembershipDenied) {
+		t.Fatalf("unauthorized list error = %v", err)
+	}
 
 	bindingRequest := ports.FrontendBindingRequest{
 		TenantID: tenantID, UserID: userID, Frontend: "synthetic",

@@ -103,8 +103,8 @@ done
 node --check "$repo_root/scripts/github-yandex-release-login.mjs"
 sh -n "$repo_root/scripts/verify-release-tag.sh"
 sh -n "$repo_root/scripts/test-release-tag-provenance.sh"
-sh "$repo_root/scripts/test-release-tag-provenance.sh"
+GITHUB_ACTIONS=false sh "$repo_root/scripts/test-release-tag-provenance.sh"
 sh -n "$repo_root/scripts/test-release-oidc.sh"
-sh "$repo_root/scripts/test-release-oidc.sh"
+GITHUB_ACTIONS=false sh "$repo_root/scripts/test-release-oidc.sh"
 
 printf '%s\n' 'release workflow and identity policy invariants passed'

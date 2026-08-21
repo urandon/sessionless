@@ -17,3 +17,8 @@ output "lock_table_path" {
   description = "YDB table path used for environment deployment leases."
   value       = yandex_ydb_table.terraform_locks.path
 }
+
+output "registry_cleaner_lock_access_configured" {
+  description = "Whether the cloud-dev registry cleaner has database-scoped deployment-lock access."
+  value       = var.registry_cleaner_service_account_id != ""
+}

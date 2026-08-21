@@ -8,3 +8,16 @@ output "container_revision_id" { value = yandex_serverless_container.web.revisio
 output "image_ref" { value = var.image_ref }
 output "prepared_instances" { value = yandex_serverless_container.web.provision_policy[0].min_instances }
 output "concurrency" { value = yandex_serverless_container.web.concurrency }
+output "registry_gc_container_inventory" {
+  value = {
+    web-bff = {
+      container_id = yandex_serverless_container.web.id
+      revision_id  = yandex_serverless_container.web.revision_id
+      component    = "web-bff"
+      repository   = "web-bff"
+      slot         = "singleton"
+      source_sha   = var.source_sha
+      image_ref    = var.image_ref
+    }
+  }
+}

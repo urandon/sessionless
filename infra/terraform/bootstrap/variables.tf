@@ -84,6 +84,20 @@ variable "lock_database_storage_gib" {
   }
 }
 
+variable "registry_cleaner_service_account_id" {
+  description = "Optional cloud-dev registry cleaner identity allowed to use only the deployment-lock database."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      var.registry_cleaner_service_account_id == "" ||
+      can(regex("^[a-z0-9]{20}$", var.registry_cleaner_service_account_id))
+    )
+    error_message = "registry_cleaner_service_account_id must be empty or a 20-character service account ID."
+  }
+}
+
 variable "labels" {
   description = "Additional non-secret labels for bootstrap resources."
   type        = map(string)

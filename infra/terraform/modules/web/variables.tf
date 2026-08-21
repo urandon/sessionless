@@ -4,6 +4,14 @@ variable "base_domain" { type = string }
 variable "dns_zone_id" { type = string }
 variable "service_account_id" { type = string }
 variable "gateway_service_account_id" { type = string }
+variable "registry_cleaner_service_account_id" { type = string }
+variable "source_sha" {
+  type = string
+  validation {
+    condition     = can(regex("^[0-9a-f]{40}$", var.source_sha))
+    error_message = "source_sha must be a full lowercase commit SHA."
+  }
+}
 variable "image_ref" {
   description = "Immutable AMD64 Web BFF image reference from the publication manifest."
   type        = string

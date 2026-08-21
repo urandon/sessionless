@@ -2,6 +2,19 @@ variable "folder_id" { type = string }
 variable "name_prefix" { type = string }
 variable "service_account_ids" { type = map(string) }
 variable "images" { type = map(string) }
+variable "image_source_shas" {
+  type = map(string)
+
+  validation {
+    condition = (
+      length(setsubtract(toset(keys(var.image_source_shas)), local.required_images)) == 0 &&
+      length(setsubtract(local.required_images, toset(keys(var.image_source_shas)))) == 0 &&
+      alltrue([for sha in values(var.image_source_shas) : can(regex("^[0-9a-f]{40}$", sha))])
+    )
+    error_message = "image_source_shas must contain one full lowercase commit SHA for every runtime image slot."
+  }
+}
+variable "registry_cleaner_service_account_id" { type = string }
 variable "ydb_connection_string" { type = string }
 variable "artifact_bucket_name" { type = string }
 variable "dispatch_queue_url" { type = string }

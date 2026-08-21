@@ -25,6 +25,43 @@ run "web_deployment_plan" {
   }
 
   assert {
+    condition = (
+      toset(keys(output.registry_gc_inventory.repositories)) ==
+      toset(["control-api", "web-bff", "reconciler", "telegram-sender", "worker-runtime"])
+    )
+    error_message = "registry GC inventory must contain every managed repository"
+  }
+
+  assert {
+    condition = (
+      toset(keys(output.registry_gc_inventory.containers)) ==
+      toset(["control-blue", "control-green", "web-bff", "reconciler", "telegram-sender", "worker-runtime"])
+    )
+    error_message = "registry GC inventory must contain every managed container slot"
+  }
+
+  assert {
+    condition = (
+      output.registry_gc_inventory.lock_environment == "cloud-dev" &&
+      output.registry_gc_inventory.stable_slot == "blue" &&
+      output.registry_gc_inventory.candidate_slot == "green" &&
+      alltrue([
+        for container in values(output.registry_gc_inventory.containers) :
+        contains(keys(container), "revision_id") &&
+        can(regex("^[0-9a-f]{40}$", container.source_sha))
+      ])
+    )
+    error_message = "registry GC inventory must identify the shared lock, rollout slots, revisions, and source commits"
+  }
+
+  assert {
+    condition = alltrue([
+      for status in values(output.registry_gc_inventory.lifecycle_policy_status) : status == "disabled"
+    ])
+    error_message = "native registry lifecycle must remain disabled"
+  }
+
+  assert {
     condition     = module.web.image_ref == var.web_image_ref
     error_message = "the Web deployment must preserve the immutable image reference"
   }

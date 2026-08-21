@@ -15,7 +15,13 @@ output "scheduler_wake_queue_arn" { value = yandex_message_queue.scheduler_wake.
 output "scheduler_wake_dlq_arn" { value = yandex_message_queue.scheduler_wake_dlq.arn }
 output "registry_id" { value = yandex_container_registry.application.id }
 output "repository_names" { value = { for name, repository in yandex_container_repository.runtime : name => repository.name } }
+output "repository_ids" { value = { for name, repository in yandex_container_repository.runtime : name => repository.id } }
 output "image_publisher_service_account_id" { value = yandex_iam_service_account.runtime["image-publisher"].id }
+output "registry_cleaner_service_account_id" { value = yandex_iam_service_account.runtime["registry-cleaner"].id }
+output "registry_cleaner_federation_id" { value = yandex_iam_workload_identity_oidc_federation.github_registry_gc.id }
+output "registry_lifecycle_policy_statuses" {
+  value = { for name, policy in yandex_container_repository_lifecycle_policy.runtime : name => policy.status }
+}
 output "github_oidc_audience" { value = var.github_oidc_audience }
 output "github_oidc_subject" { value = var.github_oidc_subject }
 output "telegram_secret_id" { value = yandex_lockbox_secret.telegram.id }

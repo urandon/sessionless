@@ -73,7 +73,11 @@ resource "yandex_serverless_container" "web" {
   concurrency        = var.concurrency
   execution_timeout  = var.execution_timeout
   service_account_id = var.service_account_id
-  labels             = var.labels
+  labels = merge(var.labels, {
+    component     = "web-bff"
+    slot          = "singleton"
+    source-commit = var.source_sha
+  })
 
   runtime { type = "http" }
   provision_policy { min_instances = 0 }
@@ -143,6 +147,12 @@ resource "yandex_serverless_container_iam_binding" "gateway_invoker" {
   container_id = yandex_serverless_container.web.id
   role         = "serverless.containers.invoker"
   members      = ["serviceAccount:${var.gateway_service_account_id}"]
+}
+
+resource "yandex_serverless_container_iam_binding" "registry_cleaner_auditor" {
+  container_id = yandex_serverless_container.web.id
+  role         = "serverless-containers.auditor"
+  members      = ["serviceAccount:${var.registry_cleaner_service_account_id}"]
 }
 
 resource "yandex_cm_certificate" "web" {

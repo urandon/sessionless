@@ -95,6 +95,11 @@ layer, and manifest identities. Cleanup removes only those uniquely named
 temporary resources. CI runs this gate on every mirrored commit and retains the
 second verified set for trusted-main publication.
 
+Deployment-aware cleanup of those immutable registry images is a separate,
+fenced operational workflow. Its evidence bridge, dry-run/delete controls, and
+audit reports are documented in [registry-gc.md](registry-gc.md). Never replace
+that workflow with an age-only or tag-count cleanup.
+
 ## Local stack
 
 Start and initialize the complete local stand:

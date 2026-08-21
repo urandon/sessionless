@@ -1,0 +1,110 @@
+name: Registry GC
+
+on:
+  schedule:
+    - cron: "17 3 * * 0"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Cleanup mode; scheduled runs are always dry-run
+        required: true
+        default: dry-run
+        type: choice
+        options:
+          - dry-run
+          - delete
+      confirmation:
+        description: For delete, type cloud-dev:<registry-id>
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+
+concurrency:
+  group: registry-gc-${{ github.repository }}-cloud-dev
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    name: Deployment-aware registry cleanup
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      REGISTRY_GC_REPORT_JSON: .build/registry-gc/report.json
+      REGISTRY_GC_REPORT_MARKDOWN: .build/registry-gc/report.md
+      REGISTRY_GC_INVENTORY_JSON: ${{ vars.YANDEX_REGISTRY_GC_INVENTORY_JSON }}
+      REGISTRY_GC_PROTECTED_DIGESTS_JSON: ${{ vars.YANDEX_REGISTRY_GC_PROTECTED_DIGESTS_JSON }}
+      TERRAFORM_LOCK_YDB_CONNECTION_STRING: ${{ secrets.TERRAFORM_LOCK_YDB_CONNECTION_STRING }}
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout mirrored main
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up pinned Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Set up pinned Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.19.0
+
+      - name: Select fail-closed cleanup mode
+        env:
+          REQUESTED_MODE: ${{ inputs.mode }}
+          REQUESTED_CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          if test "$GITHUB_EVENT_NAME" = schedule; then
+            mode=dry-run
+            confirmation=
+          else
+            mode=${REQUESTED_MODE:-dry-run}
+            confirmation=${REQUESTED_CONFIRMATION:-}
+          fi
+          case "$mode" in
+            dry-run|delete) ;;
+            *) printf 'unsupported cleanup mode: %s\n' "$mode" >&2; exit 2 ;;
+          esac
+          if printf '%s' "$confirmation" | LC_ALL=C grep -q '[[:cntrl:]]'; then
+            printf '%s\n' 'cleanup confirmation contains forbidden control characters' >&2
+            exit 2
+          fi
+          printf 'REGISTRY_GC_MODE=%s\n' "$mode" >>"$GITHUB_ENV"
+          printf 'REGISTRY_GC_CONFIRM=%s\n' "$confirmation" >>"$GITHUB_ENV"
+
+      - name: Initialize blocked audit report
+        run: sh scripts/init-registry-gc-report.sh
+
+      - name: Exchange GitHub OIDC identity for cleanup token
+        env:
+          YANDEX_OIDC_AUDIENCE: ${{ vars.YANDEX_OIDC_AUDIENCE }}
+          YANDEX_EXPECTED_OIDC_SUBJECT: ${{ vars.YANDEX_REGISTRY_GC_GITHUB_OIDC_SUBJECT }}
+          YANDEX_SERVICE_ACCOUNT_ID: ${{ vars.YANDEX_REGISTRY_GC_SERVICE_ACCOUNT_ID }}
+        run: node scripts/github-yandex-token.mjs
+
+      - name: Evaluate keep-set and optionally delete exact images
+        run: sh scripts/registry-gc.sh
+
+      - name: Publish human-readable cleanup summary
+        if: always()
+        run: |
+          if test -f "$REGISTRY_GC_REPORT_MARKDOWN"; then
+            cat "$REGISTRY_GC_REPORT_MARKDOWN" >>"$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload cleanup audit report
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: registry-gc-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            .build/registry-gc/report.json
+            .build/registry-gc/report.md
+          if-no-files-found: error
+          retention-days: 90

@@ -455,6 +455,14 @@ serialized to close the CI race window. Yandex
 Serverless Containers runs AMD64 only; publishing a native Apple Silicon image
 creates a valid registry object but revision deployment cannot use it.
 
+Registry storage cleanup is intentionally separate from publication and
+deployment. The weekly GitHub workflow is dry-run-only unless a manual run
+supplies the exact registry confirmation, and all evidence and mutations are
+coordinated with Terraform through the shared deployment lock. See
+[registry-gc.md](registry-gc.md) for the Terraform-output bridge, last-three
+manifest retention, OIDC identity, native lifecycle interaction, and report
+contract.
+
 ### 7. Reset disposable application data after a baseline rebase
 
 Skip this step for an ordinary forward migration. Use it only while cloud-dev

@@ -20,6 +20,7 @@ builder=${IMAGE_BUILDER:-}
 build_context=${IMAGE_BUILD_CONTEXT:-.}
 require_clean=${IMAGE_REQUIRE_CLEAN_CHECKOUT:-0}
 verify_toolchain=${IMAGE_VERIFY_TOOLCHAIN:-0}
+exporter_mode=${IMAGE_EXPORTER_MODE:-docker}
 checkout_sha=$(git rev-parse HEAD)
 source_tree=$(git rev-parse HEAD^{tree})
 checkout_clean=true
@@ -43,6 +44,18 @@ if test "$verify_toolchain" = 1; then
     exit 2
   fi
 fi
+case "$exporter_mode" in
+  docker)
+    exporter_spec='type=docker,rewrite-timestamp=true,compatibility-version=30,compression=gzip,compression-level=9,force-compression=true,oci-mediatypes=false'
+    ;;
+  registry)
+    exporter_spec='type=registry,rewrite-timestamp=true,compatibility-version=30,compression=gzip,compression-level=9,force-compression=true,oci-mediatypes=false'
+    ;;
+  *)
+    printf 'unsupported IMAGE_EXPORTER_MODE: %s\n' "$exporter_mode" >&2
+    exit 2
+    ;;
+esac
 mkdir -p "$metadata_dir"
 
 sha256_file() {
@@ -92,6 +105,7 @@ build_image() {
     --arg base_runtime "$DISTROLESS_BASE_IMAGE" \
     --arg buildkit "$BUILDKIT_IMAGE" \
     --arg buildx_version "$BUILDX_VERSION" \
+    --arg exporter "$exporter_mode" \
     --argjson clean_checkout "$checkout_clean" \
     '{
       schema_version: 1,
@@ -108,7 +122,7 @@ build_image() {
       component: $component,
       target: $target,
       cache_mode: $cache_mode,
-      exporter: "docker-load-then-registry-push",
+      exporter: $exporter,
       provenance: false,
       sbom: false,
       clean_checkout: $clean_checkout,
@@ -125,7 +139,7 @@ build_image() {
   printf 'sha256:%s\n' "$(sha256_file "$inputs_file")" >"$inputs_digest_file"
 
   set -- docker buildx build --provenance=false --sbom=false \
-    --output type=docker,rewrite-timestamp=true,compression=gzip,compression-level=9,force-compression=true,oci-mediatypes=false \
+    --output "$exporter_spec" \
     --build-arg "VERSION=$version" \
     --build-arg "COMMIT=$commit" \
     --build-arg "BUILT_AT=$built_at" \

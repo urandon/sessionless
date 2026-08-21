@@ -377,10 +377,12 @@ gh variable set YANDEX_IMAGE_PUBLISH_ENABLED --repo urandon/sessionless --body t
 The flag is deliberately absent during bootstrap, so the first CI run remains
 green before the federation exists. Once enabled, rerun the `CI` workflow on
 mirrored `main`. Its final job builds every image twice from the exact Git tree
-with separate pinned BuildKit daemons and empty caches, round-trips both sets
-through a pinned local registry, and compares config digests, ordered rootfs
+with separate pinned BuildKit daemons and empty caches, exports both sets
+directly to a pinned local registry, and compares config digests, ordered rootfs
 diff IDs, ordered compressed layer descriptors, and canonical manifest digests.
-The verified second set remains loaded as the publication candidate. The job
+It then pulls and republishes the verified second set through Docker and requires
+that transport to preserve every canonical manifest digest. That set remains
+loaded as the publication candidate. The job
 then requests a GitHub OIDC
 JWT, verifies its exact safe claims, exchanges it for a short-lived Yandex IAM
 token, and pushes the five already-built `linux/amd64` images, including
@@ -432,9 +434,11 @@ CLOUD_IMAGE_TAG="$(git rev-parse HEAD)" ./scripts/cloud-images.sh
 The fallback runs the same two-builder, cache-free clean-room gate and uses the
 same deterministic build metadata, platform checks, registry push, and
 schema-v2 manifest format as CI. It refuses a dirty checkout or a source SHA
-other than the checked-out commit. The clean-room gate proves that the explicit
-Docker exporter digest survives load/push normalization. Before publishing,
-both paths therefore compare the complete candidate manifest digest with the
+other than the checked-out commit. The clean-room gate makes the direct pinned
+BuildKit registry export the canonical identity, then separately proves that
+Docker pull/tag/push preserves that identity on the active transport engine.
+Before publishing, both paths require the canonical registry digest sidecar and
+compare the complete candidate manifest digest with the
 descriptor behind any existing commit tag, then verify its config through the
 digest-qualified reference. An exact manifest/config match is a no-op; any
 manifest, layer, config, input-contract, authentication, or inspection mismatch

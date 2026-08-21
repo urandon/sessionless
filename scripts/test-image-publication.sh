@@ -24,6 +24,7 @@ for name in control-api web-bff reconciler telegram-sender worker-runtime; do
   jq -n --arg digest "$build_digest" \
     '{"containerimage.digest": $digest}' >"$metadata_dir/$name.json"
   printf '%s\n' "$source_sha" >"$metadata_dir/$name.source-sha"
+  printf '%s\n' "$build_digest" >"$metadata_dir/$name.registry-manifest-digest"
 done
 
 cat >"$fake_bin/docker" <<'EOF'
@@ -131,6 +132,7 @@ expected_source_date_epoch=$(git -C "$repo_root" show -s --format=%ct HEAD)
     FAKE_BUILD_DIGEST="$build_digest" \
     IMAGE_METADATA_DIR="$metadata_dir" \
     IMAGE_PLATFORM=linux/amd64 \
+    IMAGE_EXPORTER_MODE=registry \
     DOCKER_BUILD_CACHE=none \
     "$repo_root/scripts/build-runtime-images.sh"
 )
@@ -172,6 +174,33 @@ if ! grep -q 'must match the checked-out commit' "$test_root/tag-mismatch.out"; 
   printf '%s\n' 'cloud-images did not explain the checkout/tag mismatch' >&2
   exit 1
 fi
+
+mv "$metadata_dir/control-api.registry-manifest-digest" \
+  "$metadata_dir/control-api.registry-manifest-digest.missing"
+: >"$fake_log"
+if run_publish same >"$test_root/missing-canonical-digest.out" 2>&1; then
+  printf '%s\n' 'publisher accepted missing canonical registry manifest evidence' >&2
+  exit 1
+fi
+if test -s "$fake_log"; then
+  printf '%s\n' 'publisher contacted Docker before rejecting missing manifest evidence' >&2
+  exit 1
+fi
+mv "$metadata_dir/control-api.registry-manifest-digest.missing" \
+  "$metadata_dir/control-api.registry-manifest-digest"
+
+printf '%s\n' "$other_manifest_digest" \
+  >"$metadata_dir/control-api.registry-manifest-digest"
+: >"$fake_log"
+if run_publish same >"$test_root/canonical-digest-mismatch.out" 2>&1; then
+  printf '%s\n' 'publisher accepted mismatched canonical registry manifest evidence' >&2
+  exit 1
+fi
+if test -s "$fake_log"; then
+  printf '%s\n' 'publisher contacted Docker before rejecting manifest evidence mismatch' >&2
+  exit 1
+fi
+printf '%s\n' "$build_digest" >"$metadata_dir/control-api.registry-manifest-digest"
 
 printf '%s\n' "$other_sha" >"$metadata_dir/control-api.source-sha"
 : >"$fake_log"

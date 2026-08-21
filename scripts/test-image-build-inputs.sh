@@ -43,6 +43,12 @@ fi
 grep -F 'make image-reproducibility-test' "$repo_root/scripts/cloud-images.sh" >/dev/null
 grep -F 'IMAGE_REQUIRE_CLEAN_CHECKOUT=1' "$repo_root/scripts/cloud-images.sh" >/dev/null
 grep -F 'CLOUD_IMAGE_REQUIRE_CLEAN_INPUTS=1' "$repo_root/scripts/cloud-images.sh" >/dev/null
+grep -F 'IMAGE_EXPORTER_MODE=registry' "$repo_root/scripts/test-image-reproducibility.sh" >/dev/null
+grep -F 'http = true' "$repo_root/scripts/test-image-reproducibility.sh" >/dev/null
+grep -F 'transport_manifest_digest == .manifest.digest' \
+  "$repo_root/scripts/test-image-reproducibility.sh" >/dev/null
+grep -F 'registry-manifest-digest' "$repo_root/scripts/publish-cloud-images.sh" >/dev/null
+grep -F '.exporter == "registry"' "$repo_root/scripts/publish-cloud-images.sh" >/dev/null
 
 for dockerfile in build/control.Dockerfile build/worker-runtime.Dockerfile; do
   first_line=$(sed -n '1p' "$repo_root/$dockerfile")
@@ -78,6 +84,7 @@ for required in \
   '--provenance=false' \
   '--sbom=false' \
   'rewrite-timestamp=true' \
+  'compatibility-version=30' \
   'compression=gzip' \
   'compression-level=9' \
   'force-compression=true' \
@@ -87,5 +94,9 @@ for required in \
     exit 1
   }
 done
+if grep -F 'registry.insecure=true' "$repo_root/scripts/build-runtime-images.sh" >/dev/null; then
+  printf '%s\n' 'plain-HTTP registry mode incorrectly requests insecure HTTPS' >&2
+  exit 1
+fi
 
 printf '%s\n' 'immutable image input and exporter invariants passed'

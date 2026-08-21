@@ -77,9 +77,11 @@ for name in control-api web-bff reconciler telegram-sender worker-runtime; do
   source_file="$metadata_dir/$name.source-sha"
   inputs_file="$metadata_dir/$name.inputs.json"
   inputs_digest_file="$metadata_dir/$name.inputs.sha256"
+  canonical_digest_file="$metadata_dir/$name.registry-manifest-digest"
 
   if test ! -f "$metadata_file" || test ! -f "$source_file" ||
-    test ! -f "$inputs_file" || test ! -f "$inputs_digest_file"; then
+    test ! -f "$inputs_file" || test ! -f "$inputs_digest_file" ||
+    test ! -f "$canonical_digest_file"; then
     printf 'missing build provenance for %s in %s\n' "$name" "$metadata_dir" >&2
     exit 1
   fi
@@ -89,9 +91,16 @@ for name in control-api web-bff reconciler telegram-sender worker-runtime; do
       "$name" "$built_source_sha" "$CLOUD_IMAGE_TAG" >&2
     exit 1
   fi
-  build_digest=$(jq -er '."containerimage.digest"' "$metadata_file")
-  if ! printf '%s' "$build_digest" | jq -Re 'test("^sha256:[0-9a-f]{64}$")' >/dev/null; then
+  metadata_digest=$(jq -er '."containerimage.digest"' "$metadata_file")
+  build_digest=$(sed -n '1p' "$canonical_digest_file")
+  if ! printf '%s' "$metadata_digest" | jq -Re 'test("^sha256:[0-9a-f]{64}$")' >/dev/null ||
+    ! printf '%s' "$build_digest" | jq -Re 'test("^sha256:[0-9a-f]{64}$")' >/dev/null; then
     printf 'build metadata contains a non-SHA-256 digest for %s\n' "$name" >&2
+    exit 1
+  fi
+  if test "$metadata_digest" != "$build_digest"; then
+    printf 'canonical registry manifest mismatch for %s: metadata %s, registry %s\n' \
+      "$name" "$metadata_digest" "$build_digest" >&2
     exit 1
   fi
   input_digest=$(sed -n '1p' "$inputs_digest_file")
@@ -105,7 +114,8 @@ for name in control-api web-bff reconciler telegram-sender worker-runtime; do
     --arg sha "$CLOUD_IMAGE_TAG" \
     --arg platform "$target_platform" \
     '.schema_version == 1 and .image == $name and .source_sha == $sha and
-     .platform == $platform and .provenance == false and .sbom == false' \
+     .platform == $platform and .exporter == "registry" and
+     .provenance == false and .sbom == false' \
     "$inputs_file" >/dev/null
   if test "${CLOUD_IMAGE_REQUIRE_CLEAN_INPUTS:-0}" = 1 &&
     ! jq -e '.clean_checkout == true and .cache_mode == "none"' "$inputs_file" >/dev/null; then

@@ -21,8 +21,8 @@ web_image_ref = "cr.yandex/bootstrap/web-bff@sha256:0000000000000000000000000000
 # on mirrored main, then copy its exact non-secret subject here.
 github_oidc_subject = "repo:replace-observed-immutable-subject:ref:refs/heads/main"
 # The GitHub environment named `release` must permit only protected v* tags.
-# Copy the exact environment-scoped subject from a safe claim-inspection run.
-github_release_oidc_subject = "repo:replace-observed-immutable-subject:environment:release"
+# The claim-inspection run must report this exact repository-scoped subject.
+github_release_oidc_subject = "repo:urandon/sessionless:environment:release"
 
 stable_slot  = "blue"
 canary_weight = 0

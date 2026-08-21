@@ -53,8 +53,8 @@ variable "github_release_oidc_subject" {
   type        = string
 
   validation {
-    condition     = startswith(var.github_release_oidc_subject, "repo:") && endswith(var.github_release_oidc_subject, ":environment:release")
-    error_message = "github_release_oidc_subject must be the exact repository subject for the release environment."
+    condition     = var.github_release_oidc_subject == "repo:urandon/sessionless:environment:release"
+    error_message = "github_release_oidc_subject must be the exact urandon/sessionless release-environment subject."
   }
 }
 variable "labels" {

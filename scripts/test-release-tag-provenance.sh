@@ -44,6 +44,25 @@ run_verify() {
 
 run_verify >/dev/null
 
+# Simulate both remotes moving the tag after the validation job while the
+# downstream checkout remains pinned to the previously validated commit.
+original_tag_raw=$(git --git-dir="$gitcode" rev-parse refs/tags/v1.0.0)
+printf '%s\n' moved >"$source_repo/file.txt"
+git -C "$source_repo" add file.txt
+git -C "$source_repo" commit -q -m 'Move candidate'
+moved_sha=$(git -C "$source_repo" rev-parse HEAD)
+git -C "$source_repo" push -q origin main
+git -C "$source_repo" remote add github "$github"
+git -C "$source_repo" push -q github main
+git --git-dir="$gitcode" update-ref refs/tags/v1.0.0 "$moved_sha"
+git --git-dir="$github" update-ref refs/tags/v1.0.0 "$moved_sha"
+if run_verify >/dev/null 2>&1; then
+  printf '%s\n' 'a tag moved after validation passed downstream provenance' >&2
+  exit 1
+fi
+git --git-dir="$gitcode" update-ref refs/tags/v1.0.0 "$original_tag_raw"
+git --git-dir="$github" update-ref refs/tags/v1.0.0 "$original_tag_raw"
+
 git -C "$source_repo" tag v1.1.0
 git -C "$source_repo" push -q origin v1.1.0
 git --git-dir="$github" fetch -q "$gitcode" '+refs/tags/*:refs/tags/*'

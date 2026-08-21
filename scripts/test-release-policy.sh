@@ -62,6 +62,11 @@ for pin in \
 done
 
 grep -F 'persist-credentials: false' "$workflow" >/dev/null
+if grep -F 'ref: refs/tags/' "$workflow" >/dev/null; then
+  printf '%s\n' 'downstream release checkout must use the validated immutable source SHA' >&2
+  exit 1
+fi
+test "$(grep -Fc 'ref: ${{ needs.validate.outputs.source_sha }}' "$workflow")" -eq 3
 grep -F 'sh scripts/verify-release-tag.sh' "$workflow" >/dev/null
 test "$(grep -c 'verify-release-tag.sh' "$workflow")" -ge 4
 grep -F 'IMAGE_REPRODUCIBILITY_RETAIN_REGISTRY: "1"' "$workflow" >/dev/null
@@ -86,7 +91,7 @@ if sed -n '/account_roles = {/,/^  }/p' "$foundation" | grep -F 'release-publish
   printf '%s\n' 'release publisher unexpectedly received a folder role' >&2
   exit 1
 fi
-grep -F ':environment:release' "$foundation_vars" >/dev/null
+grep -F 'repo:urandon/sessionless:environment:release' "$foundation_vars" >/dev/null
 
 for name in control-api web-bff reconciler telegram-sender worker-runtime; do
   grep -F "$name" "$workflow" >/dev/null || {

@@ -138,6 +138,11 @@ variable "github_oidc_subject" {
 variable "github_release_oidc_subject" {
   description = "Exact subject printed from the protected GitHub release environment."
   type        = string
+
+  validation {
+    condition     = var.github_release_oidc_subject == "repo:urandon/sessionless:environment:release"
+    error_message = "github_release_oidc_subject must be the exact urandon/sessionless release-environment subject."
+  }
 }
 variable "stable_slot" {
   type    = string

@@ -35,8 +35,9 @@ GitCode lookup failure therefore blocks release publication.
    exception for manual runs.
 3. Select an existing GitCode release tag when manually dispatching
    `.github/workflows/release.yml`. With publication disabled, the workflow
-   prints only safe OIDC claims and then stops. Copy the exact `subject` claim
-   into the external cloud-dev tfvars as `github_release_oidc_subject`.
+   prints only safe OIDC claims and then stops. Confirm that `subject` is
+   exactly `repo:urandon/sessionless:environment:release`; Terraform rejects
+   any other repository subject.
 4. Apply the reviewed Terraform plan. It creates a dedicated
    `release-publisher` service account and workload-identity credential. The
    service account has `container-registry.images.pusher` only on these five
@@ -54,8 +55,9 @@ Yandex federated credentials match one exact OIDC subject and do not accept a
 `refs/tags/v*` wildcard. The constant environment subject plus GitHub's
 environment tag policy provides the wildcard gate. The login helper separately
 requires the signed JWT `ref`, `sha`, repository, and event to match the
-selected release tag. Repository subjects can contain immutable owner and
-repository IDs, so copy the observed claim rather than constructing it.
+selected release tag. The helper also records immutable owner and repository
+ID claims as evidence; the cloud credential itself is bound to the exact
+repository/environment subject above.
 
 ## Publishing
 

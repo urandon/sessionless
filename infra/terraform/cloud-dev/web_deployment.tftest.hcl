@@ -15,7 +15,7 @@ run "web_deployment_plan" {
     runtime_image_tag           = "0000000000000000000000000000000000000000"
     web_image_ref               = "cr.yandex/crptestregistry/web-bff@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     github_oidc_subject         = "repo:immutable-test-subject:ref:refs/heads/main"
-    github_release_oidc_subject = "repo:immutable-test-subject:environment:release"
+    github_release_oidc_subject = "repo:urandon/sessionless:environment:release"
     billing_account_id          = "billing-test"
     budget_id                   = "budget-test"
   }
@@ -68,7 +68,7 @@ run "web_deployment_plan" {
   }
 
   assert {
-    condition     = output.github_release_oidc_subject == "repo:immutable-test-subject:environment:release"
+    condition     = output.github_release_oidc_subject == "repo:urandon/sessionless:environment:release"
     error_message = "release workload identity must preserve the exact protected-environment subject"
   }
 
@@ -81,4 +81,27 @@ run "web_deployment_plan" {
     condition     = module.web.concurrency >= 1 && module.web.concurrency <= 8
     error_message = "the Web BFF concurrency must remain inside the dev cost envelope"
   }
+}
+
+run "reject_foreign_release_subject" {
+  command = plan
+
+  variables {
+    cloud_id                    = "cloud-test"
+    base_domain                 = "sessionless.triborg.dev"
+    artifact_bucket_name        = "sessionless-test-artifacts"
+    telegram_secret_version_id  = "telegram-secret-version"
+    web_bff_secret_version_id   = "web-secret-version"
+    telegram_oidc_client_id     = "123456789"
+    control_blue_image_tag      = "0000000000000000000000000000000000000000"
+    control_green_image_tag     = "0000000000000000000000000000000000000000"
+    runtime_image_tag           = "0000000000000000000000000000000000000000"
+    web_image_ref               = "cr.yandex/crptestregistry/web-bff@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    github_oidc_subject         = "repo:immutable-test-subject:ref:refs/heads/main"
+    github_release_oidc_subject = "repo:attacker/project:environment:release"
+    billing_account_id          = "billing-test"
+    budget_id                   = "budget-test"
+  }
+
+  expect_failures = [var.github_release_oidc_subject]
 }

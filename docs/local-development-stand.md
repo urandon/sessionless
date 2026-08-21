@@ -78,11 +78,14 @@ make dev-down
 
 1. Build and start only infrastructure services: YDB, MinIO, ElasticMQ, and
    the Telegram fake.
-2. Poll their host endpoints until they are ready or emit scoped service logs.
+2. Poll their host endpoints until they are live or emit scoped service logs.
 3. Idempotently create the `sessionless-local` bucket.
-4. Apply the embedded Goose/YDB migrations before any schema-dependent
-   service starts. YDB Local's narrow storage-pool initialization state is
-   retried; all other migration failures remain fail-fast.
+4. Treat YDB's monitoring HTTP endpoint as liveness only, then use the embedded
+   Goose/YDB migration as the query-backed readiness gate before any
+   schema-dependent service starts. YDB Local's narrow storage-pool
+   initialization state is retried for at most 60 attempts; all other failures
+   remain fail-fast. `ReasonBootBSError` or `NumUnconnectedDisks` in the bounded
+   YDB log tail stops immediately with recovery guidance.
 5. Build and start the control API, Telegram sender, and reconciler, then wait
    for the control API readiness endpoint.
 6. Idempotently load `test/fixtures/telegram/text-message.json`.
@@ -100,7 +103,34 @@ and removes the container on exit.
 volumes. A subsequent `make dev-up` reuses YDB tables and objects, rechecks the
 schema, and reloads the update fixture without duplication.
 
-Destructive reset is explicit and fixed to the local project:
+Every Compose service uses Docker's `json-file` driver with `max-size=10m` and
+`max-file=3`. A service can therefore retain at most about 30 MiB of local
+container logs. The rotation bound applies to infrastructure, one-shot init,
+application, and worker-profile containers.
+
+### YDB Local boot-storage recovery
+
+If `make dev-up` reports `ReasonBootBSError` or `NumUnconnectedDisks`, stop and
+inspect before changing any persistent state. These commands are read-only or
+volume-preserving:
+
+```sh
+docker system df -v
+docker volume ls --filter label=com.docker.compose.project=sessionless-dev
+docker compose --project-name sessionless-dev ps
+docker compose --project-name sessionless-dev logs --no-color --tail 100 ydb-local
+make dev-down
+make dev-up
+```
+
+The `make dev-down` and subsequent `make dev-up` sequence removes and recreates
+containers and the project network while preserving the named `ydb-data`,
+`ydb-certs`, and `object-storage-data` volumes. If the same preserved YDB
+volume repeats the boot-storage failure, leave the stand stopped and retain the
+volume for diagnosis or recovery.
+
+Reset only when the local data is explicitly disposable. This command deletes
+all three named project volumes and cannot be undone:
 
 ```sh
 CONFIRM_LOCAL_RESET=sessionless-dev make dev-reset
@@ -167,17 +197,19 @@ object storage, durable delivery and Telegram capture. It also injects bounded
 queue, worker and Telegram failures. The full scenario list, timing boundary
 and operator queries are documented in [local-e2e.md](local-e2e.md).
 
-## Apple Silicon
+## Apple Silicon and Colima
 
-The pinned YDB Local image is run as `linux/amd64`, matching YDB's documented
-Docker setup. Docker Desktop must have Rosetta 2 emulation enabled for the
-default disk-backed stand. This is the acceptance-equivalent configuration
-because it preserves YDB state.
+The pinned YDB Local image runs as `linux/amd64`. The active Colima Docker
+runtime must therefore support amd64 emulation and have enough virtual-disk
+space for the disk-backed stand. Check the active runtime and capacity with
+`docker context show`, `colima status`, and `docker system df -v` before a long
+integration run.
 
-If Rosetta 2 is unavailable, a developer may temporarily set
-`YDB_USE_IN_MEMORY_PDISKS=true`; this removes the disk-persistence guarantee and
-must not be used to claim the persistence acceptance check. MinIO and
-ElasticMQ's pinned images provide both amd64 and arm64 variants.
+A developer may temporarily set `YDB_USE_IN_MEMORY_PDISKS=true` when the local
+runtime cannot support the disk-backed image. This removes the persistence
+guarantee and must not be used to claim the normal stop/restart acceptance
+check. MinIO and ElasticMQ's pinned images provide both amd64 and arm64
+variants.
 
 ## Configuration boundary
 

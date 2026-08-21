@@ -24,7 +24,9 @@ import (
 func TestSessionAPIStoreAuthorizationPaginationAndFrontendBinding(t *testing.T) {
 	store, client := openStore(t)
 	ctx := context.Background()
-	now := time.Now().UTC().Truncate(time.Microsecond)
+	// Keep sub-microsecond precision in the canonical JSON record. YDB Timestamp
+	// index columns truncate it, and listing/cursors must compare at that boundary.
+	now := time.Now().UTC().Truncate(time.Microsecond).Add(581 * time.Nanosecond)
 	tenantID := domain.TenantID(uniqueID(fmt.Sprintf("tenant-session-api-%d", now.UnixNano())))
 	userID := domain.UserID(uniqueID("user-session-api"))
 	seedCanonicalMembership(t, client.DB, tenantID, userID, now)

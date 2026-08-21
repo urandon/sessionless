@@ -226,16 +226,38 @@ func (sender *Sender) runProjectionWake(
 	}
 	processed := 0
 	for _, candidate := range ready {
-		deliveryID, materialized, err := sender.materializeProjection(
+		_, _, err := sender.materializeProjection(
 			ctx, candidate.TenantID, candidate.ProjectionID, now,
 		)
 		if err != nil {
 			return WakeResult{}, err
 		}
-		if !materialized {
+	}
+	deliveries, err := sender.store.ListRunTelegramDeliveries(
+		ctx, message.Envelope.TenantID, runID, sender.config.BatchSize,
+	)
+	if err != nil {
+		return WakeResult{}, err
+	}
+	for _, candidate := range deliveries {
+		delivery, found, err := sender.store.GetTelegramDelivery(
+			ctx, candidate.TenantID, candidate.DeliveryID,
+		)
+		if err != nil {
+			return WakeResult{}, err
+		}
+		if !found || delivery.Status.Terminal() {
 			continue
 		}
-		claimed, ok, err := sender.store.ClaimTelegramDelivery(ctx, candidate.TenantID, deliveryID, now)
+		if delivery.NextAttemptAt != nil && delivery.NextAttemptAt.After(now) {
+			if err := wakeQueue.Retry(ctx, message.ReceiptHandle, delivery.NextAttemptAt.Sub(now)); err != nil {
+				return WakeResult{}, err
+			}
+			return WakeResult{Outcome: "retry", Code: "retry_wait"}, nil
+		}
+		claimed, ok, err := sender.store.ClaimTelegramDelivery(
+			ctx, candidate.TenantID, candidate.DeliveryID, now,
+		)
 		if err != nil {
 			return WakeResult{}, err
 		}

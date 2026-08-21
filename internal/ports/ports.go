@@ -307,6 +307,12 @@ type TelegramDeliveryStore interface {
 		runID domain.RunID,
 		limit uint64,
 	) ([]TelegramProjectionReady, error)
+	ListRunTelegramDeliveries(
+		ctx context.Context,
+		tenantID domain.TenantID,
+		runID domain.RunID,
+		limit uint64,
+	) ([]TelegramDeliveryReady, error)
 	ListReadyTelegramProjections(
 		ctx context.Context,
 		bucket uint32,

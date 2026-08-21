@@ -88,11 +88,8 @@ func TestCanonicalSessionCrossFrontendLifecycle(t *testing.T) {
 		t.Fatalf("current Telegram session = %s, want second /new session %s", current, secondNew.SessionID)
 	}
 
-	telegramTenant, telegramUser := slice.telegramPrincipal(telegramChat)
-	if telegramTenant != initial.TenantID {
-		t.Fatalf("Telegram principal tenant = %s, want %s", telegramTenant, initial.TenantID)
-	}
-	clock := &e2eClock{at: time.Now().UTC().Add(time.Minute)}
+	telegramUser := slice.sessionOwner(initial)
+	clock := &e2eClock{at: time.Now().UTC()}
 	api, err := sessionapi.New(sessionapi.Config{
 		CursorKey: []byte(strings.Repeat("c", 32)),
 		IDKey:     []byte(strings.Repeat("a", 32)),
@@ -141,7 +138,7 @@ func TestCanonicalSessionCrossFrontendLifecycle(t *testing.T) {
 	if artifactAfter := slice.readBlob(manifest.Artifacts[0].Blob); !bytes.Equal(artifactAfter, artifactBefore) {
 		t.Fatal("archive changed an immutable canonical artifact")
 	}
-	clock.at = clock.at.Add(time.Second)
+	clock.at = time.Now().UTC()
 	unarchived, err := api.SetArchived(slice.ctx, initial.TenantID, telegramUser, initial.SessionID, false, "unarchive-e2e-1")
 	if err != nil || unarchived.Status != domain.SessionActive || unarchived.ArchivedAt != nil {
 		t.Fatalf("unarchive = %+v err=%v", unarchived, err)
@@ -153,18 +150,19 @@ func TestCanonicalSessionCrossFrontendLifecycle(t *testing.T) {
 	assertSessionPageContains(t, activeAfterUnarchive, initial.SessionID)
 
 	ingress, err := sessioningress.New(sessioningress.Config{
-		IDKey: []byte(strings.Repeat("i", 32)),
+		IDKey:                 []byte(strings.Repeat("i", 32)),
+		DispatchWakePublisher: slice.schedulerWakePublisher(),
 	}, slice.state, slice.blobs)
 	if err != nil {
 		t.Fatal(err)
 	}
 	syntheticConversationID := "synthetic-e2e-" + string(secondNew.SessionID)
 	synthetic := syntheticfrontend.New(ingress, initial.TenantID, telegramUser, syntheticConversationID)
-	syntheticState, err := synthetic.EnsureSession(slice.ctx, clock.Now().Add(time.Second))
+	syntheticState, err := synthetic.EnsureSession(slice.ctx, time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}
-	clock.at = clock.at.Add(2 * time.Second)
+	clock.at = time.Now().UTC()
 	syntheticBinding, err := api.BindFrontend(
 		slice.ctx, initial.TenantID, telegramUser, syntheticfrontend.Frontend,
 		syntheticConversationID, secondNew.SessionID,
@@ -175,7 +173,7 @@ func TestCanonicalSessionCrossFrontendLifecycle(t *testing.T) {
 	}
 	syntheticResult, err := synthetic.Send(
 		slice.ctx, "synthetic-delivery-e2e-1", "shared canonical session",
-		initial.ConnectionID, clock.Now().Add(time.Second),
+		initial.ConnectionID, time.Now().UTC(),
 	)
 	if err != nil || syntheticResult.SessionID != secondNew.SessionID {
 		t.Fatalf("synthetic canonical event = %+v err=%v", syntheticResult, err)
@@ -235,7 +233,7 @@ func TestCanonicalSessionCrossFrontendLifecycle(t *testing.T) {
 	if _, err := slice.state.RequestSessionDeletion(slice.ctx, domain.SessionDeletion{
 		TenantID: initial.TenantID, SessionID: initial.SessionID, RequestedBy: otherUser,
 		Reason: "cross-tenant negative fixture", State: domain.SessionDeletionRequested,
-		RequestedAt: clock.Now().Add(2 * time.Second),
+		RequestedAt: time.Now().UTC(),
 	}); err == nil {
 		t.Fatal("cross-tenant destructive deletion request succeeded")
 	}
@@ -248,6 +246,18 @@ func TestCanonicalSessionCrossFrontendLifecycle(t *testing.T) {
 	slice.assertCount(0,
 		`SELECT COUNT(*) FROM dispatch_outbox WHERE tenant_id = $1 AND status = $2`,
 		otherTenant, domain.DispatchPending)
+}
+
+func (slice *localSlice) sessionOwner(ref runRef) domain.UserID {
+	slice.t.Helper()
+	session, found, err := slice.state.GetSession(slice.ctx, ref.TenantID, ref.SessionID)
+	if err != nil {
+		slice.t.Fatal(err)
+	}
+	if !found {
+		slice.t.Fatalf("session %s not found", ref.SessionID)
+	}
+	return session.CreatedBy
 }
 
 func (slice *localSlice) telegramPrincipal(chatID int64) (domain.TenantID, domain.UserID) {

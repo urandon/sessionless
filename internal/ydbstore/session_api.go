@@ -152,12 +152,13 @@ func (store *Store) ListSessionsForUser(
 			 ORDER BY updated_at DESC, session_id DESC LIMIT $5`
 		args := []any{request.TenantID, request.UserID, request.Status, bucket, request.Limit}
 		if request.Before != nil {
+			beforeAt := request.Before.UpdatedAt.UTC().Truncate(time.Microsecond)
 			query = `SELECT session_id, updated_at FROM session_activity
 				 WHERE tenant_id = $1 AND user_id = $2 AND status = $3 AND activity_bucket = $4
 				 AND (updated_at < $5 OR (updated_at = $5 AND session_id < $6))
 				 ORDER BY updated_at DESC, session_id DESC LIMIT $7`
 			args = []any{request.TenantID, request.UserID, request.Status, bucket,
-				request.Before.UpdatedAt, request.Before.SessionID, request.Limit}
+				beforeAt, request.Before.SessionID, request.Limit}
 		}
 		rows, err := store.db.QueryContext(ctx, query, args...)
 		if err != nil {
@@ -204,7 +205,8 @@ func (store *Store) ListSessionsForUser(
 		// activity row between the bucket read and its authorized point read.
 		// Skip that stale candidate; a later request sees its new key. The work
 		// remains bounded by fan-out and page size.
-		if !found || record.Session.Status != request.Status || !record.Session.UpdatedAt.Equal(item.at) {
+		if !found || record.Session.Status != request.Status ||
+			!record.Session.UpdatedAt.UTC().Truncate(time.Microsecond).Equal(item.at) {
 			continue
 		}
 		result = append(result, record)

@@ -33,6 +33,20 @@ func (*senderStore) ListRunTelegramProjections(
 	return nil, nil
 }
 
+func (store *senderStore) ListRunTelegramDeliveries(
+	_ context.Context,
+	tenantID domain.TenantID,
+	runID domain.RunID,
+	_ uint64,
+) ([]ports.TelegramDeliveryReady, error) {
+	if store.delivery.TenantID != tenantID || store.delivery.RunID != runID || store.delivery.ID == "" {
+		return nil, nil
+	}
+	return []ports.TelegramDeliveryReady{{
+		TenantID: tenantID, DeliveryID: store.delivery.ID,
+	}}, nil
+}
+
 func (*senderStore) ListReadyTelegramProjections(
 	context.Context,
 	uint32,
@@ -348,7 +362,7 @@ func TestSenderWakeDeadLettersUnexpectedEnvelopeKind(t *testing.T) {
 	}
 }
 
-func TestSenderProjectionWakeMaterializesCanonicalPayloadAndRepliesToTrigger(t *testing.T) {
+func TestSenderProjectionWakeRetriesMaterializedDeliveryAndRepliesToTrigger(t *testing.T) {
 	now := time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC)
 	tenantID := domain.TenantID("tenant-projection")
 	runID := domain.RunID("run-projection")
@@ -382,8 +396,9 @@ func TestSenderProjectionWakeMaterializesCanonicalPayloadAndRepliesToTrigger(t *
 			EventPayload: eventRef, TriggerPayload: triggerRef,
 		},
 	}
-	client := &senderClient{}
-	sender, err := NewSender(Config{}, testkit.NewFakeClock(now), store, blobs, client)
+	client := &senderClient{err: errors.New("retryable Telegram failure")}
+	clock := testkit.NewFakeClock(now)
+	sender, err := NewSender(Config{BaseBackoff: time.Second}, clock, store, blobs, client)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -399,8 +414,17 @@ func TestSenderProjectionWakeMaterializesCanonicalPayloadAndRepliesToTrigger(t *
 	if err != nil {
 		t.Fatal(err)
 	}
+	if result.Outcome != "retry" || base.delivery.Status != domain.DeliveryRetryWait {
+		t.Fatalf("first projection wake = %#v delivery=%#v", result, base.delivery)
+	}
+	client.err = nil
+	clock.Advance(time.Second)
+	result, err = sender.RunWake(context.Background(), wakeQueue)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Outcome != "sent" || base.delivery.Status != domain.DeliverySent {
-		t.Fatalf("projection wake = %#v delivery=%#v", result, base.delivery)
+		t.Fatalf("retried projection wake = %#v delivery=%#v", result, base.delivery)
 	}
 	if store.content == nil || store.content.EventPayload != eventRef ||
 		store.content.TriggerPayload != triggerRef || store.content.TriggerChatID != 7001 ||
@@ -408,8 +432,8 @@ func TestSenderProjectionWakeMaterializesCanonicalPayloadAndRepliesToTrigger(t *
 		*store.content.ArtifactManifestID != "manifest-output" {
 		t.Fatalf("materialized content = %#v", store.content)
 	}
-	if len(client.requests) != 1 || client.requests[0].Payload != eventRef ||
-		client.requests[0].ReplyToMessageID != 91 {
+	if len(client.requests) != 2 || client.requests[0].Payload != eventRef ||
+		client.requests[1].Payload != eventRef || client.requests[1].ReplyToMessageID != 91 {
 		t.Fatalf("Telegram requests = %#v", client.requests)
 	}
 }

@@ -101,6 +101,16 @@ func TestTelegramProjectionMaterializationPreservesCanonicalReferencesAndRecheck
 		delivery.Chat.ChatID != -1007001 || delivery.ReplyToMessageID != 91 {
 		t.Fatalf("delivery = %#v", delivery)
 	}
+	byRunDeliveries, err := store.ListRunTelegramDeliveries(
+		context.Background(), fixture.tenant, fixture.run.ID, 10,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byRunDeliveries) != 1 || byRunDeliveries[0].TenantID != fixture.tenant ||
+		byRunDeliveries[0].DeliveryID != delivery.ID {
+		t.Fatalf("run Telegram deliveries = %#v", byRunDeliveries)
+	}
 	assertCount(t, client, "frontend_projection_outbox", fixture.tenant, 0)
 	assertCount(t, client, "frontend_projections_by_run", fixture.tenant, 0)
 	assertCount(t, client, "frontend_projection_ready_v1", fixture.tenant, 0)

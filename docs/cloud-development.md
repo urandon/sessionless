@@ -376,13 +376,27 @@ gh variable set YANDEX_IMAGE_PUBLISH_ENABLED --repo urandon/sessionless --body t
 
 The flag is deliberately absent during bootstrap, so the first CI run remains
 green before the federation exists. Once enabled, rerun the `CI` workflow on
-mirrored `main`. Its final job builds the images once, requests a GitHub OIDC
+mirrored `main`. Its final job builds every image twice from the exact Git tree
+with separate pinned BuildKit daemons and empty caches, round-trips both sets
+through a pinned local registry, and compares config digests, ordered rootfs
+diff IDs, ordered compressed layer descriptors, and canonical manifest digests.
+The verified second set remains loaded as the publication candidate. The job
+then requests a GitHub OIDC
 JWT, verifies its exact safe claims, exchanges it for a short-lived Yandex IAM
 token, and pushes the five already-built `linux/amd64` images, including
-`web-bff`. It uploads
-`deployment-images-<full-sha>` containing immutable registry digests. No GitHub
+`web-bff`. It uploads `image-reproducibility-<full-sha>`, the deterministic
+`deployment-images-<full-sha>`, and a run-specific
+`publication-receipt-<full-sha>-<attempt>`. No GitHub
 secret, authorized service-account key, Lockbox access, or Terraform credential
 is used.
+
+`build/images.env` is the canonical reviewed toolchain boundary: the Dockerfile
+frontend, Go/Node/distroless bases, BuildKit daemon, and local registry are all
+digest-pinned. The exporter fixes timestamp rewriting, gzip compression, Docker
+media types, platform, and disabled provenance/SBOM attestations. GitHub run
+IDs, OIDC exchange, cache state, builder names, logs, artifact ZIP metadata,
+and publication time are transport evidence rather than deployable image
+identity; they live only in the receipt or CI logs.
 
 Download the manifest and convert it into a separate non-secret Terraform
 variable file:
@@ -416,18 +430,22 @@ CLOUD_IMAGE_TAG="$(git rev-parse HEAD)" ./scripts/cloud-images.sh
 ```
 
 The fallback uses the same deterministic build metadata, platform checks,
-registry push, and manifest format as CI. It refuses a source SHA other than the
-checked-out commit. Before publishing, both paths compare the local image config
-digest with the config digest behind any existing commit tag: an exact content
-match is a no-op and a different config fails before push. This deliberately
-does not compare Buildx's load/export manifest digest with the registry manifest
-digest because Docker can normalize the outer manifest during push. The remote
-descriptor supplies the registry's canonical manifest digest. The raw registry
-manifest is then read through that digest-qualified reference, so a concurrent
-tag update cannot mix the descriptor of one manifest with the config digest of
-another. The remote config digest is verified again after a first publication,
-and the canonical manifest digest is recorded in the deployment reference.
-Same-ref GitHub image jobs are serialized to close the CI race window. Yandex
+registry push, and schema-v2 manifest format as CI. It refuses a source SHA
+other than the checked-out commit. The clean-room gate proves that the explicit
+Docker exporter digest survives load/push normalization. Before publishing,
+both paths therefore compare the complete candidate manifest digest with the
+descriptor behind any existing commit tag, then verify its config through the
+digest-qualified reference. An exact manifest/config match is a no-op; any
+manifest, layer, config, input-contract, authentication, or inspection mismatch
+fails before target-tag mutation. After a first push the registry manifest and
+config must equal the candidate again.
+
+`deployment-images.json` is canonical sorted JSON with only commit/tree,
+platform/input-contract, and immutable image identities, so a same-SHA rerun
+must reproduce it byte-for-byte. Wall-clock publication time, workflow URL,
+run/attempt IDs, and per-image `pushed` versus `verified_existing` actions are
+kept in `deployment-images.receipt.json`. Same-ref GitHub image jobs are
+serialized to close the CI race window. Yandex
 Serverless Containers runs AMD64 only; publishing a native Apple Silicon image
 creates a valid registry object but revision deployment cannot use it.
 

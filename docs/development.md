@@ -79,6 +79,22 @@ operator-only schema, reset, deployment-lock, and Web bootstrap commands. The
 Makefile is the authoritative component inventory; documentation deliberately
 does not duplicate a count that drifts as slices are added.
 
+The fast `make ci` contract uses fake registry fixtures to verify immutable
+publication failures and deterministic manifest/receipt separation. The real
+container identity gate is intentionally separate because it performs ten cold
+builds:
+
+```sh
+make image-reproducibility-test
+```
+
+It requires a running Docker daemon (Colima is supported), creates two
+temporary digest-pinned BuildKit builders and a pinned loopback registry, builds
+all five images twice from `git archive HEAD`, and compares config, diff-ID,
+layer, and manifest identities. Cleanup removes only those uniquely named
+temporary resources. CI runs this gate on every mirrored commit and retains the
+second verified set for trusted-main publication.
+
 ## Local stack
 
 Start and initialize the complete local stand:

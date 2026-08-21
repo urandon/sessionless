@@ -7,15 +7,17 @@ trap 'rm -rf "$test_root"' EXIT HUP INT TERM
 
 source_sha=$(git -C "$repo_root" rev-parse HEAD)
 other_sha=0000000000000000000000000000000000000000
-build_digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 conflicting_config_digest=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 candidate_config_digest=sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 remote_manifest_digest=sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+other_manifest_digest=sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+build_digest=$remote_manifest_digest
 metadata_dir="$test_root/metadata"
 fake_bin="$test_root/bin"
 fake_state="$test_root/state"
 fake_log="$test_root/docker.log"
 manifest_path="$test_root/deployment-images.json"
+receipt_path="$test_root/deployment-images.receipt.json"
 mkdir -p "$metadata_dir" "$fake_bin" "$fake_state"
 
 for name in control-api web-bff reconciler telegram-sender worker-runtime; do
@@ -128,6 +130,7 @@ expected_source_date_epoch=$(git -C "$repo_root" show -s --format=%ct HEAD)
     FAKE_EXPECTED_SOURCE_DATE_EPOCH="$expected_source_date_epoch" \
     FAKE_BUILD_DIGEST="$build_digest" \
     IMAGE_METADATA_DIR="$metadata_dir" \
+    IMAGE_PLATFORM=linux/amd64 \
     DOCKER_BUILD_CACHE=none \
     "$repo_root/scripts/build-runtime-images.sh"
 )
@@ -139,18 +142,22 @@ fi
 
 run_publish() {
   mode=$1
+  attempt=${2:-1}
   PATH="$fake_bin:$PATH" \
     FAKE_DOCKER_LOG="$fake_log" \
     FAKE_DOCKER_STATE="$fake_state" \
     FAKE_REMOTE_MODE="$mode" \
     FAKE_CANDIDATE_CONFIG_DIGEST="$candidate_config_digest" \
     FAKE_CONFLICTING_CONFIG_DIGEST="$conflicting_config_digest" \
-    FAKE_REMOTE_MANIFEST_DIGEST="$remote_manifest_digest" \
+    FAKE_REMOTE_MANIFEST_DIGEST="${FAKE_REMOTE_MANIFEST_DIGEST_OVERRIDE:-$remote_manifest_digest}" \
     YANDEX_CONTAINER_REGISTRY_ID=crptestregistry \
     CLOUD_IMAGE_TAG="$source_sha" \
     CLOUD_IMAGE_METADATA_DIR="$metadata_dir" \
     CLOUD_IMAGE_MANIFEST_PATH="$manifest_path" \
+    CLOUD_IMAGE_RECEIPT_PATH="$receipt_path" \
     SOURCE_BUILT_AT=2026-08-10T00:00:00Z \
+    SOURCE_RUN_ID=publication-test \
+    SOURCE_RUN_ATTEMPT="$attempt" \
     "$repo_root/scripts/publish-cloud-images.sh"
 }
 
@@ -203,6 +210,17 @@ if grep -q -- ":${source_sha} --raw$" "$fake_log"; then
   exit 1
 fi
 
+: >"$fake_log"
+if FAKE_REMOTE_MANIFEST_DIGEST_OVERRIDE="$other_manifest_digest" \
+  run_publish same >"$test_root/manifest-mismatch.out" 2>&1; then
+  printf '%s\n' 'publisher accepted a different existing manifest with the same config' >&2
+  exit 1
+fi
+if grep -q '^push ' "$fake_log"; then
+  printf '%s\n' 'publisher pushed before rejecting an existing manifest mismatch' >&2
+  exit 1
+fi
+unset FAKE_REMOTE_MANIFEST_DIGEST_OVERRIDE
 rm -f "$fake_state"/*
 : >"$fake_log"
 run_publish absent >/dev/null
@@ -214,8 +232,23 @@ fi
 jq -e \
   --arg sha "$source_sha" \
   --arg digest "$remote_manifest_digest" \
-  '.source_sha == $sha and (.images | length) == 5 and .images["web-bff"].reference == "cr.yandex/crptestregistry/web-bff@" + $digest and all(.images[]; .digest == $digest)' \
+  '.schema_version == 2 and .source.sha == $sha and .build.platform == "linux/amd64" and
+   (.images | length) == 5 and
+   .images["web-bff"].reference == "cr.yandex/crptestregistry/web-bff@" + $digest and
+   all(.images[]; .manifest_digest == $digest)' \
   "$manifest_path" >/dev/null
+
+cp "$manifest_path" "$test_root/first-deployment-images.json"
+cp "$receipt_path" "$test_root/first-publication-receipt.json"
+run_publish same 2 >/dev/null
+if ! cmp -s "$test_root/first-deployment-images.json" "$manifest_path"; then
+  printf '%s\n' 'same-SHA publication did not reproduce the deployment manifest byte-for-byte' >&2
+  exit 1
+fi
+if cmp -s "$test_root/first-publication-receipt.json" "$receipt_path"; then
+  printf '%s\n' 'publication receipts did not retain run-specific attempt metadata' >&2
+  exit 1
+fi
 
 EXPECTED_SOURCE_SHA="$source_sha" EXPECTED_REGISTRY_ID=crptestregistry \
   "$repo_root/scripts/cloud-image-tfvars.sh" "$manifest_path" >"$test_root/images.tfvars.json"

@@ -193,7 +193,7 @@ jobs:
       - cloudflare-edge
       - web-browser
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     concurrency:
       group: runtime-images-${{ github.repository }}-${{ github.ref }}
       cancel-in-progress: false
@@ -204,18 +204,32 @@ jobs:
       - name: Checkout mirrored commit
         uses: actions/checkout@v6
 
+      - name: Load pinned image toolchain
+        id: pinned-images
+        run: |
+          . build/images.env
+          printf 'buildkit_image=%s\n' "$BUILDKIT_IMAGE" >>"$GITHUB_OUTPUT"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
         with:
           version: v0.36.0
+          driver: docker-container
+          driver-opts: image=${{ steps.pinned-images.outputs.buildkit_image }}
+          platforms: linux/amd64
 
-      - name: Build control-plane, Web, and worker images
+      - name: Prove reproducibility and retain the verified candidate images
         env:
-          VERSION: ${{ github.sha }}
-          IMAGE_PLATFORM: linux/amd64
-          DOCKER_BUILD_CACHE: gha
-          DOCKER_CACHE_SCOPE_SUFFIX: ${{ github.ref_name }}
-        run: make images
+          IMAGE_REQUIRE_CLEAN_CHECKOUT: "1"
+        run: make image-reproducibility-test
+
+      - name: Upload clean-room reproducibility evidence
+        uses: actions/upload-artifact@v6
+        with:
+          name: image-reproducibility-${{ github.sha }}
+          path: .build/image-reproducibility.json
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Exchange GitHub OIDC identity for Yandex registry access
         if: github.ref == 'refs/heads/main' && vars.YANDEX_IMAGE_PUBLISH_ENABLED == 'true'
@@ -231,12 +245,16 @@ jobs:
           YANDEX_CONTAINER_REGISTRY_ID: ${{ vars.YANDEX_CONTAINER_REGISTRY_ID }}
           CLOUD_IMAGE_TAG: ${{ github.sha }}
           CLOUD_IMAGE_MANIFEST_PATH: .build/deployment-images.json
+          CLOUD_IMAGE_RECEIPT_PATH: .build/deployment-images.receipt.json
+          CLOUD_IMAGE_REQUIRE_CLEAN_INPUTS: "1"
           SOURCE_REPOSITORY: gitcode.com/urandon/sessionless
           SOURCE_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SOURCE_RUN_ID: ${{ github.run_id }}
+          SOURCE_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           test "$(git rev-parse HEAD)" = "$CLOUD_IMAGE_TAG"
           ./scripts/publish-cloud-images.sh
-          jq -r '"Published `" + .source_sha + "` as:\n" + (.images | to_entries | map("- `" + .key + "`: `" + .value.reference + "`") | join("\n"))' \
+          jq -r '"Published `" + .source.sha + "` as:\n" + (.images | to_entries | map("- `" + .key + "`: `" + .value.reference + "`") | join("\n"))' \
             "$CLOUD_IMAGE_MANIFEST_PATH" >>"$GITHUB_STEP_SUMMARY"
 
       - name: Upload immutable deployment manifest
@@ -245,5 +263,14 @@ jobs:
         with:
           name: deployment-images-${{ github.sha }}
           path: .build/deployment-images.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload run-specific publication receipt
+        if: github.ref == 'refs/heads/main' && vars.YANDEX_IMAGE_PUBLISH_ENABLED == 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: publication-receipt-${{ github.sha }}-${{ github.run_attempt }}
+          path: .build/deployment-images.receipt.json
           if-no-files-found: error
           retention-days: 30

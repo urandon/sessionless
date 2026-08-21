@@ -151,10 +151,16 @@ local-integration: prepare
 e2e-local: prepare
 	@./scripts/e2e-local.sh
 
-ci: web-ci generate test build integration image-publication-test
+ci: web-ci generate test build integration image-publication-test image-build-inputs-test
 
 image-publication-test:
 	@./scripts/test-image-publication.sh
+
+image-build-inputs-test:
+	@./scripts/test-image-build-inputs.sh
+
+image-reproducibility-test:
+	@./scripts/test-image-reproducibility.sh
 
 budget-policy-test:
 	@./scripts/test-cloud-budget-policy.sh

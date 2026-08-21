@@ -12,9 +12,20 @@ compose() {
 wait_http() {
 	service_name=$1
 	url=$2
+	connect_timeout=${LOCAL_HTTP_CONNECT_TIMEOUT_SECONDS:-2}
+	request_timeout=${LOCAL_HTTP_MAX_TIME_SECONDS:-5}
+	case "$connect_timeout" in
+		''|*[!0-9]*|0) printf 'LOCAL_HTTP_CONNECT_TIMEOUT_SECONDS must be a positive integer\n' >&2; return 1 ;;
+	esac
+	case "$request_timeout" in
+		''|*[!0-9]*|0) printf 'LOCAL_HTTP_MAX_TIME_SECONDS must be a positive integer\n' >&2; return 1 ;;
+	esac
 	attempt=1
 	while [ "$attempt" -le 120 ]; do
-		if curl --fail --silent --show-error "$url" >/dev/null 2>&1; then
+		if curl \
+			--connect-timeout "$connect_timeout" \
+			--max-time "$request_timeout" \
+			--fail --silent --show-error "$url" >/dev/null 2>&1; then
 			printf '%s is ready: %s\n' "$service_name" "$url"
 			return 0
 		fi
@@ -85,6 +96,9 @@ main() {
 	set -a
 	. "$repo_root/tools/versions.env"
 	set +a
+
+	printf 'Stopping schema-dependent application services before readiness checks.\n'
+	compose stop control-api telegram-sender reconciler
 
 	printf 'Starting local infrastructure services.\n'
 	compose up --build --detach \

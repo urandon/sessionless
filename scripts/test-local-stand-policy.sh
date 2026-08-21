@@ -158,6 +158,7 @@ exit 0
 EOF
 cat >"$fake_bin/curl" <<'EOF'
 #!/bin/sh
+printf '%s\n' "$*" >>"$FAKE_CURL_LOG"
 exit 0
 EOF
 cat >"$fake_bin/sleep" <<'EOF'
@@ -177,18 +178,34 @@ chmod 755 "$fake_bin/docker" "$fake_bin/curl" "$fake_bin/sleep" "$fake_bin/make"
 
 export FAKE_DOCKER_LOG="$test_root/dev-up-docker.log"
 export FAKE_MAKE_LOG="$test_root/dev-up-make.log"
+export FAKE_CURL_LOG="$test_root/dev-up-curl.log"
 : >"$FAKE_DOCKER_LOG"
 : >"$FAKE_MAKE_LOG"
+: >"$FAKE_CURL_LOG"
 if PATH="$fake_bin:$PATH" sh "$dev_up" >"$test_root/dev-up.out" 2>&1; then
 	fail 'dev-up unexpectedly continued after YDB boot-storage failure'
 fi
-if grep -E 'control-api|telegram-sender|reconciler' "$FAKE_DOCKER_LOG" >/dev/null; then
+expected_stop='compose --project-name sessionless-dev stop control-api telegram-sender reconciler'
+grep -Fx "$expected_stop" "$FAKE_DOCKER_LOG" >/dev/null ||
+	fail 'dev-up did not quiesce existing schema-dependent services before readiness checks'
+stop_line=$(grep -n -Fx "$expected_stop" "$FAKE_DOCKER_LOG" | cut -d: -f1)
+infra_line=$(grep -n ' up --build --detach ydb-local object-storage-local queue-local telegram-fake$' "$FAKE_DOCKER_LOG" | cut -d: -f1)
+test -n "$stop_line" && test -n "$infra_line" && test "$stop_line" -lt "$infra_line" ||
+	fail 'schema-dependent services must be stopped before infrastructure starts'
+if grep -E ' up .*control-api| up .*telegram-sender| up .*reconciler' "$FAKE_DOCKER_LOG" >/dev/null; then
 	fail 'dev-up started schema-dependent services after YDB boot-storage failure'
 fi
 test "$(cat "$FAKE_MAKE_LOG")" = migrate-local ||
 	fail 'dev-up must stop after the query-backed YDB readiness probe fails'
 grep -F 'No volumes were deleted.' "$test_root/dev-up.out" >/dev/null ||
 	fail 'boot-storage failure did not emit volume-preserving recovery guidance'
+test -s "$FAKE_CURL_LOG" || fail 'dev-up did not perform bounded liveness probes'
+while IFS= read -r curl_args; do
+	printf '%s\n' "$curl_args" | grep -F -- '--connect-timeout 2' >/dev/null ||
+		fail "liveness probe omitted connect timeout: $curl_args"
+	printf '%s\n' "$curl_args" | grep -F -- '--max-time 5' >/dev/null ||
+		fail "liveness probe omitted total request timeout: $curl_args"
+done <"$FAKE_CURL_LOG"
 
 reset_docker_log="$test_root/dev-reset-docker.log"
 export FAKE_DOCKER_LOG="$reset_docker_log"

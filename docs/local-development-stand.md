@@ -76,19 +76,23 @@ make dev-down
 
 `make dev-up` performs the following fail-fast sequence:
 
-1. Build and start only infrastructure services: YDB, MinIO, ElasticMQ, and
+1. Stop any existing control API, Telegram sender, and reconciler containers so
+   a prior `restart: unless-stopped` process cannot run through a failed
+   database gate.
+2. Build and start only infrastructure services: YDB, MinIO, ElasticMQ, and
    the Telegram fake.
-2. Poll their host endpoints until they are live or emit scoped service logs.
-3. Idempotently create the `sessionless-local` bucket.
-4. Treat YDB's monitoring HTTP endpoint as liveness only, then use the embedded
+3. Poll their host endpoints with explicit per-request connect/total timeouts
+   until they are live or emit scoped service logs.
+4. Idempotently create the `sessionless-local` bucket.
+5. Treat YDB's monitoring HTTP endpoint as liveness only, then use the embedded
    Goose/YDB migration as the query-backed readiness gate before any
    schema-dependent service starts. YDB Local's narrow storage-pool
    initialization state is retried for at most 60 attempts; all other failures
    remain fail-fast. `ReasonBootBSError` or `NumUnconnectedDisks` in the bounded
    YDB log tail stops immediately with recovery guidance.
-5. Build and start the control API, Telegram sender, and reconciler, then wait
+6. Build and start the control API, Telegram sender, and reconciler, then wait
    for the control API readiness endpoint.
-6. Idempotently load `test/fixtures/telegram/text-message.json`.
+7. Idempotently load `test/fixtures/telegram/text-message.json`.
 
 This phase barrier prevents application logs from being polluted by expected
 `table does not exist` errors while a fresh YDB volume is still being

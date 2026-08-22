@@ -84,6 +84,13 @@ The suite proves:
   canonical delivery reaches `sent`;
 - replaying a terminal queue message produces no re-execution, charge,
   canonical event, or projection;
+- admission pins a compatible immutable session snapshot and its covered
+  sequence before a later worker invocation materializes the contiguous tail;
+- snapshot-plus-tail materialization remains byte-identical to bounded
+  event-only replay even when the snapshot-covered event payload objects are
+  unavailable to the worker;
+- corrupt snapshot bytes fall back to bounded event-only replay without moving
+  the admitted trigger boundary or failing the canonical run;
 - output artifact keys and reads remain tenant-scoped;
 - two successive `/new` commands create distinct canonical sessions and leave
   both previous sessions participant-authorized, listable and openable;
@@ -112,7 +119,8 @@ uses synthetic Telegram identities, the production frontend-neutral session
 API and ingress services, YDB Local, MinIO, ElasticMQ, one-shot worker
 containers and the Telegram fake. It proves canonical identity, session
 switching, cross-frontend binding, participant authorization, event and
-artifact retention across archive, idempotency and negative tenant boundaries.
+artifact retention across archive, snapshot/replay equivalence, corrupt
+snapshot fallback, idempotency and negative tenant boundaries.
 
 The following evidence is deliberately not inferred from the local stand:
 
@@ -124,8 +132,7 @@ The following evidence is deliberately not inferred from the local stand:
 
 Those cloud gates repeat selected scenarios against cloud-dev and link their
 evidence; they do not replace or weaken the local canonical-session proof.
-Snapshot/canonical replay through the full local container topology,
-operational-TTL cleanup preservation and interrupted destructive deletion with
+Operational-TTL cleanup preservation and interrupted destructive deletion with
 sentinel sessions remain separate structural additions to this suite. Their
 focused unit and YDB integration contracts already run in CI, but they must not
 be reported as composed local E2E evidence until the corresponding scenarios

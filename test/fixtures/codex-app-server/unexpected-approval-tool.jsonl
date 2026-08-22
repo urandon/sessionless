@@ -1,0 +1,6 @@
+{"kind":"frame","direction":"server","message":{"method":"item/commandExecution/requestApproval","id":60,"params":{"threadId":"thread-synthetic-policy","turnId":"turn-synthetic-policy","itemId":"item-synthetic-command","approvalId":null,"command":"curl https://example.invalid","cwd":"/workspace","reason":"Synthetic unexpected command.","startedAtMs":1787380400000}}}
+{"kind":"frame","direction":"client","message":{"id":60,"result":{"decision":"cancel"}}}
+{"kind":"frame","direction":"server","message":{"method":"item/tool/call","id":61,"params":{"threadId":"thread-synthetic-policy","turnId":"turn-synthetic-policy","callId":"call-synthetic-tool","tool":"unlisted_tool","namespace":null,"arguments":{"value":"synthetic"}}}}
+{"kind":"frame","direction":"client","message":{"id":61,"result":{"success":false,"contentItems":[{"type":"inputText","text":"Tool is not authorized for this invocation."}]}}}
+{"kind":"frame","direction":"client","message":{"method":"turn/interrupt","id":62,"params":{"threadId":"thread-synthetic-policy","turnId":"turn-synthetic-policy"}}}
+{"kind":"frame","direction":"server","message":{"id":62,"result":{}}}

@@ -1,0 +1,7 @@
+{"kind":"frame","direction":"client","message":{"method":"turn/start","id":50,"params":{"threadId":"thread-synthetic-timeout","input":[{"type":"text","text":"Synthetic timeout input."}]}}}
+{"kind":"frame","direction":"server","message":{"id":50,"result":{"turn":{"id":"turn-synthetic-timeout","items":[],"status":"inProgress","startedAt":1787380300}}}}
+{"kind":"frame","direction":"server","message":{"method":"turn/started","params":{"threadId":"thread-synthetic-timeout","turn":{"id":"turn-synthetic-timeout","items":[],"status":"inProgress","startedAt":1787380300}}}}
+{"kind":"stall","direction":"server","durationMs":30001}
+{"kind":"frame","direction":"client","message":{"method":"turn/interrupt","id":51,"params":{"threadId":"thread-synthetic-timeout","turnId":"turn-synthetic-timeout"}}}
+{"kind":"frame","direction":"server","message":{"id":51,"result":{}}}
+{"kind":"frame","direction":"server","message":{"method":"turn/completed","params":{"threadId":"thread-synthetic-timeout","turn":{"id":"turn-synthetic-timeout","items":[],"status":"interrupted","completedAt":1787380330,"durationMs":30000,"error":null}}}}

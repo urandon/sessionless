@@ -68,6 +68,9 @@ func TestExecutionRequestAcceptsHarnessNeutralReferences(t *testing.T) {
 			BindingGeneration:        1,
 			ExpiresAt:                portTestTime.Add(time.Minute),
 		},
+		CredentialMaterialization: ports.CredentialMaterialization{
+			RootDir: "/tmp/sessionless-credential", AuthFile: "/tmp/sessionless-credential/auth.json",
+		},
 		AllowedMCPServers: []string{"source-control", "docs"},
 	}
 	if err := request.Validate(); err != nil {

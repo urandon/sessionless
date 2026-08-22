@@ -102,6 +102,11 @@ func TestDispatchAndTelegramOutboxes(t *testing.T) {
 	if err := dispatch.ValidateForAttempt(run, attempt); err != nil {
 		t.Fatalf("valid dispatch outbox rejected: %v", err)
 	}
+	dispatch.CredentialOwnerUserID = "invalid owner"
+	if err := dispatch.ValidateForAttempt(run, attempt); err == nil {
+		t.Fatal("invalid credential owner accepted")
+	}
+	dispatch.CredentialOwnerUserID = "user-1"
 	if err := dispatch.Transition(domain.DispatchPublished, testTime.Add(time.Second)); err != nil {
 		t.Fatalf("dispatch transition rejected: %v", err)
 	}

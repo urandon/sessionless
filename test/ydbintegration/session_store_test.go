@@ -446,6 +446,21 @@ func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 	} {
 		assertCount(t, client, table, tenantID, 1)
 	}
+	var dispatchPayload string
+	if err := client.DB.QueryRowContext(ctx,
+		`SELECT payload FROM dispatch_outbox
+		 WHERE tenant_id = $1 AND dispatch_outbox_id = $2`,
+		tenantID, request.DispatchID,
+	).Scan(&dispatchPayload); err != nil {
+		t.Fatal(err)
+	}
+	var persistedDispatch domain.DispatchOutbox
+	if err := json.Unmarshal([]byte(dispatchPayload), &persistedDispatch); err != nil {
+		t.Fatal(err)
+	}
+	if persistedDispatch.CredentialOwnerUserID != userID {
+		t.Fatalf("dispatch credential owner round-trip = %q, want %q", persistedDispatch.CredentialOwnerUserID, userID)
+	}
 	canonicalSnapshotVersion := uint64(1)
 	if err := store.PutSessionSnapshot(ctx, domain.SessionSnapshot{
 		ID:       domain.SessionSnapshotID(uniqueID("canonical-snapshot")),
@@ -517,6 +532,9 @@ func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 		loaded.Job.ContextWindow.ThroughSequence != 1 {
 		t.Fatalf("admitted context window = %#v", loaded.Job.ContextWindow)
 	}
+	if loaded.Job.CredentialOwnerUserID != userID {
+		t.Fatalf("credential owner round-trip = %q, want %q", loaded.Job.CredentialOwnerUserID, userID)
+	}
 	lease, err := store.ClaimWorkerLease(ctx, ports.WorkerLeaseRequest{
 		TenantID: tenantID, RunID: request.RunID, AttemptID: request.AttemptID,
 		LeaseID: domain.LeaseID(uniqueID("canonical-lease")), WorkerID: "canonical-worker",
@@ -527,6 +545,17 @@ func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 	}
 	if err := store.StartWorkerJob(ctx, loaded, lease, committedAt.Add(3*time.Second)); err != nil {
 		t.Fatal(err)
+	}
+	invocation, found, err := store.LoadWorkerCredentialInvocation(
+		ctx, tenantID, request.RunID, request.AttemptID, lease.ID,
+	)
+	if err != nil || !found {
+		t.Fatalf("credential invocation found=%t err=%v", found, err)
+	}
+	if invocation.Run.Status != domain.RunRunning ||
+		invocation.Attempt.Status != domain.AttemptRunning ||
+		invocation.Attempt.WorkerID != lease.WorkerID || invocation.Lease != lease {
+		t.Fatalf("authoritative credential invocation = %#v", invocation)
 	}
 	finishedAt := committedAt.Add(4 * time.Second)
 	terminalEvents := []domain.SessionEventDraft{

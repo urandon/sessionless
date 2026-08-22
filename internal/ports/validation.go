@@ -194,6 +194,11 @@ func (request ExecutionRequest) Validate() error {
 		if request.Credential.RunID != request.RunID || request.Credential.AttemptID != request.AttemptID {
 			return domain.ValidationError{Field: "execution.credential", Reason: "must match the run and attempt"}
 		}
+		if err := request.CredentialMaterialization.Validate(); err != nil {
+			return err
+		}
+	} else if request.CredentialMaterialization.RootDir != "" || request.CredentialMaterialization.AuthFile != "" {
+		return domain.ValidationError{Field: "execution.credential_materialization", Reason: "requires a credential handle"}
 	}
 	for _, artifact := range request.InputArtifacts {
 		if err := artifact.Validate(); err != nil {

@@ -190,6 +190,51 @@ func (store *Store) LoadWorkerContext(
 	return result, nil
 }
 
+func (store *Store) LoadWorkerCredentialInvocation(
+	ctx context.Context,
+	tenantID domain.TenantID,
+	runID domain.RunID,
+	attemptID domain.AttemptID,
+	leaseID domain.LeaseID,
+) (result ports.WorkerCredentialInvocationState, found bool, err error) {
+	if err := tenantID.Validate(); err != nil {
+		return result, false, err
+	}
+	if err := runID.Validate(); err != nil {
+		return result, false, err
+	}
+	if err := attemptID.Validate(); err != nil {
+		return result, false, err
+	}
+	if err := leaseID.Validate(); err != nil {
+		return result, false, err
+	}
+	err = store.Transact(ctx, tenantID, func(state ports.StateTx) error {
+		result = ports.WorkerCredentialInvocationState{}
+		found = false
+		var currentFound bool
+		result.Run, currentFound, err = state.GetRun(ctx, runID)
+		if err != nil || !currentFound {
+			return err
+		}
+		result.Attempt, currentFound, err = state.GetAttempt(ctx, attemptID)
+		if err != nil || !currentFound {
+			return err
+		}
+		result.Lease, currentFound, err = readJSON[domain.Lease](
+			ctx, state.(*stateTx).sqlTx,
+			`SELECT payload FROM leases WHERE tenant_id = $1 AND lease_id = $2`,
+			tenantID, leaseID,
+		)
+		if err != nil || !currentFound {
+			return err
+		}
+		found = true
+		return nil
+	})
+	return result, found, err
+}
+
 func validateLoadedWorkerJob(state ports.WorkerJobState) error {
 	if err := state.Attempt.ValidateForRun(state.Run); err != nil {
 		return err

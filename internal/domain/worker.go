@@ -8,20 +8,21 @@ import (
 // WorkerJob is the durable, point-addressable materialization contract for one
 // admitted run. Queue messages carry only its tenant/run routing identity.
 type WorkerJob struct {
-	TenantID          TenantID              `json:"tenant_id"`
-	RunID             RunID                 `json:"run_id"`
-	SessionID         SessionID             `json:"session_id"`
-	TriggerEventID    SessionEventID        `json:"trigger_event_id"`
-	AttemptID         AttemptID             `json:"attempt_id"`
-	ReservationID     QuotaReservationID    `json:"reservation_id"`
-	InputManifestID   ArtifactManifestID    `json:"input_manifest_id"`
-	ContextSnapshot   BlobRef               `json:"context_snapshot"`
-	ContextWindow     *SessionContextWindow `json:"context_window,omitempty"`
-	WorkspaceSnapshot *BlobRef              `json:"workspace_snapshot,omitempty"`
-	SkillBundle       *BlobRef              `json:"skill_bundle,omitempty"`
-	AllowedMCPServers []string              `json:"allowed_mcp_servers,omitempty"`
-	Limits            ProductLimits         `json:"limits"`
-	Origin            *FrontendEventOrigin  `json:"origin,omitempty"`
+	TenantID              TenantID              `json:"tenant_id"`
+	RunID                 RunID                 `json:"run_id"`
+	SessionID             SessionID             `json:"session_id"`
+	TriggerEventID        SessionEventID        `json:"trigger_event_id"`
+	AttemptID             AttemptID             `json:"attempt_id"`
+	ReservationID         QuotaReservationID    `json:"reservation_id"`
+	InputManifestID       ArtifactManifestID    `json:"input_manifest_id"`
+	ContextSnapshot       BlobRef               `json:"context_snapshot"`
+	ContextWindow         *SessionContextWindow `json:"context_window,omitempty"`
+	WorkspaceSnapshot     *BlobRef              `json:"workspace_snapshot,omitempty"`
+	SkillBundle           *BlobRef              `json:"skill_bundle,omitempty"`
+	AllowedMCPServers     []string              `json:"allowed_mcp_servers,omitempty"`
+	CredentialOwnerUserID UserID                `json:"credential_owner_user_id,omitempty"`
+	Limits                ProductLimits         `json:"limits"`
+	Origin                *FrontendEventOrigin  `json:"origin,omitempty"`
 	// Compatibility bridge for legacy Telegram jobs until #37 projects results from the
 	// canonical session stream.
 	DeliveryChat     TelegramChatRef `json:"delivery_chat"`
@@ -79,6 +80,11 @@ func (job WorkerJob) ValidateForRun(run Run) error {
 			return ValidationError{Field: "worker_job.allowed_mcp_servers", Reason: "must not contain duplicates"}
 		}
 		seen[server] = struct{}{}
+	}
+	if job.CredentialOwnerUserID != "" {
+		if err := job.CredentialOwnerUserID.Validate(); err != nil {
+			return err
+		}
 	}
 	if err := job.Limits.Validate(); err != nil {
 		return err

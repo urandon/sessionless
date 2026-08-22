@@ -255,8 +255,12 @@ func (store *Store) ResolveComputeConnectionsForUser(
 		if err := authorizeSessionForUserTx(ctx, tx, request.SessionID, request.UserID, true); err != nil {
 			return err
 		}
+		type candidate struct {
+			actorID domain.ActorID
+			state   ports.ComputeConnectionState
+		}
 		rows, err := tx.sqlTx.QueryContext(ctx,
-			`SELECT subscription_connection_id, provider, entitlement_state, quota_state, observed_at
+			`SELECT subscription_connection_id, actor_id, provider, entitlement_state, quota_state, observed_at
 			 FROM subscription_connections
 			 WHERE tenant_id = $1
 			 ORDER BY subscription_connection_id ASC LIMIT 2`,
@@ -265,18 +269,43 @@ func (store *Store) ResolveComputeConnectionsForUser(
 		if err != nil {
 			return err
 		}
-		defer rows.Close()
+		candidates := make([]candidate, 0, 2)
 		for rows.Next() {
-			var item ports.ComputeConnectionState
-			if err := rows.Scan(&item.ID, &item.Provider, &item.Entitlement, &item.Quota, &item.ObservedAt); err != nil {
+			var item candidate
+			if err := rows.Scan(
+				&item.state.ID, &item.actorID, &item.state.Provider,
+				&item.state.Entitlement, &item.state.Quota, &item.state.ObservedAt,
+			); err != nil {
+				rows.Close()
 				return err
 			}
-			if err := validateComputeConnectionState(item); err != nil {
-				return err
-			}
-			result = append(result, item)
+			candidates = append(candidates, item)
 		}
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		for _, candidate := range candidates {
+			var ownerID domain.UserID
+			err := tx.sqlTx.QueryRowContext(ctx,
+				`SELECT user_id FROM actors WHERE tenant_id = $1 AND actor_id = $2`,
+				request.TenantID, candidate.actorID,
+			).Scan(&ownerID)
+			if errors.Is(err, sql.ErrNoRows) || (err == nil && ownerID != request.UserID) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			if err := validateComputeConnectionState(candidate.state); err != nil {
+				return err
+			}
+			result = append(result, candidate.state)
+		}
+		return nil
 	})
 	return result, err
 }

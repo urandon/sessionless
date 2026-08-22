@@ -58,11 +58,12 @@ facts produce `409 conflict`; unavailable dependencies produce
 `503 temporarily_unavailable`. Responses never include storage keys, tenant
 authority supplied by the browser, or raw authorization errors.
 
-Message submission fails closed unless the tenant has exactly one configured
-compute connection. Its response identifies the canonical event and run and
-includes the selected provider's safe entitlement/quota observation; it never
-returns a provider credential. Retrying the same message idempotency key
-returns the same canonical event/run instead of appending another event.
+Message submission fails closed unless the requesting user has exactly one
+configured compute connection whose actor record maps to that user. Its
+response identifies the canonical event and run and includes the selected
+provider's safe entitlement/quota observation; it never returns a provider
+credential. Retrying the same message idempotency key returns the same
+canonical event/run instead of appending another event.
 
 Administrative metadata is a separate `SessionAdminMetadataStore` port. It
 returns only the session row, bounded display materialization, current run,

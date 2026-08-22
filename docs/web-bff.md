@@ -150,9 +150,9 @@ the serverless BFF:
 3. Commit the same `upload_id`. The BFF reauthorizes the user and verifies
    authoritative size, media type, checksum, key, and ETag from Object Storage.
 4. Submit text and up to eight committed upload IDs to the session message
-   route. The BFF resolves exactly one configured compute connection, promotes
-   each unchanged object into the immutable event namespace, and atomically
-   creates the canonical event/run.
+   route. The BFF resolves exactly one compute connection owned by the
+   requesting user, promotes each unchanged object into the immutable event
+   namespace, and atomically creates the canonical event/run.
 5. Poll the returned run ID using `If-None-Match` and the server's
    `Retry-After`/`X-Sessionless-Poll-After-Ms` hints. Fetch new transcript
    events with `after_sequence`; do not combine it with `cursor`.

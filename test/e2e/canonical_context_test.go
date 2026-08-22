@@ -33,6 +33,11 @@ func TestCanonicalContextSnapshotTailMatchesReplayAndFallsBackFromCorruption(t *
 	slice.runWorker(nil)
 	slice.waitRunStatus(seed, domain.RunSucceeded)
 	snapshot := slice.ensureCanonicalSnapshot(seed)
+	seedDocuments := len(slice.outputManifest(seed).Artifacts)
+	slice.waitForChatMethods(map[int64]map[string]int{
+		chatID: {"sendMessage": 1, "sendDocument": seedDocuments},
+	})
+	slice.waitTelegramDeliveryDrain(seed)
 
 	snapshotTail := slice.postMessage(base+302, chatID, "materialize snapshot plus tail")
 	slice.waitRunStatus(snapshotTail, domain.RunQueued)

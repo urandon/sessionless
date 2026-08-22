@@ -33,7 +33,21 @@ type Config struct {
 	MaxSnapshotFallbacks    uint32
 	DeliveryWakePublisher   ports.TelegramDeliveryWakePublisher
 	ProjectionWakePublisher ports.FrontendProjectionWakePublisher
+	CredentialMode          CredentialMode
+	CredentialFinalizeGrace time.Duration
+	CredentialLifecycle     ports.CredentialLifecycle
 }
+
+type CredentialMode uint8
+
+const (
+	CredentialDisabled CredentialMode = iota
+	CredentialRequired
+	maxCredentialFinalizeGrace = time.Minute
+	maxCredentialDuration      = time.Duration(1<<63 - 1)
+)
+
+var ErrCredentialOrchestration = errors.New("worker credential orchestration failed")
 
 type Outcome string
 
@@ -47,12 +61,13 @@ const (
 )
 
 type Manager struct {
-	config  Config
-	clock   ports.Clock
-	queue   ports.Queue
-	state   ports.WorkerStateStore
-	blobs   ports.BlobStore
-	harness ports.HarnessDriver
+	config      Config
+	clock       ports.Clock
+	queue       ports.Queue
+	state       ports.WorkerStateStore
+	blobs       ports.BlobStore
+	harness     ports.HarnessDriver
+	credentials ports.CredentialLifecycle
 }
 
 func New(
@@ -78,6 +93,18 @@ func New(
 	if config.MaxSnapshotFallbacks == 0 {
 		config.MaxSnapshotFallbacks = 4
 	}
+	if config.CredentialFinalizeGrace <= 0 {
+		config.CredentialFinalizeGrace = 15 * time.Second
+	}
+	if config.CredentialFinalizeGrace > maxCredentialFinalizeGrace {
+		return nil, errors.New("worker credential finalization grace exceeds the bound")
+	}
+	if config.CredentialMode > CredentialRequired {
+		return nil, errors.New("worker credential mode is invalid")
+	}
+	if config.CredentialMode == CredentialRequired && config.CredentialLifecycle == nil {
+		return nil, errors.New("required worker credential lifecycle must not be nil")
+	}
 	if config.ProjectionWakePublisher == nil {
 		if publisher, ok := config.DeliveryWakePublisher.(ports.FrontendProjectionWakePublisher); ok {
 			config.ProjectionWakePublisher = publisher
@@ -97,7 +124,7 @@ func New(
 	}
 	return &Manager{
 		config: config, clock: clock, queue: queue, state: state,
-		blobs: blobs, harness: harness,
+		blobs: blobs, harness: harness, credentials: config.CredentialLifecycle,
 	}, nil
 }
 
@@ -177,6 +204,18 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 		return manager.retry(ctx, message, err)
 	}
 	defer manager.cleanupInvocationDir(workDir)
+	credential, err := manager.prepareCredential(executionCtx, loaded, lease)
+	if err != nil {
+		return manager.finishFailure(ctx, message, loaded, lease, false, "credential_preparation_failed")
+	}
+	credentialFinalized := false
+	if credential != nil {
+		defer func() {
+			if !credentialFinalized {
+				_ = manager.finalizeCredential(ctx, credential)
+			}
+		}()
+	}
 
 	if err := manager.materialize(executionCtx, loaded, workDir); err != nil {
 		if errors.Is(executionCtx.Err(), context.DeadlineExceeded) {
@@ -196,6 +235,10 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 		ResumeCheckpoint:  loaded.Checkpoint,
 		AllowedMCPServers: append([]string(nil), loaded.Job.AllowedMCPServers...),
 	}
+	if credential != nil {
+		request.Credential = credential.handle
+		request.CredentialMaterialization = credential.materialization
+	}
 	if err := request.Validate(); err != nil {
 		return manager.finishFailure(ctx, message, loaded, lease, false, "invalid_execution_request")
 	}
@@ -209,6 +252,14 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 			TenantID: loaded.Run.TenantID, RunID: loaded.Run.ID,
 			AttemptID: loaded.Attempt.ID,
 		})
+	}
+	if credential != nil {
+		credentialFinalized = true
+		if finalizeErr := manager.finalizeCredential(ctx, credential); finalizeErr != nil {
+			return manager.finishFailure(context.Background(), message, loaded, lease, false, "credential_finalization_failed")
+		}
+	}
+	if err != nil {
 		cancelled, cancelErr := manager.state.CancellationRequested(
 			context.Background(), loaded.Run.TenantID, loaded.Run.ID,
 		)
@@ -306,6 +357,110 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 		return "", err
 	}
 	return OutcomeCompleted, nil
+}
+
+type managedCredential struct {
+	handle          ports.CredentialHandle
+	materialization ports.CredentialMaterialization
+}
+
+func (manager *Manager) prepareCredential(
+	ctx context.Context,
+	loaded ports.WorkerJobState,
+	claimedLease domain.Lease,
+) (*managedCredential, error) {
+	if manager.config.CredentialMode == CredentialDisabled {
+		return nil, nil
+	}
+	if loaded.Job.CredentialOwnerUserID == "" {
+		return nil, ErrCredentialOrchestration
+	}
+	authoritative, found, err := manager.state.LoadWorkerCredentialInvocation(
+		ctx, loaded.Run.TenantID, loaded.Run.ID, loaded.Attempt.ID, claimedLease.ID,
+	)
+	if err != nil || !found {
+		return nil, ErrCredentialOrchestration
+	}
+	now := manager.clock.Now().UTC()
+	finalizationBudget := 2 * manager.config.CredentialFinalizeGrace
+	if loaded.Job.Limits.MaxRuntime > maxCredentialDuration-finalizationBudget {
+		return nil, ErrCredentialOrchestration
+	}
+	requiredUntil := now.Add(loaded.Job.Limits.MaxRuntime + finalizationBudget)
+	if !requiredUntil.After(now) || authoritative.Run.ID != loaded.Run.ID ||
+		authoritative.Run.TenantID != loaded.Run.TenantID ||
+		authoritative.Run.SubscriptionConnectionID != loaded.Run.SubscriptionConnectionID ||
+		authoritative.Attempt.ID != loaded.Attempt.ID ||
+		authoritative.Attempt.WorkerID != manager.config.WorkerID ||
+		authoritative.Lease.ID != claimedLease.ID ||
+		authoritative.Lease.WorkerID != manager.config.WorkerID ||
+		authoritative.Lease.FenceToken != claimedLease.FenceToken ||
+		authoritative.Lease.ExpiresAt.Before(requiredUntil) {
+		return nil, ErrCredentialOrchestration
+	}
+	request := ports.CredentialIssueRequest{
+		OwnerUserID: loaded.Job.CredentialOwnerUserID,
+		Run:         authoritative.Run, Attempt: authoritative.Attempt, Lease: authoritative.Lease,
+		ExpiresAt: requiredUntil,
+	}
+	if err := request.ValidateAt(now); err != nil {
+		return nil, ErrCredentialOrchestration
+	}
+	handle, err := manager.credentials.Issue(ctx, request)
+	if err != nil {
+		return nil, ErrCredentialOrchestration
+	}
+	if handle.Validate() != nil ||
+		handle.TenantID != authoritative.Run.TenantID ||
+		handle.SubscriptionConnectionID != authoritative.Run.SubscriptionConnectionID ||
+		handle.OwnerUserID != loaded.Job.CredentialOwnerUserID ||
+		handle.RunID != authoritative.Run.ID || handle.AttemptID != authoritative.Attempt.ID ||
+		handle.WorkerID != authoritative.Lease.WorkerID ||
+		handle.LeaseID != authoritative.Lease.ID ||
+		handle.LeaseFence != authoritative.Lease.FenceToken ||
+		handle.ExpiresAt != requiredUntil {
+		_ = manager.releaseCredential(ctx, handle)
+		return nil, ErrCredentialOrchestration
+	}
+	materialization, err := manager.credentials.Materialize(ctx, handle)
+	if err != nil {
+		_ = manager.releaseCredential(ctx, handle)
+		return nil, ErrCredentialOrchestration
+	}
+	if materialization.Validate() != nil {
+		_ = manager.releaseCredential(ctx, handle)
+		return nil, ErrCredentialOrchestration
+	}
+	return &managedCredential{handle: handle, materialization: materialization}, nil
+}
+
+func (manager *Manager) releaseCredential(ctx context.Context, handle ports.CredentialHandle) error {
+	releaseCtx, cancel := context.WithTimeout(
+		context.WithoutCancel(ctx), manager.config.CredentialFinalizeGrace,
+	)
+	defer cancel()
+	if err := manager.credentials.Release(releaseCtx, handle); err != nil {
+		return ErrCredentialOrchestration
+	}
+	return nil
+}
+
+func (manager *Manager) finalizeCredential(ctx context.Context, credential *managedCredential) error {
+	if credential == nil {
+		return nil
+	}
+	writeBackCtx, cancelWriteBack := context.WithTimeout(
+		context.WithoutCancel(ctx), manager.config.CredentialFinalizeGrace,
+	)
+	_, writeBackErr := manager.credentials.WriteBack(
+		writeBackCtx, credential.handle, credential.materialization,
+	)
+	cancelWriteBack()
+	releaseErr := manager.releaseCredential(ctx, credential.handle)
+	if writeBackErr != nil || releaseErr != nil {
+		return ErrCredentialOrchestration
+	}
+	return nil
 }
 
 type eventSink struct {

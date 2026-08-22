@@ -563,6 +563,186 @@ func TestWorkerEnforcesRuntimeLimitAndCancelsHarness(t *testing.T) {
 	}
 }
 
+func TestRequiredCredentialLifecycleOrchestration(t *testing.T) {
+	tests := []struct {
+		name           string
+		mutateAuth     bool
+		harnessError   error
+		blockUntilDone bool
+		cancelDuring   bool
+		writeBackError bool
+		blockWriteBack bool
+		wantOutcome    worker.Outcome
+		wantChanged    bool
+	}{
+		{name: "success unchanged", wantOutcome: worker.OutcomeCompleted},
+		{name: "success changed", mutateAuth: true, wantOutcome: worker.OutcomeCompleted, wantChanged: true},
+		{name: "harness error", harnessError: errors.New("private harness detail"), wantOutcome: worker.OutcomeFailed},
+		{name: "timeout", blockUntilDone: true, wantOutcome: worker.OutcomeFailed},
+		{name: "cancellation", cancelDuring: true, harnessError: context.Canceled, wantOutcome: worker.OutcomeCancelled},
+		{name: "writeback failure still releases", writeBackError: true, wantOutcome: worker.OutcomeFailed},
+		{name: "writeback deadline still releases", blockWriteBack: true, wantOutcome: worker.OutcomeFailed},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			ctx := context.Background()
+			clock := testkit.NewFakeClock(workerTestTime)
+			queue := testkit.NewMemoryQueue()
+			blobs := newMemoryBlobs()
+			state := newWorkerState()
+			loaded := workerFixture(t, ctx, blobs, "tenant-a", workerTestTime)
+			loaded.Job.CredentialOwnerUserID = "user-a"
+			if testCase.blockUntilDone {
+				loaded.Job.Limits.MaxRuntime = 10 * time.Millisecond
+			}
+			key := jobKey(loaded.Run.TenantID, loaded.Run.ID)
+			state.jobs[key] = loaded
+			publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
+			lifecycle := newRecordingCredentialLifecycle(t, "user-a")
+			lifecycle.writeBackError = testCase.writeBackError
+			lifecycle.blockWriteBack = testCase.blockWriteBack
+			harness := &credentialHarness{
+				mutateAuth: testCase.mutateAuth, executeError: testCase.harnessError,
+				blockUntilDone: testCase.blockUntilDone,
+			}
+			if testCase.cancelDuring {
+				harness.beforeReturn = func() {
+					state.mu.Lock()
+					state.cancelled[key] = true
+					state.mu.Unlock()
+				}
+			}
+			finalizeGrace := time.Second
+			if testCase.blockWriteBack {
+				finalizeGrace = 10 * time.Millisecond
+			}
+			manager, err := worker.New(worker.Config{
+				ScratchRoot: t.TempDir(), WorkerID: "worker-credential",
+				LeaseTTL: 2 * time.Minute, CredentialMode: worker.CredentialRequired,
+				CredentialFinalizeGrace: finalizeGrace, CredentialLifecycle: lifecycle,
+				DeliveryWakePublisher: newDeliveryWakePublisher(t),
+			}, clock, queue, state, blobs, harness)
+			if err != nil {
+				t.Fatal(err)
+			}
+			outcome, err := manager.RunOnce(ctx)
+			if err != nil || outcome != testCase.wantOutcome {
+				t.Fatalf("outcome/error = %q/%v, want %q/nil", outcome, err, testCase.wantOutcome)
+			}
+			if !harness.sawCredential {
+				t.Fatal("harness did not receive invocation-only credential fields")
+			}
+			if got := lifecycle.eventNames(); strings.Join(got, ",") != "issue,materialize,writeback,release" {
+				t.Fatalf("lifecycle order = %v", got)
+			}
+			if lifecycle.changed != testCase.wantChanged {
+				t.Fatalf("writeback changed = %t, want %t", lifecycle.changed, testCase.wantChanged)
+			}
+			if testCase.blockWriteBack && (!lifecycle.writeBackReachedDeadline ||
+				!lifecycle.releaseHadDeadline || lifecycle.releaseSawCanceled) {
+				t.Fatalf(
+					"writeback deadline/release deadline/release cancelled = %t/%t/%t, want true/true/false",
+					lifecycle.writeBackReachedDeadline, lifecycle.releaseHadDeadline, lifecycle.releaseSawCanceled,
+				)
+			}
+			if _, err := os.Lstat(lifecycle.materialization.RootDir); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("credential root remains after finalize: %v", err)
+			}
+			for _, delivery := range state.deliveries {
+				if strings.Contains(delivery.Text, "private") || strings.Contains(delivery.Text, "original-secret") || strings.Contains(delivery.Text, "credential-handle") {
+					t.Fatalf("credential detail leaked into durable delivery: %q", delivery.Text)
+				}
+			}
+		})
+	}
+}
+
+func TestRequiredCredentialFailsClosedBeforeHarness(t *testing.T) {
+	tests := []struct {
+		name                    string
+		configure               func(*ports.WorkerJobState, *recordingCredentialLifecycle, *worker.Config)
+		cancelBeforeMaterialize bool
+		wantCallerCancellation  bool
+		wantEvents              string
+	}{
+		{name: "missing owner", configure: func(loaded *ports.WorkerJobState, _ *recordingCredentialLifecycle, _ *worker.Config) {
+			loaded.Job.CredentialOwnerUserID = ""
+		}},
+		{name: "forged owner", configure: func(loaded *ports.WorkerJobState, _ *recordingCredentialLifecycle, _ *worker.Config) {
+			loaded.Job.CredentialOwnerUserID = "user-forged"
+		}, wantEvents: "issue"},
+		{name: "insufficient lease window", configure: func(loaded *ports.WorkerJobState, _ *recordingCredentialLifecycle, config *worker.Config) {
+			config.LeaseTTL = loaded.Job.Limits.MaxRuntime + config.CredentialFinalizeGrace
+		}},
+		{name: "mismatched handle", configure: func(_ *ports.WorkerJobState, lifecycle *recordingCredentialLifecycle, _ *worker.Config) {
+			lifecycle.corruptHandle = true
+		}, wantEvents: "issue,release"},
+		{name: "mismatched materialization", configure: func(_ *ports.WorkerJobState, lifecycle *recordingCredentialLifecycle, _ *worker.Config) {
+			lifecycle.corruptMaterialization = true
+		}, wantEvents: "issue,materialize,release"},
+		{name: "materialize failure with cancelled caller", configure: func(_ *ports.WorkerJobState, lifecycle *recordingCredentialLifecycle, _ *worker.Config) {
+			lifecycle.materializeError = true
+		}, cancelBeforeMaterialize: true, wantCallerCancellation: true, wantEvents: "issue,materialize,release"},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			clock := testkit.NewFakeClock(workerTestTime)
+			queue := testkit.NewMemoryQueue()
+			blobs := newMemoryBlobs()
+			state := newWorkerState()
+			loaded := workerFixture(t, ctx, blobs, "tenant-a", workerTestTime)
+			loaded.Job.CredentialOwnerUserID = "user-a"
+			lifecycle := newRecordingCredentialLifecycle(t, "user-a")
+			config := worker.Config{
+				ScratchRoot: t.TempDir(), WorkerID: "worker-credential",
+				LeaseTTL: 2 * time.Minute, CredentialMode: worker.CredentialRequired,
+				CredentialFinalizeGrace: time.Second, CredentialLifecycle: lifecycle,
+				DeliveryWakePublisher: newDeliveryWakePublisher(t),
+			}
+			testCase.configure(&loaded, lifecycle, &config)
+			if testCase.cancelBeforeMaterialize {
+				lifecycle.cancelOnMaterialize = cancel
+			}
+			state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
+			publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
+			harness := &credentialHarness{}
+			manager, err := worker.New(config, clock, queue, state, blobs, harness)
+			if err != nil {
+				t.Fatal(err)
+			}
+			outcome, err := manager.RunOnce(ctx)
+			if testCase.wantCallerCancellation {
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("outcome/error = %q/%v, want caller cancellation", outcome, err)
+				}
+			} else if err != nil || outcome != worker.OutcomeFailed {
+				t.Fatalf("outcome/error = %q/%v, want failed/nil", outcome, err)
+			}
+			if harness.sawCredential {
+				t.Fatal("unauthorized credential reached harness")
+			}
+			if got := strings.Join(lifecycle.eventNames(), ","); got != testCase.wantEvents {
+				t.Fatalf("lifecycle events = %q, want %q", got, testCase.wantEvents)
+			}
+			if strings.Contains(testCase.wantEvents, "release") {
+				if !lifecycle.releaseHadDeadline || lifecycle.releaseSawCanceled {
+					t.Fatalf(
+						"compensating release deadline/cancelled = %t/%t, want true/false",
+						lifecycle.releaseHadDeadline, lifecycle.releaseSawCanceled,
+					)
+				}
+			}
+			for _, delivery := range state.deliveries {
+				if strings.Contains(delivery.Text, "private") || strings.Contains(delivery.Text, "user-forged") || strings.Contains(delivery.Text, "credential-handle") {
+					t.Fatalf("credential authorization detail leaked: %q", delivery.Text)
+				}
+			}
+		})
+	}
+}
+
 func newDeliveryWakePublisher(t *testing.T) ports.TelegramDeliveryWakePublisher {
 	t.Helper()
 	publisher, err := outboxwake.NewPublisher(testkit.NewMemoryQueue())
@@ -846,6 +1026,28 @@ func (state *workerState) StartWorkerJob(
 	return nil
 }
 
+func (state *workerState) LoadWorkerCredentialInvocation(
+	_ context.Context,
+	tenant domain.TenantID,
+	runID domain.RunID,
+	attemptID domain.AttemptID,
+	leaseID domain.LeaseID,
+) (ports.WorkerCredentialInvocationState, bool, error) {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	loaded, found := state.jobs[jobKey(tenant, runID)]
+	if !found || loaded.Attempt.ID != attemptID {
+		return ports.WorkerCredentialInvocationState{}, false, nil
+	}
+	lease, found := state.leases[jobKey(tenant, runID)]
+	if !found || lease.ID != leaseID {
+		return ports.WorkerCredentialInvocationState{}, false, nil
+	}
+	return ports.WorkerCredentialInvocationState{
+		Run: loaded.Run, Attempt: loaded.Attempt, Lease: lease,
+	}, true, nil
+}
+
 func (state *workerState) RenewWorkerLease(
 	_ context.Context,
 	tenant domain.TenantID,
@@ -1122,3 +1324,177 @@ func (harness *blockingHarness) Cancel(context.Context, ports.ExecutionIdentity)
 }
 
 var _ ports.HarnessDriver = (*blockingHarness)(nil)
+
+type credentialHarness struct {
+	mutateAuth     bool
+	executeError   error
+	blockUntilDone bool
+	beforeReturn   func()
+	sawCredential  bool
+}
+
+func (harness *credentialHarness) Execute(
+	ctx context.Context,
+	request ports.ExecutionRequest,
+	_ ports.ExecutionEventSink,
+) (ports.ExecutionResult, error) {
+	if request.Credential.HandleID == "" || request.CredentialMaterialization.AuthFile == "" {
+		return ports.ExecutionResult{}, errors.New("credential fields are missing")
+	}
+	harness.sawCredential = true
+	if _, err := os.ReadFile(request.CredentialMaterialization.AuthFile); err != nil {
+		return ports.ExecutionResult{}, err
+	}
+	if harness.mutateAuth {
+		if err := os.WriteFile(request.CredentialMaterialization.AuthFile, []byte("changed-secret"), 0o600); err != nil {
+			return ports.ExecutionResult{}, err
+		}
+	}
+	if harness.blockUntilDone {
+		<-ctx.Done()
+		return ports.ExecutionResult{}, ctx.Err()
+	}
+	if harness.beforeReturn != nil {
+		harness.beforeReturn()
+	}
+	if harness.executeError != nil {
+		return ports.ExecutionResult{}, harness.executeError
+	}
+	return ports.ExecutionResult{Summary: "credential result"}, nil
+}
+
+func (*credentialHarness) Cancel(context.Context, ports.ExecutionIdentity) error { return nil }
+
+type recordingCredentialLifecycle struct {
+	t                        *testing.T
+	root                     string
+	expectedOwner            domain.UserID
+	mu                       sync.Mutex
+	events                   []string
+	materialization          ports.CredentialMaterialization
+	original                 []byte
+	changed                  bool
+	writeBackError           bool
+	blockWriteBack           bool
+	writeBackReachedDeadline bool
+	corruptHandle            bool
+	corruptMaterialization   bool
+	materializeError         bool
+	cancelOnMaterialize      func()
+	releaseHadDeadline       bool
+	releaseSawCanceled       bool
+}
+
+func newRecordingCredentialLifecycle(t *testing.T, expectedOwner domain.UserID) *recordingCredentialLifecycle {
+	t.Helper()
+	return &recordingCredentialLifecycle{
+		t: t, root: t.TempDir(), expectedOwner: expectedOwner,
+		original: []byte("original-secret"),
+	}
+}
+
+func (lifecycle *recordingCredentialLifecycle) Issue(
+	_ context.Context,
+	request ports.CredentialIssueRequest,
+) (ports.CredentialHandle, error) {
+	lifecycle.record("issue")
+	if request.OwnerUserID != lifecycle.expectedOwner {
+		return ports.CredentialHandle{}, errors.New("private credential owner detail")
+	}
+	handle := ports.CredentialHandle{
+		HandleID: "credential-handle", TenantID: request.Run.TenantID,
+		SubscriptionConnectionID: request.Run.SubscriptionConnectionID,
+		OwnerUserID:              request.OwnerUserID, RunID: request.Run.ID, AttemptID: request.Attempt.ID,
+		WorkerID: request.Lease.WorkerID, LeaseID: request.Lease.ID,
+		LeaseFence: request.Lease.FenceToken, BindingGeneration: 1, ExpiresAt: request.ExpiresAt,
+	}
+	if lifecycle.corruptHandle {
+		handle.OwnerUserID = "user-other"
+	}
+	return handle, nil
+}
+
+func (lifecycle *recordingCredentialLifecycle) Materialize(
+	_ context.Context,
+	_ ports.CredentialHandle,
+) (ports.CredentialMaterialization, error) {
+	lifecycle.record("materialize")
+	if lifecycle.cancelOnMaterialize != nil {
+		lifecycle.cancelOnMaterialize()
+	}
+	if lifecycle.materializeError {
+		return ports.CredentialMaterialization{}, errors.New("private materialization detail")
+	}
+	dir, err := os.MkdirTemp(lifecycle.root, "credential-")
+	if err != nil {
+		return ports.CredentialMaterialization{}, err
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return ports.CredentialMaterialization{}, err
+	}
+	materialization := ports.CredentialMaterialization{
+		RootDir: dir, AuthFile: filepath.Join(dir, "auth.json"),
+	}
+	if err := os.WriteFile(materialization.AuthFile, lifecycle.original, 0o600); err != nil {
+		return ports.CredentialMaterialization{}, err
+	}
+	lifecycle.materialization = materialization
+	if lifecycle.corruptMaterialization {
+		materialization.AuthFile = filepath.Join(dir, "other.json")
+	}
+	return materialization, nil
+}
+
+func (lifecycle *recordingCredentialLifecycle) WriteBack(
+	ctx context.Context,
+	_ ports.CredentialHandle,
+	materialization ports.CredentialMaterialization,
+) (ports.CredentialWriteBackResult, error) {
+	lifecycle.record("writeback")
+	if lifecycle.blockWriteBack {
+		<-ctx.Done()
+		lifecycle.writeBackReachedDeadline = errors.Is(ctx.Err(), context.DeadlineExceeded)
+		return ports.CredentialWriteBackResult{}, errors.New("private writeback timeout detail")
+	}
+	content, err := os.ReadFile(materialization.AuthFile)
+	if err != nil {
+		return ports.CredentialWriteBackResult{}, err
+	}
+	lifecycle.changed = !bytes.Equal(content, lifecycle.original)
+	if lifecycle.writeBackError {
+		return ports.CredentialWriteBackResult{}, errors.New("private writeback detail")
+	}
+	return ports.CredentialWriteBackResult{Changed: lifecycle.changed, Generation: 1}, nil
+}
+
+func (lifecycle *recordingCredentialLifecycle) Release(
+	ctx context.Context,
+	_ ports.CredentialHandle,
+) error {
+	lifecycle.record("release")
+	_, lifecycle.releaseHadDeadline = ctx.Deadline()
+	lifecycle.releaseSawCanceled = ctx.Err() != nil
+	if lifecycle.materialization.AuthFile != "" {
+		_ = os.Remove(lifecycle.materialization.AuthFile)
+		_ = os.Remove(lifecycle.materialization.RootDir)
+	}
+	return nil
+}
+
+func (*recordingCredentialLifecycle) RevokeConnection(context.Context, ports.CredentialRevokeRequest) error {
+	return nil
+}
+
+func (lifecycle *recordingCredentialLifecycle) record(event string) {
+	lifecycle.mu.Lock()
+	lifecycle.events = append(lifecycle.events, event)
+	lifecycle.mu.Unlock()
+}
+
+func (lifecycle *recordingCredentialLifecycle) eventNames() []string {
+	lifecycle.mu.Lock()
+	defer lifecycle.mu.Unlock()
+	return append([]string(nil), lifecycle.events...)
+}
+
+var _ ports.CredentialLifecycle = (*recordingCredentialLifecycle)(nil)

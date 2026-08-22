@@ -1,10 +1,42 @@
-# Credential lifecycle Phase B0
+# Credential lifecycle Phases B0-B1
 
 Phase B0 defines a provider-neutral, local-only credential lifecycle contract.
-It is deliberately not wired into `worker-runtime`, the worker manager, YDB,
-Docker, Terraform, or a real subscription login. Runtime activation remains
-blocked on the isolated worker boundary in #18 and the credential lifecycle
-epic in #13.
+Phase B1 proves its orchestration inside the harness-neutral worker Manager.
+It is deliberately not activated in `cmd/worker-runtime` and does not add a YDB
+credential backend, Docker or Terraform changes, or a real subscription login.
+Runtime and provider activation remain blocked on the isolated worker boundary
+in #18 and the credential lifecycle epic in #13.
+
+## Manager orchestration
+
+Canonical ingress writes the independently membership-authorized user as
+`credential_owner_user_id` in the dispatch payload. Scheduler admission copies
+that identity unchanged into the WorkerJob payload. Both records already use a
+canonical YDB `JsonDocument`, so this field requires no duplicate physical
+column or migration. Newly created canonical records always include it. A
+legacy zero value remains structurally loadable only so credential-disabled
+deterministic workers remain unchanged; required mode rejects it without a
+fallback or inferred alias. Existing queued jobs must therefore be drained or
+reset before required mode is enabled.
+
+Manager configuration has two modes: disabled (the existing deterministic
+behavior) and required. Required mode reloads the current Run, Attempt, and
+Lease by exact tenant-scoped keys after the worker start transaction. It
+revalidates running states, worker, lease ID, fence, owner, connection, and
+tenant before calling the lifecycle. The active lease must cover the full
+admitted `MaxRuntime` plus two independent finalization-grace budgets, one for
+`WriteBack` and one for `Release`; each operation's grace is positive and
+bounded to one minute. Otherwise processing fails before `Materialize`.
+
+The required sequence is `Issue → Materialize → Harness Execute → WriteBack →
+Release`. Only the invocation handle and exact local materialization enter the
+in-memory `ExecutionRequest`; neither is persisted. Write-back runs after
+success, harness error, timeout, or cancellation. Release runs even when
+write-back fails. `WriteBack` and `Release` each receive a fresh,
+cancellation-independent bounded context, so an exhausted write-back deadline
+cannot consume cleanup's budget. Lifecycle errors are converted to a fixed worker orchestration error
+and generic durable failure code, so secret bytes, references, handles, and
+backend details cannot reach queue, checkpoint, artifact, or error surfaces.
 
 ## Authority and scope
 

@@ -23,17 +23,18 @@ func CanTransitionDispatch(from, to DispatchStatus) bool {
 }
 
 type DispatchOutbox struct {
-	ID                DispatchOutboxID      `json:"id"`
-	TenantID          TenantID              `json:"tenant_id"`
-	RunID             RunID                 `json:"run_id"`
-	AttemptID         AttemptID             `json:"attempt_id"`
-	InputManifestID   ArtifactManifestID    `json:"input_manifest_id"`
-	ContextSnapshot   BlobRef               `json:"context_snapshot"`
-	ContextWindow     *SessionContextWindow `json:"context_window,omitempty"`
-	WorkspaceSnapshot *BlobRef              `json:"workspace_snapshot,omitempty"`
-	SkillBundle       *BlobRef              `json:"skill_bundle,omitempty"`
-	AllowedMCPServers []string              `json:"allowed_mcp_servers,omitempty"`
-	Origin            *FrontendEventOrigin  `json:"origin,omitempty"`
+	ID                    DispatchOutboxID      `json:"id"`
+	TenantID              TenantID              `json:"tenant_id"`
+	RunID                 RunID                 `json:"run_id"`
+	AttemptID             AttemptID             `json:"attempt_id"`
+	InputManifestID       ArtifactManifestID    `json:"input_manifest_id"`
+	ContextSnapshot       BlobRef               `json:"context_snapshot"`
+	ContextWindow         *SessionContextWindow `json:"context_window,omitempty"`
+	WorkspaceSnapshot     *BlobRef              `json:"workspace_snapshot,omitempty"`
+	SkillBundle           *BlobRef              `json:"skill_bundle,omitempty"`
+	AllowedMCPServers     []string              `json:"allowed_mcp_servers,omitempty"`
+	CredentialOwnerUserID UserID                `json:"credential_owner_user_id,omitempty"`
+	Origin                *FrontendEventOrigin  `json:"origin,omitempty"`
 	// DeliveryChat and ReplyToMessageID are the compatibility bridge for the
 	// pre-canonical Telegram worker flow. New ingress paths use Origin; #37
 	// removes this bridge when Telegram projects canonical assistant events.
@@ -77,6 +78,11 @@ func (outbox DispatchOutbox) ValidateForAttempt(run Run, attempt Attempt) error 
 	}
 	if outbox.SkillBundle != nil {
 		if err := validateWorkerBlob(run.TenantID, "dispatch_outbox.skill_bundle", *outbox.SkillBundle); err != nil {
+			return err
+		}
+	}
+	if outbox.CredentialOwnerUserID != "" {
+		if err := outbox.CredentialOwnerUserID.Validate(); err != nil {
 			return err
 		}
 	}

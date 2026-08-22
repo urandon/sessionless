@@ -438,18 +438,19 @@ type SchedulerStore interface {
 }
 
 type ExecutionRequest struct {
-	TenantID          domain.TenantID
-	RunID             domain.RunID
-	SessionID         domain.SessionID
-	TriggerEventID    domain.SessionEventID
-	AttemptID         domain.AttemptID
-	WorkDir           string
-	ContextSnapshot   domain.BlobRef
-	ContextWindow     *domain.SessionContextWindow
-	InputArtifacts    []domain.Artifact
-	ResumeCheckpoint  *domain.Checkpoint
-	Credential        CredentialHandle
-	AllowedMCPServers []string
+	TenantID                  domain.TenantID
+	RunID                     domain.RunID
+	SessionID                 domain.SessionID
+	TriggerEventID            domain.SessionEventID
+	AttemptID                 domain.AttemptID
+	WorkDir                   string
+	ContextSnapshot           domain.BlobRef
+	ContextWindow             *domain.SessionContextWindow
+	InputArtifacts            []domain.Artifact
+	ResumeCheckpoint          *domain.Checkpoint
+	Credential                CredentialHandle
+	CredentialMaterialization CredentialMaterialization
+	AllowedMCPServers         []string
 }
 
 // WorkerContextRequest addresses an immutable, bounded canonical history
@@ -542,6 +543,12 @@ type WorkerJobState struct {
 	Checkpoint    *domain.Checkpoint
 }
 
+type WorkerCredentialInvocationState struct {
+	Run     domain.Run
+	Attempt domain.Attempt
+	Lease   domain.Lease
+}
+
 type WorkerLeaseRequest struct {
 	TenantID  domain.TenantID
 	RunID     domain.RunID
@@ -623,6 +630,13 @@ type WorkerStateStore interface {
 	LoadWorkerContext(ctx context.Context, request WorkerContextRequest) (domain.SessionContextInput, error)
 	ClaimWorkerLease(ctx context.Context, request WorkerLeaseRequest) (domain.Lease, error)
 	StartWorkerJob(ctx context.Context, state WorkerJobState, lease domain.Lease, at time.Time) error
+	LoadWorkerCredentialInvocation(
+		ctx context.Context,
+		tenantID domain.TenantID,
+		runID domain.RunID,
+		attemptID domain.AttemptID,
+		leaseID domain.LeaseID,
+	) (WorkerCredentialInvocationState, bool, error)
 	RenewWorkerLease(
 		ctx context.Context,
 		tenantID domain.TenantID,

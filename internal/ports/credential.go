@@ -2,6 +2,7 @@ package ports
 
 import (
 	"context"
+	"path/filepath"
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
@@ -34,6 +35,17 @@ type CredentialHandle struct {
 type CredentialMaterialization struct {
 	RootDir  string
 	AuthFile string
+}
+
+func (materialization CredentialMaterialization) Validate() error {
+	root := filepath.Clean(materialization.RootDir)
+	authFile := filepath.Clean(materialization.AuthFile)
+	if !filepath.IsAbs(root) || !filepath.IsAbs(authFile) ||
+		root != materialization.RootDir || authFile != materialization.AuthFile ||
+		filepath.Dir(authFile) != root || filepath.Base(authFile) != "auth.json" {
+		return domain.ValidationError{Field: "credential.materialization", Reason: "must be an exact normalized auth.json direct child"}
+	}
+	return nil
 }
 
 type CredentialWriteBackResult struct {

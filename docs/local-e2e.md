@@ -17,6 +17,7 @@ sequenceDiagram
     participant Blob as MinIO
     participant Sender as telegram-sender
     participant Telegram as Telegram fake
+    participant Synthetic as synthetic frontend
 
     Fixture->>API: signed Telegram update
     API->>Blob: normalized message and attachments
@@ -34,6 +35,9 @@ sequenceDiagram
     Sender->>DB: authorize + materialize transport delivery
     Sender->>Telegram: canonical text and documents
     Sender->>DB: sent or retry-wait transition
+    Synthetic->>DB: bind to an authorized canonical session
+    Synthetic->>Blob: immutable canonical event payload
+    Synthetic->>DB: append through the frontend-neutral ingress contract
 ```
 
 The worker is built and invoked through the Compose `worker` profile. Each
@@ -76,11 +80,22 @@ The suite proves:
   terminal system event;
 - canonical assistant/tool finalization creates and consumes one authorized
   Telegram projection while retaining the canonical events;
+- a retryable Telegram `429` response is persisted and retried before the
+  canonical delivery reaches `sent`;
 - replaying a terminal queue message produces no re-execution, charge,
   canonical event, or projection;
 - output artifact keys and reads remain tenant-scoped;
-- `/new` changes the next workload to a new canonical `session_id` while the
-  previous session remains intact.
+- two successive `/new` commands create distinct canonical sessions and leave
+  both previous sessions participant-authorized, listable and openable;
+- a synthetic non-Telegram frontend revision-fences its binding onto the
+  current Telegram session and both bindings observe the same canonical event;
+- archive moves a session between the active and archived fixed-fan-out lists
+  without changing its ordered event payloads or immutable worker artifacts,
+  and unarchive restores the active session;
+- duplicate ingress and terminal queue replay preserve stable trigger,
+  assistant, projection and delivery identities with exact durable row counts;
+- cross-tenant session selectors cannot bind, list, open, materialize history
+  or artifacts, or authorize a destructive deletion request.
 
 Command replies and projected AI results both exercise the durable Telegram
 delivery path; only projected results retain an immutable reference back to
@@ -89,6 +104,32 @@ The lower-level worker, YDB, S3, queue, ingress, and delivery suites retain
 their focused concurrency, fencing, path traversal, size-limit, and
 cross-tenant negative cases. The E2E suite composes those same production
 adapters rather than replacing them with an in-memory product path.
+
+## Local correctness and cloud evidence
+
+The local gate is authoritative for deterministic structure and isolation. It
+uses synthetic Telegram identities, the production frontend-neutral session
+API and ingress services, YDB Local, MinIO, ElasticMQ, one-shot worker
+containers and the Telegram fake. It proves canonical identity, session
+switching, cross-frontend binding, participant authorization, event and
+artifact retention across archive, idempotency and negative tenant boundaries.
+
+The following evidence is deliberately not inferred from the local stand:
+
+| Evidence | Owner |
+| --- | --- |
+| Real Telegram OIDC, two-user browser authorization and the deployed WebUI as an independently authenticated frontend | WEB-06 #35, after WEB-05 #34 |
+| Managed HTTPS, certificate, immutable deployed image digest and scale-to-zero cold start | WEB-05 #34 and WEB-06 #35 |
+| Cloud YDB query latency/RU, Object Storage lifecycle behavior, serverless retries, dashboards and alert delivery | release hardening #14 |
+
+Those cloud gates repeat selected scenarios against cloud-dev and link their
+evidence; they do not replace or weaken the local canonical-session proof.
+Snapshot/canonical replay through the full local container topology,
+operational-TTL cleanup preservation and interrupted destructive deletion with
+sentinel sessions remain separate structural additions to this suite. Their
+focused unit and YDB integration contracts already run in CI, but they must not
+be reported as composed local E2E evidence until the corresponding scenarios
+are added here.
 
 ## Correlation and timing evidence
 

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/outboxwake"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/queuecontract"
 	"gitcode.com/urandon/sessionless/internal/s3store"
@@ -302,6 +303,26 @@ func newLocalSlice(t *testing.T) *localSlice {
 func (slice *localSlice) close() {
 	slice.closeDB()
 	slice.cancel()
+}
+
+func (slice *localSlice) schedulerWakePublisher() ports.DispatchWakePublisher {
+	slice.t.Helper()
+	queue, err := sqsqueue.New(slice.ctx, sqsqueue.Config{
+		Endpoint:        envOrDefault("QUEUE_ENDPOINT", "http://localhost:9324"),
+		Region:          envOrDefault("QUEUE_REGION", "us-east-1"),
+		QueueURL:        envOrDefault("SCHEDULER_WAKE_QUEUE_URL", "http://localhost:9324/000000000000/sessionless-scheduler-wake"),
+		DeadLetterURL:   envOrDefault("DEAD_LETTER_QUEUE_URL", "http://localhost:9324/000000000000/sessionless-dlq"),
+		AccessKeyID:     envOrDefault("QUEUE_ACCESS_KEY_ID", "sessionless-local"),
+		SecretAccessKey: envOrDefault("QUEUE_SECRET_ACCESS_KEY", "sessionless-local-secret"),
+	})
+	if err != nil {
+		slice.t.Fatal(err)
+	}
+	publisher, err := outboxwake.NewPublisher(queue)
+	if err != nil {
+		slice.t.Fatal(err)
+	}
+	return publisher
 }
 
 func (slice *localSlice) reset() {

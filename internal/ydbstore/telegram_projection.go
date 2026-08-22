@@ -57,6 +57,47 @@ func (store *Store) ListRunTelegramProjections(
 	return result, rows.Err()
 }
 
+func (store *Store) ListRunTelegramDeliveries(
+	ctx context.Context,
+	tenantID domain.TenantID,
+	runID domain.RunID,
+	limit uint64,
+) (result []ports.TelegramDeliveryReady, err error) {
+	if err := tenantID.Validate(); err != nil {
+		return nil, err
+	}
+	if err := runID.Validate(); err != nil {
+		return nil, err
+	}
+	if limit == 0 {
+		return nil, domain.ValidationError{Field: "Telegram delivery limit", Reason: "must be positive"}
+	}
+	rows, err := store.db.QueryContext(ctx,
+		`SELECT telegram_delivery_id
+		 FROM telegram_deliveries_by_run
+		 WHERE tenant_id = $1 AND run_id = $2
+		 AND JSON_VALUE(record, "$.status" RETURNING Utf8 ERROR ON EMPTY ERROR ON ERROR)
+		 IN ($3, $4, $5)
+		 ORDER BY telegram_delivery_id
+		 LIMIT $6`,
+		tenantID, runID,
+		domain.DeliveryPending, domain.DeliveryRetryWait, domain.DeliverySending,
+		limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		item := ports.TelegramDeliveryReady{TenantID: tenantID}
+		if err := rows.Scan(&item.DeliveryID); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
 func (store *Store) ListReadyTelegramProjections(
 	ctx context.Context,
 	bucket uint32,

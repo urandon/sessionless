@@ -307,6 +307,14 @@ type TelegramDeliveryStore interface {
 		runID domain.RunID,
 		limit uint64,
 	) ([]TelegramProjectionReady, error)
+	// ListRunTelegramDeliveries applies the non-terminal status predicate before
+	// the limit so retained terminal history cannot hide retryable work.
+	ListRunTelegramDeliveries(
+		ctx context.Context,
+		tenantID domain.TenantID,
+		runID domain.RunID,
+		limit uint64,
+	) ([]TelegramDeliveryReady, error)
 	ListReadyTelegramProjections(
 		ctx context.Context,
 		bucket uint32,

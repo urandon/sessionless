@@ -402,6 +402,19 @@ func (store *Store) CommitCanonicalUserEvent(
 }
 
 func authorizeTenantWriteTx(ctx context.Context, tx *stateTx, userID domain.UserID) error {
+	return authorizeTenantTx(ctx, tx, userID, domain.TenantPermissionWrite)
+}
+
+func authorizeTenantReadTx(ctx context.Context, tx *stateTx, userID domain.UserID) error {
+	return authorizeTenantTx(ctx, tx, userID, domain.TenantPermissionRead)
+}
+
+func authorizeTenantTx(
+	ctx context.Context,
+	tx *stateTx,
+	userID domain.UserID,
+	permission domain.TenantPermission,
+) error {
 	membership, found, err := readMembershipTx(ctx, tx.sqlTx, userID, tx.tenantID)
 	if err != nil {
 		return err
@@ -409,7 +422,7 @@ func authorizeTenantWriteTx(ctx context.Context, tx *stateTx, userID domain.User
 	if !found {
 		return domain.ErrMembershipDenied
 	}
-	return membership.Authorize(userID, tx.tenantID, domain.TenantPermissionWrite)
+	return membership.Authorize(userID, tx.tenantID, permission)
 }
 
 func authorizeSessionWriteTx(ctx context.Context, tx *stateTx, sessionID domain.SessionID, userID domain.UserID) error {

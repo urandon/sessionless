@@ -101,6 +101,33 @@ func TestTelegramProjectionMaterializationPreservesCanonicalReferencesAndRecheck
 		delivery.Chat.ChatID != -1007001 || delivery.ReplyToMessageID != 91 {
 		t.Fatalf("delivery = %#v", delivery)
 	}
+	for index := 0; index < 30; index++ {
+		terminal := delivery
+		terminal.ID = domain.TelegramDeliveryID(fmt.Sprintf("aaa-terminal-%03d", index))
+		terminal.Status = domain.DeliverySent
+		record, marshalErr := json.Marshal(terminal)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		if _, execErr := client.DB.ExecContext(context.Background(),
+			`UPSERT INTO telegram_deliveries_by_run
+			 (tenant_id, run_id, telegram_delivery_id, record)
+			 VALUES ($1, $2, $3, CAST($4 AS JsonDocument))`,
+			fixture.tenant, fixture.run.ID, terminal.ID, string(record),
+		); execErr != nil {
+			t.Fatal(execErr)
+		}
+	}
+	byRunDeliveries, err := store.ListRunTelegramDeliveries(
+		context.Background(), fixture.tenant, fixture.run.ID, 1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byRunDeliveries) != 1 || byRunDeliveries[0].TenantID != fixture.tenant ||
+		byRunDeliveries[0].DeliveryID != delivery.ID {
+		t.Fatalf("run Telegram deliveries = %#v", byRunDeliveries)
+	}
 	assertCount(t, client, "frontend_projection_outbox", fixture.tenant, 0)
 	assertCount(t, client, "frontend_projections_by_run", fixture.tenant, 0)
 	assertCount(t, client, "frontend_projection_ready_v1", fixture.tenant, 0)
@@ -115,6 +142,15 @@ func TestTelegramProjectionMaterializationPreservesCanonicalReferencesAndRecheck
 	}
 	if ok || claimed.Status != domain.DeliveryCancelled {
 		t.Fatalf("revoked delivery claim = %#v claimed=%t", claimed, ok)
+	}
+	byRunDeliveries, err = store.ListRunTelegramDeliveries(
+		context.Background(), fixture.tenant, fixture.run.ID, 1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byRunDeliveries) != 0 {
+		t.Fatalf("terminal run Telegram deliveries = %#v", byRunDeliveries)
 	}
 	assertCount(t, client, "session_events", fixture.tenant, 2)
 }

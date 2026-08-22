@@ -95,12 +95,16 @@ run_migration_fixture() {
 	service_log=$3
 	output_file=$4
 	migration_max_attempts=${5:-3}
-	local_dial_max_attempts=${6:-2}
+	local_dial_max_attempts=${6-__production_default__}
 	: >"$state_file"
 	if (
 		export SESSIONLESS_DEV_UP_LIBRARY=1
 		export YDB_MIGRATION_MAX_ATTEMPTS="$migration_max_attempts"
-		export YDB_LOCAL_DIAL_MAX_ATTEMPTS="$local_dial_max_attempts"
+		if test "$local_dial_max_attempts" = __production_default__; then
+			unset YDB_LOCAL_DIAL_MAX_ATTEMPTS
+		else
+			export YDB_LOCAL_DIAL_MAX_ATTEMPTS="$local_dial_max_attempts"
+		fi
 		export YDB_MIGRATION_RETRY_DELAY_SECONDS=0
 		export FIXTURE_MODE="$mode"
 		export FIXTURE_STATE_FILE="$state_file"
@@ -196,6 +200,16 @@ test "$(wc -l <"$dial_bound_state" | tr -d ' ')" -eq 2 ||
 	fail 'persistent local SDK dial timeout must stop at its dedicated bound'
 grep -F 'after 2 dial attempts' "$dial_bound_output" >/dev/null ||
 	fail 'persistent local SDK dial timeout omitted its dedicated bound'
+
+default_dial_bound_state="$test_root/default-dial-bound.state"
+default_dial_bound_output="$test_root/default-dial-bound.out"
+if run_migration_fixture persistent-local-dial "$default_dial_bound_state" "$empty_log" "$default_dial_bound_output" 60; then
+	fail 'persistent local SDK dial timeout was incorrectly accepted with the production defaults'
+fi
+test "$(wc -l <"$default_dial_bound_state" | tr -d ' ')" -eq 3 ||
+	fail 'the production local SDK dial bound must stop after exactly three attempts'
+grep -F 'after 3 dial attempts' "$default_dial_bound_output" >/dev/null ||
+	fail 'the production local SDK dial bound must remain three independently of the global bound'
 
 storage_bound_state="$test_root/storage-bound.state"
 storage_bound_output="$test_root/storage-bound.out"

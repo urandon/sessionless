@@ -1,0 +1,5 @@
+{"kind":"frame","direction":"client","message":{"method":"account/read","id":70,"params":{"refreshToken":false}}}
+{"kind":"frame","direction":"server","message":{"id":70,"result":{"account":{"type":"apiKey"},"requiresOpenaiAuth":true}}}
+{"kind":"frame","direction":"server","message":{"method":"account/updated","params":{"authMode":"apikey","planType":null}}}
+{"kind":"frame","direction":"client","message":{"method":"account/logout","id":71}}
+{"kind":"frame","direction":"server","message":{"id":71,"result":{}}}

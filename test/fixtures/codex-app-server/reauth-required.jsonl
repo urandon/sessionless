@@ -1,0 +1,5 @@
+{"kind":"frame","direction":"server","message":{"method":"error","params":{"threadId":"thread-synthetic-reauth","turnId":"turn-synthetic-reauth","willRetry":false,"error":{"message":"Authentication is no longer valid.","codexErrorInfo":"unauthorized","additionalDetails":null}}}}
+{"kind":"frame","direction":"server","message":{"method":"turn/completed","params":{"threadId":"thread-synthetic-reauth","turn":{"id":"turn-synthetic-reauth","items":[],"status":"failed","error":{"message":"Authentication is no longer valid.","codexErrorInfo":"unauthorized","additionalDetails":null},"completedAt":1787380100}}}}
+{"kind":"frame","direction":"client","message":{"method":"account/read","id":30,"params":{"refreshToken":true}}}
+{"kind":"frame","direction":"server","message":{"error":{"code":-32600,"message":"codex account authentication required"},"id":30}}
+{"kind":"frame","direction":"server","message":{"method":"account/updated","params":{"authMode":null,"planType":null}}}

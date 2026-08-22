@@ -1,0 +1,3 @@
+{"kind":"raw","direction":"server","data":"{\"id\":40,\"result\":"}
+{"kind":"raw","direction":"server","data":"not-json\n"}
+{"kind":"repeat","direction":"server","prefix":"{\"method\":\"item/agentMessage/delta\",\"params\":{\"threadId\":\"thread-synthetic-large\",\"turnId\":\"turn-synthetic-large\",\"itemId\":\"item-synthetic-large\",\"delta\":\"","unit":"x","count":1048577,"suffix":"\"}}\n"}

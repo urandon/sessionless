@@ -48,6 +48,8 @@ test -f "$helper" || fail 'scripts/local-ydb-readiness.sh is missing'
 storage_pool_log="$test_root/storage-pool.log"
 raw_localhost_dial_log="$test_root/raw-localhost-dial.log"
 escaped_localhost_dial_log="$test_root/escaped-localhost-dial.log"
+double_escaped_localhost_dial_log="$test_root/double-escaped-localhost-dial.log"
+triple_escaped_localhost_dial_log="$test_root/triple-escaped-localhost-dial.log"
 ipv4_dial_log="$test_root/ipv4-dial.log"
 ipv6_dial_log="$test_root/ipv6-dial.log"
 remote_dial_log="$test_root/remote-dial.log"
@@ -59,6 +61,8 @@ empty_log="$test_root/empty.log"
 printf '%s\n' "database doesn't have storage pools" >"$storage_pool_log"
 printf '%s\n' 'failed to dial "localhost:2136": context deadline exceeded' >"$raw_localhost_dial_log"
 printf '%s\n' 'failed to dial \"localhost:2136\": context deadline exceeded' >"$escaped_localhost_dial_log"
+printf '%s\n' 'failed to dial \\"localhost:2136\\": context deadline exceeded' >"$double_escaped_localhost_dial_log"
+printf '%s\n' 'failed to dial \\\"localhost:2136\\\": context deadline exceeded' >"$triple_escaped_localhost_dial_log"
 printf '%s\n' 'failed to dial "127.0.0.1:2136": context deadline exceeded' >"$ipv4_dial_log"
 printf '%s\n' 'failed to dial "[::1]:2136": context deadline exceeded' >"$ipv6_dial_log"
 printf '%s\n' 'failed to dial "ydb.example.test:2136": context deadline exceeded' >"$remote_dial_log"
@@ -74,6 +78,10 @@ test "$(classify_ydb_startup_failure "$raw_localhost_dial_log" "$empty_log")" = 
 	fail 'raw localhost SDK dial timeout must be classified as retry-local-dial'
 test "$(classify_ydb_startup_failure "$escaped_localhost_dial_log" "$empty_log")" = retry-local-dial ||
 	fail 'slog-escaped localhost SDK dial timeout must be classified as retry-local-dial'
+test "$(classify_ydb_startup_failure "$double_escaped_localhost_dial_log" "$empty_log")" = retry-local-dial ||
+	fail 'nested double-escaped localhost SDK dial timeout must be classified as retry-local-dial'
+test "$(classify_ydb_startup_failure "$triple_escaped_localhost_dial_log" "$empty_log")" = retry-local-dial ||
+	fail 'real nested triple-escaped localhost SDK dial timeout must be classified as retry-local-dial'
 test "$(classify_ydb_startup_failure "$ipv4_dial_log" "$empty_log")" = retry-local-dial ||
 	fail '127.0.0.1 SDK dial timeout must be classified as retry-local-dial'
 test "$(classify_ydb_startup_failure "$ipv6_dial_log" "$empty_log")" = retry-local-dial ||

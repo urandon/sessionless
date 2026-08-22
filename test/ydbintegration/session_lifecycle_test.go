@@ -12,6 +12,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/ydbclient"
 	"gitcode.com/urandon/sessionless/internal/ydbpartition"
 )
 
@@ -29,6 +30,22 @@ func TestSessionLifecycleHoldWriteFenceInventoryAndCompletion(t *testing.T) {
 	if err := store.CreateSession(ctx, session, owner); err != nil {
 		t.Fatal(err)
 	}
+	display := domain.SessionDisplay{
+		TenantID: tenantID, SessionID: session.ID,
+		Title: "Lifecycle display", Preview: "must be removed with the canonical session", UpdatedAt: now,
+	}
+	displayRecord, err := json.Marshal(display)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.DB.ExecContext(ctx,
+		`UPSERT INTO session_displays (tenant_id, session_id, updated_at, record)
+		 VALUES ($1, $2, $3, CAST($4 AS JsonDocument))`,
+		tenantID, session.ID, display.UpdatedAt, string(displayRecord),
+	); err != nil {
+		t.Fatal(err)
+	}
+	assertSessionDisplayCount(t, client, tenantID, session.ID, 1)
 	binding := domain.FrontendBinding{
 		ID: domain.FrontendBindingID(uniqueID("binding-lifecycle")), TenantID: tenantID,
 		Frontend: domain.FrontendTelegram, ExternalConversationID: uniqueID("chat-lifecycle"),
@@ -306,4 +323,25 @@ func TestSessionLifecycleHoldWriteFenceInventoryAndCompletion(t *testing.T) {
 	assertCount(t, client, "telegram_delivery_ready_v2", tenantID, 0)
 	assertCount(t, client, "checkpoint_objects_by_run", tenantID, 0)
 	assertCount(t, client, "frontend_projection_outbox", tenantID, 0)
+	assertSessionDisplayCount(t, client, tenantID, session.ID, 0)
+}
+
+func assertSessionDisplayCount(
+	t *testing.T,
+	client *ydbclient.Client,
+	tenantID domain.TenantID,
+	sessionID domain.SessionID,
+	want uint64,
+) {
+	t.Helper()
+	var got uint64
+	if err := client.DB.QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM session_displays WHERE tenant_id = $1 AND session_id = $2`,
+		tenantID, sessionID,
+	).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("session_displays count for tenant %q session %q = %d, want %d", tenantID, sessionID, got, want)
+	}
 }

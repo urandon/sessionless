@@ -64,6 +64,14 @@ func TestExecuteResumesAfterObjectDeleteFailure(t *testing.T) {
 	if completed.State != domain.SessionDeletionCompleted || store.starts != 2 || store.completions != 1 {
 		t.Fatalf("unexpected resumed completion: deletion=%+v starts=%d completions=%d", completed, store.starts, store.completions)
 	}
+	wantDeletes := []string{
+		"tenants/tenant-a/sessions/session-a/a",
+		"tenants/tenant-a/sessions/session-a/a",
+		"tenants/tenant-a/sessions/session-a/b",
+	}
+	if !reflect.DeepEqual(blobs.deleted, wantDeletes) {
+		t.Fatalf("resumed exact deletes = %v, want %v", blobs.deleted, wantDeletes)
+	}
 }
 
 func fixture(t *testing.T) (*Service, *fakeLifecycleStore, *fakeBlobStore) {

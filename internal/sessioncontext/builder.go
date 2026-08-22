@@ -12,7 +12,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
 
-const snapshotPageSize uint64 = 256
+const snapshotPageSize uint64 = 200
 
 type SnapshotStore interface {
 	ListSessionHistory(ctx context.Context, tenantID domain.TenantID, sessionID domain.SessionID, afterSequence uint64, limit uint64) ([]domain.SessionEvent, error)

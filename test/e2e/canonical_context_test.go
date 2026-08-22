@@ -97,7 +97,7 @@ func TestCanonicalContextSnapshotTailMatchesReplayAndFallsBackFromCorruption(t *
 
 func (slice *localSlice) ensureCanonicalSnapshot(ref runRef) domain.SessionSnapshot {
 	slice.t.Helper()
-	events, err := slice.state.ListSessionHistory(slice.ctx, ref.TenantID, ref.SessionID, 0, 512)
+	events, err := slice.state.ListSessionHistory(slice.ctx, ref.TenantID, ref.SessionID, 0, 200)
 	if err != nil {
 		slice.t.Fatal(err)
 	}

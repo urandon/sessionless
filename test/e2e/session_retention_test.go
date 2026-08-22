@@ -31,6 +31,11 @@ func TestOperationalTTLPreservationAndResumableSessionDeletion(t *testing.T) {
 	crossTenantChat := base*2 + 402
 
 	target := slice.completeRetentionRun(base+401, sameTenantChat, "target session for exact deletion")
+	targetDocuments := len(slice.outputManifest(target).Artifacts)
+	slice.waitForChatMethods(map[int64]map[string]int{
+		sameTenantChat: {"sendMessage": 1, "sendDocument": targetDocuments},
+	})
+	slice.waitTelegramDeliveryDrain(target)
 	newSession := slice.postMessage(base+402, sameTenantChat, "/new")
 	slice.waitRunStatus(newSession, domain.RunSucceeded)
 	sentinel := slice.postMessage(base+403, sameTenantChat, "same-tenant retention sentinel")
@@ -39,7 +44,7 @@ func TestOperationalTTLPreservationAndResumableSessionDeletion(t *testing.T) {
 	slice.waitRunStatus(sentinel, domain.RunSucceeded)
 	crossTenant := slice.completeRetentionRun(base+404, crossTenantChat, "cross-tenant retention sentinel")
 
-	documents := len(slice.outputManifest(target).Artifacts) + len(slice.outputManifest(sentinel).Artifacts)
+	documents := targetDocuments + len(slice.outputManifest(sentinel).Artifacts)
 	crossDocuments := len(slice.outputManifest(crossTenant).Artifacts)
 	slice.waitForChatMethods(map[int64]map[string]int{
 		sameTenantChat:  {"sendMessage": 3, "sendDocument": documents},

@@ -78,6 +78,16 @@ func TestCanonicalContextSnapshotTailMatchesReplayAndFallsBackFromCorruption(t *
 		t.Fatal("corrupt-snapshot fallback history differs byte-for-byte from canonical event-only replay")
 	}
 	restoreSnapshot()
+
+	runs := []runRef{seed, snapshotTail, fallback}
+	documents := 0
+	for _, run := range runs {
+		documents += len(slice.outputManifest(run).Artifacts)
+	}
+	slice.waitForChatMethods(map[int64]map[string]int{
+		chatID: {"sendMessage": len(runs), "sendDocument": documents},
+	})
+	slice.waitTelegramDeliveryDrain(runs...)
 }
 
 func (slice *localSlice) ensureCanonicalSnapshot(ref runRef) domain.SessionSnapshot {
@@ -314,4 +324,30 @@ func (slice *localSlice) contextHistoryArtifact(ref runRef) []byte {
 	}
 	slice.t.Fatalf("captured context artifact not found in manifest %+v", manifest)
 	return nil
+}
+
+func (slice *localSlice) waitTelegramDeliveryDrain(runs ...runRef) {
+	slice.t.Helper()
+	deadline := time.Now().Add(35 * time.Second)
+	for {
+		complete := true
+		for _, run := range runs {
+			if slice.deliveryForRun(run).Status != domain.DeliverySent {
+				complete = false
+			}
+			if pending := slice.countRunRows(run,
+				`SELECT COUNT(*) FROM frontend_projections_by_run
+				 WHERE tenant_id = $1 AND run_id = $2`,
+			); pending != 0 {
+				complete = false
+			}
+		}
+		if complete {
+			return
+		}
+		if time.Now().After(deadline) {
+			slice.t.Fatalf("Telegram delivery drain did not complete for runs %+v", runs)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }

@@ -115,6 +115,59 @@ func TestUnexpectedServerRequestFailsClosedWithoutResponse(t *testing.T) {
 	}
 }
 
+func TestMidRunAPIKeyRouteSwitchRejectsCompletedOutput(t *testing.T) {
+	client := startHelper(t, "route-switch", Config{})
+	defer client.Close()
+	if _, err := client.Initialize(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ReadAccount(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	thread, err := client.StartThread(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn, err := client.StartTurn(context.Background(), thread.ID, "bounded prompt", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := client.WaitTurn(context.Background(), thread.ID, turn.ID)
+	if !errors.Is(err, ErrUnsupportedAuth) || result != (TurnResult{}) {
+		t.Fatalf("WaitTurn() = %#v, %v; want rejected output and ErrUnsupportedAuth", result, err)
+	}
+}
+
+func TestAPIKeyUpdatedFixtureFailsClosedDuringActiveTurn(t *testing.T) {
+	records := readFixture(t, filepath.Join("..", "..", "test", "fixtures", "codex-app-server", "api-key-rejected.jsonl"))
+	client := &Client{
+		authMode: "chatgpt", authValid: true,
+		turns: map[string]string{turnKey("thread-exact", "turn-exact"): "inProgress"},
+	}
+	for _, record := range records {
+		if record.Kind != "frame" || record.Direction != "server" {
+			continue
+		}
+		var envelope struct {
+			Method string `json:"method"`
+		}
+		if err := json.Unmarshal(record.Message, &envelope); err != nil {
+			t.Fatal(err)
+		}
+		if envelope.Method != "account/updated" {
+			continue
+		}
+		if err := client.handleFrame(record.Message); !errors.Is(err, ErrUnsupportedAuth) {
+			t.Fatalf("account/updated error = %v, want ErrUnsupportedAuth", err)
+		}
+		if client.authValid {
+			t.Fatal("API-key route remained valid")
+		}
+		return
+	}
+	t.Fatal("fixture has no account/updated notification")
+}
+
 func TestFrameLimitAppliesBeforeJSONDecodeAndStderrIsBounded(t *testing.T) {
 	client := startHelper(t, "oversized", Config{MaxFrameBytes: 512, MaxStderrBytes: 128})
 	defer client.Close()
@@ -266,6 +319,9 @@ func TestTurnTimeoutInterruptsAndWaitsForTerminalBeforeReturning(t *testing.T) {
 	client := startHelper(t, "turn-timeout", Config{ShutdownTimeout: time.Second})
 	defer client.Close()
 	if _, err := client.Initialize(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ReadAccount(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	thread, err := client.StartThread(context.Background())
@@ -519,6 +575,9 @@ func TestCodexAppHelperProcess(t *testing.T) {
 			turn = map[string]any{"id": "turn-exact", "status": "completed", "error": nil,
 				"items": []any{map[string]any{"type": "agentMessage", "id": "item-exact", "text": "bounded answer"}}}
 			writeJSON(writer, map[string]any{"method": "turn/completed", "params": map[string]any{"threadId": "thread-exact", "turn": turn}})
+			if scenario == "route-switch" {
+				writeJSON(writer, map[string]any{"method": "account/updated", "params": map[string]any{"authMode": "apikey", "planType": nil}})
+			}
 		case "turn/interrupt":
 			writeJSON(writer, map[string]any{"id": rawID(id), "result": map[string]any{}})
 			if scenario == "turn-timeout" {

@@ -137,6 +137,10 @@ func (client *Client) ReadAccount(ctx context.Context) (AccountState, error) {
 	}
 	state := AccountState{RequiresOpenAIAuth: response.RequiresOpenAIAuth}
 	if response.Account == nil {
+		client.mu.Lock()
+		client.authMode = ""
+		client.authValid = false
+		client.mu.Unlock()
 		return state, nil
 	}
 	if response.Account.Type != "chatgpt" {
@@ -150,6 +154,10 @@ func (client *Client) ReadAccount(ctx context.Context) (AccountState, error) {
 	state.Account = &Account{
 		Type: response.Account.Type, PlanType: response.Account.PlanType,
 	}
+	client.mu.Lock()
+	client.authMode = "chatgpt"
+	client.authValid = true
+	client.mu.Unlock()
 	return state, nil
 }
 
@@ -202,6 +210,12 @@ func (client *Client) CurrentRateLimits() RateLimits {
 func (client *Client) StartThread(ctx context.Context) (Thread, error) {
 	if err := client.requireInitialized(); err != nil {
 		return Thread{}, err
+	}
+	client.mu.Lock()
+	authValid := client.authValid && client.authMode == "chatgpt"
+	client.mu.Unlock()
+	if !authValid {
+		return Thread{}, ErrReauthenticationRequired
 	}
 	params := map[string]any{
 		"cwd":            client.paths.WorkDir,
@@ -310,7 +324,7 @@ func (client *Client) WaitTurn(ctx context.Context, threadID, turnID string) (Tu
 	client.mu.Lock()
 	if result, found := client.turnDone[key]; found {
 		client.mu.Unlock()
-		return classifyTurn(result)
+		return client.revalidateTurn(ctx, result)
 	}
 	if _, found := client.turns[key]; !found {
 		client.mu.Unlock()
@@ -325,7 +339,7 @@ func (client *Client) WaitTurn(ctx context.Context, threadID, turnID string) (Tu
 	client.mu.Unlock()
 	select {
 	case result := <-waiter:
-		return classifyTurn(result)
+		return client.revalidateTurn(ctx, result)
 	case <-ctx.Done():
 		interruptCtx, cancelInterrupt := context.WithTimeout(context.Background(), client.config.RequestTimeout)
 		_ = client.InterruptTurn(interruptCtx, threadID, turnID)
@@ -344,6 +358,17 @@ func (client *Client) WaitTurn(ctx context.Context, threadID, turnID string) (Tu
 	case <-client.done:
 		return TurnResult{}, client.failure()
 	}
+}
+
+func (client *Client) revalidateTurn(ctx context.Context, result TurnResult) (TurnResult, error) {
+	account, err := client.ReadAccount(ctx)
+	if err != nil {
+		return TurnResult{}, err
+	}
+	if account.Account == nil || account.Account.Type != "chatgpt" {
+		return TurnResult{}, ErrReauthenticationRequired
+	}
+	return classifyTurn(result)
 }
 
 func classifyTurn(result TurnResult) (TurnResult, error) {
@@ -676,6 +701,33 @@ func (client *Client) handleNotification(method string, params json.RawMessage) 
 		return ErrUnexpectedCapability
 	}
 	switch method {
+	case "account/updated":
+		var event struct {
+			AuthMode *string `json:"authMode"`
+		}
+		if json.Unmarshal(params, &event) != nil {
+			return ErrProtocol
+		}
+		client.mu.Lock()
+		hadValidAuth := client.authValid
+		runActive := len(client.turns) != 0
+		if event.AuthMode == nil || *event.AuthMode == "" {
+			client.authMode = ""
+			client.authValid = false
+			client.mu.Unlock()
+			if hadValidAuth || runActive {
+				return ErrReauthenticationRequired
+			}
+			return nil
+		}
+		if *event.AuthMode != "chatgpt" {
+			client.authMode = *event.AuthMode
+			client.authValid = false
+			client.mu.Unlock()
+			return ErrUnsupportedAuth
+		}
+		client.authMode = "chatgpt"
+		client.mu.Unlock()
 	case "account/login/completed":
 		var event struct {
 			LoginID *string `json:"loginId"`

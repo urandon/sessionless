@@ -53,6 +53,8 @@ type Client struct {
 	closing bool
 
 	initialized bool
+	authMode    string
+	authValid   bool
 	threadID    string
 	threads     map[string]struct{}
 	turns       map[string]string

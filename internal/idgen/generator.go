@@ -73,4 +73,5 @@ var prefixes = map[ports.IDKind]string{
 	ports.IDDispatchOutbox:         "dsp_",
 	ports.IDTelegramDelivery:       "tdl_",
 	ports.IDQueueMessage:           "msg_",
+	ports.IDCredentialHandle:       "crh_",
 }

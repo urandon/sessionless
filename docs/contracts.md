@@ -17,6 +17,11 @@ harness.
 Domain and queue packages import no Telegram, Yandex Cloud, or harness-specific
 SDK.
 
+The local-only credential lifecycle Phase B0 contract is described in
+[credential-lifecycle.md](credential-lifecycle.md). It defines the versioned
+owner-scoped binding and invocation-scoped handle without activating credential
+use in worker runtime.
+
 ## Canonical sessions and frontend bindings
 
 `Session` is the product conversation and Sessionless is its source of truth.

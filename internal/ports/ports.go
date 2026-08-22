@@ -39,6 +39,7 @@ const (
 	IDDispatchOutbox         IDKind = "dispatch_outbox"
 	IDTelegramDelivery       IDKind = "telegram_delivery"
 	IDQueueMessage           IDKind = "queue_message"
+	IDCredentialHandle       IDKind = "credential_handle"
 )
 
 type IDGenerator interface {
@@ -434,28 +435,6 @@ type SchedulerStore interface {
 		candidate ExpiredQuotaReservation,
 		at time.Time,
 	) (bool, error)
-}
-
-type CredentialRequest struct {
-	TenantID                 domain.TenantID
-	SubscriptionConnectionID domain.SubscriptionConnectionID
-	RunID                    domain.RunID
-	AttemptID                domain.AttemptID
-	WorkerID                 string
-}
-
-// CredentialHandle is an opaque vault/runtime reference. It is safe to pass to
-// an isolated worker control channel but never to a queue envelope.
-type CredentialHandle struct {
-	TenantID                 domain.TenantID
-	SubscriptionConnectionID domain.SubscriptionConnectionID
-	Handle                   string
-	ExpiresAt                time.Time
-}
-
-type CredentialVault interface {
-	IssueWorkerCredential(ctx context.Context, request CredentialRequest) (CredentialHandle, error)
-	RevokeWorkerCredential(ctx context.Context, handle CredentialHandle) error
 }
 
 type ExecutionRequest struct {

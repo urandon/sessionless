@@ -101,6 +101,12 @@ in [codex-subscription-worker.md](codex-subscription-worker.md). That Phase A
 client is intentionally not wired into worker product state yet and never
 falls back to API-key billing.
 
+The provider-neutral local credential binding, invocation handle, secure
+materialization, crash recovery, write-back, and deny-first revocation contract
+is documented in [credential-lifecycle.md](credential-lifecycle.md). Phase B0
+is also intentionally not activated in worker runtime while #18 and #13 remain
+open.
+
 Deployment-aware cleanup of those immutable registry images is a separate,
 fenced operational workflow. Its evidence bridge, dry-run/delete controls, and
 audit reports are documented in [registry-gc.md](registry-gc.md). Never replace

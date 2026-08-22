@@ -3,6 +3,7 @@ package ports
 import (
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
@@ -61,40 +62,93 @@ func (request TelegramSendRequest) Validate() error {
 	return request.IdempotencyKey.Validate()
 }
 
-func (request CredentialRequest) Validate() error {
+func (request CredentialIssueRequest) ValidateAt(now time.Time) error {
+	if err := request.OwnerUserID.Validate(); err != nil {
+		return err
+	}
+	if err := request.Run.Validate(); err != nil {
+		return err
+	}
+	if request.Run.Status != domain.RunRunning {
+		return domain.ValidationError{Field: "credential_issue.run", Reason: "must be running"}
+	}
+	if err := request.Attempt.ValidateForRun(request.Run); err != nil {
+		return err
+	}
+	if request.Attempt.Status != domain.AttemptRunning || request.Attempt.WorkerID == "" {
+		return domain.ValidationError{Field: "credential_issue.attempt", Reason: "must be assigned and running"}
+	}
+	if err := request.Lease.ValidateForAttempt(request.Run, request.Attempt); err != nil {
+		return err
+	}
+	if request.Lease.WorkerID != request.Attempt.WorkerID {
+		return domain.ValidationError{Field: "credential_issue.worker", Reason: "attempt and lease must match"}
+	}
+	if !request.Lease.ActiveAt(now) {
+		return domain.ValidationError{Field: "credential_issue.lease", Reason: "must be active"}
+	}
+	if !request.ExpiresAt.After(now) || request.ExpiresAt.After(request.Lease.ExpiresAt) {
+		return domain.ValidationError{Field: "credential_issue.expires_at", Reason: "must be after now and no later than lease expiry"}
+	}
+	return nil
+}
+
+func (handle CredentialHandle) Validate() error {
+	if err := domain.ValidateOpaqueID("credential.handle_id", handle.HandleID); err != nil {
+		return err
+	}
+	if err := handle.TenantID.Validate(); err != nil {
+		return err
+	}
+	if err := handle.SubscriptionConnectionID.Validate(); err != nil {
+		return err
+	}
+	if err := handle.OwnerUserID.Validate(); err != nil {
+		return err
+	}
+	if err := handle.RunID.Validate(); err != nil {
+		return err
+	}
+	if err := handle.AttemptID.Validate(); err != nil {
+		return err
+	}
+	if err := domain.ValidateOpaqueID("credential.worker_id", handle.WorkerID); err != nil {
+		return err
+	}
+	if err := handle.LeaseID.Validate(); err != nil {
+		return err
+	}
+	if handle.LeaseFence == 0 || handle.BindingGeneration == 0 {
+		return domain.ValidationError{Field: "credential.fence", Reason: "lease fence and binding generation must be positive"}
+	}
+	if handle.ExpiresAt.IsZero() {
+		return domain.ValidationError{Field: "credential.expires_at", Reason: "must not be zero"}
+	}
+	return nil
+}
+
+func (request CredentialRevokeRequest) Validate() error {
 	if err := request.TenantID.Validate(); err != nil {
 		return err
 	}
 	if err := request.SubscriptionConnectionID.Validate(); err != nil {
 		return err
 	}
-	if err := request.RunID.Validate(); err != nil {
-		return err
-	}
-	if err := request.AttemptID.Validate(); err != nil {
-		return err
-	}
-	return domain.ValidateOpaqueID("credential.worker_id", request.WorkerID)
+	return request.OwnerUserID.Validate()
 }
 
-func (handle CredentialHandle) ValidateFor(request CredentialRequest) error {
-	if err := request.Validate(); err != nil {
+func (scope CredentialCandidateScope) Validate() error {
+	if err := scope.TenantID.Validate(); err != nil {
 		return err
 	}
-	if err := domain.EnsureSameTenant(request.TenantID, handle.TenantID); err != nil {
+	if err := scope.SubscriptionConnectionID.Validate(); err != nil {
 		return err
 	}
-	if handle.SubscriptionConnectionID != request.SubscriptionConnectionID {
-		return domain.ValidationError{
-			Field:  "credential.subscription_connection_id",
-			Reason: "must match the request",
-		}
-	}
-	if err := domain.ValidateOpaqueID("credential.handle", handle.Handle); err != nil {
+	if err := scope.OwnerUserID.Validate(); err != nil {
 		return err
 	}
-	if handle.ExpiresAt.IsZero() {
-		return domain.ValidationError{Field: "credential.expires_at", Reason: "must not be zero"}
+	if scope.ExpectedGeneration == 0 {
+		return domain.ValidationError{Field: "credential_candidate.expected_generation", Reason: "must be positive"}
 	}
 	return nil
 }
@@ -130,15 +184,15 @@ func (request ExecutionRequest) Validate() error {
 			return err
 		}
 	}
-	if request.Credential.Handle != "" {
+	if request.Credential.HandleID != "" {
 		if err := domain.EnsureSameTenant(request.TenantID, request.Credential.TenantID); err != nil {
 			return err
 		}
-		if err := domain.ValidateOpaqueID("credential.handle", request.Credential.Handle); err != nil {
+		if err := request.Credential.Validate(); err != nil {
 			return err
 		}
-		if request.Credential.ExpiresAt.IsZero() {
-			return domain.ValidationError{Field: "credential.expires_at", Reason: "must not be zero"}
+		if request.Credential.RunID != request.RunID || request.Credential.AttemptID != request.AttemptID {
+			return domain.ValidationError{Field: "execution.credential", Reason: "must match the run and attempt"}
 		}
 	}
 	for _, artifact := range request.InputArtifacts {

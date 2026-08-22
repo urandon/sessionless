@@ -31,12 +31,6 @@ func TestExecutionRequestRejectsCrossTenantBlob(t *testing.T) {
 		AttemptID:       "attempt-1",
 		WorkDir:         "/tmp/sessionless-test",
 		ContextSnapshot: portTestBlob("tenant-b"),
-		Credential: ports.CredentialHandle{
-			TenantID:                 "tenant-a",
-			SubscriptionConnectionID: "subscription-1",
-			Handle:                   "credential-1",
-			ExpiresAt:                portTestTime.Add(time.Minute),
-		},
 	}
 	err := request.Validate()
 	var mismatch domain.TenantMismatchError
@@ -62,9 +56,16 @@ func TestExecutionRequestAcceptsHarnessNeutralReferences(t *testing.T) {
 			Blob:      portTestBlob("tenant-a"),
 		}},
 		Credential: ports.CredentialHandle{
+			HandleID:                 "credential-1",
 			TenantID:                 "tenant-a",
 			SubscriptionConnectionID: "subscription-1",
-			Handle:                   "credential-1",
+			OwnerUserID:              "user-1",
+			RunID:                    "run-1",
+			AttemptID:                "attempt-1",
+			WorkerID:                 "worker-1",
+			LeaseID:                  "lease-1",
+			LeaseFence:               1,
+			BindingGeneration:        1,
 			ExpiresAt:                portTestTime.Add(time.Minute),
 		},
 		AllowedMCPServers: []string{"source-control", "docs"},
@@ -78,24 +79,36 @@ func TestExecutionRequestAcceptsHarnessNeutralReferences(t *testing.T) {
 	}
 }
 
-func TestCredentialHandleMustMatchRequest(t *testing.T) {
+func TestCredentialIssueRequestRequiresActiveMatchingInvocation(t *testing.T) {
 	t.Parallel()
 
-	request := ports.CredentialRequest{
-		TenantID:                 "tenant-a",
-		SubscriptionConnectionID: "subscription-1",
-		RunID:                    "run-1",
-		AttemptID:                "attempt-1",
-		WorkerID:                 "worker-1",
+	created := portTestTime.Add(-time.Minute)
+	request := ports.CredentialIssueRequest{
+		OwnerUserID: "user-1",
+		Run: domain.Run{
+			ID: "run-1", TenantID: "tenant-a", SessionID: "session-1",
+			TriggerEventID: "event-1", SubscriptionConnectionID: "subscription-1",
+			Status: domain.RunRunning, IdempotencyKey: "run-key-1",
+			StartedAt: &created, CreatedAt: created, UpdatedAt: portTestTime,
+		},
+		Attempt: domain.Attempt{
+			ID: "attempt-1", TenantID: "tenant-a", RunID: "run-1", Number: 1,
+			Status: domain.AttemptRunning, WorkerID: "worker-1",
+			CreatedAt: created, UpdatedAt: portTestTime,
+		},
+		Lease: domain.Lease{
+			ID: "lease-1", TenantID: "tenant-a", RunID: "run-1", AttemptID: "attempt-1",
+			WorkerID: "worker-1", FenceToken: 7, AcquiredAt: created,
+			ExpiresAt: portTestTime.Add(2 * time.Minute),
+		},
+		ExpiresAt: portTestTime.Add(time.Minute),
 	}
-	handle := ports.CredentialHandle{
-		TenantID:                 "tenant-a",
-		SubscriptionConnectionID: "subscription-2",
-		Handle:                   "credential-1",
-		ExpiresAt:                portTestTime.Add(time.Minute),
+	if err := request.ValidateAt(portTestTime); err != nil {
+		t.Fatalf("valid credential issue request rejected: %v", err)
 	}
-	if err := handle.ValidateFor(request); err == nil {
-		t.Fatal("credential handle for another subscription accepted")
+	request.Lease.WorkerID = "worker-2"
+	if err := request.ValidateAt(portTestTime); err == nil {
+		t.Fatal("mismatched attempt/lease worker accepted")
 	}
 }
 

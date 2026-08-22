@@ -71,6 +71,33 @@ func TestGeneratorSupportsWebContractIDs(t *testing.T) {
 	}
 }
 
+func TestGeneratorProducesOpaqueNonSortableCredentialHandleIDs(t *testing.T) {
+	generator := newWithReader(&counterHashReader{})
+	distribution := make(map[byte]int)
+	seen := make(map[string]struct{}, 4096)
+
+	for i := 0; i < 4096; i++ {
+		id, err := generator.NewID(context.Background(), ports.IDCredentialHandle)
+		if err != nil {
+			t.Fatalf("credential handle kind is unsupported: %v", err)
+		}
+		if err := domain.ValidateOpaqueID("credential.handle_id", id); err != nil {
+			t.Fatalf("generated invalid credential handle ID %q: %v", id, err)
+		}
+		if !strings.HasPrefix(id, "crh_") || len(id) != len("crh_")+26 {
+			t.Fatalf("unexpected credential handle ID shape %q", id)
+		}
+		if _, exists := seen[id]; exists {
+			t.Fatalf("duplicate credential handle ID %q", id)
+		}
+		seen[id] = struct{}{}
+		distribution[id[len("crh_")]]++
+	}
+	if len(distribution) != 32 {
+		t.Fatalf("credential handle leading random-symbol coverage = %d, want 32", len(distribution))
+	}
+}
+
 type counterHashReader struct {
 	counter uint64
 	buffer  []byte

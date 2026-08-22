@@ -922,6 +922,7 @@ func deleteSessionRowsTx(ctx context.Context, tx *stateTx, sessionID domain.Sess
 		`DELETE FROM session_event_idempotency WHERE tenant_id = $1 AND session_id = $2`,
 		`DELETE FROM session_events WHERE tenant_id = $1 AND session_id = $2`,
 		`DELETE FROM session_participants WHERE tenant_id = $1 AND session_id = $2`,
+		`DELETE FROM session_displays WHERE tenant_id = $1 AND session_id = $2`,
 		`DELETE FROM sessions WHERE tenant_id = $1 AND session_id = $2`,
 	} {
 		if _, err := tx.sqlTx.ExecContext(ctx, query, tx.tenantID, sessionID); err != nil {

@@ -132,11 +132,13 @@ The following evidence is deliberately not inferred from the local stand:
 
 Those cloud gates repeat selected scenarios against cloud-dev and link their
 evidence; they do not replace or weaken the local canonical-session proof.
-Operational-TTL cleanup preservation and interrupted destructive deletion with
-sentinel sessions remain separate structural additions to this suite. Their
-focused unit and YDB integration contracts already run in CI, but they must not
-be reported as composed local E2E evidence until the corresponding scenarios
-are added here.
+`TestOperationalTTLPreservationAndResumableSessionDeletion` deterministically
+removes only the target run's TTL-governed operational rows, then proves that
+canonical history, artifacts, and the non-TTL delivery/checkpoint ownership
+ledgers survive. It composes an exact-object deletion interrupted after one
+successful delete, a byte-identical replan and retry, durable audit/tombstone
+checks, and same-tenant plus cross-tenant sentinels. This simulates the
+structural effect of TTL cleanup; it does not claim wall-clock YDB TTL timing.
 
 ## Correlation and timing evidence
 

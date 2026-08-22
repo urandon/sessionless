@@ -116,20 +116,34 @@ exact objects are safe to delete again. `deleting` is the irreversible phase:
 a new legal hold is rejected after it starts, so holds must be established
 while the deletion is still `requested`.
 
+The local composed gate deletes one exact object, injects an interruption,
+verifies that the durable plan and confirmation are unchanged, and then proves
+that retry completes without changing same-tenant or cross-tenant sentinel
+sessions. It also removes the target run's TTL-governed operational rows before
+planning and proves that canonical history, artifacts, and the non-TTL delivery
+and checkpoint ownership ledgers remain sufficient for exact cleanup. This is
+a deterministic simulation of TTL effects, not evidence about wall-clock YDB
+TTL scheduling.
+
 Before enabling deletion after an upgrade, complete the expand/migrate/cutover
 procedure in `migrations/ydb/README.md`. Delivery and checkpoint object
 ledgers deliberately have no TTL: operational rows may expire, but exact
 object ownership required for later audited deletion must remain available.
 
-Completion removes session metadata, events, snapshots, participants,
-bindings, projections, runs, manifests, and frontend delivery payloads. An
-exact per-run delivery index ensures that both inline results and referenced
-objects are included without scanning another tenant's state. Other
-operational rows governed by bounded TTL may age out under their existing
-policy. Run lease heads remain as content-free fencing records so a stale
-worker fence can never be reused. The deletion tombstone, released hold, and
-lifecycle audit events remain so a deleted ID cannot be silently recreated and
-an incident can be reconstructed.
+Completion removes canonical and content-bearing session state, including the
+session display, events, snapshots, participants, bindings, projections, runs,
+manifests, and frontend delivery payloads. An exact per-run delivery index
+ensures that both inline results and referenced objects are included without
+scanning another tenant's state. Other operational rows governed by bounded
+TTL may age out under their existing policy. Run lease heads remain as
+content-free fencing records so a stale worker fence can never be reused. The
+deletion tombstone, released hold, and lifecycle audit events remain so a
+deleted ID cannot be silently recreated and an incident can be reconstructed.
+
+The retention/deletion semantics for payload-free API idempotency, mutation,
+and Web upload-intent records are tracked separately in issue #57. Until that
+decision is implemented, the deletion contract does not claim that every row
+which happens to contain a `session_id` is erased.
 
 Tenant/account deletion is an orchestration of these single-session state
 machines. It must enumerate authorized session IDs and invoke this exact

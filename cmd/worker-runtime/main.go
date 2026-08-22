@@ -72,11 +72,12 @@ func main() {
 		os.Exit(1)
 	}
 	harness, err := deterministicharness.New(deterministicharness.Config{
-		Turns:               envUint64("DETERMINISTIC_HARNESS_TURNS", 2),
-		Artifacts:           envUint64("DETERMINISTIC_HARNESS_ARTIFACTS", 1),
-		FailBeforeFirstTurn: envBool("DETERMINISTIC_HARNESS_FAIL_BEFORE_FIRST_TURN"),
-		FailAtTurn:          envUint64("DETERMINISTIC_HARNESS_FAIL_AT_TURN", 0),
-		RetryableFail:       envBool("DETERMINISTIC_HARNESS_RETRYABLE_FAIL"),
+		Turns:                 envUint64("DETERMINISTIC_HARNESS_TURNS", 2),
+		Artifacts:             envUint64("DETERMINISTIC_HARNESS_ARTIFACTS", 1),
+		FailBeforeFirstTurn:   envBool("DETERMINISTIC_HARNESS_FAIL_BEFORE_FIRST_TURN"),
+		FailAtTurn:            envUint64("DETERMINISTIC_HARNESS_FAIL_AT_TURN", 0),
+		RetryableFail:         envBool("DETERMINISTIC_HARNESS_RETRYABLE_FAIL"),
+		CaptureContextHistory: envBool("DETERMINISTIC_HARNESS_CAPTURE_CONTEXT_HISTORY"),
 	})
 	if err != nil {
 		logger.Error("create deterministic harness", "error", err)

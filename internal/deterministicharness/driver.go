@@ -14,11 +14,12 @@ import (
 )
 
 type Config struct {
-	Turns               uint64
-	Artifacts           uint64
-	FailBeforeFirstTurn bool
-	FailAtTurn          uint64
-	RetryableFail       bool
+	Turns                 uint64
+	Artifacts             uint64
+	FailBeforeFirstTurn   bool
+	FailAtTurn            uint64
+	RetryableFail         bool
+	CaptureContextHistory bool
 }
 
 type Driver struct {
@@ -94,6 +95,19 @@ func (driver *Driver) Execute(
 		}
 		result.Outputs = append(result.Outputs, ports.ExecutionOutput{
 			Name: name, MediaType: "text/plain", RelativePath: name,
+		})
+	}
+	if driver.config.CaptureContextHistory {
+		const name = "context-history.jsonl"
+		history, err := os.ReadFile(filepath.Join(request.WorkDir, "context", "history.jsonl"))
+		if err != nil {
+			return ports.ExecutionResult{}, fmt.Errorf("read captured context history: %w", err)
+		}
+		if err := os.WriteFile(filepath.Join(request.WorkDir, "outputs", name), history, 0o600); err != nil {
+			return ports.ExecutionResult{}, fmt.Errorf("write captured context history: %w", err)
+		}
+		result.Outputs = append(result.Outputs, ports.ExecutionOutput{
+			Name: name, MediaType: "application/x-ndjson", RelativePath: name,
 		})
 	}
 	return result, nil

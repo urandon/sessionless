@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"strconv"
 	"testing"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
@@ -75,6 +76,41 @@ func TestSnapshotBuilderRejectsCrossSessionEventBeforeOpeningPayload(t *testing.
 	}
 }
 
+func TestSnapshotBuilderPaginatesWithinStoreLimit(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	const eventCount = 201
+	store := &snapshotStore{maxPageSize: 200}
+	blobs := &snapshotBlobs{data: make(map[string][]byte)}
+	for sequence := uint64(1); sequence <= eventCount; sequence++ {
+		item := contextEvent(t, sequence, domain.SessionEventSystemNotice, []byte(`{"schema":"notice.v1"}`))
+		item.Event.ID = domain.SessionEventID("event-" + strconv.FormatUint(sequence, 10))
+		item.Event.IdempotencyKey = domain.IdempotencyKey("event-key-" + strconv.FormatUint(sequence, 10))
+		item.Event.Payload.Key = domain.SessionEventObjectPrefix(
+			item.Event.TenantID, item.Event.SessionID, item.Event.ID,
+		) + "payload.json"
+		store.events = append(store.events, item.Event)
+		blobs.data[item.Event.Payload.Key] = append([]byte(nil), item.Payload...)
+	}
+	builder, err := sessioncontext.NewSnapshotBuilder(store, blobs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := builder.Create(ctx, sessioncontext.SnapshotRequest{
+		TenantID: "tenant-a", SessionID: "session-a", Version: 1,
+		ThroughSequence: eventCount, MaxEvents: eventCount, MaxBytes: 1 << 20,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.EventCount != eventCount {
+		t.Fatalf("snapshot events = %d, want %d", snapshot.EventCount, eventCount)
+	}
+	if len(store.pageLimits) != 2 || store.pageLimits[0] != 200 || store.pageLimits[1] != 1 {
+		t.Fatalf("history page limits = %v, want [200 1]", store.pageLimits)
+	}
+}
+
 func TestSnapshotMaintainerCreatesAtPolicyBoundaryAndSkipsCoveredHistory(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -110,8 +146,10 @@ func TestSnapshotMaintainerCreatesAtPolicyBoundaryAndSkipsCoveredHistory(t *test
 }
 
 type snapshotStore struct {
-	events   []domain.SessionEvent
-	snapshot *domain.SessionSnapshot
+	events      []domain.SessionEvent
+	snapshot    *domain.SessionSnapshot
+	maxPageSize uint64
+	pageLimits  []uint64
 }
 
 func (store *snapshotStore) ListSessionHistory(
@@ -121,6 +159,10 @@ func (store *snapshotStore) ListSessionHistory(
 	afterSequence uint64,
 	limit uint64,
 ) ([]domain.SessionEvent, error) {
+	store.pageLimits = append(store.pageLimits, limit)
+	if store.maxPageSize != 0 && limit > store.maxPageSize {
+		return nil, errors.New("history page limit exceeds store contract")
+	}
 	result := make([]domain.SessionEvent, 0)
 	for _, event := range store.events {
 		if event.TenantID == tenantID && event.SessionID == sessionID && event.Sequence > afterSequence {

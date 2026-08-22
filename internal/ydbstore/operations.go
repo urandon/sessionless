@@ -14,8 +14,10 @@ import (
 )
 
 var (
-	ErrLeaseHeld = errors.New("run already has an active lease")
-	ErrLeaseLost = errors.New("lease fence no longer owns the run")
+	ErrLeaseHeld                                = errors.New("run already has an active lease")
+	ErrLeaseLost                                = errors.New("lease fence no longer owns the run")
+	ErrSubscriptionConnectionConflict           = errors.New("subscription connection already belongs to another actor or provider")
+	ErrSubscriptionConnectionProjectionConflict = errors.New("subscription connection owner projection is inconsistent")
 )
 
 type TelegramIngress = ports.TelegramIngress
@@ -464,11 +466,13 @@ func (store *Store) EnsureTelegramIdentity(
 			}
 		}
 		var existingConnection string
+		var existingConnectionActor domain.ActorID
+		var existingConnectionProvider string
 		connectionErr := tx.sqlTx.QueryRowContext(ctx,
-			`SELECT subscription_connection_id FROM subscription_connections
+			`SELECT subscription_connection_id, actor_id, provider FROM subscription_connections
 			 WHERE tenant_id = $1 AND subscription_connection_id = $2`,
 			request.TenantID, request.SubscriptionConnectionID,
-		).Scan(&existingConnection)
+		).Scan(&existingConnection, &existingConnectionActor, &existingConnectionProvider)
 		switch {
 		case errors.Is(connectionErr, sql.ErrNoRows):
 			if _, err := tx.sqlTx.ExecContext(ctx,
@@ -485,6 +489,15 @@ func (store *Store) EnsureTelegramIdentity(
 			}
 		case connectionErr != nil:
 			return connectionErr
+		case existingConnectionActor != request.Actor.ID || existingConnectionProvider != request.Provider:
+			return ErrSubscriptionConnectionConflict
+		}
+		if _, err := tx.sqlTx.ExecContext(ctx,
+			`UPSERT INTO subscription_connections_by_user
+			 (tenant_id, user_id, subscription_connection_id) VALUES ($1, $2, $3)`,
+			request.TenantID, userID, request.SubscriptionConnectionID,
+		); err != nil {
+			return err
 		}
 		var existingSlot string
 		slotErr := tx.sqlTx.QueryRowContext(ctx,

@@ -91,6 +91,17 @@ func TestCanonicalSessionQueriesUseBoundedPlans(t *testing.T) {
 			},
 		},
 		{
+			name: "subscription connections by user range",
+			query: `SELECT subscription_connection_id FROM subscription_connections_by_user
+				WHERE tenant_id = $1 AND user_id = $2
+				ORDER BY subscription_connection_id ASC LIMIT $3`,
+			args: []any{tenantID, userID, uint64(2)},
+			contract: queryPlanContract{
+				operator: "TableRangeScan",
+				table:    "subscription_connections_by_user",
+			},
+		},
+		{
 			name: "frontend projection ready time range",
 			query: `SELECT tenant_id, frontend_projection_id, run_id
 				FROM frontend_projection_ready_v1

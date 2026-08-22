@@ -76,8 +76,8 @@ type WebRunArtifact struct {
 }
 
 // WebResourceStore combines participant-authorized point run reads with a
-// bounded compute resolver. ComputeConnectionState deliberately has no field
-// capable of carrying credential_ref.
+// bounded, user-owned compute resolver. ComputeConnectionState deliberately
+// has no field capable of carrying credential_ref.
 type WebResourceStore interface {
 	GetRunForUser(context.Context, domain.TenantID, domain.UserID, domain.RunID) (RunRecord, bool, error)
 	GetRunArtifactForUser(context.Context, WebRunArtifactRequest) (WebRunArtifact, bool, error)

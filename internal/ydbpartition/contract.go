@@ -94,6 +94,7 @@ var policies = []Policy{
 	hot("web_security_audit_events", []string{"shard_bucket", "occurred_at", "request_id"}, ClassAppend, "request hashes distribute pre-authentication security events while preserving bounded per-bucket time reads"),
 	hot("telegram_updates", []string{"tenant_id", "source_id", "update_id"}, ClassAppend, "Telegram command update sequence is behind a distributed tenant"),
 	entity("subscription_connections", []string{"tenant_id", "subscription_connection_id"}, "low-cardinality point access"),
+	hot("subscription_connections_by_user", []string{"tenant_id", "user_id", "subscription_connection_id"}, ClassEntity, "owner-scoped compute selection is bounded behind an authorized user prefix"),
 	hot("runs", []string{"tenant_id", "run_id"}, ClassEntity, "high-write entity with random run IDs"),
 	hot("run_finalizations", []string{"tenant_id", "run_id"}, ClassEntity, "one idempotency fence per terminal run"),
 	hot("runs_by_session", []string{"tenant_id", "session_id", "created_at", "run_id"}, ClassOrdered, "run time ordering remains behind a random session prefix"),

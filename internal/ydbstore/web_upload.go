@@ -256,19 +256,59 @@ func (store *Store) ResolveComputeConnectionsForUser(
 			return err
 		}
 		rows, err := tx.sqlTx.QueryContext(ctx,
-			`SELECT subscription_connection_id, provider, entitlement_state, quota_state, observed_at
-			 FROM subscription_connections
-			 WHERE tenant_id = $1
+			`SELECT subscription_connection_id
+			 FROM subscription_connections_by_user
+			 WHERE tenant_id = $1 AND user_id = $2
 			 ORDER BY subscription_connection_id ASC LIMIT 2`,
-			request.TenantID,
+			request.TenantID, request.UserID,
 		)
 		if err != nil {
 			return err
 		}
-		defer rows.Close()
+		connectionIDs := make([]domain.SubscriptionConnectionID, 0, 2)
 		for rows.Next() {
+			var connectionID domain.SubscriptionConnectionID
+			if err := rows.Scan(&connectionID); err != nil {
+				rows.Close()
+				return err
+			}
+			connectionIDs = append(connectionIDs, connectionID)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		for _, connectionID := range connectionIDs {
+			var actorID domain.ActorID
 			var item ports.ComputeConnectionState
-			if err := rows.Scan(&item.ID, &item.Provider, &item.Entitlement, &item.Quota, &item.ObservedAt); err != nil {
+			err := tx.sqlTx.QueryRowContext(ctx,
+				`SELECT subscription_connection_id, actor_id, provider,
+				        entitlement_state, quota_state, observed_at
+				 FROM subscription_connections
+				 WHERE tenant_id = $1 AND subscription_connection_id = $2`,
+				request.TenantID, connectionID,
+			).Scan(
+				&item.ID, &actorID, &item.Provider,
+				&item.Entitlement, &item.Quota, &item.ObservedAt,
+			)
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrSubscriptionConnectionProjectionConflict
+			}
+			if err != nil {
+				return err
+			}
+			var ownerID domain.UserID
+			err = tx.sqlTx.QueryRowContext(ctx,
+				`SELECT user_id FROM actors WHERE tenant_id = $1 AND actor_id = $2`,
+				request.TenantID, actorID,
+			).Scan(&ownerID)
+			if errors.Is(err, sql.ErrNoRows) || (err == nil && ownerID != request.UserID) {
+				return ErrSubscriptionConnectionProjectionConflict
+			}
+			if err != nil {
 				return err
 			}
 			if err := validateComputeConnectionState(item); err != nil {
@@ -276,9 +316,12 @@ func (store *Store) ResolveComputeConnectionsForUser(
 			}
 			result = append(result, item)
 		}
-		return rows.Err()
+		return nil
 	})
-	return result, err
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func readWebUploadIntentTx(

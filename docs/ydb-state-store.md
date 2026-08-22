@@ -49,6 +49,7 @@ domain objects whose tenant does not match it.
 | `development_bootstrap_grants` | `(tenant_id, user_id)` | exact cloud-dev bootstrap idempotency and audit ledger |
 | `telegram_updates` | `(tenant_id, source_id, update_id)` | point insert/read for Telegram control-command deduplication; ordinary messages use `frontend_ingress_idempotency` |
 | `subscription_connections` | `(tenant_id, subscription_connection_id)` | point-read credential reference and observed entitlement |
+| `subscription_connections_by_user` | `(tenant_id, user_id, subscription_connection_id)` | bounded owner-scoped compute selection; each selected base row is revalidated through its actor mapping |
 | `subscription_scheduler_slots` | `(tenant_id, subscription_connection_id)` | serializable one-subscription admission contention point |
 | `tenant_scheduler_counters` | `(tenant_id)` | point-read/update bounded queue and active-run counters |
 | `worker_jobs` | `(tenant_id, run_id)` | point-load immutable worker references and admitted limits |

@@ -4,6 +4,8 @@ package ydbintegration
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -11,6 +13,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/ydbstore"
 )
 
 func TestWebUploadStoreAuthorizationIdempotencyAndClaims(t *testing.T) {
@@ -201,6 +204,7 @@ func TestWebUploadClaimsAreAtomicAndWebResourceReadsAreBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 	connectionID := domain.SubscriptionConnectionID(uniqueID("connection-web-resource"))
+	insertComputeActor(t, client.DB, tenantID, "actor-web-resource", userID, now)
 	if _, err := client.DB.ExecContext(ctx,
 		`INSERT INTO subscription_connections
 		 (tenant_id, subscription_connection_id, actor_id, provider, credential_ref,
@@ -211,6 +215,7 @@ func TestWebUploadClaimsAreAtomicAndWebResourceReadsAreBounded(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
+	insertComputeConnectionProjection(t, client.DB, tenantID, userID, connectionID)
 	run := domain.Run{
 		ID: domain.RunID(uniqueID("run-web-resource")), TenantID: tenantID, SessionID: session.ID,
 		TriggerEventID: event.ID, SubscriptionConnectionID: connectionID,
@@ -294,6 +299,252 @@ func TestWebUploadClaimsAreAtomicAndWebResourceReadsAreBounded(t *testing.T) {
 		TenantID: tenantID, UserID: "forged-user", SessionID: session.ID,
 	}); !errors.Is(err, domain.ErrMembershipDenied) {
 		t.Fatalf("forged compute resolver error = %v", err)
+	}
+}
+
+func TestResolveComputeConnectionsForUserFiltersByActorOwner(t *testing.T) {
+	store, client := openStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	tenantID := domain.TenantID(uniqueID(fmt.Sprintf("tenant-compute-owner-%d", now.UnixNano())))
+	ownerID := domain.UserID(uniqueID("user-compute-owner"))
+	otherUserID := domain.UserID(uniqueID("user-compute-other"))
+	seedCanonicalMembership(t, client.DB, tenantID, ownerID, now)
+	seedCanonicalMembership(t, client.DB, tenantID, otherUserID, now)
+	session, owner := canonicalSessionFixture(
+		tenantID, ownerID, domain.SessionID(uniqueID("session-compute-owner")), now,
+	)
+	if _, _, err := store.CreateSessionForUser(ctx, ports.SessionCreateRequest{
+		Session: session, Owner: owner, IdempotencyKey: "create-compute-owner-session",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	insertSessionParticipant(t, client.DB, domain.SessionParticipant{
+		TenantID: tenantID, SessionID: session.ID, UserID: otherUserID,
+		Role: domain.SessionParticipantMember, Status: domain.SessionParticipantActive,
+		CreatedAt: now, UpdatedAt: now,
+	})
+
+	ownerActorID := domain.ActorID(uniqueID("actor-compute-owner"))
+	otherActorID := domain.ActorID(uniqueID("actor-compute-other"))
+	insertComputeActor(t, client.DB, tenantID, ownerActorID, ownerID, now)
+	insertComputeActor(t, client.DB, tenantID, otherActorID, otherUserID, now)
+	ownerConnectionA := domain.SubscriptionConnectionID("connection-a-owner")
+	otherConnectionB := domain.SubscriptionConnectionID("connection-b-other")
+	ownerConnectionZ := domain.SubscriptionConnectionID("connection-z-owner")
+	insertComputeConnection(t, client.DB, tenantID, ownerID, ownerConnectionA, ownerActorID, now)
+	insertComputeConnection(t, client.DB, tenantID, otherUserID, otherConnectionB, otherActorID, now)
+	insertComputeConnection(t, client.DB, tenantID, ownerID, ownerConnectionZ, ownerActorID, now)
+
+	ownerConnections, err := store.ResolveComputeConnectionsForUser(ctx, ports.ComputeConnectionResolveRequest{
+		TenantID: tenantID, UserID: ownerID, SessionID: session.ID,
+	})
+	if err != nil || len(ownerConnections) != 2 ||
+		ownerConnections[0].ID != ownerConnectionA || ownerConnections[1].ID != ownerConnectionZ {
+		t.Fatalf("owner connections = %+v err=%v", ownerConnections, err)
+	}
+	otherConnections, err := store.ResolveComputeConnectionsForUser(ctx, ports.ComputeConnectionResolveRequest{
+		TenantID: tenantID, UserID: otherUserID, SessionID: session.ID,
+	})
+	if err != nil || len(otherConnections) != 1 || otherConnections[0].ID != otherConnectionB {
+		t.Fatalf("other user connections = %+v err=%v", otherConnections, err)
+	}
+
+	if _, err := client.DB.ExecContext(ctx,
+		`DELETE FROM subscription_connections_by_user WHERE tenant_id = $1`, tenantID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.DB.ExecContext(ctx,
+		`DELETE FROM subscription_connections WHERE tenant_id = $1`, tenantID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	insertComputeConnection(
+		t, client.DB, tenantID, ownerID,
+		domain.SubscriptionConnectionID(uniqueID("connection-compute-missing-actor")),
+		domain.ActorID(uniqueID("actor-compute-missing")), now,
+	)
+	missing, err := store.ResolveComputeConnectionsForUser(ctx, ports.ComputeConnectionResolveRequest{
+		TenantID: tenantID, UserID: ownerID, SessionID: session.ID,
+	})
+	if !errors.Is(err, ydbstore.ErrSubscriptionConnectionProjectionConflict) || len(missing) != 0 {
+		t.Fatalf("missing actor mapping connections = %+v err=%v", missing, err)
+	}
+
+	if _, err := client.DB.ExecContext(ctx,
+		`DELETE FROM subscription_connections_by_user WHERE tenant_id = $1`, tenantID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.DB.ExecContext(ctx,
+		`DELETE FROM subscription_connections WHERE tenant_id = $1`, tenantID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	insertComputeConnection(
+		t, client.DB, tenantID, ownerID,
+		domain.SubscriptionConnectionID(uniqueID("connection-compute-mismatched-actor")),
+		otherActorID, now,
+	)
+	mismatched, err := store.ResolveComputeConnectionsForUser(ctx, ports.ComputeConnectionResolveRequest{
+		TenantID: tenantID, UserID: ownerID, SessionID: session.ID,
+	})
+	if !errors.Is(err, ydbstore.ErrSubscriptionConnectionProjectionConflict) || len(mismatched) != 0 {
+		t.Fatalf("mismatched actor mapping connections = %+v err=%v", mismatched, err)
+	}
+
+	if _, err := client.DB.ExecContext(ctx,
+		`DELETE FROM subscription_connections_by_user WHERE tenant_id = $1`, tenantID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.DB.ExecContext(ctx,
+		`DELETE FROM subscription_connections WHERE tenant_id = $1`, tenantID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	insertComputeConnectionProjection(
+		t, client.DB, tenantID, ownerID, "connection-0-stale",
+	)
+	insertComputeConnection(
+		t, client.DB, tenantID, ownerID,
+		"connection-a-owner", ownerActorID, now,
+	)
+	insertComputeConnection(
+		t, client.DB, tenantID, ownerID,
+		"connection-z-owner", ownerActorID, now,
+	)
+	mixed, err := store.ResolveComputeConnectionsForUser(ctx, ports.ComputeConnectionResolveRequest{
+		TenantID: tenantID, UserID: ownerID, SessionID: session.ID,
+	})
+	if !errors.Is(err, ydbstore.ErrSubscriptionConnectionProjectionConflict) || len(mixed) != 0 {
+		t.Fatalf("mixed stale and valid projection connections = %+v err=%v", mixed, err)
+	}
+}
+
+func TestResolveComputeConnectionsForUserFindsOwnerAfterEarlierForeignRows(t *testing.T) {
+	store, client := openStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	tenantID := domain.TenantID(uniqueID(fmt.Sprintf("tenant-compute-late-owner-%d", now.UnixNano())))
+	ownerID := domain.UserID(uniqueID("user-compute-late-owner"))
+	otherUserID := domain.UserID(uniqueID("user-compute-early-other"))
+	seedCanonicalMembership(t, client.DB, tenantID, ownerID, now)
+	seedCanonicalMembership(t, client.DB, tenantID, otherUserID, now)
+	session, owner := canonicalSessionFixture(
+		tenantID, ownerID, domain.SessionID(uniqueID("session-compute-late-owner")), now,
+	)
+	if _, _, err := store.CreateSessionForUser(ctx, ports.SessionCreateRequest{
+		Session: session, Owner: owner, IdempotencyKey: "create-compute-late-owner-session",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	insertSessionParticipant(t, client.DB, domain.SessionParticipant{
+		TenantID: tenantID, SessionID: session.ID, UserID: otherUserID,
+		Role: domain.SessionParticipantMember, Status: domain.SessionParticipantActive,
+		CreatedAt: now, UpdatedAt: now,
+	})
+
+	ownerActorID := domain.ActorID(uniqueID("actor-compute-late-owner"))
+	otherActorID := domain.ActorID(uniqueID("actor-compute-early-other"))
+	insertComputeActor(t, client.DB, tenantID, ownerActorID, ownerID, now)
+	insertComputeActor(t, client.DB, tenantID, otherActorID, otherUserID, now)
+	insertComputeConnection(
+		t, client.DB, tenantID, otherUserID,
+		"connection-a-other", otherActorID, now,
+	)
+	insertComputeConnection(
+		t, client.DB, tenantID, otherUserID,
+		"connection-b-other", otherActorID, now,
+	)
+	ownerConnectionID := domain.SubscriptionConnectionID("connection-z-owner")
+	insertComputeConnection(
+		t, client.DB, tenantID, ownerID,
+		ownerConnectionID, ownerActorID, now,
+	)
+
+	connections, err := store.ResolveComputeConnectionsForUser(ctx, ports.ComputeConnectionResolveRequest{
+		TenantID: tenantID, UserID: ownerID, SessionID: session.ID,
+	})
+	if err != nil || len(connections) != 1 || connections[0].ID != ownerConnectionID {
+		t.Fatalf("late owner connections = %+v err=%v", connections, err)
+	}
+}
+
+func insertSessionParticipant(t *testing.T, db *sql.DB, participant domain.SessionParticipant) {
+	t.Helper()
+	record, err := json.Marshal(participant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(context.Background(),
+		`INSERT INTO session_participants
+		 (tenant_id, session_id, user_id, role, status, created_at, updated_at, record)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, CAST($8 AS JsonDocument))`,
+		participant.TenantID, participant.SessionID, participant.UserID,
+		participant.Role, participant.Status, participant.CreatedAt, participant.UpdatedAt, string(record),
+	); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func insertComputeActor(
+	t *testing.T,
+	db *sql.DB,
+	tenantID domain.TenantID,
+	actorID domain.ActorID,
+	userID domain.UserID,
+	at time.Time,
+) {
+	t.Helper()
+	if _, err := db.ExecContext(context.Background(),
+		`INSERT INTO actors
+		 (tenant_id, actor_id, user_id, frontend, external_id, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		tenantID, actorID, userID, domain.FrontendWeb, string(actorID), at, at,
+	); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func insertComputeConnection(
+	t *testing.T,
+	db *sql.DB,
+	tenantID domain.TenantID,
+	userID domain.UserID,
+	connectionID domain.SubscriptionConnectionID,
+	actorID domain.ActorID,
+	at time.Time,
+) {
+	t.Helper()
+	if _, err := db.ExecContext(context.Background(),
+		`INSERT INTO subscription_connections
+		 (tenant_id, subscription_connection_id, actor_id, provider, credential_ref,
+		  entitlement_state, quota_state, observed_at, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		tenantID, connectionID, actorID, "codex", "credential-must-not-leak",
+		domain.EntitlementActive, domain.ProviderQuotaAvailable, at, at, at,
+	); err != nil {
+		t.Fatal(err)
+	}
+	insertComputeConnectionProjection(t, db, tenantID, userID, connectionID)
+}
+
+func insertComputeConnectionProjection(
+	t *testing.T,
+	db *sql.DB,
+	tenantID domain.TenantID,
+	userID domain.UserID,
+	connectionID domain.SubscriptionConnectionID,
+) {
+	t.Helper()
+	if _, err := db.ExecContext(context.Background(),
+		`INSERT INTO subscription_connections_by_user
+		 (tenant_id, user_id, subscription_connection_id) VALUES ($1, $2, $3)`,
+		tenantID, userID, connectionID,
+	); err != nil {
+		t.Fatal(err)
 	}
 }
 

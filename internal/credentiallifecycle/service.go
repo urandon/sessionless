@@ -5,10 +5,8 @@ package credentiallifecycle
 import (
 	"context"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
@@ -30,6 +28,8 @@ type FailurePoint string
 const (
 	FailureAfterCandidatePut FailurePoint = "after_candidate_put"
 	FailureAfterBindingCAS   FailurePoint = "after_binding_cas"
+	FailureBeforeAuthRead    FailurePoint = "before_auth_read"
+	FailureBeforeCleanup     FailurePoint = "before_cleanup"
 )
 
 type FailureInjector interface {
@@ -46,6 +46,7 @@ type Config struct {
 
 type Service struct {
 	rootDir  string
+	fs       *secureCredentialFS
 	maxBytes int64
 	clock    ports.Clock
 	ids      ports.IDGenerator
@@ -58,14 +59,19 @@ type Service struct {
 }
 
 type handleState struct {
-	handle           ports.CredentialHandle
-	binding          domain.CredentialBinding
-	materialization  ports.CredentialMaterialization
-	materialized     bool
-	writeBackStarted bool
-	revoked          bool
-	released         bool
-	cleanupDone      bool
+	handle            ports.CredentialHandle
+	binding           domain.CredentialBinding
+	materialization   *pinnedMaterialization
+	materialized      bool
+	writeBackStarted  bool
+	revoked           bool
+	released          bool
+	cleanupDone       bool
+	cleanupInProgress bool
+	cleanupWait       chan struct{}
+	cleanupWaiterSeen chan struct{}
+	cleanupWaiters    int
+	cleanupErr        error
 }
 
 func New(
@@ -86,24 +92,20 @@ func New(
 	if !filepath.IsAbs(scratchRoot) || scratchRoot != config.ScratchRoot {
 		return nil, errors.New("credential scratch root must be a normalized absolute path")
 	}
-	resolvedRoot, err := filepath.EvalSymlinks(scratchRoot)
-	if err != nil || resolvedRoot != scratchRoot {
-		return nil, ErrCredentialMaterialization
-	}
 	scratchInfo, err := os.Lstat(scratchRoot)
 	if err != nil || !scratchInfo.IsDir() || scratchInfo.Mode()&os.ModeSymlink != 0 {
 		return nil, ErrCredentialMaterialization
 	}
-	rootDir, err := os.MkdirTemp(scratchRoot, "sessionless-credentials-")
+	canonicalScratchRoot, err := filepath.EvalSymlinks(scratchRoot)
+	if err != nil || !filepath.IsAbs(canonicalScratchRoot) {
+		return nil, ErrCredentialMaterialization
+	}
+	filesystem, err := newSecureCredentialFS(canonicalScratchRoot)
 	if err != nil {
 		return nil, ErrCredentialMaterialization
 	}
-	if err := os.Chmod(rootDir, 0o700); err != nil {
-		_ = os.Remove(rootDir)
-		return nil, ErrCredentialMaterialization
-	}
 	return &Service{
-		rootDir: rootDir, maxBytes: config.MaxAuthBytes, clock: config.Clock,
+		rootDir: filesystem.rootPath, fs: filesystem, maxBytes: config.MaxAuthBytes, clock: config.Clock,
 		ids: config.IDs, bindings: bindings, secrets: secrets, failures: config.Failures,
 		handles: make(map[string]*handleState),
 	}, nil
@@ -178,19 +180,20 @@ func (service *Service) Materialize(
 		domain.FingerprintCredential(secret) != binding.SecretFingerprint {
 		return ports.CredentialMaterialization{}, ErrCredentialDenied
 	}
-	materialization, err := service.writeMaterialization(secret)
+	materialization, err := service.fs.create(secret, service.maxBytes)
 	if err != nil {
 		return ports.CredentialMaterialization{}, err
 	}
 	service.mu.Lock()
-	defer service.mu.Unlock()
 	current, exists := service.handles[handle.HandleID]
 	if !exists || current != state || current.revoked || current.released || current.handle != handle {
-		_ = service.cleanupMaterialization(materialization)
+		service.mu.Unlock()
+		_ = service.fs.cleanup(materialization)
 		return ports.CredentialMaterialization{}, ErrCredentialDenied
 	}
 	current.materialization = materialization
-	return materialization, nil
+	service.mu.Unlock()
+	return materialization.public, nil
 }
 
 func (service *Service) WriteBack(
@@ -198,14 +201,18 @@ func (service *Service) WriteBack(
 	handle ports.CredentialHandle,
 	materialization ports.CredentialMaterialization,
 ) (ports.CredentialWriteBackResult, error) {
-	if err := service.beginWriteBack(handle, materialization); err != nil {
+	state, err := service.beginWriteBack(handle, materialization)
+	if err != nil {
 		return ports.CredentialWriteBackResult{}, err
 	}
 	binding, err := service.loadAuthorizedBinding(ctx, handle)
 	if err != nil {
 		return ports.CredentialWriteBackResult{}, err
 	}
-	content, err := readRegularBounded(materialization, service.maxBytes)
+	if service.interrupted(FailureBeforeAuthRead) {
+		return ports.CredentialWriteBackResult{}, ErrCredentialInterrupted
+	}
+	content, err := service.fs.read(state.materialization, service.maxBytes)
 	if err != nil {
 		return ports.CredentialWriteBackResult{}, err
 	}
@@ -258,23 +265,8 @@ func (service *Service) Release(_ context.Context, handle ports.CredentialHandle
 		service.mu.Unlock()
 		return ErrCredentialDenied
 	}
-	if state.released && state.cleanupDone {
-		service.mu.Unlock()
-		return nil
-	}
-	state.released = true
-	materialization := state.materialization
-	materialized := state.materialized
 	service.mu.Unlock()
-	if materialized && materialization.RootDir != "" {
-		if err := service.cleanupMaterialization(materialization); err != nil {
-			return ErrCredentialMaterialization
-		}
-	}
-	service.mu.Lock()
-	state.cleanupDone = true
-	service.mu.Unlock()
-	return nil
+	return service.cleanupHandle(state)
 }
 
 func (service *Service) RevokeConnection(
@@ -294,33 +286,22 @@ func (service *Service) RevokeConnection(
 		revocation.Binding.OwnerUserID != request.OwnerUserID {
 		return ErrCredentialBackend
 	}
-	type pendingCleanup struct {
-		state           *handleState
-		materialization ports.CredentialMaterialization
-	}
-	cleanups := make([]pendingCleanup, 0)
+	cleanups := make([]*handleState, 0)
 	service.mu.Lock()
 	for _, state := range service.handles {
 		if state.handle.TenantID == request.TenantID &&
 			state.handle.SubscriptionConnectionID == request.SubscriptionConnectionID &&
 			state.handle.OwnerUserID == request.OwnerUserID {
 			state.revoked = true
-			state.released = true
-			if state.materialized && !state.cleanupDone && state.materialization.RootDir != "" {
-				cleanups = append(cleanups, pendingCleanup{state: state, materialization: state.materialization})
-			}
+			cleanups = append(cleanups, state)
 		}
 	}
 	service.mu.Unlock()
 	cleanupFailed := false
-	for _, cleanup := range cleanups {
-		if err := service.cleanupMaterialization(cleanup.materialization); err != nil {
+	for _, state := range cleanups {
+		if err := service.cleanupHandle(state); err != nil {
 			cleanupFailed = true
-			continue
 		}
-		service.mu.Lock()
-		cleanup.state.cleanupDone = true
-		service.mu.Unlock()
 	}
 	secretDeleteFailed := false
 	if !revocation.SupersededSecretRef.IsZero() {
@@ -364,27 +345,27 @@ func (service *Service) beginMaterialize(handle ports.CredentialHandle) (*handle
 func (service *Service) beginWriteBack(
 	handle ports.CredentialHandle,
 	materialization ports.CredentialMaterialization,
-) error {
+) (*handleState, error) {
 	if err := handle.Validate(); err != nil {
-		return ErrCredentialDenied
+		return nil, ErrCredentialDenied
 	}
 	service.mu.Lock()
 	defer service.mu.Unlock()
 	state, exists := service.handles[handle.HandleID]
 	if !exists || state.handle != handle || state.revoked || state.released {
-		return ErrCredentialDenied
+		return nil, ErrCredentialDenied
 	}
 	if !service.clock.Now().UTC().Before(handle.ExpiresAt) {
-		return ErrCredentialExpired
+		return nil, ErrCredentialExpired
 	}
-	if !state.materialized || state.materialization != materialization {
-		return ErrCredentialMaterialization
+	if !state.materialized || state.materialization == nil || state.materialization.public != materialization {
+		return nil, ErrCredentialMaterialization
 	}
 	if state.writeBackStarted {
-		return ErrCredentialConsumed
+		return nil, ErrCredentialConsumed
 	}
 	state.writeBackStarted = true
-	return nil
+	return state, nil
 }
 
 func (service *Service) loadAuthorizedBinding(
@@ -407,104 +388,61 @@ func (service *Service) loadAuthorizedBinding(
 	return binding, nil
 }
 
-func (service *Service) writeMaterialization(secret []byte) (ports.CredentialMaterialization, error) {
-	root, err := os.MkdirTemp(service.rootDir, "invocation-")
-	if err != nil {
-		return ports.CredentialMaterialization{}, ErrCredentialMaterialization
+func (service *Service) cleanupHandle(state *handleState) error {
+	service.mu.Lock()
+	if state.cleanupDone {
+		service.mu.Unlock()
+		return nil
 	}
-	if err := os.Chmod(root, 0o700); err != nil {
-		_ = os.Remove(root)
-		return ports.CredentialMaterialization{}, ErrCredentialMaterialization
-	}
-	authFile := filepath.Join(root, "auth.json")
-	file, err := os.OpenFile(authFile, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
-		_ = os.Remove(root)
-		return ports.CredentialMaterialization{}, ErrCredentialMaterialization
-	}
-	_, writeErr := file.Write(secret)
-	closeErr := file.Close()
-	if writeErr != nil || closeErr != nil || os.Chmod(authFile, 0o600) != nil {
-		_ = os.Remove(authFile)
-		_ = os.Remove(root)
-		return ports.CredentialMaterialization{}, ErrCredentialMaterialization
-	}
-	materialization := ports.CredentialMaterialization{RootDir: root, AuthFile: authFile}
-	verified, err := readRegularBounded(materialization, service.maxBytes)
-	if err != nil {
-		_ = service.cleanupMaterialization(materialization)
-		return ports.CredentialMaterialization{}, err
-	}
-	zero(verified)
-	return materialization, nil
-}
-
-func readRegularBounded(materialization ports.CredentialMaterialization, maxBytes int64) ([]byte, error) {
-	root := filepath.Clean(materialization.RootDir)
-	authFile := filepath.Clean(materialization.AuthFile)
-	if !filepath.IsAbs(root) || !filepath.IsAbs(authFile) || root != materialization.RootDir ||
-		authFile != materialization.AuthFile || filepath.Dir(authFile) != root || filepath.Base(authFile) != "auth.json" {
-		return nil, ErrCredentialMaterialization
-	}
-	if err := validateSecureDirectory(root); err != nil {
-		return nil, err
-	}
-	before, err := os.Lstat(authFile)
-	if err != nil || !before.Mode().IsRegular() || before.Mode().Perm() != 0o600 {
-		return nil, ErrCredentialMaterialization
-	}
-	file, err := os.Open(authFile)
-	if err != nil {
-		return nil, ErrCredentialMaterialization
-	}
-	defer file.Close()
-	after, err := file.Stat()
-	if err != nil || !after.Mode().IsRegular() || !os.SameFile(before, after) {
-		return nil, ErrCredentialMaterialization
-	}
-	content, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
-	if err != nil || int64(len(content)) > maxBytes || len(content) == 0 {
-		zero(content)
-		return nil, ErrCredentialMaterialization
-	}
-	return content, nil
-}
-
-func validateSecureDirectory(path string) error {
-	info, err := os.Lstat(path)
-	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 {
-		return ErrCredentialMaterialization
-	}
-	return nil
-}
-
-func (service *Service) cleanupMaterialization(materialization ports.CredentialMaterialization) error {
-	root := filepath.Clean(materialization.RootDir)
-	authFile := filepath.Clean(materialization.AuthFile)
-	if root != materialization.RootDir || authFile != materialization.AuthFile ||
-		filepath.Dir(root) != service.rootDir || !strings.HasPrefix(filepath.Base(root), "invocation-") ||
-		filepath.Dir(authFile) != root || filepath.Base(authFile) != "auth.json" {
-		return ErrCredentialMaterialization
-	}
-	if err := validateSecureDirectory(root); err != nil {
+	if state.cleanupInProgress {
+		wait := state.cleanupWait
+		state.cleanupWaiters++
+		if state.cleanupWaiters == 1 {
+			close(state.cleanupWaiterSeen)
+		}
+		service.mu.Unlock()
+		<-wait
+		service.mu.Lock()
+		state.cleanupWaiters--
+		done := state.cleanupDone
+		err := state.cleanupErr
+		service.mu.Unlock()
+		if done {
+			return nil
+		}
 		return err
 	}
-	info, err := os.Lstat(authFile)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return ErrCredentialMaterialization
-	}
-	if err == nil {
-		if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
-			return ErrCredentialMaterialization
+	state.released = true
+	state.cleanupInProgress = true
+	state.cleanupWait = make(chan struct{})
+	state.cleanupWaiterSeen = make(chan struct{})
+	materialization := state.materialization
+	service.mu.Unlock()
+
+	var cleanupErr error
+	if materialization != nil {
+		if service.interrupted(FailureBeforeCleanup) {
+			cleanupErr = ErrCredentialInterrupted
+		} else if err := service.fs.cleanup(materialization); err != nil {
+			cleanupErr = ErrCredentialMaterialization
 		}
-		if err := os.Remove(authFile); err != nil {
-			return err
-		}
 	}
-	if err := os.Remove(root); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
+	service.mu.Lock()
+	state.cleanupInProgress = false
+	state.cleanupErr = cleanupErr
+	state.cleanupDone = cleanupErr == nil
+	close(state.cleanupWait)
+	service.mu.Unlock()
+	return cleanupErr
+}
+
+// Close releases the service-root descriptor. Invocation cleanup remains the
+// caller's responsibility through Release or RevokeConnection.
+func (service *Service) Close() error {
+	if service == nil || service.fs == nil {
+		return nil
 	}
-	return nil
+	return service.fs.close()
 }
 
 func (service *Service) interrupted(point FailurePoint) bool {

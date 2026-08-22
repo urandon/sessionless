@@ -259,6 +259,7 @@ func newCredentialFixture(t *testing.T, failures FailureInjector) credentialFixt
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	t.Cleanup(func() { _ = service.Close() })
 	started := credentialTestTime.Add(-time.Minute)
 	request := ports.CredentialIssueRequest{
 		OwnerUserID: "user-a",
@@ -457,6 +458,7 @@ func TestWriteBackCASAndCrashRecovery(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		t.Cleanup(func() { _ = restarted.Close() })
 		if _, err := restarted.Issue(context.Background(), fixture.request); err != nil {
 			t.Fatalf("Issue() did not recover exact candidate after CAS: %v", err)
 		}
@@ -597,19 +599,23 @@ func TestReleaseRejectsReplacedInvocationRoot(t *testing.T) {
 	fixture := newCredentialFixture(t, nil)
 	handle, _ := fixture.service.Issue(context.Background(), fixture.request)
 	materialization, _ := fixture.service.Materialize(context.Background(), handle)
+	movedRoot := materialization.RootDir + "-moved"
 	external := t.TempDir()
 	externalAuth := filepath.Join(external, "auth.json")
 	if err := os.WriteFile(externalAuth, []byte("must-survive"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(materialization.AuthFile); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(materialization.RootDir); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(external, materialization.RootDir); err != nil {
-		t.Fatal(err)
+	fixture.service.failures = &callbackFailure{
+		point: FailureBeforeCleanup,
+		callback: func() {
+			if err := os.Rename(materialization.RootDir, movedRoot); err != nil {
+				t.Errorf("Rename() error = %v", err)
+				return
+			}
+			if err := os.Symlink(external, materialization.RootDir); err != nil {
+				t.Errorf("Symlink() error = %v", err)
+			}
+		},
 	}
 	if err := fixture.service.Release(context.Background(), handle); !errors.Is(err, ErrCredentialMaterialization) {
 		t.Fatalf("Release() through replaced root error = %v, want materialization rejection", err)
@@ -617,6 +623,125 @@ func TestReleaseRejectsReplacedInvocationRoot(t *testing.T) {
 	content, err := os.ReadFile(externalAuth)
 	if err != nil || string(content) != "must-survive" {
 		t.Fatalf("external auth file changed: %q, %v", content, err)
+	}
+	if _, err := os.Lstat(filepath.Join(movedRoot, "auth.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("pinned original auth file was not removed: %v", err)
+	}
+}
+
+func TestWriteBackPinsInvocationDirectoryAcrossRenameAndSymlink(t *testing.T) {
+	fixture := newCredentialFixture(t, nil)
+	handle, _ := fixture.service.Issue(context.Background(), fixture.request)
+	materialization, _ := fixture.service.Materialize(context.Background(), handle)
+	movedRoot := materialization.RootDir + "-moved"
+	external := t.TempDir()
+	externalAuth := filepath.Join(external, "auth.json")
+	if err := os.WriteFile(externalAuth, []byte(`{"access_token":"external-attacker"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture.service.failures = &callbackFailure{
+		point: FailureBeforeAuthRead,
+		callback: func() {
+			if err := os.Rename(materialization.RootDir, movedRoot); err != nil {
+				t.Errorf("Rename() error = %v", err)
+				return
+			}
+			if err := os.Symlink(external, materialization.RootDir); err != nil {
+				t.Errorf("Symlink() error = %v", err)
+			}
+		},
+	}
+	result, err := fixture.service.WriteBack(context.Background(), handle, materialization)
+	if err != nil {
+		t.Fatalf("WriteBack() error = %v", err)
+	}
+	if result.Changed || result.Generation != fixture.binding.Generation {
+		t.Fatalf("WriteBack() read replacement path: %+v", result)
+	}
+	content, err := os.ReadFile(externalAuth)
+	if err != nil || string(content) != `{"access_token":"external-attacker"}` {
+		t.Fatalf("external auth changed: %q, %v", content, err)
+	}
+}
+
+func TestConcurrentCleanupCallersConverge(t *testing.T) {
+	tests := map[string]func(context.Context, credentialFixture, ports.CredentialHandle) (func() error, func() error){
+		"release release": func(ctx context.Context, fixture credentialFixture, handle ports.CredentialHandle) (func() error, func() error) {
+			return func() error { return fixture.service.Release(ctx, handle) }, func() error { return fixture.service.Release(ctx, handle) }
+		},
+		"release revoke": func(ctx context.Context, fixture credentialFixture, handle ports.CredentialHandle) (func() error, func() error) {
+			return func() error { return fixture.service.Release(ctx, handle) }, func() error { return fixture.service.RevokeConnection(ctx, revokeRequest()) }
+		},
+		"revoke revoke": func(ctx context.Context, fixture credentialFixture, _ ports.CredentialHandle) (func() error, func() error) {
+			return func() error { return fixture.service.RevokeConnection(ctx, revokeRequest()) }, func() error { return fixture.service.RevokeConnection(ctx, revokeRequest()) }
+		},
+	}
+	for name, run := range tests {
+		t.Run(name, func(t *testing.T) {
+			fixture := newCredentialFixture(t, nil)
+			handle, _ := fixture.service.Issue(context.Background(), fixture.request)
+			materialization, _ := fixture.service.Materialize(context.Background(), handle)
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			fixture.service.failures = &callbackFailure{
+				point: FailureBeforeCleanup,
+				callback: func() {
+					close(entered)
+					<-release
+				},
+			}
+			first, second := run(context.Background(), fixture, handle)
+			firstResult := make(chan error, 1)
+			secondResult := make(chan error, 1)
+			go func() { firstResult <- first() }()
+			<-entered
+			fixture.service.mu.Lock()
+			waiterSeen := fixture.service.handles[handle.HandleID].cleanupWaiterSeen
+			fixture.service.mu.Unlock()
+			go func() { secondResult <- second() }()
+			<-waiterSeen
+			close(release)
+			firstErr, secondErr := <-firstResult, <-secondResult
+			if firstErr != nil || secondErr != nil {
+				t.Fatalf("concurrent cleanup errors = [%v, %v]", firstErr, secondErr)
+			}
+			if _, err := os.Lstat(materialization.RootDir); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("materialization remains after concurrent cleanup: %v", err)
+			}
+			if err := fixture.service.Release(context.Background(), handle); err != nil {
+				t.Fatalf("Release() after converged cleanup error = %v", err)
+			}
+		})
+	}
+}
+
+func TestNewAcceptsDefaultTempDirWithSymlinkedAncestor(t *testing.T) {
+	fixture := newCredentialFixture(t, nil)
+	if fixture.service.rootDir == "" {
+		t.Fatal("New() did not create a canonical service root")
+	}
+	resolved, err := filepath.EvalSymlinks(fixture.service.rootDir)
+	if err != nil || resolved != fixture.service.rootDir {
+		t.Fatalf("service root is not canonical: root=%q resolved=%q err=%v", fixture.service.rootDir, resolved, err)
+	}
+}
+
+type callbackFailure struct {
+	point    FailurePoint
+	callback func()
+	once     sync.Once
+}
+
+func (failure *callbackFailure) Check(point FailurePoint) error {
+	if point == failure.point {
+		failure.once.Do(failure.callback)
+	}
+	return nil
+}
+
+func revokeRequest() ports.CredentialRevokeRequest {
+	return ports.CredentialRevokeRequest{
+		TenantID: "tenant-a", SubscriptionConnectionID: "connection-a", OwnerUserID: "user-a",
 	}
 }
 

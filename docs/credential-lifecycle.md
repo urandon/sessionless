@@ -37,15 +37,22 @@ logs, or analytics.
 ## Local materialization
 
 The service receives an existing trusted scratch directory and creates a fresh
-private service root with `0700` permissions. Caller-selected final roots,
-non-normalized paths, and roots reached through symlinks are rejected. Each
-handle can materialize once into a direct child directory (`0700`) containing
-one regular `auth.json` file (`0600`). Reads are bounded and reject traversal,
-symlinks, mode drift, replacement races, empty files, and oversized files.
+private service root with `0700` permissions. The requested scratch path must
+be normalized and its final component cannot be a symlink; symlinked system
+ancestors such as macOS `/var` are resolved once and the internal root uses the
+canonical path. Each handle can materialize once into a direct child directory
+(`0700`) containing one regular `auth.json` file (`0600`). On Linux and macOS,
+the service pins the service and invocation directory inodes and performs file
+operations with `openat(O_NOFOLLOW)`, descriptor validation, and `unlinkat`.
+Unsupported operating systems fail closed. Reads are bounded and reject
+traversal, symlinks, mode drift, replacement races, empty files, and oversized
+files.
 
 `Release` is idempotent and removes only the exact registered file and direct
-child directory. It never performs recursive cleanup. Materializations must not
-be reused across tenants or invocations.
+child directory. It never performs recursive cleanup. Concurrent release and
+revoke callers share one per-handle cleanup owner and wait for the same result,
+so duplicate cleanup cannot turn a successful durable revoke into a failure.
+Materializations must not be reused across tenants or invocations.
 
 ## Write-back and recovery
 

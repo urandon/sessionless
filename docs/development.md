@@ -116,8 +116,14 @@ creates the local bucket, and applies the embedded YDB migrations. Only after
 that schema barrier does it start the control API, queue-driven Telegram
 sender, and queue-driven reconciler, then idempotently loads the synthetic Telegram
 fixture. A fresh-volume YDB storage-pool initialization is retried without
-starting schema consumers; all other migration failures remain fail-fast. The
-stand does not require cloud credentials or a real Telegram token.
+starting schema consumers. Its `YDB_MIGRATION_MAX_ATTEMPTS` bound defaults to
+60. Once HTTP monitoring is live, only the exact SDK `failed to dial` timeout
+for loopback `localhost`, `127.0.0.1`, or `[::1]` is also retryable; its
+independent `YDB_LOCAL_DIAL_MAX_ATTEMPTS` bound defaults to 3 and covers raw or
+slog-escaped quotes. Boot-storage markers take precedence. Generic deadlines,
+remote endpoints, authentication/configuration errors, and DDL failures remain
+fail-fast. Neither readiness path resets or deletes local data. The stand does
+not require cloud credentials or a real Telegram token.
 
 The worker is intentionally not kept alive by the default Compose profile.
 Local mode consumes at most one queue message and exits; cloud mode serves one

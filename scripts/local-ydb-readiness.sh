@@ -13,7 +13,16 @@ classify_ydb_startup_failure() {
 	fi
 
 	if grep -Fq "database doesn't have storage pools" "$migration_log"; then
-		printf '%s\n' 'retry'
+		printf '%s\n' 'retry-storage-pools'
+		return 0
+	fi
+
+	# The monitoring endpoint can become live just before the local SDK endpoint.
+	# Match only the SDK's exact loopback dial-timeout shape. In particular, a
+	# generic deadline or a dial failure for a configured remote host stays fatal.
+	# The optional backslashes cover quotes escaped by slog text/JSON handlers.
+	if grep -Eq 'failed to dial (\\)?"(localhost|127\.0\.0\.1|\[::1\]):[0-9]+(\\)?": context deadline exceeded' "$migration_log"; then
+		printf '%s\n' 'retry-local-dial'
 		return 0
 	fi
 

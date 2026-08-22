@@ -14,9 +14,10 @@ import (
 )
 
 var (
-	ErrLeaseHeld                      = errors.New("run already has an active lease")
-	ErrLeaseLost                      = errors.New("lease fence no longer owns the run")
-	ErrSubscriptionConnectionConflict = errors.New("subscription connection already belongs to another actor or provider")
+	ErrLeaseHeld                                = errors.New("run already has an active lease")
+	ErrLeaseLost                                = errors.New("lease fence no longer owns the run")
+	ErrSubscriptionConnectionConflict           = errors.New("subscription connection already belongs to another actor or provider")
+	ErrSubscriptionConnectionProjectionConflict = errors.New("subscription connection owner projection is inconsistent")
 )
 
 type TelegramIngress = ports.TelegramIngress

@@ -295,7 +295,7 @@ func (store *Store) ResolveComputeConnectionsForUser(
 				&item.Entitlement, &item.Quota, &item.ObservedAt,
 			)
 			if errors.Is(err, sql.ErrNoRows) {
-				continue
+				return ErrSubscriptionConnectionProjectionConflict
 			}
 			if err != nil {
 				return err
@@ -306,7 +306,7 @@ func (store *Store) ResolveComputeConnectionsForUser(
 				request.TenantID, actorID,
 			).Scan(&ownerID)
 			if errors.Is(err, sql.ErrNoRows) || (err == nil && ownerID != request.UserID) {
-				continue
+				return ErrSubscriptionConnectionProjectionConflict
 			}
 			if err != nil {
 				return err
@@ -318,7 +318,10 @@ func (store *Store) ResolveComputeConnectionsForUser(
 		}
 		return nil
 	})
-	return result, err
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func readWebUploadIntentTx(

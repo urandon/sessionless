@@ -13,6 +13,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/ydbstore"
 )
 
 func TestWebUploadStoreAuthorizationIdempotencyAndClaims(t *testing.T) {
@@ -367,7 +368,7 @@ func TestResolveComputeConnectionsForUserFiltersByActorOwner(t *testing.T) {
 	missing, err := store.ResolveComputeConnectionsForUser(ctx, ports.ComputeConnectionResolveRequest{
 		TenantID: tenantID, UserID: ownerID, SessionID: session.ID,
 	})
-	if err != nil || len(missing) != 0 {
+	if !errors.Is(err, ydbstore.ErrSubscriptionConnectionProjectionConflict) || len(missing) != 0 {
 		t.Fatalf("missing actor mapping connections = %+v err=%v", missing, err)
 	}
 
@@ -389,8 +390,36 @@ func TestResolveComputeConnectionsForUserFiltersByActorOwner(t *testing.T) {
 	mismatched, err := store.ResolveComputeConnectionsForUser(ctx, ports.ComputeConnectionResolveRequest{
 		TenantID: tenantID, UserID: ownerID, SessionID: session.ID,
 	})
-	if err != nil || len(mismatched) != 0 {
+	if !errors.Is(err, ydbstore.ErrSubscriptionConnectionProjectionConflict) || len(mismatched) != 0 {
 		t.Fatalf("mismatched actor mapping connections = %+v err=%v", mismatched, err)
+	}
+
+	if _, err := client.DB.ExecContext(ctx,
+		`DELETE FROM subscription_connections_by_user WHERE tenant_id = $1`, tenantID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.DB.ExecContext(ctx,
+		`DELETE FROM subscription_connections WHERE tenant_id = $1`, tenantID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	insertComputeConnectionProjection(
+		t, client.DB, tenantID, ownerID, "connection-0-stale",
+	)
+	insertComputeConnection(
+		t, client.DB, tenantID, ownerID,
+		"connection-a-owner", ownerActorID, now,
+	)
+	insertComputeConnection(
+		t, client.DB, tenantID, ownerID,
+		"connection-z-owner", ownerActorID, now,
+	)
+	mixed, err := store.ResolveComputeConnectionsForUser(ctx, ports.ComputeConnectionResolveRequest{
+		TenantID: tenantID, UserID: ownerID, SessionID: session.ID,
+	})
+	if !errors.Is(err, ydbstore.ErrSubscriptionConnectionProjectionConflict) || len(mixed) != 0 {
+		t.Fatalf("mixed stale and valid projection connections = %+v err=%v", mixed, err)
 	}
 }
 

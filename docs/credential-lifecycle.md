@@ -24,15 +24,17 @@ behavior) and required. Required mode reloads the current Run, Attempt, and
 Lease by exact tenant-scoped keys after the worker start transaction. It
 revalidates running states, worker, lease ID, fence, owner, connection, and
 tenant before calling the lifecycle. The active lease must cover the full
-admitted `MaxRuntime` plus a positive finalization grace bounded to one minute;
-otherwise processing fails before `Materialize`.
+admitted `MaxRuntime` plus two independent finalization-grace budgets, one for
+`WriteBack` and one for `Release`; each operation's grace is positive and
+bounded to one minute. Otherwise processing fails before `Materialize`.
 
 The required sequence is `Issue → Materialize → Harness Execute → WriteBack →
 Release`. Only the invocation handle and exact local materialization enter the
 in-memory `ExecutionRequest`; neither is persisted. Write-back runs after
 success, harness error, timeout, or cancellation. Release runs even when
-write-back fails, using a cancellation-independent bounded finalization
-context. Lifecycle errors are converted to a fixed worker orchestration error
+write-back fails. `WriteBack` and `Release` each receive a fresh,
+cancellation-independent bounded context, so an exhausted write-back deadline
+cannot consume cleanup's budget. Lifecycle errors are converted to a fixed worker orchestration error
 and generic durable failure code, so secret bytes, references, handles, and
 backend details cannot reach queue, checkpoint, artifact, or error surfaces.
 

@@ -571,6 +571,7 @@ func TestRequiredCredentialLifecycleOrchestration(t *testing.T) {
 		blockUntilDone bool
 		cancelDuring   bool
 		writeBackError bool
+		blockWriteBack bool
 		wantOutcome    worker.Outcome
 		wantChanged    bool
 	}{
@@ -580,6 +581,7 @@ func TestRequiredCredentialLifecycleOrchestration(t *testing.T) {
 		{name: "timeout", blockUntilDone: true, wantOutcome: worker.OutcomeFailed},
 		{name: "cancellation", cancelDuring: true, harnessError: context.Canceled, wantOutcome: worker.OutcomeCancelled},
 		{name: "writeback failure still releases", writeBackError: true, wantOutcome: worker.OutcomeFailed},
+		{name: "writeback deadline still releases", blockWriteBack: true, wantOutcome: worker.OutcomeFailed},
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -598,6 +600,7 @@ func TestRequiredCredentialLifecycleOrchestration(t *testing.T) {
 			publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
 			lifecycle := newRecordingCredentialLifecycle(t, "user-a")
 			lifecycle.writeBackError = testCase.writeBackError
+			lifecycle.blockWriteBack = testCase.blockWriteBack
 			harness := &credentialHarness{
 				mutateAuth: testCase.mutateAuth, executeError: testCase.harnessError,
 				blockUntilDone: testCase.blockUntilDone,
@@ -609,10 +612,14 @@ func TestRequiredCredentialLifecycleOrchestration(t *testing.T) {
 					state.mu.Unlock()
 				}
 			}
+			finalizeGrace := time.Second
+			if testCase.blockWriteBack {
+				finalizeGrace = 10 * time.Millisecond
+			}
 			manager, err := worker.New(worker.Config{
 				ScratchRoot: t.TempDir(), WorkerID: "worker-credential",
 				LeaseTTL: 2 * time.Minute, CredentialMode: worker.CredentialRequired,
-				CredentialFinalizeGrace: time.Second, CredentialLifecycle: lifecycle,
+				CredentialFinalizeGrace: finalizeGrace, CredentialLifecycle: lifecycle,
 				DeliveryWakePublisher: newDeliveryWakePublisher(t),
 			}, clock, queue, state, blobs, harness)
 			if err != nil {
@@ -630,6 +637,13 @@ func TestRequiredCredentialLifecycleOrchestration(t *testing.T) {
 			}
 			if lifecycle.changed != testCase.wantChanged {
 				t.Fatalf("writeback changed = %t, want %t", lifecycle.changed, testCase.wantChanged)
+			}
+			if testCase.blockWriteBack && (!lifecycle.writeBackReachedDeadline ||
+				!lifecycle.releaseHadDeadline || lifecycle.releaseSawCanceled) {
+				t.Fatalf(
+					"writeback deadline/release deadline/release cancelled = %t/%t/%t, want true/true/false",
+					lifecycle.writeBackReachedDeadline, lifecycle.releaseHadDeadline, lifecycle.releaseSawCanceled,
+				)
 			}
 			if _, err := os.Lstat(lifecycle.materialization.RootDir); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("credential root remains after finalize: %v", err)
@@ -657,8 +671,8 @@ func TestRequiredCredentialFailsClosedBeforeHarness(t *testing.T) {
 		{name: "forged owner", configure: func(loaded *ports.WorkerJobState, _ *recordingCredentialLifecycle, _ *worker.Config) {
 			loaded.Job.CredentialOwnerUserID = "user-forged"
 		}, wantEvents: "issue"},
-		{name: "insufficient lease window", configure: func(_ *ports.WorkerJobState, _ *recordingCredentialLifecycle, config *worker.Config) {
-			config.LeaseTTL = time.Minute
+		{name: "insufficient lease window", configure: func(loaded *ports.WorkerJobState, _ *recordingCredentialLifecycle, config *worker.Config) {
+			config.LeaseTTL = loaded.Job.Limits.MaxRuntime + config.CredentialFinalizeGrace
 		}},
 		{name: "mismatched handle", configure: func(_ *ports.WorkerJobState, lifecycle *recordingCredentialLifecycle, _ *worker.Config) {
 			lifecycle.corruptHandle = true
@@ -1352,21 +1366,23 @@ func (harness *credentialHarness) Execute(
 func (*credentialHarness) Cancel(context.Context, ports.ExecutionIdentity) error { return nil }
 
 type recordingCredentialLifecycle struct {
-	t                      *testing.T
-	root                   string
-	expectedOwner          domain.UserID
-	mu                     sync.Mutex
-	events                 []string
-	materialization        ports.CredentialMaterialization
-	original               []byte
-	changed                bool
-	writeBackError         bool
-	corruptHandle          bool
-	corruptMaterialization bool
-	materializeError       bool
-	cancelOnMaterialize    func()
-	releaseHadDeadline     bool
-	releaseSawCanceled     bool
+	t                        *testing.T
+	root                     string
+	expectedOwner            domain.UserID
+	mu                       sync.Mutex
+	events                   []string
+	materialization          ports.CredentialMaterialization
+	original                 []byte
+	changed                  bool
+	writeBackError           bool
+	blockWriteBack           bool
+	writeBackReachedDeadline bool
+	corruptHandle            bool
+	corruptMaterialization   bool
+	materializeError         bool
+	cancelOnMaterialize      func()
+	releaseHadDeadline       bool
+	releaseSawCanceled       bool
 }
 
 func newRecordingCredentialLifecycle(t *testing.T, expectedOwner domain.UserID) *recordingCredentialLifecycle {
@@ -1430,11 +1446,16 @@ func (lifecycle *recordingCredentialLifecycle) Materialize(
 }
 
 func (lifecycle *recordingCredentialLifecycle) WriteBack(
-	_ context.Context,
+	ctx context.Context,
 	_ ports.CredentialHandle,
 	materialization ports.CredentialMaterialization,
 ) (ports.CredentialWriteBackResult, error) {
 	lifecycle.record("writeback")
+	if lifecycle.blockWriteBack {
+		<-ctx.Done()
+		lifecycle.writeBackReachedDeadline = errors.Is(ctx.Err(), context.DeadlineExceeded)
+		return ports.CredentialWriteBackResult{}, errors.New("private writeback timeout detail")
+	}
 	content, err := os.ReadFile(materialization.AuthFile)
 	if err != nil {
 		return ports.CredentialWriteBackResult{}, err

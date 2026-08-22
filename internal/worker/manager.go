@@ -44,6 +44,7 @@ const (
 	CredentialDisabled CredentialMode = iota
 	CredentialRequired
 	maxCredentialFinalizeGrace = time.Minute
+	maxCredentialDuration      = time.Duration(1<<63 - 1)
 )
 
 var ErrCredentialOrchestration = errors.New("worker credential orchestration failed")
@@ -381,8 +382,12 @@ func (manager *Manager) prepareCredential(
 		return nil, ErrCredentialOrchestration
 	}
 	now := manager.clock.Now().UTC()
-	requiredUntil := now.Add(loaded.Job.Limits.MaxRuntime).Add(manager.config.CredentialFinalizeGrace)
-	if requiredUntil.Before(now) || authoritative.Run.ID != loaded.Run.ID ||
+	finalizationBudget := 2 * manager.config.CredentialFinalizeGrace
+	if loaded.Job.Limits.MaxRuntime > maxCredentialDuration-finalizationBudget {
+		return nil, ErrCredentialOrchestration
+	}
+	requiredUntil := now.Add(loaded.Job.Limits.MaxRuntime + finalizationBudget)
+	if !requiredUntil.After(now) || authoritative.Run.ID != loaded.Run.ID ||
 		authoritative.Run.TenantID != loaded.Run.TenantID ||
 		authoritative.Run.SubscriptionConnectionID != loaded.Run.SubscriptionConnectionID ||
 		authoritative.Attempt.ID != loaded.Attempt.ID ||
@@ -444,14 +449,14 @@ func (manager *Manager) finalizeCredential(ctx context.Context, credential *mana
 	if credential == nil {
 		return nil
 	}
-	finalizeCtx, cancel := context.WithTimeout(
+	writeBackCtx, cancelWriteBack := context.WithTimeout(
 		context.WithoutCancel(ctx), manager.config.CredentialFinalizeGrace,
 	)
-	defer cancel()
 	_, writeBackErr := manager.credentials.WriteBack(
-		finalizeCtx, credential.handle, credential.materialization,
+		writeBackCtx, credential.handle, credential.materialization,
 	)
-	releaseErr := manager.credentials.Release(finalizeCtx, credential.handle)
+	cancelWriteBack()
+	releaseErr := manager.releaseCredential(ctx, credential.handle)
 	if writeBackErr != nil || releaseErr != nil {
 		return ErrCredentialOrchestration
 	}

@@ -113,6 +113,15 @@ ingress ledger so new Web messages can reject reuse of an idempotency key with
 changed text or ordered upload selectors before resolving compute or touching
 staged objects. Existing non-Web ingress rows remain compatible.
 
+Migration `00076` adds the owner-keyed `subscription_connections_by_user`
+projection. Telegram identity enrollment writes it atomically with the base
+connection and repairs an absent projection on an exact retry. The Web resolver
+reads at most two rows from one authorized user prefix, then point-reads the
+base connection and its actor mapping; stale or mismatched rows fail closed.
+Pre-production environments created before this projection must replay their
+authoritative identity enrollment or be reset through the guarded application
+reset before Web compute selection is enabled.
+
 Automatic production down migrations are intentionally disabled. The `Down`
 sections are comments so neither Goose nor an operator can accidentally drop
 state.

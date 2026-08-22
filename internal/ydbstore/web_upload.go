@@ -255,31 +255,24 @@ func (store *Store) ResolveComputeConnectionsForUser(
 		if err := authorizeSessionForUserTx(ctx, tx, request.SessionID, request.UserID, true); err != nil {
 			return err
 		}
-		type candidate struct {
-			actorID domain.ActorID
-			state   ports.ComputeConnectionState
-		}
 		rows, err := tx.sqlTx.QueryContext(ctx,
-			`SELECT subscription_connection_id, actor_id, provider, entitlement_state, quota_state, observed_at
-			 FROM subscription_connections
-			 WHERE tenant_id = $1
+			`SELECT subscription_connection_id
+			 FROM subscription_connections_by_user
+			 WHERE tenant_id = $1 AND user_id = $2
 			 ORDER BY subscription_connection_id ASC LIMIT 2`,
-			request.TenantID,
+			request.TenantID, request.UserID,
 		)
 		if err != nil {
 			return err
 		}
-		candidates := make([]candidate, 0, 2)
+		connectionIDs := make([]domain.SubscriptionConnectionID, 0, 2)
 		for rows.Next() {
-			var item candidate
-			if err := rows.Scan(
-				&item.state.ID, &item.actorID, &item.state.Provider,
-				&item.state.Entitlement, &item.state.Quota, &item.state.ObservedAt,
-			); err != nil {
+			var connectionID domain.SubscriptionConnectionID
+			if err := rows.Scan(&connectionID); err != nil {
 				rows.Close()
 				return err
 			}
-			candidates = append(candidates, item)
+			connectionIDs = append(connectionIDs, connectionID)
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()
@@ -288,11 +281,29 @@ func (store *Store) ResolveComputeConnectionsForUser(
 		if err := rows.Close(); err != nil {
 			return err
 		}
-		for _, candidate := range candidates {
-			var ownerID domain.UserID
+		for _, connectionID := range connectionIDs {
+			var actorID domain.ActorID
+			var item ports.ComputeConnectionState
 			err := tx.sqlTx.QueryRowContext(ctx,
+				`SELECT subscription_connection_id, actor_id, provider,
+				        entitlement_state, quota_state, observed_at
+				 FROM subscription_connections
+				 WHERE tenant_id = $1 AND subscription_connection_id = $2`,
+				request.TenantID, connectionID,
+			).Scan(
+				&item.ID, &actorID, &item.Provider,
+				&item.Entitlement, &item.Quota, &item.ObservedAt,
+			)
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			var ownerID domain.UserID
+			err = tx.sqlTx.QueryRowContext(ctx,
 				`SELECT user_id FROM actors WHERE tenant_id = $1 AND actor_id = $2`,
-				request.TenantID, candidate.actorID,
+				request.TenantID, actorID,
 			).Scan(&ownerID)
 			if errors.Is(err, sql.ErrNoRows) || (err == nil && ownerID != request.UserID) {
 				continue
@@ -300,10 +311,10 @@ func (store *Store) ResolveComputeConnectionsForUser(
 			if err != nil {
 				return err
 			}
-			if err := validateComputeConnectionState(candidate.state); err != nil {
+			if err := validateComputeConnectionState(item); err != nil {
 				return err
 			}
-			result = append(result, candidate.state)
+			result = append(result, item)
 		}
 		return nil
 	})

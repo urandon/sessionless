@@ -89,10 +89,11 @@ func TestPoliciesCoverLogicalTablesOnce(t *testing.T) {
 
 func TestCanonicalSessionIndexesRemainBoundedAndTenantScoped(t *testing.T) {
 	want := map[string][]string{
-		"sessions":         {"tenant_id", "session_id"},
-		"session_events":   {"tenant_id", "session_id", "sequence"},
-		"session_activity": {"tenant_id", "user_id", "status", "activity_bucket", "updated_at", "session_id"},
-		"runs_by_session":  {"tenant_id", "session_id", "created_at", "run_id"},
+		"sessions":                         {"tenant_id", "session_id"},
+		"session_events":                   {"tenant_id", "session_id", "sequence"},
+		"session_activity":                 {"tenant_id", "user_id", "status", "activity_bucket", "updated_at", "session_id"},
+		"runs_by_session":                  {"tenant_id", "session_id", "created_at", "run_id"},
+		"subscription_connections_by_user": {"tenant_id", "user_id", "subscription_connection_id"},
 	}
 	for _, policy := range Policies() {
 		key, exists := want[policy.LogicalName]

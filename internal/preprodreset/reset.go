@@ -143,6 +143,7 @@ var applicationTables = []string{
 	"telegram_updates",
 	"tenant_scheduler_counters",
 	"subscription_scheduler_slots",
+	"subscription_connections_by_user",
 	"subscription_connections",
 	"session_activity",
 	"session_api_idempotency",

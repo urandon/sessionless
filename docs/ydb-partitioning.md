@@ -66,6 +66,7 @@ a production adapter.
 | `development_bootstrap_grants` | `(tenant_id, user_id)` | tenant entity | low-volume, point-addressable operator ledger |
 | `telegram_updates` | `(tenant_id, source_id, update_id)` | command append-heavy | command update sequence is behind tenant; ordinary messages use the generic frontend-ingress index |
 | `subscription_connections` | `(tenant_id, subscription_connection_id)` | tenant entity | low-cardinality point access |
+| `subscription_connections_by_user` | `(tenant_id, user_id, subscription_connection_id)` | tenant entity | bounded user-owned connection selection without a tenant scan |
 | `subscription_scheduler_slots` | `(tenant_id, subscription_connection_id)` | tenant entity | one point-contention row per subscription; load splitting enabled |
 | `tenant_scheduler_counters` | `(tenant_id)` | tenant entity | one bounded counter row per tenant; load splitting enabled |
 | `worker_jobs` | `(tenant_id, run_id)` | tenant entity | point worker descriptor distributed by tenant and random run ID |

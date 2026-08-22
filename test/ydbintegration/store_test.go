@@ -145,12 +145,18 @@ func TestTelegramIdentityInitializationIsIdempotent(t *testing.T) {
 			t.Fatalf("identity changed across retry: %#v then %#v", first, state)
 		}
 	}
+	conflict := request
+	conflict.Provider = "other-provider"
+	if _, err := store.EnsureTelegramIdentity(context.Background(), conflict); !errors.Is(err, ydbstore.ErrSubscriptionConnectionConflict) {
+		t.Fatalf("connection provider conflict error = %v", err)
+	}
 	assertCount(t, client, "tenants", tenantID, 1)
 	assertCount(t, client, "actors", tenantID, 1)
 	assertCount(t, client, "sessions", tenantID, 1)
 	assertCount(t, client, "frontend_bindings", tenantID, 1)
 	assertCount(t, client, "session_participants", tenantID, 1)
 	assertCount(t, client, "subscription_connections", tenantID, 1)
+	assertCount(t, client, "subscription_connections_by_user", tenantID, 1)
 }
 
 func TestTelegramIdentityReusesCanonicalConversationBinding(t *testing.T) {

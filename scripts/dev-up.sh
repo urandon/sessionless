@@ -44,15 +44,20 @@ run_migrations() {
 	ydb_log=$(mktemp "${TMPDIR:-/tmp}/sessionless-ydb-service.XXXXXX")
 	trap 'rm -f "$migration_log" "$ydb_log"' EXIT
 	max_attempts=${YDB_MIGRATION_MAX_ATTEMPTS:-60}
+	local_dial_max_attempts=${YDB_LOCAL_DIAL_MAX_ATTEMPTS:-3}
 	retry_delay=${YDB_MIGRATION_RETRY_DELAY_SECONDS:-1}
 	case "$max_attempts" in
 		''|*[!0-9]*|0) printf 'YDB_MIGRATION_MAX_ATTEMPTS must be a positive integer\n' >&2; return 1 ;;
 	esac
+	case "$local_dial_max_attempts" in
+		''|*[!0-9]*|0) printf 'YDB_LOCAL_DIAL_MAX_ATTEMPTS must be a positive integer\n' >&2; return 1 ;;
+	esac
 	case "$retry_delay" in
 		''|*[!0-9]*) printf 'YDB_MIGRATION_RETRY_DELAY_SECONDS must be a non-negative integer\n' >&2; return 1 ;;
 	esac
-	attempt=1
-	while [ "$attempt" -le "$max_attempts" ]; do
+	storage_pool_attempt=0
+	local_dial_attempt=0
+	while :; do
 		if make migrate-local >"$migration_log" 2>&1; then
 			cat "$migration_log"
 			rm -f "$migration_log" "$ydb_log"
@@ -71,7 +76,24 @@ run_migrations() {
 				cat "$ydb_log" >&2
 				return 1
 				;;
-			retry) ;;
+			retry-storage-pools)
+				storage_pool_attempt=$((storage_pool_attempt + 1))
+				if [ "$storage_pool_attempt" -ge "$max_attempts" ]; then
+					cat "$migration_log" >&2
+					printf 'ydb-local storage pools did not become migration-ready after %d attempts\n' "$max_attempts" >&2
+					return 1
+				fi
+				printf 'ydb-local database is initializing storage pools (attempt %d/%d)\n' "$storage_pool_attempt" "$max_attempts"
+				;;
+			retry-local-dial)
+				local_dial_attempt=$((local_dial_attempt + 1))
+				if [ "$local_dial_attempt" -ge "$local_dial_max_attempts" ]; then
+					cat "$migration_log" >&2
+					printf 'ydb-local loopback SDK endpoint did not become migration-ready after %d dial attempts\n' "$local_dial_max_attempts" >&2
+					return 1
+				fi
+				printf 'ydb-local loopback SDK endpoint is not ready (dial attempt %d/%d)\n' "$local_dial_attempt" "$local_dial_max_attempts"
+				;;
 			fatal)
 				cat "$migration_log" >&2
 				return 1
@@ -81,14 +103,8 @@ run_migrations() {
 				return 1
 				;;
 		esac
-		printf 'ydb-local database is initializing storage pools (attempt %d/%d)\n' "$attempt" "$max_attempts"
-		attempt=$((attempt + 1))
 		sleep "$retry_delay"
 	done
-
-	cat "$migration_log" >&2
-	printf 'ydb-local did not become migration-ready after %d attempts\n' "$max_attempts" >&2
-	return 1
 }
 
 main() {

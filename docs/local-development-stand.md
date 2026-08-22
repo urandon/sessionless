@@ -87,9 +87,16 @@ make dev-down
 5. Treat YDB's monitoring HTTP endpoint as liveness only, then use the embedded
    Goose/YDB migration as the query-backed readiness gate before any
    schema-dependent service starts. YDB Local's narrow storage-pool
-   initialization state is retried for at most 60 attempts; all other failures
-   remain fail-fast. `ReasonBootBSError` or `NumUnconnectedDisks` in the bounded
-   YDB log tail stops immediately with recovery guidance.
+   initialization state is retried for at most 60 matching attempts
+   (`YDB_MIGRATION_MAX_ATTEMPTS`). After HTTP liveness, the exact YDB SDK
+   `failed to dial` timeout for a loopback endpoint can race endpoint readiness;
+   that state has a separate, smaller bound of 3 matching attempts
+   (`YDB_LOCAL_DIAL_MAX_ATTEMPTS`). Raw and slog-escaped quotes are accepted for
+   `localhost`, `127.0.0.1`, and `[::1]` only. Generic deadlines, remote hosts,
+   authentication/configuration errors, and DDL failures remain fail-fast.
+   `ReasonBootBSError` or `NumUnconnectedDisks` in the bounded YDB log tail
+   overrides either transient symptom and stops immediately with recovery
+   guidance.
 6. Build and start the control API, Telegram sender, and reconciler, then wait
    for the control API readiness endpoint.
 7. Idempotently load `test/fixtures/telegram/text-message.json`.
@@ -97,6 +104,13 @@ make dev-down
 This phase barrier prevents application logs from being polluted by expected
 `table does not exist` errors while a fresh YDB volume is still being
 migrated.
+
+Both readiness retries are reason-specific and bounded. A matching attempt for
+one reason does not consume the other reason's budget. The retry loop only
+re-runs the migration probe; it never resets YDB, removes a container volume,
+or starts a schema-dependent application service. Keep the default bounds for
+normal development. Temporary overrides must be positive integers; the shared
+`YDB_MIGRATION_RETRY_DELAY_SECONDS` remains a non-negative number of seconds.
 
 The default profile leaves the serverless-shaped worker stopped. Run
 `make worker-once` after the reconciler admits a dispatch. Compose starts a

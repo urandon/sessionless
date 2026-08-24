@@ -91,6 +91,9 @@ assert_clean_tracked_checkout() {
     die "tracked working tree changes present; commit or stash them before RepoWise analysis"
   git -C "$repo_root" diff --cached --quiet --ignore-submodules -- ||
     die "staged changes present; commit or unstage them before RepoWise analysis"
+  untracked=$(git -C "$repo_root" ls-files --others --exclude-standard)
+  test -z "$untracked" ||
+    die "untracked, non-ignored files present; commit, remove, or ignore them before RepoWise analysis"
 }
 
 assert_platform() {
@@ -185,6 +188,7 @@ run_offline() {
 install_repowise() {
   assert_platform
   assert_host_python
+  assert_clean_tracked_checkout
   test ! -e "$venv_root" || die "local environment already exists: $venv_root"
   prepare_runtime_dirs
 
@@ -235,6 +239,7 @@ install_repowise() {
       >>"$evidence_root/wheelhouse.sha256"
   done
   run_offline "$repowise_bin" --version
+  assert_clean_tracked_checkout
 }
 
 index_repowise() {
@@ -261,6 +266,8 @@ index_repowise() {
     -x .local/
   assert_no_saved_key
   assert_fresh_index
+  assert_clean_tracked_checkout
+  assert_local_paths_safe
   current_head >"$evidence_root/indexed-head.txt"
 }
 
@@ -275,6 +282,8 @@ update_repowise() {
     --progress json
   assert_no_saved_key
   assert_fresh_index
+  assert_clean_tracked_checkout
+  assert_local_paths_safe
   current_head >"$evidence_root/indexed-head.txt"
 }
 
@@ -292,7 +301,8 @@ start_mcp() {
     PIP_DISABLE_PIP_VERSION_CHECK=1 GIT_CONFIG_NOSYSTEM=1 \
     GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 NO_COLOR=1 \
     /usr/bin/sandbox-exec -f "$sandbox_profile" \
-    "$repowise_bin" mcp "$repo_root" --transport stdio --tools "$REPOWISE_MCP_ALLOWED_TOOLS" &
+    "$repowise_bin" mcp "$repo_root" --transport stdio --tools "$REPOWISE_MCP_ALLOWED_TOOLS" \
+    <&0 >&1 2>&2 &
   mcp_pid=$!
   printf '%s\n' "$mcp_pid" >"$mcp_pid_file"
   trap 'kill "$mcp_pid" 2>/dev/null || true; rm -f "$mcp_pid_file"' EXIT HUP INT TERM
@@ -399,16 +409,20 @@ case "$command" in
       status)
         assert_fresh_index
         run_offline "$repowise_bin" status "$repo_root" --no-workspace --format json
+        assert_clean_tracked_checkout
         ;;
       doctor)
         assert_fresh_index
         run_offline "$repowise_bin" doctor "$repo_root" --no-workspace --format json
+        assert_clean_tracked_checkout
         ;;
       mcp)
         assert_clean_tracked_checkout
         assert_no_saved_key
         assert_fresh_index
         start_mcp
+        assert_clean_tracked_checkout
+        assert_no_saved_key
         ;;
       mcp-smoke)
         assert_clean_tracked_checkout
@@ -416,6 +430,8 @@ case "$command" in
         assert_fresh_index
         run_offline "$python_bin" "$smoke_script" \
           "$repowise_bin" "$repo_root" "$REPOWISE_MCP_ALLOWED_TOOLS"
+        assert_clean_tracked_checkout
+        assert_no_saved_key
         ;;
       evaluate) evaluate_repowise ;;
     esac

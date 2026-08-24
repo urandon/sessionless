@@ -47,11 +47,17 @@ test "$(grep -c '^\[\[packages\]\]$' "$lock_file")" -eq 125 ||
 	fail 'RepoWise platform lock must contain exactly 125 packages'
 test "$(grep -c '^\[\[packages\.wheels\]\]$' "$lock_file")" -eq 125 ||
 	fail 'RepoWise platform lock must select exactly one wheel per package'
-test "$(grep -c '^sha256 = "[0-9a-f][0-9a-f]*"$' "$lock_file")" -eq 125 ||
+test "$(grep -Ec '^sha256 = "[0-9a-f]{64}"$' "$lock_file")" -eq 125 ||
 	fail 'every locked RepoWise wheel must have one SHA-256 digest'
 if grep '^url = ' "$lock_file" | grep -v '^url = "https://files.pythonhosted.org/' >/dev/null; then
 	fail 'RepoWise platform lock contains a wheel outside files.pythonhosted.org'
 fi
+if grep '^name = ".*\.whl"$' "$lock_file" |
+	grep -vE '(^name = ".*-(py2\.py3|py3)-none-any\.whl"$|macosx_[0-9_]+_(arm64|universal2)\.whl"$)' >/dev/null; then
+	fail 'RepoWise platform lock contains a wheel incompatible with Darwin arm64'
+fi
+test "$(grep '^name = "' "$lock_file" | sed 's/^name = "//; s/"$//' | sort | uniq -d | wc -l | tr -d ' ')" -eq 0 ||
+	fail 'RepoWise platform lock contains duplicate package or wheel names'
 
 # The only repository-owned state roots are ignored. A fresh contributor or CI
 # checkout must never see generated Python, index, wiki, cache, or log files.
@@ -111,6 +117,10 @@ require_literal '--requirement' "$wrapper" 'networked download must resolve only
 require_literal '--no-index' "$wrapper" 'installation must use only the downloaded wheelhouse'
 require_literal '--no-deps' "$wrapper" 'installation must not resolve dependencies'
 require_literal 'pip check' "$wrapper" 'installed lock must pass pip dependency validation'
+require_literal '(deny network*)' "$repo_root/tools/repowise/no-network.sb" 'offline sandbox must deny every network operation'
+if grep -E 'run_sanitized .*\$repowise_bin' "$wrapper" >/dev/null; then
+	fail 'a non-install RepoWise invocation bypasses the no-network sandbox'
+fi
 
 # Synthetic home/state and interpreter isolation prevent host/global writes and
 # Python user-site leakage.
@@ -138,6 +148,25 @@ done
 require_literal '.repowise/.env' "$wrapper" 'wrapper must explicitly reject a RepoWise dotenv file'
 require_literal 'last_sync_commit' "$wrapper" 'wrapper must tie index state to an exact commit'
 require_literal 'assert_clean_tracked_checkout' "$wrapper" 'wrapper must reject a dirty tracked worktree before indexing'
+require_literal 'ls-files --others --exclude-standard' "$wrapper" 'exact-HEAD indexing must reject non-ignored untracked files'
+require_literal 'assert_local_paths_safe' "$wrapper" 'cleanup must validate physical repository-local paths'
+require_literal 'test ! -L' "$wrapper" 'cleanup must reject symlinked state roots'
+require_literal 'REPOWISE_UNINSTALL_CONFIRM=sessionless:' "$wrapper" 'uninstall must require exact typed confirmation'
+require_literal 'kill -KILL' "$wrapper" 'stop must have a bounded forced-termination fallback'
+
+# Prove the exact Git primitive used by the wrapper distinguishes an untracked
+# source from the two allowed ignored state roots.
+fixture="$test_root/untracked-fixture"
+mkdir -p "$fixture/internal" "$fixture/.repowise" "$fixture/.local/repowise"
+git -C "$fixture" init -q
+printf '%s\n' '.repowise/' '.local/repowise/' >"$fixture/.gitignore"
+git -C "$fixture" add .gitignore
+printf '%s\n' 'package probe' >"$fixture/internal/probe.go"
+printf '%s\n' ignored >"$fixture/.repowise/state.json"
+printf '%s\n' ignored >"$fixture/.local/repowise/cache"
+detected=$(git -C "$fixture" ls-files --others --exclude-standard)
+test "$detected" = 'internal/probe.go' ||
+	fail 'the clean-check fixture did not isolate the untracked source from ignored RepoWise state'
 
 # Keep MCP on stdio and restricted to the five evaluated read-only capability
 # families. The exact names are part of the reviewed experiment contract.
@@ -146,5 +175,10 @@ require_literal \
 	"$versions_file" 'MCP allowlist must equal the five reviewed tool families'
 require_literal 'REPOWISE_MCP_ALLOWED_TOOLS' "$wrapper" 'wrapper must enforce the pinned MCP allowlist'
 require_literal 'stdio' "$wrapper" 'MCP must be explicitly constrained to stdio'
+require_literal '<&0 >&1 2>&2 &' "$wrapper" 'foreground MCP must preserve stdio across the POSIX async-list launch'
+for tool in get_overview get_context get_change_risk get_health get_dead_code; do
+	require_literal "(\"$tool\"" "$repo_root/tools/repowise/mcp_smoke.py" \
+		"MCP smoke must call '$tool', not only advertise it"
+done
 
 printf '%s\n' 'repowise local policy: passed'

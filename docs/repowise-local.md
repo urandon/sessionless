@@ -57,8 +57,8 @@ not silently resolve a different wheel or sdist.
 
 ## Build and maintain the index
 
-Start from a clean tracked worktree so the index has an unambiguous source
-identity:
+Start from a clean checkout, with neither tracked changes nor non-ignored
+untracked files, so the index has an unambiguous source identity:
 
 ```sh
 git status --short
@@ -88,6 +88,11 @@ decisions. RepoWise state is checkout-local: a separate Git worktree needs its
 own `.local/repowise/` and `.repowise/`; copying or sharing an index between
 worktrees is unsupported.
 
+The MCP process is a snapshot reader, not a live source-of-truth watcher. Any
+tracked or non-ignored untracked checkout change invalidates the controlled
+evaluation: stop MCP, restore or commit the change, update the index, verify
+status, and restart MCP before relying on another answer.
+
 Neither `index` nor `update` deletes an existing index. If rebuilding becomes
 necessary, first use the exact-object uninstall plan and obtain explicit human
 confirmation for the resulting paths.
@@ -101,10 +106,11 @@ make repowise-doctor
 make repowise-policy-test
 ```
 
-The wrapper's doctor mode is not upstream's unrestricted online update check.
-It remains inside the local environment and reports missing installation,
-commit drift, unexpected state, permissions, resource-bound violations, and
-possible leftover processes with actionable remediation.
+The wrapper's doctor mode is the upstream diagnostic command constrained by the
+local environment and no-network sandbox; commit freshness is checked before it
+runs. Use `evaluate` for version and size evidence and `stop` for wrapper-owned
+process cleanup. Doctor does not prove the performance, RSS, or network-attempt
+bounds in the evaluation record.
 
 The policy test is intentionally manual and credential-free. It verifies that
 normal Sessionless workflows do not depend on RepoWise and that the wrapper

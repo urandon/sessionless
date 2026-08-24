@@ -36,7 +36,14 @@ AGPL-3.0-or-later/commercial licensing. The dependency closure is a substantial
 Python stack, including provider SDKs, SciPy, LanceDB, FastAPI, and Uvicorn. Its
 weight reinforces the local-tool boundary even if the experiment is useful.
 Platform-specific, transitively resolved wheels must also be locked and hashed;
-the two top-level hashes alone are not a reproducible installation.
+the two top-level hashes alone are not a reproducible installation. The Darwin
+arm64 CPython 3.12 experiment therefore pins a PEP 751 lock with 125 unique
+packages, one exact wheel URL and SHA-256 per package, generated/consumed with
+pip `26.2.1`. The reviewed lock SHA-256 is
+`dcbd8913e1b6e7f21990c14696143cad8dea66f8c2704147c4c6fafb02cf8dc8`.
+Installation downloads that closed wheel set in the only networked phase, then
+installs it with no index and no dependency resolution inside the no-network
+sandbox and runs `pip check`.
 
 The first supported artifact set targets Darwin arm64. An unsupported platform
 must fail with instructions instead of falling back to an unreviewed sdist or a

@@ -1,0 +1,4 @@
+# Human-owned input for the machine-generated PEP 751 lock next to this file.
+# Regenerate only on CPython 3.12 / Darwin arm64, then review the complete wheel
+# closure and update the lock digest/package count in versions.env.
+repowise==0.45.0

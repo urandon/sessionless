@@ -15,3 +15,8 @@ infra/terraform/bootstrap/backend.s3.tf
 
 .DS_Store
 coverage.out
+
+# Optional, repo-local RepoWise developer experiment (#65). Never commit its
+# Python environment, index, logs, generated wiki, synthetic home, or caches.
+.repowise/
+.local/repowise/

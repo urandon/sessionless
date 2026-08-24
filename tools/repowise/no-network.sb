@@ -1,0 +1,6 @@
+;; Local RepoWise analysis must not call telemetry, provider, update, or other
+;; network services. Installation is the one explicit exception and does not
+;; use this profile.
+(version 1)
+(allow default)
+(deny network*)

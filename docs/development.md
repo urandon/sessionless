@@ -103,6 +103,12 @@ integration surface, credential locality, and production gates are recorded in
 client is intentionally not wired into worker product state yet and never
 falls back to API-key billing.
 
+The opt-in credential-free SDK/App Server/exec comparator, exact artifact
+provenance, sanitized aggregate schema, and explicit operator-consent boundary
+are in [codex-surface-measurement.md](codex-surface-measurement.md). Its local
+Python environment and Codex binaries are research inputs and are not installed
+or invoked by normal developer or CI targets.
+
 The provider-neutral local credential binding, invocation handle, secure
 materialization, crash recovery, write-back, and deny-first revocation contract
 is documented in [credential-lifecycle.md](credential-lifecycle.md). Phase B0

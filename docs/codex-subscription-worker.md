@@ -21,11 +21,15 @@ ordinary automation and limits ChatGPT-managed cache persistence to trusted
 private infrastructure with one serialized owner. Those deployment constraints
 are release gates, not permission to silently change the billing route.
 
-The 2026-08-24 decision provisionally selects pinned App Server for bounded
-implementation, requires comparison with the stable Python SDK and `codex
-exec`, and makes a user-owned attached worker the first eligible personal
+The 2026-08-24 comparator supersedes the provisional App Server selection:
+Sessionless keeps its Go harness boundary, uses direct App Server and the stable
+Python SDK only as non-selectable research comparators, leaves `codex exec` as
+the sole candidate for an explicitly consented local experiment, and makes a
+user-owned attached worker the first eligible personal
 Plus/Pro placement. No mode can ship until its execution surface is officially
-production-supported. Cloud custody of a consumer credential remains disabled
+production-supported. The production worker remains Go/serverless and must not
+ship a Python SDK/runtime or Python sidecar. Cloud custody of a consumer
+credential remains disabled
 pending the additional gates in
 [the decision record](codex-integration-surface.md).
 
@@ -205,7 +209,8 @@ README for replay semantics.
   different ChatGPT subscription route, so technical success alone remains
   insufficient.
 - The App Server command is experimental and unsupported for production; the
-  stable Python SDK must be evaluated before implementation resumes.
+  stable Python SDK must be evaluated as a comparator, but is not an eligible
+  production implementation because the worker must remain Python-free.
 - Device-code authentication is beta and can be disabled by personal/workspace
   settings; standard browser login or an explicit unsupported result is needed.
 - Refresh writes make credentials mutable and create crash/fencing problems.

@@ -183,7 +183,7 @@ status identical to baseline.
 | Processes after stop | zero | Pass: no wrapper PID remained after bounded stop |
 | MCP smoke | all five allowed families succeed | Pass: exact allowlist and five real calls |
 | Source-verified utility | at least one material useful finding | Pass with caveats; see findings below |
-| Worktree isolation | no state/commit mixing | Dirty and stale SHA guards pass; separate-worktree check pending |
+| Worktree isolation | no state/commit mixing | Pass: dirty/stale guards and clean detached-worktree absence check |
 
 Performance thresholds are containment limits, not evidence of usefulness. A
 fast tool that adds no verified signal should still be rejected.
@@ -231,6 +231,11 @@ The exact MCP surface was
 `get_overview,get_context,get_change_risk,get_health,get_dead_code`. The bounded
 smoke called all five, and an evaluation client then used each tool against
 Sessionless paths and the two-commit RepoWise change.
+
+A separate clean detached worktree at `59791692192e7a8549ede4f0b84cb2915955413d`
+contained no `.repowise`, `.local/repowise`, or RepoWise-generated VS Code
+artifacts. It was removed through `git worktree remove` after the check. No
+state directory was copied or shared.
 
 ## Source-verified findings and limitations
 
@@ -293,8 +298,8 @@ weak: RepoWise may help an agent decide where to read next; it may not decide
 what is safe to delete, what architecture is authoritative, what tests are
 required, or whether a change may merge.
 
-Issue #65 can close after the warm-update/staleness and separate-worktree checks
-are recorded, cleanup is re-verified, and this report is independently reviewed.
+Issue #65 can close after cleanup is re-verified and this report is
+independently reviewed.
 Any source weakness discovered during the experiment belongs in a separate
 issue and MR; this task must not apply automated RepoWise fixes.
 

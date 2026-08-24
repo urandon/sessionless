@@ -2,6 +2,8 @@ package codexsurface
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,16 +22,22 @@ import (
 var versionPattern = regexp.MustCompile(`codex-cli ([0-9A-Za-z.+-]+)`)
 
 const (
-	expectedDirectVersion = "0.148.0-alpha.15"
-	expectedSDKVersion    = "0.147.0"
+	expectedDirectVersion      = "0.148.0-alpha.15"
+	expectedDirectBinarySHA256 = "7645c3caf5607e4528eb3a15b12496c284c2a918939aed34e863c760c1b421e7"
+	expectedSDKVersion         = "0.147.0"
+	expectedSDKRuntimeSHA256   = "19c4f144c5226a9f17c58e6f0fa854843b0f77a6eb420f40e2745a12f10f5d37"
+	expectedSDKClientSHA256    = "76bdb1e63c62987c3530ea763e9655a06b308cbc4e18cb51958e85b6c23aec3b"
+	expectedSDKAPISHA256       = "673defd0ccf1348a86c2bb589cb3a1a69cb315b0a3ecb29525c52f0515a82476"
+	expectedSDKSandboxSHA256   = "01ab6cabc1642941ba958b287c34a5475066c934b67e4fd194d78b4bb2eb27b2"
 )
 
 type Config struct {
-	Executable       string
-	PythonExecutable string
-	Iterations       int
-	Timeout          time.Duration
-	Scratch          string
+	Executable           string
+	PythonExecutable     string
+	Iterations           int
+	Timeout              time.Duration
+	Scratch              string
+	ExpectedBinarySHA256 string
 }
 
 func Probe(ctx context.Context, surface Surface, config Config) (Report, error) {
@@ -56,7 +64,10 @@ func Probe(ctx context.Context, surface Surface, config Config) (Report, error) 
 			return Report{}, err
 		}
 	}
-	if config.PythonExecutable != "" {
+	if surface == SurfaceSDK && config.PythonExecutable == "" {
+		config.PythonExecutable = "python3"
+	}
+	if surface == SurfaceSDK {
 		config.PythonExecutable, err = resolveExecutable(config.PythonExecutable)
 		if err != nil {
 			return Report{}, err
@@ -100,12 +111,24 @@ func resolveExecutable(value string) (string, error) {
 }
 
 func probeAppServer(ctx context.Context, config Config) (Report, error) {
+	binaryDigest, err := executableSHA256(config.Executable)
+	if err != nil {
+		return Report{}, err
+	}
+	expectedDigest := config.ExpectedBinarySHA256
+	if expectedDigest == "" {
+		expectedDigest = expectedDirectBinarySHA256
+	}
+	if binaryDigest != expectedDigest {
+		return Report{}, errors.New("selected Codex binary digest does not match pinned artifact")
+	}
 	version, err := readVersion(ctx, config)
 	if err != nil {
 		return Report{}, err
 	}
 	durations := make([]time.Duration, 0, config.Iterations)
 	checks := []Check{
+		{Name: "binary_digest_pinned", Pass: binaryDigest == expectedDigest},
 		{Name: "binary_version_pinned", Pass: version == expectedDirectVersion},
 		{Name: "chatgpt_auth_required_without_ambient_credentials", Pass: true},
 		{Name: "experimental_api_disabled", Pass: true},
@@ -146,6 +169,17 @@ func probeAppServer(ctx context.Context, config Config) (Report, error) {
 }
 
 func probeExec(ctx context.Context, config Config) (Report, error) {
+	binaryDigest, err := executableSHA256(config.Executable)
+	if err != nil {
+		return Report{}, err
+	}
+	expectedDigest := config.ExpectedBinarySHA256
+	if expectedDigest == "" {
+		expectedDigest = expectedDirectBinarySHA256
+	}
+	if binaryDigest != expectedDigest {
+		return Report{}, errors.New("selected Codex binary digest does not match pinned artifact")
+	}
 	version, err := readVersion(ctx, config)
 	if err != nil {
 		return Report{}, err
@@ -156,6 +190,7 @@ func probeExec(ctx context.Context, config Config) (Report, error) {
 		{Name: "ignore_user_config_flag", Pass: false}, {Name: "jsonl_flag", Pass: false},
 		{Name: "read_only_flag", Pass: false},
 		{Name: "binary_version_pinned", Pass: version == expectedDirectVersion},
+		{Name: "binary_digest_pinned", Pass: binaryDigest == expectedDigest},
 	}
 	for range config.Iterations {
 		root, pathErr := makeIsolatedRoot(config.Scratch, "sessionless-codexexec-")
@@ -194,6 +229,10 @@ type sdkProbeResult struct {
 	HighLevelApprovalHandler      bool   `json:"high_level_approval_handler"`
 	RestrictedReadAccessSupported bool   `json:"restricted_read_access_supported"`
 	TypedRateLimitRead            bool   `json:"typed_rate_limit_read"`
+	RuntimeSHA256                 string `json:"runtime_sha256"`
+	ClientSHA256                  string `json:"client_sha256"`
+	APISHA256                     string `json:"api_sha256"`
+	SandboxSHA256                 string `json:"sandbox_sha256"`
 }
 
 func probeSDK(ctx context.Context, config Config) (Report, error) {
@@ -234,7 +273,11 @@ func probeSDK(ctx context.Context, config Config) (Report, error) {
 		return Report{}, errors.New("python SDK provenance is incomplete")
 	}
 	checks := []Check{
+		{Name: "api_source_digest_pinned", Pass: evidence.APISHA256 == expectedSDKAPISHA256},
+		{Name: "client_source_digest_pinned", Pass: evidence.ClientSHA256 == expectedSDKClientSHA256},
 		{Name: "runtime_version_pinned", Pass: evidence.RuntimeVersion == expectedSDKVersion},
+		{Name: "runtime_digest_pinned", Pass: evidence.RuntimeSHA256 == expectedSDKRuntimeSHA256},
+		{Name: "sandbox_source_digest_pinned", Pass: evidence.SandboxSHA256 == expectedSDKSandboxSHA256},
 		{Name: "sdk_version_pinned", Pass: evidence.SDKVersion == expectedSDKVersion},
 		{Name: "chatgpt_auth_required_without_ambient_credentials", Pass: evidence.Initialized && !evidence.AccountPresent && evidence.RequiresAuth},
 		{Name: "experimental_api_disabled_by_default", Pass: !evidence.ExperimentalDefault},
@@ -270,15 +313,19 @@ func makeIsolatedRoot(parent, prefix string) (string, error) {
 }
 
 const sdkCredentialFreeProbe = `
-import inspect, json, os, subprocess, sys
+import hashlib, inspect, json, os, subprocess, sys
 import openai_codex
+import openai_codex.api as api_module
+import openai_codex.client as client_module
+import openai_codex._sandbox as sandbox_module
 from openai_codex.api import Codex
 from openai_codex.client import CodexClient, CodexConfig
 from openai_codex._sandbox import Sandbox, _sandbox_policy
 from codex_cli_bin import bundled_codex_path
 
 root = sys.argv[1]
-runtime = subprocess.run([str(bundled_codex_path()), "--version"], check=True,
+runtime_path = bundled_codex_path()
+runtime = subprocess.run([str(runtime_path), "--version"], check=True,
     capture_output=True, text=True, env={"HOME": root+"/home", "CODEX_HOME": root+"/codex-home",
     "TMPDIR": root+"/tmp", "PATH": "/usr/local/bin:/usr/bin:/bin", "NO_COLOR": "1"}).stdout.strip()
 
@@ -313,6 +360,10 @@ result = {
     "high_level_approval_handler": "approval_handler" in high_signature.parameters,
     "restricted_read_access_supported": "access" in policy_root,
     "typed_rate_limit_read": hasattr(client, "account_rate_limits_read"),
+    "runtime_sha256": hashlib.sha256(runtime_path.read_bytes()).hexdigest(),
+    "client_sha256": hashlib.sha256(open(client_module.__file__, "rb").read()).hexdigest(),
+    "api_sha256": hashlib.sha256(open(api_module.__file__, "rb").read()).hexdigest(),
+    "sandbox_sha256": hashlib.sha256(open(sandbox_module.__file__, "rb").read()).hexdigest(),
 }
 print(json.dumps(result, sort_keys=True, separators=(",", ":")))
 `
@@ -329,6 +380,23 @@ func readVersion(ctx context.Context, config Config) (string, error) {
 		return "", errors.New("unrecognized codex version")
 	}
 	return match[1], nil
+}
+
+func executableSHA256(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", errors.New("open probe executable for hashing")
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() < 1 || info.Size() > 512<<20 {
+		return "", errors.New("invalid probe executable for hashing")
+	}
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", errors.New("hash probe executable")
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 type boundedOutput struct {

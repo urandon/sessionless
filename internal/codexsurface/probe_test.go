@@ -2,6 +2,7 @@ package codexsurface
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -50,10 +51,15 @@ exit 2
 	if err := os.WriteFile(fixture, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	fixtureDigest, err := executableSHA256(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	for _, surface := range []Surface{SurfaceAppServer, SurfaceExec} {
 		report, err := Probe(context.Background(), surface, Config{
-			Executable: fixture, Scratch: root, Iterations: 2, Timeout: 15 * time.Second,
+			Executable: fixture, ExpectedBinarySHA256: fixtureDigest,
+			Scratch: root, Iterations: 2, Timeout: 15 * time.Second,
 		})
 		if err != nil {
 			t.Fatalf("Probe(%s) error = %v", surface, err)
@@ -67,6 +73,32 @@ exit 2
 		if surface == SurfaceExec && report.Status != "pass" {
 			t.Fatalf("exec status = %q", report.Status)
 		}
+		if !reportCheck(report, "binary_digest_pinned") {
+			t.Fatalf("Probe(%s) did not bind evidence to the fixture digest", surface)
+		}
+	}
+}
+
+func TestDirectProbeRejectsMismatchedBinaryDigest(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX fixture")
+	}
+	root := t.TempDir()
+	fixture := filepath.Join(root, "codex-fixture")
+	marker := filepath.Join(root, "executed")
+	script := fmt.Sprintf("#!/bin/sh\nprintf 'executed' > %q\ncase \"${1-}\" in\n--version) echo 'codex-cli 0.148.0-alpha.15' ;;\nexec) printf '%%s\\n' --json --ephemeral --ignore-user-config --ignore-rules read-only ;;\nesac\n", marker)
+	if err := os.WriteFile(fixture, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Probe(context.Background(), SurfaceExec, Config{
+		Executable: fixture, ExpectedBinarySHA256: strings.Repeat("0", 64),
+		Scratch: root, Iterations: 1, Timeout: 15 * time.Second,
+	})
+	if err == nil {
+		t.Fatal("mismatched artifact was accepted")
+	}
+	if _, statErr := os.Stat(marker); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("mismatched artifact executed before rejection: %v", statErr)
 	}
 }
 
@@ -107,7 +139,7 @@ func TestSDKProbeFailsClosedOnUnsafePublishedDefaults(t *testing.T) {
 	root := t.TempDir()
 	python := filepath.Join(root, "python-fixture")
 	script := `#!/bin/sh
-printf '%s\n' '{"sdk_version":"0.147.0","runtime_version":"0.147.0","initialized":true,"account_present":false,"requires_auth":true,"experimental_default":true,"inherits_ambient_environment":true,"default_approval_accepts":true,"high_level_approval_handler":false,"restricted_read_access_supported":false,"typed_rate_limit_read":false}'
+printf '%s\n' '{"sdk_version":"0.147.0","runtime_version":"0.147.0","initialized":true,"account_present":false,"requires_auth":true,"experimental_default":true,"inherits_ambient_environment":true,"default_approval_accepts":true,"high_level_approval_handler":false,"restricted_read_access_supported":false,"typed_rate_limit_read":false,"runtime_sha256":"19c4f144c5226a9f17c58e6f0fa854843b0f77a6eb420f40e2745a12f10f5d37","client_sha256":"76bdb1e63c62987c3530ea763e9655a06b308cbc4e18cb51958e85b6c23aec3b","api_sha256":"673defd0ccf1348a86c2bb589cb3a1a69cb315b0a3ecb29525c52f0515a82476","sandbox_sha256":"01ab6cabc1642941ba958b287c34a5475066c934b67e4fd194d78b4bb2eb27b2"}'
 `
 	if err := os.WriteFile(python, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
@@ -122,15 +154,26 @@ printf '%s\n' '{"sdk_version":"0.147.0","runtime_version":"0.147.0","initialized
 	if report.Status != "no_go" || report.Version != "0.147.0" || report.Runtime != "0.147.0" {
 		t.Fatalf("report = %#v", report)
 	}
-	for _, check := range report.Checks {
-		if check.Name == "chatgpt_auth_required_without_ambient_credentials" {
-			if !check.Pass {
-				t.Fatal("isolated account route was not preserved")
-			}
-			return
+	if !reportCheck(report, "chatgpt_auth_required_without_ambient_credentials") {
+		t.Fatal("isolated account route was not preserved")
+	}
+	for _, name := range []string{
+		"api_source_digest_pinned", "client_source_digest_pinned",
+		"runtime_digest_pinned", "sandbox_source_digest_pinned",
+	} {
+		if !reportCheck(report, name) {
+			t.Fatalf("SDK provenance check %q failed", name)
 		}
 	}
-	t.Fatal("missing account-route check")
+}
+
+func reportCheck(report Report, name string) bool {
+	for _, check := range report.Checks {
+		if check.Name == name {
+			return check.Pass
+		}
+	}
+	return false
 }
 
 func TestProbeMakesRelativeExecutablesAbsoluteBeforeChangingChildDirectory(t *testing.T) {

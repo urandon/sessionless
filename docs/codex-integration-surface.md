@@ -16,12 +16,19 @@ Sessionless provisionally selects the **stable API subset of a pinned Codex App
 Server over private stdio**, behind the existing Go `HarnessDriver`, for bounded
 adapter research and implementation.
 
+The production adapter must preserve the repository's Go/serverless deployment
+model: Sessionless-owned orchestration ships as Go binaries and must not add a
+Python SDK or Python runtime to the worker image or mandatory build/test path.
+An explicitly pinned external Codex process is compatible with this constraint;
+a Python sidecar or embedded Python harness is not.
+
 The `codex app-server` command itself is currently documented as experimental
 and unsupported for production workloads. Therefore it is an immediate
 production-release no-go even though the protocol exposes a stable subset.
 Issue #64 must compare it with the stable Python SDK and `codex exec`. A later
-official production-support statement or an accepted stable-SDK route is needed
-before any personal-subscription release.
+official production-support statement for a Python-free surface is needed
+before any personal-subscription release. The Python SDK is evidence only, not
+an eligible production route.
 
 The first personal ChatGPT Plus/Pro deployment is **an attached worker owned by
 the user**. Its Codex credential stays on that worker. The Sessionless control
@@ -63,7 +70,7 @@ provider permits Sessionless to use that mechanism.
 | Surface | Documented fit | Capabilities relevant to Sessionless | Decision |
 | --- | --- | --- | --- |
 | Codex App Server | OpenAI's documented integration surface when the agent is part of the product and the client needs direct lifecycle and user-experience control. The command is experimental and unsupported for production; only part of its API is labelled stable. | Language-neutral JSONL protocol; ChatGPT browser/device login; account/workspace state; model discovery; multi-bucket rate limits; account usage; thread/turn/item lifecycle; interruption; streamed progress; approvals; sandbox/configuration state. | **Provisional research/implementation selection.** Pin binary and stable schema, disable experimental capabilities, and block production release. |
-| Codex SDK | Official application/automation surface. The TypeScript SDK has a smaller high-level interface; the stable Python SDK controls App Server and bundles a pinned runtime. | Convenient lifecycle ownership and supported runtime packaging. Public high-level docs do not establish account/quota/approval parity or all fencing facts needed by the Go worker. | Mandatory #64 comparator and preferred production candidate if it exposes the required guardrails without an unsafe escape hatch. Runtime/language cost must be measured. |
+| Codex SDK | Official application/automation surface. The TypeScript SDK has a smaller high-level interface; the stable Python SDK controls App Server and bundles a pinned runtime. | Convenient lifecycle ownership and supported runtime packaging. Public high-level docs do not establish account/quota/approval parity or all fencing facts needed by the Go worker. | Mandatory #64 research comparator only. A Python SDK/runtime is ineligible for the production Sessionless worker even if later versions close the behavioral gaps. Runtime/language cost is still measured to explain the rejected alternative. |
 | `codex exec` | Official non-interactive mode for one-off tasks, pipelines, scheduled jobs, and CI. | Explicit sandbox, JSONL events, output schema, resume, process exit status, and an ephemeral mode. Account connection UX, quota projection, interactive approvals, and exact interrupt semantics are outside its run contract. | Required benchmark and emergency implementation fallback, selected only before an attempt. Never a silent mid-attempt fallback. |
 | Codex MCP server | Official way to expose Codex as a specialist tool inside an MCP/Agents SDK workflow. | Portable tool invocation, but loses richer Codex session, diff, account, quota, and product event semantics. | Rejected as the primary personal-agent harness. May become a later tool under #46. |
 | Direct ChatGPT/Codex backend emulation | Implemented by OpenCode and Zed, not documented by OpenAI as a third-party integration contract. | Potentially lower process overhead, but requires Sessionless to duplicate OAuth, refresh, model catalog, request headers, quota interpretation, compatibility, and policy assumptions. | Rejected. Do not reuse competitor OAuth client IDs, private endpoint paths, cookies, or hard-coded model entitlement lists. |
@@ -74,10 +81,11 @@ Server is the only documented surface inspected whose public contract includes
 both the full agent lifecycle and the subscription account/quota observations
 required by the product, but its command maturity prevents production use. A
 bounded one-turn job resembles `codex exec`, while the stable Python SDK is the
-official programmatic surface. Both are mandatory comparators: if direct App
+official programmatic reference surface. Both are mandatory comparators, but
+only Python-free surfaces are eligible for production selection: if direct App
 Server control does not materially improve account routing, quota projection,
-cancellation, or future approval handling, Sessionless must choose the smaller
-supported surface rather than defend sunk cost.
+cancellation, or future approval handling, Sessionless must choose a smaller
+supported Python-free surface rather than defend sunk cost.
 
 ## Authentication and billing-resource matrix
 
@@ -258,13 +266,22 @@ user-owned provider resource and requires a separate explicit product policy.
 | --- | --- | --- |
 | OpenCode | Typed provider adapters, explicit auth modes, provider-native quota metadata, and a working demonstration that subscription and API resources need separate routing. | Reusing an OAuth client ID, calling private ChatGPT backend paths, rewriting provider requests, decoding unverified JWT metadata as authority, and hard-coding model entitlement are not supported contracts. |
 | Zed | Clean separation among a direct ChatGPT provider, Codex as an ACP child process, and a terminal-owned CLI thread. Credentials remain local to the selected execution boundary. | Zed's direct OAuth/backend implementation is competitor evidence, not OpenAI authorization. A terminal thread delegates too much lifecycle and policy to the CLI for Sessionless's canonical-attempt contract. |
-| Hermes Agent | App Server lifecycle, fail-closed unattended approvals, usage projection, subscription-aware credential pooling, refresh locking/write-back, and the concrete danger of hidden provider history. | Soft over-cap credential leasing, broad credential environment forwarding, warm provider-thread reuse, and terminal delivery before durable Sessionless commit. |
+| Hermes Agent | App Server lifecycle, fail-closed unattended approvals, usage projection, subscription-aware credential pooling, refresh locking/write-back, and the concrete danger of hidden provider history. | Hermes is a Python application/runtime with a large non-Go closure, in addition to soft over-cap credential leasing, broad credential environment forwarding, warm provider-thread reuse, and terminal delivery before durable Sessionless commit. It is competitor evidence only, never a Sessionless dependency. |
 | DeepSeek Harness | Plugin-seamed harness architecture, append-only model-visible session logging, ACP automation sessions, one-shot permissions, and local-first data documentation. | Preview wire instability, incomplete SDK lifecycle, same-UID-readable credentials, file-only sandbox semantics, and unsafe minimal-example defaults. |
 
 These projects answer architecture and failure-mode questions. None can answer
 whether OpenAI permits Sessionless's intended use of a personal ChatGPT
 subscription; only provider documentation or an explicit provider decision can
 close that gate.
+
+The Python boundary is an earlier deliberate architecture decision, not a
+benchmark preference introduced by #64. Hermes Agent was rejected as a runtime
+dependency primarily because adopting its Python application closure would
+break the Go/serverless, monolithic-binary deployment model. Sessionless kept
+Hermes only as a competitor-research source and implemented its own
+harness-neutral contracts in Go. The same rule applies to the Codex Python SDK:
+use it to test capability and behavior claims, never as the production harness
+or a transitive worker-image dependency.
 
 ### DeepSeek Harness details
 
@@ -341,8 +358,9 @@ and token-count-as-billing assumptions.
 4. Exact process-group kill/reap and ambiguous-completion behavior are bounded.
 5. The runtime binary and stable schema are pinned and upgrade-gated.
 6. The same synthetic bounded task is compared with the stable Python SDK and
-   `codex exec --json --ephemeral`; account/quota/approval parity, sidecar
-   footprint, and direct-App-Server complexity must be explicit.
+   `codex exec --json --ephemeral`; account/quota/approval parity, rejected
+   Python runtime footprint, and direct-App-Server complexity must be explicit.
+   The comparison cannot select Python for production.
 
 ### Additional gates for personal attached-worker release
 
@@ -356,6 +374,8 @@ and token-count-as-billing assumptions.
 5. Provider policy permits the intended automated personal-subscription use.
 6. The selected execution surface is officially supported for production; an
    experimental App Server command is not releasable.
+7. The deployed harness adds no Python SDK/runtime or Python sidecar to the
+   Sessionless worker image; Sessionless-owned orchestration remains Go.
 
 ### Additional gates for cloud consumer credential preview
 

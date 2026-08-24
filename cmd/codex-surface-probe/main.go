@@ -29,7 +29,7 @@ func run() error {
 	var timeout time.Duration
 	flag.StringVar(&surface, "surface", "", "credential-free surface: app-server, exec, or python-sdk")
 	flag.StringVar(&executable, "codex-bin", "", "exact Codex executable (defaults to codex for app-server/exec)")
-	flag.StringVar(&pythonExecutable, "python-bin", "python3", "Python executable containing the pinned Codex SDK")
+	flag.StringVar(&pythonExecutable, "python-bin", "", "Python executable containing the pinned Codex SDK (defaults to python3 for python-sdk)")
 	flag.StringVar(&output, "output", "", "sanitized JSON report path")
 	flag.StringVar(&scratch, "scratch", "", "private temporary directory parent")
 	flag.IntVar(&iterations, "iterations", 1, "cold credential-free iterations")

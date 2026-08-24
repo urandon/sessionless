@@ -108,10 +108,15 @@ func (report PublicMeasurementReport) Validate() error {
 		}
 		seenMetrics[metric.Name] = struct{}{}
 	}
+	totalFailures := 0
 	for code, count := range report.FailureCounts {
 		if !validCode(code) || count < 0 || count > report.SampleCount {
 			return errors.New("invalid authenticated failure count")
 		}
+		totalFailures += count
+	}
+	if totalFailures > report.SampleCount {
+		return errors.New("authenticated failure counts exceed sample count")
 	}
 	seenChecks := make(map[string]struct{}, len(report.Checks))
 	hasFailedCheck := false

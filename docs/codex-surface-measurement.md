@@ -9,10 +9,17 @@ their ChatGPT subscription and the exact fixed, non-secret input.
 
 The credential-free evidence changes the provisional #62 decision:
 
+- the Sessionless production harness must remain compatible with the existing
+  Go/serverless deployment model. It must not add Python, a Python SDK, or a
+  Python runtime to the worker image or mandatory build/test path. A production
+  adapter may invoke an explicitly pinned external Codex process, but the
+  Sessionless-owned runtime and orchestration remain Go binaries;
+
 - direct App Server remains useful as the richest research protocol, but is a
   production `no-go` while the command is documented as experimental and
   unsupported;
-- stable Python SDK `0.147.0` is also a current `no-go` for the unattended
+- stable Python SDK `0.147.0` is a research comparator only and is also a
+  current `no-go` for the unattended
   Sessionless boundary, despite being the officially recommended automation
   surface: its measured public high-level defaults and abstractions do not
   preserve required environment, approval, restricted-read-root, and typed
@@ -46,7 +53,9 @@ questions; this spike tests both.
 
 Host: macOS arm64. Python: CPython 3.12. SDK closure is recorded in
 `test/fixtures/codex-surface/python-sdk-darwin-arm64.requirements.txt` and is an
-opt-in research dependency, not a Sessionless runtime or CI dependency.
+opt-in research dependency, not a Sessionless runtime or CI dependency. Its
+measurements may falsify assumptions about the other surfaces, but cannot make
+the Python SDK eligible for production selection.
 
 | Artifact | Version / size | SHA-256 |
 | --- | --- | --- |
@@ -56,6 +65,14 @@ opt-in research dependency, not a Sessionless runtime or CI dependency.
 | SDK-bundled Codex runtime | `0.147.0`; 219,997,536 bytes | `19c4f144c5226a9f17c58e6f0fa854843b0f77a6eb420f40e2745a12f10f5d37` |
 | SDK runtime stable v2 schema | 513,375 bytes | `f3dec1e031d99a420b137b903f02196d4325eece57620c925bb7130b25f168d2` |
 | Isolated SDK virtual environment | 291,280 KiB | closure hashes in the pinned fixture |
+
+The live probe additionally fail-closes on the runtime binary digest and the
+exact installed SDK files that define process launch, the high-level API, and
+sandbox mapping: `client.py`
+`76bdb1e63c62987c3530ea763e9655a06b308cbc4e18cb51958e85b6c23aec3b`,
+`api.py` `673defd0ccf1348a86c2bb589cb3a1a69cb315b0a3ecb29525c52f0515a82476`,
+and `_sandbox.py`
+`01ab6cabc1642941ba958b287c34a5475066c934b67e4fd194d78b4bb2eb27b2`.
 
 The direct and SDK ClientRequest method sets are equal in this sample, but the
 stable schemas are not byte-identical (288 versus 285 generated files). An SDK
@@ -80,7 +97,9 @@ The SDK statements above are observations of the exact pinned wheel, not claims
 about every future SDK. The probe supplies an explicit rejecting low-level
 approval handler so the credential-free initialization itself cannot accept a
 server request; it separately records that the published default is unsafe for
-this unattended use case.
+this unattended use case. Even if a later Python SDK fixes these behavioral
+gaps, it remains comparator-only unless the Go/serverless deployment
+requirement is explicitly superseded by a separate architecture decision.
 
 ## Reproducible runner
 

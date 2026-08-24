@@ -69,6 +69,11 @@ git -C "$repo_root" check-ignore -q .vscode/mcp.json ||
 	fail '.vscode/mcp.json is not ignored'
 git -C "$repo_root" check-ignore -q .vscode/extensions.json ||
 	fail '.vscode/extensions.json is not ignored'
+require_literal 'assert_no_editor_artifacts' "$wrapper" 'supported commands must reject ignored RepoWise editor artifacts'
+require_literal '$repo_root/.vscode/mcp.json' "$wrapper" 'wrapper must reject the ignored RepoWise MCP registration'
+require_literal '$repo_root/.vscode/extensions.json' "$wrapper" 'wrapper must reject the ignored RepoWise extension recommendation'
+test "$(grep -c '^ *assert_no_editor_artifacts$' "$wrapper")" -ge 4 ||
+	fail 'editor artifact guard must run before and after supported operations'
 
 # Validate the effective normal target graph. `make -n` expands prerequisites
 # without running recipes; any RepoWise command in its output is an accidental
@@ -130,6 +135,9 @@ require_literal '-D LOCAL_ROOT=' "$wrapper" 'wrapper must bind the exact local e
 if grep -E 'run_sanitized .*\$repowise_bin' "$wrapper" >/dev/null; then
 	fail 'a non-install RepoWise invocation bypasses the no-network sandbox'
 fi
+if grep -E 'run_sanitized .*\$venv_root/bin' "$wrapper" >/dev/null; then
+	fail 'an installed-Python command bypasses the post-install sandbox'
+fi
 
 # Synthetic home/state and interpreter isolation prevent host/global writes and
 # Python user-site leakage.
@@ -162,6 +170,10 @@ require_literal 'assert_local_paths_safe' "$wrapper" 'cleanup must validate phys
 require_literal 'test ! -L' "$wrapper" 'cleanup must reject symlinked state roots'
 require_literal 'REPOWISE_UNINSTALL_CONFIRM=sessionless:' "$wrapper" 'uninstall must require exact typed confirmation'
 require_literal 'kill -KILL' "$wrapper" 'stop must have a bounded forced-termination fallback'
+require_literal 'ps -p "$mcp_pid" -o lstart=' "$wrapper" 'MCP start must record a process start identity'
+require_literal 'recorded_identity=' "$wrapper" 'stop must read the recorded process identity'
+require_literal 'current_identity=' "$wrapper" 'stop must recompute the current process identity'
+require_literal 'expected_suffix="$repowise_bin mcp $repo_root --transport stdio --tools $REPOWISE_MCP_ALLOWED_TOOLS"' "$wrapper" 'stop must require the exact repo-local MCP command signature'
 
 # Prove the exact Git primitive used by the wrapper distinguishes an untracked
 # source from the two allowed ignored state roots.

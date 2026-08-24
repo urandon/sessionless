@@ -223,7 +223,9 @@ the policy was strengthened from an environment-only promise to an OS-enforced
 write allowlist for `.repowise/` and `.local/repowise/`. The regression run
 completed in 16.78 seconds: upstream reported its editor refresh as degraded by
 `Operation not permitted`, created no `.vscode` files, updated the ignored
-index successfully, and left the tracked tree clean.
+index successfully, and left the tracked tree clean. The supported wrapper also
+rejects either ignored editor artifact when it pre-exists, preventing an older
+uncontrolled run from contaminating exact-HEAD evidence.
 The upstream doctor reported 510 SQL/vector/FTS pages in sync, zero stale pages,
 no hosted login, no editor/agent registrations, and no distill hook.
 

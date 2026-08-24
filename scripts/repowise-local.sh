@@ -96,6 +96,13 @@ assert_clean_tracked_checkout() {
     die "untracked, non-ignored files present; commit, remove, or ignore them before RepoWise analysis"
 }
 
+assert_no_editor_artifacts() {
+  test ! -e "$repo_root/.vscode/mcp.json" ||
+    die "remove the local RepoWise editor artifact before analysis: $repo_root/.vscode/mcp.json"
+  test ! -e "$repo_root/.vscode/extensions.json" ||
+    die "remove the local RepoWise editor artifact before analysis: $repo_root/.vscode/extensions.json"
+}
+
 assert_platform() {
   test "$(uname -s)" = "$REPOWISE_PLATFORM_SYSTEM" ||
     die "this evaluation is pinned to $REPOWISE_PLATFORM_SYSTEM"
@@ -191,6 +198,7 @@ install_repowise() {
   assert_platform
   assert_host_python
   assert_clean_tracked_checkout
+  assert_no_editor_artifacts
   test ! -e "$venv_root" || die "local environment already exists: $venv_root"
   prepare_runtime_dirs
 
@@ -232,9 +240,9 @@ install_repowise() {
     --no-deps \
     "$@"
   run_offline "$venv_root/bin/python3" -m pip check
-  run_sanitized "$venv_root/bin/python3" -m pip freeze --all \
+  run_offline "$venv_root/bin/python3" -m pip freeze --all \
     >"$evidence_root/requirements-resolved.txt"
-  run_sanitized "$venv_root/bin/python3" --version >"$evidence_root/python-version.txt" 2>&1
+  run_offline "$venv_root/bin/python3" --version >"$evidence_root/python-version.txt" 2>&1
   : >"$evidence_root/wheelhouse.sha256"
   for wheel in "$downloads_root"/*.whl; do
     printf '%s  %s\n' "$(sha256_file "$wheel")" "$(basename "$wheel")" \
@@ -242,6 +250,7 @@ install_repowise() {
   done
   run_offline "$repowise_bin" --version
   assert_clean_tracked_checkout
+  assert_no_editor_artifacts
 }
 
 index_repowise() {
@@ -308,8 +317,20 @@ start_mcp() {
     "$repowise_bin" mcp "$repo_root" --transport stdio --tools "$REPOWISE_MCP_ALLOWED_TOOLS" \
     <&0 >&1 2>&2 &
   mcp_pid=$!
-  printf '%s\n' "$mcp_pid" >"$mcp_pid_file"
   trap 'kill "$mcp_pid" 2>/dev/null || true; rm -f "$mcp_pid_file"' EXIT HUP INT TERM
+  mcp_start=$(ps -p "$mcp_pid" -o lstart= 2>/dev/null | awk '{$1=$1; print}')
+  mcp_command=$(ps -p "$mcp_pid" -o command= 2>/dev/null | sed 's/^[[:space:]]*//')
+  test -n "$mcp_start" && test -n "$mcp_command" ||
+    die "could not record RepoWise MCP process identity"
+  expected_suffix="$repowise_bin mcp $repo_root --transport stdio --tools $REPOWISE_MCP_ALLOWED_TOOLS"
+  case "$mcp_command" in
+    *"$expected_suffix") ;;
+    *) die "started process does not have the exact RepoWise MCP signature" ;;
+  esac
+  mcp_identity=$(
+    printf '%s\n%s\n' "$mcp_start" "$mcp_command" | shasum -a 256 | awk '{print $1}'
+  )
+  printf '%s\n%s\n' "$mcp_pid" "$mcp_identity" >"$mcp_pid_file"
   wait "$mcp_pid"
 }
 
@@ -319,19 +340,31 @@ stop_mcp() {
     return 0
   }
   pid=$(sed -n '1p' "$mcp_pid_file")
+  recorded_identity=$(sed -n '2p' "$mcp_pid_file")
   case "$pid" in
     ''|*[!0-9]*) die "invalid MCP pid file: $mcp_pid_file" ;;
   esac
+  case "$recorded_identity" in
+    *[!0-9a-f]*|'') die "invalid MCP process identity" ;;
+  esac
+  test "${#recorded_identity}" -eq 64 || die "invalid MCP process identity"
   if ! kill -0 "$pid" 2>/dev/null; then
     rm -f "$mcp_pid_file"
     printf '%s\n' 'Removed stale RepoWise MCP pid file.'
     return 0
   fi
-  command_line=$(ps -p "$pid" -o command= 2>/dev/null || true)
+  process_start=$(ps -p "$pid" -o lstart= 2>/dev/null | awk '{$1=$1; print}')
+  command_line=$(ps -p "$pid" -o command= 2>/dev/null | sed 's/^[[:space:]]*//')
+  expected_suffix="$repowise_bin mcp $repo_root --transport stdio --tools $REPOWISE_MCP_ALLOWED_TOOLS"
   case "$command_line" in
-    *"$sandbox_profile"*"$repowise_bin"*) ;;
+    *"$expected_suffix") ;;
     *) die "pid $pid is not the expected repo-local sandboxed RepoWise MCP process" ;;
   esac
+  current_identity=$(
+    printf '%s\n%s\n' "$process_start" "$command_line" | shasum -a 256 | awk '{print $1}'
+  )
+  test "$current_identity" = "$recorded_identity" ||
+    die "pid $pid no longer has the wrapper-recorded RepoWise MCP identity"
   kill -TERM "$pid"
   attempts=0
   while kill -0 "$pid" 2>/dev/null && test "$attempts" -lt 50; do
@@ -407,6 +440,7 @@ case "$command" in
     assert_installed
     assert_clean_tracked_checkout
     assert_no_saved_key
+    assert_no_editor_artifacts
     case "$command" in
       index) index_repowise ;;
       update) update_repowise ;;
@@ -441,6 +475,7 @@ case "$command" in
         ;;
       evaluate) evaluate_repowise ;;
     esac
+    assert_no_editor_artifacts
     ;;
   *)
     usage >&2

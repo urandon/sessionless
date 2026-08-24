@@ -24,7 +24,8 @@ The wrapper `scripts/repowise-local.sh` owns the complete experiment boundary:
 - both paths are ignored by Git;
 - RepoWise's two known VS Code integration files are ignored individually (not
   the whole `.vscode/` directory), while the OS sandbox still denies creating
-  them during supported commands;
+  them during supported commands; the wrapper also refuses to run when either
+  file already exists, so ignored state cannot contaminate exact-HEAD evidence;
 - child processes receive an explicit environment allowlist instead of the host
   environment;
 - provider keys, subscription credentials, cloud credentials, proxy variables,
@@ -201,6 +202,11 @@ is still provided to detect and terminate only wrapper-owned processes:
 ```sh
 make repowise-stop
 ```
+
+The PID record includes a process-start/command fingerprint. `stop` signals a
+process only when that identity still matches and the command has the exact
+repo-local MCP subcommand, transport, and tool allowlist; PID reuse or another
+RepoWise subcommand fails closed.
 
 Inspect cleanup before deleting anything:
 

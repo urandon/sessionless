@@ -1,21 +1,33 @@
 # Codex subscription worker: Phase A evidence and protocol contract
 
-Status date: **2026-08-22**. Scope: issue [#13](https://gitcode.com/urandon/sessionless/issues/13), Phase A only.
+Status date: **2026-08-22**. Scope: issue [#13](https://gitcode.com/urandon/sessionless/issues/13), Phase A only. The later integration-surface and credential-locality decision is recorded in [codex-integration-surface.md](codex-integration-surface.md).
 
 ## Verdict
 
-The local machine-protocol slice is **viable**: the selected Codex App Server
-starts with a fresh isolated `CODEX_HOME`, completes the JSONL handshake, and
-exposes the account, quota, usage, thread, turn, cancellation, approval, and
-tool-call protocol surfaces needed by an adapter.
+The local machine-protocol slice is **viable for research**: the selected Codex
+App Server starts with a fresh isolated `CODEX_HOME`, completes the JSONL
+handshake, and exposes the account, quota, usage, thread, turn, cancellation,
+approval, and tool-call protocol surfaces needed by an adapter. The command is
+currently experimental and unsupported for production even when the client
+stays on its stable API subset.
 
 The subscription-backed cloud worker is **not yet approved for production**.
 Cloud-dev consent/auth restore, refresh persistence, resource measurements, and
 the policy/terms basis for a hosted third-party service using a person's
-ChatGPT subscription remain unproved. Official guidance also says to prefer the
-Codex SDK for automated jobs, while the required subscription/account signals
-currently live on App Server. That conflict is a release gate, not permission
-to silently change the billing route.
+ChatGPT subscription remain unproved. Current official guidance selects App
+Server when the agent is part of the product and direct lifecycle control is
+needed. Separately, the advanced CI/CD-auth guidance recommends API keys for
+ordinary automation and limits ChatGPT-managed cache persistence to trusted
+private infrastructure with one serialized owner. Those deployment constraints
+are release gates, not permission to silently change the billing route.
+
+The 2026-08-24 decision provisionally selects pinned App Server for bounded
+implementation, requires comparison with the stable Python SDK and `codex
+exec`, and makes a user-owned attached worker the first eligible personal
+Plus/Pro placement. No mode can ship until its execution surface is officially
+production-supported. Cloud custody of a consumer credential remains disabled
+pending the additional gates in
+[the decision record](codex-integration-surface.md).
 
 **There is no API-key fallback.** `account.type != "chatgpt"`,
 `account/updated.authMode != "chatgpt"`, an unauthorized response, or lost
@@ -35,12 +47,12 @@ new turn. Sessionless must never inject `OPENAI_API_KEY` to recover a run.
 
 | Claim | Status | 2026-08-22 evidence | Consequence |
 | --- | --- | --- | --- |
-| App Server is intended for embedded clients and exposes authentication, history, approvals, and streamed events. | documented | Official [App Server documentation](https://learn.chatgpt.com/docs/app-server). It separately recommends the SDK for automated jobs/CI. | App Server is technically relevant, but hosted automation policy/support remains a gate. |
+| App Server is the documented surface for product-embedded lifecycle control and exposes authentication, history, approvals, and streamed events. Its command is experimental and unsupported for production, while a stable API subset is available. | documented | Official [App Server documentation](https://learn.chatgpt.com/docs/app-server) and [integration-surface guidance](https://learn.chatgpt.com/blog/codex-as-a-platform). | App Server is only a provisional implementation boundary; production release remains blocked and the stable SDK is a mandatory comparator. |
 | The default transport is newline-delimited JSON over stdio, with `initialize` then `initialized`. | documented + observed | Official protocol docs; isolated local probe returned an initialize result. | A bounded child process can drive one invocation without a listening network port. |
 | Selected binary is `codex-cli 0.148.0-alpha.15`. | observed | `/Applications/ChatGPT.app/Contents/Resources/codex --version`. | Pin this exact build in Phase B; fail closed on version/schema drift. |
 | Version-specific schema generation works. | documented + observed | `codex app-server generate-json-schema`. Stable v2 SHA-256: `a7cc806f2845736f1176418b97d8eefd239c2e049cb643eee405f1ce07ccb198`; `--experimental` v2 SHA-256: `b4e8157096dd054c008a4f1b538fb6cd8f1f2cb9577a97a4afef59c2296ed608`. | The adapter should use the stable schema only; experimental checksum is provenance, not opt-in. |
 | A pristine auth home reports no account and refuses quota/usage reads. | observed | With an empty temporary `HOME` and `CODEX_HOME` and an empty environment: `account/read` returned `account:null, requiresOpenaiAuth:true`; quota and usage returned JSON-RPC `-32600` authentication-required errors. | Missing auth is distinguishable before a turn. No real cache, browser, or device consent was used. |
-| ChatGPT browser and device-code login are protocol operations. | documented + schema-observed | `account/login/start` accepts `type:"chatgpt"` or `type:"chatgptDeviceCode"`; device-code result carries `loginId`, `verificationUrl`, and `userCode`; completion is `account/login/completed`. | `/connect codex` can own a device-code UX, but the live flow was deliberately not run in this slice. |
+| ChatGPT browser and device-code login are protocol operations. Device code is beta and must be enabled by the user or workspace. | documented + schema-observed | `account/login/start` accepts `type:"chatgpt"` or `type:"chatgptDeviceCode"`; device-code result carries `loginId`, `verificationUrl`, and `userCode`; completion is `account/login/completed`. | Use standard local browser login when available; device code is an optional headless path. Neither live flow was run in this slice. |
 | ChatGPT and API-key billing routes are distinguishable. | documented + schema-observed | `account/read.account.type` is `chatgpt` or `apiKey`; `account/updated.authMode` reports `chatgpt` or `apikey`. Official [authentication documentation](https://learn.chatgpt.com/docs/auth) says API-key auth uses standard API pricing rather than included plan credits. | Require and continuously enforce the ChatGPT route; reject API-key state. |
 | Codex persists and refreshes login details. | documented | Login details are cached in `auth.json` under `CODEX_HOME` when file storage is selected, or in a keyring; the file contains tokens and ChatGPT tokens refresh during use. | The credential object is a secret with mutable refresh state, not a YDB payload or immutable build asset. |
 | Account and provider observations exist but may be sparse. | documented + schema-observed | `account/read`, `account/rateLimits/read`, `account/rateLimits/updated`, `account/usage/read`, and `thread/tokenUsage/updated`; nullable rate-limit fields and sparse update semantics are in the generated schema. | Missing values stay `unknown`; never synthesize remaining tokens or reset time. |
@@ -63,10 +75,13 @@ successful sequence is:
 3. `account/rateLimits/read` and `account/usage/read`. Authentication errors are
    terminal; unavailable or sparse fields become provider observation
    `unknown` rather than zeros.
-4. `thread/start` with an invocation workspace, `ephemeral:true`,
-   `sandbox:"read-only"`, and `approvalPolicy:"never"`. Phase A exposes no
-   built-in tools and grants no workspace writes. The returned Codex thread id
-   is attempt metadata only.
+4. `thread/start` with an invocation workspace and `ephemeral:true`, followed
+   by a turn with `approvalPolicy:"never"` and an explicit structured
+   `sandboxPolicy` of type `readOnly` whose access is restricted to declared
+   roots. Omitting `access` would grant full filesystem read access. App Server
+   still contains native tools, so an external container/mount boundary—not the
+   approval policy—must prevent host and credential reads. The returned Codex
+   thread id is attempt metadata only.
 5. `turn/start` with the canonical Sessionless snapshot/event context. The run
    already carries canonical `session_id` and `trigger_event_id`; Codex history
    never becomes product history.
@@ -89,37 +104,43 @@ never auto-approved merely because the worker is non-interactive.
 
 ## Authentication persistence boundary
 
-The control plane owns only connection state and an opaque secret reference.
-It must not receive token bytes in a queue message, log, artifact, Terraform
-state, or YDB row.
+The control plane owns only connection state and, where applicable, an opaque
+credential/resource reference. It must not receive token bytes in a queue
+message, log, artifact, Terraform state, or YDB row.
 
-The proposed boundary for the feasibility implementation is:
+The first eligible boundary is a user-owned attached worker:
 
-1. `/connect codex` creates a connection-scoped, empty `CODEX_HOME`; it never
-   imports a developer workstation cache. The user completes the documented
-   `chatgptDeviceCode` flow through a Sessionless-owned consent UI.
-2. File credential storage is forced for that isolated home so the resulting
-   mutable credential object has an explicit boundary. Immediately ingest it
-   as opaque encrypted secret material; YDB stores only tenant/connection,
-   secret reference/version, auth mode, plan observation, timestamps, and a
-   non-secret fingerprint.
-3. One worker invocation creates a new mode-`0700`, connection-scoped
-   `CODEX_HOME` and workspace under a dedicated uid, materializes exactly one
-   tenant's secret, and removes all API-key environment variables. Warm reuse
-   must start from a new directory, not clean selected files in place.
-4. Because Codex may refresh tokens during a run, changed credential material
-   must be re-encrypted and persisted with connection-version fencing before
-   teardown. The exact flush/atomicity contract is **unknown** and requires a
-   crash/refresh experiment; until proven, a refresh race produces
-   `reauth_required`, never an older-secret retry loop.
-5. Disconnect disables future materialization, deletes/revokes the stored
-   secret under an audited workflow, calls `account/logout` only on disposable
-   materialized copies when useful, and retains non-secret audit history.
+1. The worker creates a connection-scoped, empty `CODEX_HOME`; it never imports
+   a developer workstation cache. Standard local browser login is primary.
+   Device code is beta and may be used only when explicitly enabled; if neither
+   flow is available, connection returns a deterministic unsupported outcome.
+2. File credential storage is forced for that isolated local home. Access and
+   refresh tokens remain on the worker; the control plane receives only opaque
+   resource identity, auth/plan status, non-secret fingerprint, and sanitized
+   observations.
+3. One resource has one serialized refresh-capable execution stream. Each turn
+   uses a fresh execution directory and process, but the worker is the sole
+   owner allowed to update the connection credential.
+4. Because Codex may refresh during a run, the worker must retain the refreshed
+   file atomically. A crash or conflicting generation becomes
+   `credential_reseed_required`, never an older-secret retry loop.
+5. Disconnect denies new leases first, drains/cancels work, removes
+   Sessionless-owned local state, and retains non-secret audit history. It must
+   not claim provider-wide token revocation or destroy an unrelated global
+   Codex login.
 
-OS keyring storage is unsuitable inside an ephemeral worker unless the cloud
-runtime provides an explicit tenant-isolated keyring contract. Plaintext
-`auth.json` is allowed only inside the invocation's protected temporary
-filesystem; it is never a durable Sessionless database record.
+Cloud-vault materialization remains a distinct later mode. If #48 approves it,
+the encrypted generation/CAS lifecycle from #59/#60 applies; it is not inferred
+from attached-worker feasibility.
+
+On an attached worker, plaintext `auth.json` is allowed in the protected,
+persistent, connection-scoped credential home owned by that worker; invocation
+workspaces and process state remain fresh. For a later cloud-vault mode, a
+materialized `auth.json` is allowed only inside the invocation's protected
+temporary filesystem and must be wiped after fenced write-back. It is never a
+durable Sessionless database record. OS keyring storage is unsuitable inside
+an ephemeral cloud worker unless the runtime provides an explicit
+tenant-isolated keyring contract.
 
 ## Quota, account, and usage mapping
 
@@ -160,6 +181,10 @@ README for replay semantics.
   Experimental API must remain disabled.
 - Prove two tenant connections never share `CODEX_HOME`, workspace, process,
   quota state, logs, or refreshed credentials, including warm-runtime reuse.
+- Prove model-controlled tools cannot read host home, credential stores,
+  sibling workspaces, `/proc` or equivalent platform process paths, or the
+  attached worker's persistent credential home. `readOnly` without restricted
+  access must fail the policy test.
 - Prove API-key state is rejected before `thread/start` and during an active
   turn; inspect the child environment to show no API-key fallback exists.
 - Prove timeout and SIGTERM interrupt the turn, terminate descendants, preserve
@@ -175,9 +200,14 @@ README for replay semantics.
 
 - App Server is versioned and partly experimental; exact methods and fields can
   drift between Codex releases.
-- Public guidance prefers SDK/API-key automation, while this product requires
-  ChatGPT subscription semantics. Technical success alone is insufficient.
-- Device-code availability can be disabled by personal/workspace settings.
+- Public guidance selects App Server for full-harness embedding but recommends
+  API keys for ordinary automation. This product deliberately requires a
+  different ChatGPT subscription route, so technical success alone remains
+  insufficient.
+- The App Server command is experimental and unsupported for production; the
+  stable Python SDK must be evaluated before implementation resumes.
+- Device-code authentication is beta and can be disabled by personal/workspace
+  settings; standard browser login or an explicit unsupported result is needed.
 - Refresh writes make credentials mutable and create crash/fencing problems.
 - Rate-limit updates are sparse and may omit resets or whole buckets.
 - A compromised worker can read the materialized credential; isolation,

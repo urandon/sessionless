@@ -97,7 +97,9 @@ second verified set for trusted-main publication.
 
 The bounded Codex App Server feasibility evidence, stable protocol subset,
 subscription-auth boundary, and still-open cloud/policy gates are documented
-in [codex-subscription-worker.md](codex-subscription-worker.md). That Phase A
+in [codex-subscription-worker.md](codex-subscription-worker.md). The selected
+integration surface, credential locality, and production gates are recorded in
+[codex-integration-surface.md](codex-integration-surface.md). That Phase A
 client is intentionally not wired into worker product state yet and never
 falls back to API-key billing.
 

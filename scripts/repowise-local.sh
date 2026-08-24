@@ -130,7 +130,7 @@ assert_installed() {
   test -x "$repowise_bin" ||
     die "RepoWise is not installed; run ./scripts/repowise-local.sh install"
   actual_version=$(
-    run_sanitized "$python_bin" -c \
+    run_offline "$python_bin" -c \
       'from importlib.metadata import version; print(version("repowise"))'
   )
   test "$actual_version" = "$REPOWISE_VERSION" ||
@@ -149,7 +149,7 @@ current_head() {
 indexed_head() {
   state_file="$repo_root/.repowise/state.json"
   test -f "$state_file" || die "RepoWise index state is missing; run index first"
-  run_sanitized "$python_bin" -c \
+  run_offline "$python_bin" -c \
     'import json,sys; value=json.load(open(sys.argv[1], encoding="utf-8")).get("last_sync_commit"); print(value or "")' \
     "$state_file"
 }

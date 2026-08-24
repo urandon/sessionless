@@ -138,6 +138,9 @@ fi
 if grep -E 'run_sanitized .*\$venv_root/bin' "$wrapper" >/dev/null; then
 	fail 'an installed-Python command bypasses the post-install sandbox'
 fi
+if grep -F 'run_sanitized "$python_bin"' "$wrapper" >/dev/null; then
+	fail 'the installed Python interpreter bypasses the post-install sandbox'
+fi
 
 # Synthetic home/state and interpreter isolation prevent host/global writes and
 # Python user-site leakage.

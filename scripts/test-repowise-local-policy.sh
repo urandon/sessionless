@@ -118,6 +118,11 @@ require_literal '--no-index' "$wrapper" 'installation must use only the download
 require_literal '--no-deps' "$wrapper" 'installation must not resolve dependencies'
 require_literal 'pip check' "$wrapper" 'installed lock must pass pip dependency validation'
 require_literal '(deny network*)' "$repo_root/tools/repowise/no-network.sb" 'offline sandbox must deny every network operation'
+require_literal '(deny file-write*)' "$repo_root/tools/repowise/no-network.sb" 'offline sandbox must deny ambient filesystem writes'
+require_literal '(param "STATE_ROOT")' "$repo_root/tools/repowise/no-network.sb" 'offline sandbox must allow only the ignored index root'
+require_literal '(param "LOCAL_ROOT")' "$repo_root/tools/repowise/no-network.sb" 'offline sandbox must allow only the ignored local environment root'
+require_literal '-D STATE_ROOT=' "$wrapper" 'wrapper must bind the exact index root into the sandbox profile'
+require_literal '-D LOCAL_ROOT=' "$wrapper" 'wrapper must bind the exact local environment root into the sandbox profile'
 if grep -E 'run_sanitized .*\$repowise_bin' "$wrapper" >/dev/null; then
 	fail 'a non-install RepoWise invocation bypasses the no-network sandbox'
 fi

@@ -4,3 +4,8 @@
 (version 1)
 (allow default)
 (deny network*)
+(deny file-write*)
+(allow file-write*
+  (subpath (param "STATE_ROOT"))
+  (subpath (param "LOCAL_ROOT"))
+  (literal "/dev/null"))

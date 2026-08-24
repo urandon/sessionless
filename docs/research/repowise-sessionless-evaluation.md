@@ -88,8 +88,11 @@ flowchart LR
 The wrapper uses mode `0700` directories and `umask 077`, keeps all state below
 `.local/repowise/` and `.repowise/`, excludes `.gitcode/` and `.local/` from the
 index, and does not forward host provider, cloud, proxy, SSH, subscription, or
-agent credentials. Install is a separate explicit networked action; index,
-status, evaluation, and MCP are network-denied.
+agent credentials. Install is a separate explicit networked action; every
+post-install command is network-denied and the OS sandbox permits writes only
+below the two ignored experiment roots. This filesystem rule is required
+because upstream `update` attempts to refresh editor files even when the
+documented skip-editor environment switch is set.
 
 ## Experiment protocol
 
@@ -176,7 +179,7 @@ status identical to baseline.
 | MCP startup | no more than 10 seconds | Pass: five-call smoke completed in 5.76 s total |
 | Peak/steady RSS | no more than 1 GiB | Pass: cold-index maximum RSS 445,612,032 bytes |
 | Network after install | zero attempts | Pass as enforced policy; no denied-operation error observed; syscall count not instrumented |
-| Unexpected/global writes | zero | Pass: tracked tree unchanged and synthetic HOME/XDG/TMP used |
+| Unexpected/global writes | zero | Pass after hardening: OS policy denies writes outside the two ignored roots |
 | Processes after stop | zero | Pass: no wrapper PID remained after bounded stop |
 | MCP smoke | all five allowed families succeed | Pass: exact allowlist and five real calls |
 | Source-verified utility | at least one material useful finding | Pass with caveats; see findings below |
@@ -213,6 +216,12 @@ Post-install `index`, `status`, `doctor`, `evaluate`, and MCP ran inside the
 network-denied profile with a synthetic environment. No operation reported a
 denied network attempt. This proves that the evaluated workflow does not
 require egress; it does not claim a kernel-level count of attempted syscalls.
+The first warm update exposed an upstream editor-refresh attempt that wrote two
+untracked `.vscode` files despite `REPOWISE_SKIP_EDITOR_SETUP=1`. The wrapper's
+postcondition caught it and failed. Those generated files were removed, and
+the policy was strengthened from an environment-only promise to an OS-enforced
+write allowlist for `.repowise/` and `.local/repowise/`. The regression run
+must prove the same upstream attempt can no longer create editor files.
 The upstream doctor reported 510 SQL/vector/FTS pages in sync, zero stale pages,
 no hosted login, no editor/agent registrations, and no distill hook.
 

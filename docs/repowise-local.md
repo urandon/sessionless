@@ -28,7 +28,8 @@ The wrapper `scripts/repowise-local.sh` owns the complete experiment boundary:
   SSH/Git credentials, and host agent configuration are not forwarded;
 - telemetry, editor setup, credential saving, generated agent instructions,
   Git hooks, provider prose, workspace seeding, and cost tracking are disabled;
-- index and MCP runs are network-denied after the separately explicit install;
+- post-install commands are network-denied and may write only below the two
+  ignored experiment roots;
 - the wrapper never writes global Codex, Claude, MCP, editor, Python, Git, or
   shell configuration.
 

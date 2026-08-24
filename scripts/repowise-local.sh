@@ -183,7 +183,7 @@ run_sanitized() {
 run_offline() {
   test -x /usr/bin/sandbox-exec || die "sandbox-exec is required for offline analysis"
   run_sanitized /usr/bin/sandbox-exec \
-    -D STATE_ROOT="$state_root" -D LOCAL_ROOT="$local_root" \
+    -D STATE_ROOT="$repo_root/.repowise" -D LOCAL_ROOT="$runtime_root" \
     -f "$sandbox_profile" "$@"
 }
 
@@ -303,7 +303,7 @@ start_mcp() {
     PIP_DISABLE_PIP_VERSION_CHECK=1 GIT_CONFIG_NOSYSTEM=1 \
     GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 NO_COLOR=1 \
     /usr/bin/sandbox-exec \
-    -D STATE_ROOT="$state_root" -D LOCAL_ROOT="$local_root" \
+    -D STATE_ROOT="$repo_root/.repowise" -D LOCAL_ROOT="$runtime_root" \
     -f "$sandbox_profile" \
     "$repowise_bin" mcp "$repo_root" --transport stdio --tools "$REPOWISE_MCP_ALLOWED_TOOLS" \
     <&0 >&1 2>&2 &

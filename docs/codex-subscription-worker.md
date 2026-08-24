@@ -21,12 +21,15 @@ ordinary automation and limits ChatGPT-managed cache persistence to trusted
 private infrastructure with one serialized owner. Those deployment constraints
 are release gates, not permission to silently change the billing route.
 
-The 2026-08-24 decision provisionally selects pinned App Server for bounded
-implementation, uses the stable Python SDK only as a non-selectable research
-comparator alongside `codex exec`, and makes a user-owned attached worker the first eligible personal
+The 2026-08-24 comparator supersedes the provisional App Server selection:
+Sessionless keeps its Go harness boundary, uses direct App Server and the stable
+Python SDK only as non-selectable research comparators, leaves `codex exec` as
+the sole candidate for an explicitly consented local experiment, and makes a
+user-owned attached worker the first eligible personal
 Plus/Pro placement. No mode can ship until its execution surface is officially
 production-supported. The production worker remains Go/serverless and must not
-ship a Python SDK/runtime or Python sidecar. Cloud custody of a consumer credential remains disabled
+ship a Python SDK/runtime or Python sidecar. Cloud custody of a consumer
+credential remains disabled
 pending the additional gates in
 [the decision record](codex-integration-surface.md).
 

@@ -5,6 +5,11 @@ Status date: **2026-08-24**. Decision record for issue
 [#13](https://gitcode.com/urandon/sessionless/issues/13) and
 [#61](https://gitcode.com/urandon/sessionless/issues/61).
 
+The credential-free measurements and current decision delta are recorded in
+[codex-surface-measurement.md](codex-surface-measurement.md). They currently
+leave `codex exec` as the sole candidate for the explicitly consented phase;
+they do not approve production use or resume #61.
+
 ## Decision
 
 Sessionless provisionally selects the **stable API subset of a pinned Codex App

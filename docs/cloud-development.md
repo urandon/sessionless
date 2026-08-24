@@ -374,23 +374,40 @@ gh variable set YANDEX_CONTAINER_REGISTRY_ID --repo urandon/sessionless \
 gh variable set YANDEX_IMAGE_PUBLISH_ENABLED --repo urandon/sessionless --body true
 ```
 
-The flag is deliberately absent during bootstrap, so the first CI run remains
-green before the federation exists. Once enabled, rerun the `CI` workflow on
-mirrored `main`. Its final job builds every image twice from the exact Git tree
-with separate pinned BuildKit daemons and empty caches, exports both sets
-directly to a pinned local registry, and compares config digests, ordered rootfs
-diff IDs, ordered compressed layer descriptors, and canonical manifest digests.
-It then copies the verified second set with pinned Buildx's single-manifest
-registry-native path and requires byte-for-byte preservation of every canonical
-manifest digest. The retained loopback registry remains the publication source. The job
-then requests a GitHub OIDC
-JWT, verifies its exact safe claims, exchanges it for a short-lived Yandex IAM
-token, and pushes the five already-built `linux/amd64` images, including
-`web-bff`. It uploads `image-reproducibility-<full-sha>`, the deterministic
+The flag is deliberately absent during bootstrap. Ordinary `CI` remains
+credential-free whether or not the federation exists: it builds every image
+twice from the exact Git tree with separate pinned BuildKit daemons and empty
+caches, exports both sets directly to a pinned local registry, and compares
+config digests, ordered rootfs diff IDs, ordered compressed layer descriptors,
+and canonical manifest digests.
+It uploads only the clean-room evidence and never requests OIDC or mutates the
+cloud registry.
+
+To publish, wait for GitCode and GitHub `main` to converge, copy the exact
+40-character `main` SHA, and dispatch the `Publish runtime images` workflow
+from `main` with:
+
+```text
+source_sha: <exact-current-main-sha>
+confirmation: publish-images:<exact-current-main-sha>
+```
+
+The workflow rejects push, tag, pull-request, branch, stale-SHA, moved-main,
+mirror-divergence, and mistyped-confirmation inputs before requesting OIDC. It
+repeats the two-builder proof, then copies the verified second set with pinned
+Buildx's single-manifest registry-native path and requires byte-for-byte
+preservation of every canonical manifest digest. The retained loopback registry
+remains the publication source. The job then requests a GitHub OIDC JWT,
+verifies its exact safe claims, exchanges it for a short-lived Yandex IAM token,
+and pushes the five already-built `linux/amd64` images, including `web-bff`. It
+uploads `publish-image-reproducibility-<full-sha>-<attempt>`, the deterministic
 `deployment-images-<full-sha>`, and a run-specific
 `publication-receipt-<full-sha>-<attempt>`. No GitHub
 secret, authorized service-account key, Lockbox access, or Terraform credential
-is used.
+is used. A failed publication can be retried only by a new explicit dispatch
+after revalidating the exact current mirrored `main`; ordinary CI is not a
+publication retry mechanism. Publication does not apply Terraform or deploy a
+revision.
 
 `build/images.env` is the canonical reviewed toolchain boundary: the Dockerfile
 frontend, Go/Node/distroless bases, BuildKit daemon, and local registry are all

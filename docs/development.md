@@ -302,14 +302,15 @@ replicates every commit to `github.com/urandon/sessionless`, where GitHub Action
 runs `make ci` and `make images` for every mirrored branch or tag push. The
 workflow is `.github/workflows/ci.yml`; a GitHub pull request is not required.
 
-After every required job succeeds on mirrored `main`, the image job can use
-GitHub OIDC workload identity federation to publish the five already-built
-deployment images to Yandex Container Registry. Publishing is disabled until
-the exact claim, Terraform-managed federation, and non-secret GitHub variables
-are installed. No branch, tag, pull request, or fork identity is accepted by
-Yandex. The resulting artifact maps the GitCode commit SHA to immutable image
-digests; deployment consumes that artifact without rebuilding on a developer
-workstation. See [cloud-development.md](cloud-development.md).
+Ordinary branch and `main` CI never requests a GitHub OIDC token and never
+contacts Yandex Container Registry. It still builds every runtime image twice
+in independent clean rooms and uploads deterministic reproducibility evidence.
+Publishing requires an explicit `Publish runtime images` workflow dispatch on
+the exact current, converged GitCode/GitHub `main` SHA with a matching typed
+confirmation. That separate job repeats the clean-room proof before requesting
+OIDC and publishing the five immutable images. Publication creates a deployment
+manifest; it does not deploy Terraform or a runtime revision. See
+[cloud-development.md](cloud-development.md).
 
 When reviewing a GitCode merge request, match the GitHub Actions run to the
 GitCode head commit SHA. Automatic propagation of that status back into the

@@ -23,7 +23,7 @@ LDFLAGS := -s -w \
 	-X gitcode.com/urandon/sessionless/internal/buildinfo.Commit=$(COMMIT) \
 	-X gitcode.com/urandon/sessionless/internal/buildinfo.BuiltAt=$(BUILT_AT)
 
-.PHONY: help prepare tools web-tools go-package-layout generate fmt fmt-check lint test build web-install web-openapi-check web-check web-build web-stage web-ci web-browser-install web-browser-test integration ydb-integration local-integration e2e-local ci image-publication-test registry-gc-policy-test release-policy-test local-stand-policy-test budget-policy-test web-deployment-policy-test terraform-ci cloudflare-edge-ci \
+.PHONY: help prepare tools web-tools go-package-layout generate fmt fmt-check lint test build web-install web-openapi-check web-check web-build web-stage web-ci web-browser-install web-browser-test integration ydb-integration local-integration e2e-local ci image-publication-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test budget-policy-test web-deployment-policy-test terraform-ci cloudflare-edge-ci \
 	compose-config images dev-up dev-seed migrate-local migration-status partition-status partition-backfill cloud-app-reset-plan cloud-app-reset session-delete-request session-delete-plan session-delete session-hold session-release-hold \
 	worker-once web-bootstrap dev-down dev-reset clean
 
@@ -41,6 +41,7 @@ help:
 		'make local-integration run YDB/S3/SQS/Telegram adapter tests against the local stand' \
 		'make e2e-local      run the deterministic two-tenant black-box slice' \
 		'make image-publication-test validate immutable image publication guards' \
+		'make image-publish-policy-test validate explicit credentialed publication intent' \
 		'make registry-gc-policy-test validate deployment-aware registry cleanup guards' \
 		'make release-policy-test validate tag provenance, release assets, workflow, and IAM guards' \
 		'make local-stand-policy-test validate bounded local logging, YDB readiness, and reset guards' \
@@ -154,13 +155,16 @@ local-integration: prepare
 e2e-local: prepare
 	@./scripts/e2e-local.sh
 
-ci: web-ci generate test build integration image-publication-test image-build-inputs-test registry-gc-policy-test release-policy-test local-stand-policy-test
+ci: web-ci generate test build integration image-publication-test image-build-inputs-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test
 
 image-publication-test:
 	@./scripts/test-image-publication.sh
 
 image-build-inputs-test:
 	@./scripts/test-image-build-inputs.sh
+
+image-publish-policy-test:
+	@./scripts/test-image-publish-policy.sh
 
 registry-gc-policy-test:
 	@./scripts/test-registry-gc-policy.sh

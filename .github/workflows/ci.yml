@@ -184,7 +184,7 @@ jobs:
         run: make cloudflare-edge-ci
 
   images:
-    name: Runtime images
+    name: Runtime image reproducibility
     needs:
       - verify
       - ydb
@@ -199,7 +199,6 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: read
-      id-token: write
     steps:
       - name: Checkout mirrored commit
         uses: actions/checkout@v6
@@ -218,10 +217,9 @@ jobs:
           driver-opts: image=${{ steps.pinned-images.outputs.buildkit_image }}
           platforms: linux/amd64
 
-      - name: Prove reproducibility and retain the verified candidate images
+      - name: Prove runtime image reproducibility
         env:
           IMAGE_REQUIRE_CLEAN_CHECKOUT: "1"
-          IMAGE_REPRODUCIBILITY_RETAIN_REGISTRY: "1"
         run: make image-reproducibility-test
 
       - name: Upload clean-room reproducibility evidence
@@ -232,50 +230,6 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Exchange GitHub OIDC identity for Yandex registry access
-        if: github.ref == 'refs/heads/main' && vars.YANDEX_IMAGE_PUBLISH_ENABLED == 'true'
-        env:
-          YANDEX_OIDC_AUDIENCE: ${{ vars.YANDEX_OIDC_AUDIENCE }}
-          YANDEX_EXPECTED_OIDC_SUBJECT: ${{ vars.YANDEX_GITHUB_OIDC_SUBJECT }}
-          YANDEX_IMAGE_PUBLISHER_SERVICE_ACCOUNT_ID: ${{ vars.YANDEX_IMAGE_PUBLISHER_SERVICE_ACCOUNT_ID }}
-        run: node scripts/github-yandex-registry-login.mjs
-
-      - name: Publish immutable deployment images
-        if: github.ref == 'refs/heads/main' && vars.YANDEX_IMAGE_PUBLISH_ENABLED == 'true'
-        env:
-          YANDEX_CONTAINER_REGISTRY_ID: ${{ vars.YANDEX_CONTAINER_REGISTRY_ID }}
-          CLOUD_IMAGE_TAG: ${{ github.sha }}
-          CLOUD_IMAGE_MANIFEST_PATH: .build/deployment-images.json
-          CLOUD_IMAGE_RECEIPT_PATH: .build/deployment-images.receipt.json
-          CLOUD_IMAGE_REQUIRE_CLEAN_INPUTS: "1"
-          SOURCE_REPOSITORY: gitcode.com/urandon/sessionless
-          SOURCE_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          SOURCE_RUN_ID: ${{ github.run_id }}
-          SOURCE_RUN_ATTEMPT: ${{ github.run_attempt }}
-        run: |
-          test "$(git rev-parse HEAD)" = "$CLOUD_IMAGE_TAG"
-          ./scripts/publish-cloud-images.sh
-          jq -r '"Published `" + .source.sha + "` as:\n" + (.images | to_entries | map("- `" + .key + "`: `" + .value.reference + "`") | join("\n"))' \
-            "$CLOUD_IMAGE_MANIFEST_PATH" >>"$GITHUB_STEP_SUMMARY"
-
-      - name: Upload immutable deployment manifest
-        if: github.ref == 'refs/heads/main' && vars.YANDEX_IMAGE_PUBLISH_ENABLED == 'true'
-        uses: actions/upload-artifact@v6
-        with:
-          name: deployment-images-${{ github.sha }}
-          path: .build/deployment-images.json
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: Upload run-specific publication receipt
-        if: github.ref == 'refs/heads/main' && vars.YANDEX_IMAGE_PUBLISH_ENABLED == 'true'
-        uses: actions/upload-artifact@v6
-        with:
-          name: publication-receipt-${{ github.sha }}-${{ github.run_attempt }}
-          path: .build/deployment-images.receipt.json
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: Clean up retained candidate registry
+      - name: Clean up candidate registry state
         if: always()
         run: sh scripts/cleanup-image-candidate-registry.sh

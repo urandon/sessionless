@@ -175,7 +175,7 @@ status identical to baseline.
 | Environment size | no more than 2 GiB | Pass: 809 MiB venv; 194 MiB wheelhouse |
 | Index size | no more than 1 GiB | Pass: 38 MiB |
 | Cold index | no more than 15 minutes | Pass: 55.12 s wall clock (RepoWise: 51.6 s) |
-| Warm update | no more than 2 minutes | Pending post-report commit |
+| Warm update | no more than 2 minutes | Pass: 16.78 s wall clock, 304,283,648 bytes maximum RSS |
 | MCP startup | no more than 10 seconds | Pass: five-call smoke completed in 5.76 s total |
 | Peak/steady RSS | no more than 1 GiB | Pass: cold-index maximum RSS 445,612,032 bytes |
 | Network after install | zero attempts | Pass as enforced policy; no denied-operation error observed; syscall count not instrumented |
@@ -183,7 +183,7 @@ status identical to baseline.
 | Processes after stop | zero | Pass: no wrapper PID remained after bounded stop |
 | MCP smoke | all five allowed families succeed | Pass: exact allowlist and five real calls |
 | Source-verified utility | at least one material useful finding | Pass with caveats; see findings below |
-| Worktree isolation | no state/commit mixing | Pending post-report commit and second-worktree check |
+| Worktree isolation | no state/commit mixing | Dirty and stale SHA guards pass; separate-worktree check pending |
 
 Performance thresholds are containment limits, not evidence of usefulness. A
 fast tool that adds no verified signal should still be rejected.
@@ -221,7 +221,9 @@ untracked `.vscode` files despite `REPOWISE_SKIP_EDITOR_SETUP=1`. The wrapper's
 postcondition caught it and failed. Those generated files were removed, and
 the policy was strengthened from an environment-only promise to an OS-enforced
 write allowlist for `.repowise/` and `.local/repowise/`. The regression run
-must prove the same upstream attempt can no longer create editor files.
+completed in 16.78 seconds: upstream reported its editor refresh as degraded by
+`Operation not permitted`, created no `.vscode` files, updated the ignored
+index successfully, and left the tracked tree clean.
 The upstream doctor reported 510 SQL/vector/FTS pages in sync, zero stale pages,
 no hosted login, no editor/agent registrations, and no distill hook.
 

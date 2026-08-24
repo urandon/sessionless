@@ -65,6 +65,10 @@ git -C "$repo_root" check-ignore -q .repowise/probe ||
 	fail '.repowise/ is not ignored'
 git -C "$repo_root" check-ignore -q .local/repowise/probe ||
 	fail '.local/repowise/ is not ignored'
+git -C "$repo_root" check-ignore -q .vscode/mcp.json ||
+	fail '.vscode/mcp.json is not ignored'
+git -C "$repo_root" check-ignore -q .vscode/extensions.json ||
+	fail '.vscode/extensions.json is not ignored'
 
 # Validate the effective normal target graph. `make -n` expands prerequisites
 # without running recipes; any RepoWise command in its output is an accidental

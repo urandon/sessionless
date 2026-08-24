@@ -22,6 +22,9 @@ The wrapper `scripts/repowise-local.sh` owns the complete experiment boundary:
   `.local/repowise/`;
 - RepoWise's generated index/wiki/database state lives below `.repowise/`;
 - both paths are ignored by Git;
+- RepoWise's two known VS Code integration files are ignored individually (not
+  the whole `.vscode/` directory), while the OS sandbox still denies creating
+  them during supported commands;
 - child processes receive an explicit environment allowlist instead of the host
   environment;
 - provider keys, subscription credentials, cloud credentials, proxy variables,

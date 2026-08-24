@@ -20,3 +20,8 @@ coverage.out
 # Python environment, index, logs, generated wiki, synthetic home, or caches.
 .repowise/
 .local/repowise/
+# RepoWise may attempt these editor integrations even when editor setup is
+# disabled. They are local-only; the wrapper also blocks the writes at the OS
+# sandbox boundary so ignoring them does not weaken containment.
+.vscode/mcp.json
+.vscode/extensions.json

@@ -16,19 +16,26 @@ function includesAudience(claim, expected) {
 }
 
 const audience = required("YANDEX_OIDC_AUDIENCE");
-const requestURL = new URL(required("ACTIONS_ID_TOKEN_REQUEST_URL"));
-requestURL.searchParams.set("audience", audience);
-
-const oidcResponse = await fetch(requestURL, {
-  headers: {
-    Authorization: `Bearer ${required("ACTIONS_ID_TOKEN_REQUEST_TOKEN")}`,
-  },
-});
-if (!oidcResponse.ok) {
-  throw new Error(`GitHub OIDC token request failed with HTTP ${oidcResponse.status}`);
+const sourceSHA = required("IMAGE_PUBLISH_SOURCE_SHA");
+if (!/^[0-9a-f]{40}$/.test(sourceSHA)) {
+  throw new Error("IMAGE_PUBLISH_SOURCE_SHA must be a full lowercase commit SHA");
 }
-
-const oidcToken = (await oidcResponse.json()).value;
+let oidcToken;
+if (process.env.REGISTRY_OIDC_TEST_TOKEN && process.env.GITHUB_ACTIONS !== "true") {
+  oidcToken = process.env.REGISTRY_OIDC_TEST_TOKEN;
+} else {
+  const requestURL = new URL(required("ACTIONS_ID_TOKEN_REQUEST_URL"));
+  requestURL.searchParams.set("audience", audience);
+  const oidcResponse = await fetch(requestURL, {
+    headers: {
+      Authorization: `Bearer ${required("ACTIONS_ID_TOKEN_REQUEST_TOKEN")}`,
+    },
+  });
+  if (!oidcResponse.ok) {
+    throw new Error(`GitHub OIDC token request failed with HTTP ${oidcResponse.status}`);
+  }
+  oidcToken = (await oidcResponse.json()).value;
+}
 if (!oidcToken) {
   throw new Error("GitHub OIDC response did not contain a token");
 }
@@ -45,11 +52,19 @@ if (claims.iss !== "https://token.actions.githubusercontent.com") {
 if (!includesAudience(claims.aud, audience)) {
   throw new Error("unexpected GitHub OIDC audience");
 }
-if (claims.repository !== required("GITHUB_REPOSITORY")) {
+if (claims.repository !== required("GITHUB_REPOSITORY") ||
+    claims.repository !== "urandon/sessionless") {
   throw new Error("unexpected GitHub OIDC repository");
 }
-if (claims.ref !== "refs/heads/main") {
+if (claims.ref !== "refs/heads/main" || required("GITHUB_REF") !== "refs/heads/main") {
   throw new Error("image publication is restricted to refs/heads/main");
+}
+if (claims.sha !== sourceSHA || required("GITHUB_SHA") !== sourceSHA) {
+  throw new Error("image publication identity differs from the verified source SHA");
+}
+if (claims.event_name !== "workflow_dispatch" ||
+    required("GITHUB_EVENT_NAME") !== "workflow_dispatch") {
+  throw new Error("image publication requires an explicit workflow_dispatch event");
 }
 
 const safeClaims = {
@@ -60,6 +75,7 @@ const safeClaims = {
   repository_id: claims.repository_id,
   repository_owner_id: claims.repository_owner_id,
   ref: claims.ref,
+  sha: claims.sha,
   event_name: claims.event_name,
 };
 const safeClaimsJSON = JSON.stringify(safeClaims, null, 2);

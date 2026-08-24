@@ -1,0 +1,153 @@
+name: Publish runtime images
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact current mirrored main commit SHA to publish
+        required: true
+        type: string
+      confirmation:
+        description: Type publish-images:<source_sha>
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-images-${{ github.repository }}-${{ inputs.source_sha }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate explicit publication intent
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      valid: ${{ steps.provenance.outputs.valid }}
+      source_sha: ${{ steps.provenance.outputs.source_sha }}
+    steps:
+      - name: Checkout trusted workflow commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require publication foundation
+        env:
+          YANDEX_IMAGE_PUBLISH_ENABLED: ${{ vars.YANDEX_IMAGE_PUBLISH_ENABLED }}
+        run: test "$YANDEX_IMAGE_PUBLISH_ENABLED" = true
+
+      - name: Prove explicit intent and mirrored-main identity
+        id: provenance
+        env:
+          IMAGE_PUBLISH_SOURCE_SHA: ${{ inputs.source_sha }}
+          IMAGE_PUBLISH_CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          IMAGE_PUBLISH_PROVENANCE_OUTPUT="$GITHUB_OUTPUT" \
+            sh scripts/verify-image-publish-source.sh
+
+  publish:
+    name: Publish immutable runtime images
+    needs: validate
+    if: needs.validate.outputs.valid == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    concurrency:
+      group: runtime-image-publication-${{ github.repository }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      IMAGE_PUBLISH_SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
+      IMAGE_PUBLISH_CONFIRMATION: ${{ inputs.confirmation }}
+    steps:
+      - name: Checkout verified source SHA
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.validate.outputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Recheck mirrored-main identity before executing source
+        run: sh scripts/verify-image-publish-source.sh
+
+      - name: Load pinned image toolchain
+        id: pinned-images
+        run: |
+          . build/images.env
+          printf 'buildkit_image=%s\n' "$BUILDKIT_IMAGE" >>"$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+        with:
+          version: v0.36.0
+          driver: docker-container
+          driver-opts: image=${{ steps.pinned-images.outputs.buildkit_image }}
+          platforms: linux/amd64
+
+      - name: Prove reproducibility and retain verified candidate images
+        env:
+          IMAGE_REQUIRE_CLEAN_CHECKOUT: "1"
+          IMAGE_REPRODUCIBILITY_RETAIN_REGISTRY: "1"
+        run: make image-reproducibility-test
+
+      - name: Upload clean-room reproducibility evidence
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: publish-image-reproducibility-${{ needs.validate.outputs.source_sha }}-${{ github.run_attempt }}
+          path: .build/image-reproducibility.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Recheck mirrored-main identity before requesting OIDC
+        run: sh scripts/verify-image-publish-source.sh
+
+      - name: Exchange GitHub OIDC identity for Yandex registry access
+        env:
+          YANDEX_OIDC_AUDIENCE: ${{ vars.YANDEX_OIDC_AUDIENCE }}
+          YANDEX_EXPECTED_OIDC_SUBJECT: ${{ vars.YANDEX_GITHUB_OIDC_SUBJECT }}
+          YANDEX_IMAGE_PUBLISHER_SERVICE_ACCOUNT_ID: ${{ vars.YANDEX_IMAGE_PUBLISHER_SERVICE_ACCOUNT_ID }}
+        run: node scripts/github-yandex-registry-login.mjs
+
+      - name: Publish immutable deployment images
+        env:
+          YANDEX_CONTAINER_REGISTRY_ID: ${{ vars.YANDEX_CONTAINER_REGISTRY_ID }}
+          CLOUD_IMAGE_TAG: ${{ needs.validate.outputs.source_sha }}
+          CLOUD_IMAGE_MANIFEST_PATH: .build/deployment-images.json
+          CLOUD_IMAGE_RECEIPT_PATH: .build/deployment-images.receipt.json
+          CLOUD_IMAGE_REQUIRE_CLEAN_INPUTS: "1"
+          SOURCE_REPOSITORY: gitcode.com/urandon/sessionless
+          SOURCE_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SOURCE_RUN_ID: ${{ github.run_id }}
+          SOURCE_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$CLOUD_IMAGE_TAG"
+          sh scripts/publish-cloud-images.sh
+          jq -r '"Published `" + .source.sha + "` as:\n" + (.images | to_entries | map("- `" + .key + "`: `" + .value.reference + "`") | join("\n"))' \
+            "$CLOUD_IMAGE_MANIFEST_PATH" >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Upload immutable deployment manifest
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: deployment-images-${{ needs.validate.outputs.source_sha }}
+          path: .build/deployment-images.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload run-specific publication receipt
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: publication-receipt-${{ needs.validate.outputs.source_sha }}-${{ github.run_attempt }}
+          path: .build/deployment-images.receipt.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Clean up retained candidate registry
+        if: always()
+        run: sh scripts/cleanup-image-candidate-registry.sh

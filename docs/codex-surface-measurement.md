@@ -1,9 +1,11 @@
 # Codex execution-surface measurement
 
-Status date: **2026-08-24**. Scope: credential-free half of issue
-[#64](https://gitcode.com/urandon/sessionless/issues/64). The authenticated
-phase is intentionally paused until the operator explicitly authorizes use of
-their ChatGPT subscription and the exact fixed, non-secret input.
+Status date: **2026-08-25**. Scope: credential-free comparison and the first
+explicitly consented authenticated measurement from issue
+[#64](https://gitcode.com/urandon/sessionless/issues/64). The task remains open:
+the measurement identifies a viable attached-worker candidate, but does not
+establish a provider-policy, quota, cancellation, or cloud-custody production
+go.
 
 ## Preliminary decision
 
@@ -24,13 +26,19 @@ The credential-free evidence changes the provisional #62 decision:
   surface: its measured public high-level defaults and abstractions do not
   preserve required environment, approval, restricted-read-root, and typed
   quota guards;
-- `codex exec --json --ephemeral` is the only remaining candidate for the
-  explicitly consented phase. It is not approved yet: external isolation,
-  account route, cancellation, refresh behavior, quota visibility, resource
-  cost, and ambiguous completion still require real measurements.
+- `codex exec --json --ephemeral` is the only remaining Python-free candidate.
+  A consented 30-sample run establishes the happy path on a user-owned attached
+  macOS worker, but it is not approved for production: authoritative account
+  route, quota visibility, cancellation, refresh behavior, full isolation,
+  resource cost, and ambiguous completion remain release gates.
 
-This is not a recommendation to resume #61. No provider call, login, auth-cache
-read/copy, or prompt submission occurred in this phase.
+This is not a recommendation to resume the paused App Server implementation in
+#61. The credential-free phase made no provider call or auth-cache access. The
+authenticated phase used a dedicated isolated login after explicit operator
+consent. The Sessionless measurement orchestration did not read or copy the
+operator's global cache; the Codex child necessarily read the task-owned
+`CODEX_HOME/auth.json` created by that isolated login. Neither credential bytes
+nor cache contents were printed or committed.
 
 ## Current official contract
 
@@ -101,6 +109,61 @@ this unattended use case. Even if a later Python SDK fixes these behavioral
 gaps, it remains comparator-only unless the Go/serverless deployment
 requirement is explicitly superseded by a separate architecture decision.
 
+## Consented authenticated result
+
+The operator explicitly authorized use of their existing ChatGPT/Codex
+subscription login and the disclosed fixed, non-secret benchmark input. On
+2026-08-24 the pinned `codex-cli 0.148.0-alpha.15` binary
+(`sha256:7645c3caf5607e4528eb3a15b12496c284c2a918939aed34e863c760c1b421e7`)
+ran 30 sequential cold `codex exec --json --ephemeral` processes on Darwin
+arm64 with model `gpt-5.4` and low reasoning. Every sample used a fresh `0700`
+workspace and temporary directory, read-only sandbox, ignored user config and
+rules, no API-key environment fallback, and no tools or persistent provider
+thread.
+
+| Metric | min | p50 | p95 | p99 | max |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Completion | 6,119 ms | 9,864 ms | 23,000 ms | 26,471 ms | 26,471 ms |
+| Spawn to first JSONL event | 96 ms | 101 ms | 223 ms | 996 ms | 996 ms |
+| Stdout | 357 B | 359 B | 359 B | 359 B | 359 B |
+| Stderr | 39 B | 39 B | 182 B | 182 B | 182 B |
+| Invocation temporary disk after exit | 0 B | 0 B | 0 B | 0 B | 0 B |
+
+All 30 processes exited zero, emitted bounded valid JSONL, returned exactly the
+required marker, and emitted no command, file-change, MCP, dynamic-tool,
+web-search, approval, or user-input event. Public evidence contains aggregates
+and stable finding codes only. Raw prompt/output, identity, account, auth,
+token, URL, provider-error, and protocol-frame data were neither published nor
+placed in the repository.
+
+This is **positive feasibility evidence**, not a production pass. `exec` does
+not expose an authoritative ChatGPT billing-route assertion or the App Server's
+account/rate-limit observations. Its process contract has no in-band typed
+interrupt acknowledgement: the Go supervisor must cancel by terminating and
+reaping the process group, and loss after provider acceptance but before one
+validated terminal event remains an ambiguous attempt. Sessionless can safely
+retry the current read-only, side-effect-free turn from the same immutable
+context; future effects require idempotency keys and an effect ledger. The
+credential-lifecycle service already supplies fenced materialization,
+generation-CAS write-back, crash recovery, and deny-first revocation, but these
+contracts have not yet been composed with the real `exec` process.
+
+Accordingly the evidence changes the decision to:
+
+- retain `codex exec` as the sole candidate for a minimal Go-supervised
+  attached-worker adapter;
+- do not use App Server or the Python SDK as a production dependency;
+- keep the App Server-only #61 spike paused and replace its intended production
+  activation with a dedicated Go-supervised `codex exec` adapter task; that task
+  must not wire `worker-runtime` until OS-level cancellation, terminal-event,
+  credential write-back, external isolation, and #18 reachability tests pass;
+- treat account route and quota as separately refreshed `AIResource`
+  observations; if no supported authoritative source exists, expose them as
+  unknown and deny policy that requires them rather than inventing values;
+- keep cloud consumer-credential custody and subscription federation disabled
+  until #48 records explicit provider authorization for those deployment
+  tuples.
+
 ## Reproducible runner
 
 The Go command is intentionally not wired into `make ci` because the real
@@ -163,20 +226,29 @@ The same fixed bounded text input, immutable Sessionless context bytes, model,
 reasoning settings, external mount/network policy, and timeout must be used for
 all eligible surfaces. There is no mid-attempt fallback and no API-key fallback.
 
-## Consent gate and remaining work
+## Remaining work and stop conditions
 
-Before the authenticated phase the operator must explicitly authorize both:
+The consented happy-path phase is complete. Further provider calls still need
+their own bounded experiment definition and must reuse a user-owned attached
+worker; they must not copy the login into the repository or a cloud worker.
+The next implementation/evidence slice must test OS-level cancellation,
+deadline escalation, child-process loss before/after terminal JSONL, exact
+credential refresh/write-back and restart recovery, external filesystem-read
+isolation, peak RSS/descendants, and account/quota observation freshness.
 
-1. using their existing local ChatGPT/Codex subscription login in this
-   attached-worker experiment without copying it into the repository or a
-   cloud worker;
-2. sending the exact disclosed fixed, non-secret benchmark text to OpenAI for
-   at least 30 cold invocations per eligible surface.
+Issue #64 stays open until those failure-path results and the policy verdict in
+#48 are attached. Stop rather than proceed when any of these conditions holds:
 
-Without that authorization, stop here. After authorization, run only the
-surfaces still eligible under credential-free gates, measure completion,
-interrupt/deadline/process-loss/ambiguous outcomes and refresh/write-back, and
-update #62/#61/#47/#48/#63 with a final decision. If `exec` cannot prove the
-ChatGPT billing route or sufficient cancellation/isolation semantics, the
-correct result is that no current surface is eligible—not a fallback to the
-API or experimental App Server.
+- the only way to obtain a required signal is an unsupported/private API;
+- an API-key route appears where a ChatGPT subscription resource was selected;
+- cancellation leaves descendants or cannot bound additional output/work;
+- an ambiguous attempt can produce an unledgered external effect;
+- credential mutation cannot be serialized and fenced across restart;
+- the external isolation boundary exposes host credentials, sibling workspaces,
+  or undeclared mounts;
+- provider authorization for the exact placement/custodian/sharing tuple is
+  missing, expired, or ambiguous.
+
+There is no fallback to the OpenAI API, Python SDK, or experimental App Server.
+If `exec` cannot pass these gates, the honest result is that no current
+subscription-backed production surface is eligible.

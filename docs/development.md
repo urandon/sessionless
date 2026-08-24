@@ -109,6 +109,13 @@ are in [codex-surface-measurement.md](codex-surface-measurement.md). Its local
 Python environment and Codex binaries are research inputs and are not installed
 or invoked by normal developer or CI targets.
 
+The current memory, tooling/MCP, attached-worker, AI-resource, metering,
+skills/automation, analytics, administration, and evaluation research is
+indexed in [research/README.md](research/README.md). Those reports preserve
+evidence, alternatives, open questions, and proposed epic decomposition; they
+are not production contracts and do not close their research issues by
+themselves.
+
 The provider-neutral local credential binding, invocation handle, secure
 materialization, crash recovery, write-back, and deny-first revocation contract
 is documented in [credential-lifecycle.md](credential-lifecycle.md). Phase B0

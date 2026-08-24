@@ -35,7 +35,10 @@ The credential-free evidence changes the provisional #62 decision:
 This is not a recommendation to resume the paused App Server implementation in
 #61. The credential-free phase made no provider call or auth-cache access. The
 authenticated phase used a dedicated isolated login after explicit operator
-consent; no auth cache was read, copied, printed, or committed.
+consent. The Sessionless measurement orchestration did not read or copy the
+operator's global cache; the Codex child necessarily read the task-owned
+`CODEX_HOME/auth.json` created by that isolated login. Neither credential bytes
+nor cache contents were printed or committed.
 
 ## Current official contract
 
@@ -150,9 +153,10 @@ Accordingly the evidence changes the decision to:
 - retain `codex exec` as the sole candidate for a minimal Go-supervised
   attached-worker adapter;
 - do not use App Server or the Python SDK as a production dependency;
-- do not wire #61 into `worker-runtime` until the OS-level cancellation,
-  terminal-event, credential write-back, external isolation, and #18 reachability
-  tests pass;
+- keep the App Server-only #61 spike paused and replace its intended production
+  activation with a dedicated Go-supervised `codex exec` adapter task; that task
+  must not wire `worker-runtime` until OS-level cancellation, terminal-event,
+  credential write-back, external isolation, and #18 reachability tests pass;
 - treat account route and quota as separately refreshed `AIResource`
   observations; if no supported authoritative source exists, expose them as
   unknown and deny policy that requires them rather than inventing values;

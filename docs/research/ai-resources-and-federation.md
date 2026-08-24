@@ -202,15 +202,15 @@ Rejected:
 | SR-01 policy-evidence registry and expiry workflow | 5 SP | #62 | Each plan/surface/placement/custody/sharing tuple has a dated verdict; unknown blocks. |
 | SR-02 resource/credential-generation contracts | 5 SP | #59, #60 | CAS refresh, revoke, disconnect, and owner checks are race-tested. |
 | SR-03 attached-worker Codex resource UX/consent | 5 SP | #47, #64 | User sees exact egress, placement, resource, and no-fallback policy. |
-| SR-04 pinned Go-supervised Codex adapter | 8 SP | #64, #61 decision | One fenced canonical turn; cancellation/reap/writeback evidence; no Python/API fallback. |
-| SR-05 quota/account observations and reconciliation hooks | 5 SP | #49 | Missing values remain unknown; observations include provenance/freshness. |
+| SR-04 pinned Go-supervised Codex exec adapter | 8 SP | #64; replaces #61 production activation | One fenced canonical turn; cancellation/reap/writeback evidence; no App Server/Python/API fallback. |
+| SR-05 quota/account observation contract and reconciliation hooks | 5 SP | #49 MM-01 | Missing values remain unknown; observations include provenance/freshness. |
 | SR-06 adversarial owner/revocation E2E | 8 SP | SR-01–SR-05 | Cross-owner, stale credential, revoke/reconnect, and policy-expiry paths fail closed. |
 
 ### AI Provider Resources epic (#51)
 
 | Work item | Estimate | Dependencies | Acceptance |
 |---|---:|---|---|
-| PR-01 canonical resource/route/catalog contracts | 8 SP | #49, SR-02 | Model vendor, transport, billing, harness, placement, and history authority are separate. |
+| PR-01 canonical resource/route/catalog contracts | 8 SP | #49 MM-01, SR-02 | Model vendor, transport, billing, harness, placement, and history authority are separate. |
 | PR-02 provider conformance kit and fixtures | 8 SP | PR-01, #63 | Capability/error/usage/cancel/privacy profiles are reproducible and versioned. |
 | PR-03 direct API adapters: DeepSeek and Kimi | 8 SP | PR-02 | Go adapters pass conformance with fake servers; no real key in CI. |
 | PR-04 local endpoint adapters: Ollama, vLLM, SGLang | 8 SP | #47, PR-02 | Placement-bound discovery; external auth/network invariants; no central localhost. |

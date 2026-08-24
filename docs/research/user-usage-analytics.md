@@ -39,7 +39,12 @@ This product surface is distinct from the platform administration console in #54
 | Resource owner | Usage/capacity charged to their shared AI/worker resource and named beneficiaries where policy allows | Beneficiary session content; unrelated tenant data | Resource budgets, sharing and availability policy |
 | Support viewer | Nothing through the user UI beyond their own membership | Any privileged support/platform view | None; uses #54 controlled support flow instead |
 
-Authorization is evaluated server-side for every query and drill-down using current membership, role, resource ACL, and requested tenant. A URL parameter is only a selector. Revoked membership invalidates cached responses and exports. Federation views are intersections of the viewer's beneficiary and resource-owner permissions, not unions of every participating tenant.
+Authorization is evaluated server-side for every query, drill-down, and export
+download using current membership, role, resource ACL, and requested tenant. A
+URL parameter is only a selector. Revoked membership invalidates cached
+responses and makes the BFF download proxy deny the export immediately.
+Federation views are intersections of the viewer's beneficiary and
+resource-owner permissions, not unions of every participating tenant.
 
 ## Information architecture
 
@@ -112,7 +117,9 @@ flowchart LR
     B --> C["Short private response cache"]
     C --> UI["Authenticated WebUI"]
     B --> J["Bounded export job"]
-    J --> O["Exact-object expiring capability"]
+    J --> O["Private exact export object"]
+    UI --> X["BFF download proxy\nlive authorization"]
+    X --> O
 ```
 
 Recommended endpoints:
@@ -149,7 +156,7 @@ The server derives allowed dimensions from role and requested scope. Arbitrary S
 | Cross-tenant/member inference | Current membership and dimension-level authorization; small-cohort suppression; two-tenant negative E2E. |
 | Member ranking harms privacy | No default leaderboard. Per-member detail requires explicit tenant role/purpose; user sees their own usage by default. |
 | Prompt/tool content leaks through labels | Content-free metric catalog; display names are controlled metadata, not model text; escape all values. |
-| Export outlives access | Export binds authorization generation, expires quickly, is encrypted and exact-object scoped; revoke/delete on membership change where feasible. |
+| Export outlives access | Browser receives only a BFF download URL. The BFF rechecks live membership/resource ACL and the export's authorization generation on every download, reads the private object with its server-side exact capability, and streams it without exposing a presigned Object Storage URL. Membership revocation denies new downloads; an already-started stream and bytes already downloaded remain explicit residual risks. |
 | False billing precision | Separate observed, reconciled, allocated, estimated; show currency and price revision; link correction history. |
 | Stale quota causes spend | Show observed timestamp/expiry; stale/unknown quota follows admission policy and cannot be presented as remaining allowance. |
 | Dashboard itself creates material cost | Precomputed rollups, bounded filters, cache, request budget, no raw scans/log queries. |

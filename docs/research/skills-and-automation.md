@@ -91,7 +91,14 @@ Supported trigger families should be phased:
 4. deterministic monitor with change predicate;
 5. dependent workflow trigger.
 
-Every occurrence uses deterministic identity derived from automation revision and logical scheduled time. The state machine is `due → claimed → preflight → dispatched → running → delivering → succeeded|failed|cancelled|retry_wait|ambiguous`. Claims are leased and fenced. Retry does not create another logical occurrence or double-charge internal quota.
+Every occurrence uses deterministic identity derived from automation revision
+and logical scheduled time. The state machine is `due → claimed → preflight →
+blocked_budget|dispatched → running → delivering →
+succeeded|failed|cancelled|retry_wait|ambiguous`. `blocked_budget` retains the
+same occurrence identity and moves back to `preflight` only after a budget,
+resource, or operator-change wake; disabling or expiry moves it to `cancelled`.
+Claims are leased and fenced. Retry does not create another logical occurrence
+or double-charge internal quota.
 
 ```mermaid
 sequenceDiagram

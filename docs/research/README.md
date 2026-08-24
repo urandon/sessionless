@@ -51,7 +51,8 @@ flowchart LR
     TOOLS["#46 capability and tool policy"]
     WORKER["#47 attached worker"]
     RESOURCE["#48/#51 AI resource model"]
-    METER["#49 usage ledger"]
+    METER["#49 MM-01 usage taxonomy"]
+    RECON["#49 MM-05 reconciliation"]
     MEMORY["#45 memory"]
     SKILLS["#52 skills"]
     AUTO["#52 automation"]
@@ -62,15 +63,16 @@ flowchart LR
     TOOLS --> WORKER
     WORKER --> RESOURCE
     METER --> RESOURCE
+    RESOURCE --> RECON
     EVAL --> MEMORY
     TOOLS --> SKILLS
     MEMORY --> SKILLS
     EVAL --> SKILLS
     TOOLS --> AUTO
     METER --> AUTO
-    METER --> USER
+    RECON --> USER
     RESOURCE --> USER
-    METER --> ADMIN
+    RECON --> ADMIN
     TOOLS --> ADMIN
 ```
 

@@ -1,12 +1,12 @@
 # RepoWise evaluation for Sessionless
 
-Status date: **2026-08-25**. Issue: #65. Current recommendation: **adjust and
-continue the bounded local experiment; do not adopt into production, CI, or a
-shared service**.
+Status date: **2026-08-25**. Issue: #65. Current recommendation: **adopt only as
+an optional, checkout-local research aid; do not adopt into production, CI, or
+a shared service**.
 
-This record separates static audit facts from measurements that still require a
-clean, isolated local run. An unchecked measurement is not evidence and must
-not be presented as a RepoWise result.
+This record separates static audit facts, measured local results, and
+source-verified conclusions. A RepoWise score or candidate is not a finding
+until the cited source or test confirms it.
 
 ## Decision constraints
 
@@ -169,18 +169,18 @@ status identical to baseline.
 
 | Gate | Pass condition | Result |
 | --- | --- | --- |
-| Environment size | no more than 2 GiB | Pending local run |
-| Index size | no more than 1 GiB | Pending local run |
-| Cold index | no more than 15 minutes | Pending local run |
-| Warm update | no more than 2 minutes | Pending local run |
-| MCP startup | no more than 10 seconds | Pending local run |
-| Peak/steady RSS | no more than 1 GiB | Pending local run |
-| Network after install | zero attempts | Pending local run |
-| Unexpected/global writes | zero | Pending local run |
-| Processes after stop | zero | Pending local run |
-| MCP smoke | all five allowed families succeed | Pending local run |
-| Source-verified utility | at least one material useful finding | Pending local run |
-| Worktree isolation | no state/commit mixing | Pending local run |
+| Environment size | no more than 2 GiB | Pass: 809 MiB venv; 194 MiB wheelhouse |
+| Index size | no more than 1 GiB | Pass: 38 MiB |
+| Cold index | no more than 15 minutes | Pass: 55.12 s wall clock (RepoWise: 51.6 s) |
+| Warm update | no more than 2 minutes | Pending post-report commit |
+| MCP startup | no more than 10 seconds | Pass: five-call smoke completed in 5.76 s total |
+| Peak/steady RSS | no more than 1 GiB | Pass: cold-index maximum RSS 445,612,032 bytes |
+| Network after install | zero attempts | Pass as enforced policy; no denied-operation error observed; syscall count not instrumented |
+| Unexpected/global writes | zero | Pass: tracked tree unchanged and synthetic HOME/XDG/TMP used |
+| Processes after stop | zero | Pass: no wrapper PID remained after bounded stop |
+| MCP smoke | all five allowed families succeed | Pass: exact allowlist and five real calls |
+| Source-verified utility | at least one material useful finding | Pass with caveats; see findings below |
+| Worktree isolation | no state/commit mixing | Pending post-report commit and second-worktree check |
 
 Performance thresholds are containment limits, not evidence of usefulness. A
 fast tool that adds no verified signal should still be rejected.
@@ -192,20 +192,82 @@ extensions alone.
 
 | Surface | Indexed evidence | Useful result | False positive/negative | Cross-check |
 | --- | --- | --- | --- | --- |
-| Go | Pending | Pending | Pending | `go list`, `rg`, tests |
-| Svelte/TypeScript | Pending | Pending | Pending | Web checks, routes, generated API |
-| Terraform | Pending | Pending | Pending | Terraform validate/tests, references |
-| Shell | Pending | Pending | Pending | callers, policy tests, ShellCheck where available |
-| Cloudflare Worker | Pending | Pending | Pending | Wrangler config and Worker tests |
+| Go | 48% of indexed language mix; symbols, calls, churn | Useful hotspot and subprocess-loop leads | Planned exported interfaces reported as safe dead code; integration tests missed as paired coverage | `rg`, exact source, Git history |
+| Svelte/TypeScript | Indexed and placed in UI/API layers | Navigation/context available | `web` called a zombie package; Svelte config called unreachable | Svelte routes and build configuration |
+| Terraform | 72 infrastructure pages; raw source fallback | Fast whole-file retrieval | No symbols; layer assignment is coarse | Terraform module graph and tests |
+| Shell | 10% of indexed language mix; skeleton/context | Hotspot/fix-history metadata available | Performance analysis explicitly unsupported for 44 shell files | callers and policy tests |
+| Cloudflare Worker | Indexed as JavaScript/config files | File lookup only in this run | No trustworthy Worker-specific architecture result | Wrangler config and Worker tests |
+
+## Controlled-run evidence
+
+The index was built from clean exact commit
+`b43653789417d6bfe4898858868422902f55ce1d` on Darwin arm64 with RepoWise
+`0.45.0`. It indexed 439 files and 3,206 symbols across 14 reported languages,
+producing 510 structural pages and a graph of 4,165 nodes / 12,309 edges. The
+index reports an average health score of 6.43, but that aggregate is not a
+Sessionless quality KPI: missing external coverage data, generated/config
+entry points, and deliberately separated integration tests materially affect
+it.
+
+Post-install `index`, `status`, `doctor`, `evaluate`, and MCP ran inside the
+network-denied profile with a synthetic environment. No operation reported a
+denied network attempt. This proves that the evaluated workflow does not
+require egress; it does not claim a kernel-level count of attempted syscalls.
+The upstream doctor reported 510 SQL/vector/FTS pages in sync, zero stale pages,
+no hosted login, no editor/agent registrations, and no distill hook.
+
+The exact MCP surface was
+`get_overview,get_context,get_change_risk,get_health,get_dead_code`. The bounded
+smoke called all five, and an evaluation client then used each tool against
+Sessionless paths and the two-commit RepoWise change.
+
+## Source-verified findings and limitations
+
+1. `get_health` highlighted a real growth risk in
+   `internal/releasenotes/git.go`: `FirstParentHistory` starts at least one Git
+   subprocess for every first-parent commit, while `VersionTags` starts one for
+   every SemVer tag. Exact source inspection confirms both loops and their
+   subprocess callees. This is a valid post-MVP optimization/backlog lead, not
+   an immediate correctness bug; the release workflow is infrequent and the
+   current history is bounded.
+2. The same tool correctly concentrated attention on large, high-churn state
+   code including `internal/ydbstore/session_lifecycle.go`,
+   `internal/ydbstore/operations.go`, `internal/ydbstore/scheduler.go`, and
+   `internal/worker/manager.go`. The prioritization is useful for refactoring
+   and review planning, but its claim that some files have no tests is false:
+   Sessionless deliberately keeps substantial real-YDB coverage under
+   `test/ydbintegration` rather than same-directory `*_test.go` files.
+3. `get_context` reduced `internal/worker/manager.go` to an 18.9% skeleton and
+   returned full Terraform source when no symbols were available. That can
+   save initial navigation tokens. Its inferred parent page (`Service
+   Webstatic`) and several generic layer labels are wrong, so the generated
+   architecture cannot replace `docs/contracts.md` or source imports.
+4. `get_dead_code` found three high-confidence exported-symbol candidates:
+   `EntitlementObserver`, `QuotaObserver`, and `ByteDistribution`. `rg`
+   confirms there are no current call sites, but the observer interfaces are
+   explicit forward contracts for subscription-resource work. The tool's
+   `safe_to_delete` label is therefore unsafe without roadmap context.
+   Medium/low candidates contain obvious false positives: `web`, `infra`, and
+   `tools` are entry-point roots; Svelte/ESLint configuration is loaded by
+   conventions rather than imports.
+5. `get_change_risk` classified the 2,699-line, 11-file optional-tool change as
+   high from size and spread and explicitly disclosed that no per-test coverage
+   map was available. That disclosure is good; the score alone does not decide
+   CI scope or merge readiness.
+
+The material value is faster hotspot discovery, compact code orientation, and
+one verified growing-cost lead. The false positives are substantial enough
+that RepoWise must remain advisory and source-verified. It is not suitable as a
+blocking dead-code, architecture, health, or CI policy gate.
 
 ## Adoption decision
 
-The current static evidence supports only an **adjusted local experiment**:
+The combined audit and controlled run support an **optional local adoption**:
 
-- **adopt now:** the reviewed wrapper/policy pattern as a safe way to collect
-  evidence, not RepoWise as a product dependency;
-- **defer:** usefulness, language coverage, and resource conclusions until the
-  controlled index and five-tool comparison are complete;
+- **adopt now:** the reviewed wrapper and five read-only MCP capabilities as a
+  local research/navigation aid whose output is always independently checked;
+- **defer:** other platforms, semantic/provider-backed search, shared indexes,
+  and broader tools until separate evidence and legal review exist;
 - **reject:** production/runtime Python, default contributor setup, CI gates,
   automatic editor/agent/hook configuration, provider prose, credential access,
   HTTP/SSE/UI serving, shared indexes, and hosted service operation;
@@ -213,17 +275,17 @@ The current static evidence supports only an **adjusted local experiment**:
   shared/hosted index, or organizational rollout requires AGPL/commercial-license
   review before implementation.
 
-Adopt RepoWise as an ongoing optional tool only if it stays inside every safety
-and resource bound, produces at least one source-verified material insight, and
-has an acceptable false-result rate across the relevant Sessionless languages.
-Otherwise remove the ignored environment/state and preserve this report as the
-evidence-backed rejection.
+The experiment stayed inside its initial safety/resource bounds and produced a
+source-verified optimization lead, but also demonstrated architecture,
+coverage, and dead-code false positives. The resulting contract is deliberately
+weak: RepoWise may help an agent decide where to read next; it may not decide
+what is safe to delete, what architecture is authoritative, what tests are
+required, or whether a change may merge.
 
-Issue #65 should remain open until the pending table is populated, the findings
-are independently reviewed, cleanup is verified, and the final
-adopt/adjust/reject decision is recorded. Any source weakness discovered during
-the experiment belongs in a separate issue and MR; this task must not apply
-automated RepoWise fixes.
+Issue #65 can close after the warm-update/staleness and separate-worktree checks
+are recorded, cleanup is re-verified, and this report is independently reviewed.
+Any source weakness discovered during the experiment belongs in a separate
+issue and MR; this task must not apply automated RepoWise fixes.
 
 ## Sources
 

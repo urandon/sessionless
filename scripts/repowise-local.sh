@@ -407,11 +407,13 @@ case "$command" in
       index) index_repowise ;;
       update) update_repowise ;;
       status)
+        assert_clean_tracked_checkout
         assert_fresh_index
         run_offline "$repowise_bin" status "$repo_root" --no-workspace --format json
         assert_clean_tracked_checkout
         ;;
       doctor)
+        assert_clean_tracked_checkout
         assert_fresh_index
         run_offline "$repowise_bin" doctor "$repo_root" --no-workspace --format json
         assert_clean_tracked_checkout

@@ -173,7 +173,7 @@ require_literal 'assert_local_paths_safe' "$wrapper" 'cleanup must validate phys
 require_literal 'test ! -L' "$wrapper" 'cleanup must reject symlinked state roots'
 require_literal 'REPOWISE_UNINSTALL_CONFIRM=sessionless:' "$wrapper" 'uninstall must require exact typed confirmation'
 require_literal 'kill -KILL' "$wrapper" 'stop must have a bounded forced-termination fallback'
-require_literal 'ps -p "$mcp_pid" -o lstart=' "$wrapper" 'MCP start must record a process start identity'
+require_literal 'ps -ww -p "$mcp_pid" -o lstart=' "$wrapper" 'MCP start must record an untruncated process start identity'
 require_literal 'recorded_identity=' "$wrapper" 'stop must read the recorded process identity'
 require_literal 'current_identity=' "$wrapper" 'stop must recompute the current process identity'
 require_literal 'expected_suffix="$repowise_bin mcp $repo_root --transport stdio --tools $REPOWISE_MCP_ALLOWED_TOOLS"' "$wrapper" 'stop must require the exact repo-local MCP command signature'

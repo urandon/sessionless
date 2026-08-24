@@ -318,8 +318,8 @@ start_mcp() {
     <&0 >&1 2>&2 &
   mcp_pid=$!
   trap 'kill "$mcp_pid" 2>/dev/null || true; rm -f "$mcp_pid_file"' EXIT HUP INT TERM
-  mcp_start=$(ps -p "$mcp_pid" -o lstart= 2>/dev/null | awk '{$1=$1; print}')
-  mcp_command=$(ps -p "$mcp_pid" -o command= 2>/dev/null | sed 's/^[[:space:]]*//')
+  mcp_start=$(ps -ww -p "$mcp_pid" -o lstart= 2>/dev/null | awk '{$1=$1; print}')
+  mcp_command=$(ps -ww -p "$mcp_pid" -o command= 2>/dev/null | sed 's/^[[:space:]]*//')
   test -n "$mcp_start" && test -n "$mcp_command" ||
     die "could not record RepoWise MCP process identity"
   expected_suffix="$repowise_bin mcp $repo_root --transport stdio --tools $REPOWISE_MCP_ALLOWED_TOOLS"
@@ -353,8 +353,8 @@ stop_mcp() {
     printf '%s\n' 'Removed stale RepoWise MCP pid file.'
     return 0
   fi
-  process_start=$(ps -p "$pid" -o lstart= 2>/dev/null | awk '{$1=$1; print}')
-  command_line=$(ps -p "$pid" -o command= 2>/dev/null | sed 's/^[[:space:]]*//')
+  process_start=$(ps -ww -p "$pid" -o lstart= 2>/dev/null | awk '{$1=$1; print}')
+  command_line=$(ps -ww -p "$pid" -o command= 2>/dev/null | sed 's/^[[:space:]]*//')
   expected_suffix="$repowise_bin mcp $repo_root --transport stdio --tools $REPOWISE_MCP_ALLOWED_TOOLS"
   case "$command_line" in
     *"$expected_suffix") ;;

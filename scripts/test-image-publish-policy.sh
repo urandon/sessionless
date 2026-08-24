@@ -132,7 +132,7 @@ make_oidc_token() {
 }
 run_oidc_claim_check() {
   token=$1
-  REGISTRY_OIDC_TEST_TOKEN="$token" \
+  GITHUB_ACTIONS=false REGISTRY_OIDC_TEST_TOKEN="$token" \
     IMAGE_PUBLISH_SOURCE_SHA="$source_sha" \
     YANDEX_OIDC_AUDIENCE="$audience" \
     GITHUB_REPOSITORY=urandon/sessionless \

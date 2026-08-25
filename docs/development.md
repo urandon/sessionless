@@ -131,6 +131,11 @@ finalization order, and explicit unsupported-isolation boundary are documented
 in [attached-worker-daemon.md](attached-worker-daemon.md). No developer command
 or production binary enables it yet.
 
+The owner-facing AW-06a information architecture, read-model safety boundary,
+and control-action gates are documented in
+[attached-worker-ux.md](attached-worker-ux.md). WebUI and CLI implementations
+must consume that contract rather than deriving lifecycle state client-side.
+
 The provider-neutral local credential binding, invocation handle, secure
 materialization, crash recovery, write-back, and deny-first revocation contract
 is documented in [credential-lifecycle.md](credential-lifecycle.md). Phase B0

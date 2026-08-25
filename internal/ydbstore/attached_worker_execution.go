@@ -15,6 +15,40 @@ import (
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
 
+var _ ports.AttachedWorkerUXReadStore = (*Store)(nil)
+
+func (store *Store) LoadAttachedWorkerAttempt(
+	ctx context.Context,
+	tenantID domain.TenantID,
+	ownerUserID domain.UserID,
+	workerID domain.AttachedWorkerID,
+) (result domain.AttachedWorkerAttemptV1, found bool, err error) {
+	if err := tenantID.Validate(); err != nil {
+		return result, false, err
+	}
+	if err := ownerUserID.Validate(); err != nil {
+		return result, false, err
+	}
+	if err := workerID.Validate(); err != nil {
+		return result, false, err
+	}
+	result, found, err = readJSON[domain.AttachedWorkerAttemptV1](ctx, store.db,
+		`SELECT payload FROM attached_worker_attempt_heads
+		 WHERE tenant_id = $1 AND owner_user_id = $2 AND worker_id = $3`,
+		tenantID, ownerUserID, workerID,
+	)
+	if err != nil || !found {
+		return result, found, err
+	}
+	if err := result.Validate(); err != nil {
+		return domain.AttachedWorkerAttemptV1{}, false, err
+	}
+	if result.TenantID != tenantID || result.OwnerUserID != ownerUserID || result.WorkerID != workerID {
+		return domain.AttachedWorkerAttemptV1{}, false, ErrAttachedWorkerAttemptConflict
+	}
+	return result, true, nil
+}
+
 const maxAttachedWorkerAttemptLeaseTTL = 24 * time.Hour
 
 var (

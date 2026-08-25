@@ -85,6 +85,10 @@ func DigestAttachedWorkerCapability(value []byte) AttachedWorkerCapabilityDigest
 	return AttachedWorkerCapabilityDigest(attachedWorkerSHA256(value))
 }
 
+func (digest AttachedWorkerCapabilityDigest) Validate() error {
+	return validateAttachedWorkerTransportDigest("attached_worker_capability.digest", string(digest))
+}
+
 func DigestAttachedWorkerIdentityKey(value []byte) AttachedWorkerIdentityKeyDigest {
 	return AttachedWorkerIdentityKeyDigest(attachedWorkerSHA256(value))
 }

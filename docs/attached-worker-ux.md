@@ -4,6 +4,11 @@ Status: AW-06a design contract for issues #82 and #78. This document is an
 implementation prerequisite for attached-worker WebUI, CLI, and control
 operations. It does not enable a product surface or add a state transition.
 
+The first #78 implementation slice lives in `internal/attachedworkerux` and
+`internal/ports/attached_worker_ux.go`. It provides only owner-scoped V1
+list/detail/diagnostic reducers and public DTOs. It does not mount an endpoint,
+enable a control, evaluate a candidate, or implement WebUI/CLI behavior.
+
 ## Scope and authority
 
 The attached-worker UX is a redacted, owner-scoped projection of the existing

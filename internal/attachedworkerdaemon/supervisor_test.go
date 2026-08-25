@@ -60,7 +60,54 @@ func TestSupervisorPinsValidatedIsolationProfile(t *testing.T) {
 	}
 }
 
-func (launcher *fixtureLauncher) Command(_ context.Context, spec LaunchSpec) (*exec.Cmd, error) {
+func TestSupervisorBoundsIsolationPreparation(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	executable, err = filepath.EvalSymlinks(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := DigestExecutable(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	launcher := &deadlinePrepareLauncher{}
+	supervisor, err := NewSupervisor(SupervisorConfig{
+		ScratchRoot: newCanonicalTempDir(t), Launcher: launcher,
+		Timeout: 40 * time.Millisecond, TerminationGrace: 20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	result, err := supervisor.Run(context.Background(), AttemptSpec{
+		Executable: executable, ExecutableDigest: digest,
+	})
+	if !errors.Is(err, ErrSupervisorConfig) {
+		t.Fatalf("expected bounded preparation failure, got %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("isolation preparation was not bounded: %v", elapsed)
+	}
+	if !launcher.deadlineSeen || !result.CleanupSucceeded {
+		t.Fatalf("preparation did not receive a deadline or clean its root: seen=%v result=%+v", launcher.deadlineSeen, result)
+	}
+}
+
+type deadlinePrepareLauncher struct {
+	fixtureLauncher
+	deadlineSeen bool
+}
+
+func (launcher *deadlinePrepareLauncher) Prepare(ctx context.Context, _ LaunchSpec) (IsolationBoundary, error) {
+	_, launcher.deadlineSeen = ctx.Deadline()
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (launcher *fixtureLauncher) Prepare(_ context.Context, spec LaunchSpec) (IsolationBoundary, error) {
 	launcher.mu.Lock()
 	launcher.last = LaunchSpec{
 		Executable: spec.Executable, Arguments: append([]string(nil), spec.Arguments...),
@@ -74,8 +121,18 @@ func (launcher *fixtureLauncher) Command(_ context.Context, spec LaunchSpec) (*e
 	command := exec.Command(spec.Executable, spec.Arguments...)
 	command.Dir = spec.Directory
 	command.Env = append([]string(nil), spec.Environment...)
-	return command, nil
+	return &fixtureBoundary{command: command}, nil
 }
+
+type fixtureBoundary struct {
+	command *exec.Cmd
+}
+
+func (boundary *fixtureBoundary) Command() *exec.Cmd         { return boundary.command }
+func (*fixtureBoundary) GracefulStop(context.Context) error  { return nil }
+func (*fixtureBoundary) ForceStop(context.Context) error     { return nil }
+func (*fixtureBoundary) Alive(context.Context) (bool, error) { return false, nil }
+func (*fixtureBoundary) Release(context.Context) error       { return nil }
 
 func (launcher *fixtureLauncher) lastSpec() LaunchSpec {
 	launcher.mu.Lock()
@@ -237,6 +294,163 @@ func TestSupervisorNaturalLeaderExitReapsDescendant(t *testing.T) {
 	}
 }
 
+func TestSupervisorNaturalClientExitReapsDetachedBoundaryWorkload(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	executable, err = filepath.EvalSymlinks(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := DigestExecutable(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	launcher := &detachedFixtureLauncher{executable: executable}
+	supervisor, err := NewSupervisor(SupervisorConfig{
+		ScratchRoot: newCanonicalTempDir(t), Launcher: launcher,
+		Timeout: 2 * time.Second, TerminationGrace: 100 * time.Millisecond,
+		AllowedEnvironmentNames: []string{helperEnabled, helperMode},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := supervisor.Run(context.Background(), AttemptSpec{
+		Executable: executable, ExecutableDigest: digest,
+		Arguments: []string{"-test.run=TestSupervisorHelperProcess"},
+		Environment: []EnvironmentVariable{
+			{Name: helperEnabled, Value: "1"}, {Name: helperMode, Value: "environment"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("run detached boundary fixture: %v", err)
+	}
+	if !result.BoundaryReleased || !result.CleanupSucceeded {
+		t.Fatalf("boundary cleanup was not reported: %+v", result)
+	}
+	if err := syscall.Kill(launcher.pid(), 0); !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("detached boundary workload survived: %v", err)
+	}
+}
+
+func TestSupervisorStartFailureStillReapsDetachedBoundaryWorkload(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	executable, err = filepath.EvalSymlinks(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := DigestExecutable(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	launcher := &detachedFixtureLauncher{executable: executable, startFailure: true}
+	supervisor, err := NewSupervisor(SupervisorConfig{
+		ScratchRoot: newCanonicalTempDir(t), Launcher: launcher,
+		Timeout: 2 * time.Second, TerminationGrace: 100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := supervisor.Run(context.Background(), AttemptSpec{
+		Executable: executable, ExecutableDigest: digest,
+	})
+	if err == nil || err.Error() != "start attached worker harness" {
+		t.Fatalf("expected bounded start failure, got %v", err)
+	}
+	if !result.BoundaryReleased || !result.CleanupSucceeded {
+		t.Fatalf("start failure did not clean the boundary: %+v", result)
+	}
+	if err := syscall.Kill(launcher.pid(), 0); !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("detached boundary workload survived start failure: %v", err)
+	}
+}
+
+type detachedFixtureLauncher struct {
+	fixtureLauncher
+	executable   string
+	startFailure bool
+	mu           sync.Mutex
+	workloadPID  int
+}
+
+func (launcher *detachedFixtureLauncher) Prepare(ctx context.Context, spec LaunchSpec) (IsolationBoundary, error) {
+	client, err := launcher.fixtureLauncher.Prepare(ctx, spec)
+	if err != nil {
+		return nil, err
+	}
+	if launcher.startFailure {
+		failed := exec.Command(filepath.Join(spec.Directory, "missing-client"))
+		failed.Dir = spec.Directory
+		failed.Env = append([]string(nil), spec.Environment...)
+		client.(*fixtureBoundary).command = failed
+	}
+	workload := exec.Command(launcher.executable, "-test.run=TestSupervisorHelperProcess")
+	workload.Env = replaceEnvironment(os.Environ(), helperEnabled, "1")
+	workload.Env = replaceEnvironment(workload.Env, helperMode, "child-sleep")
+	configureProcessGroup(workload)
+	if err := workload.Start(); err != nil {
+		return nil, err
+	}
+	launcher.mu.Lock()
+	launcher.workloadPID = workload.Process.Pid
+	launcher.mu.Unlock()
+	waited := make(chan error, 1)
+	go func() { waited <- workload.Wait() }()
+	return &detachedFixtureBoundary{
+		fixtureBoundary: client.(*fixtureBoundary), processGroupID: workload.Process.Pid, waited: waited,
+	}, nil
+}
+
+func (launcher *detachedFixtureLauncher) pid() int {
+	launcher.mu.Lock()
+	defer launcher.mu.Unlock()
+	return launcher.workloadPID
+}
+
+type detachedFixtureBoundary struct {
+	*fixtureBoundary
+	processGroupID int
+	waited         <-chan error
+	mu             sync.Mutex
+	reaped         bool
+}
+
+func (*detachedFixtureBoundary) GracefulStop(context.Context) error { return nil }
+func (boundary *detachedFixtureBoundary) ForceStop(ctx context.Context) error {
+	if err := signalProcessGroup(boundary.processGroupID, processKill); err != nil {
+		return err
+	}
+	return boundary.wait(ctx)
+}
+func (boundary *detachedFixtureBoundary) Alive(context.Context) (bool, error) {
+	return processGroupAlive(boundary.processGroupID)
+}
+func (boundary *detachedFixtureBoundary) Release(ctx context.Context) error {
+	if alive, _ := processGroupAlive(boundary.processGroupID); alive {
+		_ = signalProcessGroup(boundary.processGroupID, processKill)
+	}
+	return boundary.wait(ctx)
+}
+
+func (boundary *detachedFixtureBoundary) wait(ctx context.Context) error {
+	boundary.mu.Lock()
+	defer boundary.mu.Unlock()
+	if boundary.reaped {
+		return nil
+	}
+	select {
+	case <-boundary.waited:
+		boundary.reaped = true
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 func TestNewSupervisorFailsClosedWithoutCompleteIsolation(t *testing.T) {
 	root := newCanonicalTempDir(t)
 	launcher := &incompleteLauncher{}
@@ -251,7 +465,7 @@ type incompleteLauncher struct{}
 func (*incompleteLauncher) Profile() IsolationProfile {
 	return IsolationProfile{Name: "clean-env-only"}
 }
-func (*incompleteLauncher) Command(context.Context, LaunchSpec) (*exec.Cmd, error) {
+func (*incompleteLauncher) Prepare(context.Context, LaunchSpec) (IsolationBoundary, error) {
 	return nil, errors.New("must not be called")
 }
 

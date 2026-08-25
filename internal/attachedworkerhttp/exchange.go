@@ -119,10 +119,14 @@ func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		writer.WriteHeader(http.StatusNoContent)
 		return
 	}
-	// AW-03 has no transactional outbound watermark or response conformance
-	// boundary. Fail closed on any accidental platform response until AW-04 owns
-	// that state transition.
-	writer.WriteHeader(http.StatusInternalServerError)
+	encodedResponse, err := attachedworkerprotocol.EncodeBatchV1(*response)
+	if err != nil {
+		writer.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	writer.Header().Set("Content-Type", "application/json")
+	writer.WriteHeader(http.StatusOK)
+	_, _ = writer.Write(encodedResponse)
 }
 
 func immediateQuery(rawQuery string) bool {
@@ -258,14 +262,21 @@ func (client *Client) Exchange(ctx context.Context, batch attachedworkerprotocol
 		}
 		return nil, nil
 	}
-	if response.StatusCode != http.StatusNoContent {
+	if response.StatusCode != http.StatusOK {
 		return nil, statusError(response.StatusCode)
 	}
-	body, readErr := io.ReadAll(io.LimitReader(response.Body, 1))
-	if readErr != nil || len(body) != 0 {
+	if !exactJSONMediaType(response.Header.Values("Content-Type")) {
 		return nil, &ExchangeError{Kind: ErrorProtocol}
 	}
-	return nil, nil
+	body, readErr := io.ReadAll(io.LimitReader(response.Body, attachedworkerprotocol.MaxBatchBytes+1))
+	if readErr != nil || len(body) == 0 || len(body) > attachedworkerprotocol.MaxBatchBytes {
+		return nil, &ExchangeError{Kind: ErrorProtocol}
+	}
+	decoded, decodeErr := attachedworkerprotocol.DecodeBatchV1(body)
+	if decodeErr != nil {
+		return nil, &ExchangeError{Kind: ErrorProtocol}
+	}
+	return &decoded, nil
 }
 
 func statusError(status int) error {

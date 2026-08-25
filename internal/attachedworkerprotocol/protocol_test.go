@@ -523,6 +523,69 @@ func TestConformanceMachineFullAttemptAndTerminalReplay(t *testing.T) {
 	}
 }
 
+func TestHeartbeatEvidenceNeverBecomesAttemptAuthority(t *testing.T) {
+	t.Run("undelivered offer remains idle and available", func(t *testing.T) {
+		fixture := newProtocolFixture(t)
+		machine := fixture.attachMachine(t)
+		offer := fixture.frame(DirectionPlatformToWorker, MessageLeaseOffer)
+		offer.LeaseOffer = &LeaseOfferV1{Binding: fixture.binding, AttemptSequence: 1}
+		acceptOK(t, machine, DirectionPlatformToWorker, offer, fixture.auth.ChannelBinding)
+
+		heartbeat := fixture.frame(DirectionWorkerToPlatform, MessageHeartbeat)
+		heartbeat.Heartbeat = &HeartbeatV1{ObservedAtUnixMicro: 1, Available: true, ActiveAttempts: 0}
+		acceptOK(t, machine, DirectionWorkerToPlatform, heartbeat, fixture.auth.ChannelBinding)
+	})
+
+	t.Run("preclaim cancellation remains idle for delivery", func(t *testing.T) {
+		fixture := newProtocolFixture(t)
+		machine := fixture.attachMachine(t)
+		offer := fixture.frame(DirectionPlatformToWorker, MessageLeaseOffer)
+		offer.LeaseOffer = &LeaseOfferV1{Binding: fixture.binding, AttemptSequence: 1}
+		acceptOK(t, machine, DirectionPlatformToWorker, offer, fixture.auth.ChannelBinding)
+		cancel := fixture.frame(DirectionPlatformToWorker, MessageCancel)
+		cancel.Cancel = &CancelV1{Binding: fixture.binding, AttemptSequence: 2, CancelRevision: 1, Code: CancelRequested}
+		acceptOK(t, machine, DirectionPlatformToWorker, cancel, fixture.auth.ChannelBinding)
+
+		heartbeat := fixture.frame(DirectionWorkerToPlatform, MessageHeartbeat)
+		heartbeat.Heartbeat = &HeartbeatV1{ObservedAtUnixMicro: 1, Available: true, ActiveAttempts: 0}
+		acceptOK(t, machine, DirectionWorkerToPlatform, heartbeat, fixture.auth.ChannelBinding)
+	})
+
+	t.Run("accepted lease tolerates ambiguous local observation", func(t *testing.T) {
+		fixture := newProtocolFixture(t)
+		machine := fixture.claimMachine(t, true)
+		heartbeat := fixture.frame(DirectionWorkerToPlatform, MessageHeartbeat)
+		heartbeat.Heartbeat = &HeartbeatV1{ObservedAtUnixMicro: 1, Available: false, ActiveAttempts: 1}
+		acceptOK(t, machine, DirectionWorkerToPlatform, heartbeat, fixture.auth.ChannelBinding)
+		if machine.AttemptState() != AttemptClaimed {
+			t.Fatalf("heartbeat changed attempt state to %s", machine.AttemptState())
+		}
+
+		fixture2 := newProtocolFixture(t)
+		machine2 := fixture2.claimMachine(t, true)
+		ambiguous := fixture2.frame(DirectionWorkerToPlatform, MessageHeartbeat)
+		ambiguous.Heartbeat = &HeartbeatV1{ObservedAtUnixMicro: 1, Available: false, ActiveAttempts: 0}
+		acceptOK(t, machine2, DirectionWorkerToPlatform, ambiguous, fixture2.auth.ChannelBinding)
+		if machine2.AttemptState() != AttemptClaimed {
+			t.Fatalf("ambiguous heartbeat changed attempt state to %s", machine2.AttemptState())
+		}
+	})
+
+	t.Run("draining never advertises availability", func(t *testing.T) {
+		fixture := newProtocolFixture(t)
+		machine := fixture.attachMachine(t)
+		drain := fixture.frame(DirectionPlatformToWorker, MessageDrain)
+		drain.Drain = &DrainV1{Revision: 1}
+		acceptOK(t, machine, DirectionPlatformToWorker, drain, fixture.auth.ChannelBinding)
+		heartbeat := fixture.frame(DirectionWorkerToPlatform, MessageHeartbeat)
+		heartbeat.Heartbeat = &HeartbeatV1{ObservedAtUnixMicro: 1, Available: true, ActiveAttempts: 0}
+		requireCode(t, acceptAt(machine, DirectionWorkerToPlatform, heartbeat, fixture.auth.ChannelBinding, 1_800_000_000_000_000), ErrorConflict)
+		if machine.AttemptState() != AttemptIdle {
+			t.Fatalf("rejected heartbeat changed attempt state to %s", machine.AttemptState())
+		}
+	})
+}
+
 func TestFullDuplexCrossingAllowsMonotonicStaleACKs(t *testing.T) {
 	leftFixture := newProtocolFixture(t)
 	left := leftFixture.attachMachine(t)

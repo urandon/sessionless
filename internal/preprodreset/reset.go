@@ -106,6 +106,9 @@ func containsProduction(value string) bool {
 }
 
 var applicationTables = []string{
+	"attached_worker_attempt_deadlines_v1",
+	"attached_worker_attempt_messages",
+	"attached_worker_attempt_heads",
 	"attached_worker_presence_expiry_v1",
 	"attached_worker_connections",
 	"attached_worker_capability_manifests",
@@ -127,6 +130,7 @@ var applicationTables = []string{
 	"telegram_deliveries_by_run",
 	"checkpoint_objects_by_run",
 	"session_lifecycle_backfill_state",
+	"execution_placement_cutover_state",
 	"dispatch_ready_v2",
 	"dispatch_ready",
 	"dispatch_outbox",

@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
@@ -662,6 +663,8 @@ func (store *Store) ClaimLease(
 	if err := validateLeaseClaim(claim); err != nil {
 		return result, err
 	}
+	claim.Now = canonicalAttachedWorkerTime(claim.Now)
+	claim.ExpiresAt = canonicalAttachedWorkerTime(claim.ExpiresAt)
 	err = store.Transact(ctx, claim.TenantID, func(state ports.StateTx) error {
 		tx := state.(*stateTx)
 		var currentLeaseID, currentAttemptID, currentWorker string
@@ -675,6 +678,11 @@ func (store *Store) ClaimLease(
 		switch {
 		case queryErr == nil && currentLeaseID == string(claim.LeaseID) &&
 			expiresAt.After(claim.Now):
+			if currentAttemptID != string(claim.AttemptID) || currentWorker != claim.WorkerID {
+				return fmt.Errorf(
+					"%w: replay tuple differs for lease=%s", ErrLeaseHeld, currentLeaseID,
+				)
+			}
 			lease, found, err := readJSON[domain.Lease](ctx, tx.sqlTx,
 				`SELECT payload FROM leases WHERE tenant_id = $1 AND lease_id = $2`,
 				claim.TenantID, claim.LeaseID,
@@ -684,6 +692,13 @@ func (store *Store) ClaimLease(
 			}
 			if !found {
 				return fmt.Errorf("lease head %q has no lease row", currentLeaseID)
+			}
+			if lease.TenantID != claim.TenantID || lease.ID != claim.LeaseID ||
+				lease.RunID != claim.RunID || lease.AttemptID != claim.AttemptID ||
+				lease.WorkerID != claim.WorkerID || lease.FenceToken != fence ||
+				lease.AcquiredAt.IsZero() || !lease.ExpiresAt.After(lease.AcquiredAt) ||
+				!canonicalAttachedWorkerTime(lease.ExpiresAt).Equal(canonicalAttachedWorkerTime(expiresAt)) {
+				return domain.ValidationError{Field: "lease replay", Reason: "stored lease and head differ from the stable claim tuple"}
 			}
 			result = lease
 			return nil
@@ -716,6 +731,9 @@ func (store *Store) ClaimLease(
 			); err != nil {
 				return err
 			}
+		}
+		if fence == math.MaxUint64 {
+			return domain.ValidationError{Field: "lease.fence_token", Reason: "cannot advance beyond uint64"}
 		}
 		result = domain.Lease{
 			ID:         claim.LeaseID,

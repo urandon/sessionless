@@ -38,7 +38,7 @@ func TestCoreExchangeAdapterPassesExplicitBearerCopyAndBatch(t *testing.T) {
 	}
 }
 
-func TestCoreExchangeAdapterRejectsPreAW04PlatformResponse(t *testing.T) {
+func TestCoreExchangeAdapterPassesValidatedAW04PlatformResponse(t *testing.T) {
 	token, _ := ParseBearerToken("secret-worker-token")
 	response := testBatch(2)
 	adapter, err := NewCoreExchangeAdapter(coreExchangeFunc(func(context.Context, []byte, attachedworkerprotocol.BatchV1) (*attachedworkerprotocol.BatchV1, error) {
@@ -47,8 +47,8 @@ func TestCoreExchangeAdapterRejectsPreAW04PlatformResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, err := adapter.Exchange(context.Background(), token, testBatch(1)); got != nil || !errors.Is(err, errCoreExchange) {
-		t.Fatalf("pre-AW04 response=%+v err=%v", got, err)
+	if got, err := adapter.Exchange(context.Background(), token, testBatch(1)); err != nil || got == nil || got.Frames[0].MessageID != response.Frames[0].MessageID {
+		t.Fatalf("AW04 response=%+v err=%v", got, err)
 	}
 }
 

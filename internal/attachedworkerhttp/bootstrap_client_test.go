@@ -259,13 +259,13 @@ func validActivateClientResponse(input ActivateClientInputV1, secretDigest domai
 		domain.DigestAttachedWorkerChallenge(input.Attach.Attach.PlatformNonce), secretDigest,
 	)
 	return ActivateResponseV1{
-		Connection: domain.AttachedWorkerConnection{
+		Connection: ActivateConnectionV1{
 			TenantID: input.TenantLocator, OwnerUserID: input.OwnerLocator, WorkerID: domain.AttachedWorkerID(input.Attach.WorkerID),
 			ID: input.ExpectedConnectionID, ActivationChallengeID: input.ChallengeID, EnrollmentGeneration: input.Attach.EnrollmentGeneration,
 			ConnectionGeneration: input.Attach.ConnectionGeneration, ProtocolVersion: uint32(input.Attach.Version),
 			CapabilityDigest: capabilityDigest, SecretDigest: secretDigest,
-			ChannelBinding: channelBinding, ManifestSignature: []byte{},
-			State: domain.AttachedWorkerConnectionAttaching, PlatformSequence: 2, WorkerSequence: 2, PlatformAck: 2, WorkerAck: 1,
+			ChannelBinding: channelBinding,
+			State:          domain.AttachedWorkerConnectionAttaching, PlatformSequence: 2, WorkerSequence: 2, PlatformAck: 2, WorkerAck: 1,
 			ConnectedAt: connected, AuthExpiresAt: connected.Add(time.Hour), Revision: 1,
 		},
 		Accepted: attachedworkerprotocol.FrameV1{

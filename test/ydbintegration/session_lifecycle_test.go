@@ -19,6 +19,11 @@ import (
 func TestSessionLifecycleHoldWriteFenceInventoryAndCompletion(t *testing.T) {
 	store, client := openStore(t)
 	ctx := context.Background()
+	if _, err := client.DB.ExecContext(ctx,
+		`UPSERT INTO execution_placement_cutover_state (cutover_id,completed_at) VALUES ($1,$2)`,
+		"execution-placement-v1-empty-cutover", time.Now().UTC().Truncate(time.Microsecond)); err != nil {
+		t.Fatal(err)
+	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	runSuffix := fmt.Sprintf("%d", now.UnixNano())
 	tenantID := domain.TenantID(uniqueID("tenant-lifecycle-" + runSuffix))

@@ -7,6 +7,7 @@ import (
 	"math"
 	"time"
 
+	"gitcode.com/urandon/sessionless/internal/attachedworkerprotocol"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/ydbpartition"
@@ -73,10 +74,13 @@ func validateAttachedWorkerConnectionActivation(request ports.AttachedWorkerConn
 		ProtocolVersion:      1, CapabilityDigest: request.ExpectedCapabilityDigest,
 		SecretDigest: request.ConnectionSecretDigest, ChannelBinding: request.ChannelBinding,
 		State: domain.AttachedWorkerConnectionAttaching, PlatformSequence: 2, WorkerSequence: 2,
-		PlatformAck: 2, WorkerAck: 1, ConnectedAt: time.Unix(1_700_000_000, 0).UTC(),
+		PlatformAck: 2, WorkerAck: 1, ProtocolSnapshot: append([]byte(nil), request.ProtocolSnapshot...), ConnectedAt: time.Unix(1_700_000_000, 0).UTC(),
 		AuthExpiresAt: time.Unix(1_700_000_001, 0).UTC(), Revision: 1,
 	}
-	return probe.Validate()
+	if err := probe.Validate(); err != nil {
+		return err
+	}
+	return validateAttachedWorkerProtocolSnapshotInput(request.ProtocolSnapshot)
 }
 
 func validateAttachedWorkerManifestAcceptance(request ports.AttachedWorkerManifestAcceptance) error {
@@ -101,7 +105,10 @@ func validateAttachedWorkerManifestAcceptance(request ports.AttachedWorkerManife
 		return domain.ValidationError{Field: "attached_worker_connection.manifest_acceptance.canonical_manifest", Reason: "must hash to the negotiated capability digest within the bounded size"}
 	}
 	manifest := attachedWorkerManifestTarget(request, request.ConnectionGeneration)
-	return manifest.Validate()
+	if err := manifest.Validate(); err != nil {
+		return err
+	}
+	return validateAttachedWorkerProtocolSnapshotInput(request.ProtocolSnapshot)
 }
 
 func validateAttachedWorkerExchangeAuthorization(request ports.AttachedWorkerExchangeAuthorization) error {
@@ -117,6 +124,13 @@ func validateAttachedWorkerExchangeAuthorization(request ports.AttachedWorkerExc
 		request.PresenceTTL > maxAttachedWorkerPresenceTTL || request.PlatformAck > request.WorkerSequence ||
 		request.WorkerAck > request.PlatformSequence {
 		return domain.ValidationError{Field: "attached_worker_connection.authorization", Reason: "has invalid generation, revision, watermarks, or intervals"}
+	}
+	return validateAttachedWorkerProtocolSnapshotInput(request.ProtocolSnapshot)
+}
+
+func validateAttachedWorkerProtocolSnapshotInput(encoded []byte) error {
+	if len(encoded) == 0 || len(encoded) > 64<<10 {
+		return domain.ValidationError{Field: "attached_worker_connection.protocol_snapshot", Reason: "must contain a bounded post-transition snapshot"}
 	}
 	return nil
 }
@@ -177,7 +191,7 @@ func attachedWorkerActivationTargets(
 		ProtocolVersion: challenge.SelectedProtocolVersion, CapabilityDigest: request.ExpectedCapabilityDigest,
 		SecretDigest: request.ConnectionSecretDigest, ChannelBinding: request.ChannelBinding,
 		State: domain.AttachedWorkerConnectionAttaching, PlatformSequence: 2, WorkerSequence: 2,
-		PlatformAck: 2, WorkerAck: 1, ConnectedAt: at,
+		PlatformAck: 2, WorkerAck: 1, ProtocolSnapshot: append([]byte(nil), request.ProtocolSnapshot...), ConnectedAt: at,
 		AuthExpiresAt: canonicalAttachedWorkerTime(at.Add(request.AuthTTL)), Revision: 1,
 	}
 	nextWorker := worker
@@ -406,6 +420,7 @@ func reconcileAttachedWorkerActivationTx(ctx context.Context, tx *stateTx, chall
 		connection.ConnectionGeneration != request.ExpectedConnectionGeneration+1 ||
 		connection.ProtocolVersion != challenge.SelectedProtocolVersion ||
 		connection.CapabilityDigest != request.ExpectedCapabilityDigest || connection.ChannelBinding != request.ChannelBinding ||
+		!bytes.Equal(connection.ProtocolSnapshot, request.ProtocolSnapshot) ||
 		subtle.ConstantTimeCompare([]byte(connection.SecretDigest), []byte(request.ConnectionSecretDigest)) != 1 ||
 		!connection.ConnectedAt.Equal(challenge.ConsumedAt) ||
 		!connection.AuthExpiresAt.Equal(canonicalAttachedWorkerTime(challenge.ConsumedAt.Add(request.AuthTTL))) {
@@ -439,12 +454,24 @@ func sameAttachedWorkerWatermarks(connection domain.AttachedWorkerConnection, re
 
 func sameAppliedAttachedWorkerCheckpoint(connection domain.AttachedWorkerConnection, request ports.AttachedWorkerExchangeAuthorization) bool {
 	return sameAttachedWorkerWatermarks(connection, request) &&
+		bytes.Equal(connection.ProtocolSnapshot, request.ProtocolSnapshot) &&
 		connection.PresenceExpiresAt.Equal(canonicalAttachedWorkerTime(connection.LastCheckpointAt.Add(request.PresenceTTL)))
 }
 
 func attachedWorkerCheckpointTarget(connection domain.AttachedWorkerConnection, request ports.AttachedWorkerExchangeAuthorization, at time.Time) domain.AttachedWorkerConnection {
 	connection.PlatformSequence, connection.WorkerSequence = request.PlatformSequence, request.WorkerSequence
 	connection.PlatformAck, connection.WorkerAck = request.PlatformAck, request.WorkerAck
+	connection.ProtocolSnapshot = append([]byte(nil), request.ProtocolSnapshot...)
+	if snapshot, err := attachedworkerprotocol.DecodeMachineSnapshotV1(request.ProtocolSnapshot); err == nil {
+		switch snapshot.Connection {
+		case attachedworkerprotocol.ConnectionReady:
+			connection.State = domain.AttachedWorkerConnectionOnline
+		case attachedworkerprotocol.ConnectionDraining, attachedworkerprotocol.ConnectionDrained:
+			connection.State = domain.AttachedWorkerConnectionDraining
+		case attachedworkerprotocol.ConnectionRevoking, attachedworkerprotocol.ConnectionRevoked:
+			connection.State = domain.AttachedWorkerConnectionRevoked
+		}
+	}
 	connection.LastCheckpointAt = canonicalAttachedWorkerTime(at)
 	connection.PresenceExpiresAt = canonicalAttachedWorkerTime(at.Add(request.PresenceTTL))
 	connection.Revision++
@@ -466,6 +493,7 @@ func canonicalAttachedWorkerManifest(value domain.AttachedWorkerCapabilityManife
 
 func canonicalAttachedWorkerConnection(value domain.AttachedWorkerConnection) domain.AttachedWorkerConnection {
 	value.ManifestSignature = append([]byte(nil), value.ManifestSignature...)
+	value.ProtocolSnapshot = append([]byte(nil), value.ProtocolSnapshot...)
 	value.ManifestObservedAt = canonicalAttachedWorkerTime(value.ManifestObservedAt)
 	value.ConnectedAt, value.LastCheckpointAt = canonicalAttachedWorkerTime(value.ConnectedAt), canonicalAttachedWorkerTime(value.LastCheckpointAt)
 	value.PresenceExpiresAt, value.AuthExpiresAt = canonicalAttachedWorkerTime(value.PresenceExpiresAt), canonicalAttachedWorkerTime(value.AuthExpiresAt)

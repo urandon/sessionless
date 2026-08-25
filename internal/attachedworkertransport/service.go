@@ -51,8 +51,9 @@ type ServiceConfig struct {
 	CheckpointInterval  time.Duration
 }
 
-type FrameBroker interface {
-	Exchange(context.Context, domain.AttachedWorkerConnection, attachedworkerprotocol.BatchV1) (*attachedworkerprotocol.BatchV1, error)
+type AttemptBroker interface {
+	PollAttachedWorkerAttempt(context.Context, ports.AttachedWorkerAttemptPoll) (ports.AttachedWorkerAttemptResult, error)
+	ExchangeAttachedWorkerAttempt(context.Context, ports.AttachedWorkerAttemptExchange) (ports.AttachedWorkerAttemptResult, error)
 }
 
 type Service struct {
@@ -67,10 +68,12 @@ type Service struct {
 	authTTL            time.Duration
 	checkpointInterval time.Duration
 	store              ports.AttachedWorkerTransportStore
+	attemptBroker      AttemptBroker
 }
 
-func NewService(config ServiceConfig, store ports.AttachedWorkerTransportStore, broker FrameBroker) (*Service, error) {
-	if config.IDs == nil || store == nil || broker != nil || !validAudience(config.Audience) ||
+func NewService(config ServiceConfig, store ports.AttachedWorkerTransportStore, broker AttemptBroker) (*Service, error) {
+	if config.IDs == nil || store == nil || !validAudience(config.Audience) ||
+		len(config.ImplementedVersions) != 1 || config.ImplementedVersions[0] != attachedworkerprotocol.ProtocolVersionV1 ||
 		config.ChallengeLifetime <= 0 || config.ChallengeRetention <= config.ChallengeLifetime ||
 		config.PresenceTTL <= 0 || config.AuthTTL <= 0 || config.CheckpointInterval < MinimumHeartbeatInterval ||
 		config.PresenceTTL <= config.CheckpointInterval || config.AuthTTL <= config.PresenceTTL ||
@@ -91,7 +94,7 @@ func NewService(config ServiceConfig, store ports.AttachedWorkerTransportStore, 
 		platformOffer: cloneOffer(config.PlatformOffer), implemented: append([]attachedworkerprotocol.ProtocolVersion(nil), config.ImplementedVersions...),
 		challengeLifetime: config.ChallengeLifetime, challengeRetention: config.ChallengeRetention,
 		presenceTTL: config.PresenceTTL, authTTL: config.AuthTTL, checkpointInterval: config.CheckpointInterval,
-		store: store,
+		store: store, attemptBroker: broker,
 	}, nil
 }
 
@@ -359,7 +362,8 @@ func (service *Service) Activate(
 	default:
 		return ActivationGrant{}, ErrTransportUnauthorized
 	}
-	if validateInitialHandshake(service, worker, challenge, request.Attach, accepted, channelBindingBytes) != nil {
+	protocolSnapshot, err := buildInitialProtocolSnapshot(service, worker, challenge, request.Attach, accepted, channelBindingBytes)
+	if err != nil {
 		return ActivationGrant{}, ErrTransportUnauthorized
 	}
 	capabilityDigest := domain.AttachedWorkerCapabilityDigest(hexDigest(activationCapabilityDigest(request.Attach)))
@@ -377,7 +381,7 @@ func (service *Service) Activate(
 		PresentedWorkerNonceDigest:   domain.DigestAttachedWorkerChallenge(activationWorkerNonce(request.Attach)),
 		PresentedPlatformNonceDigest: domain.DigestAttachedWorkerChallenge(activationPlatformNonce(request.Attach)),
 		ConnectionSecretDigest:       request.ConnectionSecretDigest, ChannelBinding: channelBinding,
-		ExpectedCapabilityDigest: capabilityDigest, AuthTTL: service.authTTL,
+		ExpectedCapabilityDigest: capabilityDigest, ProtocolSnapshot: protocolSnapshot, AuthTTL: service.authTTL,
 	})
 	if err != nil {
 		return ActivationGrant{}, ErrTransportBackend
@@ -388,6 +392,7 @@ func (service *Service) Activate(
 		result.Connection.EnrollmentGeneration != worker.EnrollmentGeneration || result.Connection.ConnectionGeneration != challenge.TargetConnectionGeneration ||
 		result.Connection.ProtocolVersion != challenge.SelectedProtocolVersion || result.Connection.ChannelBinding != channelBinding ||
 		result.Connection.SecretDigest != request.ConnectionSecretDigest || result.Connection.CapabilityDigest != capabilityDigest ||
+		!bytes.Equal(result.Connection.ProtocolSnapshot, protocolSnapshot) ||
 		result.Connection.State != domain.AttachedWorkerConnectionAttaching || result.Connection.PlatformSequence != 2 ||
 		result.Connection.WorkerSequence != 2 || result.Connection.PlatformAck != 2 || result.Connection.WorkerAck != 1 {
 		return ActivationGrant{}, ErrTransportUnauthorized
@@ -414,47 +419,23 @@ func activationWorkerStateCanReconcile(worker domain.AttachedWorker, challenge d
 		worker.ConnectionGeneration == challenge.TargetConnectionGeneration
 }
 
-func validateInitialHandshake(service *Service, worker domain.AttachedWorker, challenge domain.AttachedWorkerAttachChallenge, attach, accepted attachedworkerprotocol.FrameV1, channelBinding []byte) error {
+func buildInitialProtocolSnapshot(service *Service, worker domain.AttachedWorker, challenge domain.AttachedWorkerAttachChallenge, attach, accepted attachedworkerprotocol.FrameV1, channelBinding []byte) ([]byte, error) {
 	auth := attachedworkerprotocol.AuthContextV1{
 		TenantID: string(worker.TenantID), OwnerUserID: string(worker.OwnerUserID), WorkerID: string(worker.ID),
 		IdentityPublicKey: cloneBytes(worker.IdentityPublicKey), EnrollmentGeneration: worker.EnrollmentGeneration,
 		ConnectionGeneration: challenge.TargetConnectionGeneration,
 		Version:              attachedworkerprotocol.ProtocolVersion(challenge.SelectedProtocolVersion), ChannelBinding: cloneBytes(channelBinding),
 	}
-	machine, err := attachedworkerprotocol.NewConformanceMachine(attachedworkerprotocol.MachineConfig{
+	config := attachedworkerprotocol.MachineConfig{
 		Auth: auth, WorkerOffer: protocolOffer(challenge.WorkerProtocolMinimum, challenge.WorkerProtocolMaximum, challenge.WorkerProtocolVersions),
 		PlatformOffer:       protocolOffer(challenge.PlatformProtocolMinimum, challenge.PlatformProtocolMaximum, challenge.PlatformProtocolVersions),
 		ImplementedVersions: append([]attachedworkerprotocol.ProtocolVersion(nil), service.implemented...),
-	})
+	}
+	snapshot, err := attachedworkerprotocol.BuildInitialAttachSnapshotV1(config, attach, accepted)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	hello := attachedworkerprotocol.FrameV1{
-		Version: auth.Version, MessageID: attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionWorkerToPlatform, 1),
-		WorkerID: string(worker.ID), EnrollmentGeneration: worker.EnrollmentGeneration, ConnectionGeneration: challenge.TargetConnectionGeneration,
-		Sequence: 1, Ack: 0, Kind: attachedworkerprotocol.MessageHello,
-		Hello: &attachedworkerprotocol.HelloV1{Offer: protocolOffer(challenge.WorkerProtocolMinimum, challenge.WorkerProtocolMaximum, challenge.WorkerProtocolVersions), WorkerNonce: cloneBytes(activationWorkerNonce(attach))},
-	}
-	challengeFrame := attachedworkerprotocol.FrameV1{
-		Version: auth.Version, MessageID: attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionPlatformToWorker, 1),
-		WorkerID: string(worker.ID), EnrollmentGeneration: worker.EnrollmentGeneration, ConnectionGeneration: challenge.TargetConnectionGeneration,
-		Sequence: 1, Ack: 1, Kind: attachedworkerprotocol.MessageChallenge,
-		Challenge: &attachedworkerprotocol.ChallengeV1{
-			WorkerOffer:     protocolOffer(challenge.WorkerProtocolMinimum, challenge.WorkerProtocolMaximum, challenge.WorkerProtocolVersions),
-			PlatformOffer:   protocolOffer(challenge.PlatformProtocolMinimum, challenge.PlatformProtocolMaximum, challenge.PlatformProtocolVersions),
-			SelectedVersion: auth.Version, WorkerNonce: cloneBytes(activationWorkerNonce(attach)), PlatformNonce: cloneBytes(activationPlatformNonce(attach)),
-		},
-	}
-	acceptance := attachedworkerprotocol.AcceptanceContextV1{ChannelBinding: cloneBytes(channelBinding), NowUnixMicro: 1}
-	for _, item := range []struct {
-		direction attachedworkerprotocol.Direction
-		frame     attachedworkerprotocol.FrameV1
-	}{{attachedworkerprotocol.DirectionWorkerToPlatform, hello}, {attachedworkerprotocol.DirectionPlatformToWorker, challengeFrame}, {attachedworkerprotocol.DirectionWorkerToPlatform, attach}, {attachedworkerprotocol.DirectionPlatformToWorker, accepted}} {
-		if err := machine.Accept(item.direction, item.frame, acceptance); err != nil {
-			return err
-		}
-	}
-	return nil
+	return attachedworkerprotocol.EncodeMachineSnapshotV1(snapshot)
 }
 
 type ConnectionBearer struct {
@@ -538,12 +519,18 @@ func (service *Service) Exchange(ctx context.Context, bearer ConnectionBearer, b
 		return nil, ErrTransportUnauthorized
 	}
 	last := batch.Frames[0]
+	if attachedWorkerAttemptFrame(last) {
+		return service.exchangeAttemptFrame(ctx, bearer, connection, last)
+	}
 	replay := last.Sequence >= 4 && last.Sequence == connection.WorkerSequence && last.Ack == connection.WorkerAck
 	for index, frame := range batch.Frames {
-		// AW-03 persists presence only. Attempt/control frames remain disabled
-		// until AW-04 can run them through the authoritative conformance state
-		// machine; advancing their envelope sequence here would poison replay.
-		if frame.Kind != attachedworkerprotocol.MessageHeartbeat || frame.Heartbeat == nil || frame.Heartbeat.ActiveAttempts != 0 ||
+		// Presence remains a snapshot-only transition. With the transactional
+		// AW-04 broker enabled, one active attempt may refresh liveness but cannot
+		// advertise spare capacity; all attempt/control frames still go through
+		// the attempt store so their ledger and snapshot commit atomically.
+		activePresence := frame.Heartbeat != nil && (frame.Heartbeat.ActiveAttempts == 0 ||
+			(service.attemptBroker != nil && frame.Heartbeat.ActiveAttempts == 1 && !frame.Heartbeat.Available))
+		if frame.Kind != attachedworkerprotocol.MessageHeartbeat || frame.Heartbeat == nil || !activePresence ||
 			(connection.State == domain.AttachedWorkerConnectionDraining && frame.Heartbeat.Available) ||
 			frame.WorkerID != string(bearer.workerID) || frame.EnrollmentGeneration != connection.EnrollmentGeneration ||
 			frame.ConnectionGeneration != connection.ConnectionGeneration || frame.Version != batch.Version ||
@@ -552,6 +539,29 @@ func (service *Service) Exchange(ctx context.Context, bearer ConnectionBearer, b
 			frame.Ack > connection.PlatformSequence {
 			return nil, ErrTransportUnauthorized
 		}
+	}
+	config, _, currentSnapshot, err := service.loadConnectionProtocolState(ctx, bearer, connection)
+	if err != nil {
+		return nil, err
+	}
+	nextSnapshot, err := attachedworkerprotocol.ApplyMachineFrameV1(
+		config, currentSnapshot, attachedworkerprotocol.DirectionWorkerToPlatform, last, 1,
+	)
+	if err != nil {
+		return nil, ErrTransportUnauthorized
+	}
+	encodedSnapshot, err := attachedworkerprotocol.EncodeMachineSnapshotV1(nextSnapshot)
+	if err != nil {
+		return nil, ErrTransportUnauthorized
+	}
+	// Poll may atomically retire a terminal-committed attempt after observing
+	// this heartbeat's ACK. That advances the connection revision and replaces
+	// only the attempt portion of the canonical snapshot. On an exact HTTP
+	// response retry, the heartbeat is already represented by the current
+	// snapshot; let the transactional broker reauthorize the bearer and poll the
+	// durable result instead of replaying an obsolete AW-03 revision target.
+	if replay && service.attemptBroker != nil && bytes.Equal(encodedSnapshot, connection.ProtocolSnapshot) {
+		return service.pollAttemptFrame(ctx, bearer, connection)
 	}
 	expectedConnectionRevision := connection.Revision
 	if replay {
@@ -566,6 +576,7 @@ func (service *Service) Exchange(ctx context.Context, bearer ConnectionBearer, b
 		PresentedSecretDigest: bearer.secret.Digest(), ExpectedConnectionRevision: expectedConnectionRevision,
 		PlatformSequence: connection.PlatformSequence, WorkerSequence: last.Sequence,
 		PlatformAck: connection.PlatformAck, WorkerAck: last.Ack,
+		ProtocolSnapshot:   encodedSnapshot,
 		CheckpointInterval: service.checkpointInterval, PresenceTTL: service.presenceTTL,
 	})
 	if err != nil {
@@ -578,14 +589,182 @@ func (service *Service) Exchange(ctx context.Context, bearer ConnectionBearer, b
 		authorized.Connection.EnrollmentGeneration != connection.EnrollmentGeneration ||
 		authorized.Connection.ProtocolVersion != connection.ProtocolVersion || authorized.Connection.SecretDigest != connection.SecretDigest ||
 		authorized.Connection.ChannelBinding != connection.ChannelBinding || authorized.Connection.CapabilityDigest != connection.CapabilityDigest ||
+		!bytes.Equal(authorized.Connection.ProtocolSnapshot, encodedSnapshot) ||
 		authorized.Connection.PlatformSequence != connection.PlatformSequence || authorized.Connection.WorkerSequence != last.Sequence ||
 		authorized.Connection.PlatformAck != connection.PlatformAck || authorized.Connection.WorkerAck != last.Ack {
 		return nil, ErrTransportUnauthorized
 	}
-	// AW-03 is presence-only and intentionally returns 204. AW-04 must add a
-	// transactional outbound watermark/conformance boundary before any broker
-	// can return platform frames.
-	return nil, nil
+	if service.attemptBroker == nil {
+		return nil, nil
+	}
+	return service.pollAttemptFrame(ctx, bearer, authorized.Connection)
+}
+
+func (service *Service) pollAttemptFrame(ctx context.Context, bearer ConnectionBearer, connection domain.AttachedWorkerConnection) (*attachedworkerprotocol.BatchV1, error) {
+	result, err := service.attemptBroker.PollAttachedWorkerAttempt(ctx, ports.AttachedWorkerAttemptPoll{
+		TenantID: bearer.tenantID, OwnerUserID: bearer.ownerUserID, WorkerID: bearer.workerID,
+		ConnectionID: bearer.connectionID, PresentedSecretDigest: bearer.secret.Digest(),
+	})
+	if err != nil {
+		return nil, ErrTransportBackend
+	}
+	if result.Status == ports.AttachedWorkerExecutionNotFound ||
+		(result.Status == ports.AttachedWorkerExecutionApplied && result.Outbound == nil) {
+		return nil, nil
+	}
+	if result.Status != ports.AttachedWorkerExecutionApplied || result.Outbound == nil ||
+		result.Outbound.Direction != domain.AttachedWorkerAttemptPlatformToWorker || result.Outbound.WorkerID != bearer.workerID ||
+		result.Outbound.ConnectionGeneration != connection.ConnectionGeneration {
+		return nil, ErrTransportUnauthorized
+	}
+	response, err := attachedworkerprotocol.DecodeBatchV1(result.Outbound.Payload)
+	if err != nil || len(response.Frames) != 1 || response.Version != attachedworkerprotocol.ProtocolVersion(connection.ProtocolVersion) {
+		return nil, ErrTransportUnauthorized
+	}
+	frame := response.Frames[0]
+	binding, ok := platformAttemptBinding(frame)
+	if !ok || frame.WorkerID != string(bearer.workerID) || frame.ConnectionGeneration != connection.ConnectionGeneration ||
+		!attemptResultMatchesBinding(result.Attempt, bearer, connection, binding) {
+		return nil, ErrTransportUnauthorized
+	}
+	return &response, nil
+}
+
+func platformAttemptBinding(frame attachedworkerprotocol.FrameV1) (attachedworkerprotocol.AttemptBindingV1, bool) {
+	switch frame.Kind {
+	case attachedworkerprotocol.MessageLeaseOffer:
+		if frame.LeaseOffer != nil {
+			return frame.LeaseOffer.Binding, true
+		}
+	case attachedworkerprotocol.MessageCancel:
+		if frame.Cancel != nil {
+			return frame.Cancel.Binding, true
+		}
+	case attachedworkerprotocol.MessageTerminalAck:
+		if frame.TerminalAck != nil {
+			return frame.TerminalAck.Binding, true
+		}
+	}
+	return attachedworkerprotocol.AttemptBindingV1{}, false
+}
+
+func attachedWorkerAttemptFrame(frame attachedworkerprotocol.FrameV1) bool {
+	switch frame.Kind {
+	case attachedworkerprotocol.MessageLeaseClaim, attachedworkerprotocol.MessageProgress,
+		attachedworkerprotocol.MessageCancelAck, attachedworkerprotocol.MessageTerminal:
+		return true
+	default:
+		return false
+	}
+}
+
+func workerAttemptBinding(frame attachedworkerprotocol.FrameV1) (attachedworkerprotocol.AttemptBindingV1, bool) {
+	switch frame.Kind {
+	case attachedworkerprotocol.MessageLeaseClaim:
+		if frame.LeaseClaim != nil {
+			return frame.LeaseClaim.Binding, true
+		}
+	case attachedworkerprotocol.MessageProgress:
+		if frame.Progress != nil {
+			return frame.Progress.Binding, true
+		}
+	case attachedworkerprotocol.MessageCancelAck:
+		if frame.CancelAck != nil {
+			return frame.CancelAck.Binding, true
+		}
+	case attachedworkerprotocol.MessageTerminal:
+		if frame.Terminal != nil {
+			return frame.Terminal.Binding, true
+		}
+	}
+	return attachedworkerprotocol.AttemptBindingV1{}, false
+}
+
+func (service *Service) exchangeAttemptFrame(ctx context.Context, bearer ConnectionBearer, connection domain.AttachedWorkerConnection, frame attachedworkerprotocol.FrameV1) (*attachedworkerprotocol.BatchV1, error) {
+	if service.attemptBroker == nil || connection.State != domain.AttachedWorkerConnectionOnline || frame.Validate() != nil ||
+		frame.WorkerID != string(bearer.workerID) || frame.EnrollmentGeneration != connection.EnrollmentGeneration ||
+		frame.ConnectionGeneration != connection.ConnectionGeneration || frame.Version != attachedworkerprotocol.ProtocolVersion(connection.ProtocolVersion) {
+		return nil, ErrTransportUnauthorized
+	}
+	binding, ok := workerAttemptBinding(frame)
+	if !ok {
+		return nil, ErrTransportUnauthorized
+	}
+	attemptID := domain.AttemptID(binding.AttemptID)
+	if attemptID.Validate() != nil || binding.LeaseGeneration == 0 {
+		return nil, ErrTransportUnauthorized
+	}
+	result, err := service.attemptBroker.ExchangeAttachedWorkerAttempt(ctx, ports.AttachedWorkerAttemptExchange{
+		TenantID: bearer.tenantID, OwnerUserID: bearer.ownerUserID, WorkerID: bearer.workerID,
+		ConnectionID: bearer.connectionID, AttemptID: attemptID, LeaseGeneration: binding.LeaseGeneration,
+		PresentedSecretDigest: bearer.secret.Digest(), InboundFrame: frame,
+	})
+	if err != nil {
+		return nil, ErrTransportBackend
+	}
+	if result.Status != ports.AttachedWorkerExecutionApplied && result.Status != ports.AttachedWorkerExecutionReplayed {
+		return nil, ErrTransportUnauthorized
+	}
+	if !attemptResultMatchesBinding(result.Attempt, bearer, connection, binding) {
+		return nil, ErrTransportUnauthorized
+	}
+	if result.Outbound == nil {
+		if frame.Kind == attachedworkerprotocol.MessageLeaseClaim {
+			return nil, ErrTransportUnauthorized
+		}
+		return nil, nil
+	}
+	wantOutboundKind := domain.AttachedWorkerAttemptMessageLeaseAccepted
+	wantProtocolKind := attachedworkerprotocol.MessageLeaseAccepted
+	if frame.Kind == attachedworkerprotocol.MessageTerminal {
+		wantOutboundKind = domain.AttachedWorkerAttemptMessageTerminalCommitted
+		wantProtocolKind = attachedworkerprotocol.MessageTerminalAck
+	} else if frame.Kind != attachedworkerprotocol.MessageLeaseClaim {
+		return nil, ErrTransportUnauthorized
+	}
+	if result.Outbound.Direction != domain.AttachedWorkerAttemptPlatformToWorker ||
+		result.Outbound.Kind != wantOutboundKind || result.Outbound.AttemptID != attemptID ||
+		result.Outbound.WorkerID != bearer.workerID || result.Outbound.ConnectionGeneration != connection.ConnectionGeneration {
+		return nil, ErrTransportUnauthorized
+	}
+	response, err := attachedworkerprotocol.DecodeBatchV1(result.Outbound.Payload)
+	if err != nil || len(response.Frames) != 1 || response.Version != frame.Version ||
+		response.Frames[0].Kind != wantProtocolKind ||
+		response.Frames[0].WorkerID != string(bearer.workerID) || response.Frames[0].ConnectionGeneration != connection.ConnectionGeneration ||
+		!responseBindingMatches(response.Frames[0], binding) {
+		return nil, ErrTransportUnauthorized
+	}
+	return &response, nil
+}
+
+func responseBindingMatches(frame attachedworkerprotocol.FrameV1, binding attachedworkerprotocol.AttemptBindingV1) bool {
+	if frame.LeaseAccepted != nil {
+		return sameAttemptBinding(frame.LeaseAccepted.Binding, binding)
+	}
+	if frame.TerminalAck != nil {
+		return sameAttemptBinding(frame.TerminalAck.Binding, binding)
+	}
+	return false
+}
+
+func attemptResultMatchesBinding(attempt domain.AttachedWorkerAttemptV1, bearer ConnectionBearer, connection domain.AttachedWorkerConnection, binding attachedworkerprotocol.AttemptBindingV1) bool {
+	contextDigest, contextErr := hex.DecodeString(string(attempt.ContextDigest))
+	capabilityDigest, capabilityErr := hex.DecodeString(string(attempt.CapabilityDigest))
+	policyDigest, policyErr := hex.DecodeString(string(attempt.PolicyDigest))
+	return attempt.Validate() == nil && contextErr == nil && capabilityErr == nil && policyErr == nil &&
+		attempt.TenantID == bearer.tenantID && attempt.OwnerUserID == bearer.ownerUserID && attempt.WorkerID == bearer.workerID &&
+		attempt.ConnectionID == bearer.connectionID && attempt.ConnectionGeneration == connection.ConnectionGeneration &&
+		string(attempt.RunID) == binding.RunID && string(attempt.AttemptID) == binding.AttemptID && string(attempt.LeaseID) == binding.LeaseID &&
+		attempt.LeaseGeneration == binding.LeaseGeneration && string(attempt.FenceToken) == binding.FenceToken &&
+		attempt.LeaseExpiresAt.UnixMicro() == binding.ExpiresAtUnixMicro && bytes.Equal(contextDigest, binding.ContextDigest) &&
+		bytes.Equal(capabilityDigest, binding.CapabilityDigest) && bytes.Equal(policyDigest, binding.PolicyDigest)
+}
+
+func sameAttemptBinding(left, right attachedworkerprotocol.AttemptBindingV1) bool {
+	return left.RunID == right.RunID && left.AttemptID == right.AttemptID && left.LeaseID == right.LeaseID &&
+		left.LeaseGeneration == right.LeaseGeneration && left.FenceToken == right.FenceToken &&
+		left.ExpiresAtUnixMicro == right.ExpiresAtUnixMicro && bytes.Equal(left.ContextDigest, right.ContextDigest) &&
+		bytes.Equal(left.CapabilityDigest, right.CapabilityDigest) && bytes.Equal(left.PolicyDigest, right.PolicyDigest)
 }
 
 func (service *Service) acceptManifestExchange(ctx context.Context, bearer ConnectionBearer, connection domain.AttachedWorkerConnection, batch attachedworkerprotocol.BatchV1) (*attachedworkerprotocol.BatchV1, error) {
@@ -603,21 +782,11 @@ func (service *Service) acceptManifestExchange(ctx context.Context, bearer Conne
 	if connection.State != domain.AttachedWorkerConnectionAttaching && connection.State != domain.AttachedWorkerConnectionOnline && connection.State != domain.AttachedWorkerConnectionDraining {
 		return nil, ErrTransportUnauthorized
 	}
-	worker, found, err := service.store.LoadAttachedWorker(ctx, bearer.tenantID, bearer.ownerUserID, bearer.workerID)
+	config, worker, currentSnapshot, err := service.loadConnectionProtocolState(ctx, bearer, connection)
 	if err != nil {
-		return nil, ErrTransportBackend
+		return nil, err
 	}
-	channelBinding, err := decodeChannelBinding(connection.ChannelBinding)
-	if err != nil || !found || worker.Validate() != nil || worker.DesiredState == domain.AttachedWorkerDesiredRevoked ||
-		worker.TenantID != bearer.tenantID || worker.OwnerUserID != bearer.ownerUserID || worker.ID != bearer.workerID ||
-		worker.EnrollmentGeneration != connection.EnrollmentGeneration || worker.ConnectionGeneration != connection.ConnectionGeneration {
-		return nil, ErrTransportUnauthorized
-	}
-	auth := attachedworkerprotocol.AuthContextV1{
-		TenantID: string(bearer.tenantID), OwnerUserID: string(bearer.ownerUserID), WorkerID: string(bearer.workerID),
-		IdentityPublicKey: cloneBytes(worker.IdentityPublicKey), EnrollmentGeneration: connection.EnrollmentGeneration,
-		ConnectionGeneration: connection.ConnectionGeneration, Version: batch.Version, ChannelBinding: channelBinding,
-	}
+	auth := config.Auth
 	if attachedworkerprotocol.VerifyManifestV1(auth, frame) != nil {
 		return nil, ErrTransportUnauthorized
 	}
@@ -627,6 +796,16 @@ func (service *Service) acceptManifestExchange(ctx context.Context, bearer Conne
 	}
 	canonical, err := attachedworkerprotocol.CanonicalManifestBytesV1(frame.Manifest.Manifest)
 	if err != nil || len(canonical) == 0 || len(canonical) > 32<<10 {
+		return nil, ErrTransportUnauthorized
+	}
+	nextSnapshot, err := attachedworkerprotocol.ApplyMachineFrameV1(
+		config, currentSnapshot, attachedworkerprotocol.DirectionWorkerToPlatform, frame, 1,
+	)
+	if err != nil {
+		return nil, ErrTransportUnauthorized
+	}
+	encodedSnapshot, err := attachedworkerprotocol.EncodeMachineSnapshotV1(nextSnapshot)
+	if err != nil {
 		return nil, ErrTransportUnauthorized
 	}
 	expectedConnectionRevision, expectedWorkerRevision := connection.Revision, worker.Revision
@@ -648,14 +827,12 @@ func (service *Service) acceptManifestExchange(ctx context.Context, bearer Conne
 			CanonicalManifest: canonical, ManifestPayload: payload, Signature: cloneBytes(frame.Manifest.Signature),
 		},
 		PlatformSequence: 2, WorkerSequence: 3, PlatformAck: 2, WorkerAck: 2, PresenceTTL: service.presenceTTL,
+		ProtocolSnapshot: encodedSnapshot,
 	})
 	if err != nil {
 		return nil, ErrTransportBackend
 	}
 	expectedState := domain.AttachedWorkerConnectionOnline
-	if worker.DesiredState == domain.AttachedWorkerDesiredDrain {
-		expectedState = domain.AttachedWorkerConnectionDraining
-	}
 	if result.Status != ports.AttachedWorkerConnectionAuthorized || result.Connection.Validate() != nil ||
 		result.Connection.State != expectedState || result.Connection.TenantID != bearer.tenantID ||
 		result.Connection.OwnerUserID != bearer.ownerUserID || result.Connection.WorkerID != bearer.workerID ||
@@ -665,11 +842,71 @@ func (service *Service) acceptManifestExchange(ctx context.Context, bearer Conne
 		result.Connection.ManifestRevision != frame.Manifest.Manifest.Revision ||
 		result.Connection.ManifestIdentityKey != domain.DigestAttachedWorkerIdentityKey(worker.IdentityPublicKey) ||
 		!bytes.Equal(result.Connection.ManifestSignature, frame.Manifest.Signature) || result.Connection.ManifestObservedAt.IsZero() ||
+		!bytes.Equal(result.Connection.ProtocolSnapshot, encodedSnapshot) ||
 		result.Connection.WorkerSequence != 3 || result.Connection.PlatformSequence != 2 ||
 		result.Connection.WorkerAck != 2 || result.Connection.PlatformAck != 2 {
 		return nil, ErrTransportUnauthorized
 	}
 	return nil, nil
+}
+
+func (service *Service) loadConnectionProtocolState(
+	ctx context.Context,
+	bearer ConnectionBearer,
+	connection domain.AttachedWorkerConnection,
+) (attachedworkerprotocol.MachineConfig, domain.AttachedWorker, attachedworkerprotocol.MachineSnapshotV1, error) {
+	worker, found, err := service.store.LoadAttachedWorker(ctx, bearer.tenantID, bearer.ownerUserID, bearer.workerID)
+	if err != nil {
+		return attachedworkerprotocol.MachineConfig{}, domain.AttachedWorker{}, attachedworkerprotocol.MachineSnapshotV1{}, ErrTransportBackend
+	}
+	if !found || worker.Validate() != nil || worker.DesiredState == domain.AttachedWorkerDesiredRevoked ||
+		worker.TenantID != bearer.tenantID || worker.OwnerUserID != bearer.ownerUserID || worker.ID != bearer.workerID ||
+		worker.EnrollmentGeneration != connection.EnrollmentGeneration || worker.ConnectionGeneration != connection.ConnectionGeneration {
+		return attachedworkerprotocol.MachineConfig{}, domain.AttachedWorker{}, attachedworkerprotocol.MachineSnapshotV1{}, ErrTransportUnauthorized
+	}
+	channelBinding, err := decodeChannelBinding(connection.ChannelBinding)
+	if err != nil {
+		return attachedworkerprotocol.MachineConfig{}, domain.AttachedWorker{}, attachedworkerprotocol.MachineSnapshotV1{}, ErrTransportUnauthorized
+	}
+	snapshot, err := attachedworkerprotocol.DecodeMachineSnapshotV1(connection.ProtocolSnapshot)
+	if err != nil || snapshot.Hello == nil || snapshot.Challenge == nil || !protocolSnapshotMatchesConnection(snapshot, connection) {
+		return attachedworkerprotocol.MachineConfig{}, domain.AttachedWorker{}, attachedworkerprotocol.MachineSnapshotV1{}, ErrTransportUnauthorized
+	}
+	config := attachedworkerprotocol.MachineConfig{
+		Auth: attachedworkerprotocol.AuthContextV1{
+			TenantID: string(bearer.tenantID), OwnerUserID: string(bearer.ownerUserID), WorkerID: string(bearer.workerID),
+			IdentityPublicKey: cloneBytes(worker.IdentityPublicKey), EnrollmentGeneration: connection.EnrollmentGeneration,
+			ConnectionGeneration: connection.ConnectionGeneration,
+			Version:              attachedworkerprotocol.ProtocolVersion(connection.ProtocolVersion), ChannelBinding: channelBinding,
+		},
+		WorkerOffer:         cloneOffer(snapshot.Hello.Offer),
+		PlatformOffer:       cloneOffer(snapshot.Challenge.PlatformOffer),
+		ImplementedVersions: append([]attachedworkerprotocol.ProtocolVersion(nil), service.implemented...),
+	}
+	if _, err := attachedworkerprotocol.RestoreConformanceMachine(config, snapshot); err != nil {
+		return attachedworkerprotocol.MachineConfig{}, domain.AttachedWorker{}, attachedworkerprotocol.MachineSnapshotV1{}, ErrTransportUnauthorized
+	}
+	return config, worker, snapshot, nil
+}
+
+func protocolSnapshotMatchesConnection(snapshot attachedworkerprotocol.MachineSnapshotV1, connection domain.AttachedWorkerConnection) bool {
+	if snapshot.Platform.Sequence != connection.PlatformSequence || snapshot.Worker.Sequence != connection.WorkerSequence ||
+		snapshot.Platform.Ack != connection.PlatformAck || snapshot.Worker.Ack != connection.WorkerAck ||
+		!bytes.Equal(snapshot.CapabilityDigest, mustDecodeHex(string(connection.CapabilityDigest))) {
+		return false
+	}
+	switch connection.State {
+	case domain.AttachedWorkerConnectionAttaching:
+		return snapshot.Connection == attachedworkerprotocol.ConnectionAttached
+	case domain.AttachedWorkerConnectionOnline:
+		return snapshot.Connection == attachedworkerprotocol.ConnectionReady
+	case domain.AttachedWorkerConnectionDraining:
+		return snapshot.Connection == attachedworkerprotocol.ConnectionDraining
+	case domain.AttachedWorkerConnectionRevoked:
+		return snapshot.Connection == attachedworkerprotocol.ConnectionRevoked
+	default:
+		return false
+	}
 }
 
 func validateBatch(batch attachedworkerprotocol.BatchV1) error {

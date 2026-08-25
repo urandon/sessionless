@@ -1,8 +1,10 @@
 # Attached worker transport (AW-03)
 
 AW-03 establishes an owner-scoped, authenticated immediate transport for an
-attached worker. It is deliberately a presence-only slice. Attempt dispatch,
-long polling, cloud wake-up, and platform-to-worker frames remain AW-04 work.
+attached worker. AW-04a extends that transport with durable, transactionally
+fenced attempt frames and heartbeat-driven delivery. Long polling, explicit
+cloud wake-up, reconnect reconciliation, and the worker daemon remain later
+work.
 
 ## Authority and secrets
 
@@ -37,24 +39,55 @@ presence lease and cannot authorize ordinary exchange. The first authenticated
 exchange must contain exactly the Manifest. Its transaction verifies the
 bearer/current fences, inserts or reuses immutable capability content, records
 the connection-specific signature observation on the current head, changes the
-worker/head to online or draining, and starts the bounded presence lease.
+worker/head to online, and starts the bounded presence lease. A requested drain
+does not become observed draining until a durable protocol Drain transition is
+implemented.
 
 Immutable capability content is keyed by its canonical protocol digest and
 does not contain connection generation, signature, or observation time. Those
 connection-bound proof fields live on the current connection head, so a later
 connection may reuse identical content without a digest-key conflict.
 
+The connection head also owns the canonical, bounded AW-02 machine snapshot.
+Activation creates the attached snapshot; Manifest, Heartbeat, and every AW-04
+attempt frame atomically replace it. Scalar sequence and acknowledgement
+columns are checked projections only. Missing, noncanonical, authority-mismatched,
+or divergent same-sequence snapshots fail closed; old online rows without a
+snapshot must attach again and are never reconstructed from watermarks.
+
+## Heartbeat-driven delivery
+
+The immediate exchange remains outbound-only from the worker. With the AW-04a
+attempt broker enabled, one Heartbeat may report one active attempt only while
+`available=false`. After atomically checkpointing that Heartbeat, the service
+reauthorizes the current bearer, worker generations, connection and presence,
+then point-loads at most one already-durable platform frame:
+
+- LeaseOffer is discovery only; the worker cannot execute until its LeaseClaim
+  is atomically committed and the matching LeaseAccepted is returned.
+- Cancel carries the durable cancellation revision. A missing acknowledgement
+  reaches an explicit `fenced_unknown` state; the platform never fabricates
+  process termination.
+- TerminalAck is returned only after canonical run, attempt, reservation,
+  artifact/event materialization and protocol state commit under the current
+  lease fence.
+
+An empty exchange remains HTTP 204. A pending durable platform frame is a
+strict, bounded HTTP 200 AW-02 batch. A worker acknowledges it in a later signed
+frame or Heartbeat; acknowledged platform frames are no longer returned.
+
 ## Fail-closed boundaries
 
-- Reconnect challenge issuance is disabled until AW-04 provides a durable,
-  authoritative attempt snapshot for reconciliation. No unusable reconnect
-  challenge is created.
-- Ordinary AW-03 exchange accepts Heartbeat frames only. Work, cancel,
-  progress, terminal, drain, revoke, and other control frames are rejected
-  before any sequence checkpoint mutation.
-- A non-nil broker is rejected by service construction. Successful immediate
-  exchanges return no frame (HTTP 204). AW-04 must add atomic conformance and
-  outbound watermark persistence before enabling platform responses.
+- Reconnect challenge issuance remains disabled until AW-04b composes the
+  durable snapshot with reconnect challenge consumption and replay decisions.
+  No unusable reconnect challenge is created.
+- Without the AW-04a broker, ordinary exchange remains Heartbeat-only. With the
+  broker, LeaseClaim, Progress, CancelAck and Terminal are accepted only through
+  its single YDB transaction; no handler-local conformance state is authority.
+- Platform attempt responses are loaded from the durable message ledger, never
+  synthesized by the HTTP adapter. The adapter rejects a response whose scope,
+  generations, binding, kind, or canonical payload disagrees with the durable
+  attempt head.
 - Each accepted Heartbeat advances the durable worker envelope sequence and
   therefore costs one bounded store write. AW-03 enforces one shared minimum
   checkpoint and polling/heartbeat interval of 15 minutes (the

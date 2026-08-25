@@ -91,7 +91,8 @@ func validTransportConnection(state AttachedWorkerConnectionState) AttachedWorke
 		CapabilityDigest: DigestAttachedWorkerCapability([]byte("capability")), SecretDigest: DigestAttachedWorkerConnectionSecret([]byte("secret")),
 		ChannelBinding: NewAttachedWorkerChannelBinding(make([]byte, 32)), State: state,
 		PlatformSequence: 2, WorkerSequence: 2, PlatformAck: 2, WorkerAck: 1,
-		ConnectedAt: now, AuthExpiresAt: now.Add(time.Hour), Revision: 1,
+		ProtocolSnapshot: []byte(`{"version":1}`),
+		ConnectedAt:      now, AuthExpiresAt: now.Add(time.Hour), Revision: 1,
 	}
 	// A zero binding is invalid by contract; set a deterministic non-zero byte.
 	binding := make([]byte, 32)

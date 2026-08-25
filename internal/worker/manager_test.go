@@ -795,8 +795,9 @@ func workerFixture(
 		TenantID: tenant, RunID: run.ID, AttemptID: attempt.ID,
 		SessionID: run.SessionID, TriggerEventID: run.TriggerEventID,
 		ReservationID: reservation.ID, InputManifestID: manifest.ID,
-		ContextSnapshot:   contextRef,
-		AllowedMCPServers: []string{"docs"},
+		ContextSnapshot:    contextRef,
+		ExecutionPlacement: domain.ManagedExecutionPlacementV1(),
+		AllowedMCPServers:  []string{"docs"},
 		Limits: domain.ProductLimits{
 			MaxTenantQueueDepth: 8, MaxActiveRuns: 1, MaxRuntime: time.Minute,
 			MaxTurns: 10, MaxInputBytes: 1 << 20, MaxContextBytes: 1 << 20,

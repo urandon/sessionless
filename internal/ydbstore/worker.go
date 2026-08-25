@@ -275,67 +275,83 @@ func (store *Store) StartWorkerJob(
 	at time.Time,
 ) error {
 	return store.Transact(ctx, loaded.Run.TenantID, func(state ports.StateTx) error {
-		tx := state.(*stateTx)
-		if err := requireLeaseOwnership(ctx, tx, loaded.Run.ID, lease.ID, lease.FenceToken, at); err != nil {
-			return err
-		}
-		run, found, err := state.GetRun(ctx, loaded.Run.ID)
-		if err != nil || !found {
-			return err
-		}
-		attempt, found, err := state.GetAttempt(ctx, loaded.Attempt.ID)
-		if err != nil || !found {
-			return err
-		}
-		if run.Status == domain.RunRunning && attempt.Status == domain.AttemptRunning &&
-			attempt.WorkerID == lease.WorkerID {
-			return nil
-		}
-		if run.Status != domain.RunQueued || attempt.Status != domain.AttemptCreated {
-			return domain.ValidationError{Field: "worker start", Reason: "run and attempt are not claimable"}
-		}
-		reservation, found, err := readJSON[domain.QuotaReservation](
-			ctx, tx.sqlTx,
-			`SELECT payload FROM quota_reservations
-			 WHERE tenant_id = $1 AND quota_reservation_id = $2`,
-			run.TenantID, loaded.Reservation.ID,
-		)
-		if err != nil || !found {
-			return err
-		}
-		if reservation.Status != domain.ReservationHeld ||
-			!reservation.ExpiresAt.After(at) {
-			return domain.ValidationError{Field: "worker reservation", Reason: "must be held and unexpired"}
-		}
-		if err := run.Transition(domain.RunRunning, at); err != nil {
-			return err
-		}
-		attempt.WorkerID = lease.WorkerID
-		if err := attempt.Transition(domain.AttemptRunning, at); err != nil {
-			return err
-		}
-		if err := state.PutRun(ctx, run); err != nil {
-			return err
-		}
-		if err := state.PutAttempt(ctx, attempt); err != nil {
-			return err
-		}
-		queueDepth, activeRuns, err := readSchedulerCounters(ctx, tx, at)
-		if err != nil {
-			return err
-		}
-		if queueDepth > 0 {
-			queueDepth--
-		}
-		activeRuns++
-		_, err = tx.sqlTx.ExecContext(ctx,
-			`UPDATE tenant_scheduler_counters
-			 SET queue_depth = $1, active_runs = $2, updated_at = $3
-			 WHERE tenant_id = $4`,
-			queueDepth, activeRuns, at, run.TenantID,
-		)
-		return err
+		return startWorkerJobTx(ctx, state, loaded, lease, at)
 	})
+}
+
+// startWorkerJobTx is the canonical queued-to-running transition. Remote
+// attached-worker claim composes this helper with its durable LeaseAccepted
+// record in the same serializable transaction; it must not call StartWorkerJob
+// as a second transaction.
+func startWorkerJobTx(
+	ctx context.Context,
+	state ports.StateTx,
+	loaded ports.WorkerJobState,
+	lease domain.Lease,
+	at time.Time,
+) error {
+	tx := state.(*stateTx)
+	if err := requireLeaseOwnership(ctx, tx, loaded.Run.ID, lease.ID, lease.FenceToken, at); err != nil {
+		return err
+	}
+	run, found, err := state.GetRun(ctx, loaded.Run.ID)
+	if err != nil || !found {
+		return err
+	}
+	attempt, found, err := state.GetAttempt(ctx, loaded.Attempt.ID)
+	if err != nil || !found {
+		return err
+	}
+	if run.Status == domain.RunRunning && attempt.Status == domain.AttemptRunning &&
+		attempt.WorkerID == lease.WorkerID {
+		return nil
+	}
+	if run.Status != domain.RunQueued || attempt.Status != domain.AttemptCreated {
+		return domain.ValidationError{Field: "worker start", Reason: "run and attempt are not claimable"}
+	}
+	reservation, found, err := readJSON[domain.QuotaReservation](
+		ctx, tx.sqlTx,
+		`SELECT payload FROM quota_reservations
+		 WHERE tenant_id = $1 AND quota_reservation_id = $2`,
+		run.TenantID, loaded.Reservation.ID,
+	)
+	if err != nil || !found {
+		return err
+	}
+	if reservation.Status != domain.ReservationHeld || !reservation.ExpiresAt.After(at) {
+		return domain.ValidationError{Field: "worker reservation", Reason: "must be held and unexpired"}
+	}
+	if err := run.Transition(domain.RunRunning, at); err != nil {
+		return err
+	}
+	attempt.WorkerID = lease.WorkerID
+	if err := attempt.Transition(domain.AttemptRunning, at); err != nil {
+		return err
+	}
+	if err := state.PutRun(ctx, run); err != nil {
+		return err
+	}
+	if err := state.PutAttempt(ctx, attempt); err != nil {
+		return err
+	}
+	queueDepth, activeRuns, err := readSchedulerCounters(ctx, tx, at)
+	if err != nil {
+		return err
+	}
+	// Attached offers are durable direct delivery and never increment the
+	// managed queue counter during admission. Starting one must therefore not
+	// consume an unrelated managed queue slot for the same tenant.
+	if loaded.Job.ExecutionPlacement.Kind == domain.ExecutionPlacementManaged && queueDepth > 0 {
+		queueDepth--
+	}
+	activeRuns++
+	_, err = tx.sqlTx.ExecContext(ctx,
+		`UPDATE tenant_scheduler_counters
+		 SET queue_depth = $1, active_runs = $2, updated_at = $3
+		 WHERE tenant_id = $4`,
+		queueDepth, activeRuns, at, run.TenantID,
+	)
+	return err
 }
 
 func (store *Store) RenewWorkerLease(

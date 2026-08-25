@@ -75,7 +75,9 @@ type AttachedWorkerConnectionActivation struct {
 	ConnectionSecretDigest       domain.AttachedWorkerConnectionSecretDigest
 	ChannelBinding               domain.AttachedWorkerChannelBinding
 	ExpectedCapabilityDigest     domain.AttachedWorkerCapabilityDigest
-	AuthTTL                      time.Duration
+	// ProtocolSnapshot is the exact canonical post-AttachAccepted snapshot.
+	ProtocolSnapshot []byte
+	AuthTTL          time.Duration
 }
 
 type AttachedWorkerManifestAcceptance struct {
@@ -92,7 +94,9 @@ type AttachedWorkerManifestAcceptance struct {
 	WorkerSequence             uint64
 	PlatformAck                uint64
 	WorkerAck                  uint64
-	PresenceTTL                time.Duration
+	// ProtocolSnapshot is the exact canonical post-Manifest snapshot.
+	ProtocolSnapshot []byte
+	PresenceTTL      time.Duration
 }
 
 type AttachedWorkerConnectionResult struct {
@@ -112,8 +116,11 @@ type AttachedWorkerExchangeAuthorization struct {
 	WorkerSequence             uint64
 	PlatformAck                uint64
 	WorkerAck                  uint64
-	CheckpointInterval         time.Duration
-	PresenceTTL                time.Duration
+	// ProtocolSnapshot is the exact canonical post-frame snapshot. Exact replay
+	// reconciles these bytes; a divergent same-sequence frame conflicts.
+	ProtocolSnapshot   []byte
+	CheckpointInterval time.Duration
+	PresenceTTL        time.Duration
 }
 
 type AttachedWorkerAuthorizationResult struct {

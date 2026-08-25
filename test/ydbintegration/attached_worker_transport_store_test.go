@@ -6,9 +6,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/hex"
 	"testing"
 	"time"
 
+	"gitcode.com/urandon/sessionless/internal/attachedworkerprotocol"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/ydbpartition"
@@ -26,7 +28,9 @@ func TestAttachedWorkerTransportTwoPhaseAttachAuthorizationAndExpiry(t *testing.
 	if err := store.CreateAttachedWorkerEnrollment(ctx, enrollment, createAudit); err != nil {
 		t.Fatal(err)
 	}
+	privateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x41}, ed25519.SeedSize))
 	claim := attachedWorkerClaimFixture(enrollment, 0x41)
+	claim.IdentityPublicKey = append([]byte(nil), privateKey.Public().(ed25519.PublicKey)...)
 	claimed, err := store.ClaimAttachedWorkerEnrollment(ctx, claim)
 	if err != nil || claimed.Status != ports.AttachedWorkerClaimed {
 		t.Fatalf("claim = %#v, %v", claimed, err)
@@ -45,16 +49,16 @@ func TestAttachedWorkerTransportTwoPhaseAttachAuthorizationAndExpiry(t *testing.
 		t.Fatalf("cross-owner challenge load: found=%t err=%v", found, err)
 	}
 
-	canonicalManifest := []byte("attached-worker-capability-manifest-v1\x00stable-capabilities")
-	capabilityDigest := domain.DigestAttachedWorkerCapability(canonicalManifest)
+	channelBytes := bytes.Repeat([]byte{0x51}, 32)
+	canonicalManifest, capabilityDigest, attachedSnapshot, readySnapshot, manifestSignature := attachedWorkerProtocolSnapshotFixture(t, worker, challenge, privateKey, channelBytes)
 	secretDigest := domain.DigestAttachedWorkerConnectionSecret([]byte("transport-bearer"))
 	activation := ports.AttachedWorkerConnectionActivation{
 		TenantID: tenantID, OwnerUserID: ownerID, WorkerID: worker.ID, ChallengeID: challenge.ID,
 		ExpectedChallengeRevision: challenge.Revision, ExpectedWorkerRevision: worker.Revision,
 		ExpectedEnrollmentGeneration: worker.EnrollmentGeneration, ExpectedConnectionGeneration: worker.ConnectionGeneration,
 		PresentedWorkerNonceDigest: challenge.WorkerNonceDigest, PresentedPlatformNonceDigest: challenge.PlatformNonceDigest,
-		ConnectionSecretDigest: secretDigest, ChannelBinding: domain.NewAttachedWorkerChannelBinding(bytes.Repeat([]byte{0x51}, 32)),
-		ExpectedCapabilityDigest: capabilityDigest, AuthTTL: time.Hour,
+		ConnectionSecretDigest: secretDigest, ChannelBinding: domain.NewAttachedWorkerChannelBinding(channelBytes),
+		ExpectedCapabilityDigest: capabilityDigest, ProtocolSnapshot: attachedSnapshot, AuthTTL: time.Hour,
 	}
 	activated, err := store.ActivateAttachedWorkerConnection(ctx, activation)
 	if err != nil || activated.Status != ports.AttachedWorkerConnectionActivated {
@@ -81,9 +85,9 @@ func TestAttachedWorkerTransportTwoPhaseAttachAuthorizationAndExpiry(t *testing.
 			ManifestRevision: 1, Digest: capabilityDigest, ProtocolVersion: challenge.SelectedProtocolVersion,
 			IdentityKeyDigest: domain.DigestAttachedWorkerIdentityKey(worker.IdentityPublicKey),
 			CanonicalManifest: canonicalManifest, ManifestPayload: []byte(`{"version":1,"surface":"codex-exec"}`),
-			Signature: bytes.Repeat([]byte{0x61}, ed25519.SignatureSize),
+			Signature: manifestSignature,
 		},
-		PlatformSequence: 2, WorkerSequence: 3, PlatformAck: 2, WorkerAck: 2, PresenceTTL: time.Microsecond,
+		PlatformSequence: 2, WorkerSequence: 3, PlatformAck: 2, WorkerAck: 2, ProtocolSnapshot: readySnapshot, PresenceTTL: time.Microsecond,
 	}
 	accepted, err := store.AcceptAttachedWorkerManifest(ctx, manifestAcceptance)
 	if err != nil || accepted.Status != ports.AttachedWorkerConnectionAuthorized || !accepted.Checkpointed {
@@ -105,7 +109,8 @@ func TestAttachedWorkerTransportTwoPhaseAttachAuthorizationAndExpiry(t *testing.
 		TenantID: tenantID, OwnerUserID: ownerID, WorkerID: worker.ID, ConnectionID: accepted.Connection.ID,
 		ConnectionGeneration: accepted.Connection.ConnectionGeneration, PresentedSecretDigest: domain.DigestAttachedWorkerConnectionSecret([]byte("wrong")),
 		ExpectedConnectionRevision: accepted.Connection.Revision, PlatformSequence: 2, WorkerSequence: 3,
-		PlatformAck: 2, WorkerAck: 2, CheckpointInterval: time.Minute, PresenceTTL: time.Minute,
+		PlatformAck: 2, WorkerAck: 2, ProtocolSnapshot: append([]byte(nil), accepted.Connection.ProtocolSnapshot...),
+		CheckpointInterval: time.Minute, PresenceTTL: time.Minute,
 	}
 	if result, err := store.AuthorizeAttachedWorkerExchange(ctx, wrongBearer); err != nil || result.Status != ports.AttachedWorkerConnectionDenied {
 		t.Fatalf("wrong bearer = %#v, %v", result, err)
@@ -165,7 +170,10 @@ func TestAttachedWorkerTransportRevocationCleansStalePresenceExpiry(t *testing.T
 	if err := store.CreateAttachedWorkerEnrollment(ctx, enrollment, createAudit); err != nil {
 		t.Fatal(err)
 	}
-	claimed, err := store.ClaimAttachedWorkerEnrollment(ctx, attachedWorkerClaimFixture(enrollment, 0x42))
+	privateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x42}, ed25519.SeedSize))
+	claim := attachedWorkerClaimFixture(enrollment, 0x42)
+	claim.IdentityPublicKey = append([]byte(nil), privateKey.Public().(ed25519.PublicKey)...)
+	claimed, err := store.ClaimAttachedWorkerEnrollment(ctx, claim)
 	if err != nil || claimed.Status != ports.AttachedWorkerClaimed {
 		t.Fatalf("claim = %#v, %v", claimed, err)
 	}
@@ -174,16 +182,16 @@ func TestAttachedWorkerTransportRevocationCleansStalePresenceExpiry(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	canonicalManifest := []byte("attached-worker-capability-manifest-v1\x00revoke-expiry")
-	capabilityDigest := domain.DigestAttachedWorkerCapability(canonicalManifest)
+	channelBytes := bytes.Repeat([]byte{0x52}, 32)
+	canonicalManifest, capabilityDigest, attachedSnapshot, readySnapshot, manifestSignature := attachedWorkerProtocolSnapshotFixture(t, worker, challenge, privateKey, channelBytes)
 	secretDigest := domain.DigestAttachedWorkerConnectionSecret([]byte("revoke-expiry-bearer"))
 	activated, err := store.ActivateAttachedWorkerConnection(ctx, ports.AttachedWorkerConnectionActivation{
 		TenantID: tenantID, OwnerUserID: ownerID, WorkerID: worker.ID, ChallengeID: challenge.ID,
 		ExpectedChallengeRevision: challenge.Revision, ExpectedWorkerRevision: worker.Revision,
 		ExpectedEnrollmentGeneration: worker.EnrollmentGeneration, ExpectedConnectionGeneration: worker.ConnectionGeneration,
 		PresentedWorkerNonceDigest: challenge.WorkerNonceDigest, PresentedPlatformNonceDigest: challenge.PlatformNonceDigest,
-		ConnectionSecretDigest: secretDigest, ChannelBinding: domain.NewAttachedWorkerChannelBinding(bytes.Repeat([]byte{0x52}, 32)),
-		ExpectedCapabilityDigest: capabilityDigest, AuthTTL: time.Hour,
+		ConnectionSecretDigest: secretDigest, ChannelBinding: domain.NewAttachedWorkerChannelBinding(channelBytes),
+		ExpectedCapabilityDigest: capabilityDigest, ProtocolSnapshot: attachedSnapshot, AuthTTL: time.Hour,
 	})
 	if err != nil || activated.Status != ports.AttachedWorkerConnectionActivated {
 		t.Fatalf("activate = %#v, %v", activated, err)
@@ -201,9 +209,9 @@ func TestAttachedWorkerTransportRevocationCleansStalePresenceExpiry(t *testing.T
 			ManifestRevision: 1, Digest: capabilityDigest, ProtocolVersion: challenge.SelectedProtocolVersion,
 			IdentityKeyDigest: domain.DigestAttachedWorkerIdentityKey(worker.IdentityPublicKey),
 			CanonicalManifest: canonicalManifest, ManifestPayload: []byte(`{"version":1,"surface":"revoke-expiry"}`),
-			Signature: bytes.Repeat([]byte{0x62}, ed25519.SignatureSize),
+			Signature: manifestSignature,
 		},
-		PlatformSequence: 2, WorkerSequence: 3, PlatformAck: 2, WorkerAck: 2, PresenceTTL: time.Microsecond,
+		PlatformSequence: 2, WorkerSequence: 3, PlatformAck: 2, WorkerAck: 2, ProtocolSnapshot: readySnapshot, PresenceTTL: time.Microsecond,
 	})
 	if err != nil || accepted.Status != ports.AttachedWorkerConnectionAuthorized {
 		t.Fatalf("manifest acceptance = %#v, %v", accepted, err)
@@ -282,4 +290,94 @@ func attachedWorkerChallengeCreateFixture(worker domain.AttachedWorker, suffix s
 		PlatformNonceDigest:     domain.DigestAttachedWorkerChallenge([]byte("platform-nonce-" + suffix)),
 		Lifetime:                time.Minute, Retention: time.Hour,
 	}
+}
+
+func attachedWorkerProtocolSnapshotFixture(
+	t *testing.T,
+	worker domain.AttachedWorker,
+	challenge domain.AttachedWorkerAttachChallenge,
+	privateKey ed25519.PrivateKey,
+	channelBinding []byte,
+) ([]byte, domain.AttachedWorkerCapabilityDigest, []byte, []byte, []byte) {
+	t.Helper()
+	offer := attachedworkerprotocol.VersionOfferV1{
+		Window:    attachedworkerprotocol.VersionWindow{Minimum: 1, Maximum: 1},
+		Supported: []attachedworkerprotocol.ProtocolVersion{1},
+	}
+	manifest := attachedworkerprotocol.CapabilityManifestV1{
+		WorkerID: string(worker.ID), EnrollmentGeneration: worker.EnrollmentGeneration, Revision: 1, ProtocolOffer: offer,
+		OperatingSystem: "linux", Architecture: "amd64", BuildID: "integration-build", HarnessName: "fixture",
+		HarnessVersion: "1", HarnessSurface: attachedworkerprotocol.HarnessSurfaceSessionTurn,
+		HarnessExecutableDigest: bytes.Repeat([]byte{0x73}, 32),
+		IsolationEvidence: []attachedworkerprotocol.IsolationEvidenceV1{
+			attachedworkerprotocol.IsolationFilesystemBoundary,
+			attachedworkerprotocol.IsolationNetworkBoundary,
+			attachedworkerprotocol.IsolationProcessBoundary,
+		},
+		Features: []attachedworkerprotocol.ProtocolFeatureV1{
+			attachedworkerprotocol.FeatureCancellation,
+			attachedworkerprotocol.FeatureProgress,
+			attachedworkerprotocol.FeatureReconnect,
+		},
+		MaxConcurrentAttempts: 1,
+	}
+	canonicalManifest, err := attachedworkerprotocol.CanonicalManifestBytesV1(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	protocolDigest, err := attachedworkerprotocol.ManifestDigestV1(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilityDigest := domain.AttachedWorkerCapabilityDigest(hex.EncodeToString(protocolDigest))
+	auth := attachedworkerprotocol.AuthContextV1{
+		TenantID: string(worker.TenantID), OwnerUserID: string(worker.OwnerUserID), WorkerID: string(worker.ID),
+		IdentityPublicKey: append([]byte(nil), worker.IdentityPublicKey...), EnrollmentGeneration: worker.EnrollmentGeneration,
+		ConnectionGeneration: challenge.TargetConnectionGeneration, Version: 1, ChannelBinding: append([]byte(nil), channelBinding...),
+	}
+	workerNonce, platformNonce := bytes.Repeat([]byte{0x61}, 32), bytes.Repeat([]byte{0x71}, 32)
+	attach := attachedworkerprotocol.FrameV1{
+		Version: 1, MessageID: attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionWorkerToPlatform, 2),
+		WorkerID: string(worker.ID), EnrollmentGeneration: worker.EnrollmentGeneration,
+		ConnectionGeneration: challenge.TargetConnectionGeneration, Sequence: 2, Ack: 1, Kind: attachedworkerprotocol.MessageAttach,
+		Attach: &attachedworkerprotocol.AttachV1{WorkerOffer: offer, PlatformOffer: offer, SelectedVersion: 1,
+			WorkerNonce: workerNonce, PlatformNonce: platformNonce, CapabilityDigest: protocolDigest},
+	}
+	if err := attachedworkerprotocol.SignAttachV1(privateKey, auth, &attach); err != nil {
+		t.Fatal(err)
+	}
+	accepted := attachedworkerprotocol.FrameV1{
+		Version: 1, MessageID: attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionPlatformToWorker, 2),
+		WorkerID: string(worker.ID), EnrollmentGeneration: worker.EnrollmentGeneration,
+		ConnectionGeneration: challenge.TargetConnectionGeneration, Sequence: 2, Ack: 2, Kind: attachedworkerprotocol.MessageAttachAccepted,
+		AttachAccepted: &attachedworkerprotocol.AttachAcceptedV1{WorkerOffer: offer, PlatformOffer: offer, SelectedVersion: 1,
+			WorkerNonce: workerNonce, PlatformNonce: platformNonce, CapabilityDigest: protocolDigest},
+	}
+	config := attachedworkerprotocol.MachineConfig{Auth: auth, WorkerOffer: offer, PlatformOffer: offer, ImplementedVersions: []attachedworkerprotocol.ProtocolVersion{1}}
+	attached, err := attachedworkerprotocol.BuildInitialAttachSnapshotV1(config, attach, accepted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachedBytes, err := attachedworkerprotocol.EncodeMachineSnapshotV1(attached)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestFrame := attachedworkerprotocol.FrameV1{
+		Version: 1, MessageID: attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionWorkerToPlatform, 3),
+		WorkerID: string(worker.ID), EnrollmentGeneration: worker.EnrollmentGeneration,
+		ConnectionGeneration: challenge.TargetConnectionGeneration, Sequence: 3, Ack: 2, Kind: attachedworkerprotocol.MessageManifest,
+		Manifest: &attachedworkerprotocol.ManifestV1{Manifest: manifest, Digest: protocolDigest},
+	}
+	if err := attachedworkerprotocol.SignManifestV1(privateKey, auth, &manifestFrame); err != nil {
+		t.Fatal(err)
+	}
+	ready, err := attachedworkerprotocol.ApplyMachineFrameV1(config, attached, attachedworkerprotocol.DirectionWorkerToPlatform, manifestFrame, time.Now().UnixMicro())
+	if err != nil {
+		t.Fatal(err)
+	}
+	readyBytes, err := attachedworkerprotocol.EncodeMachineSnapshotV1(ready)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return canonicalManifest, capabilityDigest, attachedBytes, readyBytes, append([]byte(nil), manifestFrame.Manifest.Signature...)
 }

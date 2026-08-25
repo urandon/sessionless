@@ -61,6 +61,86 @@ func TestPublicReconnectSnapshotAndBuilders(t *testing.T) {
 		t.Fatal(err)
 	}
 	publicAccept(t, machine, auth, protocol.DirectionWorkerToPlatform, manifestFrame)
+	durable, err := machine.Snapshot()
+	if err != nil || durable.Validate() != nil {
+		t.Fatalf("durable snapshot: err=%v validation=%v", err, durable.Validate())
+	}
+	if _, err := protocol.CanonicalMachineSnapshotBytesV1(durable); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := protocol.RestoreConformanceMachine(protocol.MachineConfig{
+		Auth: auth, WorkerOffer: offer, PlatformOffer: offer, ImplementedVersions: []protocol.ProtocolVersion{1},
+	}, durable.Clone())
+	if err != nil {
+		t.Fatalf("durable restore: %v", err)
+	}
+	if restored.ConnectionState() != protocol.ConnectionReady {
+		t.Fatalf("durable restore: state=%s", restored.ConnectionState())
+	}
+	_ = protocol.MachineSnapshotV1{
+		Version:  protocol.MachineSnapshotVersionV1,
+		Platform: protocol.MachineEnvelopeSnapshotV1{}, Worker: protocol.MachineEnvelopeSnapshotV1{},
+		Attempt: protocol.MachineAttemptSnapshotV1{
+			Platform: protocol.MachineAttemptDirectionSnapshotV1{}, Worker: protocol.MachineAttemptDirectionSnapshotV1{},
+		},
+	}
+	_ = protocol.CancelAuthorityV1{Revision: 1, Code: protocol.CancelRequested, NowUnixMicro: 1}
+	_ = protocol.LeaseAcceptedAuthorityV1{NowUnixMicro: 1}
+	_ = protocol.TerminalAckAuthorityV1{NowUnixMicro: 1}
+	authority := protocol.LeaseOfferAuthorityV1{
+		RunID: "run-1", AttemptID: "attempt-1", LeaseID: "lease-1", LeaseGeneration: 7,
+		NowUnixMicro: 1_800_000_000_000_000, ExpiresAtUnixMicro: 1_900_000_000_000_000,
+		ContextDigest: publicDigest(0x81), PolicyDigest: publicDigest(0x91),
+	}
+	config := protocol.MachineConfig{
+		Auth: auth, WorkerOffer: offer, PlatformOffer: offer, ImplementedVersions: []protocol.ProtocolVersion{1},
+	}
+	attachedSnapshot, err := protocol.BuildInitialAttachSnapshotV1(config, attach, accepted)
+	if err != nil || attachedSnapshot.Connection != protocol.ConnectionAttached {
+		t.Fatalf("attach bootstrap: state=%s err=%v", attachedSnapshot.Connection, err)
+	}
+	readySnapshot, err := protocol.ApplyMachineFrameV1(config, attachedSnapshot,
+		protocol.DirectionWorkerToPlatform, manifestFrame, 1)
+	if err != nil || !bytes.Equal(readySnapshot.Digest, durable.Digest) {
+		t.Fatalf("manifest continuity: equal=%v err=%v", bytes.Equal(readySnapshot.Digest, durable.Digest), err)
+	}
+	heartbeat := publicFrame(auth, protocol.DirectionWorkerToPlatform, 4, 2, protocol.MessageHeartbeat)
+	heartbeat.Heartbeat = &protocol.HeartbeatV1{ObservedAtUnixMicro: 1_800_000_000_000_001, Available: true}
+	checkpointed, err := protocol.ApplyMachineFrameV1(config, readySnapshot,
+		protocol.DirectionWorkerToPlatform, heartbeat, 1_800_000_000_000_001)
+	if err != nil || checkpointed.Worker.Sequence != 4 || len(checkpointed.Worker.Fingerprint) != sha256.Size {
+		t.Fatalf("heartbeat continuity: worker=%+v err=%v", checkpointed.Worker, err)
+	}
+	encodedCheckpoint, err := protocol.EncodeMachineSnapshotV1(checkpointed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decodedCheckpoint, err := protocol.DecodeMachineSnapshotV1(encodedCheckpoint)
+	if err != nil || !bytes.Equal(decodedCheckpoint.Digest, checkpointed.Digest) {
+		t.Fatalf("snapshot codec: equal=%v err=%v", bytes.Equal(decodedCheckpoint.Digest, checkpointed.Digest), err)
+	}
+	offerFrame, offered, err := protocol.BuildLeaseOfferTransitionV1(config, durable, authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if offerFrame.Kind != protocol.MessageLeaseOffer || offerFrame.Sequence != durable.Platform.Sequence+1 ||
+		offerFrame.Ack != durable.Worker.Sequence || offerFrame.LeaseOffer.AttemptSequence != 1 ||
+		offerFrame.LeaseOffer.Binding.LeaseGeneration != authority.LeaseGeneration ||
+		len(offerFrame.LeaseOffer.Binding.FenceToken) != sha256.Size*2 ||
+		!bytes.Equal(offerFrame.LeaseOffer.Binding.CapabilityDigest, capabilityDigest) ||
+		offered.Attempt.Summary.State != protocol.AttemptOffered {
+		t.Fatalf("non-canonical offer transition: frame=%+v state=%s", offerFrame, offered.Attempt.Summary.State)
+	}
+	replayFrame, replayed, err := protocol.BuildLeaseOfferTransitionV1(config, durable, authority)
+	if err != nil || !bytes.Equal(offered.Digest, replayed.Digest) ||
+		offerFrame.LeaseOffer.Binding.FenceToken != replayFrame.LeaseOffer.Binding.FenceToken {
+		t.Fatalf("non-deterministic reducer: err=%v digest=%v fence=%v", err,
+			bytes.Equal(offered.Digest, replayed.Digest), offerFrame.LeaseOffer.Binding.FenceToken == replayFrame.LeaseOffer.Binding.FenceToken)
+	}
+	authority.ContextDigest[0] ^= 1
+	if offerFrame.LeaseOffer.Binding.ContextDigest[0] == authority.ContextDigest[0] {
+		t.Fatal("offer retained caller-owned authority slices")
+	}
 
 	next := auth
 	next.ConnectionGeneration++

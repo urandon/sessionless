@@ -21,6 +21,7 @@ type WorkerJob struct {
 	SkillBundle           *BlobRef              `json:"skill_bundle,omitempty"`
 	AllowedMCPServers     []string              `json:"allowed_mcp_servers,omitempty"`
 	CredentialOwnerUserID UserID                `json:"credential_owner_user_id,omitempty"`
+	ExecutionPlacement    ExecutionPlacementV1  `json:"execution_placement"`
 	Limits                ProductLimits         `json:"limits"`
 	Origin                *FrontendEventOrigin  `json:"origin,omitempty"`
 	// Compatibility bridge for legacy Telegram jobs until #37 projects results from the
@@ -85,6 +86,9 @@ func (job WorkerJob) ValidateForRun(run Run) error {
 		if err := job.CredentialOwnerUserID.Validate(); err != nil {
 			return err
 		}
+	}
+	if err := job.ExecutionPlacement.Validate(); err != nil {
+		return err
 	}
 	if err := job.Limits.Validate(); err != nil {
 		return err

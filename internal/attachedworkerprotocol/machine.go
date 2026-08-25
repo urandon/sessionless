@@ -372,12 +372,13 @@ func (machine *ConformanceMachine) acceptHeartbeat(direction Direction, frame Fr
 		(machine.connection != ConnectionReady && machine.connection != ConnectionDraining) {
 		return protocolError(ErrorInvalidTransition)
 	}
-	active := uint32(0)
-	if machine.attempt.state != AttemptIdle && machine.attempt.state != AttemptTerminalCommitted {
-		active = 1
-	}
-	if frame.Heartbeat.ActiveAttempts != active ||
-		(frame.Heartbeat.Available && (machine.connection != ConnectionReady || active != 0)) {
+	// Presence is signed worker-observed evidence, not attempt authority. The
+	// platform and worker may temporarily disagree after a lost LeaseOffer,
+	// LeaseAccepted, Cancel, or TerminalAck response. The durable attempt state
+	// and signed transition frames remain authoritative; Heartbeat must never
+	// advance or roll it back. Availability is impossible only after the
+	// platform's durable Drain transition.
+	if frame.Heartbeat.Available && machine.connection != ConnectionReady {
 		return protocolError(ErrorConflict)
 	}
 	return nil
@@ -519,7 +520,8 @@ func (machine *ConformanceMachine) applyAttemptTransition(direction Direction, f
 		machine.attempt.progressSequence = frame.Progress.ProgressSequence
 	case MessageCancel:
 		if direction != DirectionPlatformToWorker || !machine.hasFeature(FeatureCancellation) ||
-			(machine.attempt.state != AttemptClaimPending && machine.attempt.state != AttemptClaimed && machine.attempt.state != AttemptTerminalPending) ||
+			(machine.attempt.state != AttemptOffered && machine.attempt.state != AttemptClaimPending &&
+				machine.attempt.state != AttemptClaimed && machine.attempt.state != AttemptTerminalPending) ||
 			frame.Cancel.CancelRevision != 1 {
 			return protocolError(ErrorInvalidTransition)
 		}

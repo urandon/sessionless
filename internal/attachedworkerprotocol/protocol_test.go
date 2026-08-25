@@ -745,7 +745,7 @@ func TestReconnectCancelFencedDiscardsCrossedWorkerSuccess(t *testing.T) {
 		Status: TerminalSucceeded, Result: TerminalResultCompleted, EvidenceDigest: digestByte(0x9c)}
 	acceptOK(t, worker, DirectionWorkerToPlatform, success, workerFixture.auth.ChannelBinding)
 	plan := reconnectPair(t, authoritative, worker, authoritativeFixture)
-	if plan.TerminalDecision != ReconnectTerminalDiscard || authoritative.AttemptState() != AttemptFenced ||
+	if plan.TerminalDecision != ReconnectTerminalDiscard || plan.WorkerAttemptAfter != 2 || authoritative.AttemptState() != AttemptFenced ||
 		worker.AttemptState() != AttemptFenced || authoritative.attempt.pendingWorkerTerminal == nil ||
 		worker.attempt.pendingWorkerTerminal == nil {
 		t.Fatalf("fenced outcome was not explicitly discarded: plan=%+v states=%s/%s",
@@ -767,6 +767,16 @@ func TestReconnectCancelFencedDiscardsCrossedWorkerSuccess(t *testing.T) {
 			t.Fatal("discard decision was not retained as a negative replay fence")
 		}
 	}
+	cancelAck := replayed
+	cancelAck.Kind, cancelAck.Terminal = MessageCancelAck, nil
+	cancelAck.CancelAck = &CancelAckV1{Binding: authoritativeFixture.binding, AttemptSequence: 3, CancelRevision: 1}
+	for _, machine := range []*ConformanceMachine{authoritative, worker} {
+		acceptOK(t, machine, DirectionWorkerToPlatform, cancelAck, authoritativeFixture.auth.ChannelBinding)
+		if machine.AttemptState() != AttemptFenced || machine.attempt.worker.sequence != 3 {
+			t.Fatalf("fenced discard blocked cancel ack: state=%s sequence=%d",
+				machine.AttemptState(), machine.attempt.worker.sequence)
+		}
+	}
 }
 
 func TestReconnectCancelRequestedDiscardsCrossedWorkerSuccess(t *testing.T) {
@@ -783,7 +793,7 @@ func TestReconnectCancelRequestedDiscardsCrossedWorkerSuccess(t *testing.T) {
 		Status: TerminalSucceeded, Result: TerminalResultCompleted, EvidenceDigest: digestByte(0xa2)}
 	acceptOK(t, worker, DirectionWorkerToPlatform, success, workerFixture.auth.ChannelBinding)
 	plan := reconnectPair(t, authoritative, worker, authoritativeFixture)
-	if plan.TerminalDecision != ReconnectTerminalDiscard || authoritative.AttemptState() != AttemptCancelRequested ||
+	if plan.TerminalDecision != ReconnectTerminalDiscard || plan.WorkerAttemptAfter != 2 || authoritative.AttemptState() != AttemptCancelRequested ||
 		worker.AttemptState() != AttemptCancelRequested {
 		t.Fatalf("crossed success was not overridden: plan=%+v states=%s/%s",
 			plan, authoritative.AttemptState(), worker.AttemptState())
@@ -798,6 +808,40 @@ func TestReconnectCancelRequestedDiscardsCrossedWorkerSuccess(t *testing.T) {
 			machine.attempt.pendingWorkerTerminal.decision != ReconnectTerminalDiscard {
 			t.Fatal("requested-cancel discard was not enforced as a negative replay fence")
 		}
+	}
+	cancelled := replayed
+	cancelled.Terminal = cloneTerminal(replayed.Terminal)
+	cancelled.Terminal.AttemptSequence = 3
+	cancelled.Terminal.Status = TerminalCancelled
+	cancelled.Terminal.Result = TerminalResultCancelled
+	cancelled.Terminal.EvidenceDigest = digestByte(0xa3)
+	for _, machine := range []*ConformanceMachine{authoritative, worker} {
+		acceptOK(t, machine, DirectionWorkerToPlatform, cancelled, authoritativeFixture.auth.ChannelBinding)
+		if machine.AttemptState() != AttemptTerminalPending || machine.attempt.worker.sequence != 3 {
+			t.Fatalf("discard tombstone blocked replacement terminal: state=%s sequence=%d",
+				machine.AttemptState(), machine.attempt.worker.sequence)
+		}
+	}
+	plan = reconnectPair(t, authoritative, worker, authoritativeFixture)
+	if plan.TerminalDecision != ReconnectTerminalDiscard || plan.WorkerAttemptAfter != 3 || authoritative.AttemptState() != AttemptTerminalPending ||
+		worker.AttemptState() != AttemptTerminalPending {
+		t.Fatalf("repeat reconnect lost discard tombstone or replacement terminal: plan=%+v states=%s/%s",
+			plan, authoritative.AttemptState(), worker.AttemptState())
+	}
+	ack := authoritativeFixture.frame(DirectionPlatformToWorker, MessageTerminalAck)
+	ack.TerminalAck = &TerminalAckV1{Binding: authoritativeFixture.binding, AttemptSequence: 4, TerminalSequence: 1,
+		Status: TerminalCancelled, Result: TerminalResultCancelled, EvidenceDigest: digestByte(0xa3)}
+	for _, machine := range []*ConformanceMachine{authoritative, worker} {
+		acceptOK(t, machine, DirectionPlatformToWorker, ack, authoritativeFixture.auth.ChannelBinding)
+		if machine.AttemptState() != AttemptTerminalCommitted {
+			t.Fatalf("replacement cancelled terminal did not commit: %s", machine.AttemptState())
+		}
+	}
+	oldDiscarded := authoritativeFixture.frame(DirectionWorkerToPlatform, MessageTerminal)
+	oldDiscarded.Terminal = cloneTerminal(replayed.Terminal)
+	for _, machine := range []*ConformanceMachine{authoritative, worker} {
+		requireCode(t, acceptAt(machine, DirectionWorkerToPlatform, oldDiscarded, authoritativeFixture.auth.ChannelBinding,
+			1_800_000_000_000_000), ErrorProtocolViolation)
 	}
 }
 

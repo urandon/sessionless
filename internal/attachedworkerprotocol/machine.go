@@ -344,6 +344,7 @@ func (machine *ConformanceMachine) acceptReconnectAccepted(direction Direction, 
 		return err
 	}
 	machine.applyAttemptSummary(frame.ReconnectAccepted.AuthoritativeAttempt)
+	machine.applyDiscardTombstone()
 	machine.connection = ConnectionAttached
 	return nil
 }
@@ -440,12 +441,6 @@ func (machine *ConformanceMachine) acceptAttempt(direction Direction, frame Fram
 	if direction == DirectionPlatformToWorker {
 		sender = &machine.attempt.platform
 	}
-	if sequence <= sender.sequence {
-		if sequence != 0 && sender.fingerprints[sequence] == fingerprint {
-			return nil
-		}
-		return protocolError(ErrorConflict)
-	}
 	if direction == DirectionWorkerToPlatform && machine.attempt.pendingWorkerTerminal != nil &&
 		sequence == machine.attempt.pendingWorkerTerminal.sequence {
 		if machine.attempt.pendingWorkerTerminal.kind != frame.Kind || machine.attempt.pendingWorkerTerminal.fingerprint != fingerprint {
@@ -454,6 +449,12 @@ func (machine *ConformanceMachine) acceptAttempt(direction Direction, frame Fram
 		if machine.attempt.pendingWorkerTerminal.decision == ReconnectTerminalDiscard {
 			return protocolError(ErrorProtocolViolation)
 		}
+	}
+	if sequence <= sender.sequence {
+		if sequence != 0 && sender.fingerprints[sequence] == fingerprint {
+			return nil
+		}
+		return protocolError(ErrorConflict)
 	}
 	if sender.sequence == math.MaxUint64 || sequence != sender.sequence+1 {
 		return protocolError(ErrorSequenceMismatch)
@@ -791,6 +792,15 @@ func (machine *ConformanceMachine) pendingTerminalForSnapshot() *TerminalV1 {
 		return nil
 	}
 	return cloneTerminal(&machine.attempt.pendingWorkerTerminal.terminal)
+}
+
+func (machine *ConformanceMachine) applyDiscardTombstone() {
+	commitment := machine.attempt.pendingWorkerTerminal
+	if commitment == nil || commitment.decision != ReconnectTerminalDiscard ||
+		commitment.sequence <= machine.attempt.worker.sequence {
+		return
+	}
+	machine.attempt.worker.sequence = commitment.sequence
 }
 
 func (machine *ConformanceMachine) hasFeature(feature ProtocolFeatureV1) bool {

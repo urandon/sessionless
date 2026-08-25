@@ -127,6 +127,13 @@ func BuildReconnectAcceptedV1(
 			decision = ReconnectTerminalReplay
 		}
 	}
+	if decision == ReconnectTerminalReplay && workerTerminal.AttemptSequence <= authoritative.Attempt.WorkerSequence {
+		return ReconnectAcceptedV1{}, protocolError(ErrorConflict)
+	}
+	workerAttemptAfter := authoritative.Attempt.WorkerSequence
+	if decision == ReconnectTerminalDiscard && workerTerminal.AttemptSequence > workerAttemptAfter {
+		workerAttemptAfter = workerTerminal.AttemptSequence
+	}
 	return ReconnectAcceptedV1{
 		WorkerOffer: cloneVersionOffer(negotiation.WorkerOffer), PlatformOffer: cloneVersionOffer(negotiation.PlatformOffer),
 		SelectedVersion: negotiation.SelectedVersion, WorkerNonce: append([]byte(nil), negotiation.WorkerNonce...),
@@ -137,7 +144,7 @@ func BuildReconnectAcceptedV1(
 			PlatformEnvelopeAfter: workerClaim.Watermarks.PlatformSequence,
 			WorkerEnvelopeAfter:   authoritative.Watermarks.WorkerSequence,
 			PlatformAttemptAfter:  workerClaim.Attempt.PlatformSequence,
-			WorkerAttemptAfter:    authoritative.Attempt.WorkerSequence,
+			WorkerAttemptAfter:    workerAttemptAfter,
 			TerminalDecision:      decision,
 		},
 	}, nil
@@ -299,8 +306,8 @@ func summaryCanAdvance(from, to AttemptSummaryV1) bool {
 }
 
 func cancellationOverridesTerminal(summary AttemptSummaryV1, terminalStatus TerminalStatus) bool {
-	return summary.CancelRevision > 0 && (summary.State == AttemptFenced ||
-		((summary.State == AttemptCancelRequested || summary.State == AttemptCancelAcked) && terminalStatus != TerminalCancelled))
+	return summary.CancelRevision > 0 && (summary.CancelCode == CancelFenced ||
+		(summary.CancelCode == CancelRequested && terminalStatus != TerminalCancelled))
 }
 
 func attemptStateCanAdvance(from, to AttemptSummaryV1) bool {
@@ -416,8 +423,7 @@ func validatePendingTerminal(terminal *TerminalV1, summary AttemptSummaryV1) err
 	if terminal == nil {
 		return nil
 	}
-	if terminal.Validate() != nil || !sameAttemptBinding(terminal.Binding, summary.Binding) ||
-		terminal.AttemptSequence <= summary.WorkerSequence {
+	if terminal.Validate() != nil || !sameAttemptBinding(terminal.Binding, summary.Binding) {
 		return protocolError(ErrorMalformedFrame)
 	}
 	return nil

@@ -34,9 +34,7 @@ type AttachedWorkerClaimMutation struct {
 	ExpectedEnrollmentRevision uint64
 	PresentedAudience          string
 	PresentedDigest            domain.WorkerBootstrapDigest
-	Worker                     domain.AttachedWorker
-	Audit                      domain.AttachedWorkerAuditEvent
-	At                         time.Time
+	IdentityPublicKey          []byte
 }
 
 type AttachedWorkerClaimResult struct {
@@ -80,8 +78,11 @@ type AttachedWorkerStore interface {
 		domain.AttachedWorkerEnrollmentID,
 	) (domain.AttachedWorkerEnrollment, bool, error)
 	// ClaimAttachedWorkerEnrollment atomically checks exact scope, revision,
-	// digest, expiry and single-use state, marks the enrollment consumed,
-	// creates Worker, and appends Audit. It never receives the raw secret.
+	// digest, expiry and single-use state. The store uses its authoritative
+	// transaction time to mark the enrollment consumed and construct the
+	// pristine Worker plus V1 Audit; it never receives the raw secret or proof.
+	// An exact replay may return Claimed only while that pristine target and
+	// audit still match; any later worker mutation makes the replay Consumed.
 	ClaimAttachedWorkerEnrollment(
 		context.Context,
 		AttachedWorkerClaimMutation,

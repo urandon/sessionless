@@ -37,6 +37,7 @@ type Store struct {
 	idempotencyRetention time.Duration
 	operationalRetention time.Duration
 	webSessionIdleTTL    time.Duration
+	attachedWorkerNow    func(context.Context, *sql.Tx) (time.Time, error)
 }
 
 func New(db *sql.DB, options Options) (*Store, error) {
@@ -57,6 +58,7 @@ func New(db *sql.DB, options Options) (*Store, error) {
 		idempotencyRetention: options.IdempotencyRetention,
 		operationalRetention: options.OperationalRetention,
 		webSessionIdleTTL:    options.WebSessionIdleTTL,
+		attachedWorkerNow:    currentAttachedWorkerTransactionTime,
 	}, nil
 }
 

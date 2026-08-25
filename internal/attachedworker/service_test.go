@@ -23,20 +23,23 @@ var attachedWorkerTestTime = time.Date(2026, 8, 25, 9, 0, 0, 0, time.UTC)
 func TestEnrollmentClaimIsSingleUseUnderConcurrency(t *testing.T) {
 	service, store, clock := newAttachedWorkerTestService(t)
 	grant := createAttachedWorkerTestEnrollment(t, service, clock)
-	request, _ := signedAttachedWorkerClaim(t, grant)
 
 	const contenders = 16
+	requests := make([]ClaimRequest, contenders)
+	for index := range requests {
+		requests[index], _ = signedAttachedWorkerClaim(t, grant)
+	}
 	start := make(chan struct{})
 	results := make(chan error, contenders)
 	var wait sync.WaitGroup
-	for range contenders {
+	for contender := range contenders {
 		wait.Add(1)
-		go func() {
+		go func(contender int) {
 			defer wait.Done()
 			<-start
-			_, err := service.Claim(context.Background(), "tenant-a", "owner-a", request)
+			_, err := service.Claim(context.Background(), "tenant-a", "owner-a", requests[contender])
 			results <- err
-		}()
+		}(contender)
 	}
 	close(start)
 	wait.Wait()
@@ -84,7 +87,7 @@ func TestEnrollmentScopeReplayExpiryAudienceAndProof(t *testing.T) {
 		}
 	})
 
-	t.Run("replay remains consumed through retention", func(t *testing.T) {
+	t.Run("exact replay remains successful through retention", func(t *testing.T) {
 		service, _, clock := newAttachedWorkerTestService(t)
 		grant := createAttachedWorkerTestEnrollment(t, service, clock)
 		request, _ := signedAttachedWorkerClaim(t, grant)
@@ -104,7 +107,7 @@ func TestEnrollmentScopeReplayExpiryAudienceAndProof(t *testing.T) {
 		if !clock.Now().Before(grant.Enrollment.RetainUntil) {
 			t.Fatal("fixture moved beyond replay-retention window")
 		}
-		if _, err := service.Claim(context.Background(), "tenant-a", "owner-a", request); !errors.Is(err, ErrEnrollmentConsumed) {
+		if _, err := service.Claim(context.Background(), "tenant-a", "owner-a", request); err != nil {
 			t.Fatalf("retained replay error = %v", err)
 		}
 	})
@@ -116,6 +119,18 @@ func TestEnrollmentScopeReplayExpiryAudienceAndProof(t *testing.T) {
 		clock.Set(grant.Enrollment.ExpiresAt)
 		if _, err := service.Claim(context.Background(), "tenant-a", "owner-a", request); !errors.Is(err, ErrEnrollmentExpired) {
 			t.Fatalf("boundary expiry error = %v", err)
+		}
+	})
+
+	t.Run("store transaction clock is authoritative", func(t *testing.T) {
+		service, store, serviceClock := newAttachedWorkerTestService(t)
+		grant := createAttachedWorkerTestEnrollment(t, service, serviceClock)
+		request, _ := signedAttachedWorkerClaim(t, grant)
+
+		serviceClock.Set(grant.Enrollment.ExpiresAt.Add(time.Minute))
+		store.clock = &mutableClock{now: grant.Enrollment.ExpiresAt.Add(-time.Microsecond)}
+		if _, err := service.Claim(context.Background(), "tenant-a", "owner-a", request); err != nil {
+			t.Fatalf("valid transaction-time claim rejected by skewed service clock: %v", err)
 		}
 	})
 
@@ -152,6 +167,23 @@ func TestEnrollmentScopeReplayExpiryAudienceAndProof(t *testing.T) {
 			t.Fatalf("wrong bootstrap error = %v", err)
 		}
 	})
+}
+
+func TestClaimProofTranscriptBindsExpectedEnrollmentRevision(t *testing.T) {
+	service, _, clock := newAttachedWorkerTestService(t)
+	grant := createAttachedWorkerTestEnrollment(t, service, clock)
+	request, _ := signedAttachedWorkerClaim(t, grant)
+	original, err := ClaimProofTranscript(grant.Enrollment, request.ExpectedEnrollmentRevision, request.IdentityPublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := ClaimProofTranscript(grant.Enrollment, request.ExpectedEnrollmentRevision+1, request.IdentityPublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(original, other) {
+		t.Fatal("claim proof transcript did not bind expected enrollment revision")
+	}
 }
 
 func TestEnrollmentCreationUsesShortTTLRetentionAndRedactedSecret(t *testing.T) {
@@ -225,6 +257,9 @@ func TestRenameRotateConnectionAndRevokeFences(t *testing.T) {
 	})
 	if err != nil || renamed.Revision != 2 || renamed.EnrollmentGeneration != 1 || renamed.ConnectionGeneration != 0 {
 		t.Fatalf("renamed = %+v err=%v", renamed, err)
+	}
+	if _, err := service.Claim(context.Background(), "tenant-a", "owner-a", claim); !errors.Is(err, ErrEnrollmentConsumed) {
+		t.Fatalf("claim replay after rename error = %v, want consumed", err)
 	}
 
 	newPublic, newPrivate, err := ed25519.GenerateKey(nil)
@@ -353,7 +388,7 @@ func TestPublicBackendErrorsAreSanitized(t *testing.T) {
 func newAttachedWorkerTestService(t *testing.T) (*Service, *memoryAttachedWorkerStore, *mutableClock) {
 	t.Helper()
 	clock := &mutableClock{now: attachedWorkerTestTime}
-	store := newMemoryAttachedWorkerStore()
+	store := newMemoryAttachedWorkerStore(clock)
 	service, err := New(Config{
 		Clock: clock, IDs: &sequenceAttachedWorkerIDs{},
 		Random:           bytes.NewReader(bytes.Repeat([]byte{0x42}, 4096)),
@@ -382,12 +417,13 @@ func signedAttachedWorkerClaim(t *testing.T, grant EnrollmentGrant) (ClaimReques
 	if err != nil {
 		t.Fatal(err)
 	}
-	transcript, err := ClaimProofTranscript(grant.Enrollment, publicKey)
+	transcript, err := ClaimProofTranscript(grant.Enrollment, grant.Enrollment.Revision, publicKey)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return ClaimRequest{
-		EnrollmentID: grant.Enrollment.ID, Audience: grant.Enrollment.Audience,
+		EnrollmentID: grant.Enrollment.ID, ExpectedEnrollmentRevision: grant.Enrollment.Revision,
+		Audience:        grant.Enrollment.Audience,
 		BootstrapSecret: grant.Secret, IdentityPublicKey: publicKey, Proof: ed25519.Sign(privateKey, transcript),
 	}, privateKey
 }
@@ -438,12 +474,14 @@ type memoryAttachedWorkerStore struct {
 	workers     map[string]domain.AttachedWorker
 	audits      []domain.AttachedWorkerAuditEvent
 	backendErr  error
+	clock       *mutableClock
 }
 
-func newMemoryAttachedWorkerStore() *memoryAttachedWorkerStore {
+func newMemoryAttachedWorkerStore(clock *mutableClock) *memoryAttachedWorkerStore {
 	return &memoryAttachedWorkerStore{
 		enrollments: make(map[string]domain.AttachedWorkerEnrollment),
 		workers:     make(map[string]domain.AttachedWorker),
+		clock:       clock,
 	}
 }
 
@@ -487,29 +525,43 @@ func (store *memoryAttachedWorkerStore) ClaimAttachedWorkerEnrollment(_ context.
 		return ports.AttachedWorkerClaimResult{Status: ports.AttachedWorkerDenied}, nil
 	}
 	if !enrollment.ConsumedAt.IsZero() {
+		worker := store.workers[attachedWorkerKey(mutation.TenantID, mutation.OwnerUserID, enrollment.WorkerID)]
+		if enrollment.Revision == mutation.ExpectedEnrollmentRevision+1 && worker.Revision == 1 &&
+			worker.DisplayName == enrollment.DisplayName && bytes.Equal(worker.IdentityPublicKey, mutation.IdentityPublicKey) &&
+			worker.EnrollmentGeneration == 1 && worker.ConnectionGeneration == 0 &&
+			worker.DesiredState == domain.AttachedWorkerDesiredActive && worker.ObservedState == domain.AttachedWorkerObservedOffline &&
+			worker.CreatedAt.Equal(enrollment.ConsumedAt) && worker.UpdatedAt.Equal(enrollment.ConsumedAt) {
+			return ports.AttachedWorkerClaimResult{Status: ports.AttachedWorkerClaimed, Worker: cloneWorker(worker)}, nil
+		}
 		return ports.AttachedWorkerClaimResult{Status: ports.AttachedWorkerConsumed}, nil
 	}
-	if !mutation.At.Before(enrollment.ExpiresAt) {
+	at := canonicalPersistenceTime(store.clock.Now())
+	if !at.Before(enrollment.ExpiresAt) {
 		return ports.AttachedWorkerClaimResult{Status: ports.AttachedWorkerExpired}, nil
 	}
 	if mutation.ExpectedEnrollmentRevision != enrollment.Revision {
 		return ports.AttachedWorkerClaimResult{Status: ports.AttachedWorkerConflict}, nil
 	}
-	if mutation.Worker.Validate() != nil || mutation.Audit.Validate() != nil ||
-		mutation.Worker.TenantID != mutation.TenantID || mutation.Worker.OwnerUserID != mutation.OwnerUserID ||
-		mutation.Worker.ID != enrollment.WorkerID {
+	if len(mutation.IdentityPublicKey) != ed25519.PublicKeySize {
 		return ports.AttachedWorkerClaimResult{}, errors.New("invalid claim mutation")
 	}
-	workerKey := attachedWorkerKey(mutation.TenantID, mutation.OwnerUserID, mutation.Worker.ID)
+	worker := domain.AttachedWorker{
+		TenantID: mutation.TenantID, OwnerUserID: mutation.OwnerUserID, ID: enrollment.WorkerID,
+		DisplayName: enrollment.DisplayName, IdentityPublicKey: cloneBytes(mutation.IdentityPublicKey),
+		EnrollmentGeneration: 1, DesiredState: domain.AttachedWorkerDesiredActive,
+		ObservedState: domain.AttachedWorkerObservedOffline, Revision: 1, CreatedAt: at, UpdatedAt: at,
+	}
+	audit := auditForWorker(worker, domain.AttachedWorkerAuditEnrollmentClaimed, enrollment.ID, at)
+	workerKey := attachedWorkerKey(mutation.TenantID, mutation.OwnerUserID, worker.ID)
 	if _, exists := store.workers[workerKey]; exists {
 		return ports.AttachedWorkerClaimResult{Status: ports.AttachedWorkerConflict}, nil
 	}
-	enrollment.ConsumedAt = mutation.At
+	enrollment.ConsumedAt = at
 	enrollment.Revision++
 	store.enrollments[key] = enrollment
-	store.workers[workerKey] = cloneWorker(mutation.Worker)
-	store.audits = append(store.audits, mutation.Audit)
-	return ports.AttachedWorkerClaimResult{Status: ports.AttachedWorkerClaimed, Worker: cloneWorker(mutation.Worker)}, nil
+	store.workers[workerKey] = cloneWorker(worker)
+	store.audits = append(store.audits, audit)
+	return ports.AttachedWorkerClaimResult{Status: ports.AttachedWorkerClaimed, Worker: cloneWorker(worker)}, nil
 }
 
 func (store *memoryAttachedWorkerStore) LoadAttachedWorker(_ context.Context, tenantID domain.TenantID, ownerUserID domain.UserID, workerID domain.AttachedWorkerID) (domain.AttachedWorker, bool, error) {

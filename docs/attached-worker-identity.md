@@ -53,11 +53,19 @@ expires_at Unix nanoseconds (8-byte big-endian)
 ```
 
 The service verifies the proof before persistence. The store then atomically
-rechecks scope, audience, digest, single-use state, expiry, and revision; marks
-the enrollment consumed; creates the worker; and appends its content-free
-audit event. Exactly one concurrent claimant can succeed. At the exact expiry
-boundary the enrollment is expired. A wrong audience or secret is denied
-before consumed or expired state is revealed.
+rechecks scope, audience, digest, single-use state, expiry, and revision using
+its transaction timestamp; marks the enrollment consumed; creates the worker;
+and appends its content-free audit event at that same timestamp. Exactly one
+concurrent claimant can create the worker. At the exact expiry boundary the
+enrollment is expired. A wrong audience or secret is denied before consumed or
+expired state is revealed.
+
+The signed expected enrollment revision is immutable replay evidence. After an
+ambiguous commit, the exact same request may reconcile as claimed only while
+the revision-one worker and its audit event remain the pristine original
+target. A different key or any later rename, rotation, connection-generation
+advance, or revocation returns consumed instead of weakening the single-use
+boundary.
 
 ## Worker state and fences
 

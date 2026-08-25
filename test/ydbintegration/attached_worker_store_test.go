@@ -21,19 +21,17 @@ func TestAttachedWorkerEnrollmentClaimIsAtomicAndFailClosed(t *testing.T) {
 	tenantID := domain.TenantID(uniqueID("tenant-worker-claim"))
 	ownerID := domain.UserID(uniqueID("owner-worker-claim"))
 
-	enrollment, createAudit := attachedWorkerEnrollmentFixture("concurrent", tenantID, ownerID, now)
+	enrollment, createAudit := attachedWorkerEnrollmentFixture("concurrent", tenantID, ownerID, now.Add(-time.Second))
 	if err := store.CreateAttachedWorkerEnrollment(ctx, enrollment, createAudit); err != nil {
 		t.Fatal(err)
 	}
-	claim := attachedWorkerClaimFixture(enrollment, now.Add(time.Second), 1)
+	claim := attachedWorkerClaimFixture(enrollment, 1)
 	otherOwnerID := domain.UserID(uniqueID("other-owner-worker-claim"))
 	if _, found, err := store.LoadAttachedWorkerEnrollment(ctx, tenantID, otherOwnerID, enrollment.ID); err != nil || found {
 		t.Fatalf("cross-owner enrollment load: found=%t err=%v", found, err)
 	}
 	wrongOwnerClaim := claim
 	wrongOwnerClaim.OwnerUserID = otherOwnerID
-	wrongOwnerClaim.Worker.OwnerUserID = otherOwnerID
-	wrongOwnerClaim.Audit.OwnerUserID = otherOwnerID
 	denied, err := store.ClaimAttachedWorkerEnrollment(ctx, wrongOwnerClaim)
 	if err != nil || denied.Status != ports.AttachedWorkerDenied {
 		t.Fatalf("cross-owner claim = %#v, %v; want denied", denied, err)
@@ -44,15 +42,17 @@ func TestAttachedWorkerEnrollmentClaimIsAtomicAndFailClosed(t *testing.T) {
 	results := make(chan ports.AttachedWorkerClaimResult, contenders)
 	errs := make(chan error, contenders)
 	var wait sync.WaitGroup
-	for range contenders {
+	for contender := range contenders {
 		wait.Add(1)
-		go func() {
+		go func(contender int) {
 			defer wait.Done()
 			<-start
-			result, err := store.ClaimAttachedWorkerEnrollment(ctx, claim)
+			candidate := claim
+			candidate.IdentityPublicKey = bytes.Repeat([]byte{byte(contender + 1)}, ed25519.PublicKeySize)
+			result, err := store.ClaimAttachedWorkerEnrollment(ctx, candidate)
 			results <- result
 			errs <- err
-		}()
+		}(contender)
 	}
 	close(start)
 	wait.Wait()
@@ -64,10 +64,12 @@ func TestAttachedWorkerEnrollmentClaimIsAtomicAndFailClosed(t *testing.T) {
 		}
 	}
 	claimed, consumed := 0, 0
+	var winnerKey []byte
 	for result := range results {
 		switch result.Status {
 		case ports.AttachedWorkerClaimed:
 			claimed++
+			winnerKey = append([]byte(nil), result.Worker.IdentityPublicKey...)
 		case ports.AttachedWorkerConsumed:
 			consumed++
 		default:
@@ -77,20 +79,34 @@ func TestAttachedWorkerEnrollmentClaimIsAtomicAndFailClosed(t *testing.T) {
 	if claimed != 1 || consumed != contenders-1 {
 		t.Fatalf("claim outcomes: claimed=%d consumed=%d", claimed, consumed)
 	}
-	replay, err := store.ClaimAttachedWorkerEnrollment(ctx, claim)
-	if err != nil || replay.Status != ports.AttachedWorkerConsumed {
-		t.Fatalf("replay = %#v, %v; want consumed", replay, err)
+	replayClaim := claim
+	replayClaim.IdentityPublicKey = winnerKey
+	replay, err := store.ClaimAttachedWorkerEnrollment(ctx, replayClaim)
+	if err != nil || replay.Status != ports.AttachedWorkerClaimed {
+		t.Fatalf("exact replay = %#v, %v; want claimed", replay, err)
+	}
+	loserClaim := claim
+	loserClaim.IdentityPublicKey = bytes.Repeat([]byte{0xee}, ed25519.PublicKeySize)
+	loser, err := store.ClaimAttachedWorkerEnrollment(ctx, loserClaim)
+	if err != nil || loser.Status != ports.AttachedWorkerConsumed {
+		t.Fatalf("mismatched replay = %#v, %v; want consumed", loser, err)
 	}
 	storedEnrollment, found, err := store.LoadAttachedWorkerEnrollment(ctx, tenantID, ownerID, enrollment.ID)
 	if err != nil || !found || storedEnrollment.ConsumedAt.IsZero() || storedEnrollment.Revision != 2 {
 		t.Fatalf("consumed enrollment = %#v, found=%t, err=%v", storedEnrollment, found, err)
 	}
-	if _, found, err := store.LoadAttachedWorker(ctx, tenantID, ownerID, enrollment.WorkerID); err != nil || !found {
+	storedWorker, found, err := store.LoadAttachedWorker(ctx, tenantID, ownerID, enrollment.WorkerID)
+	if err != nil || !found {
 		t.Fatalf("claimed worker: found=%t err=%v", found, err)
 	}
 	audits, err := store.ListAttachedWorkerAuditEvents(ctx, tenantID, ownerID, enrollment.WorkerID, 0, 10)
 	if err != nil || len(audits) != 2 || audits[0].WorkerRevision != 0 || audits[1].WorkerRevision != 1 {
 		t.Fatalf("claim audit = %#v, err=%v", audits, err)
+	}
+	if !storedEnrollment.ConsumedAt.Equal(storedWorker.CreatedAt) ||
+		!storedWorker.CreatedAt.Equal(storedWorker.UpdatedAt) || !audits[1].OccurredAt.Equal(storedWorker.CreatedAt) {
+		t.Fatalf("claim transaction times diverged: consumed=%v worker=%v/%v audit=%v",
+			storedEnrollment.ConsumedAt, storedWorker.CreatedAt, storedWorker.UpdatedAt, audits[1].OccurredAt)
 	}
 
 	tests := []struct {
@@ -113,15 +129,6 @@ func TestAttachedWorkerEnrollmentClaimIsAtomicAndFailClosed(t *testing.T) {
 			want: ports.AttachedWorkerDenied,
 		},
 		{
-			name: "expiry boundary",
-			adjust: func(enrollment *domain.AttachedWorkerEnrollment, claim *ports.AttachedWorkerClaimMutation) {
-				claim.At = enrollment.ExpiresAt
-				claim.Worker.CreatedAt, claim.Worker.UpdatedAt = claim.At, claim.At
-				claim.Audit.OccurredAt = claim.At
-			},
-			want: ports.AttachedWorkerExpired,
-		},
-		{
 			name: "revision",
 			adjust: func(_ *domain.AttachedWorkerEnrollment, claim *ports.AttachedWorkerClaimMutation) {
 				claim.ExpectedEnrollmentRevision++
@@ -131,11 +138,11 @@ func TestAttachedWorkerEnrollmentClaimIsAtomicAndFailClosed(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			enrollment, audit := attachedWorkerEnrollmentFixture(test.name, tenantID, ownerID, now.Add(2*time.Minute))
+			enrollment, audit := attachedWorkerEnrollmentFixture(test.name, tenantID, ownerID, now.Add(-time.Second))
 			if err := store.CreateAttachedWorkerEnrollment(ctx, enrollment, audit); err != nil {
 				t.Fatal(err)
 			}
-			claim := attachedWorkerClaimFixture(enrollment, enrollment.CreatedAt.Add(time.Second), byte(len(test.name)+2))
+			claim := attachedWorkerClaimFixture(enrollment, byte(len(test.name)+2))
 			test.adjust(&enrollment, &claim)
 			result, err := store.ClaimAttachedWorkerEnrollment(ctx, claim)
 			if err != nil || result.Status != test.want {
@@ -143,9 +150,17 @@ func TestAttachedWorkerEnrollmentClaimIsAtomicAndFailClosed(t *testing.T) {
 			}
 		})
 	}
+	expiredEnrollment, expiredAudit := attachedWorkerEnrollmentFixture("expired", tenantID, ownerID, now.Add(-2*time.Minute))
+	if err := store.CreateAttachedWorkerEnrollment(ctx, expiredEnrollment, expiredAudit); err != nil {
+		t.Fatal(err)
+	}
+	expired, err := store.ClaimAttachedWorkerEnrollment(ctx, attachedWorkerClaimFixture(expiredEnrollment, 7))
+	if err != nil || expired.Status != ports.AttachedWorkerExpired {
+		t.Fatalf("expired claim = %#v, %v", expired, err)
+	}
 
-	badProofDerivedWorker := attachedWorkerClaimFixture(enrollment, now.Add(time.Second), 9)
-	badProofDerivedWorker.Worker.IdentityPublicKey = []byte("not-an-ed25519-key")
+	badProofDerivedWorker := attachedWorkerClaimFixture(enrollment, 9)
+	badProofDerivedWorker.IdentityPublicKey = []byte("not-an-ed25519-key")
 	if _, err := store.ClaimAttachedWorkerEnrollment(ctx, badProofDerivedWorker); err == nil {
 		t.Fatal("invalid proof-derived identity key was accepted")
 	}
@@ -161,11 +176,11 @@ func TestAttachedWorkerCASRevocationOwnerScopeAndBoundedPagination(t *testing.T)
 
 	var workers []domain.AttachedWorker
 	for index, suffix := range []string{"a", "b", "c"} {
-		enrollment, audit := attachedWorkerEnrollmentFixture(suffix, tenantID, ownerID, now.Add(time.Duration(index)*time.Minute))
+		enrollment, audit := attachedWorkerEnrollmentFixture(suffix, tenantID, ownerID, now.Add(-time.Duration(index+1)*time.Second))
 		if err := store.CreateAttachedWorkerEnrollment(ctx, enrollment, audit); err != nil {
 			t.Fatal(err)
 		}
-		claim := attachedWorkerClaimFixture(enrollment, enrollment.CreatedAt.Add(time.Second), byte(index+1))
+		claim := attachedWorkerClaimFixture(enrollment, byte(index+1))
 		result, err := store.ClaimAttachedWorkerEnrollment(ctx, claim)
 		if err != nil || result.Status != ports.AttachedWorkerClaimed {
 			t.Fatalf("claim %s = %#v, %v", suffix, result, err)
@@ -337,25 +352,13 @@ func attachedWorkerEnrollmentFixture(
 
 func attachedWorkerClaimFixture(
 	enrollment domain.AttachedWorkerEnrollment,
-	at time.Time,
 	keyByte byte,
 ) ports.AttachedWorkerClaimMutation {
-	worker := domain.AttachedWorker{
-		TenantID: enrollment.TenantID, OwnerUserID: enrollment.OwnerUserID, ID: enrollment.WorkerID,
-		DisplayName: enrollment.DisplayName, IdentityPublicKey: bytes.Repeat([]byte{keyByte}, ed25519.PublicKeySize),
-		EnrollmentGeneration: 1, DesiredState: domain.AttachedWorkerDesiredActive,
-		ObservedState: domain.AttachedWorkerObservedOffline, Revision: 1, CreatedAt: at, UpdatedAt: at,
-	}
-	audit := domain.AttachedWorkerAuditEvent{
-		Version:  domain.AttachedWorkerAuditEventVersionV1,
-		TenantID: enrollment.TenantID, OwnerUserID: enrollment.OwnerUserID, WorkerID: enrollment.WorkerID,
-		EnrollmentID: enrollment.ID, Action: domain.AttachedWorkerAuditEnrollmentClaimed,
-		WorkerRevision: 1, EnrollmentGeneration: 1, OccurredAt: at,
-	}
 	return ports.AttachedWorkerClaimMutation{
 		TenantID: enrollment.TenantID, OwnerUserID: enrollment.OwnerUserID, EnrollmentID: enrollment.ID,
 		ExpectedEnrollmentRevision: enrollment.Revision, PresentedAudience: enrollment.Audience,
-		PresentedDigest: enrollment.BootstrapDigest, Worker: worker, Audit: audit, At: at,
+		PresentedDigest:   enrollment.BootstrapDigest,
+		IdentityPublicKey: bytes.Repeat([]byte{keyByte}, ed25519.PublicKeySize),
 	}
 }
 

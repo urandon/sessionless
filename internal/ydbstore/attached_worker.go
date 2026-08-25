@@ -3,13 +3,13 @@ package ydbstore
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
-	"reflect"
 	"strings"
 	"time"
 
@@ -33,6 +33,8 @@ func (store *Store) CreateAttachedWorkerEnrollment(
 	enrollment domain.AttachedWorkerEnrollment,
 	audit domain.AttachedWorkerAuditEvent,
 ) error {
+	enrollment = canonicalAttachedWorkerEnrollment(enrollment)
+	audit = canonicalAttachedWorkerAuditEvent(audit)
 	if err := validateAttachedWorkerEnrollmentCreate(enrollment, audit); err != nil {
 		return err
 	}
@@ -99,6 +101,7 @@ func (store *Store) ClaimAttachedWorkerEnrollment(
 	ctx context.Context,
 	mutation ports.AttachedWorkerClaimMutation,
 ) (result ports.AttachedWorkerClaimResult, err error) {
+	mutation = canonicalAttachedWorkerClaimMutation(mutation)
 	if err := validateAttachedWorkerClaimMutation(mutation); err != nil {
 		return result, err
 	}
@@ -123,10 +126,22 @@ func (store *Store) ClaimAttachedWorkerEnrollment(
 			return nil
 		}
 		if !enrollment.ConsumedAt.IsZero() {
+			applied, worker, err := reconcileAttachedWorkerClaimTx(ctx, tx, enrollment, mutation)
+			if err != nil {
+				return err
+			}
+			if applied {
+				result = ports.AttachedWorkerClaimResult{Status: ports.AttachedWorkerClaimed, Worker: worker}
+				return nil
+			}
 			result = ports.AttachedWorkerClaimResult{Status: ports.AttachedWorkerConsumed}
 			return nil
 		}
-		if !mutation.At.Before(enrollment.ExpiresAt) {
+		attemptAt, err := store.attachedWorkerTransactionTime(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if attachedWorkerClaimExpired(attemptAt, enrollment.ExpiresAt) {
 			result = ports.AttachedWorkerClaimResult{Status: ports.AttachedWorkerExpired}
 			return nil
 		}
@@ -134,28 +149,25 @@ func (store *Store) ClaimAttachedWorkerEnrollment(
 			result = ports.AttachedWorkerClaimResult{Status: ports.AttachedWorkerConflict}
 			return nil
 		}
-		if enrollment.WorkerID != mutation.Worker.ID || enrollment.DisplayName != mutation.Worker.DisplayName {
-			result = ports.AttachedWorkerClaimResult{Status: ports.AttachedWorkerConflict}
-			return nil
-		}
-		if _, workerFound, err := readAttachedWorkerTx(ctx, tx, mutation.OwnerUserID, mutation.Worker.ID); err != nil {
+		if _, workerFound, err := readAttachedWorkerTx(ctx, tx, mutation.OwnerUserID, enrollment.WorkerID); err != nil {
 			return err
 		} else if workerFound {
 			result = ports.AttachedWorkerClaimResult{Status: ports.AttachedWorkerConflict}
 			return nil
 		}
-		enrollment.ConsumedAt = mutation.At
+		worker, audit := attachedWorkerClaimTarget(enrollment, mutation, attemptAt)
+		enrollment.ConsumedAt = attemptAt
 		enrollment.Revision++
 		if err := updateAttachedWorkerEnrollmentTx(ctx, tx, enrollment); err != nil {
 			return err
 		}
-		if err := insertAttachedWorkerTx(ctx, tx, mutation.Worker); err != nil {
+		if err := insertAttachedWorkerTx(ctx, tx, worker); err != nil {
 			return err
 		}
-		if err := insertAttachedWorkerAuditEventTx(ctx, tx, mutation.Audit); err != nil {
+		if err := insertAttachedWorkerAuditEventTx(ctx, tx, audit); err != nil {
 			return err
 		}
-		result = ports.AttachedWorkerClaimResult{Status: ports.AttachedWorkerClaimed, Worker: mutation.Worker}
+		result = ports.AttachedWorkerClaimResult{Status: ports.AttachedWorkerClaimed, Worker: worker}
 		return nil
 	})
 	return result, err
@@ -231,6 +243,7 @@ func (store *Store) CompareAndSwapAttachedWorker(
 	ctx context.Context,
 	mutation ports.AttachedWorkerCASMutation,
 ) (swapped bool, err error) {
+	mutation = canonicalAttachedWorkerCASMutation(mutation)
 	if err := validateAttachedWorkerCASMutation(mutation); err != nil {
 		return false, err
 	}
@@ -240,7 +253,21 @@ func (store *Store) CompareAndSwapAttachedWorker(
 		if err != nil {
 			return err
 		}
-		if !found || current.Revision != mutation.ExpectedRevision {
+		if !found {
+			swapped = false
+			return nil
+		}
+		if current.Revision == mutation.ExpectedRevision+1 {
+			audit, auditFound, err := readAttachedWorkerAuditEventTx(
+				ctx, tx, mutation.Next.OwnerUserID, mutation.Next.ID, mutation.Next.Revision,
+			)
+			if err != nil {
+				return err
+			}
+			swapped = auditFound && sameAppliedAttachedWorkerMutation(current, audit, mutation.Next, mutation.Audit)
+			return nil
+		}
+		if current.Revision != mutation.ExpectedRevision {
 			swapped = false
 			return nil
 		}
@@ -263,6 +290,7 @@ func (store *Store) RevokeAttachedWorker(
 	ctx context.Context,
 	mutation ports.AttachedWorkerRevokeMutation,
 ) (revoked bool, err error) {
+	mutation = canonicalAttachedWorkerRevokeMutation(mutation)
 	if err := validateAttachedWorkerRevokeMutation(mutation); err != nil {
 		return false, err
 	}
@@ -272,7 +300,21 @@ func (store *Store) RevokeAttachedWorker(
 		if err != nil {
 			return err
 		}
-		if !found || current.Revision != mutation.ExpectedRevision {
+		if !found {
+			revoked = false
+			return nil
+		}
+		if current.Revision == mutation.ExpectedRevision+1 {
+			audit, auditFound, err := readAttachedWorkerAuditEventTx(
+				ctx, tx, mutation.OwnerUserID, mutation.WorkerID, mutation.Next.Revision,
+			)
+			if err != nil {
+				return err
+			}
+			revoked = auditFound && sameAppliedAttachedWorkerMutation(current, audit, mutation.Next, mutation.Audit)
+			return nil
+		}
+		if current.Revision != mutation.ExpectedRevision {
 			revoked = false
 			return nil
 		}
@@ -408,7 +450,61 @@ func readAttachedWorkerAuditEventTx(
 		return domain.AttachedWorkerAuditEvent{}, false, err
 	}
 	event.WorkerRevision = workerRevision
+	event = canonicalAttachedWorkerAuditEvent(event)
+	if err := event.Validate(); err != nil {
+		return domain.AttachedWorkerAuditEvent{}, false, err
+	}
 	return event, true, nil
+}
+
+func (store *Store) attachedWorkerTransactionTime(ctx context.Context, tx *stateTx) (time.Time, error) {
+	now := store.attachedWorkerNow
+	if now == nil {
+		now = currentAttachedWorkerTransactionTime
+	}
+	at, err := now(ctx, tx.sqlTx)
+	if err != nil {
+		return time.Time{}, err
+	}
+	at = canonicalAttachedWorkerTime(at)
+	if at.IsZero() {
+		return time.Time{}, errors.New("attached worker transaction clock returned zero time")
+	}
+	return at, nil
+}
+
+func currentAttachedWorkerTransactionTime(ctx context.Context, tx *sql.Tx) (time.Time, error) {
+	var at time.Time
+	if err := tx.QueryRowContext(ctx, `SELECT CurrentUtcTimestamp()`).Scan(&at); err != nil {
+		return time.Time{}, fmt.Errorf("read attached worker transaction time: %w", err)
+	}
+	return at, nil
+}
+
+func reconcileAttachedWorkerClaimTx(
+	ctx context.Context,
+	tx *stateTx,
+	enrollment domain.AttachedWorkerEnrollment,
+	mutation ports.AttachedWorkerClaimMutation,
+) (bool, domain.AttachedWorker, error) {
+	if enrollment.Revision != mutation.ExpectedEnrollmentRevision+1 {
+		return false, domain.AttachedWorker{}, nil
+	}
+	_, targetAudit := attachedWorkerClaimTarget(enrollment, mutation, enrollment.ConsumedAt)
+	worker, workerFound, err := readAttachedWorkerTx(ctx, tx, mutation.OwnerUserID, enrollment.WorkerID)
+	if err != nil || !workerFound {
+		return false, domain.AttachedWorker{}, err
+	}
+	audit, auditFound, err := readAttachedWorkerAuditEventTx(
+		ctx, tx, mutation.OwnerUserID, enrollment.WorkerID, targetAudit.WorkerRevision,
+	)
+	if err != nil || !auditFound {
+		return false, domain.AttachedWorker{}, err
+	}
+	if !sameAppliedAttachedWorkerClaim(enrollment, worker, audit, mutation) {
+		return false, domain.AttachedWorker{}, nil
+	}
+	return true, worker, nil
 }
 
 func insertAttachedWorkerEnrollmentTx(ctx context.Context, tx *stateTx, enrollment domain.AttachedWorkerEnrollment) error {
@@ -538,30 +634,15 @@ func validateAttachedWorkerClaimMutation(mutation ports.AttachedWorkerClaimMutat
 	if err := validateAttachedWorkerEnrollmentScope(mutation.TenantID, mutation.OwnerUserID, mutation.EnrollmentID); err != nil {
 		return err
 	}
-	if mutation.ExpectedEnrollmentRevision == 0 || mutation.At.IsZero() || strings.TrimSpace(mutation.PresentedAudience) == "" {
-		return domain.ValidationError{Field: "attached_worker_claim", Reason: "requires revision, audience, and time"}
+	if mutation.ExpectedEnrollmentRevision == 0 || mutation.ExpectedEnrollmentRevision == math.MaxUint64 ||
+		strings.TrimSpace(mutation.PresentedAudience) == "" {
+		return domain.ValidationError{Field: "attached_worker_claim", Reason: "requires a bounded revision and audience"}
 	}
 	if err := mutation.PresentedDigest.Validate(); err != nil {
 		return err
 	}
-	if err := mutation.Worker.Validate(); err != nil {
-		return err
-	}
-	if err := mutation.Audit.Validate(); err != nil {
-		return err
-	}
-	if mutation.Worker.TenantID != mutation.TenantID || mutation.Worker.OwnerUserID != mutation.OwnerUserID ||
-		mutation.Worker.Revision != 1 || mutation.Worker.EnrollmentGeneration != 1 ||
-		mutation.Worker.ConnectionGeneration != 0 || mutation.Worker.DesiredState != domain.AttachedWorkerDesiredActive ||
-		mutation.Worker.ObservedState != domain.AttachedWorkerObservedOffline || !mutation.Worker.RevokedAt.IsZero() ||
-		!mutation.Worker.CreatedAt.Equal(mutation.At) || !mutation.Worker.UpdatedAt.Equal(mutation.At) {
-		return domain.ValidationError{Field: "attached_worker_claim.worker", Reason: "must be a pristine initial worker"}
-	}
-	if mutation.Audit.Action != domain.AttachedWorkerAuditEnrollmentClaimed ||
-		mutation.Audit.TenantID != mutation.TenantID || mutation.Audit.OwnerUserID != mutation.OwnerUserID ||
-		mutation.Audit.WorkerID != mutation.Worker.ID || mutation.Audit.EnrollmentID != mutation.EnrollmentID ||
-		!mutation.Audit.OccurredAt.Equal(mutation.At) {
-		return domain.ValidationError{Field: "attached_worker_claim.audit", Reason: "must exactly describe the claimed worker"}
+	if len(mutation.IdentityPublicKey) != ed25519.PublicKeySize {
+		return domain.ValidationError{Field: "attached_worker_claim.identity_public_key", Reason: "must be an Ed25519 public key"}
 	}
 	return nil
 }
@@ -715,6 +796,7 @@ func validateAttachedWorkerList(
 }
 
 func sameAttachedWorkerEnrollment(left, right domain.AttachedWorkerEnrollment) bool {
+	left, right = canonicalAttachedWorkerEnrollment(left), canonicalAttachedWorkerEnrollment(right)
 	return left.TenantID == right.TenantID && left.OwnerUserID == right.OwnerUserID && left.ID == right.ID &&
 		left.WorkerID == right.WorkerID && left.DisplayName == right.DisplayName && left.Audience == right.Audience &&
 		left.BootstrapDigest == right.BootstrapDigest && left.ExpiresAt.Equal(right.ExpiresAt) &&
@@ -722,13 +804,121 @@ func sameAttachedWorkerEnrollment(left, right domain.AttachedWorkerEnrollment) b
 		left.CreatedAt.Equal(right.CreatedAt) && left.Revision == right.Revision
 }
 
+func sameAppliedAttachedWorkerClaim(
+	enrollment domain.AttachedWorkerEnrollment,
+	worker domain.AttachedWorker,
+	audit domain.AttachedWorkerAuditEvent,
+	mutation ports.AttachedWorkerClaimMutation,
+) bool {
+	targetWorker, targetAudit := attachedWorkerClaimTarget(enrollment, mutation, enrollment.ConsumedAt)
+	return enrollment.Revision == mutation.ExpectedEnrollmentRevision+1 &&
+		sameAttachedWorker(worker, targetWorker) && sameAttachedWorkerAuditEvent(audit, targetAudit)
+}
+
+func sameAppliedAttachedWorkerMutation(
+	worker domain.AttachedWorker,
+	audit domain.AttachedWorkerAuditEvent,
+	targetWorker domain.AttachedWorker,
+	targetAudit domain.AttachedWorkerAuditEvent,
+) bool {
+	return sameAttachedWorker(worker, targetWorker) && sameAttachedWorkerAuditEvent(audit, targetAudit)
+}
+
+func attachedWorkerClaimExpired(attemptAt, expiresAt time.Time) bool {
+	return !canonicalAttachedWorkerTime(attemptAt).Before(canonicalAttachedWorkerTime(expiresAt))
+}
+
 func sameAttachedWorkerIdentity(left, right domain.AttachedWorker) bool {
 	return left.TenantID == right.TenantID && left.OwnerUserID == right.OwnerUserID && left.ID == right.ID
 }
 
+func sameAttachedWorker(left, right domain.AttachedWorker) bool {
+	left, right = canonicalAttachedWorker(left), canonicalAttachedWorker(right)
+	return sameAttachedWorkerIdentity(left, right) && left.DisplayName == right.DisplayName &&
+		bytes.Equal(left.IdentityPublicKey, right.IdentityPublicKey) &&
+		left.EnrollmentGeneration == right.EnrollmentGeneration && left.ConnectionGeneration == right.ConnectionGeneration &&
+		left.DesiredState == right.DesiredState && left.ObservedState == right.ObservedState &&
+		left.Revision == right.Revision && left.CreatedAt.Equal(right.CreatedAt) &&
+		left.UpdatedAt.Equal(right.UpdatedAt) && left.RevokedAt.Equal(right.RevokedAt)
+}
+
 func sameAttachedWorkerAuditEvent(left, right domain.AttachedWorkerAuditEvent) bool {
-	left.OccurredAt, right.OccurredAt = left.OccurredAt.UTC(), right.OccurredAt.UTC()
-	return reflect.DeepEqual(left, right)
+	left, right = canonicalAttachedWorkerAuditEvent(left), canonicalAttachedWorkerAuditEvent(right)
+	return left.Version == right.Version && left.TenantID == right.TenantID &&
+		left.OwnerUserID == right.OwnerUserID && left.WorkerID == right.WorkerID &&
+		left.EnrollmentID == right.EnrollmentID && left.Action == right.Action &&
+		left.WorkerRevision == right.WorkerRevision &&
+		left.EnrollmentGeneration == right.EnrollmentGeneration &&
+		left.ConnectionGeneration == right.ConnectionGeneration && left.OccurredAt.Equal(right.OccurredAt)
+}
+
+func canonicalAttachedWorkerEnrollment(enrollment domain.AttachedWorkerEnrollment) domain.AttachedWorkerEnrollment {
+	enrollment.ExpiresAt = canonicalAttachedWorkerTime(enrollment.ExpiresAt)
+	enrollment.RetainUntil = canonicalAttachedWorkerTime(enrollment.RetainUntil)
+	enrollment.ConsumedAt = canonicalAttachedWorkerTime(enrollment.ConsumedAt)
+	enrollment.CreatedAt = canonicalAttachedWorkerTime(enrollment.CreatedAt)
+	return enrollment
+}
+
+func canonicalAttachedWorker(worker domain.AttachedWorker) domain.AttachedWorker {
+	worker.CreatedAt = canonicalAttachedWorkerTime(worker.CreatedAt)
+	worker.UpdatedAt = canonicalAttachedWorkerTime(worker.UpdatedAt)
+	worker.RevokedAt = canonicalAttachedWorkerTime(worker.RevokedAt)
+	return worker
+}
+
+func canonicalAttachedWorkerAuditEvent(event domain.AttachedWorkerAuditEvent) domain.AttachedWorkerAuditEvent {
+	event.OccurredAt = canonicalAttachedWorkerTime(event.OccurredAt)
+	return event
+}
+
+func canonicalAttachedWorkerClaimMutation(mutation ports.AttachedWorkerClaimMutation) ports.AttachedWorkerClaimMutation {
+	mutation.IdentityPublicKey = append([]byte(nil), mutation.IdentityPublicKey...)
+	return mutation
+}
+
+func canonicalAttachedWorkerCASMutation(mutation ports.AttachedWorkerCASMutation) ports.AttachedWorkerCASMutation {
+	mutation.At = canonicalAttachedWorkerTime(mutation.At)
+	mutation.Next = canonicalAttachedWorker(mutation.Next)
+	mutation.Audit = canonicalAttachedWorkerAuditEvent(mutation.Audit)
+	return mutation
+}
+
+func canonicalAttachedWorkerRevokeMutation(mutation ports.AttachedWorkerRevokeMutation) ports.AttachedWorkerRevokeMutation {
+	mutation.At = canonicalAttachedWorkerTime(mutation.At)
+	mutation.Next = canonicalAttachedWorker(mutation.Next)
+	mutation.Audit = canonicalAttachedWorkerAuditEvent(mutation.Audit)
+	return mutation
+}
+
+func attachedWorkerClaimTarget(
+	enrollment domain.AttachedWorkerEnrollment,
+	mutation ports.AttachedWorkerClaimMutation,
+	at time.Time,
+) (domain.AttachedWorker, domain.AttachedWorkerAuditEvent) {
+	at = canonicalAttachedWorkerTime(at)
+	worker := domain.AttachedWorker{
+		TenantID: enrollment.TenantID, OwnerUserID: enrollment.OwnerUserID, ID: enrollment.WorkerID,
+		DisplayName: enrollment.DisplayName, IdentityPublicKey: append([]byte(nil), mutation.IdentityPublicKey...),
+		EnrollmentGeneration: 1, ConnectionGeneration: 0,
+		DesiredState: domain.AttachedWorkerDesiredActive, ObservedState: domain.AttachedWorkerObservedOffline,
+		Revision: 1, CreatedAt: at, UpdatedAt: at,
+	}
+	audit := domain.AttachedWorkerAuditEvent{
+		Version:  domain.AttachedWorkerAuditEventVersionV1,
+		TenantID: enrollment.TenantID, OwnerUserID: enrollment.OwnerUserID,
+		WorkerID: enrollment.WorkerID, EnrollmentID: enrollment.ID,
+		Action:         domain.AttachedWorkerAuditEnrollmentClaimed,
+		WorkerRevision: 1, EnrollmentGeneration: 1, ConnectionGeneration: 0, OccurredAt: at,
+	}
+	return worker, audit
+}
+
+func canonicalAttachedWorkerTime(value time.Time) time.Time {
+	if value.IsZero() {
+		return time.Time{}
+	}
+	return value.UTC().Truncate(time.Microsecond)
 }
 
 func optionalAttachedWorkerTime(value time.Time) any {

@@ -116,13 +116,11 @@ func (service *Service) CreateEnrollment(
 	ownerUserID domain.UserID,
 	request CreateEnrollmentRequest,
 ) (EnrollmentGrant, error) {
-	now := service.clock.Now().UTC()
+	now := canonicalPersistenceTime(service.clock.Now())
 	if err := validateOwnerScope(tenantID, ownerUserID); err != nil {
 		return EnrollmentGrant{}, err
 	}
-	if request.ExpiresAt.Location() != time.UTC {
-		request.ExpiresAt = request.ExpiresAt.UTC()
-	}
+	request.ExpiresAt = canonicalPersistenceTime(request.ExpiresAt)
 	if !request.ExpiresAt.After(now) || request.ExpiresAt.After(now.Add(service.maxTTL)) {
 		return EnrollmentGrant{}, domain.ValidationError{Field: "attached_worker_enrollment.expires_at", Reason: "must be future and within the configured short TTL"}
 	}
@@ -146,7 +144,7 @@ func (service *Service) CreateEnrollment(
 	enrollment := domain.AttachedWorkerEnrollment{
 		TenantID: tenantID, OwnerUserID: ownerUserID, ID: enrollmentID, WorkerID: workerID,
 		DisplayName: request.DisplayName, Audience: request.Audience, BootstrapDigest: secret.Digest(),
-		ExpiresAt: request.ExpiresAt, RetainUntil: request.ExpiresAt.Add(service.retention),
+		ExpiresAt: request.ExpiresAt, RetainUntil: canonicalPersistenceTime(request.ExpiresAt.Add(service.retention)),
 		CreatedAt: now, Revision: 1,
 	}
 	if err := enrollment.Validate(); err != nil {
@@ -167,11 +165,12 @@ func (service *Service) CreateEnrollment(
 }
 
 type ClaimRequest struct {
-	EnrollmentID      domain.AttachedWorkerEnrollmentID
-	Audience          string
-	BootstrapSecret   BootstrapSecret
-	IdentityPublicKey []byte
-	Proof             []byte
+	EnrollmentID               domain.AttachedWorkerEnrollmentID
+	ExpectedEnrollmentRevision uint64
+	Audience                   string
+	BootstrapSecret            BootstrapSecret
+	IdentityPublicKey          []byte
+	Proof                      []byte
 }
 
 func (service *Service) Claim(
@@ -180,7 +179,6 @@ func (service *Service) Claim(
 	ownerUserID domain.UserID,
 	request ClaimRequest,
 ) (domain.AttachedWorker, error) {
-	now := service.clock.Now().UTC()
 	if err := validateOwnerScope(tenantID, ownerUserID); err != nil {
 		return domain.AttachedWorker{}, err
 	}
@@ -201,35 +199,20 @@ func (service *Service) Claim(
 	if request.Audience != enrollment.Audience || !equalDigest(presentedDigest, enrollment.BootstrapDigest) {
 		return domain.AttachedWorker{}, ErrEnrollmentDenied
 	}
-	if !enrollment.ConsumedAt.IsZero() {
-		return domain.AttachedWorker{}, ErrEnrollmentConsumed
+	if request.ExpectedEnrollmentRevision == 0 || request.ExpectedEnrollmentRevision == math.MaxUint64 ||
+		(enrollment.ConsumedAt.IsZero() && enrollment.Revision != request.ExpectedEnrollmentRevision) ||
+		(!enrollment.ConsumedAt.IsZero() && enrollment.Revision != request.ExpectedEnrollmentRevision+1) {
+		return domain.AttachedWorker{}, ErrWorkerConflict
 	}
-	if !now.Before(enrollment.ExpiresAt) {
-		return domain.AttachedWorker{}, ErrEnrollmentExpired
-	}
-	transcript, err := ClaimProofTranscript(enrollment, request.IdentityPublicKey)
+	transcript, err := ClaimProofTranscript(enrollment, request.ExpectedEnrollmentRevision, request.IdentityPublicKey)
 	if err != nil || len(request.Proof) != ed25519.SignatureSize ||
 		!ed25519.Verify(ed25519.PublicKey(request.IdentityPublicKey), transcript, request.Proof) {
 		return domain.AttachedWorker{}, ErrInvalidProof
 	}
-	worker := domain.AttachedWorker{
-		TenantID: tenantID, OwnerUserID: ownerUserID, ID: enrollment.WorkerID,
-		DisplayName: enrollment.DisplayName, IdentityPublicKey: cloneBytes(request.IdentityPublicKey),
-		EnrollmentGeneration: 1, ConnectionGeneration: 0,
-		DesiredState: domain.AttachedWorkerDesiredActive, ObservedState: domain.AttachedWorkerObservedOffline,
-		Revision: 1, CreatedAt: now, UpdatedAt: now,
-	}
-	if err := worker.Validate(); err != nil {
-		return domain.AttachedWorker{}, ErrInvalidProof
-	}
-	audit := auditForWorker(worker, domain.AttachedWorkerAuditEnrollmentClaimed, enrollment.ID, now)
-	if err := audit.Validate(); err != nil {
-		return domain.AttachedWorker{}, ErrBackend
-	}
 	mutation := ports.AttachedWorkerClaimMutation{
 		TenantID: tenantID, OwnerUserID: ownerUserID, EnrollmentID: enrollment.ID,
-		ExpectedEnrollmentRevision: enrollment.Revision, PresentedAudience: request.Audience,
-		PresentedDigest: presentedDigest, Worker: worker, Audit: audit, At: now,
+		ExpectedEnrollmentRevision: request.ExpectedEnrollmentRevision, PresentedAudience: request.Audience,
+		PresentedDigest: presentedDigest, IdentityPublicKey: cloneBytes(request.IdentityPublicKey),
 	}
 	result, err := service.store.ClaimAttachedWorkerEnrollment(ctx, mutation)
 	if err != nil {
@@ -237,7 +220,13 @@ func (service *Service) Claim(
 	}
 	switch result.Status {
 	case ports.AttachedWorkerClaimed:
-		if result.Worker.Validate() != nil || !sameAttachedWorker(result.Worker, worker) {
+		if result.Worker.Validate() != nil || result.Worker.TenantID != tenantID || result.Worker.OwnerUserID != ownerUserID ||
+			result.Worker.ID != enrollment.WorkerID || result.Worker.DisplayName != enrollment.DisplayName ||
+			subtle.ConstantTimeCompare(result.Worker.IdentityPublicKey, request.IdentityPublicKey) != 1 ||
+			result.Worker.Revision != 1 || result.Worker.EnrollmentGeneration != 1 || result.Worker.ConnectionGeneration != 0 ||
+			result.Worker.DesiredState != domain.AttachedWorkerDesiredActive ||
+			result.Worker.ObservedState != domain.AttachedWorkerObservedOffline ||
+			!result.Worker.CreatedAt.Equal(result.Worker.UpdatedAt) || !result.Worker.RevokedAt.IsZero() {
 			return domain.AttachedWorker{}, ErrBackend
 		}
 		return cloneWorker(result.Worker), nil
@@ -254,9 +243,16 @@ func (service *Service) Claim(
 	}
 }
 
-func ClaimProofTranscript(enrollment domain.AttachedWorkerEnrollment, publicKey []byte) ([]byte, error) {
+func ClaimProofTranscript(
+	enrollment domain.AttachedWorkerEnrollment,
+	expectedEnrollmentRevision uint64,
+	publicKey []byte,
+) ([]byte, error) {
 	if err := enrollment.Validate(); err != nil {
 		return nil, err
+	}
+	if expectedEnrollmentRevision == 0 || expectedEnrollmentRevision == math.MaxUint64 {
+		return nil, domain.ValidationError{Field: "attached_worker_claim.expected_enrollment_revision", Reason: "must be bounded and positive"}
 	}
 	if len(publicKey) != ed25519.PublicKeySize {
 		return nil, domain.ValidationError{Field: "attached_worker.identity_public_key", Reason: "must be an Ed25519 public key"}
@@ -264,7 +260,7 @@ func ClaimProofTranscript(enrollment domain.AttachedWorkerEnrollment, publicKey 
 	return lengthPrefixedTranscript(
 		[]byte(claimProofDomain), []byte(enrollment.TenantID), []byte(enrollment.OwnerUserID),
 		[]byte(enrollment.ID), []byte(enrollment.WorkerID), []byte(enrollment.Audience),
-		[]byte(enrollment.BootstrapDigest), publicKey, uint64Bytes(enrollment.Revision),
+		[]byte(enrollment.BootstrapDigest), publicKey, uint64Bytes(expectedEnrollmentRevision),
 		int64Bytes(enrollment.ExpiresAt.UnixNano()),
 	), nil
 }
@@ -371,7 +367,7 @@ func (service *Service) Revoke(
 	if worker.Revision == math.MaxUint64 || worker.EnrollmentGeneration == math.MaxUint64 || worker.ConnectionGeneration == math.MaxUint64 {
 		return domain.AttachedWorker{}, ErrWorkerConflict
 	}
-	now := service.clock.Now().UTC()
+	now := canonicalPersistenceTime(service.clock.Now())
 	next := cloneWorker(worker)
 	next.DesiredState = domain.AttachedWorkerDesiredRevoked
 	next.EnrollmentGeneration++
@@ -468,7 +464,7 @@ func (service *Service) mutateWorker(
 		(action == domain.AttachedWorkerAuditConnectionGenerationAdvanced && worker.ConnectionGeneration == math.MaxUint64) {
 		return domain.AttachedWorker{}, ErrWorkerConflict
 	}
-	now := service.clock.Now().UTC()
+	now := canonicalPersistenceTime(service.clock.Now())
 	next := cloneWorker(worker)
 	if err := mutate(&next, now); err != nil {
 		return domain.AttachedWorker{}, err
@@ -555,6 +551,10 @@ func cloneWorker(worker domain.AttachedWorker) domain.AttachedWorker {
 }
 
 func cloneBytes(value []byte) []byte { return append([]byte(nil), value...) }
+
+func canonicalPersistenceTime(value time.Time) time.Time {
+	return value.UTC().Truncate(time.Microsecond)
+}
 
 func lengthPrefixedTranscript(fields ...[]byte) []byte {
 	size := 0

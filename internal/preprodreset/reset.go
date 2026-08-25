@@ -130,6 +130,7 @@ var applicationTables = []string{
 	"telegram_deliveries_by_run",
 	"checkpoint_objects_by_run",
 	"session_lifecycle_backfill_state",
+	"execution_placement_cutover_state",
 	"dispatch_ready_v2",
 	"dispatch_ready",
 	"dispatch_outbox",

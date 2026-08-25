@@ -497,6 +497,52 @@ func BuildTerminalAckTransitionV1(
 	return frame, post, nil
 }
 
+// RetireCommittedAttemptV1 removes the completed attempt from the canonical
+// machine only after the worker has acknowledged the latest platform frame.
+// The connection envelope and its replay fingerprints remain intact, so an
+// exact duplicate heartbeat is still idempotent while the worker becomes
+// eligible for a distinct next lease offer.
+func RetireCommittedAttemptV1(
+	config MachineConfig,
+	snapshot MachineSnapshotV1,
+) (MachineSnapshotV1, error) {
+	machine, err := RestoreConformanceMachine(config, snapshot)
+	if err != nil || machine.attempt.state != AttemptTerminalCommitted ||
+		machine.worker.ack < machine.platform.sequence {
+		return MachineSnapshotV1{}, protocolError(ErrorConflict)
+	}
+	if err := machine.EraseCommittedAttempt(); err != nil {
+		return MachineSnapshotV1{}, protocolError(ErrorConflict)
+	}
+	post, err := machine.Snapshot()
+	if err != nil {
+		return MachineSnapshotV1{}, protocolError(ErrorConflict)
+	}
+	return post, nil
+}
+
+// RetirePreClaimCancelledAttemptV1 removes an attempt after the durable
+// authority has established that its lease was cancelled before claim and the
+// worker has acknowledged that cancellation. The protocol snapshot alone
+// cannot distinguish pre-claim from post-claim cancellation, so callers must
+// make that distinction from their canonical attempt record before invoking
+// this reducer.
+func RetirePreClaimCancelledAttemptV1(
+	config MachineConfig,
+	snapshot MachineSnapshotV1,
+) (MachineSnapshotV1, error) {
+	machine, err := RestoreConformanceMachine(config, snapshot)
+	if err != nil || machine.attempt.state != AttemptCancelAcked {
+		return MachineSnapshotV1{}, protocolError(ErrorConflict)
+	}
+	machine.attempt = attemptRecord{state: AttemptIdle}
+	post, err := machine.Snapshot()
+	if err != nil {
+		return MachineSnapshotV1{}, protocolError(ErrorConflict)
+	}
+	return post, nil
+}
+
 func exactPersistedCancelFrame(config MachineConfig, machine *ConformanceMachine) (FrameV1, bool) {
 	frame := FrameV1{
 		Version: config.Auth.Version, MessageID: MessageIDV1(DirectionPlatformToWorker, machine.platform.sequence),

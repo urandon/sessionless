@@ -554,6 +554,15 @@ func (service *Service) Exchange(ctx context.Context, bearer ConnectionBearer, b
 	if err != nil {
 		return nil, ErrTransportUnauthorized
 	}
+	// Poll may atomically retire a terminal-committed attempt after observing
+	// this heartbeat's ACK. That advances the connection revision and replaces
+	// only the attempt portion of the canonical snapshot. On an exact HTTP
+	// response retry, the heartbeat is already represented by the current
+	// snapshot; let the transactional broker reauthorize the bearer and poll the
+	// durable result instead of replaying an obsolete AW-03 revision target.
+	if replay && service.attemptBroker != nil && bytes.Equal(encodedSnapshot, connection.ProtocolSnapshot) {
+		return service.pollAttemptFrame(ctx, bearer, connection)
+	}
 	expectedConnectionRevision := connection.Revision
 	if replay {
 		if expectedConnectionRevision == 0 {

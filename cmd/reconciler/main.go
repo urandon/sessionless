@@ -44,6 +44,10 @@ func main() {
 		logger.Error("create state store", "error", err)
 		os.Exit(1)
 	}
+	if err := state.RequireExecutionPlacementCutover(ctx); err != nil {
+		logger.Error("require execution placement cutover", "error", err)
+		os.Exit(1)
+	}
 	queue, err := sqsqueue.New(ctx, sqsqueue.Config{
 		Endpoint:        os.Getenv("QUEUE_ENDPOINT"),
 		Region:          envOrDefault("QUEUE_REGION", "ru-central1"),

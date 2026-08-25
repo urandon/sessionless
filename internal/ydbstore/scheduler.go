@@ -506,6 +506,13 @@ func (store *Store) ExpireQuotaReservation(
 			}
 		}
 		if run.Status == domain.RunQueued {
+			loaded, found, err := loadWorkerJobStateTx(ctx, tx, run.ID)
+			if err != nil {
+				return err
+			}
+			if !found {
+				return domain.ValidationError{Field: "quota expiry worker job", Reason: "is missing"}
+			}
 			if err := run.Transition(domain.RunQuotaBlocked, at); err != nil {
 				return err
 			}
@@ -516,7 +523,10 @@ func (store *Store) ExpireQuotaReservation(
 			if err != nil {
 				return err
 			}
-			if queueDepth > 0 {
+			// Attached-worker admission is delivered directly and never increments
+			// the managed queue counter. Expiring its reservation must not consume
+			// an unrelated managed queue slot for the tenant.
+			if loaded.Job.ExecutionPlacement.Kind == domain.ExecutionPlacementManaged && queueDepth > 0 {
 				queueDepth--
 			}
 			if _, err := tx.sqlTx.ExecContext(ctx,

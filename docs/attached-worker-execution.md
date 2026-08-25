@@ -14,6 +14,16 @@ connection. An offline, expired, revoked, generation-stale, capability-mismatche
 or already-busy worker makes the transaction fail; the dispatch is never put on
 the managed worker queue.
 
+This is an explicit schema cutover, not a runtime compatibility fallback.
+Before the first rollout, stop every dispatch writer and reader, acquire the
+deployment lock, and run `make partition-backfill`. Its serializable cutover
+transaction requires both legacy `dispatch_outbox` and `worker_jobs` empty and
+writes `execution-placement-v1-empty-cutover`. The current no-production-data
+environment must run the typed pre-production reset first; this is a fresh
+environment cutover, not a rolling-upgrade claim. Web BFF, control API,
+reconciler, and worker runtime all refuse startup until the marker exists.
+Missing placement remains invalid in every serving reader.
+
 The same admission transaction creates the canonical WorkerJob, quota
 reservation, attached attempt head, first LeaseOffer message, and deadline. A
 retry-stable lease ID is derived from tenant/run/attempt. The non-renewable
@@ -29,6 +39,9 @@ lease generation, opaque derived fence, input/capability/policy digests and
 protocol attempt watermarks. A bounded directional message ledger stores exact
 frame fingerprints and canonical batches. A 16-bucket composite deadline index
 supports bounded recovery without scanning worker or attempt tables.
+Cancellation messages also retain their acknowledgement deadline; terminal
+evidence and acknowledgements retain authoritative reservation and connection
+identities for replay after the singleton attempt head is reused.
 
 Each state change is one serializable YDB transaction:
 
@@ -45,20 +58,28 @@ Caller-supplied revisions, fence strings, outbound frames, context digests and
 placement are not authority. The store derives them from the current rows and
 canonical protocol reducers. Exact ambiguous-response retries reconcile to the
 already-persisted target; divergent same-ID or same-sequence payloads conflict.
+The context digest commits the loaded input manifest's canonical artifact
+names, media types, blob keys, sizes and SHA-256 values, not merely its mutable
+manifest ID.
 
 ## Cancellation, expiry, and unknown outcomes
 
-Cancellation before claim writes a replayable Cancel but removes the lease
-deadline: the attempt cannot subsequently be claimed and has no remaining
-deadline work. Cancellation after claim records a bounded acknowledgement
-deadline. If that deadline expires without a valid CancelAck, the attempt moves
-to `fenced_unknown` while retaining the original signed Cancel frame and
-protocol snapshot. The platform does not emit a divergent replacement frame or
-claim that the worker process stopped.
+Cancellation before claim writes a replayable Cancel, removes the lease
+deadline, and replaces it with a bounded acknowledgement deadline. The attempt
+cannot subsequently be claimed. If the worker never acknowledges that known
+pre-execution cancellation, expiry atomically advances the worker connection
+generation, supersedes the old connection, and retires the attempt; reuse then
+requires a fresh attachment under the new generation. Cancellation after claim
+also records a bounded acknowledgement deadline. If that deadline expires
+without a valid CancelAck, the attempt moves to `fenced_unknown` while retaining
+the original signed Cancel frame and protocol snapshot. The platform does not
+emit a divergent replacement frame or claim that the worker process stopped.
 
 Lease expiry fences the current attempt under the exact generation and stale
-deadline-row revision. Deadline pagination includes every composite key field,
-so equal microsecond timestamps cannot skip work. `fenced_unknown` blocks
+deadline-row revision. Deadline pages advance using the raw composite key even
+when a corrupt legacy index row is skipped and counted, so one poison row
+cannot block later work. Equal microsecond timestamps cannot skip work.
+`fenced_unknown` blocks
 automatic retry and terminal finalization until a later explicit resolution
 contract exists.
 
@@ -76,8 +97,12 @@ server-side materialization:
 That transaction rechecks the current lease ID and numeric fence, updates the
 canonical run/attempt/reservation and artifacts/events, advances the protocol
 snapshot, and persists the exact TerminalAck. Duplicate completion returns the
-same acknowledgement; a different digest, status, attempt, lease, worker or
-generation is rejected.
+same acknowledgement even after the worker ACK retires the head or a later
+offer replaces it: retained terminal/ack evidence and canonical run
+finalization reconcile the exact request. A different digest, status, attempt,
+lease, worker or generation is rejected. Once the worker ACK covers the exact
+TerminalAck, one transaction erases the committed protocol attempt, marks the
+durable head retired, and makes the connection eligible for a distinct run.
 
 ## Remaining AW-04 gates
 

@@ -122,12 +122,17 @@ func (digest AttachedWorkerContextDigest) Validate() error {
 }
 
 // AttachedWorkerJobContextDigestV1 binds an offer to the exact immutable
-// execution inputs admitted in WorkerJob. It deliberately excludes frontend
+// execution inputs admitted in WorkerJob and the content of its loaded input
+// artifact manifest. It deliberately excludes frontend
 // origin/delivery routing and CreatedAt: those fields cannot change execution
 // authority or worker-visible inputs. AllowedMCPServers is the sole semantic
-// set and is sorted on a clone; every other field retains its typed position.
-func AttachedWorkerJobContextDigestV1(job WorkerJob) (AttachedWorkerContextDigest, error) {
+// set in WorkerJob. Manifest artifacts are a name-keyed semantic set and are
+// sorted by their unique name; every other field retains its typed position.
+func AttachedWorkerJobContextDigestV1(job WorkerJob, manifest ArtifactManifest) (AttachedWorkerContextDigest, error) {
 	if err := validateAttachedWorkerJobContext(job); err != nil {
+		return "", err
+	}
+	if err := validateAttachedWorkerInputManifest(job, manifest); err != nil {
 		return "", err
 	}
 	transcript := []byte("sessionless.attached-worker.job-context.v1\x00")
@@ -161,6 +166,16 @@ func AttachedWorkerJobContextDigestV1(job WorkerJob) (AttachedWorkerContextDiges
 	appendString("attempt_id", string(job.AttemptID))
 	appendString("reservation_id", string(job.ReservationID))
 	appendString("input_manifest_id", string(job.InputManifestID))
+	appendString("input_manifest.tenant_id", string(manifest.TenantID))
+	appendString("input_manifest.run_id", string(manifest.RunID))
+	artifacts := append([]Artifact(nil), manifest.Artifacts...)
+	sort.Slice(artifacts, func(left, right int) bool { return artifacts[left].Name < artifacts[right].Name })
+	appendUint("input_manifest.artifacts.count", uint64(len(artifacts)))
+	for _, artifact := range artifacts {
+		appendString("input_manifest.artifact.name", artifact.Name)
+		appendString("input_manifest.artifact.media_type", artifact.MediaType)
+		appendBlob("input_manifest.artifact.blob", artifact.Blob)
+	}
 	if job.ContextWindow == nil {
 		appendString("context.kind", "snapshot_blob")
 		appendBlob("context.snapshot", job.ContextSnapshot)
@@ -211,6 +226,32 @@ func AttachedWorkerJobContextDigestV1(job WorkerJob) (AttachedWorkerContextDiges
 
 	sum := sha256.Sum256(transcript)
 	return AttachedWorkerContextDigest(hex.EncodeToString(sum[:])), nil
+}
+
+func validateAttachedWorkerInputManifest(job WorkerJob, manifest ArtifactManifest) error {
+	if manifest.ID != job.InputManifestID || manifest.TenantID != job.TenantID || manifest.RunID != job.RunID {
+		return ValidationError{Field: "worker_job.input_manifest", Reason: "must match the admitted job scope"}
+	}
+	if err := manifest.ID.Validate(); err != nil {
+		return err
+	}
+	if manifest.CreatedAt.IsZero() {
+		return ValidationError{Field: "worker_job.input_manifest.created_at", Reason: "must not be zero"}
+	}
+	seen := make(map[string]struct{}, len(manifest.Artifacts))
+	for _, artifact := range manifest.Artifacts {
+		if err := artifact.Validate(); err != nil {
+			return err
+		}
+		if artifact.Blob.TenantID != job.TenantID {
+			return ValidationError{Field: "worker_job.input_manifest.artifact", Reason: "must belong to the admitted tenant"}
+		}
+		if _, exists := seen[artifact.Name]; exists {
+			return ValidationError{Field: "worker_job.input_manifest.artifacts", Reason: "artifact names must be unique"}
+		}
+		seen[artifact.Name] = struct{}{}
+	}
+	return nil
 }
 
 func validateAttachedWorkerJobContext(job WorkerJob) error {
@@ -559,19 +600,22 @@ func (attempt AttachedWorkerAttemptV1) Validate() error {
 }
 
 type AttachedWorkerAttemptMessageV1 struct {
-	Version              uint32                                  `json:"version"`
-	TenantID             TenantID                                `json:"tenant_id"`
-	OwnerUserID          UserID                                  `json:"owner_user_id"`
-	WorkerID             AttachedWorkerID                        `json:"worker_id"`
-	AttemptID            AttemptID                               `json:"attempt_id"`
-	Direction            AttachedWorkerAttemptDirection          `json:"direction"`
-	AttemptSequence      uint64                                  `json:"attempt_sequence"`
-	ConnectionGeneration uint64                                  `json:"connection_generation"`
-	EnvelopeSequence     uint64                                  `json:"envelope_sequence"`
-	Kind                 AttachedWorkerAttemptMessageKind        `json:"kind"`
-	Fingerprint          AttachedWorkerAttemptMessageFingerprint `json:"fingerprint"`
-	Payload              []byte                                  `json:"payload"`
-	CreatedAt            time.Time                               `json:"created_at"`
+	Version                      uint32                                  `json:"version"`
+	TenantID                     TenantID                                `json:"tenant_id"`
+	OwnerUserID                  UserID                                  `json:"owner_user_id"`
+	WorkerID                     AttachedWorkerID                        `json:"worker_id"`
+	AttemptID                    AttemptID                               `json:"attempt_id"`
+	Direction                    AttachedWorkerAttemptDirection          `json:"direction"`
+	AttemptSequence              uint64                                  `json:"attempt_sequence"`
+	ConnectionGeneration         uint64                                  `json:"connection_generation"`
+	EnvelopeSequence             uint64                                  `json:"envelope_sequence"`
+	Kind                         AttachedWorkerAttemptMessageKind        `json:"kind"`
+	Fingerprint                  AttachedWorkerAttemptMessageFingerprint `json:"fingerprint"`
+	Payload                      []byte                                  `json:"payload"`
+	CreatedAt                    time.Time                               `json:"created_at"`
+	OperationDeadline            time.Time                               `json:"operation_deadline,omitempty"`
+	MaterializationReservationID QuotaReservationID                      `json:"materialization_reservation_id,omitempty"`
+	ExecutionConnectionID        AttachedWorkerConnectionID              `json:"execution_connection_id,omitempty"`
 }
 
 func (message AttachedWorkerAttemptMessageV1) Validate() error {
@@ -601,6 +645,23 @@ func (message AttachedWorkerAttemptMessageV1) Validate() error {
 	}
 	if message.CreatedAt.IsZero() {
 		return ValidationError{Field: "attached_worker_attempt_message.created_at", Reason: "must be non-zero"}
+	}
+	if (message.Kind == AttachedWorkerAttemptMessageCancelRequested) != !message.OperationDeadline.IsZero() {
+		return ValidationError{Field: "attached_worker_attempt_message.operation_deadline", Reason: "must be present only for cancellation requests"}
+	}
+	terminalKind := message.Kind == AttachedWorkerAttemptMessageTerminal || message.Kind == AttachedWorkerAttemptMessageTerminalCommitted
+	if terminalKind != (message.MaterializationReservationID != "") {
+		return ValidationError{Field: "attached_worker_attempt_message.materialization_reservation_id", Reason: "must be present only for terminal evidence and acknowledgement"}
+	}
+	if terminalKind {
+		if err := message.MaterializationReservationID.Validate(); err != nil {
+			return err
+		}
+		if err := message.ExecutionConnectionID.Validate(); err != nil {
+			return err
+		}
+	} else if message.ExecutionConnectionID != "" {
+		return ValidationError{Field: "attached_worker_attempt_message.execution_connection_id", Reason: "must be present only for terminal evidence and acknowledgement"}
 	}
 	platformKind := message.Kind == AttachedWorkerAttemptMessageLeaseOffered || message.Kind == AttachedWorkerAttemptMessageLeaseAccepted || message.Kind == AttachedWorkerAttemptMessageCancelRequested || message.Kind == AttachedWorkerAttemptMessageTerminalCommitted
 	if platformKind != (message.Direction == AttachedWorkerAttemptPlatformToWorker) {

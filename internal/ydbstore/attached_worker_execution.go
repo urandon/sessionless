@@ -1,6 +1,7 @@
 package ydbstore
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"database/sql"
@@ -64,7 +65,7 @@ func (store *Store) offerAttachedWorkerAttemptTx(ctx context.Context, tx *stateT
 		result.Status = ports.AttachedWorkerExecutionNotFound
 		return nil
 	}
-	canonicalContextDigest, err := domain.AttachedWorkerJobContextDigestV1(loaded.Job)
+	canonicalContextDigest, err := domain.AttachedWorkerJobContextDigestV1(loaded.Job, loaded.InputManifest)
 	if err != nil {
 		result.Status = ports.AttachedWorkerExecutionDenied
 		return nil
@@ -200,7 +201,7 @@ func (store *Store) PollAttachedWorkerAttempt(ctx context.Context, request ports
 			result.Status = ports.AttachedWorkerExecutionDenied
 			return nil
 		}
-		_, snapshot, err := loadAttachedWorkerProtocolAuthorityTx(ctx, tx, worker, connection)
+		config, snapshot, err := loadAttachedWorkerProtocolAuthorityTx(ctx, tx, worker, connection)
 		if err != nil {
 			return err
 		}
@@ -230,6 +231,37 @@ func (store *Store) PollAttachedWorkerAttempt(ctx context.Context, request ports
 			return ErrAttachedWorkerAttemptConflict
 		}
 		if !attachedWorkerPollFramePending(snapshot.Worker.Ack, frame.Sequence) {
+			if attempt.State == domain.AttachedWorkerAttemptTerminalCommitted {
+				post, retireErr := attachedworkerprotocol.RetireCommittedAttemptV1(config, snapshot)
+				if retireErr != nil {
+					return ErrAttachedWorkerAttemptConflict
+				}
+				next, retireErr := retireAttachedWorkerCommittedAttempt(attempt, at)
+				if retireErr != nil {
+					return retireErr
+				}
+				oldExpiry := attachedWorkerPresenceExpiry(connection)
+				connection, retireErr = advanceAttachedWorkerConnectionProtocol(connection, post)
+				if retireErr != nil {
+					return retireErr
+				}
+				if err := deleteAttachedWorkerPresenceExpiryTx(ctx, tx, oldExpiry); err != nil {
+					return err
+				}
+				if err := upsertAttachedWorkerConnectionTx(ctx, tx, connection); err != nil {
+					return err
+				}
+				if err := insertAttachedWorkerPresenceExpiryTx(ctx, tx, attachedWorkerPresenceExpiry(connection)); err != nil {
+					return err
+				}
+				if err := compareAndSwapAttachedWorkerAttemptTx(ctx, tx, attempt.Revision, next, at.Add(store.operationalRetention)); err != nil {
+					return err
+				}
+				if err := deleteAttachedWorkerAttemptDeadlinesTx(ctx, tx, attempt); err != nil {
+					return err
+				}
+				attempt = next
+			}
 			result = ports.AttachedWorkerAttemptResult{Status: ports.AttachedWorkerExecutionApplied, Attempt: attempt}
 			return nil
 		}
@@ -243,10 +275,8 @@ func (store *Store) ExchangeAttachedWorkerAttempt(ctx context.Context, request p
 	if err := validateAttachedWorkerAttemptExchange(request); err != nil {
 		return result, err
 	}
-	scope := domain.AttachedWorkerAttemptV1{TenantID: request.TenantID, OwnerUserID: request.OwnerUserID, WorkerID: request.WorkerID, AttemptID: request.AttemptID}
-	inboundMessage, err := attachedWorkerAttemptMessageFromFrame(scope, attachedworkerprotocol.DirectionWorkerToPlatform, request.InboundFrame, time.Unix(1, 0).UTC())
-	if err != nil {
-		return result, err
+	if _, _, ok := attachedWorkerFrameIdentity(request.InboundFrame); !ok {
+		return result, ErrAttachedWorkerAttemptMessageConflict
 	}
 	err = store.Transact(ctx, request.TenantID, func(state ports.StateTx) error {
 		tx := state.(*stateTx)
@@ -256,6 +286,34 @@ func (store *Store) ExchangeAttachedWorkerAttempt(ctx context.Context, request p
 		}
 		if !found || attempt.AttemptID != request.AttemptID {
 			result.Status = ports.AttachedWorkerExecutionNotFound
+			return nil
+		}
+		inboundMessage, err := attachedWorkerAttemptMessageFromFrame(attempt, attachedworkerprotocol.DirectionWorkerToPlatform,
+			request.InboundFrame, time.Unix(1, 0).UTC())
+		if err != nil {
+			return err
+		}
+		at, err := store.attachedWorkerTransactionTime(ctx, tx)
+		if err != nil {
+			return err
+		}
+		worker, workerFound, err := readAttachedWorkerTx(ctx, tx, request.OwnerUserID, request.WorkerID)
+		if err != nil {
+			return err
+		}
+		connection, connectionFound, err := readAttachedWorkerConnectionTx(ctx, tx, request.OwnerUserID, request.WorkerID)
+		if err != nil {
+			return err
+		}
+		// Replay reconciliation is still an authenticated operation. A captured
+		// exact frame must never reveal its stored response after secret rotation,
+		// reconnect, revocation, expiry, or an owner/worker authority change.
+		if !workerFound || !connectionFound || !attachedWorkerExecutionAuthorityCurrent(worker, connection) ||
+			attempt.LeaseGeneration != request.LeaseGeneration || attempt.ConnectionID != request.ConnectionID ||
+			connection.ID != request.ConnectionID || connection.ConnectionGeneration != attempt.ConnectionGeneration ||
+			subtle.ConstantTimeCompare([]byte(connection.SecretDigest), []byte(request.PresentedSecretDigest)) != 1 ||
+			!at.Before(connection.AuthExpiresAt) || !at.Before(connection.PresenceExpiresAt) {
+			result.Status = ports.AttachedWorkerExecutionDenied
 			return nil
 		}
 		storedInbound, replayFound, err := readAttachedWorkerAttemptMessageTx(ctx, tx, inboundMessage)
@@ -278,7 +336,8 @@ func (store *Store) ExchangeAttachedWorkerAttempt(ctx context.Context, request p
 				}
 			}
 			if wantOutbound != "" {
-				key := domain.AttachedWorkerAttemptMessageV1{OwnerUserID: attempt.OwnerUserID, WorkerID: attempt.WorkerID, AttemptID: attempt.AttemptID, Direction: domain.AttachedWorkerAttemptPlatformToWorker, AttemptSequence: attempt.PlatformAttemptSequence}
+				outboundSequence := attachedWorkerReplayOutboundSequence(inboundMessage, attempt.PlatformAttemptSequence)
+				key := domain.AttachedWorkerAttemptMessageV1{OwnerUserID: attempt.OwnerUserID, WorkerID: attempt.WorkerID, AttemptID: attempt.AttemptID, Direction: domain.AttachedWorkerAttemptPlatformToWorker, AttemptSequence: outboundSequence}
 				stored, ok, err := readAttachedWorkerAttemptMessageTx(ctx, tx, key)
 				if err != nil {
 					return err
@@ -298,27 +357,20 @@ func (store *Store) ExchangeAttachedWorkerAttempt(ctx context.Context, request p
 			result.Status = ports.AttachedWorkerExecutionConflict
 			return nil
 		}
-		at, err := store.attachedWorkerTransactionTime(ctx, tx)
-		if err != nil {
-			return err
-		}
 		if !at.Before(attempt.LeaseExpiresAt) {
 			result.Status = ports.AttachedWorkerExecutionExpired
 			return nil
 		}
-		worker, found, err := readAttachedWorkerTx(ctx, tx, request.OwnerUserID, request.WorkerID)
-		if err != nil {
-			return err
+		if attachedWorkerCancellationFrameExpired(attempt, at) {
+			// Once the authoritative acknowledgement deadline is reached only the
+			// deadline-fence transaction may resolve the attempt. A late frame must
+			// not erase the due row and escape the fenced-unknown outcome.
+			result.Status = ports.AttachedWorkerExecutionExpired
+			return nil
 		}
-		connection, connectionFound, err := readAttachedWorkerConnectionTx(ctx, tx, request.OwnerUserID, request.WorkerID)
-		if err != nil {
-			return err
-		}
-		if !found || !connectionFound || !attachedWorkerExecutionAuthorityCurrent(worker, connection) ||
-			connection.ID != request.ConnectionID || connection.Revision == math.MaxUint64 ||
+		if connection.Revision == math.MaxUint64 ||
 			request.InboundFrame.Sequence != connection.WorkerSequence+1 ||
-			connection.ConnectionGeneration != attempt.ConnectionGeneration || subtle.ConstantTimeCompare([]byte(connection.SecretDigest), []byte(request.PresentedSecretDigest)) != 1 ||
-			!at.Before(connection.AuthExpiresAt) || !at.Before(connection.PresenceExpiresAt) {
+			connection.ConnectionGeneration != attempt.ConnectionGeneration {
 			result.Status = ports.AttachedWorkerExecutionDenied
 			return nil
 		}
@@ -360,7 +412,7 @@ func (store *Store) ExchangeAttachedWorkerAttempt(ctx context.Context, request p
 				return err
 			}
 		case domain.AttachedWorkerAttemptMessageProgress:
-			if inboundFrame.Progress == nil || attempt.State != domain.AttachedWorkerAttemptClaimed {
+			if inboundFrame.Progress == nil || !attachedWorkerProgressAllowed(attempt.State) {
 				result.Status = ports.AttachedWorkerExecutionConflict
 				return nil
 			}
@@ -370,16 +422,24 @@ func (store *Store) ExchangeAttachedWorkerAttempt(ctx context.Context, request p
 				result.Status = ports.AttachedWorkerExecutionConflict
 				return nil
 			}
-			next.State = domain.AttachedWorkerAttemptCancelAcknowledged
+			next.State = attachedWorkerStateAfterCancelAck(attempt.State)
+			if next.State == domain.AttachedWorkerAttemptCancelledBeforeClaim {
+				post, err = attachedworkerprotocol.RetirePreClaimCancelledAttemptV1(config, post)
+				if err != nil {
+					result.Status = ports.AttachedWorkerExecutionConflict
+					return nil
+				}
+				next.State = domain.AttachedWorkerAttemptRetired
+			}
 		case domain.AttachedWorkerAttemptMessageTerminal:
 			if inboundFrame.Terminal == nil {
 				result.Status = ports.AttachedWorkerExecutionConflict
 				return nil
 			}
-			next.State = domain.AttachedWorkerAttemptTerminalPending
-			next.TerminalSequence = inboundFrame.Terminal.TerminalSequence
-			next.TerminalStatus = domain.AttachedWorkerTerminalStatus(inboundFrame.Terminal.Status)
-			next.TerminalEvidenceDigest = domain.AttachedWorkerTerminalEvidenceDigest(hex.EncodeToString(inboundFrame.Terminal.EvidenceDigest))
+			if err := applyAttachedWorkerTerminalTransition(&next, attempt.State, *inboundFrame.Terminal, post.Attempt.Summary.State); err != nil {
+				result.Status = ports.AttachedWorkerExecutionConflict
+				return nil
+			}
 		default:
 			result.Status = ports.AttachedWorkerExecutionConflict
 			return nil
@@ -413,15 +473,33 @@ func (store *Store) ExchangeAttachedWorkerAttempt(ctx context.Context, request p
 		}
 		bucket, _ := domain.AttachedWorkerAttemptDeadlineBucketV1(next.TenantID, next.OwnerUserID, next.WorkerID, next.AttemptID)
 		leaseDeadline := domain.AttachedWorkerAttemptDeadlineV1{Bucket: bucket, DeadlineAt: next.LeaseExpiresAt, TenantID: next.TenantID, OwnerUserID: next.OwnerUserID, WorkerID: next.WorkerID, AttemptID: next.AttemptID, Kind: domain.AttachedWorkerDeadlineLeaseExpiry, LeaseGeneration: next.LeaseGeneration, AttemptRevision: next.Revision}
-		if err := upsertAttachedWorkerAttemptDeadlineTx(ctx, tx, leaseDeadline); err != nil {
-			return err
-		}
-		if next.State == domain.AttachedWorkerAttemptCancelAcknowledged || next.State == domain.AttachedWorkerAttemptTerminalPending {
-			cancel := leaseDeadline
-			cancel.Kind, cancel.DeadlineAt = domain.AttachedWorkerDeadlineCancelAck, next.CancelDeadline
-			if !cancel.DeadlineAt.IsZero() {
-				if err := deleteAttachedWorkerAttemptDeadlineTx(ctx, tx, cancel); err != nil {
+		if next.State == domain.AttachedWorkerAttemptCancelledBeforeClaim || next.State == domain.AttachedWorkerAttemptRetired {
+			// The offer was cancelled before any lease claim. A later CancelAck is
+			// durable evidence that the worker observed the cancellation, but it
+			// must not recreate the lease deadline removed by the cancel transaction.
+			if err := deleteAttachedWorkerAttemptDeadlinesTx(ctx, tx, attempt); err != nil {
+				return err
+			}
+		} else {
+			if err := upsertAttachedWorkerAttemptDeadlineTx(ctx, tx, leaseDeadline); err != nil {
+				return err
+			}
+			if next.State == domain.AttachedWorkerAttemptCancelRequested {
+				cancel := leaseDeadline
+				cancel.Kind, cancel.DeadlineAt = domain.AttachedWorkerDeadlineCancelAck, next.CancelDeadline
+				if cancel.DeadlineAt.IsZero() {
+					return ErrAttachedWorkerAttemptConflict
+				}
+				if err := upsertAttachedWorkerAttemptDeadlineTx(ctx, tx, cancel); err != nil {
 					return err
+				}
+			} else if next.State == domain.AttachedWorkerAttemptCancelAcknowledged || next.State == domain.AttachedWorkerAttemptTerminalPending {
+				cancel := leaseDeadline
+				cancel.Kind, cancel.DeadlineAt = domain.AttachedWorkerDeadlineCancelAck, next.CancelDeadline
+				if !cancel.DeadlineAt.IsZero() {
+					if err := deleteAttachedWorkerAttemptDeadlineTx(ctx, tx, cancel); err != nil {
+						return err
+					}
 				}
 			}
 		}
@@ -429,6 +507,106 @@ func (store *Store) ExchangeAttachedWorkerAttempt(ctx context.Context, request p
 		return nil
 	})
 	return result, err
+}
+
+func (store *Store) reconcileRetiredAttachedWorkerTerminalTx(
+	ctx context.Context,
+	tx *stateTx,
+	request ports.AttachedWorkerTerminalCommit,
+	current *domain.AttachedWorkerAttemptV1,
+	result *ports.AttachedWorkerAttemptResult,
+) (bool, error) {
+	ackMessage, ackFound, err := readAttachedWorkerAttemptMessageByKindTx(ctx, tx, request.OwnerUserID, request.WorkerID,
+		request.AttemptID, domain.AttachedWorkerAttemptPlatformToWorker, domain.AttachedWorkerAttemptMessageTerminalCommitted)
+	if err != nil || !ackFound {
+		return false, err
+	}
+	ackFrame, ackDirection, err := decodeAttachedWorkerAttemptFrame(ackMessage)
+	if err != nil || ackDirection != attachedworkerprotocol.DirectionPlatformToWorker || ackFrame.TerminalAck == nil {
+		return false, ErrAttachedWorkerAttemptConflict
+	}
+	ack := ackFrame.TerminalAck
+	terminalMessages, err := readAttachedWorkerAttemptMessagesByKindTx(ctx, tx, request.OwnerUserID, request.WorkerID,
+		request.AttemptID, domain.AttachedWorkerAttemptWorkerToPlatform, domain.AttachedWorkerAttemptMessageTerminal)
+	if err != nil {
+		return false, err
+	}
+	var terminalMessage domain.AttachedWorkerAttemptMessageV1
+	var terminalFrame attachedworkerprotocol.FrameV1
+	matches := 0
+	for _, candidate := range terminalMessages {
+		frame, direction, decodeErr := decodeAttachedWorkerAttemptFrame(candidate)
+		if decodeErr != nil || direction != attachedworkerprotocol.DirectionWorkerToPlatform || frame.Terminal == nil {
+			return false, ErrAttachedWorkerAttemptConflict
+		}
+		terminal := frame.Terminal
+		if sameAttachedWorkerAttemptBinding(terminal.Binding, ack.Binding) &&
+			terminal.Binding.AttemptID == string(request.AttemptID) && terminal.Binding.LeaseGeneration == request.LeaseGeneration &&
+			frame.WorkerID == string(request.WorkerID) && frame.ConnectionGeneration == candidate.ConnectionGeneration &&
+			ack.TerminalSequence == terminal.TerminalSequence && ack.Status == terminal.Status && ack.Result == terminal.Result &&
+			bytes.Equal(ack.EvidenceDigest, terminal.EvidenceDigest) {
+			terminalMessage, terminalFrame = candidate, frame
+			matches++
+		}
+	}
+	if matches != 1 {
+		return false, ErrAttachedWorkerAttemptConflict
+	}
+	binding := terminalFrame.Terminal.Binding
+	if terminalMessage.MaterializationReservationID == "" ||
+		terminalMessage.MaterializationReservationID != ackMessage.MaterializationReservationID ||
+		terminalMessage.MaterializationReservationID != attachedWorkerMaterializationReservationID(request.Materialization) ||
+		terminalMessage.ExecutionConnectionID == "" || terminalMessage.ExecutionConnectionID != ackMessage.ExecutionConnectionID {
+		return false, ErrAttachedWorkerAttemptConflict
+	}
+	evidence, err := attachedWorkerTerminalMaterializationDigest(domain.AttachedWorkerTerminalStatus(terminalFrame.Terminal.Status), request.Materialization)
+	if err != nil || evidence != request.Materialization.EvidenceDigest ||
+		evidence != domain.AttachedWorkerTerminalEvidenceDigest(hex.EncodeToString(terminalFrame.Terminal.EvidenceDigest)) {
+		return false, ErrAttachedWorkerAttemptConflict
+	}
+	reservationID := terminalMessage.MaterializationReservationID
+	at := canonicalAttachedWorkerTime(ackMessage.CreatedAt)
+	createdAt := canonicalAttachedWorkerTime(terminalMessage.CreatedAt)
+	if at.Before(createdAt) {
+		return false, ErrAttachedWorkerAttemptConflict
+	}
+	reconstructed := domain.AttachedWorkerAttemptV1{
+		Version: domain.AttachedWorkerAttemptVersionV1, TenantID: request.TenantID, OwnerUserID: request.OwnerUserID,
+		WorkerID: request.WorkerID, ConnectionID: terminalMessage.ExecutionConnectionID, RunID: domain.RunID(binding.RunID), AttemptID: request.AttemptID,
+		ReservationID: reservationID, LeaseID: domain.LeaseID(binding.LeaseID), LeaseGeneration: binding.LeaseGeneration,
+		FenceToken: domain.AttachedWorkerFenceToken(binding.FenceToken), EnrollmentGeneration: terminalFrame.EnrollmentGeneration,
+		ConnectionGeneration: terminalFrame.ConnectionGeneration, ContextDigest: domain.AttachedWorkerContextDigest(hex.EncodeToString(binding.ContextDigest)),
+		CapabilityDigest: domain.AttachedWorkerCapabilityDigest(hex.EncodeToString(binding.CapabilityDigest)),
+		PolicyDigest:     domain.AttachedWorkerPolicyDigest(hex.EncodeToString(binding.PolicyDigest)), State: domain.AttachedWorkerAttemptRetired,
+		PlatformAttemptSequence: ack.AttemptSequence, WorkerAttemptSequence: terminalFrame.Terminal.AttemptSequence,
+		TerminalSequence: terminalFrame.Terminal.TerminalSequence, TerminalStatus: domain.AttachedWorkerTerminalStatus(terminalFrame.Terminal.Status),
+		TerminalEvidenceDigest: evidence, LeaseExpiresAt: time.UnixMicro(binding.ExpiresAtUnixMicro).UTC(),
+		CreatedAt: createdAt, UpdatedAt: at, Revision: 1,
+	}
+	if reconstructed.Validate() != nil {
+		return false, ErrAttachedWorkerAttemptConflict
+	}
+	if err := validateAttachedWorkerTerminalMaterializationBinding(reconstructed, request.Materialization); err != nil {
+		return false, err
+	}
+	runStatus := domain.RunSucceeded
+	if terminalFrame.Terminal.Status == attachedworkerprotocol.TerminalFailed {
+		runStatus = domain.RunFailed
+	} else if terminalFrame.Terminal.Status == attachedworkerprotocol.TerminalCancelled {
+		runStatus = domain.RunCancelled
+	}
+	matched, err := matchingRunFinalizationTx(ctx, tx, reconstructed.RunID, runStatus, string(evidence))
+	if err != nil || !matched {
+		return false, err
+	}
+	*result = ports.AttachedWorkerAttemptResult{Status: ports.AttachedWorkerExecutionReplayed, Outbound: &ackMessage, Historical: current == nil}
+	if current != nil {
+		if !sameAttachedWorkerRetiredAttemptBinding(*current, reconstructed) {
+			return false, ErrAttachedWorkerAttemptConflict
+		}
+		result.Attempt = *current
+	}
+	return true, nil
 }
 
 func (store *Store) RequestAttachedWorkerCancellation(ctx context.Context, request ports.AttachedWorkerCancellationRequest) (result ports.AttachedWorkerAttemptResult, err error) {
@@ -442,19 +620,40 @@ func (store *Store) RequestAttachedWorkerCancellation(ctx context.Context, reque
 			return err
 		}
 		if !found || attempt.AttemptID != request.AttemptID {
-			result.Status = ports.AttachedWorkerExecutionNotFound
-			return nil
-		}
-		if (attempt.State == domain.AttachedWorkerAttemptCancelRequested || attempt.State == domain.AttachedWorkerAttemptCancelledBeforeClaim) && attempt.CancelRevision == 1 {
-			key := domain.AttachedWorkerAttemptMessageV1{OwnerUserID: attempt.OwnerUserID, WorkerID: attempt.WorkerID, AttemptID: attempt.AttemptID, Direction: domain.AttachedWorkerAttemptPlatformToWorker, AttemptSequence: attempt.PlatformAttemptSequence}
-			message, ok, err := readAttachedWorkerAttemptMessageTx(ctx, tx, key)
+			message, ok, err := readAttachedWorkerAttemptMessageByKindTx(ctx, tx, request.OwnerUserID, request.WorkerID,
+				request.AttemptID, domain.AttachedWorkerAttemptPlatformToWorker, domain.AttachedWorkerAttemptMessageCancelRequested)
 			if err != nil {
 				return err
 			}
-			if !ok || message.Kind != domain.AttachedWorkerAttemptMessageCancelRequested {
+			if !ok {
+				result.Status = ports.AttachedWorkerExecutionNotFound
+				return nil
+			}
+			frame, direction, decodeErr := decodeAttachedWorkerAttemptFrame(message)
+			if decodeErr != nil || direction != attachedworkerprotocol.DirectionPlatformToWorker || frame.Cancel == nil ||
+				frame.Cancel.Code != attachedworkerprotocol.CancelRequested || frame.Cancel.CancelRevision != 1 ||
+				frame.Cancel.Binding.AttemptID != string(request.AttemptID) || frame.Cancel.Binding.LeaseGeneration != request.LeaseGeneration ||
+				frame.WorkerID != string(request.WorkerID) || message.OperationDeadline.IsZero() ||
+				!canonicalAttachedWorkerTime(message.CreatedAt.Add(request.AckTimeout)).Equal(message.OperationDeadline) {
+				result.Status = ports.AttachedWorkerExecutionConflict
+				return nil
+			}
+			result = ports.AttachedWorkerAttemptResult{Status: ports.AttachedWorkerExecutionReplayed, Outbound: &message, Historical: true}
+			return nil
+		}
+		if attachedWorkerCancellationReplayState(attempt.State) && attempt.CancelRevision == 1 && attempt.LeaseGeneration == request.LeaseGeneration {
+			message, ok, err := readAttachedWorkerAttemptMessageByKindTx(ctx, tx, attempt.OwnerUserID, attempt.WorkerID,
+				attempt.AttemptID, domain.AttachedWorkerAttemptPlatformToWorker, domain.AttachedWorkerAttemptMessageCancelRequested)
+			if err != nil {
+				return err
+			}
+			frame, direction, decodeErr := decodeAttachedWorkerAttemptFrame(message)
+			if !ok || decodeErr != nil || direction != attachedworkerprotocol.DirectionPlatformToWorker ||
+				frame.Cancel == nil || frame.Cancel.Code != attachedworkerprotocol.CancelRequested || frame.Cancel.CancelRevision != attempt.CancelRevision {
 				return ErrAttachedWorkerAttemptConflict
 			}
-			if !canonicalAttachedWorkerTime(message.CreatedAt.Add(request.AckTimeout)).Equal(attempt.CancelDeadline) {
+			if !message.OperationDeadline.Equal(attempt.CancelDeadline) ||
+				!canonicalAttachedWorkerTime(message.CreatedAt.Add(request.AckTimeout)).Equal(message.OperationDeadline) {
 				result.Status = ports.AttachedWorkerExecutionConflict
 				return nil
 			}
@@ -504,6 +703,7 @@ func (store *Store) RequestAttachedWorkerCancellation(ctx context.Context, reque
 		next.PlatformAttemptSequence = message.AttemptSequence
 		next.CancelRevision = 1
 		next.CancelDeadline = canonicalAttachedWorkerTime(at.Add(request.AckTimeout))
+		message.OperationDeadline = next.CancelDeadline
 		next.UpdatedAt, next.Revision = at, attempt.Revision+1
 		next.State = domain.AttachedWorkerAttemptCancelRequested
 		if attempt.State == domain.AttachedWorkerAttemptOffered {
@@ -535,9 +735,18 @@ func (store *Store) RequestAttachedWorkerCancellation(ctx context.Context, reque
 			return err
 		}
 		if deadlinePlan.DeleteLease {
-			// The durable cancel frame remains replayable, but the attempt can no
-			// longer be claimed. It therefore has no remaining deadline work.
+			// The attempt can no longer be claimed, so the lease deadline is no
+			// longer authoritative. Keep a bounded cancel-ack deadline: if the
+			// worker disappears before acknowledging the pre-claim cancellation,
+			// the deadline path fences the old connection generation before
+			// retiring the known-unexecuted attempt.
 			if err := deleteAttachedWorkerAttemptDeadlineTx(ctx, tx, deadlinePlan.Lease); err != nil {
+				return err
+			}
+			if deadlinePlan.Cancel == nil {
+				return ErrAttachedWorkerAttemptConflict
+			}
+			if err := upsertAttachedWorkerAttemptDeadlineTx(ctx, tx, *deadlinePlan.Cancel); err != nil {
 				return err
 			}
 		} else {
@@ -563,6 +772,19 @@ func (store *Store) CommitAttachedWorkerTerminal(ctx context.Context, request po
 		attempt, found, err := readAttachedWorkerAttemptTx(ctx, tx, request.OwnerUserID, request.WorkerID)
 		if err != nil {
 			return err
+		}
+		if !found || attempt.AttemptID != request.AttemptID || attempt.State == domain.AttachedWorkerAttemptRetired {
+			var current *domain.AttachedWorkerAttemptV1
+			if found && attempt.AttemptID == request.AttemptID && attempt.State == domain.AttachedWorkerAttemptRetired {
+				current = &attempt
+			}
+			replayed, replayErr := store.reconcileRetiredAttachedWorkerTerminalTx(ctx, tx, request, current, &result)
+			if replayErr != nil {
+				return replayErr
+			}
+			if replayed {
+				return nil
+			}
 		}
 		if !found || attempt.AttemptID != request.AttemptID {
 			result.Status = ports.AttachedWorkerExecutionNotFound
@@ -676,7 +898,8 @@ func (store *Store) FenceAttachedWorkerAttempt(ctx context.Context, request port
 			result.Status = ports.AttachedWorkerExecutionNotFound
 			return nil
 		}
-		if attempt.State == domain.AttachedWorkerAttemptFencedUnknown && attempt.LeaseGeneration == request.LeaseGeneration {
+		if (attempt.State == domain.AttachedWorkerAttemptFencedUnknown || attempt.State == domain.AttachedWorkerAttemptRetired) &&
+			attempt.LeaseGeneration == request.LeaseGeneration {
 			deadlineMatches := request.Reason == ports.AttachedWorkerFenceLeaseExpired && attempt.LeaseExpiresAt.Equal(canonicalAttachedWorkerTime(request.DeadlineAt))
 			if request.Reason == ports.AttachedWorkerFenceCancelAckUnknown {
 				deadlineMatches = attempt.CancelDeadline.Equal(canonicalAttachedWorkerTime(request.DeadlineAt))
@@ -692,6 +915,15 @@ func (store *Store) FenceAttachedWorkerAttempt(ctx context.Context, request port
 			}
 			if !ok || message.Kind != domain.AttachedWorkerAttemptMessageCancelRequested {
 				return ErrAttachedWorkerAttemptConflict
+			}
+			if attempt.State == domain.AttachedWorkerAttemptRetired {
+				frame, direction, decodeErr := decodeAttachedWorkerAttemptFrame(message)
+				if request.Reason != ports.AttachedWorkerFenceCancelAckUnknown || decodeErr != nil ||
+					direction != attachedworkerprotocol.DirectionPlatformToWorker || frame.Cancel == nil ||
+					(frame.Cancel.Code != attachedworkerprotocol.CancelRequested && frame.Cancel.Code != attachedworkerprotocol.CancelFenced) {
+					result.Status = ports.AttachedWorkerExecutionConflict
+					return nil
+				}
 			}
 			result = ports.AttachedWorkerAttemptResult{Status: ports.AttachedWorkerExecutionReplayed, Attempt: attempt, Outbound: &message}
 			return nil
@@ -715,6 +947,81 @@ func (store *Store) FenceAttachedWorkerAttempt(ctx context.Context, request port
 		}
 		if request.Reason == ports.AttachedWorkerFenceCancelAckUnknown && !attempt.CancelDeadline.Equal(deadline) {
 			result.Status = ports.AttachedWorkerExecutionConflict
+			return nil
+		}
+		if attempt.State == domain.AttachedWorkerAttemptCancelledBeforeClaim && request.Reason == ports.AttachedWorkerFenceCancelAckUnknown {
+			worker, workerFound, err := readAttachedWorkerTx(ctx, tx, request.OwnerUserID, request.WorkerID)
+			if err != nil {
+				return err
+			}
+			connection, connectionFound, err := readAttachedWorkerConnectionTx(ctx, tx, request.OwnerUserID, request.WorkerID)
+			if err != nil {
+				return err
+			}
+			if !workerFound || !connectionFound || worker.ConnectionGeneration < attempt.ConnectionGeneration {
+				return ErrAttachedWorkerAttemptConflict
+			}
+			if worker.ConnectionGeneration == attempt.ConnectionGeneration {
+				if connection.ID != attempt.ConnectionID || connection.ConnectionGeneration != attempt.ConnectionGeneration {
+					return ErrAttachedWorkerAttemptConflict
+				}
+				if worker.ConnectionGeneration == math.MaxUint64 || worker.Revision == math.MaxUint64 || connection.Revision == math.MaxUint64 {
+					return ErrAttachedWorkerAttemptConflict
+				}
+				oldExpiry := attachedWorkerPresenceExpiry(connection)
+				worker.ConnectionGeneration++
+				worker.ObservedState = domain.AttachedWorkerObservedOffline
+				worker.Revision++
+				worker.UpdatedAt = at
+				connection.State = domain.AttachedWorkerConnectionSuperseded
+				connection.Revision++
+				if err := worker.Validate(); err != nil {
+					return err
+				}
+				if err := connection.Validate(); err != nil {
+					return err
+				}
+				audit := domain.AttachedWorkerAuditEvent{
+					Version: domain.AttachedWorkerAuditEventVersionV1, TenantID: worker.TenantID, OwnerUserID: worker.OwnerUserID,
+					WorkerID: worker.ID, Action: domain.AttachedWorkerAuditConnectionGenerationAdvanced,
+					WorkerRevision: worker.Revision, EnrollmentGeneration: worker.EnrollmentGeneration,
+					ConnectionGeneration: worker.ConnectionGeneration, OccurredAt: at,
+				}
+				if err := audit.Validate(); err != nil {
+					return err
+				}
+				if err := updateAttachedWorkerTx(ctx, tx, worker); err != nil {
+					return err
+				}
+				if err := insertAttachedWorkerAuditEventTx(ctx, tx, audit); err != nil {
+					return err
+				}
+				if err := deleteAttachedWorkerPresenceExpiryTx(ctx, tx, oldExpiry); err != nil {
+					return err
+				}
+				if err := upsertAttachedWorkerConnectionTx(ctx, tx, connection); err != nil {
+					return err
+				}
+			}
+			next, err := retireUnacknowledgedPreClaimCancellation(attempt, at)
+			if err != nil {
+				return err
+			}
+			if err := compareAndSwapAttachedWorkerAttemptTx(ctx, tx, attempt.Revision, next, at.Add(store.operationalRetention)); err != nil {
+				return err
+			}
+			if err := deleteAttachedWorkerAttemptDeadlinesTx(ctx, tx, attempt); err != nil {
+				return err
+			}
+			message, ok, err := readAttachedWorkerAttemptMessageByKindTx(ctx, tx, attempt.OwnerUserID, attempt.WorkerID,
+				attempt.AttemptID, domain.AttachedWorkerAttemptPlatformToWorker, domain.AttachedWorkerAttemptMessageCancelRequested)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return ErrAttachedWorkerAttemptConflict
+			}
+			result = ports.AttachedWorkerAttemptResult{Status: ports.AttachedWorkerExecutionFenced, Attempt: next, Outbound: &message}
 			return nil
 		}
 		if fenceAttachedWorkerAttemptWithoutProtocolMutation(attempt.State) {
@@ -812,17 +1119,17 @@ func (store *Store) FenceAttachedWorkerAttempt(ctx context.Context, request port
 	return result, err
 }
 
-func (store *Store) ListDueAttachedWorkerAttemptDeadlines(ctx context.Context, bucket uint32, before time.Time, cursor ports.AttachedWorkerAttemptDeadlineCursor, limit uint64) ([]domain.AttachedWorkerAttemptDeadlineV1, error) {
+func (store *Store) ListDueAttachedWorkerAttemptDeadlines(ctx context.Context, bucket uint32, before time.Time, cursor ports.AttachedWorkerAttemptDeadlineCursor, limit uint64) (ports.AttachedWorkerAttemptDeadlinePage, error) {
 	if bucket >= domain.AttachedWorkerAttemptDeadlineBuckets || before.IsZero() || limit == 0 || limit > maxAttachedWorkerAttemptDeadlineListLimit {
-		return nil, domain.ValidationError{Field: "attached_worker_attempt_deadline.list", Reason: "requires a valid bucket, before timestamp, and bounded positive limit"}
+		return ports.AttachedWorkerAttemptDeadlinePage{}, domain.ValidationError{Field: "attached_worker_attempt_deadline.list", Reason: "requires a valid bucket, before timestamp, and bounded positive limit"}
 	}
 	if err := validateAttachedWorkerAttemptDeadlineCursor(cursor); err != nil {
-		return nil, err
+		return ports.AttachedWorkerAttemptDeadlinePage{}, err
 	}
 	before = canonicalAttachedWorkerTime(before)
 	var resultRows *sql.Rows
 	var err error
-	if cursor.DeadlineAt.IsZero() {
+	if !cursor.Present {
 		query := `SELECT shard_bucket,deadline_at,tenant_id,owner_user_id,worker_id,attempt_id,kind,lease_generation,attempt_revision
 		 FROM attached_worker_attempt_deadlines_v1
 		 WHERE shard_bucket=$1 AND deadline_at <= $2
@@ -843,18 +1150,30 @@ func (store *Store) ListDueAttachedWorkerAttemptDeadlines(ctx context.Context, b
 			cursor.TenantID, cursor.OwnerUserID, cursor.WorkerID, cursor.AttemptID, cursor.Kind, limit)
 	}
 	if err != nil {
-		return nil, err
+		return ports.AttachedWorkerAttemptDeadlinePage{}, err
 	}
 	defer resultRows.Close()
-	result := make([]domain.AttachedWorkerAttemptDeadlineV1, 0, limit)
+	page := ports.AttachedWorkerAttemptDeadlinePage{Items: make([]domain.AttachedWorkerAttemptDeadlineV1, 0, limit)}
+	var scanned uint64
 	for resultRows.Next() {
-		item, err := scanAttachedWorkerAttemptDeadline(resultRows)
+		item, err := scanAttachedWorkerAttemptDeadlineRaw(resultRows)
 		if err != nil {
-			return nil, err
+			return ports.AttachedWorkerAttemptDeadlinePage{}, err
 		}
-		result = append(result, item)
+		scanned++
+		page.NextCursor = ports.AttachedWorkerAttemptDeadlineCursor{Present: true, DeadlineAt: item.DeadlineAt, TenantID: item.TenantID,
+			OwnerUserID: item.OwnerUserID, WorkerID: item.WorkerID, AttemptID: item.AttemptID, Kind: item.Kind}
+		if item.Validate() != nil {
+			page.SkippedInvalid++
+			continue
+		}
+		page.Items = append(page.Items, item)
 	}
-	return result, resultRows.Err()
+	if err := resultRows.Err(); err != nil {
+		return ports.AttachedWorkerAttemptDeadlinePage{}, err
+	}
+	page.HasMore = scanned == limit
+	return page, nil
 }
 
 func validateAttachedWorkerAttemptOffer(request ports.AttachedWorkerAttemptOffer) error {
@@ -962,13 +1281,20 @@ func materializeAttachedWorkerTerminalTx(ctx context.Context, state ports.StateT
 	if err := validateAttachedWorkerTerminalMaterializationStatus(attempt.TerminalStatus, materialization); err != nil {
 		return err
 	}
+	if err := validateAttachedWorkerTerminalMaterializationBinding(attempt, materialization); err != nil {
+		return err
+	}
+	evidenceDigest, err := attachedWorkerTerminalMaterializationDigest(attempt.TerminalStatus, materialization)
+	if err != nil || evidenceDigest != attempt.TerminalEvidenceDigest || evidenceDigest != materialization.EvidenceDigest {
+		return ErrAttachedWorkerAttemptConflict
+	}
 	run, canonicalAttempt, reservation, err := loadWorkerTerminalState(ctx, state, tx, attempt.RunID, attempt.AttemptID, attempt.ReservationID)
 	if err != nil {
 		return err
 	}
 	if materialization.Completion != nil {
 		completion := *materialization.Completion
-		if completion.TenantID != attempt.TenantID || completion.RunID != attempt.RunID || completion.AttemptID != attempt.AttemptID || completion.ReservationID != attempt.ReservationID || completion.LeaseID != attempt.LeaseID || completion.Fence != attempt.LeaseGeneration || len(completion.Events) == 0 {
+		if len(completion.Events) == 0 {
 			return ErrAttachedWorkerAttemptConflict
 		}
 		if err := validateCanonicalFinalizationEvents(domain.RunSucceeded, completion.Events); err != nil {
@@ -997,7 +1323,7 @@ func materializeAttachedWorkerTerminalTx(ctx context.Context, state ports.StateT
 			})
 	}
 	failure := *materialization.Failure
-	if failure.TenantID != attempt.TenantID || failure.RunID != attempt.RunID || failure.AttemptID != attempt.AttemptID || failure.ReservationID != attempt.ReservationID || failure.LeaseID != attempt.LeaseID || failure.Fence != attempt.LeaseGeneration || len(failure.Events) == 0 {
+	if len(failure.Events) == 0 {
 		return ErrAttachedWorkerAttemptConflict
 	}
 	runStatus, attemptStatus := domain.RunFailed, domain.AttemptFailed
@@ -1027,6 +1353,40 @@ func materializeAttachedWorkerTerminalTx(ctx context.Context, state ports.StateT
 		})
 }
 
+func validateAttachedWorkerTerminalMaterializationBinding(attempt domain.AttachedWorkerAttemptV1, materialization ports.AttachedWorkerTerminalMaterialization) error {
+	if materialization.Completion != nil {
+		completion := materialization.Completion
+		if completion.TenantID != attempt.TenantID || completion.RunID != attempt.RunID || completion.AttemptID != attempt.AttemptID ||
+			completion.ReservationID != attempt.ReservationID || completion.LeaseID != attempt.LeaseID || completion.Fence != attempt.LeaseGeneration {
+			return ErrAttachedWorkerAttemptConflict
+		}
+		return nil
+	}
+	if materialization.Failure != nil {
+		failure := materialization.Failure
+		if failure.TenantID != attempt.TenantID || failure.RunID != attempt.RunID || failure.AttemptID != attempt.AttemptID ||
+			failure.ReservationID != attempt.ReservationID || failure.LeaseID != attempt.LeaseID || failure.Fence != attempt.LeaseGeneration {
+			return ErrAttachedWorkerAttemptConflict
+		}
+		return nil
+	}
+	return ErrAttachedWorkerAttemptConflict
+}
+
+func sameAttachedWorkerRetiredAttemptBinding(current, reconstructed domain.AttachedWorkerAttemptV1) bool {
+	return current.State == domain.AttachedWorkerAttemptRetired && current.TenantID == reconstructed.TenantID &&
+		current.OwnerUserID == reconstructed.OwnerUserID && current.WorkerID == reconstructed.WorkerID &&
+		current.ConnectionID == reconstructed.ConnectionID && current.RunID == reconstructed.RunID &&
+		current.AttemptID == reconstructed.AttemptID && current.ReservationID == reconstructed.ReservationID &&
+		current.LeaseID == reconstructed.LeaseID && current.LeaseGeneration == reconstructed.LeaseGeneration &&
+		current.FenceToken == reconstructed.FenceToken && current.EnrollmentGeneration == reconstructed.EnrollmentGeneration &&
+		current.ConnectionGeneration == reconstructed.ConnectionGeneration && current.ContextDigest == reconstructed.ContextDigest &&
+		current.CapabilityDigest == reconstructed.CapabilityDigest && current.PolicyDigest == reconstructed.PolicyDigest &&
+		current.PlatformAttemptSequence == reconstructed.PlatformAttemptSequence && current.WorkerAttemptSequence == reconstructed.WorkerAttemptSequence &&
+		current.TerminalSequence == reconstructed.TerminalSequence && current.TerminalStatus == reconstructed.TerminalStatus &&
+		current.TerminalEvidenceDigest == reconstructed.TerminalEvidenceDigest && current.LeaseExpiresAt.Equal(reconstructed.LeaseExpiresAt)
+}
+
 func validateAttachedWorkerTerminalMaterializationStatus(status domain.AttachedWorkerTerminalStatus, materialization ports.AttachedWorkerTerminalMaterialization) error {
 	switch {
 	case materialization.Completion != nil && materialization.Failure == nil && status == domain.AttachedWorkerTerminalSucceeded:
@@ -1038,6 +1398,38 @@ func validateAttachedWorkerTerminalMaterializationStatus(status domain.AttachedW
 	default:
 		return ErrAttachedWorkerAttemptConflict
 	}
+}
+
+// attachedWorkerTerminalMaterializationDigest is the exact content commitment
+// that a worker signs in Terminal evidence. It intentionally reuses the
+// canonical run-finalization identity: status, artifact manifest and ordered
+// event identities. Transport metadata, timestamps and sampled usage are not
+// allowed to change or substitute canonical product output.
+func attachedWorkerTerminalMaterializationDigest(status domain.AttachedWorkerTerminalStatus, materialization ports.AttachedWorkerTerminalMaterialization) (domain.AttachedWorkerTerminalEvidenceDigest, error) {
+	if err := validateAttachedWorkerTerminalMaterializationStatus(status, materialization); err != nil {
+		return "", err
+	}
+	var (
+		runStatus domain.RunStatus
+		manifest  *domain.ArtifactManifest
+		events    []domain.SessionEventDraft
+	)
+	if materialization.Completion != nil {
+		runStatus = domain.RunSucceeded
+		manifest = &materialization.Completion.Manifest
+		events = materialization.Completion.Events
+	} else {
+		runStatus = domain.RunFailed
+		if materialization.Failure.Cancelled {
+			runStatus = domain.RunCancelled
+		}
+		events = materialization.Failure.Events
+	}
+	digest, err := runFinalizationDigest(runStatus, manifest, events)
+	if err != nil {
+		return "", err
+	}
+	return domain.AttachedWorkerTerminalEvidenceDigest(digest), nil
 }
 
 func attachedWorkerOfferEligible(request ports.AttachedWorkerAttemptOffer, worker domain.AttachedWorker, connection domain.AttachedWorkerConnection, loaded ports.WorkerJobState, placement domain.ExecutionPlacementV1, at, expiresAt time.Time) bool {
@@ -1062,6 +1454,117 @@ func attachedWorkerExecutionAuthorityCurrent(worker domain.AttachedWorker, conne
 		connection.State == domain.AttachedWorkerConnectionOnline
 }
 
+func attachedWorkerStateAfterCancelAck(current domain.AttachedWorkerAttemptState) domain.AttachedWorkerAttemptState {
+	if current == domain.AttachedWorkerAttemptCancelledBeforeClaim {
+		return domain.AttachedWorkerAttemptCancelledBeforeClaim
+	}
+	return domain.AttachedWorkerAttemptCancelAcknowledged
+}
+
+func attachedWorkerCancellationReplayState(state domain.AttachedWorkerAttemptState) bool {
+	switch state {
+	case domain.AttachedWorkerAttemptCancelRequested,
+		domain.AttachedWorkerAttemptCancelledBeforeClaim,
+		domain.AttachedWorkerAttemptCancelAcknowledged,
+		domain.AttachedWorkerAttemptTerminalPending,
+		domain.AttachedWorkerAttemptTerminalCommitted,
+		domain.AttachedWorkerAttemptFencedUnknown,
+		domain.AttachedWorkerAttemptRetired:
+		return true
+	default:
+		return false
+	}
+}
+
+func attachedWorkerProgressAllowed(state domain.AttachedWorkerAttemptState) bool {
+	switch state {
+	case domain.AttachedWorkerAttemptClaimed,
+		domain.AttachedWorkerAttemptCancelRequested,
+		domain.AttachedWorkerAttemptCancelAcknowledged:
+		return true
+	default:
+		return false
+	}
+}
+
+func attachedWorkerCancellationFrameExpired(attempt domain.AttachedWorkerAttemptV1, at time.Time) bool {
+	return attempt.State == domain.AttachedWorkerAttemptCancelRequested && !at.Before(attempt.CancelDeadline)
+}
+
+func sameAttachedWorkerAttemptBinding(left, right attachedworkerprotocol.AttemptBindingV1) bool {
+	return left.RunID == right.RunID && left.AttemptID == right.AttemptID && left.LeaseID == right.LeaseID &&
+		left.LeaseGeneration == right.LeaseGeneration && left.FenceToken == right.FenceToken &&
+		left.ExpiresAtUnixMicro == right.ExpiresAtUnixMicro && bytes.Equal(left.ContextDigest, right.ContextDigest) &&
+		bytes.Equal(left.CapabilityDigest, right.CapabilityDigest) && bytes.Equal(left.PolicyDigest, right.PolicyDigest)
+}
+
+func attachedWorkerMaterializationReservationID(materialization ports.AttachedWorkerTerminalMaterialization) domain.QuotaReservationID {
+	if materialization.Completion != nil {
+		return materialization.Completion.ReservationID
+	}
+	if materialization.Failure != nil {
+		return materialization.Failure.ReservationID
+	}
+	return ""
+}
+
+func applyAttachedWorkerTerminalTransition(next *domain.AttachedWorkerAttemptV1, previous domain.AttachedWorkerAttemptState, terminal attachedworkerprotocol.TerminalV1, protocolState attachedworkerprotocol.AttemptState) error {
+	if next == nil {
+		return ErrAttachedWorkerAttemptConflict
+	}
+	switch protocolState {
+	case attachedworkerprotocol.AttemptTerminalPending:
+		next.State = domain.AttachedWorkerAttemptTerminalPending
+		next.TerminalSequence = terminal.TerminalSequence
+		next.TerminalStatus = domain.AttachedWorkerTerminalStatus(terminal.Status)
+		next.TerminalEvidenceDigest = domain.AttachedWorkerTerminalEvidenceDigest(hex.EncodeToString(terminal.EvidenceDigest))
+		return nil
+	case attachedworkerprotocol.AttemptCancelRequested:
+		// The protocol deliberately consumes a crossed non-cancelled terminal
+		// after CancelRequested without making it committable. Preserve the
+		// cancellation head and deadline while the directional fingerprint makes
+		// exact replay idempotent and divergent replay conflicting.
+		if previous != domain.AttachedWorkerAttemptCancelRequested || terminal.Status == attachedworkerprotocol.TerminalCancelled {
+			return ErrAttachedWorkerAttemptConflict
+		}
+		next.State = previous
+		return nil
+	case attachedworkerprotocol.AttemptCancelAcked:
+		// A success/failure terminal may cross an already acknowledged cancel.
+		// The protocol consumes it only for sequence/replay continuity; it is not
+		// committable and must not replace the acknowledged cancellation.
+		if previous != domain.AttachedWorkerAttemptCancelAcknowledged || terminal.Status == attachedworkerprotocol.TerminalCancelled {
+			return ErrAttachedWorkerAttemptConflict
+		}
+		next.State = previous
+		return nil
+	default:
+		return ErrAttachedWorkerAttemptConflict
+	}
+}
+
+func attachedWorkerReplayOutboundSequence(inbound domain.AttachedWorkerAttemptMessageV1, currentPlatformSequence uint64) uint64 {
+	if inbound.Kind == domain.AttachedWorkerAttemptMessageLeaseClaim {
+		// LeaseClaim is attempt sequence 1 and its canonical acceptance is
+		// platform attempt sequence 2. Later progress or cancellation may advance
+		// the head, but an exact duplicate claim reconciles to the original
+		// acceptance rather than whichever platform frame happens to be latest.
+		return inbound.AttemptSequence + 1
+	}
+	return currentPlatformSequence
+}
+
+func retireAttachedWorkerCommittedAttempt(attempt domain.AttachedWorkerAttemptV1, at time.Time) (domain.AttachedWorkerAttemptV1, error) {
+	if attempt.State != domain.AttachedWorkerAttemptTerminalCommitted || attempt.Revision == math.MaxUint64 || at.Before(attempt.UpdatedAt) {
+		return domain.AttachedWorkerAttemptV1{}, ErrAttachedWorkerAttemptConflict
+	}
+	next := attempt
+	next.State = domain.AttachedWorkerAttemptRetired
+	next.UpdatedAt = canonicalAttachedWorkerTime(at)
+	next.Revision++
+	return next, nil
+}
+
 func reconcileAttachedWorkerAttemptOfferTx(ctx context.Context, tx *stateTx, request ports.AttachedWorkerAttemptOffer, existing domain.AttachedWorkerAttemptV1, result *ports.AttachedWorkerAttemptResult) error {
 	if existing.State != domain.AttachedWorkerAttemptOffered || existing.RunID != request.RunID || existing.AttemptID != request.AttemptID || existing.ReservationID != request.ReservationID || existing.LeaseID != request.LeaseID {
 		result.Status = ports.AttachedWorkerExecutionConflict
@@ -1071,7 +1574,7 @@ func reconcileAttachedWorkerAttemptOfferTx(ctx context.Context, tx *stateTx, req
 	if err != nil || !found {
 		return err
 	}
-	contextDigest, err := domain.AttachedWorkerJobContextDigestV1(loaded.Job)
+	contextDigest, err := domain.AttachedWorkerJobContextDigestV1(loaded.Job, loaded.InputManifest)
 	wantTTL, ttlErr := domain.AttachedWorkerLeaseTTLForLimitsV1(loaded.Job.Limits)
 	if err != nil || ttlErr != nil || request.LeaseTTL != wantTTL || existing.LeaseExpiresAt.Sub(existing.CreatedAt) != wantTTL ||
 		loaded.Job.ExecutionPlacement.Kind != domain.ExecutionPlacementAttachedWorker ||

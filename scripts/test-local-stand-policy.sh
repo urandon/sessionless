@@ -313,7 +313,7 @@ export FAKE_CURL_LOG="$test_root/dev-up-curl.log"
 if PATH="$fake_bin:$PATH" sh "$dev_up" >"$test_root/dev-up.out" 2>&1; then
 	fail 'dev-up unexpectedly continued after YDB boot-storage failure'
 fi
-expected_stop='compose --project-name sessionless-dev stop control-api telegram-sender reconciler'
+expected_stop='compose --project-name sessionless-dev stop control-api web-bff telegram-sender reconciler worker-runtime'
 grep -Fx "$expected_stop" "$FAKE_DOCKER_LOG" >/dev/null ||
 	fail 'dev-up did not quiesce existing schema-dependent services before readiness checks'
 stop_line=$(grep -n -Fx "$expected_stop" "$FAKE_DOCKER_LOG" | cut -d: -f1)

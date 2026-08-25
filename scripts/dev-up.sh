@@ -114,7 +114,7 @@ main() {
 	set +a
 
 	printf 'Stopping schema-dependent application services before readiness checks.\n'
-	compose stop control-api telegram-sender reconciler
+	compose stop control-api web-bff telegram-sender reconciler worker-runtime
 
 	printf 'Starting local infrastructure services.\n'
 	compose up --build --detach \
@@ -137,6 +137,12 @@ main() {
 	export YDB_CONNECTION_STRING YDB_ANONYMOUS_CREDENTIALS
 	printf 'Applying the YDB schema before application startup.\n'
 	run_migrations
+	printf 'Committing the explicit execution-placement cutover before application startup.\n'
+	if ! make partition-backfill; then
+		printf '%s\n' 'Execution-placement cutover requires empty dispatch_outbox and worker_jobs.' >&2
+		printf '%s\n' 'For disposable local data, stop the stand and use the documented typed dev reset before retrying.' >&2
+		return 1
+	fi
 
 	printf 'Starting schema-dependent application services.\n'
 	compose up --build --detach \

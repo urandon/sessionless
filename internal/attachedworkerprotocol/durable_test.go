@@ -425,6 +425,69 @@ func TestTerminalAckTransitionDerivesCanonicalTerminal(t *testing.T) {
 		TerminalAckAuthorityV1{NowUnixMicro: fixture.binding.ExpiresAtUnixMicro}); err == nil {
 		t.Fatal("terminal ack accepted at exclusive lease expiry")
 	}
+	if _, err := RetireCommittedAttemptV1(machine.config, post); err == nil {
+		t.Fatal("unacknowledged terminal commit was retired")
+	}
+	heartbeat := FrameV1{
+		Version: fixture.auth.Version, MessageID: MessageIDV1(DirectionWorkerToPlatform, post.Worker.Sequence+1),
+		WorkerID: fixture.auth.WorkerID, EnrollmentGeneration: fixture.auth.EnrollmentGeneration,
+		ConnectionGeneration: fixture.auth.ConnectionGeneration, Sequence: post.Worker.Sequence + 1,
+		Ack: post.Platform.Sequence, Kind: MessageHeartbeat,
+		Heartbeat: &HeartbeatV1{ObservedAtUnixMicro: 1, Available: true, ActiveAttempts: 0},
+	}
+	acknowledged, err := ApplyMachineFrameV1(machine.config, post, DirectionWorkerToPlatform, heartbeat, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retired, err := RetireCommittedAttemptV1(machine.config, acknowledged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retired.Attempt.Summary.State != AttemptIdle || retired.Platform.Sequence != acknowledged.Platform.Sequence ||
+		retired.Worker.Sequence != acknowledged.Worker.Sequence || retired.Worker.Ack != acknowledged.Worker.Ack {
+		t.Fatalf("retired snapshot = %#v", retired)
+	}
+	if _, err := RetireCommittedAttemptV1(machine.config, retired); err == nil {
+		t.Fatal("idle attempt was retired twice")
+	}
+}
+
+func TestPreClaimCancelledAttemptRetiresOnlyAfterAcknowledgement(t *testing.T) {
+	fixture := newProtocolFixture(t)
+	machine := fixture.attachMachine(t)
+	offer := fixture.frame(DirectionPlatformToWorker, MessageLeaseOffer)
+	offer.LeaseOffer = &LeaseOfferV1{Binding: fixture.binding, AttemptSequence: 1}
+	acceptOK(t, machine, DirectionPlatformToWorker, offer, fixture.auth.ChannelBinding)
+	offered, err := machine.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, cancelled, err := BuildCancelTransitionV1(machine.config, offered, CancelAuthorityV1{
+		Revision: 1, Code: CancelRequested, NowUnixMicro: fixture.binding.ExpiresAtUnixMicro - 1,
+	})
+	if err != nil || cancelled.Attempt.Summary.State != AttemptCancelRequested {
+		t.Fatalf("cancelled state=%s err=%v", cancelled.Attempt.Summary.State, err)
+	}
+	if _, err := RetirePreClaimCancelledAttemptV1(machine.config, cancelled); err == nil {
+		t.Fatal("unacknowledged pre-claim cancellation retired")
+	}
+	cancelAck := FrameV1{
+		Version: fixture.auth.Version, MessageID: MessageIDV1(DirectionWorkerToPlatform, cancelled.Worker.Sequence+1),
+		WorkerID: fixture.auth.WorkerID, EnrollmentGeneration: fixture.auth.EnrollmentGeneration,
+		ConnectionGeneration: fixture.auth.ConnectionGeneration, Sequence: cancelled.Worker.Sequence + 1,
+		Ack: cancelled.Platform.Sequence, Kind: MessageCancelAck,
+		CancelAck: &CancelAckV1{Binding: fixture.binding, AttemptSequence: cancelled.Attempt.Worker.Sequence + 1, CancelRevision: 1},
+	}
+	acknowledged, err := ApplyMachineFrameV1(machine.config, cancelled, DirectionWorkerToPlatform, cancelAck,
+		fixture.binding.ExpiresAtUnixMicro-1)
+	if err != nil || acknowledged.Attempt.Summary.State != AttemptCancelAcked {
+		t.Fatalf("acknowledged state=%s err=%v", acknowledged.Attempt.Summary.State, err)
+	}
+	retired, err := RetirePreClaimCancelledAttemptV1(machine.config, acknowledged)
+	if err != nil || retired.Attempt.Summary.State != AttemptIdle ||
+		retired.Platform.Sequence != acknowledged.Platform.Sequence || retired.Worker.Sequence != acknowledged.Worker.Sequence {
+		t.Fatalf("retired snapshot=%+v err=%v", retired, err)
+	}
 }
 
 func TestMachineSnapshotCodecIsStrictAndCanonical(t *testing.T) {

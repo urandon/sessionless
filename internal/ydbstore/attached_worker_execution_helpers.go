@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -37,7 +38,11 @@ func planAttachedWorkerCancellationDeadlines(previous, next domain.AttachedWorke
 		AttemptRevision: previous.Revision,
 	}
 	if previous.State == domain.AttachedWorkerAttemptOffered {
-		return attachedWorkerCancellationDeadlinePlan{Lease: lease, DeleteLease: true}, nil
+		cancel := lease
+		cancel.Kind = domain.AttachedWorkerDeadlineCancelAck
+		cancel.DeadlineAt = next.CancelDeadline
+		cancel.AttemptRevision = next.Revision
+		return attachedWorkerCancellationDeadlinePlan{Lease: lease, Cancel: &cancel, DeleteLease: true}, nil
 	}
 	lease.AttemptRevision = next.Revision
 	cancel := lease
@@ -46,10 +51,23 @@ func planAttachedWorkerCancellationDeadlines(previous, next domain.AttachedWorke
 	return attachedWorkerCancellationDeadlinePlan{Lease: lease, Cancel: &cancel}, nil
 }
 
+func retireUnacknowledgedPreClaimCancellation(attempt domain.AttachedWorkerAttemptV1, at time.Time) (domain.AttachedWorkerAttemptV1, error) {
+	at = canonicalAttachedWorkerTime(at)
+	if attempt.State != domain.AttachedWorkerAttemptCancelledBeforeClaim || attempt.Revision == math.MaxUint64 ||
+		attempt.CancelDeadline.IsZero() || at.Before(attempt.CancelDeadline) {
+		return domain.AttachedWorkerAttemptV1{}, ErrAttachedWorkerAttemptConflict
+	}
+	next := attempt
+	next.State = domain.AttachedWorkerAttemptRetired
+	next.UpdatedAt = at
+	next.Revision++
+	return next, nil
+}
+
 func fenceAttachedWorkerAttemptWithoutProtocolMutation(state domain.AttachedWorkerAttemptState) bool {
 	// A signed CancelRequested frame already commits its revision and code.
 	// Deadline fencing must not replace it with a divergent CancelFenced frame.
-	return state == domain.AttachedWorkerAttemptCancelRequested
+	return state == domain.AttachedWorkerAttemptCancelRequested || state == domain.AttachedWorkerAttemptCancelAcknowledged
 }
 
 func fenceAttachedWorkerCommittedCancel(attempt domain.AttachedWorkerAttemptV1, at time.Time) (domain.AttachedWorkerAttemptV1, error) {
@@ -172,6 +190,97 @@ func readAttachedWorkerAttemptMessageTx(ctx context.Context, tx *stateTx, scope 
 	return value, true, nil
 }
 
+func readAttachedWorkerAttemptMessageByKindTx(
+	ctx context.Context,
+	tx *stateTx,
+	owner domain.UserID,
+	worker domain.AttachedWorkerID,
+	attempt domain.AttemptID,
+	direction domain.AttachedWorkerAttemptDirection,
+	kind domain.AttachedWorkerAttemptMessageKind,
+) (domain.AttachedWorkerAttemptMessageV1, bool, error) {
+	rows, err := tx.sqlTx.QueryContext(ctx,
+		`SELECT payload FROM attached_worker_attempt_messages
+		 WHERE tenant_id=$1 AND owner_user_id=$2 AND worker_id=$3 AND attempt_id=$4
+		       AND direction=$5 AND kind=$6
+		 ORDER BY attempt_sequence LIMIT 2`,
+		tx.tenantID, owner, worker, attempt, direction, kind)
+	if err != nil {
+		return domain.AttachedWorkerAttemptMessageV1{}, false, err
+	}
+	defer rows.Close()
+	var result domain.AttachedWorkerAttemptMessageV1
+	count := 0
+	for rows.Next() {
+		var payload string
+		if err := rows.Scan(&payload); err != nil {
+			return domain.AttachedWorkerAttemptMessageV1{}, false, err
+		}
+		count++
+		if count > 1 {
+			return domain.AttachedWorkerAttemptMessageV1{}, false, ErrAttachedWorkerAttemptMessageConflict
+		}
+		if err := json.Unmarshal([]byte(payload), &result); err != nil {
+			return domain.AttachedWorkerAttemptMessageV1{}, false, err
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return domain.AttachedWorkerAttemptMessageV1{}, false, err
+	}
+	if count == 0 {
+		return domain.AttachedWorkerAttemptMessageV1{}, false, nil
+	}
+	if result.Validate() != nil || result.TenantID != tx.tenantID || result.OwnerUserID != owner ||
+		result.WorkerID != worker || result.AttemptID != attempt || result.Direction != direction || result.Kind != kind {
+		return domain.AttachedWorkerAttemptMessageV1{}, false, ErrAttachedWorkerAttemptMessageConflict
+	}
+	return result, true, nil
+}
+
+func readAttachedWorkerAttemptMessagesByKindTx(
+	ctx context.Context,
+	tx *stateTx,
+	owner domain.UserID,
+	worker domain.AttachedWorkerID,
+	attempt domain.AttemptID,
+	direction domain.AttachedWorkerAttemptDirection,
+	kind domain.AttachedWorkerAttemptMessageKind,
+) ([]domain.AttachedWorkerAttemptMessageV1, error) {
+	rows, err := tx.sqlTx.QueryContext(ctx,
+		`SELECT payload FROM attached_worker_attempt_messages
+		 WHERE tenant_id=$1 AND owner_user_id=$2 AND worker_id=$3 AND attempt_id=$4
+		       AND direction=$5 AND kind=$6
+		 ORDER BY attempt_sequence LIMIT 65`,
+		tx.tenantID, owner, worker, attempt, direction, kind)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]domain.AttachedWorkerAttemptMessageV1, 0, 2)
+	for rows.Next() {
+		if len(result) == attachedworkerprotocol.MaxAttemptMessages {
+			return nil, ErrAttachedWorkerAttemptMessageConflict
+		}
+		var payload string
+		if err := rows.Scan(&payload); err != nil {
+			return nil, err
+		}
+		var value domain.AttachedWorkerAttemptMessageV1
+		if err := json.Unmarshal([]byte(payload), &value); err != nil {
+			return nil, err
+		}
+		if value.Validate() != nil || value.TenantID != tx.tenantID || value.OwnerUserID != owner ||
+			value.WorkerID != worker || value.AttemptID != attempt || value.Direction != direction || value.Kind != kind {
+			return nil, ErrAttachedWorkerAttemptMessageConflict
+		}
+		result = append(result, value)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 func insertOrReconcileAttachedWorkerAttemptMessageTx(ctx context.Context, tx *stateTx, message domain.AttachedWorkerAttemptMessageV1, retainUntil time.Time) (bool, error) {
 	message.CreatedAt = canonicalAttachedWorkerTime(message.CreatedAt)
 	retainUntil = canonicalAttachedWorkerTime(retainUntil)
@@ -214,7 +323,10 @@ func sameAttachedWorkerAttemptMessage(left, right domain.AttachedWorkerAttemptMe
 		left.AttemptSequence == right.AttemptSequence &&
 		left.ConnectionGeneration == right.ConnectionGeneration &&
 		left.EnvelopeSequence == right.EnvelopeSequence && left.Kind == right.Kind &&
-		left.Fingerprint == right.Fingerprint && bytes.Equal(left.Payload, right.Payload)
+		left.Fingerprint == right.Fingerprint && bytes.Equal(left.Payload, right.Payload) &&
+		left.OperationDeadline.Equal(right.OperationDeadline) &&
+		left.MaterializationReservationID == right.MaterializationReservationID &&
+		left.ExecutionConnectionID == right.ExecutionConnectionID
 }
 
 func upsertAttachedWorkerAttemptDeadlineTx(ctx context.Context, tx *stateTx, deadline domain.AttachedWorkerAttemptDeadlineV1) error {
@@ -270,31 +382,22 @@ func deleteAttachedWorkerAttemptDeadlinesTx(ctx context.Context, tx *stateTx, at
 }
 
 func validateAttachedWorkerAttemptDeadlineCursor(cursor ports.AttachedWorkerAttemptDeadlineCursor) error {
-	if cursor.DeadlineAt.IsZero() {
+	if !cursor.Present {
 		if cursor.TenantID != "" || cursor.OwnerUserID != "" || cursor.WorkerID != "" || cursor.AttemptID != "" || cursor.Kind != "" {
 			return domain.ValidationError{Field: "attached_worker_attempt_deadline.cursor", Reason: "zero cursor must have empty routing fields"}
 		}
+		if !cursor.DeadlineAt.IsZero() {
+			return domain.ValidationError{Field: "attached_worker_attempt_deadline.cursor", Reason: "absent cursor must have a zero timestamp"}
+		}
 		return nil
 	}
-	if err := cursor.TenantID.Validate(); err != nil {
-		return err
-	}
-	if err := cursor.OwnerUserID.Validate(); err != nil {
-		return err
-	}
-	if err := cursor.WorkerID.Validate(); err != nil {
-		return err
-	}
-	if err := cursor.AttemptID.Validate(); err != nil {
-		return err
-	}
-	if !cursor.Kind.Valid() {
-		return domain.ValidationError{Field: "attached_worker_attempt_deadline.cursor.kind", Reason: "is unknown"}
-	}
+	// A cursor is an opaque physical-key continuation token, not domain
+	// authority. Present explicitly distinguishes a raw all-zero/empty key from
+	// the initial cursor, so every poison physical key remains representable.
 	return nil
 }
 
-func scanAttachedWorkerAttemptDeadline(rows *sql.Rows) (domain.AttachedWorkerAttemptDeadlineV1, error) {
+func scanAttachedWorkerAttemptDeadlineRaw(rows *sql.Rows) (domain.AttachedWorkerAttemptDeadlineV1, error) {
 	var value domain.AttachedWorkerAttemptDeadlineV1
 	err := rows.Scan(&value.Bucket, &value.DeadlineAt, &value.TenantID, &value.OwnerUserID,
 		&value.WorkerID, &value.AttemptID, &value.Kind, &value.LeaseGeneration, &value.AttemptRevision)
@@ -302,9 +405,6 @@ func scanAttachedWorkerAttemptDeadline(rows *sql.Rows) (domain.AttachedWorkerAtt
 		return value, err
 	}
 	value.DeadlineAt = canonicalAttachedWorkerTime(value.DeadlineAt)
-	if err := value.Validate(); err != nil {
-		return domain.AttachedWorkerAttemptDeadlineV1{}, err
-	}
 	return value, nil
 }
 
@@ -541,6 +641,10 @@ func attachedWorkerAttemptMessageFromFrame(scope domain.AttachedWorkerAttemptV1,
 		ConnectionGeneration: frame.ConnectionGeneration, EnvelopeSequence: frame.Sequence, Kind: kind,
 		Fingerprint: domain.AttachedWorkerAttemptMessageFingerprint(hex.EncodeToString(fingerprint)),
 		Payload:     payload, CreatedAt: canonicalAttachedWorkerTime(at),
+	}
+	if kind == domain.AttachedWorkerAttemptMessageTerminal || kind == domain.AttachedWorkerAttemptMessageTerminalCommitted {
+		message.MaterializationReservationID = scope.ReservationID
+		message.ExecutionConnectionID = scope.ConnectionID
 	}
 	return message, message.Validate()
 }

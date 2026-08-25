@@ -96,6 +96,10 @@ func buildHandler(
 		closeYDB()
 		return nil, func() {}, err
 	}
+	if err := state.RequireExecutionPlacementCutover(ctx); err != nil {
+		closeYDB()
+		return nil, func() {}, fmt.Errorf("require execution placement cutover: %w", err)
+	}
 	blobs, err := s3store.New(ctx, s3store.Config{
 		Endpoint: os.Getenv("S3_ENDPOINT"), Region: os.Getenv("S3_REGION"),
 		Bucket: os.Getenv("S3_BUCKET"), AccessKeyID: os.Getenv("S3_ACCESS_KEY_ID"),

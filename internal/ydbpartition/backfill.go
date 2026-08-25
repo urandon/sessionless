@@ -46,10 +46,15 @@ func BackfillReadyExpiryV2(
 // code dual-writes these tables; the completion marker is written only after
 // every legacy row visible to this run has been copied.
 func BackfillSchemaIndexes(ctx context.Context, db *sql.DB, dryRun bool) ([]BackfillResult, error) {
+	cutover, err := verifyExecutionPlacementCutover(ctx, db, dryRun)
+	if err != nil {
+		return nil, err
+	}
 	results, err := BackfillReadyExpiryV2(ctx, db, dryRun)
 	if err != nil {
 		return nil, err
 	}
+	results = append([]BackfillResult{cutover}, results...)
 	operations := []func(context.Context, *sql.DB, bool) (BackfillResult, error){
 		backfillArtifactManifestsByRun,
 		backfillFrontendBindingsBySession,
@@ -75,6 +80,52 @@ func BackfillSchemaIndexes(ctx context.Context, db *sql.DB, dryRun bool) ([]Back
 		}
 	}
 	return results, nil
+}
+
+// verifyExecutionPlacementCutover is the enforced no-production-data gate for
+// the first explicit placement rollout. Serving code never interprets a
+// missing placement as managed. Before the marker exists, both legacy payload
+// tables must be empty; operators must drain or use the typed preprod reset.
+// Once marked, all writers persist canonical placement and later backfill runs
+// do not require an empty live system.
+func verifyExecutionPlacementCutover(ctx context.Context, db *sql.DB, dryRun bool) (BackfillResult, error) {
+	const cutoverID = "execution-placement-v1-empty-cutover"
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return BackfillResult{}, fmt.Errorf("begin execution placement cutover: %w", err)
+	}
+	defer tx.Rollback()
+	var completedAt time.Time
+	err = tx.QueryRowContext(ctx,
+		`SELECT completed_at FROM execution_placement_cutover_state WHERE cutover_id=$1`, cutoverID,
+	).Scan(&completedAt)
+	if err == nil {
+		return BackfillResult{Table: "execution_placement_cutover_v1"}, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return BackfillResult{}, fmt.Errorf("read execution placement cutover marker: %w", err)
+	}
+	for _, table := range []string{"dispatch_outbox", "worker_jobs"} {
+		var tenantID string
+		err := tx.QueryRowContext(ctx, "SELECT tenant_id FROM "+table+" LIMIT 1").Scan(&tenantID)
+		if err == nil {
+			return BackfillResult{}, fmt.Errorf("execution placement cutover requires empty %s; drain or reset before deployment", table)
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return BackfillResult{}, fmt.Errorf("verify empty %s: %w", table, err)
+		}
+	}
+	if !dryRun {
+		if _, err := tx.ExecContext(ctx,
+			`UPSERT INTO execution_placement_cutover_state (cutover_id,completed_at) VALUES ($1,$2)`,
+			cutoverID, time.Now().UTC()); err != nil {
+			return BackfillResult{}, fmt.Errorf("mark execution placement cutover: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return BackfillResult{}, fmt.Errorf("commit execution placement cutover: %w", err)
+		}
+	}
+	return BackfillResult{Table: "execution_placement_cutover_v1"}, nil
 }
 
 func backfillArtifactManifestsByRun(ctx context.Context, db *sql.DB, dryRun bool) (BackfillResult, error) {

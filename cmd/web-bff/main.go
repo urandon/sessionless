@@ -108,6 +108,10 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 		closeYDB()
 		return nil, func() {}, err
 	}
+	if err := store.RequireExecutionPlacementCutover(ctx); err != nil {
+		closeYDB()
+		return nil, func() {}, fmt.Errorf("require execution placement cutover: %w", err)
+	}
 	maxUploadBytes, err := envPositiveInt64("WEB_MAX_UPLOAD_BYTES", 32<<20)
 	if err != nil {
 		closeYDB()

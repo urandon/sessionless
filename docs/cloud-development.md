@@ -528,12 +528,23 @@ export YDB_CONNECTION_STRING="$(./scripts/cloud-terraform.sh output -raw ydb_con
 export YDB_ACCESS_TOKEN_CREDENTIALS="$(yc iam create-token)"
 go run ./cmd/schema-migrate
 go run ./cmd/schema-migrate status
+export TERRAFORM_LOCK_YDB_CONNECTION_STRING='the reviewed bootstrap lock database DSN'
+export DEPLOYMENT_ENVIRONMENT='cloud-dev'
+go run ./cmd/deployment-lock with -- go run ./cmd/schema-backfill
+unset DEPLOYMENT_ENVIRONMENT TERRAFORM_LOCK_YDB_CONNECTION_STRING
 unset YDB_ACCESS_TOKEN_CREDENTIALS
 
 ./scripts/cloud-terraform.sh plan -out=/secure/path/cloud-dev.tfplan
 terraform -chdir=infra/terraform/cloud-dev show /secure/path/cloud-dev.tfplan
 ./scripts/cloud-terraform.sh apply /secure/path/cloud-dev.tfplan
 ```
+
+The first execution-placement cutover is fresh-environment-only. Before the
+locked backfill, keep Web BFF, control API, reconciler, and worker runtime
+stopped and run the typed cloud-app reset so `dispatch_outbox` and
+`worker_jobs` are empty. The backfill checks both tables and writes the marker
+in one serializable transaction; all four serving binaries fail startup without
+it. Do not use this sequence as a rolling upgrade or retained-data backfill.
 
 The Web container is private and has zero prepared instances. Its dedicated
 gateway identity can invoke only that container; the control gateway identity

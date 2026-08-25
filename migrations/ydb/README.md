@@ -150,6 +150,15 @@ recovery without scanning worker or attempt payloads. These tables contain no
 prompt, result, credential, provider, tool, MCP, path, URL, bearer, nonce,
 signature, proof, or channel-binding bytes.
 
+Migration `00087` records the one-time explicit execution-placement cutover.
+With every old dispatch writer and reader stopped under the deployment lock,
+`make partition-backfill` uses one serializable transaction to require both
+legacy `dispatch_outbox` and `worker_jobs` empty and write the marker. The
+current pre-production rollout must use the typed reset and is fresh-only;
+retained-data migration requires a separately reviewed bounded backfill.
+Web BFF, control API, reconciler, and worker runtime refuse startup before the
+marker. Serving readers never reinterpret a missing placement as managed.
+
 Automatic production down migrations are intentionally disabled. The `Down`
 sections are comments so neither Goose nor an operator can accidentally drop
 state.

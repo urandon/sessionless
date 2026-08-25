@@ -26,6 +26,8 @@ const (
 
 var ErrIdempotencyConflict = errors.New("idempotency key already belongs to another run")
 
+const executionPlacementCutoverID = "execution-placement-v1-empty-cutover"
+
 type Options struct {
 	IdempotencyRetention time.Duration
 	OperationalRetention time.Duration
@@ -60,6 +62,30 @@ func New(db *sql.DB, options Options) (*Store, error) {
 		webSessionIdleTTL:    options.WebSessionIdleTTL,
 		attachedWorkerNow:    currentAttachedWorkerTransactionTime,
 	}, nil
+}
+
+// RequireExecutionPlacementCutover is the serving startup gate for the first
+// explicit placement rollout. Scheduler and worker processes must refuse to
+// start until the serializable empty-backlog cutover has committed; serving
+// code never treats a missing placement as managed.
+func (store *Store) RequireExecutionPlacementCutover(ctx context.Context) error {
+	if store == nil || store.db == nil {
+		return errors.New("YDB store must not be nil")
+	}
+	var completedAt time.Time
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT completed_at FROM execution_placement_cutover_state WHERE cutover_id=$1`,
+		executionPlacementCutoverID,
+	).Scan(&completedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errors.New("execution placement cutover is not complete")
+		}
+		return fmt.Errorf("read execution placement cutover marker: %w", err)
+	}
+	if completedAt.IsZero() {
+		return errors.New("execution placement cutover marker has no completion time")
+	}
+	return nil
 }
 
 func (store *Store) Transact(

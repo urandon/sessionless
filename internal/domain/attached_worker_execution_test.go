@@ -25,6 +25,17 @@ func attachedContextJob() domain.WorkerJob {
 	}
 }
 
+func attachedContextManifest(job domain.WorkerJob) domain.ArtifactManifest {
+	return domain.ArtifactManifest{
+		ID: job.InputManifestID, TenantID: job.TenantID, RunID: job.RunID,
+		CreatedAt: time.Unix(10, 0).UTC(),
+		Artifacts: []domain.Artifact{{
+			Name: "input", MediaType: "application/json",
+			Blob: domain.BlobRef{TenantID: job.TenantID, Key: "tenants/" + string(job.TenantID) + "/input.json", Size: 10, SHA256: strings.Repeat("a", 64)},
+		}},
+	}
+}
+
 func cloneAttachedContextJob(job domain.WorkerJob) domain.WorkerJob {
 	job.AllowedMCPServers = append([]string(nil), job.AllowedMCPServers...)
 	if job.ContextWindow != nil {
@@ -49,7 +60,8 @@ func cloneAttachedContextJob(job domain.WorkerJob) domain.WorkerJob {
 func TestAttachedWorkerJobContextDigestV1BindsEveryExecutionInput(t *testing.T) {
 	t.Parallel()
 	base := attachedContextJob()
-	digest, err := domain.AttachedWorkerJobContextDigestV1(base)
+	manifest := attachedContextManifest(base)
+	digest, err := domain.AttachedWorkerJobContextDigestV1(base, manifest)
 	if err != nil {
 		t.Fatalf("base digest: %v", err)
 	}
@@ -87,7 +99,20 @@ func TestAttachedWorkerJobContextDigestV1BindsEveryExecutionInput(t *testing.T) 
 		t.Run(name, func(t *testing.T) {
 			candidate := cloneAttachedContextJob(base)
 			mutate(&candidate)
-			other, err := domain.AttachedWorkerJobContextDigestV1(candidate)
+			candidateManifest := manifest
+			candidateManifest.Artifacts = append([]domain.Artifact(nil), manifest.Artifacts...)
+			if candidate.TenantID != base.TenantID {
+				candidateManifest.TenantID = candidate.TenantID
+				candidateManifest.Artifacts[0].Blob.TenantID = candidate.TenantID
+				candidateManifest.Artifacts[0].Blob.Key = "tenants/" + string(candidate.TenantID) + "/input.json"
+			}
+			if candidate.RunID != base.RunID {
+				candidateManifest.RunID = candidate.RunID
+			}
+			if candidate.InputManifestID != base.InputManifestID {
+				candidateManifest.ID = candidate.InputManifestID
+			}
+			other, err := domain.AttachedWorkerJobContextDigestV1(candidate, candidateManifest)
 			if err != nil {
 				t.Fatalf("mutated digest: %v", err)
 			}
@@ -101,12 +126,13 @@ func TestAttachedWorkerJobContextDigestV1BindsEveryExecutionInput(t *testing.T) 
 func TestAttachedWorkerJobContextDigestV1SortsOnlySemanticMCPSet(t *testing.T) {
 	t.Parallel()
 	job := attachedContextJob()
-	first, err := domain.AttachedWorkerJobContextDigestV1(job)
+	manifest := attachedContextManifest(job)
+	first, err := domain.AttachedWorkerJobContextDigestV1(job, manifest)
 	if err != nil {
 		t.Fatal(err)
 	}
 	job.AllowedMCPServers[0], job.AllowedMCPServers[1] = job.AllowedMCPServers[1], job.AllowedMCPServers[0]
-	second, err := domain.AttachedWorkerJobContextDigestV1(job)
+	second, err := domain.AttachedWorkerJobContextDigestV1(job, manifest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,13 +140,47 @@ func TestAttachedWorkerJobContextDigestV1SortsOnlySemanticMCPSet(t *testing.T) {
 		t.Fatal("semantic MCP set order changed digest")
 	}
 	job.AllowedMCPServers = append(job.AllowedMCPServers, job.AllowedMCPServers[0])
-	if _, err := domain.AttachedWorkerJobContextDigestV1(job); err == nil {
+	if _, err := domain.AttachedWorkerJobContextDigestV1(job, manifest); err == nil {
 		t.Fatal("duplicate MCP server accepted")
 	}
 	job = attachedContextJob()
 	job.ExecutionPlacement.FallbackPolicy = "managed"
-	if _, err := domain.AttachedWorkerJobContextDigestV1(job); err == nil {
+	if _, err := domain.AttachedWorkerJobContextDigestV1(job, manifest); err == nil {
 		t.Fatal("non-deny attached placement accepted")
+	}
+}
+
+func TestAttachedWorkerJobContextDigestBindsManifestContent(t *testing.T) {
+	t.Parallel()
+	job := attachedContextJob()
+	manifest := attachedContextManifest(job)
+	first, err := domain.AttachedWorkerJobContextDigestV1(job, manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutated := manifest
+	mutated.Artifacts = append([]domain.Artifact(nil), manifest.Artifacts...)
+	mutated.Artifacts[0].Blob.SHA256 = strings.Repeat("b", 64)
+	second, err := domain.AttachedWorkerJobContextDigestV1(job, mutated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatal("same manifest ID with different artifact content retained context digest")
+	}
+	reordered := manifest
+	reordered.Artifacts = append(reordered.Artifacts, domain.Artifact{
+		Name: "alpha", MediaType: "text/plain",
+		Blob: domain.BlobRef{TenantID: job.TenantID, Key: "tenants/tenant-1/alpha.txt", Size: 1, SHA256: strings.Repeat("c", 64)},
+	})
+	firstOrder, err := domain.AttachedWorkerJobContextDigestV1(job, reordered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reordered.Artifacts[0], reordered.Artifacts[1] = reordered.Artifacts[1], reordered.Artifacts[0]
+	secondOrder, err := domain.AttachedWorkerJobContextDigestV1(job, reordered)
+	if err != nil || firstOrder != secondOrder {
+		t.Fatalf("manifest semantic set order changed digest: %v", err)
 	}
 }
 
@@ -241,6 +301,13 @@ func TestAttachedWorkerMessageFingerprintDirectionAndDeadlineCursorKey(t *testin
 		t.Run(name, func(t *testing.T) {
 			candidate := message
 			candidate.Kind, candidate.Direction = item.kind, item.direction
+			if candidate.Kind == domain.AttachedWorkerAttemptMessageCancelRequested {
+				candidate.OperationDeadline = now.Add(time.Minute)
+			}
+			if candidate.Kind == domain.AttachedWorkerAttemptMessageTerminal {
+				candidate.MaterializationReservationID = "reservation-1"
+				candidate.ExecutionConnectionID = "connection-1"
+			}
 			if err := candidate.Validate(); err != nil {
 				t.Fatalf("valid direction rejected: %v", err)
 			}

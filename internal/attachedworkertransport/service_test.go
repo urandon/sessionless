@@ -689,6 +689,10 @@ func (fixture readyTransportFixture) pollResult(t *testing.T, kind attachedworke
 		WorkerID: fixture.worker.ID, AttemptID: "attempt-1", Direction: domain.AttachedWorkerAttemptPlatformToWorker, AttemptSequence: attempt.PlatformAttemptSequence,
 		ConnectionGeneration: fixture.connection.ConnectionGeneration, EnvelopeSequence: frame.Sequence, Kind: domainKind,
 		Fingerprint: domain.AttachedWorkerAttemptMessageFingerprint(domain.DigestAttachedWorkerCapability([]byte("outbound"))), Payload: payload, CreatedAt: now}
+	if domainKind == domain.AttachedWorkerAttemptMessageTerminalCommitted {
+		outbound.MaterializationReservationID = attempt.ReservationID
+		outbound.ExecutionConnectionID = attempt.ConnectionID
+	}
 	return ports.AttachedWorkerAttemptResult{Status: ports.AttachedWorkerExecutionApplied, Attempt: attempt, Outbound: outbound}
 }
 

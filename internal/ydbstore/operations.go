@@ -693,12 +693,12 @@ func (store *Store) ClaimLease(
 			if !found {
 				return fmt.Errorf("lease head %q has no lease row", currentLeaseID)
 			}
-			if lease.RunID != claim.RunID || lease.AttemptID != claim.AttemptID ||
+			if lease.TenantID != claim.TenantID || lease.ID != claim.LeaseID ||
+				lease.RunID != claim.RunID || lease.AttemptID != claim.AttemptID ||
 				lease.WorkerID != claim.WorkerID || lease.FenceToken != fence ||
-				!canonicalAttachedWorkerTime(lease.AcquiredAt).Equal(claim.Now) ||
-				!canonicalAttachedWorkerTime(lease.ExpiresAt).Equal(claim.ExpiresAt) ||
+				lease.AcquiredAt.IsZero() || !lease.ExpiresAt.After(lease.AcquiredAt) ||
 				!canonicalAttachedWorkerTime(lease.ExpiresAt).Equal(canonicalAttachedWorkerTime(expiresAt)) {
-				return domain.ValidationError{Field: "lease replay", Reason: "stored lease and head differ from the exact claim tuple"}
+				return domain.ValidationError{Field: "lease replay", Reason: "stored lease and head differ from the stable claim tuple"}
 			}
 			result = lease
 			return nil

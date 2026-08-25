@@ -25,6 +25,27 @@ import (
 
 var idSequence atomic.Uint64
 
+func TestExecutionPlacementServingGateRequiresCommittedMarker(t *testing.T) {
+	store, client := openStore(t)
+	ctx := context.Background()
+	if _, err := client.DB.ExecContext(ctx,
+		`DELETE FROM execution_placement_cutover_state WHERE cutover_id=$1`,
+		"execution-placement-v1-empty-cutover"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RequireExecutionPlacementCutover(ctx); err == nil {
+		t.Fatal("serving store started without execution placement cutover")
+	}
+	if _, err := client.DB.ExecContext(ctx,
+		`UPSERT INTO execution_placement_cutover_state (cutover_id,completed_at) VALUES ($1,$2)`,
+		"execution-placement-v1-empty-cutover", time.Now().UTC().Truncate(time.Microsecond)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RequireExecutionPlacementCutover(ctx); err != nil {
+		t.Fatalf("committed execution placement cutover rejected: %v", err)
+	}
+}
+
 func TestMigrationsAreRepeatable(t *testing.T) {
 	connectionString := requireConnectionString(t)
 	for run := 1; run <= 2; run++ {
@@ -298,12 +319,22 @@ func TestConcurrentLeaseClaimHasExactlyOneWinner(t *testing.T) {
 	}
 	var winningLeaseID domain.LeaseID
 	var winningFence uint64
+	var winningWorker string
 	if err := client.DB.QueryRowContext(context.Background(),
-		`SELECT lease_id, fence_token FROM lease_heads
+		`SELECT lease_id, worker_id, fence_token FROM lease_heads
 		 WHERE tenant_id = $1 AND run_id = $2`,
 		tenantID, ingress.Run.ID,
-	).Scan(&winningLeaseID, &winningFence); err != nil {
+	).Scan(&winningLeaseID, &winningWorker, &winningFence); err != nil {
 		t.Fatal(err)
+	}
+	replayed, err := store.ClaimLease(context.Background(), ydbstore.LeaseClaim{
+		TenantID: tenantID, RunID: ingress.Run.ID, AttemptID: ingress.Attempt.ID,
+		LeaseID: winningLeaseID, WorkerID: winningWorker,
+		Now: now.Add(2 * time.Second), ExpiresAt: now.Add(2 * time.Minute),
+	})
+	if err != nil || replayed.FenceToken != winningFence || replayed.WorkerID != winningWorker ||
+		replayed.ExpiresAt.Equal(now.Add(2*time.Minute)) {
+		t.Fatalf("fresh-clock exact replay = %+v, %v", replayed, err)
 	}
 	reclaimed, err := store.ClaimLease(context.Background(), ydbstore.LeaseClaim{
 		TenantID: tenantID, RunID: ingress.Run.ID, AttemptID: ingress.Attempt.ID,

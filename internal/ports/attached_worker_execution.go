@@ -68,6 +68,10 @@ type AttachedWorkerAttemptResult struct {
 	Status   AttachedWorkerExecutionStatus
 	Attempt  domain.AttachedWorkerAttemptV1
 	Outbound *domain.AttachedWorkerAttemptMessageV1
+	// Historical is true only when an exact retained-ledger replay no longer
+	// has a current singleton attempt head. Attempt is then intentionally zero;
+	// Outbound is the canonical retained response and remains fully scoped.
+	Historical bool
 }
 
 // AttachedWorkerTerminalMaterialization contains canonical server-side result
@@ -122,12 +126,24 @@ type AttachedWorkerAttemptFence struct {
 // key component after bucket. It remains lossless when many deadlines share
 // YDB's microsecond timestamp precision.
 type AttachedWorkerAttemptDeadlineCursor struct {
+	Present     bool
 	DeadlineAt  time.Time
 	TenantID    domain.TenantID
 	OwnerUserID domain.UserID
 	WorkerID    domain.AttachedWorkerID
 	AttemptID   domain.AttemptID
 	Kind        domain.AttachedWorkerAttemptDeadlineKind
+}
+
+// AttachedWorkerAttemptDeadlinePage advances by the raw physical key even
+// when a legacy/corrupt row cannot become a domain deadline. Callers must keep
+// paging while HasMore is true; SkippedInvalid is an operational quarantine
+// signal and never turns malformed index data into execution authority.
+type AttachedWorkerAttemptDeadlinePage struct {
+	Items          []domain.AttachedWorkerAttemptDeadlineV1
+	NextCursor     AttachedWorkerAttemptDeadlineCursor
+	HasMore        bool
+	SkippedInvalid uint64
 }
 
 // AttachedWorkerExecutionStore is deny-first and owner scoped. All mutation
@@ -142,6 +158,6 @@ type AttachedWorkerExecutionStore interface {
 	ExchangeAttachedWorkerAttempt(context.Context, AttachedWorkerAttemptExchange) (AttachedWorkerAttemptResult, error)
 	CommitAttachedWorkerTerminal(context.Context, AttachedWorkerTerminalCommit) (AttachedWorkerAttemptResult, error)
 	RequestAttachedWorkerCancellation(context.Context, AttachedWorkerCancellationRequest) (AttachedWorkerAttemptResult, error)
-	ListDueAttachedWorkerAttemptDeadlines(context.Context, uint32, time.Time, AttachedWorkerAttemptDeadlineCursor, uint64) ([]domain.AttachedWorkerAttemptDeadlineV1, error)
+	ListDueAttachedWorkerAttemptDeadlines(context.Context, uint32, time.Time, AttachedWorkerAttemptDeadlineCursor, uint64) (AttachedWorkerAttemptDeadlinePage, error)
 	FenceAttachedWorkerAttempt(context.Context, AttachedWorkerAttemptFence) (AttachedWorkerAttemptResult, error)
 }

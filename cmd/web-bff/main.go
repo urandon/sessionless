@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"gitcode.com/urandon/sessionless/internal/attachedworkerux"
 	"gitcode.com/urandon/sessionless/internal/buildinfo"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/idgen"
@@ -179,6 +180,11 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 		closeYDB()
 		return nil, func() {}, err
 	}
+	attachedWorkers, err := attachedworkerux.NewService(store, time.Now)
+	if err != nil {
+		closeYDB()
+		return nil, func() {}, err
+	}
 	backend, err := webbff.New(webbff.Config{
 		BaseURL: baseURL, RedirectURI: redirectURI,
 		ObjectStorageOrigin:        os.Getenv("WEB_OBJECT_STORAGE_ORIGIN"),
@@ -188,7 +194,8 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 			Audience: os.Getenv("TELEGRAM_OIDC_CLIENT_ID"), AllowedAlgorithms: []string{"RS256"},
 			MaxClockSkew: 30 * time.Second,
 		},
-		Provider: provider, Store: store, Sessions: sessions, API: api, IDs: idgen.New(), Clock: systemClock{},
+		Provider: provider, Store: store, Sessions: sessions, API: api, AttachedWorkers: attachedWorkers,
+		IDs: idgen.New(), Clock: systemClock{},
 		Logger: logger, Build: buildinfo.Current(component),
 	})
 	if err != nil {

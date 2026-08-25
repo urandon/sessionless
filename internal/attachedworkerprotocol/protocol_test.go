@@ -356,6 +356,36 @@ func TestSignedFramesRequireExactlyOnePayloadAndEmptySigningSlot(t *testing.T) {
 	requireCode(t, func() error { _, err := ReconnectTranscriptV1(fixture.auth, reconnectExtra); return err }(), ErrorUnauthorized)
 }
 
+func TestReconnectSignatureBindsPendingTerminalReplay(t *testing.T) {
+	fixture := newProtocolFixture(t)
+	attempt := sealAttemptSummary(AttemptSummaryV1{State: AttemptClaimed, Binding: fixture.binding,
+		PlatformSequence: 2, WorkerSequence: 1})
+	pending := &TerminalV1{Binding: fixture.binding, AttemptSequence: 2, TerminalSequence: 1,
+		Status: TerminalSucceeded, Result: TerminalResultCompleted, EvidenceDigest: digestByte(0xa1)}
+	snapshot := sealReconnectSnapshot(ReconnectSnapshotV1{PreviousConnectionGeneration: fixture.auth.ConnectionGeneration - 1,
+		Watermarks: ConnectionWatermarksV1{}, Attempt: attempt, PendingTerminalReplay: pending})
+	negotiation := ReconnectNegotiationV1{WorkerOffer: fixture.workerOffer, PlatformOffer: fixture.platformOffer,
+		SelectedVersion: 1, WorkerNonce: digestByte(3), PlatformNonce: digestByte(4), CapabilityDigest: fixture.digest}
+	payload, err := BuildReconnectV1(snapshot, negotiation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame := fixture.frame(DirectionWorkerToPlatform, MessageReconnect)
+	frame.Reconnect = &payload
+	if err := SignReconnectV1(fixture.private, fixture.auth, &frame); err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyReconnectV1(fixture.auth, frame); err != nil {
+		t.Fatalf("valid pending replay signature: %v", err)
+	}
+	tampered := frame
+	tampered.Reconnect = new(ReconnectV1)
+	*tampered.Reconnect = *frame.Reconnect
+	tampered.Reconnect.PendingTerminalReplay = cloneTerminal(frame.Reconnect.PendingTerminalReplay)
+	tampered.Reconnect.PendingTerminalReplay.EvidenceDigest[0] ^= 1
+	requireCode(t, VerifyReconnectV1(fixture.auth, tampered), ErrorUnauthorized)
+}
+
 func TestSelectedVersionUsesMachineImplementedIntersection(t *testing.T) {
 	fixture := newProtocolFixture(t)
 	workerOffer := VersionOfferV1{Window: VersionWindow{Minimum: 1, Maximum: 2}, Supported: []ProtocolVersion{1, 2}}
@@ -628,6 +658,10 @@ func TestReconnectRollsBackWorkerAheadProgressAndTerminalForReplay(t *testing.T)
 			authoritative.AttemptState() != AttemptClaimed || worker.AttemptState() != AttemptClaimed {
 			t.Fatalf("lost terminal was trusted: plan=%+v states=%s/%s", plan, authoritative.AttemptState(), worker.AttemptState())
 		}
+		plan = reconnectPair(t, authoritative, worker, authoritativeFixture)
+		if plan.WorkerAttemptAfter != 1 || plan.TerminalDecision != ReconnectTerminalReplay {
+			t.Fatalf("repeat reconnect lost signed terminal commitment: plan=%+v", plan)
+		}
 		terminalA := authoritativeFixture.frame(DirectionWorkerToPlatform, MessageTerminal)
 		terminalA.Terminal = &TerminalV1{Binding: authoritativeFixture.binding, AttemptSequence: 2, TerminalSequence: 1,
 			Status: TerminalSucceeded, Result: TerminalResultCompleted, EvidenceDigest: digestByte(0x9a)}
@@ -637,8 +671,8 @@ func TestReconnectRollsBackWorkerAheadProgressAndTerminalForReplay(t *testing.T)
 		for _, machine := range []*ConformanceMachine{authoritative, worker} {
 			requireCode(t, acceptAt(machine, DirectionWorkerToPlatform, terminalB, authoritativeFixture.auth.ChannelBinding,
 				1_800_000_000_000_000), ErrorConflict)
-			if machine.attempt.pendingWorkerReplay == nil ||
-				machine.attempt.pendingWorkerReplay.fingerprint != attemptFingerprint(terminalA) {
+			if machine.attempt.pendingWorkerTerminal == nil ||
+				machine.attempt.pendingWorkerTerminal.fingerprint != attemptFingerprint(terminalA) {
 				t.Fatal("divergent terminal replaced the pending signed replay commitment")
 			}
 			acceptOK(t, machine, DirectionWorkerToPlatform, terminalA, authoritativeFixture.auth.ChannelBinding)
@@ -648,11 +682,53 @@ func TestReconnectRollsBackWorkerAheadProgressAndTerminalForReplay(t *testing.T)
 			Status: TerminalSucceeded, Result: TerminalResultCompleted, EvidenceDigest: digestByte(0x9a)}
 		for _, machine := range []*ConformanceMachine{authoritative, worker} {
 			acceptOK(t, machine, DirectionPlatformToWorker, ack, authoritativeFixture.auth.ChannelBinding)
-			if machine.AttemptState() != AttemptTerminalCommitted || machine.attempt.pendingWorkerReplay != nil {
-				t.Fatalf("exact replay was not committed: state=%s pending=%+v", machine.AttemptState(), machine.attempt.pendingWorkerReplay)
+			if machine.AttemptState() != AttemptTerminalCommitted || machine.attempt.pendingWorkerTerminal != nil {
+				t.Fatalf("exact replay was not committed: state=%s pending=%+v", machine.AttemptState(), machine.attempt.pendingWorkerTerminal)
 			}
 		}
 	})
+}
+
+func TestReconnectCancelRequestedReplaysLostCancelledTerminal(t *testing.T) {
+	authoritativeFixture := newProtocolFixture(t)
+	authoritative := authoritativeFixture.claimMachine(t, true)
+	workerFixture := newProtocolFixture(t)
+	worker := workerFixture.claimMachine(t, true)
+	cancel := authoritativeFixture.frame(DirectionPlatformToWorker, MessageCancel)
+	cancel.Cancel = &CancelV1{Binding: authoritativeFixture.binding, AttemptSequence: 3,
+		CancelRevision: 1, Code: CancelRequested}
+	for _, machine := range []*ConformanceMachine{authoritative, worker} {
+		acceptOK(t, machine, DirectionPlatformToWorker, cancel, authoritativeFixture.auth.ChannelBinding)
+	}
+	cancelled := workerFixture.frame(DirectionWorkerToPlatform, MessageTerminal)
+	cancelled.Terminal = &TerminalV1{Binding: workerFixture.binding, AttemptSequence: 2, TerminalSequence: 1,
+		Status: TerminalCancelled, Result: TerminalResultCancelled, EvidenceDigest: digestByte(0x9d)}
+	acceptOK(t, worker, DirectionWorkerToPlatform, cancelled, workerFixture.auth.ChannelBinding)
+	plan := reconnectPair(t, authoritative, worker, authoritativeFixture)
+	if plan.TerminalDecision != ReconnectTerminalReplay || authoritative.AttemptState() != AttemptCancelRequested ||
+		worker.AttemptState() != AttemptCancelRequested {
+		t.Fatalf("requested cancellation did not preserve cancelled terminal replay: plan=%+v states=%s/%s",
+			plan, authoritative.AttemptState(), worker.AttemptState())
+	}
+	replayed := authoritativeFixture.frame(DirectionWorkerToPlatform, MessageTerminal)
+	replayed.Terminal = &TerminalV1{Binding: authoritativeFixture.binding, AttemptSequence: 2, TerminalSequence: 1,
+		Status: TerminalCancelled, Result: TerminalResultCancelled, EvidenceDigest: digestByte(0x9d)}
+	for _, machine := range []*ConformanceMachine{authoritative, worker} {
+		acceptOK(t, machine, DirectionWorkerToPlatform, replayed, authoritativeFixture.auth.ChannelBinding)
+		if machine.AttemptState() != AttemptTerminalPending || machine.attempt.pendingWorkerTerminal != nil {
+			t.Fatalf("cancelled replay did not become pending: state=%s pending=%+v",
+				machine.AttemptState(), machine.attempt.pendingWorkerTerminal)
+		}
+	}
+	ack := authoritativeFixture.frame(DirectionPlatformToWorker, MessageTerminalAck)
+	ack.TerminalAck = &TerminalAckV1{Binding: authoritativeFixture.binding, AttemptSequence: 4, TerminalSequence: 1,
+		Status: TerminalCancelled, Result: TerminalResultCancelled, EvidenceDigest: digestByte(0x9d)}
+	for _, machine := range []*ConformanceMachine{authoritative, worker} {
+		acceptOK(t, machine, DirectionPlatformToWorker, ack, authoritativeFixture.auth.ChannelBinding)
+		if machine.AttemptState() != AttemptTerminalCommitted || machine.attempt.pendingWorkerTerminal != nil {
+			t.Fatalf("cancelled terminal did not commit: state=%s pending=%+v", machine.AttemptState(), machine.attempt.pendingWorkerTerminal)
+		}
+	}
 }
 
 func TestReconnectCancelFencedDiscardsCrossedWorkerSuccess(t *testing.T) {
@@ -670,8 +746,8 @@ func TestReconnectCancelFencedDiscardsCrossedWorkerSuccess(t *testing.T) {
 	acceptOK(t, worker, DirectionWorkerToPlatform, success, workerFixture.auth.ChannelBinding)
 	plan := reconnectPair(t, authoritative, worker, authoritativeFixture)
 	if plan.TerminalDecision != ReconnectTerminalDiscard || authoritative.AttemptState() != AttemptFenced ||
-		worker.AttemptState() != AttemptFenced || authoritative.attempt.pendingWorkerReplay != nil ||
-		worker.attempt.pendingWorkerReplay != nil {
+		worker.AttemptState() != AttemptFenced || authoritative.attempt.pendingWorkerTerminal == nil ||
+		worker.attempt.pendingWorkerTerminal == nil {
 		t.Fatalf("fenced outcome was not explicitly discarded: plan=%+v states=%s/%s",
 			plan, authoritative.AttemptState(), worker.AttemptState())
 	}
@@ -679,8 +755,17 @@ func TestReconnectCancelFencedDiscardsCrossedWorkerSuccess(t *testing.T) {
 	replayed.Terminal = &TerminalV1{Binding: authoritativeFixture.binding, AttemptSequence: 2, TerminalSequence: 1,
 		Status: TerminalSucceeded, Result: TerminalResultCompleted, EvidenceDigest: digestByte(0x9c)}
 	for _, machine := range []*ConformanceMachine{authoritative, worker} {
+		divergent := replayed
+		divergent.Terminal = cloneTerminal(replayed.Terminal)
+		divergent.Terminal.EvidenceDigest = digestByte(0x9e)
+		requireCode(t, acceptAt(machine, DirectionWorkerToPlatform, divergent, authoritativeFixture.auth.ChannelBinding,
+			1_800_000_000_000_000), ErrorConflict)
 		requireCode(t, acceptAt(machine, DirectionWorkerToPlatform, replayed, authoritativeFixture.auth.ChannelBinding,
 			1_800_000_000_000_000), ErrorProtocolViolation)
+		if machine.attempt.pendingWorkerTerminal == nil ||
+			machine.attempt.pendingWorkerTerminal.decision != ReconnectTerminalDiscard {
+			t.Fatal("discard decision was not retained as a negative replay fence")
+		}
 	}
 }
 

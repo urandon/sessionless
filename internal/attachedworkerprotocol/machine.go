@@ -57,18 +57,18 @@ type AcceptanceContextV1 struct {
 }
 
 type attemptRecord struct {
-	state               AttemptState
-	binding             AttemptBindingV1
-	platform            attemptSequenceState
-	worker              attemptSequenceState
-	progressSequence    uint64
-	cancelRevision      uint64
-	cancelCode          CancelCode
-	terminalSequence    uint64
-	terminalStatus      TerminalStatus
-	terminalResult      TerminalResult
-	terminalEvidence    []byte
-	pendingWorkerReplay *attemptReplayCommitment
+	state                 AttemptState
+	binding               AttemptBindingV1
+	platform              attemptSequenceState
+	worker                attemptSequenceState
+	progressSequence      uint64
+	cancelRevision        uint64
+	cancelCode            CancelCode
+	terminalSequence      uint64
+	terminalStatus        TerminalStatus
+	terminalResult        TerminalResult
+	terminalEvidence      []byte
+	pendingWorkerTerminal *terminalReplayCommitment
 }
 
 type attemptSequenceState struct {
@@ -76,12 +76,14 @@ type attemptSequenceState struct {
 	fingerprints map[uint64][sha256.Size]byte
 }
 
-// attemptReplayCommitment is a bounded signed reconnect claim awaiting exact
-// replay. It is deliberately separate from fingerprints of accepted frames.
-type attemptReplayCommitment struct {
+// terminalReplayCommitment is a bounded signed reconnect claim awaiting an
+// exact replay decision. It is separate from accepted-frame fingerprints.
+type terminalReplayCommitment struct {
 	kind        MessageKind
 	sequence    uint64
 	fingerprint [sha256.Size]byte
+	decision    ReconnectTerminalDecision
+	terminal    TerminalV1
 }
 
 type ConformanceMachine struct {
@@ -161,6 +163,7 @@ func (machine *ConformanceMachine) SnapshotForReconnect() (ReconnectSnapshotV1, 
 		PreviousConnectionGeneration: machine.previousConnectionGeneration,
 		Watermarks:                   machine.reconnectWatermarks,
 		Attempt:                      machine.reconnectAttempt,
+		PendingTerminalReplay:        machine.pendingTerminalForSnapshot(),
 	}), nil
 }
 
@@ -295,6 +298,7 @@ func (machine *ConformanceMachine) acceptReconnect(direction Direction, frame Fr
 	workerClaim := sealReconnectSnapshot(ReconnectSnapshotV1{
 		PreviousConnectionGeneration: frame.Reconnect.PreviousConnectionGeneration,
 		Watermarks:                   frame.Reconnect.PreviousWatermarks, Attempt: frame.Reconnect.AttemptSummary,
+		PendingTerminalReplay: frame.Reconnect.PendingTerminalReplay,
 	})
 	authoritative, snapshotErr := machine.SnapshotForReconnect()
 	if direction != DirectionWorkerToPlatform || machine.connection != ConnectionChallenged || !machine.reconnecting ||
@@ -319,6 +323,7 @@ func (machine *ConformanceMachine) acceptReconnectAccepted(direction Direction, 
 		PreviousConnectionGeneration: machine.previousConnectionGeneration,
 		Watermarks:                   frame.ReconnectAccepted.AuthoritativeWatermarks,
 		Attempt:                      frame.ReconnectAccepted.AuthoritativeAttempt,
+		PendingTerminalReplay:        frame.ReconnectAccepted.AuthoritativePendingTerminalReplay,
 	})
 	negotiation := ReconnectNegotiationV1{
 		WorkerOffer: frame.ReconnectAccepted.WorkerOffer, PlatformOffer: frame.ReconnectAccepted.PlatformOffer,
@@ -335,7 +340,9 @@ func (machine *ConformanceMachine) acceptReconnectAccepted(direction Direction, 
 		buildErr != nil || !sameReconnectAccepted(expected, *frame.ReconnectAccepted) {
 		return protocolError(ErrorUnauthorized)
 	}
-	machine.installReplayCommitment(authoritative, machine.reconnectClaim, frame.ReconnectAccepted.ReplayPlan)
+	if err := machine.installReplayCommitment(authoritative, machine.reconnectClaim, frame.ReconnectAccepted.ReplayPlan); err != nil {
+		return err
+	}
 	machine.applyAttemptSummary(frame.ReconnectAccepted.AuthoritativeAttempt)
 	machine.connection = ConnectionAttached
 	return nil
@@ -439,10 +446,13 @@ func (machine *ConformanceMachine) acceptAttempt(direction Direction, frame Fram
 		}
 		return protocolError(ErrorConflict)
 	}
-	if direction == DirectionWorkerToPlatform && machine.attempt.pendingWorkerReplay != nil &&
-		sequence == machine.attempt.pendingWorkerReplay.sequence {
-		if machine.attempt.pendingWorkerReplay.kind != frame.Kind || machine.attempt.pendingWorkerReplay.fingerprint != fingerprint {
+	if direction == DirectionWorkerToPlatform && machine.attempt.pendingWorkerTerminal != nil &&
+		sequence == machine.attempt.pendingWorkerTerminal.sequence {
+		if machine.attempt.pendingWorkerTerminal.kind != frame.Kind || machine.attempt.pendingWorkerTerminal.fingerprint != fingerprint {
 			return protocolError(ErrorConflict)
+		}
+		if machine.attempt.pendingWorkerTerminal.decision == ReconnectTerminalDiscard {
+			return protocolError(ErrorProtocolViolation)
 		}
 	}
 	if sender.sequence == math.MaxUint64 || sequence != sender.sequence+1 {
@@ -464,9 +474,9 @@ func (machine *ConformanceMachine) acceptAttempt(direction Direction, frame Fram
 		sender.fingerprints = make(map[uint64][sha256.Size]byte, MaxAttemptMessages)
 	}
 	sender.sequence, sender.fingerprints[sequence] = sequence, fingerprint
-	if direction == DirectionWorkerToPlatform && machine.attempt.pendingWorkerReplay != nil &&
-		machine.attempt.pendingWorkerReplay.sequence == sequence {
-		machine.attempt.pendingWorkerReplay = nil
+	if direction == DirectionWorkerToPlatform && machine.attempt.pendingWorkerTerminal != nil &&
+		machine.attempt.pendingWorkerTerminal.sequence == sequence {
+		machine.attempt.pendingWorkerTerminal = nil
 	}
 	return nil
 }
@@ -746,22 +756,41 @@ func (machine *ConformanceMachine) installReplayCommitment(
 	authoritative ReconnectSnapshotV1,
 	workerClaim ReconnectSnapshotV1,
 	plan ReplayPlanV1,
-) {
-	machine.attempt.pendingWorkerReplay = nil
-	if plan.TerminalDecision != ReconnectTerminalReplay ||
-		workerClaim.Attempt.TerminalSequence <= authoritative.Attempt.TerminalSequence {
-		return
+) error {
+	if plan.TerminalDecision == ReconnectTerminalCommitted {
+		machine.attempt.pendingWorkerTerminal = nil
+		return nil
 	}
-	terminal := &TerminalV1{
-		Binding: cloneBinding(workerClaim.Attempt.Binding), AttemptSequence: workerClaim.Attempt.WorkerSequence,
-		TerminalSequence: workerClaim.Attempt.TerminalSequence, Status: workerClaim.Attempt.TerminalStatus,
-		Result:         workerClaim.Attempt.TerminalResult,
-		EvidenceDigest: append([]byte(nil), workerClaim.Attempt.TerminalEvidenceDigest...),
+	if plan.TerminalDecision == ReconnectTerminalNone {
+		if machine.attempt.pendingWorkerTerminal != nil &&
+			(machine.attempt.pendingWorkerTerminal.sequence <= authoritative.Attempt.WorkerSequence ||
+				authoritative.Attempt.TerminalSequence > 0) {
+			machine.attempt.pendingWorkerTerminal = nil
+		}
+		return nil
 	}
-	machine.attempt.pendingWorkerReplay = &attemptReplayCommitment{
-		kind: MessageTerminal, sequence: terminal.AttemptSequence,
-		fingerprint: attemptFingerprint(FrameV1{Kind: MessageTerminal, Terminal: terminal}),
+	terminal := reconnectPendingTerminal(workerClaim)
+	if terminal == nil {
+		return protocolError(ErrorConflict)
 	}
+	next := &terminalReplayCommitment{
+		kind: MessageTerminal, sequence: terminal.AttemptSequence, decision: plan.TerminalDecision,
+		fingerprint: attemptFingerprint(FrameV1{Kind: MessageTerminal, Terminal: terminal}), terminal: *cloneTerminal(terminal),
+	}
+	if machine.attempt.pendingWorkerTerminal != nil &&
+		(machine.attempt.pendingWorkerTerminal.sequence != next.sequence ||
+			machine.attempt.pendingWorkerTerminal.fingerprint != next.fingerprint) {
+		return protocolError(ErrorConflict)
+	}
+	machine.attempt.pendingWorkerTerminal = next
+	return nil
+}
+
+func (machine *ConformanceMachine) pendingTerminalForSnapshot() *TerminalV1 {
+	if machine.attempt.pendingWorkerTerminal == nil {
+		return nil
+	}
+	return cloneTerminal(&machine.attempt.pendingWorkerTerminal.terminal)
 }
 
 func (machine *ConformanceMachine) hasFeature(feature ProtocolFeatureV1) bool {
@@ -797,5 +826,14 @@ func sameReconnectAccepted(left, right ReconnectAcceptedV1) bool {
 		left.SelectedVersion == right.SelectedVersion && bytes.Equal(left.WorkerNonce, right.WorkerNonce) &&
 		bytes.Equal(left.PlatformNonce, right.PlatformNonce) && bytes.Equal(left.CapabilityDigest, right.CapabilityDigest) &&
 		left.AuthoritativeWatermarks == right.AuthoritativeWatermarks &&
-		sameAttemptSummary(left.AuthoritativeAttempt, right.AuthoritativeAttempt) && left.ReplayPlan == right.ReplayPlan
+		sameAttemptSummary(left.AuthoritativeAttempt, right.AuthoritativeAttempt) &&
+		sameOptionalTerminal(left.AuthoritativePendingTerminalReplay, right.AuthoritativePendingTerminalReplay) &&
+		left.ReplayPlan == right.ReplayPlan
+}
+
+func sameOptionalTerminal(left, right *TerminalV1) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return sameTerminal(*left, *right)
 }

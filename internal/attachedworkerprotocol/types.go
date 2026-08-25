@@ -112,6 +112,7 @@ type ReconnectV1 struct {
 	CapabilityDigest             []byte                 `json:"capability_digest"`
 	PreviousWatermarks           ConnectionWatermarksV1 `json:"previous_watermarks"`
 	AttemptSummary               AttemptSummaryV1       `json:"attempt_summary"`
+	PendingTerminalReplay        *TerminalV1            `json:"pending_terminal_replay,omitempty"`
 	Signature                    []byte                 `json:"signature"`
 }
 
@@ -125,15 +126,16 @@ type AttachAcceptedV1 struct {
 }
 
 type ReconnectAcceptedV1 struct {
-	WorkerOffer             VersionOfferV1         `json:"worker_offer"`
-	PlatformOffer           VersionOfferV1         `json:"platform_offer"`
-	SelectedVersion         ProtocolVersion        `json:"selected_version"`
-	WorkerNonce             []byte                 `json:"worker_nonce"`
-	PlatformNonce           []byte                 `json:"platform_nonce"`
-	CapabilityDigest        []byte                 `json:"capability_digest"`
-	AuthoritativeWatermarks ConnectionWatermarksV1 `json:"authoritative_watermarks"`
-	AuthoritativeAttempt    AttemptSummaryV1       `json:"authoritative_attempt"`
-	ReplayPlan              ReplayPlanV1           `json:"replay_plan"`
+	WorkerOffer                        VersionOfferV1         `json:"worker_offer"`
+	PlatformOffer                      VersionOfferV1         `json:"platform_offer"`
+	SelectedVersion                    ProtocolVersion        `json:"selected_version"`
+	WorkerNonce                        []byte                 `json:"worker_nonce"`
+	PlatformNonce                      []byte                 `json:"platform_nonce"`
+	CapabilityDigest                   []byte                 `json:"capability_digest"`
+	AuthoritativeWatermarks            ConnectionWatermarksV1 `json:"authoritative_watermarks"`
+	AuthoritativeAttempt               AttemptSummaryV1       `json:"authoritative_attempt"`
+	AuthoritativePendingTerminalReplay *TerminalV1            `json:"authoritative_pending_terminal_replay,omitempty"`
+	ReplayPlan                         ReplayPlanV1           `json:"replay_plan"`
 }
 
 type ManifestV1 struct {
@@ -360,6 +362,7 @@ func (message ReconnectV1) Validate() error {
 		validateNegotiationProof(message.WorkerOffer, message.PlatformOffer, message.SelectedVersion,
 			message.WorkerNonce, message.PlatformNonce, message.CapabilityDigest) != nil ||
 		message.PreviousWatermarks.Validate() != nil || message.AttemptSummary.Validate() != nil ||
+		validatePendingTerminal(message.PendingTerminalReplay, message.AttemptSummary) != nil ||
 		!validBytes(message.Signature, ed25519.SignatureSize) {
 		return protocolError(ErrorInvalidFrame)
 	}
@@ -375,6 +378,7 @@ func (message ReconnectAcceptedV1) Validate() error {
 	if validateNegotiationProof(message.WorkerOffer, message.PlatformOffer, message.SelectedVersion,
 		message.WorkerNonce, message.PlatformNonce, message.CapabilityDigest) != nil ||
 		message.AuthoritativeWatermarks.Validate() != nil || message.AuthoritativeAttempt.Validate() != nil ||
+		validatePendingTerminal(message.AuthoritativePendingTerminalReplay, message.AuthoritativeAttempt) != nil ||
 		message.ReplayPlan.Validate() != nil {
 		return protocolError(ErrorMalformedFrame)
 	}

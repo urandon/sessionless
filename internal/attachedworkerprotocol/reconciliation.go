@@ -14,11 +14,13 @@ type ReconnectSnapshotV1 struct {
 	PreviousConnectionGeneration uint64                 `json:"previous_connection_generation"`
 	Watermarks                   ConnectionWatermarksV1 `json:"watermarks"`
 	Attempt                      AttemptSummaryV1       `json:"attempt"`
+	PendingTerminalReplay        *TerminalV1            `json:"pending_terminal_replay,omitempty"`
 	Digest                       []byte                 `json:"digest"`
 }
 
 func (snapshot ReconnectSnapshotV1) Validate() error {
 	if snapshot.PreviousConnectionGeneration == 0 || snapshot.Watermarks.Validate() != nil || snapshot.Attempt.Validate() != nil ||
+		validatePendingTerminal(snapshot.PendingTerminalReplay, snapshot.Attempt) != nil ||
 		!validBytes(snapshot.Digest, sha256.Size) || !bytes.Equal(reconnectSnapshotDigestV1(snapshot), snapshot.Digest) {
 		return protocolError(ErrorMalformedFrame)
 	}
@@ -30,12 +32,14 @@ func reconnectSnapshotDigestV1(snapshot ReconnectSnapshotV1) []byte {
 	result = appendCanonicalUint64(result, snapshot.PreviousConnectionGeneration)
 	result = appendWatermarks(result, snapshot.Watermarks)
 	result = appendCanonicalField(result, snapshot.Attempt.Digest)
+	result = appendCanonicalField(result, pendingTerminalDigestV1(snapshot.PendingTerminalReplay))
 	digest := sha256.Sum256(result)
 	return append([]byte(nil), digest[:]...)
 }
 
 func sealReconnectSnapshot(snapshot ReconnectSnapshotV1) ReconnectSnapshotV1 {
 	snapshot.Attempt = cloneAttemptSummary(snapshot.Attempt)
+	snapshot.PendingTerminalReplay = cloneTerminal(snapshot.PendingTerminalReplay)
 	snapshot.Digest = reconnectSnapshotDigestV1(snapshot)
 	return snapshot
 }
@@ -97,7 +101,7 @@ func BuildReconnectV1(snapshot ReconnectSnapshotV1, negotiation ReconnectNegotia
 		SelectedVersion: negotiation.SelectedVersion, PreviousConnectionGeneration: snapshot.PreviousConnectionGeneration,
 		WorkerNonce: append([]byte(nil), negotiation.WorkerNonce...), PlatformNonce: append([]byte(nil), negotiation.PlatformNonce...),
 		CapabilityDigest: append([]byte(nil), negotiation.CapabilityDigest...), PreviousWatermarks: snapshot.Watermarks,
-		AttemptSummary: cloneAttemptSummary(snapshot.Attempt), Signature: []byte{},
+		AttemptSummary: cloneAttemptSummary(snapshot.Attempt), PendingTerminalReplay: cloneTerminal(snapshot.PendingTerminalReplay), Signature: []byte{},
 	}, nil
 }
 
@@ -112,10 +116,12 @@ func BuildReconnectAcceptedV1(
 		return ReconnectAcceptedV1{}, protocolError(ErrorConflict)
 	}
 	decision := ReconnectTerminalNone
+	workerTerminal := reconnectPendingTerminal(workerClaim)
 	if authoritative.Attempt.State == AttemptTerminalCommitted {
 		decision = ReconnectTerminalCommitted
-	} else if workerClaim.Attempt.TerminalSequence > authoritative.Attempt.TerminalSequence {
-		if cancellationOverridesTerminal(authoritative.Attempt) {
+	} else if workerTerminal != nil && (workerClaim.PendingTerminalReplay != nil ||
+		workerClaim.Attempt.TerminalSequence > authoritative.Attempt.TerminalSequence) {
+		if cancellationOverridesTerminal(authoritative.Attempt, workerTerminal.Status) {
 			decision = ReconnectTerminalDiscard
 		} else {
 			decision = ReconnectTerminalReplay
@@ -126,6 +132,7 @@ func BuildReconnectAcceptedV1(
 		SelectedVersion: negotiation.SelectedVersion, WorkerNonce: append([]byte(nil), negotiation.WorkerNonce...),
 		PlatformNonce: append([]byte(nil), negotiation.PlatformNonce...), CapabilityDigest: append([]byte(nil), negotiation.CapabilityDigest...),
 		AuthoritativeWatermarks: authoritative.Watermarks, AuthoritativeAttempt: cloneAttemptSummary(authoritative.Attempt),
+		AuthoritativePendingTerminalReplay: cloneTerminal(authoritative.PendingTerminalReplay),
 		ReplayPlan: ReplayPlanV1{
 			PlatformEnvelopeAfter: workerClaim.Watermarks.PlatformSequence,
 			WorkerEnvelopeAfter:   authoritative.Watermarks.WorkerSequence,
@@ -285,15 +292,15 @@ func summaryCanAdvance(from, to AttemptSummaryV1) bool {
 		from.State == AttemptIdle && to.State == AttemptIdle && !sameAttemptSummary(from, to) ||
 		from.PlatformSequence > to.PlatformSequence || from.WorkerSequence > to.WorkerSequence ||
 		from.ProgressSequence > to.ProgressSequence || from.CancelRevision > to.CancelRevision ||
-		(from.TerminalSequence > to.TerminalSequence && !cancellationOverridesTerminal(to)) || !attemptStateCanAdvance(from, to) {
+		(from.TerminalSequence > to.TerminalSequence && !cancellationOverridesTerminal(to, from.TerminalStatus)) || !attemptStateCanAdvance(from, to) {
 		return false
 	}
 	return true
 }
 
-func cancellationOverridesTerminal(summary AttemptSummaryV1) bool {
-	return summary.CancelRevision > 0 && (summary.State == AttemptCancelRequested ||
-		summary.State == AttemptCancelAcked || summary.State == AttemptFenced)
+func cancellationOverridesTerminal(summary AttemptSummaryV1, terminalStatus TerminalStatus) bool {
+	return summary.CancelRevision > 0 && (summary.State == AttemptFenced ||
+		((summary.State == AttemptCancelRequested || summary.State == AttemptCancelAcked) && terminalStatus != TerminalCancelled))
 }
 
 func attemptStateCanAdvance(from, to AttemptSummaryV1) bool {
@@ -348,6 +355,10 @@ func reconnectClaimsCompatible(workerClaim, authoritative ReconnectSnapshotV1) b
 		return false
 	}
 	workerAttempt, platformAttempt := workerClaim.Attempt, authoritative.Attempt
+	workerPending, platformPending := reconnectPendingTerminal(workerClaim), authoritative.PendingTerminalReplay
+	if platformPending != nil && (workerPending == nil || !sameTerminal(*platformPending, *workerPending)) {
+		return false
+	}
 	if workerAttempt.State == AttemptIdle || platformAttempt.State == AttemptIdle {
 		return workerAttempt.State == platformAttempt.State
 	}
@@ -396,6 +407,54 @@ func cloneAttemptSummary(summary AttemptSummaryV1) AttemptSummaryV1 {
 
 func cloneReconnectSnapshot(snapshot ReconnectSnapshotV1) ReconnectSnapshotV1 {
 	snapshot.Attempt = cloneAttemptSummary(snapshot.Attempt)
+	snapshot.PendingTerminalReplay = cloneTerminal(snapshot.PendingTerminalReplay)
 	snapshot.Digest = append([]byte(nil), snapshot.Digest...)
 	return snapshot
+}
+
+func validatePendingTerminal(terminal *TerminalV1, summary AttemptSummaryV1) error {
+	if terminal == nil {
+		return nil
+	}
+	if terminal.Validate() != nil || !sameAttemptBinding(terminal.Binding, summary.Binding) ||
+		terminal.AttemptSequence <= summary.WorkerSequence {
+		return protocolError(ErrorMalformedFrame)
+	}
+	return nil
+}
+
+func pendingTerminalDigestV1(terminal *TerminalV1) []byte {
+	if terminal == nil {
+		return nil
+	}
+	fingerprint := attemptFingerprint(FrameV1{Kind: MessageTerminal, Terminal: terminal})
+	return append([]byte(nil), fingerprint[:]...)
+}
+
+func reconnectPendingTerminal(snapshot ReconnectSnapshotV1) *TerminalV1 {
+	if snapshot.PendingTerminalReplay != nil {
+		return cloneTerminal(snapshot.PendingTerminalReplay)
+	}
+	if snapshot.Attempt.TerminalSequence == 0 {
+		return nil
+	}
+	return &TerminalV1{Binding: cloneBinding(snapshot.Attempt.Binding), AttemptSequence: snapshot.Attempt.WorkerSequence,
+		TerminalSequence: snapshot.Attempt.TerminalSequence, Status: snapshot.Attempt.TerminalStatus,
+		Result: snapshot.Attempt.TerminalResult, EvidenceDigest: append([]byte(nil), snapshot.Attempt.TerminalEvidenceDigest...)}
+}
+
+func cloneTerminal(terminal *TerminalV1) *TerminalV1 {
+	if terminal == nil {
+		return nil
+	}
+	cloned := *terminal
+	cloned.Binding = cloneBinding(terminal.Binding)
+	cloned.EvidenceDigest = append([]byte(nil), terminal.EvidenceDigest...)
+	return &cloned
+}
+
+func sameTerminal(left, right TerminalV1) bool {
+	return sameAttemptBinding(left.Binding, right.Binding) && left.AttemptSequence == right.AttemptSequence &&
+		left.TerminalSequence == right.TerminalSequence && left.Status == right.Status && left.Result == right.Result &&
+		bytes.Equal(left.EvidenceDigest, right.EvidenceDigest)
 }

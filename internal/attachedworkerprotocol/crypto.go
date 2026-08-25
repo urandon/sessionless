@@ -48,6 +48,7 @@ func ReconnectTranscriptV1(auth AuthContextV1, frame FrameV1) ([]byte, error) {
 	body = appendCanonicalField(body, frame.Reconnect.CapabilityDigest)
 	body = appendWatermarks(body, frame.Reconnect.PreviousWatermarks)
 	body = appendCanonicalField(body, frame.Reconnect.AttemptSummary.Digest)
+	body = appendCanonicalField(body, pendingTerminalDigestV1(frame.Reconnect.PendingTerminalReplay))
 	return signedTranscript(reconnectTranscriptDomainV1, auth, DirectionWorkerToPlatform, frame, body), nil
 }
 

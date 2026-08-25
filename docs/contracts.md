@@ -33,6 +33,12 @@ The AW-03 presence-only transport contract is described in
 proof-bound initial attach, immutable capability evidence, and immediate
 heartbeat presence without enabling reconnect, dispatch, or cloud wake-up.
 
+The feature-disabled AW-05a daemon/process boundary is described in
+[attached-worker-daemon.md](attached-worker-daemon.md). It provides
+concurrency-one drain/shutdown, exact executable/process-group supervision and
+credential finalization, but requires a separately reviewed OS isolation
+launcher and does not yet provide a runnable daemon package.
+
 ## Canonical sessions and frontend bindings
 
 `Session` is the product conversation and Sessionless is its source of truth.

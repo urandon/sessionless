@@ -126,6 +126,11 @@ presence persistence boundary is documented in
 [attached-worker-transport.md](attached-worker-transport.md). It does not
 claim reconnect, dispatch, long polling, or cloud wake-up.
 
+The AW-05a Go daemon core, exact process-supervision contract, credential
+finalization order, and explicit unsupported-isolation boundary are documented
+in [attached-worker-daemon.md](attached-worker-daemon.md). No developer command
+or production binary enables it yet.
+
 The provider-neutral local credential binding, invocation handle, secure
 materialization, crash recovery, write-back, and deny-first revocation contract
 is documented in [credential-lifecycle.md](credential-lifecycle.md). Phase B0

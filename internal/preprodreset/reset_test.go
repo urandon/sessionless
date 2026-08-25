@@ -77,9 +77,12 @@ func TestExecuteRequiresTypedConfirmationAndDropsOnlyAllowlist(t *testing.T) {
 
 func TestAttachedWorkerTablesAreExplicitlyResettable(t *testing.T) {
 	want := map[string]bool{
-		"attached_worker_audit_events": false,
-		"attached_worker_enrollments":  false,
-		"attached_workers":             false,
+		"attached_worker_attempt_deadlines_v1": false,
+		"attached_worker_attempt_messages":     false,
+		"attached_worker_attempt_heads":        false,
+		"attached_worker_audit_events":         false,
+		"attached_worker_enrollments":          false,
+		"attached_workers":                     false,
 	}
 	for _, table := range applicationTables {
 		if _, exists := want[table]; exists {

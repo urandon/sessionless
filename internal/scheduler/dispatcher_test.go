@@ -141,6 +141,7 @@ func TestDispatcherPublishesOnlyAdmittedRunsAndExpiresReservations(t *testing.T)
 		decisions: map[domain.DispatchOutboxID]ports.DispatchAdmissionResult{
 			admitted.OutboxID: {
 				Admitted: true, State: domain.SchedulerReady, Code: "admitted",
+				Delivery:  ports.DispatchDeliveryManagedQueue,
 				SessionID: "session-1", ThroughSequence: 128,
 			},
 			blocked.OutboxID: {State: domain.SchedulerPressured, Code: "subscription_slot_busy"},
@@ -214,7 +215,9 @@ func TestDispatcherWakeUsesPointLookupAndAcknowledgesDuplicate(t *testing.T) {
 	store := &memorySchedulerStore{
 		ready: map[uint32][]ports.DispatchReady{0: {candidate}},
 		decisions: map[domain.DispatchOutboxID]ports.DispatchAdmissionResult{
-			candidate.OutboxID: {Admitted: true, Code: "admitted"},
+			candidate.OutboxID: {
+				Admitted: true, Code: "admitted", Delivery: ports.DispatchDeliveryManagedQueue,
+			},
 		},
 	}
 	dispatchQueue := testkit.NewMemoryQueue()
@@ -253,6 +256,47 @@ func TestDispatcherWakeUsesPointLookupAndAcknowledgesDuplicate(t *testing.T) {
 	result, err = dispatcher.RunWake(context.Background(), missingQueue)
 	if err != nil || result.Outcome != "noop" {
 		t.Fatalf("duplicate result = %#v, %v", result, err)
+	}
+}
+
+func TestDispatcherAttachedWorkerOfferNeverPublishesManagedQueue(t *testing.T) {
+	now := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	candidate := ports.DispatchReady{
+		TenantID: "tenant-1", OutboxID: "dispatch-1",
+		RunID: "run-1", AttemptID: "attempt-1",
+	}
+	bucket, err := ydbpartition.BucketV1(string(candidate.OutboxID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &memorySchedulerStore{
+		ready: map[uint32][]ports.DispatchReady{bucket: {candidate}},
+		decisions: map[domain.DispatchOutboxID]ports.DispatchAdmissionResult{
+			candidate.OutboxID: {
+				Admitted: true, Code: "attached_worker_offered",
+				Delivery: ports.DispatchDeliveryAttachedOffer,
+			},
+		},
+	}
+	queue := testkit.NewMemoryQueue()
+	dispatcher, err := NewDispatcher(Config{
+		Limits: testLimits(), DefaultWorkload: domain.WorkloadShape{Runtime: time.Minute, Turns: 1},
+	}, testkit.NewFakeClock(now), store, queue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := dispatcher.RunOnce(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Admitted != 1 || result.AttachedOffers != 1 || result.Published != 0 {
+		t.Fatalf("pass result = %#v", result)
+	}
+	if len(store.acked) != 1 || store.acked[0] != candidate.OutboxID {
+		t.Fatalf("acked = %#v", store.acked)
+	}
+	if _, err := queue.Receive(context.Background()); err == nil {
+		t.Fatal("attached-worker placement leaked into the managed queue")
 	}
 }
 

@@ -169,6 +169,9 @@ func (store *Store) ActivateAttachedWorkerConnection(
 		if err := connection.Validate(); err != nil {
 			return err
 		}
+		if _, _, err := loadAttachedWorkerProtocolAuthorityTx(ctx, tx, worker, connection); err != nil {
+			return ErrAttachedWorkerConnectionConflict
+		}
 		current, currentFound, err := readAttachedWorkerConnectionTx(ctx, tx, request.OwnerUserID, request.WorkerID)
 		if err != nil {
 			return err
@@ -239,6 +242,7 @@ func (store *Store) AcceptAttachedWorkerManifest(
 					connection.ManifestRevision == request.Capability.ManifestRevision &&
 					connection.ManifestIdentityKey == request.Capability.IdentityKeyDigest &&
 					bytes.Equal(connection.ManifestSignature, request.Capability.Signature) &&
+					bytes.Equal(connection.ProtocolSnapshot, request.ProtocolSnapshot) &&
 					connection.ManifestObservedAt.Equal(connection.LastCheckpointAt) &&
 					connection.PresenceExpiresAt.Equal(canonicalAttachedWorkerTime(connection.LastCheckpointAt.Add(request.PresenceTTL))) {
 					worker, workerFound, err := readAttachedWorkerTx(ctx, tx, request.OwnerUserID, request.WorkerID)
@@ -288,6 +292,10 @@ func (store *Store) AcceptAttachedWorkerManifest(
 			result.Status = ports.AttachedWorkerConnectionConflict
 			return nil
 		}
+		if _, _, err := loadAttachedWorkerProtocolAuthorityTx(ctx, tx, worker, connection); err != nil {
+			result.Status = ports.AttachedWorkerConnectionConflict
+			return nil
+		}
 		if worker.DesiredState == domain.AttachedWorkerDesiredRevoked {
 			result.Status = ports.AttachedWorkerConnectionRevoked
 			return nil
@@ -302,6 +310,7 @@ func (store *Store) AcceptAttachedWorkerManifest(
 		}
 		connection.PlatformSequence, connection.WorkerSequence = request.PlatformSequence, request.WorkerSequence
 		connection.PlatformAck, connection.WorkerAck = request.PlatformAck, request.WorkerAck
+		connection.ProtocolSnapshot = append([]byte(nil), request.ProtocolSnapshot...)
 		connection.ManifestRevision = request.Capability.ManifestRevision
 		connection.ManifestIdentityKey = request.Capability.IdentityKeyDigest
 		connection.ManifestSignature = append([]byte(nil), request.Capability.Signature...)
@@ -309,12 +318,12 @@ func (store *Store) AcceptAttachedWorkerManifest(
 		connection.LastCheckpointAt = at
 		connection.PresenceExpiresAt = canonicalAttachedWorkerTime(at.Add(request.PresenceTTL))
 		connection.State = domain.AttachedWorkerConnectionOnline
-		if worker.DesiredState == domain.AttachedWorkerDesiredDrain {
-			connection.State = domain.AttachedWorkerConnectionDraining
-		}
 		connection.Revision++
 		if err := connection.Validate(); err != nil {
 			return err
+		}
+		if _, _, err := loadAttachedWorkerProtocolAuthorityTx(ctx, tx, worker, connection); err != nil {
+			return ErrAttachedWorkerConnectionConflict
 		}
 		if err := upsertAttachedWorkerConnectionTx(ctx, tx, connection); err != nil {
 			return err
@@ -323,9 +332,6 @@ func (store *Store) AcceptAttachedWorkerManifest(
 			return err
 		}
 		observed := domain.AttachedWorkerObservedOnline
-		if worker.DesiredState == domain.AttachedWorkerDesiredDrain {
-			observed = domain.AttachedWorkerObservedDraining
-		}
 		nextWorker, audit := attachedWorkerPresenceWorkerTarget(worker, observed, domain.AttachedWorkerAuditConnectionManifestAccepted, at)
 		if err := nextWorker.Validate(); err != nil {
 			return err
@@ -416,6 +422,10 @@ func (store *Store) AuthorizeAttachedWorkerExchange(
 			result.Status = ports.AttachedWorkerConnectionConflict
 			return nil
 		}
+		if _, _, err := loadAttachedWorkerProtocolAuthorityTx(ctx, tx, worker, connection); err != nil {
+			result.Status = ports.AttachedWorkerConnectionConflict
+			return nil
+		}
 		manifest, manifestFound, err := readAttachedWorkerManifestTx(ctx, tx, request.OwnerUserID, request.WorkerID, connection.CapabilityDigest)
 		if err != nil {
 			return err
@@ -452,6 +462,10 @@ func (store *Store) AuthorizeAttachedWorkerExchange(
 		due := at.Sub(connection.LastCheckpointAt) >= request.CheckpointInterval
 		advanced := !sameAttachedWorkerWatermarks(connection, request)
 		if !due && !advanced {
+			if !bytes.Equal(connection.ProtocolSnapshot, request.ProtocolSnapshot) {
+				result.Status = ports.AttachedWorkerConnectionConflict
+				return nil
+			}
 			result = ports.AttachedWorkerAuthorizationResult{Status: ports.AttachedWorkerConnectionAuthorized, Connection: connection}
 			return nil
 		}
@@ -463,6 +477,9 @@ func (store *Store) AuthorizeAttachedWorkerExchange(
 		connection = attachedWorkerCheckpointTarget(connection, request, at)
 		if err := connection.Validate(); err != nil {
 			return err
+		}
+		if _, _, err := loadAttachedWorkerProtocolAuthorityTx(ctx, tx, worker, connection); err != nil {
+			return ErrAttachedWorkerConnectionConflict
 		}
 		if err := deleteAttachedWorkerPresenceExpiryTx(ctx, tx, previousExpiry); err != nil {
 			return err

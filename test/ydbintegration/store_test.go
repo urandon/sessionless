@@ -1188,7 +1188,8 @@ func ingressFixture(
 	dispatch := domain.DispatchOutbox{
 		ID: domain.DispatchOutboxID("dispatch-" + runID), TenantID: tenantID,
 		RunID: run.ID, AttemptID: attempt.ID, Status: domain.DispatchPending,
-		InputManifestID: domain.ArtifactManifestID("manifest-" + runID),
+		InputManifestID:    domain.ArtifactManifestID("manifest-" + runID),
+		ExecutionPlacement: domain.ManagedExecutionPlacementV1(),
 		ContextSnapshot: domain.BlobRef{
 			TenantID: tenantID, Key: "tenants/" + string(tenantID) + "/context/" + runID,
 			Size: 1, SHA256: strings.Repeat("0", 64),

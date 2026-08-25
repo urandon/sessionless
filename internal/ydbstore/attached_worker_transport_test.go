@@ -39,6 +39,7 @@ func TestAttachedWorkerActivationCreatesBoundAttachingHeadWithoutPresenceLease(t
 		ConnectionSecretDigest:   domain.DigestAttachedWorkerConnectionSecret([]byte("secret")),
 		ChannelBinding:           domain.NewAttachedWorkerChannelBinding(bytes.Repeat([]byte{0x42}, 32)),
 		ExpectedCapabilityDigest: domain.DigestAttachedWorkerCapability([]byte("canonical manifest")), AuthTTL: time.Hour,
+		ProtocolSnapshot: []byte(`{"snapshot":"attached"}`),
 	}
 
 	connection, nextWorker, audit := attachedWorkerActivationTargets(request, challenge, worker, at)
@@ -72,6 +73,7 @@ func TestAttachedWorkerManifestAcceptanceHashesCanonicalProtocolBytesNotJSONSnap
 			CanonicalManifest: canonical, ManifestPayload: payload, Signature: bytes.Repeat([]byte{0x55}, ed25519.SignatureSize),
 		},
 		PlatformSequence: 2, WorkerSequence: 3, PlatformAck: 2, WorkerAck: 2, PresenceTTL: time.Minute,
+		ProtocolSnapshot: []byte(`{"snapshot":"ready"}`),
 	}
 	if domain.DigestAttachedWorkerCapability(payload) == request.Capability.Digest {
 		t.Fatal("fixture failed to distinguish canonical protocol bytes from JSON evidence")
@@ -97,6 +99,7 @@ func TestAttachedWorkerManifestAcceptanceRequiresExactHandshakeWatermarks(t *tes
 			CanonicalManifest: canonical, ManifestPayload: []byte(`{"version":1}`), Signature: bytes.Repeat([]byte{0x55}, ed25519.SignatureSize),
 		},
 		PlatformSequence: 2, WorkerSequence: 3, PlatformAck: 2, WorkerAck: 2, PresenceTTL: time.Minute,
+		ProtocolSnapshot: []byte(`{"snapshot":"ready"}`),
 	}
 	request.WorkerSequence = 4
 	if err := validateAttachedWorkerManifestAcceptance(request); err == nil {
@@ -117,10 +120,12 @@ func TestAttachedWorkerCheckpointPreservesDrainingState(t *testing.T) {
 		ManifestSignature: bytes.Repeat([]byte{0x55}, ed25519.SignatureSize), ManifestObservedAt: at.Add(-2 * time.Second),
 		State: domain.AttachedWorkerConnectionDraining, PlatformSequence: 2, WorkerSequence: 3,
 		PlatformAck: 2, WorkerAck: 2, ConnectedAt: at.Add(-3 * time.Second), LastCheckpointAt: at.Add(-time.Second),
+		ProtocolSnapshot:  []byte(`{"snapshot":"draining"}`),
 		PresenceExpiresAt: at.Add(time.Minute), AuthExpiresAt: at.Add(time.Hour), Revision: 3,
 	}
 	request := ports.AttachedWorkerExchangeAuthorization{
 		PlatformSequence: 3, WorkerSequence: 4, PlatformAck: 3, WorkerAck: 3, PresenceTTL: time.Minute,
+		ProtocolSnapshot: []byte(`{"snapshot":"draining-next"}`),
 	}
 	next := attachedWorkerCheckpointTarget(connection, request, at)
 	if next.State != domain.AttachedWorkerConnectionDraining {

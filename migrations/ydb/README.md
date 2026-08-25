@@ -141,6 +141,15 @@ checkpoints; and the stable 16-bucket expiry index supports
 bounded offline recovery. Raw nonces, bearer credentials, proofs, prompts,
 provider credentials, and tool payloads are never persisted by these tables.
 
+Migrations `00084`-`00086` add the fenced attached-worker execution boundary.
+One owner-scoped worker head is the concurrency-one contention point and stores
+only the current bounded attempt snapshot. Directional attempt messages retain
+exact fingerprints and canonical protocol records for ambiguous-response replay.
+The stable 16-bucket composite deadline index drives bounded lease and cancel
+recovery without scanning worker or attempt payloads. These tables contain no
+prompt, result, credential, provider, tool, MCP, path, URL, bearer, nonce,
+signature, proof, or channel-binding bytes.
+
 Automatic production down migrations are intentionally disabled. The `Down`
 sections are comments so neither Goose nor an operator can accidentally drop
 state.

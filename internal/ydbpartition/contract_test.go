@@ -146,6 +146,9 @@ func TestAttachedWorkerTablesRemainOwnerScopedAndBounded(t *testing.T) {
 		"attached_worker_capability_manifests": {"tenant_id", "owner_user_id", "worker_id", "capability_digest"},
 		"attached_worker_connections":          {"tenant_id", "owner_user_id", "worker_id"},
 		"attached_worker_presence_expiry":      {"shard_bucket", "presence_expires_at", "tenant_id", "owner_user_id", "worker_id"},
+		"attached_worker_attempt_heads":        {"tenant_id", "owner_user_id", "worker_id"},
+		"attached_worker_attempt_messages":     {"tenant_id", "owner_user_id", "worker_id", "attempt_id", "direction", "attempt_sequence"},
+		"attached_worker_attempt_deadlines":    {"shard_bucket", "deadline_at", "tenant_id", "owner_user_id", "worker_id", "attempt_id", "kind"},
 	}
 	for _, policy := range Policies() {
 		key, exists := want[policy.LogicalName]
@@ -156,7 +159,7 @@ func TestAttachedWorkerTablesRemainOwnerScopedAndBounded(t *testing.T) {
 		if fmt.Sprint(policy.PrimaryKey) != fmt.Sprint(key) {
 			t.Errorf("%s key = %v, want %v", policy.LogicalName, policy.PrimaryKey, key)
 		}
-		if policy.LogicalName == "attached_worker_presence_expiry" {
+		if policy.LogicalName == "attached_worker_presence_expiry" || policy.LogicalName == "attached_worker_attempt_deadlines" {
 			if !policy.Bucketed || !policy.LoadPartitioning {
 				t.Errorf("%s must be a bounded bucketed expiry index", policy.LogicalName)
 			}

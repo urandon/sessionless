@@ -22,6 +22,7 @@ func TestCanonicalSessionQueriesUseBoundedPlans(t *testing.T) {
 	userID := domain.UserID("user-query-plan")
 	sessionID := domain.SessionID("session-query-plan")
 	runID := domain.RunID("run-query-plan")
+	attemptID := domain.AttemptID("attempt-query-plan")
 	workerID := domain.AttachedWorkerID("worker-query-plan")
 	enrollmentID := domain.AttachedWorkerEnrollmentID("worker-enrollment-query-plan")
 	challengeID := domain.AttachedWorkerChallengeID("worker-challenge-query-plan")
@@ -292,6 +293,48 @@ func TestCanonicalSessionQueriesUseBoundedPlans(t *testing.T) {
 			contract: queryPlanContract{
 				operator: "TableRangeScan",
 				table:    "attached_worker_presence_expiry_v1",
+			},
+		},
+		{
+			name: "attached worker attempt head point lookup",
+			query: `SELECT payload FROM attached_worker_attempt_heads
+				WHERE tenant_id = $1 AND owner_user_id = $2 AND worker_id = $3`,
+			args: []any{tenantID, userID, workerID},
+			contract: queryPlanContract{
+				operator: "TablePointLookup",
+				table:    "attached_worker_attempt_heads",
+			},
+		},
+		{
+			name: "attached worker attempt message point lookup",
+			query: `SELECT payload FROM attached_worker_attempt_messages
+				WHERE tenant_id = $1 AND owner_user_id = $2 AND worker_id = $3
+					AND attempt_id = $4 AND direction = $5 AND attempt_sequence = $6`,
+			args: []any{tenantID, userID, workerID, attemptID, domain.AttachedWorkerAttemptWorkerToPlatform, uint64(1)},
+			contract: queryPlanContract{
+				operator: "TablePointLookup",
+				table:    "attached_worker_attempt_messages",
+			},
+		},
+		{
+			name: "attached worker attempt deadline bucket range",
+			query: `SELECT shard_bucket,deadline_at,tenant_id,owner_user_id,worker_id,attempt_id,kind,
+					lease_generation,attempt_revision
+				FROM attached_worker_attempt_deadlines_v1
+				WHERE shard_bucket = $1 AND deadline_at <= $2
+					AND (deadline_at > $3
+						OR (deadline_at = $3 AND tenant_id > $4)
+						OR (deadline_at = $3 AND tenant_id = $4 AND owner_user_id > $5)
+						OR (deadline_at = $3 AND tenant_id = $4 AND owner_user_id = $5 AND worker_id > $6)
+						OR (deadline_at = $3 AND tenant_id = $4 AND owner_user_id = $5 AND worker_id = $6 AND attempt_id > $7)
+						OR (deadline_at = $3 AND tenant_id = $4 AND owner_user_id = $5 AND worker_id = $6 AND attempt_id = $7 AND kind > $8))
+				ORDER BY deadline_at,tenant_id,owner_user_id,worker_id,attempt_id,kind LIMIT $9`,
+			args: []any{uint32(0), time.Date(2026, time.January, 1, 0, 0, 1, 0, time.UTC),
+				time.Unix(0, 0).UTC(), domain.TenantID(""), domain.UserID(""), domain.AttachedWorkerID(""),
+				domain.AttemptID(""), domain.AttachedWorkerAttemptDeadlineKind(""), limit},
+			contract: queryPlanContract{
+				operator: "TableRangeScan",
+				table:    "attached_worker_attempt_deadlines_v1",
 			},
 		},
 	}

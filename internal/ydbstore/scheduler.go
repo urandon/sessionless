@@ -108,6 +108,14 @@ func (store *Store) AdmitDispatch(
 				Field: "dispatch candidate", Reason: "does not match the stored outbox",
 			}
 		}
+		switch outbox.ExecutionPlacement.Kind {
+		case domain.ExecutionPlacementManaged:
+			result.Delivery = ports.DispatchDeliveryManagedQueue
+		case domain.ExecutionPlacementAttachedWorker:
+			result.Delivery = ports.DispatchDeliveryAttachedOffer
+		default:
+			return domain.ValidationError{Field: "dispatch_outbox.execution_placement", Reason: "is unknown"}
+		}
 		if outbox.Status != domain.DispatchPending {
 			result.Code = "dispatch_not_pending"
 			return nil
@@ -248,7 +256,7 @@ func (store *Store) AdmitDispatch(
 		if err != nil {
 			return err
 		}
-		if err := state.PutWorkerJob(ctx, domain.WorkerJob{
+		job := domain.WorkerJob{
 			TenantID: request.TenantID, RunID: request.RunID,
 			SessionID: run.SessionID, TriggerEventID: run.TriggerEventID,
 			AttemptID: request.AttemptID, ReservationID: request.ReservationID,
@@ -259,13 +267,52 @@ func (store *Store) AdmitDispatch(
 			SkillBundle:           outbox.SkillBundle,
 			AllowedMCPServers:     append([]string(nil), outbox.AllowedMCPServers...),
 			CredentialOwnerUserID: outbox.CredentialOwnerUserID,
+			ExecutionPlacement:    outbox.ExecutionPlacement,
 			Limits:                request.Limits,
 			Origin:                outbox.Origin,
 			DeliveryChat:          outbox.DeliveryChat,
 			ReplyToMessageID:      outbox.ReplyToMessageID,
 			CreatedAt:             request.Now,
-		}); err != nil {
+		}
+		if err := state.PutWorkerJob(ctx, job); err != nil {
 			return err
+		}
+		if result.Delivery == ports.DispatchDeliveryAttachedOffer {
+			leaseID, err := domain.NewAttachedWorkerLeaseIDV1(request.TenantID, request.RunID, request.AttemptID)
+			if err != nil {
+				return err
+			}
+			leaseTTL, err := domain.AttachedWorkerLeaseTTLForLimitsV1(job.Limits)
+			if err != nil {
+				return err
+			}
+			offerRequest := ports.AttachedWorkerAttemptOffer{
+				TenantID: request.TenantID, OwnerUserID: job.ExecutionPlacement.OwnerUserID,
+				WorkerID: job.ExecutionPlacement.WorkerID, RunID: request.RunID,
+				AttemptID: request.AttemptID, ReservationID: request.ReservationID,
+				LeaseID: leaseID, LeaseTTL: leaseTTL,
+			}
+			if err := validateAttachedWorkerAttemptOffer(offerRequest); err != nil {
+				return err
+			}
+			var offer ports.AttachedWorkerAttemptResult
+			if err := store.offerAttachedWorkerAttemptTx(ctx, tx, offerRequest, &offer); err != nil {
+				return err
+			}
+			if offer.Status != ports.AttachedWorkerExecutionApplied && offer.Status != ports.AttachedWorkerExecutionReplayed {
+				return ErrAttachedWorkerAttemptConflict
+			}
+			// The canonical attached-worker lease may outlive the ordinary queue
+			// reservation hold. Keep quota fenced through the exact fixed lease;
+			// otherwise the expiry reconciler could release capacity before a late
+			// but still-authorized claim.
+			if reservation.ExpiresAt.Before(offer.Attempt.LeaseExpiresAt) {
+				reservation.ExpiresAt = offer.Attempt.LeaseExpiresAt
+				reservation.UpdatedAt = request.Now
+				if err := state.PutQuotaReservation(ctx, reservation); err != nil {
+					return err
+				}
+			}
 		}
 		slot.State = domain.SchedulerPressured
 		slot.ActiveRunID = request.RunID
@@ -274,13 +321,15 @@ func (store *Store) AdmitDispatch(
 		if err := writeSchedulerSlot(ctx, tx, slot); err != nil {
 			return err
 		}
-		if _, err := tx.sqlTx.ExecContext(ctx,
-			`UPDATE tenant_scheduler_counters
-			 SET queue_depth = queue_depth + $1, updated_at = $2
-			 WHERE tenant_id = $3`,
-			uint32(1), request.Now, request.TenantID,
-		); err != nil {
-			return err
+		if result.Delivery == ports.DispatchDeliveryManagedQueue {
+			if _, err := tx.sqlTx.ExecContext(ctx,
+				`UPDATE tenant_scheduler_counters
+				 SET queue_depth = queue_depth + $1, updated_at = $2
+				 WHERE tenant_id = $3`,
+				uint32(1), request.Now, request.TenantID,
+			); err != nil {
+				return err
+			}
 		}
 		return appendSchedulerAudit(
 			ctx, tx, request.Now, "scheduler.admitted",
@@ -288,6 +337,7 @@ func (store *Store) AdmitDispatch(
 			map[string]any{
 				"reservation_id": request.ReservationID,
 				"capacity_units": uint32(1),
+				"delivery":       result.Delivery,
 			},
 		)
 	})

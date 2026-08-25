@@ -29,11 +29,12 @@ type SnapshotMaintainer interface {
 }
 
 type PassResult struct {
-	Considered int
-	Admitted   int
-	Published  int
-	Blocked    int
-	Expired    int
+	Considered     int
+	Admitted       int
+	Published      int
+	AttachedOffers int
+	Blocked        int
+	Expired        int
 }
 
 type WakeResult struct {
@@ -141,7 +142,7 @@ func (dispatcher *Dispatcher) RunWake(ctx context.Context, wakeQueue ports.Queue
 	if err := wakeQueue.Ack(ctx, message.ReceiptHandle); err != nil {
 		return WakeResult{}, err
 	}
-	return WakeResult{Outcome: "published", Code: admission.Code}, nil
+	return WakeResult{Outcome: dispatchOutcome(admission.Delivery), Code: admission.Code}, nil
 }
 
 func (dispatcher *Dispatcher) RunOnce(ctx context.Context) (PassResult, error) {
@@ -165,7 +166,12 @@ func (dispatcher *Dispatcher) RunOnce(ctx context.Context) (PassResult, error) {
 				continue
 			}
 			result.Admitted++
-			result.Published++
+			switch admission.Delivery {
+			case ports.DispatchDeliveryManagedQueue:
+				result.Published++
+			case ports.DispatchDeliveryAttachedOffer:
+				result.AttachedOffers++
+			}
 		}
 
 		expired, err := dispatcher.store.ListExpiredQuotaReservations(
@@ -202,13 +208,22 @@ func (dispatcher *Dispatcher) dispatchCandidate(
 	if err != nil || !admission.Admitted {
 		return admission, err
 	}
-	envelope := queuecontract.Envelope{
-		Schema: queuecontract.SchemaV1, MessageID: stableMessageID(candidate.OutboxID),
-		Kind: queuecontract.KindDispatchRun, TenantID: candidate.TenantID,
-		SubjectID: string(candidate.RunID), EnqueuedAt: now,
-	}
-	if err := dispatcher.queue.Publish(ctx, envelope); err != nil {
-		return ports.DispatchAdmissionResult{}, err
+	switch admission.Delivery {
+	case ports.DispatchDeliveryManagedQueue:
+		envelope := queuecontract.Envelope{
+			Schema: queuecontract.SchemaV1, MessageID: stableMessageID(candidate.OutboxID),
+			Kind: queuecontract.KindDispatchRun, TenantID: candidate.TenantID,
+			SubjectID: string(candidate.RunID), EnqueuedAt: now,
+		}
+		if err := dispatcher.queue.Publish(ctx, envelope); err != nil {
+			return ports.DispatchAdmissionResult{}, err
+		}
+	case ports.DispatchDeliveryAttachedOffer:
+		// Admission already persisted the owner-scoped attached-worker offer in
+		// the same transaction as the run, reservation, and worker job. Publishing
+		// the managed queue envelope here would violate the deny-only placement.
+	default:
+		return ports.DispatchAdmissionResult{}, fmt.Errorf("admitted dispatch has invalid delivery")
 	}
 	if err := dispatcher.store.AcknowledgeDispatch(
 		ctx, candidate.TenantID, candidate.OutboxID, now,
@@ -223,6 +238,13 @@ func (dispatcher *Dispatcher) dispatchCandidate(
 		}
 	}
 	return admission, nil
+}
+
+func dispatchOutcome(delivery ports.DispatchDelivery) string {
+	if delivery == ports.DispatchDeliveryAttachedOffer {
+		return "offered"
+	}
+	return "published"
 }
 
 func stableReservationID(outboxID domain.DispatchOutboxID) domain.QuotaReservationID {

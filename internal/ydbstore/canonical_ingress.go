@@ -363,6 +363,7 @@ func (store *Store) CommitCanonicalUserEvent(
 			AttemptID: request.AttemptID, InputManifestID: request.ManifestID,
 			AllowedMCPServers:     append([]string(nil), request.AllowedMCPServers...),
 			CredentialOwnerUserID: request.UserID,
+			ExecutionPlacement:    domain.ManagedExecutionPlacementV1(),
 			ContextWindow:         &domain.SessionContextWindow{ThroughSequence: sequence},
 			Origin:                &origin, Status: domain.DispatchPending, IdempotencyKey: request.IdempotencyKey,
 			CreatedAt: request.CommittedAt, UpdatedAt: request.CommittedAt,

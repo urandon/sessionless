@@ -28,6 +28,11 @@ single-use audience-bound enrollment, Ed25519 claim and rotation proofs,
 monotonic identity/connection fences, and deny-first revocation without
 granting transport, capability, provider, credential, or dispatch authority.
 
+The AW-03 presence-only transport contract is described in
+[attached-worker-transport.md](attached-worker-transport.md). It adds
+proof-bound initial attach, immutable capability evidence, and immediate
+heartbeat presence without enabling reconnect, dispatch, or cloud wake-up.
+
 ## Canonical sessions and frontend bindings
 
 `Session` is the product conversation and Sessionless is its source of truth.

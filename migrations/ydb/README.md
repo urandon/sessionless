@@ -132,6 +132,15 @@ queries use exact `(tenant_id, owner_user_id, ...)` keys or bounded owner-prefix
 ranges; transport, provider, credential, capability, and dispatch state are not
 stored by these tables.
 
+Migrations `00080`-`00083` add the bounded outbound attached-worker transport
+state. Single-use attach challenges retain their consumed marker beyond the
+authentication deadline; immutable capability content is keyed by its digest
+while the current per-connection signed observation stays on the connection
+head; that owner-scoped head coalesces protocol watermarks and presence
+checkpoints; and the stable 16-bucket expiry index supports
+bounded offline recovery. Raw nonces, bearer credentials, proofs, prompts,
+provider credentials, and tool payloads are never persisted by these tables.
+
 Automatic production down migrations are intentionally disabled. The `Down`
 sections are comments so neither Goose nor an operator can accidentally drop
 state.

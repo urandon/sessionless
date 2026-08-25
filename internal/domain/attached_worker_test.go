@@ -72,6 +72,21 @@ func TestAttachedWorkerAuditV1IsContentFreeAndVersioned(t *testing.T) {
 	}
 }
 
+func TestAttachedWorkerConnectionPresenceAuditActionsAreCanonical(t *testing.T) {
+	for _, action := range []AttachedWorkerAuditAction{
+		AttachedWorkerAuditConnectionManifestAccepted,
+		AttachedWorkerAuditConnectionPresenceExpired,
+	} {
+		if !action.Valid() {
+			t.Fatalf("canonical connection audit action %q is invalid", action)
+		}
+	}
+	if AttachedWorkerAuditConnectionManifestAccepted != "connection_manifest_accepted" ||
+		AttachedWorkerAuditConnectionPresenceExpired != "connection_presence_expired" {
+		t.Fatal("connection audit wire values changed")
+	}
+}
+
 func TestAttachedWorkerCoreShapesExcludeLaterProtocolConcerns(t *testing.T) {
 	for _, value := range []any{AttachedWorker{}, AttachedWorkerEnrollment{}} {
 		typeOf := reflect.TypeOf(value)

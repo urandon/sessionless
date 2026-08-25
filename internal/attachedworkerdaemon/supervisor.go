@@ -68,13 +68,26 @@ type LaunchSpec struct {
 	WriteRoots  []string
 }
 
-// IsolationLauncher constructs the command that establishes the reviewed OS
-// boundary and ultimately execs the exact harness. It may wrap the executable
-// (for example with a container runtime), but it must preserve the supplied
-// replacement environment and working directory exactly.
+// IsolationBoundary is the complete lifecycle of one prepared OS isolation
+// boundary. Command starts the local client/launcher process; the remaining
+// methods control and verify the isolated workload itself. This distinction is
+// required for runtimes whose workload can outlive their local CLI process.
+// Implementations must honor context cancellation and must make Release
+// idempotent.
+type IsolationBoundary interface {
+	Command() *exec.Cmd
+	GracefulStop(context.Context) error
+	ForceStop(context.Context) error
+	Alive(context.Context) (bool, error)
+	Release(context.Context) error
+}
+
+// IsolationLauncher prepares the reviewed OS boundary and exact harness
+// command. Prepare must either return a fully releasable boundary or clean up
+// every resource it created before returning an error.
 type IsolationLauncher interface {
 	Profile() IsolationProfile
-	Command(context.Context, LaunchSpec) (*exec.Cmd, error)
+	Prepare(context.Context, LaunchSpec) (IsolationBoundary, error)
 }
 
 type SupervisorConfig struct {
@@ -136,6 +149,7 @@ type AttemptResult struct {
 	FailureCode       string
 	Duration          time.Duration
 	IsolationProfile  string
+	BoundaryReleased  bool
 	CleanupSucceeded  bool
 }
 
@@ -230,9 +244,14 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 		return AttemptResult{}, err
 	}
 	result.CleanupSucceeded = false
+	rootCleaned := false
+	boundaryReleased := true
+	boundaryTeardownAttempted := false
+	boundaryTeardownSucceeded := true
 	defer func() {
 		cleanupErr := cleanupAttemptRoot(supervisor.root, attemptRoot)
-		result.CleanupSucceeded = cleanupErr == nil
+		rootCleaned = cleanupErr == nil
+		result.CleanupSucceeded = rootCleaned && boundaryTeardownSucceeded && boundaryReleased
 		if err == nil && cleanupErr != nil {
 			err = cleanupErr
 		}
@@ -252,8 +271,32 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 	if spec.credentialWriteFile != "" {
 		launch.WriteFiles = []string{spec.credentialWriteFile}
 	}
-	command, err := supervisor.launcher.Command(parent, launch)
-	if err != nil || command == nil || command.Dir != launch.Directory ||
+	prepareCtx, cancelPrepare := context.WithTimeout(parent, supervisor.timeout)
+	boundary, err := supervisor.launcher.Prepare(prepareCtx, launch)
+	cancelPrepare()
+	if err != nil || boundary == nil {
+		return result, ErrSupervisorConfig
+	}
+	boundaryReleased = false
+	boundaryTeardownSucceeded = false
+	defer func() {
+		if !boundaryTeardownAttempted {
+			boundaryTeardownAttempted = true
+			boundaryTeardownSucceeded = teardownIsolationBoundary(boundary, supervisor.grace) == nil
+		}
+		releaseErr := callBoundary(supervisor.grace, boundary.Release)
+		boundaryReleased = releaseErr == nil
+		result.BoundaryReleased = boundaryReleased
+		result.CleanupSucceeded = rootCleaned && boundaryTeardownSucceeded && boundaryReleased
+		if err == nil && !boundaryTeardownSucceeded {
+			err = errors.New("teardown attached worker isolation boundary")
+		}
+		if err == nil && releaseErr != nil {
+			err = errors.New("release attached worker isolation boundary")
+		}
+	}()
+	command := boundary.Command()
+	if command == nil || command.Dir != launch.Directory ||
 		!equalStrings(command.Env, launch.Environment) || command.Stdin != nil || len(command.ExtraFiles) != 0 {
 		return result, ErrSupervisorConfig
 	}
@@ -333,6 +376,11 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 			}
 		}
 	}
+	boundaryTeardownAttempted = true
+	if err := teardownIsolationBoundary(boundary, supervisor.grace); err != nil {
+		return result, err
+	}
+	boundaryTeardownSucceeded = true
 	if !waitChannel(stdoutDone, supervisor.grace) || !waitChannel(stderrDone, supervisor.grace) {
 		return result, errors.New("attached worker output reader survived teardown")
 	}
@@ -359,6 +407,82 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 	result.Duration = time.Since(startedAt)
 	result.IsolationProfile = supervisor.profileName
 	return result, nil
+}
+
+func teardownIsolationBoundary(boundary IsolationBoundary, timeout time.Duration) error {
+	alive, err := inspectBoundary(boundary, timeout)
+	if err != nil {
+		forceErr := callBoundary(timeout, boundary.ForceStop)
+		stillAlive, verifyErr := inspectBoundary(boundary, timeout)
+		if forceErr != nil || verifyErr != nil || stillAlive {
+			return errors.New("attached worker isolation boundary cleanup failed")
+		}
+		return errors.New("inspect attached worker isolation boundary")
+	}
+	if !alive {
+		return nil
+	}
+	gracefulErr := callBoundary(timeout, boundary.GracefulStop)
+	alive, err = inspectBoundary(boundary, timeout)
+	if err != nil {
+		forceErr := callBoundary(timeout, boundary.ForceStop)
+		stillAlive, verifyErr := inspectBoundary(boundary, timeout)
+		if forceErr != nil || verifyErr != nil || stillAlive {
+			return errors.New("attached worker isolation boundary cleanup failed")
+		}
+		return errors.New("inspect attached worker isolation boundary")
+	}
+	if !alive {
+		if gracefulErr != nil {
+			return errors.New("stop attached worker isolation boundary")
+		}
+		return nil
+	}
+	forceErr := callBoundary(timeout, boundary.ForceStop)
+	alive, err = inspectBoundary(boundary, timeout)
+	if err != nil {
+		return errors.New("inspect attached worker isolation boundary")
+	}
+	if alive {
+		return errors.New("attached worker isolation boundary survived teardown")
+	}
+	if gracefulErr != nil || forceErr != nil {
+		return errors.New("stop attached worker isolation boundary")
+	}
+	return nil
+}
+
+func callBoundary(timeout time.Duration, operation func(context.Context) error) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- operation(ctx) }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func inspectBoundary(boundary IsolationBoundary, timeout time.Duration) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	type inspection struct {
+		alive bool
+		err   error
+	}
+	done := make(chan inspection, 1)
+	go func() {
+		alive, err := boundary.Alive(ctx)
+		done <- inspection{alive: alive, err: err}
+	}()
+	select {
+	case result := <-done:
+		return result.alive, result.err
+	case <-ctx.Done():
+		return false, ctx.Err()
+	}
 }
 
 func (supervisor *Supervisor) validateAttemptSpec(spec AttemptSpec) error {

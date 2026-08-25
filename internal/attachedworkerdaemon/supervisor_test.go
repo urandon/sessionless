@@ -60,6 +60,53 @@ func TestSupervisorPinsValidatedIsolationProfile(t *testing.T) {
 	}
 }
 
+func TestSupervisorBoundsIsolationPreparation(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	executable, err = filepath.EvalSymlinks(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := DigestExecutable(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	launcher := &deadlinePrepareLauncher{}
+	supervisor, err := NewSupervisor(SupervisorConfig{
+		ScratchRoot: newCanonicalTempDir(t), Launcher: launcher,
+		Timeout: 40 * time.Millisecond, TerminationGrace: 20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	result, err := supervisor.Run(context.Background(), AttemptSpec{
+		Executable: executable, ExecutableDigest: digest,
+	})
+	if !errors.Is(err, ErrSupervisorConfig) {
+		t.Fatalf("expected bounded preparation failure, got %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("isolation preparation was not bounded: %v", elapsed)
+	}
+	if !launcher.deadlineSeen || !result.CleanupSucceeded {
+		t.Fatalf("preparation did not receive a deadline or clean its root: seen=%v result=%+v", launcher.deadlineSeen, result)
+	}
+}
+
+type deadlinePrepareLauncher struct {
+	fixtureLauncher
+	deadlineSeen bool
+}
+
+func (launcher *deadlinePrepareLauncher) Prepare(ctx context.Context, _ LaunchSpec) (IsolationBoundary, error) {
+	_, launcher.deadlineSeen = ctx.Deadline()
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
 func (launcher *fixtureLauncher) Prepare(_ context.Context, spec LaunchSpec) (IsolationBoundary, error) {
 	launcher.mu.Lock()
 	launcher.last = LaunchSpec{

@@ -56,8 +56,9 @@ The returned lifecycle handle must identify only that invocation, stop the
 actual isolated workload rather than merely its CLI client, verify liveness
 without trusting child output, honor every cleanup context, and make release
 idempotent. A launcher that returns an error from `Prepare` owns cleanup of any
-partially created runtime resources. The supervisor does not infer workload
-death from a successful client exit.
+partially created runtime resources. `Prepare` receives a supervisor-bounded
+context and must stop and clean partial resources when it expires. The
+supervisor does not infer workload death from a successful client exit.
 
 Construction fails with `ErrIsolationUnsupported` if any capability is absent.
 The launcher is a trusted port and therefore needs its own platform-specific

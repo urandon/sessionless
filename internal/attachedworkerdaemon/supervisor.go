@@ -271,7 +271,9 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 	if spec.credentialWriteFile != "" {
 		launch.WriteFiles = []string{spec.credentialWriteFile}
 	}
-	boundary, err := supervisor.launcher.Prepare(parent, launch)
+	prepareCtx, cancelPrepare := context.WithTimeout(parent, supervisor.timeout)
+	boundary, err := supervisor.launcher.Prepare(prepareCtx, launch)
+	cancelPrepare()
 	if err != nil || boundary == nil {
 		return result, ErrSupervisorConfig
 	}

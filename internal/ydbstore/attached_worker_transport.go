@@ -378,6 +378,37 @@ func (store *Store) LoadAttachedWorkerConnection(
 	return result, true, nil
 }
 
+func (store *Store) LoadAttachedWorkerCapabilityManifest(
+	ctx context.Context,
+	tenantID domain.TenantID,
+	ownerUserID domain.UserID,
+	workerID domain.AttachedWorkerID,
+	digest domain.AttachedWorkerCapabilityDigest,
+) (result domain.AttachedWorkerCapabilityManifest, found bool, err error) {
+	if err := validateAttachedWorkerTransportScope(tenantID, ownerUserID, workerID); err != nil {
+		return result, false, err
+	}
+	if err := digest.Validate(); err != nil {
+		return result, false, err
+	}
+	result, found, err = readJSON[domain.AttachedWorkerCapabilityManifest](ctx, store.db,
+		`SELECT record FROM attached_worker_capability_manifests
+		 WHERE tenant_id = $1 AND owner_user_id = $2 AND worker_id = $3 AND capability_digest = $4`,
+		tenantID, ownerUserID, workerID, digest,
+	)
+	if err != nil || !found {
+		return result, found, err
+	}
+	result = canonicalAttachedWorkerManifest(result)
+	if err := result.Validate(); err != nil {
+		return domain.AttachedWorkerCapabilityManifest{}, false, err
+	}
+	if result.TenantID != tenantID || result.OwnerUserID != ownerUserID || result.WorkerID != workerID || result.Digest != digest {
+		return domain.AttachedWorkerCapabilityManifest{}, false, ErrAttachedWorkerCapabilityConflict
+	}
+	return result, true, nil
+}
+
 func (store *Store) AuthorizeAttachedWorkerExchange(
 	ctx context.Context,
 	request ports.AttachedWorkerExchangeAuthorization,

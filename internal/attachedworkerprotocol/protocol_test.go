@@ -628,7 +628,60 @@ func TestReconnectRollsBackWorkerAheadProgressAndTerminalForReplay(t *testing.T)
 			authoritative.AttemptState() != AttemptClaimed || worker.AttemptState() != AttemptClaimed {
 			t.Fatalf("lost terminal was trusted: plan=%+v states=%s/%s", plan, authoritative.AttemptState(), worker.AttemptState())
 		}
+		terminalA := authoritativeFixture.frame(DirectionWorkerToPlatform, MessageTerminal)
+		terminalA.Terminal = &TerminalV1{Binding: authoritativeFixture.binding, AttemptSequence: 2, TerminalSequence: 1,
+			Status: TerminalSucceeded, Result: TerminalResultCompleted, EvidenceDigest: digestByte(0x9a)}
+		terminalB := terminalA
+		terminalB.Terminal = &TerminalV1{Binding: authoritativeFixture.binding, AttemptSequence: 2, TerminalSequence: 1,
+			Status: TerminalSucceeded, Result: TerminalResultCompleted, EvidenceDigest: digestByte(0x9b)}
+		for _, machine := range []*ConformanceMachine{authoritative, worker} {
+			requireCode(t, acceptAt(machine, DirectionWorkerToPlatform, terminalB, authoritativeFixture.auth.ChannelBinding,
+				1_800_000_000_000_000), ErrorConflict)
+			if machine.attempt.pendingWorkerReplay == nil ||
+				machine.attempt.pendingWorkerReplay.fingerprint != attemptFingerprint(terminalA) {
+				t.Fatal("divergent terminal replaced the pending signed replay commitment")
+			}
+			acceptOK(t, machine, DirectionWorkerToPlatform, terminalA, authoritativeFixture.auth.ChannelBinding)
+		}
+		ack := authoritativeFixture.frame(DirectionPlatformToWorker, MessageTerminalAck)
+		ack.TerminalAck = &TerminalAckV1{Binding: authoritativeFixture.binding, AttemptSequence: 3, TerminalSequence: 1,
+			Status: TerminalSucceeded, Result: TerminalResultCompleted, EvidenceDigest: digestByte(0x9a)}
+		for _, machine := range []*ConformanceMachine{authoritative, worker} {
+			acceptOK(t, machine, DirectionPlatformToWorker, ack, authoritativeFixture.auth.ChannelBinding)
+			if machine.AttemptState() != AttemptTerminalCommitted || machine.attempt.pendingWorkerReplay != nil {
+				t.Fatalf("exact replay was not committed: state=%s pending=%+v", machine.AttemptState(), machine.attempt.pendingWorkerReplay)
+			}
+		}
 	})
+}
+
+func TestReconnectCancelFencedDiscardsCrossedWorkerSuccess(t *testing.T) {
+	authoritativeFixture := newProtocolFixture(t)
+	authoritative := authoritativeFixture.claimMachine(t, true)
+	workerFixture := newProtocolFixture(t)
+	worker := workerFixture.claimMachine(t, true)
+	fence := authoritativeFixture.frame(DirectionPlatformToWorker, MessageCancel)
+	fence.Cancel = &CancelV1{Binding: authoritativeFixture.binding, AttemptSequence: 3,
+		CancelRevision: 1, Code: CancelFenced}
+	acceptOK(t, authoritative, DirectionPlatformToWorker, fence, authoritativeFixture.auth.ChannelBinding)
+	success := workerFixture.frame(DirectionWorkerToPlatform, MessageTerminal)
+	success.Terminal = &TerminalV1{Binding: workerFixture.binding, AttemptSequence: 2, TerminalSequence: 1,
+		Status: TerminalSucceeded, Result: TerminalResultCompleted, EvidenceDigest: digestByte(0x9c)}
+	acceptOK(t, worker, DirectionWorkerToPlatform, success, workerFixture.auth.ChannelBinding)
+	plan := reconnectPair(t, authoritative, worker, authoritativeFixture)
+	if plan.TerminalDecision != ReconnectTerminalDiscard || authoritative.AttemptState() != AttemptFenced ||
+		worker.AttemptState() != AttemptFenced || authoritative.attempt.pendingWorkerReplay != nil ||
+		worker.attempt.pendingWorkerReplay != nil {
+		t.Fatalf("fenced outcome was not explicitly discarded: plan=%+v states=%s/%s",
+			plan, authoritative.AttemptState(), worker.AttemptState())
+	}
+	replayed := authoritativeFixture.frame(DirectionWorkerToPlatform, MessageTerminal)
+	replayed.Terminal = &TerminalV1{Binding: authoritativeFixture.binding, AttemptSequence: 2, TerminalSequence: 1,
+		Status: TerminalSucceeded, Result: TerminalResultCompleted, EvidenceDigest: digestByte(0x9c)}
+	for _, machine := range []*ConformanceMachine{authoritative, worker} {
+		requireCode(t, acceptAt(machine, DirectionWorkerToPlatform, replayed, authoritativeFixture.auth.ChannelBinding,
+			1_800_000_000_000_000), ErrorProtocolViolation)
+	}
 }
 
 func TestAuthoritativeLeaseExpiryIsExclusive(t *testing.T) {

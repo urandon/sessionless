@@ -63,7 +63,7 @@ type ReplayPlanV1 struct {
 	PlatformAttemptAfter uint64 `json:"platform_attempt_after"`
 	WorkerAttemptAfter   uint64 `json:"worker_attempt_after"`
 	// TerminalDecision is an explicit control-plane decision: replay is not a
-	// commit, and only committed permits worker-side erasure.
+	// commit, discard forbids replay, and only committed permits erasure.
 	TerminalDecision ReconnectTerminalDecision `json:"terminal_decision"`
 }
 
@@ -72,6 +72,7 @@ type ReconnectTerminalDecision string
 const (
 	ReconnectTerminalNone      ReconnectTerminalDecision = "none"
 	ReconnectTerminalReplay    ReconnectTerminalDecision = "replay"
+	ReconnectTerminalDiscard   ReconnectTerminalDecision = "discard"
 	ReconnectTerminalCommitted ReconnectTerminalDecision = "committed"
 )
 
@@ -80,7 +81,7 @@ func (plan ReplayPlanV1) Validate() error {
 		return protocolError(ErrorMalformedFrame)
 	}
 	switch plan.TerminalDecision {
-	case ReconnectTerminalNone, ReconnectTerminalReplay, ReconnectTerminalCommitted:
+	case ReconnectTerminalNone, ReconnectTerminalReplay, ReconnectTerminalDiscard, ReconnectTerminalCommitted:
 		return nil
 	default:
 		return protocolError(ErrorMalformedFrame)
@@ -114,7 +115,11 @@ func BuildReconnectAcceptedV1(
 	if authoritative.Attempt.State == AttemptTerminalCommitted {
 		decision = ReconnectTerminalCommitted
 	} else if workerClaim.Attempt.TerminalSequence > authoritative.Attempt.TerminalSequence {
-		decision = ReconnectTerminalReplay
+		if cancellationOverridesTerminal(authoritative.Attempt) {
+			decision = ReconnectTerminalDiscard
+		} else {
+			decision = ReconnectTerminalReplay
+		}
 	}
 	return ReconnectAcceptedV1{
 		WorkerOffer: cloneVersionOffer(negotiation.WorkerOffer), PlatformOffer: cloneVersionOffer(negotiation.PlatformOffer),

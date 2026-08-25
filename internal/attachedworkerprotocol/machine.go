@@ -57,22 +57,31 @@ type AcceptanceContextV1 struct {
 }
 
 type attemptRecord struct {
-	state            AttemptState
-	binding          AttemptBindingV1
-	platform         attemptSequenceState
-	worker           attemptSequenceState
-	progressSequence uint64
-	cancelRevision   uint64
-	cancelCode       CancelCode
-	terminalSequence uint64
-	terminalStatus   TerminalStatus
-	terminalResult   TerminalResult
-	terminalEvidence []byte
+	state               AttemptState
+	binding             AttemptBindingV1
+	platform            attemptSequenceState
+	worker              attemptSequenceState
+	progressSequence    uint64
+	cancelRevision      uint64
+	cancelCode          CancelCode
+	terminalSequence    uint64
+	terminalStatus      TerminalStatus
+	terminalResult      TerminalResult
+	terminalEvidence    []byte
+	pendingWorkerReplay *attemptReplayCommitment
 }
 
 type attemptSequenceState struct {
 	sequence     uint64
 	fingerprints map[uint64][sha256.Size]byte
+}
+
+// attemptReplayCommitment is a bounded signed reconnect claim awaiting exact
+// replay. It is deliberately separate from fingerprints of accepted frames.
+type attemptReplayCommitment struct {
+	kind        MessageKind
+	sequence    uint64
+	fingerprint [sha256.Size]byte
 }
 
 type ConformanceMachine struct {
@@ -326,6 +335,7 @@ func (machine *ConformanceMachine) acceptReconnectAccepted(direction Direction, 
 		buildErr != nil || !sameReconnectAccepted(expected, *frame.ReconnectAccepted) {
 		return protocolError(ErrorUnauthorized)
 	}
+	machine.installReplayCommitment(authoritative, machine.reconnectClaim, frame.ReconnectAccepted.ReplayPlan)
 	machine.applyAttemptSummary(frame.ReconnectAccepted.AuthoritativeAttempt)
 	machine.connection = ConnectionAttached
 	return nil
@@ -429,6 +439,12 @@ func (machine *ConformanceMachine) acceptAttempt(direction Direction, frame Fram
 		}
 		return protocolError(ErrorConflict)
 	}
+	if direction == DirectionWorkerToPlatform && machine.attempt.pendingWorkerReplay != nil &&
+		sequence == machine.attempt.pendingWorkerReplay.sequence {
+		if machine.attempt.pendingWorkerReplay.kind != frame.Kind || machine.attempt.pendingWorkerReplay.fingerprint != fingerprint {
+			return protocolError(ErrorConflict)
+		}
+	}
 	if sender.sequence == math.MaxUint64 || sequence != sender.sequence+1 {
 		return protocolError(ErrorSequenceMismatch)
 	}
@@ -448,6 +464,10 @@ func (machine *ConformanceMachine) acceptAttempt(direction Direction, frame Fram
 		sender.fingerprints = make(map[uint64][sha256.Size]byte, MaxAttemptMessages)
 	}
 	sender.sequence, sender.fingerprints[sequence] = sequence, fingerprint
+	if direction == DirectionWorkerToPlatform && machine.attempt.pendingWorkerReplay != nil &&
+		machine.attempt.pendingWorkerReplay.sequence == sequence {
+		machine.attempt.pendingWorkerReplay = nil
+	}
 	return nil
 }
 
@@ -710,6 +730,38 @@ func (machine *ConformanceMachine) applyAttemptSummary(summary AttemptSummaryV1)
 	machine.attempt.terminalStatus = summary.TerminalStatus
 	machine.attempt.terminalResult = summary.TerminalResult
 	machine.attempt.terminalEvidence = append([]byte(nil), summary.TerminalEvidenceDigest...)
+	pruneAttemptFingerprints(&machine.attempt.platform, summary.PlatformSequence)
+	pruneAttemptFingerprints(&machine.attempt.worker, summary.WorkerSequence)
+}
+
+func pruneAttemptFingerprints(state *attemptSequenceState, through uint64) {
+	for sequence := range state.fingerprints {
+		if sequence > through {
+			delete(state.fingerprints, sequence)
+		}
+	}
+}
+
+func (machine *ConformanceMachine) installReplayCommitment(
+	authoritative ReconnectSnapshotV1,
+	workerClaim ReconnectSnapshotV1,
+	plan ReplayPlanV1,
+) {
+	machine.attempt.pendingWorkerReplay = nil
+	if plan.TerminalDecision != ReconnectTerminalReplay ||
+		workerClaim.Attempt.TerminalSequence <= authoritative.Attempt.TerminalSequence {
+		return
+	}
+	terminal := &TerminalV1{
+		Binding: cloneBinding(workerClaim.Attempt.Binding), AttemptSequence: workerClaim.Attempt.WorkerSequence,
+		TerminalSequence: workerClaim.Attempt.TerminalSequence, Status: workerClaim.Attempt.TerminalStatus,
+		Result:         workerClaim.Attempt.TerminalResult,
+		EvidenceDigest: append([]byte(nil), workerClaim.Attempt.TerminalEvidenceDigest...),
+	}
+	machine.attempt.pendingWorkerReplay = &attemptReplayCommitment{
+		kind: MessageTerminal, sequence: terminal.AttemptSequence,
+		fingerprint: attemptFingerprint(FrameV1{Kind: MessageTerminal, Terminal: terminal}),
+	}
 }
 
 func (machine *ConformanceMachine) hasFeature(feature ProtocolFeatureV1) bool {

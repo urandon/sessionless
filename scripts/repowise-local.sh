@@ -300,6 +300,8 @@ update_repowise() {
 
 start_mcp() {
   test ! -f "$mcp_pid_file" || die "MCP pid file already exists; run stop first"
+  sandbox_state_definition="STATE_ROOT=$repo_root/.repowise"
+  sandbox_local_definition="LOCAL_ROOT=$runtime_root"
   env -i \
     HOME="$home_root" TMPDIR="$tmp_root" \
     XDG_CONFIG_HOME="$xdg_config_root" XDG_CACHE_HOME="$xdg_cache_root" \
@@ -312,13 +314,13 @@ start_mcp() {
     PIP_DISABLE_PIP_VERSION_CHECK=1 GIT_CONFIG_NOSYSTEM=1 \
     GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 NO_COLOR=1 \
     /usr/bin/sandbox-exec \
-    -D STATE_ROOT="$repo_root/.repowise" -D LOCAL_ROOT="$runtime_root" \
+    -D "$sandbox_state_definition" -D "$sandbox_local_definition" \
     -f "$sandbox_profile" \
     "$repowise_bin" mcp "$repo_root" --transport stdio --tools "$REPOWISE_MCP_ALLOWED_TOOLS" \
     <&0 >&1 2>&2 &
   mcp_pid=$!
   expected_suffix="$repowise_bin mcp $repo_root --transport stdio --tools $REPOWISE_MCP_ALLOWED_TOOLS"
-  startup_signature="/usr/bin/sandbox-exec -D STATE_ROOT $repo_root/.repowise -D LOCAL_ROOT $runtime_root -f $sandbox_profile $repowise_bin mcp $repo_root --transport stdio"
+  startup_signature="/usr/bin/sandbox-exec -D $sandbox_state_definition -D $sandbox_local_definition -f $sandbox_profile $repowise_bin mcp $repo_root --transport stdio"
   mcp_start=$(ps -ww -p "$mcp_pid" -o lstart= 2>/dev/null | awk '{$1=$1; print}')
   test -n "$mcp_start" || {
     kill "$mcp_pid" 2>/dev/null || true

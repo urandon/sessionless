@@ -130,8 +130,10 @@ require_literal '(deny network*)' "$repo_root/tools/repowise/no-network.sb" 'off
 require_literal '(deny file-write*)' "$repo_root/tools/repowise/no-network.sb" 'offline sandbox must deny ambient filesystem writes'
 require_literal '(param "STATE_ROOT")' "$repo_root/tools/repowise/no-network.sb" 'offline sandbox must allow only the ignored index root'
 require_literal '(param "LOCAL_ROOT")' "$repo_root/tools/repowise/no-network.sb" 'offline sandbox must allow only the ignored local environment root'
-require_literal '-D STATE_ROOT=' "$wrapper" 'wrapper must bind the exact index root into the sandbox profile'
-require_literal '-D LOCAL_ROOT=' "$wrapper" 'wrapper must bind the exact local environment root into the sandbox profile'
+require_literal 'sandbox_state_definition="STATE_ROOT=$repo_root/.repowise"' "$wrapper" 'wrapper must bind the exact index root into the sandbox profile'
+require_literal 'sandbox_local_definition="LOCAL_ROOT=$runtime_root"' "$wrapper" 'wrapper must bind the exact local environment root into the sandbox profile'
+require_literal '-D "$sandbox_state_definition" -D "$sandbox_local_definition"' "$wrapper" 'the sandbox launch must use the recorded startup definitions'
+require_literal 'startup_signature="/usr/bin/sandbox-exec -D $sandbox_state_definition -D $sandbox_local_definition' "$wrapper" 'trap cleanup must validate the same startup definitions that were launched'
 if grep -E 'run_sanitized .*\$repowise_bin' "$wrapper" >/dev/null; then
 	fail 'a non-install RepoWise invocation bypasses the no-network sandbox'
 fi

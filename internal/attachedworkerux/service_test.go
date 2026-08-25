@@ -354,12 +354,19 @@ func TestPublicReadDTOsExcludeSensitiveAuthority(t *testing.T) {
 	t.Parallel()
 	for _, root := range []reflect.Type{
 		reflect.TypeOf(AttachedWorkerUXReadModelV1{}), reflect.TypeOf(AttachedWorkerListV1{}), reflect.TypeOf(AttachedWorkerDiagnosticsV1{}),
+		reflect.TypeOf(ActionPlanRequestV1{}), reflect.TypeOf(ActionPlanV1{}), reflect.TypeOf(ActionApplyV1{}), reflect.TypeOf(ActionOperationV1{}),
 	} {
 		walkJSONFields(t, root, map[string]bool{})
 	}
 	if strings.Contains(string(ActionUnavailableNotFound), "owner") {
 		t.Fatal("owner oracle entered public error vocabulary")
 	}
+}
+
+func TestActionInputEnvelopesCarryNoCallerAuthority(t *testing.T) {
+	t.Parallel()
+	assertJSONFields(t, reflect.TypeOf(ActionPlanRequestV1{}), []string{"action", "version"})
+	assertJSONFields(t, reflect.TypeOf(ActionApplyV1{}), []string{"confirmation", "idempotency_key", "plan_id", "version"})
 }
 
 func TestStablePublicCatalogHasNoDuplicatesOrOwnerOracle(t *testing.T) {
@@ -416,6 +423,19 @@ func stringSlice[T ~string](values []T) []string {
 		result = append(result, string(value))
 	}
 	return result
+}
+
+func assertJSONFields(t *testing.T, value reflect.Type, expected []string) {
+	t.Helper()
+	actual := make([]string, 0, value.NumField())
+	for index := 0; index < value.NumField(); index++ {
+		actual = append(actual, strings.Split(value.Field(index).Tag.Get("json"), ",")[0])
+	}
+	sort.Strings(actual)
+	sort.Strings(expected)
+	if !reflect.DeepEqual(actual, expected) {
+		t.Fatalf("%s JSON fields = %v, want %v", value, actual, expected)
+	}
 }
 
 func walkJSONFields(t *testing.T, value reflect.Type, seen map[string]bool) {

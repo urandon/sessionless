@@ -133,7 +133,7 @@ func validActivateResponse(input ActivateRequestV1, expectedConnectionID domain.
 	accepted := response.Accepted
 	message := accepted.AttachAccepted
 	connection := response.Connection
-	if attach == nil || input.Attach.Kind != attachedworkerprotocol.MessageAttach || connection.Validate() != nil ||
+	if attach == nil || input.Attach.Kind != attachedworkerprotocol.MessageAttach || validateActivateConnectionV1(connection) != nil ||
 		validateBootstrapFrame(accepted) != nil || message == nil || accepted.Kind != attachedworkerprotocol.MessageAttachAccepted {
 		return false
 	}
@@ -155,6 +155,22 @@ func validActivateResponse(input ActivateRequestV1, expectedConnectionID domain.
 		attach.SelectedVersion == input.Attach.Version && sameOffer(message.WorkerOffer, attach.WorkerOffer) && sameOffer(message.PlatformOffer, attach.PlatformOffer) &&
 		message.SelectedVersion == attach.SelectedVersion && bytes.Equal(message.WorkerNonce, attach.WorkerNonce) &&
 		bytes.Equal(message.PlatformNonce, attach.PlatformNonce) && bytes.Equal(message.CapabilityDigest, attach.CapabilityDigest)
+}
+
+func validateActivateConnectionV1(connection ActivateConnectionV1) error {
+	for _, validate := range []func() error{connection.TenantID.Validate, connection.OwnerUserID.Validate, connection.WorkerID.Validate,
+		connection.ID.Validate, connection.ActivationChallengeID.Validate, connection.SecretDigest.Validate, connection.ChannelBinding.Validate} {
+		if err := validate(); err != nil {
+			return err
+		}
+	}
+	if connection.EnrollmentGeneration == 0 || connection.ConnectionGeneration == 0 || connection.ProtocolVersion == 0 ||
+		connection.CapabilityDigest == "" || !connection.State.Valid() || connection.PlatformSequence == 0 || connection.WorkerSequence == 0 ||
+		connection.PlatformAck > connection.WorkerSequence || connection.WorkerAck > connection.PlatformSequence ||
+		connection.ConnectedAt.IsZero() || !connection.AuthExpiresAt.After(connection.ConnectedAt) || connection.Revision == 0 {
+		return ErrInvalidRequest
+	}
+	return nil
 }
 
 func validateBootstrapFrame(frame attachedworkerprotocol.FrameV1) error {

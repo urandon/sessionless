@@ -140,7 +140,7 @@ func TestHandlerReturnsOnlyBoundedProtocolBatchAndSanitizedServiceStatuses(t *te
 		serviceErr error
 		status     int
 	}{
-		{name: "pre-AW04 batch fails closed", response: batchPointer(testBatch(2)), status: http.StatusInternalServerError},
+		{name: "transactional AW04 batch", response: batchPointer(testBatch(2)), status: http.StatusOK},
 		{name: "unauthorized", serviceErr: ErrUnauthorized, status: http.StatusUnauthorized},
 		{name: "conflict", serviceErr: ErrConflict, status: http.StatusConflict},
 		{name: "unavailable", serviceErr: ErrUnavailable, status: http.StatusServiceUnavailable},
@@ -162,8 +162,11 @@ func TestHandlerReturnsOnlyBoundedProtocolBatchAndSanitizedServiceStatuses(t *te
 			if recorder.Code != test.status || strings.Contains(recorder.Body.String(), "private") {
 				t.Fatalf("status=%d body=%q", recorder.Code, recorder.Body.String())
 			}
-			if test.response != nil && recorder.Body.Len() != 0 {
-				t.Fatalf("pre-AW04 response body=%q", recorder.Body.String())
+			if test.response != nil {
+				decoded, decodeErr := attachedworkerprotocol.DecodeBatchV1(recorder.Body.Bytes())
+				if decodeErr != nil || decoded.Frames[0].MessageID != test.response.Frames[0].MessageID || recorder.Header().Get("Content-Type") != "application/json" {
+					t.Fatalf("AW04 response=%+v err=%v headers=%v", decoded, decodeErr, recorder.Header())
+				}
 			}
 		})
 	}
@@ -202,6 +205,23 @@ func TestClientUsesHTTPSHeaderOnlyBearerAndRequiresEmpty204(t *testing.T) {
 	}
 	if _, err := NewClient(ClientConfig{BaseURL: "http://control.example", Token: token}); !errors.Is(err, ErrInvalidRequest) {
 		t.Fatalf("plain HTTP accepted: %v", err)
+	}
+}
+
+func TestClientAcceptsStrictBoundedPlatformBatch(t *testing.T) {
+	token, _ := ParseBearerToken("secret-worker-token")
+	want := testBatch(2)
+	body, _ := attachedworkerprotocol.EncodeBatchV1(want)
+	transport := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(bytes.NewReader(body))}, nil
+	})
+	client, err := NewClient(ClientConfig{BaseURL: "https://control.example", Token: token, HTTPClient: &http.Client{Transport: transport}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := client.Exchange(context.Background(), testBatch(1))
+	if err != nil || got == nil || got.Frames[0].MessageID != want.Frames[0].MessageID {
+		t.Fatalf("response=%+v err=%v", got, err)
 	}
 }
 

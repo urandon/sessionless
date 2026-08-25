@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"time"
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerprotocol"
 	"gitcode.com/urandon/sessionless/internal/attachedworkertransport"
@@ -55,8 +56,33 @@ type ActivateRequestV1 struct {
 }
 
 type ActivateResponseV1 struct {
-	Connection domain.AttachedWorkerConnection `json:"connection"`
-	Accepted   attachedworkerprotocol.FrameV1  `json:"accepted"`
+	Connection ActivateConnectionV1           `json:"connection"`
+	Accepted   attachedworkerprotocol.FrameV1 `json:"accepted"`
+}
+
+// ActivateConnectionV1 is the worker-visible connection grant. The canonical
+// MachineSnapshot and its replay fingerprints remain server-side authority and
+// are deliberately absent from this wire projection.
+type ActivateConnectionV1 struct {
+	TenantID              domain.TenantID                             `json:"tenant_id"`
+	OwnerUserID           domain.UserID                               `json:"owner_user_id"`
+	WorkerID              domain.AttachedWorkerID                     `json:"worker_id"`
+	ID                    domain.AttachedWorkerConnectionID           `json:"id"`
+	ActivationChallengeID domain.AttachedWorkerChallengeID            `json:"activation_challenge_id"`
+	EnrollmentGeneration  uint64                                      `json:"enrollment_generation"`
+	ConnectionGeneration  uint64                                      `json:"connection_generation"`
+	ProtocolVersion       uint32                                      `json:"protocol_version"`
+	CapabilityDigest      domain.AttachedWorkerCapabilityDigest       `json:"capability_digest"`
+	SecretDigest          domain.AttachedWorkerConnectionSecretDigest `json:"secret_digest"`
+	ChannelBinding        domain.AttachedWorkerChannelBinding         `json:"channel_binding"`
+	State                 domain.AttachedWorkerConnectionState        `json:"state"`
+	PlatformSequence      uint64                                      `json:"platform_sequence"`
+	WorkerSequence        uint64                                      `json:"worker_sequence"`
+	PlatformAck           uint64                                      `json:"platform_ack"`
+	WorkerAck             uint64                                      `json:"worker_ack"`
+	ConnectedAt           time.Time                                   `json:"connected_at"`
+	AuthExpiresAt         time.Time                                   `json:"auth_expires_at"`
+	Revision              uint64                                      `json:"revision"`
 }
 
 type BootstrapHandler struct {
@@ -140,12 +166,21 @@ func (handler *BootstrapHandler) activate(writer http.ResponseWriter, request *h
 		writeBootstrapCoreStatus(writer, err)
 		return
 	}
-	connection := grant.Connection
-	// Attaching connections intentionally have no manifest signature. Project
-	// the empty value as [] rather than JSON null so the AW-02 null-free codec
-	// remains identical in both directions.
-	connection.ManifestSignature = append([]byte{}, grant.Connection.ManifestSignature...)
+	connection := activateConnectionProjection(grant.Connection)
 	writeBootstrapJSON(writer, http.StatusOK, ActivateResponseV1{Connection: connection, Accepted: grant.Accepted})
+}
+
+func activateConnectionProjection(connection domain.AttachedWorkerConnection) ActivateConnectionV1 {
+	return ActivateConnectionV1{
+		TenantID: connection.TenantID, OwnerUserID: connection.OwnerUserID, WorkerID: connection.WorkerID,
+		ID: connection.ID, ActivationChallengeID: connection.ActivationChallengeID,
+		EnrollmentGeneration: connection.EnrollmentGeneration, ConnectionGeneration: connection.ConnectionGeneration,
+		ProtocolVersion: connection.ProtocolVersion, CapabilityDigest: connection.CapabilityDigest,
+		SecretDigest: connection.SecretDigest, ChannelBinding: connection.ChannelBinding, State: connection.State,
+		PlatformSequence: connection.PlatformSequence, WorkerSequence: connection.WorkerSequence,
+		PlatformAck: connection.PlatformAck, WorkerAck: connection.WorkerAck,
+		ConnectedAt: connection.ConnectedAt, AuthExpiresAt: connection.AuthExpiresAt, Revision: connection.Revision,
+	}
 }
 
 func decodeBootstrapBody(writer http.ResponseWriter, request *http.Request, target any) bool {

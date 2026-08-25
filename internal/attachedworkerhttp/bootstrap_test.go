@@ -55,6 +55,7 @@ func TestBootstrapHandlerActivatesWithDigestOnlyAndReturnsAccepted(t *testing.T)
 		ConnectionSecretDigest: domain.AttachedWorkerConnectionSecretDigest(strings.Repeat("a", 64)), Attach: testBatch(1).Frames[0],
 	}
 	wantAccepted := testBatch(2).Frames[0]
+	privateSnapshot := "server-private-machine-snapshot"
 	core := bootstrapCoreStub{
 		activate: func(_ context.Context, tenant domain.TenantID, owner domain.UserID, request attachedworkertransport.ActivateRequest) (attachedworkertransport.ActivationGrant, error) {
 			if tenant != input.TenantLocator || owner != input.OwnerLocator || request.ChallengeID != input.ChallengeID ||
@@ -62,13 +63,14 @@ func TestBootstrapHandlerActivatesWithDigestOnlyAndReturnsAccepted(t *testing.T)
 				t.Fatalf("changed activation request tenant=%q owner=%q request=%+v", tenant, owner, request)
 			}
 			return attachedworkertransport.ActivationGrant{
-				Connection: domain.AttachedWorkerConnection{SecretDigest: input.ConnectionSecretDigest}, Accepted: wantAccepted,
+				Connection: domain.AttachedWorkerConnection{SecretDigest: input.ConnectionSecretDigest, ProtocolSnapshot: []byte(privateSnapshot)}, Accepted: wantAccepted,
 			}, nil
 		},
 	}
 	handler := newBootstrapHandler(t, core)
 	recorder := serveBootstrap(t, handler, AttachPathV1, input)
-	if recorder.Code != http.StatusOK || strings.Contains(recorder.Body.String(), rawSecret) {
+	if recorder.Code != http.StatusOK || strings.Contains(recorder.Body.String(), rawSecret) ||
+		strings.Contains(recorder.Body.String(), privateSnapshot) || strings.Contains(recorder.Body.String(), "protocol_snapshot") {
 		t.Fatalf("activation status=%d body=%q", recorder.Code, recorder.Body.String())
 	}
 	var response ActivateResponseV1

@@ -41,10 +41,7 @@ func (adapter *CoreExchangeAdapter) Exchange(
 	}
 	response, err := adapter.core.ExchangeBearer(ctx, token.Bytes(), batch)
 	if err == nil {
-		if response != nil {
-			return nil, errCoreExchange
-		}
-		return nil, nil
+		return response, nil
 	}
 	switch {
 	case errors.Is(err, attachedworkertransport.ErrTransportUnauthorized):

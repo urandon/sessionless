@@ -41,7 +41,8 @@ workflows.
 | OpenRouter | [routing](https://openrouter.ai/docs/guides/routing/provider-selection), [usage accounting](https://openrouter.ai/docs/cookbook/administration/usage-accounting), [provider logging](https://openrouter.ai/docs/guides/privacy/provider-logging), [guardrails](https://openrouter.ai/docs/guides/features/guardrails/overview) | Router may choose providers and permits fallbacks by default; response includes native-token usage/cost; policies differ per endpoint; account/workspace guardrails can restrict spend/models/privacy. | Router is both transport and billing resource. Sessionless must set explicit provider/privacy/fallback constraints per run and record the actual route. |
 
 The implementation-ready OpenRouter harness portfolio, provider-policy
-boundary, credential custody, and synthetic-only Ox Alpha canaries are specified in
+boundary, credential custody, and externally-shareable Ox Alpha canaries for
+generated fixtures, public research, and reviewed public open-source work are specified in
 [OpenRouter provider architecture](openrouter-provider-architecture.md).
 
 ## Canonical domain model
@@ -239,8 +240,9 @@ Rejected:
 | PR-07 end-to-end multi-resource canary | 8 SP | PR-03–PR-06 | No silent provider/billing/placement change; rollback disables each adapter independently. |
 
 Rollout: fake harness/provider conformance -> maintainer-owned local endpoint ->
-restricted synthetic Pi/OpenRouter canary -> independent OpenCode and Codex
-profiles -> optional direct reference harness -> opt-in tenant adapters.
+generated Pi/OpenRouter fixture -> reviewed `externally_shareable` public
+research/open-source tasks -> independent OpenCode and Codex profiles ->
+optional direct reference harness -> opt-in tenant adapters.
 Subscription remains separately gated. Rollback marks the exact
 harness/route/resource revision unavailable and stops new attempts; it never
 silently chooses another harness, resource or billing route.

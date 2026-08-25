@@ -291,8 +291,12 @@ secret exposure, while a live catalog is observation rather than authority.
 The adapter validates Codex JSON events exactly as the subscription adapter
 does, plus OpenRouter-specific model/resource observations where available. A
 missing actual-provider/route observation is not guessed from the request. The
-adapter may run Ox Alpha only in the synthetic policy class until the
-capability, route and terminal evidence matrix passes.
+adapter may run Ox Alpha only in the `externally_shareable` data-policy class
+until the capability, route and terminal evidence matrix passes. That class is
+broader than synthetic data, but narrower than "anything found on the
+internet": every input, retrieved artifact, tool result, and expected output
+must be safe and authorized to disclose to an external training-eligible
+provider.
 
 ## Optional direct OpenRouter backend contract
 
@@ -312,8 +316,9 @@ capability, route and terminal evidence matrix passes.
 - Request headers are an exact allowlist: `Authorization`, `Content-Type`,
   `Accept`, optional constant app attribution, and the reviewed routing-metadata
   opt-in. Raw user, tenant, run, prompt, and credential values never enter
-  headers, trace metadata, Broadcast, or app attribution. The synthetic canary
-  omits `user`; a later multi-user release may send only a policy-approved,
+  headers, trace metadata, Broadcast, or app attribution. The first generated
+  fixture omits `user`; a later externally-shareable public-research or
+  open-source profile may send only a policy-approved,
   resource-scoped HMAC pseudonym for upstream abuse isolation, never a product
   identifier, email or reusable cross-resource hash.
 - Redirects, non-HTTPS transport, alternate hosts, response compression without
@@ -403,10 +408,14 @@ report:
 - reasoning is mandatory; tools/tool choice and `response_format` are listed;
 - free-model availability and rate limits are non-guaranteed.
 
-This is suitable only for a synthetic, non-production conformance canary. It is
-not a free production capacity promise. The provider is anonymous, availability
-may end without notice, and the route cannot satisfy a policy requiring a known
-processor, ZDR, region, or durable price/availability guarantee.
+This is suitable only for controlled, non-production work whose complete data
+flow is classified `externally_shareable`. That includes generated synthetic
+fixtures, research over public corpora, and development against public
+open-source repositories when the exact inputs are public and their licenses
+and terms permit the use. It is not a free production capacity promise. The
+provider is anonymous, availability may end without notice, and the route
+cannot satisfy a policy requiring a known processor, ZDR, region, or durable
+price/availability guarantee.
 
 There is also a material policy conflict. The model page says prompts and
 completions are retained but not used for training, while the controlling
@@ -414,16 +423,28 @@ completions are retained but not used for training, while the controlling
 are free in exchange for collection and use of User Content for model training
 and grants a broad perpetual license. Sessionless must apply the more
 restrictive interpretation: **training/retention allowed, anonymous processor,
-no private or customer data**. A null endpoint `data_policy` is not evidence to
-the contrary.
+no private, customer, confidential, personal, regulated, embargoed, or
+security-sensitive data**. Merely being reachable on the public internet does
+not make personal data or restricted content eligible. A null endpoint
+`data_policy` is not evidence to the contrary.
 
-The canary corpus may contain only generated public fixtures. It excludes:
+The canary corpus may contain generated fixtures and explicitly reviewed public
+inputs. A public-research or open-source task must pin its public source,
+license/provenance, and retrieval revision, and must remain reproducible without
+private overlays. It excludes:
 
-- real Sessionless messages, sessions, issues, repositories or artifacts;
-- source code not created solely for the fixture;
+- private Sessionless messages, sessions, issues, repositories, or artifacts;
+- private forks, branches, patches, build logs, dependency credentials, or
+  local workspace overlays on an otherwise public repository;
 - personal, credential, account, tenant, customer or operational data;
 - security findings, internal architecture not already public, and secrets;
-- tool execution, network retrieval, files, images and video in the first gate.
+- public personal data, content with incompatible terms, and unpublished or
+  embargoed research;
+- tool execution, network retrieval, files, images, and video in the first
+  generated-fixture gate. A later public-research/open-source profile may add
+  allowlisted retrieval and disposable-repository tools only after the harness
+  isolation and egress gates pass, with no ambient credentials or private
+  filesystem roots.
 
 The first live gate uses the adapter that first passes credential-free
 conformance; Pi is the current preference because it can serialize the exact
@@ -460,7 +481,8 @@ Before a live canary, the following must exist:
 The user-created key for that gate should be a dedicated inference key, not a
 management key: short expiry, a very small spend limit, no auto top-up, no BYOK,
 an exact `stealth/ox-alpha` model allowlist, a `stealth` provider allowlist, the
-explicit synthetic-data privacy posture, and no other application use.
+explicit `externally_shareable` privacy posture, and no use by another data
+classification.
 OpenRouter's documented key limits, expiry and guardrails are additional
 controls, not the Sessionless authorization source. The key is delivered only
 through the accepted secret-ingestion channel and is never pasted into chat or
@@ -470,7 +492,7 @@ a tracked file.
 
 | Product | Observed integration | Useful lesson | Rejected inheritance |
 |---|---|---|---|
-| Codex CLI | Official custom-provider configuration uses OpenRouter's Responses endpoint, an exact model and environment or command auth. Codex exposes retry limits, isolated configuration and ephemeral runs, but no OpenRouter `provider` request-body configuration. | A Codex/OpenRouter backend is viable behind the Sessionless-owned routing harness as a separately governed adapter and synthetic canary. | It cannot stand in for the direct provider port or silently inherit OpenRouter fallbacks, mutable presets/catalog, ambient user config or ChatGPT subscription identity. |
+| Codex CLI | Official custom-provider configuration uses OpenRouter's Responses endpoint, an exact model and environment or command auth. Codex exposes retry limits, isolated configuration and ephemeral runs, but no OpenRouter `provider` request-body configuration. | A Codex/OpenRouter backend is viable behind the Sessionless-owned routing harness as a separately governed adapter for externally-shareable canaries and public work. | It cannot stand in for the direct provider port or silently inherit OpenRouter fallbacks, mutable presets/catalog, ambient user config or ChatGPT subscription identity. |
 | Pi | Provides headless RPC/no-session operation, a standardized provider stream, built-in OpenRouter credentials/models, and `openRouterRouting` passed as the exact request `provider` object. | Best current first spike for a narrow harness adapter whose OpenRouter route can be pinned and tested. | Pi sessions, native tools, extensions/packages, project/global config and provider catalog do not become product authority. |
 | OpenCode | Built-in OpenRouter provider accepts an API key, exposes one-shot JSON events/headless service, loads catalog/models, and supports provider ordering plus `allow_fallbacks:false`. | A second pluggable harness can preserve the same OpenRouter route policy through a different agent implementation. | OpenCode history, tools, plugins, sharing, config and credential store do not become Sessionless authority. |
 | Aider | Calls OpenRouter with an API key and an `openrouter/...` model; can choose a model based on available keys/account. | A CLI can consume the API, but the API is the actual provider boundary. | Automatic model selection from ambient keys violates pinned resource/no-fallback policy. |
@@ -492,11 +514,12 @@ state.
 3. **PR-05a credential ingestion**: owner-scoped binding plus real secret-store
    adapter, generation/revoke/rotation and invocation-scoped materialization.
 4. **PR-05b Pi adapter**: pinned RPC/no-session process, generated exact
-   OpenRouter route config, no ambient tools/extensions/config and synthetic
-   Ox Alpha canary.
+   OpenRouter route config, no ambient tools/extensions/config and an initial
+   generated Ox Alpha canary, followed only by reviewed externally-shareable
+   public tasks.
 5. **PR-05c OpenCode adapter**: pinned one-shot JSON process first, generated
    exact provider body, isolated homes/no stored auth/plugins/session, and the
-   same synthetic canary.
+   same externally-shareable canary corpus.
 6. **PR-05d Codex/OpenRouter profile**: reuse the supervised Codex adapter with
    isolated generated provider configuration, zero upstream retries and a
    dedicated guarded resource; keep policies requiring unavailable route
@@ -510,9 +533,10 @@ state.
 9. **PR-07 E2E/security**: two-owner resource/key isolation, revoke races,
    ambiguous completion, budget exhaustion and adapter rollback.
 
-Rollout is fake conformance -> credential-free catalog observation -> restricted
-synthetic Pi canary -> OpenCode and Codex profiles -> optional direct reference
-harness -> maintainer-only portfolio -> opt-in tenant. Rollback disables the
+Rollout is fake conformance -> credential-free catalog observation -> generated
+Pi fixture -> reviewed externally-shareable public research/open-source tasks
+-> OpenCode and Codex profiles -> optional direct reference harness ->
+maintainer-only portfolio -> opt-in tenant policy. Rollback disables the
 exact harness/route/resource revision and allows no new attempts; it never
 switches harness, Codex subscription, OpenRouter model, key or billing account.
 

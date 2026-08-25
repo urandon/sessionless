@@ -14,7 +14,15 @@ The MVP keeps distinct resource kinds for personal ChatGPT/Codex subscription, e
 
 For OpenAI consumer subscriptions, the only locally evidenced placement is the user's attached worker with the credential retained there. That remains a product no-go until the selected production surface, provider policy, consent, isolation, cancellation/recovery, and quota evidence pass. Cloud custody of consumer credentials and household/federation sharing remain disabled. Missing, ambiguous, or expired provider authorization is a deterministic no-go, not an invitation to emulate private endpoints or reuse another application's OAuth client.
 
-Production adapters and orchestration are Go binaries. Python SDKs and Python harnesses remain research-only comparators. Local vLLM/SGLang deployments may internally require Python, but that runtime is owned by the user/operator behind an attached endpoint and is not added to Sessionless production images or mandatory workflows.
+Production orchestration, policy and adapter supervision are Go binaries behind
+`HarnessDriver`. A selected harness may be a separately isolated,
+digest-pinned external artifact such as Codex, OpenCode or Pi; its runtime,
+config, credential view and process tree remain inside the worker boundary and
+never become control-plane dependencies. Python SDKs and Python harnesses remain
+research-only comparators. Local vLLM/SGLang deployments may internally require
+Python, but that runtime is owned by the user/operator behind an attached
+endpoint and is not added to Sessionless production images or mandatory
+workflows.
 
 ## Evidence matrix
 
@@ -31,6 +39,10 @@ Production adapters and orchestration are Go binaries. Python SDKs and Python ha
 | vLLM | [OpenAI-compatible server](https://docs.vllm.ai/en/latest/serving/online_serving/openai_compatible_server/) | Broad OpenAI-compatible surface, but compatibility is partial; official docs warn API-key auth does not protect every endpoint. | Require capability probes and an external authenticated reverse proxy/isolated network. Never infer security from `--api-key`. |
 | SGLang | [official documentation](https://docs.sglang.io/) | High-throughput local/self-hosted serving with OpenAI-compatible APIs and provider-routing components. | Self-hosted endpoint resource with explicit operator, version, model digest, capacity, and network boundary. |
 | OpenRouter | [routing](https://openrouter.ai/docs/guides/routing/provider-selection), [usage accounting](https://openrouter.ai/docs/cookbook/administration/usage-accounting), [provider logging](https://openrouter.ai/docs/guides/privacy/provider-logging), [guardrails](https://openrouter.ai/docs/guides/features/guardrails/overview) | Router may choose providers and permits fallbacks by default; response includes native-token usage/cost; policies differ per endpoint; account/workspace guardrails can restrict spend/models/privacy. | Router is both transport and billing resource. Sessionless must set explicit provider/privacy/fallback constraints per run and record the actual route. |
+
+The implementation-ready OpenRouter harness portfolio, provider-policy
+boundary, credential custody, and synthetic-only Ox Alpha canaries are specified in
+[OpenRouter provider architecture](openrouter-provider-architecture.md).
 
 ## Canonical domain model
 
@@ -76,14 +88,22 @@ flowchart TD
     R["Canonical run request"] --> P["Policy and consent filter"]
     P --> E["Eligible resource revisions"]
     E --> S["Deterministic scheduler"]
-    S --> A["Pin resource + credential generation + route"]
+    S --> A["Pin harness + resource + credential generation + route"]
     A --> W["Selected cloud or attached worker"]
-    W --> D{"Adapter kind"}
-    D -->|"subscription"| C["Pinned Codex surface"]
-    D -->|"direct API"| API["Go provider adapter"]
-    D -->|"router"| OR["Explicit router policy"]
-    D -->|"local/self-hosted"| LE["Worker-local endpoint"]
-    C --> O["Normalized output + provider observations"]
+    W --> H{"Harness adapter"}
+    H --> C["Codex"]
+    H --> OC["OpenCode"]
+    H --> PI["Pi"]
+    H --> MH["Sessionless minimal agent"]
+    C --> B{"Admitted provider binding"}
+    OC --> B
+    PI --> B
+    MH --> B
+    B -->|"subscription"| SUB["Pinned subscription surface"]
+    B -->|"direct API"| API["Explicit API policy"]
+    B -->|"router"| OR["Explicit router policy"]
+    B -->|"local/self-hosted"| LE["Worker-local endpoint"]
+    SUB --> O["Normalized output + provider observations"]
     API --> O
     OR --> O
     LE --> O
@@ -211,13 +231,18 @@ Rejected:
 | Work item | Estimate | Dependencies | Acceptance |
 |---|---:|---|---|
 | PR-01 canonical resource/route/catalog contracts | 8 SP | #49 MM-01, SR-02 | Model vendor, transport, billing, harness, placement, and history authority are separate. |
-| PR-02 provider conformance kit and fixtures | 8 SP | PR-01, #63 | Capability/error/usage/cancel/privacy profiles are reproducible and versioned. |
+| PR-02 harness/provider conformance kit and fixtures | 8 SP | PR-01, #63 | Canonical harness events plus capability/error/usage/cancel/privacy profiles are reproducible and versioned across backend adapters. |
 | PR-03 direct API adapters: DeepSeek and Kimi | 8 SP | PR-02 | Go adapters pass conformance with fake servers; no real key in CI. |
 | PR-04 local endpoint adapters: Ollama, vLLM, SGLang | 8 SP | #47, PR-02 | Placement-bound discovery; external auth/network invariants; no central localhost. |
-| PR-05 OpenRouter explicit routing adapter | 5 SP | PR-02 | Fallback off by default; actual route/usage/data-policy evidence captured. |
+| PR-05 OpenRouter harness portfolio | 13 SP | PR-01, PR-02, credential backend, harness registry | Pi/OpenCode/Codex/direct profiles remain distinct; exact route where the harness can express it, no silent fallback, actual route/usage/data-policy evidence, and owner-scoped secret generation. |
 | PR-06 scheduler, budgets, federation ACL | 8 SP | #9, #47, #49, PR-01 | Deterministic pre-attempt selection, fairness, owner reserve, revoke fencing. |
 | PR-07 end-to-end multi-resource canary | 8 SP | PR-03–PR-06 | No silent provider/billing/placement change; rollback disables each adapter independently. |
 
-Rollout: fake-provider conformance -> maintainer-owned local endpoint -> one direct API canary -> opt-in tenant adapters. Subscription remains separately gated. Rollback marks a route unavailable and stops new attempts; it never silently chooses another resource.
+Rollout: fake harness/provider conformance -> maintainer-owned local endpoint ->
+restricted synthetic Pi/OpenRouter canary -> independent OpenCode and Codex
+profiles -> optional direct reference harness -> opt-in tenant adapters.
+Subscription remains separately gated. Rollback marks the exact
+harness/route/resource revision unavailable and stops new attempts; it never
+silently chooses another harness, resource or billing route.
 
 Success metrics: eligible-route calculation latency, conformance pass rate, catalog freshness, provider-vs-product failure attribution, observed/reconciled usage coverage, scheduler fairness, route-policy violations, cost variance, and zero unauthorized federation/billing fallbacks.

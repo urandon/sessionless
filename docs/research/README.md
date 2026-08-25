@@ -29,6 +29,7 @@ opt-in developer tools, never production or mandatory CI dependencies.
 | #46 | [Tooling, MCP, and permissions](tooling-mcp-and-permissions.md) | Sessionless-owned capability/effect policy, narrow built-ins, worker/MCP isolation and call-time authorization. |
 | #47 | [Attachable workers](attachable-workers.md) | Outbound enrolled Go worker, fenced attempts, long-poll first, connection gateway only after measured need. |
 | #48, #51 | [AI resources and federation](ai-resources-and-federation.md) | Separate provider, transport, billing, harness, placement, credential generation, and sharing policy; no silent fallback. |
+| #51 / PR-05 | [OpenRouter provider architecture](openrouter-provider-architecture.md) | Sessionless-owned harness routing across Pi/OpenCode/Codex/direct adapters, exact OpenRouter policy, credential custody, and synthetic-only Ox Alpha canaries. |
 | #49 | [Metering and attribution](metering-and-resource-attribution.md) | Exact idempotent usage facts distinct from sampled telemetry and derived analytics. |
 | #52 | [Skills and automation](skills-and-automation.md) | Two separate epics: immutable governed skills and a sharded durable automation scheduler. |
 | #53 | [User usage analytics](user-usage-analytics.md) | Membership-scoped read model over #49 with provenance, freshness, coverage, and precision. |

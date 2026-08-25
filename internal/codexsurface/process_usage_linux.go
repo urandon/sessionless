@@ -3,7 +3,6 @@
 package codexsurface
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -15,8 +14,14 @@ const maxProcEntriesPerSample = 131072
 
 func samplePlatformProcessGroupUsage(processGroupID int) (processGroupUsage, error) {
 	entries, err := os.ReadDir("/proc")
-	if err != nil || len(entries) > maxProcEntriesPerSample {
-		return processGroupUsage{}, errors.New("enumerate process group usage")
+	if err != nil {
+		if os.IsPermission(err) {
+			return processGroupUsage{}, errProcessGroupUsagePermission
+		}
+		return processGroupUsage{}, errProcessGroupUsageUnavailable
+	}
+	if len(entries) > maxProcEntriesPerSample {
+		return processGroupUsage{}, errProcessGroupUsageUnavailable
 	}
 	members := 0
 	leaderPresent := false
@@ -31,6 +36,9 @@ func samplePlatformProcessGroupUsage(processGroupID int) (processGroupUsage, err
 		}
 		data, readErr := os.ReadFile(filepath.Join("/proc", entry.Name(), "stat"))
 		if readErr != nil {
+			if os.IsPermission(readErr) {
+				return processGroupUsage{}, errProcessGroupUsagePermission
+			}
 			continue
 		}
 		closing := strings.LastIndexByte(string(data), ')')
@@ -47,11 +55,11 @@ func samplePlatformProcessGroupUsage(processGroupID int) (processGroupUsage, err
 		}
 		rssPages, rssErr := strconv.ParseInt(fields[21], 10, 64)
 		if rssErr != nil || rssPages < 0 || rssPages > (1<<63-1)/pageSize {
-			return processGroupUsage{}, errors.New("invalid process group usage")
+			return processGroupUsage{}, errProcessGroupUsageInvalid
 		}
 		rssBytes := rssPages * pageSize
 		if rssBytes > 1<<63-1-aggregateRSS {
-			return processGroupUsage{}, errors.New("process group usage overflow")
+			return processGroupUsage{}, errProcessGroupUsageInvalid
 		}
 		aggregateRSS += rssBytes
 		members++

@@ -43,6 +43,8 @@ func TestExecFailureClassifications(t *testing.T) {
 		{name: "terminal followed by event", mode: "post-terminal-event", wantClass: ExecClassTerminalProtocolDrift, wantAccepted: true, wantTerminal: true, wantFinal: true, wantFailureCode: "event_after_terminal"},
 		{name: "terminal without final", mode: "terminal-without-final", wantClass: ExecClassTerminalProtocolDrift, wantAccepted: true, wantFailureCode: "terminal_without_final_agent_item"},
 		{name: "duplicate terminal", mode: "duplicate-terminal", wantClass: ExecClassTerminalProtocolDrift, wantAccepted: true, wantTerminal: true, wantFinal: true, wantFailureCode: "event_after_terminal"},
+		{name: "buffered duplicate terminal", mode: "buffered-duplicate-terminal", wantClass: ExecClassTerminalProtocolDrift, wantAccepted: true, wantTerminal: true, wantFinal: true, wantFailureCode: "event_after_terminal"},
+		{name: "buffered post-terminal event", mode: "buffered-post-terminal-event", wantClass: ExecClassTerminalProtocolDrift, wantAccepted: true, wantTerminal: true, wantFinal: true, wantFailureCode: "event_after_terminal"},
 		{name: "stdout overflow after terminal", mode: "terminal-stdout-bomb", wantClass: ExecClassTerminalProtocolDrift, wantAccepted: true, wantTerminal: true, wantFinal: true, wantFailureCode: "jsonl_line_limit_exceeded"},
 		{name: "stderr overflow after terminal", mode: "terminal-stderr-bomb", wantClass: ExecClassCompletedWithTeardownFailure, wantAccepted: true, wantTerminal: true, wantFinal: true, wantFailureCode: "stderr_limit_exceeded"},
 		{name: "unexpected effect", mode: "unexpected-effect", wantClass: ExecClassAmbiguous, wantAccepted: true, wantFailureCode: "unexpected_effect_item"},
@@ -126,12 +128,105 @@ func TestExecFailureDeadlineEscalatesAndReapsWholeGroup(t *testing.T) {
 	}
 	if result.Classification != ExecClassCancelledAmbiguous || !result.Accepted ||
 		!result.Deadline || !result.TermSent || !result.KillSent || !result.DescendantsReaped ||
-		result.PeakRSSBytes <= 0 || result.MaxDescendants < 1 {
+		result.DirectChildPeakRSSBytes <= 0 {
 		t.Fatalf("deadline result = %+v", result)
+	}
+	if runtime.GOOS == "linux" {
+		if !result.GroupUsageAvailable || result.GroupUsageFailureCode != "" ||
+			result.GroupPeakRSSBytes <= 0 || result.MaxDescendants < 1 {
+			t.Fatalf("Linux group usage result = %+v", result)
+		}
+	} else if result.GroupUsageAvailable ||
+		result.GroupUsageFailureCode != "process_group_usage_unsupported" ||
+		result.GroupPeakRSSBytes != 0 || result.MaxDescendants != 0 {
+		t.Fatalf("Darwin group usage must be explicitly unavailable: %+v", result)
 	}
 	pid := readFixturePID(t, pidFile)
 	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
 		t.Fatalf("descendant %d survived: %v", pid, err)
+	}
+}
+
+func TestExecFailureUsageDenialPreservesLifecycleClassification(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("process-group contract is Unix-specific")
+	}
+	config := execFixtureConfig(t, "success")
+	config.testSampleGroup = func(int) (processGroupUsage, error) {
+		return processGroupUsage{}, errProcessGroupUsagePermission
+	}
+	result, err := RunExecFailureFixture(context.Background(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Classification != ExecClassCompleted || result.FailureCode != "" ||
+		!result.Terminal || !result.FinalAgentItem || result.GroupUsageAvailable ||
+		result.GroupUsageFailureCode != "process_group_usage_permission_denied" ||
+		result.GroupPeakRSSBytes != 0 || result.MaxDescendants != 0 ||
+		result.DirectChildPeakRSSBytes <= 0 {
+		t.Fatalf("denied group sampler discarded or polluted lifecycle result: %+v", result)
+	}
+}
+
+func TestExecFailureBlockingUsageSamplerCannotHangRunner(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("process-group contract is Unix-specific")
+	}
+	release := make(chan struct{})
+	config := execFixtureConfig(t, "success")
+	config.testSampleGroup = func(int) (processGroupUsage, error) {
+		<-release
+		return processGroupUsage{}, nil
+	}
+	type outcome struct {
+		result ExecFailureResult
+		err    error
+	}
+	finished := make(chan outcome, 1)
+	go func() {
+		result, err := RunExecFailureFixture(context.Background(), config)
+		finished <- outcome{result: result, err: err}
+	}()
+	var got outcome
+	select {
+	case got = <-finished:
+		close(release)
+	case <-time.After(2 * time.Second):
+		close(release)
+		select {
+		case <-finished:
+		case <-time.After(time.Second):
+		}
+		t.Fatal("blocking process-usage sample hung the lifecycle runner")
+	}
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	if got.result.Classification != ExecClassCompleted || got.result.FailureCode != "" ||
+		got.result.GroupUsageAvailable ||
+		got.result.GroupUsageFailureCode != "process_group_usage_timeout" ||
+		got.result.DirectChildPeakRSSBytes <= 0 {
+		t.Fatalf("blocking sampler result = %+v", got.result)
+	}
+}
+
+func TestExecFailureBufferedTerminalDriftIsNeverLost(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("process-group contract is Unix-specific")
+	}
+	for _, mode := range []string{"buffered-duplicate-terminal", "buffered-post-terminal-event"} {
+		t.Run(mode, func(t *testing.T) {
+			for range 25 {
+				result, err := RunExecFailureFixture(context.Background(), execFixtureConfig(t, mode))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if result.Classification != ExecClassTerminalProtocolDrift ||
+					result.FailureCode != "event_after_terminal" || !result.Terminal {
+					t.Fatalf("buffered terminal drift was lost: %+v", result)
+				}
+			}
+		})
 	}
 }
 
@@ -352,6 +447,22 @@ func TestExecFailureHelperProcess(t *testing.T) {
 		accepted()
 		terminal()
 		emit(`{"type":"turn.completed"}`)
+	case "buffered-duplicate-terminal":
+		_, _ = fmt.Fprint(os.Stdout, strings.Join([]string{
+			`{"type":"thread.started","thread_id":"fixture"}`,
+			`{"type":"turn.started"}`,
+			`{"type":"item.completed","item":{"type":"agent_message","text":"bounded"}}`,
+			`{"type":"turn.completed"}`,
+			`{"type":"turn.completed"}`,
+		}, "\n")+"\n")
+	case "buffered-post-terminal-event":
+		_, _ = fmt.Fprint(os.Stdout, strings.Join([]string{
+			`{"type":"thread.started","thread_id":"fixture"}`,
+			`{"type":"turn.started"}`,
+			`{"type":"item.completed","item":{"type":"agent_message","text":"bounded"}}`,
+			`{"type":"turn.completed"}`,
+			`{"type":"item.started"}`,
+		}, "\n")+"\n")
 	case "terminal-stdout-bomb":
 		accepted()
 		terminal()

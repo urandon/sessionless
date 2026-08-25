@@ -170,6 +170,60 @@ func TestSDKProbeDeadlineKillsDescendantProcessGroup(t *testing.T) {
 	}
 }
 
+func TestBoundedCommandNormalLeaderExitReapsRedirectedDescendant(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("process-group contract is Unix-specific")
+	}
+	root := t.TempDir()
+	fixture := filepath.Join(root, "leader-exits")
+	readyPath := filepath.Join(root, "ready.fifo")
+	if err := syscall.Mkfifo(readyPath, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	readyEndpoint, err := os.OpenFile(readyPath, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = readyEndpoint.Close() })
+	script := fmt.Sprintf("#!/bin/sh\nsleep 60 >/dev/null 2>&1 &\nchild=$!\nprintf '%%s\\n' \"$child\" > %q\nexit 0\n", readyPath)
+	if err := os.WriteFile(fixture, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var descendantPID int
+	hooks := &probeCommandHooks{
+		readyTimeout: 10 * time.Second,
+		afterStart: func(ctx context.Context, _ *exec.Cmd) error {
+			result := make(chan error, 1)
+			go func() {
+				line, readErr := bufio.NewReader(readyEndpoint).ReadString('\n')
+				if readErr == nil {
+					descendantPID, readErr = strconv.Atoi(strings.TrimSpace(line))
+				}
+				result <- readErr
+			}()
+			select {
+			case readErr := <-result:
+				return readErr
+			case <-ctx.Done():
+				_ = readyEndpoint.Close()
+				return ctx.Err()
+			}
+		},
+	}
+	output, err := boundedCommandOutputWithHooks(
+		context.Background(), time.Second, exec.Command(fixture), 1024, hooks,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(output) != 0 || descendantPID <= 0 {
+		t.Fatalf("output = %q, descendant pid = %d", output, descendantPID)
+	}
+	if killErr := syscall.Kill(descendantPID, 0); !errors.Is(killErr, syscall.ESRCH) {
+		t.Fatalf("redirected-stdio descendant %d survived normal leader exit: %v", descendantPID, killErr)
+	}
+}
+
 func TestSDKProbeFailsClosedOnUnsafePublishedDefaults(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX fixture")

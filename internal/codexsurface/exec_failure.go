@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -49,6 +50,7 @@ type ExecFailureConfig struct {
 	MaxEvents        int
 	MaxFinalBytes    int
 	testSignalGroup  func(int, probeProcessGroupSignal) bool
+	testSampleGroup  processGroupUsageSampleFunc
 }
 
 // ExecFailureResult contains classifications and bounded counters only. Model
@@ -68,10 +70,18 @@ type ExecFailureResult struct {
 	EventCount        int
 	StdoutBytes       int
 	StderrBytes       int
-	PeakRSSBytes      int64
-	MaxDescendants    int
-	Duration          time.Duration
-	FailureCode       string
+	// DirectChildPeakRSSBytes is only the direct child's rusage lower bound;
+	// it is never presented as aggregate process-group usage.
+	DirectChildPeakRSSBytes int64
+	// GroupPeakRSSBytes and MaxDescendants are valid only when
+	// GroupUsageAvailable is true. Otherwise they are zero and the stable
+	// GroupUsageFailureCode explains why instrumentation was unavailable.
+	GroupPeakRSSBytes     int64
+	MaxDescendants        int
+	GroupUsageAvailable   bool
+	GroupUsageFailureCode string
+	Duration              time.Duration
+	FailureCode           string
 }
 
 func withExecFailureDefaults(config ExecFailureConfig) ExecFailureConfig {
@@ -153,23 +163,38 @@ func RunExecFailureFixture(parent context.Context, config ExecFailureConfig) (Ex
 	command.Dir = config.Directory
 	command.Env = append([]string(nil), config.Environment...)
 	configureProbeProcessGroup(command)
-	stdout, err := command.StdoutPipe()
+	stdout, stdoutWriter, err := os.Pipe()
 	if err != nil {
 		return ExecFailureResult{}, errors.New("create exec failure stdout")
 	}
-	stderr, err := command.StderrPipe()
+	stderr, stderrWriter, err := os.Pipe()
 	if err != nil {
+		_ = stdout.Close()
+		_ = stdoutWriter.Close()
 		return ExecFailureResult{}, errors.New("create exec failure stderr")
 	}
+	command.Stdout = stdoutWriter
+	command.Stderr = stderrWriter
 	if err := command.Start(); err != nil {
+		_ = stdout.Close()
+		_ = stdoutWriter.Close()
+		_ = stderr.Close()
+		_ = stderrWriter.Close()
 		return ExecFailureResult{}, errors.New("start exec failure fixture")
 	}
+	// The parent owns these pipes. Closing only its writer copies after Start
+	// preserves all child/descendant output until process-group teardown and
+	// avoids exec.Cmd.Wait closing a StdoutPipe/StderrPipe under active readers.
+	_ = stdoutWriter.Close()
+	_ = stderrWriter.Close()
+	defer stdout.Close()
+	defer stderr.Close()
 	processGroupID := command.Process.Pid
-	usageSampler := startProcessGroupUsageSampler(processGroupID)
+	usageSampler := startProcessGroupUsageSampler(processGroupID, config.testSampleGroup)
 	usageFinished := false
 	defer func() {
 		if !usageFinished {
-			_, _ = usageSampler.finish()
+			_, _ = usageSampler.finish(processUsageFinishBound)
 		}
 	}()
 	state := &execJSONLState{maxFinalBytes: config.MaxFinalBytes}
@@ -285,14 +310,13 @@ func RunExecFailureFixture(parent context.Context, config ExecFailureConfig) (Ex
 	if err := waitExecReader(stderrDone, config.TerminationGrace); err != nil {
 		return ExecFailureResult{}, err
 	}
-	usage, usageErr := usageSampler.finish()
+	usage, usageErr := usageSampler.finish(processUsageFinishBound)
 	usageFinished = true
 	if usageErr != nil {
-		return ExecFailureResult{}, errors.New("sample exec failure process usage")
+		// Partial samples are not a trustworthy peak/count measurement.
+		usage = processGroupUsage{}
 	}
-	if directPeak := processStatePeakRSS(command.ProcessState); directPeak > usage.PeakRSSBytes {
-		usage.PeakRSSBytes = directPeak
-	}
+	directPeak := processStatePeakRSS(command.ProcessState)
 	select {
 	case code := <-violation:
 		if failureCode == "" {
@@ -316,8 +340,12 @@ func RunExecFailureFixture(parent context.Context, config ExecFailureConfig) (Ex
 		Cancelled: cancelled, Deadline: deadline, TermSent: termSent, KillSent: killSent,
 		DescendantsReaped: true, ExitCode: exitCode, EventCount: snapshot.eventCount,
 		StdoutBytes: snapshot.stdoutBytes, StderrBytes: stderrCounter.countValue(),
-		PeakRSSBytes: usage.PeakRSSBytes, MaxDescendants: usage.MaxDescendants,
-		Duration: time.Since(startedAt), FailureCode: failureCode,
+		DirectChildPeakRSSBytes: directPeak,
+		GroupPeakRSSBytes:       usage.PeakRSSBytes,
+		MaxDescendants:          usage.MaxDescendants,
+		GroupUsageAvailable:     usageErr == nil,
+		GroupUsageFailureCode:   processGroupUsageFailureCode(usageErr),
+		Duration:                time.Since(startedAt), FailureCode: failureCode,
 	}, nil
 }
 
@@ -500,13 +528,6 @@ func readExecJSONL(reader io.Reader, config ExecFailureConfig, state *execJSONLS
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				return ""
-			}
-			if len(line) == 0 && state.snapshot().terminal {
-				// exec.Cmd.Wait closes a StdoutPipe after the direct child exits.
-				// A still-open descendant copy is handled by the process-group
-				// teardown below; the already validated terminal event remains
-				// authoritative.
 				return ""
 			}
 			return state.recordReadFailure("jsonl_read_failed")

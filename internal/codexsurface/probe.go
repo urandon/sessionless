@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +30,7 @@ const (
 	expectedSDKClientSHA256    = "76bdb1e63c62987c3530ea763e9655a06b308cbc4e18cb51958e85b6c23aec3b"
 	expectedSDKAPISHA256       = "673defd0ccf1348a86c2bb589cb3a1a69cb315b0a3ecb29525c52f0515a82476"
 	expectedSDKSandboxSHA256   = "01ab6cabc1642941ba958b287c34a5475066c934b67e4fd194d78b4bb2eb27b2"
+	boundedProbeTeardownBound  = 250 * time.Millisecond
 )
 
 type Config struct {
@@ -473,8 +475,7 @@ func boundedCommandOutputWithHooks(
 		readyErr := hooks.afterStart(readyCtx, command)
 		cancelReady()
 		if readyErr != nil {
-			killProbeProcessGroup(command)
-			<-done
+			stopBoundedProbeCommand(command, done)
 			return nil, errors.New("await bounded probe command readiness")
 		}
 	}
@@ -482,6 +483,9 @@ func boundedCommandOutputWithHooks(
 	defer cancel()
 	select {
 	case err := <-done:
+		if drainErr := drainExitedProbeProcessGroup(command.Process.Pid); drainErr != nil {
+			return nil, drainErr
+		}
 		data, truncated := stdout.bytes()
 		_, stderrTruncated := stderr.bytes()
 		if err != nil {
@@ -492,10 +496,46 @@ func boundedCommandOutputWithHooks(
 		}
 		return data, nil
 	case <-ctx.Done():
-		killProbeProcessGroup(command)
-		<-done
+		if !stopBoundedProbeCommand(command, done) {
+			return nil, errors.New("bounded probe command did not exit after kill")
+		}
+		if drainErr := drainExitedProbeProcessGroup(command.Process.Pid); drainErr != nil {
+			return nil, drainErr
+		}
 		return nil, errors.New("bounded probe command timed out")
 	}
+}
+
+func stopBoundedProbeCommand(command *exec.Cmd, done <-chan error) bool {
+	killProbeProcessGroup(command)
+	if _, waited := waitExecProcess(done, boundedProbeTeardownBound); waited {
+		return true
+	}
+	killProbeProcessGroup(command)
+	_, waited := waitExecProcess(done, boundedProbeTeardownBound)
+	return waited
+}
+
+func drainExitedProbeProcessGroup(processGroupID int) error {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		return nil
+	}
+	alive, err := probeProcessGroupAlive(processGroupID)
+	if err != nil {
+		return errors.New("inspect bounded probe process group")
+	}
+	if !alive {
+		return nil
+	}
+	_ = signalProbeProcessGroup(processGroupID, probeProcessGroupKill)
+	gone, err := waitProbeProcessGroupGone(processGroupID, boundedProbeTeardownBound)
+	if err != nil {
+		return errors.New("inspect bounded probe process group teardown")
+	}
+	if !gone {
+		return errors.New("bounded probe descendants survived leader exit")
+	}
+	return nil
 }
 
 var _ io.Writer = (*boundedOutput)(nil)

@@ -223,12 +223,16 @@ is `exact_filesystem_isolation_unsupported`; #77/#79 must prove a stronger
 container or OS boundary, or the attached-worker operator must explicitly own
 that isolation boundary.
 
-The research runner samples process-group membership and aggregate peak RSS for
-synthetic fixtures. That validates instrumentation and descendant accounting;
-it does not fabricate authenticated-turn RSS. Actual-turn RSS, model-driven
-forbidden-read evidence, browser/device login, cancellation after real provider
-acceptance, and refresh/reseed behavior still require a separately consented
-experiment.
+On supported Linux hosts, the research runner samples process-group membership
+and aggregate peak RSS for synthetic fixtures. On Darwin, the available
+`kinfo_proc.e_xrssize` field is only text RSS, so group RSS and descendant
+counts are explicitly `process_group_usage_unsupported`; only direct-child
+`rusage` is retained as a lower bound. Denied, invalid, unavailable, or timed-out
+sampling is recorded as a stable unknown signal and never discards the lifecycle
+classification. This does not fabricate authenticated-turn RSS. Actual-turn
+RSS, model-driven forbidden-read evidence, browser/device login, cancellation
+after real provider acceptance, and refresh/reseed behavior still require a
+separately consented experiment.
 
 ## Route, quota, and final spike verdict
 

@@ -92,7 +92,7 @@ func (lifecycle *fakeCredentialLifecycle) WriteBack(ctx context.Context, _ ports
 
 func TestInvocationRunnerReleaseGetsFreshBoundAfterWriteBackUsesItsGrace(t *testing.T) {
 	process := &immediateProcessRunner{}
-	credentials := &fakeCredentialLifecycle{waitWriteBack: true}
+	credentials := &fakeCredentialLifecycle{base: credentialFixtureBase(t), waitWriteBack: true}
 	runner, err := NewInvocationRunner(
 		InvocationRunnerConfig{CredentialFinalizeGrace: 20 * time.Millisecond},
 		process,
@@ -135,7 +135,7 @@ func (lifecycle *fakeCredentialLifecycle) record(value string) {
 
 func TestInvocationRunnerFinalizesCredentialAfterCancellation(t *testing.T) {
 	process := &captureProcessRunner{started: make(chan struct{})}
-	credentials := &fakeCredentialLifecycle{}
+	credentials := &fakeCredentialLifecycle{base: credentialFixtureBase(t)}
 	runner, err := NewInvocationRunner(InvocationRunnerConfig{CredentialFinalizeGrace: time.Second}, process, credentials)
 	if err != nil {
 		t.Fatalf("new invocation runner: %v", err)
@@ -149,9 +149,18 @@ func TestInvocationRunnerFinalizesCredentialAfterCancellation(t *testing.T) {
 		resultChannel <- result
 		errorChannel <- runErr
 	}()
-	<-process.started
+	select {
+	case <-process.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("process did not start")
+	}
 	cancel()
-	result := <-resultChannel
+	var result InvocationResult
+	select {
+	case result = <-resultChannel:
+	case <-time.After(2 * time.Second):
+		t.Fatal("invocation did not finish after cancellation")
+	}
 	if err := <-errorChannel; err != nil {
 		t.Fatalf("run invocation: %v", err)
 	}
@@ -177,7 +186,9 @@ func TestInvocationRunnerFinalizesCredentialAfterCancellation(t *testing.T) {
 
 func TestInvocationRunnerReleaseStillRunsAfterWriteBackFailure(t *testing.T) {
 	process := &immediateProcessRunner{}
-	credentials := &fakeCredentialLifecycle{writeBackErr: errors.New("private backend detail")}
+	credentials := &fakeCredentialLifecycle{
+		base: credentialFixtureBase(t), writeBackErr: errors.New("private backend detail"),
+	}
 	runner, err := NewInvocationRunner(InvocationRunnerConfig{}, process, credentials)
 	if err != nil {
 		t.Fatal(err)
@@ -191,6 +202,15 @@ func TestInvocationRunnerReleaseStillRunsAfterWriteBackFailure(t *testing.T) {
 	if !equalStrings(credentials.order, []string{"issue", "materialize", "writeback", "release"}) {
 		t.Fatalf("release did not follow writeback failure: %#v", credentials.order)
 	}
+}
+
+func credentialFixtureBase(t *testing.T) string {
+	t.Helper()
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("canonicalize credential fixture base: %v", err)
+	}
+	return base
 }
 
 type immediateProcessRunner struct{}

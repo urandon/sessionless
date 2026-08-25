@@ -98,6 +98,48 @@ func TestGeneratorProducesOpaqueNonSortableCredentialHandleIDs(t *testing.T) {
 	}
 }
 
+func TestGeneratorProducesOpaqueNonSortableAttachedWorkerIDs(t *testing.T) {
+	tests := []struct {
+		kind     ports.IDKind
+		prefix   string
+		validate func(string) error
+	}{
+		{kind: ports.IDAttachedWorker, prefix: "wrk_", validate: func(value string) error {
+			return domain.AttachedWorkerID(value).Validate()
+		}},
+		{kind: ports.IDAttachedWorkerEnrollment, prefix: "wen_", validate: func(value string) error {
+			return domain.AttachedWorkerEnrollmentID(value).Validate()
+		}},
+	}
+	for _, test := range tests {
+		t.Run(string(test.kind), func(t *testing.T) {
+			generator := newWithReader(&counterHashReader{})
+			seen := make(map[string]struct{}, 4096)
+			distribution := make(map[byte]int)
+			for i := 0; i < 4096; i++ {
+				id, err := generator.NewID(context.Background(), test.kind)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := test.validate(id); err != nil {
+					t.Fatalf("generated invalid ID %q: %v", id, err)
+				}
+				if !strings.HasPrefix(id, test.prefix) || len(id) != len(test.prefix)+26 {
+					t.Fatalf("unexpected ID shape %q", id)
+				}
+				if _, exists := seen[id]; exists {
+					t.Fatalf("duplicate ID %q", id)
+				}
+				seen[id] = struct{}{}
+				distribution[id[len(test.prefix)]]++
+			}
+			if len(distribution) != 32 {
+				t.Fatalf("leading random-symbol coverage = %d, want 32", len(distribution))
+			}
+		})
+	}
+}
+
 type counterHashReader struct {
 	counter uint64
 	buffer  []byte

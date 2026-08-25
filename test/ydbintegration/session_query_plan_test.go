@@ -22,6 +22,8 @@ func TestCanonicalSessionQueriesUseBoundedPlans(t *testing.T) {
 	userID := domain.UserID("user-query-plan")
 	sessionID := domain.SessionID("session-query-plan")
 	runID := domain.RunID("run-query-plan")
+	workerID := domain.AttachedWorkerID("worker-query-plan")
+	enrollmentID := domain.AttachedWorkerEnrollmentID("worker-enrollment-query-plan")
 	limit := uint64(100)
 
 	tests := []struct {
@@ -66,6 +68,39 @@ func TestCanonicalSessionQueriesUseBoundedPlans(t *testing.T) {
 			contract: queryPlanContract{
 				operator: "TablePointLookup",
 				table:    "frontend_binding_keys",
+			},
+		},
+		{
+			name: "attached worker enrollment point lookup",
+			query: `SELECT record FROM attached_worker_enrollments
+				WHERE tenant_id = $1 AND owner_user_id = $2 AND enrollment_id = $3`,
+			args: []any{tenantID, userID, enrollmentID},
+			contract: queryPlanContract{
+				operator: "TablePointLookup",
+				table:    "attached_worker_enrollments",
+			},
+		},
+		{
+			name: "attached worker point lookup",
+			query: `SELECT record FROM attached_workers
+				WHERE tenant_id = $1 AND owner_user_id = $2 AND worker_id = $3`,
+			args: []any{tenantID, userID, workerID},
+			contract: queryPlanContract{
+				operator: "TablePointLookup",
+				table:    "attached_workers",
+			},
+		},
+		{
+			name: "attached worker audit point lookup",
+			query: `SELECT version, enrollment_id, action, enrollment_generation,
+					connection_generation, occurred_at
+				FROM attached_worker_audit_events
+				WHERE tenant_id = $1 AND owner_user_id = $2 AND worker_id = $3
+					AND worker_revision = $4`,
+			args: []any{tenantID, userID, workerID, uint64(1)},
+			contract: queryPlanContract{
+				operator: "TablePointLookup",
+				table:    "attached_worker_audit_events",
 			},
 		},
 		{
@@ -178,6 +213,31 @@ func TestCanonicalSessionQueriesUseBoundedPlans(t *testing.T) {
 			contract: queryPlanContract{
 				operator: "TableRangeScan",
 				table:    "checkpoint_objects_by_run",
+			},
+		},
+		{
+			name: "attached workers by owner range",
+			query: `SELECT record FROM attached_workers
+				WHERE tenant_id = $1 AND owner_user_id = $2 AND worker_id > $3
+				ORDER BY worker_id ASC LIMIT $4`,
+			args: []any{tenantID, userID, domain.AttachedWorkerID(""), limit},
+			contract: queryPlanContract{
+				operator: "TableRangeScan",
+				table:    "attached_workers",
+			},
+		},
+		{
+			name: "attached worker audit by owner and worker range",
+			query: `SELECT version, enrollment_id, action, worker_revision,
+					enrollment_generation, connection_generation, occurred_at
+				FROM attached_worker_audit_events
+				WHERE tenant_id = $1 AND owner_user_id = $2 AND worker_id = $3
+					AND worker_revision >= $4
+				ORDER BY worker_revision ASC LIMIT $5`,
+			args: []any{tenantID, userID, workerID, uint64(0), limit},
+			contract: queryPlanContract{
+				operator: "TableRangeScan",
+				table:    "attached_worker_audit_events",
 			},
 		},
 	}

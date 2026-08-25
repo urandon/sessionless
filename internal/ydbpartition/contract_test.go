@@ -136,3 +136,27 @@ func TestSchedulerPointTablesUseAutomaticLoadBasedGrowth(t *testing.T) {
 		}
 	}
 }
+
+func TestAttachedWorkerTablesRemainOwnerScopedAndBounded(t *testing.T) {
+	want := map[string][]string{
+		"attached_workers":             {"tenant_id", "owner_user_id", "worker_id"},
+		"attached_worker_enrollments":  {"tenant_id", "owner_user_id", "enrollment_id"},
+		"attached_worker_audit_events": {"tenant_id", "owner_user_id", "worker_id", "worker_revision"},
+	}
+	for _, policy := range Policies() {
+		key, exists := want[policy.LogicalName]
+		if !exists {
+			continue
+		}
+		delete(want, policy.LogicalName)
+		if fmt.Sprint(policy.PrimaryKey) != fmt.Sprint(key) {
+			t.Errorf("%s key = %v, want %v", policy.LogicalName, policy.PrimaryKey, key)
+		}
+		if policy.Bucketed || !policy.LoadPartitioning {
+			t.Errorf("%s must be an owner-prefix table with load splitting", policy.LogicalName)
+		}
+	}
+	for table := range want {
+		t.Errorf("missing attached-worker partition policy for %s", table)
+	}
+}

@@ -22,6 +22,12 @@ The local-only credential lifecycle Phase B0 contract is described in
 owner-scoped binding and invocation-scoped handle without activating credential
 use in worker runtime.
 
+The owner-scoped attached-worker identity and enrollment contract is described
+in [attached-worker-identity.md](attached-worker-identity.md). It defines
+single-use audience-bound enrollment, Ed25519 claim and rotation proofs,
+monotonic identity/connection fences, and deny-first revocation without
+granting transport, capability, provider, credential, or dispatch authority.
+
 ## Canonical sessions and frontend bindings
 
 `Session` is the product conversation and Sessionless is its source of truth.

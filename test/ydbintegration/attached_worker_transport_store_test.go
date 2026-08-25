@@ -96,6 +96,10 @@ func TestAttachedWorkerTransportTwoPhaseAttachAuthorizationAndExpiry(t *testing.
 	if accepted.Connection.State != domain.AttachedWorkerConnectionOnline || accepted.Connection.ManifestRevision != 1 {
 		t.Fatalf("accepted head = %#v", accepted.Connection)
 	}
+	loadedManifest, found, err := store.LoadAttachedWorkerCapabilityManifest(ctx, tenantID, ownerID, worker.ID, capabilityDigest)
+	if err != nil || !found || loadedManifest.Digest != capabilityDigest || loadedManifest.WorkerID != worker.ID {
+		t.Fatalf("load capability manifest = %#v found=%t err=%v", loadedManifest, found, err)
+	}
 	acceptedReplay, err := store.AcceptAttachedWorkerManifest(ctx, manifestAcceptance)
 	if err != nil || acceptedReplay.Status != ports.AttachedWorkerConnectionAuthorized || !acceptedReplay.Checkpointed {
 		t.Fatalf("manifest ambiguous replay = %#v, %v", acceptedReplay, err)

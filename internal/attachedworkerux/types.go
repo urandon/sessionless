@@ -309,9 +309,8 @@ type AttachedWorkerDiagnosticsV1 struct {
 // generation, deadline, fence, desired result, raw command, proof, or secret.
 // A future durable plan store seals action-specific authority server-side.
 type ActionPlanRequestV1 struct {
-	Version     uint32       `json:"version"`
-	Action      ActionCodeV1 `json:"action"`
-	DisplayName string       `json:"display_name,omitempty"`
+	Version uint32       `json:"version"`
+	Action  ActionCodeV1 `json:"action"`
 }
 
 type ActionPlanV1 struct {

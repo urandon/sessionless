@@ -393,7 +393,7 @@ func (store *Store) LoadAttachedWorkerCapabilityManifest(
 	}
 	result, found, err = readJSON[domain.AttachedWorkerCapabilityManifest](ctx, store.db,
 		`SELECT record FROM attached_worker_capability_manifests
-		 WHERE tenant_id = $1 AND owner_user_id = $2 AND worker_id = $3 AND manifest_digest = $4`,
+		 WHERE tenant_id = $1 AND owner_user_id = $2 AND worker_id = $3 AND capability_digest = $4`,
 		tenantID, ownerUserID, workerID, digest,
 	)
 	if err != nil || !found {

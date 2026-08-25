@@ -318,15 +318,24 @@ start_mcp() {
     <&0 >&1 2>&2 &
   mcp_pid=$!
   trap 'kill "$mcp_pid" 2>/dev/null || true; rm -f "$mcp_pid_file"' EXIT HUP INT TERM
-  mcp_start=$(ps -ww -p "$mcp_pid" -o lstart= 2>/dev/null | awk '{$1=$1; print}')
-  mcp_command=$(ps -ww -p "$mcp_pid" -o command= 2>/dev/null | sed 's/^[[:space:]]*//')
-  test -n "$mcp_start" && test -n "$mcp_command" ||
-    die "could not record RepoWise MCP process identity"
   expected_suffix="$repowise_bin mcp $repo_root --transport stdio --tools $REPOWISE_MCP_ALLOWED_TOOLS"
+  identity_attempts=0
+  mcp_command=
+  while test "$identity_attempts" -lt 50; do
+    kill -0 "$mcp_pid" 2>/dev/null || die "RepoWise MCP exited before identity capture"
+    mcp_command=$(ps -ww -p "$mcp_pid" -o command= 2>/dev/null | sed 's/^[[:space:]]*//')
+    case "$mcp_command" in
+      *"$expected_suffix") break ;;
+    esac
+    /bin/sleep 0.02
+    identity_attempts=$((identity_attempts + 1))
+  done
   case "$mcp_command" in
     *"$expected_suffix") ;;
-    *) die "started process does not have the exact RepoWise MCP signature" ;;
+    *) die "started process did not reach the exact RepoWise MCP signature" ;;
   esac
+  mcp_start=$(ps -ww -p "$mcp_pid" -o lstart= 2>/dev/null | awk '{$1=$1; print}')
+  test -n "$mcp_start" || die "could not record RepoWise MCP process start identity"
   mcp_identity=$(
     printf '%s\n%s\n' "$mcp_start" "$mcp_command" | shasum -a 256 | awk '{print $1}'
   )

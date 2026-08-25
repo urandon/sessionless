@@ -34,6 +34,7 @@ type DispatchOutbox struct {
 	SkillBundle           *BlobRef              `json:"skill_bundle,omitempty"`
 	AllowedMCPServers     []string              `json:"allowed_mcp_servers,omitempty"`
 	CredentialOwnerUserID UserID                `json:"credential_owner_user_id,omitempty"`
+	ExecutionPlacement    ExecutionPlacementV1  `json:"execution_placement"`
 	Origin                *FrontendEventOrigin  `json:"origin,omitempty"`
 	// DeliveryChat and ReplyToMessageID are the compatibility bridge for the
 	// pre-canonical Telegram worker flow. New ingress paths use Origin; #37
@@ -85,6 +86,9 @@ func (outbox DispatchOutbox) ValidateForAttempt(run Run, attempt Attempt) error 
 		if err := outbox.CredentialOwnerUserID.Validate(); err != nil {
 			return err
 		}
+	}
+	if err := outbox.ExecutionPlacement.Validate(); err != nil {
+		return err
 	}
 	if outbox.Origin == nil && outbox.DeliveryChat.ChatID == 0 {
 		return ValidationError{Field: "dispatch_outbox.origin", Reason: "a frontend origin or legacy delivery target is required"}

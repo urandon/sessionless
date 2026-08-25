@@ -384,8 +384,20 @@ type DispatchAdmissionRequest struct {
 	Workload      domain.WorkloadShape
 }
 
+type DispatchDelivery string
+
+const (
+	DispatchDeliveryManagedQueue  DispatchDelivery = "managed_queue"
+	DispatchDeliveryAttachedOffer DispatchDelivery = "attached_worker_offer"
+)
+
+func (delivery DispatchDelivery) Valid() bool {
+	return delivery == DispatchDeliveryManagedQueue || delivery == DispatchDeliveryAttachedOffer
+}
+
 type DispatchAdmissionResult struct {
 	Admitted        bool
+	Delivery        DispatchDelivery
 	State           domain.SchedulerState
 	Code            string
 	RetryAt         *time.Time

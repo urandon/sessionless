@@ -10,6 +10,8 @@ import (
 
 const AttachedWorkerCapabilityManifestVersionV1 uint32 = 1
 
+const maxAttachedWorkerProtocolSnapshotBytes = 64 << 10
+
 type (
 	AttachedWorkerConnectionID           string
 	AttachedWorkerChallengeID            string
@@ -268,11 +270,15 @@ type AttachedWorkerConnection struct {
 	WorkerSequence        uint64                               `json:"worker_sequence"`
 	PlatformAck           uint64                               `json:"platform_ack"`
 	WorkerAck             uint64                               `json:"worker_ack"`
-	ConnectedAt           time.Time                            `json:"connected_at"`
-	LastCheckpointAt      time.Time                            `json:"last_checkpoint_at"`
-	PresenceExpiresAt     time.Time                            `json:"presence_expires_at"`
-	AuthExpiresAt         time.Time                            `json:"auth_expires_at"`
-	Revision              uint64                               `json:"revision"`
+	// ProtocolSnapshot is the canonical strict encoding of the sole durable
+	// MachineSnapshotV1 for this connection. Scalar watermarks are projections,
+	// not sufficient authority to reconstruct replay fingerprints.
+	ProtocolSnapshot  []byte    `json:"protocol_snapshot"`
+	ConnectedAt       time.Time `json:"connected_at"`
+	LastCheckpointAt  time.Time `json:"last_checkpoint_at"`
+	PresenceExpiresAt time.Time `json:"presence_expires_at"`
+	AuthExpiresAt     time.Time `json:"auth_expires_at"`
+	Revision          uint64    `json:"revision"`
 }
 
 func (connection AttachedWorkerConnection) Validate() error {
@@ -323,6 +329,9 @@ func (connection AttachedWorkerConnection) Validate() error {
 	}
 	if connection.PlatformAck > connection.WorkerSequence || connection.WorkerAck > connection.PlatformSequence {
 		return ValidationError{Field: "attached_worker_connection.watermarks", Reason: "acknowledgements must not exceed the opposite direction sequence"}
+	}
+	if len(connection.ProtocolSnapshot) == 0 || len(connection.ProtocolSnapshot) > maxAttachedWorkerProtocolSnapshotBytes {
+		return ValidationError{Field: "attached_worker_connection.protocol_snapshot", Reason: "must contain a bounded canonical machine snapshot"}
 	}
 	return nil
 }

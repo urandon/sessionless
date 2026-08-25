@@ -24,6 +24,8 @@ func TestCanonicalSessionQueriesUseBoundedPlans(t *testing.T) {
 	runID := domain.RunID("run-query-plan")
 	workerID := domain.AttachedWorkerID("worker-query-plan")
 	enrollmentID := domain.AttachedWorkerEnrollmentID("worker-enrollment-query-plan")
+	challengeID := domain.AttachedWorkerChallengeID("worker-challenge-query-plan")
+	capabilityDigest := domain.DigestAttachedWorkerCapability([]byte("query-plan-manifest"))
 	limit := uint64(100)
 
 	tests := []struct {
@@ -88,6 +90,36 @@ func TestCanonicalSessionQueriesUseBoundedPlans(t *testing.T) {
 			contract: queryPlanContract{
 				operator: "TablePointLookup",
 				table:    "attached_workers",
+			},
+		},
+		{
+			name: "attached worker attach challenge point lookup",
+			query: `SELECT record FROM attached_worker_attach_challenges
+				WHERE tenant_id = $1 AND owner_user_id = $2 AND worker_id = $3 AND challenge_id = $4`,
+			args: []any{tenantID, userID, workerID, challengeID},
+			contract: queryPlanContract{
+				operator: "TablePointLookup",
+				table:    "attached_worker_attach_challenges",
+			},
+		},
+		{
+			name: "attached worker connection head point lookup",
+			query: `SELECT record FROM attached_worker_connections
+				WHERE tenant_id = $1 AND owner_user_id = $2 AND worker_id = $3`,
+			args: []any{tenantID, userID, workerID},
+			contract: queryPlanContract{
+				operator: "TablePointLookup",
+				table:    "attached_worker_connections",
+			},
+		},
+		{
+			name: "attached worker capability manifest point lookup",
+			query: `SELECT record FROM attached_worker_capability_manifests
+				WHERE tenant_id = $1 AND owner_user_id = $2 AND worker_id = $3 AND capability_digest = $4`,
+			args: []any{tenantID, userID, workerID, capabilityDigest},
+			contract: queryPlanContract{
+				operator: "TablePointLookup",
+				table:    "attached_worker_capability_manifests",
 			},
 		},
 		{
@@ -238,6 +270,28 @@ func TestCanonicalSessionQueriesUseBoundedPlans(t *testing.T) {
 			contract: queryPlanContract{
 				operator: "TableRangeScan",
 				table:    "attached_worker_audit_events",
+			},
+		},
+		{
+			name: "attached worker presence expiry bucket range",
+			query: `SELECT presence_expires_at, tenant_id, owner_user_id, worker_id,
+					connection_id, connection_generation, connection_revision
+				FROM attached_worker_presence_expiry_v1
+				WHERE shard_bucket = $1 AND presence_expires_at <= $2
+					AND (presence_expires_at > $3
+						OR (presence_expires_at = $3 AND tenant_id > $4)
+						OR (presence_expires_at = $3 AND tenant_id = $4 AND owner_user_id > $5)
+						OR (presence_expires_at = $3 AND tenant_id = $4 AND owner_user_id = $5 AND worker_id > $6))
+				ORDER BY presence_expires_at, tenant_id, owner_user_id, worker_id LIMIT $7`,
+			args: []any{
+				uint32(0),
+				time.Date(2026, time.January, 1, 0, 0, 1, 0, time.UTC),
+				time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC),
+				tenantID, userID, workerID, limit,
+			},
+			contract: queryPlanContract{
+				operator: "TableRangeScan",
+				table:    "attached_worker_presence_expiry_v1",
 			},
 		},
 	}

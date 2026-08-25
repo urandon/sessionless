@@ -106,6 +106,10 @@ func containsProduction(value string) bool {
 }
 
 var applicationTables = []string{
+	"attached_worker_presence_expiry_v1",
+	"attached_worker_connections",
+	"attached_worker_capability_manifests",
+	"attached_worker_attach_challenges",
 	"attached_worker_audit_events",
 	"attached_worker_enrollments",
 	"attached_workers",

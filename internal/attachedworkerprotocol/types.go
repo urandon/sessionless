@@ -133,6 +133,7 @@ type ReconnectAcceptedV1 struct {
 	CapabilityDigest        []byte                 `json:"capability_digest"`
 	AuthoritativeWatermarks ConnectionWatermarksV1 `json:"authoritative_watermarks"`
 	AuthoritativeAttempt    AttemptSummaryV1       `json:"authoritative_attempt"`
+	ReplayPlan              ReplayPlanV1           `json:"replay_plan"`
 }
 
 type ManifestV1 struct {
@@ -373,7 +374,8 @@ func (message AttachAcceptedV1) Validate() error {
 func (message ReconnectAcceptedV1) Validate() error {
 	if validateNegotiationProof(message.WorkerOffer, message.PlatformOffer, message.SelectedVersion,
 		message.WorkerNonce, message.PlatformNonce, message.CapabilityDigest) != nil ||
-		message.AuthoritativeWatermarks.Validate() != nil || message.AuthoritativeAttempt.Validate() != nil {
+		message.AuthoritativeWatermarks.Validate() != nil || message.AuthoritativeAttempt.Validate() != nil ||
+		message.ReplayPlan.Validate() != nil {
 		return protocolError(ErrorMalformedFrame)
 	}
 	return nil
@@ -498,11 +500,21 @@ func validateNegotiationProof(
 	workerNonce, platformNonce, capabilityDigest []byte,
 ) error {
 	if workerOffer.Validate() != nil || platformOffer.Validate() != nil || selected == 0 ||
+		!versionOfferSupports(workerOffer, selected) || !versionOfferSupports(platformOffer, selected) ||
 		!validBytes(workerNonce, sha256.Size) || !validBytes(platformNonce, sha256.Size) ||
 		!validBytes(capabilityDigest, sha256.Size) {
 		return protocolError(ErrorInvalidFrame)
 	}
 	return nil
+}
+
+func versionOfferSupports(offer VersionOfferV1, selected ProtocolVersion) bool {
+	for _, version := range offer.Supported {
+		if version == selected {
+			return true
+		}
+	}
+	return false
 }
 
 func validTerminal(status TerminalStatus) bool {

@@ -5,7 +5,131 @@ import (
 	"crypto/sha256"
 )
 
-const attemptSummaryDomainV1 = "sessionless.attached-worker.attempt-summary.v1"
+const (
+	attemptSummaryDomainV1    = "sessionless.attached-worker.attempt-summary.v1"
+	reconnectSnapshotDomainV1 = "sessionless.attached-worker.reconnect-snapshot.v1"
+)
+
+type ReconnectSnapshotV1 struct {
+	PreviousConnectionGeneration uint64                 `json:"previous_connection_generation"`
+	Watermarks                   ConnectionWatermarksV1 `json:"watermarks"`
+	Attempt                      AttemptSummaryV1       `json:"attempt"`
+	Digest                       []byte                 `json:"digest"`
+}
+
+func (snapshot ReconnectSnapshotV1) Validate() error {
+	if snapshot.PreviousConnectionGeneration == 0 || snapshot.Watermarks.Validate() != nil || snapshot.Attempt.Validate() != nil ||
+		!validBytes(snapshot.Digest, sha256.Size) || !bytes.Equal(reconnectSnapshotDigestV1(snapshot), snapshot.Digest) {
+		return protocolError(ErrorMalformedFrame)
+	}
+	return nil
+}
+
+func reconnectSnapshotDigestV1(snapshot ReconnectSnapshotV1) []byte {
+	result := appendCanonicalField(nil, []byte(reconnectSnapshotDomainV1))
+	result = appendCanonicalUint64(result, snapshot.PreviousConnectionGeneration)
+	result = appendWatermarks(result, snapshot.Watermarks)
+	result = appendCanonicalField(result, snapshot.Attempt.Digest)
+	digest := sha256.Sum256(result)
+	return append([]byte(nil), digest[:]...)
+}
+
+func sealReconnectSnapshot(snapshot ReconnectSnapshotV1) ReconnectSnapshotV1 {
+	snapshot.Attempt = cloneAttemptSummary(snapshot.Attempt)
+	snapshot.Digest = reconnectSnapshotDigestV1(snapshot)
+	return snapshot
+}
+
+type ReconnectNegotiationV1 struct {
+	WorkerOffer      VersionOfferV1
+	PlatformOffer    VersionOfferV1
+	SelectedVersion  ProtocolVersion
+	WorkerNonce      []byte
+	PlatformNonce    []byte
+	CapabilityDigest []byte
+}
+
+func (input ReconnectNegotiationV1) validate() error {
+	return validateNegotiationProof(input.WorkerOffer, input.PlatformOffer, input.SelectedVersion,
+		input.WorkerNonce, input.PlatformNonce, input.CapabilityDigest)
+}
+
+type ReplayPlanV1 struct {
+	// Envelope replay watermarks refer to the previous connection. Replayed
+	// messages are wrapped in fresh envelopes on the new connection.
+	PlatformEnvelopeAfter uint64 `json:"platform_envelope_after"`
+	WorkerEnvelopeAfter   uint64 `json:"worker_envelope_after"`
+	// Attempt replay watermarks retain their direction-local attempt sequence.
+	PlatformAttemptAfter uint64 `json:"platform_attempt_after"`
+	WorkerAttemptAfter   uint64 `json:"worker_attempt_after"`
+	// TerminalDecision is an explicit control-plane decision: replay is not a
+	// commit, and only committed permits worker-side erasure.
+	TerminalDecision ReconnectTerminalDecision `json:"terminal_decision"`
+}
+
+type ReconnectTerminalDecision string
+
+const (
+	ReconnectTerminalNone      ReconnectTerminalDecision = "none"
+	ReconnectTerminalReplay    ReconnectTerminalDecision = "replay"
+	ReconnectTerminalCommitted ReconnectTerminalDecision = "committed"
+)
+
+func (plan ReplayPlanV1) Validate() error {
+	if plan.PlatformAttemptAfter > MaxAttemptMessages || plan.WorkerAttemptAfter > MaxAttemptMessages {
+		return protocolError(ErrorMalformedFrame)
+	}
+	switch plan.TerminalDecision {
+	case ReconnectTerminalNone, ReconnectTerminalReplay, ReconnectTerminalCommitted:
+		return nil
+	default:
+		return protocolError(ErrorMalformedFrame)
+	}
+}
+
+func BuildReconnectV1(snapshot ReconnectSnapshotV1, negotiation ReconnectNegotiationV1) (ReconnectV1, error) {
+	if snapshot.Validate() != nil || negotiation.validate() != nil {
+		return ReconnectV1{}, protocolError(ErrorMalformedFrame)
+	}
+	return ReconnectV1{
+		WorkerOffer: cloneVersionOffer(negotiation.WorkerOffer), PlatformOffer: cloneVersionOffer(negotiation.PlatformOffer),
+		SelectedVersion: negotiation.SelectedVersion, PreviousConnectionGeneration: snapshot.PreviousConnectionGeneration,
+		WorkerNonce: append([]byte(nil), negotiation.WorkerNonce...), PlatformNonce: append([]byte(nil), negotiation.PlatformNonce...),
+		CapabilityDigest: append([]byte(nil), negotiation.CapabilityDigest...), PreviousWatermarks: snapshot.Watermarks,
+		AttemptSummary: cloneAttemptSummary(snapshot.Attempt), Signature: []byte{},
+	}, nil
+}
+
+func BuildReconnectAcceptedV1(
+	authoritative ReconnectSnapshotV1,
+	workerClaim ReconnectSnapshotV1,
+	negotiation ReconnectNegotiationV1,
+) (ReconnectAcceptedV1, error) {
+	if authoritative.Validate() != nil || workerClaim.Validate() != nil || negotiation.validate() != nil ||
+		authoritative.PreviousConnectionGeneration != workerClaim.PreviousConnectionGeneration ||
+		!reconnectClaimsCompatible(workerClaim, authoritative) {
+		return ReconnectAcceptedV1{}, protocolError(ErrorConflict)
+	}
+	decision := ReconnectTerminalNone
+	if authoritative.Attempt.State == AttemptTerminalCommitted {
+		decision = ReconnectTerminalCommitted
+	} else if workerClaim.Attempt.TerminalSequence > authoritative.Attempt.TerminalSequence {
+		decision = ReconnectTerminalReplay
+	}
+	return ReconnectAcceptedV1{
+		WorkerOffer: cloneVersionOffer(negotiation.WorkerOffer), PlatformOffer: cloneVersionOffer(negotiation.PlatformOffer),
+		SelectedVersion: negotiation.SelectedVersion, WorkerNonce: append([]byte(nil), negotiation.WorkerNonce...),
+		PlatformNonce: append([]byte(nil), negotiation.PlatformNonce...), CapabilityDigest: append([]byte(nil), negotiation.CapabilityDigest...),
+		AuthoritativeWatermarks: authoritative.Watermarks, AuthoritativeAttempt: cloneAttemptSummary(authoritative.Attempt),
+		ReplayPlan: ReplayPlanV1{
+			PlatformEnvelopeAfter: workerClaim.Watermarks.PlatformSequence,
+			WorkerEnvelopeAfter:   authoritative.Watermarks.WorkerSequence,
+			PlatformAttemptAfter:  workerClaim.Attempt.PlatformSequence,
+			WorkerAttemptAfter:    authoritative.Attempt.WorkerSequence,
+			TerminalDecision:      decision,
+		},
+	}, nil
+}
 
 type ConnectionWatermarksV1 struct {
 	PlatformSequence uint64 `json:"platform_sequence"`
@@ -208,4 +332,65 @@ func attemptStateRank(state AttemptState) int {
 func watermarksCanAdvance(from, to ConnectionWatermarksV1) bool {
 	return from.Validate() == nil && to.Validate() == nil && from.PlatformSequence <= to.PlatformSequence &&
 		from.WorkerSequence <= to.WorkerSequence && from.PlatformAck <= to.PlatformAck && from.WorkerAck <= to.WorkerAck
+}
+
+func reconnectClaimsCompatible(workerClaim, authoritative ReconnectSnapshotV1) bool {
+	if workerClaim.Validate() != nil || authoritative.Validate() != nil ||
+		workerClaim.PreviousConnectionGeneration != authoritative.PreviousConnectionGeneration ||
+		workerClaim.Watermarks.PlatformSequence > authoritative.Watermarks.PlatformSequence ||
+		workerClaim.Watermarks.PlatformAck > authoritative.Watermarks.PlatformAck ||
+		workerClaim.Attempt.PlatformSequence > authoritative.Attempt.PlatformSequence {
+		return false
+	}
+	workerAttempt, platformAttempt := workerClaim.Attempt, authoritative.Attempt
+	if workerAttempt.State == AttemptIdle || platformAttempt.State == AttemptIdle {
+		return workerAttempt.State == platformAttempt.State
+	}
+	if !sameAttemptBinding(workerAttempt.Binding, platformAttempt.Binding) ||
+		workerAttempt.CancelRevision > platformAttempt.CancelRevision ||
+		!reconnectStatesCompatible(workerAttempt.State, platformAttempt.State) ||
+		(workerAttempt.CancelRevision > 0 && platformAttempt.CancelRevision > 0 && workerAttempt.CancelCode != platformAttempt.CancelCode) ||
+		(workerAttempt.TerminalSequence > 0 && platformAttempt.TerminalSequence > 0 &&
+			(workerAttempt.TerminalStatus != platformAttempt.TerminalStatus || workerAttempt.TerminalResult != platformAttempt.TerminalResult ||
+				!bytes.Equal(workerAttempt.TerminalEvidenceDigest, platformAttempt.TerminalEvidenceDigest))) {
+		return false
+	}
+	return true
+}
+
+func reconnectStatesCompatible(worker, platform AttemptState) bool {
+	switch platform {
+	case AttemptOffered:
+		return worker == AttemptOffered || worker == AttemptClaimPending
+	case AttemptClaimPending:
+		return worker == AttemptOffered || worker == AttemptClaimPending
+	case AttemptClaimed:
+		return worker == AttemptClaimPending || worker == AttemptClaimed || worker == AttemptTerminalPending
+	case AttemptCancelRequested:
+		return worker == AttemptClaimed || worker == AttemptCancelRequested || worker == AttemptCancelAcked || worker == AttemptTerminalPending
+	case AttemptCancelAcked:
+		return worker == AttemptCancelRequested || worker == AttemptCancelAcked || worker == AttemptTerminalPending
+	case AttemptFenced:
+		return worker == AttemptClaimed || worker == AttemptCancelRequested || worker == AttemptCancelAcked ||
+			worker == AttemptFenced || worker == AttemptTerminalPending
+	case AttemptTerminalPending:
+		return worker == AttemptClaimed || worker == AttemptCancelRequested || worker == AttemptCancelAcked || worker == AttemptTerminalPending
+	case AttemptTerminalCommitted:
+		return worker == AttemptTerminalPending || worker == AttemptTerminalCommitted
+	default:
+		return false
+	}
+}
+
+func cloneAttemptSummary(summary AttemptSummaryV1) AttemptSummaryV1 {
+	summary.Binding = cloneBinding(summary.Binding)
+	summary.TerminalEvidenceDigest = append([]byte(nil), summary.TerminalEvidenceDigest...)
+	summary.Digest = append([]byte(nil), summary.Digest...)
+	return summary
+}
+
+func cloneReconnectSnapshot(snapshot ReconnectSnapshotV1) ReconnectSnapshotV1 {
+	snapshot.Attempt = cloneAttemptSummary(snapshot.Attempt)
+	snapshot.Digest = append([]byte(nil), snapshot.Digest...)
+	return snapshot
 }

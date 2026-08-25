@@ -14,11 +14,10 @@ const (
 
 func AttachTranscriptV1(auth AuthContextV1, frame FrameV1) ([]byte, error) {
 	if validateSignedFrame(auth, DirectionWorkerToPlatform, frame, MessageAttach) != nil ||
-		frame.Attach == nil || validateAttachForTranscript(*frame.Attach) != nil {
+		!hasExactlySignedPayload(frame, MessageAttach) || validateAttachForTranscript(*frame.Attach) != nil {
 		return nil, protocolError(ErrorAuthentication)
 	}
-	selected, err := highestCommonOfferedVersion(frame.Attach.WorkerOffer, frame.Attach.PlatformOffer)
-	if err != nil || selected != auth.Version || frame.Attach.SelectedVersion != auth.Version {
+	if frame.Attach.SelectedVersion != auth.Version {
 		return nil, protocolError(ErrorAuthentication)
 	}
 	body := make([]byte, 0, 384)
@@ -33,11 +32,10 @@ func AttachTranscriptV1(auth AuthContextV1, frame FrameV1) ([]byte, error) {
 
 func ReconnectTranscriptV1(auth AuthContextV1, frame FrameV1) ([]byte, error) {
 	if validateSignedFrame(auth, DirectionWorkerToPlatform, frame, MessageReconnect) != nil ||
-		frame.Reconnect == nil || validateReconnectForTranscript(*frame.Reconnect) != nil {
+		!hasExactlySignedPayload(frame, MessageReconnect) || validateReconnectForTranscript(*frame.Reconnect) != nil {
 		return nil, protocolError(ErrorAuthentication)
 	}
-	selected, err := highestCommonOfferedVersion(frame.Reconnect.WorkerOffer, frame.Reconnect.PlatformOffer)
-	if err != nil || selected != auth.Version || frame.Reconnect.SelectedVersion != auth.Version {
+	if frame.Reconnect.SelectedVersion != auth.Version {
 		return nil, protocolError(ErrorAuthentication)
 	}
 	body := make([]byte, 0, 384)
@@ -62,7 +60,7 @@ func appendWatermarks(destination []byte, watermarks ConnectionWatermarksV1) []b
 
 func ManifestTranscriptV1(auth AuthContextV1, frame FrameV1) ([]byte, error) {
 	if validateSignedFrame(auth, DirectionWorkerToPlatform, frame, MessageManifest) != nil ||
-		frame.Manifest == nil || validateManifestForTranscript(*frame.Manifest) != nil {
+		!hasExactlySignedPayload(frame, MessageManifest) || validateManifestForTranscript(*frame.Manifest) != nil {
 		return nil, protocolError(ErrorAuthentication)
 	}
 	digest, err := ManifestDigestV1(frame.Manifest.Manifest)
@@ -74,14 +72,23 @@ func ManifestTranscriptV1(auth AuthContextV1, frame FrameV1) ([]byte, error) {
 }
 
 func SignAttachV1(privateKey ed25519.PrivateKey, auth AuthContextV1, frame *FrameV1) error {
+	if frame == nil || !hasExactlySignedPayload(*frame, MessageAttach) || len(frame.Attach.Signature) != 0 {
+		return protocolError(ErrorUnauthorized)
+	}
 	return signFrame(privateKey, auth, frame, AttachTranscriptV1, func(signature []byte) { frame.Attach.Signature = signature })
 }
 
 func SignReconnectV1(privateKey ed25519.PrivateKey, auth AuthContextV1, frame *FrameV1) error {
+	if frame == nil || !hasExactlySignedPayload(*frame, MessageReconnect) || len(frame.Reconnect.Signature) != 0 {
+		return protocolError(ErrorUnauthorized)
+	}
 	return signFrame(privateKey, auth, frame, ReconnectTranscriptV1, func(signature []byte) { frame.Reconnect.Signature = signature })
 }
 
 func SignManifestV1(privateKey ed25519.PrivateKey, auth AuthContextV1, frame *FrameV1) error {
+	if frame == nil || !hasExactlySignedPayload(*frame, MessageManifest) || len(frame.Manifest.Signature) != 0 {
+		return protocolError(ErrorUnauthorized)
+	}
 	return signFrame(privateKey, auth, frame, ManifestTranscriptV1, func(signature []byte) { frame.Manifest.Signature = signature })
 }
 
@@ -122,7 +129,7 @@ func verifyFrame[T any](
 	transcript func(AuthContextV1, FrameV1) ([]byte, error),
 	payload *T,
 ) error {
-	if payload == nil {
+	if payload == nil || frame.Validate() != nil {
 		return protocolError(ErrorAuthentication)
 	}
 	encoded, err := transcript(auth, frame)
@@ -144,6 +151,41 @@ func verifyFrame[T any](
 		return protocolError(ErrorAuthentication)
 	}
 	return nil
+}
+
+func hasExactlySignedPayload(frame FrameV1, target MessageKind) bool {
+	payloadCount := 0
+	targetPresent := false
+	check := func(kind MessageKind, present bool) {
+		if present {
+			payloadCount++
+			if kind == target {
+				targetPresent = true
+			}
+		}
+	}
+	check(MessageHello, frame.Hello != nil)
+	check(MessageChallenge, frame.Challenge != nil)
+	check(MessageAttach, frame.Attach != nil)
+	check(MessageAttachAccepted, frame.AttachAccepted != nil)
+	check(MessageReconnect, frame.Reconnect != nil)
+	check(MessageReconnectAccepted, frame.ReconnectAccepted != nil)
+	check(MessageManifest, frame.Manifest != nil)
+	check(MessageHeartbeat, frame.Heartbeat != nil)
+	check(MessageLeaseOffer, frame.LeaseOffer != nil)
+	check(MessageLeaseClaim, frame.LeaseClaim != nil)
+	check(MessageLeaseAccepted, frame.LeaseAccepted != nil)
+	check(MessageProgress, frame.Progress != nil)
+	check(MessageCancel, frame.Cancel != nil)
+	check(MessageCancelAck, frame.CancelAck != nil)
+	check(MessageTerminal, frame.Terminal != nil)
+	check(MessageTerminalAck, frame.TerminalAck != nil)
+	check(MessageDrain, frame.Drain != nil)
+	check(MessageDrained, frame.Drained != nil)
+	check(MessageRevoke, frame.Revoke != nil)
+	check(MessageRevoked, frame.Revoked != nil)
+	check(MessageError, frame.Error != nil)
+	return frame.Kind == target && targetPresent && payloadCount == 1
 }
 
 func validateSignedFrame(auth AuthContextV1, direction Direction, frame FrameV1, kind MessageKind) error {

@@ -89,7 +89,7 @@ func (fixture *protocolFixture) attachMachine(t *testing.T) *ConformanceMachine 
 	attach := fixture.frame(DirectionWorkerToPlatform, MessageAttach)
 	attach.Attach = &AttachV1{WorkerOffer: fixture.workerOffer, PlatformOffer: fixture.platformOffer,
 		SelectedVersion: 1, WorkerNonce: workerNonce, PlatformNonce: platformNonce,
-		CapabilityDigest: fixture.digest, Signature: make([]byte, ed25519.SignatureSize)}
+		CapabilityDigest: fixture.digest}
 	if err := SignAttachV1(fixture.private, fixture.auth, &attach); err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func (fixture *protocolFixture) attachMachine(t *testing.T) *ConformanceMachine 
 		SelectedVersion: 1, WorkerNonce: workerNonce, PlatformNonce: platformNonce, CapabilityDigest: fixture.digest}
 	acceptOK(t, machine, DirectionPlatformToWorker, accepted, fixture.auth.ChannelBinding)
 	manifest := fixture.frame(DirectionWorkerToPlatform, MessageManifest)
-	manifest.Manifest = &ManifestV1{Manifest: fixture.manifest, Digest: fixture.digest, Signature: make([]byte, ed25519.SignatureSize)}
+	manifest.Manifest = &ManifestV1{Manifest: fixture.manifest, Digest: fixture.digest}
 	if err := SignManifestV1(fixture.private, fixture.auth, &manifest); err != nil {
 		t.Fatal(err)
 	}
@@ -124,15 +124,17 @@ func (fixture *protocolFixture) claimMachine(t *testing.T, deliverAccepted bool)
 	return machine
 }
 
-func reconnectPair(t *testing.T, authoritative, lagging *ConformanceMachine, fixture *protocolFixture) {
+func reconnectPair(t *testing.T, authoritative, lagging *ConformanceMachine, fixture *protocolFixture) ReplayPlanV1 {
 	t.Helper()
 	nextAuth := fixture.auth
 	nextAuth.ConnectionGeneration++
 	nextAuth.ChannelBinding = digestByte(0x39)
-	if err := authoritative.BeginReconnect(nextAuth); err != nil {
+	authoritativeSnapshot, err := authoritative.BeginReconnect(nextAuth)
+	if err != nil {
 		t.Fatalf("authoritative reconnect: %v", err)
 	}
-	if err := lagging.BeginReconnect(nextAuth); err != nil {
+	laggingSnapshot, err := lagging.BeginReconnect(nextAuth)
+	if err != nil {
 		t.Fatalf("lagging reconnect: %v", err)
 	}
 	fixture.auth, fixture.workerSeq, fixture.platformSeq = nextAuth, 0, 0
@@ -147,11 +149,13 @@ func reconnectPair(t *testing.T, authoritative, lagging *ConformanceMachine, fix
 		acceptOK(t, machine, DirectionPlatformToWorker, challenge, nextAuth.ChannelBinding)
 	}
 	reconnect := fixture.frame(DirectionWorkerToPlatform, MessageReconnect)
-	reconnect.Reconnect = &ReconnectV1{WorkerOffer: fixture.workerOffer, PlatformOffer: fixture.platformOffer,
-		SelectedVersion: 1, PreviousConnectionGeneration: nextAuth.ConnectionGeneration - 1,
-		WorkerNonce: workerNonce, PlatformNonce: platformNonce, CapabilityDigest: fixture.digest,
-		PreviousWatermarks: lagging.reconnectWatermarks, AttemptSummary: lagging.reconnectAttempt,
-		Signature: make([]byte, ed25519.SignatureSize)}
+	negotiation := ReconnectNegotiationV1{WorkerOffer: fixture.workerOffer, PlatformOffer: fixture.platformOffer,
+		SelectedVersion: 1, WorkerNonce: workerNonce, PlatformNonce: platformNonce, CapabilityDigest: fixture.digest}
+	reconnectPayload, err := BuildReconnectV1(laggingSnapshot, negotiation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconnect.Reconnect = &reconnectPayload
 	if err := SignReconnectV1(fixture.private, nextAuth, &reconnect); err != nil {
 		t.Fatal(err)
 	}
@@ -159,20 +163,23 @@ func reconnectPair(t *testing.T, authoritative, lagging *ConformanceMachine, fix
 		acceptOK(t, machine, DirectionWorkerToPlatform, reconnect, nextAuth.ChannelBinding)
 	}
 	reconciled := fixture.frame(DirectionPlatformToWorker, MessageReconnectAccepted)
-	reconciled.ReconnectAccepted = &ReconnectAcceptedV1{WorkerOffer: fixture.workerOffer, PlatformOffer: fixture.platformOffer,
-		SelectedVersion: 1, WorkerNonce: workerNonce, PlatformNonce: platformNonce, CapabilityDigest: fixture.digest,
-		AuthoritativeWatermarks: authoritative.reconnectWatermarks, AuthoritativeAttempt: authoritative.reconnectAttempt}
+	reconciledPayload, err := BuildReconnectAcceptedV1(authoritativeSnapshot, laggingSnapshot, negotiation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconciled.ReconnectAccepted = &reconciledPayload
 	for _, machine := range []*ConformanceMachine{authoritative, lagging} {
 		acceptOK(t, machine, DirectionPlatformToWorker, reconciled, nextAuth.ChannelBinding)
 	}
 	manifest := fixture.frame(DirectionWorkerToPlatform, MessageManifest)
-	manifest.Manifest = &ManifestV1{Manifest: fixture.manifest, Digest: fixture.digest, Signature: make([]byte, ed25519.SignatureSize)}
+	manifest.Manifest = &ManifestV1{Manifest: fixture.manifest, Digest: fixture.digest}
 	if err := SignManifestV1(fixture.private, nextAuth, &manifest); err != nil {
 		t.Fatal(err)
 	}
 	for _, machine := range []*ConformanceMachine{authoritative, lagging} {
 		acceptOK(t, machine, DirectionWorkerToPlatform, manifest, nextAuth.ChannelBinding)
 	}
+	return reconciledPayload.ReplayPlan
 }
 
 func acceptOK(t *testing.T, machine *ConformanceMachine, direction Direction, frame FrameV1, channel []byte) {
@@ -211,6 +218,44 @@ func TestNegotiateOffersUsesExplicitIntersection(t *testing.T) {
 	requireCode(t, err, ErrorUnsupportedVersion)
 }
 
+func TestMachineClonesConfigurationAndReconnectAuthority(t *testing.T) {
+	fixture := newProtocolFixture(t)
+	config := MachineConfig{Auth: fixture.auth, WorkerOffer: fixture.workerOffer,
+		PlatformOffer: fixture.platformOffer, ImplementedVersions: []ProtocolVersion{1}}
+	expectedKey, expectedChannel := config.Auth.IdentityPublicKey[0], config.Auth.ChannelBinding[0]
+	machine, err := NewConformanceMachine(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.Auth.IdentityPublicKey[0] ^= 1
+	config.Auth.ChannelBinding[0] ^= 1
+	config.WorkerOffer.Supported[0] = 3
+	config.PlatformOffer.Supported[0] = 3
+	config.ImplementedVersions[0] = 3
+	if machine.config.Auth.IdentityPublicKey[0] != expectedKey ||
+		machine.config.Auth.ChannelBinding[0] != expectedChannel ||
+		machine.config.WorkerOffer.Supported[0] != 1 || machine.config.PlatformOffer.Supported[0] != 1 ||
+		machine.config.ImplementedVersions[0] != 1 {
+		t.Fatal("NewConformanceMachine retained caller-owned slices")
+	}
+
+	readyFixture := newProtocolFixture(t)
+	ready := readyFixture.attachMachine(t)
+	next := readyFixture.auth
+	expectedReconnectKey := next.IdentityPublicKey[0]
+	next.ConnectionGeneration++
+	next.ChannelBinding = digestByte(0x38)
+	if _, err := ready.BeginReconnect(next); err != nil {
+		t.Fatal(err)
+	}
+	next.IdentityPublicKey[0] ^= 1
+	next.ChannelBinding[0] ^= 1
+	if ready.config.Auth.IdentityPublicKey[0] != expectedReconnectKey ||
+		ready.config.Auth.ChannelBinding[0] != 0x38 {
+		t.Fatal("BeginReconnect retained caller-owned authority slices")
+	}
+}
+
 func TestManifestDigestIsCanonicalAndSensitive(t *testing.T) {
 	fixture := newProtocolFixture(t)
 	first, err := ManifestDigestV1(fixture.manifest)
@@ -240,7 +285,7 @@ func TestSignedTranscriptsBindAuthoritativeScopeAndEnvelope(t *testing.T) {
 	frame := fixture.frame(DirectionWorkerToPlatform, MessageAttach)
 	frame.Attach = &AttachV1{WorkerOffer: fixture.workerOffer, PlatformOffer: fixture.platformOffer, SelectedVersion: 1,
 		WorkerNonce: digestByte(1), PlatformNonce: digestByte(2), CapabilityDigest: fixture.digest,
-		Signature: make([]byte, ed25519.SignatureSize)}
+	}
 	if err := SignAttachV1(fixture.private, fixture.auth, &frame); err != nil {
 		t.Fatal(err)
 	}
@@ -265,15 +310,74 @@ func TestSignedTranscriptsBindAuthoritativeScopeAndEnvelope(t *testing.T) {
 	}
 }
 
-func TestStandaloneVerifierRejectsCrossVersionDowngrade(t *testing.T) {
+func TestSignedFramesRequireExactlyOnePayloadAndEmptySigningSlot(t *testing.T) {
+	fixture := newProtocolFixture(t)
+	attach := fixture.frame(DirectionWorkerToPlatform, MessageAttach)
+	attach.Attach = &AttachV1{WorkerOffer: fixture.workerOffer, PlatformOffer: fixture.platformOffer, SelectedVersion: 1,
+		WorkerNonce: digestByte(1), PlatformNonce: digestByte(2), CapabilityDigest: fixture.digest}
+	attachWithExtra := attach
+	attachWithExtra.Heartbeat = &HeartbeatV1{ObservedAtUnixMicro: 1, Available: true}
+	requireCode(t, SignAttachV1(fixture.private, fixture.auth, &attachWithExtra), ErrorUnauthorized)
+	requireCode(t, func() error { _, err := AttachTranscriptV1(fixture.auth, attachWithExtra); return err }(), ErrorUnauthorized)
+	if err := SignAttachV1(fixture.private, fixture.auth, &attach); err != nil {
+		t.Fatal(err)
+	}
+	requireCode(t, SignAttachV1(fixture.private, fixture.auth, &attach), ErrorUnauthorized)
+	verifiedExtra := attach
+	verifiedExtra.Error = &ErrorV1{Code: ErrorConflict}
+	requireCode(t, VerifyAttachV1(fixture.auth, verifiedExtra), ErrorUnauthorized)
+
+	manifest := fixture.frame(DirectionWorkerToPlatform, MessageManifest)
+	manifest.Manifest = &ManifestV1{Manifest: fixture.manifest, Digest: fixture.digest}
+	if err := SignManifestV1(fixture.private, fixture.auth, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	manifestExtra := manifest
+	manifestExtra.Drain = &DrainV1{Revision: 1}
+	requireCode(t, VerifyManifestV1(fixture.auth, manifestExtra), ErrorUnauthorized)
+	requireCode(t, func() error { _, err := ManifestTranscriptV1(fixture.auth, manifestExtra); return err }(), ErrorUnauthorized)
+
+	snapshot := sealReconnectSnapshot(ReconnectSnapshotV1{PreviousConnectionGeneration: fixture.auth.ConnectionGeneration - 1,
+		Watermarks: ConnectionWatermarksV1{}, Attempt: sealAttemptSummary(AttemptSummaryV1{State: AttemptIdle})})
+	negotiation := ReconnectNegotiationV1{WorkerOffer: fixture.workerOffer, PlatformOffer: fixture.platformOffer,
+		SelectedVersion: 1, WorkerNonce: digestByte(3), PlatformNonce: digestByte(4), CapabilityDigest: fixture.digest}
+	reconnectPayload, err := BuildReconnectV1(snapshot, negotiation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconnect := fixture.frame(DirectionWorkerToPlatform, MessageReconnect)
+	reconnect.Reconnect = &reconnectPayload
+	if err := SignReconnectV1(fixture.private, fixture.auth, &reconnect); err != nil {
+		t.Fatal(err)
+	}
+	reconnectExtra := reconnect
+	reconnectExtra.Revoked = &RevokedV1{Revision: 1, NextEnrollmentGeneration: 1, NextConnectionGeneration: 1}
+	requireCode(t, VerifyReconnectV1(fixture.auth, reconnectExtra), ErrorUnauthorized)
+	requireCode(t, func() error { _, err := ReconnectTranscriptV1(fixture.auth, reconnectExtra); return err }(), ErrorUnauthorized)
+}
+
+func TestSelectedVersionUsesMachineImplementedIntersection(t *testing.T) {
 	fixture := newProtocolFixture(t)
 	workerOffer := VersionOfferV1{Window: VersionWindow{Minimum: 1, Maximum: 2}, Supported: []ProtocolVersion{1, 2}}
 	platformOffer := VersionOfferV1{Window: VersionWindow{Minimum: 1, Maximum: 2}, Supported: []ProtocolVersion{1, 2}}
+	fixture.workerOffer, fixture.platformOffer = workerOffer, platformOffer
+	fixture.manifest.ProtocolOffer = workerOffer
+	fixture.digest, _ = ManifestDigestV1(fixture.manifest)
+	fixture.binding.CapabilityDigest = fixture.digest
+	machine := fixture.attachMachine(t)
+	if machine.ConnectionState() != ConnectionReady {
+		t.Fatalf("state=%s", machine.ConnectionState())
+	}
 	frame := fixture.frame(DirectionWorkerToPlatform, MessageAttach)
 	frame.Attach = &AttachV1{WorkerOffer: workerOffer, PlatformOffer: platformOffer, SelectedVersion: 1,
 		WorkerNonce: digestByte(1), PlatformNonce: digestByte(2), CapabilityDigest: fixture.digest,
-		Signature: make([]byte, ed25519.SignatureSize)}
-	requireCode(t, SignAttachV1(fixture.private, fixture.auth, &frame), ErrorUnauthorized)
+	}
+	if err := SignAttachV1(fixture.private, fixture.auth, &frame); err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyAttachV1(fixture.auth, frame); err != nil {
+		t.Fatal(err)
+	}
 	frame.Version = 2
 	requireCode(t, VerifyAttachV1(fixture.auth, frame), ErrorUnauthorized)
 }
@@ -493,6 +597,40 @@ func TestReconnectReconcilesLostLeaseAcceptedAndTerminalAck(t *testing.T) {
 	})
 }
 
+func TestReconnectRollsBackWorkerAheadProgressAndTerminalForReplay(t *testing.T) {
+	t.Run("progress", func(t *testing.T) {
+		authoritativeFixture := newProtocolFixture(t)
+		authoritative := authoritativeFixture.claimMachine(t, true)
+		workerFixture := newProtocolFixture(t)
+		worker := workerFixture.claimMachine(t, true)
+		progress := workerFixture.frame(DirectionWorkerToPlatform, MessageProgress)
+		progress.Progress = &ProgressV1{Binding: workerFixture.binding, AttemptSequence: 2,
+			ProgressSequence: 1, Stage: ProgressActive}
+		acceptOK(t, worker, DirectionWorkerToPlatform, progress, workerFixture.auth.ChannelBinding)
+		plan := reconnectPair(t, authoritative, worker, authoritativeFixture)
+		if plan.WorkerAttemptAfter != 1 || plan.TerminalDecision != ReconnectTerminalNone ||
+			authoritative.currentAttemptSummary().ProgressSequence != 0 || worker.currentAttemptSummary().ProgressSequence != 0 {
+			t.Fatalf("worker progress was trusted instead of replayed: plan=%+v auth=%+v worker=%+v",
+				plan, authoritative.currentAttemptSummary(), worker.currentAttemptSummary())
+		}
+	})
+	t.Run("terminal", func(t *testing.T) {
+		authoritativeFixture := newProtocolFixture(t)
+		authoritative := authoritativeFixture.claimMachine(t, true)
+		workerFixture := newProtocolFixture(t)
+		worker := workerFixture.claimMachine(t, true)
+		terminal := workerFixture.frame(DirectionWorkerToPlatform, MessageTerminal)
+		terminal.Terminal = &TerminalV1{Binding: workerFixture.binding, AttemptSequence: 2, TerminalSequence: 1,
+			Status: TerminalSucceeded, Result: TerminalResultCompleted, EvidenceDigest: digestByte(0x9a)}
+		acceptOK(t, worker, DirectionWorkerToPlatform, terminal, workerFixture.auth.ChannelBinding)
+		plan := reconnectPair(t, authoritative, worker, authoritativeFixture)
+		if plan.WorkerAttemptAfter != 1 || plan.TerminalDecision != ReconnectTerminalReplay ||
+			authoritative.AttemptState() != AttemptClaimed || worker.AttemptState() != AttemptClaimed {
+			t.Fatalf("lost terminal was trusted: plan=%+v states=%s/%s", plan, authoritative.AttemptState(), worker.AttemptState())
+		}
+	})
+}
+
 func TestAuthoritativeLeaseExpiryIsExclusive(t *testing.T) {
 	fixture := newProtocolFixture(t)
 	machine := fixture.attachMachine(t)
@@ -532,7 +670,8 @@ func TestManifestFeatureSetGatesTransitions(t *testing.T) {
 		next := fixture.auth
 		next.ConnectionGeneration++
 		next.ChannelBinding = digestByte(0x37)
-		requireCode(t, machine.BeginReconnect(next), ErrorUnauthorized)
+		_, err := machine.BeginReconnect(next)
+		requireCode(t, err, ErrorUnauthorized)
 	})
 	t.Run("progress", func(t *testing.T) {
 		fixture := newProtocolFixture(t)
@@ -603,11 +742,11 @@ func TestReconnectPreservesLeaseAndAcceptsExactTerminalReplay(t *testing.T) {
 	terminal.Terminal = &TerminalV1{Binding: fixture.binding, AttemptSequence: 2, TerminalSequence: 1, Status: TerminalSucceeded, Result: TerminalResultCompleted, EvidenceDigest: digestByte(0x82)}
 	acceptOK(t, machine, DirectionWorkerToPlatform, terminal, fixture.auth.ChannelBinding)
 
-	previousConnectionGeneration := fixture.auth.ConnectionGeneration
 	nextAuth := fixture.auth
 	nextAuth.ConnectionGeneration++
 	nextAuth.ChannelBinding = digestByte(0x32)
-	if err := machine.BeginReconnect(nextAuth); err != nil {
+	snapshot, err := machine.BeginReconnect(nextAuth)
+	if err != nil {
 		t.Fatal(err)
 	}
 	fixture.auth, fixture.workerSeq, fixture.platformSeq = nextAuth, 0, 0
@@ -620,11 +759,13 @@ func TestReconnectPreservesLeaseAndAcceptsExactTerminalReplay(t *testing.T) {
 		SelectedVersion: 1, WorkerNonce: workerNonce, PlatformNonce: platformNonce}
 	acceptOK(t, machine, DirectionPlatformToWorker, challenge, nextAuth.ChannelBinding)
 	reconnect := fixture.frame(DirectionWorkerToPlatform, MessageReconnect)
-	reconnect.Reconnect = &ReconnectV1{WorkerOffer: fixture.workerOffer, PlatformOffer: fixture.platformOffer,
-		SelectedVersion: 1, PreviousConnectionGeneration: previousConnectionGeneration,
-		WorkerNonce: workerNonce, PlatformNonce: platformNonce, CapabilityDigest: fixture.digest,
-		PreviousWatermarks: machine.reconnectWatermarks, AttemptSummary: machine.reconnectAttempt,
-		Signature: make([]byte, ed25519.SignatureSize)}
+	negotiation := ReconnectNegotiationV1{WorkerOffer: fixture.workerOffer, PlatformOffer: fixture.platformOffer,
+		SelectedVersion: 1, WorkerNonce: workerNonce, PlatformNonce: platformNonce, CapabilityDigest: fixture.digest}
+	reconnectPayload, err := BuildReconnectV1(snapshot, negotiation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconnect.Reconnect = &reconnectPayload
 	if err := SignReconnectV1(fixture.private, nextAuth, &reconnect); err != nil {
 		t.Fatal(err)
 	}
@@ -637,12 +778,14 @@ func TestReconnectPreservesLeaseAndAcceptsExactTerminalReplay(t *testing.T) {
 	}
 	acceptOK(t, machine, DirectionWorkerToPlatform, reconnect, nextAuth.ChannelBinding)
 	reconnectAccepted := fixture.frame(DirectionPlatformToWorker, MessageReconnectAccepted)
-	reconnectAccepted.ReconnectAccepted = &ReconnectAcceptedV1{WorkerOffer: fixture.workerOffer, PlatformOffer: fixture.platformOffer,
-		SelectedVersion: 1, WorkerNonce: workerNonce, PlatformNonce: platformNonce, CapabilityDigest: fixture.digest,
-		AuthoritativeWatermarks: machine.reconnectWatermarks, AuthoritativeAttempt: machine.reconnectAttempt}
+	reconnectAcceptedPayload, err := BuildReconnectAcceptedV1(snapshot, snapshot, negotiation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconnectAccepted.ReconnectAccepted = &reconnectAcceptedPayload
 	acceptOK(t, machine, DirectionPlatformToWorker, reconnectAccepted, nextAuth.ChannelBinding)
 	manifest := fixture.frame(DirectionWorkerToPlatform, MessageManifest)
-	manifest.Manifest = &ManifestV1{Manifest: fixture.manifest, Digest: fixture.digest, Signature: make([]byte, ed25519.SignatureSize)}
+	manifest.Manifest = &ManifestV1{Manifest: fixture.manifest, Digest: fixture.digest}
 	if err := SignManifestV1(fixture.private, nextAuth, &manifest); err != nil {
 		t.Fatal(err)
 	}
@@ -759,7 +902,7 @@ func TestBatchRoundTripEveryMessageKind(t *testing.T) {
 		{Kind: MessageAttach, Attach: &AttachV1{WorkerOffer: fixture.workerOffer, PlatformOffer: fixture.platformOffer, SelectedVersion: 1, WorkerNonce: digestByte(1), PlatformNonce: digestByte(2), CapabilityDigest: fixture.digest, Signature: bytes.Repeat([]byte{1}, ed25519.SignatureSize)}},
 		{Kind: MessageAttachAccepted, AttachAccepted: &AttachAcceptedV1{WorkerOffer: fixture.workerOffer, PlatformOffer: fixture.platformOffer, SelectedVersion: 1, WorkerNonce: digestByte(1), PlatformNonce: digestByte(2), CapabilityDigest: fixture.digest}},
 		{Kind: MessageReconnect, Reconnect: &ReconnectV1{WorkerOffer: fixture.workerOffer, PlatformOffer: fixture.platformOffer, SelectedVersion: 1, PreviousConnectionGeneration: 8, WorkerNonce: digestByte(1), PlatformNonce: digestByte(2), CapabilityDigest: fixture.digest, PreviousWatermarks: watermarks, AttemptSummary: idleSummary, Signature: bytes.Repeat([]byte{1}, ed25519.SignatureSize)}},
-		{Kind: MessageReconnectAccepted, ReconnectAccepted: &ReconnectAcceptedV1{WorkerOffer: fixture.workerOffer, PlatformOffer: fixture.platformOffer, SelectedVersion: 1, WorkerNonce: digestByte(1), PlatformNonce: digestByte(2), CapabilityDigest: fixture.digest, AuthoritativeWatermarks: watermarks, AuthoritativeAttempt: idleSummary}},
+		{Kind: MessageReconnectAccepted, ReconnectAccepted: &ReconnectAcceptedV1{WorkerOffer: fixture.workerOffer, PlatformOffer: fixture.platformOffer, SelectedVersion: 1, WorkerNonce: digestByte(1), PlatformNonce: digestByte(2), CapabilityDigest: fixture.digest, AuthoritativeWatermarks: watermarks, AuthoritativeAttempt: idleSummary, ReplayPlan: ReplayPlanV1{TerminalDecision: ReconnectTerminalNone}}},
 		{Kind: MessageManifest, Manifest: &ManifestV1{Manifest: fixture.manifest, Digest: fixture.digest, Signature: bytes.Repeat([]byte{1}, ed25519.SignatureSize)}},
 		{Kind: MessageHeartbeat, Heartbeat: &HeartbeatV1{ObservedAtUnixMicro: 1, Available: true}},
 		{Kind: MessageLeaseOffer, LeaseOffer: &LeaseOfferV1{Binding: binding, AttemptSequence: 1}},

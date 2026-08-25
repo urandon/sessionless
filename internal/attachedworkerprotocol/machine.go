@@ -92,9 +92,11 @@ type ConformanceMachine struct {
 	previousConnectionGeneration uint64
 	reconnectWatermarks          ConnectionWatermarksV1
 	reconnectAttempt             AttemptSummaryV1
+	reconnectClaim               ReconnectSnapshotV1
 }
 
 func NewConformanceMachine(config MachineConfig) (*ConformanceMachine, error) {
+	config = cloneMachineConfig(config)
 	if config.Auth.Validate() != nil || config.WorkerOffer.Validate() != nil || config.PlatformOffer.Validate() != nil {
 		return nil, protocolError(ErrorUnauthorized)
 	}
@@ -119,7 +121,8 @@ func (machine *ConformanceMachine) AttemptBinding() (AttemptBindingV1, bool) {
 
 // BeginReconnect starts a new channel-bound handshake while retaining the
 // bounded attempt record. It never changes the lease binding or its expiry.
-func (machine *ConformanceMachine) BeginReconnect(next AuthContextV1) error {
+func (machine *ConformanceMachine) BeginReconnect(next AuthContextV1) (ReconnectSnapshotV1, error) {
+	next = cloneAuthContext(next)
 	if machine == nil || next.Validate() != nil ||
 		(machine.connection != ConnectionReady && machine.connection != ConnectionDraining) ||
 		next.TenantID != machine.config.Auth.TenantID || next.OwnerUserID != machine.config.Auth.OwnerUserID ||
@@ -127,7 +130,7 @@ func (machine *ConformanceMachine) BeginReconnect(next AuthContextV1) error {
 		next.EnrollmentGeneration != machine.config.Auth.EnrollmentGeneration || next.Version != machine.config.Auth.Version ||
 		!machine.hasFeature(FeatureReconnect) || machine.config.Auth.ConnectionGeneration == math.MaxUint64 ||
 		next.ConnectionGeneration != machine.config.Auth.ConnectionGeneration+1 {
-		return protocolError(ErrorUnauthorized)
+		return ReconnectSnapshotV1{}, protocolError(ErrorUnauthorized)
 	}
 	machine.previousConnectionGeneration = machine.config.Auth.ConnectionGeneration
 	machine.reconnectWatermarks = machine.currentWatermarks()
@@ -138,7 +141,18 @@ func (machine *ConformanceMachine) BeginReconnect(next AuthContextV1) error {
 	machine.platform, machine.worker = sequenceState{}, sequenceState{}
 	machine.hello, machine.challenge = HelloV1{}, ChallengeV1{}
 	machine.reconnecting = true
-	return nil
+	return machine.SnapshotForReconnect()
+}
+
+func (machine *ConformanceMachine) SnapshotForReconnect() (ReconnectSnapshotV1, error) {
+	if machine == nil || !machine.reconnecting {
+		return ReconnectSnapshotV1{}, protocolError(ErrorProtocolViolation)
+	}
+	return sealReconnectSnapshot(ReconnectSnapshotV1{
+		PreviousConnectionGeneration: machine.previousConnectionGeneration,
+		Watermarks:                   machine.reconnectWatermarks,
+		Attempt:                      machine.reconnectAttempt,
+	}), nil
 }
 
 func MessageIDV1(direction Direction, sequence uint64) string {
@@ -269,6 +283,11 @@ func (machine *ConformanceMachine) acceptAttachAccepted(direction Direction, fra
 }
 
 func (machine *ConformanceMachine) acceptReconnect(direction Direction, frame FrameV1) error {
+	workerClaim := sealReconnectSnapshot(ReconnectSnapshotV1{
+		PreviousConnectionGeneration: frame.Reconnect.PreviousConnectionGeneration,
+		Watermarks:                   frame.Reconnect.PreviousWatermarks, Attempt: frame.Reconnect.AttemptSummary,
+	})
+	authoritative, snapshotErr := machine.SnapshotForReconnect()
 	if direction != DirectionWorkerToPlatform || machine.connection != ConnectionChallenged || !machine.reconnecting ||
 		frame.Reconnect.PreviousConnectionGeneration != machine.previousConnectionGeneration ||
 		frame.Reconnect.PreviousConnectionGeneration == math.MaxUint64 ||
@@ -276,25 +295,35 @@ func (machine *ConformanceMachine) acceptReconnect(direction Direction, frame Fr
 		!negotiationMatchesChallenge(frame.Reconnect.WorkerOffer, frame.Reconnect.PlatformOffer,
 			frame.Reconnect.SelectedVersion, frame.Reconnect.WorkerNonce, frame.Reconnect.PlatformNonce, machine.challenge) ||
 		VerifyReconnectV1(machine.config.Auth, frame) != nil ||
-		!watermarksCanAdvance(frame.Reconnect.PreviousWatermarks, machine.reconnectWatermarks) ||
-		!summaryCanAdvance(frame.Reconnect.AttemptSummary, machine.reconnectAttempt) ||
+		snapshotErr != nil || !reconnectClaimsCompatible(workerClaim, authoritative) ||
 		(len(machine.capabilityDigest) != 0 && !bytes.Equal(frame.Reconnect.CapabilityDigest, machine.capabilityDigest)) {
 		return protocolError(ErrorUnauthorized)
 	}
 	machine.capabilityDigest = append([]byte(nil), frame.Reconnect.CapabilityDigest...)
+	machine.reconnectClaim = cloneReconnectSnapshot(workerClaim)
 	machine.connection = ConnectionReconnectPending
 	return nil
 }
 
 func (machine *ConformanceMachine) acceptReconnectAccepted(direction Direction, frame FrameV1) error {
+	authoritative := sealReconnectSnapshot(ReconnectSnapshotV1{
+		PreviousConnectionGeneration: machine.previousConnectionGeneration,
+		Watermarks:                   frame.ReconnectAccepted.AuthoritativeWatermarks,
+		Attempt:                      frame.ReconnectAccepted.AuthoritativeAttempt,
+	})
+	negotiation := ReconnectNegotiationV1{
+		WorkerOffer: frame.ReconnectAccepted.WorkerOffer, PlatformOffer: frame.ReconnectAccepted.PlatformOffer,
+		SelectedVersion: frame.ReconnectAccepted.SelectedVersion, WorkerNonce: frame.ReconnectAccepted.WorkerNonce,
+		PlatformNonce: frame.ReconnectAccepted.PlatformNonce, CapabilityDigest: frame.ReconnectAccepted.CapabilityDigest,
+	}
+	expected, buildErr := BuildReconnectAcceptedV1(authoritative, machine.reconnectClaim, negotiation)
 	if direction != DirectionPlatformToWorker || machine.connection != ConnectionReconnectPending ||
 		!acceptedMatchesChallenge(AttachAcceptedV1{
 			WorkerOffer: frame.ReconnectAccepted.WorkerOffer, PlatformOffer: frame.ReconnectAccepted.PlatformOffer,
 			SelectedVersion: frame.ReconnectAccepted.SelectedVersion, WorkerNonce: frame.ReconnectAccepted.WorkerNonce,
 			PlatformNonce: frame.ReconnectAccepted.PlatformNonce, CapabilityDigest: frame.ReconnectAccepted.CapabilityDigest,
 		}, machine.challenge, machine.capabilityDigest) ||
-		!watermarksCanAdvance(machine.reconnectWatermarks, frame.ReconnectAccepted.AuthoritativeWatermarks) ||
-		!summaryCanAdvance(machine.reconnectAttempt, frame.ReconnectAccepted.AuthoritativeAttempt) {
+		buildErr != nil || !sameReconnectAccepted(expected, *frame.ReconnectAccepted) {
 		return protocolError(ErrorUnauthorized)
 	}
 	machine.applyAttemptSummary(frame.ReconnectAccepted.AuthoritativeAttempt)
@@ -690,4 +719,31 @@ func (machine *ConformanceMachine) hasFeature(feature ProtocolFeatureV1) bool {
 		}
 	}
 	return false
+}
+
+func cloneAuthContext(auth AuthContextV1) AuthContextV1 {
+	auth.IdentityPublicKey = append([]byte(nil), auth.IdentityPublicKey...)
+	auth.ChannelBinding = append([]byte(nil), auth.ChannelBinding...)
+	return auth
+}
+
+func cloneVersionOffer(offer VersionOfferV1) VersionOfferV1 {
+	offer.Supported = append([]ProtocolVersion(nil), offer.Supported...)
+	return offer
+}
+
+func cloneMachineConfig(config MachineConfig) MachineConfig {
+	config.Auth = cloneAuthContext(config.Auth)
+	config.WorkerOffer = cloneVersionOffer(config.WorkerOffer)
+	config.PlatformOffer = cloneVersionOffer(config.PlatformOffer)
+	config.ImplementedVersions = append([]ProtocolVersion(nil), config.ImplementedVersions...)
+	return config
+}
+
+func sameReconnectAccepted(left, right ReconnectAcceptedV1) bool {
+	return sameVersionOffer(left.WorkerOffer, right.WorkerOffer) && sameVersionOffer(left.PlatformOffer, right.PlatformOffer) &&
+		left.SelectedVersion == right.SelectedVersion && bytes.Equal(left.WorkerNonce, right.WorkerNonce) &&
+		bytes.Equal(left.PlatformNonce, right.PlatformNonce) && bytes.Equal(left.CapabilityDigest, right.CapabilityDigest) &&
+		left.AuthoritativeWatermarks == right.AuthoritativeWatermarks &&
+		sameAttemptSummary(left.AuthoritativeAttempt, right.AuthoritativeAttempt) && left.ReplayPlan == right.ReplayPlan
 }

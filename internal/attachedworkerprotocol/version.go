@@ -97,23 +97,3 @@ func NegotiateOffers(local, peer VersionOfferV1, implemented []ProtocolVersion) 
 	}
 	return selected, nil
 }
-
-func highestCommonOfferedVersion(local, peer VersionOfferV1) (ProtocolVersion, error) {
-	if local.Validate() != nil || peer.Validate() != nil {
-		return 0, protocolError(ErrorUnsupportedVersion)
-	}
-	peerSet := make(map[ProtocolVersion]struct{}, len(peer.Supported))
-	for _, version := range peer.Supported {
-		peerSet[version] = struct{}{}
-	}
-	var selected ProtocolVersion
-	for _, version := range local.Supported {
-		if _, ok := peerSet[version]; ok && version > selected {
-			selected = version
-		}
-	}
-	if selected == 0 {
-		return 0, protocolError(ErrorUnsupportedVersion)
-	}
-	return selected, nil
-}

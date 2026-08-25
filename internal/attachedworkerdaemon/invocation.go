@@ -146,6 +146,7 @@ func (runner *InvocationRunner) Run(
 	}
 	processSpec := cloneAttemptSpec(invocation.Process)
 	processSpec.AdditionalReadRoots = append(processSpec.AdditionalReadRoots, materialization.RootDir)
+	processSpec.credentialWriteFile = materialization.AuthFile
 	processSpec.Environment = append(processSpec.Environment, EnvironmentVariable{
 		Name: invocation.Credential.HomeEnvironment, Value: materialization.RootDir,
 	})

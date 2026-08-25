@@ -15,7 +15,8 @@ complete.
   complete process group;
 - `InvocationRunner` composes that process with the invocation-scoped
   credential lifecycle. It validates the returned handle and materialization,
-  adds only the exact credential root to the launcher read allowlist, then
+  adds only the exact credential root to the launcher read allowlist and the
+  exact `auth.json` to its file write allowlist, then
   attempts write-back and release under a separate bounded finalization
   context on every process outcome;
 - `Daemon` admits at most one invocation, exposes content-free
@@ -63,7 +64,9 @@ Credential handles remain exact to tenant, owner, worker, run, attempt, lease,
 and fence. A handle returned by the credential service is checked again before
 materialization. The auth file must be a canonical direct `auth.json` child of
 a symlink-free credential root. That exact root, never the shared credential
-scratch parent, is presented to the isolation launcher.
+scratch parent, is presented as a read root; only its exact `auth.json` is
+presented as a writable file. A caller-supplied process spec cannot grant this
+write path.
 
 After the process stops, credential write-back runs before release even when
 the process was cancelled or exceeded its deadline. Write-back or release

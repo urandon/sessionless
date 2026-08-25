@@ -64,6 +64,7 @@ type LaunchSpec struct {
 	Environment []string
 	ReadFiles   []string
 	ReadRoots   []string
+	WriteFiles  []string
 	WriteRoots  []string
 }
 
@@ -119,6 +120,7 @@ type AttemptSpec struct {
 	Arguments           []string
 	Environment         []EnvironmentVariable
 	AdditionalReadRoots []string
+	credentialWriteFile string
 }
 
 type AttemptResult struct {
@@ -246,6 +248,9 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 		Directory: filepath.Join(attemptRoot, "work"), Environment: environment,
 		ReadFiles: []string{spec.Executable}, ReadRoots: canonicalRootSet(readRoots),
 		WriteRoots: []string{attemptRoot},
+	}
+	if spec.credentialWriteFile != "" {
+		launch.WriteFiles = []string{spec.credentialWriteFile}
 	}
 	command, err := supervisor.launcher.Command(parent, launch)
 	if err != nil || command == nil || command.Dir != launch.Directory ||
@@ -390,6 +395,16 @@ func (supervisor *Supervisor) validateAttemptSpec(spec AttemptSpec) error {
 			return ErrSupervisorConfig
 		}
 		seenRoots[root] = struct{}{}
+	}
+	if spec.credentialWriteFile != "" {
+		canonical, err := validateDataFilePath(spec.credentialWriteFile)
+		if err != nil || canonical != spec.credentialWriteFile ||
+			filepath.Base(canonical) != "auth.json" {
+			return ErrSupervisorConfig
+		}
+		if _, exists := seenRoots[filepath.Dir(canonical)]; !exists {
+			return ErrSupervisorConfig
+		}
 	}
 	return nil
 }

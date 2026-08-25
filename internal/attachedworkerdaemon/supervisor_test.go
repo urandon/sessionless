@@ -65,8 +65,10 @@ func (launcher *fixtureLauncher) Command(_ context.Context, spec LaunchSpec) (*e
 	launcher.last = LaunchSpec{
 		Executable: spec.Executable, Arguments: append([]string(nil), spec.Arguments...),
 		Directory: spec.Directory, Environment: append([]string(nil), spec.Environment...),
-		ReadFiles: append([]string(nil), spec.ReadFiles...),
-		ReadRoots: append([]string(nil), spec.ReadRoots...), WriteRoots: append([]string(nil), spec.WriteRoots...),
+		ReadFiles:  append([]string(nil), spec.ReadFiles...),
+		ReadRoots:  append([]string(nil), spec.ReadRoots...),
+		WriteFiles: append([]string(nil), spec.WriteFiles...),
+		WriteRoots: append([]string(nil), spec.WriteRoots...),
 	}
 	launcher.mu.Unlock()
 	command := exec.Command(spec.Executable, spec.Arguments...)
@@ -137,6 +139,22 @@ func TestSupervisorRejectsDigestDriftAndAmbientSecretRoutes(t *testing.T) {
 	})
 	if !errors.Is(err, ErrSupervisorConfig) {
 		t.Fatalf("expected ambient host read-root rejection, got %v", err)
+	}
+}
+
+func TestSupervisorRejectsUnscopedCredentialWriteFile(t *testing.T) {
+	supervisor, _, executable, digest := newFixtureSupervisor(t, SupervisorConfig{})
+	root := newCanonicalTempDir(t)
+	authFile := filepath.Join(root, "auth.json")
+	if err := os.WriteFile(authFile, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := supervisor.Run(context.Background(), AttemptSpec{
+		Executable: executable, ExecutableDigest: digest,
+		credentialWriteFile: authFile,
+	})
+	if !errors.Is(err, ErrSupervisorConfig) {
+		t.Fatalf("expected unscoped credential write rejection, got %v", err)
 	}
 }
 

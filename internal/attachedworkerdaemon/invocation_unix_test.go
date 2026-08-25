@@ -11,7 +11,7 @@ import (
 
 func TestInvocationRunnerComposesCredentialWithSupervisorBoundary(t *testing.T) {
 	credentialBase := newCanonicalTempDir(t)
-	supervisor, _, executable, digest := newFixtureSupervisor(t, SupervisorConfig{
+	supervisor, launcher, executable, digest := newFixtureSupervisor(t, SupervisorConfig{
 		AllowedEnvironmentNames: []string{"CODEX_HOME"},
 		AllowedReadRoots:        []string{credentialBase},
 	})
@@ -38,5 +38,9 @@ func TestInvocationRunnerComposesCredentialWithSupervisorBoundary(t *testing.T) 
 	}
 	if _, err := os.Stat(credentials.root); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("credential root survived composed release: %v", err)
+	}
+	launch := launcher.lastSpec()
+	if len(launch.WriteFiles) != 1 || launch.WriteFiles[0] != credentials.root+"/auth.json" {
+		t.Fatalf("credential write authority is not the exact auth file: %#v", launch.WriteFiles)
 	}
 }

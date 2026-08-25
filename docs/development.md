@@ -121,6 +121,11 @@ deny-first revocation boundary is documented in
 [attached-worker-identity.md](attached-worker-identity.md). It is a domain and
 persistence contract only; it does not start a daemon or enable remote work.
 
+The feature-disabled AW-03 bootstrap, immediate heartbeat transport, and
+presence persistence boundary is documented in
+[attached-worker-transport.md](attached-worker-transport.md). It does not
+claim reconnect, dispatch, long polling, or cloud wake-up.
+
 The provider-neutral local credential binding, invocation handle, secure
 materialization, crash recovery, write-back, and deny-first revocation contract
 is documented in [credential-lifecycle.md](credential-lifecycle.md). Phase B0

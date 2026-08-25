@@ -25,7 +25,7 @@ LDFLAGS := -s -w \
 
 .PHONY: help prepare tools web-tools go-package-layout generate fmt fmt-check lint test build web-install web-openapi-check web-check web-build web-stage web-ci web-browser-install web-browser-test integration ydb-integration local-integration e2e-local ci image-publication-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test budget-policy-test web-deployment-policy-test terraform-ci cloudflare-edge-ci \
 	compose-config images dev-up dev-seed migrate-local migration-status partition-status partition-backfill cloud-app-reset-plan cloud-app-reset session-delete-request session-delete-plan session-delete session-hold session-release-hold \
-	worker-once web-bootstrap dev-down dev-reset clean
+	worker-once web-bootstrap dev-down dev-reset repowise-install repowise-index repowise-update repowise-status repowise-doctor repowise-mcp repowise-mcp-smoke repowise-evaluate repowise-stop repowise-uninstall-plan repowise-uninstall repowise-policy-test clean
 
 help:
 	@printf '%s\n' \
@@ -64,7 +64,10 @@ help:
 		'make worker-once    consume at most one admitted run with the deterministic harness' \
 		'make web-bootstrap  create an audited, confirmed cloud-dev Web membership' \
 		'make dev-down       stop the local stack' \
-		'make dev-reset      guarded deletion of local Compose volumes'
+		'make dev-reset      guarded deletion of local Compose volumes' \
+		'make repowise-index opt-in local RepoWise index (research/development only)' \
+		'make repowise-mcp   opt-in local RepoWise stdio MCP (research/development only)' \
+		'make repowise-policy-test validate the optional RepoWise boundary'
 
 tools:
 	@./scripts/check-tools.sh
@@ -261,6 +264,15 @@ dev-down:
 
 dev-reset:
 	@./scripts/dev-reset.sh
+
+# RepoWise is an explicitly optional local development experiment. These
+# targets are deliberately leaves: no normal build, test, CI, dev, image, or
+# release target depends on them.
+repowise-install repowise-index repowise-update repowise-status repowise-doctor repowise-mcp repowise-mcp-smoke repowise-evaluate repowise-stop repowise-uninstall-plan repowise-uninstall:
+	@./scripts/repowise-local.sh $(@:repowise-%=%)
+
+repowise-policy-test:
+	@./scripts/test-repowise-local-policy.sh
 
 clean:
 	rm -rf ".build"

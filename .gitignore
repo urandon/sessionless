@@ -15,3 +15,13 @@ infra/terraform/bootstrap/backend.s3.tf
 
 .DS_Store
 coverage.out
+
+# Optional, repo-local RepoWise developer experiment (#65). Never commit its
+# Python environment, index, logs, generated wiki, synthetic home, or caches.
+.repowise/
+.local/repowise/
+# RepoWise may attempt these editor integrations even when editor setup is
+# disabled. They are local-only; the wrapper also blocks the writes at the OS
+# sandbox boundary so ignoring them does not weaken containment.
+.vscode/mcp.json
+.vscode/extensions.json

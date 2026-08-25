@@ -337,7 +337,7 @@ start_mcp() {
   mcp_start=$(ps -ww -p "$mcp_pid" -o lstart= 2>/dev/null | awk '{$1=$1; print}')
   test -n "$mcp_start" || die "could not record RepoWise MCP process start identity"
   mcp_identity=$(
-    printf '%s\n%s\n' "$mcp_start" "$mcp_command" | shasum -a 256 | awk '{print $1}'
+    printf '%s\n' "$mcp_start" | shasum -a 256 | awk '{print $1}'
   )
   printf '%s\n%s\n' "$mcp_pid" "$mcp_identity" >"$mcp_pid_file"
   wait "$mcp_pid"
@@ -370,7 +370,7 @@ stop_mcp() {
     *) die "pid $pid is not the expected repo-local sandboxed RepoWise MCP process" ;;
   esac
   current_identity=$(
-    printf '%s\n%s\n' "$process_start" "$command_line" | shasum -a 256 | awk '{print $1}'
+    printf '%s\n' "$process_start" | shasum -a 256 | awk '{print $1}'
   )
   test "$current_identity" = "$recorded_identity" ||
     die "pid $pid no longer has the wrapper-recorded RepoWise MCP identity"

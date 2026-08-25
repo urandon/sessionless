@@ -203,8 +203,8 @@ is still provided to detect and terminate only wrapper-owned processes:
 make repowise-stop
 ```
 
-The PID record includes a process-start/command fingerprint. `stop` signals a
-process only when that identity still matches and the command has the exact
+The PID record includes a process-start identity. `stop` signals a process only
+when that identity still matches and the current command has the exact
 repo-local MCP subcommand, transport, and tool allowlist; PID reuse or another
 RepoWise subcommand fails closed.
 

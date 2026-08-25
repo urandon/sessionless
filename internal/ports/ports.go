@@ -42,6 +42,8 @@ const (
 	IDCredentialHandle         IDKind = "credential_handle"
 	IDAttachedWorker           IDKind = "attached_worker"
 	IDAttachedWorkerEnrollment IDKind = "attached_worker_enrollment"
+	IDAttachedWorkerConnection IDKind = "attached_worker_connection"
+	IDAttachedWorkerChallenge  IDKind = "attached_worker_challenge"
 )
 
 type IDGenerator interface {

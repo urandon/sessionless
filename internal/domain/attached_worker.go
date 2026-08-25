@@ -205,6 +205,8 @@ const (
 	AttachedWorkerAuditWorkerRenamed                AttachedWorkerAuditAction = "worker_renamed"
 	AttachedWorkerAuditIdentityRotated              AttachedWorkerAuditAction = "identity_rotated"
 	AttachedWorkerAuditConnectionGenerationAdvanced AttachedWorkerAuditAction = "connection_generation_advanced"
+	AttachedWorkerAuditConnectionManifestAccepted   AttachedWorkerAuditAction = "connection_manifest_accepted"
+	AttachedWorkerAuditConnectionPresenceExpired    AttachedWorkerAuditAction = "connection_presence_expired"
 	AttachedWorkerAuditWorkerRevoked                AttachedWorkerAuditAction = "worker_revoked"
 )
 
@@ -212,7 +214,9 @@ func (action AttachedWorkerAuditAction) Valid() bool {
 	switch action {
 	case AttachedWorkerAuditEnrollmentCreated, AttachedWorkerAuditEnrollmentClaimed,
 		AttachedWorkerAuditWorkerRenamed, AttachedWorkerAuditIdentityRotated,
-		AttachedWorkerAuditConnectionGenerationAdvanced, AttachedWorkerAuditWorkerRevoked:
+		AttachedWorkerAuditConnectionGenerationAdvanced, AttachedWorkerAuditConnectionManifestAccepted,
+		AttachedWorkerAuditConnectionPresenceExpired,
+		AttachedWorkerAuditWorkerRevoked:
 		return true
 	default:
 		return false

@@ -39,6 +39,11 @@ concurrency-one drain/shutdown, exact executable/process-group supervision and
 credential finalization, but requires a separately reviewed OS isolation
 launcher and does not yet provide a runnable daemon package.
 
+The AW-06a owner-facing observability and control contract is described in
+[attached-worker-ux.md](attached-worker-ux.md). It projects AW-01 through AW-05
+authority into six semantic cohorts, public-safe read models, and explicit
+action gates without defining a second state machine or enabling a UI.
+
 ## Canonical sessions and frontend bindings
 
 `Session` is the product conversation and Sessionless is its source of truth.

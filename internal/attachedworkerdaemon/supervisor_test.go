@@ -289,12 +289,17 @@ func newFixtureSupervisor(
 
 func newCanonicalTempDir(t *testing.T) string {
 	t.Helper()
-	root, err := os.MkdirTemp("/private/tmp", "sessionless-aw-daemon-test-")
+	root, err := os.MkdirTemp("", "sessionless-aw-daemon-test-")
 	if err != nil {
 		t.Fatalf("create canonical temp dir: %v", err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(root) })
-	return root
+	canonical, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		_ = os.RemoveAll(root)
+		t.Fatalf("canonicalize temp dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(canonical) })
+	return canonical
 }
 
 func waitForFile(t *testing.T, path string) {

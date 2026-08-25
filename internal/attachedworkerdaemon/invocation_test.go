@@ -57,14 +57,16 @@ func (lifecycle *fakeCredentialLifecycle) Issue(context.Context, ports.Credentia
 
 func (lifecycle *fakeCredentialLifecycle) Materialize(context.Context, ports.CredentialHandle) (ports.CredentialMaterialization, error) {
 	lifecycle.record("materialize")
-	base := lifecycle.base
-	if base == "" {
-		base = "/private/tmp"
-	}
-	root, err := os.MkdirTemp(base, "sessionless-aw-credential-")
+	root, err := os.MkdirTemp(lifecycle.base, "sessionless-aw-credential-")
 	if err != nil {
 		return ports.CredentialMaterialization{}, err
 	}
+	canonical, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		_ = os.RemoveAll(root)
+		return ports.CredentialMaterialization{}, err
+	}
+	root = canonical
 	lifecycle.root = root
 	auth := filepath.Join(root, "auth.json")
 	if err := os.WriteFile(auth, []byte("{}"), 0o600); err != nil {
@@ -241,7 +243,7 @@ func validCredentialInvocation(t *testing.T) Invocation {
 			TenantID: "tenant-a", OwnerUserID: "user-a", WorkerID: "worker-a", RunID: "run-a",
 			AttemptID: "attempt-a", LeaseID: "lease-a", FenceToken: 9,
 		},
-		Process: AttemptSpec{Executable: "/private/tmp/fixture", ExecutableDigest: digest},
+		Process: AttemptSpec{Executable: "/fixture", ExecutableDigest: digest},
 		Credential: &CredentialInvocation{
 			IssueRequest: ports.CredentialIssueRequest{
 				OwnerUserID: "user-a", Run: run, Attempt: attempt, Lease: lease,

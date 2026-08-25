@@ -164,7 +164,7 @@ func validDaemonInvocation(attemptID string) Invocation {
 			TenantID: "tenant-a", OwnerUserID: "user-a", WorkerID: "worker-a", RunID: "run-a",
 			AttemptID: domainAttemptID(attemptID), LeaseID: "lease-a", FenceToken: 1,
 		},
-		Process: AttemptSpec{Executable: "/private/tmp/fixture", ExecutableDigest: ExecutableDigest{1}},
+		Process: AttemptSpec{Executable: "/fixture", ExecutableDigest: ExecutableDigest{1}},
 	}
 }
 

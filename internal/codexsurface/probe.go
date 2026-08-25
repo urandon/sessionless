@@ -38,6 +38,13 @@ type Config struct {
 	Timeout              time.Duration
 	Scratch              string
 	ExpectedBinarySHA256 string
+	testCommandHooks     *probeCommandHooks
+}
+
+type probeCommandHooks struct {
+	beforeStart  func(*exec.Cmd) error
+	afterStart   func(context.Context, *exec.Cmd) error
+	readyTimeout time.Duration
 }
 
 func Probe(ctx context.Context, surface Surface, config Config) (Report, error) {
@@ -254,7 +261,9 @@ func probeSDK(ctx context.Context, config Config) (Report, error) {
 		command := exec.Command(python, "-I", "-c", sdkCredentialFreeProbe, root)
 		command.Dir = root
 		command.Env = isolatedEnvironment(root)
-		output, commandErr := boundedCommandOutput(ctx, config.Timeout, command, 8<<10)
+		output, commandErr := boundedCommandOutputWithHooks(
+			ctx, config.Timeout, command, 8<<10, config.testCommandHooks,
+		)
 		durations = append(durations, time.Since(started))
 		_ = os.RemoveAll(root)
 		if commandErr != nil {
@@ -430,18 +439,47 @@ func (output *boundedOutput) bytes() ([]byte, bool) {
 }
 
 func boundedCommandOutput(parent context.Context, timeout time.Duration, command *exec.Cmd, limit int) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(parent, timeout)
-	defer cancel()
+	return boundedCommandOutputWithHooks(parent, timeout, command, limit, nil)
+}
+
+func boundedCommandOutputWithHooks(
+	parent context.Context,
+	timeout time.Duration,
+	command *exec.Cmd,
+	limit int,
+	hooks *probeCommandHooks,
+) ([]byte, error) {
 	stdout := &boundedOutput{limit: limit}
 	stderr := &boundedOutput{limit: limit}
 	command.Stdout = stdout
 	command.Stderr = stderr
 	configureProbeProcessGroup(command)
+	if hooks != nil && hooks.beforeStart != nil {
+		if err := hooks.beforeStart(command); err != nil {
+			return nil, errors.New("configure bounded probe command")
+		}
+	}
 	if err := command.Start(); err != nil {
 		return nil, errors.New("start bounded probe command")
 	}
 	done := make(chan error, 1)
 	go func() { done <- command.Wait() }()
+	if hooks != nil && hooks.afterStart != nil {
+		readyTimeout := hooks.readyTimeout
+		if readyTimeout <= 0 {
+			readyTimeout = timeout
+		}
+		readyCtx, cancelReady := context.WithTimeout(parent, readyTimeout)
+		readyErr := hooks.afterStart(readyCtx, command)
+		cancelReady()
+		if readyErr != nil {
+			killProbeProcessGroup(command)
+			<-done
+			return nil, errors.New("await bounded probe command readiness")
+		}
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
 	select {
 	case err := <-done:
 		data, truncated := stdout.bytes()

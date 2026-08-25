@@ -1,10 +1,12 @@
 package codexsurface
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -107,25 +109,61 @@ func TestSDKProbeDeadlineKillsDescendantProcessGroup(t *testing.T) {
 		t.Skip("process-group contract is Unix-specific")
 	}
 	root := t.TempDir()
-	pidFile := filepath.Join(root, "descendant.pid")
 	python := filepath.Join(root, "python-stall")
-	script := fmt.Sprintf("#!/bin/sh\nsleep 60 &\nchild=$!\nprintf '%%s\\n' \"$child\" > %q\nwait\n", pidFile)
+	readyPath := filepath.Join(root, "ready.fifo")
+	if err := syscall.Mkfifo(readyPath, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	readyEndpoint, err := os.OpenFile(readyPath, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := fmt.Sprintf("#!/bin/sh\nsleep 60 &\nchild=$!\nprintf '%%s\\n' \"$child\" > %q\nwait\n", readyPath)
 	if err := os.WriteFile(python, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	_, err := Probe(context.Background(), SurfaceSDK, Config{
-		PythonExecutable: python, Scratch: root, Iterations: 1, Timeout: 2 * time.Second,
+	t.Cleanup(func() { _ = readyEndpoint.Close() })
+	var pid int
+	var hookErr error
+	hooks := &probeCommandHooks{
+		// This is only a watchdog for process startup under a loaded race-test
+		// runner. The measured 100ms operation timeout starts after the pipe
+		// barrier, so increasing this bound cannot hide a slow teardown.
+		readyTimeout: 10 * time.Second,
+		afterStart: func(ctx context.Context, _ *exec.Cmd) error {
+			result := make(chan error, 1)
+			go func() {
+				line, readErr := bufio.NewReader(readyEndpoint).ReadString('\n')
+				if readErr != nil {
+					result <- readErr
+					return
+				}
+				parsed, parseErr := strconv.Atoi(strings.TrimSpace(line))
+				if parseErr == nil {
+					pid = parsed
+				}
+				result <- parseErr
+			}()
+			select {
+			case readyErr := <-result:
+				hookErr = readyErr
+				return readyErr
+			case <-ctx.Done():
+				hookErr = ctx.Err()
+				_ = readyEndpoint.Close()
+				return ctx.Err()
+			}
+		},
+	}
+	_, err = Probe(context.Background(), SurfaceSDK, Config{
+		PythonExecutable: python, Scratch: root, Iterations: 1, Timeout: 100 * time.Millisecond,
+		testCommandHooks: hooks,
 	})
 	if err == nil {
 		t.Fatal("stalled SDK probe succeeded")
 	}
-	rawPID, readErr := os.ReadFile(pidFile)
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	pid, parseErr := strconv.Atoi(strings.TrimSpace(string(rawPID)))
-	if parseErr != nil {
-		t.Fatal(parseErr)
+	if pid <= 0 {
+		t.Fatalf("fixture readiness did not report a descendant pid: %v", hookErr)
 	}
 	if killErr := syscall.Kill(pid, 0); killErr == nil || killErr != syscall.ESRCH {
 		t.Fatalf("descendant %d survived bounded probe: %v", pid, killErr)

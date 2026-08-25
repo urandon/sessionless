@@ -164,6 +164,99 @@ Accordingly the evidence changes the decision to:
   until #48 records explicit provider authorization for those deployment
   tuples.
 
+## Deterministic failure-path evidence
+
+The no-provider phase now includes an exec-specific Go supervisor fixture. It
+does not invoke Codex or read an auth cache. It starts an exact executable and
+argument vector in a fresh process group, applies hard limits to each JSONL
+line, total stdout, stderr, event count, final agent item, wall time, and
+termination grace, and retains only stable classifications and aggregate
+process counters.
+
+The pinned protocol boundary treats `turn.started` as provider acceptance and
+requires one bounded final `agent_message` followed by exactly one
+`turn.completed`. It does not turn a provider-specific error string into retry
+policy.
+
+| Fixture outcome | Stable classification | Scheduling consequence |
+| --- | --- | --- |
+| Exit before `turn.started` | `pre_acceptance` | A later adapter may retry only from the same immutable input after its own admission recheck. |
+| Loss or malformed/bounded-output failure after acceptance but before terminal | `ambiguous` | Never claim success. Automatic retry is allowed only for a side-effect-free policy; effects require an idempotency/reconciliation ledger. |
+| User cancellation or deadline after acceptance | `cancelled_ambiguous` | Record cancellation intent and ambiguous provider outcome; do not invent an in-band acknowledgement. |
+| One valid terminal followed by non-zero exit, forced teardown, or live descendant | `completed_with_teardown_failure` | Preserve the terminal evidence, but do not start a duplicate provider turn. Credential finalization and cleanup still run. |
+| Duplicate terminal, event after terminal, terminal without a final item, or other post-terminal drift | `terminal_protocol_drift` | Fail closed and require a reviewed protocol/version update. |
+| Clean single terminal and zero surviving process-group members | `completed` | Candidate success evidence only; product finalization still requires the current Sessionless attempt fence. |
+
+The fixtures prove TERM of the complete process group, bounded escalation to
+KILL, wait/reap of the leader, and zero surviving descendants. Cleanup also
+runs when the leader exits naturally while leaving a child alive. A readiness
+pipe replaces the former fixed-time descendant test, so the deadline assertion
+starts only after the child is known to exist. This closes the timing race
+tracked by #70 without increasing an arbitrary sleep.
+
+The credential composition test uses the real local credential-lifecycle
+service and a real child process that changes only the supplied `auth.json`.
+It proves:
+
+- a clean mutation advances the authoritative generation through CAS;
+- an ambiguous child exit can preserve a credential refresh without treating
+  the attempted model turn as successful;
+- an attempt failure followed by bounded `Release` cannot activate unwritten
+  materialization residue;
+- the existing interruption fixtures retain an enumerable candidate before
+  CAS and recover the exact candidate after CAS on service restart.
+
+This does not prove cleanup after a complete worker/host crash that prevents
+`Release` from running. That guarantee belongs to the attached-worker sandbox
+or disposable attempt filesystem in #77/#79. Until then the public finding is
+`credential_materialization_crash_cleanup_unproven`, not a pass.
+
+The Darwin exact-read isolation experiment is a negative result. A deny-default
+legacy Seatbelt profile with only canonical invocation work, credential, temp,
+pinned runtime, and minimal system-read roots aborts before the payload starts:
+macOS bootstrap access is broader than the exact-root contract. The comparable
+Zed implementation deliberately allows broad filesystem reads and therefore
+does not establish Sessionless's required confidentiality boundary. Sessionless
+does not weaken the result to broad host reads, and it does not count a clean
+environment or CLI `read-only` flag as filesystem isolation. The public finding
+is `exact_filesystem_isolation_unsupported`; #77/#79 must prove a stronger
+container or OS boundary, or the attached-worker operator must explicitly own
+that isolation boundary.
+
+The research runner samples process-group membership and aggregate peak RSS for
+synthetic fixtures. That validates instrumentation and descendant accounting;
+it does not fabricate authenticated-turn RSS. Actual-turn RSS, model-driven
+forbidden-read evidence, browser/device login, cancellation after real provider
+acceptance, and refresh/reseed behavior still require a separately consented
+experiment.
+
+## Route, quota, and final spike verdict
+
+`codex exec` exposes no supported authoritative assertion that a completed turn
+used a ChatGPT subscription rather than another billing route, and it exposes
+no supported provider-quota snapshot. The honest observations are therefore:
+
+- `billing_route_unobservable`;
+- `quota_observation_unavailable` with quota state `unknown`, no `remaining`,
+  and no `reset_at`;
+- policies requiring an authoritative route or fresh provider quota must deny;
+- a local policy based only on product concurrency may choose to proceed, but
+  UI and audit must continue to display the route/quota as unknown.
+
+No private App Server/backend/API call may be added to fill those fields. The
+exact tuple `personal subscription + owner-managed attached worker + user-local
+credential custody + codex exec` also remains policy-unknown until #48 records
+provider authorization; user consent to a benchmark is not that authorization.
+
+The resulting #64 verdict is a completed **conditional/negative spike**, not a
+production go: a Go-supervised exec adapter is technically feasible and its
+deterministic failure contract is implementable, but exact host-filesystem
+isolation remains unsupported and production subscription execution remains
+disabled behind #48 and the attached-worker epic #72. If no supported
+route/quota/policy signal becomes available, Sessionless must expose the
+limitation or return subscription `no-go`; it must not fall back to Python,
+experimental App Server, credential custody in cloud, or API billing.
+
 ## Reproducible runner
 
 The Go command is intentionally not wired into `make ci` because the real

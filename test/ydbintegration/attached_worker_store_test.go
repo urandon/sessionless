@@ -216,11 +216,20 @@ func TestAttachedWorkerCASRevocationOwnerScopeAndBoundedPagination(t *testing.T)
 	if err != nil || !swapped {
 		t.Fatalf("rename CAS: swapped=%t err=%v", swapped, err)
 	}
-	stale, err := store.CompareAndSwapAttachedWorker(ctx, ports.AttachedWorkerCASMutation{
+	replayed, err := store.CompareAndSwapAttachedWorker(ctx, ports.AttachedWorkerCASMutation{
 		ExpectedRevision: current.Revision, Next: renamed, Audit: renamedAudit, At: at,
 	})
-	if err != nil || stale {
-		t.Fatalf("stale rename CAS: swapped=%t err=%v", stale, err)
+	if err != nil || !replayed {
+		t.Fatalf("exact rename replay: swapped=%t err=%v", replayed, err)
+	}
+	mismatchedRename := renamed
+	mismatchedRename.DisplayName = "different replay target"
+	mismatchedAudit := attachedWorkerMutationAudit(mismatchedRename, domain.AttachedWorkerAuditWorkerRenamed, at)
+	mismatched, err := store.CompareAndSwapAttachedWorker(ctx, ports.AttachedWorkerCASMutation{
+		ExpectedRevision: current.Revision, Next: mismatchedRename, Audit: mismatchedAudit, At: at,
+	})
+	if err != nil || mismatched {
+		t.Fatalf("mismatched rename replay: swapped=%t err=%v", mismatched, err)
 	}
 
 	current = renamed
@@ -279,6 +288,13 @@ func TestAttachedWorkerCASRevocationOwnerScopeAndBoundedPagination(t *testing.T)
 	})
 	if err != nil || !didRevoke {
 		t.Fatalf("revoke: revoked=%t err=%v", didRevoke, err)
+	}
+	didRevoke, err = store.RevokeAttachedWorker(ctx, ports.AttachedWorkerRevokeMutation{
+		TenantID: tenantID, OwnerUserID: ownerID, WorkerID: current.ID,
+		ExpectedRevision: current.Revision, Next: revoked, Audit: revokeAudit, At: at,
+	})
+	if err != nil || !didRevoke {
+		t.Fatalf("exact revoke replay: revoked=%t err=%v", didRevoke, err)
 	}
 	stored, found, err := store.LoadAttachedWorker(ctx, tenantID, ownerID, current.ID)
 	if err != nil || !found || stored.DesiredState != domain.AttachedWorkerDesiredRevoked ||

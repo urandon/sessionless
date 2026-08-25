@@ -116,6 +116,11 @@ evidence, alternatives, open questions, and proposed epic decomposition; they
 are not production contracts and do not close their research issues by
 themselves.
 
+The implemented AW-01 owner-scoped identity, enrollment, generation, and
+deny-first revocation boundary is documented in
+[attached-worker-identity.md](attached-worker-identity.md). It is a domain and
+persistence contract only; it does not start a daemon or enable remote work.
+
 The provider-neutral local credential binding, invocation handle, secure
 materialization, crash recovery, write-back, and deny-first revocation contract
 is documented in [credential-lifecycle.md](credential-lifecycle.md). Phase B0

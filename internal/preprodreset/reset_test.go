@@ -75,6 +75,24 @@ func TestExecuteRequiresTypedConfirmationAndDropsOnlyAllowlist(t *testing.T) {
 	}
 }
 
+func TestAttachedWorkerTablesAreExplicitlyResettable(t *testing.T) {
+	want := map[string]bool{
+		"attached_worker_audit_events": false,
+		"attached_worker_enrollments":  false,
+		"attached_workers":             false,
+	}
+	for _, table := range applicationTables {
+		if _, exists := want[table]; exists {
+			want[table] = true
+		}
+	}
+	for table, present := range want {
+		if !present {
+			t.Errorf("attached-worker table %s is absent from the guarded reset allowlist", table)
+		}
+	}
+}
+
 type recordingSchema struct{ statements []string }
 
 func (schema *recordingSchema) ExecContext(_ context.Context, statement string, _ ...any) (sql.Result, error) {

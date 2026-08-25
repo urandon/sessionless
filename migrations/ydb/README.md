@@ -122,6 +122,16 @@ Pre-production environments created before this projection must replay their
 authoritative identity enrollment or be reset through the guarded application
 reset before Web compute selection is enabled.
 
+Migrations `00077`-`00079` add the owner-scoped attached-worker identity
+boundary. The enrollment table retains the digest-only single-use grant beyond
+its bootstrap expiry and applies TTL to `retain_until`, not `expires_at`. The
+worker table stores the durable Ed25519 public identity and monotonic enrollment,
+connection, and revision fences. The audit table is content-free and ordered by
+worker revision, including enrollment creation at revision zero. All serving
+queries use exact `(tenant_id, owner_user_id, ...)` keys or bounded owner-prefix
+ranges; transport, provider, credential, capability, and dispatch state are not
+stored by these tables.
+
 Automatic production down migrations are intentionally disabled. The `Down`
 sections are comments so neither Goose nor an operator can accidentally drop
 state.

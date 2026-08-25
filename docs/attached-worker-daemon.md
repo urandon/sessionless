@@ -9,10 +9,10 @@ complete.
 
 `internal/attachedworkerdaemon` provides three composable boundaries:
 
-- `Supervisor` starts one exact executable under a mandatory reviewed
-  `IsolationLauncher`, verifies its SHA-256 digest, supplies an exact argv and
-  replacement environment, bounds stdout/stderr and wall time, and owns the
-  complete process group;
+- `Supervisor` prepares one mandatory reviewed `IsolationBoundary`, starts its
+  exact local client command, verifies the harness SHA-256 digest, supplies an
+  exact argv and replacement environment, bounds stdout/stderr and wall time,
+  and owns both the local process group and the external boundary lifecycle;
 - `InvocationRunner` composes that process with the invocation-scoped
   credential lifecycle. It validates the returned handle and materialization,
   adds only the exact credential root to the launcher read allowlist and the
@@ -29,22 +29,35 @@ from scratch. Host `HOME`, `PATH`, XDG variables, API keys, tokens, secrets, and
 other ambient variables are not inherited. Additional variables and read roots
 must be allowlisted when the supervisor is constructed.
 
-The supervisor sends `TERM` to the whole process group, waits the configured
-grace, sends `KILL`, waits/reaps the leader, then verifies that no descendant
-remains. This cleanup also runs when the leader exits naturally while a child
-survives. Output readers and attempt-root deletion are bounded parts of the
-same lifecycle; stderr content is never returned or logged by this package.
+The supervisor sends `TERM` to the whole local process group, waits the
+configured grace, sends `KILL`, waits/reaps the leader, then verifies that no
+local descendant remains. It separately inspects the prepared isolation
+boundary, requests graceful stop, force-stops it when necessary, verifies that
+the isolated workload is gone, and releases the boundary under bounded cleanup
+contexts. This distinction is mandatory for container or VM runtimes whose
+workload can survive their local CLI process. Both cleanup paths also run when
+the client exits naturally. Output readers and attempt-root deletion are
+bounded parts of the same lifecycle; stderr content is never returned or
+logged by this package.
 
 ## Required isolation launcher
 
 A clean environment and private directory are hygiene, not isolation. A
-production `IsolationLauncher` must independently prove all of these
+production `IsolationLauncher` and every boundary returned by `Prepare` must
+independently prove all of these
 capabilities:
 
 - exact filesystem read and write boundaries;
 - denied network access;
 - a process boundary that the attempted harness cannot escape;
 - a hard attempt disk-byte bound.
+
+The returned lifecycle handle must identify only that invocation, stop the
+actual isolated workload rather than merely its CLI client, verify liveness
+without trusting child output, honor every cleanup context, and make release
+idempotent. A launcher that returns an error from `Prepare` owns cleanup of any
+partially created runtime resources. The supervisor does not infer workload
+death from a successful client exit.
 
 Construction fails with `ErrIsolationUnsupported` if any capability is absent.
 The launcher is a trusted port and therefore needs its own platform-specific

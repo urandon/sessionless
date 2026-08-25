@@ -769,6 +769,38 @@ func TestReconnectCancelFencedDiscardsCrossedWorkerSuccess(t *testing.T) {
 	}
 }
 
+func TestReconnectCancelRequestedDiscardsCrossedWorkerSuccess(t *testing.T) {
+	authoritativeFixture := newProtocolFixture(t)
+	authoritative := authoritativeFixture.claimMachine(t, true)
+	workerFixture := newProtocolFixture(t)
+	worker := workerFixture.claimMachine(t, true)
+	cancel := authoritativeFixture.frame(DirectionPlatformToWorker, MessageCancel)
+	cancel.Cancel = &CancelV1{Binding: authoritativeFixture.binding, AttemptSequence: 3,
+		CancelRevision: 1, Code: CancelRequested}
+	acceptOK(t, authoritative, DirectionPlatformToWorker, cancel, authoritativeFixture.auth.ChannelBinding)
+	success := workerFixture.frame(DirectionWorkerToPlatform, MessageTerminal)
+	success.Terminal = &TerminalV1{Binding: workerFixture.binding, AttemptSequence: 2, TerminalSequence: 1,
+		Status: TerminalSucceeded, Result: TerminalResultCompleted, EvidenceDigest: digestByte(0xa2)}
+	acceptOK(t, worker, DirectionWorkerToPlatform, success, workerFixture.auth.ChannelBinding)
+	plan := reconnectPair(t, authoritative, worker, authoritativeFixture)
+	if plan.TerminalDecision != ReconnectTerminalDiscard || authoritative.AttemptState() != AttemptCancelRequested ||
+		worker.AttemptState() != AttemptCancelRequested {
+		t.Fatalf("crossed success was not overridden: plan=%+v states=%s/%s",
+			plan, authoritative.AttemptState(), worker.AttemptState())
+	}
+	replayed := authoritativeFixture.frame(DirectionWorkerToPlatform, MessageTerminal)
+	replayed.Terminal = &TerminalV1{Binding: authoritativeFixture.binding, AttemptSequence: 2, TerminalSequence: 1,
+		Status: TerminalSucceeded, Result: TerminalResultCompleted, EvidenceDigest: digestByte(0xa2)}
+	for _, machine := range []*ConformanceMachine{authoritative, worker} {
+		requireCode(t, acceptAt(machine, DirectionWorkerToPlatform, replayed, authoritativeFixture.auth.ChannelBinding,
+			1_800_000_000_000_000), ErrorProtocolViolation)
+		if machine.attempt.pendingWorkerTerminal == nil ||
+			machine.attempt.pendingWorkerTerminal.decision != ReconnectTerminalDiscard {
+			t.Fatal("requested-cancel discard was not enforced as a negative replay fence")
+		}
+	}
+}
+
 func TestAuthoritativeLeaseExpiryIsExclusive(t *testing.T) {
 	fixture := newProtocolFixture(t)
 	machine := fixture.attachMachine(t)

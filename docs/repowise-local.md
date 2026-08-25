@@ -206,7 +206,9 @@ make repowise-stop
 The PID record includes a process-start identity. `stop` signals a process only
 when that identity still matches and the current command has the exact
 repo-local MCP subcommand, transport, and tool allowlist; PID reuse or another
-RepoWise subcommand fails closed.
+RepoWise subcommand fails closed. Signal/exit cleanup applies the same checks,
+and its trap is disarmed immediately after the child has been reaped so it
+cannot signal a PID reused during postconditions.
 
 Inspect cleanup before deleting anything:
 

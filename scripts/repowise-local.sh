@@ -317,8 +317,20 @@ start_mcp() {
     "$repowise_bin" mcp "$repo_root" --transport stdio --tools "$REPOWISE_MCP_ALLOWED_TOOLS" \
     <&0 >&1 2>&2 &
   mcp_pid=$!
-  trap 'kill "$mcp_pid" 2>/dev/null || true; rm -f "$mcp_pid_file"' EXIT HUP INT TERM
   expected_suffix="$repowise_bin mcp $repo_root --transport stdio --tools $REPOWISE_MCP_ALLOWED_TOOLS"
+  startup_signature="/usr/bin/sandbox-exec -D STATE_ROOT $repo_root/.repowise -D LOCAL_ROOT $runtime_root -f $sandbox_profile $repowise_bin mcp $repo_root --transport stdio"
+  mcp_start=$(ps -ww -p "$mcp_pid" -o lstart= 2>/dev/null | awk '{$1=$1; print}')
+  test -n "$mcp_start" || {
+    kill "$mcp_pid" 2>/dev/null || true
+    die "could not record RepoWise MCP process start identity"
+  }
+  mcp_identity=$(
+    printf '%s\n' "$mcp_start" | shasum -a 256 | awk '{print $1}'
+  )
+  trap 'cleanup_started_mcp' EXIT
+  trap 'cleanup_started_mcp; exit 129' HUP
+  trap 'cleanup_started_mcp; exit 130' INT
+  trap 'cleanup_started_mcp; exit 143' TERM
   identity_attempts=0
   mcp_command=
   while test "$identity_attempts" -lt 50; do
@@ -334,13 +346,41 @@ start_mcp() {
     *"$expected_suffix") ;;
     *) die "started process did not reach the exact RepoWise MCP signature" ;;
   esac
-  mcp_start=$(ps -ww -p "$mcp_pid" -o lstart= 2>/dev/null | awk '{$1=$1; print}')
-  test -n "$mcp_start" || die "could not record RepoWise MCP process start identity"
-  mcp_identity=$(
-    printf '%s\n' "$mcp_start" | shasum -a 256 | awk '{print $1}'
-  )
   printf '%s\n%s\n' "$mcp_pid" "$mcp_identity" >"$mcp_pid_file"
+  set +e
   wait "$mcp_pid"
+  mcp_status=$?
+  set -e
+  trap - EXIT HUP INT TERM
+  rm -f "$mcp_pid_file"
+  return "$mcp_status"
+}
+
+cleanup_started_mcp() {
+  trap - EXIT HUP INT TERM
+  if ! kill -0 "$mcp_pid" 2>/dev/null; then
+    rm -f "$mcp_pid_file"
+    return 0
+  fi
+  cleanup_start=$(ps -ww -p "$mcp_pid" -o lstart= 2>/dev/null | awk '{$1=$1; print}')
+  cleanup_command=$(ps -ww -p "$mcp_pid" -o command= 2>/dev/null | sed 's/^[[:space:]]*//')
+  cleanup_identity=$(
+    printf '%s\n' "$cleanup_start" | shasum -a 256 | awk '{print $1}'
+  )
+  case "$cleanup_command" in
+    *"$expected_suffix") ;;
+    "$startup_signature"|"$startup_signature "*) ;;
+    *)
+      printf '%s\n' "repowise-local: refusing to signal changed pid $mcp_pid during trap cleanup" >&2
+      return 0
+      ;;
+  esac
+  if test "$cleanup_identity" != "$mcp_identity"; then
+    printf '%s\n' "repowise-local: refusing to signal reused pid $mcp_pid during trap cleanup" >&2
+    return 0
+  fi
+  kill -TERM "$mcp_pid" 2>/dev/null || true
+  rm -f "$mcp_pid_file"
 }
 
 stop_mcp() {

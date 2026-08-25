@@ -177,6 +177,9 @@ require_literal 'ps -ww -p "$mcp_pid" -o lstart=' "$wrapper" 'MCP start must rec
 require_literal 'recorded_identity=' "$wrapper" 'stop must read the recorded process identity'
 require_literal 'current_identity=' "$wrapper" 'stop must recompute the current process identity'
 require_literal 'expected_suffix="$repowise_bin mcp $repo_root --transport stdio --tools $REPOWISE_MCP_ALLOWED_TOOLS"' "$wrapper" 'stop must require the exact repo-local MCP command signature'
+require_literal 'cleanup_started_mcp' "$wrapper" 'signal and exit traps must use identity-aware MCP cleanup'
+require_literal 'trap - EXIT HUP INT TERM' "$wrapper" 'MCP trap must disarm before postconditions and return'
+require_literal 'refusing to signal reused pid' "$wrapper" 'trap cleanup must fail closed on PID reuse'
 
 # Prove the exact Git primitive used by the wrapper distinguishes an untracked
 # source from the two allowed ignored state roots.

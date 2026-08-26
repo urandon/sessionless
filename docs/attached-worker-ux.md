@@ -666,6 +666,28 @@ help text and machine-readable identifiers. Copy/export excludes owner email,
 credentials, prompt/result, public keys, signatures, host paths, environment,
 stderr/stdout, provider bodies, connection bearer, and raw protocol payloads.
 
+The V1 diagnostic catalog is an ordered projection of existing authorities,
+not another lifecycle machine:
+
+- identity: `desired_state`, `observed_state`, `enrollment_state`;
+- readiness: `daemon_state`, `last_daemon_failure`, `credential_state`,
+  `isolation_configuration`, `isolation_verification`;
+- connectivity: `connection_state`, `last_contact`, `transport_failure`;
+- eligibility: `capability_state`, `admission_preview`, `entitlement_state`,
+  `quota_state`;
+- execution: `attempt_state`, `cancel_request`, `cancel_ack`,
+  `process_observation`, `worker_terminal`, `canonical_terminal`;
+- governance: `admission_control`, `remote_erase`.
+
+`connection_state` never borrows the last-contact timestamp or freshness;
+`last_contact` owns those observation fields. Isolation configuration and
+verification remain separate, as do capability advertisement and admission,
+quota unknown/zero/exhausted, every cancellation/process/terminal fact, and
+revoke/fence authority versus remote erasure acknowledgement. The browser
+loads diagnostics only after an explicit user gesture and rebuilds copy and
+download bytes from the public allowlist. It does not probe, poll, persist, or
+send a control mutation.
+
 ## Accessibility and interaction requirements
 
 - State is never conveyed by color alone; every badge has exact text and a

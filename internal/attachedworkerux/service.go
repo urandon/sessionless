@@ -124,21 +124,41 @@ func (service *Service) Diagnostics(
 	}
 	return AttachedWorkerDiagnosticsV1{
 		Version: ReadModelVersionV1, EvaluatedAt: detail.EvaluatedAt, WorkerID: detail.Worker.WorkerID,
-		Facts: []DiagnosticFactV1{
-			{Cohort: "identity", Code: "desired_state", State: detail.Worker.DesiredState},
-			{Cohort: "identity", Code: "observed_state", State: detail.Worker.ObservedState},
-			{Cohort: "connectivity", Code: "connection_state", State: detail.Connectivity.State, ObservedAt: detail.Connectivity.LastContactAt, Freshness: detail.Connectivity.Freshness},
-			{Cohort: "readiness", Code: "daemon_state", State: detail.Readiness.DaemonObservation.State, Freshness: detail.Readiness.DaemonObservation.Freshness},
-			{Cohort: "readiness", Code: "isolation_verification", State: detail.Readiness.Isolation.VerificationState},
-			{Cohort: "eligibility", Code: "admission_preview", State: detail.AdmissionPreview.State},
-			{Cohort: "execution", Code: "attempt_state", State: detail.Execution.State},
-			{Cohort: "execution", Code: "cancel_ack", State: detail.Execution.CancelAcknowledgement.State},
-			{Cohort: "execution", Code: "worker_terminal", State: detail.Execution.WorkerTerminal.State},
-			{Cohort: "execution", Code: "canonical_terminal", State: detail.Execution.CanonicalTerminal.State},
-			{Cohort: "governance", Code: "remote_erase", State: detail.Governance.RemoteErase},
-		},
+		Facts:    diagnosticFacts(detail),
 		Warnings: append([]ReasonCodeV1(nil), detail.ObservationWarnings...),
 	}, nil
+}
+
+func diagnosticFacts(detail AttachedWorkerUXReadModelV1) []DiagnosticFactV1 {
+	lastContactState := "unknown"
+	if !detail.Connectivity.LastContactAt.IsZero() {
+		lastContactState = "recorded"
+	}
+	return []DiagnosticFactV1{
+		{Cohort: DiagnosticCohortIdentity, Code: DiagnosticCodeDesiredState, State: detail.Worker.DesiredState},
+		{Cohort: DiagnosticCohortIdentity, Code: DiagnosticCodeObservedState, State: detail.Worker.ObservedState},
+		{Cohort: DiagnosticCohortIdentity, Code: DiagnosticCodeEnrollmentState, State: detail.Identity.EnrollmentState},
+		{Cohort: DiagnosticCohortReadiness, Code: DiagnosticCodeDaemonState, State: detail.Readiness.DaemonObservation.State, ObservedAt: detail.Readiness.DaemonObservation.ObservedAt, Freshness: detail.Readiness.DaemonObservation.Freshness},
+		{Cohort: DiagnosticCohortReadiness, Code: DiagnosticCodeLastDaemonFailure, State: detail.Readiness.LastDaemonFailure.State, ObservedAt: detail.Readiness.LastDaemonFailure.OccurredAt, Freshness: detail.Readiness.LastDaemonFailure.Freshness},
+		{Cohort: DiagnosticCohortReadiness, Code: DiagnosticCodeCredentialState, State: detail.Readiness.CredentialState},
+		{Cohort: DiagnosticCohortReadiness, Code: DiagnosticCodeIsolationConfiguration, State: detail.Readiness.Isolation.ConfigurationState},
+		{Cohort: DiagnosticCohortReadiness, Code: DiagnosticCodeIsolationVerification, State: detail.Readiness.Isolation.VerificationState},
+		{Cohort: DiagnosticCohortConnectivity, Code: DiagnosticCodeConnectionState, State: detail.Connectivity.State},
+		{Cohort: DiagnosticCohortConnectivity, Code: DiagnosticCodeLastContact, State: lastContactState, ObservedAt: detail.Connectivity.LastContactAt, Freshness: detail.Connectivity.Freshness},
+		{Cohort: DiagnosticCohortConnectivity, Code: DiagnosticCodeTransportFailure, State: detail.Connectivity.LastFailure.State, ObservedAt: detail.Connectivity.LastFailure.OccurredAt, Freshness: detail.Connectivity.LastFailure.Freshness},
+		{Cohort: DiagnosticCohortEligibility, Code: DiagnosticCodeCapabilityState, State: detail.Capability.State, ObservedAt: detail.Capability.ObservedAt},
+		{Cohort: DiagnosticCohortEligibility, Code: DiagnosticCodeAdmissionPreview, State: detail.AdmissionPreview.State, ObservedAt: detail.AdmissionPreview.EvaluatedAt},
+		{Cohort: DiagnosticCohortEligibility, Code: DiagnosticCodeEntitlementState, State: detail.Resource.EntitlementState},
+		{Cohort: DiagnosticCohortEligibility, Code: DiagnosticCodeQuotaState, State: detail.Resource.Quota.State, ObservedAt: detail.Resource.Quota.ObservedAt, Freshness: detail.Resource.Quota.Freshness},
+		{Cohort: DiagnosticCohortExecution, Code: DiagnosticCodeAttemptState, State: detail.Execution.State},
+		{Cohort: DiagnosticCohortExecution, Code: DiagnosticCodeCancelRequest, State: detail.Execution.CancelRequest.State, ObservedAt: detail.Execution.CancelRequest.RequestedAt},
+		{Cohort: DiagnosticCohortExecution, Code: DiagnosticCodeCancelAcknowledgement, State: detail.Execution.CancelAcknowledgement.State, ObservedAt: detail.Execution.CancelAcknowledgement.AcknowledgedAt},
+		{Cohort: DiagnosticCohortExecution, Code: DiagnosticCodeProcessObservation, State: detail.Execution.ProcessObservation.State, ObservedAt: detail.Execution.ProcessObservation.ObservedAt, Freshness: detail.Execution.ProcessObservation.Freshness},
+		{Cohort: DiagnosticCohortExecution, Code: DiagnosticCodeWorkerTerminal, State: detail.Execution.WorkerTerminal.State},
+		{Cohort: DiagnosticCohortExecution, Code: DiagnosticCodeCanonicalTerminal, State: detail.Execution.CanonicalTerminal.State, ObservedAt: detail.Execution.CanonicalTerminal.CommittedAt},
+		{Cohort: DiagnosticCohortGovernance, Code: DiagnosticCodeAdmissionControl, State: detail.Governance.AdmissionControl},
+		{Cohort: DiagnosticCohortGovernance, Code: DiagnosticCodeRemoteErase, State: detail.Governance.RemoteErase},
+	}
 }
 
 func (service *Service) reduce(ctx context.Context, worker domain.AttachedWorker, evaluatedAt time.Time, includeExecutionOccurrences bool) (AttachedWorkerUXReadModelV1, error) {

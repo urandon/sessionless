@@ -337,6 +337,46 @@ func TestCanonicalSessionQueriesUseBoundedPlans(t *testing.T) {
 				table:    "attached_worker_attempt_deadlines_v1",
 			},
 		},
+		{
+			name: "provider credential binding point lookup",
+			query: `SELECT record FROM provider_credential_bindings
+				WHERE tenant_id = $1 AND owner_user_id = $2 AND resource_kind = $3 AND resource_id = $4`,
+			args: []any{tenantID, userID, domain.ProviderResourceRouterAccountV1, "router-query-plan"},
+			contract: queryPlanContract{
+				operator: "TablePointLookup",
+				table:    "provider_credential_bindings",
+			},
+		},
+		{
+			name: "provider credential candidate fence point lookup",
+			query: `SELECT mutation_id FROM provider_credential_candidate_fences
+				WHERE tenant_id = $1 AND owner_user_id = $2 AND resource_kind = $3 AND resource_id = $4 AND mutation_id = $5`,
+			args: []any{tenantID, userID, domain.ProviderResourceRouterAccountV1, "router-query-plan", "mutation-query-plan"},
+			contract: queryPlanContract{
+				operator: "TablePointLookup",
+				table:    "provider_credential_candidate_fences",
+			},
+		},
+		{
+			name: "provider credential cleanup bucket range",
+			query: `SELECT created_at,tenant_id,owner_user_id,resource_kind,resource_id,credential_generation,secret_ref
+				FROM provider_credential_cleanup_ready_v1
+				WHERE shard_bucket = $1 AND created_at <= $2 AND
+				(created_at > $3
+				 OR (created_at=$3 AND tenant_id > $4)
+				 OR (created_at=$3 AND tenant_id=$4 AND owner_user_id > $5)
+				 OR (created_at=$3 AND tenant_id=$4 AND owner_user_id=$5 AND resource_kind > $6)
+				 OR (created_at=$3 AND tenant_id=$4 AND owner_user_id=$5 AND resource_kind=$6 AND resource_id > $7)
+				 OR (created_at=$3 AND tenant_id=$4 AND owner_user_id=$5 AND resource_kind=$6 AND resource_id=$7 AND credential_generation > $8)
+				 OR (created_at=$3 AND tenant_id=$4 AND owner_user_id=$5 AND resource_kind=$6 AND resource_id=$7 AND credential_generation=$8 AND secret_ref > $9))
+				ORDER BY created_at,tenant_id,owner_user_id,resource_kind,resource_id,credential_generation,secret_ref LIMIT $10`,
+			args: []any{uint32(0), time.Date(2026, time.January, 1, 0, 0, 1, 0, time.UTC), time.Unix(0, 0).UTC(),
+				domain.TenantID(""), domain.UserID(""), domain.ProviderResourceKindV1(""), "", uint64(0), "", limit},
+			contract: queryPlanContract{
+				operator: "TableRangeScan",
+				table:    "provider_credential_cleanup_ready_v1",
+			},
+		},
 	}
 
 	for _, test := range tests {

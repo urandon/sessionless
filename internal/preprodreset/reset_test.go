@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"errors"
 	"net/url"
 	"strings"
 	"testing"
@@ -53,12 +54,12 @@ func TestBuildPlanRequiresResolvedNonProductionTarget(t *testing.T) {
 func TestExecuteRequiresTypedConfirmationAndDropsOnlyAllowlist(t *testing.T) {
 	target := validTarget()
 	target.Confirmation = "wrong"
-	if _, err := Execute(context.Background(), target, &recordingSchema{}, prefixDeleter{}); err == nil {
+	if _, err := Execute(context.Background(), target, &recordingSchema{}, prefixDeleter{}, emptyCredentialGuard{}); err == nil {
 		t.Fatal("reset accepted wrong confirmation")
 	}
 	target.Confirmation = ExpectedConfirmation(target)
 	schema := &recordingSchema{}
-	result, err := Execute(context.Background(), target, schema, prefixDeleter{count: 7})
+	result, err := Execute(context.Background(), target, schema, prefixDeleter{count: 7}, emptyCredentialGuard{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,6 +73,18 @@ func TestExecuteRequiresTypedConfirmationAndDropsOnlyAllowlist(t *testing.T) {
 		if statement != "DROP TABLE IF EXISTS `"+applicationTables[index]+"`" || strings.Contains(statement, "/") {
 			t.Fatalf("statement[%d] = %q", index, statement)
 		}
+	}
+}
+
+func TestExecuteFailsBeforeDeletionWhenProviderCredentialsAreNotDrained(t *testing.T) {
+	target := validTarget()
+	target.Confirmation = ExpectedConfirmation(target)
+	objects := &recordingPrefixDeleter{}
+	if _, err := Execute(context.Background(), target, &recordingSchema{}, objects, failingCredentialGuard{}); err == nil {
+		t.Fatal("reset accepted undrained provider credential authority")
+	}
+	if objects.called {
+		t.Fatal("object deletion began before provider credential drain proof")
 	}
 }
 
@@ -96,6 +109,26 @@ func TestAttachedWorkerTablesAreExplicitlyResettable(t *testing.T) {
 	}
 }
 
+func TestProviderCredentialTablesAreExplicitlyResettable(t *testing.T) {
+	want := map[string]bool{
+		"provider_credential_cleanup_ready_v1": false,
+		"provider_credential_cleanups":         false,
+		"provider_credential_audit_events":     false,
+		"provider_credential_candidate_fences": false,
+		"provider_credential_bindings":         false,
+	}
+	for _, table := range applicationTables {
+		if _, exists := want[table]; exists {
+			want[table] = true
+		}
+	}
+	for table, present := range want {
+		if !present {
+			t.Errorf("provider credential table %s is absent from the guarded reset allowlist", table)
+		}
+	}
+}
+
 type recordingSchema struct{ statements []string }
 
 func (schema *recordingSchema) ExecContext(_ context.Context, statement string, _ ...any) (sql.Result, error) {
@@ -110,4 +143,21 @@ func (deleter prefixDeleter) DeletePrefix(_ context.Context, prefix string) (uin
 		panic("unexpected prefix")
 	}
 	return deleter.count, nil
+}
+
+type emptyCredentialGuard struct{}
+
+func (emptyCredentialGuard) AssertProviderCredentialsDrained(context.Context) error { return nil }
+
+type failingCredentialGuard struct{}
+
+func (failingCredentialGuard) AssertProviderCredentialsDrained(context.Context) error {
+	return errors.New("provider secret namespace is not drained")
+}
+
+type recordingPrefixDeleter struct{ called bool }
+
+func (deleter *recordingPrefixDeleter) DeletePrefix(context.Context, string) (uint64, error) {
+	deleter.called = true
+	return 0, nil
 }

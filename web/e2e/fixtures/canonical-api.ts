@@ -2,6 +2,7 @@ import { expect, test as base, type Page, type Request, type Route } from '@play
 
 export const csrfToken = 'e2e-csrf-token';
 export const sessionId = 'session-alpha';
+export const workerId = 'worker-one';
 export const objectOrigin = 'https://objects.sessionless.test';
 
 type AuthMode = 'authenticated' | 'unauthenticated' | 'access-denied' | 'error';
@@ -31,6 +32,8 @@ export class CanonicalApiFixture {
   sessionStatus: 'active' | 'archived' = 'active';
   emptySessions = false;
   emptyHistory = false;
+  workerMode: 'ready' | 'empty' | 'not-found' | 'error' = 'ready';
+  diagnosticsMode: 'ready' | 'not-found' | 'error' | 'mismatch' = 'ready';
 
   #page: Page;
   #messageCreated = false;
@@ -143,6 +146,34 @@ export class CanonicalApiFixture {
       const body = captured.body as { tenant_id?: string } | undefined;
       this.activeTenant = body?.tenant_id === 'tenant-two' ? 'tenant-two' : 'tenant-one';
       return this.#json(route, this.#identity());
+    }
+
+    if (path === '/api/web/v1/attached-workers' && method === 'GET') {
+      if (this.workerMode === 'error') return this.#error(route, 503, 'temporarily_unavailable');
+      return this.#json(route, {
+        version: 1,
+        evaluated_at: '2026-08-26T08:00:00.123456Z',
+        items: this.workerMode === 'empty' ? [] : [this.#workerSummary()],
+        has_more: false,
+      });
+    }
+
+    if (path === `/api/web/v1/attached-workers/${workerId}/diagnostics` && method === 'GET') {
+      if (this.workerMode === 'not-found' || this.diagnosticsMode === 'not-found') {
+        return this.#error(route, 404, 'not_found');
+      }
+      if (this.diagnosticsMode === 'error') {
+        return this.#error(route, 503, 'temporarily_unavailable');
+      }
+      const diagnostics = this.#workerDiagnostics();
+      if (this.diagnosticsMode === 'mismatch') diagnostics.worker_id = 'worker-other';
+      return this.#json(route, diagnostics);
+    }
+
+    if (path === `/api/web/v1/attached-workers/${workerId}` && method === 'GET') {
+      if (this.workerMode === 'not-found') return this.#error(route, 404, 'not_found');
+      if (this.workerMode === 'error') return this.#error(route, 503, 'temporarily_unavailable');
+      return this.#json(route, this.#workerDetail());
     }
 
     if (path === '/api/web/v1/sessions' && method === 'GET') {
@@ -368,6 +399,190 @@ export class CanonicalApiFixture {
       created_at: '2026-08-18T10:00:00Z',
       updated_at: '2026-08-18T10:00:02Z',
       finished_at: '2026-08-18T10:00:02Z',
+    };
+  }
+
+  #workerSummary(): Record<string, unknown> {
+    return {
+      evaluated_at: '2026-08-26T08:00:00.123456Z',
+      worker: {
+        worker_id: workerId,
+        display_name: 'Studio Mac',
+        revision: '12',
+        enrollment_generation: '2',
+        connection_generation: '4',
+        desired_state: 'active',
+        observed_state: 'online',
+        created_at: '2026-08-01T09:00:00Z',
+        updated_at: '2026-08-26T08:00:00.123456Z',
+      },
+      connectivity: {
+        connection_id: 'connection-worker-one',
+        state: 'online',
+        connected_at: '2026-08-26T07:30:00Z',
+        last_contact_at: '2026-08-26T07:59:58.765432Z',
+        presence_expires_at: '2026-08-26T08:01:00Z',
+        authentication_expires_at: '2026-08-27T08:00:00Z',
+        freshness: 'fresh',
+        last_failure: { state: 'unknown' },
+      },
+      execution_state: 'cancel_requested',
+      observation_warnings: ['isolation_unsupported', 'quota_zero'],
+    };
+  }
+
+  #workerDetail(): Record<string, unknown> {
+    const summary = this.#workerSummary();
+    return {
+      version: 1,
+      evaluated_at: '2026-08-26T08:00:00.123456Z',
+      worker: summary.worker,
+      identity: {
+        algorithm: 'Ed25519',
+        fingerprint: 'sha256:public-fingerprint',
+        enrollment_state: 'consumed',
+      },
+      readiness: {
+        daemon_observation: { state: 'unknown', source: 'unavailable', freshness: 'unknown' },
+        last_daemon_failure: { state: 'unknown' },
+        credential_state: 'unknown',
+        isolation: {
+          configuration_state: 'unsupported',
+          advertised_evidence: ['network_boundary', 'process_boundary'],
+          verification_state: 'unsupported',
+        },
+      },
+      connectivity: summary.connectivity,
+      capability: {
+        state: 'advertised',
+        manifest_revision: '8',
+        digest_fingerprint: 'sha256:manifest',
+        operating_system: 'darwin',
+        architecture: 'arm64',
+        build_id: 'worker-build-1',
+        harness: { name: 'sessionless', version: '1.0', surface: 'session_turn_v1' },
+        isolation_evidence: ['network_boundary'],
+        features: ['exec', 'files'],
+        max_concurrent_attempts: 1,
+        observed_at: '2026-08-26T07:59:57Z',
+      },
+      admission_preview: { state: 'not_evaluated' },
+      observation_warnings: ['isolation_unsupported', 'quota_zero', 'control_contract_unavailable'],
+      resource: {
+        state: 'observed',
+        resource_ref: 'codex-subscription',
+        credential_state: 'unknown',
+        entitlement_state: 'active',
+        quota: {
+          state: 'zero',
+          remaining: '0',
+          observed_at: '2026-08-26T07:58:00Z',
+          source: 'worker_report',
+          freshness: 'fresh',
+        },
+      },
+      execution: {
+        state: 'cancel_requested',
+        run_id: 'run-one',
+        attempt_id: 'attempt-one',
+        lease_id: 'lease-one',
+        lease_generation: '5',
+        fence_fingerprint: 'sha256:fence',
+        lease_expires_at: '2026-08-26T08:02:00Z',
+        cancel_request: {
+          state: 'requested',
+          revision: '3',
+          requested_at: '2026-08-26T07:59:50Z',
+          ack_deadline: '2026-08-26T08:00:10Z',
+        },
+        cancel_ack: { state: 'pending', revision: '3' },
+        process_observation: {
+          state: 'running',
+          attempt_id: 'attempt-one',
+          lease_generation: '5',
+          fence_fingerprint: 'sha256:fence',
+          source: 'worker_report',
+          observed_at: '2026-08-26T07:59:51Z',
+          freshness: 'fresh',
+        },
+        worker_terminal: {
+          state: 'received',
+          sequence: '11',
+          status: 'cancelled',
+          evidence_fingerprint: 'sha256:terminal',
+        },
+        canonical_terminal: { state: 'not_committed' },
+      },
+      governance: {
+        admission_control: 'paused',
+        remote_erase: 'not_acknowledged',
+        available_actions: [
+          { code: 'revoke', enabled: false, reason_code: 'control_contract_unavailable' },
+        ],
+      },
+    };
+  }
+
+  #workerDiagnostics(): {
+    version: number;
+    evaluated_at: string;
+    worker_id: string;
+    facts: Array<Record<string, string>>;
+    warnings: string[];
+  } {
+    return {
+      version: 1,
+      evaluated_at: '2026-08-26T08:00:00.123456Z',
+      worker_id: workerId,
+      facts: [
+        { cohort: 'identity', code: 'desired_state', state: 'active' },
+        { cohort: 'identity', code: 'observed_state', state: 'online' },
+        { cohort: 'identity', code: 'enrollment_state', state: 'consumed' },
+        { cohort: 'readiness', code: 'daemon_state', state: 'unknown', freshness: 'unknown' },
+        { cohort: 'readiness', code: 'last_daemon_failure', state: 'unknown' },
+        { cohort: 'readiness', code: 'credential_state', state: 'unknown' },
+        { cohort: 'readiness', code: 'isolation_configuration', state: 'unsupported' },
+        { cohort: 'readiness', code: 'isolation_verification', state: 'unsupported' },
+        { cohort: 'connectivity', code: 'connection_state', state: 'online' },
+        {
+          cohort: 'connectivity',
+          code: 'last_contact',
+          state: 'recorded',
+          observed_at: '2026-08-26T07:59:58.765432Z',
+          freshness: 'fresh',
+        },
+        { cohort: 'connectivity', code: 'transport_failure', state: 'unknown' },
+        { cohort: 'eligibility', code: 'capability_state', state: 'advertised' },
+        { cohort: 'eligibility', code: 'admission_preview', state: 'not_evaluated' },
+        { cohort: 'eligibility', code: 'entitlement_state', state: 'active' },
+        {
+          cohort: 'eligibility',
+          code: 'quota_state',
+          state: 'zero',
+          observed_at: '2026-08-26T07:58:00Z',
+          freshness: 'fresh',
+        },
+        { cohort: 'execution', code: 'attempt_state', state: 'cancel_requested' },
+        {
+          cohort: 'execution',
+          code: 'cancel_request',
+          state: 'requested',
+          observed_at: '2026-08-26T07:59:50Z',
+        },
+        { cohort: 'execution', code: 'cancel_ack', state: 'pending' },
+        {
+          cohort: 'execution',
+          code: 'process_observation',
+          state: 'running',
+          observed_at: '2026-08-26T07:59:51Z',
+          freshness: 'fresh',
+        },
+        { cohort: 'execution', code: 'worker_terminal', state: 'received' },
+        { cohort: 'execution', code: 'canonical_terminal', state: 'not_committed' },
+        { cohort: 'governance', code: 'admission_control', state: 'paused' },
+        { cohort: 'governance', code: 'remote_erase', state: 'not_acknowledged' },
+      ],
+      warnings: ['isolation_unsupported', 'quota_zero', 'control_contract_unavailable'],
     };
   }
 }

@@ -483,6 +483,163 @@ func TestDiagnosticsDoNotInventObservedStateTime(t *testing.T) {
 	t.Fatal("observed_state diagnostic fact missing")
 }
 
+func TestDiagnosticsUseExactOrderedVocabulary(t *testing.T) {
+	t.Parallel()
+	worker := testWorker("worker-1")
+	service, _ := NewService(&readStore{workers: []domain.AttachedWorker{worker}}, nil)
+	diagnostics, err := service.Diagnostics(context.Background(), worker.TenantID, worker.OwnerUserID, worker.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := []struct {
+		cohort DiagnosticCohortV1
+		code   DiagnosticCodeV1
+	}{
+		{DiagnosticCohortIdentity, DiagnosticCodeDesiredState},
+		{DiagnosticCohortIdentity, DiagnosticCodeObservedState},
+		{DiagnosticCohortIdentity, DiagnosticCodeEnrollmentState},
+		{DiagnosticCohortReadiness, DiagnosticCodeDaemonState},
+		{DiagnosticCohortReadiness, DiagnosticCodeLastDaemonFailure},
+		{DiagnosticCohortReadiness, DiagnosticCodeCredentialState},
+		{DiagnosticCohortReadiness, DiagnosticCodeIsolationConfiguration},
+		{DiagnosticCohortReadiness, DiagnosticCodeIsolationVerification},
+		{DiagnosticCohortConnectivity, DiagnosticCodeConnectionState},
+		{DiagnosticCohortConnectivity, DiagnosticCodeLastContact},
+		{DiagnosticCohortConnectivity, DiagnosticCodeTransportFailure},
+		{DiagnosticCohortEligibility, DiagnosticCodeCapabilityState},
+		{DiagnosticCohortEligibility, DiagnosticCodeAdmissionPreview},
+		{DiagnosticCohortEligibility, DiagnosticCodeEntitlementState},
+		{DiagnosticCohortEligibility, DiagnosticCodeQuotaState},
+		{DiagnosticCohortExecution, DiagnosticCodeAttemptState},
+		{DiagnosticCohortExecution, DiagnosticCodeCancelRequest},
+		{DiagnosticCohortExecution, DiagnosticCodeCancelAcknowledgement},
+		{DiagnosticCohortExecution, DiagnosticCodeProcessObservation},
+		{DiagnosticCohortExecution, DiagnosticCodeWorkerTerminal},
+		{DiagnosticCohortExecution, DiagnosticCodeCanonicalTerminal},
+		{DiagnosticCohortGovernance, DiagnosticCodeAdmissionControl},
+		{DiagnosticCohortGovernance, DiagnosticCodeRemoteErase},
+	}
+	if len(diagnostics.Facts) != len(want) {
+		t.Fatalf("diagnostic fact count = %d, want %d", len(diagnostics.Facts), len(want))
+	}
+	seenCodes := make(map[DiagnosticCodeV1]bool, len(want))
+	seenCohorts := make(map[DiagnosticCohortV1]bool, 6)
+	for index, expected := range want {
+		fact := diagnostics.Facts[index]
+		if fact.Cohort != expected.cohort || fact.Code != expected.code {
+			t.Fatalf("diagnostic fact[%d] = %s/%s, want %s/%s", index, fact.Cohort, fact.Code, expected.cohort, expected.code)
+		}
+		if !fact.Cohort.Valid() || !fact.Code.Valid() {
+			t.Fatalf("diagnostic fact[%d] has invalid vocabulary: %+v", index, fact)
+		}
+		if seenCodes[fact.Code] {
+			t.Fatalf("duplicate diagnostic code %q", fact.Code)
+		}
+		seenCodes[fact.Code] = true
+		seenCohorts[fact.Cohort] = true
+	}
+	if len(seenCohorts) != 6 {
+		t.Fatalf("diagnostics cover %d cohorts, want 6", len(seenCohorts))
+	}
+	if DiagnosticCohortV1("").Valid() || DiagnosticCohortV1("future").Valid() {
+		t.Fatal("unknown diagnostic cohort accepted")
+	}
+	if DiagnosticCodeV1("").Valid() || DiagnosticCodeV1("future").Valid() {
+		t.Fatal("unknown diagnostic code accepted")
+	}
+}
+
+func TestDiagnosticFactsUseOnlyAuthoritativeObservationTimes(t *testing.T) {
+	t.Parallel()
+	genericUpdatedAt := time.Date(2026, 8, 25, 12, 0, 0, 1, time.UTC)
+	observedAt := func(offset time.Duration) time.Time { return genericUpdatedAt.Add(offset) }
+	detail := AttachedWorkerUXReadModelV1{
+		Worker:   WorkerV1{DesiredState: "active", ObservedState: "online", UpdatedAt: genericUpdatedAt},
+		Identity: IdentityV1{EnrollmentState: "consumed"},
+		Readiness: ReadinessV1{
+			DaemonObservation: DaemonObservationV1{State: "running", ObservedAt: observedAt(time.Second), Freshness: FreshnessExpired},
+			LastDaemonFailure: LastFailureV1{State: "recorded", OccurredAt: observedAt(2 * time.Second), Freshness: FreshnessFresh},
+			CredentialState:   "ready",
+			Isolation: IsolationV1{
+				ConfigurationState: "configured",
+				VerificationState:  "verified",
+			},
+		},
+		Connectivity: ConnectivityV1{
+			State:         "connected",
+			LastContactAt: observedAt(3 * time.Second),
+			Freshness:     FreshnessExpired,
+			LastFailure:   LastFailureV1{State: "recorded", OccurredAt: observedAt(4 * time.Second), Freshness: FreshnessFresh},
+		},
+		Capability:       CapabilityV1{State: "advertised", ObservedAt: observedAt(5 * time.Second)},
+		AdmissionPreview: AdmissionPreviewV1{State: "admitted", EvaluatedAt: observedAt(6 * time.Second)},
+		Resource: ResourceV1{
+			EntitlementState: "active",
+			Quota:            QuotaObservationV1{State: "known", ObservedAt: observedAt(7 * time.Second), Freshness: FreshnessExpired},
+		},
+		Execution: ExecutionV1{
+			State:                 "claimed",
+			CancelRequest:         CancelRequestV1{State: "requested", RequestedAt: observedAt(8 * time.Second)},
+			CancelAcknowledgement: CancelAcknowledgementV1{State: "acknowledged", AcknowledgedAt: observedAt(9 * time.Second)},
+			ProcessObservation:    ProcessObservationV1{State: "stopped", ObservedAt: observedAt(10 * time.Second), Freshness: FreshnessFresh},
+			WorkerTerminal:        WorkerTerminalV1{State: "received"},
+			CanonicalTerminal:     CanonicalTerminalV1{State: "committed", CommittedAt: observedAt(11 * time.Second)},
+		},
+		Governance: GovernanceV1{AdmissionControl: "enabled", RemoteErase: "acknowledged"},
+	}
+	wantTimes := map[DiagnosticCodeV1]time.Time{
+		DiagnosticCodeDaemonState:           observedAt(time.Second),
+		DiagnosticCodeLastDaemonFailure:     observedAt(2 * time.Second),
+		DiagnosticCodeLastContact:           observedAt(3 * time.Second),
+		DiagnosticCodeTransportFailure:      observedAt(4 * time.Second),
+		DiagnosticCodeCapabilityState:       observedAt(5 * time.Second),
+		DiagnosticCodeAdmissionPreview:      observedAt(6 * time.Second),
+		DiagnosticCodeQuotaState:            observedAt(7 * time.Second),
+		DiagnosticCodeCancelRequest:         observedAt(8 * time.Second),
+		DiagnosticCodeCancelAcknowledgement: observedAt(9 * time.Second),
+		DiagnosticCodeProcessObservation:    observedAt(10 * time.Second),
+		DiagnosticCodeCanonicalTerminal:     observedAt(11 * time.Second),
+	}
+	wantFreshness := map[DiagnosticCodeV1]FreshnessV1{
+		DiagnosticCodeDaemonState:        FreshnessExpired,
+		DiagnosticCodeLastDaemonFailure:  FreshnessFresh,
+		DiagnosticCodeLastContact:        FreshnessExpired,
+		DiagnosticCodeTransportFailure:   FreshnessFresh,
+		DiagnosticCodeQuotaState:         FreshnessExpired,
+		DiagnosticCodeProcessObservation: FreshnessFresh,
+	}
+	for _, fact := range diagnosticFacts(detail) {
+		if want, ok := wantTimes[fact.Code]; ok {
+			if !fact.ObservedAt.Equal(want) {
+				t.Fatalf("%s observed_at = %s, want %s", fact.Code, fact.ObservedAt, want)
+			}
+		} else if !fact.ObservedAt.IsZero() {
+			t.Fatalf("%s invented observation time %s", fact.Code, fact.ObservedAt)
+		}
+		if fact.ObservedAt.Equal(genericUpdatedAt) {
+			t.Fatalf("%s reused generic worker updated_at", fact.Code)
+		}
+		if want := wantFreshness[fact.Code]; fact.Freshness != want {
+			t.Fatalf("%s freshness = %s, want %s", fact.Code, fact.Freshness, want)
+		}
+		if fact.Code == DiagnosticCodeConnectionState && (!fact.ObservedAt.IsZero() || fact.Freshness != "") {
+			t.Fatalf("connection state conflated with last contact: %+v", fact)
+		}
+		if fact.Code == DiagnosticCodeLastContact && fact.State != "recorded" {
+			t.Fatalf("last contact state = %q, want recorded", fact.State)
+		}
+	}
+
+	unknownContact := diagnosticFacts(AttachedWorkerUXReadModelV1{
+		Connectivity: ConnectivityV1{Freshness: FreshnessUnknown},
+	})[9]
+	if unknownContact.Code != DiagnosticCodeLastContact || unknownContact.State != "unknown" ||
+		!unknownContact.ObservedAt.IsZero() || unknownContact.Freshness != FreshnessUnknown {
+		t.Fatalf("unknown last contact misreported: %+v", unknownContact)
+	}
+}
+
 func TestStoredCapabilityCorruptionFailsClosed(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
@@ -697,6 +854,8 @@ func TestPublicReadDTOsExcludeSensitiveAuthority(t *testing.T) {
 	if strings.Contains(string(ActionUnavailableNotFound), "owner") {
 		t.Fatal("owner oracle entered public error vocabulary")
 	}
+	assertJSONFields(t, reflect.TypeOf(DiagnosticFactV1{}), []string{"code", "cohort", "freshness", "observed_at", "state"})
+	assertJSONFields(t, reflect.TypeOf(AttachedWorkerDiagnosticsV1{}), []string{"evaluated_at", "facts", "version", "warnings", "worker_id"})
 }
 
 func TestActionInputEnvelopesCarryNoCallerAuthority(t *testing.T) {

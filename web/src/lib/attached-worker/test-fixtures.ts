@@ -1,4 +1,5 @@
 import type {
+  AttachedWorkerDiagnostics,
   AttachedWorkerList,
   AttachedWorkerReadModel,
   AttachedWorkerSummary,
@@ -145,5 +146,62 @@ export function attachedWorkerDetail(): AttachedWorkerReadModel {
         },
       ],
     },
+  };
+}
+
+export function attachedWorkerDiagnostics(): AttachedWorkerDiagnostics {
+  return {
+    version: 1,
+    evaluated_at: evaluatedAt,
+    worker_id: 'worker-one',
+    facts: [
+      { cohort: 'identity', code: 'desired_state', state: 'active' },
+      { cohort: 'identity', code: 'observed_state', state: 'online' },
+      { cohort: 'identity', code: 'enrollment_state', state: 'consumed' },
+      { cohort: 'readiness', code: 'daemon_state', state: 'unknown', freshness: 'unknown' },
+      { cohort: 'readiness', code: 'last_daemon_failure', state: 'unknown' },
+      { cohort: 'readiness', code: 'credential_state', state: 'unknown' },
+      { cohort: 'readiness', code: 'isolation_configuration', state: 'unsupported' },
+      { cohort: 'readiness', code: 'isolation_verification', state: 'unsupported' },
+      { cohort: 'connectivity', code: 'connection_state', state: 'online' },
+      {
+        cohort: 'connectivity',
+        code: 'last_contact',
+        state: 'recorded',
+        observed_at: '2026-08-26T07:59:58.765432Z',
+        freshness: 'fresh',
+      },
+      { cohort: 'connectivity', code: 'transport_failure', state: 'unknown' },
+      { cohort: 'eligibility', code: 'capability_state', state: 'advertised' },
+      { cohort: 'eligibility', code: 'admission_preview', state: 'not_evaluated' },
+      { cohort: 'eligibility', code: 'entitlement_state', state: 'active' },
+      {
+        cohort: 'eligibility',
+        code: 'quota_state',
+        state: 'zero',
+        observed_at: '2026-08-26T07:58:00Z',
+        freshness: 'fresh',
+      },
+      { cohort: 'execution', code: 'attempt_state', state: 'cancel_requested' },
+      {
+        cohort: 'execution',
+        code: 'cancel_request',
+        state: 'requested',
+        observed_at: '2026-08-26T07:59:50Z',
+      },
+      { cohort: 'execution', code: 'cancel_ack', state: 'pending' },
+      {
+        cohort: 'execution',
+        code: 'process_observation',
+        state: 'running',
+        observed_at: '2026-08-26T07:59:51Z',
+        freshness: 'fresh',
+      },
+      { cohort: 'execution', code: 'worker_terminal', state: 'received' },
+      { cohort: 'execution', code: 'canonical_terminal', state: 'not_committed' },
+      { cohort: 'governance', code: 'admission_control', state: 'paused' },
+      { cohort: 'governance', code: 'remote_erase', state: 'not_acknowledged' },
+    ],
+    warnings: ['isolation_unsupported', 'quota_zero', 'control_contract_unavailable'],
   };
 }

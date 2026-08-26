@@ -699,9 +699,13 @@ export interface components {
             next_worker_id?: string;
             has_more: boolean;
         };
+        /** @enum {string} */
+        AttachedWorkerDiagnosticCohortV1: "identity" | "readiness" | "connectivity" | "eligibility" | "execution" | "governance";
+        /** @enum {string} */
+        AttachedWorkerDiagnosticCodeV1: "desired_state" | "observed_state" | "enrollment_state" | "daemon_state" | "last_daemon_failure" | "credential_state" | "isolation_configuration" | "isolation_verification" | "connection_state" | "last_contact" | "transport_failure" | "capability_state" | "admission_preview" | "entitlement_state" | "quota_state" | "attempt_state" | "cancel_request" | "cancel_ack" | "process_observation" | "worker_terminal" | "canonical_terminal" | "admission_control" | "remote_erase";
         AttachedWorkerDiagnosticFactV1: {
-            cohort: string;
-            code: string;
+            cohort: components["schemas"]["AttachedWorkerDiagnosticCohortV1"];
+            code: components["schemas"]["AttachedWorkerDiagnosticCodeV1"];
             state: string;
             /** Format: date-time */
             observed_at?: string;

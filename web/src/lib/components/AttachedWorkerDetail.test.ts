@@ -18,7 +18,7 @@ describe('AttachedWorkerDetail', () => {
     const getAttachedWorker = vi.fn().mockResolvedValue(model);
 
     render(AttachedWorkerDetail, {
-      client: { getAttachedWorker },
+      client: { getAttachedWorker, getAttachedWorkerDiagnostics: vi.fn() },
       workerId: 'worker-one',
     });
 
@@ -59,7 +59,10 @@ describe('AttachedWorkerDetail', () => {
 
   it('shows cancellation, process, worker terminal, and canonical evidence independently', async () => {
     render(AttachedWorkerDetail, {
-      client: { getAttachedWorker: vi.fn().mockResolvedValue(attachedWorkerDetail()) },
+      client: {
+        getAttachedWorker: vi.fn().mockResolvedValue(attachedWorkerDetail()),
+        getAttachedWorkerDiagnostics: vi.fn(),
+      },
       workerId: 'worker-one',
     });
 
@@ -97,7 +100,10 @@ describe('AttachedWorkerDetail', () => {
 
   it('keeps disabled controls inert and renders their stable reason', async () => {
     render(AttachedWorkerDetail, {
-      client: { getAttachedWorker: vi.fn().mockResolvedValue(attachedWorkerDetail()) },
+      client: {
+        getAttachedWorker: vi.fn().mockResolvedValue(attachedWorkerDetail()),
+        getAttachedWorkerDiagnostics: vi.fn(),
+      },
       workerId: 'worker-one',
     });
 
@@ -120,7 +126,10 @@ describe('AttachedWorkerDetail', () => {
       if (state !== 'zero') delete model.resource.quota.remaining;
 
       render(AttachedWorkerDetail, {
-        client: { getAttachedWorker: vi.fn().mockResolvedValue(model) },
+        client: {
+          getAttachedWorker: vi.fn().mockResolvedValue(model),
+          getAttachedWorkerDiagnostics: vi.fn(),
+        },
         workerId: 'worker-one',
       });
 
@@ -139,6 +148,7 @@ describe('AttachedWorkerDetail', () => {
           .mockRejectedValue(
             new ApiError('not_found', 'The requested resource is not available.', 404),
           ),
+        getAttachedWorkerDiagnostics: vi.fn(),
       },
       workerId: 'worker-other',
     });

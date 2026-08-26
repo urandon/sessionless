@@ -3,6 +3,7 @@
 
   export interface AttachedWorkerDetailApi {
     getAttachedWorker: CanonicalApiClient['getAttachedWorker'];
+    getAttachedWorkerDiagnostics: CanonicalApiClient['getAttachedWorkerDiagnostics'];
   }
 
   type ViewState = 'loading' | 'ready' | 'not-found' | 'error';
@@ -15,6 +16,7 @@
   import { ApiError } from '$lib/api/client';
   import { labelState } from '$lib/attached-worker/presentation';
   import AttachedWorkerActionCatalog from './AttachedWorkerActionCatalog.svelte';
+  import AttachedWorkerDiagnostics from './AttachedWorkerDiagnostics.svelte';
   import AttachedWorkerTime from './AttachedWorkerTime.svelte';
   import AttachedWorkerWarnings from './AttachedWorkerWarnings.svelte';
 
@@ -560,6 +562,7 @@
         This interface is read-only. Controls remain inert and show their exact bounded reason.
       </p>
       <AttachedWorkerActionCatalog actions={model.governance.available_actions} />
+      <AttachedWorkerDiagnostics {client} {workerId} />
     </section>
 
     <aside class="warnings" aria-labelledby="warnings-title">

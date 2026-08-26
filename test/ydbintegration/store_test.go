@@ -68,6 +68,27 @@ func TestHarnessBindingServingGateRequiresCommittedMarker(t *testing.T) {
 	}
 }
 
+func TestManagedExecutionAuthorityV2ServingGateRequiresCommittedMarker(t *testing.T) {
+	store, client := openStore(t)
+	ctx := context.Background()
+	if _, err := client.DB.ExecContext(ctx,
+		`DELETE FROM managed_execution_authority_v2_cutover_state WHERE cutover_id=$1`,
+		"managed-execution-authority-v2-empty-cutover"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RequireManagedExecutionAuthorityV2Cutover(ctx); err == nil {
+		t.Fatal("missing managed execution authority v2 cutover marker accepted")
+	}
+	if _, err := client.DB.ExecContext(ctx,
+		`UPSERT INTO managed_execution_authority_v2_cutover_state (cutover_id,completed_at) VALUES ($1,$2)`,
+		"managed-execution-authority-v2-empty-cutover", time.Now().UTC().Truncate(time.Microsecond)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RequireManagedExecutionAuthorityV2Cutover(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestMigrationsAreRepeatable(t *testing.T) {
 	connectionString := requireConnectionString(t)
 	for run := 1; run <= 2; run++ {
@@ -616,6 +637,34 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 	if err := store.StartWorkerJob(context.Background(), loaded, lease, now.Add(2*time.Second)); err != nil {
 		t.Fatal(err)
 	}
+	effectRequest := ports.ReserveAttemptEffectRequestV1{
+		TenantID: tenantID, RunID: ingress.Run.ID, AttemptID: ingress.Attempt.ID,
+		LeaseID: lease.ID, FenceToken: lease.FenceToken, PhysicalInvocationClaimID: uniqueID("physical-claim"),
+	}
+	effect, err := store.ReserveAttemptEffect(context.Background(), effectRequest)
+	if err != nil || effect.Status != ports.AttemptEffectOwnedV1 {
+		t.Fatalf("reserve first provider effect = %#v, %v", effect, err)
+	}
+	if effect.Reservation.InvocationAuthorityDigest == "" || effect.Authority.Lease != lease {
+		t.Fatalf("reserved effect authority = %#v", effect)
+	}
+	replayed, err := store.ReserveAttemptEffect(context.Background(), effectRequest)
+	if err != nil || replayed.Status != ports.AttemptEffectReplayedV1 || replayed.Reservation != effect.Reservation {
+		t.Fatalf("exact provider effect replay = %#v, %v", replayed, err)
+	}
+	contender := effectRequest
+	contender.PhysicalInvocationClaimID = uniqueID("physical-contender")
+	reconcile, err := store.ReserveAttemptEffect(context.Background(), contender)
+	if err != nil || reconcile.Status != ports.AttemptEffectReconcileOnlyV1 || reconcile.Reservation != effect.Reservation {
+		t.Fatalf("contending provider effect = %#v, %v", reconcile, err)
+	}
+	divergent := effectRequest
+	divergentDigest := strings.Repeat("d", 64)
+	divergent.UpstreamIdempotencyKeyDigest = &divergentDigest
+	if _, err := store.ReserveAttemptEffect(context.Background(), divergent); err == nil {
+		t.Fatal("divergent upstream idempotency authority was accepted")
+	}
+	assertCount(t, client, "attempt_effect_reservations", tenantID, 1)
 	checkpoint := domain.Checkpoint{
 		ID: domain.CheckpointID(uniqueID("checkpoint")), TenantID: tenantID,
 		RunID: ingress.Run.ID, AttemptID: ingress.Attempt.ID, Sequence: 1,
@@ -1171,7 +1220,11 @@ func openStore(t *testing.T) (*ydbstore.Store, *ydbclient.Client) {
 			t.Errorf("close YDB client: %v", err)
 		}
 	})
-	store, err := ydbstore.New(client.DB, ydbstore.Options{})
+	grantIssuer, err := serverlessharness.NewCapabilityIssuer(time.Now, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := ydbstore.New(client.DB, ydbstore.Options{AttemptEffectGrantIssuer: grantIssuer})
 	if err != nil {
 		t.Fatal(err)
 	}

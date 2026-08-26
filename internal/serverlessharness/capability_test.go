@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -51,7 +52,11 @@ func TestPreparedInvocationRequiresExactProcessLocalAuthenticator(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	prepared, err := issuer.Issue(authority, reservation, allocation)
+	grant, err := issuer.MintAttemptEffectOwnershipGrant(authority, reservation, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := issuer.Issue(grant, allocation)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,6 +85,44 @@ func TestPreparedInvocationRequiresExactProcessLocalAuthenticator(t *testing.T) 
 	clock = prepared.ExecuteDeadline()
 	if issuer.Validate(prepared) == nil {
 		t.Fatal("capability accepted at exclusive deadline")
+	}
+}
+
+func TestPreparedInvocationIsConsumedExactlyOnceBeforeEffect(t *testing.T) {
+	t.Parallel()
+	authority, reservation, allocation, now := capabilityFixture(t)
+	issuer, err := NewCapabilityIssuer(func() time.Time { return now }, bytes.NewReader(bytes.Repeat([]byte{3}, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant, err := issuer.MintAttemptEffectOwnershipGrant(authority, reservation, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := issuer.Issue(grant, allocation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const contenders = 32
+	results := make(chan error, contenders)
+	var wait sync.WaitGroup
+	for range contenders {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			results <- issuer.Consume(prepared)
+		}()
+	}
+	wait.Wait()
+	close(results)
+	success := 0
+	for err := range results {
+		if err == nil {
+			success++
+		}
+	}
+	if success != 1 {
+		t.Fatalf("successful consumes = %d, want exactly one", success)
 	}
 }
 

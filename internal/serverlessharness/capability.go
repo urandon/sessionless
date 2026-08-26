@@ -9,11 +9,14 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"io"
+	"sync"
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/ports"
 )
 
 var ErrInvalidPreparedInvocation = errors.New("invalid prepared invocation")
@@ -21,8 +24,10 @@ var ErrInvalidPreparedInvocation = errors.New("invalid prepared invocation")
 type Clock func() time.Time
 
 type CapabilityIssuer struct {
-	key   [32]byte
-	clock Clock
+	key      [32]byte
+	clock    Clock
+	mu       sync.Mutex
+	consumed map[domain.AttemptEffectReservationDigestV1]struct{}
 }
 
 // PreparedInvocation has no exported fields and no JSON representation. A
@@ -47,7 +52,7 @@ func NewCapabilityIssuer(clock Clock, entropy io.Reader) (*CapabilityIssuer, err
 	if entropy == nil {
 		entropy = rand.Reader
 	}
-	issuer := &CapabilityIssuer{clock: clock}
+	issuer := &CapabilityIssuer{clock: clock, consumed: make(map[domain.AttemptEffectReservationDigestV1]struct{})}
 	if _, err := io.ReadFull(entropy, issuer.key[:]); err != nil {
 		return nil, ErrInvalidPreparedInvocation
 	}
@@ -59,17 +64,18 @@ func NewCapabilityIssuer(clock Clock, entropy io.Reader) (*CapabilityIssuer, err
 }
 
 func (issuer *CapabilityIssuer) Issue(
-	authority domain.ServerlessInvocationAuthorityV1,
-	reservation domain.AttemptEffectReservationV1,
+	grant ports.AttemptEffectOwnershipGrantV1,
 	allocation domain.PreparedAllocationV1,
 ) (PreparedInvocation, error) {
 	if issuer == nil || issuer.clock == nil {
 		return PreparedInvocation{}, ErrInvalidPreparedInvocation
 	}
 	now := issuer.clock().UTC()
-	if err := authority.ValidateAt(now); err != nil {
+	if err := issuer.verifyGrant(grant, now); err != nil {
 		return PreparedInvocation{}, ErrInvalidPreparedInvocation
 	}
+	authority := grant.Authority.Clone()
+	reservation := grant.Reservation.Clone()
 	if err := reservation.ValidateForAuthority(authority); err != nil || reservation.PhysicalInvocationClaimID == "" || now.Before(reservation.ReservedAt) {
 		return PreparedInvocation{}, ErrInvalidPreparedInvocation
 	}
@@ -84,10 +90,55 @@ func (issuer *CapabilityIssuer) Issue(
 		authority: authority.Clone(), reservation: reservation.Clone(), allocation: allocation.Clone(),
 		authorityDigest: authorityDigest, reservationDigest: reservationDigest,
 		allocationDigest: allocationDigest, costDigest: costDigest,
-		issuedAt: now, executeDeadline: authority.InvocationDeadline.UTC(),
+		issuedAt: now, executeDeadline: grant.GrantExpiresAt.UTC(),
 	}
 	prepared.authenticator = issuer.authenticate(prepared)
 	return prepared, nil
+}
+
+func (issuer *CapabilityIssuer) MintAttemptEffectOwnershipGrant(
+	authority domain.ServerlessInvocationAuthorityV1,
+	reservation domain.AttemptEffectReservationV1,
+	expiresAt time.Time,
+) (ports.AttemptEffectOwnershipGrantV1, error) {
+	if issuer == nil || issuer.clock == nil || authority.ValidateAt(issuer.clock().UTC()) != nil || reservation.ValidateForAuthority(authority) != nil {
+		return ports.AttemptEffectOwnershipGrantV1{}, ErrInvalidPreparedInvocation
+	}
+	grant := ports.AttemptEffectOwnershipGrantV1{
+		Version: ports.AttemptEffectOwnershipGrantVersionV1, Authority: authority.Clone(), Reservation: reservation.Clone(),
+		GrantExpiresAt: expiresAt.UTC(), Authenticator: make([]byte, sha256.Size),
+	}
+	grant.Authenticator = issuer.authenticateGrant(grant)
+	if err := grant.Validate(); err != nil {
+		return ports.AttemptEffectOwnershipGrantV1{}, ErrInvalidPreparedInvocation
+	}
+	return grant.Clone(), nil
+}
+
+func (issuer *CapabilityIssuer) verifyGrant(grant ports.AttemptEffectOwnershipGrantV1, now time.Time) error {
+	if issuer == nil || issuer.clock == nil || grant.Validate() != nil || now.Before(grant.Reservation.ReservedAt) || !now.Before(grant.GrantExpiresAt) {
+		return ErrInvalidPreparedInvocation
+	}
+	expected := issuer.authenticateGrant(grant)
+	if subtle.ConstantTimeCompare(expected, grant.Authenticator) != 1 || grant.Authority.ValidateAt(now) != nil {
+		return ErrInvalidPreparedInvocation
+	}
+	return nil
+}
+
+// Consume atomically burns a prepared provider-turn capability before the
+// caller may start a process, network request, or other provider effect.
+func (issuer *CapabilityIssuer) Consume(prepared PreparedInvocation) error {
+	if err := issuer.Validate(prepared); err != nil {
+		return err
+	}
+	issuer.mu.Lock()
+	defer issuer.mu.Unlock()
+	if _, exists := issuer.consumed[prepared.reservationDigest]; exists {
+		return ErrInvalidPreparedInvocation
+	}
+	issuer.consumed[prepared.reservationDigest] = struct{}{}
+	return nil
 }
 
 func (issuer *CapabilityIssuer) Validate(prepared PreparedInvocation) error {
@@ -135,6 +186,11 @@ func (prepared PreparedInvocation) Allocation() domain.PreparedAllocationV1 {
 
 func (prepared PreparedInvocation) ExecuteDeadline() time.Time { return prepared.executeDeadline }
 
+func (prepared PreparedInvocation) Digest() domain.PreparedInvocationDigestV1 {
+	digest := sha256.Sum256(prepared.authenticator[:])
+	return domain.PreparedInvocationDigestV1(hex.EncodeToString(digest[:]))
+}
+
 func (issuer *CapabilityIssuer) authenticate(prepared PreparedInvocation) [32]byte {
 	mac := hmac.New(sha256.New, issuer.key[:])
 	writeFrame(mac, "sessionless.prepared-invocation-capability.v1")
@@ -149,6 +205,20 @@ func (issuer *CapabilityIssuer) authenticate(prepared PreparedInvocation) [32]by
 	copy(result[:], mac.Sum(nil))
 	return result
 }
+
+func (issuer *CapabilityIssuer) authenticateGrant(grant ports.AttemptEffectOwnershipGrantV1) []byte {
+	mac := hmac.New(sha256.New, issuer.key[:])
+	writeFrame(mac, "sessionless.attempt-effect-ownership-grant.v1")
+	authorityDigest, _ := grant.Authority.Digest()
+	reservationDigest, _ := grant.Reservation.DigestForAuthority(grant.Authority)
+	writeFrame(mac, string(authorityDigest))
+	writeFrame(mac, string(reservationDigest))
+	writeFrame(mac, grant.Reservation.PhysicalInvocationClaimID)
+	writeInstant(mac, grant.GrantExpiresAt)
+	return mac.Sum(nil)
+}
+
+var _ ports.AttemptEffectOwnershipGrantIssuerV1 = (*CapabilityIssuer)(nil)
 
 func writeFrame(writer io.Writer, value string) {
 	var size [8]byte

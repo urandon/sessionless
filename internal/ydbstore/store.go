@@ -31,17 +31,19 @@ const harnessBindingCutoverID = "harness-binding-v1-empty-cutover"
 const managedExecutionAuthorityV2CutoverID = "managed-execution-authority-v2-empty-cutover"
 
 type Options struct {
-	IdempotencyRetention time.Duration
-	OperationalRetention time.Duration
-	WebSessionIdleTTL    time.Duration
+	IdempotencyRetention     time.Duration
+	OperationalRetention     time.Duration
+	WebSessionIdleTTL        time.Duration
+	AttemptEffectGrantIssuer ports.AttemptEffectOwnershipGrantIssuerV1
 }
 
 type Store struct {
-	db                   *sql.DB
-	idempotencyRetention time.Duration
-	operationalRetention time.Duration
-	webSessionIdleTTL    time.Duration
-	attachedWorkerNow    func(context.Context, *sql.Tx) (time.Time, error)
+	db                       *sql.DB
+	idempotencyRetention     time.Duration
+	operationalRetention     time.Duration
+	webSessionIdleTTL        time.Duration
+	attachedWorkerNow        func(context.Context, *sql.Tx) (time.Time, error)
+	attemptEffectGrantIssuer ports.AttemptEffectOwnershipGrantIssuerV1
 }
 
 func New(db *sql.DB, options Options) (*Store, error) {
@@ -58,11 +60,12 @@ func New(db *sql.DB, options Options) (*Store, error) {
 		options.WebSessionIdleTTL = defaultWebSessionIdleTTL
 	}
 	return &Store{
-		db:                   db,
-		idempotencyRetention: options.IdempotencyRetention,
-		operationalRetention: options.OperationalRetention,
-		webSessionIdleTTL:    options.WebSessionIdleTTL,
-		attachedWorkerNow:    currentAttachedWorkerTransactionTime,
+		db:                       db,
+		idempotencyRetention:     options.IdempotencyRetention,
+		operationalRetention:     options.OperationalRetention,
+		webSessionIdleTTL:        options.WebSessionIdleTTL,
+		attachedWorkerNow:        currentAttachedWorkerTransactionTime,
+		attemptEffectGrantIssuer: options.AttemptEffectGrantIssuer,
 	}, nil
 }
 

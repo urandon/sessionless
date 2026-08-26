@@ -2,8 +2,9 @@ package ydbstore
 
 import (
 	"context"
-	"database/sql"
+	"errors"
 	"fmt"
+	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
@@ -31,6 +32,10 @@ func (store *Store) ReserveAttemptEffect(ctx context.Context, request ports.Rese
 	}
 	err = store.Transact(ctx, request.TenantID, func(state ports.StateTx) error {
 		tx := state.(*stateTx)
+		at, err := store.attachedWorkerTransactionTime(ctx, tx)
+		if err != nil {
+			return err
+		}
 		existing, found, readErr := readAttemptEffectRecordTx(ctx, tx, request.AttemptID)
 		if readErr != nil {
 			return readErr
@@ -42,60 +47,31 @@ func (store *Store) ReserveAttemptEffect(ctx context.Context, request ports.Rese
 			if !attemptEffectRequestMatchesRecord(request, existing) {
 				return domain.ValidationError{Field: "reserve_attempt_effect", Reason: "does not match the persisted attempt effect scope"}
 			}
-			result = ports.ReserveAttemptEffectResultV1{
-				Status: ports.AttemptEffectReconcileOnlyV1, Authority: existing.Authority.Clone(),
-				Reservation: existing.Reservation.Clone(),
+			result = ports.ReserveAttemptEffectResultV1{Status: ports.AttemptEffectReconcileOnlyV1, Reservation: existing.Reservation.Clone()}
+			if existing.Reservation.PhysicalInvocationClaimID != request.PhysicalInvocationClaimID {
+				return result.Validate()
 			}
-			if existing.Reservation.PhysicalInvocationClaimID == request.PhysicalInvocationClaimID {
-				result.Status = ports.AttemptEffectReplayedV1
+			current, authorized, err := currentServerlessInvocationAuthorityTx(ctx, tx, request, at)
+			if err != nil {
+				return err
 			}
+			currentDigest, digestErr := current.Digest()
+			if !authorized || digestErr != nil || currentDigest != existing.Reservation.InvocationAuthorityDigest {
+				return result.Validate()
+			}
+			grant, err := store.mintAttemptEffectGrant(current, existing.Reservation, at)
+			if err != nil {
+				return err
+			}
+			result.Status, result.Grant = ports.AttemptEffectReplayedV1, &grant
 			return result.Validate()
 		}
-
-		at, err := store.attachedWorkerTransactionTime(ctx, tx)
+		authority, authorized, err := currentServerlessInvocationAuthorityTx(ctx, tx, request, at)
 		if err != nil {
 			return err
 		}
-		loaded, found, err := loadWorkerJobStateTx(ctx, tx, request.RunID)
-		if err != nil {
-			return err
-		}
-		if !found {
-			return sql.ErrNoRows
-		}
-		if loaded.Job.AttemptID != request.AttemptID || loaded.Attempt.ID != request.AttemptID {
-			return domain.ValidationError{Field: "reserve_attempt_effect.attempt_id", Reason: "does not match the canonical worker job"}
-		}
-		if loaded.Run.CancellationRequestedAt != nil || loaded.Run.Status != domain.RunRunning || loaded.Attempt.Status != domain.AttemptRunning {
-			return domain.ValidationError{Field: "reserve_attempt_effect", Reason: "run must be running and not cancelled"}
-		}
-		if loaded.Job.ExecutionPlacementV2.Kind != domain.ExecutionPlacementManaged || loaded.Job.SubstrateBinding == nil || loaded.Job.AdmissionCostCeiling == nil {
-			return domain.ValidationError{Field: "reserve_attempt_effect.execution_authority", Reason: "requires canonical managed authority version 2"}
-		}
-		lease, found, err := readCanonicalLeaseHeadTx(ctx, tx, request.RunID)
-		if err != nil {
-			return err
-		}
-		if !found || lease.ID != request.LeaseID || lease.AttemptID != request.AttemptID || lease.FenceToken != request.FenceToken {
-			return ErrLeaseLost
-		}
-		if err := requireLeaseOwnership(ctx, tx, request.RunID, request.LeaseID, request.FenceToken, at); err != nil {
-			return err
-		}
-		contextDigest, inputDigest, err := domain.ServerlessWorkerJobDigestsV1(loaded.Job, loaded.InputManifest)
-		if err != nil {
-			return err
-		}
-		invocationDeadline := lease.AcquiredAt.Add(loaded.Job.SubstrateBinding.Limits.InvocationTimeout)
-		if lease.ExpiresAt.Before(invocationDeadline) {
-			invocationDeadline = lease.ExpiresAt
-		}
-		authority := domain.ServerlessInvocationAuthorityV1{
-			Version:        domain.ServerlessInvocationAuthorityVersionV1,
-			HarnessBinding: loaded.Job.HarnessBinding.Clone(), ExecutionPlacementV2: loaded.Job.ExecutionPlacementV2,
-			SubstrateBinding: *loaded.Job.SubstrateBinding, AdmissionCostCeiling: loaded.Job.AdmissionCostCeiling.Clone(),
-			Lease: lease, ContextManifestDigest: contextDigest, InputManifestDigest: inputDigest,
-			InvocationDeadline: invocationDeadline.UTC(),
+		if !authorized {
+			return domain.ValidationError{Field: "reserve_attempt_effect", Reason: "canonical authority is not executable"}
 		}
 		reservation, err := domain.BuildAttemptEffectReservationV1(authority, request.PhysicalInvocationClaimID, request.UpstreamIdempotencyKeyDigest, at)
 		if err != nil {
@@ -118,12 +94,83 @@ func (store *Store) ReserveAttemptEffect(ctx context.Context, request ports.Rese
 		); err != nil {
 			return err
 		}
-		result = ports.ReserveAttemptEffectResultV1{
-			Status: ports.AttemptEffectOwnedV1, Authority: authority.Clone(), Reservation: reservation.Clone(),
+		grant, err := store.mintAttemptEffectGrant(authority, reservation, at)
+		if err != nil {
+			return err
 		}
+		result = ports.ReserveAttemptEffectResultV1{Status: ports.AttemptEffectOwnedV1, Reservation: reservation.Clone(), Grant: &grant}
 		return result.Validate()
 	})
 	return result, err
+}
+
+func currentServerlessInvocationAuthorityTx(ctx context.Context, tx *stateTx, request ports.ReserveAttemptEffectRequestV1, at time.Time) (domain.ServerlessInvocationAuthorityV1, bool, error) {
+	loaded, found, err := loadWorkerJobStateTx(ctx, tx, request.RunID)
+	if err != nil || !found {
+		return domain.ServerlessInvocationAuthorityV1{}, false, err
+	}
+	if loaded.Job.AttemptID != request.AttemptID || loaded.Attempt.ID != request.AttemptID ||
+		loaded.Run.CancellationRequestedAt != nil || loaded.Run.Status != domain.RunRunning || loaded.Attempt.Status != domain.AttemptRunning {
+		return domain.ServerlessInvocationAuthorityV1{}, false, nil
+	}
+	if loaded.Job.ExecutionPlacementV2.Kind != domain.ExecutionPlacementManaged || loaded.Job.SubstrateBinding == nil || loaded.Job.AdmissionCostCeiling == nil {
+		return domain.ServerlessInvocationAuthorityV1{}, false, nil
+	}
+	if loaded.Job.HarnessBinding.Backend.BackendKind != domain.HarnessBackendDeterministicFixtureV1 ||
+		loaded.Job.HarnessBinding.Resource.Kind != domain.ProviderResourceCredentiallessFixtureV1 {
+		return domain.ServerlessInvocationAuthorityV1{}, false, nil
+	}
+	lease, found, err := readCanonicalLeaseHeadTx(ctx, tx, request.RunID)
+	if err != nil || !found {
+		return domain.ServerlessInvocationAuthorityV1{}, false, err
+	}
+	if lease.ID != request.LeaseID || lease.AttemptID != request.AttemptID || lease.FenceToken != request.FenceToken {
+		return domain.ServerlessInvocationAuthorityV1{}, false, nil
+	}
+	if err := requireLeaseOwnership(ctx, tx, request.RunID, request.LeaseID, request.FenceToken, at); err != nil {
+		if errors.Is(err, ErrLeaseLost) {
+			return domain.ServerlessInvocationAuthorityV1{}, false, nil
+		}
+		return domain.ServerlessInvocationAuthorityV1{}, false, err
+	}
+	contextDigest, inputDigest, err := domain.ServerlessWorkerJobDigestsV1(loaded.Job, loaded.InputManifest)
+	if err != nil {
+		return domain.ServerlessInvocationAuthorityV1{}, false, err
+	}
+	invocationDeadline := lease.AcquiredAt.Add(loaded.Job.SubstrateBinding.Limits.InvocationTimeout)
+	if lease.ExpiresAt.Before(invocationDeadline) {
+		invocationDeadline = lease.ExpiresAt
+	}
+	authority := domain.ServerlessInvocationAuthorityV1{
+		Version:        domain.ServerlessInvocationAuthorityVersionV1,
+		HarnessBinding: loaded.Job.HarnessBinding.Clone(), ExecutionPlacementV2: loaded.Job.ExecutionPlacementV2,
+		SubstrateBinding: *loaded.Job.SubstrateBinding, AdmissionCostCeiling: loaded.Job.AdmissionCostCeiling.Clone(),
+		Lease: lease, ContextManifestDigest: contextDigest, InputManifestDigest: inputDigest,
+		InvocationDeadline: invocationDeadline.UTC(),
+	}
+	if err := authority.ValidateAt(at); err != nil {
+		return domain.ServerlessInvocationAuthorityV1{}, false, nil
+	}
+	return authority, true, nil
+}
+
+func (store *Store) mintAttemptEffectGrant(authority domain.ServerlessInvocationAuthorityV1, reservation domain.AttemptEffectReservationV1, at time.Time) (ports.AttemptEffectOwnershipGrantV1, error) {
+	if store.attemptEffectGrantIssuer == nil {
+		return ports.AttemptEffectOwnershipGrantV1{}, errors.New("attempt effect ownership grant issuer is not configured")
+	}
+	expiresAt := at.Add(authority.AdmissionCostCeiling.MaxPreEffectDurationPerDelivery)
+	for _, deadline := range []time.Time{authority.InvocationDeadline, authority.SubstrateBinding.ProfileEvidenceExpiresAt, authority.AdmissionCostCeiling.PriceExpiresAt} {
+		if deadline.Before(expiresAt) {
+			expiresAt = deadline
+		}
+	}
+	if authority.HarnessBinding.EvidenceExpiresAt != nil && authority.HarnessBinding.EvidenceExpiresAt.Before(expiresAt) {
+		expiresAt = *authority.HarnessBinding.EvidenceExpiresAt
+	}
+	if !expiresAt.After(at) {
+		return ports.AttemptEffectOwnershipGrantV1{}, errors.New("attempt effect ownership grant has no fresh pre-effect window")
+	}
+	return store.attemptEffectGrantIssuer.MintAttemptEffectOwnershipGrant(authority, reservation, expiresAt)
 }
 
 func readAttemptEffectRecordTx(ctx context.Context, tx *stateTx, attemptID domain.AttemptID) (attemptEffectRecordV1, bool, error) {

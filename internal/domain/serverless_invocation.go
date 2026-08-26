@@ -53,6 +53,9 @@ func (value ServerlessInvocationAuthorityV1) Validate() error {
 	if value.SubstrateBinding.AdmissionCostCeilingDigest != costDigest {
 		return ValidationError{Field: "serverless_invocation_authority.admission_cost_ceiling", Reason: "must match the sealed substrate cost authority"}
 	}
+	if err := value.AdmissionCostCeiling.ValidateForSubstrate(value.SubstrateBinding); err != nil {
+		return err
+	}
 	if err := value.HarnessBinding.ValidateForScope(value.Lease.TenantID, value.HarnessBinding.OwnerUserID, value.Lease.RunID, value.Lease.AttemptID, value.ExecutionPlacementV2); err != nil {
 		return err
 	}
@@ -289,9 +292,42 @@ func (value AttemptEffectReservationV1) Clone() AttemptEffectReservationV1 {
 	return clone
 }
 
-func (value AttemptEffectReservationV1) ValidateForAuthority(authority ServerlessInvocationAuthorityV1) error {
+func (value AttemptEffectReservationV1) Validate() error {
 	if value.Version != AttemptEffectReservationVersionV1 || value.Kind != ProviderEffectTurnV1 || value.EffectSequence != ServerlessProviderEffectSequenceV1 {
 		return ValidationError{Field: "attempt_effect_reservation", Reason: "must be the version 1 provider-turn effect fence"}
+	}
+	for _, validate := range []func() error{value.TenantID.Validate, value.RunID.Validate, value.AttemptID.Validate, value.LeaseID.Validate} {
+		if err := validate(); err != nil {
+			return err
+		}
+	}
+	if value.FenceToken == 0 {
+		return ValidationError{Field: "attempt_effect_reservation.fence_token", Reason: "must be positive"}
+	}
+	if err := ValidateOpaqueID("attempt_effect_reservation.physical_invocation_claim_id", value.PhysicalInvocationClaimID); err != nil {
+		return err
+	}
+	for _, digest := range []interface{ Validate() error }{
+		value.InvocationAuthorityDigest, value.HarnessBindingDigest, value.SubstrateBindingDigest, value.AdmissionCostCeilingDigest,
+	} {
+		if err := digest.Validate(); err != nil {
+			return err
+		}
+	}
+	if value.UpstreamIdempotencyKeyDigest != nil {
+		if err := validateSHA256("attempt_effect_reservation.upstream_idempotency_key_digest", *value.UpstreamIdempotencyKeyDigest); err != nil {
+			return err
+		}
+	}
+	if value.ReservedAt.IsZero() {
+		return ValidationError{Field: "attempt_effect_reservation.reserved_at", Reason: "must not be zero"}
+	}
+	return nil
+}
+
+func (value AttemptEffectReservationV1) ValidateForAuthority(authority ServerlessInvocationAuthorityV1) error {
+	if err := value.Validate(); err != nil {
+		return err
 	}
 	if err := authority.Validate(); err != nil {
 		return err
@@ -299,20 +335,12 @@ func (value AttemptEffectReservationV1) ValidateForAuthority(authority Serverles
 	if value.TenantID != authority.Lease.TenantID || value.RunID != authority.Lease.RunID || value.AttemptID != authority.Lease.AttemptID || value.LeaseID != authority.Lease.ID || value.FenceToken != authority.Lease.FenceToken {
 		return ValidationError{Field: "attempt_effect_reservation.scope", Reason: "must exact-match the lease and fence"}
 	}
-	if err := ValidateOpaqueID("attempt_effect_reservation.physical_invocation_claim_id", value.PhysicalInvocationClaimID); err != nil {
-		return err
-	}
 	harnessDigest, _ := authority.HarnessBinding.Digest()
 	substrateDigest, _ := authority.SubstrateBinding.Digest()
 	costDigest, _ := authority.AdmissionCostCeiling.Digest()
 	authorityDigest, _ := authority.Digest()
 	if value.InvocationAuthorityDigest != authorityDigest || value.HarnessBindingDigest != harnessDigest || value.SubstrateBindingDigest != substrateDigest || value.AdmissionCostCeilingDigest != costDigest {
 		return ValidationError{Field: "attempt_effect_reservation.authority", Reason: "must exact-match all admitted authority digests"}
-	}
-	if value.UpstreamIdempotencyKeyDigest != nil {
-		if err := validateSHA256("attempt_effect_reservation.upstream_idempotency_key_digest", *value.UpstreamIdempotencyKeyDigest); err != nil {
-			return err
-		}
 	}
 	if value.ReservedAt.IsZero() || value.ReservedAt.Before(authority.Lease.AcquiredAt) || !value.ReservedAt.Before(authority.InvocationDeadline) || !value.ReservedAt.Before(authority.Lease.ExpiresAt) {
 		return ValidationError{Field: "attempt_effect_reservation.reserved_at", Reason: "must be inside the active authority window"}

@@ -336,7 +336,7 @@ func (binder *DeterministicFixtureBinder) BindHarness(_ context.Context, request
 		PriceObservedAt: request.At.UTC(), PriceExpiresAt: request.At.UTC().Add(30 * 24 * time.Hour), MaxDeliveries: 5,
 		MaxPreEffectDurationPerDelivery: time.Minute, MaxActiveDuration: 40 * time.Minute, MaxCleanupAndReconcileDuration: 5 * time.Minute,
 		ConfiguredMemoryBytes: 256 << 20, ConfiguredVCPUMillis: 1000, MaxIngressBytes: 1 << 20, MaxEgressBytes: 1 << 20,
-		MaxLogBytes: 1 << 20, MaxEvidenceBytes: 1 << 20, SubstratePriceState: domain.CostEvidenceKnownV1,
+		MaxLogBytes: 2 << 20, MaxEvidenceBytes: 1 << 20, SubstratePriceState: domain.CostEvidenceKnownV1,
 		ProviderPriceState: domain.ProviderPriceKnownFreeV1, MaxSubstrateAmountMicrounits: &zero,
 		MaxProviderAmountMicrounits: &zero, MaxTotalAmountMicrounits: &zero,
 	}

@@ -172,6 +172,46 @@ func (value AdmissionCostCeilingV1) ValidateAt(now time.Time) error {
 	return nil
 }
 
+// ValidateForSubstrate turns the cost ceiling into enforceable runtime
+// authority. It must cover the exact selected substrate profile; a merely
+// digest-linked but smaller budget cannot authorize execution.
+func (value AdmissionCostCeilingV1) ValidateForSubstrate(substrate SubstrateBindingV1) error {
+	if err := value.Validate(); err != nil {
+		return err
+	}
+	if err := substrate.Validate(); err != nil {
+		return err
+	}
+	digest, _ := value.Digest()
+	if substrate.AdmissionCostCeilingDigest != digest {
+		return ValidationError{Field: "admission_cost_ceiling", Reason: "must be the exact ceiling sealed by the substrate"}
+	}
+	limits := substrate.Limits
+	if value.ConfiguredMemoryBytes != limits.MemoryBytes || value.ConfiguredVCPUMillis != limits.CPUMillis {
+		return ValidationError{Field: "admission_cost_ceiling.configuration", Reason: "memory and CPU must exact-match the substrate profile"}
+	}
+	if value.MaxActiveDuration != limits.ExecutionTimeout || value.MaxCleanupAndReconcileDuration < limits.CleanupTimeout {
+		return ValidationError{Field: "admission_cost_ceiling.duration", Reason: "must cover exact execution and cleanup limits"}
+	}
+	if value.MaxPreEffectDurationPerDelivery > limits.InvocationTimeout-value.MaxActiveDuration-value.MaxCleanupAndReconcileDuration {
+		return ValidationError{Field: "admission_cost_ceiling.duration", Reason: "pre-effect, active and cleanup ceilings must fit inside invocation timeout"}
+	}
+	if value.MaxIngressBytes < limits.ArtifactBytes || value.MaxEgressBytes < limits.ArtifactBytes {
+		return ValidationError{Field: "admission_cost_ceiling.artifact_bytes", Reason: "ingress and egress ceilings must cover the substrate artifact bound"}
+	}
+	if limits.StdoutBytes > ^uint64(0)-limits.StderrBytes || value.MaxLogBytes < limits.StdoutBytes+limits.StderrBytes {
+		return ValidationError{Field: "admission_cost_ceiling.max_log_bytes", Reason: "must cover bounded stdout and stderr"}
+	}
+	minimumEvidence := limits.StdoutBytes
+	if limits.StderrBytes > minimumEvidence {
+		minimumEvidence = limits.StderrBytes
+	}
+	if value.MaxEvidenceBytes < minimumEvidence {
+		return ValidationError{Field: "admission_cost_ceiling.max_evidence_bytes", Reason: "must cover one bounded substrate evidence stream"}
+	}
+	return nil
+}
+
 func (value AdmissionCostCeilingV1) Digest() (AdmissionCostCeilingDigestV1, error) {
 	if err := value.Validate(); err != nil {
 		return "", err
@@ -316,6 +356,9 @@ func ValidateExecutionAuthorityProjection(placement ExecutionPlacementV2, substr
 			return err
 		}
 		if err := cost.Validate(); err != nil {
+			return err
+		}
+		if err := cost.ValidateForSubstrate(*substrate); err != nil {
 			return err
 		}
 		substrateDigest, _ := substrate.Digest()

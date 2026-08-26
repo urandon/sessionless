@@ -275,17 +275,15 @@ func (service *Service) IngestBound(
 		return existing, nil
 	}
 	attemptID := domain.AttemptID(service.stableID("attempt", input.Actor.TenantID, plan.RunID, "1"))
-	harnessBinding, err := service.harnessBinder.BindHarness(ctx, ports.HarnessBindingRequest{
+	managedAuthority, err := service.harnessBinder.BindHarness(ctx, ports.HarnessBindingRequest{
 		TenantID: input.Actor.TenantID, OwnerUserID: input.Actor.UserID,
 		RunID: plan.RunID, AttemptID: attemptID, SubscriptionConnectionID: input.SubscriptionConnectionID,
-		ExecutionPlacement: domain.ManagedExecutionPlacementV1(), At: input.ReceivedAt.UTC(),
+		At: input.ReceivedAt.UTC(),
 	})
 	if err != nil {
 		return ports.CanonicalUserEventResult{}, err
 	}
-	if err := harnessBinding.ValidateForScope(
-		input.Actor.TenantID, input.Actor.UserID, plan.RunID, attemptID, domain.ManagedExecutionPlacementV1(),
-	); err != nil {
+	if err := managedAuthority.ValidateForScope(ports.HarnessBindingRequest{TenantID: input.Actor.TenantID, OwnerUserID: input.Actor.UserID, RunID: plan.RunID, AttemptID: attemptID, SubscriptionConnectionID: input.SubscriptionConnectionID, At: input.ReceivedAt.UTC()}); err != nil {
 		return ports.CanonicalUserEventResult{}, err
 	}
 
@@ -345,9 +343,12 @@ func (service *Service) IngestBound(
 		SubscriptionConnectionID: input.SubscriptionConnectionID,
 		ManifestID:               domain.ArtifactManifestID(service.stableID("manifest", input.Actor.TenantID, plan.RunID)),
 		Artifacts:                artifacts, DispatchID: plan.DispatchID,
-		AllowedMCPServers: append([]string(nil), input.AllowedMCPServers...),
-		HarnessBinding:    harnessBinding.Clone(),
-		CommittedAt:       input.ReceivedAt.UTC(),
+		AllowedMCPServers:    append([]string(nil), input.AllowedMCPServers...),
+		ExecutionPlacementV2: managedAuthority.ExecutionPlacementV2,
+		HarnessBinding:       managedAuthority.HarnessBinding.Clone(),
+		SubstrateBinding:     managedAuthority.SubstrateBinding,
+		AdmissionCostCeiling: managedAuthority.AdmissionCostCeiling.Clone(),
+		CommittedAt:          input.ReceivedAt.UTC(),
 	})
 	if err != nil {
 		return ports.CanonicalUserEventResult{}, err
@@ -392,17 +393,15 @@ func (service *Service) Ingest(ctx context.Context, input UserInput) (ports.Cano
 		return existing.Result, nil
 	}
 	attemptID := domain.AttemptID(service.stableID("attempt", input.Actor.TenantID, runID, "1"))
-	harnessBinding, err := service.harnessBinder.BindHarness(ctx, ports.HarnessBindingRequest{
+	managedAuthority, err := service.harnessBinder.BindHarness(ctx, ports.HarnessBindingRequest{
 		TenantID: input.Actor.TenantID, OwnerUserID: input.Actor.UserID,
 		RunID: runID, AttemptID: attemptID, SubscriptionConnectionID: input.SubscriptionConnectionID,
-		ExecutionPlacement: domain.ManagedExecutionPlacementV1(), At: input.ReceivedAt.UTC(),
+		At: input.ReceivedAt.UTC(),
 	})
 	if err != nil {
 		return ports.CanonicalUserEventResult{}, err
 	}
-	if err := harnessBinding.ValidateForScope(
-		input.Actor.TenantID, input.Actor.UserID, runID, attemptID, domain.ManagedExecutionPlacementV1(),
-	); err != nil {
+	if err := managedAuthority.ValidateForScope(ports.HarnessBindingRequest{TenantID: input.Actor.TenantID, OwnerUserID: input.Actor.UserID, RunID: runID, AttemptID: attemptID, SubscriptionConnectionID: input.SubscriptionConnectionID, At: input.ReceivedAt.UTC()}); err != nil {
 		return ports.CanonicalUserEventResult{}, err
 	}
 	origin := domain.FrontendEventOrigin{
@@ -461,7 +460,10 @@ func (service *Service) Ingest(ctx context.Context, input UserInput) (ports.Cano
 		Artifacts:                artifacts,
 		DispatchID:               dispatchID,
 		AllowedMCPServers:        append([]string(nil), input.AllowedMCPServers...),
-		HarnessBinding:           harnessBinding.Clone(),
+		ExecutionPlacementV2:     managedAuthority.ExecutionPlacementV2,
+		HarnessBinding:           managedAuthority.HarnessBinding.Clone(),
+		SubstrateBinding:         managedAuthority.SubstrateBinding,
+		AdmissionCostCeiling:     managedAuthority.AdmissionCostCeiling.Clone(),
 		CommittedAt:              input.ReceivedAt.UTC(),
 	})
 	if err != nil {

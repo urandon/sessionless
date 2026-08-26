@@ -39,7 +39,7 @@ func (runner Runner) Run(ctx context.Context, fixture FixtureV1) (ResultV1, erro
 		return ResultV1{}, ErrInvalidFixture
 	}
 
-	identity := fixtureIdentity(fixture.Binding, fixture.Placement)
+	identity := fixtureIdentity(fixture)
 	var executionEvidence *domain.ProviderExecutionEvidenceV1
 	var operationErr error
 	switch fixture.Operation {
@@ -49,7 +49,7 @@ func (runner Runner) Run(ctx context.Context, fixture FixtureV1) (ResultV1, erro
 		operationErr = runner.Registry.Cancel(ctx, identity)
 	case OperationExecuteV1:
 		var executionResult ports.ExecutionResult
-		executionResult, operationErr = runner.Registry.Execute(ctx, fixtureRequest(fixture.Binding, fixture.Placement), discardEventSink{})
+		executionResult, operationErr = runner.Registry.Execute(ctx, fixtureRequest(fixture), discardEventSink{})
 		executionEvidence = executionResult.ProviderEvidence
 		if executionEvidence == nil {
 			if operationErr == nil {
@@ -105,19 +105,22 @@ func (runner Runner) Run(ctx context.Context, fixture FixtureV1) (ResultV1, erro
 	return result.seal()
 }
 
-func fixtureIdentity(binding domain.HarnessBindingV1, placement domain.ExecutionPlacementV1) ports.ExecutionIdentity {
+func fixtureIdentity(fixture FixtureV1) ports.ExecutionIdentity {
 	return ports.ExecutionIdentity{
-		TenantID: binding.TenantID, OwnerUserID: binding.OwnerUserID, RunID: binding.RunID, AttemptID: binding.AttemptID,
-		ExecutionPlacement: placement, HarnessBinding: binding.Clone(),
+		TenantID: fixture.Binding.TenantID, OwnerUserID: fixture.Binding.OwnerUserID, RunID: fixture.Binding.RunID, AttemptID: fixture.Binding.AttemptID,
+		ExecutionPlacementV2: fixture.Placement, HarnessBinding: fixture.Binding.Clone(),
+		SubstrateBinding: cloneFixtureSubstrate(fixture.SubstrateBinding), AdmissionCostCeiling: cloneFixtureCost(fixture.AdmissionCostCeiling),
 	}
 }
 
-func fixtureRequest(binding domain.HarnessBindingV1, placement domain.ExecutionPlacementV1) ports.ExecutionRequest {
+func fixtureRequest(fixture FixtureV1) ports.ExecutionRequest {
+	binding := fixture.Binding
 	request := ports.ExecutionRequest{
 		TenantID: binding.TenantID, OwnerUserID: binding.OwnerUserID, RunID: binding.RunID,
 		SessionID: "session-conformance", TriggerEventID: "event-conformance", AttemptID: binding.AttemptID,
 		WorkDir: "/sessionless-conformance/work", ContextWindow: &domain.SessionContextWindow{ThroughSequence: 1},
-		ExecutionPlacement: placement, HarnessBinding: binding.Clone(),
+		ExecutionPlacementV2: fixture.Placement, HarnessBinding: binding.Clone(),
+		SubstrateBinding: cloneFixtureSubstrate(fixture.SubstrateBinding), AdmissionCostCeiling: cloneFixtureCost(fixture.AdmissionCostCeiling),
 	}
 	if binding.Resource.CredentialMode == domain.ProviderCredentialInvocationV1 {
 		expiresAt := time.Unix(4102444800, 0).UTC()
@@ -139,6 +142,16 @@ func fixtureRequest(binding domain.HarnessBindingV1, placement domain.ExecutionP
 		}
 	}
 	return request
+}
+
+func cloneFixtureSubstrate(value domain.SubstrateBindingV1) *domain.SubstrateBindingV1 {
+	clone := value
+	return &clone
+}
+
+func cloneFixtureCost(value domain.AdmissionCostCeilingV1) *domain.AdmissionCostCeilingV1 {
+	clone := value.Clone()
+	return &clone
 }
 
 type discardEventSink struct{}

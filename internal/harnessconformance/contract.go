@@ -177,18 +177,21 @@ type ExpectedV1 struct {
 }
 
 type FixtureV1 struct {
-	Version        uint32                      `json:"version"`
-	FixtureID      string                      `json:"fixture_id"`
-	Placement      domain.ExecutionPlacementV1 `json:"execution_placement"`
-	Binding        domain.HarnessBindingV1     `json:"binding"`
-	EvidenceBundle *EvidenceBundleV1           `json:"evidence_bundle,omitempty"`
-	Operation      OperationV1                 `json:"operation"`
-	Expected       ExpectedV1                  `json:"expected"`
+	Version              uint32                        `json:"version"`
+	FixtureID            string                        `json:"fixture_id"`
+	Placement            domain.ExecutionPlacementV2   `json:"execution_placement"`
+	Binding              domain.HarnessBindingV1       `json:"binding"`
+	SubstrateBinding     domain.SubstrateBindingV1     `json:"substrate_binding"`
+	AdmissionCostCeiling domain.AdmissionCostCeilingV1 `json:"admission_cost_ceiling"`
+	EvidenceBundle       *EvidenceBundleV1             `json:"evidence_bundle,omitempty"`
+	Operation            OperationV1                   `json:"operation"`
+	Expected             ExpectedV1                    `json:"expected"`
 }
 
 func (fixture FixtureV1) Clone() FixtureV1 {
 	clone := fixture
 	clone.Binding = fixture.Binding.Clone()
+	clone.AdmissionCostCeiling = fixture.AdmissionCostCeiling.Clone()
 	if fixture.EvidenceBundle != nil {
 		bundle := fixture.EvidenceBundle.Clone()
 		clone.EvidenceBundle = &bundle
@@ -207,6 +210,9 @@ func (fixture FixtureV1) Validate() error {
 		return err
 	}
 	if err := fixture.Binding.ValidateForScope(fixture.Binding.TenantID, fixture.Binding.OwnerUserID, fixture.Binding.RunID, fixture.Binding.AttemptID, fixture.Placement); err != nil {
+		return err
+	}
+	if err := domain.ValidateExecutionAuthorityProjection(fixture.Placement, &fixture.SubstrateBinding, &fixture.AdmissionCostCeiling); err != nil {
 		return err
 	}
 	switch fixture.Operation {

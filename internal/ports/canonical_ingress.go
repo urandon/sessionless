@@ -107,7 +107,10 @@ type CanonicalUserEventCommit struct {
 	Artifacts                []domain.Artifact
 	DispatchID               domain.DispatchOutboxID
 	AllowedMCPServers        []string
+	ExecutionPlacementV2     domain.ExecutionPlacementV2
 	HarnessBinding           domain.HarnessBindingV1
+	SubstrateBinding         domain.SubstrateBindingV1
+	AdmissionCostCeiling     domain.AdmissionCostCeilingV1
 	CommittedAt              time.Time
 }
 
@@ -119,12 +122,48 @@ type HarnessBindingRequest struct {
 	RunID                    domain.RunID
 	AttemptID                domain.AttemptID
 	SubscriptionConnectionID domain.SubscriptionConnectionID
-	ExecutionPlacement       domain.ExecutionPlacementV1
 	At                       time.Time
 }
 
+type ManagedExecutionAuthorityV2 struct {
+	ExecutionPlacementV2 domain.ExecutionPlacementV2
+	HarnessBinding       domain.HarnessBindingV1
+	SubstrateBinding     domain.SubstrateBindingV1
+	AdmissionCostCeiling domain.AdmissionCostCeilingV1
+}
+
+func (authority ManagedExecutionAuthorityV2) ValidateForScope(request HarnessBindingRequest) error {
+	if err := authority.ExecutionPlacementV2.Validate(); err != nil {
+		return err
+	}
+	if authority.ExecutionPlacementV2.Kind != domain.ExecutionPlacementManaged {
+		return domain.ValidationError{Field: "managed_execution_authority.execution_placement", Reason: "must be managed"}
+	}
+	if err := authority.SubstrateBinding.Validate(); err != nil {
+		return err
+	}
+	substrateDigest, err := authority.SubstrateBinding.Digest()
+	if err != nil {
+		return err
+	}
+	if authority.ExecutionPlacementV2.SubstrateBindingDigest != string(substrateDigest) {
+		return domain.ValidationError{Field: "managed_execution_authority.execution_placement", Reason: "must seal the exact substrate binding"}
+	}
+	if err := authority.AdmissionCostCeiling.Validate(); err != nil {
+		return err
+	}
+	costDigest, err := authority.AdmissionCostCeiling.Digest()
+	if err != nil {
+		return err
+	}
+	if authority.SubstrateBinding.AdmissionCostCeilingDigest != costDigest {
+		return domain.ValidationError{Field: "managed_execution_authority.admission_cost_ceiling", Reason: "must match the substrate binding"}
+	}
+	return authority.HarnessBinding.ValidateForScope(request.TenantID, request.OwnerUserID, request.RunID, request.AttemptID, authority.ExecutionPlacementV2)
+}
+
 type HarnessBinder interface {
-	BindHarness(context.Context, HarnessBindingRequest) (domain.HarnessBindingV1, error)
+	BindHarness(context.Context, HarnessBindingRequest) (ManagedExecutionAuthorityV2, error)
 }
 
 type CanonicalUserEventResult struct {

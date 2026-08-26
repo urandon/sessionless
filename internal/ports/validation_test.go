@@ -21,30 +21,33 @@ func portTestBlob(tenant domain.TenantID) domain.BlobRef {
 	}
 }
 
-func portTestHarnessBinding(tenant domain.TenantID, owner domain.UserID, run domain.RunID, attempt domain.AttemptID) domain.HarnessBindingV1 {
-	binding, err := sessionlessharness.NewDeterministicFixtureBindingV1(
-		tenant, owner, run, attempt, "subscription-1", domain.ManagedExecutionPlacementV1(), portTestTime,
+func portTestManagedAuthority(tenant domain.TenantID, owner domain.UserID, run domain.RunID, attempt domain.AttemptID) ports.ManagedExecutionAuthorityV2 {
+	authority, err := sessionlessharness.NewDeterministicFixtureManagedAuthorityV2(
+		tenant, owner, run, attempt, "subscription-1", portTestTime,
 	)
 	if err != nil {
 		panic(err)
 	}
-	return binding
+	return authority
 }
 
 func TestExecutionRequestRejectsCrossTenantBlob(t *testing.T) {
 	t.Parallel()
+	authority := portTestManagedAuthority("tenant-a", "user-1", "run-1", "attempt-1")
+	substrate := authority.SubstrateBinding
+	cost := authority.AdmissionCostCeiling.Clone()
 
 	request := ports.ExecutionRequest{
-		TenantID:           "tenant-a",
-		OwnerUserID:        "user-1",
-		RunID:              "run-1",
-		SessionID:          "session-1",
-		TriggerEventID:     "event-1",
-		AttemptID:          "attempt-1",
-		WorkDir:            "/tmp/sessionless-test",
-		ContextSnapshot:    portTestBlob("tenant-b"),
-		HarnessBinding:     portTestHarnessBinding("tenant-a", "user-1", "run-1", "attempt-1"),
-		ExecutionPlacement: domain.ManagedExecutionPlacementV1(),
+		TenantID:        "tenant-a",
+		OwnerUserID:     "user-1",
+		RunID:           "run-1",
+		SessionID:       "session-1",
+		TriggerEventID:  "event-1",
+		AttemptID:       "attempt-1",
+		WorkDir:         "/tmp/sessionless-test",
+		ContextSnapshot: portTestBlob("tenant-b"),
+		HarnessBinding:  authority.HarnessBinding, ExecutionPlacementV2: authority.ExecutionPlacementV2,
+		SubstrateBinding: &substrate, AdmissionCostCeiling: &cost,
 	}
 	err := request.Validate()
 	var mismatch domain.TenantMismatchError
@@ -55,6 +58,9 @@ func TestExecutionRequestRejectsCrossTenantBlob(t *testing.T) {
 
 func TestExecutionRequestAcceptsHarnessNeutralReferences(t *testing.T) {
 	t.Parallel()
+	authority := portTestManagedAuthority("tenant-a", "user-1", "run-1", "attempt-1")
+	substrate := authority.SubstrateBinding
+	cost := authority.AdmissionCostCeiling.Clone()
 
 	request := ports.ExecutionRequest{
 		TenantID:        "tenant-a",
@@ -84,9 +90,11 @@ func TestExecutionRequestAcceptsHarnessNeutralReferences(t *testing.T) {
 		CredentialMaterialization: ports.ProviderCredentialMaterializationV1{
 			Kind: domain.ProviderCredentialDeliveryFileV1, RootDir: "/tmp/sessionless-credential", FilePath: "/tmp/sessionless-credential/auth.json",
 		},
-		AllowedMCPServers:  []string{"source-control", "docs"},
-		ExecutionPlacement: domain.ManagedExecutionPlacementV1(),
-		HarnessBinding:     portTestHarnessBinding("tenant-a", "user-1", "run-1", "attempt-1"),
+		AllowedMCPServers:    []string{"source-control", "docs"},
+		ExecutionPlacementV2: authority.ExecutionPlacementV2,
+		HarnessBinding:       authority.HarnessBinding,
+		SubstrateBinding:     &substrate,
+		AdmissionCostCeiling: &cost,
 	}
 	request.HarnessBinding.Backend.ProviderContractKind = domain.ProviderContractInvocationV1
 	request.HarnessBinding.Backend.CredentialDeliveryKind = domain.ProviderCredentialDeliveryFileV1

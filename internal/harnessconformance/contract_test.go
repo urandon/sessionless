@@ -14,15 +14,19 @@ import (
 
 func deterministicFixture(t *testing.T, operation OperationV1) FixtureV1 {
 	t.Helper()
-	placement := domain.ManagedExecutionPlacementV1()
-	binding, err := sessionlessharness.NewDeterministicFixtureBindingV1(
+	authority, err := sessionlessharness.NewDeterministicFixtureManagedAuthorityV2(
 		"tenant-conformance", "user-conformance", "run-conformance", "attempt-conformance", "subscription-conformance",
-		placement, time.Unix(10, 0).UTC(),
+		time.Unix(10, 0).UTC(),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return FixtureV1{Version: VersionV1, FixtureID: "deterministic-execute", Placement: placement, Binding: binding, Operation: operation, Expected: ExpectedV1{RegistryContract: RegistryContractPassV1, BackendProtocol: BackendProtocolSkippedV1}}
+	return FixtureV1{
+		Version: VersionV1, FixtureID: "deterministic-execute",
+		Placement: authority.ExecutionPlacementV2, Binding: authority.HarnessBinding,
+		SubstrateBinding: authority.SubstrateBinding, AdmissionCostCeiling: authority.AdmissionCostCeiling,
+		Operation: operation, Expected: ExpectedV1{RegistryContract: RegistryContractPassV1, BackendProtocol: BackendProtocolSkippedV1},
+	}
 }
 
 type providerFixtureProfile struct {
@@ -57,8 +61,14 @@ func providerFixture(t *testing.T, profile providerFixtureProfile) FixtureV1 {
 	t.Helper()
 	observed := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
 	expires := observed.Add(time.Hour)
-	placement := domain.ManagedExecutionPlacementV1()
-	placementDigest, err := domain.ExecutionPlacementDigestV1(placement)
+	authority, err := sessionlessharness.NewDeterministicFixtureManagedAuthorityV2(
+		"tenant-conformance", "user-conformance", "run-conformance", "attempt-conformance", "subscription-conformance", observed,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	placement := authority.ExecutionPlacementV2
+	placementDigest, err := domain.ExecutionPlacementDigest(placement)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +94,12 @@ func providerFixture(t *testing.T, profile providerFixtureProfile) FixtureV1 {
 	policyDigest, _ := policy.Digest()
 	binding := domain.HarnessBindingV1{Version: 1, TenantID: "tenant-conformance", OwnerUserID: "user-conformance", RunID: "run-conformance", AttemptID: "attempt-conformance", Backend: descriptor, Resource: resource, ModelVendorID: profile.modelVendorID, ModelID: profile.modelID, InputDataClass: domain.ProviderDataExternallyShareableV1, ProviderCatalogDigest: string(catalogDigest), ProviderRouteDigest: string(routeDigest), PrivacyPolicyDigest: string(privacyDigest), CapabilityEvidenceDigest: string(capabilityDigest), EffectivePolicyDigest: string(policyDigest), ExecutionPlacementDigest: string(placementDigest), EvidenceExpiresAt: &expires}
 	bundle := EvidenceBundleV1{Catalog: catalog, Route: route, Capability: capability, Privacy: privacy, Price: price, Policy: policy}
-	fixture := FixtureV1{Version: 1, FixtureID: profile.fixtureID, Placement: placement, Binding: binding, EvidenceBundle: &bundle, Operation: OperationExecuteV1, Expected: ExpectedV1{RegistryContract: RegistryContractPassV1, BackendProtocol: BackendProtocolSkippedV1}}
+	fixture := FixtureV1{
+		Version: 1, FixtureID: profile.fixtureID, Placement: placement, Binding: binding,
+		SubstrateBinding: authority.SubstrateBinding, AdmissionCostCeiling: authority.AdmissionCostCeiling,
+		EvidenceBundle: &bundle, Operation: OperationExecuteV1,
+		Expected: ExpectedV1{RegistryContract: RegistryContractPassV1, BackendProtocol: BackendProtocolSkippedV1},
+	}
 	if err := fixture.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -378,8 +393,10 @@ func TestAuthorityMutationMatrixFailsClosedBeforeDriver(t *testing.T) {
 			value.HarnessBinding.Backend.ArtifactDigest = strings.Repeat("f", 64)
 		}},
 		"placement": {want: sessionlessharness.FailurePlacementMismatch, apply: func(value *ports.ExecutionIdentity) {
-			value.ExecutionPlacement = domain.ExecutionPlacementV1{Version: domain.ExecutionPlacementVersionV1, Kind: domain.ExecutionPlacementAttachedWorker, FallbackPolicy: domain.ExecutionFallbackDenied, OwnerUserID: value.OwnerUserID, WorkerID: "worker-other", CapabilityDigest: domain.AttachedWorkerCapabilityDigest(strings.Repeat("8", 64)), PolicyDigest: domain.AttachedWorkerPolicyDigest(strings.Repeat("9", 64))}
-			digest, digestErr := domain.ExecutionPlacementDigestV1(value.ExecutionPlacement)
+			value.ExecutionPlacementV2 = domain.ExecutionPlacementV2{Version: domain.ExecutionPlacementVersionV2, Kind: domain.ExecutionPlacementAttachedWorker, FallbackPolicy: domain.ExecutionFallbackDenied, OwnerUserID: value.OwnerUserID, WorkerID: "worker-other", CapabilityDigest: domain.AttachedWorkerCapabilityDigest(strings.Repeat("8", 64)), PolicyDigest: domain.AttachedWorkerPolicyDigest(strings.Repeat("9", 64))}
+			value.SubstrateBinding = nil
+			value.AdmissionCostCeiling = nil
+			digest, digestErr := domain.ExecutionPlacementDigest(value.ExecutionPlacementV2)
 			if digestErr != nil {
 				t.Fatal(digestErr)
 			}
@@ -389,7 +406,7 @@ func TestAuthorityMutationMatrixFailsClosedBeforeDriver(t *testing.T) {
 	for name, test := range mutations {
 		t.Run(name, func(t *testing.T) {
 			before := recorder.Snapshot()
-			identity := fixtureIdentity(base.Binding, base.Placement)
+			identity := fixtureIdentity(base)
 			test.apply(&identity)
 			err := registry.Preflight(context.Background(), identity)
 			var classified *domain.ClassifiedError

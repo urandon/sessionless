@@ -175,7 +175,7 @@ func (store *Store) offerAttachedWorkerAttemptTx(ctx context.Context, tx *stateT
 		result.Status = ports.AttachedWorkerExecutionDenied
 		return nil
 	}
-	placement := loaded.Job.ExecutionPlacement
+	placement := loaded.Job.ExecutionPlacementV2
 	if !attachedWorkerOfferEligible(request, worker, connection, loaded, placement, at, expiresAt) {
 		result.Status = ports.AttachedWorkerExecutionDenied
 		return nil
@@ -1537,7 +1537,7 @@ func attachedWorkerTerminalMaterializationDigest(status domain.AttachedWorkerTer
 	return domain.AttachedWorkerTerminalEvidenceDigest(digest), nil
 }
 
-func attachedWorkerOfferEligible(request ports.AttachedWorkerAttemptOffer, worker domain.AttachedWorker, connection domain.AttachedWorkerConnection, loaded ports.WorkerJobState, placement domain.ExecutionPlacementV1, at, expiresAt time.Time) bool {
+func attachedWorkerOfferEligible(request ports.AttachedWorkerAttemptOffer, worker domain.AttachedWorker, connection domain.AttachedWorkerConnection, loaded ports.WorkerJobState, placement domain.ExecutionPlacementV2, at, expiresAt time.Time) bool {
 	wantTTL, err := domain.AttachedWorkerLeaseTTLForLimitsV1(loaded.Job.Limits)
 	return err == nil && request.LeaseTTL == wantTTL && placement.Kind == domain.ExecutionPlacementAttachedWorker &&
 		placement.OwnerUserID == request.OwnerUserID && placement.WorkerID == request.WorkerID &&
@@ -1682,10 +1682,10 @@ func reconcileAttachedWorkerAttemptOfferTx(ctx context.Context, tx *stateTx, req
 	contextDigest, err := domain.AttachedWorkerJobContextDigestV1(loaded.Job, loaded.InputManifest)
 	wantTTL, ttlErr := domain.AttachedWorkerLeaseTTLForLimitsV1(loaded.Job.Limits)
 	if err != nil || ttlErr != nil || request.LeaseTTL != wantTTL || existing.LeaseExpiresAt.Sub(existing.CreatedAt) != wantTTL ||
-		loaded.Job.ExecutionPlacement.Kind != domain.ExecutionPlacementAttachedWorker ||
-		loaded.Job.ExecutionPlacement.OwnerUserID != request.OwnerUserID || loaded.Job.ExecutionPlacement.WorkerID != request.WorkerID ||
-		existing.ContextDigest != contextDigest || existing.CapabilityDigest != loaded.Job.ExecutionPlacement.CapabilityDigest ||
-		existing.PolicyDigest != loaded.Job.ExecutionPlacement.PolicyDigest {
+		loaded.Job.ExecutionPlacementV2.Kind != domain.ExecutionPlacementAttachedWorker ||
+		loaded.Job.ExecutionPlacementV2.OwnerUserID != request.OwnerUserID || loaded.Job.ExecutionPlacementV2.WorkerID != request.WorkerID ||
+		existing.ContextDigest != contextDigest || existing.CapabilityDigest != loaded.Job.ExecutionPlacementV2.CapabilityDigest ||
+		existing.PolicyDigest != loaded.Job.ExecutionPlacementV2.PolicyDigest {
 		result.Status = ports.AttachedWorkerExecutionConflict
 		return nil
 	}

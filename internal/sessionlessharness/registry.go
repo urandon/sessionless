@@ -86,7 +86,11 @@ func (registry *Registry) Execute(ctx context.Context, request ports.ExecutionRe
 	if err := request.Validate(); err != nil {
 		return ports.ExecutionResult{}, harnessError(FailureHarnessBindingInvalid)
 	}
-	if err := registry.Preflight(ctx, ports.ExecutionIdentity{TenantID: request.TenantID, OwnerUserID: request.OwnerUserID, RunID: request.RunID, AttemptID: request.AttemptID, ExecutionPlacement: request.ExecutionPlacement, HarnessBinding: request.HarnessBinding.Clone()}); err != nil {
+	if err := registry.Preflight(ctx, ports.ExecutionIdentity{
+		TenantID: request.TenantID, OwnerUserID: request.OwnerUserID, RunID: request.RunID, AttemptID: request.AttemptID,
+		ExecutionPlacementV2: request.ExecutionPlacementV2, HarnessBinding: request.HarnessBinding.Clone(),
+		SubstrateBinding: cloneSubstrateBinding(request.SubstrateBinding), AdmissionCostCeiling: cloneAdmissionCostCeiling(request.AdmissionCostCeiling),
+	}); err != nil {
 		return ports.ExecutionResult{}, err
 	}
 	registration, key, err := registry.resolve(request.HarnessBinding, true)
@@ -255,18 +259,17 @@ func NewDeterministicFixtureBinderV1() *DeterministicFixtureBinder {
 	return &DeterministicFixtureBinder{descriptor: DeterministicFixtureDescriptorV1()}
 }
 
-func NewDeterministicFixtureBindingV1(
+func NewDeterministicFixtureManagedAuthorityV2(
 	tenantID domain.TenantID,
 	ownerUserID domain.UserID,
 	runID domain.RunID,
 	attemptID domain.AttemptID,
 	subscriptionConnectionID domain.SubscriptionConnectionID,
-	placement domain.ExecutionPlacementV1,
 	at time.Time,
-) (domain.HarnessBindingV1, error) {
+) (ports.ManagedExecutionAuthorityV2, error) {
 	return NewDeterministicFixtureBinderV1().BindHarness(context.Background(), ports.HarnessBindingRequest{
 		TenantID: tenantID, OwnerUserID: ownerUserID, RunID: runID, AttemptID: attemptID,
-		SubscriptionConnectionID: subscriptionConnectionID, ExecutionPlacement: placement, At: at,
+		SubscriptionConnectionID: subscriptionConnectionID, At: at,
 	})
 }
 
@@ -315,21 +318,55 @@ func ValidateDeterministicFixtureBindingV1(binding domain.HarnessBindingV1) Fail
 	return ""
 }
 
-func (binder *DeterministicFixtureBinder) BindHarness(_ context.Context, request ports.HarnessBindingRequest) (domain.HarnessBindingV1, error) {
+func (binder *DeterministicFixtureBinder) BindHarness(_ context.Context, request ports.HarnessBindingRequest) (ports.ManagedExecutionAuthorityV2, error) {
 	if binder == nil {
-		return domain.HarnessBindingV1{}, errors.New("deterministic harness binder must not be nil")
+		return ports.ManagedExecutionAuthorityV2{}, errors.New("deterministic harness binder must not be nil")
 	}
-	for _, validate := range []func() error{request.TenantID.Validate, request.OwnerUserID.Validate, request.RunID.Validate, request.AttemptID.Validate, request.SubscriptionConnectionID.Validate, request.ExecutionPlacement.Validate} {
+	for _, validate := range []func() error{request.TenantID.Validate, request.OwnerUserID.Validate, request.RunID.Validate, request.AttemptID.Validate, request.SubscriptionConnectionID.Validate} {
 		if err := validate(); err != nil {
-			return domain.HarnessBindingV1{}, err
+			return ports.ManagedExecutionAuthorityV2{}, err
 		}
 	}
 	if request.At.IsZero() {
-		return domain.HarnessBindingV1{}, domain.ValidationError{Field: "harness_binding.at", Reason: "must not be zero"}
+		return ports.ManagedExecutionAuthorityV2{}, domain.ValidationError{Field: "harness_binding.at", Reason: "must not be zero"}
 	}
-	placementDigest, err := domain.ExecutionPlacementDigestV1(request.ExecutionPlacement)
+	zero := uint64(0)
+	cost := domain.AdmissionCostCeilingV1{
+		Version: domain.AdmissionCostCeilingVersionV1, Currency: "USD", PriceRevision: "deterministic-fixture-v1",
+		PriceObservedAt: request.At.UTC(), PriceExpiresAt: request.At.UTC().Add(30 * 24 * time.Hour), MaxDeliveries: 5,
+		MaxPreEffectDurationPerDelivery: time.Minute, MaxActiveDuration: 40 * time.Minute, MaxCleanupAndReconcileDuration: 5 * time.Minute,
+		ConfiguredMemoryBytes: 256 << 20, ConfiguredVCPUMillis: 1000, MaxIngressBytes: 1 << 20, MaxEgressBytes: 1 << 20,
+		MaxLogBytes: 1 << 20, MaxEvidenceBytes: 1 << 20, SubstratePriceState: domain.CostEvidenceKnownV1,
+		ProviderPriceState: domain.ProviderPriceKnownFreeV1, MaxSubstrateAmountMicrounits: &zero,
+		MaxProviderAmountMicrounits: &zero, MaxTotalAmountMicrounits: &zero,
+	}
+	costDigest, err := cost.Digest()
 	if err != nil {
-		return domain.HarnessBindingV1{}, err
+		return ports.ManagedExecutionAuthorityV2{}, err
+	}
+	substrate := domain.SubstrateBindingV1{
+		Version: domain.SubstrateBindingVersionV1, Kind: domain.SubstrateDeterministicFixtureV1,
+		ProfileID: "deterministic-fixture-v1", ProfileRevision: 1,
+		ProfileDigest: stableDigest("sessionless.deterministic-substrate.profile.v1"), ProfileEvidenceExpiresAt: request.At.UTC().Add(30 * 24 * time.Hour),
+		Region: "local-fixture", ImageDigest: stableDigest("sessionless.deterministic-substrate.image.v1"),
+		OuterHarnessArtifactDigest: stableDigest("sessionless.deterministic-substrate.outer-harness.v1"), WorkloadMode: domain.SubstrateWorkloadInProcessDirectV1,
+		IsolationProfileDigest: stableDigest("sessionless.deterministic-substrate.isolation.v1"), EgressPolicyDigest: stableDigest("sessionless.deterministic-substrate.egress-denied.v1"),
+		CleanupPolicyDigest: stableDigest("sessionless.deterministic-substrate.cleanup.v1"), EgressProxyArtifactDigest: stableDigest("sessionless.deterministic-substrate.no-network-proxy.v1"),
+		EgressProxyIdentityDigest: stableDigest("sessionless.deterministic-substrate.no-network-identity.v1"), AdmissionCostCeilingDigest: costDigest,
+		Limits: domain.SubstrateLimitsV1{InvocationTimeout: time.Hour, ExecutionTimeout: 40 * time.Minute, CleanupTimeout: 5 * time.Minute,
+			CPUMillis: 1000, MemoryBytes: 256 << 20, ScratchBytes: 256 << 20, StdoutBytes: 1 << 20, StderrBytes: 1 << 20, NativeEventCount: 1024, ArtifactBytes: 1 << 20},
+	}
+	substrateDigest, err := substrate.Digest()
+	if err != nil {
+		return ports.ManagedExecutionAuthorityV2{}, err
+	}
+	placement, err := domain.ManagedExecutionPlacementV2(string(substrateDigest))
+	if err != nil {
+		return ports.ManagedExecutionAuthorityV2{}, err
+	}
+	placementDigest, err := domain.ExecutionPlacementDigest(placement)
+	if err != nil {
+		return ports.ManagedExecutionAuthorityV2{}, err
 	}
 	binding := domain.HarnessBindingV1{
 		Version:  domain.HarnessBindingVersionV1,
@@ -349,15 +386,32 @@ func (binder *DeterministicFixtureBinder) BindHarness(_ context.Context, request
 		EffectivePolicyDigest:    stableDigest("sessionless.deterministic-harness.policy.v1"),
 		ExecutionPlacementDigest: string(placementDigest),
 	}
-	if err := binding.ValidateForScope(request.TenantID, request.OwnerUserID, request.RunID, request.AttemptID, request.ExecutionPlacement); err != nil {
-		return domain.HarnessBindingV1{}, err
+	result := ports.ManagedExecutionAuthorityV2{ExecutionPlacementV2: placement, HarnessBinding: binding, SubstrateBinding: substrate, AdmissionCostCeiling: cost}
+	if err := result.ValidateForScope(request); err != nil {
+		return ports.ManagedExecutionAuthorityV2{}, err
 	}
-	return binding, nil
+	return result, nil
 }
 
 func stableDigest(value string) string {
 	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:])
+}
+
+func cloneSubstrateBinding(value *domain.SubstrateBindingV1) *domain.SubstrateBindingV1 {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
+}
+
+func cloneAdmissionCostCeiling(value *domain.AdmissionCostCeilingV1) *domain.AdmissionCostCeilingV1 {
+	if value == nil {
+		return nil
+	}
+	clone := value.Clone()
+	return &clone
 }
 
 var _ ports.HarnessBinder = (*DeterministicFixtureBinder)(nil)

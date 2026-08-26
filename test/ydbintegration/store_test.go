@@ -1223,6 +1223,10 @@ func ingressFixture(
 	updateID int64,
 	now time.Time,
 ) ydbstore.TelegramIngress {
+	authority := mustManagedAuthorityV2(
+		panicTestingT{}, tenantID, "user-fixture", domain.RunID(runID), domain.AttemptID("attempt-"+runID),
+		domain.SubscriptionConnectionID("subscription-"+string(tenantID)), now,
+	)
 	run := domain.Run{
 		ID:                       domain.RunID(runID),
 		TenantID:                 tenantID,
@@ -1242,7 +1246,10 @@ func ingressFixture(
 		ID: domain.DispatchOutboxID("dispatch-" + runID), TenantID: tenantID,
 		RunID: run.ID, AttemptID: attempt.ID, Status: domain.DispatchPending,
 		InputManifestID:       domain.ArtifactManifestID("manifest-" + runID),
-		ExecutionPlacement:    domain.ManagedExecutionPlacementV1(),
+		ExecutionPlacementV2:  authority.ExecutionPlacementV2,
+		HarnessBinding:        authority.HarnessBinding,
+		SubstrateBinding:      cloneSubstrateBindingForIntegration(authority.SubstrateBinding),
+		AdmissionCostCeiling:  cloneAdmissionCostForIntegration(authority.AdmissionCostCeiling),
 		CredentialOwnerUserID: "user-fixture",
 		ContextSnapshot: domain.BlobRef{
 			TenantID: tenantID, Key: "tenants/" + string(tenantID) + "/context/" + runID,
@@ -1253,10 +1260,6 @@ func ingressFixture(
 		IdempotencyKey:   domain.IdempotencyKey("dispatch-key-" + runID),
 		CreatedAt:        now, UpdatedAt: now,
 	}
-	dispatch.HarnessBinding = mustHarnessBindingV1(
-		panicTestingT{}, dispatch.TenantID, dispatch.CredentialOwnerUserID, dispatch.RunID,
-		dispatch.AttemptID, run.SubscriptionConnectionID, dispatch.ExecutionPlacement, now,
-	)
 	manifest := domain.ArtifactManifest{
 		ID: domain.ArtifactManifestID("manifest-" + runID), TenantID: tenantID,
 		RunID: run.ID, CreatedAt: now,
@@ -1278,24 +1281,33 @@ type panicTestingT struct{}
 func (panicTestingT) Helper()             {}
 func (panicTestingT) Fatal(values ...any) { panic(fmt.Sprint(values...)) }
 
-func mustHarnessBindingV1(
+func mustManagedAuthorityV2(
 	t testingFataler,
 	tenantID domain.TenantID,
 	ownerUserID domain.UserID,
 	runID domain.RunID,
 	attemptID domain.AttemptID,
 	subscriptionConnectionID domain.SubscriptionConnectionID,
-	placement domain.ExecutionPlacementV1,
 	at time.Time,
-) domain.HarnessBindingV1 {
+) ports.ManagedExecutionAuthorityV2 {
 	t.Helper()
-	binding, err := sessionlessharness.NewDeterministicFixtureBindingV1(
-		tenantID, ownerUserID, runID, attemptID, subscriptionConnectionID, placement, at,
+	authority, err := sessionlessharness.NewDeterministicFixtureManagedAuthorityV2(
+		tenantID, ownerUserID, runID, attemptID, subscriptionConnectionID, at,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return binding
+	return authority
+}
+
+func cloneSubstrateBindingForIntegration(value domain.SubstrateBindingV1) *domain.SubstrateBindingV1 {
+	clone := value
+	return &clone
+}
+
+func cloneAdmissionCostForIntegration(value domain.AdmissionCostCeilingV1) *domain.AdmissionCostCeilingV1 {
+	clone := value.Clone()
+	return &clone
 }
 
 func uniqueID(prefix string) string {

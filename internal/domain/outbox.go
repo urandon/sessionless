@@ -23,20 +23,22 @@ func CanTransitionDispatch(from, to DispatchStatus) bool {
 }
 
 type DispatchOutbox struct {
-	ID                    DispatchOutboxID      `json:"id"`
-	TenantID              TenantID              `json:"tenant_id"`
-	RunID                 RunID                 `json:"run_id"`
-	AttemptID             AttemptID             `json:"attempt_id"`
-	InputManifestID       ArtifactManifestID    `json:"input_manifest_id"`
-	ContextSnapshot       BlobRef               `json:"context_snapshot"`
-	ContextWindow         *SessionContextWindow `json:"context_window,omitempty"`
-	WorkspaceSnapshot     *BlobRef              `json:"workspace_snapshot,omitempty"`
-	SkillBundle           *BlobRef              `json:"skill_bundle,omitempty"`
-	AllowedMCPServers     []string              `json:"allowed_mcp_servers,omitempty"`
-	CredentialOwnerUserID UserID                `json:"credential_owner_user_id,omitempty"`
-	ExecutionPlacement    ExecutionPlacementV1  `json:"execution_placement"`
-	HarnessBinding        HarnessBindingV1      `json:"harness_binding"`
-	Origin                *FrontendEventOrigin  `json:"origin,omitempty"`
+	ID                    DispatchOutboxID        `json:"id"`
+	TenantID              TenantID                `json:"tenant_id"`
+	RunID                 RunID                   `json:"run_id"`
+	AttemptID             AttemptID               `json:"attempt_id"`
+	InputManifestID       ArtifactManifestID      `json:"input_manifest_id"`
+	ContextSnapshot       BlobRef                 `json:"context_snapshot"`
+	ContextWindow         *SessionContextWindow   `json:"context_window,omitempty"`
+	WorkspaceSnapshot     *BlobRef                `json:"workspace_snapshot,omitempty"`
+	SkillBundle           *BlobRef                `json:"skill_bundle,omitempty"`
+	AllowedMCPServers     []string                `json:"allowed_mcp_servers,omitempty"`
+	CredentialOwnerUserID UserID                  `json:"credential_owner_user_id,omitempty"`
+	ExecutionPlacementV2  ExecutionPlacementV2    `json:"execution_placement"`
+	HarnessBinding        HarnessBindingV1        `json:"harness_binding"`
+	SubstrateBinding      *SubstrateBindingV1     `json:"substrate_binding,omitempty"`
+	AdmissionCostCeiling  *AdmissionCostCeilingV1 `json:"admission_cost_ceiling,omitempty"`
+	Origin                *FrontendEventOrigin    `json:"origin,omitempty"`
 	// DeliveryChat and ReplyToMessageID are the compatibility bridge for the
 	// pre-canonical Telegram worker flow. New ingress paths use Origin; #37
 	// removes this bridge when Telegram projects canonical assistant events.
@@ -88,11 +90,14 @@ func (outbox DispatchOutbox) ValidateForAttempt(run Run, attempt Attempt) error 
 			return err
 		}
 	}
-	if err := outbox.ExecutionPlacement.Validate(); err != nil {
+	if err := outbox.ExecutionPlacementV2.Validate(); err != nil {
+		return err
+	}
+	if err := ValidateExecutionAuthorityProjection(outbox.ExecutionPlacementV2, outbox.SubstrateBinding, outbox.AdmissionCostCeiling); err != nil {
 		return err
 	}
 	if err := outbox.HarnessBinding.ValidateForScope(
-		outbox.TenantID, outbox.CredentialOwnerUserID, outbox.RunID, outbox.AttemptID, outbox.ExecutionPlacement,
+		outbox.TenantID, outbox.CredentialOwnerUserID, outbox.RunID, outbox.AttemptID, outbox.ExecutionPlacementV2,
 	); err != nil {
 		return err
 	}

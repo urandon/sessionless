@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	ExecutionPlacementVersionV1             uint32 = 1
+	ExecutionPlacementVersionV2             uint32 = 2
 	AttachedWorkerAttemptVersionV1          uint32 = 1
 	AttachedWorkerAttemptMessageVersionV1   uint32 = 1
 	AttachedWorkerAttemptDeadlineBuckets           = 16
@@ -69,33 +69,44 @@ const (
 	AttachedWorkerTerminalCancelled AttachedWorkerTerminalStatus = "cancelled"
 )
 
-// ExecutionPlacementV1 is required on every admitted dispatch and worker job.
+// ExecutionPlacementV2 is required on every admitted dispatch and worker job.
 // An explicit attached-worker selection is deny-only: it can never fall back
 // to managed execution implicitly.
-type ExecutionPlacementV1 struct {
-	Version          uint32                         `json:"version"`
-	Kind             ExecutionPlacementKind         `json:"kind"`
-	FallbackPolicy   ExecutionFallbackPolicy        `json:"fallback_policy"`
-	OwnerUserID      UserID                         `json:"owner_user_id,omitempty"`
-	WorkerID         AttachedWorkerID               `json:"worker_id,omitempty"`
-	CapabilityDigest AttachedWorkerCapabilityDigest `json:"capability_digest,omitempty"`
-	PolicyDigest     AttachedWorkerPolicyDigest     `json:"policy_digest,omitempty"`
+type ExecutionPlacementV2 struct {
+	Version                uint32                         `json:"version"`
+	Kind                   ExecutionPlacementKind         `json:"kind"`
+	FallbackPolicy         ExecutionFallbackPolicy        `json:"fallback_policy"`
+	OwnerUserID            UserID                         `json:"owner_user_id,omitempty"`
+	WorkerID               AttachedWorkerID               `json:"worker_id,omitempty"`
+	CapabilityDigest       AttachedWorkerCapabilityDigest `json:"capability_digest,omitempty"`
+	PolicyDigest           AttachedWorkerPolicyDigest     `json:"policy_digest,omitempty"`
+	SubstrateBindingDigest string                         `json:"substrate_binding_digest,omitempty"`
 }
 
-func ManagedExecutionPlacementV1() ExecutionPlacementV1 {
-	return ExecutionPlacementV1{Version: ExecutionPlacementVersionV1, Kind: ExecutionPlacementManaged, FallbackPolicy: ExecutionFallbackDenied}
-}
-
-func (placement ExecutionPlacementV1) Validate() error {
-	if placement.Version != ExecutionPlacementVersionV1 || placement.FallbackPolicy != ExecutionFallbackDenied {
-		return ValidationError{Field: "execution_placement", Reason: "must be version 1 with deny fallback"}
+// ManagedExecutionPlacementV2 seals one exact substrate profile. There is no
+// no-argument managed default and no V1 serving fallback.
+func ManagedExecutionPlacementV2(substrateBindingDigest string) (ExecutionPlacementV2, error) {
+	placement := ExecutionPlacementV2{
+		Version:                ExecutionPlacementVersionV2,
+		Kind:                   ExecutionPlacementManaged,
+		FallbackPolicy:         ExecutionFallbackDenied,
+		SubstrateBindingDigest: substrateBindingDigest,
 	}
-	switch placement.Kind {
-	case ExecutionPlacementManaged:
-		if placement.OwnerUserID != "" || placement.WorkerID != "" || placement.CapabilityDigest != "" || placement.PolicyDigest != "" {
-			return ValidationError{Field: "execution_placement", Reason: "managed placement must not contain attached-worker targeting"}
+	if err := placement.Validate(); err != nil {
+		return ExecutionPlacementV2{}, err
+	}
+	return placement, nil
+}
+
+func (placement ExecutionPlacementV2) Validate() error {
+	if placement.FallbackPolicy != ExecutionFallbackDenied {
+		return ValidationError{Field: "execution_placement.fallback_policy", Reason: "must deny fallback"}
+	}
+	switch {
+	case placement.Version == ExecutionPlacementVersionV2 && placement.Kind == ExecutionPlacementAttachedWorker:
+		if placement.SubstrateBindingDigest != "" {
+			return ValidationError{Field: "execution_placement.substrate_binding_digest", Reason: "must be absent from attached-worker placement"}
 		}
-	case ExecutionPlacementAttachedWorker:
 		if err := placement.OwnerUserID.Validate(); err != nil {
 			return err
 		}
@@ -108,8 +119,15 @@ func (placement ExecutionPlacementV1) Validate() error {
 		if err := placement.PolicyDigest.Validate(); err != nil {
 			return err
 		}
+	case placement.Version == ExecutionPlacementVersionV2 && placement.Kind == ExecutionPlacementManaged:
+		if placement.OwnerUserID != "" || placement.WorkerID != "" || placement.CapabilityDigest != "" || placement.PolicyDigest != "" {
+			return ValidationError{Field: "execution_placement", Reason: "serverless managed placement must not contain attached-worker targeting"}
+		}
+		if err := validateSHA256("execution_placement.substrate_binding_digest", placement.SubstrateBindingDigest); err != nil {
+			return err
+		}
 	default:
-		return ValidationError{Field: "execution_placement.kind", Reason: "is unknown"}
+		return ValidationError{Field: "execution_placement", Reason: "version and kind tuple is unsupported"}
 	}
 	return nil
 }
@@ -204,7 +222,7 @@ func AttachedWorkerJobContextDigestV1(job WorkerJob, manifest ArtifactManifest) 
 		appendUint("credential_owner_user_id.present", 1)
 		appendString("credential_owner_user_id", string(job.CredentialOwnerUserID))
 	}
-	placement := job.ExecutionPlacement
+	placement := job.ExecutionPlacementV2
 	appendUint("execution_placement.version", uint64(placement.Version))
 	appendString("execution_placement.kind", string(placement.Kind))
 	appendString("execution_placement.fallback_policy", string(placement.FallbackPolicy))
@@ -266,10 +284,10 @@ func validateAttachedWorkerJobContext(job WorkerJob) error {
 			return err
 		}
 	}
-	if job.ExecutionPlacement.Kind != ExecutionPlacementAttachedWorker {
+	if job.ExecutionPlacementV2.Kind != ExecutionPlacementAttachedWorker {
 		return ValidationError{Field: "worker_job.execution_placement", Reason: "must select an attached worker"}
 	}
-	if err := job.ExecutionPlacement.Validate(); err != nil {
+	if err := job.ExecutionPlacementV2.Validate(); err != nil {
 		return err
 	}
 	if err := job.Limits.ValidateForAdmission(); err != nil {

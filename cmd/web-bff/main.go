@@ -118,6 +118,10 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 		closeYDB()
 		return nil, func() {}, fmt.Errorf("require harness binding cutover: %w", err)
 	}
+	if err := store.RequireManagedExecutionAuthorityV2Cutover(ctx); err != nil {
+		closeYDB()
+		return nil, func() {}, fmt.Errorf("require managed execution authority v2 cutover: %w", err)
+	}
 	maxUploadBytes, err := envPositiveInt64("WEB_MAX_UPLOAD_BYTES", 32<<20)
 	if err != nil {
 		closeYDB()

@@ -28,6 +28,7 @@ var ErrIdempotencyConflict = errors.New("idempotency key already belongs to anot
 
 const executionPlacementCutoverID = "execution-placement-v1-empty-cutover"
 const harnessBindingCutoverID = "harness-binding-v1-empty-cutover"
+const managedExecutionAuthorityV2CutoverID = "managed-execution-authority-v2-empty-cutover"
 
 type Options struct {
 	IdempotencyRetention time.Duration
@@ -105,6 +106,29 @@ func (store *Store) RequireHarnessBindingCutover(ctx context.Context) error {
 	}
 	if completedAt.IsZero() {
 		return errors.New("harness binding cutover marker has no completion time")
+	}
+	return nil
+}
+
+// RequireManagedExecutionAuthorityV2Cutover prevents any dispatch reader or
+// writer from observing a mixed backlog where placement, harness, substrate
+// and cost authority are not one exact persisted chain.
+func (store *Store) RequireManagedExecutionAuthorityV2Cutover(ctx context.Context) error {
+	if store == nil || store.db == nil {
+		return errors.New("YDB store must not be nil")
+	}
+	var completedAt time.Time
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT completed_at FROM managed_execution_authority_v2_cutover_state WHERE cutover_id=$1`,
+		managedExecutionAuthorityV2CutoverID,
+	).Scan(&completedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errors.New("managed execution authority v2 cutover is not complete")
+		}
+		return fmt.Errorf("read managed execution authority v2 cutover marker: %w", err)
+	}
+	if completedAt.IsZero() {
+		return errors.New("managed execution authority v2 cutover marker has no completion time")
 	}
 	return nil
 }

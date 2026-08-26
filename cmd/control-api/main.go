@@ -105,6 +105,10 @@ func buildHandler(
 		closeYDB()
 		return nil, func() {}, fmt.Errorf("require harness binding cutover: %w", err)
 	}
+	if err := state.RequireManagedExecutionAuthorityV2Cutover(ctx); err != nil {
+		closeYDB()
+		return nil, func() {}, fmt.Errorf("require managed execution authority v2 cutover: %w", err)
+	}
 	blobs, err := s3store.New(ctx, s3store.Config{
 		Endpoint: os.Getenv("S3_ENDPOINT"), Region: os.Getenv("S3_REGION"),
 		Bucket: os.Getenv("S3_BUCKET"), AccessKeyID: os.Getenv("S3_ACCESS_KEY_ID"),

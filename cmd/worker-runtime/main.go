@@ -68,6 +68,10 @@ func main() {
 		logger.Error("require harness binding cutover", "error", err)
 		os.Exit(1)
 	}
+	if err := state.RequireManagedExecutionAuthorityV2Cutover(ctx); err != nil {
+		logger.Error("require managed execution authority v2 cutover", "error", err)
+		os.Exit(1)
+	}
 	blobs, err := s3store.New(ctx, s3store.Config{
 		Endpoint: os.Getenv("S3_ENDPOINT"), Region: envOrDefault("S3_REGION", "ru-central1"),
 		Bucket: os.Getenv("S3_BUCKET"), AccessKeyID: os.Getenv("S3_ACCESS_KEY_ID"),

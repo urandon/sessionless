@@ -455,3 +455,9 @@ func validateDigestToken(field, value string) error {
 	}
 	return validateSHA256(field, value)
 }
+
+// ValidateSHA256Digest exposes the canonical lowercase SHA-256 grammar to
+// ports without duplicating the repository digest contract.
+func ValidateSHA256Digest(field, value string) error {
+	return validateSHA256(field, value)
+}

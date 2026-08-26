@@ -163,6 +163,8 @@ var applicationTables = []string{
 	"session_lifecycle_backfill_state",
 	"execution_placement_cutover_state",
 	"harness_binding_cutover_state",
+	"managed_execution_authority_v2_cutover_state",
+	"attempt_effect_reservations",
 	"dispatch_ready_v2",
 	"dispatch_ready",
 	"dispatch_outbox",

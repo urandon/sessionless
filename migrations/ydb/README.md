@@ -193,6 +193,16 @@ the cleanup drain, invocation-only materialization/release, and the serving
 cutover that proves those components are composed. Until then no binary may
 mount an ingestion route or accept a real provider key.
 
+Migrations `00094`-`00095` add the immutable managed provider-effect fence and
+the fresh-only ManagedExecutionAuthorityV2 cutover marker. The effect table is
+keyed by `(tenant_id, attempt_id, kind)` and is written with `INSERT` only after
+the canonical worker job, lease/fence, cancellation state, evidence freshness,
+context/input digests and database time have been checked in one serializable
+transaction. A different physical claim is reconcile-only. Before enabling any
+dispatch reader or writer, the cutover transaction requires `dispatch_outbox`,
+`worker_jobs` and `attempt_effect_reservations` all empty; serving code never
+coerces an old payload or a missing substrate/cost binding.
+
 Automatic production down migrations are intentionally disabled. The `Down`
 sections are comments so neither Goose nor an operator can accidentally drop
 state.

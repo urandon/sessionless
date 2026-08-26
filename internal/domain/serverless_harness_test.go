@@ -104,6 +104,62 @@ func TestAdmissionCostUnknownAndKnownFreeRemainDistinct(t *testing.T) {
 	}
 }
 
+func TestServerlessWorkerJobDigestsBindContextAndManifestContent(t *testing.T) {
+	t.Parallel()
+	job := attachedContextJob(t)
+	managed := deterministicManagedAuthority(t, job.TenantID, job.CredentialOwnerUserID, job.RunID, job.AttemptID, time.Unix(10, 0).UTC())
+	job.ExecutionPlacementV2 = managed.ExecutionPlacementV2
+	job.HarnessBinding = managed.HarnessBinding
+	substrate, cost := managed.SubstrateBinding, managed.AdmissionCostCeiling.Clone()
+	job.SubstrateBinding, job.AdmissionCostCeiling = &substrate, &cost
+	manifest := attachedContextManifest(job)
+	manifest.Artifacts = append(manifest.Artifacts, domain.Artifact{
+		Name: "second", MediaType: "text/plain",
+		Blob: domain.BlobRef{TenantID: job.TenantID, Key: "tenants/tenant-1/second.txt", Size: 3, SHA256: strings.Repeat("b", 64)},
+	})
+
+	contextDigest, inputDigest, err := domain.ServerlessWorkerJobDigestsV1(job, manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reordered := manifest
+	reordered.Artifacts = []domain.Artifact{manifest.Artifacts[1], manifest.Artifacts[0]}
+	reorderedContext, reorderedInput, err := domain.ServerlessWorkerJobDigestsV1(job, reordered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contextDigest != reorderedContext || inputDigest != reorderedInput {
+		t.Fatal("semantic manifest set order changed a canonical digest")
+	}
+
+	changedManifest := reordered
+	changedManifest.Artifacts = append([]domain.Artifact(nil), reordered.Artifacts...)
+	changedManifest.Artifacts[0].Blob.SHA256 = strings.Repeat("c", 64)
+	changedContext, changedInput, err := domain.ServerlessWorkerJobDigestsV1(job, changedManifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changedInput == inputDigest || changedContext == contextDigest {
+		t.Fatal("manifest content mutation did not change both sealed digests")
+	}
+
+	changedJob := job
+	changedJob.AllowedMCPServers = append([]string(nil), job.AllowedMCPServers...)
+	changedJob.AllowedMCPServers[0] = "database"
+	changedContext, unchangedInput, err := domain.ServerlessWorkerJobDigestsV1(changedJob, manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changedContext == contextDigest || unchangedInput != inputDigest {
+		t.Fatal("context-only mutation was not kept separate from input manifest digest")
+	}
+
+	job.ExecutionPlacementV2 = domain.ExecutionPlacementV2{Version: domain.ExecutionPlacementVersionV2, Kind: domain.ExecutionPlacementAttachedWorker}
+	if _, _, err := domain.ServerlessWorkerJobDigestsV1(job, manifest); err == nil {
+		t.Fatal("attached-worker placement was accepted as serverless authority")
+	}
+}
+
 func TestPreparedAllocationExactMatchesSealedInProcessProfile(t *testing.T) {
 	t.Parallel()
 	authority, _ := validServerlessInvocationAuthority(t)

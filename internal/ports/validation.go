@@ -167,14 +167,14 @@ func (handle ProviderInvocationCredentialV1) Validate() error {
 
 func (materialization ProviderCredentialMaterializationV1) Validate() error {
 	switch materialization.Kind {
-	case ProviderCredentialDeliveryFileV1:
+	case domain.ProviderCredentialDeliveryFileV1:
 		root := filepath.Clean(materialization.RootDir)
 		file := filepath.Clean(materialization.FilePath)
 		if !filepath.IsAbs(root) || !filepath.IsAbs(file) || root != materialization.RootDir || file != materialization.FilePath || filepath.Dir(file) != root || filepath.Base(file) == "." || filepath.Base(file) == string(filepath.Separator) || materialization.EnvironmentName != "" {
 			return domain.ValidationError{Field: "provider_credential_materialization", Reason: "file delivery must be one normalized absolute direct child"}
 		}
 		return domain.ValidateOpaqueID("provider_credential_materialization.file_name", filepath.Base(file))
-	case ProviderCredentialDeliveryEnvironmentV1:
+	case domain.ProviderCredentialDeliveryEnvironmentV1:
 		if materialization.RootDir != "" || materialization.FilePath != "" || len(materialization.EnvironmentName) == 0 || len(materialization.EnvironmentName) > 128 {
 			return domain.ValidationError{Field: "provider_credential_materialization", Reason: "environment delivery requires only a bounded name"}
 		}
@@ -184,7 +184,7 @@ func (materialization ProviderCredentialMaterializationV1) Validate() error {
 			}
 		}
 		return nil
-	case ProviderCredentialDeliveryDirectV1:
+	case domain.ProviderCredentialDeliveryDirectV1:
 		if materialization.RootDir != "" || materialization.FilePath != "" || materialization.EnvironmentName != "" {
 			return domain.ValidationError{Field: "provider_credential_materialization", Reason: "direct delivery carries no materialization locator"}
 		}
@@ -280,10 +280,15 @@ func (request ExecutionRequest) Validate() error {
 			request.Credential.ProviderResource != request.HarnessBinding.Resource {
 			return domain.ValidationError{Field: "execution.credential", Reason: "must match the sealed harness credential generation"}
 		}
+		if request.CredentialMaterialization.Kind != request.HarnessBinding.Backend.CredentialDeliveryKind {
+			return domain.ValidationError{Field: "execution.credential_materialization.kind", Reason: "must match the sealed backend delivery kind"}
+		}
 	} else if request.CredentialMaterialization != (ProviderCredentialMaterializationV1{}) {
 		return domain.ValidationError{Field: "execution.credential_materialization", Reason: "requires a credential handle"}
 	} else if request.HarnessBinding.Resource.CredentialMode == domain.ProviderCredentialInvocationV1 {
 		return domain.ValidationError{Field: "execution.credential", Reason: "is required by the sealed harness binding"}
+	} else if request.HarnessBinding.Backend.CredentialDeliveryKind != domain.ProviderCredentialDeliveryNoneV1 {
+		return domain.ValidationError{Field: "execution.credential_materialization.kind", Reason: "credentialless execution requires sealed none delivery"}
 	}
 	for _, artifact := range request.InputArtifacts {
 		if err := artifact.Validate(); err != nil {

@@ -232,7 +232,7 @@ Rejected:
 | Work item | Estimate | Dependencies | Acceptance |
 |---|---:|---|---|
 | PR-01 canonical resource/route/catalog contracts | 8 SP | #49 MM-01, SR-02 | Model vendor, transport, billing, harness, placement, and history authority are separate. |
-| PR-02 harness/provider conformance kit and fixtures | 8 SP | PR-01, #63 | Canonical harness events plus capability/error/usage/cancel/privacy profiles are reproducible and versioned across backend adapters. |
+| PR-02 harness/provider conformance kit and fixtures | 8 SP | PR-01, #63 | Credential-free registry fixtures make capability/error/usage/cancel/privacy profiles reproducible and versioned; generic fakes report native adapter protocol as skipped. |
 | PR-03 direct API adapters: DeepSeek and Kimi | 8 SP | PR-02 | Go adapters pass conformance with fake servers; no real key in CI. |
 | PR-04 local endpoint adapters: Ollama, vLLM, SGLang | 8 SP | #47, PR-02 | Placement-bound discovery; external auth/network invariants; no central localhost. |
 | PR-05 OpenRouter harness portfolio | 13 SP | PR-01, PR-02, credential backend, harness registry | Pi/OpenCode/Codex/direct profiles remain distinct; exact route where the harness can express it, no silent fallback, actual route/usage/data-policy evidence, and owner-scoped secret generation. |

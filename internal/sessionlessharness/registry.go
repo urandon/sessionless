@@ -39,6 +39,7 @@ const (
 	FailureCapabilityMismatch        FailureCode = "capability_mismatch"
 	FailureEffectivePolicyMismatch   FailureCode = "effective_policy_mismatch"
 	FailurePlacementMismatch         FailureCode = "placement_mismatch"
+	FailureHarnessBackendFailed      FailureCode = "harness_backend_failed"
 )
 
 type Registration struct {
@@ -105,7 +106,26 @@ func (registry *Registry) Execute(ctx context.Context, request ports.ExecutionRe
 		delete(registry.active, identityKey)
 		registry.mu.Unlock()
 	}()
-	return registration.Driver.Execute(ctx, request, sink)
+	result, executeErr := registration.Driver.Execute(ctx, request, sink)
+	if result.ProviderEvidence != nil {
+		if result.ProviderEvidence.ValidateForBinding(request.HarnessBinding) != nil {
+			return ports.ExecutionResult{}, harnessError(FailureHarnessBackendFailed)
+		}
+		evidence := result.ProviderEvidence.Clone()
+		result.ProviderEvidence = &evidence
+	}
+	if executeErr != nil {
+		bounded := ports.ExecutionResult{}
+		if result.ProviderEvidence != nil {
+			evidence := result.ProviderEvidence.Clone()
+			bounded.ProviderEvidence = &evidence
+		}
+		return bounded, sanitizeBackendError(executeErr)
+	}
+	if result.ProviderEvidence == nil {
+		return ports.ExecutionResult{}, harnessError(FailureHarnessBackendFailed)
+	}
+	return result, nil
 }
 
 func (registry *Registry) Preflight(ctx context.Context, identity ports.ExecutionIdentity) error {
@@ -117,7 +137,7 @@ func (registry *Registry) Preflight(ctx context.Context, identity ports.Executio
 		return err
 	}
 	if err := registration.Driver.Preflight(ctx, identity); err != nil {
-		return harnessError(FailureHarnessBackendMismatch)
+		return sanitizeBackendError(err)
 	}
 	return nil
 }
@@ -137,7 +157,10 @@ func (registry *Registry) Cancel(ctx context.Context, identity ports.ExecutionId
 	if active && activeKey != key {
 		return harnessError(FailureHarnessBackendMismatch)
 	}
-	return registration.Driver.Cancel(ctx, identity)
+	if err := registration.Driver.Cancel(ctx, identity); err != nil {
+		return sanitizeBackendError(err)
+	}
+	return nil
 }
 
 func (registry *Registry) resolve(binding domain.HarnessBindingV1, requireFresh bool) (Registration, string, error) {
@@ -181,10 +204,16 @@ func (code FailureCode) validRegistrationResult() bool {
 	}
 }
 
+// Valid reports whether code belongs to the closed public-safe harness
+// failure taxonomy. Backend-private error text never crosses this boundary.
+func (code FailureCode) Valid() bool {
+	return code == FailureHarnessBackendFailed || code.validRegistrationResult()
+}
+
 func descriptorKey(descriptor domain.HarnessBackendDescriptorV1) string {
-	return fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s", descriptor.HarnessKind, descriptor.HarnessVersion,
+	return fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s", descriptor.HarnessKind, descriptor.HarnessVersion,
 		descriptor.BackendKind, descriptor.ArtifactKind, descriptor.ArtifactDigest, descriptor.NativeProtocolVersion,
-		descriptor.BackendProfileDigest, descriptor.ProviderContractKind)
+		descriptor.BackendProfileDigest, descriptor.ProviderContractKind, descriptor.CredentialDeliveryKind)
 }
 
 func executionKey(tenantID domain.TenantID, runID domain.RunID, attemptID domain.AttemptID) string {
@@ -193,6 +222,17 @@ func executionKey(tenantID domain.TenantID, runID domain.RunID, attemptID domain
 
 func harnessError(code FailureCode) error {
 	return &domain.ClassifiedError{Kind: domain.ErrorTerminal, Code: string(code), Operation: "sessionless_harness.resolve"}
+}
+
+func sanitizeBackendError(err error) error {
+	var classified *domain.ClassifiedError
+	if errors.As(err, &classified) && classified != nil {
+		code := FailureCode(classified.Code)
+		if code.Valid() {
+			return harnessError(code)
+		}
+	}
+	return harnessError(FailureHarnessBackendFailed)
 }
 
 var _ ports.HarnessDriver = (*Registry)(nil)
@@ -224,12 +264,13 @@ func DeterministicFixtureDescriptorV1() domain.HarnessBackendDescriptorV1 {
 	artifact := sha256.Sum256([]byte(deterministicFixtureProfileArtifactV1))
 	return domain.HarnessBackendDescriptorV1{
 		HarnessKind: domain.HarnessKindSessionlessV1, HarnessVersion: DeterministicHarnessVersionV1,
-		BackendKind:           domain.HarnessBackendDeterministicFixtureV1,
-		ArtifactKind:          domain.HarnessArtifactEmbeddedProfileV1,
-		ArtifactDigest:        hex.EncodeToString(artifact[:]),
-		NativeProtocolVersion: DeterministicNativeProtocolV1,
-		BackendProfileDigest:  stableDigest("sessionless.deterministic-harness.profile.v1"),
-		ProviderContractKind:  domain.ProviderContractCredentiallessFixtureV1,
+		BackendKind:            domain.HarnessBackendDeterministicFixtureV1,
+		ArtifactKind:           domain.HarnessArtifactEmbeddedProfileV1,
+		ArtifactDigest:         hex.EncodeToString(artifact[:]),
+		NativeProtocolVersion:  DeterministicNativeProtocolV1,
+		BackendProfileDigest:   stableDigest("sessionless.deterministic-harness.profile.v1"),
+		ProviderContractKind:   domain.ProviderContractCredentiallessFixtureV1,
+		CredentialDeliveryKind: domain.ProviderCredentialDeliveryNoneV1,
 	}
 }
 
@@ -252,6 +293,7 @@ func ValidateDeterministicFixtureBindingV1(binding domain.HarnessBindingV1) Fail
 		return FailureProviderResourceMismatch
 	}
 	if binding.ModelID != DeterministicModelIDV1 ||
+		binding.InputDataClass != domain.ProviderDataPrivateV1 ||
 		binding.ProviderCatalogDigest != stableDigest("sessionless.deterministic-harness.catalog.v1") ||
 		binding.ProviderRouteDigest != stableDigest("sessionless.deterministic-harness.route.v1") ||
 		binding.PrivacyPolicyDigest != stableDigest("sessionless.deterministic-harness.privacy.v1") ||
@@ -287,7 +329,9 @@ func (binder *DeterministicFixtureBinder) BindHarness(_ context.Context, request
 			Kind: domain.ProviderResourceCredentiallessFixtureV1, ResourceID: DeterministicFixtureResourceIDV1,
 			OwnerUserID: request.OwnerUserID, Revision: 1, CredentialMode: domain.ProviderCredentialNoneV1,
 		},
+		ModelVendorID:            "sessionless",
 		ModelID:                  DeterministicModelIDV1,
+		InputDataClass:           domain.ProviderDataPrivateV1,
 		ProviderCatalogDigest:    stableDigest("sessionless.deterministic-harness.catalog.v1"),
 		ProviderRouteDigest:      stableDigest("sessionless.deterministic-harness.route.v1"),
 		PrivacyPolicyDigest:      stableDigest("sessionless.deterministic-harness.privacy.v1"),

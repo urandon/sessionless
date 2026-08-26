@@ -37,6 +37,9 @@ func TestHarnessBindingDigestBindsEveryAuthorityField(t *testing.T) {
 		"provider contract": func(value *domain.HarnessBindingV1) {
 			value.Backend.ProviderContractKind = domain.ProviderContractInvocationV1
 		},
+		"credential delivery": func(value *domain.HarnessBindingV1) {
+			value.Backend.CredentialDeliveryKind = domain.ProviderCredentialDeliveryFileV1
+		},
 		"artifact":      func(value *domain.HarnessBindingV1) { value.Backend.ArtifactDigest = strings.Repeat("a", 64) },
 		"protocol":      func(value *domain.HarnessBindingV1) { value.Backend.NativeProtocolVersion = "other.v1" },
 		"profile":       func(value *domain.HarnessBindingV1) { value.Backend.BackendProfileDigest = strings.Repeat("b", 64) },
@@ -47,7 +50,9 @@ func TestHarnessBindingDigestBindsEveryAuthorityField(t *testing.T) {
 			value.Resource.CredentialMode = domain.ProviderCredentialInvocationV1
 		},
 		"credential generation": func(value *domain.HarnessBindingV1) { value.Resource.CredentialGeneration++ },
+		"model vendor":          func(value *domain.HarnessBindingV1) { value.ModelVendorID = "other-vendor" },
 		"model":                 func(value *domain.HarnessBindingV1) { value.ModelID = "fixture-model-2" },
+		"input data class":      func(value *domain.HarnessBindingV1) { value.InputDataClass = domain.ProviderDataPublicV1 },
 		"catalog":               func(value *domain.HarnessBindingV1) { value.ProviderCatalogDigest = strings.Repeat("c", 64) },
 		"route":                 func(value *domain.HarnessBindingV1) { value.ProviderRouteDigest = strings.Repeat("d", 64) },
 		"privacy":               func(value *domain.HarnessBindingV1) { value.PrivacyPolicyDigest = strings.Repeat("e", 64) },

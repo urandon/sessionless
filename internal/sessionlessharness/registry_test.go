@@ -17,6 +17,9 @@ type recordingDriver struct {
 	cancelCalls    int
 	preflightCalls int
 	preflightErr   error
+	executeErr     error
+	executeResult  ports.ExecutionResult
+	cancelErr      error
 }
 
 func (driver *recordingDriver) Preflight(_ context.Context, identity ports.ExecutionIdentity) error {
@@ -27,13 +30,28 @@ func (driver *recordingDriver) Preflight(_ context.Context, identity ports.Execu
 	return identity.Validate()
 }
 
-func (driver *recordingDriver) Execute(_ context.Context, _ ports.ExecutionRequest, _ ports.ExecutionEventSink) (ports.ExecutionResult, error) {
+func (driver *recordingDriver) Execute(_ context.Context, request ports.ExecutionRequest, _ ports.ExecutionEventSink) (ports.ExecutionResult, error) {
 	driver.executeCalls++
-	return ports.ExecutionResult{Summary: "ok"}, nil
+	evidence, err := (domain.ProviderExecutionEvidenceV1{
+		AcceptanceClass: domain.ProviderAcceptanceAcceptedV1, FinishClass: domain.ProviderFinishCompletedV1,
+		RouteState: domain.ProviderEvidenceSupportedV1, ActualModelVendorID: request.HarnessBinding.ModelVendorID, ActualModelID: request.HarnessBinding.ModelID,
+		TransportKind:     domain.ProviderTransportLocalCLIV1,
+		TransportProvider: "sessionless", UpstreamProviderID: "local", EndpointID: "recording-fixture",
+		PolicyVerdict: domain.ProviderPolicyGoV1, UsageProvenance: domain.ProviderUsageUnknownV1,
+	}).SealForBinding(request.HarnessBinding)
+	if err != nil {
+		return ports.ExecutionResult{}, err
+	}
+	result := driver.executeResult
+	if result.Summary == "" {
+		result.Summary = "ok"
+	}
+	result.ProviderEvidence = &evidence
+	return result, driver.executeErr
 }
 func (driver *recordingDriver) Cancel(_ context.Context, _ ports.ExecutionIdentity) error {
 	driver.cancelCalls++
-	return nil
+	return driver.cancelErr
 }
 
 type noopSink struct{}
@@ -130,8 +148,8 @@ func invocationIdentity(t *testing.T, expires time.Time) ports.ExecutionIdentity
 	if err != nil {
 		t.Fatal(err)
 	}
-	descriptor := domain.HarnessBackendDescriptorV1{HarnessKind: domain.HarnessKindSessionlessV1, HarnessVersion: "1", BackendKind: domain.HarnessBackendCodexExecV1, ArtifactKind: domain.HarnessArtifactExecutableV1, ArtifactDigest: strings.Repeat("1", 64), NativeProtocolVersion: "codex-jsonl.v1", BackendProfileDigest: strings.Repeat("2", 64), ProviderContractKind: domain.ProviderContractInvocationV1}
-	binding := domain.HarnessBindingV1{Version: 1, TenantID: "tenant-1", OwnerUserID: "user-1", RunID: "run-1", AttemptID: "attempt-1", Backend: descriptor, Resource: domain.ProviderResourceBindingV1{Kind: domain.ProviderResourceSubscriptionV1, ResourceID: "subscription-1", OwnerUserID: "user-1", Revision: 1, CredentialMode: domain.ProviderCredentialInvocationV1, CredentialGeneration: 1}, ModelID: "codex-model", ProviderCatalogDigest: strings.Repeat("3", 64), ProviderRouteDigest: strings.Repeat("4", 64), PrivacyPolicyDigest: strings.Repeat("5", 64), CapabilityEvidenceDigest: strings.Repeat("6", 64), EffectivePolicyDigest: strings.Repeat("7", 64), ExecutionPlacementDigest: string(placementDigest), EvidenceExpiresAt: &expires}
+	descriptor := domain.HarnessBackendDescriptorV1{HarnessKind: domain.HarnessKindSessionlessV1, HarnessVersion: "1", BackendKind: domain.HarnessBackendCodexExecV1, ArtifactKind: domain.HarnessArtifactExecutableV1, ArtifactDigest: strings.Repeat("1", 64), NativeProtocolVersion: "codex-jsonl.v1", BackendProfileDigest: strings.Repeat("2", 64), ProviderContractKind: domain.ProviderContractInvocationV1, CredentialDeliveryKind: domain.ProviderCredentialDeliveryFileV1}
+	binding := domain.HarnessBindingV1{Version: 1, TenantID: "tenant-1", OwnerUserID: "user-1", RunID: "run-1", AttemptID: "attempt-1", Backend: descriptor, Resource: domain.ProviderResourceBindingV1{Kind: domain.ProviderResourceSubscriptionV1, ResourceID: "subscription-1", OwnerUserID: "user-1", Revision: 1, CredentialMode: domain.ProviderCredentialInvocationV1, CredentialGeneration: 1}, ModelVendorID: "openai", ModelID: "codex-model", InputDataClass: domain.ProviderDataPrivateV1, ProviderCatalogDigest: strings.Repeat("3", 64), ProviderRouteDigest: strings.Repeat("4", 64), PrivacyPolicyDigest: strings.Repeat("5", 64), CapabilityEvidenceDigest: strings.Repeat("6", 64), EffectivePolicyDigest: strings.Repeat("7", 64), ExecutionPlacementDigest: string(placementDigest), EvidenceExpiresAt: &expires}
 	return ports.ExecutionIdentity{TenantID: "tenant-1", OwnerUserID: "user-1", RunID: "run-1", AttemptID: "attempt-1", ExecutionPlacement: placement, HarnessBinding: binding}
 }
 
@@ -212,6 +230,26 @@ func TestRegistrySelectsExactBackendAmongMultipleRegistrations(t *testing.T) {
 	}
 	if codex.cancelCalls != 1 || fixture.cancelCalls != 0 {
 		t.Fatalf("exact/fallback calls=%d/%d", codex.cancelCalls, fixture.cancelCalls)
+	}
+}
+
+func TestRegistrySanitizesBackendErrorsAndRetainsValidFailureEvidence(t *testing.T) {
+	t.Parallel()
+	registry, driver, request := registryFixture(t)
+	driver.executeErr = errors.New("private provider body token=secret")
+	driver.executeResult = ports.ExecutionResult{
+		Summary:    "private provider response",
+		Outputs:    []ports.ExecutionOutput{{Name: "private-output", MediaType: "text/plain", RelativePath: "secret/path.txt"}},
+		ToolEvents: []ports.ExecutionToolEvent{{Kind: domain.SessionEventToolResult, CallID: "call-private", ToolName: "private-tool", Payload: []byte("raw provider frame secret")}},
+	}
+	result, err := registry.Execute(context.Background(), request, noopSink{})
+	if err == nil || strings.Contains(err.Error(), "private provider") || result.ProviderEvidence == nil || result.Summary != "" || len(result.Outputs) != 0 || len(result.ToolEvents) != 0 {
+		t.Fatalf("execute error/evidence not bounded: result=%+v err=%v", result, err)
+	}
+	driver.cancelErr = errors.New("private cancel response")
+	identity := ports.ExecutionIdentity{TenantID: request.TenantID, OwnerUserID: request.OwnerUserID, RunID: request.RunID, AttemptID: request.AttemptID, ExecutionPlacement: request.ExecutionPlacement, HarnessBinding: request.HarnessBinding.Clone()}
+	if err := registry.Cancel(context.Background(), identity); err == nil || strings.Contains(err.Error(), "private cancel") {
+		t.Fatalf("cancel error leaked: %v", err)
 	}
 }
 

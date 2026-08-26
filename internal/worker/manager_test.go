@@ -828,6 +828,7 @@ func workerFixture(
 
 func setInvocationHarnessBinding(job *domain.WorkerJob, resourceID domain.SubscriptionConnectionID, generation uint64) {
 	job.HarnessBinding.Backend.ProviderContractKind = domain.ProviderContractInvocationV1
+	job.HarnessBinding.Backend.CredentialDeliveryKind = domain.ProviderCredentialDeliveryFileV1
 	job.HarnessBinding.Backend.BackendKind = domain.HarnessBackendCodexExecV1
 	job.HarnessBinding.Backend.ArtifactKind = domain.HarnessArtifactExecutableV1
 	job.HarnessBinding.Resource = domain.ProviderResourceBindingV1{

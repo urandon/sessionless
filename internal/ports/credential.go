@@ -60,26 +60,18 @@ type CredentialMaterialization struct {
 	AuthFile string
 }
 
-type ProviderCredentialDeliveryKindV1 string
-
-const (
-	ProviderCredentialDeliveryFileV1        ProviderCredentialDeliveryKindV1 = "file"
-	ProviderCredentialDeliveryEnvironmentV1 ProviderCredentialDeliveryKindV1 = "environment"
-	ProviderCredentialDeliveryDirectV1      ProviderCredentialDeliveryKindV1 = "direct"
-)
-
 // ProviderCredentialMaterializationV1 describes only the delivery boundary;
 // it never contains credential bytes. Exact delivery kind remains backend-
 // profile authority and is validated again by that backend's preflight.
 type ProviderCredentialMaterializationV1 struct {
-	Kind            ProviderCredentialDeliveryKindV1
+	Kind            domain.ProviderCredentialDeliveryKindV1
 	RootDir         string
 	FilePath        string
 	EnvironmentName string
 }
 
 func (materialization CredentialMaterialization) ProviderMaterialization() ProviderCredentialMaterializationV1 {
-	return ProviderCredentialMaterializationV1{Kind: ProviderCredentialDeliveryFileV1, RootDir: materialization.RootDir, FilePath: materialization.AuthFile}
+	return ProviderCredentialMaterializationV1{Kind: domain.ProviderCredentialDeliveryFileV1, RootDir: materialization.RootDir, FilePath: materialization.AuthFile}
 }
 
 func (materialization CredentialMaterialization) Validate() error {

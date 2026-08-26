@@ -531,9 +531,15 @@ state.
    price and effective-policy evidence contracts. No credentials or provider
    backend are enabled by this slice; the contracts preserve unknown/no-go and
    expire before execution rather than trusting live discovery.
-2. **PR-02 harness/provider conformance kit**: one `HarnessDriver` fixture suite
-   plus fake OpenRouter HTTPS/SSE, RPC/JSONL fixtures, acceptance ambiguity,
-   cancellation, route/usage evidence, process and size/depth/event/time bounds.
+2. **PR-02 harness/provider conformance kit**: strict credential-free fixture
+   manifests exercise the production closed registry for deterministic,
+   Codex, OpenCode, Pi and direct OpenRouter descriptors. They bind delivery,
+   input data class, capability/catalog/route/privacy/price/policy evidence,
+   cancellation after expiry, and public-safe terminal evidence without a
+   secret, process or network call. Generic fake registrations report native
+   backend protocol as `skipped`; HTTPS/SSE and RPC/JSONL protocol scripts land
+   only with their owning adapters and must pass the same reusable contract
+   before they may report `supported`.
 3. **PR-05a credential ingestion**: owner-scoped binding plus real secret-store
    adapter, generation/revoke/rotation and invocation-scoped materialization.
 4. **PR-05b Pi adapter**: pinned RPC/no-session process, generated exact

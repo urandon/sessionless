@@ -177,6 +177,9 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 	}); err != nil {
 		return manager.retry(ctx, message, err)
 	}
+	if err := manager.validateProviderCredentialPlan(loaded.Job.HarnessBinding); err != nil {
+		return manager.retry(ctx, message, err)
+	}
 	now := manager.clock.Now().UTC()
 	if loaded.Reservation.Status != domain.ReservationHeld ||
 		!loaded.Reservation.ExpiresAt.After(now) {
@@ -373,6 +376,33 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 type managedCredential struct {
 	handle          ports.CredentialHandle
 	materialization ports.CredentialMaterialization
+}
+
+// validateProviderCredentialPlan is the worker's secret-free lifecycle gate.
+// It runs before lease claim, credential Issue/Materialize, workspace/blob
+// materialization, process launch, or provider network access. The current
+// production lifecycle is deliberately subscription+file only; other sealed
+// provider tuples stay feature-disabled until their owning lifecycle exists.
+func (manager *Manager) validateProviderCredentialPlan(binding domain.HarnessBindingV1) error {
+	if err := binding.Validate(); err != nil {
+		return ErrCredentialOrchestration
+	}
+	switch manager.config.CredentialMode {
+	case CredentialDisabled:
+		if binding.Resource.CredentialMode != domain.ProviderCredentialNoneV1 ||
+			binding.Backend.CredentialDeliveryKind != domain.ProviderCredentialDeliveryNoneV1 {
+			return ErrCredentialOrchestration
+		}
+	case CredentialRequired:
+		if binding.Resource.CredentialMode != domain.ProviderCredentialInvocationV1 ||
+			binding.Resource.Kind != domain.ProviderResourceSubscriptionV1 ||
+			binding.Backend.CredentialDeliveryKind != domain.ProviderCredentialDeliveryFileV1 {
+			return ErrCredentialOrchestration
+		}
+	default:
+		return ErrCredentialOrchestration
+	}
+	return nil
 }
 
 func (manager *Manager) prepareCredential(

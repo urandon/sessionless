@@ -48,6 +48,10 @@ func main() {
 		logger.Error("require execution placement cutover", "error", err)
 		os.Exit(1)
 	}
+	if err := state.RequireHarnessBindingCutover(ctx); err != nil {
+		logger.Error("require harness binding cutover", "error", err)
+		os.Exit(1)
+	}
 	queue, err := sqsqueue.New(ctx, sqsqueue.Config{
 		Endpoint:        os.Getenv("QUEUE_ENDPOINT"),
 		Region:          envOrDefault("QUEUE_REGION", "ru-central1"),

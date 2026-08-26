@@ -22,6 +22,7 @@ type WorkerJob struct {
 	AllowedMCPServers     []string              `json:"allowed_mcp_servers,omitempty"`
 	CredentialOwnerUserID UserID                `json:"credential_owner_user_id,omitempty"`
 	ExecutionPlacement    ExecutionPlacementV1  `json:"execution_placement"`
+	HarnessBinding        HarnessBindingV1      `json:"harness_binding"`
 	Limits                ProductLimits         `json:"limits"`
 	Origin                *FrontendEventOrigin  `json:"origin,omitempty"`
 	// Compatibility bridge for legacy Telegram jobs until #37 projects results from the
@@ -88,6 +89,11 @@ func (job WorkerJob) ValidateForRun(run Run) error {
 		}
 	}
 	if err := job.ExecutionPlacement.Validate(); err != nil {
+		return err
+	}
+	if err := job.HarnessBinding.ValidateForScope(
+		job.TenantID, job.CredentialOwnerUserID, job.RunID, job.AttemptID, job.ExecutionPlacement,
+	); err != nil {
 		return err
 	}
 	if err := job.Limits.Validate(); err != nil {

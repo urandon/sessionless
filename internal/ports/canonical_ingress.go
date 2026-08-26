@@ -107,7 +107,24 @@ type CanonicalUserEventCommit struct {
 	Artifacts                []domain.Artifact
 	DispatchID               domain.DispatchOutboxID
 	AllowedMCPServers        []string
+	HarnessBinding           domain.HarnessBindingV1
 	CommittedAt              time.Time
+}
+
+// HarnessBindingRequest contains only server-derived authority. Frontend
+// adapters never construct or pass provider/harness selection fields.
+type HarnessBindingRequest struct {
+	TenantID                 domain.TenantID
+	OwnerUserID              domain.UserID
+	RunID                    domain.RunID
+	AttemptID                domain.AttemptID
+	SubscriptionConnectionID domain.SubscriptionConnectionID
+	ExecutionPlacement       domain.ExecutionPlacementV1
+	At                       time.Time
+}
+
+type HarnessBinder interface {
+	BindHarness(context.Context, HarnessBindingRequest) (domain.HarnessBindingV1, error)
 }
 
 type CanonicalUserEventResult struct {

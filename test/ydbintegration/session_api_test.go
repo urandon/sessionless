@@ -18,6 +18,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/sessionapi"
 	"gitcode.com/urandon/sessionless/internal/sessioningress"
+	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 	"gitcode.com/urandon/sessionless/internal/syntheticfrontend"
 )
 
@@ -212,7 +213,8 @@ func TestTelegramAndSyntheticFrontendOpenTheSameAuthorizedSession(t *testing.T) 
 	seedCanonicalMembership(t, client.DB, tenantID, userID, now)
 	blobs := newSessionAPITestBlobs()
 	ingress, err := sessioningress.New(sessioningress.Config{
-		IDKey: []byte(strings.Repeat("i", 32)),
+		IDKey:         []byte(strings.Repeat("i", 32)),
+		HarnessBinder: sessionlessharness.NewDeterministicFixtureBinderV1(),
 	}, store, blobs)
 	if err != nil {
 		t.Fatal(err)

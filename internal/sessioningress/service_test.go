@@ -14,13 +14,14 @@ import (
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/sessioningress"
+	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 	"gitcode.com/urandon/sessionless/internal/syntheticfrontend"
 )
 
 func TestSyntheticFrontendCreatesSwitchesAndIngestsCanonicalSessions(t *testing.T) {
 	store := newMemoryCanonicalStore()
 	blobs := newMemoryBlobs()
-	service, err := sessioningress.New(sessioningress.Config{IDKey: []byte(strings.Repeat("k", 32))}, store, blobs)
+	service, err := sessioningress.New(testIngressConfig("k"), store, blobs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,13 +86,21 @@ func TestSyntheticFrontendCreatesSwitchesAndIngestsCanonicalSessions(t *testing.
 	if strings.Contains(strings.ToLower(commit.Payload.Key), "telegram") {
 		t.Fatalf("synthetic payload leaked a Telegram path: %q", commit.Payload.Key)
 	}
+	if err := commit.HarnessBinding.ValidateForScope(
+		commit.TenantID, commit.UserID, commit.RunID, commit.AttemptID, domain.ManagedExecutionPlacementV1(),
+	); err != nil {
+		t.Fatalf("server-owned harness binding = %+v: %v", commit.HarnessBinding, err)
+	}
+	if commit.HarnessBinding.Resource.CredentialMode != domain.ProviderCredentialNoneV1 {
+		t.Fatalf("fixture credential mode = %q", commit.HarnessBinding.Resource.CredentialMode)
+	}
 }
 
 func TestObjectFailureDoesNotReachCanonicalTransaction(t *testing.T) {
 	store := newMemoryCanonicalStore()
 	blobs := newMemoryBlobs()
 	blobs.fail = errors.New("object store unavailable")
-	service, err := sessioningress.New(sessioningress.Config{IDKey: []byte(strings.Repeat("k", 32))}, store, blobs)
+	service, err := sessioningress.New(testIngressConfig("k"), store, blobs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,12 +117,34 @@ func TestObjectFailureDoesNotReachCanonicalTransaction(t *testing.T) {
 	}
 }
 
+func TestInvalidServerHarnessBindingFailsBeforeObjectWrite(t *testing.T) {
+	store := newMemoryCanonicalStore()
+	blobs := newMemoryBlobs()
+	config := testIngressConfig("h")
+	config.HarnessBinder = invalidHarnessBinder{}
+	service, err := sessioningress.New(config, store, blobs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.Ingest(context.Background(), sessioningress.UserInput{
+		Actor:           sessioningress.Actor{TenantID: "tenant-a", UserID: "user-a", Frontend: syntheticfrontend.Frontend, ExternalConversationID: "conversation-a"},
+		ExternalEventID: "invalid-binding", ReceivedAt: time.Date(2026, 8, 10, 10, 0, 0, 0, time.UTC),
+		Text: "must not be stored", SubscriptionConnectionID: "subscription-a",
+	})
+	if err == nil {
+		t.Fatal("invalid server-owned binding accepted")
+	}
+	if len(blobs.objects) != 0 || len(store.commits) != 0 {
+		t.Fatalf("invalid binding reached effects: blobs=%d commits=%d", len(blobs.objects), len(store.commits))
+	}
+}
+
 func TestConcurrentPreflightMissCannotOverwriteCanonicalBlob(t *testing.T) {
 	baseStore := newMemoryCanonicalStore()
 	store := &alwaysMissCanonicalStore{memoryCanonicalStore: baseStore}
 	blobs := newMemoryBlobs()
 	service, err := sessioningress.New(
-		sessioningress.Config{IDKey: []byte(strings.Repeat("r", 32))}, store, blobs,
+		testIngressConfig("r"), store, blobs,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -164,7 +195,7 @@ func TestAttachmentsStayInsideTheCanonicalEventPrefix(t *testing.T) {
 	store := newMemoryCanonicalStore()
 	blobs := newMemoryBlobs()
 	service, err := sessioningress.New(
-		sessioningress.Config{IDKey: []byte(strings.Repeat("a", 32))}, store, blobs,
+		testIngressConfig("a"), store, blobs,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -204,7 +235,7 @@ func TestBoundIngressAcceptsOnlyPromotedEventAttachments(t *testing.T) {
 	store := newMemoryCanonicalStore()
 	blobs := newMemoryBlobs()
 	service, err := sessioningress.New(
-		sessioningress.Config{IDKey: []byte(strings.Repeat("w", 32))}, store, blobs,
+		testIngressConfig("w"), store, blobs,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -267,7 +298,7 @@ func TestBoundIngressAcceptsOnlyPromotedEventAttachments(t *testing.T) {
 
 func TestBoundIngressRejectsBrowserForgedBinding(t *testing.T) {
 	service, err := sessioningress.New(
-		sessioningress.Config{IDKey: []byte(strings.Repeat("b", 32))},
+		testIngressConfig("b"),
 		newMemoryCanonicalStore(), newMemoryBlobs(),
 	)
 	if err != nil {
@@ -294,7 +325,7 @@ func TestBoundIngressRejectsBrowserForgedBinding(t *testing.T) {
 
 func TestBoundIngressNamespacesIdempotencyByUser(t *testing.T) {
 	service, err := sessioningress.New(
-		sessioningress.Config{IDKey: []byte(strings.Repeat("k", 32))},
+		testIngressConfig("k"),
 		newMemoryCanonicalStore(), newMemoryBlobs(),
 	)
 	if err != nil {
@@ -332,6 +363,19 @@ func TestServiceRequiresAnOpaqueIDSecret(t *testing.T) {
 	if _, err := sessioningress.New(sessioningress.Config{}, newMemoryCanonicalStore(), newMemoryBlobs()); err == nil {
 		t.Fatal("service accepted a missing ID HMAC key")
 	}
+}
+
+func testIngressConfig(key string) sessioningress.Config {
+	return sessioningress.Config{
+		IDKey:         []byte(strings.Repeat(key, 32)),
+		HarnessBinder: sessionlessharness.NewDeterministicFixtureBinderV1(),
+	}
+}
+
+type invalidHarnessBinder struct{}
+
+func (invalidHarnessBinder) BindHarness(context.Context, ports.HarnessBindingRequest) (domain.HarnessBindingV1, error) {
+	return domain.HarnessBindingV1{}, nil
 }
 
 type memoryCanonicalStore struct {

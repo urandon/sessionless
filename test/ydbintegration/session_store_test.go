@@ -16,6 +16,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/sessioningress"
+	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 	"gitcode.com/urandon/sessionless/internal/ydbpartition"
 	"gitcode.com/urandon/sessionless/internal/ydbstore"
 )
@@ -41,7 +42,8 @@ func TestCanonicalIngressReusesAnExistingTelegramBindingIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	service, err := sessioningress.New(sessioningress.Config{
-		IDKey: []byte(strings.Repeat("t", 32)),
+		IDKey:         []byte(strings.Repeat("t", 32)),
+		HarnessBinder: sessionlessharness.NewDeterministicFixtureBinderV1(),
 	}, store, newSessionAPITestBlobs())
 	if err != nil {
 		t.Fatal(err)
@@ -395,6 +397,10 @@ func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 		DispatchID:               domain.DispatchOutboxID(uniqueID("dispatch-ingress")),
 		CommittedAt:              committedAt,
 	}
+	request.HarnessBinding = mustHarnessBindingV1(
+		t, request.TenantID, request.UserID, request.RunID, request.AttemptID,
+		request.SubscriptionConnectionID, domain.ManagedExecutionPlacementV1(), committedAt,
+	)
 	start := make(chan struct{})
 	results := make(chan ports.CanonicalUserEventResult, 2)
 	errorsByCommit := make(chan error, 2)
@@ -769,6 +775,10 @@ func TestCanonicalFailureAndCancellationFinalizationAreAtomicAndIdempotent(t *te
 				DispatchID:               domain.DispatchOutboxID(uniqueID("dispatch-terminal-" + testCase.name)),
 				CommittedAt:              committedAt,
 			}
+			request.HarnessBinding = mustHarnessBindingV1(
+				t, request.TenantID, request.UserID, request.RunID, request.AttemptID,
+				request.SubscriptionConnectionID, domain.ManagedExecutionPlacementV1(), committedAt,
+			)
 			if _, err := store.CommitCanonicalUserEvent(ctx, request); err != nil {
 				t.Fatal(err)
 			}

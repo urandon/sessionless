@@ -212,6 +212,11 @@ func AttachedWorkerJobContextDigestV1(job WorkerJob, manifest ArtifactManifest) 
 	appendString("execution_placement.worker_id", string(placement.WorkerID))
 	appendString("execution_placement.capability_digest", string(placement.CapabilityDigest))
 	appendString("execution_placement.policy_digest", string(placement.PolicyDigest))
+	harnessBindingDigest, err := job.HarnessBinding.Digest()
+	if err != nil {
+		return "", err
+	}
+	appendString("harness_binding_digest", string(harnessBindingDigest))
 	limits := job.Limits
 	appendUint("limits.max_tenant_queue_depth", uint64(limits.MaxTenantQueueDepth))
 	appendUint("limits.max_active_runs", uint64(limits.MaxActiveRuns))

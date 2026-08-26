@@ -16,6 +16,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 	"gitcode.com/urandon/sessionless/internal/ydbclient"
 	"gitcode.com/urandon/sessionless/internal/ydbmigrate"
 	"gitcode.com/urandon/sessionless/internal/ydbpartition"
@@ -43,6 +44,27 @@ func TestExecutionPlacementServingGateRequiresCommittedMarker(t *testing.T) {
 	}
 	if err := store.RequireExecutionPlacementCutover(ctx); err != nil {
 		t.Fatalf("committed execution placement cutover rejected: %v", err)
+	}
+}
+
+func TestHarnessBindingServingGateRequiresCommittedMarker(t *testing.T) {
+	store, client := openStore(t)
+	ctx := context.Background()
+	if _, err := client.DB.ExecContext(ctx,
+		`DELETE FROM harness_binding_cutover_state WHERE cutover_id=$1`,
+		"harness-binding-v1-empty-cutover"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RequireHarnessBindingCutover(ctx); err == nil {
+		t.Fatal("missing harness binding cutover marker accepted")
+	}
+	if _, err := client.DB.ExecContext(ctx,
+		`UPSERT INTO harness_binding_cutover_state (cutover_id,completed_at) VALUES ($1,$2)`,
+		"harness-binding-v1-empty-cutover", time.Now().UTC().Truncate(time.Microsecond)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RequireHarnessBindingCutover(ctx); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -1219,8 +1241,9 @@ func ingressFixture(
 	dispatch := domain.DispatchOutbox{
 		ID: domain.DispatchOutboxID("dispatch-" + runID), TenantID: tenantID,
 		RunID: run.ID, AttemptID: attempt.ID, Status: domain.DispatchPending,
-		InputManifestID:    domain.ArtifactManifestID("manifest-" + runID),
-		ExecutionPlacement: domain.ManagedExecutionPlacementV1(),
+		InputManifestID:       domain.ArtifactManifestID("manifest-" + runID),
+		ExecutionPlacement:    domain.ManagedExecutionPlacementV1(),
+		CredentialOwnerUserID: "user-fixture",
 		ContextSnapshot: domain.BlobRef{
 			TenantID: tenantID, Key: "tenants/" + string(tenantID) + "/context/" + runID,
 			Size: 1, SHA256: strings.Repeat("0", 64),
@@ -1230,6 +1253,10 @@ func ingressFixture(
 		IdempotencyKey:   domain.IdempotencyKey("dispatch-key-" + runID),
 		CreatedAt:        now, UpdatedAt: now,
 	}
+	dispatch.HarnessBinding = mustHarnessBindingV1(
+		panicTestingT{}, dispatch.TenantID, dispatch.CredentialOwnerUserID, dispatch.RunID,
+		dispatch.AttemptID, run.SubscriptionConnectionID, dispatch.ExecutionPlacement, now,
+	)
 	manifest := domain.ArtifactManifest{
 		ID: domain.ArtifactManifestID("manifest-" + runID), TenantID: tenantID,
 		RunID: run.ID, CreatedAt: now,
@@ -1239,6 +1266,36 @@ func ingressFixture(
 		ExpireAt: now.Add(24 * time.Hour), Run: run, Attempt: attempt,
 		InputManifest: manifest, Dispatch: dispatch,
 	}
+}
+
+type testingFataler interface {
+	Helper()
+	Fatal(...any)
+}
+
+type panicTestingT struct{}
+
+func (panicTestingT) Helper()             {}
+func (panicTestingT) Fatal(values ...any) { panic(fmt.Sprint(values...)) }
+
+func mustHarnessBindingV1(
+	t testingFataler,
+	tenantID domain.TenantID,
+	ownerUserID domain.UserID,
+	runID domain.RunID,
+	attemptID domain.AttemptID,
+	subscriptionConnectionID domain.SubscriptionConnectionID,
+	placement domain.ExecutionPlacementV1,
+	at time.Time,
+) domain.HarnessBindingV1 {
+	t.Helper()
+	binding, err := sessionlessharness.NewDeterministicFixtureBindingV1(
+		tenantID, ownerUserID, runID, attemptID, subscriptionConnectionID, placement, at,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return binding
 }
 
 func uniqueID(prefix string) string {

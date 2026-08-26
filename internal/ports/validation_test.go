@@ -7,6 +7,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 )
 
 var portTestTime = time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
@@ -20,17 +21,30 @@ func portTestBlob(tenant domain.TenantID) domain.BlobRef {
 	}
 }
 
+func portTestHarnessBinding(tenant domain.TenantID, owner domain.UserID, run domain.RunID, attempt domain.AttemptID) domain.HarnessBindingV1 {
+	binding, err := sessionlessharness.NewDeterministicFixtureBindingV1(
+		tenant, owner, run, attempt, "subscription-1", domain.ManagedExecutionPlacementV1(), portTestTime,
+	)
+	if err != nil {
+		panic(err)
+	}
+	return binding
+}
+
 func TestExecutionRequestRejectsCrossTenantBlob(t *testing.T) {
 	t.Parallel()
 
 	request := ports.ExecutionRequest{
-		TenantID:        "tenant-a",
-		RunID:           "run-1",
-		SessionID:       "session-1",
-		TriggerEventID:  "event-1",
-		AttemptID:       "attempt-1",
-		WorkDir:         "/tmp/sessionless-test",
-		ContextSnapshot: portTestBlob("tenant-b"),
+		TenantID:           "tenant-a",
+		OwnerUserID:        "user-1",
+		RunID:              "run-1",
+		SessionID:          "session-1",
+		TriggerEventID:     "event-1",
+		AttemptID:          "attempt-1",
+		WorkDir:            "/tmp/sessionless-test",
+		ContextSnapshot:    portTestBlob("tenant-b"),
+		HarnessBinding:     portTestHarnessBinding("tenant-a", "user-1", "run-1", "attempt-1"),
+		ExecutionPlacement: domain.ManagedExecutionPlacementV1(),
 	}
 	err := request.Validate()
 	var mismatch domain.TenantMismatchError
@@ -44,6 +58,7 @@ func TestExecutionRequestAcceptsHarnessNeutralReferences(t *testing.T) {
 
 	request := ports.ExecutionRequest{
 		TenantID:        "tenant-a",
+		OwnerUserID:     "user-1",
 		RunID:           "run-1",
 		SessionID:       "session-1",
 		TriggerEventID:  "event-1",
@@ -55,24 +70,34 @@ func TestExecutionRequestAcceptsHarnessNeutralReferences(t *testing.T) {
 			MediaType: "text/plain",
 			Blob:      portTestBlob("tenant-a"),
 		}},
-		Credential: ports.CredentialHandle{
-			HandleID:                 "credential-1",
-			TenantID:                 "tenant-a",
-			SubscriptionConnectionID: "subscription-1",
-			OwnerUserID:              "user-1",
-			RunID:                    "run-1",
-			AttemptID:                "attempt-1",
-			WorkerID:                 "worker-1",
-			LeaseID:                  "lease-1",
-			LeaseFence:               1,
-			BindingGeneration:        1,
-			ExpiresAt:                portTestTime.Add(time.Minute),
+		Credential: ports.ProviderInvocationCredentialV1{
+			HandleID:    "credential-1",
+			TenantID:    "tenant-a",
+			OwnerUserID: "user-1",
+			RunID:       "run-1",
+			AttemptID:   "attempt-1",
+			WorkerID:    "worker-1",
+			LeaseID:     "lease-1",
+			LeaseFence:  1,
+			ExpiresAt:   portTestTime.Add(time.Minute),
 		},
-		CredentialMaterialization: ports.CredentialMaterialization{
-			RootDir: "/tmp/sessionless-credential", AuthFile: "/tmp/sessionless-credential/auth.json",
+		CredentialMaterialization: ports.ProviderCredentialMaterializationV1{
+			Kind: ports.ProviderCredentialDeliveryFileV1, RootDir: "/tmp/sessionless-credential", FilePath: "/tmp/sessionless-credential/auth.json",
 		},
-		AllowedMCPServers: []string{"source-control", "docs"},
+		AllowedMCPServers:  []string{"source-control", "docs"},
+		ExecutionPlacement: domain.ManagedExecutionPlacementV1(),
+		HarnessBinding:     portTestHarnessBinding("tenant-a", "user-1", "run-1", "attempt-1"),
 	}
+	request.HarnessBinding.Backend.ProviderContractKind = domain.ProviderContractInvocationV1
+	request.HarnessBinding.Backend.BackendKind = domain.HarnessBackendCodexExecV1
+	request.HarnessBinding.Backend.ArtifactKind = domain.HarnessArtifactExecutableV1
+	request.HarnessBinding.Resource = domain.ProviderResourceBindingV1{
+		Kind: domain.ProviderResourceSubscriptionV1, ResourceID: "subscription-1", OwnerUserID: "user-1",
+		Revision: 1, CredentialMode: domain.ProviderCredentialInvocationV1, CredentialGeneration: 1,
+	}
+	expires := portTestTime.Add(time.Hour)
+	request.HarnessBinding.EvidenceExpiresAt = &expires
+	request.Credential.ProviderResource = request.HarnessBinding.Resource
 	if err := request.Validate(); err != nil {
 		t.Fatalf("valid execution request rejected: %v", err)
 	}
@@ -104,7 +129,8 @@ func TestCredentialIssueRequestRequiresActiveMatchingInvocation(t *testing.T) {
 			WorkerID: "worker-1", FenceToken: 7, AcquiredAt: created,
 			ExpiresAt: portTestTime.Add(2 * time.Minute),
 		},
-		ExpiresAt: portTestTime.Add(time.Minute),
+		ExpiresAt:        portTestTime.Add(time.Minute),
+		ProviderResource: domain.ProviderResourceBindingV1{Kind: domain.ProviderResourceSubscriptionV1, ResourceID: "subscription-1", OwnerUserID: "user-1", Revision: 1, CredentialMode: domain.ProviderCredentialInvocationV1, CredentialGeneration: 1},
 	}
 	if err := request.ValidateAt(portTestTime); err != nil {
 		t.Fatalf("valid credential issue request rejected: %v", err)

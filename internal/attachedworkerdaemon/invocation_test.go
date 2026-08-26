@@ -46,12 +46,13 @@ type fakeCredentialLifecycle struct {
 	waitWriteBack   bool
 }
 
-func (lifecycle *fakeCredentialLifecycle) Issue(context.Context, ports.CredentialIssueRequest) (ports.CredentialHandle, error) {
+func (lifecycle *fakeCredentialLifecycle) Issue(_ context.Context, request ports.CredentialIssueRequest) (ports.CredentialHandle, error) {
 	lifecycle.record("issue")
 	return ports.CredentialHandle{
 		HandleID: "handle-a", TenantID: "tenant-a", SubscriptionConnectionID: "connection-a",
 		OwnerUserID: "user-a", RunID: "run-a", AttemptID: "attempt-a", WorkerID: "worker-a",
 		LeaseID: "lease-a", LeaseFence: 9, BindingGeneration: 1, ExpiresAt: time.Now().Add(time.Hour),
+		ProviderResource: request.ProviderResource,
 	}, nil
 }
 
@@ -247,7 +248,8 @@ func validCredentialInvocation(t *testing.T) Invocation {
 		Credential: &CredentialInvocation{
 			IssueRequest: ports.CredentialIssueRequest{
 				OwnerUserID: "user-a", Run: run, Attempt: attempt, Lease: lease,
-				ExpiresAt: started.Add(30 * time.Minute),
+				ExpiresAt:        started.Add(30 * time.Minute),
+				ProviderResource: domain.ProviderResourceBindingV1{Kind: domain.ProviderResourceSubscriptionV1, ResourceID: "connection-a", OwnerUserID: "user-a", Revision: 1, CredentialMode: domain.ProviderCredentialInvocationV1, CredentialGeneration: 1},
 			},
 			HomeEnvironment: "CODEX_HOME",
 		},

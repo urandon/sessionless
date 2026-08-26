@@ -27,6 +27,7 @@ const (
 var ErrIdempotencyConflict = errors.New("idempotency key already belongs to another run")
 
 const executionPlacementCutoverID = "execution-placement-v1-empty-cutover"
+const harnessBindingCutoverID = "harness-binding-v1-empty-cutover"
 
 type Options struct {
 	IdempotencyRetention time.Duration
@@ -84,6 +85,26 @@ func (store *Store) RequireExecutionPlacementCutover(ctx context.Context) error 
 	}
 	if completedAt.IsZero() {
 		return errors.New("execution placement cutover marker has no completion time")
+	}
+	return nil
+}
+
+func (store *Store) RequireHarnessBindingCutover(ctx context.Context) error {
+	if store == nil || store.db == nil {
+		return errors.New("YDB store must not be nil")
+	}
+	var completedAt time.Time
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT completed_at FROM harness_binding_cutover_state WHERE cutover_id=$1`,
+		harnessBindingCutoverID,
+	).Scan(&completedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errors.New("harness binding cutover is not complete")
+		}
+		return fmt.Errorf("read harness binding cutover marker: %w", err)
+	}
+	if completedAt.IsZero() {
+		return errors.New("harness binding cutover marker has no completion time")
 	}
 	return nil
 }

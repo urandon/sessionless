@@ -9,15 +9,17 @@ import (
 )
 
 type CredentialIssueRequest struct {
-	OwnerUserID domain.UserID
-	Run         domain.Run
-	Attempt     domain.Attempt
-	Lease       domain.Lease
-	ExpiresAt   time.Time
+	OwnerUserID      domain.UserID
+	Run              domain.Run
+	Attempt          domain.Attempt
+	Lease            domain.Lease
+	ExpiresAt        time.Time
+	ProviderResource domain.ProviderResourceBindingV1
 }
 
-// CredentialHandle is invocation-scoped and must never be placed in a queue,
-// checkpoint, artifact, log, or persisted session event.
+// CredentialHandle is the existing subscription-backed lifecycle handle. It
+// remains private to credential orchestration and is never the provider-neutral
+// harness contract.
 type CredentialHandle struct {
 	HandleID                 string
 	TenantID                 domain.TenantID
@@ -29,12 +31,55 @@ type CredentialHandle struct {
 	LeaseID                  domain.LeaseID
 	LeaseFence               uint64
 	BindingGeneration        uint64
+	ProviderResource         domain.ProviderResourceBindingV1
 	ExpiresAt                time.Time
+}
+
+// ProviderInvocationCredentialV1 is the provider-neutral, invocation-only
+// projection passed to a harness backend. It contains no secret and does not
+// model API/router resources as subscription connections.
+type ProviderInvocationCredentialV1 struct {
+	HandleID         string
+	TenantID         domain.TenantID
+	OwnerUserID      domain.UserID
+	RunID            domain.RunID
+	AttemptID        domain.AttemptID
+	WorkerID         string
+	LeaseID          domain.LeaseID
+	LeaseFence       uint64
+	ProviderResource domain.ProviderResourceBindingV1
+	ExpiresAt        time.Time
+}
+
+func (handle CredentialHandle) ProviderInvocationCredential() ProviderInvocationCredentialV1 {
+	return ProviderInvocationCredentialV1{HandleID: handle.HandleID, TenantID: handle.TenantID, OwnerUserID: handle.OwnerUserID, RunID: handle.RunID, AttemptID: handle.AttemptID, WorkerID: handle.WorkerID, LeaseID: handle.LeaseID, LeaseFence: handle.LeaseFence, ProviderResource: handle.ProviderResource, ExpiresAt: handle.ExpiresAt}
 }
 
 type CredentialMaterialization struct {
 	RootDir  string
 	AuthFile string
+}
+
+type ProviderCredentialDeliveryKindV1 string
+
+const (
+	ProviderCredentialDeliveryFileV1        ProviderCredentialDeliveryKindV1 = "file"
+	ProviderCredentialDeliveryEnvironmentV1 ProviderCredentialDeliveryKindV1 = "environment"
+	ProviderCredentialDeliveryDirectV1      ProviderCredentialDeliveryKindV1 = "direct"
+)
+
+// ProviderCredentialMaterializationV1 describes only the delivery boundary;
+// it never contains credential bytes. Exact delivery kind remains backend-
+// profile authority and is validated again by that backend's preflight.
+type ProviderCredentialMaterializationV1 struct {
+	Kind            ProviderCredentialDeliveryKindV1
+	RootDir         string
+	FilePath        string
+	EnvironmentName string
+}
+
+func (materialization CredentialMaterialization) ProviderMaterialization() ProviderCredentialMaterializationV1 {
+	return ProviderCredentialMaterializationV1{Kind: ProviderCredentialDeliveryFileV1, RootDir: materialization.RootDir, FilePath: materialization.AuthFile}
 }
 
 func (materialization CredentialMaterialization) Validate() error {

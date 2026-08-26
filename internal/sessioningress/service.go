@@ -24,21 +24,23 @@ import (
 type Config struct {
 	IdempotencyRetention  time.Duration
 	IDKey                 []byte
+	HarnessBinder         ports.HarnessBinder
 	DispatchWakePublisher ports.DispatchWakePublisher
 	WakePublishError      func(error)
 }
 
 type Service struct {
-	store        ports.CanonicalIngressStore
-	blobs        ports.BlobStore
-	retention    time.Duration
-	idKey        []byte
-	dispatchWake ports.DispatchWakePublisher
-	wakeError    func(error)
+	store         ports.CanonicalIngressStore
+	blobs         ports.BlobStore
+	retention     time.Duration
+	idKey         []byte
+	dispatchWake  ports.DispatchWakePublisher
+	wakeError     func(error)
+	harnessBinder ports.HarnessBinder
 }
 
 func New(config Config, store ports.CanonicalIngressStore, blobs ports.BlobStore) (*Service, error) {
-	if store == nil || blobs == nil {
+	if store == nil || blobs == nil || config.HarnessBinder == nil {
 		return nil, errors.New("canonical ingress dependencies must not be nil")
 	}
 	if len(config.IDKey) < 32 {
@@ -50,7 +52,7 @@ func New(config Config, store ports.CanonicalIngressStore, blobs ports.BlobStore
 	return &Service{
 		store: store, blobs: blobs, retention: config.IdempotencyRetention,
 		idKey: append([]byte(nil), config.IDKey...), dispatchWake: config.DispatchWakePublisher,
-		wakeError: config.WakePublishError,
+		wakeError: config.WakePublishError, harnessBinder: config.HarnessBinder,
 	}, nil
 }
 
@@ -272,6 +274,20 @@ func (service *Service) IngestBound(
 	if found {
 		return existing, nil
 	}
+	attemptID := domain.AttemptID(service.stableID("attempt", input.Actor.TenantID, plan.RunID, "1"))
+	harnessBinding, err := service.harnessBinder.BindHarness(ctx, ports.HarnessBindingRequest{
+		TenantID: input.Actor.TenantID, OwnerUserID: input.Actor.UserID,
+		RunID: plan.RunID, AttemptID: attemptID, SubscriptionConnectionID: input.SubscriptionConnectionID,
+		ExecutionPlacement: domain.ManagedExecutionPlacementV1(), At: input.ReceivedAt.UTC(),
+	})
+	if err != nil {
+		return ports.CanonicalUserEventResult{}, err
+	}
+	if err := harnessBinding.ValidateForScope(
+		input.Actor.TenantID, input.Actor.UserID, plan.RunID, attemptID, domain.ManagedExecutionPlacementV1(),
+	); err != nil {
+		return ports.CanonicalUserEventResult{}, err
+	}
 
 	origin := domain.FrontendEventOrigin{
 		BindingID: input.Binding.ID, BindingRevision: input.Binding.Revision,
@@ -325,11 +341,12 @@ func (service *Service) IngestBound(
 		ExpireAt: input.ReceivedAt.UTC().Add(service.retention),
 		EventID:  plan.EventID, Payload: payloadRef, DisplayText: input.Text,
 		RunID:                    plan.RunID,
-		AttemptID:                domain.AttemptID(service.stableID("attempt", input.Actor.TenantID, plan.RunID, "1")),
+		AttemptID:                attemptID,
 		SubscriptionConnectionID: input.SubscriptionConnectionID,
 		ManifestID:               domain.ArtifactManifestID(service.stableID("manifest", input.Actor.TenantID, plan.RunID)),
 		Artifacts:                artifacts, DispatchID: plan.DispatchID,
 		AllowedMCPServers: append([]string(nil), input.AllowedMCPServers...),
+		HarnessBinding:    harnessBinding.Clone(),
 		CommittedAt:       input.ReceivedAt.UTC(),
 	})
 	if err != nil {
@@ -373,6 +390,20 @@ func (service *Service) Ingest(ctx context.Context, input UserInput) (ports.Cano
 			}
 		}
 		return existing.Result, nil
+	}
+	attemptID := domain.AttemptID(service.stableID("attempt", input.Actor.TenantID, runID, "1"))
+	harnessBinding, err := service.harnessBinder.BindHarness(ctx, ports.HarnessBindingRequest{
+		TenantID: input.Actor.TenantID, OwnerUserID: input.Actor.UserID,
+		RunID: runID, AttemptID: attemptID, SubscriptionConnectionID: input.SubscriptionConnectionID,
+		ExecutionPlacement: domain.ManagedExecutionPlacementV1(), At: input.ReceivedAt.UTC(),
+	})
+	if err != nil {
+		return ports.CanonicalUserEventResult{}, err
+	}
+	if err := harnessBinding.ValidateForScope(
+		input.Actor.TenantID, input.Actor.UserID, runID, attemptID, domain.ManagedExecutionPlacementV1(),
+	); err != nil {
+		return ports.CanonicalUserEventResult{}, err
 	}
 	origin := domain.FrontendEventOrigin{
 		BindingID: state.Binding.ID, BindingRevision: state.Binding.Revision,
@@ -424,12 +455,13 @@ func (service *Service) Ingest(ctx context.Context, input UserInput) (ports.Cano
 		EventID:  eventID, Payload: payloadRef,
 		DisplayText:              input.Text,
 		RunID:                    runID,
-		AttemptID:                domain.AttemptID(service.stableID("attempt", input.Actor.TenantID, runID, "1")),
+		AttemptID:                attemptID,
 		SubscriptionConnectionID: input.SubscriptionConnectionID,
 		ManifestID:               domain.ArtifactManifestID(service.stableID("manifest", input.Actor.TenantID, runID)),
 		Artifacts:                artifacts,
 		DispatchID:               dispatchID,
 		AllowedMCPServers:        append([]string(nil), input.AllowedMCPServers...),
+		HarnessBinding:           harnessBinding.Clone(),
 		CommittedAt:              input.ReceivedAt.UTC(),
 	})
 	if err != nil {

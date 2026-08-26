@@ -20,6 +20,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/s3store"
 	"gitcode.com/urandon/sessionless/internal/sessionapi"
 	"gitcode.com/urandon/sessionless/internal/sessioningress"
+	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 	"gitcode.com/urandon/sessionless/internal/sqsqueue"
 	"gitcode.com/urandon/sessionless/internal/telegramoidc"
 	"gitcode.com/urandon/sessionless/internal/webapi"
@@ -112,6 +113,10 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 		closeYDB()
 		return nil, func() {}, fmt.Errorf("require execution placement cutover: %w", err)
 	}
+	if err := store.RequireHarnessBindingCutover(ctx); err != nil {
+		closeYDB()
+		return nil, func() {}, fmt.Errorf("require harness binding cutover: %w", err)
+	}
 	maxUploadBytes, err := envPositiveInt64("WEB_MAX_UPLOAD_BYTES", 32<<20)
 	if err != nil {
 		closeYDB()
@@ -161,7 +166,7 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 	}
 	identityKey := []byte(os.Getenv("SESSION_API_ID_HMAC_KEY"))
 	canonicalIngress, err := sessioningress.New(sessioningress.Config{
-		IDKey: identityKey, DispatchWakePublisher: dispatchWakePublisher,
+		IDKey: identityKey, HarnessBinder: sessionlessharness.NewDeterministicFixtureBinderV1(), DispatchWakePublisher: dispatchWakePublisher,
 		WakePublishError: func(publishErr error) {
 			logger.Warn("durable web dispatch wake publication deferred to recovery", "error", publishErr)
 		},

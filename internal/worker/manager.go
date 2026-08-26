@@ -169,6 +169,14 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 		}
 		return OutcomeDuplicate, nil
 	}
+	if err := manager.harness.Preflight(ctx, ports.ExecutionIdentity{
+		TenantID: loaded.Run.TenantID, OwnerUserID: loaded.Job.CredentialOwnerUserID,
+		RunID: loaded.Run.ID, AttemptID: loaded.Attempt.ID,
+		ExecutionPlacement: loaded.Job.ExecutionPlacement,
+		HarnessBinding:     loaded.Job.HarnessBinding.Clone(),
+	}); err != nil {
+		return manager.retry(ctx, message, err)
+	}
 	now := manager.clock.Now().UTC()
 	if loaded.Reservation.Status != domain.ReservationHeld ||
 		!loaded.Reservation.ExpiresAt.After(now) {
@@ -226,18 +234,20 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 		return manager.finishFailure(ctx, message, loaded, lease, false, "materialization_failed")
 	}
 	request := ports.ExecutionRequest{
-		TenantID: loaded.Run.TenantID, RunID: loaded.Run.ID,
+		TenantID: loaded.Run.TenantID, OwnerUserID: loaded.Job.CredentialOwnerUserID, RunID: loaded.Run.ID,
 		SessionID: loaded.Run.SessionID, TriggerEventID: loaded.Run.TriggerEventID,
 		AttemptID: loaded.Attempt.ID, WorkDir: workDir,
-		ContextSnapshot:   loaded.Job.ContextSnapshot,
-		ContextWindow:     loaded.Job.ContextWindow,
-		InputArtifacts:    loaded.InputManifest.Artifacts,
-		ResumeCheckpoint:  loaded.Checkpoint,
-		AllowedMCPServers: append([]string(nil), loaded.Job.AllowedMCPServers...),
+		ContextSnapshot:    loaded.Job.ContextSnapshot,
+		ContextWindow:      loaded.Job.ContextWindow,
+		InputArtifacts:     loaded.InputManifest.Artifacts,
+		ResumeCheckpoint:   loaded.Checkpoint,
+		AllowedMCPServers:  append([]string(nil), loaded.Job.AllowedMCPServers...),
+		ExecutionPlacement: loaded.Job.ExecutionPlacement,
+		HarnessBinding:     loaded.Job.HarnessBinding.Clone(),
 	}
 	if credential != nil {
-		request.Credential = credential.handle
-		request.CredentialMaterialization = credential.materialization
+		request.Credential = credential.handle.ProviderInvocationCredential()
+		request.CredentialMaterialization = credential.materialization.ProviderMaterialization()
 	}
 	if err := request.Validate(); err != nil {
 		return manager.finishFailure(ctx, message, loaded, lease, false, "invalid_execution_request")
@@ -249,8 +259,9 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 	result, err := manager.harness.Execute(executionCtx, request, sink)
 	if err != nil {
 		_ = manager.harness.Cancel(context.Background(), ports.ExecutionIdentity{
-			TenantID: loaded.Run.TenantID, RunID: loaded.Run.ID,
-			AttemptID: loaded.Attempt.ID,
+			TenantID: loaded.Run.TenantID, OwnerUserID: loaded.Job.CredentialOwnerUserID, RunID: loaded.Run.ID,
+			AttemptID: loaded.Attempt.ID, ExecutionPlacement: loaded.Job.ExecutionPlacement,
+			HarnessBinding: loaded.Job.HarnessBinding.Clone(),
 		})
 	}
 	if credential != nil {
@@ -401,7 +412,8 @@ func (manager *Manager) prepareCredential(
 	request := ports.CredentialIssueRequest{
 		OwnerUserID: loaded.Job.CredentialOwnerUserID,
 		Run:         authoritative.Run, Attempt: authoritative.Attempt, Lease: authoritative.Lease,
-		ExpiresAt: requiredUntil,
+		ExpiresAt:        requiredUntil,
+		ProviderResource: loaded.Job.HarnessBinding.Resource,
 	}
 	if err := request.ValidateAt(now); err != nil {
 		return nil, ErrCredentialOrchestration

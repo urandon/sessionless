@@ -18,6 +18,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/outboxwake"
 	"gitcode.com/urandon/sessionless/internal/s3store"
 	"gitcode.com/urandon/sessionless/internal/sessioningress"
+	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 	"gitcode.com/urandon/sessionless/internal/sqsqueue"
 	"gitcode.com/urandon/sessionless/internal/telegramingress"
 	"gitcode.com/urandon/sessionless/internal/ydbclient"
@@ -100,6 +101,10 @@ func buildHandler(
 		closeYDB()
 		return nil, func() {}, fmt.Errorf("require execution placement cutover: %w", err)
 	}
+	if err := state.RequireHarnessBindingCutover(ctx); err != nil {
+		closeYDB()
+		return nil, func() {}, fmt.Errorf("require harness binding cutover: %w", err)
+	}
 	blobs, err := s3store.New(ctx, s3store.Config{
 		Endpoint: os.Getenv("S3_ENDPOINT"), Region: os.Getenv("S3_REGION"),
 		Bucket: os.Getenv("S3_BUCKET"), AccessKeyID: os.Getenv("S3_ACCESS_KEY_ID"),
@@ -149,6 +154,7 @@ func buildHandler(
 	}
 	canonicalIngress, err := sessioningress.New(sessioningress.Config{
 		IDKey:                 identityKey,
+		HarnessBinder:         sessionlessharness.NewDeterministicFixtureBinderV1(),
 		DispatchWakePublisher: dispatchWakePublisher,
 		WakePublishError: func(publishErr error) {
 			logger.Warn("durable outbox wake publication deferred to recovery", "error", publishErr)

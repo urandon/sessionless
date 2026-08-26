@@ -7,13 +7,26 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 )
 
 type recordingSink struct {
 	events []ports.ExecutionEvent
+}
+
+func deterministicTestBinding() domain.HarnessBindingV1 {
+	binding, err := sessionlessharness.NewDeterministicFixtureBindingV1(
+		"tenant-a", "user-a", "run-a", "attempt-a", "subscription-a",
+		domain.ManagedExecutionPlacementV1(), time.Unix(1, 0).UTC(),
+	)
+	if err != nil {
+		panic(err)
+	}
+	return binding
 }
 
 func TestCaptureContextHistoryCopiesExactMaterializedBytesWhenEnabled(t *testing.T) {
@@ -34,9 +47,11 @@ func TestCaptureContextHistoryCopiesExactMaterializedBytesWhenEnabled(t *testing
 		t.Fatal(err)
 	}
 	request := ports.ExecutionRequest{
-		TenantID: "tenant-a", RunID: "run-a", SessionID: "session-a",
+		TenantID: "tenant-a", OwnerUserID: "user-a", RunID: "run-a", SessionID: "session-a",
 		TriggerEventID: "event-a", AttemptID: "attempt-a", WorkDir: workDir,
-		ContextWindow: &domain.SessionContextWindow{ThroughSequence: 1},
+		ContextWindow:      &domain.SessionContextWindow{ThroughSequence: 1},
+		HarnessBinding:     deterministicTestBinding(),
+		ExecutionPlacement: domain.ManagedExecutionPlacementV1(),
 	}
 	result, err := driver.Execute(context.Background(), request, &recordingSink{})
 	if err != nil {
@@ -74,9 +89,11 @@ func TestContextHistoryCaptureIsOptIn(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := ports.ExecutionRequest{
-		TenantID: "tenant-a", RunID: "run-a", SessionID: "session-a",
+		TenantID: "tenant-a", OwnerUserID: "user-a", RunID: "run-a", SessionID: "session-a",
 		TriggerEventID: "event-a", AttemptID: "attempt-a", WorkDir: workDir,
-		ContextWindow: &domain.SessionContextWindow{ThroughSequence: 1},
+		ContextWindow:      &domain.SessionContextWindow{ThroughSequence: 1},
+		HarnessBinding:     deterministicTestBinding(),
+		ExecutionPlacement: domain.ManagedExecutionPlacementV1(),
 	}
 	result, err := driver.Execute(context.Background(), request, &recordingSink{})
 	if err != nil {
@@ -108,13 +125,15 @@ func TestFailBeforeFirstTurnLeavesNoCheckpointAndResumeCanProceed(t *testing.T) 
 		t.Fatal(err)
 	}
 	request := ports.ExecutionRequest{
-		TenantID: "tenant-a", RunID: "run-a", SessionID: "session-a",
+		TenantID: "tenant-a", OwnerUserID: "user-a", RunID: "run-a", SessionID: "session-a",
 		TriggerEventID: "event-a", AttemptID: "attempt-a",
 		WorkDir: workDir,
 		ContextSnapshot: domain.BlobRef{
 			TenantID: "tenant-a", Key: "tenants/tenant-a/context.json",
 			Size: 1, SHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		},
+		HarnessBinding:     deterministicTestBinding(),
+		ExecutionPlacement: domain.ManagedExecutionPlacementV1(),
 	}
 	sink := &recordingSink{}
 	_, err = driver.Execute(context.Background(), request, sink)

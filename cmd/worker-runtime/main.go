@@ -17,6 +17,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/s3store"
 	"gitcode.com/urandon/sessionless/internal/serverlesshttp"
+	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 	"gitcode.com/urandon/sessionless/internal/sqsqueue"
 	"gitcode.com/urandon/sessionless/internal/worker"
 	"gitcode.com/urandon/sessionless/internal/yandextriggers"
@@ -63,6 +64,10 @@ func main() {
 		logger.Error("require execution placement cutover", "error", err)
 		os.Exit(1)
 	}
+	if err := state.RequireHarnessBindingCutover(ctx); err != nil {
+		logger.Error("require harness binding cutover", "error", err)
+		os.Exit(1)
+	}
 	blobs, err := s3store.New(ctx, s3store.Config{
 		Endpoint: os.Getenv("S3_ENDPOINT"), Region: envOrDefault("S3_REGION", "ru-central1"),
 		Bucket: os.Getenv("S3_BUCKET"), AccessKeyID: os.Getenv("S3_ACCESS_KEY_ID"),
@@ -87,6 +92,15 @@ func main() {
 		logger.Error("create deterministic harness", "error", err)
 		os.Exit(1)
 	}
+	harnessRegistry, err := sessionlessharness.NewRegistry(time.Now, sessionlessharness.Registration{
+		Descriptor:      sessionlessharness.DeterministicFixtureDescriptorV1(),
+		ValidateBinding: sessionlessharness.ValidateDeterministicFixtureBindingV1,
+		Driver:          harness,
+	})
+	if err != nil {
+		logger.Error("create Sessionless harness registry", "error", err)
+		os.Exit(1)
+	}
 	managerConfig := worker.Config{
 		ScratchRoot: envOrDefault("WORKER_SCRATCH_ROOT", "/tmp/sessionless-worker"),
 		WorkerID:    envOrDefault("WORKER_ID", defaultWorkerID()),
@@ -103,7 +117,7 @@ func main() {
 	newManager := func(queue ports.Queue) (*worker.Manager, error) {
 		return worker.New(
 			managerConfig, systemClock{}, portlog.NewQueue(logger, "worker-runtime", queue),
-			state, blobs, harness,
+			state, blobs, harnessRegistry,
 		)
 	}
 	if envBool("SERVERLESS_TRIGGER_HTTP") {

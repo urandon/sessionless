@@ -90,6 +90,14 @@ func (request CredentialIssueRequest) ValidateAt(now time.Time) error {
 	if !request.ExpiresAt.After(now) || request.ExpiresAt.After(request.Lease.ExpiresAt) {
 		return domain.ValidationError{Field: "credential_issue.expires_at", Reason: "must be after now and no later than lease expiry"}
 	}
+	if err := request.ProviderResource.Validate(); err != nil {
+		return err
+	}
+	if request.ProviderResource.Kind != domain.ProviderResourceSubscriptionV1 ||
+		request.ProviderResource.ResourceID != string(request.Run.SubscriptionConnectionID) ||
+		request.ProviderResource.OwnerUserID != request.OwnerUserID {
+		return domain.ValidationError{Field: "credential_issue.provider_resource", Reason: "must match the authorized subscription resource"}
+	}
 	return nil
 }
 
@@ -121,10 +129,69 @@ func (handle CredentialHandle) Validate() error {
 	if handle.LeaseFence == 0 || handle.BindingGeneration == 0 {
 		return domain.ValidationError{Field: "credential.fence", Reason: "lease fence and binding generation must be positive"}
 	}
+	if err := handle.ProviderResource.Validate(); err != nil {
+		return err
+	}
+	if handle.ProviderResource.Kind != domain.ProviderResourceSubscriptionV1 ||
+		handle.ProviderResource.ResourceID != string(handle.SubscriptionConnectionID) ||
+		handle.ProviderResource.OwnerUserID != handle.OwnerUserID ||
+		handle.ProviderResource.CredentialGeneration != handle.BindingGeneration {
+		return domain.ValidationError{Field: "credential.provider_resource", Reason: "must match the issued subscription credential authority"}
+	}
 	if handle.ExpiresAt.IsZero() {
 		return domain.ValidationError{Field: "credential.expires_at", Reason: "must not be zero"}
 	}
 	return nil
+}
+
+func (handle ProviderInvocationCredentialV1) Validate() error {
+	if err := domain.ValidateOpaqueID("provider_credential.handle_id", handle.HandleID); err != nil {
+		return err
+	}
+	for _, validate := range []func() error{handle.TenantID.Validate, handle.OwnerUserID.Validate, handle.RunID.Validate, handle.AttemptID.Validate, handle.LeaseID.Validate, handle.ProviderResource.Validate} {
+		if err := validate(); err != nil {
+			return err
+		}
+	}
+	if err := domain.ValidateOpaqueID("provider_credential.worker_id", handle.WorkerID); err != nil {
+		return err
+	}
+	if handle.LeaseFence == 0 || handle.ExpiresAt.IsZero() {
+		return domain.ValidationError{Field: "provider_credential", Reason: "requires positive lease fence and expiry"}
+	}
+	if handle.ProviderResource.OwnerUserID != handle.OwnerUserID || handle.ProviderResource.CredentialMode != domain.ProviderCredentialInvocationV1 {
+		return domain.ValidationError{Field: "provider_credential.resource", Reason: "must be an owner-bound invocation resource"}
+	}
+	return nil
+}
+
+func (materialization ProviderCredentialMaterializationV1) Validate() error {
+	switch materialization.Kind {
+	case ProviderCredentialDeliveryFileV1:
+		root := filepath.Clean(materialization.RootDir)
+		file := filepath.Clean(materialization.FilePath)
+		if !filepath.IsAbs(root) || !filepath.IsAbs(file) || root != materialization.RootDir || file != materialization.FilePath || filepath.Dir(file) != root || filepath.Base(file) == "." || filepath.Base(file) == string(filepath.Separator) || materialization.EnvironmentName != "" {
+			return domain.ValidationError{Field: "provider_credential_materialization", Reason: "file delivery must be one normalized absolute direct child"}
+		}
+		return domain.ValidateOpaqueID("provider_credential_materialization.file_name", filepath.Base(file))
+	case ProviderCredentialDeliveryEnvironmentV1:
+		if materialization.RootDir != "" || materialization.FilePath != "" || len(materialization.EnvironmentName) == 0 || len(materialization.EnvironmentName) > 128 {
+			return domain.ValidationError{Field: "provider_credential_materialization", Reason: "environment delivery requires only a bounded name"}
+		}
+		for i, r := range materialization.EnvironmentName {
+			if !((r >= 'A' && r <= 'Z') || (i > 0 && r >= '0' && r <= '9') || (i > 0 && r == '_')) {
+				return domain.ValidationError{Field: "provider_credential_materialization.environment_name", Reason: "must be canonical uppercase environment name"}
+			}
+		}
+		return nil
+	case ProviderCredentialDeliveryDirectV1:
+		if materialization.RootDir != "" || materialization.FilePath != "" || materialization.EnvironmentName != "" {
+			return domain.ValidationError{Field: "provider_credential_materialization", Reason: "direct delivery carries no materialization locator"}
+		}
+		return nil
+	default:
+		return domain.ValidationError{Field: "provider_credential_materialization.kind", Reason: "is unsupported"}
+	}
 }
 
 func (request CredentialRevokeRequest) Validate() error {
@@ -160,6 +227,12 @@ func (request ExecutionRequest) Validate() error {
 	if err := request.RunID.Validate(); err != nil {
 		return err
 	}
+	if err := request.OwnerUserID.Validate(); err != nil {
+		return err
+	}
+	if err := request.ExecutionPlacement.Validate(); err != nil {
+		return err
+	}
 	if err := request.SessionID.Validate(); err != nil {
 		return err
 	}
@@ -167,6 +240,12 @@ func (request ExecutionRequest) Validate() error {
 		return err
 	}
 	if err := request.AttemptID.Validate(); err != nil {
+		return err
+	}
+	if err := request.HarnessBinding.Validate(); err != nil {
+		return err
+	}
+	if err := request.HarnessBinding.ValidateForScope(request.TenantID, request.OwnerUserID, request.RunID, request.AttemptID, request.ExecutionPlacement); err != nil {
 		return err
 	}
 	if !filepath.IsAbs(request.WorkDir) || filepath.Clean(request.WorkDir) != request.WorkDir {
@@ -197,8 +276,14 @@ func (request ExecutionRequest) Validate() error {
 		if err := request.CredentialMaterialization.Validate(); err != nil {
 			return err
 		}
-	} else if request.CredentialMaterialization.RootDir != "" || request.CredentialMaterialization.AuthFile != "" {
+		if request.HarnessBinding.Resource.CredentialMode != domain.ProviderCredentialInvocationV1 ||
+			request.Credential.ProviderResource != request.HarnessBinding.Resource {
+			return domain.ValidationError{Field: "execution.credential", Reason: "must match the sealed harness credential generation"}
+		}
+	} else if request.CredentialMaterialization != (ProviderCredentialMaterializationV1{}) {
 		return domain.ValidationError{Field: "execution.credential_materialization", Reason: "requires a credential handle"}
+	} else if request.HarnessBinding.Resource.CredentialMode == domain.ProviderCredentialInvocationV1 {
+		return domain.ValidationError{Field: "execution.credential", Reason: "is required by the sealed harness binding"}
 	}
 	for _, artifact := range request.InputArtifacts {
 		if err := artifact.Validate(); err != nil {
@@ -262,5 +347,17 @@ func (identity ExecutionIdentity) Validate() error {
 	if err := identity.RunID.Validate(); err != nil {
 		return err
 	}
-	return identity.AttemptID.Validate()
+	if err := identity.OwnerUserID.Validate(); err != nil {
+		return err
+	}
+	if err := identity.ExecutionPlacement.Validate(); err != nil {
+		return err
+	}
+	if err := identity.AttemptID.Validate(); err != nil {
+		return err
+	}
+	if err := identity.HarnessBinding.Validate(); err != nil {
+		return err
+	}
+	return identity.HarnessBinding.ValidateForScope(identity.TenantID, identity.OwnerUserID, identity.RunID, identity.AttemptID, identity.ExecutionPlacement)
 }

@@ -131,6 +131,7 @@ var applicationTables = []string{
 	"checkpoint_objects_by_run",
 	"session_lifecycle_backfill_state",
 	"execution_placement_cutover_state",
+	"harness_binding_cutover_state",
 	"dispatch_ready_v2",
 	"dispatch_ready",
 	"dispatch_outbox",

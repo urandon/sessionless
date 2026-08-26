@@ -72,32 +72,50 @@ independent provider architecture:
   Codex/OpenRouter binding is a separate harness-resource profile and must not
   modify or fall back from that subscription route;
 - [credential lifecycle](../credential-lifecycle.md) already provides the
-  invocation-scoped handle, generation fence, exact `auth.json`
-  materialization, write-back, release, and revoke contract, but currently has
-  no production YDB/Lockbox credential backend;
+  subscription-scoped handle, generation fence, exact `auth.json`
+  materialization, write-back, release, and revoke contract. PR-01 projects a
+  secret-free provider-neutral invocation handle and typed
+  `file|environment|direct` delivery boundary, but does not pretend that the
+  subscription lifecycle can issue API/router credentials; no production
+  YDB/Lockbox credential backend exists yet;
 - canonical `Session`, `Run`, `Attempt`, `Lease`, fence, terminal commit, and
   usage evidence remain unchanged. Provider output cannot become a second
   attempt state machine.
 
-### Compile-visible routing gap
+### Compile-visible PR-01 boundary
 
-The current `WorkerJob` and `ExecutionRequest` do not carry a harness/resource
-binding, and `worker.Manager` receives one process-wide `HarnessDriver`. That is
-correct for the deterministic bootstrap but cannot implement the required
-Codex/OpenCode/Pi portfolio.
+PR-01 implements the first compile-visible routing boundary without enabling a
+provider backend. A server-owned `HarnessBinder` receives only the already
+derived tenant/owner/run/attempt and explicit execution placement. Its sealed
+`HarnessBindingV1` is persisted by `CanonicalUserEventCommit`, copied unchanged
+through `DispatchOutbox`, scheduler admission and `WorkerJob`, and projected
+into `ExecutionRequest` and cancellation identity. Browser, Telegram and queue
+DTOs cannot supply or replace it.
 
-PR-01 must add one immutable, versioned `HarnessBindingV1` to the canonical
-admission/outbox/job path and project it into `ExecutionRequest`. The queue
-remains only tenant/run routing identity. A Go routing driver resolves the
-already admitted binding to one registered adapter; it never selects from
-environment variables, installed binaries, available keys or model catalogs at
-execution time. The adapter must exact-match its registered artifact/protocol
-digest and provider-resource generation before it can read the credential or
-start a process.
+The binding separates the Sessionless harness/backend descriptor from provider
+resource kind/revision, credential mode/generation, model, catalog, route,
+privacy, capability, effective-policy and placement digests. The canonical
+binding digest is domain-separated and length-prefixed. The AW-04 attached
+worker context digest includes that binding digest, so a provider/harness
+mutation invalidates an already offered lease.
 
-Existing jobs need an explicit deployment migration/drain gate. There is no
-runtime zero-value alias to the deterministic or Codex harness, because that
-would silently change billing and behavior.
+`SessionlessHarnessV1` is a closed exact-match registry. It has no default,
+version negotiation, installed-binary lookup, environment/model/key discovery,
+or nearest-backend fallback. The retained deterministic path is registered
+explicitly under a credentialless fixture profile; `credential_mode=none` is
+valid only for that profile and generation zero. Subscription, API-account or router-account
+profiles require `credential_mode=invocation` and a positive generation.
+
+Migration `00088` adds a separate `harness-binding-v1-empty-cutover` marker.
+All ingress/scheduler/worker serving binaries require it. The marker can be
+committed only in a serializable transaction after both `dispatch_outbox` and
+`worker_jobs` are empty; it never permits runtime zero-value coercion. This is
+deliberately distinct from the earlier execution-placement cutover.
+
+Provider adapters, real resources, credentials, network egress and live calls
+remain absent. PR-02 conformance and the reviewed credential/isolation work are
+still hard gates before any Codex, OpenCode, Pi or direct OpenRouter backend can
+be registered.
 
 ## Layering
 
@@ -458,9 +476,10 @@ model quality, availability, privacy suitability or production readiness.
 
 ## Credential custody
 
-Do not provide an API key yet. The current repository has only the local
-provider-neutral credential lifecycle; it does not have the production
-owner-scoped YDB/Lockbox backend needed to ingest and bind a router credential.
+Do not provide an API key yet. The current repository has a local
+subscription-backed credential lifecycle plus provider-neutral invocation
+contracts; it does not have the production owner-scoped YDB/Lockbox backend
+needed to ingest and bind a router credential.
 Putting a key in a shell environment, developer `.env`, command line, issue,
 Terraform value, generic runtime Lockbox payload or worker image would bypass
 the accepted resource/generation contract.
@@ -471,9 +490,10 @@ Before a live canary, the following must exist:
    `openrouter`, credential generation, revoke fence and policy revision;
 2. a write-only ingestion path into a dedicated KMS-backed secret reference,
    with no plaintext in API responses, YDB, Terraform state or logs;
-3. invocation-only materialization and release through the existing credential
-   lifecycle; the direct Go adapter reads the exact bounded versioned secret
-   material directly, while a Pi/OpenCode/Codex adapter may expose
+3. invocation-only materialization and release through a reviewed
+   provider-resource credential lifecycle; the direct Go adapter reads the
+   exact bounded versioned secret material through an invocation-only port,
+   while a Pi/OpenCode/Codex adapter may expose
    `OPENROUTER_API_KEY` only to its sanitized child process for that invocation;
 4. deny-first revoke, key rotation, expiry and ambiguous cleanup tests;
 5. a canary feature flag that cannot select the resource for ordinary runs.
@@ -505,9 +525,12 @@ state.
 
 ## Implementation backlog
 
-1. **PR-01 resource contracts**: land versioned router resource, route/catalog,
-   harness binding, capability, privacy, price and policy-evidence DTOs without
-   credentials.
+1. **PR-01 resource/binding boundary**: land the immutable harness/resource
+   binding, exact registry, durable projection, empty-backlog cutover, and the
+   owner/resource/backend-scoped versioned catalog, route, capability, privacy,
+   price and effective-policy evidence contracts. No credentials or provider
+   backend are enabled by this slice; the contracts preserve unknown/no-go and
+   expire before execution rather than trusting live discovery.
 2. **PR-02 harness/provider conformance kit**: one `HarnessDriver` fixture suite
    plus fake OpenRouter HTTPS/SSE, RPC/JSONL fixtures, acceptance ambiguity,
    cancellation, route/usage evidence, process and size/depth/event/time bounds.

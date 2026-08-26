@@ -246,6 +246,17 @@ func TestRegistrySanitizesBackendErrorsAndRetainsValidFailureEvidence(t *testing
 	if err == nil || strings.Contains(err.Error(), "private provider") || result.ProviderEvidence == nil || result.Summary != "" || len(result.Outputs) != 0 || len(result.ToolEvents) != 0 {
 		t.Fatalf("execute error/evidence not bounded: result=%+v err=%v", result, err)
 	}
+	driver.executeErr = &domain.ClassifiedError{
+		Kind: domain.ErrorRetryable, Code: "private_retry_code",
+		Operation: "private_operation", Cause: errors.New("private retry detail"),
+	}
+	_, err = registry.Execute(context.Background(), request, noopSink{})
+	var classified *domain.ClassifiedError
+	if !errors.As(err, &classified) || !classified.Retryable() ||
+		classified.Code != string(sessionlessharness.FailureHarnessBackendFailed) ||
+		strings.Contains(err.Error(), "private") {
+		t.Fatalf("retry class was not preserved and sanitized: %v", err)
+	}
 	driver.cancelErr = errors.New("private cancel response")
 	identity := ports.ExecutionIdentity{TenantID: request.TenantID, OwnerUserID: request.OwnerUserID, RunID: request.RunID, AttemptID: request.AttemptID, ExecutionPlacement: request.ExecutionPlacement, HarnessBinding: request.HarnessBinding.Clone()}
 	if err := registry.Cancel(context.Background(), identity); err == nil || strings.Contains(err.Error(), "private cancel") {

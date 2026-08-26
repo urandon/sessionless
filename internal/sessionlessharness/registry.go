@@ -221,7 +221,14 @@ func executionKey(tenantID domain.TenantID, runID domain.RunID, attemptID domain
 }
 
 func harnessError(code FailureCode) error {
-	return &domain.ClassifiedError{Kind: domain.ErrorTerminal, Code: string(code), Operation: "sessionless_harness.resolve"}
+	return harnessErrorWithKind(code, domain.ErrorTerminal)
+}
+
+func harnessErrorWithKind(code FailureCode, kind domain.ErrorKind) error {
+	if !kind.Valid() {
+		kind = domain.ErrorTerminal
+	}
+	return &domain.ClassifiedError{Kind: kind, Code: string(code), Operation: "sessionless_harness.resolve"}
 }
 
 func sanitizeBackendError(err error) error {
@@ -229,8 +236,11 @@ func sanitizeBackendError(err error) error {
 	if errors.As(err, &classified) && classified != nil {
 		code := FailureCode(classified.Code)
 		if code.Valid() {
-			return harnessError(code)
+			return harnessErrorWithKind(code, classified.Kind)
 		}
+		// Preserve only the closed domain failure class. Backend-private codes,
+		// operations and causes never cross the registry boundary.
+		return harnessErrorWithKind(FailureHarnessBackendFailed, classified.Kind)
 	}
 	return harnessError(FailureHarnessBackendFailed)
 }

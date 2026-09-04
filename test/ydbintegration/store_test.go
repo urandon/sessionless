@@ -569,15 +569,16 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 		t.Fatal(err)
 	}
 	reservationID := domain.QuotaReservationID(uniqueID("reservation-worker"))
-	admission, err := store.AdmitDispatch(
-		context.Background(),
-		admissionFixture(ingress, reservationID, now, domain.ProductLimits{
-			MaxTenantQueueDepth: 8, MaxActiveRuns: 1,
-			MaxRuntime: 15 * time.Minute, MaxTurns: 30,
-			MaxInputBytes: 16 << 20, MaxContextBytes: 64 << 20, MaxContextEvents: 512, MaxArtifacts: 32,
-			MaxToolEvents: 128, MaxToolEventBytes: 16 << 20,
-		}),
-	)
+	admissionRequest := admissionFixture(ingress, reservationID, now, domain.ProductLimits{
+		MaxTenantQueueDepth: 8, MaxActiveRuns: 1,
+		MaxRuntime: 15 * time.Minute, MaxTurns: 30,
+		MaxInputBytes: 16 << 20, MaxContextBytes: 64 << 20, MaxContextEvents: 512, MaxArtifacts: 32,
+		MaxToolEvents: 128, MaxToolEventBytes: 16 << 20,
+	})
+	// Expiry behavior is covered separately. Keep this scenario independent of
+	// runner speed while it exercises legacy loading and provider-effect fencing.
+	admissionRequest.HoldUntil = now.Add(30 * time.Minute)
+	admission, err := store.AdmitDispatch(context.Background(), admissionRequest)
 	if err != nil || !admission.Admitted {
 		t.Fatalf("admission = %+v, %v", admission, err)
 	}
@@ -627,15 +628,20 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 			2*loaded.Job.Limits.MaxTurns, loaded.Job.Limits.MaxContextBytes,
 		)
 	}
+	var workerNow time.Time
+	if err := client.DB.QueryRowContext(context.Background(), `SELECT CurrentUtcTimestamp()`).Scan(&workerNow); err != nil {
+		t.Fatal(err)
+	}
+	workerNow = workerNow.UTC().Truncate(time.Microsecond)
 	lease, err := store.ClaimWorkerLease(context.Background(), ports.WorkerLeaseRequest{
 		TenantID: tenantID, RunID: ingress.Run.ID, AttemptID: ingress.Attempt.ID,
 		LeaseID: domain.LeaseID(uniqueID("lease-worker")), WorkerID: "worker-integration",
-		Now: now.Add(2 * time.Second), ExpiresAt: now.Add(time.Minute),
+		Now: workerNow, ExpiresAt: workerNow.Add(30 * time.Minute),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.StartWorkerJob(context.Background(), loaded, lease, now.Add(2*time.Second)); err != nil {
+	if err := store.StartWorkerJob(context.Background(), loaded, lease, workerNow.Add(2*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	effectRequest := ports.ReserveAttemptEffectRequestV1{
@@ -675,7 +681,7 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 				"checkpoints/checkpoint.json",
 			Size: 2, SHA256: strings.Repeat("1", 64),
 		},
-		CreatedAt: now.Add(3 * time.Second),
+		CreatedAt: workerNow.Add(3 * time.Second),
 	}
 	if err := store.CommitWorkerEvent(context.Background(), ports.WorkerEventCommit{
 		Checkpoint: checkpoint, LeaseID: lease.ID, Fence: lease.FenceToken,
@@ -685,12 +691,12 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 	}
 	lease, err = store.RenewWorkerLease(
 		context.Background(), tenantID, lease.ID, lease.FenceToken,
-		now.Add(30*time.Second), now.Add(2*time.Minute),
+		workerNow.Add(30*time.Second), workerNow.Add(30*time.Minute),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	finishedAt := now.Add(40 * time.Second)
+	finishedAt := workerNow.Add(40 * time.Second)
 	manifest := domain.ArtifactManifest{
 		ID:       domain.ArtifactManifestID(uniqueID("manifest-output")),
 		TenantID: tenantID, RunID: ingress.Run.ID, CreatedAt: finishedAt,

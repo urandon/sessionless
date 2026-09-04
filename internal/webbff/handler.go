@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"gitcode.com/urandon/sessionless/internal/attachedworkerux"
 	"gitcode.com/urandon/sessionless/internal/buildinfo"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
@@ -31,12 +32,13 @@ import (
 )
 
 const (
-	LoginBindingCookieName = "__Host-sessionless-login"
-	defaultChallengeTTL    = 10 * time.Minute
-	defaultIdleTTL         = 12 * time.Hour
-	defaultAbsoluteTTL     = 7 * 24 * time.Hour
-	maxRequestBytes        = 64 << 10
-	maxMemberships         = uint64(200)
+	LoginBindingCookieName         = "__Host-sessionless-login"
+	defaultChallengeTTL            = 10 * time.Minute
+	defaultIdleTTL                 = 12 * time.Hour
+	defaultAbsoluteTTL             = 7 * 24 * time.Hour
+	maxRequestBytes                = 64 << 10
+	maxAttachedWorkerResponseBytes = 256 << 10
+	maxMemberships                 = uint64(200)
 )
 
 type Config struct {
@@ -49,6 +51,7 @@ type Config struct {
 	Store                      ports.WebAuthStore
 	Sessions                   *sessionapi.Service
 	API                        *webapi.Service
+	AttachedWorkers            AttachedWorkerReadService
 	IDs                        ports.IDGenerator
 	Clock                      ports.Clock
 	Random                     io.Reader
@@ -57,6 +60,12 @@ type Config struct {
 	ChallengeTTL               time.Duration
 	IdleTTL                    time.Duration
 	AbsoluteTTL                time.Duration
+}
+
+type AttachedWorkerReadService interface {
+	List(context.Context, domain.TenantID, domain.UserID, domain.AttachedWorkerID, uint64) (attachedworkerux.AttachedWorkerListV1, error)
+	Get(context.Context, domain.TenantID, domain.UserID, domain.AttachedWorkerID) (attachedworkerux.AttachedWorkerUXReadModelV1, error)
+	Diagnostics(context.Context, domain.TenantID, domain.UserID, domain.AttachedWorkerID) (attachedworkerux.AttachedWorkerDiagnosticsV1, error)
 }
 
 type Handler struct {
@@ -157,10 +166,14 @@ func (handler *Handler) ServeHTTP(w http.ResponseWriter, request *http.Request) 
 	request = request.WithContext(context.WithValue(request.Context(), requestIDKey{}, requestID))
 	response := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 	handler.mux.ServeHTTP(response, request)
+	route := request.Pattern
+	if route == "" {
+		route = "unmatched"
+	}
 	handler.config.Logger.Info("web request completed",
 		"request_id", requestID,
 		"method", request.Method,
-		"path", request.URL.Path,
+		"route", route,
 		"status", response.status,
 	)
 }
@@ -192,6 +205,75 @@ func (handler *Handler) routes() {
 		handler.mux.HandleFunc("GET "+webcontract.RouteEventAttachment, handler.downloadAttachment)
 		handler.mux.HandleFunc("GET "+webcontract.RouteRunArtifact, handler.downloadRunArtifact)
 	}
+	if handler.config.AttachedWorkers != nil {
+		handler.mux.HandleFunc("GET "+webcontract.RouteAttachedWorkers, handler.listAttachedWorkers)
+		handler.mux.HandleFunc("GET "+webcontract.RouteAttachedWorker, handler.getAttachedWorker)
+		handler.mux.HandleFunc("GET "+webcontract.RouteAttachedWorkerDiagnostics, handler.getAttachedWorkerDiagnostics)
+	}
+}
+
+func (handler *Handler) listAttachedWorkers(w http.ResponseWriter, request *http.Request) {
+	authorization, err := handler.authorize(request, domain.TenantPermissionRead)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	query, err := attachedWorkerListQuery(request)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	result, err := handler.config.AttachedWorkers.List(
+		request.Context(), authorization.Session.ActiveTenantID, authorization.Session.UserID,
+		query.AfterWorkerID, query.Limit,
+	)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	handler.writeBoundedJSON(w, request, result, maxAttachedWorkerResponseBytes)
+}
+
+func (handler *Handler) getAttachedWorker(w http.ResponseWriter, request *http.Request) {
+	authorization, err := handler.authorize(request, domain.TenantPermissionRead)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	if len(request.URL.Query()) != 0 {
+		handler.writeError(w, request, domain.ValidationError{Field: "attached_worker.query", Reason: "must be empty"})
+		return
+	}
+	result, err := handler.config.AttachedWorkers.Get(
+		request.Context(), authorization.Session.ActiveTenantID, authorization.Session.UserID,
+		domain.AttachedWorkerID(request.PathValue("worker_id")),
+	)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	handler.writeBoundedJSON(w, request, result, maxAttachedWorkerResponseBytes)
+}
+
+func (handler *Handler) getAttachedWorkerDiagnostics(w http.ResponseWriter, request *http.Request) {
+	authorization, err := handler.authorize(request, domain.TenantPermissionRead)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	if len(request.URL.Query()) != 0 {
+		handler.writeError(w, request, domain.ValidationError{Field: "attached_worker_diagnostics.query", Reason: "must be empty"})
+		return
+	}
+	result, err := handler.config.AttachedWorkers.Diagnostics(
+		request.Context(), authorization.Session.ActiveTenantID, authorization.Session.UserID,
+		domain.AttachedWorkerID(request.PathValue("worker_id")),
+	)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	handler.writeBoundedJSON(w, request, result, maxAttachedWorkerResponseBytes)
 }
 
 func (handler *Handler) listSessions(w http.ResponseWriter, request *http.Request) {
@@ -942,6 +1024,12 @@ func (handler *Handler) writeError(w http.ResponseWriter, request *http.Request,
 		handler.writeFailure(w, request, webcontract.ErrorNotFound, "The requested session is not available.")
 	case errors.Is(err, webapi.ErrResourceUnavailable):
 		handler.writeFailure(w, request, webcontract.ErrorNotFound, "The requested resource is not available.")
+	case errors.Is(err, attachedworkerux.ErrNotFound):
+		handler.writeFailure(w, request, webcontract.ErrorNotFound, "The requested attached worker is not available.")
+	case errors.Is(err, attachedworkerux.ErrInvalidRequest):
+		handler.writeFailure(w, request, webcontract.ErrorInvalidRequest, "The attached worker request is invalid.")
+	case errors.Is(err, attachedworkerux.ErrBackend):
+		handler.writeFailure(w, request, webcontract.ErrorTemporarilyUnavailable, "The attached worker view is temporarily unavailable.")
 	case errors.Is(err, domain.ErrSessionMutationConflict), errors.Is(err, domain.ErrEventIdempotencyConflict):
 		handler.writeFailure(w, request, webcontract.ErrorConflict, "The idempotency key conflicts with an earlier session mutation.")
 	case errors.Is(err, webapi.ErrComputeUnavailable):
@@ -1077,6 +1165,22 @@ func (handler *Handler) writeJSON(w http.ResponseWriter, status int, value any) 
 	_ = json.NewEncoder(w).Encode(value)
 }
 
+func (handler *Handler) writeBoundedJSON(
+	w http.ResponseWriter,
+	request *http.Request,
+	value any,
+	limit int,
+) {
+	payload, err := json.Marshal(value)
+	if err != nil || len(payload)+1 > limit {
+		handler.writeFailure(w, request, webcontract.ErrorTemporarilyUnavailable, "The response could not be encoded within its public limit.")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(append(payload, '\n'))
+}
+
 func (handler *Handler) writeJSONConditional(
 	w http.ResponseWriter,
 	request *http.Request,
@@ -1198,6 +1302,33 @@ func queryLimit(request *http.Request, fallback uint32) uint32 {
 		return 0
 	}
 	return uint32(value)
+}
+
+func attachedWorkerListQuery(request *http.Request) (webcontract.AttachedWorkerListQuery, error) {
+	values := request.URL.Query()
+	for key, entries := range values {
+		if key != "after_worker_id" && key != "limit" {
+			return webcontract.AttachedWorkerListQuery{}, domain.ValidationError{Field: "attached_workers.query", Reason: "contains an unknown parameter"}
+		}
+		if len(entries) != 1 || entries[0] == "" {
+			return webcontract.AttachedWorkerListQuery{}, domain.ValidationError{Field: "attached_workers." + key, Reason: "must appear once with a value"}
+		}
+	}
+	query := webcontract.AttachedWorkerListQuery{Limit: 20}
+	if raw, found := values["after_worker_id"]; found {
+		query.AfterWorkerID = domain.AttachedWorkerID(raw[0])
+	}
+	if raw, found := values["limit"]; found {
+		limit, err := strconv.ParseUint(raw[0], 10, 64)
+		if err != nil {
+			return webcontract.AttachedWorkerListQuery{}, domain.ValidationError{Field: "attached_workers.limit", Reason: "must be an unsigned integer"}
+		}
+		query.Limit = limit
+	}
+	if err := query.Validate(); err != nil {
+		return webcontract.AttachedWorkerListQuery{}, err
+	}
+	return query, nil
 }
 
 func optionalUint64(request *http.Request, name string) (*uint64, error) {

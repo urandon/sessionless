@@ -16,26 +16,29 @@ import (
 )
 
 const (
-	RouteLogin            = "/login"
-	RouteOIDCStart        = "/auth/telegram/start"
-	RouteOIDCCallback     = "/auth/telegram/callback"
-	RouteLogout           = "/auth/logout"
-	RouteMe               = "/api/web/v1/me"
-	RouteTenants          = "/api/web/v1/tenants"
-	RouteActiveTenant     = "/api/web/v1/active-tenant"
-	RouteSessions         = "/api/web/v1/sessions"
-	RouteSession          = "/api/web/v1/sessions/{session_id}"
-	RouteSessionEvents    = "/api/web/v1/sessions/{session_id}/events"
-	RouteSessionRuns      = "/api/web/v1/sessions/{session_id}/runs"
-	RouteSessionCompute   = "/api/web/v1/sessions/{session_id}/compute"
-	RouteArchiveSession   = "/api/web/v1/sessions/{session_id}/archive"
-	RouteFrontendBindings = "/api/web/v1/frontend-bindings"
-	RouteSessionMessages  = "/api/web/v1/sessions/{session_id}/messages"
-	RouteUploads          = "/api/web/v1/uploads"
-	RouteUploadCommit     = "/api/web/v1/uploads/{upload_id}/commit"
-	RouteRun              = "/api/web/v1/runs/{run_id}"
-	RouteEventAttachment  = "/api/web/v1/sessions/{session_id}/events/{sequence}/attachments/{index}"
-	RouteRunArtifact      = "/api/web/v1/sessions/{session_id}/runs/{run_id}/artifact-manifests/{manifest_id}/artifacts/{index}"
+	RouteLogin                     = "/login"
+	RouteOIDCStart                 = "/auth/telegram/start"
+	RouteOIDCCallback              = "/auth/telegram/callback"
+	RouteLogout                    = "/auth/logout"
+	RouteMe                        = "/api/web/v1/me"
+	RouteTenants                   = "/api/web/v1/tenants"
+	RouteActiveTenant              = "/api/web/v1/active-tenant"
+	RouteSessions                  = "/api/web/v1/sessions"
+	RouteSession                   = "/api/web/v1/sessions/{session_id}"
+	RouteSessionEvents             = "/api/web/v1/sessions/{session_id}/events"
+	RouteSessionRuns               = "/api/web/v1/sessions/{session_id}/runs"
+	RouteSessionCompute            = "/api/web/v1/sessions/{session_id}/compute"
+	RouteArchiveSession            = "/api/web/v1/sessions/{session_id}/archive"
+	RouteFrontendBindings          = "/api/web/v1/frontend-bindings"
+	RouteSessionMessages           = "/api/web/v1/sessions/{session_id}/messages"
+	RouteUploads                   = "/api/web/v1/uploads"
+	RouteUploadCommit              = "/api/web/v1/uploads/{upload_id}/commit"
+	RouteRun                       = "/api/web/v1/runs/{run_id}"
+	RouteEventAttachment           = "/api/web/v1/sessions/{session_id}/events/{sequence}/attachments/{index}"
+	RouteRunArtifact               = "/api/web/v1/sessions/{session_id}/runs/{run_id}/artifact-manifests/{manifest_id}/artifacts/{index}"
+	RouteAttachedWorkers           = "/api/web/v1/attached-workers"
+	RouteAttachedWorker            = "/api/web/v1/attached-workers/{worker_id}"
+	RouteAttachedWorkerDiagnostics = "/api/web/v1/attached-workers/{worker_id}/diagnostics"
 )
 
 const AuthErrorQueryName = "auth_error"
@@ -185,6 +188,21 @@ type SessionListQuery struct {
 	Cursor string
 	Limit  uint32
 	Status domain.SessionStatus
+}
+
+type AttachedWorkerListQuery struct {
+	AfterWorkerID domain.AttachedWorkerID
+	Limit         uint64
+}
+
+func (query AttachedWorkerListQuery) Validate() error {
+	if query.Limit == 0 || query.Limit > 50 {
+		return domain.ValidationError{Field: "attached_workers.limit", Reason: "must be between 1 and 50"}
+	}
+	if query.AfterWorkerID != "" {
+		return query.AfterWorkerID.Validate()
+	}
+	return nil
 }
 
 func (query SessionListQuery) Validate() error {

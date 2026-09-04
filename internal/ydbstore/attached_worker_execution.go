@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"math"
 	"time"
@@ -47,6 +48,76 @@ func (store *Store) LoadAttachedWorkerAttempt(
 		return domain.AttachedWorkerAttemptV1{}, false, ErrAttachedWorkerAttemptConflict
 	}
 	return result, true, nil
+}
+
+// ListAttachedWorkerAttemptMessages returns the bounded, immutable AW-04
+// message ledger for one owner-scoped attempt. It is a read-only provenance
+// source for AW-06 and must not advance protocol state or acknowledge frames.
+func (store *Store) ListAttachedWorkerAttemptMessages(
+	ctx context.Context,
+	tenantID domain.TenantID,
+	ownerUserID domain.UserID,
+	workerID domain.AttachedWorkerID,
+	attemptID domain.AttemptID,
+) ([]domain.AttachedWorkerAttemptMessageV1, error) {
+	if err := tenantID.Validate(); err != nil {
+		return nil, err
+	}
+	if err := ownerUserID.Validate(); err != nil {
+		return nil, err
+	}
+	if err := workerID.Validate(); err != nil {
+		return nil, err
+	}
+	if err := attemptID.Validate(); err != nil {
+		return nil, err
+	}
+	rows, err := store.db.QueryContext(ctx,
+		`SELECT direction,attempt_sequence,connection_generation,kind,created_at,payload
+		 FROM attached_worker_attempt_messages
+		 WHERE tenant_id=$1 AND owner_user_id=$2 AND worker_id=$3 AND attempt_id=$4
+		 ORDER BY direction,attempt_sequence LIMIT 65`,
+		tenantID, ownerUserID, workerID, attemptID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]domain.AttachedWorkerAttemptMessageV1, 0, 8)
+	var previous *domain.AttachedWorkerAttemptMessageV1
+	for rows.Next() {
+		if len(result) == attachedworkerprotocol.MaxAttemptMessages {
+			return nil, ErrAttachedWorkerAttemptMessageConflict
+		}
+		var direction string
+		var attemptSequence, connectionGeneration uint64
+		var kind, payload string
+		var createdAt time.Time
+		if err := rows.Scan(&direction, &attemptSequence, &connectionGeneration, &kind, &createdAt, &payload); err != nil {
+			return nil, err
+		}
+		var message domain.AttachedWorkerAttemptMessageV1
+		if err := json.Unmarshal([]byte(payload), &message); err != nil {
+			return nil, err
+		}
+		if message.Validate() != nil || message.TenantID != tenantID || message.OwnerUserID != ownerUserID ||
+			message.WorkerID != workerID || message.AttemptID != attemptID ||
+			string(message.Direction) != direction || message.AttemptSequence != attemptSequence ||
+			message.ConnectionGeneration != connectionGeneration || string(message.Kind) != kind ||
+			!message.CreatedAt.Equal(canonicalAttachedWorkerTime(createdAt)) {
+			return nil, ErrAttachedWorkerAttemptMessageConflict
+		}
+		if previous != nil && (message.Direction < previous.Direction ||
+			(message.Direction == previous.Direction && message.AttemptSequence <= previous.AttemptSequence)) {
+			return nil, ErrAttachedWorkerAttemptMessageConflict
+		}
+		result = append(result, message)
+		previous = &result[len(result)-1]
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 const maxAttachedWorkerAttemptLeaseTTL = 24 * time.Hour

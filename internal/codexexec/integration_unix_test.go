@@ -87,7 +87,8 @@ func (lifecycle *fixtureCredentialLifecycle) Issue(_ context.Context, request po
 		SubscriptionConnectionID: request.Run.SubscriptionConnectionID,
 		OwnerUserID:              request.OwnerUserID, RunID: request.Run.ID, AttemptID: request.Attempt.ID,
 		WorkerID: request.Attempt.WorkerID, LeaseID: request.Lease.ID,
-		LeaseFence: request.Lease.FenceToken, BindingGeneration: 7, ExpiresAt: request.ExpiresAt,
+		LeaseFence: request.Lease.FenceToken, BindingGeneration: request.ProviderResource.CredentialGeneration,
+		ProviderResource: request.ProviderResource, ExpiresAt: request.ExpiresAt,
 	}, nil
 }
 

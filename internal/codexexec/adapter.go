@@ -85,7 +85,7 @@ func (adapter *Adapter) Run(ctx context.Context, request RequestV1) (ResultV1, e
 		},
 		Credential: &attachedworkerdaemon.CredentialInvocation{
 			IssueRequest: request.Credential, HomeEnvironment: "CODEX_HOME",
-			ExpectedBindingGeneration: authority.ExpectedCredentialGeneration,
+			ExpectedBindingGeneration: authority.ProviderResource.CredentialGeneration,
 		},
 	}
 	invocationResult, runErr := adapter.runner.Run(ctx, invocation)

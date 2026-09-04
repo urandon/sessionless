@@ -29,6 +29,11 @@ func TestSessionLifecycleHoldWriteFenceInventoryAndCompletion(t *testing.T) {
 		"harness-binding-v1-empty-cutover", time.Now().UTC().Truncate(time.Microsecond)); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := client.DB.ExecContext(ctx,
+		`UPSERT INTO managed_execution_authority_v2_cutover_state (cutover_id,completed_at) VALUES ($1,$2)`,
+		"managed-execution-authority-v2-empty-cutover", time.Now().UTC().Truncate(time.Microsecond)); err != nil {
+		t.Fatal(err)
+	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	runSuffix := fmt.Sprintf("%d", now.UnixNano())
 	tenantID := domain.TenantID(uniqueID("tenant-lifecycle-" + runSuffix))

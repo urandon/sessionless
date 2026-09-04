@@ -43,7 +43,7 @@ func ServerlessWorkerJobDigestsV1(job WorkerJob, manifest ArtifactManifest) (con
 			}
 		}
 	}
-	if err := job.Limits.ValidateForAdmission(); err != nil {
+	if err := job.Limits.Validate(); err != nil {
 		return "", "", err
 	}
 
@@ -92,10 +92,13 @@ func ServerlessWorkerJobDigestsV1(job WorkerJob, manifest ArtifactManifest) (con
 	}
 	context.str(string(job.CredentialOwnerUserID))
 	limits := job.Limits
+	// Jobs admitted before the explicit context/tool-event fields remain bounded
+	// by their documented effective limits. Seal those limits, not legacy zeros.
+	maxToolEvents, maxToolEventBytes := limits.EffectiveToolEventLimits()
 	for _, value := range []uint64{
 		uint64(limits.MaxTenantQueueDepth), uint64(limits.MaxActiveRuns), uint64(limits.MaxRuntime),
-		uint64(limits.MaxTurns), limits.MaxInputBytes, limits.MaxContextBytes, limits.MaxContextEvents,
-		uint64(limits.MaxArtifacts), uint64(limits.MaxToolEvents), limits.MaxToolEventBytes,
+		uint64(limits.MaxTurns), limits.MaxInputBytes, limits.MaxContextBytes, limits.EffectiveMaxContextEvents(),
+		uint64(limits.MaxArtifacts), uint64(maxToolEvents), maxToolEventBytes,
 	} {
 		context.uint(value)
 	}

@@ -160,6 +160,36 @@ func TestServerlessWorkerJobDigestsBindContextAndManifestContent(t *testing.T) {
 	}
 }
 
+func TestServerlessWorkerJobDigestsNormalizeFiniteLegacyBudgets(t *testing.T) {
+	t.Parallel()
+	legacy := attachedContextJob(t)
+	managed := deterministicManagedAuthority(t, legacy.TenantID, legacy.CredentialOwnerUserID, legacy.RunID, legacy.AttemptID, time.Unix(10, 0).UTC())
+	legacy.ExecutionPlacementV2 = managed.ExecutionPlacementV2
+	legacy.HarnessBinding = managed.HarnessBinding
+	substrate, cost := managed.SubstrateBinding, managed.AdmissionCostCeiling.Clone()
+	legacy.SubstrateBinding, legacy.AdmissionCostCeiling = &substrate, &cost
+	legacy.Limits.MaxContextEvents = 0
+	legacy.Limits.MaxToolEvents = 0
+	legacy.Limits.MaxToolEventBytes = 0
+
+	explicit := legacy
+	explicit.Limits.MaxContextEvents = legacy.Limits.EffectiveMaxContextEvents()
+	explicit.Limits.MaxToolEvents, explicit.Limits.MaxToolEventBytes = legacy.Limits.EffectiveToolEventLimits()
+	manifest := attachedContextManifest(legacy)
+
+	legacyContext, legacyInput, err := domain.ServerlessWorkerJobDigestsV1(legacy, manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	explicitContext, explicitInput, err := domain.ServerlessWorkerJobDigestsV1(explicit, manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacyContext != explicitContext || legacyInput != explicitInput {
+		t.Fatal("legacy zero fields did not normalize to their finite effective budgets")
+	}
+}
+
 func TestPreparedAllocationExactMatchesSealedInProcessProfile(t *testing.T) {
 	t.Parallel()
 	authority, _ := validServerlessInvocationAuthority(t)

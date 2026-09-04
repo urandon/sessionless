@@ -18,15 +18,14 @@ type recordingSink struct {
 	events []ports.ExecutionEvent
 }
 
-func deterministicTestBinding() domain.HarnessBindingV1 {
-	binding, err := sessionlessharness.NewDeterministicFixtureBindingV1(
-		"tenant-a", "user-a", "run-a", "attempt-a", "subscription-a",
-		domain.ManagedExecutionPlacementV1(), time.Unix(1, 0).UTC(),
+func deterministicTestAuthority() ports.ManagedExecutionAuthorityV2 {
+	authority, err := sessionlessharness.NewDeterministicFixtureManagedAuthorityV2(
+		"tenant-a", "user-a", "run-a", "attempt-a", "subscription-a", time.Unix(1, 0).UTC(),
 	)
 	if err != nil {
 		panic(err)
 	}
-	return binding
+	return authority
 }
 
 func TestCaptureContextHistoryCopiesExactMaterializedBytesWhenEnabled(t *testing.T) {
@@ -46,12 +45,15 @@ func TestCaptureContextHistoryCopiesExactMaterializedBytesWhenEnabled(t *testing
 	if err := os.WriteFile(filepath.Join(workDir, "context", "history.jsonl"), history, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	authority := deterministicTestAuthority()
 	request := ports.ExecutionRequest{
 		TenantID: "tenant-a", OwnerUserID: "user-a", RunID: "run-a", SessionID: "session-a",
 		TriggerEventID: "event-a", AttemptID: "attempt-a", WorkDir: workDir,
-		ContextWindow:      &domain.SessionContextWindow{ThroughSequence: 1},
-		HarnessBinding:     deterministicTestBinding(),
-		ExecutionPlacement: domain.ManagedExecutionPlacementV1(),
+		ContextWindow:        &domain.SessionContextWindow{ThroughSequence: 1},
+		HarnessBinding:       authority.HarnessBinding,
+		ExecutionPlacementV2: authority.ExecutionPlacementV2,
+		SubstrateBinding:     &authority.SubstrateBinding,
+		AdmissionCostCeiling: &authority.AdmissionCostCeiling,
 	}
 	result, err := driver.Execute(context.Background(), request, &recordingSink{})
 	if err != nil {
@@ -88,12 +90,15 @@ func TestContextHistoryCaptureIsOptIn(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
+	authority := deterministicTestAuthority()
 	request := ports.ExecutionRequest{
 		TenantID: "tenant-a", OwnerUserID: "user-a", RunID: "run-a", SessionID: "session-a",
 		TriggerEventID: "event-a", AttemptID: "attempt-a", WorkDir: workDir,
-		ContextWindow:      &domain.SessionContextWindow{ThroughSequence: 1},
-		HarnessBinding:     deterministicTestBinding(),
-		ExecutionPlacement: domain.ManagedExecutionPlacementV1(),
+		ContextWindow:        &domain.SessionContextWindow{ThroughSequence: 1},
+		HarnessBinding:       authority.HarnessBinding,
+		ExecutionPlacementV2: authority.ExecutionPlacementV2,
+		SubstrateBinding:     &authority.SubstrateBinding,
+		AdmissionCostCeiling: &authority.AdmissionCostCeiling,
 	}
 	result, err := driver.Execute(context.Background(), request, &recordingSink{})
 	if err != nil {
@@ -124,6 +129,7 @@ func TestFailBeforeFirstTurnLeavesNoCheckpointAndResumeCanProceed(t *testing.T) 
 	if err := os.MkdirAll(workDir+"/outputs", 0o700); err != nil {
 		t.Fatal(err)
 	}
+	authority := deterministicTestAuthority()
 	request := ports.ExecutionRequest{
 		TenantID: "tenant-a", OwnerUserID: "user-a", RunID: "run-a", SessionID: "session-a",
 		TriggerEventID: "event-a", AttemptID: "attempt-a",
@@ -132,8 +138,10 @@ func TestFailBeforeFirstTurnLeavesNoCheckpointAndResumeCanProceed(t *testing.T) 
 			TenantID: "tenant-a", Key: "tenants/tenant-a/context.json",
 			Size: 1, SHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		},
-		HarnessBinding:     deterministicTestBinding(),
-		ExecutionPlacement: domain.ManagedExecutionPlacementV1(),
+		HarnessBinding:       authority.HarnessBinding,
+		ExecutionPlacementV2: authority.ExecutionPlacementV2,
+		SubstrateBinding:     &authority.SubstrateBinding,
+		AdmissionCostCeiling: &authority.AdmissionCostCeiling,
 	}
 	sink := &recordingSink{}
 	_, err = driver.Execute(context.Background(), request, sink)

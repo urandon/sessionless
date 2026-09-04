@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
-	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 )
 
 func TestArtifactManifestValidation(t *testing.T) {
@@ -86,6 +85,9 @@ func TestDispatchAndTelegramOutboxes(t *testing.T) {
 
 	run := validRun()
 	attempt := validAttempt()
+	authority := deterministicManagedAuthority(t, run.TenantID, "user-1", run.ID, attempt.ID, testTime)
+	substrate := authority.SubstrateBinding
+	cost := authority.AdmissionCostCeiling.Clone()
 	dispatch := domain.DispatchOutbox{
 		ID:                    "dispatch-1",
 		TenantID:              run.TenantID,
@@ -93,7 +95,10 @@ func TestDispatchAndTelegramOutboxes(t *testing.T) {
 		AttemptID:             attempt.ID,
 		InputManifestID:       "manifest-1",
 		ContextSnapshot:       validBlob(),
-		ExecutionPlacement:    domain.ManagedExecutionPlacementV1(),
+		ExecutionPlacementV2:  authority.ExecutionPlacementV2,
+		HarnessBinding:        authority.HarnessBinding,
+		SubstrateBinding:      &substrate,
+		AdmissionCostCeiling:  &cost,
 		CredentialOwnerUserID: "user-1",
 		DeliveryChat:          domain.TelegramChatRef{TenantID: run.TenantID, ChatID: -1000123},
 		ReplyToMessageID:      77,
@@ -102,14 +107,6 @@ func TestDispatchAndTelegramOutboxes(t *testing.T) {
 		CreatedAt:             testTime,
 		UpdatedAt:             testTime,
 	}
-	binding, err := sessionlessharness.NewDeterministicFixtureBindingV1(
-		dispatch.TenantID, dispatch.CredentialOwnerUserID, dispatch.RunID, dispatch.AttemptID,
-		run.SubscriptionConnectionID, dispatch.ExecutionPlacement, testTime,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	dispatch.HarnessBinding = binding
 	if err := dispatch.ValidateForAttempt(run, attempt); err != nil {
 		t.Fatalf("valid dispatch outbox rejected: %v", err)
 	}

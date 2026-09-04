@@ -53,7 +53,7 @@ or substrate fallback occurs inside an attempt.
 canonical Sessionless authority
   Session / Run / Attempt / Lease / fence / cancellation / terminal commit
   HarnessBindingV1 / provider resource generation / policy evidence
-  ExecutionPlacementV1 + sealed substrate profile digest
+  ExecutionPlacementV2 + sealed substrate profile digest
                          |
                          v
 disposable serverless invocation
@@ -133,7 +133,6 @@ ServerlessInvocationAuthorityV1 {
   admission_cost_ceiling: AdmissionCostCeilingV1
   lease: existing domain.Lease
   context_manifest_digest, input_manifest_digest
-  delivery_ordinal
   invocation_deadline
 }
 
@@ -192,14 +191,12 @@ AttemptEffectReservationV1 {
   reserved_at
 }
 
-PreparedInvocationV1 {
-  version
-  invocation_authority_digest
-  effect_reservation_digest, physical_invocation_claim_id
-  prepared_allocation_digest
-  admission_cost_ceiling_digest
-  issued_at, execute_deadline
-}
+opaque internal PreparedInvocation capability
+  MAC over invocation_authority_digest
+           effect_reservation_digest, physical_invocation_claim_id
+           prepared_allocation_digest
+           admission_cost_ceiling_digest
+           issued_at, execute_deadline
 ```
 
 `ServerlessInvocationAuthorityV1` is constructed only after the canonical
@@ -209,9 +206,10 @@ The existing `Lease` supplies the exact run, attempt, worker, fence, acquisition
 and expiry authority; those fields are exact-compared with the binding rather
 than copied into another authority.
 
-Current `ExecutionPlacementV1` can distinguish only `managed` from one exact
-attached worker; its managed variant cannot seal a substrate profile. PR-03a
-therefore requires a canonical placement evolution, conceptually:
+The previous `ExecutionPlacementV1` could distinguish only `managed` from one
+exact attached worker; its managed variant could not seal a substrate profile.
+PR-03a therefore replaces it after an empty-backlog cutover with one canonical
+shape for both kinds:
 
 ```text
 ManagedExecutionPlacementV2 {
@@ -231,9 +229,9 @@ implementation must choose one canonical persisted
 shape and update the harness binding/version if the existing digest contract
 cannot encode it without ambiguity. It must use an explicit empty-backlog
 cutover marker, writer-first rollout, and no zero-value or `managed` default.
-`ExecutionPlacementV1` is never silently reinterpreted. A mismatch between the
-runtime profile and sealed placement fails before workspace, secret, process,
-or network effects.
+There is no V1 alias, reader fallback, or zero-value managed default. A mismatch
+between the runtime profile and sealed placement fails before workspace, secret,
+process, or network effects.
 
 The current managed worker lease prevents a different worker from claiming an
 active attempt, but an exact lease replay by the same warm worker is not by
@@ -247,12 +245,13 @@ send may conservatively produce an ambiguous attempt. Safety wins over an
 automatic duplicate call. A provider idempotency key may improve reconciliation
 only when the exact provider contract proves its semantics.
 
-`PreparedInvocationV1` is a short-lived, non-durable capability constructed
+The prepared invocation is a short-lived, non-durable, non-JSON capability
+with an unexported process-local authenticator. It is issued
 only after exact substrate and harness preflight, the final authority gate, the
 atomic effect-reservation append, and exact `PreparedAllocationV1` attestation.
 It binds the winning physical claim to the stored reservation and observed
 allocation. It is not a lifecycle record and cannot be reconstructed from
-caller input or a queue delivery.
+caller input or a queue delivery, and no public decoder or constructor exists.
 
 The proposed substrate port is deliberately smaller than a general remote
 shell:
@@ -344,10 +343,12 @@ process spawn, and network send. It re-reads the current attempt, lease/fence,
 cancellation, substrate registration/profile freshness, provider resource
 revision/generation/revoke state, policy/evidence expiry, image/workload
 attestation, trusted proxy artifact/identity, and the exact cost-ceiling digest.
-Before the claim it also requires fresh price evidence and
-`delivery_ordinal <= max_deliveries`; an unknown or exceeded ceiling fails
-closed. The prepared capability and returned evidence exact-compare that same
-digest. Any change releases local
+Before the claim it also requires fresh price evidence and the admitted queue
+delivery ceiling. YMQ `ApproximateReceiveCount` is diagnostic evidence only and
+never enters an authority digest; enforcement requires server-owned durable
+delivery accounting or exact queue-policy attestation. Until that proof exists,
+an unknown or exceeded ceiling fails closed. The prepared capability and
+returned evidence exact-compare that same digest. Any change releases local
 materialization and stops before the next effect. A configuration digest alone
 is not proxy attestation.
 

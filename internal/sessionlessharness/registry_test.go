@@ -70,9 +70,8 @@ func registryFixture(t *testing.T) (*sessionlessharness.Registry, *recordingDriv
 	if err != nil {
 		t.Fatal(err)
 	}
-	binding, err := sessionlessharness.NewDeterministicFixtureBindingV1(
-		"tenant-1", "user-1", "run-1", "attempt-1", "subscription-1",
-		domain.ManagedExecutionPlacementV1(), time.Unix(10, 0).UTC(),
+	authority, err := sessionlessharness.NewDeterministicFixtureManagedAuthorityV2(
+		"tenant-1", "user-1", "run-1", "attempt-1", "subscription-1", time.Unix(10, 0).UTC(),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -80,7 +79,8 @@ func registryFixture(t *testing.T) (*sessionlessharness.Registry, *recordingDriv
 	return registry, driver, ports.ExecutionRequest{
 		TenantID: "tenant-1", OwnerUserID: "user-1", RunID: "run-1", SessionID: "session-1", TriggerEventID: "event-1", AttemptID: "attempt-1",
 		WorkDir: "/tmp/sessionless-registry-test", ContextWindow: &domain.SessionContextWindow{ThroughSequence: 1},
-		ExecutionPlacement: domain.ManagedExecutionPlacementV1(), HarnessBinding: binding,
+		ExecutionPlacementV2: authority.ExecutionPlacementV2, HarnessBinding: authority.HarnessBinding,
+		SubstrateBinding: cloneSubstrateBindingForTest(authority.SubstrateBinding), AdmissionCostCeiling: cloneAdmissionCostCeilingForTest(authority.AdmissionCostCeiling),
 	}
 }
 
@@ -93,7 +93,7 @@ func TestRegistryUsesOnlyExactSealedBackend(t *testing.T) {
 	if driver.executeCalls != 1 {
 		t.Fatalf("execute calls = %d, want 1", driver.executeCalls)
 	}
-	identity := ports.ExecutionIdentity{TenantID: request.TenantID, OwnerUserID: request.OwnerUserID, RunID: request.RunID, AttemptID: request.AttemptID, ExecutionPlacement: request.ExecutionPlacement, HarnessBinding: request.HarnessBinding.Clone()}
+	identity := identityForRequest(request)
 	if err := registry.Cancel(context.Background(), identity); err != nil {
 		t.Fatal(err)
 	}
@@ -143,14 +143,21 @@ func TestRegistryRejectsDynamicResourceMutationBeforeDriver(t *testing.T) {
 
 func invocationIdentity(t *testing.T, expires time.Time) ports.ExecutionIdentity {
 	t.Helper()
-	placement := domain.ManagedExecutionPlacementV1()
-	placementDigest, err := domain.ExecutionPlacementDigestV1(placement)
+	authority, err := sessionlessharness.NewDeterministicFixtureManagedAuthorityV2("tenant-1", "user-1", "run-1", "attempt-1", "subscription-1", time.Unix(10, 0).UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	placement := authority.ExecutionPlacementV2
+	placementDigest, err := domain.ExecutionPlacementDigest(placement)
 	if err != nil {
 		t.Fatal(err)
 	}
 	descriptor := domain.HarnessBackendDescriptorV1{HarnessKind: domain.HarnessKindSessionlessV1, HarnessVersion: "1", BackendKind: domain.HarnessBackendCodexExecV1, ArtifactKind: domain.HarnessArtifactExecutableV1, ArtifactDigest: strings.Repeat("1", 64), NativeProtocolVersion: "codex-jsonl.v1", BackendProfileDigest: strings.Repeat("2", 64), ProviderContractKind: domain.ProviderContractInvocationV1, CredentialDeliveryKind: domain.ProviderCredentialDeliveryFileV1}
 	binding := domain.HarnessBindingV1{Version: 1, TenantID: "tenant-1", OwnerUserID: "user-1", RunID: "run-1", AttemptID: "attempt-1", Backend: descriptor, Resource: domain.ProviderResourceBindingV1{Kind: domain.ProviderResourceSubscriptionV1, ResourceID: "subscription-1", OwnerUserID: "user-1", Revision: 1, CredentialMode: domain.ProviderCredentialInvocationV1, CredentialGeneration: 1}, ModelVendorID: "openai", ModelID: "codex-model", InputDataClass: domain.ProviderDataPrivateV1, ProviderCatalogDigest: strings.Repeat("3", 64), ProviderRouteDigest: strings.Repeat("4", 64), PrivacyPolicyDigest: strings.Repeat("5", 64), CapabilityEvidenceDigest: strings.Repeat("6", 64), EffectivePolicyDigest: strings.Repeat("7", 64), ExecutionPlacementDigest: string(placementDigest), EvidenceExpiresAt: &expires}
-	return ports.ExecutionIdentity{TenantID: "tenant-1", OwnerUserID: "user-1", RunID: "run-1", AttemptID: "attempt-1", ExecutionPlacement: placement, HarnessBinding: binding}
+	return ports.ExecutionIdentity{
+		TenantID: "tenant-1", OwnerUserID: "user-1", RunID: "run-1", AttemptID: "attempt-1", ExecutionPlacementV2: placement, HarnessBinding: binding,
+		SubstrateBinding: cloneSubstrateBindingForTest(authority.SubstrateBinding), AdmissionCostCeiling: cloneAdmissionCostCeilingForTest(authority.AdmissionCostCeiling),
+	}
 }
 
 func TestRegistryFreshnessGatesStartButNotCancellation(t *testing.T) {
@@ -202,7 +209,7 @@ func TestRegistryRejectsOwnerPlacementAndInvalidValidatorCode(t *testing.T) {
 		t.Fatal("cross-owner identity accepted")
 	}
 	placement := identity
-	placement.ExecutionPlacement = domain.ExecutionPlacementV1{Version: domain.ExecutionPlacementVersionV1, Kind: domain.ExecutionPlacementAttachedWorker, FallbackPolicy: domain.ExecutionFallbackDenied, OwnerUserID: "user-1", WorkerID: "worker-1", CapabilityDigest: domain.AttachedWorkerCapabilityDigest(strings.Repeat("8", 64)), PolicyDigest: domain.AttachedWorkerPolicyDigest(strings.Repeat("9", 64))}
+	placement.ExecutionPlacementV2 = domain.ExecutionPlacementV2{Version: domain.ExecutionPlacementVersionV2, Kind: domain.ExecutionPlacementAttachedWorker, FallbackPolicy: domain.ExecutionFallbackDenied, OwnerUserID: "user-1", WorkerID: "worker-1", CapabilityDigest: domain.AttachedWorkerCapabilityDigest(strings.Repeat("8", 64)), PolicyDigest: domain.AttachedWorkerPolicyDigest(strings.Repeat("9", 64))}
 	if err := registry.Preflight(context.Background(), placement); err == nil {
 		t.Fatal("cross-placement identity accepted")
 	}
@@ -258,10 +265,42 @@ func TestRegistrySanitizesBackendErrorsAndRetainsValidFailureEvidence(t *testing
 		t.Fatalf("retry class was not preserved and sanitized: %v", err)
 	}
 	driver.cancelErr = errors.New("private cancel response")
-	identity := ports.ExecutionIdentity{TenantID: request.TenantID, OwnerUserID: request.OwnerUserID, RunID: request.RunID, AttemptID: request.AttemptID, ExecutionPlacement: request.ExecutionPlacement, HarnessBinding: request.HarnessBinding.Clone()}
+	identity := identityForRequest(request)
 	if err := registry.Cancel(context.Background(), identity); err == nil || strings.Contains(err.Error(), "private cancel") {
 		t.Fatalf("cancel error leaked: %v", err)
 	}
 }
 
 var _ ports.HarnessDriver = (*recordingDriver)(nil)
+
+func identityForRequest(request ports.ExecutionRequest) ports.ExecutionIdentity {
+	return ports.ExecutionIdentity{
+		TenantID: request.TenantID, OwnerUserID: request.OwnerUserID, RunID: request.RunID, AttemptID: request.AttemptID,
+		ExecutionPlacementV2: request.ExecutionPlacementV2, HarnessBinding: request.HarnessBinding.Clone(),
+		SubstrateBinding: cloneSubstrateBindingForTestPointer(request.SubstrateBinding), AdmissionCostCeiling: cloneAdmissionCostCeilingForTestPointer(request.AdmissionCostCeiling),
+	}
+}
+
+func cloneSubstrateBindingForTest(value domain.SubstrateBindingV1) *domain.SubstrateBindingV1 {
+	clone := value
+	return &clone
+}
+
+func cloneSubstrateBindingForTestPointer(value *domain.SubstrateBindingV1) *domain.SubstrateBindingV1 {
+	if value == nil {
+		return nil
+	}
+	return cloneSubstrateBindingForTest(*value)
+}
+
+func cloneAdmissionCostCeilingForTest(value domain.AdmissionCostCeilingV1) *domain.AdmissionCostCeilingV1 {
+	clone := value.Clone()
+	return &clone
+}
+
+func cloneAdmissionCostCeilingForTestPointer(value *domain.AdmissionCostCeilingV1) *domain.AdmissionCostCeilingV1 {
+	if value == nil {
+		return nil
+	}
+	return cloneAdmissionCostCeilingForTest(*value)
+}

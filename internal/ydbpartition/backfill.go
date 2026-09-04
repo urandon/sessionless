@@ -54,11 +54,15 @@ func BackfillSchemaIndexes(ctx context.Context, db *sql.DB, dryRun bool) ([]Back
 	if err != nil {
 		return nil, err
 	}
+	authorityCutover, err := verifyManagedExecutionAuthorityV2Cutover(ctx, db, dryRun)
+	if err != nil {
+		return nil, err
+	}
 	results, err := BackfillReadyExpiryV2(ctx, db, dryRun)
 	if err != nil {
 		return nil, err
 	}
-	results = append([]BackfillResult{cutover, harnessCutover}, results...)
+	results = append([]BackfillResult{cutover, harnessCutover, authorityCutover}, results...)
 	operations := []func(context.Context, *sql.DB, bool) (BackfillResult, error){
 		backfillArtifactManifestsByRun,
 		backfillFrontendBindingsBySession,
@@ -84,6 +88,48 @@ func BackfillSchemaIndexes(ctx context.Context, db *sql.DB, dryRun bool) ([]Back
 		}
 	}
 	return results, nil
+}
+
+// verifyManagedExecutionAuthorityV2Cutover is the fresh-only deployment fence
+// for the canonical placement+harness+substrate+cost authority chain.
+func verifyManagedExecutionAuthorityV2Cutover(ctx context.Context, db *sql.DB, dryRun bool) (BackfillResult, error) {
+	const cutoverID = "managed-execution-authority-v2-empty-cutover"
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return BackfillResult{}, fmt.Errorf("begin managed execution authority v2 cutover: %w", err)
+	}
+	defer tx.Rollback()
+	var completedAt time.Time
+	err = tx.QueryRowContext(ctx,
+		`SELECT completed_at FROM managed_execution_authority_v2_cutover_state WHERE cutover_id=$1`, cutoverID,
+	).Scan(&completedAt)
+	if err == nil {
+		return BackfillResult{Table: "managed_execution_authority_v2_cutover"}, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return BackfillResult{}, fmt.Errorf("read managed execution authority v2 cutover marker: %w", err)
+	}
+	for _, table := range []string{"dispatch_outbox", "worker_jobs", "attempt_effect_reservations"} {
+		var tenantID string
+		err := tx.QueryRowContext(ctx, "SELECT tenant_id FROM "+table+" LIMIT 1").Scan(&tenantID)
+		if err == nil {
+			return BackfillResult{}, fmt.Errorf("managed execution authority v2 cutover requires empty %s; drain or reset before deployment", table)
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return BackfillResult{}, fmt.Errorf("verify empty %s: %w", table, err)
+		}
+	}
+	if !dryRun {
+		if _, err := tx.ExecContext(ctx,
+			`UPSERT INTO managed_execution_authority_v2_cutover_state (cutover_id,completed_at) VALUES ($1,$2)`,
+			cutoverID, time.Now().UTC()); err != nil {
+			return BackfillResult{}, fmt.Errorf("mark managed execution authority v2 cutover: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return BackfillResult{}, fmt.Errorf("commit managed execution authority v2 cutover: %w", err)
+		}
+	}
+	return BackfillResult{Table: "managed_execution_authority_v2_cutover"}, nil
 }
 
 // verifyHarnessBindingCutover is a separate deployment fence. It certifies

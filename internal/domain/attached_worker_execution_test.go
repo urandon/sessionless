@@ -6,10 +6,10 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
-	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 )
 
-func attachedContextJob() domain.WorkerJob {
+func attachedContextJob(t testing.TB) domain.WorkerJob {
+	t.Helper()
 	blob := func(name, digest string) domain.BlobRef {
 		return domain.BlobRef{TenantID: "tenant-1", Key: "tenants/tenant-1/" + name, Size: 10, SHA256: strings.Repeat(digest, 64)}
 	}
@@ -18,19 +18,16 @@ func attachedContextJob() domain.WorkerJob {
 		TenantID: "tenant-1", RunID: "run-1", SessionID: "session-1", TriggerEventID: "event-1", AttemptID: "attempt-1",
 		ReservationID: "reservation-1", InputManifestID: "manifest-1", ContextSnapshot: blob("context.json", "1"),
 		WorkspaceSnapshot: &workspace, SkillBundle: &skills, AllowedMCPServers: []string{"filesystem", "search"}, CredentialOwnerUserID: "user-1",
-		ExecutionPlacement: domain.ExecutionPlacementV1{Version: domain.ExecutionPlacementVersionV1, Kind: domain.ExecutionPlacementAttachedWorker,
+		ExecutionPlacementV2: domain.ExecutionPlacementV2{Version: domain.ExecutionPlacementVersionV2, Kind: domain.ExecutionPlacementAttachedWorker,
 			FallbackPolicy: domain.ExecutionFallbackDenied, OwnerUserID: "user-1", WorkerID: "worker-1",
 			CapabilityDigest: domain.DigestAttachedWorkerCapability([]byte("capability")), PolicyDigest: domain.AttachedWorkerPolicyDigest(domain.DigestAttachedWorkerCapability([]byte("policy")))},
 		Limits: domain.ProductLimits{MaxTenantQueueDepth: 8, MaxActiveRuns: 1, MaxRuntime: time.Minute, MaxTurns: 10,
 			MaxInputBytes: 1 << 20, MaxContextBytes: 1 << 20, MaxContextEvents: 100, MaxArtifacts: 10, MaxToolEvents: 20, MaxToolEventBytes: 1 << 18},
 	}
-	binding, err := sessionlessharness.NewDeterministicFixtureBindingV1(
-		job.TenantID, job.CredentialOwnerUserID, job.RunID, job.AttemptID, "subscription-1", job.ExecutionPlacement, time.Unix(1, 0).UTC(),
+	job.HarnessBinding = deterministicHarnessBindingForPlacement(
+		t, job.TenantID, job.CredentialOwnerUserID, job.RunID, job.AttemptID,
+		job.ExecutionPlacementV2, time.Unix(1, 0).UTC(),
 	)
-	if err != nil {
-		panic(err)
-	}
-	job.HarnessBinding = binding
 	return job
 }
 
@@ -68,7 +65,7 @@ func cloneAttachedContextJob(job domain.WorkerJob) domain.WorkerJob {
 
 func TestAttachedWorkerJobContextDigestV1BindsEveryExecutionInput(t *testing.T) {
 	t.Parallel()
-	base := attachedContextJob()
+	base := attachedContextJob(t)
 	manifest := attachedContextManifest(base)
 	digest, err := domain.AttachedWorkerJobContextDigestV1(base, manifest)
 	if err != nil {
@@ -91,12 +88,12 @@ func TestAttachedWorkerJobContextDigestV1BindsEveryExecutionInput(t *testing.T) 
 		"workspace":      func(job *domain.WorkerJob) { job.WorkspaceSnapshot.SHA256 = strings.Repeat("5", 64) }, "workspace presence": func(job *domain.WorkerJob) { job.WorkspaceSnapshot = nil },
 		"skills": func(job *domain.WorkerJob) { job.SkillBundle.SHA256 = strings.Repeat("6", 64) }, "skills presence": func(job *domain.WorkerJob) { job.SkillBundle = nil },
 		"mcp set": func(job *domain.WorkerJob) { job.AllowedMCPServers[0] = "browser" }, "credential owner": func(job *domain.WorkerJob) { job.CredentialOwnerUserID = "user-2" },
-		"placement owner": func(job *domain.WorkerJob) { job.ExecutionPlacement.OwnerUserID = "user-2" }, "placement worker": func(job *domain.WorkerJob) { job.ExecutionPlacement.WorkerID = "worker-2" },
+		"placement owner": func(job *domain.WorkerJob) { job.ExecutionPlacementV2.OwnerUserID = "user-2" }, "placement worker": func(job *domain.WorkerJob) { job.ExecutionPlacementV2.WorkerID = "worker-2" },
 		"capability": func(job *domain.WorkerJob) {
-			job.ExecutionPlacement.CapabilityDigest = domain.DigestAttachedWorkerCapability([]byte("capability-2"))
+			job.ExecutionPlacementV2.CapabilityDigest = domain.DigestAttachedWorkerCapability([]byte("capability-2"))
 		},
 		"policy": func(job *domain.WorkerJob) {
-			job.ExecutionPlacement.PolicyDigest = domain.AttachedWorkerPolicyDigest(domain.DigestAttachedWorkerCapability([]byte("policy-2")))
+			job.ExecutionPlacementV2.PolicyDigest = domain.AttachedWorkerPolicyDigest(domain.DigestAttachedWorkerCapability([]byte("policy-2")))
 		},
 		"harness model": func(job *domain.WorkerJob) { job.HarnessBinding.ModelID = "deterministic-fixture-v2" },
 		"queue limit":   func(job *domain.WorkerJob) { job.Limits.MaxTenantQueueDepth++ }, "active limit": func(job *domain.WorkerJob) { job.Limits.MaxActiveRuns++ },
@@ -135,7 +132,7 @@ func TestAttachedWorkerJobContextDigestV1BindsEveryExecutionInput(t *testing.T) 
 
 func TestAttachedWorkerJobContextDigestV1SortsOnlySemanticMCPSet(t *testing.T) {
 	t.Parallel()
-	job := attachedContextJob()
+	job := attachedContextJob(t)
 	manifest := attachedContextManifest(job)
 	first, err := domain.AttachedWorkerJobContextDigestV1(job, manifest)
 	if err != nil {
@@ -153,8 +150,8 @@ func TestAttachedWorkerJobContextDigestV1SortsOnlySemanticMCPSet(t *testing.T) {
 	if _, err := domain.AttachedWorkerJobContextDigestV1(job, manifest); err == nil {
 		t.Fatal("duplicate MCP server accepted")
 	}
-	job = attachedContextJob()
-	job.ExecutionPlacement.FallbackPolicy = "managed"
+	job = attachedContextJob(t)
+	job.ExecutionPlacementV2.FallbackPolicy = "managed"
 	if _, err := domain.AttachedWorkerJobContextDigestV1(job, manifest); err == nil {
 		t.Fatal("non-deny attached placement accepted")
 	}
@@ -162,7 +159,7 @@ func TestAttachedWorkerJobContextDigestV1SortsOnlySemanticMCPSet(t *testing.T) {
 
 func TestAttachedWorkerJobContextDigestBindsManifestContent(t *testing.T) {
 	t.Parallel()
-	job := attachedContextJob()
+	job := attachedContextJob(t)
 	manifest := attachedContextManifest(job)
 	first, err := domain.AttachedWorkerJobContextDigestV1(job, manifest)
 	if err != nil {
@@ -194,26 +191,26 @@ func TestAttachedWorkerJobContextDigestBindsManifestContent(t *testing.T) {
 	}
 }
 
-func TestExecutionPlacementV1IsExplicitAndDenyOnly(t *testing.T) {
+func TestExecutionPlacementIsExplicitAndDenyOnly(t *testing.T) {
 	t.Parallel()
-	managed := domain.ManagedExecutionPlacementV1()
+	managed := deterministicManagedAuthority(t, "tenant-1", "user-1", "run-1", "attempt-1", time.Unix(1, 0).UTC()).ExecutionPlacementV2
 	if err := managed.Validate(); err != nil {
 		t.Fatalf("managed placement: %v", err)
 	}
 	capability := domain.DigestAttachedWorkerCapability([]byte("capability"))
-	attached := domain.ExecutionPlacementV1{
-		Version: domain.ExecutionPlacementVersionV1, Kind: domain.ExecutionPlacementAttachedWorker,
+	attached := domain.ExecutionPlacementV2{
+		Version: domain.ExecutionPlacementVersionV2, Kind: domain.ExecutionPlacementAttachedWorker,
 		FallbackPolicy: domain.ExecutionFallbackDenied, OwnerUserID: "user-1", WorkerID: "worker-1",
 		CapabilityDigest: capability, PolicyDigest: domain.AttachedWorkerPolicyDigest(domain.DigestAttachedWorkerCapability([]byte("policy"))),
 	}
 	if err := attached.Validate(); err != nil {
 		t.Fatalf("attached placement: %v", err)
 	}
-	for name, mutate := range map[string]func(*domain.ExecutionPlacementV1){
-		"zero":           func(value *domain.ExecutionPlacementV1) { *value = domain.ExecutionPlacementV1{} },
-		"fallback":       func(value *domain.ExecutionPlacementV1) { value.FallbackPolicy = "managed" },
-		"managed target": func(value *domain.ExecutionPlacementV1) { value.Kind = domain.ExecutionPlacementManaged },
-		"missing owner":  func(value *domain.ExecutionPlacementV1) { value.OwnerUserID = "" },
+	for name, mutate := range map[string]func(*domain.ExecutionPlacementV2){
+		"zero":           func(value *domain.ExecutionPlacementV2) { *value = domain.ExecutionPlacementV2{} },
+		"fallback":       func(value *domain.ExecutionPlacementV2) { value.FallbackPolicy = "managed" },
+		"managed target": func(value *domain.ExecutionPlacementV2) { value.Kind = domain.ExecutionPlacementManaged },
+		"missing owner":  func(value *domain.ExecutionPlacementV2) { value.OwnerUserID = "" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			candidate := attached
@@ -397,7 +394,7 @@ func TestAttachedWorkerLeaseIDV1IsOpaqueStableAndScopeBound(t *testing.T) {
 
 func TestAttachedWorkerLeaseTTLForLimitsV1IsFixedAndBounded(t *testing.T) {
 	t.Parallel()
-	limits := attachedContextJob().Limits
+	limits := attachedContextJob(t).Limits
 	limits.MaxRuntime = time.Minute
 	ttl, err := domain.AttachedWorkerLeaseTTLForLimitsV1(limits)
 	if err != nil || ttl != time.Minute+domain.AttachedWorkerLeaseFinalizationBudgetV1 {
@@ -411,7 +408,7 @@ func TestAttachedWorkerLeaseTTLForLimitsV1IsFixedAndBounded(t *testing.T) {
 	if _, err := domain.AttachedWorkerLeaseTTLForLimitsV1(limits); err == nil {
 		t.Fatal("over-maximum lease accepted")
 	}
-	limits = attachedContextJob().Limits
+	limits = attachedContextJob(t).Limits
 	limits.MaxContextEvents = 0
 	if _, err := domain.AttachedWorkerLeaseTTLForLimitsV1(limits); err == nil {
 		t.Fatal("non-admission limits accepted")

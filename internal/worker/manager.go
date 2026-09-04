@@ -169,12 +169,7 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 		}
 		return OutcomeDuplicate, nil
 	}
-	if err := manager.harness.Preflight(ctx, ports.ExecutionIdentity{
-		TenantID: loaded.Run.TenantID, OwnerUserID: loaded.Job.CredentialOwnerUserID,
-		RunID: loaded.Run.ID, AttemptID: loaded.Attempt.ID,
-		ExecutionPlacement: loaded.Job.ExecutionPlacement,
-		HarnessBinding:     loaded.Job.HarnessBinding.Clone(),
-	}); err != nil {
+	if err := manager.harness.Preflight(ctx, executionIdentityForJob(loaded.Job)); err != nil {
 		return manager.retry(ctx, message, err)
 	}
 	if err := manager.validateProviderCredentialPlan(loaded.Job.HarnessBinding); err != nil {
@@ -240,13 +235,15 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 		TenantID: loaded.Run.TenantID, OwnerUserID: loaded.Job.CredentialOwnerUserID, RunID: loaded.Run.ID,
 		SessionID: loaded.Run.SessionID, TriggerEventID: loaded.Run.TriggerEventID,
 		AttemptID: loaded.Attempt.ID, WorkDir: workDir,
-		ContextSnapshot:    loaded.Job.ContextSnapshot,
-		ContextWindow:      loaded.Job.ContextWindow,
-		InputArtifacts:     loaded.InputManifest.Artifacts,
-		ResumeCheckpoint:   loaded.Checkpoint,
-		AllowedMCPServers:  append([]string(nil), loaded.Job.AllowedMCPServers...),
-		ExecutionPlacement: loaded.Job.ExecutionPlacement,
-		HarnessBinding:     loaded.Job.HarnessBinding.Clone(),
+		ContextSnapshot:      loaded.Job.ContextSnapshot,
+		ContextWindow:        loaded.Job.ContextWindow,
+		InputArtifacts:       loaded.InputManifest.Artifacts,
+		ResumeCheckpoint:     loaded.Checkpoint,
+		AllowedMCPServers:    append([]string(nil), loaded.Job.AllowedMCPServers...),
+		ExecutionPlacementV2: loaded.Job.ExecutionPlacementV2,
+		HarnessBinding:       loaded.Job.HarnessBinding.Clone(),
+		SubstrateBinding:     cloneSubstrateBinding(loaded.Job.SubstrateBinding),
+		AdmissionCostCeiling: cloneAdmissionCostCeiling(loaded.Job.AdmissionCostCeiling),
 	}
 	if credential != nil {
 		request.Credential = credential.handle.ProviderInvocationCredential()
@@ -261,11 +258,7 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 	}
 	result, err := manager.harness.Execute(executionCtx, request, sink)
 	if err != nil {
-		_ = manager.harness.Cancel(context.Background(), ports.ExecutionIdentity{
-			TenantID: loaded.Run.TenantID, OwnerUserID: loaded.Job.CredentialOwnerUserID, RunID: loaded.Run.ID,
-			AttemptID: loaded.Attempt.ID, ExecutionPlacement: loaded.Job.ExecutionPlacement,
-			HarnessBinding: loaded.Job.HarnessBinding.Clone(),
-		})
+		_ = manager.harness.Cancel(context.Background(), executionIdentityForJob(loaded.Job))
 	}
 	if credential != nil {
 		credentialFinalized = true
@@ -1149,6 +1142,30 @@ func stableID(prefix string, values ...string) string {
 		_, _ = hash.Write([]byte{0})
 	}
 	return prefix + "_" + hex.EncodeToString(hash.Sum(nil)[:16])
+}
+
+func executionIdentityForJob(job domain.WorkerJob) ports.ExecutionIdentity {
+	return ports.ExecutionIdentity{
+		TenantID: job.TenantID, OwnerUserID: job.CredentialOwnerUserID, RunID: job.RunID, AttemptID: job.AttemptID,
+		ExecutionPlacementV2: job.ExecutionPlacementV2, HarnessBinding: job.HarnessBinding.Clone(),
+		SubstrateBinding: cloneSubstrateBinding(job.SubstrateBinding), AdmissionCostCeiling: cloneAdmissionCostCeiling(job.AdmissionCostCeiling),
+	}
+}
+
+func cloneSubstrateBinding(value *domain.SubstrateBindingV1) *domain.SubstrateBindingV1 {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
+}
+
+func cloneAdmissionCostCeiling(value *domain.AdmissionCostCeilingV1) *domain.AdmissionCostCeilingV1 {
+	if value == nil {
+		return nil
+	}
+	clone := value.Clone()
+	return &clone
 }
 
 func digestHex(data []byte) string {

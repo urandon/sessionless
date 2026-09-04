@@ -48,8 +48,8 @@ func TestAttachedWorkerOfferEligibilityUsesPersistedAuthority(t *testing.T) {
 		t.Fatal(err)
 	}
 	capability := domain.DigestAttachedWorkerCapability([]byte("capability"))
-	placement := domain.ExecutionPlacementV1{
-		Version: domain.ExecutionPlacementVersionV1, Kind: domain.ExecutionPlacementAttachedWorker,
+	placement := domain.ExecutionPlacementV2{
+		Version: domain.ExecutionPlacementVersionV2, Kind: domain.ExecutionPlacementAttachedWorker,
 		FallbackPolicy: domain.ExecutionFallbackDenied, OwnerUserID: "owner-1", WorkerID: "worker-1",
 		CapabilityDigest: capability, PolicyDigest: domain.AttachedWorkerPolicyDigest(domain.DigestAttachedWorkerCapability([]byte("policy"))),
 	}
@@ -68,7 +68,7 @@ func TestAttachedWorkerOfferEligibilityUsesPersistedAuthority(t *testing.T) {
 		State: domain.AttachedWorkerConnectionOnline, AuthExpiresAt: at.Add(2 * ttl), PresenceExpiresAt: at.Add(2 * ttl),
 	}
 	loaded := ports.WorkerJobState{
-		Job:         domain.WorkerJob{ExecutionPlacement: placement, Limits: limits},
+		Job:         domain.WorkerJob{ExecutionPlacementV2: placement, Limits: limits},
 		Run:         domain.Run{ID: request.RunID, Status: domain.RunQueued},
 		Attempt:     domain.Attempt{ID: request.AttemptID, Status: domain.AttemptCreated},
 		Reservation: domain.QuotaReservation{ID: request.ReservationID, Status: domain.ReservationHeld, ExpiresAt: at.Add(time.Minute)},
@@ -83,7 +83,7 @@ func TestAttachedWorkerOfferEligibilityUsesPersistedAuthority(t *testing.T) {
 			request.LeaseTTL++
 		},
 		"placement owner": func(_ *domain.AttachedWorker, _ *domain.AttachedWorkerConnection, loaded *ports.WorkerJobState, _ *ports.AttachedWorkerAttemptOffer) {
-			loaded.Job.ExecutionPlacement.OwnerUserID = "owner-2"
+			loaded.Job.ExecutionPlacementV2.OwnerUserID = "owner-2"
 		},
 		"worker generation": func(worker *domain.AttachedWorker, _ *domain.AttachedWorkerConnection, _ *ports.WorkerJobState, _ *ports.AttachedWorkerAttemptOffer) {
 			worker.ConnectionGeneration++
@@ -102,7 +102,7 @@ func TestAttachedWorkerOfferEligibilityUsesPersistedAuthority(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			candidateWorker, candidateConnection, candidateLoaded, candidateRequest := worker, connection, loaded, request
 			mutate(&candidateWorker, &candidateConnection, &candidateLoaded, &candidateRequest)
-			if attachedWorkerOfferEligible(candidateRequest, candidateWorker, candidateConnection, candidateLoaded, candidateLoaded.Job.ExecutionPlacement, at, expiresAt) {
+			if attachedWorkerOfferEligible(candidateRequest, candidateWorker, candidateConnection, candidateLoaded, candidateLoaded.Job.ExecutionPlacementV2, at, expiresAt) {
 				t.Fatal("divergent authority was accepted")
 			}
 		})

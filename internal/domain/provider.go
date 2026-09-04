@@ -281,14 +281,14 @@ func (binding HarnessBindingV1) ValidateAt(now time.Time) error {
 	return nil
 }
 
-func (binding HarnessBindingV1) ValidateForScope(tenantID TenantID, ownerUserID UserID, runID RunID, attemptID AttemptID, placement ExecutionPlacementV1) error {
+func (binding HarnessBindingV1) ValidateForScope(tenantID TenantID, ownerUserID UserID, runID RunID, attemptID AttemptID, placement ExecutionPlacementV2) error {
 	if err := binding.Validate(); err != nil {
 		return err
 	}
 	if binding.TenantID != tenantID || binding.OwnerUserID != ownerUserID || binding.RunID != runID || binding.AttemptID != attemptID {
 		return ValidationError{Field: "harness_binding.scope", Reason: "must match the owning dispatch scope"}
 	}
-	placementDigest, err := ExecutionPlacementDigestV1(placement)
+	placementDigest, err := ExecutionPlacementDigest(placement)
 	if err != nil {
 		return err
 	}
@@ -344,13 +344,18 @@ func (digest HarnessBindingDigestV1) Validate() error {
 	return validateSHA256("harness_binding_digest", string(digest))
 }
 
-func ExecutionPlacementDigestV1(placement ExecutionPlacementV1) (HarnessBindingDigestV1, error) {
+func ExecutionPlacementDigest(placement ExecutionPlacementV2) (HarnessBindingDigestV1, error) {
 	if err := placement.Validate(); err != nil {
 		return "", err
 	}
 	hash := sha256.New()
-	hash.Write([]byte("sessionless.execution-placement.v1\x00"))
-	for _, value := range []string{string(placement.Kind), string(placement.FallbackPolicy), string(placement.OwnerUserID), string(placement.WorkerID), string(placement.CapabilityDigest), string(placement.PolicyDigest)} {
+	hash.Write([]byte("sessionless.execution-placement.v2\x00"))
+	var version [8]byte
+	binary.BigEndian.PutUint64(version[:], uint64(placement.Version))
+	hash.Write(version[:])
+	values := []string{string(placement.Kind), string(placement.FallbackPolicy), string(placement.OwnerUserID), string(placement.WorkerID), string(placement.CapabilityDigest), string(placement.PolicyDigest)}
+	values = append(values, placement.SubstrateBindingDigest)
+	for _, value := range values {
 		var size [8]byte
 		binary.BigEndian.PutUint64(size[:], uint64(len(value)))
 		hash.Write(size[:])

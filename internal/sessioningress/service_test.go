@@ -87,7 +87,7 @@ func TestSyntheticFrontendCreatesSwitchesAndIngestsCanonicalSessions(t *testing.
 		t.Fatalf("synthetic payload leaked a Telegram path: %q", commit.Payload.Key)
 	}
 	if err := commit.HarnessBinding.ValidateForScope(
-		commit.TenantID, commit.UserID, commit.RunID, commit.AttemptID, domain.ManagedExecutionPlacementV1(),
+		commit.TenantID, commit.UserID, commit.RunID, commit.AttemptID, commit.ExecutionPlacementV2,
 	); err != nil {
 		t.Fatalf("server-owned harness binding = %+v: %v", commit.HarnessBinding, err)
 	}
@@ -374,8 +374,8 @@ func testIngressConfig(key string) sessioningress.Config {
 
 type invalidHarnessBinder struct{}
 
-func (invalidHarnessBinder) BindHarness(context.Context, ports.HarnessBindingRequest) (domain.HarnessBindingV1, error) {
-	return domain.HarnessBindingV1{}, nil
+func (invalidHarnessBinder) BindHarness(context.Context, ports.HarnessBindingRequest) (ports.ManagedExecutionAuthorityV2, error) {
+	return ports.ManagedExecutionAuthorityV2{}, nil
 }
 
 type memoryCanonicalStore struct {

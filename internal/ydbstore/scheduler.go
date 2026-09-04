@@ -109,11 +109,11 @@ func (store *Store) AdmitDispatch(
 			}
 		}
 		if err := outbox.HarnessBinding.ValidateForScope(
-			outbox.TenantID, outbox.CredentialOwnerUserID, outbox.RunID, outbox.AttemptID, outbox.ExecutionPlacement,
+			outbox.TenantID, outbox.CredentialOwnerUserID, outbox.RunID, outbox.AttemptID, outbox.ExecutionPlacementV2,
 		); err != nil {
 			return err
 		}
-		switch outbox.ExecutionPlacement.Kind {
+		switch outbox.ExecutionPlacementV2.Kind {
 		case domain.ExecutionPlacementManaged:
 			result.Delivery = ports.DispatchDeliveryManagedQueue
 		case domain.ExecutionPlacementAttachedWorker:
@@ -178,7 +178,19 @@ func (store *Store) AdmitDispatch(
 				}
 				outboxBindingDigest, outboxErr := outbox.HarnessBinding.Digest()
 				jobBindingDigest, jobErr := job.HarnessBinding.Digest()
+				outboxPlacementDigest, outboxPlacementErr := domain.ExecutionPlacementDigest(outbox.ExecutionPlacementV2)
+				jobPlacementDigest, jobPlacementErr := domain.ExecutionPlacementDigest(job.ExecutionPlacementV2)
+				authorityMatches := outbox.SubstrateBinding == nil && job.SubstrateBinding == nil && outbox.AdmissionCostCeiling == nil && job.AdmissionCostCeiling == nil
+				if outbox.SubstrateBinding != nil && job.SubstrateBinding != nil && outbox.AdmissionCostCeiling != nil && job.AdmissionCostCeiling != nil {
+					outboxSubstrateDigest, outboxSubstrateErr := outbox.SubstrateBinding.Digest()
+					jobSubstrateDigest, jobSubstrateErr := job.SubstrateBinding.Digest()
+					outboxCostDigest, outboxCostErr := outbox.AdmissionCostCeiling.Digest()
+					jobCostDigest, jobCostErr := job.AdmissionCostCeiling.Digest()
+					authorityMatches = outboxSubstrateErr == nil && jobSubstrateErr == nil && outboxCostErr == nil && jobCostErr == nil &&
+						outboxSubstrateDigest == jobSubstrateDigest && outboxCostDigest == jobCostDigest
+				}
 				if !jobFound || outboxErr != nil || jobErr != nil || outboxBindingDigest != jobBindingDigest ||
+					outboxPlacementErr != nil || jobPlacementErr != nil || outboxPlacementDigest != jobPlacementDigest || !authorityMatches ||
 					job.AttemptID != request.AttemptID || job.ReservationID != request.ReservationID {
 					return domain.ValidationError{Field: "worker_job.harness_binding", Reason: "does not match the admitted outbox authority"}
 				}
@@ -285,13 +297,21 @@ func (store *Store) AdmitDispatch(
 			SkillBundle:           outbox.SkillBundle,
 			AllowedMCPServers:     append([]string(nil), outbox.AllowedMCPServers...),
 			CredentialOwnerUserID: outbox.CredentialOwnerUserID,
-			ExecutionPlacement:    outbox.ExecutionPlacement,
+			ExecutionPlacementV2:  outbox.ExecutionPlacementV2,
 			HarnessBinding:        outbox.HarnessBinding.Clone(),
 			Limits:                request.Limits,
 			Origin:                outbox.Origin,
 			DeliveryChat:          outbox.DeliveryChat,
 			ReplyToMessageID:      outbox.ReplyToMessageID,
 			CreatedAt:             request.Now,
+		}
+		if outbox.SubstrateBinding != nil {
+			substrate := *outbox.SubstrateBinding
+			job.SubstrateBinding = &substrate
+		}
+		if outbox.AdmissionCostCeiling != nil {
+			cost := outbox.AdmissionCostCeiling.Clone()
+			job.AdmissionCostCeiling = &cost
 		}
 		if err := state.PutWorkerJob(ctx, job); err != nil {
 			return err
@@ -306,8 +326,8 @@ func (store *Store) AdmitDispatch(
 				return err
 			}
 			offerRequest := ports.AttachedWorkerAttemptOffer{
-				TenantID: request.TenantID, OwnerUserID: job.ExecutionPlacement.OwnerUserID,
-				WorkerID: job.ExecutionPlacement.WorkerID, RunID: request.RunID,
+				TenantID: request.TenantID, OwnerUserID: job.ExecutionPlacementV2.OwnerUserID,
+				WorkerID: job.ExecutionPlacementV2.WorkerID, RunID: request.RunID,
 				AttemptID: request.AttemptID, ReservationID: request.ReservationID,
 				LeaseID: leaseID, LeaseTTL: leaseTTL,
 			}
@@ -545,7 +565,7 @@ func (store *Store) ExpireQuotaReservation(
 			// Attached-worker admission is delivered directly and never increments
 			// the managed queue counter. Expiring its reservation must not consume
 			// an unrelated managed queue slot for the tenant.
-			if loaded.Job.ExecutionPlacement.Kind == domain.ExecutionPlacementManaged && queueDepth > 0 {
+			if loaded.Job.ExecutionPlacementV2.Kind == domain.ExecutionPlacementManaged && queueDepth > 0 {
 				queueDepth--
 			}
 			if _, err := tx.sqlTx.ExecContext(ctx,

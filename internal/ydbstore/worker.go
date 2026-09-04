@@ -341,7 +341,7 @@ func startWorkerJobTx(
 	// Attached offers are durable direct delivery and never increment the
 	// managed queue counter during admission. Starting one must therefore not
 	// consume an unrelated managed queue slot for the same tenant.
-	if loaded.Job.ExecutionPlacement.Kind == domain.ExecutionPlacementManaged && queueDepth > 0 {
+	if loaded.Job.ExecutionPlacementV2.Kind == domain.ExecutionPlacementManaged && queueDepth > 0 {
 		queueDepth--
 	}
 	activeRuns++

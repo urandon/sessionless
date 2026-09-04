@@ -397,10 +397,14 @@ func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 		DispatchID:               domain.DispatchOutboxID(uniqueID("dispatch-ingress")),
 		CommittedAt:              committedAt,
 	}
-	request.HarnessBinding = mustHarnessBindingV1(
+	authority := mustManagedAuthorityV2(
 		t, request.TenantID, request.UserID, request.RunID, request.AttemptID,
-		request.SubscriptionConnectionID, domain.ManagedExecutionPlacementV1(), committedAt,
+		request.SubscriptionConnectionID, committedAt,
 	)
+	request.ExecutionPlacementV2 = authority.ExecutionPlacementV2
+	request.HarnessBinding = authority.HarnessBinding
+	request.SubstrateBinding = authority.SubstrateBinding
+	request.AdmissionCostCeiling = authority.AdmissionCostCeiling
 	start := make(chan struct{})
 	results := make(chan ports.CanonicalUserEventResult, 2)
 	errorsByCommit := make(chan error, 2)
@@ -775,10 +779,14 @@ func TestCanonicalFailureAndCancellationFinalizationAreAtomicAndIdempotent(t *te
 				DispatchID:               domain.DispatchOutboxID(uniqueID("dispatch-terminal-" + testCase.name)),
 				CommittedAt:              committedAt,
 			}
-			request.HarnessBinding = mustHarnessBindingV1(
+			authority := mustManagedAuthorityV2(
 				t, request.TenantID, request.UserID, request.RunID, request.AttemptID,
-				request.SubscriptionConnectionID, domain.ManagedExecutionPlacementV1(), committedAt,
+				request.SubscriptionConnectionID, committedAt,
 			)
+			request.ExecutionPlacementV2 = authority.ExecutionPlacementV2
+			request.HarnessBinding = authority.HarnessBinding
+			request.SubstrateBinding = authority.SubstrateBinding
+			request.AdmissionCostCeiling = authority.AdmissionCostCeiling
 			if _, err := store.CommitCanonicalUserEvent(ctx, request); err != nil {
 				t.Fatal(err)
 			}

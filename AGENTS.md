@@ -24,6 +24,9 @@
 - Keep infrastructure choices friendly to Yandex Cloud serverless and YDB support.
 - Include WebUI/admin surfaces for sessions, worker health, and consumed-token
   monitoring. Membership, not an identity-provider claim alone, grants tenant access.
+- All Go tests and test reviews must follow
+  [`docs/testing-best-practices.md`](docs/testing-best-practices.md), including
+  its deterministic-time, isolation, cleanup, race, and exact-CI requirements.
 
 ## Current repository state
 - The repository contains a Go control plane, YDB migrations/state adapters,

@@ -230,7 +230,10 @@ func (request ExecutionRequest) Validate() error {
 	if err := request.OwnerUserID.Validate(); err != nil {
 		return err
 	}
-	if err := request.ExecutionPlacement.Validate(); err != nil {
+	if err := request.ExecutionPlacementV2.Validate(); err != nil {
+		return err
+	}
+	if err := domain.ValidateExecutionAuthorityProjection(request.ExecutionPlacementV2, request.SubstrateBinding, request.AdmissionCostCeiling); err != nil {
 		return err
 	}
 	if err := request.SessionID.Validate(); err != nil {
@@ -245,7 +248,7 @@ func (request ExecutionRequest) Validate() error {
 	if err := request.HarnessBinding.Validate(); err != nil {
 		return err
 	}
-	if err := request.HarnessBinding.ValidateForScope(request.TenantID, request.OwnerUserID, request.RunID, request.AttemptID, request.ExecutionPlacement); err != nil {
+	if err := request.HarnessBinding.ValidateForScope(request.TenantID, request.OwnerUserID, request.RunID, request.AttemptID, request.ExecutionPlacementV2); err != nil {
 		return err
 	}
 	if !filepath.IsAbs(request.WorkDir) || filepath.Clean(request.WorkDir) != request.WorkDir {
@@ -355,7 +358,10 @@ func (identity ExecutionIdentity) Validate() error {
 	if err := identity.OwnerUserID.Validate(); err != nil {
 		return err
 	}
-	if err := identity.ExecutionPlacement.Validate(); err != nil {
+	if err := identity.ExecutionPlacementV2.Validate(); err != nil {
+		return err
+	}
+	if err := domain.ValidateExecutionAuthorityProjection(identity.ExecutionPlacementV2, identity.SubstrateBinding, identity.AdmissionCostCeiling); err != nil {
 		return err
 	}
 	if err := identity.AttemptID.Validate(); err != nil {
@@ -364,5 +370,5 @@ func (identity ExecutionIdentity) Validate() error {
 	if err := identity.HarnessBinding.Validate(); err != nil {
 		return err
 	}
-	return identity.HarnessBinding.ValidateForScope(identity.TenantID, identity.OwnerUserID, identity.RunID, identity.AttemptID, identity.ExecutionPlacement)
+	return identity.HarnessBinding.ValidateForScope(identity.TenantID, identity.OwnerUserID, identity.RunID, identity.AttemptID, identity.ExecutionPlacementV2)
 }

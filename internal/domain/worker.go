@@ -8,23 +8,25 @@ import (
 // WorkerJob is the durable, point-addressable materialization contract for one
 // admitted run. Queue messages carry only its tenant/run routing identity.
 type WorkerJob struct {
-	TenantID              TenantID              `json:"tenant_id"`
-	RunID                 RunID                 `json:"run_id"`
-	SessionID             SessionID             `json:"session_id"`
-	TriggerEventID        SessionEventID        `json:"trigger_event_id"`
-	AttemptID             AttemptID             `json:"attempt_id"`
-	ReservationID         QuotaReservationID    `json:"reservation_id"`
-	InputManifestID       ArtifactManifestID    `json:"input_manifest_id"`
-	ContextSnapshot       BlobRef               `json:"context_snapshot"`
-	ContextWindow         *SessionContextWindow `json:"context_window,omitempty"`
-	WorkspaceSnapshot     *BlobRef              `json:"workspace_snapshot,omitempty"`
-	SkillBundle           *BlobRef              `json:"skill_bundle,omitempty"`
-	AllowedMCPServers     []string              `json:"allowed_mcp_servers,omitempty"`
-	CredentialOwnerUserID UserID                `json:"credential_owner_user_id,omitempty"`
-	ExecutionPlacement    ExecutionPlacementV1  `json:"execution_placement"`
-	HarnessBinding        HarnessBindingV1      `json:"harness_binding"`
-	Limits                ProductLimits         `json:"limits"`
-	Origin                *FrontendEventOrigin  `json:"origin,omitempty"`
+	TenantID              TenantID                `json:"tenant_id"`
+	RunID                 RunID                   `json:"run_id"`
+	SessionID             SessionID               `json:"session_id"`
+	TriggerEventID        SessionEventID          `json:"trigger_event_id"`
+	AttemptID             AttemptID               `json:"attempt_id"`
+	ReservationID         QuotaReservationID      `json:"reservation_id"`
+	InputManifestID       ArtifactManifestID      `json:"input_manifest_id"`
+	ContextSnapshot       BlobRef                 `json:"context_snapshot"`
+	ContextWindow         *SessionContextWindow   `json:"context_window,omitempty"`
+	WorkspaceSnapshot     *BlobRef                `json:"workspace_snapshot,omitempty"`
+	SkillBundle           *BlobRef                `json:"skill_bundle,omitempty"`
+	AllowedMCPServers     []string                `json:"allowed_mcp_servers,omitempty"`
+	CredentialOwnerUserID UserID                  `json:"credential_owner_user_id,omitempty"`
+	ExecutionPlacementV2  ExecutionPlacementV2    `json:"execution_placement"`
+	HarnessBinding        HarnessBindingV1        `json:"harness_binding"`
+	SubstrateBinding      *SubstrateBindingV1     `json:"substrate_binding,omitempty"`
+	AdmissionCostCeiling  *AdmissionCostCeilingV1 `json:"admission_cost_ceiling,omitempty"`
+	Limits                ProductLimits           `json:"limits"`
+	Origin                *FrontendEventOrigin    `json:"origin,omitempty"`
 	// Compatibility bridge for legacy Telegram jobs until #37 projects results from the
 	// canonical session stream.
 	DeliveryChat     TelegramChatRef `json:"delivery_chat"`
@@ -88,11 +90,14 @@ func (job WorkerJob) ValidateForRun(run Run) error {
 			return err
 		}
 	}
-	if err := job.ExecutionPlacement.Validate(); err != nil {
+	if err := job.ExecutionPlacementV2.Validate(); err != nil {
+		return err
+	}
+	if err := ValidateExecutionAuthorityProjection(job.ExecutionPlacementV2, job.SubstrateBinding, job.AdmissionCostCeiling); err != nil {
 		return err
 	}
 	if err := job.HarnessBinding.ValidateForScope(
-		job.TenantID, job.CredentialOwnerUserID, job.RunID, job.AttemptID, job.ExecutionPlacement,
+		job.TenantID, job.CredentialOwnerUserID, job.RunID, job.AttemptID, job.ExecutionPlacementV2,
 	); err != nil {
 		return err
 	}

@@ -73,6 +73,9 @@ gated `make web-browser-install` installs pinned Chromium, and
 suites. CI adds Playwright's Linux system dependencies through the same target.
 
 `make test` checks formatting, runs `go vet`, unit tests, and the race detector.
+The repository-wide rules for deterministic clocks, isolation, cleanup,
+diagnostics, repeated execution, and exact-commit CI evidence are in
+[testing-best-practices.md](testing-best-practices.md).
 `make build` writes every component declared by the Makefile to `.build/bin`.
 This includes the control plane, Web BFF, local fixtures, isolated worker, and
 operator-only schema, reset, deployment-lock, and Web bootstrap commands. The

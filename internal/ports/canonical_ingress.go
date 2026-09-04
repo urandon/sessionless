@@ -107,7 +107,10 @@ type CanonicalUserEventCommit struct {
 	Artifacts                []domain.Artifact
 	DispatchID               domain.DispatchOutboxID
 	AllowedMCPServers        []string
+	ExecutionPlacementV2     domain.ExecutionPlacementV2
 	HarnessBinding           domain.HarnessBindingV1
+	SubstrateBinding         domain.SubstrateBindingV1
+	AdmissionCostCeiling     domain.AdmissionCostCeilingV1
 	CommittedAt              time.Time
 }
 
@@ -119,12 +122,79 @@ type HarnessBindingRequest struct {
 	RunID                    domain.RunID
 	AttemptID                domain.AttemptID
 	SubscriptionConnectionID domain.SubscriptionConnectionID
-	ExecutionPlacement       domain.ExecutionPlacementV1
 	At                       time.Time
 }
 
+type ManagedExecutionAuthorityV2 struct {
+	ExecutionPlacementV2 domain.ExecutionPlacementV2
+	HarnessBinding       domain.HarnessBindingV1
+	SubstrateBinding     domain.SubstrateBindingV1
+	AdmissionCostCeiling domain.AdmissionCostCeilingV1
+}
+
+func (authority ManagedExecutionAuthorityV2) ValidateForScope(request HarnessBindingRequest) error {
+	for _, validate := range []func() error{
+		request.TenantID.Validate, request.OwnerUserID.Validate, request.RunID.Validate,
+		request.AttemptID.Validate, request.SubscriptionConnectionID.Validate,
+	} {
+		if err := validate(); err != nil {
+			return err
+		}
+	}
+	if request.At.IsZero() {
+		return domain.ValidationError{Field: "managed_execution_authority.at", Reason: "must not be zero"}
+	}
+	if err := authority.ExecutionPlacementV2.Validate(); err != nil {
+		return err
+	}
+	if authority.ExecutionPlacementV2.Kind != domain.ExecutionPlacementManaged {
+		return domain.ValidationError{Field: "managed_execution_authority.execution_placement", Reason: "must be managed"}
+	}
+	if err := authority.SubstrateBinding.Validate(); err != nil {
+		return err
+	}
+	substrateDigest, err := authority.SubstrateBinding.Digest()
+	if err != nil {
+		return err
+	}
+	if authority.ExecutionPlacementV2.SubstrateBindingDigest != string(substrateDigest) {
+		return domain.ValidationError{Field: "managed_execution_authority.execution_placement", Reason: "must seal the exact substrate binding"}
+	}
+	if err := authority.AdmissionCostCeiling.Validate(); err != nil {
+		return err
+	}
+	costDigest, err := authority.AdmissionCostCeiling.Digest()
+	if err != nil {
+		return err
+	}
+	if authority.SubstrateBinding.AdmissionCostCeilingDigest != costDigest {
+		return domain.ValidationError{Field: "managed_execution_authority.admission_cost_ceiling", Reason: "must match the substrate binding"}
+	}
+	if err := authority.AdmissionCostCeiling.ValidateForSubstrate(authority.SubstrateBinding); err != nil {
+		return err
+	}
+	if err := authority.HarnessBinding.ValidateForScope(request.TenantID, request.OwnerUserID, request.RunID, request.AttemptID, authority.ExecutionPlacementV2); err != nil {
+		return err
+	}
+	if authority.HarnessBinding.Resource.Kind == domain.ProviderResourceSubscriptionV1 {
+		if authority.HarnessBinding.Resource.ResourceID != string(request.SubscriptionConnectionID) {
+			return domain.ValidationError{Field: "managed_execution_authority.subscription_connection_id", Reason: "must match the selected subscription resource"}
+		}
+	} else if authority.HarnessBinding.Backend.BackendKind != domain.HarnessBackendDeterministicFixtureV1 ||
+		authority.HarnessBinding.Resource.Kind != domain.ProviderResourceCredentiallessFixtureV1 {
+		return domain.ValidationError{Field: "managed_execution_authority.provider_resource", Reason: "non-subscription resources are feature-disabled"}
+	}
+	if err := authority.HarnessBinding.ValidateAt(request.At.UTC()); err != nil {
+		return err
+	}
+	if err := authority.SubstrateBinding.ValidateAt(request.At.UTC()); err != nil {
+		return err
+	}
+	return authority.AdmissionCostCeiling.ValidateAt(request.At.UTC())
+}
+
 type HarnessBinder interface {
-	BindHarness(context.Context, HarnessBindingRequest) (domain.HarnessBindingV1, error)
+	BindHarness(context.Context, HarnessBindingRequest) (ManagedExecutionAuthorityV2, error)
 }
 
 type CanonicalUserEventResult struct {

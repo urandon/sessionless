@@ -375,12 +375,16 @@ func (store *Store) CommitCanonicalUserEvent(
 			AttemptID: request.AttemptID, InputManifestID: request.ManifestID,
 			AllowedMCPServers:     append([]string(nil), request.AllowedMCPServers...),
 			CredentialOwnerUserID: request.UserID,
-			ExecutionPlacement:    domain.ManagedExecutionPlacementV1(),
+			ExecutionPlacementV2:  request.ExecutionPlacementV2,
 			HarnessBinding:        request.HarnessBinding.Clone(),
 			ContextWindow:         &domain.SessionContextWindow{ThroughSequence: sequence},
 			Origin:                &origin, Status: domain.DispatchPending, IdempotencyKey: request.IdempotencyKey,
 			CreatedAt: request.CommittedAt, UpdatedAt: request.CommittedAt,
 		}
+		substrate := request.SubstrateBinding
+		cost := request.AdmissionCostCeiling.Clone()
+		dispatch.SubstrateBinding = &substrate
+		dispatch.AdmissionCostCeiling = &cost
 		if err := state.PutRun(ctx, run); err != nil {
 			return err
 		}
@@ -530,8 +534,14 @@ func validateCanonicalCommit(request ports.CanonicalUserEventCommit) error {
 	if err := request.Payload.Validate(); err != nil {
 		return err
 	}
+	if err := request.ExecutionPlacementV2.Validate(); err != nil {
+		return err
+	}
+	if err := domain.ValidateExecutionAuthorityProjection(request.ExecutionPlacementV2, &request.SubstrateBinding, &request.AdmissionCostCeiling); err != nil {
+		return err
+	}
 	if err := request.HarnessBinding.ValidateForScope(
-		request.TenantID, request.UserID, request.RunID, request.AttemptID, domain.ManagedExecutionPlacementV1(),
+		request.TenantID, request.UserID, request.RunID, request.AttemptID, request.ExecutionPlacementV2,
 	); err != nil {
 		return err
 	}

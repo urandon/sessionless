@@ -6,18 +6,11 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
-	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 )
 
 func TestProviderExecutionEvidenceBindsAuthorityAndPreservesUnknownVsZero(t *testing.T) {
 	t.Parallel()
-	binding, err := sessionlessharness.NewDeterministicFixtureBindingV1(
-		"tenant-1", "user-1", "run-1", "attempt-1", "subscription-1",
-		domain.ManagedExecutionPlacementV1(), time.Unix(10, 0).UTC(),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	binding := deterministicManagedAuthority(t, "tenant-1", "user-1", "run-1", "attempt-1", time.Unix(10, 0).UTC()).HarnessBinding
 	zero := uint64(0)
 	base, err := (domain.ProviderExecutionEvidenceV1{
 		AcceptanceClass:     domain.ProviderAcceptanceAcceptedV1,
@@ -75,13 +68,7 @@ func TestProviderExecutionEvidenceBindsAuthorityAndPreservesUnknownVsZero(t *tes
 
 func TestProviderExecutionEvidenceLifecycleCompatibility(t *testing.T) {
 	t.Parallel()
-	binding, err := sessionlessharness.NewDeterministicFixtureBindingV1(
-		"tenant-1", "user-1", "run-1", "attempt-1", "subscription-1",
-		domain.ManagedExecutionPlacementV1(), time.Unix(10, 0).UTC(),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	binding := deterministicManagedAuthority(t, "tenant-1", "user-1", "run-1", "attempt-1", time.Unix(10, 0).UTC()).HarnessBinding
 	tests := []struct {
 		name       string
 		acceptance domain.ProviderAcceptanceClassV1

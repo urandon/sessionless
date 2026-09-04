@@ -469,8 +469,10 @@ type ExecutionRequest struct {
 	Credential                ProviderInvocationCredentialV1
 	CredentialMaterialization ProviderCredentialMaterializationV1
 	AllowedMCPServers         []string
-	ExecutionPlacement        domain.ExecutionPlacementV1
+	ExecutionPlacementV2      domain.ExecutionPlacementV2
 	HarnessBinding            domain.HarnessBindingV1
+	SubstrateBinding          *domain.SubstrateBindingV1
+	AdmissionCostCeiling      *domain.AdmissionCostCeilingV1
 }
 
 // WorkerContextRequest addresses an immutable, bounded canonical history
@@ -521,12 +523,14 @@ type ExecutionOutput struct {
 }
 
 type ExecutionIdentity struct {
-	TenantID           domain.TenantID
-	OwnerUserID        domain.UserID
-	RunID              domain.RunID
-	AttemptID          domain.AttemptID
-	ExecutionPlacement domain.ExecutionPlacementV1
-	HarnessBinding     domain.HarnessBindingV1
+	TenantID             domain.TenantID
+	OwnerUserID          domain.UserID
+	RunID                domain.RunID
+	AttemptID            domain.AttemptID
+	ExecutionPlacementV2 domain.ExecutionPlacementV2
+	HarnessBinding       domain.HarnessBindingV1
+	SubstrateBinding     *domain.SubstrateBindingV1
+	AdmissionCostCeiling *domain.AdmissionCostCeilingV1
 }
 
 // HarnessDriver is implemented inside an isolated worker adapter. Core

@@ -6,18 +6,11 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
-	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 )
 
 func TestHarnessBindingDigestBindsEveryAuthorityField(t *testing.T) {
 	t.Parallel()
-	base, err := sessionlessharness.NewDeterministicFixtureBindingV1(
-		"tenant-1", "user-1", "run-1", "attempt-1", "subscription-1",
-		domain.ManagedExecutionPlacementV1(), time.Unix(10, 0).UTC(),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	base := deterministicManagedAuthority(t, "tenant-1", "user-1", "run-1", "attempt-1", time.Unix(10, 0).UTC()).HarnessBinding
 	baseDigest, err := base.Digest()
 	if err != nil {
 		t.Fatal(err)
@@ -81,13 +74,7 @@ func TestHarnessBindingDigestBindsEveryAuthorityField(t *testing.T) {
 
 func TestHarnessBindingCredentialModesAreExplicit(t *testing.T) {
 	t.Parallel()
-	binding, err := sessionlessharness.NewDeterministicFixtureBindingV1(
-		"tenant-1", "user-1", "run-1", "attempt-1", "subscription-1",
-		domain.ManagedExecutionPlacementV1(), time.Unix(10, 0).UTC(),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	binding := deterministicManagedAuthority(t, "tenant-1", "user-1", "run-1", "attempt-1", time.Unix(10, 0).UTC()).HarnessBinding
 	for name, mutate := range map[string]func(*domain.HarnessBindingV1){
 		"zero":                     func(value *domain.HarnessBindingV1) { *value = domain.HarnessBindingV1{} },
 		"none positive generation": func(value *domain.HarnessBindingV1) { value.Resource.CredentialGeneration = 1 },
@@ -108,13 +95,7 @@ func TestHarnessBindingCredentialModesAreExplicit(t *testing.T) {
 
 func TestHarnessBindingCloneOwnsOptionalEvidenceTime(t *testing.T) {
 	t.Parallel()
-	binding, err := sessionlessharness.NewDeterministicFixtureBindingV1(
-		"tenant-1", "user-1", "run-1", "attempt-1", "subscription-1",
-		domain.ManagedExecutionPlacementV1(), time.Unix(10, 0).UTC(),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	binding := deterministicManagedAuthority(t, "tenant-1", "user-1", "run-1", "attempt-1", time.Unix(10, 0).UTC()).HarnessBinding
 	expires := time.Unix(20, 0).UTC()
 	binding.EvidenceExpiresAt = &expires
 	clone := binding.Clone()

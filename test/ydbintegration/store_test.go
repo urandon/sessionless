@@ -16,6 +16,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/serverlessharness"
 	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 	"gitcode.com/urandon/sessionless/internal/ydbclient"
 	"gitcode.com/urandon/sessionless/internal/ydbmigrate"
@@ -64,6 +65,27 @@ func TestHarnessBindingServingGateRequiresCommittedMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := store.RequireHarnessBindingCutover(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestManagedExecutionAuthorityV2ServingGateRequiresCommittedMarker(t *testing.T) {
+	store, client := openStore(t)
+	ctx := context.Background()
+	if _, err := client.DB.ExecContext(ctx,
+		`DELETE FROM managed_execution_authority_v2_cutover_state WHERE cutover_id=$1`,
+		"managed-execution-authority-v2-empty-cutover"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RequireManagedExecutionAuthorityV2Cutover(ctx); err == nil {
+		t.Fatal("missing managed execution authority v2 cutover marker accepted")
+	}
+	if _, err := client.DB.ExecContext(ctx,
+		`UPSERT INTO managed_execution_authority_v2_cutover_state (cutover_id,completed_at) VALUES ($1,$2)`,
+		"managed-execution-authority-v2-empty-cutover", time.Now().UTC().Truncate(time.Microsecond)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RequireManagedExecutionAuthorityV2Cutover(ctx); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -547,15 +569,16 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 		t.Fatal(err)
 	}
 	reservationID := domain.QuotaReservationID(uniqueID("reservation-worker"))
-	admission, err := store.AdmitDispatch(
-		context.Background(),
-		admissionFixture(ingress, reservationID, now, domain.ProductLimits{
-			MaxTenantQueueDepth: 8, MaxActiveRuns: 1,
-			MaxRuntime: 15 * time.Minute, MaxTurns: 30,
-			MaxInputBytes: 16 << 20, MaxContextBytes: 64 << 20, MaxContextEvents: 512, MaxArtifacts: 32,
-			MaxToolEvents: 128, MaxToolEventBytes: 16 << 20,
-		}),
-	)
+	admissionRequest := admissionFixture(ingress, reservationID, now, domain.ProductLimits{
+		MaxTenantQueueDepth: 8, MaxActiveRuns: 1,
+		MaxRuntime: 15 * time.Minute, MaxTurns: 30,
+		MaxInputBytes: 16 << 20, MaxContextBytes: 64 << 20, MaxContextEvents: 512, MaxArtifacts: 32,
+		MaxToolEvents: 128, MaxToolEventBytes: 16 << 20,
+	})
+	// Expiry behavior is covered separately. Keep this scenario independent of
+	// runner speed while it exercises legacy loading and provider-effect fencing.
+	admissionRequest.HoldUntil = now.Add(30 * time.Minute)
+	admission, err := store.AdmitDispatch(context.Background(), admissionRequest)
 	if err != nil || !admission.Admitted {
 		t.Fatalf("admission = %+v, %v", admission, err)
 	}
@@ -605,17 +628,50 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 			2*loaded.Job.Limits.MaxTurns, loaded.Job.Limits.MaxContextBytes,
 		)
 	}
+	var workerNow time.Time
+	if err := client.DB.QueryRowContext(context.Background(), `SELECT CurrentUtcTimestamp()`).Scan(&workerNow); err != nil {
+		t.Fatal(err)
+	}
+	workerNow = workerNow.UTC().Truncate(time.Microsecond)
 	lease, err := store.ClaimWorkerLease(context.Background(), ports.WorkerLeaseRequest{
 		TenantID: tenantID, RunID: ingress.Run.ID, AttemptID: ingress.Attempt.ID,
 		LeaseID: domain.LeaseID(uniqueID("lease-worker")), WorkerID: "worker-integration",
-		Now: now.Add(2 * time.Second), ExpiresAt: now.Add(time.Minute),
+		Now: workerNow, ExpiresAt: workerNow.Add(30 * time.Minute),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.StartWorkerJob(context.Background(), loaded, lease, now.Add(2*time.Second)); err != nil {
+	if err := store.StartWorkerJob(context.Background(), loaded, lease, workerNow.Add(2*time.Second)); err != nil {
 		t.Fatal(err)
 	}
+	effectRequest := ports.ReserveAttemptEffectRequestV1{
+		TenantID: tenantID, RunID: ingress.Run.ID, AttemptID: ingress.Attempt.ID,
+		LeaseID: lease.ID, FenceToken: lease.FenceToken, PhysicalInvocationClaimID: uniqueID("physical-claim"),
+	}
+	effect, err := store.ReserveAttemptEffect(context.Background(), effectRequest)
+	if err != nil || effect.Status != ports.AttemptEffectOwnedV1 {
+		t.Fatalf("reserve first provider effect = %#v, %v", effect, err)
+	}
+	if effect.Reservation.InvocationAuthorityDigest == "" || effect.Grant == nil || effect.Grant.Authority.Lease != lease {
+		t.Fatalf("reserved effect authority = %#v", effect)
+	}
+	replayed, err := store.ReserveAttemptEffect(context.Background(), effectRequest)
+	if err != nil || replayed.Status != ports.AttemptEffectReplayedV1 || replayed.Reservation != effect.Reservation {
+		t.Fatalf("exact provider effect replay = %#v, %v", replayed, err)
+	}
+	contender := effectRequest
+	contender.PhysicalInvocationClaimID = uniqueID("physical-contender")
+	reconcile, err := store.ReserveAttemptEffect(context.Background(), contender)
+	if err != nil || reconcile.Status != ports.AttemptEffectReconcileOnlyV1 || reconcile.Reservation != effect.Reservation {
+		t.Fatalf("contending provider effect = %#v, %v", reconcile, err)
+	}
+	divergent := effectRequest
+	divergentDigest := strings.Repeat("d", 64)
+	divergent.UpstreamIdempotencyKeyDigest = &divergentDigest
+	if _, err := store.ReserveAttemptEffect(context.Background(), divergent); err == nil {
+		t.Fatal("divergent upstream idempotency authority was accepted")
+	}
+	assertCount(t, client, "attempt_effect_reservations", tenantID, 1)
 	checkpoint := domain.Checkpoint{
 		ID: domain.CheckpointID(uniqueID("checkpoint")), TenantID: tenantID,
 		RunID: ingress.Run.ID, AttemptID: ingress.Attempt.ID, Sequence: 1,
@@ -625,7 +681,7 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 				"checkpoints/checkpoint.json",
 			Size: 2, SHA256: strings.Repeat("1", 64),
 		},
-		CreatedAt: now.Add(3 * time.Second),
+		CreatedAt: workerNow.Add(3 * time.Second),
 	}
 	if err := store.CommitWorkerEvent(context.Background(), ports.WorkerEventCommit{
 		Checkpoint: checkpoint, LeaseID: lease.ID, Fence: lease.FenceToken,
@@ -635,12 +691,12 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 	}
 	lease, err = store.RenewWorkerLease(
 		context.Background(), tenantID, lease.ID, lease.FenceToken,
-		now.Add(30*time.Second), now.Add(2*time.Minute),
+		workerNow.Add(30*time.Second), workerNow.Add(30*time.Minute),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	finishedAt := now.Add(40 * time.Second)
+	finishedAt := workerNow.Add(40 * time.Second)
 	manifest := domain.ArtifactManifest{
 		ID:       domain.ArtifactManifestID(uniqueID("manifest-output")),
 		TenantID: tenantID, RunID: ingress.Run.ID, CreatedAt: finishedAt,
@@ -1171,7 +1227,11 @@ func openStore(t *testing.T) (*ydbstore.Store, *ydbclient.Client) {
 			t.Errorf("close YDB client: %v", err)
 		}
 	})
-	store, err := ydbstore.New(client.DB, ydbstore.Options{})
+	grantIssuer, err := serverlessharness.NewCapabilityIssuer(time.Now, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := ydbstore.New(client.DB, ydbstore.Options{AttemptEffectGrantIssuer: grantIssuer})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1223,6 +1283,10 @@ func ingressFixture(
 	updateID int64,
 	now time.Time,
 ) ydbstore.TelegramIngress {
+	authority := mustManagedAuthorityV2(
+		panicTestingT{}, tenantID, "user-fixture", domain.RunID(runID), domain.AttemptID("attempt-"+runID),
+		domain.SubscriptionConnectionID("subscription-"+string(tenantID)), now,
+	)
 	run := domain.Run{
 		ID:                       domain.RunID(runID),
 		TenantID:                 tenantID,
@@ -1242,7 +1306,10 @@ func ingressFixture(
 		ID: domain.DispatchOutboxID("dispatch-" + runID), TenantID: tenantID,
 		RunID: run.ID, AttemptID: attempt.ID, Status: domain.DispatchPending,
 		InputManifestID:       domain.ArtifactManifestID("manifest-" + runID),
-		ExecutionPlacement:    domain.ManagedExecutionPlacementV1(),
+		ExecutionPlacementV2:  authority.ExecutionPlacementV2,
+		HarnessBinding:        authority.HarnessBinding,
+		SubstrateBinding:      cloneSubstrateBindingForIntegration(authority.SubstrateBinding),
+		AdmissionCostCeiling:  cloneAdmissionCostForIntegration(authority.AdmissionCostCeiling),
 		CredentialOwnerUserID: "user-fixture",
 		ContextSnapshot: domain.BlobRef{
 			TenantID: tenantID, Key: "tenants/" + string(tenantID) + "/context/" + runID,
@@ -1253,10 +1320,6 @@ func ingressFixture(
 		IdempotencyKey:   domain.IdempotencyKey("dispatch-key-" + runID),
 		CreatedAt:        now, UpdatedAt: now,
 	}
-	dispatch.HarnessBinding = mustHarnessBindingV1(
-		panicTestingT{}, dispatch.TenantID, dispatch.CredentialOwnerUserID, dispatch.RunID,
-		dispatch.AttemptID, run.SubscriptionConnectionID, dispatch.ExecutionPlacement, now,
-	)
 	manifest := domain.ArtifactManifest{
 		ID: domain.ArtifactManifestID("manifest-" + runID), TenantID: tenantID,
 		RunID: run.ID, CreatedAt: now,
@@ -1278,24 +1341,33 @@ type panicTestingT struct{}
 func (panicTestingT) Helper()             {}
 func (panicTestingT) Fatal(values ...any) { panic(fmt.Sprint(values...)) }
 
-func mustHarnessBindingV1(
+func mustManagedAuthorityV2(
 	t testingFataler,
 	tenantID domain.TenantID,
 	ownerUserID domain.UserID,
 	runID domain.RunID,
 	attemptID domain.AttemptID,
 	subscriptionConnectionID domain.SubscriptionConnectionID,
-	placement domain.ExecutionPlacementV1,
 	at time.Time,
-) domain.HarnessBindingV1 {
+) ports.ManagedExecutionAuthorityV2 {
 	t.Helper()
-	binding, err := sessionlessharness.NewDeterministicFixtureBindingV1(
-		tenantID, ownerUserID, runID, attemptID, subscriptionConnectionID, placement, at,
+	authority, err := sessionlessharness.NewDeterministicFixtureManagedAuthorityV2(
+		tenantID, ownerUserID, runID, attemptID, subscriptionConnectionID, at,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return binding
+	return authority
+}
+
+func cloneSubstrateBindingForIntegration(value domain.SubstrateBindingV1) *domain.SubstrateBindingV1 {
+	clone := value
+	return &clone
+}
+
+func cloneAdmissionCostForIntegration(value domain.AdmissionCostCeilingV1) *domain.AdmissionCostCeilingV1 {
+	clone := value.Clone()
+	return &clone
 }
 
 func uniqueID(prefix string) string {

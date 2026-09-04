@@ -794,13 +794,25 @@ func workerFixture(
 		Status:                   domain.ReservationHeld, CapacityUnits: 1,
 		HeldAt: at, ExpiresAt: at.Add(time.Hour), UpdatedAt: at,
 	}
+	ownerUserID := domain.UserID("user-" + suffix)
+	authority, err := sessionlessharness.NewDeterministicFixtureManagedAuthorityV2(
+		tenant, ownerUserID, run.ID, attempt.ID, run.SubscriptionConnectionID, at,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	substrateBinding := authority.SubstrateBinding
+	admissionCostCeiling := authority.AdmissionCostCeiling
 	job := domain.WorkerJob{
 		TenantID: tenant, RunID: run.ID, AttemptID: attempt.ID,
 		SessionID: run.SessionID, TriggerEventID: run.TriggerEventID,
 		ReservationID: reservation.ID, InputManifestID: manifest.ID,
 		ContextSnapshot:       contextRef,
-		ExecutionPlacement:    domain.ManagedExecutionPlacementV1(),
-		CredentialOwnerUserID: domain.UserID("user-" + suffix),
+		ExecutionPlacementV2:  authority.ExecutionPlacementV2,
+		HarnessBinding:        authority.HarnessBinding,
+		SubstrateBinding:      &substrateBinding,
+		AdmissionCostCeiling:  &admissionCostCeiling,
+		CredentialOwnerUserID: ownerUserID,
 		AllowedMCPServers:     []string{"docs"},
 		Limits: domain.ProductLimits{
 			MaxTenantQueueDepth: 8, MaxActiveRuns: 1, MaxRuntime: time.Minute,
@@ -812,14 +824,6 @@ func workerFixture(
 		},
 		ReplyToMessageID: 10, CreatedAt: at,
 	}
-	binding, err := sessionlessharness.NewDeterministicFixtureBindingV1(
-		job.TenantID, job.CredentialOwnerUserID, job.RunID, job.AttemptID,
-		run.SubscriptionConnectionID, job.ExecutionPlacement, at,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	job.HarnessBinding = binding
 	return ports.WorkerJobState{
 		Job: job, Run: run, Attempt: attempt,
 		Reservation: reservation, InputManifest: manifest,

@@ -540,8 +540,20 @@ state.
    backend protocol as `skipped`; HTTPS/SSE and RPC/JSONL protocol scripts land
    only with their owning adapters and must pass the same reusable contract
    before they may report `supported`.
-3. **PR-05a credential ingestion**: owner-scoped binding plus real secret-store
-   adapter, generation/revoke/rotation and invocation-scoped materialization.
+3. **PR-05a credential ingestion**: owner-scoped durable binding,
+   generation/revoke/rotation, bounded candidate and superseded-secret recovery,
+   content-free audit receipts, and invocation-scoped file/environment/direct
+   materialization contracts with deterministic fakes. This slice is
+   feature-disabled: it does not mount an ingestion endpoint, accept a real
+   key, or claim a production secret-store adapter. Enabling it requires a
+   separately reviewed tenant-scoped KMS/Lockbox implementation that satisfies
+   the exact candidate enumeration, recovery, deletion, reset-drain, and
+   one-shot materialization ports plus a serving cutover gate.
+   File delivery additionally requires one dedicated empty `0700` scratch root
+   owned exclusively by the credential lifecycle; startup pins it, rejects
+   foreign/symlink residue, and performs a bounded no-follow crash sweep before
+   any credential-backend read. Environment and direct delivery do not acquire
+   that filesystem and remain separately portable.
 4. **PR-05b Pi adapter**: pinned RPC/no-session process, generated exact
    OpenRouter route config, no ambient tools/extensions/config and an initial
    generated Ox Alpha canary, followed only by reviewed externally-shareable

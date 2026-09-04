@@ -38,8 +38,8 @@ fixtures, and reviewed open-source work without private inputs.
 ## Implemented bounded contract
 
 The adapter verifies an exact owner/worker/connection/run/attempt/lease/fence
-authority, attached-worker capability and policy digests, subscription
-resource connection, and expected credential generation. The outer registry
+authority, attached-worker capability and policy digests, and the complete
+immutable subscription resource binding. The outer registry
 must later derive that authority from the admitted canonical binding; remote
 inputs never choose its fields.
 

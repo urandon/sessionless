@@ -34,6 +34,28 @@ type PrefixDeleter interface {
 	DeletePrefix(context.Context, string) (uint64, error)
 }
 
+type ProviderCredentialResetGuard interface {
+	AssertProviderCredentialsDrained(context.Context) error
+}
+
+type SQLProviderCredentialResetGuard struct{ DB *sql.DB }
+
+func (guard SQLProviderCredentialResetGuard) AssertProviderCredentialsDrained(ctx context.Context) error {
+	if guard.DB == nil {
+		return fmt.Errorf("provider credential reset guard requires YDB")
+	}
+	for _, table := range []string{"provider_credential_cleanup_ready_v1", "provider_credential_cleanups", "provider_credential_candidate_fences", "provider_credential_bindings"} {
+		var count uint64
+		if err := guard.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM `"+table+"`").Scan(&count); err != nil {
+			return fmt.Errorf("verify provider credential reset guard: %w", err)
+		}
+		if count != 0 {
+			return fmt.Errorf("provider credential reset requires an explicitly drained secret namespace and empty metadata tables")
+		}
+	}
+	return nil
+}
+
 type Result struct {
 	DeletedObjects uint64   `json:"deleted_objects"`
 	DroppedTables  []string `json:"dropped_tables"`
@@ -77,13 +99,17 @@ func Execute(
 	target Target,
 	schema SchemaExecutor,
 	objects PrefixDeleter,
+	credentialGuard ProviderCredentialResetGuard,
 ) (Result, error) {
 	plan, err := BuildPlan(target, true)
 	if err != nil {
 		return Result{}, err
 	}
-	if schema == nil || objects == nil {
+	if schema == nil || objects == nil || credentialGuard == nil {
 		return Result{}, fmt.Errorf("reset executors must not be nil")
+	}
+	if err := credentialGuard.AssertProviderCredentialsDrained(ctx); err != nil {
+		return Result{}, err
 	}
 	deleted, err := objects.DeletePrefix(ctx, target.ObjectPrefix)
 	if err != nil {
@@ -106,6 +132,11 @@ func containsProduction(value string) bool {
 }
 
 var applicationTables = []string{
+	"provider_credential_cleanup_ready_v1",
+	"provider_credential_cleanups",
+	"provider_credential_candidate_fences",
+	"provider_credential_audit_events",
+	"provider_credential_bindings",
 	"attached_worker_attempt_deadlines_v1",
 	"attached_worker_attempt_messages",
 	"attached_worker_attempt_heads",

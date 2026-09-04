@@ -42,6 +42,36 @@ func TestCredentialSecretReferenceIsRedactedOnEveryGenericSurface(t *testing.T) 
 	}
 }
 
+func TestCredentialSecretReferenceStorageValueIsExplicitAndGenericSurfacesStayRedacted(t *testing.T) {
+	const rawReference = "lockbox/provider/resource/version-7"
+	ref, err := domain.NewCredentialSecretRef(rawReference)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ref.StorageValue() != rawReference {
+		t.Fatal("storage adapter cannot recover the exact opaque locator")
+	}
+	encoded, err := json.Marshal(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), rawReference) || strings.Contains(fmt.Sprintf("%v %#v", ref, ref), rawReference) {
+		t.Fatal("explicit storage capability weakened generic redaction")
+	}
+}
+
+func TestCredentialSecretReferenceRejectsStorageUnsafeText(t *testing.T) {
+	for name, value := range map[string]string{
+		"newline": "lockbox/provider\nversion", "nul": "lockbox/provider\x00version", "invalid_utf8": string([]byte{0xff}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := domain.NewCredentialSecretRef(value); err == nil {
+				t.Fatal("storage-unsafe opaque reference accepted")
+			}
+		})
+	}
+}
+
 func TestCredentialBindingRevocationShapeClearsActiveSecret(t *testing.T) {
 	t.Parallel()
 

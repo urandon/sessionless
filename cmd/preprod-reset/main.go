@@ -55,7 +55,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("open guarded reset Object Storage target: %v", err)
 	}
-	result, err := preprodreset.Execute(ctx, target, ydb.DB, objects)
+	result, err := preprodreset.Execute(ctx, target, ydb.DB, objects, preprodreset.SQLProviderCredentialResetGuard{DB: ydb.DB})
 	if err != nil {
 		log.Fatal(err)
 	}

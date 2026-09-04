@@ -9,15 +9,18 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
+	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"golang.org/x/sys/unix"
 )
 
 const (
-	invocationPrefix = "invocation-"
-	authFilename     = "auth.json"
+	invocationPrefix          = "invocation-"
+	authFilename              = "auth.json"
+	maxRecoveredProviderRoots = 256
 )
 
 type secureCredentialFS struct {
@@ -26,9 +29,10 @@ type secureCredentialFS struct {
 }
 
 type pinnedMaterialization struct {
-	public ports.CredentialMaterialization
-	name   string
-	dirFD  int
+	public   ports.CredentialMaterialization
+	name     string
+	fileName string
+	dirFD    int
 
 	mu     sync.Mutex
 	closed bool
@@ -36,7 +40,11 @@ type pinnedMaterialization struct {
 }
 
 func newSecureCredentialFS(canonicalScratchRoot string) (*secureCredentialFS, error) {
-	rootPath, err := os.MkdirTemp(canonicalScratchRoot, "sessionless-credentials-")
+	return newSecureCredentialFSWithPrefix(canonicalScratchRoot, "sessionless-credentials-")
+}
+
+func newSecureCredentialFSWithPrefix(canonicalScratchRoot, prefix string) (*secureCredentialFS, error) {
+	rootPath, err := os.MkdirTemp(canonicalScratchRoot, prefix)
 	if err != nil {
 		return nil, ErrCredentialMaterialization
 	}
@@ -57,8 +65,163 @@ func newSecureCredentialFS(canonicalScratchRoot string) (*secureCredentialFS, er
 	return &secureCredentialFS{rootPath: rootPath, rootFD: rootFD}, nil
 }
 
+func acquireProviderScratchRoot(canonicalScratchRoot string) (int, error) {
+	rootFD, err := unix.Open(canonicalScratchRoot, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return -1, ErrCredentialMaterialization
+	}
+	if err := validateDirectoryFD(rootFD); err != nil {
+		_ = unix.Close(rootFD)
+		return -1, err
+	}
+	if err := unix.Flock(rootFD, unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		_ = unix.Close(rootFD)
+		return -1, ErrCredentialMaterialization
+	}
+	if err := recoverProviderScratchRoot(rootFD); err != nil {
+		_ = unix.Flock(rootFD, unix.LOCK_UN)
+		_ = unix.Close(rootFD)
+		return -1, err
+	}
+	return rootFD, nil
+}
+
+func recoverProviderScratchRoot(rootFD int) error {
+	duplicate, err := unix.Dup(rootFD)
+	if err != nil {
+		return ErrCredentialMaterialization
+	}
+	root := os.NewFile(uintptr(duplicate), "provider-credential-scratch")
+	if root == nil {
+		_ = unix.Close(duplicate)
+		return ErrCredentialMaterialization
+	}
+	defer root.Close()
+	names, err := root.Readdirnames(maxRecoveredProviderRoots + 1)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return ErrCredentialMaterialization
+	}
+	if len(names) > maxRecoveredProviderRoots {
+		return ErrCredentialMaterialization
+	}
+	for _, name := range names {
+		if !strings.HasPrefix(name, providerRootPrefix) || filepath.Base(name) != name {
+			return ErrCredentialMaterialization
+		}
+		if err := recoverProviderServiceRoot(rootFD, name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func recoverProviderServiceRoot(scratchFD int, name string) error {
+	serviceFD, err := unix.Openat(scratchFD, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return ErrCredentialMaterialization
+	}
+	defer unix.Close(serviceFD)
+	if err := validateDirectoryFD(serviceFD); err != nil {
+		return err
+	}
+	duplicate, err := unix.Dup(serviceFD)
+	if err != nil {
+		return ErrCredentialMaterialization
+	}
+	serviceRoot := os.NewFile(uintptr(duplicate), name)
+	if serviceRoot == nil {
+		_ = unix.Close(duplicate)
+		return ErrCredentialMaterialization
+	}
+	invocations, readErr := serviceRoot.Readdirnames(maxRecoveredProviderRoots + 1)
+	_ = serviceRoot.Close()
+	if readErr != nil && !errors.Is(readErr, io.EOF) || len(invocations) > maxRecoveredProviderRoots {
+		return ErrCredentialMaterialization
+	}
+	for _, invocation := range invocations {
+		if !strings.HasPrefix(invocation, invocationPrefix) || filepath.Base(invocation) != invocation {
+			return ErrCredentialMaterialization
+		}
+		if err := recoverProviderInvocation(serviceFD, invocation); err != nil {
+			return err
+		}
+	}
+	var pinnedStat, entryStat unix.Stat_t
+	if err := unix.Fstat(serviceFD, &pinnedStat); err != nil || unix.Fstatat(scratchFD, name, &entryStat, unix.AT_SYMLINK_NOFOLLOW) != nil || pinnedStat.Dev != entryStat.Dev || pinnedStat.Ino != entryStat.Ino || entryStat.Mode&unix.S_IFMT != unix.S_IFDIR {
+		return ErrCredentialMaterialization
+	}
+	if err := unix.Unlinkat(scratchFD, name, unix.AT_REMOVEDIR); err != nil {
+		return ErrCredentialMaterialization
+	}
+	return nil
+}
+
+func recoverProviderInvocation(serviceFD int, name string) error {
+	dirFD, err := unix.Openat(serviceFD, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return ErrCredentialMaterialization
+	}
+	defer unix.Close(dirFD)
+	if err := validateDirectoryFD(dirFD); err != nil {
+		return err
+	}
+	duplicate, err := unix.Dup(dirFD)
+	if err != nil {
+		return ErrCredentialMaterialization
+	}
+	directory := os.NewFile(uintptr(duplicate), name)
+	if directory == nil {
+		_ = unix.Close(duplicate)
+		return ErrCredentialMaterialization
+	}
+	files, readErr := directory.Readdirnames(2)
+	_ = directory.Close()
+	if readErr != nil && !errors.Is(readErr, io.EOF) || len(files) > 1 {
+		return ErrCredentialMaterialization
+	}
+	for _, fileName := range files {
+		if err := domain.ValidateOpaqueID("credential.materialization.file_name", fileName); err != nil || filepath.Base(fileName) != fileName {
+			return ErrCredentialMaterialization
+		}
+		var stat unix.Stat_t
+		if err := unix.Fstatat(dirFD, fileName, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Mode&0o777 != 0o600 {
+			return ErrCredentialMaterialization
+		}
+		if err := unix.Unlinkat(dirFD, fileName, 0); err != nil {
+			return ErrCredentialMaterialization
+		}
+	}
+	var pinnedStat, entryStat unix.Stat_t
+	if err := unix.Fstat(dirFD, &pinnedStat); err != nil || unix.Fstatat(serviceFD, name, &entryStat, unix.AT_SYMLINK_NOFOLLOW) != nil || pinnedStat.Dev != entryStat.Dev || pinnedStat.Ino != entryStat.Ino || entryStat.Mode&unix.S_IFMT != unix.S_IFDIR {
+		return ErrCredentialMaterialization
+	}
+	if err := unix.Unlinkat(serviceFD, name, unix.AT_REMOVEDIR); err != nil {
+		return ErrCredentialMaterialization
+	}
+	return nil
+}
+
+func releaseProviderScratchRoot(rootFD int) error {
+	if rootFD < 0 {
+		return nil
+	}
+	unlockErr := unix.Flock(rootFD, unix.LOCK_UN)
+	closeErr := unix.Close(rootFD)
+	if unlockErr != nil || closeErr != nil {
+		return ErrCredentialMaterialization
+	}
+	return nil
+}
+
 func (filesystem *secureCredentialFS) create(secret []byte, maxBytes int64) (*pinnedMaterialization, error) {
+	return filesystem.createNamed(authFilename, secret, maxBytes)
+}
+
+func (filesystem *secureCredentialFS) createNamed(fileName string, secret []byte, maxBytes int64) (*pinnedMaterialization, error) {
 	if filesystem == nil || filesystem.rootFD < 0 || len(secret) == 0 || int64(len(secret)) > maxBytes {
+		return nil, ErrCredentialMaterialization
+	}
+	if err := domain.ValidateOpaqueID("credential.materialization.file_name", fileName); err != nil || filepath.Base(fileName) != fileName {
 		return nil, ErrCredentialMaterialization
 	}
 	name, err := filesystem.mkdirInvocation()
@@ -71,23 +234,24 @@ func (filesystem *secureCredentialFS) create(secret []byte, maxBytes int64) (*pi
 		return nil, ErrCredentialMaterialization
 	}
 	pinned := &pinnedMaterialization{
-		name:  name,
-		dirFD: dirFD,
+		name:     name,
+		fileName: fileName,
+		dirFD:    dirFD,
 		public: ports.CredentialMaterialization{
 			RootDir:  filepath.Join(filesystem.rootPath, name),
-			AuthFile: filepath.Join(filesystem.rootPath, name, authFilename),
+			AuthFile: filepath.Join(filesystem.rootPath, name, fileName),
 		},
 	}
 	if err := validateDirectoryFD(dirFD); err != nil {
 		_ = filesystem.cleanup(pinned)
 		return nil, err
 	}
-	authFD, err := unix.Openat(dirFD, authFilename, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	authFD, err := unix.Openat(dirFD, fileName, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
 	if err != nil {
 		_ = filesystem.cleanup(pinned)
 		return nil, ErrCredentialMaterialization
 	}
-	file := os.NewFile(uintptr(authFD), authFilename)
+	file := os.NewFile(uintptr(authFD), fileName)
 	if file == nil {
 		_ = unix.Close(authFD)
 		_ = filesystem.cleanup(pinned)
@@ -141,12 +305,12 @@ func (filesystem *secureCredentialFS) read(pinned *pinnedMaterialization, maxByt
 		pinned.mu.Unlock()
 		return nil, err
 	}
-	authFD, err := unix.Openat(dirFD, authFilename, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	authFD, err := unix.Openat(dirFD, pinned.fileName, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	pinned.mu.Unlock()
 	if err != nil {
 		return nil, ErrCredentialMaterialization
 	}
-	file := os.NewFile(uintptr(authFD), authFilename)
+	file := os.NewFile(uintptr(authFD), pinned.fileName)
 	if file == nil {
 		_ = unix.Close(authFD)
 		return nil, ErrCredentialMaterialization
@@ -187,7 +351,7 @@ func (filesystem *secureCredentialFS) cleanup(pinned *pinnedMaterialization) err
 	if err := validateDirectoryFD(dirFD); err != nil {
 		return finish(err)
 	}
-	if err := unix.Unlinkat(dirFD, authFilename, 0); err != nil && !errors.Is(err, unix.ENOENT) {
+	if err := unix.Unlinkat(dirFD, pinned.fileName, 0); err != nil && !errors.Is(err, unix.ENOENT) {
 		return finish(ErrCredentialMaterialization)
 	}
 	var pinnedStat unix.Stat_t
@@ -208,10 +372,10 @@ func (filesystem *secureCredentialFS) cleanup(pinned *pinnedMaterialization) err
 }
 
 func (filesystem *secureCredentialFS) validPinned(pinned *pinnedMaterialization) bool {
-	return filesystem != nil && filesystem.rootFD >= 0 && pinned != nil && pinned.name != "" &&
+	return filesystem != nil && filesystem.rootFD >= 0 && pinned != nil && pinned.name != "" && pinned.fileName != "" &&
 		filepath.Dir(pinned.public.RootDir) == filesystem.rootPath &&
 		filepath.Base(pinned.public.RootDir) == pinned.name &&
-		pinned.public.AuthFile == filepath.Join(pinned.public.RootDir, authFilename)
+		pinned.public.AuthFile == filepath.Join(pinned.public.RootDir, pinned.fileName)
 }
 
 func (filesystem *secureCredentialFS) close() error {

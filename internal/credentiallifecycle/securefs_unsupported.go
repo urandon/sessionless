@@ -14,7 +14,19 @@ func newSecureCredentialFS(string) (*secureCredentialFS, error) {
 	return nil, ErrCredentialMaterialization
 }
 
+func newSecureCredentialFSWithPrefix(string, string) (*secureCredentialFS, error) {
+	return nil, ErrCredentialMaterialization
+}
+
+func acquireProviderScratchRoot(string) (int, error) { return -1, ErrCredentialMaterialization }
+
+func releaseProviderScratchRoot(int) error { return nil }
+
 func (*secureCredentialFS) create([]byte, int64) (*pinnedMaterialization, error) {
+	return nil, ErrCredentialMaterialization
+}
+
+func (*secureCredentialFS) createNamed(string, []byte, int64) (*pinnedMaterialization, error) {
 	return nil, ErrCredentialMaterialization
 }
 

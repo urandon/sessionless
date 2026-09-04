@@ -16,6 +16,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/serverlessharness"
 	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 	"gitcode.com/urandon/sessionless/internal/ydbclient"
 	"gitcode.com/urandon/sessionless/internal/ydbmigrate"
@@ -645,7 +646,7 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 	if err != nil || effect.Status != ports.AttemptEffectOwnedV1 {
 		t.Fatalf("reserve first provider effect = %#v, %v", effect, err)
 	}
-	if effect.Reservation.InvocationAuthorityDigest == "" || effect.Authority.Lease != lease {
+	if effect.Reservation.InvocationAuthorityDigest == "" || effect.Grant == nil || effect.Grant.Authority.Lease != lease {
 		t.Fatalf("reserved effect authority = %#v", effect)
 	}
 	replayed, err := store.ReserveAttemptEffect(context.Background(), effectRequest)

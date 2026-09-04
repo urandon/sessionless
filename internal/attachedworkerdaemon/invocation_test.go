@@ -221,6 +221,33 @@ func (*immediateProcessRunner) Run(context.Context, AttemptSpec) (AttemptResult,
 	return AttemptResult{ExitCode: 0, DescendantsReaped: true, CleanupSucceeded: true}, nil
 }
 
+type countingProcessRunner struct{ calls int }
+
+func (runner *countingProcessRunner) Run(context.Context, AttemptSpec) (AttemptResult, error) {
+	runner.calls++
+	return AttemptResult{}, nil
+}
+
+func TestInvocationRunnerRejectsCredentialGenerationMismatchBeforeSpawn(t *testing.T) {
+	process := &countingProcessRunner{}
+	credentials := &fakeCredentialLifecycle{base: credentialFixtureBase(t)}
+	runner, err := NewInvocationRunner(InvocationRunnerConfig{}, process, credentials)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invocation := validCredentialInvocation(t)
+	invocation.Credential.ExpectedBindingGeneration = 2
+	result, err := runner.Run(context.Background(), invocation)
+	if !errors.Is(err, ErrCredentialUnavailable) || result.FailureCode != "credential_handle_mismatch" || process.calls != 0 {
+		t.Fatalf("generation mismatch result=%+v err=%v calls=%d", result, err, process.calls)
+	}
+	credentials.mu.Lock()
+	defer credentials.mu.Unlock()
+	if !equalStrings(credentials.order, []string{"issue", "release"}) {
+		t.Fatalf("generation mismatch order = %#v", credentials.order)
+	}
+}
+
 func validCredentialInvocation(t *testing.T) Invocation {
 	t.Helper()
 	started := time.Now().UTC().Add(-time.Minute)
@@ -249,7 +276,7 @@ func validCredentialInvocation(t *testing.T) Invocation {
 				OwnerUserID: "user-a", Run: run, Attempt: attempt, Lease: lease,
 				ExpiresAt: started.Add(30 * time.Minute),
 			},
-			HomeEnvironment: "CODEX_HOME",
+			HomeEnvironment: "CODEX_HOME", ExpectedBindingGeneration: 1,
 		},
 	}
 }

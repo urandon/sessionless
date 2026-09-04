@@ -36,8 +36,9 @@ func (identity InvocationIdentity) Validate() error {
 }
 
 type CredentialInvocation struct {
-	IssueRequest    ports.CredentialIssueRequest
-	HomeEnvironment string
+	IssueRequest              ports.CredentialIssueRequest
+	HomeEnvironment           string
+	ExpectedBindingGeneration uint64
 }
 
 type Invocation struct {
@@ -57,6 +58,7 @@ func (invocation Invocation) Validate() error {
 	credential := invocation.Credential
 	request := credential.IssueRequest
 	if !environmentNamePattern.MatchString(credential.HomeEnvironment) || reservedEnvironmentName(credential.HomeEnvironment) ||
+		credential.ExpectedBindingGeneration == 0 ||
 		request.OwnerUserID != invocation.Identity.OwnerUserID ||
 		request.Run.TenantID != invocation.Identity.TenantID ||
 		request.Run.ID != invocation.Identity.RunID ||
@@ -129,6 +131,7 @@ func (runner *InvocationRunner) Run(
 	}
 	if handle.Validate() != nil || !credentialHandleMatchesInvocation(
 		handle, invocation.Identity, invocation.Credential.IssueRequest.Run.SubscriptionConnectionID,
+		invocation.Credential.ExpectedBindingGeneration,
 	) {
 		_ = runner.releaseCredential(ctx, handle)
 		return InvocationResult{FailureCode: "credential_handle_mismatch"}, ErrCredentialUnavailable
@@ -174,12 +177,13 @@ func credentialHandleMatchesInvocation(
 	handle ports.CredentialHandle,
 	identity InvocationIdentity,
 	connectionID domain.SubscriptionConnectionID,
+	expectedGeneration uint64,
 ) bool {
 	return handle.TenantID == identity.TenantID && handle.OwnerUserID == identity.OwnerUserID &&
 		handle.SubscriptionConnectionID == connectionID &&
 		handle.RunID == identity.RunID && handle.AttemptID == identity.AttemptID &&
 		handle.WorkerID == string(identity.WorkerID) && handle.LeaseID == identity.LeaseID &&
-		handle.LeaseFence == identity.FenceToken
+		handle.LeaseFence == identity.FenceToken && handle.BindingGeneration == expectedGeneration
 }
 
 func (runner *InvocationRunner) releaseCredential(
@@ -196,6 +200,7 @@ func cloneAttemptSpec(spec AttemptSpec) AttemptSpec {
 	clone.Arguments = append([]string(nil), spec.Arguments...)
 	clone.Environment = append([]EnvironmentVariable(nil), spec.Environment...)
 	clone.AdditionalReadRoots = append([]string(nil), spec.AdditionalReadRoots...)
+	clone.Stdin = append([]byte(nil), spec.Stdin...)
 	return clone
 }
 

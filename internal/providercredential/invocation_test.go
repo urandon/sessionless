@@ -94,14 +94,13 @@ func invocationFixture(t *testing.T, delivery domain.ProviderCredentialDeliveryK
 	secrets := newFakeSecretStore()
 	secrets.committed[ref] = struct{}{}
 	secrets.values[ref] = []byte(secret)
-	root, err := os.MkdirTemp("/private/tmp", "sessionless-provider-credential-")
+	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chmod(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(root) })
 	template := ports.ProviderCredentialDeliveryTemplateV1{Kind: delivery}
 	switch delivery {
 	case domain.ProviderCredentialDeliveryFileV1:

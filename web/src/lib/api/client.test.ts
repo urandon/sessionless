@@ -41,6 +41,47 @@ describe('CanonicalApiClient', () => {
     expect(new Headers(options?.headers).has('X-Sessionless-CSRF')).toBe(false);
   });
 
+  it('reads bounded attached-worker pages without mutation headers or polling', async () => {
+    const request = vi.fn<typeof fetch>().mockResolvedValue(
+      Response.json({
+        version: 1,
+        evaluated_at: '2026-08-26T08:00:00Z',
+        items: [],
+        has_more: false,
+      }),
+    );
+    const client = new CanonicalApiClient({ fetch: request, readCSRFToken: () => 'csrf' });
+
+    await client.listAttachedWorkers({ afterWorkerId: 'worker:one', limit: 20 });
+
+    expect(request.mock.calls[0]?.[0]).toBe(
+      '/api/web/v1/attached-workers?after_worker_id=worker%3Aone&limit=20',
+    );
+    const options = request.mock.calls[0]?.[1];
+    expect(options?.method).toBeUndefined();
+    expect(new Headers(options?.headers).has('X-Sessionless-CSRF')).toBe(false);
+    expect(new Headers(options?.headers).has('If-None-Match')).toBe(false);
+  });
+
+  it('escapes attached-worker selectors for detail and diagnostics reads', async () => {
+    const request = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ version: 1 }))
+      .mockResolvedValueOnce(Response.json({ version: 1 }));
+    const client = new CanonicalApiClient({ fetch: request });
+
+    await client.getAttachedWorker('worker:one');
+    await client.getAttachedWorkerDiagnostics('worker:one');
+
+    expect(request.mock.calls[0]?.[0]).toBe('/api/web/v1/attached-workers/worker%3Aone');
+    expect(request.mock.calls[1]?.[0]).toBe(
+      '/api/web/v1/attached-workers/worker%3Aone/diagnostics',
+    );
+    for (const [, options] of request.mock.calls) {
+      expect(new Headers(options?.headers).has('X-Sessionless-CSRF')).toBe(false);
+    }
+  });
+
   it('fails closed before a mutation when the CSRF cookie is unavailable', async () => {
     const request = vi.fn<typeof fetch>();
     const client = new CanonicalApiClient({ fetch: request, readCSRFToken: () => undefined });

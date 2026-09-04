@@ -58,7 +58,7 @@ func (service *Service) Get(
 	if worker.TenantID != tenantID || worker.OwnerUserID != ownerUserID || worker.ID != workerID {
 		return AttachedWorkerUXReadModelV1{}, ErrBackend
 	}
-	return service.reduce(ctx, worker, canonicalNow(service.now()))
+	return service.reduce(ctx, worker, canonicalNow(service.now()), true)
 }
 
 func (service *Service) List(
@@ -95,12 +95,12 @@ func (service *Service) List(
 		if worker.TenantID != tenantID || worker.OwnerUserID != ownerUserID || worker.ID <= previousWorkerID {
 			return AttachedWorkerListV1{}, ErrBackend
 		}
-		detail, err := service.reduce(ctx, worker, evaluatedAt)
+		detail, err := service.reduce(ctx, worker, evaluatedAt, false)
 		if err != nil {
 			return AttachedWorkerListV1{}, err
 		}
 		result.Items = append(result.Items, AttachedWorkerSummaryV1{
-			Worker: detail.Worker, Connectivity: detail.Connectivity,
+			EvaluatedAt: detail.EvaluatedAt, Worker: detail.Worker, Connectivity: detail.Connectivity,
 			ExecutionState:      detail.Execution.State,
 			ObservationWarnings: append([]ReasonCodeV1(nil), detail.ObservationWarnings...),
 		})
@@ -126,7 +126,7 @@ func (service *Service) Diagnostics(
 		Version: ReadModelVersionV1, EvaluatedAt: detail.EvaluatedAt, WorkerID: detail.Worker.WorkerID,
 		Facts: []DiagnosticFactV1{
 			{Cohort: "identity", Code: "desired_state", State: detail.Worker.DesiredState},
-			{Cohort: "identity", Code: "observed_state", State: detail.Worker.ObservedState, ObservedAt: detail.Worker.UpdatedAt},
+			{Cohort: "identity", Code: "observed_state", State: detail.Worker.ObservedState},
 			{Cohort: "connectivity", Code: "connection_state", State: detail.Connectivity.State, ObservedAt: detail.Connectivity.LastContactAt, Freshness: detail.Connectivity.Freshness},
 			{Cohort: "readiness", Code: "daemon_state", State: detail.Readiness.DaemonObservation.State, Freshness: detail.Readiness.DaemonObservation.Freshness},
 			{Cohort: "readiness", Code: "isolation_verification", State: detail.Readiness.Isolation.VerificationState},
@@ -141,7 +141,7 @@ func (service *Service) Diagnostics(
 	}, nil
 }
 
-func (service *Service) reduce(ctx context.Context, worker domain.AttachedWorker, evaluatedAt time.Time) (AttachedWorkerUXReadModelV1, error) {
+func (service *Service) reduce(ctx context.Context, worker domain.AttachedWorker, evaluatedAt time.Time, includeExecutionOccurrences bool) (AttachedWorkerUXReadModelV1, error) {
 	if worker.Validate() != nil {
 		return AttachedWorkerUXReadModelV1{}, ErrBackend
 	}
@@ -201,7 +201,21 @@ func (service *Service) reduce(ctx context.Context, worker domain.AttachedWorker
 		if attempt.Validate() != nil || attempt.TenantID != worker.TenantID || attempt.OwnerUserID != worker.OwnerUserID || attempt.WorkerID != worker.ID {
 			return AttachedWorkerUXReadModelV1{}, ErrBackend
 		}
-		result.Execution = reduceExecution(attempt)
+		if !includeExecutionOccurrences {
+			result.Execution.State = string(attempt.State)
+		} else {
+			messages, err := service.store.ListAttachedWorkerAttemptMessages(
+				ctx, worker.TenantID, worker.OwnerUserID, worker.ID, attempt.AttemptID,
+			)
+			if err != nil {
+				return AttachedWorkerUXReadModelV1{}, ErrBackend
+			}
+			times, ok := executionOccurrenceTimes(attempt, messages)
+			if !ok {
+				return AttachedWorkerUXReadModelV1{}, ErrBackend
+			}
+			result.Execution = reduceExecution(attempt, times)
+		}
 	}
 	if worker.DesiredState == domain.AttachedWorkerDesiredRevoked {
 		result.Governance.RemoteErase = "unknown"
@@ -267,7 +281,177 @@ func emptyExecution() ExecutionV1 {
 	}
 }
 
-func reduceExecution(attempt domain.AttachedWorkerAttemptV1) ExecutionV1 {
+type executionTimes struct {
+	cancelRequestedAt    time.Time
+	cancelAcknowledgedAt time.Time
+	terminalReceivedAt   time.Time
+	terminalCommittedAt  time.Time
+}
+
+func executionOccurrenceTimes(attempt domain.AttachedWorkerAttemptV1, messages []domain.AttachedWorkerAttemptMessageV1) (executionTimes, bool) {
+	var result executionTimes
+	for _, message := range messages {
+		if message.Validate() != nil || message.TenantID != attempt.TenantID || message.OwnerUserID != attempt.OwnerUserID ||
+			message.WorkerID != attempt.WorkerID || message.AttemptID != attempt.AttemptID ||
+			message.ConnectionGeneration != attempt.ConnectionGeneration || message.CreatedAt.Before(attempt.CreatedAt) ||
+			message.CreatedAt.After(attempt.UpdatedAt) {
+			return executionTimes{}, false
+		}
+		frame, ok := decodeOccurrenceFrame(message)
+		if !ok || frame.WorkerID != string(attempt.WorkerID) || frame.EnrollmentGeneration != attempt.EnrollmentGeneration ||
+			frame.ConnectionGeneration != attempt.ConnectionGeneration {
+			return executionTimes{}, false
+		}
+		switch message.Kind {
+		case domain.AttachedWorkerAttemptMessageCancelRequested:
+			if !result.cancelRequestedAt.IsZero() || message.Direction != domain.AttachedWorkerAttemptPlatformToWorker ||
+				attempt.CancelRevision == 0 || !message.OperationDeadline.Equal(attempt.CancelDeadline) || frame.Cancel == nil ||
+				frame.Cancel.CancelRevision != attempt.CancelRevision || !bindingMatchesAttempt(frame.Cancel.Binding, attempt) {
+				return executionTimes{}, false
+			}
+			result.cancelRequestedAt = message.CreatedAt
+		case domain.AttachedWorkerAttemptMessageCancelAcknowledged:
+			if !result.cancelAcknowledgedAt.IsZero() || message.Direction != domain.AttachedWorkerAttemptWorkerToPlatform ||
+				attempt.CancelRevision == 0 || frame.CancelAck == nil || frame.CancelAck.CancelRevision != attempt.CancelRevision ||
+				!bindingMatchesAttempt(frame.CancelAck.Binding, attempt) {
+				return executionTimes{}, false
+			}
+			result.cancelAcknowledgedAt = message.CreatedAt
+		case domain.AttachedWorkerAttemptMessageTerminal:
+			if message.Direction != domain.AttachedWorkerAttemptWorkerToPlatform || frame.Terminal == nil ||
+				message.MaterializationReservationID != attempt.ReservationID || message.ExecutionConnectionID != attempt.ConnectionID ||
+				!bindingMatchesAttempt(frame.Terminal.Binding, attempt) {
+				return executionTimes{}, false
+			}
+			if frame.Terminal.TerminalSequence == attempt.TerminalSequence && string(frame.Terminal.Status) == string(attempt.TerminalStatus) &&
+				terminalResultMatchesStatus(frame.Terminal.Result, attempt.TerminalStatus) &&
+				digestBytesMatch(frame.Terminal.EvidenceDigest, string(attempt.TerminalEvidenceDigest)) {
+				if !result.terminalReceivedAt.IsZero() {
+					return executionTimes{}, false
+				}
+				result.terminalReceivedAt = message.CreatedAt
+			}
+		case domain.AttachedWorkerAttemptMessageTerminalCommitted:
+			if !result.terminalCommittedAt.IsZero() || message.Direction != domain.AttachedWorkerAttemptPlatformToWorker ||
+				attempt.TerminalSequence == 0 || frame.TerminalAck == nil ||
+				message.MaterializationReservationID != attempt.ReservationID || message.ExecutionConnectionID != attempt.ConnectionID ||
+				frame.TerminalAck.TerminalSequence != attempt.TerminalSequence || string(frame.TerminalAck.Status) != string(attempt.TerminalStatus) ||
+				!terminalResultMatchesStatus(frame.TerminalAck.Result, attempt.TerminalStatus) ||
+				!digestBytesMatch(frame.TerminalAck.EvidenceDigest, string(attempt.TerminalEvidenceDigest)) ||
+				!bindingMatchesAttempt(frame.TerminalAck.Binding, attempt) {
+				return executionTimes{}, false
+			}
+			result.terminalCommittedAt = message.CreatedAt
+		}
+	}
+	if attempt.CancelRevision > 0 && result.cancelRequestedAt.IsZero() {
+		return executionTimes{}, false
+	}
+	if !result.cancelAcknowledgedAt.IsZero() && result.cancelAcknowledgedAt.Before(result.cancelRequestedAt) {
+		return executionTimes{}, false
+	}
+	if !result.terminalCommittedAt.IsZero() && attempt.CancelRevision > 0 && result.terminalCommittedAt.Before(result.cancelRequestedAt) {
+		return executionTimes{}, false
+	}
+	if !result.terminalCommittedAt.IsZero() && (result.terminalReceivedAt.IsZero() || result.terminalCommittedAt.Before(result.terminalReceivedAt)) {
+		return executionTimes{}, false
+	}
+	if !result.terminalCommittedAt.IsZero() && !result.cancelAcknowledgedAt.IsZero() && result.terminalCommittedAt.Before(result.cancelAcknowledgedAt) {
+		return executionTimes{}, false
+	}
+	if attempt.State == domain.AttachedWorkerAttemptCancelAcknowledged && result.cancelAcknowledgedAt.IsZero() {
+		return executionTimes{}, false
+	}
+	if attempt.TerminalSequence > 0 && (attempt.State == domain.AttachedWorkerAttemptTerminalCommitted || attempt.State == domain.AttachedWorkerAttemptRetired) && result.terminalCommittedAt.IsZero() {
+		return executionTimes{}, false
+	}
+	return result, true
+}
+
+func decodeOccurrenceFrame(message domain.AttachedWorkerAttemptMessageV1) (attachedworkerprotocol.FrameV1, bool) {
+	batch, err := attachedworkerprotocol.DecodeBatchV1(message.Payload)
+	if err != nil || len(batch.Frames) != 1 {
+		return attachedworkerprotocol.FrameV1{}, false
+	}
+	frame := batch.Frames[0]
+	wantKind, attemptSequence, ok := occurrenceFrameIdentity(frame)
+	if !ok || wantKind != message.Kind || frame.Sequence != message.EnvelopeSequence ||
+		frame.ConnectionGeneration != message.ConnectionGeneration || attemptSequence != message.AttemptSequence {
+		return attachedworkerprotocol.FrameV1{}, false
+	}
+	fingerprint, err := attachedworkerprotocol.AttemptFrameFingerprintV1(frame)
+	if err != nil || hex.EncodeToString(fingerprint) != string(message.Fingerprint) {
+		return attachedworkerprotocol.FrameV1{}, false
+	}
+	return frame, true
+}
+
+func occurrenceFrameIdentity(frame attachedworkerprotocol.FrameV1) (domain.AttachedWorkerAttemptMessageKind, uint64, bool) {
+	switch frame.Kind {
+	case attachedworkerprotocol.MessageLeaseOffer:
+		if frame.LeaseOffer != nil {
+			return domain.AttachedWorkerAttemptMessageLeaseOffered, frame.LeaseOffer.AttemptSequence, true
+		}
+	case attachedworkerprotocol.MessageLeaseClaim:
+		if frame.LeaseClaim != nil {
+			return domain.AttachedWorkerAttemptMessageLeaseClaim, frame.LeaseClaim.AttemptSequence, true
+		}
+	case attachedworkerprotocol.MessageLeaseAccepted:
+		if frame.LeaseAccepted != nil {
+			return domain.AttachedWorkerAttemptMessageLeaseAccepted, frame.LeaseAccepted.AttemptSequence, true
+		}
+	case attachedworkerprotocol.MessageProgress:
+		if frame.Progress != nil {
+			return domain.AttachedWorkerAttemptMessageProgress, frame.Progress.AttemptSequence, true
+		}
+	case attachedworkerprotocol.MessageCancel:
+		if frame.Cancel != nil {
+			return domain.AttachedWorkerAttemptMessageCancelRequested, frame.Cancel.AttemptSequence, true
+		}
+	case attachedworkerprotocol.MessageCancelAck:
+		if frame.CancelAck != nil {
+			return domain.AttachedWorkerAttemptMessageCancelAcknowledged, frame.CancelAck.AttemptSequence, true
+		}
+	case attachedworkerprotocol.MessageTerminal:
+		if frame.Terminal != nil {
+			return domain.AttachedWorkerAttemptMessageTerminal, frame.Terminal.AttemptSequence, true
+		}
+	case attachedworkerprotocol.MessageTerminalAck:
+		if frame.TerminalAck != nil {
+			return domain.AttachedWorkerAttemptMessageTerminalCommitted, frame.TerminalAck.AttemptSequence, true
+		}
+	}
+	return "", 0, false
+}
+
+func bindingMatchesAttempt(binding attachedworkerprotocol.AttemptBindingV1, attempt domain.AttachedWorkerAttemptV1) bool {
+	return binding.RunID == string(attempt.RunID) && binding.AttemptID == string(attempt.AttemptID) &&
+		binding.LeaseID == string(attempt.LeaseID) && binding.LeaseGeneration == attempt.LeaseGeneration &&
+		binding.FenceToken == string(attempt.FenceToken) && binding.ExpiresAtUnixMicro == attempt.LeaseExpiresAt.UnixMicro() &&
+		digestBytesMatch(binding.ContextDigest, string(attempt.ContextDigest)) &&
+		digestBytesMatch(binding.CapabilityDigest, string(attempt.CapabilityDigest)) &&
+		digestBytesMatch(binding.PolicyDigest, string(attempt.PolicyDigest))
+}
+
+func digestBytesMatch(value []byte, encoded string) bool {
+	want, err := hex.DecodeString(encoded)
+	return err == nil && bytes.Equal(value, want)
+}
+
+func terminalResultMatchesStatus(result attachedworkerprotocol.TerminalResult, status domain.AttachedWorkerTerminalStatus) bool {
+	switch status {
+	case domain.AttachedWorkerTerminalSucceeded:
+		return result == attachedworkerprotocol.TerminalResultCompleted
+	case domain.AttachedWorkerTerminalFailed:
+		return result == attachedworkerprotocol.TerminalResultFailed
+	case domain.AttachedWorkerTerminalCancelled:
+		return result == attachedworkerprotocol.TerminalResultCancelled
+	default:
+		return false
+	}
+}
+
+func reduceExecution(attempt domain.AttachedWorkerAttemptV1, times executionTimes) ExecutionV1 {
 	result := emptyExecution()
 	result.State = string(attempt.State)
 	result.RunID, result.AttemptID, result.LeaseID = string(attempt.RunID), string(attempt.AttemptID), string(attempt.LeaseID)
@@ -277,10 +461,11 @@ func reduceExecution(attempt domain.AttachedWorkerAttemptV1) ExecutionV1 {
 	result.ProcessObservation.LeaseGeneration = attempt.LeaseGeneration
 	result.ProcessObservation.FenceFingerprint = result.FenceFingerprint
 	if attempt.CancelRevision > 0 {
-		result.CancelRequest = CancelRequestV1{State: "requested", Revision: attempt.CancelRevision, AckDeadline: attempt.CancelDeadline}
+		result.CancelRequest = CancelRequestV1{State: "requested", Revision: attempt.CancelRevision, RequestedAt: times.cancelRequestedAt, AckDeadline: attempt.CancelDeadline}
 		result.CancelAcknowledgement = CancelAcknowledgementV1{State: "pending", Revision: attempt.CancelRevision}
-		if attempt.State == domain.AttachedWorkerAttemptCancelAcknowledged {
+		if !times.cancelAcknowledgedAt.IsZero() {
 			result.CancelAcknowledgement.State = "acknowledged"
+			result.CancelAcknowledgement.AcknowledgedAt = times.cancelAcknowledgedAt
 		} else if attempt.State != domain.AttachedWorkerAttemptCancelRequested && attempt.State != domain.AttachedWorkerAttemptCancelledBeforeClaim {
 			// Later terminal/retired/fenced heads retain the cancel revision but do
 			// not prove that a distinct CancelAck was ever durably observed.
@@ -293,7 +478,7 @@ func reduceExecution(attempt domain.AttachedWorkerAttemptV1) ExecutionV1 {
 			EvidenceFingerprint: fingerprintDigest(string(attempt.TerminalEvidenceDigest)),
 		}
 		if attempt.State == domain.AttachedWorkerAttemptTerminalCommitted || attempt.State == domain.AttachedWorkerAttemptRetired {
-			result.CanonicalTerminal = CanonicalTerminalV1{State: "committed", Sequence: attempt.TerminalSequence, Status: string(attempt.TerminalStatus)}
+			result.CanonicalTerminal = CanonicalTerminalV1{State: "committed", CommittedAt: times.terminalCommittedAt, Sequence: attempt.TerminalSequence, Status: string(attempt.TerminalStatus)}
 		}
 	}
 	return result
@@ -363,7 +548,7 @@ func disabledActions() []AvailableActionV1 {
 	}
 	result := make([]AvailableActionV1, 0, len(codes))
 	for _, code := range codes {
-		result = append(result, AvailableActionV1{Code: code, Enabled: false, ReasonCode: ActionUnavailableFeatureDisabled})
+		result = append(result, AvailableActionV1{Code: code, Enabled: false, ReasonCode: ActionUnavailableControlContract})
 	}
 	return result
 }

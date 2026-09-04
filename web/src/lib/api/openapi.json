@@ -310,6 +310,68 @@
           "default": { "$ref": "#/components/responses/Error" }
         }
       }
+    },
+    "/api/web/v1/attached-workers": {
+      "get": {
+        "operationId": "listAttachedWorkers",
+        "parameters": [
+          {
+            "name": "after_worker_id",
+            "in": "query",
+            "schema": { "type": "string", "maxLength": 256 }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": { "type": "integer", "minimum": 1, "maximum": 50, "default": 20 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Owner-scoped attached workers",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AttachedWorkerListV1" }
+              }
+            }
+          },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/web/v1/attached-workers/{worker_id}": {
+      "get": {
+        "operationId": "getAttachedWorker",
+        "parameters": [{ "$ref": "#/components/parameters/WorkerID" }],
+        "responses": {
+          "200": {
+            "description": "Owner-scoped attached-worker read model",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AttachedWorkerReadModelV1" }
+              }
+            }
+          },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/web/v1/attached-workers/{worker_id}/diagnostics": {
+      "get": {
+        "operationId": "getAttachedWorkerDiagnostics",
+        "parameters": [{ "$ref": "#/components/parameters/WorkerID" }],
+        "responses": {
+          "200": {
+            "description": "Bounded redacted attached-worker diagnostics",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AttachedWorkerDiagnosticsV1" }
+              }
+            }
+          },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
     }
   },
   "components": {
@@ -320,7 +382,13 @@
         "required": true,
         "schema": { "type": "string" }
       },
-      "RunID": { "name": "run_id", "in": "path", "required": true, "schema": { "type": "string" } }
+      "RunID": { "name": "run_id", "in": "path", "required": true, "schema": { "type": "string" } },
+      "WorkerID": {
+        "name": "worker_id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string" }
+      }
     },
     "responses": {
       "Error": {
@@ -681,6 +749,464 @@
           "url": { "type": "string" },
           "headers": { "type": "object", "additionalProperties": { "type": "string" } },
           "expires_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "AttachedWorkerFreshnessV1": {
+        "type": "string",
+        "enum": ["unknown", "fresh", "expired"]
+      },
+      "AttachedWorkerUint64V1": {
+        "type": "string",
+        "pattern": "^(0|[1-9][0-9]{0,19})$",
+        "description": "Canonical unsigned 64-bit decimal string; encoded as text to preserve browser precision."
+      },
+      "AttachedWorkerReasonCodeV1": {
+        "type": "string",
+        "enum": [
+          "worker_not_active",
+          "worker_revoked",
+          "worker_draining",
+          "worker_offline",
+          "connection_attaching",
+          "connection_superseded",
+          "presence_expired",
+          "authentication_expired",
+          "protocol_incompatible",
+          "capability_missing",
+          "capability_stale",
+          "capability_mismatch",
+          "policy_mismatch",
+          "isolation_unsupported",
+          "isolation_unverified",
+          "credential_unavailable",
+          "credential_reauth_required",
+          "entitlement_unknown",
+          "entitlement_inactive",
+          "quota_unknown",
+          "quota_zero",
+          "quota_exhausted",
+          "capacity_busy",
+          "attempt_active",
+          "attempt_ambiguous",
+          "control_contract_unavailable",
+          "backend_unavailable"
+        ]
+      },
+      "AttachedWorkerActionCodeV1": {
+        "type": "string",
+        "enum": [
+          "create_enrollment",
+          "consume_enrollment",
+          "rename",
+          "rotate_identity",
+          "pause_admission",
+          "resume_admission",
+          "drain",
+          "revoke",
+          "request_cancel",
+          "reconnect_remediation",
+          "reauth_remediation",
+          "check_update",
+          "logout",
+          "uninstall_plan"
+        ]
+      },
+      "AttachedWorkerActionUnavailableCodeV1": {
+        "type": "string",
+        "enum": [
+          "not_found",
+          "stale_revision",
+          "stale_generation",
+          "invalid_state",
+          "active_attempt",
+          "ambiguous_attempt",
+          "awaiting_acknowledgement",
+          "already_applied",
+          "unsupported_platform",
+          "feature_disabled",
+          "control_contract_unavailable",
+          "confirmation_required",
+          "operation_in_progress"
+        ]
+      },
+      "AttachedWorkerIdentityRecordV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "worker_id",
+          "display_name",
+          "revision",
+          "enrollment_generation",
+          "connection_generation",
+          "desired_state",
+          "observed_state",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "worker_id": { "type": "string" },
+          "display_name": { "type": "string" },
+          "revision": { "$ref": "#/components/schemas/AttachedWorkerUint64V1" },
+          "enrollment_generation": { "$ref": "#/components/schemas/AttachedWorkerUint64V1" },
+          "connection_generation": { "$ref": "#/components/schemas/AttachedWorkerUint64V1" },
+          "desired_state": { "type": "string" },
+          "observed_state": { "type": "string" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" },
+          "revoked_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "AttachedWorkerIdentityV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["algorithm", "fingerprint", "enrollment_state"],
+        "properties": {
+          "algorithm": { "type": "string" },
+          "fingerprint": { "type": "string" },
+          "enrollment_state": { "type": "string" }
+        }
+      },
+      "AttachedWorkerLastFailureV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["state"],
+        "properties": {
+          "state": { "type": "string" },
+          "code": { "type": "string" },
+          "occurred_at": { "type": "string", "format": "date-time" },
+          "operation": { "type": "string" },
+          "retry_class": { "type": "string" },
+          "source": { "type": "string" },
+          "freshness": { "$ref": "#/components/schemas/AttachedWorkerFreshnessV1" }
+        }
+      },
+      "AttachedWorkerDaemonObservationV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["state", "source", "freshness"],
+        "properties": {
+          "state": { "type": "string" },
+          "source": { "type": "string" },
+          "observed_at": { "type": "string", "format": "date-time" },
+          "freshness": { "$ref": "#/components/schemas/AttachedWorkerFreshnessV1" }
+        }
+      },
+      "AttachedWorkerIsolationV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["configuration_state", "advertised_evidence", "verification_state"],
+        "properties": {
+          "configuration_state": { "type": "string" },
+          "advertised_evidence": { "type": "array", "items": { "type": "string" } },
+          "verification_state": { "type": "string" }
+        }
+      },
+      "AttachedWorkerReadinessV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["daemon_observation", "last_daemon_failure", "credential_state", "isolation"],
+        "properties": {
+          "daemon_observation": {
+            "$ref": "#/components/schemas/AttachedWorkerDaemonObservationV1"
+          },
+          "last_daemon_failure": { "$ref": "#/components/schemas/AttachedWorkerLastFailureV1" },
+          "credential_state": { "type": "string" },
+          "isolation": { "$ref": "#/components/schemas/AttachedWorkerIsolationV1" }
+        }
+      },
+      "AttachedWorkerConnectivityV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["state", "freshness", "last_failure"],
+        "properties": {
+          "connection_id": { "type": "string" },
+          "state": { "type": "string" },
+          "connected_at": { "type": "string", "format": "date-time" },
+          "last_contact_at": { "type": "string", "format": "date-time" },
+          "presence_expires_at": { "type": "string", "format": "date-time" },
+          "authentication_expires_at": { "type": "string", "format": "date-time" },
+          "freshness": { "$ref": "#/components/schemas/AttachedWorkerFreshnessV1" },
+          "last_failure": { "$ref": "#/components/schemas/AttachedWorkerLastFailureV1" }
+        }
+      },
+      "AttachedWorkerHarnessV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string" },
+          "version": { "type": "string" },
+          "surface": { "type": "string" }
+        }
+      },
+      "AttachedWorkerCapabilityV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["state", "harness", "isolation_evidence", "features"],
+        "properties": {
+          "state": { "type": "string" },
+          "manifest_revision": { "$ref": "#/components/schemas/AttachedWorkerUint64V1" },
+          "digest_fingerprint": { "type": "string" },
+          "operating_system": { "type": "string" },
+          "architecture": { "type": "string" },
+          "build_id": { "type": "string" },
+          "harness": { "$ref": "#/components/schemas/AttachedWorkerHarnessV1" },
+          "isolation_evidence": { "type": "array", "items": { "type": "string" } },
+          "features": { "type": "array", "items": { "type": "string" } },
+          "max_concurrent_attempts": { "type": "integer", "minimum": 0 },
+          "observed_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "AttachedWorkerAdmissionPreviewV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["state"],
+        "properties": {
+          "state": { "type": "string", "enum": ["not_evaluated", "admitted", "denied"] },
+          "decision_code": { "type": "string" },
+          "evaluation_ref": { "type": "string" },
+          "candidate_ref": { "type": "string" },
+          "evaluated_at": { "type": "string", "format": "date-time" },
+          "worker_revision": { "$ref": "#/components/schemas/AttachedWorkerUint64V1" },
+          "enrollment_generation": { "$ref": "#/components/schemas/AttachedWorkerUint64V1" },
+          "connection_generation": { "$ref": "#/components/schemas/AttachedWorkerUint64V1" },
+          "capability_digest_fingerprint": { "type": "string" },
+          "policy_digest_fingerprint": { "type": "string" },
+          "context_digest_fingerprint": { "type": "string" }
+        }
+      },
+      "AttachedWorkerQuotaObservationV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["state"],
+        "properties": {
+          "state": { "type": "string" },
+          "remaining": { "$ref": "#/components/schemas/AttachedWorkerUint64V1" },
+          "observed_at": { "type": "string", "format": "date-time" },
+          "reset_at": { "type": "string", "format": "date-time" },
+          "source": { "type": "string" },
+          "freshness": { "$ref": "#/components/schemas/AttachedWorkerFreshnessV1" }
+        }
+      },
+      "AttachedWorkerResourceV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["state", "credential_state", "entitlement_state", "quota"],
+        "properties": {
+          "state": { "type": "string" },
+          "resource_ref": { "type": "string" },
+          "credential_state": { "type": "string" },
+          "entitlement_state": { "type": "string" },
+          "quota": { "$ref": "#/components/schemas/AttachedWorkerQuotaObservationV1" }
+        }
+      },
+      "AttachedWorkerCancelRequestV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["state"],
+        "properties": {
+          "state": { "type": "string" },
+          "revision": { "$ref": "#/components/schemas/AttachedWorkerUint64V1" },
+          "requested_at": { "type": "string", "format": "date-time" },
+          "ack_deadline": { "type": "string", "format": "date-time" }
+        }
+      },
+      "AttachedWorkerCancelAcknowledgementV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["state"],
+        "properties": {
+          "state": { "type": "string" },
+          "revision": { "$ref": "#/components/schemas/AttachedWorkerUint64V1" },
+          "acknowledged_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "AttachedWorkerProcessObservationV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["state", "source", "freshness"],
+        "properties": {
+          "state": { "type": "string" },
+          "attempt_id": { "type": "string" },
+          "lease_generation": { "$ref": "#/components/schemas/AttachedWorkerUint64V1" },
+          "fence_fingerprint": { "type": "string" },
+          "source": { "type": "string" },
+          "observed_at": { "type": "string", "format": "date-time" },
+          "freshness": { "$ref": "#/components/schemas/AttachedWorkerFreshnessV1" }
+        }
+      },
+      "AttachedWorkerTerminalEvidenceV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["state"],
+        "properties": {
+          "state": { "type": "string" },
+          "sequence": { "$ref": "#/components/schemas/AttachedWorkerUint64V1" },
+          "status": { "type": "string" },
+          "evidence_fingerprint": { "type": "string" }
+        }
+      },
+      "AttachedWorkerCanonicalTerminalV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["state"],
+        "properties": {
+          "state": { "type": "string" },
+          "committed_at": { "type": "string", "format": "date-time" },
+          "sequence": { "$ref": "#/components/schemas/AttachedWorkerUint64V1" },
+          "status": { "type": "string" }
+        }
+      },
+      "AttachedWorkerExecutionV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "state",
+          "cancel_request",
+          "cancel_ack",
+          "process_observation",
+          "worker_terminal",
+          "canonical_terminal"
+        ],
+        "properties": {
+          "state": { "type": "string" },
+          "run_id": { "type": "string" },
+          "attempt_id": { "type": "string" },
+          "lease_id": { "type": "string" },
+          "lease_generation": { "$ref": "#/components/schemas/AttachedWorkerUint64V1" },
+          "fence_fingerprint": { "type": "string" },
+          "lease_expires_at": { "type": "string", "format": "date-time" },
+          "cancel_request": { "$ref": "#/components/schemas/AttachedWorkerCancelRequestV1" },
+          "cancel_ack": { "$ref": "#/components/schemas/AttachedWorkerCancelAcknowledgementV1" },
+          "process_observation": {
+            "$ref": "#/components/schemas/AttachedWorkerProcessObservationV1"
+          },
+          "worker_terminal": { "$ref": "#/components/schemas/AttachedWorkerTerminalEvidenceV1" },
+          "canonical_terminal": { "$ref": "#/components/schemas/AttachedWorkerCanonicalTerminalV1" }
+        }
+      },
+      "AttachedWorkerAvailableActionV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "enabled"],
+        "properties": {
+          "code": { "$ref": "#/components/schemas/AttachedWorkerActionCodeV1" },
+          "enabled": { "type": "boolean" },
+          "reason_code": { "$ref": "#/components/schemas/AttachedWorkerActionUnavailableCodeV1" },
+          "confirmation": { "type": "string" }
+        }
+      },
+      "AttachedWorkerGovernanceV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["admission_control", "remote_erase", "available_actions"],
+        "properties": {
+          "admission_control": { "type": "string" },
+          "remote_erase": { "type": "string" },
+          "available_actions": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/AttachedWorkerAvailableActionV1" }
+          }
+        }
+      },
+      "AttachedWorkerReadModelV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "version",
+          "evaluated_at",
+          "worker",
+          "identity",
+          "readiness",
+          "connectivity",
+          "capability",
+          "admission_preview",
+          "observation_warnings",
+          "resource",
+          "execution",
+          "governance"
+        ],
+        "properties": {
+          "version": { "type": "integer", "const": 1 },
+          "evaluated_at": { "type": "string", "format": "date-time" },
+          "worker": { "$ref": "#/components/schemas/AttachedWorkerIdentityRecordV1" },
+          "identity": { "$ref": "#/components/schemas/AttachedWorkerIdentityV1" },
+          "readiness": { "$ref": "#/components/schemas/AttachedWorkerReadinessV1" },
+          "connectivity": { "$ref": "#/components/schemas/AttachedWorkerConnectivityV1" },
+          "capability": { "$ref": "#/components/schemas/AttachedWorkerCapabilityV1" },
+          "admission_preview": { "$ref": "#/components/schemas/AttachedWorkerAdmissionPreviewV1" },
+          "observation_warnings": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/AttachedWorkerReasonCodeV1" }
+          },
+          "resource": { "$ref": "#/components/schemas/AttachedWorkerResourceV1" },
+          "execution": { "$ref": "#/components/schemas/AttachedWorkerExecutionV1" },
+          "governance": { "$ref": "#/components/schemas/AttachedWorkerGovernanceV1" }
+        }
+      },
+      "AttachedWorkerSummaryV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "evaluated_at",
+          "worker",
+          "connectivity",
+          "execution_state",
+          "observation_warnings"
+        ],
+        "properties": {
+          "evaluated_at": { "type": "string", "format": "date-time" },
+          "worker": { "$ref": "#/components/schemas/AttachedWorkerIdentityRecordV1" },
+          "connectivity": { "$ref": "#/components/schemas/AttachedWorkerConnectivityV1" },
+          "execution_state": { "type": "string" },
+          "observation_warnings": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/AttachedWorkerReasonCodeV1" }
+          }
+        }
+      },
+      "AttachedWorkerListV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["version", "evaluated_at", "items", "has_more"],
+        "properties": {
+          "version": { "type": "integer", "const": 1 },
+          "evaluated_at": { "type": "string", "format": "date-time" },
+          "items": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/AttachedWorkerSummaryV1" }
+          },
+          "next_worker_id": { "type": "string" },
+          "has_more": { "type": "boolean" }
+        }
+      },
+      "AttachedWorkerDiagnosticFactV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["cohort", "code", "state"],
+        "properties": {
+          "cohort": { "type": "string" },
+          "code": { "type": "string" },
+          "state": { "type": "string" },
+          "observed_at": { "type": "string", "format": "date-time" },
+          "freshness": { "$ref": "#/components/schemas/AttachedWorkerFreshnessV1" }
+        }
+      },
+      "AttachedWorkerDiagnosticsV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["version", "evaluated_at", "worker_id", "facts", "warnings"],
+        "properties": {
+          "version": { "type": "integer", "const": 1 },
+          "evaluated_at": { "type": "string", "format": "date-time" },
+          "worker_id": { "type": "string" },
+          "facts": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/AttachedWorkerDiagnosticFactV1" }
+          },
+          "warnings": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/AttachedWorkerReasonCodeV1" }
+          }
         }
       },
       "ArtifactCapability": {

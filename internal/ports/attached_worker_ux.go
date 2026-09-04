@@ -43,4 +43,11 @@ type AttachedWorkerUXReadStore interface {
 		domain.UserID,
 		domain.AttachedWorkerID,
 	) (domain.AttachedWorkerAttemptV1, bool, error)
+	ListAttachedWorkerAttemptMessages(
+		context.Context,
+		domain.TenantID,
+		domain.UserID,
+		domain.AttachedWorkerID,
+		domain.AttemptID,
+	) ([]domain.AttachedWorkerAttemptMessageV1, error)
 }

@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -24,6 +25,7 @@ import (
 const (
 	maxSupervisorStdoutBytes = 16 << 20
 	maxSupervisorStderrBytes = 1 << 20
+	maxSupervisorStdinBytes  = 4 << 20
 	maxSupervisorGrace       = 30 * time.Second
 )
 
@@ -58,14 +60,25 @@ func (profile IsolationProfile) Validate() error {
 // LaunchSpec is the complete replacement process contract presented to an
 // isolation launcher. It contains no inherited environment or shell command.
 type LaunchSpec struct {
-	Executable  string
-	Arguments   []string
-	Directory   string
-	Environment []string
-	ReadFiles   []string
-	ReadRoots   []string
-	WriteFiles  []string
-	WriteRoots  []string
+	Executable       string
+	ExecutableDigest ExecutableDigest
+	Arguments        []string
+	Directory        string
+	Environment      []string
+	ReadFiles        []string
+	ReadRoots        []string
+	WriteFiles       []string
+	WriteRoots       []string
+}
+
+// WorkloadAttestation is the trusted launcher's statement of the exact inner
+// harness artifact and argv installed in the prepared boundary. It is kept
+// separate from Command: a container, bwrap, or VM client legitimately has a
+// different outer executable and argv.
+type WorkloadAttestation struct {
+	Executable       string
+	ExecutableDigest ExecutableDigest
+	Arguments        []string
 }
 
 // IsolationBoundary is the complete lifecycle of one prepared OS isolation
@@ -76,6 +89,7 @@ type LaunchSpec struct {
 // idempotent.
 type IsolationBoundary interface {
 	Command() *exec.Cmd
+	AttestedWorkload() WorkloadAttestation
 	GracefulStop(context.Context) error
 	ForceStop(context.Context) error
 	Alive(context.Context) (bool, error)
@@ -133,8 +147,23 @@ type AttemptSpec struct {
 	Arguments           []string
 	Environment         []EnvironmentVariable
 	AdditionalReadRoots []string
+	// Stdin is the bounded invocation payload. It is intentionally absent from
+	// LaunchSpec so isolation launchers cannot log or reinterpret it as process
+	// configuration. The supervisor attaches it only after validating the
+	// bounded outer client and the launcher's exact inner-workload attestation.
+	Stdin               []byte `json:"-"`
 	credentialWriteFile string
 }
+
+func (spec AttemptSpec) String() string {
+	return fmt.Sprintf(
+		"AttemptSpec{executable:%s digest:%x arguments:%d environment:%d read_roots:%d stdin:[redacted:%d] credential_write:%t}",
+		spec.Executable, spec.ExecutableDigest, len(spec.Arguments), len(spec.Environment),
+		len(spec.AdditionalReadRoots), len(spec.Stdin), spec.credentialWriteFile != "",
+	)
+}
+
+func (spec AttemptSpec) GoString() string { return spec.String() }
 
 type AttemptResult struct {
 	ExitCode          int
@@ -143,7 +172,7 @@ type AttemptResult struct {
 	TermSent          bool
 	KillSent          bool
 	DescendantsReaped bool
-	Stdout            []byte
+	Stdout            []byte `json:"-"`
 	StdoutBytes       int
 	StderrBytes       int
 	FailureCode       string
@@ -152,6 +181,17 @@ type AttemptResult struct {
 	BoundaryReleased  bool
 	CleanupSucceeded  bool
 }
+
+func (result AttemptResult) String() string {
+	return fmt.Sprintf(
+		"AttemptResult{exit:%d cancelled:%t deadline:%t term:%t kill:%t reaped:%t stdout:[redacted:%d] stderr_bytes:%d failure:%s duration:%s isolation:%s released:%t cleanup:%t}",
+		result.ExitCode, result.Cancelled, result.Deadline, result.TermSent, result.KillSent,
+		result.DescendantsReaped, result.StdoutBytes, result.StderrBytes, result.FailureCode,
+		result.Duration, result.IsolationProfile, result.BoundaryReleased, result.CleanupSucceeded,
+	)
+}
+
+func (result AttemptResult) GoString() string { return result.String() }
 
 type Supervisor struct {
 	root             string
@@ -229,6 +269,35 @@ func NewSupervisor(config SupervisorConfig) (*Supervisor, error) {
 }
 
 func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (result AttemptResult, err error) {
+	var command *exec.Cmd
+	var stdout, stderr *boundedBuffer
+	var stdoutDone, stderrDone <-chan struct{}
+	var startedAt time.Time
+	defer func() {
+		// This defer is registered before boundary/pipe cleanup and therefore
+		// runs after them. Preserve the bounded protocol prefix and counters on
+		// every post-spawn return, including cleanup/inspection failures.
+		if stdoutDone != nil {
+			_ = waitChannel(stdoutDone, supervisor.grace)
+		}
+		if stderrDone != nil {
+			_ = waitChannel(stderrDone, supervisor.grace)
+		}
+		if stdout != nil {
+			result.StdoutBytes = stdout.countValue()
+			result.Stdout = stdout.bytesValue()
+		}
+		if stderr != nil {
+			result.StderrBytes = stderr.countValue()
+		}
+		if command != nil && command.ProcessState != nil {
+			result.ExitCode = command.ProcessState.ExitCode()
+		}
+		if !startedAt.IsZero() {
+			result.Duration = time.Since(startedAt)
+			result.IsolationProfile = supervisor.profileName
+		}
+	}()
 	if parent == nil || parent.Err() != nil {
 		return AttemptResult{}, ErrSupervisorConfig
 	}
@@ -263,7 +332,8 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 	readRoots := []string{attemptRoot}
 	readRoots = append(readRoots, spec.AdditionalReadRoots...)
 	launch := LaunchSpec{
-		Executable: spec.Executable, Arguments: append([]string(nil), spec.Arguments...),
+		Executable: spec.Executable, ExecutableDigest: spec.ExecutableDigest,
+		Arguments: append([]string(nil), spec.Arguments...),
 		Directory: filepath.Join(attemptRoot, "work"), Environment: environment,
 		ReadFiles: []string{spec.Executable}, ReadRoots: canonicalRootSet(readRoots),
 		WriteRoots: []string{attemptRoot},
@@ -295,10 +365,20 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 			err = errors.New("release attached worker isolation boundary")
 		}
 	}()
-	command := boundary.Command()
+	command = boundary.Command()
+	attested := boundary.AttestedWorkload()
 	if command == nil || command.Dir != launch.Directory ||
-		!equalStrings(command.Env, launch.Environment) || command.Stdin != nil || len(command.ExtraFiles) != 0 {
+		!filepath.IsAbs(command.Path) || len(command.Args) == 0 || command.Args[0] != command.Path ||
+		!equalStrings(command.Env, launch.Environment) || command.Stdin != nil ||
+		command.Stdout != nil || command.Stderr != nil || len(command.ExtraFiles) != 0 ||
+		command.Process != nil || command.ProcessState != nil || command.Cancel != nil ||
+		command.WaitDelay != 0 || attested.Executable != launch.Executable ||
+		attested.ExecutableDigest != launch.ExecutableDigest ||
+		!equalStrings(attested.Arguments, launch.Arguments) {
 		return result, ErrSupervisorConfig
+	}
+	if len(spec.Stdin) != 0 {
+		command.Stdin = bytes.NewReader(spec.Stdin)
 	}
 	configureProcessGroup(command)
 	stdoutReader, stdoutWriter, err := os.Pipe()
@@ -315,18 +395,22 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 	defer stderrWriter.Close()
 	command.Stdout = stdoutWriter
 	command.Stderr = stderrWriter
-	startedAt := time.Now()
+	actualDigest, err = DigestExecutable(spec.Executable)
+	if err != nil || actualDigest != spec.ExecutableDigest {
+		return result, ErrExecutableChanged
+	}
 	if err := command.Start(); err != nil {
 		return result, errors.New("start attached worker harness")
 	}
+	startedAt = time.Now()
 	_ = stdoutWriter.Close()
 	_ = stderrWriter.Close()
 	processGroupID := command.Process.Pid
-	stdout := &boundedBuffer{limit: supervisor.maxStdout}
-	stderr := &boundedBuffer{limit: supervisor.maxStderr, discard: true}
+	stdout = &boundedBuffer{limit: supervisor.maxStdout}
+	stderr = &boundedBuffer{limit: supervisor.maxStderr, discard: true}
 	violation := make(chan string, 2)
-	stdoutDone := copyBounded(stdoutReader, stdout, violation, "stdout_limit_exceeded")
-	stderrDone := copyBounded(stderrReader, stderr, violation, "stderr_limit_exceeded")
+	stdoutDone = copyBounded(stdoutReader, stdout, violation, "stdout_limit_exceeded")
+	stderrDone = copyBounded(stderrReader, stderr, violation, "stderr_limit_exceeded")
 	waited := make(chan error, 1)
 	go func() { waited <- command.Wait() }()
 	timer := time.NewTimer(supervisor.timeout)
@@ -401,9 +485,10 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 	result.DescendantsReaped = true
 	result.StdoutBytes = stdout.countValue()
 	result.StderrBytes = stderr.countValue()
-	if result.FailureCode == "" {
-		result.Stdout = stdout.bytesValue()
-	}
+	// Retain only the bounded prefix on every exit. A protocol reducer needs it
+	// to distinguish pre-acceptance loss from ambiguous post-acceptance output
+	// overflow or teardown failure. Callers clear it after deriving evidence.
+	result.Stdout = stdout.bytesValue()
 	result.Duration = time.Since(startedAt)
 	result.IsolationProfile = supervisor.profileName
 	return result, nil
@@ -494,6 +579,9 @@ func (supervisor *Supervisor) validateAttemptSpec(spec AttemptSpec) error {
 		if strings.IndexByte(argument, 0) >= 0 {
 			return ErrSupervisorConfig
 		}
+	}
+	if len(spec.Stdin) > maxSupervisorStdinBytes {
+		return ErrSupervisorConfig
 	}
 	seen := make(map[string]struct{}, len(spec.Environment))
 	for _, variable := range spec.Environment {

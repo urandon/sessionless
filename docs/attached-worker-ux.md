@@ -309,6 +309,12 @@ unrelated worker metadata revisions. Apply never accepts tenant, owner,
 revision, generation, deadline, desired result, fence, capability, policy,
 terminal, or raw command fields from the caller.
 
+Every unsigned 64-bit revision, generation, sequence, and quota value is a
+canonical base-10 JSON string in public V1. This preserves exact authority in
+browsers, whose native `number` cannot represent all `uint64` values. Bounded
+`uint32` fields such as `version` and advertised concurrency remain JSON
+numbers.
+
 The conceptual JSON shape is:
 
 ```json
@@ -318,11 +324,12 @@ The conceptual JSON shape is:
   "worker": {
     "worker_id": "wrk_opaque",
     "display_name": "Studio Mac",
-    "revision": 12,
-    "enrollment_generation": 2,
-    "connection_generation": 7,
+    "revision": "12",
+    "enrollment_generation": "2",
+    "connection_generation": "7",
     "desired_state": "active",
     "observed_state": "online",
+    "created_at": "2026-08-01T09:00:00Z",
     "updated_at": "2026-08-25T14:59:00Z"
   },
   "identity": {"algorithm": "ed25519", "fingerprint": "sha256:12ab…", "enrollment_state": "consumed"},
@@ -345,17 +352,20 @@ The conceptual JSON shape is:
     "last_failure": {"state": "unknown"}
   },
   "capability": {
-    "manifest_revision": 4,
+    "state": "advertised",
+    "manifest_revision": "4",
     "digest_fingerprint": "sha256:34cd…",
-    "harness": {"name": "codex", "version": "1.2.3", "surface": "session_turn_v1"},
+    "harness": {"name": "sessionless", "version": "1.2.3", "surface": "session_turn_v1"},
+    "isolation_evidence": ["filesystem_boundary", "network_boundary", "process_boundary"],
+    "features": ["cancellation"],
     "max_concurrent_attempts": 1
   },
   "admission_preview": {
-    "state": "not_evaluated",
-    "decision_code": null
+    "state": "not_evaluated"
   },
   "observation_warnings": ["isolation_unsupported", "quota_unknown"],
   "resource": {
+    "state": "unknown",
     "resource_ref": "air_opaque",
     "credential_state": "unknown",
     "entitlement_state": "active",
@@ -366,11 +376,11 @@ The conceptual JSON shape is:
     "run_id": "run_opaque",
     "attempt_id": "att_opaque",
     "lease_id": "lea_opaque",
-    "lease_generation": 3,
+    "lease_generation": "3",
     "fence_fingerprint": "sha256:56ef…",
-    "cancel_request": {"state": "requested", "revision": 1, "requested_at": "2026-08-25T14:50:00Z", "ack_deadline": "2026-08-25T14:51:00Z"},
-    "cancel_ack": {"state": "pending", "revision": 1},
-    "process_observation": {"state": "unknown", "attempt_id": "att_opaque", "lease_generation": 3, "fence_fingerprint": "sha256:56ef…", "freshness": "unknown"},
+    "cancel_request": {"state": "requested", "revision": "1", "requested_at": "2026-08-25T14:50:00Z", "ack_deadline": "2026-08-25T14:51:00Z"},
+    "cancel_ack": {"state": "pending", "revision": "1"},
+    "process_observation": {"state": "unknown", "attempt_id": "att_opaque", "lease_generation": "3", "fence_fingerprint": "sha256:56ef…", "source": "unavailable", "freshness": "unknown"},
     "worker_terminal": {"state": "none"},
     "canonical_terminal": {"state": "none"}
   },
@@ -378,8 +388,8 @@ The conceptual JSON shape is:
     "admission_control": "unavailable",
     "remote_erase": "not_requested",
     "available_actions": [
-      {"code": "request_cancel", "enabled": true},
-      {"code": "revoke", "enabled": true, "confirmation": "destructive"},
+      {"code": "request_cancel", "enabled": false, "reason_code": "control_contract_unavailable"},
+      {"code": "revoke", "enabled": false, "reason_code": "control_contract_unavailable"},
       {"code": "resume_admission", "enabled": false, "reason_code": "control_contract_unavailable"}
     ]
   }
@@ -403,6 +413,18 @@ Execution facts are orthogonal projections, not a synthesized lifecycle:
   sequence, status, and a short evidence fingerprint;
 - `canonical_terminal` is `none` or `committed` and carries commit time plus
   the bounded matching TerminalAck metadata.
+
+The AW-06 read adapter obtains cancel-request, CancelAck, and TerminalAck
+occurrence times from the bounded, immutable, owner-scoped AW-04 message
+ledger. It exact-checks the attempt scope and connection generation before
+projecting them. Missing or divergent ledger evidence fails the established
+projection closed; reducers never substitute an attempt or worker
+`updated_at`. Diagnostics likewise publish current `observed_state` without an
+`observed_at` until the AW-01 transition audit supplies it.
+
+Each overview item carries its own `evaluated_at`. When the client explicitly
+appends another page, it preserves that per-item timestamp; the later page
+timestamp cannot make retained freshness observations appear newer.
 
 No stale daemon observation is joined to a newer lease. Because current AW-04
 does not persist a public cause taxonomy for `fenced_unknown`, V1 exposes only
@@ -473,6 +495,7 @@ awaiting_acknowledgement
 already_applied
 unsupported_platform
 feature_disabled
+control_contract_unavailable
 confirmation_required
 operation_in_progress
 ```
@@ -694,6 +717,15 @@ Bounded scope after slice 1 acceptance:
 Controls remain disabled when the API reports unavailable. UI/CLI cannot infer
 availability from labels or reconstruct a state machine.
 
+The first accepted implementation slice is deliberately read-only: WebUI list,
+detail, and redacted diagnostics consume the canonical V1 projection and show
+future controls as inert rows with their exact unavailability codes. It adds no
+action endpoint and performs no automatic polling. A networked CLI remains
+blocked until an authenticated owner-context transport is accepted; a future
+CLI may first add a pure renderer over already-authorized V1 DTOs, but must not
+access domain stores directly or substitute local daemon observations for
+server truth.
+
 ### 3. Diagnostics and accessibility
 
 Bounded scope:
@@ -768,5 +800,6 @@ rotation-proof path, invented transport/daemon observations, a reusable global
 eligibility boolean, quota-derived policy not present in the scheduler, generic
 cross-domain CAS fields, and an under-specified cancellation/process/terminal
 projection. All three resolution reviews reported no remaining actionable
-P1/P2. This review accepts the information and safety contract only; it does
-not accept or enable production UI or control operations.
+P1/P2. This review accepted the information and safety contract only. The
+subsequent bounded slice may expose its read-only list, detail, and diagnostics
+projections, but it does not accept or enable control operations.

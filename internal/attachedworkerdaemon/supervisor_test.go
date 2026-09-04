@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,9 +26,11 @@ const (
 )
 
 type fixtureLauncher struct {
-	mu   sync.Mutex
-	last LaunchSpec
-	name string
+	mu                sync.Mutex
+	last              LaunchSpec
+	name              string
+	mutateAttestation func(*WorkloadAttestation)
+	wrapCommand       func(LaunchSpec) *exec.Cmd
 }
 
 func (launcher *fixtureLauncher) Profile() IsolationProfile {
@@ -110,7 +113,8 @@ func (launcher *deadlinePrepareLauncher) Prepare(ctx context.Context, _ LaunchSp
 func (launcher *fixtureLauncher) Prepare(_ context.Context, spec LaunchSpec) (IsolationBoundary, error) {
 	launcher.mu.Lock()
 	launcher.last = LaunchSpec{
-		Executable: spec.Executable, Arguments: append([]string(nil), spec.Arguments...),
+		Executable: spec.Executable, ExecutableDigest: spec.ExecutableDigest,
+		Arguments: append([]string(nil), spec.Arguments...),
 		Directory: spec.Directory, Environment: append([]string(nil), spec.Environment...),
 		ReadFiles:  append([]string(nil), spec.ReadFiles...),
 		ReadRoots:  append([]string(nil), spec.ReadRoots...),
@@ -119,16 +123,33 @@ func (launcher *fixtureLauncher) Prepare(_ context.Context, spec LaunchSpec) (Is
 	}
 	launcher.mu.Unlock()
 	command := exec.Command(spec.Executable, spec.Arguments...)
+	if launcher.wrapCommand != nil {
+		command = launcher.wrapCommand(spec)
+	}
 	command.Dir = spec.Directory
 	command.Env = append([]string(nil), spec.Environment...)
-	return &fixtureBoundary{command: command}, nil
+	attestation := WorkloadAttestation{
+		Executable: spec.Executable, ExecutableDigest: spec.ExecutableDigest,
+		Arguments: append([]string(nil), spec.Arguments...),
+	}
+	if launcher.mutateAttestation != nil {
+		launcher.mutateAttestation(&attestation)
+	}
+	return &fixtureBoundary{command: command, attestation: attestation}, nil
 }
 
 type fixtureBoundary struct {
-	command *exec.Cmd
+	command     *exec.Cmd
+	attestation WorkloadAttestation
 }
 
-func (boundary *fixtureBoundary) Command() *exec.Cmd         { return boundary.command }
+func (boundary *fixtureBoundary) Command() *exec.Cmd { return boundary.command }
+func (boundary *fixtureBoundary) AttestedWorkload() WorkloadAttestation {
+	return WorkloadAttestation{
+		Executable: boundary.attestation.Executable, ExecutableDigest: boundary.attestation.ExecutableDigest,
+		Arguments: append([]string(nil), boundary.attestation.Arguments...),
+	}
+}
 func (*fixtureBoundary) GracefulStop(context.Context) error  { return nil }
 func (*fixtureBoundary) ForceStop(context.Context) error     { return nil }
 func (*fixtureBoundary) Alive(context.Context) (bool, error) { return false, nil }
@@ -170,6 +191,130 @@ func TestSupervisorUsesReplacementEnvironmentAndCleansAttemptRoot(t *testing.T) 
 	if len(launch.WriteRoots) != 1 || launch.WriteRoots[0] != filepath.Dir(launch.Directory) {
 		t.Fatalf("write boundary is not the exact attempt root: %#v", launch.WriteRoots)
 	}
+}
+
+func TestSupervisorFeedsBoundedStdinWithoutExposingItToLauncher(t *testing.T) {
+	supervisor, launcher, executable, digest := newFixtureSupervisor(t, SupervisorConfig{})
+	result, err := supervisor.Run(context.Background(), AttemptSpec{
+		Executable: executable, ExecutableDigest: digest,
+		Arguments: []string{"-test.run=TestSupervisorHelperProcess"},
+		Environment: []EnvironmentVariable{
+			{Name: helperEnabled, Value: "1"}, {Name: helperMode, Value: "stdin"},
+		},
+		Stdin: []byte("private prompt"),
+	})
+	if err != nil || string(result.Stdout) != "stdin-ok\n" {
+		t.Fatalf("stdin result=%+v err=%v", result, err)
+	}
+	launch := launcher.lastSpec()
+	if strings.Contains(strings.Join(launch.Arguments, "\x00"), "private prompt") ||
+		strings.Contains(strings.Join(launch.Environment, "\x00"), "private prompt") {
+		t.Fatal("stdin payload crossed into launcher-visible argv/environment")
+	}
+	_, err = supervisor.Run(context.Background(), AttemptSpec{
+		Executable: executable, ExecutableDigest: digest,
+		Stdin: bytes.Repeat([]byte{'x'}, maxSupervisorStdinBytes+1),
+	})
+	if !errors.Is(err, ErrSupervisorConfig) {
+		t.Fatalf("oversized stdin error = %v", err)
+	}
+}
+
+func TestSupervisorRejectsAttestedWorkloadExecutableOrArgumentSubstitution(t *testing.T) {
+	for name, mutate := range map[string]func(*WorkloadAttestation){
+		"path": func(attestation *WorkloadAttestation) { attestation.Executable += ".other" },
+		"digest": func(attestation *WorkloadAttestation) {
+			attestation.ExecutableDigest[0] ^= 0xff
+		},
+		"arguments": func(attestation *WorkloadAttestation) {
+			attestation.Arguments = append(attestation.Arguments, "--injected")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			supervisor, launcher, executable, digest := newFixtureSupervisor(t, SupervisorConfig{})
+			launcher.mutateAttestation = mutate
+			result, err := supervisor.Run(context.Background(), AttemptSpec{
+				Executable: executable, ExecutableDigest: digest,
+				Arguments: []string{"-test.run=TestSupervisorHelperProcess"},
+			})
+			if !errors.Is(err, ErrSupervisorConfig) || !result.CleanupSucceeded {
+				t.Fatalf("substitution result=%+v err=%v", result, err)
+			}
+		})
+	}
+}
+
+func TestSupervisorKeepsOuterClientSeparateFromAttestedWorkload(t *testing.T) {
+	supervisor, launcher, executable, digest := newFixtureSupervisor(t, SupervisorConfig{})
+	launcher.wrapCommand = func(spec LaunchSpec) *exec.Cmd {
+		// The fixture shell is only an outer client stand-in. The trusted
+		// attestation remains the exact inner harness executable and argv.
+		arguments := append([]string{"-c", `exec "$@"`, "fixture-wrapper", spec.Executable}, spec.Arguments...)
+		return exec.Command("/bin/sh", arguments...)
+	}
+	result, err := supervisor.Run(context.Background(), AttemptSpec{
+		Executable: executable, ExecutableDigest: digest,
+		Arguments: []string{"-test.run=TestSupervisorHelperProcess"},
+		Environment: []EnvironmentVariable{
+			{Name: helperEnabled, Value: "1"}, {Name: helperMode, Value: "environment"},
+		},
+	})
+	if err != nil || result.ExitCode != 0 || !result.CleanupSucceeded ||
+		launcher.lastSpec().Executable != executable {
+		t.Fatalf("outer wrapper result=%+v err=%v", result, err)
+	}
+}
+
+func TestSupervisorRetainsProtocolPrefixWhenBoundaryTeardownFails(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	executable, err = filepath.EvalSymlinks(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := DigestExecutable(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	launcher := &failingTeardownLauncher{}
+	supervisor, err := NewSupervisor(SupervisorConfig{
+		ScratchRoot: newCanonicalTempDir(t), Launcher: launcher,
+		Timeout: 2 * time.Second, TerminationGrace: 100 * time.Millisecond,
+		AllowedEnvironmentNames: []string{helperEnabled, helperMode},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := supervisor.Run(context.Background(), AttemptSpec{
+		Executable: executable, ExecutableDigest: digest,
+		Arguments: []string{"-test.run=TestSupervisorHelperProcess"},
+		Environment: []EnvironmentVariable{
+			{Name: helperEnabled, Value: "1"}, {Name: helperMode, Value: "protocol-terminal"},
+		},
+	})
+	if err == nil || !strings.Contains(string(result.Stdout), `{"type":"turn.started"}`) ||
+		!strings.Contains(string(result.Stdout), `{"type":"turn.completed"}`) ||
+		result.StdoutBytes != len(result.Stdout) || result.ExitCode != 0 || result.IsolationProfile == "" {
+		t.Fatalf("teardown evidence result=%+v err=%v stdout=%q", result, err, result.Stdout)
+	}
+}
+
+type failingTeardownLauncher struct{ fixtureLauncher }
+
+func (launcher *failingTeardownLauncher) Prepare(ctx context.Context, spec LaunchSpec) (IsolationBoundary, error) {
+	boundary, err := launcher.fixtureLauncher.Prepare(ctx, spec)
+	if err != nil {
+		return nil, err
+	}
+	return &failingTeardownBoundary{fixtureBoundary: boundary.(*fixtureBoundary)}, nil
+}
+
+type failingTeardownBoundary struct{ *fixtureBoundary }
+
+func (*failingTeardownBoundary) Alive(context.Context) (bool, error) {
+	return false, errors.New("private inspection failure")
 }
 
 func TestSupervisorRejectsDigestDriftAndAmbientSecretRoutes(t *testing.T) {
@@ -229,7 +374,7 @@ func TestSupervisorBoundsOutputAndReapsTermResistantGroup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run output bomb: %v", err)
 	}
-	if result.FailureCode != "stdout_limit_exceeded" || len(result.Stdout) != 0 ||
+	if result.FailureCode != "stdout_limit_exceeded" || len(result.Stdout) != 128 ||
 		!result.TermSent || !result.DescendantsReaped || !result.CleanupSucceeded {
 		t.Fatalf("unexpected bounded output result: %+v", result)
 	}
@@ -541,6 +686,17 @@ func TestSupervisorHelperProcess(t *testing.T) {
 			os.Exit(95)
 		}
 		fmt.Println("credential-ok")
+	case "stdin":
+		content, err := io.ReadAll(os.Stdin)
+		if err != nil || string(content) != "private prompt" {
+			os.Exit(96)
+		}
+		fmt.Println("stdin-ok")
+	case "protocol-terminal":
+		fmt.Println(`{"type":"thread.started","thread_id":"fixture"}`)
+		fmt.Println(`{"type":"turn.started"}`)
+		fmt.Println(`{"type":"item.completed","item":{"type":"agent_message","text":"fixture result"}}`)
+		fmt.Println(`{"type":"turn.completed"}`)
 	case "output-bomb":
 		_, _ = os.Stdout.Write(bytes.Repeat([]byte("x"), 4096))
 		time.Sleep(time.Second)

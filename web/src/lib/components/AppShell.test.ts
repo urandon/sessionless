@@ -12,6 +12,7 @@ describe('AppShell', () => {
       '#main-content',
     );
     expect(screen.getByRole('navigation', { name: 'Primary navigation' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Workers' })).toHaveAttribute('href', '/workers');
     expect(screen.getByRole('main')).toHaveAttribute('tabindex', '-1');
   });
 });

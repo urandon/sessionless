@@ -79,6 +79,7 @@ const (
 	ActionUnavailableAlreadyApplied          ActionUnavailableCodeV1 = "already_applied"
 	ActionUnavailableUnsupportedPlatform     ActionUnavailableCodeV1 = "unsupported_platform"
 	ActionUnavailableFeatureDisabled         ActionUnavailableCodeV1 = "feature_disabled"
+	ActionUnavailableControlContract         ActionUnavailableCodeV1 = "control_contract_unavailable"
 	ActionUnavailableConfirmationRequired    ActionUnavailableCodeV1 = "confirmation_required"
 	ActionUnavailableOperationInProgress     ActionUnavailableCodeV1 = "operation_in_progress"
 )
@@ -86,14 +87,14 @@ const (
 type WorkerV1 struct {
 	WorkerID             string    `json:"worker_id"`
 	DisplayName          string    `json:"display_name"`
-	Revision             uint64    `json:"revision"`
-	EnrollmentGeneration uint64    `json:"enrollment_generation"`
-	ConnectionGeneration uint64    `json:"connection_generation"`
+	Revision             uint64    `json:"revision,string"`
+	EnrollmentGeneration uint64    `json:"enrollment_generation,string"`
+	ConnectionGeneration uint64    `json:"connection_generation,string"`
 	DesiredState         string    `json:"desired_state"`
 	ObservedState        string    `json:"observed_state"`
 	CreatedAt            time.Time `json:"created_at"`
 	UpdatedAt            time.Time `json:"updated_at"`
-	RevokedAt            time.Time `json:"revoked_at,omitempty"`
+	RevokedAt            time.Time `json:"revoked_at,omitzero"`
 }
 
 type IdentityV1 struct {
@@ -105,7 +106,7 @@ type IdentityV1 struct {
 type LastFailureV1 struct {
 	State      string      `json:"state"`
 	Code       string      `json:"code,omitempty"`
-	OccurredAt time.Time   `json:"occurred_at,omitempty"`
+	OccurredAt time.Time   `json:"occurred_at,omitzero"`
 	Operation  string      `json:"operation,omitempty"`
 	RetryClass string      `json:"retry_class,omitempty"`
 	Source     string      `json:"source,omitempty"`
@@ -115,7 +116,7 @@ type LastFailureV1 struct {
 type DaemonObservationV1 struct {
 	State      string      `json:"state"`
 	Source     string      `json:"source"`
-	ObservedAt time.Time   `json:"observed_at,omitempty"`
+	ObservedAt time.Time   `json:"observed_at,omitzero"`
 	Freshness  FreshnessV1 `json:"freshness"`
 }
 
@@ -135,10 +136,10 @@ type ReadinessV1 struct {
 type ConnectivityV1 struct {
 	ConnectionID            string        `json:"connection_id,omitempty"`
 	State                   string        `json:"state"`
-	ConnectedAt             time.Time     `json:"connected_at,omitempty"`
-	LastContactAt           time.Time     `json:"last_contact_at,omitempty"`
-	PresenceExpiresAt       time.Time     `json:"presence_expires_at,omitempty"`
-	AuthenticationExpiresAt time.Time     `json:"authentication_expires_at,omitempty"`
+	ConnectedAt             time.Time     `json:"connected_at,omitzero"`
+	LastContactAt           time.Time     `json:"last_contact_at,omitzero"`
+	PresenceExpiresAt       time.Time     `json:"presence_expires_at,omitzero"`
+	AuthenticationExpiresAt time.Time     `json:"authentication_expires_at,omitzero"`
 	Freshness               FreshnessV1   `json:"freshness"`
 	LastFailure             LastFailureV1 `json:"last_failure"`
 }
@@ -151,7 +152,7 @@ type HarnessV1 struct {
 
 type CapabilityV1 struct {
 	State                 string    `json:"state"`
-	ManifestRevision      uint64    `json:"manifest_revision,omitempty"`
+	ManifestRevision      uint64    `json:"manifest_revision,omitempty,string"`
 	DigestFingerprint     string    `json:"digest_fingerprint,omitempty"`
 	OperatingSystem       string    `json:"operating_system,omitempty"`
 	Architecture          string    `json:"architecture,omitempty"`
@@ -160,7 +161,7 @@ type CapabilityV1 struct {
 	IsolationEvidence     []string  `json:"isolation_evidence"`
 	Features              []string  `json:"features"`
 	MaxConcurrentAttempts uint32    `json:"max_concurrent_attempts,omitempty"`
-	ObservedAt            time.Time `json:"observed_at,omitempty"`
+	ObservedAt            time.Time `json:"observed_at,omitzero"`
 }
 
 type AdmissionPreviewV1 struct {
@@ -168,10 +169,10 @@ type AdmissionPreviewV1 struct {
 	DecisionCode                string    `json:"decision_code,omitempty"`
 	EvaluationRef               string    `json:"evaluation_ref,omitempty"`
 	CandidateRef                string    `json:"candidate_ref,omitempty"`
-	EvaluatedAt                 time.Time `json:"evaluated_at,omitempty"`
-	WorkerRevision              uint64    `json:"worker_revision,omitempty"`
-	EnrollmentGeneration        uint64    `json:"enrollment_generation,omitempty"`
-	ConnectionGeneration        uint64    `json:"connection_generation,omitempty"`
+	EvaluatedAt                 time.Time `json:"evaluated_at,omitzero"`
+	WorkerRevision              uint64    `json:"worker_revision,omitempty,string"`
+	EnrollmentGeneration        uint64    `json:"enrollment_generation,omitempty,string"`
+	ConnectionGeneration        uint64    `json:"connection_generation,omitempty,string"`
 	CapabilityDigestFingerprint string    `json:"capability_digest_fingerprint,omitempty"`
 	PolicyDigestFingerprint     string    `json:"policy_digest_fingerprint,omitempty"`
 	ContextDigestFingerprint    string    `json:"context_digest_fingerprint,omitempty"`
@@ -179,9 +180,9 @@ type AdmissionPreviewV1 struct {
 
 type QuotaObservationV1 struct {
 	State      string      `json:"state"`
-	Remaining  uint64      `json:"remaining,omitempty"`
-	ObservedAt time.Time   `json:"observed_at,omitempty"`
-	ResetAt    time.Time   `json:"reset_at,omitempty"`
+	Remaining  *uint64     `json:"remaining,omitempty,string"`
+	ObservedAt time.Time   `json:"observed_at,omitzero"`
+	ResetAt    time.Time   `json:"reset_at,omitzero"`
 	Source     string      `json:"source,omitempty"`
 	Freshness  FreshnessV1 `json:"freshness,omitempty"`
 }
@@ -196,38 +197,38 @@ type ResourceV1 struct {
 
 type CancelRequestV1 struct {
 	State       string    `json:"state"`
-	Revision    uint64    `json:"revision,omitempty"`
-	RequestedAt time.Time `json:"requested_at,omitempty"`
-	AckDeadline time.Time `json:"ack_deadline,omitempty"`
+	Revision    uint64    `json:"revision,omitempty,string"`
+	RequestedAt time.Time `json:"requested_at,omitzero"`
+	AckDeadline time.Time `json:"ack_deadline,omitzero"`
 }
 
 type CancelAcknowledgementV1 struct {
 	State          string    `json:"state"`
-	Revision       uint64    `json:"revision,omitempty"`
-	AcknowledgedAt time.Time `json:"acknowledged_at,omitempty"`
+	Revision       uint64    `json:"revision,omitempty,string"`
+	AcknowledgedAt time.Time `json:"acknowledged_at,omitzero"`
 }
 
 type ProcessObservationV1 struct {
 	State            string      `json:"state"`
 	AttemptID        string      `json:"attempt_id,omitempty"`
-	LeaseGeneration  uint64      `json:"lease_generation,omitempty"`
+	LeaseGeneration  uint64      `json:"lease_generation,omitempty,string"`
 	FenceFingerprint string      `json:"fence_fingerprint,omitempty"`
 	Source           string      `json:"source"`
-	ObservedAt       time.Time   `json:"observed_at,omitempty"`
+	ObservedAt       time.Time   `json:"observed_at,omitzero"`
 	Freshness        FreshnessV1 `json:"freshness"`
 }
 
 type WorkerTerminalV1 struct {
 	State               string `json:"state"`
-	Sequence            uint64 `json:"sequence,omitempty"`
+	Sequence            uint64 `json:"sequence,omitempty,string"`
 	Status              string `json:"status,omitempty"`
 	EvidenceFingerprint string `json:"evidence_fingerprint,omitempty"`
 }
 
 type CanonicalTerminalV1 struct {
 	State       string    `json:"state"`
-	CommittedAt time.Time `json:"committed_at,omitempty"`
-	Sequence    uint64    `json:"sequence,omitempty"`
+	CommittedAt time.Time `json:"committed_at,omitzero"`
+	Sequence    uint64    `json:"sequence,omitempty,string"`
 	Status      string    `json:"status,omitempty"`
 }
 
@@ -236,9 +237,9 @@ type ExecutionV1 struct {
 	RunID                 string                  `json:"run_id,omitempty"`
 	AttemptID             string                  `json:"attempt_id,omitempty"`
 	LeaseID               string                  `json:"lease_id,omitempty"`
-	LeaseGeneration       uint64                  `json:"lease_generation,omitempty"`
+	LeaseGeneration       uint64                  `json:"lease_generation,omitempty,string"`
 	FenceFingerprint      string                  `json:"fence_fingerprint,omitempty"`
-	LeaseExpiresAt        time.Time               `json:"lease_expires_at,omitempty"`
+	LeaseExpiresAt        time.Time               `json:"lease_expires_at,omitzero"`
 	CancelRequest         CancelRequestV1         `json:"cancel_request"`
 	CancelAcknowledgement CancelAcknowledgementV1 `json:"cancel_ack"`
 	ProcessObservation    ProcessObservationV1    `json:"process_observation"`
@@ -275,6 +276,7 @@ type AttachedWorkerUXReadModelV1 struct {
 }
 
 type AttachedWorkerSummaryV1 struct {
+	EvaluatedAt         time.Time      `json:"evaluated_at"`
 	Worker              WorkerV1       `json:"worker"`
 	Connectivity        ConnectivityV1 `json:"connectivity"`
 	ExecutionState      string         `json:"execution_state"`
@@ -293,7 +295,7 @@ type DiagnosticFactV1 struct {
 	Cohort     string      `json:"cohort"`
 	Code       string      `json:"code"`
 	State      string      `json:"state"`
-	ObservedAt time.Time   `json:"observed_at,omitempty"`
+	ObservedAt time.Time   `json:"observed_at,omitzero"`
 	Freshness  FreshnessV1 `json:"freshness,omitempty"`
 }
 
@@ -337,5 +339,5 @@ type ActionOperationV1 struct {
 	State       string                  `json:"state"`
 	ReasonCode  ActionUnavailableCodeV1 `json:"reason_code,omitempty"`
 	CreatedAt   time.Time               `json:"created_at"`
-	CompletedAt time.Time               `json:"completed_at,omitempty"`
+	CompletedAt time.Time               `json:"completed_at,omitzero"`
 }

@@ -260,6 +260,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/web/v1/attached-workers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listAttachedWorkers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/web/v1/attached-workers/{worker_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getAttachedWorker"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/web/v1/attached-workers/{worker_id}/diagnostics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getAttachedWorkerDiagnostics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -432,6 +480,242 @@ export interface components {
             /** Format: date-time */
             expires_at: string;
         };
+        /** @enum {string} */
+        AttachedWorkerFreshnessV1: "unknown" | "fresh" | "expired";
+        /** @description Canonical unsigned 64-bit decimal string; encoded as text to preserve browser precision. */
+        AttachedWorkerUint64V1: string;
+        /** @enum {string} */
+        AttachedWorkerReasonCodeV1: "worker_not_active" | "worker_revoked" | "worker_draining" | "worker_offline" | "connection_attaching" | "connection_superseded" | "presence_expired" | "authentication_expired" | "protocol_incompatible" | "capability_missing" | "capability_stale" | "capability_mismatch" | "policy_mismatch" | "isolation_unsupported" | "isolation_unverified" | "credential_unavailable" | "credential_reauth_required" | "entitlement_unknown" | "entitlement_inactive" | "quota_unknown" | "quota_zero" | "quota_exhausted" | "capacity_busy" | "attempt_active" | "attempt_ambiguous" | "control_contract_unavailable" | "backend_unavailable";
+        /** @enum {string} */
+        AttachedWorkerActionCodeV1: "create_enrollment" | "consume_enrollment" | "rename" | "rotate_identity" | "pause_admission" | "resume_admission" | "drain" | "revoke" | "request_cancel" | "reconnect_remediation" | "reauth_remediation" | "check_update" | "logout" | "uninstall_plan";
+        /** @enum {string} */
+        AttachedWorkerActionUnavailableCodeV1: "not_found" | "stale_revision" | "stale_generation" | "invalid_state" | "active_attempt" | "ambiguous_attempt" | "awaiting_acknowledgement" | "already_applied" | "unsupported_platform" | "feature_disabled" | "control_contract_unavailable" | "confirmation_required" | "operation_in_progress";
+        AttachedWorkerIdentityRecordV1: {
+            worker_id: string;
+            display_name: string;
+            revision: components["schemas"]["AttachedWorkerUint64V1"];
+            enrollment_generation: components["schemas"]["AttachedWorkerUint64V1"];
+            connection_generation: components["schemas"]["AttachedWorkerUint64V1"];
+            desired_state: string;
+            observed_state: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+            /** Format: date-time */
+            revoked_at?: string;
+        };
+        AttachedWorkerIdentityV1: {
+            algorithm: string;
+            fingerprint: string;
+            enrollment_state: string;
+        };
+        AttachedWorkerLastFailureV1: {
+            state: string;
+            code?: string;
+            /** Format: date-time */
+            occurred_at?: string;
+            operation?: string;
+            retry_class?: string;
+            source?: string;
+            freshness?: components["schemas"]["AttachedWorkerFreshnessV1"];
+        };
+        AttachedWorkerDaemonObservationV1: {
+            state: string;
+            source: string;
+            /** Format: date-time */
+            observed_at?: string;
+            freshness: components["schemas"]["AttachedWorkerFreshnessV1"];
+        };
+        AttachedWorkerIsolationV1: {
+            configuration_state: string;
+            advertised_evidence: string[];
+            verification_state: string;
+        };
+        AttachedWorkerReadinessV1: {
+            daemon_observation: components["schemas"]["AttachedWorkerDaemonObservationV1"];
+            last_daemon_failure: components["schemas"]["AttachedWorkerLastFailureV1"];
+            credential_state: string;
+            isolation: components["schemas"]["AttachedWorkerIsolationV1"];
+        };
+        AttachedWorkerConnectivityV1: {
+            connection_id?: string;
+            state: string;
+            /** Format: date-time */
+            connected_at?: string;
+            /** Format: date-time */
+            last_contact_at?: string;
+            /** Format: date-time */
+            presence_expires_at?: string;
+            /** Format: date-time */
+            authentication_expires_at?: string;
+            freshness: components["schemas"]["AttachedWorkerFreshnessV1"];
+            last_failure: components["schemas"]["AttachedWorkerLastFailureV1"];
+        };
+        AttachedWorkerHarnessV1: {
+            name?: string;
+            version?: string;
+            surface?: string;
+        };
+        AttachedWorkerCapabilityV1: {
+            state: string;
+            manifest_revision?: components["schemas"]["AttachedWorkerUint64V1"];
+            digest_fingerprint?: string;
+            operating_system?: string;
+            architecture?: string;
+            build_id?: string;
+            harness: components["schemas"]["AttachedWorkerHarnessV1"];
+            isolation_evidence: string[];
+            features: string[];
+            max_concurrent_attempts?: number;
+            /** Format: date-time */
+            observed_at?: string;
+        };
+        AttachedWorkerAdmissionPreviewV1: {
+            /** @enum {string} */
+            state: "not_evaluated" | "admitted" | "denied";
+            decision_code?: string;
+            evaluation_ref?: string;
+            candidate_ref?: string;
+            /** Format: date-time */
+            evaluated_at?: string;
+            worker_revision?: components["schemas"]["AttachedWorkerUint64V1"];
+            enrollment_generation?: components["schemas"]["AttachedWorkerUint64V1"];
+            connection_generation?: components["schemas"]["AttachedWorkerUint64V1"];
+            capability_digest_fingerprint?: string;
+            policy_digest_fingerprint?: string;
+            context_digest_fingerprint?: string;
+        };
+        AttachedWorkerQuotaObservationV1: {
+            state: string;
+            remaining?: components["schemas"]["AttachedWorkerUint64V1"];
+            /** Format: date-time */
+            observed_at?: string;
+            /** Format: date-time */
+            reset_at?: string;
+            source?: string;
+            freshness?: components["schemas"]["AttachedWorkerFreshnessV1"];
+        };
+        AttachedWorkerResourceV1: {
+            state: string;
+            resource_ref?: string;
+            credential_state: string;
+            entitlement_state: string;
+            quota: components["schemas"]["AttachedWorkerQuotaObservationV1"];
+        };
+        AttachedWorkerCancelRequestV1: {
+            state: string;
+            revision?: components["schemas"]["AttachedWorkerUint64V1"];
+            /** Format: date-time */
+            requested_at?: string;
+            /** Format: date-time */
+            ack_deadline?: string;
+        };
+        AttachedWorkerCancelAcknowledgementV1: {
+            state: string;
+            revision?: components["schemas"]["AttachedWorkerUint64V1"];
+            /** Format: date-time */
+            acknowledged_at?: string;
+        };
+        AttachedWorkerProcessObservationV1: {
+            state: string;
+            attempt_id?: string;
+            lease_generation?: components["schemas"]["AttachedWorkerUint64V1"];
+            fence_fingerprint?: string;
+            source: string;
+            /** Format: date-time */
+            observed_at?: string;
+            freshness: components["schemas"]["AttachedWorkerFreshnessV1"];
+        };
+        AttachedWorkerTerminalEvidenceV1: {
+            state: string;
+            sequence?: components["schemas"]["AttachedWorkerUint64V1"];
+            status?: string;
+            evidence_fingerprint?: string;
+        };
+        AttachedWorkerCanonicalTerminalV1: {
+            state: string;
+            /** Format: date-time */
+            committed_at?: string;
+            sequence?: components["schemas"]["AttachedWorkerUint64V1"];
+            status?: string;
+        };
+        AttachedWorkerExecutionV1: {
+            state: string;
+            run_id?: string;
+            attempt_id?: string;
+            lease_id?: string;
+            lease_generation?: components["schemas"]["AttachedWorkerUint64V1"];
+            fence_fingerprint?: string;
+            /** Format: date-time */
+            lease_expires_at?: string;
+            cancel_request: components["schemas"]["AttachedWorkerCancelRequestV1"];
+            cancel_ack: components["schemas"]["AttachedWorkerCancelAcknowledgementV1"];
+            process_observation: components["schemas"]["AttachedWorkerProcessObservationV1"];
+            worker_terminal: components["schemas"]["AttachedWorkerTerminalEvidenceV1"];
+            canonical_terminal: components["schemas"]["AttachedWorkerCanonicalTerminalV1"];
+        };
+        AttachedWorkerAvailableActionV1: {
+            code: components["schemas"]["AttachedWorkerActionCodeV1"];
+            enabled: boolean;
+            reason_code?: components["schemas"]["AttachedWorkerActionUnavailableCodeV1"];
+            confirmation?: string;
+        };
+        AttachedWorkerGovernanceV1: {
+            admission_control: string;
+            remote_erase: string;
+            available_actions: components["schemas"]["AttachedWorkerAvailableActionV1"][];
+        };
+        AttachedWorkerReadModelV1: {
+            /** @constant */
+            version: 1;
+            /** Format: date-time */
+            evaluated_at: string;
+            worker: components["schemas"]["AttachedWorkerIdentityRecordV1"];
+            identity: components["schemas"]["AttachedWorkerIdentityV1"];
+            readiness: components["schemas"]["AttachedWorkerReadinessV1"];
+            connectivity: components["schemas"]["AttachedWorkerConnectivityV1"];
+            capability: components["schemas"]["AttachedWorkerCapabilityV1"];
+            admission_preview: components["schemas"]["AttachedWorkerAdmissionPreviewV1"];
+            observation_warnings: components["schemas"]["AttachedWorkerReasonCodeV1"][];
+            resource: components["schemas"]["AttachedWorkerResourceV1"];
+            execution: components["schemas"]["AttachedWorkerExecutionV1"];
+            governance: components["schemas"]["AttachedWorkerGovernanceV1"];
+        };
+        AttachedWorkerSummaryV1: {
+            /** Format: date-time */
+            evaluated_at: string;
+            worker: components["schemas"]["AttachedWorkerIdentityRecordV1"];
+            connectivity: components["schemas"]["AttachedWorkerConnectivityV1"];
+            execution_state: string;
+            observation_warnings: components["schemas"]["AttachedWorkerReasonCodeV1"][];
+        };
+        AttachedWorkerListV1: {
+            /** @constant */
+            version: 1;
+            /** Format: date-time */
+            evaluated_at: string;
+            items: components["schemas"]["AttachedWorkerSummaryV1"][];
+            next_worker_id?: string;
+            has_more: boolean;
+        };
+        AttachedWorkerDiagnosticFactV1: {
+            cohort: string;
+            code: string;
+            state: string;
+            /** Format: date-time */
+            observed_at?: string;
+            freshness?: components["schemas"]["AttachedWorkerFreshnessV1"];
+        };
+        AttachedWorkerDiagnosticsV1: {
+            /** @constant */
+            version: 1;
+            /** Format: date-time */
+            evaluated_at: string;
+            worker_id: string;
+            facts: components["schemas"]["AttachedWorkerDiagnosticFactV1"][];
+            warnings: components["schemas"]["AttachedWorkerReasonCodeV1"][];
+        };
         ArtifactCapability: {
             name: string;
             media_type: string;
@@ -507,6 +791,7 @@ export interface components {
     parameters: {
         SessionID: string;
         RunID: string;
+        WorkerID: string;
     };
     requestBodies: never;
     headers: never;
@@ -890,6 +1175,76 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ArtifactCapability"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    listAttachedWorkers: {
+        parameters: {
+            query?: {
+                after_worker_id?: string;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Owner-scoped attached workers */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttachedWorkerListV1"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getAttachedWorker: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                worker_id: components["parameters"]["WorkerID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Owner-scoped attached-worker read model */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttachedWorkerReadModelV1"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getAttachedWorkerDiagnostics: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                worker_id: components["parameters"]["WorkerID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bounded redacted attached-worker diagnostics */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttachedWorkerDiagnosticsV1"];
                 };
             };
             default: components["responses"]["Error"];

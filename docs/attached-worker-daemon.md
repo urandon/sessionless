@@ -10,9 +10,10 @@ complete.
 `internal/attachedworkerdaemon` provides three composable boundaries:
 
 - `Supervisor` prepares one mandatory reviewed `IsolationBoundary`, starts its
-  exact local client command, verifies the harness SHA-256 digest, supplies an
-  exact argv and replacement environment, bounds stdout/stderr and wall time,
-  and owns both the local process group and the external boundary lifecycle;
+  bounded local client command, verifies the separately attested inner harness
+  artifact and exact argv plus its SHA-256 digest, supplies a replacement
+  environment, bounds stdout/stderr and wall time, and owns both the local
+  process group and the external boundary lifecycle;
 - `InvocationRunner` composes that process with the invocation-scoped
   credential lifecycle. It validates the returned handle and materialization,
   adds only the exact credential root to the launcher read allowlist and the
@@ -55,7 +56,9 @@ capabilities:
 The returned lifecycle handle must identify only that invocation, stop the
 actual isolated workload rather than merely its CLI client, verify liveness
 without trusting child output, honor every cleanup context, and make release
-idempotent. A launcher that returns an error from `Prepare` owns cleanup of any
+idempotent. It must separately attest the exact inner workload executable and
+argv; those are not inferred from a Docker, bwrap, VM, or other outer client
+command. A launcher that returns an error from `Prepare` owns cleanup of any
 partially created runtime resources. `Prepare` receives a supervisor-bounded
 context and must stop and clean partial resources when it expires. The
 supervisor does not infer workload death from a successful client exit.

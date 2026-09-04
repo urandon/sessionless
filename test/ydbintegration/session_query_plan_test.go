@@ -317,6 +317,18 @@ func TestCanonicalSessionQueriesUseBoundedPlans(t *testing.T) {
 			},
 		},
 		{
+			name: "attached worker attempt message provenance range",
+			query: `SELECT direction,attempt_sequence,connection_generation,kind,created_at,payload
+				FROM attached_worker_attempt_messages
+				WHERE tenant_id = $1 AND owner_user_id = $2 AND worker_id = $3 AND attempt_id = $4
+				ORDER BY direction,attempt_sequence LIMIT 65`,
+			args: []any{tenantID, userID, workerID, attemptID},
+			contract: queryPlanContract{
+				operator: "TableRangeScan",
+				table:    "attached_worker_attempt_messages",
+			},
+		},
+		{
 			name: "attached worker attempt deadline bucket range",
 			query: `SELECT shard_bucket,deadline_at,tenant_id,owner_user_id,worker_id,attempt_id,kind,
 					lease_generation,attempt_revision

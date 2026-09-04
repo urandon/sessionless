@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"gitcode.com/urandon/sessionless/internal/attachedworkerux"
 	"gitcode.com/urandon/sessionless/internal/buildinfo"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
@@ -406,6 +407,168 @@ func TestSessionRoutesUseWebAuthorizationCSRFAndSafeSelectors(t *testing.T) {
 	}
 }
 
+func TestAttachedWorkerReadRoutesAreOwnerScopedAndReadOnly(t *testing.T) {
+	auth := newMemoryAuthStore()
+	subject := domain.ExternalSubject{Provider: domain.IdentityProviderTelegram, Subject: "424242"}
+	userID := domain.UserID("usr_known_user")
+	auth.identities[subject] = domain.ExternalIdentity{Subject: subject, UserID: userID, CreatedAt: bffTestTime, UpdatedAt: bffTestTime}
+	auth.memberships[userID] = []domain.TenantMembership{membership("ten_alpha", userID, domain.TenantMembershipOwner)}
+	worker := domain.AttachedWorker{
+		TenantID: "ten_alpha", OwnerUserID: userID, ID: "wrk_owner_worker", DisplayName: "Office Mac",
+		IdentityPublicKey: bytes.Repeat([]byte{1}, 32), EnrollmentGeneration: 1, ConnectionGeneration: 1,
+		DesiredState: domain.AttachedWorkerDesiredActive, ObservedState: domain.AttachedWorkerObservedOffline,
+		Revision: 1, CreatedAt: bffTestTime, UpdatedAt: bffTestTime,
+	}
+	foreign := worker
+	foreign.OwnerUserID, foreign.ID, foreign.DisplayName = "usr_other_owner", "wrk_foreign_worker", "Foreign"
+	store := &memoryAttachedWorkerUXStore{workers: []domain.AttachedWorker{worker, foreign}}
+	var requestLogs bytes.Buffer
+	handler := newAttachedWorkerTestHandlerWithLogger(t, auth, subject.Subject, store,
+		slog.New(slog.NewTextHandler(&requestLogs, nil)))
+	sessionCookie, _ := performLogin(t, handler, "/workers")
+
+	list := httptest.NewRequest(http.MethodGet,
+		"https://web.dev.sessionless.triborg.dev"+webcontract.RouteAttachedWorkers+"?limit=1", nil)
+	list.AddCookie(sessionCookie)
+	listResponse := httptest.NewRecorder()
+	handler.ServeHTTP(listResponse, list)
+	if listResponse.Code != http.StatusOK || !strings.Contains(listResponse.Body.String(), `"worker_id":"wrk_owner_worker"`) || strings.Contains(listResponse.Body.String(), "Foreign") {
+		t.Fatalf("worker list status=%d body=%s", listResponse.Code, listResponse.Body.String())
+	}
+	// The canonical reducer loads limit+1 rows to determine has_more.
+	if store.lastTenant != "ten_alpha" || store.lastOwner != userID || store.lastLimit != 2 || store.lastAfter != "" {
+		t.Fatalf("worker list authority/query mismatch: tenant=%q owner=%q after=%q limit=%d", store.lastTenant, store.lastOwner, store.lastAfter, store.lastLimit)
+	}
+
+	detail := httptest.NewRequest(http.MethodGet,
+		"https://web.dev.sessionless.triborg.dev/api/web/v1/attached-workers/wrk_owner_worker", nil)
+	detail.AddCookie(sessionCookie)
+	detailResponse := httptest.NewRecorder()
+	handler.ServeHTTP(detailResponse, detail)
+	if detailResponse.Code != http.StatusOK || !strings.Contains(detailResponse.Body.String(), `"state":"not_evaluated"`) || !strings.Contains(detailResponse.Body.String(), `"enabled":false`) {
+		t.Fatalf("worker detail status=%d body=%s", detailResponse.Code, detailResponse.Body.String())
+	}
+
+	diagnostics := httptest.NewRequest(http.MethodGet,
+		"https://web.dev.sessionless.triborg.dev/api/web/v1/attached-workers/wrk_owner_worker/diagnostics", nil)
+	diagnostics.AddCookie(sessionCookie)
+	diagnosticsResponse := httptest.NewRecorder()
+	handler.ServeHTTP(diagnosticsResponse, diagnostics)
+	if diagnosticsResponse.Code != http.StatusOK || !strings.Contains(diagnosticsResponse.Body.String(), `"code":"daemon_state","state":"unknown"`) {
+		t.Fatalf("worker diagnostics status=%d body=%s", diagnosticsResponse.Code, diagnosticsResponse.Body.String())
+	}
+
+	var missingEnvelope, foreignEnvelope webcontract.ErrorEnvelope
+	for _, test := range []struct {
+		id       string
+		envelope *webcontract.ErrorEnvelope
+	}{
+		{id: "wrk_missing_worker", envelope: &missingEnvelope},
+		{id: "wrk_foreign_worker", envelope: &foreignEnvelope},
+	} {
+		request := httptest.NewRequest(http.MethodGet,
+			"https://web.dev.sessionless.triborg.dev/api/web/v1/attached-workers/"+test.id, nil)
+		request.AddCookie(sessionCookie)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusNotFound || json.Unmarshal(response.Body.Bytes(), test.envelope) != nil {
+			t.Fatalf("worker %s status=%d body=%s", test.id, response.Code, response.Body.String())
+		}
+	}
+	if missingEnvelope.Error.Code != foreignEnvelope.Error.Code || missingEnvelope.Error.Message != foreignEnvelope.Error.Message {
+		t.Fatalf("missing and foreign worker oracles differ: missing=%+v foreign=%+v", missingEnvelope, foreignEnvelope)
+	}
+
+	for _, rawQuery := range []string{
+		"limit=51", "limit=0", "limit=abc", "limit=1&limit=2", "unknown=value",
+		"after_worker_id=", "after_worker_id=bad%2Fworker",
+	} {
+		invalid := httptest.NewRequest(http.MethodGet,
+			"https://web.dev.sessionless.triborg.dev"+webcontract.RouteAttachedWorkers+"?"+rawQuery, nil)
+		invalid.AddCookie(sessionCookie)
+		invalidResponse := httptest.NewRecorder()
+		handler.ServeHTTP(invalidResponse, invalid)
+		if invalidResponse.Code != http.StatusBadRequest {
+			t.Fatalf("invalid worker query %q status=%d body=%s", rawQuery, invalidResponse.Code, invalidResponse.Body.String())
+		}
+	}
+	for _, path := range []string{
+		"/api/web/v1/attached-workers/wrk_owner_worker?limit=1",
+		"/api/web/v1/attached-workers/wrk_owner_worker/diagnostics?extra=1",
+	} {
+		invalid := httptest.NewRequest(http.MethodGet, "https://web.dev.sessionless.triborg.dev"+path, nil)
+		invalid.AddCookie(sessionCookie)
+		invalidResponse := httptest.NewRecorder()
+		handler.ServeHTTP(invalidResponse, invalid)
+		if invalidResponse.Code != http.StatusBadRequest {
+			t.Fatalf("unexpected selector query %q status=%d body=%s", path, invalidResponse.Code, invalidResponse.Body.String())
+		}
+	}
+	post := httptest.NewRequest(http.MethodPost,
+		"https://web.dev.sessionless.triborg.dev/api/web/v1/attached-workers/wrk_owner_worker", nil)
+	post.AddCookie(sessionCookie)
+	postResponse := httptest.NewRecorder()
+	handler.ServeHTTP(postResponse, post)
+	if postResponse.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("worker mutation route status=%d body=%s", postResponse.Code, postResponse.Body.String())
+	}
+	logs := requestLogs.String()
+	if strings.Contains(logs, "wrk_owner_worker") || !strings.Contains(logs, webcontract.RouteAttachedWorker) {
+		t.Fatalf("request logs must contain the route template and no worker selector: %s", logs)
+	}
+	if store.mutations != 0 {
+		t.Fatalf("read routes caused %d mutations", store.mutations)
+	}
+}
+
+func TestAttachedWorkerReadRoutesAuthorizeBeforeReadingAndSanitizeBackends(t *testing.T) {
+	auth := newMemoryAuthStore()
+	subject := domain.ExternalSubject{Provider: domain.IdentityProviderTelegram, Subject: "515151"}
+	userID := domain.UserID("usr_worker_reader")
+	auth.identities[subject] = domain.ExternalIdentity{Subject: subject, UserID: userID, CreatedAt: bffTestTime, UpdatedAt: bffTestTime}
+	auth.memberships[userID] = []domain.TenantMembership{membership("ten_alpha", userID, domain.TenantMembershipOwner)}
+	store := &memoryAttachedWorkerUXStore{failure: errors.New("provider-token=must-not-escape")}
+	handler := newAttachedWorkerTestHandler(t, auth, subject.Subject, store)
+
+	unauthenticated := httptest.NewRequest(http.MethodGet,
+		"https://web.dev.sessionless.triborg.dev"+webcontract.RouteAttachedWorkers, nil)
+	unauthenticatedResponse := httptest.NewRecorder()
+	handler.ServeHTTP(unauthenticatedResponse, unauthenticated)
+	if unauthenticatedResponse.Code != http.StatusUnauthorized || store.reads != 0 {
+		t.Fatalf("unauthenticated status=%d reads=%d", unauthenticatedResponse.Code, store.reads)
+	}
+
+	sessionCookie, _ := performLogin(t, handler, "/workers")
+	backend := httptest.NewRequest(http.MethodGet,
+		"https://web.dev.sessionless.triborg.dev"+webcontract.RouteAttachedWorkers, nil)
+	backend.AddCookie(sessionCookie)
+	backendResponse := httptest.NewRecorder()
+	handler.ServeHTTP(backendResponse, backend)
+	if backendResponse.Code != http.StatusServiceUnavailable || strings.Contains(backendResponse.Body.String(), "provider-token") {
+		t.Fatalf("backend status=%d body=%s", backendResponse.Code, backendResponse.Body.String())
+	}
+}
+
+func TestAttachedWorkerReadRoutesRejectOversizedProjection(t *testing.T) {
+	auth := newMemoryAuthStore()
+	subject := domain.ExternalSubject{Provider: domain.IdentityProviderTelegram, Subject: "616161"}
+	userID := domain.UserID("usr_worker_reader")
+	auth.identities[subject] = domain.ExternalIdentity{Subject: subject, UserID: userID, CreatedAt: bffTestTime, UpdatedAt: bffTestTime}
+	auth.memberships[userID] = []domain.TenantMembership{membership("ten_alpha", userID, domain.TenantMembershipOwner)}
+	service := oversizedAttachedWorkerReadService{}
+	handler := newAttachedWorkerHandlerWithService(t, auth, subject.Subject, service, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	sessionCookie, _ := performLogin(t, handler, "/workers")
+
+	request := httptest.NewRequest(http.MethodGet,
+		"https://web.dev.sessionless.triborg.dev"+webcontract.RouteAttachedWorkers, nil)
+	request.AddCookie(sessionCookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusServiceUnavailable || strings.Contains(response.Body.String(), strings.Repeat("x", 128)) {
+		t.Fatalf("oversized projection status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 const maxTestRequestBytes = 64 << 10
 
 func newTestHandler(t *testing.T, store *memoryAuthStore, subject string) http.Handler {
@@ -449,6 +612,38 @@ func newSessionTestHandler(t *testing.T, auth *memoryAuthStore, subject string, 
 		Provider: fakeProvider{subject: subject}, Store: auth, Sessions: sessions, IDs: fixedIDs{},
 		Clock: fixedClock{now: bffTestTime}, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Build: buildinfo.Current("web-bff-session-test"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return handler
+}
+
+func newAttachedWorkerTestHandler(t *testing.T, auth *memoryAuthStore, subject string, store ports.AttachedWorkerUXReadStore) http.Handler {
+	t.Helper()
+	return newAttachedWorkerTestHandlerWithLogger(t, auth, subject, store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+}
+
+func newAttachedWorkerTestHandlerWithLogger(t *testing.T, auth *memoryAuthStore, subject string, store ports.AttachedWorkerUXReadStore, logger *slog.Logger) http.Handler {
+	t.Helper()
+	workers, err := attachedworkerux.NewService(store, func() time.Time { return bffTestTime })
+	if err != nil {
+		t.Fatal(err)
+	}
+	return newAttachedWorkerHandlerWithService(t, auth, subject, workers, logger)
+}
+
+func newAttachedWorkerHandlerWithService(t *testing.T, auth *memoryAuthStore, subject string, workers webbff.AttachedWorkerReadService, logger *slog.Logger) http.Handler {
+	t.Helper()
+	handler, err := webbff.New(webbff.Config{
+		BaseURL:     "https://web.dev.sessionless.triborg.dev",
+		RedirectURI: "https://web.dev.sessionless.triborg.dev" + webcontract.RouteOIDCCallback,
+		OIDCPolicy: domain.OIDCVerificationPolicy{
+			Issuer: "https://oauth.telegram.org", Audience: "100000", AllowedAlgorithms: []string{"RS256"},
+		},
+		Provider: fakeProvider{subject: subject}, Store: auth, AttachedWorkers: workers, IDs: fixedIDs{},
+		Clock: fixedClock{now: bffTestTime}, Logger: logger,
+		Build: buildinfo.Current("web-bff-attached-worker-test"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -765,3 +960,78 @@ func (memorySessionBlobs) Open(context.Context, domain.TenantID, domain.BlobRef)
 }
 
 func (memorySessionBlobs) Delete(context.Context, domain.TenantID, domain.BlobRef) error { return nil }
+
+type memoryAttachedWorkerUXStore struct {
+	workers    []domain.AttachedWorker
+	mutations  int
+	reads      int
+	failure    error
+	lastTenant domain.TenantID
+	lastOwner  domain.UserID
+	lastAfter  domain.AttachedWorkerID
+	lastLimit  uint64
+}
+
+type oversizedAttachedWorkerReadService struct{}
+
+func (oversizedAttachedWorkerReadService) List(context.Context, domain.TenantID, domain.UserID, domain.AttachedWorkerID, uint64) (attachedworkerux.AttachedWorkerListV1, error) {
+	return attachedworkerux.AttachedWorkerListV1{
+		Version: attachedworkerux.ReadModelVersionV1, EvaluatedAt: bffTestTime,
+		Items: []attachedworkerux.AttachedWorkerSummaryV1{{Worker: attachedworkerux.WorkerV1{DisplayName: strings.Repeat("x", 300<<10)}}},
+	}, nil
+}
+
+func (oversizedAttachedWorkerReadService) Get(context.Context, domain.TenantID, domain.UserID, domain.AttachedWorkerID) (attachedworkerux.AttachedWorkerUXReadModelV1, error) {
+	return attachedworkerux.AttachedWorkerUXReadModelV1{}, attachedworkerux.ErrNotFound
+}
+
+func (oversizedAttachedWorkerReadService) Diagnostics(context.Context, domain.TenantID, domain.UserID, domain.AttachedWorkerID) (attachedworkerux.AttachedWorkerDiagnosticsV1, error) {
+	return attachedworkerux.AttachedWorkerDiagnosticsV1{}, attachedworkerux.ErrNotFound
+}
+
+func (store *memoryAttachedWorkerUXStore) LoadAttachedWorker(_ context.Context, tenantID domain.TenantID, ownerUserID domain.UserID, workerID domain.AttachedWorkerID) (domain.AttachedWorker, bool, error) {
+	store.reads++
+	if store.failure != nil {
+		return domain.AttachedWorker{}, false, store.failure
+	}
+	for _, worker := range store.workers {
+		if worker.TenantID == tenantID && worker.OwnerUserID == ownerUserID && worker.ID == workerID {
+			return worker, true, nil
+		}
+	}
+	return domain.AttachedWorker{}, false, nil
+}
+
+func (store *memoryAttachedWorkerUXStore) ListAttachedWorkers(_ context.Context, tenantID domain.TenantID, ownerUserID domain.UserID, after domain.AttachedWorkerID, limit uint64) ([]domain.AttachedWorker, error) {
+	store.reads++
+	store.lastTenant, store.lastOwner, store.lastAfter, store.lastLimit = tenantID, ownerUserID, after, limit
+	if store.failure != nil {
+		return nil, store.failure
+	}
+	result := make([]domain.AttachedWorker, 0, len(store.workers))
+	for _, worker := range store.workers {
+		if worker.TenantID == tenantID && worker.OwnerUserID == ownerUserID && worker.ID > after {
+			result = append(result, worker)
+		}
+	}
+	if uint64(len(result)) > limit {
+		result = result[:limit]
+	}
+	return result, nil
+}
+
+func (*memoryAttachedWorkerUXStore) LoadAttachedWorkerConnection(context.Context, domain.TenantID, domain.UserID, domain.AttachedWorkerID) (domain.AttachedWorkerConnection, bool, error) {
+	return domain.AttachedWorkerConnection{}, false, nil
+}
+
+func (*memoryAttachedWorkerUXStore) LoadAttachedWorkerCapabilityManifest(context.Context, domain.TenantID, domain.UserID, domain.AttachedWorkerID, domain.AttachedWorkerCapabilityDigest) (domain.AttachedWorkerCapabilityManifest, bool, error) {
+	return domain.AttachedWorkerCapabilityManifest{}, false, nil
+}
+
+func (*memoryAttachedWorkerUXStore) LoadAttachedWorkerAttempt(context.Context, domain.TenantID, domain.UserID, domain.AttachedWorkerID) (domain.AttachedWorkerAttemptV1, bool, error) {
+	return domain.AttachedWorkerAttemptV1{}, false, nil
+}
+
+func (*memoryAttachedWorkerUXStore) ListAttachedWorkerAttemptMessages(context.Context, domain.TenantID, domain.UserID, domain.AttachedWorkerID, domain.AttemptID) ([]domain.AttachedWorkerAttemptMessageV1, error) {
+	return nil, nil
+}

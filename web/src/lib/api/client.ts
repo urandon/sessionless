@@ -17,6 +17,14 @@ export type UploadIntent = Schemas['UploadIntent'];
 export type UploadCommit = Schemas['UploadCommit'];
 export type DownloadCapability = Schemas['DownloadCapability'];
 export type ArtifactCapability = Schemas['ArtifactCapability'];
+export type AttachedWorkerList = Schemas['AttachedWorkerListV1'];
+export type AttachedWorkerSummary = Schemas['AttachedWorkerSummaryV1'];
+export type AttachedWorkerReadModel = Schemas['AttachedWorkerReadModelV1'];
+export type AttachedWorkerDiagnostics = Schemas['AttachedWorkerDiagnosticsV1'];
+export type AttachedWorkerReasonCode = Schemas['AttachedWorkerReasonCodeV1'];
+export type AttachedWorkerActionCode = Schemas['AttachedWorkerActionCodeV1'];
+export type AttachedWorkerActionUnavailableCode = Schemas['AttachedWorkerActionUnavailableCodeV1'];
+export type AttachedWorkerAvailableAction = Schemas['AttachedWorkerAvailableActionV1'];
 
 export type PublicErrorCode = Schemas['PublicError']['code'];
 
@@ -79,6 +87,11 @@ export interface ListRunsQuery {
   limit?: number;
   etag?: string;
   signal?: AbortSignal;
+}
+
+export interface ListAttachedWorkersQuery {
+  afterWorkerId?: string;
+  limit?: number;
 }
 
 interface RequestOptions extends RequestInit {
@@ -234,6 +247,25 @@ export class CanonicalApiClient {
   ): Promise<ArtifactCapability> {
     return this.#json<ArtifactCapability>(
       `/api/web/v1/sessions/${selector(sessionId)}/runs/${selector(runId)}/artifact-manifests/${selector(manifestId)}/artifacts/${boundedInteger(index)}`,
+    );
+  }
+
+  listAttachedWorkers(query: ListAttachedWorkersQuery = {}): Promise<AttachedWorkerList> {
+    const params = new URLSearchParams();
+    setParam(params, 'after_worker_id', query.afterWorkerId);
+    setParam(params, 'limit', query.limit);
+    return this.#json<AttachedWorkerList>(withQuery('/api/web/v1/attached-workers', params));
+  }
+
+  getAttachedWorker(workerId: string): Promise<AttachedWorkerReadModel> {
+    return this.#json<AttachedWorkerReadModel>(
+      `/api/web/v1/attached-workers/${selector(workerId)}`,
+    );
+  }
+
+  getAttachedWorkerDiagnostics(workerId: string): Promise<AttachedWorkerDiagnostics> {
+    return this.#json<AttachedWorkerDiagnostics>(
+      `/api/web/v1/attached-workers/${selector(workerId)}/diagnostics`,
     );
   }
 

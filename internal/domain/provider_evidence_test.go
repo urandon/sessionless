@@ -11,7 +11,7 @@ import (
 
 func TestProviderAuthorityDTOsContainNoSecretOrPayloadFields(t *testing.T) {
 	t.Parallel()
-	for _, value := range []any{domain.ProviderRouterResourceV1{}, domain.ProviderRoutePolicyV1{}, domain.ProviderCatalogObservationV1{}, domain.ProviderCapabilityEvidenceV1{}, domain.ProviderPrivacyEvidenceV1{}, domain.ProviderPriceObservationV1{}, domain.ProviderPolicyEvidenceV1{}, domain.HarnessBindingV1{}} {
+	for _, value := range []any{domain.ProviderRouterResourceV1{}, domain.ProviderRoutePolicyV1{}, domain.ProviderCatalogObservationV1{}, domain.ProviderCapabilityEvidenceV1{}, domain.ProviderPrivacyEvidenceV1{}, domain.ProviderPriceObservationV1{}, domain.ProviderPolicyEvidenceV1{}, domain.ProviderExecutionEvidenceV1{}, domain.HarnessBindingV1{}} {
 		walkProviderAuthorityType(t, reflect.TypeOf(value), map[reflect.Type]bool{})
 	}
 }
@@ -44,7 +44,7 @@ func providerEvidenceScope() domain.ProviderEvidenceScopeV1 {
 	return domain.ProviderEvidenceScopeV1{
 		TenantID: "tenant-a", OwnerUserID: "user-a",
 		Resource: domain.ProviderResourceBindingV1{Kind: domain.ProviderResourceRouterAccountV1, ResourceID: "openrouter-account-a", OwnerUserID: "user-a", Revision: 7, CredentialMode: domain.ProviderCredentialInvocationV1, CredentialGeneration: 3},
-		Backend:  domain.HarnessBackendDescriptorV1{HarnessKind: domain.HarnessKindSessionlessV1, HarnessVersion: "1", BackendKind: domain.HarnessBackendDirectOpenRouterV1, ArtifactKind: domain.HarnessArtifactEmbeddedProfileV1, ArtifactDigest: strings.Repeat("a", 64), NativeProtocolVersion: "openai-compatible.v1", BackendProfileDigest: strings.Repeat("b", 64), ProviderContractKind: domain.ProviderContractInvocationV1},
+		Backend:  domain.HarnessBackendDescriptorV1{HarnessKind: domain.HarnessKindSessionlessV1, HarnessVersion: "1", BackendKind: domain.HarnessBackendDirectOpenRouterV1, ArtifactKind: domain.HarnessArtifactEmbeddedProfileV1, ArtifactDigest: strings.Repeat("a", 64), NativeProtocolVersion: "openai-compatible.v1", BackendProfileDigest: strings.Repeat("b", 64), ProviderContractKind: domain.ProviderContractInvocationV1, CredentialDeliveryKind: domain.ProviderCredentialDeliveryDirectV1},
 	}
 }
 

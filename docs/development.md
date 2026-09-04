@@ -142,6 +142,13 @@ is documented in [credential-lifecycle.md](credential-lifecycle.md). Phase B0
 is also intentionally not activated in worker runtime while #18 and #13 remain
 open.
 
+Run `make provider-conformance` for the credential-free provider registry
+matrix. It performs vet plus repeated race-enabled tests over strict fixtures;
+it reads no provider secret, starts no provider process, performs no network
+call, and does not enable Codex, OpenCode, Pi, or direct OpenRouter. A generic
+fake result reports native backend protocol as `skipped`, even when its exact
+registry tuple passes.
+
 Deployment-aware cleanup of those immutable registry images is a separate,
 fenced operational workflow. Its evidence bridge, dry-run/delete controls, and
 audit reports are documented in [registry-gc.md](registry-gc.md). Never replace

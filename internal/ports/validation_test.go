@@ -82,13 +82,14 @@ func TestExecutionRequestAcceptsHarnessNeutralReferences(t *testing.T) {
 			ExpiresAt:   portTestTime.Add(time.Minute),
 		},
 		CredentialMaterialization: ports.ProviderCredentialMaterializationV1{
-			Kind: ports.ProviderCredentialDeliveryFileV1, RootDir: "/tmp/sessionless-credential", FilePath: "/tmp/sessionless-credential/auth.json",
+			Kind: domain.ProviderCredentialDeliveryFileV1, RootDir: "/tmp/sessionless-credential", FilePath: "/tmp/sessionless-credential/auth.json",
 		},
 		AllowedMCPServers:  []string{"source-control", "docs"},
 		ExecutionPlacement: domain.ManagedExecutionPlacementV1(),
 		HarnessBinding:     portTestHarnessBinding("tenant-a", "user-1", "run-1", "attempt-1"),
 	}
 	request.HarnessBinding.Backend.ProviderContractKind = domain.ProviderContractInvocationV1
+	request.HarnessBinding.Backend.CredentialDeliveryKind = domain.ProviderCredentialDeliveryFileV1
 	request.HarnessBinding.Backend.BackendKind = domain.HarnessBackendCodexExecV1
 	request.HarnessBinding.Backend.ArtifactKind = domain.HarnessArtifactExecutableV1
 	request.HarnessBinding.Resource = domain.ProviderResourceBindingV1{
@@ -100,6 +101,24 @@ func TestExecutionRequestAcceptsHarnessNeutralReferences(t *testing.T) {
 	request.Credential.ProviderResource = request.HarnessBinding.Resource
 	if err := request.Validate(); err != nil {
 		t.Fatalf("valid execution request rejected: %v", err)
+	}
+	for name, mismatch := range map[string]struct {
+		sealed domain.ProviderCredentialDeliveryKindV1
+		actual ports.ProviderCredentialMaterializationV1
+	}{
+		"file to environment":   {sealed: domain.ProviderCredentialDeliveryFileV1, actual: ports.ProviderCredentialMaterializationV1{Kind: domain.ProviderCredentialDeliveryEnvironmentV1, EnvironmentName: "SESSIONLESS_PROVIDER_TOKEN"}},
+		"environment to direct": {sealed: domain.ProviderCredentialDeliveryEnvironmentV1, actual: ports.ProviderCredentialMaterializationV1{Kind: domain.ProviderCredentialDeliveryDirectV1}},
+		"direct to file":        {sealed: domain.ProviderCredentialDeliveryDirectV1, actual: ports.ProviderCredentialMaterializationV1{Kind: domain.ProviderCredentialDeliveryFileV1, RootDir: "/tmp/sessionless-credential", FilePath: "/tmp/sessionless-credential/provider.json"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := request
+			candidate.HarnessBinding = request.HarnessBinding.Clone()
+			candidate.HarnessBinding.Backend.CredentialDeliveryKind = mismatch.sealed
+			candidate.CredentialMaterialization = mismatch.actual
+			if err := candidate.Validate(); err == nil {
+				t.Fatal("cross-delivery credential materialization accepted")
+			}
+		})
 	}
 	request.AllowedMCPServers = append(request.AllowedMCPServers, "docs")
 	if err := request.Validate(); err == nil {

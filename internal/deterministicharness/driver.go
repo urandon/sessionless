@@ -61,11 +61,14 @@ func (driver *Driver) Execute(
 	if request.ResumeCheckpoint != nil {
 		start = request.ResumeCheckpoint.Sequence + 1
 	}
+	var totalInput, totalOutput uint64
 	for turn := start; turn <= driver.config.Turns; turn++ {
 		if err := ctx.Err(); err != nil {
 			return ports.ExecutionResult{}, err
 		}
 		input, output := turn*10, turn*5
+		totalInput += input
+		totalOutput += output
 		state, err := json.Marshal(map[string]any{
 			"schema": "sessionless.deterministic-checkpoint.v1",
 			"turn":   turn, "run_id": request.RunID,
@@ -86,6 +89,25 @@ func (driver *Driver) Execute(
 	result := ports.ExecutionResult{
 		Summary: fmt.Sprintf("Deterministic run completed after %d turns.", driver.config.Turns),
 	}
+	evidence, err := (domain.ProviderExecutionEvidenceV1{
+		AcceptanceClass:     domain.ProviderAcceptanceAcceptedV1,
+		FinishClass:         domain.ProviderFinishCompletedV1,
+		RouteState:          domain.ProviderEvidenceSupportedV1,
+		ActualModelVendorID: "sessionless",
+		ActualModelID:       request.HarnessBinding.ModelID,
+		TransportKind:       domain.ProviderTransportLocalCLIV1,
+		TransportProvider:   "sessionless",
+		UpstreamProviderID:  "local",
+		EndpointID:          "deterministic-fixture",
+		PolicyVerdict:       domain.ProviderPolicyGoV1,
+		UsageProvenance:     domain.ProviderUsageHarnessMeasuredV1,
+		InputTokens:         &totalInput,
+		OutputTokens:        &totalOutput,
+	}).SealForBinding(request.HarnessBinding)
+	if err != nil {
+		return ports.ExecutionResult{}, err
+	}
+	result.ProviderEvidence = &evidence
 	for index := uint64(1); index <= driver.config.Artifacts; index++ {
 		name := fmt.Sprintf("result-%02d.txt", index)
 		relative := filepath.Join("outputs", name)

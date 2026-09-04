@@ -497,9 +497,10 @@ type ExecutionEventSink interface {
 }
 
 type ExecutionResult struct {
-	Summary    string
-	Outputs    []ExecutionOutput
-	ToolEvents []ExecutionToolEvent
+	Summary          string
+	Outputs          []ExecutionOutput
+	ToolEvents       []ExecutionToolEvent
+	ProviderEvidence *domain.ProviderExecutionEvidenceV1
 }
 
 // ExecutionToolEvent is a reconstructable tool boundary returned by a harness.

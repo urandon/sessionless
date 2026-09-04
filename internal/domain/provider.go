@@ -12,13 +12,14 @@ import (
 const HarnessBindingVersionV1 uint32 = 1
 
 type (
-	HarnessKindV1            string
-	HarnessBackendKindV1     string
-	HarnessArtifactKindV1    string
-	HarnessBindingDigestV1   string
-	ProviderContractKindV1   string
-	ProviderResourceKindV1   string
-	ProviderCredentialModeV1 string
+	HarnessKindV1                    string
+	HarnessBackendKindV1             string
+	HarnessArtifactKindV1            string
+	HarnessBindingDigestV1           string
+	ProviderContractKindV1           string
+	ProviderResourceKindV1           string
+	ProviderCredentialModeV1         string
+	ProviderCredentialDeliveryKindV1 string
 )
 
 const (
@@ -44,20 +45,26 @@ const (
 
 	ProviderCredentialNoneV1       ProviderCredentialModeV1 = "none"
 	ProviderCredentialInvocationV1 ProviderCredentialModeV1 = "invocation"
+
+	ProviderCredentialDeliveryNoneV1        ProviderCredentialDeliveryKindV1 = "none"
+	ProviderCredentialDeliveryFileV1        ProviderCredentialDeliveryKindV1 = "file"
+	ProviderCredentialDeliveryEnvironmentV1 ProviderCredentialDeliveryKindV1 = "environment"
+	ProviderCredentialDeliveryDirectV1      ProviderCredentialDeliveryKindV1 = "direct"
 )
 
 // HarnessBackendDescriptorV1 identifies one immutable backend implementation
 // inside the Sessionless-owned outer harness. It is a registry key, not a
 // provider lifecycle state and not a request for installed-binary discovery.
 type HarnessBackendDescriptorV1 struct {
-	HarnessKind           HarnessKindV1          `json:"harness_kind"`
-	HarnessVersion        string                 `json:"harness_version"`
-	BackendKind           HarnessBackendKindV1   `json:"backend_kind"`
-	ArtifactKind          HarnessArtifactKindV1  `json:"artifact_kind"`
-	ArtifactDigest        string                 `json:"artifact_digest"`
-	NativeProtocolVersion string                 `json:"native_protocol_version"`
-	BackendProfileDigest  string                 `json:"backend_profile_digest"`
-	ProviderContractKind  ProviderContractKindV1 `json:"provider_contract_kind"`
+	HarnessKind            HarnessKindV1                    `json:"harness_kind"`
+	HarnessVersion         string                           `json:"harness_version"`
+	BackendKind            HarnessBackendKindV1             `json:"backend_kind"`
+	ArtifactKind           HarnessArtifactKindV1            `json:"artifact_kind"`
+	ArtifactDigest         string                           `json:"artifact_digest"`
+	NativeProtocolVersion  string                           `json:"native_protocol_version"`
+	BackendProfileDigest   string                           `json:"backend_profile_digest"`
+	ProviderContractKind   ProviderContractKindV1           `json:"provider_contract_kind"`
+	CredentialDeliveryKind ProviderCredentialDeliveryKindV1 `json:"credential_delivery_kind"`
 }
 
 func (descriptor HarnessBackendDescriptorV1) Validate() error {
@@ -96,9 +103,17 @@ func (descriptor HarnessBackendDescriptorV1) Validate() error {
 		if descriptor.BackendKind != HarnessBackendDeterministicFixtureV1 {
 			return ValidationError{Field: "harness_binding.backend", Reason: "credentialless contract is restricted to the deterministic fixture"}
 		}
+		if descriptor.CredentialDeliveryKind != ProviderCredentialDeliveryNoneV1 {
+			return ValidationError{Field: "harness_binding.backend.credential_delivery_kind", Reason: "must be none for the credentialless fixture"}
+		}
 	case ProviderContractInvocationV1:
 		if descriptor.BackendKind == HarnessBackendDeterministicFixtureV1 {
 			return ValidationError{Field: "harness_binding.backend", Reason: "deterministic fixture cannot claim the invocation contract"}
+		}
+		switch descriptor.CredentialDeliveryKind {
+		case ProviderCredentialDeliveryFileV1, ProviderCredentialDeliveryEnvironmentV1, ProviderCredentialDeliveryDirectV1:
+		default:
+			return ValidationError{Field: "harness_binding.backend.credential_delivery_kind", Reason: "is unsupported for provider invocation"}
 		}
 	default:
 		return ValidationError{Field: "harness_binding.backend.provider_contract_kind", Reason: "is unsupported"}
@@ -176,7 +191,9 @@ type HarnessBindingV1 struct {
 	AttemptID                AttemptID                  `json:"attempt_id"`
 	Backend                  HarnessBackendDescriptorV1 `json:"backend"`
 	Resource                 ProviderResourceBindingV1  `json:"resource"`
+	ModelVendorID            string                     `json:"model_vendor_id"`
 	ModelID                  string                     `json:"model_id"`
+	InputDataClass           ProviderDataClassV1        `json:"input_data_class"`
 	ProviderCatalogDigest    string                     `json:"provider_catalog_digest"`
 	ProviderRouteDigest      string                     `json:"provider_route_digest"`
 	PrivacyPolicyDigest      string                     `json:"privacy_policy_digest"`
@@ -207,8 +224,14 @@ func (binding HarnessBindingV1) Validate() error {
 	if binding.OwnerUserID != binding.Resource.OwnerUserID {
 		return ValidationError{Field: "harness_binding.resource.owner_user_id", Reason: "must match the binding owner"}
 	}
+	if err := validateProviderToken("harness_binding.model_vendor_id", binding.ModelVendorID, 128); err != nil {
+		return err
+	}
 	if err := validateProviderToken("harness_binding.model_id", binding.ModelID, 256); err != nil {
 		return err
+	}
+	if binding.InputDataClass != ProviderDataPublicV1 && binding.InputDataClass != ProviderDataExternallyShareableV1 && binding.InputDataClass != ProviderDataPrivateV1 {
+		return ValidationError{Field: "harness_binding.input_data_class", Reason: "is unsupported"}
 	}
 	for field, value := range map[string]string{
 		"harness_binding.provider_catalog_digest":    binding.ProviderCatalogDigest,
@@ -297,7 +320,7 @@ func (binding HarnessBindingV1) Digest() (HarnessBindingDigestV1, error) {
 		string(binding.TenantID), string(binding.OwnerUserID), string(binding.RunID), string(binding.AttemptID),
 		string(binding.Backend.HarnessKind), binding.Backend.HarnessVersion, string(binding.Backend.BackendKind),
 		string(binding.Backend.ArtifactKind), binding.Backend.ArtifactDigest,
-		binding.Backend.NativeProtocolVersion, binding.Backend.BackendProfileDigest, string(binding.Backend.ProviderContractKind),
+		binding.Backend.NativeProtocolVersion, binding.Backend.BackendProfileDigest, string(binding.Backend.ProviderContractKind), string(binding.Backend.CredentialDeliveryKind),
 		string(binding.Resource.Kind), binding.Resource.ResourceID, string(binding.Resource.OwnerUserID),
 	} {
 		appendString(value)
@@ -305,7 +328,7 @@ func (binding HarnessBindingV1) Digest() (HarnessBindingDigestV1, error) {
 	appendUint(binding.Resource.Revision)
 	appendString(string(binding.Resource.CredentialMode))
 	appendUint(binding.Resource.CredentialGeneration)
-	for _, value := range []string{binding.ModelID, binding.ProviderCatalogDigest, binding.ProviderRouteDigest, binding.PrivacyPolicyDigest, binding.CapabilityEvidenceDigest, binding.EffectivePolicyDigest, binding.ExecutionPlacementDigest} {
+	for _, value := range []string{binding.ModelVendorID, binding.ModelID, string(binding.InputDataClass), binding.ProviderCatalogDigest, binding.ProviderRouteDigest, binding.PrivacyPolicyDigest, binding.CapabilityEvidenceDigest, binding.EffectivePolicyDigest, binding.ExecutionPlacementDigest} {
 		appendString(value)
 	}
 	if binding.EvidenceExpiresAt == nil {

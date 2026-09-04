@@ -282,6 +282,18 @@ func (store *Store) CommitCanonicalUserEvent(
 			if !found || run.ID != request.RunID || run.TriggerEventID != event.ID {
 				return fmt.Errorf("frontend ingress idempotency index is inconsistent")
 			}
+			outbox, found, err := readJSON[domain.DispatchOutbox](ctx, tx.sqlTx,
+				`SELECT payload FROM dispatch_outbox WHERE tenant_id=$1 AND dispatch_outbox_id=$2`,
+				request.TenantID, request.DispatchID,
+			)
+			if err != nil {
+				return err
+			}
+			storedBindingDigest, storedErr := outbox.HarnessBinding.Digest()
+			requestBindingDigest, requestErr := request.HarnessBinding.Digest()
+			if !found || storedErr != nil || requestErr != nil || storedBindingDigest != requestBindingDigest {
+				return domain.ErrEventIdempotencyConflict
+			}
 			result = ports.CanonicalUserEventResult{
 				SessionID: event.SessionID, EventID: event.ID, Sequence: event.Sequence,
 				RunID: run.ID, Created: false,
@@ -364,6 +376,7 @@ func (store *Store) CommitCanonicalUserEvent(
 			AllowedMCPServers:     append([]string(nil), request.AllowedMCPServers...),
 			CredentialOwnerUserID: request.UserID,
 			ExecutionPlacement:    domain.ManagedExecutionPlacementV1(),
+			HarnessBinding:        request.HarnessBinding.Clone(),
 			ContextWindow:         &domain.SessionContextWindow{ThroughSequence: sequence},
 			Origin:                &origin, Status: domain.DispatchPending, IdempotencyKey: request.IdempotencyKey,
 			CreatedAt: request.CommittedAt, UpdatedAt: request.CommittedAt,
@@ -515,6 +528,11 @@ func validateCanonicalCommit(request ports.CanonicalUserEventCommit) error {
 		return domain.ValidationError{Field: "canonical_ingress.expire_at", Reason: "must be after committed_at"}
 	}
 	if err := request.Payload.Validate(); err != nil {
+		return err
+	}
+	if err := request.HarnessBinding.ValidateForScope(
+		request.TenantID, request.UserID, request.RunID, request.AttemptID, domain.ManagedExecutionPlacementV1(),
+	); err != nil {
 		return err
 	}
 	return validateMutationDigest(request.MutationDigest)

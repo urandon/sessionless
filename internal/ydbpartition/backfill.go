@@ -50,11 +50,15 @@ func BackfillSchemaIndexes(ctx context.Context, db *sql.DB, dryRun bool) ([]Back
 	if err != nil {
 		return nil, err
 	}
+	harnessCutover, err := verifyHarnessBindingCutover(ctx, db, dryRun)
+	if err != nil {
+		return nil, err
+	}
 	results, err := BackfillReadyExpiryV2(ctx, db, dryRun)
 	if err != nil {
 		return nil, err
 	}
-	results = append([]BackfillResult{cutover}, results...)
+	results = append([]BackfillResult{cutover, harnessCutover}, results...)
 	operations := []func(context.Context, *sql.DB, bool) (BackfillResult, error){
 		backfillArtifactManifestsByRun,
 		backfillFrontendBindingsBySession,
@@ -80,6 +84,50 @@ func BackfillSchemaIndexes(ctx context.Context, db *sql.DB, dryRun bool) ([]Back
 		}
 	}
 	return results, nil
+}
+
+// verifyHarnessBindingCutover is a separate deployment fence. It certifies
+// only that legacy dispatch/job payloads were drained before every writer and
+// reader began requiring HarnessBindingV1; it never authorizes zero-value
+// coercion or runtime backfill.
+func verifyHarnessBindingCutover(ctx context.Context, db *sql.DB, dryRun bool) (BackfillResult, error) {
+	const cutoverID = "harness-binding-v1-empty-cutover"
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return BackfillResult{}, fmt.Errorf("begin harness binding cutover: %w", err)
+	}
+	defer tx.Rollback()
+	var completedAt time.Time
+	err = tx.QueryRowContext(ctx,
+		`SELECT completed_at FROM harness_binding_cutover_state WHERE cutover_id=$1`, cutoverID,
+	).Scan(&completedAt)
+	if err == nil {
+		return BackfillResult{Table: "harness_binding_cutover_v1"}, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return BackfillResult{}, fmt.Errorf("read harness binding cutover marker: %w", err)
+	}
+	for _, table := range []string{"dispatch_outbox", "worker_jobs"} {
+		var tenantID string
+		err := tx.QueryRowContext(ctx, "SELECT tenant_id FROM "+table+" LIMIT 1").Scan(&tenantID)
+		if err == nil {
+			return BackfillResult{}, fmt.Errorf("harness binding cutover requires empty %s; drain or reset before deployment", table)
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return BackfillResult{}, fmt.Errorf("verify empty %s: %w", table, err)
+		}
+	}
+	if !dryRun {
+		if _, err := tx.ExecContext(ctx,
+			`UPSERT INTO harness_binding_cutover_state (cutover_id,completed_at) VALUES ($1,$2)`,
+			cutoverID, time.Now().UTC()); err != nil {
+			return BackfillResult{}, fmt.Errorf("mark harness binding cutover: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return BackfillResult{}, fmt.Errorf("commit harness binding cutover: %w", err)
+		}
+	}
+	return BackfillResult{Table: "harness_binding_cutover_v1"}, nil
 }
 
 // verifyExecutionPlacementCutover is the enforced no-production-data gate for

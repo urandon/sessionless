@@ -97,12 +97,13 @@ type secretRecord struct {
 }
 
 type fakeSecretStore struct {
-	mu         sync.Mutex
-	next       uint64
-	committed  map[domain.CredentialSecretRef]secretRecord
-	candidates map[domain.CredentialSecretRef]secretRecord
-	putError   error
-	readError  error
+	mu           sync.Mutex
+	next         uint64
+	committed    map[domain.CredentialSecretRef]secretRecord
+	candidates   map[domain.CredentialSecretRef]secretRecord
+	putError     error
+	readError    error
+	recoverCalls uint64
 }
 
 func newFakeSecretStore(binding domain.CredentialBinding, value []byte) *fakeSecretStore {
@@ -188,6 +189,7 @@ func (store *fakeSecretStore) ListUncommittedCredentialCandidates(_ context.Cont
 func (store *fakeSecretStore) RecoverCredentialCandidate(_ context.Context, binding domain.CredentialBinding) (bool, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	store.recoverCalls++
 	if _, found := store.committed[binding.SecretRef]; found {
 		return false, nil
 	}
@@ -201,6 +203,21 @@ func (store *fakeSecretStore) RecoverCredentialCandidate(_ context.Context, bind
 	store.committed[binding.SecretRef] = record
 	delete(store.candidates, binding.SecretRef)
 	return true, nil
+}
+
+func TestIssueRejectsStaleSealedGenerationBeforeSecretRecovery(t *testing.T) {
+	fixture := newCredentialFixture(t, nil)
+	request := fixture.request
+	request.ProviderResource.CredentialGeneration++
+	if _, err := fixture.service.Issue(context.Background(), request); !errors.Is(err, ErrCredentialDenied) {
+		t.Fatalf("Issue() error=%v, want denied", err)
+	}
+	fixture.secrets.mu.Lock()
+	calls := fixture.secrets.recoverCalls
+	fixture.secrets.mu.Unlock()
+	if calls != 0 {
+		t.Fatalf("secret recovery calls=%d, want 0", calls)
+	}
 }
 
 func (store *fakeSecretStore) candidateCount() int {
@@ -279,7 +296,8 @@ func newCredentialFixture(t *testing.T, failures FailureInjector) credentialFixt
 			WorkerID: "worker-a", FenceToken: 9, AcquiredAt: started,
 			ExpiresAt: credentialTestTime.Add(10 * time.Minute),
 		},
-		ExpiresAt: credentialTestTime.Add(5 * time.Minute),
+		ExpiresAt:        credentialTestTime.Add(5 * time.Minute),
+		ProviderResource: domain.ProviderResourceBindingV1{Kind: domain.ProviderResourceSubscriptionV1, ResourceID: "connection-a", OwnerUserID: "user-a", Revision: 1, CredentialMode: domain.ProviderCredentialInvocationV1, CredentialGeneration: 1},
 	}
 	return credentialFixture{service: service, clock: clock, state: state, secrets: secrets, binding: binding, request: request, value: value}
 }
@@ -288,6 +306,7 @@ func TestIssueMaterializeReleaseAndExactScope(t *testing.T) {
 	fixture := newCredentialFixture(t, nil)
 	wrongOwner := fixture.request
 	wrongOwner.OwnerUserID = "user-b"
+	wrongOwner.ProviderResource.OwnerUserID = "user-b"
 	if _, err := fixture.service.Issue(context.Background(), wrongOwner); !errors.Is(err, ErrCredentialDenied) {
 		t.Fatalf("Issue() for wrong owner error = %v, want denied", err)
 	}
@@ -383,6 +402,8 @@ func TestTenantSecretsRemainIsolatedWithinOneService(t *testing.T) {
 	secondRequest.Lease.TenantID = "tenant-b"
 	secondRequest.Lease.RunID = "run-b"
 	secondRequest.Lease.AttemptID = "attempt-b"
+	secondRequest.ProviderResource.ResourceID = "connection-b"
+	secondRequest.ProviderResource.OwnerUserID = "user-b"
 
 	firstHandle, _ := fixture.service.Issue(context.Background(), fixture.request)
 	secondHandle, err := fixture.service.Issue(context.Background(), secondRequest)
@@ -459,7 +480,9 @@ func TestWriteBackCASAndCrashRecovery(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = restarted.Close() })
-		if _, err := restarted.Issue(context.Background(), fixture.request); err != nil {
+		retry := fixture.request
+		retry.ProviderResource.CredentialGeneration = 2
+		if _, err := restarted.Issue(context.Background(), retry); err != nil {
 			t.Fatalf("Issue() did not recover exact candidate after CAS: %v", err)
 		}
 		if fixture.secrets.candidateCount() != 0 {

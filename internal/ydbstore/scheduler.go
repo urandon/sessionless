@@ -108,6 +108,11 @@ func (store *Store) AdmitDispatch(
 				Field: "dispatch candidate", Reason: "does not match the stored outbox",
 			}
 		}
+		if err := outbox.HarnessBinding.ValidateForScope(
+			outbox.TenantID, outbox.CredentialOwnerUserID, outbox.RunID, outbox.AttemptID, outbox.ExecutionPlacement,
+		); err != nil {
+			return err
+		}
 		switch outbox.ExecutionPlacement.Kind {
 		case domain.ExecutionPlacementManaged:
 			result.Delivery = ports.DispatchDeliveryManagedQueue
@@ -164,6 +169,19 @@ func (store *Store) AdmitDispatch(
 				return err
 			}
 			if found && reservation.Status == domain.ReservationHeld {
+				job, jobFound, err := readJSON[domain.WorkerJob](ctx, tx.sqlTx,
+					`SELECT payload FROM worker_jobs WHERE tenant_id=$1 AND run_id=$2`,
+					request.TenantID, request.RunID,
+				)
+				if err != nil {
+					return err
+				}
+				outboxBindingDigest, outboxErr := outbox.HarnessBinding.Digest()
+				jobBindingDigest, jobErr := job.HarnessBinding.Digest()
+				if !jobFound || outboxErr != nil || jobErr != nil || outboxBindingDigest != jobBindingDigest ||
+					job.AttemptID != request.AttemptID || job.ReservationID != request.ReservationID {
+					return domain.ValidationError{Field: "worker_job.harness_binding", Reason: "does not match the admitted outbox authority"}
+				}
 				result.Admitted = true
 				result.State = slot.State
 				result.Code = "already_admitted"
@@ -268,6 +286,7 @@ func (store *Store) AdmitDispatch(
 			AllowedMCPServers:     append([]string(nil), outbox.AllowedMCPServers...),
 			CredentialOwnerUserID: outbox.CredentialOwnerUserID,
 			ExecutionPlacement:    outbox.ExecutionPlacement,
+			HarnessBinding:        outbox.HarnessBinding.Clone(),
 			Limits:                request.Limits,
 			Origin:                outbox.Origin,
 			DeliveryChat:          outbox.DeliveryChat,

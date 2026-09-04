@@ -26,6 +26,10 @@ type Driver struct {
 	config Config
 }
 
+func (driver *Driver) Preflight(_ context.Context, identity ports.ExecutionIdentity) error {
+	return identity.Validate()
+}
+
 func New(config Config) (*Driver, error) {
 	if config.Turns == 0 {
 		config.Turns = 2

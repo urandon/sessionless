@@ -18,6 +18,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/sessionapi"
 	"gitcode.com/urandon/sessionless/internal/sessioningress"
+	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 	"gitcode.com/urandon/sessionless/internal/webapi"
 	"gitcode.com/urandon/sessionless/internal/webcontract"
 )
@@ -393,7 +394,9 @@ func newHarness(t *testing.T) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ingress, err := sessioningress.New(sessioningress.Config{IDKey: bytes.Repeat([]byte("i"), 32)}, backend, blobs)
+	ingress, err := sessioningress.New(sessioningress.Config{
+		IDKey: bytes.Repeat([]byte("i"), 32), HarnessBinder: sessionlessharness.NewDeterministicFixtureBinderV1(),
+	}, backend, blobs)
 	if err != nil {
 		t.Fatal(err)
 	}

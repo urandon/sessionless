@@ -133,6 +133,7 @@ var policies = []Policy{
 	hot("checkpoint_objects_by_run", []string{"tenant_id", "run_id", "checkpoint_id"}, ClassEntity, "durable checkpoint object cleanup behind a random run ID"),
 	entity("session_lifecycle_backfill_state", []string{"backfill_id"}, "single deployment migration marker; never a serving contention point"),
 	entity("execution_placement_cutover_state", []string{"cutover_id"}, "one explicit empty-backlog cutover marker; never a serving contention point"),
+	entity("harness_binding_cutover_state", []string{"cutover_id"}, "one explicit empty-backlog harness-binding cutover marker; never a serving contention point"),
 	hot("audit_events", []string{"tenant_id", "occurred_at", "audit_event_id"}, ClassAppend, "time is behind a distributed tenant; cloud evidence gates elephant-tenant scale"),
 	hot("subscription_scheduler_slots", []string{"tenant_id", "subscription_connection_id"}, ClassEntity, "one contention row per user-owned subscription connection"),
 	hot("tenant_scheduler_counters", []string{"tenant_id"}, ClassEntity, "one bounded counter row per tenant"),

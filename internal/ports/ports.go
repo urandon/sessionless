@@ -455,6 +455,7 @@ type SchedulerStore interface {
 
 type ExecutionRequest struct {
 	TenantID                  domain.TenantID
+	OwnerUserID               domain.UserID
 	RunID                     domain.RunID
 	SessionID                 domain.SessionID
 	TriggerEventID            domain.SessionEventID
@@ -464,9 +465,11 @@ type ExecutionRequest struct {
 	ContextWindow             *domain.SessionContextWindow
 	InputArtifacts            []domain.Artifact
 	ResumeCheckpoint          *domain.Checkpoint
-	Credential                CredentialHandle
-	CredentialMaterialization CredentialMaterialization
+	Credential                ProviderInvocationCredentialV1
+	CredentialMaterialization ProviderCredentialMaterializationV1
 	AllowedMCPServers         []string
+	ExecutionPlacement        domain.ExecutionPlacementV1
+	HarnessBinding            domain.HarnessBindingV1
 }
 
 // WorkerContextRequest addresses an immutable, bounded canonical history
@@ -516,14 +519,18 @@ type ExecutionOutput struct {
 }
 
 type ExecutionIdentity struct {
-	TenantID  domain.TenantID
-	RunID     domain.RunID
-	AttemptID domain.AttemptID
+	TenantID           domain.TenantID
+	OwnerUserID        domain.UserID
+	RunID              domain.RunID
+	AttemptID          domain.AttemptID
+	ExecutionPlacement domain.ExecutionPlacementV1
+	HarnessBinding     domain.HarnessBindingV1
 }
 
 // HarnessDriver is implemented inside an isolated worker adapter. Core
 // scheduling types never name or assume a concrete harness.
 type HarnessDriver interface {
+	Preflight(ctx context.Context, identity ExecutionIdentity) error
 	Execute(ctx context.Context, request ExecutionRequest, sink ExecutionEventSink) (ExecutionResult, error)
 	Cancel(ctx context.Context, identity ExecutionIdentity) error
 }

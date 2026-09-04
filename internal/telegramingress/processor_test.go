@@ -17,6 +17,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/outboxwake"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/sessioningress"
+	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 	"gitcode.com/urandon/sessionless/internal/testkit"
 )
 
@@ -248,6 +249,7 @@ func TestProcessorPersistsTenantScopedMessageAndDeduplicatesUpdate(t *testing.T)
 	deliveryPublisher, _ := outboxwake.NewPublisher(deliveryQueue)
 	canonical, err := sessioningress.New(sessioningress.Config{
 		IDKey: []byte(strings.Repeat("i", 32)), DispatchWakePublisher: dispatchPublisher,
+		HarnessBinder: sessionlessharness.NewDeterministicFixtureBinderV1(),
 	}, canonicalStore, blobs)
 	if err != nil {
 		t.Fatal(err)
@@ -339,6 +341,7 @@ func TestProcessorRoutesCommandsWithoutCreatingAIIngress(t *testing.T) {
 	deliveryPublisher, _ := outboxwake.NewPublisher(deliveryQueue)
 	canonical, err := sessioningress.New(sessioningress.Config{
 		IDKey: []byte(strings.Repeat("c", 32)), DispatchWakePublisher: dispatchPublisher,
+		HarnessBinder: sessionlessharness.NewDeterministicFixtureBinderV1(),
 	}, canonicalStore, blobs)
 	if err != nil {
 		t.Fatal(err)

@@ -159,6 +159,13 @@ retained-data migration requires a separately reviewed bounded backfill.
 Web BFF, control API, reconciler, and worker runtime refuse startup before the
 marker. Serving readers never reinterpret a missing placement as managed.
 
+Migration `00088` records the separate one-time HarnessBindingV1 empty-backlog
+cutover. Stop every ingress, scheduler, reconciler, managed worker, and attached
+worker admission process; drain `dispatch_outbox` and `worker_jobs`; then run
+the serializable cutover. Every serving binary refuses to start without this
+second marker. It never permits a legacy zero binding to be interpreted as the
+deterministic backend.
+
 Automatic production down migrations are intentionally disabled. The `Down`
 sections are comments so neither Goose nor an operator can accidentally drop
 state.

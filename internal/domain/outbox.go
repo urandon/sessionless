@@ -35,6 +35,7 @@ type DispatchOutbox struct {
 	AllowedMCPServers     []string              `json:"allowed_mcp_servers,omitempty"`
 	CredentialOwnerUserID UserID                `json:"credential_owner_user_id,omitempty"`
 	ExecutionPlacement    ExecutionPlacementV1  `json:"execution_placement"`
+	HarnessBinding        HarnessBindingV1      `json:"harness_binding"`
 	Origin                *FrontendEventOrigin  `json:"origin,omitempty"`
 	// DeliveryChat and ReplyToMessageID are the compatibility bridge for the
 	// pre-canonical Telegram worker flow. New ingress paths use Origin; #37
@@ -88,6 +89,11 @@ func (outbox DispatchOutbox) ValidateForAttempt(run Run, attempt Attempt) error 
 		}
 	}
 	if err := outbox.ExecutionPlacement.Validate(); err != nil {
+		return err
+	}
+	if err := outbox.HarnessBinding.ValidateForScope(
+		outbox.TenantID, outbox.CredentialOwnerUserID, outbox.RunID, outbox.AttemptID, outbox.ExecutionPlacement,
+	); err != nil {
 		return err
 	}
 	if outbox.Origin == nil && outbox.DeliveryChat.ChatID == 0 {

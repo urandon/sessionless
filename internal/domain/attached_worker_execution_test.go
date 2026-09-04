@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 )
 
 func attachedContextJob() domain.WorkerJob {
@@ -13,7 +14,7 @@ func attachedContextJob() domain.WorkerJob {
 		return domain.BlobRef{TenantID: "tenant-1", Key: "tenants/tenant-1/" + name, Size: 10, SHA256: strings.Repeat(digest, 64)}
 	}
 	workspace, skills := blob("workspace.tar", "2"), blob("skills.tar", "3")
-	return domain.WorkerJob{
+	job := domain.WorkerJob{
 		TenantID: "tenant-1", RunID: "run-1", SessionID: "session-1", TriggerEventID: "event-1", AttemptID: "attempt-1",
 		ReservationID: "reservation-1", InputManifestID: "manifest-1", ContextSnapshot: blob("context.json", "1"),
 		WorkspaceSnapshot: &workspace, SkillBundle: &skills, AllowedMCPServers: []string{"filesystem", "search"}, CredentialOwnerUserID: "user-1",
@@ -23,6 +24,14 @@ func attachedContextJob() domain.WorkerJob {
 		Limits: domain.ProductLimits{MaxTenantQueueDepth: 8, MaxActiveRuns: 1, MaxRuntime: time.Minute, MaxTurns: 10,
 			MaxInputBytes: 1 << 20, MaxContextBytes: 1 << 20, MaxContextEvents: 100, MaxArtifacts: 10, MaxToolEvents: 20, MaxToolEventBytes: 1 << 18},
 	}
+	binding, err := sessionlessharness.NewDeterministicFixtureBindingV1(
+		job.TenantID, job.CredentialOwnerUserID, job.RunID, job.AttemptID, "subscription-1", job.ExecutionPlacement, time.Unix(1, 0).UTC(),
+	)
+	if err != nil {
+		panic(err)
+	}
+	job.HarnessBinding = binding
+	return job
 }
 
 func attachedContextManifest(job domain.WorkerJob) domain.ArtifactManifest {
@@ -89,7 +98,8 @@ func TestAttachedWorkerJobContextDigestV1BindsEveryExecutionInput(t *testing.T) 
 		"policy": func(job *domain.WorkerJob) {
 			job.ExecutionPlacement.PolicyDigest = domain.AttachedWorkerPolicyDigest(domain.DigestAttachedWorkerCapability([]byte("policy-2")))
 		},
-		"queue limit": func(job *domain.WorkerJob) { job.Limits.MaxTenantQueueDepth++ }, "active limit": func(job *domain.WorkerJob) { job.Limits.MaxActiveRuns++ },
+		"harness model": func(job *domain.WorkerJob) { job.HarnessBinding.ModelID = "deterministic-fixture-v2" },
+		"queue limit":   func(job *domain.WorkerJob) { job.Limits.MaxTenantQueueDepth++ }, "active limit": func(job *domain.WorkerJob) { job.Limits.MaxActiveRuns++ },
 		"runtime limit": func(job *domain.WorkerJob) { job.Limits.MaxRuntime++ }, "turn limit": func(job *domain.WorkerJob) { job.Limits.MaxTurns++ },
 		"input limit": func(job *domain.WorkerJob) { job.Limits.MaxInputBytes++ }, "context limit": func(job *domain.WorkerJob) { job.Limits.MaxContextBytes++ },
 		"context event limit": func(job *domain.WorkerJob) { job.Limits.MaxContextEvents++ }, "artifact limit": func(job *domain.WorkerJob) { job.Limits.MaxArtifacts++ },

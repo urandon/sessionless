@@ -15,6 +15,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/sessionapi"
 	"gitcode.com/urandon/sessionless/internal/sessioningress"
+	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 	"gitcode.com/urandon/sessionless/internal/syntheticfrontend"
 	"gitcode.com/urandon/sessionless/internal/telegramingress"
 )
@@ -151,6 +152,7 @@ func TestCanonicalSessionCrossFrontendLifecycle(t *testing.T) {
 
 	ingress, err := sessioningress.New(sessioningress.Config{
 		IDKey:                 []byte(strings.Repeat("i", 32)),
+		HarnessBinder:         sessionlessharness.NewDeterministicFixtureBinderV1(),
 		DispatchWakePublisher: slice.schedulerWakePublisher(),
 	}, slice.state, slice.blobs)
 	if err != nil {

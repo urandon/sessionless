@@ -132,6 +132,13 @@ func (service *Service) Issue(
 		binding.OwnerUserID != request.OwnerUserID {
 		return ports.CredentialHandle{}, ErrCredentialDenied
 	}
+	if request.ProviderResource.Kind != domain.ProviderResourceSubscriptionV1 ||
+		request.ProviderResource.ResourceID != string(binding.SubscriptionConnectionID) ||
+		request.ProviderResource.OwnerUserID != binding.OwnerUserID ||
+		request.ProviderResource.CredentialMode != domain.ProviderCredentialInvocationV1 ||
+		request.ProviderResource.CredentialGeneration != binding.Generation {
+		return ports.CredentialHandle{}, ErrCredentialDenied
+	}
 	if _, err := service.secrets.RecoverCredentialCandidate(ctx, binding); err != nil {
 		return ports.CredentialHandle{}, ErrCredentialBackend
 	}
@@ -145,7 +152,8 @@ func (service *Service) Issue(
 		OwnerUserID:              request.OwnerUserID, RunID: request.Run.ID, AttemptID: request.Attempt.ID,
 		WorkerID: request.Lease.WorkerID, LeaseID: request.Lease.ID,
 		LeaseFence: request.Lease.FenceToken, BindingGeneration: binding.Generation,
-		ExpiresAt: request.ExpiresAt,
+		ProviderResource: request.ProviderResource,
+		ExpiresAt:        request.ExpiresAt,
 	}
 	if err := handle.Validate(); err != nil {
 		return ports.CredentialHandle{}, ErrCredentialBackend

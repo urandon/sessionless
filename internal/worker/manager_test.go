@@ -22,6 +22,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/queuecontract"
 	"gitcode.com/urandon/sessionless/internal/sessioncontext"
+	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 	"gitcode.com/urandon/sessionless/internal/testkit"
 	"gitcode.com/urandon/sessionless/internal/worker"
 )
@@ -592,6 +593,7 @@ func TestRequiredCredentialLifecycleOrchestration(t *testing.T) {
 			state := newWorkerState()
 			loaded := workerFixture(t, ctx, blobs, "tenant-a", workerTestTime)
 			loaded.Job.CredentialOwnerUserID = "user-a"
+			setInvocationHarnessBinding(&loaded.Job, loaded.Run.SubscriptionConnectionID, 1)
 			if testCase.blockUntilDone {
 				loaded.Job.Limits.MaxRuntime = 10 * time.Millisecond
 			}
@@ -670,7 +672,7 @@ func TestRequiredCredentialFailsClosedBeforeHarness(t *testing.T) {
 		}},
 		{name: "forged owner", configure: func(loaded *ports.WorkerJobState, _ *recordingCredentialLifecycle, _ *worker.Config) {
 			loaded.Job.CredentialOwnerUserID = "user-forged"
-		}, wantEvents: "issue"},
+		}},
 		{name: "insufficient lease window", configure: func(loaded *ports.WorkerJobState, _ *recordingCredentialLifecycle, config *worker.Config) {
 			config.LeaseTTL = loaded.Job.Limits.MaxRuntime + config.CredentialFinalizeGrace
 		}},
@@ -694,6 +696,7 @@ func TestRequiredCredentialFailsClosedBeforeHarness(t *testing.T) {
 			state := newWorkerState()
 			loaded := workerFixture(t, ctx, blobs, "tenant-a", workerTestTime)
 			loaded.Job.CredentialOwnerUserID = "user-a"
+			setInvocationHarnessBinding(&loaded.Job, loaded.Run.SubscriptionConnectionID, 1)
 			lifecycle := newRecordingCredentialLifecycle(t, "user-a")
 			config := worker.Config{
 				ScratchRoot: t.TempDir(), WorkerID: "worker-credential",
@@ -795,9 +798,10 @@ func workerFixture(
 		TenantID: tenant, RunID: run.ID, AttemptID: attempt.ID,
 		SessionID: run.SessionID, TriggerEventID: run.TriggerEventID,
 		ReservationID: reservation.ID, InputManifestID: manifest.ID,
-		ContextSnapshot:    contextRef,
-		ExecutionPlacement: domain.ManagedExecutionPlacementV1(),
-		AllowedMCPServers:  []string{"docs"},
+		ContextSnapshot:       contextRef,
+		ExecutionPlacement:    domain.ManagedExecutionPlacementV1(),
+		CredentialOwnerUserID: domain.UserID("user-" + suffix),
+		AllowedMCPServers:     []string{"docs"},
 		Limits: domain.ProductLimits{
 			MaxTenantQueueDepth: 8, MaxActiveRuns: 1, MaxRuntime: time.Minute,
 			MaxTurns: 10, MaxInputBytes: 1 << 20, MaxContextBytes: 1 << 20,
@@ -808,10 +812,31 @@ func workerFixture(
 		},
 		ReplyToMessageID: 10, CreatedAt: at,
 	}
+	binding, err := sessionlessharness.NewDeterministicFixtureBindingV1(
+		job.TenantID, job.CredentialOwnerUserID, job.RunID, job.AttemptID,
+		run.SubscriptionConnectionID, job.ExecutionPlacement, at,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job.HarnessBinding = binding
 	return ports.WorkerJobState{
 		Job: job, Run: run, Attempt: attempt,
 		Reservation: reservation, InputManifest: manifest,
 	}
+}
+
+func setInvocationHarnessBinding(job *domain.WorkerJob, resourceID domain.SubscriptionConnectionID, generation uint64) {
+	job.HarnessBinding.Backend.ProviderContractKind = domain.ProviderContractInvocationV1
+	job.HarnessBinding.Backend.BackendKind = domain.HarnessBackendCodexExecV1
+	job.HarnessBinding.Backend.ArtifactKind = domain.HarnessArtifactExecutableV1
+	job.HarnessBinding.Resource = domain.ProviderResourceBindingV1{
+		Kind: domain.ProviderResourceSubscriptionV1, ResourceID: string(resourceID),
+		OwnerUserID: job.CredentialOwnerUserID, Revision: 1,
+		CredentialMode: domain.ProviderCredentialInvocationV1, CredentialGeneration: generation,
+	}
+	expires := job.CreatedAt.Add(24 * time.Hour)
+	job.HarnessBinding.EvidenceExpiresAt = &expires
 }
 
 func publishWorkerMessage(
@@ -1214,6 +1239,10 @@ type advancingHarness struct {
 	clock *testkit.FakeClock
 }
 
+func (advancingHarness) Preflight(context.Context, ports.ExecutionIdentity) error {
+	return nil
+}
+
 func (harness advancingHarness) Execute(
 	ctx context.Context,
 	request ports.ExecutionRequest,
@@ -1237,6 +1266,10 @@ func (advancingHarness) Cancel(context.Context, ports.ExecutionIdentity) error {
 var _ ports.HarnessDriver = advancingHarness{}
 
 type canonicalHarness struct{}
+
+func (canonicalHarness) Preflight(context.Context, ports.ExecutionIdentity) error {
+	return nil
+}
 
 func (canonicalHarness) Execute(
 	ctx context.Context,
@@ -1262,6 +1295,10 @@ func (canonicalHarness) Cancel(context.Context, ports.ExecutionIdentity) error {
 type captureContextHarness struct {
 	history    *[]byte
 	attachment *[]byte
+}
+
+func (captureContextHarness) Preflight(context.Context, ports.ExecutionIdentity) error {
+	return nil
 }
 
 func (harness captureContextHarness) Execute(
@@ -1294,6 +1331,10 @@ type resultHarness struct {
 	result ports.ExecutionResult
 }
 
+func (resultHarness) Preflight(context.Context, ports.ExecutionIdentity) error {
+	return nil
+}
+
 func (harness resultHarness) Execute(
 	context.Context,
 	ports.ExecutionRequest,
@@ -1308,6 +1349,10 @@ var _ ports.HarnessDriver = resultHarness{}
 
 type blockingHarness struct {
 	cancelCalls int
+}
+
+func (*blockingHarness) Preflight(context.Context, ports.ExecutionIdentity) error {
+	return nil
 }
 
 func (*blockingHarness) Execute(
@@ -1334,20 +1379,24 @@ type credentialHarness struct {
 	sawCredential  bool
 }
 
+func (*credentialHarness) Preflight(context.Context, ports.ExecutionIdentity) error {
+	return nil
+}
+
 func (harness *credentialHarness) Execute(
 	ctx context.Context,
 	request ports.ExecutionRequest,
 	_ ports.ExecutionEventSink,
 ) (ports.ExecutionResult, error) {
-	if request.Credential.HandleID == "" || request.CredentialMaterialization.AuthFile == "" {
+	if request.Credential.HandleID == "" || request.CredentialMaterialization.FilePath == "" {
 		return ports.ExecutionResult{}, errors.New("credential fields are missing")
 	}
 	harness.sawCredential = true
-	if _, err := os.ReadFile(request.CredentialMaterialization.AuthFile); err != nil {
+	if _, err := os.ReadFile(request.CredentialMaterialization.FilePath); err != nil {
 		return ports.ExecutionResult{}, err
 	}
 	if harness.mutateAuth {
-		if err := os.WriteFile(request.CredentialMaterialization.AuthFile, []byte("changed-secret"), 0o600); err != nil {
+		if err := os.WriteFile(request.CredentialMaterialization.FilePath, []byte("changed-secret"), 0o600); err != nil {
 			return ports.ExecutionResult{}, err
 		}
 	}
@@ -1408,6 +1457,7 @@ func (lifecycle *recordingCredentialLifecycle) Issue(
 		OwnerUserID:              request.OwnerUserID, RunID: request.Run.ID, AttemptID: request.Attempt.ID,
 		WorkerID: request.Lease.WorkerID, LeaseID: request.Lease.ID,
 		LeaseFence: request.Lease.FenceToken, BindingGeneration: 1, ExpiresAt: request.ExpiresAt,
+		ProviderResource: request.ProviderResource,
 	}
 	if lifecycle.corruptHandle {
 		handle.OwnerUserID = "user-other"

@@ -486,6 +486,10 @@ only then permits canonical success and trigger acknowledgement. A cleanup
 failure is committed as an independent failure/ambiguity fact, taints and
 terminates the warm instance, and can never be converted into `verified`.
 
+The feature-disabled PR-03b implementation contract and its inherited AW-05
+boundary are documented in
+[serverless-isolation.md](serverless-isolation.md).
+
 `PreparedAllocationV1` separates outer substrate allocation from workload
 attestation. A child-process profile exact-compares the inner executable,
 artifact digest, argv, native protocol and backend profile immediately before

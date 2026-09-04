@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -20,6 +21,7 @@ const (
 	defaultShutdownTimeout = 3 * time.Second
 	defaultMaxFrameBytes   = 4 << 20
 	defaultMaxStderrBytes  = 64 << 10
+	defaultMaxAuthBytes    = 1 << 20
 )
 
 type rpcResponse struct {
@@ -67,13 +69,18 @@ type Client struct {
 	rateReadMu  sync.Mutex
 	rateReading bool
 	rateUpdates []RateLimitSnapshot
+	tokenUsage  TokenUsage
 
 	done        chan struct{}
 	processDone chan struct{}
 	ioDone      sync.WaitGroup
 	failOnce    sync.Once
 	cleanupOnce sync.Once
+	closeOnce   sync.Once
+	closeDone   chan struct{}
 	stderr      *boundedBuffer
+	ownedRoot   string
+	prepared    *preparedGuard
 }
 
 // Start launches one invocation-scoped app-server. ctx owns the process
@@ -84,6 +91,33 @@ func Start(ctx context.Context, config Config) (*Client, error) {
 	if err != nil {
 		return nil, ErrProcessUnavailable
 	}
+	return startClient(ctx, config, paths, paths.Root, nil)
+}
+
+// StartPrepared borrows an invocation CODEX_HOME and Manager work directory.
+// Only the fresh auxiliary Root/Home/TempDir returned in Paths is owned and
+// removed by the client.
+func StartPrepared(ctx context.Context, config Config, prepared PreparedPaths) (*Client, error) {
+	config = withDefaults(config)
+	guard, err := openPreparedPaths(prepared, config.MaxAuthBytes)
+	if err != nil {
+		return nil, ErrProcessUnavailable
+	}
+	paths, err := createPreparedPaths(config.ScratchRoot, prepared)
+	if err != nil {
+		guard.close()
+		return nil, ErrProcessUnavailable
+	}
+	return startClient(ctx, config, paths, paths.Root, guard)
+}
+
+func startClient(
+	ctx context.Context,
+	config Config,
+	paths Paths,
+	ownedRoot string,
+	guard *preparedGuard,
+) (*Client, error) {
 	executable := config.Executable
 	if executable == "" {
 		executable = "codex"
@@ -99,19 +133,19 @@ func Start(ctx context.Context, config Config) (*Client, error) {
 	command.Env = childEnvironment(paths)
 	stdin, err := command.StdinPipe()
 	if err != nil {
-		_ = os.RemoveAll(paths.Root)
+		cleanupStartFailure(ownedRoot, guard)
 		return nil, ErrProcessUnavailable
 	}
 	stdout, err := command.StdoutPipe()
 	if err != nil {
 		_ = stdin.Close()
-		_ = os.RemoveAll(paths.Root)
+		cleanupStartFailure(ownedRoot, guard)
 		return nil, ErrProcessUnavailable
 	}
 	stderr, err := command.StderrPipe()
 	if err != nil {
 		_ = stdin.Close()
-		_ = os.RemoveAll(paths.Root)
+		cleanupStartFailure(ownedRoot, guard)
 		return nil, ErrProcessUnavailable
 	}
 	client := &Client{
@@ -122,12 +156,24 @@ func Start(ctx context.Context, config Config) (*Client, error) {
 		turnErrors: make(map[string]string),
 		loginDone:  make(map[string]LoginResult), loginWait: make(map[string][]chan LoginResult),
 		rateLimits: RateLimits{ByLimitID: make(map[string]RateLimitSnapshot)},
-		done:       make(chan struct{}), processDone: make(chan struct{}),
-		stderr: &boundedBuffer{limit: config.MaxStderrBytes},
+		done:       make(chan struct{}), processDone: make(chan struct{}), closeDone: make(chan struct{}),
+		stderr: &boundedBuffer{limit: config.MaxStderrBytes}, ownedRoot: ownedRoot, prepared: guard,
+	}
+	if guard != nil && guard.recheck(true) != nil {
+		_ = stdin.Close()
+		cleanupStartFailure(ownedRoot, guard)
+		return nil, ErrProcessUnavailable
 	}
 	if err := command.Start(); err != nil {
 		_ = stdin.Close()
-		_ = os.RemoveAll(paths.Root)
+		cleanupStartFailure(ownedRoot, guard)
+		return nil, ErrProcessUnavailable
+	}
+	if guard != nil && guard.recheck(true) != nil {
+		killProcessGroup(command)
+		_ = command.Wait()
+		_ = stdin.Close()
+		cleanupStartFailure(ownedRoot, guard)
 		return nil, ErrProcessUnavailable
 	}
 	client.ioDone.Add(2)
@@ -163,7 +209,74 @@ func withDefaults(config Config) Config {
 	if config.MaxStderrBytes <= 0 {
 		config.MaxStderrBytes = defaultMaxStderrBytes
 	}
+	if config.MaxAuthBytes <= 0 {
+		config.MaxAuthBytes = defaultMaxAuthBytes
+	}
 	return config
+}
+
+func createPreparedPaths(parent string, prepared PreparedPaths) (Paths, error) {
+	if err := validatePrivateDirectory(parent); err != nil {
+		return Paths{}, err
+	}
+	root, err := os.MkdirTemp(parent, "sessionless-codexapp-")
+	if err != nil {
+		return Paths{}, err
+	}
+	if err := os.Chmod(root, 0o700); err != nil {
+		_ = os.RemoveAll(root)
+		return Paths{}, err
+	}
+	paths := Paths{
+		Root: root, Home: filepath.Join(root, "home"), TempDir: filepath.Join(root, "tmp"),
+		CodexHome: prepared.CodexHome, WorkDir: prepared.WorkDir,
+	}
+	for _, path := range []string{paths.Home, paths.TempDir} {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			_ = os.RemoveAll(root)
+			return Paths{}, err
+		}
+	}
+	if !disjointRoots(paths.Root, paths.CodexHome) || !disjointRoots(paths.Root, paths.WorkDir) ||
+		!disjointRoots(paths.CodexHome, paths.WorkDir) {
+		_ = os.RemoveAll(root)
+		return Paths{}, errors.New("prepared roots overlap")
+	}
+	return paths, nil
+}
+
+func validatePrivateDirectory(path string) error {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return errors.New("directory path is not normalized")
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil || resolved != path {
+		return errors.New("directory path is not canonical")
+	}
+	info, err := os.Lstat(path)
+	if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
+		return errors.New("directory is not private")
+	}
+	return nil
+}
+
+func disjointRoots(left, right string) bool {
+	for _, pair := range [][2]string{{left, right}, {right, left}} {
+		relative, err := filepath.Rel(pair[0], pair[1])
+		if err != nil || relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))) {
+			return false
+		}
+	}
+	return true
+}
+
+func cleanupStartFailure(ownedRoot string, guard *preparedGuard) {
+	if guard != nil {
+		guard.close()
+	}
+	if ownedRoot != "" {
+		_ = os.RemoveAll(ownedRoot)
+	}
 }
 
 func createPaths(parent string) (Paths, error) {
@@ -301,41 +414,43 @@ func (client *Client) fail(err error) {
 
 func (client *Client) waitProcess() {
 	_ = client.cmd.Wait()
-	close(client.processDone)
+	if client.prepared != nil {
+		if client.prepared.recheck(false) != nil {
+			client.fail(ErrProcessUnavailable)
+		}
+		client.prepared.close()
+	}
 	client.mu.Lock()
 	closing := client.closing
 	client.mu.Unlock()
 	if !closing {
 		client.fail(ErrProcessExited)
 	}
+	client.ioDone.Wait()
 	client.cleanup()
+	close(client.processDone)
 }
 
 func (client *Client) cleanup() {
-	client.cleanupOnce.Do(func() { _ = os.RemoveAll(client.paths.Root) })
+	client.cleanupOnce.Do(func() {
+		if client.ownedRoot != "" {
+			_ = os.RemoveAll(client.ownedRoot)
+		}
+	})
 }
 
 func (client *Client) Close() error {
-	client.mu.Lock()
-	if client.closing {
+	client.closeOnce.Do(func() {
+		client.mu.Lock()
+		client.closing = true
 		client.mu.Unlock()
+		_ = client.stdin.Close()
+		killProcessGroup(client.cmd)
 		<-client.processDone
-		return nil
-	}
-	client.closing = true
-	client.mu.Unlock()
-	_ = client.stdin.Close()
-	timer := time.NewTimer(client.config.ShutdownTimeout)
-	defer timer.Stop()
-	select {
-	case <-client.processDone:
-	case <-timer.C:
 		client.fail(ErrClosed)
-		<-client.processDone
-	}
-	client.fail(ErrClosed)
-	client.ioDone.Wait()
-	client.cleanup()
+		close(client.closeDone)
+	})
+	<-client.closeDone
 	return nil
 }
 

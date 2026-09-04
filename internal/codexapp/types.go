@@ -39,10 +39,17 @@ type Config struct {
 	ShutdownTimeout time.Duration
 	MaxFrameBytes   int
 	MaxStderrBytes  int
+	MaxAuthBytes    int64
 
 	// testArguments is intentionally unavailable to production callers. The
 	// production command line is always exactly "app-server --stdio".
 	testArguments []string
+}
+
+type PreparedPaths struct {
+	CodexHome string
+	AuthFile  string
+	WorkDir   string
 }
 
 type Paths struct {
@@ -151,6 +158,16 @@ type TurnResult struct {
 	Status      string
 	OutputText  string
 	FailureCode string
+}
+
+type TokenCount struct {
+	InputTokens  *uint64
+	OutputTokens *uint64
+}
+
+type TokenUsage struct {
+	Last  TokenCount
+	Total TokenCount
 }
 
 type rawTurn struct {

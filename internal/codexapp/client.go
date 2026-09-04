@@ -314,6 +314,17 @@ func (client *Client) StartTurn(
 }
 
 func (client *Client) WaitTurn(ctx context.Context, threadID, turnID string) (TurnResult, error) {
+	return client.waitTurn(ctx, threadID, turnID, true)
+}
+
+// WaitTurnCompleted waits for the terminal provider event without performing
+// account revalidation. Harnesses use it when they own the explicit final
+// account/read gate; WaitTurn retains its existing self-contained behavior.
+func (client *Client) WaitTurnCompleted(ctx context.Context, threadID, turnID string) (TurnResult, error) {
+	return client.waitTurn(ctx, threadID, turnID, false)
+}
+
+func (client *Client) waitTurn(ctx context.Context, threadID, turnID string, revalidate bool) (TurnResult, error) {
 	if threadID == "" || turnID == "" {
 		return TurnResult{}, ErrProtocol
 	}
@@ -324,7 +335,7 @@ func (client *Client) WaitTurn(ctx context.Context, threadID, turnID string) (Tu
 	client.mu.Lock()
 	if result, found := client.turnDone[key]; found {
 		client.mu.Unlock()
-		return client.revalidateTurn(ctx, result)
+		return client.finishTurn(ctx, result, revalidate)
 	}
 	if _, found := client.turns[key]; !found {
 		client.mu.Unlock()
@@ -339,7 +350,7 @@ func (client *Client) WaitTurn(ctx context.Context, threadID, turnID string) (Tu
 	client.mu.Unlock()
 	select {
 	case result := <-waiter:
-		return client.revalidateTurn(ctx, result)
+		return client.finishTurn(ctx, result, revalidate)
 	case <-ctx.Done():
 		interruptCtx, cancelInterrupt := context.WithTimeout(context.Background(), client.config.RequestTimeout)
 		_ = client.InterruptTurn(interruptCtx, threadID, turnID)
@@ -358,6 +369,19 @@ func (client *Client) WaitTurn(ctx context.Context, threadID, turnID string) (Tu
 	case <-client.done:
 		return TurnResult{}, client.failure()
 	}
+}
+
+func (client *Client) finishTurn(ctx context.Context, result TurnResult, revalidate bool) (TurnResult, error) {
+	if revalidate {
+		return client.revalidateTurn(ctx, result)
+	}
+	return classifyTurn(result)
+}
+
+func (client *Client) CurrentTokenUsage() TokenUsage {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	return cloneTokenUsage(client.tokenUsage)
 }
 
 func (client *Client) revalidateTurn(ctx context.Context, result TurnResult) (TurnResult, error) {
@@ -759,6 +783,27 @@ func (client *Client) handleNotification(method string, params json.RawMessage) 
 			client.applyRateUpdateLocked(event.RateLimits)
 		}
 		client.mu.Unlock()
+	case "thread/tokenUsage/updated":
+		var event struct {
+			ThreadID string `json:"threadId"`
+			TurnID   string `json:"turnId"`
+			Usage    struct {
+				Last  rawTokenCount `json:"last"`
+				Total rawTokenCount `json:"total"`
+			} `json:"tokenUsage"`
+		}
+		if json.Unmarshal(params, &event) != nil || event.ThreadID == "" || event.TurnID == "" {
+			return ErrProtocol
+		}
+		client.mu.Lock()
+		_, known := client.turns[turnKey(event.ThreadID, event.TurnID)]
+		if known {
+			client.tokenUsage = TokenUsage{Last: event.Usage.Last.public(), Total: event.Usage.Total.public()}
+		}
+		client.mu.Unlock()
+		if !known {
+			return ErrProtocol
+		}
 	case "thread/started":
 		var event struct {
 			Thread struct {
@@ -847,6 +892,22 @@ func (client *Client) handleNotification(method string, params json.RawMessage) 
 		}
 	}
 	return nil
+}
+
+type rawTokenCount struct {
+	InputTokens  *uint64 `json:"inputTokens"`
+	OutputTokens *uint64 `json:"outputTokens"`
+}
+
+func (count rawTokenCount) public() TokenCount {
+	return TokenCount{InputTokens: clonePointer(count.InputTokens), OutputTokens: clonePointer(count.OutputTokens)}
+}
+
+func cloneTokenUsage(source TokenUsage) TokenUsage {
+	return TokenUsage{
+		Last:  TokenCount{InputTokens: clonePointer(source.Last.InputTokens), OutputTokens: clonePointer(source.Last.OutputTokens)},
+		Total: TokenCount{InputTokens: clonePointer(source.Total.InputTokens), OutputTokens: clonePointer(source.Total.OutputTokens)},
+	}
 }
 
 func (client *Client) completeTurn(params json.RawMessage) error {

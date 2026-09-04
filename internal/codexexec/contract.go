@@ -57,25 +57,24 @@ func (class LifecycleClass) Valid() bool {
 // A future SessionlessHarnessV1 must construct it from the already-admitted
 // immutable harness/resource binding. Remote workers never choose these fields.
 type AuthorityV1 struct {
-	Version                      uint32
-	TenantID                     domain.TenantID
-	OwnerUserID                  domain.UserID
-	WorkerID                     domain.AttachedWorkerID
-	ConnectionID                 domain.AttachedWorkerConnectionID
-	EnrollmentGeneration         uint64
-	ConnectionGeneration         uint64
-	RunID                        domain.RunID
-	AttemptID                    domain.AttemptID
-	ReservationID                domain.QuotaReservationID
-	LeaseID                      domain.LeaseID
-	LeaseGeneration              uint64
-	FenceToken                   domain.AttachedWorkerFenceToken
-	LeaseExpiresAt               time.Time
-	ContextDigest                domain.AttachedWorkerContextDigest
-	CapabilityDigest             domain.AttachedWorkerCapabilityDigest
-	PolicyDigest                 domain.AttachedWorkerPolicyDigest
-	SubscriptionConnectionID     domain.SubscriptionConnectionID
-	ExpectedCredentialGeneration uint64
+	Version              uint32
+	TenantID             domain.TenantID
+	OwnerUserID          domain.UserID
+	WorkerID             domain.AttachedWorkerID
+	ConnectionID         domain.AttachedWorkerConnectionID
+	EnrollmentGeneration uint64
+	ConnectionGeneration uint64
+	RunID                domain.RunID
+	AttemptID            domain.AttemptID
+	ReservationID        domain.QuotaReservationID
+	LeaseID              domain.LeaseID
+	LeaseGeneration      uint64
+	FenceToken           domain.AttachedWorkerFenceToken
+	LeaseExpiresAt       time.Time
+	ContextDigest        domain.AttachedWorkerContextDigest
+	CapabilityDigest     domain.AttachedWorkerCapabilityDigest
+	PolicyDigest         domain.AttachedWorkerPolicyDigest
+	ProviderResource     domain.ProviderResourceBindingV1
 }
 
 func (authority AuthorityV1) Validate() error {
@@ -84,11 +83,17 @@ func (authority AuthorityV1) Validate() error {
 		authority.ConnectionID.Validate() != nil || authority.RunID.Validate() != nil ||
 		authority.AttemptID.Validate() != nil || authority.ReservationID.Validate() != nil ||
 		authority.LeaseID.Validate() != nil ||
-		authority.SubscriptionConnectionID.Validate() != nil ||
 		authority.EnrollmentGeneration == 0 || authority.ConnectionGeneration == 0 ||
-		authority.LeaseGeneration == 0 || authority.ExpectedCredentialGeneration == 0 ||
+		authority.LeaseGeneration == 0 || authority.ProviderResource.Validate() != nil ||
 		authority.LeaseExpiresAt.IsZero() || authority.ContextDigest.Validate() != nil ||
 		authority.CapabilityDigest.Validate() != nil || authority.PolicyDigest.Validate() != nil {
+		return ErrContract
+	}
+	resource := authority.ProviderResource
+	if resource.Kind != domain.ProviderResourceSubscriptionV1 ||
+		resource.OwnerUserID != authority.OwnerUserID ||
+		resource.CredentialMode != domain.ProviderCredentialInvocationV1 ||
+		domain.SubscriptionConnectionID(resource.ResourceID).Validate() != nil {
 		return ErrContract
 	}
 	expectedFence, err := domain.NewAttachedWorkerFenceTokenV1(
@@ -115,8 +120,11 @@ func (request RequestV1) Validate() error {
 	}
 	authority := request.Authority
 	credential := request.Credential
-	if credential.OwnerUserID != authority.OwnerUserID || credential.Run.TenantID != authority.TenantID ||
-		credential.Run.ID != authority.RunID || credential.Run.SubscriptionConnectionID != authority.SubscriptionConnectionID ||
+	if credential.ValidateAt(time.Now().UTC()) != nil ||
+		credential.OwnerUserID != authority.OwnerUserID || credential.Run.TenantID != authority.TenantID ||
+		credential.Run.ID != authority.RunID ||
+		credential.Run.SubscriptionConnectionID != domain.SubscriptionConnectionID(authority.ProviderResource.ResourceID) ||
+		credential.ProviderResource != authority.ProviderResource ||
 		credential.Attempt.ID != authority.AttemptID || credential.Attempt.WorkerID != string(authority.WorkerID) ||
 		credential.Lease.ID != authority.LeaseID || credential.Lease.WorkerID != string(authority.WorkerID) ||
 		credential.Lease.FenceToken != authority.LeaseGeneration ||
@@ -132,7 +140,7 @@ func (request RequestV1) String() string {
 		request.Authority.TenantID, request.Authority.OwnerUserID, request.Authority.WorkerID,
 		request.Authority.ConnectionID, request.Authority.RunID, request.Authority.AttemptID,
 		request.Authority.LeaseID, request.Authority.LeaseGeneration,
-		request.Authority.ExpectedCredentialGeneration,
+		request.Authority.ProviderResource.CredentialGeneration,
 	)
 }
 
@@ -176,8 +184,10 @@ func evidenceDigest(authority AuthorityV1, executableVersion string, executableD
 		string(authority.ReservationID), string(authority.LeaseID), fmt.Sprint(authority.LeaseGeneration),
 		string(authority.FenceToken), authority.LeaseExpiresAt.UTC().Format(time.RFC3339Nano),
 		string(authority.ContextDigest), string(authority.CapabilityDigest),
-		string(authority.PolicyDigest), string(authority.SubscriptionConnectionID),
-		fmt.Sprint(authority.ExpectedCredentialGeneration), executableVersion, hex.EncodeToString(executableDigest[:]),
+		string(authority.PolicyDigest), string(authority.ProviderResource.Kind),
+		authority.ProviderResource.ResourceID, string(authority.ProviderResource.OwnerUserID),
+		fmt.Sprint(authority.ProviderResource.Revision), string(authority.ProviderResource.CredentialMode),
+		fmt.Sprint(authority.ProviderResource.CredentialGeneration), executableVersion, hex.EncodeToString(executableDigest[:]),
 		model, hex.EncodeToString(instructionDigest[:]),
 		string(lifecycle), failureCode,
 	}

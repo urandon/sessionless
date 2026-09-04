@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const CredentialBindingVersionV1 uint32 = 1
@@ -30,14 +31,24 @@ func NewCredentialSecretRef(raw string) (CredentialSecretRef, error) {
 }
 
 func (ref CredentialSecretRef) Validate() error {
-	if ref.raw == "" || len(ref.raw) > 512 {
+	if ref.raw == "" || len(ref.raw) > 512 || !utf8.ValidString(ref.raw) {
 		return ValidationError{Field: "credential.secret_ref", Reason: "must be a bounded non-empty backend reference"}
+	}
+	for _, character := range ref.raw {
+		if character < 0x20 || character == 0x7f {
+			return ValidationError{Field: "credential.secret_ref", Reason: "must not contain control characters"}
+		}
 	}
 	return nil
 }
 
 func (ref CredentialSecretRef) String() string { return "[redacted]" }
 func (ref CredentialSecretRef) IsZero() bool   { return ref.raw == "" }
+
+// StorageValue exposes the opaque locator only to persistence and secret-store
+// adapters. It must never be used in logs, errors, JSON, telemetry, or public
+// DTOs; all generic formatting surfaces remain redacted.
+func (ref CredentialSecretRef) StorageValue() string { return ref.raw }
 func (ref CredentialSecretRef) GoString() string {
 	return "domain.CredentialSecretRef([redacted])"
 }

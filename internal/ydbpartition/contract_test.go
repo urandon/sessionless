@@ -173,3 +173,35 @@ func TestAttachedWorkerTablesRemainOwnerScopedAndBounded(t *testing.T) {
 		t.Errorf("missing attached-worker partition policy for %s", table)
 	}
 }
+
+func TestProviderCredentialTablesRemainOwnerScopedAndBounded(t *testing.T) {
+	want := map[string][]string{
+		"provider_credential_bindings":         {"tenant_id", "owner_user_id", "resource_kind", "resource_id"},
+		"provider_credential_audit_events":     {"tenant_id", "owner_user_id", "resource_kind", "resource_id", "resource_revision"},
+		"provider_credential_candidate_fences": {"tenant_id", "owner_user_id", "resource_kind", "resource_id", "mutation_id"},
+		"provider_credential_cleanups":         {"tenant_id", "owner_user_id", "resource_kind", "resource_id", "credential_generation", "secret_ref"},
+		"provider_credential_cleanup_ready":    {"shard_bucket", "created_at", "tenant_id", "owner_user_id", "resource_kind", "resource_id", "credential_generation", "secret_ref"},
+	}
+	for _, policy := range Policies() {
+		key, exists := want[policy.LogicalName]
+		if !exists {
+			continue
+		}
+		delete(want, policy.LogicalName)
+		if fmt.Sprint(policy.PrimaryKey) != fmt.Sprint(key) {
+			t.Errorf("%s key = %v, want %v", policy.LogicalName, policy.PrimaryKey, key)
+		}
+		if policy.LogicalName == "provider_credential_cleanup_ready" {
+			if !policy.Bucketed || !policy.LoadPartitioning {
+				t.Errorf("%s must be a bounded global recovery index", policy.LogicalName)
+			}
+			continue
+		}
+		if policy.Bucketed || !policy.LoadPartitioning {
+			t.Errorf("%s must be an owner-prefix table with load splitting", policy.LogicalName)
+		}
+	}
+	for table := range want {
+		t.Errorf("missing provider credential partition policy for %s", table)
+	}
+}

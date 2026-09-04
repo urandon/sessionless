@@ -166,6 +166,33 @@ the serializable cutover. Every serving binary refuses to start without this
 second marker. It never permits a legacy zero binding to be interpreted as the
 deterministic backend.
 
+Migrations `00089`-`00093` add the owner-scoped provider credential authority
+for API and router accounts. The binding row contains only resource revisions,
+credential generations, a safe fingerprint, and an opaque secret-backend
+locator; plaintext credential bytes never enter YDB or its JSON document. A
+rotation or revocation enqueues the superseded locator atomically in the
+bounded cleanup table and its stable 16-bucket ready index so an ambiguous
+secret-backend deletion is recoverable without another owner mutation.
+Each accepted generation or revoke transition also writes one content-free,
+deterministic owner/resource audit receipt in the same serializable transaction.
+The candidate-fence ledger is a permanent mutation tombstone: candidate cleanup
+and binding CAS serialize on the exact owner/resource/mutation tuple, so cleanup
+may delete plaintext only after making a paused or retried CAS unable to promote
+that candidate. If the CAS won first, cleanup observes the exact authoritative
+binding and recovers the candidate instead. The guarded cloud-development reset
+therefore requires bindings, cleanup work, and candidate fences to be empty only
+after the external secret namespace has been explicitly drained; it never drops
+the last deletion/fencing locators on its own.
+These tables are separate from subscription connection credentials and do not
+authorize provider routing, admission, or execution by themselves.
+
+This slice remains feature-disabled: migrations and contracts do not authorize
+credential ingestion or provider use. Enabling it requires a separately
+reviewed tenant-scoped encrypted secret backend, bounded candidate recovery,
+the cleanup drain, invocation-only materialization/release, and the serving
+cutover that proves those components are composed. Until then no binary may
+mount an ingestion route or accept a real provider key.
+
 Automatic production down migrations are intentionally disabled. The `Down`
 sections are comments so neither Goose nor an operator can accidentally drop
 state.

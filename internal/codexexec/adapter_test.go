@@ -98,6 +98,20 @@ func TestAdapterBuildsExactPinnedInvocationAndReturnsContentFreeEvidence(t *test
 	if err != nil || changedResult.EvidenceDigest == result.EvidenceDigest {
 		t.Fatalf("instruction was not bound into evidence: result=%+v err=%v", changedResult, err)
 	}
+	resourceChanged := validRequest(t)
+	resourceChanged.Authority.ProviderResource.Revision++
+	resourceChanged.Credential.ProviderResource.Revision++
+	resourceRunner := &fixtureInvocationRunner{result: attachedworkerdaemon.InvocationResult{
+		Process: attachedworkerdaemon.AttemptResult{
+			DescendantsReaped: true, CleanupSucceeded: true, BoundaryReleased: true,
+			Stdout: []byte(successfulJSONL),
+		},
+		CredentialGeneration: 8,
+	}}
+	resourceResult, err := mustAdapter(t, resourceRunner, true).Run(context.Background(), resourceChanged)
+	if err != nil || resourceResult.EvidenceDigest == result.EvidenceDigest {
+		t.Fatalf("provider resource revision was not bound into evidence: result=%+v err=%v", resourceResult, err)
+	}
 }
 
 func TestAdapterClassifiesLifecycleWithoutRetryHint(t *testing.T) {
@@ -185,6 +199,16 @@ func TestAdapterFailsClosedBeforeRunner(t *testing.T) {
 		t.Fatalf("cross-owner err=%v calls=%d", err, runner.calls)
 	}
 	request = validRequest(t)
+	request.Credential.ProviderResource.CredentialGeneration++
+	if _, err := adapter.Run(context.Background(), request); !errors.Is(err, ErrContract) || runner.calls != 0 {
+		t.Fatalf("credential resource drift err=%v calls=%d", err, runner.calls)
+	}
+	request = validRequest(t)
+	request.Authority.ProviderResource.Revision++
+	if _, err := adapter.Run(context.Background(), request); !errors.Is(err, ErrContract) || runner.calls != 0 {
+		t.Fatalf("authority resource drift err=%v calls=%d", err, runner.calls)
+	}
+	request = validRequest(t)
 	request.Instruction = append(request.Instruction, 0)
 	if _, err := adapter.Run(context.Background(), request); !errors.Is(err, ErrContract) || runner.calls != 0 {
 		t.Fatalf("invalid instruction err=%v calls=%d", err, runner.calls)
@@ -253,6 +277,10 @@ func validRequest(t *testing.T) RequestV1 {
 	if err != nil {
 		t.Fatal(err)
 	}
+	resource := domain.ProviderResourceBindingV1{
+		Kind: domain.ProviderResourceSubscriptionV1, ResourceID: "resource-a", OwnerUserID: "user-a",
+		Revision: 1, CredentialMode: domain.ProviderCredentialInvocationV1, CredentialGeneration: 7,
+	}
 	return RequestV1{
 		Authority: AuthorityV1{
 			Version: ContractVersionV1, TenantID: "tenant-a", OwnerUserID: "user-a",
@@ -260,13 +288,14 @@ func validRequest(t *testing.T) RequestV1 {
 			ConnectionGeneration: 4, RunID: "run-a", AttemptID: "attempt-a",
 			ReservationID: "reservation-a", LeaseID: "lease-a", LeaseGeneration: 9,
 			FenceToken: fence, LeaseExpiresAt: lease.ExpiresAt,
-			ContextDigest:            domain.AttachedWorkerContextDigest(domain.DigestAttachedWorkerCapability([]byte("context"))),
-			CapabilityDigest:         domain.DigestAttachedWorkerCapability([]byte("capability")),
-			PolicyDigest:             domain.AttachedWorkerPolicyDigest(domain.DigestAttachedWorkerCapability([]byte("policy"))),
-			SubscriptionConnectionID: "resource-a", ExpectedCredentialGeneration: 7,
+			ContextDigest:    domain.AttachedWorkerContextDigest(domain.DigestAttachedWorkerCapability([]byte("context"))),
+			CapabilityDigest: domain.DigestAttachedWorkerCapability([]byte("capability")),
+			PolicyDigest:     domain.AttachedWorkerPolicyDigest(domain.DigestAttachedWorkerCapability([]byte("policy"))),
+			ProviderResource: resource,
 		},
 		Credential: ports.CredentialIssueRequest{
-			OwnerUserID: "user-a", Run: run, Attempt: attempt, Lease: lease, ExpiresAt: now.Add(30 * time.Minute),
+			OwnerUserID: "user-a", Run: run, Attempt: attempt, Lease: lease,
+			ExpiresAt: now.Add(30 * time.Minute), ProviderResource: resource,
 		},
 		Instruction: []byte("public fixture task"),
 	}

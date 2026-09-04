@@ -651,10 +651,10 @@ image and region.
 
 ### Agent-harness implementation sources
 
-The following repositories are cloned only into the disposable research cache;
-they are not vendored dependencies. The exact revisions below make the review
-repeatable. Their native session, permission, provider, or telemetry state is
-competitor evidence, never Sessionless durable authority.
+The following repositories are cloned only into the read-only research library;
+they are not vendored dependencies. The exact revisions below make the completed
+review repeatable. Their native session, permission, provider, or telemetry
+state is competitor evidence, never Sessionless durable authority.
 
 | Repository and reviewed revision | Implementation evidence | Sessionless conclusion |
 |---|---|---|
@@ -662,9 +662,13 @@ competitor evidence, never Sessionless durable authority.
 | [Earendil Works Pi `6c4f3602`](https://github.com/earendil-works/pi/tree/6c4f360264397c59801f6da2bdac13e3b1fcbe91) | Pi exposes a multi-provider API/runtime and typed telemetry. Its [RPC surface](https://github.com/earendil-works/pi/blob/6c4f360264397c59801f6da2bdac13e3b1fcbe91/packages/coding-agent/docs/rpc.md) is correlated JSONL with streaming events; prompt acknowledgement is acceptance, while later failure is an event. Its [security contract](https://github.com/earendil-works/pi/blob/6c4f360264397c59801f6da2bdac13e3b1fcbe91/packages/coding-agent/docs/security.md) explicitly says project trust is not a sandbox. The [custom-provider surface](https://github.com/earendil-works/pi/blob/6c4f360264397c59801f6da2bdac13e3b1fcbe91/packages/coding-agent/docs/custom-provider.md) supports native providers, proxy/base-URL overrides, OpenAI-compatible transports, OAuth, and OpenRouter-specific compatibility. | Pi RPC is the likely closed subprocess boundary, but use one admitted prompt plus abort only; keep its queues/sessions/catalog/fallback outside authority. Provider selection, credentials, isolation, route evidence, and retries stay server-sealed, and Pi remains disabled until the outer isolation profile proves every gate. |
 | [codeaashu Claude Code mirror `6a259091`](https://github.com/codeaashu/claude-code/tree/6a2590911df240ff5ea56aa355696cfb94d128cb) | The mirror documents centralized per-tool permission checks, bridge transports, remote-session control, MCP, worktree/same-directory spawn modes, and teardown. However its own `README` and `LICENSE` describe leaked Anthropic proprietary source and mark it unlicensed. It is not an official Anthropic source. | Treat only as low-trust architectural orientation. Do not copy, build, redistribute, or derive implementation from it; verify any product claim against official Anthropic documentation before it can affect a decision or contract. |
 
-Research clone receipt (2026-08-26):
-`/private/tmp/sessionless-competitor-research/{codex,pi,claude-code}`. The cache
-contains no credentials and is outside every Sessionless worktree.
+Research clone receipt (updated 2026-09-04):
+`/Volumes/hubdisk/workspace/research/sessionless-competitors`. Reviewed sources
+currently pinned above are `codex`, `pi`, and `claude-code`; additional cloned
+candidates are `opencode`, `deepseek-harness`, `hermes-agent`, `zed`, and
+`needle`. A clone is inventory, not accepted evidence: every later claim must
+still pin an exact revision and cite the inspected source. The library contains
+no credentials and is outside every Sessionless worktree.
 
 No vendor marketing claim is treated as a Sessionless pass. The cloud-dev spike
 records exact image/profile/region, raw measurement artifacts in private test

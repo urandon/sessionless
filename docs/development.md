@@ -15,7 +15,7 @@ though the first local process only needs Go and Docker.
 
 | Tool | Pinned version | Installation source |
 | --- | ---: | --- |
-| Go | 1.26.4 | [go.dev/dl](https://go.dev/dl/) |
+| Go | 1.26.8 | [go.dev/dl](https://go.dev/dl/) |
 | Node.js | 24.19.0 | [nodejs.org downloads](https://nodejs.org/en/download) |
 | npm | 11.17.0 | `npm install --global npm@11.17.0` |
 | Docker Compose | 5.3.1 | [Docker Compose install](https://docs.docker.com/compose/install/) |
@@ -97,6 +97,16 @@ all five images twice from `git archive HEAD`, and compares config, diff-ID,
 layer, and manifest identities. Cleanup removes only those uniquely named
 temporary resources. CI runs this gate on every mirrored commit and retains the
 second verified set for trusted-main publication.
+
+The Go builder is the Docker Official Image `golang:1.26.8-alpine`, pinned to
+OCI index `sha256:ce864e7223ac17b1775e6fd0b4c0db580c2eb50e7953a427916379e4b92a1628`.
+The reviewed `linux/amd64` child manifest is
+`sha256:6e5de3f5b9fb7e30b8bb2ffe8dcbcbdaa2990f0f31267456eabe83f870a623be`,
+published from `docker-library/golang` revision
+`f47489bcbda87966b421340c536f39a34d00b45f` on 2026-09-01. These values are
+recorded in `build/images.env`; `make image-build-inputs-test` rejects drift
+between that image tag, its index provenance, `tools/versions.env`, `go.mod`,
+and both Dockerfile defaults.
 
 The bounded Codex App Server feasibility evidence, stable protocol subset,
 subscription-auth boundary, and still-open cloud/policy gates are documented

@@ -269,6 +269,14 @@ worker cannot reconstruct, retain, mutate, or route around `PreparedInvocation`;
 the registry and selected exact driver remain the only holders that can consume
 it at the reviewed effect boundary.
 
+A different physical delivery receives a separate short-lived
+`AttemptEffectObservationGrantV1`. Its MAC uses a domain distinct from effect
+ownership, so it cannot issue a `PreparedInvocation`. Exact preparation returns
+only `PreparedReconciliationV1`, which exposes `Reconcile` but neither `Execute`
+nor `Cancel`. Historical authority is structurally validated so an immutable
+tombstone can still observe the original claim after its execution window has
+closed; the observation grant itself remains short-lived and process-local.
+
 The proposed substrate port is deliberately smaller than a general remote
 shell:
 

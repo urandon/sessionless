@@ -56,6 +56,34 @@ func (testExecutionPreparer) PrepareExecution(
 	return &testPreparedExecution{authority: result.Grant.Authority.Clone(), reservation: result.Reservation.Clone()}, nil
 }
 
+func (testExecutionPreparer) PrepareReconciliation(
+	_ context.Context,
+	result ports.ReserveAttemptEffectResultV1,
+) (serverlessharness.PreparedReconciliationV1, error) {
+	if err := result.Validate(); err != nil || result.ObservationGrant == nil || result.Status != ports.AttemptEffectReconcileOnlyV1 {
+		return nil, errors.New("test reconciliation reservation is not observable")
+	}
+	return &testPreparedReconciliation{
+		authority:   result.ObservationGrant.Authority.Clone(),
+		reservation: result.Reservation.Clone(),
+	}, nil
+}
+
+type testPreparedReconciliation struct {
+	authority   domain.ServerlessInvocationAuthorityV1
+	reservation domain.AttemptEffectReservationV1
+}
+
+func (reconciliation *testPreparedReconciliation) Reconcile(context.Context) (serverlessharness.SubstrateOperationObservationV1, error) {
+	authorityDigest, _ := reconciliation.authority.Digest()
+	substrateDigest, _ := reconciliation.authority.SubstrateBinding.Digest()
+	return serverlessharness.SubstrateOperationObservationV1{
+		State: serverlessharness.SubstrateOperationObservedV1, InvocationAuthority: authorityDigest,
+		SubstrateBinding: substrateDigest, PhysicalInvocationID: reconciliation.reservation.PhysicalInvocationClaimID,
+		ObservedAt: reconciliation.reservation.ReservedAt.Add(time.Second),
+	}, nil
+}
+
 type testPreparedExecution struct {
 	authority   domain.ServerlessInvocationAuthorityV1
 	reservation domain.AttemptEffectReservationV1
@@ -112,6 +140,13 @@ func (preparer *signalingExecutionPreparer) PrepareExecution(
 		testPreparedExecution: testPreparedExecution{authority: result.Grant.Authority.Clone(), reservation: result.Reservation.Clone()},
 		executed:              preparer.executed,
 	}, nil
+}
+
+func (*signalingExecutionPreparer) PrepareReconciliation(
+	ctx context.Context,
+	result ports.ReserveAttemptEffectResultV1,
+) (serverlessharness.PreparedReconciliationV1, error) {
+	return testExecutionPreparer{}.PrepareReconciliation(ctx, result)
 }
 
 func testSubstrateExecutionEvidence(
@@ -719,6 +754,9 @@ func TestWorkerRetryableProviderFailureBecomesReconcileOnlyOnRedelivery(t *testi
 	outcome, err = manager.RunOnce(ctx)
 	if err != nil || outcome != worker.OutcomeRetried {
 		t.Fatalf("second outcome/error = %q/%v, want reconcile-only retry/nil", outcome, err)
+	}
+	if retryCause == nil || !strings.Contains(retryCause.Error(), "state=observed") || !strings.Contains(retryCause.Error(), "physical_invocation_id=") {
+		t.Fatalf("reconcile retry cause = %v, want typed observed physical invocation", retryCause)
 	}
 	if state.jobs[key].Checkpoint == nil || state.jobs[key].Checkpoint.Sequence != 1 {
 		t.Fatalf("checkpoint after reconcile-only redelivery = %#v, want sequence 1", state.jobs[key].Checkpoint)
@@ -1710,13 +1748,16 @@ func (state *workerState) ReserveAttemptEffect(
 		result := ports.ReserveAttemptEffectResultV1{
 			Status: ports.AttemptEffectReconcileOnlyV1, Reservation: existing.Clone(),
 		}
+		authority, err := workerEffectAuthority(loaded, lease)
+		if err != nil {
+			return ports.ReserveAttemptEffectResultV1{}, err
+		}
 		if existing.PhysicalInvocationClaimID == request.PhysicalInvocationClaimID {
-			authority, err := workerEffectAuthority(loaded, lease)
-			if err != nil {
-				return ports.ReserveAttemptEffectResultV1{}, err
-			}
 			grant := workerEffectGrant(authority, existing)
 			result.Status, result.Grant = ports.AttemptEffectReplayedV1, &grant
+		} else {
+			grant := workerEffectObservationGrant(authority, existing)
+			result.ObservationGrant = &grant
 		}
 		return result, result.Validate()
 	}
@@ -1772,6 +1813,19 @@ func workerEffectGrant(
 		Version: ports.AttemptEffectOwnershipGrantVersionV1, Authority: authority,
 		Reservation: reservation, GrantExpiresAt: authority.InvocationDeadline,
 		Authenticator: bytes.Repeat([]byte{1}, sha256.Size),
+	}
+}
+
+func workerEffectObservationGrant(
+	authority domain.ServerlessInvocationAuthorityV1,
+	reservation domain.AttemptEffectReservationV1,
+) ports.AttemptEffectObservationGrantV1 {
+	issuedAt := reservation.ReservedAt.Add(time.Nanosecond)
+	return ports.AttemptEffectObservationGrantV1{
+		Version: ports.AttemptEffectObservationGrantVersionV1, Authority: authority,
+		Reservation: reservation, GrantIssuedAt: issuedAt,
+		GrantExpiresAt: issuedAt.Add(authority.AdmissionCostCeiling.MaxPreEffectDurationPerDelivery),
+		Authenticator:  bytes.Repeat([]byte{2}, sha256.Size),
 	}
 }
 

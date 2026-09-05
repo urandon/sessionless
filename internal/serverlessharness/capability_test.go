@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/ports"
 	outerharness "gitcode.com/urandon/sessionless/internal/sessionlessharness"
 )
 
@@ -123,6 +124,38 @@ func TestPreparedInvocationIsConsumedExactlyOnceBeforeEffect(t *testing.T) {
 	}
 	if success != 1 {
 		t.Fatalf("successful consumes = %d, want exactly one", success)
+	}
+}
+
+func TestObservationGrantIsReadOnlyProcessLocalAndShortLived(t *testing.T) {
+	t.Parallel()
+	authority, reservation, allocation, now := capabilityFixture(t)
+	clock := now
+	issuer, err := NewCapabilityIssuer(func() time.Time { return clock }, bytes.NewReader(bytes.Repeat([]byte{4}, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant, err := issuer.MintAttemptEffectObservationGrant(authority, reservation, now, now.Add(time.Minute))
+	if err != nil || issuer.VerifyObservationGrant(grant) != nil {
+		t.Fatalf("mint/verify observation grant = %v/%v", err, issuer.VerifyObservationGrant(grant))
+	}
+	if _, err := issuer.Issue(ports.AttemptEffectOwnershipGrantV1{
+		Version: ports.AttemptEffectOwnershipGrantVersionV1, Authority: grant.Authority,
+		Reservation: grant.Reservation, GrantExpiresAt: grant.GrantExpiresAt,
+		Authenticator: grant.Authenticator,
+	}, allocation); err == nil {
+		t.Fatal("observation authenticator was accepted as execution ownership")
+	}
+	other, err := NewCapabilityIssuer(func() time.Time { return clock }, bytes.NewReader(bytes.Repeat([]byte{5}, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other.VerifyObservationGrant(grant) == nil {
+		t.Fatal("observation grant crossed process-local issuer")
+	}
+	clock = grant.GrantExpiresAt
+	if issuer.VerifyObservationGrant(grant) == nil {
+		t.Fatal("observation grant accepted at exclusive deadline")
 	}
 }
 

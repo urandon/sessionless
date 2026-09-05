@@ -7,7 +7,10 @@ import (
 	"gitcode.com/urandon/sessionless/internal/domain"
 )
 
-const AttemptEffectOwnershipGrantVersionV1 uint32 = 1
+const (
+	AttemptEffectOwnershipGrantVersionV1   uint32 = 1
+	AttemptEffectObservationGrantVersionV1 uint32 = 1
+)
 
 type AttemptEffectReservationStatusV1 string
 
@@ -55,9 +58,10 @@ func (request ReserveAttemptEffectRequestV1) Validate() error {
 }
 
 type ReserveAttemptEffectResultV1 struct {
-	Status      AttemptEffectReservationStatusV1
-	Reservation domain.AttemptEffectReservationV1
-	Grant       *AttemptEffectOwnershipGrantV1
+	Status           AttemptEffectReservationStatusV1
+	Reservation      domain.AttemptEffectReservationV1
+	Grant            *AttemptEffectOwnershipGrantV1
+	ObservationGrant *AttemptEffectObservationGrantV1
 }
 
 func (result ReserveAttemptEffectResultV1) Validate() error {
@@ -71,7 +75,19 @@ func (result ReserveAttemptEffectResultV1) Validate() error {
 		if result.Grant != nil {
 			return domain.ValidationError{Field: "reserve_attempt_effect.grant", Reason: "must be absent for reconcile-only"}
 		}
+		if result.ObservationGrant == nil {
+			return domain.ValidationError{Field: "reserve_attempt_effect.observation_grant", Reason: "is required for reconcile-only"}
+		}
+		if err := result.ObservationGrant.Validate(); err != nil {
+			return err
+		}
+		if result.ObservationGrant.Reservation != result.Reservation {
+			return domain.ValidationError{Field: "reserve_attempt_effect.observation_grant", Reason: "must bind the returned reservation"}
+		}
 		return nil
+	}
+	if result.ObservationGrant != nil {
+		return domain.ValidationError{Field: "reserve_attempt_effect.observation_grant", Reason: "must be absent for an owned effect"}
 	}
 	if result.Grant == nil {
 		return domain.ValidationError{Field: "reserve_attempt_effect.grant", Reason: "is required for an owned effect"}
@@ -122,6 +138,46 @@ func (grant AttemptEffectOwnershipGrantV1) Validate() error {
 
 type AttemptEffectOwnershipGrantIssuerV1 interface {
 	MintAttemptEffectOwnershipGrant(domain.ServerlessInvocationAuthorityV1, domain.AttemptEffectReservationV1, time.Time) (AttemptEffectOwnershipGrantV1, error)
+	MintAttemptEffectObservationGrant(domain.ServerlessInvocationAuthorityV1, domain.AttemptEffectReservationV1, time.Time, time.Time) (AttemptEffectObservationGrantV1, error)
+}
+
+// AttemptEffectObservationGrantV1 authorizes read-only reconciliation of one
+// already-reserved physical invocation. It is domain-separated from ownership
+// grants and cannot be exchanged for a PreparedInvocation.
+type AttemptEffectObservationGrantV1 struct {
+	Version        uint32
+	Authority      domain.ServerlessInvocationAuthorityV1
+	Reservation    domain.AttemptEffectReservationV1
+	GrantIssuedAt  time.Time
+	GrantExpiresAt time.Time
+	Authenticator  []byte
+}
+
+func (grant AttemptEffectObservationGrantV1) Clone() AttemptEffectObservationGrantV1 {
+	clone := grant
+	clone.Authority = grant.Authority.Clone()
+	clone.Reservation = grant.Reservation.Clone()
+	clone.Authenticator = append([]byte(nil), grant.Authenticator...)
+	return clone
+}
+
+func (grant AttemptEffectObservationGrantV1) Validate() error {
+	if grant.Version != AttemptEffectObservationGrantVersionV1 {
+		return domain.ValidationError{Field: "attempt_effect_observation_grant.version", Reason: "must equal 1"}
+	}
+	if err := grant.Reservation.ValidateForAuthority(grant.Authority); err != nil {
+		return err
+	}
+	if grant.GrantIssuedAt.IsZero() || grant.GrantExpiresAt.IsZero() || !grant.GrantExpiresAt.After(grant.GrantIssuedAt) {
+		return domain.ValidationError{Field: "attempt_effect_observation_grant.window", Reason: "must be a positive bounded window"}
+	}
+	if grant.GrantExpiresAt.After(grant.GrantIssuedAt.Add(grant.Authority.AdmissionCostCeiling.MaxPreEffectDurationPerDelivery)) {
+		return domain.ValidationError{Field: "attempt_effect_observation_grant.expires_at", Reason: "must fit the pre-effect delivery window"}
+	}
+	if len(grant.Authenticator) != 32 {
+		return domain.ValidationError{Field: "attempt_effect_observation_grant.authenticator", Reason: "must be a process-local MAC"}
+	}
+	return nil
 }
 
 type AttemptEffectStoreV1 interface {

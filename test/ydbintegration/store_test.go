@@ -663,7 +663,8 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 	contender := effectRequest
 	contender.PhysicalInvocationClaimID = uniqueID("physical-contender")
 	reconcile, err := store.ReserveAttemptEffect(context.Background(), contender)
-	if err != nil || reconcile.Status != ports.AttemptEffectReconcileOnlyV1 || reconcile.Reservation != effect.Reservation {
+	if err != nil || reconcile.Status != ports.AttemptEffectReconcileOnlyV1 || reconcile.Reservation != effect.Reservation ||
+		reconcile.Grant != nil || reconcile.ObservationGrant == nil || grantIssuer.VerifyObservationGrant(*reconcile.ObservationGrant) != nil {
 		t.Fatalf("contending provider effect = %#v, %v", reconcile, err)
 	}
 	divergent := effectRequest

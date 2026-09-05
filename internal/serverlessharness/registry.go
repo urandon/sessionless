@@ -101,10 +101,18 @@ type PreparedExecutionV1 interface {
 	Reconcile(context.Context) (SubstrateOperationObservationV1, error)
 }
 
+// PreparedReconciliationV1 is a read-only operation session for a physical
+// invocation reserved by another delivery. It intentionally exposes neither
+// Execute nor Cancel.
+type PreparedReconciliationV1 interface {
+	Reconcile(context.Context) (SubstrateOperationObservationV1, error)
+}
+
 // ExecutionPreparerV1 authenticates the durable effect owner and returns an
 // opaque session already bound to its exact substrate and invocation.
 type ExecutionPreparerV1 interface {
 	PrepareExecution(context.Context, ports.ReserveAttemptEffectResultV1) (PreparedExecutionV1, error)
+	PrepareReconciliation(context.Context, ports.ReserveAttemptEffectResultV1) (PreparedReconciliationV1, error)
 }
 
 // SubstrateRegistrationResolverV1 is trusted process composition. It must
@@ -121,6 +129,11 @@ type ExactExecutionPreparerV1 struct {
 type preparedExecutionV1 struct {
 	registry *SubstrateRegistryV1
 	prepared PreparedInvocation
+}
+
+type preparedReconciliationV1 struct {
+	registry  *SubstrateRegistryV1
+	authority domain.ServerlessInvocationAuthorityV1
 }
 
 func NewExactExecutionPreparerV1(
@@ -157,6 +170,32 @@ func (preparer *ExactExecutionPreparerV1) PrepareExecution(
 		return nil, substrateErrorV1{code: SubstrateFailureUnsupportedV1}
 	}
 	return registry.PrepareExecution(ctx, result)
+}
+
+func (preparer *ExactExecutionPreparerV1) PrepareReconciliation(
+	ctx context.Context,
+	result ports.ReserveAttemptEffectResultV1,
+) (PreparedReconciliationV1, error) {
+	if preparer == nil || preparer.issuer == nil || preparer.resolver == nil || ctx == nil || ctx.Err() != nil ||
+		result.Validate() != nil || result.Status != ports.AttemptEffectReconcileOnlyV1 || result.ObservationGrant == nil {
+		return nil, substrateErrorV1{code: SubstrateFailureAuthorityInvalidV1}
+	}
+	grant := result.ObservationGrant.Clone()
+	if preparer.issuer.VerifyObservationGrant(grant) != nil {
+		return nil, substrateErrorV1{code: SubstrateFailureAuthorityInvalidV1}
+	}
+	registration, err := preparer.resolver(grant.Authority.Clone())
+	if err != nil || registration.Driver == nil {
+		return nil, substrateErrorV1{code: SubstrateFailureUnsupportedV1}
+	}
+	if registration.Binding != grant.Authority.SubstrateBinding {
+		return nil, substrateErrorV1{code: SubstrateFailureBindingMismatchV1}
+	}
+	registry, err := NewSubstrateRegistryV1(preparer.now, preparer.issuer, registration)
+	if err != nil {
+		return nil, substrateErrorV1{code: SubstrateFailureUnsupportedV1}
+	}
+	return &preparedReconciliationV1{registry: registry, authority: grant.Authority.Clone()}, nil
 }
 
 type SubstrateRegistrationV1 struct {
@@ -267,6 +306,13 @@ func (execution *preparedExecutionV1) Reconcile(ctx context.Context) (SubstrateO
 		return SubstrateOperationObservationV1{}, substrateErrorV1{code: SubstrateFailureAuthorityInvalidV1}
 	}
 	return execution.registry.Reconcile(ctx, execution.prepared.Authority())
+}
+
+func (reconciliation *preparedReconciliationV1) Reconcile(ctx context.Context) (SubstrateOperationObservationV1, error) {
+	if reconciliation == nil || reconciliation.registry == nil {
+		return SubstrateOperationObservationV1{}, substrateErrorV1{code: SubstrateFailureAuthorityInvalidV1}
+	}
+	return reconciliation.registry.Reconcile(ctx, reconciliation.authority.Clone())
 }
 
 func (registry *SubstrateRegistryV1) Preflight(ctx context.Context, authority domain.ServerlessInvocationAuthorityV1) (domain.PreparedAllocationV1, error) {

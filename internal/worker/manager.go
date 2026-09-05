@@ -253,7 +253,15 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 		return manager.retry(ctx, message, err)
 	}
 	if effect.Status == ports.AttemptEffectReconcileOnlyV1 {
-		return manager.retry(ctx, message, errAttemptEffectReconcileOnly)
+		reconciliation, err := manager.preparer.PrepareReconciliation(ctx, effect)
+		if err != nil {
+			return manager.retry(ctx, message, err)
+		}
+		observation, err := reconciliation.Reconcile(ctx)
+		if err != nil {
+			return manager.retry(ctx, message, err)
+		}
+		return manager.retry(ctx, message, attemptEffectReconcilePendingError{observation: observation})
 	}
 	execution, err := manager.preparer.PrepareExecution(ctx, effect)
 	if err != nil {
@@ -739,8 +747,15 @@ func (sink *eventSink) Emit(ctx context.Context, event ports.ExecutionEvent) err
 
 var (
 	errWorkerCancellationObserved = errors.New("worker cancellation observed")
-	errAttemptEffectReconcileOnly = errors.New("provider effect belongs to another physical invocation")
 )
+
+type attemptEffectReconcilePendingError struct {
+	observation serverlessharness.SubstrateOperationObservationV1
+}
+
+func (err attemptEffectReconcilePendingError) Error() string {
+	return fmt.Sprintf("provider effect reconciliation pending: state=%s physical_invocation_id=%s", err.observation.State, err.observation.PhysicalInvocationID)
+}
 
 func generatePhysicalClaim(ctx context.Context) (string, error) {
 	if err := ctx.Err(); err != nil {

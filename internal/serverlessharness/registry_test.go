@@ -153,6 +153,10 @@ func TestSubstrateRegistryPreparesOnlyAuthenticatedEffectOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	observationGrant, err := issuer.MintAttemptEffectObservationGrant(authority, reservation, at, at.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
 	driver := &substrateRegistryRecordingDriver{allocation: allocation}
 	registry, err := NewSubstrateRegistryV1(func() time.Time { return at }, issuer, SubstrateRegistrationV1{
 		Binding: authority.SubstrateBinding, Enabled: true, Driver: driver,
@@ -180,13 +184,41 @@ func TestSubstrateRegistryPreparesOnlyAuthenticatedEffectOwner(t *testing.T) {
 	}
 
 	reconcile := ports.ReserveAttemptEffectResultV1{
-		Status: ports.AttemptEffectReconcileOnlyV1, Reservation: reservation,
+		Status: ports.AttemptEffectReconcileOnlyV1, Reservation: reservation, ObservationGrant: &observationGrant,
 	}
 	if _, err := registry.Prepare(context.Background(), reconcile); err == nil {
 		t.Fatal("reconcile-only reservation prepared")
 	}
 	if driver.preflightCalls != 1 {
 		t.Fatalf("reconcile-only reservation reached preflight: calls = %d", driver.preflightCalls)
+	}
+	reconciliation, err := (&ExactExecutionPreparerV1{
+		now: func() time.Time { return at }, issuer: issuer,
+		resolver: func(domain.ServerlessInvocationAuthorityV1) (SubstrateRegistrationV1, error) {
+			return SubstrateRegistrationV1{Binding: authority.SubstrateBinding, Enabled: false, Driver: driver}, nil
+		},
+	}).PrepareReconciliation(context.Background(), reconcile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observation, err := reconciliation.Reconcile(context.Background())
+	if err != nil || observation.State != SubstrateOperationObservedV1 || driver.reconcileCalls != 1 {
+		t.Fatalf("reconcile observation/calls/error = %#v/%d/%v", observation, driver.reconcileCalls, err)
+	}
+	tamperedObservation := reconcile
+	tamperedObservationGrant := observationGrant.Clone()
+	tamperedObservationGrant.Authenticator[0] ^= 0xff
+	tamperedObservation.ObservationGrant = &tamperedObservationGrant
+	if _, err := (&ExactExecutionPreparerV1{
+		now: func() time.Time { return at }, issuer: issuer,
+		resolver: func(domain.ServerlessInvocationAuthorityV1) (SubstrateRegistrationV1, error) {
+			return SubstrateRegistrationV1{Binding: authority.SubstrateBinding, Enabled: false, Driver: driver}, nil
+		},
+	}).PrepareReconciliation(context.Background(), tamperedObservation); err == nil {
+		t.Fatal("tampered observation grant prepared")
+	}
+	if driver.reconcileCalls != 1 {
+		t.Fatalf("tampered observation reached reconcile: calls = %d", driver.reconcileCalls)
 	}
 }
 

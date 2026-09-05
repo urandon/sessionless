@@ -47,7 +47,13 @@ func (store *Store) ReserveAttemptEffect(ctx context.Context, request ports.Rese
 			if !attemptEffectRequestMatchesRecord(request, existing) {
 				return domain.ValidationError{Field: "reserve_attempt_effect", Reason: "does not match the persisted attempt effect scope"}
 			}
-			result = ports.ReserveAttemptEffectResultV1{Status: ports.AttemptEffectReconcileOnlyV1, Reservation: existing.Reservation.Clone()}
+			observationGrant, err := store.mintAttemptEffectObservationGrant(existing, at)
+			if err != nil {
+				return err
+			}
+			result = ports.ReserveAttemptEffectResultV1{
+				Status: ports.AttemptEffectReconcileOnlyV1, Reservation: existing.Reservation.Clone(), ObservationGrant: &observationGrant,
+			}
 			if existing.Reservation.PhysicalInvocationClaimID != request.PhysicalInvocationClaimID {
 				return result.Validate()
 			}
@@ -63,7 +69,7 @@ func (store *Store) ReserveAttemptEffect(ctx context.Context, request ports.Rese
 			if err != nil {
 				return err
 			}
-			result.Status, result.Grant = ports.AttemptEffectReplayedV1, &grant
+			result.Status, result.Grant, result.ObservationGrant = ports.AttemptEffectReplayedV1, &grant, nil
 			return result.Validate()
 		}
 		authority, authorized, err := currentServerlessInvocationAuthorityTx(ctx, tx, request, at)
@@ -171,6 +177,14 @@ func (store *Store) mintAttemptEffectGrant(authority domain.ServerlessInvocation
 		return ports.AttemptEffectOwnershipGrantV1{}, errors.New("attempt effect ownership grant has no fresh pre-effect window")
 	}
 	return store.attemptEffectGrantIssuer.MintAttemptEffectOwnershipGrant(authority, reservation, expiresAt)
+}
+
+func (store *Store) mintAttemptEffectObservationGrant(record attemptEffectRecordV1, at time.Time) (ports.AttemptEffectObservationGrantV1, error) {
+	if store.attemptEffectGrantIssuer == nil {
+		return ports.AttemptEffectObservationGrantV1{}, errors.New("attempt effect observation grant issuer is not configured")
+	}
+	expiresAt := at.Add(record.Authority.AdmissionCostCeiling.MaxPreEffectDurationPerDelivery)
+	return store.attemptEffectGrantIssuer.MintAttemptEffectObservationGrant(record.Authority, record.Reservation, at, expiresAt)
 }
 
 func readAttemptEffectRecordTx(ctx context.Context, tx *stateTx, attemptID domain.AttemptID) (attemptEffectRecordV1, bool, error) {

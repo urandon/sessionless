@@ -106,7 +106,10 @@ published from `docker-library/golang` revision
 `f47489bcbda87966b421340c536f39a34d00b45f` on 2026-09-01. These values are
 recorded in `build/images.env`; `make image-build-inputs-test` rejects drift
 between that image tag, its index provenance, `tools/versions.env`, `go.mod`,
-and both Dockerfile defaults.
+and both Dockerfile defaults. Before its first build,
+`make image-reproducibility-test` resolves the immutable index and rejects any
+`linux/amd64` child digest, source URL/revision, or image-version annotation
+that differs from this reviewed record.
 
 The bounded Codex App Server feasibility evidence, stable protocol subset,
 subscription-auth boundary, and still-open cloud/policy gates are documented

@@ -12,6 +12,8 @@ for command_name in curl docker git jq tar; do
   }
 done
 
+"$repo_root/scripts/verify-go-builder-provenance.sh"
+
 test_root=$(mktemp -d "${TMPDIR:-/tmp}/sessionless-image-reproducibility.XXXXXX")
 suffix=$$
 registry_name="sessionless-repro-registry-$suffix"

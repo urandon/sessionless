@@ -71,6 +71,10 @@ grep -F 'IMAGE_REQUIRE_CLEAN_CHECKOUT=1' "$repo_root/scripts/cloud-images.sh" >/
 grep -F 'CLOUD_IMAGE_REQUIRE_CLEAN_INPUTS=1' "$repo_root/scripts/cloud-images.sh" >/dev/null
 grep -F 'IMAGE_EXPORTER_MODE=registry' "$repo_root/scripts/test-image-reproducibility.sh" >/dev/null
 grep -F 'http = true' "$repo_root/scripts/test-image-reproducibility.sh" >/dev/null
+grep -F 'verify-go-builder-provenance.sh' \
+  "$repo_root/scripts/test-image-reproducibility.sh" >/dev/null
+grep -F 'org.opencontainers.image.source' \
+  "$repo_root/scripts/verify-go-builder-provenance.sh" >/dev/null
 grep -F 'transport_manifest_digest == .manifest.digest' \
   "$repo_root/scripts/test-image-reproducibility.sh" >/dev/null
 grep -F 'docker buildx imagetools create --prefer-index=false' \

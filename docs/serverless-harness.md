@@ -266,15 +266,20 @@ shell:
 
 ```text
 ExecutionSubstrateV1.Preflight(ctx, authority) -> verified profile | stable error
-ExecutionSubstrateV1.Execute(ctx, prepared_invocation, SessionlessHarnessV1) -> evidence
+ExecutionSubstrateV1.Execute(ctx, prepared_invocation, exact_execution_request,
+                             event_sink, SessionlessHarnessV1)
+  -> harness_result + substrate_evidence
 ExecutionSubstrateV1.Cancel(ctx, exact attempt/lease/fence) -> observation
 ExecutionSubstrateV1.Reconcile(ctx, exact attempt/lease/fence) -> observation
 ```
 
-`Execute` exact-validates the capability against the current authority,
-reservation, physical claim and allocation before any effect; it cannot choose
-a backend or provider. The returned evidence exact-compares all three digests
-and the claim ID. `Cancel` stays routable after
+`Execute` exact-validates the capability and the explicit execution request
+against the current authority, reservation, physical claim, allocation,
+placement, harness binding, substrate binding, and admission cost ceiling
+before any effect; it cannot choose a backend or provider or recover material
+through a hidden side channel. The returned provider evidence must be the same
+sealed observation in both the harness result and substrate evidence, which
+exact-compares all authority digests and the claim ID. `Cancel` stays routable after
 provider-policy evidence expires, but its exact attempt, lease, fence,
 substrate, and artifact bindings must still validate. `Reconcile` observes an
 already bound invocation; it never starts work.

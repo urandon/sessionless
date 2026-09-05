@@ -86,7 +86,7 @@ func (value SubstrateOperationObservationV1) ValidateForAuthority(authority doma
 // PreparedInvocation and cannot select another backend/provider.
 type ExecutionSubstrateV1 interface {
 	Preflight(context.Context, domain.ServerlessInvocationAuthorityV1) (domain.PreparedAllocationV1, error)
-	Execute(context.Context, PreparedInvocation, ports.HarnessDriver) (domain.SubstrateExecutionEvidenceV1, error)
+	Execute(context.Context, PreparedInvocation, ports.ExecutionRequest, ports.ExecutionEventSink, ports.HarnessDriver) (ports.ExecutionResult, domain.SubstrateExecutionEvidenceV1, error)
 	Cancel(context.Context, domain.ServerlessInvocationAuthorityV1) (SubstrateOperationObservationV1, error)
 	Reconcile(context.Context, domain.ServerlessInvocationAuthorityV1) (SubstrateOperationObservationV1, error)
 }
@@ -176,20 +176,27 @@ func (registry *SubstrateRegistryV1) Preflight(ctx context.Context, authority do
 	return allocation.Clone(), nil
 }
 
-func (registry *SubstrateRegistryV1) Execute(ctx context.Context, prepared PreparedInvocation, harness ports.HarnessDriver) (domain.SubstrateExecutionEvidenceV1, error) {
-	if harness == nil || registry == nil || registry.issuer == nil || registry.issuer.Validate(prepared) != nil {
-		return domain.SubstrateExecutionEvidenceV1{}, substrateErrorV1{code: SubstrateFailureAuthorityInvalidV1}
+func (registry *SubstrateRegistryV1) Execute(
+	ctx context.Context,
+	prepared PreparedInvocation,
+	request ports.ExecutionRequest,
+	sink ports.ExecutionEventSink,
+	harness ports.HarnessDriver,
+) (ports.ExecutionResult, domain.SubstrateExecutionEvidenceV1, error) {
+	if harness == nil || sink == nil || registry == nil || registry.issuer == nil ||
+		registry.issuer.Validate(prepared) != nil || validatePreparedExecutionRequest(prepared, request) != nil {
+		return ports.ExecutionResult{}, domain.SubstrateExecutionEvidenceV1{}, substrateErrorV1{code: SubstrateFailureAuthorityInvalidV1}
 	}
 	authority := prepared.Authority()
 	registration, bindingDigest, err := registry.resolve(authority, true)
 	if err != nil {
-		return domain.SubstrateExecutionEvidenceV1{}, err
+		return ports.ExecutionResult{}, domain.SubstrateExecutionEvidenceV1{}, err
 	}
 	authorityDigest, _ := authority.Digest()
 	registry.mu.Lock()
 	if activeBinding, exists := registry.active[authorityDigest]; exists && activeBinding != bindingDigest {
 		registry.mu.Unlock()
-		return domain.SubstrateExecutionEvidenceV1{}, substrateErrorV1{code: SubstrateFailureBindingMismatchV1}
+		return ports.ExecutionResult{}, domain.SubstrateExecutionEvidenceV1{}, substrateErrorV1{code: SubstrateFailureBindingMismatchV1}
 	}
 	registry.active[authorityDigest] = bindingDigest
 	registry.mu.Unlock()
@@ -198,14 +205,57 @@ func (registry *SubstrateRegistryV1) Execute(ctx context.Context, prepared Prepa
 		delete(registry.active, authorityDigest)
 		registry.mu.Unlock()
 	}()
-	evidence, executeErr := registration.Driver.Execute(ctx, prepared, harness)
+	result, evidence, executeErr := registration.Driver.Execute(ctx, prepared, request, sink, harness)
 	if evidence.ValidateForAuthority(authority, prepared.Reservation(), prepared.Allocation(), prepared.Digest()) != nil {
-		return domain.SubstrateExecutionEvidenceV1{}, substrateErrorV1{code: SubstrateFailureExecuteV1}
+		return ports.ExecutionResult{}, domain.SubstrateExecutionEvidenceV1{}, substrateErrorV1{code: SubstrateFailureExecuteV1}
+	}
+	if result.ProviderEvidence == nil || evidence.ProviderEvidence == nil ||
+		result.ProviderEvidence.EvidenceDigest != evidence.ProviderEvidence.EvidenceDigest {
+		return ports.ExecutionResult{}, domain.SubstrateExecutionEvidenceV1{}, substrateErrorV1{code: SubstrateFailureExecuteV1}
 	}
 	if executeErr != nil {
-		return evidence.Clone(), substrateErrorV1{code: SubstrateFailureExecuteV1}
+		return result, evidence.Clone(), substrateErrorV1{code: SubstrateFailureExecuteV1}
 	}
-	return evidence.Clone(), nil
+	return result, evidence.Clone(), nil
+}
+
+func validatePreparedExecutionRequest(prepared PreparedInvocation, request ports.ExecutionRequest) error {
+	if err := request.Validate(); err != nil {
+		return err
+	}
+	authority := prepared.Authority()
+	if request.TenantID != authority.HarnessBinding.TenantID || request.OwnerUserID != authority.HarnessBinding.OwnerUserID ||
+		request.RunID != authority.HarnessBinding.RunID || request.AttemptID != authority.HarnessBinding.AttemptID {
+		return errors.New("prepared execution request scope mismatch")
+	}
+	harnessDigest, err := request.HarnessBinding.Digest()
+	if err != nil {
+		return err
+	}
+	authorityHarnessDigest, _ := authority.HarnessBinding.Digest()
+	placementDigest, err := domain.ExecutionPlacementDigest(request.ExecutionPlacementV2)
+	if err != nil {
+		return err
+	}
+	authorityPlacementDigest, _ := domain.ExecutionPlacementDigest(authority.ExecutionPlacementV2)
+	if request.SubstrateBinding == nil || request.AdmissionCostCeiling == nil {
+		return errors.New("prepared execution request authority is incomplete")
+	}
+	substrateDigest, err := request.SubstrateBinding.Digest()
+	if err != nil {
+		return err
+	}
+	authoritySubstrateDigest, _ := authority.SubstrateBinding.Digest()
+	costDigest, err := request.AdmissionCostCeiling.Digest()
+	if err != nil {
+		return err
+	}
+	authorityCostDigest, _ := authority.AdmissionCostCeiling.Digest()
+	if harnessDigest != authorityHarnessDigest || placementDigest != authorityPlacementDigest ||
+		substrateDigest != authoritySubstrateDigest || costDigest != authorityCostDigest {
+		return errors.New("prepared execution request binding mismatch")
+	}
+	return nil
 }
 
 func (registry *SubstrateRegistryV1) Cancel(ctx context.Context, authority domain.ServerlessInvocationAuthorityV1) (SubstrateOperationObservationV1, error) {

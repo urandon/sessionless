@@ -91,6 +91,27 @@ type ExecutionSubstrateV1 interface {
 	Reconcile(context.Context, domain.ServerlessInvocationAuthorityV1) (SubstrateOperationObservationV1, error)
 }
 
+// PreparedExecutionV1 is the only managed-work execution surface exposed to
+// the worker after it owns a durable effect reservation. The concrete session
+// keeps PreparedInvocation process-local and cannot be reconstructed from a
+// queue delivery or caller-supplied fields.
+type PreparedExecutionV1 interface {
+	Execute(context.Context, ports.ExecutionRequest, ports.ExecutionEventSink, ports.HarnessDriver) (ports.ExecutionResult, domain.SubstrateExecutionEvidenceV1, error)
+	Cancel(context.Context) (SubstrateOperationObservationV1, error)
+	Reconcile(context.Context) (SubstrateOperationObservationV1, error)
+}
+
+// ExecutionPreparerV1 authenticates the durable effect owner and returns an
+// opaque session already bound to its exact substrate and invocation.
+type ExecutionPreparerV1 interface {
+	PrepareExecution(context.Context, ports.ReserveAttemptEffectResultV1) (PreparedExecutionV1, error)
+}
+
+type preparedExecutionV1 struct {
+	registry *SubstrateRegistryV1
+	prepared PreparedInvocation
+}
+
 type SubstrateRegistrationV1 struct {
 	Binding domain.SubstrateBindingV1
 	Enabled bool
@@ -159,6 +180,46 @@ func (registry *SubstrateRegistryV1) Prepare(
 		return PreparedInvocation{}, substrateErrorV1{code: SubstrateFailureAuthorityInvalidV1}
 	}
 	return prepared, nil
+}
+
+// PrepareExecution is the worker-facing composition boundary. Callers receive
+// operations bound to one authenticated reservation, never the underlying
+// PreparedInvocation capability.
+func (registry *SubstrateRegistryV1) PrepareExecution(
+	ctx context.Context,
+	result ports.ReserveAttemptEffectResultV1,
+) (PreparedExecutionV1, error) {
+	prepared, err := registry.Prepare(ctx, result)
+	if err != nil {
+		return nil, err
+	}
+	return &preparedExecutionV1{registry: registry, prepared: prepared}, nil
+}
+
+func (execution *preparedExecutionV1) Execute(
+	ctx context.Context,
+	request ports.ExecutionRequest,
+	sink ports.ExecutionEventSink,
+	harness ports.HarnessDriver,
+) (ports.ExecutionResult, domain.SubstrateExecutionEvidenceV1, error) {
+	if execution == nil || execution.registry == nil {
+		return ports.ExecutionResult{}, domain.SubstrateExecutionEvidenceV1{}, substrateErrorV1{code: SubstrateFailureAuthorityInvalidV1}
+	}
+	return execution.registry.Execute(ctx, execution.prepared, request, sink, harness)
+}
+
+func (execution *preparedExecutionV1) Cancel(ctx context.Context) (SubstrateOperationObservationV1, error) {
+	if execution == nil || execution.registry == nil {
+		return SubstrateOperationObservationV1{}, substrateErrorV1{code: SubstrateFailureAuthorityInvalidV1}
+	}
+	return execution.registry.Cancel(ctx, execution.prepared.Authority())
+}
+
+func (execution *preparedExecutionV1) Reconcile(ctx context.Context) (SubstrateOperationObservationV1, error) {
+	if execution == nil || execution.registry == nil {
+		return SubstrateOperationObservationV1{}, substrateErrorV1{code: SubstrateFailureAuthorityInvalidV1}
+	}
+	return execution.registry.Reconcile(ctx, execution.prepared.Authority())
 }
 
 func (registry *SubstrateRegistryV1) Preflight(ctx context.Context, authority domain.ServerlessInvocationAuthorityV1) (domain.PreparedAllocationV1, error) {

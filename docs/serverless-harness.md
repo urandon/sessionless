@@ -261,6 +261,14 @@ and issues the capability. It deliberately does not consume the capability:
 the selected child-process supervisor or direct-egress boundary owns the one
 actual effect transition.
 
+The managed worker receives only `PreparedExecutionV1`, an opaque operation
+session returned by `PrepareExecution` after the same authenticated preparation.
+The session exposes bound `Execute`, `Cancel`, and `Reconcile` operations but no
+capability, authority getter, decoder, or alternate substrate selector. Thus the
+worker cannot reconstruct, retain, mutate, or route around `PreparedInvocation`;
+the registry and selected exact driver remain the only holders that can consume
+it at the reviewed effect boundary.
+
 The proposed substrate port is deliberately smaller than a general remote
 shell:
 

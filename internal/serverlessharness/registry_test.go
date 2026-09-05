@@ -209,31 +209,66 @@ func TestSubstrateRegistryExecutesOnlyExactPreparedRequestOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prepared, err := registry.Prepare(context.Background(), ports.ReserveAttemptEffectResultV1{
+	execution, err := registry.PrepareExecution(context.Background(), ports.ReserveAttemptEffectResultV1{
 		Status: ports.AttemptEffectOwnedV1, Reservation: reservation, Grant: &grant,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	request := executionRequestForAuthority(authority)
-	result, evidence, err := registry.Execute(context.Background(), prepared, request, substrateSinkNoop{}, substrateHarnessNoop{})
+	result, evidence, err := execution.Execute(context.Background(), request, substrateSinkNoop{}, substrateHarnessNoop{})
 	if err != nil || result.ProviderEvidence == nil || evidence.ProviderEvidence == nil || driver.effects != 1 {
 		t.Fatalf("result/evidence/effects/error = %+v/%+v/%d/%v", result, evidence, driver.effects, err)
 	}
 
 	mutated := request
 	mutated.HarnessBinding.Backend.BackendProfileDigest = strings.Repeat("c", 64)
-	if _, _, err := registry.Execute(context.Background(), prepared, mutated, substrateSinkNoop{}, substrateHarnessNoop{}); err == nil {
+	if _, _, err := execution.Execute(context.Background(), mutated, substrateSinkNoop{}, substrateHarnessNoop{}); err == nil {
 		t.Fatal("mutated execution request reached prepared driver")
 	}
 	if driver.effects != 1 {
 		t.Fatalf("mutated execution changed effects = %d", driver.effects)
 	}
-	if _, _, err := registry.Execute(context.Background(), prepared, request, substrateSinkNoop{}, substrateHarnessNoop{}); err == nil {
+	if _, _, err := execution.Execute(context.Background(), request, substrateSinkNoop{}, substrateHarnessNoop{}); err == nil {
 		t.Fatal("replayed prepared invocation executed")
 	}
 	if driver.effects != 1 {
 		t.Fatalf("replay changed effects = %d", driver.effects)
+	}
+}
+
+func TestPreparedExecutionKeepsCancelAndReconcileBoundToPreparedAuthority(t *testing.T) {
+	t.Parallel()
+	authority, reservation, allocation, at := capabilityFixture(t)
+	issuer, err := NewCapabilityIssuer(func() time.Time { return at }, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant, err := issuer.MintAttemptEffectOwnershipGrant(authority, reservation, at.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	driver := &substrateRegistryRecordingDriver{allocation: allocation}
+	registry, err := NewSubstrateRegistryV1(func() time.Time { return at }, issuer, SubstrateRegistrationV1{
+		Binding: authority.SubstrateBinding, Enabled: true, Driver: driver,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution, err := registry.PrepareExecution(context.Background(), ports.ReserveAttemptEffectResultV1{
+		Status: ports.AttemptEffectOwnedV1, Reservation: reservation, Grant: &grant,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := execution.Cancel(context.Background()); err != nil {
+		t.Fatalf("cancel prepared execution: %v", err)
+	}
+	if _, err := execution.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile prepared execution: %v", err)
+	}
+	if driver.cancelCalls != 1 || driver.reconcileCalls != 1 {
+		t.Fatalf("cancel/reconcile calls = %d/%d, want 1/1", driver.cancelCalls, driver.reconcileCalls)
 	}
 }
 

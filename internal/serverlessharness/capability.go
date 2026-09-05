@@ -126,6 +126,15 @@ func (issuer *CapabilityIssuer) verifyGrant(grant ports.AttemptEffectOwnershipGr
 	return nil
 }
 
+// VerifyGrant authenticates a durable reservation result before any substrate
+// preflight is delegated. It does not issue or consume an execution capability.
+func (issuer *CapabilityIssuer) VerifyGrant(grant ports.AttemptEffectOwnershipGrantV1) error {
+	if issuer == nil || issuer.clock == nil {
+		return ErrInvalidPreparedInvocation
+	}
+	return issuer.verifyGrant(grant, issuer.clock().UTC())
+}
+
 // Consume atomically burns a prepared provider-turn capability before the
 // caller may start a process, network request, or other provider effect.
 func (issuer *CapabilityIssuer) Consume(prepared PreparedInvocation) error {

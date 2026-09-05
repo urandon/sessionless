@@ -10,6 +10,8 @@ import (
 )
 
 type substrateRegistryRecordingDriver struct {
+	allocation     domain.PreparedAllocationV1
+	preflightCalls int
 	executeCalls   int
 	cancelCalls    int
 	reconcileCalls int
@@ -24,7 +26,8 @@ func (substrateHarnessNoop) Execute(context.Context, ports.ExecutionRequest, por
 func (substrateHarnessNoop) Cancel(context.Context, ports.ExecutionIdentity) error { return nil }
 
 func (driver *substrateRegistryRecordingDriver) Preflight(_ context.Context, _ domain.ServerlessInvocationAuthorityV1) (domain.PreparedAllocationV1, error) {
-	return domain.PreparedAllocationV1{}, nil
+	driver.preflightCalls++
+	return driver.allocation.Clone(), nil
 }
 
 func (driver *substrateRegistryRecordingDriver) Execute(_ context.Context, _ PreparedInvocation, _ ports.HarnessDriver) (domain.SubstrateExecutionEvidenceV1, error) {
@@ -84,6 +87,54 @@ func TestSubstrateRegistryExecuteRequiresFreshProfile(t *testing.T) {
 	}
 	if driver.executeCalls != 0 {
 		t.Fatalf("execute calls = %d, want 0", driver.executeCalls)
+	}
+}
+
+func TestSubstrateRegistryPreparesOnlyAuthenticatedEffectOwner(t *testing.T) {
+	t.Parallel()
+	authority, reservation, allocation, at := capabilityFixture(t)
+	issuer, err := NewCapabilityIssuer(func() time.Time { return at }, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant, err := issuer.MintAttemptEffectOwnershipGrant(authority, reservation, at.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	driver := &substrateRegistryRecordingDriver{allocation: allocation}
+	registry, err := NewSubstrateRegistryV1(func() time.Time { return at }, issuer, SubstrateRegistrationV1{
+		Binding: authority.SubstrateBinding, Enabled: true, Driver: driver,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := ports.ReserveAttemptEffectResultV1{
+		Status: ports.AttemptEffectOwnedV1, Reservation: reservation, Grant: &grant,
+	}
+	prepared, err := registry.Prepare(context.Background(), result)
+	if err != nil || issuer.Validate(prepared) != nil || driver.preflightCalls != 1 {
+		t.Fatalf("prepared = %v, validate = %v, preflights = %d", err, issuer.Validate(prepared), driver.preflightCalls)
+	}
+
+	tampered := result
+	tamperedGrant := grant.Clone()
+	tamperedGrant.Authenticator[0] ^= 0xff
+	tampered.Grant = &tamperedGrant
+	if _, err := registry.Prepare(context.Background(), tampered); err == nil {
+		t.Fatal("tampered effect grant prepared")
+	}
+	if driver.preflightCalls != 1 {
+		t.Fatalf("tampered grant reached preflight: calls = %d", driver.preflightCalls)
+	}
+
+	reconcile := ports.ReserveAttemptEffectResultV1{
+		Status: ports.AttemptEffectReconcileOnlyV1, Reservation: reservation,
+	}
+	if _, err := registry.Prepare(context.Background(), reconcile); err == nil {
+		t.Fatal("reconcile-only reservation prepared")
+	}
+	if driver.preflightCalls != 1 {
+		t.Fatalf("reconcile-only reservation reached preflight: calls = %d", driver.preflightCalls)
 	}
 }
 

@@ -253,6 +253,14 @@ It binds the winning physical claim to the stored reservation and observed
 allocation. It is not a lifecycle record and cannot be reconstructed from
 caller input or a queue delivery, and no public decoder or constructor exists.
 
+`SubstrateRegistryV1.Prepare` is the only generic composition step from the
+durable reservation result to that capability. It rejects structurally invalid,
+reconcile-only, and issuer-MAC-mismatched results before delegating preflight;
+then it exact-resolves the sealed substrate, validates its observed allocation,
+and issues the capability. It deliberately does not consume the capability:
+the selected child-process supervisor or direct-egress boundary owns the one
+actual effect transition.
+
 The proposed substrate port is deliberately smaller than a general remote
 shell:
 

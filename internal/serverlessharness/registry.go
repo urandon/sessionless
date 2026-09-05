@@ -133,6 +133,34 @@ func NewSubstrateRegistryV1(now func() time.Time, issuer *CapabilityIssuer, regi
 	return registry, nil
 }
 
+// Prepare authenticates one durable effect owner, resolves and preflights its
+// exact sealed substrate registration, and issues the non-durable capability
+// that downstream process or egress code must consume at its effect boundary.
+func (registry *SubstrateRegistryV1) Prepare(
+	ctx context.Context,
+	result ports.ReserveAttemptEffectResultV1,
+) (PreparedInvocation, error) {
+	if registry == nil || registry.issuer == nil || ctx == nil || ctx.Err() != nil || result.Validate() != nil {
+		return PreparedInvocation{}, substrateErrorV1{code: SubstrateFailureAuthorityInvalidV1}
+	}
+	if result.Status == ports.AttemptEffectReconcileOnlyV1 || result.Grant == nil {
+		return PreparedInvocation{}, substrateErrorV1{code: SubstrateFailureReconcileV1}
+	}
+	grant := result.Grant.Clone()
+	if registry.issuer.VerifyGrant(grant) != nil {
+		return PreparedInvocation{}, substrateErrorV1{code: SubstrateFailureAuthorityInvalidV1}
+	}
+	allocation, err := registry.Preflight(ctx, grant.Authority)
+	if err != nil {
+		return PreparedInvocation{}, err
+	}
+	prepared, err := registry.issuer.Issue(grant, allocation)
+	if err != nil {
+		return PreparedInvocation{}, substrateErrorV1{code: SubstrateFailureAuthorityInvalidV1}
+	}
+	return prepared, nil
+}
+
 func (registry *SubstrateRegistryV1) Preflight(ctx context.Context, authority domain.ServerlessInvocationAuthorityV1) (domain.PreparedAllocationV1, error) {
 	registration, _, err := registry.resolve(authority, true)
 	if err != nil {

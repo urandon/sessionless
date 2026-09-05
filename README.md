@@ -71,6 +71,9 @@ browser UI remains a separate slice.
 - `internal/worker`: durable materialize/execute/checkpoint/finalize lifecycle;
 - `internal/deterministicharness`: credential-free adapter that proves the
   worker contract before a subscription CLI is selected;
+- `internal/serverlessharness`, `internal/serverlessisolation`, and
+  `internal/serverlessegress`: feature-disabled managed-substrate authority,
+  process isolation, and exact attested provider/credential boundaries;
 - `internal/domain`: canonical sessions/events/bindings/snapshots, tenant-scoped
   identities, state machines, quota/usage semantics, outboxes, and artifacts;
 - `internal/ports`: YDB/queue/blob/frontend/credential/harness-neutral runtime

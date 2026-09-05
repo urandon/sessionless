@@ -40,55 +40,124 @@ type substrateErrorV1 struct{ code SubstrateFailureCodeV1 }
 func (err substrateErrorV1) Error() string                { return string(err.code) }
 func (err substrateErrorV1) Code() SubstrateFailureCodeV1 { return err.code }
 
-type SubstrateOperationStateV1 string
-
-const (
-	SubstrateOperationNotFoundV1     SubstrateOperationStateV1 = "not_found"
-	SubstrateOperationObservedV1     SubstrateOperationStateV1 = "observed"
-	SubstrateOperationAcknowledgedV1 SubstrateOperationStateV1 = "acknowledged"
-	SubstrateOperationUnknownV1      SubstrateOperationStateV1 = "unknown"
-)
-
-type SubstrateOperationObservationV1 struct {
-	State                SubstrateOperationStateV1
-	InvocationAuthority  domain.ServerlessInvocationAuthorityDigestV1
-	SubstrateBinding     domain.SubstrateBindingDigestV1
-	PhysicalInvocationID string
-	ObservedAt           time.Time
-}
-
-func (value SubstrateOperationObservationV1) ValidateForAuthority(authority domain.ServerlessInvocationAuthorityV1) error {
-	if value.State != SubstrateOperationNotFoundV1 && value.State != SubstrateOperationObservedV1 &&
-		value.State != SubstrateOperationAcknowledgedV1 && value.State != SubstrateOperationUnknownV1 {
-		return domain.ValidationError{Field: "substrate_operation.state", Reason: "is unsupported"}
-	}
-	authorityDigest, err := authority.Digest()
-	if err != nil {
-		return err
-	}
-	substrateDigest, _ := authority.SubstrateBinding.Digest()
-	if value.InvocationAuthority != authorityDigest || value.SubstrateBinding != substrateDigest {
-		return domain.ValidationError{Field: "substrate_operation.authority", Reason: "must exact-match the invocation authority"}
-	}
-	if value.PhysicalInvocationID != "" {
-		if err := domain.ValidateOpaqueID("substrate_operation.physical_invocation_id", value.PhysicalInvocationID); err != nil {
-			return err
-		}
-	}
-	if value.ObservedAt.IsZero() {
-		return domain.ValidationError{Field: "substrate_operation.observed_at", Reason: "must not be zero"}
-	}
-	return nil
-}
-
 // ExecutionSubstrateV1 is deliberately not a remote-shell interface. The
 // implementation receives only canonical authority or an issuer-authenticated
 // PreparedInvocation and cannot select another backend/provider.
 type ExecutionSubstrateV1 interface {
 	Preflight(context.Context, domain.ServerlessInvocationAuthorityV1) (domain.PreparedAllocationV1, error)
-	Execute(context.Context, PreparedInvocation, ports.HarnessDriver) (domain.SubstrateExecutionEvidenceV1, error)
-	Cancel(context.Context, domain.ServerlessInvocationAuthorityV1) (SubstrateOperationObservationV1, error)
-	Reconcile(context.Context, domain.ServerlessInvocationAuthorityV1) (SubstrateOperationObservationV1, error)
+	Execute(context.Context, PreparedInvocation, ports.ExecutionRequest, ports.ExecutionEventSink, ports.HarnessDriver) (ports.ExecutionResult, domain.SubstrateExecutionEvidenceV1, error)
+	Cancel(context.Context, domain.ServerlessInvocationAuthorityV1) (domain.SubstrateOperationObservationV1, error)
+	Reconcile(context.Context, domain.ServerlessInvocationAuthorityV1) (domain.SubstrateOperationObservationV1, error)
+}
+
+// PreparedExecutionV1 is the only managed-work execution surface exposed to
+// the worker after it owns a durable effect reservation. The concrete session
+// keeps PreparedInvocation process-local and cannot be reconstructed from a
+// queue delivery or caller-supplied fields.
+type PreparedExecutionV1 interface {
+	Execute(context.Context, ports.ExecutionRequest, ports.ExecutionEventSink, ports.HarnessDriver) (ports.ExecutionResult, domain.SubstrateExecutionEvidenceV1, error)
+	Cancel(context.Context) (domain.SubstrateOperationObservationV1, error)
+	Reconcile(context.Context) (domain.SubstrateOperationObservationV1, error)
+}
+
+// PreparedReconciliationV1 is a read-only operation session for a physical
+// invocation reserved by another delivery. It intentionally exposes neither
+// Execute nor Cancel.
+type PreparedReconciliationV1 interface {
+	Reconcile(context.Context) (domain.AttemptEffectReconciliationEvidenceV1, error)
+}
+
+// ExecutionPreparerV1 authenticates the durable effect owner and returns an
+// opaque session already bound to its exact substrate and invocation.
+type ExecutionPreparerV1 interface {
+	PrepareExecution(context.Context, ports.ReserveAttemptEffectResultV1) (PreparedExecutionV1, error)
+	PrepareReconciliation(context.Context, ports.ReserveAttemptEffectResultV1) (PreparedReconciliationV1, error)
+}
+
+// SubstrateRegistrationResolverV1 is trusted process composition. It must
+// return the one reviewed registration that exact-matches authenticated
+// authority; it is never selected from queue or request input.
+type SubstrateRegistrationResolverV1 func(domain.ServerlessInvocationAuthorityV1) (SubstrateRegistrationV1, error)
+
+type ExactExecutionPreparerV1 struct {
+	now      func() time.Time
+	issuer   *CapabilityIssuer
+	resolver SubstrateRegistrationResolverV1
+}
+
+type preparedExecutionV1 struct {
+	registry *SubstrateRegistryV1
+	prepared PreparedInvocation
+}
+
+type preparedReconciliationV1 struct {
+	registry    *SubstrateRegistryV1
+	authority   domain.ServerlessInvocationAuthorityV1
+	reservation domain.AttemptEffectReservationV1
+}
+
+func NewExactExecutionPreparerV1(
+	now func() time.Time,
+	issuer *CapabilityIssuer,
+	resolver SubstrateRegistrationResolverV1,
+) (*ExactExecutionPreparerV1, error) {
+	if now == nil || issuer == nil || resolver == nil {
+		return nil, errors.New("exact execution preparer requires a clock, capability issuer and registration resolver")
+	}
+	return &ExactExecutionPreparerV1{now: now, issuer: issuer, resolver: resolver}, nil
+}
+
+func (preparer *ExactExecutionPreparerV1) PrepareExecution(
+	ctx context.Context,
+	result ports.ReserveAttemptEffectResultV1,
+) (PreparedExecutionV1, error) {
+	if preparer == nil || preparer.issuer == nil || preparer.resolver == nil || ctx == nil || ctx.Err() != nil || result.Validate() != nil || result.Grant == nil || result.Status == ports.AttemptEffectReconcileOnlyV1 {
+		return nil, substrateErrorV1{code: SubstrateFailureAuthorityInvalidV1}
+	}
+	grant := result.Grant.Clone()
+	if preparer.issuer.VerifyGrant(grant) != nil {
+		return nil, substrateErrorV1{code: SubstrateFailureAuthorityInvalidV1}
+	}
+	registration, err := preparer.resolver(grant.Authority.Clone())
+	if err != nil || registration.Driver == nil {
+		return nil, substrateErrorV1{code: SubstrateFailureUnsupportedV1}
+	}
+	if registration.Binding != grant.Authority.SubstrateBinding {
+		return nil, substrateErrorV1{code: SubstrateFailureBindingMismatchV1}
+	}
+	registry, err := NewSubstrateRegistryV1(preparer.now, preparer.issuer, registration)
+	if err != nil {
+		return nil, substrateErrorV1{code: SubstrateFailureUnsupportedV1}
+	}
+	return registry.PrepareExecution(ctx, result)
+}
+
+func (preparer *ExactExecutionPreparerV1) PrepareReconciliation(
+	ctx context.Context,
+	result ports.ReserveAttemptEffectResultV1,
+) (PreparedReconciliationV1, error) {
+	if preparer == nil || preparer.issuer == nil || preparer.resolver == nil || ctx == nil || ctx.Err() != nil ||
+		result.Validate() != nil || result.Status != ports.AttemptEffectReconcileOnlyV1 || result.ObservationGrant == nil {
+		return nil, substrateErrorV1{code: SubstrateFailureAuthorityInvalidV1}
+	}
+	grant := result.ObservationGrant.Clone()
+	if preparer.issuer.VerifyObservationGrant(grant) != nil {
+		return nil, substrateErrorV1{code: SubstrateFailureAuthorityInvalidV1}
+	}
+	registration, err := preparer.resolver(grant.Authority.Clone())
+	if err != nil || registration.Driver == nil {
+		return nil, substrateErrorV1{code: SubstrateFailureUnsupportedV1}
+	}
+	if registration.Binding != grant.Authority.SubstrateBinding {
+		return nil, substrateErrorV1{code: SubstrateFailureBindingMismatchV1}
+	}
+	registry, err := NewSubstrateRegistryV1(preparer.now, preparer.issuer, registration)
+	if err != nil {
+		return nil, substrateErrorV1{code: SubstrateFailureUnsupportedV1}
+	}
+	return &preparedReconciliationV1{
+		registry: registry, authority: grant.Authority.Clone(), reservation: grant.Reservation.Clone(),
+	}, nil
 }
 
 type SubstrateRegistrationV1 struct {
@@ -133,6 +202,91 @@ func NewSubstrateRegistryV1(now func() time.Time, issuer *CapabilityIssuer, regi
 	return registry, nil
 }
 
+// Prepare authenticates one durable effect owner, resolves and preflights its
+// exact sealed substrate registration, and issues the non-durable capability
+// that downstream process or egress code must consume at its effect boundary.
+func (registry *SubstrateRegistryV1) Prepare(
+	ctx context.Context,
+	result ports.ReserveAttemptEffectResultV1,
+) (PreparedInvocation, error) {
+	if registry == nil || registry.issuer == nil || ctx == nil || ctx.Err() != nil || result.Validate() != nil {
+		return PreparedInvocation{}, substrateErrorV1{code: SubstrateFailureAuthorityInvalidV1}
+	}
+	if result.Status == ports.AttemptEffectReconcileOnlyV1 || result.Grant == nil {
+		return PreparedInvocation{}, substrateErrorV1{code: SubstrateFailureReconcileV1}
+	}
+	grant := result.Grant.Clone()
+	if registry.issuer.VerifyGrant(grant) != nil {
+		return PreparedInvocation{}, substrateErrorV1{code: SubstrateFailureAuthorityInvalidV1}
+	}
+	allocation, err := registry.Preflight(ctx, grant.Authority)
+	if err != nil {
+		return PreparedInvocation{}, err
+	}
+	prepared, err := registry.issuer.Issue(grant, allocation)
+	if err != nil {
+		return PreparedInvocation{}, substrateErrorV1{code: SubstrateFailureAuthorityInvalidV1}
+	}
+	return prepared, nil
+}
+
+// PrepareExecution is the worker-facing composition boundary. Callers receive
+// operations bound to one authenticated reservation, never the underlying
+// PreparedInvocation capability.
+func (registry *SubstrateRegistryV1) PrepareExecution(
+	ctx context.Context,
+	result ports.ReserveAttemptEffectResultV1,
+) (PreparedExecutionV1, error) {
+	prepared, err := registry.Prepare(ctx, result)
+	if err != nil {
+		return nil, err
+	}
+	return &preparedExecutionV1{registry: registry, prepared: prepared}, nil
+}
+
+func (execution *preparedExecutionV1) Execute(
+	ctx context.Context,
+	request ports.ExecutionRequest,
+	sink ports.ExecutionEventSink,
+	harness ports.HarnessDriver,
+) (ports.ExecutionResult, domain.SubstrateExecutionEvidenceV1, error) {
+	if execution == nil || execution.registry == nil {
+		return ports.ExecutionResult{}, domain.SubstrateExecutionEvidenceV1{}, substrateErrorV1{code: SubstrateFailureAuthorityInvalidV1}
+	}
+	return execution.registry.Execute(ctx, execution.prepared, request, sink, harness)
+}
+
+func (execution *preparedExecutionV1) Cancel(ctx context.Context) (domain.SubstrateOperationObservationV1, error) {
+	if execution == nil || execution.registry == nil {
+		return domain.SubstrateOperationObservationV1{}, substrateErrorV1{code: SubstrateFailureAuthorityInvalidV1}
+	}
+	return execution.registry.Cancel(ctx, execution.prepared.Authority())
+}
+
+func (execution *preparedExecutionV1) Reconcile(ctx context.Context) (domain.SubstrateOperationObservationV1, error) {
+	if execution == nil || execution.registry == nil {
+		return domain.SubstrateOperationObservationV1{}, substrateErrorV1{code: SubstrateFailureAuthorityInvalidV1}
+	}
+	return execution.registry.Reconcile(ctx, execution.prepared.Authority())
+}
+
+func (reconciliation *preparedReconciliationV1) Reconcile(ctx context.Context) (domain.AttemptEffectReconciliationEvidenceV1, error) {
+	if reconciliation == nil || reconciliation.registry == nil {
+		return domain.AttemptEffectReconciliationEvidenceV1{}, substrateErrorV1{code: SubstrateFailureAuthorityInvalidV1}
+	}
+	observation, err := reconciliation.registry.Reconcile(ctx, reconciliation.authority.Clone())
+	if err != nil {
+		return domain.AttemptEffectReconciliationEvidenceV1{}, err
+	}
+	evidence, err := domain.SealAttemptEffectReconciliationEvidenceV1(
+		reconciliation.authority, reconciliation.reservation, observation,
+	)
+	if err != nil {
+		return domain.AttemptEffectReconciliationEvidenceV1{}, substrateErrorV1{code: SubstrateFailureBindingMismatchV1}
+	}
+	return evidence, nil
+}
+
 func (registry *SubstrateRegistryV1) Preflight(ctx context.Context, authority domain.ServerlessInvocationAuthorityV1) (domain.PreparedAllocationV1, error) {
 	registration, _, err := registry.resolve(authority, true)
 	if err != nil {
@@ -148,23 +302,27 @@ func (registry *SubstrateRegistryV1) Preflight(ctx context.Context, authority do
 	return allocation.Clone(), nil
 }
 
-func (registry *SubstrateRegistryV1) Execute(ctx context.Context, prepared PreparedInvocation, harness ports.HarnessDriver) (domain.SubstrateExecutionEvidenceV1, error) {
-	if harness == nil || registry == nil || registry.issuer == nil || registry.issuer.Validate(prepared) != nil {
-		return domain.SubstrateExecutionEvidenceV1{}, substrateErrorV1{code: SubstrateFailureAuthorityInvalidV1}
+func (registry *SubstrateRegistryV1) Execute(
+	ctx context.Context,
+	prepared PreparedInvocation,
+	request ports.ExecutionRequest,
+	sink ports.ExecutionEventSink,
+	harness ports.HarnessDriver,
+) (ports.ExecutionResult, domain.SubstrateExecutionEvidenceV1, error) {
+	if harness == nil || sink == nil || registry == nil || registry.issuer == nil ||
+		registry.issuer.Validate(prepared) != nil || validatePreparedExecutionRequest(prepared, request) != nil {
+		return ports.ExecutionResult{}, domain.SubstrateExecutionEvidenceV1{}, substrateErrorV1{code: SubstrateFailureAuthorityInvalidV1}
 	}
 	authority := prepared.Authority()
 	registration, bindingDigest, err := registry.resolve(authority, true)
 	if err != nil {
-		return domain.SubstrateExecutionEvidenceV1{}, err
-	}
-	if registry.issuer.Consume(prepared) != nil {
-		return domain.SubstrateExecutionEvidenceV1{}, substrateErrorV1{code: SubstrateFailureAuthorityInvalidV1}
+		return ports.ExecutionResult{}, domain.SubstrateExecutionEvidenceV1{}, err
 	}
 	authorityDigest, _ := authority.Digest()
 	registry.mu.Lock()
 	if activeBinding, exists := registry.active[authorityDigest]; exists && activeBinding != bindingDigest {
 		registry.mu.Unlock()
-		return domain.SubstrateExecutionEvidenceV1{}, substrateErrorV1{code: SubstrateFailureBindingMismatchV1}
+		return ports.ExecutionResult{}, domain.SubstrateExecutionEvidenceV1{}, substrateErrorV1{code: SubstrateFailureBindingMismatchV1}
 	}
 	registry.active[authorityDigest] = bindingDigest
 	registry.mu.Unlock()
@@ -173,30 +331,73 @@ func (registry *SubstrateRegistryV1) Execute(ctx context.Context, prepared Prepa
 		delete(registry.active, authorityDigest)
 		registry.mu.Unlock()
 	}()
-	evidence, executeErr := registration.Driver.Execute(ctx, prepared, harness)
+	result, evidence, executeErr := registration.Driver.Execute(ctx, prepared, request, sink, harness)
 	if evidence.ValidateForAuthority(authority, prepared.Reservation(), prepared.Allocation(), prepared.Digest()) != nil {
-		return domain.SubstrateExecutionEvidenceV1{}, substrateErrorV1{code: SubstrateFailureExecuteV1}
+		return ports.ExecutionResult{}, domain.SubstrateExecutionEvidenceV1{}, substrateErrorV1{code: SubstrateFailureExecuteV1}
+	}
+	if result.ProviderEvidence == nil || evidence.ProviderEvidence == nil ||
+		result.ProviderEvidence.EvidenceDigest != evidence.ProviderEvidence.EvidenceDigest {
+		return ports.ExecutionResult{}, domain.SubstrateExecutionEvidenceV1{}, substrateErrorV1{code: SubstrateFailureExecuteV1}
 	}
 	if executeErr != nil {
-		return evidence.Clone(), substrateErrorV1{code: SubstrateFailureExecuteV1}
+		return result, evidence.Clone(), substrateErrorV1{code: SubstrateFailureExecuteV1}
 	}
-	return evidence.Clone(), nil
+	return result, evidence.Clone(), nil
 }
 
-func (registry *SubstrateRegistryV1) Cancel(ctx context.Context, authority domain.ServerlessInvocationAuthorityV1) (SubstrateOperationObservationV1, error) {
+func validatePreparedExecutionRequest(prepared PreparedInvocation, request ports.ExecutionRequest) error {
+	if err := request.Validate(); err != nil {
+		return err
+	}
+	authority := prepared.Authority()
+	if request.TenantID != authority.HarnessBinding.TenantID || request.OwnerUserID != authority.HarnessBinding.OwnerUserID ||
+		request.RunID != authority.HarnessBinding.RunID || request.AttemptID != authority.HarnessBinding.AttemptID {
+		return errors.New("prepared execution request scope mismatch")
+	}
+	harnessDigest, err := request.HarnessBinding.Digest()
+	if err != nil {
+		return err
+	}
+	authorityHarnessDigest, _ := authority.HarnessBinding.Digest()
+	placementDigest, err := domain.ExecutionPlacementDigest(request.ExecutionPlacementV2)
+	if err != nil {
+		return err
+	}
+	authorityPlacementDigest, _ := domain.ExecutionPlacementDigest(authority.ExecutionPlacementV2)
+	if request.SubstrateBinding == nil || request.AdmissionCostCeiling == nil {
+		return errors.New("prepared execution request authority is incomplete")
+	}
+	substrateDigest, err := request.SubstrateBinding.Digest()
+	if err != nil {
+		return err
+	}
+	authoritySubstrateDigest, _ := authority.SubstrateBinding.Digest()
+	costDigest, err := request.AdmissionCostCeiling.Digest()
+	if err != nil {
+		return err
+	}
+	authorityCostDigest, _ := authority.AdmissionCostCeiling.Digest()
+	if harnessDigest != authorityHarnessDigest || placementDigest != authorityPlacementDigest ||
+		substrateDigest != authoritySubstrateDigest || costDigest != authorityCostDigest {
+		return errors.New("prepared execution request binding mismatch")
+	}
+	return nil
+}
+
+func (registry *SubstrateRegistryV1) Cancel(ctx context.Context, authority domain.ServerlessInvocationAuthorityV1) (domain.SubstrateOperationObservationV1, error) {
 	return registry.observe(ctx, authority, true)
 }
 
-func (registry *SubstrateRegistryV1) Reconcile(ctx context.Context, authority domain.ServerlessInvocationAuthorityV1) (SubstrateOperationObservationV1, error) {
+func (registry *SubstrateRegistryV1) Reconcile(ctx context.Context, authority domain.ServerlessInvocationAuthorityV1) (domain.SubstrateOperationObservationV1, error) {
 	return registry.observe(ctx, authority, false)
 }
 
-func (registry *SubstrateRegistryV1) observe(ctx context.Context, authority domain.ServerlessInvocationAuthorityV1, cancel bool) (SubstrateOperationObservationV1, error) {
+func (registry *SubstrateRegistryV1) observe(ctx context.Context, authority domain.ServerlessInvocationAuthorityV1, cancel bool) (domain.SubstrateOperationObservationV1, error) {
 	registration, _, err := registry.resolve(authority, false)
 	if err != nil {
-		return SubstrateOperationObservationV1{}, err
+		return domain.SubstrateOperationObservationV1{}, err
 	}
-	var observation SubstrateOperationObservationV1
+	var observation domain.SubstrateOperationObservationV1
 	if cancel {
 		observation, err = registration.Driver.Cancel(ctx, authority.Clone())
 	} else {
@@ -207,10 +408,10 @@ func (registry *SubstrateRegistryV1) observe(ctx context.Context, authority doma
 		if cancel {
 			code = SubstrateFailureCancelV1
 		}
-		return SubstrateOperationObservationV1{}, substrateErrorV1{code: code}
+		return domain.SubstrateOperationObservationV1{}, substrateErrorV1{code: code}
 	}
 	if err := observation.ValidateForAuthority(authority); err != nil {
-		return SubstrateOperationObservationV1{}, substrateErrorV1{code: SubstrateFailureBindingMismatchV1}
+		return domain.SubstrateOperationObservationV1{}, substrateErrorV1{code: SubstrateFailureBindingMismatchV1}
 	}
 	return observation, nil
 }

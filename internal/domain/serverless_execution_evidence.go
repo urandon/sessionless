@@ -268,6 +268,51 @@ func (value SubstrateExecutionEvidenceV1) ValidateForAuthority(
 	return nil
 }
 
+// ValidateForPersistedAuthority validates a sealed observation against the
+// durable authority and effect reservation available to the state store. The
+// exact PreparedAllocation was already authenticated and checked by the
+// process-local registry; only its sealed digest crosses this boundary.
+func (value SubstrateExecutionEvidenceV1) ValidateForPersistedAuthority(
+	authority ServerlessInvocationAuthorityV1,
+	reservation AttemptEffectReservationV1,
+) error {
+	if err := authority.Validate(); err != nil {
+		return err
+	}
+	if err := reservation.ValidateForAuthority(authority); err != nil {
+		return err
+	}
+	authorityDigest, _ := authority.Digest()
+	substrateDigest, _ := authority.SubstrateBinding.Digest()
+	costDigest, _ := authority.AdmissionCostCeiling.Digest()
+	reservationDigest, _ := reservation.DigestForAuthority(authority)
+	if value.InvocationAuthorityDigest != authorityDigest || value.SubstrateBindingDigest != substrateDigest ||
+		value.AdmissionCostCeilingDigest != costDigest || value.EffectReservationDigest != reservationDigest ||
+		value.PhysicalInvocationClaimID != reservation.PhysicalInvocationClaimID {
+		return ValidationError{Field: "substrate_execution_evidence.authority", Reason: "must exact-match persisted authority, reservation, cost, and physical claim"}
+	}
+	if err := value.PreparedInvocationDigest.Validate(); err != nil {
+		return err
+	}
+	if err := value.PreparedAllocationDigest.Validate(); err != nil {
+		return err
+	}
+	if err := value.validateForAuthority(authority); err != nil {
+		return err
+	}
+	if err := value.EvidenceDigest.Validate(); err != nil {
+		return err
+	}
+	expected, err := value.digest()
+	if err != nil {
+		return err
+	}
+	if value.EvidenceDigest != expected {
+		return ValidationError{Field: "substrate_execution_evidence.evidence_digest", Reason: "does not match canonical evidence"}
+	}
+	return nil
+}
+
 // DigestForAuthority derives the canonical digest after validating every
 // content field against the exact authority chain. It deliberately ignores a
 // previously attached EvidenceDigest so callers can seal an otherwise exact

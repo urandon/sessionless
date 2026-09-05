@@ -104,6 +104,7 @@ func RegistrationForFixture(fixture FixtureV1, recorder *SideEffectRecorder) (se
 	}
 	registration := sessionlessharness.Registration{
 		Descriptor: fixture.Binding.Backend,
+		Enabled:    true,
 		Driver:     driver,
 		ValidateBinding: func(candidate domain.HarnessBindingV1) sessionlessharness.FailureCode {
 			recorder.recordValidator()

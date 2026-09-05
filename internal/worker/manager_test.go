@@ -21,6 +21,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/outboxwake"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/queuecontract"
+	"gitcode.com/urandon/sessionless/internal/serverlessharness"
 	"gitcode.com/urandon/sessionless/internal/sessioncontext"
 	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 	"gitcode.com/urandon/sessionless/internal/testkit"
@@ -28,6 +29,235 @@ import (
 )
 
 var workerTestTime = time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+
+func newTestWorker(
+	config worker.Config,
+	clock ports.Clock,
+	queue ports.Queue,
+	state ports.WorkerStateStore,
+	blobs ports.BlobStore,
+	harness ports.HarnessDriver,
+) (*worker.Manager, error) {
+	if config.ExecutionPreparer == nil {
+		config.ExecutionPreparer = testExecutionPreparer{}
+	}
+	return worker.New(config, clock, queue, state, blobs, harness)
+}
+
+type testExecutionPreparer struct {
+	reconcileState domain.SubstrateOperationStateV1
+}
+
+func (testExecutionPreparer) PrepareExecution(
+	_ context.Context,
+	result ports.ReserveAttemptEffectResultV1,
+) (serverlessharness.PreparedExecutionV1, error) {
+	if err := result.Validate(); err != nil || result.Grant == nil || result.Status == ports.AttemptEffectReconcileOnlyV1 {
+		return nil, errors.New("test execution reservation is not owned")
+	}
+	return &testPreparedExecution{authority: result.Grant.Authority.Clone(), reservation: result.Reservation.Clone()}, nil
+}
+
+func (preparer testExecutionPreparer) PrepareReconciliation(
+	_ context.Context,
+	result ports.ReserveAttemptEffectResultV1,
+) (serverlessharness.PreparedReconciliationV1, error) {
+	if err := result.Validate(); err != nil || result.ObservationGrant == nil || result.Status != ports.AttemptEffectReconcileOnlyV1 {
+		return nil, errors.New("test reconciliation reservation is not observable")
+	}
+	return &testPreparedReconciliation{
+		authority:   result.ObservationGrant.Authority.Clone(),
+		reservation: result.Reservation.Clone(),
+		state:       defaultReconcileState(preparer.reconcileState),
+	}, nil
+}
+
+func defaultReconcileState(state domain.SubstrateOperationStateV1) domain.SubstrateOperationStateV1 {
+	if state == "" {
+		return domain.SubstrateOperationObservedV1
+	}
+	return state
+}
+
+type testPreparedReconciliation struct {
+	authority   domain.ServerlessInvocationAuthorityV1
+	reservation domain.AttemptEffectReservationV1
+	state       domain.SubstrateOperationStateV1
+}
+
+func (reconciliation *testPreparedReconciliation) Reconcile(context.Context) (domain.AttemptEffectReconciliationEvidenceV1, error) {
+	authorityDigest, _ := reconciliation.authority.Digest()
+	substrateDigest, _ := reconciliation.authority.SubstrateBinding.Digest()
+	return domain.SealAttemptEffectReconciliationEvidenceV1(reconciliation.authority, reconciliation.reservation, domain.SubstrateOperationObservationV1{
+		State: reconciliation.state, InvocationAuthority: authorityDigest,
+		SubstrateBinding: substrateDigest, PhysicalInvocationID: reconciliation.reservation.PhysicalInvocationClaimID,
+		ObservedAt: reconciliation.reservation.ReservedAt.Add(time.Second),
+	})
+}
+
+type testPreparedExecution struct {
+	authority   domain.ServerlessInvocationAuthorityV1
+	reservation domain.AttemptEffectReservationV1
+	harness     ports.HarnessDriver
+}
+
+func (execution *testPreparedExecution) Execute(
+	ctx context.Context,
+	request ports.ExecutionRequest,
+	sink ports.ExecutionEventSink,
+	harness ports.HarnessDriver,
+) (ports.ExecutionResult, domain.SubstrateExecutionEvidenceV1, error) {
+	execution.harness = harness
+	result, err := harness.Execute(ctx, request, sink)
+	if err != nil {
+		return result, domain.SubstrateExecutionEvidenceV1{}, err
+	}
+	evidence, err := testSubstrateExecutionEvidence(execution.authority, execution.reservation, result.ProviderEvidence)
+	return result, evidence, err
+}
+
+func (execution *testPreparedExecution) Cancel(ctx context.Context) (domain.SubstrateOperationObservationV1, error) {
+	if execution.harness == nil {
+		return domain.SubstrateOperationObservationV1{}, errors.New("test execution has not started")
+	}
+	authority := execution.authority
+	err := execution.harness.Cancel(ctx, ports.ExecutionIdentity{
+		TenantID: authority.HarnessBinding.TenantID, OwnerUserID: authority.HarnessBinding.OwnerUserID,
+		RunID: authority.HarnessBinding.RunID, AttemptID: authority.HarnessBinding.AttemptID,
+		ExecutionPlacementV2: authority.ExecutionPlacementV2, HarnessBinding: authority.HarnessBinding.Clone(),
+		SubstrateBinding: &authority.SubstrateBinding, AdmissionCostCeiling: &authority.AdmissionCostCeiling,
+	})
+	return domain.SubstrateOperationObservationV1{}, err
+}
+
+func (*testPreparedExecution) Reconcile(context.Context) (domain.SubstrateOperationObservationV1, error) {
+	return domain.SubstrateOperationObservationV1{}, nil
+}
+
+type signalingExecutionPreparer struct {
+	prepared chan struct{}
+	executed chan struct{}
+}
+
+func (preparer *signalingExecutionPreparer) PrepareExecution(
+	_ context.Context,
+	result ports.ReserveAttemptEffectResultV1,
+) (serverlessharness.PreparedExecutionV1, error) {
+	if err := result.Validate(); err != nil || result.Grant == nil {
+		return nil, errors.New("signaling execution reservation is not owned")
+	}
+	close(preparer.prepared)
+	return &signalingPreparedExecution{
+		testPreparedExecution: testPreparedExecution{authority: result.Grant.Authority.Clone(), reservation: result.Reservation.Clone()},
+		executed:              preparer.executed,
+	}, nil
+}
+
+func (*signalingExecutionPreparer) PrepareReconciliation(
+	ctx context.Context,
+	result ports.ReserveAttemptEffectResultV1,
+) (serverlessharness.PreparedReconciliationV1, error) {
+	return testExecutionPreparer{}.PrepareReconciliation(ctx, result)
+}
+
+func testSubstrateExecutionEvidence(
+	authority domain.ServerlessInvocationAuthorityV1,
+	reservation domain.AttemptEffectReservationV1,
+	provider *domain.ProviderExecutionEvidenceV1,
+) (domain.SubstrateExecutionEvidenceV1, error) {
+	if provider == nil {
+		sealed, err := (domain.ProviderExecutionEvidenceV1{
+			AcceptanceClass: domain.ProviderAcceptanceAcceptedV1, FinishClass: domain.ProviderFinishCompletedV1,
+			RouteState: domain.ProviderEvidenceSupportedV1, ActualModelVendorID: authority.HarnessBinding.ModelVendorID,
+			ActualModelID: authority.HarnessBinding.ModelID, TransportKind: domain.ProviderTransportLocalCLIV1,
+			TransportProvider: "test", UpstreamProviderID: "test", EndpointID: "test",
+			PolicyVerdict: domain.ProviderPolicyGoV1, UsageProvenance: domain.ProviderUsageUnknownV1,
+		}).SealForBinding(authority.HarnessBinding)
+		if err != nil {
+			return domain.SubstrateExecutionEvidenceV1{}, err
+		}
+		provider = &sealed
+	}
+	binding := authority.SubstrateBinding
+	bindingDigest, _ := binding.Digest()
+	allocation := domain.PreparedAllocationV1{
+		Version: domain.PreparedAllocationVersionV1, SubstrateBindingDigest: bindingDigest,
+		ObservedImageDigest: binding.ImageDigest, ObservedOuterHarnessDigest: binding.OuterHarnessArtifactDigest,
+		ObservedProxyArtifactDigest: binding.EgressProxyArtifactDigest, ObservedProxyIdentityDigest: binding.EgressProxyIdentityDigest,
+		WorkloadMode: binding.WorkloadMode,
+	}
+	process := domain.SubstrateProcessNotApplicableV1
+	if binding.WorkloadMode == domain.SubstrateWorkloadChildProcessV1 {
+		process = domain.SubstrateProcessStoppedV1
+		allocation.ChildProcess = &domain.ChildProcessAttestationV1{
+			ExecutableDigest: authority.HarnessBinding.Backend.ArtifactDigest, ExactArgv: []string{"test-backend"},
+			NativeProtocol:       authority.HarnessBinding.Backend.NativeProtocolVersion,
+			BackendProfileDigest: authority.HarnessBinding.Backend.BackendProfileDigest,
+		}
+	} else {
+		allocation.InProcess = &domain.InProcessAttestationV1{LinkedBackendProfileDigest: authority.HarnessBinding.Backend.BackendProfileDigest}
+	}
+	credentialFinalization := domain.CredentialFinalizationVerifiedV1
+	if authority.HarnessBinding.Backend.CredentialDeliveryKind == domain.ProviderCredentialDeliveryNoneV1 {
+		credentialFinalization = domain.CredentialFinalizationNotRequiredV1
+	}
+	unknown := func(kind domain.SubstrateResourceKindV1) domain.SubstrateResourceObservationV1 {
+		return domain.SubstrateResourceObservationV1{Kind: kind, State: domain.SubstrateResourceUnknownV1, Provenance: domain.SubstrateResourceProvenanceUnknownV1}
+	}
+	providerClone := provider.Clone()
+	return (domain.SubstrateExecutionEvidenceV1{
+		Allocation: domain.SubstrateAllocationStartedV1, Process: process,
+		CredentialFinalization: credentialFinalization, Cleanup: domain.SubstrateCleanupVerifiedV1,
+		Egress: domain.SubstrateEgressPolicyEnforcedV1, ImageAttestation: domain.SubstrateAttestationVerifiedV1,
+		BackendAttestation: domain.SubstrateAttestationVerifiedV1, ProxyAttestation: domain.SubstrateProxyAttestationVerifiedV1,
+		Cancellation:     domain.SubstrateCancellationEvidenceV1{Request: domain.SubstrateCancellationRequestNoneV1, BackendSignal: domain.SubstrateCancellationSignalNotRequiredV1},
+		ProviderEvidence: &providerClone,
+		ResourceObservations: []domain.SubstrateResourceObservationV1{
+			unknown(domain.SubstrateResourceCPUTimeV1), unknown(domain.SubstrateResourceEgressBytesV1),
+			unknown(domain.SubstrateResourceEvidenceBytesV1), unknown(domain.SubstrateResourceIngressBytesV1),
+			unknown(domain.SubstrateResourceLogBytesV1), unknown(domain.SubstrateResourceMemoryPeakV1),
+			unknown(domain.SubstrateResourceScratchPeakV1),
+		},
+		FailureCode: domain.SubstrateExecutionFailureNoneV1,
+	}).SealForAuthority(authority, reservation, allocation, domain.PreparedInvocationDigestV1(strings.Repeat("d", 64)))
+}
+
+type signalingPreparedExecution struct {
+	testPreparedExecution
+	executed chan struct{}
+}
+
+func (execution *signalingPreparedExecution) Execute(
+	ctx context.Context,
+	request ports.ExecutionRequest,
+	sink ports.ExecutionEventSink,
+	harness ports.HarnessDriver,
+) (ports.ExecutionResult, domain.SubstrateExecutionEvidenceV1, error) {
+	close(execution.executed)
+	return execution.testPreparedExecution.Execute(ctx, request, sink, harness)
+}
+
+func TestWorkerRejectsUnsafeLeaseWatchInterval(t *testing.T) {
+	t.Parallel()
+	_, err := newTestWorker(worker.Config{
+		ScratchRoot: t.TempDir(), WorkerID: "worker-test", LeaseTTL: time.Minute,
+		LeaseWatchdogInterval: 21 * time.Second,
+	}, nil, nil, nil, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "one third") {
+		t.Fatalf("error = %v, want unsafe lease watch interval rejection", err)
+	}
+}
+
+func TestWorkerRequiresExplicitExecutionPreparer(t *testing.T) {
+	t.Parallel()
+	_, err := worker.New(worker.Config{
+		ScratchRoot: t.TempDir(), WorkerID: "worker-test",
+		DeliveryWakePublisher: newDeliveryWakePublisher(t),
+	}, testkit.NewFakeClock(workerTestTime), testkit.NewMemoryQueue(), newWorkerState(), newMemoryBlobs(), resultHarness{})
+	if err == nil || !strings.Contains(err.Error(), "dependencies must not be nil") {
+		t.Fatalf("error = %v, want missing execution preparer rejection", err)
+	}
+}
 
 func TestWorkerCompletesOnceAndCleansReusedScratch(t *testing.T) {
 	t.Parallel()
@@ -46,7 +276,7 @@ func TestWorkerCompletesOnceAndCleansReusedScratch(t *testing.T) {
 		t.Fatal(err)
 	}
 	scratch := t.TempDir()
-	manager, err := worker.New(worker.Config{
+	manager, err := newTestWorker(worker.Config{
 		ScratchRoot: scratch, WorkerID: "worker-test",
 		LeaseTTL: time.Minute, DeliveryWakePublisher: newDeliveryWakePublisher(t),
 	}, clock, queue, state, blobs, harness)
@@ -63,10 +293,10 @@ func TestWorkerCompletesOnceAndCleansReusedScratch(t *testing.T) {
 		}
 		assertScratchEmpty(t, scratch)
 	}
-	if state.completions != 2 || len(state.checkpoints) != 4 || len(state.usage) != 4 {
+	if state.completions != 2 || len(state.checkpoints) != 4 || len(state.usage) != 4 || len(state.substrateEvidence) != 2 {
 		t.Fatalf(
-			"completions/checkpoints/usage = %d/%d/%d, want 2/4/4",
-			state.completions, len(state.checkpoints), len(state.usage),
+			"completions/checkpoints/usage/substrate evidence = %d/%d/%d/%d, want 2/4/4/2",
+			state.completions, len(state.checkpoints), len(state.usage), len(state.substrateEvidence),
 		)
 	}
 	for _, manifest := range state.manifests {
@@ -78,6 +308,78 @@ func TestWorkerCompletesOnceAndCleansReusedScratch(t *testing.T) {
 				t.Fatalf("artifact tenant = %s, manifest tenant = %s", artifact.Blob.TenantID, manifest.TenantID)
 			}
 		}
+	}
+}
+
+func TestWorkerPreparesOpaqueExecutionBeforeMaterializationAndUsesItForExecute(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	clock := testkit.NewFakeClock(workerTestTime)
+	queue := testkit.NewMemoryQueue()
+	blobs := newMemoryBlobs()
+	state := newWorkerState()
+	loaded := workerFixture(t, ctx, blobs, "tenant-a", workerTestTime)
+	state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
+	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
+	materializationStarted, releaseMaterialization := blobs.blockNextOpen()
+	preparer := &signalingExecutionPreparer{prepared: make(chan struct{}), executed: make(chan struct{})}
+	manager, err := newTestWorker(worker.Config{
+		ScratchRoot: t.TempDir(), WorkerID: "worker-prepared-execution",
+		DeliveryWakePublisher: newDeliveryWakePublisher(t), ExecutionPreparer: preparer,
+	}, clock, queue, state, blobs, resultHarness{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := runWorkerOnce(manager, ctx)
+	waitForSignal(t, ctx, materializationStarted, "input materialization")
+	select {
+	case <-preparer.prepared:
+	default:
+		t.Fatal("input materialization started before opaque execution preparation")
+	}
+	close(releaseMaterialization)
+	result := waitForWorkerResult(t, ctx, done)
+	if result.err != nil || result.outcome != worker.OutcomeCompleted {
+		t.Fatalf("outcome/error = %q/%v, want completed/nil", result.outcome, result.err)
+	}
+	select {
+	case <-preparer.executed:
+	default:
+		t.Fatal("worker bypassed the prepared execution session")
+	}
+}
+
+func TestWorkerCleanupFailureBlocksCompletion(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	clock := testkit.NewFakeClock(workerTestTime)
+	queue := testkit.NewMemoryQueue()
+	blobs := newMemoryBlobs()
+	state := newWorkerState()
+	loaded := workerFixture(t, ctx, blobs, "tenant-a", workerTestTime)
+	state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
+	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
+	cleanupCalls := 0
+	manager, err := newTestWorker(worker.Config{
+		ScratchRoot: t.TempDir(), WorkerID: "worker-test",
+		ScratchRemoveAll: func(string) error {
+			cleanupCalls++
+			return errors.New("simulated cleanup failure")
+		},
+		DeliveryWakePublisher: newDeliveryWakePublisher(t),
+	}, clock, queue, state, blobs, resultHarness{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := manager.RunOnce(ctx)
+	if err != nil || outcome != worker.OutcomeFailed {
+		t.Fatalf("outcome/error = %q/%v, want failed/nil", outcome, err)
+	}
+	if cleanupCalls != 1 || state.completions != 0 || state.failures != 1 {
+		t.Fatalf("cleanup calls/completions/failures = %d/%d/%d, want 1/0/1", cleanupCalls, state.completions, state.failures)
+	}
+	if len(state.deliveries) != 1 || !strings.Contains(state.deliveries[0].Text, "cleanup_failed") {
+		t.Fatalf("cleanup failure delivery = %+v", state.deliveries)
 	}
 }
 
@@ -98,7 +400,7 @@ func TestCanonicalWorkerFinalizesToolAndAssistantEventsWithoutTelegramDelivery(t
 	loaded.Job.ReplyToMessageID = 0
 	state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
 	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
-	manager, err := worker.New(worker.Config{
+	manager, err := newTestWorker(worker.Config{
 		ScratchRoot: t.TempDir(), WorkerID: "worker-canonical",
 		DeliveryWakePublisher: newDeliveryWakePublisher(t),
 	}, clock, queue, state, blobs, canonicalHarness{})
@@ -253,7 +555,7 @@ func runCanonicalContextFixture(
 	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
 	var history []byte
 	var attachment []byte
-	manager, err := worker.New(worker.Config{
+	manager, err := newTestWorker(worker.Config{
 		ScratchRoot: t.TempDir(), WorkerID: "worker-context",
 		DeliveryWakePublisher: newDeliveryWakePublisher(t),
 	}, clock, queue, state, blobs, captureContextHarness{history: &history, attachment: &attachment})
@@ -293,7 +595,7 @@ func TestCanonicalWorkerFinalizesCancellationNoticeWithoutTelegramDelivery(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager, err := worker.New(worker.Config{
+	manager, err := newTestWorker(worker.Config{
 		ScratchRoot: t.TempDir(), WorkerID: "worker-canonical-cancelled",
 		DeliveryWakePublisher: newDeliveryWakePublisher(t),
 	}, clock, queue, state, blobs, harness)
@@ -355,7 +657,7 @@ func TestCanonicalWorkerRejectsToolEventsOutsideAdmittedBudgetBeforeUpload(t *te
 			loaded.Job.Limits.MaxToolEventBytes = test.maxBytes
 			state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
 			publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
-			manager, err := worker.New(worker.Config{
+			manager, err := newTestWorker(worker.Config{
 				ScratchRoot: t.TempDir(), WorkerID: "worker-tool-budget",
 				DeliveryWakePublisher: newDeliveryWakePublisher(t),
 			}, clock, queue, state, blobs, resultHarness{
@@ -407,7 +709,7 @@ func TestWorkerRejectsTraversalAndCrossTenantReferences(t *testing.T) {
 		publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
 		harness, _ := deterministicharness.New(deterministicharness.Config{})
 		scratch := t.TempDir()
-		manager, err := worker.New(worker.Config{
+		manager, err := newTestWorker(worker.Config{
 			ScratchRoot: scratch, WorkerID: "worker-test",
 			DeliveryWakePublisher: newDeliveryWakePublisher(t),
 		}, clock, queue, state, blobs, harness)
@@ -425,7 +727,7 @@ func TestWorkerRejectsTraversalAndCrossTenantReferences(t *testing.T) {
 	}
 }
 
-func TestWorkerResumesAfterRetryableFailureAndDeduplicatesDelivery(t *testing.T) {
+func TestWorkerRetryableProviderFailureBecomesReconcileOnlyOnRedelivery(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	clock := testkit.NewFakeClock(workerTestTime)
@@ -440,7 +742,7 @@ func TestWorkerResumesAfterRetryableFailureAndDeduplicatesDelivery(t *testing.T)
 		Turns: 2, Artifacts: 1, FailAtTurn: 1, RetryableFail: true,
 	})
 	var retryCause error
-	manager, err := worker.New(worker.Config{
+	manager, err := newTestWorker(worker.Config{
 		ScratchRoot: t.TempDir(), WorkerID: "worker-test",
 		RetryDelay:            time.Millisecond,
 		RetryObserver:         func(cause error) { retryCause = cause },
@@ -461,16 +763,158 @@ func TestWorkerResumesAfterRetryableFailureAndDeduplicatesDelivery(t *testing.T)
 		t.Fatalf("checkpoint after failure = %#v, want sequence 1", state.jobs[key].Checkpoint)
 	}
 	outcome, err = manager.RunOnce(ctx)
-	if err != nil || outcome != worker.OutcomeCompleted {
-		t.Fatalf("second outcome/error = %q/%v, want completed/nil", outcome, err)
+	if err != nil || outcome != worker.OutcomeRetried {
+		t.Fatalf("second outcome/error = %q/%v, want reconcile-only retry/nil", outcome, err)
+	}
+	if retryCause == nil || !strings.Contains(retryCause.Error(), "state=observed") || !strings.Contains(retryCause.Error(), "physical_invocation_id=") {
+		t.Fatalf("reconcile retry cause = %v, want typed observed physical invocation", retryCause)
+	}
+	if state.jobs[key].Checkpoint == nil || state.jobs[key].Checkpoint.Sequence != 1 {
+		t.Fatalf("checkpoint after reconcile-only redelivery = %#v, want sequence 1", state.jobs[key].Checkpoint)
+	}
+	if state.completions != 0 || len(state.effects) != 1 || len(state.reconciliationEvidence) != 1 {
+		t.Fatalf("completion/effect reservations/reconciliation evidence = %d/%d/%d, want 0/1/1", state.completions, len(state.effects), len(state.reconciliationEvidence))
+	}
+}
+
+func TestWorkerFailsWithoutReexecutionWhenReconciliationProvesEffectNotFound(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	clock := testkit.NewFakeClock(workerTestTime)
+	queue := testkit.NewMemoryQueue()
+	blobs := newMemoryBlobs()
+	state := newWorkerState()
+	loaded := workerFixture(t, ctx, blobs, "tenant-a", workerTestTime)
+	key := jobKey(loaded.Run.TenantID, loaded.Run.ID)
+	state.jobs[key] = loaded
+	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
+	harness, _ := deterministicharness.New(deterministicharness.Config{
+		Turns: 2, Artifacts: 1, FailAtTurn: 1, RetryableFail: true,
+	})
+	manager, err := newTestWorker(worker.Config{
+		ScratchRoot: t.TempDir(), WorkerID: "worker-test", RetryDelay: time.Millisecond,
+		MaxDeliveryCount: 3, DeliveryWakePublisher: newDeliveryWakePublisher(t),
+		ExecutionPreparer: testExecutionPreparer{reconcileState: domain.SubstrateOperationNotFoundV1},
+	}, clock, queue, state, blobs, harness)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome, err := manager.RunOnce(ctx); err != nil || outcome != worker.OutcomeRetried {
+		t.Fatalf("first outcome/error = %q/%v, want retried/nil", outcome, err)
+	}
+	if outcome, err := manager.RunOnce(ctx); err != nil || outcome != worker.OutcomeFailed {
+		t.Fatalf("reconciled outcome/error = %q/%v, want failed/nil", outcome, err)
+	}
+	if state.failures != 1 || state.completions != 0 || len(state.effects) != 1 || len(state.reconciliationEvidence) != 1 {
+		t.Fatalf("failures/completions/effects/reconciliation evidence = %d/%d/%d/%d, want 1/0/1/1",
+			state.failures, state.completions, len(state.effects), len(state.reconciliationEvidence))
+	}
+	if got := state.jobs[key]; got.Run.Status != domain.RunFailed || got.Attempt.Status != domain.AttemptFailed {
+		t.Fatalf("reconciled terminal state = run %q attempt %q", got.Run.Status, got.Attempt.Status)
+	}
+}
+
+func TestWorkerAcknowledgesTerminalRedeliveryWithoutAnotherEffect(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	clock := testkit.NewFakeClock(workerTestTime)
+	queue := testkit.NewMemoryQueue()
+	blobs := newMemoryBlobs()
+	state := newWorkerState()
+	loaded := workerFixture(t, ctx, blobs, "tenant-a", workerTestTime)
+	state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
+	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
+	manager, err := newTestWorker(worker.Config{
+		ScratchRoot: t.TempDir(), WorkerID: "worker-test",
+		DeliveryWakePublisher: newDeliveryWakePublisher(t),
+	}, clock, queue, state, blobs, resultHarness{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome, err := manager.RunOnce(ctx); err != nil || outcome != worker.OutcomeCompleted {
+		t.Fatalf("first outcome/error = %q/%v, want completed/nil", outcome, err)
 	}
 	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
-	outcome, err = manager.RunOnce(ctx)
-	if err != nil || outcome != worker.OutcomeDuplicate {
-		t.Fatalf("duplicate outcome/error = %q/%v, want duplicate/nil", outcome, err)
+	if outcome, err := manager.RunOnce(ctx); err != nil || outcome != worker.OutcomeDuplicate {
+		t.Fatalf("redelivery outcome/error = %q/%v, want duplicate/nil", outcome, err)
 	}
-	if state.completions != 1 {
-		t.Fatalf("completion count = %d, want 1", state.completions)
+	if state.completions != 1 || len(state.effects) != 1 {
+		t.Fatalf("completion/effect reservations = %d/%d, want 1/1", state.completions, len(state.effects))
+	}
+}
+
+func TestWorkerConcurrentRedeliveryIsReconcileOnly(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	clock := testkit.NewFakeClock(workerTestTime)
+	blobs := newMemoryBlobs()
+	state := newWorkerState()
+	loaded := workerFixture(t, ctx, blobs, "tenant-a", workerTestTime)
+	state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
+	firstQueue, secondQueue := testkit.NewMemoryQueue(), testkit.NewMemoryQueue()
+	publishWorkerMessage(t, ctx, firstQueue, loaded.Run.TenantID, loaded.Run.ID)
+	publishWorkerMessage(t, ctx, secondQueue, loaded.Run.TenantID, loaded.Run.ID)
+	harness := newCountingBlockingHarness()
+	newManager := func(queue ports.Queue, claim string) *worker.Manager {
+		manager, err := newTestWorker(worker.Config{
+			ScratchRoot: t.TempDir(), WorkerID: "worker-test",
+			PhysicalClaimGenerator: func(context.Context) (string, error) { return claim, nil },
+			DeliveryWakePublisher:  newDeliveryWakePublisher(t),
+		}, clock, queue, state, blobs, harness)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return manager
+	}
+	firstDone := runWorkerOnce(newManager(firstQueue, "physical-claim-one"), ctx)
+	waitForSignal(t, ctx, harness.started, "first provider effect")
+	second := waitForWorkerResult(t, ctx, runWorkerOnce(newManager(secondQueue, "physical-claim-two"), ctx))
+	if second.err != nil || second.outcome != worker.OutcomeRetried {
+		t.Fatalf("redelivery outcome/error = %q/%v, want reconcile-only retry/nil", second.outcome, second.err)
+	}
+	if calls := harness.calls(); calls != 1 {
+		t.Fatalf("provider calls before release = %d, want 1", calls)
+	}
+	close(harness.release)
+	first := waitForWorkerResult(t, ctx, firstDone)
+	if first.err != nil || first.outcome != worker.OutcomeCompleted {
+		t.Fatalf("owner outcome/error = %q/%v, want completed/nil", first.outcome, first.err)
+	}
+	if state.completions != 1 || len(state.effects) != 1 || harness.calls() != 1 {
+		t.Fatalf("completions/effects/provider calls = %d/%d/%d, want 1/1/1", state.completions, len(state.effects), harness.calls())
+	}
+}
+
+func TestWorkerLostResponseAfterTerminalCommitRedeliversWithoutAnotherEffect(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	clock := testkit.NewFakeClock(workerTestTime)
+	queue := testkit.NewMemoryQueue()
+	blobs := newMemoryBlobs()
+	state := newWorkerState()
+	loaded := workerFixture(t, ctx, blobs, "tenant-a", workerTestTime)
+	state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
+	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
+	publisher := &failOnceWakePublisher{}
+	harness := &countingHarness{}
+	manager, err := newTestWorker(worker.Config{
+		ScratchRoot: t.TempDir(), WorkerID: "worker-test", DeliveryWakePublisher: publisher,
+	}, clock, queue, state, blobs, harness)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome, err := manager.RunOnce(ctx); err != nil || outcome != worker.OutcomeRetried {
+		t.Fatalf("lost-response outcome/error = %q/%v, want retried/nil", outcome, err)
+	}
+	if state.completions != 1 || harness.calls() != 1 {
+		t.Fatalf("completion/provider calls = %d/%d, want 1/1", state.completions, harness.calls())
+	}
+	if outcome, err := manager.RunOnce(ctx); err != nil || outcome != worker.OutcomeDuplicate {
+		t.Fatalf("redelivery outcome/error = %q/%v, want duplicate/nil", outcome, err)
+	}
+	if state.completions != 1 || len(state.effects) != 1 || harness.calls() != 1 {
+		t.Fatalf("completions/effects/provider calls = %d/%d/%d, want 1/1/1", state.completions, len(state.effects), harness.calls())
 	}
 }
 
@@ -487,7 +931,7 @@ func TestWorkerPersistsDurableCancellation(t *testing.T) {
 	state.cancelled[key] = true
 	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
 	harness, _ := deterministicharness.New(deterministicharness.Config{})
-	manager, err := worker.New(worker.Config{
+	manager, err := newTestWorker(worker.Config{
 		ScratchRoot: t.TempDir(), WorkerID: "worker-test",
 		DeliveryWakePublisher: newDeliveryWakePublisher(t),
 	}, clock, queue, state, blobs, harness)
@@ -516,7 +960,7 @@ func TestWorkerRenewsLeaseAtDurableBoundary(t *testing.T) {
 	loaded := workerFixture(t, ctx, blobs, "tenant-a", workerTestTime)
 	state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
 	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
-	manager, err := worker.New(worker.Config{
+	manager, err := newTestWorker(worker.Config{
 		ScratchRoot: t.TempDir(), WorkerID: "worker-test", LeaseTTL: time.Minute,
 		DeliveryWakePublisher: newDeliveryWakePublisher(t),
 	}, clock, queue, state, blobs, advancingHarness{clock: clock})
@@ -532,6 +976,227 @@ func TestWorkerRenewsLeaseAtDurableBoundary(t *testing.T) {
 	}
 }
 
+func TestWorkerWatchdogRenewsLeaseDuringSilentHarnessCall(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	clock := testkit.NewFakeClock(workerTestTime)
+	queue := testkit.NewMemoryQueue()
+	blobs := newMemoryBlobs()
+	state := newWorkerState()
+	state.renewalNotify = make(chan error, 1)
+	loaded := workerFixture(t, ctx, blobs, "tenant-a", workerTestTime)
+	state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
+	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
+	harness := newWatchdogHarness()
+	manager, err := newTestWorker(worker.Config{
+		ScratchRoot: t.TempDir(), WorkerID: "worker-test", LeaseTTL: time.Minute,
+		LeaseWatchdogInterval: time.Millisecond, DeliveryWakePublisher: newDeliveryWakePublisher(t),
+	}, clock, queue, state, blobs, harness)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := runWorkerOnce(manager, ctx)
+	waitForSignal(t, ctx, harness.started, "harness start")
+	clock.Advance(40 * time.Second)
+	select {
+	case renewalErr := <-state.renewalNotify:
+		if renewalErr != nil {
+			t.Fatalf("watchdog renewal: %v", renewalErr)
+		}
+	case <-ctx.Done():
+		t.Fatalf("watchdog renewal: %v", ctx.Err())
+	}
+	close(harness.release)
+	result := waitForWorkerResult(t, ctx, done)
+	if result.err != nil || result.outcome != worker.OutcomeCompleted {
+		t.Fatalf("outcome/error = %q/%v, want completed/nil", result.outcome, result.err)
+	}
+	if state.renewals == 0 {
+		t.Fatal("silent harness call completed without a watchdog lease renewal")
+	}
+}
+
+func TestWorkerWatchdogRenewsLeaseDuringInputMaterialization(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	clock := testkit.NewFakeClock(workerTestTime)
+	queue := testkit.NewMemoryQueue()
+	blobs := newMemoryBlobs()
+	state := newWorkerState()
+	state.renewalNotify = make(chan error, 1)
+	loaded := workerFixture(t, ctx, blobs, "tenant-a", workerTestTime)
+	state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
+	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
+	materializationStarted, releaseMaterialization := blobs.blockNextOpen()
+	manager, err := newTestWorker(worker.Config{
+		ScratchRoot: t.TempDir(), WorkerID: "worker-test", LeaseTTL: time.Minute,
+		LeaseWatchdogInterval: time.Millisecond, DeliveryWakePublisher: newDeliveryWakePublisher(t),
+	}, clock, queue, state, blobs, resultHarness{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := runWorkerOnce(manager, ctx)
+	waitForSignal(t, ctx, materializationStarted, "input materialization")
+	clock.Advance(40 * time.Second)
+	select {
+	case renewalErr := <-state.renewalNotify:
+		if renewalErr != nil {
+			t.Fatalf("watchdog renewal: %v", renewalErr)
+		}
+	case <-ctx.Done():
+		t.Fatalf("watchdog renewal: %v", ctx.Err())
+	}
+	close(releaseMaterialization)
+	result := waitForWorkerResult(t, ctx, done)
+	if result.err != nil || result.outcome != worker.OutcomeCompleted {
+		t.Fatalf("outcome/error = %q/%v, want completed/nil", result.outcome, result.err)
+	}
+}
+
+func TestWorkerWatchdogLeaseLossDuringOutputUploadBlocksCompletion(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	clock := testkit.NewFakeClock(workerTestTime)
+	queue := testkit.NewMemoryQueue()
+	blobs := newMemoryBlobs()
+	state := newWorkerState()
+	loaded := workerFixture(t, ctx, blobs, "tenant-a", workerTestTime)
+	key := jobKey(loaded.Run.TenantID, loaded.Run.ID)
+	state.jobs[key] = loaded
+	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
+	uploadStarted, releaseUpload := blobs.blockNextPut("artifacts/sha256/")
+	manager, err := newTestWorker(worker.Config{
+		ScratchRoot: t.TempDir(), WorkerID: "worker-test", LeaseTTL: time.Minute,
+		LeaseWatchdogInterval: time.Millisecond, DeliveryWakePublisher: newDeliveryWakePublisher(t),
+	}, clock, queue, state, blobs, outputHarness{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := runWorkerOnce(manager, ctx)
+	waitForSignal(t, ctx, uploadStarted, "output upload")
+	state.replaceFence(key)
+	result := waitForWorkerResult(t, ctx, done)
+	close(releaseUpload)
+	if result.err != nil || result.outcome != worker.OutcomeRetried {
+		t.Fatalf("outcome/error = %q/%v, want retried/nil", result.outcome, result.err)
+	}
+	if state.completions != 0 || state.failures != 0 {
+		t.Fatalf("completions/failures = %d/%d, want 0/0", state.completions, state.failures)
+	}
+}
+
+func TestWorkerWatchdogRenewsLeaseDuringCredentialFinalization(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	clock := testkit.NewFakeClock(workerTestTime)
+	queue := testkit.NewMemoryQueue()
+	blobs := newMemoryBlobs()
+	state := newWorkerState()
+	loaded := workerFixture(t, ctx, blobs, "tenant-a", workerTestTime)
+	loaded.Job.CredentialOwnerUserID = "user-a"
+	setInvocationHarnessBinding(&loaded.Job, loaded.Run.SubscriptionConnectionID, 1)
+	state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
+	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
+	lifecycle := newRecordingCredentialLifecycle(t, "user-a")
+	finalizationStarted, releaseFinalization := lifecycle.blockNextWriteBack()
+	manager, err := newTestWorker(worker.Config{
+		ScratchRoot: t.TempDir(), WorkerID: "worker-credential", LeaseTTL: 2 * time.Minute,
+		LeaseWatchdogInterval: time.Millisecond, CredentialMode: worker.CredentialRequired,
+		CredentialFinalizeGrace: time.Second, CredentialLifecycle: lifecycle,
+		DeliveryWakePublisher: newDeliveryWakePublisher(t),
+	}, clock, queue, state, blobs, &credentialHarness{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := runWorkerOnce(manager, ctx)
+	waitForSignal(t, ctx, finalizationStarted, "credential finalization")
+	renewal := make(chan error, 1)
+	state.setRenewalNotify(renewal)
+	clock.Advance(40 * time.Second)
+	select {
+	case renewalErr := <-renewal:
+		if renewalErr != nil {
+			t.Fatalf("watchdog renewal: %v", renewalErr)
+		}
+	case <-ctx.Done():
+		t.Fatalf("watchdog renewal: %v", ctx.Err())
+	}
+	close(releaseFinalization)
+	result := waitForWorkerResult(t, ctx, done)
+	if result.err != nil || result.outcome != worker.OutcomeCompleted {
+		t.Fatalf("outcome/error = %q/%v, want completed/nil", result.outcome, result.err)
+	}
+}
+
+func TestWorkerWatchdogDeliversCancellationToSilentHarness(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	clock := testkit.NewFakeClock(workerTestTime)
+	queue := testkit.NewMemoryQueue()
+	blobs := newMemoryBlobs()
+	state := newWorkerState()
+	loaded := workerFixture(t, ctx, blobs, "tenant-a", workerTestTime)
+	key := jobKey(loaded.Run.TenantID, loaded.Run.ID)
+	state.jobs[key] = loaded
+	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
+	harness := newWatchdogHarness()
+	manager, err := newTestWorker(worker.Config{
+		ScratchRoot: t.TempDir(), WorkerID: "worker-test", LeaseTTL: time.Minute,
+		LeaseWatchdogInterval: time.Millisecond, DeliveryWakePublisher: newDeliveryWakePublisher(t),
+	}, clock, queue, state, blobs, harness)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := runWorkerOnce(manager, ctx)
+	waitForSignal(t, ctx, harness.started, "harness start")
+	state.setCancelled(key)
+	waitForSignal(t, ctx, harness.contextCancelled, "harness context cancellation")
+	result := waitForWorkerResult(t, ctx, done)
+	if result.err != nil || result.outcome != worker.OutcomeCancelled {
+		t.Fatalf("outcome/error = %q/%v, want cancelled/nil", result.outcome, result.err)
+	}
+	if state.completions != 0 || state.failures != 1 || harness.cancelCalls != 1 {
+		t.Fatalf("completions/failures/cancel calls = %d/%d/%d, want 0/1/1", state.completions, state.failures, harness.cancelCalls)
+	}
+}
+
+func TestWorkerWatchdogLeaseLossCancelsAndBlocksSuccess(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	clock := testkit.NewFakeClock(workerTestTime)
+	queue := testkit.NewMemoryQueue()
+	blobs := newMemoryBlobs()
+	state := newWorkerState()
+	loaded := workerFixture(t, ctx, blobs, "tenant-a", workerTestTime)
+	state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
+	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
+	harness := newWatchdogHarness()
+	manager, err := newTestWorker(worker.Config{
+		ScratchRoot: t.TempDir(), WorkerID: "worker-test", LeaseTTL: time.Minute,
+		LeaseWatchdogInterval: time.Millisecond, DeliveryWakePublisher: newDeliveryWakePublisher(t),
+	}, clock, queue, state, blobs, harness)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := runWorkerOnce(manager, ctx)
+	waitForSignal(t, ctx, harness.started, "harness start")
+	state.replaceFence(jobKey(loaded.Run.TenantID, loaded.Run.ID))
+	waitForSignal(t, ctx, harness.contextCancelled, "harness context cancellation")
+	result := waitForWorkerResult(t, ctx, done)
+	if result.err != nil || result.outcome != worker.OutcomeRetried {
+		t.Fatalf("outcome/error = %q/%v, want retried/nil", result.outcome, result.err)
+	}
+	if state.completions != 0 || state.failures != 0 || harness.cancelCalls != 1 {
+		t.Fatalf("completions/failures/cancel calls = %d/%d/%d, want 0/0/1", state.completions, state.failures, harness.cancelCalls)
+	}
+}
+
 func TestWorkerEnforcesRuntimeLimitAndCancelsHarness(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -544,8 +1209,8 @@ func TestWorkerEnforcesRuntimeLimitAndCancelsHarness(t *testing.T) {
 	state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
 	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
 	harness := &blockingHarness{}
-	manager, err := worker.New(worker.Config{
-		ScratchRoot: t.TempDir(), WorkerID: "worker-test",
+	manager, err := newTestWorker(worker.Config{
+		ScratchRoot: t.TempDir(), WorkerID: "worker-test", LeaseWatchdogInterval: time.Millisecond,
 		DeliveryWakePublisher: newDeliveryWakePublisher(t),
 	}, clock, queue, state, blobs, harness)
 	if err != nil {
@@ -618,7 +1283,7 @@ func TestRequiredCredentialLifecycleOrchestration(t *testing.T) {
 			if testCase.blockWriteBack {
 				finalizeGrace = 10 * time.Millisecond
 			}
-			manager, err := worker.New(worker.Config{
+			manager, err := newTestWorker(worker.Config{
 				ScratchRoot: t.TempDir(), WorkerID: "worker-credential",
 				LeaseTTL: 2 * time.Minute, CredentialMode: worker.CredentialRequired,
 				CredentialFinalizeGrace: finalizeGrace, CredentialLifecycle: lifecycle,
@@ -711,7 +1376,7 @@ func TestRequiredCredentialFailsClosedBeforeHarness(t *testing.T) {
 			state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
 			publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
 			harness := &credentialHarness{}
-			manager, err := worker.New(config, clock, queue, state, blobs, harness)
+			manager, err := newTestWorker(config, clock, queue, state, blobs, harness)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -885,12 +1550,34 @@ var osReadDir = func(name string) ([]string, error) {
 }
 
 type memoryBlobs struct {
-	mu   sync.Mutex
-	data map[string][]byte
+	mu             sync.Mutex
+	data           map[string][]byte
+	openStarted    chan struct{}
+	openRelease    chan struct{}
+	putStarted     chan struct{}
+	putRelease     chan struct{}
+	blockPutPrefix string
 }
 
 func newMemoryBlobs() *memoryBlobs {
 	return &memoryBlobs{data: make(map[string][]byte)}
+}
+
+func (store *memoryBlobs) blockNextOpen() (<-chan struct{}, chan<- struct{}) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.openStarted = make(chan struct{})
+	store.openRelease = make(chan struct{})
+	return store.openStarted, store.openRelease
+}
+
+func (store *memoryBlobs) blockNextPut(prefix string) (<-chan struct{}, chan<- struct{}) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.putStarted = make(chan struct{})
+	store.putRelease = make(chan struct{})
+	store.blockPutPrefix = prefix
+	return store.putStarted, store.putRelease
 }
 
 func (store *memoryBlobs) seed(
@@ -909,7 +1596,7 @@ func (store *memoryBlobs) seed(
 }
 
 func (store *memoryBlobs) Put(
-	_ context.Context,
+	ctx context.Context,
 	tenant domain.TenantID,
 	key string,
 	body io.Reader,
@@ -930,13 +1617,29 @@ func (store *memoryBlobs) Put(
 		SHA256: hex.EncodeToString(sum[:]),
 	}
 	store.mu.Lock()
+	started, release := store.putStarted, store.putRelease
+	if started == nil || !strings.Contains(key, store.blockPutPrefix) {
+		started, release = nil, nil
+	} else {
+		store.putStarted, store.putRelease, store.blockPutPrefix = nil, nil, ""
+	}
+	store.mu.Unlock()
+	if started != nil {
+		close(started)
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return domain.BlobRef{}, ctx.Err()
+		}
+	}
+	store.mu.Lock()
 	store.data[key] = append([]byte(nil), data...)
 	store.mu.Unlock()
 	return ref, nil
 }
 
 func (store *memoryBlobs) Open(
-	_ context.Context,
+	ctx context.Context,
 	tenant domain.TenantID,
 	ref domain.BlobRef,
 ) (io.ReadCloser, error) {
@@ -944,10 +1647,21 @@ func (store *memoryBlobs) Open(
 		return nil, domain.TenantMismatchError{Expected: tenant, Actual: ref.TenantID}
 	}
 	store.mu.Lock()
-	defer store.mu.Unlock()
 	data, ok := store.data[ref.Key]
+	data = append([]byte(nil), data...)
+	started, release := store.openStarted, store.openRelease
+	store.openStarted, store.openRelease = nil, nil
+	store.mu.Unlock()
 	if !ok {
 		return nil, errors.New("blob not found")
+	}
+	if started != nil {
+		close(started)
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 	return io.NopCloser(bytes.NewReader(data)), nil
 }
@@ -963,19 +1677,23 @@ func (store *memoryBlobs) Delete(_ context.Context, tenant domain.TenantID, ref 
 }
 
 type workerState struct {
-	mu          sync.Mutex
-	jobs        map[string]ports.WorkerJobState
-	leases      map[string]domain.Lease
-	cancelled   map[string]bool
-	checkpoints []domain.Checkpoint
-	usage       []domain.UsageObservation
-	manifests   []domain.ArtifactManifest
-	events      []domain.SessionEventDraft
-	deliveries  []domain.TelegramDeliveryOutbox
-	completions int
-	failures    int
-	renewals    int
-	loadContext func(ports.WorkerContextRequest) (domain.SessionContextInput, error)
+	mu                     sync.Mutex
+	jobs                   map[string]ports.WorkerJobState
+	leases                 map[string]domain.Lease
+	cancelled              map[string]bool
+	checkpoints            []domain.Checkpoint
+	usage                  []domain.UsageObservation
+	manifests              []domain.ArtifactManifest
+	events                 []domain.SessionEventDraft
+	deliveries             []domain.TelegramDeliveryOutbox
+	completions            int
+	failures               int
+	renewals               int
+	renewalNotify          chan error
+	effects                map[string]domain.AttemptEffectReservationV1
+	substrateEvidence      []domain.SubstrateExecutionEvidenceV1
+	reconciliationEvidence []domain.AttemptEffectReconciliationEvidenceV1
+	loadContext            func(ports.WorkerContextRequest) (domain.SessionContextInput, error)
 }
 
 func newWorkerState() *workerState {
@@ -983,6 +1701,7 @@ func newWorkerState() *workerState {
 		jobs:      make(map[string]ports.WorkerJobState),
 		leases:    make(map[string]domain.Lease),
 		cancelled: make(map[string]bool),
+		effects:   make(map[string]domain.AttemptEffectReservationV1),
 	}
 }
 
@@ -1057,6 +1776,140 @@ func (state *workerState) StartWorkerJob(
 	return nil
 }
 
+func (state *workerState) ReserveAttemptEffect(
+	_ context.Context,
+	request ports.ReserveAttemptEffectRequestV1,
+) (ports.ReserveAttemptEffectResultV1, error) {
+	if err := request.Validate(); err != nil {
+		return ports.ReserveAttemptEffectResultV1{}, err
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	key := jobKey(request.TenantID, request.RunID)
+	loaded, found := state.jobs[key]
+	lease, leaseFound := state.leases[key]
+	if !found || !leaseFound || loaded.Attempt.ID != request.AttemptID ||
+		lease.ID != request.LeaseID || lease.FenceToken != request.FenceToken {
+		return ports.ReserveAttemptEffectResultV1{}, errors.New("effect authority not found")
+	}
+	effectKey := string(request.TenantID) + "/" + string(request.AttemptID)
+	if existing, exists := state.effects[effectKey]; exists {
+		result := ports.ReserveAttemptEffectResultV1{
+			Status: ports.AttemptEffectReconcileOnlyV1, Reservation: existing.Clone(),
+		}
+		authority, err := workerEffectAuthority(loaded, lease)
+		if err != nil {
+			return ports.ReserveAttemptEffectResultV1{}, err
+		}
+		if existing.PhysicalInvocationClaimID == request.PhysicalInvocationClaimID {
+			grant := workerEffectGrant(authority, existing)
+			result.Status, result.Grant = ports.AttemptEffectReplayedV1, &grant
+		} else {
+			grant := workerEffectObservationGrant(authority, existing)
+			result.ObservationGrant = &grant
+		}
+		return result, result.Validate()
+	}
+	authority, err := workerEffectAuthority(loaded, lease)
+	if err != nil {
+		return ports.ReserveAttemptEffectResultV1{}, err
+	}
+	at := lease.AcquiredAt.Add(time.Nanosecond)
+	reservation, err := domain.BuildAttemptEffectReservationV1(
+		authority, request.PhysicalInvocationClaimID, request.UpstreamIdempotencyKeyDigest, at,
+	)
+	if err != nil {
+		return ports.ReserveAttemptEffectResultV1{}, err
+	}
+	state.effects[effectKey] = reservation.Clone()
+	grant := workerEffectGrant(authority, reservation)
+	result := ports.ReserveAttemptEffectResultV1{
+		Status: ports.AttemptEffectOwnedV1, Reservation: reservation, Grant: &grant,
+	}
+	return result, result.Validate()
+}
+
+func (state *workerState) RecordAttemptEffectReconciliation(
+	_ context.Context,
+	record ports.AttemptEffectReconciliationRecordV1,
+) error {
+	if err := record.Validate(); err != nil {
+		return err
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	key := string(record.TenantID) + "/" + string(record.AttemptID)
+	reservation, found := state.effects[key]
+	loaded, loadedFound := state.jobs[jobKey(record.TenantID, record.RunID)]
+	lease, leaseFound := state.leases[jobKey(record.TenantID, record.RunID)]
+	if !found || !loadedFound || !leaseFound {
+		return errors.New("effect authority not found for reconciliation evidence")
+	}
+	authority, err := workerEffectAuthority(loaded, lease)
+	if err != nil {
+		return err
+	}
+	if err := record.Evidence.ValidateForPersistedAuthority(authority, reservation); err != nil {
+		return err
+	}
+	for _, existing := range state.reconciliationEvidence {
+		if existing.EvidenceDigest == record.Evidence.EvidenceDigest {
+			return nil
+		}
+	}
+	state.reconciliationEvidence = append(state.reconciliationEvidence, record.Evidence.Clone())
+	return nil
+}
+
+func workerEffectAuthority(
+	loaded ports.WorkerJobState,
+	lease domain.Lease,
+) (domain.ServerlessInvocationAuthorityV1, error) {
+	if loaded.Job.SubstrateBinding == nil || loaded.Job.AdmissionCostCeiling == nil {
+		return domain.ServerlessInvocationAuthorityV1{}, errors.New("serverless authority is missing")
+	}
+	contextDigest, inputDigest, err := domain.ServerlessWorkerJobDigestsV1(loaded.Job, loaded.InputManifest)
+	if err != nil {
+		return domain.ServerlessInvocationAuthorityV1{}, err
+	}
+	deadline := lease.AcquiredAt.Add(loaded.Job.SubstrateBinding.Limits.InvocationTimeout)
+	if lease.ExpiresAt.Before(deadline) {
+		deadline = lease.ExpiresAt
+	}
+	authority := domain.ServerlessInvocationAuthorityV1{
+		Version:        domain.ServerlessInvocationAuthorityVersionV1,
+		HarnessBinding: loaded.Job.HarnessBinding.Clone(), ExecutionPlacementV2: loaded.Job.ExecutionPlacementV2,
+		SubstrateBinding: *loaded.Job.SubstrateBinding, AdmissionCostCeiling: loaded.Job.AdmissionCostCeiling.Clone(),
+		Lease: lease, ContextManifestDigest: contextDigest, InputManifestDigest: inputDigest,
+		InvocationDeadline: deadline.UTC(),
+	}
+	return authority, authority.ValidateAt(lease.AcquiredAt.Add(time.Nanosecond))
+}
+
+func workerEffectGrant(
+	authority domain.ServerlessInvocationAuthorityV1,
+	reservation domain.AttemptEffectReservationV1,
+) ports.AttemptEffectOwnershipGrantV1 {
+	return ports.AttemptEffectOwnershipGrantV1{
+		Version: ports.AttemptEffectOwnershipGrantVersionV1, Authority: authority,
+		Reservation: reservation, GrantExpiresAt: authority.InvocationDeadline,
+		Authenticator: bytes.Repeat([]byte{1}, sha256.Size),
+	}
+}
+
+func workerEffectObservationGrant(
+	authority domain.ServerlessInvocationAuthorityV1,
+	reservation domain.AttemptEffectReservationV1,
+) ports.AttemptEffectObservationGrantV1 {
+	issuedAt := reservation.ReservedAt.Add(time.Nanosecond)
+	return ports.AttemptEffectObservationGrantV1{
+		Version: ports.AttemptEffectObservationGrantVersionV1, Authority: authority,
+		Reservation: reservation, GrantIssuedAt: issuedAt,
+		GrantExpiresAt: issuedAt.Add(authority.AdmissionCostCeiling.MaxPreEffectDurationPerDelivery),
+		Authenticator:  bytes.Repeat([]byte{2}, sha256.Size),
+	}
+}
+
 func (state *workerState) LoadWorkerCredentialInvocation(
 	_ context.Context,
 	tenant domain.TenantID,
@@ -1088,16 +1941,22 @@ func (state *workerState) RenewWorkerLease(
 	newExpiry time.Time,
 ) (domain.Lease, error) {
 	state.mu.Lock()
-	defer state.mu.Unlock()
 	for key, lease := range state.leases {
 		if lease.TenantID == tenant && lease.ID == leaseID && lease.FenceToken == fence {
 			lease.ExpiresAt = newExpiry
 			state.leases[key] = lease
 			state.renewals++
+			notify := state.renewalNotify
+			state.mu.Unlock()
+			notifyRenewal(notify, nil)
 			return lease, nil
 		}
 	}
-	return domain.Lease{}, errors.New("lease lost")
+	notify := state.renewalNotify
+	state.mu.Unlock()
+	err := errors.New("lease lost")
+	notifyRenewal(notify, err)
+	return domain.Lease{}, err
 }
 
 func (state *workerState) CommitWorkerEvent(_ context.Context, event ports.WorkerEventCommit) error {
@@ -1138,6 +1997,9 @@ func (state *workerState) CompleteWorkerJob(
 	state.jobs[key] = current
 	state.manifests = append(state.manifests, completion.Manifest)
 	state.events = append(state.events, completion.Events...)
+	if completion.SubstrateEvidence != nil {
+		state.substrateEvidence = append(state.substrateEvidence, completion.SubstrateEvidence.Clone())
+	}
 	state.completions++
 	return nil
 }
@@ -1165,6 +2027,9 @@ func (state *workerState) CompleteLegacyTelegramWorkerJob(
 	state.jobs[key] = current
 	state.manifests = append(state.manifests, completion.Manifest)
 	state.deliveries = append(state.deliveries, completion.Delivery)
+	if completion.SubstrateEvidence != nil {
+		state.substrateEvidence = append(state.substrateEvidence, completion.SubstrateEvidence.Clone())
+	}
 	state.completions++
 	return nil
 }
@@ -1189,6 +2054,9 @@ func (state *workerState) FailWorkerJob(_ context.Context, failure ports.WorkerF
 	}
 	state.jobs[key] = current
 	state.events = append(state.events, failure.Events...)
+	if failure.ReconciliationEvidence != nil {
+		state.reconciliationEvidence = append(state.reconciliationEvidence, failure.ReconciliationEvidence.Clone())
+	}
 	state.failures++
 	return nil
 }
@@ -1216,6 +2084,9 @@ func (state *workerState) FailLegacyTelegramWorkerJob(
 	}
 	state.jobs[key] = current
 	state.deliveries = append(state.deliveries, failure.Delivery)
+	if failure.ReconciliationEvidence != nil {
+		state.reconciliationEvidence = append(state.reconciliationEvidence, failure.ReconciliationEvidence.Clone())
+	}
 	state.failures++
 	return nil
 }
@@ -1230,6 +2101,36 @@ func (state *workerState) CancellationRequested(
 	return state.cancelled[jobKey(tenant, runID)], nil
 }
 
+func (state *workerState) setCancelled(key string) {
+	state.mu.Lock()
+	state.cancelled[key] = true
+	state.mu.Unlock()
+}
+
+func (state *workerState) replaceFence(key string) {
+	state.mu.Lock()
+	lease := state.leases[key]
+	lease.FenceToken++
+	state.leases[key] = lease
+	state.mu.Unlock()
+}
+
+func (state *workerState) setRenewalNotify(notify chan error) {
+	state.mu.Lock()
+	state.renewalNotify = notify
+	state.mu.Unlock()
+}
+
+func notifyRenewal(channel chan error, err error) {
+	if channel == nil {
+		return
+	}
+	select {
+	case channel <- err:
+	default:
+	}
+}
+
 func jobKey(tenant domain.TenantID, runID domain.RunID) string {
 	return string(tenant) + "/" + string(runID)
 }
@@ -1238,6 +2139,7 @@ var (
 	_ ports.BlobStore                      = (*memoryBlobs)(nil)
 	_ ports.WorkerStateStore               = (*workerState)(nil)
 	_ ports.LegacyTelegramWorkerStateStore = (*workerState)(nil)
+	_ ports.AttemptEffectStoreV1           = (*workerState)(nil)
 )
 
 type advancingHarness struct {
@@ -1352,6 +2254,121 @@ func (resultHarness) Cancel(context.Context, ports.ExecutionIdentity) error { re
 
 var _ ports.HarnessDriver = resultHarness{}
 
+type countingHarness struct {
+	mu           sync.Mutex
+	executeCalls int
+}
+
+func (*countingHarness) Preflight(context.Context, ports.ExecutionIdentity) error { return nil }
+
+func (harness *countingHarness) Execute(
+	context.Context,
+	ports.ExecutionRequest,
+	ports.ExecutionEventSink,
+) (ports.ExecutionResult, error) {
+	harness.mu.Lock()
+	harness.executeCalls++
+	harness.mu.Unlock()
+	return ports.ExecutionResult{Summary: "counted provider effect"}, nil
+}
+
+func (*countingHarness) Cancel(context.Context, ports.ExecutionIdentity) error { return nil }
+
+func (harness *countingHarness) calls() int {
+	harness.mu.Lock()
+	defer harness.mu.Unlock()
+	return harness.executeCalls
+}
+
+type countingBlockingHarness struct {
+	countingHarness
+	startOnce sync.Once
+	started   chan struct{}
+	release   chan struct{}
+}
+
+func newCountingBlockingHarness() *countingBlockingHarness {
+	return &countingBlockingHarness{started: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (harness *countingBlockingHarness) Execute(
+	ctx context.Context,
+	_ ports.ExecutionRequest,
+	_ ports.ExecutionEventSink,
+) (ports.ExecutionResult, error) {
+	harness.mu.Lock()
+	harness.executeCalls++
+	harness.mu.Unlock()
+	harness.startOnce.Do(func() { close(harness.started) })
+	select {
+	case <-harness.release:
+		return ports.ExecutionResult{Summary: "counted provider effect"}, nil
+	case <-ctx.Done():
+		return ports.ExecutionResult{}, ctx.Err()
+	}
+}
+
+var _ ports.HarnessDriver = (*countingBlockingHarness)(nil)
+
+type failOnceWakePublisher struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (publisher *failOnceWakePublisher) PublishTelegramDeliveryWake(
+	context.Context,
+	domain.TenantID,
+	domain.TelegramDeliveryID,
+	time.Time,
+) error {
+	publisher.mu.Lock()
+	defer publisher.mu.Unlock()
+	publisher.calls++
+	if publisher.calls == 1 {
+		return errors.New("simulated lost trigger response")
+	}
+	return nil
+}
+
+func (*failOnceWakePublisher) PublishFrontendProjectionWake(
+	context.Context,
+	domain.TenantID,
+	domain.RunID,
+	time.Time,
+) error {
+	return nil
+}
+
+var (
+	_ ports.HarnessDriver                   = (*countingHarness)(nil)
+	_ ports.TelegramDeliveryWakePublisher   = (*failOnceWakePublisher)(nil)
+	_ ports.FrontendProjectionWakePublisher = (*failOnceWakePublisher)(nil)
+)
+
+type outputHarness struct{}
+
+func (outputHarness) Preflight(context.Context, ports.ExecutionIdentity) error { return nil }
+
+func (outputHarness) Execute(
+	_ context.Context,
+	request ports.ExecutionRequest,
+	_ ports.ExecutionEventSink,
+) (ports.ExecutionResult, error) {
+	if err := os.WriteFile(filepath.Join(request.WorkDir, "outputs", "result.txt"), []byte("result"), 0o600); err != nil {
+		return ports.ExecutionResult{}, err
+	}
+	return ports.ExecutionResult{
+		Summary: "output fixture completed",
+		Outputs: []ports.ExecutionOutput{{
+			Name: "result.txt", MediaType: "text/plain", RelativePath: "result.txt",
+		}},
+	}, nil
+}
+
+func (outputHarness) Cancel(context.Context, ports.ExecutionIdentity) error { return nil }
+
+var _ ports.HarnessDriver = outputHarness{}
+
 type blockingHarness struct {
 	cancelCalls int
 }
@@ -1375,6 +2392,77 @@ func (harness *blockingHarness) Cancel(context.Context, ports.ExecutionIdentity)
 }
 
 var _ ports.HarnessDriver = (*blockingHarness)(nil)
+
+type watchdogHarness struct {
+	started          chan struct{}
+	release          chan struct{}
+	contextCancelled chan struct{}
+	cancelCalls      int
+}
+
+func newWatchdogHarness() *watchdogHarness {
+	return &watchdogHarness{
+		started: make(chan struct{}), release: make(chan struct{}), contextCancelled: make(chan struct{}),
+	}
+}
+
+func (*watchdogHarness) Preflight(context.Context, ports.ExecutionIdentity) error { return nil }
+
+func (harness *watchdogHarness) Execute(
+	ctx context.Context,
+	_ ports.ExecutionRequest,
+	_ ports.ExecutionEventSink,
+) (ports.ExecutionResult, error) {
+	close(harness.started)
+	select {
+	case <-harness.release:
+		return ports.ExecutionResult{Summary: "watchdog fixture completed"}, nil
+	case <-ctx.Done():
+		close(harness.contextCancelled)
+		return ports.ExecutionResult{}, ctx.Err()
+	}
+}
+
+func (harness *watchdogHarness) Cancel(context.Context, ports.ExecutionIdentity) error {
+	harness.cancelCalls++
+	return nil
+}
+
+type workerRunResult struct {
+	outcome worker.Outcome
+	err     error
+}
+
+func runWorkerOnce(manager *worker.Manager, ctx context.Context) <-chan workerRunResult {
+	done := make(chan workerRunResult, 1)
+	go func() {
+		outcome, err := manager.RunOnce(ctx)
+		done <- workerRunResult{outcome: outcome, err: err}
+	}()
+	return done
+}
+
+func waitForSignal(t *testing.T, ctx context.Context, signal <-chan struct{}, operation string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-ctx.Done():
+		t.Fatalf("%s: %v", operation, ctx.Err())
+	}
+}
+
+func waitForWorkerResult(t *testing.T, ctx context.Context, done <-chan workerRunResult) workerRunResult {
+	t.Helper()
+	select {
+	case result := <-done:
+		return result
+	case <-ctx.Done():
+		t.Fatalf("worker completion: %v", ctx.Err())
+		return workerRunResult{}
+	}
+}
+
+var _ ports.HarnessDriver = (*watchdogHarness)(nil)
 
 type credentialHarness struct {
 	mutateAuth     bool
@@ -1438,6 +2526,8 @@ type recordingCredentialLifecycle struct {
 	cancelOnMaterialize      func()
 	releaseHadDeadline       bool
 	releaseSawCanceled       bool
+	writeBackStarted         chan struct{}
+	writeBackRelease         chan struct{}
 }
 
 func newRecordingCredentialLifecycle(t *testing.T, expectedOwner domain.UserID) *recordingCredentialLifecycle {
@@ -1446,6 +2536,14 @@ func newRecordingCredentialLifecycle(t *testing.T, expectedOwner domain.UserID) 
 		t: t, root: t.TempDir(), expectedOwner: expectedOwner,
 		original: []byte("original-secret"),
 	}
+}
+
+func (lifecycle *recordingCredentialLifecycle) blockNextWriteBack() (<-chan struct{}, chan<- struct{}) {
+	lifecycle.mu.Lock()
+	defer lifecycle.mu.Unlock()
+	lifecycle.writeBackStarted = make(chan struct{})
+	lifecycle.writeBackRelease = make(chan struct{})
+	return lifecycle.writeBackStarted, lifecycle.writeBackRelease
 }
 
 func (lifecycle *recordingCredentialLifecycle) Issue(
@@ -1507,6 +2605,18 @@ func (lifecycle *recordingCredentialLifecycle) WriteBack(
 	materialization ports.CredentialMaterialization,
 ) (ports.CredentialWriteBackResult, error) {
 	lifecycle.record("writeback")
+	lifecycle.mu.Lock()
+	started, release := lifecycle.writeBackStarted, lifecycle.writeBackRelease
+	lifecycle.writeBackStarted, lifecycle.writeBackRelease = nil, nil
+	lifecycle.mu.Unlock()
+	if started != nil {
+		close(started)
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return ports.CredentialWriteBackResult{}, ctx.Err()
+		}
+	}
 	if lifecycle.blockWriteBack {
 		<-ctx.Done()
 		lifecycle.writeBackReachedDeadline = errors.Is(ctx.Err(), context.DeadlineExceeded)

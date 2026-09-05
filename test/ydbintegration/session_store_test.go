@@ -326,7 +326,7 @@ func TestCanonicalSnapshotsAndRunsUseBoundedSessionPrefixes(t *testing.T) {
 }
 
 func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
-	store, client := openStore(t)
+	store, client, grantIssuer := openStoreWithIssuer(t)
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	tenantID := domain.TenantID(uniqueID("tenant-ingress"))
@@ -556,6 +556,14 @@ func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 	if err := store.StartWorkerJob(ctx, loaded, lease, committedAt.Add(3*time.Second)); err != nil {
 		t.Fatal(err)
 	}
+	effect, err := store.ReserveAttemptEffect(ctx, ports.ReserveAttemptEffectRequestV1{
+		TenantID: tenantID, RunID: request.RunID, AttemptID: request.AttemptID,
+		LeaseID: lease.ID, FenceToken: lease.FenceToken, PhysicalInvocationClaimID: uniqueID("canonical-physical-claim"),
+	})
+	if err != nil || effect.Status != ports.AttemptEffectOwnedV1 {
+		t.Fatalf("reserve canonical provider effect = %#v, %v", effect, err)
+	}
+	substrateEvidence := successfulSubstrateExecutionEvidence(t, grantIssuer, effect)
 	invocation, found, err := store.LoadWorkerCredentialInvocation(
 		ctx, tenantID, request.RunID, request.AttemptID, lease.ID,
 	)
@@ -581,7 +589,8 @@ func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 			ID:       domain.ArtifactManifestID(uniqueID("canonical-output-manifest")),
 			TenantID: tenantID, RunID: request.RunID, CreatedAt: finishedAt,
 		},
-		Events: terminalEvents,
+		Events:            terminalEvents,
+		SubstrateEvidence: &substrateEvidence,
 	}
 	missingAssistant := completion
 	missingAssistant.Events = append([]domain.SessionEventDraft(nil), terminalEvents[:2]...)
@@ -615,6 +624,7 @@ func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 	assertCount(t, client, "session_events", tenantID, 4)
 	assertCount(t, client, "frontend_projection_outbox", tenantID, 1)
 	assertCount(t, client, "run_finalizations", tenantID, 1)
+	assertCount(t, client, "substrate_execution_evidence", tenantID, 1)
 	assertCount(t, client, "telegram_delivery_outbox", tenantID, 0)
 	manifestConflict := completion
 	manifestConflict.Manifest.Artifacts = []domain.Artifact{{

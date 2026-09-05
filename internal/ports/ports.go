@@ -597,29 +597,31 @@ type WorkerEventCommit struct {
 }
 
 type WorkerCompletion struct {
-	TenantID      domain.TenantID
-	RunID         domain.RunID
-	AttemptID     domain.AttemptID
-	ReservationID domain.QuotaReservationID
-	LeaseID       domain.LeaseID
-	Fence         uint64
-	At            time.Time
-	Manifest      domain.ArtifactManifest
-	Events        []domain.SessionEventDraft
-	Usage         []domain.UsageObservation
+	TenantID          domain.TenantID
+	RunID             domain.RunID
+	AttemptID         domain.AttemptID
+	ReservationID     domain.QuotaReservationID
+	LeaseID           domain.LeaseID
+	Fence             uint64
+	At                time.Time
+	Manifest          domain.ArtifactManifest
+	Events            []domain.SessionEventDraft
+	Usage             []domain.UsageObservation
+	SubstrateEvidence *domain.SubstrateExecutionEvidenceV1
 }
 
 type WorkerFailure struct {
-	TenantID      domain.TenantID
-	RunID         domain.RunID
-	AttemptID     domain.AttemptID
-	ReservationID domain.QuotaReservationID
-	LeaseID       domain.LeaseID
-	Fence         uint64
-	At            time.Time
-	Cancelled     bool
-	Code          string
-	Events        []domain.SessionEventDraft
+	TenantID               domain.TenantID
+	RunID                  domain.RunID
+	AttemptID              domain.AttemptID
+	ReservationID          domain.QuotaReservationID
+	LeaseID                domain.LeaseID
+	Fence                  uint64
+	At                     time.Time
+	Cancelled              bool
+	Code                   string
+	Events                 []domain.SessionEventDraft
+	ReconciliationEvidence *domain.AttemptEffectReconciliationEvidenceV1
 }
 
 // LegacyTelegramWorkerCompletion and LegacyTelegramWorkerFailure keep the
@@ -627,29 +629,31 @@ type WorkerFailure struct {
 // adapter. They are deliberately outside WorkerStateStore so the canonical
 // finalization boundary contains no transport-specific delivery type.
 type LegacyTelegramWorkerCompletion struct {
-	TenantID      domain.TenantID
-	RunID         domain.RunID
-	AttemptID     domain.AttemptID
-	ReservationID domain.QuotaReservationID
-	LeaseID       domain.LeaseID
-	Fence         uint64
-	At            time.Time
-	Manifest      domain.ArtifactManifest
-	Delivery      domain.TelegramDeliveryOutbox
-	Usage         []domain.UsageObservation
+	TenantID          domain.TenantID
+	RunID             domain.RunID
+	AttemptID         domain.AttemptID
+	ReservationID     domain.QuotaReservationID
+	LeaseID           domain.LeaseID
+	Fence             uint64
+	At                time.Time
+	Manifest          domain.ArtifactManifest
+	Delivery          domain.TelegramDeliveryOutbox
+	Usage             []domain.UsageObservation
+	SubstrateEvidence *domain.SubstrateExecutionEvidenceV1
 }
 
 type LegacyTelegramWorkerFailure struct {
-	TenantID      domain.TenantID
-	RunID         domain.RunID
-	AttemptID     domain.AttemptID
-	ReservationID domain.QuotaReservationID
-	LeaseID       domain.LeaseID
-	Fence         uint64
-	At            time.Time
-	Cancelled     bool
-	Code          string
-	Delivery      domain.TelegramDeliveryOutbox
+	TenantID               domain.TenantID
+	RunID                  domain.RunID
+	AttemptID              domain.AttemptID
+	ReservationID          domain.QuotaReservationID
+	LeaseID                domain.LeaseID
+	Fence                  uint64
+	At                     time.Time
+	Cancelled              bool
+	Code                   string
+	Delivery               domain.TelegramDeliveryOutbox
+	ReconciliationEvidence *domain.AttemptEffectReconciliationEvidenceV1
 }
 
 // WorkerStateStore exposes the durable lifecycle boundary required by one

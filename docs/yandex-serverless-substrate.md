@@ -31,9 +31,10 @@ The following promotion gates are known to fail in the current composition:
   redelivery. `cmd/worker-runtime` now configures the PR-03a grant issuer, and
   `worker.Manager` creates a fresh physical claim and reserves the durable
   provider effect before credential or workspace materialization. A different
-  physical delivery is reconcile-only and cannot call `Execute`; the returned
-  ownership grant is not yet composed through a PR-03b prepared invocation and
-  consumed at the PR-03c egress boundary;
+  physical delivery is reconcile-only and receives a MAC-authenticated
+  observation grant that can expose only `Reconcile`. The effect owner is
+  composed through an opaque prepared invocation consumed at the exact
+  in-process or child-process effect boundary;
 - no immutable candidate has completed cold/warm, 15-minute redelivery, lost
   response, fence-loss, cleanup, or tainted-instance tests in cloud-dev;
 - cold-start latency, warm-start latency, billed duration, comparable cost,

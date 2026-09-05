@@ -253,20 +253,55 @@ It binds the winning physical claim to the stored reservation and observed
 allocation. It is not a lifecycle record and cannot be reconstructed from
 caller input or a queue delivery, and no public decoder or constructor exists.
 
+`SubstrateRegistryV1.Prepare` is the only generic composition step from the
+durable reservation result to that capability. It rejects structurally invalid,
+reconcile-only, and issuer-MAC-mismatched results before delegating preflight;
+then it exact-resolves the sealed substrate, validates its observed allocation,
+and issues the capability. It deliberately does not consume the capability:
+the selected child-process supervisor or direct-egress boundary owns the one
+actual effect transition.
+
+The managed worker receives only `PreparedExecutionV1`, an opaque operation
+session returned by `PrepareExecution` after the same authenticated preparation.
+The session exposes bound `Execute`, `Cancel`, and `Reconcile` operations but no
+capability, authority getter, decoder, or alternate substrate selector. Thus the
+worker cannot reconstruct, retain, mutate, or route around `PreparedInvocation`;
+the registry and selected exact driver remain the only holders that can consume
+it at the reviewed effect boundary.
+
+A different physical delivery receives a separate short-lived
+`AttemptEffectObservationGrantV1`. Its MAC uses a domain distinct from effect
+ownership, so it cannot issue a `PreparedInvocation`. Exact preparation returns
+only `PreparedReconciliationV1`, which exposes `Reconcile` but neither `Execute`
+nor `Cancel`. Historical authority is structurally validated so an immutable
+tombstone can still observe the original claim after its execution window has
+closed; the observation grant itself remains short-lived and process-local.
+The opaque session seals the returned operation with the original authority
+digest, effect-reservation digest, winning physical claim, and observation
+time. `observed`, `acknowledged`, and `unknown` are persisted as bounded retry
+evidence. An exact `not_found` is persisted atomically with a terminal failed
+attempt (`provider_effect_not_found_after_reservation`); it never reopens the
+one-way effect fence or authorizes a replacement call.
+
 The proposed substrate port is deliberately smaller than a general remote
 shell:
 
 ```text
 ExecutionSubstrateV1.Preflight(ctx, authority) -> verified profile | stable error
-ExecutionSubstrateV1.Execute(ctx, prepared_invocation, SessionlessHarnessV1) -> evidence
+ExecutionSubstrateV1.Execute(ctx, prepared_invocation, exact_execution_request,
+                             event_sink, SessionlessHarnessV1)
+  -> harness_result + substrate_evidence
 ExecutionSubstrateV1.Cancel(ctx, exact attempt/lease/fence) -> observation
 ExecutionSubstrateV1.Reconcile(ctx, exact attempt/lease/fence) -> observation
 ```
 
-`Execute` exact-validates the capability against the current authority,
-reservation, physical claim and allocation before any effect; it cannot choose
-a backend or provider. The returned evidence exact-compares all three digests
-and the claim ID. `Cancel` stays routable after
+`Execute` exact-validates the capability and the explicit execution request
+against the current authority, reservation, physical claim, allocation,
+placement, harness binding, substrate binding, and admission cost ceiling
+before any effect; it cannot choose a backend or provider or recover material
+through a hidden side channel. The returned provider evidence must be the same
+sealed observation in both the harness result and substrate evidence, which
+exact-compares all authority digests and the claim ID. `Cancel` stays routable after
 provider-policy evidence expires, but its exact attempt, lease, fence,
 substrate, and artifact bindings must still validate. `Reconcile` observes an
 already bound invocation; it never starts work.
@@ -278,6 +313,12 @@ has no default or nearest match, and rejects disabled or expired profiles for
 new `Execute`. Immutable tombstoned registrations retain only enough trusted
 adapter metadata for exact `Cancel` and `Reconcile` after disablement or
 expiry. They cannot start work.
+
+Backend registrations carry the same explicit start gate: `Enabled=false` is
+a tombstone that can still route cancellation through its exact reviewed
+driver, but `Preflight` and `Execute` fail with
+`harness_backend_disabled` before calling the driver. Registration presence,
+ordering, or an installed executable therefore never enables a backend.
 
 `SubstrateExecutionEvidenceV1.ValidateForAuthority` exact-compares both binding
 digests and enforces a closed compatibility matrix:
@@ -304,6 +345,15 @@ Canonical terminal commit is intentionally not a field in substrate evidence.
 The #82 read model joins it from the canonical attempt/finalization authority;
 the runtime cannot assert it about itself.
 
+For a successful managed attempt, the worker may submit terminal state only
+with the exact sealed substrate evidence returned by its opaque execution
+session. After credential finalization and scratch cleanup succeed, the YDB
+terminal transaction validates the observation against the persisted effect
+authority and reservation, inserts one immutable evidence row keyed by attempt,
+and seals its digest into canonical finalization idempotency. Attached-worker
+terminal materialization remains a separate signed-evidence contract and does
+not synthesize a serverless substrate observation.
+
 ## Selected request path
 
 ```text
@@ -317,6 +367,7 @@ DispatchOutbox -> YMQ dispatch message
   -> final authority/freshness/cancel/profile gate and atomically append
      the canonical provider-effect reservation
   -> attest PreparedAllocationV1 and issue the non-durable PreparedInvocationV1
+  -> return only its opaque PreparedExecutionV1 operation session to the worker
   -> only the exact reservation owner materializes immutable context/workspace
   -> repeat the final authority/freshness/cancel/attestation gate
   -> invocation credential issue/materialize

@@ -28,6 +28,7 @@ type FailureCode string
 const (
 	FailureHarnessBindingInvalid     FailureCode = "harness_binding_invalid"
 	FailureHarnessBackendUnsupported FailureCode = "harness_backend_unsupported"
+	FailureHarnessBackendDisabled    FailureCode = "harness_backend_disabled"
 	FailureHarnessBackendMismatch    FailureCode = "harness_backend_mismatch"
 	FailureProviderResourceMismatch  FailureCode = "provider_resource_mismatch"
 	FailureProviderRevisionMismatch  FailureCode = "provider_revision_mismatch"
@@ -44,6 +45,7 @@ const (
 
 type Registration struct {
 	Descriptor      domain.HarnessBackendDescriptorV1
+	Enabled         bool
 	ValidateBinding func(domain.HarnessBindingV1) FailureCode
 	Driver          ports.HarnessDriver
 }
@@ -187,6 +189,9 @@ func (registry *Registry) resolve(binding domain.HarnessBindingV1, requireFresh 
 	if registration.Descriptor != binding.Backend {
 		return Registration{}, "", harnessError(FailureHarnessBackendMismatch)
 	}
+	if requireFresh && !registration.Enabled {
+		return Registration{}, "", harnessError(FailureHarnessBackendDisabled)
+	}
 	if code := registration.ValidateBinding(binding.Clone()); code != "" {
 		if !code.validRegistrationResult() {
 			code = FailureHarnessBackendMismatch
@@ -198,7 +203,7 @@ func (registry *Registry) resolve(binding domain.HarnessBindingV1, requireFresh 
 
 func (code FailureCode) validRegistrationResult() bool {
 	switch code {
-	case FailureHarnessBindingInvalid, FailureHarnessBackendUnsupported, FailureHarnessBackendMismatch,
+	case FailureHarnessBindingInvalid, FailureHarnessBackendUnsupported, FailureHarnessBackendDisabled, FailureHarnessBackendMismatch,
 		FailureProviderResourceMismatch, FailureProviderRevisionMismatch, FailureCredentialGeneration,
 		FailureProviderCatalogExpired, FailureProviderEvidenceExpired, FailureProviderRouteMismatch, FailurePrivacyPolicyMismatch,
 		FailureCapabilityMismatch, FailureEffectivePolicyMismatch, FailurePlacementMismatch:
@@ -271,6 +276,40 @@ func NewDeterministicFixtureManagedAuthorityV2(
 		TenantID: tenantID, OwnerUserID: ownerUserID, RunID: runID, AttemptID: attemptID,
 		SubscriptionConnectionID: subscriptionConnectionID, At: at,
 	})
+}
+
+// ValidateDeterministicFixtureInvocationAuthorityV2 proves that all managed
+// placement, harness, substrate and cost fields are exactly those emitted by
+// the built-in deterministic binder for the authenticated scope and pinned
+// price observation. It does not inspect queue input or discover a backend.
+func ValidateDeterministicFixtureInvocationAuthorityV2(authority domain.ServerlessInvocationAuthorityV1) error {
+	if err := authority.Validate(); err != nil {
+		return err
+	}
+	expected, err := NewDeterministicFixtureManagedAuthorityV2(
+		authority.HarnessBinding.TenantID,
+		authority.HarnessBinding.OwnerUserID,
+		authority.HarnessBinding.RunID,
+		authority.HarnessBinding.AttemptID,
+		"deterministic-validation",
+		authority.AdmissionCostCeiling.PriceObservedAt,
+	)
+	if err != nil {
+		return err
+	}
+	expectedHarness, _ := expected.HarnessBinding.Digest()
+	actualHarness, _ := authority.HarnessBinding.Digest()
+	expectedPlacement, _ := domain.ExecutionPlacementDigest(expected.ExecutionPlacementV2)
+	actualPlacement, _ := domain.ExecutionPlacementDigest(authority.ExecutionPlacementV2)
+	expectedSubstrate, _ := expected.SubstrateBinding.Digest()
+	actualSubstrate, _ := authority.SubstrateBinding.Digest()
+	expectedCost, _ := expected.AdmissionCostCeiling.Digest()
+	actualCost, _ := authority.AdmissionCostCeiling.Digest()
+	if expectedHarness != actualHarness || expectedPlacement != actualPlacement ||
+		expectedSubstrate != actualSubstrate || expectedCost != actualCost {
+		return errors.New("deterministic fixture invocation authority does not exact-match the built-in profile")
+	}
+	return nil
 }
 
 func DeterministicFixtureDescriptorV1() domain.HarnessBackendDescriptorV1 {

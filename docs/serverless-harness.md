@@ -356,18 +356,23 @@ YMQ redelivery is expected. A duplicate delivery must either lose the lease,
 observe a committed/terminal attempt, or reconcile the exact current
 invocation and its effect reservation. It cannot cause two provider calls.
 Container concurrency one is a defence in depth; the lease/fence and durable
-effect reservation are the cross-instance authority. The current worker
-runtime does not yet persist this provider-effect fence, so no production
-provider profile can be enabled by configuration alone.
+effect reservation are the cross-instance authority. The current worker now
+persists this fence before credential or workspace materialization and blocks a
+different physical claim before `Execute`. It does not yet pass the returned
+MAC-authenticated ownership grant through PR-03b preparation and consume it at
+the PR-03c egress boundary, so no production provider profile can be enabled by
+configuration alone.
 
 The existing cloud profile also uses a common `WORKER_ID=serverless-worker`, a
 two-minute lease, and a 15-minute YMQ visibility window. Long provider work
-therefore requires a PR-03a worker refactor, not a larger documentation timeout:
+therefore requires the remaining PR-03 composition, not a larger documentation
+timeout:
 
 - before credential issue, the lease must already cover the admitted execution
   plus finalization horizon required by the credential contract;
 - an independent watchdog renews the lease and reads cancellation throughout
-  silent provider calls, output upload, credential finalization, and cleanup;
+  preparation, materialization, silent provider calls, output upload,
+  credential finalization, and cleanup;
 - `lease.expires_at >= credential.expires_at >= execution_deadline +
   cleanup_budget`; the serverless lease horizon therefore cannot use the
   current two-minute configuration for a 40-minute execution;
@@ -481,14 +486,15 @@ launcher, such as a managed per-session microVM or an equivalent measured
 boundary. AW-05's `NetworkDenied=true` profile is not weakened or relabelled to
 make cloud provider egress appear compatible.
 
-The current `worker.Manager` does not meet the cleanup ordering above: its
-invocation directory is removed by a best-effort `defer` after terminal/queue
-handling and the removal error is ignored. PR-03a/PR-03b must replace that path
-with a typed finalization coordinator. It stops the workload, uploads allowed
-outputs, finalizes/releases credentials, removes and scans the workspace, and
-only then permits canonical success and trigger acknowledgement. A cleanup
-failure is committed as an independent failure/ambiguity fact, taints and
-terminates the warm instance, and can never be converted into `verified`.
+`worker.Manager` now uploads allowed outputs, finalizes/releases credentials,
+and removes its invocation directory before canonical success and trigger
+acknowledgement. It still treats directory removal as best effort and has no
+residue proof or warm-instance taint action. PR-03b composition must replace
+that last gap with its typed finalization coordinator: scan the workspace,
+processes, sockets, and credentials, then permit success only with verified
+cleanup. A cleanup failure is committed as an independent failure/ambiguity
+fact, taints and terminates the warm instance, and can never be converted into
+`verified`.
 
 The feature-disabled PR-03b implementation contract and its inherited AW-05
 boundary are documented in

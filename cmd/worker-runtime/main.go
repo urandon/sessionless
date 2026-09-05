@@ -16,6 +16,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/portlog"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/s3store"
+	"gitcode.com/urandon/sessionless/internal/serverlessharness"
 	"gitcode.com/urandon/sessionless/internal/serverlesshttp"
 	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 	"gitcode.com/urandon/sessionless/internal/sqsqueue"
@@ -55,7 +56,12 @@ func main() {
 		os.Exit(1)
 	}
 	defer ydb.Close(context.Background())
-	state, err := ydbstore.New(ydb.DB, ydbstore.Options{})
+	effectIssuer, err := serverlessharness.NewCapabilityIssuer(time.Now, nil)
+	if err != nil {
+		logger.Error("create provider effect grant issuer", "error", err)
+		os.Exit(1)
+	}
+	state, err := ydbstore.New(ydb.DB, ydbstore.Options{AttemptEffectGrantIssuer: effectIssuer})
 	if err != nil {
 		logger.Error("create worker state store", "error", err)
 		os.Exit(1)

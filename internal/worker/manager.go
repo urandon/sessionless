@@ -5,6 +5,7 @@ package worker
 import (
 	"bytes"
 	"context"
+	cryptorand "crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -38,7 +39,10 @@ type Config struct {
 	CredentialMode          CredentialMode
 	CredentialFinalizeGrace time.Duration
 	CredentialLifecycle     ports.CredentialLifecycle
+	PhysicalClaimGenerator  PhysicalClaimGenerator
 }
+
+type PhysicalClaimGenerator func(context.Context) (string, error)
 
 type CredentialMode uint8
 
@@ -70,6 +74,7 @@ type Manager struct {
 	blobs       ports.BlobStore
 	harness     ports.HarnessDriver
 	credentials ports.CredentialLifecycle
+	effects     ports.AttemptEffectStoreV1
 }
 
 func New(
@@ -136,9 +141,16 @@ func New(
 		config.DeliveryWakePublisher == nil || config.ProjectionWakePublisher == nil {
 		return nil, fmt.Errorf("worker dependencies must not be nil")
 	}
+	effects, ok := state.(ports.AttemptEffectStoreV1)
+	if !ok {
+		return nil, errors.New("worker state store must reserve provider effects")
+	}
+	if config.PhysicalClaimGenerator == nil {
+		config.PhysicalClaimGenerator = generatePhysicalClaim
+	}
 	return &Manager{
 		config: config, clock: clock, queue: queue, state: state,
-		blobs: blobs, harness: harness, credentials: config.CredentialLifecycle,
+		blobs: blobs, harness: harness, credentials: config.CredentialLifecycle, effects: effects,
 	}, nil
 }
 
@@ -207,6 +219,9 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 	if err := manager.state.StartWorkerJob(ctx, loaded, lease, now); err != nil {
 		return manager.retry(ctx, message, err)
 	}
+	if err := validateLoadedWorkerJob(loaded); err != nil {
+		return manager.finishFailure(ctx, message, loaded, lease, false, "invalid_worker_job")
+	}
 	cancelled, err := manager.state.CancellationRequested(
 		ctx, loaded.Run.TenantID, loaded.Run.ID,
 	)
@@ -215,6 +230,23 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 	}
 	if cancelled {
 		return manager.finishFailure(ctx, message, loaded, lease, true, "cancelled_before_start")
+	}
+	physicalClaimID, err := manager.config.PhysicalClaimGenerator(ctx)
+	if err != nil {
+		return manager.retry(ctx, message, err)
+	}
+	effect, err := manager.effects.ReserveAttemptEffect(ctx, ports.ReserveAttemptEffectRequestV1{
+		TenantID: loaded.Run.TenantID, RunID: loaded.Run.ID, AttemptID: loaded.Attempt.ID,
+		LeaseID: lease.ID, FenceToken: lease.FenceToken, PhysicalInvocationClaimID: physicalClaimID,
+	})
+	if err != nil {
+		return manager.retry(ctx, message, err)
+	}
+	if err := validateAttemptEffectResult(effect, loaded, lease, physicalClaimID); err != nil {
+		return manager.retry(ctx, message, err)
+	}
+	if effect.Status == ports.AttemptEffectReconcileOnlyV1 {
+		return manager.retry(ctx, message, errAttemptEffectReconcileOnly)
 	}
 	executionCtx, cancelExecution := context.WithTimeout(ctx, loaded.Job.Limits.MaxRuntime)
 	defer cancelExecution()
@@ -439,6 +471,43 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 	return OutcomeCompleted, nil
 }
 
+func validateLoadedWorkerJob(loaded ports.WorkerJobState) error {
+	if loaded.Job.AttemptID != loaded.Attempt.ID ||
+		loaded.Job.ReservationID != loaded.Reservation.ID ||
+		loaded.Job.InputManifestID != loaded.InputManifest.ID ||
+		loaded.InputManifest.TenantID != loaded.Run.TenantID ||
+		loaded.InputManifest.RunID != loaded.Run.ID {
+		return errors.New("worker job references do not match loaded aggregates")
+	}
+	refs := []*domain.BlobRef{loaded.Job.WorkspaceSnapshot, loaded.Job.SkillBundle}
+	if loaded.Job.ContextWindow == nil {
+		refs = append(refs, &loaded.Job.ContextSnapshot)
+	}
+	for _, ref := range refs {
+		if ref == nil {
+			continue
+		}
+		if err := ref.Validate(); err != nil {
+			return err
+		}
+		if err := domain.EnsureSameTenant(loaded.Run.TenantID, ref.TenantID); err != nil {
+			return err
+		}
+	}
+	for _, artifact := range loaded.InputManifest.Artifacts {
+		if err := artifact.Validate(); err != nil {
+			return err
+		}
+		if err := domain.EnsureSameTenant(loaded.Run.TenantID, artifact.Blob.TenantID); err != nil {
+			return err
+		}
+		if err := validateFilename(artifact.Name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 type managedCredential struct {
 	handle          ports.CredentialHandle
 	materialization ports.CredentialMaterialization
@@ -650,7 +719,43 @@ func (sink *eventSink) Emit(ctx context.Context, event ports.ExecutionEvent) err
 	return nil
 }
 
-var errWorkerCancellationObserved = errors.New("worker cancellation observed")
+var (
+	errWorkerCancellationObserved = errors.New("worker cancellation observed")
+	errAttemptEffectReconcileOnly = errors.New("provider effect belongs to another physical invocation")
+)
+
+func generatePhysicalClaim(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	var entropy [16]byte
+	if _, err := cryptorand.Read(entropy[:]); err != nil {
+		return "", fmt.Errorf("generate physical invocation claim: %w", err)
+	}
+	return "pic_" + hex.EncodeToString(entropy[:]), nil
+}
+
+func validateAttemptEffectResult(
+	result ports.ReserveAttemptEffectResultV1,
+	loaded ports.WorkerJobState,
+	lease domain.Lease,
+	physicalClaimID string,
+) error {
+	if err := result.Validate(); err != nil {
+		return err
+	}
+	reservation := result.Reservation
+	if reservation.TenantID != loaded.Run.TenantID || reservation.RunID != loaded.Run.ID ||
+		reservation.AttemptID != loaded.Attempt.ID || reservation.LeaseID != lease.ID ||
+		reservation.FenceToken != lease.FenceToken {
+		return errors.New("provider effect reservation changed invocation authority")
+	}
+	if result.Status != ports.AttemptEffectReconcileOnlyV1 &&
+		reservation.PhysicalInvocationClaimID != physicalClaimID {
+		return errors.New("provider effect reservation changed physical invocation claim")
+	}
+	return nil
+}
 
 type invocationLease struct {
 	mu       sync.Mutex

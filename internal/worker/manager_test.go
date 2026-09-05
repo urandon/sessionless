@@ -436,7 +436,7 @@ func TestWorkerRejectsTraversalAndCrossTenantReferences(t *testing.T) {
 	}
 }
 
-func TestWorkerResumesAfterRetryableFailureAndDeduplicatesDelivery(t *testing.T) {
+func TestWorkerRetryableProviderFailureBecomesReconcileOnlyOnRedelivery(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	clock := testkit.NewFakeClock(workerTestTime)
@@ -472,16 +472,118 @@ func TestWorkerResumesAfterRetryableFailureAndDeduplicatesDelivery(t *testing.T)
 		t.Fatalf("checkpoint after failure = %#v, want sequence 1", state.jobs[key].Checkpoint)
 	}
 	outcome, err = manager.RunOnce(ctx)
-	if err != nil || outcome != worker.OutcomeCompleted {
-		t.Fatalf("second outcome/error = %q/%v, want completed/nil", outcome, err)
+	if err != nil || outcome != worker.OutcomeRetried {
+		t.Fatalf("second outcome/error = %q/%v, want reconcile-only retry/nil", outcome, err)
+	}
+	if state.jobs[key].Checkpoint == nil || state.jobs[key].Checkpoint.Sequence != 1 {
+		t.Fatalf("checkpoint after reconcile-only redelivery = %#v, want sequence 1", state.jobs[key].Checkpoint)
+	}
+	if state.completions != 0 || len(state.effects) != 1 {
+		t.Fatalf("completion/effect reservations = %d/%d, want 0/1", state.completions, len(state.effects))
+	}
+}
+
+func TestWorkerAcknowledgesTerminalRedeliveryWithoutAnotherEffect(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	clock := testkit.NewFakeClock(workerTestTime)
+	queue := testkit.NewMemoryQueue()
+	blobs := newMemoryBlobs()
+	state := newWorkerState()
+	loaded := workerFixture(t, ctx, blobs, "tenant-a", workerTestTime)
+	state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
+	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
+	manager, err := worker.New(worker.Config{
+		ScratchRoot: t.TempDir(), WorkerID: "worker-test",
+		DeliveryWakePublisher: newDeliveryWakePublisher(t),
+	}, clock, queue, state, blobs, resultHarness{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome, err := manager.RunOnce(ctx); err != nil || outcome != worker.OutcomeCompleted {
+		t.Fatalf("first outcome/error = %q/%v, want completed/nil", outcome, err)
 	}
 	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
-	outcome, err = manager.RunOnce(ctx)
-	if err != nil || outcome != worker.OutcomeDuplicate {
-		t.Fatalf("duplicate outcome/error = %q/%v, want duplicate/nil", outcome, err)
+	if outcome, err := manager.RunOnce(ctx); err != nil || outcome != worker.OutcomeDuplicate {
+		t.Fatalf("redelivery outcome/error = %q/%v, want duplicate/nil", outcome, err)
 	}
-	if state.completions != 1 {
-		t.Fatalf("completion count = %d, want 1", state.completions)
+	if state.completions != 1 || len(state.effects) != 1 {
+		t.Fatalf("completion/effect reservations = %d/%d, want 1/1", state.completions, len(state.effects))
+	}
+}
+
+func TestWorkerConcurrentRedeliveryIsReconcileOnly(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	clock := testkit.NewFakeClock(workerTestTime)
+	blobs := newMemoryBlobs()
+	state := newWorkerState()
+	loaded := workerFixture(t, ctx, blobs, "tenant-a", workerTestTime)
+	state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
+	firstQueue, secondQueue := testkit.NewMemoryQueue(), testkit.NewMemoryQueue()
+	publishWorkerMessage(t, ctx, firstQueue, loaded.Run.TenantID, loaded.Run.ID)
+	publishWorkerMessage(t, ctx, secondQueue, loaded.Run.TenantID, loaded.Run.ID)
+	harness := newCountingBlockingHarness()
+	newManager := func(queue ports.Queue, claim string) *worker.Manager {
+		manager, err := worker.New(worker.Config{
+			ScratchRoot: t.TempDir(), WorkerID: "worker-test",
+			PhysicalClaimGenerator: func(context.Context) (string, error) { return claim, nil },
+			DeliveryWakePublisher:  newDeliveryWakePublisher(t),
+		}, clock, queue, state, blobs, harness)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return manager
+	}
+	firstDone := runWorkerOnce(newManager(firstQueue, "physical-claim-one"), ctx)
+	waitForSignal(t, ctx, harness.started, "first provider effect")
+	second := waitForWorkerResult(t, ctx, runWorkerOnce(newManager(secondQueue, "physical-claim-two"), ctx))
+	if second.err != nil || second.outcome != worker.OutcomeRetried {
+		t.Fatalf("redelivery outcome/error = %q/%v, want reconcile-only retry/nil", second.outcome, second.err)
+	}
+	if calls := harness.calls(); calls != 1 {
+		t.Fatalf("provider calls before release = %d, want 1", calls)
+	}
+	close(harness.release)
+	first := waitForWorkerResult(t, ctx, firstDone)
+	if first.err != nil || first.outcome != worker.OutcomeCompleted {
+		t.Fatalf("owner outcome/error = %q/%v, want completed/nil", first.outcome, first.err)
+	}
+	if state.completions != 1 || len(state.effects) != 1 || harness.calls() != 1 {
+		t.Fatalf("completions/effects/provider calls = %d/%d/%d, want 1/1/1", state.completions, len(state.effects), harness.calls())
+	}
+}
+
+func TestWorkerLostResponseAfterTerminalCommitRedeliversWithoutAnotherEffect(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	clock := testkit.NewFakeClock(workerTestTime)
+	queue := testkit.NewMemoryQueue()
+	blobs := newMemoryBlobs()
+	state := newWorkerState()
+	loaded := workerFixture(t, ctx, blobs, "tenant-a", workerTestTime)
+	state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
+	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
+	publisher := &failOnceWakePublisher{}
+	harness := &countingHarness{}
+	manager, err := worker.New(worker.Config{
+		ScratchRoot: t.TempDir(), WorkerID: "worker-test", DeliveryWakePublisher: publisher,
+	}, clock, queue, state, blobs, harness)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome, err := manager.RunOnce(ctx); err != nil || outcome != worker.OutcomeRetried {
+		t.Fatalf("lost-response outcome/error = %q/%v, want retried/nil", outcome, err)
+	}
+	if state.completions != 1 || harness.calls() != 1 {
+		t.Fatalf("completion/provider calls = %d/%d, want 1/1", state.completions, harness.calls())
+	}
+	if outcome, err := manager.RunOnce(ctx); err != nil || outcome != worker.OutcomeDuplicate {
+		t.Fatalf("redelivery outcome/error = %q/%v, want duplicate/nil", outcome, err)
+	}
+	if state.completions != 1 || len(state.effects) != 1 || harness.calls() != 1 {
+		t.Fatalf("completions/effects/provider calls = %d/%d/%d, want 1/1/1", state.completions, len(state.effects), harness.calls())
 	}
 }
 
@@ -1257,6 +1359,7 @@ type workerState struct {
 	failures      int
 	renewals      int
 	renewalNotify chan error
+	effects       map[string]domain.AttemptEffectReservationV1
 	loadContext   func(ports.WorkerContextRequest) (domain.SessionContextInput, error)
 }
 
@@ -1265,6 +1368,7 @@ func newWorkerState() *workerState {
 		jobs:      make(map[string]ports.WorkerJobState),
 		leases:    make(map[string]domain.Lease),
 		cancelled: make(map[string]bool),
+		effects:   make(map[string]domain.AttemptEffectReservationV1),
 	}
 }
 
@@ -1337,6 +1441,92 @@ func (state *workerState) StartWorkerJob(
 	}
 	state.jobs[key] = current
 	return nil
+}
+
+func (state *workerState) ReserveAttemptEffect(
+	_ context.Context,
+	request ports.ReserveAttemptEffectRequestV1,
+) (ports.ReserveAttemptEffectResultV1, error) {
+	if err := request.Validate(); err != nil {
+		return ports.ReserveAttemptEffectResultV1{}, err
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	key := jobKey(request.TenantID, request.RunID)
+	loaded, found := state.jobs[key]
+	lease, leaseFound := state.leases[key]
+	if !found || !leaseFound || loaded.Attempt.ID != request.AttemptID ||
+		lease.ID != request.LeaseID || lease.FenceToken != request.FenceToken {
+		return ports.ReserveAttemptEffectResultV1{}, errors.New("effect authority not found")
+	}
+	effectKey := string(request.TenantID) + "/" + string(request.AttemptID)
+	if existing, exists := state.effects[effectKey]; exists {
+		result := ports.ReserveAttemptEffectResultV1{
+			Status: ports.AttemptEffectReconcileOnlyV1, Reservation: existing.Clone(),
+		}
+		if existing.PhysicalInvocationClaimID == request.PhysicalInvocationClaimID {
+			authority, err := workerEffectAuthority(loaded, lease)
+			if err != nil {
+				return ports.ReserveAttemptEffectResultV1{}, err
+			}
+			grant := workerEffectGrant(authority, existing)
+			result.Status, result.Grant = ports.AttemptEffectReplayedV1, &grant
+		}
+		return result, result.Validate()
+	}
+	authority, err := workerEffectAuthority(loaded, lease)
+	if err != nil {
+		return ports.ReserveAttemptEffectResultV1{}, err
+	}
+	at := lease.AcquiredAt.Add(time.Nanosecond)
+	reservation, err := domain.BuildAttemptEffectReservationV1(
+		authority, request.PhysicalInvocationClaimID, request.UpstreamIdempotencyKeyDigest, at,
+	)
+	if err != nil {
+		return ports.ReserveAttemptEffectResultV1{}, err
+	}
+	state.effects[effectKey] = reservation.Clone()
+	grant := workerEffectGrant(authority, reservation)
+	result := ports.ReserveAttemptEffectResultV1{
+		Status: ports.AttemptEffectOwnedV1, Reservation: reservation, Grant: &grant,
+	}
+	return result, result.Validate()
+}
+
+func workerEffectAuthority(
+	loaded ports.WorkerJobState,
+	lease domain.Lease,
+) (domain.ServerlessInvocationAuthorityV1, error) {
+	if loaded.Job.SubstrateBinding == nil || loaded.Job.AdmissionCostCeiling == nil {
+		return domain.ServerlessInvocationAuthorityV1{}, errors.New("serverless authority is missing")
+	}
+	contextDigest, inputDigest, err := domain.ServerlessWorkerJobDigestsV1(loaded.Job, loaded.InputManifest)
+	if err != nil {
+		return domain.ServerlessInvocationAuthorityV1{}, err
+	}
+	deadline := lease.AcquiredAt.Add(loaded.Job.SubstrateBinding.Limits.InvocationTimeout)
+	if lease.ExpiresAt.Before(deadline) {
+		deadline = lease.ExpiresAt
+	}
+	authority := domain.ServerlessInvocationAuthorityV1{
+		Version:        domain.ServerlessInvocationAuthorityVersionV1,
+		HarnessBinding: loaded.Job.HarnessBinding.Clone(), ExecutionPlacementV2: loaded.Job.ExecutionPlacementV2,
+		SubstrateBinding: *loaded.Job.SubstrateBinding, AdmissionCostCeiling: loaded.Job.AdmissionCostCeiling.Clone(),
+		Lease: lease, ContextManifestDigest: contextDigest, InputManifestDigest: inputDigest,
+		InvocationDeadline: deadline.UTC(),
+	}
+	return authority, authority.ValidateAt(lease.AcquiredAt.Add(time.Nanosecond))
+}
+
+func workerEffectGrant(
+	authority domain.ServerlessInvocationAuthorityV1,
+	reservation domain.AttemptEffectReservationV1,
+) ports.AttemptEffectOwnershipGrantV1 {
+	return ports.AttemptEffectOwnershipGrantV1{
+		Version: ports.AttemptEffectOwnershipGrantVersionV1, Authority: authority,
+		Reservation: reservation, GrantExpiresAt: authority.InvocationDeadline,
+		Authenticator: bytes.Repeat([]byte{1}, sha256.Size),
+	}
 }
 
 func (state *workerState) LoadWorkerCredentialInvocation(
@@ -1556,6 +1746,7 @@ var (
 	_ ports.BlobStore                      = (*memoryBlobs)(nil)
 	_ ports.WorkerStateStore               = (*workerState)(nil)
 	_ ports.LegacyTelegramWorkerStateStore = (*workerState)(nil)
+	_ ports.AttemptEffectStoreV1           = (*workerState)(nil)
 )
 
 type advancingHarness struct {
@@ -1669,6 +1860,97 @@ func (harness resultHarness) Execute(
 func (resultHarness) Cancel(context.Context, ports.ExecutionIdentity) error { return nil }
 
 var _ ports.HarnessDriver = resultHarness{}
+
+type countingHarness struct {
+	mu           sync.Mutex
+	executeCalls int
+}
+
+func (*countingHarness) Preflight(context.Context, ports.ExecutionIdentity) error { return nil }
+
+func (harness *countingHarness) Execute(
+	context.Context,
+	ports.ExecutionRequest,
+	ports.ExecutionEventSink,
+) (ports.ExecutionResult, error) {
+	harness.mu.Lock()
+	harness.executeCalls++
+	harness.mu.Unlock()
+	return ports.ExecutionResult{Summary: "counted provider effect"}, nil
+}
+
+func (*countingHarness) Cancel(context.Context, ports.ExecutionIdentity) error { return nil }
+
+func (harness *countingHarness) calls() int {
+	harness.mu.Lock()
+	defer harness.mu.Unlock()
+	return harness.executeCalls
+}
+
+type countingBlockingHarness struct {
+	countingHarness
+	startOnce sync.Once
+	started   chan struct{}
+	release   chan struct{}
+}
+
+func newCountingBlockingHarness() *countingBlockingHarness {
+	return &countingBlockingHarness{started: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (harness *countingBlockingHarness) Execute(
+	ctx context.Context,
+	_ ports.ExecutionRequest,
+	_ ports.ExecutionEventSink,
+) (ports.ExecutionResult, error) {
+	harness.mu.Lock()
+	harness.executeCalls++
+	harness.mu.Unlock()
+	harness.startOnce.Do(func() { close(harness.started) })
+	select {
+	case <-harness.release:
+		return ports.ExecutionResult{Summary: "counted provider effect"}, nil
+	case <-ctx.Done():
+		return ports.ExecutionResult{}, ctx.Err()
+	}
+}
+
+var _ ports.HarnessDriver = (*countingBlockingHarness)(nil)
+
+type failOnceWakePublisher struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (publisher *failOnceWakePublisher) PublishTelegramDeliveryWake(
+	context.Context,
+	domain.TenantID,
+	domain.TelegramDeliveryID,
+	time.Time,
+) error {
+	publisher.mu.Lock()
+	defer publisher.mu.Unlock()
+	publisher.calls++
+	if publisher.calls == 1 {
+		return errors.New("simulated lost trigger response")
+	}
+	return nil
+}
+
+func (*failOnceWakePublisher) PublishFrontendProjectionWake(
+	context.Context,
+	domain.TenantID,
+	domain.RunID,
+	time.Time,
+) error {
+	return nil
+}
+
+var (
+	_ ports.HarnessDriver                   = (*countingHarness)(nil)
+	_ ports.TelegramDeliveryWakePublisher   = (*failOnceWakePublisher)(nil)
+	_ ports.FrontendProjectionWakePublisher = (*failOnceWakePublisher)(nil)
+)
 
 type outputHarness struct{}
 

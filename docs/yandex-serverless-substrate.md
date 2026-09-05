@@ -26,9 +26,12 @@ The following promotion gates are known to fail in the current composition:
 - the cloud profile sets `WORKER_LEASE_TTL=2m`, while a credentialed 40-minute
   execution must acquire authority covering execution and bounded cleanup;
 - an exact retry-stable lease ID can be returned to the same worker identity on
-  redelivery. The durable PR-03a effect reservation prevents a second provider
-  effect, but the current `cmd/worker-runtime` path does not yet compose that
-  reservation, PR-03b isolation, and PR-03c egress around `Execute`;
+  redelivery. `cmd/worker-runtime` now configures the PR-03a grant issuer, and
+  `worker.Manager` creates a fresh physical claim and reserves the durable
+  provider effect before credential or workspace materialization. A different
+  physical delivery is reconcile-only and cannot call `Execute`; the returned
+  ownership grant is not yet composed through a PR-03b prepared invocation and
+  consumed at the PR-03c egress boundary;
 - no immutable candidate has completed cold/warm, 15-minute redelivery, lost
   response, fence-loss, cleanup, or tainted-instance tests in cloud-dev;
 - cold-start latency, warm-start latency, billed duration, comparable cost,
@@ -146,8 +149,9 @@ unknown. It may still produce a `conditional` or `no_go` report, but never
 
 The remaining implementation slice is composition, not a timeout increase:
 
-1. put the PR-03a attempt-effect reservation in front of every provider effect
-   in the managed worker path;
+1. carry the newly reserved PR-03a ownership grant through an attested PR-03b
+   prepared invocation and consume it exactly once at the PR-03c provider
+   boundary; keep foreign physical claims reconcile-only;
 2. compose the full-lifecycle worker watchdog with PR-03b process supervision
    and PR-03c transport cancellation, then retain its deterministic local race
    cohorts as promotion gates;

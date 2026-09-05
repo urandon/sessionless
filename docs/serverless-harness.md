@@ -279,6 +279,12 @@ new `Execute`. Immutable tombstoned registrations retain only enough trusted
 adapter metadata for exact `Cancel` and `Reconcile` after disablement or
 expiry. They cannot start work.
 
+Backend registrations carry the same explicit start gate: `Enabled=false` is
+a tombstone that can still route cancellation through its exact reviewed
+driver, but `Preflight` and `Execute` fail with
+`harness_backend_disabled` before calling the driver. Registration presence,
+ordering, or an installed executable therefore never enables a backend.
+
 `SubstrateExecutionEvidenceV1.ValidateForAuthority` exact-compares both binding
 digests and enforces a closed compatibility matrix:
 

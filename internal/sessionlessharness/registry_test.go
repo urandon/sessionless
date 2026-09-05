@@ -3,6 +3,7 @@ package sessionlessharness_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -64,6 +65,7 @@ func registryFixture(t *testing.T) (*sessionlessharness.Registry, *recordingDriv
 	driver := &recordingDriver{}
 	registry, err := sessionlessharness.NewRegistry(func() time.Time { return now }, sessionlessharness.Registration{
 		Descriptor:      sessionlessharness.DeterministicFixtureDescriptorV1(),
+		Enabled:         true,
 		ValidateBinding: sessionlessharness.ValidateDeterministicFixtureBindingV1,
 		Driver:          driver,
 	})
@@ -122,8 +124,8 @@ func TestRegistryRejectsDuplicateAndEmptyRegistration(t *testing.T) {
 		t.Fatal("empty registry accepted")
 	}
 	if _, err := sessionlessharness.NewRegistry(time.Now,
-		sessionlessharness.Registration{Descriptor: descriptor, ValidateBinding: sessionlessharness.ValidateDeterministicFixtureBindingV1, Driver: driver},
-		sessionlessharness.Registration{Descriptor: descriptor, ValidateBinding: sessionlessharness.ValidateDeterministicFixtureBindingV1, Driver: &recordingDriver{}},
+		sessionlessharness.Registration{Descriptor: descriptor, Enabled: true, ValidateBinding: sessionlessharness.ValidateDeterministicFixtureBindingV1, Driver: driver},
+		sessionlessharness.Registration{Descriptor: descriptor, Enabled: true, ValidateBinding: sessionlessharness.ValidateDeterministicFixtureBindingV1, Driver: &recordingDriver{}},
 	); err == nil {
 		t.Fatal("duplicate registry descriptor accepted")
 	}
@@ -166,7 +168,7 @@ func TestRegistryFreshnessGatesStartButNotCancellation(t *testing.T) {
 	expires := now.Add(time.Minute)
 	identity := invocationIdentity(t, expires)
 	driver := &recordingDriver{}
-	registry, err := sessionlessharness.NewRegistry(func() time.Time { return now }, sessionlessharness.Registration{Descriptor: identity.HarnessBinding.Backend, ValidateBinding: func(domain.HarnessBindingV1) sessionlessharness.FailureCode { return "" }, Driver: driver})
+	registry, err := sessionlessharness.NewRegistry(func() time.Time { return now }, sessionlessharness.Registration{Descriptor: identity.HarnessBinding.Backend, Enabled: true, ValidateBinding: func(domain.HarnessBindingV1) sessionlessharness.FailureCode { return "" }, Driver: driver})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,12 +187,39 @@ func TestRegistryFreshnessGatesStartButNotCancellation(t *testing.T) {
 	}
 }
 
+func TestRegistryDisabledRegistrationCannotStartButCanCancel(t *testing.T) {
+	t.Parallel()
+	now := time.Unix(100, 0).UTC()
+	identity := invocationIdentity(t, now.Add(time.Minute))
+	driver := &recordingDriver{}
+	registry, err := sessionlessharness.NewRegistry(func() time.Time { return now }, sessionlessharness.Registration{
+		Descriptor: identity.HarnessBinding.Backend, Enabled: false,
+		ValidateBinding: func(domain.HarnessBindingV1) sessionlessharness.FailureCode { return "" }, Driver: driver,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Preflight(context.Background(), identity); err == nil ||
+		!strings.Contains(err.Error(), string(sessionlessharness.FailureHarnessBackendDisabled)) {
+		t.Fatalf("disabled preflight error = %v", err)
+	}
+	if driver.preflightCalls != 0 {
+		t.Fatalf("disabled driver preflight calls = %d, want 0", driver.preflightCalls)
+	}
+	if err := registry.Cancel(context.Background(), identity); err != nil {
+		t.Fatalf("disabled registration cancellation = %v", err)
+	}
+	if driver.cancelCalls != 1 {
+		t.Fatalf("disabled driver cancel calls = %d, want 1", driver.cancelCalls)
+	}
+}
+
 func TestRegistryRejectsOwnerPlacementAndInvalidValidatorCode(t *testing.T) {
 	t.Parallel()
 	now := time.Unix(100, 0).UTC()
 	identity := invocationIdentity(t, now.Add(time.Minute))
 	driver := &recordingDriver{}
-	registry, err := sessionlessharness.NewRegistry(func() time.Time { return now }, sessionlessharness.Registration{Descriptor: identity.HarnessBinding.Backend, ValidateBinding: func(domain.HarnessBindingV1) sessionlessharness.FailureCode {
+	registry, err := sessionlessharness.NewRegistry(func() time.Time { return now }, sessionlessharness.Registration{Descriptor: identity.HarnessBinding.Backend, Enabled: true, ValidateBinding: func(domain.HarnessBindingV1) sessionlessharness.FailureCode {
 		return sessionlessharness.FailureCode("private_provider_detail")
 	}, Driver: driver})
 	if err != nil {
@@ -199,7 +228,7 @@ func TestRegistryRejectsOwnerPlacementAndInvalidValidatorCode(t *testing.T) {
 	if err := registry.Preflight(context.Background(), identity); err == nil || strings.Contains(err.Error(), "private_provider_detail") {
 		t.Fatalf("validator error not sanitized: %v", err)
 	}
-	registry, err = sessionlessharness.NewRegistry(func() time.Time { return now }, sessionlessharness.Registration{Descriptor: identity.HarnessBinding.Backend, ValidateBinding: func(domain.HarnessBindingV1) sessionlessharness.FailureCode { return "" }, Driver: driver})
+	registry, err = sessionlessharness.NewRegistry(func() time.Time { return now }, sessionlessharness.Registration{Descriptor: identity.HarnessBinding.Backend, Enabled: true, ValidateBinding: func(domain.HarnessBindingV1) sessionlessharness.FailureCode { return "" }, Driver: driver})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,17 +255,29 @@ func TestRegistrySelectsExactBackendAmongMultipleRegistrations(t *testing.T) {
 	t.Parallel()
 	now := time.Unix(100, 0).UTC()
 	identity := invocationIdentity(t, now.Add(time.Minute))
-	codex := &recordingDriver{}
-	fixture := &recordingDriver{}
-	registry, err := sessionlessharness.NewRegistry(func() time.Time { return now }, sessionlessharness.Registration{Descriptor: sessionlessharness.DeterministicFixtureDescriptorV1(), ValidateBinding: sessionlessharness.ValidateDeterministicFixtureBindingV1, Driver: fixture}, sessionlessharness.Registration{Descriptor: identity.HarnessBinding.Backend, ValidateBinding: func(domain.HarnessBindingV1) sessionlessharness.FailureCode { return "" }, Driver: codex})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := registry.Cancel(context.Background(), identity); err != nil {
-		t.Fatal(err)
-	}
-	if codex.cancelCalls != 1 || fixture.cancelCalls != 0 {
-		t.Fatalf("exact/fallback calls=%d/%d", codex.cancelCalls, fixture.cancelCalls)
+	for _, reverse := range []bool{false, true} {
+		reverse := reverse
+		t.Run(fmt.Sprintf("reverse=%t", reverse), func(t *testing.T) {
+			t.Parallel()
+			codex := &recordingDriver{}
+			fixture := &recordingDriver{}
+			fixtureRegistration := sessionlessharness.Registration{Descriptor: sessionlessharness.DeterministicFixtureDescriptorV1(), Enabled: true, ValidateBinding: sessionlessharness.ValidateDeterministicFixtureBindingV1, Driver: fixture}
+			codexRegistration := sessionlessharness.Registration{Descriptor: identity.HarnessBinding.Backend, Enabled: true, ValidateBinding: func(domain.HarnessBindingV1) sessionlessharness.FailureCode { return "" }, Driver: codex}
+			registrations := []sessionlessharness.Registration{fixtureRegistration, codexRegistration}
+			if reverse {
+				registrations[0], registrations[1] = registrations[1], registrations[0]
+			}
+			registry, err := sessionlessharness.NewRegistry(func() time.Time { return now }, registrations...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := registry.Cancel(context.Background(), identity); err != nil {
+				t.Fatal(err)
+			}
+			if codex.cancelCalls != 1 || fixture.cancelCalls != 0 {
+				t.Fatalf("exact/fallback calls=%d/%d", codex.cancelCalls, fixture.cancelCalls)
+			}
+		})
 	}
 }
 

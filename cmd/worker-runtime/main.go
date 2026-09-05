@@ -104,6 +104,7 @@ func main() {
 	}
 	harnessRegistry, err := sessionlessharness.NewRegistry(time.Now, sessionlessharness.Registration{
 		Descriptor:      sessionlessharness.DeterministicFixtureDescriptorV1(),
+		Enabled:         true,
 		ValidateBinding: sessionlessharness.ValidateDeterministicFixtureBindingV1,
 		Driver:          harness,
 	})

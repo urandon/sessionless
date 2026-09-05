@@ -28,6 +28,7 @@ type FailureCode string
 const (
 	FailureHarnessBindingInvalid     FailureCode = "harness_binding_invalid"
 	FailureHarnessBackendUnsupported FailureCode = "harness_backend_unsupported"
+	FailureHarnessBackendDisabled    FailureCode = "harness_backend_disabled"
 	FailureHarnessBackendMismatch    FailureCode = "harness_backend_mismatch"
 	FailureProviderResourceMismatch  FailureCode = "provider_resource_mismatch"
 	FailureProviderRevisionMismatch  FailureCode = "provider_revision_mismatch"
@@ -44,6 +45,7 @@ const (
 
 type Registration struct {
 	Descriptor      domain.HarnessBackendDescriptorV1
+	Enabled         bool
 	ValidateBinding func(domain.HarnessBindingV1) FailureCode
 	Driver          ports.HarnessDriver
 }
@@ -187,6 +189,9 @@ func (registry *Registry) resolve(binding domain.HarnessBindingV1, requireFresh 
 	if registration.Descriptor != binding.Backend {
 		return Registration{}, "", harnessError(FailureHarnessBackendMismatch)
 	}
+	if requireFresh && !registration.Enabled {
+		return Registration{}, "", harnessError(FailureHarnessBackendDisabled)
+	}
 	if code := registration.ValidateBinding(binding.Clone()); code != "" {
 		if !code.validRegistrationResult() {
 			code = FailureHarnessBackendMismatch
@@ -198,7 +203,7 @@ func (registry *Registry) resolve(binding domain.HarnessBindingV1, requireFresh 
 
 func (code FailureCode) validRegistrationResult() bool {
 	switch code {
-	case FailureHarnessBindingInvalid, FailureHarnessBackendUnsupported, FailureHarnessBackendMismatch,
+	case FailureHarnessBindingInvalid, FailureHarnessBackendUnsupported, FailureHarnessBackendDisabled, FailureHarnessBackendMismatch,
 		FailureProviderResourceMismatch, FailureProviderRevisionMismatch, FailureCredentialGeneration,
 		FailureProviderCatalogExpired, FailureProviderEvidenceExpired, FailureProviderRouteMismatch, FailurePrivacyPolicyMismatch,
 		FailureCapabilityMismatch, FailureEffectivePolicyMismatch, FailurePlacementMismatch:

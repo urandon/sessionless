@@ -64,6 +64,7 @@ type runRef struct {
 
 type durableRunState struct {
 	Checkpoints uint64
+	Effects     uint64
 	Usage       uint64
 	Manifests   uint64
 	Deliveries  uint64
@@ -133,7 +134,7 @@ func TestDeterministicLocalMultiUserSlice(t *testing.T) {
 		slice.assertTerminalState(runA, beforeState)
 	})
 
-	t.Run("consumed provider effect is not re-executed before the first checkpoint", func(t *testing.T) {
+	t.Run("failed consumed effect remains terminal before the first checkpoint", func(t *testing.T) {
 		run := slice.postMessage(base+10, userA, "fail before checkpoint")
 		slice.setConnectionReady(run)
 		slice.waitRunStatus(run, domain.RunQueued)
@@ -144,13 +145,16 @@ func TestDeterministicLocalMultiUserSlice(t *testing.T) {
 		slice.waitRunStatus(run, domain.RunFailed)
 		slice.assertCheckpointCount(run, 0)
 		beforeState := slice.terminalState(run)
+		if beforeState.Effects != 1 {
+			t.Fatalf("run %s effect reservations = %d, want 1", run.RunID, beforeState.Effects)
+		}
 		slice.publishDuplicate(run)
 		slice.runWorker(nil)
 		slice.waitRunStatus(run, domain.RunFailed)
 		slice.assertTerminalState(run, beforeState)
 	})
 
-	t.Run("consumed provider effect is not re-executed after a durable checkpoint", func(t *testing.T) {
+	t.Run("failed consumed effect remains terminal after a durable checkpoint", func(t *testing.T) {
 		run := slice.postMessage(base+11, userB, "fail after checkpoint")
 		slice.setConnectionReady(run)
 		slice.waitRunStatus(run, domain.RunQueued)
@@ -161,6 +165,9 @@ func TestDeterministicLocalMultiUserSlice(t *testing.T) {
 		slice.waitRunStatus(run, domain.RunFailed)
 		slice.assertCheckpointCount(run, 1)
 		beforeState := slice.terminalState(run)
+		if beforeState.Effects != 1 {
+			t.Fatalf("run %s effect reservations = %d, want 1", run.RunID, beforeState.Effects)
+		}
 		slice.publishDuplicate(run)
 		slice.runWorker(nil)
 		slice.waitRunStatus(run, domain.RunFailed)
@@ -809,6 +816,10 @@ func (slice *localSlice) terminalState(run runRef) durableRunState {
 		Checkpoints: slice.countRunRows(
 			run,
 			`SELECT COUNT(*) FROM checkpoints WHERE tenant_id = $1 AND run_id = $2`,
+		),
+		Effects: slice.countRunRows(
+			run,
+			`SELECT COUNT(*) FROM attempt_effect_reservations WHERE tenant_id = $1 AND run_id = $2`,
 		),
 		Usage: slice.countRunRows(
 			run,

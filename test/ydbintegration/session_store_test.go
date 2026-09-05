@@ -563,7 +563,18 @@ func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.StartWorkerJob(ctx, loaded, lease, workerNow.Add(time.Second)); err != nil {
+	startedAt := workerNow
+	for _, persistedAt := range []time.Time{
+		loaded.Run.UpdatedAt,
+		loaded.Attempt.UpdatedAt,
+		loaded.Reservation.UpdatedAt,
+	} {
+		if startedAt.Before(persistedAt) {
+			startedAt = persistedAt
+		}
+	}
+	startedAt = startedAt.Add(time.Second)
+	if err := store.StartWorkerJob(ctx, loaded, lease, startedAt); err != nil {
 		t.Fatal(err)
 	}
 	effect, err := store.ReserveAttemptEffect(ctx, ports.ReserveAttemptEffectRequestV1{
@@ -585,7 +596,7 @@ func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 		invocation.Attempt.WorkerID != lease.WorkerID || invocation.Lease != lease {
 		t.Fatalf("authoritative credential invocation = %#v", invocation)
 	}
-	finishedAt := workerNow.Add(2 * time.Second)
+	finishedAt := startedAt.Add(time.Second)
 	terminalEvents := []domain.SessionEventDraft{
 		canonicalTerminalDraft(tenantID, thirdID, "tool-call", domain.SessionEventToolCall, finishedAt),
 		canonicalTerminalDraft(tenantID, thirdID, "tool-result", domain.SessionEventToolResult, finishedAt),

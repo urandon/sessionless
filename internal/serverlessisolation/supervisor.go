@@ -16,7 +16,7 @@ type Clock func() time.Time
 type SupervisorConfigV1 struct {
 	ScratchRoot             string
 	Launcher                AttestedLauncher
-	Validator               PreparedInvocationValidator
+	Gate                    PreparedInvocationGate
 	Outputs                 OutputFinalizer
 	Credentials             CredentialFinalizer
 	Clock                   Clock
@@ -28,7 +28,7 @@ type SupervisorV1 struct {
 }
 
 func NewSupervisorV1(config SupervisorConfigV1) (*SupervisorV1, error) {
-	if config.ScratchRoot == "" || config.Launcher == nil || config.Validator == nil ||
+	if config.ScratchRoot == "" || config.Launcher == nil || config.Gate == nil ||
 		config.Outputs == nil || config.Credentials == nil || config.Clock == nil {
 		return nil, ErrConfig
 	}
@@ -62,7 +62,7 @@ func (supervisor *SupervisorV1) Preflight(
 }
 
 func (supervisor *SupervisorV1) Run(ctx context.Context, spec RunSpecV1) (RunResultV1, error) {
-	if supervisor == nil || ctx == nil || ctx.Err() != nil || supervisor.config.Validator.Validate(spec.Prepared) != nil {
+	if supervisor == nil || ctx == nil || ctx.Err() != nil || supervisor.config.Gate.Validate(spec.Prepared) != nil {
 		return RunResultV1{}, ErrAuthority
 	}
 	authority := spec.Prepared.Authority()
@@ -112,6 +112,13 @@ func (supervisor *SupervisorV1) Run(ctx context.Context, spec RunSpecV1) (RunRes
 	})
 	if err != nil {
 		return RunResultV1{}, ErrConfig
+	}
+	// Preparing the boundary, spawning the child, or handing it credentials is
+	// the first provider-side effect for a child-process profile. Burn the
+	// process-local capability here, after every pure attestation/configuration
+	// check and immediately before the AW-05 launcher can create state.
+	if supervisor.config.Gate.Consume(spec.Prepared) != nil {
+		return RunResultV1{}, ErrAuthority
 	}
 	sealedStdin := append([]byte(nil), spec.Stdin...)
 	defer clear(sealedStdin)

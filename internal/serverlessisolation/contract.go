@@ -25,11 +25,12 @@ var (
 	ErrTaintNotConfirmed  = errors.New("serverless isolation taint was not confirmed")
 )
 
-// PreparedInvocationValidator is intentionally satisfied by the exact
-// process-local CapabilityIssuer. A public-shaped authority/allocation tuple
-// is insufficient to start a workload.
-type PreparedInvocationValidator interface {
+// PreparedInvocationGate is intentionally satisfied by the exact process-local
+// CapabilityIssuer. Validation is non-authorizing; Consume burns the capability
+// exactly once at the final process-effect boundary.
+type PreparedInvocationGate interface {
 	Validate(serverlessharness.PreparedInvocation) error
+	Consume(serverlessharness.PreparedInvocation) error
 }
 
 // AttestedLauncher adds serverless allocation and residue evidence to the

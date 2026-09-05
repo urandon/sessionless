@@ -157,9 +157,6 @@ func (registry *SubstrateRegistryV1) Execute(ctx context.Context, prepared Prepa
 	if err != nil {
 		return domain.SubstrateExecutionEvidenceV1{}, err
 	}
-	if registry.issuer.Consume(prepared) != nil {
-		return domain.SubstrateExecutionEvidenceV1{}, substrateErrorV1{code: SubstrateFailureAuthorityInvalidV1}
-	}
 	authorityDigest, _ := authority.Digest()
 	registry.mu.Lock()
 	if activeBinding, exists := registry.active[authorityDigest]; exists && activeBinding != bindingDigest {

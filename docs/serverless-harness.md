@@ -276,6 +276,12 @@ only `PreparedReconciliationV1`, which exposes `Reconcile` but neither `Execute`
 nor `Cancel`. Historical authority is structurally validated so an immutable
 tombstone can still observe the original claim after its execution window has
 closed; the observation grant itself remains short-lived and process-local.
+The opaque session seals the returned operation with the original authority
+digest, effect-reservation digest, winning physical claim, and observation
+time. `observed`, `acknowledged`, and `unknown` are persisted as bounded retry
+evidence. An exact `not_found` is persisted atomically with a terminal failed
+attempt (`provider_effect_not_found_after_reservation`); it never reopens the
+one-way effect fence or authorizes a replacement call.
 
 The proposed substrate port is deliberately smaller than a general remote
 shell:

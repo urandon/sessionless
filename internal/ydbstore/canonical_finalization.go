@@ -30,6 +30,7 @@ func runFinalizationDigest(
 	manifest *domain.ArtifactManifest,
 	events []domain.SessionEventDraft,
 	substrateEvidence *domain.SubstrateExecutionEvidenceV1,
+	reconciliationEvidence *domain.AttemptEffectReconciliationEvidenceV1,
 ) (string, error) {
 	identities := make([]finalizationEventIdentity, 0, len(events))
 	for _, event := range events {
@@ -39,19 +40,29 @@ func runFinalizationDigest(
 		})
 	}
 	payload, err := json.Marshal(struct {
-		Status                  domain.RunStatus                           `json:"status"`
-		Manifest                *domain.ArtifactManifest                   `json:"manifest,omitempty"`
-		Events                  []finalizationEventIdentity                `json:"events"`
-		SubstrateEvidenceDigest *domain.SubstrateExecutionEvidenceDigestV1 `json:"substrate_evidence_digest,omitempty"`
+		Status                       domain.RunStatus                                    `json:"status"`
+		Manifest                     *domain.ArtifactManifest                            `json:"manifest,omitempty"`
+		Events                       []finalizationEventIdentity                         `json:"events"`
+		SubstrateEvidenceDigest      *domain.SubstrateExecutionEvidenceDigestV1          `json:"substrate_evidence_digest,omitempty"`
+		ReconciliationEvidenceDigest *domain.AttemptEffectReconciliationEvidenceDigestV1 `json:"reconciliation_evidence_digest,omitempty"`
 	}{
 		Status: status, Manifest: manifest, Events: identities,
-		SubstrateEvidenceDigest: substrateEvidenceDigest(substrateEvidence),
+		SubstrateEvidenceDigest:      substrateEvidenceDigest(substrateEvidence),
+		ReconciliationEvidenceDigest: reconciliationEvidenceDigest(reconciliationEvidence),
 	})
 	if err != nil {
 		return "", err
 	}
 	digest := sha256.Sum256(payload)
 	return hex.EncodeToString(digest[:]), nil
+}
+
+func reconciliationEvidenceDigest(value *domain.AttemptEffectReconciliationEvidenceV1) *domain.AttemptEffectReconciliationEvidenceDigestV1 {
+	if value == nil {
+		return nil
+	}
+	digest := value.EvidenceDigest
+	return &digest
 }
 
 func substrateEvidenceDigest(value *domain.SubstrateExecutionEvidenceV1) *domain.SubstrateExecutionEvidenceDigestV1 {

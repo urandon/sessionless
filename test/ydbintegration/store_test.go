@@ -667,6 +667,28 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 		reconcile.Grant != nil || reconcile.ObservationGrant == nil || grantIssuer.VerifyObservationGrant(*reconcile.ObservationGrant) != nil {
 		t.Fatalf("contending provider effect = %#v, %v", reconcile, err)
 	}
+	reconcileAuthority := reconcile.ObservationGrant.Authority
+	reconcileAuthorityDigest, _ := reconcileAuthority.Digest()
+	reconcileSubstrateDigest, _ := reconcileAuthority.SubstrateBinding.Digest()
+	reconciliationEvidence, err := domain.SealAttemptEffectReconciliationEvidenceV1(
+		reconcileAuthority, reconcile.Reservation, domain.SubstrateOperationObservationV1{
+			State: domain.SubstrateOperationObservedV1, InvocationAuthority: reconcileAuthorityDigest,
+			SubstrateBinding: reconcileSubstrateDigest, PhysicalInvocationID: "integration-runtime-operation",
+			ObservedAt: now.Add(7 * time.Second),
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconciliationRecord := ports.AttemptEffectReconciliationRecordV1{
+		TenantID: tenantID, RunID: ingress.Run.ID, AttemptID: ingress.Attempt.ID, Evidence: reconciliationEvidence,
+	}
+	if err := store.RecordAttemptEffectReconciliation(context.Background(), reconciliationRecord); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordAttemptEffectReconciliation(context.Background(), reconciliationRecord); err != nil {
+		t.Fatalf("idempotent reconciliation evidence replay: %v", err)
+	}
 	divergent := effectRequest
 	divergentDigest := strings.Repeat("d", 64)
 	divergent.UpstreamIdempotencyKeyDigest = &divergentDigest
@@ -674,6 +696,7 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 		t.Fatal("divergent upstream idempotency authority was accepted")
 	}
 	assertCount(t, client, "attempt_effect_reservations", tenantID, 1)
+	assertCount(t, client, "attempt_effect_reconciliation_evidence", tenantID, 1)
 	checkpoint := domain.Checkpoint{
 		ID: domain.CheckpointID(uniqueID("checkpoint")), TenantID: tenantID,
 		RunID: ingress.Run.ID, AttemptID: ingress.Attempt.ID, Sequence: 1,

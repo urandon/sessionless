@@ -611,16 +611,17 @@ type WorkerCompletion struct {
 }
 
 type WorkerFailure struct {
-	TenantID      domain.TenantID
-	RunID         domain.RunID
-	AttemptID     domain.AttemptID
-	ReservationID domain.QuotaReservationID
-	LeaseID       domain.LeaseID
-	Fence         uint64
-	At            time.Time
-	Cancelled     bool
-	Code          string
-	Events        []domain.SessionEventDraft
+	TenantID               domain.TenantID
+	RunID                  domain.RunID
+	AttemptID              domain.AttemptID
+	ReservationID          domain.QuotaReservationID
+	LeaseID                domain.LeaseID
+	Fence                  uint64
+	At                     time.Time
+	Cancelled              bool
+	Code                   string
+	Events                 []domain.SessionEventDraft
+	ReconciliationEvidence *domain.AttemptEffectReconciliationEvidenceV1
 }
 
 // LegacyTelegramWorkerCompletion and LegacyTelegramWorkerFailure keep the
@@ -642,16 +643,17 @@ type LegacyTelegramWorkerCompletion struct {
 }
 
 type LegacyTelegramWorkerFailure struct {
-	TenantID      domain.TenantID
-	RunID         domain.RunID
-	AttemptID     domain.AttemptID
-	ReservationID domain.QuotaReservationID
-	LeaseID       domain.LeaseID
-	Fence         uint64
-	At            time.Time
-	Cancelled     bool
-	Code          string
-	Delivery      domain.TelegramDeliveryOutbox
+	TenantID               domain.TenantID
+	RunID                  domain.RunID
+	AttemptID              domain.AttemptID
+	ReservationID          domain.QuotaReservationID
+	LeaseID                domain.LeaseID
+	Fence                  uint64
+	At                     time.Time
+	Cancelled              bool
+	Code                   string
+	Delivery               domain.TelegramDeliveryOutbox
+	ReconciliationEvidence *domain.AttemptEffectReconciliationEvidenceV1
 }
 
 // WorkerStateStore exposes the durable lifecycle boundary required by one

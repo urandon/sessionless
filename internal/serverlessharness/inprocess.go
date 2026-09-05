@@ -80,33 +80,33 @@ func (substrate *InProcessExecutionSubstrateV1) Execute(
 func (substrate *InProcessExecutionSubstrateV1) Cancel(
 	ctx context.Context,
 	authority domain.ServerlessInvocationAuthorityV1,
-) (SubstrateOperationObservationV1, error) {
+) (domain.SubstrateOperationObservationV1, error) {
 	if ctx == nil || ctx.Err() != nil {
-		return SubstrateOperationObservationV1{}, errors.New("in-process substrate cancellation context is unavailable")
+		return domain.SubstrateOperationObservationV1{}, errors.New("in-process substrate cancellation context is unavailable")
 	}
-	return substrate.observation(authority, SubstrateOperationAcknowledgedV1)
+	return substrate.observation(authority, domain.SubstrateOperationAcknowledgedV1)
 }
 
 func (substrate *InProcessExecutionSubstrateV1) Reconcile(
 	ctx context.Context,
 	authority domain.ServerlessInvocationAuthorityV1,
-) (SubstrateOperationObservationV1, error) {
+) (domain.SubstrateOperationObservationV1, error) {
 	if ctx == nil || ctx.Err() != nil {
-		return SubstrateOperationObservationV1{}, errors.New("in-process substrate reconciliation context is unavailable")
+		return domain.SubstrateOperationObservationV1{}, errors.New("in-process substrate reconciliation context is unavailable")
 	}
-	return substrate.observation(authority, SubstrateOperationObservedV1)
+	return substrate.observation(authority, domain.SubstrateOperationObservedV1)
 }
 
 func (substrate *InProcessExecutionSubstrateV1) observation(
 	authority domain.ServerlessInvocationAuthorityV1,
-	state SubstrateOperationStateV1,
-) (SubstrateOperationObservationV1, error) {
+	state domain.SubstrateOperationStateV1,
+) (domain.SubstrateOperationObservationV1, error) {
 	if substrate == nil || substrate.now == nil || authority.Validate() != nil || authority.HarnessBinding.Backend != substrate.backend {
-		return SubstrateOperationObservationV1{}, errors.New("in-process substrate authority mismatch")
+		return domain.SubstrateOperationObservationV1{}, errors.New("in-process substrate authority mismatch")
 	}
 	authorityDigest, _ := authority.Digest()
 	substrateDigest, _ := authority.SubstrateBinding.Digest()
-	return SubstrateOperationObservationV1{
+	return domain.SubstrateOperationObservationV1{
 		State: state, InvocationAuthority: authorityDigest, SubstrateBinding: substrateDigest,
 		PhysicalInvocationID: string(authority.Lease.ID) + "-in-process", ObservedAt: substrate.now().UTC(),
 	}, nil

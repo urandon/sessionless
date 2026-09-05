@@ -257,11 +257,21 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 		if err != nil {
 			return manager.retry(ctx, message, err)
 		}
-		observation, err := reconciliation.Reconcile(ctx)
+		evidence, err := reconciliation.Reconcile(ctx)
 		if err != nil {
 			return manager.retry(ctx, message, err)
 		}
-		return manager.retry(ctx, message, attemptEffectReconcilePendingError{observation: observation})
+		if evidence.Observation.State == domain.SubstrateOperationNotFoundV1 {
+			return manager.finishFailureWithReconciliation(
+				ctx, message, loaded, lease, false, "provider_effect_not_found_after_reservation", &evidence,
+			)
+		}
+		if err := manager.effects.RecordAttemptEffectReconciliation(ctx, ports.AttemptEffectReconciliationRecordV1{
+			TenantID: loaded.Run.TenantID, RunID: loaded.Run.ID, AttemptID: loaded.Attempt.ID, Evidence: evidence,
+		}); err != nil {
+			return manager.retry(ctx, message, err)
+		}
+		return manager.retry(ctx, message, attemptEffectReconcilePendingError{evidence: evidence})
 	}
 	execution, err := manager.preparer.PrepareExecution(ctx, effect)
 	if err != nil {
@@ -750,11 +760,14 @@ var (
 )
 
 type attemptEffectReconcilePendingError struct {
-	observation serverlessharness.SubstrateOperationObservationV1
+	evidence domain.AttemptEffectReconciliationEvidenceV1
 }
 
 func (err attemptEffectReconcilePendingError) Error() string {
-	return fmt.Sprintf("provider effect reconciliation pending: state=%s physical_invocation_id=%s", err.observation.State, err.observation.PhysicalInvocationID)
+	return fmt.Sprintf(
+		"provider effect reconciliation pending: state=%s physical_invocation_id=%s",
+		err.evidence.Observation.State, err.evidence.Observation.PhysicalInvocationID,
+	)
 }
 
 func generatePhysicalClaim(ctx context.Context) (string, error) {
@@ -1262,6 +1275,18 @@ func (manager *Manager) finishFailure(
 	cancelled bool,
 	code string,
 ) (Outcome, error) {
+	return manager.finishFailureWithReconciliation(ctx, message, loaded, lease, cancelled, code, nil)
+}
+
+func (manager *Manager) finishFailureWithReconciliation(
+	ctx context.Context,
+	message ports.ReceivedMessage,
+	loaded ports.WorkerJobState,
+	lease domain.Lease,
+	cancelled bool,
+	code string,
+	reconciliationEvidence *domain.AttemptEffectReconciliationEvidenceV1,
+) (Outcome, error) {
 	if lease.ID == "" {
 		if err := manager.queue.Ack(ctx, message.ReceiptHandle); err != nil {
 			return "", err
@@ -1291,6 +1316,7 @@ func (manager *Manager) finishFailure(
 			AttemptID: loaded.Attempt.ID, ReservationID: loaded.Reservation.ID,
 			LeaseID: lease.ID, Fence: lease.FenceToken,
 			At: failedAt, Cancelled: cancelled, Code: code, Events: events,
+			ReconciliationEvidence: reconciliationEvidence,
 		}); err != nil {
 			return manager.retry(ctx, message, err)
 		}
@@ -1311,6 +1337,7 @@ func (manager *Manager) finishFailure(
 				AttemptID: loaded.Attempt.ID, ReservationID: loaded.Reservation.ID,
 				LeaseID: lease.ID, Fence: lease.FenceToken,
 				At: failedAt, Cancelled: cancelled, Code: code, Delivery: delivery,
+				ReconciliationEvidence: reconciliationEvidence,
 			},
 		); err != nil {
 			return manager.retry(ctx, message, err)

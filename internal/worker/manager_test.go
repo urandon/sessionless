@@ -44,7 +44,9 @@ func newTestWorker(
 	return worker.New(config, clock, queue, state, blobs, harness)
 }
 
-type testExecutionPreparer struct{}
+type testExecutionPreparer struct {
+	reconcileState domain.SubstrateOperationStateV1
+}
 
 func (testExecutionPreparer) PrepareExecution(
 	_ context.Context,
@@ -56,7 +58,7 @@ func (testExecutionPreparer) PrepareExecution(
 	return &testPreparedExecution{authority: result.Grant.Authority.Clone(), reservation: result.Reservation.Clone()}, nil
 }
 
-func (testExecutionPreparer) PrepareReconciliation(
+func (preparer testExecutionPreparer) PrepareReconciliation(
 	_ context.Context,
 	result ports.ReserveAttemptEffectResultV1,
 ) (serverlessharness.PreparedReconciliationV1, error) {
@@ -66,22 +68,31 @@ func (testExecutionPreparer) PrepareReconciliation(
 	return &testPreparedReconciliation{
 		authority:   result.ObservationGrant.Authority.Clone(),
 		reservation: result.Reservation.Clone(),
+		state:       defaultReconcileState(preparer.reconcileState),
 	}, nil
+}
+
+func defaultReconcileState(state domain.SubstrateOperationStateV1) domain.SubstrateOperationStateV1 {
+	if state == "" {
+		return domain.SubstrateOperationObservedV1
+	}
+	return state
 }
 
 type testPreparedReconciliation struct {
 	authority   domain.ServerlessInvocationAuthorityV1
 	reservation domain.AttemptEffectReservationV1
+	state       domain.SubstrateOperationStateV1
 }
 
-func (reconciliation *testPreparedReconciliation) Reconcile(context.Context) (serverlessharness.SubstrateOperationObservationV1, error) {
+func (reconciliation *testPreparedReconciliation) Reconcile(context.Context) (domain.AttemptEffectReconciliationEvidenceV1, error) {
 	authorityDigest, _ := reconciliation.authority.Digest()
 	substrateDigest, _ := reconciliation.authority.SubstrateBinding.Digest()
-	return serverlessharness.SubstrateOperationObservationV1{
-		State: serverlessharness.SubstrateOperationObservedV1, InvocationAuthority: authorityDigest,
+	return domain.SealAttemptEffectReconciliationEvidenceV1(reconciliation.authority, reconciliation.reservation, domain.SubstrateOperationObservationV1{
+		State: reconciliation.state, InvocationAuthority: authorityDigest,
 		SubstrateBinding: substrateDigest, PhysicalInvocationID: reconciliation.reservation.PhysicalInvocationClaimID,
 		ObservedAt: reconciliation.reservation.ReservedAt.Add(time.Second),
-	}, nil
+	})
 }
 
 type testPreparedExecution struct {
@@ -105,9 +116,9 @@ func (execution *testPreparedExecution) Execute(
 	return result, evidence, err
 }
 
-func (execution *testPreparedExecution) Cancel(ctx context.Context) (serverlessharness.SubstrateOperationObservationV1, error) {
+func (execution *testPreparedExecution) Cancel(ctx context.Context) (domain.SubstrateOperationObservationV1, error) {
 	if execution.harness == nil {
-		return serverlessharness.SubstrateOperationObservationV1{}, errors.New("test execution has not started")
+		return domain.SubstrateOperationObservationV1{}, errors.New("test execution has not started")
 	}
 	authority := execution.authority
 	err := execution.harness.Cancel(ctx, ports.ExecutionIdentity{
@@ -116,11 +127,11 @@ func (execution *testPreparedExecution) Cancel(ctx context.Context) (serverlessh
 		ExecutionPlacementV2: authority.ExecutionPlacementV2, HarnessBinding: authority.HarnessBinding.Clone(),
 		SubstrateBinding: &authority.SubstrateBinding, AdmissionCostCeiling: &authority.AdmissionCostCeiling,
 	})
-	return serverlessharness.SubstrateOperationObservationV1{}, err
+	return domain.SubstrateOperationObservationV1{}, err
 }
 
-func (*testPreparedExecution) Reconcile(context.Context) (serverlessharness.SubstrateOperationObservationV1, error) {
-	return serverlessharness.SubstrateOperationObservationV1{}, nil
+func (*testPreparedExecution) Reconcile(context.Context) (domain.SubstrateOperationObservationV1, error) {
+	return domain.SubstrateOperationObservationV1{}, nil
 }
 
 type signalingExecutionPreparer struct {
@@ -761,8 +772,45 @@ func TestWorkerRetryableProviderFailureBecomesReconcileOnlyOnRedelivery(t *testi
 	if state.jobs[key].Checkpoint == nil || state.jobs[key].Checkpoint.Sequence != 1 {
 		t.Fatalf("checkpoint after reconcile-only redelivery = %#v, want sequence 1", state.jobs[key].Checkpoint)
 	}
-	if state.completions != 0 || len(state.effects) != 1 {
-		t.Fatalf("completion/effect reservations = %d/%d, want 0/1", state.completions, len(state.effects))
+	if state.completions != 0 || len(state.effects) != 1 || len(state.reconciliationEvidence) != 1 {
+		t.Fatalf("completion/effect reservations/reconciliation evidence = %d/%d/%d, want 0/1/1", state.completions, len(state.effects), len(state.reconciliationEvidence))
+	}
+}
+
+func TestWorkerFailsWithoutReexecutionWhenReconciliationProvesEffectNotFound(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	clock := testkit.NewFakeClock(workerTestTime)
+	queue := testkit.NewMemoryQueue()
+	blobs := newMemoryBlobs()
+	state := newWorkerState()
+	loaded := workerFixture(t, ctx, blobs, "tenant-a", workerTestTime)
+	key := jobKey(loaded.Run.TenantID, loaded.Run.ID)
+	state.jobs[key] = loaded
+	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
+	harness, _ := deterministicharness.New(deterministicharness.Config{
+		Turns: 2, Artifacts: 1, FailAtTurn: 1, RetryableFail: true,
+	})
+	manager, err := newTestWorker(worker.Config{
+		ScratchRoot: t.TempDir(), WorkerID: "worker-test", RetryDelay: time.Millisecond,
+		MaxDeliveryCount: 3, DeliveryWakePublisher: newDeliveryWakePublisher(t),
+		ExecutionPreparer: testExecutionPreparer{reconcileState: domain.SubstrateOperationNotFoundV1},
+	}, clock, queue, state, blobs, harness)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome, err := manager.RunOnce(ctx); err != nil || outcome != worker.OutcomeRetried {
+		t.Fatalf("first outcome/error = %q/%v, want retried/nil", outcome, err)
+	}
+	if outcome, err := manager.RunOnce(ctx); err != nil || outcome != worker.OutcomeFailed {
+		t.Fatalf("reconciled outcome/error = %q/%v, want failed/nil", outcome, err)
+	}
+	if state.failures != 1 || state.completions != 0 || len(state.effects) != 1 || len(state.reconciliationEvidence) != 1 {
+		t.Fatalf("failures/completions/effects/reconciliation evidence = %d/%d/%d/%d, want 1/0/1/1",
+			state.failures, state.completions, len(state.effects), len(state.reconciliationEvidence))
+	}
+	if got := state.jobs[key]; got.Run.Status != domain.RunFailed || got.Attempt.Status != domain.AttemptFailed {
+		t.Fatalf("reconciled terminal state = run %q attempt %q", got.Run.Status, got.Attempt.Status)
 	}
 }
 
@@ -1629,22 +1677,23 @@ func (store *memoryBlobs) Delete(_ context.Context, tenant domain.TenantID, ref 
 }
 
 type workerState struct {
-	mu                sync.Mutex
-	jobs              map[string]ports.WorkerJobState
-	leases            map[string]domain.Lease
-	cancelled         map[string]bool
-	checkpoints       []domain.Checkpoint
-	usage             []domain.UsageObservation
-	manifests         []domain.ArtifactManifest
-	events            []domain.SessionEventDraft
-	deliveries        []domain.TelegramDeliveryOutbox
-	completions       int
-	failures          int
-	renewals          int
-	renewalNotify     chan error
-	effects           map[string]domain.AttemptEffectReservationV1
-	substrateEvidence []domain.SubstrateExecutionEvidenceV1
-	loadContext       func(ports.WorkerContextRequest) (domain.SessionContextInput, error)
+	mu                     sync.Mutex
+	jobs                   map[string]ports.WorkerJobState
+	leases                 map[string]domain.Lease
+	cancelled              map[string]bool
+	checkpoints            []domain.Checkpoint
+	usage                  []domain.UsageObservation
+	manifests              []domain.ArtifactManifest
+	events                 []domain.SessionEventDraft
+	deliveries             []domain.TelegramDeliveryOutbox
+	completions            int
+	failures               int
+	renewals               int
+	renewalNotify          chan error
+	effects                map[string]domain.AttemptEffectReservationV1
+	substrateEvidence      []domain.SubstrateExecutionEvidenceV1
+	reconciliationEvidence []domain.AttemptEffectReconciliationEvidenceV1
+	loadContext            func(ports.WorkerContextRequest) (domain.SessionContextInput, error)
 }
 
 func newWorkerState() *workerState {
@@ -1778,6 +1827,38 @@ func (state *workerState) ReserveAttemptEffect(
 		Status: ports.AttemptEffectOwnedV1, Reservation: reservation, Grant: &grant,
 	}
 	return result, result.Validate()
+}
+
+func (state *workerState) RecordAttemptEffectReconciliation(
+	_ context.Context,
+	record ports.AttemptEffectReconciliationRecordV1,
+) error {
+	if err := record.Validate(); err != nil {
+		return err
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	key := string(record.TenantID) + "/" + string(record.AttemptID)
+	reservation, found := state.effects[key]
+	loaded, loadedFound := state.jobs[jobKey(record.TenantID, record.RunID)]
+	lease, leaseFound := state.leases[jobKey(record.TenantID, record.RunID)]
+	if !found || !loadedFound || !leaseFound {
+		return errors.New("effect authority not found for reconciliation evidence")
+	}
+	authority, err := workerEffectAuthority(loaded, lease)
+	if err != nil {
+		return err
+	}
+	if err := record.Evidence.ValidateForPersistedAuthority(authority, reservation); err != nil {
+		return err
+	}
+	for _, existing := range state.reconciliationEvidence {
+		if existing.EvidenceDigest == record.Evidence.EvidenceDigest {
+			return nil
+		}
+	}
+	state.reconciliationEvidence = append(state.reconciliationEvidence, record.Evidence.Clone())
+	return nil
 }
 
 func workerEffectAuthority(
@@ -1973,6 +2054,9 @@ func (state *workerState) FailWorkerJob(_ context.Context, failure ports.WorkerF
 	}
 	state.jobs[key] = current
 	state.events = append(state.events, failure.Events...)
+	if failure.ReconciliationEvidence != nil {
+		state.reconciliationEvidence = append(state.reconciliationEvidence, failure.ReconciliationEvidence.Clone())
+	}
 	state.failures++
 	return nil
 }
@@ -2000,6 +2084,9 @@ func (state *workerState) FailLegacyTelegramWorkerJob(
 	}
 	state.jobs[key] = current
 	state.deliveries = append(state.deliveries, failure.Delivery)
+	if failure.ReconciliationEvidence != nil {
+		state.reconciliationEvidence = append(state.reconciliationEvidence, failure.ReconciliationEvidence.Clone())
+	}
 	state.failures++
 	return nil
 }

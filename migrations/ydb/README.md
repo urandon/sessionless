@@ -210,6 +210,14 @@ with canonical completion, and includes its digest in finalization
 idempotency. The substrate observation remains distinct from canonical run
 terminal state and never asserts that commit itself.
 
+Migration `00097` adds append-only reconciliation evidence for a reserved
+provider effect. Each row seals the persisted invocation authority,
+reservation digest, winning physical claim, typed substrate observation and
+observation time. Repeated evidence is idempotent by digest. A `not_found`
+observation is inserted in the same transaction that terminally fails the
+attempt; other closed observation states are durable retry diagnostics and do
+not permit another provider effect.
+
 Automatic production down migrations are intentionally disabled. The `Down`
 sections are comments so neither Goose nor an operator can accidentally drop
 state.

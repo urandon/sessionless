@@ -52,12 +52,12 @@ func (driver *substrateRegistryRecordingDriver) Execute(_ context.Context, _ Pre
 	return ports.ExecutionResult{}, domain.SubstrateExecutionEvidenceV1{}, nil
 }
 
-func (driver *substrateRegistryRecordingDriver) Cancel(_ context.Context, authority domain.ServerlessInvocationAuthorityV1) (SubstrateOperationObservationV1, error) {
+func (driver *substrateRegistryRecordingDriver) Cancel(_ context.Context, authority domain.ServerlessInvocationAuthorityV1) (domain.SubstrateOperationObservationV1, error) {
 	driver.cancelCalls++
 	return substrateRegistryObservation(authority), nil
 }
 
-func (driver *substrateRegistryRecordingDriver) Reconcile(_ context.Context, authority domain.ServerlessInvocationAuthorityV1) (SubstrateOperationObservationV1, error) {
+func (driver *substrateRegistryRecordingDriver) Reconcile(_ context.Context, authority domain.ServerlessInvocationAuthorityV1) (domain.SubstrateOperationObservationV1, error) {
 	driver.reconcileCalls++
 	return substrateRegistryObservation(authority), nil
 }
@@ -85,19 +85,19 @@ func (driver *substrateRegistryPreparedDriver) Execute(
 	return result, evidence, err
 }
 
-func (driver *substrateRegistryPreparedDriver) Cancel(_ context.Context, authority domain.ServerlessInvocationAuthorityV1) (SubstrateOperationObservationV1, error) {
+func (driver *substrateRegistryPreparedDriver) Cancel(_ context.Context, authority domain.ServerlessInvocationAuthorityV1) (domain.SubstrateOperationObservationV1, error) {
 	return substrateRegistryObservation(authority), nil
 }
 
-func (driver *substrateRegistryPreparedDriver) Reconcile(_ context.Context, authority domain.ServerlessInvocationAuthorityV1) (SubstrateOperationObservationV1, error) {
+func (driver *substrateRegistryPreparedDriver) Reconcile(_ context.Context, authority domain.ServerlessInvocationAuthorityV1) (domain.SubstrateOperationObservationV1, error) {
 	return substrateRegistryObservation(authority), nil
 }
 
-func substrateRegistryObservation(authority domain.ServerlessInvocationAuthorityV1) SubstrateOperationObservationV1 {
+func substrateRegistryObservation(authority domain.ServerlessInvocationAuthorityV1) domain.SubstrateOperationObservationV1 {
 	authorityDigest, _ := authority.Digest()
 	substrateDigest, _ := authority.SubstrateBinding.Digest()
-	return SubstrateOperationObservationV1{
-		State:                SubstrateOperationObservedV1,
+	return domain.SubstrateOperationObservationV1{
+		State:                domain.SubstrateOperationObservedV1,
 		InvocationAuthority:  authorityDigest,
 		SubstrateBinding:     substrateDigest,
 		PhysicalInvocationID: string(authority.Lease.ID) + "-physical",
@@ -202,7 +202,7 @@ func TestSubstrateRegistryPreparesOnlyAuthenticatedEffectOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	observation, err := reconciliation.Reconcile(context.Background())
-	if err != nil || observation.State != SubstrateOperationObservedV1 || driver.reconcileCalls != 1 {
+	if err != nil || observation.Observation.State != domain.SubstrateOperationObservedV1 || driver.reconcileCalls != 1 {
 		t.Fatalf("reconcile observation/calls/error = %#v/%d/%v", observation, driver.reconcileCalls, err)
 	}
 	tamperedObservation := reconcile

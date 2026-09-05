@@ -182,4 +182,24 @@ func (grant AttemptEffectObservationGrantV1) Validate() error {
 
 type AttemptEffectStoreV1 interface {
 	ReserveAttemptEffect(context.Context, ReserveAttemptEffectRequestV1) (ReserveAttemptEffectResultV1, error)
+	RecordAttemptEffectReconciliation(context.Context, AttemptEffectReconciliationRecordV1) error
+}
+
+type AttemptEffectReconciliationRecordV1 struct {
+	TenantID  domain.TenantID
+	RunID     domain.RunID
+	AttemptID domain.AttemptID
+	Evidence  domain.AttemptEffectReconciliationEvidenceV1
+}
+
+func (record AttemptEffectReconciliationRecordV1) Validate() error {
+	for _, validate := range []func() error{record.TenantID.Validate, record.RunID.Validate, record.AttemptID.Validate} {
+		if err := validate(); err != nil {
+			return err
+		}
+	}
+	if err := record.Evidence.EvidenceDigest.Validate(); err != nil {
+		return err
+	}
+	return nil
 }

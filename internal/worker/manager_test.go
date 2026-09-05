@@ -92,6 +92,40 @@ func TestWorkerCompletesOnceAndCleansReusedScratch(t *testing.T) {
 	}
 }
 
+func TestWorkerCleanupFailureBlocksCompletion(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	clock := testkit.NewFakeClock(workerTestTime)
+	queue := testkit.NewMemoryQueue()
+	blobs := newMemoryBlobs()
+	state := newWorkerState()
+	loaded := workerFixture(t, ctx, blobs, "tenant-a", workerTestTime)
+	state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
+	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
+	cleanupCalls := 0
+	manager, err := worker.New(worker.Config{
+		ScratchRoot: t.TempDir(), WorkerID: "worker-test",
+		ScratchRemoveAll: func(string) error {
+			cleanupCalls++
+			return errors.New("simulated cleanup failure")
+		},
+		DeliveryWakePublisher: newDeliveryWakePublisher(t),
+	}, clock, queue, state, blobs, resultHarness{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := manager.RunOnce(ctx)
+	if err != nil || outcome != worker.OutcomeFailed {
+		t.Fatalf("outcome/error = %q/%v, want failed/nil", outcome, err)
+	}
+	if cleanupCalls != 1 || state.completions != 0 || state.failures != 1 {
+		t.Fatalf("cleanup calls/completions/failures = %d/%d/%d, want 1/0/1", cleanupCalls, state.completions, state.failures)
+	}
+	if len(state.deliveries) != 1 || !strings.Contains(state.deliveries[0].Text, "cleanup_failed") {
+		t.Fatalf("cleanup failure delivery = %+v", state.deliveries)
+	}
+}
+
 func TestCanonicalWorkerFinalizesToolAndAssistantEventsWithoutTelegramDelivery(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

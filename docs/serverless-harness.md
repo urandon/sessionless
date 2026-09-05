@@ -487,14 +487,14 @@ boundary. AW-05's `NetworkDenied=true` profile is not weakened or relabelled to
 make cloud provider egress appear compatible.
 
 `worker.Manager` now uploads allowed outputs, finalizes/releases credentials,
-and removes its invocation directory before canonical success and trigger
-acknowledgement. It still treats directory removal as best effort and has no
-residue proof or warm-instance taint action. PR-03b composition must replace
-that last gap with its typed finalization coordinator: scan the workspace,
-processes, sockets, and credentials, then permit success only with verified
-cleanup. A cleanup failure is committed as an independent failure/ambiguity
-fact, taints and terminates the warm instance, and can never be converted into
-`verified`.
+removes its invocation directory, and verifies absence before canonical success
+and trigger acknowledgement. Removal or absence-check failure is a typed
+`cleanup_failed` terminal outcome and cannot commit success. The manager still
+has no cross-resource residue proof or warm-instance taint action. PR-03b
+composition must close that last gap with its typed finalization coordinator:
+scan the workspace, processes, sockets, and credentials, then permit success
+only with verified cleanup. A cleanup failure taints and terminates the warm
+instance and can never be converted into `verified`.
 
 The feature-disabled PR-03b implementation contract and its inherited AW-05
 boundary are documented in

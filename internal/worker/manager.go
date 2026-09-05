@@ -40,6 +40,7 @@ type Config struct {
 	CredentialFinalizeGrace time.Duration
 	CredentialLifecycle     ports.CredentialLifecycle
 	PhysicalClaimGenerator  PhysicalClaimGenerator
+	ScratchRemoveAll        func(string) error
 }
 
 type PhysicalClaimGenerator func(context.Context) (string, error)
@@ -147,6 +148,9 @@ func New(
 	}
 	if config.PhysicalClaimGenerator == nil {
 		config.PhysicalClaimGenerator = generatePhysicalClaim
+	}
+	if config.ScratchRemoveAll == nil {
+		config.ScratchRemoveAll = os.RemoveAll
 	}
 	return &Manager{
 		config: config, clock: clock, queue: queue, state: state,
@@ -256,33 +260,34 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 	watchdog := manager.startLeaseWatchdog(watchdogCtx, cancelExecution, loaded, leaseState)
 	workDir := ""
 	activeStopped := false
-	stopActiveInvocation := func() error {
+	stopResult := activeInvocationStop{}
+	stopActiveInvocation := func() activeInvocationStop {
 		if activeStopped {
-			return watchdog.Stop()
+			return stopResult
 		}
 		if workDir != "" {
-			manager.cleanupInvocationDir(workDir)
+			stopResult.cleanupErr = manager.cleanupInvocationDir(workDir)
 			workDir = ""
 		}
 		activeStopped = true
 		cancelWatchdog()
-		watchdogErr := watchdog.Stop()
+		stopResult.watchdogErr = watchdog.Stop()
 		lease = leaseState.Current()
-		return watchdogErr
+		return stopResult
 	}
-	defer func() { _ = stopActiveInvocation() }()
+	defer stopActiveInvocation()
 
 	workDir, err = manager.createInvocationDir()
 	if err != nil {
-		if watchdogErr := stopActiveInvocation(); watchdogErr != nil {
-			return manager.handleWatchdogFailure(message, loaded, lease, watchdogErr)
+		if stopped := stopActiveInvocation(); stopped.Failed() {
+			return manager.handleActiveStop(message, loaded, lease, stopped)
 		}
 		return manager.retry(ctx, message, err)
 	}
 	credential, err := manager.prepareCredential(executionCtx, loaded, lease)
 	if err != nil {
-		if watchdogErr := stopActiveInvocation(); watchdogErr != nil {
-			return manager.handleWatchdogFailure(message, loaded, lease, watchdogErr)
+		if stopped := stopActiveInvocation(); stopped.Failed() {
+			return manager.handleActiveStop(message, loaded, lease, stopped)
 		}
 		return manager.finishFailure(ctx, message, loaded, lease, false, "credential_preparation_failed")
 	}
@@ -298,8 +303,8 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 
 	if err := manager.materialize(executionCtx, loaded, workDir); err != nil {
 		finalizeErr := finalizeCredential()
-		if watchdogErr := stopActiveInvocation(); watchdogErr != nil {
-			return manager.handleWatchdogFailure(message, loaded, lease, watchdogErr)
+		if stopped := stopActiveInvocation(); stopped.Failed() {
+			return manager.handleActiveStop(message, loaded, lease, stopped)
 		}
 		if finalizeErr != nil {
 			return manager.finishFailure(context.Background(), message, loaded, lease, false, "credential_finalization_failed")
@@ -331,8 +336,8 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 	}
 	if err := request.Validate(); err != nil {
 		finalizeErr := finalizeCredential()
-		if watchdogErr := stopActiveInvocation(); watchdogErr != nil {
-			return manager.handleWatchdogFailure(message, loaded, lease, watchdogErr)
+		if stopped := stopActiveInvocation(); stopped.Failed() {
+			return manager.handleActiveStop(message, loaded, lease, stopped)
 		}
 		if finalizeErr != nil {
 			return manager.finishFailure(context.Background(), message, loaded, lease, false, "credential_finalization_failed")
@@ -349,9 +354,9 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 	}
 	finalizeErr := finalizeCredential()
 	if err != nil || finalizeErr != nil {
-		watchdogErr := stopActiveInvocation()
-		if watchdogErr != nil {
-			return manager.handleWatchdogFailure(message, loaded, lease, watchdogErr)
+		stopped := stopActiveInvocation()
+		if stopped.Failed() {
+			return manager.handleActiveStop(message, loaded, lease, stopped)
 		}
 		if finalizeErr != nil {
 			return manager.finishFailure(context.Background(), message, loaded, lease, false, "credential_finalization_failed")
@@ -380,8 +385,8 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 	}
 	manifest, err := manager.uploadOutputs(executionCtx, loaded, workDir, result.Outputs)
 	if err != nil {
-		if watchdogErr := stopActiveInvocation(); watchdogErr != nil {
-			return manager.handleWatchdogFailure(message, loaded, lease, watchdogErr)
+		if stopped := stopActiveInvocation(); stopped.Failed() {
+			return manager.handleActiveStop(message, loaded, lease, stopped)
 		}
 		if errors.Is(executionCtx.Err(), context.DeadlineExceeded) {
 			return manager.finishFailure(
@@ -397,14 +402,14 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 			executionCtx, loaded, result, manifest, finishedAt,
 		)
 		if err != nil {
-			if watchdogErr := stopActiveInvocation(); watchdogErr != nil {
-				return manager.handleWatchdogFailure(message, loaded, lease, watchdogErr)
+			if stopped := stopActiveInvocation(); stopped.Failed() {
+				return manager.handleActiveStop(message, loaded, lease, stopped)
 			}
 			return manager.finishFailure(ctx, message, loaded, lease, false, "canonical_result_upload_failed")
 		}
 	}
-	if watchdogErr := stopActiveInvocation(); watchdogErr != nil {
-		return manager.handleWatchdogFailure(message, loaded, lease, watchdogErr)
+	if stopped := stopActiveInvocation(); stopped.Failed() {
+		return manager.handleActiveStop(message, loaded, lease, stopped)
 	}
 	lease, err = manager.ensureLease(context.Background(), loaded.Run.TenantID, lease)
 	if err != nil {
@@ -812,24 +817,38 @@ type leaseWatchdog struct {
 	err      error
 }
 
+type activeInvocationStop struct {
+	watchdogErr error
+	cleanupErr  error
+}
+
+func (result activeInvocationStop) Failed() bool {
+	return result.watchdogErr != nil || result.cleanupErr != nil
+}
+
 func (watchdog *leaseWatchdog) Stop() error {
 	watchdog.stopOnce.Do(func() { close(watchdog.stop) })
 	<-watchdog.done
 	return watchdog.err
 }
 
-func (manager *Manager) handleWatchdogFailure(
+func (manager *Manager) handleActiveStop(
 	message ports.ReceivedMessage,
 	loaded ports.WorkerJobState,
 	lease domain.Lease,
-	err error,
+	stopped activeInvocationStop,
 ) (Outcome, error) {
-	if errors.Is(err, errWorkerCancellationObserved) {
+	if stopped.watchdogErr != nil && !errors.Is(stopped.watchdogErr, errWorkerCancellationObserved) {
+		return manager.retry(context.Background(), message, stopped.watchdogErr)
+	}
+	if stopped.cleanupErr != nil {
 		return manager.finishFailure(
-			context.Background(), message, loaded, lease, true, "cancelled",
+			context.Background(), message, loaded, lease, false, "cleanup_failed",
 		)
 	}
-	return manager.retry(context.Background(), message, err)
+	return manager.finishFailure(
+		context.Background(), message, loaded, lease, true, "cancelled",
+	)
 }
 
 func (manager *Manager) startLeaseWatchdog(
@@ -1398,11 +1417,20 @@ func (manager *Manager) createInvocationDir() (string, error) {
 	return dir, nil
 }
 
-func (manager *Manager) cleanupInvocationDir(dir string) {
-	if filepath.Dir(dir) == manager.config.ScratchRoot &&
-		strings.HasPrefix(filepath.Base(dir), "invocation-") {
-		_ = os.RemoveAll(dir)
+func (manager *Manager) cleanupInvocationDir(dir string) error {
+	if filepath.Dir(dir) != manager.config.ScratchRoot ||
+		!strings.HasPrefix(filepath.Base(dir), "invocation-") {
+		return errors.New("invocation cleanup target escaped scratch root")
 	}
+	if err := manager.config.ScratchRemoveAll(dir); err != nil {
+		return fmt.Errorf("remove invocation directory: %w", err)
+	}
+	if _, err := os.Lstat(dir); err == nil {
+		return errors.New("invocation directory remains after cleanup")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("verify invocation directory cleanup: %w", err)
+	}
+	return nil
 }
 
 func validateFilename(name string) error {

@@ -21,8 +21,10 @@ The following promotion gates are known to fail in the current composition:
   materialization, `HarnessDriver.Execute`, credential finalization, output and
   canonical-event upload, and scratch cleanup. Deterministic race tests cover
   silent materialization, execution, finalization, and fence loss during
-  upload; the cloud composition still has to prove that the PR-03b process
-  supervisor and PR-03c egress transport stop under that cancellation signal;
+  upload; a failed scratch removal/absence check now blocks success with
+  `cleanup_failed`. The cloud composition still has to prove that the PR-03b
+  process supervisor and PR-03c egress transport stop under that cancellation
+  signal and taint a warm instance on any wider residue ambiguity;
 - the cloud profile sets `WORKER_LEASE_TTL=2m`, while a credentialed 40-minute
   execution must acquire authority covering execution and bounded cleanup;
 - an exact retry-stable lease ID can be returned to the same worker identity on

@@ -64,6 +64,7 @@ type runRef struct {
 
 type durableRunState struct {
 	Checkpoints uint64
+	Effects     uint64
 	Usage       uint64
 	Manifests   uint64
 	Deliveries  uint64
@@ -133,30 +134,44 @@ func TestDeterministicLocalMultiUserSlice(t *testing.T) {
 		slice.assertTerminalState(runA, beforeState)
 	})
 
-	t.Run("retry before the first checkpoint", func(t *testing.T) {
-		run := slice.postMessage(base+10, userA, "retry before checkpoint")
+	t.Run("failed consumed effect remains terminal before the first checkpoint", func(t *testing.T) {
+		run := slice.postMessage(base+10, userA, "fail before checkpoint")
 		slice.setConnectionReady(run)
 		slice.waitRunStatus(run, domain.RunQueued)
 		slice.runWorker(map[string]string{
 			"DETERMINISTIC_HARNESS_FAIL_BEFORE_FIRST_TURN": "true",
 			"DETERMINISTIC_HARNESS_RETRYABLE_FAIL":         "true",
 		})
+		slice.waitRunStatus(run, domain.RunFailed)
 		slice.assertCheckpointCount(run, 0)
-		slice.runWorkerUntilStatus(run, domain.RunSucceeded)
-		slice.assertCheckpointCount(run, 2)
+		beforeState := slice.terminalState(run)
+		if beforeState.Effects != 1 {
+			t.Fatalf("run %s effect reservations = %d, want 1", run.RunID, beforeState.Effects)
+		}
+		slice.publishDuplicate(run)
+		slice.runWorker(nil)
+		slice.waitRunStatus(run, domain.RunFailed)
+		slice.assertTerminalState(run, beforeState)
 	})
 
-	t.Run("retry resumes after a durable checkpoint", func(t *testing.T) {
-		run := slice.postMessage(base+11, userB, "retry after checkpoint")
+	t.Run("failed consumed effect remains terminal after a durable checkpoint", func(t *testing.T) {
+		run := slice.postMessage(base+11, userB, "fail after checkpoint")
 		slice.setConnectionReady(run)
 		slice.waitRunStatus(run, domain.RunQueued)
 		slice.runWorker(map[string]string{
 			"DETERMINISTIC_HARNESS_FAIL_AT_TURN":   "1",
 			"DETERMINISTIC_HARNESS_RETRYABLE_FAIL": "true",
 		})
+		slice.waitRunStatus(run, domain.RunFailed)
 		slice.assertCheckpointCount(run, 1)
-		slice.runWorkerUntilStatus(run, domain.RunSucceeded)
-		slice.assertCheckpointCount(run, 2)
+		beforeState := slice.terminalState(run)
+		if beforeState.Effects != 1 {
+			t.Fatalf("run %s effect reservations = %d, want 1", run.RunID, beforeState.Effects)
+		}
+		slice.publishDuplicate(run)
+		slice.runWorker(nil)
+		slice.waitRunStatus(run, domain.RunFailed)
+		slice.assertTerminalState(run, beforeState)
 	})
 
 	t.Run("durable cancellation releases the canonical run", func(t *testing.T) {
@@ -801,6 +816,10 @@ func (slice *localSlice) terminalState(run runRef) durableRunState {
 		Checkpoints: slice.countRunRows(
 			run,
 			`SELECT COUNT(*) FROM checkpoints WHERE tenant_id = $1 AND run_id = $2`,
+		),
+		Effects: slice.countRunRows(
+			run,
+			`SELECT COUNT(*) FROM attempt_effect_reservations WHERE tenant_id = $1 AND run_id = $2`,
 		),
 		Usage: slice.countRunRows(
 			run,

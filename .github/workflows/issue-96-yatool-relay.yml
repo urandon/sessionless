@@ -1,0 +1,40 @@
+name: Issue 96 pinned Yatool relay
+
+on:
+  push:
+    branches:
+      - codex/issue-96-native-macos-ydb
+    paths:
+      - .github/workflows/issue-96-yatool-relay.yml
+
+permissions:
+  contents: read
+
+jobs:
+  relay:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Fetch and verify pinned Darwin arm64 bootstrap
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 5 --retry-all-errors \
+            --output yatool-darwin-arm64-25.3.1.25.tar.gz \
+            https://devtools-registry.s3.yandex.net/9750552540
+          printf '%s  %s\n' \
+            d8b7d17c095beb38007e0f55d6319cff \
+            yatool-darwin-arm64-25.3.1.25.tar.gz | md5sum --check --strict
+          tar -tzf yatool-darwin-arm64-25.3.1.25.tar.gz > archive-members.txt
+          if grep -Eq '(^/|(^|/)\.\.(/|$))' archive-members.txt; then
+            echo 'archive contains an unsafe member path' >&2
+            exit 1
+          fi
+
+      - name: Upload verified pinned bootstrap
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-96-yatool-darwin-arm64-25.3.1.25
+          path: yatool-darwin-arm64-25.3.1.25.tar.gz
+          if-no-files-found: error
+          retention-days: 1

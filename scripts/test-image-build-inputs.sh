@@ -3,6 +3,32 @@ set -eu
 
 repo_root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 . "$repo_root/build/images.env"
+. "$repo_root/tools/versions.env"
+
+go_mod_toolchain=$(awk '$1 == "toolchain" {sub(/^go/, "", $2); print $2}' "$repo_root/go.mod")
+if test "$go_mod_toolchain" != "$GO_VERSION"; then
+  printf 'go.mod toolchain %s diverges from tools/versions.env %s\n' \
+    "${go_mod_toolchain:-missing}" "$GO_VERSION" >&2
+  exit 1
+fi
+expected_go_builder="golang:$GO_VERSION-alpine@$GO_BUILDER_INDEX_DIGEST"
+if test "$GO_BUILDER_IMAGE" != "$expected_go_builder"; then
+  printf 'Go builder %s diverges from toolchain/index contract %s\n' \
+    "$GO_BUILDER_IMAGE" "$expected_go_builder" >&2
+  exit 1
+fi
+for digest in \
+  "$GO_BUILDER_INDEX_DIGEST" \
+  "$GO_BUILDER_LINUX_AMD64_MANIFEST_DIGEST"; do
+  printf '%s' "$digest" | jq -Re 'test("^sha256:[0-9a-f]{64}$")' >/dev/null || {
+    printf 'invalid Go builder provenance digest: %s\n' "$digest" >&2
+    exit 1
+  }
+done
+printf '%s' "$GO_BUILDER_SOURCE_REVISION" | jq -Re 'test("^[0-9a-f]{40}$")' >/dev/null || {
+  printf 'invalid Go builder source revision: %s\n' "$GO_BUILDER_SOURCE_REVISION" >&2
+  exit 1
+}
 
 for variable_name in \
   DOCKERFILE_FRONTEND_IMAGE \
@@ -45,6 +71,10 @@ grep -F 'IMAGE_REQUIRE_CLEAN_CHECKOUT=1' "$repo_root/scripts/cloud-images.sh" >/
 grep -F 'CLOUD_IMAGE_REQUIRE_CLEAN_INPUTS=1' "$repo_root/scripts/cloud-images.sh" >/dev/null
 grep -F 'IMAGE_EXPORTER_MODE=registry' "$repo_root/scripts/test-image-reproducibility.sh" >/dev/null
 grep -F 'http = true' "$repo_root/scripts/test-image-reproducibility.sh" >/dev/null
+grep -F 'verify-go-builder-provenance.sh' \
+  "$repo_root/scripts/test-image-reproducibility.sh" >/dev/null
+grep -F 'org.opencontainers.image.source' \
+  "$repo_root/scripts/verify-go-builder-provenance.sh" >/dev/null
 grep -F 'transport_manifest_digest == .manifest.digest' \
   "$repo_root/scripts/test-image-reproducibility.sh" >/dev/null
 grep -F 'docker buildx imagetools create --prefer-index=false' \

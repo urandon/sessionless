@@ -1,6 +1,6 @@
 # Sessionless research and design index
 
-Status date: **2026-08-25**. These reports turn the open research backlog into
+Status date: **2026-09-06**. These reports turn the open research backlog into
 versioned, reviewable evidence. They are inputs to architecture decisions and
 epic decomposition; they do not by themselves close the tracked issues or
 authorize a production integration.
@@ -36,6 +36,7 @@ opt-in developer tools, never production or mandatory CI dependencies.
 | #54 | [Platform admin console](platform-admin-console.md) | Separate admin identity/API, read-only default, JIT/break-glass, dual control, immutable audit. |
 | #63 | [Harness-neutral evaluation](harness-neutral-evaluation.md) | Go-owned fixtures and evidence with non-compensable security gates and variance-aware provider trials. |
 | #62, #64 | [Codex surface measurement](../codex-surface-measurement.md) | `codex exec` is the sole Python-free attached-worker candidate; 30/30 happy path is not a production go. |
+| #96 | [Native macOS YDB](native-macos-ydb.md) | Conditional no-go for YDB 25.3.1.25: Darwin arm64 build signals exist, but the server path is unsupported and the pinned bootstrap was locally transport-blocked. |
 
 Pinned competitor snapshots used by the reports:
 

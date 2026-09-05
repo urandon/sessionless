@@ -327,7 +327,8 @@ func TestCanonicalSnapshotsAndRunsUseBoundedSessionPrefixes(t *testing.T) {
 
 func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 	store, client, grantIssuer := openStoreWithIssuer(t)
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	tenantID := domain.TenantID(uniqueID("tenant-ingress"))
 	userID := domain.UserID(uniqueID("user-ingress"))
@@ -500,11 +501,15 @@ func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 		t.Fatal(err)
 	}
 	canonicalReservationID := domain.QuotaReservationID(uniqueID("canonical-reservation"))
+	// Expiry behavior is covered separately. Keep this atomicity scenario
+	// independent of runner speed and host/YDB clock skew while it exercises
+	// the authoritative provider-effect fence.
+	const workerAuthorityLifetime = 30 * time.Minute
 	admission, err := store.AdmitDispatch(ctx, ports.DispatchAdmissionRequest{
 		TenantID: tenantID, OutboxID: request.DispatchID, RunID: request.RunID,
 		AttemptID:     request.AttemptID,
 		ReservationID: canonicalReservationID,
-		Now:           committedAt, HoldUntil: committedAt.Add(time.Minute),
+		Now:           committedAt, HoldUntil: committedAt.Add(workerAuthorityLifetime),
 		Limits: domain.ProductLimits{
 			MaxTenantQueueDepth: 8, MaxActiveRuns: 1,
 			MaxRuntime: 15 * time.Minute, MaxTurns: 30,
@@ -545,15 +550,20 @@ func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 	if loaded.Job.CredentialOwnerUserID != userID {
 		t.Fatalf("credential owner round-trip = %q, want %q", loaded.Job.CredentialOwnerUserID, userID)
 	}
+	var workerNow time.Time
+	if err := client.DB.QueryRowContext(ctx, `SELECT CurrentUtcTimestamp()`).Scan(&workerNow); err != nil {
+		t.Fatal(err)
+	}
+	workerNow = workerNow.UTC().Truncate(time.Microsecond)
 	lease, err := store.ClaimWorkerLease(ctx, ports.WorkerLeaseRequest{
 		TenantID: tenantID, RunID: request.RunID, AttemptID: request.AttemptID,
 		LeaseID: domain.LeaseID(uniqueID("canonical-lease")), WorkerID: "canonical-worker",
-		Now: committedAt.Add(3 * time.Second), ExpiresAt: committedAt.Add(time.Minute),
+		Now: workerNow, ExpiresAt: workerNow.Add(workerAuthorityLifetime),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.StartWorkerJob(ctx, loaded, lease, committedAt.Add(3*time.Second)); err != nil {
+	if err := store.StartWorkerJob(ctx, loaded, lease, workerNow.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	effect, err := store.ReserveAttemptEffect(ctx, ports.ReserveAttemptEffectRequestV1{
@@ -575,7 +585,7 @@ func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 		invocation.Attempt.WorkerID != lease.WorkerID || invocation.Lease != lease {
 		t.Fatalf("authoritative credential invocation = %#v", invocation)
 	}
-	finishedAt := committedAt.Add(4 * time.Second)
+	finishedAt := workerNow.Add(2 * time.Second)
 	terminalEvents := []domain.SessionEventDraft{
 		canonicalTerminalDraft(tenantID, thirdID, "tool-call", domain.SessionEventToolCall, finishedAt),
 		canonicalTerminalDraft(tenantID, thirdID, "tool-result", domain.SessionEventToolResult, finishedAt),

@@ -133,30 +133,38 @@ func TestDeterministicLocalMultiUserSlice(t *testing.T) {
 		slice.assertTerminalState(runA, beforeState)
 	})
 
-	t.Run("retry before the first checkpoint", func(t *testing.T) {
-		run := slice.postMessage(base+10, userA, "retry before checkpoint")
+	t.Run("consumed provider effect is not re-executed before the first checkpoint", func(t *testing.T) {
+		run := slice.postMessage(base+10, userA, "fail before checkpoint")
 		slice.setConnectionReady(run)
 		slice.waitRunStatus(run, domain.RunQueued)
 		slice.runWorker(map[string]string{
 			"DETERMINISTIC_HARNESS_FAIL_BEFORE_FIRST_TURN": "true",
 			"DETERMINISTIC_HARNESS_RETRYABLE_FAIL":         "true",
 		})
+		slice.waitRunStatus(run, domain.RunFailed)
 		slice.assertCheckpointCount(run, 0)
-		slice.runWorkerUntilStatus(run, domain.RunSucceeded)
-		slice.assertCheckpointCount(run, 2)
+		beforeState := slice.terminalState(run)
+		slice.publishDuplicate(run)
+		slice.runWorker(nil)
+		slice.waitRunStatus(run, domain.RunFailed)
+		slice.assertTerminalState(run, beforeState)
 	})
 
-	t.Run("retry resumes after a durable checkpoint", func(t *testing.T) {
-		run := slice.postMessage(base+11, userB, "retry after checkpoint")
+	t.Run("consumed provider effect is not re-executed after a durable checkpoint", func(t *testing.T) {
+		run := slice.postMessage(base+11, userB, "fail after checkpoint")
 		slice.setConnectionReady(run)
 		slice.waitRunStatus(run, domain.RunQueued)
 		slice.runWorker(map[string]string{
 			"DETERMINISTIC_HARNESS_FAIL_AT_TURN":   "1",
 			"DETERMINISTIC_HARNESS_RETRYABLE_FAIL": "true",
 		})
+		slice.waitRunStatus(run, domain.RunFailed)
 		slice.assertCheckpointCount(run, 1)
-		slice.runWorkerUntilStatus(run, domain.RunSucceeded)
-		slice.assertCheckpointCount(run, 2)
+		beforeState := slice.terminalState(run)
+		slice.publishDuplicate(run)
+		slice.runWorker(nil)
+		slice.waitRunStatus(run, domain.RunFailed)
+		slice.assertTerminalState(run, beforeState)
 	})
 
 	t.Run("durable cancellation releases the canonical run", func(t *testing.T) {

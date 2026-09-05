@@ -145,6 +145,13 @@ is documented in [credential-lifecycle.md](credential-lifecycle.md). Phase B0
 is also intentionally not activated in worker runtime while #18 and #13 remain
 open.
 
+The feature-disabled serverless authority, local isolation supervisor, and
+attested provider-egress/credential composition boundaries are documented in
+[serverless-harness.md](serverless-harness.md),
+[serverless-isolation.md](serverless-isolation.md), and
+[serverless-egress.md](serverless-egress.md). None registers a concrete cloud
+launcher, provider proxy, secret backend, or production route.
+
 Run `make provider-conformance` for the credential-free provider registry
 matrix. It performs vet plus repeated race-enabled tests over strict fixtures;
 it reads no provider secret, starts no provider process, performs no network

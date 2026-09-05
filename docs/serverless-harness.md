@@ -517,6 +517,9 @@ sandboxes.
 
 ## Egress model
 
+The implemented, still feature-disabled PR-03c composition contract and its
+effect ordering are specified in [serverless-egress.md](serverless-egress.md).
+
 All profiles start with network denied. An admitted provider route adds one
 exact egress policy, not general internet access:
 
@@ -876,7 +879,9 @@ labels, and milestone `MVP — Provider & harness (#13)`.
      timeout/cancel/kill, output bounds, cleanup proof, and network-denied fake.
 3. **PR-03c — Provider egress and invocation credentials**
    - exact provider proxy, #85 encrypted adapter/materialization, generation
-     fencing, zeroization/recovery, and fake endpoints only.
+     fencing, zeroization/recovery, and fake endpoints only; the first
+     feature-disabled composition boundary is documented in
+     [serverless-egress.md](serverless-egress.md).
 4. **PR-03d — Yandex scale-to-zero substrate spike**
    - immutable HTTP-server revision, YMQ trigger, warm reuse, cold-start,
      timeout/concurrency/cost, cancellation, lost response, and ambiguous

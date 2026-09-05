@@ -98,6 +98,9 @@ func TestSubstrateExecutionEvidenceExactBindingAndMutationResistance(t *testing.
 	if err := value.ValidateForAuthority(authority, reservation, allocation, preparedDigest); err != nil {
 		t.Fatal(err)
 	}
+	if err := value.ValidateForPersistedAuthority(authority, reservation); err != nil {
+		t.Fatalf("validate persisted authority: %v", err)
+	}
 	digest, err := value.DigestForAuthority(authority, reservation, allocation, preparedDigest)
 	if err != nil {
 		t.Fatal(err)
@@ -147,6 +150,11 @@ func TestSubstrateExecutionEvidenceExactBindingAndMutationResistance(t *testing.
 	wrongPrepared := domain.PreparedInvocationDigestV1(strings.Repeat("2", 64))
 	if value.ValidateForAuthority(authority, reservation, allocation, wrongPrepared) == nil {
 		t.Fatal("evidence accepted a different opaque prepared capability")
+	}
+	mutatedPersisted := value.Clone()
+	mutatedPersisted.PhysicalInvocationClaimID = "other-claim"
+	if mutatedPersisted.ValidateForPersistedAuthority(authority, reservation) == nil {
+		t.Fatal("persisted-authority validation accepted a different physical claim")
 	}
 }
 

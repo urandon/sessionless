@@ -301,6 +301,28 @@ func TestSupervisorRejectsSubstitutionBeforePrepare(t *testing.T) {
 	}
 }
 
+func TestSupervisorConsumesCapabilityAtProcessBoundary(t *testing.T) {
+	t.Parallel()
+	fixture := executableFixture(t)
+	prepared, issuer, allocation, now := childPreparedFixture(t, fixture)
+	launcher := newFixtureLauncher(allocation, now)
+	supervisor := newFixtureSupervisor(t, launcher, issuer, now)
+	spec := RunSpecV1{
+		Prepared: prepared, Executable: fixture, Arguments: []string{"--fixture"}, Stdin: []byte("input"),
+	}
+
+	if _, err := supervisor.Run(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := supervisor.Run(context.Background(), spec); !errors.Is(err, ErrAuthority) {
+		t.Fatalf("replayed capability error = %v, want %v", err, ErrAuthority)
+	}
+	_, prepares, _ := launcher.snapshot()
+	if prepares != 1 {
+		t.Fatalf("prepare calls = %d, want exactly one", prepares)
+	}
+}
+
 func TestSupervisorRejectsPreparedCapabilityAfterIssuerRestart(t *testing.T) {
 	t.Parallel()
 	fixture := executableFixture(t)
@@ -332,7 +354,7 @@ func TestSupervisorRejectsSymlinkScratchRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := NewSupervisorV1(SupervisorConfigV1{
-		ScratchRoot: link, Launcher: launcher, Validator: issuer,
+		ScratchRoot: link, Launcher: launcher, Gate: issuer,
 		Outputs: fixtureOutputs{launcher: launcher}, Credentials: fixtureCredentials{launcher: launcher},
 		Clock: func() time.Time { return now },
 	})
@@ -385,7 +407,7 @@ func TestOutputFailureBlocksResultWithoutTaintingCleanInstance(t *testing.T) {
 	prepared, issuer, allocation, now := childPreparedFixture(t, fixture)
 	launcher := newFixtureLauncher(allocation, now)
 	supervisor, err := NewSupervisorV1(SupervisorConfigV1{
-		ScratchRoot: canonicalTempDir(t), Launcher: launcher, Validator: issuer,
+		ScratchRoot: canonicalTempDir(t), Launcher: launcher, Gate: issuer,
 		Outputs: failingOutputs{launcher: launcher}, Credentials: fixtureCredentials{launcher: launcher},
 		Clock: func() time.Time { return now },
 	})
@@ -407,7 +429,7 @@ func TestOversizedOutputProofBlocksResultWithoutTaintingCleanInstance(t *testing
 	prepared, issuer, allocation, now := childPreparedFixture(t, fixture)
 	launcher := newFixtureLauncher(allocation, now)
 	supervisor, err := NewSupervisorV1(SupervisorConfigV1{
-		ScratchRoot: canonicalTempDir(t), Launcher: launcher, Validator: issuer,
+		ScratchRoot: canonicalTempDir(t), Launcher: launcher, Gate: issuer,
 		Outputs: oversizedOutputs{launcher: launcher}, Credentials: fixtureCredentials{launcher: launcher},
 		Clock: func() time.Time { return now },
 	})
@@ -429,7 +451,7 @@ func TestSupervisorTaintsAfterCredentialFinalizationFailure(t *testing.T) {
 	prepared, issuer, allocation, now := childPreparedFixture(t, fixture)
 	launcher := newFixtureLauncher(allocation, now)
 	supervisor, err := NewSupervisorV1(SupervisorConfigV1{
-		ScratchRoot: canonicalTempDir(t), Launcher: launcher, Validator: issuer,
+		ScratchRoot: canonicalTempDir(t), Launcher: launcher, Gate: issuer,
 		Outputs: fixtureOutputs{launcher: launcher}, Credentials: failingCredentials{launcher: launcher},
 		Clock: func() time.Time { return now },
 	})
@@ -453,7 +475,7 @@ func TestSupervisorUsesFreshEmergencyContextForTaint(t *testing.T) {
 	prepared, issuer, allocation, now := childPreparedFixtureWithLimits(t, fixture, 5*time.Minute, 50*time.Millisecond, 1<<20, 1<<20)
 	launcher := newFixtureLauncher(allocation, now)
 	supervisor, err := NewSupervisorV1(SupervisorConfigV1{
-		ScratchRoot: canonicalTempDir(t), Launcher: launcher, Validator: issuer,
+		ScratchRoot: canonicalTempDir(t), Launcher: launcher, Gate: issuer,
 		Outputs: fixtureOutputs{launcher: launcher}, Credentials: deadlineCredentials{launcher: launcher},
 		Clock: func() time.Time { return now },
 	})
@@ -544,7 +566,7 @@ func newFixtureLauncher(allocation domain.PreparedAllocationV1, now time.Time) *
 func newFixtureSupervisor(t testing.TB, launcher *fixtureLauncher, issuer *serverlessharness.CapabilityIssuer, now time.Time) *SupervisorV1 {
 	t.Helper()
 	supervisor, err := NewSupervisorV1(SupervisorConfigV1{
-		ScratchRoot: canonicalTempDir(t), Launcher: launcher, Validator: issuer,
+		ScratchRoot: canonicalTempDir(t), Launcher: launcher, Gate: issuer,
 		Outputs: fixtureOutputs{launcher: launcher}, Credentials: fixtureCredentials{launcher: launcher},
 		Clock: func() time.Time { return now },
 	})

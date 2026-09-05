@@ -529,7 +529,7 @@ func TestConcurrentSchedulerAdmissionReservesOneSubscriptionSlot(t *testing.T) {
 }
 
 func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
-	store, client := openStore(t)
+	store, client, grantIssuer := openStoreWithIssuer(t)
 	tenantID := domain.TenantID(uniqueID("tenant-worker"))
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	connectionID := domain.SubscriptionConnectionID("subscription-" + string(tenantID))
@@ -655,6 +655,7 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 	if effect.Reservation.InvocationAuthorityDigest == "" || effect.Grant == nil || effect.Grant.Authority.Lease != lease {
 		t.Fatalf("reserved effect authority = %#v", effect)
 	}
+	substrateEvidence := successfulSubstrateExecutionEvidence(t, grantIssuer, effect)
 	replayed, err := store.ReserveAttemptEffect(context.Background(), effectRequest)
 	if err != nil || replayed.Status != ports.AttemptEffectReplayedV1 || replayed.Reservation != effect.Reservation {
 		t.Fatalf("exact provider effect replay = %#v, %v", replayed, err)
@@ -662,8 +663,31 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 	contender := effectRequest
 	contender.PhysicalInvocationClaimID = uniqueID("physical-contender")
 	reconcile, err := store.ReserveAttemptEffect(context.Background(), contender)
-	if err != nil || reconcile.Status != ports.AttemptEffectReconcileOnlyV1 || reconcile.Reservation != effect.Reservation {
+	if err != nil || reconcile.Status != ports.AttemptEffectReconcileOnlyV1 || reconcile.Reservation != effect.Reservation ||
+		reconcile.Grant != nil || reconcile.ObservationGrant == nil || grantIssuer.VerifyObservationGrant(*reconcile.ObservationGrant) != nil {
 		t.Fatalf("contending provider effect = %#v, %v", reconcile, err)
+	}
+	reconcileAuthority := reconcile.ObservationGrant.Authority
+	reconcileAuthorityDigest, _ := reconcileAuthority.Digest()
+	reconcileSubstrateDigest, _ := reconcileAuthority.SubstrateBinding.Digest()
+	reconciliationEvidence, err := domain.SealAttemptEffectReconciliationEvidenceV1(
+		reconcileAuthority, reconcile.Reservation, domain.SubstrateOperationObservationV1{
+			State: domain.SubstrateOperationObservedV1, InvocationAuthority: reconcileAuthorityDigest,
+			SubstrateBinding: reconcileSubstrateDigest, PhysicalInvocationID: "integration-runtime-operation",
+			ObservedAt: now.Add(7 * time.Second),
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconciliationRecord := ports.AttemptEffectReconciliationRecordV1{
+		TenantID: tenantID, RunID: ingress.Run.ID, AttemptID: ingress.Attempt.ID, Evidence: reconciliationEvidence,
+	}
+	if err := store.RecordAttemptEffectReconciliation(context.Background(), reconciliationRecord); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordAttemptEffectReconciliation(context.Background(), reconciliationRecord); err != nil {
+		t.Fatalf("idempotent reconciliation evidence replay: %v", err)
 	}
 	divergent := effectRequest
 	divergentDigest := strings.Repeat("d", 64)
@@ -672,6 +696,7 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 		t.Fatal("divergent upstream idempotency authority was accepted")
 	}
 	assertCount(t, client, "attempt_effect_reservations", tenantID, 1)
+	assertCount(t, client, "attempt_effect_reconciliation_evidence", tenantID, 1)
 	checkpoint := domain.Checkpoint{
 		ID: domain.CheckpointID(uniqueID("checkpoint")), TenantID: tenantID,
 		RunID: ingress.Run.ID, AttemptID: ingress.Attempt.ID, Sequence: 1,
@@ -712,7 +737,7 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 	if err := store.CompleteLegacyTelegramWorkerJob(context.Background(), ports.LegacyTelegramWorkerCompletion{
 		TenantID: tenantID, RunID: ingress.Run.ID, AttemptID: ingress.Attempt.ID,
 		ReservationID: reservationID, LeaseID: lease.ID, Fence: lease.FenceToken,
-		At: finishedAt, Manifest: manifest, Delivery: delivery,
+		At: finishedAt, Manifest: manifest, Delivery: delivery, SubstrateEvidence: &substrateEvidence,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -730,6 +755,7 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 	assertCount(t, client, "lease_expiry", tenantID, 0)
 	assertCount(t, client, "lease_expiry_v2", tenantID, 0)
 	assertCount(t, client, "telegram_delivery_outbox", tenantID, 1)
+	assertCount(t, client, "substrate_execution_evidence", tenantID, 1)
 }
 
 func TestTenantScopedReadsCannotCrossTenant(t *testing.T) {
@@ -1207,6 +1233,12 @@ func TestConcurrentTelegramNewCommandsFenceStaleBindingRevision(t *testing.T) {
 
 func openStore(t *testing.T) (*ydbstore.Store, *ydbclient.Client) {
 	t.Helper()
+	store, client, _ := openStoreWithIssuer(t)
+	return store, client
+}
+
+func openStoreWithIssuer(t *testing.T) (*ydbstore.Store, *ydbclient.Client, *serverlessharness.CapabilityIssuer) {
+	t.Helper()
 	connectionString := requireConnectionString(t)
 	migrator, err := ydbmigrate.New(ydbmigrate.Config{
 		ConnectionString: connectionString,
@@ -1235,7 +1267,63 @@ func openStore(t *testing.T) (*ydbstore.Store, *ydbclient.Client) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return store, client
+	return store, client, grantIssuer
+}
+
+func successfulSubstrateExecutionEvidence(
+	t *testing.T,
+	issuer *serverlessharness.CapabilityIssuer,
+	effect ports.ReserveAttemptEffectResultV1,
+) domain.SubstrateExecutionEvidenceV1 {
+	t.Helper()
+	if issuer == nil || effect.Grant == nil {
+		t.Fatal("substrate evidence fixture requires an issuer-owned effect grant")
+	}
+	authority := effect.Grant.Authority.Clone()
+	substrateDigest, _ := authority.SubstrateBinding.Digest()
+	allocation := domain.PreparedAllocationV1{
+		Version: domain.PreparedAllocationVersionV1, SubstrateBindingDigest: substrateDigest,
+		ObservedImageDigest: authority.SubstrateBinding.ImageDigest, ObservedOuterHarnessDigest: authority.SubstrateBinding.OuterHarnessArtifactDigest,
+		ObservedProxyArtifactDigest: authority.SubstrateBinding.EgressProxyArtifactDigest, ObservedProxyIdentityDigest: authority.SubstrateBinding.EgressProxyIdentityDigest,
+		WorkloadMode: authority.SubstrateBinding.WorkloadMode,
+		InProcess:    &domain.InProcessAttestationV1{LinkedBackendProfileDigest: authority.HarnessBinding.Backend.BackendProfileDigest},
+	}
+	prepared, err := issuer.Issue(effect.Grant.Clone(), allocation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider, err := (domain.ProviderExecutionEvidenceV1{
+		AcceptanceClass: domain.ProviderAcceptanceAcceptedV1, FinishClass: domain.ProviderFinishCompletedV1,
+		RouteState: domain.ProviderEvidenceSupportedV1, ActualModelVendorID: authority.HarnessBinding.ModelVendorID,
+		ActualModelID: authority.HarnessBinding.ModelID, TransportKind: domain.ProviderTransportLocalCLIV1,
+		TransportProvider: "sessionless", UpstreamProviderID: "local", EndpointID: "deterministic-fixture",
+		PolicyVerdict: domain.ProviderPolicyGoV1, UsageProvenance: domain.ProviderUsageUnknownV1,
+	}).SealForBinding(authority.HarnessBinding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknown := func(kind domain.SubstrateResourceKindV1) domain.SubstrateResourceObservationV1 {
+		return domain.SubstrateResourceObservationV1{Kind: kind, State: domain.SubstrateResourceUnknownV1, Provenance: domain.SubstrateResourceProvenanceUnknownV1}
+	}
+	evidence, err := (domain.SubstrateExecutionEvidenceV1{
+		Allocation: domain.SubstrateAllocationStartedV1, Process: domain.SubstrateProcessNotApplicableV1,
+		CredentialFinalization: domain.CredentialFinalizationNotRequiredV1, Cleanup: domain.SubstrateCleanupVerifiedV1,
+		Egress: domain.SubstrateEgressPolicyEnforcedV1, ImageAttestation: domain.SubstrateAttestationVerifiedV1,
+		BackendAttestation: domain.SubstrateAttestationVerifiedV1, ProxyAttestation: domain.SubstrateProxyAttestationVerifiedV1,
+		Cancellation:     domain.SubstrateCancellationEvidenceV1{Request: domain.SubstrateCancellationRequestNoneV1, BackendSignal: domain.SubstrateCancellationSignalNotRequiredV1},
+		ProviderEvidence: &provider,
+		ResourceObservations: []domain.SubstrateResourceObservationV1{
+			unknown(domain.SubstrateResourceCPUTimeV1), unknown(domain.SubstrateResourceEgressBytesV1),
+			unknown(domain.SubstrateResourceEvidenceBytesV1), unknown(domain.SubstrateResourceIngressBytesV1),
+			unknown(domain.SubstrateResourceLogBytesV1), unknown(domain.SubstrateResourceMemoryPeakV1),
+			unknown(domain.SubstrateResourceScratchPeakV1),
+		},
+		FailureCode: domain.SubstrateExecutionFailureNoneV1,
+	}).SealForAuthority(authority, effect.Reservation, allocation, prepared.Digest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return evidence
 }
 
 func commandFixture(

@@ -407,7 +407,7 @@ func (store *Store) CompleteWorkerJob(
 			return err
 		}
 		finalizationDigest, err := runFinalizationDigest(
-			domain.RunSucceeded, &completion.Manifest, completion.Events,
+			domain.RunSucceeded, &completion.Manifest, completion.Events, completion.SubstrateEvidence, nil,
 		)
 		if err != nil {
 			return err
@@ -427,7 +427,7 @@ func (store *Store) CompleteWorkerJob(
 		return completeWorkerSuccessTx(
 			ctx, state, tx, run, attempt, reservation,
 			completion.LeaseID, completion.Fence, completion.At,
-			completion.Manifest, completion.Usage,
+			completion.Manifest, completion.Usage, completion.SubstrateEvidence, true,
 			func(run domain.Run) error {
 				return appendCanonicalFinalizationTx(
 					ctx, tx, run, domain.RunSucceeded, finalizationDigest,
@@ -456,7 +456,7 @@ func (store *Store) CompleteLegacyTelegramWorkerJob(
 		return completeWorkerSuccessTx(
 			ctx, state, tx, run, attempt, reservation,
 			completion.LeaseID, completion.Fence, completion.At,
-			completion.Manifest, completion.Usage,
+			completion.Manifest, completion.Usage, completion.SubstrateEvidence, true,
 			func(domain.Run) error {
 				return state.PutTelegramDeliveryOutbox(ctx, completion.Delivery)
 			},
@@ -476,10 +476,15 @@ func completeWorkerSuccessTx(
 	at time.Time,
 	manifest domain.ArtifactManifest,
 	usage []domain.UsageObservation,
+	substrateEvidence *domain.SubstrateExecutionEvidenceV1,
+	requireSubstrateEvidence bool,
 	finalize func(domain.Run) error,
 ) error {
 	if err := requireLeaseOwnership(ctx, tx, run.ID, leaseID, fence, at); err != nil {
 		return err
+	}
+	if requireSubstrateEvidence && substrateEvidence == nil {
+		return domain.ValidationError{Field: "worker_completion.substrate_evidence", Reason: "must not be nil for managed execution"}
 	}
 	if err := run.Transition(domain.RunSucceeded, at); err != nil {
 		return err
@@ -506,6 +511,11 @@ func completeWorkerSuccessTx(
 	}
 	if err := state.PutArtifactManifest(ctx, manifest); err != nil {
 		return err
+	}
+	if substrateEvidence != nil {
+		if err := putSubstrateExecutionEvidenceTx(ctx, tx, run, attempt, *substrateEvidence, at); err != nil {
+			return err
+		}
 	}
 	if err := finalize(run); err != nil {
 		return err
@@ -540,7 +550,7 @@ func (store *Store) FailWorkerJob(ctx context.Context, failure ports.WorkerFailu
 		if err := validateCanonicalFinalizationEvents(runStatus, failure.Events); err != nil {
 			return err
 		}
-		finalizationDigest, err := runFinalizationDigest(runStatus, nil, failure.Events)
+		finalizationDigest, err := runFinalizationDigest(runStatus, nil, failure.Events, nil, failure.ReconciliationEvidence)
 		if err != nil {
 			return err
 		}
@@ -556,7 +566,7 @@ func (store *Store) FailWorkerJob(ctx context.Context, failure ports.WorkerFailu
 		}
 		return failWorkerTx(
 			ctx, state, tx, run, attempt, reservation, runStatus, attemptStatus,
-			failure.LeaseID, failure.Fence, failure.At, failure.Code,
+			failure.LeaseID, failure.Fence, failure.At, failure.Code, failure.ReconciliationEvidence,
 			func(run domain.Run) error {
 				return appendCanonicalFinalizationTx(
 					ctx, tx, run, runStatus, finalizationDigest, failure.Events, failure.At,
@@ -587,7 +597,7 @@ func (store *Store) FailLegacyTelegramWorkerJob(
 		}
 		return failWorkerTx(
 			ctx, state, tx, run, attempt, reservation, runStatus, attemptStatus,
-			failure.LeaseID, failure.Fence, failure.At, failure.Code,
+			failure.LeaseID, failure.Fence, failure.At, failure.Code, failure.ReconciliationEvidence,
 			func(domain.Run) error {
 				return state.PutTelegramDeliveryOutbox(ctx, failure.Delivery)
 			},
@@ -608,10 +618,18 @@ func failWorkerTx(
 	fence uint64,
 	at time.Time,
 	code string,
+	reconciliationEvidence *domain.AttemptEffectReconciliationEvidenceV1,
 	finalize func(domain.Run) error,
 ) error {
 	if err := requireLeaseOwnership(ctx, tx, run.ID, leaseID, fence, at); err != nil {
 		return err
+	}
+	if reconciliationEvidence != nil {
+		if err := putAttemptEffectReconciliationTx(ctx, tx, ports.AttemptEffectReconciliationRecordV1{
+			TenantID: run.TenantID, RunID: run.ID, AttemptID: attempt.ID, Evidence: reconciliationEvidence.Clone(),
+		}); err != nil {
+			return err
+		}
 	}
 	if err := run.Transition(runStatus, at); err != nil {
 		return err

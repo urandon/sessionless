@@ -115,12 +115,65 @@ func (issuer *CapabilityIssuer) MintAttemptEffectOwnershipGrant(
 	return grant.Clone(), nil
 }
 
+func (issuer *CapabilityIssuer) MintAttemptEffectObservationGrant(
+	authority domain.ServerlessInvocationAuthorityV1,
+	reservation domain.AttemptEffectReservationV1,
+	issuedAt time.Time,
+	expiresAt time.Time,
+) (ports.AttemptEffectObservationGrantV1, error) {
+	if issuer == nil || issuer.clock == nil || authority.Validate() != nil || reservation.ValidateForAuthority(authority) != nil {
+		return ports.AttemptEffectObservationGrantV1{}, ErrInvalidPreparedInvocation
+	}
+	issuedAt = issuedAt.UTC()
+	expiresAt = expiresAt.UTC()
+	now := issuer.clock().UTC()
+	if now.Before(issuedAt) || !now.Before(expiresAt) {
+		return ports.AttemptEffectObservationGrantV1{}, ErrInvalidPreparedInvocation
+	}
+	grant := ports.AttemptEffectObservationGrantV1{
+		Version: ports.AttemptEffectObservationGrantVersionV1, Authority: authority.Clone(), Reservation: reservation.Clone(),
+		GrantIssuedAt: issuedAt, GrantExpiresAt: expiresAt, Authenticator: make([]byte, sha256.Size),
+	}
+	grant.Authenticator = issuer.authenticateObservationGrant(grant)
+	if err := grant.Validate(); err != nil {
+		return ports.AttemptEffectObservationGrantV1{}, ErrInvalidPreparedInvocation
+	}
+	return grant.Clone(), nil
+}
+
 func (issuer *CapabilityIssuer) verifyGrant(grant ports.AttemptEffectOwnershipGrantV1, now time.Time) error {
 	if issuer == nil || issuer.clock == nil || grant.Validate() != nil || now.Before(grant.Reservation.ReservedAt) || !now.Before(grant.GrantExpiresAt) {
 		return ErrInvalidPreparedInvocation
 	}
 	expected := issuer.authenticateGrant(grant)
 	if subtle.ConstantTimeCompare(expected, grant.Authenticator) != 1 || grant.Authority.ValidateAt(now) != nil {
+		return ErrInvalidPreparedInvocation
+	}
+	return nil
+}
+
+// VerifyGrant authenticates a durable reservation result before any substrate
+// preflight is delegated. It does not issue or consume an execution capability.
+func (issuer *CapabilityIssuer) VerifyGrant(grant ports.AttemptEffectOwnershipGrantV1) error {
+	if issuer == nil || issuer.clock == nil {
+		return ErrInvalidPreparedInvocation
+	}
+	return issuer.verifyGrant(grant, issuer.clock().UTC())
+}
+
+// VerifyObservationGrant authenticates read-only authority for a historical
+// physical invocation. It deliberately uses structural authority validation:
+// reconciliation remains possible after the original execution window closes.
+func (issuer *CapabilityIssuer) VerifyObservationGrant(grant ports.AttemptEffectObservationGrantV1) error {
+	if issuer == nil || issuer.clock == nil || grant.Validate() != nil {
+		return ErrInvalidPreparedInvocation
+	}
+	now := issuer.clock().UTC()
+	if now.Before(grant.GrantIssuedAt) || !now.Before(grant.GrantExpiresAt) {
+		return ErrInvalidPreparedInvocation
+	}
+	expected := issuer.authenticateObservationGrant(grant)
+	if subtle.ConstantTimeCompare(expected, grant.Authenticator) != 1 {
 		return ErrInvalidPreparedInvocation
 	}
 	return nil
@@ -214,6 +267,19 @@ func (issuer *CapabilityIssuer) authenticateGrant(grant ports.AttemptEffectOwner
 	writeFrame(mac, string(authorityDigest))
 	writeFrame(mac, string(reservationDigest))
 	writeFrame(mac, grant.Reservation.PhysicalInvocationClaimID)
+	writeInstant(mac, grant.GrantExpiresAt)
+	return mac.Sum(nil)
+}
+
+func (issuer *CapabilityIssuer) authenticateObservationGrant(grant ports.AttemptEffectObservationGrantV1) []byte {
+	mac := hmac.New(sha256.New, issuer.key[:])
+	writeFrame(mac, "sessionless.attempt-effect-observation-grant.v1")
+	authorityDigest, _ := grant.Authority.Digest()
+	reservationDigest, _ := grant.Reservation.DigestForAuthority(grant.Authority)
+	writeFrame(mac, string(authorityDigest))
+	writeFrame(mac, string(reservationDigest))
+	writeFrame(mac, grant.Reservation.PhysicalInvocationClaimID)
+	writeInstant(mac, grant.GrantIssuedAt)
 	writeInstant(mac, grant.GrantExpiresAt)
 	return mac.Sum(nil)
 }

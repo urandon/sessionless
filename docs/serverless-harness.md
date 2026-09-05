@@ -253,20 +253,55 @@ It binds the winning physical claim to the stored reservation and observed
 allocation. It is not a lifecycle record and cannot be reconstructed from
 caller input or a queue delivery, and no public decoder or constructor exists.
 
+`SubstrateRegistryV1.Prepare` is the only generic composition step from the
+durable reservation result to that capability. It rejects structurally invalid,
+reconcile-only, and issuer-MAC-mismatched results before delegating preflight;
+then it exact-resolves the sealed substrate, validates its observed allocation,
+and issues the capability. It deliberately does not consume the capability:
+the selected child-process supervisor or direct-egress boundary owns the one
+actual effect transition.
+
+The managed worker receives only `PreparedExecutionV1`, an opaque operation
+session returned by `PrepareExecution` after the same authenticated preparation.
+The session exposes bound `Execute`, `Cancel`, and `Reconcile` operations but no
+capability, authority getter, decoder, or alternate substrate selector. Thus the
+worker cannot reconstruct, retain, mutate, or route around `PreparedInvocation`;
+the registry and selected exact driver remain the only holders that can consume
+it at the reviewed effect boundary.
+
+A different physical delivery receives a separate short-lived
+`AttemptEffectObservationGrantV1`. Its MAC uses a domain distinct from effect
+ownership, so it cannot issue a `PreparedInvocation`. Exact preparation returns
+only `PreparedReconciliationV1`, which exposes `Reconcile` but neither `Execute`
+nor `Cancel`. Historical authority is structurally validated so an immutable
+tombstone can still observe the original claim after its execution window has
+closed; the observation grant itself remains short-lived and process-local.
+The opaque session seals the returned operation with the original authority
+digest, effect-reservation digest, winning physical claim, and observation
+time. `observed`, `acknowledged`, and `unknown` are persisted as bounded retry
+evidence. An exact `not_found` is persisted atomically with a terminal failed
+attempt (`provider_effect_not_found_after_reservation`); it never reopens the
+one-way effect fence or authorizes a replacement call.
+
 The proposed substrate port is deliberately smaller than a general remote
 shell:
 
 ```text
 ExecutionSubstrateV1.Preflight(ctx, authority) -> verified profile | stable error
-ExecutionSubstrateV1.Execute(ctx, prepared_invocation, SessionlessHarnessV1) -> evidence
+ExecutionSubstrateV1.Execute(ctx, prepared_invocation, exact_execution_request,
+                             event_sink, SessionlessHarnessV1)
+  -> harness_result + substrate_evidence
 ExecutionSubstrateV1.Cancel(ctx, exact attempt/lease/fence) -> observation
 ExecutionSubstrateV1.Reconcile(ctx, exact attempt/lease/fence) -> observation
 ```
 
-`Execute` exact-validates the capability against the current authority,
-reservation, physical claim and allocation before any effect; it cannot choose
-a backend or provider. The returned evidence exact-compares all three digests
-and the claim ID. `Cancel` stays routable after
+`Execute` exact-validates the capability and the explicit execution request
+against the current authority, reservation, physical claim, allocation,
+placement, harness binding, substrate binding, and admission cost ceiling
+before any effect; it cannot choose a backend or provider or recover material
+through a hidden side channel. The returned provider evidence must be the same
+sealed observation in both the harness result and substrate evidence, which
+exact-compares all authority digests and the claim ID. `Cancel` stays routable after
 provider-policy evidence expires, but its exact attempt, lease, fence,
 substrate, and artifact bindings must still validate. `Reconcile` observes an
 already bound invocation; it never starts work.
@@ -278,6 +313,12 @@ has no default or nearest match, and rejects disabled or expired profiles for
 new `Execute`. Immutable tombstoned registrations retain only enough trusted
 adapter metadata for exact `Cancel` and `Reconcile` after disablement or
 expiry. They cannot start work.
+
+Backend registrations carry the same explicit start gate: `Enabled=false` is
+a tombstone that can still route cancellation through its exact reviewed
+driver, but `Preflight` and `Execute` fail with
+`harness_backend_disabled` before calling the driver. Registration presence,
+ordering, or an installed executable therefore never enables a backend.
 
 `SubstrateExecutionEvidenceV1.ValidateForAuthority` exact-compares both binding
 digests and enforces a closed compatibility matrix:
@@ -304,6 +345,15 @@ Canonical terminal commit is intentionally not a field in substrate evidence.
 The #82 read model joins it from the canonical attempt/finalization authority;
 the runtime cannot assert it about itself.
 
+For a successful managed attempt, the worker may submit terminal state only
+with the exact sealed substrate evidence returned by its opaque execution
+session. After credential finalization and scratch cleanup succeed, the YDB
+terminal transaction validates the observation against the persisted effect
+authority and reservation, inserts one immutable evidence row keyed by attempt,
+and seals its digest into canonical finalization idempotency. Attached-worker
+terminal materialization remains a separate signed-evidence contract and does
+not synthesize a serverless substrate observation.
+
 ## Selected request path
 
 ```text
@@ -317,6 +367,7 @@ DispatchOutbox -> YMQ dispatch message
   -> final authority/freshness/cancel/profile gate and atomically append
      the canonical provider-effect reservation
   -> attest PreparedAllocationV1 and issue the non-durable PreparedInvocationV1
+  -> return only its opaque PreparedExecutionV1 operation session to the worker
   -> only the exact reservation owner materializes immutable context/workspace
   -> repeat the final authority/freshness/cancel/attestation gate
   -> invocation credential issue/materialize
@@ -356,18 +407,23 @@ YMQ redelivery is expected. A duplicate delivery must either lose the lease,
 observe a committed/terminal attempt, or reconcile the exact current
 invocation and its effect reservation. It cannot cause two provider calls.
 Container concurrency one is a defence in depth; the lease/fence and durable
-effect reservation are the cross-instance authority. The current worker
-runtime does not yet persist this provider-effect fence, so no production
-provider profile can be enabled by configuration alone.
+effect reservation are the cross-instance authority. The current worker now
+persists this fence before credential or workspace materialization and blocks a
+different physical claim before `Execute`. It does not yet pass the returned
+MAC-authenticated ownership grant through PR-03b preparation and consume it at
+the PR-03c egress boundary, so no production provider profile can be enabled by
+configuration alone.
 
 The existing cloud profile also uses a common `WORKER_ID=serverless-worker`, a
 two-minute lease, and a 15-minute YMQ visibility window. Long provider work
-therefore requires a PR-03a worker refactor, not a larger documentation timeout:
+therefore requires the remaining PR-03 composition, not a larger documentation
+timeout:
 
 - before credential issue, the lease must already cover the admitted execution
   plus finalization horizon required by the credential contract;
 - an independent watchdog renews the lease and reads cancellation throughout
-  silent provider calls, output upload, credential finalization, and cleanup;
+  preparation, materialization, silent provider calls, output upload,
+  credential finalization, and cleanup;
 - `lease.expires_at >= credential.expires_at >= execution_deadline +
   cleanup_budget`; the serverless lease horizon therefore cannot use the
   current two-minute configuration for a 40-minute execution;
@@ -397,9 +453,13 @@ The initial production policy reserves the one-hour Yandex request limit as:
 - at least 5 additional minutes remain unallocated as a hard platform guard.
 
 PR-03d must measure and then reduce these values if the tail does not fit. The
-current two-minute lease and event-boundary-only renewal do not pass this
-profile. A request timeout is never reported as process stopped or cleanup
-verified.
+two-minute lease does not pass this profile. PR-03d now keeps independent
+polling active across scratch and credential preparation, materialization,
+silent harness execution, credential finalization, output and canonical-event
+upload, and scratch cleanup. Production promotion still requires the PR-03b
+process supervisor and PR-03c transport to consume that cancellation signal
+and emit verified stop/cleanup evidence. A request timeout is never reported as
+process stopped or cleanup verified.
 
 Yandex's broker acknowledges the queue delivery because the container returned
 HTTP 2xx. The in-memory trigger adapter's `Ack` only marks that local delivery
@@ -477,14 +537,15 @@ launcher, such as a managed per-session microVM or an equivalent measured
 boundary. AW-05's `NetworkDenied=true` profile is not weakened or relabelled to
 make cloud provider egress appear compatible.
 
-The current `worker.Manager` does not meet the cleanup ordering above: its
-invocation directory is removed by a best-effort `defer` after terminal/queue
-handling and the removal error is ignored. PR-03a/PR-03b must replace that path
-with a typed finalization coordinator. It stops the workload, uploads allowed
-outputs, finalizes/releases credentials, removes and scans the workspace, and
-only then permits canonical success and trigger acknowledgement. A cleanup
-failure is committed as an independent failure/ambiguity fact, taints and
-terminates the warm instance, and can never be converted into `verified`.
+`worker.Manager` now uploads allowed outputs, finalizes/releases credentials,
+removes its invocation directory, and verifies absence before canonical success
+and trigger acknowledgement. Removal or absence-check failure is a typed
+`cleanup_failed` terminal outcome and cannot commit success. The manager still
+has no cross-resource residue proof or warm-instance taint action. PR-03b
+composition must close that last gap with its typed finalization coordinator:
+scan the workspace, processes, sockets, and credentials, then permit success
+only with verified cleanup. A cleanup failure taints and terminates the warm
+instance and can never be converted into `verified`.
 
 The feature-disabled PR-03b implementation contract and its inherited AW-05
 boundary are documented in
@@ -641,7 +702,8 @@ objects. No projection may infer `healthy`, `safe`, `erased`, `stopped`, or
 ## Substrate and competitor comparison
 
 All rows below are **documented vendor behavior**, not Sessionless measurements,
-unless explicitly marked. Current pages were checked on 2026-08-26; preview
+unless explicitly marked. Current Yandex pages were rechecked on 2026-09-05;
+other pages were checked on 2026-08-26; preview
 surfaces can change. Cold-start values are unknown until PR-03d runs the exact
 image and region.
 
@@ -680,7 +742,9 @@ no credentials and is outside every Sessionless worktree.
 
 No vendor marketing claim is treated as a Sessionless pass. The cloud-dev spike
 records exact image/profile/region, raw measurement artifacts in private test
-storage, sanitized results, and reproducible commands.
+storage, sanitized results, and reproducible commands. The executable gate
+contract, current no-go baseline, and operator-safe probe sequence are in
+[yandex-serverless-substrate.md](yandex-serverless-substrate.md).
 
 ### Region and data residency
 

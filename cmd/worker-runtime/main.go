@@ -12,10 +12,12 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/deterministicharness"
+	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/outboxwake"
 	"gitcode.com/urandon/sessionless/internal/portlog"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/s3store"
+	"gitcode.com/urandon/sessionless/internal/serverlessharness"
 	"gitcode.com/urandon/sessionless/internal/serverlesshttp"
 	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 	"gitcode.com/urandon/sessionless/internal/sqsqueue"
@@ -55,7 +57,12 @@ func main() {
 		os.Exit(1)
 	}
 	defer ydb.Close(context.Background())
-	state, err := ydbstore.New(ydb.DB, ydbstore.Options{})
+	effectIssuer, err := serverlessharness.NewCapabilityIssuer(time.Now, nil)
+	if err != nil {
+		logger.Error("create provider effect grant issuer", "error", err)
+		os.Exit(1)
+	}
+	state, err := ydbstore.New(ydb.DB, ydbstore.Options{AttemptEffectGrantIssuer: effectIssuer})
 	if err != nil {
 		logger.Error("create worker state store", "error", err)
 		os.Exit(1)
@@ -98,6 +105,7 @@ func main() {
 	}
 	harnessRegistry, err := sessionlessharness.NewRegistry(time.Now, sessionlessharness.Registration{
 		Descriptor:      sessionlessharness.DeterministicFixtureDescriptorV1(),
+		Enabled:         true,
 		ValidateBinding: sessionlessharness.ValidateDeterministicFixtureBindingV1,
 		Driver:          harness,
 	})
@@ -105,11 +113,35 @@ func main() {
 		logger.Error("create Sessionless harness registry", "error", err)
 		os.Exit(1)
 	}
+	inProcessSubstrate, err := serverlessharness.NewInProcessExecutionSubstrateV1(
+		time.Now, effectIssuer, sessionlessharness.DeterministicFixtureDescriptorV1(),
+	)
+	if err != nil {
+		logger.Error("create deterministic execution substrate", "error", err)
+		os.Exit(1)
+	}
+	executionPreparer, err := serverlessharness.NewExactExecutionPreparerV1(
+		time.Now,
+		effectIssuer,
+		func(authority domain.ServerlessInvocationAuthorityV1) (serverlessharness.SubstrateRegistrationV1, error) {
+			if err := sessionlessharness.ValidateDeterministicFixtureInvocationAuthorityV2(authority); err != nil {
+				return serverlessharness.SubstrateRegistrationV1{}, err
+			}
+			return serverlessharness.SubstrateRegistrationV1{
+				Binding: authority.SubstrateBinding, Enabled: true, Driver: inProcessSubstrate,
+			}, nil
+		},
+	)
+	if err != nil {
+		logger.Error("create exact execution preparer", "error", err)
+		os.Exit(1)
+	}
 	managerConfig := worker.Config{
-		ScratchRoot: envOrDefault("WORKER_SCRATCH_ROOT", "/tmp/sessionless-worker"),
-		WorkerID:    envOrDefault("WORKER_ID", defaultWorkerID()),
-		LeaseTTL:    envDuration("WORKER_LEASE_TTL", 2*time.Minute),
-		RetryDelay:  envDuration("WORKER_RETRY_DELAY", 5*time.Second),
+		ScratchRoot:           envOrDefault("WORKER_SCRATCH_ROOT", "/tmp/sessionless-worker"),
+		WorkerID:              envOrDefault("WORKER_ID", defaultWorkerID()),
+		LeaseTTL:              envDuration("WORKER_LEASE_TTL", 2*time.Minute),
+		LeaseWatchdogInterval: envDuration("WORKER_LEASE_WATCHDOG_INTERVAL", 0),
+		RetryDelay:            envDuration("WORKER_RETRY_DELAY", 5*time.Second),
 		RetryObserver: func(cause error) {
 			logger.Warn("worker invocation scheduled for retry", "error", cause)
 		},
@@ -117,6 +149,7 @@ func main() {
 		MaxMaterializedBytes:  int64(envUint64("WORKER_MAX_BLOB_BYTES", 64<<20)),
 		MaxSnapshotFallbacks:  uint32(envUint64("WORKER_MAX_SNAPSHOT_FALLBACKS", 4)),
 		DeliveryWakePublisher: deliveryWakePublisher,
+		ExecutionPreparer:     executionPreparer,
 	}
 	newManager := func(queue ports.Queue) (*worker.Manager, error) {
 		return worker.New(

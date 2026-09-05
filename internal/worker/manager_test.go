@@ -584,6 +584,121 @@ func TestWorkerWatchdogRenewsLeaseDuringSilentHarnessCall(t *testing.T) {
 	}
 }
 
+func TestWorkerWatchdogRenewsLeaseDuringInputMaterialization(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	clock := testkit.NewFakeClock(workerTestTime)
+	queue := testkit.NewMemoryQueue()
+	blobs := newMemoryBlobs()
+	state := newWorkerState()
+	state.renewalNotify = make(chan error, 1)
+	loaded := workerFixture(t, ctx, blobs, "tenant-a", workerTestTime)
+	state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
+	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
+	materializationStarted, releaseMaterialization := blobs.blockNextOpen()
+	manager, err := worker.New(worker.Config{
+		ScratchRoot: t.TempDir(), WorkerID: "worker-test", LeaseTTL: time.Minute,
+		LeaseWatchdogInterval: time.Millisecond, DeliveryWakePublisher: newDeliveryWakePublisher(t),
+	}, clock, queue, state, blobs, resultHarness{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := runWorkerOnce(manager, ctx)
+	waitForSignal(t, ctx, materializationStarted, "input materialization")
+	clock.Advance(40 * time.Second)
+	select {
+	case renewalErr := <-state.renewalNotify:
+		if renewalErr != nil {
+			t.Fatalf("watchdog renewal: %v", renewalErr)
+		}
+	case <-ctx.Done():
+		t.Fatalf("watchdog renewal: %v", ctx.Err())
+	}
+	close(releaseMaterialization)
+	result := waitForWorkerResult(t, ctx, done)
+	if result.err != nil || result.outcome != worker.OutcomeCompleted {
+		t.Fatalf("outcome/error = %q/%v, want completed/nil", result.outcome, result.err)
+	}
+}
+
+func TestWorkerWatchdogLeaseLossDuringOutputUploadBlocksCompletion(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	clock := testkit.NewFakeClock(workerTestTime)
+	queue := testkit.NewMemoryQueue()
+	blobs := newMemoryBlobs()
+	state := newWorkerState()
+	loaded := workerFixture(t, ctx, blobs, "tenant-a", workerTestTime)
+	key := jobKey(loaded.Run.TenantID, loaded.Run.ID)
+	state.jobs[key] = loaded
+	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
+	uploadStarted, releaseUpload := blobs.blockNextPut("artifacts/sha256/")
+	manager, err := worker.New(worker.Config{
+		ScratchRoot: t.TempDir(), WorkerID: "worker-test", LeaseTTL: time.Minute,
+		LeaseWatchdogInterval: time.Millisecond, DeliveryWakePublisher: newDeliveryWakePublisher(t),
+	}, clock, queue, state, blobs, outputHarness{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := runWorkerOnce(manager, ctx)
+	waitForSignal(t, ctx, uploadStarted, "output upload")
+	state.replaceFence(key)
+	result := waitForWorkerResult(t, ctx, done)
+	close(releaseUpload)
+	if result.err != nil || result.outcome != worker.OutcomeRetried {
+		t.Fatalf("outcome/error = %q/%v, want retried/nil", result.outcome, result.err)
+	}
+	if state.completions != 0 || state.failures != 0 {
+		t.Fatalf("completions/failures = %d/%d, want 0/0", state.completions, state.failures)
+	}
+}
+
+func TestWorkerWatchdogRenewsLeaseDuringCredentialFinalization(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	clock := testkit.NewFakeClock(workerTestTime)
+	queue := testkit.NewMemoryQueue()
+	blobs := newMemoryBlobs()
+	state := newWorkerState()
+	loaded := workerFixture(t, ctx, blobs, "tenant-a", workerTestTime)
+	loaded.Job.CredentialOwnerUserID = "user-a"
+	setInvocationHarnessBinding(&loaded.Job, loaded.Run.SubscriptionConnectionID, 1)
+	state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
+	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
+	lifecycle := newRecordingCredentialLifecycle(t, "user-a")
+	finalizationStarted, releaseFinalization := lifecycle.blockNextWriteBack()
+	manager, err := worker.New(worker.Config{
+		ScratchRoot: t.TempDir(), WorkerID: "worker-credential", LeaseTTL: 2 * time.Minute,
+		LeaseWatchdogInterval: time.Millisecond, CredentialMode: worker.CredentialRequired,
+		CredentialFinalizeGrace: time.Second, CredentialLifecycle: lifecycle,
+		DeliveryWakePublisher: newDeliveryWakePublisher(t),
+	}, clock, queue, state, blobs, &credentialHarness{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := runWorkerOnce(manager, ctx)
+	waitForSignal(t, ctx, finalizationStarted, "credential finalization")
+	renewal := make(chan error, 1)
+	state.setRenewalNotify(renewal)
+	clock.Advance(40 * time.Second)
+	select {
+	case renewalErr := <-renewal:
+		if renewalErr != nil {
+			t.Fatalf("watchdog renewal: %v", renewalErr)
+		}
+	case <-ctx.Done():
+		t.Fatalf("watchdog renewal: %v", ctx.Err())
+	}
+	close(releaseFinalization)
+	result := waitForWorkerResult(t, ctx, done)
+	if result.err != nil || result.outcome != worker.OutcomeCompleted {
+		t.Fatalf("outcome/error = %q/%v, want completed/nil", result.outcome, result.err)
+	}
+}
+
 func TestWorkerWatchdogDeliversCancellationToSilentHarness(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -1002,12 +1117,34 @@ var osReadDir = func(name string) ([]string, error) {
 }
 
 type memoryBlobs struct {
-	mu   sync.Mutex
-	data map[string][]byte
+	mu             sync.Mutex
+	data           map[string][]byte
+	openStarted    chan struct{}
+	openRelease    chan struct{}
+	putStarted     chan struct{}
+	putRelease     chan struct{}
+	blockPutPrefix string
 }
 
 func newMemoryBlobs() *memoryBlobs {
 	return &memoryBlobs{data: make(map[string][]byte)}
+}
+
+func (store *memoryBlobs) blockNextOpen() (<-chan struct{}, chan<- struct{}) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.openStarted = make(chan struct{})
+	store.openRelease = make(chan struct{})
+	return store.openStarted, store.openRelease
+}
+
+func (store *memoryBlobs) blockNextPut(prefix string) (<-chan struct{}, chan<- struct{}) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.putStarted = make(chan struct{})
+	store.putRelease = make(chan struct{})
+	store.blockPutPrefix = prefix
+	return store.putStarted, store.putRelease
 }
 
 func (store *memoryBlobs) seed(
@@ -1026,7 +1163,7 @@ func (store *memoryBlobs) seed(
 }
 
 func (store *memoryBlobs) Put(
-	_ context.Context,
+	ctx context.Context,
 	tenant domain.TenantID,
 	key string,
 	body io.Reader,
@@ -1047,13 +1184,29 @@ func (store *memoryBlobs) Put(
 		SHA256: hex.EncodeToString(sum[:]),
 	}
 	store.mu.Lock()
+	started, release := store.putStarted, store.putRelease
+	if started == nil || !strings.Contains(key, store.blockPutPrefix) {
+		started, release = nil, nil
+	} else {
+		store.putStarted, store.putRelease, store.blockPutPrefix = nil, nil, ""
+	}
+	store.mu.Unlock()
+	if started != nil {
+		close(started)
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return domain.BlobRef{}, ctx.Err()
+		}
+	}
+	store.mu.Lock()
 	store.data[key] = append([]byte(nil), data...)
 	store.mu.Unlock()
 	return ref, nil
 }
 
 func (store *memoryBlobs) Open(
-	_ context.Context,
+	ctx context.Context,
 	tenant domain.TenantID,
 	ref domain.BlobRef,
 ) (io.ReadCloser, error) {
@@ -1061,10 +1214,21 @@ func (store *memoryBlobs) Open(
 		return nil, domain.TenantMismatchError{Expected: tenant, Actual: ref.TenantID}
 	}
 	store.mu.Lock()
-	defer store.mu.Unlock()
 	data, ok := store.data[ref.Key]
+	data = append([]byte(nil), data...)
+	started, release := store.openStarted, store.openRelease
+	store.openStarted, store.openRelease = nil, nil
+	store.mu.Unlock()
 	if !ok {
 		return nil, errors.New("blob not found")
+	}
+	if started != nil {
+		close(started)
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 	return io.NopCloser(bytes.NewReader(data)), nil
 }
@@ -1368,6 +1532,12 @@ func (state *workerState) replaceFence(key string) {
 	state.mu.Unlock()
 }
 
+func (state *workerState) setRenewalNotify(notify chan error) {
+	state.mu.Lock()
+	state.renewalNotify = notify
+	state.mu.Unlock()
+}
+
 func notifyRenewal(channel chan error, err error) {
 	if channel == nil {
 		return
@@ -1499,6 +1669,30 @@ func (harness resultHarness) Execute(
 func (resultHarness) Cancel(context.Context, ports.ExecutionIdentity) error { return nil }
 
 var _ ports.HarnessDriver = resultHarness{}
+
+type outputHarness struct{}
+
+func (outputHarness) Preflight(context.Context, ports.ExecutionIdentity) error { return nil }
+
+func (outputHarness) Execute(
+	_ context.Context,
+	request ports.ExecutionRequest,
+	_ ports.ExecutionEventSink,
+) (ports.ExecutionResult, error) {
+	if err := os.WriteFile(filepath.Join(request.WorkDir, "outputs", "result.txt"), []byte("result"), 0o600); err != nil {
+		return ports.ExecutionResult{}, err
+	}
+	return ports.ExecutionResult{
+		Summary: "output fixture completed",
+		Outputs: []ports.ExecutionOutput{{
+			Name: "result.txt", MediaType: "text/plain", RelativePath: "result.txt",
+		}},
+	}, nil
+}
+
+func (outputHarness) Cancel(context.Context, ports.ExecutionIdentity) error { return nil }
+
+var _ ports.HarnessDriver = outputHarness{}
 
 type blockingHarness struct {
 	cancelCalls int
@@ -1657,6 +1851,8 @@ type recordingCredentialLifecycle struct {
 	cancelOnMaterialize      func()
 	releaseHadDeadline       bool
 	releaseSawCanceled       bool
+	writeBackStarted         chan struct{}
+	writeBackRelease         chan struct{}
 }
 
 func newRecordingCredentialLifecycle(t *testing.T, expectedOwner domain.UserID) *recordingCredentialLifecycle {
@@ -1665,6 +1861,14 @@ func newRecordingCredentialLifecycle(t *testing.T, expectedOwner domain.UserID) 
 		t: t, root: t.TempDir(), expectedOwner: expectedOwner,
 		original: []byte("original-secret"),
 	}
+}
+
+func (lifecycle *recordingCredentialLifecycle) blockNextWriteBack() (<-chan struct{}, chan<- struct{}) {
+	lifecycle.mu.Lock()
+	defer lifecycle.mu.Unlock()
+	lifecycle.writeBackStarted = make(chan struct{})
+	lifecycle.writeBackRelease = make(chan struct{})
+	return lifecycle.writeBackStarted, lifecycle.writeBackRelease
 }
 
 func (lifecycle *recordingCredentialLifecycle) Issue(
@@ -1726,6 +1930,18 @@ func (lifecycle *recordingCredentialLifecycle) WriteBack(
 	materialization ports.CredentialMaterialization,
 ) (ports.CredentialWriteBackResult, error) {
 	lifecycle.record("writeback")
+	lifecycle.mu.Lock()
+	started, release := lifecycle.writeBackStarted, lifecycle.writeBackRelease
+	lifecycle.writeBackStarted, lifecycle.writeBackRelease = nil, nil
+	lifecycle.mu.Unlock()
+	if started != nil {
+		close(started)
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return ports.CredentialWriteBackResult{}, ctx.Err()
+		}
+	}
 	if lifecycle.blockWriteBack {
 		<-ctx.Done()
 		lifecycle.writeBackReachedDeadline = errors.Is(ctx.Err(), context.DeadlineExceeded)

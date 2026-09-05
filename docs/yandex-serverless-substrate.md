@@ -16,9 +16,13 @@ tool-free control-plane smoke path.
 
 The following promotion gates are known to fail in the current composition:
 
-- this PR adds independent renewal/cancellation polling around a silent
-  `HarnessDriver.Execute`, but supervision does not yet cover the complete
-  prepare/materialize/upload/finalize/cleanup horizon required for promotion;
+- the managed worker now keeps one serialized renewal/cancellation watchdog
+  active across scratch preparation, credential issue/materialization, input
+  materialization, `HarnessDriver.Execute`, credential finalization, output and
+  canonical-event upload, and scratch cleanup. Deterministic race tests cover
+  silent materialization, execution, finalization, and fence loss during
+  upload; the cloud composition still has to prove that the PR-03b process
+  supervisor and PR-03c egress transport stop under that cancellation signal;
 - the cloud profile sets `WORKER_LEASE_TTL=2m`, while a credentialed 40-minute
   execution must acquire authority covering execution and bounded cleanup;
 - an exact retry-stable lease ID can be returned to the same worker identity on
@@ -140,12 +144,13 @@ unknown. It may still produce a `conditional` or `no_go` report, but never
 
 ## Work needed before the cloud run
 
-The first implementation slice is composition, not a timeout increase:
+The remaining implementation slice is composition, not a timeout increase:
 
 1. put the PR-03a attempt-effect reservation in front of every provider effect
    in the managed worker path;
-2. supervise the full materialize/execute/upload/finalize/cleanup horizon with
-   one serialized lease state and independent renewal/cancellation polling;
+2. compose the full-lifecycle worker watchdog with PR-03b process supervision
+   and PR-03c transport cancellation, then retain its deterministic local race
+   cohorts as promotion gates;
 3. cancel transport and PR-03b process supervision on renewal/fence loss and
    block every event, artifact, terminal commit, and trigger acknowledgement;
 4. compose PR-03c egress and invocation credentials only after the fresh

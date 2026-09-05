@@ -218,26 +218,60 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 	}
 	executionCtx, cancelExecution := context.WithTimeout(ctx, loaded.Job.Limits.MaxRuntime)
 	defer cancelExecution()
+	leaseState := &invocationLease{manager: manager, tenantID: loaded.Run.TenantID, lease: lease}
+	watchdogCtx, cancelWatchdog := context.WithCancel(context.WithoutCancel(ctx))
+	defer cancelWatchdog()
+	watchdog := manager.startLeaseWatchdog(watchdogCtx, cancelExecution, loaded, leaseState)
+	workDir := ""
+	activeStopped := false
+	stopActiveInvocation := func() error {
+		if activeStopped {
+			return watchdog.Stop()
+		}
+		if workDir != "" {
+			manager.cleanupInvocationDir(workDir)
+			workDir = ""
+		}
+		activeStopped = true
+		cancelWatchdog()
+		watchdogErr := watchdog.Stop()
+		lease = leaseState.Current()
+		return watchdogErr
+	}
+	defer func() { _ = stopActiveInvocation() }()
 
-	workDir, err := manager.createInvocationDir()
+	workDir, err = manager.createInvocationDir()
 	if err != nil {
+		if watchdogErr := stopActiveInvocation(); watchdogErr != nil {
+			return manager.handleWatchdogFailure(message, loaded, lease, watchdogErr)
+		}
 		return manager.retry(ctx, message, err)
 	}
-	defer manager.cleanupInvocationDir(workDir)
 	credential, err := manager.prepareCredential(executionCtx, loaded, lease)
 	if err != nil {
+		if watchdogErr := stopActiveInvocation(); watchdogErr != nil {
+			return manager.handleWatchdogFailure(message, loaded, lease, watchdogErr)
+		}
 		return manager.finishFailure(ctx, message, loaded, lease, false, "credential_preparation_failed")
 	}
-	credentialFinalized := false
-	if credential != nil {
-		defer func() {
-			if !credentialFinalized {
-				_ = manager.finalizeCredential(ctx, credential)
-			}
-		}()
+	credentialFinalized := credential == nil
+	finalizeCredential := func() error {
+		if credentialFinalized {
+			return nil
+		}
+		credentialFinalized = true
+		return manager.finalizeCredential(executionCtx, credential)
 	}
+	defer func() { _ = finalizeCredential() }()
 
 	if err := manager.materialize(executionCtx, loaded, workDir); err != nil {
+		finalizeErr := finalizeCredential()
+		if watchdogErr := stopActiveInvocation(); watchdogErr != nil {
+			return manager.handleWatchdogFailure(message, loaded, lease, watchdogErr)
+		}
+		if finalizeErr != nil {
+			return manager.finishFailure(context.Background(), message, loaded, lease, false, "credential_finalization_failed")
+		}
 		if errors.Is(executionCtx.Err(), context.DeadlineExceeded) {
 			return manager.finishFailure(
 				context.Background(), message, loaded, lease, false, "runtime_limit_exceeded",
@@ -264,31 +298,32 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 		request.CredentialMaterialization = credential.materialization.ProviderMaterialization()
 	}
 	if err := request.Validate(); err != nil {
+		finalizeErr := finalizeCredential()
+		if watchdogErr := stopActiveInvocation(); watchdogErr != nil {
+			return manager.handleWatchdogFailure(message, loaded, lease, watchdogErr)
+		}
+		if finalizeErr != nil {
+			return manager.finishFailure(context.Background(), message, loaded, lease, false, "credential_finalization_failed")
+		}
 		return manager.finishFailure(ctx, message, loaded, lease, false, "invalid_execution_request")
 	}
-	leaseState := &invocationLease{manager: manager, tenantID: loaded.Run.TenantID, lease: lease}
 	sink := &eventSink{
 		manager: manager, loaded: loaded, lease: leaseState,
 		lastSequence: checkpointSequence(loaded.Checkpoint),
 	}
-	watchdog := manager.startLeaseWatchdog(executionCtx, cancelExecution, loaded, leaseState)
 	result, err := manager.harness.Execute(executionCtx, request, sink)
-	watchdogErr := watchdog.Stop()
-	if err != nil || watchdogErr != nil {
+	if err != nil {
 		_ = manager.harness.Cancel(context.Background(), executionIdentityForJob(loaded.Job))
 	}
-	lease = leaseState.Current()
-	if credential != nil {
-		credentialFinalized = true
-		if finalizeErr := manager.finalizeCredential(ctx, credential); finalizeErr != nil {
+	finalizeErr := finalizeCredential()
+	if err != nil || finalizeErr != nil {
+		watchdogErr := stopActiveInvocation()
+		if watchdogErr != nil {
+			return manager.handleWatchdogFailure(message, loaded, lease, watchdogErr)
+		}
+		if finalizeErr != nil {
 			return manager.finishFailure(context.Background(), message, loaded, lease, false, "credential_finalization_failed")
 		}
-	}
-	if watchdogErr != nil {
-		if errors.Is(watchdogErr, errWorkerCancellationObserved) {
-			return manager.finishFailure(context.Background(), message, loaded, lease, true, "cancelled")
-		}
-		return manager.retry(context.Background(), message, watchdogErr)
 	}
 	if err != nil {
 		cancelled, cancelErr := manager.state.CancellationRequested(
@@ -311,12 +346,11 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 		}
 		return manager.finishFailure(context.Background(), message, loaded, lease, false, "harness_failed")
 	}
-	lease, err = manager.ensureLease(executionCtx, loaded.Run.TenantID, lease)
-	if err != nil {
-		return manager.retry(ctx, message, err)
-	}
 	manifest, err := manager.uploadOutputs(executionCtx, loaded, workDir, result.Outputs)
 	if err != nil {
+		if watchdogErr := stopActiveInvocation(); watchdogErr != nil {
+			return manager.handleWatchdogFailure(message, loaded, lease, watchdogErr)
+		}
 		if errors.Is(executionCtx.Err(), context.DeadlineExceeded) {
 			return manager.finishFailure(
 				context.Background(), message, loaded, lease, false, "runtime_limit_exceeded",
@@ -325,21 +359,37 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 		return manager.finishFailure(ctx, message, loaded, lease, false, "artifact_upload_failed")
 	}
 	finishedAt := manager.clock.Now().UTC()
-	lease, err = manager.ensureLease(executionCtx, loaded.Run.TenantID, lease)
-	if err != nil {
-		return manager.retry(ctx, message, err)
-	}
+	var events []domain.SessionEventDraft
 	if loaded.Job.Origin != nil {
-		events, err := manager.canonicalCompletionEvents(
+		events, err = manager.canonicalCompletionEvents(
 			executionCtx, loaded, result, manifest, finishedAt,
 		)
 		if err != nil {
+			if watchdogErr := stopActiveInvocation(); watchdogErr != nil {
+				return manager.handleWatchdogFailure(message, loaded, lease, watchdogErr)
+			}
 			return manager.finishFailure(ctx, message, loaded, lease, false, "canonical_result_upload_failed")
 		}
-		lease, err = manager.ensureLease(executionCtx, loaded.Run.TenantID, lease)
-		if err != nil {
-			return manager.retry(ctx, message, err)
-		}
+	}
+	if watchdogErr := stopActiveInvocation(); watchdogErr != nil {
+		return manager.handleWatchdogFailure(message, loaded, lease, watchdogErr)
+	}
+	lease, err = manager.ensureLease(context.Background(), loaded.Run.TenantID, lease)
+	if err != nil {
+		return manager.retry(context.Background(), message, err)
+	}
+	cancelled, err = manager.state.CancellationRequested(
+		context.Background(), loaded.Run.TenantID, loaded.Run.ID,
+	)
+	if err != nil {
+		return manager.retry(context.Background(), message, err)
+	}
+	if cancelled {
+		return manager.finishFailure(
+			context.Background(), message, loaded, lease, true, "cancelled",
+		)
+	}
+	if loaded.Job.Origin != nil {
 		if err := manager.state.CompleteWorkerJob(ctx, ports.WorkerCompletion{
 			TenantID: loaded.Run.TenantID, RunID: loaded.Run.ID,
 			AttemptID: loaded.Attempt.ID, ReservationID: loaded.Reservation.ID,
@@ -661,6 +711,20 @@ func (watchdog *leaseWatchdog) Stop() error {
 	watchdog.stopOnce.Do(func() { close(watchdog.stop) })
 	<-watchdog.done
 	return watchdog.err
+}
+
+func (manager *Manager) handleWatchdogFailure(
+	message ports.ReceivedMessage,
+	loaded ports.WorkerJobState,
+	lease domain.Lease,
+	err error,
+) (Outcome, error) {
+	if errors.Is(err, errWorkerCancellationObserved) {
+		return manager.finishFailure(
+			context.Background(), message, loaded, lease, true, "cancelled",
+		)
+	}
+	return manager.retry(context.Background(), message, err)
 }
 
 func (manager *Manager) startLeaseWatchdog(

@@ -397,11 +397,13 @@ The initial production policy reserves the one-hour Yandex request limit as:
 - at least 5 additional minutes remain unallocated as a hard platform guard.
 
 PR-03d must measure and then reduce these values if the tail does not fit. The
-two-minute lease does not pass this profile. PR-03d adds independent polling
-around silent harness execution, but production promotion still requires the
-same supervision across preparation, upload, credential finalization, and
-cleanup. A request timeout is never reported as process stopped or cleanup
-verified.
+two-minute lease does not pass this profile. PR-03d now keeps independent
+polling active across scratch and credential preparation, materialization,
+silent harness execution, credential finalization, output and canonical-event
+upload, and scratch cleanup. Production promotion still requires the PR-03b
+process supervisor and PR-03c transport to consume that cancellation signal
+and emit verified stop/cleanup evidence. A request timeout is never reported as
+process stopped or cleanup verified.
 
 Yandex's broker acknowledges the queue delivery because the container returned
 HTTP 2xx. The in-memory trigger adapter's `Ack` only marks that local delivery

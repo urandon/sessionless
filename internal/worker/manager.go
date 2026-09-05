@@ -355,7 +355,12 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 		manager: manager, loaded: loaded, lease: leaseState,
 		lastSequence: checkpointSequence(loaded.Checkpoint),
 	}
-	result, _, err := execution.Execute(executionCtx, request, sink, manager.harness)
+	result, substrateEvidence, err := execution.Execute(executionCtx, request, sink, manager.harness)
+	if err == nil {
+		if effect.Grant == nil || substrateEvidence.ValidateForPersistedAuthority(effect.Grant.Authority, effect.Reservation) != nil {
+			err = errors.New("prepared execution returned invalid substrate evidence")
+		}
+	}
 	if err != nil {
 		_, _ = execution.Cancel(context.Background())
 	}
@@ -418,6 +423,7 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 	if stopped := stopActiveInvocation(); stopped.Failed() {
 		return manager.handleActiveStop(message, loaded, lease, stopped)
 	}
+	substrateEvidence = substrateEvidence.Clone()
 	lease, err = manager.ensureLease(context.Background(), loaded.Run.TenantID, lease)
 	if err != nil {
 		return manager.retry(context.Background(), message, err)
@@ -438,7 +444,7 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 			TenantID: loaded.Run.TenantID, RunID: loaded.Run.ID,
 			AttemptID: loaded.Attempt.ID, ReservationID: loaded.Reservation.ID,
 			LeaseID: lease.ID, Fence: lease.FenceToken, At: finishedAt,
-			Manifest: manifest, Events: events,
+			Manifest: manifest, Events: events, SubstrateEvidence: &substrateEvidence,
 		}); err != nil {
 			return manager.retry(ctx, message, err)
 		}
@@ -466,7 +472,7 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 				TenantID: loaded.Run.TenantID, RunID: loaded.Run.ID,
 				AttemptID: loaded.Attempt.ID, ReservationID: loaded.Reservation.ID,
 				LeaseID: lease.ID, Fence: lease.FenceToken, At: finishedAt,
-				Manifest: manifest, Delivery: delivery,
+				Manifest: manifest, Delivery: delivery, SubstrateEvidence: &substrateEvidence,
 			},
 		); err != nil {
 			return manager.retry(ctx, message, err)

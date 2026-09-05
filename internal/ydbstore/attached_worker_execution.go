@@ -1408,7 +1408,7 @@ func materializeAttachedWorkerTerminalTx(ctx context.Context, state ports.StateT
 		if err := completion.Manifest.ValidateForRun(run); err != nil {
 			return err
 		}
-		digest, err := runFinalizationDigest(domain.RunSucceeded, &completion.Manifest, completion.Events)
+		digest, err := runFinalizationDigest(domain.RunSucceeded, &completion.Manifest, completion.Events, nil)
 		if err != nil {
 			return err
 		}
@@ -1422,7 +1422,7 @@ func materializeAttachedWorkerTerminalTx(ctx context.Context, state ports.StateT
 		if run.Status.Terminal() {
 			return ErrRunFinalizationConflict
 		}
-		return completeWorkerSuccessTx(ctx, state, tx, run, canonicalAttempt, reservation, attempt.LeaseID, attempt.LeaseGeneration, at, completion.Manifest, completion.Usage,
+		return completeWorkerSuccessTx(ctx, state, tx, run, canonicalAttempt, reservation, attempt.LeaseID, attempt.LeaseGeneration, at, completion.Manifest, completion.Usage, nil, false,
 			func(run domain.Run) error {
 				return appendCanonicalFinalizationTx(ctx, tx, run, domain.RunSucceeded, digest, completion.Events, at)
 			})
@@ -1438,7 +1438,7 @@ func materializeAttachedWorkerTerminalTx(ctx context.Context, state ports.StateT
 	if err := validateCanonicalFinalizationEvents(runStatus, failure.Events); err != nil {
 		return err
 	}
-	digest, err := runFinalizationDigest(runStatus, nil, failure.Events)
+	digest, err := runFinalizationDigest(runStatus, nil, failure.Events, nil)
 	if err != nil {
 		return err
 	}
@@ -1530,7 +1530,7 @@ func attachedWorkerTerminalMaterializationDigest(status domain.AttachedWorkerTer
 		}
 		events = materialization.Failure.Events
 	}
-	digest, err := runFinalizationDigest(runStatus, manifest, events)
+	digest, err := runFinalizationDigest(runStatus, manifest, events, nil)
 	if err != nil {
 		return "", err
 	}

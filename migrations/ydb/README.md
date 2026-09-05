@@ -203,6 +203,13 @@ dispatch reader or writer, the cutover transaction requires `dispatch_outbox`,
 `worker_jobs` and `attempt_effect_reservations` all empty; serving code never
 coerces an old payload or a missing substrate/cost binding.
 
+Migration `00096` adds one content-free, typed substrate execution evidence
+record per managed attempt. The terminal worker transaction validates it
+against the persisted effect authority and reservation, stores it atomically
+with canonical completion, and includes its digest in finalization
+idempotency. The substrate observation remains distinct from canonical run
+terminal state and never asserts that commit itself.
+
 Automatic production down migrations are intentionally disabled. The `Down`
 sections are comments so neither Goose nor an operator can accidentally drop
 state.

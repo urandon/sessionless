@@ -53,12 +53,13 @@ func (testExecutionPreparer) PrepareExecution(
 	if err := result.Validate(); err != nil || result.Grant == nil || result.Status == ports.AttemptEffectReconcileOnlyV1 {
 		return nil, errors.New("test execution reservation is not owned")
 	}
-	return &testPreparedExecution{authority: result.Grant.Authority.Clone()}, nil
+	return &testPreparedExecution{authority: result.Grant.Authority.Clone(), reservation: result.Reservation.Clone()}, nil
 }
 
 type testPreparedExecution struct {
-	authority domain.ServerlessInvocationAuthorityV1
-	harness   ports.HarnessDriver
+	authority   domain.ServerlessInvocationAuthorityV1
+	reservation domain.AttemptEffectReservationV1
+	harness     ports.HarnessDriver
 }
 
 func (execution *testPreparedExecution) Execute(
@@ -69,7 +70,11 @@ func (execution *testPreparedExecution) Execute(
 ) (ports.ExecutionResult, domain.SubstrateExecutionEvidenceV1, error) {
 	execution.harness = harness
 	result, err := harness.Execute(ctx, request, sink)
-	return result, domain.SubstrateExecutionEvidenceV1{}, err
+	if err != nil {
+		return result, domain.SubstrateExecutionEvidenceV1{}, err
+	}
+	evidence, err := testSubstrateExecutionEvidence(execution.authority, execution.reservation, result.ProviderEvidence)
+	return result, evidence, err
 }
 
 func (execution *testPreparedExecution) Cancel(ctx context.Context) (serverlessharness.SubstrateOperationObservationV1, error) {
@@ -104,9 +109,71 @@ func (preparer *signalingExecutionPreparer) PrepareExecution(
 	}
 	close(preparer.prepared)
 	return &signalingPreparedExecution{
-		testPreparedExecution: testPreparedExecution{authority: result.Grant.Authority.Clone()},
+		testPreparedExecution: testPreparedExecution{authority: result.Grant.Authority.Clone(), reservation: result.Reservation.Clone()},
 		executed:              preparer.executed,
 	}, nil
+}
+
+func testSubstrateExecutionEvidence(
+	authority domain.ServerlessInvocationAuthorityV1,
+	reservation domain.AttemptEffectReservationV1,
+	provider *domain.ProviderExecutionEvidenceV1,
+) (domain.SubstrateExecutionEvidenceV1, error) {
+	if provider == nil {
+		sealed, err := (domain.ProviderExecutionEvidenceV1{
+			AcceptanceClass: domain.ProviderAcceptanceAcceptedV1, FinishClass: domain.ProviderFinishCompletedV1,
+			RouteState: domain.ProviderEvidenceSupportedV1, ActualModelVendorID: authority.HarnessBinding.ModelVendorID,
+			ActualModelID: authority.HarnessBinding.ModelID, TransportKind: domain.ProviderTransportLocalCLIV1,
+			TransportProvider: "test", UpstreamProviderID: "test", EndpointID: "test",
+			PolicyVerdict: domain.ProviderPolicyGoV1, UsageProvenance: domain.ProviderUsageUnknownV1,
+		}).SealForBinding(authority.HarnessBinding)
+		if err != nil {
+			return domain.SubstrateExecutionEvidenceV1{}, err
+		}
+		provider = &sealed
+	}
+	binding := authority.SubstrateBinding
+	bindingDigest, _ := binding.Digest()
+	allocation := domain.PreparedAllocationV1{
+		Version: domain.PreparedAllocationVersionV1, SubstrateBindingDigest: bindingDigest,
+		ObservedImageDigest: binding.ImageDigest, ObservedOuterHarnessDigest: binding.OuterHarnessArtifactDigest,
+		ObservedProxyArtifactDigest: binding.EgressProxyArtifactDigest, ObservedProxyIdentityDigest: binding.EgressProxyIdentityDigest,
+		WorkloadMode: binding.WorkloadMode,
+	}
+	process := domain.SubstrateProcessNotApplicableV1
+	if binding.WorkloadMode == domain.SubstrateWorkloadChildProcessV1 {
+		process = domain.SubstrateProcessStoppedV1
+		allocation.ChildProcess = &domain.ChildProcessAttestationV1{
+			ExecutableDigest: authority.HarnessBinding.Backend.ArtifactDigest, ExactArgv: []string{"test-backend"},
+			NativeProtocol:       authority.HarnessBinding.Backend.NativeProtocolVersion,
+			BackendProfileDigest: authority.HarnessBinding.Backend.BackendProfileDigest,
+		}
+	} else {
+		allocation.InProcess = &domain.InProcessAttestationV1{LinkedBackendProfileDigest: authority.HarnessBinding.Backend.BackendProfileDigest}
+	}
+	credentialFinalization := domain.CredentialFinalizationVerifiedV1
+	if authority.HarnessBinding.Backend.CredentialDeliveryKind == domain.ProviderCredentialDeliveryNoneV1 {
+		credentialFinalization = domain.CredentialFinalizationNotRequiredV1
+	}
+	unknown := func(kind domain.SubstrateResourceKindV1) domain.SubstrateResourceObservationV1 {
+		return domain.SubstrateResourceObservationV1{Kind: kind, State: domain.SubstrateResourceUnknownV1, Provenance: domain.SubstrateResourceProvenanceUnknownV1}
+	}
+	providerClone := provider.Clone()
+	return (domain.SubstrateExecutionEvidenceV1{
+		Allocation: domain.SubstrateAllocationStartedV1, Process: process,
+		CredentialFinalization: credentialFinalization, Cleanup: domain.SubstrateCleanupVerifiedV1,
+		Egress: domain.SubstrateEgressPolicyEnforcedV1, ImageAttestation: domain.SubstrateAttestationVerifiedV1,
+		BackendAttestation: domain.SubstrateAttestationVerifiedV1, ProxyAttestation: domain.SubstrateProxyAttestationVerifiedV1,
+		Cancellation:     domain.SubstrateCancellationEvidenceV1{Request: domain.SubstrateCancellationRequestNoneV1, BackendSignal: domain.SubstrateCancellationSignalNotRequiredV1},
+		ProviderEvidence: &providerClone,
+		ResourceObservations: []domain.SubstrateResourceObservationV1{
+			unknown(domain.SubstrateResourceCPUTimeV1), unknown(domain.SubstrateResourceEgressBytesV1),
+			unknown(domain.SubstrateResourceEvidenceBytesV1), unknown(domain.SubstrateResourceIngressBytesV1),
+			unknown(domain.SubstrateResourceLogBytesV1), unknown(domain.SubstrateResourceMemoryPeakV1),
+			unknown(domain.SubstrateResourceScratchPeakV1),
+		},
+		FailureCode: domain.SubstrateExecutionFailureNoneV1,
+	}).SealForAuthority(authority, reservation, allocation, domain.PreparedInvocationDigestV1(strings.Repeat("d", 64)))
 }
 
 type signalingPreparedExecution struct {
@@ -180,10 +247,10 @@ func TestWorkerCompletesOnceAndCleansReusedScratch(t *testing.T) {
 		}
 		assertScratchEmpty(t, scratch)
 	}
-	if state.completions != 2 || len(state.checkpoints) != 4 || len(state.usage) != 4 {
+	if state.completions != 2 || len(state.checkpoints) != 4 || len(state.usage) != 4 || len(state.substrateEvidence) != 2 {
 		t.Fatalf(
-			"completions/checkpoints/usage = %d/%d/%d, want 2/4/4",
-			state.completions, len(state.checkpoints), len(state.usage),
+			"completions/checkpoints/usage/substrate evidence = %d/%d/%d/%d, want 2/4/4/2",
+			state.completions, len(state.checkpoints), len(state.usage), len(state.substrateEvidence),
 		)
 	}
 	for _, manifest := range state.manifests {
@@ -1524,21 +1591,22 @@ func (store *memoryBlobs) Delete(_ context.Context, tenant domain.TenantID, ref 
 }
 
 type workerState struct {
-	mu            sync.Mutex
-	jobs          map[string]ports.WorkerJobState
-	leases        map[string]domain.Lease
-	cancelled     map[string]bool
-	checkpoints   []domain.Checkpoint
-	usage         []domain.UsageObservation
-	manifests     []domain.ArtifactManifest
-	events        []domain.SessionEventDraft
-	deliveries    []domain.TelegramDeliveryOutbox
-	completions   int
-	failures      int
-	renewals      int
-	renewalNotify chan error
-	effects       map[string]domain.AttemptEffectReservationV1
-	loadContext   func(ports.WorkerContextRequest) (domain.SessionContextInput, error)
+	mu                sync.Mutex
+	jobs              map[string]ports.WorkerJobState
+	leases            map[string]domain.Lease
+	cancelled         map[string]bool
+	checkpoints       []domain.Checkpoint
+	usage             []domain.UsageObservation
+	manifests         []domain.ArtifactManifest
+	events            []domain.SessionEventDraft
+	deliveries        []domain.TelegramDeliveryOutbox
+	completions       int
+	failures          int
+	renewals          int
+	renewalNotify     chan error
+	effects           map[string]domain.AttemptEffectReservationV1
+	substrateEvidence []domain.SubstrateExecutionEvidenceV1
+	loadContext       func(ports.WorkerContextRequest) (domain.SessionContextInput, error)
 }
 
 func newWorkerState() *workerState {
@@ -1794,6 +1862,9 @@ func (state *workerState) CompleteWorkerJob(
 	state.jobs[key] = current
 	state.manifests = append(state.manifests, completion.Manifest)
 	state.events = append(state.events, completion.Events...)
+	if completion.SubstrateEvidence != nil {
+		state.substrateEvidence = append(state.substrateEvidence, completion.SubstrateEvidence.Clone())
+	}
 	state.completions++
 	return nil
 }
@@ -1821,6 +1892,9 @@ func (state *workerState) CompleteLegacyTelegramWorkerJob(
 	state.jobs[key] = current
 	state.manifests = append(state.manifests, completion.Manifest)
 	state.deliveries = append(state.deliveries, completion.Delivery)
+	if completion.SubstrateEvidence != nil {
+		state.substrateEvidence = append(state.substrateEvidence, completion.SubstrateEvidence.Clone())
+	}
 	state.completions++
 	return nil
 }

@@ -29,6 +29,7 @@ func runFinalizationDigest(
 	status domain.RunStatus,
 	manifest *domain.ArtifactManifest,
 	events []domain.SessionEventDraft,
+	substrateEvidence *domain.SubstrateExecutionEvidenceV1,
 ) (string, error) {
 	identities := make([]finalizationEventIdentity, 0, len(events))
 	for _, event := range events {
@@ -38,15 +39,27 @@ func runFinalizationDigest(
 		})
 	}
 	payload, err := json.Marshal(struct {
-		Status   domain.RunStatus            `json:"status"`
-		Manifest *domain.ArtifactManifest    `json:"manifest,omitempty"`
-		Events   []finalizationEventIdentity `json:"events"`
-	}{Status: status, Manifest: manifest, Events: identities})
+		Status                  domain.RunStatus                           `json:"status"`
+		Manifest                *domain.ArtifactManifest                   `json:"manifest,omitempty"`
+		Events                  []finalizationEventIdentity                `json:"events"`
+		SubstrateEvidenceDigest *domain.SubstrateExecutionEvidenceDigestV1 `json:"substrate_evidence_digest,omitempty"`
+	}{
+		Status: status, Manifest: manifest, Events: identities,
+		SubstrateEvidenceDigest: substrateEvidenceDigest(substrateEvidence),
+	})
 	if err != nil {
 		return "", err
 	}
 	digest := sha256.Sum256(payload)
 	return hex.EncodeToString(digest[:]), nil
+}
+
+func substrateEvidenceDigest(value *domain.SubstrateExecutionEvidenceV1) *domain.SubstrateExecutionEvidenceDigestV1 {
+	if value == nil {
+		return nil
+	}
+	digest := value.EvidenceDigest
+	return &digest
 }
 
 func validateCanonicalFinalizationEvents(

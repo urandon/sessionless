@@ -331,6 +331,15 @@ Canonical terminal commit is intentionally not a field in substrate evidence.
 The #82 read model joins it from the canonical attempt/finalization authority;
 the runtime cannot assert it about itself.
 
+For a successful managed attempt, the worker may submit terminal state only
+with the exact sealed substrate evidence returned by its opaque execution
+session. After credential finalization and scratch cleanup succeed, the YDB
+terminal transaction validates the observation against the persisted effect
+authority and reservation, inserts one immutable evidence row keyed by attempt,
+and seals its digest into canonical finalization idempotency. Attached-worker
+terminal materialization remains a separate signed-evidence contract and does
+not synthesize a serverless substrate observation.
+
 ## Selected request path
 
 ```text

@@ -229,4 +229,3 @@ binary. Deletion still requires explicit confirmation and a fresh containment,
 symlink, process-use, size, and free-space check. No broad parent directory,
 home-directory cache, VM disk, container image, or unrelated checkout is part
 of that candidate.
-

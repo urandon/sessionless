@@ -180,6 +180,11 @@ that workflow with an age-only or tag-count cleanup.
 
 ## Local stack
 
+The bounded Apple Silicon source-build spike for YDB `25.3.1.25` reached a
+conditional no-go. Do not replace the pinned Linux container with an
+unvalidated native binary; see the [native macOS YDB evidence and rerun
+conditions](research/native-macos-ydb.md).
+
 Start and initialize the complete local stand:
 
 ```sh

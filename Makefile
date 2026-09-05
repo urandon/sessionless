@@ -41,7 +41,7 @@ help:
 		'make local-integration run YDB/S3/SQS/Telegram adapter tests against the local stand' \
 		'make e2e-local      run the deterministic two-tenant black-box slice' \
 		'make provider-conformance run the credential-free harness/provider registry fixtures' \
-		'make provider-conformance-fuzz run the bounded Pi RPC parser fuzz gate' \
+		'make provider-conformance-fuzz run the bounded native harness parser fuzz gates' \
 		'make image-publication-test validate immutable image publication guards' \
 		'make image-publish-policy-test validate explicit credentialed publication intent' \
 		'make registry-gc-policy-test validate deployment-aware registry cleanup guards' \
@@ -161,13 +161,15 @@ e2e-local: prepare
 	@./scripts/e2e-local.sh
 
 provider-conformance: prepare
-	go vet ./internal/domain ./internal/ports ./internal/sessionlessharness ./internal/harnessconformance ./internal/piopenrouter
+	go vet ./internal/domain ./internal/ports ./internal/sessionlessharness ./internal/harnessconformance ./internal/piopenrouter ./internal/opencodeopenrouter
 	go test -race -count=50 -shuffle=on -timeout=5m ./internal/domain ./internal/ports ./internal/sessionlessharness ./internal/harnessconformance
 	go test -race -count=10 -shuffle=on -timeout=2m ./internal/piopenrouter
+	go test -race -count=10 -shuffle=on -timeout=2m ./internal/opencodeopenrouter
 	$(MAKE) provider-conformance-fuzz
 
 provider-conformance-fuzz: prepare
 	go test -run='^$$' -fuzz=FuzzRPCParserNeverCommitsMalformedTerminal -fuzztime=2s ./internal/piopenrouter
+	go test -run='^$$' -fuzz=FuzzOpenCodeJSONLParserNeverCommitsMalformedTerminal -fuzztime=2s ./internal/opencodeopenrouter
 
 ci: web-ci generate test build integration image-publication-test image-build-inputs-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test
 

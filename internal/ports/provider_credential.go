@@ -236,6 +236,8 @@ type ProviderCredentialConsumerV1 func(ProviderCredentialMaterializationV1, []by
 
 type ProviderResourceCredentialLifecycleV1 interface {
 	IssueProviderCredential(context.Context, ProviderCredentialIssueRequestV1) (ProviderInvocationCredentialV1, error)
+	// MaterializeProviderCredential invokes consume synchronously at most once
+	// and must not retain the callback or credential bytes after returning.
 	MaterializeProviderCredential(context.Context, ProviderInvocationCredentialV1, ProviderCredentialConsumerV1) error
 	ReleaseProviderCredential(context.Context, ProviderInvocationCredentialV1) error
 }

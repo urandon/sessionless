@@ -5,6 +5,7 @@ package worker
 import (
 	"bytes"
 	"context"
+	cryptorand "crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -14,18 +15,21 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/outboxwake"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/queuecontract"
+	"gitcode.com/urandon/sessionless/internal/serverlessharness"
 )
 
 type Config struct {
 	ScratchRoot             string
 	WorkerID                string
 	LeaseTTL                time.Duration
+	LeaseWatchdogInterval   time.Duration
 	RetryDelay              time.Duration
 	RetryObserver           func(error)
 	MaxDeliveryCount        uint32
@@ -36,7 +40,12 @@ type Config struct {
 	CredentialMode          CredentialMode
 	CredentialFinalizeGrace time.Duration
 	CredentialLifecycle     ports.CredentialLifecycle
+	ExecutionPreparer       serverlessharness.ExecutionPreparerV1
+	PhysicalClaimGenerator  PhysicalClaimGenerator
+	ScratchRemoveAll        func(string) error
 }
+
+type PhysicalClaimGenerator func(context.Context) (string, error)
 
 type CredentialMode uint8
 
@@ -68,6 +77,8 @@ type Manager struct {
 	blobs       ports.BlobStore
 	harness     ports.HarnessDriver
 	credentials ports.CredentialLifecycle
+	effects     ports.AttemptEffectStoreV1
+	preparer    serverlessharness.ExecutionPreparerV1
 }
 
 func New(
@@ -80,6 +91,18 @@ func New(
 ) (*Manager, error) {
 	if config.LeaseTTL <= 0 {
 		config.LeaseTTL = 2 * time.Minute
+	}
+	maximumLeaseWatchInterval := config.LeaseTTL / 3
+	if maximumLeaseWatchInterval <= 0 {
+		return nil, errors.New("worker lease TTL is too short for supervision")
+	}
+	if config.LeaseWatchdogInterval <= 0 {
+		config.LeaseWatchdogInterval = maximumLeaseWatchInterval
+		if config.LeaseWatchdogInterval > 30*time.Second {
+			config.LeaseWatchdogInterval = 30 * time.Second
+		}
+	} else if config.LeaseWatchdogInterval > maximumLeaseWatchInterval {
+		return nil, errors.New("worker lease watch interval exceeds one third of lease TTL")
 	}
 	if config.RetryDelay <= 0 {
 		config.RetryDelay = 5 * time.Second
@@ -119,12 +142,22 @@ func New(
 	}
 	config.ScratchRoot = root
 	if clock == nil || queue == nil || state == nil || blobs == nil || harness == nil ||
-		config.DeliveryWakePublisher == nil || config.ProjectionWakePublisher == nil {
+		config.DeliveryWakePublisher == nil || config.ProjectionWakePublisher == nil || config.ExecutionPreparer == nil {
 		return nil, fmt.Errorf("worker dependencies must not be nil")
+	}
+	effects, ok := state.(ports.AttemptEffectStoreV1)
+	if !ok {
+		return nil, errors.New("worker state store must reserve provider effects")
+	}
+	if config.PhysicalClaimGenerator == nil {
+		config.PhysicalClaimGenerator = generatePhysicalClaim
+	}
+	if config.ScratchRemoveAll == nil {
+		config.ScratchRemoveAll = os.RemoveAll
 	}
 	return &Manager{
 		config: config, clock: clock, queue: queue, state: state,
-		blobs: blobs, harness: harness, credentials: config.CredentialLifecycle,
+		blobs: blobs, harness: harness, credentials: config.CredentialLifecycle, effects: effects, preparer: config.ExecutionPreparer,
 	}, nil
 }
 
@@ -193,6 +226,9 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 	if err := manager.state.StartWorkerJob(ctx, loaded, lease, now); err != nil {
 		return manager.retry(ctx, message, err)
 	}
+	if err := validateLoadedWorkerJob(loaded); err != nil {
+		return manager.finishFailure(ctx, message, loaded, lease, false, "invalid_worker_job")
+	}
 	cancelled, err := manager.state.CancellationRequested(
 		ctx, loaded.Run.TenantID, loaded.Run.ID,
 	)
@@ -202,28 +238,102 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 	if cancelled {
 		return manager.finishFailure(ctx, message, loaded, lease, true, "cancelled_before_start")
 	}
-	executionCtx, cancelExecution := context.WithTimeout(ctx, loaded.Job.Limits.MaxRuntime)
-	defer cancelExecution()
-
-	workDir, err := manager.createInvocationDir()
+	physicalClaimID, err := manager.config.PhysicalClaimGenerator(ctx)
 	if err != nil {
 		return manager.retry(ctx, message, err)
 	}
-	defer manager.cleanupInvocationDir(workDir)
+	effect, err := manager.effects.ReserveAttemptEffect(ctx, ports.ReserveAttemptEffectRequestV1{
+		TenantID: loaded.Run.TenantID, RunID: loaded.Run.ID, AttemptID: loaded.Attempt.ID,
+		LeaseID: lease.ID, FenceToken: lease.FenceToken, PhysicalInvocationClaimID: physicalClaimID,
+	})
+	if err != nil {
+		return manager.retry(ctx, message, err)
+	}
+	if err := validateAttemptEffectResult(effect, loaded, lease, physicalClaimID); err != nil {
+		return manager.retry(ctx, message, err)
+	}
+	if effect.Status == ports.AttemptEffectReconcileOnlyV1 {
+		reconciliation, err := manager.preparer.PrepareReconciliation(ctx, effect)
+		if err != nil {
+			return manager.retry(ctx, message, err)
+		}
+		evidence, err := reconciliation.Reconcile(ctx)
+		if err != nil {
+			return manager.retry(ctx, message, err)
+		}
+		if evidence.Observation.State == domain.SubstrateOperationNotFoundV1 {
+			return manager.finishFailureWithReconciliation(
+				ctx, message, loaded, lease, false, "provider_effect_not_found_after_reservation", &evidence,
+			)
+		}
+		if err := manager.effects.RecordAttemptEffectReconciliation(ctx, ports.AttemptEffectReconciliationRecordV1{
+			TenantID: loaded.Run.TenantID, RunID: loaded.Run.ID, AttemptID: loaded.Attempt.ID, Evidence: evidence,
+		}); err != nil {
+			return manager.retry(ctx, message, err)
+		}
+		return manager.retry(ctx, message, attemptEffectReconcilePendingError{evidence: evidence})
+	}
+	execution, err := manager.preparer.PrepareExecution(ctx, effect)
+	if err != nil {
+		return manager.retry(ctx, message, err)
+	}
+	executionCtx, cancelExecution := context.WithTimeout(ctx, loaded.Job.Limits.MaxRuntime)
+	defer cancelExecution()
+	leaseState := &invocationLease{manager: manager, tenantID: loaded.Run.TenantID, lease: lease}
+	watchdogCtx, cancelWatchdog := context.WithCancel(context.WithoutCancel(ctx))
+	defer cancelWatchdog()
+	watchdog := manager.startLeaseWatchdog(watchdogCtx, cancelExecution, loaded, leaseState)
+	workDir := ""
+	activeStopped := false
+	stopResult := activeInvocationStop{}
+	stopActiveInvocation := func() activeInvocationStop {
+		if activeStopped {
+			return stopResult
+		}
+		if workDir != "" {
+			stopResult.cleanupErr = manager.cleanupInvocationDir(workDir)
+			workDir = ""
+		}
+		activeStopped = true
+		cancelWatchdog()
+		stopResult.watchdogErr = watchdog.Stop()
+		lease = leaseState.Current()
+		return stopResult
+	}
+	defer stopActiveInvocation()
+
+	workDir, err = manager.createInvocationDir()
+	if err != nil {
+		if stopped := stopActiveInvocation(); stopped.Failed() {
+			return manager.handleActiveStop(message, loaded, lease, stopped)
+		}
+		return manager.retry(ctx, message, err)
+	}
 	credential, err := manager.prepareCredential(executionCtx, loaded, lease)
 	if err != nil {
+		if stopped := stopActiveInvocation(); stopped.Failed() {
+			return manager.handleActiveStop(message, loaded, lease, stopped)
+		}
 		return manager.finishFailure(ctx, message, loaded, lease, false, "credential_preparation_failed")
 	}
-	credentialFinalized := false
-	if credential != nil {
-		defer func() {
-			if !credentialFinalized {
-				_ = manager.finalizeCredential(ctx, credential)
-			}
-		}()
+	credentialFinalized := credential == nil
+	finalizeCredential := func() error {
+		if credentialFinalized {
+			return nil
+		}
+		credentialFinalized = true
+		return manager.finalizeCredential(executionCtx, credential)
 	}
+	defer func() { _ = finalizeCredential() }()
 
 	if err := manager.materialize(executionCtx, loaded, workDir); err != nil {
+		finalizeErr := finalizeCredential()
+		if stopped := stopActiveInvocation(); stopped.Failed() {
+			return manager.handleActiveStop(message, loaded, lease, stopped)
+		}
+		if finalizeErr != nil {
+			return manager.finishFailure(context.Background(), message, loaded, lease, false, "credential_finalization_failed")
+		}
 		if errors.Is(executionCtx.Err(), context.DeadlineExceeded) {
 			return manager.finishFailure(
 				context.Background(), message, loaded, lease, false, "runtime_limit_exceeded",
@@ -250,19 +360,35 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 		request.CredentialMaterialization = credential.materialization.ProviderMaterialization()
 	}
 	if err := request.Validate(); err != nil {
+		finalizeErr := finalizeCredential()
+		if stopped := stopActiveInvocation(); stopped.Failed() {
+			return manager.handleActiveStop(message, loaded, lease, stopped)
+		}
+		if finalizeErr != nil {
+			return manager.finishFailure(context.Background(), message, loaded, lease, false, "credential_finalization_failed")
+		}
 		return manager.finishFailure(ctx, message, loaded, lease, false, "invalid_execution_request")
 	}
 	sink := &eventSink{
-		manager: manager, loaded: loaded, lease: lease,
+		manager: manager, loaded: loaded, lease: leaseState,
 		lastSequence: checkpointSequence(loaded.Checkpoint),
 	}
-	result, err := manager.harness.Execute(executionCtx, request, sink)
-	if err != nil {
-		_ = manager.harness.Cancel(context.Background(), executionIdentityForJob(loaded.Job))
+	result, substrateEvidence, err := execution.Execute(executionCtx, request, sink, manager.harness)
+	if err == nil {
+		if effect.Grant == nil || substrateEvidence.ValidateForPersistedAuthority(effect.Grant.Authority, effect.Reservation) != nil {
+			err = errors.New("prepared execution returned invalid substrate evidence")
+		}
 	}
-	if credential != nil {
-		credentialFinalized = true
-		if finalizeErr := manager.finalizeCredential(ctx, credential); finalizeErr != nil {
+	if err != nil {
+		_, _ = execution.Cancel(context.Background())
+	}
+	finalizeErr := finalizeCredential()
+	if err != nil || finalizeErr != nil {
+		stopped := stopActiveInvocation()
+		if stopped.Failed() {
+			return manager.handleActiveStop(message, loaded, lease, stopped)
+		}
+		if finalizeErr != nil {
 			return manager.finishFailure(context.Background(), message, loaded, lease, false, "credential_finalization_failed")
 		}
 	}
@@ -287,13 +413,11 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 		}
 		return manager.finishFailure(context.Background(), message, loaded, lease, false, "harness_failed")
 	}
-	lease = sink.lease
-	lease, err = manager.ensureLease(executionCtx, loaded.Run.TenantID, lease)
-	if err != nil {
-		return manager.retry(ctx, message, err)
-	}
 	manifest, err := manager.uploadOutputs(executionCtx, loaded, workDir, result.Outputs)
 	if err != nil {
+		if stopped := stopActiveInvocation(); stopped.Failed() {
+			return manager.handleActiveStop(message, loaded, lease, stopped)
+		}
 		if errors.Is(executionCtx.Err(), context.DeadlineExceeded) {
 			return manager.finishFailure(
 				context.Background(), message, loaded, lease, false, "runtime_limit_exceeded",
@@ -302,26 +426,43 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 		return manager.finishFailure(ctx, message, loaded, lease, false, "artifact_upload_failed")
 	}
 	finishedAt := manager.clock.Now().UTC()
-	lease, err = manager.ensureLease(executionCtx, loaded.Run.TenantID, lease)
-	if err != nil {
-		return manager.retry(ctx, message, err)
-	}
+	var events []domain.SessionEventDraft
 	if loaded.Job.Origin != nil {
-		events, err := manager.canonicalCompletionEvents(
+		events, err = manager.canonicalCompletionEvents(
 			executionCtx, loaded, result, manifest, finishedAt,
 		)
 		if err != nil {
+			if stopped := stopActiveInvocation(); stopped.Failed() {
+				return manager.handleActiveStop(message, loaded, lease, stopped)
+			}
 			return manager.finishFailure(ctx, message, loaded, lease, false, "canonical_result_upload_failed")
 		}
-		lease, err = manager.ensureLease(executionCtx, loaded.Run.TenantID, lease)
-		if err != nil {
-			return manager.retry(ctx, message, err)
-		}
+	}
+	if stopped := stopActiveInvocation(); stopped.Failed() {
+		return manager.handleActiveStop(message, loaded, lease, stopped)
+	}
+	substrateEvidence = substrateEvidence.Clone()
+	lease, err = manager.ensureLease(context.Background(), loaded.Run.TenantID, lease)
+	if err != nil {
+		return manager.retry(context.Background(), message, err)
+	}
+	cancelled, err = manager.state.CancellationRequested(
+		context.Background(), loaded.Run.TenantID, loaded.Run.ID,
+	)
+	if err != nil {
+		return manager.retry(context.Background(), message, err)
+	}
+	if cancelled {
+		return manager.finishFailure(
+			context.Background(), message, loaded, lease, true, "cancelled",
+		)
+	}
+	if loaded.Job.Origin != nil {
 		if err := manager.state.CompleteWorkerJob(ctx, ports.WorkerCompletion{
 			TenantID: loaded.Run.TenantID, RunID: loaded.Run.ID,
 			AttemptID: loaded.Attempt.ID, ReservationID: loaded.Reservation.ID,
 			LeaseID: lease.ID, Fence: lease.FenceToken, At: finishedAt,
-			Manifest: manifest, Events: events,
+			Manifest: manifest, Events: events, SubstrateEvidence: &substrateEvidence,
 		}); err != nil {
 			return manager.retry(ctx, message, err)
 		}
@@ -349,7 +490,7 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 				TenantID: loaded.Run.TenantID, RunID: loaded.Run.ID,
 				AttemptID: loaded.Attempt.ID, ReservationID: loaded.Reservation.ID,
 				LeaseID: lease.ID, Fence: lease.FenceToken, At: finishedAt,
-				Manifest: manifest, Delivery: delivery,
+				Manifest: manifest, Delivery: delivery, SubstrateEvidence: &substrateEvidence,
 			},
 		); err != nil {
 			return manager.retry(ctx, message, err)
@@ -364,6 +505,43 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 		return "", err
 	}
 	return OutcomeCompleted, nil
+}
+
+func validateLoadedWorkerJob(loaded ports.WorkerJobState) error {
+	if loaded.Job.AttemptID != loaded.Attempt.ID ||
+		loaded.Job.ReservationID != loaded.Reservation.ID ||
+		loaded.Job.InputManifestID != loaded.InputManifest.ID ||
+		loaded.InputManifest.TenantID != loaded.Run.TenantID ||
+		loaded.InputManifest.RunID != loaded.Run.ID {
+		return errors.New("worker job references do not match loaded aggregates")
+	}
+	refs := []*domain.BlobRef{loaded.Job.WorkspaceSnapshot, loaded.Job.SkillBundle}
+	if loaded.Job.ContextWindow == nil {
+		refs = append(refs, &loaded.Job.ContextSnapshot)
+	}
+	for _, ref := range refs {
+		if ref == nil {
+			continue
+		}
+		if err := ref.Validate(); err != nil {
+			return err
+		}
+		if err := domain.EnsureSameTenant(loaded.Run.TenantID, ref.TenantID); err != nil {
+			return err
+		}
+	}
+	for _, artifact := range loaded.InputManifest.Artifacts {
+		if err := artifact.Validate(); err != nil {
+			return err
+		}
+		if err := domain.EnsureSameTenant(loaded.Run.TenantID, artifact.Blob.TenantID); err != nil {
+			return err
+		}
+		if err := validateFilename(artifact.Name); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type managedCredential struct {
@@ -501,7 +679,7 @@ func (manager *Manager) finalizeCredential(ctx context.Context, credential *mana
 type eventSink struct {
 	manager      *Manager
 	loaded       ports.WorkerJobState
-	lease        domain.Lease
+	lease        *invocationLease
 	lastSequence uint64
 }
 
@@ -531,7 +709,7 @@ func (sink *eventSink) Emit(ctx context.Context, event ports.ExecutionEvent) err
 		return context.Canceled
 	}
 	at := sink.manager.clock.Now().UTC()
-	sink.lease, err = sink.manager.ensureLease(ctx, sink.loaded.Run.TenantID, sink.lease)
+	lease, err := sink.lease.Ensure(ctx)
 	if err != nil {
 		return err
 	}
@@ -568,13 +746,191 @@ func (sink *eventSink) Emit(ctx context.Context, event ports.ExecutionEvent) err
 		usage = &value
 	}
 	if err := sink.manager.state.CommitWorkerEvent(ctx, ports.WorkerEventCommit{
-		Checkpoint: checkpoint, Usage: usage, LeaseID: sink.lease.ID,
-		Fence: sink.lease.FenceToken, At: at,
+		Checkpoint: checkpoint, Usage: usage, LeaseID: lease.ID,
+		Fence: lease.FenceToken, At: at,
 	}); err != nil {
 		return err
 	}
 	sink.lastSequence = event.Sequence
 	return nil
+}
+
+var (
+	errWorkerCancellationObserved = errors.New("worker cancellation observed")
+)
+
+type attemptEffectReconcilePendingError struct {
+	evidence domain.AttemptEffectReconciliationEvidenceV1
+}
+
+func (err attemptEffectReconcilePendingError) Error() string {
+	return fmt.Sprintf(
+		"provider effect reconciliation pending: state=%s physical_invocation_id=%s",
+		err.evidence.Observation.State, err.evidence.Observation.PhysicalInvocationID,
+	)
+}
+
+func generatePhysicalClaim(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	var entropy [16]byte
+	if _, err := cryptorand.Read(entropy[:]); err != nil {
+		return "", fmt.Errorf("generate physical invocation claim: %w", err)
+	}
+	return "pic_" + hex.EncodeToString(entropy[:]), nil
+}
+
+func validateAttemptEffectResult(
+	result ports.ReserveAttemptEffectResultV1,
+	loaded ports.WorkerJobState,
+	lease domain.Lease,
+	physicalClaimID string,
+) error {
+	if err := result.Validate(); err != nil {
+		return err
+	}
+	reservation := result.Reservation
+	if reservation.TenantID != loaded.Run.TenantID || reservation.RunID != loaded.Run.ID ||
+		reservation.AttemptID != loaded.Attempt.ID || reservation.LeaseID != lease.ID ||
+		reservation.FenceToken != lease.FenceToken {
+		return errors.New("provider effect reservation changed invocation authority")
+	}
+	if result.Status != ports.AttemptEffectReconcileOnlyV1 &&
+		reservation.PhysicalInvocationClaimID != physicalClaimID {
+		return errors.New("provider effect reservation changed physical invocation claim")
+	}
+	return nil
+}
+
+type invocationLease struct {
+	mu       sync.Mutex
+	manager  *Manager
+	tenantID domain.TenantID
+	lease    domain.Lease
+}
+
+func (state *invocationLease) Current() domain.Lease {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.lease
+}
+
+func (state *invocationLease) Ensure(ctx context.Context) (domain.Lease, error) {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	lease, err := state.manager.ensureLease(ctx, state.tenantID, state.lease)
+	if err == nil {
+		state.lease = lease
+	}
+	return lease, err
+}
+
+// Renew always reaches the canonical store. Unlike an event-boundary Ensure,
+// the watchdog must discover a replaced fence even while the current local
+// expiry still appears comfortably in the future.
+func (state *invocationLease) Renew(ctx context.Context) (domain.Lease, error) {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	now := state.manager.clock.Now().UTC()
+	current := state.lease
+	lease, err := state.manager.state.RenewWorkerLease(
+		ctx, state.tenantID, current.ID, current.FenceToken,
+		now, now.Add(state.manager.config.LeaseTTL),
+	)
+	if err != nil {
+		return domain.Lease{}, err
+	}
+	if lease.ID != current.ID || lease.TenantID != current.TenantID ||
+		lease.RunID != current.RunID || lease.AttemptID != current.AttemptID ||
+		lease.WorkerID != current.WorkerID || lease.FenceToken != current.FenceToken ||
+		lease.AcquiredAt != current.AcquiredAt || !lease.ExpiresAt.After(now) {
+		return domain.Lease{}, errors.New("worker lease renewal changed authority")
+	}
+	state.lease = lease
+	return lease, nil
+}
+
+type leaseWatchdog struct {
+	stopOnce sync.Once
+	stop     chan struct{}
+	done     chan struct{}
+	err      error
+}
+
+type activeInvocationStop struct {
+	watchdogErr error
+	cleanupErr  error
+}
+
+func (result activeInvocationStop) Failed() bool {
+	return result.watchdogErr != nil || result.cleanupErr != nil
+}
+
+func (watchdog *leaseWatchdog) Stop() error {
+	watchdog.stopOnce.Do(func() { close(watchdog.stop) })
+	<-watchdog.done
+	return watchdog.err
+}
+
+func (manager *Manager) handleActiveStop(
+	message ports.ReceivedMessage,
+	loaded ports.WorkerJobState,
+	lease domain.Lease,
+	stopped activeInvocationStop,
+) (Outcome, error) {
+	if stopped.watchdogErr != nil && !errors.Is(stopped.watchdogErr, errWorkerCancellationObserved) {
+		return manager.retry(context.Background(), message, stopped.watchdogErr)
+	}
+	if stopped.cleanupErr != nil {
+		return manager.finishFailure(
+			context.Background(), message, loaded, lease, false, "cleanup_failed",
+		)
+	}
+	return manager.finishFailure(
+		context.Background(), message, loaded, lease, true, "cancelled",
+	)
+}
+
+func (manager *Manager) startLeaseWatchdog(
+	ctx context.Context,
+	cancelExecution context.CancelFunc,
+	loaded ports.WorkerJobState,
+	lease *invocationLease,
+) *leaseWatchdog {
+	watchdog := &leaseWatchdog{stop: make(chan struct{}), done: make(chan struct{})}
+	go func() {
+		defer close(watchdog.done)
+		ticker := time.NewTicker(manager.config.LeaseWatchdogInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-watchdog.stop:
+				return
+			case <-ticker.C:
+				cancelled, err := manager.state.CancellationRequested(
+					ctx, loaded.Run.TenantID, loaded.Run.ID,
+				)
+				if err == nil && cancelled {
+					err = errWorkerCancellationObserved
+				}
+				if err == nil {
+					_, err = lease.Renew(ctx)
+				}
+				if err != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					watchdog.err = err
+					cancelExecution()
+					return
+				}
+			}
+		}
+	}()
+	return watchdog
 }
 
 func (manager *Manager) materialize(
@@ -919,6 +1275,18 @@ func (manager *Manager) finishFailure(
 	cancelled bool,
 	code string,
 ) (Outcome, error) {
+	return manager.finishFailureWithReconciliation(ctx, message, loaded, lease, cancelled, code, nil)
+}
+
+func (manager *Manager) finishFailureWithReconciliation(
+	ctx context.Context,
+	message ports.ReceivedMessage,
+	loaded ports.WorkerJobState,
+	lease domain.Lease,
+	cancelled bool,
+	code string,
+	reconciliationEvidence *domain.AttemptEffectReconciliationEvidenceV1,
+) (Outcome, error) {
 	if lease.ID == "" {
 		if err := manager.queue.Ack(ctx, message.ReceiptHandle); err != nil {
 			return "", err
@@ -948,6 +1316,7 @@ func (manager *Manager) finishFailure(
 			AttemptID: loaded.Attempt.ID, ReservationID: loaded.Reservation.ID,
 			LeaseID: lease.ID, Fence: lease.FenceToken,
 			At: failedAt, Cancelled: cancelled, Code: code, Events: events,
+			ReconciliationEvidence: reconciliationEvidence,
 		}); err != nil {
 			return manager.retry(ctx, message, err)
 		}
@@ -968,6 +1337,7 @@ func (manager *Manager) finishFailure(
 				AttemptID: loaded.Attempt.ID, ReservationID: loaded.Reservation.ID,
 				LeaseID: lease.ID, Fence: lease.FenceToken,
 				At: failedAt, Cancelled: cancelled, Code: code, Delivery: delivery,
+				ReconciliationEvidence: reconciliationEvidence,
 			},
 		); err != nil {
 			return manager.retry(ctx, message, err)
@@ -1102,11 +1472,20 @@ func (manager *Manager) createInvocationDir() (string, error) {
 	return dir, nil
 }
 
-func (manager *Manager) cleanupInvocationDir(dir string) {
-	if filepath.Dir(dir) == manager.config.ScratchRoot &&
-		strings.HasPrefix(filepath.Base(dir), "invocation-") {
-		_ = os.RemoveAll(dir)
+func (manager *Manager) cleanupInvocationDir(dir string) error {
+	if filepath.Dir(dir) != manager.config.ScratchRoot ||
+		!strings.HasPrefix(filepath.Base(dir), "invocation-") {
+		return errors.New("invocation cleanup target escaped scratch root")
 	}
+	if err := manager.config.ScratchRemoveAll(dir); err != nil {
+		return fmt.Errorf("remove invocation directory: %w", err)
+	}
+	if _, err := os.Lstat(dir); err == nil {
+		return errors.New("invocation directory remains after cleanup")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("verify invocation directory cleanup: %w", err)
+	}
+	return nil
 }
 
 func validateFilename(name string) error {

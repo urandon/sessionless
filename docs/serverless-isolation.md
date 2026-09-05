@@ -8,10 +8,12 @@ provider credential, or production backend.
 ## Authority and attestation
 
 `internal/serverlessisolation.SupervisorV1` accepts only a process-local,
-issuer-authenticated `PreparedInvocation`. The registry consumes that
-capability before calling a substrate driver; the supervisor validates it
-again immediately before preparing a process. A capability from a restarted
-issuer is invalid and cannot be reconstructed from durable DTOs.
+issuer-authenticated `PreparedInvocation`. The registry validates and routes
+that capability but does not consume it. The supervisor validates it again and
+consumes it exactly once after pure attestation/configuration checks and
+immediately before the AW-05 launcher can prepare a boundary or start a
+process. A capability from a restarted issuer is invalid and cannot be
+reconstructed from durable DTOs.
 
 `Preflight` asks the trusted launcher to observe the allocation without
 creating a workspace, reading credentials, opening network traffic, or
@@ -99,6 +101,8 @@ that implementation.
 No concrete Yandex launcher, provider proxy, credential materializer, warm-pool
 reuse, arbitrary shell/tool profile, or native-session resume is registered by
 this change. Those remain the later PR-03c through PR-03f gates in
-[serverless-harness.md](serverless-harness.md). A production profile cannot be
-enabled until its concrete launcher and exact image revision prove the same
-negative matrix in cloud-dev.
+[serverless-harness.md](serverless-harness.md). The separate feature-disabled
+PR-03c composition boundary is specified in
+[serverless-egress.md](serverless-egress.md). A production profile cannot be
+enabled until its concrete launcher, proxy, secret adapter, and exact image
+revision prove the same negative matrix in cloud-dev.

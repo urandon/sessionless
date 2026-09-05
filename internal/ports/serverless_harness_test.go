@@ -73,13 +73,19 @@ func TestReserveAttemptEffectResultRequiresExactAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	observationGrant, err := issuer.MintAttemptEffectObservationGrant(authority, reservation, at, at.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, status := range []ports.AttemptEffectReservationStatusV1{ports.AttemptEffectOwnedV1, ports.AttemptEffectReplayedV1} {
 		result := ports.ReserveAttemptEffectResultV1{Status: status, Reservation: reservation.Clone(), Grant: ptr(grant.Clone())}
 		if err := result.Validate(); err != nil {
 			t.Fatalf("status %q rejected: %v", status, err)
 		}
 	}
-	reconcile := ports.ReserveAttemptEffectResultV1{Status: ports.AttemptEffectReconcileOnlyV1, Reservation: reservation.Clone()}
+	reconcile := ports.ReserveAttemptEffectResultV1{
+		Status: ports.AttemptEffectReconcileOnlyV1, Reservation: reservation.Clone(), ObservationGrant: ptr(observationGrant.Clone()),
+	}
 	if err := reconcile.Validate(); err != nil {
 		t.Fatalf("reconcile-only result rejected: %v", err)
 	}
@@ -98,6 +104,12 @@ func TestReserveAttemptEffectResultRequiresExactAuthority(t *testing.T) {
 	}
 	if err := (ports.ReserveAttemptEffectResultV1{Status: ports.AttemptEffectReconcileOnlyV1, Reservation: reservation, Grant: &grant}).Validate(); err == nil {
 		t.Fatal("reconcile-only effect accepted a grant")
+	}
+	if err := (ports.ReserveAttemptEffectResultV1{Status: ports.AttemptEffectReconcileOnlyV1, Reservation: reservation}).Validate(); err == nil {
+		t.Fatal("reconcile-only effect accepted without an observation grant")
+	}
+	if err := (ports.ReserveAttemptEffectResultV1{Status: ports.AttemptEffectOwnedV1, Reservation: reservation, Grant: &grant, ObservationGrant: &observationGrant}).Validate(); err == nil {
+		t.Fatal("owned effect accepted an observation grant")
 	}
 }
 

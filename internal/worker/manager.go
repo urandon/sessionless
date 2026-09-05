@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
@@ -26,6 +27,7 @@ type Config struct {
 	ScratchRoot             string
 	WorkerID                string
 	LeaseTTL                time.Duration
+	LeaseWatchdogInterval   time.Duration
 	RetryDelay              time.Duration
 	RetryObserver           func(error)
 	MaxDeliveryCount        uint32
@@ -80,6 +82,18 @@ func New(
 ) (*Manager, error) {
 	if config.LeaseTTL <= 0 {
 		config.LeaseTTL = 2 * time.Minute
+	}
+	maximumLeaseWatchInterval := config.LeaseTTL / 3
+	if maximumLeaseWatchInterval <= 0 {
+		return nil, errors.New("worker lease TTL is too short for supervision")
+	}
+	if config.LeaseWatchdogInterval <= 0 {
+		config.LeaseWatchdogInterval = maximumLeaseWatchInterval
+		if config.LeaseWatchdogInterval > 30*time.Second {
+			config.LeaseWatchdogInterval = 30 * time.Second
+		}
+	} else if config.LeaseWatchdogInterval > maximumLeaseWatchInterval {
+		return nil, errors.New("worker lease watch interval exceeds one third of lease TTL")
 	}
 	if config.RetryDelay <= 0 {
 		config.RetryDelay = 5 * time.Second
@@ -252,19 +266,29 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 	if err := request.Validate(); err != nil {
 		return manager.finishFailure(ctx, message, loaded, lease, false, "invalid_execution_request")
 	}
+	leaseState := &invocationLease{manager: manager, tenantID: loaded.Run.TenantID, lease: lease}
 	sink := &eventSink{
-		manager: manager, loaded: loaded, lease: lease,
+		manager: manager, loaded: loaded, lease: leaseState,
 		lastSequence: checkpointSequence(loaded.Checkpoint),
 	}
+	watchdog := manager.startLeaseWatchdog(executionCtx, cancelExecution, loaded, leaseState)
 	result, err := manager.harness.Execute(executionCtx, request, sink)
-	if err != nil {
+	watchdogErr := watchdog.Stop()
+	if err != nil || watchdogErr != nil {
 		_ = manager.harness.Cancel(context.Background(), executionIdentityForJob(loaded.Job))
 	}
+	lease = leaseState.Current()
 	if credential != nil {
 		credentialFinalized = true
 		if finalizeErr := manager.finalizeCredential(ctx, credential); finalizeErr != nil {
 			return manager.finishFailure(context.Background(), message, loaded, lease, false, "credential_finalization_failed")
 		}
+	}
+	if watchdogErr != nil {
+		if errors.Is(watchdogErr, errWorkerCancellationObserved) {
+			return manager.finishFailure(context.Background(), message, loaded, lease, true, "cancelled")
+		}
+		return manager.retry(context.Background(), message, watchdogErr)
 	}
 	if err != nil {
 		cancelled, cancelErr := manager.state.CancellationRequested(
@@ -287,7 +311,6 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 		}
 		return manager.finishFailure(context.Background(), message, loaded, lease, false, "harness_failed")
 	}
-	lease = sink.lease
 	lease, err = manager.ensureLease(executionCtx, loaded.Run.TenantID, lease)
 	if err != nil {
 		return manager.retry(ctx, message, err)
@@ -501,7 +524,7 @@ func (manager *Manager) finalizeCredential(ctx context.Context, credential *mana
 type eventSink struct {
 	manager      *Manager
 	loaded       ports.WorkerJobState
-	lease        domain.Lease
+	lease        *invocationLease
 	lastSequence uint64
 }
 
@@ -531,7 +554,7 @@ func (sink *eventSink) Emit(ctx context.Context, event ports.ExecutionEvent) err
 		return context.Canceled
 	}
 	at := sink.manager.clock.Now().UTC()
-	sink.lease, err = sink.manager.ensureLease(ctx, sink.loaded.Run.TenantID, sink.lease)
+	lease, err := sink.lease.Ensure(ctx)
 	if err != nil {
 		return err
 	}
@@ -568,13 +591,117 @@ func (sink *eventSink) Emit(ctx context.Context, event ports.ExecutionEvent) err
 		usage = &value
 	}
 	if err := sink.manager.state.CommitWorkerEvent(ctx, ports.WorkerEventCommit{
-		Checkpoint: checkpoint, Usage: usage, LeaseID: sink.lease.ID,
-		Fence: sink.lease.FenceToken, At: at,
+		Checkpoint: checkpoint, Usage: usage, LeaseID: lease.ID,
+		Fence: lease.FenceToken, At: at,
 	}); err != nil {
 		return err
 	}
 	sink.lastSequence = event.Sequence
 	return nil
+}
+
+var errWorkerCancellationObserved = errors.New("worker cancellation observed")
+
+type invocationLease struct {
+	mu       sync.Mutex
+	manager  *Manager
+	tenantID domain.TenantID
+	lease    domain.Lease
+}
+
+func (state *invocationLease) Current() domain.Lease {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.lease
+}
+
+func (state *invocationLease) Ensure(ctx context.Context) (domain.Lease, error) {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	lease, err := state.manager.ensureLease(ctx, state.tenantID, state.lease)
+	if err == nil {
+		state.lease = lease
+	}
+	return lease, err
+}
+
+// Renew always reaches the canonical store. Unlike an event-boundary Ensure,
+// the watchdog must discover a replaced fence even while the current local
+// expiry still appears comfortably in the future.
+func (state *invocationLease) Renew(ctx context.Context) (domain.Lease, error) {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	now := state.manager.clock.Now().UTC()
+	current := state.lease
+	lease, err := state.manager.state.RenewWorkerLease(
+		ctx, state.tenantID, current.ID, current.FenceToken,
+		now, now.Add(state.manager.config.LeaseTTL),
+	)
+	if err != nil {
+		return domain.Lease{}, err
+	}
+	if lease.ID != current.ID || lease.TenantID != current.TenantID ||
+		lease.RunID != current.RunID || lease.AttemptID != current.AttemptID ||
+		lease.WorkerID != current.WorkerID || lease.FenceToken != current.FenceToken ||
+		lease.AcquiredAt != current.AcquiredAt || !lease.ExpiresAt.After(now) {
+		return domain.Lease{}, errors.New("worker lease renewal changed authority")
+	}
+	state.lease = lease
+	return lease, nil
+}
+
+type leaseWatchdog struct {
+	stopOnce sync.Once
+	stop     chan struct{}
+	done     chan struct{}
+	err      error
+}
+
+func (watchdog *leaseWatchdog) Stop() error {
+	watchdog.stopOnce.Do(func() { close(watchdog.stop) })
+	<-watchdog.done
+	return watchdog.err
+}
+
+func (manager *Manager) startLeaseWatchdog(
+	ctx context.Context,
+	cancelExecution context.CancelFunc,
+	loaded ports.WorkerJobState,
+	lease *invocationLease,
+) *leaseWatchdog {
+	watchdog := &leaseWatchdog{stop: make(chan struct{}), done: make(chan struct{})}
+	go func() {
+		defer close(watchdog.done)
+		ticker := time.NewTicker(manager.config.LeaseWatchdogInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-watchdog.stop:
+				return
+			case <-ticker.C:
+				cancelled, err := manager.state.CancellationRequested(
+					ctx, loaded.Run.TenantID, loaded.Run.ID,
+				)
+				if err == nil && cancelled {
+					err = errWorkerCancellationObserved
+				}
+				if err == nil {
+					_, err = lease.Renew(ctx)
+				}
+				if err != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					watchdog.err = err
+					cancelExecution()
+					return
+				}
+			}
+		}
+	}()
+	return watchdog
 }
 
 func (manager *Manager) materialize(

@@ -159,14 +159,15 @@ resource "yandex_serverless_container" "worker" {
   image {
     url = var.images["worker-runtime"]
     environment = merge(local.common_environment, {
-      DEPLOYMENT_IMAGE          = var.images["worker-runtime"]
-      SERVERLESS_TRIGGER_HTTP   = "true"
-      WORKER_ID                 = "serverless-worker"
-      WORKER_LEASE_TTL          = "2m"
-      WORKER_MAX_DELIVERY_COUNT = "5"
-      QUEUE_ENDPOINT            = "https://message-queue.api.cloud.yandex.net"
-      QUEUE_REGION              = "ru-central1"
-      DELIVERY_QUEUE_URL        = var.delivery_queue_url
+      DEPLOYMENT_IMAGE               = var.images["worker-runtime"]
+      SERVERLESS_TRIGGER_HTTP        = "true"
+      WORKER_ID                      = "serverless-worker"
+      WORKER_LEASE_TTL               = "2m"
+      WORKER_LEASE_WATCHDOG_INTERVAL = "30s"
+      WORKER_MAX_DELIVERY_COUNT      = "5"
+      QUEUE_ENDPOINT                 = "https://message-queue.api.cloud.yandex.net"
+      QUEUE_REGION                   = "ru-central1"
+      DELIVERY_QUEUE_URL             = var.delivery_queue_url
     })
   }
   metadata_options {

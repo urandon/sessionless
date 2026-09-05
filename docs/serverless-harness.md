@@ -397,8 +397,10 @@ The initial production policy reserves the one-hour Yandex request limit as:
 - at least 5 additional minutes remain unallocated as a hard platform guard.
 
 PR-03d must measure and then reduce these values if the tail does not fit. The
-current two-minute lease and event-boundary-only renewal do not pass this
-profile. A request timeout is never reported as process stopped or cleanup
+two-minute lease does not pass this profile. PR-03d adds independent polling
+around silent harness execution, but production promotion still requires the
+same supervision across preparation, upload, credential finalization, and
+cleanup. A request timeout is never reported as process stopped or cleanup
 verified.
 
 Yandex's broker acknowledges the queue delivery because the container returned
@@ -641,7 +643,8 @@ objects. No projection may infer `healthy`, `safe`, `erased`, `stopped`, or
 ## Substrate and competitor comparison
 
 All rows below are **documented vendor behavior**, not Sessionless measurements,
-unless explicitly marked. Current pages were checked on 2026-08-26; preview
+unless explicitly marked. Current Yandex pages were rechecked on 2026-09-05;
+other pages were checked on 2026-08-26; preview
 surfaces can change. Cold-start values are unknown until PR-03d runs the exact
 image and region.
 
@@ -680,7 +683,9 @@ no credentials and is outside every Sessionless worktree.
 
 No vendor marketing claim is treated as a Sessionless pass. The cloud-dev spike
 records exact image/profile/region, raw measurement artifacts in private test
-storage, sanitized results, and reproducible commands.
+storage, sanitized results, and reproducible commands. The executable gate
+contract, current no-go baseline, and operator-safe probe sequence are in
+[yandex-serverless-substrate.md](yandex-serverless-substrate.md).
 
 ### Region and data residency
 

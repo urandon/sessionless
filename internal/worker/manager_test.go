@@ -29,6 +29,17 @@ import (
 
 var workerTestTime = time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
 
+func TestWorkerRejectsUnsafeLeaseWatchInterval(t *testing.T) {
+	t.Parallel()
+	_, err := worker.New(worker.Config{
+		ScratchRoot: t.TempDir(), WorkerID: "worker-test", LeaseTTL: time.Minute,
+		LeaseWatchdogInterval: 21 * time.Second,
+	}, nil, nil, nil, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "one third") {
+		t.Fatalf("error = %v, want unsafe lease watch interval rejection", err)
+	}
+}
+
 func TestWorkerCompletesOnceAndCleansReusedScratch(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -532,6 +543,112 @@ func TestWorkerRenewsLeaseAtDurableBoundary(t *testing.T) {
 	}
 }
 
+func TestWorkerWatchdogRenewsLeaseDuringSilentHarnessCall(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	clock := testkit.NewFakeClock(workerTestTime)
+	queue := testkit.NewMemoryQueue()
+	blobs := newMemoryBlobs()
+	state := newWorkerState()
+	state.renewalNotify = make(chan error, 1)
+	loaded := workerFixture(t, ctx, blobs, "tenant-a", workerTestTime)
+	state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
+	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
+	harness := newWatchdogHarness()
+	manager, err := worker.New(worker.Config{
+		ScratchRoot: t.TempDir(), WorkerID: "worker-test", LeaseTTL: time.Minute,
+		LeaseWatchdogInterval: time.Millisecond, DeliveryWakePublisher: newDeliveryWakePublisher(t),
+	}, clock, queue, state, blobs, harness)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := runWorkerOnce(manager, ctx)
+	waitForSignal(t, ctx, harness.started, "harness start")
+	clock.Advance(40 * time.Second)
+	select {
+	case renewalErr := <-state.renewalNotify:
+		if renewalErr != nil {
+			t.Fatalf("watchdog renewal: %v", renewalErr)
+		}
+	case <-ctx.Done():
+		t.Fatalf("watchdog renewal: %v", ctx.Err())
+	}
+	close(harness.release)
+	result := waitForWorkerResult(t, ctx, done)
+	if result.err != nil || result.outcome != worker.OutcomeCompleted {
+		t.Fatalf("outcome/error = %q/%v, want completed/nil", result.outcome, result.err)
+	}
+	if state.renewals == 0 {
+		t.Fatal("silent harness call completed without a watchdog lease renewal")
+	}
+}
+
+func TestWorkerWatchdogDeliversCancellationToSilentHarness(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	clock := testkit.NewFakeClock(workerTestTime)
+	queue := testkit.NewMemoryQueue()
+	blobs := newMemoryBlobs()
+	state := newWorkerState()
+	loaded := workerFixture(t, ctx, blobs, "tenant-a", workerTestTime)
+	key := jobKey(loaded.Run.TenantID, loaded.Run.ID)
+	state.jobs[key] = loaded
+	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
+	harness := newWatchdogHarness()
+	manager, err := worker.New(worker.Config{
+		ScratchRoot: t.TempDir(), WorkerID: "worker-test", LeaseTTL: time.Minute,
+		LeaseWatchdogInterval: time.Millisecond, DeliveryWakePublisher: newDeliveryWakePublisher(t),
+	}, clock, queue, state, blobs, harness)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := runWorkerOnce(manager, ctx)
+	waitForSignal(t, ctx, harness.started, "harness start")
+	state.setCancelled(key)
+	waitForSignal(t, ctx, harness.contextCancelled, "harness context cancellation")
+	result := waitForWorkerResult(t, ctx, done)
+	if result.err != nil || result.outcome != worker.OutcomeCancelled {
+		t.Fatalf("outcome/error = %q/%v, want cancelled/nil", result.outcome, result.err)
+	}
+	if state.completions != 0 || state.failures != 1 || harness.cancelCalls != 1 {
+		t.Fatalf("completions/failures/cancel calls = %d/%d/%d, want 0/1/1", state.completions, state.failures, harness.cancelCalls)
+	}
+}
+
+func TestWorkerWatchdogLeaseLossCancelsAndBlocksSuccess(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	clock := testkit.NewFakeClock(workerTestTime)
+	queue := testkit.NewMemoryQueue()
+	blobs := newMemoryBlobs()
+	state := newWorkerState()
+	loaded := workerFixture(t, ctx, blobs, "tenant-a", workerTestTime)
+	state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
+	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
+	harness := newWatchdogHarness()
+	manager, err := worker.New(worker.Config{
+		ScratchRoot: t.TempDir(), WorkerID: "worker-test", LeaseTTL: time.Minute,
+		LeaseWatchdogInterval: time.Millisecond, DeliveryWakePublisher: newDeliveryWakePublisher(t),
+	}, clock, queue, state, blobs, harness)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := runWorkerOnce(manager, ctx)
+	waitForSignal(t, ctx, harness.started, "harness start")
+	state.replaceFence(jobKey(loaded.Run.TenantID, loaded.Run.ID))
+	waitForSignal(t, ctx, harness.contextCancelled, "harness context cancellation")
+	result := waitForWorkerResult(t, ctx, done)
+	if result.err != nil || result.outcome != worker.OutcomeRetried {
+		t.Fatalf("outcome/error = %q/%v, want retried/nil", result.outcome, result.err)
+	}
+	if state.completions != 0 || state.failures != 0 || harness.cancelCalls != 1 {
+		t.Fatalf("completions/failures/cancel calls = %d/%d/%d, want 0/0/1", state.completions, state.failures, harness.cancelCalls)
+	}
+}
+
 func TestWorkerEnforcesRuntimeLimitAndCancelsHarness(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -545,7 +662,7 @@ func TestWorkerEnforcesRuntimeLimitAndCancelsHarness(t *testing.T) {
 	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
 	harness := &blockingHarness{}
 	manager, err := worker.New(worker.Config{
-		ScratchRoot: t.TempDir(), WorkerID: "worker-test",
+		ScratchRoot: t.TempDir(), WorkerID: "worker-test", LeaseWatchdogInterval: time.Millisecond,
 		DeliveryWakePublisher: newDeliveryWakePublisher(t),
 	}, clock, queue, state, blobs, harness)
 	if err != nil {
@@ -963,19 +1080,20 @@ func (store *memoryBlobs) Delete(_ context.Context, tenant domain.TenantID, ref 
 }
 
 type workerState struct {
-	mu          sync.Mutex
-	jobs        map[string]ports.WorkerJobState
-	leases      map[string]domain.Lease
-	cancelled   map[string]bool
-	checkpoints []domain.Checkpoint
-	usage       []domain.UsageObservation
-	manifests   []domain.ArtifactManifest
-	events      []domain.SessionEventDraft
-	deliveries  []domain.TelegramDeliveryOutbox
-	completions int
-	failures    int
-	renewals    int
-	loadContext func(ports.WorkerContextRequest) (domain.SessionContextInput, error)
+	mu            sync.Mutex
+	jobs          map[string]ports.WorkerJobState
+	leases        map[string]domain.Lease
+	cancelled     map[string]bool
+	checkpoints   []domain.Checkpoint
+	usage         []domain.UsageObservation
+	manifests     []domain.ArtifactManifest
+	events        []domain.SessionEventDraft
+	deliveries    []domain.TelegramDeliveryOutbox
+	completions   int
+	failures      int
+	renewals      int
+	renewalNotify chan error
+	loadContext   func(ports.WorkerContextRequest) (domain.SessionContextInput, error)
 }
 
 func newWorkerState() *workerState {
@@ -1088,16 +1206,22 @@ func (state *workerState) RenewWorkerLease(
 	newExpiry time.Time,
 ) (domain.Lease, error) {
 	state.mu.Lock()
-	defer state.mu.Unlock()
 	for key, lease := range state.leases {
 		if lease.TenantID == tenant && lease.ID == leaseID && lease.FenceToken == fence {
 			lease.ExpiresAt = newExpiry
 			state.leases[key] = lease
 			state.renewals++
+			notify := state.renewalNotify
+			state.mu.Unlock()
+			notifyRenewal(notify, nil)
 			return lease, nil
 		}
 	}
-	return domain.Lease{}, errors.New("lease lost")
+	notify := state.renewalNotify
+	state.mu.Unlock()
+	err := errors.New("lease lost")
+	notifyRenewal(notify, err)
+	return domain.Lease{}, err
 }
 
 func (state *workerState) CommitWorkerEvent(_ context.Context, event ports.WorkerEventCommit) error {
@@ -1228,6 +1352,30 @@ func (state *workerState) CancellationRequested(
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	return state.cancelled[jobKey(tenant, runID)], nil
+}
+
+func (state *workerState) setCancelled(key string) {
+	state.mu.Lock()
+	state.cancelled[key] = true
+	state.mu.Unlock()
+}
+
+func (state *workerState) replaceFence(key string) {
+	state.mu.Lock()
+	lease := state.leases[key]
+	lease.FenceToken++
+	state.leases[key] = lease
+	state.mu.Unlock()
+}
+
+func notifyRenewal(channel chan error, err error) {
+	if channel == nil {
+		return
+	}
+	select {
+	case channel <- err:
+	default:
+	}
 }
 
 func jobKey(tenant domain.TenantID, runID domain.RunID) string {
@@ -1375,6 +1523,77 @@ func (harness *blockingHarness) Cancel(context.Context, ports.ExecutionIdentity)
 }
 
 var _ ports.HarnessDriver = (*blockingHarness)(nil)
+
+type watchdogHarness struct {
+	started          chan struct{}
+	release          chan struct{}
+	contextCancelled chan struct{}
+	cancelCalls      int
+}
+
+func newWatchdogHarness() *watchdogHarness {
+	return &watchdogHarness{
+		started: make(chan struct{}), release: make(chan struct{}), contextCancelled: make(chan struct{}),
+	}
+}
+
+func (*watchdogHarness) Preflight(context.Context, ports.ExecutionIdentity) error { return nil }
+
+func (harness *watchdogHarness) Execute(
+	ctx context.Context,
+	_ ports.ExecutionRequest,
+	_ ports.ExecutionEventSink,
+) (ports.ExecutionResult, error) {
+	close(harness.started)
+	select {
+	case <-harness.release:
+		return ports.ExecutionResult{Summary: "watchdog fixture completed"}, nil
+	case <-ctx.Done():
+		close(harness.contextCancelled)
+		return ports.ExecutionResult{}, ctx.Err()
+	}
+}
+
+func (harness *watchdogHarness) Cancel(context.Context, ports.ExecutionIdentity) error {
+	harness.cancelCalls++
+	return nil
+}
+
+type workerRunResult struct {
+	outcome worker.Outcome
+	err     error
+}
+
+func runWorkerOnce(manager *worker.Manager, ctx context.Context) <-chan workerRunResult {
+	done := make(chan workerRunResult, 1)
+	go func() {
+		outcome, err := manager.RunOnce(ctx)
+		done <- workerRunResult{outcome: outcome, err: err}
+	}()
+	return done
+}
+
+func waitForSignal(t *testing.T, ctx context.Context, signal <-chan struct{}, operation string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-ctx.Done():
+		t.Fatalf("%s: %v", operation, ctx.Err())
+	}
+}
+
+func waitForWorkerResult(t *testing.T, ctx context.Context, done <-chan workerRunResult) workerRunResult {
+	t.Helper()
+	select {
+	case result := <-done:
+		return result
+	case <-ctx.Done():
+		t.Fatalf("worker completion: %v", ctx.Err())
+		return workerRunResult{}
+	}
+}
+
+var _ ports.HarnessDriver = (*watchdogHarness)(nil)
 
 type credentialHarness struct {
 	mutateAuth     bool

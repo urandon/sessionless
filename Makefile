@@ -23,7 +23,7 @@ LDFLAGS := -s -w \
 	-X gitcode.com/urandon/sessionless/internal/buildinfo.Commit=$(COMMIT) \
 	-X gitcode.com/urandon/sessionless/internal/buildinfo.BuiltAt=$(BUILT_AT)
 
-.PHONY: help prepare tools web-tools go-package-layout generate fmt fmt-check lint test build web-install web-openapi-check web-check web-build web-stage web-ci web-browser-install web-browser-test integration ydb-integration local-integration e2e-local provider-conformance ci image-publication-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test budget-policy-test web-deployment-policy-test terraform-ci cloudflare-edge-ci \
+.PHONY: help prepare tools web-tools go-package-layout generate fmt fmt-check lint test build web-install web-openapi-check web-check web-build web-stage web-ci web-browser-install web-browser-test integration ydb-integration local-integration e2e-local provider-conformance provider-conformance-fuzz ci image-publication-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test budget-policy-test web-deployment-policy-test terraform-ci cloudflare-edge-ci \
 	compose-config images dev-up dev-seed migrate-local migration-status partition-status partition-backfill cloud-app-reset-plan cloud-app-reset session-delete-request session-delete-plan session-delete session-hold session-release-hold \
 	worker-once web-bootstrap dev-down dev-reset repowise-install repowise-index repowise-update repowise-status repowise-doctor repowise-mcp repowise-mcp-smoke repowise-evaluate repowise-stop repowise-uninstall-plan repowise-uninstall repowise-policy-test clean
 
@@ -41,6 +41,7 @@ help:
 		'make local-integration run YDB/S3/SQS/Telegram adapter tests against the local stand' \
 		'make e2e-local      run the deterministic two-tenant black-box slice' \
 		'make provider-conformance run the credential-free harness/provider registry fixtures' \
+		'make provider-conformance-fuzz run the bounded Pi RPC parser fuzz gate' \
 		'make image-publication-test validate immutable image publication guards' \
 		'make image-publish-policy-test validate explicit credentialed publication intent' \
 		'make registry-gc-policy-test validate deployment-aware registry cleanup guards' \
@@ -160,8 +161,13 @@ e2e-local: prepare
 	@./scripts/e2e-local.sh
 
 provider-conformance: prepare
-	go vet ./internal/domain ./internal/ports ./internal/sessionlessharness ./internal/harnessconformance
-	go test -race -count=50 ./internal/domain ./internal/ports ./internal/sessionlessharness ./internal/harnessconformance
+	go vet ./internal/domain ./internal/ports ./internal/sessionlessharness ./internal/harnessconformance ./internal/piopenrouter
+	go test -race -count=50 -shuffle=on -timeout=5m ./internal/domain ./internal/ports ./internal/sessionlessharness ./internal/harnessconformance
+	go test -race -count=10 -shuffle=on -timeout=2m ./internal/piopenrouter
+	$(MAKE) provider-conformance-fuzz
+
+provider-conformance-fuzz: prepare
+	go test -run='^$$' -fuzz=FuzzRPCParserNeverCommitsMalformedTerminal -fuzztime=2s ./internal/piopenrouter
 
 ci: web-ci generate test build integration image-publication-test image-build-inputs-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test
 

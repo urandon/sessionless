@@ -107,9 +107,56 @@ type ExecutionPreparerV1 interface {
 	PrepareExecution(context.Context, ports.ReserveAttemptEffectResultV1) (PreparedExecutionV1, error)
 }
 
+// SubstrateRegistrationResolverV1 is trusted process composition. It must
+// return the one reviewed registration that exact-matches authenticated
+// authority; it is never selected from queue or request input.
+type SubstrateRegistrationResolverV1 func(domain.ServerlessInvocationAuthorityV1) (SubstrateRegistrationV1, error)
+
+type ExactExecutionPreparerV1 struct {
+	now      func() time.Time
+	issuer   *CapabilityIssuer
+	resolver SubstrateRegistrationResolverV1
+}
+
 type preparedExecutionV1 struct {
 	registry *SubstrateRegistryV1
 	prepared PreparedInvocation
+}
+
+func NewExactExecutionPreparerV1(
+	now func() time.Time,
+	issuer *CapabilityIssuer,
+	resolver SubstrateRegistrationResolverV1,
+) (*ExactExecutionPreparerV1, error) {
+	if now == nil || issuer == nil || resolver == nil {
+		return nil, errors.New("exact execution preparer requires a clock, capability issuer and registration resolver")
+	}
+	return &ExactExecutionPreparerV1{now: now, issuer: issuer, resolver: resolver}, nil
+}
+
+func (preparer *ExactExecutionPreparerV1) PrepareExecution(
+	ctx context.Context,
+	result ports.ReserveAttemptEffectResultV1,
+) (PreparedExecutionV1, error) {
+	if preparer == nil || preparer.issuer == nil || preparer.resolver == nil || ctx == nil || ctx.Err() != nil || result.Validate() != nil || result.Grant == nil || result.Status == ports.AttemptEffectReconcileOnlyV1 {
+		return nil, substrateErrorV1{code: SubstrateFailureAuthorityInvalidV1}
+	}
+	grant := result.Grant.Clone()
+	if preparer.issuer.VerifyGrant(grant) != nil {
+		return nil, substrateErrorV1{code: SubstrateFailureAuthorityInvalidV1}
+	}
+	registration, err := preparer.resolver(grant.Authority.Clone())
+	if err != nil || registration.Driver == nil {
+		return nil, substrateErrorV1{code: SubstrateFailureUnsupportedV1}
+	}
+	if registration.Binding != grant.Authority.SubstrateBinding {
+		return nil, substrateErrorV1{code: SubstrateFailureBindingMismatchV1}
+	}
+	registry, err := NewSubstrateRegistryV1(preparer.now, preparer.issuer, registration)
+	if err != nil {
+		return nil, substrateErrorV1{code: SubstrateFailureUnsupportedV1}
+	}
+	return registry.PrepareExecution(ctx, result)
 }
 
 type SubstrateRegistrationV1 struct {

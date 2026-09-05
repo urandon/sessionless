@@ -278,6 +278,40 @@ func NewDeterministicFixtureManagedAuthorityV2(
 	})
 }
 
+// ValidateDeterministicFixtureInvocationAuthorityV2 proves that all managed
+// placement, harness, substrate and cost fields are exactly those emitted by
+// the built-in deterministic binder for the authenticated scope and pinned
+// price observation. It does not inspect queue input or discover a backend.
+func ValidateDeterministicFixtureInvocationAuthorityV2(authority domain.ServerlessInvocationAuthorityV1) error {
+	if err := authority.Validate(); err != nil {
+		return err
+	}
+	expected, err := NewDeterministicFixtureManagedAuthorityV2(
+		authority.HarnessBinding.TenantID,
+		authority.HarnessBinding.OwnerUserID,
+		authority.HarnessBinding.RunID,
+		authority.HarnessBinding.AttemptID,
+		"deterministic-validation",
+		authority.AdmissionCostCeiling.PriceObservedAt,
+	)
+	if err != nil {
+		return err
+	}
+	expectedHarness, _ := expected.HarnessBinding.Digest()
+	actualHarness, _ := authority.HarnessBinding.Digest()
+	expectedPlacement, _ := domain.ExecutionPlacementDigest(expected.ExecutionPlacementV2)
+	actualPlacement, _ := domain.ExecutionPlacementDigest(authority.ExecutionPlacementV2)
+	expectedSubstrate, _ := expected.SubstrateBinding.Digest()
+	actualSubstrate, _ := authority.SubstrateBinding.Digest()
+	expectedCost, _ := expected.AdmissionCostCeiling.Digest()
+	actualCost, _ := authority.AdmissionCostCeiling.Digest()
+	if expectedHarness != actualHarness || expectedPlacement != actualPlacement ||
+		expectedSubstrate != actualSubstrate || expectedCost != actualCost {
+		return errors.New("deterministic fixture invocation authority does not exact-match the built-in profile")
+	}
+	return nil
+}
+
 func DeterministicFixtureDescriptorV1() domain.HarnessBackendDescriptorV1 {
 	artifact := sha256.Sum256([]byte(deterministicFixtureProfileArtifactV1))
 	return domain.HarnessBackendDescriptorV1{

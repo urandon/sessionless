@@ -86,6 +86,37 @@ func registryFixture(t *testing.T) (*sessionlessharness.Registry, *recordingDriv
 	}
 }
 
+func TestDeterministicFixtureInvocationAuthorityValidatorRejectsNearMatch(t *testing.T) {
+	t.Parallel()
+	boundAt := time.Unix(10, 0).UTC()
+	managed, err := sessionlessharness.NewDeterministicFixtureManagedAuthorityV2(
+		"tenant-1", "user-1", "run-1", "attempt-1", "subscription-1", boundAt,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaseAt := time.Unix(20, 0).UTC()
+	authority := domain.ServerlessInvocationAuthorityV1{
+		Version:        domain.ServerlessInvocationAuthorityVersionV1,
+		HarnessBinding: managed.HarnessBinding, ExecutionPlacementV2: managed.ExecutionPlacementV2,
+		SubstrateBinding: managed.SubstrateBinding, AdmissionCostCeiling: managed.AdmissionCostCeiling,
+		Lease: domain.Lease{
+			ID: "lease-1", TenantID: "tenant-1", RunID: "run-1", AttemptID: "attempt-1",
+			WorkerID: "worker-1", FenceToken: 1, AcquiredAt: leaseAt, ExpiresAt: leaseAt.Add(time.Hour),
+		},
+		ContextManifestDigest: strings.Repeat("a", 64), InputManifestDigest: strings.Repeat("b", 64),
+		InvocationDeadline: leaseAt.Add(50 * time.Minute),
+	}
+	if err := sessionlessharness.ValidateDeterministicFixtureInvocationAuthorityV2(authority); err != nil {
+		t.Fatalf("validate exact authority: %v", err)
+	}
+	mutated := authority.Clone()
+	mutated.HarnessBinding.Backend.BackendProfileDigest = strings.Repeat("c", 64)
+	if err := sessionlessharness.ValidateDeterministicFixtureInvocationAuthorityV2(mutated); err == nil {
+		t.Fatal("near-match backend profile passed deterministic authority validation")
+	}
+}
+
 func TestRegistryUsesOnlyExactSealedBackend(t *testing.T) {
 	t.Parallel()
 	registry, driver, request := registryFixture(t)

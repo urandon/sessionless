@@ -21,6 +21,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/outboxwake"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/queuecontract"
+	"gitcode.com/urandon/sessionless/internal/serverlessharness"
 	"gitcode.com/urandon/sessionless/internal/sessioncontext"
 	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 	"gitcode.com/urandon/sessionless/internal/testkit"
@@ -29,14 +30,119 @@ import (
 
 var workerTestTime = time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
 
+func newTestWorker(
+	config worker.Config,
+	clock ports.Clock,
+	queue ports.Queue,
+	state ports.WorkerStateStore,
+	blobs ports.BlobStore,
+	harness ports.HarnessDriver,
+) (*worker.Manager, error) {
+	if config.ExecutionPreparer == nil {
+		config.ExecutionPreparer = testExecutionPreparer{}
+	}
+	return worker.New(config, clock, queue, state, blobs, harness)
+}
+
+type testExecutionPreparer struct{}
+
+func (testExecutionPreparer) PrepareExecution(
+	_ context.Context,
+	result ports.ReserveAttemptEffectResultV1,
+) (serverlessharness.PreparedExecutionV1, error) {
+	if err := result.Validate(); err != nil || result.Grant == nil || result.Status == ports.AttemptEffectReconcileOnlyV1 {
+		return nil, errors.New("test execution reservation is not owned")
+	}
+	return &testPreparedExecution{authority: result.Grant.Authority.Clone()}, nil
+}
+
+type testPreparedExecution struct {
+	authority domain.ServerlessInvocationAuthorityV1
+	harness   ports.HarnessDriver
+}
+
+func (execution *testPreparedExecution) Execute(
+	ctx context.Context,
+	request ports.ExecutionRequest,
+	sink ports.ExecutionEventSink,
+	harness ports.HarnessDriver,
+) (ports.ExecutionResult, domain.SubstrateExecutionEvidenceV1, error) {
+	execution.harness = harness
+	result, err := harness.Execute(ctx, request, sink)
+	return result, domain.SubstrateExecutionEvidenceV1{}, err
+}
+
+func (execution *testPreparedExecution) Cancel(ctx context.Context) (serverlessharness.SubstrateOperationObservationV1, error) {
+	if execution.harness == nil {
+		return serverlessharness.SubstrateOperationObservationV1{}, errors.New("test execution has not started")
+	}
+	authority := execution.authority
+	err := execution.harness.Cancel(ctx, ports.ExecutionIdentity{
+		TenantID: authority.HarnessBinding.TenantID, OwnerUserID: authority.HarnessBinding.OwnerUserID,
+		RunID: authority.HarnessBinding.RunID, AttemptID: authority.HarnessBinding.AttemptID,
+		ExecutionPlacementV2: authority.ExecutionPlacementV2, HarnessBinding: authority.HarnessBinding.Clone(),
+		SubstrateBinding: &authority.SubstrateBinding, AdmissionCostCeiling: &authority.AdmissionCostCeiling,
+	})
+	return serverlessharness.SubstrateOperationObservationV1{}, err
+}
+
+func (*testPreparedExecution) Reconcile(context.Context) (serverlessharness.SubstrateOperationObservationV1, error) {
+	return serverlessharness.SubstrateOperationObservationV1{}, nil
+}
+
+type signalingExecutionPreparer struct {
+	prepared chan struct{}
+	executed chan struct{}
+}
+
+func (preparer *signalingExecutionPreparer) PrepareExecution(
+	_ context.Context,
+	result ports.ReserveAttemptEffectResultV1,
+) (serverlessharness.PreparedExecutionV1, error) {
+	if err := result.Validate(); err != nil || result.Grant == nil {
+		return nil, errors.New("signaling execution reservation is not owned")
+	}
+	close(preparer.prepared)
+	return &signalingPreparedExecution{
+		testPreparedExecution: testPreparedExecution{authority: result.Grant.Authority.Clone()},
+		executed:              preparer.executed,
+	}, nil
+}
+
+type signalingPreparedExecution struct {
+	testPreparedExecution
+	executed chan struct{}
+}
+
+func (execution *signalingPreparedExecution) Execute(
+	ctx context.Context,
+	request ports.ExecutionRequest,
+	sink ports.ExecutionEventSink,
+	harness ports.HarnessDriver,
+) (ports.ExecutionResult, domain.SubstrateExecutionEvidenceV1, error) {
+	close(execution.executed)
+	return execution.testPreparedExecution.Execute(ctx, request, sink, harness)
+}
+
 func TestWorkerRejectsUnsafeLeaseWatchInterval(t *testing.T) {
 	t.Parallel()
-	_, err := worker.New(worker.Config{
+	_, err := newTestWorker(worker.Config{
 		ScratchRoot: t.TempDir(), WorkerID: "worker-test", LeaseTTL: time.Minute,
 		LeaseWatchdogInterval: 21 * time.Second,
 	}, nil, nil, nil, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "one third") {
 		t.Fatalf("error = %v, want unsafe lease watch interval rejection", err)
+	}
+}
+
+func TestWorkerRequiresExplicitExecutionPreparer(t *testing.T) {
+	t.Parallel()
+	_, err := worker.New(worker.Config{
+		ScratchRoot: t.TempDir(), WorkerID: "worker-test",
+		DeliveryWakePublisher: newDeliveryWakePublisher(t),
+	}, testkit.NewFakeClock(workerTestTime), testkit.NewMemoryQueue(), newWorkerState(), newMemoryBlobs(), resultHarness{})
+	if err == nil || !strings.Contains(err.Error(), "dependencies must not be nil") {
+		t.Fatalf("error = %v, want missing execution preparer rejection", err)
 	}
 }
 
@@ -57,7 +163,7 @@ func TestWorkerCompletesOnceAndCleansReusedScratch(t *testing.T) {
 		t.Fatal(err)
 	}
 	scratch := t.TempDir()
-	manager, err := worker.New(worker.Config{
+	manager, err := newTestWorker(worker.Config{
 		ScratchRoot: scratch, WorkerID: "worker-test",
 		LeaseTTL: time.Minute, DeliveryWakePublisher: newDeliveryWakePublisher(t),
 	}, clock, queue, state, blobs, harness)
@@ -92,6 +198,44 @@ func TestWorkerCompletesOnceAndCleansReusedScratch(t *testing.T) {
 	}
 }
 
+func TestWorkerPreparesOpaqueExecutionBeforeMaterializationAndUsesItForExecute(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	clock := testkit.NewFakeClock(workerTestTime)
+	queue := testkit.NewMemoryQueue()
+	blobs := newMemoryBlobs()
+	state := newWorkerState()
+	loaded := workerFixture(t, ctx, blobs, "tenant-a", workerTestTime)
+	state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
+	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
+	materializationStarted, releaseMaterialization := blobs.blockNextOpen()
+	preparer := &signalingExecutionPreparer{prepared: make(chan struct{}), executed: make(chan struct{})}
+	manager, err := newTestWorker(worker.Config{
+		ScratchRoot: t.TempDir(), WorkerID: "worker-prepared-execution",
+		DeliveryWakePublisher: newDeliveryWakePublisher(t), ExecutionPreparer: preparer,
+	}, clock, queue, state, blobs, resultHarness{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := runWorkerOnce(manager, ctx)
+	waitForSignal(t, ctx, materializationStarted, "input materialization")
+	select {
+	case <-preparer.prepared:
+	default:
+		t.Fatal("input materialization started before opaque execution preparation")
+	}
+	close(releaseMaterialization)
+	result := waitForWorkerResult(t, ctx, done)
+	if result.err != nil || result.outcome != worker.OutcomeCompleted {
+		t.Fatalf("outcome/error = %q/%v, want completed/nil", result.outcome, result.err)
+	}
+	select {
+	case <-preparer.executed:
+	default:
+		t.Fatal("worker bypassed the prepared execution session")
+	}
+}
+
 func TestWorkerCleanupFailureBlocksCompletion(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -103,7 +247,7 @@ func TestWorkerCleanupFailureBlocksCompletion(t *testing.T) {
 	state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
 	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
 	cleanupCalls := 0
-	manager, err := worker.New(worker.Config{
+	manager, err := newTestWorker(worker.Config{
 		ScratchRoot: t.TempDir(), WorkerID: "worker-test",
 		ScratchRemoveAll: func(string) error {
 			cleanupCalls++
@@ -143,7 +287,7 @@ func TestCanonicalWorkerFinalizesToolAndAssistantEventsWithoutTelegramDelivery(t
 	loaded.Job.ReplyToMessageID = 0
 	state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
 	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
-	manager, err := worker.New(worker.Config{
+	manager, err := newTestWorker(worker.Config{
 		ScratchRoot: t.TempDir(), WorkerID: "worker-canonical",
 		DeliveryWakePublisher: newDeliveryWakePublisher(t),
 	}, clock, queue, state, blobs, canonicalHarness{})
@@ -298,7 +442,7 @@ func runCanonicalContextFixture(
 	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
 	var history []byte
 	var attachment []byte
-	manager, err := worker.New(worker.Config{
+	manager, err := newTestWorker(worker.Config{
 		ScratchRoot: t.TempDir(), WorkerID: "worker-context",
 		DeliveryWakePublisher: newDeliveryWakePublisher(t),
 	}, clock, queue, state, blobs, captureContextHarness{history: &history, attachment: &attachment})
@@ -338,7 +482,7 @@ func TestCanonicalWorkerFinalizesCancellationNoticeWithoutTelegramDelivery(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager, err := worker.New(worker.Config{
+	manager, err := newTestWorker(worker.Config{
 		ScratchRoot: t.TempDir(), WorkerID: "worker-canonical-cancelled",
 		DeliveryWakePublisher: newDeliveryWakePublisher(t),
 	}, clock, queue, state, blobs, harness)
@@ -400,7 +544,7 @@ func TestCanonicalWorkerRejectsToolEventsOutsideAdmittedBudgetBeforeUpload(t *te
 			loaded.Job.Limits.MaxToolEventBytes = test.maxBytes
 			state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
 			publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
-			manager, err := worker.New(worker.Config{
+			manager, err := newTestWorker(worker.Config{
 				ScratchRoot: t.TempDir(), WorkerID: "worker-tool-budget",
 				DeliveryWakePublisher: newDeliveryWakePublisher(t),
 			}, clock, queue, state, blobs, resultHarness{
@@ -452,7 +596,7 @@ func TestWorkerRejectsTraversalAndCrossTenantReferences(t *testing.T) {
 		publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
 		harness, _ := deterministicharness.New(deterministicharness.Config{})
 		scratch := t.TempDir()
-		manager, err := worker.New(worker.Config{
+		manager, err := newTestWorker(worker.Config{
 			ScratchRoot: scratch, WorkerID: "worker-test",
 			DeliveryWakePublisher: newDeliveryWakePublisher(t),
 		}, clock, queue, state, blobs, harness)
@@ -485,7 +629,7 @@ func TestWorkerRetryableProviderFailureBecomesReconcileOnlyOnRedelivery(t *testi
 		Turns: 2, Artifacts: 1, FailAtTurn: 1, RetryableFail: true,
 	})
 	var retryCause error
-	manager, err := worker.New(worker.Config{
+	manager, err := newTestWorker(worker.Config{
 		ScratchRoot: t.TempDir(), WorkerID: "worker-test",
 		RetryDelay:            time.Millisecond,
 		RetryObserver:         func(cause error) { retryCause = cause },
@@ -527,7 +671,7 @@ func TestWorkerAcknowledgesTerminalRedeliveryWithoutAnotherEffect(t *testing.T) 
 	loaded := workerFixture(t, ctx, blobs, "tenant-a", workerTestTime)
 	state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
 	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
-	manager, err := worker.New(worker.Config{
+	manager, err := newTestWorker(worker.Config{
 		ScratchRoot: t.TempDir(), WorkerID: "worker-test",
 		DeliveryWakePublisher: newDeliveryWakePublisher(t),
 	}, clock, queue, state, blobs, resultHarness{})
@@ -560,7 +704,7 @@ func TestWorkerConcurrentRedeliveryIsReconcileOnly(t *testing.T) {
 	publishWorkerMessage(t, ctx, secondQueue, loaded.Run.TenantID, loaded.Run.ID)
 	harness := newCountingBlockingHarness()
 	newManager := func(queue ports.Queue, claim string) *worker.Manager {
-		manager, err := worker.New(worker.Config{
+		manager, err := newTestWorker(worker.Config{
 			ScratchRoot: t.TempDir(), WorkerID: "worker-test",
 			PhysicalClaimGenerator: func(context.Context) (string, error) { return claim, nil },
 			DeliveryWakePublisher:  newDeliveryWakePublisher(t),
@@ -601,7 +745,7 @@ func TestWorkerLostResponseAfterTerminalCommitRedeliversWithoutAnotherEffect(t *
 	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
 	publisher := &failOnceWakePublisher{}
 	harness := &countingHarness{}
-	manager, err := worker.New(worker.Config{
+	manager, err := newTestWorker(worker.Config{
 		ScratchRoot: t.TempDir(), WorkerID: "worker-test", DeliveryWakePublisher: publisher,
 	}, clock, queue, state, blobs, harness)
 	if err != nil {
@@ -634,7 +778,7 @@ func TestWorkerPersistsDurableCancellation(t *testing.T) {
 	state.cancelled[key] = true
 	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
 	harness, _ := deterministicharness.New(deterministicharness.Config{})
-	manager, err := worker.New(worker.Config{
+	manager, err := newTestWorker(worker.Config{
 		ScratchRoot: t.TempDir(), WorkerID: "worker-test",
 		DeliveryWakePublisher: newDeliveryWakePublisher(t),
 	}, clock, queue, state, blobs, harness)
@@ -663,7 +807,7 @@ func TestWorkerRenewsLeaseAtDurableBoundary(t *testing.T) {
 	loaded := workerFixture(t, ctx, blobs, "tenant-a", workerTestTime)
 	state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
 	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
-	manager, err := worker.New(worker.Config{
+	manager, err := newTestWorker(worker.Config{
 		ScratchRoot: t.TempDir(), WorkerID: "worker-test", LeaseTTL: time.Minute,
 		DeliveryWakePublisher: newDeliveryWakePublisher(t),
 	}, clock, queue, state, blobs, advancingHarness{clock: clock})
@@ -692,7 +836,7 @@ func TestWorkerWatchdogRenewsLeaseDuringSilentHarnessCall(t *testing.T) {
 	state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
 	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
 	harness := newWatchdogHarness()
-	manager, err := worker.New(worker.Config{
+	manager, err := newTestWorker(worker.Config{
 		ScratchRoot: t.TempDir(), WorkerID: "worker-test", LeaseTTL: time.Minute,
 		LeaseWatchdogInterval: time.Millisecond, DeliveryWakePublisher: newDeliveryWakePublisher(t),
 	}, clock, queue, state, blobs, harness)
@@ -733,7 +877,7 @@ func TestWorkerWatchdogRenewsLeaseDuringInputMaterialization(t *testing.T) {
 	state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
 	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
 	materializationStarted, releaseMaterialization := blobs.blockNextOpen()
-	manager, err := worker.New(worker.Config{
+	manager, err := newTestWorker(worker.Config{
 		ScratchRoot: t.TempDir(), WorkerID: "worker-test", LeaseTTL: time.Minute,
 		LeaseWatchdogInterval: time.Millisecond, DeliveryWakePublisher: newDeliveryWakePublisher(t),
 	}, clock, queue, state, blobs, resultHarness{})
@@ -771,7 +915,7 @@ func TestWorkerWatchdogLeaseLossDuringOutputUploadBlocksCompletion(t *testing.T)
 	state.jobs[key] = loaded
 	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
 	uploadStarted, releaseUpload := blobs.blockNextPut("artifacts/sha256/")
-	manager, err := worker.New(worker.Config{
+	manager, err := newTestWorker(worker.Config{
 		ScratchRoot: t.TempDir(), WorkerID: "worker-test", LeaseTTL: time.Minute,
 		LeaseWatchdogInterval: time.Millisecond, DeliveryWakePublisher: newDeliveryWakePublisher(t),
 	}, clock, queue, state, blobs, outputHarness{})
@@ -806,7 +950,7 @@ func TestWorkerWatchdogRenewsLeaseDuringCredentialFinalization(t *testing.T) {
 	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
 	lifecycle := newRecordingCredentialLifecycle(t, "user-a")
 	finalizationStarted, releaseFinalization := lifecycle.blockNextWriteBack()
-	manager, err := worker.New(worker.Config{
+	manager, err := newTestWorker(worker.Config{
 		ScratchRoot: t.TempDir(), WorkerID: "worker-credential", LeaseTTL: 2 * time.Minute,
 		LeaseWatchdogInterval: time.Millisecond, CredentialMode: worker.CredentialRequired,
 		CredentialFinalizeGrace: time.Second, CredentialLifecycle: lifecycle,
@@ -848,7 +992,7 @@ func TestWorkerWatchdogDeliversCancellationToSilentHarness(t *testing.T) {
 	state.jobs[key] = loaded
 	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
 	harness := newWatchdogHarness()
-	manager, err := worker.New(worker.Config{
+	manager, err := newTestWorker(worker.Config{
 		ScratchRoot: t.TempDir(), WorkerID: "worker-test", LeaseTTL: time.Minute,
 		LeaseWatchdogInterval: time.Millisecond, DeliveryWakePublisher: newDeliveryWakePublisher(t),
 	}, clock, queue, state, blobs, harness)
@@ -880,7 +1024,7 @@ func TestWorkerWatchdogLeaseLossCancelsAndBlocksSuccess(t *testing.T) {
 	state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
 	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
 	harness := newWatchdogHarness()
-	manager, err := worker.New(worker.Config{
+	manager, err := newTestWorker(worker.Config{
 		ScratchRoot: t.TempDir(), WorkerID: "worker-test", LeaseTTL: time.Minute,
 		LeaseWatchdogInterval: time.Millisecond, DeliveryWakePublisher: newDeliveryWakePublisher(t),
 	}, clock, queue, state, blobs, harness)
@@ -912,7 +1056,7 @@ func TestWorkerEnforcesRuntimeLimitAndCancelsHarness(t *testing.T) {
 	state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
 	publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
 	harness := &blockingHarness{}
-	manager, err := worker.New(worker.Config{
+	manager, err := newTestWorker(worker.Config{
 		ScratchRoot: t.TempDir(), WorkerID: "worker-test", LeaseWatchdogInterval: time.Millisecond,
 		DeliveryWakePublisher: newDeliveryWakePublisher(t),
 	}, clock, queue, state, blobs, harness)
@@ -986,7 +1130,7 @@ func TestRequiredCredentialLifecycleOrchestration(t *testing.T) {
 			if testCase.blockWriteBack {
 				finalizeGrace = 10 * time.Millisecond
 			}
-			manager, err := worker.New(worker.Config{
+			manager, err := newTestWorker(worker.Config{
 				ScratchRoot: t.TempDir(), WorkerID: "worker-credential",
 				LeaseTTL: 2 * time.Minute, CredentialMode: worker.CredentialRequired,
 				CredentialFinalizeGrace: finalizeGrace, CredentialLifecycle: lifecycle,
@@ -1079,7 +1223,7 @@ func TestRequiredCredentialFailsClosedBeforeHarness(t *testing.T) {
 			state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
 			publishWorkerMessage(t, ctx, queue, loaded.Run.TenantID, loaded.Run.ID)
 			harness := &credentialHarness{}
-			manager, err := worker.New(config, clock, queue, state, blobs, harness)
+			manager, err := newTestWorker(config, clock, queue, state, blobs, harness)
 			if err != nil {
 				t.Fatal(err)
 			}

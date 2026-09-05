@@ -2,7 +2,6 @@ package serverlessharness
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -82,7 +81,7 @@ func (driver *substrateRegistryPreparedDriver) Execute(
 	if err != nil {
 		return ports.ExecutionResult{}, domain.SubstrateExecutionEvidenceV1{}, err
 	}
-	evidence, err := successfulInProcessEvidence(prepared, result.ProviderEvidence)
+	evidence, err := sealSuccessfulInProcessEvidence(prepared, result.ProviderEvidence)
 	return result, evidence, err
 }
 
@@ -283,31 +282,6 @@ func executionRequestForAuthority(authority domain.ServerlessInvocationAuthority
 		ExecutionPlacementV2: authority.ExecutionPlacementV2, HarnessBinding: authority.HarnessBinding.Clone(),
 		SubstrateBinding: &substrate, AdmissionCostCeiling: &cost,
 	}
-}
-
-func successfulInProcessEvidence(prepared PreparedInvocation, provider *domain.ProviderExecutionEvidenceV1) (domain.SubstrateExecutionEvidenceV1, error) {
-	if provider == nil {
-		return domain.SubstrateExecutionEvidenceV1{}, errors.New("provider evidence is required")
-	}
-	unknown := func(kind domain.SubstrateResourceKindV1) domain.SubstrateResourceObservationV1 {
-		return domain.SubstrateResourceObservationV1{Kind: kind, State: domain.SubstrateResourceUnknownV1, Provenance: domain.SubstrateResourceProvenanceUnknownV1}
-	}
-	value := domain.SubstrateExecutionEvidenceV1{
-		Allocation: domain.SubstrateAllocationStartedV1, Process: domain.SubstrateProcessNotApplicableV1,
-		CredentialFinalization: domain.CredentialFinalizationNotRequiredV1, Cleanup: domain.SubstrateCleanupVerifiedV1,
-		Egress: domain.SubstrateEgressPolicyEnforcedV1, ImageAttestation: domain.SubstrateAttestationVerifiedV1,
-		BackendAttestation: domain.SubstrateAttestationVerifiedV1, ProxyAttestation: domain.SubstrateProxyAttestationVerifiedV1,
-		Cancellation:     domain.SubstrateCancellationEvidenceV1{Request: domain.SubstrateCancellationRequestNoneV1, BackendSignal: domain.SubstrateCancellationSignalNotRequiredV1},
-		ProviderEvidence: func() *domain.ProviderExecutionEvidenceV1 { clone := provider.Clone(); return &clone }(),
-		ResourceObservations: []domain.SubstrateResourceObservationV1{
-			unknown(domain.SubstrateResourceCPUTimeV1), unknown(domain.SubstrateResourceEgressBytesV1),
-			unknown(domain.SubstrateResourceEvidenceBytesV1), unknown(domain.SubstrateResourceIngressBytesV1),
-			unknown(domain.SubstrateResourceLogBytesV1), unknown(domain.SubstrateResourceMemoryPeakV1),
-			unknown(domain.SubstrateResourceScratchPeakV1),
-		},
-		FailureCode: domain.SubstrateExecutionFailureNoneV1,
-	}
-	return value.SealForAuthority(prepared.Authority(), prepared.Reservation(), prepared.Allocation(), prepared.Digest())
 }
 
 func TestSubstrateRegistryCancelAndReconcileRemainRoutableAfterProfileExpiry(t *testing.T) {

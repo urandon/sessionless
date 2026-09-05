@@ -344,6 +344,7 @@ DispatchOutbox -> YMQ dispatch message
   -> final authority/freshness/cancel/profile gate and atomically append
      the canonical provider-effect reservation
   -> attest PreparedAllocationV1 and issue the non-durable PreparedInvocationV1
+  -> return only its opaque PreparedExecutionV1 operation session to the worker
   -> only the exact reservation owner materializes immutable context/workspace
   -> repeat the final authority/freshness/cancel/attestation gate
   -> invocation credential issue/materialize

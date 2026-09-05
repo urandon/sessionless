@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/deterministicharness"
+	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/outboxwake"
 	"gitcode.com/urandon/sessionless/internal/portlog"
 	"gitcode.com/urandon/sessionless/internal/ports"
@@ -112,6 +113,29 @@ func main() {
 		logger.Error("create Sessionless harness registry", "error", err)
 		os.Exit(1)
 	}
+	inProcessSubstrate, err := serverlessharness.NewInProcessExecutionSubstrateV1(
+		time.Now, effectIssuer, sessionlessharness.DeterministicFixtureDescriptorV1(),
+	)
+	if err != nil {
+		logger.Error("create deterministic execution substrate", "error", err)
+		os.Exit(1)
+	}
+	executionPreparer, err := serverlessharness.NewExactExecutionPreparerV1(
+		time.Now,
+		effectIssuer,
+		func(authority domain.ServerlessInvocationAuthorityV1) (serverlessharness.SubstrateRegistrationV1, error) {
+			if err := sessionlessharness.ValidateDeterministicFixtureInvocationAuthorityV2(authority); err != nil {
+				return serverlessharness.SubstrateRegistrationV1{}, err
+			}
+			return serverlessharness.SubstrateRegistrationV1{
+				Binding: authority.SubstrateBinding, Enabled: true, Driver: inProcessSubstrate,
+			}, nil
+		},
+	)
+	if err != nil {
+		logger.Error("create exact execution preparer", "error", err)
+		os.Exit(1)
+	}
 	managerConfig := worker.Config{
 		ScratchRoot:           envOrDefault("WORKER_SCRATCH_ROOT", "/tmp/sessionless-worker"),
 		WorkerID:              envOrDefault("WORKER_ID", defaultWorkerID()),
@@ -125,6 +149,7 @@ func main() {
 		MaxMaterializedBytes:  int64(envUint64("WORKER_MAX_BLOB_BYTES", 64<<20)),
 		MaxSnapshotFallbacks:  uint32(envUint64("WORKER_MAX_SNAPSHOT_FALLBACKS", 4)),
 		DeliveryWakePublisher: deliveryWakePublisher,
+		ExecutionPreparer:     executionPreparer,
 	}
 	newManager := func(queue ports.Queue) (*worker.Manager, error) {
 		return worker.New(

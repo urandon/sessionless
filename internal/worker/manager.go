@@ -22,6 +22,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/outboxwake"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/queuecontract"
+	"gitcode.com/urandon/sessionless/internal/serverlessharness"
 )
 
 type Config struct {
@@ -39,6 +40,7 @@ type Config struct {
 	CredentialMode          CredentialMode
 	CredentialFinalizeGrace time.Duration
 	CredentialLifecycle     ports.CredentialLifecycle
+	ExecutionPreparer       serverlessharness.ExecutionPreparerV1
 	PhysicalClaimGenerator  PhysicalClaimGenerator
 	ScratchRemoveAll        func(string) error
 }
@@ -76,6 +78,7 @@ type Manager struct {
 	harness     ports.HarnessDriver
 	credentials ports.CredentialLifecycle
 	effects     ports.AttemptEffectStoreV1
+	preparer    serverlessharness.ExecutionPreparerV1
 }
 
 func New(
@@ -139,7 +142,7 @@ func New(
 	}
 	config.ScratchRoot = root
 	if clock == nil || queue == nil || state == nil || blobs == nil || harness == nil ||
-		config.DeliveryWakePublisher == nil || config.ProjectionWakePublisher == nil {
+		config.DeliveryWakePublisher == nil || config.ProjectionWakePublisher == nil || config.ExecutionPreparer == nil {
 		return nil, fmt.Errorf("worker dependencies must not be nil")
 	}
 	effects, ok := state.(ports.AttemptEffectStoreV1)
@@ -154,7 +157,7 @@ func New(
 	}
 	return &Manager{
 		config: config, clock: clock, queue: queue, state: state,
-		blobs: blobs, harness: harness, credentials: config.CredentialLifecycle, effects: effects,
+		blobs: blobs, harness: harness, credentials: config.CredentialLifecycle, effects: effects, preparer: config.ExecutionPreparer,
 	}, nil
 }
 
@@ -252,6 +255,10 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 	if effect.Status == ports.AttemptEffectReconcileOnlyV1 {
 		return manager.retry(ctx, message, errAttemptEffectReconcileOnly)
 	}
+	execution, err := manager.preparer.PrepareExecution(ctx, effect)
+	if err != nil {
+		return manager.retry(ctx, message, err)
+	}
 	executionCtx, cancelExecution := context.WithTimeout(ctx, loaded.Job.Limits.MaxRuntime)
 	defer cancelExecution()
 	leaseState := &invocationLease{manager: manager, tenantID: loaded.Run.TenantID, lease: lease}
@@ -348,9 +355,9 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 		manager: manager, loaded: loaded, lease: leaseState,
 		lastSequence: checkpointSequence(loaded.Checkpoint),
 	}
-	result, err := manager.harness.Execute(executionCtx, request, sink)
+	result, _, err := execution.Execute(executionCtx, request, sink, manager.harness)
 	if err != nil {
-		_ = manager.harness.Cancel(context.Background(), executionIdentityForJob(loaded.Job))
+		_, _ = execution.Cancel(context.Background())
 	}
 	finalizeErr := finalizeCredential()
 	if err != nil || finalizeErr != nil {

@@ -138,7 +138,7 @@ which was made for the macOS 15.4 SDK conflict. The exact previously failing
 `snprintf.c.o` target passed after that rename. No YDB storage,
 synchronization, allocator, query, actor, or recovery code is changed.
 
-The complete graph configured successfully with 61,940 Ninja targets and a
+The retained final graph enumerates 61,858 Ninja targets and includes a
 real `ydb/apps/ydbd/ydbd` target. The first build stopped because the frozen
 graph invokes `build/bin/ragel` without creating its build target; compiling
 the exact bundled Ragel source supplied that missing generated-tool edge. A
@@ -161,23 +161,28 @@ Reconfiguring also rescheduled thousands of previously completed generated and
 compiled targets, so a terminal build must be followed by an immediate no-op
 pass before the historical graph can be described as converged.
 
-The configured build was started with `-j4`. A read-only resource snapshot
-showed about 50% available system memory while individual heavy compiler
-processes reached roughly 1.5 GiB RSS; Ninja was stopped by exact session/PID
-and resumed incrementally at `-j6`, then `-j8` after repeated snapshots stayed
-well above the 25% memory stop threshold. During a later group of large
-`schemeshard` translation units, free memory fell from 55% to 37%; Ninja was
-stopped through its exact session handle before the 25% threshold and resumed
-at `-j6`. The same translation unit then ran with 59% free memory. The safe
-retained target command is:
+The configured build was started with `-j4`. A read-only
+`memory_pressure -Q` snapshot reported about 50% system-wide free memory while
+individual heavy compiler processes reached roughly 1.5 GiB RSS; Ninja was
+stopped by exact session/PID and resumed incrementally at `-j6`, then `-j8`
+after repeated samples of the same metric stayed well above the 25% stop
+threshold. During a later group of large `schemeshard` translation units,
+`memory_pressure -Q` fell from 55% to 37%; Ninja was stopped through its exact
+session handle before that metric's 25% threshold and resumed at `-j6`. The
+same translation unit then ran while `memory_pressure -Q` reported 59%. The
+safe retained target command is:
 
 ```sh
-ninja -C /Volumes/hubdisk/workspace/ai/ydb-native-macos-cmake-45c7adf/build/last-darwin-step1 \
+env TMPDIR=/Volumes/hubdisk/workspace/ai/ydb-native-macos-cmake-45c7adf/tmp \
+  PATH=/Volumes/hubdisk/workspace/ai/ydb-native-macos-cmake-45c7adf/toolchain/clang+llvm-18.1.8-arm64-apple-macos11/bin:/usr/bin:/bin:/usr/sbin:/sbin \
+  /opt/homebrew/bin/ninja \
+  -C /Volumes/hubdisk/workspace/ai/ydb-native-macos-cmake-45c7adf/build/last-darwin-step1 \
   -j6 -k1 ydb/apps/ydbd/all
 ```
 
-The shell environment also prepends the pinned LLVM `bin` directory because
-the generated archive rules call bare `llvm-ar` and `llvm-ranlib`. This command
+The explicit `TMPDIR` preserves experiment-root containment, and `PATH`
+supplies the pinned LLVM `bin` directory because the generated archive rules
+call bare `llvm-ar` and `llvm-ranlib`. This command
 is a reproduction receipt for the retained experiment root, not a portable
 Sessionless build recipe: the historical graph omits prerequisite edges for
 Ragel, libidn, M4, and Bison and does not preserve the LLVM tool path; upstream
@@ -282,7 +287,7 @@ process. The existing container runtime was not changed or restarted.
 | The `ydbd` target strips on Darwin and omits the x86-only Hyperscan peer outside `ARCH_X86_64`. | Observed | The graph anticipates Darwin/non-x86 compilation, but this is capability evidence, not a support or runtime-parity guarantee. |
 | The bootstrap selects a dedicated `darwin-arm64` archive with object `9750552540` and MD5 `d8b7d17c095beb38007e0f55d6319cff`. | Observed | A pinned native bootstrap exists and can be retried without floating tool inputs. |
 | Pinned GitHub automation builds `ydb`, not `ydbd`, with `DEFAULT-DARWIN-ARM64`. | Observed | Upstream continuously exercises a Darwin arm64 client lane, not the server acceptance boundary needed here. |
-| Current YDB system requirements call macOS/Windows unsupported for server operation and direct Apple Silicon development to an emulated x86_64 container. | Documented, current | Native server adoption would be an unsupported local divergence even if a one-off link succeeded. |
+| Current YDB system requirements call macOS/Windows unsupported for production server operation and separately call ARM unsupported; Quick Start directs Apple Silicon development to an emulated x86_64 container. | Documented, current | Native arm64 server adoption would be an unsupported local divergence even if a one-off link succeeded. |
 | Issue [ydb-platform/ydb#12259](https://github.com/ydb-platform/ydb/issues/12259) records a file-backed local-container storage-pool failure and is closed without a visible linked fix on the issue page. | Documented, historical | It motivates storage-parity testing but does not establish native APFS support. |
 
 Pinned primary sources:

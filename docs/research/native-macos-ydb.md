@@ -1,12 +1,238 @@
-# Native macOS YDB 25.3.1.25 spike
+# Native macOS YDB server spike
 
-Status date: **2026-09-06**. Tracking issue: **#96**.
+Status date: **2026-09-07**. Tracking issue: **#96**.
 
-## Decision
+## CMake follow-up after the issue was reopened
 
-Do **not** add native macOS YDB as a Sessionless local-runtime option for the
-pinned `25.3.1.25` release. The result is a conditional no-go, not a claim that
-the source can never compile on Darwin:
+The first pass tested the Sessionless-pinned stable tag through YDB's documented
+Yatool path. After review requested an explicit CMake attempt, the follow-up
+separately reconstructed the last complete Darwin-enabled generated CMake graph
+and inspected upstream's CMake history and GitHub automation.
+
+### Revision choice and upstream support boundary
+
+None of the concrete stable candidates inspected can serve as an immutable
+native-macOS CMake server pin:
+
+| Candidate | Exact tag SHA | Root generated CMake graph | Exact `cmakebuild` generation mapping |
+| --- | --- | --- | --- |
+| `24.4.4.12` | `31a1edb9e704b354454b4b76778a5400b587136a` | absent | none found |
+| `25.1.2.7-rc` | `1e3953ae0d2f31c0650f50c048ebf8aaaecfd032` | absent | none found |
+| `25.1.2.7` | `e0e29e98f0614e18e20f2861d69a6ee12590ad52` | absent | none found |
+| `25.3.1.25` | `8187ce049bed9e63a5ec04769da2d83dd237c08a` | absent | none found |
+
+The retained `cmakebuild` history was searched for those four exact source
+SHAs. This bounded result does not claim that every YDB tag ever published was
+examined. It is decisive for the proposed Sessionless pin because:
+
+- YDB's generated `cmakebuild` branch stopped updating in July 2025 and was
+  later removed from the supported project surface;
+- [PR #33872](https://github.com/ydb-platform/ydb/pull/33872), merged on
+  2026-02-12, explicitly removed CMake support because upstream no longer
+  officially supported that build;
+- [PR #48873](https://github.com/ydb-platform/ydb/pull/48873), merged on
+  2026-08-04, removed remaining CMake artifacts.
+
+The final generated `cmakebuild` commit,
+`673f99a2e60268b510e1e1838b23c9cb9e5d7fa3`, maps to source commit
+`45c7adf3773c433f0a200060e3ed9cd2f4f92c4d`, but it is not a valid Darwin
+probe: generator commit `6a6541d7e69112a5bb2c21d2059816f95bf8b5a3`
+had already removed Darwin branches from the root and leaf wrappers. Merely
+restoring the root include produced only a partially connected graph with
+missing generated targets.
+
+The bounded experiment therefore uses the immediately preceding complete
+Darwin-enabled generated snapshot:
+
+| Identity | Exact value |
+| --- | --- |
+| Generated CMake commit | `3ba801addecf906ac4159bf3dd1037056c4441fa` |
+| Source commit recorded by `ydb/ci/cmakegen.txt` | `703afff9099973c6dd6cf063ca375d84dcc895c7` |
+| Generated at | `2025-07-11T06:07:52Z` |
+| First generator commit without Darwin wiring | `6a6541d7e69112a5bb2c21d2059816f95bf8b5a3` |
+
+This is suitable for a historical feasibility probe, not a production pin:
+it is an untagged development snapshot, predates the stable version used by
+Sessionless, and has no upstream maintenance or security-update promise.
+
+Upstream issue
+[#13756](https://github.com/ydb-platform/ydb/issues/13756) records an M2 CMake
+build and startup after local patches. Current issue
+[#50178](https://github.com/ydb-platform/ydb/issues/50178) and open fix
+[#50181](https://github.com/ydb-platform/ydb/pull/50181) show that Darwin arm64
+link compatibility still needs source-level maintenance. These reports justify
+running the experiment; they do not turn the historical branch into a
+supported release surface.
+
+### What upstream CI actually covered
+
+The historical
+[`postcommit_cmakebuild.yml`](https://github.com/ydb-platform/ydb/blob/3ba801addecf906ac4159bf3dd1037056c4441fa/.github/workflows/postcommit_cmakebuild.yml)
+invoked the generated CMake graph through an Ubuntu package/toolchain setup.
+Its
+[`prepare_vm` action](https://github.com/ydb-platform/ydb/blob/3ba801addecf906ac4159bf3dd1037056c4441fa/.github/actions/prepare_vm/action.yaml)
+installs Linux packages including `libaio-dev`; there is no native macOS
+`ydbd` CMake matrix. Darwin arm64 jobs in that tree build the
+[`ydb` CLI](https://github.com/ydb-platform/ydb/blob/3ba801addecf906ac4159bf3dd1037056c4441fa/.github/workflows/build_ydb_cli.yml)
+and
+[`ydb-dstool`](https://github.com/ydb-platform/ydb/blob/3ba801addecf906ac4159bf3dd1037056c4441fa/.github/workflows/build_ydb_dstool.yml)
+through Yatool. Current upstream has removed the CMake workflows along with
+CMake support.
+
+The pinned `25.3.1.25` workflows make the non-CMake boundary equally explicit.
+The Darwin matrix runs on `macos-13` and builds only the CLI with:
+
+```sh
+./ya make ydb/apps/ydb -r -DUSE_SSE4=no \
+  --target-platform DEFAULT-DARWIN-ARM64
+```
+
+Its x86_64 sibling changes only the target platform to
+`DEFAULT-DARWIN-X86_64`. The pinned nightly workflow does build
+`ydb/apps/ydbd`, but only on upstream self-hosted build-preset runners and with
+no Darwin matrix or target-platform flag. It publishes that server artifact to
+YDB's build storage; it is not evidence of a macOS server artifact. Thus the
+CI-derived local server hypothesis is the CLI command with the target replaced
+by `ydb/apps/ydbd`, not an undocumented server-specific Darwin workflow.
+
+### Contained reproducible tool inputs
+
+All experiment-owned persistent archives, extracted tools, generated files,
+build output, logs, and runtime state are rooted at
+`/Volumes/hubdisk/workspace/ai/ydb-native-macos-cmake-45c7adf`. The build was
+launched with `TMPDIR` under that root, and its `CMakeCache.txt` contains no
+path below `/Users/urandon`; this is a containment receipt for the owned
+experiment, not a claim that unrelated host processes caused zero transient
+system-volume activity. A read-only symlink audit found three virtualenv links
+to the Command Line Tools Python outside the root and eleven broken generated
+upstream links to former developer `.ya` locations; the latter were not build
+inputs, and disk measurements did not follow symlinks. The experiment uses:
+
+| Input | Identity |
+| --- | --- |
+| LLVM/Clang | official `clang+llvm-18.1.8-arm64-apple-macos11.tar.xz`, SHA-256 `4573b7f25f46d2a9c8882993f091c52f416c83271db6f5b213c93f0bd0346a10` |
+| Java runtime | Temurin JRE `17.0.20.1+1`, SHA-256 `190480874ccceb358cbc840393207f77ac3e63a4c5f8129d0e23e9518b96ad05` |
+| ANTLR | bundled byte-identical jars, versions 3.5.2 and 4.11.1 |
+| Ragel | version 6.10, compiled locally from the exact bundled source; binary SHA-256 `f57ddadc1a2a591ebb1847592a630eb190881aef1cf12b7924fb4a20ed495e95` |
+| libidn | version 1.43, compiled locally from the bundled source with a local declaration for the bundled `strverscmp` fallback; archive SHA-256 `d17a77fe8c1d0cb9b1525bcaedd05de9d6c65ed344981a73ad6f949e8a0cc0b8` |
+| GNU M4 | version 1.4.18, matching `contrib/tools/m4/ya.make`; official source archive SHA-256 `f2c1e86ca0a404ff281631bdc8377638992744b175afb806e25871a24a934e07`, arm64 binary SHA-256 `15fae0896af1ed1b7c6420e9ed1a40b92d6d322d78fc93a89e4f8c1b0b8c42f1` |
+| GNU Bison | version 3.7.6, matching `contrib/tools/bison/ya.make`; official source archive SHA-256 `67d68ce1e22192050525643fc0a7a22297576682bef6a5c51446903f5aeef3cf`, arm64 binary SHA-256 `b542535f931704da6765c868b3146872d8c5fc95228ed8ed0cec88ece32aae6f` |
+| Generator | CMake with Ninja, `Release`, macOS SDK from Command Line Tools |
+
+The source diff is deliberately narrow: four files and fourteen added lines.
+`clang.toolchain` selects `llvm-ar` and `llvm-ranlib`;
+`cmake/FindAIO.cmake` supplies an imported interface target on Apple because
+the Linux `libaio` API is not present there; and the custom LLVM-bitcode
+compiler in `cmake/llvm-tools.cmake` receives CMake's already resolved macOS
+SDK sysroot. The last build-system change was validated by a minimal probe:
+the same bundled libc++ headers reproduced the `wchar.h`/`mbstate_t` failure
+without `-isysroot` and passed with the configured `MacOSX26.5.sdk`.
+
+The fourth change renames the vendored PostgreSQL fallback implementation of
+`strchrnul` to `pg_strchrnul` inside its translation unit. Current macOS SDKs
+declare the platform symbol while the historical deployment target still
+needs PostgreSQL's fallback, so the original static definition no longer
+compiles. This mirrors PostgreSQL upstream fix
+[`6da2ba1d8a031984eb016fed6741bb2ac945f19d`](https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=6da2ba1d8a031984eb016fed6741bb2ac945f19d),
+which was made for the macOS 15.4 SDK conflict. The exact previously failing
+`snprintf.c.o` target passed after that rename. No YDB storage,
+synchronization, allocator, query, actor, or recovery code is changed.
+
+The complete graph configured successfully with 61,940 Ninja targets and a
+real `ydb/apps/ydbd/ydbd` target. The first build stopped because the frozen
+graph invokes `build/bin/ragel` without creating its build target; compiling
+the exact bundled Ragel source supplied that missing generated-tool edge. A
+second attempt reached generated and compiled YDB sources before exposing an
+incomplete local libidn header staging; copying the exact bundled private
+headers corrected the local prefix without changing YDB source. The first
+Darwin-specific compile failure occurred at the custom LLVM-bitcode step: its
+generated command omitted CMake's configured SDK sysroot. After the bounded
+build-infrastructure fix, the generated command contains the exact SDK path.
+That allowed the bitcode archive to link and exposed two more missing
+generated-tool edges: the graph invokes exact `bin/m4/bin/m4` and
+`bin/bison/bin/bison` paths but creates neither tool. The matching upstream GNU
+versions were built under the experiment root and staged into those paths.
+Old M4's gnulib required the narrow modern-Darwin compatibility flag for its
+`noreturn` function-pointer declaration and a one-line Apple guard that avoids
+constructing a writable `%n` format rejected by current macOS libc. The
+resulting M4 passed version and stdin expansion smoke tests, Bison reported the
+expected version, and the previously failing Pire parser target completed.
+Reconfiguring also rescheduled thousands of previously completed generated and
+compiled targets, so a terminal build must be followed by an immediate no-op
+pass before the historical graph can be described as converged.
+
+The configured build was started with `-j4`. A read-only resource snapshot
+showed about 50% available system memory while individual heavy compiler
+processes reached roughly 1.5 GiB RSS; Ninja was stopped by exact session/PID
+and resumed incrementally at `-j6`, then `-j8` after repeated snapshots stayed
+well above the 25% memory stop threshold. During a later group of large
+`schemeshard` translation units, free memory fell from 55% to 37%; Ninja was
+stopped through its exact session handle before the 25% threshold and resumed
+at `-j6`. The same translation unit then ran with 59% free memory. The safe
+retained target command is:
+
+```sh
+ninja -C /Volumes/hubdisk/workspace/ai/ydb-native-macos-cmake-45c7adf/build/last-darwin-step1 \
+  -j6 -k1 ydb/apps/ydbd/all
+```
+
+The shell environment also prepends the pinned LLVM `bin` directory because
+the generated archive rules call bare `llvm-ar` and `llvm-ranlib`. This command
+is a reproduction receipt for the retained experiment root, not a portable
+Sessionless build recipe: the historical graph omits prerequisite edges for
+Ragel, libidn, M4, and Bison and does not preserve the LLVM tool path; upstream
+has removed the graph rather than stabilizing those inputs.
+
+The interrupted invocation also exposed a convergence defect: restarting
+Ninja regenerated protobuf outputs and dirtied dependent objects, so the next
+invocation reported 3,717 remaining edges even though more than 2,000 edges of
+the preceding invocation had completed. Those early generated edges executed
+quickly, but the rebuild is material evidence that an interrupted build is not
+incrementally stable. A terminal build still requires a separate immediate
+no-op check; the report does not infer convergence from a successful link.
+
+### CMake terminal result and bounded decision
+
+The historical CMake experiment did **not** produce a `ydbd` binary. Its last
+contained invocation reached `[2387/3717]` with no compiler or linker error,
+then was deliberately interrupted through the exact Ninja session handle. The
+preceding invocation had reached `[2039/3747]` before concurrency was reduced;
+as described above, restarting exposed generated-output convergence defects
+and materially repeated work. The eleven retained build logs record about
+9 hours 48 minutes of active Ninja wall time between the first attempt and the
+bounded stop; the end-to-end investigation spanned about 16 hours 44 minutes
+including tool reconstruction, upstream research, bounded fixes, and pauses.
+The final log marker is:
+
+```text
+[2387/3717] Building CXX object .../kqp_opt_log_sort.cpp.o
+ninja: build stopped: interrupted by user.
+```
+
+This is a bounded cost stop, not a compiler failure. A conservative watcher
+reported raw free pages below its 25% threshold, while macOS
+`memory_pressure -Q` remained materially healthier in surrounding samples and
+reported 57% immediately after the stop. The decision does not depend on that
+metric discrepancy: even a successful remaining compile and link would still
+need startup, executable-query, migration, integration, crash recovery, APFS,
+reproducibility, and container-comparison work, while the only usable graph is
+an untagged retired snapshot with known missing dependency edges.
+
+The run therefore establishes that a narrow four-file portability patch can
+drive a large part of the real Darwin arm64 server graph, but it does not
+establish a buildable, reproducible, or runnable server. There is no defensible
+stable native-macOS pin and no product case for continuing this port in the MVP
+critical path. The recommendation remains **no-go** for a Sessionless native
+YDB option; retain the container fallback and lower further investigation to
+normal priority. The experiment root is intentionally retained so a future
+upstream-supported change can resume from exact evidence rather than restart
+the investigation from scratch.
+
+## Stable-tag Yatool result
+
+The initial pass concluded that Sessionless must **not** add native macOS YDB
+from the pinned `25.3.1.25` release. This stable-tag result is a conditional
+no-go, not a claim that some historical source can never compile on Darwin:
 
 - the pinned source contains a Darwin arm64 Yatool bootstrap, Darwin-specific
   `ydbd` build clauses, and Darwin arm64 toolchain resources;
@@ -20,10 +246,31 @@ the source can never compile on Darwin:
   returning any bytes. Both the system Python/LibreSSL and an installed
   Python 3.14/OpenSSL 3 reproduced the same endpoint failure.
 
+A final attempt used the exact Darwin CLI flags from pinned CI with the target
+replaced by the nightly server target:
+
+```sh
+./ya make ydb/apps/ydbd -r -DUSE_SSE4=no \
+  --target-platform DEFAULT-DARWIN-ARM64
+```
+
+`TMPDIR`, `YA_CACHE_DIR`, and `YA_CACHE_DIR_TOOLS` all resolved inside the
+owned hubdisk root, and `YA_TOKEN_PATH` pointed to an explicit nonexistent
+owned path. The wrapper again terminated before real compilation with
+`ssl.SSLEOFError: UNEXPECTED_EOF_WHILE_READING` while fetching exact object
+`9750552540`. A direct `curl` probe, a no-proxy probe, and an explicit
+IPv4/TLS-1.2/HTTP-1.1 probe reproduced the same pre-response TLS termination.
+No compiler process or build output was created.
+
+An x86_64/Rosetta target retry cannot bypass this blocker. On an arm64 host the
+wrapper must first fetch the same `darwin-arm64` Yatool bootstrap before it can
+parse `--target-platform DEFAULT-DARWIN-X86_64`; changing the target platform
+does not select a different host bootstrap. Repeating it would therefore be
+the same failed network operation, not an independent build hypothesis.
+
 No YDB source, storage, synchronization, allocator, or correctness check was
-patched around. No `ydbd` artifact was produced, no native process was run, and
-the existing container runtime was not changed or restarted. The supported
-Sessionless path remains the pinned Linux container in `compose.yaml`.
+patched around in that pass. It produced no `ydbd` artifact and ran no native
+process. The existing container runtime was not changed or restarted.
 
 ## Evidence classification
 
@@ -147,15 +394,10 @@ commit `b763ac26d7705a8b77a8ec61fbec03c65dd10002`, conclusion `success`, artifac
 digest `sha256:1f87b86ecd1d62af4557532b2af77fae3778c04899c9514926e75b0ef8e50d73`.
 
 Because the verified bootstrap could not be transferred back through an
-authorized channel, the required build command was not started:
-
-```sh
-./ya make ydb/apps/ydbd --build relwithdebinfo
-```
-
-This prevents false evidence: no architecture, Rosetta, linking, signing,
-minimum-macOS, runtime, migration, recovery, APFS, or reproducibility claim is
-made without a binary.
+authorized channel, neither the documented command nor the CI-derived command
+reached the Yatool build engine. This prevents false evidence: no architecture,
+Rosetta, linking, signing, minimum-macOS, runtime, migration, recovery, APFS,
+or reproducibility claim is made without a binary.
 
 ### Measured footprint
 
@@ -183,7 +425,7 @@ and log pressure without answering the native feasibility question.
 
 | Metric | Native macOS | Existing container path |
 | --- | ---: | ---: |
-| One-time peak build/download disk | not measured; bootstrap blocked | not re-run |
+| One-time peak build/download disk | 15,872,444 KiB retained historical CMake experiment; no binary | not re-run |
 | Retained steady-state disk | no artifact | existing supported fallback unchanged |
 | Cold startup to executable query | not run | not re-run |
 | Warm startup | not run | not re-run |
@@ -192,40 +434,45 @@ and log pressure without answering the native feasibility question.
 | Shutdown/restart reliability | not run | not re-run |
 | Host energy/thermal observations | not run | not re-run |
 
-## Conditions for a defensible rerun
+## Adoption gates after the research override
 
-Reopen this decision only when all of the following are true:
+The human CMake follow-up superseded the first pass's narrow “wait for an
+upstream Darwin `ydbd` lane before rerunning research” condition. Research may
+reproduce a historical unsupported graph, as this follow-up does. Production
+or default local-runtime adoption still requires all of the following:
 
-1. The exact pinned bootstrap can be obtained through an authorized channel
-   and verified against the MD5 embedded in the pinned wrapper, or upstream
-   publishes a replacement with equally immutable provenance.
-2. Upstream documents or continuously tests `ydbd`, not only the CLI/DSTool,
-   on Darwin arm64 at the selected YDB revision.
-3. Every Yatool build, tool, cache, log, and runtime root is demonstrated under
-   the hubdisk before the first build download.
-4. The same disk guards above are active and peak use is sampled throughout
-   the build.
-5. A produced binary passes `file`, Mach-O load-command, code-signature,
+1. A maintained, immutable source and generated-build identity with complete
+   prerequisite edges, rather than an untagged retired CMake snapshot.
+2. Every build, tool, cache, log, and runtime root demonstrated under hubdisk
+   before the first large download, with the same disk guards sampled through
+   the run.
+3. A produced binary passing `file`, Mach-O load-command, code-signature,
    Rosetta/process, startup/query, migration, restart/recovery, in-memory, and
    APFS-backed tests before any Sessionless opt-in is proposed.
-6. Native and the pinned container are measured on the same host, with the
+4. Native and the pinned container measured on the same host, with the
    container fallback and Linux CI left intact.
+5. Explicit ownership of the ongoing Darwin portability/security patch burden
+   if upstream still does not support or continuously test the server target.
 
 An upstream-supported macOS server recipe would justify a new implementation
-task. A local patch stack, x86_64 binary under Rosetta, or a success that omits
-storage/recovery semantics does not.
+task. A historical local patch stack, x86_64 binary under Rosetta, or a success
+that omits storage/recovery semantics does not justify adoption.
 
 ## Cleanup receipt
 
-No cleanup has been performed. The exact reclaim candidate is:
+No cleanup has been performed. The exact reclaim candidates are:
 
 ```text
 /Volumes/hubdisk/workspace/ai/ydb-native-macos-25.3.1.25
+/Volumes/hubdisk/workspace/ai/ydb-native-macos-cmake-45c7adf
 ```
 
-It was measured at 2,417,512 KiB logical and contains the pinned clean checkout
-plus empty owned cache/build/log/runtime directories. It contains no retained
-binary. Deletion still requires explicit confirmation and a fresh containment,
-symlink, process-use, size, and free-space check. No broad parent directory,
-home-directory cache, VM disk, container image, or unrelated checkout is part
-of that candidate.
+The stable-tag root was measured at 2,417,512 KiB logical and contains the
+pinned clean checkout plus empty owned cache/build/log/runtime directories.
+The historical CMake root was measured at 15,872,444 KiB at the final watcher
+sample and contains source snapshots, pinned tools, generated objects, logs,
+and the four-file uncommitted portability patch. Neither root contains a
+`ydbd` binary. Deletion still requires explicit confirmation and a fresh
+containment, symlink, process-use, size, and free-space check. No broad parent
+directory, home-directory cache, VM disk, container image, or unrelated
+checkout is part of either candidate.

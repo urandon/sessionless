@@ -31,7 +31,7 @@ Sessionless gives every frontend the same conversation and execution truth:
 ## How it fits together
 
 ```mermaid
-flowchart LR
+flowchart TD
     Frontends["Telegram or WebUI"]
     Control["Sessionless control plane"]
     State["Canonical sessions and objects"]

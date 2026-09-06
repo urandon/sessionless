@@ -7,7 +7,7 @@ and never perform a provider network call.
 
 `deterministic-execute.json` covers the real embedded deterministic contract.
 `openrouter-ox-alpha-public.json` covers the provider-neutral registry and
-policy tuple for public or externally-shareable work. Because the native
+policy tuple for public or externally-shareable work. Because the native direct
 OpenRouter adapter is not implemented, its `backend_protocol` is deliberately
 `skipped`; the fixture must not be cited as native API conformance evidence.
 

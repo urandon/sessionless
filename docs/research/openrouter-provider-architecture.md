@@ -282,9 +282,10 @@ surface, but has a distinct identity such as `codex_exec_openrouter_v1`. It must
 not modify the subscription-backed Codex resource from #81 or act as its API-key
 fallback.
 
-Each invocation receives a private, invocation-scoped `CODEX_HOME` and generated
-host-owned configuration. It runs non-interactively with user configuration
-ignored and rollout persistence disabled. The configuration pins:
+Each invocation receives a private, invocation-scoped `CODEX_HOME` containing
+only generated host-owned configuration. It runs non-interactively with ambient
+user configuration unreachable and rollout persistence disabled. The
+configuration pins:
 
 - exact Codex binary digest and harness surface;
 - `model_provider = "openrouter"`, fixed

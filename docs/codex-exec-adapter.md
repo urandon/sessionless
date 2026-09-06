@@ -47,15 +47,18 @@ The executable path, version evidence, SHA-256 digest, and model are local
 configuration. The fixed command is:
 
 ```text
-codex exec --json --ephemeral --ignore-user-config --ignore-rules \
+codex exec --json --ephemeral --ignore-rules \
   --strict-config --sandbox read-only --skip-git-repo-check \
   --color never --model <sealed-model> -
 ```
 
 The instruction is bounded UTF-8 stdin, never argv or environment. The
-supervisor supplies a replacement environment, and the existing credential
-lifecycle adds only invocation-scoped `CODEX_HOME`, permits writes only to the
-exact `auth.json`, then performs bounded write-back and release. An
+subscription profile uses a private credential-only `CODEX_HOME`; the
+Codex/OpenRouter profile instead loads a complete, generated and digested
+`CODEX_HOME/config.toml` plus local model catalog. Neither profile can reach an
+ambient user home. The supervisor supplies a replacement environment, and the
+existing credential lifecycle adds only invocation-scoped authority, then
+performs bounded finalization and release. An
 admission-pinned credential generation is checked before process spawn. The
 reviewed isolation launcher must attest this exact inner Codex artifact and
 argv independently of its outer container/bwrap/VM client command.

@@ -167,11 +167,12 @@ attested provider-egress/credential composition boundaries are documented in
 a concrete cloud launcher, provider proxy, secret backend, or production route.
 
 Run `make provider-conformance` for the credential-free provider registry
-matrix. It performs vet plus repeated race-enabled tests over strict fixtures;
-it reads no provider secret, starts no provider process, performs no network
-call, and does not enable Codex, OpenCode, Pi, or direct OpenRouter. A generic
-fake result reports native backend protocol as `skipped`, even when its exact
-registry tuple passes.
+matrix. It performs vet plus repeated race-enabled tests over strict fixtures,
+including the native feature-disabled Codex/OpenRouter, OpenCode/OpenRouter,
+and Pi/OpenRouter profiles. It reads no provider secret, starts no provider
+process, performs no network call, and does not enable Codex, OpenCode, Pi, or
+direct OpenRouter. A generic fake result reports native backend protocol as
+`skipped`, even when its exact registry tuple passes.
 
 Deployment-aware cleanup of those immutable registry images is a separate,
 fenced operational workflow. Its evidence bridge, dry-run/delete controls, and

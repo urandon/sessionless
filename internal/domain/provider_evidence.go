@@ -303,7 +303,7 @@ func (value ProviderRoutePolicyV1) Validate() error {
 	seen := map[string]struct{}{}
 	for _, r := range value.Routes {
 		switch r.BackendKind {
-		case HarnessBackendCodexExecV1, HarnessBackendOpenCodeV1, HarnessBackendPiV1, HarnessBackendDirectOpenRouterV1, HarnessBackendDeterministicFixtureV1:
+		case HarnessBackendCodexExecV1, HarnessBackendCodexOpenRouterV1, HarnessBackendOpenCodeV1, HarnessBackendPiV1, HarnessBackendDirectOpenRouterV1, HarnessBackendDeterministicFixtureV1:
 		default:
 			return ValidationError{Field: "provider_route_policy.routes.backend_kind", Reason: "is unsupported"}
 		}

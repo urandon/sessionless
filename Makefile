@@ -169,13 +169,15 @@ e2e-local: prepare
 	@./scripts/e2e-local.sh
 
 provider-conformance: prepare
-	go vet ./internal/domain ./internal/ports ./internal/sessionlessharness ./internal/harnessconformance ./internal/piopenrouter ./internal/opencodeopenrouter
+	go vet ./internal/domain ./internal/ports ./internal/sessionlessharness ./internal/harnessconformance ./internal/codexexec ./internal/codexopenrouter ./internal/piopenrouter ./internal/opencodeopenrouter
 	go test -race -count=50 -shuffle=on -timeout=5m ./internal/domain ./internal/ports ./internal/sessionlessharness ./internal/harnessconformance
+	go test -race -count=10 -shuffle=on -timeout=2m ./internal/codexexec ./internal/codexopenrouter
 	go test -race -count=10 -shuffle=on -timeout=2m ./internal/piopenrouter
 	go test -race -count=10 -shuffle=on -timeout=2m ./internal/opencodeopenrouter
 	$(MAKE) provider-conformance-fuzz
 
 provider-conformance-fuzz: prepare
+	go test -run='^$$' -fuzz=FuzzCodexJSONLParserNeverCommitsMalformedTerminal -fuzztime=2s ./internal/codexexec
 	go test -run='^$$' -fuzz=FuzzRPCParserNeverCommitsMalformedTerminal -fuzztime=2s ./internal/piopenrouter
 	go test -run='^$$' -fuzz=FuzzOpenCodeJSONLParserNeverCommitsMalformedTerminal -fuzztime=2s ./internal/opencodeopenrouter
 

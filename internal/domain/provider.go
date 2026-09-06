@@ -27,6 +27,7 @@ const (
 
 	HarnessBackendDeterministicFixtureV1 HarnessBackendKindV1 = "deterministic_fixture"
 	HarnessBackendCodexExecV1            HarnessBackendKindV1 = "codex_exec"
+	HarnessBackendCodexOpenRouterV1      HarnessBackendKindV1 = "codex_exec_openrouter"
 	HarnessBackendOpenCodeV1             HarnessBackendKindV1 = "opencode"
 	HarnessBackendPiV1                   HarnessBackendKindV1 = "pi"
 	HarnessBackendDirectOpenRouterV1     HarnessBackendKindV1 = "direct_openrouter"
@@ -72,7 +73,7 @@ func (descriptor HarnessBackendDescriptorV1) Validate() error {
 		return ValidationError{Field: "harness_binding.backend.harness_kind", Reason: "is unsupported"}
 	}
 	switch descriptor.BackendKind {
-	case HarnessBackendDeterministicFixtureV1, HarnessBackendCodexExecV1, HarnessBackendOpenCodeV1, HarnessBackendPiV1, HarnessBackendDirectOpenRouterV1:
+	case HarnessBackendDeterministicFixtureV1, HarnessBackendCodexExecV1, HarnessBackendCodexOpenRouterV1, HarnessBackendOpenCodeV1, HarnessBackendPiV1, HarnessBackendDirectOpenRouterV1:
 	default:
 		return ValidationError{Field: "harness_binding.backend.backend_kind", Reason: "is unsupported"}
 	}

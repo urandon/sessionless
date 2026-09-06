@@ -171,10 +171,16 @@ pins one non-streaming Chat Completions request and strict observed-route
 response contract. Its tests use only a local fake boundary; no production HTTP
 boundary, key lookup, DNS request, or provider call is enabled.
 
+The [native provider composition](provider-composition.md) accepts four explicit
+pinned drivers and assembles their disabled registrations below the existing
+exact-match harness registry. It performs no profile or executable discovery,
+does not select a default backend, and is not wired into `worker-runtime`.
+
 Run `make provider-conformance` for the credential-free provider registry
 matrix. It performs vet plus repeated race-enabled tests over strict fixtures,
 including the native feature-disabled Codex/OpenRouter, OpenCode/OpenRouter,
-and Pi/OpenRouter profiles. It reads no provider secret, starts no provider
+Pi/OpenRouter, and direct OpenRouter profiles plus their closed composition. It
+reads no provider secret, starts no provider
 process, performs no network call, and does not enable Codex, OpenCode, Pi, or
 direct OpenRouter. A generic fake result reports native backend protocol as
 `skipped`, even when its exact registry tuple passes.

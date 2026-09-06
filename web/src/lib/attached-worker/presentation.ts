@@ -195,6 +195,30 @@ export function exactUTCTime(value: string): string {
   return value.replace('T', ' ').replace(/Z$/, ' UTC');
 }
 
+export function relativeTime(value: string, reference: string): string {
+  if (!validTimestamp(value) || !validTimestamp(reference)) return '';
+  const deltaSeconds = (Date.parse(value) - Date.parse(reference)) / 1000;
+  const absoluteSeconds = Math.abs(deltaSeconds);
+  if (absoluteSeconds < 0.5) return 'at evaluation time';
+
+  let unit = 'second';
+  let divisor = 1;
+  if (absoluteSeconds >= 86_400) {
+    unit = 'day';
+    divisor = 86_400;
+  } else if (absoluteSeconds >= 3_600) {
+    unit = 'hour';
+    divisor = 3_600;
+  } else if (absoluteSeconds >= 60) {
+    unit = 'minute';
+    divisor = 60;
+  }
+  const amount = Math.max(1, Math.round(absoluteSeconds / divisor));
+  return `${amount} ${unit}${amount === 1 ? '' : 's'} ${
+    deltaSeconds < 0 ? 'before' : 'after'
+  } evaluation`;
+}
+
 function safeCode(value: string): string {
   const safe = value.replace(/[^a-z0-9_-]/gi, '').slice(0, 64);
   return safe || 'unrecognized';

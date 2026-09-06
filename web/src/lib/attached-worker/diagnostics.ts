@@ -85,33 +85,120 @@ export const diagnosticFactExplanations = {
   ],
 } satisfies Record<AttachedWorkerDiagnosticCode, readonly [string, string]>;
 
+type EvidenceShape = 'none' | 'time' | 'freshness' | 'time_freshness';
+type EvidenceRule = readonly [shape: EvidenceShape, allowedFreshness?: readonly string[]];
+
+interface DiagnosticFactRule {
+  cohort: AttachedWorkerDiagnosticCohort;
+  code: AttachedWorkerDiagnosticCode;
+  states: Readonly<Record<string, EvidenceRule>>;
+}
+
+const none = ['none'] as const;
+const time = ['time'] as const;
+const unknownFreshness = ['freshness', ['unknown']] as const;
+const observedFreshness = ['time_freshness', ['fresh', 'expired']] as const;
+
 export const diagnosticFactCatalog = [
-  ['identity', 'desired_state'],
-  ['identity', 'observed_state'],
-  ['identity', 'enrollment_state'],
-  ['readiness', 'daemon_state'],
-  ['readiness', 'last_daemon_failure'],
-  ['readiness', 'credential_state'],
-  ['readiness', 'isolation_configuration'],
-  ['readiness', 'isolation_verification'],
-  ['connectivity', 'connection_state'],
-  ['connectivity', 'last_contact'],
-  ['connectivity', 'transport_failure'],
-  ['eligibility', 'capability_state'],
-  ['eligibility', 'admission_preview'],
-  ['eligibility', 'entitlement_state'],
-  ['eligibility', 'quota_state'],
-  ['execution', 'attempt_state'],
-  ['execution', 'cancel_request'],
-  ['execution', 'cancel_ack'],
-  ['execution', 'process_observation'],
-  ['execution', 'worker_terminal'],
-  ['execution', 'canonical_terminal'],
-  ['governance', 'admission_control'],
-  ['governance', 'remote_erase'],
-] as const satisfies ReadonlyArray<
-  readonly [AttachedWorkerDiagnosticCohort, AttachedWorkerDiagnosticCode]
->;
+  {
+    cohort: 'identity',
+    code: 'desired_state',
+    states: { active: none, drain: none, revoked: none },
+  },
+  {
+    cohort: 'identity',
+    code: 'observed_state',
+    states: { pending: none, offline: none, online: none, draining: none, revoked: none },
+  },
+  { cohort: 'identity', code: 'enrollment_state', states: { consumed: none } },
+  { cohort: 'readiness', code: 'daemon_state', states: { unknown: unknownFreshness } },
+  { cohort: 'readiness', code: 'last_daemon_failure', states: { unknown: none } },
+  { cohort: 'readiness', code: 'credential_state', states: { unknown: none } },
+  {
+    cohort: 'readiness',
+    code: 'isolation_configuration',
+    states: { unsupported: none },
+  },
+  {
+    cohort: 'readiness',
+    code: 'isolation_verification',
+    states: { unsupported: none },
+  },
+  {
+    cohort: 'connectivity',
+    code: 'connection_state',
+    states: {
+      unknown: none,
+      attaching: none,
+      online: none,
+      draining: none,
+      offline: none,
+      superseded: none,
+      revoked: none,
+    },
+  },
+  {
+    cohort: 'connectivity',
+    code: 'last_contact',
+    states: { unknown: unknownFreshness, recorded: observedFreshness },
+  },
+  { cohort: 'connectivity', code: 'transport_failure', states: { unknown: none } },
+  {
+    cohort: 'eligibility',
+    code: 'capability_state',
+    states: { unknown: none, advertised: time },
+  },
+  { cohort: 'eligibility', code: 'admission_preview', states: { not_evaluated: none } },
+  { cohort: 'eligibility', code: 'entitlement_state', states: { unknown: none } },
+  { cohort: 'eligibility', code: 'quota_state', states: { unknown: none } },
+  {
+    cohort: 'execution',
+    code: 'attempt_state',
+    states: {
+      none,
+      offered: none,
+      claimed: none,
+      cancel_requested: none,
+      cancel_acknowledged: none,
+      terminal_pending: none,
+      terminal_committed: none,
+      cancelled_before_claim: none,
+      fenced_unknown: none,
+      retired: none,
+    },
+  },
+  {
+    cohort: 'execution',
+    code: 'cancel_request',
+    states: { none, requested: time },
+  },
+  {
+    cohort: 'execution',
+    code: 'cancel_ack',
+    states: { none, pending: none, unknown: none, acknowledged: time },
+  },
+  {
+    cohort: 'execution',
+    code: 'process_observation',
+    states: { unknown: unknownFreshness },
+  },
+  {
+    cohort: 'execution',
+    code: 'worker_terminal',
+    states: { none, received: none },
+  },
+  {
+    cohort: 'execution',
+    code: 'canonical_terminal',
+    states: { none, committed: time },
+  },
+  { cohort: 'governance', code: 'admission_control', states: { unavailable: none } },
+  {
+    cohort: 'governance',
+    code: 'remote_erase',
+    states: { not_requested: none, unknown: none },
+  },
+] as const satisfies ReadonlyArray<DiagnosticFactRule>;
 
 export function explainDiagnostic(code: string): DiagnosticExplanation {
   const value = (diagnosticFactExplanations as Record<string, readonly [string, string]>)[code];
@@ -165,12 +252,16 @@ export function buildDiagnosticBundleV1(
     const expected = diagnosticFactCatalog[index];
     if (
       expected === undefined ||
-      fact.cohort !== expected[0] ||
-      fact.code !== expected[1] ||
+      fact.cohort !== expected.cohort ||
+      fact.code !== expected.code ||
       !safeToken.test(fact.state) ||
       (fact.observed_at !== undefined && !validTimestamp(fact.observed_at)) ||
       (fact.freshness !== undefined && !freshnessValues.has(fact.freshness))
     ) {
+      throw new Error('invalid_diagnostics');
+    }
+    const stateRule = (expected.states as Record<string, EvidenceRule>)[fact.state];
+    if (stateRule === undefined || !validEvidenceShape(fact, stateRule)) {
       throw new Error('invalid_diagnostics');
     }
     return {
@@ -210,4 +301,26 @@ function safeCode(value: string): string {
     .replace(/[^a-z0-9_]/g, '')
     .slice(0, 48);
   return safe || 'unknown';
+}
+
+function validEvidenceShape(
+  fact: { observed_at?: string; freshness?: string },
+  rule: EvidenceRule,
+): boolean {
+  const [shape, allowedFreshness = []] = rule;
+  const hasTime = fact.observed_at !== undefined;
+  const hasFreshness = fact.freshness !== undefined;
+  if (hasFreshness && !(allowedFreshness as readonly string[]).includes(fact.freshness ?? '')) {
+    return false;
+  }
+  switch (shape) {
+    case 'none':
+      return !hasTime && !hasFreshness;
+    case 'time':
+      return hasTime && !hasFreshness;
+    case 'freshness':
+      return !hasTime && hasFreshness;
+    case 'time_freshness':
+      return hasTime && hasFreshness;
+  }
 }

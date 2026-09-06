@@ -9,7 +9,7 @@ import {
 } from './diagnostics';
 
 describe('attached-worker public diagnostics', () => {
-  it('has stable help for all eleven V1 facts and a safe unknown fallback', () => {
+  it('has stable help for all 23 V1 facts and a safe unknown fallback', () => {
     expect(Object.keys(diagnosticFactExplanations)).toHaveLength(23);
     expect(explainDiagnostic('canonical_terminal').title).toBe('Canonical terminal');
     expect(explainDiagnostic('<script>secret</script>').title).toBe(
@@ -17,7 +17,7 @@ describe('attached-worker public diagnostics', () => {
     );
   });
 
-  it('serializes only the explicit public allowlist without losing microseconds or zero-like states', () => {
+  it('serializes only the explicit public allowlist without losing microseconds or explicit states', () => {
     const input = attachedWorkerDiagnostics() as ReturnType<typeof attachedWorkerDiagnostics> & {
       private_token?: string;
     };
@@ -63,5 +63,45 @@ describe('attached-worker public diagnostics', () => {
     const warning = attachedWorkerDiagnostics();
     (warning.warnings as string[])[0] = 'provider_token';
     expect(() => serializeDiagnosticBundleV1(warning)).toThrow('invalid_diagnostics');
+  });
+
+  it('rejects safe-looking unknown states and forbidden or missing observation fields', () => {
+    const unknownState = attachedWorkerDiagnostics();
+    unknownState.facts[8]!.state = 'connected';
+    expect(() => serializeDiagnosticBundleV1(unknownState)).toThrow('invalid_diagnostics');
+
+    const borrowedContact = attachedWorkerDiagnostics();
+    borrowedContact.facts[8]!.observed_at = '2026-08-26T07:59:58Z';
+    borrowedContact.facts[8]!.freshness = 'fresh';
+    expect(() => serializeDiagnosticBundleV1(borrowedContact)).toThrow('invalid_diagnostics');
+
+    const missingCapabilityTime = attachedWorkerDiagnostics();
+    delete missingCapabilityTime.facts[11]!.observed_at;
+    expect(() => serializeDiagnosticBundleV1(missingCapabilityTime)).toThrow('invalid_diagnostics');
+  });
+
+  it('accepts production-reachable expired contact and retained terminal replay evidence', () => {
+    const stale = attachedWorkerDiagnostics();
+    stale.facts[9]!.freshness = 'expired';
+    expect(JSON.parse(serializeDiagnosticBundleV1(stale)).facts[9]).toMatchObject({
+      code: 'last_contact',
+      state: 'recorded',
+      freshness: 'expired',
+    });
+
+    const replay = attachedWorkerDiagnostics();
+    replay.facts[15]!.state = 'retired';
+    replay.facts[17]!.state = 'acknowledged';
+    replay.facts[17]!.observed_at = '2026-08-26T07:59:55Z';
+    replay.facts[19]!.state = 'received';
+    replay.facts[20]!.state = 'committed';
+    replay.facts[20]!.observed_at = '2026-08-26T07:59:57Z';
+    replay.warnings = replay.warnings.filter((warning) => warning !== 'attempt_active');
+    const facts = JSON.parse(serializeDiagnosticBundleV1(replay)).facts as Array<{
+      code: string;
+      state: string;
+    }>;
+    expect(facts.find((fact) => fact.code === 'attempt_state')?.state).toBe('retired');
+    expect(facts.find((fact) => fact.code === 'canonical_terminal')?.state).toBe('committed');
   });
 });

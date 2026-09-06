@@ -33,7 +33,8 @@ export class CanonicalApiFixture {
   emptySessions = false;
   emptyHistory = false;
   workerMode: 'ready' | 'empty' | 'not-found' | 'error' = 'ready';
-  diagnosticsMode: 'ready' | 'not-found' | 'error' | 'mismatch' = 'ready';
+  diagnosticsMode: 'ready' | 'baseline' | 'stale' | 'replay' | 'not-found' | 'error' | 'mismatch' =
+    'ready';
 
   #page: Page;
   #messageCreated = false;
@@ -166,6 +167,49 @@ export class CanonicalApiFixture {
         return this.#error(route, 503, 'temporarily_unavailable');
       }
       const diagnostics = this.#workerDiagnostics();
+      const fact = (code: string): Record<string, string> =>
+        diagnostics.facts.find((candidate) => candidate.code === code)!;
+      if (this.diagnosticsMode === 'baseline') {
+        fact('connection_state').state = 'unknown';
+        fact('last_contact').state = 'unknown';
+        delete fact('last_contact').observed_at;
+        fact('last_contact').freshness = 'unknown';
+        fact('capability_state').state = 'unknown';
+        delete fact('capability_state').observed_at;
+        fact('attempt_state').state = 'none';
+        fact('cancel_request').state = 'none';
+        delete fact('cancel_request').observed_at;
+        fact('cancel_ack').state = 'none';
+        diagnostics.warnings = [
+          'capability_missing',
+          'control_contract_unavailable',
+          'entitlement_unknown',
+          'isolation_unsupported',
+          'quota_unknown',
+        ];
+      }
+      if (this.diagnosticsMode === 'stale') {
+        fact('last_contact').freshness = 'expired';
+        diagnostics.warnings = [
+          'attempt_active',
+          'control_contract_unavailable',
+          'entitlement_unknown',
+          'isolation_unsupported',
+          'presence_expired',
+          'quota_unknown',
+        ];
+      }
+      if (this.diagnosticsMode === 'replay') {
+        fact('attempt_state').state = 'retired';
+        fact('cancel_ack').state = 'acknowledged';
+        fact('cancel_ack').observed_at = '2026-08-26T07:59:55Z';
+        fact('worker_terminal').state = 'received';
+        fact('canonical_terminal').state = 'committed';
+        fact('canonical_terminal').observed_at = '2026-08-26T07:59:57Z';
+        diagnostics.warnings = diagnostics.warnings.filter(
+          (warning) => warning !== 'attempt_active',
+        );
+      }
       if (this.diagnosticsMode === 'mismatch') diagnostics.worker_id = 'worker-other';
       return this.#json(route, diagnostics);
     }
@@ -552,16 +596,15 @@ export class CanonicalApiFixture {
           freshness: 'fresh',
         },
         { cohort: 'connectivity', code: 'transport_failure', state: 'unknown' },
-        { cohort: 'eligibility', code: 'capability_state', state: 'advertised' },
-        { cohort: 'eligibility', code: 'admission_preview', state: 'not_evaluated' },
-        { cohort: 'eligibility', code: 'entitlement_state', state: 'active' },
         {
           cohort: 'eligibility',
-          code: 'quota_state',
-          state: 'zero',
+          code: 'capability_state',
+          state: 'advertised',
           observed_at: '2026-08-26T07:58:00Z',
-          freshness: 'fresh',
         },
+        { cohort: 'eligibility', code: 'admission_preview', state: 'not_evaluated' },
+        { cohort: 'eligibility', code: 'entitlement_state', state: 'unknown' },
+        { cohort: 'eligibility', code: 'quota_state', state: 'unknown' },
         { cohort: 'execution', code: 'attempt_state', state: 'cancel_requested' },
         {
           cohort: 'execution',
@@ -573,16 +616,21 @@ export class CanonicalApiFixture {
         {
           cohort: 'execution',
           code: 'process_observation',
-          state: 'running',
-          observed_at: '2026-08-26T07:59:51Z',
-          freshness: 'fresh',
+          state: 'unknown',
+          freshness: 'unknown',
         },
-        { cohort: 'execution', code: 'worker_terminal', state: 'received' },
-        { cohort: 'execution', code: 'canonical_terminal', state: 'not_committed' },
-        { cohort: 'governance', code: 'admission_control', state: 'paused' },
-        { cohort: 'governance', code: 'remote_erase', state: 'not_acknowledged' },
+        { cohort: 'execution', code: 'worker_terminal', state: 'none' },
+        { cohort: 'execution', code: 'canonical_terminal', state: 'none' },
+        { cohort: 'governance', code: 'admission_control', state: 'unavailable' },
+        { cohort: 'governance', code: 'remote_erase', state: 'not_requested' },
       ],
-      warnings: ['isolation_unsupported', 'quota_zero', 'control_contract_unavailable'],
+      warnings: [
+        'attempt_active',
+        'control_contract_unavailable',
+        'entitlement_unknown',
+        'isolation_unsupported',
+        'quota_unknown',
+      ],
     };
   }
 }

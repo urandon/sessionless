@@ -27,9 +27,11 @@ describe('AttachedWorkerDiagnostics', () => {
     expect(screen.getAllByRole('region', { name: /diagnostic facts$/ })).toHaveLength(6);
     expect(screen.getByText('canonical_terminal')).toBeInTheDocument();
     expect(screen.getByText('Not Evaluated')).toBeInTheDocument();
-    expect(screen.getAllByText('Freshness: Fresh')).toHaveLength(3);
+    expect(screen.getAllByText('Freshness: Fresh')).toHaveLength(1);
     expect(screen.getAllByText('Not recorded').length).toBeGreaterThan(0);
-    expect(screen.getByText('quota_zero')).toBeInTheDocument();
+    expect(screen.getByText('quota_unknown')).toBeInTheDocument();
+    expect(screen.getByText('2026-08-26 07:58:00 UTC')).toBeInTheDocument();
+    expect(screen.getByText('(2 minutes before evaluation)')).toBeInTheDocument();
   });
 
   it('copies only the exact visible allowlisted bundle and never performs another request', async () => {

@@ -63,5 +63,62 @@ test.describe('attached-worker diagnostics', () => {
     await page.getByRole('button', { name: 'Try again' }).click();
     await expect(page.getByText('Diagnostics are temporarily unavailable.').first()).toBeVisible();
     await expect(page.getByText('worker-other')).toHaveCount(0);
+
+    canonicalApi.diagnosticsMode = 'error';
+    await page.getByRole('button', { name: 'Try again' }).click();
+    await expect(page.getByText('Diagnostics are temporarily unavailable.').first()).toBeVisible();
+  });
+
+  test('renders bounded empty and error overview states without polling', async ({
+    canonicalApi,
+    page,
+  }) => {
+    canonicalApi.workerMode = 'empty';
+    await page.goto('/workers');
+    await expect(page.getByRole('heading', { name: 'No attached workers' })).toBeVisible();
+    expect(canonicalApi.requestsFor('GET', '/api/web/v1/attached-workers')).toHaveLength(1);
+
+    canonicalApi.workerMode = 'error';
+    await page.reload();
+    await expect(
+      page.getByRole('heading', { name: 'Attached workers cannot be loaded' }),
+    ).toBeVisible();
+    await expect(page.getByRole('alert')).toContainText('Sessionless is temporarily unavailable.');
+    expect(canonicalApi.requestsFor('GET', '/api/web/v1/attached-workers')).toHaveLength(2);
+  });
+
+  test('renders production-reachable baseline, stale, and retained replay evidence', async ({
+    canonicalApi,
+    page,
+  }) => {
+    canonicalApi.diagnosticsMode = 'baseline';
+    await page.goto(`/workers/${workerId}`);
+    await page.getByRole('button', { name: 'Load redacted diagnostics' }).click();
+    await expect(page.getByText('connection_state').locator('..').locator('..')).toContainText(
+      'Unknown',
+    );
+    await expect(page.getByText('attempt_state').locator('..').locator('..')).toContainText('None');
+    await expect(page.getByText('capability_missing')).toBeVisible();
+
+    canonicalApi.diagnosticsMode = 'stale';
+    await page.reload();
+    await page.getByRole('button', { name: 'Load redacted diagnostics' }).click();
+    await expect(page.getByText('last_contact').locator('..').locator('..')).toContainText(
+      'Freshness: Expired',
+    );
+    await expect(page.getByText('presence_expired')).toBeVisible();
+
+    canonicalApi.diagnosticsMode = 'replay';
+    await page.reload();
+    await page.getByRole('button', { name: 'Load redacted diagnostics' }).click();
+    await expect(page.getByText('attempt_state').locator('..').locator('..')).toContainText(
+      'Retired',
+    );
+    await expect(page.getByText('worker_terminal').locator('..').locator('..')).toContainText(
+      'Received',
+    );
+    await expect(page.getByText('canonical_terminal').locator('..').locator('..')).toContainText(
+      'Committed',
+    );
   });
 });

@@ -171,7 +171,12 @@
                         </th>
                         <td>{labelState(fact.state)}</td>
                         <td>
-                          <span>Observed: <AttachedWorkerTime value={fact.observed_at} /></span>
+                          <span
+                            >Observed: <AttachedWorkerTime
+                              value={fact.observed_at}
+                              relativeTo={diagnostics.evaluated_at}
+                            /></span
+                          >
                           <span>Freshness: {labelState(fact.freshness)}</span>
                         </td>
                       </tr>
@@ -229,6 +234,12 @@
 
   .table-region {
     overflow-x: auto;
+  }
+
+  .diagnostic-ready:focus-visible,
+  .table-region:focus-visible {
+    outline: 0.1875rem solid var(--accent);
+    outline-offset: 0.2rem;
   }
 
   table {

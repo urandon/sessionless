@@ -686,7 +686,13 @@ quota unknown/zero/exhausted, every cancellation/process/terminal fact, and
 revoke/fence authority versus remote erasure acknowledgement. The browser
 loads diagnostics only after an explicit user gesture and rebuilds copy and
 download bytes from the public allowlist. It does not probe, poll, persist, or
-send a control mutation.
+send a control mutation. Human-relative observation time is calculated against
+the response's immutable `evaluated_at` timestamp and is always rendered beside
+the exact UTC value, so clock passage cannot silently relabel retained evidence.
+The V1 browser consumer also validates each fact against the state and evidence
+shape currently produced by the Go reducer; a new state or a newly observed
+field requires a reviewed, versioned catalog change rather than a permissive
+client fallback.
 
 ## Accessibility and interaction requirements
 

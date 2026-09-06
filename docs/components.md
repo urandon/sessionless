@@ -34,6 +34,7 @@ scripts it invokes.
 | `internal/deterministicharness` | Credential-free reference adapter for orchestration proofs. |
 | `internal/serverlessharness`, `internal/serverlessisolation`, `internal/serverlessegress` | Feature-disabled managed-harness authority, process isolation, and attested provider/credential boundaries. |
 | `internal/directopenrouter` | Feature-disabled native [direct OpenRouter](direct-openrouter.md) request/response and observed-route reference backend. |
+| `internal/providercomposition` | Closed, feature-disabled [native provider composition](provider-composition.md) for exact Codex, OpenCode, Pi, and direct registrations. |
 | `internal/ydbstore`, `internal/ydbmigrate`, `internal/ydbpartition` | Tenant-scoped state, migration fencing, and physical partition policy. |
 | `internal/s3store`, `internal/sqsqueue`, `internal/queuecontract` | Tenant-enforcing objects and payload-free at-least-once queue contracts. |
 | `internal/scheduler` | Injected-clock admission, reservation, publication, and expiry rules. |

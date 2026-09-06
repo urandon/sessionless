@@ -169,8 +169,8 @@ e2e-local: prepare
 	@./scripts/e2e-local.sh
 
 provider-conformance: prepare
-	go vet ./internal/domain ./internal/ports ./internal/sessionlessharness ./internal/harnessconformance ./internal/codexexec ./internal/codexopenrouter ./internal/piopenrouter ./internal/opencodeopenrouter ./internal/directopenrouter
-	go test -race -count=50 -shuffle=on -timeout=5m ./internal/domain ./internal/ports ./internal/sessionlessharness ./internal/harnessconformance
+	go vet ./internal/domain ./internal/ports ./internal/sessionlessharness ./internal/harnessconformance ./internal/codexexec ./internal/codexopenrouter ./internal/piopenrouter ./internal/opencodeopenrouter ./internal/directopenrouter ./internal/providercomposition
+	go test -race -count=50 -shuffle=on -timeout=5m ./internal/domain ./internal/ports ./internal/sessionlessharness ./internal/harnessconformance ./internal/providercomposition
 	go test -race -count=10 -shuffle=on -timeout=2m ./internal/codexexec ./internal/codexopenrouter
 	go test -race -count=10 -shuffle=on -timeout=2m ./internal/piopenrouter
 	go test -race -count=10 -shuffle=on -timeout=2m ./internal/opencodeopenrouter

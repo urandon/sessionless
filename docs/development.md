@@ -166,6 +166,11 @@ attested provider-egress/credential composition boundaries are documented in
 [Yandex substrate evidence plan](yandex-serverless-substrate.md). None registers
 a concrete cloud launcher, provider proxy, secret backend, or production route.
 
+The feature-disabled native [direct OpenRouter reference backend](direct-openrouter.md)
+pins one non-streaming Chat Completions request and strict observed-route
+response contract. Its tests use only a local fake boundary; no production HTTP
+boundary, key lookup, DNS request, or provider call is enabled.
+
 Run `make provider-conformance` for the credential-free provider registry
 matrix. It performs vet plus repeated race-enabled tests over strict fixtures,
 including the native feature-disabled Codex/OpenRouter, OpenCode/OpenRouter,

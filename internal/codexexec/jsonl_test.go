@@ -64,6 +64,21 @@ func TestParseJSONLBoundsFinalAndLine(t *testing.T) {
 	}
 }
 
+func TestParseProtocolV1SharesTheClosedParserWithoutAliasingInput(t *testing.T) {
+	input := []byte(successfulJSONL)
+	result := ParseProtocolV1(input)
+	if !result.Accepted || !result.Terminal || result.ProtocolDrift || result.TerminalDrift ||
+		result.FailureCode != "" || string(result.Final) != "bounded result" {
+		t.Fatalf("protocol result = %+v", result)
+	}
+	for index := range input {
+		input[index] = 0
+	}
+	if string(result.Final) != "bounded result" {
+		t.Fatal("protocol final aliased the raw JSONL input")
+	}
+}
+
 func TestStrictJSONObjectRejectsNestedCaseFoldDuplicatesAndDepth(t *testing.T) {
 	if strictJSONObject([]byte(`{"type":"x","item":{"text":"a","Text":"b"}}`)) {
 		t.Fatal("nested case-fold duplicate was accepted")
@@ -72,4 +87,22 @@ func TestStrictJSONObjectRejectsNestedCaseFoldDuplicatesAndDepth(t *testing.T) {
 	if strictJSONObject([]byte(value)) {
 		t.Fatal("over-depth object was accepted")
 	}
+}
+
+func FuzzCodexJSONLParserNeverCommitsMalformedTerminal(f *testing.F) {
+	f.Add([]byte(successfulJSONL))
+	f.Add([]byte(`{"type":"thread.started"}` + "\n" + `{"type":"turn.started"}` + "\n"))
+	f.Add([]byte(`{"type":"provider.secret_event"}` + "\n"))
+	f.Fuzz(func(t *testing.T, value []byte) {
+		result := ParseProtocolV1(value)
+		if result.Terminal && !result.Accepted {
+			t.Fatal("terminal protocol state was not accepted")
+		}
+		if result.Terminal && result.ProtocolDrift && !result.TerminalDrift {
+			t.Fatal("terminal protocol drift was not marked terminal")
+		}
+		if result.Terminal && !result.ProtocolDrift && (result.FailureCode != "" || len(result.Final) == 0) {
+			t.Fatalf("committable terminal lacks a final result: %+v", result)
+		}
+	})
 }

@@ -29,6 +29,29 @@ type parseResult struct {
 	final         []byte
 }
 
+// ProtocolResultV1 is the content-bounded Codex exec lifecycle shared by the
+// subscription and OpenRouter profiles. Final is invocation-private output;
+// callers must clear raw provider frames after parsing and never log this value.
+type ProtocolResultV1 struct {
+	Accepted      bool
+	Terminal      bool
+	ProtocolDrift bool
+	TerminalDrift bool
+	FailureCode   string
+	Final         []byte `json:"-"`
+}
+
+// ParseProtocolV1 applies the reviewed #81 JSONL grammar and bounds without
+// granting provider, credential, routing, retry, or scheduling authority.
+func ParseProtocolV1(value []byte) ProtocolResultV1 {
+	parsed := parseJSONL(value)
+	return ProtocolResultV1{
+		Accepted: parsed.accepted, Terminal: parsed.terminal,
+		ProtocolDrift: parsed.protocolDrift, TerminalDrift: parsed.terminalDrift,
+		FailureCode: parsed.failureCode, Final: append([]byte(nil), parsed.final...),
+	}
+}
+
 type eventEnvelope struct {
 	Type string          `json:"type"`
 	Item json.RawMessage `json:"item"`

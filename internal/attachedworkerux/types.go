@@ -15,6 +15,71 @@ const (
 	FreshnessExpired FreshnessV1 = "expired"
 )
 
+type DiagnosticCohortV1 string
+
+const (
+	DiagnosticCohortIdentity     DiagnosticCohortV1 = "identity"
+	DiagnosticCohortReadiness    DiagnosticCohortV1 = "readiness"
+	DiagnosticCohortConnectivity DiagnosticCohortV1 = "connectivity"
+	DiagnosticCohortEligibility  DiagnosticCohortV1 = "eligibility"
+	DiagnosticCohortExecution    DiagnosticCohortV1 = "execution"
+	DiagnosticCohortGovernance   DiagnosticCohortV1 = "governance"
+)
+
+func (cohort DiagnosticCohortV1) Valid() bool {
+	switch cohort {
+	case DiagnosticCohortIdentity, DiagnosticCohortReadiness, DiagnosticCohortConnectivity,
+		DiagnosticCohortEligibility, DiagnosticCohortExecution, DiagnosticCohortGovernance:
+		return true
+	default:
+		return false
+	}
+}
+
+type DiagnosticCodeV1 string
+
+const (
+	DiagnosticCodeDesiredState           DiagnosticCodeV1 = "desired_state"
+	DiagnosticCodeObservedState          DiagnosticCodeV1 = "observed_state"
+	DiagnosticCodeEnrollmentState        DiagnosticCodeV1 = "enrollment_state"
+	DiagnosticCodeDaemonState            DiagnosticCodeV1 = "daemon_state"
+	DiagnosticCodeLastDaemonFailure      DiagnosticCodeV1 = "last_daemon_failure"
+	DiagnosticCodeCredentialState        DiagnosticCodeV1 = "credential_state"
+	DiagnosticCodeIsolationConfiguration DiagnosticCodeV1 = "isolation_configuration"
+	DiagnosticCodeIsolationVerification  DiagnosticCodeV1 = "isolation_verification"
+	DiagnosticCodeConnectionState        DiagnosticCodeV1 = "connection_state"
+	DiagnosticCodeLastContact            DiagnosticCodeV1 = "last_contact"
+	DiagnosticCodeTransportFailure       DiagnosticCodeV1 = "transport_failure"
+	DiagnosticCodeCapabilityState        DiagnosticCodeV1 = "capability_state"
+	DiagnosticCodeAdmissionPreview       DiagnosticCodeV1 = "admission_preview"
+	DiagnosticCodeEntitlementState       DiagnosticCodeV1 = "entitlement_state"
+	DiagnosticCodeQuotaState             DiagnosticCodeV1 = "quota_state"
+	DiagnosticCodeAttemptState           DiagnosticCodeV1 = "attempt_state"
+	DiagnosticCodeCancelRequest          DiagnosticCodeV1 = "cancel_request"
+	DiagnosticCodeCancelAcknowledgement  DiagnosticCodeV1 = "cancel_ack"
+	DiagnosticCodeProcessObservation     DiagnosticCodeV1 = "process_observation"
+	DiagnosticCodeWorkerTerminal         DiagnosticCodeV1 = "worker_terminal"
+	DiagnosticCodeCanonicalTerminal      DiagnosticCodeV1 = "canonical_terminal"
+	DiagnosticCodeAdmissionControl       DiagnosticCodeV1 = "admission_control"
+	DiagnosticCodeRemoteErase            DiagnosticCodeV1 = "remote_erase"
+)
+
+func (code DiagnosticCodeV1) Valid() bool {
+	switch code {
+	case DiagnosticCodeDesiredState, DiagnosticCodeObservedState, DiagnosticCodeEnrollmentState,
+		DiagnosticCodeDaemonState, DiagnosticCodeLastDaemonFailure, DiagnosticCodeCredentialState,
+		DiagnosticCodeIsolationConfiguration, DiagnosticCodeIsolationVerification, DiagnosticCodeConnectionState,
+		DiagnosticCodeLastContact, DiagnosticCodeTransportFailure, DiagnosticCodeCapabilityState,
+		DiagnosticCodeAdmissionPreview, DiagnosticCodeEntitlementState, DiagnosticCodeQuotaState,
+		DiagnosticCodeAttemptState, DiagnosticCodeCancelRequest, DiagnosticCodeCancelAcknowledgement,
+		DiagnosticCodeProcessObservation, DiagnosticCodeWorkerTerminal, DiagnosticCodeCanonicalTerminal,
+		DiagnosticCodeAdmissionControl, DiagnosticCodeRemoteErase:
+		return true
+	default:
+		return false
+	}
+}
+
 type ReasonCodeV1 string
 
 const (
@@ -292,11 +357,11 @@ type AttachedWorkerListV1 struct {
 }
 
 type DiagnosticFactV1 struct {
-	Cohort     string      `json:"cohort"`
-	Code       string      `json:"code"`
-	State      string      `json:"state"`
-	ObservedAt time.Time   `json:"observed_at,omitzero"`
-	Freshness  FreshnessV1 `json:"freshness,omitempty"`
+	Cohort     DiagnosticCohortV1 `json:"cohort"`
+	Code       DiagnosticCodeV1   `json:"code"`
+	State      string             `json:"state"`
+	ObservedAt time.Time          `json:"observed_at,omitzero"`
+	Freshness  FreshnessV1        `json:"freshness,omitempty"`
 }
 
 type AttachedWorkerDiagnosticsV1 struct {

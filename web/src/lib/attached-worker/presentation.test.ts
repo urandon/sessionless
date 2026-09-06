@@ -7,6 +7,7 @@ import {
   explainReason,
   explainUnavailable,
   reasonExplanations,
+  relativeTime,
   unavailableExplanations,
   validTimestamp,
 } from './presentation';
@@ -38,5 +39,15 @@ describe('attached-worker presentation vocabulary', () => {
     expect(validTimestamp('not-a-time')).toBe(false);
     expect(validTimestamp('2026-08-26T08:00:00+03:00')).toBe(false);
     expect(exactUTCTime('2026-08-26T08:00:00.123456Z')).toBe('2026-08-26 08:00:00.123456 UTC');
+  });
+
+  it('describes observation time relative to the deterministic evaluation timestamp', () => {
+    expect(relativeTime('2026-08-26T07:58:00Z', '2026-08-26T08:00:00Z')).toBe(
+      '2 minutes before evaluation',
+    );
+    expect(relativeTime('2026-08-26T08:00:10Z', '2026-08-26T08:00:00Z')).toBe(
+      '10 seconds after evaluation',
+    );
+    expect(relativeTime('bad', '2026-08-26T08:00:00Z')).toBe('');
   });
 });

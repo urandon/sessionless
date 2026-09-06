@@ -1179,14 +1179,46 @@
           "has_more": { "type": "boolean" }
         }
       },
+      "AttachedWorkerDiagnosticCohortV1": {
+        "type": "string",
+        "enum": ["identity", "readiness", "connectivity", "eligibility", "execution", "governance"]
+      },
+      "AttachedWorkerDiagnosticCodeV1": {
+        "type": "string",
+        "enum": [
+          "desired_state",
+          "observed_state",
+          "enrollment_state",
+          "daemon_state",
+          "last_daemon_failure",
+          "credential_state",
+          "isolation_configuration",
+          "isolation_verification",
+          "connection_state",
+          "last_contact",
+          "transport_failure",
+          "capability_state",
+          "admission_preview",
+          "entitlement_state",
+          "quota_state",
+          "attempt_state",
+          "cancel_request",
+          "cancel_ack",
+          "process_observation",
+          "worker_terminal",
+          "canonical_terminal",
+          "admission_control",
+          "remote_erase"
+        ]
+      },
       "AttachedWorkerDiagnosticFactV1": {
         "type": "object",
         "additionalProperties": false,
         "required": ["cohort", "code", "state"],
         "properties": {
-          "cohort": { "type": "string" },
-          "code": { "type": "string" },
-          "state": { "type": "string" },
+          "cohort": { "$ref": "#/components/schemas/AttachedWorkerDiagnosticCohortV1" },
+          "code": { "$ref": "#/components/schemas/AttachedWorkerDiagnosticCodeV1" },
+          "state": { "type": "string", "minLength": 1, "maxLength": 128 },
           "observed_at": { "type": "string", "format": "date-time" },
           "freshness": { "$ref": "#/components/schemas/AttachedWorkerFreshnessV1" }
         }
@@ -1198,13 +1230,23 @@
         "properties": {
           "version": { "type": "integer", "const": 1 },
           "evaluated_at": { "type": "string", "format": "date-time" },
-          "worker_id": { "type": "string" },
+          "worker_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160,
+            "pattern": "^[A-Za-z0-9._:-]+$"
+          },
           "facts": {
             "type": "array",
+            "minItems": 23,
+            "maxItems": 23,
+            "uniqueItems": true,
             "items": { "$ref": "#/components/schemas/AttachedWorkerDiagnosticFactV1" }
           },
           "warnings": {
             "type": "array",
+            "maxItems": 27,
+            "uniqueItems": true,
             "items": { "$ref": "#/components/schemas/AttachedWorkerReasonCodeV1" }
           }
         }

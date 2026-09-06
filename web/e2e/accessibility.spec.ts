@@ -1,7 +1,7 @@
 import AxeBuilder from '@axe-core/playwright';
 import type { Page } from '@playwright/test';
 
-import { expect, sessionId, test } from './fixtures/canonical-api';
+import { expect, sessionId, test, workerId } from './fixtures/canonical-api';
 
 async function expectNoSeriousOrCriticalViolations(page: Page): Promise<void> {
   const results = await new AxeBuilder({ page }).analyze();
@@ -71,6 +71,62 @@ test.describe('accessible states', () => {
     await expect(loading.locator('..')).toHaveAttribute('aria-busy', 'true');
     await expectNoSeriousOrCriticalViolations(page);
     releaseIdentity();
+  });
+
+  test('@a11y attached-worker detail and explicit diagnostics pass axe', async ({
+    canonicalApi,
+    page,
+  }) => {
+    void canonicalApi;
+    await page.goto(`/workers/${workerId}`);
+    await expect(page.getByRole('heading', { name: 'Studio Mac' })).toBeVisible();
+    await expectNoSeriousOrCriticalViolations(page);
+
+    const load = page.getByRole('button', { name: 'Load redacted diagnostics' });
+    await load.focus();
+    await page.keyboard.press('Enter');
+    await expect(page.getByLabel('Redacted diagnostic JSON')).toBeVisible();
+    const result = page.getByRole('region', { name: 'Loaded redacted diagnostics' });
+    await expect(result).toBeFocused();
+    await expect(result).toHaveCSS('outline-style', 'solid');
+    await page.keyboard.press('Tab');
+    const identity = page.getByRole('region', { name: 'Identity diagnostic facts' });
+    await expect(identity).toBeFocused();
+    await expect(identity).toHaveCSS('outline-style', 'solid');
+    for (let index = 0; index < 5; index += 1) await page.keyboard.press('Tab');
+    await expect(page.getByRole('region', { name: 'Governance diagnostic facts' })).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(page.getByLabel('Redacted diagnostic JSON')).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(page.getByRole('button', { name: 'Copy redacted diagnostics' })).toBeFocused();
+    await expect(page.getByRole('region', { name: 'Execution diagnostic facts' })).toBeVisible();
+    await expectNoSeriousOrCriticalViolations(page);
+  });
+
+  test('@a11y attached-worker diagnostics remain textual, responsive, and reduced-motion safe', async ({
+    canonicalApi,
+    page,
+  }) => {
+    void canonicalApi;
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await page.setViewportSize({ width: 360, height: 800 });
+    await page.goto(`/workers/${workerId}`);
+
+    const load = page.getByRole('button', { name: 'Load redacted diagnostics' });
+    await expect(load).toHaveCSS('transition-duration', '0s');
+    await load.click();
+    const diagnostics = page.getByRole('region', { name: 'Loaded redacted diagnostics' });
+    await expect(diagnostics.getByText('2026-08-26 07:58:00 UTC')).toBeVisible();
+    await expect(diagnostics.getByText('(2 minutes before evaluation)')).toBeVisible();
+    await expect(diagnostics.getByText('Unknown', { exact: true })).toHaveCount(7);
+    await expect(diagnostics.getByText('Pending', { exact: true })).toBeVisible();
+    await expect(diagnostics.getByText('None', { exact: true })).toHaveCount(2);
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+      ),
+    ).toBe(true);
+    await expectNoSeriousOrCriticalViolations(page);
   });
 
   test('@a11y keyboard path exposes focus, labels, and the composer', async ({

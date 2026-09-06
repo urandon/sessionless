@@ -23,13 +23,15 @@ LDFLAGS := -s -w \
 	-X gitcode.com/urandon/sessionless/internal/buildinfo.Commit=$(COMMIT) \
 	-X gitcode.com/urandon/sessionless/internal/buildinfo.BuiltAt=$(BUILT_AT)
 
-.PHONY: help prepare tools web-tools go-package-layout generate fmt fmt-check lint test build web-install web-openapi-check web-check web-build web-stage web-ci web-browser-install web-browser-test integration ydb-integration local-integration e2e-local provider-conformance provider-conformance-fuzz ci image-publication-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test budget-policy-test web-deployment-policy-test terraform-ci cloudflare-edge-ci \
+.PHONY: help prepare tools web-tools go-package-layout generate fmt fmt-check lint test build docs-check readme-visual-preview web-install web-openapi-check web-check web-build web-stage web-ci web-browser-install web-browser-test integration ydb-integration local-integration e2e-local provider-conformance provider-conformance-fuzz ci image-publication-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test budget-policy-test web-deployment-policy-test terraform-ci cloudflare-edge-ci \
 	compose-config images dev-up dev-seed migrate-local migration-status partition-status partition-backfill cloud-app-reset-plan cloud-app-reset session-delete-request session-delete-plan session-delete session-hold session-release-hold \
 	worker-once web-bootstrap dev-down dev-reset repowise-install repowise-index repowise-update repowise-status repowise-doctor repowise-mcp repowise-mcp-smoke repowise-evaluate repowise-stop repowise-uninstall-plan repowise-uninstall repowise-policy-test clean
 
 help:
 	@printf '%s\n' \
 		'make tools          validate every pinned developer tool' \
+		'make docs-check     validate local Markdown links, anchors, images, and discoverability' \
+		'make readme-visual-preview serve the built WebUI with a read-only deterministic fixture' \
 		'make web-ci         install locked WebUI dependencies and run deterministic checks/build' \
 		'make web-browser-install install the pinned Chromium browser runtime' \
 		'make web-browser-test run the separately gated Playwright and axe suites' \
@@ -116,6 +118,12 @@ build: prepare web-stage
 			-o "$(BIN_DIR)/$$component" "./cmd/$$component"; \
 	done
 
+docs-check:
+	@node ./scripts/check-markdown-links.mjs
+
+readme-visual-preview: web-build
+	@node ./scripts/readme-visual-preview.mjs
+
 web-install: web-tools
 	npm --prefix $(WEB_DIR) ci
 
@@ -171,7 +179,7 @@ provider-conformance-fuzz: prepare
 	go test -run='^$$' -fuzz=FuzzRPCParserNeverCommitsMalformedTerminal -fuzztime=2s ./internal/piopenrouter
 	go test -run='^$$' -fuzz=FuzzOpenCodeJSONLParserNeverCommitsMalformedTerminal -fuzztime=2s ./internal/opencodeopenrouter
 
-ci: web-ci generate test build integration image-publication-test image-build-inputs-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test
+ci: docs-check web-ci generate test build integration image-publication-test image-build-inputs-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test
 
 image-publication-test:
 	@./scripts/test-image-publication.sh

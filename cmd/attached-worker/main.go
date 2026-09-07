@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"gitcode.com/urandon/sessionless/internal/attachedworkerforeground"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerlocal"
 )
 
@@ -42,6 +43,16 @@ func run(arguments []string, output io.Writer) int {
 	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 	defer cancel()
 	switch command {
+	case "run":
+		if *expectedRevision != 0 || *idempotencyKey != "" {
+			return writeResult(output, commandErrorV1{Version: 1, Code: attachedworkerlocal.CodeInvalid}, 2)
+		}
+		foreground, foregroundErr := attachedworkerforeground.New(store, attachedworkerforeground.Config{})
+		if foregroundErr != nil {
+			return writeResult(output, commandErrorV1{Version: 1, Code: attachedworkerlocal.CodeInvalid}, 2)
+		}
+		result, operationErr := foreground.Run(ctx)
+		return writeOperation(output, result, operationErr)
 	case "check":
 		if *expectedRevision != 0 || *idempotencyKey != "" {
 			return writeResult(output, commandErrorV1{Version: 1, Code: attachedworkerlocal.CodeInvalid}, 2)

@@ -107,12 +107,13 @@ paths, raw stderr, provider errors, or auth material.
 
 ## Still required before #77 can close
 
-- foreground CLI plus reviewed OS-service and container packaging;
-- live foreground composition using the durable local state and lifecycle CLI
-  foundation defined in [#107](attached-worker-local-state.md);
+- live activation behind the feature-disabled
+  [foreground preflight](attached-worker-foreground.md), plus reviewed
+  OS-service and container packaging;
 - composition with the AW-03/AW-04 exchange and attempt protocol;
 - crash/restart recovery that fences or resumes the exact durable attempt;
 - the two-owner security and recovery gate in #79.
 
-Until those items land, no binary enables this package and the attached-worker
-daemon remains feature-disabled.
+Until those items land, the `attached-worker run` binary performs local
+preflight only and cannot construct this daemon. The attached-worker daemon
+remains feature-disabled.

@@ -10,7 +10,7 @@ dispatch, provider execution, or the reviewed OCI launcher.
 The bounded local sequence is:
 
 ```text
-preflight -> runtime-owned -> disabled/unavailable -> shutdown -> stopped
+preflight -> runtime-owned -> disabled/unavailable -> draining -> stopped
 ```
 
 `preflight` first acquires the kernel-backed `runtime.lock`. Only that owner may
@@ -23,14 +23,21 @@ and connection material are internally consistent. The foreground immediately
 zeroes its temporary byte slices. It does not send or format them and cannot
 turn them into provider credentials or a live connection.
 
-The disabled activation records one monotonic, content-free local observation
-with `daemon_state=stopped` and `last_failure_code=feature_disabled`. It carries
-forward only already validated counters, never attempts to infer server state,
-then durably retires the observation before releasing `runtime.lock`. Cleanup
-uses a separate bounded context so caller cancellation cannot leave a normal
-disabled run looking active. Any cleanup ambiguity overrides the disabled
-result and fails closed. Retirement is revision-guarded, so cleanup cannot
-remove a different observation.
+The disabled activation records monotonic, content-free local observations
+with `last_failure_code=feature_disabled`. It carries forward only already
+validated counters and never attempts to infer server state. A started shell
+retains `runtime.lock` until its explicit, idempotent drain/shutdown lifecycle
+persists `draining`, persists `stopped`, durably retires the final observation,
+and releases the lock. The command entrypoint performs that sequence
+immediately because live activation remains unavailable.
+
+Shutdown runs exactly once under a separate bounded cleanup context. A caller
+may bound how long it waits, but cancellation cannot abort that cleanup; a
+later call observes the same terminal result. Concurrent or repeated drain and
+shutdown requests cannot duplicate observation retirement or lease release.
+Any cleanup ambiguity overrides the disabled result and fails closed.
+Retirement is revision-guarded, so cleanup cannot remove a different
+observation.
 
 ## Operator behavior
 
@@ -54,9 +61,11 @@ not daemon health, attach acceptance, an AW-04 attempt, or terminal authority.
 
 ## Deferred live composition
 
-`internal/attachedworkerforeground.Activation` names the later injection seam,
-but the product constructor deliberately accepts no activation implementation.
-A later reviewed child must first define the connection-session contract:
+`internal/attachedworkerforeground.ActivationPorts` names the exact existing
+bootstrap, source, result-sink, invocation-runner, and daemon authority seams.
+The product constructor deliberately accepts none of them, and executable
+tests prove that even package-injected spies receive zero calls. A later
+reviewed child must first define the connection-session contract:
 
 - how bootstrap issues an exact connection identity and bearer;
 - whether and how that material is persisted or renewed;

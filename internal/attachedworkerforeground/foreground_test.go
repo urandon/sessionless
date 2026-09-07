@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemon"
+	"gitcode.com/urandon/sessionless/internal/attachedworkerhttp"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerlocal"
 	"gitcode.com/urandon/sessionless/internal/domain"
 )
@@ -26,7 +28,7 @@ func TestRunDisabledRetiresObservationAndReleasesOwnership(t *testing.T) {
 		t.Fatalf("Run error = %v, want ErrFeatureDisabled", runErr)
 	}
 	if result.Code != CodeFeatureDisabled || result.RuntimeOwnership != "released" ||
-		result.ObservationState != "retired" || result.ObservationRevision != 1 ||
+		result.ObservationState != "retired" || result.ObservationRevision != 3 ||
 		result.DaemonState != "not_started" || result.ServerConnectionState != "unknown" ||
 		result.NetworkAction != "not_attempted" || result.ProcessAction != "not_attempted" ||
 		result.CredentialAction != "not_attempted" {
@@ -140,7 +142,7 @@ func TestRunAdvancesValidatedPriorObservationBeforeRetiringIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, runErr := foreground.Run(context.Background())
-	if !errors.Is(runErr, ErrFeatureDisabled) || result.ObservationRevision != 2 ||
+	if !errors.Is(runErr, ErrFeatureDisabled) || result.ObservationRevision != 4 ||
 		result.ObservationState != "retired" {
 		t.Fatalf("Run result=%+v error=%v", result, runErr)
 	}
@@ -150,6 +152,142 @@ func TestRunAdvancesValidatedPriorObservationBeforeRetiringIt(t *testing.T) {
 	}
 	if status.DaemonObservation != "unknown" {
 		t.Fatalf("status retained observation: %+v", status)
+	}
+}
+
+func TestSessionDrainAndShutdownAreExplicitAndIdempotent(t *testing.T) {
+	store, _, now := initializedStore(t)
+	foreground, err := New(store, Config{Now: func() time.Time { return now.Add(time.Second) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, session, err := foreground.Start(context.Background())
+	if err != nil || session == nil || result.ObservationRevision != 1 || result.RuntimeOwnership != "acquired" {
+		t.Fatalf("Start result=%+v session=%v error=%v", result, session != nil, err)
+	}
+	if err := session.Drain(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Drain(context.Background()); err != nil {
+		t.Fatalf("repeated Drain error = %v", err)
+	}
+	status, err := store.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.DaemonObservation != "observed_local" || status.DaemonState != "draining" || status.ObservationRevision != 2 {
+		t.Fatalf("draining status = %+v", status)
+	}
+	if err := session.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Shutdown(context.Background()); err != nil {
+		t.Fatalf("repeated Shutdown error = %v", err)
+	}
+	result = session.Result()
+	if result.ObservationRevision != 3 || result.ObservationState != "retired" ||
+		result.RuntimeOwnership != "released" || result.DaemonState != "not_started" {
+		t.Fatalf("Shutdown result = %+v", result)
+	}
+	status, err = store.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.DaemonObservation != "unknown" || status.ObservationRevision != 0 {
+		t.Fatalf("shutdown retained observation: %+v", status)
+	}
+}
+
+func TestSessionConcurrentShutdownRunsCleanupOnce(t *testing.T) {
+	store, _, now := initializedStore(t)
+	foreground, err := New(store, Config{Now: func() time.Time { return now.Add(time.Second) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, session, err := foreground.Start(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const callers = 12
+	errorsSeen := make(chan error, callers)
+	var group sync.WaitGroup
+	for index := 0; index < callers; index++ {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			errorsSeen <- session.Shutdown(context.Background())
+		}()
+	}
+	group.Wait()
+	close(errorsSeen)
+	for err := range errorsSeen {
+		if err != nil {
+			t.Fatalf("concurrent Shutdown error = %v", err)
+		}
+	}
+	if result := session.Result(); result.ObservationRevision != 3 ||
+		result.ObservationState != "retired" || result.RuntimeOwnership != "released" {
+		t.Fatalf("concurrent Shutdown result = %+v", result)
+	}
+}
+
+func TestSessionShutdownWaitIsCallerBoundedButCleanupContinues(t *testing.T) {
+	manifest := attachedworkerlocal.ManifestV1{Lifecycle: attachedworkerlocal.LifecycleActive, Revision: 7,
+		UpdatedAt: time.Date(2026, 9, 7, 0, 0, 0, 0, time.UTC)}
+	lease := newBlockingLifecycleLease(2)
+	store := &fakeStore{lease: lease, snapshot: attachedworkerlocal.SnapshotV1{Manifest: manifest}}
+	foreground, err := newForeground(store, Config{
+		Now: func() time.Time { return manifest.UpdatedAt }, CleanupTimeout: time.Second,
+	}, ActivationPorts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, session, err := foreground.Start(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitCtx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	if err := session.Shutdown(waitCtx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("bounded Shutdown error = %v, want deadline", err)
+	}
+	select {
+	case <-lease.entered:
+	case <-time.After(time.Second):
+		t.Fatal("cleanup did not continue after caller timeout")
+	}
+	close(lease.release)
+	if err := session.Shutdown(context.Background()); err != nil {
+		t.Fatalf("completed Shutdown error = %v", err)
+	}
+	persistCalls, retireCalls, closeCalls := lease.counts()
+	if persistCalls != 3 || retireCalls != 1 || closeCalls != 1 {
+		t.Fatalf("cleanup calls persist=%d retire=%d close=%d", persistCalls, retireCalls, closeCalls)
+	}
+}
+
+func TestDisabledForegroundNeverCallsActivationPorts(t *testing.T) {
+	manifest := attachedworkerlocal.ManifestV1{Lifecycle: attachedworkerlocal.LifecycleActive, Revision: 7,
+		UpdatedAt: time.Date(2026, 9, 7, 0, 0, 0, 0, time.UTC)}
+	lease := &fakeLease{}
+	store := &fakeStore{lease: lease, snapshot: attachedworkerlocal.SnapshotV1{Manifest: manifest}}
+	bootstrap := &bootstrapSpy{}
+	source := &sourceSpy{}
+	sink := &sinkSpy{}
+	runner := &runnerSpy{}
+	daemon := &daemonSpy{}
+	foreground, err := newForeground(store, Config{Now: func() time.Time { return manifest.UpdatedAt }}, ActivationPorts{
+		Bootstrap: bootstrap, Source: source, ResultSink: sink, Runner: runner, Daemon: daemon,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, runErr := foreground.Run(context.Background()); !errors.Is(runErr, ErrFeatureDisabled) {
+		t.Fatalf("Run error = %v", runErr)
+	}
+	if bootstrap.calls != 0 || source.calls != 0 || sink.calls != 0 || runner.calls != 0 || daemon.calls != 0 {
+		t.Fatalf("disabled shell called live ports: bootstrap=%d source=%d sink=%d runner=%d daemon=%d",
+			bootstrap.calls, source.calls, sink.calls, runner.calls, daemon.calls)
 	}
 }
 
@@ -168,7 +306,7 @@ func TestRunPreservesFailClosedPreflightCodesWithoutObservation(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			lease := &fakeLease{}
 			store := &fakeStore{lease: lease, snapshotErr: test.err}
-			foreground, err := newForeground(store, Config{})
+			foreground, err := newForeground(store, Config{}, ActivationPorts{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -187,7 +325,7 @@ func TestRunCleanupFailureOverridesDisabledCodeAndStillCloses(t *testing.T) {
 		UpdatedAt: time.Date(2026, 9, 7, 0, 0, 0, 0, time.UTC)}
 	lease := &fakeLease{retireErr: attachedworkerlocal.ErrLocalIO}
 	store := &fakeStore{lease: lease, snapshot: attachedworkerlocal.SnapshotV1{Manifest: manifest}, secret: attachedworkerlocal.SecretRecordV1{}}
-	foreground, err := newForeground(store, Config{Now: func() time.Time { return manifest.UpdatedAt }})
+	foreground, err := newForeground(store, Config{Now: func() time.Time { return manifest.UpdatedAt }}, ActivationPorts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +345,7 @@ func TestRunCleanupIgnoresCallerCancellationAfterObservationPersist(t *testing.T
 		UpdatedAt: time.Date(2026, 9, 7, 0, 0, 0, 0, time.UTC)}
 	lease := &fakeLease{persistHook: cancel}
 	store := &fakeStore{lease: lease, snapshot: attachedworkerlocal.SnapshotV1{Manifest: manifest}}
-	foreground, err := newForeground(store, Config{Now: func() time.Time { return manifest.UpdatedAt }})
+	foreground, err := newForeground(store, Config{Now: func() time.Time { return manifest.UpdatedAt }}, ActivationPorts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,6 +402,117 @@ func (lease *fakeLease) RetireObservation(ctx context.Context, _ uint64) error {
 func (lease *fakeLease) Close() error {
 	lease.closeCalls++
 	return nil
+}
+
+type blockingLifecycleLease struct {
+	mu             sync.Mutex
+	blockPersistAt int
+	persistCalls   int
+	retireCalls    int
+	closeCalls     int
+	entered        chan struct{}
+	release        chan struct{}
+	enteredOnce    sync.Once
+}
+
+func newBlockingLifecycleLease(blockPersistAt int) *blockingLifecycleLease {
+	return &blockingLifecycleLease{
+		blockPersistAt: blockPersistAt,
+		entered:        make(chan struct{}),
+		release:        make(chan struct{}),
+	}
+}
+
+func (lease *blockingLifecycleLease) PersistObservation(ctx context.Context, _ attachedworkerlocal.RuntimeObservationV1) error {
+	lease.mu.Lock()
+	lease.persistCalls++
+	call := lease.persistCalls
+	lease.mu.Unlock()
+	if call != lease.blockPersistAt {
+		return nil
+	}
+	lease.enteredOnce.Do(func() { close(lease.entered) })
+	select {
+	case <-lease.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (lease *blockingLifecycleLease) RetireObservation(context.Context, uint64) error {
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	lease.retireCalls++
+	return nil
+}
+
+func (lease *blockingLifecycleLease) Close() error {
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	lease.closeCalls++
+	return nil
+}
+
+func (lease *blockingLifecycleLease) counts() (int, int, int) {
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	return lease.persistCalls, lease.retireCalls, lease.closeCalls
+}
+
+type bootstrapSpy struct{ calls int }
+
+func (spy *bootstrapSpy) IssueChallenge(context.Context, attachedworkerhttp.ChallengeRequestV1) (*attachedworkerhttp.ChallengeResponseV1, error) {
+	spy.calls++
+	return nil, errors.New("unexpected bootstrap challenge")
+}
+
+func (spy *bootstrapSpy) Activate(context.Context, attachedworkerhttp.ActivateClientInputV1) (*attachedworkerhttp.ActivateResponseV1, error) {
+	spy.calls++
+	return nil, errors.New("unexpected bootstrap activation")
+}
+
+type sourceSpy struct{ calls int }
+
+func (spy *sourceSpy) Next(context.Context) (attachedworkerdaemon.Invocation, bool, error) {
+	spy.calls++
+	return attachedworkerdaemon.Invocation{}, false, errors.New("unexpected transport source")
+}
+
+type sinkSpy struct{ calls int }
+
+func (spy *sinkSpy) Complete(context.Context, attachedworkerdaemon.InvocationIdentity, attachedworkerdaemon.InvocationResult, error) error {
+	spy.calls++
+	return errors.New("unexpected result sink")
+}
+
+type runnerSpy struct{ calls int }
+
+func (spy *runnerSpy) Run(context.Context, attachedworkerdaemon.Invocation) (attachedworkerdaemon.InvocationResult, error) {
+	spy.calls++
+	return attachedworkerdaemon.InvocationResult{}, errors.New("unexpected invocation runner")
+}
+
+type daemonSpy struct{ calls int }
+
+func (spy *daemonSpy) Run(context.Context) error {
+	spy.calls++
+	return errors.New("unexpected daemon run")
+}
+
+func (spy *daemonSpy) Drain(context.Context) error {
+	spy.calls++
+	return errors.New("unexpected daemon drain")
+}
+
+func (spy *daemonSpy) Shutdown(context.Context) error {
+	spy.calls++
+	return errors.New("unexpected daemon shutdown")
+}
+
+func (spy *daemonSpy) Status() attachedworkerdaemon.Status {
+	spy.calls++
+	return attachedworkerdaemon.Status{}
 }
 
 func initializedStore(t *testing.T) (*attachedworkerlocal.Store, ed25519.PrivateKey, time.Time) {

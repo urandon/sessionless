@@ -96,6 +96,7 @@ and link to it.
 
 - [Identity and enrollment](attached-worker-identity.md)
 - [Worker-side connection session](attached-worker-connection-session.md)
+- [Session-to-daemon adapter](attached-worker-daemon-transport.md)
 - [Outbound transport](attached-worker-transport.md)
 - [Execution authority](attached-worker-execution.md)
 - [Daemon and supervisor](attached-worker-daemon.md)

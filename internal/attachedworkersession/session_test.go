@@ -127,6 +127,173 @@ func TestConnectorFailsClosedBeforeNetworkOnInvalidLocalAuthority(t *testing.T) 
 	})
 }
 
+func TestSessionExchangeActionOwnsEnvelopeAndReleasesCommittedAttempt(t *testing.T) {
+	fixture := newSessionFixture(t)
+	session := mustReadySession(t, fixture)
+	snapshot := session.Snapshot()
+	capabilityDigest := mustDecodeHex(t, string(snapshot.CapabilityDigest))
+	firstBinding := sessionAttemptBinding(capabilityDigest, "first")
+	secondBinding := sessionAttemptBinding(capabilityDigest, "second")
+	step := 0
+	var terminalBatch attachedworkerprotocol.BatchV1
+	var terminalResponse attachedworkerprotocol.BatchV1
+	var mainHandler func(context.Context, attachedworkerprotocol.BatchV1) (*attachedworkerprotocol.BatchV1, error)
+	mainHandler = func(_ context.Context, batch attachedworkerprotocol.BatchV1) (*attachedworkerprotocol.BatchV1, error) {
+		if len(batch.Frames) != 1 {
+			t.Fatalf("exchange step=%d frames=%d, want 1", step, len(batch.Frames))
+		}
+		frame := batch.Frames[0]
+		wantSequence := uint64(4 + step)
+		wantAck := uint64(2 + step)
+		if frame.Sequence != wantSequence || frame.Ack != wantAck ||
+			frame.MessageID != attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionWorkerToPlatform, wantSequence) ||
+			frame.WorkerID != string(snapshot.WorkerID) || frame.EnrollmentGeneration != snapshot.EnrollmentGeneration ||
+			frame.ConnectionGeneration != snapshot.ConnectionGeneration {
+			t.Fatalf("exchange step=%d envelope=%+v want sequence=%d ack=%d", step, frame, wantSequence, wantAck)
+		}
+		platformFrame := attachedworkerprotocol.FrameV1{
+			Version:   snapshot.ProtocolVersion,
+			MessageID: attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionPlatformToWorker, uint64(3+step)),
+			WorkerID:  string(snapshot.WorkerID), EnrollmentGeneration: snapshot.EnrollmentGeneration,
+			ConnectionGeneration: snapshot.ConnectionGeneration, Sequence: uint64(3 + step), Ack: wantSequence,
+		}
+		switch step {
+		case 0:
+			if frame.Kind != attachedworkerprotocol.MessageHeartbeat || frame.Heartbeat == nil || !frame.Heartbeat.Available {
+				t.Fatalf("heartbeat action=%+v", frame)
+			}
+			platformFrame.Kind = attachedworkerprotocol.MessageLeaseOffer
+			platformFrame.LeaseOffer = &attachedworkerprotocol.LeaseOfferV1{Binding: firstBinding, AttemptSequence: 1}
+		case 1:
+			if frame.Kind != attachedworkerprotocol.MessageLeaseClaim || frame.LeaseClaim == nil ||
+				!sessionSameAttemptBinding(frame.LeaseClaim.Binding, firstBinding) || frame.LeaseClaim.AttemptSequence != 1 {
+				t.Fatalf("lease claim action=%+v", frame)
+			}
+			platformFrame.Kind = attachedworkerprotocol.MessageLeaseAccepted
+			platformFrame.LeaseAccepted = &attachedworkerprotocol.LeaseAcceptedV1{Binding: firstBinding, AttemptSequence: 2}
+		case 2:
+			if frame.Kind != attachedworkerprotocol.MessageTerminal || frame.Terminal == nil ||
+				!sessionSameAttemptBinding(frame.Terminal.Binding, firstBinding) || frame.Terminal.AttemptSequence != 2 {
+				t.Fatalf("terminal action=%+v", frame)
+			}
+			platformFrame.Kind = attachedworkerprotocol.MessageTerminalAck
+			platformFrame.TerminalAck = &attachedworkerprotocol.TerminalAckV1{
+				Binding: firstBinding, AttemptSequence: 3,
+				TerminalSequence: frame.Terminal.TerminalSequence, Status: frame.Terminal.Status,
+				Result: frame.Terminal.Result, EvidenceDigest: append([]byte(nil), frame.Terminal.EvidenceDigest...),
+			}
+			terminalBatch = batch
+		case 3:
+			if frame.Kind != attachedworkerprotocol.MessageHeartbeat || frame.Heartbeat == nil || !frame.Heartbeat.Available {
+				t.Fatalf("second heartbeat action=%+v", frame)
+			}
+			platformFrame.Kind = attachedworkerprotocol.MessageLeaseOffer
+			platformFrame.LeaseOffer = &attachedworkerprotocol.LeaseOfferV1{Binding: secondBinding, AttemptSequence: 1}
+		default:
+			t.Fatalf("unexpected exchange step=%d", step)
+		}
+		step++
+		response := attachedworkerprotocol.BatchV1{Version: snapshot.ProtocolVersion, Frames: []attachedworkerprotocol.FrameV1{platformFrame}}
+		if step == 3 {
+			terminalResponse = response
+		}
+		return &response, nil
+	}
+	fixture.exchange.setHandler(mainHandler)
+
+	response, err := session.ExchangeAction(context.Background(), ActionV1{Heartbeat: &attachedworkerprotocol.HeartbeatV1{
+		ObservedAtUnixMicro: sessionTestTime.UnixMicro(), Available: true,
+	}})
+	if err != nil || response == nil || response.Kind != attachedworkerprotocol.MessageLeaseOffer {
+		t.Fatalf("heartbeat response=%+v error=%v", response, err)
+	}
+	response, err = session.ExchangeAction(context.Background(), ActionV1{LeaseClaim: &attachedworkerprotocol.LeaseClaimV1{
+		Binding: firstBinding, AttemptSequence: 1,
+	}})
+	if err != nil || response == nil || response.Kind != attachedworkerprotocol.MessageLeaseAccepted {
+		t.Fatalf("claim response=%+v error=%v", response, err)
+	}
+	evidence := bytes.Repeat([]byte{0x5a}, sha256.Size)
+	response, err = session.ExchangeAction(context.Background(), ActionV1{Terminal: &attachedworkerprotocol.TerminalV1{
+		Binding: firstBinding, AttemptSequence: 2, TerminalSequence: 1,
+		Status: attachedworkerprotocol.TerminalSucceeded, Result: attachedworkerprotocol.TerminalResultCompleted,
+		EvidenceDigest: evidence,
+	}})
+	if err != nil || response == nil || response.Kind != attachedworkerprotocol.MessageTerminalAck {
+		t.Fatalf("terminal response=%+v error=%v", response, err)
+	}
+	session.mu.Lock()
+	committed, snapshotErr := session.machine.Snapshot()
+	session.mu.Unlock()
+	if snapshotErr != nil {
+		t.Fatal(snapshotErr)
+	}
+	if committed.Attempt.Summary.State != attachedworkerprotocol.AttemptTerminalCommitted ||
+		committed.Worker.Ack >= committed.Platform.Sequence {
+		t.Fatalf("attempt retired before worker acknowledgement: snapshot=%+v", committed)
+	}
+	terminalAckSequence := committed.Platform.Sequence
+	fixture.exchange.setHandler(func(_ context.Context, batch attachedworkerprotocol.BatchV1) (*attachedworkerprotocol.BatchV1, error) {
+		got, _ := json.Marshal(batch)
+		want, _ := json.Marshal(terminalBatch)
+		if !bytes.Equal(got, want) {
+			t.Fatalf("terminal replay differs: got=%s want=%s", got, want)
+		}
+		return &terminalResponse, nil
+	})
+	if replay, err := session.Exchange(context.Background(), terminalBatch); err != nil || replay == nil ||
+		len(replay.Frames) != 1 || replay.Frames[0].Kind != attachedworkerprotocol.MessageTerminalAck {
+		t.Fatalf("terminal replay response=%+v error=%v", replay, err)
+	}
+	fixture.exchange.setHandler(mainHandler)
+	response, err = session.ExchangeAction(context.Background(), ActionV1{Heartbeat: &attachedworkerprotocol.HeartbeatV1{
+		ObservedAtUnixMicro: sessionTestTime.Add(time.Second).UnixMicro(), Available: true,
+	}})
+	if err != nil || response == nil || response.Kind != attachedworkerprotocol.MessageLeaseOffer ||
+		!sessionSameAttemptBinding(response.LeaseOffer.Binding, secondBinding) {
+		t.Fatalf("second attempt response=%+v error=%v", response, err)
+	}
+	session.mu.Lock()
+	retired, snapshotErr := session.machine.Snapshot()
+	session.mu.Unlock()
+	if snapshotErr != nil {
+		t.Fatal(snapshotErr)
+	}
+	if retired.Worker.Ack < terminalAckSequence || retired.Attempt.Summary.State != attachedworkerprotocol.AttemptOffered ||
+		!sessionSameAttemptBinding(retired.Attempt.Summary.Binding, secondBinding) {
+		t.Fatalf("later acknowledgement did not retire before next offer: snapshot=%+v", retired)
+	}
+	if step != 4 {
+		t.Fatalf("exchange steps=%d, want 4", step)
+	}
+}
+
+func TestSessionExchangeActionRejectsAmbiguousVocabularyBeforeExchange(t *testing.T) {
+	fixture := newSessionFixture(t)
+	session := mustReadySession(t, fixture)
+	before := fixture.exchange.calls.Load()
+	invalid := []ActionV1{
+		{},
+		{
+			Heartbeat: &attachedworkerprotocol.HeartbeatV1{ObservedAtUnixMicro: sessionTestTime.UnixMicro(), Available: true},
+			Drained:   &attachedworkerprotocol.DrainedV1{Revision: 1},
+		},
+	}
+	for index, action := range invalid {
+		if _, err := session.ExchangeAction(context.Background(), action); !errors.Is(err, ErrInvalidAuthority) {
+			t.Errorf("case=%d error=%v", index, err)
+		}
+	}
+	if fixture.exchange.calls.Load() != before {
+		t.Fatalf("invalid action reached exchange calls=%d before=%d", fixture.exchange.calls.Load(), before)
+	}
+	secret := "attempt-secret-never-format"
+	action := ActionV1{LeaseClaim: &attachedworkerprotocol.LeaseClaimV1{Binding: attachedworkerprotocol.AttemptBindingV1{RunID: secret}}}
+	if formatted := fmt.Sprintf("%+v %#v", action, action); strings.Contains(formatted, secret) {
+		t.Fatalf("action formatting leaked payload: %s", formatted)
+	}
+}
+
 func TestConnectorRejectsProtocolBaitSwitchAfterDurableFence(t *testing.T) {
 	fixture := newSessionFixture(t)
 	fixture.bootstrap.challengeMutation = func(response *attachedworkerhttp.ChallengeResponseV1) {
@@ -815,6 +982,23 @@ func waitForRuntimeRelease(t *testing.T, store *attachedworkerlocal.Store) {
 			t.Fatal("runtime lease was not released")
 		}
 	}
+}
+
+func sessionAttemptBinding(capabilityDigest []byte, suffix string) attachedworkerprotocol.AttemptBindingV1 {
+	return attachedworkerprotocol.AttemptBindingV1{
+		RunID: "run-" + suffix, AttemptID: "attempt-" + suffix, LeaseID: "lease-" + suffix,
+		LeaseGeneration: 7, FenceToken: "fence-" + suffix,
+		ExpiresAtUnixMicro: sessionTestTime.Add(30 * time.Minute).UnixMicro(),
+		ContextDigest:      bytes.Repeat([]byte{0x61}, sha256.Size), CapabilityDigest: append([]byte(nil), capabilityDigest...),
+		PolicyDigest: bytes.Repeat([]byte{0x62}, sha256.Size),
+	}
+}
+
+func sessionSameAttemptBinding(left, right attachedworkerprotocol.AttemptBindingV1) bool {
+	return left.RunID == right.RunID && left.AttemptID == right.AttemptID && left.LeaseID == right.LeaseID &&
+		left.LeaseGeneration == right.LeaseGeneration && left.FenceToken == right.FenceToken &&
+		left.ExpiresAtUnixMicro == right.ExpiresAtUnixMicro && bytes.Equal(left.ContextDigest, right.ContextDigest) &&
+		bytes.Equal(left.CapabilityDigest, right.CapabilityDigest) && bytes.Equal(left.PolicyDigest, right.PolicyDigest)
 }
 
 func mustDecodeHex(t *testing.T, value string) []byte {

@@ -110,7 +110,10 @@ paths, raw stderr, provider errors, or auth material.
 - live activation behind the feature-disabled
   [foreground preflight](attached-worker-foreground.md), plus reviewed
   OS-service and container packaging;
-- composition with the AW-03/AW-04 exchange and attempt protocol;
+- production composition of the feature-disabled
+  [session-to-daemon adapter](attached-worker-daemon-transport.md), including
+  concrete authenticated materialization and an active-cancel watcher, with
+  the AW-04 durable attempt protocol;
 - crash/restart recovery that fences or resumes the exact durable attempt;
 - the two-owner security and recovery gate in #79.
 

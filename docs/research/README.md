@@ -30,6 +30,7 @@ opt-in developer tools, never production or mandatory CI dependencies.
 | #47 | [Attachable workers](attachable-workers.md) | Outbound enrolled Go worker, fenced attempts, long-poll first, connection gateway only after measured need. |
 | #48, #51 | [AI resources and federation](ai-resources-and-federation.md) | Separate provider, transport, billing, harness, placement, credential generation, and sharing policy; no silent fallback. |
 | #51 / PR-05 | [OpenRouter provider architecture](openrouter-provider-architecture.md) | Sessionless-owned harness routing across Pi/OpenCode/Codex/direct adapters, exact OpenRouter policy, credential custody, and externally-shareable Ox Alpha use for generated, public-research, and reviewed public open-source tasks. |
+| #51, #105 / PR-04 | [Ollama local provider](ollama-local-provider.md) | Native, placement-bound Ollama adapter; hubdisk-safe opt-in model lifecycle; tiny-model smoke and measured Qwen3.8-27B ceiling; owner-scoped federation without fake credentials or endpoint exposure. |
 | #49 | [Metering and attribution](metering-and-resource-attribution.md) | Exact idempotent usage facts distinct from sampled telemetry and derived analytics. |
 | #52 | [Skills and automation](skills-and-automation.md) | Two separate epics: immutable governed skills and a sharded durable automation scheduler. |
 | #53 | [User usage analytics](user-usage-analytics.md) | Membership-scoped read model over #49 with provenance, freshness, coverage, and precision. |

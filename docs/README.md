@@ -98,6 +98,7 @@ and link to it.
 - [Outbound transport](attached-worker-transport.md)
 - [Execution authority](attached-worker-execution.md)
 - [Daemon and supervisor](attached-worker-daemon.md)
+- [OCI isolation profile](attached-worker-oci.md)
 - [Observability and control UX](attached-worker-ux.md)
 
 ## Research and design

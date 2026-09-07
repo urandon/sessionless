@@ -39,6 +39,12 @@ concurrency-one drain/shutdown, exact executable/process-group supervision and
 credential finalization, but requires a separately reviewed OS isolation
 launcher and does not yet provide a runnable daemon package.
 
+The feature-disabled AW-05b OCI launcher is described in
+[attached-worker-oci.md](attached-worker-oci.md). It binds one explicit local
+Docker Engine/VM identity, immutable image, exact mount set, denied network,
+bounded writable storage and invocation-owned container lifecycle without
+enabling the daemon or weakening the AW-05a supervisor.
+
 The feature-disabled first #81 Codex backend slice is described in
 [codex-exec-adapter.md](codex-exec-adapter.md). It promotes the bounded JSONL
 lifecycle, stdin privacy, exact artifact/argv, and credential-generation gates

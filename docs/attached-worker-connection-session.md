@@ -80,12 +80,14 @@ advances a sequence, changes an acknowledgement, follows `Retry-After`, or
 crosses a reconnect/process-restart boundary.
 
 Exact replay uses a bounded attempt count and local exponential full jitter
-inside the existing total operation timeout. The first validated response is
-applied to the pre-effect conformance snapshot exactly once. Unauthorized,
-conflict, protocol, divergent response, exhausted retry, timeout, and caller
-cancellation still fail closed. A dependency that ignores cancellation keeps
-the single operation owner until it returns, so no replacement exchange can
-overtake the ambiguous call. A restart still returns
+inside the existing total operation timeout. The session pins the pre-effect
+acceptance timestamp for the whole operation, so a retry cannot reinterpret an
+already-sent lease-bound frame after its lease clock boundary. The first
+validated response is applied to the pre-effect conformance snapshot exactly
+once. Unauthorized, conflict, protocol, divergent response, exhausted retry,
+timeout, and caller cancellation still fail closed. A dependency that ignores
+cancellation keeps the single operation owner until it returns, so no
+replacement exchange can overtake the ambiguous call. A restart still returns
 `reconciliation_required`; the pending batch is deliberately not persisted.
 Unauthorized exchange is classified as fenced (covering stale bearer,
 generation advance, or server revocation). A protocol `Revoke` permits only

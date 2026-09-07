@@ -87,8 +87,9 @@ and returns the corresponding durable response. The worker session may pair
 that behavior with an explicitly configured, in-process retry: it retains one
 canonical batch, retries only sanitized retryable `unavailable` outcomes with
 bounded local full jitter, and accepts the first response against the original
-pre-effect snapshot. It never creates a new Heartbeat, LeaseClaim, CancelAck,
-Terminal, sequence, acknowledgement, or evidence payload for a retry. Restart,
+pre-effect snapshot and acceptance timestamp. It never creates a new
+Heartbeat, LeaseClaim, CancelAck, Terminal, sequence, acknowledgement, or
+evidence payload for a retry. Restart,
 reconnect, exhaustion, cancellation, unauthorized, conflict, protocol drift,
 and divergent replay remain fail-closed reconciliation/fencing boundaries.
 

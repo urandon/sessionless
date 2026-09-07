@@ -744,6 +744,16 @@ func (session *Session) exchangeWithReplay(
 		return nil, ErrInvalidAuthority
 	}
 	defer clearBytes(encoded)
+	session.mu.Lock()
+	now := session.now
+	session.mu.Unlock()
+	if now == nil {
+		return nil, ErrInvalidAuthority
+	}
+	acceptanceNowUnixMicro := now().UTC().UnixMicro()
+	if acceptanceNowUnixMicro <= 0 {
+		return nil, ErrInvalidAuthority
+	}
 	backoff := session.retryInitialBackoff
 	for attempt := uint32(1); attempt <= session.maxExchangeAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
@@ -753,7 +763,7 @@ func (session *Session) exchangeWithReplay(
 		if err != nil {
 			return nil, ErrInvalidAuthority
 		}
-		response, exchangeErr := session.exchangeOnce(ctx, exact)
+		response, exchangeErr := session.exchangeOnce(ctx, exact, acceptanceNowUnixMicro)
 		if exchangeErr == nil || !retryableExchange(exchangeErr) {
 			return response, exchangeErr
 		}
@@ -858,7 +868,11 @@ type exchangeResult struct {
 	err      error
 }
 
-func (session *Session) exchangeOnce(ctx context.Context, batch attachedworkerprotocol.BatchV1) (*attachedworkerprotocol.BatchV1, error) {
+func (session *Session) exchangeOnce(
+	ctx context.Context,
+	batch attachedworkerprotocol.BatchV1,
+	acceptanceNowUnixMicro int64,
+) (*attachedworkerprotocol.BatchV1, error) {
 	session.mu.Lock()
 	machine := session.machine
 	config := session.machineConfig
@@ -876,17 +890,13 @@ func (session *Session) exchangeOnce(ctx context.Context, batch attachedworkerpr
 	if err != nil {
 		return nil, ErrReconciliationRequired
 	}
-	session.mu.Lock()
-	now := session.now
-	session.mu.Unlock()
-	if now == nil {
+	if acceptanceNowUnixMicro <= 0 {
 		return nil, ErrInvalidAuthority
 	}
-	nowUnixMicro := now().UTC().UnixMicro()
-	if nowUnixMicro <= 0 {
-		return nil, ErrInvalidAuthority
+	acceptance := attachedworkerprotocol.AcceptanceContextV1{
+		ChannelBinding: append([]byte(nil), config.Auth.ChannelBinding...),
+		NowUnixMicro:   acceptanceNowUnixMicro,
 	}
-	acceptance := attachedworkerprotocol.AcceptanceContextV1{ChannelBinding: append([]byte(nil), config.Auth.ChannelBinding...), NowUnixMicro: nowUnixMicro}
 	for _, frame := range batch.Frames {
 		if !frameMatchesBinding(frame, binding) || working.Accept(attachedworkerprotocol.DirectionWorkerToPlatform, frame, acceptance) != nil {
 			return nil, ErrInvalidAuthority

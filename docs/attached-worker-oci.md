@@ -123,12 +123,12 @@ stand in for the independent Linux rootless evidence recorded below.
 Recorded Linux rootless evidence:
 
 - 2026-09-07, exact mirrored commit
-  `d45dff327264e3ceeed1c6f6bc6bee7f8f308662`, GitHub Actions
-  [run 34073731597](https://github.com/urandon/sessionless/actions/runs/34073731597);
+  `3ba535869fb1d1c3ecf59e765f9fb2477fcdffc5`, GitHub Actions
+  [run 34074475726](https://github.com/urandon/sessionless/actions/runs/34074475726);
 - GitHub-hosted `ubuntu24/20260831.293.1`, Ubuntu 24.04.4 LTS, x86_64,
   kernel `6.17.0-1022-azure`, cgroup v2, `overlay2`;
 - pinned Docker client/server `28.0.4`, engine ID
-  `2331c34d-828c-4ea9-8621-9a6fedfedd47`, rootless security option verified;
+  `3464e4fb-3d1d-447d-97b2-b6715dd67c53`, rootless security option verified;
 - rootless-extras archive SHA-256
   `0d0c2680d924671df0ac33d53dd71f410dfb253fb4fa5e8a0a231951234781c9`;
 - all six adversarial probes passed, and the gate-owned AppArmor profile,

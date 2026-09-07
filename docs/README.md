@@ -95,6 +95,7 @@ and link to it.
 ### Attached workers
 
 - [Identity and enrollment](attached-worker-identity.md)
+- [Worker-side connection session](attached-worker-connection-session.md)
 - [Outbound transport](attached-worker-transport.md)
 - [Execution authority](attached-worker-execution.md)
 - [Daemon and supervisor](attached-worker-daemon.md)

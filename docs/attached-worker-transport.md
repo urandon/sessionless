@@ -6,6 +6,11 @@ fenced attempt frames and heartbeat-driven delivery. Long polling, explicit
 cloud wake-up, reconnect reconciliation, and the worker daemon remain later
 work.
 
+The feature-disabled [worker-side connection session](attached-worker-connection-session.md)
+now owns the corresponding bootstrap-to-immediate-exchange composition and its
+local generation fence. It remains unreachable from the product foreground
+entry point until the later source/result-sink and AW-04 composition slices.
+
 ## Authority and secrets
 
 `tenant_id` and `owner_user_id` on bootstrap routes and inside a connection

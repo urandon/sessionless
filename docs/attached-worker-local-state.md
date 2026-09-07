@@ -105,6 +105,7 @@ attached-worker status --state-dir /absolute/symlink-free/path
 attached-worker logout --state-dir /absolute/symlink-free/path \
   --expected-revision 7 --idempotency-key logout-request-001
 attached-worker uninstall-plan --state-dir /absolute/symlink-free/path
+attached-worker run --state-dir /absolute/symlink-free/path
 ```
 
 All commands emit one bounded JSON object and stable result code. They never
@@ -124,15 +125,19 @@ provider credential, environment, process arguments, stdout, or stderr.
 - `uninstall-plan` reports the exact relative inventory and whether the kernel
   runtime lock is free. It deletes nothing and always states that destructive
   action requires separate explicit consent.
+- `run` performs the bounded [foreground preflight](attached-worker-foreground.md),
+  proves one-process ownership, and returns `feature_disabled` after retiring
+  its local observation. It performs no network, process, provider, or OCI
+  action.
 
 ## Remaining gates
 
 The following remain required before #77 can close:
 
 - enrollment/bootstrap and durable connection setup;
-- composition of this local store, the AW-03 HTTP transport/poller, the AW-04
-  attempt protocol, the daemon, credential lifecycle, and the reviewed OCI
-  launcher into a foreground process;
+- live composition after the feature-disabled foreground preflight: the AW-03
+  HTTP transport/poller, AW-04 attempt protocol, daemon, credential lifecycle,
+  and reviewed OCI launcher;
 - authenticated local daemon status/control and crash/restart reconciliation;
 - reviewed OS-service and container packaging plus update and destructive
   uninstall flows;

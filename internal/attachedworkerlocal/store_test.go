@@ -462,6 +462,19 @@ func TestRuntimeObservationIsLeaseBoundMonotonicAndVisible(t *testing.T) {
 	if err := lease.PersistObservation(context.Background(), stale); !errors.Is(err, ErrStateConflict) {
 		t.Fatalf("counter regression error = %v", err)
 	}
+	if err := lease.RetireObservation(context.Background(), 2); !errors.Is(err, ErrStateConflict) {
+		t.Fatalf("wrong retirement revision error = %v", err)
+	}
+	if err := lease.RetireObservation(context.Background(), 1); err != nil {
+		t.Fatalf("retire observation: %v", err)
+	}
+	if err := lease.RetireObservation(context.Background(), 1); err != nil {
+		t.Fatalf("repeat retirement: %v", err)
+	}
+	status, err = store.Status(context.Background())
+	if err != nil || status.DaemonObservation != "unknown" || status.ObservationRevision != 0 {
+		t.Fatalf("retired status=%+v err=%v", status, err)
+	}
 	if err := lease.Close(); err != nil {
 		t.Fatal(err)
 	}

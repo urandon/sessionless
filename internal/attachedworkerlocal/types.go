@@ -152,6 +152,15 @@ type RuntimeObservationV1 struct {
 	LastFailureCode  string                           `json:"last_failure_code,omitempty"`
 }
 
+// SnapshotV1 is a point-in-time, secret-free view of the local installation.
+// Observation remains local evidence only; it is never server or attempt
+// authority.
+type SnapshotV1 struct {
+	Manifest           ManifestV1
+	Observation        RuntimeObservationV1
+	ObservationPresent bool
+}
+
 func (observation RuntimeObservationV1) Validate(manifest ManifestV1) error {
 	if manifest.Validate() != nil || manifest.Lifecycle != LifecycleActive || observation.Version != 1 ||
 		observation.Revision == 0 || observation.ManifestRevision != manifest.Revision ||

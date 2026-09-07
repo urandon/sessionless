@@ -90,6 +90,14 @@ func (store *Store) Load(ctx context.Context) (manifest ManifestV1, resultErr er
 	return manifest, resultErr
 }
 
+func (store *Store) LoadSnapshot(ctx context.Context) (SnapshotV1, error) {
+	manifest, observation, present, err := store.loadSnapshot(ctx)
+	if err != nil {
+		return SnapshotV1{}, err
+	}
+	return SnapshotV1{Manifest: manifest, Observation: observation, ObservationPresent: present}, nil
+}
+
 func (store *Store) loadSnapshot(ctx context.Context) (manifest ManifestV1, observation RuntimeObservationV1, observationPresent bool, resultErr error) {
 	if ctx == nil || ctx.Err() != nil || store == nil {
 		return ManifestV1{}, RuntimeObservationV1{}, false, ErrInvalidState
@@ -282,6 +290,38 @@ func (lease *RuntimeLease) PersistObservation(ctx context.Context, observation R
 		return err
 	}
 	return store.writeAtomic(ObservationFileName, encoded)
+}
+
+// RetireObservation durably removes local runtime evidence while the caller
+// still owns the kernel-backed runtime lease. Missing evidence is already
+// retired and therefore succeeds.
+func (lease *RuntimeLease) RetireObservation(ctx context.Context, expectedRevision uint64) (resultErr error) {
+	if ctx == nil || ctx.Err() != nil || expectedRevision == 0 || lease == nil || lease.file == nil || lease.store == nil {
+		return ErrInvalidState
+	}
+	store := lease.store
+	lock, err := store.acquireStateLock(false)
+	if err != nil {
+		return err
+	}
+	defer func() { resultErr = errors.Join(resultErr, lock.Close()) }()
+	if _, err := store.loadConsistentLocked(); err != nil {
+		return err
+	}
+	observation, present, err := store.loadObservationLocked()
+	if err != nil {
+		return err
+	}
+	if !present {
+		return nil
+	}
+	if observation.Revision != expectedRevision {
+		return ErrStateConflict
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return store.removeDurable(ObservationFileName)
 }
 
 type stateLock struct{ file *os.File }

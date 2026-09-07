@@ -84,6 +84,39 @@ func TestRunSuccessfulLifecycleCommandsStayBoundedAndRedacted(t *testing.T) {
 	}
 }
 
+func TestRunForegroundIsExplicitlyDisabledAndLeavesNoObservation(t *testing.T) {
+	root, privateKey := initializeCLIStore(t)
+	var output bytes.Buffer
+	if code := run([]string{"run", "--state-dir", root}, &output); code != 1 {
+		t.Fatalf("run exit=%d output=%s", code, output.String())
+	}
+	var result map[string]any
+	if err := json.Unmarshal(output.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result["code"] != "feature_disabled" || result["runtime_ownership"] != "released" ||
+		result["observation_state"] != "retired" || result["network_action"] != "not_attempted" ||
+		result["process_action"] != "not_attempted" || result["credential_action"] != "not_attempted" {
+		t.Fatalf("run result=%v", result)
+	}
+	lower := strings.ToLower(output.String())
+	if strings.Contains(output.String(), root) || strings.Contains(lower, "identity_private_key") ||
+		strings.Contains(lower, "connection_secret") || strings.Contains(lower, fmt.Sprintf("%x", privateKey)) {
+		t.Fatalf("run leaked private/path material: %s", output.String())
+	}
+	store, err := attachedworkerlocal.NewStore(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := store.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.DaemonObservation != "unknown" || status.ObservationRevision != 0 {
+		t.Fatalf("run retained observation: %+v", status)
+	}
+}
+
 func initializeCLIStore(t *testing.T) (string, ed25519.PrivateKey) {
 	t.Helper()
 	parent, err := filepath.EvalSymlinks(t.TempDir())

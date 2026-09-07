@@ -61,7 +61,7 @@ credential material it retains. A later concrete HTTP composition will own
 that retained credential for exactly the `Session` lifetime; an adapter that
 supports `Close() error` is closed before the runtime lease is released.
 
-## Cancellation, ambiguity, and fencing
+## Cancellation, exact replay, and fencing
 
 Connect and exchange use a caller context plus a configured maximum operation
 timeout. If a dependency ignores cancellation, the caller still returns at its
@@ -70,8 +70,23 @@ ownership. No replacement activation or exchange may start.
 
 Once the durable generation fence exists, every bootstrap, activation,
 persistence, adapter-construction, cancellation, timeout, unavailable,
-conflict, or unvalidated-response outcome requires explicit reconciliation.
-The session never retries an effect whose server outcome may be unknown.
+conflict, or unvalidated-response outcome requires explicit reconciliation
+unless the current in-process session can retry one already-built exchange
+under the exact same operation owner. That optional recovery is disabled by
+default. When enabled, it canonical-encodes the owned AW-02 batch once and
+replays only byte-equivalent protocol content after a sanitized transport
+`unavailable` result explicitly marked retryable. It never rebuilds an action,
+advances a sequence, changes an acknowledgement, follows `Retry-After`, or
+crosses a reconnect/process-restart boundary.
+
+Exact replay uses a bounded attempt count and local exponential full jitter
+inside the existing total operation timeout. The first validated response is
+applied to the pre-effect conformance snapshot exactly once. Unauthorized,
+conflict, protocol, divergent response, exhausted retry, timeout, and caller
+cancellation still fail closed. A dependency that ignores cancellation keeps
+the single operation owner until it returns, so no replacement exchange can
+overtake the ambiguous call. A restart still returns
+`reconciliation_required`; the pending batch is deliberately not persisted.
 Unauthorized exchange is classified as fenced (covering stale bearer,
 generation advance, or server revocation). A protocol `Revoke` permits only
 the exact `Revoked` acknowledgement; the session then becomes fenced.
@@ -84,10 +99,9 @@ exchange port.
 
 This package is a reviewed composition contract and deterministic fake surface;
 it is not reachable through `attachedworkerforeground.New`. The feature-disabled
-[session-to-daemon adapter](attached-worker-daemon-transport.md) now owns the
-semantic worker action envelope plus fake-backed `Source`/`ResultSink` flow.
-AW-04 fenced attempt composition must still connect durable
-lease/cancel/terminal transitions, an active-cancel watcher must reach the
-exact running attempt, and concrete authenticated materialization must be
-reviewed before foreground composition can inject the live ports and enable
-bounded long polling.
+[session-to-daemon adapter](attached-worker-daemon-transport.md) owns the
+semantic worker action envelope, durable lease/cancel/terminal transitions,
+and active-cancel acknowledgement flow. Exact in-process replay is likewise
+feature-disabled. A later AW-03 slice must own the real timer cadence,
+sleep/wake/offline observations, cost evidence, and reviewed foreground wiring
+before bounded polling can become live.

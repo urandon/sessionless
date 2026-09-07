@@ -268,6 +268,444 @@ func TestSessionExchangeActionOwnsEnvelopeAndReleasesCommittedAttempt(t *testing
 	}
 }
 
+func TestConnectorReplaysExactInitialManifestAfterRetryableAmbiguity(t *testing.T) {
+	fixture := newSessionFixture(t)
+	config := fixture.config
+	config.MaxExchangeAttempts = 2
+	config.RetryInitialBackoff = time.Millisecond
+	config.RetryMaxBackoff = time.Millisecond
+	config.RetryRandom = bytes.NewReader(bytes.Repeat([]byte{0x73}, 8))
+	var waits []time.Duration
+	config.retryWait = func(ctx context.Context, delay time.Duration) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		waits = append(waits, delay)
+		return nil
+	}
+
+	var first []byte
+	var handlerErr error
+	fixture.exchange.setHandler(func(_ context.Context, batch attachedworkerprotocol.BatchV1) (*attachedworkerprotocol.BatchV1, error) {
+		encoded, err := attachedworkerprotocol.EncodeBatchV1(batch)
+		if err != nil {
+			handlerErr = fmt.Errorf("encode manifest batch: %w", err)
+			return nil, attachedworkerhttp.NewExchangeError(attachedworkerhttp.ErrorProtocol, false)
+		}
+		if first == nil {
+			first = encoded
+			return nil, attachedworkerhttp.NewExchangeError(attachedworkerhttp.ErrorUnavailable, true)
+		}
+		if !bytes.Equal(encoded, first) {
+			handlerErr = fmt.Errorf("manifest replay changed: first=%s replay=%s", first, encoded)
+			return nil, attachedworkerhttp.NewExchangeError(attachedworkerhttp.ErrorProtocol, false)
+		}
+		return nil, nil
+	})
+
+	connector, err := New(fixture.store, fixture.bootstrap, fixture.factory, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := connector.Connect(context.Background(), fixture.input)
+	if handlerErr != nil {
+		t.Fatal(handlerErr)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerSessionCleanup(t, session)
+	if fixture.exchange.calls.Load() != 2 || len(waits) != 1 || waits[0] < 0 || waits[0] > time.Millisecond {
+		t.Fatalf("exchange calls=%d waits=%v", fixture.exchange.calls.Load(), waits)
+	}
+	if snapshot := session.Snapshot(); snapshot.State != StateReady || snapshot.FailureCode != "" {
+		t.Fatalf("snapshot=%+v", snapshot)
+	}
+}
+
+func TestSessionReplaysExactSemanticActionsWithoutRebuilding(t *testing.T) {
+	fixture := newSessionFixture(t)
+	session := mustReadySession(t, fixture)
+	session.maxExchangeAttempts = 2
+	session.retryInitialBackoff = time.Millisecond
+	session.retryMaxBackoff = time.Millisecond
+	session.retryJitter = &exchangeRetryJitter{state: 0x4f}
+	var waits []time.Duration
+	session.retryWait = func(ctx context.Context, delay time.Duration) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		waits = append(waits, delay)
+		return nil
+	}
+
+	snapshot := session.Snapshot()
+	capabilityDigest := mustDecodeHex(t, string(snapshot.CapabilityDigest))
+	binding := sessionAttemptBinding(capabilityDigest, "replay")
+	wantAck := []uint64{2, 3, 4, 5, 5}
+	logicalStep := 0
+	firstAttempt := true
+	var first []byte
+	var handlerErr error
+	fixture.exchange.setHandler(func(_ context.Context, batch attachedworkerprotocol.BatchV1) (*attachedworkerprotocol.BatchV1, error) {
+		encoded, err := attachedworkerprotocol.EncodeBatchV1(batch)
+		if err != nil {
+			handlerErr = fmt.Errorf("step %d encode batch: %w", logicalStep, err)
+			return nil, attachedworkerhttp.NewExchangeError(attachedworkerhttp.ErrorProtocol, false)
+		}
+		if firstAttempt {
+			first = encoded
+			firstAttempt = false
+			return nil, attachedworkerhttp.NewExchangeError(attachedworkerhttp.ErrorUnavailable, true)
+		}
+		if !bytes.Equal(encoded, first) {
+			handlerErr = fmt.Errorf("step %d replay changed: first=%s replay=%s", logicalStep, first, encoded)
+			return nil, attachedworkerhttp.NewExchangeError(attachedworkerhttp.ErrorProtocol, false)
+		}
+		if logicalStep >= len(wantAck) || len(batch.Frames) != 1 {
+			handlerErr = fmt.Errorf("unexpected step=%d frames=%d", logicalStep, len(batch.Frames))
+			return nil, attachedworkerhttp.NewExchangeError(attachedworkerhttp.ErrorProtocol, false)
+		}
+		frame := batch.Frames[0]
+		wantWorkerSequence := uint64(4 + logicalStep)
+		if frame.Sequence != wantWorkerSequence || frame.Ack != wantAck[logicalStep] ||
+			frame.MessageID != attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionWorkerToPlatform, wantWorkerSequence) {
+			handlerErr = fmt.Errorf("step %d envelope=%+v want sequence=%d ack=%d", logicalStep, frame, wantWorkerSequence, wantAck[logicalStep])
+			return nil, attachedworkerhttp.NewExchangeError(attachedworkerhttp.ErrorProtocol, false)
+		}
+
+		var response *attachedworkerprotocol.BatchV1
+		switch logicalStep {
+		case 0:
+			if frame.Kind != attachedworkerprotocol.MessageHeartbeat || frame.Heartbeat == nil || !frame.Heartbeat.Available {
+				handlerErr = fmt.Errorf("heartbeat action=%+v", frame)
+				break
+			}
+			response = sessionPlatformBatch(snapshot, 3, wantWorkerSequence, attachedworkerprotocol.MessageLeaseOffer)
+			response.Frames[0].LeaseOffer = &attachedworkerprotocol.LeaseOfferV1{Binding: binding, AttemptSequence: 1}
+		case 1:
+			if frame.Kind != attachedworkerprotocol.MessageLeaseClaim || frame.LeaseClaim == nil ||
+				!sessionSameAttemptBinding(frame.LeaseClaim.Binding, binding) || frame.LeaseClaim.AttemptSequence != 1 {
+				handlerErr = fmt.Errorf("lease claim action=%+v", frame)
+				break
+			}
+			response = sessionPlatformBatch(snapshot, 4, wantWorkerSequence, attachedworkerprotocol.MessageLeaseAccepted)
+			response.Frames[0].LeaseAccepted = &attachedworkerprotocol.LeaseAcceptedV1{Binding: binding, AttemptSequence: 2}
+		case 2:
+			if frame.Kind != attachedworkerprotocol.MessageHeartbeat || frame.Heartbeat == nil || frame.Heartbeat.Available || frame.Heartbeat.ActiveAttempts != 1 {
+				handlerErr = fmt.Errorf("active heartbeat action=%+v", frame)
+				break
+			}
+			response = sessionPlatformBatch(snapshot, 5, wantWorkerSequence, attachedworkerprotocol.MessageCancel)
+			response.Frames[0].Cancel = &attachedworkerprotocol.CancelV1{
+				Binding: binding, AttemptSequence: 3, CancelRevision: 1, Code: attachedworkerprotocol.CancelRequested,
+			}
+		case 3:
+			if frame.Kind != attachedworkerprotocol.MessageCancelAck || frame.CancelAck == nil ||
+				!sessionSameAttemptBinding(frame.CancelAck.Binding, binding) || frame.CancelAck.AttemptSequence != 2 || frame.CancelAck.CancelRevision != 1 {
+				handlerErr = fmt.Errorf("cancel acknowledgement action=%+v", frame)
+			}
+		case 4:
+			if frame.Kind != attachedworkerprotocol.MessageTerminal || frame.Terminal == nil ||
+				!sessionSameAttemptBinding(frame.Terminal.Binding, binding) || frame.Terminal.AttemptSequence != 3 ||
+				frame.Terminal.Status != attachedworkerprotocol.TerminalCancelled || frame.Terminal.Result != attachedworkerprotocol.TerminalResultCancelled {
+				handlerErr = fmt.Errorf("terminal action=%+v", frame)
+				break
+			}
+			response = sessionPlatformBatch(snapshot, 6, wantWorkerSequence, attachedworkerprotocol.MessageTerminalAck)
+			response.Frames[0].TerminalAck = &attachedworkerprotocol.TerminalAckV1{
+				Binding: binding, AttemptSequence: 4, TerminalSequence: frame.Terminal.TerminalSequence,
+				Status: frame.Terminal.Status, Result: frame.Terminal.Result,
+				EvidenceDigest: append([]byte(nil), frame.Terminal.EvidenceDigest...),
+			}
+		}
+		if handlerErr != nil {
+			return nil, attachedworkerhttp.NewExchangeError(attachedworkerhttp.ErrorProtocol, false)
+		}
+		logicalStep++
+		firstAttempt = true
+		first = nil
+		return response, nil
+	})
+
+	run := func(action ActionV1, wantKind attachedworkerprotocol.MessageKind) {
+		t.Helper()
+		response, err := session.ExchangeAction(context.Background(), action)
+		if handlerErr != nil {
+			t.Fatal(handlerErr)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if wantKind == "" {
+			if response != nil {
+				t.Fatalf("response=%+v, want nil", response)
+			}
+			return
+		}
+		if response == nil || response.Kind != wantKind {
+			t.Fatalf("response=%+v want kind=%s", response, wantKind)
+		}
+	}
+
+	run(ActionV1{Heartbeat: &attachedworkerprotocol.HeartbeatV1{
+		ObservedAtUnixMicro: sessionTestTime.UnixMicro(), Available: true,
+	}}, attachedworkerprotocol.MessageLeaseOffer)
+	run(ActionV1{LeaseClaim: &attachedworkerprotocol.LeaseClaimV1{
+		Binding: binding, AttemptSequence: 1,
+	}}, attachedworkerprotocol.MessageLeaseAccepted)
+	run(ActionV1{Heartbeat: &attachedworkerprotocol.HeartbeatV1{
+		ObservedAtUnixMicro: sessionTestTime.Add(time.Second).UnixMicro(), Available: false, ActiveAttempts: 1,
+	}}, attachedworkerprotocol.MessageCancel)
+	run(ActionV1{CancelAck: &attachedworkerprotocol.CancelAckV1{
+		Binding: binding, AttemptSequence: 2, CancelRevision: 1,
+	}}, "")
+	evidence := bytes.Repeat([]byte{0x91}, sha256.Size)
+	run(ActionV1{Terminal: &attachedworkerprotocol.TerminalV1{
+		Binding: binding, AttemptSequence: 3, TerminalSequence: 1,
+		Status: attachedworkerprotocol.TerminalCancelled, Result: attachedworkerprotocol.TerminalResultCancelled,
+		EvidenceDigest: evidence,
+	}}, attachedworkerprotocol.MessageTerminalAck)
+
+	if logicalStep != 5 || fixture.exchange.calls.Load() != 11 || len(waits) != 5 {
+		t.Fatalf("logical steps=%d exchange calls=%d waits=%v", logicalStep, fixture.exchange.calls.Load(), waits)
+	}
+	for index, delay := range waits {
+		if delay < 0 || delay > time.Millisecond {
+			t.Errorf("wait %d=%s, want within [0,%s]", index, delay, time.Millisecond)
+		}
+	}
+	session.mu.Lock()
+	committed, err := session.machine.Snapshot()
+	session.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if committed.Attempt.Summary.State != attachedworkerprotocol.AttemptTerminalCommitted {
+		t.Fatalf("attempt state=%s", committed.Attempt.Summary.State)
+	}
+}
+
+func TestSessionExactReplayExhaustionRequiresReconciliation(t *testing.T) {
+	fixture := newSessionFixture(t)
+	session := mustReadySession(t, fixture)
+	session.maxExchangeAttempts = 3
+	session.retryInitialBackoff = time.Millisecond
+	session.retryMaxBackoff = 2 * time.Millisecond
+	session.retryJitter = &exchangeRetryJitter{state: 0x27}
+	var waits []time.Duration
+	session.retryWait = func(ctx context.Context, delay time.Duration) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		waits = append(waits, delay)
+		return nil
+	}
+
+	var attempts [][]byte
+	var handlerErr error
+	fixture.exchange.setHandler(func(_ context.Context, batch attachedworkerprotocol.BatchV1) (*attachedworkerprotocol.BatchV1, error) {
+		encoded, err := attachedworkerprotocol.EncodeBatchV1(batch)
+		if err != nil {
+			handlerErr = fmt.Errorf("encode replay attempt: %w", err)
+			return nil, attachedworkerhttp.NewExchangeError(attachedworkerhttp.ErrorProtocol, false)
+		}
+		attempts = append(attempts, encoded)
+		return nil, attachedworkerhttp.NewExchangeError(attachedworkerhttp.ErrorUnavailable, true)
+	})
+
+	before := fixture.exchange.calls.Load()
+	_, err := session.ExchangeAction(context.Background(), ActionV1{Heartbeat: &attachedworkerprotocol.HeartbeatV1{
+		ObservedAtUnixMicro: sessionTestTime.UnixMicro(), Available: true,
+	}})
+	if handlerErr != nil {
+		t.Fatal(handlerErr)
+	}
+	var exchangeErr *attachedworkerhttp.ExchangeError
+	if !errors.Is(err, ErrReconciliationRequired) || !errors.As(err, &exchangeErr) ||
+		exchangeErr.Kind != attachedworkerhttp.ErrorUnavailable || !exchangeErr.Retryable() {
+		t.Fatalf("error=%v", err)
+	}
+	if fixture.exchange.calls.Load()-before != 3 || len(attempts) != 3 || len(waits) != 2 {
+		t.Fatalf("attempts=%d encoded=%d waits=%v", fixture.exchange.calls.Load()-before, len(attempts), waits)
+	}
+	for index := 1; index < len(attempts); index++ {
+		if !bytes.Equal(attempts[0], attempts[index]) {
+			t.Errorf("attempt %d changed: first=%s got=%s", index+1, attempts[0], attempts[index])
+		}
+	}
+	if snapshot := session.Snapshot(); snapshot.State != StateReconciliationRequired || snapshot.FailureCode != "exchange_ambiguous" {
+		t.Fatalf("snapshot=%+v", snapshot)
+	}
+}
+
+func TestSessionExactReplayStopsOnNonRetryableClassification(t *testing.T) {
+	tests := []struct {
+		name      string
+		kind      attachedworkerhttp.ErrorKind
+		wantState State
+		wantCode  string
+	}{
+		{name: "unauthorized", kind: attachedworkerhttp.ErrorUnauthorized, wantState: StateFenced, wantCode: "unauthorized"},
+		{name: "conflict", kind: attachedworkerhttp.ErrorConflict, wantState: StateReconciliationRequired, wantCode: "exchange_ambiguous"},
+		{name: "protocol", kind: attachedworkerhttp.ErrorProtocol, wantState: StateReconciliationRequired, wantCode: "exchange_ambiguous"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newSessionFixture(t)
+			session := mustReadySession(t, fixture)
+			session.maxExchangeAttempts = 3
+			session.retryInitialBackoff = time.Millisecond
+			session.retryMaxBackoff = 2 * time.Millisecond
+			session.retryJitter = &exchangeRetryJitter{state: 0x37}
+			var waits atomic.Int32
+			session.retryWait = func(context.Context, time.Duration) error {
+				waits.Add(1)
+				return nil
+			}
+			fixture.exchange.setHandler(func(context.Context, attachedworkerprotocol.BatchV1) (*attachedworkerprotocol.BatchV1, error) {
+				return nil, attachedworkerhttp.NewExchangeError(test.kind, true)
+			})
+
+			before := fixture.exchange.calls.Load()
+			_, err := session.ExchangeAction(context.Background(), ActionV1{Heartbeat: &attachedworkerprotocol.HeartbeatV1{
+				ObservedAtUnixMicro: sessionTestTime.UnixMicro(), Available: true,
+			}})
+			var exchangeErr *attachedworkerhttp.ExchangeError
+			if !errors.As(err, &exchangeErr) || exchangeErr.Kind != test.kind {
+				t.Fatalf("error=%v", err)
+			}
+			if fixture.exchange.calls.Load()-before != 1 || waits.Load() != 0 {
+				t.Fatalf("exchange calls=%d waits=%d", fixture.exchange.calls.Load()-before, waits.Load())
+			}
+			if snapshot := session.Snapshot(); snapshot.State != test.wantState || snapshot.FailureCode != test.wantCode {
+				t.Fatalf("snapshot=%+v want state=%s code=%s", snapshot, test.wantState, test.wantCode)
+			}
+		})
+	}
+}
+
+func TestSessionExactReplayRejectsDivergentResponse(t *testing.T) {
+	fixture := newSessionFixture(t)
+	session := mustReadySession(t, fixture)
+	session.maxExchangeAttempts = 2
+	session.retryInitialBackoff = time.Millisecond
+	session.retryMaxBackoff = time.Millisecond
+	session.retryJitter = &exchangeRetryJitter{state: 0x47}
+	var waits atomic.Int32
+	session.retryWait = func(ctx context.Context, _ time.Duration) error {
+		waits.Add(1)
+		return ctx.Err()
+	}
+
+	snapshot := session.Snapshot()
+	var calls atomic.Int32
+	fixture.exchange.setHandler(func(context.Context, attachedworkerprotocol.BatchV1) (*attachedworkerprotocol.BatchV1, error) {
+		if calls.Add(1) == 1 {
+			return nil, attachedworkerhttp.NewExchangeError(attachedworkerhttp.ErrorUnavailable, true)
+		}
+		response := sessionPlatformBatch(snapshot, 3, 4, attachedworkerprotocol.MessageDrain)
+		response.Frames[0].ConnectionGeneration++
+		response.Frames[0].Drain = &attachedworkerprotocol.DrainV1{Revision: 1}
+		return response, nil
+	})
+
+	_, err := session.ExchangeAction(context.Background(), ActionV1{Heartbeat: &attachedworkerprotocol.HeartbeatV1{
+		ObservedAtUnixMicro: sessionTestTime.UnixMicro(), Available: true,
+	}})
+	if !errors.Is(err, ErrReconciliationRequired) || calls.Load() != 2 || waits.Load() != 1 {
+		t.Fatalf("error=%v calls=%d waits=%d", err, calls.Load(), waits.Load())
+	}
+	if snapshot := session.Snapshot(); snapshot.State != StateReconciliationRequired || snapshot.FailureCode != "exchange_ambiguous" {
+		t.Fatalf("snapshot=%+v", snapshot)
+	}
+}
+
+func TestSessionCancellationStopsExactReplayBeforeNextAttempt(t *testing.T) {
+	fixture := newSessionFixture(t)
+	session := mustReadySession(t, fixture)
+	session.maxExchangeAttempts = 3
+	session.retryInitialBackoff = time.Millisecond
+	session.retryMaxBackoff = 2 * time.Millisecond
+	session.retryJitter = &exchangeRetryJitter{state: 0x57}
+	waiting := make(chan struct{})
+	session.retryWait = func(ctx context.Context, _ time.Duration) error {
+		close(waiting)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	fixture.exchange.setHandler(func(context.Context, attachedworkerprotocol.BatchV1) (*attachedworkerprotocol.BatchV1, error) {
+		return nil, attachedworkerhttp.NewExchangeError(attachedworkerhttp.ErrorUnavailable, true)
+	})
+
+	before := fixture.exchange.calls.Load()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := session.ExchangeAction(ctx, ActionV1{Heartbeat: &attachedworkerprotocol.HeartbeatV1{
+			ObservedAtUnixMicro: sessionTestTime.UnixMicro(), Available: true,
+		}})
+		done <- err
+	}()
+	waitSignal(t, waiting, "retry wait did not start")
+	cancel()
+	err := waitError(t, done, "cancelled replay did not return")
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, ErrReconciliationRequired) {
+		t.Fatalf("error=%v", err)
+	}
+	if fixture.exchange.calls.Load()-before != 1 {
+		t.Fatalf("exchange calls=%d want 1", fixture.exchange.calls.Load()-before)
+	}
+	if snapshot := session.Snapshot(); snapshot.State != StateReconciliationRequired || snapshot.FailureCode != "exchange_cancelled" {
+		t.Fatalf("snapshot=%+v", snapshot)
+	}
+}
+
+func TestConnectorRejectsInvalidExactReplayConfiguration(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Config)
+	}{
+		{name: "too many attempts", mutate: func(config *Config) { config.MaxExchangeAttempts = maxExchangeAttempts + 1 }},
+		{name: "inverted backoff", mutate: func(config *Config) {
+			config.RetryInitialBackoff, config.RetryMaxBackoff = 2*time.Millisecond, time.Millisecond
+		}},
+		{name: "backoff exceeds operation", mutate: func(config *Config) {
+			config.MaxExchangeAttempts = 2
+			config.RetryInitialBackoff, config.RetryMaxBackoff = time.Millisecond, config.OperationTimeout+time.Millisecond
+		}},
+		{name: "missing retry entropy", mutate: func(config *Config) {
+			config.MaxExchangeAttempts = 2
+			config.RetryInitialBackoff, config.RetryMaxBackoff = time.Millisecond, time.Millisecond
+			config.RetryRandom = bytes.NewReader(nil)
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newSessionFixture(t)
+			config := fixture.config
+			test.mutate(&config)
+			if _, err := New(fixture.store, fixture.bootstrap, fixture.factory, config); !errors.Is(err, ErrInvalidConfiguration) {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
+func sessionPlatformBatch(
+	snapshot SnapshotV1,
+	sequence uint64,
+	ack uint64,
+	kind attachedworkerprotocol.MessageKind,
+) *attachedworkerprotocol.BatchV1 {
+	return &attachedworkerprotocol.BatchV1{Version: snapshot.ProtocolVersion, Frames: []attachedworkerprotocol.FrameV1{{
+		Version:   snapshot.ProtocolVersion,
+		MessageID: attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionPlatformToWorker, sequence),
+		WorkerID:  string(snapshot.WorkerID), EnrollmentGeneration: snapshot.EnrollmentGeneration,
+		ConnectionGeneration: snapshot.ConnectionGeneration, Sequence: sequence, Ack: ack, Kind: kind,
+	}}}
+}
+
 func TestSessionExchangeActionRejectsAmbiguousVocabularyBeforeExchange(t *testing.T) {
 	fixture := newSessionFixture(t)
 	session := mustReadySession(t, fixture)

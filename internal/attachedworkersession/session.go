@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -25,8 +26,11 @@ import (
 )
 
 const (
-	SnapshotVersionV1  = uint32(1)
-	connectionKeyBytes = 32
+	SnapshotVersionV1          = uint32(1)
+	connectionKeyBytes         = 32
+	defaultRetryInitialBackoff = 100 * time.Millisecond
+	defaultRetryMaxBackoff     = 2 * time.Second
+	maxExchangeAttempts        = uint32(8)
 )
 
 var (
@@ -92,7 +96,15 @@ type Config struct {
 	ImplementedVersions []attachedworkerprotocol.ProtocolVersion
 	OperationTimeout    time.Duration
 	Random              io.Reader
+	// MaxExchangeAttempts includes the first exchange. The default is one, so
+	// exact replay remains disabled until a reviewed composition opts in.
+	MaxExchangeAttempts uint32
+	RetryInitialBackoff time.Duration
+	RetryMaxBackoff     time.Duration
+	RetryRandom         io.Reader
 	Now                 func() time.Time
+	retrySeed           uint64
+	retryWait           func(context.Context, time.Duration) error
 }
 
 type ConnectInputV1 struct {
@@ -150,7 +162,9 @@ func newConnector(store localState, bootstrap BootstrapPort, factory ExchangeFac
 	if store == nil || bootstrap == nil || factory == nil || !validAudience(config.Audience) ||
 		config.WorkerOffer.Validate() != nil || len(config.ImplementedVersions) != 1 ||
 		config.ImplementedVersions[0] != attachedworkerprotocol.ProtocolVersionV1 ||
-		config.OperationTimeout < 0 || config.OperationTimeout > time.Minute {
+		config.OperationTimeout < 0 || config.OperationTimeout > time.Minute ||
+		config.MaxExchangeAttempts > maxExchangeAttempts || config.RetryInitialBackoff < 0 ||
+		config.RetryMaxBackoff < 0 {
 		return nil, ErrInvalidConfiguration
 	}
 	if selected, err := attachedworkerprotocol.NegotiateOffers(
@@ -161,8 +175,37 @@ func newConnector(store localState, bootstrap BootstrapPort, factory ExchangeFac
 	if config.OperationTimeout == 0 {
 		config.OperationTimeout = 15 * time.Second
 	}
+	if config.MaxExchangeAttempts == 0 {
+		config.MaxExchangeAttempts = 1
+	}
+	if config.RetryInitialBackoff == 0 {
+		config.RetryInitialBackoff = defaultRetryInitialBackoff
+	}
+	if config.RetryMaxBackoff == 0 {
+		config.RetryMaxBackoff = defaultRetryMaxBackoff
+	}
+	if config.RetryInitialBackoff > config.RetryMaxBackoff ||
+		(config.MaxExchangeAttempts > 1 && config.RetryMaxBackoff > config.OperationTimeout) {
+		return nil, ErrInvalidConfiguration
+	}
 	if config.Random == nil {
 		config.Random = rand.Reader
+	}
+	if config.MaxExchangeAttempts > 1 {
+		if config.RetryRandom == nil {
+			config.RetryRandom = rand.Reader
+		}
+		var seedBytes [8]byte
+		if _, err := io.ReadFull(config.RetryRandom, seedBytes[:]); err != nil {
+			return nil, ErrInvalidConfiguration
+		}
+		config.retrySeed = binary.BigEndian.Uint64(seedBytes[:])
+		if config.retrySeed == 0 {
+			config.retrySeed = 0x9e3779b97f4a7c15
+		}
+	}
+	if config.retryWait == nil {
+		config.retryWait = waitForExchangeRetry
 	}
 	if config.Now == nil {
 		config.Now = func() time.Time { return time.Now().UTC() }
@@ -491,6 +534,9 @@ func (connector *Connector) connect(ctx context.Context, input ConnectInputV1) (
 		},
 		machineConfig: machineConfig, machine: machine, exchange: exchange, lease: lease,
 		operationTimeout: connector.config.OperationTimeout, operationGate: make(chan struct{}, 1), now: connector.config.Now,
+		maxExchangeAttempts: connector.config.MaxExchangeAttempts,
+		retryInitialBackoff: connector.config.RetryInitialBackoff, retryMaxBackoff: connector.config.RetryMaxBackoff,
+		retryJitter: &exchangeRetryJitter{state: connector.config.retrySeed}, retryWait: connector.config.retryWait,
 	}
 	session.operationGate <- struct{}{}
 	if err := ctx.Err(); err != nil {
@@ -513,7 +559,7 @@ func (connector *Connector) connect(ctx context.Context, input ConnectInputV1) (
 		return result
 	}
 	defer clearBytes(manifestFrame.Manifest.Signature)
-	if _, err := session.exchangeOnce(ctx, attachedworkerprotocol.BatchV1{Version: selected, Frames: []attachedworkerprotocol.FrameV1{manifestFrame}}); err != nil {
+	if _, err := session.exchangeWithReplay(ctx, attachedworkerprotocol.BatchV1{Version: selected, Frames: []attachedworkerprotocol.FrameV1{manifestFrame}}); err != nil {
 		_ = session.abandon()
 		owned = false
 		result.err = errors.Join(ErrReconciliationRequired, err)
@@ -529,17 +575,26 @@ func (connector *Connector) connect(ctx context.Context, input ConnectInputV1) (
 }
 
 type Session struct {
-	mu               sync.Mutex
-	state            State
-	failureCode      string
-	binding          ConnectionBindingV1
-	machineConfig    attachedworkerprotocol.MachineConfig
-	machine          *attachedworkerprotocol.ConformanceMachine
-	exchange         ExchangePort
-	lease            localRuntimeLease
-	operationTimeout time.Duration
-	operationGate    chan struct{}
-	now              func() time.Time
+	mu                  sync.Mutex
+	state               State
+	failureCode         string
+	binding             ConnectionBindingV1
+	machineConfig       attachedworkerprotocol.MachineConfig
+	machine             *attachedworkerprotocol.ConformanceMachine
+	exchange            ExchangePort
+	lease               localRuntimeLease
+	operationTimeout    time.Duration
+	operationGate       chan struct{}
+	now                 func() time.Time
+	maxExchangeAttempts uint32
+	retryInitialBackoff time.Duration
+	retryMaxBackoff     time.Duration
+	retryJitter         *exchangeRetryJitter
+	retryWait           func(context.Context, time.Duration) error
+}
+
+type exchangeRetryJitter struct {
+	state uint64
 }
 
 // ActionV1 is the bounded worker-to-platform vocabulary that may be emitted
@@ -649,7 +704,7 @@ func (session *Session) exchangePrepared(
 	opCtx, cancel := context.WithTimeout(ctx, session.operationTimeout)
 	result := make(chan exchangeResult, 1)
 	go func() {
-		response, err := session.exchangeOnce(opCtx, ownedBatch)
+		response, err := session.exchangeWithReplay(opCtx, ownedBatch)
 		result <- exchangeResult{response: response, err: err}
 		session.release()
 	}()
@@ -669,6 +724,87 @@ func (session *Session) exchangePrepared(
 		cancel()
 		session.fail(StateReconciliationRequired, "exchange_cancelled")
 		return nil, errors.Join(ErrReconciliationRequired, opCtx.Err())
+	}
+}
+
+// exchangeWithReplay retains one canonical encoded batch and, when explicitly
+// enabled, replays only that exact content after a sanitized retryable
+// transport error. It never calls prepare again, so sequence, acknowledgement,
+// attempt authority, signature, and evidence cannot be regenerated between
+// attempts.
+func (session *Session) exchangeWithReplay(
+	ctx context.Context,
+	batch attachedworkerprotocol.BatchV1,
+) (*attachedworkerprotocol.BatchV1, error) {
+	if session == nil || ctx == nil || session.maxExchangeAttempts == 0 || session.retryJitter == nil || session.retryWait == nil {
+		return nil, ErrInvalidConfiguration
+	}
+	encoded, err := attachedworkerprotocol.EncodeBatchV1(batch)
+	if err != nil {
+		return nil, ErrInvalidAuthority
+	}
+	defer clearBytes(encoded)
+	backoff := session.retryInitialBackoff
+	for attempt := uint32(1); attempt <= session.maxExchangeAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		exact, err := attachedworkerprotocol.DecodeBatchV1(encoded)
+		if err != nil {
+			return nil, ErrInvalidAuthority
+		}
+		response, exchangeErr := session.exchangeOnce(ctx, exact)
+		if exchangeErr == nil || !retryableExchange(exchangeErr) {
+			return response, exchangeErr
+		}
+		if attempt == session.maxExchangeAttempts {
+			return nil, errors.Join(ErrReconciliationRequired, exchangeErr)
+		}
+		delay := session.retryJitter.duration(backoff)
+		if err := session.retryWait(ctx, delay); err != nil {
+			return nil, err
+		}
+		backoff = growExchangeBackoff(backoff, session.retryMaxBackoff)
+	}
+	return nil, ErrReconciliationRequired
+}
+
+func retryableExchange(err error) bool {
+	var classified *attachedworkerhttp.ExchangeError
+	return errors.As(err, &classified) && classified.Retryable()
+}
+
+func (source *exchangeRetryJitter) duration(cap time.Duration) time.Duration {
+	if source == nil || cap <= 0 {
+		return 0
+	}
+	source.state += 0x9e3779b97f4a7c15
+	value := source.state
+	value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9
+	value = (value ^ (value >> 27)) * 0x94d049bb133111eb
+	value ^= value >> 31
+	bound := uint64(cap)
+	if bound == math.MaxUint64 {
+		return time.Duration(value)
+	}
+	return time.Duration(value % (bound + 1))
+}
+
+func growExchangeBackoff(current, maximum time.Duration) time.Duration {
+	if current >= maximum || current > maximum/2 {
+		return maximum
+	}
+	return current * 2
+}
+
+func waitForExchangeRetry(ctx context.Context, duration time.Duration) error {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 
@@ -1038,7 +1174,7 @@ func sanitizeExchange(err error) error {
 	}
 	var exchangeErr *attachedworkerhttp.ExchangeError
 	if errors.As(err, &exchangeErr) {
-		return &attachedworkerhttp.ExchangeError{Kind: exchangeErr.Kind}
+		return exchangeErr.SanitizedCopy()
 	}
 	return ErrConnectionSessionFailed
 }

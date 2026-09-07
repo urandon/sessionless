@@ -170,6 +170,10 @@ func TestHandlerReturnsOnlyBoundedProtocolBatchAndSanitizedServiceStatuses(t *te
 			}
 		})
 	}
+	direct := (&ExchangeError{Kind: ErrorKind("future"), retryable: true}).SanitizedCopy()
+	if direct.Kind != ErrorProtocol || direct.Retryable() {
+		t.Fatalf("direct invalid copy=%+v retryable=%t", direct, direct.Retryable())
+	}
 }
 
 func TestClientUsesHTTPSHeaderOnlyBearerAndRequiresEmpty204(t *testing.T) {
@@ -343,6 +347,29 @@ func TestClientTreatsOwnDeadlineAsRetryableButPreservesCallerCancellation(t *tes
 	_, err = client.Exchange(ctx, testBatch(1))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("caller cancellation error=%v", err)
+	}
+}
+
+func TestExchangeErrorSanitizedCopyPreservesOnlyValidRetryability(t *testing.T) {
+	tests := []struct {
+		name      string
+		kind      ErrorKind
+		retryable bool
+		wantKind  ErrorKind
+		wantRetry bool
+	}{
+		{name: "unavailable retryable", kind: ErrorUnavailable, retryable: true, wantKind: ErrorUnavailable, wantRetry: true},
+		{name: "unauthorized cannot retry", kind: ErrorUnauthorized, retryable: true, wantKind: ErrorUnauthorized},
+		{name: "unknown becomes protocol", kind: ErrorKind("future"), retryable: true, wantKind: ErrorProtocol},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			original := NewExchangeError(test.kind, test.retryable)
+			copy := original.SanitizedCopy()
+			if copy == original || copy.Kind != test.wantKind || copy.Retryable() != test.wantRetry {
+				t.Fatalf("copy=%+v retryable=%t want kind=%s retryable=%t", copy, copy.Retryable(), test.wantKind, test.wantRetry)
+			}
+		})
 	}
 }
 

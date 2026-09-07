@@ -7,9 +7,10 @@ cloud wake-up, reconnect reconciliation, and the worker daemon remain later
 work.
 
 The feature-disabled [worker-side connection session](attached-worker-connection-session.md)
-now owns the corresponding bootstrap-to-immediate-exchange composition and its
-local generation fence. It remains unreachable from the product foreground
-entry point until the later source/result-sink and AW-04 composition slices.
+owns the corresponding bootstrap-to-immediate-exchange composition, local
+generation fence, and optional bounded exact replay of one already-built
+authenticated batch. It remains unreachable from the product foreground entry
+point until a later cadence/composition slice.
 
 ## Authority and secrets
 
@@ -81,6 +82,16 @@ An empty exchange remains HTTP 204. A pending durable platform frame is a
 strict, bounded HTTP 200 AW-02 batch. A worker acknowledges it in a later signed
 frame or Heartbeat; acknowledged platform frames are no longer returned.
 
+The control plane already treats an exact same-sequence request as idempotent
+and returns the corresponding durable response. The worker session may pair
+that behavior with an explicitly configured, in-process retry: it retains one
+canonical batch, retries only sanitized retryable `unavailable` outcomes with
+bounded local full jitter, and accepts the first response against the original
+pre-effect snapshot. It never creates a new Heartbeat, LeaseClaim, CancelAck,
+Terminal, sequence, acknowledgement, or evidence payload for a retry. Restart,
+reconnect, exhaustion, cancellation, unauthorized, conflict, protocol drift,
+and divergent replay remain fail-closed reconciliation/fencing boundaries.
+
 ## Fail-closed boundaries
 
 - Reconnect challenge issuance remains disabled until AW-04b composes the
@@ -93,6 +104,10 @@ frame or Heartbeat; acknowledged platform frames are no longer returned.
   synthesized by the HTTP adapter. The adapter rejects a response whose scope,
   generations, binding, kind, or canonical payload disagrees with the durable
   attempt head.
+- Worker exact replay is disabled by default and does not itself start a
+  polling loop, reconnect, daemon, process, OCI boundary, provider call, or
+  production route. Pending retry content is process-ephemeral and cleared on
+  operation completion where Go permits best-effort byte erasure.
 - Each accepted Heartbeat advances the durable worker envelope sequence and
   therefore costs one bounded store write. AW-03 enforces one shared minimum
   checkpoint and polling/heartbeat interval of 15 minutes (the

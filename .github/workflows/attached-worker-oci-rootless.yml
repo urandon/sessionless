@@ -43,7 +43,7 @@ jobs:
       - name: Prepare delegated non-root user manager
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends iptables uidmap
+          sudo apt-get install --yes --no-install-recommends apparmor iptables uidmap
           runner_user=$(id -un)
           runner_uid=$(id -u)
           grep -q "^${runner_user}:" /etc/subuid
@@ -55,5 +55,28 @@ jobs:
           printf 'XDG_RUNTIME_DIR=%s\n' "$runtime_dir" >>"$GITHUB_ENV"
           printf 'DBUS_SESSION_BUS_ADDRESS=unix:path=%s/bus\n' "$runtime_dir" >>"$GITHUB_ENV"
 
+          rootlesskit_path="${RUNNER_TEMP}/sessionless-rootless-toolchain/docker-rootless-extras/rootlesskit"
+          profile_name=$(printf '%s' "$rootlesskit_path" | sed -e 's@^/@@' -e 's@/@.@g')
+          profile_path="/etc/apparmor.d/${profile_name}"
+          test ! -e "$profile_path"
+          printf 'SESSIONLESS_ROOTLESS_APPARMOR_PROFILE=%s\n' "$profile_path" >>"$GITHUB_ENV"
+          printf '%s\n' \
+            'abi <abi/4.0>,' \
+            'include <tunables/global>' \
+            '' \
+            "\"${rootlesskit_path}\" flags=(unconfined) {" \
+            '  userns,' \
+            '}' | sudo tee "$profile_path" >/dev/null
+          sudo apparmor_parser --replace "$profile_path"
+
       - name: Run pinned Linux rootless isolation matrix
         run: make attached-worker-oci-linux-rootless-ci
+
+      - name: Remove gate AppArmor profile
+        if: always()
+        run: |
+          profile_path="${SESSIONLESS_ROOTLESS_APPARMOR_PROFILE:-}"
+          if test -n "$profile_path" && test -f "$profile_path"; then
+            sudo apparmor_parser --remove "$profile_path"
+            sudo rm -f -- "$profile_path"
+          fi

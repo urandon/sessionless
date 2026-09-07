@@ -1,6 +1,7 @@
 package attachedworkerlocal
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
@@ -114,6 +115,38 @@ func TestStoreCreateLoadUpdate(t *testing.T) {
 	}
 	if err := store.Update(context.Background(), 1, next, nextSecret); !errors.Is(err, ErrStateConflict) {
 		t.Fatalf("stale update=%v", err)
+	}
+}
+
+func TestRuntimeLeaseOwnsGenerationUpdateWithoutSecondOwner(t *testing.T) {
+	store, manifest, secret := initializeFixture(t)
+	lease, err := store.AcquireRuntime(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Close()
+	next := manifest
+	next.Revision++
+	next.ConnectionGeneration++
+	next.UpdatedAt = manifest.UpdatedAt.Add(time.Minute)
+	nextSecret := cloneSecret(secret)
+	nextSecret.ManifestRevision = next.Revision
+	nextSecret.ConnectionGeneration = next.ConnectionGeneration
+	nextSecret.ConnectionSecret = []byte(strings.Repeat("s", 32))
+	if err := lease.Update(context.Background(), manifest.Revision, next, nextSecret); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := lease.LoadSnapshot(context.Background())
+	if err != nil || snapshot.Manifest.Revision != next.Revision || snapshot.Manifest.ConnectionGeneration != 1 {
+		t.Fatalf("snapshot=%+v err=%v", snapshot.Manifest, err)
+	}
+	loadedSecret, err := lease.LoadSecret(context.Background())
+	if err != nil || loadedSecret.ManifestRevision != next.Revision || loadedSecret.ConnectionGeneration != 1 ||
+		!bytes.Equal(loadedSecret.ConnectionSecret, nextSecret.ConnectionSecret) {
+		t.Fatalf("secret generation=%d revision=%d err=%v", loadedSecret.ConnectionGeneration, loadedSecret.ManifestRevision, err)
+	}
+	if err := store.Update(context.Background(), next.Revision, next, nextSecret); !errors.Is(err, ErrStateBusy) {
+		t.Fatalf("second runtime owner error=%v", err)
 	}
 }
 

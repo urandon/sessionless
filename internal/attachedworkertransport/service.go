@@ -218,20 +218,44 @@ func ChallengeRequestProofTranscript(
 	worker domain.AttachedWorker,
 	request IssueChallengeRequest,
 ) ([]byte, error) {
-	if tenantID.Validate() != nil || ownerUserID.Validate() != nil || worker.Validate() != nil ||
-		worker.TenantID != tenantID || worker.OwnerUserID != ownerUserID || worker.ID != request.WorkerID ||
-		request.ExpectedWorkerRevision == 0 || !validAudience(request.ExpectedAudience) || !request.Purpose.Valid() || validateSingleFrame(request.Hello) != nil ||
-		request.Hello.Kind != attachedworkerprotocol.MessageHello || request.Hello.Hello == nil {
+	if worker.Validate() != nil || worker.TenantID != tenantID || worker.OwnerUserID != ownerUserID {
+		return nil, ErrTransportUnauthorized
+	}
+	return ChallengeRequestProofTranscriptV1(
+		tenantID, ownerUserID, worker.ID, worker.EnrollmentGeneration,
+		worker.ConnectionGeneration, request,
+	)
+}
+
+// ChallengeRequestProofTranscriptV1 exposes the exact fields covered by an
+// initial worker-side bootstrap proof. It lets the owner-local connection
+// session sign from its already validated installation authority without
+// manufacturing a partial domain.AttachedWorker projection. The server still
+// verifies the transcript against its authoritative worker row.
+func ChallengeRequestProofTranscriptV1(
+	tenantID domain.TenantID,
+	ownerUserID domain.UserID,
+	workerID domain.AttachedWorkerID,
+	enrollmentGeneration uint64,
+	currentConnectionGeneration uint64,
+	request IssueChallengeRequest,
+) ([]byte, error) {
+	if tenantID.Validate() != nil || ownerUserID.Validate() != nil || workerID.Validate() != nil ||
+		enrollmentGeneration == 0 || request.WorkerID != workerID || request.ExpectedWorkerRevision == 0 ||
+		!validAudience(request.ExpectedAudience) || !request.Purpose.Valid() || validateSingleFrame(request.Hello) != nil ||
+		request.Hello.Kind != attachedworkerprotocol.MessageHello || request.Hello.Hello == nil ||
+		request.Hello.WorkerID != string(workerID) || request.Hello.EnrollmentGeneration != enrollmentGeneration ||
+		currentConnectionGeneration == math.MaxUint64 || request.Hello.ConnectionGeneration != currentConnectionGeneration+1 {
 		return nil, ErrTransportUnauthorized
 	}
 	result := appendTransportField(nil, []byte(challengeRequestProofDomain))
 	result = appendTransportField(result, []byte(tenantID))
 	result = appendTransportField(result, []byte(ownerUserID))
-	result = appendTransportField(result, []byte(worker.ID))
+	result = appendTransportField(result, []byte(workerID))
 	result = appendTransportField(result, []byte(request.ExpectedAudience))
 	result = appendTransportUint64(result, request.ExpectedWorkerRevision)
-	result = appendTransportUint64(result, worker.EnrollmentGeneration)
-	result = appendTransportUint64(result, worker.ConnectionGeneration)
+	result = appendTransportUint64(result, enrollmentGeneration)
+	result = appendTransportUint64(result, currentConnectionGeneration)
 	result = appendTransportUint64(result, uint64(request.Hello.ConnectionGeneration))
 	result = appendTransportField(result, []byte(request.Purpose))
 	result = appendTransportField(result, []byte(request.Hello.MessageID))
@@ -246,6 +270,33 @@ func SignChallengeRequest(privateKey ed25519.PrivateKey, tenantID domain.TenantI
 		return nil, ErrTransportUnauthorized
 	}
 	transcript, err := ChallengeRequestProofTranscript(tenantID, ownerUserID, worker, request)
+	if err != nil {
+		return nil, err
+	}
+	return ed25519.Sign(privateKey, transcript), nil
+}
+
+// SignChallengeRequestV1 signs the exact owner-local bootstrap authority. The
+// private key is checked against the caller-supplied public identity before it
+// is used; neither key is included in the returned transcript or error.
+func SignChallengeRequestV1(
+	privateKey ed25519.PrivateKey,
+	identityPublicKey ed25519.PublicKey,
+	tenantID domain.TenantID,
+	ownerUserID domain.UserID,
+	workerID domain.AttachedWorkerID,
+	enrollmentGeneration uint64,
+	currentConnectionGeneration uint64,
+	request IssueChallengeRequest,
+) ([]byte, error) {
+	if len(privateKey) != ed25519.PrivateKeySize || len(identityPublicKey) != ed25519.PublicKeySize ||
+		!bytes.Equal(privateKey.Public().(ed25519.PublicKey), identityPublicKey) {
+		return nil, ErrTransportUnauthorized
+	}
+	transcript, err := ChallengeRequestProofTranscriptV1(
+		tenantID, ownerUserID, workerID, enrollmentGeneration,
+		currentConnectionGeneration, request,
+	)
 	if err != nil {
 		return nil, err
 	}

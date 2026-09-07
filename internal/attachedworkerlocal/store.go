@@ -178,6 +178,46 @@ func (store *Store) Update(ctx context.Context, expectedRevision uint64, next Ma
 		return err
 	}
 	defer func() { resultErr = errors.Join(resultErr, runtimeLease.Close()) }()
+	return store.updateWithRuntimeLease(ctx, expectedRevision, next, nextSecret)
+}
+
+// LoadSnapshot reads the installation while this lease owns the local runtime
+// boundary. It is the connection-session equivalent of Store.LoadSnapshot and
+// does not treat the lease as server or protocol authority.
+func (lease *RuntimeLease) LoadSnapshot(ctx context.Context) (SnapshotV1, error) {
+	if lease == nil || lease.file == nil || lease.store == nil {
+		return SnapshotV1{}, ErrInvalidState
+	}
+	return lease.store.LoadSnapshot(ctx)
+}
+
+// LoadSecret reads generation-bound local material while the same runtime
+// owner remains active. The returned value is still a clone and remains the
+// caller's responsibility to clear after use.
+func (lease *RuntimeLease) LoadSecret(ctx context.Context) (SecretRecordV1, error) {
+	if lease == nil || lease.file == nil || lease.store == nil {
+		return SecretRecordV1{}, ErrInvalidState
+	}
+	return lease.store.LoadSecret(ctx)
+}
+
+// Update commits a generation change without attempting to acquire a second
+// runtime lease. This is used by the one connection-session owner to durably
+// fence an attach before any ambiguous network effect is possible.
+func (lease *RuntimeLease) Update(ctx context.Context, expectedRevision uint64, next ManifestV1, nextSecret SecretRecordV1) error {
+	if lease == nil || lease.file == nil || lease.store == nil {
+		return ErrInvalidState
+	}
+	return lease.store.updateWithRuntimeLease(ctx, expectedRevision, next, nextSecret)
+}
+
+func (store *Store) updateWithRuntimeLease(ctx context.Context, expectedRevision uint64, next ManifestV1, nextSecret SecretRecordV1) (resultErr error) {
+	if ctx == nil || ctx.Err() != nil || store == nil || next.Validate() != nil || nextSecret.Validate(next) != nil {
+		return ErrInvalidState
+	}
+	if err := store.ensureRoot(false); err != nil {
+		return err
+	}
 	lock, err := store.acquireStateLock(false)
 	if err != nil {
 		return err

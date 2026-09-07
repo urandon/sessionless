@@ -48,6 +48,29 @@ func TestConnectionSecretsAndBearersAreOpaqueAndRedacted(t *testing.T) {
 	}
 }
 
+func TestWorkerSideChallengeSignerMatchesAuthoritativeWorkerSigner(t *testing.T) {
+	_, _, worker, privateKey := newTransportFixture(t)
+	request := signedChallengeRequest(t, worker, privateKey)
+	request.Proof = nil
+	want, err := SignChallengeRequest(privateKey, worker.TenantID, worker.OwnerUserID, worker, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := SignChallengeRequestV1(
+		privateKey, ed25519.PublicKey(worker.IdentityPublicKey), worker.TenantID, worker.OwnerUserID, worker.ID,
+		worker.EnrollmentGeneration, worker.ConnectionGeneration, request,
+	)
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("worker-side signature differs: err=%v", err)
+	}
+	if _, err := SignChallengeRequestV1(
+		privateKey, ed25519.PublicKey(worker.IdentityPublicKey), worker.TenantID, worker.OwnerUserID, worker.ID,
+		worker.EnrollmentGeneration, worker.ConnectionGeneration+1, request,
+	); !errors.Is(err, ErrTransportUnauthorized) {
+		t.Fatalf("stale generation error=%v", err)
+	}
+}
+
 func TestAW04AcceptsOnlyTransactionalAttemptBroker(t *testing.T) {
 	_, store, _, _ := newTransportFixture(t)
 	_, err := NewService(ServiceConfig{

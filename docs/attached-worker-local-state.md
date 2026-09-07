@@ -134,7 +134,8 @@ provider credential, environment, process arguments, stdout, or stderr.
 
 The following remain required before #77 can close:
 
-- enrollment/bootstrap and durable connection setup;
+- enrollment setup and reviewed composition of the feature-disabled
+  [worker-side connection session](attached-worker-connection-session.md);
 - live composition after the feature-disabled foreground preflight: the AW-03
   HTTP transport/poller, AW-04 attempt protocol, daemon, credential lifecycle,
   and reviewed OCI launcher;

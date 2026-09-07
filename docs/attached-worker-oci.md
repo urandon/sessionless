@@ -90,6 +90,23 @@ write, denied egress, detached-process teardown, hard scratch exhaustion, and
 zero boundary residue. Darwin and Linux need separate recorded passes for the
 exact release tuple before a binary may enable the profile.
 
+The canonical Linux proof is `make attached-worker-oci-linux-rootless-ci`, run
+by `.github/workflows/attached-worker-oci-rootless.yml` on Ubuntu 24.04. It
+downloads the Docker engine and rootless extras at the repository-pinned
+version, verifies both archive SHA-256 values, and starts a dedicated transient
+non-root systemd user service. Its client configuration, daemon configuration,
+data root, exec root, RootlessKit state, socket, and ownership are all explicit;
+it neither adopts the hosted runner's rootful daemon nor writes Docker context
+state under `HOME`.
+
+Ubuntu 24.04 restricts unprivileged user namespaces with AppArmor by default.
+For the statically installed RootlessKit binary, the workflow follows Docker's
+[documented rootless setup](https://docs.docker.com/engine/security/rootless/troubleshoot/#distribution-specific-hint):
+it loads a `userns` exception attached only to the exact gate-owned RootlessKit
+path, refuses to replace a pre-existing profile, and requires successful
+profile unload before the job can pass. It does not disable the host-wide
+restriction.
+
 Recorded developer evidence (not product enablement or Linux release evidence):
 
 - 2026-09-07, Darwin arm64 host with an explicit Colima Linux VM;
@@ -100,9 +117,26 @@ Recorded developer evidence (not product enablement or Linux release evidence):
 - all six adversarial probes passed and the exact ownership-label residue query
   returned no containers after cleanup.
 
-This tuple establishes the Darwin/Colima development path only. A reviewed
-Linux rootless tuple and release-specific reruns remain required before the
-launcher can be enabled by a product binary.
+This tuple establishes the Darwin/Colima development path only; it does not
+stand in for the independent Linux rootless evidence recorded below.
+
+Recorded Linux rootless evidence:
+
+- 2026-09-07, exact mirrored commit
+  `d45dff327264e3ceeed1c6f6bc6bee7f8f308662`, GitHub Actions
+  [run 34073731597](https://github.com/urandon/sessionless/actions/runs/34073731597);
+- GitHub-hosted `ubuntu24/20260831.293.1`, Ubuntu 24.04.4 LTS, x86_64,
+  kernel `6.17.0-1022-azure`, cgroup v2, `overlay2`;
+- pinned Docker client/server `28.0.4`, engine ID
+  `2331c34d-828c-4ea9-8621-9a6fedfedd47`, rootless security option verified;
+- rootless-extras archive SHA-256
+  `0d0c2680d924671df0ac33d53dd71f410dfb253fb4fa5e8a0a231951234781c9`;
+- all six adversarial probes passed, and the gate-owned AppArmor profile,
+  transient service, containers, images, engine data, runtime state, and
+  temporary roots were cleaned successfully.
+
+This is Linux rootless release evidence for the current launcher. Product
+enablement remains blocked on the separate #77 packaging and composition work.
 
 ## Remaining gates
 

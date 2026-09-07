@@ -55,6 +55,7 @@ tool_root="$RUNNER_TEMP/sessionless-rootless-toolchain"
 data_root="$RUNNER_TEMP/sessionless-rootless-data"
 exec_root="$XDG_RUNTIME_DIR/sessionless-rootless-exec"
 state_root="$XDG_RUNTIME_DIR/sessionless-rootless-state"
+socket_path="$XDG_RUNTIME_DIR/docker.sock"
 client_config="$tool_root/client-config"
 daemon_config="$tool_root/daemon.json"
 docker_archive="$tool_root/docker.tgz"
@@ -69,7 +70,7 @@ test ! -e "$tool_root" && test ! -e "$data_root" && test ! -e "$exec_root" && te
 	exit 2
 }
 unit_load_state=$(systemctl --user show "$unit_name" --property=LoadState --value 2>/dev/null || true)
-if test -e "$XDG_RUNTIME_DIR/docker.sock" || \
+if test -e "$socket_path" || \
 	{ test -n "$unit_load_state" && test "$unit_load_state" != not-found; }; then
 	printf '%s\n' 'refusing to replace an existing rootless Docker socket or gate service' >&2
 	exit 2
@@ -87,8 +88,25 @@ cleanup() {
 	status=$?
 	trap - EXIT HUP INT TERM
 	if test "$service_started" = true; then
-		systemctl --user stop "$unit_name" >/dev/null 2>&1 || true
+		if systemctl --user is-active --quiet "$unit_name" && \
+			! systemctl --user stop "$unit_name" >/dev/null 2>&1; then
+			printf '%s\n' 'rootless gate service did not stop cleanly' >&2
+			status=1
+			systemctl --user kill --kill-whom=all --signal=KILL "$unit_name" >/dev/null 2>&1 || true
+			systemctl --user stop "$unit_name" >/dev/null 2>&1 || true
+		fi
+		if systemctl --user is-active --quiet "$unit_name"; then
+			printf '%s\n' 'rootless gate service remains active after cleanup' >&2
+			status=1
+			systemctl --user kill --kill-whom=all --signal=KILL "$unit_name" >/dev/null 2>&1 || true
+			systemctl --user stop "$unit_name" >/dev/null 2>&1 || true
+		fi
 		systemctl --user reset-failed "$unit_name" >/dev/null 2>&1 || true
+	fi
+	if test -e "$socket_path" || test -L "$socket_path"; then
+		printf '%s\n' 'rootless gate socket remained after service cleanup' >&2
+		rm -f -- "$socket_path" || status=1
+		status=1
 	fi
 	cleanup_path "$exec_root" || status=1
 	cleanup_path "$state_root" || status=1
@@ -156,9 +174,9 @@ systemd-run --user \
 	"--config-file=$daemon_config" \
 	"--data-root=$data_root" \
 	"--exec-root=$exec_root" \
-	"--host=unix://$XDG_RUNTIME_DIR/docker.sock"
+	"--host=unix://$socket_path"
 
-docker_host="unix://$XDG_RUNTIME_DIR/docker.sock"
+docker_host="unix://$socket_path"
 ready=false
 attempt=0
 while test "$attempt" -lt 60; do

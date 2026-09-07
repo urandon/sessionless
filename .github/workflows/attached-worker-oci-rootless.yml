@@ -6,6 +6,7 @@ on:
       - .github/workflows/attached-worker-oci-rootless.yml
       - Makefile
       - build/images.env
+      - docs/attached-worker-oci.md
       - go.mod
       - go.sum
       - internal/attachedworkerdaemon/**

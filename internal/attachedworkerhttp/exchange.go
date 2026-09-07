@@ -55,6 +55,28 @@ func (err *ExchangeError) Error() string {
 
 func (err *ExchangeError) Retryable() bool { return err != nil && err.retryable }
 
+// NewExchangeError constructs the stable transport classification used by
+// concrete adapters and deterministic fixtures. Only unavailable outcomes may
+// be retryable; all other kinds are forced terminal.
+func NewExchangeError(kind ErrorKind, retryable bool) *ExchangeError {
+	switch kind {
+	case ErrorUnauthorized, ErrorConflict, ErrorUnavailable, ErrorProtocol:
+	default:
+		kind = ErrorProtocol
+	}
+	return &ExchangeError{Kind: kind, retryable: retryable && kind == ErrorUnavailable}
+}
+
+// SanitizedCopy preserves only the stable transport classification needed by
+// an in-process exact-replay owner. It deliberately carries no endpoint,
+// response body, header, bearer, or underlying network error.
+func (err *ExchangeError) SanitizedCopy() *ExchangeError {
+	if err == nil {
+		return nil
+	}
+	return NewExchangeError(err.Kind, err.retryable)
+}
+
 type ExchangeService interface {
 	Exchange(context.Context, BearerToken, attachedworkerprotocol.BatchV1) (*attachedworkerprotocol.BatchV1, error)
 }

@@ -76,12 +76,29 @@ second claim or materialization can start, partial returned stdin is cleared,
 and the accepted attempt remains reconciliation-required rather than being
 reported as a fabricated terminal failure.
 
-Active cancellation remains deliberately unsupported. The current daemon does
-not call `Source.Next` while its runner is active, so this adapter cannot poll a
-new `CancelV1` and reach the exact active process cancellation authority.
-Production foreground composition remains blocked until a reviewed attempt
-control watcher provides that behavior, bounded `CancelAckV1` evidence, and
-restart/reconnect reconciliation.
+The feature-disabled active-attempt watcher closes the in-process control gap
+without reusing `Source.Next`. While the exact invocation remains active it
+sends session-owned unavailable/one-active presence heartbeats. An exact
+same-binding `CancelV1` is accepted only under the current connection and lease
+authority. The watcher then calls the daemon's full-identity `CancelActive`
+boundary and emits `CancelAckV1`; the daemon applies the local cancellation
+function at most once. A lost or divergent acknowledgement retains the local
+effect as reconciliation-required and never repeats it.
+
+Local cancellation application has its own bounded timeout and ignores caller
+cancellation once an exact remote cancel has been accepted. If an injected
+canceller violates that bound, the watcher returns reconciliation-required but
+retains adapter operation ownership until the dependency actually returns; no
+terminal completion, new watcher, acknowledgement, or replacement attempt can
+overtake the unresolved local effect.
+
+The adapter operation gate serializes each watcher exchange with terminal
+completion. If completion retires the adapter attempt first, a late watcher
+cannot reach a replacement invocation. If the runner has already returned and
+its cancel function is no longer installed, the cancel remains unknown rather
+than being acknowledged as applied. Daemon shutdown records cancel-on-install,
+so a shutdown crossing the narrow begin-attempt/install boundary still cancels
+the exact process once the function becomes available.
 
 ## Current boundaries and follow-up
 
@@ -91,6 +108,6 @@ scope, generations, connection sequence, or acknowledgement values. Both
 contracts remain unreachable from `attachedworkerforeground.New`.
 
 A later slice must provide the concrete authenticated context/artifact
-materializer, durable AW-04 attempt ownership and terminal reconciliation, the
-active-cancel watcher, and reviewed foreground wiring. The two-owner security
-and recovery proof in #79 remains a release gate.
+materializer, durable restart/reconnect reconciliation for ambiguous active
+cancellation, the production wake cadence, and reviewed foreground wiring.
+The two-owner security and recovery proof in #79 remains a release gate.

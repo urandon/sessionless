@@ -66,6 +66,13 @@ type Materializer interface {
 	Materialize(context.Context, MaterializationRequestV1) (MaterializedInputV1, error)
 }
 
+// ActiveAttemptCanceller is the exact local process-control boundary. The
+// daemon implementation matches the full invocation identity before applying
+// an idempotent cancellation signal.
+type ActiveAttemptCanceller interface {
+	CancelActive(context.Context, attachedworkerdaemon.InvocationIdentity) error
+}
+
 type LocalProfileV1 struct {
 	Name             string
 	CapabilityDigest domain.AttachedWorkerCapabilityDigest
@@ -89,6 +96,7 @@ type Config struct {
 	MaterializationRoot    string
 	MaxInputBytes          int
 	MaterializationTimeout time.Duration
+	ActiveCancelTimeout    time.Duration
 	ReportTimeout          time.Duration
 	Now                    func() time.Time
 }
@@ -134,6 +142,7 @@ type activeAttempt struct {
 	nextWorkerAttemptSequence   uint64
 	nextPlatformAttemptSequence uint64
 	cancelRevision              uint64
+	cancelAcknowledged          bool
 }
 
 type completedAttempt struct {
@@ -165,6 +174,9 @@ func New(session SessionPort, materializer Materializer, config Config) (*Adapte
 	}
 	if config.MaterializationTimeout == 0 {
 		config.MaterializationTimeout = 30 * time.Second
+	}
+	if config.ActiveCancelTimeout == 0 {
+		config.ActiveCancelTimeout = 5 * time.Second
 	}
 	if config.Now == nil {
 		config.Now = func() time.Time { return time.Now().UTC() }
@@ -247,6 +259,149 @@ func (adapter *Adapter) Complete(
 	}
 	defer adapter.release()
 	return adapter.completeOwned(ctx, identity, result, runErr)
+}
+
+// WatchActiveCancellation performs bounded active-presence exchanges until an
+// exact CancelV1 is applied locally and acknowledged, the caller stops the
+// watcher, or authority becomes ambiguous. It remains feature-disabled: no
+// shipped foreground constructor starts it.
+func (adapter *Adapter) WatchActiveCancellation(
+	ctx context.Context,
+	identity attachedworkerdaemon.InvocationIdentity,
+	target ActiveAttemptCanceller,
+	interval time.Duration,
+) error {
+	if interval <= 0 || interval > time.Minute {
+		return ErrInvalidConfiguration
+	}
+	return adapter.watchActiveCancellation(ctx, identity, target, func(ctx context.Context) error {
+		timer := time.NewTimer(interval)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+			return nil
+		}
+	})
+}
+
+type activeControlWait func(context.Context) error
+
+func (adapter *Adapter) watchActiveCancellation(
+	ctx context.Context,
+	identity attachedworkerdaemon.InvocationIdentity,
+	target ActiveAttemptCanceller,
+	wait activeControlWait,
+) error {
+	if adapter == nil || ctx == nil || target == nil || wait == nil || identity.Validate() != nil {
+		return ErrInvalidConfiguration
+	}
+	for {
+		handled, err := adapter.pollActiveCancellation(ctx, identity, target)
+		if err != nil || handled {
+			return err
+		}
+		if err := wait(ctx); err != nil {
+			return err
+		}
+	}
+}
+
+func (adapter *Adapter) pollActiveCancellation(
+	ctx context.Context,
+	identity attachedworkerdaemon.InvocationIdentity,
+	target ActiveAttemptCanceller,
+) (bool, error) {
+	if err := adapter.acquire(ctx); err != nil {
+		return false, err
+	}
+	releaseGate := true
+	defer func() {
+		if releaseGate {
+			adapter.release()
+		}
+	}()
+	active := adapter.currentActive()
+	if active == nil {
+		return false, ErrAttemptUnavailable
+	}
+	if active.identity != identity {
+		return false, ErrInvalidAuthority
+	}
+	if active.cancelRevision != 0 {
+		if active.cancelAcknowledged {
+			return true, nil
+		}
+		return false, ErrReconciliationRequired
+	}
+	if err := adapter.validateActiveAuthority(active); err != nil {
+		return false, err
+	}
+	response, err := adapter.session.ExchangeAction(ctx, attachedworkersession.ActionV1{Heartbeat: &attachedworkerprotocol.HeartbeatV1{
+		ObservedAtUnixMicro: adapter.config.Now().UTC().UnixMicro(), Available: false, ActiveAttempts: 1,
+	}})
+	if err != nil {
+		return false, errors.Join(ErrReconciliationRequired, classifySessionError(err))
+	}
+	if response == nil {
+		return false, nil
+	}
+	if !frameMatchesCurrentSession(*response, adapter.session.Snapshot()) || response.Kind != attachedworkerprotocol.MessageCancel ||
+		response.Cancel == nil || response.Cancel.Validate() != nil ||
+		!sameAttemptBinding(response.Cancel.Binding, active.request.Attempt) ||
+		response.Cancel.AttemptSequence != active.nextPlatformAttemptSequence ||
+		response.Cancel.CancelRevision != 1 {
+		return false, ErrInvalidAuthority
+	}
+	active.cancelRevision = response.Cancel.CancelRevision
+	active.nextPlatformAttemptSequence = response.Cancel.AttemptSequence + 1
+	if err := adapter.validateActiveAuthority(active); err != nil {
+		return false, err
+	}
+	cancelErr, ambiguous := adapter.cancelActiveOwned(ctx, identity, target, &releaseGate)
+	if ambiguous {
+		return false, errors.Join(ErrReconciliationRequired, cancelErr)
+	}
+	if cancelErr != nil {
+		return false, errors.Join(ErrReconciliationRequired, ErrAttemptUnavailable)
+	}
+	if err := adapter.acknowledgeCancel(ctx, active, *response.Cancel); err != nil {
+		return false, err
+	}
+	active.cancelAcknowledged = true
+	return true, nil
+}
+
+func (adapter *Adapter) cancelActiveOwned(
+	ctx context.Context,
+	identity attachedworkerdaemon.InvocationIdentity,
+	target ActiveAttemptCanceller,
+	releaseGate *bool,
+) (error, bool) {
+	cancelCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), adapter.config.ActiveCancelTimeout)
+	result := make(chan error, 1)
+	go func() { result <- target.CancelActive(cancelCtx, identity) }()
+	select {
+	case err := <-result:
+		operationErr := cancelCtx.Err()
+		cancel()
+		if operationErr != nil {
+			return operationErr, true
+		}
+		return err, false
+	case <-cancelCtx.Done():
+		operationErr := cancelCtx.Err()
+		cancel()
+		if releaseGate != nil {
+			*releaseGate = false
+		}
+		go func() {
+			<-result
+			adapter.release()
+		}()
+		return operationErr, true
+	}
 }
 
 func (adapter *Adapter) claimAndMaterialize(
@@ -352,6 +507,7 @@ func (adapter *Adapter) acknowledgeCancel(ctx context.Context, active *activeAtt
 		return errors.Join(ErrReconciliationRequired, classifySessionError(err))
 	}
 	active.nextWorkerAttemptSequence++
+	active.cancelAcknowledged = true
 	return nil
 }
 
@@ -414,6 +570,9 @@ func (adapter *Adapter) completeOwned(
 		active.nextWorkerAttemptSequence == math.MaxUint64 || active.nextPlatformAttemptSequence == 0 ||
 		active.nextPlatformAttemptSequence == math.MaxUint64 {
 		return ErrInvalidAuthority
+	}
+	if active.cancelRevision != 0 && !active.cancelAcknowledged {
+		return ErrReconciliationRequired
 	}
 	if authorityErr := adapter.validateActiveAuthority(active); authorityErr != nil {
 		return authorityErr
@@ -524,6 +683,7 @@ func validateConfig(config Config) error {
 		filepath.Clean(config.MaterializationRoot) != config.MaterializationRoot || config.MaxInputBytes <= 0 ||
 		config.MaxInputBytes > attachedworkerprotocol.MaxBatchBytes*64 || config.MaterializationTimeout <= 0 ||
 		config.MaterializationTimeout > time.Minute || config.ReportTimeout <= 0 ||
+		config.ActiveCancelTimeout <= 0 || config.ActiveCancelTimeout > time.Minute ||
 		config.ReportTimeout > time.Minute || config.Now == nil {
 		return ErrInvalidConfiguration
 	}

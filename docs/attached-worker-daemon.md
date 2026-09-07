@@ -112,8 +112,8 @@ paths, raw stderr, provider errors, or auth material.
   OS-service and container packaging;
 - production composition of the feature-disabled
   [session-to-daemon adapter](attached-worker-daemon-transport.md), including
-  concrete authenticated materialization and an active-cancel watcher, with
-  the AW-04 durable attempt protocol;
+  concrete authenticated materialization and durable restart reconciliation
+  for its exact active-cancel watcher, with the AW-04 attempt protocol;
 - crash/restart recovery that fences or resumes the exact durable attempt;
 - the two-owner security and recovery gate in #79.
 

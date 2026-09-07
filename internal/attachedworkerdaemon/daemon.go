@@ -8,9 +8,11 @@ import (
 )
 
 var (
-	ErrDaemonAlreadyRunning = errors.New("attached worker daemon is already running")
-	ErrDaemonNotRunning     = errors.New("attached worker daemon is not running")
-	ErrDaemonShutdown       = errors.New("attached worker daemon shutdown exceeded its bound")
+	ErrDaemonAlreadyRunning  = errors.New("attached worker daemon is already running")
+	ErrDaemonNotRunning      = errors.New("attached worker daemon is not running")
+	ErrDaemonShutdown        = errors.New("attached worker daemon shutdown exceeded its bound")
+	ErrActiveAttemptMissing  = errors.New("attached worker daemon active attempt is unavailable")
+	ErrActiveAttemptMismatch = errors.New("attached worker daemon active attempt identity does not match")
 )
 
 type DaemonState string
@@ -54,17 +56,19 @@ type Daemon struct {
 	runner Runner
 	sink   ResultSink
 
-	mu           sync.Mutex
-	state        DaemonState
-	active       bool
-	activeID     InvocationIdentity
-	activeCancel context.CancelFunc
-	pollCancel   context.CancelFunc
-	done         chan struct{}
-	wake         chan struct{}
-	startedAt    time.Time
-	completed    uint64
-	lastFailure  string
+	mu                    sync.Mutex
+	state                 DaemonState
+	active                bool
+	activeID              InvocationIdentity
+	activeCancel          context.CancelFunc
+	activeCancelIssued    bool
+	cancelActiveOnInstall bool
+	pollCancel            context.CancelFunc
+	done                  chan struct{}
+	wake                  chan struct{}
+	startedAt             time.Time
+	completed             uint64
+	lastFailure           string
 }
 
 func NewDaemon(config DaemonConfig, source Source, runner Runner, sink ResultSink) (*Daemon, error) {
@@ -187,6 +191,8 @@ func (daemon *Daemon) finishRun() {
 	daemon.active = false
 	daemon.activeID = InvocationIdentity{}
 	daemon.activeCancel = nil
+	daemon.activeCancelIssued = false
+	daemon.cancelActiveOnInstall = false
 	daemon.pollCancel = nil
 	done := daemon.done
 	daemon.done = nil
@@ -206,7 +212,11 @@ func (daemon *Daemon) draining() bool {
 func (daemon *Daemon) setPollCancel(cancel context.CancelFunc) {
 	daemon.mu.Lock()
 	daemon.pollCancel = cancel
+	shouldCancel := cancel != nil && daemon.state == DaemonDraining
 	daemon.mu.Unlock()
+	if shouldCancel {
+		cancel()
+	}
 }
 
 func (daemon *Daemon) beginAttempt(identity InvocationIdentity) bool {
@@ -217,13 +227,56 @@ func (daemon *Daemon) beginAttempt(identity InvocationIdentity) bool {
 	}
 	daemon.active = true
 	daemon.activeID = identity
+	daemon.activeCancelIssued = false
 	return true
 }
 
 func (daemon *Daemon) setActiveCancel(cancel context.CancelFunc) {
 	daemon.mu.Lock()
 	daemon.activeCancel = cancel
+	shouldCancel := cancel != nil && daemon.cancelActiveOnInstall && !daemon.activeCancelIssued
+	if shouldCancel {
+		daemon.activeCancelIssued = true
+	}
 	daemon.mu.Unlock()
+	if shouldCancel {
+		cancel()
+	}
+}
+
+// CancelActive cancels only the exact currently active invocation. Repeating
+// the same accepted authority is idempotent and never invokes the local cancel
+// function twice. Callers must still reconcile their own remote acknowledgement
+// before treating cancellation as committed.
+func (daemon *Daemon) CancelActive(ctx context.Context, identity InvocationIdentity) error {
+	if daemon == nil || ctx == nil || identity.Validate() != nil {
+		return ErrInvocationInvalid
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	daemon.mu.Lock()
+	if !daemon.active {
+		daemon.mu.Unlock()
+		return ErrActiveAttemptMissing
+	}
+	if daemon.activeID != identity {
+		daemon.mu.Unlock()
+		return ErrActiveAttemptMismatch
+	}
+	if daemon.activeCancelIssued {
+		daemon.mu.Unlock()
+		return nil
+	}
+	cancel := daemon.activeCancel
+	if cancel == nil {
+		daemon.mu.Unlock()
+		return ErrActiveAttemptMissing
+	}
+	daemon.activeCancelIssued = true
+	daemon.mu.Unlock()
+	cancel()
+	return nil
 }
 
 func (daemon *Daemon) finishAttempt(result InvocationResult, runErr error) {
@@ -231,6 +284,8 @@ func (daemon *Daemon) finishAttempt(result InvocationResult, runErr error) {
 	defer daemon.mu.Unlock()
 	daemon.active = false
 	daemon.activeID = InvocationIdentity{}
+	daemon.activeCancel = nil
+	daemon.activeCancelIssued = false
 	daemon.completed++
 	daemon.lastFailure = result.FailureCode
 	if daemon.lastFailure == "" && runErr != nil {
@@ -240,22 +295,31 @@ func (daemon *Daemon) finishAttempt(result InvocationResult, runErr error) {
 
 func (daemon *Daemon) startDrain(cancelActive bool) bool {
 	daemon.mu.Lock()
-	defer daemon.mu.Unlock()
 	if daemon.state == DaemonStopped {
+		daemon.mu.Unlock()
 		return false
 	}
 	daemon.state = DaemonDraining
+	if cancelActive {
+		daemon.cancelActiveOnInstall = true
+	}
 	if daemon.pollCancel != nil {
 		daemon.pollCancel()
 	}
-	if cancelActive && daemon.activeCancel != nil {
-		daemon.activeCancel()
+	activeCancel := context.CancelFunc(nil)
+	if cancelActive && daemon.activeCancel != nil && !daemon.activeCancelIssued {
+		daemon.activeCancelIssued = true
+		activeCancel = daemon.activeCancel
 	}
 	if daemon.wake != nil {
 		select {
 		case daemon.wake <- struct{}{}:
 		default:
 		}
+	}
+	daemon.mu.Unlock()
+	if activeCancel != nil {
+		activeCancel()
 	}
 	return true
 }

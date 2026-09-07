@@ -53,6 +53,8 @@ func TestRunHoldsKernelRuntimeLeaseThroughPreflight(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	var once sync.Once
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
 	first, err := New(store, Config{Now: func() time.Time {
 		once.Do(func() { close(entered) })
 		<-release
@@ -66,7 +68,11 @@ func TestRunHoldsKernelRuntimeLeaseThroughPreflight(t *testing.T) {
 		_, runErr := first.Run(context.Background())
 		firstDone <- runErr
 	}()
-	<-entered
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first foreground did not reach the owned preflight state")
+	}
 
 	second, err := New(store, Config{Now: func() time.Time { return now.Add(2 * time.Second) }})
 	if err != nil {
@@ -77,9 +83,14 @@ func TestRunHoldsKernelRuntimeLeaseThroughPreflight(t *testing.T) {
 		result.Code != ResultCode(attachedworkerlocal.CodeBusy) || result.RuntimeOwnership != "not_acquired" {
 		t.Fatalf("concurrent Run result=%+v error=%v", result, runErr)
 	}
-	close(release)
-	if runErr := <-firstDone; !errors.Is(runErr, ErrFeatureDisabled) {
-		t.Fatalf("first Run error = %v", runErr)
+	releaseOnce.Do(func() { close(release) })
+	select {
+	case runErr := <-firstDone:
+		if !errors.Is(runErr, ErrFeatureDisabled) {
+			t.Fatalf("first Run error = %v", runErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("first foreground did not finish after release")
 	}
 }
 
@@ -190,6 +201,24 @@ func TestRunCleanupFailureOverridesDisabledCodeAndStillCloses(t *testing.T) {
 	}
 }
 
+func TestRunCleanupIgnoresCallerCancellationAfterObservationPersist(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	manifest := attachedworkerlocal.ManifestV1{Lifecycle: attachedworkerlocal.LifecycleActive, Revision: 7,
+		UpdatedAt: time.Date(2026, 9, 7, 0, 0, 0, 0, time.UTC)}
+	lease := &fakeLease{persistHook: cancel}
+	store := &fakeStore{lease: lease, snapshot: attachedworkerlocal.SnapshotV1{Manifest: manifest}}
+	foreground, err := newForeground(store, Config{Now: func() time.Time { return manifest.UpdatedAt }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, runErr := foreground.Run(ctx)
+	if !errors.Is(runErr, ErrFeatureDisabled) || result.Code != CodeFeatureDisabled ||
+		result.ObservationState != "retired" || result.RuntimeOwnership != "released" ||
+		lease.retireContextErr != nil || lease.retireCalls != 1 || lease.closeCalls != 1 {
+		t.Fatalf("Run result=%+v error=%v lease=%+v", result, runErr, lease)
+	}
+}
+
 type fakeStore struct {
 	lease       localRuntimeLease
 	snapshot    attachedworkerlocal.SnapshotV1
@@ -210,19 +239,25 @@ func (store *fakeStore) LoadSecret(context.Context) (attachedworkerlocal.SecretR
 }
 
 type fakeLease struct {
-	retireErr    error
-	closeCalls   int
-	retireCalls  int
-	persistCalls int
+	retireErr        error
+	retireContextErr error
+	persistHook      func()
+	closeCalls       int
+	retireCalls      int
+	persistCalls     int
 }
 
 func (lease *fakeLease) PersistObservation(context.Context, attachedworkerlocal.RuntimeObservationV1) error {
 	lease.persistCalls++
+	if lease.persistHook != nil {
+		lease.persistHook()
+	}
 	return nil
 }
 
-func (lease *fakeLease) RetireObservation(context.Context, uint64) error {
+func (lease *fakeLease) RetireObservation(ctx context.Context, _ uint64) error {
 	lease.retireCalls++
+	lease.retireContextErr = ctx.Err()
 	return lease.retireErr
 }
 

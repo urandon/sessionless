@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemon"
@@ -593,6 +594,340 @@ func TestTerminalEvidenceAndCompletionFingerprintBindCommittedDigests(t *testing
 	}
 }
 
+func TestAdapterWatchesAndAcknowledgesExactActiveCancellation(t *testing.T) {
+	fixture := newAdapterFixture(t)
+	invocation, available, err := fixture.adapter.Next(context.Background())
+	if err != nil || !available {
+		t.Fatalf("Next available=%t error=%v", available, err)
+	}
+	fixture.session.activeCancel = &attachedworkerprotocol.CancelV1{
+		Binding: cloneAttemptBinding(fixture.binding), AttemptSequence: 3,
+		CancelRevision: 1, Code: attachedworkerprotocol.CancelRequested,
+	}
+	fixture.session.terminalAckAttemptSequence = 4
+	target := &fakeActiveCanceller{}
+	waits := 0
+	err = fixture.adapter.watchActiveCancellation(context.Background(), invocation.Identity, target, func(context.Context) error {
+		waits++
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("watch error=%v", err)
+	}
+	if waits != 0 || target.calls != 1 || target.identity != invocation.Identity {
+		t.Fatalf("watch waits=%d target_calls=%d identity=%+v", waits, target.calls, target.identity)
+	}
+	if len(fixture.session.actions) != 4 {
+		t.Fatalf("actions=%+v", fixture.session.actions)
+	}
+	heartbeat := fixture.session.actions[2].Heartbeat
+	ack := fixture.session.actions[3].CancelAck
+	if heartbeat == nil || heartbeat.Available || heartbeat.ActiveAttempts != 1 ||
+		ack == nil || ack.AttemptSequence != 2 || ack.CancelRevision != 1 ||
+		!sameAttemptBinding(ack.Binding, fixture.binding) {
+		t.Fatalf("active control heartbeat=%+v ack=%+v", heartbeat, ack)
+	}
+	beforeActions := len(fixture.session.actions)
+	if err := fixture.adapter.watchActiveCancellation(context.Background(), invocation.Identity, target, func(context.Context) error {
+		return errors.New("exact replay unexpectedly waited")
+	}); err != nil {
+		t.Fatalf("exact watcher replay error=%v", err)
+	}
+	if target.calls != 1 || len(fixture.session.actions) != beforeActions {
+		t.Fatalf("exact watcher replay repeated effect calls=%d actions=%d", target.calls, len(fixture.session.actions))
+	}
+	result := successfulResult()
+	result.Process.Cancelled = true
+	result.Process.ExitCode = -1
+	if err := fixture.adapter.Complete(context.Background(), invocation.Identity, result, context.Canceled); err != nil {
+		t.Fatalf("cancelled Complete error=%v", err)
+	}
+	terminal := fixture.session.actions[4].Terminal
+	if terminal == nil || terminal.Status != attachedworkerprotocol.TerminalCancelled ||
+		terminal.Result != attachedworkerprotocol.TerminalResultCancelled || terminal.AttemptSequence != 3 {
+		t.Fatalf("terminal=%+v", terminal)
+	}
+}
+
+func TestActiveCancellationReachesExactRunningDaemonInvocation(t *testing.T) {
+	fixture := newAdapterFixture(t)
+	fixture.session.activeCancel = &attachedworkerprotocol.CancelV1{
+		Binding: cloneAttemptBinding(fixture.binding), AttemptSequence: 3,
+		CancelRevision: 1, Code: attachedworkerprotocol.CancelRequested,
+	}
+	fixture.session.terminalAckAttemptSequence = 4
+	runner := &activeCancellationRunner{
+		started: make(chan attachedworkerdaemon.InvocationIdentity, 1), cancelled: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	daemon, err := attachedworkerdaemon.NewDaemon(
+		attachedworkerdaemon.DaemonConfig{IdleBackoff: time.Second}, fixture.adapter, runner, fixture.adapter,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runDone := make(chan error, 1)
+	go func() { runDone <- daemon.Run(context.Background()) }()
+	identity := <-runner.started
+	if identity != fixture.identity() {
+		t.Fatalf("running identity=%+v want=%+v", identity, fixture.identity())
+	}
+	if err := fixture.adapter.watchActiveCancellation(context.Background(), identity, daemon, func(context.Context) error {
+		return errors.New("immediate cancel unexpectedly waited")
+	}); err != nil {
+		t.Fatalf("watch error=%v", err)
+	}
+	<-runner.cancelled
+	drainDone := make(chan error, 1)
+	go func() { drainDone <- daemon.Drain(context.Background()) }()
+	waitForAttachedDaemonState(t, daemon, attachedworkerdaemon.DaemonDraining)
+	close(runner.release)
+	if err := <-drainDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-runDone; err != nil {
+		t.Fatal(err)
+	}
+	status := daemon.Status()
+	if status.State != attachedworkerdaemon.DaemonStopped || status.Active || status.Completed != 1 {
+		t.Fatalf("daemon status=%+v", status)
+	}
+	if len(fixture.session.actions) != 5 || fixture.session.actions[4].Terminal == nil ||
+		fixture.session.actions[4].Terminal.Status != attachedworkerprotocol.TerminalCancelled {
+		t.Fatalf("actions=%+v", fixture.session.actions)
+	}
+}
+
+func TestCancelAcknowledgementPrecedesTerminalCompletion(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		fixture := newAdapterFixture(t)
+		invocation, available, err := fixture.adapter.Next(context.Background())
+		if err != nil || !available {
+			t.Fatalf("Next available=%t error=%v", available, err)
+		}
+		fixture.session.activeCancel = &attachedworkerprotocol.CancelV1{
+			Binding: cloneAttemptBinding(fixture.binding), AttemptSequence: 3,
+			CancelRevision: 1, Code: attachedworkerprotocol.CancelRequested,
+		}
+		fixture.session.cancelAckStarted = make(chan struct{})
+		fixture.session.cancelAckRelease = make(chan struct{})
+		fixture.session.terminalAckAttemptSequence = 4
+		released := false
+		defer func() {
+			if !released {
+				close(fixture.session.cancelAckRelease)
+			}
+		}()
+
+		watchDone := make(chan error, 1)
+		go func() {
+			watchDone <- fixture.adapter.watchActiveCancellation(
+				context.Background(), invocation.Identity, &fakeActiveCanceller{}, func(context.Context) error { return nil },
+			)
+		}()
+		<-fixture.session.cancelAckStarted
+
+		result := successfulResult()
+		result.Process.Cancelled = true
+		result.Process.ExitCode = -1
+		completeDone := make(chan error, 1)
+		go func() {
+			completeDone <- fixture.adapter.Complete(context.Background(), invocation.Identity, result, context.Canceled)
+		}()
+		synctest.Wait()
+		select {
+		case err := <-completeDone:
+			t.Fatalf("Complete crossed pending CancelAck: %v", err)
+		default:
+		}
+		if len(fixture.session.actions) != 4 || fixture.session.actions[3].CancelAck == nil {
+			t.Fatalf("terminal crossed pending CancelAck actions=%+v", fixture.session.actions)
+		}
+
+		close(fixture.session.cancelAckRelease)
+		released = true
+		synctest.Wait()
+		if err := <-watchDone; err != nil {
+			t.Fatalf("watch error=%v", err)
+		}
+		if err := <-completeDone; err != nil {
+			t.Fatalf("Complete after CancelAck error=%v", err)
+		}
+		if len(fixture.session.actions) != 5 || fixture.session.actions[4].Terminal == nil {
+			t.Fatalf("terminal missing after CancelAck actions=%+v", fixture.session.actions)
+		}
+	})
+}
+
+func TestAdapterActiveCancellationAmbiguityNeverRepeatsLocalEffect(t *testing.T) {
+	fixture := newAdapterFixture(t)
+	invocation, available, err := fixture.adapter.Next(context.Background())
+	if err != nil || !available {
+		t.Fatalf("Next available=%t error=%v", available, err)
+	}
+	fixture.session.activeCancel = &attachedworkerprotocol.CancelV1{
+		Binding: cloneAttemptBinding(fixture.binding), AttemptSequence: 3,
+		CancelRevision: 1, Code: attachedworkerprotocol.CancelRequested,
+	}
+	fixture.session.cancelAckErr = context.DeadlineExceeded
+	target := &fakeActiveCanceller{}
+	err = fixture.adapter.watchActiveCancellation(context.Background(), invocation.Identity, target, func(context.Context) error { return nil })
+	if !errors.Is(err, ErrReconciliationRequired) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("first watch error=%v", err)
+	}
+	beforeActions := len(fixture.session.actions)
+	err = fixture.adapter.watchActiveCancellation(context.Background(), invocation.Identity, target, func(context.Context) error { return nil })
+	if !errors.Is(err, ErrReconciliationRequired) {
+		t.Fatalf("replay watch error=%v", err)
+	}
+	if target.calls != 1 || len(fixture.session.actions) != beforeActions {
+		t.Fatalf("ambiguous replay repeated effect calls=%d actions=%d", target.calls, len(fixture.session.actions))
+	}
+}
+
+func TestAdapterRetainsOwnershipWhenActiveCancellerIgnoresBound(t *testing.T) {
+	fixture := newAdapterFixture(t)
+	fixture.adapter.config.ActiveCancelTimeout = 30 * time.Millisecond
+	invocation, available, err := fixture.adapter.Next(context.Background())
+	if err != nil || !available {
+		t.Fatalf("Next available=%t error=%v", available, err)
+	}
+	fixture.session.activeCancel = &attachedworkerprotocol.CancelV1{
+		Binding: cloneAttemptBinding(fixture.binding), AttemptSequence: 3,
+		CancelRevision: 1, Code: attachedworkerprotocol.CancelRequested,
+	}
+	target := &fakeActiveCanceller{
+		started: make(chan struct{}), release: make(chan struct{}), finished: make(chan struct{}),
+	}
+	released := false
+	t.Cleanup(func() {
+		if !released {
+			close(target.release)
+		}
+		<-target.finished
+	})
+	err = fixture.adapter.watchActiveCancellation(context.Background(), invocation.Identity, target, func(context.Context) error { return nil })
+	if !errors.Is(err, ErrReconciliationRequired) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("watch error=%v", err)
+	}
+	<-target.started
+	blockedCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := fixture.adapter.Complete(blockedCtx, invocation.Identity, successfulResult(), nil); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("competing completion error=%v", err)
+	}
+	if len(fixture.session.actions) != 3 {
+		t.Fatalf("ambiguous cancellation emitted acknowledgement actions=%+v", fixture.session.actions)
+	}
+	close(target.release)
+	released = true
+	<-target.finished
+	if err := fixture.adapter.watchActiveCancellation(context.Background(), invocation.Identity, target, func(context.Context) error { return nil }); !errors.Is(err, ErrReconciliationRequired) {
+		t.Fatalf("post-release watch error=%v", err)
+	}
+	if target.calls != 1 || len(fixture.session.actions) != 3 {
+		t.Fatalf("post-release replay calls=%d actions=%d", target.calls, len(fixture.session.actions))
+	}
+}
+
+func TestAdapterActiveCancellationRejectsSubstitutionBeforeLocalEffect(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*attachedworkerprotocol.CancelV1, *adapterFixture)
+	}{
+		{name: "attempt sequence", mutate: func(cancel *attachedworkerprotocol.CancelV1, _ *adapterFixture) { cancel.AttemptSequence++ }},
+		{name: "binding", mutate: func(cancel *attachedworkerprotocol.CancelV1, _ *adapterFixture) {
+			cancel.Binding.AttemptID = "replacement"
+		}},
+		{name: "revision", mutate: func(cancel *attachedworkerprotocol.CancelV1, _ *adapterFixture) { cancel.CancelRevision++ }},
+		{name: "generation", mutate: func(_ *attachedworkerprotocol.CancelV1, fixture *adapterFixture) {
+			fixture.session.snapshot.ConnectionGeneration++
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newAdapterFixture(t)
+			invocation, available, err := fixture.adapter.Next(context.Background())
+			if err != nil || !available {
+				t.Fatalf("Next available=%t error=%v", available, err)
+			}
+			cancel := &attachedworkerprotocol.CancelV1{
+				Binding: cloneAttemptBinding(fixture.binding), AttemptSequence: 3,
+				CancelRevision: 1, Code: attachedworkerprotocol.CancelRequested,
+			}
+			test.mutate(cancel, fixture)
+			fixture.session.activeCancel = cancel
+			target := &fakeActiveCanceller{}
+			err = fixture.adapter.watchActiveCancellation(context.Background(), invocation.Identity, target, func(context.Context) error { return nil })
+			if err == nil || target.calls != 0 {
+				t.Fatalf("watch error=%v target_calls=%d", err, target.calls)
+			}
+		})
+	}
+}
+
+func TestAdapterActiveCancellationWaitIsCallerBounded(t *testing.T) {
+	fixture := newAdapterFixture(t)
+	invocation, available, err := fixture.adapter.Next(context.Background())
+	if err != nil || !available {
+		t.Fatalf("Next available=%t error=%v", available, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	target := &fakeActiveCanceller{}
+	err = fixture.adapter.watchActiveCancellation(ctx, invocation.Identity, target, func(waitCtx context.Context) error {
+		cancel()
+		return waitCtx.Err()
+	})
+	if !errors.Is(err, context.Canceled) || target.calls != 0 {
+		t.Fatalf("watch error=%v target_calls=%d", err, target.calls)
+	}
+	if len(fixture.session.actions) != 3 || fixture.session.actions[2].Heartbeat == nil {
+		t.Fatalf("actions=%+v", fixture.session.actions)
+	}
+}
+
+type fakeActiveCanceller struct {
+	identity attachedworkerdaemon.InvocationIdentity
+	calls    int
+	err      error
+	started  chan struct{}
+	release  chan struct{}
+	finished chan struct{}
+}
+
+type activeCancellationRunner struct {
+	started   chan attachedworkerdaemon.InvocationIdentity
+	cancelled chan struct{}
+	release   chan struct{}
+}
+
+func (runner *activeCancellationRunner) Run(
+	ctx context.Context,
+	invocation attachedworkerdaemon.Invocation,
+) (attachedworkerdaemon.InvocationResult, error) {
+	runner.started <- invocation.Identity
+	<-ctx.Done()
+	close(runner.cancelled)
+	<-runner.release
+	return attachedworkerdaemon.InvocationResult{Process: attachedworkerdaemon.AttemptResult{
+		Cancelled: true, DescendantsReaped: true, BoundaryReleased: true, CleanupSucceeded: true,
+	}}, nil
+}
+
+func (fake *fakeActiveCanceller) CancelActive(_ context.Context, identity attachedworkerdaemon.InvocationIdentity) error {
+	fake.calls++
+	fake.identity = identity
+	if fake.started != nil {
+		close(fake.started)
+	}
+	if fake.release != nil {
+		<-fake.release
+	}
+	if fake.finished != nil {
+		close(fake.finished)
+	}
+	return fake.err
+}
+
 func orderedEvidenceDigests(count int) []attachedworkerdaemon.CommittedEvidenceDigest {
 	result := make([]attachedworkerdaemon.CommittedEvidenceDigest, count)
 	for index := range result {
@@ -667,14 +1002,20 @@ func (fixture *adapterFixture) identity() attachedworkerdaemon.InvocationIdentit
 }
 
 type fakeSession struct {
-	snapshot          attachedworkersession.SnapshotV1
-	binding           attachedworkerprotocol.AttemptBindingV1
-	actions           []attachedworkersession.ActionV1
-	heartbeatErr      error
-	claimErr          error
-	cancelOnClaim     bool
-	terminalErr       error
-	mutateTerminalAck func(*attachedworkerprotocol.TerminalAckV1)
+	snapshot                   attachedworkersession.SnapshotV1
+	binding                    attachedworkerprotocol.AttemptBindingV1
+	actions                    []attachedworkersession.ActionV1
+	heartbeatErr               error
+	claimErr                   error
+	cancelOnClaim              bool
+	terminalErr                error
+	activeCancel               *attachedworkerprotocol.CancelV1
+	activeHeartbeatErr         error
+	cancelAckErr               error
+	cancelAckStarted           chan struct{}
+	cancelAckRelease           chan struct{}
+	mutateTerminalAck          func(*attachedworkerprotocol.TerminalAckV1)
+	terminalAckAttemptSequence uint64
 }
 
 func (fake *fakeSession) Snapshot() attachedworkersession.SnapshotV1 { return fake.snapshot }
@@ -686,6 +1027,19 @@ func (fake *fakeSession) ExchangeAction(_ context.Context, action attachedworker
 	case action.Heartbeat != nil:
 		if fake.heartbeatErr != nil {
 			return nil, fake.heartbeatErr
+		}
+		if !action.Heartbeat.Available && action.Heartbeat.ActiveAttempts == 1 {
+			if fake.activeHeartbeatErr != nil {
+				return nil, fake.activeHeartbeatErr
+			}
+			if fake.activeCancel == nil {
+				return nil, nil
+			}
+			cancel := *fake.activeCancel
+			cancel.Binding = cloneAttemptBinding(cancel.Binding)
+			return platformFrame(snapshot, 5, attachedworkerprotocol.MessageCancel, func(frame *attachedworkerprotocol.FrameV1) {
+				frame.Cancel = &cancel
+			}), nil
 		}
 		return platformFrame(snapshot, 3, attachedworkerprotocol.MessageLeaseOffer, func(frame *attachedworkerprotocol.FrameV1) {
 			frame.LeaseOffer = &attachedworkerprotocol.LeaseOfferV1{Binding: cloneAttemptBinding(fake.binding), AttemptSequence: 1}
@@ -706,15 +1060,25 @@ func (fake *fakeSession) ExchangeAction(_ context.Context, action attachedworker
 			frame.LeaseAccepted = &attachedworkerprotocol.LeaseAcceptedV1{Binding: cloneAttemptBinding(fake.binding), AttemptSequence: 2}
 		}), nil
 	case action.CancelAck != nil:
-		return nil, nil
+		if fake.cancelAckStarted != nil {
+			close(fake.cancelAckStarted)
+		}
+		if fake.cancelAckRelease != nil {
+			<-fake.cancelAckRelease
+		}
+		return nil, fake.cancelAckErr
 	case action.Terminal != nil:
 		if fake.terminalErr != nil {
 			return nil, fake.terminalErr
 		}
 		terminal := action.Terminal
-		return platformFrame(snapshot, 5, attachedworkerprotocol.MessageTerminalAck, func(frame *attachedworkerprotocol.FrameV1) {
+		attemptSequence := fake.terminalAckAttemptSequence
+		if attemptSequence == 0 {
+			attemptSequence = 3
+		}
+		return platformFrame(snapshot, 6, attachedworkerprotocol.MessageTerminalAck, func(frame *attachedworkerprotocol.FrameV1) {
 			frame.TerminalAck = &attachedworkerprotocol.TerminalAckV1{
-				Binding: cloneAttemptBinding(fake.binding), AttemptSequence: 3,
+				Binding: cloneAttemptBinding(fake.binding), AttemptSequence: attemptSequence,
 				TerminalSequence: terminal.TerminalSequence, Status: terminal.Status, Result: terminal.Result,
 				EvidenceDigest: append([]byte(nil), terminal.EvidenceDigest...),
 			}
@@ -771,6 +1135,24 @@ func platformFrame(
 	}
 	populate(frame)
 	return frame
+}
+
+func waitForAttachedDaemonState(t *testing.T, daemon *attachedworkerdaemon.Daemon, want attachedworkerdaemon.DaemonState) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if daemon.Status().State == want {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("daemon did not reach state %s: %+v", want, daemon.Status())
+		case <-ticker.C:
+		}
+	}
 }
 
 func successfulResult() attachedworkerdaemon.InvocationResult {

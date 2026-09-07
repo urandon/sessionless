@@ -147,6 +147,12 @@ finalization order, and explicit unsupported-isolation boundary are documented
 in [attached-worker-daemon.md](attached-worker-daemon.md). No developer command
 or production binary enables it yet.
 
+The feature-disabled AW-05b OCI isolation profile and its explicit opt-in
+real-engine matrix are documented in
+[attached-worker-oci.md](attached-worker-oci.md). Run only against a reviewed,
+explicit local engine endpoint with `make attached-worker-oci-integration`;
+the ordinary test/CI path uses deterministic fake-client coverage.
+
 The owner-facing AW-06a information architecture, read-model safety boundary,
 and control-action gates are documented in
 [attached-worker-ux.md](attached-worker-ux.md). WebUI and CLI implementations

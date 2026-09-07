@@ -70,10 +70,13 @@ is fixture-only evidence for process lifecycle behavior; it is not exported and
 must never be used by a binary.
 
 Darwin and Linux currently have process-group mechanics. Neither platform has
-a committed production filesystem/network launcher yet. Other platforms fail
-closed before process creation. In particular, isolated `HOME`, Seatbelt-free
-process launch, a container-like directory layout, or a child-reported denial
-does not satisfy this contract.
+a product-enabled filesystem/network launcher yet. The feature-disabled
+[OCI isolation profile](attached-worker-oci.md) is the first reviewed launcher
+implementation and real-engine negative matrix, but it remains gated on
+separate Darwin/Linux release evidence and later daemon packaging. Other
+platforms fail closed before process creation. In particular, isolated `HOME`,
+Seatbelt-free process launch, a container-like directory layout, or a
+child-reported denial does not satisfy this contract.
 
 ## Credential behavior
 
@@ -104,8 +107,9 @@ paths, raw stderr, provider errors, or auth material.
 
 ## Still required before #77 can close
 
-- production Darwin and Linux isolation launchers with forbidden-read,
-  forbidden-write, egress, process escape, and disk-limit tests;
+- separate exact-release Darwin and Linux evidence for the OCI launcher's
+  forbidden-read, forbidden-write, egress, process escape, and disk-limit
+  matrix;
 - foreground CLI plus reviewed OS-service and container packaging;
 - durable local identity/config storage, update/check, doctor, logout, and
   uninstall-plan commands;

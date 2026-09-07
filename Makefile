@@ -23,7 +23,7 @@ LDFLAGS := -s -w \
 	-X gitcode.com/urandon/sessionless/internal/buildinfo.Commit=$(COMMIT) \
 	-X gitcode.com/urandon/sessionless/internal/buildinfo.BuiltAt=$(BUILT_AT)
 
-.PHONY: help prepare tools web-tools go-package-layout generate fmt fmt-check lint test build docs-check readme-visual-preview web-install web-openapi-check web-check web-build web-stage web-ci web-browser-install web-browser-test integration ydb-integration local-integration e2e-local provider-conformance provider-conformance-fuzz ci image-publication-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test budget-policy-test web-deployment-policy-test terraform-ci cloudflare-edge-ci \
+.PHONY: help prepare tools web-tools go-package-layout generate fmt fmt-check lint test build docs-check readme-visual-preview web-install web-openapi-check web-check web-build web-stage web-ci web-browser-install web-browser-test integration ydb-integration local-integration e2e-local attached-worker-oci-integration provider-conformance provider-conformance-fuzz ci image-publication-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test budget-policy-test web-deployment-policy-test terraform-ci cloudflare-edge-ci \
 	compose-config images dev-up dev-seed migrate-local migration-status partition-status partition-backfill cloud-app-reset-plan cloud-app-reset session-delete-request session-delete-plan session-delete session-hold session-release-hold \
 	worker-once web-bootstrap dev-down dev-reset repowise-install repowise-index repowise-update repowise-status repowise-doctor repowise-mcp repowise-mcp-smoke repowise-evaluate repowise-stop repowise-uninstall-plan repowise-uninstall repowise-policy-test clean
 
@@ -42,6 +42,7 @@ help:
 		'make ydb-integration run YDB Local schema and concurrency tests' \
 		'make local-integration run YDB/S3/SQS/Telegram adapter tests against the local stand' \
 		'make e2e-local      run the deterministic two-tenant black-box slice' \
+		'make attached-worker-oci-integration run the opt-in real Docker Engine isolation matrix' \
 		'make provider-conformance run the credential-free harness/provider registry fixtures' \
 		'make provider-conformance-fuzz run the bounded native harness parser fuzz gates' \
 		'make image-publication-test validate immutable image publication guards' \
@@ -176,6 +177,9 @@ provider-conformance: prepare
 	go test -race -count=10 -shuffle=on -timeout=2m ./internal/opencodeopenrouter
 	go test -race -count=10 -shuffle=on -timeout=2m ./internal/directopenrouter
 	$(MAKE) provider-conformance-fuzz
+
+attached-worker-oci-integration: prepare
+	@./scripts/test-attached-worker-oci.sh
 
 provider-conformance-fuzz: prepare
 	go test -run='^$$' -fuzz=FuzzCodexJSONLParserNeverCommitsMalformedTerminal -fuzztime=2s ./internal/codexexec

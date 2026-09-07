@@ -72,9 +72,9 @@ must never be used by a binary.
 Darwin and Linux currently have process-group mechanics. Neither platform has
 a product-enabled filesystem/network launcher yet. The feature-disabled
 [OCI isolation profile](attached-worker-oci.md) is the first reviewed launcher
-implementation and real-engine negative matrix, but it remains gated on
-separate Darwin/Linux release evidence and later daemon packaging. Other
-platforms fail closed before process creation. In particular, isolated `HOME`,
+implementation; its separate Darwin/Colima and Linux-rootless release gates
+are complete under #106, while daemon composition and packaging remain gated.
+Other platforms fail closed before process creation. In particular, isolated `HOME`,
 Seatbelt-free process launch, a container-like directory layout, or a
 child-reported denial does not satisfy this contract.
 
@@ -107,12 +107,9 @@ paths, raw stderr, provider errors, or auth material.
 
 ## Still required before #77 can close
 
-- separate exact-release Darwin and Linux evidence for the OCI launcher's
-  forbidden-read, forbidden-write, egress, process escape, and disk-limit
-  matrix;
 - foreground CLI plus reviewed OS-service and container packaging;
-- durable local identity/config storage, update/check, doctor, logout, and
-  uninstall-plan commands;
+- live foreground composition using the durable local state and lifecycle CLI
+  foundation defined in [#107](attached-worker-local-state.md);
 - composition with the AW-03/AW-04 exchange and attempt protocol;
 - crash/restart recovery that fences or resumes the exact durable attempt;
 - the two-owner security and recovery gate in #79.

@@ -99,6 +99,7 @@ and link to it.
 - [Execution authority](attached-worker-execution.md)
 - [Daemon and supervisor](attached-worker-daemon.md)
 - [OCI isolation profile](attached-worker-oci.md)
+- [Local state and lifecycle CLI](attached-worker-local-state.md)
 - [Observability and control UX](attached-worker-ux.md)
 
 ## Research and design

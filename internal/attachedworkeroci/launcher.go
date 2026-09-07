@@ -162,6 +162,9 @@ func NewLauncher(ctx context.Context, config Config) (*Launcher, error) {
 	if ctx == nil || ctx.Err() != nil {
 		return nil, ErrConfig
 	}
+	if err := ValidateDeclarativeConfig(config); err != nil {
+		return nil, err
+	}
 	dockerPath, err := canonicalRegularFile(config.DockerPath)
 	if err != nil || dockerPath != config.DockerPath {
 		return nil, ErrConfig
@@ -173,18 +176,8 @@ func NewLauncher(ctx context.Context, config Config) (*Launcher, error) {
 	if err := requireEmptyPrivateDirectory(cliConfig); err != nil {
 		return nil, ErrConfig
 	}
-	if !validUnixHost(config.Host) || !validEngineID(config.EngineID) ||
-		!installationIDPattern.MatchString(config.InstallationID) || !validPinnedImage(config.Image) ||
-		config.UserID == 0 || config.GroupID == 0 || config.DiskBytes < minimumDiskBytes ||
-		config.CredentialFileBytes <= 0 || config.CredentialFileBytes+sharedMemoryBytes >= config.DiskBytes ||
-		config.MemoryBytes < minimumMemory || config.PIDsLimit < minimumPIDs || config.PIDsLimit > maximumPIDs {
-		return nil, ErrConfig
-	}
 	if config.StopSeconds == 0 {
 		config.StopSeconds = defaultStopSecond
-	}
-	if config.StopSeconds < 1 || config.StopSeconds > 30 {
-		return nil, ErrConfig
 	}
 	runner := config.runner
 	if runner == nil {
@@ -216,6 +209,26 @@ func NewLauncher(ctx context.Context, config Config) (*Launcher, error) {
 		stopSeconds: config.StopSeconds,
 		engineID:    config.EngineID, installationID: config.InstallationID,
 	}, nil
+}
+
+// ValidateDeclarativeConfig validates the explicit, serializable launcher
+// contract without touching the filesystem, selecting a host platform, or
+// contacting an engine. Callers must separately prove pinned artifacts and
+// host/boundary compatibility before treating the configuration as usable.
+func ValidateDeclarativeConfig(config Config) error {
+	if !canonicalAbsolutePath(config.DockerPath) || !canonicalAbsolutePath(config.CLIConfigDir) ||
+		!validUnixHost(config.Host) || !validEngineID(config.EngineID) ||
+		!installationIDPattern.MatchString(config.InstallationID) || !validPinnedImage(config.Image) ||
+		config.UserID == 0 || config.GroupID == 0 || config.DiskBytes < minimumDiskBytes ||
+		config.CredentialFileBytes <= 0 || config.CredentialFileBytes+sharedMemoryBytes >= config.DiskBytes ||
+		config.MemoryBytes < minimumMemory || config.PIDsLimit < minimumPIDs || config.PIDsLimit > maximumPIDs ||
+		config.StopSeconds < 0 || config.StopSeconds > 30 {
+		return ErrConfig
+	}
+	if config.Boundary != BoundaryDarwinVM && config.Boundary != BoundaryLinuxRootless {
+		return ErrConfig
+	}
+	return nil
 }
 
 func (launcher *Launcher) Profile() attachedworkerdaemon.IsolationProfile {
@@ -910,6 +923,11 @@ func canonicalRegularFile(path string) (string, error) {
 		return "", ErrConfig
 	}
 	return canonical, nil
+}
+
+func canonicalAbsolutePath(path string) bool {
+	return path != "" && len(path) <= 4096 && filepath.IsAbs(path) && filepath.Clean(path) == path &&
+		!strings.ContainsAny(path, "\x00\r\n\t")
 }
 
 func canonicalDirectory(path string) (string, error) {

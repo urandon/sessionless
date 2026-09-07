@@ -34,8 +34,10 @@ immediately because live activation remains unavailable.
 Shutdown runs exactly once under a separate bounded cleanup context. A caller
 may bound how long it waits, but cancellation cannot abort that cleanup; a
 later call observes the same terminal result. Concurrent or repeated drain and
-shutdown requests cannot duplicate observation retirement or lease release.
-Any cleanup ambiguity overrides the disabled result and fails closed.
+shutdown requests use context-aware transition serialization and cannot
+duplicate observation retirement or lease release. Starting shutdown cancels
+an in-flight drain request before the shutdown bound begins controlling the
+remaining transition work. Any cleanup ambiguity overrides the disabled result and fails closed.
 Retirement is revision-guarded, so cleanup cannot remove a different
 observation.
 

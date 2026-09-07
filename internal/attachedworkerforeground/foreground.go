@@ -136,16 +136,20 @@ func newForeground(store localState, config Config, ports ActivationPorts) (*For
 // bounded shutdown. Drain and Shutdown are idempotent and safe for concurrent
 // callers; caller cancellation never cancels the one cleanup attempt.
 type Session struct {
-	mu             sync.Mutex
-	lease          localRuntimeLease
-	now            func() time.Time
-	cleanupTimeout time.Duration
-	observation    attachedworkerlocal.RuntimeObservationV1
-	result         ResultV1
-	state          string
-	shutdownOnce   sync.Once
-	shutdownDone   chan struct{}
-	shutdownErr    error
+	mu              sync.Mutex
+	transitionGate  chan struct{}
+	drainContext    context.Context
+	cancelDrains    context.CancelFunc
+	lease           localRuntimeLease
+	now             func() time.Time
+	cleanupTimeout  time.Duration
+	observation     attachedworkerlocal.RuntimeObservationV1
+	result          ResultV1
+	state           string
+	shutdownOnce    sync.Once
+	shutdownDone    chan struct{}
+	shutdownErr     error
+	shutdownStarted bool
 }
 
 // Start performs fail-closed local preflight and returns ownership to the
@@ -219,10 +223,13 @@ func (foreground *Foreground) Start(ctx context.Context) (result ResultV1, sessi
 	result.ObservationRevision = observation.Revision
 	result.ObservationState = "observed_local"
 	result.Code = CodeFeatureDisabled
+	drainContext, cancelDrains := context.WithCancel(context.Background())
 	session = &Session{
+		transitionGate: make(chan struct{}, 1), drainContext: drainContext, cancelDrains: cancelDrains,
 		lease: lease, now: foreground.now, cleanupTimeout: foreground.cleanupTimeout,
 		observation: observation, result: result, state: "owned", shutdownDone: make(chan struct{}),
 	}
+	session.transitionGate <- struct{}{}
 	return result, session, nil
 }
 
@@ -247,15 +254,37 @@ func (session *Session) Drain(ctx context.Context) error {
 	if session == nil || ctx == nil || ctx.Err() != nil {
 		return ErrInvalidConfiguration
 	}
+	opCtx, cancel := context.WithTimeout(ctx, session.cleanupTimeout)
+	stopCancel := context.AfterFunc(session.drainContext, cancel)
+	defer func() {
+		stopCancel()
+		cancel()
+	}()
+	if err := session.acquireTransition(opCtx); err != nil {
+		return err
+	}
+	defer session.releaseTransition()
+
 	session.mu.Lock()
-	defer session.mu.Unlock()
+	if session.shutdownStarted {
+		err := session.shutdownErr
+		session.mu.Unlock()
+		if err != nil {
+			return err
+		}
+		return context.Canceled
+	}
 	if session.state == "stopped" {
-		return session.shutdownErr
+		err := session.shutdownErr
+		session.mu.Unlock()
+		return err
 	}
 	if session.state == "draining" {
+		session.mu.Unlock()
 		return nil
 	}
-	return session.transitionLocked(ctx, attachedworkerdaemon.DaemonDraining, "draining")
+	session.mu.Unlock()
+	return session.transition(opCtx, attachedworkerdaemon.DaemonDraining, "draining")
 }
 
 // Shutdown starts exactly one cleanup attempt under its own timeout. Each
@@ -264,7 +293,13 @@ func (session *Session) Shutdown(ctx context.Context) error {
 	if session == nil || ctx == nil {
 		return ErrInvalidConfiguration
 	}
-	session.shutdownOnce.Do(func() { go session.shutdown() })
+	session.shutdownOnce.Do(func() {
+		session.mu.Lock()
+		session.shutdownStarted = true
+		session.cancelDrains()
+		session.mu.Unlock()
+		go session.shutdown()
+	})
 	select {
 	case <-session.shutdownDone:
 		session.mu.Lock()
@@ -280,23 +315,47 @@ func (session *Session) shutdown() {
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), session.cleanupTimeout)
 	defer cancel()
 
-	session.mu.Lock()
 	var cleanupErr error
-	if session.state == "owned" {
-		cleanupErr = session.transitionLocked(cleanupCtx, attachedworkerdaemon.DaemonDraining, "draining")
+	if err := session.acquireTransition(cleanupCtx); err != nil {
+		session.mu.Lock()
+		session.shutdownErr = err
+		session.result.Code = localCode(err)
+		session.result.ObservationState = "unknown"
+		session.result.RuntimeOwnership = "unknown"
+		session.state = "shutdown_failed"
+		session.mu.Unlock()
+		close(session.shutdownDone)
+		return
 	}
-	if cleanupErr == nil && session.state == "draining" {
-		cleanupErr = session.transitionLocked(cleanupCtx, attachedworkerdaemon.DaemonStopped, "stopped")
+	defer session.releaseTransition()
+
+	session.mu.Lock()
+	state := session.state
+	session.mu.Unlock()
+	if state == "owned" {
+		cleanupErr = session.transition(cleanupCtx, attachedworkerdaemon.DaemonDraining, "draining")
+	}
+	session.mu.Lock()
+	state = session.state
+	session.mu.Unlock()
+	if cleanupErr == nil && state == "draining" {
+		cleanupErr = session.transition(cleanupCtx, attachedworkerdaemon.DaemonStopped, "stopped")
 	}
 	if cleanupErr == nil {
-		cleanupErr = session.lease.RetireObservation(cleanupCtx, session.observation.Revision)
+		session.mu.Lock()
+		revision := session.observation.Revision
+		session.mu.Unlock()
+		cleanupErr = session.lease.RetireObservation(cleanupCtx, revision)
+		session.mu.Lock()
 		if cleanupErr == nil {
 			session.result.ObservationState = "retired"
 		} else {
 			session.result.ObservationState = "unknown"
 		}
+		session.mu.Unlock()
 	}
 	closeErr := session.lease.Close()
+	session.mu.Lock()
 	if closeErr == nil {
 		session.result.RuntimeOwnership = "released"
 	} else {
@@ -315,29 +374,40 @@ func (session *Session) shutdown() {
 	close(session.shutdownDone)
 }
 
-func (session *Session) transitionLocked(ctx context.Context, daemonState attachedworkerdaemon.DaemonState, state string) error {
-	if session.observation.Revision == ^uint64(0) {
+func (session *Session) transition(ctx context.Context, daemonState attachedworkerdaemon.DaemonState, state string) error {
+	session.mu.Lock()
+	observation := session.observation
+	session.mu.Unlock()
+	if observation.Revision == ^uint64(0) {
+		session.mu.Lock()
 		session.result.Code = localCode(attachedworkerlocal.ErrStateConflict)
 		session.result.ObservationState = "unknown"
+		session.mu.Unlock()
 		return attachedworkerlocal.ErrStateConflict
 	}
 	observedAt := session.now().UTC()
-	if observedAt.Before(session.observation.ObservedAt) {
+	if observedAt.Before(observation.ObservedAt) {
+		session.mu.Lock()
 		session.result.Code = localCode(attachedworkerlocal.ErrStateConflict)
 		session.result.ObservationState = "unknown"
+		session.mu.Unlock()
 		return attachedworkerlocal.ErrStateConflict
 	}
-	next := session.observation
+	next := observation
 	next.Revision++
 	next.State = daemonState
 	next.Active = false
 	next.ObservedAt = observedAt
 	if err := session.lease.PersistObservation(ctx, next); err != nil {
+		session.mu.Lock()
 		session.result.Code = localCode(err)
 		session.result.ObservationState = "unknown"
+		session.mu.Unlock()
 		return err
 	}
+	session.mu.Lock()
 	session.observation = next
+	session.result.Code = CodeFeatureDisabled
 	session.result.ObservationRevision = next.Revision
 	session.result.ObservationState = "observed_local"
 	if daemonState == attachedworkerdaemon.DaemonDraining {
@@ -346,7 +416,21 @@ func (session *Session) transitionLocked(ctx context.Context, daemonState attach
 		session.result.DaemonState = "not_started"
 	}
 	session.state = state
+	session.mu.Unlock()
 	return nil
+}
+
+func (session *Session) acquireTransition(ctx context.Context) error {
+	select {
+	case <-session.transitionGate:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (session *Session) releaseTransition() {
+	session.transitionGate <- struct{}{}
 }
 
 // Result returns a race-free snapshot of bounded local lifecycle evidence.

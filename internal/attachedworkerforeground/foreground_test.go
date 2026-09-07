@@ -266,6 +266,94 @@ func TestSessionShutdownWaitIsCallerBoundedButCleanupContinues(t *testing.T) {
 	}
 }
 
+func TestConcurrentDrainCancellationIsHonoredWhileShutdownPersists(t *testing.T) {
+	manifest := attachedworkerlocal.ManifestV1{Lifecycle: attachedworkerlocal.LifecycleActive, Revision: 7,
+		UpdatedAt: time.Date(2026, 9, 7, 0, 0, 0, 0, time.UTC)}
+	lease := newBlockingLifecycleLease(2)
+	store := &fakeStore{lease: lease, snapshot: attachedworkerlocal.SnapshotV1{Manifest: manifest}}
+	foreground, err := newForeground(store, Config{
+		Now: func() time.Time { return manifest.UpdatedAt }, CleanupTimeout: time.Second,
+	}, ActivationPorts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, session, err := foreground.Start(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	shutdownResult := make(chan error, 1)
+	go func() { shutdownResult <- session.Shutdown(context.Background()) }()
+	select {
+	case <-lease.entered:
+	case <-time.After(time.Second):
+		t.Fatal("shutdown did not enter its draining persist")
+	}
+	drainCtx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	drainResult := make(chan error, 1)
+	go func() { drainResult <- session.Drain(drainCtx) }()
+	select {
+	case err := <-drainResult:
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("concurrent Drain error = %v, want cancellation", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("concurrent Drain ignored cancellation while shutdown held the transition")
+	}
+	close(lease.release)
+	select {
+	case err := <-shutdownResult:
+		if err != nil {
+			t.Fatalf("Shutdown error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("shutdown did not complete after persist release")
+	}
+	persistCalls, retireCalls, closeCalls := lease.counts()
+	if persistCalls != 3 || retireCalls != 1 || closeCalls != 1 {
+		t.Fatalf("cleanup calls persist=%d retire=%d close=%d", persistCalls, retireCalls, closeCalls)
+	}
+}
+
+func TestShutdownCancelsInFlightDrainBeforeBoundedCleanup(t *testing.T) {
+	manifest := attachedworkerlocal.ManifestV1{Lifecycle: attachedworkerlocal.LifecycleActive, Revision: 7,
+		UpdatedAt: time.Date(2026, 9, 7, 0, 0, 0, 0, time.UTC)}
+	lease := newBlockingLifecycleLease(2)
+	store := &fakeStore{lease: lease, snapshot: attachedworkerlocal.SnapshotV1{Manifest: manifest}}
+	foreground, err := newForeground(store, Config{
+		Now: func() time.Time { return manifest.UpdatedAt }, CleanupTimeout: time.Second,
+	}, ActivationPorts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, session, err := foreground.Start(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	drainResult := make(chan error, 1)
+	go func() { drainResult <- session.Drain(context.Background()) }()
+	select {
+	case <-lease.entered:
+	case <-time.After(time.Second):
+		t.Fatal("drain did not enter its persist")
+	}
+	if err := session.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown error = %v", err)
+	}
+	select {
+	case err := <-drainResult:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("in-flight Drain error = %v, want canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("in-flight drain was not canceled by shutdown")
+	}
+	persistCalls, retireCalls, closeCalls := lease.counts()
+	if persistCalls != 4 || retireCalls != 1 || closeCalls != 1 {
+		t.Fatalf("cleanup calls persist=%d retire=%d close=%d", persistCalls, retireCalls, closeCalls)
+	}
+}
+
 func TestDisabledForegroundNeverCallsActivationPorts(t *testing.T) {
 	manifest := attachedworkerlocal.ManifestV1{Lifecycle: attachedworkerlocal.LifecycleActive, Revision: 7,
 		UpdatedAt: time.Date(2026, 9, 7, 0, 0, 0, 0, time.UTC)}

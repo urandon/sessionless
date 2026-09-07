@@ -354,6 +354,68 @@ func TestShutdownCancelsInFlightDrainBeforeBoundedCleanup(t *testing.T) {
 	}
 }
 
+func TestShutdownLateFinalizerReleasesLeaseAfterPersistIgnoresCancellation(t *testing.T) {
+	manifest := attachedworkerlocal.ManifestV1{Lifecycle: attachedworkerlocal.LifecycleActive, Revision: 7,
+		UpdatedAt: time.Date(2026, 9, 7, 0, 0, 0, 0, time.UTC)}
+	lease := newBlockingLifecycleLease(2)
+	lease.ignoreCancellation = true
+	store := &fakeStore{lease: lease, snapshot: attachedworkerlocal.SnapshotV1{Manifest: manifest}}
+	foreground, err := newForeground(store, Config{
+		Now: func() time.Time { return manifest.UpdatedAt }, CleanupTimeout: 20 * time.Millisecond,
+	}, ActivationPorts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, session, err := foreground.Start(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	drainResult := make(chan error, 1)
+	go func() { drainResult <- session.Drain(context.Background()) }()
+	select {
+	case <-lease.entered:
+	case <-time.After(time.Second):
+		t.Fatal("drain did not enter cancellation-ignoring persist")
+	}
+	waitCtx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	if err := session.Shutdown(waitCtx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("bounded Shutdown error = %v, want deadline", err)
+	}
+	cancel()
+
+	deadline := time.NewTimer(time.Second)
+	ticker := time.NewTicker(time.Millisecond)
+	defer deadline.Stop()
+	defer ticker.Stop()
+	for session.Result().RuntimeOwnership != "unknown" {
+		select {
+		case <-ticker.C:
+		case <-deadline.C:
+			t.Fatal("shutdown did not enter late-finalizer state")
+		}
+	}
+	close(lease.release)
+	select {
+	case err := <-drainResult:
+		if err != nil {
+			t.Fatalf("cancellation-ignoring Drain error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("drain did not return after unblock")
+	}
+	if err := session.Shutdown(context.Background()); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("terminal Shutdown error = %v, want recorded cleanup deadline", err)
+	}
+	result := session.Result()
+	if result.RuntimeOwnership != "released" || result.ObservationState != "retired" {
+		t.Fatalf("late-finalizer result = %+v", result)
+	}
+	persistCalls, retireCalls, closeCalls := lease.counts()
+	if persistCalls != 3 || retireCalls != 1 || closeCalls != 1 {
+		t.Fatalf("late-finalizer calls persist=%d retire=%d close=%d", persistCalls, retireCalls, closeCalls)
+	}
+}
+
 func TestDisabledForegroundNeverCallsActivationPorts(t *testing.T) {
 	manifest := attachedworkerlocal.ManifestV1{Lifecycle: attachedworkerlocal.LifecycleActive, Revision: 7,
 		UpdatedAt: time.Date(2026, 9, 7, 0, 0, 0, 0, time.UTC)}
@@ -493,14 +555,15 @@ func (lease *fakeLease) Close() error {
 }
 
 type blockingLifecycleLease struct {
-	mu             sync.Mutex
-	blockPersistAt int
-	persistCalls   int
-	retireCalls    int
-	closeCalls     int
-	entered        chan struct{}
-	release        chan struct{}
-	enteredOnce    sync.Once
+	mu                 sync.Mutex
+	blockPersistAt     int
+	persistCalls       int
+	retireCalls        int
+	closeCalls         int
+	entered            chan struct{}
+	release            chan struct{}
+	enteredOnce        sync.Once
+	ignoreCancellation bool
 }
 
 func newBlockingLifecycleLease(blockPersistAt int) *blockingLifecycleLease {
@@ -520,6 +583,10 @@ func (lease *blockingLifecycleLease) PersistObservation(ctx context.Context, _ a
 		return nil
 	}
 	lease.enteredOnce.Do(func() { close(lease.entered) })
+	if lease.ignoreCancellation {
+		<-lease.release
+		return nil
+	}
 	select {
 	case <-lease.release:
 		return nil

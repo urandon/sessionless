@@ -37,9 +37,17 @@ later call observes the same terminal result. Concurrent or repeated drain and
 shutdown requests use context-aware transition serialization and cannot
 duplicate observation retirement or lease release. Starting shutdown cancels
 an in-flight drain request before the shutdown bound begins controlling the
-remaining transition work. Any cleanup ambiguity overrides the disabled result and fails closed.
+remaining transition work. Any cleanup ambiguity overrides the disabled result
+and fails closed.
 Retirement is revision-guarded, so cleanup cannot remove a different
 observation.
+
+If an underlying filesystem operation does not observe cancellation before
+the cleanup deadline, bounded callers still return on their own deadline. The
+single ownership goroutine remains as a late finalizer: after the operation
+unblocks it makes one fresh bounded reconciliation attempt and closes the
+runtime lease exactly once. Until that happens the result reports ownership as
+`unknown`, rather than falsely claiming release.
 
 ## Operator behavior
 

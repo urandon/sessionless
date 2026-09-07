@@ -240,7 +240,9 @@ func (foreground *Foreground) Run(ctx context.Context) (ResultV1, error) {
 	if err != nil {
 		return result, err
 	}
-	shutdownErr := session.Shutdown(context.Background())
+	waitCtx, cancel := context.WithTimeout(context.Background(), 2*foreground.cleanupTimeout)
+	shutdownErr := session.Shutdown(waitCtx)
+	cancel()
 	result = session.Result()
 	if shutdownErr != nil {
 		return result, errors.Join(ErrFeatureDisabled, shutdownErr)
@@ -313,39 +315,52 @@ func (session *Session) Shutdown(ctx context.Context) error {
 
 func (session *Session) shutdown() {
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), session.cleanupTimeout)
-	defer cancel()
-
-	var cleanupErr error
-	if err := session.acquireTransition(cleanupCtx); err != nil {
+	gateErr := session.acquireTransition(cleanupCtx)
+	if gateErr != nil {
+		cancel()
 		session.mu.Lock()
-		session.shutdownErr = err
-		session.result.Code = localCode(err)
+		session.shutdownErr = gateErr
+		session.result.Code = localCode(gateErr)
 		session.result.ObservationState = "unknown"
 		session.result.RuntimeOwnership = "unknown"
-		session.state = "shutdown_failed"
 		session.mu.Unlock()
-		close(session.shutdownDone)
+
+		// A filesystem operation may not observe cancellation until it returns.
+		// Keep exactly one ownership finalizer alive: wait for that operation,
+		// then reconcile under a fresh bound before closing the lease.
+		_ = session.acquireTransition(context.Background())
+		lateCtx, lateCancel := context.WithTimeout(context.Background(), session.cleanupTimeout)
+		cleanupErr := session.cleanupWithTransition(lateCtx)
+		lateCancel()
+		session.finishShutdown(errors.Join(gateErr, cleanupErr))
+		session.releaseTransition()
 		return
 	}
+	defer cancel()
 	defer session.releaseTransition()
+	cleanupErr := session.cleanupWithTransition(cleanupCtx)
+	session.finishShutdown(cleanupErr)
+}
 
+func (session *Session) cleanupWithTransition(ctx context.Context) error {
+	var cleanupErr error
 	session.mu.Lock()
 	state := session.state
 	session.mu.Unlock()
 	if state == "owned" {
-		cleanupErr = session.transition(cleanupCtx, attachedworkerdaemon.DaemonDraining, "draining")
+		cleanupErr = session.transition(ctx, attachedworkerdaemon.DaemonDraining, "draining")
 	}
 	session.mu.Lock()
 	state = session.state
 	session.mu.Unlock()
 	if cleanupErr == nil && state == "draining" {
-		cleanupErr = session.transition(cleanupCtx, attachedworkerdaemon.DaemonStopped, "stopped")
+		cleanupErr = session.transition(ctx, attachedworkerdaemon.DaemonStopped, "stopped")
 	}
 	if cleanupErr == nil {
 		session.mu.Lock()
 		revision := session.observation.Revision
 		session.mu.Unlock()
-		cleanupErr = session.lease.RetireObservation(cleanupCtx, revision)
+		cleanupErr = session.lease.RetireObservation(ctx, revision)
 		session.mu.Lock()
 		if cleanupErr == nil {
 			session.result.ObservationState = "retired"
@@ -354,6 +369,10 @@ func (session *Session) shutdown() {
 		}
 		session.mu.Unlock()
 	}
+	return cleanupErr
+}
+
+func (session *Session) finishShutdown(cleanupErr error) {
 	closeErr := session.lease.Close()
 	session.mu.Lock()
 	if closeErr == nil {

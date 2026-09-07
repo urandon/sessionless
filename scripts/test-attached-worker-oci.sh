@@ -40,29 +40,77 @@ suffix=$$
 registry_name="sessionless-aw05b-registry-$suffix"
 installation_id="real-engine-gate-$suffix"
 fixture_tag=''
+fixture_digest=''
 
 cleanup() {
-  owned=$(docker_cli container ls --all --quiet \
+  status=$?
+  trap - EXIT HUP INT TERM
+  if ! owned=$(docker_cli container ls --all --quiet \
     --filter "label=dev.sessionless.attached-worker.profile=sessionless.oci.docker.v1" \
-    --filter "label=dev.sessionless.attached-worker.installation=$installation_id" 2>/dev/null || true)
+    --filter "label=dev.sessionless.attached-worker.installation=$installation_id" 2>/dev/null); then
+    printf '%s\n' 'could not enumerate test-owned containers during cleanup' >&2
+    status=1
+    owned=''
+  fi
   for id in $owned; do
     case "$id" in
-      *[!0-9a-f]*|'') printf '%s\n' 'refusing malformed owned-container cleanup output' >&2 ;;
+      *[!0-9a-f]*|'')
+        printf '%s\n' 'refusing malformed owned-container cleanup output' >&2
+        status=1
+        ;;
       ????????????????????????????????????????????????????????????????)
         docker_cli container rm --force --volumes -- "$id" >/dev/null 2>&1 || true ;;
-      *) printf '%s\n' 'refusing malformed owned-container cleanup output' >&2 ;;
+      *)
+        printf '%s\n' 'refusing malformed owned-container cleanup output' >&2
+        status=1
+        ;;
     esac
   done
   docker_cli container rm --force --volumes "$registry_name" >/dev/null 2>&1 || true
   if test -n "$fixture_tag"; then
-    docker_cli image rm "$fixture_tag" >/dev/null 2>&1 || true
+    docker_cli image rm --force "$fixture_tag" >/dev/null 2>&1 || true
+  fi
+  if test -n "$fixture_digest"; then
+    docker_cli image rm --force "$fixture_digest" >/dev/null 2>&1 || true
+  fi
+
+  if docker_cli info >/dev/null 2>&1; then
+    if ! remaining=$(docker_cli container ls --all --quiet \
+      --filter "label=dev.sessionless.attached-worker.profile=sessionless.oci.docker.v1" \
+      --filter "label=dev.sessionless.attached-worker.installation=$installation_id" 2>/dev/null); then
+      printf '%s\n' 'could not verify test-owned container cleanup' >&2
+      status=1
+    elif test -n "$remaining"; then
+      printf '%s\n' 'test-owned containers remain after cleanup' >&2
+      status=1
+    fi
+    if docker_cli container inspect "$registry_name" >/dev/null 2>&1; then
+      printf '%s\n' 'ephemeral registry container remains after cleanup' >&2
+      status=1
+    fi
+    if test -n "$fixture_tag" && docker_cli image inspect "$fixture_tag" >/dev/null 2>&1; then
+      printf '%s\n' 'fixture image tag remains after cleanup' >&2
+      status=1
+    fi
+    if test -n "$fixture_digest" && docker_cli image inspect "$fixture_digest" >/dev/null 2>&1; then
+      printf '%s\n' 'fixture image digest remains after cleanup' >&2
+      status=1
+    fi
+  else
+    printf '%s\n' 'Docker Engine unavailable for cleanup verification' >&2
+    status=1
   fi
   case "$test_root" in
-    "$repo_root/.build/tmp/attached-worker-oci."*) rm -rf "$test_root" ;;
-    *) printf '%s\n' 'refusing unexpected OCI test-root cleanup target' >&2 ;;
+    "$repo_root/.build/tmp/attached-worker-oci."*)
+      rm -rf "$test_root" || status=1
+      test ! -e "$test_root" || status=1
+      ;;
+    *) printf '%s\n' 'refusing unexpected OCI test-root cleanup target' >&2; status=1 ;;
   esac
+  exit "$status"
 }
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+trap 'exit 130' HUP INT TERM
 
 engine_id=$(docker_cli info --format '{{.ID}}')
 engine_arch=$(docker_cli info --format '{{.Architecture}}')
@@ -78,7 +126,10 @@ GOOS=linux GOARCH="$go_arch" CGO_ENABLED=0 go build -trimpath \
 tar -cf "$test_root/rootfs.tar" --files-from /dev/null
 
 docker_cli run --detach --rm --name "$registry_name" \
-  --publish 127.0.0.1::5000 "$LOCAL_REGISTRY_IMAGE" >/dev/null
+  --log-driver none \
+  --publish 127.0.0.1::5000 \
+  --tmpfs /var/lib/registry:rw,nosuid,nodev,noexec,size=64m \
+  "$LOCAL_REGISTRY_IMAGE" >/dev/null
 registry_port=$(docker_cli port "$registry_name" 5000/tcp | sed -n 's/.*://p' | tail -1)
 case "$registry_port" in
   ''|*[!0-9]*) printf '%s\n' 'could not resolve local registry port' >&2; exit 1 ;;

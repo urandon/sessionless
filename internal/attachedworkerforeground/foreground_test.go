@@ -221,7 +221,7 @@ func (lease *fakeLease) PersistObservation(context.Context, attachedworkerlocal.
 	return nil
 }
 
-func (lease *fakeLease) RetireObservation(context.Context) error {
+func (lease *fakeLease) RetireObservation(context.Context, uint64) error {
 	lease.retireCalls++
 	return lease.retireErr
 }

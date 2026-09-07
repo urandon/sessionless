@@ -295,8 +295,8 @@ func (lease *RuntimeLease) PersistObservation(ctx context.Context, observation R
 // RetireObservation durably removes local runtime evidence while the caller
 // still owns the kernel-backed runtime lease. Missing evidence is already
 // retired and therefore succeeds.
-func (lease *RuntimeLease) RetireObservation(ctx context.Context) (resultErr error) {
-	if ctx == nil || ctx.Err() != nil || lease == nil || lease.file == nil || lease.store == nil {
+func (lease *RuntimeLease) RetireObservation(ctx context.Context, expectedRevision uint64) (resultErr error) {
+	if ctx == nil || ctx.Err() != nil || expectedRevision == 0 || lease == nil || lease.file == nil || lease.store == nil {
 		return ErrInvalidState
 	}
 	store := lease.store
@@ -307,6 +307,16 @@ func (lease *RuntimeLease) RetireObservation(ctx context.Context) (resultErr err
 	defer func() { resultErr = errors.Join(resultErr, lock.Close()) }()
 	if _, err := store.loadConsistentLocked(); err != nil {
 		return err
+	}
+	observation, present, err := store.loadObservationLocked()
+	if err != nil {
+		return err
+	}
+	if !present {
+		return nil
+	}
+	if observation.Revision != expectedRevision {
+		return ErrStateConflict
 	}
 	if ctx.Err() != nil {
 		return ctx.Err()

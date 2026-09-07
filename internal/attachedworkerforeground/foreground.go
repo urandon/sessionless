@@ -60,7 +60,7 @@ type Activation interface {
 
 type localRuntimeLease interface {
 	PersistObservation(context.Context, attachedworkerlocal.RuntimeObservationV1) error
-	RetireObservation(context.Context) error
+	RetireObservation(context.Context, uint64) error
 	Close() error
 }
 
@@ -127,7 +127,7 @@ func (foreground *Foreground) Run(ctx context.Context) (result ResultV1, resultE
 		var cleanupErr error
 		if observationPersisted {
 			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), foreground.cleanupTimeout)
-			cleanupErr = lease.RetireObservation(cleanupCtx)
+			cleanupErr = lease.RetireObservation(cleanupCtx, result.ObservationRevision)
 			cancel()
 			if cleanupErr == nil {
 				result.ObservationState = "retired"

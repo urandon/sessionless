@@ -29,7 +29,8 @@ forward only already validated counters, never attempts to infer server state,
 then durably retires the observation before releasing `runtime.lock`. Cleanup
 uses a separate bounded context so caller cancellation cannot leave a normal
 disabled run looking active. Any cleanup ambiguity overrides the disabled
-result and fails closed.
+result and fails closed. Retirement is revision-guarded, so cleanup cannot
+remove a different observation.
 
 ## Operator behavior
 
@@ -68,4 +69,3 @@ Until that contract lands, no repository binary can construct a live
 activation. OS-service/container packaging, authenticated local control,
 self-update, destructive uninstall, owner-facing UX, and #79 two-owner E2E are
 also separate gates.
-

@@ -60,13 +60,15 @@ observation before committing its new manifest state.
 JSON decoding is size bounded, UTF-8 only, case-insensitive duplicate-key
 rejecting, unknown-field rejecting, and single-value only. Unsupported schema
 versions, permission drift, symlink substitution, orphaned transaction files,
-and manifest/secret revision or generation disagreement fail closed.
+unknown direct inventory entries, and manifest/secret revision or generation
+disagreement fail closed.
 
 ## Durability and ambiguity
 
 Writes create a same-directory mode-`0600` temporary file, write and `fsync`
 it, close it, atomically rename it over the exact target, then `fsync` the state
-directory. A directory-sync failure after rename returns `state_ambiguous`;
+directory. Initial creation also `fsync`s the state root's parent before any
+successful return. A directory-sync failure after a namespace mutation returns `state_ambiguous`;
 the caller must reload and reconcile the exact revision rather than repeat an
 effect blindly. An orphaned `.sessionless-tmp-*` file is treated as
 `state_incomplete`, not silently ignored.
@@ -81,9 +83,10 @@ Local logout is a small journaled transition:
 
 1. atomically persist `logout-intent.json` for the exact manifest revision and
    caller-supplied idempotency key;
-2. durably remove `secret.json`;
-3. atomically commit the `logged_out` manifest and content-free receipt;
-4. durably remove the intent.
+2. durably remove any prior daemon observation;
+3. durably remove `secret.json`;
+4. atomically commit the `logged_out` manifest and content-free receipt;
+5. durably remove the intent.
 
 The presence of an intent denies secret reads immediately. The same
 idempotency key can resume after interruption; a different request conflicts.
@@ -111,9 +114,9 @@ provider credential, environment, process arguments, stdout, or stderr.
 - `check` proves strict local consistency and exact SHA-256 identity of the
   configured Docker and harness executables; it does not execute either one.
 - `doctor` additionally validates the supported host/boundary pairing, pinned
-  Docker and harness executable digests, and empty private Docker CLI directory. Engine,
-  external-release, daemon, and server observations remain `unknown` because
-  this slice makes no live call.
+  Docker and harness executable digests, and empty private Docker CLI
+  directory. Engine, external-release, daemon, and server observations remain
+  `unknown` because this slice makes no live call.
 - `status` exposes local lifecycle and generations plus an exact content-free
   daemon state when a valid local observation exists. Server observation stays
   `unknown`; a local `running` value is not server acceptance or health.

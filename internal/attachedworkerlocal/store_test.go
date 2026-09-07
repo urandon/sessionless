@@ -246,6 +246,35 @@ func TestInitializeCreatesExactPrivateInventoryAndReadOnlyCommandsDoNotMutate(t 
 	}
 }
 
+func TestInitializeMakesRootCreationDurableOrAmbiguous(t *testing.T) {
+	store, manifest, secret := newFixture(t)
+	store.syncParentOverride = func() error { return ErrLocalIO }
+	if err := store.Initialize(context.Background(), manifest, secret); !errors.Is(err, ErrStateAmbiguous) {
+		t.Fatalf("Initialize() error = %v, want ambiguous", err)
+	}
+	if info, err := os.Stat(store.root); err != nil || !info.IsDir() {
+		t.Fatalf("ambiguous root info=%v err=%v", info, err)
+	}
+}
+
+func TestUnknownInventoryFailsClosedAndIsNeverOmittedAsOK(t *testing.T) {
+	store, _, _ := initializeFixture(t)
+	unknown := filepath.Join(store.root, "future-v2-state.json")
+	if err := os.WriteFile(unknown, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Load(context.Background()); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("Load() error = %v, want invalid", err)
+	}
+	plan, err := store.UninstallPlan(context.Background())
+	if !errors.Is(err, ErrInvalidState) || plan.Code != CodeInvalid || plan.DestructiveAction != "not_performed" {
+		t.Fatalf("UninstallPlan()=%+v err=%v", plan, err)
+	}
+	if _, err := os.Stat(unknown); err != nil {
+		t.Fatalf("uninstall plan mutated unknown entry: %v", err)
+	}
+}
+
 func TestStoreRejectsSymlinkAndModeSubstitution(t *testing.T) {
 	store, _, _ := initializeFixture(t)
 	manifestPath := filepath.Join(store.root, ManifestFileName)

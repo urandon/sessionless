@@ -7,6 +7,8 @@ import (
 	"os"
 )
 
+func platformSupported() bool { return false }
+
 func openLockFile(string, bool) (*os.File, error) { return nil, ErrStateUnsupported }
 func acquireFileLock(*os.File) error              { return ErrStateUnsupported }
 func releaseFileLock(*os.File) error              { return ErrStateUnsupported }

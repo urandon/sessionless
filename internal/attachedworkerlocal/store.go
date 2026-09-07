@@ -15,9 +15,10 @@ import (
 const temporaryFilePrefix = ".sessionless-tmp-"
 
 type Store struct {
-	root             string
-	now              func() time.Time
-	syncRootOverride func() error
+	root               string
+	now                func() time.Time
+	syncRootOverride   func() error
+	syncParentOverride func() error
 }
 
 type RuntimeLease struct {
@@ -130,10 +131,8 @@ func (store *Store) LoadSecret(ctx context.Context) (secretResult SecretRecordV1
 	if ctx.Err() != nil {
 		return SecretRecordV1{}, ctx.Err()
 	}
-	if incomplete, err := store.hasTemporaryFiles(); err != nil {
+	if err := store.validateInventory(); err != nil {
 		return SecretRecordV1{}, err
-	} else if incomplete {
-		return SecretRecordV1{}, ErrStateIncomplete
 	}
 	if present, err := store.filePresentSecure(RuntimeLockFileName); err != nil {
 		return SecretRecordV1{}, err
@@ -312,13 +311,19 @@ func (store *Store) ensureRoot(create bool) error {
 	if store == nil || !canonicalAbsolute(store.root) || filepath.Dir(store.root) == store.root {
 		return ErrInvalidRoot
 	}
+	if !platformSupported() {
+		return ErrStateUnsupported
+	}
 	parent := filepath.Dir(store.root)
 	resolvedParent, err := filepath.EvalSymlinks(parent)
 	if err != nil || resolvedParent != parent {
 		return ErrInvalidRoot
 	}
+	created := false
 	if create {
-		if err := os.Mkdir(store.root, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+		if err := os.Mkdir(store.root, 0o700); err == nil {
+			created = true
+		} else if !errors.Is(err, fs.ErrExist) {
 			return ErrLocalIO
 		}
 	}
@@ -333,14 +338,17 @@ func (store *Store) ensureRoot(create bool) error {
 	if err != nil || resolvedRoot != store.root {
 		return ErrInvalidRoot
 	}
+	if created {
+		if err := store.syncParent(); err != nil {
+			return ErrStateAmbiguous
+		}
+	}
 	return nil
 }
 
 func (store *Store) loadConsistentLocked() (ManifestV1, error) {
-	if incomplete, err := store.hasTemporaryFiles(); err != nil {
+	if err := store.validateInventory(); err != nil {
 		return ManifestV1{}, err
-	} else if incomplete {
-		return ManifestV1{}, ErrStateIncomplete
 	}
 	if present, err := store.filePresentSecure(RuntimeLockFileName); err != nil {
 		return ManifestV1{}, err
@@ -475,17 +483,23 @@ func (store *Store) filePresentSecure(name string) (bool, error) {
 	return true, nil
 }
 
-func (store *Store) hasTemporaryFiles() (bool, error) {
+func (store *Store) validateInventory() error {
 	entries, err := os.ReadDir(store.root)
 	if err != nil {
-		return false, ErrLocalIO
+		return ErrLocalIO
 	}
 	for _, entry := range entries {
 		if strings.HasPrefix(entry.Name(), temporaryFilePrefix) {
-			return true, nil
+			return ErrStateIncomplete
+		}
+		switch entry.Name() {
+		case ManifestFileName, SecretFileName, LogoutIntentFileName, ObservationFileName,
+			StateLockFileName, RuntimeLockFileName:
+		default:
+			return ErrInvalidState
 		}
 	}
-	return false, nil
+	return nil
 }
 
 func (store *Store) writeAtomic(name string, encoded []byte) error {
@@ -553,7 +567,18 @@ func (store *Store) syncRoot() error {
 	if store.syncRootOverride != nil {
 		return store.syncRootOverride()
 	}
-	directory, err := os.Open(store.root)
+	return syncDirectory(store.root)
+}
+
+func (store *Store) syncParent() error {
+	if store.syncParentOverride != nil {
+		return store.syncParentOverride()
+	}
+	return syncDirectory(filepath.Dir(store.root))
+}
+
+func syncDirectory(path string) error {
+	directory, err := os.Open(path)
 	if err != nil {
 		return ErrLocalIO
 	}

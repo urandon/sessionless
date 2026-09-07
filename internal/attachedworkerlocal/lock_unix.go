@@ -11,6 +11,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+func platformSupported() bool { return true }
+
 func openLockFile(path string, create bool) (*os.File, error) {
 	flags := unix.O_RDWR | unix.O_CLOEXEC | unix.O_NOFOLLOW
 	if create {

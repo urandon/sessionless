@@ -319,11 +319,8 @@ func (store *Store) ensureRoot(create bool) error {
 	if err != nil || resolvedParent != parent {
 		return ErrInvalidRoot
 	}
-	created := false
 	if create {
-		if err := os.Mkdir(store.root, 0o700); err == nil {
-			created = true
-		} else if !errors.Is(err, fs.ErrExist) {
+		if err := os.Mkdir(store.root, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
 			return ErrLocalIO
 		}
 	}
@@ -338,7 +335,7 @@ func (store *Store) ensureRoot(create bool) error {
 	if err != nil || resolvedRoot != store.root {
 		return ErrInvalidRoot
 	}
-	if created {
+	if create {
 		if err := store.syncParent(); err != nil {
 			return ErrStateAmbiguous
 		}

@@ -255,6 +255,13 @@ func TestInitializeMakesRootCreationDurableOrAmbiguous(t *testing.T) {
 	if info, err := os.Stat(store.root); err != nil || !info.IsDir() {
 		t.Fatalf("ambiguous root info=%v err=%v", info, err)
 	}
+	store.syncParentOverride = nil
+	if err := store.Initialize(context.Background(), manifest, secret); err != nil {
+		t.Fatalf("resumable Initialize() error = %v", err)
+	}
+	if _, err := store.Load(context.Background()); err != nil {
+		t.Fatalf("Load() after resumed initialization = %v", err)
+	}
 }
 
 func TestUnknownInventoryFailsClosedAndIsNeverOmittedAsOK(t *testing.T) {

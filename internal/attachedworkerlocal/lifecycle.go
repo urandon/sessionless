@@ -251,10 +251,8 @@ func (store *Store) Logout(ctx context.Context, input LogoutInputV1) (result Log
 			result.Code = Code(resultErr)
 		}
 	}()
-	if incomplete, err := store.hasTemporaryFiles(); err != nil {
+	if err := store.validateInventory(); err != nil {
 		return LogoutResultV1{Version: 1, Code: Code(err)}, err
-	} else if incomplete {
-		return LogoutResultV1{Version: 1, Code: CodeIncomplete}, ErrStateIncomplete
 	}
 	manifest, err := store.loadManifestLocked()
 	if err != nil {

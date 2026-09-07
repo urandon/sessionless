@@ -2,6 +2,7 @@ package attachedworkerdaemon
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"time"
 
@@ -74,11 +75,18 @@ func (invocation Invocation) Validate() error {
 }
 
 type InvocationResult struct {
-	Process              AttemptResult
-	CredentialChanged    bool
-	CredentialGeneration uint64
-	FailureCode          string
+	Process                  AttemptResult
+	CredentialChanged        bool
+	CredentialGeneration     uint64
+	FailureCode              string
+	CommittedArtifactDigests []CommittedEvidenceDigest
+	CommittedEventDigests    []CommittedEvidenceDigest
 }
+
+// CommittedEvidenceDigest is content-addressed evidence already committed by
+// the local invocation boundary. The daemon transport carries only the digest;
+// it never embeds artifact, event, provider, prompt, or result content.
+type CommittedEvidenceDigest [sha256.Size]byte
 
 type ProcessRunner interface {
 	Run(context.Context, AttemptSpec) (AttemptResult, error)

@@ -25,7 +25,7 @@ import (
 )
 
 const (
-	snapshotVersionV1  = uint32(1)
+	SnapshotVersionV1  = uint32(1)
 	connectionKeyBytes = 32
 )
 
@@ -542,6 +542,28 @@ type Session struct {
 	now              func() time.Time
 }
 
+// ActionV1 is the bounded worker-to-platform vocabulary that may be emitted
+// through a connected Session after bootstrap. The Session owns the connection
+// envelope sequence and acknowledgement; callers own only the typed semantic
+// payload. Raw FrameV1 construction remains inside this package so a daemon
+// adapter cannot forge scope, generations, or connection watermarks.
+type ActionV1 struct {
+	Heartbeat  *attachedworkerprotocol.HeartbeatV1
+	LeaseClaim *attachedworkerprotocol.LeaseClaimV1
+	Progress   *attachedworkerprotocol.ProgressV1
+	CancelAck  *attachedworkerprotocol.CancelAckV1
+	Terminal   *attachedworkerprotocol.TerminalV1
+	Drained    *attachedworkerprotocol.DrainedV1
+	Revoked    *attachedworkerprotocol.RevokedV1
+}
+
+func (action ActionV1) String() string {
+	kind, count := actionKind(action)
+	return fmt.Sprintf("ActionV1{kind:%s payload:[redacted] count:%d}", kind, count)
+}
+
+func (action ActionV1) GoString() string { return action.String() }
+
 func (session *Session) Exchange(ctx context.Context, batch attachedworkerprotocol.BatchV1) (*attachedworkerprotocol.BatchV1, error) {
 	if session == nil || ctx == nil {
 		return nil, ErrInvalidConfiguration
@@ -552,6 +574,45 @@ func (session *Session) Exchange(ctx context.Context, batch attachedworkerprotoc
 	ownedBatch, err := cloneBatch(batch)
 	if err != nil {
 		return nil, ErrInvalidAuthority
+	}
+	return session.exchangePrepared(ctx, func() (attachedworkerprotocol.BatchV1, error) {
+		return ownedBatch, nil
+	})
+}
+
+// ExchangeAction creates the next exact worker envelope under the Session's
+// operation ownership and returns at most one validated platform frame. It is
+// intentionally narrower than Exchange and never exposes connection sequence
+// or acknowledgement construction to transport/daemon adapters.
+func (session *Session) ExchangeAction(ctx context.Context, action ActionV1) (*attachedworkerprotocol.FrameV1, error) {
+	if session == nil || ctx == nil {
+		return nil, ErrInvalidConfiguration
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	response, err := session.exchangePrepared(ctx, func() (attachedworkerprotocol.BatchV1, error) {
+		return session.buildActionBatch(action)
+	})
+	if err != nil || response == nil {
+		return nil, err
+	}
+	if len(response.Frames) != 1 {
+		return nil, ErrReconciliationRequired
+	}
+	frame := response.Frames[0]
+	return &frame, nil
+}
+
+func (session *Session) exchangePrepared(
+	ctx context.Context,
+	prepare func() (attachedworkerprotocol.BatchV1, error),
+) (*attachedworkerprotocol.BatchV1, error) {
+	if session == nil || ctx == nil || prepare == nil {
+		return nil, ErrInvalidConfiguration
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	session.mu.Lock()
 	state := session.state
@@ -580,6 +641,11 @@ func (session *Session) Exchange(ctx context.Context, batch attachedworkerprotoc
 		session.release()
 		return nil, ErrSessionFenced
 	}
+	ownedBatch, err := prepare()
+	if err != nil {
+		session.release()
+		return nil, err
+	}
 	opCtx, cancel := context.WithTimeout(ctx, session.operationTimeout)
 	result := make(chan exchangeResult, 1)
 	go func() {
@@ -604,6 +670,51 @@ func (session *Session) Exchange(ctx context.Context, batch attachedworkerprotoc
 		session.fail(StateReconciliationRequired, "exchange_cancelled")
 		return nil, errors.Join(ErrReconciliationRequired, opCtx.Err())
 	}
+}
+
+func (session *Session) buildActionBatch(action ActionV1) (attachedworkerprotocol.BatchV1, error) {
+	kind, count := actionKind(action)
+	if count != 1 {
+		return attachedworkerprotocol.BatchV1{}, ErrInvalidAuthority
+	}
+	session.mu.Lock()
+	machine := session.machine
+	binding := session.binding
+	session.mu.Unlock()
+	if machine == nil || !validBinding(binding) {
+		return attachedworkerprotocol.BatchV1{}, ErrInvalidAuthority
+	}
+	snapshot, err := machine.Snapshot()
+	if err != nil || snapshot.Worker.Sequence == math.MaxUint64 {
+		return attachedworkerprotocol.BatchV1{}, ErrReconciliationRequired
+	}
+	sequence := snapshot.Worker.Sequence + 1
+	frame := attachedworkerprotocol.FrameV1{
+		Version: binding.ProtocolVersion, MessageID: attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionWorkerToPlatform, sequence),
+		WorkerID: string(binding.WorkerID), EnrollmentGeneration: binding.EnrollmentGeneration,
+		ConnectionGeneration: binding.ConnectionGeneration, Sequence: sequence, Ack: snapshot.Platform.Sequence, Kind: kind,
+		Heartbeat: action.Heartbeat, LeaseClaim: action.LeaseClaim, Progress: action.Progress,
+		CancelAck: action.CancelAck, Terminal: action.Terminal, Drained: action.Drained, Revoked: action.Revoked,
+	}
+	return cloneBatch(attachedworkerprotocol.BatchV1{Version: binding.ProtocolVersion, Frames: []attachedworkerprotocol.FrameV1{frame}})
+}
+
+func actionKind(action ActionV1) (attachedworkerprotocol.MessageKind, int) {
+	var kind attachedworkerprotocol.MessageKind
+	count := 0
+	check := func(candidate attachedworkerprotocol.MessageKind, present bool) {
+		if present {
+			kind, count = candidate, count+1
+		}
+	}
+	check(attachedworkerprotocol.MessageHeartbeat, action.Heartbeat != nil)
+	check(attachedworkerprotocol.MessageLeaseClaim, action.LeaseClaim != nil)
+	check(attachedworkerprotocol.MessageProgress, action.Progress != nil)
+	check(attachedworkerprotocol.MessageCancelAck, action.CancelAck != nil)
+	check(attachedworkerprotocol.MessageTerminal, action.Terminal != nil)
+	check(attachedworkerprotocol.MessageDrained, action.Drained != nil)
+	check(attachedworkerprotocol.MessageRevoked, action.Revoked != nil)
+	return kind, count
 }
 
 type exchangeResult struct {
@@ -643,6 +754,26 @@ func (session *Session) exchangeOnce(ctx context.Context, batch attachedworkerpr
 	for _, frame := range batch.Frames {
 		if !frameMatchesBinding(frame, binding) || working.Accept(attachedworkerprotocol.DirectionWorkerToPlatform, frame, acceptance) != nil {
 			return nil, ErrInvalidAuthority
+		}
+	}
+	// Receiving TerminalAck commits the attempt, but the worker must first
+	// acknowledge that platform frame in a later connection envelope. Retire
+	// only after that proof so a reconnect cannot regress committed authority
+	// to idle. The connection watermarks and replay fingerprints are preserved.
+	if working.AttemptState() == attachedworkerprotocol.AttemptTerminalCommitted {
+		snapshot, snapshotErr := working.Snapshot()
+		if snapshotErr != nil {
+			return nil, ErrReconciliationRequired
+		}
+		if snapshot.Worker.Ack >= snapshot.Platform.Sequence {
+			retired, retireErr := attachedworkerprotocol.RetireCommittedAttemptV1(config, snapshot)
+			if retireErr != nil {
+				return nil, ErrReconciliationRequired
+			}
+			working, retireErr = attachedworkerprotocol.RestoreConformanceMachine(config, retired)
+			if retireErr != nil {
+				return nil, ErrReconciliationRequired
+			}
 		}
 	}
 	if err := ctx.Err(); err != nil {
@@ -717,12 +848,12 @@ func (session *Session) abandon() error {
 
 func (session *Session) Snapshot() SnapshotV1 {
 	if session == nil {
-		return SnapshotV1{Version: snapshotVersionV1, State: StateClosed, FailureCode: "invalid_session"}
+		return SnapshotV1{Version: SnapshotVersionV1, State: StateClosed, FailureCode: "invalid_session"}
 	}
 	session.mu.Lock()
 	defer session.mu.Unlock()
 	result := SnapshotV1{
-		Version: snapshotVersionV1, State: session.state,
+		Version: SnapshotVersionV1, State: session.state,
 		TenantID: session.binding.TenantID, OwnerUserID: session.binding.OwnerUserID, WorkerID: session.binding.WorkerID,
 		EnrollmentGeneration: session.binding.EnrollmentGeneration, ConnectionGeneration: session.binding.ConnectionGeneration,
 		ProtocolVersion: session.binding.ProtocolVersion, ConnectionID: session.binding.ConnectionID,

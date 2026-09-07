@@ -83,9 +83,11 @@ exchange port.
 ## Current use and next slices
 
 This package is a reviewed composition contract and deterministic fake surface;
-it is not reachable through `attachedworkerforeground.New`. The next AW-03
-slice should implement the worker-side `Source`/`ResultSink` adapter over this
-session, still without harness execution. After that, AW-04 fenced attempt
-composition can connect durable lease/cancel/terminal transitions. Only the
-subsequent reviewed foreground composition may inject those live ports and
-enable bounded long polling.
+it is not reachable through `attachedworkerforeground.New`. The feature-disabled
+[session-to-daemon adapter](attached-worker-daemon-transport.md) now owns the
+semantic worker action envelope plus fake-backed `Source`/`ResultSink` flow.
+AW-04 fenced attempt composition must still connect durable
+lease/cancel/terminal transitions, an active-cancel watcher must reach the
+exact running attempt, and concrete authenticated materialization must be
+reviewed before foreground composition can inject the live ports and enable
+bounded long polling.

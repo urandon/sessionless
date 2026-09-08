@@ -542,6 +542,10 @@ func loadAttachedWorkerProtocolAuthorityTx(ctx context.Context, tx *stateTx, wor
 	if err != nil {
 		return attachedworkerprotocol.MachineConfig{}, attachedworkerprotocol.MachineSnapshotV1{}, ErrAttachedWorkerAttemptConflict
 	}
+	capabilityDigest, err := hex.DecodeString(string(connection.CapabilityDigest))
+	if err != nil {
+		return attachedworkerprotocol.MachineConfig{}, attachedworkerprotocol.MachineSnapshotV1{}, ErrAttachedWorkerAttemptConflict
+	}
 	config := attachedworkerprotocol.MachineConfig{
 		Auth: attachedworkerprotocol.AuthContextV1{
 			TenantID: string(worker.TenantID), OwnerUserID: string(worker.OwnerUserID), WorkerID: string(worker.ID),
@@ -555,6 +559,7 @@ func loadAttachedWorkerProtocolAuthorityTx(ctx context.Context, tx *stateTx, wor
 	machine, err := attachedworkerprotocol.RestoreConformanceMachine(config, snapshot)
 	if err != nil || snapshot.Platform.Sequence != connection.PlatformSequence || snapshot.Platform.Ack != connection.PlatformAck ||
 		snapshot.Worker.Sequence != connection.WorkerSequence || snapshot.Worker.Ack != connection.WorkerAck ||
+		!bytes.Equal(snapshot.CapabilityDigest, capabilityDigest) ||
 		!attachedWorkerProtocolStateMatches(connection.State, machine.ConnectionState()) {
 		return attachedworkerprotocol.MachineConfig{}, attachedworkerprotocol.MachineSnapshotV1{}, ErrAttachedWorkerAttemptConflict
 	}

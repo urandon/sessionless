@@ -92,6 +92,15 @@ func TestMachineSnapshotRoundTripsEveryHandshakeState(t *testing.T) {
 	if err := SignReconnectV1(fixture.private, next, &reconnect); err != nil {
 		t.Fatal(err)
 	}
+	encodedReconnect, err := EncodeBatchV1(BatchV1{Version: 1, Frames: []FrameV1{reconnect}})
+	if err != nil {
+		t.Fatalf("idle reconnect did not cross the strict wire codec: %v", err)
+	}
+	decodedReconnect, err := DecodeBatchV1(encodedReconnect)
+	if err != nil || len(decodedReconnect.Frames) != 1 || decodedReconnect.Frames[0].Reconnect == nil ||
+		!bytes.Equal(decodedReconnect.Frames[0].Reconnect.AttemptSummary.Digest, reconnect.Reconnect.AttemptSummary.Digest) {
+		t.Fatalf("idle reconnect wire round trip failed: %#v err=%v", decodedReconnect, err)
+	}
 	acceptOK(t, machine, DirectionWorkerToPlatform, reconnect, next.ChannelBinding)
 	machine = roundTripMachine(t, machine)
 	reconnectAcceptedPayload, err := BuildReconnectAcceptedV1(previous, previous, negotiation)
@@ -110,6 +119,72 @@ func TestMachineSnapshotRoundTripsEveryHandshakeState(t *testing.T) {
 	acceptOK(t, machine, DirectionWorkerToPlatform, manifest, next.ChannelBinding)
 	if got := roundTripMachine(t, machine).ConnectionState(); got != ConnectionReady {
 		t.Fatalf("state=%s", got)
+	}
+}
+
+func TestIdleReconnectRestoresDrainingTargetAfterFreshManifest(t *testing.T) {
+	fixture := newProtocolFixture(t)
+	machine := fixture.attachMachine(t)
+	drain := fixture.frame(DirectionPlatformToWorker, MessageDrain)
+	drain.Drain = &DrainV1{Revision: 1}
+	acceptOK(t, machine, DirectionPlatformToWorker, drain, fixture.auth.ChannelBinding)
+	previousSnapshot, err := machine.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousConfig := MachineConfig{
+		Auth: fixture.auth, WorkerOffer: fixture.workerOffer, PlatformOffer: fixture.platformOffer,
+		ImplementedVersions: []ProtocolVersion{1},
+	}
+	workerMachine, err := RestoreConformanceMachine(previousConfig, previousSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextAuth := fixture.auth
+	nextAuth.ConnectionGeneration++
+	nextAuth.ChannelBinding = digestByte(0x49)
+	workerClaim, err := workerMachine.BeginReconnect(nextAuth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	negotiation := ReconnectNegotiationV1{
+		WorkerOffer: fixture.workerOffer, PlatformOffer: fixture.platformOffer, SelectedVersion: 1,
+		WorkerNonce: digestByte(0x69), PlatformNonce: digestByte(0x79), CapabilityDigest: fixture.digest,
+	}
+	reconnect, err := BuildReconnectV1(workerClaim, negotiation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconnectFrame := FrameV1{
+		Version: 1, MessageID: MessageIDV1(DirectionWorkerToPlatform, 2), WorkerID: nextAuth.WorkerID,
+		EnrollmentGeneration: nextAuth.EnrollmentGeneration, ConnectionGeneration: nextAuth.ConnectionGeneration,
+		Sequence: 2, Ack: 1, Kind: MessageReconnect, Reconnect: &reconnect,
+	}
+	if err := SignReconnectV1(fixture.private, nextAuth, &reconnectFrame); err != nil {
+		t.Fatal(err)
+	}
+	_, postReconnect, err := BuildReconnectAcceptedSnapshotV1(previousConfig, previousSnapshot, nextAuth, reconnectFrame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextConfig := previousConfig
+	nextConfig.Auth = nextAuth
+	restored, err := RestoreConformanceMachine(nextConfig, postReconnect)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := FrameV1{
+		Version: 1, MessageID: MessageIDV1(DirectionWorkerToPlatform, 3), WorkerID: nextAuth.WorkerID,
+		EnrollmentGeneration: nextAuth.EnrollmentGeneration, ConnectionGeneration: nextAuth.ConnectionGeneration,
+		Sequence: 3, Ack: 2, Kind: MessageManifest,
+		Manifest: &ManifestV1{Manifest: fixture.manifest, Digest: fixture.digest},
+	}
+	if err := SignManifestV1(fixture.private, nextAuth, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	acceptOK(t, restored, DirectionWorkerToPlatform, manifest, nextAuth.ChannelBinding)
+	if restored.ConnectionState() != ConnectionDraining {
+		t.Fatalf("reconnect lost draining authority: %s", restored.ConnectionState())
 	}
 }
 

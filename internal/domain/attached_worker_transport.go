@@ -117,31 +117,39 @@ func validateAttachedWorkerTransportDigest(field, value string) error {
 }
 
 type AttachedWorkerAttachChallenge struct {
-	TenantID                     TenantID                      `json:"tenant_id"`
-	OwnerUserID                  UserID                        `json:"owner_user_id"`
-	ID                           AttachedWorkerChallengeID     `json:"challenge_id"`
-	WorkerID                     AttachedWorkerID              `json:"worker_id"`
-	ConnectionID                 AttachedWorkerConnectionID    `json:"connection_id"`
-	Purpose                      AttachedWorkerAttachPurpose   `json:"purpose"`
-	Audience                     string                        `json:"audience"`
-	ExpectedWorkerRevision       uint64                        `json:"expected_worker_revision"`
-	ExpectedEnrollmentGeneration uint64                        `json:"expected_enrollment_generation"`
-	ExpectedConnectionGeneration uint64                        `json:"expected_connection_generation"`
-	TargetConnectionGeneration   uint64                        `json:"target_connection_generation"`
-	WorkerProtocolMinimum        uint32                        `json:"worker_protocol_minimum"`
-	WorkerProtocolMaximum        uint32                        `json:"worker_protocol_maximum"`
-	WorkerProtocolVersions       []uint32                      `json:"worker_protocol_versions"`
-	PlatformProtocolMinimum      uint32                        `json:"platform_protocol_minimum"`
-	PlatformProtocolMaximum      uint32                        `json:"platform_protocol_maximum"`
-	PlatformProtocolVersions     []uint32                      `json:"platform_protocol_versions"`
-	SelectedProtocolVersion      uint32                        `json:"selected_protocol_version"`
-	WorkerNonceDigest            AttachedWorkerChallengeDigest `json:"worker_nonce_digest"`
-	PlatformNonceDigest          AttachedWorkerChallengeDigest `json:"platform_nonce_digest"`
-	CreatedAt                    time.Time                     `json:"created_at"`
-	ExpiresAt                    time.Time                     `json:"expires_at"`
-	RetainUntil                  time.Time                     `json:"retain_until"`
-	ConsumedAt                   time.Time                     `json:"consumed_at"`
-	Revision                     uint64                        `json:"revision"`
+	TenantID                     TenantID                    `json:"tenant_id"`
+	OwnerUserID                  UserID                      `json:"owner_user_id"`
+	ID                           AttachedWorkerChallengeID   `json:"challenge_id"`
+	WorkerID                     AttachedWorkerID            `json:"worker_id"`
+	ConnectionID                 AttachedWorkerConnectionID  `json:"connection_id"`
+	Purpose                      AttachedWorkerAttachPurpose `json:"purpose"`
+	Audience                     string                      `json:"audience"`
+	ExpectedWorkerRevision       uint64                      `json:"expected_worker_revision"`
+	ExpectedEnrollmentGeneration uint64                      `json:"expected_enrollment_generation"`
+	ExpectedConnectionGeneration uint64                      `json:"expected_connection_generation"`
+	TargetConnectionGeneration   uint64                      `json:"target_connection_generation"`
+	// Reconnect authority is persisted with the challenge but is deliberately
+	// excluded from public JSON projections. It pins the exact previous
+	// connection head that the store admitted before issuing a single-use
+	// reconnect challenge; scalar watermarks are never sufficient authority.
+	ExpectedConnectionID       AttachedWorkerConnectionID     `json:"-"`
+	ExpectedConnectionRevision uint64                         `json:"-"`
+	ExpectedCapabilityDigest   AttachedWorkerCapabilityDigest `json:"-"`
+	ExpectedProtocolSnapshot   []byte                         `json:"-"`
+	WorkerProtocolMinimum      uint32                         `json:"worker_protocol_minimum"`
+	WorkerProtocolMaximum      uint32                         `json:"worker_protocol_maximum"`
+	WorkerProtocolVersions     []uint32                       `json:"worker_protocol_versions"`
+	PlatformProtocolMinimum    uint32                         `json:"platform_protocol_minimum"`
+	PlatformProtocolMaximum    uint32                         `json:"platform_protocol_maximum"`
+	PlatformProtocolVersions   []uint32                       `json:"platform_protocol_versions"`
+	SelectedProtocolVersion    uint32                         `json:"selected_protocol_version"`
+	WorkerNonceDigest          AttachedWorkerChallengeDigest  `json:"worker_nonce_digest"`
+	PlatformNonceDigest        AttachedWorkerChallengeDigest  `json:"platform_nonce_digest"`
+	CreatedAt                  time.Time                      `json:"created_at"`
+	ExpiresAt                  time.Time                      `json:"expires_at"`
+	RetainUntil                time.Time                      `json:"retain_until"`
+	ConsumedAt                 time.Time                      `json:"consumed_at"`
+	Revision                   uint64                         `json:"revision"`
 }
 
 func (challenge AttachedWorkerAttachChallenge) Validate() error {
@@ -167,6 +175,29 @@ func (challenge AttachedWorkerAttachChallenge) Validate() error {
 		challenge.ExpectedConnectionGeneration == ^uint64(0) || challenge.TargetConnectionGeneration == 0 ||
 		challenge.TargetConnectionGeneration != challenge.ExpectedConnectionGeneration+1 {
 		return ValidationError{Field: "attached_worker_challenge.generations", Reason: "must describe the exact next connection generation"}
+	}
+	if challenge.Purpose == AttachedWorkerAttachInitial {
+		if challenge.ExpectedConnectionID != "" || challenge.ExpectedConnectionRevision != 0 ||
+			challenge.ExpectedCapabilityDigest != "" || len(challenge.ExpectedProtocolSnapshot) != 0 {
+			return ValidationError{Field: "attached_worker_challenge.reconnect_authority", Reason: "must be empty for initial attach"}
+		}
+	} else if challenge.ExpectedConnectionID != "" || challenge.ExpectedConnectionRevision != 0 ||
+		challenge.ExpectedCapabilityDigest != "" || len(challenge.ExpectedProtocolSnapshot) != 0 {
+		// Public challenge projections deliberately omit reconnect authority.
+		// When authority is present inside the transport/store boundary, it
+		// must be complete; durable stores additionally require its presence.
+		if err := challenge.ExpectedConnectionID.Validate(); err != nil {
+			return err
+		}
+		if challenge.ExpectedConnectionRevision == 0 || challenge.ExpectedConnectionRevision == ^uint64(0) {
+			return ValidationError{Field: "attached_worker_challenge.expected_connection_revision", Reason: "must be a bounded positive revision"}
+		}
+		if err := challenge.ExpectedCapabilityDigest.Validate(); err != nil {
+			return err
+		}
+		if len(challenge.ExpectedProtocolSnapshot) == 0 || len(challenge.ExpectedProtocolSnapshot) > maxAttachedWorkerProtocolSnapshotBytes {
+			return ValidationError{Field: "attached_worker_challenge.expected_protocol_snapshot", Reason: "must contain bounded exact reconnect authority"}
+		}
 	}
 	if !validAttachedWorkerProtocolOffer(challenge.WorkerProtocolMinimum, challenge.WorkerProtocolMaximum, challenge.WorkerProtocolVersions) ||
 		!validAttachedWorkerProtocolOffer(challenge.PlatformProtocolMinimum, challenge.PlatformProtocolMaximum, challenge.PlatformProtocolVersions) ||

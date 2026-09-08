@@ -706,10 +706,19 @@ func cloneManifest(value CapabilityManifestV1) CapabilityManifestV1 {
 }
 
 func cloneBinding(value AttemptBindingV1) AttemptBindingV1 {
-	value.ContextDigest = append([]byte(nil), value.ContextDigest...)
-	value.CapabilityDigest = append([]byte(nil), value.CapabilityDigest...)
-	value.PolicyDigest = append([]byte(nil), value.PolicyDigest...)
+	value.ContextDigest = cloneBytesPreservingNil(value.ContextDigest)
+	value.CapabilityDigest = cloneBytesPreservingNil(value.CapabilityDigest)
+	value.PolicyDigest = cloneBytesPreservingNil(value.PolicyDigest)
 	return value
+}
+
+func cloneBytesPreservingNil(value []byte) []byte {
+	if value == nil {
+		return nil
+	}
+	result := make([]byte, len(value))
+	copy(result, value)
+	return result
 }
 
 func (machine *ConformanceMachine) currentWatermarks() ConnectionWatermarksV1 {

@@ -33,7 +33,7 @@ func TestAttachedWorkerActivationCreatesBoundAttachingHeadWithoutPresenceLease(t
 	}
 	request := ports.AttachedWorkerConnectionActivation{
 		TenantID: worker.TenantID, OwnerUserID: worker.OwnerUserID, WorkerID: worker.ID,
-		ChallengeID: challenge.ID, ExpectedChallengeRevision: challenge.Revision,
+		ChallengeID: challenge.ID, Purpose: domain.AttachedWorkerAttachInitial, ExpectedChallengeRevision: challenge.Revision,
 		ExpectedWorkerRevision: worker.Revision, ExpectedEnrollmentGeneration: 1, ExpectedConnectionGeneration: 0,
 		PresentedWorkerNonceDigest: challenge.WorkerNonceDigest, PresentedPlatformNonceDigest: challenge.PlatformNonceDigest,
 		ConnectionSecretDigest:   domain.DigestAttachedWorkerConnectionSecret([]byte("secret")),

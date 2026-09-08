@@ -420,6 +420,247 @@ func TestReconnectIsRejectedBeforeChallengeUntilAuthoritativeSnapshotExists(t *t
 	}
 }
 
+func TestIdleReconnectRotatesAuthorityAndReplaysExactly(t *testing.T) {
+	fixture := newReadyTransportFixture(t)
+	service := newReconnectTransportService(t, fixture.store)
+	fixture.store.mu.Lock()
+	worker := fixture.store.worker
+	previous := fixture.store.connection
+	fixture.store.mu.Unlock()
+
+	challengeRequest := signedChallengeRequest(t, worker, fixture.privateKey)
+	challengeRequest.Purpose = domain.AttachedWorkerAttachReconnect
+	proof, err := SignChallengeRequest(fixture.privateKey, worker.TenantID, worker.OwnerUserID, worker, challengeRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	challengeRequest.Proof = proof
+	grant, err := service.IssueChallenge(context.Background(), worker.TenantID, worker.OwnerUserID, challengeRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if grant.Challenge.ExpectedConnectionID != previous.ID || grant.Challenge.ExpectedConnectionRevision != previous.Revision ||
+		grant.Challenge.ExpectedCapabilityDigest != previous.CapabilityDigest ||
+		!bytes.Equal(grant.Challenge.ExpectedProtocolSnapshot, previous.ProtocolSnapshot) {
+		t.Fatalf("challenge did not pin the exact previous head: %#v", grant.Challenge)
+	}
+	wireChallenge, err := json.Marshal(grant.Challenge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(wireChallenge, []byte("expected_connection_id")) || bytes.Contains(wireChallenge, []byte(string(previous.ID))) ||
+		bytes.Contains(wireChallenge, []byte("expected_protocol_snapshot")) {
+		t.Fatalf("server-only reconnect authority leaked on wire: %s", wireChallenge)
+	}
+
+	previousConfig, previousSnapshot, err := fixture.service.protocolStateForConnection(worker, previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerMachine, err := attachedworkerprotocol.RestoreConformanceMachine(previousConfig, previousSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextSecret, err := ParseConnectionSecret(bytes.Repeat([]byte{0x72}, connectionSecretBytes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextBinding := ConnectionChannelBinding(grant.Challenge.ID, grant.Challenge.WorkerNonceDigest, grant.Challenge.PlatformNonceDigest, nextSecret.Digest())
+	nextBindingBytes, err := decodeChannelBinding(nextBinding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextAuth := attachedworkerprotocol.AuthContextV1{
+		TenantID: string(worker.TenantID), OwnerUserID: string(worker.OwnerUserID), WorkerID: string(worker.ID),
+		IdentityPublicKey: worker.IdentityPublicKey, EnrollmentGeneration: worker.EnrollmentGeneration,
+		ConnectionGeneration: grant.Challenge.TargetConnectionGeneration, Version: 1, ChannelBinding: nextBindingBytes,
+	}
+	workerClaim, err := workerMachine.BeginReconnect(nextAuth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconnect, err := attachedworkerprotocol.BuildReconnectV1(workerClaim, attachedworkerprotocol.ReconnectNegotiationV1{
+		WorkerOffer: challengeRequest.Hello.Hello.Offer, PlatformOffer: grant.Frame.Challenge.PlatformOffer,
+		SelectedVersion: grant.Frame.Challenge.SelectedVersion, WorkerNonce: challengeRequest.Hello.Hello.WorkerNonce,
+		PlatformNonce: grant.Frame.Challenge.PlatformNonce, CapabilityDigest: mustDecodeHex(string(previous.CapabilityDigest)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconnectFrame := attachedworkerprotocol.FrameV1{
+		Version: 1, MessageID: attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionWorkerToPlatform, 2),
+		WorkerID: string(worker.ID), EnrollmentGeneration: worker.EnrollmentGeneration,
+		ConnectionGeneration: grant.Challenge.TargetConnectionGeneration, Sequence: 2, Ack: 1,
+		Kind: attachedworkerprotocol.MessageReconnect, Reconnect: &reconnect,
+	}
+	if err := attachedworkerprotocol.SignReconnectV1(fixture.privateKey, nextAuth, &reconnectFrame); err != nil {
+		t.Fatal(err)
+	}
+	activationRequest := ActivateRequest{ChallengeID: grant.Challenge.ID, ConnectionSecretDigest: nextSecret.Digest(), Attach: reconnectFrame}
+	activation, err := service.Activate(context.Background(), worker.TenantID, worker.OwnerUserID, activationRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if activation.Accepted.Kind != attachedworkerprotocol.MessageReconnectAccepted || activation.Connection.ID == previous.ID ||
+		activation.Connection.ConnectionGeneration != previous.ConnectionGeneration+1 ||
+		activation.Connection.State != domain.AttachedWorkerConnectionAttaching || !activation.Connection.PresenceExpiresAt.IsZero() {
+		t.Fatalf("reconnect activation did not rotate into two-phase attaching: %#v", activation)
+	}
+	fixture.store.mu.Lock()
+	observedAfterActivation := fixture.store.worker.ObservedState
+	fixture.store.mu.Unlock()
+	if observedAfterActivation != domain.AttachedWorkerObservedOffline {
+		t.Fatalf("old presence survived reconnect activation: %s", observedAfterActivation)
+	}
+	replay, err := service.Activate(context.Background(), worker.TenantID, worker.OwnerUserID, activationRequest)
+	if err != nil || !reflect.DeepEqual(replay, activation) {
+		t.Fatalf("exact reconnect activation replay=%#v err=%v", replay, err)
+	}
+	divergentSecret, _ := ParseConnectionSecret(bytes.Repeat([]byte{0x73}, connectionSecretBytes))
+	divergentRequest := activationRequest
+	divergentRequest.ConnectionSecretDigest = divergentSecret.Digest()
+	if _, err := service.Activate(context.Background(), worker.TenantID, worker.OwnerUserID, divergentRequest); !errors.Is(err, ErrTransportUnauthorized) {
+		t.Fatalf("divergent reconnect activation error=%v", err)
+	}
+
+	manifest := testCapabilityManifest(worker)
+	capabilityDigest, err := attachedworkerprotocol.ManifestDigestV1(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestFrame := attachedworkerprotocol.FrameV1{
+		Version: 1, MessageID: attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionWorkerToPlatform, 3),
+		WorkerID: string(worker.ID), EnrollmentGeneration: worker.EnrollmentGeneration,
+		ConnectionGeneration: activation.Connection.ConnectionGeneration, Sequence: 3, Ack: 2,
+		Kind:     attachedworkerprotocol.MessageManifest,
+		Manifest: &attachedworkerprotocol.ManifestV1{Manifest: manifest, Digest: capabilityDigest},
+	}
+	if err := attachedworkerprotocol.SignManifestV1(fixture.privateKey, nextAuth, &manifestFrame); err != nil {
+		t.Fatal(err)
+	}
+	nextBearer, err := NewConnectionBearer(worker.TenantID, worker.OwnerUserID, worker.ID, activation.Connection.ID, nextSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response, err := service.Exchange(context.Background(), nextBearer, attachedworkerprotocol.BatchV1{Version: 1, Frames: []attachedworkerprotocol.FrameV1{manifestFrame}}); err != nil || response != nil {
+		t.Fatalf("reconnect manifest response=%#v err=%v", response, err)
+	}
+	fixture.store.mu.Lock()
+	defer fixture.store.mu.Unlock()
+	if fixture.store.connection.State != domain.AttachedWorkerConnectionOnline || fixture.store.worker.ObservedState != domain.AttachedWorkerObservedOnline {
+		t.Fatalf("reconnected worker did not become online: connection=%s observed=%s", fixture.store.connection.State, fixture.store.worker.ObservedState)
+	}
+}
+
+func TestReconnectRejectsNonIdleProtocolOrDurableAttemptHead(t *testing.T) {
+	t.Run("protocol active", func(t *testing.T) {
+		fixture := newReadyTransportFixture(t)
+		fixture.makeOffered(t)
+		assertReconnectChallengeRejected(t, fixture)
+	})
+	t.Run("durable attempt head active", func(t *testing.T) {
+		fixture := newReadyTransportFixture(t)
+		attempt := fixture.pollResult(t, attachedworkerprotocol.MessageLeaseOffer).Attempt
+		fixture.store.mu.Lock()
+		fixture.store.attempt, fixture.store.attemptFound = attempt, true
+		fixture.store.mu.Unlock()
+		assertReconnectChallengeRejected(t, fixture)
+	})
+}
+
+func TestReconnectRejectsFullyDrainedSnapshotBeforeChallenge(t *testing.T) {
+	fixture := newReadyTransportFixture(t)
+	setReadyFixtureDrained(t, &fixture)
+	fixture.store.mu.Lock()
+	worker, createCalls := fixture.store.worker, fixture.store.createCalls
+	fixture.store.mu.Unlock()
+	request := signedChallengeRequest(t, worker, fixture.privateKey)
+	request.Purpose = domain.AttachedWorkerAttachReconnect
+	proof, err := SignChallengeRequest(fixture.privateKey, worker.TenantID, worker.OwnerUserID, worker, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Proof = proof
+	if _, err := newReconnectTransportService(t, fixture.store).IssueChallenge(
+		context.Background(), worker.TenantID, worker.OwnerUserID, request,
+	); !errors.Is(err, ErrTransportUnauthorized) {
+		t.Fatalf("fully drained reconnect error: %v", err)
+	}
+	fixture.store.mu.Lock()
+	defer fixture.store.mu.Unlock()
+	if fixture.store.createCalls != createCalls {
+		t.Fatal("fully drained reconnect reached challenge mutation")
+	}
+}
+
+func TestReconnectRejectsChangedOfferBeforeChallengeMutation(t *testing.T) {
+	fixture := newReadyTransportFixture(t)
+	fixture.store.mu.Lock()
+	worker, createCalls := fixture.store.worker, fixture.store.createCalls
+	fixture.store.mu.Unlock()
+	request := signedChallengeRequest(t, worker, fixture.privateKey)
+	request.Purpose = domain.AttachedWorkerAttachReconnect
+	request.Hello.Hello.Offer = attachedworkerprotocol.VersionOfferV1{
+		Window:    attachedworkerprotocol.VersionWindow{Minimum: 1, Maximum: 2},
+		Supported: []attachedworkerprotocol.ProtocolVersion{1, 2},
+	}
+	proof, err := SignChallengeRequest(fixture.privateKey, worker.TenantID, worker.OwnerUserID, worker, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Proof = proof
+	if _, err := newReconnectTransportService(t, fixture.store).IssueChallenge(
+		context.Background(), worker.TenantID, worker.OwnerUserID, request,
+	); !errors.Is(err, ErrTransportUnauthorized) {
+		t.Fatalf("changed-offer reconnect error=%v", err)
+	}
+	fixture.store.mu.Lock()
+	defer fixture.store.mu.Unlock()
+	if fixture.store.createCalls != createCalls {
+		t.Fatal("changed reconnect offer reached challenge mutation")
+	}
+}
+
+func TestReconnectRejectsConnectionIDCollision(t *testing.T) {
+	fixture := newReadyTransportFixture(t)
+	fixture.store.mu.Lock()
+	worker, previousID := fixture.store.worker, fixture.store.connection.ID
+	fixture.store.mu.Unlock()
+	service := newReconnectTransportServiceWithIDs(t, fixture.store, collidingReconnectIDs{connectionID: previousID})
+	request := signedChallengeRequest(t, worker, fixture.privateKey)
+	request.Purpose = domain.AttachedWorkerAttachReconnect
+	proof, err := SignChallengeRequest(fixture.privateKey, worker.TenantID, worker.OwnerUserID, worker, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Proof = proof
+	if _, err := service.IssueChallenge(context.Background(), worker.TenantID, worker.OwnerUserID, request); !errors.Is(err, ErrTransportBackend) {
+		t.Fatalf("connection ID collision error=%v", err)
+	}
+}
+
+func assertReconnectChallengeRejected(t *testing.T, fixture readyTransportFixture) {
+	t.Helper()
+	fixture.store.mu.Lock()
+	worker, createCalls := fixture.store.worker, fixture.store.createCalls
+	fixture.store.mu.Unlock()
+	request := signedChallengeRequest(t, worker, fixture.privateKey)
+	request.Purpose = domain.AttachedWorkerAttachReconnect
+	proof, err := SignChallengeRequest(fixture.privateKey, worker.TenantID, worker.OwnerUserID, worker, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Proof = proof
+	if _, err := newReconnectTransportService(t, fixture.store).IssueChallenge(context.Background(), worker.TenantID, worker.OwnerUserID, request); !errors.Is(err, ErrTransportUnauthorized) {
+		t.Fatalf("reconnect error=%v", err)
+	}
+	fixture.store.mu.Lock()
+	defer fixture.store.mu.Unlock()
+	if fixture.store.createCalls != createCalls {
+		t.Fatal("ambiguous reconnect reached challenge mutation")
+	}
+}
+
 func newTransportFixture(t *testing.T) (*Service, *transportMemoryStore, domain.AttachedWorker, ed25519.PrivateKey) {
 	t.Helper()
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
@@ -484,6 +725,10 @@ func testCapabilityManifest(worker domain.AttachedWorker) attachedworkerprotocol
 }
 
 type transportIDs struct{}
+type reconnectTransportIDs struct{}
+type collidingReconnectIDs struct {
+	connectionID domain.AttachedWorkerConnectionID
+}
 
 type transportBrokerFunc func(context.Context, ports.AttachedWorkerAttemptExchange) (ports.AttachedWorkerAttemptResult, error)
 
@@ -517,6 +762,7 @@ type readyTransportFixture struct {
 	service    *Service
 	store      *transportMemoryStore
 	worker     domain.AttachedWorker
+	privateKey ed25519.PrivateKey
 	bearer     ConnectionBearer
 	connection domain.AttachedWorkerConnection
 	secret     ConnectionSecret
@@ -575,7 +821,74 @@ func newReadyTransportFixture(t *testing.T) readyTransportFixture {
 	if response, err := service.Exchange(context.Background(), bearer, attachedworkerprotocol.BatchV1{Version: 1, Frames: []attachedworkerprotocol.FrameV1{manifestFrame}}); err != nil || response != nil {
 		t.Fatalf("manifest setup response=%#v err=%v", response, err)
 	}
-	return readyTransportFixture{service: service, store: store, worker: worker, bearer: bearer, connection: store.connection, secret: secret}
+	return readyTransportFixture{service: service, store: store, worker: worker, privateKey: privateKey, bearer: bearer, connection: store.connection, secret: secret}
+}
+
+func newReconnectTransportService(t *testing.T, store *transportMemoryStore) *Service {
+	return newReconnectTransportServiceWithIDs(t, store, reconnectTransportIDs{})
+}
+
+func newReconnectTransportServiceWithIDs(t *testing.T, store *transportMemoryStore, ids ports.IDGenerator) *Service {
+	t.Helper()
+	service, err := NewService(ServiceConfig{
+		IDs: ids, Audience: "sessionless:attached-worker:v1",
+		PlatformOffer: testOffer(), ImplementedVersions: []attachedworkerprotocol.ProtocolVersion{1},
+		ChallengeLifetime: 5 * time.Minute, ChallengeRetention: time.Hour,
+		PresenceTTL: 20 * time.Minute, AuthTTL: time.Hour, CheckpointInterval: MinimumHeartbeatInterval,
+		Random: bytes.NewReader(bytes.Repeat([]byte{0x45}, 128)),
+	}, store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return service
+}
+
+func setReadyFixtureDrained(t *testing.T, fixture *readyTransportFixture) {
+	t.Helper()
+	fixture.store.mu.Lock()
+	worker, connection := fixture.store.worker, fixture.store.connection
+	fixture.store.mu.Unlock()
+	config, snapshot, err := fixture.service.protocolStateForConnection(worker, connection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain := attachedworkerprotocol.FrameV1{
+		Version: 1, MessageID: attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionPlatformToWorker, 3),
+		WorkerID: string(worker.ID), EnrollmentGeneration: worker.EnrollmentGeneration,
+		ConnectionGeneration: connection.ConnectionGeneration, Sequence: 3, Ack: 3,
+		Kind: attachedworkerprotocol.MessageDrain, Drain: &attachedworkerprotocol.DrainV1{Revision: 1},
+	}
+	snapshot, err = attachedworkerprotocol.ApplyMachineFrameV1(
+		config, snapshot, attachedworkerprotocol.DirectionPlatformToWorker, drain, fixture.store.now.UnixMicro(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drained := attachedworkerprotocol.FrameV1{
+		Version: 1, MessageID: attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionWorkerToPlatform, 4),
+		WorkerID: string(worker.ID), EnrollmentGeneration: worker.EnrollmentGeneration,
+		ConnectionGeneration: connection.ConnectionGeneration, Sequence: 4, Ack: 3,
+		Kind: attachedworkerprotocol.MessageDrained, Drained: &attachedworkerprotocol.DrainedV1{Revision: 1},
+	}
+	snapshot, err = attachedworkerprotocol.ApplyMachineFrameV1(
+		config, snapshot, attachedworkerprotocol.DirectionWorkerToPlatform, drained, fixture.store.now.UnixMicro(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := attachedworkerprotocol.EncodeMachineSnapshotV1(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.store.mu.Lock()
+	defer fixture.store.mu.Unlock()
+	fixture.store.connection.ProtocolSnapshot = encoded
+	fixture.store.connection.State = domain.AttachedWorkerConnectionDraining
+	fixture.store.connection.PlatformSequence = snapshot.Platform.Sequence
+	fixture.store.connection.WorkerSequence = snapshot.Worker.Sequence
+	fixture.store.connection.PlatformAck = snapshot.Platform.Ack
+	fixture.store.connection.WorkerAck = snapshot.Worker.Ack
+	fixture.store.worker.ObservedState = domain.AttachedWorkerObservedDraining
 }
 
 func (fixture readyTransportFixture) heartbeat(active uint32) attachedworkerprotocol.BatchV1 {
@@ -730,12 +1043,36 @@ func (transportIDs) NewID(_ context.Context, kind ports.IDKind) (string, error) 
 	}
 }
 
+func (reconnectTransportIDs) NewID(_ context.Context, kind ports.IDKind) (string, error) {
+	switch kind {
+	case ports.IDAttachedWorkerChallenge:
+		return "wch_reconnect", nil
+	case ports.IDAttachedWorkerConnection:
+		return "wcn_reconnect", nil
+	default:
+		return "", errors.New("unsupported ID")
+	}
+}
+
+func (ids collidingReconnectIDs) NewID(_ context.Context, kind ports.IDKind) (string, error) {
+	switch kind {
+	case ports.IDAttachedWorkerChallenge:
+		return "wch_collision", nil
+	case ports.IDAttachedWorkerConnection:
+		return string(ids.connectionID), nil
+	default:
+		return "", errors.New("unsupported ID")
+	}
+}
+
 type transportMemoryStore struct {
 	mu                sync.Mutex
 	now               time.Time
 	worker            domain.AttachedWorker
 	challenge         domain.AttachedWorkerAttachChallenge
 	connection        domain.AttachedWorkerConnection
+	attempt           domain.AttachedWorkerAttemptV1
+	attemptFound      bool
 	activationRequest ports.AttachedWorkerConnectionActivation
 	manifestRequest   ports.AttachedWorkerManifestAcceptance
 	authorizeRequest  ports.AttachedWorkerExchangeAuthorization
@@ -749,12 +1086,22 @@ func (store *transportMemoryStore) CreateAttachedWorkerAttachChallenge(_ context
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	store.createCalls++
+	if request.Purpose == domain.AttachedWorkerAttachReconnect {
+		if store.connection.ID != request.ExpectedConnectionID || store.connection.Revision != request.ExpectedConnectionRevision ||
+			store.connection.CapabilityDigest != request.ExpectedCapabilityDigest || !bytes.Equal(store.connection.ProtocolSnapshot, request.ExpectedProtocolSnapshot) ||
+			store.attemptFound && store.attempt.State != domain.AttachedWorkerAttemptRetired {
+			return domain.AttachedWorkerAttachChallenge{}, errors.New("reconnect authority conflict")
+		}
+	}
 	store.challenge = domain.AttachedWorkerAttachChallenge{
 		TenantID: request.TenantID, OwnerUserID: request.OwnerUserID, ID: request.ChallengeID, WorkerID: request.WorkerID,
 		ConnectionID: request.ConnectionID, Purpose: request.Purpose, Audience: request.Audience,
 		ExpectedWorkerRevision: request.ExpectedWorkerRevision, ExpectedEnrollmentGeneration: request.ExpectedEnrollmentGeneration,
 		ExpectedConnectionGeneration: request.ExpectedConnectionGeneration, TargetConnectionGeneration: request.ExpectedConnectionGeneration + 1,
-		WorkerProtocolMinimum: request.WorkerProtocolMinimum, WorkerProtocolMaximum: request.WorkerProtocolMaximum,
+		ExpectedConnectionID: request.ExpectedConnectionID, ExpectedConnectionRevision: request.ExpectedConnectionRevision,
+		ExpectedCapabilityDigest: request.ExpectedCapabilityDigest,
+		ExpectedProtocolSnapshot: append([]byte(nil), request.ExpectedProtocolSnapshot...),
+		WorkerProtocolMinimum:    request.WorkerProtocolMinimum, WorkerProtocolMaximum: request.WorkerProtocolMaximum,
 		WorkerProtocolVersions: request.WorkerProtocolVersions, PlatformProtocolMinimum: request.PlatformProtocolMinimum,
 		PlatformProtocolMaximum: request.PlatformProtocolMaximum, PlatformProtocolVersions: request.PlatformProtocolVersions,
 		SelectedProtocolVersion: request.SelectedProtocolVersion, WorkerNonceDigest: request.WorkerNonceDigest,
@@ -781,10 +1128,20 @@ func (store *transportMemoryStore) ActivateAttachedWorkerConnection(_ context.Co
 		}
 		return ports.AttachedWorkerConnectionResult{Status: ports.AttachedWorkerConnectionConsumed}, nil
 	}
+	if request.Purpose == domain.AttachedWorkerAttachReconnect &&
+		(store.connection.ID != request.ExpectedConnectionID || store.connection.Revision != request.ExpectedConnectionRevision ||
+			store.connection.CapabilityDigest != request.ExpectedPreviousCapabilityDigest ||
+			!bytes.Equal(store.connection.ProtocolSnapshot, request.ExpectedPreviousProtocolSnapshot) ||
+			store.attemptFound && store.attempt.State != domain.AttachedWorkerAttemptRetired) {
+		return ports.AttachedWorkerConnectionResult{Status: ports.AttachedWorkerConnectionConflict}, nil
+	}
 	store.activationRequest = request
 	store.worker.ConnectionGeneration++
 	store.worker.Revision++
 	store.worker.UpdatedAt = store.now
+	if request.Purpose == domain.AttachedWorkerAttachReconnect {
+		store.worker.ObservedState = domain.AttachedWorkerObservedOffline
+	}
 	store.challenge.ConsumedAt = store.now
 	store.challenge.Revision++
 	store.connection = domain.AttachedWorkerConnection{
@@ -818,10 +1175,18 @@ func (store *transportMemoryStore) AcceptAttachedWorkerManifest(_ context.Contex
 		return ports.AttachedWorkerAuthorizationResult{}, errors.New("canonical manifest digest mismatch")
 	}
 	store.manifestRequest = request
+	snapshot, err := attachedworkerprotocol.DecodeMachineSnapshotV1(request.ProtocolSnapshot)
+	if err != nil {
+		return ports.AttachedWorkerAuthorizationResult{}, err
+	}
 	store.worker.ObservedState = domain.AttachedWorkerObservedOnline
+	store.connection.State = domain.AttachedWorkerConnectionOnline
+	if snapshot.Connection == attachedworkerprotocol.ConnectionDraining || snapshot.Connection == attachedworkerprotocol.ConnectionDrained {
+		store.worker.ObservedState = domain.AttachedWorkerObservedDraining
+		store.connection.State = domain.AttachedWorkerConnectionDraining
+	}
 	store.worker.Revision++
 	store.worker.UpdatedAt = store.now
-	store.connection.State = domain.AttachedWorkerConnectionOnline
 	store.connection.ManifestRevision = request.Capability.ManifestRevision
 	store.connection.ManifestIdentityKey = request.Capability.IdentityKeyDigest
 	store.connection.ManifestSignature = append([]byte(nil), request.Capability.Signature...)
@@ -840,6 +1205,15 @@ func (store *transportMemoryStore) LoadAttachedWorkerConnection(_ context.Contex
 	defer store.mu.Unlock()
 	found := store.connection.TenantID == tenant && store.connection.OwnerUserID == owner && store.connection.WorkerID == worker
 	return store.connection, found, nil
+}
+
+func (store *transportMemoryStore) LoadAttachedWorkerAttempt(_ context.Context, tenant domain.TenantID, owner domain.UserID, worker domain.AttachedWorkerID) (domain.AttachedWorkerAttemptV1, bool, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if !store.attemptFound || store.attempt.TenantID != tenant || store.attempt.OwnerUserID != owner || store.attempt.WorkerID != worker {
+		return domain.AttachedWorkerAttemptV1{}, false, nil
+	}
+	return store.attempt, true, nil
 }
 
 func (store *transportMemoryStore) AuthorizeAttachedWorkerExchange(_ context.Context, request ports.AttachedWorkerExchangeAuthorization) (ports.AttachedWorkerAuthorizationResult, error) {

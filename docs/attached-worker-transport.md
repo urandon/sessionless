@@ -2,9 +2,10 @@
 
 AW-03 establishes an owner-scoped, authenticated immediate transport for an
 attached worker. AW-04a extends that transport with durable, transactionally
-fenced attempt frames and heartbeat-driven delivery. Long polling, explicit
-cloud wake-up, reconnect reconciliation, and the worker daemon remain later
-work.
+fenced attempt frames and heartbeat-driven delivery. AW-03d1 adds the
+control-plane half of reconnect for an exact idle durable head. Long polling,
+explicit cloud wake-up, active-attempt reconnect reconciliation, worker-side
+checkpoint restoration, and the worker daemon remain later work.
 
 The feature-disabled [worker-side connection session](attached-worker-connection-session.md)
 owns the corresponding bootstrap-to-immediate-exchange composition, local
@@ -61,6 +62,31 @@ columns are checked projections only. Missing, noncanonical, authority-mismatche
 or divergent same-sequence snapshots fail closed; old online rows without a
 snapshot must attach again and are never reconstructed from watermarks.
 
+## Authoritative idle reconnect
+
+A reconnect challenge is issued only when the current owner-scoped connection
+is online or draining, its authentication has not expired, its canonical
+protocol state is exactly `Ready` or `Draining` (not fully `Drained`), its
+attempt is idle, and no non-retired durable attempt head exists. The
+challenge durably pins the exact previous connection ID, revision, capability
+digest, and canonical protocol snapshot. Those pins are server-only authority:
+they are persisted with the challenge but omitted from the public challenge
+JSON.
+
+Activation consumes that single-use challenge in the same transaction that
+rechecks every pin against the current worker and connection heads. It accepts
+the signed reconnect claim through the AW-02 reducer, advances the connection
+generation, rotates the connection ID, bearer digest, and channel binding,
+retires the old presence, and creates a presence-free `attaching` head. The
+worker is observed offline until a fresh signed Manifest authorizes the new
+head and restores online or draining state from the canonical snapshot.
+
+An exact retry after a lost activation response returns the already-committed
+connection. A request that changes any predecessor pin or new credential is a
+consumed/conflicting replay and cannot mutate state. Reconnect from an active,
+terminal-pending, expired, revoked, legacy snapshot-less, or otherwise
+divergent head fails closed before challenge creation or activation.
+
 ## Heartbeat-driven delivery
 
 The immediate exchange remains outbound-only from the worker. With the AW-04a
@@ -95,9 +121,13 @@ and divergent replay remain fail-closed reconciliation/fencing boundaries.
 
 ## Fail-closed boundaries
 
-- Reconnect challenge issuance remains disabled until AW-04b composes the
-  durable snapshot with reconnect challenge consumption and replay decisions.
-  No unusable reconnect challenge is created.
+- Reconnect is deliberately idle-only. Active or terminal-pending attempt
+  recovery remains disabled until a later slice composes durable effect
+  reconciliation and terminal replay decisions. No challenge is issued for an
+  unsupported head.
+- A fully `Drained` worker also remains a fresh-attach boundary. The domain
+  projection intentionally groups `Draining` and `Drained` for UX, but the
+  reconnect reducer retains only the former as a resumable transport state.
 - Without the AW-04a broker, ordinary exchange remains Heartbeat-only. With the
   broker, LeaseClaim, Progress, CancelAck and Terminal are accepted only through
   its single YDB transaction; no handler-local conformance state is authority.

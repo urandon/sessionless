@@ -44,8 +44,10 @@ locators and generations, and private/connection-secret material. Challenge
 identity, nonces, proof, selected server offer, channel-binding bytes,
 connection identity, authentication expiry, AW-02 machine state, and response
 watermarks remain process-ephemeral in this slice. None is reconstructed or
-declared successful after restart. AW-04 durable attempt and reconnect
-reconciliation must land before reconnect can be enabled.
+declared successful after restart. The control plane supports exact idle-head
+reconnect, but this worker-side session cannot use it until a later slice owns
+durable local checkpoint restoration. Active-attempt reconnect additionally
+depends on durable effect reconciliation.
 
 ## Credential custody and evidence
 
@@ -106,4 +108,7 @@ semantic worker action envelope, durable lease/cancel/terminal transitions,
 and active-cancel acknowledgement flow. Exact in-process replay is likewise
 feature-disabled. A later AW-03 slice must own the real timer cadence,
 sleep/wake/offline observations, cost evidence, and reviewed foreground wiring
-before bounded polling can become live.
+before bounded polling can become live. That slice must also compose the
+already-available idle reconnect endpoint with a durable local checkpoint;
+this package must not infer reconnect authority from scalar watermarks or
+ephemeral in-process state.

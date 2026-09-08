@@ -44,6 +44,28 @@ func TestBootstrapClientIssuesChallengeWithoutAuthorization(t *testing.T) {
 	}
 }
 
+func TestBootstrapClientAcceptsReconnectChallengeWithoutServerAuthorityProjection(t *testing.T) {
+	input := validChallengeClientInput()
+	input.Purpose = domain.AttachedWorkerAttachReconnect
+	input.Hello.ConnectionGeneration = 2
+	want := validChallengeClientResponse(input)
+	responseBody, err := encodeStrictJSON(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(responseBody, []byte("expected_connection_id")) || bytes.Contains(responseBody, []byte("expected_protocol_snapshot")) {
+		t.Fatalf("server-only reconnect authority appeared on the HTTP wire: %s", responseBody)
+	}
+	client := newBootstrapClient(t, roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return bootstrapHTTPResponse(http.StatusCreated, responseBody), nil
+	}))
+	response, err := client.IssueChallenge(context.Background(), input)
+	if err != nil || response == nil || response.Challenge.Purpose != domain.AttachedWorkerAttachReconnect ||
+		response.Challenge.ExpectedConnectionID != "" || len(response.Challenge.ExpectedProtocolSnapshot) != 0 {
+		t.Fatalf("reconnect challenge response=%#v err=%v", response, err)
+	}
+}
+
 func TestBootstrapClientSendsOnlyConnectionSecretDigest(t *testing.T) {
 	rawSecret := bytes.Repeat([]byte{0x55}, 32)
 	secret, err := attachedworkertransport.ParseConnectionSecret(rawSecret)

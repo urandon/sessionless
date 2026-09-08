@@ -9,6 +9,7 @@ import (
 	"math"
 	"time"
 
+	"gitcode.com/urandon/sessionless/internal/attachedworkerprotocol"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/ydbpartition"
@@ -36,6 +37,7 @@ func (store *Store) CreateAttachedWorkerAttachChallenge(
 ) (result domain.AttachedWorkerAttachChallenge, err error) {
 	request.WorkerProtocolVersions = append([]uint32(nil), request.WorkerProtocolVersions...)
 	request.PlatformProtocolVersions = append([]uint32(nil), request.PlatformProtocolVersions...)
+	request.ExpectedProtocolSnapshot = append([]byte(nil), request.ExpectedProtocolSnapshot...)
 	if err := validateAttachedWorkerChallengeCreate(request); err != nil {
 		return result, err
 	}
@@ -66,8 +68,11 @@ func (store *Store) CreateAttachedWorkerAttachChallenge(
 		if err != nil {
 			return err
 		}
+		if err := validateReconnectChallengeAuthorityTx(ctx, tx, request, worker, at); err != nil {
+			return err
+		}
 		target := attachedWorkerChallengeTarget(request, at)
-		if err := target.Validate(); err != nil {
+		if err := validateDurableAttachedWorkerChallenge(target); err != nil {
 			return err
 		}
 		if err := insertAttachedWorkerChallengeTx(ctx, tx, target); err != nil {
@@ -92,7 +97,7 @@ func (store *Store) LoadAttachedWorkerAttachChallenge(
 	if err := challengeID.Validate(); err != nil {
 		return result, false, err
 	}
-	result, found, err = readJSON[domain.AttachedWorkerAttachChallenge](ctx, store.db,
+	record, found, err := readJSON[attachedWorkerChallengeRecord](ctx, store.db,
 		`SELECT record FROM attached_worker_attach_challenges
 		 WHERE tenant_id = $1 AND owner_user_id = $2 AND worker_id = $3 AND challenge_id = $4`,
 		tenantID, ownerUserID, workerID, challengeID,
@@ -100,8 +105,9 @@ func (store *Store) LoadAttachedWorkerAttachChallenge(
 	if err != nil || !found {
 		return result, found, err
 	}
+	result = record.challenge()
 	result = canonicalAttachedWorkerChallenge(result)
-	if err := result.Validate(); err != nil || result.TenantID != tenantID || result.OwnerUserID != ownerUserID ||
+	if err := validateDurableAttachedWorkerChallenge(result); err != nil || result.TenantID != tenantID || result.OwnerUserID != ownerUserID ||
 		result.WorkerID != workerID || result.ID != challengeID {
 		if err != nil {
 			return domain.AttachedWorkerAttachChallenge{}, false, err
@@ -115,6 +121,8 @@ func (store *Store) ActivateAttachedWorkerConnection(
 	ctx context.Context,
 	request ports.AttachedWorkerConnectionActivation,
 ) (result ports.AttachedWorkerConnectionResult, err error) {
+	request.ProtocolSnapshot = append([]byte(nil), request.ProtocolSnapshot...)
+	request.ExpectedPreviousProtocolSnapshot = append([]byte(nil), request.ExpectedPreviousProtocolSnapshot...)
 	if err := validateAttachedWorkerConnectionActivation(request); err != nil {
 		return result, err
 	}
@@ -165,20 +173,32 @@ func (store *Store) ActivateAttachedWorkerConnection(
 			result.Status = ports.AttachedWorkerConnectionConflict
 			return nil
 		}
+		current, currentFound, err := readAttachedWorkerConnectionTx(ctx, tx, request.OwnerUserID, request.WorkerID)
+		if err != nil {
+			return err
+		}
+		if request.Purpose == domain.AttachedWorkerAttachReconnect {
+			if !currentFound {
+				result.Status = ports.AttachedWorkerConnectionConflict
+				return nil
+			}
+			if authorityErr := validateReconnectActivationAuthorityTx(ctx, tx, request, challenge, worker, current, at); authorityErr != nil {
+				if errors.Is(authorityErr, ErrAttachedWorkerConnectionConflict) {
+					result.Status = ports.AttachedWorkerConnectionConflict
+					return nil
+				}
+				return authorityErr
+			}
+		} else if currentFound && current.ConnectionGeneration >= challenge.TargetConnectionGeneration {
+			result.Status = ports.AttachedWorkerConnectionConflict
+			return nil
+		}
 		connection, nextWorker, audit := attachedWorkerActivationTargets(request, challenge, worker, at)
 		if err := connection.Validate(); err != nil {
 			return err
 		}
 		if _, _, err := loadAttachedWorkerProtocolAuthorityTx(ctx, tx, worker, connection); err != nil {
 			return ErrAttachedWorkerConnectionConflict
-		}
-		current, currentFound, err := readAttachedWorkerConnectionTx(ctx, tx, request.OwnerUserID, request.WorkerID)
-		if err != nil {
-			return err
-		}
-		if currentFound && current.ConnectionGeneration >= connection.ConnectionGeneration {
-			result.Status = ports.AttachedWorkerConnectionConflict
-			return nil
 		}
 		if currentFound && !current.PresenceExpiresAt.IsZero() {
 			if err := deleteAttachedWorkerPresenceExpiryTx(ctx, tx, attachedWorkerPresenceExpiry(current)); err != nil {
@@ -317,7 +337,20 @@ func (store *Store) AcceptAttachedWorkerManifest(
 		connection.ManifestObservedAt = at
 		connection.LastCheckpointAt = at
 		connection.PresenceExpiresAt = canonicalAttachedWorkerTime(at.Add(request.PresenceTTL))
-		connection.State = domain.AttachedWorkerConnectionOnline
+		protocolSnapshot, decodeErr := attachedworkerprotocol.DecodeMachineSnapshotV1(request.ProtocolSnapshot)
+		if decodeErr != nil {
+			return ErrAttachedWorkerConnectionConflict
+		}
+		observed := domain.AttachedWorkerObservedOnline
+		switch protocolSnapshot.Connection {
+		case attachedworkerprotocol.ConnectionReady:
+			connection.State = domain.AttachedWorkerConnectionOnline
+		case attachedworkerprotocol.ConnectionDraining, attachedworkerprotocol.ConnectionDrained:
+			connection.State = domain.AttachedWorkerConnectionDraining
+			observed = domain.AttachedWorkerObservedDraining
+		default:
+			return ErrAttachedWorkerConnectionConflict
+		}
 		connection.Revision++
 		if err := connection.Validate(); err != nil {
 			return err
@@ -331,7 +364,6 @@ func (store *Store) AcceptAttachedWorkerManifest(
 		if err := insertAttachedWorkerPresenceExpiryTx(ctx, tx, attachedWorkerPresenceExpiry(connection)); err != nil {
 			return err
 		}
-		observed := domain.AttachedWorkerObservedOnline
 		nextWorker, audit := attachedWorkerPresenceWorkerTarget(worker, observed, domain.AttachedWorkerAuditConnectionManifestAccepted, at)
 		if err := nextWorker.Validate(); err != nil {
 			return err

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/subtle"
+	"encoding/hex"
 	"math"
 	"time"
 
@@ -42,7 +43,79 @@ func validateAttachedWorkerChallengeCreate(request ports.AttachedWorkerChallenge
 	// Domain validation owns the exact offer/digest/audience contract. Fixed
 	// timestamps let it run before the transaction clock is consulted.
 	probe := attachedWorkerChallengeTarget(request, time.Unix(1_700_000_000, 0).UTC())
-	return probe.Validate()
+	if err := probe.Validate(); err != nil {
+		return err
+	}
+	if request.Purpose == domain.AttachedWorkerAttachReconnect {
+		if err := validateAttachedWorkerProtocolSnapshotInput(request.ExpectedProtocolSnapshot); err != nil {
+			return err
+		}
+		if _, err := attachedworkerprotocol.DecodeMachineSnapshotV1(request.ExpectedProtocolSnapshot); err != nil {
+			return domain.ValidationError{Field: "attached_worker_challenge.expected_protocol_snapshot", Reason: "must be canonical protocol authority"}
+		}
+	}
+	return nil
+}
+
+func validateDurableAttachedWorkerChallenge(challenge domain.AttachedWorkerAttachChallenge) error {
+	if err := challenge.Validate(); err != nil {
+		return err
+	}
+	if challenge.Purpose == domain.AttachedWorkerAttachInitial {
+		return nil
+	}
+	if challenge.ExpectedConnectionID.Validate() != nil || challenge.ExpectedConnectionRevision == 0 ||
+		challenge.ExpectedConnectionRevision == math.MaxUint64 || challenge.ExpectedCapabilityDigest.Validate() != nil {
+		return domain.ValidationError{Field: "attached_worker_challenge.reconnect_authority", Reason: "must contain the exact previous connection head"}
+	}
+	if err := validateAttachedWorkerProtocolSnapshotInput(challenge.ExpectedProtocolSnapshot); err != nil {
+		return err
+	}
+	if _, err := attachedworkerprotocol.DecodeMachineSnapshotV1(challenge.ExpectedProtocolSnapshot); err != nil {
+		return domain.ValidationError{Field: "attached_worker_challenge.expected_protocol_snapshot", Reason: "must be canonical protocol authority"}
+	}
+	return nil
+}
+
+func validateReconnectChallengeAuthorityTx(
+	ctx context.Context,
+	tx *stateTx,
+	request ports.AttachedWorkerChallengeCreate,
+	worker domain.AttachedWorker,
+	at time.Time,
+) error {
+	if request.Purpose == domain.AttachedWorkerAttachInitial {
+		return nil
+	}
+	connection, found, err := readAttachedWorkerConnectionTx(ctx, tx, request.OwnerUserID, request.WorkerID)
+	if err != nil {
+		return err
+	}
+	if !found || connection.ID != request.ExpectedConnectionID ||
+		request.ConnectionID == connection.ID ||
+		connection.Revision != request.ExpectedConnectionRevision ||
+		connection.EnrollmentGeneration != request.ExpectedEnrollmentGeneration ||
+		connection.ConnectionGeneration != request.ExpectedConnectionGeneration ||
+		connection.ProtocolVersion != request.SelectedProtocolVersion ||
+		connection.CapabilityDigest != request.ExpectedCapabilityDigest ||
+		!bytes.Equal(connection.ProtocolSnapshot, request.ExpectedProtocolSnapshot) ||
+		(connection.State != domain.AttachedWorkerConnectionOnline && connection.State != domain.AttachedWorkerConnectionDraining) ||
+		!at.Before(connection.AuthExpiresAt) {
+		return ErrAttachedWorkerChallengeConflict
+	}
+	_, snapshot, err := loadAttachedWorkerProtocolAuthorityTx(ctx, tx, worker, connection)
+	if err != nil || snapshot.Attempt.Summary.State != attachedworkerprotocol.AttemptIdle ||
+		!protocolSnapshotMatchesChallengeCreate(snapshot, request) {
+		return ErrAttachedWorkerChallengeConflict
+	}
+	attempt, found, err := readAttachedWorkerAttemptTx(ctx, tx, request.OwnerUserID, request.WorkerID)
+	if err != nil {
+		return err
+	}
+	if found && attempt.State != domain.AttachedWorkerAttemptRetired {
+		return ErrAttachedWorkerChallengeConflict
+	}
+	return nil
 }
 
 func validateAttachedWorkerConnectionActivation(request ports.AttachedWorkerConnectionActivation) error {
@@ -52,7 +125,7 @@ func validateAttachedWorkerConnectionActivation(request ports.AttachedWorkerConn
 	if err := request.ChallengeID.Validate(); err != nil {
 		return err
 	}
-	if request.ExpectedChallengeRevision == 0 || request.ExpectedChallengeRevision == math.MaxUint64 ||
+	if !request.Purpose.Valid() || request.ExpectedChallengeRevision == 0 || request.ExpectedChallengeRevision == math.MaxUint64 ||
 		request.ExpectedWorkerRevision == 0 || request.ExpectedWorkerRevision == math.MaxUint64 ||
 		request.ExpectedEnrollmentGeneration == 0 || request.ExpectedConnectionGeneration == math.MaxUint64 ||
 		request.AuthTTL <= 0 || request.AuthTTL > maxAttachedWorkerAuthTTL {
@@ -63,6 +136,28 @@ func validateAttachedWorkerConnectionActivation(request ports.AttachedWorkerConn
 	}
 	if err := request.ChannelBinding.Validate(); err != nil {
 		return err
+	}
+	if request.Purpose == domain.AttachedWorkerAttachInitial {
+		if request.ExpectedConnectionID != "" || request.ExpectedConnectionRevision != 0 ||
+			request.ExpectedPreviousCapabilityDigest != "" || len(request.ExpectedPreviousProtocolSnapshot) != 0 {
+			return domain.ValidationError{Field: "attached_worker_connection.activation.reconnect_authority", Reason: "must be empty for initial attach"}
+		}
+	} else {
+		if err := request.ExpectedConnectionID.Validate(); err != nil {
+			return err
+		}
+		if request.ExpectedConnectionRevision == 0 || request.ExpectedConnectionRevision == math.MaxUint64 {
+			return domain.ValidationError{Field: "attached_worker_connection.activation.expected_connection_revision", Reason: "must be a bounded positive revision"}
+		}
+		if err := request.ExpectedPreviousCapabilityDigest.Validate(); err != nil {
+			return err
+		}
+		if err := validateAttachedWorkerProtocolSnapshotInput(request.ExpectedPreviousProtocolSnapshot); err != nil {
+			return err
+		}
+		if _, err := attachedworkerprotocol.DecodeMachineSnapshotV1(request.ExpectedPreviousProtocolSnapshot); err != nil {
+			return domain.ValidationError{Field: "attached_worker_connection.activation.expected_protocol_snapshot", Reason: "must be canonical protocol authority"}
+		}
 	}
 	// A digest's concrete payload is intentionally unavailable at activation;
 	// validate only its canonical shape through a minimal attaching head.
@@ -152,7 +247,10 @@ func attachedWorkerChallengeTarget(request ports.AttachedWorkerChallengeCreate, 
 		WorkerID: request.WorkerID, ConnectionID: request.ConnectionID, Purpose: request.Purpose, Audience: request.Audience,
 		ExpectedWorkerRevision: request.ExpectedWorkerRevision, ExpectedEnrollmentGeneration: request.ExpectedEnrollmentGeneration,
 		ExpectedConnectionGeneration: request.ExpectedConnectionGeneration, TargetConnectionGeneration: request.ExpectedConnectionGeneration + 1,
-		WorkerProtocolMinimum: request.WorkerProtocolMinimum, WorkerProtocolMaximum: request.WorkerProtocolMaximum,
+		ExpectedConnectionID: request.ExpectedConnectionID, ExpectedConnectionRevision: request.ExpectedConnectionRevision,
+		ExpectedCapabilityDigest: request.ExpectedCapabilityDigest,
+		ExpectedProtocolSnapshot: append([]byte(nil), request.ExpectedProtocolSnapshot...),
+		WorkerProtocolMinimum:    request.WorkerProtocolMinimum, WorkerProtocolMaximum: request.WorkerProtocolMaximum,
 		WorkerProtocolVersions:  append([]uint32(nil), request.WorkerProtocolVersions...),
 		PlatformProtocolMinimum: request.PlatformProtocolMinimum, PlatformProtocolMaximum: request.PlatformProtocolMaximum,
 		PlatformProtocolVersions: append([]uint32(nil), request.PlatformProtocolVersions...),
@@ -164,12 +262,50 @@ func attachedWorkerChallengeTarget(request ports.AttachedWorkerChallengeCreate, 
 }
 
 func activationMatchesChallenge(request ports.AttachedWorkerConnectionActivation, challenge domain.AttachedWorkerAttachChallenge) bool {
-	return challenge.Revision == request.ExpectedChallengeRevision && challenge.ExpectedWorkerRevision == request.ExpectedWorkerRevision &&
+	return challenge.Purpose == request.Purpose && challenge.Revision == request.ExpectedChallengeRevision && challenge.ExpectedWorkerRevision == request.ExpectedWorkerRevision &&
 		challenge.ExpectedEnrollmentGeneration == request.ExpectedEnrollmentGeneration &&
 		challenge.ExpectedConnectionGeneration == request.ExpectedConnectionGeneration &&
 		challenge.TargetConnectionGeneration == request.ExpectedConnectionGeneration+1 &&
+		challenge.ExpectedConnectionID == request.ExpectedConnectionID &&
+		challenge.ExpectedConnectionRevision == request.ExpectedConnectionRevision &&
+		challenge.ExpectedCapabilityDigest == request.ExpectedPreviousCapabilityDigest &&
+		bytes.Equal(challenge.ExpectedProtocolSnapshot, request.ExpectedPreviousProtocolSnapshot) &&
 		subtle.ConstantTimeCompare([]byte(challenge.WorkerNonceDigest), []byte(request.PresentedWorkerNonceDigest)) == 1 &&
-		subtle.ConstantTimeCompare([]byte(challenge.PlatformNonceDigest), []byte(request.PresentedPlatformNonceDigest)) == 1
+		subtle.ConstantTimeCompare([]byte(challenge.PlatformNonceDigest), []byte(request.PresentedPlatformNonceDigest)) == 1 &&
+		protocolSnapshotMatchesActivation(request, challenge)
+}
+
+func protocolSnapshotMatchesChallengeCreate(snapshot attachedworkerprotocol.MachineSnapshotV1, request ports.AttachedWorkerChallengeCreate) bool {
+	return snapshot.Hello != nil && snapshot.Challenge != nil &&
+		protocolOfferMatchesProjection(snapshot.Hello.Offer, request.WorkerProtocolMinimum, request.WorkerProtocolMaximum, request.WorkerProtocolVersions) &&
+		protocolOfferMatchesProjection(snapshot.Challenge.PlatformOffer, request.PlatformProtocolMinimum, request.PlatformProtocolMaximum, request.PlatformProtocolVersions)
+}
+
+func protocolSnapshotMatchesActivation(request ports.AttachedWorkerConnectionActivation, challenge domain.AttachedWorkerAttachChallenge) bool {
+	snapshot, err := attachedworkerprotocol.DecodeMachineSnapshotV1(request.ProtocolSnapshot)
+	if err != nil || snapshot.Hello == nil || snapshot.Challenge == nil || snapshot.Connection != attachedworkerprotocol.ConnectionAttached ||
+		!protocolOfferMatchesProjection(snapshot.Hello.Offer, challenge.WorkerProtocolMinimum, challenge.WorkerProtocolMaximum, challenge.WorkerProtocolVersions) ||
+		!protocolOfferMatchesProjection(snapshot.Challenge.PlatformOffer, challenge.PlatformProtocolMinimum, challenge.PlatformProtocolMaximum, challenge.PlatformProtocolVersions) ||
+		snapshot.Challenge.SelectedVersion != attachedworkerprotocol.ProtocolVersion(challenge.SelectedProtocolVersion) ||
+		domain.DigestAttachedWorkerChallenge(snapshot.Hello.WorkerNonce) != challenge.WorkerNonceDigest ||
+		domain.DigestAttachedWorkerChallenge(snapshot.Challenge.WorkerNonce) != challenge.WorkerNonceDigest ||
+		domain.DigestAttachedWorkerChallenge(snapshot.Challenge.PlatformNonce) != challenge.PlatformNonceDigest ||
+		domain.AttachedWorkerCapabilityDigest(hex.EncodeToString(snapshot.CapabilityDigest)) != request.ExpectedCapabilityDigest {
+		return false
+	}
+	return (request.Purpose == domain.AttachedWorkerAttachReconnect) == (snapshot.Reconnect != nil)
+}
+
+func protocolOfferMatchesProjection(offer attachedworkerprotocol.VersionOfferV1, minimum, maximum uint32, versions []uint32) bool {
+	if uint32(offer.Window.Minimum) != minimum || uint32(offer.Window.Maximum) != maximum || len(offer.Supported) != len(versions) {
+		return false
+	}
+	for index := range offer.Supported {
+		if uint32(offer.Supported[index]) != versions[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func activationMatchesWorker(request ports.AttachedWorkerConnectionActivation, challenge domain.AttachedWorkerAttachChallenge, worker domain.AttachedWorker) bool {
@@ -197,6 +333,12 @@ func attachedWorkerActivationTargets(
 	nextWorker := worker
 	nextWorker.ConnectionGeneration, nextWorker.Revision = challenge.TargetConnectionGeneration, worker.Revision+1
 	nextWorker.UpdatedAt = at
+	if request.Purpose == domain.AttachedWorkerAttachReconnect {
+		// The previous presence belongs to the retired connection. The worker
+		// becomes authoritative again only after the new signed manifest is
+		// accepted on the rotated channel.
+		nextWorker.ObservedState = domain.AttachedWorkerObservedOffline
+	}
 	audit := domain.AttachedWorkerAuditEvent{
 		Version: domain.AttachedWorkerAuditEventVersionV1, TenantID: worker.TenantID, OwnerUserID: worker.OwnerUserID,
 		WorkerID: worker.ID, Action: domain.AttachedWorkerAuditConnectionGenerationAdvanced,
@@ -235,15 +377,16 @@ func attachedWorkerPresenceWorkerTarget(
 }
 
 func readAttachedWorkerChallengeTx(ctx context.Context, tx *stateTx, owner domain.UserID, worker domain.AttachedWorkerID, id domain.AttachedWorkerChallengeID) (domain.AttachedWorkerAttachChallenge, bool, error) {
-	result, found, err := readJSON[domain.AttachedWorkerAttachChallenge](ctx, tx.sqlTx,
+	record, found, err := readJSON[attachedWorkerChallengeRecord](ctx, tx.sqlTx,
 		`SELECT record FROM attached_worker_attach_challenges
 		 WHERE tenant_id = $1 AND owner_user_id = $2 AND worker_id = $3 AND challenge_id = $4`,
 		tx.tenantID, owner, worker, id)
 	if err != nil || !found {
-		return result, found, err
+		return domain.AttachedWorkerAttachChallenge{}, found, err
 	}
+	result := record.challenge()
 	result = canonicalAttachedWorkerChallenge(result)
-	if err := result.Validate(); err != nil || result.TenantID != tx.tenantID || result.OwnerUserID != owner ||
+	if err := validateDurableAttachedWorkerChallenge(result); err != nil || result.TenantID != tx.tenantID || result.OwnerUserID != owner ||
 		result.WorkerID != worker || result.ID != id {
 		if err == nil {
 			return domain.AttachedWorkerAttachChallenge{}, false, ErrAttachedWorkerChallengeConflict
@@ -254,7 +397,10 @@ func readAttachedWorkerChallengeTx(ctx context.Context, tx *stateTx, owner domai
 }
 
 func insertAttachedWorkerChallengeTx(ctx context.Context, tx *stateTx, challenge domain.AttachedWorkerAttachChallenge) error {
-	record, err := marshal(challenge)
+	if err := validateDurableAttachedWorkerChallenge(challenge); err != nil {
+		return err
+	}
+	record, err := marshal(newAttachedWorkerChallengeRecord(challenge))
 	if err != nil {
 		return err
 	}
@@ -275,10 +421,10 @@ func insertAttachedWorkerChallengeTx(ctx context.Context, tx *stateTx, challenge
 
 func updateAttachedWorkerChallengeTx(ctx context.Context, tx *stateTx, challenge domain.AttachedWorkerAttachChallenge) error {
 	challenge = canonicalAttachedWorkerChallenge(challenge)
-	if err := challenge.Validate(); err != nil {
+	if err := validateDurableAttachedWorkerChallenge(challenge); err != nil {
 		return err
 	}
-	record, err := marshal(challenge)
+	record, err := marshal(newAttachedWorkerChallengeRecord(challenge))
 	if err != nil {
 		return err
 	}
@@ -430,11 +576,80 @@ func reconcileAttachedWorkerActivationTx(ctx context.Context, tx *stateTx, chall
 }
 
 func activationMatchesConsumedChallenge(request ports.AttachedWorkerConnectionActivation, challenge domain.AttachedWorkerAttachChallenge) bool {
-	return challenge.ExpectedWorkerRevision == request.ExpectedWorkerRevision &&
+	return challenge.Purpose == request.Purpose && challenge.ExpectedWorkerRevision == request.ExpectedWorkerRevision &&
 		challenge.ExpectedEnrollmentGeneration == request.ExpectedEnrollmentGeneration &&
 		challenge.ExpectedConnectionGeneration == request.ExpectedConnectionGeneration &&
+		challenge.ExpectedConnectionID == request.ExpectedConnectionID &&
+		challenge.ExpectedConnectionRevision == request.ExpectedConnectionRevision &&
+		challenge.ExpectedCapabilityDigest == request.ExpectedPreviousCapabilityDigest &&
+		bytes.Equal(challenge.ExpectedProtocolSnapshot, request.ExpectedPreviousProtocolSnapshot) &&
 		subtle.ConstantTimeCompare([]byte(challenge.WorkerNonceDigest), []byte(request.PresentedWorkerNonceDigest)) == 1 &&
 		subtle.ConstantTimeCompare([]byte(challenge.PlatformNonceDigest), []byte(request.PresentedPlatformNonceDigest)) == 1
+}
+
+func validateReconnectActivationAuthorityTx(
+	ctx context.Context,
+	tx *stateTx,
+	request ports.AttachedWorkerConnectionActivation,
+	challenge domain.AttachedWorkerAttachChallenge,
+	worker domain.AttachedWorker,
+	current domain.AttachedWorkerConnection,
+	at time.Time,
+) error {
+	if !reconnectChallengeAuthorityMatches(challenge, current) || current.ID != request.ExpectedConnectionID ||
+		current.Revision != request.ExpectedConnectionRevision ||
+		current.CapabilityDigest != request.ExpectedPreviousCapabilityDigest ||
+		!bytes.Equal(current.ProtocolSnapshot, request.ExpectedPreviousProtocolSnapshot) ||
+		request.ExpectedCapabilityDigest != current.CapabilityDigest ||
+		(current.State != domain.AttachedWorkerConnectionOnline && current.State != domain.AttachedWorkerConnectionDraining) ||
+		!at.Before(current.AuthExpiresAt) {
+		return ErrAttachedWorkerConnectionConflict
+	}
+	_, snapshot, err := loadAttachedWorkerProtocolAuthorityTx(ctx, tx, worker, current)
+	if err != nil || snapshot.Attempt.Summary.State != attachedworkerprotocol.AttemptIdle {
+		return ErrAttachedWorkerConnectionConflict
+	}
+	nextSnapshot, err := attachedworkerprotocol.DecodeMachineSnapshotV1(request.ProtocolSnapshot)
+	if err != nil || !reconnectSnapshotPinsPrevious(nextSnapshot, snapshot, request.ExpectedConnectionGeneration) {
+		return ErrAttachedWorkerConnectionConflict
+	}
+	attempt, found, err := readAttachedWorkerAttemptTx(ctx, tx, request.OwnerUserID, request.WorkerID)
+	if err != nil {
+		return err
+	}
+	if found && attempt.State != domain.AttachedWorkerAttemptRetired {
+		return ErrAttachedWorkerConnectionConflict
+	}
+	return nil
+}
+
+func reconnectSnapshotPinsPrevious(
+	next attachedworkerprotocol.MachineSnapshotV1,
+	previous attachedworkerprotocol.MachineSnapshotV1,
+	previousGeneration uint64,
+) bool {
+	if next.Reconnect == nil || previous.Attempt.Summary.State != attachedworkerprotocol.AttemptIdle ||
+		previous.Attempt.PendingWorkerTerminal != nil || next.Reconnect.Target != previous.Connection ||
+		next.Reconnect.PreviousConnectionGeneration != previousGeneration ||
+		next.Reconnect.Watermarks != (attachedworkerprotocol.ConnectionWatermarksV1{
+			PlatformSequence: previous.Platform.Sequence,
+			WorkerSequence:   previous.Worker.Sequence,
+			PlatformAck:      previous.Platform.Ack,
+			WorkerAck:        previous.Worker.Ack,
+		}) || !bytes.Equal(next.Reconnect.Attempt.Digest, previous.Attempt.Summary.Digest) {
+		return false
+	}
+	return next.Reconnect.Attempt.State == attachedworkerprotocol.AttemptIdle
+}
+
+func reconnectChallengeAuthorityMatches(challenge domain.AttachedWorkerAttachChallenge, connection domain.AttachedWorkerConnection) bool {
+	return challenge.Purpose == domain.AttachedWorkerAttachReconnect &&
+		challenge.ExpectedConnectionID == connection.ID && challenge.ExpectedConnectionRevision == connection.Revision &&
+		challenge.ExpectedEnrollmentGeneration == connection.EnrollmentGeneration &&
+		challenge.ExpectedConnectionGeneration == connection.ConnectionGeneration &&
+		challenge.ExpectedCapabilityDigest == connection.CapabilityDigest &&
+		challenge.SelectedProtocolVersion == connection.ProtocolVersion &&
+		bytes.Equal(challenge.ExpectedProtocolSnapshot, connection.ProtocolSnapshot)
 }
 
 func validateAttachedWorkerWatermarkAdvance(connection domain.AttachedWorkerConnection, request ports.AttachedWorkerExchangeAuthorization) error {
@@ -481,6 +696,7 @@ func attachedWorkerCheckpointTarget(connection domain.AttachedWorkerConnection, 
 func canonicalAttachedWorkerChallenge(value domain.AttachedWorkerAttachChallenge) domain.AttachedWorkerAttachChallenge {
 	value.WorkerProtocolVersions = append([]uint32(nil), value.WorkerProtocolVersions...)
 	value.PlatformProtocolVersions = append([]uint32(nil), value.PlatformProtocolVersions...)
+	value.ExpectedProtocolSnapshot = append([]byte(nil), value.ExpectedProtocolSnapshot...)
 	value.CreatedAt, value.ExpiresAt = canonicalAttachedWorkerTime(value.CreatedAt), canonicalAttachedWorkerTime(value.ExpiresAt)
 	value.RetainUntil, value.ConsumedAt = canonicalAttachedWorkerTime(value.RetainUntil), canonicalAttachedWorkerTime(value.ConsumedAt)
 	return value
@@ -508,6 +724,9 @@ func sameAttachedWorkerChallenge(left, right domain.AttachedWorkerAttachChalleng
 		left.ExpectedEnrollmentGeneration == right.ExpectedEnrollmentGeneration &&
 		left.ExpectedConnectionGeneration == right.ExpectedConnectionGeneration &&
 		left.TargetConnectionGeneration == right.TargetConnectionGeneration &&
+		left.ExpectedConnectionID == right.ExpectedConnectionID && left.ExpectedConnectionRevision == right.ExpectedConnectionRevision &&
+		left.ExpectedCapabilityDigest == right.ExpectedCapabilityDigest &&
+		bytes.Equal(left.ExpectedProtocolSnapshot, right.ExpectedProtocolSnapshot) &&
 		left.WorkerProtocolMinimum == right.WorkerProtocolMinimum && left.WorkerProtocolMaximum == right.WorkerProtocolMaximum &&
 		bytes.Equal(uint32SliceBytes(left.WorkerProtocolVersions), uint32SliceBytes(right.WorkerProtocolVersions)) &&
 		left.PlatformProtocolMinimum == right.PlatformProtocolMinimum && left.PlatformProtocolMaximum == right.PlatformProtocolMaximum &&
@@ -516,6 +735,37 @@ func sameAttachedWorkerChallenge(left, right domain.AttachedWorkerAttachChalleng
 		left.PlatformNonceDigest == right.PlatformNonceDigest && left.CreatedAt.Equal(right.CreatedAt) &&
 		left.ExpiresAt.Equal(right.ExpiresAt) && left.RetainUntil.Equal(right.RetainUntil) &&
 		left.ConsumedAt.Equal(right.ConsumedAt) && left.Revision == right.Revision
+}
+
+// attachedWorkerChallengeRecord retains server-only reconnect authority in the
+// durable JSON document while domain JSON projections keep it off the wire.
+// Anonymous embedding preserves the existing flat record schema.
+type attachedWorkerChallengeRecord struct {
+	domain.AttachedWorkerAttachChallenge
+	ExpectedConnectionID       domain.AttachedWorkerConnectionID     `json:"expected_connection_id,omitempty"`
+	ExpectedConnectionRevision uint64                                `json:"expected_connection_revision,omitempty"`
+	ExpectedCapabilityDigest   domain.AttachedWorkerCapabilityDigest `json:"expected_capability_digest,omitempty"`
+	ExpectedProtocolSnapshot   []byte                                `json:"expected_protocol_snapshot,omitempty"`
+}
+
+func newAttachedWorkerChallengeRecord(challenge domain.AttachedWorkerAttachChallenge) attachedWorkerChallengeRecord {
+	challenge = canonicalAttachedWorkerChallenge(challenge)
+	return attachedWorkerChallengeRecord{
+		AttachedWorkerAttachChallenge: challenge,
+		ExpectedConnectionID:          challenge.ExpectedConnectionID,
+		ExpectedConnectionRevision:    challenge.ExpectedConnectionRevision,
+		ExpectedCapabilityDigest:      challenge.ExpectedCapabilityDigest,
+		ExpectedProtocolSnapshot:      append([]byte(nil), challenge.ExpectedProtocolSnapshot...),
+	}
+}
+
+func (record attachedWorkerChallengeRecord) challenge() domain.AttachedWorkerAttachChallenge {
+	challenge := record.AttachedWorkerAttachChallenge
+	challenge.ExpectedConnectionID = record.ExpectedConnectionID
+	challenge.ExpectedConnectionRevision = record.ExpectedConnectionRevision
+	challenge.ExpectedCapabilityDigest = record.ExpectedCapabilityDigest
+	challenge.ExpectedProtocolSnapshot = append([]byte(nil), record.ExpectedProtocolSnapshot...)
+	return canonicalAttachedWorkerChallenge(challenge)
 }
 
 func sameAttachedWorkerManifest(left, right domain.AttachedWorkerCapabilityManifest) bool {

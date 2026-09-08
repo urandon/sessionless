@@ -407,8 +407,8 @@ func reconnectStatesCompatible(worker, platform AttemptState) bool {
 
 func cloneAttemptSummary(summary AttemptSummaryV1) AttemptSummaryV1 {
 	summary.Binding = cloneBinding(summary.Binding)
-	summary.TerminalEvidenceDigest = append([]byte(nil), summary.TerminalEvidenceDigest...)
-	summary.Digest = append([]byte(nil), summary.Digest...)
+	summary.TerminalEvidenceDigest = cloneBytesPreservingNil(summary.TerminalEvidenceDigest)
+	summary.Digest = cloneBytesPreservingNil(summary.Digest)
 	return summary
 }
 

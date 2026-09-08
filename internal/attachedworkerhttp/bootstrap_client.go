@@ -65,7 +65,7 @@ func NewBootstrapClient(config BootstrapClientConfig) (*BootstrapClient, error) 
 }
 
 func (client *BootstrapClient) IssueChallenge(ctx context.Context, input ChallengeRequestV1) (*ChallengeResponseV1, error) {
-	if input.Purpose != domain.AttachedWorkerAttachInitial {
+	if !input.Purpose.Valid() {
 		return nil, &ExchangeError{Kind: ErrorProtocol}
 	}
 	var response ChallengeResponseV1
@@ -129,18 +129,17 @@ func validChallengeResponse(input ChallengeRequestV1, response ChallengeResponse
 }
 
 func validActivateResponse(input ActivateRequestV1, expectedConnectionID domain.AttachedWorkerConnectionID, response ActivateResponseV1) bool {
-	attach := input.Attach.Attach
+	workerOffer, platformOffer, selectedVersion, workerNonce, platformNonce, capabilityBytes, inputOK := bootstrapActivationProof(input.Attach)
+	acceptedWorkerOffer, acceptedPlatformOffer, acceptedVersion, acceptedWorkerNonce, acceptedPlatformNonce, acceptedCapability, acceptedOK := bootstrapAcceptedProof(response.Accepted, input.Attach.Kind)
 	accepted := response.Accepted
-	message := accepted.AttachAccepted
 	connection := response.Connection
-	if attach == nil || input.Attach.Kind != attachedworkerprotocol.MessageAttach || validateActivateConnectionV1(connection) != nil ||
-		validateBootstrapFrame(accepted) != nil || message == nil || accepted.Kind != attachedworkerprotocol.MessageAttachAccepted {
+	if !inputOK || !acceptedOK || validateActivateConnectionV1(connection) != nil || validateBootstrapFrame(accepted) != nil {
 		return false
 	}
-	capabilityDigest := domain.AttachedWorkerCapabilityDigest(hex.EncodeToString(attach.CapabilityDigest))
+	capabilityDigest := domain.AttachedWorkerCapabilityDigest(hex.EncodeToString(capabilityBytes))
 	expectedBinding := attachedworkertransport.ConnectionChannelBinding(
-		input.ChallengeID, domain.DigestAttachedWorkerChallenge(attach.WorkerNonce),
-		domain.DigestAttachedWorkerChallenge(attach.PlatformNonce), input.ConnectionSecretDigest,
+		input.ChallengeID, domain.DigestAttachedWorkerChallenge(workerNonce),
+		domain.DigestAttachedWorkerChallenge(platformNonce), input.ConnectionSecretDigest,
 	)
 	return connection.TenantID == input.TenantLocator && connection.OwnerUserID == input.OwnerLocator &&
 		connection.WorkerID == domain.AttachedWorkerID(input.Attach.WorkerID) && connection.ActivationChallengeID == input.ChallengeID &&
@@ -152,9 +151,33 @@ func validActivateResponse(input ActivateRequestV1, expectedConnectionID domain.
 		accepted.Version == input.Attach.Version && accepted.MessageID == attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionPlatformToWorker, 2) &&
 		accepted.WorkerID == input.Attach.WorkerID && accepted.EnrollmentGeneration == input.Attach.EnrollmentGeneration &&
 		accepted.ConnectionGeneration == input.Attach.ConnectionGeneration && accepted.Sequence == 2 && accepted.Ack == 2 &&
-		attach.SelectedVersion == input.Attach.Version && sameOffer(message.WorkerOffer, attach.WorkerOffer) && sameOffer(message.PlatformOffer, attach.PlatformOffer) &&
-		message.SelectedVersion == attach.SelectedVersion && bytes.Equal(message.WorkerNonce, attach.WorkerNonce) &&
-		bytes.Equal(message.PlatformNonce, attach.PlatformNonce) && bytes.Equal(message.CapabilityDigest, attach.CapabilityDigest)
+		selectedVersion == input.Attach.Version && sameOffer(acceptedWorkerOffer, workerOffer) && sameOffer(acceptedPlatformOffer, platformOffer) &&
+		acceptedVersion == selectedVersion && bytes.Equal(acceptedWorkerNonce, workerNonce) &&
+		bytes.Equal(acceptedPlatformNonce, platformNonce) && bytes.Equal(acceptedCapability, capabilityBytes)
+}
+
+func bootstrapActivationProof(frame attachedworkerprotocol.FrameV1) (attachedworkerprotocol.VersionOfferV1, attachedworkerprotocol.VersionOfferV1, attachedworkerprotocol.ProtocolVersion, []byte, []byte, []byte, bool) {
+	if frame.Kind == attachedworkerprotocol.MessageAttach && frame.Attach != nil {
+		message := frame.Attach
+		return message.WorkerOffer, message.PlatformOffer, message.SelectedVersion, message.WorkerNonce, message.PlatformNonce, message.CapabilityDigest, true
+	}
+	if frame.Kind == attachedworkerprotocol.MessageReconnect && frame.Reconnect != nil {
+		message := frame.Reconnect
+		return message.WorkerOffer, message.PlatformOffer, message.SelectedVersion, message.WorkerNonce, message.PlatformNonce, message.CapabilityDigest, true
+	}
+	return attachedworkerprotocol.VersionOfferV1{}, attachedworkerprotocol.VersionOfferV1{}, 0, nil, nil, nil, false
+}
+
+func bootstrapAcceptedProof(frame attachedworkerprotocol.FrameV1, activationKind attachedworkerprotocol.MessageKind) (attachedworkerprotocol.VersionOfferV1, attachedworkerprotocol.VersionOfferV1, attachedworkerprotocol.ProtocolVersion, []byte, []byte, []byte, bool) {
+	if activationKind == attachedworkerprotocol.MessageAttach && frame.Kind == attachedworkerprotocol.MessageAttachAccepted && frame.AttachAccepted != nil {
+		message := frame.AttachAccepted
+		return message.WorkerOffer, message.PlatformOffer, message.SelectedVersion, message.WorkerNonce, message.PlatformNonce, message.CapabilityDigest, true
+	}
+	if activationKind == attachedworkerprotocol.MessageReconnect && frame.Kind == attachedworkerprotocol.MessageReconnectAccepted && frame.ReconnectAccepted != nil {
+		message := frame.ReconnectAccepted
+		return message.WorkerOffer, message.PlatformOffer, message.SelectedVersion, message.WorkerNonce, message.PlatformNonce, message.CapabilityDigest, true
+	}
+	return attachedworkerprotocol.VersionOfferV1{}, attachedworkerprotocol.VersionOfferV1{}, 0, nil, nil, nil, false
 }
 
 func validateActivateConnectionV1(connection ActivateConnectionV1) error {

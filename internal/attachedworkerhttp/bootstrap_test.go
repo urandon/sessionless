@@ -126,10 +126,13 @@ func TestBootstrapHandlerStrictlyRejectsAmbiguousOrSecretBearingBodies(t *testin
 	}
 }
 
-func TestBootstrapHandlerEnforcesExactRouteHeadersAndInitialAttachGate(t *testing.T) {
+func TestBootstrapHandlerEnforcesExactRouteHeadersAndDelegatesReconnectAuthority(t *testing.T) {
 	var calls atomic.Int32
-	handler := newBootstrapHandler(t, bootstrapCoreStub{issue: func(context.Context, domain.TenantID, domain.UserID, attachedworkertransport.IssueChallengeRequest) (attachedworkertransport.ChallengeGrant, error) {
+	handler := newBootstrapHandler(t, bootstrapCoreStub{issue: func(_ context.Context, _ domain.TenantID, _ domain.UserID, request attachedworkertransport.IssueChallengeRequest) (attachedworkertransport.ChallengeGrant, error) {
 		calls.Add(1)
+		if request.Purpose == domain.AttachedWorkerAttachReconnect {
+			return attachedworkertransport.ChallengeGrant{}, attachedworkertransport.ErrTransportUnauthorized
+		}
 		return attachedworkertransport.ChallengeGrant{}, nil
 	}})
 	input := ChallengeRequestV1{
@@ -164,8 +167,13 @@ func TestBootstrapHandlerEnforcesExactRouteHeadersAndInitialAttachGate(t *testin
 	}
 	input.Purpose = domain.AttachedWorkerAttachReconnect
 	recorder := serveBootstrap(t, handler, ChallengePathV1, input)
-	if recorder.Code != http.StatusBadRequest || calls.Load() != 0 {
-		t.Fatalf("reconnect gate status=%d calls=%d", recorder.Code, calls.Load())
+	if recorder.Code != http.StatusUnauthorized || calls.Load() != 1 {
+		t.Fatalf("reconnect delegation status=%d calls=%d", recorder.Code, calls.Load())
+	}
+	input.Purpose = domain.AttachedWorkerAttachPurpose("invalid")
+	recorder = serveBootstrap(t, handler, ChallengePathV1, input)
+	if recorder.Code != http.StatusBadRequest || calls.Load() != 1 {
+		t.Fatalf("invalid purpose status=%d calls=%d", recorder.Code, calls.Load())
 	}
 }
 

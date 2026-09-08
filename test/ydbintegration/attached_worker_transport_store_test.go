@@ -18,7 +18,8 @@ import (
 
 func TestAttachedWorkerTransportTwoPhaseAttachAuthorizationAndExpiry(t *testing.T) {
 	store, _ := openStore(t)
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	tenantID := domain.TenantID(uniqueID("tenant-worker-transport"))
 	ownerID := domain.UserID(uniqueID("owner-worker-transport"))
@@ -54,6 +55,7 @@ func TestAttachedWorkerTransportTwoPhaseAttachAuthorizationAndExpiry(t *testing.
 	secretDigest := domain.DigestAttachedWorkerConnectionSecret([]byte("transport-bearer"))
 	activation := ports.AttachedWorkerConnectionActivation{
 		TenantID: tenantID, OwnerUserID: ownerID, WorkerID: worker.ID, ChallengeID: challenge.ID,
+		Purpose:                   domain.AttachedWorkerAttachInitial,
 		ExpectedChallengeRevision: challenge.Revision, ExpectedWorkerRevision: worker.Revision,
 		ExpectedEnrollmentGeneration: worker.EnrollmentGeneration, ExpectedConnectionGeneration: worker.ConnectionGeneration,
 		PresentedWorkerNonceDigest: challenge.WorkerNonceDigest, PresentedPlatformNonceDigest: challenge.PlatformNonceDigest,
@@ -109,6 +111,163 @@ func TestAttachedWorkerTransportTwoPhaseAttachAuthorizationAndExpiry(t *testing.
 		t.Fatalf("worker after manifest = %#v found=%t err=%v", worker, found, err)
 	}
 
+	reconnectCreate := attachedWorkerChallengeCreateFixture(worker, "reconnect")
+	reconnectCreate.Purpose = domain.AttachedWorkerAttachReconnect
+	reconnectCreate.ExpectedConnectionID = accepted.Connection.ID
+	reconnectCreate.ExpectedConnectionRevision = accepted.Connection.Revision
+	reconnectCreate.ExpectedCapabilityDigest = accepted.Connection.CapabilityDigest
+	reconnectCreate.ExpectedProtocolSnapshot = append([]byte(nil), accepted.Connection.ProtocolSnapshot...)
+	reconnectChallenge, err := store.CreateAttachedWorkerAttachChallenge(ctx, reconnectCreate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loadedReconnectChallenge, found, err := store.LoadAttachedWorkerAttachChallenge(ctx, tenantID, ownerID, worker.ID, reconnectChallenge.ID)
+	if err != nil || !found || loadedReconnectChallenge.ExpectedConnectionID != accepted.Connection.ID ||
+		loadedReconnectChallenge.ExpectedConnectionRevision != accepted.Connection.Revision ||
+		loadedReconnectChallenge.ExpectedCapabilityDigest != accepted.Connection.CapabilityDigest ||
+		!bytes.Equal(loadedReconnectChallenge.ExpectedProtocolSnapshot, accepted.Connection.ProtocolSnapshot) {
+		t.Fatalf("durable reconnect authority = %#v found=%t err=%v", loadedReconnectChallenge, found, err)
+	}
+	reconnectChannelBytes := bytes.Repeat([]byte{0x53}, 32)
+	reconnectAttachedSnapshot, reconnectReadySnapshot, reconnectManifestSignature := attachedWorkerReconnectProtocolSnapshotFixture(
+		t, worker, accepted.Connection, reconnectChallenge, privateKey, reconnectChannelBytes,
+	)
+	reconnectSecretDigest := domain.DigestAttachedWorkerConnectionSecret([]byte("transport-reconnect-bearer"))
+	reconnectActivation := ports.AttachedWorkerConnectionActivation{
+		TenantID: tenantID, OwnerUserID: ownerID, WorkerID: worker.ID, ChallengeID: reconnectChallenge.ID,
+		Purpose: reconnectChallenge.Purpose, ExpectedChallengeRevision: reconnectChallenge.Revision,
+		ExpectedWorkerRevision: worker.Revision, ExpectedEnrollmentGeneration: worker.EnrollmentGeneration,
+		ExpectedConnectionGeneration:     worker.ConnectionGeneration,
+		ExpectedConnectionID:             accepted.Connection.ID,
+		ExpectedConnectionRevision:       accepted.Connection.Revision,
+		ExpectedPreviousCapabilityDigest: accepted.Connection.CapabilityDigest,
+		ExpectedPreviousProtocolSnapshot: append([]byte(nil), accepted.Connection.ProtocolSnapshot...),
+		PresentedWorkerNonceDigest:       reconnectChallenge.WorkerNonceDigest,
+		PresentedPlatformNonceDigest:     reconnectChallenge.PlatformNonceDigest,
+		ConnectionSecretDigest:           reconnectSecretDigest,
+		ChannelBinding:                   domain.NewAttachedWorkerChannelBinding(reconnectChannelBytes),
+		ExpectedCapabilityDigest:         accepted.Connection.CapabilityDigest,
+		ProtocolSnapshot:                 reconnectAttachedSnapshot,
+		AuthTTL:                          time.Hour,
+	}
+	divergentPrevious := attachedWorkerDrainingConnectionFixture(t, worker, accepted.Connection)
+	divergentChannelBytes := bytes.Repeat([]byte{0x55}, 32)
+	divergentAttachedSnapshot, _, _ := attachedWorkerReconnectProtocolSnapshotFixture(
+		t, worker, divergentPrevious, reconnectChallenge, privateKey, divergentChannelBytes,
+	)
+	divergentAuthority := reconnectActivation
+	divergentAuthority.ConnectionSecretDigest = domain.DigestAttachedWorkerConnectionSecret([]byte("transport-divergent-authority-bearer"))
+	divergentAuthority.ChannelBinding = domain.NewAttachedWorkerChannelBinding(divergentChannelBytes)
+	divergentAuthority.ProtocolSnapshot = divergentAttachedSnapshot
+	if result, err := store.ActivateAttachedWorkerConnection(ctx, divergentAuthority); err != nil || result.Status != ports.AttachedWorkerConnectionConflict {
+		t.Fatalf("divergent reconnect authority = %#v, %v", result, err)
+	}
+	otherReconnectChannelBytes := bytes.Repeat([]byte{0x54}, 32)
+	otherReconnectAttachedSnapshot, otherReconnectReadySnapshot, otherReconnectManifestSignature := attachedWorkerReconnectProtocolSnapshotFixture(
+		t, worker, accepted.Connection, reconnectChallenge, privateKey, otherReconnectChannelBytes,
+	)
+	otherReconnectActivation := reconnectActivation
+	otherReconnectActivation.ConnectionSecretDigest = domain.DigestAttachedWorkerConnectionSecret([]byte("transport-other-reconnect-bearer"))
+	otherReconnectActivation.ChannelBinding = domain.NewAttachedWorkerChannelBinding(otherReconnectChannelBytes)
+	otherReconnectActivation.ProtocolSnapshot = otherReconnectAttachedSnapshot
+	type reconnectContender struct {
+		request           ports.AttachedWorkerConnectionActivation
+		readySnapshot     []byte
+		manifestSignature []byte
+		result            ports.AttachedWorkerConnectionResult
+		err               error
+	}
+	contenders := []reconnectContender{
+		{request: reconnectActivation, readySnapshot: reconnectReadySnapshot, manifestSignature: reconnectManifestSignature},
+		{request: otherReconnectActivation, readySnapshot: otherReconnectReadySnapshot, manifestSignature: otherReconnectManifestSignature},
+	}
+	start := make(chan struct{})
+	results := make(chan reconnectContender, len(contenders))
+	for _, contender := range contenders {
+		contender := contender
+		go func() {
+			<-start
+			contender.result, contender.err = store.ActivateAttachedWorkerConnection(ctx, contender.request)
+			results <- contender
+		}()
+	}
+	close(start)
+	var winner, loser reconnectContender
+	activatedCount, consumedCount := 0, 0
+	for range contenders {
+		var contender reconnectContender
+		select {
+		case contender = <-results:
+		case <-ctx.Done():
+			t.Fatalf("concurrent reconnect did not complete: %v", context.Cause(ctx))
+		}
+		if contender.err != nil {
+			t.Fatalf("concurrent reconnect activation: %v", contender.err)
+		}
+		switch contender.result.Status {
+		case ports.AttachedWorkerConnectionActivated:
+			activatedCount++
+			winner = contender
+		case ports.AttachedWorkerConnectionConsumed:
+			consumedCount++
+			loser = contender
+		default:
+			t.Fatalf("concurrent reconnect status = %#v", contender.result)
+		}
+	}
+	if activatedCount != 1 || consumedCount != 1 {
+		t.Fatalf("concurrent reconnect activated=%d consumed=%d", activatedCount, consumedCount)
+	}
+	reconnectActivation = winner.request
+	reconnectReadySnapshot = winner.readySnapshot
+	reconnectManifestSignature = winner.manifestSignature
+	reconnectSecretDigest = winner.request.ConnectionSecretDigest
+	reconnectActivated := winner.result
+	if reconnectActivated.Connection.ID == accepted.Connection.ID ||
+		reconnectActivated.Connection.ConnectionGeneration != accepted.Connection.ConnectionGeneration+1 ||
+		reconnectActivated.Connection.State != domain.AttachedWorkerConnectionAttaching ||
+		!reconnectActivated.Connection.PresenceExpiresAt.IsZero() {
+		t.Fatalf("reconnect did not rotate to a presence-free attaching head: %#v", reconnectActivated.Connection)
+	}
+	reconnectReplay, err := store.ActivateAttachedWorkerConnection(ctx, reconnectActivation)
+	if err != nil || reconnectReplay.Status != ports.AttachedWorkerConnectionActivated ||
+		reconnectReplay.Connection.ID != reconnectActivated.Connection.ID {
+		t.Fatalf("reconnect activation replay = %#v, %v", reconnectReplay, err)
+	}
+	if result, err := store.ActivateAttachedWorkerConnection(ctx, loser.request); err != nil || result.Status != ports.AttachedWorkerConnectionConsumed {
+		t.Fatalf("divergent reconnect replay = %#v, %v", result, err)
+	}
+	worker, found, err = store.LoadAttachedWorker(ctx, tenantID, ownerID, worker.ID)
+	if err != nil || !found || worker.ConnectionGeneration != reconnectActivated.Connection.ConnectionGeneration ||
+		worker.ObservedState != domain.AttachedWorkerObservedOffline {
+		t.Fatalf("worker after reconnect activation = %#v found=%t err=%v", worker, found, err)
+	}
+	reconnectManifestAcceptance := ports.AttachedWorkerManifestAcceptance{
+		TenantID: tenantID, OwnerUserID: ownerID, WorkerID: worker.ID,
+		ConnectionID:               reconnectActivated.Connection.ID,
+		ConnectionGeneration:       reconnectActivated.Connection.ConnectionGeneration,
+		ExpectedConnectionRevision: reconnectActivated.Connection.Revision, ExpectedWorkerRevision: worker.Revision,
+		PresentedSecretDigest: reconnectSecretDigest,
+		Capability: ports.AttachedWorkerCapabilityTarget{
+			ManifestRevision: 1, Digest: capabilityDigest, ProtocolVersion: reconnectChallenge.SelectedProtocolVersion,
+			IdentityKeyDigest: domain.DigestAttachedWorkerIdentityKey(worker.IdentityPublicKey),
+			CanonicalManifest: canonicalManifest, ManifestPayload: []byte(`{"version":1,"surface":"codex-exec"}`),
+			Signature: reconnectManifestSignature,
+		},
+		PlatformSequence: 2, WorkerSequence: 3, PlatformAck: 2, WorkerAck: 2,
+		ProtocolSnapshot: reconnectReadySnapshot, PresenceTTL: time.Microsecond,
+	}
+	reconnectAccepted, err := store.AcceptAttachedWorkerManifest(ctx, reconnectManifestAcceptance)
+	if err != nil || reconnectAccepted.Status != ports.AttachedWorkerConnectionAuthorized || !reconnectAccepted.Checkpointed {
+		t.Fatalf("reconnect manifest acceptance = %#v, %v", reconnectAccepted, err)
+	}
+	accepted = reconnectAccepted
+	secretDigest = reconnectSecretDigest
+	worker, found, err = store.LoadAttachedWorker(ctx, tenantID, ownerID, worker.ID)
+	if err != nil || !found || worker.ObservedState != domain.AttachedWorkerObservedOnline {
+		t.Fatalf("worker after reconnect manifest = %#v found=%t err=%v", worker, found, err)
+	}
+
 	wrongBearer := ports.AttachedWorkerExchangeAuthorization{
 		TenantID: tenantID, OwnerUserID: ownerID, WorkerID: worker.ID, ConnectionID: accepted.Connection.ID,
 		ConnectionGeneration: accepted.Connection.ConnectionGeneration, PresentedSecretDigest: domain.DigestAttachedWorkerConnectionSecret([]byte("wrong")),
@@ -151,8 +310,8 @@ func TestAttachedWorkerTransportTwoPhaseAttachAuthorizationAndExpiry(t *testing.
 		t.Fatalf("worker after expiry = %#v found=%t err=%v", worker, found, err)
 	}
 	audits, err := store.ListAttachedWorkerAuditEvents(ctx, tenantID, ownerID, worker.ID, 0, 10)
-	if err != nil || len(audits) != 5 || audits[3].Action != domain.AttachedWorkerAuditConnectionManifestAccepted ||
-		audits[4].Action != domain.AttachedWorkerAuditConnectionPresenceExpired {
+	if err != nil || len(audits) != 7 || audits[5].Action != domain.AttachedWorkerAuditConnectionManifestAccepted ||
+		audits[6].Action != domain.AttachedWorkerAuditConnectionPresenceExpired {
 		t.Fatalf("transport audits = %#v, %v", audits, err)
 	}
 
@@ -191,6 +350,7 @@ func TestAttachedWorkerTransportRevocationCleansStalePresenceExpiry(t *testing.T
 	secretDigest := domain.DigestAttachedWorkerConnectionSecret([]byte("revoke-expiry-bearer"))
 	activated, err := store.ActivateAttachedWorkerConnection(ctx, ports.AttachedWorkerConnectionActivation{
 		TenantID: tenantID, OwnerUserID: ownerID, WorkerID: worker.ID, ChallengeID: challenge.ID,
+		Purpose:                   domain.AttachedWorkerAttachInitial,
 		ExpectedChallengeRevision: challenge.Revision, ExpectedWorkerRevision: worker.Revision,
 		ExpectedEnrollmentGeneration: worker.EnrollmentGeneration, ExpectedConnectionGeneration: worker.ConnectionGeneration,
 		PresentedWorkerNonceDigest: challenge.WorkerNonceDigest, PresentedPlatformNonceDigest: challenge.PlatformNonceDigest,
@@ -280,6 +440,10 @@ func TestAttachedWorkerTransportRevocationCleansStalePresenceExpiry(t *testing.T
 }
 
 func attachedWorkerChallengeCreateFixture(worker domain.AttachedWorker, suffix string) ports.AttachedWorkerChallengeCreate {
+	workerNonce, platformNonce := bytes.Repeat([]byte{0x61}, 32), bytes.Repeat([]byte{0x71}, 32)
+	if suffix == "reconnect" {
+		workerNonce, platformNonce = bytes.Repeat([]byte{0x62}, 32), bytes.Repeat([]byte{0x72}, 32)
+	}
 	return ports.AttachedWorkerChallengeCreate{
 		TenantID: worker.TenantID, OwnerUserID: worker.OwnerUserID, WorkerID: worker.ID,
 		ChallengeID:  domain.AttachedWorkerChallengeID(uniqueID("challenge-" + suffix)),
@@ -290,8 +454,8 @@ func attachedWorkerChallengeCreateFixture(worker domain.AttachedWorker, suffix s
 		WorkerProtocolMinimum:        1, WorkerProtocolMaximum: 1, WorkerProtocolVersions: []uint32{1},
 		PlatformProtocolMinimum: 1, PlatformProtocolMaximum: 1, PlatformProtocolVersions: []uint32{1},
 		SelectedProtocolVersion: 1,
-		WorkerNonceDigest:       domain.DigestAttachedWorkerChallenge([]byte("worker-nonce-" + suffix)),
-		PlatformNonceDigest:     domain.DigestAttachedWorkerChallenge([]byte("platform-nonce-" + suffix)),
+		WorkerNonceDigest:       domain.DigestAttachedWorkerChallenge(workerNonce),
+		PlatformNonceDigest:     domain.DigestAttachedWorkerChallenge(platformNonce),
 		Lifetime:                time.Minute, Retention: time.Hour,
 	}
 }
@@ -308,23 +472,7 @@ func attachedWorkerProtocolSnapshotFixture(
 		Window:    attachedworkerprotocol.VersionWindow{Minimum: 1, Maximum: 1},
 		Supported: []attachedworkerprotocol.ProtocolVersion{1},
 	}
-	manifest := attachedworkerprotocol.CapabilityManifestV1{
-		WorkerID: string(worker.ID), EnrollmentGeneration: worker.EnrollmentGeneration, Revision: 1, ProtocolOffer: offer,
-		OperatingSystem: "linux", Architecture: "amd64", BuildID: "integration-build", HarnessName: "fixture",
-		HarnessVersion: "1", HarnessSurface: attachedworkerprotocol.HarnessSurfaceSessionTurn,
-		HarnessExecutableDigest: bytes.Repeat([]byte{0x73}, 32),
-		IsolationEvidence: []attachedworkerprotocol.IsolationEvidenceV1{
-			attachedworkerprotocol.IsolationFilesystemBoundary,
-			attachedworkerprotocol.IsolationNetworkBoundary,
-			attachedworkerprotocol.IsolationProcessBoundary,
-		},
-		Features: []attachedworkerprotocol.ProtocolFeatureV1{
-			attachedworkerprotocol.FeatureCancellation,
-			attachedworkerprotocol.FeatureProgress,
-			attachedworkerprotocol.FeatureReconnect,
-		},
-		MaxConcurrentAttempts: 1,
-	}
+	manifest := attachedWorkerCapabilityManifestFixture(worker, offer)
 	canonicalManifest, err := attachedworkerprotocol.CanonicalManifestBytesV1(manifest)
 	if err != nil {
 		t.Fatal(err)
@@ -384,4 +532,171 @@ func attachedWorkerProtocolSnapshotFixture(
 		t.Fatal(err)
 	}
 	return canonicalManifest, capabilityDigest, attachedBytes, readyBytes, append([]byte(nil), manifestFrame.Manifest.Signature...)
+}
+
+func attachedWorkerCapabilityManifestFixture(worker domain.AttachedWorker, offer attachedworkerprotocol.VersionOfferV1) attachedworkerprotocol.CapabilityManifestV1 {
+	return attachedworkerprotocol.CapabilityManifestV1{
+		WorkerID: string(worker.ID), EnrollmentGeneration: worker.EnrollmentGeneration, Revision: 1, ProtocolOffer: offer,
+		OperatingSystem: "linux", Architecture: "amd64", BuildID: "integration-build", HarnessName: "fixture",
+		HarnessVersion: "1", HarnessSurface: attachedworkerprotocol.HarnessSurfaceSessionTurn,
+		HarnessExecutableDigest: bytes.Repeat([]byte{0x73}, 32),
+		IsolationEvidence: []attachedworkerprotocol.IsolationEvidenceV1{
+			attachedworkerprotocol.IsolationFilesystemBoundary,
+			attachedworkerprotocol.IsolationNetworkBoundary,
+			attachedworkerprotocol.IsolationProcessBoundary,
+		},
+		Features: []attachedworkerprotocol.ProtocolFeatureV1{
+			attachedworkerprotocol.FeatureCancellation,
+			attachedworkerprotocol.FeatureProgress,
+			attachedworkerprotocol.FeatureReconnect,
+		},
+		MaxConcurrentAttempts: 1,
+	}
+}
+
+func attachedWorkerReconnectProtocolSnapshotFixture(
+	t *testing.T,
+	worker domain.AttachedWorker,
+	previous domain.AttachedWorkerConnection,
+	challenge domain.AttachedWorkerAttachChallenge,
+	privateKey ed25519.PrivateKey,
+	channelBinding []byte,
+) ([]byte, []byte, []byte) {
+	t.Helper()
+	previousSnapshot, err := attachedworkerprotocol.DecodeMachineSnapshotV1(previous.ProtocolSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousChannelBinding, err := hex.DecodeString(string(previous.ChannelBinding))
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousConfig := attachedworkerprotocol.MachineConfig{
+		Auth: attachedworkerprotocol.AuthContextV1{
+			TenantID: string(worker.TenantID), OwnerUserID: string(worker.OwnerUserID), WorkerID: string(worker.ID),
+			IdentityPublicKey: append([]byte(nil), worker.IdentityPublicKey...), EnrollmentGeneration: worker.EnrollmentGeneration,
+			ConnectionGeneration: previous.ConnectionGeneration, Version: attachedworkerprotocol.ProtocolVersion(previous.ProtocolVersion),
+			ChannelBinding: append([]byte(nil), previousChannelBinding...),
+		},
+		WorkerOffer: previousSnapshot.Hello.Offer, PlatformOffer: previousSnapshot.Challenge.PlatformOffer,
+		ImplementedVersions: []attachedworkerprotocol.ProtocolVersion{attachedworkerprotocol.ProtocolVersion(previous.ProtocolVersion)},
+	}
+	previousMachine, err := attachedworkerprotocol.RestoreConformanceMachine(previousConfig, previousSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextAuth := previousConfig.Auth
+	nextAuth.ConnectionGeneration = challenge.TargetConnectionGeneration
+	nextAuth.ChannelBinding = append([]byte(nil), channelBinding...)
+	claim, err := previousMachine.BeginReconnect(nextAuth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilityDigest, err := hex.DecodeString(string(previous.CapabilityDigest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconnect, err := attachedworkerprotocol.BuildReconnectV1(claim, attachedworkerprotocol.ReconnectNegotiationV1{
+		WorkerOffer: previousSnapshot.Hello.Offer, PlatformOffer: previousSnapshot.Challenge.PlatformOffer,
+		SelectedVersion: attachedworkerprotocol.ProtocolVersion(previous.ProtocolVersion),
+		WorkerNonce:     bytes.Repeat([]byte{0x62}, 32), PlatformNonce: bytes.Repeat([]byte{0x72}, 32),
+		CapabilityDigest: capabilityDigest,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconnectFrame := attachedworkerprotocol.FrameV1{
+		Version:   attachedworkerprotocol.ProtocolVersion(previous.ProtocolVersion),
+		MessageID: attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionWorkerToPlatform, 2),
+		WorkerID:  string(worker.ID), EnrollmentGeneration: worker.EnrollmentGeneration,
+		ConnectionGeneration: challenge.TargetConnectionGeneration, Sequence: 2, Ack: 1,
+		Kind: attachedworkerprotocol.MessageReconnect, Reconnect: &reconnect,
+	}
+	if err := attachedworkerprotocol.SignReconnectV1(privateKey, nextAuth, &reconnectFrame); err != nil {
+		t.Fatal(err)
+	}
+	_, attached, err := attachedworkerprotocol.BuildReconnectAcceptedSnapshotV1(previousConfig, previousSnapshot, nextAuth, reconnectFrame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachedBytes, err := attachedworkerprotocol.EncodeMachineSnapshotV1(attached)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextConfig := previousConfig
+	nextConfig.Auth = nextAuth
+	manifest := attachedWorkerCapabilityManifestFixture(worker, previousSnapshot.Hello.Offer)
+	manifestFrame := attachedworkerprotocol.FrameV1{
+		Version:   attachedworkerprotocol.ProtocolVersion(previous.ProtocolVersion),
+		MessageID: attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionWorkerToPlatform, 3),
+		WorkerID:  string(worker.ID), EnrollmentGeneration: worker.EnrollmentGeneration,
+		ConnectionGeneration: challenge.TargetConnectionGeneration, Sequence: 3, Ack: 2,
+		Kind:     attachedworkerprotocol.MessageManifest,
+		Manifest: &attachedworkerprotocol.ManifestV1{Manifest: manifest, Digest: capabilityDigest},
+	}
+	if err := attachedworkerprotocol.SignManifestV1(privateKey, nextAuth, &manifestFrame); err != nil {
+		t.Fatal(err)
+	}
+	ready, err := attachedworkerprotocol.ApplyMachineFrameV1(
+		nextConfig, attached, attachedworkerprotocol.DirectionWorkerToPlatform, manifestFrame, time.Now().UnixMicro(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readyBytes, err := attachedworkerprotocol.EncodeMachineSnapshotV1(ready)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return attachedBytes, readyBytes, append([]byte(nil), manifestFrame.Manifest.Signature...)
+}
+
+func attachedWorkerDrainingConnectionFixture(
+	t *testing.T,
+	worker domain.AttachedWorker,
+	connection domain.AttachedWorkerConnection,
+) domain.AttachedWorkerConnection {
+	t.Helper()
+	snapshot, err := attachedworkerprotocol.DecodeMachineSnapshotV1(connection.ProtocolSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	channelBinding, err := hex.DecodeString(string(connection.ChannelBinding))
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := attachedworkerprotocol.MachineConfig{
+		Auth: attachedworkerprotocol.AuthContextV1{
+			TenantID: string(worker.TenantID), OwnerUserID: string(worker.OwnerUserID), WorkerID: string(worker.ID),
+			IdentityPublicKey: append([]byte(nil), worker.IdentityPublicKey...), EnrollmentGeneration: worker.EnrollmentGeneration,
+			ConnectionGeneration: connection.ConnectionGeneration, Version: attachedworkerprotocol.ProtocolVersion(connection.ProtocolVersion),
+			ChannelBinding: channelBinding,
+		},
+		WorkerOffer: snapshot.Hello.Offer, PlatformOffer: snapshot.Challenge.PlatformOffer,
+		ImplementedVersions: []attachedworkerprotocol.ProtocolVersion{attachedworkerprotocol.ProtocolVersion(connection.ProtocolVersion)},
+	}
+	drain := attachedworkerprotocol.FrameV1{
+		Version:   attachedworkerprotocol.ProtocolVersion(connection.ProtocolVersion),
+		MessageID: attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionPlatformToWorker, snapshot.Platform.Sequence+1),
+		WorkerID:  string(worker.ID), EnrollmentGeneration: worker.EnrollmentGeneration,
+		ConnectionGeneration: connection.ConnectionGeneration,
+		Sequence:             snapshot.Platform.Sequence + 1, Ack: snapshot.Worker.Sequence,
+		Kind: attachedworkerprotocol.MessageDrain, Drain: &attachedworkerprotocol.DrainV1{Revision: 1},
+	}
+	snapshot, err = attachedworkerprotocol.ApplyMachineFrameV1(
+		config, snapshot, attachedworkerprotocol.DirectionPlatformToWorker, drain, time.Now().UnixMicro(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := attachedworkerprotocol.EncodeMachineSnapshotV1(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection.State = domain.AttachedWorkerConnectionDraining
+	connection.PlatformSequence = snapshot.Platform.Sequence
+	connection.WorkerSequence = snapshot.Worker.Sequence
+	connection.PlatformAck = snapshot.Platform.Ack
+	connection.WorkerAck = snapshot.Worker.Ack
+	connection.ProtocolSnapshot = encoded
+	return connection
 }

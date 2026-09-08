@@ -141,18 +141,27 @@ func (service *Service) IssueChallenge(
 	if (request.Purpose == domain.AttachedWorkerAttachInitial) != (worker.ConnectionGeneration == 0) {
 		return ChallengeGrant{}, ErrTransportUnauthorized
 	}
-	// AW-03 has no durable attempt snapshot yet. Reject reconnect before
-	// creating a single-use challenge; AW-04 will enable it with authoritative
-	// reconciliation rather than trusting the worker's claim.
-	if request.Purpose == domain.AttachedWorkerAttachReconnect {
-		return ChallengeGrant{}, ErrTransportUnauthorized
-	}
 	transcript, err := ChallengeRequestProofTranscript(tenantID, ownerUserID, worker, request)
 	if err != nil || !ed25519.Verify(ed25519.PublicKey(worker.IdentityPublicKey), transcript, request.Proof) {
 		return ChallengeGrant{}, ErrTransportUnauthorized
 	}
+	var previous domain.AttachedWorkerConnection
+	if request.Purpose == domain.AttachedWorkerAttachReconnect {
+		previous, err = service.loadIdleReconnectAuthority(ctx, tenantID, ownerUserID, worker)
+		if err != nil {
+			return ChallengeGrant{}, err
+		}
+		_, previousSnapshot, stateErr := service.protocolStateForConnection(worker, previous)
+		if stateErr != nil || !sameProtocolOffer(request.Hello.Hello.Offer, previousSnapshot.Hello.Offer) ||
+			!sameProtocolOffer(service.platformOffer, previousSnapshot.Challenge.PlatformOffer) {
+			return ChallengeGrant{}, ErrTransportUnauthorized
+		}
+	}
 	selected, err := attachedworkerprotocol.NegotiateOffers(service.platformOffer, request.Hello.Hello.Offer, service.implemented)
 	if err != nil {
+		return ChallengeGrant{}, ErrTransportUnauthorized
+	}
+	if request.Purpose == domain.AttachedWorkerAttachReconnect && uint32(selected) != previous.ProtocolVersion {
 		return ChallengeGrant{}, ErrTransportUnauthorized
 	}
 	challengeValue, err := service.ids.NewID(ctx, ports.IDAttachedWorkerChallenge)
@@ -168,6 +177,9 @@ func (service *Service) IssueChallenge(
 	if challengeID.Validate() != nil || connectionID.Validate() != nil {
 		return ChallengeGrant{}, ErrTransportBackend
 	}
+	if request.Purpose == domain.AttachedWorkerAttachReconnect && connectionID == previous.ID {
+		return ChallengeGrant{}, ErrTransportBackend
+	}
 	platformNonce := make([]byte, transportNonceBytes)
 	if _, err := io.ReadFull(service.random, platformNonce); err != nil {
 		return ChallengeGrant{}, ErrTransportBackend
@@ -177,16 +189,19 @@ func (service *Service) IssueChallenge(
 		ChallengeID: challengeID, ConnectionID: connectionID, Purpose: request.Purpose, Audience: request.ExpectedAudience,
 		ExpectedWorkerRevision: worker.Revision, ExpectedEnrollmentGeneration: worker.EnrollmentGeneration,
 		ExpectedConnectionGeneration: worker.ConnectionGeneration,
-		WorkerProtocolMinimum:        uint32(request.Hello.Hello.Offer.Window.Minimum),
-		WorkerProtocolMaximum:        uint32(request.Hello.Hello.Offer.Window.Maximum),
-		WorkerProtocolVersions:       protocolVersions(request.Hello.Hello.Offer.Supported),
-		PlatformProtocolMinimum:      uint32(service.platformOffer.Window.Minimum),
-		PlatformProtocolMaximum:      uint32(service.platformOffer.Window.Maximum),
-		PlatformProtocolVersions:     protocolVersions(service.platformOffer.Supported),
-		SelectedProtocolVersion:      uint32(selected),
-		WorkerNonceDigest:            domain.DigestAttachedWorkerChallenge(request.Hello.Hello.WorkerNonce),
-		PlatformNonceDigest:          domain.DigestAttachedWorkerChallenge(platformNonce),
-		Lifetime:                     service.challengeLifetime, Retention: service.challengeRetention,
+		ExpectedConnectionID:         previous.ID, ExpectedConnectionRevision: previous.Revision,
+		ExpectedCapabilityDigest: previous.CapabilityDigest,
+		ExpectedProtocolSnapshot: append([]byte(nil), previous.ProtocolSnapshot...),
+		WorkerProtocolMinimum:    uint32(request.Hello.Hello.Offer.Window.Minimum),
+		WorkerProtocolMaximum:    uint32(request.Hello.Hello.Offer.Window.Maximum),
+		WorkerProtocolVersions:   protocolVersions(request.Hello.Hello.Offer.Supported),
+		PlatformProtocolMinimum:  uint32(service.platformOffer.Window.Minimum),
+		PlatformProtocolMaximum:  uint32(service.platformOffer.Window.Maximum),
+		PlatformProtocolVersions: protocolVersions(service.platformOffer.Supported),
+		SelectedProtocolVersion:  uint32(selected),
+		WorkerNonceDigest:        domain.DigestAttachedWorkerChallenge(request.Hello.Hello.WorkerNonce),
+		PlatformNonceDigest:      domain.DigestAttachedWorkerChallenge(platformNonce),
+		Lifetime:                 service.challengeLifetime, Retention: service.challengeRetention,
 	}
 	challenge, err := service.store.CreateAttachedWorkerAttachChallenge(ctx, create)
 	if err != nil {
@@ -359,7 +374,8 @@ func (service *Service) Activate(
 	if err != nil {
 		return ActivationGrant{}, ErrTransportBackend
 	}
-	if !found || challenge.Validate() != nil || challenge.TenantID != tenantID || challenge.OwnerUserID != ownerUserID ||
+	if !found || challenge.Validate() != nil || !hasDurableReconnectAuthority(challenge) ||
+		challenge.TenantID != tenantID || challenge.OwnerUserID != ownerUserID ||
 		challenge.WorkerID != workerID || challenge.Audience != service.audience {
 		return ActivationGrant{}, ErrTransportUnauthorized
 	}
@@ -389,6 +405,7 @@ func (service *Service) Activate(
 		Version:              attachedworkerprotocol.ProtocolVersion(challenge.SelectedProtocolVersion), ChannelBinding: channelBindingBytes,
 	}
 	var accepted attachedworkerprotocol.FrameV1
+	var protocolSnapshot []byte
 	switch challenge.Purpose {
 	case domain.AttachedWorkerAttachInitial:
 		if request.Attach.Kind != attachedworkerprotocol.MessageAttach || attachedworkerprotocol.VerifyAttachV1(auth, request.Attach) != nil {
@@ -405,16 +422,55 @@ func (service *Service) Activate(
 				PlatformNonce: cloneBytes(request.Attach.Attach.PlatformNonce), CapabilityDigest: cloneBytes(request.Attach.Attach.CapabilityDigest),
 			},
 		}
+		protocolSnapshot, err = buildInitialProtocolSnapshot(service, worker, challenge, request.Attach, accepted, channelBindingBytes)
+		if err != nil {
+			return ActivationGrant{}, ErrTransportUnauthorized
+		}
 	case domain.AttachedWorkerAttachReconnect:
-		// Active-attempt reconnect needs the authoritative AW-04 attempt
-		// snapshot. Until that store exists, reconnect is deliberately denied
-		// instead of trusting the worker's claim or fabricating a snapshot.
-		return ActivationGrant{}, ErrTransportUnauthorized
+		if request.Attach.Kind != attachedworkerprotocol.MessageReconnect || request.Attach.Reconnect == nil {
+			return ActivationGrant{}, ErrTransportUnauthorized
+		}
+		if challenge.ConsumedAt.IsZero() {
+			previous, loadErr := service.loadIdleReconnectAuthority(ctx, tenantID, ownerUserID, worker)
+			if loadErr != nil || !reconnectChallengeMatchesConnection(challenge, previous) ||
+				previous.CapabilityDigest != domain.AttachedWorkerCapabilityDigest(hexDigest(request.Attach.Reconnect.CapabilityDigest)) {
+				return ActivationGrant{}, ErrTransportUnauthorized
+			}
+			previousConfig, previousSnapshot, loadErr := service.protocolStateForConnection(worker, previous)
+			if loadErr != nil {
+				return ActivationGrant{}, ErrTransportUnauthorized
+			}
+			accepted, previousSnapshot, loadErr = attachedworkerprotocol.BuildReconnectAcceptedSnapshotV1(
+				previousConfig, previousSnapshot, auth, request.Attach,
+			)
+			if loadErr != nil {
+				return ActivationGrant{}, ErrTransportUnauthorized
+			}
+			protocolSnapshot, loadErr = attachedworkerprotocol.EncodeMachineSnapshotV1(previousSnapshot)
+			if loadErr != nil {
+				return ActivationGrant{}, ErrTransportUnauthorized
+			}
+		} else {
+			current, found, loadErr := service.store.LoadAttachedWorkerConnection(ctx, tenantID, ownerUserID, worker.ID)
+			if loadErr != nil {
+				return ActivationGrant{}, ErrTransportBackend
+			}
+			if !found || current.Validate() != nil || current.ID != challenge.ConnectionID ||
+				current.ActivationChallengeID != challenge.ID || current.ConnectionGeneration != challenge.TargetConnectionGeneration ||
+				current.EnrollmentGeneration != challenge.ExpectedEnrollmentGeneration || current.State != domain.AttachedWorkerConnectionAttaching {
+				return ActivationGrant{}, ErrTransportUnauthorized
+			}
+			currentConfig, currentSnapshot, loadErr := service.protocolStateForConnection(worker, current)
+			if loadErr != nil {
+				return ActivationGrant{}, ErrTransportUnauthorized
+			}
+			accepted, loadErr = attachedworkerprotocol.ReplayIdleReconnectAcceptedV1(currentConfig, currentSnapshot, request.Attach)
+			if loadErr != nil {
+				return ActivationGrant{}, ErrTransportUnauthorized
+			}
+			protocolSnapshot = append([]byte(nil), current.ProtocolSnapshot...)
+		}
 	default:
-		return ActivationGrant{}, ErrTransportUnauthorized
-	}
-	protocolSnapshot, err := buildInitialProtocolSnapshot(service, worker, challenge, request.Attach, accepted, channelBindingBytes)
-	if err != nil {
 		return ActivationGrant{}, ErrTransportUnauthorized
 	}
 	capabilityDigest := domain.AttachedWorkerCapabilityDigest(hexDigest(activationCapabilityDigest(request.Attach)))
@@ -426,12 +482,15 @@ func (service *Service) Activate(
 		expectedChallengeRevision--
 	}
 	result, err := service.store.ActivateAttachedWorkerConnection(ctx, ports.AttachedWorkerConnectionActivation{
-		TenantID: tenantID, OwnerUserID: ownerUserID, WorkerID: worker.ID, ChallengeID: challenge.ID,
+		TenantID: tenantID, OwnerUserID: ownerUserID, WorkerID: worker.ID, ChallengeID: challenge.ID, Purpose: challenge.Purpose,
 		ExpectedChallengeRevision: expectedChallengeRevision, ExpectedWorkerRevision: challenge.ExpectedWorkerRevision,
 		ExpectedEnrollmentGeneration: challenge.ExpectedEnrollmentGeneration, ExpectedConnectionGeneration: challenge.ExpectedConnectionGeneration,
-		PresentedWorkerNonceDigest:   domain.DigestAttachedWorkerChallenge(activationWorkerNonce(request.Attach)),
-		PresentedPlatformNonceDigest: domain.DigestAttachedWorkerChallenge(activationPlatformNonce(request.Attach)),
-		ConnectionSecretDigest:       request.ConnectionSecretDigest, ChannelBinding: channelBinding,
+		ExpectedConnectionID: challenge.ExpectedConnectionID, ExpectedConnectionRevision: challenge.ExpectedConnectionRevision,
+		ExpectedPreviousCapabilityDigest: challenge.ExpectedCapabilityDigest,
+		ExpectedPreviousProtocolSnapshot: append([]byte(nil), challenge.ExpectedProtocolSnapshot...),
+		PresentedWorkerNonceDigest:       domain.DigestAttachedWorkerChallenge(activationWorkerNonce(request.Attach)),
+		PresentedPlatformNonceDigest:     domain.DigestAttachedWorkerChallenge(activationPlatformNonce(request.Attach)),
+		ConnectionSecretDigest:           request.ConnectionSecretDigest, ChannelBinding: channelBinding,
 		ExpectedCapabilityDigest: capabilityDigest, ProtocolSnapshot: protocolSnapshot, AuthTTL: service.authTTL,
 	})
 	if err != nil {
@@ -449,6 +508,26 @@ func (service *Service) Activate(
 		return ActivationGrant{}, ErrTransportUnauthorized
 	}
 	return ActivationGrant{Connection: result.Connection, Accepted: accepted}, nil
+}
+
+func reconnectChallengeMatchesConnection(challenge domain.AttachedWorkerAttachChallenge, connection domain.AttachedWorkerConnection) bool {
+	return challenge.Purpose == domain.AttachedWorkerAttachReconnect &&
+		challenge.ExpectedConnectionID == connection.ID && challenge.ExpectedConnectionRevision == connection.Revision &&
+		challenge.ExpectedEnrollmentGeneration == connection.EnrollmentGeneration &&
+		challenge.ExpectedConnectionGeneration == connection.ConnectionGeneration &&
+		challenge.ExpectedCapabilityDigest == connection.CapabilityDigest &&
+		challenge.SelectedProtocolVersion == connection.ProtocolVersion &&
+		bytes.Equal(challenge.ExpectedProtocolSnapshot, connection.ProtocolSnapshot)
+}
+
+func hasDurableReconnectAuthority(challenge domain.AttachedWorkerAttachChallenge) bool {
+	if challenge.Purpose == domain.AttachedWorkerAttachInitial {
+		return challenge.ExpectedConnectionID == "" && challenge.ExpectedConnectionRevision == 0 &&
+			challenge.ExpectedCapabilityDigest == "" && len(challenge.ExpectedProtocolSnapshot) == 0
+	}
+	return challenge.Purpose == domain.AttachedWorkerAttachReconnect && challenge.ExpectedConnectionID.Validate() == nil &&
+		challenge.ExpectedConnectionRevision > 0 && challenge.ExpectedConnectionRevision != math.MaxUint64 &&
+		challenge.ExpectedCapabilityDigest.Validate() == nil && len(challenge.ExpectedProtocolSnapshot) > 0
 }
 
 func ConnectionChannelBinding(challengeID domain.AttachedWorkerChallengeID, workerNonceDigest, platformNonceDigest domain.AttachedWorkerChallengeDigest, secretDigest domain.AttachedWorkerConnectionSecretDigest) domain.AttachedWorkerChannelBinding {
@@ -884,6 +963,9 @@ func (service *Service) acceptManifestExchange(ctx context.Context, bearer Conne
 		return nil, ErrTransportBackend
 	}
 	expectedState := domain.AttachedWorkerConnectionOnline
+	if nextSnapshot.Connection == attachedworkerprotocol.ConnectionDraining || nextSnapshot.Connection == attachedworkerprotocol.ConnectionDrained {
+		expectedState = domain.AttachedWorkerConnectionDraining
+	}
 	if result.Status != ports.AttachedWorkerConnectionAuthorized || result.Connection.Validate() != nil ||
 		result.Connection.State != expectedState || result.Connection.TenantID != bearer.tenantID ||
 		result.Connection.OwnerUserID != bearer.ownerUserID || result.Connection.WorkerID != bearer.workerID ||
@@ -915,17 +997,28 @@ func (service *Service) loadConnectionProtocolState(
 		worker.EnrollmentGeneration != connection.EnrollmentGeneration || worker.ConnectionGeneration != connection.ConnectionGeneration {
 		return attachedworkerprotocol.MachineConfig{}, domain.AttachedWorker{}, attachedworkerprotocol.MachineSnapshotV1{}, ErrTransportUnauthorized
 	}
-	channelBinding, err := decodeChannelBinding(connection.ChannelBinding)
+	config, snapshot, err := service.protocolStateForConnection(worker, connection)
 	if err != nil {
 		return attachedworkerprotocol.MachineConfig{}, domain.AttachedWorker{}, attachedworkerprotocol.MachineSnapshotV1{}, ErrTransportUnauthorized
 	}
+	return config, worker, snapshot, nil
+}
+
+func (service *Service) protocolStateForConnection(
+	worker domain.AttachedWorker,
+	connection domain.AttachedWorkerConnection,
+) (attachedworkerprotocol.MachineConfig, attachedworkerprotocol.MachineSnapshotV1, error) {
+	channelBinding, err := decodeChannelBinding(connection.ChannelBinding)
+	if err != nil {
+		return attachedworkerprotocol.MachineConfig{}, attachedworkerprotocol.MachineSnapshotV1{}, ErrTransportUnauthorized
+	}
 	snapshot, err := attachedworkerprotocol.DecodeMachineSnapshotV1(connection.ProtocolSnapshot)
 	if err != nil || snapshot.Hello == nil || snapshot.Challenge == nil || !protocolSnapshotMatchesConnection(snapshot, connection) {
-		return attachedworkerprotocol.MachineConfig{}, domain.AttachedWorker{}, attachedworkerprotocol.MachineSnapshotV1{}, ErrTransportUnauthorized
+		return attachedworkerprotocol.MachineConfig{}, attachedworkerprotocol.MachineSnapshotV1{}, ErrTransportUnauthorized
 	}
 	config := attachedworkerprotocol.MachineConfig{
 		Auth: attachedworkerprotocol.AuthContextV1{
-			TenantID: string(bearer.tenantID), OwnerUserID: string(bearer.ownerUserID), WorkerID: string(bearer.workerID),
+			TenantID: string(worker.TenantID), OwnerUserID: string(worker.OwnerUserID), WorkerID: string(worker.ID),
 			IdentityPublicKey: cloneBytes(worker.IdentityPublicKey), EnrollmentGeneration: connection.EnrollmentGeneration,
 			ConnectionGeneration: connection.ConnectionGeneration,
 			Version:              attachedworkerprotocol.ProtocolVersion(connection.ProtocolVersion), ChannelBinding: channelBinding,
@@ -935,9 +1028,9 @@ func (service *Service) loadConnectionProtocolState(
 		ImplementedVersions: append([]attachedworkerprotocol.ProtocolVersion(nil), service.implemented...),
 	}
 	if _, err := attachedworkerprotocol.RestoreConformanceMachine(config, snapshot); err != nil {
-		return attachedworkerprotocol.MachineConfig{}, domain.AttachedWorker{}, attachedworkerprotocol.MachineSnapshotV1{}, ErrTransportUnauthorized
+		return attachedworkerprotocol.MachineConfig{}, attachedworkerprotocol.MachineSnapshotV1{}, ErrTransportUnauthorized
 	}
-	return config, worker, snapshot, nil
+	return config, snapshot, nil
 }
 
 func protocolSnapshotMatchesConnection(snapshot attachedworkerprotocol.MachineSnapshotV1, connection domain.AttachedWorkerConnection) bool {
@@ -973,18 +1066,65 @@ func cloneOffer(value attachedworkerprotocol.VersionOfferV1) attachedworkerproto
 	return attachedworkerprotocol.VersionOfferV1{Window: value.Window, Supported: append([]attachedworkerprotocol.ProtocolVersion(nil), value.Supported...)}
 }
 
+func sameProtocolOffer(left, right attachedworkerprotocol.VersionOfferV1) bool {
+	if left.Window != right.Window || len(left.Supported) != len(right.Supported) {
+		return false
+	}
+	for index := range left.Supported {
+		if left.Supported[index] != right.Supported[index] {
+			return false
+		}
+	}
+	return true
+}
+
 func challengeMatchesCreate(challenge domain.AttachedWorkerAttachChallenge, create ports.AttachedWorkerChallengeCreate) bool {
 	return challenge.Purpose == create.Purpose && challenge.Audience == create.Audience &&
 		challenge.ExpectedWorkerRevision == create.ExpectedWorkerRevision &&
 		challenge.ExpectedEnrollmentGeneration == create.ExpectedEnrollmentGeneration &&
 		challenge.ExpectedConnectionGeneration == create.ExpectedConnectionGeneration &&
 		challenge.TargetConnectionGeneration == create.ExpectedConnectionGeneration+1 &&
+		challenge.ExpectedConnectionID == create.ExpectedConnectionID &&
+		challenge.ExpectedConnectionRevision == create.ExpectedConnectionRevision &&
+		challenge.ExpectedCapabilityDigest == create.ExpectedCapabilityDigest &&
+		bytes.Equal(challenge.ExpectedProtocolSnapshot, create.ExpectedProtocolSnapshot) &&
 		challenge.WorkerProtocolMinimum == create.WorkerProtocolMinimum && challenge.WorkerProtocolMaximum == create.WorkerProtocolMaximum &&
 		challenge.PlatformProtocolMinimum == create.PlatformProtocolMinimum && challenge.PlatformProtocolMaximum == create.PlatformProtocolMaximum &&
 		challenge.SelectedProtocolVersion == create.SelectedProtocolVersion &&
 		equalUint32s(challenge.WorkerProtocolVersions, create.WorkerProtocolVersions) &&
 		equalUint32s(challenge.PlatformProtocolVersions, create.PlatformProtocolVersions) &&
 		challenge.WorkerNonceDigest == create.WorkerNonceDigest && challenge.PlatformNonceDigest == create.PlatformNonceDigest
+}
+
+func (service *Service) loadIdleReconnectAuthority(
+	ctx context.Context,
+	tenantID domain.TenantID,
+	ownerUserID domain.UserID,
+	worker domain.AttachedWorker,
+) (domain.AttachedWorkerConnection, error) {
+	connection, found, err := service.store.LoadAttachedWorkerConnection(ctx, tenantID, ownerUserID, worker.ID)
+	if err != nil {
+		return domain.AttachedWorkerConnection{}, ErrTransportBackend
+	}
+	if !found || connection.Validate() != nil || connection.TenantID != tenantID || connection.OwnerUserID != ownerUserID ||
+		connection.WorkerID != worker.ID || connection.EnrollmentGeneration != worker.EnrollmentGeneration ||
+		connection.ConnectionGeneration != worker.ConnectionGeneration ||
+		(connection.State != domain.AttachedWorkerConnectionOnline && connection.State != domain.AttachedWorkerConnectionDraining) {
+		return domain.AttachedWorkerConnection{}, ErrTransportUnauthorized
+	}
+	_, snapshot, err := service.protocolStateForConnection(worker, connection)
+	if err != nil || snapshot.Attempt.Summary.State != attachedworkerprotocol.AttemptIdle {
+		return domain.AttachedWorkerConnection{}, ErrTransportUnauthorized
+	}
+	attempt, found, err := service.store.LoadAttachedWorkerAttempt(ctx, tenantID, ownerUserID, worker.ID)
+	if err != nil {
+		return domain.AttachedWorkerConnection{}, ErrTransportBackend
+	}
+	if found && (attempt.Validate() != nil || attempt.TenantID != tenantID || attempt.OwnerUserID != ownerUserID ||
+		attempt.WorkerID != worker.ID || attempt.State != domain.AttachedWorkerAttemptRetired) {
+		return domain.AttachedWorkerConnection{}, ErrTransportUnauthorized
+	}
+	return connection, nil
 }
 
 func equalUint32s(left, right []uint32) bool {

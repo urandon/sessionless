@@ -38,6 +38,10 @@ type AttachedWorkerChallengeCreate struct {
 	ExpectedWorkerRevision       uint64
 	ExpectedEnrollmentGeneration uint64
 	ExpectedConnectionGeneration uint64
+	ExpectedConnectionID         domain.AttachedWorkerConnectionID
+	ExpectedConnectionRevision   uint64
+	ExpectedCapabilityDigest     domain.AttachedWorkerCapabilityDigest
+	ExpectedProtocolSnapshot     []byte
 	WorkerProtocolMinimum        uint32
 	WorkerProtocolMaximum        uint32
 	WorkerProtocolVersions       []uint32
@@ -62,19 +66,24 @@ type AttachedWorkerCapabilityTarget struct {
 }
 
 type AttachedWorkerConnectionActivation struct {
-	TenantID                     domain.TenantID
-	OwnerUserID                  domain.UserID
-	WorkerID                     domain.AttachedWorkerID
-	ChallengeID                  domain.AttachedWorkerChallengeID
-	ExpectedChallengeRevision    uint64
-	ExpectedWorkerRevision       uint64
-	ExpectedEnrollmentGeneration uint64
-	ExpectedConnectionGeneration uint64
-	PresentedWorkerNonceDigest   domain.AttachedWorkerChallengeDigest
-	PresentedPlatformNonceDigest domain.AttachedWorkerChallengeDigest
-	ConnectionSecretDigest       domain.AttachedWorkerConnectionSecretDigest
-	ChannelBinding               domain.AttachedWorkerChannelBinding
-	ExpectedCapabilityDigest     domain.AttachedWorkerCapabilityDigest
+	TenantID                         domain.TenantID
+	OwnerUserID                      domain.UserID
+	WorkerID                         domain.AttachedWorkerID
+	ChallengeID                      domain.AttachedWorkerChallengeID
+	Purpose                          domain.AttachedWorkerAttachPurpose
+	ExpectedChallengeRevision        uint64
+	ExpectedWorkerRevision           uint64
+	ExpectedEnrollmentGeneration     uint64
+	ExpectedConnectionGeneration     uint64
+	ExpectedConnectionID             domain.AttachedWorkerConnectionID
+	ExpectedConnectionRevision       uint64
+	ExpectedPreviousCapabilityDigest domain.AttachedWorkerCapabilityDigest
+	ExpectedPreviousProtocolSnapshot []byte
+	PresentedWorkerNonceDigest       domain.AttachedWorkerChallengeDigest
+	PresentedPlatformNonceDigest     domain.AttachedWorkerChallengeDigest
+	ConnectionSecretDigest           domain.AttachedWorkerConnectionSecretDigest
+	ChannelBinding                   domain.AttachedWorkerChannelBinding
+	ExpectedCapabilityDigest         domain.AttachedWorkerCapabilityDigest
 	// ProtocolSnapshot is the exact canonical post-AttachAccepted snapshot.
 	ProtocolSnapshot []byte
 	AuthTTL          time.Duration
@@ -151,6 +160,10 @@ type AttachedWorkerTransportStore interface {
 	ActivateAttachedWorkerConnection(context.Context, AttachedWorkerConnectionActivation) (AttachedWorkerConnectionResult, error)
 	AcceptAttachedWorkerManifest(context.Context, AttachedWorkerManifestAcceptance) (AttachedWorkerAuthorizationResult, error)
 	LoadAttachedWorkerConnection(context.Context, domain.TenantID, domain.UserID, domain.AttachedWorkerID) (domain.AttachedWorkerConnection, bool, error)
+	// LoadAttachedWorkerAttempt exposes the owner-scoped singleton attempt head
+	// only so reconnect challenge/activation can deny any non-retired authority.
+	// The transport service never mutates or reconstructs attempt state from it.
+	LoadAttachedWorkerAttempt(context.Context, domain.TenantID, domain.UserID, domain.AttachedWorkerID) (domain.AttachedWorkerAttemptV1, bool, error)
 	AuthorizeAttachedWorkerExchange(context.Context, AttachedWorkerExchangeAuthorization) (AttachedWorkerAuthorizationResult, error)
 	ListExpiredAttachedWorkerPresence(context.Context, uint32, time.Time, AttachedWorkerPresenceCursor, uint64) ([]domain.AttachedWorkerPresenceExpiry, error)
 	ExpireAttachedWorkerPresence(context.Context, domain.AttachedWorkerPresenceExpiry) (bool, error)

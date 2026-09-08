@@ -138,7 +138,7 @@ func (handler *BootstrapHandler) issueChallenge(writer http.ResponseWriter, requ
 	if !decodeBootstrapBody(writer, request, &input) {
 		return
 	}
-	if input.Purpose != domain.AttachedWorkerAttachInitial {
+	if !input.Purpose.Valid() {
 		writer.WriteHeader(http.StatusBadRequest)
 		return
 	}

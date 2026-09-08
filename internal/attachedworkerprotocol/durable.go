@@ -215,6 +215,142 @@ func BuildInitialAttachSnapshotV1(
 	return machine.Snapshot()
 }
 
+// BuildReconnectAcceptedSnapshotV1 applies one signed reconnect handshake to
+// an exact durable predecessor. The predecessor remains the sole authority;
+// the worker claim is compared by the conformance reducer and can only affect
+// the bounded replay plan. The returned snapshot is post-ReconnectAccepted and
+// remains ConnectionAttached until the worker presents a fresh Manifest.
+func BuildReconnectAcceptedSnapshotV1(
+	previousConfig MachineConfig,
+	previousSnapshot MachineSnapshotV1,
+	nextAuth AuthContextV1,
+	signedReconnect FrameV1,
+) (FrameV1, MachineSnapshotV1, error) {
+	if signedReconnect.Kind != MessageReconnect || signedReconnect.Reconnect == nil {
+		return FrameV1{}, MachineSnapshotV1{}, protocolError(ErrorUnauthorized)
+	}
+	machine, err := RestoreConformanceMachine(previousConfig, previousSnapshot)
+	if err != nil {
+		return FrameV1{}, MachineSnapshotV1{}, protocolError(ErrorUnauthorized)
+	}
+	authoritative, err := machine.BeginReconnect(nextAuth)
+	if err != nil {
+		return FrameV1{}, MachineSnapshotV1{}, protocolError(ErrorUnauthorized)
+	}
+	reconnect := signedReconnect.Reconnect
+	hello := FrameV1{
+		Version: nextAuth.Version, MessageID: MessageIDV1(DirectionWorkerToPlatform, 1),
+		WorkerID: nextAuth.WorkerID, EnrollmentGeneration: nextAuth.EnrollmentGeneration,
+		ConnectionGeneration: nextAuth.ConnectionGeneration, Sequence: 1, Ack: 0, Kind: MessageHello,
+		Hello: &HelloV1{Offer: cloneVersionOffer(reconnect.WorkerOffer), WorkerNonce: append([]byte(nil), reconnect.WorkerNonce...)},
+	}
+	challenge := FrameV1{
+		Version: nextAuth.Version, MessageID: MessageIDV1(DirectionPlatformToWorker, 1),
+		WorkerID: nextAuth.WorkerID, EnrollmentGeneration: nextAuth.EnrollmentGeneration,
+		ConnectionGeneration: nextAuth.ConnectionGeneration, Sequence: 1, Ack: 1, Kind: MessageChallenge,
+		Challenge: &ChallengeV1{
+			WorkerOffer: cloneVersionOffer(reconnect.WorkerOffer), PlatformOffer: cloneVersionOffer(reconnect.PlatformOffer),
+			SelectedVersion: reconnect.SelectedVersion, WorkerNonce: append([]byte(nil), reconnect.WorkerNonce...),
+			PlatformNonce: append([]byte(nil), reconnect.PlatformNonce...),
+		},
+	}
+	acceptance := AcceptanceContextV1{ChannelBinding: append([]byte(nil), nextAuth.ChannelBinding...), NowUnixMicro: 1}
+	for _, transition := range []struct {
+		direction Direction
+		frame     FrameV1
+	}{{DirectionWorkerToPlatform, hello}, {DirectionPlatformToWorker, challenge}, {DirectionWorkerToPlatform, signedReconnect}} {
+		if err := machine.Accept(transition.direction, transition.frame, acceptance); err != nil {
+			return FrameV1{}, MachineSnapshotV1{}, protocolError(ErrorUnauthorized)
+		}
+	}
+	workerClaim := sealReconnectSnapshot(ReconnectSnapshotV1{
+		PreviousConnectionGeneration: reconnect.PreviousConnectionGeneration,
+		Watermarks:                   reconnect.PreviousWatermarks, Attempt: reconnect.AttemptSummary,
+		PendingTerminalReplay: reconnect.PendingTerminalReplay,
+	})
+	negotiation := ReconnectNegotiationV1{
+		WorkerOffer: reconnect.WorkerOffer, PlatformOffer: reconnect.PlatformOffer,
+		SelectedVersion: reconnect.SelectedVersion, WorkerNonce: reconnect.WorkerNonce,
+		PlatformNonce: reconnect.PlatformNonce, CapabilityDigest: reconnect.CapabilityDigest,
+	}
+	payload, err := BuildReconnectAcceptedV1(authoritative, workerClaim, negotiation)
+	if err != nil {
+		return FrameV1{}, MachineSnapshotV1{}, protocolError(ErrorUnauthorized)
+	}
+	accepted := FrameV1{
+		Version: nextAuth.Version, MessageID: MessageIDV1(DirectionPlatformToWorker, 2),
+		WorkerID: nextAuth.WorkerID, EnrollmentGeneration: nextAuth.EnrollmentGeneration,
+		ConnectionGeneration: nextAuth.ConnectionGeneration, Sequence: 2, Ack: 2,
+		Kind: MessageReconnectAccepted, ReconnectAccepted: &payload,
+	}
+	if err := machine.Accept(DirectionPlatformToWorker, accepted, acceptance); err != nil {
+		return FrameV1{}, MachineSnapshotV1{}, protocolError(ErrorUnauthorized)
+	}
+	post, err := machine.Snapshot()
+	if err != nil || post.Connection != ConnectionAttached {
+		return FrameV1{}, MachineSnapshotV1{}, protocolError(ErrorConflict)
+	}
+	return accepted, post, nil
+}
+
+// ReplayIdleReconnectAcceptedV1 reconstructs the exact accepted frame from a
+// committed idle reconnect snapshot. It is intentionally idle-only: active or
+// terminal replay requires the later durable effect-reconciliation contract.
+func ReplayIdleReconnectAcceptedV1(
+	config MachineConfig,
+	post MachineSnapshotV1,
+	signedReconnect FrameV1,
+) (FrameV1, error) {
+	machine, err := RestoreConformanceMachine(config, post)
+	if err != nil || post.Connection != ConnectionAttached || post.Reconnect == nil || post.Reconnect.Claim == nil ||
+		post.Reconnect.Attempt.State != AttemptIdle || post.Attempt.Summary.State != AttemptIdle ||
+		post.Attempt.PendingWorkerTerminal != nil || signedReconnect.Kind != MessageReconnect || signedReconnect.Reconnect == nil ||
+		VerifyReconnectV1(config.Auth, signedReconnect) != nil {
+		return FrameV1{}, protocolError(ErrorUnauthorized)
+	}
+	reconnect := signedReconnect.Reconnect
+	claim := sealReconnectSnapshot(ReconnectSnapshotV1{
+		PreviousConnectionGeneration: reconnect.PreviousConnectionGeneration,
+		Watermarks:                   reconnect.PreviousWatermarks, Attempt: reconnect.AttemptSummary,
+		PendingTerminalReplay: reconnect.PendingTerminalReplay,
+	})
+	if claim.Validate() != nil || !bytes.Equal(claim.Digest, post.Reconnect.Claim.Digest) ||
+		post.Hello == nil || post.Challenge == nil ||
+		!negotiationMatchesChallenge(reconnect.WorkerOffer, reconnect.PlatformOffer, reconnect.SelectedVersion,
+			reconnect.WorkerNonce, reconnect.PlatformNonce, *post.Challenge) ||
+		!bytes.Equal(reconnect.CapabilityDigest, post.CapabilityDigest) {
+		return FrameV1{}, protocolError(ErrorUnauthorized)
+	}
+	authoritative := sealReconnectSnapshot(ReconnectSnapshotV1{
+		PreviousConnectionGeneration: post.Reconnect.PreviousConnectionGeneration,
+		Watermarks:                   post.Reconnect.Watermarks, Attempt: post.Reconnect.Attempt,
+	})
+	negotiation := ReconnectNegotiationV1{
+		WorkerOffer: reconnect.WorkerOffer, PlatformOffer: reconnect.PlatformOffer,
+		SelectedVersion: reconnect.SelectedVersion, WorkerNonce: reconnect.WorkerNonce,
+		PlatformNonce: reconnect.PlatformNonce, CapabilityDigest: reconnect.CapabilityDigest,
+	}
+	payload, err := BuildReconnectAcceptedV1(authoritative, claim, negotiation)
+	if err != nil {
+		return FrameV1{}, protocolError(ErrorUnauthorized)
+	}
+	accepted := FrameV1{
+		Version: config.Auth.Version, MessageID: MessageIDV1(DirectionPlatformToWorker, 2),
+		WorkerID: config.Auth.WorkerID, EnrollmentGeneration: config.Auth.EnrollmentGeneration,
+		ConnectionGeneration: config.Auth.ConnectionGeneration, Sequence: 2, Ack: 2,
+		Kind: MessageReconnectAccepted, ReconnectAccepted: &payload,
+	}
+	acceptance := AcceptanceContextV1{ChannelBinding: append([]byte(nil), config.Auth.ChannelBinding...), NowUnixMicro: 1}
+	if err := machine.Accept(DirectionPlatformToWorker, accepted, acceptance); err != nil {
+		return FrameV1{}, protocolError(ErrorUnauthorized)
+	}
+	replayed, err := machine.Snapshot()
+	if err != nil || !bytes.Equal(replayed.Digest, post.Digest) {
+		return FrameV1{}, protocolError(ErrorConflict)
+	}
+	return accepted, nil
+}
+
 // ApplyMachineFrameV1 is the persistence reducer for an already-built exact
 // frame. Stores use it to atomically advance the canonical snapshot together
 // with connection/attempt indexes; they must not update watermarks in parallel.

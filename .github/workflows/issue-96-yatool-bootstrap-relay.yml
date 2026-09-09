@@ -76,10 +76,6 @@ jobs:
       EXPECTED_MD5: d8b7d17c095beb38007e0f55d6319cff
       CACHE_ASSET_NAME: yatool-25.3.1.25-darwin-arm64-tool-cache.tar.gz
       RELEASE_TAG: research-yatool-bootstrap-25.3.1.25
-      YA_CACHE_DIR: ${{ runner.temp }}/ya-cache
-      YA_CACHE_DIR_TOOLS: ${{ runner.temp }}/ya-cache/tools
-      YA_TOKEN_PATH: ${{ runner.temp }}/no-token
-      TMPDIR: ${{ runner.temp }}
 
     steps:
       - name: Check out the exact YDB source tag
@@ -95,7 +91,14 @@ jobs:
           set -euo pipefail
           test "$(uname -m)" = arm64
           df -h /
-          mkdir -p "$YA_CACHE_DIR_TOOLS/d8b7d17c09_d" "$TMPDIR"
+          cache_dir="$RUNNER_TEMP/ya-cache"
+          {
+            echo "YA_CACHE_DIR=$cache_dir"
+            echo "YA_CACHE_DIR_TOOLS=$cache_dir/tools"
+            echo "YA_TOKEN_PATH=$RUNNER_TEMP/no-token"
+            echo "TMPDIR=$RUNNER_TEMP"
+          } >> "$GITHUB_ENV"
+          mkdir -p "$cache_dir/tools/d8b7d17c09_d"
 
       - name: Install the exact verified bootstrap in the isolated cache
         run: |

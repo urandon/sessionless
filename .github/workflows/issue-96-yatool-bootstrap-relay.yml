@@ -1,0 +1,69 @@
+name: Issue 96 pinned Yatool bootstrap relay
+
+on:
+  push:
+    branches:
+      - codex/issue-96-yatool-relay
+
+permissions:
+  contents: write
+
+concurrency:
+  group: issue-96-yatool-bootstrap-relay
+  cancel-in-progress: false
+
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      BOOTSTRAP_URL: https://devtools-registry.s3.yandex.net/9750552540
+      EXPECTED_MD5: d8b7d17c095beb38007e0f55d6319cff
+      ASSET_NAME: yatool-25.3.1.25-darwin-arm64-9750552540.tar
+      RELEASE_TAG: research-yatool-bootstrap-25.3.1.25
+
+    steps:
+      - name: Download exact pinned bootstrap
+        run: |
+          set -euo pipefail
+          curl --fail --location \
+            --retry 5 --retry-all-errors --retry-delay 2 \
+            --connect-timeout 20 --max-time 300 \
+            "$BOOTSTRAP_URL" \
+            --output "$RUNNER_TEMP/$ASSET_NAME"
+
+      - name: Verify identity and archive shape
+        run: |
+          set -euo pipefail
+          actual_md5="$(md5sum "$RUNNER_TEMP/$ASSET_NAME" | cut -d ' ' -f 1)"
+          actual_sha256="$(sha256sum "$RUNNER_TEMP/$ASSET_NAME" | cut -d ' ' -f 1)"
+          test "$actual_md5" = "$EXPECTED_MD5"
+          tar -tf "$RUNNER_TEMP/$ASSET_NAME" > "$RUNNER_TEMP/archive-files.txt"
+          grep -Eq '(^|/)ya-bin$' "$RUNNER_TEMP/archive-files.txt"
+          printf '%s  %s\n' "$actual_sha256" "$ASSET_NAME" > "$RUNNER_TEMP/$ASSET_NAME.sha256"
+          {
+            echo "Pinned Yatool bootstrap verified."
+            echo
+            echo "- object: 9750552540"
+            echo "- MD5: $actual_md5"
+            echo "- SHA-256: $actual_sha256"
+            echo "- bytes: $(stat -c %s "$RUNNER_TEMP/$ASSET_NAME")"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish bounded research prerelease asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" \
+              --target "$GITHUB_SHA" \
+              --prerelease \
+              --title "Research relay: Yatool bootstrap for YDB 25.3.1.25" \
+              --notes "Exact upstream archive for Sessionless issue #96. Source object 9750552540; expected MD5 d8b7d17c095beb38007e0f55d6319cff. This prerelease is a bounded transport relay, not a supported Sessionless artifact."
+          fi
+          gh release upload "$RELEASE_TAG" \
+            "$RUNNER_TEMP/$ASSET_NAME" \
+            "$RUNNER_TEMP/$ASSET_NAME.sha256" \
+            --clobber

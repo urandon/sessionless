@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerprotocol"
+	"gitcode.com/urandon/sessionless/internal/attachedworkerreconnect"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/ydbpartition"
@@ -104,15 +105,15 @@ func validateReconnectChallengeAuthorityTx(
 		return ErrAttachedWorkerChallengeConflict
 	}
 	_, snapshot, err := loadAttachedWorkerProtocolAuthorityTx(ctx, tx, worker, connection)
-	if err != nil || snapshot.Attempt.Summary.State != attachedworkerprotocol.AttemptIdle ||
-		!protocolSnapshotMatchesChallengeCreate(snapshot, request) {
+	if err != nil || !protocolSnapshotMatchesChallengeCreate(snapshot, request) {
 		return ErrAttachedWorkerChallengeConflict
 	}
 	attempt, found, err := readAttachedWorkerAttemptTx(ctx, tx, request.OwnerUserID, request.WorkerID)
 	if err != nil {
 		return err
 	}
-	if found && attempt.State != domain.AttachedWorkerAttemptRetired {
+	if !attachedworkerreconnect.AttemptMatchesSnapshot(snapshot, attempt, found, connection) ||
+		!reconnectAttemptFresh(snapshot, attempt, at) {
 		return ErrAttachedWorkerChallengeConflict
 	}
 	return nil
@@ -606,7 +607,7 @@ func validateReconnectActivationAuthorityTx(
 		return ErrAttachedWorkerConnectionConflict
 	}
 	_, snapshot, err := loadAttachedWorkerProtocolAuthorityTx(ctx, tx, worker, current)
-	if err != nil || snapshot.Attempt.Summary.State != attachedworkerprotocol.AttemptIdle {
+	if err != nil {
 		return ErrAttachedWorkerConnectionConflict
 	}
 	nextSnapshot, err := attachedworkerprotocol.DecodeMachineSnapshotV1(request.ProtocolSnapshot)
@@ -617,7 +618,8 @@ func validateReconnectActivationAuthorityTx(
 	if err != nil {
 		return err
 	}
-	if found && attempt.State != domain.AttachedWorkerAttemptRetired {
+	if !attachedworkerreconnect.AttemptMatchesSnapshot(snapshot, attempt, found, current) ||
+		!reconnectAttemptFresh(snapshot, attempt, at) {
 		return ErrAttachedWorkerConnectionConflict
 	}
 	return nil
@@ -628,8 +630,7 @@ func reconnectSnapshotPinsPrevious(
 	previous attachedworkerprotocol.MachineSnapshotV1,
 	previousGeneration uint64,
 ) bool {
-	if next.Reconnect == nil || previous.Attempt.Summary.State != attachedworkerprotocol.AttemptIdle ||
-		previous.Attempt.PendingWorkerTerminal != nil || next.Reconnect.Target != previous.Connection ||
+	if next.Reconnect == nil || next.Reconnect.Target != previous.Connection ||
 		next.Reconnect.PreviousConnectionGeneration != previousGeneration ||
 		next.Reconnect.Watermarks != (attachedworkerprotocol.ConnectionWatermarksV1{
 			PlatformSequence: previous.Platform.Sequence,
@@ -639,7 +640,100 @@ func reconnectSnapshotPinsPrevious(
 		}) || !bytes.Equal(next.Reconnect.Attempt.Digest, previous.Attempt.Summary.Digest) {
 		return false
 	}
-	return next.Reconnect.Attempt.State == attachedworkerprotocol.AttemptIdle
+	return bytes.Equal(next.Reconnect.Attempt.Digest, previous.Attempt.Summary.Digest)
+}
+
+func reconnectAttemptFresh(snapshot attachedworkerprotocol.MachineSnapshotV1, attempt domain.AttachedWorkerAttemptV1, at time.Time) bool {
+	if snapshot.Attempt.Summary.State == attachedworkerprotocol.AttemptIdle {
+		return true
+	}
+	switch attempt.State {
+	case domain.AttachedWorkerAttemptTerminalCommitted, domain.AttachedWorkerAttemptFencedUnknown:
+		return true
+	case domain.AttachedWorkerAttemptCancelledBeforeClaim:
+		return !attempt.CancelDeadline.IsZero() && at.Before(attempt.CancelDeadline)
+	case domain.AttachedWorkerAttemptCancelRequested, domain.AttachedWorkerAttemptCancelAcknowledged:
+		return at.Before(attempt.LeaseExpiresAt) && !attempt.CancelDeadline.IsZero() && at.Before(attempt.CancelDeadline)
+	default:
+		return at.Before(attempt.LeaseExpiresAt)
+	}
+}
+
+func rebindReconnectAttemptTx(
+	ctx context.Context,
+	tx *stateTx,
+	previousConnection domain.AttachedWorkerConnection,
+	nextConnection domain.AttachedWorkerConnection,
+	at time.Time,
+	retention time.Duration,
+) error {
+	previousSnapshot, err := attachedworkerprotocol.DecodeMachineSnapshotV1(previousConnection.ProtocolSnapshot)
+	if err != nil {
+		return ErrAttachedWorkerConnectionConflict
+	}
+	attempt, found, err := readAttachedWorkerAttemptTx(ctx, tx, previousConnection.OwnerUserID, previousConnection.WorkerID)
+	if err != nil {
+		return err
+	}
+	if !attachedworkerreconnect.AttemptMatchesSnapshot(previousSnapshot, attempt, found, previousConnection) ||
+		!reconnectAttemptFresh(previousSnapshot, attempt, at) {
+		return ErrAttachedWorkerConnectionConflict
+	}
+	if previousSnapshot.Attempt.Summary.State == attachedworkerprotocol.AttemptIdle {
+		return nil
+	}
+	if attempt.Revision == math.MaxUint64 {
+		return ErrAttachedWorkerConnectionConflict
+	}
+	next := attempt
+	next.ConnectionID = nextConnection.ID
+	next.ConnectionGeneration = nextConnection.ConnectionGeneration
+	next.UpdatedAt = canonicalAttachedWorkerTime(at)
+	next.Revision++
+	if err := next.Validate(); err != nil {
+		return ErrAttachedWorkerConnectionConflict
+	}
+	retainUntil := next.LeaseExpiresAt.Add(retention)
+	if !retainUntil.After(at) {
+		retainUntil = at.Add(retention)
+	}
+	if err := compareAndSwapAttachedWorkerAttemptTx(ctx, tx, attempt.Revision, next, retainUntil); err != nil {
+		return err
+	}
+	return rebindReconnectAttemptDeadlinesTx(ctx, tx, next)
+}
+
+func rebindReconnectAttemptDeadlinesTx(ctx context.Context, tx *stateTx, attempt domain.AttachedWorkerAttemptV1) error {
+	bucket, err := domain.AttachedWorkerAttemptDeadlineBucketV1(attempt.TenantID, attempt.OwnerUserID, attempt.WorkerID, attempt.AttemptID)
+	if err != nil {
+		return err
+	}
+	base := domain.AttachedWorkerAttemptDeadlineV1{
+		Bucket: bucket, TenantID: attempt.TenantID, OwnerUserID: attempt.OwnerUserID,
+		WorkerID: attempt.WorkerID, AttemptID: attempt.AttemptID,
+		LeaseGeneration: attempt.LeaseGeneration, AttemptRevision: attempt.Revision,
+	}
+	switch attempt.State {
+	case domain.AttachedWorkerAttemptOffered, domain.AttachedWorkerAttemptClaimed,
+		domain.AttachedWorkerAttemptCancelRequested, domain.AttachedWorkerAttemptCancelAcknowledged,
+		domain.AttachedWorkerAttemptTerminalPending:
+		lease := base
+		lease.Kind = domain.AttachedWorkerDeadlineLeaseExpiry
+		lease.DeadlineAt = attempt.LeaseExpiresAt
+		if err := upsertAttachedWorkerAttemptDeadlineTx(ctx, tx, lease); err != nil {
+			return err
+		}
+	}
+	switch attempt.State {
+	case domain.AttachedWorkerAttemptCancelRequested, domain.AttachedWorkerAttemptCancelAcknowledged,
+		domain.AttachedWorkerAttemptCancelledBeforeClaim:
+		cancel := base
+		cancel.Kind = domain.AttachedWorkerDeadlineCancelAck
+		cancel.DeadlineAt = attempt.CancelDeadline
+		return upsertAttachedWorkerAttemptDeadlineTx(ctx, tx, cancel)
+	default:
+		return nil
+	}
 }
 
 func reconnectChallengeAuthorityMatches(challenge domain.AttachedWorkerAttachChallenge, connection domain.AttachedWorkerConnection) bool {

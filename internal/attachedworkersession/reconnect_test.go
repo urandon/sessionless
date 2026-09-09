@@ -145,7 +145,7 @@ func TestReconnectCheckpointTamperingFailsBeforeNetwork(t *testing.T) {
 	}
 }
 
-func TestActiveAttemptRetiresIdleReconnectCheckpoint(t *testing.T) {
+func TestActiveAttemptPersistsReconnectCheckpoint(t *testing.T) {
 	fixture := newSessionFixture(t)
 	session := mustReadySession(t, fixture)
 	snapshot := session.Snapshot()
@@ -162,8 +162,51 @@ func TestActiveAttemptRetiresIdleReconnectCheckpoint(t *testing.T) {
 	if err != nil || response == nil || response.Kind != attachedworkerprotocol.MessageLeaseOffer {
 		t.Fatalf("response=%+v err=%v", response, err)
 	}
-	if _, err := session.lease.LoadReconnectCheckpoint(context.Background()); !errors.Is(err, attachedworkerlocal.ErrStateMissing) {
-		t.Fatalf("active attempt retained reconnect checkpoint: %v", err)
+	checkpoint, err := session.lease.LoadReconnectCheckpoint(context.Background())
+	if err != nil {
+		t.Fatalf("load active checkpoint: %v", err)
+	}
+	if checkpoint.MachineSnapshot.Attempt.Summary.State != attachedworkerprotocol.AttemptOffered ||
+		checkpoint.MachineSnapshot.Attempt.Summary.Binding.AttemptID != binding.AttemptID {
+		t.Fatalf("active checkpoint attempt=%+v", checkpoint.MachineSnapshot.Attempt.Summary)
+	}
+	recovery, err := session.ReconnectRecovery()
+	if err != nil || recovery.AttemptState != attachedworkerprotocol.AttemptOffered ||
+		recovery.TerminalDecision != attachedworkerprotocol.ReconnectTerminalNone || recovery.Terminal != nil {
+		t.Fatalf("active recovery=%+v err=%v", recovery, err)
+	}
+	previousConfig, previousSnapshot := sessionProtocolState(t, session)
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	bootstrap := &reconnectBootstrap{
+		now:              fixture.bootstrap.now,
+		publicKey:        ed25519.PrivateKey(fixture.secret.IdentityPrivateKey).Public().(ed25519.PublicKey),
+		previousConfig:   previousConfig,
+		previousSnapshot: previousSnapshot,
+	}
+	config := fixture.config
+	config.Random = bytes.NewReader(append(bytes.Repeat([]byte{0x63}, 32), bytes.Repeat([]byte{0x64}, 32)...))
+	connector, err := New(fixture.store, bootstrap, &fakeFactory{exchange: &fakeExchange{}}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := connector.Reconnect(context.Background(), ReconnectInputV1(fixture.input))
+	if err != nil {
+		t.Fatalf("active reconnect error=%v", err)
+	}
+	registerSessionCleanup(t, resumed)
+	recovery, err = resumed.ReconnectRecovery()
+	if err != nil || recovery.AttemptState != attachedworkerprotocol.AttemptOffered ||
+		recovery.TerminalDecision != attachedworkerprotocol.ReconnectTerminalNone || recovery.Terminal != nil {
+		t.Fatalf("resumed active recovery=%+v err=%v", recovery, err)
+	}
+	resumedCheckpoint, err := resumed.lease.LoadReconnectCheckpoint(context.Background())
+	if err != nil || resumedCheckpoint.ConnectionGeneration != 2 ||
+		resumedCheckpoint.MachineSnapshot.Attempt.Summary.State != attachedworkerprotocol.AttemptOffered ||
+		resumedCheckpoint.MachineSnapshot.Attempt.Summary.Binding.AttemptID != binding.AttemptID {
+		t.Fatalf("resumed active checkpoint=%+v err=%v", resumedCheckpoint, err)
 	}
 }
 

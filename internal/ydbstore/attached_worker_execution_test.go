@@ -1,6 +1,8 @@
 package ydbstore
 
 import (
+	"bytes"
+	"encoding/hex"
 	"strings"
 	"testing"
 	"time"
@@ -592,7 +594,7 @@ func TestAttachedWorkerPollAuthorityAndPendingSelection(t *testing.T) {
 		domain.AttachedWorkerAttemptCancelledBeforeClaim: domain.AttachedWorkerAttemptMessageCancelRequested,
 		domain.AttachedWorkerAttemptFencedUnknown:        domain.AttachedWorkerAttemptMessageCancelRequested,
 		domain.AttachedWorkerAttemptTerminalCommitted:    domain.AttachedWorkerAttemptMessageTerminalCommitted,
-		domain.AttachedWorkerAttemptClaimed:              "",
+		domain.AttachedWorkerAttemptClaimed:              domain.AttachedWorkerAttemptMessageLeaseAccepted,
 	}
 	for state, kind := range want {
 		if got := pendingAttachedWorkerAttemptMessageKind(state); got != kind {
@@ -616,5 +618,99 @@ func TestMalformedDurableAttemptMessageConflicts(t *testing.T) {
 	}
 	if _, _, err := decodeAttachedWorkerAttemptFrame(message); err == nil {
 		t.Fatal("malformed durable attempt message was accepted")
+	}
+}
+
+func TestReconnectAttemptFreshUsesStateSpecificAuthorityDeadline(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, time.September, 10, 12, 0, 0, 0, time.UTC)
+	future, past := now.Add(time.Minute), now.Add(-time.Nanosecond)
+	tests := []struct {
+		name           string
+		protocolState  attachedworkerprotocol.AttemptState
+		durableState   domain.AttachedWorkerAttemptState
+		leaseDeadline  time.Time
+		cancelDeadline time.Time
+		want           bool
+	}{
+		{name: "idle has no attempt deadline", protocolState: attachedworkerprotocol.AttemptIdle, want: true},
+		{name: "offered live lease", protocolState: attachedworkerprotocol.AttemptOffered, durableState: domain.AttachedWorkerAttemptOffered, leaseDeadline: future, want: true},
+		{name: "offered expired lease", protocolState: attachedworkerprotocol.AttemptOffered, durableState: domain.AttachedWorkerAttemptOffered, leaseDeadline: past},
+		{name: "claimed live lease", protocolState: attachedworkerprotocol.AttemptClaimed, durableState: domain.AttachedWorkerAttemptClaimed, leaseDeadline: future, want: true},
+		{name: "running expired lease", protocolState: attachedworkerprotocol.AttemptClaimed, durableState: domain.AttachedWorkerAttemptClaimed, leaseDeadline: past},
+		{name: "cancel requested live lease and cancel", protocolState: attachedworkerprotocol.AttemptCancelRequested, durableState: domain.AttachedWorkerAttemptCancelRequested, leaseDeadline: future, cancelDeadline: future, want: true},
+		{name: "cancel requested expired cancel", protocolState: attachedworkerprotocol.AttemptCancelRequested, durableState: domain.AttachedWorkerAttemptCancelRequested, leaseDeadline: future, cancelDeadline: past},
+		{name: "cancel acknowledged expired lease", protocolState: attachedworkerprotocol.AttemptCancelAcked, durableState: domain.AttachedWorkerAttemptCancelAcknowledged, leaseDeadline: past, cancelDeadline: future},
+		{name: "cancelled before claim uses cancel deadline", protocolState: attachedworkerprotocol.AttemptCancelRequested, durableState: domain.AttachedWorkerAttemptCancelledBeforeClaim, leaseDeadline: past, cancelDeadline: future, want: true},
+		{name: "cancelled before claim expired cancel", protocolState: attachedworkerprotocol.AttemptCancelRequested, durableState: domain.AttachedWorkerAttemptCancelledBeforeClaim, leaseDeadline: future, cancelDeadline: past},
+		{name: "terminal pending live lease", protocolState: attachedworkerprotocol.AttemptTerminalPending, durableState: domain.AttachedWorkerAttemptTerminalPending, leaseDeadline: future, want: true},
+		{name: "terminal pending expired lease", protocolState: attachedworkerprotocol.AttemptTerminalPending, durableState: domain.AttachedWorkerAttemptTerminalPending, leaseDeadline: past},
+		{name: "terminal committed survives lease", protocolState: attachedworkerprotocol.AttemptTerminalCommitted, durableState: domain.AttachedWorkerAttemptTerminalCommitted, leaseDeadline: past, want: true},
+		{name: "fenced unknown survives lease", protocolState: attachedworkerprotocol.AttemptFenced, durableState: domain.AttachedWorkerAttemptFencedUnknown, leaseDeadline: past, cancelDeadline: past, want: true},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			snapshot := attachedworkerprotocol.MachineSnapshotV1{
+				Attempt: attachedworkerprotocol.MachineAttemptSnapshotV1{
+					Summary: attachedworkerprotocol.AttemptSummaryV1{State: test.protocolState},
+				},
+			}
+			attempt := domain.AttachedWorkerAttemptV1{
+				State: test.durableState, LeaseExpiresAt: test.leaseDeadline, CancelDeadline: test.cancelDeadline,
+			}
+			if got := reconnectAttemptFresh(snapshot, attempt, now); got != test.want {
+				t.Fatalf("fresh=%v want=%v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestTerminalProvenanceSurvivesAttemptConnectionRebind(t *testing.T) {
+	t.Parallel()
+	at := time.Date(2026, time.September, 10, 12, 0, 0, 0, time.UTC)
+	contextDigest := bytes.Repeat([]byte{0x61}, 32)
+	capabilityDigest := bytes.Repeat([]byte{0x62}, 32)
+	policyDigest := bytes.Repeat([]byte{0x63}, 32)
+	evidence := bytes.Repeat([]byte{0x64}, 32)
+	binding := attachedworkerprotocol.AttemptBindingV1{
+		RunID: "run-1", AttemptID: "attempt-1", LeaseID: "lease-1", LeaseGeneration: 7,
+		FenceToken: "fence-1", ExpiresAtUnixMicro: at.Add(time.Hour).UnixMicro(),
+		ContextDigest: contextDigest, CapabilityDigest: capabilityDigest, PolicyDigest: policyDigest,
+	}
+	original := domain.AttachedWorkerAttemptV1{
+		TenantID: "tenant-1", OwnerUserID: "owner-1", WorkerID: "worker-1", ConnectionID: "wcn_original",
+		AttemptID: "attempt-1", ReservationID: "reservation-1", State: domain.AttachedWorkerAttemptTerminalPending,
+		WorkerAttemptSequence: 2, TerminalSequence: 1, TerminalStatus: domain.AttachedWorkerTerminalSucceeded,
+		TerminalEvidenceDigest: domain.AttachedWorkerTerminalEvidenceDigest(hex.EncodeToString(evidence)),
+	}
+	frame := attachedworkerprotocol.FrameV1{
+		Version: 1, MessageID: attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionWorkerToPlatform, 5),
+		WorkerID: "worker-1", EnrollmentGeneration: 2, ConnectionGeneration: 3, Sequence: 5, Ack: 4,
+		Kind: attachedworkerprotocol.MessageTerminal,
+		Terminal: &attachedworkerprotocol.TerminalV1{
+			Binding: binding, AttemptSequence: 2, TerminalSequence: 1,
+			Status: attachedworkerprotocol.TerminalSucceeded, Result: attachedworkerprotocol.TerminalResultCompleted,
+			EvidenceDigest: evidence,
+		},
+	}
+	message, err := attachedWorkerAttemptMessageFromFrame(original, attachedworkerprotocol.DirectionWorkerToPlatform, frame, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rebound := original
+	rebound.ConnectionID = "wcn_reconnected"
+	summary := attachedworkerprotocol.AttemptSummaryV1{
+		State: attachedworkerprotocol.AttemptTerminalPending, Binding: binding,
+		WorkerSequence: 2, TerminalSequence: 1, TerminalStatus: attachedworkerprotocol.TerminalSucceeded,
+		TerminalResult: attachedworkerprotocol.TerminalResultCompleted, TerminalEvidenceDigest: evidence,
+	}
+	reservationID, connectionID, err := selectAttachedWorkerTerminalProvenance(rebound, summary, []domain.AttachedWorkerAttemptMessageV1{message})
+	if err != nil || reservationID != original.ReservationID || connectionID != original.ConnectionID {
+		t.Fatalf("provenance reservation=%q connection=%q err=%v", reservationID, connectionID, err)
+	}
+	if _, _, err := selectAttachedWorkerTerminalProvenance(rebound, summary, []domain.AttachedWorkerAttemptMessageV1{message, message}); err == nil {
+		t.Fatal("ambiguous terminal provenance was accepted")
 	}
 }

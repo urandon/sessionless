@@ -293,18 +293,19 @@ func BuildReconnectAcceptedSnapshotV1(
 	return accepted, post, nil
 }
 
-// ReplayIdleReconnectAcceptedV1 reconstructs the exact accepted frame from a
-// committed idle reconnect snapshot. It is intentionally idle-only: active or
-// terminal replay requires the later durable effect-reconciliation contract.
-func ReplayIdleReconnectAcceptedV1(
+// ReplayReconnectAcceptedV1 reconstructs the exact accepted frame from a
+// committed reconnect snapshot. The snapshot already contains the bounded
+// authoritative attempt head and the worker claim selected during activation;
+// rebuilding the frame must therefore reproduce the same replay decision for
+// idle and active attempts alike.
+func ReplayReconnectAcceptedV1(
 	config MachineConfig,
 	post MachineSnapshotV1,
 	signedReconnect FrameV1,
 ) (FrameV1, error) {
 	machine, err := RestoreConformanceMachine(config, post)
 	if err != nil || post.Connection != ConnectionAttached || post.Reconnect == nil || post.Reconnect.Claim == nil ||
-		post.Reconnect.Attempt.State != AttemptIdle || post.Attempt.Summary.State != AttemptIdle ||
-		post.Attempt.PendingWorkerTerminal != nil || signedReconnect.Kind != MessageReconnect || signedReconnect.Reconnect == nil ||
+		signedReconnect.Kind != MessageReconnect || signedReconnect.Reconnect == nil ||
 		VerifyReconnectV1(config.Auth, signedReconnect) != nil {
 		return FrameV1{}, protocolError(ErrorUnauthorized)
 	}

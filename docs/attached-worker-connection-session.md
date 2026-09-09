@@ -40,12 +40,13 @@ update is a durable attempt fence and a restart returns
 the server accepted the connection.
 
 Issue #123 adds a [strict, secret-free local checkpoint](attached-worker-reconnect-checkpoint.md)
-for the exact idle AW-02 machine state, connection binding, protocol offers, and
+for the exact AW-02 machine state, connection binding, protocol offers, and
 capability digest. A restarted connector may use that checkpoint only as a
 signed claim: #122 compares it with the exact durable server snapshot before
 advancing the connection generation. Private keys, connection secrets, bearers,
-and request/response bodies remain outside the checkpoint. Active-attempt
-reconnect still depends on the later durable effect-reconciliation slice.
+and request/response bodies remain outside the checkpoint. Issue #124 extends
+the claim with the bounded active-attempt summary and optional terminal replay
+commitment, then reconciles it against the exact AW-04 ledger.
 
 ## Credential custody and evidence
 
@@ -104,8 +105,10 @@ it is not reachable through `attachedworkerforeground.New`. The feature-disabled
 [session-to-daemon adapter](attached-worker-daemon-transport.md) owns the
 semantic worker action envelope, durable lease/cancel/terminal transitions,
 and active-cancel acknowledgement flow. Exact in-process replay is likewise
-feature-disabled. The package now composes initial attach and explicit idle reconnect, but a later
-AW-03 slice must still own real timer cadence, sleep/wake/offline observations,
-cost evidence, and reviewed foreground wiring before bounded polling can become
-live. AW-03d3 must reconcile active attempt effects; this package never infers
-remote authority from scalar watermarks or local process state.
+feature-disabled. The package now composes initial attach and explicit idle or
+active reconnect, and exposes the server-selected terminal
+replay/discard/committed intent through a read-only recovery result. It does not
+auto-send that terminal. A later AW-03 slice must still own real timer cadence,
+sleep/wake/offline observations, cost evidence, and reviewed foreground wiring
+before bounded polling can become live. This package never infers remote
+authority from scalar watermarks or local process state.

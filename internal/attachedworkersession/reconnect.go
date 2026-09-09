@@ -398,9 +398,7 @@ func (session *Session) persistReconnectCheckpoint(ctx context.Context, machine 
 	}
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reconnectCheckpointTimeout)
 	defer cancel()
-	if snapshot.Attempt.Summary.State != attachedworkerprotocol.AttemptIdle ||
-		snapshot.Attempt.PendingWorkerTerminal != nil ||
-		(snapshot.Connection != attachedworkerprotocol.ConnectionReady && snapshot.Connection != attachedworkerprotocol.ConnectionDraining) {
+	if snapshot.Connection != attachedworkerprotocol.ConnectionReady && snapshot.Connection != attachedworkerprotocol.ConnectionDraining {
 		if revision == 0 {
 			return nil
 		}

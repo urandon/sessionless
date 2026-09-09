@@ -161,8 +161,8 @@ type AttachedWorkerTransportStore interface {
 	AcceptAttachedWorkerManifest(context.Context, AttachedWorkerManifestAcceptance) (AttachedWorkerAuthorizationResult, error)
 	LoadAttachedWorkerConnection(context.Context, domain.TenantID, domain.UserID, domain.AttachedWorkerID) (domain.AttachedWorkerConnection, bool, error)
 	// LoadAttachedWorkerAttempt exposes the owner-scoped singleton attempt head
-	// only so reconnect challenge/activation can deny any non-retired authority.
-	// The transport service never mutates or reconstructs attempt state from it.
+	// so reconnect can prove that it exactly matches the protocol snapshot.
+	// Activation rebinding remains an atomic store responsibility.
 	LoadAttachedWorkerAttempt(context.Context, domain.TenantID, domain.UserID, domain.AttachedWorkerID) (domain.AttachedWorkerAttemptV1, bool, error)
 	AuthorizeAttachedWorkerExchange(context.Context, AttachedWorkerExchangeAuthorization) (AttachedWorkerAuthorizationResult, error)
 	ListExpiredAttachedWorkerPresence(context.Context, uint32, time.Time, AttachedWorkerPresenceCursor, uint64) ([]domain.AttachedWorkerPresenceExpiry, error)

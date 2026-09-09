@@ -619,6 +619,43 @@ type ActionV1 struct {
 	Revoked    *attachedworkerprotocol.RevokedV1
 }
 
+// ReconnectRecoveryV1 is the bounded, read-only result of reconnect
+// reconciliation. Callers may submit Terminal through ExchangeAction only
+// when TerminalDecision is replay; discard and committed are explicit
+// prohibitions on another terminal effect.
+type ReconnectRecoveryV1 struct {
+	AttemptState     attachedworkerprotocol.AttemptState
+	TerminalDecision attachedworkerprotocol.ReconnectTerminalDecision
+	Terminal         *attachedworkerprotocol.TerminalV1
+}
+
+func (session *Session) ReconnectRecovery() (ReconnectRecoveryV1, error) {
+	if session == nil {
+		return ReconnectRecoveryV1{}, ErrInvalidConfiguration
+	}
+	session.mu.Lock()
+	machine := session.machine
+	session.mu.Unlock()
+	if machine == nil {
+		return ReconnectRecoveryV1{}, ErrInvalidAuthority
+	}
+	snapshot, err := machine.Snapshot()
+	if err != nil {
+		return ReconnectRecoveryV1{}, ErrReconciliationRequired
+	}
+	result := ReconnectRecoveryV1{AttemptState: snapshot.Attempt.Summary.State, TerminalDecision: attachedworkerprotocol.ReconnectTerminalNone}
+	if pending := snapshot.Attempt.PendingWorkerTerminal; pending != nil {
+		terminal := pending.Terminal
+		terminal.Binding.ContextDigest = append([]byte(nil), terminal.Binding.ContextDigest...)
+		terminal.Binding.CapabilityDigest = append([]byte(nil), terminal.Binding.CapabilityDigest...)
+		terminal.Binding.PolicyDigest = append([]byte(nil), terminal.Binding.PolicyDigest...)
+		terminal.EvidenceDigest = append([]byte(nil), terminal.EvidenceDigest...)
+		result.TerminalDecision = pending.Decision
+		result.Terminal = &terminal
+	}
+	return result, nil
+}
+
 func (action ActionV1) String() string {
 	kind, count := actionKind(action)
 	return fmt.Sprintf("ActionV1{kind:%s payload:[redacted] count:%d}", kind, count)

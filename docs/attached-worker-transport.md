@@ -3,10 +3,11 @@
 AW-03 establishes an owner-scoped, authenticated immediate transport for an
 attached worker. AW-04a extends that transport with durable, transactionally
 fenced attempt frames and heartbeat-driven delivery. AW-03d1 adds the
-control-plane half of reconnect for an exact idle durable head; AW-03d2 adds the
-[strict worker-side checkpoint and explicit resume](attached-worker-reconnect-checkpoint.md).
-Long polling, explicit cloud wake-up, active-attempt reconnect reconciliation,
-and the worker daemon remain later work.
+control-plane half of reconnect for an exact durable head; AW-03d2 adds the
+[strict worker-side checkpoint and explicit resume](attached-worker-reconnect-checkpoint.md),
+and AW-03d3 reconciles that checkpoint against an active AW-04 attempt without
+repeating semantic effects. Long polling, explicit cloud wake-up, and the
+worker daemon remain later work.
 
 The feature-disabled [worker-side connection session](attached-worker-connection-session.md)
 owns the corresponding bootstrap-to-immediate-exchange composition, local
@@ -63,12 +64,14 @@ columns are checked projections only. Missing, noncanonical, authority-mismatche
 or divergent same-sequence snapshots fail closed; old online rows without a
 snapshot must attach again and are never reconstructed from watermarks.
 
-## Authoritative idle reconnect
+## Authoritative reconnect
 
 A reconnect challenge is issued only when the current owner-scoped connection
-is online or draining, its authentication has not expired, its canonical
-protocol state is exactly `Ready` or `Draining` (not fully `Drained`), its
-attempt is idle, and no non-retired durable attempt head exists. The
+is online or draining, its authentication has not expired, and its canonical
+protocol state is exactly `Ready` or `Draining` (not fully `Drained`). An idle
+snapshot must have no non-retired durable attempt; an active snapshot must
+match the exact owner-scoped AW-04 attempt head including binding, lease/fence,
+capability, sequences, cancellation, and terminal commitment. The
 challenge durably pins the exact previous connection ID, revision, capability
 digest, and canonical protocol snapshot. Those pins are server-only authority:
 they are persisted with the challenge but omitted from the public challenge
@@ -78,15 +81,26 @@ Activation consumes that single-use challenge in the same transaction that
 rechecks every pin against the current worker and connection heads. It accepts
 the signed reconnect claim through the AW-02 reducer, advances the connection
 generation, rotates the connection ID, bearer digest, and channel binding,
-retires the old presence, and creates a presence-free `attaching` head. The
+retires the old presence, rebinds any matching active attempt to the new
+connection generation without changing its semantic sequences or effects, and
+creates a presence-free `attaching` head. The
 worker is observed offline until a fresh signed Manifest authorizes the new
 head and restores online or draining state from the canonical snapshot.
 
+Pending LeaseOffer, LeaseAccepted, Cancel, and TerminalAck messages retain
+their semantic attempt identity and fingerprint. If their old connection
+envelope was lost, polling rebuilds only a fresh envelope under the replacement
+connection and atomically advances the canonical protocol snapshot. It does
+not rerun lease allocation, claim, provider/materialization, cancellation,
+terminal commit, or cleanup.
+
 An exact retry after a lost activation response returns the already-committed
 connection. A request that changes any predecessor pin or new credential is a
-consumed/conflicting replay and cannot mutate state. Reconnect from an active,
-terminal-pending, expired, revoked, legacy snapshot-less, or otherwise
-divergent head fails closed before challenge creation or activation.
+consumed/conflicting replay and cannot mutate state. Reconnect from an expired,
+revoked, legacy snapshot-less, or otherwise divergent head fails closed before
+challenge creation or activation. The full active-state decision and crash
+matrix is maintained in
+[the reconnect checkpoint contract](attached-worker-reconnect-checkpoint.md).
 
 ## Heartbeat-driven delivery
 
@@ -122,10 +136,10 @@ and divergent replay remain fail-closed reconciliation/fencing boundaries.
 
 ## Fail-closed boundaries
 
-- Reconnect is deliberately idle-only. Active or terminal-pending attempt
-  recovery remains disabled until a later slice composes durable effect
-  reconciliation and terminal replay decisions. No challenge is issued for an
-  unsupported head.
+- Reconnect accepts only idle or exactly matching active server heads. Any
+  unsupported, stale, expired, or divergent head fails before challenge or
+  activation. Terminal replay intent is exposed read-only; reconnect does not
+  auto-send a terminal or perform a process effect.
 - A fully `Drained` worker also remains a fresh-attach boundary. The domain
   projection intentionally groups `Draining` and `Drained` for UX, but the
   reconnect reducer retains only the former as a resumable transport state.
@@ -136,7 +150,7 @@ and divergent replay remain fail-closed reconciliation/fencing boundaries.
   synthesized by the HTTP adapter. The adapter rejects a response whose scope,
   generations, binding, kind, or canonical payload disagrees with the durable
   attempt head.
-- Worker exact in-process replay is disabled by default. Explicit idle reconnect
+- Worker exact in-process replay is disabled by default. Explicit reconnect
   is available only through the reviewed checkpoint API; neither path starts a
   polling loop, daemon, process, OCI boundary, provider call, or production route. Pending retry content is process-ephemeral and cleared on
   operation completion where Go permits best-effort byte erasure.

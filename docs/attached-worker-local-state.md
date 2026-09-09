@@ -15,7 +15,7 @@ does not become a second copy of the product state machines:
 | tenant, owner and worker locators; enrollment and connection generations | AW-01 (`docs/attached-worker-identity.md`) | exact scope/fences last installed locally; not proof that the server still accepts them |
 | identity-key fingerprint | AW-01 | digest binding for the private key in the separate secret record |
 | protocol/server observation | AW-02/AW-03 | always `unknown` in this slice; no cached file upgrades it |
-| attempt, cancellation and terminal state | AW-04 | absent; local daemon/process exit cannot commit product terminal state |
+| attempt, cancellation and terminal state | AW-04 | bounded reconnect evidence only; local daemon/process exit cannot commit product terminal state |
 | OCI and harness configuration | AW-05/#106 | selected explicit inputs; configuration is not external verification |
 | daemon observation | AW-05 | content-free, monotonic evidence written only while holding local process ownership; never server health |
 | local logout receipt | #107 | deny-first retirement of local connection material only |
@@ -42,7 +42,7 @@ The V1 inventory is fixed:
 - `secret.json` — separate private material, present only while locally active;
 - `logout-intent.json` — crash-recovery barrier for a local logout;
 - `runtime-observation.json` — optional content-free AW-05 daemon observation;
-- `reconnect-checkpoint.json` — secret-free, revisioned idle reconnect evidence;
+- `reconnect-checkpoint.json` — secret-free, revisioned idle or active reconnect evidence;
 - `state.lock` — advisory serialization for state reads and mutations;
 - `runtime.lock` — advisory one-process foreground ownership.
 

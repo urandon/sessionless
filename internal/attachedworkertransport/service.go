@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerprotocol"
+	"gitcode.com/urandon/sessionless/internal/attachedworkerreconnect"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
@@ -147,7 +148,7 @@ func (service *Service) IssueChallenge(
 	}
 	var previous domain.AttachedWorkerConnection
 	if request.Purpose == domain.AttachedWorkerAttachReconnect {
-		previous, err = service.loadIdleReconnectAuthority(ctx, tenantID, ownerUserID, worker)
+		previous, err = service.loadReconnectAuthority(ctx, tenantID, ownerUserID, worker)
 		if err != nil {
 			return ChallengeGrant{}, err
 		}
@@ -431,7 +432,7 @@ func (service *Service) Activate(
 			return ActivationGrant{}, ErrTransportUnauthorized
 		}
 		if challenge.ConsumedAt.IsZero() {
-			previous, loadErr := service.loadIdleReconnectAuthority(ctx, tenantID, ownerUserID, worker)
+			previous, loadErr := service.loadReconnectAuthority(ctx, tenantID, ownerUserID, worker)
 			if loadErr != nil || !reconnectChallengeMatchesConnection(challenge, previous) ||
 				previous.CapabilityDigest != domain.AttachedWorkerCapabilityDigest(hexDigest(request.Attach.Reconnect.CapabilityDigest)) {
 				return ActivationGrant{}, ErrTransportUnauthorized
@@ -464,7 +465,7 @@ func (service *Service) Activate(
 			if loadErr != nil {
 				return ActivationGrant{}, ErrTransportUnauthorized
 			}
-			accepted, loadErr = attachedworkerprotocol.ReplayIdleReconnectAcceptedV1(currentConfig, currentSnapshot, request.Attach)
+			accepted, loadErr = attachedworkerprotocol.ReplayReconnectAcceptedV1(currentConfig, currentSnapshot, request.Attach)
 			if loadErr != nil {
 				return ActivationGrant{}, ErrTransportUnauthorized
 			}
@@ -1096,7 +1097,7 @@ func challengeMatchesCreate(challenge domain.AttachedWorkerAttachChallenge, crea
 		challenge.WorkerNonceDigest == create.WorkerNonceDigest && challenge.PlatformNonceDigest == create.PlatformNonceDigest
 }
 
-func (service *Service) loadIdleReconnectAuthority(
+func (service *Service) loadReconnectAuthority(
 	ctx context.Context,
 	tenantID domain.TenantID,
 	ownerUserID domain.UserID,
@@ -1113,15 +1114,14 @@ func (service *Service) loadIdleReconnectAuthority(
 		return domain.AttachedWorkerConnection{}, ErrTransportUnauthorized
 	}
 	_, snapshot, err := service.protocolStateForConnection(worker, connection)
-	if err != nil || snapshot.Attempt.Summary.State != attachedworkerprotocol.AttemptIdle {
+	if err != nil {
 		return domain.AttachedWorkerConnection{}, ErrTransportUnauthorized
 	}
 	attempt, found, err := service.store.LoadAttachedWorkerAttempt(ctx, tenantID, ownerUserID, worker.ID)
 	if err != nil {
 		return domain.AttachedWorkerConnection{}, ErrTransportBackend
 	}
-	if found && (attempt.Validate() != nil || attempt.TenantID != tenantID || attempt.OwnerUserID != ownerUserID ||
-		attempt.WorkerID != worker.ID || attempt.State != domain.AttachedWorkerAttemptRetired) {
+	if !attachedworkerreconnect.AttemptMatchesSnapshot(snapshot, attempt, found, connection) {
 		return domain.AttachedWorkerConnection{}, ErrTransportUnauthorized
 	}
 	return connection, nil

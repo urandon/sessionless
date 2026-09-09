@@ -16,22 +16,25 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemon"
 	"gitcode.com/urandon/sessionless/internal/attachedworkeroci"
+	"gitcode.com/urandon/sessionless/internal/attachedworkerprotocol"
 	"gitcode.com/urandon/sessionless/internal/domain"
 )
 
 const (
-	ManifestVersionV1 = uint32(1)
-	SecretVersionV1   = uint32(1)
-	ReceiptVersionV1  = uint32(1)
+	ManifestVersionV1            = uint32(1)
+	SecretVersionV1              = uint32(1)
+	ReceiptVersionV1             = uint32(1)
+	ReconnectCheckpointVersionV1 = uint32(1)
 
-	ManifestFileName     = "manifest.json"
-	SecretFileName       = "secret.json"
-	LogoutIntentFileName = "logout-intent.json"
-	ObservationFileName  = "runtime-observation.json"
-	StateLockFileName    = "state.lock"
-	RuntimeLockFileName  = "runtime.lock"
+	ManifestFileName            = "manifest.json"
+	SecretFileName              = "secret.json"
+	LogoutIntentFileName        = "logout-intent.json"
+	ObservationFileName         = "runtime-observation.json"
+	ReconnectCheckpointFileName = "reconnect-checkpoint.json"
+	StateLockFileName           = "state.lock"
+	RuntimeLockFileName         = "runtime.lock"
 
-	maxStateFileBytes = 32 << 10
+	maxStateFileBytes = attachedworkerprotocol.MaxBatchBytes + 16<<10
 )
 
 var (
@@ -150,6 +153,55 @@ type RuntimeObservationV1 struct {
 	Failed           uint64                           `json:"failed"`
 	ObservedAt       time.Time                        `json:"observed_at"`
 	LastFailureCode  string                           `json:"last_failure_code,omitempty"`
+}
+
+// ReconnectCheckpointV1 is secret-free local continuation evidence for one
+// idle attached-worker connection. It is never server authority: the control
+// plane must compare its signed claim with the exact durable server snapshot.
+type ReconnectCheckpointV1 struct {
+	Version               uint32                                   `json:"version"`
+	Revision              uint64                                   `json:"revision"`
+	ManifestRevision      uint64                                   `json:"manifest_revision"`
+	TenantID              domain.TenantID                          `json:"tenant_id"`
+	OwnerUserID           domain.UserID                            `json:"owner_user_id"`
+	WorkerID              domain.AttachedWorkerID                  `json:"worker_id"`
+	EnrollmentGeneration  uint64                                   `json:"enrollment_generation"`
+	ConnectionGeneration  uint64                                   `json:"connection_generation"`
+	ProtocolVersion       attachedworkerprotocol.ProtocolVersion   `json:"protocol_version"`
+	ConnectionID          domain.AttachedWorkerConnectionID        `json:"connection_id"`
+	CapabilityDigest      domain.AttachedWorkerCapabilityDigest    `json:"capability_digest"`
+	AuthenticationExpires time.Time                                `json:"authentication_expires"`
+	ChannelBinding        []byte                                   `json:"channel_binding"`
+	WorkerOffer           attachedworkerprotocol.VersionOfferV1    `json:"worker_offer"`
+	PlatformOffer         attachedworkerprotocol.VersionOfferV1    `json:"platform_offer"`
+	MachineSnapshot       attachedworkerprotocol.MachineSnapshotV1 `json:"machine_snapshot"`
+	CheckpointedAt        time.Time                                `json:"checkpointed_at"`
+}
+
+func (checkpoint ReconnectCheckpointV1) Validate(manifest ManifestV1) error {
+	machine := checkpoint.MachineSnapshot
+	if manifest.Validate() != nil || manifest.Lifecycle != LifecycleActive ||
+		checkpoint.Version != ReconnectCheckpointVersionV1 || checkpoint.Revision == 0 ||
+		checkpoint.ManifestRevision != manifest.Revision || checkpoint.TenantID != manifest.TenantID ||
+		checkpoint.OwnerUserID != manifest.OwnerUserID || checkpoint.WorkerID != manifest.WorkerID ||
+		checkpoint.EnrollmentGeneration != manifest.EnrollmentGeneration ||
+		checkpoint.ConnectionGeneration != manifest.ConnectionGeneration ||
+		checkpoint.ProtocolVersion != attachedworkerprotocol.ProtocolVersionV1 ||
+		checkpoint.ConnectionID.Validate() != nil || checkpoint.CapabilityDigest.Validate() != nil ||
+		checkpoint.WorkerOffer.Validate() != nil || checkpoint.PlatformOffer.Validate() != nil ||
+		len(checkpoint.ChannelBinding) != 32 || machine.Validate() != nil ||
+		(machine.Connection != attachedworkerprotocol.ConnectionReady && machine.Connection != attachedworkerprotocol.ConnectionDraining) ||
+		machine.Attempt.Summary.State != attachedworkerprotocol.AttemptIdle || machine.Attempt.PendingWorkerTerminal != nil ||
+		machine.Reconnect != nil || machine.Manifest == nil ||
+		checkpoint.AuthenticationExpires.IsZero() || checkpoint.AuthenticationExpires.Location() != time.UTC ||
+		checkpoint.CheckpointedAt.IsZero() || checkpoint.CheckpointedAt.Location() != time.UTC ||
+		checkpoint.CheckpointedAt.Before(manifest.UpdatedAt) || !checkpoint.AuthenticationExpires.After(checkpoint.CheckpointedAt) {
+		return ErrInvalidState
+	}
+	if checkpoint.CapabilityDigest != domain.AttachedWorkerCapabilityDigest(fmt.Sprintf("%x", machine.CapabilityDigest)) {
+		return ErrInvalidState
+	}
+	return nil
 }
 
 // SnapshotV1 is a point-in-time, secret-free view of the local installation.

@@ -601,7 +601,7 @@ func TestUninstallPlanRedactedAndIdempotent(t *testing.T) {
 	if strings.Contains(strings.ToLower(string(mustJSON(t, one))), "private") || strings.Contains(string(mustJSON(t, one)), "identity") {
 		t.Fatal("plan contains secret-like fields")
 	}
-	if !one.RuntimeStopped || len(one.Entries) != 6 {
+	if !one.RuntimeStopped || len(one.Entries) != 7 {
 		t.Fatalf("plan=%+v", one)
 	}
 	for index := 1; index < len(one.Entries); index++ {

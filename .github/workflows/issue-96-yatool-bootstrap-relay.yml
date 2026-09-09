@@ -67,3 +67,110 @@ jobs:
             "$RUNNER_TEMP/$ASSET_NAME" \
             "$RUNNER_TEMP/$ASSET_NAME.sha256" \
             --clobber
+
+  darwin-arm64-tool-cache:
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      BOOTSTRAP_URL: https://devtools-registry.s3.yandex.net/9750552540
+      EXPECTED_MD5: d8b7d17c095beb38007e0f55d6319cff
+      CACHE_ASSET_NAME: yatool-25.3.1.25-darwin-arm64-tool-cache.tar.gz
+      RELEASE_TAG: research-yatool-bootstrap-25.3.1.25
+      YA_CACHE_DIR: ${{ runner.temp }}/ya-cache
+      YA_CACHE_DIR_TOOLS: ${{ runner.temp }}/ya-cache/tools
+      YA_TOKEN_PATH: ${{ runner.temp }}/no-token
+      TMPDIR: ${{ runner.temp }}
+
+    steps:
+      - name: Check out the exact YDB source tag
+        uses: actions/checkout@v4
+        with:
+          repository: ydb-platform/ydb
+          ref: 25.3.1.25
+          fetch-depth: 1
+          path: ydb
+
+      - name: Guard runner architecture and storage
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          df -h /
+          mkdir -p "$YA_CACHE_DIR_TOOLS/d8b7d17c09_d" "$TMPDIR"
+
+      - name: Install the exact verified bootstrap in the isolated cache
+        run: |
+          set -euo pipefail
+          bootstrap="$RUNNER_TEMP/yatool-bootstrap.tar"
+          curl --fail --location \
+            --retry 5 --retry-all-errors --retry-delay 2 \
+            --connect-timeout 20 --max-time 300 \
+            "$BOOTSTRAP_URL" \
+            --output "$bootstrap"
+          actual_md5="$(md5 -q "$bootstrap")"
+          test "$actual_md5" = "$EXPECTED_MD5"
+          tar -xf "$bootstrap" -C "$YA_CACHE_DIR_TOOLS/d8b7d17c09_d"
+          test -x "$YA_CACHE_DIR_TOOLS/d8b7d17c09_d/ya-bin"
+
+      - name: Resolve the native C++ toolchain through Yatool
+        working-directory: ydb
+        run: |
+          set -euo pipefail
+          ./ya tool c++ \
+            --print-toolchain-path \
+            --host-platform DARWIN-ARM64
+
+      - name: Configure the ydbd graph without executing build nodes
+        id: configure
+        continue-on-error: true
+        working-directory: ydb
+        run: |
+          set +e
+          ./ya make ydb/apps/ydbd \
+            -r \
+            -DUSE_SSE4=no \
+            --target-platform DEFAULT-DARWIN-ARM64 \
+            -j3 \
+            -B "$RUNNER_TEMP/ya-build" \
+            --show-command=ydbd \
+            --log-file "$RUNNER_TEMP/yatool-configure.log" \
+            >"$RUNNER_TEMP/yatool-show-command.stdout" 2>&1
+          status=$?
+          set -e
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          tail -n 120 "$RUNNER_TEMP/yatool-show-command.stdout"
+          exit "$status"
+
+      - name: Package the portable Darwin arm64 tool cache
+        if: always() && steps.configure.outcome != 'skipped'
+        run: |
+          set -euo pipefail
+          find "$YA_CACHE_DIR_TOOLS" -name '*.lock' -type f -delete
+          tar -czf "$RUNNER_TEMP/$CACHE_ASSET_NAME" \
+            -C "$YA_CACHE_DIR" tools
+          shasum -a 256 "$RUNNER_TEMP/$CACHE_ASSET_NAME" \
+            > "$RUNNER_TEMP/$CACHE_ASSET_NAME.sha256"
+          {
+            echo "Darwin arm64 Yatool cache relay."
+            echo
+            echo "- YDB tag: 25.3.1.25"
+            echo "- bootstrap MD5: $EXPECTED_MD5"
+            echo "- configure-only exit: ${{ steps.configure.outputs.status }}"
+            echo "- cache bytes: $(stat -f %z "$RUNNER_TEMP/$CACHE_ASSET_NAME")"
+            echo "- cache SHA-256: $(shasum -a 256 "$RUNNER_TEMP/$CACHE_ASSET_NAME" | awk '{print $1}')"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish the bounded tool-cache relay
+        if: always() && steps.configure.outcome != 'skipped'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh release upload "$RELEASE_TAG" \
+            "$RUNNER_TEMP/$CACHE_ASSET_NAME" \
+            "$RUNNER_TEMP/$CACHE_ASSET_NAME.sha256" \
+            --clobber
+
+      - name: Require successful graph configuration
+        if: always()
+        run: test "${{ steps.configure.outcome }}" = success

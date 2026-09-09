@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerprotocol"
+	"gitcode.com/urandon/sessionless/internal/attachedworkerreconnect"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
@@ -552,7 +553,7 @@ func TestIdleReconnectRotatesAuthorityAndReplaysExactly(t *testing.T) {
 	}
 }
 
-func TestReconnectRejectsNonIdleProtocolOrDurableAttemptHead(t *testing.T) {
+func TestReconnectRejectsMismatchedProtocolAndDurableAttemptHeads(t *testing.T) {
 	t.Run("protocol active", func(t *testing.T) {
 		fixture := newReadyTransportFixture(t)
 		fixture.makeOffered(t)
@@ -566,6 +567,91 @@ func TestReconnectRejectsNonIdleProtocolOrDurableAttemptHead(t *testing.T) {
 		fixture.store.mu.Unlock()
 		assertReconnectChallengeRejected(t, fixture)
 	})
+}
+
+func TestReconnectChallengeAcceptsMatchingActiveAttemptHead(t *testing.T) {
+	fixture := newReadyTransportFixture(t)
+	result := fixture.makeOffered(t)
+	fixture.store.mu.Lock()
+	fixture.store.attempt, fixture.store.attemptFound = result.Attempt, true
+	worker, previous := fixture.store.worker, fixture.store.connection
+	fixture.store.mu.Unlock()
+	request := signedChallengeRequest(t, worker, fixture.privateKey)
+	request.Purpose = domain.AttachedWorkerAttachReconnect
+	proof, err := SignChallengeRequest(fixture.privateKey, worker.TenantID, worker.OwnerUserID, worker, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Proof = proof
+	service := newReconnectTransportService(t, fixture.store)
+	grant, err := service.IssueChallenge(
+		context.Background(), worker.TenantID, worker.OwnerUserID, request,
+	)
+	if err != nil || grant.Challenge.Purpose != domain.AttachedWorkerAttachReconnect {
+		t.Fatalf("active reconnect challenge=%#v err=%v", grant, err)
+	}
+
+	previousConfig, previousSnapshot, err := fixture.service.protocolStateForConnection(worker, previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerMachine, err := attachedworkerprotocol.RestoreConformanceMachine(previousConfig, previousSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextSecret, err := ParseConnectionSecret(bytes.Repeat([]byte{0x74}, connectionSecretBytes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextBinding := ConnectionChannelBinding(grant.Challenge.ID, grant.Challenge.WorkerNonceDigest, grant.Challenge.PlatformNonceDigest, nextSecret.Digest())
+	nextBindingBytes, err := decodeChannelBinding(nextBinding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextAuth := attachedworkerprotocol.AuthContextV1{
+		TenantID: string(worker.TenantID), OwnerUserID: string(worker.OwnerUserID), WorkerID: string(worker.ID),
+		IdentityPublicKey: worker.IdentityPublicKey, EnrollmentGeneration: worker.EnrollmentGeneration,
+		ConnectionGeneration: grant.Challenge.TargetConnectionGeneration, Version: 1, ChannelBinding: nextBindingBytes,
+	}
+	workerClaim, err := workerMachine.BeginReconnect(nextAuth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconnect, err := attachedworkerprotocol.BuildReconnectV1(workerClaim, attachedworkerprotocol.ReconnectNegotiationV1{
+		WorkerOffer: request.Hello.Hello.Offer, PlatformOffer: grant.Frame.Challenge.PlatformOffer,
+		SelectedVersion: grant.Frame.Challenge.SelectedVersion, WorkerNonce: request.Hello.Hello.WorkerNonce,
+		PlatformNonce: grant.Frame.Challenge.PlatformNonce, CapabilityDigest: mustDecodeHex(string(previous.CapabilityDigest)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconnectFrame := attachedworkerprotocol.FrameV1{
+		Version: 1, MessageID: attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionWorkerToPlatform, 2),
+		WorkerID: string(worker.ID), EnrollmentGeneration: worker.EnrollmentGeneration,
+		ConnectionGeneration: grant.Challenge.TargetConnectionGeneration, Sequence: 2, Ack: 1,
+		Kind: attachedworkerprotocol.MessageReconnect, Reconnect: &reconnect,
+	}
+	if err := attachedworkerprotocol.SignReconnectV1(fixture.privateKey, nextAuth, &reconnectFrame); err != nil {
+		t.Fatal(err)
+	}
+	activationRequest := ActivateRequest{ChallengeID: grant.Challenge.ID, ConnectionSecretDigest: nextSecret.Digest(), Attach: reconnectFrame}
+	activation, err := service.Activate(context.Background(), worker.TenantID, worker.OwnerUserID, activationRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.store.mu.Lock()
+	rebound := fixture.store.attempt
+	fixture.store.mu.Unlock()
+	if rebound.ConnectionID != activation.Connection.ID || rebound.ConnectionGeneration != activation.Connection.ConnectionGeneration ||
+		rebound.Revision != result.Attempt.Revision+1 || rebound.State != result.Attempt.State ||
+		rebound.PlatformAttemptSequence != result.Attempt.PlatformAttemptSequence ||
+		rebound.WorkerAttemptSequence != result.Attempt.WorkerAttemptSequence || rebound.FenceToken != result.Attempt.FenceToken {
+		t.Fatalf("active reconnect changed semantic attempt authority: before=%#v after=%#v", result.Attempt, rebound)
+	}
+	replay, err := service.Activate(context.Background(), worker.TenantID, worker.OwnerUserID, activationRequest)
+	if err != nil || !reflect.DeepEqual(replay, activation) {
+		t.Fatalf("active reconnect exact activation replay=%#v err=%v", replay, err)
+	}
 }
 
 func TestReconnectRejectsFullyDrainedSnapshotBeforeChallenge(t *testing.T) {
@@ -1087,9 +1173,10 @@ func (store *transportMemoryStore) CreateAttachedWorkerAttachChallenge(_ context
 	defer store.mu.Unlock()
 	store.createCalls++
 	if request.Purpose == domain.AttachedWorkerAttachReconnect {
+		snapshot, decodeErr := attachedworkerprotocol.DecodeMachineSnapshotV1(store.connection.ProtocolSnapshot)
 		if store.connection.ID != request.ExpectedConnectionID || store.connection.Revision != request.ExpectedConnectionRevision ||
 			store.connection.CapabilityDigest != request.ExpectedCapabilityDigest || !bytes.Equal(store.connection.ProtocolSnapshot, request.ExpectedProtocolSnapshot) ||
-			store.attemptFound && store.attempt.State != domain.AttachedWorkerAttemptRetired {
+			decodeErr != nil || !attachedworkerreconnect.AttemptMatchesSnapshot(snapshot, store.attempt, store.attemptFound, store.connection) {
 			return domain.AttachedWorkerAttachChallenge{}, errors.New("reconnect authority conflict")
 		}
 	}
@@ -1128,12 +1215,14 @@ func (store *transportMemoryStore) ActivateAttachedWorkerConnection(_ context.Co
 		}
 		return ports.AttachedWorkerConnectionResult{Status: ports.AttachedWorkerConnectionConsumed}, nil
 	}
-	if request.Purpose == domain.AttachedWorkerAttachReconnect &&
-		(store.connection.ID != request.ExpectedConnectionID || store.connection.Revision != request.ExpectedConnectionRevision ||
+	if request.Purpose == domain.AttachedWorkerAttachReconnect {
+		snapshot, decodeErr := attachedworkerprotocol.DecodeMachineSnapshotV1(store.connection.ProtocolSnapshot)
+		if store.connection.ID != request.ExpectedConnectionID || store.connection.Revision != request.ExpectedConnectionRevision ||
 			store.connection.CapabilityDigest != request.ExpectedPreviousCapabilityDigest ||
-			!bytes.Equal(store.connection.ProtocolSnapshot, request.ExpectedPreviousProtocolSnapshot) ||
-			store.attemptFound && store.attempt.State != domain.AttachedWorkerAttemptRetired) {
-		return ports.AttachedWorkerConnectionResult{Status: ports.AttachedWorkerConnectionConflict}, nil
+			!bytes.Equal(store.connection.ProtocolSnapshot, request.ExpectedPreviousProtocolSnapshot) || decodeErr != nil ||
+			!attachedworkerreconnect.AttemptMatchesSnapshot(snapshot, store.attempt, store.attemptFound, store.connection) {
+			return ports.AttachedWorkerConnectionResult{Status: ports.AttachedWorkerConnectionConflict}, nil
+		}
 	}
 	store.activationRequest = request
 	store.worker.ConnectionGeneration++
@@ -1141,6 +1230,12 @@ func (store *transportMemoryStore) ActivateAttachedWorkerConnection(_ context.Co
 	store.worker.UpdatedAt = store.now
 	if request.Purpose == domain.AttachedWorkerAttachReconnect {
 		store.worker.ObservedState = domain.AttachedWorkerObservedOffline
+		if store.attemptFound && store.attempt.State != domain.AttachedWorkerAttemptRetired {
+			store.attempt.ConnectionID = store.challenge.ConnectionID
+			store.attempt.ConnectionGeneration = store.challenge.TargetConnectionGeneration
+			store.attempt.UpdatedAt = store.now
+			store.attempt.Revision++
+		}
 	}
 	store.challenge.ConsumedAt = store.now
 	store.challenge.Revision++

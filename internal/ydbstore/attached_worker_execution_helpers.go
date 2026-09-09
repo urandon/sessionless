@@ -94,6 +94,8 @@ func pendingAttachedWorkerAttemptMessageKind(state domain.AttachedWorkerAttemptS
 	switch state {
 	case domain.AttachedWorkerAttemptOffered:
 		return domain.AttachedWorkerAttemptMessageLeaseOffered
+	case domain.AttachedWorkerAttemptClaimed:
+		return domain.AttachedWorkerAttemptMessageLeaseAccepted
 	case domain.AttachedWorkerAttemptCancelRequested, domain.AttachedWorkerAttemptCancelledBeforeClaim, domain.AttachedWorkerAttemptFencedUnknown:
 		return domain.AttachedWorkerAttemptMessageCancelRequested
 	case domain.AttachedWorkerAttemptTerminalCommitted:
@@ -314,6 +316,55 @@ func insertOrReconcileAttachedWorkerAttemptMessageTx(ctx context.Context, tx *st
 		message.EnvelopeSequence, message.Kind, message.Fingerprint, message.CreatedAt,
 		retainUntil, payload)
 	return false, err
+}
+
+func replaceAttachedWorkerAttemptMessageEnvelopeTx(
+	ctx context.Context,
+	tx *stateTx,
+	previous domain.AttachedWorkerAttemptMessageV1,
+	next domain.AttachedWorkerAttemptMessageV1,
+	retainUntil time.Time,
+) error {
+	next.CreatedAt = canonicalAttachedWorkerTime(next.CreatedAt)
+	retainUntil = canonicalAttachedWorkerTime(retainUntil)
+	if previous.Validate() != nil || next.Validate() != nil || !sameAttachedWorkerAttemptMessageSemantic(previous, next) ||
+		next.ConnectionGeneration <= previous.ConnectionGeneration || !retainUntil.After(next.CreatedAt) {
+		return ErrAttachedWorkerAttemptMessageConflict
+	}
+	current, found, err := readAttachedWorkerAttemptMessageTx(ctx, tx, previous)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return ErrAttachedWorkerAttemptMessageConflict
+	}
+	if !sameAttachedWorkerAttemptMessage(current, previous) {
+		return ErrAttachedWorkerAttemptMessageConflict
+	}
+	payload, err := marshal(next)
+	if err != nil {
+		return err
+	}
+	_, err = tx.sqlTx.ExecContext(ctx,
+		`UPSERT INTO attached_worker_attempt_messages
+		 (tenant_id,owner_user_id,worker_id,attempt_id,direction,attempt_sequence,
+		  connection_generation,envelope_sequence,kind,fingerprint,created_at,retention_expire_at,payload)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,CAST($13 AS JsonDocument))`,
+		next.TenantID, next.OwnerUserID, next.WorkerID, next.AttemptID,
+		next.Direction, next.AttemptSequence, next.ConnectionGeneration,
+		next.EnvelopeSequence, next.Kind, next.Fingerprint, next.CreatedAt,
+		retainUntil, payload)
+	return err
+}
+
+func sameAttachedWorkerAttemptMessageSemantic(left, right domain.AttachedWorkerAttemptMessageV1) bool {
+	return left.Version == right.Version && left.TenantID == right.TenantID &&
+		left.OwnerUserID == right.OwnerUserID && left.WorkerID == right.WorkerID &&
+		left.AttemptID == right.AttemptID && left.Direction == right.Direction &&
+		left.AttemptSequence == right.AttemptSequence && left.Kind == right.Kind &&
+		left.Fingerprint == right.Fingerprint && left.OperationDeadline.Equal(right.OperationDeadline) &&
+		left.MaterializationReservationID == right.MaterializationReservationID &&
+		left.ExecutionConnectionID == right.ExecutionConnectionID
 }
 
 func sameAttachedWorkerAttemptMessage(left, right domain.AttachedWorkerAttemptMessageV1) bool {

@@ -1,9 +1,10 @@
 # Attached-worker durable reconnect checkpoint
 
-Issue #123 implements the worker-side AW-03d2 half of durable idle reconnect. It
-composes the exact server-authoritative reconnect endpoint from #122 with a
-strict owner-local checkpoint. It does not enable foreground or daemon wiring,
-timer cadence, provider execution, OCI launch, or active-attempt recovery.
+Issue #123 implements the worker-side AW-03d2 durable reconnect checkpoint and
+issue #124 extends it with AW-03d3 active-attempt reconciliation. Together they
+compose the exact server-authoritative reconnect endpoint from #122 with a
+strict owner-local checkpoint. They do not enable foreground or daemon wiring,
+timer cadence, provider execution, or OCI launch.
 
 ## Authority boundary
 
@@ -24,11 +25,12 @@ local manifest exactly:
   digest;
 - the canonical, digest-sealed `MachineSnapshotV1`.
 
-The embedded machine must be `ready` or `draining`, have an idle attempt,
-contain no pending terminal replay, and contain no in-progress reconnect.
-Restoration reconstructs `MachineConfig` with the public identity key derived
-from the separately loaded private key. Its configuration digest therefore
-detects substituted channel binding, offers, scope, generations, or identity.
+The embedded machine must be `ready` or `draining`, contain no in-progress
+reconnect, and carry either idle authority or one bounded active-attempt
+summary plus its optional terminal replay commitment. Restoration reconstructs
+`MachineConfig` with the public identity key derived from the separately loaded
+private key. Its configuration digest therefore detects substituted channel
+binding, offers, scope, generations, or identity.
 
 The file contains no private key, connection secret, bearer, provider
 credential, request/response body, artifact, or harness payload. The
@@ -53,12 +55,49 @@ cross-owner/worker substitution, generation drift, and snapshot-digest drift
 fail closed before network access.
 
 Initial attach writes checkpoint revision 1 after the Manifest exchange has
-been validated. Each later idle exchange advances it with CAS. Entering an
-active attempt, revocation, drain completion, a manifest/generation update, or
-logout retires it. A crash between a remote active-attempt effect and local
-retirement may leave an older idle checkpoint, but #122 rejects that claim
-against the non-idle server snapshot without mutation. Recovering that active
-effect belongs to AW-03d3.
+been validated. Each later validated exchange advances it with CAS, including
+active-attempt states. Revocation, drain completion, a manifest/generation
+update, or logout retires it. A crash after a remote attempt transition but
+before local checkpoint replacement leaves an older claim; the server compares
+that claim with the exact AW-02 snapshot and AW-04 attempt ledger and permits
+only their deterministic reconciliation plan. Local evidence never advances
+the server head.
+
+## Active-state decision table
+
+The durable server snapshot and attempt ledger are the authority. A matching
+local claim determines only which already-committed message may need a fresh
+connection envelope.
+
+| Durable server head | Reconnect result | Forbidden repeat |
+|---|---|---|
+| `offered` | retransmit the existing LeaseOffer semantic message in a fresh envelope | lease allocation or process launch |
+| `claimed` with no progress, or running progress | retransmit a lost LeaseAccepted when it is still pending; otherwise continue observing | lease claim, launcher, provider, or credential materialization |
+| `cancel_requested` or cancelled before claim | retransmit the existing Cancel when pending | local cancellation effect or cancel-generation allocation |
+| `cancel_acknowledged` | continue observing the existing cancelled attempt | CancelAck or local cancellation effect |
+| `fenced_unknown` | preserve the fence and retransmit only the committed fenced Cancel when pending | execution, success commit, or retry under a new lease |
+| `terminal_pending` | obey the protocol terminal decision: replay the exact committed terminal, discard it, or continue observing | new evidence or terminal sequence |
+| `terminal_committed` | retransmit a lost TerminalAck until acknowledged, then retire through the normal acknowledgement proof | terminal materialization, canonical commit, or cleanup effect |
+| idle | resume without attempt replay | creation of an attempt from local state |
+
+A mismatched owner, worker, connection, enrollment/connection generation,
+capability, binding, lease/fence, cancellation revision, terminal commitment,
+or attempt sequence fails before activation. Expired authentication, and
+expired lease/cancel authority where the active state still depends on it, fail
+the same way. A committed terminal or explicit fenced-unknown head remains a
+durable historical decision and is not revived as executable authority.
+
+## Crash and lost-response matrix
+
+| Boundary | Durable fact after restart | Recovery |
+|---|---|---|
+| before local generation fence | old manifest/checkpoint remain current | retry reconnect from the same exact predecessor |
+| after local generation fence, before challenge/activation result | local generation is newer but remote outcome is unknown | stop with `reconciliation_required`; never initial-attach fallback |
+| activation committed, response lost | consumed challenge stores one exact result | exact request replay returns that result; divergent replay conflicts |
+| active attempt rebound, fresh platform envelope response lost | semantic ledger key/fingerprint are unchanged | the same pending semantic message is rebuilt under the current envelope and redelivered |
+| worker action accepted remotely, checkpoint replacement lost | server snapshot/ledger are ahead of the local claim | AW-02 plan selects acknowledgement/replay/discard/fence; the local claim cannot invent progress |
+| checkpoint rename completed but directory fsync failed | local durability is ambiguous | stop and reload exact state; no network or process effect is repeated |
+| concurrent reconnect or stale checkpoint CAS loses | one server generation and one local revision remain current | deterministic conflict; loser cannot overwrite or retire newer evidence |
 
 ## Reconnect sequence
 
@@ -73,7 +112,9 @@ machine. It then:
    and prior connection generation;
 4. derives a fresh channel binding and builds the signed reconnect claim from
    the restored machine;
-5. accepts only the server's bounded authoritative reconnect decision;
+5. accepts only the server's bounded authoritative reconnect decision and
+   exposes any terminal replay/discard/committed decision as read-only recovery
+   intent;
 6. opens the new bearer-bound exchange, sends the exact capability Manifest,
    and persists checkpoint revision 1 for the new generation.
 
@@ -83,6 +124,8 @@ attach and never infers success from local evidence.
 
 ## Remaining boundary
 
-AW-03d3 must reconcile active attempt/lease/cancellation/terminal commitments
-with the durable AW-04 ledger. Only after that reviewed slice may a separate
-cadence/foreground slice enable a timer poller or process activation.
+The reconnect API remains feature-disabled and side-effect free beyond the
+existing protocol/store transitions. A separate reviewed cadence/foreground
+slice must consume the read-only recovery intent, enable bounded polling, and
+own process activation. In particular, reconnect itself never auto-sends a
+terminal or starts/cancels a process.

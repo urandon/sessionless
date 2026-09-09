@@ -156,8 +156,9 @@ type RuntimeObservationV1 struct {
 }
 
 // ReconnectCheckpointV1 is secret-free local continuation evidence for one
-// idle attached-worker connection. It is never server authority: the control
-// plane must compare its signed claim with the exact durable server snapshot.
+// attached-worker connection, including its bounded active-attempt summary and
+// optional terminal replay commitment. It is never server authority: the
+// control plane compares its signed claim with the exact durable server head.
 type ReconnectCheckpointV1 struct {
 	Version               uint32                                   `json:"version"`
 	Revision              uint64                                   `json:"revision"`
@@ -191,7 +192,6 @@ func (checkpoint ReconnectCheckpointV1) Validate(manifest ManifestV1) error {
 		checkpoint.WorkerOffer.Validate() != nil || checkpoint.PlatformOffer.Validate() != nil ||
 		len(checkpoint.ChannelBinding) != 32 || machine.Validate() != nil ||
 		(machine.Connection != attachedworkerprotocol.ConnectionReady && machine.Connection != attachedworkerprotocol.ConnectionDraining) ||
-		machine.Attempt.Summary.State != attachedworkerprotocol.AttemptIdle || machine.Attempt.PendingWorkerTerminal != nil ||
 		machine.Reconnect != nil || machine.Manifest == nil ||
 		checkpoint.AuthenticationExpires.IsZero() || checkpoint.AuthenticationExpires.Location() != time.UTC ||
 		checkpoint.CheckpointedAt.IsZero() || checkpoint.CheckpointedAt.Location() != time.UTC ||

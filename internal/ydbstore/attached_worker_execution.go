@@ -332,7 +332,15 @@ func (store *Store) PollAttachedWorkerAttempt(ctx context.Context, request ports
 		}
 		frame, direction, decodeErr := decodeAttachedWorkerAttemptFrame(message)
 		if !found || decodeErr != nil || direction != attachedworkerprotocol.DirectionPlatformToWorker || message.Kind != wantKind ||
-			message.ConnectionGeneration != connection.ConnectionGeneration || frame.Sequence != snapshot.Platform.Sequence {
+			message.ConnectionGeneration > connection.ConnectionGeneration {
+			return ErrAttachedWorkerAttemptConflict
+		}
+		if message.ConnectionGeneration < connection.ConnectionGeneration {
+			connection, message, frame, err = store.replayAttachedWorkerPlatformMessageTx(ctx, tx, config, snapshot, connection, attempt, message, at)
+			if err != nil {
+				return err
+			}
+		} else if frame.Sequence != snapshot.Platform.Sequence {
 			return ErrAttachedWorkerAttemptConflict
 		}
 		if !attachedWorkerPollFramePending(snapshot.Worker.Ack, frame.Sequence) {
@@ -374,6 +382,65 @@ func (store *Store) PollAttachedWorkerAttempt(ctx context.Context, request ports
 		return nil
 	})
 	return result, err
+}
+
+func (store *Store) replayAttachedWorkerPlatformMessageTx(
+	ctx context.Context,
+	tx *stateTx,
+	config attachedworkerprotocol.MachineConfig,
+	snapshot attachedworkerprotocol.MachineSnapshotV1,
+	connection domain.AttachedWorkerConnection,
+	attempt domain.AttachedWorkerAttemptV1,
+	previous domain.AttachedWorkerAttemptMessageV1,
+	at time.Time,
+) (domain.AttachedWorkerConnection, domain.AttachedWorkerAttemptMessageV1, attachedworkerprotocol.FrameV1, error) {
+	frame, direction, err := decodeAttachedWorkerAttemptFrame(previous)
+	if err != nil || direction != attachedworkerprotocol.DirectionPlatformToWorker ||
+		previous.ConnectionGeneration >= connection.ConnectionGeneration || snapshot.Platform.Sequence == math.MaxUint64 {
+		return connection, previous, attachedworkerprotocol.FrameV1{}, ErrAttachedWorkerAttemptConflict
+	}
+	frame.Version = attachedworkerprotocol.ProtocolVersion(connection.ProtocolVersion)
+	frame.WorkerID = string(connection.WorkerID)
+	frame.EnrollmentGeneration = connection.EnrollmentGeneration
+	frame.ConnectionGeneration = connection.ConnectionGeneration
+	frame.Sequence = snapshot.Platform.Sequence + 1
+	frame.Ack = snapshot.Worker.Sequence
+	frame.MessageID = attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionPlatformToWorker, frame.Sequence)
+	post, err := attachedworkerprotocol.ApplyMachineFrameV1(config, snapshot, attachedworkerprotocol.DirectionPlatformToWorker, frame, at.UnixMicro())
+	if err != nil {
+		return connection, previous, attachedworkerprotocol.FrameV1{}, ErrAttachedWorkerAttemptConflict
+	}
+	nextMessage, err := attachedWorkerAttemptMessageFromFrame(attempt, attachedworkerprotocol.DirectionPlatformToWorker, frame, at)
+	if err != nil {
+		return connection, previous, attachedworkerprotocol.FrameV1{}, err
+	}
+	// Materialization remains bound to the connection that actually executed
+	// the attempt; only its transport envelope moves to the replacement link.
+	nextMessage.OperationDeadline = previous.OperationDeadline
+	nextMessage.MaterializationReservationID = previous.MaterializationReservationID
+	nextMessage.ExecutionConnectionID = previous.ExecutionConnectionID
+	retainUntil := attempt.LeaseExpiresAt.Add(store.operationalRetention)
+	if !retainUntil.After(at) {
+		retainUntil = at.Add(store.operationalRetention)
+	}
+	if err := replaceAttachedWorkerAttemptMessageEnvelopeTx(ctx, tx, previous, nextMessage, retainUntil); err != nil {
+		return connection, previous, attachedworkerprotocol.FrameV1{}, err
+	}
+	oldExpiry := attachedWorkerPresenceExpiry(connection)
+	nextConnection, err := advanceAttachedWorkerConnectionProtocol(connection, post)
+	if err != nil {
+		return connection, previous, attachedworkerprotocol.FrameV1{}, err
+	}
+	if err := deleteAttachedWorkerPresenceExpiryTx(ctx, tx, oldExpiry); err != nil {
+		return connection, previous, attachedworkerprotocol.FrameV1{}, err
+	}
+	if err := upsertAttachedWorkerConnectionTx(ctx, tx, nextConnection); err != nil {
+		return connection, previous, attachedworkerprotocol.FrameV1{}, err
+	}
+	if err := insertAttachedWorkerPresenceExpiryTx(ctx, tx, attachedWorkerPresenceExpiry(nextConnection)); err != nil {
+		return connection, previous, attachedworkerprotocol.FrameV1{}, err
+	}
+	return nextConnection, nextMessage, frame, nil
 }
 
 func (store *Store) ExchangeAttachedWorkerAttempt(ctx context.Context, request ports.AttachedWorkerAttemptExchange) (result ports.AttachedWorkerAttemptResult, err error) {
@@ -612,6 +679,54 @@ func (store *Store) ExchangeAttachedWorkerAttempt(ctx context.Context, request p
 		return nil
 	})
 	return result, err
+}
+
+func attachedWorkerTerminalProvenanceTx(
+	ctx context.Context,
+	tx *stateTx,
+	attempt domain.AttachedWorkerAttemptV1,
+	summary attachedworkerprotocol.AttemptSummaryV1,
+) (domain.QuotaReservationID, domain.AttachedWorkerConnectionID, error) {
+	messages, err := readAttachedWorkerAttemptMessagesByKindTx(ctx, tx, attempt.OwnerUserID, attempt.WorkerID,
+		attempt.AttemptID, domain.AttachedWorkerAttemptWorkerToPlatform, domain.AttachedWorkerAttemptMessageTerminal)
+	if err != nil {
+		return "", "", err
+	}
+	return selectAttachedWorkerTerminalProvenance(attempt, summary, messages)
+}
+
+func selectAttachedWorkerTerminalProvenance(
+	attempt domain.AttachedWorkerAttemptV1,
+	summary attachedworkerprotocol.AttemptSummaryV1,
+	messages []domain.AttachedWorkerAttemptMessageV1,
+) (domain.QuotaReservationID, domain.AttachedWorkerConnectionID, error) {
+	if attempt.State != domain.AttachedWorkerAttemptTerminalPending || summary.State != attachedworkerprotocol.AttemptTerminalPending ||
+		attempt.TerminalSequence != summary.TerminalSequence || attachedworkerprotocol.TerminalStatus(attempt.TerminalStatus) != summary.TerminalStatus ||
+		attempt.TerminalEvidenceDigest != domain.AttachedWorkerTerminalEvidenceDigest(hex.EncodeToString(summary.TerminalEvidenceDigest)) {
+		return "", "", ErrAttachedWorkerAttemptConflict
+	}
+	var reservationID domain.QuotaReservationID
+	var connectionID domain.AttachedWorkerConnectionID
+	matches := 0
+	for _, message := range messages {
+		frame, direction, decodeErr := decodeAttachedWorkerAttemptFrame(message)
+		if decodeErr != nil || direction != attachedworkerprotocol.DirectionWorkerToPlatform || frame.Terminal == nil {
+			return "", "", ErrAttachedWorkerAttemptConflict
+		}
+		terminal := frame.Terminal
+		if message.AttemptSequence == attempt.WorkerAttemptSequence &&
+			message.MaterializationReservationID == attempt.ReservationID && message.ExecutionConnectionID != "" &&
+			sameAttachedWorkerAttemptBinding(terminal.Binding, summary.Binding) &&
+			terminal.TerminalSequence == summary.TerminalSequence && terminal.Status == summary.TerminalStatus &&
+			terminal.Result == summary.TerminalResult && bytes.Equal(terminal.EvidenceDigest, summary.TerminalEvidenceDigest) {
+			reservationID, connectionID = message.MaterializationReservationID, message.ExecutionConnectionID
+			matches++
+		}
+	}
+	if matches != 1 {
+		return "", "", ErrAttachedWorkerAttemptConflict
+	}
+	return reservationID, connectionID, nil
 }
 
 func (store *Store) reconcileRetiredAttachedWorkerTerminalTx(
@@ -943,6 +1058,10 @@ func (store *Store) CommitAttachedWorkerTerminal(ctx context.Context, request po
 		if err != nil {
 			return err
 		}
+		terminalReservationID, terminalConnectionID, err := attachedWorkerTerminalProvenanceTx(ctx, tx, attempt, snapshot.Attempt.Summary)
+		if err != nil {
+			return err
+		}
 		if err := materializeAttachedWorkerTerminalTx(ctx, state, tx, attempt, request.Materialization, at); err != nil {
 			return err
 		}
@@ -954,6 +1073,11 @@ func (store *Store) CommitAttachedWorkerTerminal(ctx context.Context, request po
 		if err != nil {
 			return err
 		}
+		// The attempt may have been rebound after the worker Terminal was
+		// accepted. Preserve the connection that executed the effect so an
+		// historical retry proves one immutable provenance chain.
+		message.MaterializationReservationID = terminalReservationID
+		message.ExecutionConnectionID = terminalConnectionID
 		next := attempt
 		next.State = domain.AttachedWorkerAttemptTerminalCommitted
 		next.PlatformAttemptSequence = message.AttemptSequence

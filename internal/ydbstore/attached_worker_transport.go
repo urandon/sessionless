@@ -200,6 +200,11 @@ func (store *Store) ActivateAttachedWorkerConnection(
 		if _, _, err := loadAttachedWorkerProtocolAuthorityTx(ctx, tx, worker, connection); err != nil {
 			return ErrAttachedWorkerConnectionConflict
 		}
+		if request.Purpose == domain.AttachedWorkerAttachReconnect {
+			if err := rebindReconnectAttemptTx(ctx, tx, current, connection, at, store.operationalRetention); err != nil {
+				return err
+			}
+		}
 		if currentFound && !current.PresenceExpiresAt.IsZero() {
 			if err := deleteAttachedWorkerPresenceExpiryTx(ctx, tx, attachedWorkerPresenceExpiry(current)); err != nil {
 				return err

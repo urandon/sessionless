@@ -1,6 +1,7 @@
 name: Issue 96 pinned Yatool bootstrap relay
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - codex/issue-96-yatool-relay

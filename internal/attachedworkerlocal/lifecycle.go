@@ -277,6 +277,11 @@ func (store *Store) Logout(ctx context.Context, input LogoutInputV1) (result Log
 		} else if observationPresent {
 			return LogoutResultV1{Version: 1, Code: CodeIncomplete}, ErrStateIncomplete
 		}
+		if checkpointPresent, checkpointErr := store.filePresentSecure(ReconnectCheckpointFileName); checkpointErr != nil {
+			return LogoutResultV1{Version: 1, Code: Code(checkpointErr)}, checkpointErr
+		} else if checkpointPresent {
+			return LogoutResultV1{Version: 1, Code: CodeIncomplete}, ErrStateIncomplete
+		}
 		if intentPresent {
 			if !intentMatches(intent, manifest, input) {
 				return LogoutResultV1{Version: 1, Code: CodeConflict}, ErrStateConflict
@@ -328,6 +333,9 @@ func (store *Store) Logout(ctx context.Context, input LogoutInputV1) (result Log
 		}
 	}
 	if err := store.removeDurable(ObservationFileName); err != nil {
+		return LogoutResultV1{Version: 1, Code: Code(err)}, err
+	}
+	if err := store.removeDurable(ReconnectCheckpointFileName); err != nil {
 		return LogoutResultV1{Version: 1, Code: Code(err)}, err
 	}
 	if err := store.removeDurable(SecretFileName); err != nil {
@@ -407,6 +415,7 @@ func (store *Store) UninstallPlan(ctx context.Context) (result UninstallPlanV1, 
 		{"manifest", ManifestFileName, true}, {"secret", SecretFileName, false},
 		{"logout_intent", LogoutIntentFileName, false}, {"state_lock", StateLockFileName, true},
 		{"runtime_lock", RuntimeLockFileName, true}, {"runtime_observation", ObservationFileName, false},
+		{"reconnect_checkpoint", ReconnectCheckpointFileName, false},
 	} {
 		present, err := store.filePresentSecure(entry.name)
 		if err != nil {

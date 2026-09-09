@@ -39,15 +39,13 @@ update is a durable attempt fence and a restart returns
 `reconciliation_required` without retrying. Neither outcome is evidence that
 the server accepted the connection.
 
-The existing local files durably retain only installation identity, the latest
-locators and generations, and private/connection-secret material. Challenge
-identity, nonces, proof, selected server offer, channel-binding bytes,
-connection identity, authentication expiry, AW-02 machine state, and response
-watermarks remain process-ephemeral in this slice. None is reconstructed or
-declared successful after restart. The control plane supports exact idle-head
-reconnect, but this worker-side session cannot use it until a later slice owns
-durable local checkpoint restoration. Active-attempt reconnect additionally
-depends on durable effect reconciliation.
+Issue #123 adds a [strict, secret-free local checkpoint](attached-worker-reconnect-checkpoint.md)
+for the exact idle AW-02 machine state, connection binding, protocol offers, and
+capability digest. A restarted connector may use that checkpoint only as a
+signed claim: #122 compares it with the exact durable server snapshot before
+advancing the connection generation. Private keys, connection secrets, bearers,
+and request/response bodies remain outside the checkpoint. Active-attempt
+reconnect still depends on the later durable effect-reconciliation slice.
 
 ## Credential custody and evidence
 
@@ -106,9 +104,8 @@ it is not reachable through `attachedworkerforeground.New`. The feature-disabled
 [session-to-daemon adapter](attached-worker-daemon-transport.md) owns the
 semantic worker action envelope, durable lease/cancel/terminal transitions,
 and active-cancel acknowledgement flow. Exact in-process replay is likewise
-feature-disabled. A later AW-03 slice must own the real timer cadence,
-sleep/wake/offline observations, cost evidence, and reviewed foreground wiring
-before bounded polling can become live. That slice must also compose the
-already-available idle reconnect endpoint with a durable local checkpoint;
-this package must not infer reconnect authority from scalar watermarks or
-ephemeral in-process state.
+feature-disabled. The package now composes initial attach and explicit idle reconnect, but a later
+AW-03 slice must still own real timer cadence, sleep/wake/offline observations,
+cost evidence, and reviewed foreground wiring before bounded polling can become
+live. AW-03d3 must reconcile active attempt effects; this package never infers
+remote authority from scalar watermarks or local process state.

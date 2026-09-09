@@ -81,6 +81,9 @@ type localRuntimeLease interface {
 	LoadSnapshot(context.Context) (attachedworkerlocal.SnapshotV1, error)
 	LoadSecret(context.Context) (attachedworkerlocal.SecretRecordV1, error)
 	Update(context.Context, uint64, attachedworkerlocal.ManifestV1, attachedworkerlocal.SecretRecordV1) error
+	LoadReconnectCheckpoint(context.Context) (attachedworkerlocal.ReconnectCheckpointV1, error)
+	PersistReconnectCheckpoint(context.Context, uint64, attachedworkerlocal.ReconnectCheckpointV1) error
+	RetireReconnectCheckpoint(context.Context, uint64) error
 	Close() error
 }
 
@@ -537,6 +540,7 @@ func (connector *Connector) connect(ctx context.Context, input ConnectInputV1) (
 		maxExchangeAttempts: connector.config.MaxExchangeAttempts,
 		retryInitialBackoff: connector.config.RetryInitialBackoff, retryMaxBackoff: connector.config.RetryMaxBackoff,
 		retryJitter: &exchangeRetryJitter{state: connector.config.retrySeed}, retryWait: connector.config.retryWait,
+		manifestRevision: nextManifest.Revision, manifestUpdatedAt: nextManifest.UpdatedAt,
 	}
 	session.operationGate <- struct{}{}
 	if err := ctx.Err(); err != nil {
@@ -591,6 +595,9 @@ type Session struct {
 	retryMaxBackoff     time.Duration
 	retryJitter         *exchangeRetryJitter
 	retryWait           func(context.Context, time.Duration) error
+	manifestRevision    uint64
+	manifestUpdatedAt   time.Time
+	checkpointRevision  uint64
 }
 
 type exchangeRetryJitter struct {
@@ -938,6 +945,9 @@ func (session *Session) exchangeOnce(
 				return nil, ErrReconciliationRequired
 			}
 		}
+	}
+	if err := session.persistReconnectCheckpoint(ctx, working); err != nil {
+		return nil, err
 	}
 	session.mu.Lock()
 	if session.state == StateConnecting || session.state == StateReady {

@@ -252,6 +252,9 @@ func (store *Store) updateWithRuntimeLease(ctx context.Context, expectedRevision
 	}
 	// Secret authority is replaced first. A crash before the manifest commit
 	// leaves a detectable generation/revision mismatch and therefore fails closed.
+	if err := store.removeDurable(ReconnectCheckpointFileName); err != nil {
+		return err
+	}
 	if err := store.removeDurable(ObservationFileName); err != nil {
 		return err
 	}
@@ -465,7 +468,11 @@ func (store *Store) loadConsistentLocked() (ManifestV1, error) {
 		if observationErr != nil {
 			return ManifestV1{}, observationErr
 		}
-		if secretPresent || observationPresent {
+		checkpointPresent, checkpointErr := store.filePresentSecure(ReconnectCheckpointFileName)
+		if checkpointErr != nil {
+			return ManifestV1{}, checkpointErr
+		}
+		if secretPresent || observationPresent || checkpointPresent {
 			return ManifestV1{}, ErrStateIncomplete
 		}
 		return manifest, nil
@@ -482,6 +489,9 @@ func (store *Store) loadConsistentLocked() (ManifestV1, error) {
 		return ManifestV1{}, err
 	}
 	if present && observation.Validate(manifest) != nil {
+		return ManifestV1{}, ErrStateIncomplete
+	}
+	if _, _, err := store.loadReconnectCheckpointOptionalLocked(manifest); err != nil {
 		return ManifestV1{}, ErrStateIncomplete
 	}
 	return manifest, nil
@@ -570,7 +580,7 @@ func (store *Store) validateInventory() error {
 			return ErrStateIncomplete
 		}
 		switch entry.Name() {
-		case ManifestFileName, SecretFileName, LogoutIntentFileName, ObservationFileName,
+		case ManifestFileName, SecretFileName, LogoutIntentFileName, ObservationFileName, ReconnectCheckpointFileName,
 			StateLockFileName, RuntimeLockFileName:
 		default:
 			return ErrInvalidState

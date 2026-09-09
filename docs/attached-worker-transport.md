@@ -3,9 +3,10 @@
 AW-03 establishes an owner-scoped, authenticated immediate transport for an
 attached worker. AW-04a extends that transport with durable, transactionally
 fenced attempt frames and heartbeat-driven delivery. AW-03d1 adds the
-control-plane half of reconnect for an exact idle durable head. Long polling,
-explicit cloud wake-up, active-attempt reconnect reconciliation, worker-side
-checkpoint restoration, and the worker daemon remain later work.
+control-plane half of reconnect for an exact idle durable head; AW-03d2 adds the
+[strict worker-side checkpoint and explicit resume](attached-worker-reconnect-checkpoint.md).
+Long polling, explicit cloud wake-up, active-attempt reconnect reconciliation,
+and the worker daemon remain later work.
 
 The feature-disabled [worker-side connection session](attached-worker-connection-session.md)
 owns the corresponding bootstrap-to-immediate-exchange composition, local
@@ -135,9 +136,9 @@ and divergent replay remain fail-closed reconciliation/fencing boundaries.
   synthesized by the HTTP adapter. The adapter rejects a response whose scope,
   generations, binding, kind, or canonical payload disagrees with the durable
   attempt head.
-- Worker exact replay is disabled by default and does not itself start a
-  polling loop, reconnect, daemon, process, OCI boundary, provider call, or
-  production route. Pending retry content is process-ephemeral and cleared on
+- Worker exact in-process replay is disabled by default. Explicit idle reconnect
+  is available only through the reviewed checkpoint API; neither path starts a
+  polling loop, daemon, process, OCI boundary, provider call, or production route. Pending retry content is process-ephemeral and cleared on
   operation completion where Go permits best-effort byte erasure.
 - Each accepted Heartbeat advances the durable worker envelope sequence and
   therefore costs one bounded store write. AW-03 enforces one shared minimum

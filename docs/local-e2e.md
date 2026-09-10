@@ -1,8 +1,10 @@
 # Deterministic local end-to-end slice
 
 `make e2e-local` is the black-box proof gate between the individual adapter
-contracts and cloud-dev deployment. It requires Docker Compose but no cloud,
-Telegram, provider, or subscription credential.
+contracts and cloud-dev deployment. Its default backend requires Docker
+Compose, but `make e2e-local-dockerless` runs the same suite with owned host
+processes on macOS. Neither backend needs cloud, Telegram, provider, or
+subscription credentials.
 
 ## Executed topology
 
@@ -13,7 +15,7 @@ sequenceDiagram
     participant DB as YDB Local
     participant Scheduler as reconciler
     participant Queue as ElasticMQ
-    participant Worker as one-shot worker container
+    participant Worker as one-shot worker
     participant Blob as MinIO
     participant Sender as telegram-sender
     participant Telegram as Telegram fake
@@ -40,9 +42,11 @@ sequenceDiagram
     Synthetic->>DB: append through the frontend-neutral ingress contract
 ```
 
-The worker is built and invoked through the Compose `worker` profile. Each
-invocation is read-only, nonroot, concurrency-one, receives one queue message,
-uses a private tmpfs scratch directory, and is removed on exit.
+The default backend builds and invokes the worker through the Compose `worker`
+profile. Dockerless mode invokes the same Go worker binary as a bounded host
+process with a private per-invocation scratch directory. Both paths use
+concurrency one and consume at most one queue message. Container-only
+read-only/nonroot/tmpfs isolation remains a separate Compose assertion.
 
 ## Command
 
@@ -50,10 +54,18 @@ uses a private tmpfs scratch directory, and is removed on exit.
 make e2e-local
 ```
 
+On macOS with the pinned host artifacts:
+
+```sh
+YDBD_PATH=/absolute/path/to/ydbd make e2e-local-dockerless
+```
+
+See [the Dockerless macOS runbook](macos-dockerless-development.md).
+
 The command:
 
 1. starts and migrates the pinned local stand;
-2. builds the worker image;
+2. builds the worker image for Compose or the host binary for Dockerless mode;
 3. resets only ephemeral Telegram captures and visible queue messages;
 4. runs the tagged black-box suite;
 5. prints service logs automatically when the suite fails.
@@ -61,6 +73,11 @@ The command:
 The stand is intentionally left running for inspection. Use `make dev-down` for
 a non-destructive stop or the guarded `dev-reset` command when local volumes
 must be deleted.
+
+Dockerless mode instead uses `make dockerless-down`; it preserves native data
+and refuses to signal stale or mismatched PID metadata. It has no automatic
+data-reset target.
+data-reset target.
 
 ## Automated scenarios
 

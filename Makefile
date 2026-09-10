@@ -23,9 +23,9 @@ LDFLAGS := -s -w \
 	-X gitcode.com/urandon/sessionless/internal/buildinfo.Commit=$(COMMIT) \
 	-X gitcode.com/urandon/sessionless/internal/buildinfo.BuiltAt=$(BUILT_AT)
 
-.PHONY: help prepare tools web-tools go-package-layout generate fmt fmt-check lint test build docs-check readme-visual-preview web-install web-openapi-check web-check web-build web-stage web-ci web-browser-install web-browser-test integration ydb-integration local-integration e2e-local attached-worker-oci-integration attached-worker-oci-linux-rootless-ci provider-conformance provider-conformance-fuzz ci image-publication-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test budget-policy-test web-deployment-policy-test terraform-ci cloudflare-edge-ci \
+.PHONY: help prepare tools web-tools go-package-layout generate fmt fmt-check lint test build dockerless-build docs-check readme-visual-preview web-install web-openapi-check web-check web-build web-stage web-ci web-browser-install web-browser-test integration ydb-integration local-integration e2e-local e2e-local-dockerless attached-worker-oci-integration attached-worker-oci-linux-rootless-ci provider-conformance provider-conformance-fuzz ci image-publication-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test dockerless-stand-policy-test budget-policy-test web-deployment-policy-test terraform-ci cloudflare-edge-ci \
 	compose-config images dev-up dev-seed migrate-local migration-status partition-status partition-backfill cloud-app-reset-plan cloud-app-reset session-delete-request session-delete-plan session-delete session-hold session-release-hold \
-	worker-once web-bootstrap dev-down dev-reset repowise-install repowise-index repowise-update repowise-status repowise-doctor repowise-mcp repowise-mcp-smoke repowise-evaluate repowise-stop repowise-uninstall-plan repowise-uninstall repowise-policy-test clean
+	worker-once web-bootstrap dev-down dev-reset dockerless-up dockerless-status dockerless-worker-once dockerless-logs dockerless-down repowise-install repowise-index repowise-update repowise-status repowise-doctor repowise-mcp repowise-mcp-smoke repowise-evaluate repowise-stop repowise-uninstall-plan repowise-uninstall repowise-policy-test clean
 
 help:
 	@printf '%s\n' \
@@ -38,10 +38,12 @@ help:
 		'make generate       run Go generators' \
 		'make test           formatting, static analysis, unit tests, race detector' \
 		'make build          build all component binaries' \
+		'make dockerless-build build only native binaries used by the Dockerless stand' \
 		'make integration    run foundation integration tests' \
 		'make ydb-integration run YDB Local schema and concurrency tests' \
 		'make local-integration run YDB/S3/SQS/Telegram adapter tests against the local stand' \
 		'make e2e-local      run the deterministic two-tenant black-box slice' \
+		'make e2e-local-dockerless run the same slice with host processes and no Docker' \
 		'make attached-worker-oci-integration run the opt-in real Docker Engine isolation matrix' \
 		'make attached-worker-oci-linux-rootless-ci run the pinned Linux rootless release gate' \
 		'make provider-conformance run the credential-free harness/provider registry fixtures' \
@@ -51,6 +53,7 @@ help:
 		'make registry-gc-policy-test validate deployment-aware registry cleanup guards' \
 		'make release-policy-test validate tag provenance, release assets, workflow, and IAM guards' \
 		'make local-stand-policy-test validate bounded local logging, YDB readiness, and reset guards' \
+		'make dockerless-stand-policy-test validate native orchestration safety and Docker isolation' \
 		'make terraform-ci   validate Terraform, run a mocked Web plan, and enforce policies' \
 		'make cloudflare-edge-ci test and dry-run bundle the Telegram edge Worker' \
 		'make images         build control-plane and worker images' \
@@ -71,6 +74,9 @@ help:
 		'make web-bootstrap  create an audited, confirmed cloud-dev Web membership' \
 		'make dev-down       stop the local stack' \
 		'make dev-reset      guarded deletion of local Compose volumes' \
+		'make dockerless-up  start the host-process stand (requires YDBD_PATH)' \
+		'make dockerless-status show only processes owned by the Dockerless stand' \
+		'make dockerless-down gracefully stop only owned host processes' \
 		'make repowise-index opt-in local RepoWise index (research/development only)' \
 		'make repowise-mcp   opt-in local RepoWise stdio MCP (research/development only)' \
 		'make repowise-policy-test validate the optional RepoWise boundary'
@@ -115,6 +121,14 @@ test: prepare fmt-check lint
 build: prepare web-stage
 	@mkdir -p $(BIN_DIR)
 	@set -e; for component in $(COMPONENTS); do \
+		printf 'building %s\n' "$$component"; \
+		CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" \
+			-o "$(BIN_DIR)/$$component" "./cmd/$$component"; \
+	done
+
+dockerless-build: prepare
+	@mkdir -p $(BIN_DIR)
+	@set -e; for component in control-api reconciler telegram-sender telegram-fake worker-runtime; do \
 		printf 'building %s\n' "$$component"; \
 		CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" \
 			-o "$(BIN_DIR)/$$component" "./cmd/$$component"; \
@@ -170,6 +184,9 @@ local-integration: prepare
 e2e-local: prepare
 	@./scripts/e2e-local.sh
 
+e2e-local-dockerless: prepare
+	@SESSIONLESS_LOCAL_ORCHESTRATOR=dockerless ./scripts/e2e-local.sh
+
 provider-conformance: prepare
 	go vet ./internal/domain ./internal/ports ./internal/sessionlessharness ./internal/harnessconformance ./internal/codexexec ./internal/codexopenrouter ./internal/piopenrouter ./internal/opencodeopenrouter ./internal/directopenrouter ./internal/providercomposition
 	go test -race -count=50 -shuffle=on -timeout=5m ./internal/domain ./internal/ports ./internal/sessionlessharness ./internal/harnessconformance ./internal/providercomposition
@@ -191,7 +208,7 @@ provider-conformance-fuzz: prepare
 	go test -run='^$$' -fuzz=FuzzOpenCodeJSONLParserNeverCommitsMalformedTerminal -fuzztime=2s ./internal/opencodeopenrouter
 	go test -run='^$$' -fuzz=FuzzResponseParserNeverCommitsMalformedTerminal -fuzztime=2s ./internal/directopenrouter
 
-ci: docs-check web-ci generate test build integration image-publication-test image-build-inputs-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test
+ci: docs-check web-ci generate test build integration image-publication-test image-build-inputs-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test dockerless-stand-policy-test
 
 image-publication-test:
 	@./scripts/test-image-publication.sh
@@ -211,6 +228,9 @@ release-policy-test:
 
 local-stand-policy-test:
 	@./scripts/test-local-stand-policy.sh
+
+dockerless-stand-policy-test:
+	@./scripts/test-dockerless-stand-policy.sh
 
 image-reproducibility-test:
 	@./scripts/test-image-reproducibility.sh
@@ -288,6 +308,21 @@ session-release-hold: prepare
 
 worker-once:
 	docker compose --project-name sessionless-dev --profile worker run --rm worker-runtime
+
+dockerless-up:
+	@./scripts/dockerless-local.sh up
+
+dockerless-status:
+	@./scripts/dockerless-local.sh status
+
+dockerless-worker-once:
+	@./scripts/dockerless-local.sh worker-once
+
+dockerless-logs:
+	@./scripts/dockerless-local.sh logs
+
+dockerless-down:
+	@./scripts/dockerless-local.sh down
 
 web-bootstrap: prepare
 	go run ./cmd/web-bootstrap

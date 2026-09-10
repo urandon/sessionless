@@ -2,6 +2,15 @@
 
 Status date: **2026-09-07**. Tracking issue: **#96**.
 
+> **Later result (2026-09-10):** the bounded Yatool investigation subsequently
+> produced and ran a Darwin x86_64 `ydbd` under Rosetta from the same
+> `25.3.1.25` source pin. Sessionless migrations plus YDB and adapter
+> integration suites passed without Docker. Native Darwin arm64 remains a
+> no-go, and upstream still has no supported Darwin server lane. The exact
+> successful build, artifact checksums, Dockerless lifecycle, and packaging
+> decision are documented in
+> [Dockerless local development on macOS](../macos-dockerless-development.md).
+
 ## CMake follow-up after the issue was reopened
 
 The first pass tested the Sessionless-pinned stable tag through YDB's documented

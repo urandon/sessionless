@@ -4,6 +4,7 @@ node_modules/
 .env
 .env.*
 !.env.example
+/.envrc
 
 .terraform/
 infra/terraform/bootstrap/backend.s3.tf

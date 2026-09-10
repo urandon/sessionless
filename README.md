@@ -13,6 +13,7 @@ pluggable agent workers do the work.**
 
 [Explore the documentation](docs/README.md) ·
 [Run the local stand](docs/local-development-stand.md#lifecycle) ·
+[Run Dockerless on macOS](docs/macos-dockerless-development.md) ·
 [See the MVP plan](https://gitcode.com/urandon/sessionless/issues/6)
 
 ![Sessionless WebUI showing a canonical conversation, its completed assistant response, and ready compute capacity](docs/assets/sessionless-webui-session.jpg)

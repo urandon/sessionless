@@ -1,0 +1,11 @@
+# Copy this file to .envrc and adjust paths for the local machine. The real
+# .envrc is ignored because it may contain machine-specific paths or secrets.
+repo_root=$(git rev-parse --show-toplevel)
+workspace_root=$(CDPATH= cd -- "$repo_root/../.." && pwd -P)
+
+export SESSIONLESS_NATIVE_DEPS_DIR=${SESSIONLESS_NATIVE_DEPS_DIR:-$workspace_root/ai/sessionless-native-deps}
+export SESSIONLESS_DOCKERLESS_ROOT=${SESSIONLESS_DOCKERLESS_ROOT:-$workspace_root/ai/sessionless-native-runtime}
+export YDBD_PATH=${YDBD_PATH:-$workspace_root/artifacts/ydb/25.3.1.25/darwin-x86_64/ydbd-25.3.1.25-darwin-x86_64}
+export YDB_LOCAL_LAUNCHER_PATH=${YDB_LOCAL_LAUNCHER_PATH:-$workspace_root/artifacts/ydb/25.3.1.25/darwin-x86_64/local_ydb-25.3.1.25-darwin-x86_64}
+
+unset repo_root workspace_root

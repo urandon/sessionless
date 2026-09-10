@@ -205,11 +205,11 @@ func TestDeterministicLocalMultiUserSlice(t *testing.T) {
 		slice.waitRunStatus(setupRun, domain.RunQueued)
 		slice.runWorker(nil)
 		slice.waitRunStatus(setupRun, domain.RunSucceeded)
-		slice.compose("stop", "queue-local")
+		slice.orchestrate("stop", "queue-local")
 		run := slice.postMessage(base+14, userA, "repair dispatch publication gap")
-		slice.compose("start", "queue-local")
+		slice.orchestrate("start", "queue-local")
 		slice.waitHTTP("http://127.0.0.1:9324/?Action=ListQueues&Version=2012-11-05")
-		slice.compose("restart", "reconciler")
+		slice.orchestrate("restart", "reconciler")
 		slice.waitDispatchStatus(run, domain.DispatchPublished)
 		slice.runWorker(nil)
 		slice.waitRunStatus(run, domain.RunSucceeded)
@@ -653,6 +653,17 @@ func (slice *localSlice) waitDispatchStatus(run runRef, wanted domain.DispatchSt
 
 func (slice *localSlice) runWorker(overrides map[string]string) {
 	slice.t.Helper()
+	if envOrDefault("SESSIONLESS_E2E_ORCHESTRATOR", "compose") == "dockerless" {
+		command := exec.CommandContext(slice.ctx, "./scripts/dockerless-local.sh", "worker-once")
+		command.Dir = repositoryRoot(slice.t)
+		command.Env = environmentWithOverrides(overrides)
+		output, err := command.CombinedOutput()
+		if err != nil {
+			slice.t.Fatalf("native worker failed: %v\n%s", err, output)
+		}
+		slice.t.Logf("worker invocation: %s", strings.TrimSpace(string(output)))
+		return
+	}
 	arguments := []string{
 		"compose", "--project-name", "sessionless-dev", "--profile", "worker",
 		"run", "--rm", "--no-deps",
@@ -675,6 +686,29 @@ func (slice *localSlice) runWorker(overrides map[string]string) {
 		slice.t.Fatalf("worker container failed: %v\n%s", err, output)
 	}
 	slice.t.Logf("worker invocation: %s", strings.TrimSpace(string(output)))
+}
+
+func environmentWithOverrides(overrides map[string]string) []string {
+	values := make(map[string]string, len(os.Environ())+len(overrides))
+	for _, entry := range os.Environ() {
+		key, value, found := strings.Cut(entry, "=")
+		if found {
+			values[key] = value
+		}
+	}
+	for key, value := range overrides {
+		values[key] = value
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	result := make([]string, 0, len(keys))
+	for _, key := range keys {
+		result = append(result, key+"="+values[key])
+	}
+	return result
 }
 
 func (slice *localSlice) publishDuplicate(run runRef) {
@@ -1006,8 +1040,17 @@ func (slice *localSlice) captures() []capture {
 	return payload.Result
 }
 
-func (slice *localSlice) compose(arguments ...string) {
+func (slice *localSlice) orchestrate(arguments ...string) {
 	slice.t.Helper()
+	if envOrDefault("SESSIONLESS_E2E_ORCHESTRATOR", "compose") == "dockerless" {
+		command := exec.CommandContext(slice.ctx, "./scripts/dockerless-local.sh", arguments...)
+		command.Dir = repositoryRoot(slice.t)
+		output, err := command.CombinedOutput()
+		if err != nil {
+			slice.t.Fatalf("dockerless stand %s: %v\n%s", strings.Join(arguments, " "), err, output)
+		}
+		return
+	}
 	args := append([]string{"compose", "--project-name", "sessionless-dev"}, arguments...)
 	command := exec.CommandContext(slice.ctx, "docker", args...)
 	command.Dir = repositoryRoot(slice.t)

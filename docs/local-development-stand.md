@@ -73,6 +73,11 @@ make local-integration
 make e2e-local
 make dev-down
 ```
+On macOS, the opt-in host-process backend runs the same adapters without
+Docker, Colima, Lima, or a Linux image. It requires an explicit `YDBD_PATH`;
+see [Dockerless local development on macOS](macos-dockerless-development.md)
+for artifact provenance, setup, lifecycle, and limitations.
+
 
 `make dev-up` performs the following fail-fast sequence:
 
@@ -222,6 +227,11 @@ runtime must therefore support amd64 emulation and have enough virtual-disk
 space for the disk-backed stand. Check the active runtime and capacity with
 `docker context show`, `colima status`, and `docker system df -v` before a long
 integration run.
+
+Docker is not required by the opt-in
+[Dockerless macOS path](macos-dockerless-development.md). That path uses a
+Darwin x86_64 YDB binary under Rosetta and native host processes for the other
+services; it does not turn the unsupported YDB build into a production target.
 
 A developer may temporarily set `YDB_USE_IN_MEMORY_PDISKS=true` when the local
 runtime cannot support the disk-backed image. This removes the persistence

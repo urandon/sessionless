@@ -35,6 +35,11 @@ grep -F 'make -C "$repo_root" partition-backfill' "$runner" >/dev/null ||
 	fail 'Dockerless startup omits the mandatory execution-placement cutover'
 grep -F 'grpc://127.0.0.1:' "$e2e_runner" >/dev/null ||
 	fail 'Dockerless E2E does not pin YDB to numeric loopback'
+grep -F 'grpc://127.0.0.1:2136/local' "$repo_root/Makefile" >/dev/null ||
+	fail 'local integration does not default YDB to numeric loopback'
+if grep -F 'grpc://localhost:2136/local' "$repo_root/test/localintegration/stand_test.go" >/dev/null; then
+	fail 'local integration tests retain a proxy-sensitive localhost YDB default'
+fi
 grep -F 'QUEUE_ENDPOINT="http://127.0.0.1:' "$e2e_runner" >/dev/null ||
 	fail 'Dockerless E2E does not pin its queue to numeric loopback'
 

@@ -177,7 +177,7 @@ ydb-integration: prepare
 	go test -race -tags=ydbintegration ./test/ydbintegration/...
 
 local-integration: prepare
-	YDB_CONNECTION_STRING="$${YDB_CONNECTION_STRING:-grpc://localhost:2136/local?go_query_mode=scripting&go_fake_tx=scripting&go_query_bind=declare,numeric}" \
+	YDB_CONNECTION_STRING="$${YDB_CONNECTION_STRING:-grpc://127.0.0.1:2136/local?go_query_mode=scripting&go_fake_tx=scripting&go_query_bind=declare,numeric}" \
 	YDB_ANONYMOUS_CREDENTIALS="$${YDB_ANONYMOUS_CREDENTIALS:-1}" \
 	go test -race -tags=localintegration ./test/localintegration/...
 

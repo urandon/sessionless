@@ -226,6 +226,11 @@ globally.
 - `make dockerless-down` preserves YDB and MinIO data. There is intentionally
   no Dockerless reset target; inspect and confirm an exact runtime directory
   before deleting local data manually.
-- Build-root cleanup is separate from runtime cleanup. The 116 GiB Yatool
-  build root remains a useful incremental cache and must not be deleted without
-  a fresh size/process/path audit and explicit confirmation.
+- Build-root cleanup is separate from runtime cleanup. On 2026-09-11 the
+  audited Yatool and historical CMake roots were deleted after explicit
+  confirmation, reclaiming 126,325,592 KiB (about 120.5 GiB) of hubdisk space.
+  The stable artifact directory remains intact. Build and experiment logs,
+  metadata, and patch provenance are retained in
+  `sessionless-ydb-issue96-provenance-20260911.tar.gz` beside the binaries;
+  verify it with the adjacent `PROVENANCE.sha256` before use. Regenerating
+  intermediate objects requires the pinned build recipe above.

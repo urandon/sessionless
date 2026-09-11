@@ -45,7 +45,7 @@ flowchart LR
 
 | Service | Container endpoint | Host endpoint | Persistence |
 | --- | --- | --- | --- |
-| YDB Local | `grpc://ydb-local:2136/local` | `grpc://localhost:2136/local` | `ydb-data`, `ydb-certs` |
+| YDB Local | `grpc://ydb-local:2136/local` | `grpc://127.0.0.1:2136/local` | `ydb-data`, `ydb-certs` |
 | YDB monitoring | `http://ydb-local:8765` | `http://localhost:8765` | n/a |
 | MinIO S3 API | `http://object-storage-local:9000` | `http://localhost:9000` | `object-storage-data` |
 | MinIO console | `http://object-storage-local:9001` | `http://localhost:9001` | `object-storage-data` |

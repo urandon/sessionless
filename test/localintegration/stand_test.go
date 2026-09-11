@@ -42,7 +42,7 @@ func testYDB(t *testing.T) {
 	defer cancel()
 	client, err := ydbclient.Open(ctx, envOrDefault(
 		"YDB_CONNECTION_STRING",
-		"grpc://localhost:2136/local?go_query_mode=scripting&go_fake_tx=scripting&go_query_bind=declare,numeric",
+		"grpc://127.0.0.1:2136/local?go_query_mode=scripting&go_fake_tx=scripting&go_query_bind=declare,numeric",
 	))
 	if err != nil {
 		t.Fatal(err)
@@ -233,7 +233,7 @@ func testTelegramWebhook(t *testing.T) {
 	defer cancel()
 	ydb, err := ydbclient.Open(ctx, envOrDefault(
 		"YDB_CONNECTION_STRING",
-		"grpc://localhost:2136/local?go_query_mode=scripting&go_fake_tx=scripting&go_query_bind=declare,numeric",
+		"grpc://127.0.0.1:2136/local?go_query_mode=scripting&go_fake_tx=scripting&go_query_bind=declare,numeric",
 	))
 	if err != nil {
 		t.Fatal(err)
@@ -340,7 +340,7 @@ func testTelegramCommands(t *testing.T) {
 	defer cancel()
 	ydb, err := ydbclient.Open(ctx, envOrDefault(
 		"YDB_CONNECTION_STRING",
-		"grpc://localhost:2136/local?go_query_mode=scripting&go_fake_tx=scripting&go_query_bind=declare,numeric",
+		"grpc://127.0.0.1:2136/local?go_query_mode=scripting&go_fake_tx=scripting&go_query_bind=declare,numeric",
 	))
 	if err != nil {
 		t.Fatal(err)
@@ -425,7 +425,7 @@ func testSchedulerDispatch(t *testing.T) {
 	defer cancel()
 	ydb, err := ydbclient.Open(ctx, envOrDefault(
 		"YDB_CONNECTION_STRING",
-		"grpc://localhost:2136/local?go_query_mode=scripting&go_fake_tx=scripting&go_query_bind=declare,numeric",
+		"grpc://127.0.0.1:2136/local?go_query_mode=scripting&go_fake_tx=scripting&go_query_bind=declare,numeric",
 	))
 	if err != nil {
 		t.Fatal(err)

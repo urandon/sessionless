@@ -1,6 +1,6 @@
 # Native macOS YDB server spike
 
-Status date: **2026-09-07**. Tracking issue: **#96**.
+Status date: **2026-09-11**. Tracking issue: **#96**.
 
 > **Later result (2026-09-10):** the bounded Yatool investigation subsequently
 > produced and ran a Darwin x86_64 `ydbd` under Rosetta from the same
@@ -431,22 +431,30 @@ MiB more blocks while the checkout reports 2.3 GiB logical size, consistent
 with filesystem compression/shared storage. Both remained far from the abort
 thresholds.
 
-## Native-versus-container matrix
+## Dockerless-versus-container closeout measurements
 
-The existing container was deliberately not started merely to populate a
-comparison after the native prerequisite failed. Doing so would add VM/image
-and log pressure without answering the native feasibility question.
+Measurements below were taken on the same 24 GiB M4 host. They deliberately
+record different storage modes instead of presenting them as a strict
+benchmark: Dockerless used a fresh file-backed runtime, while the disposable
+container used in-memory pdisks. The retained Compose-volume result is a
+reliability observation, not a startup-time comparison.
 
-| Metric | Native macOS | Existing container path |
-| --- | ---: | ---: |
-| One-time peak build/download disk | 15,872,444 KiB retained historical CMake experiment; no binary | not re-run |
-| Retained steady-state disk | no artifact | existing supported fallback unchanged |
-| Cold startup to executable query | not run | not re-run |
-| Warm startup | not run | not re-run |
-| Idle host RSS/CPU | not run | not re-run |
-| Integration-suite wall time | not run | not re-run |
-| Shutdown/restart reliability | not run | not re-run |
-| Host energy/thermal observations | not run | not re-run |
+| Metric | Darwin x86_64 under Rosetta | Colima/container path |
+| --- | --- | --- |
+| One-time build/download disk | Yatool root measured 111,420,164 KiB at cleanup; historical CMake root 15,825,148 KiB | no image pull during closeout; pinned YDB image was already present and measured 1.1 GB |
+| Retained steady-state disk | 2.0 GiB artifact directory, including baseline/stripped binaries, transfer bundle, and 13 MiB provenance archive; 502 MiB native dependencies; fresh runtime data 29 MiB | Colima root 61 GiB allocated on hubdisk; Docker reported 10.83 GB images, 13.99 GB volumes, and 1.81 GB build cache across all local projects, not exclusively Sessionless |
+| Fresh startup to query-backed readiness | 28.52 s after host binaries were cached; first developer run including fresh Go downloads/builds was 134.66 s | 19.50 s for a disposable, already-downloaded image with in-memory pdisks; second fresh run on the warm VM was 29.35 s |
+| Warm startup | 17.74 s against the same file-backed data | retained Compose volumes did not become ready: 153.45 s to `ReasonBootBSError` / `NumUnconnectedDisks=1` |
+| Process memory sample | complete stand 1,257,568 KiB RSS; `ydbd` 702,576 KiB of that total | YDB container 504.9 MiB in a clean sample; the macOS VM process was about 2,925,792 KiB RSS under integration load with an 8 GiB configured VM limit |
+| Integration evidence | local integration passed in 6.84 s wall / 3.514 s Go test; an earlier full YDB integration pass took 95.033 s | full YDB integration ran 208.36 s and hit one timing-sensitive expiry assertion; the exact test then passed 5/5 in 48.17 s wall / 31.424 s Go test |
+| Shutdown/restart reliability | stop completed in 2.06 s; fresh and warm startup passed; an additional stressed reused-runtime trial later hit a YDB `GENERIC_ERROR` and is excluded from timing results | disposable runs stopped and auto-removed cleanly; the retained-volume boot failure reproduced the documented local-volume recovery risk |
+| Host energy/thermal | not quantified: privileged power sampling was outside the experiment | not quantified |
+
+The result supports an opt-in Dockerless fallback for developers who already
+have the pinned artifact. It does not justify replacing the Linux container
+and CI path: upstream still does not support the Darwin server, the local
+binary requires Rosetta, the storage modes above are not equivalent, and both
+paths exposed reliability variance worth keeping visible.
 
 ## Adoption gates after the research override
 
@@ -474,19 +482,29 @@ that omits storage/recovery semantics does not justify adoption.
 
 ## Cleanup receipt
 
-No cleanup has been performed. The exact reclaim candidates are:
+On 2026-09-11 the exact audited intermediate roots were deleted:
 
 ```text
 /Volumes/hubdisk/workspace/ai/ydb-native-macos-25.3.1.25
 /Volumes/hubdisk/workspace/ai/ydb-native-macos-cmake-45c7adf
 ```
 
-The stable-tag root was measured at 2,417,512 KiB logical and contains the
-pinned clean checkout plus empty owned cache/build/log/runtime directories.
-The historical CMake root was measured at 15,872,444 KiB at the final watcher
-sample and contains source snapshots, pinned tools, generated objects, logs,
-and the four-file uncommitted portability patch. Neither root contains a
-`ydbd` binary. Deletion still requires explicit confirmation and a fresh
-containment, symlink, process-use, size, and free-space check. No broad parent
-directory, home-directory cache, VM disk, container image, or unrelated
-checkout is part of either candidate.
+Immediately before deletion they measured 111,420,164 KiB and 15,825,148 KiB,
+respectively (127,245,312 KiB logical total). Hubdisk available space increased
+by 126,325,592 KiB, about 120.5 GiB. The sole process using either root was an
+owned loopback-only provenance relay; its exact PID, command, working directory,
+and listener were verified before it was terminated. Shadowrocket and its
+packet-tunnel process remained running with unchanged PIDs.
+
+The stable artifact directory was excluded from cleanup:
+
+```text
+/Volumes/hubdisk/workspace/artifacts/ydb/25.3.1.25/darwin-x86_64
+```
+
+Its nine-file `MANIFEST.sha256` passed verification. Raw Yatool/CMake logs,
+metadata, and the unsuccessful and successful patch stacks were compacted into
+`sessionless-ydb-issue96-provenance-20260911.tar.gz` (13 MiB), with SHA-256
+`c0b199175accc680af1819337008f07e7c553cd5188a4ae33bb3f8c5872fc1f3` and an
+adjacent `PROVENANCE.sha256`. No VM disk, container image, persistent Docker
+volume, home-directory cache, or unrelated checkout was deleted.

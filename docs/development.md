@@ -308,7 +308,7 @@ and executes the two-tenant product flow and recovery scenarios documented in
 After the YDB monitoring endpoint is ready, apply or inspect the schema:
 
 ```sh
-export YDB_CONNECTION_STRING='grpc://localhost:2136/local?go_query_mode=scripting&go_fake_tx=scripting&go_query_bind=declare,numeric'
+export YDB_CONNECTION_STRING='grpc://127.0.0.1:2136/local?go_query_mode=scripting&go_fake_tx=scripting&go_query_bind=declare,numeric'
 export YDB_ANONYMOUS_CREDENTIALS=1
 make migrate-local
 make migration-status

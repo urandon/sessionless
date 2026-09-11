@@ -5,6 +5,7 @@ pluggable agent workers do the work.**
 
 [![CI](https://github.com/urandon/sessionless/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/urandon/sessionless/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2f6feb.svg)](LICENSE)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/urandon/sessionless)
 
 > **MVP in progress.** The canonical session core, Telegram path, local WebUI,
 > deterministic worker, and feature-disabled provider adapters are implemented.

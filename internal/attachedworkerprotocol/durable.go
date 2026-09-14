@@ -54,6 +54,12 @@ type TerminalAckAuthorityV1 struct {
 	NowUnixMicro int64 `json:"now_unix_micro"`
 }
 
+type DrainAuthorityV1 struct {
+	Revision                      uint64 `json:"revision"`
+	DeliveredConnectionGeneration uint64 `json:"delivered_connection_generation"`
+	NowUnixMicro                  int64  `json:"now_unix_micro"`
+}
+
 // MachineEnvelopeSnapshotV1 is one direction of the connection envelope.
 // Only the latest fingerprint is needed because connection-envelope replay is
 // limited to the immediately current sequence.
@@ -160,6 +166,17 @@ func AttemptFrameFingerprintV1(frame FrameV1) ([]byte, error) {
 		return nil, protocolError(ErrorInvalidFrame)
 	}
 	fingerprint := attemptFingerprint(frame)
+	return append([]byte(nil), fingerprint[:]...), nil
+}
+
+// FrameFingerprintV1 is the exact connection-envelope fingerprint used by the
+// protocol replay guard. Unlike AttemptFrameFingerprintV1 it deliberately
+// changes when a control message is re-enveloped after reconnect.
+func FrameFingerprintV1(frame FrameV1) ([]byte, error) {
+	if frame.Validate() != nil {
+		return nil, protocolError(ErrorInvalidFrame)
+	}
+	fingerprint := frameFingerprint(frame)
 	return append([]byte(nil), fingerprint[:]...), nil
 }
 
@@ -634,6 +651,55 @@ func BuildTerminalAckTransitionV1(
 	return frame, post, nil
 }
 
+// BuildDrainTransitionV1 derives a durable platform drain from the current
+// connection envelope. Drain closes admission without changing an active
+// attempt; exact retries reconstruct the already-persisted frame.
+func BuildDrainTransitionV1(
+	config MachineConfig,
+	snapshot MachineSnapshotV1,
+	authority DrainAuthorityV1,
+) (FrameV1, MachineSnapshotV1, error) {
+	machine, err := RestoreConformanceMachine(config, snapshot)
+	if err != nil || authority.Revision == 0 || authority.NowUnixMicro <= 0 ||
+		machine.platform.sequence == math.MaxUint64 {
+		return FrameV1{}, MachineSnapshotV1{}, protocolError(ErrorConflict)
+	}
+	if machine.connection == ConnectionDraining &&
+		authority.DeliveredConnectionGeneration == config.Auth.ConnectionGeneration {
+		if machine.drainRevision != authority.Revision {
+			return FrameV1{}, MachineSnapshotV1{}, protocolError(ErrorConflict)
+		}
+		frame, exact := exactPersistedDrainFrame(config, machine)
+		if !exact {
+			return FrameV1{}, MachineSnapshotV1{}, protocolError(ErrorConflict)
+		}
+		return frame, snapshot.Clone(), nil
+	}
+	initial := machine.connection == ConnectionReady && authority.DeliveredConnectionGeneration == 0
+	reenvelope := machine.connection == ConnectionDraining && machine.drainRevision == authority.Revision &&
+		authority.DeliveredConnectionGeneration > 0 &&
+		authority.DeliveredConnectionGeneration < config.Auth.ConnectionGeneration
+	if !initial && !reenvelope {
+		return FrameV1{}, MachineSnapshotV1{}, protocolError(ErrorConflict)
+	}
+	frame := FrameV1{
+		Version: config.Auth.Version, MessageID: MessageIDV1(DirectionPlatformToWorker, machine.platform.sequence+1),
+		WorkerID: config.Auth.WorkerID, EnrollmentGeneration: config.Auth.EnrollmentGeneration,
+		ConnectionGeneration: config.Auth.ConnectionGeneration, Sequence: machine.platform.sequence + 1,
+		Ack: machine.worker.sequence, Kind: MessageDrain, Drain: &DrainV1{Revision: authority.Revision},
+	}
+	if frame.Validate() != nil || machine.Accept(DirectionPlatformToWorker, frame, AcceptanceContextV1{
+		ChannelBinding: config.Auth.ChannelBinding, NowUnixMicro: authority.NowUnixMicro,
+	}) != nil {
+		return FrameV1{}, MachineSnapshotV1{}, protocolError(ErrorConflict)
+	}
+	post, err := machine.Snapshot()
+	if err != nil {
+		return FrameV1{}, MachineSnapshotV1{}, protocolError(ErrorConflict)
+	}
+	return frame, post, nil
+}
+
 // RetireCommittedAttemptV1 removes the completed attempt from the canonical
 // machine only after the worker has acknowledged the latest platform frame.
 // The connection envelope and its replay fingerprints remain intact, so an
@@ -678,6 +744,22 @@ func RetirePreClaimCancelledAttemptV1(
 		return MachineSnapshotV1{}, protocolError(ErrorConflict)
 	}
 	return post, nil
+}
+
+func exactPersistedDrainFrame(config MachineConfig, machine *ConformanceMachine) (FrameV1, bool) {
+	if machine == nil {
+		return FrameV1{}, false
+	}
+	frame := FrameV1{
+		Version: config.Auth.Version, MessageID: MessageIDV1(DirectionPlatformToWorker, machine.platform.sequence),
+		WorkerID: config.Auth.WorkerID, EnrollmentGeneration: config.Auth.EnrollmentGeneration,
+		ConnectionGeneration: config.Auth.ConnectionGeneration, Sequence: machine.platform.sequence,
+		Ack: machine.platform.ack, Kind: MessageDrain, Drain: &DrainV1{Revision: machine.drainRevision},
+	}
+	if frame.Validate() != nil || frame.Sequence == 0 || machine.platform.fingerprint != frameFingerprint(frame) {
+		return FrameV1{}, false
+	}
+	return frame, true
 }
 
 func exactPersistedCancelFrame(config MachineConfig, machine *ConformanceMachine) (FrameV1, bool) {
@@ -794,7 +876,7 @@ func (machine *ConformanceMachine) Snapshot() (MachineSnapshotV1, error) {
 			Terminal: *cloneTerminal(&commitment.terminal),
 		}
 	}
-	if machine.reconnecting {
+	if machine.reconnecting || machine.drainReenvelopePending {
 		reconnect := &MachineReconnectStateV1{
 			Target: machine.reconnectTarget, PreviousConnectionGeneration: machine.previousConnectionGeneration,
 			Watermarks: machine.reconnectWatermarks, Attempt: cloneAttemptSummary(machine.reconnectAttempt),
@@ -855,7 +937,8 @@ func RestoreConformanceMachine(config MachineConfig, snapshot MachineSnapshotV1)
 		machine.revoke = *snapshot.Revoke
 	}
 	if snapshot.Reconnect != nil {
-		machine.reconnecting = true
+		machine.reconnecting = snapshot.Connection != ConnectionDraining
+		machine.drainReenvelopePending = snapshot.Connection == ConnectionDraining
 		machine.reconnectTarget = snapshot.Reconnect.Target
 		machine.previousConnectionGeneration = snapshot.Reconnect.PreviousConnectionGeneration
 		machine.reconnectWatermarks = snapshot.Reconnect.Watermarks
@@ -952,9 +1035,15 @@ func validateMachineSnapshotContent(snapshot MachineSnapshotV1) error {
 			(snapshot.Reconnect == nil) != (snapshot.Manifest == nil) {
 			return protocolError(ErrorMalformedFrame)
 		}
-	case ConnectionReady, ConnectionDraining, ConnectionDrained:
+	case ConnectionReady, ConnectionDrained:
 		if snapshot.Reconnect != nil || snapshot.Hello == nil || snapshot.Challenge == nil || snapshot.Manifest == nil ||
 			!validBytes(snapshot.CapabilityDigest, sha256.Size) {
+			return protocolError(ErrorMalformedFrame)
+		}
+	case ConnectionDraining:
+		if snapshot.Hello == nil || snapshot.Challenge == nil || snapshot.Manifest == nil ||
+			!validBytes(snapshot.CapabilityDigest, sha256.Size) ||
+			(snapshot.Reconnect != nil && (snapshot.Reconnect.Target != ConnectionDraining || snapshot.Reconnect.Claim == nil)) {
 			return protocolError(ErrorMalformedFrame)
 		}
 	}

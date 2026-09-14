@@ -207,6 +207,9 @@ const (
 	AttachedWorkerAuditConnectionGenerationAdvanced AttachedWorkerAuditAction = "connection_generation_advanced"
 	AttachedWorkerAuditConnectionManifestAccepted   AttachedWorkerAuditAction = "connection_manifest_accepted"
 	AttachedWorkerAuditConnectionPresenceExpired    AttachedWorkerAuditAction = "connection_presence_expired"
+	AttachedWorkerAuditDrainRequested               AttachedWorkerAuditAction = "worker_drain_requested"
+	AttachedWorkerAuditDrainStarted                 AttachedWorkerAuditAction = "worker_drain_started"
+	AttachedWorkerAuditDrained                      AttachedWorkerAuditAction = "worker_drained"
 	AttachedWorkerAuditWorkerRevoked                AttachedWorkerAuditAction = "worker_revoked"
 )
 
@@ -216,6 +219,7 @@ func (action AttachedWorkerAuditAction) Valid() bool {
 		AttachedWorkerAuditWorkerRenamed, AttachedWorkerAuditIdentityRotated,
 		AttachedWorkerAuditConnectionGenerationAdvanced, AttachedWorkerAuditConnectionManifestAccepted,
 		AttachedWorkerAuditConnectionPresenceExpired,
+		AttachedWorkerAuditDrainRequested, AttachedWorkerAuditDrainStarted, AttachedWorkerAuditDrained,
 		AttachedWorkerAuditWorkerRevoked:
 		return true
 	default:

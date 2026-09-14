@@ -76,6 +76,9 @@ func TestAttachedWorkerConnectionPresenceAuditActionsAreCanonical(t *testing.T) 
 	for _, action := range []AttachedWorkerAuditAction{
 		AttachedWorkerAuditConnectionManifestAccepted,
 		AttachedWorkerAuditConnectionPresenceExpired,
+		AttachedWorkerAuditDrainRequested,
+		AttachedWorkerAuditDrainStarted,
+		AttachedWorkerAuditDrained,
 	} {
 		if !action.Valid() {
 			t.Fatalf("canonical connection audit action %q is invalid", action)
@@ -84,6 +87,36 @@ func TestAttachedWorkerConnectionPresenceAuditActionsAreCanonical(t *testing.T) 
 	if AttachedWorkerAuditConnectionManifestAccepted != "connection_manifest_accepted" ||
 		AttachedWorkerAuditConnectionPresenceExpired != "connection_presence_expired" {
 		t.Fatal("connection audit wire values changed")
+	}
+}
+
+func TestAttachedWorkerControlMessageRequiresCompleteEnvelope(t *testing.T) {
+	now := time.Date(2026, 9, 11, 9, 0, 0, 0, time.UTC)
+	pending := AttachedWorkerControlMessageV1{
+		Version: AttachedWorkerControlMessageVersionV1, TenantID: "tenant-a", OwnerUserID: "owner-a",
+		WorkerID: "wrk-a", DrainRevision: 7, Direction: AttachedWorkerAttemptPlatformToWorker,
+		Kind: AttachedWorkerControlMessageDrain, CreatedAt: now,
+	}
+	if err := pending.Validate(); err != nil {
+		t.Fatalf("pending drain rejected: %v", err)
+	}
+	delivered := pending
+	delivered.ConnectionGeneration, delivered.EnvelopeSequence = 3, 5
+	delivered.Fingerprint = AttachedWorkerAttemptMessageFingerprint(DigestAttachedWorkerCapability([]byte("drain-frame")))
+	delivered.Payload = []byte(`{"version":1}`)
+	if err := delivered.Validate(); err != nil {
+		t.Fatalf("delivered drain rejected: %v", err)
+	}
+	partial := delivered
+	partial.Payload = nil
+	if err := partial.Validate(); err == nil {
+		t.Fatal("partial delivery envelope accepted")
+	}
+	inboundPending := pending
+	inboundPending.Direction = AttachedWorkerAttemptWorkerToPlatform
+	inboundPending.Kind = AttachedWorkerControlMessageDrained
+	if err := inboundPending.Validate(); err == nil {
+		t.Fatal("pending worker acknowledgement accepted")
 	}
 }
 

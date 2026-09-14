@@ -9,6 +9,11 @@ and AW-03d3 reconciles that checkpoint against an active AW-04 attempt without
 repeating semantic effects. Long polling, explicit cloud wake-up, and the
 worker daemon remain later work.
 
+AW-04c adds owner-scoped durable drain closure. It closes admission before a
+Drain is delivered, serializes the control frame behind any unacknowledged
+platform attempt frame, and accepts Drained only after the exact durable
+attempt head is absent or retired and the protocol attempt is idle.
+
 The feature-disabled [worker-side connection session](attached-worker-connection-session.md)
 owns the corresponding bootstrap-to-immediate-exchange composition, local
 generation fence, and optional bounded exact replay of one already-built
@@ -49,8 +54,9 @@ exchange must contain exactly the Manifest. Its transaction verifies the
 bearer/current fences, inserts or reuses immutable capability content, records
 the connection-specific signature observation on the current head, changes the
 worker/head to online, and starts the bounded presence lease. A requested drain
-does not become observed draining until a durable protocol Drain transition is
-implemented.
+atomically changes desired state first. Observed state changes to draining only
+when the durable protocol Drain transition can be placed after every earlier
+platform frame in the same canonical sequence.
 
 Immutable capability content is keyed by its canonical protocol digest and
 does not contain connection generation, signature, or observation time. Those
@@ -110,6 +116,9 @@ attempt broker enabled, one Heartbeat may report one active attempt only while
 reauthorizes the current bearer, worker generations, connection and presence,
 then point-loads at most one already-durable platform frame:
 
+- Drain has strict priority over a later attempt frame once earlier platform
+  frames are acknowledged. Its semantic revision is stable; reconnect may
+  replace only the connection envelope and exact replay returns the same frame.
 - LeaseOffer is discovery only; the worker cannot execute until its LeaseClaim
   is atomically committed and the matching LeaseAccepted is returned.
 - Cancel carries the durable cancellation revision. A missing acknowledgement
@@ -122,6 +131,10 @@ then point-loads at most one already-durable platform frame:
 An empty exchange remains HTTP 204. A pending durable platform frame is a
 strict, bounded HTTP 200 AW-02 batch. A worker acknowledges it in a later signed
 frame or Heartbeat; acknowledged platform frames are no longer returned.
+Drained is a worker-to-platform control exchange, not a presence observation.
+It is committed atomically with the canonical snapshot and an owner-scoped
+audit record. A fully Drained snapshot cannot reconnect; the next attach is
+fresh.
 
 The control plane already treats an exact same-sequence request as idempotent
 and returns the corresponding durable response. The worker session may pair
@@ -150,6 +163,9 @@ and divergent replay remain fail-closed reconciliation/fencing boundaries.
   synthesized by the HTTP adapter. The adapter rejects a response whose scope,
   generations, binding, kind, or canonical payload disagrees with the durable
   attempt head.
+- Drain never retires or fabricates an active attempt. The already-claimed
+  attempt may complete or cancel while admission remains closed; ambiguous
+  termination remains fenced_unknown and blocks Drained.
 - Worker exact in-process replay is disabled by default. Explicit reconnect
   is available only through the reviewed checkpoint API; neither path starts a
   polling loop, daemon, process, OCI boundary, provider call, or production route. Pending retry content is process-ephemeral and cleared on

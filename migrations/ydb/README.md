@@ -218,6 +218,15 @@ observation is inserted in the same transaction that terminally fails the
 attempt; other closed observation states are durable retry diagnostics and do
 not permit another provider effect.
 
+Migration `00098` adds the owner-scoped attached-worker control-message ledger.
+One semantic drain revision is keyed by worker, revision, and direction. The
+outbound row may start without a connection envelope while an earlier platform
+frame is unacknowledged; delivery or reconnect replaces only that envelope.
+The worker's Drained acknowledgement is a separate immutable direction row.
+Worker desired/observed state, connection snapshot, control ledger, attempt
+retirement checks, and sanitized audit events are reconciled in the same
+serializable transaction.
+
 Automatic production down migrations are intentionally disabled. The `Down`
 sections are comments so neither Goose nor an operator can accidentally drop
 state.

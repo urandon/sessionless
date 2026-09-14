@@ -376,6 +376,147 @@ func TestLeaseOfferTransitionRejectsNonAuthoritativeInputs(t *testing.T) {
 	}
 }
 
+func TestDrainTransitionIsDerivedReplayableAndKeepsActiveAttempt(t *testing.T) {
+	fixture := newProtocolFixture(t)
+	machine := fixture.claimMachine(t, true)
+	snapshot, err := machine.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority := DrainAuthorityV1{Revision: 7, NowUnixMicro: 1_800_000_000_000_000}
+	frame, post, err := BuildDrainTransitionV1(machine.config, snapshot, authority)
+	if err != nil || frame.Drain == nil || frame.Drain.Revision != authority.Revision ||
+		post.Connection != ConnectionDraining || post.Attempt.Summary.State != AttemptClaimed {
+		t.Fatalf("drain: frame=%+v connection=%s attempt=%s err=%v",
+			frame, post.Connection, post.Attempt.Summary.State, err)
+	}
+	replayAuthority := authority
+	replayAuthority.DeliveredConnectionGeneration = frame.ConnectionGeneration
+	replay, replayed, err := BuildDrainTransitionV1(machine.config, post, replayAuthority)
+	if err != nil || frameFingerprint(replay) != frameFingerprint(frame) || !bytes.Equal(replayed.Digest, post.Digest) {
+		t.Fatalf("replay: exact=%v digest=%v err=%v", frameFingerprint(replay) == frameFingerprint(frame),
+			bytes.Equal(replayed.Digest, post.Digest), err)
+	}
+	if _, _, err := BuildDrainTransitionV1(machine.config, post,
+		DrainAuthorityV1{Revision: authority.Revision + 1, DeliveredConnectionGeneration: frame.ConnectionGeneration,
+			NowUnixMicro: authority.NowUnixMicro}); err == nil {
+		t.Fatal("divergent drain revision replayed")
+	}
+	divergentEnvelope := frame
+	divergentEnvelope.Sequence++
+	divergentEnvelope.MessageID = MessageIDV1(DirectionPlatformToWorker, divergentEnvelope.Sequence)
+	if _, err := ApplyMachineFrameV1(machine.config, post, DirectionPlatformToWorker, divergentEnvelope,
+		authority.NowUnixMicro); err == nil {
+		t.Fatal("same-generation drain with a new envelope was accepted")
+	}
+	if _, _, err := BuildDrainTransitionV1(machine.config, snapshot,
+		DrainAuthorityV1{Revision: 0, NowUnixMicro: authority.NowUnixMicro}); err == nil {
+		t.Fatal("zero drain revision accepted")
+	}
+
+	drained := fixture.frame(DirectionWorkerToPlatform, MessageDrained)
+	drained.Drained = &DrainedV1{Revision: authority.Revision}
+	if _, err := ApplyMachineFrameV1(machine.config, post, DirectionWorkerToPlatform, drained,
+		authority.NowUnixMicro); err == nil {
+		t.Fatal("active attempt acknowledged as drained")
+	}
+	cancel, cancelled, err := BuildCancelTransitionV1(machine.config, post,
+		CancelAuthorityV1{Revision: 1, Code: CancelRequested, NowUnixMicro: authority.NowUnixMicro})
+	if err != nil || cancel.Cancel == nil || cancelled.Attempt.Summary.State != AttemptCancelRequested ||
+		cancelled.Connection != ConnectionDraining {
+		t.Fatalf("cancel while draining: frame=%+v connection=%s attempt=%s err=%v",
+			cancel, cancelled.Connection, cancelled.Attempt.Summary.State, err)
+	}
+}
+
+func TestDrainTransitionReenvelopesAfterReconnect(t *testing.T) {
+	fixture := newProtocolFixture(t)
+	machine := fixture.attachMachine(t)
+	before, err := machine.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority := DrainAuthorityV1{Revision: 9, NowUnixMicro: 1_800_000_000_000_000}
+	oldFrame, draining, err := BuildDrainTransitionV1(machine.config, before, authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reconnectedConfig, reconnected := reconnectDrainingSnapshot(t, fixture, machine.config, draining)
+	if reconnected.Connection != ConnectionDraining {
+		t.Fatalf("reconnect target = %s", reconnected.Connection)
+	}
+	freshAuthority := authority
+	freshAuthority.DeliveredConnectionGeneration = oldFrame.ConnectionGeneration
+	fresh, post, err := BuildDrainTransitionV1(reconnectedConfig, reconnected, freshAuthority)
+	if err != nil || fresh.ConnectionGeneration != reconnectedConfig.Auth.ConnectionGeneration ||
+		fresh.ConnectionGeneration != oldFrame.ConnectionGeneration+1 || fresh.Sequence != reconnected.Platform.Sequence+1 ||
+		fresh.Drain == nil || fresh.Drain.Revision != authority.Revision || post.Connection != ConnectionDraining {
+		t.Fatalf("fresh drain: frame=%+v connection=%s err=%v", fresh, post.Connection, err)
+	}
+	freshAuthority.DeliveredConnectionGeneration = fresh.ConnectionGeneration
+	replay, replayed, err := BuildDrainTransitionV1(reconnectedConfig, post, freshAuthority)
+	if err != nil || frameFingerprint(replay) != frameFingerprint(fresh) || !bytes.Equal(replayed.Digest, post.Digest) {
+		t.Fatalf("fresh replay: frame=%+v err=%v", replay, err)
+	}
+}
+
+func reconnectDrainingSnapshot(
+	t *testing.T,
+	fixture *protocolFixture,
+	previousConfig MachineConfig,
+	previousSnapshot MachineSnapshotV1,
+) (MachineConfig, MachineSnapshotV1) {
+	t.Helper()
+	workerMachine, err := RestoreConformanceMachine(previousConfig, previousSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextAuth := previousConfig.Auth
+	nextAuth.ConnectionGeneration++
+	nextAuth.ChannelBinding = digestByte(0x4a)
+	workerClaim, err := workerMachine.BeginReconnect(nextAuth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	negotiation := ReconnectNegotiationV1{
+		WorkerOffer: fixture.workerOffer, PlatformOffer: fixture.platformOffer, SelectedVersion: 1,
+		WorkerNonce: digestByte(0x6a), PlatformNonce: digestByte(0x7a), CapabilityDigest: fixture.digest,
+	}
+	reconnect, err := BuildReconnectV1(workerClaim, negotiation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconnectFrame := FrameV1{
+		Version: 1, MessageID: MessageIDV1(DirectionWorkerToPlatform, 2), WorkerID: nextAuth.WorkerID,
+		EnrollmentGeneration: nextAuth.EnrollmentGeneration, ConnectionGeneration: nextAuth.ConnectionGeneration,
+		Sequence: 2, Ack: 1, Kind: MessageReconnect, Reconnect: &reconnect,
+	}
+	if err := SignReconnectV1(fixture.private, nextAuth, &reconnectFrame); err != nil {
+		t.Fatal(err)
+	}
+	_, reconnectSnapshot, err := BuildReconnectAcceptedSnapshotV1(previousConfig, previousSnapshot, nextAuth, reconnectFrame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextConfig := previousConfig
+	nextConfig.Auth = nextAuth
+	manifest := FrameV1{
+		Version: 1, MessageID: MessageIDV1(DirectionWorkerToPlatform, 3), WorkerID: nextAuth.WorkerID,
+		EnrollmentGeneration: nextAuth.EnrollmentGeneration, ConnectionGeneration: nextAuth.ConnectionGeneration,
+		Sequence: 3, Ack: 2, Kind: MessageManifest,
+		Manifest: &ManifestV1{Manifest: fixture.manifest, Digest: fixture.digest},
+	}
+	if err := SignManifestV1(fixture.private, nextAuth, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	post, err := ApplyMachineFrameV1(nextConfig, reconnectSnapshot, DirectionWorkerToPlatform, manifest, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return nextConfig, post
+}
+
 func TestCancelTransitionCoversOfferClaimAndExactReplay(t *testing.T) {
 	fixture := newProtocolFixture(t)
 	ready := fixture.attachMachine(t)

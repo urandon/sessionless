@@ -673,7 +673,7 @@ func decodeAttachedWorkerAttemptFrame(message domain.AttachedWorkerAttemptMessag
 	return frame, direction, nil
 }
 
-func attachedWorkerAttemptMessageFromFrame(scope domain.AttachedWorkerAttemptV1, direction attachedworkerprotocol.Direction, frame attachedworkerprotocol.FrameV1, at time.Time) (domain.AttachedWorkerAttemptMessageV1, error) {
+func attachedWorkerAttemptMessageFromFrame(scope domain.AttachedWorkerAttemptV1, direction attachedworkerprotocol.Direction, frame attachedworkerprotocol.FrameV1, at time.Time, operationDeadline time.Time) (domain.AttachedWorkerAttemptMessageV1, error) {
 	kind, attemptSequence, ok := attachedWorkerFrameIdentity(frame)
 	if !ok {
 		return domain.AttachedWorkerAttemptMessageV1{}, ErrAttachedWorkerAttemptMessageConflict
@@ -697,6 +697,9 @@ func attachedWorkerAttemptMessageFromFrame(scope domain.AttachedWorkerAttemptV1,
 		ConnectionGeneration: frame.ConnectionGeneration, EnvelopeSequence: frame.Sequence, Kind: kind,
 		Fingerprint: domain.AttachedWorkerAttemptMessageFingerprint(hex.EncodeToString(fingerprint)),
 		Payload:     payload, CreatedAt: canonicalAttachedWorkerTime(at),
+	}
+	if !operationDeadline.IsZero() {
+		message.OperationDeadline = canonicalAttachedWorkerTime(operationDeadline)
 	}
 	if kind == domain.AttachedWorkerAttemptMessageTerminal || kind == domain.AttachedWorkerAttemptMessageTerminalCommitted {
 		message.MaterializationReservationID = scope.ReservationID

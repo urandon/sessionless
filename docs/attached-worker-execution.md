@@ -111,10 +111,14 @@ remaining gates are:
 
 1. reconnect-before/after-terminal recovery using the durable machine snapshot
    and replay commitments;
-2. durable drain admission closure and `drained` only after zero active or
-   unknown attempts;
-3. explicit retry policy that always allocates a new attempt, lease and fence
+2. explicit retry policy that always allocates a new attempt, lease and fence
    after a resolved retryable outcome and never reuses ambiguous effects;
-4. worker daemon/process supervision and Codex execution integration;
-5. a production cloud delivery choice: timer polling, paid bounded long poll,
+3. worker daemon/process supervision and Codex execution integration;
+4. a production cloud delivery choice: timer polling, paid bounded long poll,
    per-worker broker capability, or an always-on gateway.
+
+AW-04c now provides durable owner-scoped admission closure, sequenced Drain
+delivery, reconnect re-enveloping, and a transactionally fenced Drained
+transition. It deliberately leaves active attempt completion/cancellation to
+the existing attempt ledger and rejects Drained while that exact head remains
+active, unresolved, or fenced_unknown.

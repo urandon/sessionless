@@ -99,6 +99,7 @@ type ConformanceMachine struct {
 	drainRevision                uint64
 	revoke                       RevokeV1
 	reconnecting                 bool
+	drainReenvelopePending       bool
 	reconnectTarget              ConnectionState
 	previousConnectionGeneration uint64
 	reconnectWatermarks          ConnectionWatermarksV1
@@ -139,7 +140,8 @@ func (machine *ConformanceMachine) BeginReconnect(next AuthContextV1) (Reconnect
 		next.TenantID != machine.config.Auth.TenantID || next.OwnerUserID != machine.config.Auth.OwnerUserID ||
 		next.WorkerID != machine.config.Auth.WorkerID || !bytes.Equal(next.IdentityPublicKey, machine.config.Auth.IdentityPublicKey) ||
 		next.EnrollmentGeneration != machine.config.Auth.EnrollmentGeneration || next.Version != machine.config.Auth.Version ||
-		!machine.hasFeature(FeatureReconnect) || machine.config.Auth.ConnectionGeneration == math.MaxUint64 ||
+		machine.reconnecting || machine.drainReenvelopePending || !machine.hasFeature(FeatureReconnect) ||
+		machine.config.Auth.ConnectionGeneration == math.MaxUint64 ||
 		next.ConnectionGeneration != machine.config.Auth.ConnectionGeneration+1 {
 		return ReconnectSnapshotV1{}, protocolError(ErrorUnauthorized)
 	}
@@ -360,6 +362,7 @@ func (machine *ConformanceMachine) acceptManifest(direction Direction, frame Fra
 	machine.manifest = cloneManifest(manifest)
 	if machine.reconnecting {
 		machine.connection = machine.reconnectTarget
+		machine.drainReenvelopePending = machine.reconnectTarget == ConnectionDraining
 		machine.reconnecting = false
 	} else {
 		machine.connection = ConnectionReady
@@ -385,7 +388,23 @@ func (machine *ConformanceMachine) acceptHeartbeat(direction Direction, frame Fr
 }
 
 func (machine *ConformanceMachine) acceptDrain(direction Direction, frame FrameV1) error {
-	if direction != DirectionPlatformToWorker || machine.connection != ConnectionReady {
+	if direction != DirectionPlatformToWorker {
+		return protocolError(ErrorInvalidTransition)
+	}
+	switch machine.connection {
+	case ConnectionReady:
+		if machine.drainRevision != 0 || machine.drainReenvelopePending {
+			return protocolError(ErrorInvalidTransition)
+		}
+	case ConnectionDraining:
+		if !machine.drainReenvelopePending || machine.reconnectTarget != ConnectionDraining ||
+			machine.previousConnectionGeneration == math.MaxUint64 ||
+			machine.previousConnectionGeneration+1 != machine.config.Auth.ConnectionGeneration ||
+			frame.Drain.Revision != machine.drainRevision {
+			return protocolError(ErrorInvalidTransition)
+		}
+		machine.drainReenvelopePending = false
+	default:
 		return protocolError(ErrorInvalidTransition)
 	}
 	machine.drainRevision = frame.Drain.Revision
@@ -396,7 +415,7 @@ func (machine *ConformanceMachine) acceptDrain(direction Direction, frame FrameV
 func (machine *ConformanceMachine) acceptDrained(direction Direction, frame FrameV1) error {
 	if direction != DirectionWorkerToPlatform || machine.connection != ConnectionDraining ||
 		frame.Drained.Revision != machine.drainRevision ||
-		(machine.attempt.state != AttemptIdle && machine.attempt.state != AttemptTerminalCommitted) {
+		machine.attempt.state != AttemptIdle {
 		return protocolError(ErrorInvalidTransition)
 	}
 	machine.connection = ConnectionDrained

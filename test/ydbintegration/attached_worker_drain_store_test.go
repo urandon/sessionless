@@ -102,6 +102,11 @@ func TestAttachedWorkerDrainIsDurableReplayableAndOwnerScoped(t *testing.T) {
 		drained.Connection.State != domain.AttachedWorkerConnectionDraining {
 		t.Fatalf("drain = %#v, %v", drained, err)
 	}
+	wantDrainRevision := request.ExpectedWorkerRevision + 1
+	if drained.Worker.Revision != wantDrainRevision || drained.Outbound.DrainRevision != wantDrainRevision {
+		t.Fatalf("immediate drain revisions: worker got %d want %d; semantic got %d want %d",
+			drained.Worker.Revision, wantDrainRevision, drained.Outbound.DrainRevision, wantDrainRevision)
+	}
 	replayed, err := store.RequestAttachedWorkerDrain(ctx, request)
 	if err != nil || replayed.Status != ports.AttachedWorkerExecutionReplayed || replayed.Outbound == nil ||
 		!bytes.Equal(replayed.Outbound.Payload, drained.Outbound.Payload) {
@@ -305,6 +310,7 @@ func TestAttachedWorkerDrainWaitsForActiveAttemptRetirement(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("claimed worker = %#v found=%t err=%v", worker, found, err)
 	}
+	requestedRevision := worker.Revision
 	drain, err := store.RequestAttachedWorkerDrain(ctx, ports.AttachedWorkerDrainRequest{
 		TenantID: worker.TenantID, OwnerUserID: worker.OwnerUserID, WorkerID: worker.ID,
 		ExpectedWorkerRevision: worker.Revision,
@@ -312,6 +318,9 @@ func TestAttachedWorkerDrainWaitsForActiveAttemptRetirement(t *testing.T) {
 	if err != nil || drain.Status != ports.AttachedWorkerExecutionApplied || drain.Outbound != nil ||
 		drain.Worker.DesiredState != domain.AttachedWorkerDesiredDrain || drain.Worker.ObservedState != domain.AttachedWorkerObservedOnline {
 		t.Fatalf("drain with unacked lease accepted = %#v, %v", drain, err)
+	}
+	if drain.Worker.Revision != requestedRevision+1 {
+		t.Fatalf("pending drain worker revision = %d, want %d", drain.Worker.Revision, requestedRevision+1)
 	}
 	progressFrame := attachedworkerprotocol.FrameV1{
 		Version: acceptedFrame.Version, MessageID: attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionWorkerToPlatform, drain.Connection.WorkerSequence+1),
@@ -335,6 +344,11 @@ func TestAttachedWorkerDrainWaitsForActiveAttemptRetirement(t *testing.T) {
 	if err != nil || poll.Status != ports.AttachedWorkerExecutionApplied || poll.Outbound == nil ||
 		poll.Worker.ObservedState != domain.AttachedWorkerObservedDraining {
 		t.Fatalf("drain delivery after attempt ack = %#v, %v", poll, err)
+	}
+	wantDeliveryRevision := drain.Worker.Revision + 1
+	if poll.Worker.Revision != wantDeliveryRevision || poll.Outbound.DrainRevision != drain.Worker.Revision {
+		t.Fatalf("delayed drain revisions: worker got %d want %d; semantic got %d want %d",
+			poll.Worker.Revision, wantDeliveryRevision, poll.Outbound.DrainRevision, drain.Worker.Revision)
 	}
 	drainBatch, err := attachedworkerprotocol.DecodeBatchV1(poll.Outbound.Payload)
 	if err != nil || len(drainBatch.Frames) != 1 || drainBatch.Frames[0].Drain == nil {

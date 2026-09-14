@@ -26,7 +26,7 @@ services:
     restart: unless-stopped
 
   object-storage-local:
-    image: minio/minio:${MINIO_IMAGE_VERSION:-RELEASE.2025-09-07T16-13-09Z}
+    image: quay.io/minio/minio:${MINIO_IMAGE_VERSION:-RELEASE.2025-09-07T16-13-09Z}
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${S3_ACCESS_KEY_ID:-sessionless-local}
@@ -40,7 +40,7 @@ services:
     restart: unless-stopped
 
   object-storage-init:
-    image: minio/mc:${MINIO_MC_IMAGE_VERSION:-RELEASE.2025-08-13T08-35-41Z}
+    image: quay.io/minio/mc:${MINIO_MC_IMAGE_VERSION:-RELEASE.2025-08-13T08-35-41Z}
     profiles:
       - tools
     environment:

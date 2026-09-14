@@ -278,6 +278,13 @@ cat >"$fake_bin/docker" <<'EOF'
 set -eu
 printf '%s\n' "$*" >>"$FAKE_DOCKER_LOG"
 case " $* " in
+	*' pull object-storage-init '*)
+		attempts=0
+		test ! -f "$PULL_RETRY_STATE" || attempts=$(cat "$PULL_RETRY_STATE")
+		attempts=$((attempts + 1))
+		printf '%s\n' "$attempts" >"$PULL_RETRY_STATE"
+		test "$attempts" -ge 3 || exit 1
+		;;
 	*' compose '*' logs '*' ydb-local '*)
 		printf '%s\n' 'tablet failed: ReasonBootBSError while opening local database'
 		;;
@@ -304,15 +311,22 @@ exit 0
 EOF
 chmod 755 "$fake_bin/docker" "$fake_bin/curl" "$fake_bin/sleep" "$fake_bin/make"
 
+pull_retry_state="$test_root/pull-retry.state"
+export PULL_RETRY_STATE="$pull_retry_state"
 export FAKE_DOCKER_LOG="$test_root/dev-up-docker.log"
 export FAKE_MAKE_LOG="$test_root/dev-up-make.log"
 export FAKE_CURL_LOG="$test_root/dev-up-curl.log"
 : >"$FAKE_DOCKER_LOG"
 : >"$FAKE_MAKE_LOG"
 : >"$FAKE_CURL_LOG"
-if PATH="$fake_bin:$PATH" sh "$dev_up" >"$test_root/dev-up.out" 2>&1; then
+if LOCAL_COMPOSE_PULL_MAX_ATTEMPTS=3 LOCAL_COMPOSE_PULL_RETRY_DELAY_SECONDS=0 \
+	PATH="$fake_bin:$PATH" sh "$dev_up" >"$test_root/dev-up.out" 2>&1; then
 	fail 'dev-up unexpectedly continued after YDB boot-storage failure'
 fi
+test "$(cat "$pull_retry_state")" -eq 3 ||
+	fail 'transient object-storage-init pull must recover at the configured bound'
+grep -F 'retrying (attempt 2/3)' "$test_root/dev-up.out" >/dev/null ||
+	fail 'object-storage-init pull retry did not emit its configured bound'
 expected_stop='compose --project-name sessionless-dev stop control-api web-bff telegram-sender reconciler worker-runtime'
 grep -Fx "$expected_stop" "$FAKE_DOCKER_LOG" >/dev/null ||
 	fail 'dev-up did not quiesce existing schema-dependent services before readiness checks'

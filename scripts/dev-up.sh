@@ -9,6 +9,30 @@ compose() {
 	docker compose --project-name "$project_name" "$@"
 }
 
+pull_service() {
+	service_name=$1
+	max_attempts=${LOCAL_COMPOSE_PULL_MAX_ATTEMPTS:-3}
+	retry_delay=${LOCAL_COMPOSE_PULL_RETRY_DELAY_SECONDS:-2}
+	case "$max_attempts" in
+		''|*[!0-9]*|0) printf 'LOCAL_COMPOSE_PULL_MAX_ATTEMPTS must be a positive integer\n' >&2; return 1 ;;
+	esac
+	case "$retry_delay" in
+		''|*[!0-9]*) printf 'LOCAL_COMPOSE_PULL_RETRY_DELAY_SECONDS must be a non-negative integer\n' >&2; return 1 ;;
+	esac
+
+	attempt=1
+	while ! compose pull "$service_name"; do
+		if [ "$attempt" -ge "$max_attempts" ]; then
+			printf 'failed to pull %s after %d attempts\n' "$service_name" "$max_attempts" >&2
+			return 1
+		fi
+		printf 'pulling %s failed; retrying (attempt %d/%d)\n' \
+			"$service_name" "$attempt" "$max_attempts" >&2
+		attempt=$((attempt + 1))
+		sleep "$retry_delay"
+	done
+}
+
 wait_http() {
 	service_name=$1
 	url=$2
@@ -117,6 +141,10 @@ main() {
 	compose stop control-api web-bff telegram-sender reconciler worker-runtime
 
 	printf 'Starting local infrastructure services.\n'
+	# Compose otherwise pulls this one-shot image only after all infrastructure
+	# readiness gates have passed. Bound transient registry/TLS failures here so
+	# CI does not discard a healthy stand after a single failed HEAD request.
+	pull_service object-storage-init
 	compose up --build --detach \
 		ydb-local \
 		object-storage-local \

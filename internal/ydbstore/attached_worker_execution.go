@@ -410,13 +410,12 @@ func (store *Store) replayAttachedWorkerPlatformMessageTx(
 	if err != nil {
 		return connection, previous, attachedworkerprotocol.FrameV1{}, ErrAttachedWorkerAttemptConflict
 	}
-	nextMessage, err := attachedWorkerAttemptMessageFromFrame(attempt, attachedworkerprotocol.DirectionPlatformToWorker, frame, at)
+	nextMessage, err := attachedWorkerAttemptMessageFromFrame(attempt, attachedworkerprotocol.DirectionPlatformToWorker, frame, at, previous.OperationDeadline)
 	if err != nil {
 		return connection, previous, attachedworkerprotocol.FrameV1{}, err
 	}
 	// Materialization remains bound to the connection that actually executed
 	// the attempt; only its transport envelope moves to the replacement link.
-	nextMessage.OperationDeadline = previous.OperationDeadline
 	nextMessage.MaterializationReservationID = previous.MaterializationReservationID
 	nextMessage.ExecutionConnectionID = previous.ExecutionConnectionID
 	retainUntil := attempt.LeaseExpiresAt.Add(store.operationalRetention)
@@ -461,7 +460,7 @@ func (store *Store) ExchangeAttachedWorkerAttempt(ctx context.Context, request p
 			return nil
 		}
 		inboundMessage, err := attachedWorkerAttemptMessageFromFrame(attempt, attachedworkerprotocol.DirectionWorkerToPlatform,
-			request.InboundFrame, time.Unix(1, 0).UTC())
+			request.InboundFrame, time.Unix(1, 0).UTC(), time.Time{})
 		if err != nil {
 			return err
 		}
@@ -523,6 +522,15 @@ func (store *Store) ExchangeAttachedWorkerAttempt(ctx context.Context, request p
 			result = ports.AttachedWorkerAttemptResult{Status: ports.AttachedWorkerExecutionReplayed, Attempt: attempt, Outbound: replayOutbound}
 			return nil
 		}
+		// A drain request closes claim admission in the same owner-scoped
+		// serializable authority domain. An exact claim that committed before the
+		// drain may still replay above, but a new claim must lose once desired
+		// state is drain. Progress, cancellation, and terminal frames for an
+		// already-claimed attempt remain legal below.
+		if inboundMessage.Kind == domain.AttachedWorkerAttemptMessageLeaseClaim && worker.DesiredState != domain.AttachedWorkerDesiredActive {
+			result.Status = ports.AttachedWorkerExecutionDenied
+			return nil
+		}
 		if attempt.Revision == math.MaxUint64 || inboundMessage.AttemptSequence != attempt.WorkerAttemptSequence+1 ||
 			attempt.LeaseGeneration != request.LeaseGeneration || attempt.ConnectionID != request.ConnectionID ||
 			attempt.State == domain.AttachedWorkerAttemptFencedUnknown || attempt.State == domain.AttachedWorkerAttemptTerminalCommitted {
@@ -566,7 +574,7 @@ func (store *Store) ExchangeAttachedWorkerAttempt(ctx context.Context, request p
 				result.Status = ports.AttachedWorkerExecutionConflict
 				return nil
 			}
-			message, buildErr := attachedWorkerAttemptMessageFromFrame(attempt, attachedworkerprotocol.DirectionPlatformToWorker, acceptedFrame, at)
+			message, buildErr := attachedWorkerAttemptMessageFromFrame(attempt, attachedworkerprotocol.DirectionPlatformToWorker, acceptedFrame, at, time.Time{})
 			if buildErr != nil {
 				return buildErr
 			}
@@ -915,15 +923,15 @@ func (store *Store) RequestAttachedWorkerCancellation(ctx context.Context, reque
 			result.Status = ports.AttachedWorkerExecutionConflict
 			return nil
 		}
-		message, err := attachedWorkerAttemptMessageFromFrame(attempt, attachedworkerprotocol.DirectionPlatformToWorker, frame, at)
+		cancelDeadline := canonicalAttachedWorkerTime(at.Add(request.AckTimeout))
+		message, err := attachedWorkerAttemptMessageFromFrame(attempt, attachedworkerprotocol.DirectionPlatformToWorker, frame, at, cancelDeadline)
 		if err != nil {
 			return err
 		}
 		next := attempt
 		next.PlatformAttemptSequence = message.AttemptSequence
 		next.CancelRevision = 1
-		next.CancelDeadline = canonicalAttachedWorkerTime(at.Add(request.AckTimeout))
-		message.OperationDeadline = next.CancelDeadline
+		next.CancelDeadline = cancelDeadline
 		next.UpdatedAt, next.Revision = at, attempt.Revision+1
 		next.State = domain.AttachedWorkerAttemptCancelRequested
 		if attempt.State == domain.AttachedWorkerAttemptOffered {
@@ -1069,7 +1077,7 @@ func (store *Store) CommitAttachedWorkerTerminal(ctx context.Context, request po
 		if err != nil {
 			return err
 		}
-		message, err := attachedWorkerAttemptMessageFromFrame(attempt, attachedworkerprotocol.DirectionPlatformToWorker, ackFrame, at)
+		message, err := attachedWorkerAttemptMessageFromFrame(attempt, attachedworkerprotocol.DirectionPlatformToWorker, ackFrame, at, time.Time{})
 		if err != nil {
 			return err
 		}
@@ -1294,7 +1302,7 @@ func (store *Store) FenceAttachedWorkerAttempt(ctx context.Context, request port
 		if err != nil {
 			return err
 		}
-		message, err := attachedWorkerAttemptMessageFromFrame(attempt, attachedworkerprotocol.DirectionPlatformToWorker, frame, at)
+		message, err := attachedWorkerAttemptMessageFromFrame(attempt, attachedworkerprotocol.DirectionPlatformToWorker, frame, at, deadline)
 		if err != nil {
 			return err
 		}
@@ -1680,7 +1688,9 @@ func attachedWorkerExecutionAuthorityCurrent(worker domain.AttachedWorker, conne
 	return worker.TenantID == connection.TenantID && worker.OwnerUserID == connection.OwnerUserID && worker.ID == connection.WorkerID &&
 		worker.DesiredState != domain.AttachedWorkerDesiredRevoked &&
 		worker.EnrollmentGeneration == connection.EnrollmentGeneration && worker.ConnectionGeneration == connection.ConnectionGeneration &&
-		connection.State == domain.AttachedWorkerConnectionOnline
+		((worker.DesiredState == domain.AttachedWorkerDesiredActive && connection.State == domain.AttachedWorkerConnectionOnline) ||
+			(worker.DesiredState == domain.AttachedWorkerDesiredDrain &&
+				(connection.State == domain.AttachedWorkerConnectionOnline || connection.State == domain.AttachedWorkerConnectionDraining)))
 }
 
 func attachedWorkerStateAfterCancelAck(current domain.AttachedWorkerAttemptState) domain.AttachedWorkerAttemptState {

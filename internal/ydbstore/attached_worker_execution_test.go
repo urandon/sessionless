@@ -124,6 +124,12 @@ func TestAttachedWorkerExecutionAuthorityIsDenyFirst(t *testing.T) {
 	if !attachedWorkerExecutionAuthorityCurrent(worker, connection) {
 		t.Fatal("current execution authority was denied")
 	}
+	drainingWorker, drainingConnection := worker, connection
+	drainingWorker.DesiredState = domain.AttachedWorkerDesiredDrain
+	drainingConnection.State = domain.AttachedWorkerConnectionDraining
+	if !attachedWorkerExecutionAuthorityCurrent(drainingWorker, drainingConnection) {
+		t.Fatal("active attempt authority was closed by drain")
+	}
 	for name, mutate := range map[string]func(*domain.AttachedWorker, *domain.AttachedWorkerConnection){
 		"revoked": func(worker *domain.AttachedWorker, _ *domain.AttachedWorkerConnection) {
 			worker.DesiredState = domain.AttachedWorkerDesiredRevoked
@@ -695,7 +701,7 @@ func TestTerminalProvenanceSurvivesAttemptConnectionRebind(t *testing.T) {
 			EvidenceDigest: evidence,
 		},
 	}
-	message, err := attachedWorkerAttemptMessageFromFrame(original, attachedworkerprotocol.DirectionWorkerToPlatform, frame, at)
+	message, err := attachedWorkerAttemptMessageFromFrame(original, attachedworkerprotocol.DirectionWorkerToPlatform, frame, at, time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -712,5 +718,38 @@ func TestTerminalProvenanceSurvivesAttemptConnectionRebind(t *testing.T) {
 	}
 	if _, _, err := selectAttachedWorkerTerminalProvenance(rebound, summary, []domain.AttachedWorkerAttemptMessageV1{message, message}); err == nil {
 		t.Fatal("ambiguous terminal provenance was accepted")
+	}
+}
+
+func TestAttachedWorkerCancelMessageIsBuiltWithOperationDeadline(t *testing.T) {
+	t.Parallel()
+	at := time.Date(2026, time.September, 10, 12, 0, 0, 0, time.UTC)
+	deadline := at.Add(time.Minute)
+	binding := attachedworkerprotocol.AttemptBindingV1{
+		RunID: "run-1", AttemptID: "attempt-1", LeaseID: "lease-1", LeaseGeneration: 7,
+		FenceToken: "fence-1", ExpiresAtUnixMicro: at.Add(time.Hour).UnixMicro(),
+		ContextDigest: bytes.Repeat([]byte{0x61}, 32), CapabilityDigest: bytes.Repeat([]byte{0x62}, 32),
+		PolicyDigest: bytes.Repeat([]byte{0x63}, 32),
+	}
+	scope := domain.AttachedWorkerAttemptV1{
+		TenantID: "tenant-1", OwnerUserID: "owner-1", WorkerID: "worker-1", AttemptID: "attempt-1",
+	}
+	frame := attachedworkerprotocol.FrameV1{
+		Version: 1, MessageID: attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionPlatformToWorker, 5),
+		WorkerID: "worker-1", EnrollmentGeneration: 2, ConnectionGeneration: 3, Sequence: 5, Ack: 4,
+		Kind: attachedworkerprotocol.MessageCancel,
+		Cancel: &attachedworkerprotocol.CancelV1{
+			Binding: binding, AttemptSequence: 2, CancelRevision: 1, Code: attachedworkerprotocol.CancelRequested,
+		},
+	}
+	message, err := attachedWorkerAttemptMessageFromFrame(scope, attachedworkerprotocol.DirectionPlatformToWorker, frame, at, deadline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message.Kind != domain.AttachedWorkerAttemptMessageCancelRequested || !message.OperationDeadline.Equal(deadline) {
+		t.Fatalf("cancel message = %#v", message)
+	}
+	if _, err := attachedWorkerAttemptMessageFromFrame(scope, attachedworkerprotocol.DirectionPlatformToWorker, frame, at, time.Time{}); err == nil {
+		t.Fatal("cancel message without operation deadline was accepted")
 	}
 }

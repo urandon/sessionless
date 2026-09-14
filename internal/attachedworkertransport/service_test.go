@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -136,6 +137,163 @@ func TestAW04ActiveHeartbeatRequiresBrokerAndPollsStrictPlatformFrame(t *testing
 				t.Fatalf("idle response=%#v err=%v", response, err)
 			}
 		})
+	}
+}
+
+func TestAW04cDrainPollingPrecedesAttemptDeliveryAndFallsThroughWhenInactive(t *testing.T) {
+	t.Run("normal worker falls through to attempt delivery", func(t *testing.T) {
+		fixture := newReadyTransportFixture(t)
+		attemptResult := fixture.pollResult(t, attachedworkerprotocol.MessageLeaseOffer)
+		controlPolls, attemptPolls := 0, 0
+		broker := transportControlBroker{
+			transportAttemptBroker: transportAttemptBroker{poll: func(context.Context, ports.AttachedWorkerAttemptPoll) (ports.AttachedWorkerAttemptResult, error) {
+				attemptPolls++
+				return attemptResult, nil
+			}},
+			poll: func(context.Context, ports.AttachedWorkerControlPoll) (ports.AttachedWorkerDrainResult, error) {
+				controlPolls++
+				return ports.AttachedWorkerDrainResult{Status: ports.AttachedWorkerExecutionNotFound}, nil
+			},
+		}
+		response, err := newTransportServiceWithBroker(t, fixture.store, broker).Exchange(
+			context.Background(), fixture.bearer, fixture.heartbeat(0),
+		)
+		if err != nil || response == nil || len(response.Frames) != 1 || response.Frames[0].Kind != attachedworkerprotocol.MessageLeaseOffer {
+			t.Fatalf("response=%#v err=%v", response, err)
+		}
+		if controlPolls != 1 || attemptPolls != 1 {
+			t.Fatalf("polls: control=%d attempt=%d", controlPolls, attemptPolls)
+		}
+	})
+
+	t.Run("drain wins over later attempt frame", func(t *testing.T) {
+		fixture := newReadyTransportFixture(t)
+		message := transportDrainMessage(t, fixture, fixture.worker.Revision+1)
+		attemptPolls := 0
+		broker := transportControlBroker{
+			transportAttemptBroker: transportAttemptBroker{poll: func(context.Context, ports.AttachedWorkerAttemptPoll) (ports.AttachedWorkerAttemptResult, error) {
+				attemptPolls++
+				return fixture.pollResult(t, attachedworkerprotocol.MessageLeaseOffer), nil
+			}},
+			poll: func(context.Context, ports.AttachedWorkerControlPoll) (ports.AttachedWorkerDrainResult, error) {
+				return ports.AttachedWorkerDrainResult{Status: ports.AttachedWorkerExecutionApplied, Outbound: &message}, nil
+			},
+		}
+		response, err := newTransportServiceWithBroker(t, fixture.store, broker).Exchange(
+			context.Background(), fixture.bearer, fixture.heartbeat(0),
+		)
+		if err != nil || response == nil || len(response.Frames) != 1 || response.Frames[0].Kind != attachedworkerprotocol.MessageDrain {
+			t.Fatalf("response=%#v err=%v", response, err)
+		}
+		if attemptPolls != 0 {
+			t.Fatalf("attempt frame polled before drain: %d", attemptPolls)
+		}
+	})
+}
+
+func TestAW04cDrainPollingRejectsDivergentLedgerEnvelope(t *testing.T) {
+	for name, mutate := range map[string]func(*domain.AttachedWorkerControlMessageV1){
+		"fingerprint": func(message *domain.AttachedWorkerControlMessageV1) {
+			message.Fingerprint = domain.AttachedWorkerAttemptMessageFingerprint(strings.Repeat("0", 64))
+		},
+		"sequence": func(message *domain.AttachedWorkerControlMessageV1) {
+			message.EnvelopeSequence++
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fixture := newReadyTransportFixture(t)
+			message := transportDrainMessage(t, fixture, fixture.worker.Revision+1)
+			mutate(&message)
+			broker := transportControlBroker{
+				poll: func(context.Context, ports.AttachedWorkerControlPoll) (ports.AttachedWorkerDrainResult, error) {
+					return ports.AttachedWorkerDrainResult{Status: ports.AttachedWorkerExecutionApplied, Outbound: &message}, nil
+				},
+			}
+			response, err := newTransportServiceWithBroker(t, fixture.store, broker).Exchange(
+				context.Background(), fixture.bearer, fixture.heartbeat(0),
+			)
+			if !errors.Is(err, ErrTransportUnauthorized) || response != nil {
+				t.Fatalf("response=%#v err=%v", response, err)
+			}
+		})
+	}
+}
+
+func TestAW04cOwnerDrainDelegatesExactScope(t *testing.T) {
+	fixture := newReadyTransportFixture(t)
+	expectedRevision := fixture.worker.Revision
+	requests := 0
+	broker := transportControlBroker{
+		request: func(_ context.Context, request ports.AttachedWorkerDrainRequest) (ports.AttachedWorkerDrainResult, error) {
+			requests++
+			if request.TenantID != fixture.worker.TenantID || request.OwnerUserID != fixture.worker.OwnerUserID ||
+				request.WorkerID != fixture.worker.ID || request.ExpectedWorkerRevision != expectedRevision {
+				t.Fatalf("drain request = %#v", request)
+			}
+			worker := fixture.worker
+			worker.DesiredState = domain.AttachedWorkerDesiredDrain
+			return ports.AttachedWorkerDrainResult{Status: ports.AttachedWorkerExecutionApplied, Worker: worker}, nil
+		},
+	}
+	result, err := newTransportServiceWithBroker(t, fixture.store, broker).RequestDrain(
+		context.Background(), fixture.worker.TenantID, fixture.worker.OwnerUserID,
+		DrainRequest{WorkerID: fixture.worker.ID, ExpectedWorkerRevision: expectedRevision},
+	)
+	if err != nil || requests != 1 || result.Worker.DesiredState != domain.AttachedWorkerDesiredDrain {
+		t.Fatalf("drain result=%#v requests=%d err=%v", result, requests, err)
+	}
+}
+
+func TestAW04cDrainedIsDelegatedToTheTransactionalControlBroker(t *testing.T) {
+	fixture := newReadyTransportFixture(t)
+	config, snapshot, err := fixture.service.protocolStateForConnection(fixture.store.worker, fixture.store.connection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drainRevision := fixture.worker.Revision + 1
+	_, snapshot, err = attachedworkerprotocol.BuildDrainTransitionV1(config, snapshot, attachedworkerprotocol.DrainAuthorityV1{
+		Revision: drainRevision, NowUnixMicro: fixture.store.now.UnixMicro(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := attachedworkerprotocol.EncodeMachineSnapshotV1(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.store.connection.ProtocolSnapshot = encoded
+	fixture.store.connection.State = domain.AttachedWorkerConnectionDraining
+	fixture.store.connection.PlatformSequence = snapshot.Platform.Sequence
+	fixture.store.connection.WorkerSequence = snapshot.Worker.Sequence
+	fixture.store.connection.PlatformAck = snapshot.Platform.Ack
+	fixture.store.connection.WorkerAck = snapshot.Worker.Ack
+	fixture.store.worker.DesiredState = domain.AttachedWorkerDesiredDrain
+	fixture.store.worker.ObservedState = domain.AttachedWorkerObservedDraining
+	fixture.connection = fixture.store.connection
+
+	drained := attachedworkerprotocol.FrameV1{
+		Version: 1, MessageID: attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionWorkerToPlatform, fixture.connection.WorkerSequence+1),
+		WorkerID: string(fixture.worker.ID), EnrollmentGeneration: fixture.connection.EnrollmentGeneration,
+		ConnectionGeneration: fixture.connection.ConnectionGeneration, Sequence: fixture.connection.WorkerSequence + 1,
+		Ack: fixture.connection.PlatformSequence, Kind: attachedworkerprotocol.MessageDrained,
+		Drained: &attachedworkerprotocol.DrainedV1{Revision: drainRevision},
+	}
+	exchanges := 0
+	broker := transportControlBroker{
+		exchange: func(_ context.Context, request ports.AttachedWorkerControlExchange) (ports.AttachedWorkerDrainResult, error) {
+			exchanges++
+			if request.ConnectionID != fixture.connection.ID || request.InboundFrame.Drained == nil ||
+				request.InboundFrame.Drained.Revision != drainRevision {
+				t.Fatalf("control exchange = %#v", request)
+			}
+			return ports.AttachedWorkerDrainResult{Status: ports.AttachedWorkerExecutionApplied, Worker: fixture.store.worker, Connection: fixture.store.connection}, nil
+		},
+	}
+	response, err := newTransportServiceWithBroker(t, fixture.store, broker).Exchange(
+		context.Background(), fixture.bearer, attachedworkerprotocol.BatchV1{Version: 1, Frames: []attachedworkerprotocol.FrameV1{drained}},
+	)
+	if err != nil || response != nil || exchanges != 1 {
+		t.Fatalf("response=%#v exchanges=%d err=%v", response, exchanges, err)
 	}
 }
 
@@ -829,6 +987,62 @@ func (broker transportBrokerFunc) PollAttachedWorkerAttempt(context.Context, por
 type transportAttemptBroker struct {
 	poll     func(context.Context, ports.AttachedWorkerAttemptPoll) (ports.AttachedWorkerAttemptResult, error)
 	exchange func(context.Context, ports.AttachedWorkerAttemptExchange) (ports.AttachedWorkerAttemptResult, error)
+}
+
+type transportControlBroker struct {
+	transportAttemptBroker
+	request  func(context.Context, ports.AttachedWorkerDrainRequest) (ports.AttachedWorkerDrainResult, error)
+	poll     func(context.Context, ports.AttachedWorkerControlPoll) (ports.AttachedWorkerDrainResult, error)
+	exchange func(context.Context, ports.AttachedWorkerControlExchange) (ports.AttachedWorkerDrainResult, error)
+}
+
+func (broker transportControlBroker) RequestAttachedWorkerDrain(ctx context.Context, request ports.AttachedWorkerDrainRequest) (ports.AttachedWorkerDrainResult, error) {
+	if broker.request == nil {
+		return ports.AttachedWorkerDrainResult{Status: ports.AttachedWorkerExecutionNotFound}, nil
+	}
+	return broker.request(ctx, request)
+}
+
+func (broker transportControlBroker) PollAttachedWorkerControl(ctx context.Context, request ports.AttachedWorkerControlPoll) (ports.AttachedWorkerDrainResult, error) {
+	if broker.poll == nil {
+		return ports.AttachedWorkerDrainResult{Status: ports.AttachedWorkerExecutionNotFound}, nil
+	}
+	return broker.poll(ctx, request)
+}
+
+func (broker transportControlBroker) ExchangeAttachedWorkerControl(ctx context.Context, request ports.AttachedWorkerControlExchange) (ports.AttachedWorkerDrainResult, error) {
+	if broker.exchange == nil {
+		return ports.AttachedWorkerDrainResult{Status: ports.AttachedWorkerExecutionNotFound}, nil
+	}
+	return broker.exchange(ctx, request)
+}
+
+func transportDrainMessage(t *testing.T, fixture readyTransportFixture, revision uint64) domain.AttachedWorkerControlMessageV1 {
+	t.Helper()
+	sequence := fixture.connection.PlatformSequence + 1
+	frame := attachedworkerprotocol.FrameV1{
+		Version: 1, MessageID: attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionPlatformToWorker, sequence),
+		WorkerID: string(fixture.worker.ID), EnrollmentGeneration: fixture.connection.EnrollmentGeneration,
+		ConnectionGeneration: fixture.connection.ConnectionGeneration, Sequence: sequence,
+		Ack: fixture.connection.WorkerSequence + 1, Kind: attachedworkerprotocol.MessageDrain,
+		Drain: &attachedworkerprotocol.DrainV1{Revision: revision},
+	}
+	payload, err := attachedworkerprotocol.EncodeBatchV1(attachedworkerprotocol.BatchV1{Version: 1, Frames: []attachedworkerprotocol.FrameV1{frame}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprint, err := attachedworkerprotocol.FrameFingerprintV1(frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return domain.AttachedWorkerControlMessageV1{
+		Version: domain.AttachedWorkerControlMessageVersionV1, TenantID: fixture.worker.TenantID,
+		OwnerUserID: fixture.worker.OwnerUserID, WorkerID: fixture.worker.ID, DrainRevision: revision,
+		Direction: domain.AttachedWorkerAttemptPlatformToWorker, ConnectionGeneration: fixture.connection.ConnectionGeneration,
+		EnvelopeSequence: sequence, Kind: domain.AttachedWorkerControlMessageDrain,
+		Fingerprint: domain.AttachedWorkerAttemptMessageFingerprint(fmt.Sprintf("%x", fingerprint)), Payload: payload,
+		CreatedAt: fixture.store.now,
+	}
 }
 
 func (broker transportAttemptBroker) PollAttachedWorkerAttempt(ctx context.Context, request ports.AttachedWorkerAttemptPoll) (ports.AttachedWorkerAttemptResult, error) {

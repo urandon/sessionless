@@ -82,6 +82,31 @@ operator-only schema, reset, deployment-lock, and Web bootstrap commands. The
 Makefile is the authoritative component inventory; documentation deliberately
 does not duplicate a count that drifts as slices are added.
 
+### Worktrees and Go caches
+
+`make` resolves the repository's Git common directory and shares
+`GOCACHE` and `GOMODCACHE` below `.git/sessionless-go-cache` across every
+linked worktree. Go's build cache is content-addressed and safe for concurrent
+Go commands; the module cache is also normally shared by the Go toolchain.
+
+`GOTMPDIR`, `.build/bin`, and `.build/dockerless` stay inside each
+worktree. They may contain in-progress files, commit-specific binaries, process
+metadata, logs, and mutable service data and must not be shared.
+
+Inspect the resolved paths with:
+
+```sh
+make go-cache-status
+```
+
+`make clean` removes only the current worktree's `.build`. After all Go
+commands in every linked worktree have stopped, `make go-cache-clean` removes
+the default shared cache. The cleanup target refuses
+`SESSIONLESS_GO_CACHE_ROOT` overrides (including those inside the Git common
+directory) and symlinked cache roots; it never passes an override to its shell
+cleanup command.
+Existing checkout-local caches are not migrated automatically.
+
 The fast `make ci` contract uses fake registry fixtures to verify immutable
 publication failures and deterministic manifest/receipt separation. The real
 container identity gate is intentionally separate because it performs ten cold

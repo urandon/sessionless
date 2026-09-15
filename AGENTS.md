@@ -37,3 +37,14 @@
   conversation/context tables as the canonical model.
 - Use only commands backed by the Makefile and documented in `README.md` and
   `docs/development.md`.
+
+## Worktree lifecycle
+- Treat every worktree as task-scoped. Keep Go build and module caches in the
+  repository-shared cache, while temporary files, binaries, and runtime state
+  remain local to the worktree.
+- When a task is closed, merged, abandoned, or otherwise no longer needs its
+  worktree, stop its owned processes and verify that the tree is clean and has
+  no unpreserved commits. Then remove the worktree and its merged local branch;
+  remove the remote feature branch when that external mutation is authorized.
+- Never keep a completed worktree merely as a build-cache archive. Never remove
+  a dirty or unmerged worktree; report the exact state that must be preserved.

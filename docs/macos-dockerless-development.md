@@ -47,11 +47,15 @@ workspace/
     local_ydb-25.3.1.25-darwin-x86_64
 ```
 
-All mutable data, logs, PID metadata, worker scratch, Go caches, and built Go
-binaries default to `.build/dockerless` and `.build` in the checkout. Because
-the checkout is under `workspace`, these paths stay on the large volume.
+Mutable data, logs, PID metadata, worker scratch, temporary Go files, and built
+Go binaries default to `.build/dockerless` and `.build` in the checkout.
+`GOCACHE` and `GOMODCACHE` instead default to the repository-shared
+`.git/sessionless-go-cache`, so linked worktrees do not duplicate several
+gigabytes of reusable Go artifacts. Because the checkout and its Git common
+directory are under `workspace`, these paths stay on the large volume.
 `SESSIONLESS_DOCKERLESS_ROOT` may select another absolute, narrowly scoped
-directory on that volume.
+runtime directory on that volume. Use `make go-cache-status` to inspect the
+split and stop all worktree builds before `make go-cache-clean`.
 
 ## Optional direnv setup
 

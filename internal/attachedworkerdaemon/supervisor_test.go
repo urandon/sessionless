@@ -301,6 +301,192 @@ func TestSupervisorRetainsProtocolPrefixWhenBoundaryTeardownFails(t *testing.T) 
 	}
 }
 
+func TestSupervisorDrainsOutputBeforeClosingPipesOnTeardownFailure(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable: %v", err)
+	}
+	executable, err = filepath.EvalSymlinks(executable)
+	if err != nil {
+		t.Fatalf("canonicalize test executable: %v", err)
+	}
+	digest, err := DigestExecutable(executable)
+	if err != nil {
+		t.Fatalf("digest test executable: %v", err)
+	}
+	release := make(chan struct{})
+	launcher := &delayedDrainTeardownLauncher{release: release}
+	supervisor, err := NewSupervisor(SupervisorConfig{
+		ScratchRoot: newCanonicalTempDir(t), Launcher: launcher,
+		Timeout: 5 * time.Second, TerminationGrace: time.Second,
+		AllowedEnvironmentNames: []string{helperEnabled, helperMode},
+	})
+	if err != nil {
+		t.Fatalf("new supervisor: %v", err)
+	}
+	supervisor.outputReader = func(_ string, reader io.Reader) io.Reader {
+		return releaseGatedReader{reader: reader, release: release}
+	}
+	result, err := supervisor.Run(context.Background(), AttemptSpec{
+		Executable: executable, ExecutableDigest: digest,
+		Arguments: []string{"-test.run=TestSupervisorHelperProcess"},
+		Environment: []EnvironmentVariable{
+			{Name: helperEnabled, Value: "1"}, {Name: helperMode, Value: "protocol-terminal-drain"},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "attached worker isolation boundary cleanup failed") {
+		t.Fatalf("teardown failure: got_err=%v want=attached worker isolation boundary cleanup failed", err)
+	}
+	const stdout = "{\"type\":\"turn.started\"}\n{\"type\":\"turn.completed\"}\n"
+	const stderr = "fixture stderr\n"
+	if !bytes.Equal(result.Stdout, []byte(stdout)) || result.StdoutBytes != len(stdout) ||
+		result.StderrBytes != len(stderr) || result.ExitCode != 0 || result.IsolationProfile == "" ||
+		!result.BoundaryReleased {
+		t.Fatalf("delayed drain: got_stdout_bytes=%d want_stdout_bytes=%d got_stderr_bytes=%d want_stderr_bytes=%d got_exit=%d want_exit=0 got_profile=%q got_released=%t want_released=true stdout_matches=%t err=%v",
+			result.StdoutBytes, len(stdout), result.StderrBytes, len(stderr), result.ExitCode,
+			result.IsolationProfile, result.BoundaryReleased, bytes.Equal(result.Stdout, []byte(stdout)), err)
+	}
+}
+
+func TestSupervisorSeparatesReaderTimeoutFromBoundaryFailure(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable: %v", err)
+	}
+	executable, err = filepath.EvalSymlinks(executable)
+	if err != nil {
+		t.Fatalf("canonicalize test executable: %v", err)
+	}
+	digest, err := DigestExecutable(executable)
+	if err != nil {
+		t.Fatalf("digest test executable: %v", err)
+	}
+	release := make(chan struct{})
+	unblock := make(chan struct{})
+	var stdoutDone <-chan struct{}
+	supervisor, err := NewSupervisor(SupervisorConfig{
+		ScratchRoot: newCanonicalTempDir(t), Launcher: &delayedDrainTeardownLauncher{release: release},
+		Timeout: 5 * time.Second, TerminationGrace: time.Second,
+		AllowedEnvironmentNames: []string{helperEnabled, helperMode},
+	})
+	if err != nil {
+		t.Fatalf("new supervisor: %v", err)
+	}
+	supervisor.outputReader = func(stream string, reader io.Reader) io.Reader {
+		if stream == "stdout" {
+			return timeoutGatedReader{reader: reader, unblock: unblock}
+		}
+		return reader
+	}
+	supervisor.outputDone = func(stream string, done <-chan struct{}) {
+		if stream == "stdout" {
+			stdoutDone = done
+		}
+	}
+	defer func() {
+		close(unblock)
+		if stdoutDone == nil || !waitChannel(stdoutDone, time.Second) {
+			t.Error("timed-out fixture copy goroutine did not exit after release")
+		}
+	}()
+	result, err := supervisor.Run(context.Background(), AttemptSpec{
+		Executable: executable, ExecutableDigest: digest,
+		Arguments: []string{"-test.run=TestSupervisorHelperProcess"},
+		Environment: []EnvironmentVariable{
+			{Name: helperEnabled, Value: "1"}, {Name: helperMode, Value: "protocol-terminal-drain"},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "attached worker isolation boundary cleanup failed") ||
+		!strings.Contains(err.Error(), "attached worker stdout reader timeout") ||
+		strings.Contains(err.Error(), "turn.started") || result.CleanupSucceeded || !result.BoundaryReleased ||
+		result.ExitCode != 0 {
+		t.Fatalf("distinct cleanup diagnostics: result=%+v err=%v", result, err)
+	}
+}
+
+func TestSupervisorPreservesOutputLimitFailureOverProcessExit(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable: %v", err)
+	}
+	executable, err = filepath.EvalSymlinks(executable)
+	if err != nil {
+		t.Fatalf("canonicalize test executable: %v", err)
+	}
+	digest, err := DigestExecutable(executable)
+	if err != nil {
+		t.Fatalf("digest test executable: %v", err)
+	}
+	supervisor, err := NewSupervisor(SupervisorConfig{
+		ScratchRoot: newCanonicalTempDir(t), Launcher: &fixtureLauncher{},
+		Timeout: 5 * time.Second, TerminationGrace: time.Second,
+		MaxStdoutBytes: 128, AllowedEnvironmentNames: []string{helperEnabled, helperMode},
+	})
+	if err != nil {
+		t.Fatalf("new supervisor: %v", err)
+	}
+	result, err := supervisor.Run(context.Background(), AttemptSpec{
+		Executable: executable, ExecutableDigest: digest,
+		Arguments: []string{"-test.run=TestSupervisorHelperProcess"},
+		Environment: []EnvironmentVariable{
+			{Name: helperEnabled, Value: "1"}, {Name: helperMode, Value: "output-bomb-exit"},
+		},
+	})
+	if err != nil || result.FailureCode != "stdout_limit_exceeded" || result.ExitCode != 3 ||
+		result.StdoutBytes != 128 || len(result.Stdout) != 128 || !result.CleanupSucceeded {
+		t.Fatalf("overflow must outrank exit: failure=%q exit=%d stdout_bytes=%d prefix_bytes=%d cleanup=%t err=%v",
+			result.FailureCode, result.ExitCode, result.StdoutBytes, len(result.Stdout), result.CleanupSucceeded, err)
+	}
+}
+
+type timeoutGatedReader struct {
+	reader  io.Reader
+	unblock <-chan struct{}
+}
+
+func (reader timeoutGatedReader) Read(value []byte) (int, error) {
+	<-reader.unblock
+	return reader.reader.Read(value)
+}
+
+type releaseGatedReader struct {
+	reader  io.Reader
+	release <-chan struct{}
+}
+
+func (reader releaseGatedReader) Read(value []byte) (int, error) {
+	<-reader.release
+	return reader.reader.Read(value)
+}
+
+type delayedDrainTeardownLauncher struct {
+	fixtureLauncher
+	release chan struct{}
+}
+
+func (launcher *delayedDrainTeardownLauncher) Prepare(ctx context.Context, spec LaunchSpec) (IsolationBoundary, error) {
+	boundary, err := launcher.fixtureLauncher.Prepare(ctx, spec)
+	if err != nil {
+		return nil, err
+	}
+	return &delayedDrainTeardownBoundary{fixtureBoundary: boundary.(*fixtureBoundary), release: launcher.release}, nil
+}
+
+type delayedDrainTeardownBoundary struct {
+	*fixtureBoundary
+	release chan struct{}
+	once    sync.Once
+}
+
+func (*delayedDrainTeardownBoundary) Alive(context.Context) (bool, error) {
+	return false, errors.New("private inspection failure")
+}
+
+func (boundary *delayedDrainTeardownBoundary) Release(context.Context) error {
+	boundary.once.Do(func() { close(boundary.release) })
+	return nil
+}
+
 type failingTeardownLauncher struct{ fixtureLauncher }
 
 func (launcher *failingTeardownLauncher) Prepare(ctx context.Context, spec LaunchSpec) (IsolationBoundary, error) {
@@ -697,6 +883,13 @@ func TestSupervisorHelperProcess(t *testing.T) {
 		fmt.Println(`{"type":"turn.started"}`)
 		fmt.Println(`{"type":"item.completed","item":{"type":"agent_message","text":"fixture result"}}`)
 		fmt.Println(`{"type":"turn.completed"}`)
+	case "protocol-terminal-drain":
+		fmt.Print("{\"type\":\"turn.started\"}\n{\"type\":\"turn.completed\"}\n")
+		fmt.Fprint(os.Stderr, "fixture stderr\n")
+		os.Exit(0)
+	case "output-bomb-exit":
+		_, _ = os.Stdout.Write(bytes.Repeat([]byte("x"), 4096))
+		os.Exit(3)
 	case "output-bomb":
 		_, _ = os.Stdout.Write(bytes.Repeat([]byte("x"), 4096))
 		time.Sleep(time.Second)

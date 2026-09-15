@@ -196,6 +196,8 @@ func (result AttemptResult) GoString() string { return result.String() }
 type Supervisor struct {
 	root             string
 	launcher         IsolationLauncher
+	outputReader     func(string, io.Reader) io.Reader
+	outputDone       func(string, <-chan struct{})
 	profileName      string
 	timeout          time.Duration
 	grace            time.Duration
@@ -272,23 +274,23 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 	var command *exec.Cmd
 	var stdout, stderr *boundedBuffer
 	var stdoutDone, stderrDone <-chan struct{}
+	var stdoutReader, stdoutWriter, stderrReader, stderrWriter *os.File
+	var violation chan string
+	stdoutComplete, stderrComplete := true, true
+	processExitFailed := false
 	var startedAt time.Time
 	defer func() {
-		// This defer is registered before boundary/pipe cleanup and therefore
-		// runs after them. Preserve the bounded protocol prefix and counters on
-		// every post-spawn return, including cleanup/inspection failures.
-		if stdoutDone != nil {
-			_ = waitChannel(stdoutDone, supervisor.grace)
-		}
-		if stderrDone != nil {
-			_ = waitChannel(stderrDone, supervisor.grace)
-		}
+		// Boundary release, bounded reader cleanup, pipe close, and attempt-root
+		// cleanup all finish before this final observed-output snapshot.
 		if stdout != nil {
 			result.StdoutBytes = stdout.countValue()
 			result.Stdout = stdout.bytesValue()
 		}
 		if stderr != nil {
 			result.StderrBytes = stderr.countValue()
+		}
+		if processExitFailed && result.FailureCode == "" {
+			result.FailureCode = "process_exit_failed"
 		}
 		if command != nil && command.ProcessState != nil {
 			result.ExitCode = command.ProcessState.ExitCode()
@@ -320,9 +322,39 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 	defer func() {
 		cleanupErr := cleanupAttemptRoot(supervisor.root, attemptRoot)
 		rootCleaned = cleanupErr == nil
-		result.CleanupSucceeded = rootCleaned && boundaryTeardownSucceeded && boundaryReleased
+		result.CleanupSucceeded = rootCleaned && boundaryTeardownSucceeded && boundaryReleased && stdoutComplete && stderrComplete
 		if err == nil && cleanupErr != nil {
 			err = cleanupErr
+		}
+	}()
+	defer func() {
+		// Registered before boundary cleanup: on every return, teardown and
+		// release run first, then readers are drained before read endpoints close
+		// (or force-closed after a reader timeout), then the attempt root is
+		// cleaned and observed output is snapshotted.
+		var readerErr error
+		stdoutComplete, readerErr = finishOutputReader(stdoutDone, stdoutReader, supervisor.grace, "stdout")
+		if readerErr != nil {
+			err = errors.Join(err, readerErr)
+		}
+		stderrComplete, readerErr = finishOutputReader(stderrDone, stderrReader, supervisor.grace, "stderr")
+		if readerErr != nil {
+			err = errors.Join(err, readerErr)
+		}
+		if stdoutWriter != nil {
+			_ = stdoutWriter.Close()
+		}
+		if stderrWriter != nil {
+			_ = stderrWriter.Close()
+		}
+		if violation != nil {
+			select {
+			case code := <-violation:
+				if result.FailureCode == "" {
+					result.FailureCode = code
+				}
+			default:
+			}
 		}
 	}()
 	environment, err := supervisor.replacementEnvironment(attemptRoot, spec.Environment)
@@ -358,11 +390,11 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 		boundaryReleased = releaseErr == nil
 		result.BoundaryReleased = boundaryReleased
 		result.CleanupSucceeded = rootCleaned && boundaryTeardownSucceeded && boundaryReleased
-		if err == nil && !boundaryTeardownSucceeded {
-			err = errors.New("teardown attached worker isolation boundary")
+		if !boundaryTeardownSucceeded {
+			err = errors.Join(err, errors.New("teardown attached worker isolation boundary"))
 		}
-		if err == nil && releaseErr != nil {
-			err = errors.New("release attached worker isolation boundary")
+		if releaseErr != nil {
+			err = errors.Join(err, errors.New("release attached worker isolation boundary"))
 		}
 	}()
 	command = boundary.Command()
@@ -381,18 +413,14 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 		command.Stdin = bytes.NewReader(spec.Stdin)
 	}
 	configureProcessGroup(command)
-	stdoutReader, stdoutWriter, err := os.Pipe()
+	stdoutReader, stdoutWriter, err = os.Pipe()
 	if err != nil {
 		return result, errors.New("create attached worker stdout")
 	}
-	defer stdoutReader.Close()
-	defer stdoutWriter.Close()
-	stderrReader, stderrWriter, err := os.Pipe()
+	stderrReader, stderrWriter, err = os.Pipe()
 	if err != nil {
 		return result, errors.New("create attached worker stderr")
 	}
-	defer stderrReader.Close()
-	defer stderrWriter.Close()
 	command.Stdout = stdoutWriter
 	command.Stderr = stderrWriter
 	actualDigest, err = DigestExecutable(spec.Executable)
@@ -408,9 +436,18 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 	processGroupID := command.Process.Pid
 	stdout = &boundedBuffer{limit: supervisor.maxStdout}
 	stderr = &boundedBuffer{limit: supervisor.maxStderr, discard: true}
-	violation := make(chan string, 2)
-	stdoutDone = copyBounded(stdoutReader, stdout, violation, "stdout_limit_exceeded")
-	stderrDone = copyBounded(stderrReader, stderr, violation, "stderr_limit_exceeded")
+	violation = make(chan string, 2)
+	stdoutSource, stderrSource := io.Reader(stdoutReader), io.Reader(stderrReader)
+	if supervisor.outputReader != nil {
+		stdoutSource = supervisor.outputReader("stdout", stdoutSource)
+		stderrSource = supervisor.outputReader("stderr", stderrSource)
+	}
+	stdoutDone = copyBounded(stdoutSource, stdout, violation, "stdout_limit_exceeded")
+	stderrDone = copyBounded(stderrSource, stderr, violation, "stderr_limit_exceeded")
+	if supervisor.outputDone != nil {
+		supervisor.outputDone("stdout", stdoutDone)
+		supervisor.outputDone("stderr", stderrDone)
+	}
 	waited := make(chan error, 1)
 	go func() { waited <- command.Wait() }()
 	timer := time.NewTimer(supervisor.timeout)
@@ -465,32 +502,8 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 		return result, err
 	}
 	boundaryTeardownSucceeded = true
-	if !waitChannel(stdoutDone, supervisor.grace) || !waitChannel(stderrDone, supervisor.grace) {
-		return result, errors.New("attached worker output reader survived teardown")
-	}
-	select {
-	case code := <-violation:
-		if result.FailureCode == "" {
-			result.FailureCode = code
-		}
-	default:
-	}
-	result.ExitCode = -1
-	if command.ProcessState != nil {
-		result.ExitCode = command.ProcessState.ExitCode()
-	}
-	if waitErr != nil && result.FailureCode == "" {
-		result.FailureCode = "process_exit_failed"
-	}
+	processExitFailed = waitErr != nil
 	result.DescendantsReaped = true
-	result.StdoutBytes = stdout.countValue()
-	result.StderrBytes = stderr.countValue()
-	// Retain only the bounded prefix on every exit. A protocol reducer needs it
-	// to distinguish pre-acceptance loss from ambiguous post-acceptance output
-	// overflow or teardown failure. Callers clear it after deriving evidence.
-	result.Stdout = stdout.bytesValue()
-	result.Duration = time.Since(startedAt)
-	result.IsolationProfile = supervisor.profileName
 	return result, nil
 }
 
@@ -852,4 +865,28 @@ func waitChannel(done <-chan struct{}, bound time.Duration) bool {
 	case <-timer.C:
 		return false
 	}
+}
+
+func finishOutputReader(done <-chan struct{}, reader *os.File, bound time.Duration, stream string) (bool, error) {
+	if done == nil {
+		if reader != nil {
+			_ = reader.Close()
+		}
+		return true, nil
+	}
+	if waitChannel(done, bound) {
+		if reader != nil {
+			_ = reader.Close()
+		}
+		return true, nil
+	}
+	// A timed-out reader must be unblocked for bounded cleanup. The forced
+	// close is exceptional; never claim a complete output snapshot afterward.
+	if reader != nil {
+		_ = reader.Close()
+	}
+	if !waitChannel(done, bound) {
+		return false, fmt.Errorf("attached worker %s reader timeout (survived pipe close)", stream)
+	}
+	return false, fmt.Errorf("attached worker %s reader timeout", stream)
 }

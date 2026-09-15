@@ -46,7 +46,13 @@ type Poller struct {
 	cycle          Cycle
 	jitter         *jitterSource
 	wait           func(context.Context, time.Duration) error
+	waitForWake    func(context.Context, time.Duration, <-chan struct{}) error
+	wake           chan struct{}
 	running        atomic.Bool
+	// lastSuccess is retained across Run calls on the same poller. A new
+	// process still needs an authoritative durable cadence checkpoint.
+	lastSuccess time.Time
+	now         func() time.Time
 }
 
 type jitterSource struct {
@@ -74,7 +80,25 @@ func NewPoller(config Config, cycle Cycle) (*Poller, error) {
 		enabled: config.Enabled, pollInterval: config.PollInterval,
 		initialBackoff: config.InitialBackoff, maxBackoff: config.MaxBackoff,
 		cycle: cycle, jitter: &jitterSource{state: seed}, wait: waitContext,
+		waitForWake: waitContextOrWake, wake: make(chan struct{}, 1), now: time.Now,
 	}, nil
+}
+
+// Wake coalesces local work into at most one earlier poll. It never interrupts
+// the minimum heartbeat interval or an offline retry backoff, and it carries
+// no remote authority.
+func (poller *Poller) Wake() error {
+	if poller == nil || poller.wake == nil {
+		return ErrInvalidConfig
+	}
+	if !poller.enabled {
+		return ErrPollingDisabled
+	}
+	select {
+	case poller.wake <- struct{}{}:
+	default:
+	}
+	return nil
 }
 
 func (poller *Poller) Run(ctx context.Context) error {
@@ -88,6 +112,16 @@ func (poller *Poller) Run(ctx context.Context) error {
 		return ErrAlreadyRunning
 	}
 	defer poller.running.Store(false)
+	// A wake left by an earlier run cannot authorize an early exchange after
+	// restart; the last successful exchange still enforces the minimum gap.
+	poller.discardWake()
+	if !poller.lastSuccess.IsZero() {
+		if remaining := MinimumHeartbeatInterval - poller.now().Sub(poller.lastSuccess); remaining > 0 {
+			if err := poller.wait(ctx, remaining); err != nil {
+				return err
+			}
+		}
+	}
 
 	backoff := poller.initialBackoff
 	for {
@@ -97,8 +131,16 @@ func (poller *Poller) Run(ctx context.Context) error {
 		err := poller.cycle.Exchange(ctx)
 		if err == nil {
 			backoff = poller.initialBackoff
-			if err := poller.wait(ctx, poller.pollInterval); err != nil {
+			poller.lastSuccess = poller.now()
+			if err := poller.wait(ctx, MinimumHeartbeatInterval); err != nil {
 				return err
+			}
+			if remainder := poller.pollInterval - MinimumHeartbeatInterval; remainder > 0 {
+				if err := poller.waitForWake(ctx, remainder, poller.wake); err != nil {
+					return err
+				}
+			} else {
+				poller.discardWake()
 			}
 			continue
 		}
@@ -119,13 +161,26 @@ func (poller *Poller) Run(ctx context.Context) error {
 	}
 }
 
+func (poller *Poller) discardWake() {
+	select {
+	case <-poller.wake:
+	default:
+	}
+}
+
 type retryableError interface {
 	Retryable() bool
+	// NoExchangeAttempted is an explicit adapter proof that the error occurred
+	// before any request or semantic effect. A network timeout, HTTP 5xx, or
+	// exhausted exact replay is not such proof even if it is Retryable.
+	NoExchangeAttempted() bool
 }
 
 func retryable(err error) bool {
-	var candidate retryableError
-	return errors.As(err, &candidate) && candidate.Retryable()
+	// Require a direct trusted cycle result. Unwrapping a joined or wrapped
+	// error could pick out a pre-exchange marker while hiding reconciliation.
+	candidate, ok := err.(retryableError)
+	return ok && candidate.Retryable() && candidate.NoExchangeAttempted()
 }
 
 func (source *jitterSource) duration(cap time.Duration) (time.Duration, error) {
@@ -164,9 +219,24 @@ func waitContext(ctx context.Context, duration time.Duration) error {
 	}
 }
 
+func waitContextOrWake(ctx context.Context, duration time.Duration, wake <-chan struct{}) error {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-wake:
+		return nil
+	case <-timer.C:
+		return nil
+	}
+}
+
 // PollCountUpperBound returns the scheduled immediate exchanges across a
-// horizon. It deliberately excludes an attach-time exchange and rounds a
-// partial interval up. The multiplication fails closed on overflow.
+// horizon without local wake. It deliberately excludes an attach-time
+// exchange and exact in-process retries, rounds a partial interval up, and
+// fails closed on overflow. Use PollCountUpperBoundWithWake when local wake
+// can shorten the configured interval.
 func PollCountUpperBound(workers uint64, horizon, interval time.Duration) (uint64, error) {
 	if workers == 0 || horizon <= 0 || interval < MinimumHeartbeatInterval {
 		return 0, ErrInvalidConfig
@@ -179,4 +249,14 @@ func PollCountUpperBound(workers uint64, horizon, interval time.Duration) (uint6
 		return 0, ErrInvalidConfig
 	}
 	return workers * perWorker, nil
+}
+
+// PollCountUpperBoundWithWake budgets the fastest permitted local wake
+// cadence. A longer configured interval cannot be used as the cost ceiling
+// once a buffered wake may shorten it to MinimumHeartbeatInterval.
+func PollCountUpperBoundWithWake(workers uint64, horizon, interval time.Duration) (uint64, error) {
+	if interval < MinimumHeartbeatInterval {
+		return 0, ErrInvalidConfig
+	}
+	return PollCountUpperBound(workers, horizon, MinimumHeartbeatInterval)
 }

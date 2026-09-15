@@ -7,7 +7,8 @@ control-plane half of reconnect for an exact durable head; AW-03d2 adds the
 [strict worker-side checkpoint and explicit resume](attached-worker-reconnect-checkpoint.md),
 and AW-03d3 reconciles that checkpoint against an active AW-04 attempt without
 repeating semantic effects. Long polling, explicit cloud wake-up, and the
-worker daemon remain later work.
+worker daemon remain later work. Issue #128 starts the feature-disabled local
+cadence/composition slice; it does not enable the product foreground.
 
 AW-04c adds owner-scoped durable drain closure. It closes admission before a
 Drain is delivered, serializes the control frame behind any unacknowledged
@@ -135,6 +136,40 @@ Drained is a worker-to-platform control exchange, not a presence observation.
 It is committed atomically with the canonical snapshot and an owner-scoped
 audit record. A fully Drained snapshot cannot reconnect; the next attach is
 fresh.
+
+## Local wake and request ceiling (#128)
+
+The feature-disabled transport poller makes one immediate cycle on a fresh
+instance. After each successful cycle, it waits the shared 15-minute minimum
+before considering another exchange. A local wake is a buffered, coalesced
+hint that can shorten only the *remainder* of a longer configured interval;
+it cannot interrupt the minimum wait, an offline retry backoff, or an in-flight
+exchange. A wake left
+by a stopped poller is discarded on restart. A repeated `Run` on the same
+poller retains its last successful exchange time and waits out any remaining
+minimum gap. A new process cannot enforce that gap until composition loads an
+authoritative durable checkpoint; the advertised ceiling below therefore
+applies only to uninterrupted runs or same-process restarts. This hint is not
+a platform message, lease, cancellation, or reconnect authority.
+
+`PollCountUpperBound` estimates the no-wake timer schedule. With local wake,
+`PollCountUpperBoundWithWake` uses the minimum interval even if the operator
+configured a longer one: one idle worker can make at most 96 scheduled
+Heartbeat exchanges per 24 hours on that scoped schedule, excluding the
+attach-time exchange, exact in-process retries, active-attempt controls, and
+other semantic effects. The bound is a scheduled Heartbeat/write ceiling, not
+a total HTTP-request ceiling or a measured YDB RU, bytes-egressed, or
+RUB charge. Those values require real cloud-dev evidence before enabling the
+foreground path. The daemon's independent idle loop must not be wired on top
+of this poller as a second network cadence.
+
+The poller retries a failed cycle with short jitter only when its direct,
+trusted error explicitly proves `NoExchangeAttempted`. A merely retryable
+HTTP timeout/status is ambiguous after a request was sent, and a joined
+reconciliation error must stop the cycle rather than create a new Heartbeat.
+The future daemon composition must provide this pre-effect proof and an
+authoritative restart checkpoint before offline recovery and a cross-process
+cost ceiling can be claimed.
 
 The control plane already treats an exact same-sequence request as idempotent
 and returns the corresponding durable response. The worker session may pair

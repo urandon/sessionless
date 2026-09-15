@@ -22,6 +22,304 @@ func TestPollerFeatureGatePreventsExchange(t *testing.T) {
 	if err := poller.Run(context.Background()); !errors.Is(err, ErrPollingDisabled) || calls.Load() != 0 {
 		t.Fatalf("disabled run err=%v calls=%d", err, calls.Load())
 	}
+	if err := poller.Wake(); !errors.Is(err, ErrPollingDisabled) {
+		t.Fatalf("disabled wake err=%v", err)
+	}
+}
+
+func TestPollerWakeCoalescesOnlyAfterMinimumInterval(t *testing.T) {
+	var calls int
+	poller, err := NewPoller(Config{
+		Enabled: true, PollInterval: time.Hour, InitialBackoff: time.Second, MaxBackoff: time.Minute,
+	}, cycleFunc(func(context.Context) error {
+		calls++
+		if calls == 2 {
+			return errors.New("stop")
+		}
+		return nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var events []string
+	poller.wait = func(_ context.Context, duration time.Duration) error {
+		events = append(events, "minimum")
+		if duration != MinimumHeartbeatInterval || calls != 1 {
+			t.Fatalf("minimum wait duration=%s calls=%d", duration, calls)
+		}
+		for range 3 {
+			if err := poller.Wake(); err != nil {
+				t.Fatalf("wake err=%v", err)
+			}
+		}
+		return nil
+	}
+	poller.waitForWake = func(_ context.Context, duration time.Duration, wake <-chan struct{}) error {
+		events = append(events, "wake")
+		if duration != time.Hour-MinimumHeartbeatInterval || calls != 1 {
+			t.Fatalf("wake wait duration=%s calls=%d", duration, calls)
+		}
+		select {
+		case <-wake:
+		default:
+			t.Fatal("coalesced wake was not retained until the minimum interval")
+		}
+		select {
+		case <-wake:
+			t.Fatal("multiple wakes produced more than one early poll")
+		default:
+		}
+		return nil
+	}
+	if err := poller.Run(context.Background()); err == nil || err.Error() != "stop" {
+		t.Fatalf("run err=%v", err)
+	}
+	if calls != 2 || len(events) != 2 || events[0] != "minimum" || events[1] != "wake" {
+		t.Fatalf("calls=%d events=%v", calls, events)
+	}
+}
+
+func TestPollerWakeInterruptsOnlyPostMinimumRemainder(t *testing.T) {
+	var calls atomic.Int32
+	poller, err := NewPoller(Config{
+		Enabled: true, PollInterval: time.Hour, InitialBackoff: time.Second, MaxBackoff: time.Minute,
+	}, cycleFunc(func(context.Context) error {
+		if calls.Add(1) == 1 {
+			return nil
+		}
+		return errors.New("stop")
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	minimumDone := make(chan struct{})
+	poller.wait = func(_ context.Context, duration time.Duration) error {
+		if duration != MinimumHeartbeatInterval {
+			t.Errorf("minimum duration=%s", duration)
+		}
+		close(minimumDone)
+		return nil
+	}
+	remainderEntered := make(chan struct{})
+	poller.waitForWake = func(ctx context.Context, duration time.Duration, wake <-chan struct{}) error {
+		if duration != time.Hour-MinimumHeartbeatInterval {
+			t.Errorf("remainder duration=%s", duration)
+		}
+		close(remainderEntered)
+		return waitContextOrWake(ctx, duration, wake)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	result := make(chan error, 1)
+	go func() { result <- poller.Run(ctx) }()
+	select {
+	case <-remainderEntered:
+	case <-ctx.Done():
+		t.Fatalf("remainder was not entered: %v", ctx.Err())
+	}
+	select {
+	case <-minimumDone:
+	default:
+		t.Fatal("remainder began before minimum interval")
+	}
+	if err := poller.Wake(); err != nil {
+		t.Fatalf("wake err=%v", err)
+	}
+	select {
+	case err := <-result:
+		if err == nil || err.Error() != "stop" || calls.Load() != 2 {
+			t.Fatalf("run err=%v calls=%d", err, calls.Load())
+		}
+	case <-ctx.Done():
+		t.Fatalf("wake did not finish bounded remainder: %v", ctx.Err())
+	}
+}
+
+func TestPollerCancellationInterruptsPostMinimumRemainder(t *testing.T) {
+	var calls atomic.Int32
+	poller, err := NewPoller(Config{
+		Enabled: true, PollInterval: time.Hour, InitialBackoff: time.Second, MaxBackoff: time.Minute,
+	}, cycleFunc(func(context.Context) error { calls.Add(1); return nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	poller.wait = func(context.Context, time.Duration) error { return nil }
+	remainderEntered := make(chan struct{})
+	poller.waitForWake = func(ctx context.Context, duration time.Duration, wake <-chan struct{}) error {
+		close(remainderEntered)
+		return waitContextOrWake(ctx, duration, wake)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	result := make(chan error, 1)
+	go func() { result <- poller.Run(ctx) }()
+	select {
+	case <-remainderEntered:
+	case <-ctx.Done():
+		t.Fatalf("remainder was not entered: %v", ctx.Err())
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) || calls.Load() != 1 {
+			t.Fatalf("cancelled run err=%v calls=%d", err, calls.Load())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelled remainder did not exit")
+	}
+}
+
+func TestPollerWakeDoesNotInterruptOfflineBackoff(t *testing.T) {
+	var calls int
+	poller, err := NewPoller(Config{
+		Enabled: true, PollInterval: time.Hour, InitialBackoff: time.Second, MaxBackoff: time.Minute,
+	}, cycleFunc(func(context.Context) error {
+		calls++
+		switch calls {
+		case 1:
+			return temporaryError{}
+		case 2:
+			return nil
+		default:
+			return errors.New("stop")
+		}
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var waits []time.Duration
+	poller.wait = func(_ context.Context, duration time.Duration) error {
+		waits = append(waits, duration)
+		if calls == 1 {
+			if err := poller.Wake(); err != nil {
+				t.Fatalf("offline wake err=%v", err)
+			}
+		}
+		return nil
+	}
+	poller.waitForWake = func(_ context.Context, _ time.Duration, wake <-chan struct{}) error {
+		if calls != 2 {
+			t.Fatalf("wake observed during offline retry calls=%d", calls)
+		}
+		select {
+		case <-wake:
+			return nil
+		default:
+			t.Fatal("wake missing after successful minimum wait")
+			return nil
+		}
+	}
+	if err := poller.Run(context.Background()); err == nil || err.Error() != "stop" {
+		t.Fatalf("run err=%v", err)
+	}
+	if calls != 3 || len(waits) != 2 || waits[0] > time.Second || waits[1] != MinimumHeartbeatInterval {
+		t.Fatalf("calls=%d waits=%v", calls, waits)
+	}
+}
+
+func TestPollerRestartDiscardsStaleWake(t *testing.T) {
+	var calls int
+	poller, err := NewPoller(Config{
+		Enabled: true, PollInterval: time.Hour, InitialBackoff: time.Second, MaxBackoff: time.Minute,
+	}, cycleFunc(func(context.Context) error {
+		calls++
+		if calls == 1 {
+			return errors.New("stop")
+		}
+		return nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := poller.Run(context.Background()); err == nil || err.Error() != "stop" {
+		t.Fatalf("first run err=%v", err)
+	}
+	if err := poller.Wake(); err != nil {
+		t.Fatalf("stale wake err=%v", err)
+	}
+	poller.wait = func(context.Context, time.Duration) error { return nil }
+	poller.waitForWake = func(_ context.Context, _ time.Duration, wake <-chan struct{}) error {
+		select {
+		case <-wake:
+			t.Fatal("stale wake crossed poller restart")
+		default:
+		}
+		return context.Canceled
+	}
+	if err := poller.Run(context.Background()); !errors.Is(err, context.Canceled) || calls != 2 {
+		t.Fatalf("restart err=%v calls=%d", err, calls)
+	}
+}
+
+func TestPollerRestartAfterSuccessRetainsMinimumGap(t *testing.T) {
+	var calls int
+	now := time.Unix(1_700_000_000, 0)
+	poller, err := NewPoller(Config{
+		Enabled: true, PollInterval: time.Hour, InitialBackoff: time.Second, MaxBackoff: time.Minute,
+	}, cycleFunc(func(context.Context) error {
+		calls++
+		if calls == 1 {
+			return nil
+		}
+		return errors.New("stop")
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	poller.now = func() time.Time { return now }
+	firstCtx, firstCancel := context.WithCancel(context.Background())
+	poller.wait = func(ctx context.Context, duration time.Duration) error {
+		if duration != MinimumHeartbeatInterval {
+			t.Fatalf("first wait=%s", duration)
+		}
+		firstCancel()
+		return ctx.Err()
+	}
+	if err := poller.Run(firstCtx); !errors.Is(err, context.Canceled) || calls != 1 {
+		t.Fatalf("first run err=%v calls=%d", err, calls)
+	}
+	now = now.Add(5 * time.Minute)
+	if err := poller.Wake(); err != nil {
+		t.Fatalf("restart wake err=%v", err)
+	}
+	poller.wait = func(_ context.Context, duration time.Duration) error {
+		if duration != 10*time.Minute || calls != 1 {
+			t.Fatalf("restart minimum=%s calls=%d", duration, calls)
+		}
+		now = now.Add(duration)
+		return nil
+	}
+	if err := poller.Run(context.Background()); err == nil || err.Error() != "stop" || calls != 2 {
+		t.Fatalf("restart err=%v calls=%d", err, calls)
+	}
+}
+
+func TestPollerNeverRetriesAmbiguousOrPostExchangeUnavailable(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		err  error
+	}{
+		{name: "retryable transport outcome without no-effect proof", err: unsafeTemporaryError{}},
+		{name: "joined reconciliation ambiguity", err: errors.Join(temporaryError{}, errors.New("reconciliation required"))},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			poller, err := NewPoller(Config{
+				Enabled: true, PollInterval: MinimumHeartbeatInterval,
+				InitialBackoff: time.Second, MaxBackoff: time.Minute,
+			}, cycleFunc(func(context.Context) error { calls++; return test.err }))
+			if err != nil {
+				t.Fatal(err)
+			}
+			poller.wait = func(context.Context, time.Duration) error {
+				t.Fatal("ambiguous exchange entered retry backoff")
+				return nil
+			}
+			if got := poller.Run(context.Background()); got != test.err || calls != 1 {
+				t.Fatalf("run err=%v calls=%d", got, calls)
+			}
+		})
+	}
 }
 
 func TestPollerUsesDeterministicFullJitterAndWaitsAfterCompletion(t *testing.T) {
@@ -151,6 +449,17 @@ func TestPollCountUpperBound(t *testing.T) {
 	if _, err := PollCountUpperBound(math.MaxUint64, time.Hour, MinimumHeartbeatInterval); !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("overflow error=%v", err)
 	}
+	withoutWake, err := PollCountUpperBound(1, 24*time.Hour, time.Hour)
+	if err != nil || withoutWake != 24 {
+		t.Fatalf("scheduled count=%d err=%v", withoutWake, err)
+	}
+	withWake, err := PollCountUpperBoundWithWake(1, 24*time.Hour, time.Hour)
+	if err != nil || withWake != 96 {
+		t.Fatalf("wake cost ceiling=%d err=%v", withWake, err)
+	}
+	if _, err := PollCountUpperBoundWithWake(1, time.Hour, MinimumHeartbeatInterval-time.Nanosecond); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("wake subminimum interval err=%v", err)
+	}
 }
 
 type cycleFunc func(context.Context) error
@@ -159,5 +468,11 @@ func (function cycleFunc) Exchange(ctx context.Context) error { return function(
 
 type temporaryError struct{}
 
-func (temporaryError) Error() string   { return "temporary" }
-func (temporaryError) Retryable() bool { return true }
+func (temporaryError) Error() string             { return "temporary" }
+func (temporaryError) Retryable() bool           { return true }
+func (temporaryError) NoExchangeAttempted() bool { return true }
+
+type unsafeTemporaryError struct{}
+
+func (unsafeTemporaryError) Error() string   { return "post-exchange unavailable" }
+func (unsafeTemporaryError) Retryable() bool { return true }

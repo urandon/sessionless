@@ -82,6 +82,14 @@ if SESSIONLESS_GO_CACHE_ROOT="$override_root" \
 fi
 test -f "$override_root/sentinel" || fail 'refused cleanup still removed override data'
 
+injected_root='$(touch '"$test_root"'/injected)'
+if SESSIONLESS_GO_CACHE_ROOT="$injected_root" \
+	make --no-print-directory -s -C "$fixture" -f "$repo_root/Makefile" go-cache-clean \
+	>"$test_root/injected-clean.out" 2>&1; then
+	fail 'cleanup accepted a shell-substitution cache override'
+fi
+test ! -e "$test_root/injected" || fail 'cleanup executed an override as shell code'
+
 internal_root=$fixture/.git/refs
 if SESSIONLESS_GO_CACHE_ROOT="$internal_root" \
 	make --no-print-directory -s -C "$fixture" -f "$repo_root/Makefile" go-cache-clean \

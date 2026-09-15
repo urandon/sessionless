@@ -103,7 +103,8 @@ make go-cache-status
 commands in every linked worktree have stopped, `make go-cache-clean` removes
 the default shared cache. The cleanup target refuses
 `SESSIONLESS_GO_CACHE_ROOT` overrides (including those inside the Git common
-directory) and symlinked cache roots.
+directory) and symlinked cache roots; it never passes an override to its shell
+cleanup command.
 Existing checkout-local caches are not migrated automatically.
 
 The fast `make ci` contract uses fake registry fixtures to verify immutable

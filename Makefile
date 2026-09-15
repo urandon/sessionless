@@ -114,19 +114,22 @@ go-cache-status:
 		'BIN_DIR=$(abspath $(BIN_DIR))'
 
 go-cache-clean:
-	@test -n "$(GIT_COMMON_DIR)" || { \
+	@test "$(origin SESSIONLESS_GO_CACHE_ROOT)" = "file" || { \
+		printf '%s\n' 'refusing to clean an overridden shared Go cache' >&2; \
+		exit 1; \
+	}
+	@set -eu; \
+	common_dir=$$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || { \
 		printf '%s\n' 'refusing to clean a shared Go cache outside a Git worktree' >&2; \
 		exit 1; \
-	}
-	@test "$(SESSIONLESS_GO_CACHE_ROOT)" = "$(GIT_COMMON_DIR)/sessionless-go-cache" || { \
-		printf 'refusing to clean non-default shared cache: %s\n' "$(SESSIONLESS_GO_CACHE_ROOT)" >&2; \
+	}; \
+	test -n "$$common_dir" || exit 1; \
+	cache_root="$$common_dir/sessionless-go-cache"; \
+	test ! -L "$$cache_root" || { \
+		printf 'refusing to clean symlinked shared cache: %s\n' "$$cache_root" >&2; \
 		exit 1; \
-	}
-	@test ! -L "$(SESSIONLESS_GO_CACHE_ROOT)" || { \
-		printf 'refusing to clean symlinked shared cache: %s\n' "$(SESSIONLESS_GO_CACHE_ROOT)" >&2; \
-		exit 1; \
-	}
-	rm -rf "$(SESSIONLESS_GO_CACHE_ROOT)"
+	}; \
+	rm -rf "$$cache_root"
 
 go-cache-policy-test:
 	@./scripts/test-go-worktree-cache-policy.sh

@@ -2,8 +2,10 @@ SHELL := /bin/sh
 TERRAFORM ?= terraform
 
 BIN_DIR := .build/bin
-GO_CACHE_DIR := $(CURDIR)/.build/cache/go-build
-GO_MOD_CACHE_DIR := $(CURDIR)/.build/cache/go-mod
+GIT_COMMON_DIR := $(shell git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+SESSIONLESS_GO_CACHE_ROOT ?= $(if $(GIT_COMMON_DIR),$(GIT_COMMON_DIR)/sessionless-go-cache,$(CURDIR)/.build/cache)
+GO_CACHE_DIR := $(SESSIONLESS_GO_CACHE_ROOT)/go-build
+GO_MOD_CACHE_DIR := $(SESSIONLESS_GO_CACHE_ROOT)/go-mod
 GO_TMP_DIR := $(CURDIR)/.build/tmp
 COMPONENTS := control-api web-bff reconciler telegram-sender telegram-fake oidc-fake worker-runtime attached-worker schema-migrate schema-inspect schema-backfill preprod-reset deployment-lock registry-gc release-notes github-release web-bootstrap session-delete
 GO_PACKAGE_PATTERNS := ./cmd/... ./internal/... ./migrations/...
@@ -23,12 +25,15 @@ LDFLAGS := -s -w \
 	-X gitcode.com/urandon/sessionless/internal/buildinfo.Commit=$(COMMIT) \
 	-X gitcode.com/urandon/sessionless/internal/buildinfo.BuiltAt=$(BUILT_AT)
 
-.PHONY: help prepare tools web-tools go-package-layout generate fmt fmt-check lint test build dockerless-build docs-check readme-visual-preview web-install web-openapi-check web-check web-build web-stage web-ci web-browser-install web-browser-test integration ydb-integration local-integration e2e-local e2e-local-dockerless attached-worker-oci-integration attached-worker-oci-linux-rootless-ci provider-conformance provider-conformance-fuzz ci image-publication-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test dockerless-stand-policy-test budget-policy-test web-deployment-policy-test terraform-ci cloudflare-edge-ci \
+.PHONY: help prepare go-cache-status go-cache-clean go-cache-policy-test tools web-tools go-package-layout generate fmt fmt-check lint test build dockerless-build docs-check readme-visual-preview web-install web-openapi-check web-check web-build web-stage web-ci web-browser-install web-browser-test integration ydb-integration local-integration e2e-local e2e-local-dockerless attached-worker-oci-integration attached-worker-oci-linux-rootless-ci provider-conformance provider-conformance-fuzz ci image-publication-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test dockerless-stand-policy-test budget-policy-test web-deployment-policy-test terraform-ci cloudflare-edge-ci \
 	compose-config images dev-up dev-seed migrate-local migration-status partition-status partition-backfill cloud-app-reset-plan cloud-app-reset session-delete-request session-delete-plan session-delete session-hold session-release-hold \
 	worker-once web-bootstrap dev-down dev-reset dockerless-up dockerless-status dockerless-worker-once dockerless-logs dockerless-down repowise-install repowise-index repowise-update repowise-status repowise-doctor repowise-mcp repowise-mcp-smoke repowise-evaluate repowise-stop repowise-uninstall-plan repowise-uninstall repowise-policy-test clean
 
 help:
 	@printf '%s\n' \
+		'make go-cache-status show shared Go cache and worktree-local output paths' \
+		'make go-cache-clean  remove the repository-shared Go cache after builds stop' \
+		'make go-cache-policy-test validate shared-cache and worktree isolation' \
 		'make tools          validate every pinned developer tool' \
 		'make docs-check     validate local Markdown links, anchors, images, and discoverability' \
 		'make readme-visual-preview serve the built WebUI with a read-only deterministic fixture' \
@@ -100,6 +105,31 @@ go-package-layout:
 
 prepare:
 	@mkdir -p "$(GO_CACHE_DIR)" "$(GO_MOD_CACHE_DIR)" "$(GO_TMP_DIR)"
+
+go-cache-status:
+	@printf '%s\n' \
+		'GOCACHE=$(GO_CACHE_DIR)' \
+		'GOMODCACHE=$(GO_MOD_CACHE_DIR)' \
+		'GOTMPDIR=$(GO_TMP_DIR)' \
+		'BIN_DIR=$(abspath $(BIN_DIR))'
+
+go-cache-clean:
+	@test -n "$(GIT_COMMON_DIR)" || { \
+		printf '%s\n' 'refusing to clean a shared Go cache outside a Git worktree' >&2; \
+		exit 1; \
+	}
+	@test "$(SESSIONLESS_GO_CACHE_ROOT)" = "$(GIT_COMMON_DIR)/sessionless-go-cache" || { \
+		printf 'refusing to clean non-default shared cache: %s\n' "$(SESSIONLESS_GO_CACHE_ROOT)" >&2; \
+		exit 1; \
+	}
+	@test ! -L "$(SESSIONLESS_GO_CACHE_ROOT)" || { \
+		printf 'refusing to clean symlinked shared cache: %s\n' "$(SESSIONLESS_GO_CACHE_ROOT)" >&2; \
+		exit 1; \
+	}
+	rm -rf "$(SESSIONLESS_GO_CACHE_ROOT)"
+
+go-cache-policy-test:
+	@./scripts/test-go-worktree-cache-policy.sh
 
 generate: prepare go-package-layout
 	go generate $(GO_PACKAGE_PATTERNS)
@@ -208,7 +238,7 @@ provider-conformance-fuzz: prepare
 	go test -run='^$$' -fuzz=FuzzOpenCodeJSONLParserNeverCommitsMalformedTerminal -fuzztime=2s ./internal/opencodeopenrouter
 	go test -run='^$$' -fuzz=FuzzResponseParserNeverCommitsMalformedTerminal -fuzztime=2s ./internal/directopenrouter
 
-ci: docs-check web-ci generate test build integration image-publication-test image-build-inputs-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test dockerless-stand-policy-test
+ci: docs-check web-ci generate test build integration image-publication-test image-build-inputs-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test dockerless-stand-policy-test go-cache-policy-test
 
 image-publication-test:
 	@./scripts/test-image-publication.sh

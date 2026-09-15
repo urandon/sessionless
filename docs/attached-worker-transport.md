@@ -163,10 +163,20 @@ RUB charge. Those values require real cloud-dev evidence before enabling the
 foreground path. The daemon's independent idle loop must not be wired on top
 of this poller as a second network cadence.
 
+The feature-disabled `CadencedSource` seam calls one `Poller.Step` from each
+serial daemon `Source.Next`. Daemon idle backoff may ask again locally, but
+Step blocks before the next outbound exchange; while an accepted invocation
+is running, no separate poller goroutine continues to send Heartbeats. This
+is not yet a production foreground wiring or a cross-process restart proof.
+
 The poller retries a failed cycle with short jitter only when its direct,
 trusted error explicitly proves `NoExchangeAttempted`. A merely retryable
 HTTP timeout/status is ambiguous after a request was sent, and a joined
 reconciliation error must stop the cycle rather than create a new Heartbeat.
+After an ambiguous cycle, the same poller instance is latched in
+`reconciliation_required`; later `Run` or `Step` calls do not send another
+request. Reconstructing a poller in a new process still requires an
+authoritative durable checkpoint before a fresh cycle may be attempted.
 The future daemon composition must provide this pre-effect proof and an
 authoritative restart checkpoint before offline recovery and a cross-process
 cost ceiling can be claimed.

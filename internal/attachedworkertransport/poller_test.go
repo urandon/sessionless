@@ -224,7 +224,7 @@ func TestPollerRestartDiscardsStaleWake(t *testing.T) {
 	}, cycleFunc(func(context.Context) error {
 		calls++
 		if calls == 1 {
-			return errors.New("stop")
+			return terminalNoEffectError{}
 		}
 		return nil
 	}))
@@ -255,7 +255,7 @@ func TestPollerRestartAfterSuccessRetainsMinimumGap(t *testing.T) {
 	var calls int
 	now := time.Unix(1_700_000_000, 0)
 	poller, err := NewPoller(Config{
-		Enabled: true, PollInterval: time.Hour, InitialBackoff: time.Second, MaxBackoff: time.Minute,
+		Enabled: true, PollInterval: MinimumHeartbeatInterval, InitialBackoff: time.Second, MaxBackoff: time.Minute,
 	}, cycleFunc(func(context.Context) error {
 		calls++
 		if calls == 1 {
@@ -318,7 +318,87 @@ func TestPollerNeverRetriesAmbiguousOrPostExchangeUnavailable(t *testing.T) {
 			if got := poller.Run(context.Background()); got != test.err || calls != 1 {
 				t.Fatalf("run err=%v calls=%d", got, calls)
 			}
+			if got := poller.Run(context.Background()); !errors.Is(got, ErrReconciliationRequired) || calls != 1 {
+				t.Fatalf("ambiguous restart err=%v calls=%d", got, calls)
+			}
 		})
+	}
+}
+
+func TestPollerStepGatesSerialDaemonSourceCallsAndWake(t *testing.T) {
+	var calls int
+	now := time.Unix(1_700_000_000, 0)
+	poller, err := NewPoller(Config{
+		Enabled: true, PollInterval: time.Hour, InitialBackoff: time.Second, MaxBackoff: time.Minute,
+	}, cycleFunc(func(context.Context) error { calls++; return nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	poller.now = func() time.Time { return now }
+	if err := poller.Step(context.Background()); err != nil || calls != 1 {
+		t.Fatalf("first step err=%v calls=%d", err, calls)
+	}
+	if err := poller.Wake(); err != nil {
+		t.Fatal(err)
+	}
+	var waits []time.Duration
+	poller.wait = func(_ context.Context, duration time.Duration) error {
+		if calls != 1 {
+			t.Fatalf("second network exchange began before minimum wait: calls=%d", calls)
+		}
+		waits = append(waits, duration)
+		now = now.Add(duration)
+		return nil
+	}
+	poller.waitForWake = func(_ context.Context, duration time.Duration, wake <-chan struct{}) error {
+		waits = append(waits, duration)
+		select {
+		case <-wake:
+			return nil
+		default:
+			t.Fatal("local wake missing after minimum wait")
+			return nil
+		}
+	}
+	if err := poller.Step(context.Background()); err != nil || calls != 2 {
+		t.Fatalf("second step err=%v calls=%d", err, calls)
+	}
+	if len(waits) != 2 || waits[0] != MinimumHeartbeatInterval || waits[1] != time.Hour-MinimumHeartbeatInterval {
+		t.Fatalf("step waits=%v", waits)
+	}
+}
+
+func TestPollerStepSingleflightWhileCadenceWaits(t *testing.T) {
+	var calls atomic.Int32
+	poller, err := NewPoller(Config{
+		Enabled: true, PollInterval: MinimumHeartbeatInterval,
+		InitialBackoff: time.Second, MaxBackoff: time.Minute,
+	}, cycleFunc(func(context.Context) error { calls.Add(1); return nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := poller.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	enteredWait := make(chan struct{})
+	poller.wait = func(ctx context.Context, duration time.Duration) error {
+		if duration <= 0 || duration > MinimumHeartbeatInterval {
+			t.Errorf("cadence wait=%s", duration)
+		}
+		close(enteredWait)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() { result <- poller.Step(ctx) }()
+	<-enteredWait
+	if err := poller.Step(context.Background()); !errors.Is(err, ErrAlreadyRunning) || calls.Load() != 1 {
+		t.Fatalf("concurrent step err=%v calls=%d", err, calls.Load())
+	}
+	cancel()
+	if err := <-result; !errors.Is(err, context.Canceled) || calls.Load() != 1 {
+		t.Fatalf("cancelled step err=%v calls=%d", err, calls.Load())
 	}
 }
 
@@ -476,3 +556,8 @@ type unsafeTemporaryError struct{}
 
 func (unsafeTemporaryError) Error() string   { return "post-exchange unavailable" }
 func (unsafeTemporaryError) Retryable() bool { return true }
+
+type terminalNoEffectError struct{}
+
+func (terminalNoEffectError) Error() string             { return "stop" }
+func (terminalNoEffectError) NoExchangeAttempted() bool { return true }

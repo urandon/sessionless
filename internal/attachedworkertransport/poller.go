@@ -15,9 +15,10 @@ import (
 )
 
 var (
-	ErrPollingDisabled = errors.New("attached worker timer polling is disabled")
-	ErrAlreadyRunning  = errors.New("attached worker poller is already running")
-	ErrInvalidConfig   = errors.New("attached worker poller configuration is invalid")
+	ErrPollingDisabled        = errors.New("attached worker timer polling is disabled")
+	ErrAlreadyRunning         = errors.New("attached worker poller is already running")
+	ErrInvalidConfig          = errors.New("attached worker poller configuration is invalid")
+	ErrReconciliationRequired = errors.New("attached worker poller requires reconciliation")
 )
 
 type Cycle interface {
@@ -51,8 +52,9 @@ type Poller struct {
 	running        atomic.Bool
 	// lastSuccess is retained across Run calls on the same poller. A new
 	// process still needs an authoritative durable cadence checkpoint.
-	lastSuccess time.Time
-	now         func() time.Time
+	lastSuccess            time.Time
+	now                    func() time.Time
+	reconciliationRequired bool
 }
 
 type jitterSource struct {
@@ -102,7 +104,7 @@ func (poller *Poller) Wake() error {
 }
 
 func (poller *Poller) Run(ctx context.Context) error {
-	if poller == nil || poller.cycle == nil {
+	if poller == nil || poller.cycle == nil || ctx == nil {
 		return ErrInvalidConfig
 	}
 	if !poller.enabled {
@@ -112,17 +114,81 @@ func (poller *Poller) Run(ctx context.Context) error {
 		return ErrAlreadyRunning
 	}
 	defer poller.running.Store(false)
+	if poller.reconciliationRequired {
+		return ErrReconciliationRequired
+	}
 	// A wake left by an earlier run cannot authorize an early exchange after
 	// restart; the last successful exchange still enforces the minimum gap.
 	poller.discardWake()
-	if !poller.lastSuccess.IsZero() {
-		if remaining := MinimumHeartbeatInterval - poller.now().Sub(poller.lastSuccess); remaining > 0 {
-			if err := poller.wait(ctx, remaining); err != nil {
-				return err
-			}
-		}
+	if err := poller.waitUntilDue(ctx); err != nil {
+		return err
 	}
 
+	for {
+		if err := poller.exchangeUntilSuccess(ctx); err != nil {
+			return err
+		}
+		poller.lastSuccess = poller.now()
+		if err := poller.wait(ctx, MinimumHeartbeatInterval); err != nil {
+			return err
+		}
+		if remainder := poller.pollInterval - MinimumHeartbeatInterval; remainder > 0 {
+			if err := poller.waitForWake(ctx, remainder, poller.wake); err != nil {
+				return err
+			}
+		} else {
+			poller.discardWake()
+		}
+	}
+}
+
+// Step performs one cadence-gated exchange, returning after success. A daemon
+// Source may call Step on every idle iteration without creating a second
+// network cadence. Run and Step share one exchange owner and retry policy.
+func (poller *Poller) Step(ctx context.Context) error {
+	if poller == nil || poller.cycle == nil || ctx == nil {
+		return ErrInvalidConfig
+	}
+	if !poller.enabled {
+		return ErrPollingDisabled
+	}
+	if !poller.running.CompareAndSwap(false, true) {
+		return ErrAlreadyRunning
+	}
+	defer poller.running.Store(false)
+	if poller.reconciliationRequired {
+		return ErrReconciliationRequired
+	}
+	if err := poller.waitUntilDue(ctx); err != nil {
+		return err
+	}
+	if err := poller.exchangeUntilSuccess(ctx); err != nil {
+		return err
+	}
+	poller.lastSuccess = poller.now()
+	return nil
+}
+
+func (poller *Poller) waitUntilDue(ctx context.Context) error {
+	if poller.lastSuccess.IsZero() {
+		poller.discardWake()
+		return nil
+	}
+	elapsed := poller.now().Sub(poller.lastSuccess)
+	if elapsed < MinimumHeartbeatInterval {
+		if err := poller.wait(ctx, MinimumHeartbeatInterval-elapsed); err != nil {
+			return err
+		}
+		elapsed = max(MinimumHeartbeatInterval, poller.now().Sub(poller.lastSuccess))
+	}
+	if remainder := poller.pollInterval - elapsed; remainder > 0 {
+		return poller.waitForWake(ctx, remainder, poller.wake)
+	}
+	poller.discardWake()
+	return nil
+}
+
+func (poller *Poller) exchangeUntilSuccess(ctx context.Context) error {
 	backoff := poller.initialBackoff
 	for {
 		if err := ctx.Err(); err != nil {
@@ -130,19 +196,10 @@ func (poller *Poller) Run(ctx context.Context) error {
 		}
 		err := poller.cycle.Exchange(ctx)
 		if err == nil {
-			backoff = poller.initialBackoff
-			poller.lastSuccess = poller.now()
-			if err := poller.wait(ctx, MinimumHeartbeatInterval); err != nil {
-				return err
-			}
-			if remainder := poller.pollInterval - MinimumHeartbeatInterval; remainder > 0 {
-				if err := poller.waitForWake(ctx, remainder, poller.wake); err != nil {
-					return err
-				}
-			} else {
-				poller.discardWake()
-			}
-			continue
+			return nil
+		}
+		if !provedNoEffect(err) {
+			poller.reconciliationRequired = true
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -159,6 +216,15 @@ func (poller *Poller) Run(ctx context.Context) error {
 		}
 		backoff = growBackoff(backoff, poller.maxBackoff)
 	}
+}
+
+type noEffectError interface {
+	NoExchangeAttempted() bool
+}
+
+func provedNoEffect(err error) bool {
+	candidate, ok := err.(noEffectError)
+	return ok && candidate.NoExchangeAttempted()
 }
 
 func (poller *Poller) discardWake() {

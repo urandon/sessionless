@@ -649,6 +649,46 @@ func TestAdapterWatchesAndAcknowledgesExactActiveCancellation(t *testing.T) {
 	}
 }
 
+func TestAdapterDefersDrainedUntilActiveTerminalCommit(t *testing.T) {
+	fixture := newAdapterFixture(t)
+	invocation, available, err := fixture.adapter.Next(context.Background())
+	if err != nil || !available {
+		t.Fatalf("Next available=%t error=%v", available, err)
+	}
+	fixture.session.activeDrain = &attachedworkerprotocol.DrainV1{Revision: 11}
+	target := &fakeActiveController{}
+	control, err := fixture.adapter.watchActiveControl(
+		context.Background(), invocation.Identity, target, func(context.Context) error {
+			return errors.New("immediate drain unexpectedly waited")
+		},
+	)
+	if err != nil {
+		t.Fatalf("watch control: %v", err)
+	}
+	if control != ActiveControlDraining || target.drainCalls != 1 || target.cancelCalls != 0 {
+		t.Fatalf("control=%q drain_calls=%d cancel_calls=%d", control, target.drainCalls, target.cancelCalls)
+	}
+	if len(fixture.session.actions) != 3 || fixture.session.actions[2].Heartbeat == nil {
+		t.Fatalf("drain watcher actions=%+v", fixture.session.actions)
+	}
+
+	result := successfulResult()
+	if err := fixture.adapter.Complete(context.Background(), invocation.Identity, result, nil); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if len(fixture.session.actions) != 5 || fixture.session.actions[3].Terminal == nil ||
+		fixture.session.actions[4].Drained == nil || fixture.session.actions[4].Drained.Revision != 11 {
+		t.Fatalf("terminal/drained ordering=%+v", fixture.session.actions)
+	}
+	before := len(fixture.session.actions)
+	if err := fixture.adapter.Complete(context.Background(), invocation.Identity, result, nil); err != nil {
+		t.Fatalf("duplicate Complete: %v", err)
+	}
+	if len(fixture.session.actions) != before {
+		t.Fatalf("duplicate completion repeated terminal/drained actions=%+v", fixture.session.actions)
+	}
+}
+
 func TestActiveCancellationReachesExactRunningDaemonInvocation(t *testing.T) {
 	fixture := newAdapterFixture(t)
 	fixture.session.activeCancel = &attachedworkerprotocol.CancelV1{
@@ -894,6 +934,22 @@ type fakeActiveCanceller struct {
 	finished chan struct{}
 }
 
+type fakeActiveController struct {
+	cancelCalls int
+	drainCalls  int
+	err         error
+}
+
+func (fake *fakeActiveController) CancelActive(_ context.Context, _ attachedworkerdaemon.InvocationIdentity) error {
+	fake.cancelCalls++
+	return fake.err
+}
+
+func (fake *fakeActiveController) RequestDrain(context.Context) error {
+	fake.drainCalls++
+	return fake.err
+}
+
 type activeCancellationRunner struct {
 	started   chan attachedworkerdaemon.InvocationIdentity
 	cancelled chan struct{}
@@ -1010,6 +1066,7 @@ type fakeSession struct {
 	cancelOnClaim              bool
 	terminalErr                error
 	activeCancel               *attachedworkerprotocol.CancelV1
+	activeDrain                *attachedworkerprotocol.DrainV1
 	activeHeartbeatErr         error
 	cancelAckErr               error
 	cancelAckStarted           chan struct{}
@@ -1032,13 +1089,19 @@ func (fake *fakeSession) ExchangeAction(_ context.Context, action attachedworker
 			if fake.activeHeartbeatErr != nil {
 				return nil, fake.activeHeartbeatErr
 			}
-			if fake.activeCancel == nil {
+			if fake.activeCancel == nil && fake.activeDrain == nil {
 				return nil, nil
 			}
-			cancel := *fake.activeCancel
-			cancel.Binding = cloneAttemptBinding(cancel.Binding)
-			return platformFrame(snapshot, 5, attachedworkerprotocol.MessageCancel, func(frame *attachedworkerprotocol.FrameV1) {
-				frame.Cancel = &cancel
+			if fake.activeCancel != nil {
+				cancel := *fake.activeCancel
+				cancel.Binding = cloneAttemptBinding(cancel.Binding)
+				return platformFrame(snapshot, 5, attachedworkerprotocol.MessageCancel, func(frame *attachedworkerprotocol.FrameV1) {
+					frame.Cancel = &cancel
+				}), nil
+			}
+			drain := *fake.activeDrain
+			return platformFrame(snapshot, 5, attachedworkerprotocol.MessageDrain, func(frame *attachedworkerprotocol.FrameV1) {
+				frame.Drain = &drain
 			}), nil
 		}
 		return platformFrame(snapshot, 3, attachedworkerprotocol.MessageLeaseOffer, func(frame *attachedworkerprotocol.FrameV1) {
@@ -1086,6 +1149,8 @@ func (fake *fakeSession) ExchangeAction(_ context.Context, action attachedworker
 				fake.mutateTerminalAck(frame.TerminalAck)
 			}
 		}), nil
+	case action.Drained != nil:
+		return nil, nil
 	default:
 		return nil, errors.New("unexpected action")
 	}

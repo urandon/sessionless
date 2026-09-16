@@ -127,6 +127,51 @@ func TestDaemonDrainLetsActiveAttemptFinishAndStopsAdmission(t *testing.T) {
 	}
 }
 
+func TestDaemonRequestDrainClosesAdmissionWithoutWaitingForActiveAttempt(t *testing.T) {
+	source := &channelSource{invocations: make(chan Invocation, 2), calls: make(chan struct{}, 8)}
+	runner := &blockingRunner{started: make(chan InvocationIdentity, 2), release: make(chan struct{}, 1)}
+	sink := &recordingSink{done: make(chan struct{}, 1)}
+	daemon, err := NewDaemon(DaemonConfig{IdleBackoff: time.Second}, source, runner, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := validDaemonInvocation("attempt-drain-active")
+	source.invocations <- first
+	source.invocations <- validDaemonInvocation("attempt-must-not-start")
+	runDone := make(chan error, 1)
+	go func() { runDone <- daemon.Run(context.Background()) }()
+	if started := <-runner.started; started != first.Identity {
+		t.Fatalf("started identity=%+v want=%+v", started, first.Identity)
+	}
+
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	if err := daemon.RequestDrain(requestCtx); err != nil {
+		cancelRequest()
+		t.Fatalf("request drain: %v", err)
+	}
+	cancelRequest()
+	status := daemon.Status()
+	if status.State != DaemonDraining || !status.Active || status.ActiveAttempt != first.Identity {
+		t.Fatalf("request-drain status=%+v", status)
+	}
+	select {
+	case started := <-runner.started:
+		t.Fatalf("request drain admitted another attempt: %+v", started)
+	default:
+	}
+
+	runner.release <- struct{}{}
+	if err := <-runDone; err != nil {
+		t.Fatalf("run after request drain: %v", err)
+	}
+	if status := daemon.Status(); status.State != DaemonStopped || status.Active || status.Completed != 1 {
+		t.Fatalf("stopped status=%+v", status)
+	}
+	if err := daemon.RequestDrain(context.Background()); !errors.Is(err, ErrDaemonNotRunning) {
+		t.Fatalf("request drain after stop error=%v", err)
+	}
+}
+
 func TestDaemonShutdownCancelsActiveAttemptWithinBound(t *testing.T) {
 	source := &channelSource{invocations: make(chan Invocation, 1), calls: make(chan struct{}, 8)}
 	runner := &blockingRunner{started: make(chan InvocationIdentity, 1), release: make(chan struct{})}

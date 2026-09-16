@@ -1,10 +1,12 @@
 # AI resources, provider diversity, routing, and federation
 
-Research date: 2026-08-25
+Research date: 2026-09-16
 
 Tracks: [#48](https://gitcode.com/urandon/sessionless/issues/48), [#51](https://gitcode.com/urandon/sessionless/issues/51)
 
-Status: decision-ready research; both issues remain open for policy evidence and epic acceptance
+Status: decision-ready research; #48 policy is resolved by the dedicated
+[OpenAI subscription resource policy](openai-subscription-resource-policy.md),
+while #51 remains the broader provider-resource track
 
 ## Decision summary
 
@@ -12,7 +14,16 @@ Sessionless must represent an AI resource independently from model vendor, trans
 
 The MVP keeps distinct resource kinds for personal ChatGPT/Codex subscription, enterprise/workload identity, direct API account, router credit account, local/self-hosted endpoint, and organization-managed endpoint. Every run pins the selected resource revision, credential generation, catalog snapshot, policy evidence, execution placement, and fallback policy. No adapter silently changes billing route, provider, model, data policy, or credential owner.
 
-For OpenAI consumer subscriptions, the only locally evidenced placement is the user's attached worker with the credential retained there. That remains a product no-go until the selected production surface, provider policy, consent, isolation, cancellation/recovery, and quota evidence pass. Cloud custody of consumer credentials and household/federation sharing remain disabled. Missing, ambiguous, or expired provider authorization is a deterministic no-go, not an invitation to emulate private endpoints or reuse another application's OAuth client.
+For OpenAI consumer subscriptions, current primary documentation supports a
+conditional owner-local route: the user's attached private worker, local
+credential custody, and pinned `codex exec`. It is not runtime-enabled until
+consent, isolation, egress, cancellation/recovery, artifact, and exact billing
+route gates pass. Cloud custody of consumer credentials and
+household/federation sharing remain disabled. Business/Enterprise access tokens,
+service accounts, and beta WIF are separate managed-workspace routes. Missing,
+ambiguous, or expired provider authorization is a deterministic no-go, not an
+invitation to emulate private endpoints or reuse another application's OAuth
+client.
 
 Production orchestration, policy and adapter supervision are Go binaries behind
 `HarnessDriver`. A selected harness may be a separately isolated,
@@ -28,7 +39,7 @@ workflows.
 
 | Resource/surface | Primary or pinned evidence | Observed semantics | Sessionless conclusion |
 |---|---|---|---|
-| OpenAI ChatGPT/Codex subscription | [Codex CLI sign-in](https://help.openai.com/en/articles/11381614-api-codex-cli-and-sign-in-with-chatgpt), `docs/codex-integration-surface.md`, [#62](https://gitcode.com/urandon/sessionless/issues/62) | Subscription login and API billing are distinct; official surfaces have different automation and lifecycle contracts. | Personal attached-worker research only. API key is a separate resource, never fallback. |
+| OpenAI ChatGPT/Codex subscription | [OpenAI subscription policy](openai-subscription-resource-policy.md), [Codex authentication](https://learn.chatgpt.com/docs/auth), `docs/codex-integration-surface.md` | Subscription login and API billing are distinct; owner-local `codex exec`, workspace access tokens/service accounts, and beta WIF have different custody and lifecycle contracts. | Conditional go only for exact owner-local or managed-workspace tuples. Personal cloud custody/sharing is no-go. API key is a separate resource, never fallback. |
 | OpenCode | pinned [`3a31c4e`](https://github.com/anomalyco/opencode/tree/3a31c4ea801915c0b050df4b3842997ea62b6e93) | Catalog merges config, environment, stored auth, plugins, and provider discovery; direct Codex plugin demonstrates technical subscription access; Copilot separates model vendor, transport, and billing resource. | Useful implementation evidence, not provider authorization. Reject copied OAuth clients, private endpoint emulation, ambient env, and provider-global credential records. |
 | Zed | pinned [`d9ad6af`](https://github.com/zed-industries/zed/tree/d9ad6aff67e47de43abb270d22de75dd950f1b48) | Separates direct providers, external ACP agents, and terminal-owned CLIs. | Confirms harness, provider, and placement are independent axes. |
 | Hermes Agent | pinned [`c80a0a5`](https://github.com/NousResearch/hermes-agent/tree/c80a0a551c7038517456ee0aeb60203ec92aedb6) | Credential pools and multiple backends, but broad environment forwarding and Python application/runtime closure. | Competitor evidence only; not a production dependency. |
@@ -149,7 +160,7 @@ Federation is a resource ACL and accounting layer, not credential copying. The p
 | User's local Ollama/vLLM/SGLang shared with the same user | Conditional go | Worker ownership, model license, capacity/budget, network and data policy. |
 | User-owned local endpoint shared with named tenant members | Conditional no-go until configured | Explicit owner consent, model license, per-member ACL/quota, host threat model, revocation. |
 | Organization API/enterprise resource shared inside its workspace | Conditional | Provider organization terms, admin approval, workspace membership, cost attribution, data policy. |
-| Personal ChatGPT/Codex subscription used by its owner on attached worker | Research-only | Current official surface/policy evidence, consent, isolation, billing/quota route, cancellation/recovery. |
+| Personal ChatGPT/Codex subscription used by its owner on attached worker | Conditional go | Exact `OAI-SUB-2026-09-PERSONAL-LOCAL` tuple, consent, isolation, billing-route guard, cancellation/recovery, and pinned runtime evidence. |
 | Personal subscription shared with household/federation | No-go | Explicit authoritative provider authorization for that exact arrangement; technical feasibility is insufficient. |
 | Consumer credential held in Sessionless cloud | No-go | Explicit provider authorization, custody/legal decision, consent, tenant isolation, refresh/revocation and incident evidence. |
 
@@ -207,16 +218,25 @@ Rejected:
 
 ## Open questions
 
-1. Can OpenAI provide an authoritative policy verdict for personal attached-worker product integration and any sharing shape?
-2. Which provider admin APIs offer reconcilable cost/usage at user, workspace, key, and project scope?
-3. What minimum conformance profile is common across direct APIs, routers, and local endpoints without hiding important differences?
-4. Which local-model licenses permit tenant/federation service, and who owns update/vulnerability response?
-5. How should owner-reserved capacity and beneficiary fairness interact when an attached GPU is intermittently available?
-6. Which catalog observations can remain stale for read-only display but must block execution?
+1. Which provider admin APIs offer reconcilable cost/usage at user, workspace,
+   key, and project scope?
+2. What minimum conformance profile is common across direct APIs, routers, and
+   local endpoints without hiding important differences?
+3. Which local-model licenses permit tenant/federation service, and who owns
+   update/vulnerability response?
+4. How should owner-reserved capacity and beneficiary fairness interact when
+   an attached GPU is intermittently available?
+5. Which catalog observations can remain stale for read-only display but must
+   block execution?
 
 ## Proposed epics
 
 ### Subscription Resource epic (#48)
+
+The dated plan/identity/surface/placement/custody/sharing verdicts, credential
+flows, threat and cost model, ADR, and expanded SR-01–SR-08 delivery backlog are
+normative in [the dedicated policy](openai-subscription-resource-policy.md).
+The compact dependency view below is retained for the cross-provider roadmap.
 
 | Work item | Estimate | Dependencies | Acceptance |
 |---|---:|---|---|

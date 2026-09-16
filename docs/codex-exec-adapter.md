@@ -1,6 +1,6 @@
 # Go-supervised Codex exec backend
 
-Status date: **2026-08-26**. This is the bounded first implementation slice of
+Status date: **2026-09-16**. This is the bounded first implementation slice of
 [#81](https://gitcode.com/urandon/sessionless/issues/81). It is a disabled
 backend contract and credential-free/fake-process evidence, not production
 provider enablement.
@@ -103,8 +103,9 @@ The package is not wired into any binary. Its local `Enabled` field is only a
 reversible component gate and is not provider authorization. Production still
 requires all of the following:
 
-- the accepted #48 authorization tuple for personal subscription, owner-managed
-  attached worker, local credential custody, and exact Codex exec surface;
+- the conditional #48 `OAI-SUB-2026-09-PERSONAL-LOCAL` authorization tuple for
+  personal subscription, owner-managed attached worker, local credential
+  custody, and exact Codex exec surface, including its expiry/re-review gate;
 - an enabled production bridge from the canonical immutable `HarnessBindingV1`
   to the attached-worker attempt/connection/lease authority. The closed
   registry now advertises the exact backend descriptor but keeps it disabled;

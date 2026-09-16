@@ -111,6 +111,7 @@ The [research index](research/README.md) separates evidence and open decisions
 from committed runtime contracts. It covers:
 
 - [AI resources, routing, and federation](research/ai-resources-and-federation.md)
+- [OpenAI subscription resource policy](research/openai-subscription-resource-policy.md)
 - [Attachable workers](research/attachable-workers.md)
 - [Harness-neutral evaluation](research/harness-neutral-evaluation.md)
 - [Memory and permissions](research/memory-and-permissions.md)

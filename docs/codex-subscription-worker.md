@@ -1,6 +1,6 @@
 # Codex subscription worker: Phase A evidence and protocol contract
 
-Status date: **2026-08-22**. Scope: issue [#13](https://gitcode.com/urandon/sessionless/issues/13), Phase A only. The later integration-surface and credential-locality decision is recorded in [codex-integration-surface.md](codex-integration-surface.md).
+Status date: **2026-09-16**. Scope: issue [#13](https://gitcode.com/urandon/sessionless/issues/13), Phase A only. The later integration-surface and credential-locality decision is recorded in [codex-integration-surface.md](codex-integration-surface.md), with exact authorization tuples in [the OpenAI subscription resource policy](research/openai-subscription-resource-policy.md).
 
 ## Verdict
 
@@ -23,11 +23,11 @@ are release gates, not permission to silently change the billing route.
 
 The 2026-08-24 comparator supersedes the provisional App Server selection:
 Sessionless keeps its Go harness boundary, uses direct App Server and the stable
-Python SDK only as non-selectable research comparators, leaves `codex exec` as
-the sole candidate for an explicitly consented local experiment, and makes a
-user-owned attached worker the first eligible personal
-Plus/Pro placement. No mode can ship until its execution surface is officially
-production-supported. The production worker remains Go/serverless and must not
+Python SDK only as non-selectable research comparators, selects `codex exec` as
+the sole eligible Python-free production surface, and makes a user-owned
+attached worker the first conditional personal Free/Go/Plus/Pro placement. No
+mode can ship until its exact policy, isolation, egress, lifecycle, artifact,
+and billing-route gates pass. The production worker remains Go/serverless and must not
 ship a Python SDK/runtime or Python sidecar. Cloud custody of a consumer
 credential remains disabled
 pending the additional gates in
@@ -133,9 +133,10 @@ The first eligible boundary is a user-owned attached worker:
    not claim provider-wide token revocation or destroy an unrelated global
    Codex login.
 
-Cloud-vault materialization remains a distinct later mode. If #48 approves it,
-the encrypted generation/CAS lifecycle from #59/#60 applies; it is not inferred
-from attached-worker feasibility.
+Cloud-vault materialization remains a distinct no-go mode under #48. If new
+authoritative evidence later replaces that policy record, the encrypted
+generation/CAS lifecycle from #59/#60 applies; it is not inferred from
+attached-worker feasibility.
 
 On an attached worker, plaintext `auth.json` is allowed in the protected,
 persistent, connection-scoped credential home owned by that worker; invocation

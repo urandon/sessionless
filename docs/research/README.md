@@ -1,6 +1,6 @@
 # Sessionless research and design index
 
-Status date: **2026-09-11**. These reports turn the open research backlog into
+Status date: **2026-09-16**. These reports turn the open research backlog into
 versioned, reviewable evidence. They are inputs to architecture decisions and
 epic decomposition; they do not by themselves close the tracked issues or
 authorize a production integration.
@@ -29,6 +29,7 @@ opt-in developer tools, never production or mandatory CI dependencies.
 | #46 | [Tooling, MCP, and permissions](tooling-mcp-and-permissions.md) | Sessionless-owned capability/effect policy, narrow built-ins, worker/MCP isolation and call-time authorization. |
 | #47 | [Attachable workers](attachable-workers.md) | Outbound enrolled Go worker, fenced attempts, long-poll first, connection gateway only after measured need. |
 | #48, #51 | [AI resources and federation](ai-resources-and-federation.md) | Separate provider, transport, billing, harness, placement, credential generation, and sharing policy; no silent fallback. |
+| #48 | [OpenAI subscription resource policy](openai-subscription-resource-policy.md) | Conditional owner-local and managed-workspace subscription routes; personal cloud custody/account sharing and App Server production remain no-go. |
 | #51 / PR-05 | [OpenRouter provider architecture](openrouter-provider-architecture.md) | Sessionless-owned harness routing across Pi/OpenCode/Codex/direct adapters, exact OpenRouter policy, credential custody, and externally-shareable Ox Alpha use for generated, public-research, and reviewed public open-source tasks. |
 | #51, #105 / PR-04 | [Ollama local provider](ollama-local-provider.md) | Native, placement-bound Ollama adapter; hubdisk-safe opt-in model lifecycle; tiny-model smoke and measured Qwen3.8-27B ceiling; owner-scoped federation without fake credentials or endpoint exposure. |
 | #49 | [Metering and attribution](metering-and-resource-attribution.md) | Exact idempotent usage facts distinct from sampled telemetry and derived analytics. |

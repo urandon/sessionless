@@ -1,14 +1,15 @@
 # Native provider composition
 
-`internal/providercomposition` is the closed composition boundary for the four
+`internal/providercomposition` is the closed composition boundary for the five
 reviewed native provider adapters below the Sessionless-owned harness registry:
 
+- Codex exec with an owner-local subscription credential;
 - Codex over OpenRouter;
 - OpenCode over OpenRouter;
 - Pi over OpenRouter;
 - the native direct OpenRouter reference backend.
 
-The V1 factory accepts only four explicitly constructed, already pinned driver
+The V1 factory accepts only five explicitly constructed, already pinned driver
 instances and an injected clock. It does not inspect the environment, discover
 installed binaries, choose profiles, construct process or HTTP boundaries, or
 select a default backend. Missing dependencies and enabled profiles fail the
@@ -23,6 +24,9 @@ retry. Disabled preflight cannot reach credential, process, or network effects.
 Cancellation remains routable through an exact binding while a profile is
 disabled. This is a teardown path, not execution authorization: a mismatched
 descriptor, model, or owner/run/attempt scope fails before the boundary.
+The subscription profile has never been enabled through this registry, so its
+disabled exact cancellation is a bounded no-op and cannot reach the older
+invocation runner.
 
 The composition is deliberately not wired into `worker-runtime`. Production
 enablement remains blocked on the accepted isolation, egress, credential,

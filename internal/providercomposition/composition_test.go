@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemon"
+	"gitcode.com/urandon/sessionless/internal/codexexec"
 	"gitcode.com/urandon/sessionless/internal/codexopenrouter"
 	"gitcode.com/urandon/sessionless/internal/directopenrouter"
 	"gitcode.com/urandon/sessionless/internal/domain"
@@ -28,10 +29,11 @@ func TestNewDisabledRegistryV1RejectsIncompleteOrEnabledDependencies(t *testing.
 		dependencies DependenciesV1
 	}{
 		{name: "nil clock", dependencies: complete.dependencies()},
-		{name: "missing codex", now: fixedClock, dependencies: DependenciesV1{OpenCode: complete.openCode, Pi: complete.pi, Direct: complete.direct}},
-		{name: "missing opencode", now: fixedClock, dependencies: DependenciesV1{Codex: complete.codex, Pi: complete.pi, Direct: complete.direct}},
-		{name: "missing pi", now: fixedClock, dependencies: DependenciesV1{Codex: complete.codex, OpenCode: complete.openCode, Direct: complete.direct}},
-		{name: "missing direct", now: fixedClock, dependencies: DependenciesV1{Codex: complete.codex, OpenCode: complete.openCode, Pi: complete.pi}},
+		{name: "missing codex subscription", now: fixedClock, dependencies: DependenciesV1{CodexOpenRouter: complete.codex, OpenCode: complete.openCode, Pi: complete.pi, Direct: complete.direct}},
+		{name: "missing codex openrouter", now: fixedClock, dependencies: DependenciesV1{CodexSubscription: complete.subscription, OpenCode: complete.openCode, Pi: complete.pi, Direct: complete.direct}},
+		{name: "missing opencode", now: fixedClock, dependencies: DependenciesV1{CodexSubscription: complete.subscription, CodexOpenRouter: complete.codex, Pi: complete.pi, Direct: complete.direct}},
+		{name: "missing pi", now: fixedClock, dependencies: DependenciesV1{CodexSubscription: complete.subscription, CodexOpenRouter: complete.codex, OpenCode: complete.openCode, Direct: complete.direct}},
+		{name: "missing direct", now: fixedClock, dependencies: DependenciesV1{CodexSubscription: complete.subscription, CodexOpenRouter: complete.codex, OpenCode: complete.openCode, Pi: complete.pi}},
 		{name: "enabled profiles", now: fixedClock, dependencies: newDriverSet(t, true).dependencies()},
 	}
 	for _, testCase := range tests {
@@ -50,10 +52,11 @@ func TestDisabledRegistrationsAreExactUniqueAndOrderIndependent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("registrationsV1() error = %v", err)
 	}
-	if len(registrations) != 4 {
-		t.Fatalf("registration count = %d, want 4", len(registrations))
+	if len(registrations) != 5 {
+		t.Fatalf("registration count = %d, want 5", len(registrations))
 	}
 	wantKinds := []domain.HarnessBackendKindV1{
+		domain.HarnessBackendCodexExecV1,
 		domain.HarnessBackendCodexOpenRouterV1,
 		domain.HarnessBackendOpenCodeV1,
 		domain.HarnessBackendPiV1,
@@ -108,8 +111,12 @@ func TestCancelRoutesOnlyToExactMatchingDisabledBackend(t *testing.T) {
 			t.Fatalf("Cancel(%q) error = %v", descriptor.BackendKind, err)
 		}
 		after := drivers.effects()
-		if after.cancels != before.cancels+1 || after.runs != before.runs || after.invokes != before.invokes {
-			t.Fatalf("Cancel(%q) effects before=%+v after=%+v, want one cancellation only", descriptor.BackendKind, before, after)
+		wantCancels := before.cancels + 1
+		if descriptor.BackendKind == domain.HarnessBackendCodexExecV1 {
+			wantCancels = before.cancels
+		}
+		if after.cancels != wantCancels || after.runs != before.runs || after.invokes != before.invokes {
+			t.Fatalf("Cancel(%q) effects before=%+v after=%+v, want bounded exact cancellation", descriptor.BackendKind, before, after)
 		}
 		requireOnlyCancelIncrement(t, descriptor.BackendKind, beforeCancels, drivers.cancelCounts())
 	}
@@ -128,11 +135,21 @@ func TestCancelRoutesOnlyToExactMatchingDisabledBackend(t *testing.T) {
 				identity.HarnessBinding.ModelID = "near-match"
 			}},
 			{name: "wrong resource", code: sessionlessharness.FailureProviderResourceMismatch, mutate: func(identity *ports.ExecutionIdentity) {
-				identity.HarnessBinding.Resource.Kind = domain.ProviderResourceSubscriptionV1
+				if descriptor.BackendKind == domain.HarnessBackendCodexExecV1 {
+					identity.HarnessBinding.Resource.Kind = domain.ProviderResourceRouterAccountV1
+				} else {
+					identity.HarnessBinding.Resource.Kind = domain.ProviderResourceSubscriptionV1
+				}
 			}},
-			{name: "private data", code: sessionlessharness.FailureEffectivePolicyMismatch, mutate: func(identity *ports.ExecutionIdentity) {
+		}
+		if descriptor.BackendKind != domain.HarnessBackendCodexExecV1 {
+			mutations = append(mutations, struct {
+				name   string
+				code   sessionlessharness.FailureCode
+				mutate func(*ports.ExecutionIdentity)
+			}{name: "private data", code: sessionlessharness.FailureEffectivePolicyMismatch, mutate: func(identity *ports.ExecutionIdentity) {
 				identity.HarnessBinding.InputDataClass = domain.ProviderDataPrivateV1
-			}},
+			}})
 		}
 		for _, mutation := range mutations {
 			t.Run(string(descriptor.BackendKind)+"/"+mutation.name, func(t *testing.T) {
@@ -169,7 +186,7 @@ func TestCancelRoutesOnlyToExactMatchingDisabledBackend(t *testing.T) {
 
 func TestDisabledCompositionCannotClaimNativeProtocolSupport(t *testing.T) {
 	drivers := newDriverSet(t, false)
-	observers := []harnessconformance.BackendProtocolObserver{drivers.codex, drivers.openCode, drivers.pi, drivers.direct}
+	observers := []harnessconformance.BackendProtocolObserver{drivers.subscription, drivers.codex, drivers.openCode, drivers.pi, drivers.direct}
 	for index, observer := range observers {
 		if state := observer.BackendProtocolState(); state != harnessconformance.BackendProtocolUnsupportedV1 {
 			t.Errorf("observer %d state = %q, want %q", index, state, harnessconformance.BackendProtocolUnsupportedV1)
@@ -178,25 +195,35 @@ func TestDisabledCompositionCannotClaimNativeProtocolSupport(t *testing.T) {
 }
 
 type driverSet struct {
-	codex          *codexopenrouter.Driver
-	openCode       *opencodeopenrouter.Driver
-	pi             *piopenrouter.Driver
-	direct         *directopenrouter.Driver
-	codexBoundary  *codexBoundary
-	openBoundary   *openCodeBoundary
-	piBoundary     *piBoundary
-	directBoundary *directBoundary
+	subscription    *codexexec.Adapter
+	subscriptionRun *subscriptionRunner
+	codex           *codexopenrouter.Driver
+	openCode        *opencodeopenrouter.Driver
+	pi              *piopenrouter.Driver
+	direct          *directopenrouter.Driver
+	codexBoundary   *codexBoundary
+	openBoundary    *openCodeBoundary
+	piBoundary      *piBoundary
+	directBoundary  *directBoundary
 }
 
 func newDriverSet(t *testing.T, enabled bool) driverSet {
 	t.Helper()
 	set := driverSet{
-		codexBoundary:  &codexBoundary{},
-		openBoundary:   &openCodeBoundary{},
-		piBoundary:     &piBoundary{},
-		directBoundary: &directBoundary{},
+		subscriptionRun: &subscriptionRunner{},
+		codexBoundary:   &codexBoundary{},
+		openBoundary:    &openCodeBoundary{},
+		piBoundary:      &piBoundary{},
+		directBoundary:  &directBoundary{},
 	}
 	var err error
+	set.subscription, err = codexexec.New(codexexec.Config{
+		Enabled: enabled, Executable: "/sessionless/bin/codex-subscription", ExecutableVersion: "1.0.0",
+		ExecutableDigest: executableDigest(5), Model: "gpt-subscription",
+	}, set.subscriptionRun)
+	if err != nil {
+		t.Fatalf("New(subscription) error = %v", err)
+	}
 	set.codex, err = codexopenrouter.NewDriver(codexopenrouter.ProfileV1{
 		Enabled: enabled, Executable: "/sessionless/bin/codex", ExecutableVersion: "1.0.0",
 		ExecutableDigest: executableDigest(1), ProviderTimeoutMS: 60_000, ContextWindow: 65_536, MaxOutputTokens: 8_192,
@@ -228,11 +255,15 @@ func newDriverSet(t *testing.T, enabled bool) driverSet {
 }
 
 func (set driverSet) dependencies() DependenciesV1 {
-	return DependenciesV1{Codex: set.codex, OpenCode: set.openCode, Pi: set.pi, Direct: set.direct}
+	return DependenciesV1{
+		CodexSubscription: set.subscription, CodexOpenRouter: set.codex,
+		OpenCode: set.openCode, Pi: set.pi, Direct: set.direct,
+	}
 }
 
 func (set driverSet) descriptors() []domain.HarnessBackendDescriptorV1 {
 	return []domain.HarnessBackendDescriptorV1{
+		set.subscription.DescriptorV1(),
 		set.codex.DescriptorV1(), set.openCode.DescriptorV1(), set.pi.DescriptorV1(), set.direct.DescriptorV1(),
 	}
 }
@@ -243,7 +274,7 @@ type backendCancelCounts struct{ codex, openCode, pi, direct int }
 
 func (set driverSet) effects() effectCounts {
 	return effectCounts{
-		runs:    set.codexBoundary.runs + set.openBoundary.runs + set.piBoundary.runs,
+		runs:    set.subscriptionRun.runs + set.codexBoundary.runs + set.openBoundary.runs + set.piBoundary.runs,
 		invokes: set.directBoundary.invokes,
 		cancels: set.codexBoundary.cancels + set.openBoundary.cancels + set.piBoundary.cancels + set.directBoundary.cancels,
 	}
@@ -260,6 +291,9 @@ func requireOnlyCancelIncrement(t *testing.T, kind domain.HarnessBackendKindV1, 
 	t.Helper()
 	want := before
 	switch kind {
+	case domain.HarnessBackendCodexExecV1:
+		// The subscription profile is permanently disabled in this composition;
+		// exact cancellation is therefore a bounded no-op with no process effect.
 	case domain.HarnessBackendCodexOpenRouterV1:
 		want.codex++
 	case domain.HarnessBackendOpenCodeV1:
@@ -300,7 +334,12 @@ func validIdentity(t *testing.T, descriptor domain.HarnessBackendDescriptorV1) p
 	}
 	binding.ModelVendorID = "stealth"
 	binding.ModelID = "stealth/ox-alpha"
-	if descriptor.BackendKind == domain.HarnessBackendDirectOpenRouterV1 {
+	if descriptor.BackendKind == domain.HarnessBackendCodexExecV1 {
+		binding.Resource.Kind = domain.ProviderResourceSubscriptionV1
+		binding.Resource.ResourceID = "subscription-composition"
+		binding.ModelVendorID = codexexec.ModelVendorIDV1
+		binding.ModelID = "gpt-subscription"
+	} else if descriptor.BackendKind == domain.HarnessBackendDirectOpenRouterV1 {
 		binding.ModelID = "ox-alpha"
 	}
 	binding.InputDataClass = domain.ProviderDataExternallyShareableV1
@@ -341,6 +380,13 @@ func executableDigest(value byte) attachedworkerdaemon.ExecutableDigest {
 }
 
 func fixedClock() time.Time { return compositionNow }
+
+type subscriptionRunner struct{ runs int }
+
+func (runner *subscriptionRunner) Run(context.Context, attachedworkerdaemon.Invocation) (attachedworkerdaemon.InvocationResult, error) {
+	runner.runs++
+	return attachedworkerdaemon.InvocationResult{}, errors.New("unexpected subscription process run")
+}
 
 type codexBoundary struct{ runs, cancels int }
 

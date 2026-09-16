@@ -165,6 +165,19 @@ func New(session SessionPort, materializer Materializer, config Config) (*Adapte
 	if session == nil || materializer == nil {
 		return nil, ErrInvalidConfiguration
 	}
+	var err error
+	config, err = prepareAdapterConfig(config)
+	if err != nil {
+		return nil, err
+	}
+	adapter := &Adapter{session: session, materializer: materializer, config: config, gate: make(chan struct{}, 1)}
+	adapter.gate <- struct{}{}
+	return adapter, nil
+}
+
+// prepareAdapterConfig is read-only and can reject persistent local mistakes
+// before a reconnect advances the generation or sends a Manifest.
+func prepareAdapterConfig(config Config) (Config, error) {
 	config.Profile = cloneProfile(config.Profile)
 	if config.MaxInputBytes == 0 {
 		config.MaxInputBytes = defaultMaxInputBytes
@@ -183,14 +196,12 @@ func New(session SessionPort, materializer Materializer, config Config) (*Adapte
 	}
 	canonicalRoot, err := canonicalDirectory(config.MaterializationRoot)
 	if err != nil || canonicalRoot != config.MaterializationRoot {
-		return nil, ErrInvalidConfiguration
+		return Config{}, ErrInvalidConfiguration
 	}
 	if validateConfig(config) != nil {
-		return nil, ErrInvalidConfiguration
+		return Config{}, ErrInvalidConfiguration
 	}
-	adapter := &Adapter{session: session, materializer: materializer, config: config, gate: make(chan struct{}, 1)}
-	adapter.gate <- struct{}{}
-	return adapter, nil
+	return config, nil
 }
 
 func (adapter *Adapter) Next(ctx context.Context) (attachedworkerdaemon.Invocation, bool, error) {

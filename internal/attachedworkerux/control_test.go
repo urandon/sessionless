@@ -3,6 +3,7 @@ package attachedworkerux
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -96,6 +97,10 @@ func (mutator actionMutator) RequestDrain(_ context.Context, tenant domain.Tenan
 	defer mutator.workers.mu.Unlock()
 	worker := mutator.workers.worker
 	if worker.TenantID != tenant || worker.OwnerUserID != owner || worker.ID != request.WorkerID || worker.Revision != request.ExpectedWorkerRevision {
+		if worker.TenantID == tenant && worker.OwnerUserID == owner && worker.ID == request.WorkerID &&
+			worker.Revision > request.ExpectedWorkerRevision && worker.DesiredState == domain.AttachedWorkerDesiredDrain {
+			return ports.AttachedWorkerDrainResult{Status: ports.AttachedWorkerExecutionReplayed, Worker: worker}, nil
+		}
 		return ports.AttachedWorkerDrainResult{}, attachedworkertransport.ErrTransportConflict
 	}
 	worker.DesiredState = domain.AttachedWorkerDesiredDrain
@@ -104,6 +109,22 @@ func (mutator actionMutator) RequestDrain(_ context.Context, tenant domain.Tenan
 	worker.UpdatedAt = worker.UpdatedAt.Add(time.Microsecond)
 	mutator.workers.worker = worker
 	return ports.AttachedWorkerDrainResult{Status: ports.AttachedWorkerExecutionApplied, Worker: worker}, nil
+}
+
+type synchronizedActionMutator struct {
+	actionMutator
+	revokeReady   chan<- struct{}
+	revokeRelease <-chan struct{}
+}
+
+func (mutator synchronizedActionMutator) Revoke(ctx context.Context, tenant domain.TenantID, owner domain.UserID, request attachedworker.WorkerRevisionRequest) (domain.AttachedWorker, error) {
+	mutator.revokeReady <- struct{}{}
+	select {
+	case <-ctx.Done():
+		return domain.AttachedWorker{}, ctx.Err()
+	case <-mutator.revokeRelease:
+	}
+	return mutator.actionMutator.Revoke(ctx, tenant, owner, request)
 }
 
 func (mutator actionMutator) Revoke(_ context.Context, tenant domain.TenantID, owner domain.UserID, request attachedworker.WorkerRevisionRequest) (domain.AttachedWorker, error) {
@@ -180,6 +201,9 @@ func (store *actionPlanStore) CompleteAttachedWorkerAction(_ context.Context, pl
 		return errors.New("simulated completion failure")
 	}
 	current, found := store.plans[plan.ID]
+	if found && current.State == domain.AttachedWorkerActionSucceeded && reflect.DeepEqual(current, plan) {
+		return nil
+	}
 	if !found || current.OperationID != plan.OperationID || current.Revision+1 != plan.Revision {
 		return errors.New("completion conflict")
 	}
@@ -423,5 +447,74 @@ func TestControlServiceReconcilesMutationAfterCompletionFailure(t *testing.T) {
 	operation, err := service.Apply(context.Background(), "tenant-1", "owner-1", "wrk-control", request)
 	if err != nil || operation.State != "succeeded" || operation.DesiredState != "drain" {
 		t.Fatalf("reconciled operation = %+v, err = %v", operation, err)
+	}
+}
+
+func TestControlServiceReconcilesDrainAfterCompletionFailureAndWorkerAdvancement(t *testing.T) {
+	service, _, workers, plans := newActionFixture(t)
+	ctx := context.Background()
+	plan, err := service.Plan(ctx, "tenant-1", "owner-1", "wrk-control", ActionPlanRequestV1{Version: 1, Action: ActionDrain})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plans.completeFail = true
+	request := ActionApplyV1{Version: 1, PlanID: plan.PlanID, Action: ActionDrain, Confirmation: plan.Confirmation, IdempotencyKey: "idem-reconcile-advanced"}
+	if _, err := service.Apply(ctx, "tenant-1", "owner-1", "wrk-control", request); !errors.Is(err, ErrActionBackend) {
+		t.Fatalf("first apply err = %v", err)
+	}
+	workers.mu.Lock()
+	workers.worker.Revision++
+	workers.worker.UpdatedAt = workers.worker.UpdatedAt.Add(time.Microsecond)
+	workers.mu.Unlock()
+	operation, err := service.Apply(ctx, "tenant-1", "owner-1", "wrk-control", request)
+	if err != nil || operation.State != "succeeded" || operation.DesiredState != "drain" || operation.WorkerRevision != plan.WorkerRevision+2 {
+		t.Fatalf("reconciled operation = %+v, err = %v", operation, err)
+	}
+}
+
+func TestControlServiceConcurrentSameIdempotencyRevokeReconcilesSuccess(t *testing.T) {
+	for iteration := 0; iteration < 20; iteration++ {
+		service, clock, workers, plans := newActionFixture(t)
+		ready := make(chan struct{}, 2)
+		release := make(chan struct{})
+		mutator := synchronizedActionMutator{
+			actionMutator: actionMutator{workers: workers}, revokeReady: ready, revokeRelease: release,
+		}
+		service, err := NewControlService(ControlConfig{Clock: clock, IDs: &actionTestIDs{}}, workers, plans, mutator, mutator)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx := context.Background()
+		plan, err := service.Plan(ctx, "tenant-1", "owner-1", "wrk-control", ActionPlanRequestV1{Version: 1, Action: ActionRevoke})
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := ActionApplyV1{Version: 1, PlanID: plan.PlanID, Action: ActionRevoke, Confirmation: plan.Confirmation, IdempotencyKey: "idem-concurrent-revoke"}
+		results := make(chan ActionOperationV1, 2)
+		errs := make(chan error, 2)
+		for range 2 {
+			go func() {
+				result, applyErr := service.Apply(ctx, "tenant-1", "owner-1", "wrk-control", request)
+				results <- result
+				errs <- applyErr
+			}()
+		}
+		<-ready
+		<-ready
+		close(release)
+		first, second := <-results, <-results
+		if firstErr, secondErr := <-errs, <-errs; firstErr != nil || secondErr != nil {
+			t.Fatalf("iteration %d: apply errors = %v, %v", iteration, firstErr, secondErr)
+		}
+		if first.State != "succeeded" || second.State != "succeeded" || first.OperationID != second.OperationID ||
+			first.DesiredState != "revoked" || second.DesiredState != "revoked" {
+			t.Fatalf("iteration %d: results = %+v, %+v", iteration, first, second)
+		}
+		plans.mu.Lock()
+		stored := plans.plans[domain.AttachedWorkerActionPlanID(plan.PlanID)]
+		plans.mu.Unlock()
+		if stored.State != domain.AttachedWorkerActionSucceeded || stored.Result.DesiredState != domain.AttachedWorkerDesiredRevoked {
+			t.Fatalf("iteration %d: stored plan = %+v", iteration, stored)
+		}
 	}
 }

@@ -177,12 +177,20 @@ func (service *ControlService) execute(ctx context.Context, plan domain.Attached
 	if actionResultMatches(plan, worker) {
 		return service.succeed(ctx, plan, worker)
 	}
-	connection, connectionFound, err := service.workers.LoadAttachedWorkerConnection(ctx, plan.TenantID, plan.OwnerUserID, plan.WorkerID)
-	if err != nil {
-		return ActionOperationV1{}, ErrActionBackend
+	exactPreview := worker.Revision == plan.WorkerRevision && worker.EnrollmentGeneration == plan.EnrollmentGeneration &&
+		worker.ConnectionGeneration == plan.ConnectionGeneration
+	if worker.Revision == plan.WorkerRevision && !exactPreview {
+		return service.fail(ctx, plan)
 	}
-	if worker.Revision != plan.WorkerRevision || worker.EnrollmentGeneration != plan.EnrollmentGeneration ||
-		worker.ConnectionGeneration != plan.ConnectionGeneration || !actionAvailable(plan.Action, worker, connection, connectionFound) {
+	if exactPreview {
+		connection, connectionFound, loadErr := service.workers.LoadAttachedWorkerConnection(ctx, plan.TenantID, plan.OwnerUserID, plan.WorkerID)
+		if loadErr != nil {
+			return ActionOperationV1{}, ErrActionBackend
+		}
+		if !actionAvailable(plan.Action, worker, connection, connectionFound) {
+			return service.fail(ctx, plan)
+		}
+	} else if plan.Action != domain.AttachedWorkerActionDrain {
 		return service.fail(ctx, plan)
 	}
 	var result domain.AttachedWorker
@@ -198,12 +206,22 @@ func (service *ControlService) execute(ctx context.Context, plan domain.Attached
 			return ActionOperationV1{}, ErrActionBackend
 		}
 		result = drain.Worker
+		if !drainResultMatches(plan, result) {
+			return ActionOperationV1{}, ErrActionBackend
+		}
 	case domain.AttachedWorkerActionRevoke:
 		result, err = service.revoker.Revoke(ctx, plan.TenantID, plan.OwnerUserID, attachedworker.WorkerRevisionRequest{
 			WorkerID: plan.WorkerID, ExpectedRevision: plan.WorkerRevision,
 		})
 		if err != nil {
 			if errors.Is(err, attachedworker.ErrWorkerConflict) || errors.Is(err, attachedworker.ErrWorkerNotFound) || errors.Is(err, attachedworker.ErrWorkerRevoked) {
+				current, currentFound, loadErr := service.workers.LoadAttachedWorker(ctx, plan.TenantID, plan.OwnerUserID, plan.WorkerID)
+				if loadErr != nil {
+					return ActionOperationV1{}, ErrActionBackend
+				}
+				if currentFound && actionResultMatches(plan, current) {
+					return service.succeed(ctx, plan, current)
+				}
 				return service.fail(ctx, plan)
 			}
 			return ActionOperationV1{}, ErrActionBackend
@@ -211,7 +229,7 @@ func (service *ControlService) execute(ctx context.Context, plan domain.Attached
 	default:
 		return ActionOperationV1{}, ErrActionInvalid
 	}
-	if !actionResultMatches(plan, result) {
+	if plan.Action != domain.AttachedWorkerActionDrain && !actionResultMatches(plan, result) {
 		return ActionOperationV1{}, ErrActionBackend
 	}
 	return service.succeed(ctx, plan, result)
@@ -264,6 +282,12 @@ func actionResultMatches(plan domain.AttachedWorkerActionPlan, worker domain.Att
 	default:
 		return false
 	}
+}
+
+func drainResultMatches(plan domain.AttachedWorkerActionPlan, worker domain.AttachedWorker) bool {
+	return workerMatchesScope(worker, plan.TenantID, plan.OwnerUserID, plan.WorkerID) &&
+		worker.Revision >= plan.WorkerRevision+1 && worker.EnrollmentGeneration == plan.EnrollmentGeneration &&
+		worker.ConnectionGeneration == plan.ConnectionGeneration && worker.DesiredState == domain.AttachedWorkerDesiredDrain
 }
 
 func workerMatchesScope(worker domain.AttachedWorker, tenantID domain.TenantID, ownerUserID domain.UserID, workerID domain.AttachedWorkerID) bool {

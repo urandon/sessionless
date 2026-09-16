@@ -44,6 +44,7 @@ var (
 	ErrAttemptActive           = errors.New("attached worker daemon transport attempt is already active")
 	ErrAttemptUnavailable      = errors.New("attached worker daemon transport attempt is unavailable")
 	ErrAttemptCancelled        = errors.New("attached worker daemon transport attempt was cancelled before execution")
+	ErrDrainRequested          = errors.New("attached worker daemon transport remote drain was accepted")
 	ErrMaterializationFailed   = errors.New("attached worker daemon transport materialization failed")
 	ErrReconciliationRequired  = errors.New("attached worker daemon transport requires reconciliation")
 	ErrSessionFenced           = errors.New("attached worker daemon transport session is fenced")
@@ -72,6 +73,21 @@ type Materializer interface {
 type ActiveAttemptCanceller interface {
 	CancelActive(context.Context, attachedworkerdaemon.InvocationIdentity) error
 }
+
+// ActiveAttemptController is the exact local process-control boundary used by
+// the composed foreground runtime. A remote Drain closes new admission without
+// cancelling the current invocation; Drained is acknowledged only after the
+// invocation reaches terminal state.
+type ActiveAttemptController interface {
+	ActiveAttemptCanceller
+	RequestDrain(context.Context) error
+}
+
+type ActiveControl string
+
+const (
+	ActiveControlCancelled ActiveControl = "cancelled"
+)
 
 type LocalProfileV1 struct {
 	Name             string
@@ -143,6 +159,7 @@ type activeAttempt struct {
 	nextPlatformAttemptSequence uint64
 	cancelRevision              uint64
 	cancelAcknowledged          bool
+	drainRevision               uint64
 }
 
 type completedAttempt struct {
@@ -250,7 +267,7 @@ func (adapter *Adapter) Next(ctx context.Context) (attachedworkerdaemon.Invocati
 		if ackErr != nil {
 			return attachedworkerdaemon.Invocation{}, false, classifySessionError(ackErr)
 		}
-		return attachedworkerdaemon.Invocation{}, false, ErrAttemptUnavailable
+		return attachedworkerdaemon.Invocation{}, false, ErrDrainRequested
 	default:
 		return attachedworkerdaemon.Invocation{}, false, ErrInvalidAuthority
 	}
@@ -297,7 +314,141 @@ func (adapter *Adapter) WatchActiveCancellation(
 	})
 }
 
+// WatchActiveControl performs the same bounded active-presence exchange as
+// WatchActiveCancellation, but also accepts the protocol's remote Drain. Drain
+// is applied locally as admission closure and remains pending until Complete
+// has committed the terminal and Drained transitions in that order.
+func (adapter *Adapter) WatchActiveControl(
+	ctx context.Context,
+	identity attachedworkerdaemon.InvocationIdentity,
+	target ActiveAttemptController,
+	interval time.Duration,
+) (ActiveControl, error) {
+	if interval <= 0 || interval > time.Minute {
+		return "", ErrInvalidConfiguration
+	}
+	return adapter.watchActiveControl(ctx, identity, target, func(ctx context.Context) error {
+		timer := time.NewTimer(interval)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+			return nil
+		}
+	})
+}
+
 type activeControlWait func(context.Context) error
+
+func (adapter *Adapter) watchActiveControl(
+	ctx context.Context,
+	identity attachedworkerdaemon.InvocationIdentity,
+	target ActiveAttemptController,
+	wait activeControlWait,
+) (ActiveControl, error) {
+	if adapter == nil || ctx == nil || target == nil || wait == nil || identity.Validate() != nil {
+		return "", ErrInvalidConfiguration
+	}
+	for {
+		control, handled, err := adapter.pollActiveControl(ctx, identity, target)
+		if err != nil || handled {
+			return control, err
+		}
+		if err := wait(ctx); err != nil {
+			return "", err
+		}
+	}
+}
+
+func (adapter *Adapter) pollActiveControl(
+	ctx context.Context,
+	identity attachedworkerdaemon.InvocationIdentity,
+	target ActiveAttemptController,
+) (ActiveControl, bool, error) {
+	if err := adapter.acquire(ctx); err != nil {
+		return "", false, err
+	}
+	releaseGate := true
+	defer func() {
+		if releaseGate {
+			adapter.release()
+		}
+	}()
+	active := adapter.currentActive()
+	if active == nil {
+		return "", false, ErrAttemptUnavailable
+	}
+	if active.identity != identity {
+		return "", false, ErrInvalidAuthority
+	}
+	if active.cancelRevision != 0 {
+		if active.cancelAcknowledged {
+			return ActiveControlCancelled, true, nil
+		}
+		return "", false, ErrReconciliationRequired
+	}
+	if err := adapter.validateActiveAuthority(active); err != nil {
+		return "", false, err
+	}
+	response, err := adapter.session.ExchangeAction(ctx, attachedworkersession.ActionV1{Heartbeat: &attachedworkerprotocol.HeartbeatV1{
+		ObservedAtUnixMicro: adapter.config.Now().UTC().UnixMicro(), Available: false, ActiveAttempts: 1,
+	}})
+	if err != nil {
+		return "", false, errors.Join(ErrReconciliationRequired, classifySessionError(err))
+	}
+	if response == nil {
+		return "", false, nil
+	}
+	if !frameMatchesCurrentSession(*response, adapter.session.Snapshot()) {
+		return "", false, ErrInvalidAuthority
+	}
+	switch response.Kind {
+	case attachedworkerprotocol.MessageCancel:
+		if response.Cancel == nil || response.Cancel.Validate() != nil ||
+			!sameAttemptBinding(response.Cancel.Binding, active.request.Attempt) ||
+			response.Cancel.AttemptSequence != active.nextPlatformAttemptSequence ||
+			response.Cancel.CancelRevision != 1 {
+			return "", false, ErrInvalidAuthority
+		}
+		active.cancelRevision = response.Cancel.CancelRevision
+		active.nextPlatformAttemptSequence = response.Cancel.AttemptSequence + 1
+		if err := adapter.validateActiveAuthority(active); err != nil {
+			return "", false, err
+		}
+		cancelErr, ambiguous := adapter.cancelActiveOwned(ctx, identity, target, &releaseGate)
+		if ambiguous {
+			return "", false, errors.Join(ErrReconciliationRequired, cancelErr)
+		}
+		if cancelErr != nil {
+			return "", false, errors.Join(ErrReconciliationRequired, ErrAttemptUnavailable)
+		}
+		if err := adapter.acknowledgeCancel(ctx, active, *response.Cancel); err != nil {
+			return "", false, err
+		}
+		active.cancelAcknowledged = true
+		return ActiveControlCancelled, true, nil
+	case attachedworkerprotocol.MessageDrain:
+		if response.Drain == nil || response.Drain.Validate() != nil || active.drainRevision != 0 {
+			return "", false, ErrInvalidAuthority
+		}
+		active.drainRevision = response.Drain.Revision
+		drainCtx, cancelDrain := context.WithTimeout(context.WithoutCancel(ctx), adapter.config.ActiveCancelTimeout)
+		drainErr := target.RequestDrain(drainCtx)
+		operationErr := drainCtx.Err()
+		cancelDrain()
+		if operationErr != nil || drainErr != nil {
+			return "", false, errors.Join(ErrReconciliationRequired, operationErr, drainErr)
+		}
+		// Drain closes local admission but does not end active control. The
+		// platform may still issue an exact Cancel while the current attempt
+		// finishes, so keep sending unavailable/one-active presence until the
+		// runner completes or cancellation is accepted.
+		return "", false, nil
+	default:
+		return "", false, ErrInvalidAuthority
+	}
+}
 
 func (adapter *Adapter) watchActiveCancellation(
 	ctx context.Context,
@@ -604,6 +755,22 @@ func (adapter *Adapter) completeOwned(
 	if !frameMatchesCurrentSession(*response, adapter.session.Snapshot()) || response.Kind != attachedworkerprotocol.MessageTerminalAck ||
 		response.TerminalAck == nil || !terminalMatchesAck(terminal, *response.TerminalAck, active.nextPlatformAttemptSequence) {
 		return ErrReconciliationRequired
+	}
+	if active.drainRevision != 0 {
+		ackResponse, ackErr := adapter.session.ExchangeAction(ctx, attachedworkersession.ActionV1{
+			Heartbeat: &attachedworkerprotocol.HeartbeatV1{
+				ObservedAtUnixMicro: adapter.config.Now().UTC().UnixMicro(), Available: false, ActiveAttempts: 0,
+			},
+		})
+		if ackErr != nil || ackResponse != nil {
+			return errors.Join(ErrReconciliationRequired, classifySessionError(ackErr))
+		}
+		drainedResponse, drainedErr := adapter.session.ExchangeAction(ctx, attachedworkersession.ActionV1{
+			Drained: &attachedworkerprotocol.DrainedV1{Revision: active.drainRevision},
+		})
+		if drainedErr != nil || drainedResponse != nil {
+			return errors.Join(ErrReconciliationRequired, classifySessionError(drainedErr))
+		}
 	}
 	adapter.mu.Lock()
 	adapter.active = nil

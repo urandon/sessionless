@@ -61,7 +61,7 @@ acknowledges that platform frame, preserving reconnect authority and connection
 replay fingerprints. An absent, ambiguous, divergent, or cross-session
 acknowledgement returns reconciliation-required and does not invent success.
 
-## Cancellation and remaining gate
+## Active cancellation and drain
 
 Cancellation received instead of claim acceptance is acknowledged and
 reported terminally without invoking the materializer or daemon. Caller
@@ -100,14 +100,44 @@ than being acknowledged as applied. Daemon shutdown records cancel-on-install,
 so a shutdown crossing the narrow begin-attempt/install boundary still cancels
 the exact process once the function becomes available.
 
+The same active-control exchange now handles an authoritative remote `DrainV1`
+without treating it as cancellation. `Daemon.RequestDrain` closes admission
+immediately and wakes an idle poll, but does not wait for or cancel the active
+invocation. The watcher continues unavailable/one-active heartbeats while that
+invocation runs, so an exact later `CancelV1` remains deliverable even though
+the connection is draining. The adapter retains the exact drain revision,
+commits the terminal transition, sends an unavailable/zero-active heartbeat to
+acknowledge `TerminalAckV1` and retire that committed attempt, and only then
+emits `DrainedV1`. A divergent or ambiguous transition stops the composed
+runtime as reconciliation-required; it never acknowledges a drained worker
+while execution is still active or unknown.
+
+## Feature-disabled foreground composition
+
+Issue #130 adds `ForegroundRuntime`, a single-use, library-only composition of
+the recovered cadence, adapter, daemon, runner, active-control watcher, result
+sink, and bounded session cleanup. It has no product constructor and remains
+unreachable from `attachedworkerforeground.New` and the `attached-worker run`
+command.
+
+The runtime owns one reconciled session until the daemon stops. Remote cancel
+is applied to the exact active identity; remote active drain closes admission
+and waits for terminal commit; idle remote drain becomes a graceful daemon
+stop. Watcher ambiguity fails closed by cancelling the exact active invocation,
+reporting its terminal outcome, and returning reconciliation-required. Session
+close always uses an independent bounded cleanup context, including after
+caller cancellation.
+
 ## Current boundaries and follow-up
 
-The adapter is under `internal/attachedworkerdaemontransport`. The session
-exposes a semantic `ExchangeAction` method so callers cannot forge raw frame
-scope, generations, connection sequence, or acknowledgement values. Both
-contracts remain unreachable from `attachedworkerforeground.New`.
+The adapter and feature-disabled runtime are under
+`internal/attachedworkerdaemontransport`. The session exposes a semantic
+`ExchangeAction` method so callers cannot forge raw frame scope, generations,
+connection sequence, or acknowledgement values. Both contracts remain
+unreachable from `attachedworkerforeground.New`.
 
 A later slice must provide the concrete authenticated context/artifact
 materializer, durable restart/reconnect reconciliation for ambiguous active
-cancellation, the production wake cadence, and reviewed foreground wiring.
-The two-owner security and recovery proof in #79 remains a release gate.
+cancellation, product activation and packaging, and production sleep/wake and
+offline evidence. The two-owner security and recovery proof in #79 remains a
+release gate.

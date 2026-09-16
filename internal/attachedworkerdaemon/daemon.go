@@ -153,6 +153,23 @@ func (daemon *Daemon) Drain(ctx context.Context) error {
 	return daemon.waitDone(ctx, false)
 }
 
+// RequestDrain closes admission immediately without waiting for the active
+// invocation to finish. It is the exact non-blocking boundary used by a
+// remote Drain control: the caller must not acknowledge Drained until the
+// daemon has completed its current invocation and stopped.
+func (daemon *Daemon) RequestDrain(ctx context.Context) error {
+	if daemon == nil || ctx == nil {
+		return ErrInvocationInvalid
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !daemon.startDrain(false) {
+		return ErrDaemonNotRunning
+	}
+	return nil
+}
+
 func (daemon *Daemon) Shutdown(ctx context.Context) error {
 	if ctx == nil {
 		return ErrInvocationInvalid

@@ -98,6 +98,10 @@ package does not invent successful cleanup or retry an accepted provider turn.
 `Drain` changes the daemon to `draining`, interrupts a blocked poll, refuses a
 new invocation, and allows the current invocation to finish. `Shutdown` also
 cancels the active invocation and waits only the configured shutdown grace.
+`RequestDrain` is the non-blocking remote-control boundary: it performs the
+same admission closure but leaves waiting and the eventual `Drained`
+acknowledgement to the feature-disabled foreground composition. It never
+implies cancellation of the current invocation.
 The invocation runner and result sink are cancellation-aware ports; a component
 that ignores context violates the daemon contract.
 
@@ -110,10 +114,11 @@ paths, raw stderr, provider errors, or auth material.
 - live activation behind the feature-disabled
   [foreground preflight](attached-worker-foreground.md), plus reviewed
   OS-service and container packaging;
-- production composition of the feature-disabled
-  [session-to-daemon adapter](attached-worker-daemon-transport.md), including
-  concrete authenticated materialization and durable restart reconciliation
-  for its exact active-cancel watcher, with the AW-04 attempt protocol;
+- product activation of the feature-disabled
+  [session-to-daemon composition](attached-worker-daemon-transport.md),
+  including concrete authenticated materialization and durable restart
+  reconciliation for ambiguous active control, with the AW-04 attempt
+  protocol;
 - crash/restart recovery that fences or resumes the exact durable attempt;
 - the two-owner security and recovery gate in #79.
 

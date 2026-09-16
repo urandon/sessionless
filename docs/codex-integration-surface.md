@@ -1,26 +1,31 @@
 # Codex integration surface and credential locality
 
-Status date: **2026-08-24**. Decision record for issue
+Status date: **2026-09-16**. Decision record for issue
 [#62](https://gitcode.com/urandon/sessionless/issues/62), affecting
 [#13](https://gitcode.com/urandon/sessionless/issues/13) and
 [#61](https://gitcode.com/urandon/sessionless/issues/61).
 
 The credential-free measurements and current decision delta are recorded in
-[codex-surface-measurement.md](codex-surface-measurement.md). They currently
-leave `codex exec` as the sole candidate for the explicitly consented phase;
-they do not approve production use or resume #61.
+[codex-surface-measurement.md](codex-surface-measurement.md). They leave
+`codex exec` as the sole Python-free candidate. The exact authorization tuples
+and current primary-source policy verdicts are recorded in
+[the OpenAI subscription resource policy](research/openai-subscription-resource-policy.md).
 
 ## Decision
 
 Sessionless selects its existing **Go `HarnessDriver` and credential-lifecycle
-contracts** as the durable product boundary. No Codex execution surface is
-currently selected for production.
+contracts** as the durable product boundary. Pinned
+`codex exec --json --ephemeral` is the selected production-eligible surface for
+the conditional owner-local and managed-workspace tuples in #48. The backend
+remains disabled until all placement, isolation, egress, lifecycle, artifact,
+and billing-route gates pass.
 
-For the next explicitly consented local experiment, a digest-pinned
-`codex exec --json --ephemeral` child process is the sole remaining candidate.
-It is not approved for product wiring: account-route, quota, cancellation,
-refresh, ambiguous-completion, isolation, resource, and provider-policy gates
-remain open.
+The selected child process is one digest-pinned
+`codex exec --json --ephemeral` invocation per fenced attempt. Current OpenAI
+documentation establishes subscription login, scriptable workflows, trusted
+private account automation, workspace access tokens, service accounts, and
+beta WIF. It does not waive Sessionless's account-route, quota, cancellation,
+refresh, ambiguous-completion, isolation, and resource gates.
 
 The production adapter must preserve the repository's Go/serverless deployment
 model: Sessionless-owned orchestration ships as Go binaries and must not add a
@@ -32,20 +37,23 @@ The direct `codex app-server` command remains useful for protocol research, but
 is currently documented as experimental
 and unsupported for production workloads. Therefore it is an immediate
 production-release no-go even though the protocol exposes a stable subset.
-Issue #64 compares it with the stable Python SDK and `codex exec`. A later
-official production-support statement for a Python-free surface is needed
-before any personal-subscription release. The Python SDK is evidence only, not
-an eligible production route.
+Issue #64 compares it with the stable Python SDK and `codex exec`. Current
+official non-interactive and pricing guidance makes `codex exec` the supported
+Python-free scriptable route; App Server remains ineligible. The Python SDK is
+evidence only, not an eligible production route.
 
-The first personal ChatGPT Plus/Pro deployment is **an attached worker owned by
-the user**. Its Codex credential stays on that worker. The Sessionless control
-plane stores only an opaque AI-resource identity, worker placement, connection
-health, lease state, and sanitized provider observations.
+The first eligible personal ChatGPT Plus/Pro deployment is **an attached worker
+owned by the user**. Free/Go remain no-go pending plan-specific evidence, and
+Education requires workspace-admin confirmation of the exact scriptable
+surface. The Codex credential stays on that worker. The Sessionless
+control plane stores only an opaque AI-resource identity, worker placement,
+connection health, lease state, and sanitized provider observations.
 
 A multi-tenant Sessionless cloud worker must not take custody of a consumer
 ChatGPT credential by default. That mode remains disabled until the cloud
 custody, policy, isolation, refresh/write-back, and consent gates in this
-document pass. ChatGPT Enterprise access tokens and workload identity are
+document pass and the no-go tuple is replaced by new authoritative evidence.
+Business/Enterprise access tokens, service accounts, and workload identity are
 separate deployment modes with separate administrator-controlled resources.
 OpenAI Platform API keys are separately billed resources and are never a
 fallback for a ChatGPT subscription resource.
@@ -57,8 +65,9 @@ Sessionless remains authoritative for the canonical Session, Run, Attempt,
 context snapshot, checkpoints, artifacts, permissions, and terminal result.
 
 This keeps direct App Server and Python SDK work research-only. It does **not**
-approve any production subscription-backed execution, cloud credential
-custody, or subscription federation.
+enable the production backend, cloud consumer-credential custody, or
+subscription federation. Runtime enablement requires every gate in this record
+and the exact unexpired #48 policy tuple.
 
 ## Evidence vocabulary
 
@@ -78,7 +87,7 @@ provider permits Sessionless to use that mechanism.
 | --- | --- | --- | --- |
 | Codex App Server | OpenAI's documented integration surface when the agent is part of the product and the client needs direct lifecycle and user-experience control. The command is experimental and unsupported for production; only part of its API is labelled stable. | Language-neutral JSONL protocol; ChatGPT browser/device login; account/workspace state; model discovery; multi-bucket rate limits; account usage; thread/turn/item lifecycle; interruption; streamed progress; approvals; sandbox/configuration state. | Research protocol only. Keep pinned fixtures and fail-closed Go client evidence, but do not select or ship the unsupported command. |
 | Codex SDK | Official application/automation surface. The TypeScript SDK has a smaller high-level interface; the stable Python SDK controls App Server and bundles a pinned runtime. | Convenient lifecycle ownership and supported runtime packaging. Public high-level docs do not establish account/quota/approval parity or all fencing facts needed by the Go worker. | Mandatory #64 research comparator only. A Python SDK/runtime is ineligible for the production Sessionless worker even if later versions close the behavioral gaps. Runtime/language cost is still measured to explain the rejected alternative. |
-| `codex exec` | Official non-interactive mode for one-off tasks, pipelines, scheduled jobs, and CI. | Explicit sandbox, JSONL events, output schema, resume, process exit status, and an ephemeral mode. Account connection UX, quota projection, interactive approvals, and exact interrupt semantics are outside its run contract. | Sole candidate for the explicitly consented #64 experiment. It remains a no-go for product wiring until every release gate passes. Never a silent mid-attempt fallback. |
+| `codex exec` | Official non-interactive mode for one-off tasks, pipelines, scheduled jobs, and CI; current pricing lists scriptable workflows for ChatGPT plans. | Explicit sandbox, JSONL events, output schema, resume, process exit status, and an ephemeral mode. Account connection UX, quota projection, interactive approvals, and exact interrupt semantics are outside its run contract. | Selected Python-free surface for the conditional #48 tuples. Runtime remains disabled until every release gate passes. Never a silent mid-attempt fallback. |
 | Codex MCP server | Official way to expose Codex as a specialist tool inside an MCP/Agents SDK workflow. | Portable tool invocation, but loses richer Codex session, diff, account, quota, and product event semantics. | Rejected as the primary personal-agent harness. May become a later tool under #46. |
 | Direct ChatGPT/Codex backend emulation | Implemented by OpenCode and Zed, not documented by OpenAI as a third-party integration contract. | Potentially lower process overhead, but requires Sessionless to duplicate OAuth, refresh, model catalog, request headers, quota interpretation, compatibility, and policy assumptions. | Rejected. Do not reuse competitor OAuth client IDs, private endpoint paths, cookies, or hard-coded model entitlement lists. |
 | OpenAI API | Official programmatic API with API-key/workload identity billing and policy. | Stable API integration, but it is a separately billed model resource rather than ChatGPT subscription access. | Supported later as a distinct `AIResource`; never an automatic fallback. |
@@ -98,10 +107,12 @@ supported Python-free surface rather than defend sunk cost.
 
 | Resource kind | Documented use | Credential owner | Sessionless deployment decision |
 | --- | --- | --- | --- |
-| Personal ChatGPT Plus/Pro | ChatGPT desktop, Codex CLI, IDE, and App Server login use subscription access. Standard browser login is primary; device-code login is beta and must be enabled by the user or workspace. | User's local Codex client/worker. | Attached worker first after a production-supported surface exists. No federation, credential export, or warm cross-user pool. |
+| Personal ChatGPT Plus/Pro | ChatGPT login is subscription access and `codex exec` is the documented scriptable surface. Standard browser login is primary; device-code login is beta and must be enabled by the user or workspace. | User's local Codex client/worker. | Conditional owner-only attached-worker route under `OAI-SUB-2026-09-PLUS-PRO-LOCAL`. No federation, Sessionless credential custody, or warm cross-user pool. |
+| Personal ChatGPT Free/Go | Codex is documented as included, but plan-specific non-interactive entitlement is not established precisely enough for this product decision. | User's local Codex client/worker. | No-go under `OAI-SUB-2026-09-FREE-GO-LOCAL` until a new dated primary-source record closes the gap. |
+| ChatGPT Education member | Managed workspace access may include Codex, but Business/Enterprise access-token evidence is not generalized to Education. | Workspace member's local worker. | Conditional owner-local route under `OAI-SUB-2026-09-EDU-MEMBER-LOCAL` only after admin confirmation of Codex and the exact scriptable surface. |
 | Consumer credential in Sessionless cloud | Public documentation explains local cached login and trusted runner persistence, but does not establish general multi-tenant SaaS custody or family/federation use. | Sessionless would become refresh-token custodian. | Disabled pending explicit policy, consent, threat model, and controlled evidence. |
-| ChatGPT Enterprise Codex access token | Trusted scripts, schedulers, and private CI runners that need workspace-managed Codex access. | Workspace administrator/member under Enterprise controls. | Separate organization resource; require admin configuration, rotation, revocation, and workspace binding. |
-| Workload identity | Preferred when the cloud/CI platform can issue short-lived workload tokens. | Organization identity plane. | Preferred cloud enterprise mode when available; separate from consumer login. |
+| ChatGPT Business/Enterprise Codex access token | Trusted scripts, schedulers, and private CI runners that need workspace-managed Codex access. | Workspace member or dedicated non-human service account under administrator controls. | Conditional organization resource; require admin configuration, dedicated workflow owner, least scope, rotation, revocation, and workspace binding. |
+| Workload identity | Preferred when an eligible managed workspace and cloud/CI platform can exchange short-lived OIDC/SPIFFE tokens; currently beta and enablement-gated. | Organization identity plane. | Preferred conditional managed-cloud mode when enabled; no fallback to consumer login or stored token. |
 | OpenAI Platform API key | Programmatic use at standard API pricing and API-organization data controls. | API organization/project. | Separate explicit resource and billing route. Never substitute for subscription exhaustion or reauthentication. |
 
 `account.type`, `account/updated.authMode`, and the selected resource kind form
@@ -111,13 +122,15 @@ terminates the attempt as `reauth_required`; it does not trigger another
 provider or billing resource.
 
 Provider-policy approval is a versioned decision artifact, not an informal
-checkbox. Issue #48 must record one verdict for each tuple of account type,
+checkbox. Issue #48 records one verdict for each tuple of account type,
 execution surface, placement, credential custodian, and sharing model. Each
 record names the authoritative document or provider response, precise deployment
 shape, decision owner, evidence date, go/no-go result, and expiry or re-review
 triggers such as terms, auth, runtime, or product changes. Missing, expired, or
-ambiguous evidence is no-go. Personal attached worker, Enterprise runner, cloud
-consumer custody, and federation are separate decisions.
+ambiguous evidence is no-go. Personal attached worker, managed runner, cloud
+consumer custody, and federation are separate decisions. The current records
+and expiry are in
+[the subscription policy](research/openai-subscription-resource-policy.md).
 
 ## Credential locality
 

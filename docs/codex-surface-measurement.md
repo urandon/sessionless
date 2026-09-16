@@ -161,8 +161,8 @@ Accordingly the evidence changes the decision to:
   observations; if no supported authoritative source exists, expose them as
   unknown and deny policy that requires them rather than inventing values;
 - keep cloud consumer-credential custody and subscription federation disabled
-  until #48 records explicit provider authorization for those deployment
-  tuples.
+  under the explicit #48 no-go tuples; changing either requires new
+  authoritative evidence and a new reviewed policy record.
 
 ## Deterministic failure-path evidence
 
@@ -249,14 +249,15 @@ no supported provider-quota snapshot. The honest observations are therefore:
 
 No private App Server/backend/API call may be added to fill those fields. The
 exact tuple `personal subscription + owner-managed attached worker + user-local
-credential custody + codex exec` also remains policy-unknown until #48 records
-provider authorization; user consent to a benchmark is not that authorization.
+credential custody + codex exec` is now conditionally authorized by
+`OAI-SUB-2026-09-PLUS-PRO-LOCAL`. That policy verdict does not make an
+unobservable billing route or quota observable and does not enable the backend.
 
 The resulting #64 verdict is a completed **conditional/negative spike**, not a
 production go: a Go-supervised exec adapter is technically feasible and its
 deterministic failure contract is implementable, but exact host-filesystem
 isolation remains unsupported and production subscription execution remains
-disabled behind #48 and the attached-worker epic #72. If no supported
+disabled behind the #48 release gates and the attached-worker epic #72. If no supported
 route/quota/policy signal becomes available, Sessionless must expose the
 limitation or return subscription `no-go`; it must not fall back to Python,
 experimental App Server, credential custody in cloud, or API billing.
@@ -333,8 +334,10 @@ deadline escalation, child-process loss before/after terminal JSONL, exact
 credential refresh/write-back and restart recovery, external filesystem-read
 isolation, peak RSS/descendants, and account/quota observation freshness.
 
-Issue #64 stays open until those failure-path results and the policy verdict in
-#48 are attached. Stop rather than proceed when any of these conditions holds:
+The #64 evidence remains bounded to its recorded experiment. Any implementation
+follow-up must supply the missing failure-path results and reference the exact
+unexpired #48 policy record. Stop rather than proceed when any of these
+conditions holds:
 
 - the only way to obtain a required signal is an unsupported/private API;
 - an API-key route appears where a ChatGPT subscription resource was selected;

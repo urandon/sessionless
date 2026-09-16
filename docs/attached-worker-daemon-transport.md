@@ -103,11 +103,14 @@ the exact process once the function becomes available.
 The same active-control exchange now handles an authoritative remote `DrainV1`
 without treating it as cancellation. `Daemon.RequestDrain` closes admission
 immediately and wakes an idle poll, but does not wait for or cancel the active
-invocation. The adapter retains the exact drain revision while that invocation
-finishes, commits its terminal transition first, and emits `DrainedV1` only
-after the matching `TerminalAckV1`. A divergent or ambiguous transition stops
-the composed runtime as reconciliation-required; it never acknowledges a
-drained worker while execution is still active or unknown.
+invocation. The watcher continues unavailable/one-active heartbeats while that
+invocation runs, so an exact later `CancelV1` remains deliverable even though
+the connection is draining. The adapter retains the exact drain revision,
+commits the terminal transition, sends an unavailable/zero-active heartbeat to
+acknowledge `TerminalAckV1` and retire that committed attempt, and only then
+emits `DrainedV1`. A divergent or ambiguous transition stops the composed
+runtime as reconciliation-required; it never acknowledges a drained worker
+while execution is still active or unknown.
 
 ## Feature-disabled foreground composition
 

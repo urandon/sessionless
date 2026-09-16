@@ -87,7 +87,6 @@ type ActiveControl string
 
 const (
 	ActiveControlCancelled ActiveControl = "cancelled"
-	ActiveControlDraining  ActiveControl = "draining"
 )
 
 type LocalProfileV1 struct {
@@ -389,9 +388,6 @@ func (adapter *Adapter) pollActiveControl(
 		}
 		return "", false, ErrReconciliationRequired
 	}
-	if active.drainRevision != 0 {
-		return ActiveControlDraining, true, nil
-	}
 	if err := adapter.validateActiveAuthority(active); err != nil {
 		return "", false, err
 	}
@@ -433,7 +429,7 @@ func (adapter *Adapter) pollActiveControl(
 		active.cancelAcknowledged = true
 		return ActiveControlCancelled, true, nil
 	case attachedworkerprotocol.MessageDrain:
-		if response.Drain == nil || response.Drain.Validate() != nil {
+		if response.Drain == nil || response.Drain.Validate() != nil || active.drainRevision != 0 {
 			return "", false, ErrInvalidAuthority
 		}
 		active.drainRevision = response.Drain.Revision
@@ -444,7 +440,11 @@ func (adapter *Adapter) pollActiveControl(
 		if operationErr != nil || drainErr != nil {
 			return "", false, errors.Join(ErrReconciliationRequired, operationErr, drainErr)
 		}
-		return ActiveControlDraining, true, nil
+		// Drain closes local admission but does not end active control. The
+		// platform may still issue an exact Cancel while the current attempt
+		// finishes, so keep sending unavailable/one-active presence until the
+		// runner completes or cancellation is accepted.
+		return "", false, nil
 	default:
 		return "", false, ErrInvalidAuthority
 	}
@@ -757,6 +757,14 @@ func (adapter *Adapter) completeOwned(
 		return ErrReconciliationRequired
 	}
 	if active.drainRevision != 0 {
+		ackResponse, ackErr := adapter.session.ExchangeAction(ctx, attachedworkersession.ActionV1{
+			Heartbeat: &attachedworkerprotocol.HeartbeatV1{
+				ObservedAtUnixMicro: adapter.config.Now().UTC().UnixMicro(), Available: false, ActiveAttempts: 0,
+			},
+		})
+		if ackErr != nil || ackResponse != nil {
+			return errors.Join(ErrReconciliationRequired, classifySessionError(ackErr))
+		}
 		drainedResponse, drainedErr := adapter.session.ExchangeAction(ctx, attachedworkersession.ActionV1{
 			Drained: &attachedworkerprotocol.DrainedV1{Revision: active.drainRevision},
 		})

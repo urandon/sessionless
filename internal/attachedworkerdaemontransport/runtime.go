@@ -79,7 +79,7 @@ func ReconnectForegroundRuntime(
 	if err == nil {
 		return runtime, nil
 	}
-	closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), preparedRuntimeConfig(config).CleanupTimeout)
+	closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), safeRuntimeCleanupTimeout(config.CleanupTimeout))
 	defer cancel()
 	return nil, errors.Join(err, cadence.Close(closeCtx))
 }
@@ -142,6 +142,13 @@ func validateRuntimeConfig(config RuntimeConfig) (RuntimeConfig, error) {
 		return RuntimeConfig{}, ErrInvalidConfiguration
 	}
 	return config, nil
+}
+
+func safeRuntimeCleanupTimeout(timeout time.Duration) time.Duration {
+	if timeout <= 0 || timeout > time.Minute {
+		return defaultRuntimeCleanupTimeout
+	}
+	return timeout
 }
 
 // Run owns the daemon and reconciled session exactly once. Session close runs
@@ -292,23 +299,18 @@ func (runner *activeControlRunner) Run(
 		return outcome.result, outcome.err
 	case control := <-watchDone:
 		if control.err != nil {
+			if ctx.Err() != nil && errors.Is(control.err, ctx.Err()) {
+				outcome, waitErr := runner.waitRunner(runDone)
+				return outcome.result, errors.Join(outcome.err, waitErr)
+			}
 			cancelErr := runner.cancelExact(invocation.Identity)
 			outcome, waitErr := runner.waitRunner(runDone)
 			return outcome.result, errors.Join(outcome.err, ErrReconciliationRequired, control.err, cancelErr, waitErr)
 		}
-		if control.control != ActiveControlCancelled && control.control != ActiveControlDraining {
+		if control.control != ActiveControlCancelled {
 			cancelErr := runner.cancelExact(invocation.Identity)
 			outcome, waitErr := runner.waitRunner(runDone)
 			return outcome.result, errors.Join(outcome.err, ErrReconciliationRequired, ErrInvalidAuthority, cancelErr, waitErr)
-		}
-		if control.control == ActiveControlDraining {
-			select {
-			case outcome := <-runDone:
-				return outcome.result, outcome.err
-			case <-ctx.Done():
-				outcome, waitErr := runner.waitRunner(runDone)
-				return outcome.result, errors.Join(outcome.err, ctx.Err(), waitErr)
-			}
 		}
 		outcome, waitErr := runner.waitRunner(runDone)
 		return outcome.result, errors.Join(outcome.err, waitErr)

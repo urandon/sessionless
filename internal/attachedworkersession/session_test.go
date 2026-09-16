@@ -268,6 +268,114 @@ func TestSessionExchangeActionOwnsEnvelopeAndReleasesCommittedAttempt(t *testing
 	}
 }
 
+func TestSessionRequiresTerminalAckEnvelopeBeforeActiveDrainAcknowledgement(t *testing.T) {
+	fixture := newSessionFixture(t)
+	session := mustReadySession(t, fixture)
+	snapshot := session.Snapshot()
+	binding := sessionAttemptBinding(mustDecodeHex(t, string(snapshot.CapabilityDigest)), "active-drain")
+	step := 0
+	fixture.exchange.setHandler(func(_ context.Context, batch attachedworkerprotocol.BatchV1) (*attachedworkerprotocol.BatchV1, error) {
+		if len(batch.Frames) != 1 {
+			t.Fatalf("step=%d frames=%d", step, len(batch.Frames))
+		}
+		frame := batch.Frames[0]
+		if frame.WorkerID != string(snapshot.WorkerID) || frame.EnrollmentGeneration != snapshot.EnrollmentGeneration ||
+			frame.ConnectionGeneration != snapshot.ConnectionGeneration {
+			t.Fatalf("step=%d scope=%+v", step, frame)
+		}
+		var response *attachedworkerprotocol.BatchV1
+		switch step {
+		case 0:
+			if frame.Kind != attachedworkerprotocol.MessageHeartbeat || frame.Sequence != 4 || frame.Ack != 2 {
+				t.Fatalf("initial heartbeat=%+v", frame)
+			}
+			response = sessionPlatformBatch(snapshot, 3, 4, attachedworkerprotocol.MessageLeaseOffer)
+			response.Frames[0].LeaseOffer = &attachedworkerprotocol.LeaseOfferV1{Binding: binding, AttemptSequence: 1}
+		case 1:
+			if frame.Kind != attachedworkerprotocol.MessageLeaseClaim || frame.Sequence != 5 || frame.Ack != 3 {
+				t.Fatalf("claim=%+v", frame)
+			}
+			response = sessionPlatformBatch(snapshot, 4, 5, attachedworkerprotocol.MessageLeaseAccepted)
+			response.Frames[0].LeaseAccepted = &attachedworkerprotocol.LeaseAcceptedV1{Binding: binding, AttemptSequence: 2}
+		case 2:
+			if frame.Kind != attachedworkerprotocol.MessageHeartbeat || frame.Heartbeat == nil ||
+				frame.Heartbeat.Available || frame.Heartbeat.ActiveAttempts != 1 || frame.Sequence != 6 || frame.Ack != 4 {
+				t.Fatalf("active heartbeat=%+v", frame)
+			}
+			response = sessionPlatformBatch(snapshot, 5, 6, attachedworkerprotocol.MessageDrain)
+			response.Frames[0].Drain = &attachedworkerprotocol.DrainV1{Revision: 1}
+		case 3:
+			if frame.Kind != attachedworkerprotocol.MessageTerminal || frame.Sequence != 7 || frame.Ack != 5 {
+				t.Fatalf("terminal=%+v", frame)
+			}
+			response = sessionPlatformBatch(snapshot, 6, 7, attachedworkerprotocol.MessageTerminalAck)
+			response.Frames[0].TerminalAck = &attachedworkerprotocol.TerminalAckV1{
+				Binding: binding, AttemptSequence: 3, TerminalSequence: frame.Terminal.TerminalSequence,
+				Status: frame.Terminal.Status, Result: frame.Terminal.Result,
+				EvidenceDigest: append([]byte(nil), frame.Terminal.EvidenceDigest...),
+			}
+		case 4:
+			if frame.Kind != attachedworkerprotocol.MessageHeartbeat || frame.Heartbeat == nil ||
+				frame.Heartbeat.Available || frame.Heartbeat.ActiveAttempts != 0 || frame.Sequence != 8 || frame.Ack != 6 {
+				t.Fatalf("terminal acknowledgement heartbeat=%+v", frame)
+			}
+		case 5:
+			if frame.Kind != attachedworkerprotocol.MessageDrained || frame.Drained == nil ||
+				frame.Drained.Revision != 1 || frame.Sequence != 9 || frame.Ack != 6 {
+				t.Fatalf("drained=%+v", frame)
+			}
+		default:
+			t.Fatalf("unexpected step=%d", step)
+		}
+		step++
+		return response, nil
+	})
+	response, err := session.ExchangeAction(context.Background(), ActionV1{Heartbeat: &attachedworkerprotocol.HeartbeatV1{
+		ObservedAtUnixMicro: sessionTestTime.UnixMicro(), Available: true,
+	}})
+	if err != nil || response == nil || response.LeaseOffer == nil {
+		t.Fatalf("offer response=%+v error=%v", response, err)
+	}
+	response, err = session.ExchangeAction(context.Background(), ActionV1{LeaseClaim: &attachedworkerprotocol.LeaseClaimV1{
+		Binding: binding, AttemptSequence: 1,
+	}})
+	if err != nil || response == nil || response.LeaseAccepted == nil {
+		t.Fatalf("accepted response=%+v error=%v", response, err)
+	}
+	response, err = session.ExchangeAction(context.Background(), ActionV1{Heartbeat: &attachedworkerprotocol.HeartbeatV1{
+		ObservedAtUnixMicro: sessionTestTime.Add(time.Second).UnixMicro(), Available: false, ActiveAttempts: 1,
+	}})
+	if err != nil || response == nil || response.Drain == nil {
+		t.Fatalf("drain response=%+v error=%v", response, err)
+	}
+	evidence := bytes.Repeat([]byte{0x6a}, sha256.Size)
+	response, err = session.ExchangeAction(context.Background(), ActionV1{Terminal: &attachedworkerprotocol.TerminalV1{
+		Binding: binding, AttemptSequence: 2, TerminalSequence: 1,
+		Status: attachedworkerprotocol.TerminalSucceeded, Result: attachedworkerprotocol.TerminalResultCompleted,
+		EvidenceDigest: evidence,
+	}})
+	if err != nil || response == nil || response.TerminalAck == nil {
+		t.Fatalf("terminal response=%+v error=%v", response, err)
+	}
+	if response, err = session.ExchangeAction(context.Background(), ActionV1{Heartbeat: &attachedworkerprotocol.HeartbeatV1{
+		ObservedAtUnixMicro: sessionTestTime.Add(2 * time.Second).UnixMicro(), Available: false, ActiveAttempts: 0,
+	}}); err != nil || response != nil {
+		t.Fatalf("terminal acknowledgement response=%+v error=%v", response, err)
+	}
+	if response, err = session.ExchangeAction(context.Background(), ActionV1{
+		Drained: &attachedworkerprotocol.DrainedV1{Revision: 1},
+	}); err != nil || response != nil {
+		t.Fatalf("drained response=%+v error=%v", response, err)
+	}
+	session.mu.Lock()
+	post, snapshotErr := session.machine.Snapshot()
+	session.mu.Unlock()
+	if snapshotErr != nil || post.Connection != attachedworkerprotocol.ConnectionDrained ||
+		post.Attempt.Summary.State != attachedworkerprotocol.AttemptIdle || step != 6 {
+		t.Fatalf("post=%+v steps=%d error=%v", post, step, snapshotErr)
+	}
+}
+
 func TestConnectorReplaysExactInitialManifestAfterRetryableAmbiguity(t *testing.T) {
 	fixture := newSessionFixture(t)
 	config := fixture.config

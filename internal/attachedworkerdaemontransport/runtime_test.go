@@ -16,7 +16,7 @@ func TestForegroundRuntimeComposesRemoteDrainAfterActiveTerminal(t *testing.T) {
 	source := newRuntimeSource()
 	runner := &runtimeRunner{started: make(chan struct{}, 1), release: make(chan struct{})}
 	sink := &runtimeSink{completed: make(chan struct{}, 1)}
-	watcher := &runtimeWatcher{started: make(chan struct{}, 1), control: ActiveControlDraining}
+	watcher := &runtimeWatcher{started: make(chan struct{}, 1), requestDrain: true}
 	closer := &runtimeCloser{}
 	runtime, err := newForegroundRuntime(source, sink, watcher, closer, runner, RuntimeConfig{
 		Daemon: attachedworkerdaemon.DaemonConfig{IdleBackoff: time.Second}, CleanupTimeout: time.Second,
@@ -30,8 +30,8 @@ func TestForegroundRuntimeComposesRemoteDrainAfterActiveTerminal(t *testing.T) {
 	source.invocations <- runtimeInvocation("attempt-must-not-start")
 	runDone := make(chan error, 1)
 	go func() { runDone <- runtime.Run(context.Background()) }()
-	<-runner.started
-	<-watcher.started
+	waitRuntimeSignal(t, runner.started, "runner did not start")
+	waitRuntimeSignal(t, watcher.started, "active-control watcher did not start")
 	waitForRuntimeState(t, runtime, attachedworkerdaemon.DaemonDraining)
 	if err := runtime.Wake(); err != nil {
 		t.Fatalf("wake: %v", err)
@@ -42,7 +42,7 @@ func TestForegroundRuntimeComposesRemoteDrainAfterActiveTerminal(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("terminal result was not reported")
 	}
-	if err := <-runDone; err != nil {
+	if err := waitRuntimeResult(t, runDone, "runtime did not stop after drain"); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	if closer.calls != 1 || source.wakes != 1 || runner.calls != 1 || sink.calls != 1 {
@@ -80,8 +80,8 @@ func TestForegroundRuntimeComposesExactRemoteCancellation(t *testing.T) {
 	source.invocations <- invocation
 	runDone := make(chan error, 1)
 	go func() { runDone <- runtime.Run(context.Background()) }()
-	<-runner.started
-	<-watcher.started
+	waitRuntimeSignal(t, runner.started, "runner did not start")
+	waitRuntimeSignal(t, watcher.started, "active-control watcher did not start")
 	select {
 	case <-sink.completed:
 	case <-time.After(time.Second):
@@ -90,7 +90,7 @@ func TestForegroundRuntimeComposesExactRemoteCancellation(t *testing.T) {
 	if err := runtime.Drain(context.Background()); err != nil {
 		t.Fatalf("drain after cancellation: %v", err)
 	}
-	if err := <-runDone; err != nil {
+	if err := waitRuntimeResult(t, runDone, "runtime did not stop after cancellation"); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	if !sink.result.Process.Cancelled || sink.identity != invocation.Identity || watcher.identity != invocation.Identity {
@@ -116,14 +116,52 @@ func TestForegroundRuntimeFailsClosedOnActiveControlAmbiguity(t *testing.T) {
 	source.invocations <- runtimeInvocation("attempt-ambiguous-control")
 	runDone := make(chan error, 1)
 	go func() { runDone <- runtime.Run(context.Background()) }()
-	<-runner.started
-	<-watcher.started
-	err = <-runDone
+	waitRuntimeSignal(t, runner.started, "runner did not start")
+	waitRuntimeSignal(t, watcher.started, "active-control watcher did not start")
+	err = waitRuntimeResult(t, runDone, "runtime did not fail closed after ambiguity")
 	if !errors.Is(err, ErrReconciliationRequired) || !errors.Is(err, watcher.err) {
 		t.Fatalf("run error=%v", err)
 	}
 	if !sink.result.Process.Cancelled || sink.calls != 1 || closer.calls != 1 {
 		t.Fatalf("result=%+v sink_calls=%d close_calls=%d", sink.result, sink.calls, closer.calls)
+	}
+}
+
+func TestActiveControlRunnerTreatsParentCancellationDeterministically(t *testing.T) {
+	for iteration := 0; iteration < 50; iteration++ {
+		delegate := &runtimeRunner{started: make(chan struct{}, 1), release: make(chan struct{})}
+		watcher := &runtimeWatcher{started: make(chan struct{}, 1)}
+		controller := &fakeActiveController{}
+		runner := &activeControlRunner{
+			delegate: delegate, watcher: watcher, target: controller,
+			interval: time.Second, cleanup: time.Second,
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() {
+			_, runErr := runner.Run(ctx, runtimeInvocation("attempt-parent-cancel"))
+			done <- runErr
+		}()
+		waitRuntimeSignal(t, delegate.started, "delegate did not start")
+		waitRuntimeSignal(t, watcher.started, "watcher did not start")
+		cancel()
+		if err := waitRuntimeResult(t, done, "active-control runner did not observe parent cancellation"); err != nil {
+			t.Fatalf("iteration %d: cancellation error=%v", iteration, err)
+		}
+		if controller.cancelCalls != 0 {
+			t.Fatalf("iteration %d: parent cancellation repeated exact remote cancel calls=%d", iteration, controller.cancelCalls)
+		}
+	}
+}
+
+func TestSafeRuntimeCleanupTimeoutUsesOnlyValidBound(t *testing.T) {
+	for _, invalid := range []time.Duration{-time.Second, 0, time.Minute + time.Nanosecond} {
+		if got := safeRuntimeCleanupTimeout(invalid); got != defaultRuntimeCleanupTimeout {
+			t.Fatalf("timeout %s resolved to %s", invalid, got)
+		}
+	}
+	if got := safeRuntimeCleanupTimeout(time.Second); got != time.Second {
+		t.Fatalf("valid timeout resolved to %s", got)
 	}
 }
 
@@ -234,10 +272,11 @@ func (sink *runtimeSink) Complete(
 }
 
 type runtimeWatcher struct {
-	started  chan struct{}
-	control  ActiveControl
-	err      error
-	identity attachedworkerdaemon.InvocationIdentity
+	started      chan struct{}
+	control      ActiveControl
+	err          error
+	requestDrain bool
+	identity     attachedworkerdaemon.InvocationIdentity
 }
 
 func (watcher *runtimeWatcher) WatchActiveControl(
@@ -254,14 +293,39 @@ func (watcher *runtimeWatcher) WatchActiveControl(
 	if watcher.err != nil {
 		return "", watcher.err
 	}
+	if watcher.requestDrain {
+		if err := target.RequestDrain(ctx); err != nil {
+			return "", err
+		}
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
 	switch watcher.control {
 	case ActiveControlCancelled:
 		return watcher.control, target.CancelActive(ctx, identity)
-	case ActiveControlDraining:
-		return watcher.control, target.RequestDrain(ctx)
 	default:
 		<-ctx.Done()
 		return "", ctx.Err()
+	}
+}
+
+func waitRuntimeSignal(t *testing.T, signal <-chan struct{}, failure string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(time.Second):
+		t.Fatal(failure)
+	}
+}
+
+func waitRuntimeResult(t *testing.T, result <-chan error, failure string) error {
+	t.Helper()
+	select {
+	case err := <-result:
+		return err
+	case <-time.After(time.Second):
+		t.Fatal(failure)
+		return nil
 	}
 }
 

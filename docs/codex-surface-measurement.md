@@ -250,7 +250,7 @@ no supported provider-quota snapshot. The honest observations are therefore:
 No private App Server/backend/API call may be added to fill those fields. The
 exact tuple `personal subscription + owner-managed attached worker + user-local
 credential custody + codex exec` is now conditionally authorized by
-`OAI-SUB-2026-09-PERSONAL-LOCAL`. That policy verdict does not make an
+`OAI-SUB-2026-09-PLUS-PRO-LOCAL`. That policy verdict does not make an
 unobservable billing route or quota observable and does not enable the backend.
 
 The resulting #64 verdict is a completed **conditional/negative spike**, not a

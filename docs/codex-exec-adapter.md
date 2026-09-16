@@ -103,8 +103,8 @@ The package is not wired into any binary. Its local `Enabled` field is only a
 reversible component gate and is not provider authorization. Production still
 requires all of the following:
 
-- the conditional #48 `OAI-SUB-2026-09-PERSONAL-LOCAL` authorization tuple for
-  personal subscription, owner-managed attached worker, local credential
+- the conditional #48 `OAI-SUB-2026-09-PLUS-PRO-LOCAL` authorization tuple for
+  eligible personal subscription, owner-managed attached worker, local credential
   custody, and exact Codex exec surface, including its expiry/re-review gate;
 - an enabled production bridge from the canonical immutable `HarnessBindingV1`
   to the attached-worker attempt/connection/lease authority. The closed

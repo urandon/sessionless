@@ -42,8 +42,10 @@ official non-interactive and pricing guidance makes `codex exec` the supported
 Python-free scriptable route; App Server remains ineligible. The Python SDK is
 evidence only, not an eligible production route.
 
-The first personal ChatGPT Free/Go/Plus/Pro deployment is **an attached worker
-owned by the user**. Its Codex credential stays on that worker. The Sessionless
+The first eligible personal ChatGPT Plus/Pro deployment is **an attached worker
+owned by the user**. Free/Go remain no-go pending plan-specific evidence, and
+Education requires workspace-admin confirmation of the exact scriptable
+surface. The Codex credential stays on that worker. The Sessionless
 control plane stores only an opaque AI-resource identity, worker placement,
 connection health, lease state, and sanitized provider observations.
 
@@ -105,7 +107,9 @@ supported Python-free surface rather than defend sunk cost.
 
 | Resource kind | Documented use | Credential owner | Sessionless deployment decision |
 | --- | --- | --- | --- |
-| Personal ChatGPT Free/Go/Plus/Pro | ChatGPT desktop, Codex CLI, IDE, `codex exec`, and scriptable workflows use subscription access. Standard browser login is primary; device-code login is beta and must be enabled by the user or workspace. | User's local Codex client/worker. | Conditional owner-only attached-worker route under `OAI-SUB-2026-09-PERSONAL-LOCAL`. No federation, Sessionless credential custody, or warm cross-user pool. |
+| Personal ChatGPT Plus/Pro | ChatGPT login is subscription access and `codex exec` is the documented scriptable surface. Standard browser login is primary; device-code login is beta and must be enabled by the user or workspace. | User's local Codex client/worker. | Conditional owner-only attached-worker route under `OAI-SUB-2026-09-PLUS-PRO-LOCAL`. No federation, Sessionless credential custody, or warm cross-user pool. |
+| Personal ChatGPT Free/Go | Codex is documented as included, but plan-specific non-interactive entitlement is not established precisely enough for this product decision. | User's local Codex client/worker. | No-go under `OAI-SUB-2026-09-FREE-GO-LOCAL` until a new dated primary-source record closes the gap. |
+| ChatGPT Education member | Managed workspace access may include Codex, but Business/Enterprise access-token evidence is not generalized to Education. | Workspace member's local worker. | Conditional owner-local route under `OAI-SUB-2026-09-EDU-MEMBER-LOCAL` only after admin confirmation of Codex and the exact scriptable surface. |
 | Consumer credential in Sessionless cloud | Public documentation explains local cached login and trusted runner persistence, but does not establish general multi-tenant SaaS custody or family/federation use. | Sessionless would become refresh-token custodian. | Disabled pending explicit policy, consent, threat model, and controlled evidence. |
 | ChatGPT Business/Enterprise Codex access token | Trusted scripts, schedulers, and private CI runners that need workspace-managed Codex access. | Workspace member or dedicated non-human service account under administrator controls. | Conditional organization resource; require admin configuration, dedicated workflow owner, least scope, rotation, revocation, and workspace binding. |
 | Workload identity | Preferred when an eligible managed workspace and cloud/CI platform can exchange short-lived OIDC/SPIFFE tokens; currently beta and enablement-gated. | Organization identity plane. | Preferred conditional managed-cloud mode when enabled; no fallback to consumer login or stored token. |

@@ -25,7 +25,9 @@ The 2026-08-24 comparator supersedes the provisional App Server selection:
 Sessionless keeps its Go harness boundary, uses direct App Server and the stable
 Python SDK only as non-selectable research comparators, selects `codex exec` as
 the sole eligible Python-free production surface, and makes a user-owned
-attached worker the first conditional personal Free/Go/Plus/Pro placement. No
+attached worker the first conditional personal Plus/Pro placement. Free/Go
+remain no-go pending plan-specific evidence, and Education requires explicit
+workspace-admin confirmation. No
 mode can ship until its exact policy, isolation, egress, lifecycle, artifact,
 and billing-route gates pass. The production worker remains Go/serverless and must not
 ship a Python SDK/runtime or Python sidecar. Cloud custody of a consumer

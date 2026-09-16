@@ -160,7 +160,7 @@ Federation is a resource ACL and accounting layer, not credential copying. The p
 | User's local Ollama/vLLM/SGLang shared with the same user | Conditional go | Worker ownership, model license, capacity/budget, network and data policy. |
 | User-owned local endpoint shared with named tenant members | Conditional no-go until configured | Explicit owner consent, model license, per-member ACL/quota, host threat model, revocation. |
 | Organization API/enterprise resource shared inside its workspace | Conditional | Provider organization terms, admin approval, workspace membership, cost attribution, data policy. |
-| Personal ChatGPT/Codex subscription used by its owner on attached worker | Conditional go | Exact `OAI-SUB-2026-09-PERSONAL-LOCAL` tuple, consent, isolation, billing-route guard, cancellation/recovery, and pinned runtime evidence. |
+| Personal ChatGPT Plus/Pro subscription used by its owner on attached worker | Conditional go | Exact `OAI-SUB-2026-09-PLUS-PRO-LOCAL` tuple, consent, isolation, billing-route guard, cancellation/recovery, and pinned runtime evidence. Free/Go remain no-go pending plan-specific evidence; Education has its own admin-confirmed tuple. |
 | Personal subscription shared with household/federation | No-go | Explicit authoritative provider authorization for that exact arrangement; technical feasibility is insufficient. |
 | Consumer credential held in Sessionless cloud | No-go | Explicit provider authorization, custody/legal decision, consent, tenant isolation, refresh/revocation and incident evidence. |
 

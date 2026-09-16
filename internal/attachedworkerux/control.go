@@ -238,16 +238,18 @@ func (service *ControlService) execute(ctx context.Context, plan domain.Attached
 func (service *ControlService) succeed(ctx context.Context, plan domain.AttachedWorkerActionPlan, worker domain.AttachedWorker) (ActionOperationV1, error) {
 	plan.State, plan.Result, plan.FailureCode = domain.AttachedWorkerActionSucceeded, worker, ""
 	plan.CompletedAt, plan.Revision = canonicalNow(service.clock.Now()), plan.Revision+1
-	if err := service.plans.CompleteAttachedWorkerAction(ctx, plan); err != nil {
+	durable, err := service.plans.CompleteAttachedWorkerAction(ctx, plan)
+	if err != nil || !actionTerminalMatches(plan, durable) {
 		return ActionOperationV1{}, ErrActionBackend
 	}
-	return operationView(plan, "applied"), nil
+	return operationView(durable, "applied"), nil
 }
 
 func (service *ControlService) fail(ctx context.Context, plan domain.AttachedWorkerActionPlan) (ActionOperationV1, error) {
 	plan.State, plan.FailureCode = domain.AttachedWorkerActionFailed, "conflict"
 	plan.CompletedAt, plan.Revision = canonicalNow(service.clock.Now()), plan.Revision+1
-	if err := service.plans.CompleteAttachedWorkerAction(ctx, plan); err != nil {
+	durable, err := service.plans.CompleteAttachedWorkerAction(ctx, plan)
+	if err != nil || !actionTerminalMatches(plan, durable) {
 		return ActionOperationV1{}, ErrActionBackend
 	}
 	return ActionOperationV1{}, ErrActionConflict
@@ -288,6 +290,25 @@ func drainResultMatches(plan domain.AttachedWorkerActionPlan, worker domain.Atta
 	return workerMatchesScope(worker, plan.TenantID, plan.OwnerUserID, plan.WorkerID) &&
 		worker.Revision >= plan.WorkerRevision+1 && worker.EnrollmentGeneration == plan.EnrollmentGeneration &&
 		worker.ConnectionGeneration == plan.ConnectionGeneration && worker.DesiredState == domain.AttachedWorkerDesiredDrain
+}
+
+func actionTerminalMatches(expected, durable domain.AttachedWorkerActionPlan) bool {
+	if durable.Validate() != nil || expected.Version != durable.Version || expected.TenantID != durable.TenantID ||
+		expected.OwnerUserID != durable.OwnerUserID || expected.ID != durable.ID || expected.OperationID != durable.OperationID ||
+		expected.WorkerID != durable.WorkerID || expected.Action != durable.Action || expected.State != durable.State ||
+		expected.WorkerRevision != durable.WorkerRevision || expected.EnrollmentGeneration != durable.EnrollmentGeneration ||
+		expected.ConnectionGeneration != durable.ConnectionGeneration || expected.ConfirmationDigest != durable.ConfirmationDigest ||
+		expected.IdempotencyDigest != durable.IdempotencyDigest || expected.FailureCode != durable.FailureCode ||
+		expected.Revision != durable.Revision || !expected.CreatedAt.Equal(durable.CreatedAt) || !expected.ExpiresAt.Equal(durable.ExpiresAt) {
+		return false
+	}
+	if expected.State == domain.AttachedWorkerActionFailed {
+		return true
+	}
+	if expected.Action == domain.AttachedWorkerActionDrain {
+		return drainResultMatches(expected, durable.Result) && durable.Result.Revision == expected.Result.Revision
+	}
+	return actionResultMatches(expected, durable.Result)
 }
 
 func workerMatchesScope(worker domain.AttachedWorker, tenantID domain.TenantID, ownerUserID domain.UserID, workerID domain.AttachedWorkerID) bool {

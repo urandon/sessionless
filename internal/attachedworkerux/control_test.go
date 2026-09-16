@@ -16,14 +16,17 @@ import (
 )
 
 type actionTestClock struct {
-	mu  sync.Mutex
-	now time.Time
+	mu   sync.Mutex
+	now  time.Time
+	step time.Duration
 }
 
 func (clock *actionTestClock) Now() time.Time {
 	clock.mu.Lock()
 	defer clock.mu.Unlock()
-	return clock.now
+	now := clock.now
+	clock.now = clock.now.Add(clock.step)
+	return now
 }
 
 func (clock *actionTestClock) Add(delta time.Duration) {
@@ -58,10 +61,12 @@ func fmtID(prefix string, value int) string {
 }
 
 type actionWorkerStore struct {
-	mu         sync.Mutex
-	worker     domain.AttachedWorker
-	connection domain.AttachedWorkerConnection
-	err        error
+	mu          sync.Mutex
+	worker      domain.AttachedWorker
+	connection  domain.AttachedWorkerConnection
+	err         error
+	loadReady   chan<- struct{}
+	loadRelease <-chan struct{}
 }
 
 func (store *actionWorkerStore) LoadAttachedWorkerConnection(_ context.Context, tenant domain.TenantID, owner domain.UserID, workerID domain.AttachedWorkerID) (domain.AttachedWorkerConnection, bool, error) {
@@ -77,6 +82,13 @@ func (store *actionWorkerStore) LoadAttachedWorkerConnection(_ context.Context, 
 }
 
 func (store *actionWorkerStore) LoadAttachedWorker(_ context.Context, tenant domain.TenantID, owner domain.UserID, workerID domain.AttachedWorkerID) (domain.AttachedWorker, bool, error) {
+	store.mu.Lock()
+	ready, release := store.loadReady, store.loadRelease
+	store.mu.Unlock()
+	if ready != nil {
+		ready <- struct{}{}
+		<-release
+	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	if store.err != nil {
@@ -193,22 +205,28 @@ func (store *actionPlanStore) ClaimAttachedWorkerActionPlan(_ context.Context, c
 	return ports.AttachedWorkerActionClaimResult{Status: ports.AttachedWorkerActionClaimed, Plan: plan}, nil
 }
 
-func (store *actionPlanStore) CompleteAttachedWorkerAction(_ context.Context, plan domain.AttachedWorkerActionPlan) error {
+func (store *actionPlanStore) CompleteAttachedWorkerAction(_ context.Context, plan domain.AttachedWorkerActionPlan) (domain.AttachedWorkerActionPlan, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	if store.completeFail {
 		store.completeFail = false
-		return errors.New("simulated completion failure")
+		return domain.AttachedWorkerActionPlan{}, errors.New("simulated completion failure")
 	}
 	current, found := store.plans[plan.ID]
-	if found && current.State == domain.AttachedWorkerActionSucceeded && reflect.DeepEqual(current, plan) {
-		return nil
+	if found && (current.State == domain.AttachedWorkerActionSucceeded || current.State == domain.AttachedWorkerActionFailed) {
+		currentTime, planTime := current.CompletedAt, plan.CompletedAt
+		current.CompletedAt, plan.CompletedAt = time.Time{}, time.Time{}
+		same := reflect.DeepEqual(current, plan)
+		current.CompletedAt, plan.CompletedAt = currentTime, planTime
+		if same {
+			return current, nil
+		}
 	}
 	if !found || current.OperationID != plan.OperationID || current.Revision+1 != plan.Revision {
-		return errors.New("completion conflict")
+		return domain.AttachedWorkerActionPlan{}, errors.New("completion conflict")
 	}
 	store.plans[plan.ID] = plan
-	return nil
+	return plan, nil
 }
 
 func (store *actionPlanStore) LoadAttachedWorkerActionOperation(_ context.Context, tenant domain.TenantID, owner domain.UserID, operationID domain.AttachedWorkerActionOperationID) (domain.AttachedWorkerActionPlan, bool, error) {
@@ -489,6 +507,9 @@ func TestControlServiceConcurrentSameIdempotencyRevokeReconcilesSuccess(t *testi
 		if err != nil {
 			t.Fatal(err)
 		}
+		clock.mu.Lock()
+		clock.step = time.Microsecond
+		clock.mu.Unlock()
 		request := ActionApplyV1{Version: 1, PlanID: plan.PlanID, Action: ActionRevoke, Confirmation: plan.Confirmation, IdempotencyKey: "idem-concurrent-revoke"}
 		results := make(chan ActionOperationV1, 2)
 		errs := make(chan error, 2)
@@ -514,6 +535,49 @@ func TestControlServiceConcurrentSameIdempotencyRevokeReconcilesSuccess(t *testi
 		stored := plans.plans[domain.AttachedWorkerActionPlanID(plan.PlanID)]
 		plans.mu.Unlock()
 		if stored.State != domain.AttachedWorkerActionSucceeded || stored.Result.DesiredState != domain.AttachedWorkerDesiredRevoked {
+			t.Fatalf("iteration %d: stored plan = %+v", iteration, stored)
+		}
+	}
+}
+
+func TestControlServiceConcurrentSameIdempotencyFailureReturnsConflict(t *testing.T) {
+	for iteration := 0; iteration < 20; iteration++ {
+		service, clock, workers, plans := newActionFixture(t)
+		ctx := context.Background()
+		plan, err := service.Plan(ctx, "tenant-1", "owner-1", "wrk-control", ActionPlanRequestV1{Version: 1, Action: ActionDrain})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ready := make(chan struct{}, 2)
+		release := make(chan struct{})
+		workers.mu.Lock()
+		workers.worker.Revision++
+		workers.worker.UpdatedAt = workers.worker.UpdatedAt.Add(time.Microsecond)
+		workers.loadReady, workers.loadRelease = ready, release
+		workers.mu.Unlock()
+		clock.mu.Lock()
+		clock.step = time.Microsecond
+		clock.mu.Unlock()
+		request := ActionApplyV1{Version: 1, PlanID: plan.PlanID, Action: ActionDrain, Confirmation: plan.Confirmation, IdempotencyKey: "idem-concurrent-failure"}
+		errs := make(chan error, 2)
+		for range 2 {
+			go func() {
+				_, applyErr := service.Apply(ctx, "tenant-1", "owner-1", "wrk-control", request)
+				errs <- applyErr
+			}()
+		}
+		<-ready
+		<-ready
+		close(release)
+		for range 2 {
+			if applyErr := <-errs; !errors.Is(applyErr, ErrActionConflict) {
+				t.Fatalf("iteration %d: apply err = %v, want conflict", iteration, applyErr)
+			}
+		}
+		plans.mu.Lock()
+		stored := plans.plans[domain.AttachedWorkerActionPlanID(plan.PlanID)]
+		plans.mu.Unlock()
+		if stored.State != domain.AttachedWorkerActionFailed || stored.FailureCode != "conflict" {
 			t.Fatalf("iteration %d: stored plan = %+v", iteration, stored)
 		}
 	}

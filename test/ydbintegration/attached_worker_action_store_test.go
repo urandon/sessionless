@@ -103,11 +103,18 @@ func TestAttachedWorkerActionPlanClaimIsConcurrentReplayableAndOwnerScoped(t *te
 	}
 	completed.CompletedAt = now.Add(time.Second)
 	completed.Revision++
-	if err := store.CompleteAttachedWorkerAction(ctx, completed); err != nil {
+	durable, err := store.CompleteAttachedWorkerAction(ctx, completed)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CompleteAttachedWorkerAction(ctx, completed); err != nil {
+	repeated := completed
+	repeated.CompletedAt = repeated.CompletedAt.Add(time.Second)
+	replayedCompletion, err := store.CompleteAttachedWorkerAction(ctx, repeated)
+	if err != nil {
 		t.Fatalf("idempotent completion: %v", err)
+	}
+	if !replayedCompletion.CompletedAt.Equal(durable.CompletedAt) {
+		t.Fatalf("replayed completion time = %s, want durable %s", replayedCompletion.CompletedAt, durable.CompletedAt)
 	}
 
 	loaded, found, err := store.LoadAttachedWorkerActionOperation(ctx, plan.TenantID, plan.OwnerUserID, completed.OperationID)

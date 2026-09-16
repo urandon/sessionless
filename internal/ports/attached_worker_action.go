@@ -37,6 +37,6 @@ type AttachedWorkerActionClaimResult struct {
 type AttachedWorkerActionPlanStore interface {
 	CreateAttachedWorkerActionPlan(context.Context, domain.AttachedWorkerActionPlan) error
 	ClaimAttachedWorkerActionPlan(context.Context, AttachedWorkerActionClaim) (AttachedWorkerActionClaimResult, error)
-	CompleteAttachedWorkerAction(context.Context, domain.AttachedWorkerActionPlan) error
+	CompleteAttachedWorkerAction(context.Context, domain.AttachedWorkerActionPlan) (domain.AttachedWorkerActionPlan, error)
 	LoadAttachedWorkerActionOperation(context.Context, domain.TenantID, domain.UserID, domain.AttachedWorkerActionOperationID) (domain.AttachedWorkerActionPlan, bool, error)
 }

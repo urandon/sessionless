@@ -106,15 +106,15 @@ func (store *Store) ClaimAttachedWorkerActionPlan(ctx context.Context, claim por
 	return result, err
 }
 
-func (store *Store) CompleteAttachedWorkerAction(ctx context.Context, plan domain.AttachedWorkerActionPlan) error {
+func (store *Store) CompleteAttachedWorkerAction(ctx context.Context, plan domain.AttachedWorkerActionPlan) (completed domain.AttachedWorkerActionPlan, err error) {
 	plan = canonicalAttachedWorkerActionPlan(plan)
 	if err := plan.Validate(); err != nil || (plan.State != domain.AttachedWorkerActionSucceeded && plan.State != domain.AttachedWorkerActionFailed) {
 		if err != nil {
-			return err
+			return completed, err
 		}
-		return ErrAttachedWorkerActionConflict
+		return completed, ErrAttachedWorkerActionConflict
 	}
-	return store.Transact(ctx, plan.TenantID, func(state ports.StateTx) error {
+	err = store.Transact(ctx, plan.TenantID, func(state ports.StateTx) error {
 		tx := state.(*stateTx)
 		current, found, err := readAttachedWorkerActionPlanTx(ctx, tx, plan.OwnerUserID, plan.ID)
 		if err != nil {
@@ -123,8 +123,9 @@ func (store *Store) CompleteAttachedWorkerAction(ctx context.Context, plan domai
 		if !found {
 			return ErrAttachedWorkerActionConflict
 		}
-		if current.State == domain.AttachedWorkerActionSucceeded {
-			if sameAttachedWorkerActionPlan(current, plan) {
+		if current.State == domain.AttachedWorkerActionSucceeded || current.State == domain.AttachedWorkerActionFailed {
+			if sameAttachedWorkerActionTerminal(current, plan) {
+				completed = current
 				return nil
 			}
 			return ErrAttachedWorkerActionConflict
@@ -133,8 +134,13 @@ func (store *Store) CompleteAttachedWorkerAction(ctx context.Context, plan domai
 			current.IdempotencyDigest != plan.IdempotencyDigest || plan.Revision != current.Revision+1 {
 			return ErrAttachedWorkerActionConflict
 		}
-		return writeAttachedWorkerActionPlanTx(ctx, tx, plan, store.operationalRetention, false)
+		if err := writeAttachedWorkerActionPlanTx(ctx, tx, plan, store.operationalRetention, false); err != nil {
+			return err
+		}
+		completed = plan
+		return nil
 	})
+	return completed, err
 }
 
 func (store *Store) LoadAttachedWorkerActionOperation(ctx context.Context, tenantID domain.TenantID, ownerUserID domain.UserID, operationID domain.AttachedWorkerActionOperationID) (plan domain.AttachedWorkerActionPlan, found bool, err error) {
@@ -232,6 +238,12 @@ func sameAttachedWorkerActionPlan(left, right domain.AttachedWorkerActionPlan) b
 		left.ConfirmationDigest == right.ConfirmationDigest && left.IdempotencyDigest == right.IdempotencyDigest && left.FailureCode == right.FailureCode &&
 		sameAttachedWorker(left.Result, right.Result) && left.CreatedAt.Equal(right.CreatedAt) && left.ExpiresAt.Equal(right.ExpiresAt) &&
 		left.CompletedAt.Equal(right.CompletedAt) && left.Revision == right.Revision
+}
+
+func sameAttachedWorkerActionTerminal(left, right domain.AttachedWorkerActionPlan) bool {
+	left, right = canonicalAttachedWorkerActionPlan(left), canonicalAttachedWorkerActionPlan(right)
+	left.CompletedAt, right.CompletedAt = time.Time{}, time.Time{}
+	return sameAttachedWorkerActionPlan(left, right)
 }
 
 func validActionDigest(value string) bool {

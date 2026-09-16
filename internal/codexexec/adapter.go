@@ -24,8 +24,9 @@ type Config struct {
 }
 
 type Adapter struct {
-	config Config
-	runner InvocationRunner
+	config     Config
+	descriptor domain.HarnessBackendDescriptorV1
+	runner     InvocationRunner
 }
 
 func New(config Config, runner InvocationRunner) (*Adapter, error) {
@@ -36,7 +37,11 @@ func New(config Config, runner InvocationRunner) (*Adapter, error) {
 		!validModelID(config.Model) {
 		return nil, ErrContract
 	}
-	return &Adapter{config: config, runner: runner}, nil
+	descriptor, err := descriptorV1(config)
+	if err != nil {
+		return nil, err
+	}
+	return &Adapter{config: config, descriptor: descriptor, runner: runner}, nil
 }
 
 func validModelID(value string) bool {
@@ -76,15 +81,11 @@ func (adapter *Adapter) Run(ctx context.Context, request RequestV1) (ResultV1, e
 		},
 		Process: attachedworkerdaemon.AttemptSpec{
 			Executable: adapter.config.Executable, ExecutableDigest: adapter.config.ExecutableDigest,
-			Arguments: []string{
-				"exec", "--json", "--ephemeral", "--ignore-user-config", "--ignore-rules",
-				"--strict-config", "--sandbox", "read-only", "--skip-git-repo-check",
-				"--color", "never", "--model", adapter.config.Model, "-",
-			},
-			Stdin: append([]byte(nil), request.Instruction...),
+			Arguments: processArguments(adapter.config.Model),
+			Stdin:     append([]byte(nil), request.Instruction...),
 		},
 		Credential: &attachedworkerdaemon.CredentialInvocation{
-			IssueRequest: request.Credential, HomeEnvironment: "CODEX_HOME",
+			IssueRequest: request.Credential, HomeEnvironment: CredentialHomeEnvironmentV1,
 			ExpectedBindingGeneration: authority.ProviderResource.CredentialGeneration,
 		},
 	}

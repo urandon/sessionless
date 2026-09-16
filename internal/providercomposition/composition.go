@@ -7,6 +7,7 @@ import (
 	"errors"
 	"time"
 
+	"gitcode.com/urandon/sessionless/internal/codexexec"
 	"gitcode.com/urandon/sessionless/internal/codexopenrouter"
 	"gitcode.com/urandon/sessionless/internal/directopenrouter"
 	"gitcode.com/urandon/sessionless/internal/domain"
@@ -21,13 +22,14 @@ var ErrContract = errors.New("provider composition contract is invalid")
 // drivers. Profile discovery, environment lookup and production boundary
 // construction belong to reviewed outer composition layers.
 type DependenciesV1 struct {
-	Codex    *codexopenrouter.Driver
-	OpenCode *opencodeopenrouter.Driver
-	Pi       *piopenrouter.Driver
-	Direct   *directopenrouter.Driver
+	CodexSubscription *codexexec.Adapter
+	CodexOpenRouter   *codexopenrouter.Driver
+	OpenCode          *opencodeopenrouter.Driver
+	Pi                *piopenrouter.Driver
+	Direct            *directopenrouter.Driver
 }
 
-// NewDisabledRegistryV1 constructs the closed four-backend registry. Every
+// NewDisabledRegistryV1 constructs the closed five-backend registry. Every
 // registration remains disabled; an exact cancellation can still route to its
 // matching driver so teardown is possible without authorizing new execution.
 func NewDisabledRegistryV1(now func() time.Time, dependencies DependenciesV1) (*sessionlessharness.Registry, error) {
@@ -46,15 +48,19 @@ func NewDisabledRegistryV1(now func() time.Time, dependencies DependenciesV1) (*
 }
 
 func registrationsV1(dependencies DependenciesV1) ([]sessionlessharness.Registration, error) {
-	if dependencies.Codex == nil || dependencies.OpenCode == nil || dependencies.Pi == nil || dependencies.Direct == nil {
+	if dependencies.CodexSubscription == nil || dependencies.CodexOpenRouter == nil ||
+		dependencies.OpenCode == nil || dependencies.Pi == nil || dependencies.Direct == nil {
 		return nil, ErrContract
 	}
 	builders := []struct {
 		kind  domain.HarnessBackendKindV1
 		build func() (sessionlessharness.Registration, error)
 	}{
+		{kind: domain.HarnessBackendCodexExecV1, build: func() (sessionlessharness.Registration, error) {
+			return codexexec.DisabledRegistrationV1(dependencies.CodexSubscription)
+		}},
 		{kind: domain.HarnessBackendCodexOpenRouterV1, build: func() (sessionlessharness.Registration, error) {
-			return codexopenrouter.DisabledRegistrationV1(dependencies.Codex)
+			return codexopenrouter.DisabledRegistrationV1(dependencies.CodexOpenRouter)
 		}},
 		{kind: domain.HarnessBackendOpenCodeV1, build: func() (sessionlessharness.Registration, error) {
 			return opencodeopenrouter.DisabledRegistrationV1(dependencies.OpenCode)

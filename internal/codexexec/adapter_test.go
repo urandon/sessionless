@@ -2,6 +2,7 @@ package codexexec
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemon"
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/harnessconformance"
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
 
@@ -240,6 +242,51 @@ func TestNewRejectsUnpinnedOrAmbiguousProcessConfiguration(t *testing.T) {
 				t.Fatalf("New() error = %v", err)
 			}
 		})
+	}
+}
+
+func TestDisabledRegistrationPinsExactSubscriptionProfile(t *testing.T) {
+	runner := &fixtureInvocationRunner{}
+	disabled := mustAdapter(t, runner, false)
+	registration, err := DisabledRegistrationV1(disabled)
+	if err != nil {
+		t.Fatalf("DisabledRegistrationV1() error = %v", err)
+	}
+	descriptor := disabled.DescriptorV1()
+	expectedDigest := attachedworkerdaemon.ExecutableDigest{1}
+	const expectedProfileDigest = "0fe627348aedc0dbd5750a4bdff245dc80ddfa685037b58eea24166d4deb6ff4"
+	if registration.Enabled || registration.Driver == nil || registration.ValidateBinding == nil ||
+		registration.Descriptor != descriptor || descriptor.BackendKind != domain.HarnessBackendCodexExecV1 ||
+		descriptor.ArtifactKind != domain.HarnessArtifactExecutableV1 ||
+		descriptor.ArtifactDigest != hex.EncodeToString(expectedDigest[:]) ||
+		descriptor.BackendProfileDigest != expectedProfileDigest ||
+		descriptor.NativeProtocolVersion != NativeProtocolVersionV1 ||
+		descriptor.ProviderContractKind != domain.ProviderContractInvocationV1 ||
+		descriptor.CredentialDeliveryKind != domain.ProviderCredentialDeliveryFileV1 {
+		t.Fatalf("disabled registration = %+v", registration)
+	}
+
+	enabled := mustAdapter(t, runner, true)
+	if enabled.DescriptorV1() != descriptor {
+		t.Fatalf("enablement changed descriptor: disabled=%+v enabled=%+v", descriptor, enabled.DescriptorV1())
+	}
+	if enabled.BackendProtocolState() != harnessconformance.BackendProtocolUnsupportedV1 {
+		t.Fatalf("legacy enabled adapter claimed canonical registry protocol support")
+	}
+	if _, err := DisabledRegistrationV1(enabled); !errors.Is(err, ErrContract) {
+		t.Fatalf("enabled registration error = %v, want ErrContract", err)
+	}
+
+	changed, err := New(Config{
+		Executable: "/opt/sessionless/codex", ExecutableVersion: "0.148.0-alpha.15",
+		ExecutableDigest: attachedworkerdaemon.ExecutableDigest{1}, Model: "gpt-other",
+	}, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed.DescriptorV1().BackendProfileDigest == descriptor.BackendProfileDigest ||
+		changed.DescriptorV1().ArtifactDigest != descriptor.ArtifactDigest {
+		t.Fatalf("model change did not change only profile identity: base=%+v changed=%+v", descriptor, changed.DescriptorV1())
 	}
 }
 

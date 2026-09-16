@@ -9,10 +9,12 @@ provider enablement.
 
 Sessionless owns the harness. Canonical sessions, runs, attempts, leases,
 fences, events, terminal commit, tools, and retries never become Codex state.
-`internal/codexexec` is one backend below the future closed
-`SessionlessHarnessV1` registry; it is deliberately not a `HarnessDriver` and
-is not selected from the environment, an installed binary, an available
-credential, or a live model catalog.
+`internal/codexexec` is one backend below the closed `SessionlessHarnessV1`
+registry. The exact executable, protocol, model, limits, and file-credential
+delivery profile now have a disabled registry descriptor, but the legacy
+invocation adapter is deliberately not exposed as a `HarnessDriver`: it is not
+selected from the environment, an installed binary, an available credential,
+or a live model catalog.
 
 The same outer harness will eventually route an already-admitted immutable
 binding to distinct backends such as:
@@ -103,9 +105,9 @@ requires all of the following:
 
 - the accepted #48 authorization tuple for personal subscription, owner-managed
   attached worker, local credential custody, and exact Codex exec surface;
-- a canonical immutable `HarnessBindingV1` in admission/job/execution and a
-  closed registry that keeps the signed worker harness identity Sessionless-
-  owned while separately advertising backend descriptors;
+- an enabled production bridge from the canonical immutable `HarnessBindingV1`
+  to the attached-worker attempt/connection/lease authority. The closed
+  registry now advertises the exact backend descriptor but keeps it disabled;
 - reviewed production egress isolation. The current AW-05 isolation profile
   correctly requires `NetworkDenied=true`, so it can run fake contract tests
   but cannot perform a real provider turn;

@@ -39,8 +39,21 @@ func NewCadencedSource(source attachedworkerdaemon.Source, config attachedworker
 	if source == nil {
 		return nil, ErrInvalidConfiguration
 	}
+	prepared, err := attachedworkertransport.PrepareConfig(config)
+	if err != nil {
+		return nil, err
+	}
+	return NewPreparedCadencedSource(source, prepared)
+}
+
+// NewPreparedCadencedSource cannot re-read fallible local config or entropy
+// after a caller has reconciled the durable connection head.
+func NewPreparedCadencedSource(source attachedworkerdaemon.Source, config attachedworkertransport.PreparedConfig) (*CadencedSource, error) {
+	if source == nil {
+		return nil, ErrInvalidConfiguration
+	}
 	cycle := &cadenceCycle{source: source}
-	poller, err := attachedworkertransport.NewPoller(config, cycle)
+	poller, err := attachedworkertransport.NewPreparedPoller(config, cycle)
 	if err != nil {
 		return nil, err
 	}

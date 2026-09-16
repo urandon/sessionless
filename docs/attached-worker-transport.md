@@ -169,6 +169,22 @@ Step blocks before the next outbound exchange; while an accepted invocation
 is running, no separate poller goroutine continues to send Heartbeats. This
 is not yet a production foreground wiring or a cross-process restart proof.
 
+`ReconnectIdleCadence` is a narrower, still feature-disabled restart seam. It
+rejects invalid local adapter/poller configuration before network work, then
+uses `Connector.Reconnect` to reconcile the local checkpoint against the exact
+durable server head and accept a fresh Manifest. Only a conformance
+`ConnectionReady` and idle attempt with no terminal replay intent can own a
+`CadencedSource`; draining, active, fenced, or unknown recovery stops before
+another Heartbeat or process effect.
+The first idle Step is conservatively delayed by the configured interval after
+that Manifest, including when a local wake is queued. This local cooldown does
+not bound repeated reconnect/Manifest traffic across process crashes or supply
+an authoritative durable timestamp. Foreground enabling and total request,
+YDB RU, egress, and charge ceilings still require separate restart/cost proof.
+If the injected clock fails after Manifest or an accepted cycle, the source
+stops at `reconciliation_required`; it does not classify that post-effect
+failure as retryable local configuration or send a catch-up Heartbeat.
+
 The poller retries a failed cycle with short jitter only when its direct,
 trusted error explicitly proves `NoExchangeAttempted`. A merely retryable
 HTTP timeout/status is ambiguous after a request was sent, and a joined

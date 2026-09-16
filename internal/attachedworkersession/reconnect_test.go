@@ -171,7 +171,8 @@ func TestActiveAttemptPersistsReconnectCheckpoint(t *testing.T) {
 		t.Fatalf("active checkpoint attempt=%+v", checkpoint.MachineSnapshot.Attempt.Summary)
 	}
 	recovery, err := session.ReconnectRecovery()
-	if err != nil || recovery.AttemptState != attachedworkerprotocol.AttemptOffered ||
+	if err != nil || recovery.ConnectionState != attachedworkerprotocol.ConnectionReady ||
+		recovery.AttemptState != attachedworkerprotocol.AttemptOffered ||
 		recovery.TerminalDecision != attachedworkerprotocol.ReconnectTerminalNone || recovery.Terminal != nil {
 		t.Fatalf("active recovery=%+v err=%v", recovery, err)
 	}
@@ -198,7 +199,8 @@ func TestActiveAttemptPersistsReconnectCheckpoint(t *testing.T) {
 	}
 	registerSessionCleanup(t, resumed)
 	recovery, err = resumed.ReconnectRecovery()
-	if err != nil || recovery.AttemptState != attachedworkerprotocol.AttemptOffered ||
+	if err != nil || recovery.ConnectionState != attachedworkerprotocol.ConnectionReady ||
+		recovery.AttemptState != attachedworkerprotocol.AttemptOffered ||
 		recovery.TerminalDecision != attachedworkerprotocol.ReconnectTerminalNone || recovery.Terminal != nil {
 		t.Fatalf("resumed active recovery=%+v err=%v", recovery, err)
 	}

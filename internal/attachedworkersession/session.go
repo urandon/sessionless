@@ -624,6 +624,7 @@ type ActionV1 struct {
 // when TerminalDecision is replay; discard and committed are explicit
 // prohibitions on another terminal effect.
 type ReconnectRecoveryV1 struct {
+	ConnectionState  attachedworkerprotocol.ConnectionState
 	AttemptState     attachedworkerprotocol.AttemptState
 	TerminalDecision attachedworkerprotocol.ReconnectTerminalDecision
 	Terminal         *attachedworkerprotocol.TerminalV1
@@ -643,7 +644,11 @@ func (session *Session) ReconnectRecovery() (ReconnectRecoveryV1, error) {
 	if err != nil {
 		return ReconnectRecoveryV1{}, ErrReconciliationRequired
 	}
-	result := ReconnectRecoveryV1{AttemptState: snapshot.Attempt.Summary.State, TerminalDecision: attachedworkerprotocol.ReconnectTerminalNone}
+	result := ReconnectRecoveryV1{
+		ConnectionState:  snapshot.Connection,
+		AttemptState:     snapshot.Attempt.Summary.State,
+		TerminalDecision: attachedworkerprotocol.ReconnectTerminalNone,
+	}
 	if pending := snapshot.Attempt.PendingWorkerTerminal; pending != nil {
 		terminal := pending.Terminal
 		terminal.Binding.ContextDigest = append([]byte(nil), terminal.Binding.ContextDigest...)

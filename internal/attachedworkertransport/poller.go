@@ -31,6 +31,23 @@ type Config struct {
 	InitialBackoff time.Duration
 	MaxBackoff     time.Duration
 	Random         io.Reader
+	Now            func() time.Time
+	// StartWithCooldown conservatively delays the first cycle after a newly
+	// accepted Manifest. It is local scheduling, never remote progress proof.
+	StartWithCooldown bool
+}
+
+// PreparedConfig contains only locally validated cadence values and a captured
+// non-secret jitter seed. Its fields cannot be supplied without PrepareConfig.
+type PreparedConfig struct {
+	enabled        bool
+	pollInterval   time.Duration
+	initialBackoff time.Duration
+	maxBackoff     time.Duration
+	seed           uint64
+	now            func() time.Time
+	startCooldown  bool
+	valid          bool
 }
 
 // MinimumHeartbeatInterval is the canonical AW-03 lower bound for both the
@@ -54,6 +71,7 @@ type Poller struct {
 	// process still needs an authoritative durable cadence checkpoint.
 	lastSuccess            time.Time
 	now                    func() time.Time
+	firstCooldown          bool
 	reconciliationRequired bool
 }
 
@@ -63,26 +81,69 @@ type jitterSource struct {
 }
 
 func NewPoller(config Config, cycle Cycle) (*Poller, error) {
-	if cycle == nil || config.PollInterval < MinimumHeartbeatInterval || config.InitialBackoff <= 0 ||
-		config.MaxBackoff < config.InitialBackoff || config.MaxBackoff > 24*time.Hour {
+	if cycle == nil {
 		return nil, ErrInvalidConfig
+	}
+	prepared, err := PrepareConfig(config)
+	if err != nil {
+		return nil, err
+	}
+	return NewPreparedPoller(prepared, cycle)
+}
+
+// NewPreparedPoller consumes prevalidated local inputs. A bad clock after the
+// accepted Manifest is a reconciliation boundary, never a reason to construct
+// another exchange or classify the networked attempt as a local config error.
+func NewPreparedPoller(config PreparedConfig, cycle Cycle) (*Poller, error) {
+	if cycle == nil || !config.valid {
+		return nil, ErrInvalidConfig
+	}
+	poller := &Poller{
+		enabled: config.enabled, pollInterval: config.pollInterval,
+		initialBackoff: config.initialBackoff, maxBackoff: config.maxBackoff,
+		cycle: cycle, jitter: &jitterSource{state: config.seed}, wait: waitContext,
+		waitForWake: waitContextOrWake, wake: make(chan struct{}, 1), now: config.now,
+	}
+	if config.startCooldown {
+		poller.lastSuccess = poller.now()
+		if poller.lastSuccess.IsZero() {
+			return nil, ErrReconciliationRequired
+		}
+		poller.firstCooldown = true
+	}
+	return poller, nil
+}
+
+// PrepareConfig rejects all locally checkable cadence/entropy/clock errors
+// before a caller performs a reconnect. No caller-owned reader is consumed
+// again when the prepared poller is constructed after network reconciliation.
+func PrepareConfig(config Config) (PreparedConfig, error) {
+	if config.PollInterval < MinimumHeartbeatInterval || config.InitialBackoff <= 0 ||
+		config.MaxBackoff < config.InitialBackoff || config.MaxBackoff > 24*time.Hour {
+		return PreparedConfig{}, ErrInvalidConfig
 	}
 	if config.Random == nil {
 		config.Random = rand.Reader
 	}
+	if config.Now == nil {
+		config.Now = time.Now
+	}
+	if config.StartWithCooldown && config.Now().IsZero() {
+		return PreparedConfig{}, ErrInvalidConfig
+	}
 	var seedBytes [8]byte
 	if _, err := io.ReadFull(config.Random, seedBytes[:]); err != nil {
-		return nil, ErrInvalidConfig
+		return PreparedConfig{}, ErrInvalidConfig
 	}
 	seed := binary.BigEndian.Uint64(seedBytes[:])
 	if seed == 0 {
 		seed = 0x9e3779b97f4a7c15
 	}
-	return &Poller{
+	return PreparedConfig{
 		enabled: config.Enabled, pollInterval: config.PollInterval,
 		initialBackoff: config.InitialBackoff, maxBackoff: config.MaxBackoff,
-		cycle: cycle, jitter: &jitterSource{state: seed}, wait: waitContext,
-		waitForWake: waitContextOrWake, wake: make(chan struct{}, 1), now: time.Now,
+		seed: seed, now: config.Now, startCooldown: config.StartWithCooldown,
+		valid: true,
 	}, nil
 }
 
@@ -128,7 +189,12 @@ func (poller *Poller) Run(ctx context.Context) error {
 		if err := poller.exchangeUntilSuccess(ctx); err != nil {
 			return err
 		}
-		poller.lastSuccess = poller.now()
+		completedAt, err := poller.checkedNow()
+		if err != nil {
+			return err
+		}
+		poller.lastSuccess = completedAt
+		poller.firstCooldown = false
 		if err := poller.wait(ctx, MinimumHeartbeatInterval); err != nil {
 			return err
 		}
@@ -165,7 +231,12 @@ func (poller *Poller) Step(ctx context.Context) error {
 	if err := poller.exchangeUntilSuccess(ctx); err != nil {
 		return err
 	}
-	poller.lastSuccess = poller.now()
+	completedAt, err := poller.checkedNow()
+	if err != nil {
+		return err
+	}
+	poller.lastSuccess = completedAt
+	poller.firstCooldown = false
 	return nil
 }
 
@@ -174,18 +245,51 @@ func (poller *Poller) waitUntilDue(ctx context.Context) error {
 		poller.discardWake()
 		return nil
 	}
-	elapsed := poller.now().Sub(poller.lastSuccess)
+	if poller.firstCooldown {
+		// A local wake cannot abbreviate the first full interval following the
+		// accepted reconnect Manifest. Later successful idle cycles can wake
+		// after the shared minimum interval as usual.
+		current, err := poller.checkedNow()
+		if err != nil {
+			return err
+		}
+		if remaining := poller.pollInterval - current.Sub(poller.lastSuccess); remaining > 0 {
+			if err := poller.wait(ctx, remaining); err != nil {
+				return err
+			}
+		}
+		poller.discardWake()
+		return nil
+	}
+	current, err := poller.checkedNow()
+	if err != nil {
+		return err
+	}
+	elapsed := current.Sub(poller.lastSuccess)
 	if elapsed < MinimumHeartbeatInterval {
 		if err := poller.wait(ctx, MinimumHeartbeatInterval-elapsed); err != nil {
 			return err
 		}
-		elapsed = max(MinimumHeartbeatInterval, poller.now().Sub(poller.lastSuccess))
+		current, err = poller.checkedNow()
+		if err != nil {
+			return err
+		}
+		elapsed = max(MinimumHeartbeatInterval, current.Sub(poller.lastSuccess))
 	}
 	if remainder := poller.pollInterval - elapsed; remainder > 0 {
 		return poller.waitForWake(ctx, remainder, poller.wake)
 	}
 	poller.discardWake()
 	return nil
+}
+
+func (poller *Poller) checkedNow() (time.Time, error) {
+	current := poller.now()
+	if current.IsZero() {
+		poller.reconciliationRequired = true
+		return time.Time{}, ErrReconciliationRequired
+	}
+	return current, nil
 }
 
 func (poller *Poller) exchangeUntilSuccess(ctx context.Context) error {

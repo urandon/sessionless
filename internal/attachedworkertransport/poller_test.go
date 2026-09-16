@@ -368,6 +368,84 @@ func TestPollerStepGatesSerialDaemonSourceCallsAndWake(t *testing.T) {
 	}
 }
 
+func TestPollerStartWithCooldownDefersFirstCycleAfterManifest(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	calls := 0
+	poller, err := NewPoller(Config{
+		Enabled: true, PollInterval: MinimumHeartbeatInterval,
+		InitialBackoff: time.Second, MaxBackoff: time.Minute,
+		Now: func() time.Time { return now }, StartWithCooldown: true,
+	}, cycleFunc(func(context.Context) error { calls++; return terminalNoEffectError{} }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	poller.wait = func(_ context.Context, duration time.Duration) error {
+		if duration != MinimumHeartbeatInterval || calls != 0 {
+			t.Fatalf("first cycle began before post-Manifest cooldown duration=%s calls=%d", duration, calls)
+		}
+		now = now.Add(duration)
+		return nil
+	}
+	if err := poller.Step(context.Background()); err == nil || err.Error() != "stop" || calls != 1 {
+		t.Fatalf("first step err=%v calls=%d", err, calls)
+	}
+	if _, err := NewPoller(Config{
+		Enabled: true, PollInterval: MinimumHeartbeatInterval,
+		InitialBackoff: time.Second, MaxBackoff: time.Minute,
+		Now: func() time.Time { return time.Time{} }, StartWithCooldown: true,
+	}, cycleFunc(func(context.Context) error { return nil })); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("zero initial cooldown clock err=%v", err)
+	}
+}
+
+func TestPollerFirstPostManifestCooldownCannotBeShortenedByWake(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	calls := 0
+	poller, err := NewPoller(Config{
+		Enabled: true, PollInterval: time.Hour,
+		InitialBackoff: time.Second, MaxBackoff: time.Minute,
+		Now: func() time.Time { return now }, StartWithCooldown: true,
+	}, cycleFunc(func(context.Context) error { calls++; return nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := poller.Wake(); err != nil {
+		t.Fatal(err)
+	}
+	poller.wait = func(_ context.Context, duration time.Duration) error {
+		if duration != time.Hour || calls != 0 {
+			t.Fatalf("first post-Manifest wait duration=%s calls=%d", duration, calls)
+		}
+		now = now.Add(duration)
+		return nil
+	}
+	poller.waitForWake = func(context.Context, time.Duration, <-chan struct{}) error {
+		t.Fatal("queued wake shortened the first post-Manifest interval")
+		return nil
+	}
+	if err := poller.Step(context.Background()); err != nil || calls != 1 || len(poller.wake) != 0 {
+		t.Fatalf("first Step err=%v calls=%d queued_wakes=%d", err, calls, len(poller.wake))
+	}
+}
+
+func TestPollerInvalidClockAfterAcceptedCycleCannotCauseCatchupBurst(t *testing.T) {
+	calls := 0
+	poller, err := NewPoller(Config{
+		Enabled: true, PollInterval: MinimumHeartbeatInterval,
+		InitialBackoff: time.Second, MaxBackoff: time.Minute,
+		Now: func() time.Time { return time.Time{} },
+	}, cycleFunc(func(context.Context) error { calls++; return nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := poller.Step(context.Background()); !errors.Is(err, ErrReconciliationRequired) || calls != 1 {
+		t.Fatalf("accepted cycle with invalid clock err=%v calls=%d", err, calls)
+	}
+	if err := poller.Step(context.Background()); !errors.Is(err, ErrReconciliationRequired) || calls != 1 {
+		t.Fatalf("clock failure allowed second outbound cycle err=%v calls=%d", err, calls)
+	}
+}
+
 func TestPollerStepSingleflightWhileCadenceWaits(t *testing.T) {
 	var calls atomic.Int32
 	poller, err := NewPoller(Config{

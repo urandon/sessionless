@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -569,6 +570,133 @@ func TestAttachedWorkerReadRoutesRejectOversizedProjection(t *testing.T) {
 	}
 }
 
+func TestAttachedWorkerControlRoutesRequireOwnerScopeCSRFAndWriteMembership(t *testing.T) {
+	auth := newMemoryAuthStore()
+	subject := domain.ExternalSubject{Provider: domain.IdentityProviderTelegram, Subject: "717171"}
+	userID := domain.UserID("usr_worker_owner")
+	auth.identities[subject] = domain.ExternalIdentity{Subject: subject, UserID: userID, CreatedAt: bffTestTime, UpdatedAt: bffTestTime}
+	auth.memberships[userID] = []domain.TenantMembership{membership("ten_alpha", userID, domain.TenantMembershipOwner)}
+	controls := &attachedWorkerControlStub{}
+	handler := newAttachedWorkerControlHandler(t, auth, subject.Subject, controls)
+	sessionCookie, csrfCookie := performLogin(t, handler, "/workers")
+
+	planRequest := attachedWorkerMutationRequest(http.MethodPost,
+		"/api/web/v1/attached-workers/wrk_owner_worker/actions:plan",
+		`{"version":1,"action":"drain"}`, sessionCookie, csrfCookie, csrfCookie.Value)
+	planResponse := httptest.NewRecorder()
+	handler.ServeHTTP(planResponse, planRequest)
+	if planResponse.Code != http.StatusOK || !strings.Contains(planResponse.Body.String(), `"plan_id":"wap_stub"`) {
+		t.Fatalf("plan status=%d body=%s", planResponse.Code, planResponse.Body.String())
+	}
+	if controls.planTenant != "ten_alpha" || controls.planOwner != userID || controls.planWorker != "wrk_owner_worker" {
+		t.Fatalf("plan scope tenant=%q owner=%q worker=%q", controls.planTenant, controls.planOwner, controls.planWorker)
+	}
+
+	applyRequest := attachedWorkerMutationRequest(http.MethodPost,
+		"/api/web/v1/attached-workers/wrk_owner_worker/actions:apply",
+		`{"version":1,"plan_id":"wap_stub","action":"drain","confirmation":"confirm","idempotency_key":"idem_stub"}`,
+		sessionCookie, csrfCookie, csrfCookie.Value)
+	applyResponse := httptest.NewRecorder()
+	handler.ServeHTTP(applyResponse, applyRequest)
+	if applyResponse.Code != http.StatusOK || !strings.Contains(applyResponse.Body.String(), `"operation_id":"wao_stub"`) {
+		t.Fatalf("apply status=%d body=%s", applyResponse.Code, applyResponse.Body.String())
+	}
+
+	get := httptest.NewRequest(http.MethodGet,
+		"https://web.dev.sessionless.triborg.dev/api/web/v1/attached-worker-actions/wao_stub", nil)
+	get.AddCookie(sessionCookie)
+	getResponse := httptest.NewRecorder()
+	handler.ServeHTTP(getResponse, get)
+	if getResponse.Code != http.StatusOK || controls.operationID != "wao_stub" {
+		t.Fatalf("operation status=%d body=%s id=%q", getResponse.Code, getResponse.Body.String(), controls.operationID)
+	}
+
+	withoutCSRF := attachedWorkerMutationRequest(http.MethodPost,
+		"/api/web/v1/attached-workers/wrk_owner_worker/actions:plan",
+		`{"version":1,"action":"drain"}`, sessionCookie, csrfCookie, "")
+	withoutCSRFResponse := httptest.NewRecorder()
+	handler.ServeHTTP(withoutCSRFResponse, withoutCSRF)
+	if withoutCSRFResponse.Code != http.StatusForbidden || controls.planCalls != 1 {
+		t.Fatalf("missing CSRF status=%d calls=%d", withoutCSRFResponse.Code, controls.planCalls)
+	}
+	wrongCSRF := attachedWorkerMutationRequest(http.MethodPost,
+		"/api/web/v1/attached-workers/wrk_owner_worker/actions:plan",
+		`{"version":1,"action":"drain"}`, sessionCookie, csrfCookie, "wrong-csrf")
+	wrongCSRFResponse := httptest.NewRecorder()
+	handler.ServeHTTP(wrongCSRFResponse, wrongCSRF)
+	if wrongCSRFResponse.Code != http.StatusForbidden || controls.planCalls != 1 {
+		t.Fatalf("wrong CSRF status=%d calls=%d", wrongCSRFResponse.Code, controls.planCalls)
+	}
+
+	auth.memberships[userID] = []domain.TenantMembership{membership("ten_alpha", userID, domain.TenantMembershipViewer)}
+	viewerSession, viewerCSRF := performLogin(t, handler, "/workers")
+	viewer := attachedWorkerMutationRequest(http.MethodPost,
+		"/api/web/v1/attached-workers/wrk_owner_worker/actions:plan",
+		`{"version":1,"action":"drain"}`, viewerSession, viewerCSRF, viewerCSRF.Value)
+	viewerResponse := httptest.NewRecorder()
+	handler.ServeHTTP(viewerResponse, viewer)
+	if viewerResponse.Code != http.StatusForbidden || controls.planCalls != 1 {
+		t.Fatalf("viewer status=%d calls=%d", viewerResponse.Code, controls.planCalls)
+	}
+}
+
+func TestAttachedWorkerControlRoutesBoundAndSanitizeFailures(t *testing.T) {
+	auth := newMemoryAuthStore()
+	subject := domain.ExternalSubject{Provider: domain.IdentityProviderTelegram, Subject: "818181"}
+	userID := domain.UserID("usr_worker_owner")
+	auth.identities[subject] = domain.ExternalIdentity{Subject: subject, UserID: userID, CreatedAt: bffTestTime, UpdatedAt: bffTestTime}
+	auth.memberships[userID] = []domain.TenantMembership{membership("ten_alpha", userID, domain.TenantMembershipOwner)}
+	controls := &attachedWorkerControlStub{err: attachedworkerux.ErrActionBackend}
+	handler := newAttachedWorkerControlHandler(t, auth, subject.Subject, controls)
+	sessionCookie, csrfCookie := performLogin(t, handler, "/workers")
+
+	backend := attachedWorkerMutationRequest(http.MethodPost,
+		"/api/web/v1/attached-workers/wrk_owner_worker/actions:plan",
+		`{"version":1,"action":"drain"}`, sessionCookie, csrfCookie, csrfCookie.Value)
+	backendResponse := httptest.NewRecorder()
+	handler.ServeHTTP(backendResponse, backend)
+	if backendResponse.Code != http.StatusServiceUnavailable || strings.Contains(backendResponse.Body.String(), "worker-secret") {
+		t.Fatalf("backend status=%d body=%s", backendResponse.Code, backendResponse.Body.String())
+	}
+
+	controls.err = nil
+	oversized := attachedWorkerMutationRequest(http.MethodPost,
+		"/api/web/v1/attached-workers/wrk_owner_worker/actions:plan",
+		`{"version":1,"action":"`+strings.Repeat("x", 70<<10)+`"}`, sessionCookie, csrfCookie, csrfCookie.Value)
+	oversizedResponse := httptest.NewRecorder()
+	handler.ServeHTTP(oversizedResponse, oversized)
+	if oversizedResponse.Code != http.StatusRequestEntityTooLarge || controls.planCalls != 1 {
+		t.Fatalf("oversized status=%d calls=%d", oversizedResponse.Code, controls.planCalls)
+	}
+
+	malformed := attachedWorkerMutationRequest(http.MethodPost,
+		"/api/web/v1/attached-workers/wrk_owner_worker/actions:plan",
+		`{"version":1,"action":"drain","unexpected":true}`, sessionCookie, csrfCookie, csrfCookie.Value)
+	malformedResponse := httptest.NewRecorder()
+	handler.ServeHTTP(malformedResponse, malformed)
+	if malformedResponse.Code != http.StatusBadRequest || controls.planCalls != 1 {
+		t.Fatalf("malformed status=%d calls=%d", malformedResponse.Code, controls.planCalls)
+	}
+
+	for _, test := range []struct {
+		name string
+		err  error
+	}{
+		{name: "conflict", err: attachedworkerux.ErrActionConflict},
+		{name: "unavailable", err: attachedworkerux.ErrActionUnavailable},
+	} {
+		controls.err = test.err
+		request := attachedWorkerMutationRequest(http.MethodPost,
+			"/api/web/v1/attached-workers/wrk_owner_worker/actions:plan",
+			`{"version":1,"action":"drain"}`, sessionCookie, csrfCookie, csrfCookie.Value)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusConflict || strings.Contains(response.Body.String(), "worker-secret") {
+			t.Fatalf("%s status=%d body=%s", test.name, response.Code, response.Body.String())
+		}
+	}
+}
+
 const maxTestRequestBytes = 64 << 10
 
 func newTestHandler(t *testing.T, store *memoryAuthStore, subject string) http.Handler {
@@ -649,6 +777,32 @@ func newAttachedWorkerHandlerWithService(t *testing.T, auth *memoryAuthStore, su
 		t.Fatal(err)
 	}
 	return handler
+}
+
+func newAttachedWorkerControlHandler(t *testing.T, auth *memoryAuthStore, subject string, controls webbff.AttachedWorkerControlService) http.Handler {
+	t.Helper()
+	handler, err := webbff.New(webbff.Config{
+		BaseURL: "https://web.dev.sessionless.triborg.dev", RedirectURI: "https://web.dev.sessionless.triborg.dev" + webcontract.RouteOIDCCallback,
+		OIDCPolicy: domain.OIDCVerificationPolicy{Issuer: "https://oauth.telegram.org", Audience: "100000", AllowedAlgorithms: []string{"RS256"}},
+		Provider:   fakeProvider{subject: subject}, Store: auth, AttachedWorkerControls: controls, IDs: fixedIDs{},
+		Clock: fixedClock{now: bffTestTime}, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Build: buildinfo.Current("web-bff-attached-worker-control-test"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return handler
+}
+
+func attachedWorkerMutationRequest(method, path, body string, session, csrf *http.Cookie, token string) *http.Request {
+	request := httptest.NewRequest(method, "https://web.dev.sessionless.triborg.dev"+path, strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Origin", "https://web.dev.sessionless.triborg.dev")
+	if token != "" {
+		request.Header.Set(webcontract.CSRFHeaderName, token)
+	}
+	request.AddCookie(session)
+	request.AddCookie(csrf)
+	return request
 }
 
 func performLogin(t *testing.T, handler http.Handler, returnTo string) (*http.Cookie, *http.Cookie) {
@@ -973,6 +1127,39 @@ type memoryAttachedWorkerUXStore struct {
 }
 
 type oversizedAttachedWorkerReadService struct{}
+
+type attachedWorkerControlStub struct {
+	err         error
+	planCalls   int
+	planTenant  domain.TenantID
+	planOwner   domain.UserID
+	planWorker  domain.AttachedWorkerID
+	operationID domain.AttachedWorkerActionOperationID
+}
+
+func (stub *attachedWorkerControlStub) Plan(_ context.Context, tenant domain.TenantID, owner domain.UserID, worker domain.AttachedWorkerID, _ attachedworkerux.ActionPlanRequestV1) (attachedworkerux.ActionPlanV1, error) {
+	stub.planCalls++
+	stub.planTenant, stub.planOwner, stub.planWorker = tenant, owner, worker
+	if stub.err != nil {
+		return attachedworkerux.ActionPlanV1{}, fmt.Errorf("worker-secret: %w", stub.err)
+	}
+	return attachedworkerux.ActionPlanV1{Version: 1, PlanID: "wap_stub", WorkerID: string(worker), Action: attachedworkerux.ActionDrain, Confirmation: "confirm", ExpiresAt: bffTestTime.Add(time.Minute), Consequences: []string{}, RemoteAcknowledgement: "unknown", RemoteErase: "unknown"}, nil
+}
+
+func (stub *attachedWorkerControlStub) Apply(_ context.Context, _ domain.TenantID, _ domain.UserID, worker domain.AttachedWorkerID, _ attachedworkerux.ActionApplyV1) (attachedworkerux.ActionOperationV1, error) {
+	if stub.err != nil {
+		return attachedworkerux.ActionOperationV1{}, stub.err
+	}
+	return attachedworkerux.ActionOperationV1{Version: 1, OperationID: "wao_stub", WorkerID: string(worker), Action: attachedworkerux.ActionDrain, State: "succeeded", Outcome: "applied", DurableDelivery: "recorded", CreatedAt: bffTestTime, CompletedAt: bffTestTime, RemoteAcknowledgement: "unknown", RemoteErase: "unknown"}, nil
+}
+
+func (stub *attachedWorkerControlStub) Operation(_ context.Context, _ domain.TenantID, _ domain.UserID, operationID domain.AttachedWorkerActionOperationID) (attachedworkerux.ActionOperationV1, error) {
+	stub.operationID = operationID
+	if stub.err != nil {
+		return attachedworkerux.ActionOperationV1{}, stub.err
+	}
+	return attachedworkerux.ActionOperationV1{Version: 1, OperationID: string(operationID), WorkerID: "wrk_owner_worker", Action: attachedworkerux.ActionDrain, State: "succeeded", Outcome: "applied", DurableDelivery: "recorded", CreatedAt: bffTestTime, CompletedAt: bffTestTime, RemoteAcknowledgement: "unknown", RemoteErase: "unknown"}, nil
+}
 
 func (oversizedAttachedWorkerReadService) List(context.Context, domain.TenantID, domain.UserID, domain.AttachedWorkerID, uint64) (attachedworkerux.AttachedWorkerListV1, error) {
 	return attachedworkerux.AttachedWorkerListV1{

@@ -359,7 +359,11 @@ func TestGetSeparatesAuthorityEvidenceAndFreshness(t *testing.T) {
 		t.Fatalf("durable cancellation occurrence times lost: %+v", model.Execution)
 	}
 	for _, action := range model.Governance.AvailableActions {
-		if action.Enabled || action.ReasonCode != ActionUnavailableControlContract {
+		if action.Code == ActionDrain || action.Code == ActionRevoke {
+			if !action.Enabled || action.Confirmation != "plan_apply_required" {
+				t.Fatalf("accepted control unavailable: %+v", action)
+			}
+		} else if action.Enabled || action.ReasonCode != ActionUnavailableControlContract {
 			t.Fatalf("unaccepted control enabled: %+v", action)
 		}
 	}
@@ -861,7 +865,7 @@ func TestPublicReadDTOsExcludeSensitiveAuthority(t *testing.T) {
 func TestActionInputEnvelopesCarryNoCallerAuthority(t *testing.T) {
 	t.Parallel()
 	assertJSONFields(t, reflect.TypeOf(ActionPlanRequestV1{}), []string{"action", "version"})
-	assertJSONFields(t, reflect.TypeOf(ActionApplyV1{}), []string{"confirmation", "idempotency_key", "plan_id", "version"})
+	assertJSONFields(t, reflect.TypeOf(ActionApplyV1{}), []string{"action", "confirmation", "idempotency_key", "plan_id", "version"})
 }
 
 func TestUnknownFactsOmitZeroTimesAndQuotaZeroRemainsObservable(t *testing.T) {

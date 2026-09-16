@@ -1,6 +1,11 @@
 package attachedworkerux
 
-import "time"
+import (
+	"strings"
+	"time"
+
+	"gitcode.com/urandon/sessionless/internal/domain"
+)
 
 const (
 	ReadModelVersionV1 uint32 = 1
@@ -380,29 +385,61 @@ type ActionPlanRequestV1 struct {
 	Action  ActionCodeV1 `json:"action"`
 }
 
+func (request ActionPlanRequestV1) Validate() error {
+	if request.Version != ReadModelVersionV1 || (request.Action != ActionDrain && request.Action != ActionRevoke) {
+		return domain.ValidationError{Field: "attached_worker_action_plan", Reason: "must request a supported V1 action"}
+	}
+	return nil
+}
+
 type ActionPlanV1 struct {
-	Version      uint32       `json:"version"`
-	PlanID       string       `json:"plan_id"`
-	WorkerID     string       `json:"worker_id"`
-	Action       ActionCodeV1 `json:"action"`
-	ExpiresAt    time.Time    `json:"expires_at"`
-	Confirmation string       `json:"confirmation"`
+	Version               uint32       `json:"version"`
+	PlanID                string       `json:"plan_id"`
+	WorkerID              string       `json:"worker_id"`
+	Action                ActionCodeV1 `json:"action"`
+	WorkerRevision        uint64       `json:"worker_revision,string"`
+	EnrollmentGeneration  uint64       `json:"enrollment_generation,string"`
+	ConnectionGeneration  uint64       `json:"connection_generation,string"`
+	Consequences          []string     `json:"consequences"`
+	RemoteAcknowledgement string       `json:"remote_acknowledgement"`
+	RemoteErase           string       `json:"remote_erase"`
+	ExpiresAt             time.Time    `json:"expires_at"`
+	Confirmation          string       `json:"confirmation"`
 }
 
 type ActionApplyV1 struct {
-	Version        uint32 `json:"version"`
-	PlanID         string `json:"plan_id"`
-	Confirmation   string `json:"confirmation"`
-	IdempotencyKey string `json:"idempotency_key"`
+	Version        uint32       `json:"version"`
+	PlanID         string       `json:"plan_id"`
+	Action         ActionCodeV1 `json:"action"`
+	Confirmation   string       `json:"confirmation"`
+	IdempotencyKey string       `json:"idempotency_key"`
+}
+
+func (request ActionApplyV1) Validate() error {
+	if request.Version != ReadModelVersionV1 || (request.Action != ActionDrain && request.Action != ActionRevoke) ||
+		domain.ValidateOpaqueID("attached_worker_action.plan_id", request.PlanID) != nil ||
+		domain.ValidateOpaqueID("attached_worker_action.idempotency_key", request.IdempotencyKey) != nil ||
+		request.Confirmation != strings.TrimSpace(request.Confirmation) || request.Confirmation == "" || len(request.Confirmation) > 256 {
+		return domain.ValidationError{Field: "attached_worker_action_apply", Reason: "contains an invalid V1 plan, confirmation, or idempotency key"}
+	}
+	return nil
 }
 
 type ActionOperationV1 struct {
-	Version     uint32                  `json:"version"`
-	OperationID string                  `json:"operation_id"`
-	WorkerID    string                  `json:"worker_id"`
-	Action      ActionCodeV1            `json:"action"`
-	State       string                  `json:"state"`
-	ReasonCode  ActionUnavailableCodeV1 `json:"reason_code,omitempty"`
-	CreatedAt   time.Time               `json:"created_at"`
-	CompletedAt time.Time               `json:"completed_at,omitzero"`
+	Version               uint32                  `json:"version"`
+	OperationID           string                  `json:"operation_id"`
+	WorkerID              string                  `json:"worker_id"`
+	Action                ActionCodeV1            `json:"action"`
+	State                 string                  `json:"state"`
+	Outcome               string                  `json:"outcome"`
+	DurableDelivery       string                  `json:"durable_delivery"`
+	ReasonCode            ActionUnavailableCodeV1 `json:"reason_code,omitempty"`
+	CreatedAt             time.Time               `json:"created_at"`
+	CompletedAt           time.Time               `json:"completed_at,omitzero"`
+	WorkerRevision        uint64                  `json:"worker_revision,omitempty,string"`
+	EnrollmentGeneration  uint64                  `json:"enrollment_generation,omitempty,string"`
+	ConnectionGeneration  uint64                  `json:"connection_generation,omitempty,string"`
+	DesiredState          string                  `json:"desired_state,omitempty"`
+	RemoteAcknowledgement string                  `json:"remote_acknowledgement"`
+	RemoteErase           string                  `json:"remote_erase"`
 }

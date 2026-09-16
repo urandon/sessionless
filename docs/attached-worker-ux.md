@@ -1,13 +1,14 @@
 # Attached-worker UX observability and control contract
 
-Status: AW-06a design contract for issues #82 and #78. This document is an
-implementation prerequisite for attached-worker WebUI, CLI, and control
-operations. It does not enable a product surface or add a state transition.
+Status: AW-06a design contract with the AW-06b read projection and AW-06c
+owner-scoped drain/revoke control API implemented for issues #82, #78, #104,
+and #131. Browser mutation controls remain intentionally inert.
 
-The first #78 implementation slice lives in `internal/attachedworkerux` and
-`internal/ports/attached_worker_ux.go`. It provides only owner-scoped V1
-list/detail/diagnostic reducers and public DTOs. It does not mount an endpoint,
-enable a control, evaluate a candidate, or implement WebUI/CLI behavior.
+The implementation lives in `internal/attachedworkerux`, its narrow ports, and
+the same-origin Web BFF. It provides owner-scoped V1 list/detail/diagnostic
+reducers plus durable plan/apply/operation receipts for the already accepted
+drain and deny-first revoke authorities. It does not add a second lifecycle
+transition path, daemon/provider probe, or WebUI/CLI mutation behavior.
 
 ## Scope and authority
 
@@ -28,9 +29,10 @@ particular:
 
 The read service must point-load these authorities in the authenticated
 `(tenant_id, owner_user_id)` scope and reduce them without mutation. Loading a
-list, detail, diagnostics, or action-preview endpoint has no side effects. A
-body field, query parameter, capability advertisement, daemon report, or
-worker timestamp never becomes authorization.
+list, detail, or diagnostics endpoint has no side effects. Creating an action
+plan persists only short-lived, bounded authorization evidence; it does not
+transition the worker. A body field, query parameter, capability
+advertisement, daemon report, or worker timestamp never becomes authorization.
 
 Another tenant member or another owner receives the same not-found result as a
 missing worker. There is no sharing model in V1. Mutations repeat the same
@@ -245,9 +247,11 @@ local-cleanup observations, and available actions with denial reasons.
 Pause/resume admission must be backed by a future AW-04 authoritative admission
 policy; V1 must not repurpose `offline`, daemon `stopped`, or AW-01 desired
 state as a pause flag. AW-04 already rejects a new offer when AW-01 desired
-state is not active. What remains unavailable is the reviewed drain mutation
-and receipt plus remote `Drained` acknowledgement. A drained presentation
-requires zero active and zero unknown attempts.
+state is not active. AW-06c now exposes the reviewed drain request and its
+local durable receipt. The receipt reports whether the apply was new or an
+idempotent replay and whether a drain command was durably recorded; remote
+`Drained` acknowledgement remains separate and unavailable. A drained
+presentation requires zero active and zero unknown attempts.
 Revocation is deny-first. Remote revoked/erase acknowledgement is separate and
 may remain unknown indefinitely for an offline host.
 
@@ -289,9 +293,9 @@ GET  /v1/attached-workers/{worker_id}
 GET  /v1/attached-workers/{worker_id}/diagnostics
 POST /v1/attached-worker-enrollments:plan
 GET  /v1/attached-worker-enrollments/{enrollment_id}
-POST /v1/attached-workers/{worker_id}/actions:plan
-POST /v1/attached-workers/{worker_id}/actions:apply
-GET  /v1/attached-worker-actions/{operation_id}
+POST /api/web/v1/attached-workers/{worker_id}/actions:plan
+POST /api/web/v1/attached-workers/{worker_id}/actions:apply
+GET  /api/web/v1/attached-worker-actions/{operation_id}
 ```
 
 The public enrollment plan returns only a safe local-handoff plan identifier
@@ -389,7 +393,8 @@ The conceptual JSON shape is:
     "remote_erase": "not_requested",
     "available_actions": [
       {"code": "request_cancel", "enabled": false, "reason_code": "control_contract_unavailable"},
-      {"code": "revoke", "enabled": false, "reason_code": "control_contract_unavailable"},
+      {"code": "drain", "enabled": true, "confirmation": "plan_apply_required"},
+      {"code": "revoke", "enabled": true, "confirmation": "plan_apply_required"},
       {"code": "resume_admission", "enabled": false, "reason_code": "control_contract_unavailable"}
     ]
   }
@@ -577,7 +582,7 @@ operation is an action with its own receipt, not page-load behavior.
 ```mermaid
 stateDiagram-v2
     [*] --> ActiveDesired
-    ActiveDesired --> DrainDesired: future reviewed drain mutation
+    ActiveDesired --> DrainDesired: reviewed confirmed drain apply
     DrainDesired --> Waiting: authoritative attempt still active
     Waiting --> DrainedPresentation: zero active and zero unknown attempts plus ack
     Waiting --> BlockedUnknown: fenced_unknown or ambiguous effect
@@ -745,14 +750,13 @@ Bounded scope after slice 1 acceptance:
 Controls remain disabled when the API reports unavailable. UI/CLI cannot infer
 availability from labels or reconstruct a state machine.
 
-The first accepted implementation slice is deliberately read-only: WebUI list,
-detail, and redacted diagnostics consume the canonical V1 projection and show
-future controls as inert rows with their exact unavailability codes. It adds no
-action endpoint and performs no automatic polling. A networked CLI remains
-blocked until an authenticated owner-context transport is accepted; a future
-CLI may first add a pure renderer over already-authorized V1 DTOs, but must not
-access domain stores directly or substitute local daemon observations for
-server truth.
+The WebUI remains deliberately non-mutating: list, detail, and redacted
+diagnostics consume the canonical V1 projection, while the BFF exposes only
+the reviewed owner-scoped drain/revoke plan/apply contract. No browser control
+invokes those routes and no automatic polling was added. A networked CLI
+remains blocked until an authenticated owner-context transport is accepted; a
+future CLI may render already-authorized V1 DTOs but must not access domain
+stores directly or substitute local daemon observations for server truth.
 
 ### 3. Diagnostics and accessibility
 
@@ -829,5 +833,5 @@ eligibility boolean, quota-derived policy not present in the scheduler, generic
 cross-domain CAS fields, and an under-specified cancellation/process/terminal
 projection. All three resolution reviews reported no remaining actionable
 P1/P2. This review accepted the information and safety contract only. The
-subsequent bounded slice may expose its read-only list, detail, and diagnostics
-projections, but it does not accept or enable control operations.
+subsequent bounded slices exposed the read-only projections and the narrowly
+reviewed drain/revoke control API without enabling browser mutation controls.

@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"time"
 
+	"gitcode.com/urandon/sessionless/internal/attachedworker"
+	"gitcode.com/urandon/sessionless/internal/attachedworkertransport"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerux"
 	"gitcode.com/urandon/sessionless/internal/buildinfo"
 	"gitcode.com/urandon/sessionless/internal/domain"
@@ -189,7 +191,27 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 		closeYDB()
 		return nil, func() {}, err
 	}
+	ids := idgen.New()
 	attachedWorkers, err := attachedworkerux.NewService(store, time.Now)
+	if err != nil {
+		closeYDB()
+		return nil, func() {}, err
+	}
+	workerLifecycle, err := attachedworker.New(attachedworker.Config{
+		Clock: systemClock{}, IDs: ids, MaxEnrollmentTTL: 15 * time.Minute, EnrollmentRetention: 24 * time.Hour,
+	}, store)
+	if err != nil {
+		closeYDB()
+		return nil, func() {}, err
+	}
+	drainService, err := attachedworkertransport.NewDrainService(store)
+	if err != nil {
+		closeYDB()
+		return nil, func() {}, err
+	}
+	attachedWorkerControls, err := attachedworkerux.NewControlService(attachedworkerux.ControlConfig{
+		Clock: systemClock{}, IDs: ids,
+	}, store, store, drainService, workerLifecycle)
 	if err != nil {
 		closeYDB()
 		return nil, func() {}, err
@@ -204,7 +226,7 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 			MaxClockSkew: 30 * time.Second,
 		},
 		Provider: provider, Store: store, Sessions: sessions, API: api, AttachedWorkers: attachedWorkers,
-		IDs: idgen.New(), Clock: systemClock{},
+		AttachedWorkerControls: attachedWorkerControls, IDs: ids, Clock: systemClock{},
 		Logger: logger, Build: buildinfo.Current(component),
 	})
 	if err != nil {

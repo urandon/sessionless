@@ -240,6 +240,7 @@ func (service *Service) reduce(ctx context.Context, worker domain.AttachedWorker
 	if worker.DesiredState == domain.AttachedWorkerDesiredRevoked {
 		result.Governance.RemoteErase = "unknown"
 	}
+	result.Governance.AvailableActions = actionCatalog(worker, connection, connectionFound)
 	result.ObservationWarnings = warnings(worker, connection, connectionFound, result.Capability, attempt, attemptFound, evaluatedAt)
 	return result, nil
 }
@@ -569,6 +570,27 @@ func disabledActions() []AvailableActionV1 {
 	result := make([]AvailableActionV1, 0, len(codes))
 	for _, code := range codes {
 		result = append(result, AvailableActionV1{Code: code, Enabled: false, ReasonCode: ActionUnavailableControlContract})
+	}
+	return result
+}
+
+func actionCatalog(worker domain.AttachedWorker, connection domain.AttachedWorkerConnection, connectionFound bool) []AvailableActionV1 {
+	result := disabledActions()
+	for index := range result {
+		switch result[index].Code {
+		case ActionDrain:
+			if actionAvailable(domain.AttachedWorkerActionDrain, worker, connection, connectionFound) {
+				result[index] = AvailableActionV1{Code: ActionDrain, Enabled: true, Confirmation: "plan_apply_required"}
+			} else {
+				result[index].ReasonCode = ActionUnavailableInvalidState
+			}
+		case ActionRevoke:
+			if worker.DesiredState != domain.AttachedWorkerDesiredRevoked {
+				result[index] = AvailableActionV1{Code: ActionRevoke, Enabled: true, Confirmation: "plan_apply_required"}
+			} else {
+				result[index].ReasonCode = ActionUnavailableAlreadyApplied
+			}
+		}
 	}
 	return result
 }

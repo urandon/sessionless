@@ -372,6 +372,73 @@
           "default": { "$ref": "#/components/responses/Error" }
         }
       }
+    },
+    "/api/web/v1/attached-workers/{worker_id}/actions:plan": {
+      "post": {
+        "operationId": "planAttachedWorkerAction",
+        "parameters": [{ "$ref": "#/components/parameters/WorkerID" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AttachedWorkerActionPlanRequestV1" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Fresh owner-scoped drain or revoke plan",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AttachedWorkerActionPlanV1" }
+              }
+            }
+          },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/web/v1/attached-workers/{worker_id}/actions:apply": {
+      "post": {
+        "operationId": "applyAttachedWorkerAction",
+        "parameters": [{ "$ref": "#/components/parameters/WorkerID" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AttachedWorkerActionApplyV1" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Content-free durable action receipt",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AttachedWorkerActionOperationV1" }
+              }
+            }
+          },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/web/v1/attached-worker-actions/{operation_id}": {
+      "get": {
+        "operationId": "getAttachedWorkerAction",
+        "parameters": [{ "$ref": "#/components/parameters/AttachedWorkerOperationID" }],
+        "responses": {
+          "200": {
+            "description": "Owner-scoped attached-worker action receipt",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AttachedWorkerActionOperationV1" }
+              }
+            }
+          },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
     }
   },
   "components": {
@@ -388,6 +455,17 @@
         "in": "path",
         "required": true,
         "schema": { "type": "string" }
+      },
+      "AttachedWorkerOperationID": {
+        "name": "operation_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[A-Za-z0-9._:-]+$"
+        }
       }
     },
     "responses": {
@@ -828,6 +906,136 @@
           "confirmation_required",
           "operation_in_progress"
         ]
+      },
+      "AttachedWorkerControlActionV1": {
+        "type": "string",
+        "enum": ["drain", "revoke"]
+      },
+      "AttachedWorkerActionPlanRequestV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["version", "action"],
+        "properties": {
+          "version": { "type": "integer", "const": 1 },
+          "action": { "$ref": "#/components/schemas/AttachedWorkerControlActionV1" }
+        }
+      },
+      "AttachedWorkerActionPlanV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "version",
+          "plan_id",
+          "worker_id",
+          "action",
+          "worker_revision",
+          "enrollment_generation",
+          "connection_generation",
+          "consequences",
+          "remote_acknowledgement",
+          "remote_erase",
+          "expires_at",
+          "confirmation"
+        ],
+        "properties": {
+          "version": { "type": "integer", "const": 1 },
+          "plan_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160,
+            "pattern": "^[A-Za-z0-9._:-]+$"
+          },
+          "worker_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160,
+            "pattern": "^[A-Za-z0-9._:-]+$"
+          },
+          "action": { "$ref": "#/components/schemas/AttachedWorkerControlActionV1" },
+          "worker_revision": { "$ref": "#/components/schemas/AttachedWorkerUint64V1" },
+          "enrollment_generation": { "$ref": "#/components/schemas/AttachedWorkerUint64V1" },
+          "connection_generation": { "$ref": "#/components/schemas/AttachedWorkerUint64V1" },
+          "consequences": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 3,
+            "uniqueItems": true,
+            "items": { "type": "string", "maxLength": 64 }
+          },
+          "remote_acknowledgement": { "type": "string", "const": "unknown" },
+          "remote_erase": { "type": "string", "const": "unknown" },
+          "expires_at": { "type": "string", "format": "date-time" },
+          "confirmation": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+        }
+      },
+      "AttachedWorkerActionApplyV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["version", "plan_id", "action", "confirmation", "idempotency_key"],
+        "properties": {
+          "version": { "type": "integer", "const": 1 },
+          "plan_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160,
+            "pattern": "^[A-Za-z0-9._:-]+$"
+          },
+          "action": { "$ref": "#/components/schemas/AttachedWorkerControlActionV1" },
+          "confirmation": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160,
+            "pattern": "^[A-Za-z0-9._:-]+$"
+          }
+        }
+      },
+      "AttachedWorkerActionOperationV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "version",
+          "operation_id",
+          "worker_id",
+          "action",
+          "state",
+          "outcome",
+          "durable_delivery",
+          "created_at",
+          "remote_acknowledgement",
+          "remote_erase"
+        ],
+        "properties": {
+          "version": { "type": "integer", "const": 1 },
+          "operation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160,
+            "pattern": "^[A-Za-z0-9._:-]+$"
+          },
+          "worker_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160,
+            "pattern": "^[A-Za-z0-9._:-]+$"
+          },
+          "action": { "$ref": "#/components/schemas/AttachedWorkerControlActionV1" },
+          "state": { "type": "string", "enum": ["applying", "succeeded", "failed"] },
+          "outcome": { "type": "string", "enum": ["in_progress", "applied", "replayed", "failed"] },
+          "durable_delivery": {
+            "type": "string",
+            "enum": ["unknown", "recorded", "not_applicable"]
+          },
+          "reason_code": { "$ref": "#/components/schemas/AttachedWorkerActionUnavailableCodeV1" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "completed_at": { "type": "string", "format": "date-time" },
+          "worker_revision": { "$ref": "#/components/schemas/AttachedWorkerUint64V1" },
+          "enrollment_generation": { "$ref": "#/components/schemas/AttachedWorkerUint64V1" },
+          "connection_generation": { "$ref": "#/components/schemas/AttachedWorkerUint64V1" },
+          "desired_state": { "type": "string", "enum": ["drain", "revoked"] },
+          "remote_acknowledgement": { "type": "string", "const": "unknown" },
+          "remote_erase": { "type": "string", "const": "unknown" }
+        }
       },
       "AttachedWorkerIdentityRecordV1": {
         "type": "object",

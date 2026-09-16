@@ -78,4 +78,6 @@ var prefixes = map[ports.IDKind]string{
 	ports.IDAttachedWorkerEnrollment: "wen_",
 	ports.IDAttachedWorkerConnection: "wcn_",
 	ports.IDAttachedWorkerChallenge:  "wch_",
+	ports.IDAttachedWorkerActionPlan: "wap_",
+	ports.IDAttachedWorkerAction:     "wao_",
 }

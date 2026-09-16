@@ -39,6 +39,9 @@ const (
 	RouteAttachedWorkers           = "/api/web/v1/attached-workers"
 	RouteAttachedWorker            = "/api/web/v1/attached-workers/{worker_id}"
 	RouteAttachedWorkerDiagnostics = "/api/web/v1/attached-workers/{worker_id}/diagnostics"
+	RouteAttachedWorkerActionPlan  = "/api/web/v1/attached-workers/{worker_id}/actions:plan"
+	RouteAttachedWorkerActionApply = "/api/web/v1/attached-workers/{worker_id}/actions:apply"
+	RouteAttachedWorkerAction      = "/api/web/v1/attached-worker-actions/{operation_id}"
 )
 
 const AuthErrorQueryName = "auth_error"

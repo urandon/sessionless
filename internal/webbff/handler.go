@@ -52,6 +52,7 @@ type Config struct {
 	Sessions                   *sessionapi.Service
 	API                        *webapi.Service
 	AttachedWorkers            AttachedWorkerReadService
+	AttachedWorkerControls     AttachedWorkerControlService
 	IDs                        ports.IDGenerator
 	Clock                      ports.Clock
 	Random                     io.Reader
@@ -66,6 +67,12 @@ type AttachedWorkerReadService interface {
 	List(context.Context, domain.TenantID, domain.UserID, domain.AttachedWorkerID, uint64) (attachedworkerux.AttachedWorkerListV1, error)
 	Get(context.Context, domain.TenantID, domain.UserID, domain.AttachedWorkerID) (attachedworkerux.AttachedWorkerUXReadModelV1, error)
 	Diagnostics(context.Context, domain.TenantID, domain.UserID, domain.AttachedWorkerID) (attachedworkerux.AttachedWorkerDiagnosticsV1, error)
+}
+
+type AttachedWorkerControlService interface {
+	Plan(context.Context, domain.TenantID, domain.UserID, domain.AttachedWorkerID, attachedworkerux.ActionPlanRequestV1) (attachedworkerux.ActionPlanV1, error)
+	Apply(context.Context, domain.TenantID, domain.UserID, domain.AttachedWorkerID, attachedworkerux.ActionApplyV1) (attachedworkerux.ActionOperationV1, error)
+	Operation(context.Context, domain.TenantID, domain.UserID, domain.AttachedWorkerActionOperationID) (attachedworkerux.ActionOperationV1, error)
 }
 
 type Handler struct {
@@ -210,6 +217,84 @@ func (handler *Handler) routes() {
 		handler.mux.HandleFunc("GET "+webcontract.RouteAttachedWorker, handler.getAttachedWorker)
 		handler.mux.HandleFunc("GET "+webcontract.RouteAttachedWorkerDiagnostics, handler.getAttachedWorkerDiagnostics)
 	}
+	if handler.config.AttachedWorkerControls != nil {
+		handler.mux.HandleFunc("POST "+webcontract.RouteAttachedWorkerActionPlan, handler.planAttachedWorkerAction)
+		handler.mux.HandleFunc("POST "+webcontract.RouteAttachedWorkerActionApply, handler.applyAttachedWorkerAction)
+		handler.mux.HandleFunc("GET "+webcontract.RouteAttachedWorkerAction, handler.getAttachedWorkerAction)
+	}
+}
+
+func (handler *Handler) planAttachedWorkerAction(w http.ResponseWriter, request *http.Request) {
+	authorization, err := handler.authorizeMutation(request, domain.TenantPermissionWrite)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	if len(request.URL.Query()) != 0 {
+		handler.writeError(w, request, domain.ValidationError{Field: "attached_worker_action.query", Reason: "must be empty"})
+		return
+	}
+	var input attachedworkerux.ActionPlanRequestV1
+	if err := decodeJSON(request, &input); err != nil || input.Validate() != nil {
+		if err == nil {
+			err = input.Validate()
+		}
+		handler.writeError(w, request, err)
+		return
+	}
+	result, err := handler.config.AttachedWorkerControls.Plan(request.Context(), authorization.Session.ActiveTenantID,
+		authorization.Session.UserID, domain.AttachedWorkerID(request.PathValue("worker_id")), input)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	handler.writeBoundedJSON(w, request, result, maxAttachedWorkerResponseBytes)
+}
+
+func (handler *Handler) applyAttachedWorkerAction(w http.ResponseWriter, request *http.Request) {
+	authorization, err := handler.authorizeMutation(request, domain.TenantPermissionWrite)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	if len(request.URL.Query()) != 0 {
+		handler.writeError(w, request, domain.ValidationError{Field: "attached_worker_action.query", Reason: "must be empty"})
+		return
+	}
+	var input attachedworkerux.ActionApplyV1
+	if err := decodeJSON(request, &input); err != nil || input.Validate() != nil {
+		if err == nil {
+			err = input.Validate()
+		}
+		handler.writeError(w, request, err)
+		return
+	}
+	result, err := handler.config.AttachedWorkerControls.Apply(request.Context(), authorization.Session.ActiveTenantID,
+		authorization.Session.UserID, domain.AttachedWorkerID(request.PathValue("worker_id")), input)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	handler.writeBoundedJSON(w, request, result, maxAttachedWorkerResponseBytes)
+}
+
+func (handler *Handler) getAttachedWorkerAction(w http.ResponseWriter, request *http.Request) {
+	authorization, err := handler.authorize(request, domain.TenantPermissionRead)
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	if len(request.URL.Query()) != 0 {
+		handler.writeError(w, request, domain.ValidationError{Field: "attached_worker_action.query", Reason: "must be empty"})
+		return
+	}
+	result, err := handler.config.AttachedWorkerControls.Operation(request.Context(), authorization.Session.ActiveTenantID,
+		authorization.Session.UserID, domain.AttachedWorkerActionOperationID(request.PathValue("operation_id")))
+	if err != nil {
+		handler.writeError(w, request, err)
+		return
+	}
+	handler.writeBoundedJSON(w, request, result, maxAttachedWorkerResponseBytes)
 }
 
 func (handler *Handler) listAttachedWorkers(w http.ResponseWriter, request *http.Request) {
@@ -1030,6 +1115,14 @@ func (handler *Handler) writeError(w http.ResponseWriter, request *http.Request,
 		handler.writeFailure(w, request, webcontract.ErrorInvalidRequest, "The attached worker request is invalid.")
 	case errors.Is(err, attachedworkerux.ErrBackend):
 		handler.writeFailure(w, request, webcontract.ErrorTemporarilyUnavailable, "The attached worker view is temporarily unavailable.")
+	case errors.Is(err, attachedworkerux.ErrActionNotFound):
+		handler.writeFailure(w, request, webcontract.ErrorNotFound, "The requested attached worker action is not available.")
+	case errors.Is(err, attachedworkerux.ErrActionInvalid):
+		handler.writeFailure(w, request, webcontract.ErrorInvalidRequest, "The attached worker action request is invalid.")
+	case errors.Is(err, attachedworkerux.ErrActionUnavailable), errors.Is(err, attachedworkerux.ErrActionConflict), errors.Is(err, attachedworkerux.ErrActionExpired):
+		handler.writeFailure(w, request, webcontract.ErrorConflict, "The attached worker action conflicts with current state.")
+	case errors.Is(err, attachedworkerux.ErrActionBackend):
+		handler.writeFailure(w, request, webcontract.ErrorTemporarilyUnavailable, "The attached worker action service is temporarily unavailable.")
 	case errors.Is(err, domain.ErrSessionMutationConflict), errors.Is(err, domain.ErrEventIdempotencyConflict):
 		handler.writeFailure(w, request, webcontract.ErrorConflict, "The idempotency key conflicts with an earlier session mutation.")
 	case errors.Is(err, webapi.ErrComputeUnavailable):

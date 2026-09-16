@@ -116,6 +116,12 @@ func TestGeneratorProducesOpaqueNonSortableAttachedWorkerIDs(t *testing.T) {
 		{kind: ports.IDAttachedWorkerChallenge, prefix: "wch_", validate: func(value string) error {
 			return domain.AttachedWorkerChallengeID(value).Validate()
 		}},
+		{kind: ports.IDAttachedWorkerActionPlan, prefix: "wap_", validate: func(value string) error {
+			return domain.AttachedWorkerActionPlanID(value).Validate()
+		}},
+		{kind: ports.IDAttachedWorkerAction, prefix: "wao_", validate: func(value string) error {
+			return domain.AttachedWorkerActionOperationID(value).Validate()
+		}},
 	}
 	for _, test := range tests {
 		t.Run(string(test.kind), func(t *testing.T) {

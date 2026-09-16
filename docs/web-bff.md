@@ -57,6 +57,9 @@ sequenceDiagram
 | `GET` | `/api/web/v1/attached-workers` | Page owner-scoped attached-worker summaries (`limit` 1–50, default 20) |
 | `GET` | `/api/web/v1/attached-workers/{worker_id}` | Read the canonical owner-scoped attached-worker UX projection |
 | `GET` | `/api/web/v1/attached-workers/{worker_id}/diagnostics` | Read bounded, redacted owner-scoped diagnostics |
+| `POST` | `/api/web/v1/attached-workers/{worker_id}/actions:plan` | Seal a short-lived exact drain/revoke plan |
+| `POST` | `/api/web/v1/attached-workers/{worker_id}/actions:apply` | Apply the exact confirmed plan idempotently |
+| `GET` | `/api/web/v1/attached-worker-actions/{operation_id}` | Read the owner-scoped content-free operation receipt |
 | `GET` | `/api/web/v1/sessions/{session_id}/events/{sequence}/attachments/{index}` | Create a short-lived capability for one canonical attachment |
 | `GET` | `/api/web/v1/sessions/{session_id}/runs/{run_id}/artifact-manifests/{manifest_id}/artifacts/{index}` | Create a short-lived capability for one exact worker artifact |
 
@@ -72,8 +75,8 @@ server creates or verifies the binding `(web, session_id)` for the authorized
 canonical session. The generic revision-fenced binding operation remains an
 internal adapter boundary and is deliberately not registered as a Web route.
 
-Attached-worker routes are read-only projections of the AW-01–AW-05
-authorities. The path and pagination values are selectors, never tenant or
+Attached-worker read routes are projections of the AW-01–AW-05 authorities.
+The path and pagination values are selectors, never tenant or
 owner authority; the BFF always derives both from the authenticated Web
 session. Missing and foreign-owner workers share the same public `not_found`
 outcome. List queries accept only one optional `after_worker_id` and one
@@ -81,7 +84,12 @@ optional `limit`; detail and diagnostics reject query parameters. Encoded
 responses are capped at 256 KiB, remain `Cache-Control: no-store`, and request
 logs record the matched route template rather than the worker ID. These reads
 do not refresh presence, evaluate admission, probe a daemon/provider, or mutate
-attached-worker state.
+attached-worker state. The separately mounted plan/apply routes admit only
+`drain` and deny-first `revoke`. They require write membership, same-origin
+double-submit CSRF, a fresh exact revision/generation plan, its deterministic
+confirmation digest, and an idempotency key. Durable receipts report local
+state while remote acknowledgement and remote erasure remain `unknown`; no
+browser button is enabled by this backend slice.
 
 Any failed OIDC callback, including provider denial or missing enrollment,
 redirects to the stable same-origin `/login?auth_error=access_denied` recovery

@@ -308,6 +308,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/web/v1/attached-workers/{worker_id}/actions:plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["planAttachedWorkerAction"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/web/v1/attached-workers/{worker_id}/actions:apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["applyAttachedWorkerAction"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/web/v1/attached-worker-actions/{operation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getAttachedWorkerAction"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -490,6 +538,66 @@ export interface components {
         AttachedWorkerActionCodeV1: "create_enrollment" | "consume_enrollment" | "rename" | "rotate_identity" | "pause_admission" | "resume_admission" | "drain" | "revoke" | "request_cancel" | "reconnect_remediation" | "reauth_remediation" | "check_update" | "logout" | "uninstall_plan";
         /** @enum {string} */
         AttachedWorkerActionUnavailableCodeV1: "not_found" | "stale_revision" | "stale_generation" | "invalid_state" | "active_attempt" | "ambiguous_attempt" | "awaiting_acknowledgement" | "already_applied" | "unsupported_platform" | "feature_disabled" | "control_contract_unavailable" | "confirmation_required" | "operation_in_progress";
+        /** @enum {string} */
+        AttachedWorkerControlActionV1: "drain" | "revoke";
+        AttachedWorkerActionPlanRequestV1: {
+            /** @constant */
+            version: 1;
+            action: components["schemas"]["AttachedWorkerControlActionV1"];
+        };
+        AttachedWorkerActionPlanV1: {
+            /** @constant */
+            version: 1;
+            plan_id: string;
+            worker_id: string;
+            action: components["schemas"]["AttachedWorkerControlActionV1"];
+            worker_revision: components["schemas"]["AttachedWorkerUint64V1"];
+            enrollment_generation: components["schemas"]["AttachedWorkerUint64V1"];
+            connection_generation: components["schemas"]["AttachedWorkerUint64V1"];
+            consequences: string[];
+            /** @constant */
+            remote_acknowledgement: "unknown";
+            /** @constant */
+            remote_erase: "unknown";
+            /** Format: date-time */
+            expires_at: string;
+            confirmation: string;
+        };
+        AttachedWorkerActionApplyV1: {
+            /** @constant */
+            version: 1;
+            plan_id: string;
+            action: components["schemas"]["AttachedWorkerControlActionV1"];
+            confirmation: string;
+            idempotency_key: string;
+        };
+        AttachedWorkerActionOperationV1: {
+            /** @constant */
+            version: 1;
+            operation_id: string;
+            worker_id: string;
+            action: components["schemas"]["AttachedWorkerControlActionV1"];
+            /** @enum {string} */
+            state: "applying" | "succeeded" | "failed";
+            /** @enum {string} */
+            outcome: "in_progress" | "applied" | "replayed" | "failed";
+            /** @enum {string} */
+            durable_delivery: "unknown" | "recorded" | "not_applicable";
+            reason_code?: components["schemas"]["AttachedWorkerActionUnavailableCodeV1"];
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            completed_at?: string;
+            worker_revision?: components["schemas"]["AttachedWorkerUint64V1"];
+            enrollment_generation?: components["schemas"]["AttachedWorkerUint64V1"];
+            connection_generation?: components["schemas"]["AttachedWorkerUint64V1"];
+            /** @enum {string} */
+            desired_state?: "drain" | "revoked";
+            /** @constant */
+            remote_acknowledgement: "unknown";
+            /** @constant */
+            remote_erase: "unknown";
+        };
         AttachedWorkerIdentityRecordV1: {
             worker_id: string;
             display_name: string;
@@ -796,6 +904,7 @@ export interface components {
         SessionID: string;
         RunID: string;
         WorkerID: string;
+        AttachedWorkerOperationID: string;
     };
     requestBodies: never;
     headers: never;
@@ -1249,6 +1358,83 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AttachedWorkerDiagnosticsV1"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    planAttachedWorkerAction: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                worker_id: components["parameters"]["WorkerID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AttachedWorkerActionPlanRequestV1"];
+            };
+        };
+        responses: {
+            /** @description Fresh owner-scoped drain or revoke plan */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttachedWorkerActionPlanV1"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    applyAttachedWorkerAction: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                worker_id: components["parameters"]["WorkerID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AttachedWorkerActionApplyV1"];
+            };
+        };
+        responses: {
+            /** @description Content-free durable action receipt */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttachedWorkerActionOperationV1"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getAttachedWorkerAction: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                operation_id: components["parameters"]["AttachedWorkerOperationID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Owner-scoped attached-worker action receipt */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttachedWorkerActionOperationV1"];
                 };
             };
             default: components["responses"]["Error"];

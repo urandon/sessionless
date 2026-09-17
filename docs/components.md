@@ -36,6 +36,7 @@ scripts it invokes.
 | `internal/directopenrouter` | Feature-disabled native [direct OpenRouter](direct-openrouter.md) request/response and observed-route reference backend. |
 | `internal/providercomposition` | Closed, feature-disabled [native provider composition](provider-composition.md) for exact Codex, OpenCode, Pi, and direct registrations. |
 | `internal/attachedworkersession` | Feature-disabled [worker-side connection owner](attached-worker-connection-session.md) for bootstrap, durable generation fencing, and immediate AW-02 exchange. |
+| `internal/attachedworkerstack` | Feature-disabled manifest-pinned local OCI/supervisor/credential-runner assembly with startup residue reconciliation. |
 | `internal/ydbstore`, `internal/ydbmigrate`, `internal/ydbpartition` | Tenant-scoped state, migration fencing, and physical partition policy. |
 | `internal/s3store`, `internal/sqsqueue`, `internal/queuecontract` | Tenant-enforcing objects and payload-free at-least-once queue contracts. |
 | `internal/scheduler` | Injected-clock admission, reservation, publication, and expiry rules. |

@@ -178,6 +178,12 @@ real-engine matrix are documented in
 explicit local engine endpoint with `make attached-worker-oci-integration`;
 the ordinary test/CI path uses deterministic fake-client coverage.
 
+The #132 local execution-stack assembly verifies the manifest-pinned Docker
+CLI and harness artifacts, reconciles installation-owned OCI residue, and
+composes the supervisor with the existing credential runner. It remains a
+library boundary: `attached-worker run` does not call it and ordinary tests do
+not contact an engine or provider.
+
 The owner-facing AW-06a information architecture, read-model safety boundary,
 and control-action gates are documented in
 [attached-worker-ux.md](attached-worker-ux.md). WebUI and CLI implementations

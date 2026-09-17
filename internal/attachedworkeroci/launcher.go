@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -63,6 +64,7 @@ const (
 // replace ambient PATH, HOME, Docker contexts and credential helpers.
 type Config struct {
 	DockerPath          string
+	DockerSHA256        string
 	CLIConfigDir        string
 	Host                string
 	EngineID            string
@@ -87,10 +89,14 @@ type commandRunner interface {
 }
 
 type execRunner struct {
-	path string
+	path   string
+	sha256 string
 }
 
 func (runner execRunner) Run(ctx context.Context, directory string, environment, arguments []string) ([]byte, []byte, error) {
+	if _, err := verifyPinnedExecutable(runner.path, runner.sha256); err != nil {
+		return nil, nil, ErrBoundary
+	}
 	command := exec.CommandContext(ctx, runner.path, arguments...)
 	command.Dir = directory
 	command.Env = append([]string(nil), environment...)
@@ -109,6 +115,9 @@ func (runner execRunner) Command(directory string, environment, arguments []stri
 	command := exec.Command(runner.path, arguments...)
 	command.Dir = directory
 	command.Env = append([]string(nil), environment...)
+	if _, err := verifyPinnedExecutable(runner.path, runner.sha256); err != nil {
+		command.Err = ErrBoundary
+	}
 	return command
 }
 
@@ -165,7 +174,7 @@ func NewLauncher(ctx context.Context, config Config) (*Launcher, error) {
 	if err := ValidateDeclarativeConfig(config); err != nil {
 		return nil, err
 	}
-	dockerPath, err := canonicalRegularFile(config.DockerPath)
+	dockerPath, err := verifyPinnedExecutable(config.DockerPath, config.DockerSHA256)
 	if err != nil || dockerPath != config.DockerPath {
 		return nil, ErrConfig
 	}
@@ -181,7 +190,7 @@ func NewLauncher(ctx context.Context, config Config) (*Launcher, error) {
 	}
 	runner := config.runner
 	if runner == nil {
-		runner = execRunner{path: dockerPath}
+		runner = execRunner{path: dockerPath, sha256: config.DockerSHA256}
 	}
 	hostOS := config.hostOS
 	if hostOS == "" {
@@ -216,7 +225,7 @@ func NewLauncher(ctx context.Context, config Config) (*Launcher, error) {
 // contacting an engine. Callers must separately prove pinned artifacts and
 // host/boundary compatibility before treating the configuration as usable.
 func ValidateDeclarativeConfig(config Config) error {
-	if !canonicalAbsolutePath(config.DockerPath) || !canonicalAbsolutePath(config.CLIConfigDir) ||
+	if !canonicalAbsolutePath(config.DockerPath) || !validSHA256(config.DockerSHA256) || !canonicalAbsolutePath(config.CLIConfigDir) ||
 		!validUnixHost(config.Host) || !validEngineID(config.EngineID) ||
 		!installationIDPattern.MatchString(config.InstallationID) || !validPinnedImage(config.Image) ||
 		config.UserID == 0 || config.GroupID == 0 || config.DiskBytes < minimumDiskBytes ||
@@ -286,12 +295,12 @@ func (launcher *Launcher) Prepare(ctx context.Context, spec attachedworkerdaemon
 	if err := launcher.verifyContainer(ctx, id, name, spec, validated, staged); err != nil {
 		return nil, err
 	}
-	command := launcher.client.command(spec.Directory, spec.Environment,
-		"container", "start", "--attach", "--interactive", id)
 	cleanup = false
 	stageOwned = false
 	return &boundary{
-		client: launcher.client, id: id, command: command,
+		client: launcher.client, id: id,
+		commandDirectory: spec.Directory, commandEnvironment: append([]string(nil), spec.Environment...),
+		commandArguments: []string{"container", "start", "--attach", "--interactive", id},
 		attestation: attachedworkerdaemon.WorkloadAttestation{
 			Executable: spec.Executable, ExecutableDigest: spec.ExecutableDigest,
 			Arguments: append([]string(nil), spec.Arguments...),
@@ -722,18 +731,25 @@ type stateResponse struct {
 }
 
 type boundary struct {
-	client       dockerClient
-	id           string
-	command      *exec.Cmd
-	attestation  attachedworkerdaemon.WorkloadAttestation
-	stage        *credentialStage
-	stopSeconds  int
-	releaseMu    sync.Mutex
-	released     bool
-	releaseError error
+	client             dockerClient
+	id                 string
+	commandDirectory   string
+	commandEnvironment []string
+	commandArguments   []string
+	attestation        attachedworkerdaemon.WorkloadAttestation
+	stage              *credentialStage
+	stopSeconds        int
+	releaseMu          sync.Mutex
+	released           bool
+	releaseError       error
 }
 
-func (boundary *boundary) Command() *exec.Cmd { return boundary.command }
+func (boundary *boundary) Command() *exec.Cmd {
+	if boundary == nil {
+		return nil
+	}
+	return boundary.client.command(boundary.commandDirectory, boundary.commandEnvironment, boundary.commandArguments...)
+}
 
 func (boundary *boundary) AttestedWorkload() attachedworkerdaemon.WorkloadAttestation {
 	return attachedworkerdaemon.WorkloadAttestation{
@@ -923,6 +939,34 @@ func canonicalRegularFile(path string) (string, error) {
 		return "", ErrConfig
 	}
 	return canonical, nil
+}
+
+func verifyPinnedExecutable(path, want string) (string, error) {
+	if !canonicalAbsolutePath(path) || !validSHA256(want) {
+		return "", ErrConfig
+	}
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 ||
+		info.Size() <= 0 || info.Size() > 128<<20 || info.Mode().Perm()&0o022 != 0 || info.Mode().Perm()&0o111 == 0 {
+		return "", ErrConfig
+	}
+	canonical, err := filepath.EvalSymlinks(path)
+	if err != nil || canonical != path {
+		return "", ErrConfig
+	}
+	digest, err := attachedworkerdaemon.DigestExecutable(path)
+	if err != nil || hex.EncodeToString(digest[:]) != want {
+		return "", ErrConfig
+	}
+	return canonical, nil
+}
+
+func validSHA256(value string) bool {
+	if len(value) != sha256.Size*2 {
+		return false
+	}
+	decoded, err := hex.DecodeString(value)
+	return err == nil && hex.EncodeToString(decoded) == value
 }
 
 func canonicalAbsolutePath(path string) bool {

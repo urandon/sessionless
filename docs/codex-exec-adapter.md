@@ -2,7 +2,8 @@
 
 Status date: **2026-09-17**. This is the feature-disabled implementation of
 [#81](https://gitcode.com/urandon/sessionless/issues/81). It is a disabled
-backend contract, canonical `HarnessDriver` bridge, and fake-process evidence,
+backend contract, canonical `HarnessDriver` bridge, concrete accepted-authority
+resolver, prepared Go-supervisor boundary, and fake-process evidence,
 not production provider enablement.
 
 ## Architectural position
@@ -13,8 +14,9 @@ fences, events, terminal commit, tools, and retries never become Codex state.
 registry. The exact executable, protocol, model, limits, and file-credential
 delivery profile now have a disabled registry descriptor, but the legacy
 invocation adapter remains a lower-level compatibility fixture. The production
-composition now accepts the separate `codexexec.Driver`, which implements
-`ports.HarnessDriver` over an injected exact-authority resolver and reviewed
+composition accepts the separate `codexexec.Driver`, which implements
+`ports.HarnessDriver`. `NewPreparedAttachedWorkerDriverV1` composes its concrete
+resolver over one immutable accepted-attempt snapshot and its exact pinned
 prepared-process boundary. It is not selected from the environment, an
 installed binary, an available credential, or a live model catalog.
 
@@ -41,7 +43,12 @@ fixtures, and reviewed open-source work without private inputs.
 
 ## Implemented bounded contract
 
-The driver verifies an exact owner/worker/connection/run/attempt/lease/fence
+The concrete resolver consumes one immutable, owner-scoped attempt snapshot only
+after the attached-worker protocol has accepted it. It performs no central-store
+read from the user-owned worker. Execution accepts only a live `claimed`
+snapshot; cancellation may also use the exact `cancel_requested` or
+`cancel_acknowledged` snapshot without reviving execution. The driver verifies
+the resulting exact owner/worker/connection/run/attempt/lease/fence
 authority, attached-worker capability and policy digests, and the complete
 immutable subscription resource binding. Its resolver must project the fields
 which are intentionally absent from provider-neutral `ExecutionRequest`
@@ -125,10 +132,9 @@ requires all of the following:
   tuple for
   eligible personal subscription, owner-managed attached worker, local credential
   custody, and exact Codex exec surface, including its expiry/re-review gate;
-- a reviewed concrete outer implementation of the bridge's authority resolver
-  and prepared process/cancellation boundary in the attached-worker foreground.
-  The closed registry now carries the production-shaped driver but keeps it
-  disabled;
+- product foreground activation of the already concrete authority resolver and
+  prepared process/cancellation composition. The closed registry carries the
+  production-shaped driver but keeps registration and the command path disabled;
 - reviewed production egress isolation. The current AW-05 isolation profile
   correctly requires `NetworkDenied=true`, so it can run fake contract tests
   but cannot perform a real provider turn;
@@ -145,6 +151,11 @@ Codex/deterministic. Those changes would create silent egress/billing fallback
 and a second provider state machine.
 
 ## Verification
+
+The concrete runtime tests consume an accepted attempt snapshot, reuse an already
+materialized `auth.json`, run the exact pinned argv through the real Go
+supervisor, preserve the credential for the outer write-back owner, and route
+exact cancellation to the active process.
 
 Pure reducer tests cover clean completion, pre/post-acceptance loss, duplicate
 and post-terminal events, unexpected effects, malformed/unterminated/duplicate

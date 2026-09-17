@@ -12,7 +12,8 @@ import (
 // lease, and resource authority. The driver validates this projection against
 // the canonical execution identity instead of manufacturing missing fields.
 type AuthorityResolverV1 interface {
-	Resolve(context.Context, ports.ExecutionIdentity) (AuthorityV1, error)
+	ResolveExecution(context.Context, ports.ExecutionIdentity) (AuthorityV1, error)
+	ResolveCancellation(context.Context, ports.ExecutionIdentity) (AuthorityV1, error)
 }
 
 // ProcessInvocationV1 carries no credential bytes. Its materialization is the

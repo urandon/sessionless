@@ -9,11 +9,14 @@ reviewed native provider adapters below the Sessionless-owned harness registry:
 - Pi over OpenRouter;
 - the native direct OpenRouter reference backend.
 
-The V1 factory accepts only five explicitly constructed, already pinned driver
+The V1 registry factory accepts only five explicitly constructed, already
+pinned driver
 instances and an injected clock. It does not inspect the environment, discover
 installed binaries, choose profiles, construct process or HTTP boundaries, or
 select a default backend. Missing dependencies and enabled profiles fail the
-composition before a registry is returned.
+composition before a registry is returned. The Codex subscription driver has a
+separate exact constructor that composes the immutable accepted-attempt snapshot
+and prepared Go supervisor; it still performs no discovery or activation.
 
 Every registration is built through its adapter's `DisabledRegistrationV1`
 contract and passed to the existing exact-match `sessionlessharness.Registry`.

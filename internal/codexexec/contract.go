@@ -1,7 +1,7 @@
 // Package codexexec implements the bounded Codex exec subscription backend.
-// It is deliberately not a ports.HarnessDriver and is not wired into a
-// runtime: the future Sessionless-owned routing harness remains the canonical
-// cross-backend boundary for Codex, OpenCode, Pi, and direct providers.
+// Its canonical Driver implements ports.HarnessDriver over an accepted
+// attached-worker authority and the Go supervisor. Runtime construction remains
+// feature-gated and no product binary enables the backend.
 package codexexec
 
 import (

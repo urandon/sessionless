@@ -46,6 +46,68 @@ printf '%s\n' '{"type":"turn.completed"}'
 	if resolved, err := driver.authority.ResolveExecution(context.Background(), executionIdentity(request)); err != nil || resolved != authority {
 		t.Fatalf("resolved authority = (%+v, %v), want exact accepted authority", resolved, err)
 	}
+	if _, err := driver.Execute(context.Background(), request, &fixtureEventSink{}); err == nil {
+		t.Fatal("replayed Execute() error = nil")
+	}
+	if got := launcher.prepareCount(); got != 1 {
+		t.Fatalf("isolation preparations after replay = %d, want 1", got)
+	}
+}
+
+func TestPreparedSupervisorBoundaryRechecksExpiryImmediatelyBeforePreparation(t *testing.T) {
+	fixture := writePreparedCodexFixture(t, `#!/bin/sh
+exit 91
+`)
+	request, _, driver, launcher, _, recording := preparedDriverFixture(t, fixture)
+	var clockMu sync.Mutex
+	now := driverNow
+	clock := func() time.Time {
+		clockMu.Lock()
+		defer clockMu.Unlock()
+		return now
+	}
+	driver.now = clock
+	prepared := recording.delegate.(*PreparedProcessBoundaryV1)
+	prepared.now = clock
+	recording.beforeRun = func() {
+		clockMu.Lock()
+		now = driverNow.Add(2 * time.Hour)
+		clockMu.Unlock()
+	}
+	if _, err := driver.Execute(context.Background(), request, &fixtureEventSink{}); err == nil {
+		t.Fatal("Execute() after authority expired before process preparation = nil")
+	}
+	if got := launcher.prepareCount(); got != 0 {
+		t.Fatalf("expired authority reached isolation preparation %d times", got)
+	}
+}
+
+func TestPreparedSupervisorBoundaryArbitratesFinishAndCancel(t *testing.T) {
+	_, authority := validDriverRequest(t)
+	for iteration := 0; iteration < 200; iteration++ {
+		_, cancel := context.WithCancel(context.Background())
+		active := &activePreparedProcess{authority: authority, cancel: cancel}
+		boundary := &PreparedProcessBoundaryV1{authority: authority, active: active, consumed: true}
+		start := make(chan struct{})
+		cancelled := make(chan error, 1)
+		finished := make(chan bool, 1)
+		go func() {
+			<-start
+			cancelled <- boundary.Cancel(context.Background(), authority)
+		}()
+		go func() {
+			<-start
+			finished <- boundary.finish(active)
+		}()
+		close(start)
+		cancelErr, cancellationWon := <-cancelled, <-finished
+		switch {
+		case cancelErr == nil && cancellationWon:
+		case errors.Is(cancelErr, ErrProcessNotActive) && !cancellationWon:
+		default:
+			t.Fatalf("iteration %d: cancel_error=%v finish_cancelled=%t", iteration, cancelErr, cancellationWon)
+		}
+	}
 }
 
 func TestPreparedSupervisorBoundaryRoutesExactCancellation(t *testing.T) {
@@ -137,13 +199,17 @@ func preparedDriverFixture(
 }
 
 type recordingPreparedBoundary struct {
-	delegate ProcessBoundaryV1
-	mu       sync.Mutex
-	result   ProcessResultV1
-	err      error
+	delegate  ProcessBoundaryV1
+	beforeRun func()
+	mu        sync.Mutex
+	result    ProcessResultV1
+	err       error
 }
 
 func (boundary *recordingPreparedBoundary) Run(ctx context.Context, invocation ProcessInvocationV1) (ProcessResultV1, error) {
+	if boundary.beforeRun != nil {
+		boundary.beforeRun()
+	}
 	result, err := boundary.delegate.Run(ctx, invocation)
 	boundary.mu.Lock()
 	boundary.result, boundary.err = result, err

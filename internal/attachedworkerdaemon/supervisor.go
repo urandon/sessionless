@@ -427,6 +427,9 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 	if err != nil || actualDigest != spec.ExecutableDigest {
 		return result, ErrExecutableChanged
 	}
+	if parent.Err() != nil {
+		return result, parent.Err()
+	}
 	if err := command.Start(); err != nil {
 		return result, errors.New("start attached worker harness")
 	}

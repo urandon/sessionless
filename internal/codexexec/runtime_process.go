@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemon"
 	"gitcode.com/urandon/sessionless/internal/domain"
@@ -16,40 +17,49 @@ import (
 var (
 	ErrProcessBoundaryUnavailable = errors.New("codex exec prepared process boundary is unavailable")
 	ErrProcessAlreadyActive       = errors.New("codex exec prepared process is already active")
+	ErrProcessAlreadyConsumed     = errors.New("codex exec prepared process authority was already consumed")
 	ErrProcessNotActive           = errors.New("codex exec prepared process is not active")
 )
 
-// PreparedProcessBoundaryConfigV1 pins the exact workload accepted by the
-// already-reviewed Go supervisor. Credential lifecycle ownership remains with
-// the canonical worker; this boundary receives only its private materialization.
+// PreparedProcessBoundaryConfigV1 pins the exact workload and one accepted
+// attempt authority consumed by the already-reviewed Go supervisor. Credential
+// lifecycle ownership remains with the canonical worker; this boundary receives
+// only its private materialization.
 type PreparedProcessBoundaryConfigV1 struct {
 	Supervisor       *attachedworkerdaemon.Supervisor
+	Authority        AuthorityV1
 	Executable       string
 	ExecutableDigest attachedworkerdaemon.ExecutableDigest
 	Arguments        []string
+	Now              func() time.Time
 }
 
 type activePreparedProcess struct {
 	authority AuthorityV1
 	cancel    context.CancelFunc
 	cancelled bool
+	finished  bool
 }
 
-// PreparedProcessBoundaryV1 runs a single exact prepared Codex process through
-// the Go supervisor. It never issues, materializes, writes back, or releases a
-// credential and it owns exact in-process cancellation only while Run is live.
+// PreparedProcessBoundaryV1 runs at most one exact prepared Codex process for
+// its immutable accepted attempt. It never issues, materializes, writes back,
+// or releases a credential. Exact cancellation and terminal observation are
+// arbitrated under one lock so they cannot both report success.
 type PreparedProcessBoundaryV1 struct {
 	supervisor *attachedworkerdaemon.Supervisor
+	authority  AuthorityV1
 	executable string
 	digest     attachedworkerdaemon.ExecutableDigest
 	arguments  []string
+	now        func() time.Time
 
-	mu     sync.Mutex
-	active *activePreparedProcess
+	mu       sync.Mutex
+	consumed bool
+	active   *activePreparedProcess
 }
 
 func NewPreparedProcessBoundaryV1(config PreparedProcessBoundaryConfigV1) (*PreparedProcessBoundaryV1, error) {
-	if config.Supervisor == nil || !filepath.IsAbs(config.Executable) ||
+	if config.Supervisor == nil || config.Authority.Validate() != nil || !filepath.IsAbs(config.Executable) ||
 		filepath.Clean(config.Executable) != config.Executable ||
 		config.ExecutableDigest == (attachedworkerdaemon.ExecutableDigest{}) || len(config.Arguments) == 0 {
 		return nil, ErrContract
@@ -63,9 +73,14 @@ func NewPreparedProcessBoundaryV1(config PreparedProcessBoundaryConfigV1) (*Prep
 	if err != nil || actual != config.ExecutableDigest {
 		return nil, ErrContract
 	}
+	now := config.Now
+	if now == nil {
+		now = func() time.Time { return time.Now().UTC() }
+	}
 	return &PreparedProcessBoundaryV1{
-		supervisor: config.Supervisor, executable: config.Executable,
-		digest: config.ExecutableDigest, arguments: append([]string(nil), config.Arguments...),
+		supervisor: config.Supervisor, authority: config.Authority,
+		executable: config.Executable, digest: config.ExecutableDigest,
+		arguments: append([]string(nil), config.Arguments...), now: now,
 	}, nil
 }
 
@@ -76,20 +91,23 @@ func (boundary *PreparedProcessBoundaryV1) Run(ctx context.Context, invocation P
 	runCtx, cancel := context.WithCancel(ctx)
 	active := &activePreparedProcess{authority: invocation.Authority, cancel: cancel}
 	boundary.mu.Lock()
-	if boundary.active != nil {
+	switch {
+	case boundary.active != nil:
 		boundary.mu.Unlock()
 		cancel()
 		return ProcessResultV1{}, ErrProcessAlreadyActive
+	case boundary.consumed:
+		boundary.mu.Unlock()
+		cancel()
+		return ProcessResultV1{}, ErrProcessAlreadyConsumed
+	default:
+		boundary.consumed = true
+		boundary.active = active
+		boundary.mu.Unlock()
 	}
-	boundary.active = active
-	boundary.mu.Unlock()
 	defer func() {
 		cancel()
-		boundary.mu.Lock()
-		if boundary.active == active {
-			boundary.active = nil
-		}
-		boundary.mu.Unlock()
+		boundary.finish(active)
 	}()
 
 	spec := attachedworkerdaemon.AttemptSpec{
@@ -109,18 +127,28 @@ func (boundary *PreparedProcessBoundaryV1) Run(ctx context.Context, invocation P
 	if err != nil {
 		return ProcessResultV1{}, ErrProcessBoundaryUnavailable
 	}
-	observed, runErr := boundary.supervisor.Run(runCtx, prepared)
+	remaining, err := boundary.remainingAuthorityLifetime(invocation)
+	if err != nil {
+		return ProcessResultV1{}, ErrProcessBoundaryUnavailable
+	}
+	expiryCtx, cancelExpiry := context.WithTimeout(runCtx, remaining)
+	observed, runErr := boundary.supervisor.Run(expiryCtx, prepared)
+	cancelExpiry()
+	if boundary.finish(active) {
+		observed.Cancelled = true
+		runErr = errors.Join(runErr, context.Canceled)
+	}
 	result := mapPreparedProcessResult(invocation, observed)
 	return result, runErr
 }
 
 func (boundary *PreparedProcessBoundaryV1) Cancel(ctx context.Context, authority AuthorityV1) error {
-	if boundary == nil || ctx == nil || ctx.Err() != nil || authority.Validate() != nil {
+	if boundary == nil || ctx == nil || ctx.Err() != nil || authority.Validate() != nil || authority != boundary.authority {
 		return ErrProcessBoundaryUnavailable
 	}
 	boundary.mu.Lock()
 	defer boundary.mu.Unlock()
-	if boundary.active == nil {
+	if boundary.active == nil || boundary.active.finished {
 		return ErrProcessNotActive
 	}
 	if boundary.active.authority != authority {
@@ -134,11 +162,29 @@ func (boundary *PreparedProcessBoundaryV1) Cancel(ctx context.Context, authority
 	return nil
 }
 
+// finish is the single terminal arbitration point. A nil Cancel result implies
+// cancelled=true here; if finish wins first, a later Cancel observes not-active.
+func (boundary *PreparedProcessBoundaryV1) finish(active *activePreparedProcess) bool {
+	boundary.mu.Lock()
+	defer boundary.mu.Unlock()
+	if active == nil {
+		return false
+	}
+	if !active.finished {
+		active.finished = true
+		if boundary.active == active {
+			boundary.active = nil
+		}
+	}
+	return active.cancelled
+}
+
 func (boundary *PreparedProcessBoundaryV1) validateInvocation(invocation ProcessInvocationV1) error {
-	if invocation.Authority.Validate() != nil || invocation.Identity.Validate() != nil ||
-		invocation.Executable != boundary.executable || invocation.ExecutableDigest != boundary.digest ||
-		!sameStrings(invocation.Arguments, boundary.arguments) || invocation.WorkDir == "" ||
-		!filepath.IsAbs(invocation.WorkDir) || filepath.Clean(invocation.WorkDir) != invocation.WorkDir ||
+	if invocation.Authority.Validate() != nil || invocation.Authority != boundary.authority ||
+		invocation.Identity.Validate() != nil || invocation.Executable != boundary.executable ||
+		invocation.ExecutableDigest != boundary.digest || !sameStrings(invocation.Arguments, boundary.arguments) ||
+		invocation.WorkDir == "" || !filepath.IsAbs(invocation.WorkDir) ||
+		filepath.Clean(invocation.WorkDir) != invocation.WorkDir ||
 		invocation.CredentialHomeEnvironmentName != CredentialHomeEnvironmentV1 ||
 		!invocation.RequirePrivateWorkingDirectory || !invocation.RequireSanitizedEnvironment ||
 		!invocation.RequireNoAmbientHome || !invocation.RequireNoAmbientAPIKey ||
@@ -152,11 +198,32 @@ func (boundary *PreparedProcessBoundaryV1) validateInvocation(invocation Process
 		!credentialMatchesProcessAuthority(invocation.Credential, invocation.Authority) {
 		return ErrContract
 	}
+	if _, err := boundary.remainingAuthorityLifetime(invocation); err != nil {
+		return err
+	}
 	info, err := os.Lstat(invocation.WorkDir)
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return ErrContract
 	}
 	return nil
+}
+
+func (boundary *PreparedProcessBoundaryV1) remainingAuthorityLifetime(invocation ProcessInvocationV1) (time.Duration, error) {
+	if invocation.Identity.HarnessBinding.EvidenceExpiresAt == nil {
+		return 0, ErrContract
+	}
+	notAfter := invocation.Authority.LeaseExpiresAt.UTC()
+	if credentialExpiry := invocation.Credential.ExpiresAt.UTC(); credentialExpiry.Before(notAfter) {
+		notAfter = credentialExpiry
+	}
+	if evidenceExpiry := invocation.Identity.HarnessBinding.EvidenceExpiresAt.UTC(); evidenceExpiry.Before(notAfter) {
+		notAfter = evidenceExpiry
+	}
+	remaining := notAfter.Sub(boundary.now().UTC())
+	if remaining <= 0 {
+		return 0, ErrContract
+	}
+	return remaining, nil
 }
 
 func authorityMatchesProcessIdentity(authority AuthorityV1, identity ports.ExecutionIdentity) bool {
@@ -213,6 +280,9 @@ func mapPreparedProcessResult(invocation ProcessInvocationV1, observed attachedw
 		ProcessStopped: stopped, DescendantsStopped: stopped,
 		CleanupSucceeded: observed.CleanupSucceeded, PrivateStateRemoved: observed.CleanupSucceeded,
 		CredentialStateQuiesced: stopped && observed.BoundaryReleased,
+		// Run's boundary-local one-shot latch consumed this exact immutable
+		// reservation before supervisor preparation. The numeric limit is only
+		// the matching invocation contract, not the fence by itself.
 		ProviderEffectFenceSatisfied: invocation.Authority.ReservationID.Validate() == nil &&
 			invocation.RequireProviderEffectFence && invocation.MaxProviderEffects == maxProviderEffectsV1,
 		ProviderEffects: providerEffects, FailureCode: observed.FailureCode, Stdout: stdout,

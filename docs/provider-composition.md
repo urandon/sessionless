@@ -32,6 +32,13 @@ subscription registration uses its prepared-process `HarnessDriver`, so an
 exact cancellation reaches only the matching attached-worker boundary; it
 cannot reach the older credential-issuing invocation runner.
 
+Each prepared subscription driver owns one immutable accepted authority and a
+one-shot process boundary. The attempt/reservation is consumed before process
+preparation and cannot be executed again, even sequentially after a terminal or
+failed start. Lease, invocation-credential, and harness-evidence expiry are
+rechecked at the last process boundary and carried through isolation
+preparation; cancellation and finish use one terminal arbitration point.
+
 The composition is deliberately not wired into `worker-runtime`. Production
 enablement remains blocked on the accepted isolation, egress, credential,
 provider-evidence, two-owner security, cost, and recovery gates. The factory

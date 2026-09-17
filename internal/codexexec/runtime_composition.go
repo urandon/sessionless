@@ -20,9 +20,10 @@ func NewPreparedAttachedWorkerDriverV1(
 		return nil, err
 	}
 	boundary, err := NewPreparedProcessBoundaryV1(PreparedProcessBoundaryConfigV1{
-		Supervisor: supervisor, Executable: config.Executable,
+		Supervisor: supervisor, Authority: resolver.authority, Executable: config.Executable,
 		ExecutableDigest: config.ExecutableDigest,
 		Arguments:        processArguments(config.Model),
+		Now:              config.Now,
 	})
 	if err != nil {
 		return nil, err

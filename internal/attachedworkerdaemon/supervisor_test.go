@@ -99,6 +99,56 @@ func TestSupervisorBoundsIsolationPreparation(t *testing.T) {
 	}
 }
 
+func TestSupervisorDoesNotStartWhenParentCancelsDuringPreparation(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	executable, err = filepath.EvalSymlinks(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := DigestExecutable(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent, cancel := context.WithCancel(context.Background())
+	launcher := &cancelBeforeStartLauncher{cancel: cancel}
+	supervisor, err := NewSupervisor(SupervisorConfig{
+		ScratchRoot: newCanonicalTempDir(t), Launcher: launcher,
+		Timeout: 2 * time.Second, TerminationGrace: 20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := supervisor.Run(parent, AttemptSpec{Executable: executable, ExecutableDigest: digest})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v, want context cancellation before start", err)
+	}
+	if launcher.command == nil || launcher.command.Process != nil {
+		t.Fatalf("prepared command process = %+v, want never started", launcher.command)
+	}
+	if !result.BoundaryReleased || !result.CleanupSucceeded {
+		t.Fatalf("cancelled preparation cleanup = %+v", result)
+	}
+}
+
+type cancelBeforeStartLauncher struct {
+	fixtureLauncher
+	cancel  context.CancelFunc
+	command *exec.Cmd
+}
+
+func (launcher *cancelBeforeStartLauncher) Prepare(ctx context.Context, spec LaunchSpec) (IsolationBoundary, error) {
+	boundary, err := launcher.fixtureLauncher.Prepare(ctx, spec)
+	if err != nil {
+		return nil, err
+	}
+	launcher.command = boundary.Command()
+	launcher.cancel()
+	return boundary, nil
+}
+
 type deadlinePrepareLauncher struct {
 	fixtureLauncher
 	deadlineSeen bool

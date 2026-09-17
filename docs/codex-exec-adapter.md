@@ -61,7 +61,19 @@ Canonical preflight happens before the worker claims its execution lease, so it
 validates only the immutable binding and attached-worker placement. It neither
 resolves nor fabricates post-claim lease authority. Execute resolves the full
 live authority after canonical orchestration has claimed the lease and rejects
-an expired invocation credential before reaching the process boundary.
+an expired invocation credential before reaching the process boundary. The
+prepared boundary independently rechecks the minimum lease, credential, and
+harness-evidence lifetime immediately before supervisor preparation, carries
+that remaining lifetime as the supervisor context deadline, and the supervisor
+checks it again after isolation preparation immediately before `Start`.
+
+One prepared boundary is a one-shot capability for exactly one accepted
+attempt/reservation. Its state advances `not_started -> running -> terminal`;
+the capability is consumed before credential binding or process preparation,
+including when preparation fails. A sequential or concurrent replay therefore
+cannot produce a second provider effect. This stateful latch is what backs the
+reported provider-effect fence; the request's numeric limit alone is not
+evidence of fencing.
 
 The executable path, version evidence, SHA-256 digest, and model are local
 configuration. The fixed command is:
@@ -121,6 +133,10 @@ The result keeps these facts independent:
 evidence digest to prevent an unsafe replay, but is not canonical success.
 The adapter never emits a cancellation acknowledgement or terminal commit;
 AW-04 owns those durable facts. There is no internal provider retry.
+Cancellation and finish arbitrate under the same lock: a successful boundary
+cancel means cancellation won while the attempt was active and is reflected in
+the returned process observation; once finish wins, later cancellation reports
+not-active instead of a false acknowledgement.
 
 ## Why production remains disabled
 
@@ -155,7 +171,9 @@ and a second provider state machine.
 The concrete runtime tests consume an accepted attempt snapshot, reuse an already
 materialized `auth.json`, run the exact pinned argv through the real Go
 supervisor, preserve the credential for the outer write-back owner, and route
-exact cancellation to the active process.
+exact cancellation to the active process. They also prove one-shot sequential
+replay rejection, final expiry checks before isolation preparation and process
+start, and the cancel/finish arbitration invariant under the race detector.
 
 Pure reducer tests cover clean completion, pre/post-acceptance loss, duplicate
 and post-terminal events, unexpected effects, malformed/unterminated/duplicate

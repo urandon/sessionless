@@ -111,6 +111,10 @@ paths, raw stderr, provider errors, or auth material.
 
 ## Still required before #77 can close
 
+- #132 adds the manifest-pinned local execution-stack assembly boundary. It
+  verifies the Docker CLI and harness digests, reconciles installation-owned
+  OCI residue, and composes the supervisor with the generation-CAS credential
+  runner without enabling the shipped command.
 - live activation behind the feature-disabled
   [foreground preflight](attached-worker-foreground.md), plus reviewed
   OS-service and container packaging;

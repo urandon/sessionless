@@ -2,6 +2,7 @@ package attachedworkeroci
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -29,9 +30,14 @@ func TestRealEngineIsolationMatrix(t *testing.T) {
 	}
 	boundaryKind := BoundaryKind(required("SESSIONLESS_OCI_BOUNDARY"))
 	dockerPath := required("SESSIONLESS_OCI_DOCKER_PATH")
-	trace := &realTraceRunner{delegate: execRunner{path: dockerPath}}
+	dockerDigest, err := attachedworkerdaemon.DigestExecutable(dockerPath)
+	if err != nil {
+		t.Fatalf("Docker digest: %v", err)
+	}
+	dockerSHA256 := hex.EncodeToString(dockerDigest[:])
+	trace := &realTraceRunner{delegate: execRunner{path: dockerPath, sha256: dockerSHA256}}
 	launcher, err := NewLauncher(context.Background(), Config{
-		DockerPath: dockerPath, CLIConfigDir: required("SESSIONLESS_OCI_CLI_CONFIG_DIR"),
+		DockerPath: dockerPath, DockerSHA256: dockerSHA256, CLIConfigDir: required("SESSIONLESS_OCI_CLI_CONFIG_DIR"),
 		Host: required("SESSIONLESS_OCI_HOST"), EngineID: required("SESSIONLESS_OCI_ENGINE_ID"),
 		InstallationID: required("SESSIONLESS_OCI_INSTALLATION_ID"), Boundary: boundaryKind,
 		Image: required("SESSIONLESS_OCI_IMAGE"), UserID: 65532, GroupID: 65532,

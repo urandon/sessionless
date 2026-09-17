@@ -347,7 +347,7 @@ func validateOCI(config OCIConfigV1) error {
 
 func toLauncherConfig(config OCIConfigV1) attachedworkeroci.Config {
 	return attachedworkeroci.Config{
-		DockerPath: config.DockerPath, CLIConfigDir: config.CLIConfigDir, Host: config.Host,
+		DockerPath: config.DockerPath, DockerSHA256: config.DockerSHA256, CLIConfigDir: config.CLIConfigDir, Host: config.Host,
 		EngineID: config.EngineID, InstallationID: config.InstallationID,
 		Boundary: attachedworkeroci.BoundaryKind(config.Boundary), Image: config.Image,
 		UserID: config.UserID, GroupID: config.GroupID, DiskBytes: config.DiskBytes,

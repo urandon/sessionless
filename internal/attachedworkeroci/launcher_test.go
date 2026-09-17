@@ -2,6 +2,7 @@ package attachedworkeroci
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -126,6 +127,10 @@ func newFixture(t *testing.T, hostOS string, withCredential bool) fixture {
 	if err := os.WriteFile(dockerPath, []byte("fixture"), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	dockerDigest, err := attachedworkerdaemon.DigestExecutable(dockerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	cliConfig := filepath.Join(root, "docker-config")
 	if err := os.Mkdir(cliConfig, 0o700); err != nil {
 		t.Fatal(err)
@@ -187,7 +192,7 @@ func newFixture(t *testing.T, hostOS string, withCredential bool) fixture {
 	}
 	result := fixture{
 		config: Config{
-			DockerPath: dockerPath, CLIConfigDir: cliConfig, Host: "unix:///private/tmp/sessionless-docker.sock",
+			DockerPath: dockerPath, DockerSHA256: hex.EncodeToString(dockerDigest[:]), CLIConfigDir: cliConfig, Host: "unix:///private/tmp/sessionless-docker.sock",
 			EngineID: "fixture-engine-0001", InstallationID: "fixture-installation-0001",
 			Image: image, UserID: 65532, GroupID: 65532, DiskBytes: 32 << 20,
 			CredentialFileBytes: 1 << 20, MemoryBytes: 128 << 20, PIDsLimit: 32,
@@ -201,6 +206,38 @@ func newFixture(t *testing.T, hostOS string, withCredential bool) fixture {
 		result.config.Boundary = BoundaryLinuxRootless
 	}
 	return result
+}
+
+func TestExecRunnerRejectsDockerReplacementBeforeSpawn(t *testing.T) {
+	root := canonicalTempDir(t)
+	marker := filepath.Join(root, "spawned")
+	dockerPath := filepath.Join(root, "docker")
+	write := func(body string) {
+		t.Helper()
+		if err := os.WriteFile(dockerPath, []byte("#!/bin/sh\n"+body+"\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("touch " + marker)
+	digest, err := attachedworkerdaemon.DigestExecutable(dockerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := execRunner{path: dockerPath, sha256: hex.EncodeToString(digest[:])}
+	write("touch " + marker + ".replacement")
+
+	if _, _, err := runner.Run(context.Background(), root, nil, nil); !errors.Is(err, ErrBoundary) {
+		t.Fatalf("Run() error = %v, want ErrBoundary", err)
+	}
+	command := runner.Command(root, nil, nil)
+	if err := command.Start(); !errors.Is(err, ErrBoundary) {
+		t.Fatalf("Command().Start() error = %v, want ErrBoundary", err)
+	}
+	for _, path := range []string{marker, marker + ".replacement"} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("unpinned Docker process left marker %q: %v", path, err)
+		}
+	}
 }
 
 func canonicalTempDir(t *testing.T) string {

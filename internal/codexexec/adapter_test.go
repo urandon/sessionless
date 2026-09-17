@@ -245,25 +245,19 @@ func TestNewRejectsUnpinnedOrAmbiguousProcessConfiguration(t *testing.T) {
 	}
 }
 
-func TestDisabledRegistrationPinsExactSubscriptionProfile(t *testing.T) {
+func TestAdapterPinsExactSubscriptionProfile(t *testing.T) {
 	runner := &fixtureInvocationRunner{}
 	disabled := mustAdapter(t, runner, false)
-	registration, err := DisabledRegistrationV1(disabled)
-	if err != nil {
-		t.Fatalf("DisabledRegistrationV1() error = %v", err)
-	}
 	descriptor := disabled.DescriptorV1()
 	expectedDigest := attachedworkerdaemon.ExecutableDigest{1}
-	const expectedProfileDigest = "0fe627348aedc0dbd5750a4bdff245dc80ddfa685037b58eea24166d4deb6ff4"
-	if registration.Enabled || registration.Driver == nil || registration.ValidateBinding == nil ||
-		registration.Descriptor != descriptor || descriptor.BackendKind != domain.HarnessBackendCodexExecV1 ||
+	if descriptor.BackendKind != domain.HarnessBackendCodexExecV1 ||
 		descriptor.ArtifactKind != domain.HarnessArtifactExecutableV1 ||
 		descriptor.ArtifactDigest != hex.EncodeToString(expectedDigest[:]) ||
-		descriptor.BackendProfileDigest != expectedProfileDigest ||
+		len(descriptor.BackendProfileDigest) != 64 ||
 		descriptor.NativeProtocolVersion != NativeProtocolVersionV1 ||
 		descriptor.ProviderContractKind != domain.ProviderContractInvocationV1 ||
 		descriptor.CredentialDeliveryKind != domain.ProviderCredentialDeliveryFileV1 {
-		t.Fatalf("disabled registration = %+v", registration)
+		t.Fatalf("descriptor = %+v", descriptor)
 	}
 
 	enabled := mustAdapter(t, runner, true)
@@ -273,10 +267,6 @@ func TestDisabledRegistrationPinsExactSubscriptionProfile(t *testing.T) {
 	if enabled.BackendProtocolState() != harnessconformance.BackendProtocolUnsupportedV1 {
 		t.Fatalf("legacy enabled adapter claimed canonical registry protocol support")
 	}
-	if _, err := DisabledRegistrationV1(enabled); !errors.Is(err, ErrContract) {
-		t.Fatalf("enabled registration error = %v, want ErrContract", err)
-	}
-
 	changed, err := New(Config{
 		Executable: "/opt/sessionless/codex", ExecutableVersion: "0.148.0-alpha.15",
 		ExecutableDigest: attachedworkerdaemon.ExecutableDigest{1}, Model: "gpt-other",

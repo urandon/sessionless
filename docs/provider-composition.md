@@ -23,10 +23,11 @@ retry. Disabled preflight cannot reach credential, process, or network effects.
 
 Cancellation remains routable through an exact binding while a profile is
 disabled. This is a teardown path, not execution authorization: a mismatched
-descriptor, model, or owner/run/attempt scope fails before the boundary.
-The subscription profile has never been enabled through this registry, so its
-disabled exact cancellation is a bounded no-op and cannot reach the older
-invocation runner.
+descriptor, model, owner/run/attempt scope, worker, connection generation,
+lease, capability, or policy authority fails before the boundary. The
+subscription registration uses its prepared-process `HarnessDriver`, so an
+exact cancellation reaches only the matching attached-worker boundary; it
+cannot reach the older credential-issuing invocation runner.
 
 The composition is deliberately not wired into `worker-runtime`. Production
 enablement remains blocked on the accepted isolation, egress, credential,

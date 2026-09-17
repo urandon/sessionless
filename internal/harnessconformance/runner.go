@@ -106,21 +106,23 @@ func (runner Runner) Run(ctx context.Context, fixture FixtureV1) (ResultV1, erro
 }
 
 func fixtureIdentity(fixture FixtureV1) ports.ExecutionIdentity {
+	substrate, cost := fixtureExecutionAuthority(fixture)
 	return ports.ExecutionIdentity{
 		TenantID: fixture.Binding.TenantID, OwnerUserID: fixture.Binding.OwnerUserID, RunID: fixture.Binding.RunID, AttemptID: fixture.Binding.AttemptID,
 		ExecutionPlacementV2: fixture.Placement, HarnessBinding: fixture.Binding.Clone(),
-		SubstrateBinding: cloneFixtureSubstrate(fixture.SubstrateBinding), AdmissionCostCeiling: cloneFixtureCost(fixture.AdmissionCostCeiling),
+		SubstrateBinding: cloneFixtureSubstrate(substrate), AdmissionCostCeiling: cloneFixtureCost(cost),
 	}
 }
 
 func fixtureRequest(fixture FixtureV1) ports.ExecutionRequest {
 	binding := fixture.Binding
+	substrate, cost := fixtureExecutionAuthority(fixture)
 	request := ports.ExecutionRequest{
 		TenantID: binding.TenantID, OwnerUserID: binding.OwnerUserID, RunID: binding.RunID,
 		SessionID: "session-conformance", TriggerEventID: "event-conformance", AttemptID: binding.AttemptID,
 		WorkDir: "/sessionless-conformance/work", ContextWindow: &domain.SessionContextWindow{ThroughSequence: 1},
 		ExecutionPlacementV2: fixture.Placement, HarnessBinding: binding.Clone(),
-		SubstrateBinding: cloneFixtureSubstrate(fixture.SubstrateBinding), AdmissionCostCeiling: cloneFixtureCost(fixture.AdmissionCostCeiling),
+		SubstrateBinding: cloneFixtureSubstrate(substrate), AdmissionCostCeiling: cloneFixtureCost(cost),
 	}
 	if binding.Resource.CredentialMode == domain.ProviderCredentialInvocationV1 {
 		expiresAt := time.Unix(4102444800, 0).UTC()
@@ -144,12 +146,18 @@ func fixtureRequest(fixture FixtureV1) ports.ExecutionRequest {
 	return request
 }
 
-func cloneFixtureSubstrate(value domain.SubstrateBindingV1) *domain.SubstrateBindingV1 {
-	clone := value
+func cloneFixtureSubstrate(value *domain.SubstrateBindingV1) *domain.SubstrateBindingV1 {
+	if value == nil {
+		return nil
+	}
+	clone := *value
 	return &clone
 }
 
-func cloneFixtureCost(value domain.AdmissionCostCeilingV1) *domain.AdmissionCostCeilingV1 {
+func cloneFixtureCost(value *domain.AdmissionCostCeilingV1) *domain.AdmissionCostCeilingV1 {
+	if value == nil {
+		return nil
+	}
 	clone := value.Clone()
 	return &clone
 }

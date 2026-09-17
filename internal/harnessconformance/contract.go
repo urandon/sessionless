@@ -212,7 +212,8 @@ func (fixture FixtureV1) Validate() error {
 	if err := fixture.Binding.ValidateForScope(fixture.Binding.TenantID, fixture.Binding.OwnerUserID, fixture.Binding.RunID, fixture.Binding.AttemptID, fixture.Placement); err != nil {
 		return err
 	}
-	if err := domain.ValidateExecutionAuthorityProjection(fixture.Placement, &fixture.SubstrateBinding, &fixture.AdmissionCostCeiling); err != nil {
+	substrate, cost := fixtureExecutionAuthority(fixture)
+	if err := domain.ValidateExecutionAuthorityProjection(fixture.Placement, substrate, cost); err != nil {
 		return err
 	}
 	switch fixture.Operation {
@@ -248,6 +249,17 @@ func (fixture FixtureV1) Validate() error {
 		return domain.ValidationError{Field: "provider_conformance.expected.failure_code", Reason: "is not in the closed harness taxonomy"}
 	}
 	return nil
+}
+
+func fixtureExecutionAuthority(fixture FixtureV1) (*domain.SubstrateBindingV1, *domain.AdmissionCostCeilingV1) {
+	if fixture.Placement.Kind == domain.ExecutionPlacementAttachedWorker {
+		if fixture.SubstrateBinding != (domain.SubstrateBindingV1{}) ||
+			fixture.AdmissionCostCeiling != (domain.AdmissionCostCeilingV1{}) {
+			return &fixture.SubstrateBinding, &fixture.AdmissionCostCeiling
+		}
+		return nil, nil
+	}
+	return &fixture.SubstrateBinding, &fixture.AdmissionCostCeiling
 }
 
 func (fixture FixtureV1) Digest() (domain.ProviderEvidenceDigestV1, error) {

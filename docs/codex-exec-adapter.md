@@ -1,9 +1,9 @@
 # Go-supervised Codex exec backend
 
-Status date: **2026-09-16**. This is the bounded first implementation slice of
+Status date: **2026-09-17**. This is the feature-disabled implementation of
 [#81](https://gitcode.com/urandon/sessionless/issues/81). It is a disabled
-backend contract and credential-free/fake-process evidence, not production
-provider enablement.
+backend contract, canonical `HarnessDriver` bridge, and fake-process evidence,
+not production provider enablement.
 
 ## Architectural position
 
@@ -12,9 +12,11 @@ fences, events, terminal commit, tools, and retries never become Codex state.
 `internal/codexexec` is one backend below the closed `SessionlessHarnessV1`
 registry. The exact executable, protocol, model, limits, and file-credential
 delivery profile now have a disabled registry descriptor, but the legacy
-invocation adapter is deliberately not exposed as a `HarnessDriver`: it is not
-selected from the environment, an installed binary, an available credential,
-or a live model catalog.
+invocation adapter remains a lower-level compatibility fixture. The production
+composition now accepts the separate `codexexec.Driver`, which implements
+`ports.HarnessDriver` over an injected exact-authority resolver and reviewed
+prepared-process boundary. It is not selected from the environment, an
+installed binary, an available credential, or a live model catalog.
 
 The same outer harness will eventually route an already-admitted immutable
 binding to distinct backends such as:
@@ -39,28 +41,44 @@ fixtures, and reviewed open-source work without private inputs.
 
 ## Implemented bounded contract
 
-The adapter verifies an exact owner/worker/connection/run/attempt/lease/fence
+The driver verifies an exact owner/worker/connection/run/attempt/lease/fence
 authority, attached-worker capability and policy digests, and the complete
-immutable subscription resource binding. The outer registry
-must later derive that authority from the admitted canonical binding; remote
-inputs never choose its fields.
+immutable subscription resource binding. Its resolver must project the fields
+which are intentionally absent from provider-neutral `ExecutionRequest`
+(connection/enrollment generations, reservation, context digest, and lease
+expiry) from the already accepted attached-worker session. A missing, stale,
+expired, or cross-scope projection fails before process execution; the driver
+never manufactures those values.
+
+Canonical preflight happens before the worker claims its execution lease, so it
+validates only the immutable binding and attached-worker placement. It neither
+resolves nor fabricates post-claim lease authority. Execute resolves the full
+live authority after canonical orchestration has claimed the lease and rejects
+an expired invocation credential before reaching the process boundary.
 
 The executable path, version evidence, SHA-256 digest, and model are local
 configuration. The fixed command is:
 
 ```text
-codex exec --json --ephemeral --ignore-rules \
+codex exec --json --ephemeral --ignore-user-config --ignore-rules \
   --strict-config --sandbox read-only --skip-git-repo-check \
   --color never --model <sealed-model> -
 ```
 
-The instruction is bounded UTF-8 stdin, never argv or environment. The
+The bridge compiles bounded UTF-8 stdin from the descriptor-pinned canonical
+`context/history.jsonl`, never from argv, environment, or an unverified
+caller string. The
 subscription profile uses a private credential-only `CODEX_HOME`; the
 Codex/OpenRouter profile instead loads a complete, generated and digested
 `CODEX_HOME/config.toml` plus local model catalog. Neither profile can reach an
 ambient user home. The supervisor supplies a replacement environment, and the
-existing credential lifecycle adds only invocation-scoped authority, then
-performs bounded finalization and release. An
+existing canonical credential lifecycle adds only invocation-scoped authority,
+then performs bounded CAS finalization and release after the driver returns.
+The bridge consumes that
+already prepared handle and exact direct-child `auth.json`; it cannot perform
+a second Issue/Materialize cycle. Its process boundary reports that refreshed
+local credential state is quiesced and safe for the outer lifecycle to write
+back; it does not claim that the later CAS has already succeeded. An
 admission-pinned credential generation is checked before process spawn. The
 reviewed isolation launcher must attest this exact inner Codex artifact and
 argv independently of its outer container/bwrap/VM client command.
@@ -103,12 +121,14 @@ The package is not wired into any binary. Its local `Enabled` field is only a
 reversible component gate and is not provider authorization. Production still
 requires all of the following:
 
-- the conditional #48 `OAI-SUB-2026-09-PLUS-PRO-LOCAL` authorization tuple for
+- the merged #48 `OAI-SUB-2026-09-PLUS-PRO-LOCAL` conditional authorization
+  tuple for
   eligible personal subscription, owner-managed attached worker, local credential
   custody, and exact Codex exec surface, including its expiry/re-review gate;
-- an enabled production bridge from the canonical immutable `HarnessBindingV1`
-  to the attached-worker attempt/connection/lease authority. The closed
-  registry now advertises the exact backend descriptor but keeps it disabled;
+- a reviewed concrete outer implementation of the bridge's authority resolver
+  and prepared process/cancellation boundary in the attached-worker foreground.
+  The closed registry now carries the production-shaped driver but keeps it
+  disabled;
 - reviewed production egress isolation. The current AW-05 isolation profile
   correctly requires `NetworkDenied=true`, so it can run fake contract tests
   but cannot perform a real provider turn;
@@ -133,5 +153,11 @@ argv, stdin privacy, replacement environment, pinned digest, invocation-scoped
 credential materialization, write-back/release, and cleanup. Existing AW-05
 tests continue to own cancellation, deadline, TERM-resistant descendants,
 natural leader loss, no-late-output, and isolation-boundary teardown.
+
+Driver contract tests additionally cover canonical transcript compilation,
+prepared-credential reuse, exact attached-worker authority, cross-owner and
+stale-generation rejection, policy expiry, content-free terminal evidence,
+accepted-outcome ambiguity, credential-quiescence/teardown failures, and
+exact cancellation routing while the registration is disabled.
 
 No live provider call or secret is required or allowed in this phase.

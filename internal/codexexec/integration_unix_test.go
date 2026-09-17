@@ -17,8 +17,9 @@ import (
 )
 
 type fixtureIsolationLauncher struct {
-	mu   sync.Mutex
-	last attachedworkerdaemon.LaunchSpec
+	mu       sync.Mutex
+	last     attachedworkerdaemon.LaunchSpec
+	prepares int
 }
 
 func (*fixtureIsolationLauncher) Profile() attachedworkerdaemon.IsolationProfile {
@@ -31,6 +32,7 @@ func (*fixtureIsolationLauncher) Profile() attachedworkerdaemon.IsolationProfile
 
 func (launcher *fixtureIsolationLauncher) Prepare(_ context.Context, spec attachedworkerdaemon.LaunchSpec) (attachedworkerdaemon.IsolationBoundary, error) {
 	launcher.mu.Lock()
+	launcher.prepares++
 	launcher.last = attachedworkerdaemon.LaunchSpec{
 		Executable: spec.Executable, ExecutableDigest: spec.ExecutableDigest,
 		Arguments: append([]string(nil), spec.Arguments...),
@@ -49,6 +51,12 @@ func (launcher *fixtureIsolationLauncher) Prepare(_ context.Context, spec attach
 			Arguments: append([]string(nil), spec.Arguments...),
 		},
 	}, nil
+}
+
+func (launcher *fixtureIsolationLauncher) prepareCount() int {
+	launcher.mu.Lock()
+	defer launcher.mu.Unlock()
+	return launcher.prepares
 }
 
 func (launcher *fixtureIsolationLauncher) snapshot() attachedworkerdaemon.LaunchSpec {

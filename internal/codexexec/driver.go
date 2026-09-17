@@ -93,7 +93,7 @@ func (driver *Driver) Execute(
 		return ports.ExecutionResult{}, driverError(domain.ErrorTerminal, sessionlessharness.FailureHarnessBindingInvalid)
 	}
 	identity := executionIdentity(request)
-	authority, err := driver.authority.Resolve(ctx, identity)
+	authority, err := driver.authority.ResolveExecution(ctx, identity)
 	if err != nil || driver.validateExecutionAuthority(request, authority) != nil {
 		return ports.ExecutionResult{}, driverError(domain.ErrorPolicyDenied, sessionlessharness.FailureEffectivePolicyMismatch)
 	}
@@ -145,7 +145,7 @@ func (driver *Driver) Cancel(ctx context.Context, identity ports.ExecutionIdenti
 		driver.validateHarnessBinding(identity.HarnessBinding) != "" {
 		return driverError(domain.ErrorTerminal, sessionlessharness.FailureHarnessBindingInvalid)
 	}
-	authority, err := driver.authority.Resolve(ctx, identity)
+	authority, err := driver.authority.ResolveCancellation(ctx, identity)
 	if err != nil || driver.validateAuthority(identity, authority, false) != nil {
 		return driverError(domain.ErrorPolicyDenied, sessionlessharness.FailureEffectivePolicyMismatch)
 	}

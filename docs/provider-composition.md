@@ -9,11 +9,14 @@ reviewed native provider adapters below the Sessionless-owned harness registry:
 - Pi over OpenRouter;
 - the native direct OpenRouter reference backend.
 
-The V1 factory accepts only five explicitly constructed, already pinned driver
+The V1 registry factory accepts only five explicitly constructed, already
+pinned driver
 instances and an injected clock. It does not inspect the environment, discover
 installed binaries, choose profiles, construct process or HTTP boundaries, or
 select a default backend. Missing dependencies and enabled profiles fail the
-composition before a registry is returned.
+composition before a registry is returned. The Codex subscription driver has a
+separate exact constructor that composes the immutable accepted-attempt snapshot
+and prepared Go supervisor; it still performs no discovery or activation.
 
 Every registration is built through its adapter's `DisabledRegistrationV1`
 contract and passed to the existing exact-match `sessionlessharness.Registry`.
@@ -28,6 +31,13 @@ lease, capability, or policy authority fails before the boundary. The
 subscription registration uses its prepared-process `HarnessDriver`, so an
 exact cancellation reaches only the matching attached-worker boundary; it
 cannot reach the older credential-issuing invocation runner.
+
+Each prepared subscription driver owns one immutable accepted authority and a
+one-shot process boundary. The attempt/reservation is consumed before process
+preparation and cannot be executed again, even sequentially after a terminal or
+failed start. Lease, invocation-credential, and harness-evidence expiry are
+rechecked at the last process boundary and carried through isolation
+preparation; cancellation and finish use one terminal arbitration point.
 
 The composition is deliberately not wired into `worker-runtime`. Production
 enablement remains blocked on the accepted isolation, egress, credential,

@@ -22,13 +22,19 @@ import (
 var driverNow = time.Date(2026, time.September, 17, 8, 0, 0, 0, time.UTC)
 
 type fixtureAuthorityResolver struct {
-	authority AuthorityV1
-	err       error
-	calls     int
+	authority         AuthorityV1
+	err               error
+	executionCalls    int
+	cancellationCalls int
 }
 
-func (resolver *fixtureAuthorityResolver) Resolve(_ context.Context, _ ports.ExecutionIdentity) (AuthorityV1, error) {
-	resolver.calls++
+func (resolver *fixtureAuthorityResolver) ResolveExecution(_ context.Context, _ ports.ExecutionIdentity) (AuthorityV1, error) {
+	resolver.executionCalls++
+	return resolver.authority, resolver.err
+}
+
+func (resolver *fixtureAuthorityResolver) ResolveCancellation(_ context.Context, _ ports.ExecutionIdentity) (AuthorityV1, error) {
+	resolver.cancellationCalls++
 	return resolver.authority, resolver.err
 }
 
@@ -73,16 +79,16 @@ func TestDriverExecutesExactPreparedAttachedWorkerInvocation(t *testing.T) {
 	if err := driver.Preflight(context.Background(), executionIdentity(request)); err != nil {
 		t.Fatalf("Preflight() error = %v", err)
 	}
-	if resolver.calls != 0 {
-		t.Fatalf("pre-lease Preflight() authority resolutions = %d, want 0", resolver.calls)
+	if resolver.executionCalls != 0 {
+		t.Fatalf("pre-lease Preflight() authority resolutions = %d, want 0", resolver.executionCalls)
 	}
 	sink := &fixtureEventSink{}
 	result, err := driver.Execute(context.Background(), request, sink)
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
-	if resolver.calls != 1 {
-		t.Fatalf("Execute() authority resolutions = %d, want 1", resolver.calls)
+	if resolver.executionCalls != 1 {
+		t.Fatalf("Execute() authority resolutions = %d, want 1", resolver.executionCalls)
 	}
 	if result.Summary != "bounded result" || result.ProviderEvidence == nil ||
 		result.ProviderEvidence.FinishClass != domain.ProviderFinishCompletedV1 ||

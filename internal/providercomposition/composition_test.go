@@ -403,7 +403,7 @@ func fixedClock() time.Time { return compositionNow }
 
 type subscriptionAuthority struct{}
 
-func (*subscriptionAuthority) Resolve(_ context.Context, identity ports.ExecutionIdentity) (codexexec.AuthorityV1, error) {
+func (*subscriptionAuthority) ResolveExecution(_ context.Context, identity ports.ExecutionIdentity) (codexexec.AuthorityV1, error) {
 	const leaseGeneration = uint64(5)
 	fence, err := domain.NewAttachedWorkerFenceTokenV1(
 		identity.TenantID, identity.OwnerUserID, identity.ExecutionPlacementV2.WorkerID,
@@ -427,6 +427,10 @@ func (*subscriptionAuthority) Resolve(_ context.Context, identity ports.Executio
 		PolicyDigest:     identity.ExecutionPlacementV2.PolicyDigest,
 		ProviderResource: identity.HarnessBinding.Resource,
 	}, nil
+}
+
+func (resolver *subscriptionAuthority) ResolveCancellation(ctx context.Context, identity ports.ExecutionIdentity) (codexexec.AuthorityV1, error) {
+	return resolver.ResolveExecution(ctx, identity)
 }
 
 type subscriptionBoundary struct{ runs, cancels int }

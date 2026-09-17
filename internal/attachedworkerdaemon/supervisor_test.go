@@ -99,6 +99,56 @@ func TestSupervisorBoundsIsolationPreparation(t *testing.T) {
 	}
 }
 
+func TestSupervisorDoesNotStartWhenParentCancelsDuringPreparation(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	executable, err = filepath.EvalSymlinks(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := DigestExecutable(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent, cancel := context.WithCancel(context.Background())
+	launcher := &cancelBeforeStartLauncher{cancel: cancel}
+	supervisor, err := NewSupervisor(SupervisorConfig{
+		ScratchRoot: newCanonicalTempDir(t), Launcher: launcher,
+		Timeout: 2 * time.Second, TerminationGrace: 20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := supervisor.Run(parent, AttemptSpec{Executable: executable, ExecutableDigest: digest})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v, want context cancellation before start", err)
+	}
+	if launcher.command == nil || launcher.command.Process != nil {
+		t.Fatalf("prepared command process = %+v, want never started", launcher.command)
+	}
+	if !result.BoundaryReleased || !result.CleanupSucceeded {
+		t.Fatalf("cancelled preparation cleanup = %+v", result)
+	}
+}
+
+type cancelBeforeStartLauncher struct {
+	fixtureLauncher
+	cancel  context.CancelFunc
+	command *exec.Cmd
+}
+
+func (launcher *cancelBeforeStartLauncher) Prepare(ctx context.Context, spec LaunchSpec) (IsolationBoundary, error) {
+	boundary, err := launcher.fixtureLauncher.Prepare(ctx, spec)
+	if err != nil {
+		return nil, err
+	}
+	launcher.command = boundary.Command()
+	launcher.cancel()
+	return boundary, nil
+}
+
 type deadlinePrepareLauncher struct {
 	fixtureLauncher
 	deadlineSeen bool
@@ -596,6 +646,38 @@ func TestSupervisorCancellationKillsTermResistantDescendant(t *testing.T) {
 	if !result.Cancelled || !result.TermSent || !result.KillSent ||
 		!result.DescendantsReaped || !result.CleanupSucceeded {
 		t.Fatalf("unexpected cancellation result: %+v", result)
+	}
+}
+
+func TestSupervisorDeadlineIsNotClassifiedAsCancellation(t *testing.T) {
+	ready := filepath.Join(newCanonicalTempDir(t), "ready")
+	supervisor, _, executable, digest := newFixtureSupervisor(t, SupervisorConfig{
+		TerminationGrace: 100 * time.Millisecond,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	resultChannel := make(chan AttemptResult, 1)
+	errorChannel := make(chan error, 1)
+	go func() {
+		result, err := supervisor.Run(ctx, AttemptSpec{
+			Executable: executable, ExecutableDigest: digest,
+			Arguments: []string{"-test.run=TestSupervisorHelperProcess"},
+			Environment: []EnvironmentVariable{
+				{Name: helperEnabled, Value: "1"}, {Name: helperMode, Value: "term-resistant"},
+				{Name: helperReady, Value: ready},
+			},
+		})
+		resultChannel <- result
+		errorChannel <- err
+	}()
+	waitForFile(t, ready)
+	result := <-resultChannel
+	if err := <-errorChannel; err != nil {
+		t.Fatalf("deadline supervisor: %v", err)
+	}
+	if !result.Deadline || result.Cancelled || !result.TermSent || !result.KillSent ||
+		!result.DescendantsReaped || !result.CleanupSucceeded {
+		t.Fatalf("unexpected deadline result: %+v", result)
 	}
 }
 

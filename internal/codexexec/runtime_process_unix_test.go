@@ -58,9 +58,9 @@ func TestPreparedSupervisorBoundaryRechecksExpiryImmediatelyBeforePreparation(t 
 	fixture := writePreparedCodexFixture(t, `#!/bin/sh
 exit 91
 `)
-	request, _, driver, launcher, _, recording := preparedDriverFixture(t, fixture)
+	request, authority, driver, launcher, _, recording := preparedDriverFixture(t, fixture)
 	var clockMu sync.Mutex
-	now := driverNow
+	now := authority.LeaseExpiresAt.Add(-time.Hour)
 	clock := func() time.Time {
 		clockMu.Lock()
 		defer clockMu.Unlock()
@@ -71,11 +71,64 @@ exit 91
 	prepared.now = clock
 	recording.beforeRun = func() {
 		clockMu.Lock()
-		now = driverNow.Add(2 * time.Hour)
+		now = authority.LeaseExpiresAt.Add(time.Second)
 		clockMu.Unlock()
 	}
 	if _, err := driver.Execute(context.Background(), request, &fixtureEventSink{}); err == nil {
 		t.Fatal("Execute() after authority expired before process preparation = nil")
+	}
+	if got := launcher.prepareCount(); got != 0 {
+		t.Fatalf("expired authority reached isolation preparation %d times", got)
+	}
+}
+
+func TestPreparedSupervisorBoundaryPreservesCancellationOnFinalExpiryFailure(t *testing.T) {
+	fixture := writePreparedCodexFixture(t, `#!/bin/sh
+exit 91
+`)
+	request, authority, driver, launcher, _, recording := preparedDriverFixture(t, fixture)
+	prepared := recording.delegate.(*PreparedProcessBoundaryV1)
+	secondCheck := make(chan struct{})
+	continueCheck := make(chan struct{})
+	var callsMu sync.Mutex
+	calls := 0
+	prepared.now = func() time.Time {
+		callsMu.Lock()
+		calls++
+		call := calls
+		callsMu.Unlock()
+		if call == 2 {
+			close(secondCheck)
+			<-continueCheck
+			return authority.LeaseExpiresAt.Add(time.Second)
+		}
+		return authority.LeaseExpiresAt.Add(-time.Hour)
+	}
+	executed := make(chan error, 1)
+	go func() {
+		_, err := driver.Execute(context.Background(), request, &fixtureEventSink{})
+		executed <- err
+	}()
+	select {
+	case <-secondCheck:
+	case <-time.After(5 * time.Second):
+		t.Fatal("final authority check was not reached")
+	}
+	if err := driver.Cancel(context.Background(), executionIdentity(request)); err != nil {
+		t.Fatalf("Cancel() during final authority check = %v", err)
+	}
+	close(continueCheck)
+	select {
+	case err := <-executed:
+		if err == nil {
+			t.Fatal("Execute() after cancellation and expiry error = nil")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Execute() did not return after final authority check")
+	}
+	process, processErr := recording.snapshot()
+	if !process.Cancelled || !errors.Is(processErr, context.Canceled) {
+		t.Fatalf("early-exit arbitration process=%+v error=%v", process, processErr)
 	}
 	if got := launcher.prepareCount(); got != 0 {
 		t.Fatalf("expired authority reached isolation preparation %d times", got)
@@ -174,9 +227,15 @@ func preparedDriverFixture(
 		t.Fatal(err)
 	}
 	request, authority := validDriverRequest(t)
+	runtimeNow := time.Now().UTC()
+	leaseExpiresAt := runtimeNow.Add(time.Hour)
+	credentialExpiresAt := runtimeNow.Add(30 * time.Minute)
+	authority.LeaseExpiresAt = leaseExpiresAt
+	request.HarnessBinding.EvidenceExpiresAt = &leaseExpiresAt
+	request.Credential.ExpiresAt = credentialExpiresAt
 	config := Config{
 		Enabled: true, Executable: executable, ExecutableVersion: "fixture-v1",
-		ExecutableDigest: digest, Model: "gpt-fixture", Now: func() time.Time { return driverNow },
+		ExecutableDigest: digest, Model: "gpt-fixture", Now: func() time.Time { return runtimeNow },
 	}
 	descriptor, err := prepareConfig(config)
 	if err != nil {

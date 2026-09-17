@@ -649,6 +649,38 @@ func TestSupervisorCancellationKillsTermResistantDescendant(t *testing.T) {
 	}
 }
 
+func TestSupervisorDeadlineIsNotClassifiedAsCancellation(t *testing.T) {
+	ready := filepath.Join(newCanonicalTempDir(t), "ready")
+	supervisor, _, executable, digest := newFixtureSupervisor(t, SupervisorConfig{
+		TerminationGrace: 100 * time.Millisecond,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	resultChannel := make(chan AttemptResult, 1)
+	errorChannel := make(chan error, 1)
+	go func() {
+		result, err := supervisor.Run(ctx, AttemptSpec{
+			Executable: executable, ExecutableDigest: digest,
+			Arguments: []string{"-test.run=TestSupervisorHelperProcess"},
+			Environment: []EnvironmentVariable{
+				{Name: helperEnabled, Value: "1"}, {Name: helperMode, Value: "term-resistant"},
+				{Name: helperReady, Value: ready},
+			},
+		})
+		resultChannel <- result
+		errorChannel <- err
+	}()
+	waitForFile(t, ready)
+	result := <-resultChannel
+	if err := <-errorChannel; err != nil {
+		t.Fatalf("deadline supervisor: %v", err)
+	}
+	if !result.Deadline || result.Cancelled || !result.TermSent || !result.KillSent ||
+		!result.DescendantsReaped || !result.CleanupSucceeded {
+		t.Fatalf("unexpected deadline result: %+v", result)
+	}
+}
+
 func TestSupervisorNaturalLeaderExitReapsDescendant(t *testing.T) {
 	supervisor, _, executable, digest := newFixtureSupervisor(t, SupervisorConfig{
 		TerminationGrace: 100 * time.Millisecond,

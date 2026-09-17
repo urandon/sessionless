@@ -462,7 +462,11 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 		processWaited = true
 	case result.FailureCode = <-violation:
 	case <-parent.Done():
-		result.Cancelled = true
+		if errors.Is(parent.Err(), context.DeadlineExceeded) {
+			result.Deadline = true
+		} else {
+			result.Cancelled = true
+		}
 	case <-timer.C:
 		result.Deadline = true
 	}

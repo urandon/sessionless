@@ -84,7 +84,7 @@ func NewPreparedProcessBoundaryV1(config PreparedProcessBoundaryConfigV1) (*Prep
 	}, nil
 }
 
-func (boundary *PreparedProcessBoundaryV1) Run(ctx context.Context, invocation ProcessInvocationV1) (ProcessResultV1, error) {
+func (boundary *PreparedProcessBoundaryV1) Run(ctx context.Context, invocation ProcessInvocationV1) (result ProcessResultV1, runErr error) {
 	if boundary == nil || ctx == nil || ctx.Err() != nil || boundary.validateInvocation(invocation) != nil {
 		return ProcessResultV1{}, ErrProcessBoundaryUnavailable
 	}
@@ -106,8 +106,11 @@ func (boundary *PreparedProcessBoundaryV1) Run(ctx context.Context, invocation P
 		boundary.mu.Unlock()
 	}
 	defer func() {
+		if boundary.finish(active) {
+			result.Cancelled = true
+			runErr = errors.Join(runErr, context.Canceled)
+		}
 		cancel()
-		boundary.finish(active)
 	}()
 
 	spec := attachedworkerdaemon.AttemptSpec{
@@ -127,18 +130,14 @@ func (boundary *PreparedProcessBoundaryV1) Run(ctx context.Context, invocation P
 	if err != nil {
 		return ProcessResultV1{}, ErrProcessBoundaryUnavailable
 	}
-	remaining, err := boundary.remainingAuthorityLifetime(invocation)
+	deadline, err := boundary.authorityDeadline(invocation)
 	if err != nil {
 		return ProcessResultV1{}, ErrProcessBoundaryUnavailable
 	}
-	expiryCtx, cancelExpiry := context.WithTimeout(runCtx, remaining)
+	expiryCtx, cancelExpiry := context.WithDeadline(runCtx, deadline)
 	observed, runErr := boundary.supervisor.Run(expiryCtx, prepared)
 	cancelExpiry()
-	if boundary.finish(active) {
-		observed.Cancelled = true
-		runErr = errors.Join(runErr, context.Canceled)
-	}
-	result := mapPreparedProcessResult(invocation, observed)
+	result = mapPreparedProcessResult(invocation, observed)
 	return result, runErr
 }
 
@@ -198,7 +197,7 @@ func (boundary *PreparedProcessBoundaryV1) validateInvocation(invocation Process
 		!credentialMatchesProcessAuthority(invocation.Credential, invocation.Authority) {
 		return ErrContract
 	}
-	if _, err := boundary.remainingAuthorityLifetime(invocation); err != nil {
+	if _, err := boundary.authorityDeadline(invocation); err != nil {
 		return err
 	}
 	info, err := os.Lstat(invocation.WorkDir)
@@ -208,9 +207,9 @@ func (boundary *PreparedProcessBoundaryV1) validateInvocation(invocation Process
 	return nil
 }
 
-func (boundary *PreparedProcessBoundaryV1) remainingAuthorityLifetime(invocation ProcessInvocationV1) (time.Duration, error) {
+func (boundary *PreparedProcessBoundaryV1) authorityDeadline(invocation ProcessInvocationV1) (time.Time, error) {
 	if invocation.Identity.HarnessBinding.EvidenceExpiresAt == nil {
-		return 0, ErrContract
+		return time.Time{}, ErrContract
 	}
 	notAfter := invocation.Authority.LeaseExpiresAt.UTC()
 	if credentialExpiry := invocation.Credential.ExpiresAt.UTC(); credentialExpiry.Before(notAfter) {
@@ -219,11 +218,10 @@ func (boundary *PreparedProcessBoundaryV1) remainingAuthorityLifetime(invocation
 	if evidenceExpiry := invocation.Identity.HarnessBinding.EvidenceExpiresAt.UTC(); evidenceExpiry.Before(notAfter) {
 		notAfter = evidenceExpiry
 	}
-	remaining := notAfter.Sub(boundary.now().UTC())
-	if remaining <= 0 {
-		return 0, ErrContract
+	if !notAfter.After(boundary.now().UTC()) {
+		return time.Time{}, ErrContract
 	}
-	return remaining, nil
+	return notAfter, nil
 }
 
 func authorityMatchesProcessIdentity(authority AuthorityV1, identity ports.ExecutionIdentity) bool {

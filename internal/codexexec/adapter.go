@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemon"
 	"gitcode.com/urandon/sessionless/internal/domain"
@@ -15,12 +16,13 @@ type InvocationRunner interface {
 
 type Config struct {
 	// Enabled is a reversible local feature gate, not provider authorization.
-	// No production binary wires it while #48, registry, and egress gates are open.
+	// No production binary wires it while registry, isolation, and egress gates are open.
 	Enabled           bool
 	Executable        string
 	ExecutableVersion string
 	ExecutableDigest  attachedworkerdaemon.ExecutableDigest
 	Model             string
+	Now               func() time.Time
 }
 
 type Adapter struct {
@@ -30,18 +32,29 @@ type Adapter struct {
 }
 
 func New(config Config, runner InvocationRunner) (*Adapter, error) {
-	if runner == nil || config.Executable == "" || config.ExecutableVersion == "" ||
-		config.ExecutableDigest == (attachedworkerdaemon.ExecutableDigest{}) ||
-		!filepath.IsAbs(config.Executable) || filepath.Clean(config.Executable) != config.Executable ||
-		domain.ValidateOpaqueID("codex_exec.executable_version", config.ExecutableVersion) != nil ||
-		!validModelID(config.Model) {
+	if runner == nil {
 		return nil, ErrContract
 	}
-	descriptor, err := descriptorV1(config)
+	descriptor, err := prepareConfig(config)
 	if err != nil {
 		return nil, err
 	}
 	return &Adapter{config: config, descriptor: descriptor, runner: runner}, nil
+}
+
+func prepareConfig(config Config) (domain.HarnessBackendDescriptorV1, error) {
+	if config.Executable == "" || config.ExecutableVersion == "" ||
+		config.ExecutableDigest == (attachedworkerdaemon.ExecutableDigest{}) ||
+		!filepath.IsAbs(config.Executable) || filepath.Clean(config.Executable) != config.Executable ||
+		domain.ValidateOpaqueID("codex_exec.executable_version", config.ExecutableVersion) != nil ||
+		!validModelID(config.Model) {
+		return domain.HarnessBackendDescriptorV1{}, ErrContract
+	}
+	descriptor, err := descriptorV1(config)
+	if err != nil {
+		return domain.HarnessBackendDescriptorV1{}, err
+	}
+	return descriptor, nil
 }
 
 func validModelID(value string) bool {

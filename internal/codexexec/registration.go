@@ -1,14 +1,12 @@
 package codexexec
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/harnessconformance"
-	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 )
 
@@ -29,18 +27,20 @@ func (adapter *Adapter) DescriptorV1() domain.HarnessBackendDescriptorV1 {
 	return adapter.descriptor
 }
 
-// DisabledRegistrationV1 adds the exact subscription profile to the closed
-// Sessionless registry without authorizing provider execution. The bridge is
-// intentionally cancellation-only: a disabled registration cannot have
-// started work through this registry, so exact cancellation is a bounded no-op.
-func DisabledRegistrationV1(adapter *Adapter) (sessionlessharness.Registration, error) {
-	if adapter == nil || adapter.config.Enabled {
+// DisabledRegistrationV1 adds the production-shaped driver to the closed
+// registry without authorizing provider execution. Exact cancellation still
+// reaches its boundary so a previously admitted attempt can be torn down.
+func DisabledRegistrationV1(driver *Driver) (sessionlessharness.Registration, error) {
+	return registrationV1(driver, false)
+}
+
+func registrationV1(driver *Driver, enabled bool) (sessionlessharness.Registration, error) {
+	if driver == nil || driver.config.Enabled != enabled {
 		return sessionlessharness.Registration{}, ErrContract
 	}
-	driver := &disabledRegistryDriver{adapter: adapter}
 	return sessionlessharness.Registration{
-		Descriptor: adapter.descriptor, Enabled: false, Driver: driver,
-		ValidateBinding: adapter.validateHarnessBinding,
+		Descriptor: driver.descriptor, Enabled: enabled, Driver: driver,
+		ValidateBinding: driver.validateHarnessBinding,
 	}, nil
 }
 
@@ -55,13 +55,14 @@ func descriptorV1(config Config) (domain.HarnessBackendDescriptorV1, error) {
 		fmt.Sprint(maxInstructionBytes),
 		fmt.Sprint(maxJSONLLineBytes),
 		fmt.Sprint(maxJSONLOutputBytes),
+		fmt.Sprint(maxProcessStderrBytesV1),
 		fmt.Sprint(maxJSONLEvents),
 		fmt.Sprint(maxFinalBytes),
 		fmt.Sprint(maxJSONDepth),
 		"credential_home=" + CredentialHomeEnvironmentV1,
 		"billing_route=" + string(ObservationUnknown),
 		"quota=" + string(ObservationUnknown),
-		"disabled_cancel=bounded_noop_v1",
+		"cancel=exact_attached_worker_boundary_v1",
 	}, processArguments(config.Model)...) {
 		_, _ = fmt.Fprintf(profile, "%d:%s", len(field), field)
 	}
@@ -89,11 +90,11 @@ func processArguments(model string) []string {
 	}
 }
 
-func (adapter *Adapter) validateHarnessBinding(binding domain.HarnessBindingV1) sessionlessharness.FailureCode {
-	if adapter == nil || binding.Validate() != nil {
+func (driver *Driver) validateHarnessBinding(binding domain.HarnessBindingV1) sessionlessharness.FailureCode {
+	if driver == nil || binding.Validate() != nil {
 		return sessionlessharness.FailureHarnessBindingInvalid
 	}
-	if binding.Backend != adapter.descriptor {
+	if binding.Backend != driver.descriptor {
 		return sessionlessharness.FailureHarnessBackendMismatch
 	}
 	if binding.Resource.Kind != domain.ProviderResourceSubscriptionV1 ||
@@ -101,30 +102,10 @@ func (adapter *Adapter) validateHarnessBinding(binding domain.HarnessBindingV1) 
 		domain.SubscriptionConnectionID(binding.Resource.ResourceID).Validate() != nil {
 		return sessionlessharness.FailureProviderResourceMismatch
 	}
-	if binding.ModelVendorID != ModelVendorIDV1 || binding.ModelID != adapter.config.Model {
+	if binding.ModelVendorID != ModelVendorIDV1 || binding.ModelID != driver.config.Model {
 		return sessionlessharness.FailureProviderCatalogExpired
 	}
 	return ""
-}
-
-type disabledRegistryDriver struct {
-	adapter *Adapter
-}
-
-func (*disabledRegistryDriver) Preflight(context.Context, ports.ExecutionIdentity) error {
-	return disabledHarnessError()
-}
-
-func (*disabledRegistryDriver) Execute(context.Context, ports.ExecutionRequest, ports.ExecutionEventSink) (ports.ExecutionResult, error) {
-	return ports.ExecutionResult{}, disabledHarnessError()
-}
-
-func (driver *disabledRegistryDriver) Cancel(ctx context.Context, identity ports.ExecutionIdentity) error {
-	if driver == nil || driver.adapter == nil || ctx == nil || ctx.Err() != nil || identity.Validate() != nil ||
-		driver.adapter.validateHarnessBinding(identity.HarnessBinding) != "" {
-		return disabledHarnessError()
-	}
-	return nil
 }
 
 func disabledHarnessError() error {
@@ -135,11 +116,8 @@ func disabledHarnessError() error {
 }
 
 func (*Adapter) BackendProtocolState() harnessconformance.BackendProtocolStateV1 {
-	// The legacy invocation adapter has not yet been bridged to the canonical
-	// HarnessDriver request/evidence contract. Local process enablement alone
-	// must never be reported as registry protocol support.
+	// The legacy invocation adapter remains outside the canonical registry.
 	return harnessconformance.BackendProtocolUnsupportedV1
 }
 
-var _ ports.HarnessDriver = (*disabledRegistryDriver)(nil)
 var _ harnessconformance.BackendProtocolObserver = (*Adapter)(nil)

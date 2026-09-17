@@ -22,7 +22,7 @@ var ErrContract = errors.New("provider composition contract is invalid")
 // drivers. Profile discovery, environment lookup and production boundary
 // construction belong to reviewed outer composition layers.
 type DependenciesV1 struct {
-	CodexSubscription *codexexec.Adapter
+	CodexSubscription *codexexec.Driver
 	CodexOpenRouter   *codexopenrouter.Driver
 	OpenCode          *opencodeopenrouter.Driver
 	Pi                *piopenrouter.Driver

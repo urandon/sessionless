@@ -112,9 +112,6 @@ func TestCancelRoutesOnlyToExactMatchingDisabledBackend(t *testing.T) {
 		}
 		after := drivers.effects()
 		wantCancels := before.cancels + 1
-		if descriptor.BackendKind == domain.HarnessBackendCodexExecV1 {
-			wantCancels = before.cancels
-		}
 		if after.cancels != wantCancels || after.runs != before.runs || after.invokes != before.invokes {
 			t.Fatalf("Cancel(%q) effects before=%+v after=%+v, want bounded exact cancellation", descriptor.BackendKind, before, after)
 		}
@@ -195,32 +192,34 @@ func TestDisabledCompositionCannotClaimNativeProtocolSupport(t *testing.T) {
 }
 
 type driverSet struct {
-	subscription    *codexexec.Adapter
-	subscriptionRun *subscriptionRunner
-	codex           *codexopenrouter.Driver
-	openCode        *opencodeopenrouter.Driver
-	pi              *piopenrouter.Driver
-	direct          *directopenrouter.Driver
-	codexBoundary   *codexBoundary
-	openBoundary    *openCodeBoundary
-	piBoundary      *piBoundary
-	directBoundary  *directBoundary
+	subscription          *codexexec.Driver
+	subscriptionAuthority *subscriptionAuthority
+	subscriptionBoundary  *subscriptionBoundary
+	codex                 *codexopenrouter.Driver
+	openCode              *opencodeopenrouter.Driver
+	pi                    *piopenrouter.Driver
+	direct                *directopenrouter.Driver
+	codexBoundary         *codexBoundary
+	openBoundary          *openCodeBoundary
+	piBoundary            *piBoundary
+	directBoundary        *directBoundary
 }
 
 func newDriverSet(t *testing.T, enabled bool) driverSet {
 	t.Helper()
 	set := driverSet{
-		subscriptionRun: &subscriptionRunner{},
-		codexBoundary:   &codexBoundary{},
-		openBoundary:    &openCodeBoundary{},
-		piBoundary:      &piBoundary{},
-		directBoundary:  &directBoundary{},
+		subscriptionAuthority: &subscriptionAuthority{},
+		subscriptionBoundary:  &subscriptionBoundary{},
+		codexBoundary:         &codexBoundary{},
+		openBoundary:          &openCodeBoundary{},
+		piBoundary:            &piBoundary{},
+		directBoundary:        &directBoundary{},
 	}
 	var err error
-	set.subscription, err = codexexec.New(codexexec.Config{
+	set.subscription, err = codexexec.NewDriver(codexexec.Config{
 		Enabled: enabled, Executable: "/sessionless/bin/codex-subscription", ExecutableVersion: "1.0.0",
-		ExecutableDigest: executableDigest(5), Model: "gpt-subscription",
-	}, set.subscriptionRun)
+		ExecutableDigest: executableDigest(5), Model: "gpt-subscription", Now: fixedClock,
+	}, set.subscriptionAuthority, set.subscriptionBoundary)
 	if err != nil {
 		t.Fatalf("New(subscription) error = %v", err)
 	}
@@ -270,19 +269,20 @@ func (set driverSet) descriptors() []domain.HarnessBackendDescriptorV1 {
 
 type effectCounts struct{ runs, invokes, cancels int }
 
-type backendCancelCounts struct{ codex, openCode, pi, direct int }
+type backendCancelCounts struct{ subscription, codex, openCode, pi, direct int }
 
 func (set driverSet) effects() effectCounts {
 	return effectCounts{
-		runs:    set.subscriptionRun.runs + set.codexBoundary.runs + set.openBoundary.runs + set.piBoundary.runs,
+		runs:    set.subscriptionBoundary.runs + set.codexBoundary.runs + set.openBoundary.runs + set.piBoundary.runs,
 		invokes: set.directBoundary.invokes,
-		cancels: set.codexBoundary.cancels + set.openBoundary.cancels + set.piBoundary.cancels + set.directBoundary.cancels,
+		cancels: set.subscriptionBoundary.cancels + set.codexBoundary.cancels + set.openBoundary.cancels + set.piBoundary.cancels + set.directBoundary.cancels,
 	}
 }
 
 func (set driverSet) cancelCounts() backendCancelCounts {
 	return backendCancelCounts{
-		codex: set.codexBoundary.cancels, openCode: set.openBoundary.cancels,
+		subscription: set.subscriptionBoundary.cancels,
+		codex:        set.codexBoundary.cancels, openCode: set.openBoundary.cancels,
 		pi: set.piBoundary.cancels, direct: set.directBoundary.cancels,
 	}
 }
@@ -292,8 +292,7 @@ func requireOnlyCancelIncrement(t *testing.T, kind domain.HarnessBackendKindV1, 
 	want := before
 	switch kind {
 	case domain.HarnessBackendCodexExecV1:
-		// The subscription profile is permanently disabled in this composition;
-		// exact cancellation is therefore a bounded no-op with no process effect.
+		want.subscription++
 	case domain.HarnessBackendCodexOpenRouterV1:
 		want.codex++
 	case domain.HarnessBackendOpenCodeV1:
@@ -350,12 +349,33 @@ func validIdentity(t *testing.T, descriptor domain.HarnessBackendDescriptorV1) p
 	binding.EffectivePolicyDigest = strings.Repeat("5", 64)
 	expiresAt := compositionNow.Add(time.Hour)
 	binding.EvidenceExpiresAt = &expiresAt
-	substrate := authority.SubstrateBinding
-	cost := authority.AdmissionCostCeiling.Clone()
+	placement := authority.ExecutionPlacementV2
+	var substrate *domain.SubstrateBindingV1
+	var cost *domain.AdmissionCostCeilingV1
+	if descriptor.BackendKind == domain.HarnessBackendCodexExecV1 {
+		placement = domain.ExecutionPlacementV2{
+			Version:        domain.ExecutionPlacementVersionV2,
+			Kind:           domain.ExecutionPlacementAttachedWorker,
+			FallbackPolicy: domain.ExecutionFallbackDenied,
+			OwnerUserID:    binding.OwnerUserID, WorkerID: "worker-composition",
+			CapabilityDigest: domain.AttachedWorkerCapabilityDigest(strings.Repeat("8", 64)),
+			PolicyDigest:     domain.AttachedWorkerPolicyDigest(strings.Repeat("9", 64)),
+		}
+		placementDigest, digestErr := domain.ExecutionPlacementDigest(placement)
+		if digestErr != nil {
+			t.Fatal(digestErr)
+		}
+		binding.ExecutionPlacementDigest = string(placementDigest)
+	} else {
+		substrateValue := authority.SubstrateBinding
+		costValue := authority.AdmissionCostCeiling.Clone()
+		substrate = &substrateValue
+		cost = &costValue
+	}
 	identity := ports.ExecutionIdentity{
 		TenantID: binding.TenantID, OwnerUserID: binding.OwnerUserID, RunID: binding.RunID, AttemptID: binding.AttemptID,
-		ExecutionPlacementV2: authority.ExecutionPlacementV2, HarnessBinding: binding,
-		SubstrateBinding: &substrate, AdmissionCostCeiling: &cost,
+		ExecutionPlacementV2: placement, HarnessBinding: binding,
+		SubstrateBinding: substrate, AdmissionCostCeiling: cost,
 	}
 	if err := identity.Validate(); err != nil {
 		t.Fatalf("validIdentity(%q) validation error = %v", descriptor.BackendKind, err)
@@ -381,11 +401,43 @@ func executableDigest(value byte) attachedworkerdaemon.ExecutableDigest {
 
 func fixedClock() time.Time { return compositionNow }
 
-type subscriptionRunner struct{ runs int }
+type subscriptionAuthority struct{}
 
-func (runner *subscriptionRunner) Run(context.Context, attachedworkerdaemon.Invocation) (attachedworkerdaemon.InvocationResult, error) {
-	runner.runs++
-	return attachedworkerdaemon.InvocationResult{}, errors.New("unexpected subscription process run")
+func (*subscriptionAuthority) Resolve(_ context.Context, identity ports.ExecutionIdentity) (codexexec.AuthorityV1, error) {
+	const leaseGeneration = uint64(5)
+	fence, err := domain.NewAttachedWorkerFenceTokenV1(
+		identity.TenantID, identity.OwnerUserID, identity.ExecutionPlacementV2.WorkerID,
+		identity.RunID, identity.AttemptID, "lease-composition", leaseGeneration,
+	)
+	if err != nil {
+		return codexexec.AuthorityV1{}, err
+	}
+	return codexexec.AuthorityV1{
+		Version:  codexexec.ContractVersionV1,
+		TenantID: identity.TenantID, OwnerUserID: identity.OwnerUserID,
+		WorkerID:             identity.ExecutionPlacementV2.WorkerID,
+		ConnectionID:         "connection-composition",
+		EnrollmentGeneration: 1, ConnectionGeneration: 1,
+		RunID: identity.RunID, AttemptID: identity.AttemptID,
+		ReservationID: "reservation-composition",
+		LeaseID:       "lease-composition", LeaseGeneration: leaseGeneration,
+		FenceToken: fence, LeaseExpiresAt: compositionNow.Add(time.Hour),
+		ContextDigest:    domain.AttachedWorkerContextDigest(strings.Repeat("7", 64)),
+		CapabilityDigest: identity.ExecutionPlacementV2.CapabilityDigest,
+		PolicyDigest:     identity.ExecutionPlacementV2.PolicyDigest,
+		ProviderResource: identity.HarnessBinding.Resource,
+	}, nil
+}
+
+type subscriptionBoundary struct{ runs, cancels int }
+
+func (boundary *subscriptionBoundary) Run(context.Context, codexexec.ProcessInvocationV1) (codexexec.ProcessResultV1, error) {
+	boundary.runs++
+	return codexexec.ProcessResultV1{}, errors.New("unexpected subscription process run")
+}
+func (boundary *subscriptionBoundary) Cancel(context.Context, codexexec.AuthorityV1) error {
+	boundary.cancels++
+	return nil
 }
 
 type codexBoundary struct{ runs, cancels int }

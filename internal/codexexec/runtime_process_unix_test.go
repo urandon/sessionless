@@ -57,9 +57,11 @@ printf '%s\n' '{"type":"turn.started"}'
 while :; do :; done
 `)
 	request, _, driver, _, authFile, recording := preparedDriverFixture(t, fixture)
+	runCtx, stopRun := context.WithCancel(context.Background())
+	t.Cleanup(stopRun)
 	result := make(chan error, 1)
 	go func() {
-		_, err := driver.Execute(context.Background(), request, &fixtureEventSink{})
+		_, err := driver.Execute(runCtx, request, &fixtureEventSink{})
 		result <- err
 	}()
 	waitForPathOrResult(t, filepath.Join(filepath.Dir(authFile), "started"), result, recording, 5*time.Second)

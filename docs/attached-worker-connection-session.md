@@ -14,6 +14,16 @@ session retains that lease until `Close`. This prevents a second process from
 logging out, updating generations, or starting another connection owner while
 an activation or exchange may still be in flight.
 
+The optional trusted `RuntimePreflight` hook runs under that same lease after
+the local manifest, secret, capability and (for reconnect) checkpoint have
+been validated, but before generation advance or network I/O. A pinned stack
+can therefore be checked without separately acquiring `runtime.lock` or
+trusting a snapshot read before ownership. Hook errors are reported only as
+`runtime preflight failed`; dependency paths and private diagnostics are not
+returned. A failed hook leaves the generation unchanged and releases the
+lease. This is a library seam, not product activation: the shipped command
+does not provide a hook or construct a live session.
+
 The session binds every frame and response to the exact:
 
 - tenant, owner, and worker;

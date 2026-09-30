@@ -41,6 +41,7 @@ var (
 	ErrSessionFenced           = errors.New("attached worker connection session is fenced")
 	ErrReconciliationRequired  = errors.New("attached worker connection session requires reconciliation")
 	ErrConnectionSessionFailed = errors.New("attached worker connection session failed")
+	ErrRuntimePreflight        = errors.New("attached worker local runtime preflight failed")
 )
 
 type State string
@@ -106,8 +107,13 @@ type Config struct {
 	RetryMaxBackoff     time.Duration
 	RetryRandom         io.Reader
 	Now                 func() time.Time
-	retrySeed           uint64
-	retryWait           func(context.Context, time.Duration) error
+	// RuntimePreflight runs with the exclusive local runtime lease after the
+	// manifest, secret, and capability have been validated, but before a
+	// connection generation or network effect. It may verify pinned local
+	// execution authority; it must honor ctx and return no secret material.
+	RuntimePreflight func(context.Context, attachedworkerlocal.ManifestV1) error
+	retrySeed        uint64
+	retryWait        func(context.Context, time.Duration) error
 }
 
 type ConnectInputV1 struct {
@@ -216,6 +222,26 @@ func newConnector(store localState, bootstrap BootstrapPort, factory ExchangeFac
 	config.ImplementedVersions = append([]attachedworkerprotocol.ProtocolVersion(nil), config.ImplementedVersions...)
 	config.WorkerOffer.Supported = append([]attachedworkerprotocol.ProtocolVersion(nil), config.WorkerOffer.Supported...)
 	return &Connector{state: StateIdle, store: store, bootstrap: bootstrap, factory: factory, config: config}, nil
+}
+
+// runtimePreflight never exposes a local path or dependency error through the
+// connection boundary. The trusted hook runs while the same runtime lease that
+// owns the later session is held; no second lock or TOCTOU snapshot is needed.
+func (connector *Connector) runtimePreflight(ctx context.Context, manifest attachedworkerlocal.ManifestV1) error {
+	if connector.config.RuntimePreflight == nil {
+		return nil
+	}
+	manifest.Harness.Arguments = append([]string(nil), manifest.Harness.Arguments...)
+	if err := connector.config.RuntimePreflight(ctx, manifest); err != nil {
+		if ctx.Err() != nil {
+			return errors.Join(ErrRuntimePreflight, ctx.Err())
+		}
+		return ErrRuntimePreflight
+	}
+	if err := ctx.Err(); err != nil {
+		return errors.Join(ErrRuntimePreflight, err)
+	}
+	return nil
 }
 
 func (connector *Connector) Connect(ctx context.Context, input ConnectInputV1) (*Session, error) {
@@ -339,6 +365,10 @@ func (connector *Connector) connect(ctx context.Context, input ConnectInputV1) (
 	}
 	if manifest.Revision == math.MaxUint64 || manifest.ConnectionGeneration == math.MaxUint64 {
 		result.err = ErrInvalidAuthority
+		return result
+	}
+	if err := connector.runtimePreflight(ctx, manifest); err != nil {
+		result.err = err
 		return result
 	}
 

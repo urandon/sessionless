@@ -127,6 +127,96 @@ func TestConnectorFailsClosedBeforeNetworkOnInvalidLocalAuthority(t *testing.T) 
 	})
 }
 
+func TestConnectRuntimePreflightOwnsLeaseAndFailsBeforeEffects(t *testing.T) {
+	fixture := newSessionFixture(t)
+	var calls int
+	config := fixture.config
+	config.RuntimePreflight = func(ctx context.Context, manifest attachedworkerlocal.ManifestV1) error {
+		calls++
+		if manifest.Revision != fixture.manifest.Revision || manifest.WorkerID != fixture.manifest.WorkerID {
+			t.Errorf("preflight authority = revision %d worker %q", manifest.Revision, manifest.WorkerID)
+		}
+		if lease, err := fixture.store.AcquireRuntime(ctx); lease != nil || !errors.Is(err, attachedworkerlocal.ErrStateBusy) {
+			if lease != nil {
+				_ = lease.Close()
+			}
+			t.Errorf("second runtime owner lease=%v err=%v", lease, err)
+		}
+		manifest.Harness.Arguments[0] = "--untrusted-mutation"
+		return errors.New("private local path and dependency detail")
+	}
+	connector, err := New(fixture.store, fixture.bootstrap, fixture.factory, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := connector.Connect(context.Background(), fixture.input); !errors.Is(err, ErrRuntimePreflight) ||
+		strings.Contains(err.Error(), "private local path") {
+		t.Fatalf("preflight error=%v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("preflight calls=%d, want 1", calls)
+	}
+	assertNoNetworkAndGeneration(t, fixture, 0)
+	snapshot, err := fixture.store.LoadSnapshot(context.Background())
+	if err != nil || snapshot.Manifest.Harness.Arguments[0] != "--attached" {
+		t.Fatalf("durable harness args=%v err=%v", snapshot.Manifest.Harness.Arguments, err)
+	}
+	lease, err := fixture.store.AcquireRuntime(context.Background())
+	if err != nil {
+		t.Fatalf("preflight did not release runtime ownership: %v", err)
+	}
+	if err := lease.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestConnectRuntimePreflightRetainsOneOwnerThroughSession(t *testing.T) {
+	fixture := newSessionFixture(t)
+	var calls int
+	config := fixture.config
+	config.RuntimePreflight = func(ctx context.Context, manifest attachedworkerlocal.ManifestV1) error {
+		calls++
+		if manifest.Revision != 1 || manifest.ConnectionGeneration != 0 {
+			t.Errorf("preflight authority revision=%d generation=%d", manifest.Revision, manifest.ConnectionGeneration)
+		}
+		if lease, err := fixture.store.AcquireRuntime(ctx); lease != nil || !errors.Is(err, attachedworkerlocal.ErrStateBusy) {
+			if lease != nil {
+				_ = lease.Close()
+			}
+			t.Errorf("second runtime owner lease=%v err=%v", lease, err)
+		}
+		return nil
+	}
+	connector, err := New(fixture.store, fixture.bootstrap, fixture.factory, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := connector.Connect(context.Background(), fixture.input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerSessionCleanup(t, session)
+	if calls != 1 || session.Snapshot().State != StateReady {
+		t.Fatalf("preflight calls=%d session=%+v", calls, session.Snapshot())
+	}
+	if lease, err := fixture.store.AcquireRuntime(context.Background()); lease != nil || !errors.Is(err, attachedworkerlocal.ErrStateBusy) {
+		if lease != nil {
+			_ = lease.Close()
+		}
+		t.Fatalf("session runtime owner lease=%v err=%v", lease, err)
+	}
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := fixture.store.AcquireRuntime(context.Background())
+	if err != nil {
+		t.Fatalf("session close did not release runtime ownership: %v", err)
+	}
+	if err := lease.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSessionExchangeActionOwnsEnvelopeAndReleasesCommittedAttempt(t *testing.T) {
 	fixture := newSessionFixture(t)
 	session := mustReadySession(t, fixture)

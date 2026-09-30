@@ -55,7 +55,7 @@ project canonical events without becoming an alternate source of truth.
 
 ## Try the complete local path
 
-The local stand uses pinned YDB Local, MinIO, ElasticMQ, a Telegram fixture, and
+The Compose stand uses pinned YDB Local, Silo (a MinIO fork), ElasticMQ, a Telegram fixture, and
 the production Go boundaries. It does not need cloud, Telegram, or AI-provider
 credentials.
 

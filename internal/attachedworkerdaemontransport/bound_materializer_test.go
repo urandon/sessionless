@@ -199,6 +199,66 @@ func TestBoundMaterializerRejectsSwappedOrTamperedInput(t *testing.T) {
 	}
 }
 
+func TestBoundMaterializerRejectsResealedForeignHarnessBinding(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*domain.HarnessBindingV1)
+	}{
+		{name: "tenant", mutate: func(binding *domain.HarnessBindingV1) { binding.TenantID = "tenant-2" }},
+		{name: "owner", mutate: func(binding *domain.HarnessBindingV1) {
+			binding.OwnerUserID = "owner-2"
+			binding.Resource.OwnerUserID = "owner-2"
+		}},
+		{name: "run", mutate: func(binding *domain.HarnessBindingV1) { binding.RunID = "run-2" }},
+		{name: "attempt", mutate: func(binding *domain.HarnessBindingV1) { binding.AttemptID = "attempt-2" }},
+		{name: "placement", mutate: func(binding *domain.HarnessBindingV1) {
+			binding.ExecutionPlacementDigest = strings.Repeat("a", 64)
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			materializer, source, request := sealedMaterializerFixture(t)
+			test.mutate(&source.input.Job.HarnessBinding)
+			resealSealedRequest(t, &source.input, &request)
+			if _, err := materializer.Materialize(context.Background(), request); !errors.Is(err, ErrSealedInputInvalid) {
+				t.Fatalf("foreign %s binding returned %v", test.name, err)
+			}
+		})
+	}
+}
+
+func TestBoundMaterializerRejectsOversizedMetadataBeforeDigest(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*SealedInputV1)
+	}{
+		{name: "manifest collection", mutate: func(input *SealedInputV1) {
+			input.Manifest.Artifacts = make([]domain.Artifact, maxSealedCollectionItems+1)
+		}},
+		{name: "server collection", mutate: func(input *SealedInputV1) {
+			input.Job.AllowedMCPServers = make([]string, maxSealedCollectionItems+1)
+		}},
+		{name: "oversized key", mutate: func(input *SealedInputV1) {
+			input.Job.ContextSnapshot.Key += strings.Repeat("x", maxSealedMetadataValue)
+		}},
+		{name: "oversized context", mutate: func(input *SealedInputV1) {
+			input.Context = make([]byte, defaultMaxSealedInputBytes+1)
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			materializer, source, request := sealedMaterializerFixture(t)
+			test.mutate(&source.input)
+			if _, err := materializer.Materialize(context.Background(), request); !errors.Is(err, ErrSealedInputInvalid) {
+				t.Fatalf("oversized %s returned %v", test.name, err)
+			}
+			if source.calls != 1 {
+				t.Fatalf("oversized %s source calls=%d", test.name, source.calls)
+			}
+		})
+	}
+}
+
 func TestBoundMaterializerRejectsOversizedEnvelopeAndRedactsErrors(t *testing.T) {
 	materializer, source, request := sealedMaterializerFixture(t)
 	materializer.maxBytes = len(source.input.Context) + len(source.input.Artifacts[0].Body)

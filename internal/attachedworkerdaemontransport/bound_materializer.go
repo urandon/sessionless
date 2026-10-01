@@ -7,13 +7,18 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"sort"
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 )
 
-const defaultMaxSealedInputBytes = 1 << 20
+const (
+	defaultMaxSealedInputBytes = 1 << 20
+	maxSealedCollectionItems   = 64
+	maxSealedMetadataValue     = 4096
+)
 
 var (
 	ErrSealedInputInvalid     = errors.New("attached worker sealed input is invalid")
@@ -92,10 +97,30 @@ func (materializer *BoundMaterializer) Materialize(ctx context.Context, request 
 	job := input.Job
 	if job.TenantID != request.TenantID || job.RunID != domain.RunID(request.Attempt.RunID) ||
 		job.AttemptID != domain.AttemptID(request.Attempt.AttemptID) ||
+		job.CredentialOwnerUserID != request.OwnerUserID ||
 		job.ExecutionPlacementV2.OwnerUserID != request.OwnerUserID ||
 		job.ExecutionPlacementV2.WorkerID != request.WorkerID ||
 		!digestEquals(request.Attempt.CapabilityDigest, string(job.ExecutionPlacementV2.CapabilityDigest)) ||
 		!digestEquals(request.Attempt.PolicyDigest, string(job.ExecutionPlacementV2.PolicyDigest)) {
+		return MaterializedInputV1{}, ErrSealedInputInvalid
+	}
+	// Bound source-owned collections and strings before domain digest validation,
+	// which copies/sorts manifest artifacts and allowed MCP server names.
+	if !boundedSealedMetadata(reflect.ValueOf(job), materializer.maxBytes) ||
+		!boundedSealedMetadata(reflect.ValueOf(input.Manifest), materializer.maxBytes) ||
+		len(input.Artifacts) > maxSealedCollectionItems || len(input.Context) > materializer.maxBytes ||
+		len(input.Artifacts) != len(input.Manifest.Artifacts) ||
+		uint64(len(input.Artifacts)) > uint64(job.Limits.MaxArtifacts) {
+		return MaterializedInputV1{}, ErrSealedInputInvalid
+	}
+	remaining := materializer.maxBytes - len(input.Context)
+	for _, artifact := range input.Artifacts {
+		if len(artifact.Name) > maxSealedMetadataValue || len(artifact.Body) > remaining {
+			return MaterializedInputV1{}, ErrSealedInputInvalid
+		}
+		remaining -= len(artifact.Body)
+	}
+	if job.HarnessBinding.ValidateForScope(job.TenantID, request.OwnerUserID, job.RunID, job.AttemptID, job.ExecutionPlacementV2) != nil {
 		return MaterializedInputV1{}, ErrSealedInputInvalid
 	}
 	digest, err := domain.AttachedWorkerJobContextDigestV1(job, input.Manifest)
@@ -117,7 +142,7 @@ func (materializer *BoundMaterializer) Materialize(ctx context.Context, request 
 		byName[artifact.Name] = artifact
 	}
 	seen := make(map[string]struct{}, len(input.Artifacts))
-	remaining := materializer.maxBytes - len(input.Context)
+	remaining = materializer.maxBytes - len(input.Context)
 	for _, artifact := range input.Artifacts {
 		sealed, found := byName[artifact.Name]
 		if _, duplicate := seen[artifact.Name]; !found || duplicate ||
@@ -142,6 +167,53 @@ func (materializer *BoundMaterializer) Materialize(ctx context.Context, request 
 		return MaterializedInputV1{}, ErrSealedInputInvalid
 	}
 	return MaterializedInputV1{Stdin: envelope}, nil
+}
+
+// boundedSealedMetadata rejects oversized source-controlled typed metadata
+// without copying it. No digest, sort, path normalization, or JSON encoding
+// runs until this bounded walk succeeds.
+func boundedSealedMetadata(value reflect.Value, budget int) bool {
+	if budget <= 0 {
+		return false
+	}
+	var visit func(reflect.Value, int) bool
+	visit = func(current reflect.Value, depth int) bool {
+		if depth > 16 {
+			return false
+		}
+		switch current.Kind() {
+		case reflect.Interface, reflect.Pointer:
+			return current.IsNil() || visit(current.Elem(), depth+1)
+		case reflect.String:
+			size := current.Len()
+			if size > maxSealedMetadataValue || size > budget {
+				return false
+			}
+			budget -= size
+			return true
+		case reflect.Slice, reflect.Array:
+			if current.Len() > maxSealedCollectionItems {
+				return false
+			}
+			for index := 0; index < current.Len(); index++ {
+				if !visit(current.Index(index), depth+1) {
+					return false
+				}
+			}
+		case reflect.Struct:
+			for index := 0; index < current.NumField(); index++ {
+				if !visit(current.Field(index), depth+1) {
+					return false
+				}
+			}
+		case reflect.Map:
+			// The sealed domain contracts contain no maps. A future map field
+			// needs an explicit bounded and deterministic review.
+			return false
+		}
+		return true
+	}
+	return visit(value, 0)
 }
 
 func blobMatches(ref domain.BlobRef, body []byte, maxBytes int) bool {

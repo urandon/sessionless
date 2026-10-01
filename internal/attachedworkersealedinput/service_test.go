@@ -223,6 +223,14 @@ func TestLoadRejectsCrossTenantArtifactBeforeBlobRead(t *testing.T) {
 	}
 }
 
+func TestBlobReaderRejectsValidForeignTenantRefWithoutOpen(t *testing.T) {
+	service, _, _, blobs, _ := fixtureInput(t)
+	foreign := testBlob("tenant-2", "alpha", []byte("synthetic artifact"))
+	if _, err := service.readExact(context.Background(), "tenant-1", foreign, maxInputBytes); !errors.Is(err, ErrInvalid) || blobs.calls != 0 {
+		t.Fatalf("valid foreign ref reached blob store: err=%v calls=%d", err, blobs.calls)
+	}
+}
+
 func TestHTTPSourceToBoundMaterializer(t *testing.T) {
 	service, authorizer, _, blobs, request := fixtureInput(t)
 	router := controlapi.NewHandlerWithOptions(

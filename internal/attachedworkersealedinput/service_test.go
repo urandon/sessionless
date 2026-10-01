@@ -29,12 +29,17 @@ type authorizerFixture struct {
 	denyAt         int
 	revision       uint64
 	secondRevision uint64
+	bearer         []byte
 }
 
 func (fixture *authorizerFixture) AuthorizeSealedInputBearer(_ context.Context, bearer []byte, request ports.AttachedWorkerSealedInputAuthorization) (uint64, error) {
 	fixture.calls++
 	fixture.requests = append(fixture.requests, request)
-	if !bytes.Equal(bearer, []byte("test-connection-bearer")) || fixture.calls == fixture.denyAt {
+	wantBearer := fixture.bearer
+	if wantBearer == nil {
+		wantBearer = []byte("test-connection-bearer")
+	}
+	if !bytes.Equal(bearer, wantBearer) || fixture.calls == fixture.denyAt {
 		return 0, ErrUnauthorized
 	}
 	if fixture.calls == 2 && fixture.secondRevision != 0 {

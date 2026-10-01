@@ -428,6 +428,7 @@ type joinedExchange struct {
 	binding         attachedworkerprotocol.AttemptBindingV1
 	terminalSeen    chan attachedworkerprotocol.TerminalV1
 	steps           int
+	lastWorkerKind  attachedworkerprotocol.MessageKind
 	lastPlatformErr error
 	closed          atomic.Int32
 }
@@ -437,7 +438,14 @@ func (exchange *joinedExchange) Exchange(_ context.Context, batch attachedworker
 		return nil, fmt.Errorf("joined exchange got %d frames", len(batch.Frames))
 	}
 	worker := batch.Frames[0]
+	exchange.lastWorkerKind = worker.Kind
 	if worker.Kind == attachedworkerprotocol.MessageManifest {
+		return nil, nil
+	}
+	// The active-control watcher may send unavailable/one-active heartbeats
+	// between acceptance and terminal. A nil response carries no new platform
+	// sequence and must not create a second lease offer.
+	if exchange.steps == 2 && worker.Kind == attachedworkerprotocol.MessageHeartbeat {
 		return nil, nil
 	}
 	step := exchange.steps
@@ -462,7 +470,7 @@ func (exchange *joinedExchange) Exchange(_ context.Context, batch attachedworker
 		platform.Kind = attachedworkerprotocol.MessageLeaseAccepted
 		platform.LeaseAccepted = &attachedworkerprotocol.LeaseAcceptedV1{Binding: exchange.binding, AttemptSequence: 2}
 	case 2:
-		if worker.Kind != attachedworkerprotocol.MessageTerminal || worker.Terminal == nil || worker.Sequence != 6 || worker.Ack != 4 {
+		if worker.Kind != attachedworkerprotocol.MessageTerminal || worker.Terminal == nil || worker.Sequence < 6 || worker.Ack != 4 {
 			return nil, fmt.Errorf("joined terminal envelope kind=%s sequence=%d ack=%d", worker.Kind, worker.Sequence, worker.Ack)
 		}
 		platform.Kind = attachedworkerprotocol.MessageTerminalAck

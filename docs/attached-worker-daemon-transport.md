@@ -207,9 +207,22 @@ connection is accepted, and its exchange close clears the retained bearer.
 `SyntheticRuntime` also owns explicit pre-run and active-run cleanup, including
 an interrupted run and failed post-connect construction. This is a library
 entrypoint only: no shipped command invokes it, and the control API still does
-not mount the optional sealed-input route. The local synthetic tests prove
-this ownership seam, not a real OCI/provider turn or a complete end-to-end
-activation/restart demonstration.
+not mount the optional sealed-input route. The matching default-off
+`ReconnectSyntheticPinnedRuntime` goes through the same sealed-input source,
+pin verification, and credential-denying stack, but requires the connector's
+durable idle reconciliation before it can poll. Non-idle or ambiguous recovery
+remains fenced; neither constructor is a production activation command.
+
+The joined local tests now cover both an authorization denial before any
+container command and one accepted credential-free synthetic attempt through
+the exported composition, pinned OCI test double, terminal acknowledgement,
+local drain, durable checkpoint, and resource release. The successful path
+first restarts from a durable idle checkpoint, then restarts from the exact
+committed terminal head; server reconciliation returns it to idle without
+replaying the process. The OCI test double is not a real container engine or
+provider turn. Product activation, a real OCI turn, and joined restart tests
+for claimed, draining, and ambiguous checkpoints remain separate evidence
+gates.
 
 The adapter and feature-disabled runtime are under
 `internal/attachedworkerdaemontransport`. The session exposes a semantic
@@ -217,7 +230,7 @@ The adapter and feature-disabled runtime are under
 connection sequence, or acknowledgement values. Both contracts remain
 unreachable from `attachedworkerforeground.New`.
 
-A later slice must complete the joined accepted-attempt and durable
-restart/reconnect proof, product activation and local control, packaging,
+A later slice must complete the joined restart matrix for non-terminal
+checkpoints, product activation and local control, packaging,
 and production sleep/wake and offline evidence. The two-owner
 security and recovery proof in #79 remains a release gate.

@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -231,7 +232,7 @@ func (connector *Connector) runtimePreflight(ctx context.Context, manifest attac
 	if connector.config.RuntimePreflight == nil {
 		return nil
 	}
-	manifest.Harness.Arguments = append([]string(nil), manifest.Harness.Arguments...)
+	manifest.Harness.Arguments = slices.Clone(manifest.Harness.Arguments)
 	if err := connector.config.RuntimePreflight(ctx, manifest); err != nil {
 		if ctx.Err() != nil {
 			return errors.Join(ErrRuntimePreflight, ctx.Err())

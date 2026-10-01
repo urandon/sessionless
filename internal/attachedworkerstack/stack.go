@@ -115,7 +115,7 @@ func newStack(
 	credentials ports.CredentialLifecycle,
 	deps dependencies,
 ) (*Stack, error) {
-	manifest.Harness.Arguments = append([]string(nil), manifest.Harness.Arguments...)
+	manifest.Harness.Arguments = slices.Clone(manifest.Harness.Arguments)
 	if ctx == nil || credentials == nil || manifest.Validate() != nil ||
 		manifest.Lifecycle != attachedworkerlocal.LifecycleActive || deps.digest == nil ||
 		deps.newLauncher == nil || deps.newSupervisor == nil || deps.newRunner == nil {

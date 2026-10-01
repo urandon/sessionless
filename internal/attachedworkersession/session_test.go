@@ -217,6 +217,29 @@ func TestConnectRuntimePreflightRetainsOneOwnerThroughSession(t *testing.T) {
 	}
 }
 
+func TestConnectRuntimePreflightPreservesZeroArgumentHarness(t *testing.T) {
+	fixture := newSessionFixtureWithHarnessArguments(t, []string{})
+	config := fixture.config
+	config.RuntimePreflight = func(_ context.Context, manifest attachedworkerlocal.ManifestV1) error {
+		if manifest.Harness.Arguments == nil {
+			t.Error("preflight received nil arguments for a valid zero-argument harness")
+		}
+		return manifest.Validate()
+	}
+	connector, err := New(fixture.store, fixture.bootstrap, fixture.factory, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := connector.Connect(context.Background(), fixture.input)
+	if err != nil {
+		t.Fatalf("connect zero-argument harness: %v", err)
+	}
+	registerSessionCleanup(t, session)
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSessionExchangeActionOwnsEnvelopeAndReleasesCommittedAttempt(t *testing.T) {
 	fixture := newSessionFixture(t)
 	session := mustReadySession(t, fixture)
@@ -1436,6 +1459,11 @@ type sessionFixture struct {
 
 func newSessionFixture(t *testing.T) *sessionFixture {
 	t.Helper()
+	return newSessionFixtureWithHarnessArguments(t, []string{"--attached"})
+}
+
+func newSessionFixtureWithHarnessArguments(t *testing.T, arguments []string) *sessionFixture {
+	t.Helper()
 	parent, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -1464,7 +1492,7 @@ func newSessionFixture(t *testing.T) *sessionFixture {
 			UserID:   1000, GroupID: 1000, DiskBytes: 1 << 30, CredentialFileBytes: 1024,
 			MemoryBytes: 64 << 20, PIDsLimit: 64, StopSeconds: 10,
 		},
-		Harness:   attachedworkerlocal.HarnessConfigV1{Executable: executable, SHA256: executableDigest, Arguments: []string{"--attached"}},
+		Harness:   attachedworkerlocal.HarnessConfigV1{Executable: executable, SHA256: executableDigest, Arguments: arguments},
 		Lifecycle: attachedworkerlocal.LifecycleActive, CreatedAt: sessionTestTime, UpdatedAt: sessionTestTime,
 	}
 	if runtime.GOOS == "darwin" {

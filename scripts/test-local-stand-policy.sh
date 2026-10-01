@@ -38,6 +38,18 @@ if test -n "$logging_violations"; then
 	fail 'every resolved Compose service must use bounded json-file logging'
 fi
 
+# CI and local Compose must use the same immutable classic Silo image for the
+# server and its bundled mc client. Native dockerless MinIO pins are separate.
+# shellcheck source=/dev/null
+. "$repo_root/tools/versions.env"
+expected_silo_image="docker.io/pgsty/silo:$SILO_IMAGE_VERSION@sha256:$SILO_IMAGE_DIGEST"
+if ! jq -e --arg image "$expected_silo_image" '
+  .services["object-storage-local"].image == $image
+  and .services["object-storage-init"].image == $image
+' "$compose_config" >/dev/null; then
+	fail 'Compose server and bucket init must use the same pinned Silo image'
+fi
+
 helper="$repo_root/scripts/local-ydb-readiness.sh"
 dev_up="$repo_root/scripts/dev-up.sh"
 test -f "$helper" || fail 'scripts/local-ydb-readiness.sh is missing'

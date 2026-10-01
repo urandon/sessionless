@@ -91,7 +91,7 @@ func NewClientSource(endpoint string, client *http.Client, bearer []byte) (*Clie
 	if client != nil {
 		result.client = *client
 	}
-	if result.client.Timeout == 0 || result.client.Timeout > time.Minute {
+	if result.client.Timeout <= 0 || result.client.Timeout > time.Minute {
 		result.client.Timeout = time.Minute
 	}
 	result.client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }

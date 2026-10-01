@@ -24,10 +24,11 @@ import (
 )
 
 type authorizerFixture struct {
-	calls    int
-	requests []ports.AttachedWorkerSealedInputAuthorization
-	denyAt   int
-	revision uint64
+	calls          int
+	requests       []ports.AttachedWorkerSealedInputAuthorization
+	denyAt         int
+	revision       uint64
+	secondRevision uint64
 }
 
 func (fixture *authorizerFixture) AuthorizeSealedInputBearer(_ context.Context, bearer []byte, request ports.AttachedWorkerSealedInputAuthorization) (uint64, error) {
@@ -35,6 +36,9 @@ func (fixture *authorizerFixture) AuthorizeSealedInputBearer(_ context.Context, 
 	fixture.requests = append(fixture.requests, request)
 	if !bytes.Equal(bearer, []byte("test-connection-bearer")) || fixture.calls == fixture.denyAt {
 		return 0, ErrUnauthorized
+	}
+	if fixture.calls == 2 && fixture.secondRevision != 0 {
+		return fixture.secondRevision, nil
 	}
 	return fixture.revision, nil
 }
@@ -184,6 +188,16 @@ func TestLoadFailsClosedBeforeReadAndAfterRevisionLoss(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsChangedRevisionAfterBlobRead(t *testing.T) {
+	service, authorizer, jobs, blobs, request := fixtureInput(t)
+	authorizer.secondRevision = 8
+	input, err := service.Load(context.Background(), []byte("test-connection-bearer"), request)
+	if !errors.Is(err, ErrUnauthorized) || len(input.Context) != 0 || len(input.Artifacts) != 0 ||
+		jobs.calls != 1 || blobs.calls != 2 || authorizer.calls != 2 {
+		t.Fatalf("changed head leaked content: err=%v jobs=%d blobs=%d auth=%d", err, jobs.calls, blobs.calls, authorizer.calls)
+	}
+}
+
 func TestLoadRejectsBlobDriftAndUnsupportedContext(t *testing.T) {
 	service, authorizer, _, blobs, request := fixtureInput(t)
 	blobs.contents["tenants/tenant-1/alpha"] = []byte("corrupted artifact")
@@ -196,6 +210,16 @@ func TestLoadRejectsBlobDriftAndUnsupportedContext(t *testing.T) {
 	_, err = service.Load(context.Background(), []byte("test-connection-bearer"), request)
 	if !errors.Is(err, ErrUnauthorized) || blobs.calls != 0 {
 		t.Fatalf("unsupported changed job passed digest gate: %v", err)
+	}
+}
+
+func TestLoadRejectsCrossTenantArtifactBeforeBlobRead(t *testing.T) {
+	service, authorizer, jobs, blobs, request := fixtureInput(t)
+	jobs.state.InputManifest.Artifacts[0].Blob.TenantID = "tenant-2"
+	jobs.state.InputManifest.Artifacts[0].Blob.Key = "tenants/tenant-2/alpha"
+	input, err := service.Load(context.Background(), []byte("test-connection-bearer"), request)
+	if !errors.Is(err, ErrUnauthorized) || len(input.Context) != 0 || authorizer.calls != 1 || blobs.calls != 0 {
+		t.Fatalf("cross-tenant artifact reached blob store: err=%v auth=%d blobs=%d", err, authorizer.calls, blobs.calls)
 	}
 }
 
@@ -298,5 +322,29 @@ func TestHTTPSourceNeverForwardsBearerAcrossRedirect(t *testing.T) {
 	defer source.Close()
 	if _, err := source.Load(context.Background(), attachedworkerdaemontransport.MaterializationRequestV1{}); !errors.Is(err, ErrUnavailable) || targetCalls != 0 {
 		t.Fatalf("redirect was followed: err=%v target calls=%d", err, targetCalls)
+	}
+}
+
+func TestHTTPSourceAlwaysHasBoundedClientTimeout(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		input, want time.Duration
+	}{
+		{name: "negative", input: -time.Second, want: time.Minute},
+		{name: "zero", input: 0, want: time.Minute},
+		{name: "too large", input: 2 * time.Minute, want: time.Minute},
+		{name: "shorter bound", input: 5 * time.Second, want: 5 * time.Second},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := &http.Client{Timeout: test.input}
+			source, err := NewClientSource("https://example.com"+PathV1, client, []byte("test-connection-bearer"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer source.Close()
+			if source.client.Timeout != test.want || client.Timeout != test.input {
+				t.Fatalf("timeout=%s, caller timeout=%s, want %s and unchanged caller", source.client.Timeout, client.Timeout, test.want)
+			}
+		})
 	}
 }

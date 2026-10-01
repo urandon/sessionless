@@ -116,9 +116,17 @@ while execution is still active or unknown.
 
 Issue #130 adds `ForegroundRuntime`, a single-use, library-only composition of
 the recovered cadence, adapter, daemon, runner, active-control watcher, result
-sink, and bounded session cleanup. It has no product constructor and remains
-unreachable from `attachedworkerforeground.New` and the `attached-worker run`
-command.
+sink, and bounded session cleanup. AW-05f adds a library-only initial connection
+composition, `ConnectPinnedForegroundRuntime`: it builds the session connector
+with one lease-held preflight, matches the local harness path/digest/argv and
+capability digest, verifies the #132 pinned stack, and reconciles its
+installation-owned OCI residue before connection generation or control-plane
+network I/O.
+The accepted Manifest enters the same daemon through one cooldown cadence;
+there is no extra eager heartbeat. A post-connect construction error, or a
+caller cancellation before `Run`, closes the acquired session under an
+independent bound. Zero-argument harnesses remain valid. This constructor is
+not called by `attachedworkerforeground.New` or `attached-worker run`.
 
 The runtime owns one reconciled session until the daemon stops. Remote cancel
 is applied to the exact active identity; remote active drain closes admission

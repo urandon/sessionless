@@ -856,7 +856,7 @@ func validateConfig(config Config) error {
 	if domain.ValidateOpaqueID("attached_worker.local_profile.name", profile.Name) != nil ||
 		profile.CapabilityDigest.Validate() != nil || profile.ExecutableDigest == (attachedworkerdaemon.ExecutableDigest{}) ||
 		!filepath.IsAbs(profile.Executable) || filepath.Clean(profile.Executable) != profile.Executable || len(profile.Executable) > maxPathBytes ||
-		len(profile.Arguments) == 0 || len(profile.Arguments) > maxProfileArguments ||
+		len(profile.Arguments) > maxProfileArguments ||
 		len(profile.Environment) > maxProfileVariables || !filepath.IsAbs(config.MaterializationRoot) ||
 		filepath.Clean(config.MaterializationRoot) != config.MaterializationRoot || config.MaxInputBytes <= 0 ||
 		config.MaxInputBytes > attachedworkerprotocol.MaxBatchBytes*64 || config.MaterializationTimeout <= 0 ||

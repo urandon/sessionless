@@ -47,7 +47,13 @@ func TestSyntheticPinnedReconnectFencesPersistedNonIdleHeads(t *testing.T) {
 			if err != nil {
 				t.Fatalf("construct authenticated checkpoint session: %v", err)
 			}
-			t.Cleanup(func() { _ = session.Close(context.Background()) })
+			t.Cleanup(func() {
+				cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := session.Close(cleanupCtx); err != nil {
+					t.Errorf("close checkpoint session: %v", err)
+				}
+			})
 			response, err := session.ExchangeAction(context.Background(), attachedworkersession.ActionV1{
 				Heartbeat: &attachedworkerprotocol.HeartbeatV1{ObservedAtUnixMicro: joinedTestTime.UnixMicro(), Available: true},
 			})
@@ -126,7 +132,11 @@ func TestSyntheticPinnedReconnectFencesPersistedNonIdleHeads(t *testing.T) {
 			if err != nil {
 				t.Fatalf("fenced reconnect leaked runtime lease: %v", err)
 			}
-			defer func() { _ = finalLease.Close() }()
+			defer func() {
+				if err := finalLease.Close(); err != nil {
+					t.Errorf("close fenced proof lease: %v", err)
+				}
+			}()
 			finalLocal, err := finalLease.LoadSnapshot(context.Background())
 			if err != nil || finalLocal.Manifest.ConnectionGeneration != 2 {
 				t.Fatalf("fenced local generation=%d error=%v, want 2", finalLocal.Manifest.ConnectionGeneration, err)

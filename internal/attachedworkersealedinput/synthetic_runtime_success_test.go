@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http/httptest"
@@ -41,6 +42,7 @@ type joinedSuccessFixture struct {
 	blobs               *blobFixture
 	commandLog          string
 	materializationRoot string
+	stateRoot           string
 }
 
 // The digest-pinned OCI test executable emulates strict inspect, consumes
@@ -94,7 +96,15 @@ case "$1:$2" in
         attempt_root=${workdir%/work}
         printf '{"Id":"%s","Name":"/%s","State":{"Status":"created"},"Config":{"Image":"@IMAGE@","User":"1000:1000","WorkingDir":"%s","StopSignal":"SIGTERM","StopTimeout":10,"Entrypoint":["%s"],"Cmd":[],"Env":["HOME=%s/home","TMPDIR=%s/tmp","XDG_CONFIG_HOME=%s/xdg/config","XDG_CACHE_HOME=%s/xdg/cache","XDG_DATA_HOME=%s/xdg/data","PATH=","LANG=C.UTF-8","LC_ALL=C.UTF-8","NO_COLOR=1"],"Healthcheck":{"Test":["NONE"]},"Labels":{"dev.sessionless.attached-worker.profile":"sessionless.oci.docker.v1","dev.sessionless.attached-worker.installation":"install-joined","dev.sessionless.attached-worker.engine":"engine-001-abcdef"}},"HostConfig":{"NetworkMode":"none","ReadonlyRootfs":true,"IpcMode":"private","CgroupnsMode":"private","CapDrop":["ALL"],"SecurityOpt":["no-new-privileges:true"],"PidsLimit":64,"Memory":67108864,"MemorySwap":67108864,"ShmSize":1048576,"Tmpfs":{"%s":"%s"},"Ulimits":[{"Name":"fsize","Soft":1024,"Hard":1024}],"Init":true,"LogConfig":{"Type":"none"},"RestartPolicy":{"Name":"no"}},"Mounts":[{"Type":"bind","Source":"%s","Destination":"%s","RW":false}]}\n' 'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd' "$name" "$workdir" "$entrypoint" "$attempt_root" "$attempt_root" "$attempt_root" "$attempt_root" "$attempt_root" "$tmpfs_path" "$tmpfs_opts" "$mount_src" "$mount_src";;
     esac;;
-  container:start) while IFS= read -r line; do :; done; exit 0;;
+	  container:start)
+	    attempts=0
+	    while [ ! -f '@ROOT@/active-heartbeat-committed' ]; do
+	      attempts=$((attempts + 1))
+	      [ "$attempts" -lt 500 ] || exit 98
+	      sleep 0.01
+	    done
+	    while IFS= read -r line; do :; done
+	    exit 0;;
   container:rm) exit 0;;
   *) exit 97;;
 esac
@@ -135,7 +145,8 @@ esac
 		WorkerID: manifest.WorkerID, EnrollmentGeneration: 1, IdentityPrivateKey: append([]byte(nil), private...),
 	}
 	clock := &joinedClock{value: joinedTestTime}
-	store, err := attachedworkerlocal.NewStore(filepath.Join(root, "state"), clock.Now)
+	stateRoot := filepath.Join(root, "state")
+	store, err := attachedworkerlocal.NewStore(stateRoot, clock.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +227,7 @@ esac
 	return joinedSuccessFixture{config: config, manifest: manifest, store: store, clock: clock,
 		public: public, binding: binding, exchange: exchange, factory: factory,
 		authorizer: authorizer, jobs: jobs, blobs: blobs, commandLog: commandLog,
-		materializationRoot: materializationRoot}
+		materializationRoot: materializationRoot, stateRoot: stateRoot}
 }
 
 // This is a protocol and ownership test, not a real Docker integration test.
@@ -275,6 +286,37 @@ func TestSyntheticPinnedRuntimeCommitsAcceptedAttemptAndLocalDrain(t *testing.T)
 	t.Cleanup(cancelRun)
 	done := make(chan error, 1)
 	go func() { done <- owner.Run(runCtx) }()
+	// The active-control watcher sends an immediate unavailable heartbeat.
+	// Let the pinned process exit only after that heartbeat's checkpoint is
+	// durable. Otherwise process completion may cancel an in-flight exchange
+	// after its network effect but before its local commit, legitimately fencing
+	// the session instead of producing the successful-path terminal.
+	checkpointFile := filepath.Join(fixture.stateRoot, attachedworkerlocal.ReconnectCheckpointFileName)
+	checkpointDeadline := time.NewTimer(5 * time.Second)
+	defer checkpointDeadline.Stop()
+	checkpointPoll := time.NewTicker(10 * time.Millisecond)
+	defer checkpointPoll.Stop()
+	for {
+		encoded, readErr := os.ReadFile(checkpointFile)
+		var activeCheckpoint attachedworkerlocal.ReconnectCheckpointV1
+		if readErr == nil && json.Unmarshal(encoded, &activeCheckpoint) == nil &&
+			activeCheckpoint.ConnectionGeneration == 2 &&
+			activeCheckpoint.MachineSnapshot.Attempt.Summary.State == attachedworkerprotocol.AttemptClaimed &&
+			activeCheckpoint.MachineSnapshot.Worker.Sequence >= 6 {
+			break
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("runtime stopped before active heartbeat checkpoint: %v; read error=%v; checkpoint=%+v", err, readErr, activeCheckpoint)
+		case <-checkpointDeadline.C:
+			cancelRun()
+			t.Fatalf("active heartbeat checkpoint not durable: read error=%v; checkpoint=%+v", readErr, activeCheckpoint)
+		case <-checkpointPoll.C:
+		}
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(fixture.stateRoot), "active-heartbeat-committed"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	select {
 	case terminal := <-exchange.terminalSeen:
 		if terminal.Status != attachedworkerprotocol.TerminalSucceeded || terminal.Result != attachedworkerprotocol.TerminalResultCompleted {
@@ -423,14 +465,34 @@ func TestSyntheticPinnedRuntimeCommitsAcceptedAttemptAndLocalDrain(t *testing.T)
 	}
 	// The local head is now generation 3/idle. A server still claiming the
 	// generation 2 terminal head cannot authorize generation 4 or a process.
+	checkpointPath := filepath.Join(fixture.stateRoot, attachedworkerlocal.ReconnectCheckpointFileName)
+	checkpointBeforeStale, err := os.ReadFile(checkpointPath)
+	if err != nil || len(checkpointBeforeStale) == 0 {
+		t.Fatalf("missing prior terminal-to-idle checkpoint before stale-server test: bytes=%d error=%v", len(checkpointBeforeStale), err)
+	}
 	config.Bootstrap = newJoinedReconnectBootstrap(clock.Now(), manifest, checkpoint, public)
 	config.Session.Random = bytes.NewReader(append(bytes.Repeat([]byte{0x71}, 32), bytes.Repeat([]byte{0x72}, 32)...))
 	config.Poll.Random = bytes.NewReader(bytes.Repeat([]byte{0x73}, 8))
-	if stale, err := ReconnectSyntheticPinnedRuntime(context.Background(), config); stale != nil || err == nil {
+	if stale, err := ReconnectSyntheticPinnedRuntime(context.Background(), config); stale != nil ||
+		!errors.Is(err, attachedworkersession.ErrReconciliationRequired) {
 		if stale != nil {
 			_ = stale.Close(context.Background())
 		}
-		t.Fatalf("stale server head reopened runtime: owner=%v error=%v", stale, err)
+		t.Fatalf("stale server head was not fenced by reconciliation: owner=%v error=%v", stale, err)
+	}
+	staleSnapshot, err := store.LoadSnapshot(context.Background())
+	if err != nil || staleSnapshot.Manifest.ConnectionGeneration != 4 {
+		t.Fatalf("fenced stale reconnect local generation=%d error=%v, want 4", staleSnapshot.Manifest.ConnectionGeneration, err)
+	}
+	if _, err := os.Stat(checkpointPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale server head left reusable reconnect checkpoint: stat error=%v", err)
+	}
+	staleLease, err := store.AcquireRuntime(context.Background())
+	if err != nil {
+		t.Fatalf("stale server head leaked runtime lease: %v", err)
+	}
+	if err := staleLease.Close(); err != nil {
+		t.Fatal(err)
 	}
 	commandsAfterStaleHead, err := os.ReadFile(commandLog)
 	if err != nil {

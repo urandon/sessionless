@@ -220,12 +220,14 @@ durable checkpoint, temporary-material removal, and resource release. The
 successful path first restarts from a durable idle checkpoint, then restarts
 from the exact committed terminal head and runs an idle poll without replaying
 the process. A separate joined table generates real durable claimed, draining,
-and ambiguous-claim heads through authenticated protocol actions, then proves
+and unknown-claim-response heads through authenticated protocol actions, then proves
 that pinned reconnect never polls, materializes input, or starts a process
-from those non-idle heads. The component tests additionally cover neighboring
-offered/cancel/pending variants, exact cancellation and drain ordering, and
-cleanup failure. The OCI test double is not a real container engine or provider
-turn.
+from those non-idle heads. The unknown response does not assert that the server
+accepted the claim. A stale server head advances the attempted local generation
+but retires its reusable checkpoint, keeping that generation fenced. The
+component tests also cover neighboring offered/cancel/pending variants, exact
+cancellation and drain ordering, and cleanup failure. The OCI test double is not a real
+container engine or provider turn.
 
 The adapter and feature-disabled runtime are under
 `internal/attachedworkerdaemontransport`. The session exposes a semantic

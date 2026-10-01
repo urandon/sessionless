@@ -67,7 +67,7 @@ func (runner *blockingRunner) Run(ctx context.Context, invocation Invocation) (I
 	runner.mu.Lock()
 	runner.active--
 	runner.mu.Unlock()
-	return InvocationResult{Process: AttemptResult{Cancelled: ctx.Err() != nil, DescendantsReaped: true, CleanupSucceeded: true}}, nil
+	return InvocationResult{Process: AttemptResult{Cancelled: ctx.Err() != nil, DescendantsReaped: true, BoundaryReleased: true, CleanupSucceeded: true}}, nil
 }
 
 type recordingSink struct {
@@ -117,13 +117,130 @@ func TestDaemonDrainLetsActiveAttemptFinishAndStopsAdmission(t *testing.T) {
 		t.Fatalf("run: %v", err)
 	}
 	status = daemon.Status()
-	if status.State != DaemonStopped || status.Completed != 1 || status.Active {
+	if status.State != DaemonStopped || status.Accepted != 1 || status.Completed != 1 || status.Committed != 1 || status.Failed != 0 || status.Active {
 		t.Fatalf("unexpected stopped status: %+v", status)
 	}
 	runner.mu.Lock()
 	defer runner.mu.Unlock()
 	if runner.peak != 1 {
 		t.Fatalf("daemon exceeded concurrency one: %d", runner.peak)
+	}
+}
+
+type failingObservationRunner struct{ err error }
+
+func (runner failingObservationRunner) Run(context.Context, Invocation) (InvocationResult, error) {
+	return InvocationResult{FailureCode: "synthetic_failed"}, runner.err
+}
+
+func TestDaemonStatusCountsFailedAttemptWithoutInventingSuccess(t *testing.T) {
+	source := &channelSource{invocations: make(chan Invocation, 1), calls: make(chan struct{}, 1)}
+	sink := &recordingSink{done: make(chan struct{}, 1)}
+	runFailure := errors.New("synthetic runner failure")
+	daemon, err := NewDaemon(DaemonConfig{}, source, failingObservationRunner{err: runFailure}, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.invocations <- validDaemonInvocation("attempt-failed-observation")
+	runCtx, cancelRun := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelRun()
+	if err := daemon.Run(runCtx); !errors.Is(err, runFailure) {
+		t.Fatalf("run failure=%v", err)
+	}
+	status := daemon.Status()
+	if status.State != DaemonStopped || status.Accepted != 1 || status.Completed != 1 || status.Committed != 0 ||
+		status.Failed != 1 || status.LastFailureCode != "synthetic_failed" {
+		t.Fatalf("failed status=%+v", status)
+	}
+	select {
+	case update := <-daemon.Updates():
+		if update != status {
+			t.Fatalf("latest coalesced update=%+v want=%+v", update, status)
+		}
+	default:
+		t.Fatal("stopped status update is missing")
+	}
+}
+
+type processObservationRunner struct{ result InvocationResult }
+
+func (runner processObservationRunner) Run(context.Context, Invocation) (InvocationResult, error) {
+	return runner.result, nil
+}
+
+type failingTerminalSink struct{ err error }
+
+func (sink failingTerminalSink) Complete(context.Context, InvocationIdentity, InvocationResult, error) error {
+	return sink.err
+}
+
+func TestDaemonStatusCountsProcessFailureAsFailedTerminal(t *testing.T) {
+	source := &channelSource{invocations: make(chan Invocation, 1), calls: make(chan struct{}, 1)}
+	result := InvocationResult{Process: AttemptResult{ExitCode: 42, DescendantsReaped: true, BoundaryReleased: true, CleanupSucceeded: true}}
+	sink := &recordingSink{done: make(chan struct{}, 1)}
+	daemon, err := NewDaemon(DaemonConfig{}, source, processObservationRunner{result: result}, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.invocations <- validDaemonInvocation("attempt-process-failed")
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	runDone := make(chan error, 1)
+	runStopped := make(chan struct{})
+	go func() {
+		defer close(runStopped)
+		runDone <- daemon.Run(runCtx)
+	}()
+	t.Cleanup(func() {
+		cancelRun()
+		select {
+		case <-runStopped:
+		case <-time.After(time.Second):
+			t.Error("daemon did not stop during cleanup")
+		}
+	})
+	select {
+	case <-sink.done:
+	case <-time.After(time.Second):
+		t.Fatal("process terminal was not reported")
+	}
+	drainCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := daemon.Drain(drainCtx); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("daemon did not stop after drain")
+	}
+	status := daemon.Status()
+	if status.Accepted != 1 || status.Completed != 1 || status.Committed != 0 || status.Failed != 1 ||
+		status.LastFailureCode != "invocation_process_failed" {
+		t.Fatalf("process failure status=%+v", status)
+	}
+}
+
+func TestDaemonStatusDoesNotCommitUnacknowledgedTerminal(t *testing.T) {
+	source := &channelSource{invocations: make(chan Invocation, 1), calls: make(chan struct{}, 1)}
+	terminalErr := errors.New("ambiguous terminal acknowledgement")
+	result := InvocationResult{Process: AttemptResult{DescendantsReaped: true, BoundaryReleased: true, CleanupSucceeded: true}}
+	daemon, err := NewDaemon(DaemonConfig{}, source, processObservationRunner{result: result}, failingTerminalSink{err: terminalErr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.invocations <- validDaemonInvocation("attempt-terminal-unconfirmed")
+	runCtx, cancelRun := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelRun()
+	if err := daemon.Run(runCtx); !errors.Is(err, terminalErr) {
+		t.Fatalf("terminal error=%v", err)
+	}
+	status := daemon.Status()
+	if status.Accepted != 1 || status.Completed != 1 || status.Committed != 0 || status.Failed != 0 ||
+		status.LastFailureCode != "terminal_unconfirmed" {
+		t.Fatalf("unconfirmed status=%+v", status)
 	}
 }
 

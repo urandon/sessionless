@@ -9,8 +9,132 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemon"
+	"gitcode.com/urandon/sessionless/internal/attachedworkerlocal"
 	"gitcode.com/urandon/sessionless/internal/domain"
 )
+
+func TestForegroundRuntimePublishesAndRetiresContentFreeObservation(t *testing.T) {
+	source := newRuntimeSource()
+	runner := &runtimeRunner{started: make(chan struct{}, 1), release: make(chan struct{})}
+	sink := &runtimeSink{completed: make(chan struct{}, 1)}
+	watcher := &runtimeWatcher{started: make(chan struct{}, 1)}
+	closer := &runtimeObservationCloser{observed: make(chan attachedworkerlocal.RuntimeObservationV1, 8)}
+	runtime, err := newForegroundRuntime(source, sink, watcher, closer, runner, RuntimeConfig{
+		CleanupTimeout: time.Second, ActiveControlInterval: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.invocations <- runtimeInvocation("attempt-observed")
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	runDone := make(chan error, 1)
+	runStopped := make(chan struct{})
+	go func() {
+		defer close(runStopped)
+		runDone <- runtime.Run(runCtx)
+	}()
+	t.Cleanup(func() {
+		cancelRun()
+		select {
+		case <-runStopped:
+		case <-time.After(time.Second):
+			t.Error("runtime did not stop during cleanup")
+		}
+	})
+	waitRuntimeSignal(t, runner.started, "observed runner did not start")
+	var active attachedworkerlocal.RuntimeObservationV1
+	for !active.Active {
+		select {
+		case active = <-closer.observed:
+		case <-time.After(time.Second):
+			t.Fatalf("active runtime was not observed; last=%+v", active)
+		}
+	}
+	if active.State != attachedworkerdaemon.DaemonRunning || active.Accepted != 1 ||
+		active.Completed != 0 || active.Failed != 0 || active.LastFailureCode != "" {
+		t.Fatalf("active content-free observation=%+v", active)
+	}
+	close(runner.release)
+	select {
+	case <-sink.completed:
+	case <-time.After(time.Second):
+		t.Fatal("terminal result was not reported")
+	}
+	if err := runtime.Drain(context.Background()); err != nil {
+		t.Fatalf("drain observed runtime: %v", err)
+	}
+	if err := waitRuntimeResult(t, runDone, "observed runtime did not stop"); err != nil {
+		t.Fatalf("run observed runtime: %v", err)
+	}
+	closer.mu.Lock()
+	defer closer.mu.Unlock()
+	if closer.retires != 1 || closer.closes != 1 || len(closer.values) == 0 ||
+		closer.values[len(closer.values)-1].State != attachedworkerdaemon.DaemonStopped ||
+		closer.values[len(closer.values)-1].Completed != 1 || closer.values[len(closer.values)-1].Failed != 0 {
+		t.Fatalf("observation cleanup retires=%d closes=%d values=%+v", closer.retires, closer.closes, closer.values)
+	}
+}
+
+func TestForegroundRuntimeObservationFailureStopsAndClosesOwner(t *testing.T) {
+	source := newRuntimeSource()
+	runner := &runtimeRunner{started: make(chan struct{}, 1), release: make(chan struct{})}
+	sink := &runtimeSink{completed: make(chan struct{}, 1)}
+	watcher := &runtimeWatcher{started: make(chan struct{}, 1)}
+	observeFailure := errors.New("local observation failed")
+	closer := &runtimeObservationCloser{observeErr: observeFailure}
+	runtime, err := newForegroundRuntime(source, sink, watcher, closer, runner, RuntimeConfig{CleanupTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	runDone := make(chan error, 1)
+	runStopped := make(chan struct{})
+	go func() {
+		defer close(runStopped)
+		runDone <- runtime.Run(runCtx)
+	}()
+	t.Cleanup(func() {
+		cancelRun()
+		select {
+		case <-runStopped:
+		case <-time.After(time.Second):
+			t.Error("runtime did not stop during cleanup")
+		}
+	})
+	err = waitRuntimeResult(t, runDone, "runtime did not stop after observation failure")
+	if !errors.Is(err, ErrReconciliationRequired) || !errors.Is(err, observeFailure) {
+		t.Fatalf("observation failure run error=%v", err)
+	}
+	closer.mu.Lock()
+	defer closer.mu.Unlock()
+	if closer.retires != 1 || closer.closes != 1 || runner.calls != 0 || sink.calls != 0 {
+		t.Fatalf("failure cleanup retires=%d closes=%d runs=%d completions=%d", closer.retires, closer.closes, runner.calls, sink.calls)
+	}
+}
+
+func TestForegroundRuntimeObservationRetirementFailureIsNotSuccess(t *testing.T) {
+	source := newRuntimeSource()
+	source.errs <- ErrDrainRequested
+	runner := &runtimeRunner{started: make(chan struct{}, 1), release: make(chan struct{})}
+	sink := &runtimeSink{completed: make(chan struct{}, 1)}
+	watcher := &runtimeWatcher{started: make(chan struct{}, 1)}
+	retireFailure := errors.New("local retirement failed")
+	closer := &runtimeObservationCloser{retireErr: retireFailure}
+	runtime, err := newForegroundRuntime(source, sink, watcher, closer, runner, RuntimeConfig{CleanupTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runCtx, cancelRun := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelRun()
+	if err := runtime.Run(runCtx); !errors.Is(err, ErrReconciliationRequired) || !errors.Is(err, retireFailure) {
+		t.Fatalf("retirement failure run error=%v", err)
+	}
+	closer.mu.Lock()
+	defer closer.mu.Unlock()
+	if closer.retires != 1 || closer.closes != 1 || runner.calls != 0 {
+		t.Fatalf("retirement cleanup retires=%d closes=%d runs=%d", closer.retires, closer.closes, runner.calls)
+	}
+}
 
 func TestForegroundRuntimeComposesRemoteDrainAfterActiveTerminal(t *testing.T) {
 	source := newRuntimeSource()
@@ -332,6 +456,41 @@ func waitRuntimeResult(t *testing.T, result <-chan error, failure string) error 
 type runtimeCloser struct {
 	calls int
 	err   error
+}
+
+type runtimeObservationCloser struct {
+	mu         sync.Mutex
+	values     []attachedworkerlocal.RuntimeObservationV1
+	observed   chan attachedworkerlocal.RuntimeObservationV1
+	observeErr error
+	retireErr  error
+	retires    int
+	closes     int
+}
+
+func (closer *runtimeObservationCloser) ObserveRuntime(_ context.Context, value attachedworkerlocal.RuntimeObservationV1) error {
+	closer.mu.Lock()
+	closer.values = append(closer.values, value)
+	err := closer.observeErr
+	closer.mu.Unlock()
+	if closer.observed != nil {
+		closer.observed <- value
+	}
+	return err
+}
+
+func (closer *runtimeObservationCloser) RetireRuntimeObservation(context.Context) error {
+	closer.mu.Lock()
+	defer closer.mu.Unlock()
+	closer.retires++
+	return closer.retireErr
+}
+
+func (closer *runtimeObservationCloser) Close(context.Context) error {
+	closer.mu.Lock()
+	defer closer.mu.Unlock()
+	closer.closes++
+	return nil
 }
 
 func (closer *runtimeCloser) Close(context.Context) error {

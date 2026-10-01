@@ -117,8 +117,10 @@ provider credential, environment, process arguments, stdout, or stderr.
   configured Docker and harness executables; it does not execute either one.
 - `doctor` additionally validates the supported host/boundary pairing, pinned
   Docker and harness executable digests, and empty private Docker CLI
-  directory. Engine, external-release, daemon, and server observations remain
-  `unknown` because this slice makes no live call.
+  directory. Engine, external-release, and server observations remain
+  `unknown`. The daemon is `observed_local` only if its lease owner left a
+  valid content-free observation; this is historical evidence, not a live
+  process probe.
 - `status` exposes local lifecycle and generations plus an exact content-free
   daemon state when a valid local observation exists. Server observation stays
   `unknown`; a local `running` value is not server acceptance or health.

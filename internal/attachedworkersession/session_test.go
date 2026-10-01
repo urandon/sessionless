@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemon"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerhttp"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerlocal"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerprotocol"
@@ -214,6 +215,59 @@ func TestConnectRuntimePreflightRetainsOneOwnerThroughSession(t *testing.T) {
 	}
 	if err := lease.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSessionRuntimeObservationUsesOwnedLeaseAndRetiresBeforeClose(t *testing.T) {
+	fixture := newSessionFixture(t)
+	session := mustReadySession(t, fixture)
+	ctx := context.Background()
+	if err := session.ObserveRuntime(ctx, attachedworkerlocal.RuntimeObservationV1{
+		State: attachedworkerdaemon.DaemonRunning, Active: true, Accepted: 1,
+	}); err != nil {
+		t.Fatalf("observe active runtime: %v", err)
+	}
+	status, err := fixture.store.Status(ctx)
+	if err != nil || status.DaemonObservation != "observed_local" ||
+		status.DaemonState != "running" || !status.DaemonActive || status.ObservationRevision != 1 {
+		t.Fatalf("active observation status=%+v err=%v", status, err)
+	}
+	doctor, err := fixture.store.Doctor(ctx)
+	if err != nil || doctor.DaemonObservation != "observed_local" || doctor.ServerConnectionState != "unknown" {
+		t.Fatalf("active observation doctor=%+v err=%v", doctor, err)
+	}
+	if lease, leaseErr := fixture.store.AcquireRuntime(ctx); lease != nil || !errors.Is(leaseErr, attachedworkerlocal.ErrStateBusy) {
+		if lease != nil {
+			_ = lease.Close()
+		}
+		t.Fatalf("observation created second owner lease=%v err=%v", lease, leaseErr)
+	}
+	if err := session.ObserveRuntime(ctx, attachedworkerlocal.RuntimeObservationV1{
+		State: attachedworkerdaemon.DaemonDraining, Accepted: 1, Completed: 1,
+	}); err != nil {
+		t.Fatalf("observe drained runtime: %v", err)
+	}
+	status, err = fixture.store.Status(ctx)
+	if err != nil || status.DaemonState != "draining" || status.DaemonActive ||
+		status.ObservationRevision != 2 || status.ObservedAt == nil {
+		t.Fatalf("drained observation status=%+v err=%v", status, err)
+	}
+	if err := session.RetireRuntimeObservation(ctx); err != nil {
+		t.Fatalf("retire runtime observation: %v", err)
+	}
+	status, err = fixture.store.Status(ctx)
+	if err != nil || status.DaemonObservation != "unknown" || status.ObservationRevision != 0 {
+		t.Fatalf("retired status=%+v err=%v", status, err)
+	}
+	doctor, err = fixture.store.Doctor(ctx)
+	if err != nil || doctor.DaemonObservation != "unknown" {
+		t.Fatalf("retired doctor=%+v err=%v", doctor, err)
+	}
+	if err := session.Close(ctx); err != nil {
+		t.Fatalf("close session: %v", err)
+	}
+	if err := session.ObserveRuntime(ctx, attachedworkerlocal.RuntimeObservationV1{State: attachedworkerdaemon.DaemonStopped}); !errors.Is(err, ErrSessionClosed) {
+		t.Fatalf("observe after close error=%v", err)
 	}
 }
 

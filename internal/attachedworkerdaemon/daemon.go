@@ -46,7 +46,10 @@ type Status struct {
 	Active          bool
 	ActiveAttempt   InvocationIdentity
 	StartedAt       time.Time
+	Accepted        uint64
 	Completed       uint64
+	Committed       uint64
+	Failed          uint64
 	LastFailureCode string
 }
 
@@ -67,8 +70,12 @@ type Daemon struct {
 	done                  chan struct{}
 	wake                  chan struct{}
 	startedAt             time.Time
+	accepted              uint64
 	completed             uint64
+	committed             uint64
+	failed                uint64
 	lastFailure           string
+	updates               chan Status
 }
 
 func NewDaemon(config DaemonConfig, source Source, runner Runner, sink ResultSink) (*Daemon, error) {
@@ -87,7 +94,7 @@ func NewDaemon(config DaemonConfig, source Source, runner Runner, sink ResultSin
 	if config.ShutdownGrace > 2*time.Minute || config.ReportGrace > time.Minute {
 		return nil, ErrInvocationInvalid
 	}
-	return &Daemon{config: config, source: source, runner: runner, sink: sink, state: DaemonStopped}, nil
+	return &Daemon{config: config, source: source, runner: runner, sink: sink, state: DaemonStopped, updates: make(chan Status, 1)}, nil
 }
 
 func (daemon *Daemon) Run(parent context.Context) error {
@@ -133,7 +140,7 @@ func (daemon *Daemon) Run(parent context.Context) error {
 		reportCtx, reportCancel := context.WithTimeout(context.WithoutCancel(parent), daemon.config.ReportGrace)
 		reportErr := daemon.sink.Complete(reportCtx, invocation.Identity, result, runErr)
 		reportCancel()
-		daemon.finishAttempt(result, runErr)
+		daemon.finishAttempt(result, runErr, reportErr)
 		if reportErr != nil {
 			return reportErr
 		}
@@ -183,9 +190,35 @@ func (daemon *Daemon) Shutdown(ctx context.Context) error {
 func (daemon *Daemon) Status() Status {
 	daemon.mu.Lock()
 	defer daemon.mu.Unlock()
+	return daemon.statusLocked()
+}
+
+// Updates coalesces content-free state changes for the sole foreground owner.
+// A slow observer never blocks admission, cancellation, or terminal reporting;
+// it must read Status again before treating any update as current evidence.
+func (daemon *Daemon) Updates() <-chan Status { return daemon.updates }
+
+func (daemon *Daemon) statusLocked() Status {
 	return Status{
 		State: daemon.state, Active: daemon.active, ActiveAttempt: daemon.activeID,
-		StartedAt: daemon.startedAt, Completed: daemon.completed, LastFailureCode: daemon.lastFailure,
+		StartedAt: daemon.startedAt, Accepted: daemon.accepted, Completed: daemon.completed, Committed: daemon.committed,
+		Failed: daemon.failed, LastFailureCode: daemon.lastFailure,
+	}
+}
+
+func (daemon *Daemon) publishLocked() {
+	status := daemon.statusLocked()
+	select {
+	case daemon.updates <- status:
+	default:
+		select {
+		case <-daemon.updates:
+		default:
+		}
+		select {
+		case daemon.updates <- status:
+		default:
+		}
 	}
 }
 
@@ -199,6 +232,7 @@ func (daemon *Daemon) beginRun() bool {
 	daemon.done = make(chan struct{})
 	daemon.wake = make(chan struct{}, 1)
 	daemon.startedAt = time.Now().UTC()
+	daemon.publishLocked()
 	return true
 }
 
@@ -214,6 +248,7 @@ func (daemon *Daemon) finishRun() {
 	done := daemon.done
 	daemon.done = nil
 	daemon.wake = nil
+	daemon.publishLocked()
 	daemon.mu.Unlock()
 	if done != nil {
 		close(done)
@@ -245,6 +280,8 @@ func (daemon *Daemon) beginAttempt(identity InvocationIdentity) bool {
 	daemon.active = true
 	daemon.activeID = identity
 	daemon.activeCancelIssued = false
+	daemon.accepted++
+	daemon.publishLocked()
 	return true
 }
 
@@ -296,7 +333,7 @@ func (daemon *Daemon) CancelActive(ctx context.Context, identity InvocationIdent
 	return nil
 }
 
-func (daemon *Daemon) finishAttempt(result InvocationResult, runErr error) {
+func (daemon *Daemon) finishAttempt(result InvocationResult, runErr, reportErr error) {
 	daemon.mu.Lock()
 	defer daemon.mu.Unlock()
 	daemon.active = false
@@ -304,10 +341,22 @@ func (daemon *Daemon) finishAttempt(result InvocationResult, runErr error) {
 	daemon.activeCancel = nil
 	daemon.activeCancelIssued = false
 	daemon.completed++
-	daemon.lastFailure = result.FailureCode
-	if daemon.lastFailure == "" && runErr != nil {
-		daemon.lastFailure = "invocation_runner_failed"
+	if reportErr == nil {
+		if result.Succeeded(runErr) {
+			daemon.committed++
+		} else {
+			daemon.failed++
+		}
 	}
+	daemon.lastFailure = result.FailureCode
+	if reportErr != nil {
+		daemon.lastFailure = "terminal_unconfirmed"
+	} else if daemon.lastFailure == "" && runErr != nil {
+		daemon.lastFailure = "invocation_runner_failed"
+	} else if daemon.lastFailure == "" && !result.Succeeded(runErr) {
+		daemon.lastFailure = "invocation_process_failed"
+	}
+	daemon.publishLocked()
 }
 
 func (daemon *Daemon) startDrain(cancelActive bool) bool {
@@ -334,6 +383,7 @@ func (daemon *Daemon) startDrain(cancelActive bool) bool {
 		default:
 		}
 	}
+	daemon.publishLocked()
 	daemon.mu.Unlock()
 	if activeCancel != nil {
 		activeCancel()

@@ -46,6 +46,11 @@ type sessionCloser interface {
 	Close(context.Context) error
 }
 
+type runtimeObservationPort interface {
+	ObserveRuntime(context.Context, attachedworkerlocal.RuntimeObservationV1) error
+	RetireRuntimeObservation(context.Context) error
+}
+
 type wakeSource interface {
 	attachedworkerdaemon.Source
 	Wake() error
@@ -77,10 +82,11 @@ func (port concreteInitialConnectPort) Connect(ctx context.Context, input attach
 // It remains feature-disabled because no product constructor or command path
 // can create it.
 type ForegroundRuntime struct {
-	daemon  *attachedworkerdaemon.Daemon
-	source  wakeSource
-	closer  sessionCloser
-	cleanup time.Duration
+	daemon   *attachedworkerdaemon.Daemon
+	source   wakeSource
+	closer   sessionCloser
+	observer runtimeObservationPort
+	cleanup  time.Duration
 
 	mu   sync.Mutex
 	used bool
@@ -462,7 +468,14 @@ func newForegroundRuntime(
 		return nil, err
 	}
 	proxy.bind(daemon)
-	return &ForegroundRuntime{daemon: daemon, source: wakeable, closer: closer, cleanup: config.CleanupTimeout}, nil
+	observer, _ := closer.(runtimeObservationPort)
+	if cadence, ok := closer.(*IdleRecoveredCadence); ok && cadence != nil {
+		observer = nil
+		if session, ok := cadence.session.(*attachedworkersession.Session); ok && session != nil {
+			observer = session
+		}
+	}
+	return &ForegroundRuntime{daemon: daemon, source: wakeable, closer: closer, observer: observer, cleanup: config.CleanupTimeout}, nil
 }
 
 func preparedRuntimeConfig(config RuntimeConfig) RuntimeConfig {
@@ -518,7 +531,19 @@ func (runtime *ForegroundRuntime) Run(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			runErr = err
 		} else {
-			runErr = runtime.daemon.Run(ctx)
+			if runtime.observer == nil {
+				runErr = runtime.daemon.Run(ctx)
+			} else {
+				runErr = runtime.runObserved(ctx)
+			}
+		}
+	}
+	if runtime.observer != nil {
+		retireCtx, retireCancel := context.WithTimeout(cleanupParent, runtime.cleanup)
+		retireErr := runtime.observer.RetireRuntimeObservation(retireCtx)
+		retireCancel()
+		if retireErr != nil {
+			runErr = errors.Join(runErr, ErrReconciliationRequired, retireErr)
 		}
 	}
 	closeCtx, cancel := context.WithTimeout(cleanupParent, runtime.cleanup)
@@ -528,6 +553,50 @@ func (runtime *ForegroundRuntime) Run(ctx context.Context) error {
 		return errors.Join(runErr, ErrReconciliationRequired, closeErr)
 	}
 	return runErr
+}
+
+func (runtime *ForegroundRuntime) runObserved(ctx context.Context) error {
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+	stopObserve := make(chan struct{})
+	observed := make(chan error, 1)
+	go func() {
+		for {
+			select {
+			case <-stopObserve:
+				observed <- runtime.observeStatus(context.WithoutCancel(ctx))
+				return
+			case <-runtime.daemon.Updates():
+				if err := runtime.observeStatus(context.WithoutCancel(ctx)); err != nil {
+					cancelRun()
+					observed <- err
+					return
+				}
+			}
+		}
+	}()
+	runErr := runtime.daemon.Run(runCtx)
+	close(stopObserve)
+	if observeErr := <-observed; observeErr != nil {
+		return errors.Join(runErr, ErrReconciliationRequired, observeErr)
+	}
+	return runErr
+}
+
+func (runtime *ForegroundRuntime) observeStatus(parent context.Context) error {
+	status := runtime.daemon.Status()
+	if status.Completed > status.Accepted || status.Committed > status.Completed ||
+		status.Failed > status.Completed-status.Committed {
+		return ErrReconciliationRequired
+	}
+	observation := attachedworkerlocal.RuntimeObservationV1{
+		State: status.State, Active: status.Active, Accepted: status.Accepted,
+		Completed: status.Committed, Failed: status.Failed,
+		LastFailureCode: status.LastFailureCode,
+	}
+	observeCtx, cancel := context.WithTimeout(parent, runtime.cleanup)
+	defer cancel()
+	return runtime.observer.ObserveRuntime(observeCtx, observation)
 }
 
 func (runtime *ForegroundRuntime) Drain(ctx context.Context) error {

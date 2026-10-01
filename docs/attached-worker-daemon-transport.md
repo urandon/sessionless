@@ -178,11 +178,11 @@ cannot select executable, argv, or environment. The source transfers ownership
 of returned byte buffers so they can be cleared after encoding. A rejected or
 expired attempt fails without a source call.
 
-This is a credential-free, in-memory fixture boundary, not a production input
-API or a Codex prompt format. Context windows, workspace/skill bundles,
-invocation credentials, large-file staging, and a concrete authenticated
-remote source remain fail-closed and require separate reviewed composition.
-No shipped command constructs this materializer or starts the daemon.
+This is a credential-free synthetic boundary, not a production input API or a
+Codex prompt format. Context windows, workspace/skill bundles, invocation
+credentials, and large-file staging remain fail-closed and require separate
+reviewed composition. No shipped command constructs this materializer or starts
+the daemon.
 
 The server now has a read-only sealed-input authorization gate for that later
 composition. It derives the presented secret digest from the connection bearer
@@ -191,8 +191,12 @@ transaction at server time, including exact generation, lease/fence/expiry,
 three input digests, and optional attempt revision. A content fetch must call
 this gate before reading blobs and repeat it with the returned revision after
 the read; any changed head discards all fetched bytes. This gate returns no
-job, manifest, or blob bytes. There is still no sealed-input HTTP route or
-local source, so it cannot be mistaken for production materialization.
+job, manifest, or blob bytes. The optional `attachedworkersealedinput` route
+uses it before tenant-scoped immutable blob reads and again with the observed
+attempt revision after those reads. Its HTTPS-only local client source refuses
+redirects and caps request, response, and content sizes. The route is
+injectable into `controlapi.Options`, but is **not** wired into the shipped
+control API; the feature remains default-off.
 
 The adapter and feature-disabled runtime are under
 `internal/attachedworkerdaemontransport`. The session exposes a semantic
@@ -200,8 +204,7 @@ The adapter and feature-disabled runtime are under
 connection sequence, or acknowledgement values. Both contracts remain
 unreachable from `attachedworkerforeground.New`.
 
-A later slice must provide the concrete authenticated context/artifact
-materializer, durable restart/reconnect reconciliation for ambiguous active
-cancellation, product activation and local control, packaging, and production
-sleep/wake and offline evidence. The two-owner security and recovery proof in
-#79 remains a release gate.
+A later slice must complete durable restart/reconnect reconciliation for
+ambiguous active cancellation, product activation and local control,
+packaging, and production sleep/wake and offline evidence. The two-owner
+security and recovery proof in #79 remains a release gate.

@@ -222,6 +222,13 @@ func boundedSealedMetadata(value reflect.Value, budget int) bool {
 	return visit(value, 0)
 }
 
+// BoundedSealedInputMetadataV1 allows a source to reject malformed durable
+// metadata before the context digest copies or sorts any collections.
+func BoundedSealedInputMetadataV1(job domain.WorkerJob, manifest domain.ArtifactManifest, maxBytes int) bool {
+	return boundedSealedMetadata(reflect.ValueOf(job), maxBytes) &&
+		boundedSealedMetadata(reflect.ValueOf(manifest), maxBytes)
+}
+
 func blobMatches(ref domain.BlobRef, body []byte, maxBytes int) bool {
 	if ref.Validate() != nil || ref.Size > int64(maxBytes) ||
 		len(body) != int(ref.Size) {

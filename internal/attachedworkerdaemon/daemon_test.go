@@ -142,7 +142,9 @@ func TestDaemonStatusCountsFailedAttemptWithoutInventingSuccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	source.invocations <- validDaemonInvocation("attempt-failed-observation")
-	if err := daemon.Run(context.Background()); !errors.Is(err, runFailure) {
+	runCtx, cancelRun := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelRun()
+	if err := daemon.Run(runCtx); !errors.Is(err, runFailure) {
 		t.Fatalf("run failure=%v", err)
 	}
 	status := daemon.Status()
@@ -230,7 +232,9 @@ func TestDaemonStatusDoesNotCommitUnacknowledgedTerminal(t *testing.T) {
 		t.Fatal(err)
 	}
 	source.invocations <- validDaemonInvocation("attempt-terminal-unconfirmed")
-	if err := daemon.Run(context.Background()); !errors.Is(err, terminalErr) {
+	runCtx, cancelRun := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelRun()
+	if err := daemon.Run(runCtx); !errors.Is(err, terminalErr) {
 		t.Fatalf("terminal error=%v", err)
 	}
 	status := daemon.Status()

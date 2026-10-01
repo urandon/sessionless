@@ -124,7 +124,9 @@ func TestForegroundRuntimeObservationRetirementFailureIsNotSuccess(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := runtime.Run(context.Background()); !errors.Is(err, ErrReconciliationRequired) || !errors.Is(err, retireFailure) {
+	runCtx, cancelRun := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelRun()
+	if err := runtime.Run(runCtx); !errors.Is(err, ErrReconciliationRequired) || !errors.Is(err, retireFailure) {
 		t.Fatalf("retirement failure run error=%v", err)
 	}
 	closer.mu.Lock()

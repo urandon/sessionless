@@ -130,6 +130,24 @@ caller cancellation.
 
 ## Current boundaries and follow-up
 
+The AW-05f synthetic path now includes `BoundMaterializer`. Its injected
+`SealedInputSource` must authenticate and authorize the exact accepted
+tenant/owner/worker, connection generation/ID, and attempt before returning
+the immutable `WorkerJob`, input manifest, and blob bytes. The materializer
+independently recomputes the server's context digest, matches the selected
+capability and policy digests, verifies every blob's size/SHA-256, applies the
+admitted input/context/artifact limits, and emits one bounded, deterministic
+JSON stdin envelope. It creates no host read root or credential handle and
+cannot select executable, argv, or environment. The source transfers ownership
+of returned byte buffers so they can be cleared after encoding. A rejected or
+expired attempt fails without a source call.
+
+This is a credential-free, in-memory fixture boundary, not a production input
+API or a Codex prompt format. Context windows, workspace/skill bundles,
+invocation credentials, large-file staging, and a concrete authenticated
+remote source remain fail-closed and require separate reviewed composition.
+No shipped command constructs this materializer or starts the daemon.
+
 The adapter and feature-disabled runtime are under
 `internal/attachedworkerdaemontransport`. The session exposes a semantic
 `ExchangeAction` method so callers cannot forge raw frame scope, generations,

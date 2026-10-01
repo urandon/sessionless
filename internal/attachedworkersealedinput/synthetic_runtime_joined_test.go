@@ -427,6 +427,9 @@ func (joinedNoBlobStore) Open(context.Context, domain.TenantID, domain.BlobRef) 
 type joinedExchange struct {
 	binding         attachedworkerprotocol.AttemptBindingV1
 	terminalSeen    chan attachedworkerprotocol.TerminalV1
+	idleHeartbeat   chan struct{}
+	drainOnFirst    bool
+	ambiguousClaim  bool
 	steps           int
 	lastWorkerKind  attachedworkerprotocol.MessageKind
 	lastPlatformErr error
@@ -440,6 +443,16 @@ func (exchange *joinedExchange) Exchange(_ context.Context, batch attachedworker
 	worker := batch.Frames[0]
 	exchange.lastWorkerKind = worker.Kind
 	if worker.Kind == attachedworkerprotocol.MessageManifest {
+		return nil, nil
+	}
+	if exchange.idleHeartbeat != nil {
+		if worker.Kind != attachedworkerprotocol.MessageHeartbeat {
+			return nil, fmt.Errorf("reconciled idle exchange got %s, want heartbeat", worker.Kind)
+		}
+		select {
+		case exchange.idleHeartbeat <- struct{}{}:
+		default:
+		}
 		return nil, nil
 	}
 	// The active-control watcher may send unavailable/one-active heartbeats
@@ -461,11 +474,19 @@ func (exchange *joinedExchange) Exchange(_ context.Context, batch attachedworker
 		if worker.Kind != attachedworkerprotocol.MessageHeartbeat || worker.Sequence != 4 || worker.Ack != 2 {
 			return nil, fmt.Errorf("joined heartbeat envelope kind=%s sequence=%d ack=%d", worker.Kind, worker.Sequence, worker.Ack)
 		}
-		platform.Kind = attachedworkerprotocol.MessageLeaseOffer
-		platform.LeaseOffer = &attachedworkerprotocol.LeaseOfferV1{Binding: exchange.binding, AttemptSequence: 1}
+		if exchange.drainOnFirst {
+			platform.Kind = attachedworkerprotocol.MessageDrain
+			platform.Drain = &attachedworkerprotocol.DrainV1{Revision: 1}
+		} else {
+			platform.Kind = attachedworkerprotocol.MessageLeaseOffer
+			platform.LeaseOffer = &attachedworkerprotocol.LeaseOfferV1{Binding: exchange.binding, AttemptSequence: 1}
+		}
 	case 1:
 		if worker.Kind != attachedworkerprotocol.MessageLeaseClaim || worker.LeaseClaim == nil || worker.Sequence != 5 || worker.Ack != 3 {
 			return nil, fmt.Errorf("joined claim envelope kind=%s sequence=%d ack=%d", worker.Kind, worker.Sequence, worker.Ack)
+		}
+		if exchange.ambiguousClaim {
+			return nil, attachedworkerhttp.NewExchangeError(attachedworkerhttp.ErrorUnavailable, true)
 		}
 		platform.Kind = attachedworkerprotocol.MessageLeaseAccepted
 		platform.LeaseAccepted = &attachedworkerprotocol.LeaseAcceptedV1{Binding: exchange.binding, AttemptSequence: 2}

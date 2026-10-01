@@ -213,16 +213,19 @@ pin verification, and credential-denying stack, but requires the connector's
 durable idle reconciliation before it can poll. Non-idle or ambiguous recovery
 remains fenced; neither constructor is a production activation command.
 
-The joined local tests now cover both an authorization denial before any
-container command and one accepted credential-free synthetic attempt through
-the exported composition, pinned OCI test double, terminal acknowledgement,
-local drain, durable checkpoint, and resource release. The successful path
-first restarts from a durable idle checkpoint, then restarts from the exact
-committed terminal head; server reconciliation returns it to idle without
-replaying the process. The OCI test double is not a real container engine or
-provider turn. Product activation, a real OCI turn, and joined restart tests
-for claimed, draining, and ambiguous checkpoints remain separate evidence
-gates.
+The joined local tests cover both an authorization denial before any container
+command and one accepted credential-free synthetic attempt through the exported
+composition, pinned OCI test double, terminal acknowledgement, local drain,
+durable checkpoint, temporary-material removal, and resource release. The
+successful path first restarts from a durable idle checkpoint, then restarts
+from the exact committed terminal head and runs an idle poll without replaying
+the process. A separate joined table generates real durable claimed, draining,
+and ambiguous-claim heads through authenticated protocol actions, then proves
+that pinned reconnect never polls, materializes input, or starts a process
+from those non-idle heads. The component tests additionally cover neighboring
+offered/cancel/pending variants, exact cancellation and drain ordering, and
+cleanup failure. The OCI test double is not a real container engine or provider
+turn.
 
 The adapter and feature-disabled runtime are under
 `internal/attachedworkerdaemontransport`. The session exposes a semantic
@@ -230,7 +233,6 @@ The adapter and feature-disabled runtime are under
 connection sequence, or acknowledgement values. Both contracts remain
 unreachable from `attachedworkerforeground.New`.
 
-A later slice must complete the joined restart matrix for non-terminal
-checkpoints, product activation and local control, packaging,
+A later slice must complete product activation and local control, packaging,
 and production sleep/wake and offline evidence. The two-owner
 security and recovery proof in #79 remains a release gate.

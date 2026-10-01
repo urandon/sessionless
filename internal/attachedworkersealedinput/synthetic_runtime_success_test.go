@@ -27,10 +27,27 @@ import (
 	"gitcode.com/urandon/sessionless/internal/domain"
 )
 
-// This is a protocol and ownership test, not a real Docker integration test.
-// The digest-pinned OCI test executable emulates the strict inspect contract,
-// consumes the bounded synthetic stdin, and records every process boundary.
-func TestSyntheticPinnedRuntimeCommitsAcceptedAttemptAndLocalDrain(t *testing.T) {
+type joinedSuccessFixture struct {
+	config              SyntheticRuntimeConfig
+	manifest            attachedworkerlocal.ManifestV1
+	store               *attachedworkerlocal.Store
+	clock               *joinedClock
+	public              ed25519.PublicKey
+	binding             attachedworkerprotocol.AttemptBindingV1
+	exchange            *joinedExchange
+	factory             *joinedFactory
+	authorizer          *authorizerFixture
+	jobs                *jobFixture
+	blobs               *blobFixture
+	commandLog          string
+	materializationRoot string
+}
+
+// The digest-pinned OCI test executable emulates strict inspect, consumes
+// bounded synthetic stdin, and records every process boundary. No Docker is
+// required for this protocol and ownership fixture.
+func newJoinedSuccessFixture(t *testing.T) joinedSuccessFixture {
+	t.Helper()
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -196,6 +213,20 @@ esac
 		},
 		Stack: attachedworkerstack.Config{ScratchRoot: scratchRoot},
 	}
+	return joinedSuccessFixture{config: config, manifest: manifest, store: store, clock: clock,
+		public: public, binding: binding, exchange: exchange, factory: factory,
+		authorizer: authorizer, jobs: jobs, blobs: blobs, commandLog: commandLog,
+		materializationRoot: materializationRoot}
+}
+
+// This is a protocol and ownership test, not a real Docker integration test.
+func TestSyntheticPinnedRuntimeCommitsAcceptedAttemptAndLocalDrain(t *testing.T) {
+	fixture := newJoinedSuccessFixture(t)
+	config, manifest, store, clock := fixture.config, fixture.manifest, fixture.store, fixture.clock
+	public, binding := fixture.public, fixture.binding
+	exchange, factory := fixture.exchange, fixture.factory
+	authorizer, jobs, blobs := fixture.authorizer, fixture.jobs, fixture.blobs
+	commandLog, materializationRoot := fixture.commandLog, fixture.materializationRoot
 	owner, err := ConnectSyntheticPinnedRuntime(context.Background(), config)
 	if err != nil {
 		t.Fatalf("connect joined pinned runtime: %v", err)
@@ -286,6 +317,13 @@ esac
 		strings.Count(string(commands), "container rm ") != 1 {
 		t.Errorf("expected exactly one owned OCI attempt, commands=%q", commands)
 	}
+	materialized, err := os.ReadDir(materializationRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(materialized) != 0 {
+		t.Errorf("materialized attempt data was not removed: %v", materialized)
+	}
 	if got := exchange.closed.Load(); got != 1 {
 		t.Errorf("owned exchange close count=%d, want 1", got)
 	}
@@ -313,26 +351,55 @@ esac
 	if err := lease.Close(); err != nil {
 		t.Fatal(err)
 	}
-	// A server-confirmed terminal head may reconnect as idle, but it must never
-	// replay the already committed attempt. The new owner is closed before Run;
-	// no second container may be created or started.
+	// A server-confirmed terminal head may reconnect as idle. Resume its poll
+	// against a server with no new offer: it must not relaunch the locally
+	// committed attempt merely from the durable checkpoint.
 	config.Bootstrap = newJoinedReconnectBootstrap(clock.Now(), manifest, checkpoint, public)
 	config.Session.Random = bytes.NewReader(append(bytes.Repeat([]byte{0x61}, 32), bytes.Repeat([]byte{0x62}, 32)...))
 	config.Poll.Random = bytes.NewReader(bytes.Repeat([]byte{0x63}, 8))
+	restartExchange := &joinedExchange{idleHeartbeat: make(chan struct{}, 1)}
+	config.Exchange = &joinedFactory{exchange: restartExchange}
 	restarted, err := ReconnectSyntheticPinnedRuntime(context.Background(), config)
 	if err != nil || restarted == nil {
 		t.Fatalf("terminal restart owner=%v error=%v, want reconciled idle owner", restarted, err)
 	}
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := restarted.Close(cleanupCtx); err != nil && !errors.Is(err, context.Canceled) {
+			t.Errorf("close terminal-reconnected owner: %v", err)
+		}
+	})
 	if competing, err := store.AcquireRuntime(context.Background()); competing != nil || !errors.Is(err, attachedworkerlocal.ErrStateBusy) {
 		if competing != nil {
 			_ = competing.Close()
 		}
 		t.Errorf("restarted session allowed a second owner: lease=%v error=%v", competing, err)
 	}
-	restartCloseCtx, cancelRestartClose := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancelRestartClose()
-	if err := restarted.Close(restartCloseCtx); err != nil {
-		t.Fatalf("close reconciled owner before Run: %v", err)
+	clock.Set(joinedTestTime.Add(34 * time.Minute))
+	restartRunCtx, cancelRestartRun := context.WithCancel(context.Background())
+	defer cancelRestartRun()
+	restartDone := make(chan error, 1)
+	go func() { restartDone <- restarted.Run(restartRunCtx) }()
+	select {
+	case <-restartExchange.idleHeartbeat:
+	case err := <-restartDone:
+		t.Fatalf("reconciled idle runtime stopped before heartbeat: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("reconciled idle runtime did not poll")
+	}
+	restartDrainCtx, cancelRestartDrain := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelRestartDrain()
+	if err := restarted.Drain(restartDrainCtx); err != nil {
+		t.Fatalf("drain reconciled idle runtime: %v", err)
+	}
+	select {
+	case err := <-restartDone:
+		if err != nil {
+			t.Fatalf("reconciled idle runtime after drain: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("reconciled idle runtime did not stop after drain")
 	}
 	commandsAfterRestart, err := os.ReadFile(commandLog)
 	if err != nil {
@@ -350,6 +417,27 @@ esac
 	if err != nil || restartCheckpoint.ConnectionGeneration != 3 ||
 		restartCheckpoint.MachineSnapshot.Attempt.Summary.State != attachedworkerprotocol.AttemptIdle {
 		t.Errorf("reconciled restart checkpoint=%+v error=%v", restartCheckpoint, err)
+	}
+	if err := restartLease.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// The local head is now generation 3/idle. A server still claiming the
+	// generation 2 terminal head cannot authorize generation 4 or a process.
+	config.Bootstrap = newJoinedReconnectBootstrap(clock.Now(), manifest, checkpoint, public)
+	config.Session.Random = bytes.NewReader(append(bytes.Repeat([]byte{0x71}, 32), bytes.Repeat([]byte{0x72}, 32)...))
+	config.Poll.Random = bytes.NewReader(bytes.Repeat([]byte{0x73}, 8))
+	if stale, err := ReconnectSyntheticPinnedRuntime(context.Background(), config); stale != nil || err == nil {
+		if stale != nil {
+			_ = stale.Close(context.Background())
+		}
+		t.Fatalf("stale server head reopened runtime: owner=%v error=%v", stale, err)
+	}
+	commandsAfterStaleHead, err := os.ReadFile(commandLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(commandsAfterStaleHead), "container create ") != 1 || strings.Count(string(commandsAfterStaleHead), "container start ") != 1 {
+		t.Errorf("stale server head launched process: commands=%q", commandsAfterStaleHead)
 	}
 }
 

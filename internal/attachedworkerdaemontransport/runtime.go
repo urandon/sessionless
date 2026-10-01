@@ -65,7 +65,11 @@ type concreteInitialConnectPort struct {
 }
 
 func (port concreteInitialConnectPort) Connect(ctx context.Context, input attachedworkersession.ConnectInputV1) (connectedSession, error) {
-	return port.connector.Connect(ctx, input)
+	session, err := port.connector.Connect(ctx, input)
+	if session == nil {
+		return nil, err
+	}
+	return session, err
 }
 
 // ForegroundRuntime is the one-owner composition of cadence, fenced dispatch,
@@ -141,6 +145,7 @@ func connectPinnedForegroundRuntime(
 	if ctx == nil || newConnector == nil || newStack == nil || credentials == nil || sessionConfig.RuntimePreflight != nil {
 		return nil, ErrInvalidConfiguration
 	}
+	adapterConfig.Profile = cloneProfile(adapterConfig.Profile)
 	preflight, runner, err := pinnedRuntimePreflight(input.CapabilityManifest, adapterConfig.Profile, stackConfig, credentials, newStack)
 	if err != nil {
 		return nil, err
@@ -166,6 +171,8 @@ func pinnedRuntimePreflight(
 	if credentials == nil || newStack == nil {
 		return nil, nil, ErrInvalidConfiguration
 	}
+	stackConfig.AllowedEnvironmentNames = slices.Clone(stackConfig.AllowedEnvironmentNames)
+	stackConfig.AllowedReadRoots = slices.Clone(stackConfig.AllowedReadRoots)
 	// The selected capability and the local invocation profile must already
 	// agree before acquiring the local lease or constructing a connector.
 	digest, err := attachedworkerprotocol.ManifestDigestV1(capability)
@@ -388,6 +395,7 @@ func reconnectPinnedForegroundRuntime(
 	if _, err := validateRuntimeConfig(config); err != nil {
 		return nil, err
 	}
+	adapterConfig.Profile = cloneProfile(adapterConfig.Profile)
 	preflight, runner, err := pinnedRuntimePreflight(input.CapabilityManifest, adapterConfig.Profile, stackConfig, credentials, newStack)
 	if err != nil {
 		return nil, err

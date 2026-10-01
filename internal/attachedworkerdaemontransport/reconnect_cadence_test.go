@@ -53,6 +53,14 @@ func idleRecoveredFixture(t *testing.T) (*adapterFixture, *fakeRecoveredSession,
 	return fixture, session, &fakeReconnectPort{session: session}
 }
 
+func TestConcreteReconnectPortDoesNotBoxNilSession(t *testing.T) {
+	port := concreteReconnectPort{}
+	session, err := port.Reconnect(context.Background(), attachedworkersession.ReconnectInputV1{})
+	if session != nil || !errors.Is(err, attachedworkersession.ErrInvalidConfiguration) || errors.Is(err, ErrReconciliationRequired) {
+		t.Fatalf("session=%t error=%v, want nil session and original configuration error", session != nil, err)
+	}
+}
+
 func TestReconnectIdleCadenceDisabledBeforeAnyNetwork(t *testing.T) {
 	fixture, session, port := idleRecoveredFixture(t)
 	_, err := reconnectIdleCadence(context.Background(), port, attachedworkersession.ReconnectInputV1{},

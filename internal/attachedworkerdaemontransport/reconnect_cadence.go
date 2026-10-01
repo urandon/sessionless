@@ -27,7 +27,11 @@ type concreteReconnectPort struct {
 }
 
 func (port concreteReconnectPort) Reconnect(ctx context.Context, input attachedworkersession.ReconnectInputV1) (recoveredSession, error) {
-	return port.connector.Reconnect(ctx, input)
+	session, err := port.connector.Reconnect(ctx, input)
+	if session == nil {
+		return nil, err
+	}
+	return session, err
 }
 
 // IdleRecoveredCadence owns a server-reconciled session and one serial daemon

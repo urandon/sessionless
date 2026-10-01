@@ -42,6 +42,14 @@ func (port *pinnedInitialConnectPort) Connect(ctx context.Context, input attache
 
 type unusedInitialCredentials struct{}
 
+func TestConcreteInitialConnectPortDoesNotBoxNilSession(t *testing.T) {
+	port := concreteInitialConnectPort{}
+	session, err := port.Connect(context.Background(), attachedworkersession.ConnectInputV1{})
+	if session != nil || !errors.Is(err, attachedworkersession.ErrInvalidConfiguration) || errors.Is(err, ErrReconciliationRequired) {
+		t.Fatalf("session=%t error=%v, want nil session and original configuration error", session != nil, err)
+	}
+}
+
 func (unusedInitialCredentials) Issue(context.Context, ports.CredentialIssueRequest) (ports.CredentialHandle, error) {
 	return ports.CredentialHandle{}, ErrInvalidConfiguration
 }

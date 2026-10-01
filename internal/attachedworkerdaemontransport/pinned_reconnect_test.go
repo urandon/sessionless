@@ -158,3 +158,45 @@ func TestPinnedReconnectFencesNonIdleRecoveryWithoutProcess(t *testing.T) {
 		})
 	}
 }
+
+func TestPinnedReconnectDeepOwnsProfileAndStackAllowlist(t *testing.T) {
+	fixture, session, port, input := pinnedReconnectFixture(t)
+	stackConfig := attachedworkerstack.Config{AllowedEnvironmentNames: []string{"SESSIONLESS_MODE"}, AllowedReadRoots: []string{"/fixture/read"}}
+	process := &runtimeRunner{started: make(chan struct{}, 1), release: make(chan struct{})}
+	runtime, err := reconnectPinnedForegroundRuntime(context.Background(), nil, nil, nil,
+		attachedworkersession.Config{}, input, fixture.materializer, fixture.config, cadenceConfig(true),
+		stackConfig, unusedInitialCredentials{}, initialRuntimeConfig(),
+		func(_ *attachedworkerlocal.Store, _ attachedworkersession.BootstrapPort, _ attachedworkersession.ExchangeFactory, config attachedworkersession.Config) (reconnectPort, error) {
+			port.preflight = config.RuntimePreflight
+			fixture.config.Profile.Environment[0].Name = "FOREIGN_MODE"
+			stackConfig.AllowedEnvironmentNames[0] = "FOREIGN_MODE"
+			stackConfig.AllowedReadRoots[0] = "/foreign/read"
+			return port, nil
+		},
+		func(_ context.Context, _ attachedworkerlocal.ManifestV1, config attachedworkerstack.Config, _ ports.CredentialLifecycle) (attachedworkerdaemon.Runner, error) {
+			if len(config.AllowedEnvironmentNames) != 1 || config.AllowedEnvironmentNames[0] != "SESSIONLESS_MODE" ||
+				len(config.AllowedReadRoots) != 1 || config.AllowedReadRoots[0] != "/fixture/read" {
+				t.Errorf("pinned stack allowlists followed caller mutation: env=%v roots=%v", config.AllowedEnvironmentNames, config.AllowedReadRoots)
+			}
+			return process, nil
+		})
+	if err != nil || runtime == nil {
+		t.Fatalf("runtime=%t error=%v", runtime != nil, err)
+	}
+	source, ok := runtime.source.(*CadencedSource)
+	if !ok {
+		t.Fatalf("runtime source type=%T, want *CadencedSource", runtime.source)
+	}
+	adapter, ok := source.cycle.source.(*Adapter)
+	if !ok {
+		t.Fatalf("adapter type=%T, want *Adapter", source.cycle.source)
+	}
+	if len(adapter.config.Profile.Environment) != 1 || adapter.config.Profile.Environment[0].Name != "SESSIONLESS_MODE" {
+		t.Fatalf("adapter env=%v, want pinned SESSIONLESS_MODE", adapter.config.Profile.Environment)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := runtime.Run(ctx); !errors.Is(err, context.Canceled) || session.closeCalls != 1 || process.calls != 0 {
+		t.Fatalf("run error=%v close=%d process=%d", err, session.closeCalls, process.calls)
+	}
+}

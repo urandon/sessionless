@@ -134,6 +134,9 @@ func TestPinnedInitialForegroundPreflightBeforeNetworkAndProcess(t *testing.T) {
 		}, want: ErrInvalidAuthority},
 		{name: "stack reconciliation fails", stackFailure: errors.New("private residue path"), want: ErrInvalidConfiguration, wantStack: 1},
 		{name: "stack returns nil runner", nilRunner: true, want: ErrInvalidConfiguration, wantStack: 1},
+		{name: "profile environment outside stack allowlist", prepare: func(fixture *adapterFixture, _ *pinnedInitialConnectPort, _ *attachedworkersession.ConnectInputV1) {
+			fixture.config.Profile.Environment[0].Name = "FOREIGN_MODE"
+		}, want: ErrInvalidConfiguration},
 		{name: "capability changed before construction", prepare: func(_ *adapterFixture, _ *pinnedInitialConnectPort, input *attachedworkersession.ConnectInputV1) {
 			input.CapabilityManifest.BuildID = "foreign-build"
 		}, want: ErrInvalidAuthority},
@@ -148,7 +151,7 @@ func TestPinnedInitialForegroundPreflightBeforeNetworkAndProcess(t *testing.T) {
 			process := &runtimeRunner{started: make(chan struct{}, 1), release: make(chan struct{})}
 			runtime, err := connectPinnedForegroundRuntime(context.Background(), nil, nil, nil,
 				attachedworkersession.Config{}, input, fixture.materializer, fixture.config, cadenceConfig(true),
-				attachedworkerstack.Config{}, unusedInitialCredentials{}, initialRuntimeConfig(),
+				attachedworkerstack.Config{AllowedEnvironmentNames: []string{"SESSIONLESS_MODE"}}, unusedInitialCredentials{}, initialRuntimeConfig(),
 				func(_ *attachedworkerlocal.Store, _ attachedworkersession.BootstrapPort, _ attachedworkersession.ExchangeFactory, config attachedworkersession.Config) (initialConnectPort, error) {
 					connectorCalls++
 					port.preflight = config.RuntimePreflight
@@ -180,8 +183,8 @@ func TestPinnedInitialForegroundPreflightBeforeNetworkAndProcess(t *testing.T) {
 				process.calls != 0 || len(session.actions) != 0 {
 				t.Fatalf("network=%d stack=%d close=%d process=%d actions=%d", port.networkCalls, stackCalls, session.closeCalls, process.calls, len(session.actions))
 			}
-			if test.name == "capability changed before construction" && connectorCalls != 0 {
-				t.Fatalf("connector construction crossed invalid capability: %d", connectorCalls)
+			if (test.name == "capability changed before construction" || test.name == "profile environment outside stack allowlist") && connectorCalls != 0 {
+				t.Fatalf("connector construction crossed invalid local configuration: %d", connectorCalls)
 			}
 		})
 	}
@@ -194,7 +197,7 @@ func TestPinnedInitialForegroundAcceptsZeroArgumentHarness(t *testing.T) {
 	runner := &runtimeRunner{started: make(chan struct{}, 1), release: make(chan struct{})}
 	runtime, err := connectPinnedForegroundRuntime(context.Background(), nil, nil, nil,
 		attachedworkersession.Config{}, input, fixture.materializer, fixture.config, cadenceConfig(true),
-		attachedworkerstack.Config{}, unusedInitialCredentials{}, initialRuntimeConfig(),
+		attachedworkerstack.Config{AllowedEnvironmentNames: []string{"SESSIONLESS_MODE"}}, unusedInitialCredentials{}, initialRuntimeConfig(),
 		func(_ *attachedworkerlocal.Store, _ attachedworkersession.BootstrapPort, _ attachedworkersession.ExchangeFactory, config attachedworkersession.Config) (initialConnectPort, error) {
 			port.preflight = config.RuntimePreflight
 			return port, nil

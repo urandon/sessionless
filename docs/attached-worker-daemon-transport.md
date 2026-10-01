@@ -119,7 +119,8 @@ the recovered cadence, adapter, daemon, runner, active-control watcher, result
 sink, and bounded session cleanup. AW-05f adds a library-only initial connection
 composition, `ConnectPinnedForegroundRuntime`: it builds the session connector
 with one lease-held preflight, matches the local harness path/digest/argv and
-capability digest, verifies the #132 pinned stack, and reconciles its
+capability digest, checks every static profile environment name against the
+stack's exact allowlist, verifies the #132 pinned stack, and reconciles its
 installation-owned OCI residue before connection generation or control-plane
 network I/O.
 The accepted Manifest enters the same daemon through one cooldown cadence;

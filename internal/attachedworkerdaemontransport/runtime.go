@@ -147,6 +147,11 @@ func connectPinnedForegroundRuntime(
 	if err != nil || adapterConfig.Profile.CapabilityDigest != domain.AttachedWorkerCapabilityDigest(hex.EncodeToString(digest)) {
 		return nil, ErrInvalidAuthority
 	}
+	for _, variable := range adapterConfig.Profile.Environment {
+		if !slices.Contains(stackConfig.AllowedEnvironmentNames, variable.Name) {
+			return nil, ErrInvalidConfiguration
+		}
+	}
 	capabilityExecutableDigest := slices.Clone(input.CapabilityManifest.HarnessExecutableDigest)
 	adapterConfig.Profile = cloneProfile(adapterConfig.Profile)
 	var runner attachedworkerdaemon.Runner

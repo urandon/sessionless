@@ -78,6 +78,48 @@ func TestConnectorRestoresIdleCheckpointThroughAuthoritativeReconnect(t *testing
 	}
 }
 
+func TestReconnectRuntimePreflightFailsBeforeGenerationAndNetwork(t *testing.T) {
+	fixture := newSessionFixture(t)
+	initial := mustReadySession(t, fixture)
+	if err := initial.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var calls int
+	config := fixture.config
+	config.RuntimePreflight = func(ctx context.Context, manifest attachedworkerlocal.ManifestV1) error {
+		calls++
+		if manifest.ConnectionGeneration != 1 || manifest.Revision != 2 {
+			t.Errorf("preflight generation=%d revision=%d", manifest.ConnectionGeneration, manifest.Revision)
+		}
+		if lease, err := fixture.store.AcquireRuntime(ctx); lease != nil || !errors.Is(err, attachedworkerlocal.ErrStateBusy) {
+			if lease != nil {
+				_ = lease.Close()
+			}
+			t.Errorf("second runtime owner lease=%v err=%v", lease, err)
+		}
+		return errors.New("private runtime failure")
+	}
+	bootstrap := &reconnectBootstrap{}
+	connector, err := New(fixture.store, bootstrap, &fakeFactory{exchange: &fakeExchange{}}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := connector.Reconnect(context.Background(), ReconnectInputV1(fixture.input)); !errors.Is(err, ErrRuntimePreflight) || bytes.Contains([]byte(err.Error()), []byte("private runtime failure")) {
+		t.Fatalf("reconnect preflight error=%v", err)
+	}
+	if calls != 1 || bootstrap.challengeCalls.Load() != 0 || bootstrap.activateCalls.Load() != 0 {
+		t.Fatalf("calls preflight=%d challenge=%d activate=%d", calls, bootstrap.challengeCalls.Load(), bootstrap.activateCalls.Load())
+	}
+	assertGeneration(t, fixture, 1)
+	lease, err := fixture.store.AcquireRuntime(context.Background())
+	if err != nil {
+		t.Fatalf("preflight did not release runtime ownership: %v", err)
+	}
+	if err := lease.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestReconnectCheckpointTamperingFailsBeforeNetwork(t *testing.T) {
 	tests := []struct {
 		name   string

@@ -161,6 +161,10 @@ func (connector *Connector) reconnect(ctx context.Context, input ConnectInputV1)
 		result.reconciliation = true
 		return result
 	}
+	if err := connector.runtimePreflight(ctx, manifest); err != nil {
+		result.err = err
+		return result
+	}
 
 	rawConnectionSecret := make([]byte, connectionKeyBytes)
 	defer clearBytes(rawConnectionSecret)

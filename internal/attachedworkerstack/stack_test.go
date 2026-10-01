@@ -89,6 +89,25 @@ func TestNewAssemblesPinnedStackAfterResidueReconciliation(t *testing.T) {
 	}
 }
 
+func TestNewAcceptsZeroArgumentHarness(t *testing.T) {
+	fixture := newFixture(t)
+	fixture.manifest.Harness.Arguments = []string{}
+	if err := fixture.manifest.Validate(); err != nil {
+		t.Fatalf("zero-argument manifest should be valid: %v", err)
+	}
+	stack, err := newStack(context.Background(), fixture.manifest, fixture.config, fixture.credentials, fixture.dependencies(nil))
+	if err != nil {
+		t.Fatalf("construct zero-argument harness stack: %v", err)
+	}
+	invocation := attachedworkerdaemon.Invocation{Process: attachedworkerdaemon.AttemptSpec{
+		Executable: fixture.manifest.Harness.Executable, ExecutableDigest: fixture.harnessDigest,
+		Arguments: []string{},
+	}}
+	if _, err := stack.Run(context.Background(), invocation); err != nil {
+		t.Fatalf("run zero-argument harness: %v", err)
+	}
+}
+
 func TestNewFailsBeforeLauncherOnArtifactOrLocalAuthorityDrift(t *testing.T) {
 	tests := map[string]func(*stackFixture){
 		"docker digest":  func(f *stackFixture) { f.manifest.OCI.DockerSHA256 = strings.Repeat("0", 64) },

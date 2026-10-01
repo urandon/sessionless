@@ -73,7 +73,7 @@ func TestAttachedWorkerSealedInputAuthorizationReadsClaimedHeadTransactionally(t
 		{name: "rotated connection", change: func(r *ports.AttachedWorkerSealedInputAuthorization) {
 			r.ConnectionID = domain.AttachedWorkerConnectionID(uniqueID("foreign-connection"))
 		}},
-		{name: "old generation", change: func(r *ports.AttachedWorkerSealedInputAuthorization) { r.ConnectionGeneration-- }},
+		{name: "mismatched generation", change: func(r *ports.AttachedWorkerSealedInputAuthorization) { r.ConnectionGeneration++ }},
 		{name: "changed head revision", change: func(r *ports.AttachedWorkerSealedInputAuthorization) {
 			r.ExpectedAttemptRevision = result.AttemptRevision + 1
 		}},
@@ -87,6 +87,28 @@ func TestAttachedWorkerSealedInputAuthorizationReadsClaimedHeadTransactionally(t
 				t.Fatalf("divergent durable head authorized: result=%+v error=%v", denied, err)
 			}
 		})
+	}
+	worker, found, err = store.LoadAttachedWorker(ctx, worker.TenantID, worker.OwnerUserID, worker.ID)
+	if err != nil || !found {
+		t.Fatalf("worker before revoke = %#v found=%t err=%v", worker, found, err)
+	}
+	revoked := worker
+	revoked.DesiredState = domain.AttachedWorkerDesiredRevoked
+	revoked.EnrollmentGeneration++
+	revoked.ConnectionGeneration++
+	revoked.Revision++
+	revoked.UpdatedAt = worker.UpdatedAt.Add(time.Microsecond).UTC().Truncate(time.Microsecond)
+	revoked.RevokedAt = revoked.UpdatedAt
+	revokeAudit := attachedWorkerMutationAudit(revoked, domain.AttachedWorkerAuditWorkerRevoked, revoked.UpdatedAt)
+	didRevoke, err := store.RevokeAttachedWorker(ctx, ports.AttachedWorkerRevokeMutation{
+		TenantID: worker.TenantID, OwnerUserID: worker.OwnerUserID, WorkerID: worker.ID,
+		ExpectedRevision: worker.Revision, Next: revoked, Audit: revokeAudit, At: revoked.UpdatedAt,
+	})
+	if err != nil || !didRevoke {
+		t.Fatalf("revoke after claim = %t, %v", didRevoke, err)
+	}
+	if denied, err := store.AuthorizeAttachedWorkerSealedInput(ctx, request); err != nil || denied.Status != ports.AttachedWorkerExecutionDenied {
+		t.Fatalf("revoked durable worker authorized: result=%+v error=%v", denied, err)
 	}
 }
 

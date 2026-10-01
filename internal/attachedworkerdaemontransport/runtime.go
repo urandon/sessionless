@@ -65,7 +65,11 @@ type concreteInitialConnectPort struct {
 }
 
 func (port concreteInitialConnectPort) Connect(ctx context.Context, input attachedworkersession.ConnectInputV1) (connectedSession, error) {
-	return port.connector.Connect(ctx, input)
+	session, err := port.connector.Connect(ctx, input)
+	if session == nil {
+		return nil, err
+	}
+	return session, err
 }
 
 // ForegroundRuntime is the one-owner composition of cadence, fenced dispatch,
@@ -141,22 +145,50 @@ func connectPinnedForegroundRuntime(
 	if ctx == nil || newConnector == nil || newStack == nil || credentials == nil || sessionConfig.RuntimePreflight != nil {
 		return nil, ErrInvalidConfiguration
 	}
+	adapterConfig.Profile = cloneProfile(adapterConfig.Profile)
+	preflight, runner, err := pinnedRuntimePreflight(input.CapabilityManifest, adapterConfig.Profile, stackConfig, credentials, newStack)
+	if err != nil {
+		return nil, err
+	}
+	sessionConfig.RuntimePreflight = preflight
+	connector, err := newConnector(store, bootstrap, exchange, sessionConfig)
+	if err != nil {
+		return nil, err
+	}
+	return connectForegroundRuntime(ctx, connector, input, materializer, adapterConfig, pollConfig, runner, config)
+}
+
+// pinnedRuntimePreflight uses the Connector's lease-held hook so neither an
+// initial connection nor a reconnect can advance a generation or send network
+// traffic before the exact local execution stack is verified and reconciled.
+func pinnedRuntimePreflight(
+	capability attachedworkerprotocol.CapabilityManifestV1,
+	profile LocalProfileV1,
+	stackConfig attachedworkerstack.Config,
+	credentials ports.CredentialLifecycle,
+	newStack pinnedStackFactory,
+) (func(context.Context, attachedworkerlocal.ManifestV1) error, *preflightRunner, error) {
+	if credentials == nil || newStack == nil {
+		return nil, nil, ErrInvalidConfiguration
+	}
+	stackConfig.AllowedEnvironmentNames = slices.Clone(stackConfig.AllowedEnvironmentNames)
+	stackConfig.AllowedReadRoots = slices.Clone(stackConfig.AllowedReadRoots)
 	// The selected capability and the local invocation profile must already
 	// agree before acquiring the local lease or constructing a connector.
-	digest, err := attachedworkerprotocol.ManifestDigestV1(input.CapabilityManifest)
-	if err != nil || adapterConfig.Profile.CapabilityDigest != domain.AttachedWorkerCapabilityDigest(hex.EncodeToString(digest)) {
-		return nil, ErrInvalidAuthority
+	digest, err := attachedworkerprotocol.ManifestDigestV1(capability)
+	if err != nil || profile.CapabilityDigest != domain.AttachedWorkerCapabilityDigest(hex.EncodeToString(digest)) {
+		return nil, nil, ErrInvalidAuthority
 	}
-	for _, variable := range adapterConfig.Profile.Environment {
+	for _, variable := range profile.Environment {
 		if !slices.Contains(stackConfig.AllowedEnvironmentNames, variable.Name) {
-			return nil, ErrInvalidConfiguration
+			return nil, nil, ErrInvalidConfiguration
 		}
 	}
-	capabilityExecutableDigest := slices.Clone(input.CapabilityManifest.HarnessExecutableDigest)
-	adapterConfig.Profile = cloneProfile(adapterConfig.Profile)
+	capabilityExecutableDigest := slices.Clone(capability.HarnessExecutableDigest)
+	profile = cloneProfile(profile)
 	var runner attachedworkerdaemon.Runner
-	sessionConfig.RuntimePreflight = func(ctx context.Context, manifest attachedworkerlocal.ManifestV1) error {
-		if !profileMatchesManifest(adapterConfig.Profile, manifest) ||
+	preflight := func(ctx context.Context, manifest attachedworkerlocal.ManifestV1) error {
+		if !profileMatchesManifest(profile, manifest) ||
 			!slices.Equal(capabilityExecutableDigest, decodeDigest(manifest.Harness.SHA256)) {
 			return ErrInvalidAuthority
 		}
@@ -170,11 +202,7 @@ func connectPinnedForegroundRuntime(
 		runner = pinned
 		return nil
 	}
-	connector, err := newConnector(store, bootstrap, exchange, sessionConfig)
-	if err != nil {
-		return nil, err
-	}
-	return connectForegroundRuntime(ctx, connector, input, materializer, adapterConfig, pollConfig, &preflightRunner{current: &runner}, config)
+	return preflight, &preflightRunner{current: &runner}, nil
 }
 
 // preflightRunner only exists so local configuration can be validated before
@@ -292,6 +320,9 @@ func ReconnectForegroundRuntime(
 	runner attachedworkerdaemon.Runner,
 	config RuntimeConfig,
 ) (*ForegroundRuntime, error) {
+	if _, err := validateRuntimeConfig(config); err != nil {
+		return nil, err
+	}
 	cadence, err := ReconnectIdleCadence(ctx, connector, input, materializer, adapterConfig, pollConfig)
 	if err != nil {
 		return nil, err
@@ -303,6 +334,94 @@ func ReconnectForegroundRuntime(
 	closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), safeRuntimeCleanupTimeout(config.CleanupTimeout))
 	defer cancel()
 	return nil, errors.Join(err, cadence.Close(closeCtx))
+}
+
+type reconnectConnectorFactory func(*attachedworkerlocal.Store, attachedworkersession.BootstrapPort, attachedworkersession.ExchangeFactory, attachedworkersession.Config) (reconnectPort, error)
+
+// ReconnectPinnedForegroundRuntime is the default-off idle recovery path for
+// an already enrolled installation. The Connector must reconcile its durable
+// checkpoint against the server; active, draining, or ambiguous heads remain
+// fenced and cannot become fresh poll or process authority.
+func ReconnectPinnedForegroundRuntime(
+	ctx context.Context,
+	store *attachedworkerlocal.Store,
+	bootstrap attachedworkersession.BootstrapPort,
+	exchange attachedworkersession.ExchangeFactory,
+	sessionConfig attachedworkersession.Config,
+	input attachedworkersession.ReconnectInputV1,
+	materializer Materializer,
+	adapterConfig Config,
+	pollConfig attachedworkertransport.Config,
+	stackConfig attachedworkerstack.Config,
+	credentials ports.CredentialLifecycle,
+	config RuntimeConfig,
+) (*ForegroundRuntime, error) {
+	if store == nil {
+		return nil, ErrInvalidConfiguration
+	}
+	return reconnectPinnedForegroundRuntime(ctx, store, bootstrap, exchange, sessionConfig, input, materializer,
+		adapterConfig, pollConfig, stackConfig, credentials, config,
+		func(store *attachedworkerlocal.Store, bootstrap attachedworkersession.BootstrapPort, exchange attachedworkersession.ExchangeFactory, config attachedworkersession.Config) (reconnectPort, error) {
+			connector, err := attachedworkersession.New(store, bootstrap, exchange, config)
+			if err != nil {
+				return nil, err
+			}
+			return concreteReconnectPort{connector: connector}, nil
+		},
+		func(ctx context.Context, manifest attachedworkerlocal.ManifestV1, config attachedworkerstack.Config, credentials ports.CredentialLifecycle) (attachedworkerdaemon.Runner, error) {
+			return attachedworkerstack.New(ctx, manifest, config, credentials)
+		})
+}
+
+func reconnectPinnedForegroundRuntime(
+	ctx context.Context,
+	store *attachedworkerlocal.Store,
+	bootstrap attachedworkersession.BootstrapPort,
+	exchange attachedworkersession.ExchangeFactory,
+	sessionConfig attachedworkersession.Config,
+	input attachedworkersession.ReconnectInputV1,
+	materializer Materializer,
+	adapterConfig Config,
+	pollConfig attachedworkertransport.Config,
+	stackConfig attachedworkerstack.Config,
+	credentials ports.CredentialLifecycle,
+	config RuntimeConfig,
+	newConnector reconnectConnectorFactory,
+	newStack pinnedStackFactory,
+) (*ForegroundRuntime, error) {
+	if ctx == nil || newConnector == nil || sessionConfig.RuntimePreflight != nil {
+		return nil, ErrInvalidConfiguration
+	}
+	if _, err := validateRuntimeConfig(config); err != nil {
+		return nil, err
+	}
+	adapterConfig.Profile = cloneProfile(adapterConfig.Profile)
+	preflight, runner, err := pinnedRuntimePreflight(input.CapabilityManifest, adapterConfig.Profile, stackConfig, credentials, newStack)
+	if err != nil {
+		return nil, err
+	}
+	sessionConfig.RuntimePreflight = preflight
+	port, err := newConnector(store, bootstrap, exchange, sessionConfig)
+	if err != nil {
+		return nil, err
+	}
+	cadence, err := reconnectIdleCadence(ctx, port, input, materializer, adapterConfig, pollConfig)
+	if err != nil {
+		return nil, err
+	}
+	cleanup := func(prior error) (*ForegroundRuntime, error) {
+		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), safeRuntimeCleanupTimeout(config.CleanupTimeout))
+		defer cancel()
+		return nil, errors.Join(prior, cadence.Close(closeCtx))
+	}
+	if !runner.ready() || ctx.Err() != nil {
+		return cleanup(errors.Join(ErrReconciliationRequired, ctx.Err()))
+	}
+	runtime, err := NewForegroundRuntime(cadence, runner, config)
+	if err != nil {
+		return cleanup(err)
+	}
+	return runtime, nil
 }
 
 // NewForegroundRuntime composes an already reconciled idle cadence. The

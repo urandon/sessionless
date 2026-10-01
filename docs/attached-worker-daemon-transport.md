@@ -129,6 +129,15 @@ caller cancellation before `Run`, closes the acquired session under an
 independent bound. Zero-argument harnesses remain valid. This constructor is
 not called by `attachedworkerforeground.New` or `attached-worker run`.
 
+The default-off `ReconnectPinnedForegroundRuntime` uses that same lease-held
+profile/capability/stack preflight on reconnect. The Connector must reconcile
+the exact local checkpoint with the durable server head before the idle cadence
+is created. Claimed, cancellation-pending, draining, terminal, or ambiguous
+recovery remains fenced; it is never converted into a fresh poll or process
+launch. A reconnect that returns an acquired session with an error closes that
+session under an independent bound. The shipped command does not call this
+constructor either.
+
 The runtime owns one reconciled session until the daemon stops. Remote cancel
 is applied to the exact active identity; remote active drain closes admission
 and waits for terminal commit; idle remote drain becomes a graceful daemon

@@ -181,6 +181,12 @@ func boundedSealedMetadata(value reflect.Value, budget int) bool {
 		if depth > 16 {
 			return false
 		}
+		// A timestamp is a scalar in the domain contract. Walking its
+		// private Location transition table would make valid input depend on
+		// the host's tzdata size rather than source-controlled metadata.
+		if current.Type() == reflect.TypeOf(time.Time{}) {
+			return true
+		}
 		switch current.Kind() {
 		case reflect.Interface, reflect.Pointer:
 			return current.IsNil() || visit(current.Elem(), depth+1)

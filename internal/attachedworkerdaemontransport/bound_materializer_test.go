@@ -259,6 +259,19 @@ func TestBoundMaterializerRejectsOversizedMetadataBeforeDigest(t *testing.T) {
 	}
 }
 
+func TestBoundMaterializerDoesNotTraverseTimestampLocationInternals(t *testing.T) {
+	zone, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skipf("tzdata unavailable: %v", err)
+	}
+	materializer, source, request := sealedMaterializerFixture(t)
+	source.input.Job.CreatedAt = time.Unix(10, 0).In(zone)
+	source.input.Manifest.CreatedAt = time.Unix(10, 0).In(zone)
+	if _, err := materializer.Materialize(context.Background(), request); err != nil {
+		t.Fatalf("valid timestamp location affected metadata budget: %v", err)
+	}
+}
+
 func TestBoundMaterializerRejectsOversizedEnvelopeAndRedactsErrors(t *testing.T) {
 	materializer, source, request := sealedMaterializerFixture(t)
 	materializer.maxBytes = len(source.input.Context) + len(source.input.Artifacts[0].Body)

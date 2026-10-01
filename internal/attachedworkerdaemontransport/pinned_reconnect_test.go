@@ -135,10 +135,42 @@ func TestPinnedReconnectPreflightBeforeGenerationAndNetwork(t *testing.T) {
 }
 
 func TestPinnedReconnectFencesNonIdleRecoveryWithoutProcess(t *testing.T) {
-	for _, state := range []attachedworkerprotocol.AttemptState{attachedworkerprotocol.AttemptClaimed, attachedworkerprotocol.AttemptCancelRequested} {
-		t.Run(string(state), func(t *testing.T) {
+	for _, test := range []struct {
+		name             string
+		connectionState  attachedworkerprotocol.ConnectionState
+		attemptState     attachedworkerprotocol.AttemptState
+		terminalDecision attachedworkerprotocol.ReconnectTerminalDecision
+		pendingTerminal  bool
+	}{
+		{name: "offered", attemptState: attachedworkerprotocol.AttemptOffered},
+		{name: "claim pending", attemptState: attachedworkerprotocol.AttemptClaimPending},
+		{name: "claimed", attemptState: attachedworkerprotocol.AttemptClaimed},
+		{name: "cancel requested", attemptState: attachedworkerprotocol.AttemptCancelRequested},
+		{name: "cancel acknowledged", attemptState: attachedworkerprotocol.AttemptCancelAcked},
+		{name: "fenced", attemptState: attachedworkerprotocol.AttemptFenced},
+		{name: "terminal pending", attemptState: attachedworkerprotocol.AttemptTerminalPending},
+		{name: "terminal committed", attemptState: attachedworkerprotocol.AttemptTerminalCommitted},
+		{name: "draining idle", connectionState: attachedworkerprotocol.ConnectionDraining},
+		{name: "drained idle", connectionState: attachedworkerprotocol.ConnectionDrained},
+		{name: "terminal replay intent", terminalDecision: attachedworkerprotocol.ReconnectTerminalReplay, pendingTerminal: true},
+		{name: "terminal discard intent", terminalDecision: attachedworkerprotocol.ReconnectTerminalDiscard, pendingTerminal: true},
+		{name: "terminal committed intent", terminalDecision: attachedworkerprotocol.ReconnectTerminalCommitted, pendingTerminal: true},
+		{name: "orphan terminal", pendingTerminal: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			fixture, session, port, input := pinnedReconnectFixture(t)
-			session.recovery.AttemptState = state
+			if test.connectionState != "" {
+				session.recovery.ConnectionState = test.connectionState
+			}
+			if test.attemptState != "" {
+				session.recovery.AttemptState = test.attemptState
+			}
+			if test.terminalDecision != "" {
+				session.recovery.TerminalDecision = test.terminalDecision
+			}
+			if test.pendingTerminal {
+				session.recovery.Terminal = &attachedworkerprotocol.TerminalV1{}
+			}
 			process := &runtimeRunner{started: make(chan struct{}, 1), release: make(chan struct{})}
 			runtime, err := reconnectPinnedForegroundRuntime(context.Background(), nil, nil, nil,
 				attachedworkersession.Config{}, input, fixture.materializer, fixture.config, cadenceConfig(true),
@@ -152,8 +184,8 @@ func TestPinnedReconnectFencesNonIdleRecoveryWithoutProcess(t *testing.T) {
 				})
 			if runtime != nil || !errors.Is(err, ErrReconciliationRequired) || port.networkCalls != 1 ||
 				session.closeCalls != 1 || process.calls != 0 || len(session.actions) != 0 {
-				t.Fatalf("state=%s runtime=%t error=%v network=%d close=%d process=%d actions=%d",
-					state, runtime != nil, err, port.networkCalls, session.closeCalls, process.calls, len(session.actions))
+				t.Fatalf("recovery=%+v runtime=%t error=%v network=%d close=%d process=%d actions=%d",
+					session.recovery, runtime != nil, err, port.networkCalls, session.closeCalls, process.calls, len(session.actions))
 			}
 		})
 	}

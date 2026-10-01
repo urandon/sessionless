@@ -90,6 +90,36 @@ func attachedWorkerAttemptPollAuthorized(request ports.AttachedWorkerAttemptPoll
 		(connection.State == domain.AttachedWorkerConnectionOnline || connection.State == domain.AttachedWorkerConnectionDraining)
 }
 
+func attachedWorkerSealedInputAuthorized(
+	request ports.AttachedWorkerSealedInputAuthorization,
+	at time.Time,
+	worker domain.AttachedWorker,
+	connection domain.AttachedWorkerConnection,
+	attempt domain.AttachedWorkerAttemptV1,
+) bool {
+	poll := ports.AttachedWorkerAttemptPoll{
+		TenantID: request.TenantID, OwnerUserID: request.OwnerUserID, WorkerID: request.WorkerID,
+		ConnectionID: request.ConnectionID, PresentedSecretDigest: request.PresentedSecretDigest,
+	}
+	return attachedWorkerAttemptPollAuthorized(poll, at, worker, connection) &&
+		request.AttemptSequence == 1 &&
+		worker.EnrollmentGeneration == request.EnrollmentGeneration &&
+		connection.ConnectionGeneration == request.ConnectionGeneration &&
+		attempt.State == domain.AttachedWorkerAttemptClaimed && at.Before(attempt.LeaseExpiresAt) &&
+		attempt.TenantID == request.TenantID && attempt.OwnerUserID == request.OwnerUserID &&
+		attempt.WorkerID == request.WorkerID && attempt.ConnectionID == request.ConnectionID &&
+		attempt.EnrollmentGeneration == request.EnrollmentGeneration &&
+		attempt.ConnectionGeneration == request.ConnectionGeneration &&
+		attempt.RunID == request.RunID && attempt.AttemptID == request.AttemptID &&
+		attempt.LeaseID == request.LeaseID && attempt.LeaseGeneration == request.LeaseGeneration &&
+		attempt.FenceToken == request.FenceToken &&
+		attempt.LeaseExpiresAt.UnixMicro() == request.LeaseExpiresAtUnixMicro &&
+		attempt.ContextDigest == request.ContextDigest &&
+		attempt.CapabilityDigest == request.CapabilityDigest &&
+		attempt.PolicyDigest == request.PolicyDigest &&
+		(request.ExpectedAttemptRevision == 0 || attempt.Revision == request.ExpectedAttemptRevision)
+}
+
 func pendingAttachedWorkerAttemptMessageKind(state domain.AttachedWorkerAttemptState) domain.AttachedWorkerAttemptMessageKind {
 	switch state {
 	case domain.AttachedWorkerAttemptOffered:

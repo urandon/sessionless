@@ -663,6 +663,40 @@ func (service *Service) ExchangeBearer(ctx context.Context, rawBearer []byte, ba
 	return service.Exchange(ctx, bearer, batch)
 }
 
+// AuthorizeSealedInputBearer is the read-only gate for a future sealed-input
+// response. It never returns job or blob content. The request's scope must
+// match the bearer; the secret digest is derived here rather than accepted
+// from a remote request. The store validates the complete claimed head in one
+// transaction and returns only its revision for a post-read recheck.
+func (service *Service) AuthorizeSealedInputBearer(
+	ctx context.Context,
+	rawBearer []byte,
+	request ports.AttachedWorkerSealedInputAuthorization,
+) (uint64, error) {
+	if service == nil || service.store == nil || ctx == nil || ctx.Err() != nil {
+		return 0, ErrTransportUnauthorized
+	}
+	bearer, err := ParseConnectionBearer(rawBearer)
+	if err != nil || request.TenantID != bearer.tenantID || request.OwnerUserID != bearer.ownerUserID ||
+		request.WorkerID != bearer.workerID || request.ConnectionID != bearer.connectionID ||
+		request.PresentedSecretDigest != "" {
+		return 0, ErrTransportUnauthorized
+	}
+	authorizer, ok := service.store.(ports.AttachedWorkerSealedInputAuthorizer)
+	if !ok {
+		return 0, ErrTransportConfig
+	}
+	request.PresentedSecretDigest = bearer.secret.Digest()
+	result, err := authorizer.AuthorizeAttachedWorkerSealedInput(ctx, request)
+	if err != nil {
+		return 0, ErrTransportBackend
+	}
+	if result.Status != ports.AttachedWorkerExecutionApplied || result.AttemptRevision == 0 {
+		return 0, ErrTransportUnauthorized
+	}
+	return result.AttemptRevision, nil
+}
+
 func (service *Service) Exchange(ctx context.Context, bearer ConnectionBearer, batch attachedworkerprotocol.BatchV1) (*attachedworkerprotocol.BatchV1, error) {
 	if service == nil || service.store == nil || validateBatch(batch) != nil || len(batch.Frames) == 0 {
 		return nil, ErrTransportUnauthorized

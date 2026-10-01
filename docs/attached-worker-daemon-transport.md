@@ -184,6 +184,16 @@ invocation credentials, large-file staging, and a concrete authenticated
 remote source remain fail-closed and require separate reviewed composition.
 No shipped command constructs this materializer or starts the daemon.
 
+The server now has a read-only sealed-input authorization gate for that later
+composition. It derives the presented secret digest from the connection bearer
+and checks the current worker, connection, and `claimed` attempt in one YDB
+transaction at server time, including exact generation, lease/fence/expiry,
+three input digests, and optional attempt revision. A content fetch must call
+this gate before reading blobs and repeat it with the returned revision after
+the read; any changed head discards all fetched bytes. This gate returns no
+job, manifest, or blob bytes. There is still no sealed-input HTTP route or
+local source, so it cannot be mistaken for production materialization.
+
 The adapter and feature-disabled runtime are under
 `internal/attachedworkerdaemontransport`. The session exposes a semantic
 `ExchangeAction` method so callers cannot forge raw frame scope, generations,

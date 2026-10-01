@@ -17,6 +17,7 @@ import (
 )
 
 var _ ports.AttachedWorkerUXReadStore = (*Store)(nil)
+var _ ports.AttachedWorkerSealedInputAuthorizer = (*Store)(nil)
 
 func (store *Store) LoadAttachedWorkerAttempt(
 	ctx context.Context,
@@ -48,6 +49,50 @@ func (store *Store) LoadAttachedWorkerAttempt(
 		return domain.AttachedWorkerAttemptV1{}, false, ErrAttachedWorkerAttemptConflict
 	}
 	return result, true, nil
+}
+
+// AuthorizeAttachedWorkerSealedInput is deliberately read-only. Unlike three
+// independent point reads, one transaction-time snapshot binds the presented
+// bearer to the current worker, connection, and claimed attempt head. The
+// returned revision is a recheck fence for a later blob-read composition.
+func (store *Store) AuthorizeAttachedWorkerSealedInput(
+	ctx context.Context,
+	request ports.AttachedWorkerSealedInputAuthorization,
+) (result ports.AttachedWorkerSealedInputAuthorizationResult, err error) {
+	if err := validateAttachedWorkerSealedInputAuthorization(request); err != nil {
+		return result, err
+	}
+	err = store.Transact(ctx, request.TenantID, func(state ports.StateTx) error {
+		tx := state.(*stateTx)
+		at, err := store.attachedWorkerTransactionTime(ctx, tx)
+		if err != nil {
+			return err
+		}
+		worker, workerFound, err := readAttachedWorkerTx(ctx, tx, request.OwnerUserID, request.WorkerID)
+		if err != nil {
+			return err
+		}
+		connection, connectionFound, err := readAttachedWorkerConnectionTx(ctx, tx, request.OwnerUserID, request.WorkerID)
+		if err != nil {
+			return err
+		}
+		attempt, attemptFound, err := readAttachedWorkerAttemptTx(ctx, tx, request.OwnerUserID, request.WorkerID)
+		if err != nil {
+			return err
+		}
+		result.Status = ports.AttachedWorkerExecutionDenied
+		if !workerFound || !connectionFound || !attemptFound ||
+			!attachedWorkerSealedInputAuthorized(request, at, worker, connection, attempt) {
+			return nil
+		}
+		result.Status = ports.AttachedWorkerExecutionApplied
+		result.AttemptRevision = attempt.Revision
+		return nil
+	})
+	if err != nil {
+		return ports.AttachedWorkerSealedInputAuthorizationResult{}, err
+	}
+	return result, nil
 }
 
 // ListAttachedWorkerAttemptMessages returns the bounded, immutable AW-04
@@ -1467,6 +1512,29 @@ func validateAttachedWorkerAttemptPoll(request ports.AttachedWorkerAttemptPoll) 
 	}
 	if err := request.PresentedSecretDigest.Validate(); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateAttachedWorkerSealedInputAuthorization(request ports.AttachedWorkerSealedInputAuthorization) error {
+	if err := validateAttachedWorkerAttemptPoll(ports.AttachedWorkerAttemptPoll{
+		TenantID: request.TenantID, OwnerUserID: request.OwnerUserID, WorkerID: request.WorkerID,
+		ConnectionID: request.ConnectionID, PresentedSecretDigest: request.PresentedSecretDigest,
+	}); err != nil {
+		return err
+	}
+	for _, validate := range []func() error{
+		request.RunID.Validate, request.AttemptID.Validate, request.LeaseID.Validate,
+		request.FenceToken.Validate, request.ContextDigest.Validate,
+		request.CapabilityDigest.Validate, request.PolicyDigest.Validate,
+	} {
+		if err := validate(); err != nil {
+			return err
+		}
+	}
+	if request.EnrollmentGeneration == 0 || request.ConnectionGeneration == 0 || request.AttemptSequence != 1 ||
+		request.LeaseGeneration == 0 || request.LeaseExpiresAtUnixMicro <= 0 {
+		return domain.ValidationError{Field: "attached_worker.sealed_input", Reason: "has invalid generation or lease expiry"}
 	}
 	return nil
 }

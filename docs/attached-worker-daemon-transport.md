@@ -146,6 +146,24 @@ reporting its terminal outcome, and returning reconciliation-required. Session
 close always uses an independent bounded cleanup context, including after
 caller cancellation.
 
+The composed runtime now publishes content-free daemon state changes through
+the authenticated session's existing kernel-backed local lease. A coalescing
+update channel never blocks attempt, cancellation, or terminal ownership; the
+single observer reads the current daemon status, persists monotonic
+accepted/completed/failed counters and local observation time, and retires the
+observation before closing the session on normal exit. An observation write
+failure cancels the runtime and returns reconciliation-required. A crash may
+leave historical `observed_local` evidence, which status/doctor do **not**
+upgrade to a live process, server connection, or accepted attempt. No shipped
+command constructs this runtime; `attached-worker run` remains default-off.
+
+Here `completed` means a successful process outcome with a confirmed terminal
+acknowledgement, while `failed` counts confirmed non-success terminals. A
+finished runner whose terminal acknowledgement is ambiguous advances neither
+counter and retains a content-free `terminal_unconfirmed` failure code for
+reconciliation. The daemon's in-memory `Completed` additionally counts ended
+runner attempts; it is not projected as successful completion.
+
 ## Current boundaries and follow-up
 
 The AW-05f synthetic path now includes `BoundMaterializer`. Its injected
@@ -174,6 +192,6 @@ unreachable from `attachedworkerforeground.New`.
 
 A later slice must provide the concrete authenticated context/artifact
 materializer, durable restart/reconnect reconciliation for ambiguous active
-cancellation, product activation and packaging, and production sleep/wake and
-offline evidence. The two-owner security and recovery proof in #79 remains a
-release gate.
+cancellation, product activation and local control, packaging, and production
+sleep/wake and offline evidence. The two-owner security and recovery proof in
+#79 remains a release gate.

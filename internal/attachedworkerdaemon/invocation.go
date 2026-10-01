@@ -83,6 +83,16 @@ type InvocationResult struct {
 	CommittedEventDigests    []CommittedEvidenceDigest
 }
 
+// Succeeded reports the same process-level success predicate used by the
+// terminal protocol. It says nothing about whether the terminal was committed;
+// callers must separately require a successful terminal acknowledgement.
+func (result InvocationResult) Succeeded(runErr error) bool {
+	process := result.Process
+	return runErr == nil && !process.Cancelled && !process.Deadline && process.ExitCode == 0 &&
+		process.FailureCode == "" && result.FailureCode == "" && process.DescendantsReaped &&
+		process.BoundaryReleased && process.CleanupSucceeded
+}
+
 // CommittedEvidenceDigest is content-addressed evidence already committed by
 // the local invocation boundary. The daemon transport carries only the digest;
 // it never embeds artifact, event, provider, prompt, or result content.

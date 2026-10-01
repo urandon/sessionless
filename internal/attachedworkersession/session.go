@@ -83,6 +83,8 @@ type localRuntimeLease interface {
 	LoadSnapshot(context.Context) (attachedworkerlocal.SnapshotV1, error)
 	LoadSecret(context.Context) (attachedworkerlocal.SecretRecordV1, error)
 	Update(context.Context, uint64, attachedworkerlocal.ManifestV1, attachedworkerlocal.SecretRecordV1) error
+	PersistObservation(context.Context, attachedworkerlocal.RuntimeObservationV1) error
+	RetireObservation(context.Context, uint64) error
 	LoadReconnectCheckpoint(context.Context) (attachedworkerlocal.ReconnectCheckpointV1, error)
 	PersistReconnectCheckpoint(context.Context, uint64, attachedworkerlocal.ReconnectCheckpointV1) error
 	RetireReconnectCheckpoint(context.Context, uint64) error
@@ -611,6 +613,7 @@ func (connector *Connector) connect(ctx context.Context, input ConnectInputV1) (
 
 type Session struct {
 	mu                  sync.Mutex
+	observationMu       sync.Mutex
 	state               State
 	failureCode         string
 	binding             ConnectionBindingV1
@@ -1045,10 +1048,84 @@ func (session *Session) Close(ctx context.Context) error {
 	return session.abandon()
 }
 
+// ObserveRuntime records content-free daemon evidence through the same
+// kernel-backed lease that owns this authenticated connection. It neither
+// upgrades local evidence to server authority nor exposes the lease to a
+// second owner. The caller supplies only daemon counters/state; revision,
+// manifest binding, and observation time are owned here.
+func (session *Session) ObserveRuntime(ctx context.Context, observation attachedworkerlocal.RuntimeObservationV1) error {
+	if session == nil || ctx == nil || ctx.Err() != nil {
+		return ErrInvalidConfiguration
+	}
+	session.observationMu.Lock()
+	defer session.observationMu.Unlock()
+	session.mu.Lock()
+	lease, now, revision := session.lease, session.now, session.manifestRevision
+	session.mu.Unlock()
+	if lease == nil || now == nil || revision == 0 {
+		return ErrSessionClosed
+	}
+	snapshot, err := lease.LoadSnapshot(ctx)
+	if err != nil {
+		return err
+	}
+	if snapshot.Manifest.Revision != revision {
+		return ErrReconciliationRequired
+	}
+	observation.Version = 1
+	observation.ManifestRevision = revision
+	observation.ObservedAt = nextTime(now().UTC(), snapshot.Manifest.UpdatedAt)
+	observation.Revision = 1
+	if snapshot.ObservationPresent {
+		if snapshot.Observation.Revision == ^uint64(0) {
+			return ErrReconciliationRequired
+		}
+		observation.Revision = snapshot.Observation.Revision + 1
+		observation.ObservedAt = nextTime(observation.ObservedAt, snapshot.Observation.ObservedAt)
+	}
+	if err := lease.PersistObservation(ctx, observation); err != nil {
+		return errors.Join(ErrReconciliationRequired, err)
+	}
+	return nil
+}
+
+// RetireRuntimeObservation removes local daemon evidence before the session
+// gives up its exclusive runtime lease. A crash can leave historical evidence;
+// status/doctor still label that evidence observed_local rather than live.
+func (session *Session) RetireRuntimeObservation(ctx context.Context) error {
+	if session == nil || ctx == nil || ctx.Err() != nil {
+		return ErrInvalidConfiguration
+	}
+	session.observationMu.Lock()
+	defer session.observationMu.Unlock()
+	session.mu.Lock()
+	lease, revision := session.lease, session.manifestRevision
+	session.mu.Unlock()
+	if lease == nil || revision == 0 {
+		return ErrSessionClosed
+	}
+	snapshot, err := lease.LoadSnapshot(ctx)
+	if err != nil {
+		return err
+	}
+	if snapshot.Manifest.Revision != revision {
+		return ErrReconciliationRequired
+	}
+	if !snapshot.ObservationPresent {
+		return nil
+	}
+	if err := lease.RetireObservation(ctx, snapshot.Observation.Revision); err != nil {
+		return errors.Join(ErrReconciliationRequired, err)
+	}
+	return nil
+}
+
 func (session *Session) abandon() error {
 	if session == nil {
 		return nil
 	}
+	session.observationMu.Lock()
+	defer session.observationMu.Unlock()
 	session.mu.Lock()
 	if session.state == StateClosed {
 		session.mu.Unlock()

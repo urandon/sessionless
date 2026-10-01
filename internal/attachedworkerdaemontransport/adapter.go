@@ -957,9 +957,7 @@ func classifyTerminal(
 	if cancelRevision > 0 && process.Cancelled {
 		return attachedworkerprotocol.TerminalCancelled, attachedworkerprotocol.TerminalResultCancelled
 	}
-	if runErr == nil && !process.Cancelled && !process.Deadline && process.ExitCode == 0 &&
-		process.FailureCode == "" && result.FailureCode == "" && process.DescendantsReaped &&
-		process.BoundaryReleased && process.CleanupSucceeded {
+	if result.Succeeded(runErr) {
 		return attachedworkerprotocol.TerminalSucceeded, attachedworkerprotocol.TerminalResultCompleted
 	}
 	return attachedworkerprotocol.TerminalFailed, attachedworkerprotocol.TerminalResultFailed

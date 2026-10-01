@@ -384,6 +384,11 @@ func (session *Session) persistReconnectCheckpoint(ctx context.Context, machine 
 	if session == nil || machine == nil {
 		return ErrInvalidAuthority
 	}
+	// Runtime observations and reconnect checkpoints share the installation's
+	// non-blocking local state lock. Serialize this session's writers so an
+	// ordinary status update cannot fence an otherwise valid exchange.
+	session.observationMu.Lock()
+	defer session.observationMu.Unlock()
 	snapshot, err := machine.Snapshot()
 	if err != nil {
 		return ErrReconciliationRequired

@@ -16,7 +16,7 @@ flowchart LR
     Developer["Developer / contract tests"]
     Control["Go control API"]
     YDB["YDB Local<br/>operational state"]
-    MinIO["MinIO<br/>S3-compatible blobs"]
+    MinIO["Silo (MinIO fork)<br/>S3-compatible blobs"]
     Queue["ElasticMQ<br/>SQS-shaped queues"]
     Telegram["Telegram fake<br/>updates + captures"]
     Sender["Telegram sender<br/>durable outbox consumer"]
@@ -47,8 +47,8 @@ flowchart LR
 | --- | --- | --- | --- |
 | YDB Local | `grpc://ydb-local:2136/local` | `grpc://127.0.0.1:2136/local` | `ydb-data`, `ydb-certs` |
 | YDB monitoring | `http://ydb-local:8765` | `http://localhost:8765` | n/a |
-| MinIO S3 API | `http://object-storage-local:9000` | `http://localhost:9000` | `object-storage-data` |
-| MinIO console | `http://object-storage-local:9001` | `http://localhost:9001` | `object-storage-data` |
+| Silo S3 API | `http://object-storage-local:9000` | `http://localhost:9000` | `object-storage-data` |
+| Silo console | `http://object-storage-local:9001` | `http://localhost:9001` | `object-storage-data` |
 | ElasticMQ SQS API | `http://queue-local:9324` | `http://localhost:9324` | intentionally ephemeral |
 | ElasticMQ UI | `http://queue-local:9325` | `http://localhost:9325` | intentionally ephemeral |
 | Telegram fake | `http://telegram-fake:8081` | `http://localhost:8081` | intentionally ephemeral |
@@ -62,6 +62,14 @@ defaults when no `.env` file is present. The committed access key, secret, and
 bot token values are deliberately local emulator credentials; they grant no
 access outside the fixed Compose project and must never be copied to cloud
 environments.
+
+The Compose stand uses the classic Silo release pinned by tag and multi-architecture
+manifest digest. Silo is a MinIO fork, and its image bundles the `mc` client used
+by `object-storage-init`; both services therefore pull the same image. The native
+macOS dockerless stand still uses its separately pinned MinIO binaries. This
+change does not affect production Yandex Object Storage. Keep existing local
+object-storage volumes intact when switching images; validate or back up any
+non-disposable data before a format upgrade.
 
 ## Lifecycle
 
@@ -84,7 +92,7 @@ for artifact provenance, setup, lifecycle, and limitations.
 1. Stop any existing control API, Telegram sender, and reconciler containers so
    a prior `restart: unless-stopped` process cannot run through a failed
    database gate.
-2. Build and start only infrastructure services: YDB, MinIO, ElasticMQ, and
+2. Build and start only infrastructure services: YDB, Silo, ElasticMQ, and
    the Telegram fake.
 3. Poll their host endpoints with explicit per-request connect/total timeouts
    until they are live or emit scoped service logs.

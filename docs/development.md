@@ -242,7 +242,7 @@ curl http://127.0.0.1:8080/healthz
 curl http://127.0.0.1:8081/healthz
 ```
 
-`make dev-up` first starts pinned YDB Local, MinIO, ElasticMQ, and the
+`make dev-up` first starts pinned YDB Local, Silo (a MinIO fork), ElasticMQ, and the
 deterministic Telegram fake. It waits for the infrastructure endpoints,
 creates the local bucket, and applies the embedded YDB migrations. Only after
 that schema barrier does it start the control API, queue-driven Telegram
@@ -299,7 +299,8 @@ are accepted only when the BFF itself runs in the local environment. See
 bootstrap procedure, and threat boundary.
 
 The Web canonical API additionally needs the existing Object Storage and
-scheduler-wake queue coordinates. Local static S3 credentials use MinIO;
+scheduler-wake queue coordinates. Local static S3 credentials use Silo in the
+Compose stand and MinIO in the native dockerless stand;
 cloud deployments set `S3_IAM_METADATA_CREDENTIALS=true` so both exact-object
 operations and short-lived Yandex Object Storage capabilities use the workload
 service account. `SESSION_API_ID_HMAC_KEY` must be at least 32 bytes and stable

@@ -8,9 +8,109 @@ import (
 	"testing"
 	"time"
 
+	"gitcode.com/urandon/sessionless/internal/attachedworkerprotocol"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
+
+func TestAttachedWorkerSealedInputAuthorizationReadsClaimedHeadTransactionally(t *testing.T) {
+	store, client, worker, connection, secretDigest, _, _, now := readyAttachedWorkerForDrain(t, "sealed-input")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	offer := attachedWorkerOfferForDrain(t, store, client, worker, connection, now, "sealed-input")
+	batch, err := attachedworkerprotocol.DecodeBatchV1(offer.Outbound.Payload)
+	if err != nil || len(batch.Frames) != 1 || batch.Frames[0].LeaseOffer == nil {
+		t.Fatalf("decode offered attempt: frames=%d error=%v", len(batch.Frames), err)
+	}
+	offerFrame := batch.Frames[0]
+	connection, found, err := store.LoadAttachedWorkerConnection(ctx, worker.TenantID, worker.OwnerUserID, worker.ID)
+	if err != nil || !found {
+		t.Fatalf("offered connection = %#v found=%t err=%v", connection, found, err)
+	}
+	request := ports.AttachedWorkerSealedInputAuthorization{
+		TenantID: worker.TenantID, OwnerUserID: worker.OwnerUserID, WorkerID: worker.ID,
+		ConnectionID: connection.ID, PresentedSecretDigest: secretDigest,
+		EnrollmentGeneration: connection.EnrollmentGeneration, ConnectionGeneration: connection.ConnectionGeneration,
+		RunID: offer.Attempt.RunID, AttemptID: offer.Attempt.AttemptID, AttemptSequence: 1,
+		LeaseID: offer.Attempt.LeaseID, LeaseGeneration: offer.Attempt.LeaseGeneration,
+		FenceToken: offer.Attempt.FenceToken, LeaseExpiresAtUnixMicro: offer.Attempt.LeaseExpiresAt.UnixMicro(),
+		ContextDigest: offer.Attempt.ContextDigest, CapabilityDigest: offer.Attempt.CapabilityDigest,
+		PolicyDigest: offer.Attempt.PolicyDigest,
+	}
+	if result, err := store.AuthorizeAttachedWorkerSealedInput(ctx, request); err != nil || result.Status != ports.AttachedWorkerExecutionDenied {
+		t.Fatalf("offered attempt authorized: result=%+v error=%v", result, err)
+	}
+	claimFrame := attachedworkerprotocol.FrameV1{
+		Version:   offerFrame.Version,
+		MessageID: attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionWorkerToPlatform, connection.WorkerSequence+1),
+		WorkerID:  string(worker.ID), EnrollmentGeneration: connection.EnrollmentGeneration,
+		ConnectionGeneration: connection.ConnectionGeneration, Sequence: connection.WorkerSequence + 1,
+		Ack: offerFrame.Sequence, Kind: attachedworkerprotocol.MessageLeaseClaim,
+		LeaseClaim: &attachedworkerprotocol.LeaseClaimV1{Binding: offerFrame.LeaseOffer.Binding, AttemptSequence: 1},
+	}
+	claim, err := store.ExchangeAttachedWorkerAttempt(ctx, ports.AttachedWorkerAttemptExchange{
+		TenantID: worker.TenantID, OwnerUserID: worker.OwnerUserID, WorkerID: worker.ID,
+		ConnectionID: connection.ID, AttemptID: offer.Attempt.AttemptID, LeaseGeneration: offer.Attempt.LeaseGeneration,
+		PresentedSecretDigest: secretDigest, InboundFrame: claimFrame,
+	})
+	if err != nil || claim.Status != ports.AttachedWorkerExecutionApplied || claim.Attempt.State != domain.AttachedWorkerAttemptClaimed {
+		t.Fatalf("claim attempt: result=%+v error=%v", claim, err)
+	}
+	result, err := store.AuthorizeAttachedWorkerSealedInput(ctx, request)
+	if err != nil || result.Status != ports.AttachedWorkerExecutionApplied || result.AttemptRevision != claim.Attempt.Revision {
+		t.Fatalf("claimed head authorization: result=%+v error=%v want revision=%d", result, err, claim.Attempt.Revision)
+	}
+	for _, test := range []struct {
+		name   string
+		change func(*ports.AttachedWorkerSealedInputAuthorization)
+	}{
+		{name: "foreign owner", change: func(r *ports.AttachedWorkerSealedInputAuthorization) {
+			r.OwnerUserID = domain.UserID(uniqueID("foreign-owner"))
+		}},
+		{name: "wrong bearer", change: func(r *ports.AttachedWorkerSealedInputAuthorization) {
+			r.PresentedSecretDigest = domain.DigestAttachedWorkerConnectionSecret([]byte("wrong bearer"))
+		}},
+		{name: "rotated connection", change: func(r *ports.AttachedWorkerSealedInputAuthorization) {
+			r.ConnectionID = domain.AttachedWorkerConnectionID(uniqueID("foreign-connection"))
+		}},
+		{name: "mismatched generation", change: func(r *ports.AttachedWorkerSealedInputAuthorization) { r.ConnectionGeneration++ }},
+		{name: "changed head revision", change: func(r *ports.AttachedWorkerSealedInputAuthorization) {
+			r.ExpectedAttemptRevision = result.AttemptRevision + 1
+		}},
+		{name: "changed expiry", change: func(r *ports.AttachedWorkerSealedInputAuthorization) { r.LeaseExpiresAtUnixMicro++ }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := request
+			test.change(&candidate)
+			denied, err := store.AuthorizeAttachedWorkerSealedInput(ctx, candidate)
+			if err != nil || denied.Status != ports.AttachedWorkerExecutionDenied || denied.AttemptRevision != 0 {
+				t.Fatalf("divergent durable head authorized: result=%+v error=%v", denied, err)
+			}
+		})
+	}
+	worker, found, err = store.LoadAttachedWorker(ctx, worker.TenantID, worker.OwnerUserID, worker.ID)
+	if err != nil || !found {
+		t.Fatalf("worker before revoke = %#v found=%t err=%v", worker, found, err)
+	}
+	revoked := worker
+	revoked.DesiredState = domain.AttachedWorkerDesiredRevoked
+	revoked.EnrollmentGeneration++
+	revoked.ConnectionGeneration++
+	revoked.Revision++
+	revoked.UpdatedAt = worker.UpdatedAt.Add(time.Microsecond).UTC().Truncate(time.Microsecond)
+	revoked.RevokedAt = revoked.UpdatedAt
+	revokeAudit := attachedWorkerMutationAudit(revoked, domain.AttachedWorkerAuditWorkerRevoked, revoked.UpdatedAt)
+	didRevoke, err := store.RevokeAttachedWorker(ctx, ports.AttachedWorkerRevokeMutation{
+		TenantID: worker.TenantID, OwnerUserID: worker.OwnerUserID, WorkerID: worker.ID,
+		ExpectedRevision: worker.Revision, Next: revoked, Audit: revokeAudit, At: revoked.UpdatedAt,
+	})
+	if err != nil || !didRevoke {
+		t.Fatalf("revoke after claim = %t, %v", didRevoke, err)
+	}
+	if denied, err := store.AuthorizeAttachedWorkerSealedInput(ctx, request); err != nil || denied.Status != ports.AttachedWorkerExecutionDenied {
+		t.Fatalf("revoked durable worker authorized: result=%+v error=%v", denied, err)
+	}
+}
 
 func TestAttachedWorkerAttemptDeadlinePaginationIsLosslessAndBounded(t *testing.T) {
 	store, client := openStore(t)

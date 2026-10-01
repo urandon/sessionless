@@ -612,6 +612,96 @@ func TestAttachedWorkerPollAuthorityAndPendingSelection(t *testing.T) {
 	}
 }
 
+func TestAttachedWorkerSealedInputRequiresExactLiveClaimedHead(t *testing.T) {
+	t.Parallel()
+	at := time.Unix(100, 0).UTC()
+	secret := domain.DigestAttachedWorkerConnectionSecret([]byte("sealed-input-secret"))
+	capability := domain.DigestAttachedWorkerCapability([]byte("sealed-input-capability"))
+	policy := domain.AttachedWorkerPolicyDigest(domain.DigestAttachedWorkerCapability([]byte("sealed-input-policy")))
+	contextDigest := domain.AttachedWorkerContextDigest(domain.DigestAttachedWorkerCapability([]byte("sealed-input-context")))
+	fence, err := domain.NewAttachedWorkerFenceTokenV1("tenant-1", "owner-1", "worker-1", "run-1", "attempt-1", "lease-1", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := ports.AttachedWorkerSealedInputAuthorization{
+		TenantID: "tenant-1", OwnerUserID: "owner-1", WorkerID: "worker-1", ConnectionID: "connection-1",
+		PresentedSecretDigest: secret, EnrollmentGeneration: 2, ConnectionGeneration: 3,
+		RunID: "run-1", AttemptID: "attempt-1", AttemptSequence: 1, LeaseID: "lease-1", LeaseGeneration: 4,
+		FenceToken: fence, LeaseExpiresAtUnixMicro: at.Add(time.Minute).UnixMicro(),
+		ContextDigest: contextDigest, CapabilityDigest: capability, PolicyDigest: policy,
+	}
+	worker := domain.AttachedWorker{
+		TenantID: request.TenantID, OwnerUserID: request.OwnerUserID, ID: request.WorkerID,
+		EnrollmentGeneration: 2, ConnectionGeneration: 3, DesiredState: domain.AttachedWorkerDesiredActive,
+	}
+	connection := domain.AttachedWorkerConnection{
+		TenantID: request.TenantID, OwnerUserID: request.OwnerUserID, WorkerID: request.WorkerID,
+		ID: request.ConnectionID, EnrollmentGeneration: 2, ConnectionGeneration: 3,
+		SecretDigest: secret, State: domain.AttachedWorkerConnectionOnline,
+		AuthExpiresAt: at.Add(time.Hour), PresenceExpiresAt: at.Add(time.Minute),
+	}
+	attempt := domain.AttachedWorkerAttemptV1{
+		TenantID: request.TenantID, OwnerUserID: request.OwnerUserID, WorkerID: request.WorkerID,
+		ConnectionID: request.ConnectionID, EnrollmentGeneration: 2, ConnectionGeneration: 3,
+		RunID: request.RunID, AttemptID: request.AttemptID, LeaseID: request.LeaseID,
+		LeaseGeneration: request.LeaseGeneration, FenceToken: fence,
+		LeaseExpiresAt: at.Add(time.Minute), ContextDigest: contextDigest,
+		CapabilityDigest: capability, PolicyDigest: policy,
+		State: domain.AttachedWorkerAttemptClaimed, Revision: 7,
+	}
+	if err := validateAttachedWorkerSealedInputAuthorization(request); err != nil ||
+		!attachedWorkerSealedInputAuthorized(request, at, worker, connection, attempt) {
+		t.Fatalf("exact claimed head denied: validation=%v", err)
+	}
+	for _, test := range []struct {
+		name   string
+		change func(*ports.AttachedWorkerSealedInputAuthorization, *domain.AttachedWorker, *domain.AttachedWorkerConnection, *domain.AttachedWorkerAttemptV1)
+	}{
+		{name: "wrong bearer", change: func(r *ports.AttachedWorkerSealedInputAuthorization, _ *domain.AttachedWorker, _ *domain.AttachedWorkerConnection, _ *domain.AttachedWorkerAttemptV1) {
+			r.PresentedSecretDigest = domain.DigestAttachedWorkerConnectionSecret([]byte("wrong"))
+		}},
+		{name: "foreign owner", change: func(r *ports.AttachedWorkerSealedInputAuthorization, _ *domain.AttachedWorker, _ *domain.AttachedWorkerConnection, _ *domain.AttachedWorkerAttemptV1) {
+			r.OwnerUserID = "owner-2"
+		}},
+		{name: "rotated connection", change: func(_ *ports.AttachedWorkerSealedInputAuthorization, _ *domain.AttachedWorker, c *domain.AttachedWorkerConnection, _ *domain.AttachedWorkerAttemptV1) {
+			c.ID = "connection-2"
+		}},
+		{name: "stale generation", change: func(r *ports.AttachedWorkerSealedInputAuthorization, _ *domain.AttachedWorker, _ *domain.AttachedWorkerConnection, _ *domain.AttachedWorkerAttemptV1) {
+			r.ConnectionGeneration++
+		}},
+		{name: "offered not claimed", change: func(_ *ports.AttachedWorkerSealedInputAuthorization, _ *domain.AttachedWorker, _ *domain.AttachedWorkerConnection, a *domain.AttachedWorkerAttemptV1) {
+			a.State = domain.AttachedWorkerAttemptOffered
+		}},
+		{name: "cancel requested", change: func(_ *ports.AttachedWorkerSealedInputAuthorization, _ *domain.AttachedWorker, _ *domain.AttachedWorkerConnection, a *domain.AttachedWorkerAttemptV1) {
+			a.State = domain.AttachedWorkerAttemptCancelRequested
+		}},
+		{name: "terminal pending", change: func(_ *ports.AttachedWorkerSealedInputAuthorization, _ *domain.AttachedWorker, _ *domain.AttachedWorkerConnection, a *domain.AttachedWorkerAttemptV1) {
+			a.State = domain.AttachedWorkerAttemptTerminalPending
+		}},
+		{name: "lease expired", change: func(_ *ports.AttachedWorkerSealedInputAuthorization, _ *domain.AttachedWorker, _ *domain.AttachedWorkerConnection, a *domain.AttachedWorkerAttemptV1) {
+			a.LeaseExpiresAt = at
+		}},
+		{name: "wrong fence", change: func(r *ports.AttachedWorkerSealedInputAuthorization, _ *domain.AttachedWorker, _ *domain.AttachedWorkerConnection, _ *domain.AttachedWorkerAttemptV1) {
+			r.FenceToken = domain.AttachedWorkerFenceToken(domain.DigestAttachedWorkerCapability([]byte("wrong fence")))
+		}},
+		{name: "wrong context digest", change: func(r *ports.AttachedWorkerSealedInputAuthorization, _ *domain.AttachedWorker, _ *domain.AttachedWorkerConnection, _ *domain.AttachedWorkerAttemptV1) {
+			r.ContextDigest = domain.AttachedWorkerContextDigest(domain.DigestAttachedWorkerCapability([]byte("wrong context")))
+		}},
+		{name: "head changed during read", change: func(r *ports.AttachedWorkerSealedInputAuthorization, _ *domain.AttachedWorker, _ *domain.AttachedWorkerConnection, a *domain.AttachedWorkerAttemptV1) {
+			r.ExpectedAttemptRevision = a.Revision
+			a.Revision++
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			r, w, c, a := request, worker, connection, attempt
+			test.change(&r, &w, &c, &a)
+			if attachedWorkerSealedInputAuthorized(r, at, w, c, a) {
+				t.Fatalf("divergent sealed-input authority accepted: request=%+v state=%s revision=%d", r, a.State, a.Revision)
+			}
+		})
+	}
+}
+
 func TestMalformedDurableAttemptMessageConflicts(t *testing.T) {
 	t.Parallel()
 	message := domain.AttachedWorkerAttemptMessageV1{

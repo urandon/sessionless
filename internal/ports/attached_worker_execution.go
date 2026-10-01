@@ -64,6 +64,42 @@ type AttachedWorkerAttemptPoll struct {
 	PresentedSecretDigest domain.AttachedWorkerConnectionSecretDigest
 }
 
+// AttachedWorkerSealedInputAuthorization is a read-only, exact-head gate for
+// materialization after LeaseAccepted. The store must check the presented
+// connection secret, current connection, claimed attempt, lease time, and all
+// immutable bindings in one authoritative transaction before any input bytes
+// are fetched. ExpectedAttemptRevision lets a caller repeat the gate after
+// reading blobs and reject a head changed during that read.
+type AttachedWorkerSealedInputAuthorization struct {
+	TenantID                domain.TenantID
+	OwnerUserID             domain.UserID
+	WorkerID                domain.AttachedWorkerID
+	ConnectionID            domain.AttachedWorkerConnectionID
+	PresentedSecretDigest   domain.AttachedWorkerConnectionSecretDigest
+	EnrollmentGeneration    uint64
+	ConnectionGeneration    uint64
+	RunID                   domain.RunID
+	AttemptID               domain.AttemptID
+	AttemptSequence         uint64
+	LeaseID                 domain.LeaseID
+	LeaseGeneration         uint64
+	FenceToken              domain.AttachedWorkerFenceToken
+	LeaseExpiresAtUnixMicro int64
+	ContextDigest           domain.AttachedWorkerContextDigest
+	CapabilityDigest        domain.AttachedWorkerCapabilityDigest
+	PolicyDigest            domain.AttachedWorkerPolicyDigest
+	ExpectedAttemptRevision uint64
+}
+
+type AttachedWorkerSealedInputAuthorizationResult struct {
+	Status          AttachedWorkerExecutionStatus
+	AttemptRevision uint64
+}
+
+type AttachedWorkerSealedInputAuthorizer interface {
+	AuthorizeAttachedWorkerSealedInput(context.Context, AttachedWorkerSealedInputAuthorization) (AttachedWorkerSealedInputAuthorizationResult, error)
+}
+
 type AttachedWorkerAttemptResult struct {
 	Status   AttachedWorkerExecutionStatus
 	Attempt  domain.AttachedWorkerAttemptV1

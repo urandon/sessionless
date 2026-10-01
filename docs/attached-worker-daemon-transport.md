@@ -198,13 +198,26 @@ redirects and caps request, response, and content sizes. The route is
 injectable into `controlapi.Options`, but is **not** wired into the shipped
 control API; the feature remains default-off.
 
+The default-off `attachedworkersealedinput.ConnectSyntheticPinnedRuntime`
+constructor now composes that bounded source with the pinned foreground
+runtime and a credential lifecycle that denies every provider operation.
+`SessionSourceFactory` receives the exact bearer only from the authenticated
+session's `ExchangeFactory.Open`; it cannot fetch sealed input before that
+connection is accepted, and its exchange close clears the retained bearer.
+`SyntheticRuntime` also owns explicit pre-run and active-run cleanup, including
+an interrupted run and failed post-connect construction. This is a library
+entrypoint only: no shipped command invokes it, and the control API still does
+not mount the optional sealed-input route. The local synthetic tests prove
+this ownership seam, not a real OCI/provider turn or a complete end-to-end
+activation/restart demonstration.
+
 The adapter and feature-disabled runtime are under
 `internal/attachedworkerdaemontransport`. The session exposes a semantic
 `ExchangeAction` method so callers cannot forge raw frame scope, generations,
 connection sequence, or acknowledgement values. Both contracts remain
 unreachable from `attachedworkerforeground.New`.
 
-A later slice must complete durable restart/reconnect reconciliation for
-ambiguous active cancellation, product activation and local control,
-packaging, and production sleep/wake and offline evidence. The two-owner
+A later slice must complete the joined accepted-attempt and durable
+restart/reconnect proof, product activation and local control, packaging,
+and production sleep/wake and offline evidence. The two-owner
 security and recovery proof in #79 remains a release gate.

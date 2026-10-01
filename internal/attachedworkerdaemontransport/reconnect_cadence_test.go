@@ -27,6 +27,7 @@ type fakeRecoveredSession struct {
 	recovery    attachedworkersession.ReconnectRecoveryV1
 	recoveryErr error
 	closeCalls  int
+	closeErr    error
 }
 
 func (session *fakeRecoveredSession) ReconnectRecovery() (attachedworkersession.ReconnectRecoveryV1, error) {
@@ -35,7 +36,7 @@ func (session *fakeRecoveredSession) ReconnectRecovery() (attachedworkersession.
 
 func (session *fakeRecoveredSession) Close(context.Context) error {
 	session.closeCalls++
-	return nil
+	return session.closeErr
 }
 
 func idleRecoveredFixture(t *testing.T) (*adapterFixture, *fakeRecoveredSession, *fakeReconnectPort) {
@@ -70,7 +71,11 @@ func TestReconnectIdleCadenceStopsBeforePollOnFailedOrActiveRecovery(t *testing.
 	}{
 		{name: "server reconciliation failed", prepare: func(_ *fakeRecoveredSession, port *fakeReconnectPort) {
 			port.err = attachedworkersession.ErrReconciliationRequired
+			port.session = nil
 		}, wantCall: 1, wantClose: 0},
+		{name: "ambiguous reconnect returns an acquired session", prepare: func(_ *fakeRecoveredSession, port *fakeReconnectPort) {
+			port.err = attachedworkersession.ErrReconciliationRequired
+		}, wantCall: 1, wantClose: 1},
 		{name: "active attempt is not idle poll authority", prepare: func(session *fakeRecoveredSession, _ *fakeReconnectPort) {
 			session.recovery.AttemptState = attachedworkerprotocol.AttemptClaimed
 		}, wantCall: 1, wantClose: 1},
@@ -93,6 +98,20 @@ func TestReconnectIdleCadenceStopsBeforePollOnFailedOrActiveRecovery(t *testing.
 				t.Fatalf("recovery result=%t err=%v reconnect_calls=%d close_calls=%d actions=%d", result != nil, err, port.calls, session.closeCalls, len(session.actions))
 			}
 		})
+	}
+}
+
+func TestReconnectIdleCadencePreservesAmbiguousErrorAndCleanupFailure(t *testing.T) {
+	fixture, session, port := idleRecoveredFixture(t)
+	connectionErr := errors.New("ambiguous reconnect")
+	cleanupErr := errors.New("close failed")
+	port.err = connectionErr
+	session.closeErr = cleanupErr
+	result, err := reconnectIdleCadence(context.Background(), port, attachedworkersession.ReconnectInputV1{},
+		fixture.materializer, fixture.config, cadenceConfig(true))
+	if result != nil || !errors.Is(err, ErrReconciliationRequired) || !errors.Is(err, connectionErr) ||
+		!errors.Is(err, cleanupErr) || session.closeCalls != 1 || len(session.actions) != 0 {
+		t.Fatalf("result=%t error=%v close=%d actions=%d", result != nil, err, session.closeCalls, len(session.actions))
 	}
 }
 

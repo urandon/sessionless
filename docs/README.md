@@ -55,6 +55,10 @@ and link to it.
 
 ## Architecture
 
+- [Product UX cohorts and scope](product-ux-contract.md)
+- [Shared product design rules](design-rules.md)
+- [Tenant and federation administration authority](tenant-federation-admin-contract.md)
+- [Product UX backlog and conditional roadmap](product-ux-roadmap.md)
 - [Domain and runtime contracts](contracts.md)
 - [Canonical frontend ingress](canonical-ingress.md)
 - [Frontend-neutral session API](session-api.md)

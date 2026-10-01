@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -135,7 +136,16 @@ esac
 	}
 	exchange := &joinedExchange{binding: binding, terminalSeen: make(chan attachedworkerprotocol.TerminalV1, 1)}
 	factory := &joinedFactory{exchange: exchange}
-	authorizer := &joinedDenyAuthorizer{factory: factory}
+	authorizer := &joinedDenyAuthorizer{factory: factory, want: ports.AttachedWorkerSealedInputAuthorization{
+		TenantID: manifest.TenantID, OwnerUserID: manifest.OwnerUserID, WorkerID: manifest.WorkerID,
+		ConnectionID: "connection-joined", EnrollmentGeneration: manifest.EnrollmentGeneration, ConnectionGeneration: 1,
+		RunID: domain.RunID(binding.RunID), AttemptID: domain.AttemptID(binding.AttemptID), AttemptSequence: 1,
+		LeaseID: domain.LeaseID(binding.LeaseID), LeaseGeneration: binding.LeaseGeneration,
+		FenceToken: domain.AttachedWorkerFenceToken(binding.FenceToken), LeaseExpiresAtUnixMicro: binding.ExpiresAtUnixMicro,
+		ContextDigest:    domain.AttachedWorkerContextDigest(hex.EncodeToString(binding.ContextDigest)),
+		CapabilityDigest: domain.AttachedWorkerCapabilityDigest(hex.EncodeToString(binding.CapabilityDigest)),
+		PolicyDigest:     domain.AttachedWorkerPolicyDigest(hex.EncodeToString(binding.PolicyDigest)),
+	}}
 	service, err := NewService(authorizer, joinedNoJobStore{}, joinedNoBlobStore{})
 	if err != nil {
 		t.Fatal(err)
@@ -206,13 +216,48 @@ esac
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, command := range []string{"version", "info", "image inspect", "container ls"} {
-		if !strings.Contains(string(commands), command) {
-			t.Errorf("pinned OCI preflight omitted %q; commands=%q", command, commands)
+	wantCommands := []string{
+		"version --format {{json .}}",
+		"info --format {{json .}}",
+		"image inspect --format {{json .}} " + image,
+		"container ls --all --quiet --filter label=dev.sessionless.attached-worker.profile=sessionless.oci.docker.v1 " +
+			"--filter label=dev.sessionless.attached-worker.installation=install-joined " +
+			"--filter label=dev.sessionless.attached-worker.engine=engine-001-abcdef",
+	}
+	gotCommands := strings.Split(strings.TrimSpace(string(commands)), "\n")
+	if len(gotCommands) != len(wantCommands) {
+		t.Errorf("pinned OCI command count=%d, want %d; commands=%q", len(gotCommands), len(wantCommands), gotCommands)
+	} else {
+		for index, command := range wantCommands {
+			if gotCommands[index] != command {
+				t.Errorf("pinned OCI command %d=%q, want %q", index, gotCommands[index], command)
+			}
 		}
 	}
-	if strings.Contains(string(commands), "container create") || strings.Contains(string(commands), "container start") {
-		t.Errorf("denied input launched a container: %q", commands)
+	if got := exchange.closed.Load(); got != 1 {
+		t.Errorf("owned exchange close count=%d, want 1", got)
+	}
+	lease, err := store.AcquireRuntime(context.Background())
+	if err != nil {
+		t.Fatalf("runtime lease was not released: %v", err)
+	}
+	defer func() {
+		if err := lease.Close(); err != nil {
+			t.Errorf("close proof lease: %v", err)
+		}
+	}()
+	checkpoint, err := lease.LoadReconnectCheckpoint(context.Background())
+	if err != nil {
+		t.Fatalf("terminal checkpoint missing: %v", err)
+	}
+	if checkpoint.MachineSnapshot.Attempt.Summary.State != attachedworkerprotocol.AttemptTerminalCommitted ||
+		checkpoint.MachineSnapshot.Attempt.Summary.TerminalStatus != attachedworkerprotocol.TerminalFailed ||
+		checkpoint.MachineSnapshot.Attempt.Summary.TerminalResult != attachedworkerprotocol.TerminalResultFailed {
+		t.Errorf("persisted terminal checkpoint=%+v", checkpoint.MachineSnapshot.Attempt.Summary)
+	}
+	local, err := lease.LoadSnapshot(context.Background())
+	if err != nil || local.ObservationPresent {
+		t.Errorf("runtime observation not retired: present=%t error=%v", local.ObservationPresent, err)
 	}
 }
 
@@ -346,6 +391,7 @@ func (factory *joinedFactory) Open(_ attachedworkersession.ConnectionBindingV1, 
 
 type joinedDenyAuthorizer struct {
 	factory  *joinedFactory
+	want     ports.AttachedWorkerSealedInputAuthorization
 	mu       sync.Mutex
 	calls    int
 	badScope bool
@@ -355,9 +401,7 @@ func (authorizer *joinedDenyAuthorizer) AuthorizeSealedInputBearer(_ context.Con
 	authorizer.factory.mu.Lock()
 	validBearer := bytes.Equal(bearer, authorizer.factory.bearer)
 	authorizer.factory.mu.Unlock()
-	badScope := !validBearer || request.TenantID != "tenant-joined" || request.OwnerUserID != "user-joined" ||
-		request.WorkerID != "worker-joined" || request.ConnectionID != "connection-joined" ||
-		request.ConnectionGeneration != 1 || request.AttemptID != "attempt-joined" || request.AttemptSequence != 1
+	badScope := !validBearer || request != authorizer.want
 	authorizer.mu.Lock()
 	authorizer.calls++
 	authorizer.badScope = authorizer.badScope || badScope
@@ -385,6 +429,7 @@ type joinedExchange struct {
 	terminalSeen    chan attachedworkerprotocol.TerminalV1
 	steps           int
 	lastPlatformErr error
+	closed          atomic.Int32
 }
 
 func (exchange *joinedExchange) Exchange(_ context.Context, batch attachedworkerprotocol.BatchV1) (*attachedworkerprotocol.BatchV1, error) {
@@ -434,4 +479,7 @@ func (exchange *joinedExchange) Exchange(_ context.Context, batch attachedworker
 	return &attachedworkerprotocol.BatchV1{Version: worker.Version, Frames: []attachedworkerprotocol.FrameV1{platform}}, nil
 }
 
-func (exchange *joinedExchange) Close() error { return nil }
+func (exchange *joinedExchange) Close() error {
+	exchange.closed.Add(1)
+	return nil
+}

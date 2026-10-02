@@ -74,6 +74,25 @@ func ConnectSyntheticPinnedRuntime(ctx context.Context, config SyntheticRuntimeC
 	})
 }
 
+// ReconnectSyntheticPinnedRuntime resumes only a durably reconciled idle
+// installation. The underlying pinned connector compares the exact local
+// checkpoint with the server head before it permits another poll. Active,
+// draining, terminal, or ambiguous recovery never becomes process authority.
+// Like the initial constructor, this entrypoint is library-only and default-off.
+func ReconnectSyntheticPinnedRuntime(ctx context.Context, config SyntheticRuntimeConfig) (*SyntheticRuntime, error) {
+	return connectSyntheticPinnedRuntime(ctx, config, func(ctx context.Context, source *SessionSourceFactory, materializer *attachedworkerdaemontransport.BoundMaterializer) (syntheticRuntimePort, error) {
+		runtime, err := attachedworkerdaemontransport.ReconnectPinnedForegroundRuntime(
+			ctx, config.Store, config.Bootstrap, source, config.Session,
+			attachedworkersession.ReconnectInputV1(config.Connect), materializer, config.Adapter,
+			config.Poll, config.Stack, DeniedCredentialLifecycle{}, config.Runtime,
+		)
+		if err != nil || runtime == nil {
+			return nil, err
+		}
+		return runtime, nil
+	})
+}
+
 func connectSyntheticPinnedRuntime(
 	ctx context.Context,
 	config SyntheticRuntimeConfig,

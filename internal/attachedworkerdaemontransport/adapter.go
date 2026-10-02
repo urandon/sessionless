@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemon"
@@ -115,6 +116,10 @@ type Config struct {
 	ActiveCancelTimeout    time.Duration
 	ReportTimeout          time.Duration
 	Now                    func() time.Time
+	// ActiveHeartbeatSettled is an optional, content-free observation counter
+	// incremented after an active heartbeat has fully settled in the session.
+	// It grants no process or protocol authority.
+	ActiveHeartbeatSettled *atomic.Uint64
 }
 
 type MaterializationRequestV1 struct {
@@ -398,6 +403,9 @@ func (adapter *Adapter) pollActiveControl(
 		return "", false, errors.Join(ErrReconciliationRequired, classifySessionError(err))
 	}
 	if response == nil {
+		if adapter.config.ActiveHeartbeatSettled != nil {
+			adapter.config.ActiveHeartbeatSettled.Add(1)
+		}
 		return "", false, nil
 	}
 	if !frameMatchesCurrentSession(*response, adapter.session.Snapshot()) {

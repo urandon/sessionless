@@ -227,3 +227,15 @@ func TestSyntheticPinnedConstructorRejectsInvalidPreflightBeforeAnyEffect(t *tes
 		t.Fatalf("invalid preflight owner=%v err=%v exchange opens=%d", owner, err, exchange.calls)
 	}
 }
+
+func TestSyntheticPinnedReconnectRejectsInvalidPreflightBeforeAnyEffect(t *testing.T) {
+	exchange := &exchangeFixture{port: &exchangePortFixture{}}
+	config, _, closeServer := syntheticConfig(t, exchange)
+	defer closeServer()
+	// Reconnect must not bypass the same capability/profile and pinned-stack
+	// preflight as the initial connection, even with a local checkpoint.
+	owner, err := ReconnectSyntheticPinnedRuntime(context.Background(), config)
+	if owner != nil || !errors.Is(err, attachedworkerdaemontransport.ErrInvalidAuthority) || exchange.calls != 0 {
+		t.Fatalf("invalid reconnect preflight owner=%v err=%v exchange opens=%d", owner, err, exchange.calls)
+	}
+}

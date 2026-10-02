@@ -284,6 +284,80 @@ func TestPackagePlanAndApplyStayUnregistered(t *testing.T) {
 	}
 }
 
+func TestPackageRollbackCLIRequiresExactReviewedPlan(t *testing.T) {
+	root, _ := initializeCLIStore(t)
+	store, err := attachedworkerlocal.NewStore(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := store.LoadSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mode := string(attachedworkerpackage.ModeSystemdUser)
+	if runtime.GOOS == "darwin" {
+		mode = string(attachedworkerpackage.ModeLaunchd)
+	}
+	base := []string{"--state-dir", root, "--package-mode", mode,
+		"--install-dir", filepath.Join(filepath.Dir(root), "units"),
+		"--binary", snapshot.Manifest.OCI.DockerPath,
+		"--binary-sha256", snapshot.Manifest.OCI.DockerSHA256}
+	planAndApply := func(args []string, revision uint64) attachedworkerpackage.PlanV1 {
+		t.Helper()
+		flags := append(append([]string{}, args...), "--expected-install-revision", fmt.Sprint(revision))
+		var output bytes.Buffer
+		if code := run(append([]string{"package-plan"}, flags...), &output); code != 0 {
+			t.Fatalf("package plan exit=%d output=%s", code, output.String())
+		}
+		var plan attachedworkerpackage.PlanV1
+		if err := json.Unmarshal(output.Bytes(), &plan); err != nil {
+			t.Fatal(err)
+		}
+		output.Reset()
+		applyArgs := append(append([]string{}, flags...), "--plan-sha256", plan.PlanSHA256)
+		if code := run(append([]string{"package-apply"}, applyArgs...), &output); code != 0 {
+			t.Fatalf("package apply exit=%d output=%s", code, output.String())
+		}
+		return plan
+	}
+	first := planAndApply(base, 0)
+	newBinary := filepath.Join(filepath.Dir(root), "attached-worker-v2")
+	newContents := []byte("#!/bin/sh\nexit 2\n")
+	if err := os.WriteFile(newBinary, newContents, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	updatedBase := append([]string{}, base...)
+	updatedBase[len(updatedBase)-3] = newBinary
+	updatedBase[len(updatedBase)-1] = fmt.Sprintf("%x", sha256.Sum256(newContents))
+	second := planAndApply(updatedBase, 1)
+	rollbackFlags := append(append([]string{}, base...), "--expected-install-revision", "2")
+	var output bytes.Buffer
+	if code := run(append([]string{"package-rollback-plan"}, rollbackFlags...), &output); code != 0 {
+		t.Fatalf("rollback plan exit=%d output=%s", code, output.String())
+	}
+	var plan attachedworkerpackage.RollbackPlanV1
+	if err := json.Unmarshal(output.Bytes(), &plan); err != nil || plan.TargetUnitSHA256 != first.UnitSHA256 ||
+		plan.CurrentUnitSHA256 != second.UnitSHA256 {
+		t.Fatalf("rollback plan=%+v err=%v", plan, err)
+	}
+	output.Reset()
+	badApply := append(append([]string{}, rollbackFlags...), "--plan-sha256", strings.Repeat("0", 64))
+	if code := run(append([]string{"package-rollback-apply"}, badApply...), &output); code != 1 ||
+		!strings.Contains(output.String(), `"state_conflict"`) {
+		t.Fatalf("unreviewed rollback exit=%d output=%s", code, output.String())
+	}
+	output.Reset()
+	applyArgs := append(append([]string{}, rollbackFlags...), "--plan-sha256", plan.PlanSHA256)
+	if code := run(append([]string{"package-rollback-apply"}, applyArgs...), &output); code != 0 {
+		t.Fatalf("rollback apply exit=%d output=%s", code, output.String())
+	}
+	var receipt attachedworkerpackage.ReceiptV1
+	if err := json.Unmarshal(output.Bytes(), &receipt); err != nil || receipt.InstallRevision != 3 ||
+		receipt.UnitSHA256 != first.UnitSHA256 || receipt.Registration != "not_attempted" {
+		t.Fatalf("rollback receipt=%+v err=%v", receipt, err)
+	}
+}
+
 func initializeCLIStore(t *testing.T) (string, ed25519.PrivateKey) {
 	t.Helper()
 	parent := shortCLIHome(t)

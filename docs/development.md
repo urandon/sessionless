@@ -187,7 +187,9 @@ not contact an engine or provider.
 The #137 [service package staging and local control](attached-worker-packaging.md)
 adds a single lease-holding, still feature-disabled `attached-worker serve`
 mode, a versioned permission-bound local status/doctor/drain/stop endpoint,
-and exact launchd/systemd-user/rootless-container artifact plan/apply receipts.
+and exact launchd/systemd-user/rootless-container artifact plan/apply/rollback
+receipts. `make attached-worker-build` builds only its native binary;
+`make attached-worker-package-test` repeats its focused race/shuffle tests.
 Staging does not register or start an OS service or container, and does not
 enable transport, credentials, harness execution, or provider calls. #137
 remains open until those separate packaging and platform gates are proved.

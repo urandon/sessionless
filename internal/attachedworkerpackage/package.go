@@ -64,6 +64,7 @@ type PlanV1 struct {
 	UnitPath                string `json:"unit_path"`
 	UnitSHA256              string `json:"unit_sha256"`
 	RollbackSHA256          string `json:"rollback_sha256,omitempty"`
+	RollbackReceiptSHA256   string `json:"rollback_receipt_sha256,omitempty"`
 	BinarySHA256            string `json:"binary_sha256"`
 	ContainerImage          string `json:"container_image,omitempty"`
 	PlanSHA256              string `json:"plan_sha256"`
@@ -72,17 +73,20 @@ type PlanV1 struct {
 // ReceiptV1 is local package-stage evidence, not service registration or
 // runtime health. A mismatch with the staged unit fails closed.
 type ReceiptV1 struct {
-	Version          uint32 `json:"version"`
-	InstallRevision  uint64 `json:"install_revision"`
-	ManifestRevision uint64 `json:"manifest_revision"`
-	OwnerUserID      string `json:"owner_user_id"`
-	WorkerID         string `json:"worker_id"`
-	Mode             Mode   `json:"mode"`
-	UnitSHA256       string `json:"unit_sha256"`
-	BinarySHA256     string `json:"binary_sha256"`
-	PlanSHA256       string `json:"plan_sha256"`
-	RollbackSHA256   string `json:"rollback_sha256,omitempty"`
-	Registration     string `json:"registration"`
+	Version               uint32 `json:"version"`
+	InstallRevision       uint64 `json:"install_revision"`
+	ManifestRevision      uint64 `json:"manifest_revision"`
+	OwnerUserID           string `json:"owner_user_id"`
+	WorkerID              string `json:"worker_id"`
+	Mode                  Mode   `json:"mode"`
+	UnitSHA256            string `json:"unit_sha256"`
+	BinaryPath            string `json:"binary_path,omitempty"`
+	BinarySHA256          string `json:"binary_sha256"`
+	ContainerImage        string `json:"container_image,omitempty"`
+	PlanSHA256            string `json:"plan_sha256"`
+	RollbackSHA256        string `json:"rollback_sha256,omitempty"`
+	RollbackReceiptSHA256 string `json:"rollback_receipt_sha256,omitempty"`
+	Registration          string `json:"registration"`
 }
 
 // Plan reads the exact enrolled installation, pinned binary, prior staged
@@ -124,6 +128,7 @@ func Plan(ctx context.Context, config Config, expectedInstallRevision uint64) (P
 	}
 	if len(previousUnit) > 0 {
 		plan.RollbackSHA256 = digest(previousUnit)
+		plan.RollbackReceiptSHA256 = digest(encodeReceipt(previous))
 	}
 	plan.PlanSHA256 = planDigest(plan)
 	return plan, nil
@@ -159,7 +164,7 @@ func Apply(ctx context.Context, config Config, plan PlanV1) (receiptResult Recei
 		return ReceiptV1{}, ErrConflict
 	}
 	unitPath, receiptPath := paths(config, snapshot.Manifest)
-	_, oldUnit, err := readPrevious(config.InstallDir, unitPath, receiptPath, snapshot.Manifest)
+	previous, oldUnit, err := readPrevious(config.InstallDir, unitPath, receiptPath, snapshot.Manifest)
 	if err != nil {
 		return ReceiptV1{}, err
 	}
@@ -170,17 +175,26 @@ func Apply(ctx context.Context, config Config, plan PlanV1) (receiptResult Recei
 		Version: VersionV1, InstallRevision: plan.NextInstallRevision,
 		ManifestRevision: plan.ManifestRevision, OwnerUserID: plan.OwnerUserID,
 		WorkerID: plan.WorkerID, Mode: plan.Mode, UnitSHA256: plan.UnitSHA256,
-		BinarySHA256: plan.BinarySHA256, PlanSHA256: plan.PlanSHA256,
-		RollbackSHA256: plan.RollbackSHA256, Registration: "not_attempted",
+		BinaryPath: config.BinaryPath, BinarySHA256: plan.BinarySHA256,
+		ContainerImage: plan.ContainerImage, PlanSHA256: plan.PlanSHA256,
+		RollbackSHA256:        plan.RollbackSHA256,
+		RollbackReceiptSHA256: plan.RollbackReceiptSHA256, Registration: "not_attempted",
 	}
-	encoded, err := json.Marshal(receipt)
-	if err != nil {
-		return ReceiptV1{}, ErrInvalid
+	if len(oldUnit) > 0 {
+		if digest(encodeReceipt(previous)) != plan.RollbackReceiptSHA256 {
+			return ReceiptV1{}, ErrConflict
+		}
+		if err := archiveBundle(unitPath, oldUnit, previous); err != nil {
+			return ReceiptV1{}, err
+		}
+	}
+	if err := archiveBundle(unitPath, unit, receipt); err != nil {
+		return ReceiptV1{}, err
 	}
 	if err := writeAtomic(unitPath, unit); err != nil {
 		return ReceiptV1{}, errors.Join(ErrAmbiguous, err)
 	}
-	if err := writeAtomic(receiptPath, append(encoded, '\n')); err != nil {
+	if err := writeAtomic(receiptPath, encodeReceipt(receipt)); err != nil {
 		if errors.Is(err, ErrAmbiguous) {
 			return ReceiptV1{}, err
 		}

@@ -81,6 +81,152 @@ func TestStageExactServiceArtifactAndFencedUpdate(t *testing.T) {
 	if _, err := Plan(ctx, config, 1); !errors.Is(err, ErrConflict) {
 		t.Fatalf("old package revision revived after update: %v", err)
 	}
+	rollbackPlan, err := RollbackPlan(ctx, config, 2)
+	if err != nil || rollbackPlan.TargetUnitSHA256 != plan.UnitSHA256 || rollbackPlan.CurrentUnitSHA256 != update.UnitSHA256 ||
+		rollbackPlan.NextInstallRevision != 3 {
+		t.Fatalf("plan exact rollback: plan=%+v err=%v", rollbackPlan, err)
+	}
+	if _, err := ApplyRollback(ctx, config, RollbackPlanV1{Version: VersionV1}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("unreviewed rollback accepted: %v", err)
+	}
+	rolledBack, err := ApplyRollback(ctx, config, rollbackPlan)
+	if err != nil || rolledBack.InstallRevision != 3 || rolledBack.UnitSHA256 != plan.UnitSHA256 ||
+		rolledBack.RollbackSHA256 != update.UnitSHA256 {
+		t.Fatalf("apply exact rollback: receipt=%+v err=%v", rolledBack, err)
+	}
+	if _, err := ApplyRollback(ctx, config, rollbackPlan); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale rollback replay accepted: %v", err)
+	}
+	if _, err := RollbackPlan(ctx, changed, 3); err != nil {
+		t.Fatalf("rollback retained redo target: %v", err)
+	}
+}
+
+func TestRollbackFailsClosedOnTamperedArchive(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("owner-local service package is Unix-only")
+	}
+	_, config := packageFixture(t)
+	ctx := context.Background()
+	first, err := Plan(ctx, config, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Apply(ctx, config, first); err != nil {
+		t.Fatal(err)
+	}
+	changed := config
+	changed.BinaryPath = filepath.Join(filepath.Dir(config.BinaryPath), "attached-worker-v2")
+	if err := os.WriteFile(changed.BinaryPath, []byte("#!/bin/sh\nexit 2\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	changed.BinarySHA256 = digest([]byte("#!/bin/sh\nexit 2\n"))
+	second, err := Plan(ctx, changed, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Apply(ctx, changed, second); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(archiveUnitPath(first.UnitPath, first.UnitSHA256), []byte("tampered"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RollbackPlan(ctx, config, 2); !errors.Is(err, ErrConflict) {
+		t.Fatalf("tampered rollback archive accepted: %v", err)
+	}
+	unit, err := os.ReadFile(second.UnitPath)
+	if err != nil || digest(unit) != second.UnitSHA256 {
+		t.Fatalf("failed rollback changed active unit: err=%v digest=%s", err, digest(unit))
+	}
+}
+
+func TestRollbackFailsClosedOnChangedInputsAndBusyOwner(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("owner-local service package is Unix-only")
+	}
+	for _, scenario := range []string{"receipt archive", "missing binary", "changed binary", "manifest drift", "busy owner"} {
+		t.Run(scenario, func(t *testing.T) {
+			store, original, first, current := stagedRollbackFixture(t)
+			ctx := context.Background()
+			var err error
+			switch scenario {
+			case "receipt archive":
+				err = os.WriteFile(archiveReceiptPath(first.UnitPath, current.RollbackReceiptSHA256), []byte("tampered"), 0o600)
+			case "missing binary":
+				err = os.Remove(original.BinaryPath)
+			case "changed binary":
+				err = os.WriteFile(original.BinaryPath, []byte("#!/bin/sh\nexit 3\n"), 0o700)
+			case "manifest drift":
+				manifest, loadErr := store.Load(ctx)
+				if loadErr != nil {
+					t.Fatal(loadErr)
+				}
+				secret, loadErr := store.LoadSecret(ctx)
+				if loadErr != nil {
+					t.Fatal(loadErr)
+				}
+				manifest.Revision++
+				manifest.UpdatedAt = manifest.UpdatedAt.Add(time.Minute)
+				secret.ManifestRevision = manifest.Revision
+				err = store.Update(ctx, manifest.Revision-1, manifest, secret)
+			case "busy owner":
+				plan, planErr := RollbackPlan(ctx, original, current.InstallRevision)
+				if planErr != nil {
+					t.Fatal(planErr)
+				}
+				lease, leaseErr := store.AcquireRuntime(ctx)
+				if leaseErr != nil {
+					t.Fatal(leaseErr)
+				}
+				defer lease.Close()
+				if _, applyErr := ApplyRollback(ctx, original, plan); !errors.Is(applyErr, attachedworkerlocal.ErrStateBusy) {
+					t.Fatalf("rollback ignored runtime owner: %v", applyErr)
+				}
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if scenario != "busy owner" {
+				if _, planErr := RollbackPlan(ctx, original, current.InstallRevision); !errors.Is(planErr, ErrConflict) &&
+					!(scenario == "missing binary" && errors.Is(planErr, ErrInvalid)) {
+					t.Fatalf("rollback plan accepted %s: %v", scenario, planErr)
+				}
+			}
+			unit, readErr := os.ReadFile(first.UnitPath)
+			if readErr != nil || digest(unit) != current.UnitSHA256 {
+				t.Fatalf("rejected rollback changed active unit: err=%v digest=%s", readErr, digest(unit))
+			}
+		})
+	}
+}
+
+func stagedRollbackFixture(t *testing.T) (*attachedworkerlocal.Store, Config, PlanV1, ReceiptV1) {
+	t.Helper()
+	store, original := packageFixture(t)
+	ctx := context.Background()
+	first, err := Plan(ctx, original, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Apply(ctx, original, first); err != nil {
+		t.Fatal(err)
+	}
+	changed := original
+	changed.BinaryPath = filepath.Join(filepath.Dir(original.BinaryPath), "attached-worker-v2")
+	content := []byte("#!/bin/sh\nexit 2\n")
+	if err := os.WriteFile(changed.BinaryPath, content, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	changed.BinarySHA256 = digest(content)
+	second, err := Plan(ctx, changed, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := Apply(ctx, changed, second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store, original, first, current
 }
 
 func TestPackageFailsClosedOnTamperingAndUnsafeInputs(t *testing.T) {

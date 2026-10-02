@@ -90,6 +90,9 @@ func reconcileNative(ctx context.Context, config Config, expectedPlanSHA256 stri
 	if err != nil {
 		return NativeReconciliationV1{}, errors.Join(ErrIO, err)
 	}
+	if state.containerPresent && !state.active {
+		return NativeReconciliationV1{}, ErrConflict
+	}
 	completed := false
 	switch plan.Action {
 	case NativeRegister:

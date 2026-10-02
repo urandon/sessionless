@@ -183,6 +183,11 @@ func Apply(ctx context.Context, config Config, plan PlanV1) (receiptResult Recei
 	if err := ensurePrivateDir(config.InstallDir, true); err != nil {
 		return ReceiptV1{}, err
 	}
+	if config.Mode == ModeRootlessContainer {
+		if err := prepareRootlessDirectories(config); err != nil {
+			return ReceiptV1{}, err
+		}
+	}
 	receipt := ReceiptV1{
 		Version: VersionV1, InstallRevision: plan.NextInstallRevision,
 		ManifestRevision: plan.ManifestRevision, OwnerUserID: plan.OwnerUserID,

@@ -94,6 +94,22 @@ func TestNativePlatformIntegration(t *testing.T) {
 			t.Errorf("cleanup inspect: %v", inspectErr)
 			return
 		}
+		if rootless && state.containerPresent && !state.active {
+			containerName := "sessionless-attached-worker-" + shortID(snapshot.Manifest)
+			if _, err := rootlessDockerOutput(cleanupCtx, config.InstallDir, "container", "stop", "--time", "10", containerName); err != nil {
+				t.Errorf("cleanup exact rootless container: %v", err)
+				return
+			}
+			if err := waitForRootlessContainerAbsent(cleanupCtx, config, name); err != nil {
+				t.Errorf("cleanup rootless container remained: %v", err)
+				return
+			}
+			state, inspectErr = manager.inspect(cleanupCtx, config.Mode, name, stage.UnitPath)
+			if inspectErr != nil {
+				t.Errorf("cleanup inspect after exact stop: %v", inspectErr)
+				return
+			}
+		}
 		if !state.loaded {
 			safeToRemove = true
 			return
@@ -123,12 +139,28 @@ func TestNativePlatformIntegration(t *testing.T) {
 				}
 			}
 		}
+		if rootless {
+			graceCtx, endGrace := context.WithTimeout(cleanupCtx, 2*time.Second)
+			graceErr := waitForRootlessContainerAbsent(graceCtx, config, name)
+			endGrace()
+			if graceErr != nil {
+				containerName := "sessionless-attached-worker-" + shortID(snapshot.Manifest)
+				if _, stopErr := rootlessDockerOutput(cleanupCtx, config.InstallDir, "container", "stop", "--time", "10", containerName); stopErr != nil {
+					t.Errorf("cleanup exact rootless stop: %v", stopErr)
+					return
+				}
+				if err := waitForRootlessContainerAbsent(cleanupCtx, config, name); err != nil {
+					t.Errorf("cleanup rootless container remained: %v", err)
+					return
+				}
+			}
+		}
 		if err := manager.unregister(cleanupCtx, config.Mode, name, stage.UnitPath); err != nil {
 			t.Errorf("cleanup exact test service: %v", err)
 			return
 		}
 		final, err := manager.inspect(cleanupCtx, config.Mode, name, stage.UnitPath)
-		if err != nil || final.loaded || final.active {
+		if err != nil || final.loaded || final.active || final.containerPresent {
 			t.Errorf("cleanup registration still present: %+v %v", final, err)
 			return
 		}
@@ -188,6 +220,27 @@ func TestNativePlatformIntegration(t *testing.T) {
 	if err := waitForInactive(ctx, config); err != nil {
 		t.Fatalf("service did not become inactive: %v", err)
 	}
+	if rootless {
+		if err := waitForRootlessContainerAbsent(ctx, config, name); err != nil {
+			t.Fatalf("normal stop left rootless container: %v", err)
+		}
+		// Kill only the test-owned Docker client. The user unit's ExecStopPost
+		// must reap the daemon-owned container even after the client dies.
+		integrationCLI(t, ctx, binary, startArgs...)
+		if err := waitForLiveOwner(ctx, controlDir); err != nil {
+			t.Fatalf("restarted rootless owner did not answer: %v", err)
+		}
+		kill := exec.CommandContext(ctx, "/usr/bin/systemctl", "--user", "kill", "--kill-whom=main", "--signal=KILL", filepath.Base(stage.UnitPath))
+		if output, err := kill.CombinedOutput(); err != nil {
+			t.Fatalf("kill test-owned Docker client: %v: %s", err, output)
+		}
+		if err := waitForInactive(ctx, config); err != nil {
+			t.Fatalf("client death left active unit: %v", err)
+		}
+		if err := waitForRootlessContainerAbsent(ctx, config, name); err != nil {
+			t.Fatalf("client death left rootless container: %v", err)
+		}
+	}
 	unregisterArgs := append(append([]string{}, baseArgs...), "--expected-install-revision", "1", "--native-action", "unregister")
 	var unregister NativePlanV1
 	if err := json.Unmarshal(integrationCLI(t, ctx, binary, append([]string{"native-plan"}, unregisterArgs...)...), &unregister); err != nil {
@@ -197,6 +250,22 @@ func TestNativePlatformIntegration(t *testing.T) {
 	inspection, err = NativeInspect(ctx, config)
 	if err != nil || inspection.Status != "unregistered" {
 		t.Fatalf("unregister readback: %+v %v", inspection, err)
+	}
+}
+
+func waitForRootlessContainerAbsent(ctx context.Context, config Config, name string) error {
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		present, err := rootlessContainerPresent(ctx, config.InstallDir, name)
+		if err == nil && !present {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return errors.Join(ctx.Err(), err)
+		case <-ticker.C:
+		}
 	}
 }
 

@@ -14,6 +14,7 @@ type NativeInspectionV1 struct {
 	Version              uint32 `json:"version"`
 	Status               string `json:"status"`
 	OSActive             bool   `json:"os_active"`
+	ContainerPresent     bool   `json:"container_present,omitempty"`
 	ManifestRevision     uint64 `json:"manifest_revision"`
 	InstallRevision      uint64 `json:"install_revision"`
 	RegistrationRevision uint64 `json:"registration_revision"`
@@ -62,6 +63,10 @@ func nativeInspect(ctx context.Context, config Config, manager nativeManager) (N
 		return result, errors.Join(ErrIO, err)
 	}
 	result.OSActive = state.active
+	result.ContainerPresent = state.containerPresent
+	if state.containerPresent && !state.active {
+		return result, nil
+	}
 	if registration.Version != 0 && (registration.Mode != config.Mode ||
 		registration.OwnerUserID != string(manifest.OwnerUserID) ||
 		registration.WorkerID != string(manifest.WorkerID) ||

@@ -302,7 +302,7 @@ func TestServiceArtifactRenderModesRemainDefaultOff(t *testing.T) {
 			for _, required := range []string{"ExecStart=/usr/bin/env -i", "--pull never", "--network none",
 				"--read-only", "--cap-drop ALL", "--user 0:0", "--binary-sha256 " + config.BinarySHA256,
 				"--expected-revision 1", candidate.ContainerImage, "--mount type=bind,src=" + config.StateRoot,
-				"--restart no", "Restart=no"} {
+				"--restart no", "ExecStopPost=-/usr/bin/env -i", "Restart=no"} {
 				if !strings.Contains(text, required) {
 					t.Errorf("rootless unit misses %q: %s", required, text)
 				}
@@ -311,6 +311,19 @@ func TestServiceArtifactRenderModesRemainDefaultOff(t *testing.T) {
 			!strings.Contains(text, config.BinarySHA256) {
 			t.Errorf("%s artifact misses startup pins: %s", mode, text)
 		}
+	}
+}
+
+func TestRootlessImageDigestIgnoresOnlyOptionalTag(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	withTag := "gcr.io/distroless/static-debian12:nonroot@sha256:" + digest
+	withoutTag := "gcr.io/distroless/static-debian12@sha256:" + digest
+	if canonicalImageDigest(withTag) != withoutTag || canonicalImageDigest(withoutTag) != withoutTag {
+		t.Fatal("tagged and untagged exact digest did not normalize")
+	}
+	if canonicalImageDigest("gcr.io/other:nonroot@sha256:"+digest) == withoutTag ||
+		canonicalImageDigest("gcr.io/distroless/static-debian12:nonroot@sha256:"+strings.Repeat("b", 64)) == withoutTag {
+		t.Fatal("repository or digest drift normalized as the same image")
 	}
 }
 

@@ -115,6 +115,14 @@ func TestRootlessNativePlanPinsStagedImageAndCreatesPrivateClientConfig(t *testi
 	if _, err := nativeStart(ctx, changed, 1, 1, manager); !errors.Is(err, ErrConflict) || manager.startCalls != 0 {
 		t.Fatalf("different image reached manager: %v calls=%d", err, manager.startCalls)
 	}
+	manager.state = nativeState{loaded: true, path: stage.UnitPath, containerPresent: true}
+	orphaned, err := nativeInspect(ctx, config, manager)
+	if err != nil || orphaned.Status != "reconciliation_required" || !orphaned.ContainerPresent || orphaned.OSActive {
+		t.Fatalf("orphaned container was reported stopped: %+v %v", orphaned, err)
+	}
+	if _, err := nativePlan(ctx, config, NativeUnregister, 1, manager); !errors.Is(err, ErrConflict) {
+		t.Fatalf("orphaned container allowed unregister: %v", err)
+	}
 	for _, directory := range []string{rootlessDockerConfig(config), config.StateRoot + ".control"} {
 		info, err := os.Lstat(directory)
 		if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {

@@ -48,6 +48,10 @@ func (osNativeManager) inspect(ctx context.Context, mode Mode, name, unitPath st
 			return nativeState{}, err
 		}
 		if properties["LoadState"] == "not-found" {
+			if mode == ModeRootlessContainer {
+				present, err := rootlessContainerPresent(ctx, filepath.Dir(unitPath), name)
+				return nativeState{containerPresent: present}, err
+			}
 			return nativeState{}, nil
 		}
 		if properties["LoadState"] != "loaded" || !canonicalPath(properties["FragmentPath"]) ||
@@ -58,8 +62,15 @@ func (osNativeManager) inspect(ctx context.Context, mode Mode, name, unitPath st
 		if err != nil {
 			return nativeState{}, err
 		}
-		return nativeState{loaded: true, active: properties["ActiveState"] != "inactive" &&
-			properties["ActiveState"] != "failed", path: fragment}, nil
+		state := nativeState{loaded: true, active: properties["ActiveState"] != "inactive" &&
+			properties["ActiveState"] != "failed", path: fragment}
+		if mode == ModeRootlessContainer {
+			state.containerPresent, err = rootlessContainerPresent(ctx, filepath.Dir(unitPath), name)
+			if err != nil {
+				return nativeState{}, err
+			}
+		}
+		return state, nil
 	default:
 		return nativeState{}, ErrInvalid
 	}

@@ -113,10 +113,18 @@ The unit does not pull an image, enable itself, restart automatically, use
 host networking, inherit Docker context or credentials, or call a provider.
 An operator must preload the exact image digest, provide a current-user
 rootless Docker socket at `/run/user/<uid>/docker.sock`, and make the Docker
-client available at `/usr/bin/docker`. `native-start` verifies the socket,
+client available at `/usr/bin/docker` before native registration.
+`native-start` verifies the socket,
 rootless security option, empty private client config, and exact preloaded
 image before requesting systemd start. OS readback still requires
 `live-status` to prove the single local owner.
+Because Docker owns the container after its client exits, the unit also tries
+an exact-name stop on abnormal client exit. Inspection checks both systemd and
+the exact rootless container: an inactive unit with a remaining container is
+`reconciliation_required`, blocking unregister or update. If the rootless
+engine is unavailable, inspection cannot assert absence and also fails closed;
+the operator must restore the engine and stop only that exact container before
+retrying the readback. A failed cleanup is never reported as a clean stop.
 
 The launchd plist has `RunAtLoad=false` and `KeepAlive=false`; the systemd user
 unit has `Restart=no`. Native units pin the executable digest and manifest

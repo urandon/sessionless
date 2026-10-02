@@ -1,6 +1,7 @@
 package attachedworkerpackage
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerlocal"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerservice"
@@ -47,13 +49,14 @@ Description=Sessionless rootless attached worker %s
 Type=exec
 ExecStart=/usr/bin/env -i PATH=/usr/bin:/bin %s container run --rm --pull never --name %s --network none --read-only --cap-drop ALL --no-healthcheck --ipc private --cgroupns private --security-opt no-new-privileges=true --pids-limit 64 --memory 268435456 --memory-swap 268435456 --log-driver none --restart no --stop-signal SIGTERM --stop-timeout 10 --user 0:0 --mount type=bind,src=%s,dst=%s,bind-propagation=rprivate --mount type=bind,src=%s,dst=%s,bind-propagation=rprivate --mount type=bind,src=%s,dst=%s,bind-propagation=rprivate,readonly --entrypoint %s %s serve --state-dir %s --expected-revision %d --binary %s --binary-sha256 %s
 ExecStop=/usr/bin/env -i PATH=/usr/bin:/bin %s container stop --time 10 %s
+ExecStopPost=-/usr/bin/env -i PATH=/usr/bin:/bin %s container stop --time 10 %s
 Restart=no
 UMask=0077
 NoNewPrivileges=yes
 `, shortID(manifest), client, name, config.StateRoot, config.StateRoot,
 		controlDir, controlDir, config.BinaryPath, config.BinaryPath, config.BinaryPath,
 		config.ContainerImage, config.StateRoot, manifest.Revision, config.BinaryPath,
-		config.BinarySHA256, client, name)
+		config.BinarySHA256, client, name, client, name)
 	return []byte(unit), nil
 }
 
@@ -111,25 +114,75 @@ func verifyRootlessEngine(ctx context.Context, config Config) error {
 		return err
 	}
 	for _, candidate := range digests {
-		if candidate == config.ContainerImage {
+		if canonicalImageDigest(candidate) == canonicalImageDigest(config.ContainerImage) {
 			return nil
 		}
 	}
 	return ErrConflict
 }
 
+// Docker RepoDigests omit the optional human tag even when pull used
+// repository:tag@sha256:digest. The repository and digest remain exact pins.
+func canonicalImageDigest(reference string) string {
+	at := strings.LastIndex(reference, "@sha256:")
+	if at < 0 {
+		return reference
+	}
+	repository := reference[:at]
+	if colon := strings.LastIndex(repository, ":"); colon > strings.LastIndex(repository, "/") {
+		repository = repository[:colon]
+	}
+	return repository + reference[at:]
+}
+
 func rootlessDockerJSON(ctx context.Context, config Config, result any, arguments ...string) error {
-	args := append([]string{"--host", "unix://" + rootlessDockerSocket(), "--config", rootlessDockerConfig(config)}, arguments...)
+	output, err := rootlessDockerOutput(ctx, config.InstallDir, arguments...)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(output, result); err != nil {
+		return errors.Join(ErrConflict, err)
+	}
+	return nil
+}
+
+// The service manager supervises the client, not the daemon-owned container.
+// An orphaned exact container therefore blocks unregister, update, and any
+// claim that the worker stopped, even when systemd calls the unit inactive.
+func rootlessContainerPresent(ctx context.Context, installDir, nativeName string) (bool, error) {
+	if !strings.HasPrefix(nativeName, "com.sessionless.attached-worker.") ||
+		len(nativeName) != len("com.sessionless.attached-worker.")+16 {
+		return false, ErrInvalid
+	}
+	if err := emptyRootlessDockerConfig(Config{InstallDir: installDir}); err != nil {
+		return false, err
+	}
+	name := "sessionless-attached-worker-" + strings.TrimPrefix(nativeName, "com.sessionless.attached-worker.")
+	output, err := rootlessDockerOutput(ctx, installDir, "container", "ls", "--all", "--no-trunc",
+		"--filter", "name=^/"+name+"$", "--format", "{{json .Names}}")
+	if err != nil {
+		return false, err
+	}
+	output = bytes.TrimSpace(output)
+	if len(output) == 0 {
+		return false, nil
+	}
+	var found string
+	if json.Unmarshal(output, &found) != nil || strings.TrimPrefix(found, "/") != name {
+		return false, ErrConflict
+	}
+	return true, nil
+}
+
+func rootlessDockerOutput(ctx context.Context, installDir string, arguments ...string) ([]byte, error) {
+	args := append([]string{"--host", "unix://" + rootlessDockerSocket(), "--config", filepath.Join(installDir, "docker-config")}, arguments...)
 	command := exec.CommandContext(ctx, rootlessDockerBinary, args...)
 	command.Env = []string{"PATH=/usr/bin:/bin"}
 	var output, diagnostic cappedOutput
 	command.Stdout = &output
 	command.Stderr = &diagnostic
 	if err := command.Run(); err != nil {
-		return errors.Join(ErrIO, err)
+		return nil, errors.Join(ErrIO, err)
 	}
-	if err := json.Unmarshal(output.Bytes(), result); err != nil {
-		return errors.Join(ErrConflict, err)
-	}
-	return nil
+	return output.Bytes(), nil
 }

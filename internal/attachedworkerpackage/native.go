@@ -53,9 +53,10 @@ type NativeReceiptV1 struct {
 }
 
 type nativeState struct {
-	loaded bool
-	active bool
-	path   string
+	loaded           bool
+	active           bool
+	path             string
+	containerPresent bool
 }
 
 type nativeManager interface {
@@ -113,6 +114,9 @@ func nativePlan(ctx context.Context, config Config, action NativeAction, expecte
 	state, err := manager.inspect(ctx, config.Mode, nativeName(manifest), unitPath)
 	if err != nil {
 		return NativePlanV1{}, errors.Join(ErrIO, err)
+	}
+	if state.containerPresent && !state.active {
+		return NativePlanV1{}, ErrConflict
 	}
 	switch action {
 	case NativeRegister:
@@ -191,8 +195,9 @@ func applyNative(ctx context.Context, config Config, plan NativePlanV1, manager 
 		return NativeReceiptV1{}, errors.Join(ErrAmbiguous, err)
 	}
 	state, err := manager.inspect(ctx, plan.Mode, name, plan.UnitPath)
-	if err != nil || (plan.Action == NativeRegister && (!state.loaded || state.active || state.path != plan.UnitPath)) ||
-		(plan.Action == NativeUnregister && state.loaded) {
+	if err != nil || (state.containerPresent && !state.active) ||
+		(plan.Action == NativeRegister && (!state.loaded || state.active || state.path != plan.UnitPath)) ||
+		(plan.Action == NativeUnregister && (state.loaded || state.containerPresent)) {
 		return NativeReceiptV1{}, errors.Join(ErrAmbiguous, err)
 	}
 	receipt := NativeReceiptV1{Version: VersionV1, RegistrationRevision: plan.NextRegistrationRevision,

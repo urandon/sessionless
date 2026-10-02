@@ -54,8 +54,12 @@ func (osNativeManager) inspect(ctx context.Context, mode Mode, name, unitPath st
 			properties["ActiveState"] == "" {
 			return nativeState{}, ErrConflict
 		}
+		fragment, err := resolveSystemdFragment(properties["FragmentPath"])
+		if err != nil {
+			return nativeState{}, err
+		}
 		return nativeState{loaded: true, active: properties["ActiveState"] != "inactive" &&
-			properties["ActiveState"] != "failed", path: properties["FragmentPath"]}, nil
+			properties["ActiveState"] != "failed", path: fragment}, nil
 	default:
 		return nativeState{}, ErrInvalid
 	}
@@ -230,6 +234,17 @@ func systemdProperties(output string) (map[string]string, error) {
 		return nil, ErrConflict
 	}
 	return result, nil
+}
+
+func resolveSystemdFragment(fragment string) (string, error) {
+	if !canonicalPath(fragment) {
+		return "", ErrConflict
+	}
+	resolved, err := filepath.EvalSymlinks(fragment)
+	if err != nil || !canonicalPath(resolved) {
+		return "", errors.Join(ErrConflict, err)
+	}
+	return resolved, nil
 }
 
 var _ io.Writer = (*cappedOutput)(nil)

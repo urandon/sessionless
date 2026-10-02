@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -292,5 +293,34 @@ func TestNativeOutputParsersRejectIncompleteState(t *testing.T) {
 	properties, err := systemdProperties("LoadState=loaded\nFragmentPath=/tmp/unit\nActiveState=inactive\n")
 	if err != nil || properties["FragmentPath"] != "/tmp/unit" {
 		t.Fatalf("exact systemd state: %+v %v", properties, err)
+	}
+}
+
+func TestResolveSystemdFragmentFromUserManagerLink(t *testing.T) {
+	root := t.TempDir()
+	root, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unit := filepath.Join(root, "exact.service")
+	link := filepath.Join(root, "linked.service")
+	if err := os.WriteFile(unit, []byte("[Service]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(unit, link); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := resolveSystemdFragment(link)
+	if err != nil || resolved != unit {
+		t.Fatalf("systemd link did not resolve to exact unit: %q %v", resolved, err)
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "missing.service"), link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveSystemdFragment(link); !errors.Is(err, ErrConflict) {
+		t.Fatalf("missing linked target was accepted: %v", err)
 	}
 }

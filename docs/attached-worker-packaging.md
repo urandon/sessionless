@@ -66,6 +66,10 @@ immediately previous exact unit and `package-rollback-apply` stages it as a
 new monotonic install revision. A stale/tampered unit, stale install revision,
 live owner, unsupported mode, symlinked/unsafe path, or changed binary fails
 closed. The focused local gate is `make attached-worker-package-test`.
+Package mutations and `native-start` also share a private
+`.package-operations.lock` in the private staging directory. It stays held
+through the OS start/readback handoff, when the child must be free to acquire
+`runtime.lock`.
 
 ```text
 .build/bin/attached-worker package-plan --state-dir <absolute-state-root> \

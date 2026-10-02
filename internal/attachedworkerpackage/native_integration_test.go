@@ -43,7 +43,12 @@ func TestNativePlatformIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	safeToRemove := true
 	t.Cleanup(func() {
+		if !safeToRemove {
+			t.Errorf("preserving test root %s: exact service cleanup was not verified", parent)
+			return
+		}
 		if err := os.RemoveAll(parent); err != nil {
 			t.Errorf("remove exact test root: %v", err)
 		}
@@ -67,7 +72,8 @@ func TestNativePlatformIntegration(t *testing.T) {
 	}
 	name := nativeName(snapshot.Manifest)
 	// Cleanup is limited to this test's unique temporary unit path. An
-	// unexpectedly active service gets a local shutdown attempt first.
+	// unexpectedly active service gets a local shutdown attempt, then an
+	// exact OS stop, before the test root may be removed.
 	t.Cleanup(func() {
 		cleanupCtx, stop := context.WithTimeout(context.Background(), 10*time.Second)
 		defer stop()
@@ -76,24 +82,52 @@ func TestNativePlatformIntegration(t *testing.T) {
 			t.Errorf("cleanup inspect: %v", inspectErr)
 			return
 		}
-		if !state.loaded || state.path != stage.UnitPath {
+		if !state.loaded {
+			safeToRemove = true
+			return
+		}
+		if state.path != stage.UnitPath {
+			t.Errorf("cleanup refused foreign service path %s", state.path)
 			return
 		}
 		if state.active {
 			controlDir, dirErr := attachedworkerservice.Directory(config.StateRoot)
 			if dirErr == nil {
-				_, _ = attachedworkerservice.Call(cleanupCtx, controlDir, attachedworkerservice.ActionShutdown, 1)
+				if _, err := attachedworkerservice.Call(cleanupCtx, controlDir, attachedworkerservice.ActionShutdown, 1); err != nil {
+					t.Logf("local shutdown unavailable; using exact OS stop: %v", err)
+				}
+			}
+			graceCtx, endGrace := context.WithTimeout(cleanupCtx, 2*time.Second)
+			graceErr := waitForManagerInactive(graceCtx, manager, config, name, stage.UnitPath)
+			endGrace()
+			if graceErr != nil {
+				if err := manager.stop(cleanupCtx, config.Mode, name, stage.UnitPath); err != nil {
+					t.Errorf("cleanup exact OS stop: %v", err)
+					return
+				}
+				if err := waitForManagerInactive(cleanupCtx, manager, config, name, stage.UnitPath); err != nil {
+					t.Errorf("cleanup remained active: %v", err)
+					return
+				}
 			}
 		}
 		if err := manager.unregister(cleanupCtx, config.Mode, name, stage.UnitPath); err != nil {
 			t.Errorf("cleanup exact test service: %v", err)
+			return
 		}
+		final, err := manager.inspect(cleanupCtx, config.Mode, name, stage.UnitPath)
+		if err != nil || final.loaded || final.active {
+			t.Errorf("cleanup registration still present: %+v %v", final, err)
+			return
+		}
+		safeToRemove = true
 	})
 	baseArgs := []string{"--state-dir", config.StateRoot, "--package-mode", string(config.Mode),
 		"--install-dir", config.InstallDir, "--binary", config.BinaryPath,
 		"--binary-sha256", config.BinarySHA256}
 	registerArgs := append(append([]string{}, baseArgs...), "--expected-install-revision", "1", "--native-action", "register")
 	var register NativePlanV1
+	safeToRemove = false
 	if err := json.Unmarshal(integrationCLI(t, ctx, binary, append([]string{"native-plan"}, registerArgs...)...), &register); err != nil {
 		t.Fatal(err)
 	}
@@ -129,6 +163,22 @@ func TestNativePlatformIntegration(t *testing.T) {
 	inspection, err = NativeInspect(ctx, config)
 	if err != nil || inspection.Status != "unregistered" {
 		t.Fatalf("unregister readback: %+v %v", inspection, err)
+	}
+}
+
+func waitForManagerInactive(ctx context.Context, manager osNativeManager, config Config, name, unitPath string) error {
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		state, err := manager.inspect(ctx, config.Mode, name, unitPath)
+		if err == nil && (!state.loaded || (state.path == unitPath && !state.active)) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return errors.Join(ctx.Err(), err)
+		case <-ticker.C:
+		}
 	}
 }
 

@@ -145,7 +145,7 @@ func Plan(ctx context.Context, config Config, expectedInstallRevision uint64) (P
 // It intentionally does not call launchctl, systemctl or Docker. A caller
 // must not infer that a staged artifact is a running service.
 func Apply(ctx context.Context, config Config, plan PlanV1) (receiptResult ReceiptV1, resultErr error) {
-	if ctx == nil || ctx.Err() != nil || plan.Version != VersionV1 ||
+	if ctx == nil || ctx.Err() != nil || validateConfig(config) != nil || plan.Version != VersionV1 ||
 		plan.PlanSHA256 == "" || plan.PlanSHA256 != planDigest(plan) {
 		return ReceiptV1{}, ErrInvalid
 	}
@@ -153,6 +153,11 @@ func Apply(ctx context.Context, config Config, plan PlanV1) (receiptResult Recei
 	if err != nil {
 		return ReceiptV1{}, ErrInvalid
 	}
+	operation, err := acquireOperationLease(config.InstallDir)
+	if err != nil {
+		return ReceiptV1{}, err
+	}
+	defer func() { resultErr = errors.Join(resultErr, operation.Close()) }()
 	lease, err := store.AcquireRuntime(ctx)
 	if err != nil {
 		return ReceiptV1{}, err

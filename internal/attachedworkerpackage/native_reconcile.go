@@ -32,6 +32,11 @@ func reconcileNative(ctx context.Context, config Config, expectedPlanSHA256 stri
 	if err != nil {
 		return NativeReconciliationV1{}, ErrInvalid
 	}
+	operation, err := acquireOperationLease(config.InstallDir)
+	if err != nil {
+		return NativeReconciliationV1{}, err
+	}
+	defer func() { resultErr = errors.Join(resultErr, operation.Close()) }()
 	lease, err := store.AcquireRuntime(ctx)
 	if err != nil {
 		return NativeReconciliationV1{}, err

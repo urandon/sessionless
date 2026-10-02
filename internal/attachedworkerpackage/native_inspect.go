@@ -85,8 +85,9 @@ func NativeStart(ctx context.Context, config Config, expectedInstallRevision, ex
 	return nativeStart(ctx, config, expectedInstallRevision, expectedRegistrationRevision, osNativeManager{})
 }
 
-func nativeStart(ctx context.Context, config Config, expectedInstallRevision, expectedRegistrationRevision uint64, manager nativeManager) (NativeInspectionV1, error) {
-	if ctx == nil || ctx.Err() != nil || expectedInstallRevision == 0 || expectedRegistrationRevision == 0 ||
+func nativeStart(ctx context.Context, config Config, expectedInstallRevision, expectedRegistrationRevision uint64, manager nativeManager) (result NativeInspectionV1, resultErr error) {
+	if ctx == nil || ctx.Err() != nil || validateConfig(config) != nil ||
+		expectedInstallRevision == 0 || expectedRegistrationRevision == 0 ||
 		manager == nil {
 		return NativeInspectionV1{}, ErrInvalid
 	}
@@ -94,6 +95,11 @@ func nativeStart(ctx context.Context, config Config, expectedInstallRevision, ex
 	if err != nil {
 		return NativeInspectionV1{}, ErrInvalid
 	}
+	operation, err := acquireOperationLease(config.InstallDir)
+	if err != nil {
+		return NativeInspectionV1{}, err
+	}
+	defer func() { resultErr = errors.Join(resultErr, operation.Close()) }()
 	lease, err := store.AcquireRuntime(ctx)
 	if err != nil {
 		return NativeInspectionV1{}, err
@@ -121,7 +127,10 @@ func nativeStart(ctx context.Context, config Config, expectedInstallRevision, ex
 	defer ticker.Stop()
 	for {
 		result, err := nativeInspect(readbackCtx, config, manager)
-		if err == nil && result.Status == "registered" && result.OSActive {
+		if err == nil && result.Status == "registered" && result.OSActive &&
+			result.ManifestRevision == inspection.ManifestRevision &&
+			result.InstallRevision == expectedInstallRevision &&
+			result.RegistrationRevision == expectedRegistrationRevision {
 			return result, nil
 		}
 		select {

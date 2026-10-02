@@ -147,7 +147,7 @@ func ApplyNative(ctx context.Context, config Config, plan NativePlanV1) (NativeR
 }
 
 func applyNative(ctx context.Context, config Config, plan NativePlanV1, manager nativeManager) (result NativeReceiptV1, resultErr error) {
-	if ctx == nil || ctx.Err() != nil || plan.Version != VersionV1 || plan.PlanSHA256 == "" ||
+	if ctx == nil || ctx.Err() != nil || validateConfig(config) != nil || plan.Version != VersionV1 || plan.PlanSHA256 == "" ||
 		plan.PlanSHA256 != nativePlanDigest(plan) {
 		return NativeReceiptV1{}, ErrInvalid
 	}
@@ -155,6 +155,11 @@ func applyNative(ctx context.Context, config Config, plan NativePlanV1, manager 
 	if err != nil {
 		return NativeReceiptV1{}, ErrInvalid
 	}
+	operation, err := acquireOperationLease(config.InstallDir)
+	if err != nil {
+		return NativeReceiptV1{}, err
+	}
+	defer func() { resultErr = errors.Join(resultErr, operation.Close()) }()
 	lease, err := store.AcquireRuntime(ctx)
 	if err != nil {
 		return NativeReceiptV1{}, err

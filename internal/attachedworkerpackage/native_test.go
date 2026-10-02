@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerlocal"
 )
@@ -19,6 +20,22 @@ type fakeNativeManager struct {
 	unregisterCalls  int
 	startCalls       int
 	inspectAfterCall bool
+}
+
+type blockedStartManager struct {
+	*fakeNativeManager
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (m *blockedStartManager) start(ctx context.Context, mode Mode, name, path string) error {
+	close(m.entered)
+	select {
+	case <-m.release:
+		return m.fakeNativeManager.start(ctx, mode, name, path)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (m *fakeNativeManager) inspect(_ context.Context, _ Mode, _, _ string) (nativeState, error) {
@@ -129,6 +146,48 @@ func TestNativeRegistrationIsDefaultOffFencedAndReversible(t *testing.T) {
 	}
 	if _, err := applyNative(ctx, config, remove, manager); !errors.Is(err, ErrConflict) {
 		t.Fatalf("replayed unregister plan: %v", err)
+	}
+}
+
+func TestNativeStartFencesConcurrentRegistrationMutation(t *testing.T) {
+	_, config, fake := nativeFixture(t)
+	ctx := context.Background()
+	register, err := nativePlan(ctx, config, NativeRegister, 1, fake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := applyNative(ctx, config, register, fake); err != nil {
+		t.Fatal(err)
+	}
+	remove, err := nativePlan(ctx, config, NativeUnregister, 1, fake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &blockedStartManager{fakeNativeManager: fake, entered: make(chan struct{}), release: make(chan struct{})}
+	type startResult struct {
+		inspection NativeInspectionV1
+		err        error
+	}
+	done := make(chan startResult, 1)
+	go func() {
+		inspection, err := nativeStart(ctx, config, 1, 1, manager)
+		done <- startResult{inspection, err}
+	}()
+	select {
+	case <-manager.entered:
+	case <-time.After(3 * time.Second):
+		close(manager.release)
+		t.Fatal("start did not reach manager")
+	}
+	if _, err := applyNative(ctx, config, remove, manager); !errors.Is(err, ErrConflict) || fake.unregisterCalls != 0 {
+		close(manager.release)
+		t.Fatalf("concurrent unregister reached manager: %v calls=%d", err, fake.unregisterCalls)
+	}
+	close(manager.release)
+	result := <-done
+	if result.err != nil || result.inspection.Status != "registered" || !result.inspection.OSActive ||
+		result.inspection.InstallRevision != 1 || result.inspection.RegistrationRevision != 1 {
+		t.Fatalf("start exact revision: %+v %v", result.inspection, result.err)
 	}
 }
 

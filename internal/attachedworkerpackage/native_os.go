@@ -115,6 +115,24 @@ func (osNativeManager) start(ctx context.Context, mode Mode, name, unitPath stri
 	}
 }
 
+// stop is reserved for bounded cleanup of an exact test-owned service. It
+// never disables or removes registration by itself.
+func (osNativeManager) stop(ctx context.Context, mode Mode, name, unitPath string) error {
+	if err := nativeOSInput(mode, name, unitPath); err != nil {
+		return err
+	}
+	switch mode {
+	case ModeLaunchd:
+		_, err := nativeCommand(ctx, mode, "stop", launchdTarget(name))
+		return err
+	case ModeSystemdUser:
+		_, err := nativeCommand(ctx, mode, "stop", filepath.Base(unitPath))
+		return err
+	default:
+		return ErrInvalid
+	}
+}
+
 func nativeOSInput(mode Mode, name, unitPath string) error {
 	if !canonicalPath(unitPath) || !strings.HasPrefix(name, "com.sessionless.attached-worker.") ||
 		len(name) != len("com.sessionless.attached-worker.")+16 {

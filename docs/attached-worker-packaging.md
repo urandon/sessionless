@@ -101,25 +101,34 @@ and an intact archived receipt. Pre-archive legacy staged units fail closed;
 there is no implicit rollback across a manifest revision change. The operation
 affects staged files only, not a registered or running OS service. Lost or
 partial writes are reported as ambiguous for operator reconciliation. For
-rootless intent, pass the previous immutable `--container-image` on both
+rootless service packaging, pass the previous immutable `--container-image` on both
 rollback commands as well.
 
 Rootless-container staging additionally requires `--container-image` with an
-immutable `@sha256:` daemon-service image. That JSON artifact is an exact
-intent record, **not** a runnable container definition or a claim that a
-container image has been published. The harness/OCI image in the enrolled
-manifest is a different artifact and is never reused as the daemon image.
+immutable `@sha256:` execution-base image. The staged Linux user unit wraps
+the exact attached-worker binary in a rootless Docker namespace; the binary is
+read-only bind-mounted and verifies its own digest before taking the shared
+runtime lease. This is not the harness/OCI image in the enrolled manifest.
+The unit does not pull an image, enable itself, restart automatically, use
+host networking, inherit Docker context or credentials, or call a provider.
+An operator must preload the exact image digest, provide a current-user
+rootless Docker socket at `/run/user/<uid>/docker.sock`, and make the Docker
+client available at `/usr/bin/docker`. `native-start` verifies the socket,
+rootless security option, empty private client config, and exact preloaded
+image before requesting systemd start. OS readback still requires
+`live-status` to prove the single local owner.
 
 The launchd plist has `RunAtLoad=false` and `KeepAlive=false`; the systemd user
 unit has `Restart=no`. Native units pin the executable digest and manifest
 revision on startup. Neither staging nor registration starts or enables the
-service. Rootless intent pins an image digest and manifest revision, but is not
-yet a runnable container definition.
+service. The rootless unit pins an image digest and manifest revision and
+remains default-off until the explicit native start.
 
 ## Exact native user-service lifecycle
 
 On Darwin, `launchd` uses only the current `gui/<uid>` domain. On Linux,
-`systemd-user` uses only the current UID's user manager at `/run/user/<uid>`;
+`systemd-user` and `rootless-container` use only the current UID's user manager
+at `/run/user/<uid>`;
 there is no `sudo`, system service, `enable`, or automatic restart. The
 operator first stages a unit, then reviews a separate `native-plan` for
 `register` and applies that exact plan SHA. Registration has monotonic local
@@ -134,7 +143,7 @@ new reviewed plan; there is no implicit in-place reload.
 
 ```text
 .build/bin/attached-worker native-plan --state-dir <absolute-state-root> \
-  --package-mode <launchd|systemd-user> --install-dir <same-private-dir> \
+  --package-mode <launchd|systemd-user|rootless-container> --install-dir <same-private-dir> \
   --binary <same-binary> --binary-sha256 <same-digest> \
   --expected-install-revision <staged-revision> --native-action register
 
@@ -154,6 +163,10 @@ new reviewed plan; there is no implicit in-place reload.
   --expected-install-revision <staged-revision> \
   --expected-registration-revision <registration-revision>
 ```
+
+For `rootless-container`, include the same `--container-image <exact-digest>`
+on every `native-*` command. A different image is a revision conflict, not
+an implicit reconfiguration.
 
 For unregister, use the same `native-plan`/`native-apply` pair with
 `--native-action unregister` and the currently registered install revision.
@@ -176,6 +189,9 @@ starts, drains, stops, and unregisters a test-owned user service. It requires
 a functioning current-user launchd GUI domain or systemd user manager, and
 does not use provider credentials, Docker, or cloud resources.
 
-Runnable rootless packaging with shared-lock/UID proof, cross-platform CI
-evidence, and fault-injection coverage remain open for #137 before #77 may
-close. #79 remains the separate two-owner security/recovery release gate.
+`make attached-worker-rootless-integration` is an opt-in Linux user-service
+lifecycle test against an already running, explicitly configured rootless
+Docker engine and a preloaded `SESSIONLESS_ROOTLESS_IMAGE`. The pinned Linux
+rootless CI gate provisions its own test-owned engine and runs this target;
+ordinary tests never start Docker. The Mac user-service gate uses launchd
+instead. #79 remains the separate two-owner security/recovery release gate.

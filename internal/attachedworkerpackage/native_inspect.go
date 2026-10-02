@@ -25,7 +25,7 @@ func NativeInspect(ctx context.Context, config Config) (NativeInspectionV1, erro
 
 func nativeInspect(ctx context.Context, config Config, manager nativeManager) (NativeInspectionV1, error) {
 	if ctx == nil || ctx.Err() != nil || manager == nil || validateConfig(config) != nil ||
-		(config.Mode != ModeLaunchd && config.Mode != ModeSystemdUser) {
+		(config.Mode != ModeLaunchd && config.Mode != ModeSystemdUser && config.Mode != ModeRootlessContainer) {
 		return NativeInspectionV1{}, ErrInvalid
 	}
 	store, err := attachedworkerlocal.NewStore(config.StateRoot, nil)
@@ -44,7 +44,7 @@ func nativeInspect(ctx context.Context, config Config, manager nativeManager) (N
 	staged, _, err := readPrevious(config.InstallDir, unitPath, receiptPath, manifest)
 	if err != nil || staged.Version != VersionV1 || staged.Mode != config.Mode ||
 		staged.ManifestRevision != manifest.Revision || staged.BinaryPath != config.BinaryPath ||
-		staged.BinarySHA256 != config.BinarySHA256 {
+		staged.BinarySHA256 != config.BinarySHA256 || staged.ContainerImage != config.ContainerImage {
 		return NativeInspectionV1{}, errors.Join(ErrConflict, err)
 	}
 	registration, err := readNativeReceipt(unitPath)
@@ -118,6 +118,11 @@ func nativeStart(ctx context.Context, config Config, expectedInstallRevision, ex
 		return inspection, errors.Join(ErrConflict, err)
 	}
 	unitPath, _ := paths(config, snapshot.Manifest)
+	if config.Mode == ModeRootlessContainer {
+		if err := verifyRootlessEngine(ctx, config); err != nil {
+			return inspection, err
+		}
+	}
 	if err := manager.start(ctx, config.Mode, nativeName(snapshot.Manifest), unitPath); err != nil {
 		return inspection, errors.Join(ErrAmbiguous, err)
 	}

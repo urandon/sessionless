@@ -25,7 +25,7 @@ LDFLAGS := -s -w \
 	-X gitcode.com/urandon/sessionless/internal/buildinfo.Commit=$(COMMIT) \
 	-X gitcode.com/urandon/sessionless/internal/buildinfo.BuiltAt=$(BUILT_AT)
 
-.PHONY: help prepare go-cache-status go-cache-clean go-cache-policy-test tools web-tools go-package-layout generate fmt fmt-check lint test build dockerless-build attached-worker-build attached-worker-package-test attached-worker-native-integration docs-check readme-visual-preview web-install web-openapi-check web-check web-build web-stage web-ci web-browser-install web-browser-test integration ydb-integration local-integration e2e-local e2e-local-dockerless attached-worker-oci-integration attached-worker-oci-linux-rootless-ci provider-conformance provider-conformance-fuzz ci image-publication-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test dockerless-stand-policy-test budget-policy-test web-deployment-policy-test terraform-ci cloudflare-edge-ci \
+.PHONY: help prepare go-cache-status go-cache-clean go-cache-policy-test tools web-tools go-package-layout generate fmt fmt-check lint test build dockerless-build attached-worker-build attached-worker-package-test attached-worker-native-integration attached-worker-rootless-integration docs-check readme-visual-preview web-install web-openapi-check web-check web-build web-stage web-ci web-browser-install web-browser-test integration ydb-integration local-integration e2e-local e2e-local-dockerless attached-worker-oci-integration attached-worker-oci-linux-rootless-ci provider-conformance provider-conformance-fuzz ci image-publication-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test dockerless-stand-policy-test budget-policy-test web-deployment-policy-test terraform-ci cloudflare-edge-ci \
 	compose-config images dev-up dev-seed migrate-local migration-status partition-status partition-backfill cloud-app-reset-plan cloud-app-reset session-delete-request session-delete-plan session-delete session-hold session-release-hold \
 	worker-once web-bootstrap dev-down dev-reset dockerless-up dockerless-status dockerless-worker-once dockerless-logs dockerless-down repowise-install repowise-index repowise-update repowise-status repowise-doctor repowise-mcp repowise-mcp-smoke repowise-evaluate repowise-stop repowise-uninstall-plan repowise-uninstall repowise-policy-test clean
 
@@ -47,6 +47,7 @@ help:
 		'make attached-worker-build build the native attached-worker without WebUI tooling' \
 		'make attached-worker-package-test run focused package and CLI race/shuffle tests' \
 		'make attached-worker-native-integration run an opt-in test-owned user-service lifecycle' \
+		'make attached-worker-rootless-integration run an opt-in Linux rootless user-service lifecycle' \
 		'make integration    run foundation integration tests' \
 		'make ydb-integration run YDB Local schema and concurrency tests' \
 		'make local-integration run YDB/S3/SQS/Telegram adapter tests against the local stand' \
@@ -181,6 +182,10 @@ attached-worker-package-test: prepare
 
 attached-worker-native-integration: attached-worker-build
 	SESSIONLESS_NATIVE_INTEGRATION=1 SESSIONLESS_ATTACHED_WORKER_BINARY="$(CURDIR)/$(BIN_DIR)/attached-worker" \
+		go test -race -count=1 -run '^TestNativePlatformIntegration$$' ./internal/attachedworkerpackage
+
+attached-worker-rootless-integration: attached-worker-build
+	SESSIONLESS_ROOTLESS_INTEGRATION=1 SESSIONLESS_ATTACHED_WORKER_BINARY="$(CURDIR)/$(BIN_DIR)/attached-worker" \
 		go test -race -count=1 -run '^TestNativePlatformIntegration$$' ./internal/attachedworkerpackage
 
 docs-check:

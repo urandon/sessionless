@@ -120,7 +120,8 @@ func runWithContext(parent context.Context, arguments []string, output io.Writer
 		return writeResult(output, receipt, 0)
 	}
 	if nativeCommand {
-		if *expectedRevision != 0 || *idempotencyKey != "" || *containerImage != "" ||
+		if *expectedRevision != 0 || *idempotencyKey != "" ||
+			(attachedworkerpackage.Mode(*packageMode) != attachedworkerpackage.ModeRootlessContainer && *containerImage != "") ||
 			(*planSHA256 != "") != (command == "native-apply" || command == "native-reconcile") ||
 			(command != "native-start" && *expectedRegistrationRevision != 0) ||
 			((command == "native-reconcile" || command == "native-inspect" || command == "native-start") && *nativeAction != "") ||
@@ -131,7 +132,7 @@ func runWithContext(parent context.Context, arguments []string, output io.Writer
 		ctx, cancel := context.WithTimeout(parent, commandTimeout)
 		defer cancel()
 		config := attachedworkerpackage.Config{Mode: attachedworkerpackage.Mode(*packageMode), StateRoot: *stateRoot,
-			InstallDir: *installDir, BinaryPath: *binaryPath, BinarySHA256: *binarySHA256}
+			InstallDir: *installDir, BinaryPath: *binaryPath, BinarySHA256: *binarySHA256, ContainerImage: *containerImage}
 		if command == "native-inspect" {
 			result, inspectErr := attachedworkerpackage.NativeInspect(ctx, config)
 			if inspectErr != nil {

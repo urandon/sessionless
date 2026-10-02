@@ -37,7 +37,7 @@ func (osNativeManager) inspect(ctx context.Context, mode Mode, name, unitPath st
 			return nativeState{}, ErrConflict
 		}
 		return nativeState{loaded: true, active: state == "running", path: path}, nil
-	case ModeSystemdUser:
+	case ModeSystemdUser, ModeRootlessContainer:
 		output, err := nativeCommand(ctx, mode, "show", filepath.Base(unitPath),
 			"--property=LoadState,FragmentPath,ActiveState", "--no-pager")
 		if err != nil {
@@ -73,7 +73,7 @@ func (osNativeManager) register(ctx context.Context, mode Mode, name, unitPath s
 	case ModeLaunchd:
 		_, err := nativeCommand(ctx, mode, "bootstrap", launchdDomain(), unitPath)
 		return err
-	case ModeSystemdUser:
+	case ModeSystemdUser, ModeRootlessContainer:
 		if _, err := nativeCommand(ctx, mode, "link", unitPath); err != nil {
 			return err
 		}
@@ -92,7 +92,7 @@ func (osNativeManager) unregister(ctx context.Context, mode Mode, name, unitPath
 	case ModeLaunchd:
 		_, err := nativeCommand(ctx, mode, "bootout", launchdTarget(name))
 		return err
-	case ModeSystemdUser:
+	case ModeSystemdUser, ModeRootlessContainer:
 		if _, err := nativeCommand(ctx, mode, "disable", filepath.Base(unitPath)); err != nil {
 			return err
 		}
@@ -111,7 +111,7 @@ func (osNativeManager) start(ctx context.Context, mode Mode, name, unitPath stri
 	case ModeLaunchd:
 		_, err := nativeCommand(ctx, mode, "kickstart", launchdTarget(name))
 		return err
-	case ModeSystemdUser:
+	case ModeSystemdUser, ModeRootlessContainer:
 		_, err := nativeCommand(ctx, mode, "start", filepath.Base(unitPath))
 		return err
 	default:
@@ -129,7 +129,7 @@ func (osNativeManager) stop(ctx context.Context, mode Mode, name, unitPath strin
 	case ModeLaunchd:
 		_, err := nativeCommand(ctx, mode, "stop", launchdTarget(name))
 		return err
-	case ModeSystemdUser:
+	case ModeSystemdUser, ModeRootlessContainer:
 		_, err := nativeCommand(ctx, mode, "stop", filepath.Base(unitPath))
 		return err
 	default:
@@ -148,8 +148,8 @@ func nativeOSInput(mode Mode, name, unitPath string) error {
 		}
 	}
 	if (mode == ModeLaunchd && runtime.GOOS != "darwin") ||
-		(mode == ModeSystemdUser && runtime.GOOS != "linux") ||
-		(mode != ModeLaunchd && mode != ModeSystemdUser) {
+		((mode == ModeSystemdUser || mode == ModeRootlessContainer) && runtime.GOOS != "linux") ||
+		(mode != ModeLaunchd && mode != ModeSystemdUser && mode != ModeRootlessContainer) {
 		return ErrInvalid
 	}
 	return nil
@@ -168,7 +168,7 @@ func nativeCommand(ctx context.Context, mode Mode, args ...string) (string, erro
 	case ModeLaunchd:
 		binary = "/bin/launchctl"
 		env = []string{"PATH=/usr/bin:/bin"}
-	case ModeSystemdUser:
+	case ModeSystemdUser, ModeRootlessContainer:
 		binary = "/usr/bin/systemctl"
 		args = append([]string{"--user"}, args...)
 		runtimeDir := "/run/user/" + strconv.Itoa(os.Getuid())

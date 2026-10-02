@@ -73,7 +73,7 @@ func NativePlan(ctx context.Context, config Config, action NativeAction, expecte
 
 func nativePlan(ctx context.Context, config Config, action NativeAction, expectedInstallRevision uint64, manager nativeManager) (NativePlanV1, error) {
 	if ctx == nil || ctx.Err() != nil || manager == nil || validateConfig(config) != nil ||
-		(config.Mode != ModeLaunchd && config.Mode != ModeSystemdUser) ||
+		(config.Mode != ModeLaunchd && config.Mode != ModeSystemdUser && config.Mode != ModeRootlessContainer) ||
 		(action != NativeRegister && action != NativeUnregister) || expectedInstallRevision == 0 ||
 		expectedInstallRevision == ^uint64(0) {
 		return NativePlanV1{}, ErrInvalid
@@ -94,7 +94,7 @@ func nativePlan(ctx context.Context, config Config, action NativeAction, expecte
 	staged, _, err := readPrevious(config.InstallDir, unitPath, receiptPath, manifest)
 	if err != nil || staged.InstallRevision != expectedInstallRevision || staged.Mode != config.Mode ||
 		staged.ManifestRevision != manifest.Revision || staged.BinaryPath != config.BinaryPath ||
-		staged.BinarySHA256 != config.BinarySHA256 {
+		staged.BinarySHA256 != config.BinarySHA256 || staged.ContainerImage != config.ContainerImage {
 		return NativePlanV1{}, errors.Join(ErrConflict, err)
 	}
 	registration, err := readNativeReceipt(unitPath)
@@ -174,6 +174,11 @@ func applyNative(ctx context.Context, config Config, plan NativePlanV1, manager 
 		return NativeReceiptV1{}, errors.Join(ErrConflict, err)
 	}
 	name := nativeName(snapshot.Manifest)
+	if config.Mode == ModeRootlessContainer {
+		if err := prepareRootlessDirectories(config); err != nil {
+			return NativeReceiptV1{}, err
+		}
+	}
 	if err := writeAtomic(nativePendingPath(plan.UnitPath), encodeNativePlan(plan)); err != nil {
 		return NativeReceiptV1{}, errors.Join(ErrAmbiguous, err)
 	}

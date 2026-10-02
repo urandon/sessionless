@@ -17,10 +17,15 @@ import (
 )
 
 // This test is opt-in because it temporarily registers and starts a real
-// test-owned user service. No provider, Docker, or cloud endpoint is called.
+// test-owned user service. The rootless variant uses a test-owned Docker
+// engine and a preloaded execution base; neither variant calls a provider.
 func TestNativePlatformIntegration(t *testing.T) {
-	if os.Getenv("SESSIONLESS_NATIVE_INTEGRATION") != "1" {
+	rootless := os.Getenv("SESSIONLESS_ROOTLESS_INTEGRATION") == "1"
+	if os.Getenv("SESSIONLESS_NATIVE_INTEGRATION") != "1" && !rootless {
 		t.Skip("opt-in user-service integration")
+	}
+	if rootless && runtime.GOOS != "linux" {
+		t.Fatal("rootless service integration requires Linux")
 	}
 	binary := os.Getenv("SESSIONLESS_ATTACHED_WORKER_BINARY")
 	if binary == "" {
@@ -54,6 +59,13 @@ func TestNativePlatformIntegration(t *testing.T) {
 		}
 	})
 	store, config := packageFixtureAt(t, parent)
+	if rootless {
+		config.Mode = ModeRootlessContainer
+		config.ContainerImage = os.Getenv("SESSIONLESS_ROOTLESS_IMAGE")
+		if !imageDigest.MatchString(config.ContainerImage) {
+			t.Fatal("SESSIONLESS_ROOTLESS_IMAGE must be an immutable image digest")
+		}
+	}
 	config.BinaryPath = binary
 	config.BinarySHA256 = hex.EncodeToString(hash[:])
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -125,6 +137,9 @@ func TestNativePlatformIntegration(t *testing.T) {
 	baseArgs := []string{"--state-dir", config.StateRoot, "--package-mode", string(config.Mode),
 		"--install-dir", config.InstallDir, "--binary", config.BinaryPath,
 		"--binary-sha256", config.BinarySHA256}
+	if rootless {
+		baseArgs = append(baseArgs, "--container-image", config.ContainerImage)
+	}
 	registerArgs := append(append([]string{}, baseArgs...), "--expected-install-revision", "1", "--native-action", "register")
 	var register NativePlanV1
 	safeToRemove = false

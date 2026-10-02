@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -78,6 +79,48 @@ func nativeFixture(t *testing.T) (*attachedworkerlocal.Store, Config, *fakeNativ
 		t.Fatal(err)
 	}
 	return store, config, &fakeNativeManager{}
+}
+
+func TestRootlessNativePlanPinsStagedImageAndCreatesPrivateClientConfig(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("rootless user service is Linux-only")
+	}
+	_, config := packageFixture(t)
+	config.Mode = ModeRootlessContainer
+	config.ContainerImage = "registry.example/base@sha256:" + strings.Repeat("a", 64)
+	ctx := context.Background()
+	stage, err := Plan(ctx, config, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Apply(ctx, config, stage); err != nil {
+		t.Fatal(err)
+	}
+	manager := &fakeNativeManager{}
+	plan, err := nativePlan(ctx, config, NativeRegister, 1, manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := config
+	changed.ContainerImage = "registry.example/base@sha256:" + strings.Repeat("b", 64)
+	if _, err := nativePlan(ctx, changed, NativeRegister, 1, manager); !errors.Is(err, ErrConflict) {
+		t.Fatalf("different image was accepted for staged unit: %v", err)
+	}
+	if _, err := applyNative(ctx, config, plan, manager); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := nativeInspect(ctx, changed, manager); !errors.Is(err, ErrConflict) {
+		t.Fatalf("different image inspected as registered: %v", err)
+	}
+	if _, err := nativeStart(ctx, changed, 1, 1, manager); !errors.Is(err, ErrConflict) || manager.startCalls != 0 {
+		t.Fatalf("different image reached manager: %v calls=%d", err, manager.startCalls)
+	}
+	for _, directory := range []string{rootlessDockerConfig(config), config.StateRoot + ".control"} {
+		info, err := os.Lstat(directory)
+		if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
+			t.Fatalf("private rootless directory %s: %v %v", directory, info, err)
+		}
+	}
 }
 
 func TestNativeRegistrationIsDefaultOffFencedAndReversible(t *testing.T) {

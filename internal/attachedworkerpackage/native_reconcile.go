@@ -25,7 +25,8 @@ func ReconcileNative(ctx context.Context, config Config, expectedPlanSHA256 stri
 
 func reconcileNative(ctx context.Context, config Config, expectedPlanSHA256 string, manager nativeManager) (result NativeReconciliationV1, resultErr error) {
 	if ctx == nil || ctx.Err() != nil || manager == nil || validateConfig(config) != nil ||
-		(config.Mode != ModeLaunchd && config.Mode != ModeSystemdUser) || len(expectedPlanSHA256) != 64 {
+		(config.Mode != ModeLaunchd && config.Mode != ModeSystemdUser && config.Mode != ModeRootlessContainer) ||
+		len(expectedPlanSHA256) != 64 {
 		return NativeReconciliationV1{}, ErrInvalid
 	}
 	store, err := attachedworkerlocal.NewStore(config.StateRoot, nil)
@@ -54,6 +55,9 @@ func reconcileNative(ctx context.Context, config Config, expectedPlanSHA256 stri
 	staged, _, err := readPrevious(config.InstallDir, unitPath, receiptPath, manifest)
 	if err != nil {
 		return NativeReconciliationV1{}, err
+	}
+	if staged.ContainerImage != config.ContainerImage {
+		return NativeReconciliationV1{}, ErrConflict
 	}
 	encoded, err := readRegular(nativePendingPath(unitPath))
 	if err != nil {

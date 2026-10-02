@@ -2,6 +2,9 @@ name: Attached-worker OCI Linux rootless
 
 on:
   push:
+    branches:
+      - main
+      - 'ai/issue-137-*'
     paths:
       - .github/workflows/attached-worker-oci-rootless.yml
       - Makefile
@@ -11,6 +14,10 @@ on:
       - go.sum
       - internal/attachedworkerdaemon/**
       - internal/attachedworkeroci/**
+      - internal/attachedworkerpackage/**
+      - internal/attachedworkerservice/**
+      - cmd/attached-worker/**
+      - docs/attached-worker-packaging.md
       - scripts/test-attached-worker-oci.sh
       - scripts/test-attached-worker-oci-linux-rootless.sh
       - test/fixtures/attached-worker-oci-probe/**

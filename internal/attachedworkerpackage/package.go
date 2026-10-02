@@ -237,7 +237,7 @@ func validateConfig(config Config) error {
 			return ErrInvalid
 		}
 	case ModeRootlessContainer:
-		if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		if runtime.GOOS != "linux" {
 			return ErrInvalid
 		}
 		if !imageDigest.MatchString(config.ContainerImage) {
@@ -312,14 +312,7 @@ func render(config Config, manifest attachedworkerlocal.ManifestV1) ([]byte, err
 	case ModeSystemdUser:
 		return []byte(fmt.Sprintf("[Unit]\nDescription=Sessionless attached worker %s\n[Service]\nType=exec\nExecStart=%s serve --state-dir %s --expected-revision %d --binary %s --binary-sha256 %s\nRestart=no\nUMask=0077\nNoNewPrivileges=yes\n[Install]\nWantedBy=default.target\n", shortID(manifest), config.BinaryPath, config.StateRoot, manifest.Revision, config.BinaryPath, config.BinarySHA256)), nil
 	case ModeRootlessContainer:
-		return json.MarshalIndent(struct {
-			Version          uint32 `json:"version"`
-			Image            string `json:"image"`
-			StateRoot        string `json:"state_root"`
-			ManifestRevision uint64 `json:"manifest_revision"`
-			AutoRestart      bool   `json:"auto_restart"`
-		}{Version: 1, Image: config.ContainerImage, StateRoot: config.StateRoot,
-			ManifestRevision: manifest.Revision, AutoRestart: false}, "", "  ")
+		return renderRootless(config, manifest)
 	default:
 		return nil, ErrInvalid
 	}
@@ -335,10 +328,8 @@ func paths(config Config, manifest attachedworkerlocal.ManifestV1) (string, stri
 	switch config.Mode {
 	case ModeLaunchd:
 		name += ".plist"
-	case ModeSystemdUser:
+	case ModeSystemdUser, ModeRootlessContainer:
 		name += ".service"
-	case ModeRootlessContainer:
-		name += ".container.json"
 	}
 	unit := filepath.Join(config.InstallDir, name)
 	return unit, unit + ".receipt.json"

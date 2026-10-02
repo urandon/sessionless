@@ -299,9 +299,13 @@ func TestServiceArtifactRenderModesRemainDefaultOff(t *testing.T) {
 			t.Errorf("%s artifact enables retry or embeds secret path: %s", mode, text)
 		}
 		if mode == ModeRootlessContainer {
-			if !strings.Contains(text, `"manifest_revision": 1`) || !strings.Contains(text, candidate.ContainerImage) ||
-				strings.Contains(text, "command") {
-				t.Errorf("rootless intent claims an unverified runnable command or misses pins: %s", text)
+			for _, required := range []string{"ExecStart=/usr/bin/env -i", "--pull never", "--network none",
+				"--read-only", "--cap-drop ALL", "--user 0:0", "--binary-sha256 " + config.BinarySHA256,
+				"--expected-revision 1", candidate.ContainerImage, "--mount type=bind,src=" + config.StateRoot,
+				"--restart no", "Restart=no"} {
+				if !strings.Contains(text, required) {
+					t.Errorf("rootless unit misses %q: %s", required, text)
+				}
 			}
 		} else if !strings.Contains(text, "--expected-revision") || !strings.Contains(text, "--binary-sha256") ||
 			!strings.Contains(text, config.BinarySHA256) {

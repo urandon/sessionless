@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -238,8 +239,8 @@ func TestSyntheticPinnedRuntimeCommitsAcceptedAttemptAndLocalDrain(t *testing.T)
 	exchange, factory := fixture.exchange, fixture.factory
 	authorizer, jobs, blobs := fixture.authorizer, fixture.jobs, fixture.blobs
 	commandLog, materializationRoot := fixture.commandLog, fixture.materializationRoot
-	activeHeartbeatSettled := make(chan struct{}, 1)
-	config.Adapter.ActiveHeartbeatSettled = activeHeartbeatSettled
+	var activeHeartbeatSettled atomic.Uint64
+	config.Adapter.ActiveHeartbeatSettled = &activeHeartbeatSettled
 	// Keep the next active-control poll outside this bounded attempt. The
 	// settled signal below, not elapsed time, releases the pinned process.
 	config.Runtime.ActiveControlInterval = time.Minute
@@ -296,22 +297,29 @@ func TestSyntheticPinnedRuntimeCommitsAcceptedAttemptAndLocalDrain(t *testing.T)
 	// the watcher is no longer in an ambiguous network operation. A checkpoint
 	// can become visible just before that return and is not itself a barrier.
 	checkpointFile := filepath.Join(fixture.stateRoot, attachedworkerlocal.ReconnectCheckpointFileName)
-	select {
-	case <-activeHeartbeatSettled:
-	case err := <-done:
-		t.Fatalf("runtime stopped before active heartbeat settled: %v", err)
-	case <-time.After(5 * time.Second):
-		cancelRun()
-		t.Fatal("active heartbeat did not settle")
+	settleDeadline := time.NewTimer(5 * time.Second)
+	defer settleDeadline.Stop()
+	settlePoll := time.NewTicker(10 * time.Millisecond)
+	defer settlePoll.Stop()
+	for activeHeartbeatSettled.Load() == 0 {
+		select {
+		case err := <-done:
+			t.Fatalf("runtime stopped before active heartbeat settled: %v", err)
+		case <-settleDeadline.C:
+			cancelRun()
+			t.Fatal("active heartbeat did not settle")
+		case <-settlePoll.C:
+		}
 	}
 	encoded, readErr := os.ReadFile(checkpointFile)
 	var activeCheckpoint attachedworkerlocal.ReconnectCheckpointV1
-	if readErr != nil || json.Unmarshal(encoded, &activeCheckpoint) != nil ||
+	decodeErr := json.Unmarshal(encoded, &activeCheckpoint)
+	if readErr != nil || decodeErr != nil ||
 		activeCheckpoint.ConnectionGeneration != 2 ||
 		activeCheckpoint.MachineSnapshot.Attempt.Summary.State != attachedworkerprotocol.AttemptClaimed ||
 		activeCheckpoint.MachineSnapshot.Worker.Sequence < 6 {
 		cancelRun()
-		t.Fatalf("settled active heartbeat lacks durable claimed checkpoint: read error=%v checkpoint=%+v", readErr, activeCheckpoint)
+		t.Fatalf("settled active heartbeat lacks durable claimed checkpoint: read error=%v decode error=%v checkpoint=%+v", readErr, decodeErr, activeCheckpoint)
 	}
 	if err := os.WriteFile(filepath.Join(filepath.Dir(fixture.stateRoot), "active-heartbeat-committed"), nil, 0o600); err != nil {
 		t.Fatal(err)

@@ -63,19 +63,38 @@ func runWithContext(parent context.Context, arguments []string, output io.Writer
 	if err != nil {
 		return writeResult(output, commandErrorV1{Version: 1, Code: attachedworkerlocal.Code(err)}, 2)
 	}
-	packageCommand := command == "package-plan" || command == "package-apply"
+	packageCommand := command == "package-plan" || command == "package-apply" ||
+		command == "package-rollback-plan" || command == "package-rollback-apply"
 	if !packageCommand && command != "serve" && (*packageMode != "" || *installDir != "" || *binaryPath != "" ||
 		*binarySHA256 != "" || *containerImage != "" || *expectedInstallRevision != 0 || *planSHA256 != "") {
 		return writeResult(output, commandErrorV1{Version: 1, Code: attachedworkerlocal.CodeInvalid}, 2)
 	}
 	if packageCommand {
-		if *expectedRevision != 0 || *idempotencyKey != "" || (*planSHA256 != "") != (command == "package-apply") {
+		applyCommand := command == "package-apply" || command == "package-rollback-apply"
+		if *expectedRevision != 0 || *idempotencyKey != "" || (*planSHA256 != "") != applyCommand {
 			return writeResult(output, commandErrorV1{Version: 1, Code: attachedworkerlocal.CodeInvalid}, 2)
 		}
 		ctx, cancel := context.WithTimeout(parent, commandTimeout)
 		defer cancel()
 		config := attachedworkerpackage.Config{Mode: attachedworkerpackage.Mode(*packageMode), StateRoot: *stateRoot,
 			InstallDir: *installDir, BinaryPath: *binaryPath, BinarySHA256: *binarySHA256, ContainerImage: *containerImage}
+		if command == "package-rollback-plan" || command == "package-rollback-apply" {
+			plan, planErr := attachedworkerpackage.RollbackPlan(ctx, config, *expectedInstallRevision)
+			if planErr != nil {
+				return writeResult(output, commandErrorV1{Version: 1, Code: packageCode(planErr)}, 1)
+			}
+			if command == "package-rollback-plan" {
+				return writeResult(output, plan, 0)
+			}
+			if plan.PlanSHA256 != *planSHA256 {
+				return writeResult(output, commandErrorV1{Version: 1, Code: attachedworkerlocal.CodeConflict}, 1)
+			}
+			receipt, applyErr := attachedworkerpackage.ApplyRollback(ctx, config, plan)
+			if applyErr != nil {
+				return writeResult(output, commandErrorV1{Version: 1, Code: packageCode(applyErr)}, 1)
+			}
+			return writeResult(output, receipt, 0)
+		}
 		plan, planErr := attachedworkerpackage.Plan(ctx, config, *expectedInstallRevision)
 		if planErr != nil {
 			return writeResult(output, commandErrorV1{Version: 1, Code: packageCode(planErr)}, 1)

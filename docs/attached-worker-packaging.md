@@ -59,9 +59,12 @@ not write a file. `package-apply` recomputes the plan while holding the same
 runtime lock, requires its exact reviewed `plan_sha256`, and stages the
 mode-specific unit with a versioned receipt. The receipt states
 `registration=not_attempted` and records the previous unit digest for an
-eventual rollback audit. It does not yet retain previous unit bytes or offer
-a rollback command. A stale/tampered unit, stale install revision, live owner,
-unsupported mode, symlinked/unsafe path, or changed binary fails closed.
+exact rollback audit. Every staged revision retains its unit and receipt in
+private content-addressed archives. `package-rollback-plan` previews the
+immediately previous exact unit and `package-rollback-apply` stages it as a
+new monotonic install revision. A stale/tampered unit, stale install revision,
+live owner, unsupported mode, symlinked/unsafe path, or changed binary fails
+closed. The focused local gate is `make attached-worker-package-test`.
 
 ```text
 .build/bin/attached-worker package-plan --state-dir <absolute-state-root> \
@@ -75,7 +78,26 @@ unsupported mode, symlinked/unsafe path, or changed binary fails closed.
   --binary <same-binary> --binary-sha256 <same-digest> \
   --expected-install-revision <same-prior-revision> \
   --plan-sha256 <reviewed-plan-digest>
+
+.build/bin/attached-worker package-rollback-plan --state-dir <absolute-state-root> \
+  --package-mode <same-mode> --install-dir <same-dir> \
+  --binary <previous-absolute-binary> --binary-sha256 <previous-digest> \
+  --expected-install-revision <current-revision>
+
+.build/bin/attached-worker package-rollback-apply --state-dir <absolute-state-root> \
+  --package-mode <same-mode> --install-dir <same-dir> \
+  --binary <same-previous-binary> --binary-sha256 <same-previous-digest> \
+  --expected-install-revision <same-current-revision> \
+  --plan-sha256 <reviewed-rollback-plan-digest>
 ```
+
+Rollback requires the previous binary/image, same active manifest revision,
+and an intact archived receipt. Pre-archive legacy staged units fail closed;
+there is no implicit rollback across a manifest revision change. The operation
+affects staged files only, not a registered or running OS service. Lost or
+partial writes are reported as ambiguous for operator reconciliation. For
+rootless intent, pass the previous immutable `--container-image` on both
+rollback commands as well.
 
 Rootless-container staging additionally requires `--container-image` with an
 immutable `@sha256:` daemon-service image. That JSON artifact is an exact
@@ -88,8 +110,8 @@ unit has `Restart=no`. These avoid turning an ambiguous crash into automatic
 re-admission. The staged artifacts are not loaded or enabled by these
 commands. Native units pin the executable digest and manifest revision on
 startup; the rootless intent pins an image digest and manifest revision, but
-has not been validated as a runnable container. Durable rollback, operator
-service registration, verified rootless shared-lock/UID
-semantics, exact platform integration evidence, and rollback of a registered
+has not been validated as a runnable container. Operator service
+registration, verified rootless shared-lock/UID semantics, exact platform
+integration evidence, and rollback of a registered
 service remain required by #137 before #77 may close. #79 remains the
 separate two-owner security/recovery release gate.

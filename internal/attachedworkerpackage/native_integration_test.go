@@ -154,8 +154,27 @@ func TestNativePlatformIntegration(t *testing.T) {
 	if inspection.Status != "registered" || inspection.OSActive {
 		t.Fatalf("default-off registration: %+v", inspection)
 	}
-	integrationCLI(t, ctx, binary, append(append([]string{"native-start"}, baseArgs...),
-		"--expected-install-revision", "1", "--expected-registration-revision", "1")...)
+	if rootless {
+		if err := verifyRootlessEngine(ctx, config); err != nil {
+			var security, images []string
+			securityErr := rootlessDockerJSON(ctx, config, &security, "info", "--format", "{{json .SecurityOptions}}")
+			imageErr := rootlessDockerJSON(ctx, config, &images, "image", "inspect", "--format", "{{json .RepoDigests}}", config.ContainerImage)
+			t.Fatalf("rootless preflight: %v; security=%v (%v); image=%v (%v)", err, security, securityErr, images, imageErr)
+		}
+	}
+	startArgs := append(append([]string{"native-start"}, baseArgs...),
+		"--expected-install-revision", "1", "--expected-registration-revision", "1")
+	if rootless {
+		command := exec.CommandContext(ctx, binary, startArgs...)
+		output, startErr := command.CombinedOutput()
+		if startErr != nil {
+			status, _ := exec.CommandContext(ctx, "/usr/bin/systemctl", "--user", "status", filepath.Base(stage.UnitPath), "--no-pager").CombinedOutput()
+			journal, _ := exec.CommandContext(ctx, "/usr/bin/journalctl", "--user-unit", filepath.Base(stage.UnitPath), "--no-pager", "-n", "40").CombinedOutput()
+			t.Fatalf("native-start: %v: %s\nstatus: %s\njournal: %s", startErr, output, status, journal)
+		}
+	} else {
+		integrationCLI(t, ctx, binary, startArgs...)
+	}
 	controlDir, err := attachedworkerservice.Directory(config.StateRoot)
 	if err != nil {
 		t.Fatal(err)

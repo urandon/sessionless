@@ -1,6 +1,9 @@
 name: Attached-worker native service integration
 
 on:
+  push:
+    branches:
+      - 'ai/issue-137-*'
   workflow_dispatch:
 
 permissions:

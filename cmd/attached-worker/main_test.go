@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerlocal"
+	"gitcode.com/urandon/sessionless/internal/attachedworkerpackage"
 	"gitcode.com/urandon/sessionless/internal/domain"
 )
 
@@ -117,12 +118,175 @@ func TestRunForegroundIsExplicitlyDisabledAndLeavesNoObservation(t *testing.T) {
 	}
 }
 
-func initializeCLIStore(t *testing.T) (string, ed25519.PrivateKey) {
-	t.Helper()
-	parent, err := filepath.EvalSymlinks(t.TempDir())
+func TestServeOwnsOneDisabledForegroundAndLocalControl(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("service control requires Unix-domain sockets")
+	}
+	root, privateKey := initializeCLIStore(t)
+	binaryPath, binaryDigest := runningTestBinary(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	var output bytes.Buffer
+	var exitCode int
+	go func() {
+		exitCode = runWithContext(ctx, []string{"serve", "--state-dir", root, "--expected-revision", "1",
+			"--binary", binaryPath, "--binary-sha256", binaryDigest}, &output)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Error("attached-worker serve did not stop after cancellation")
+		}
+	})
+	deadline, stopWaiting := context.WithTimeout(context.Background(), 2*time.Second)
+	defer stopWaiting()
+	var status bytes.Buffer
+	for {
+		status.Reset()
+		if runWithContext(deadline, []string{"live-status", "--state-dir", root}, &status) == 0 {
+			break
+		}
+		if deadline.Err() != nil {
+			t.Fatalf("live status not ready before deadline: %v", deadline.Err())
+		}
+		select {
+		case <-time.After(time.Millisecond):
+		case <-deadline.Done():
+		}
+	}
+	if !strings.Contains(status.String(), `"feature_state":"disabled"`) ||
+		!strings.Contains(status.String(), `"network_action":"not_attempted"`) ||
+		!strings.Contains(status.String(), `"server_connection_state":"unknown"`) {
+		t.Fatalf("service claimed unproved runtime or server authority: %s", status.String())
+	}
+	var rejected bytes.Buffer
+	if code := run([]string{"stop", "--state-dir", root, "--expected-revision", "2"}, &rejected); code != 1 ||
+		!strings.Contains(rejected.String(), `"revision_conflict"`) {
+		t.Fatalf("stale stop: exit=%d output=%s", code, rejected.String())
+	}
+	var drained bytes.Buffer
+	if code := run([]string{"drain", "--state-dir", root, "--expected-revision", "1"}, &drained); code != 0 ||
+		!strings.Contains(drained.String(), `"daemon_state":"draining"`) {
+		t.Fatalf("drain: exit=%d output=%s", code, drained.String())
+	}
+	var stopped bytes.Buffer
+	if code := run([]string{"stop", "--state-dir", root, "--expected-revision", "1"}, &stopped); code != 0 ||
+		!strings.Contains(stopped.String(), `"runtime_ownership":"released"`) {
+		t.Fatalf("stop: exit=%d output=%s", code, stopped.String())
+	}
+	select {
+	case <-done:
+		if exitCode != 0 {
+			t.Fatalf("serve exit=%d output=%s", exitCode, output.String())
+		}
+	case <-deadline.Done():
+		t.Fatalf("serve did not exit after stop: %v", deadline.Err())
+	}
+	combined := status.String() + drained.String() + stopped.String() + output.String()
+	if strings.Contains(combined, root) || strings.Contains(strings.ToLower(combined), fmt.Sprintf("%x", privateKey)) ||
+		strings.Contains(combined, "identity_private_key") || strings.Contains(combined, "connection_secret") {
+		t.Fatalf("service control leaked private material: %s", combined)
+	}
+	store, err := attachedworkerlocal.NewStore(root, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	local, err := store.Status(context.Background())
+	if err != nil || local.DaemonObservation != "unknown" {
+		t.Fatalf("service retained stale live observation: status=%+v err=%v", local, err)
+	}
+}
+
+func TestServeRejectsStaleManifestAndWrongExecutableBeforeListening(t *testing.T) {
+	root, _ := initializeCLIStore(t)
+	binaryPath, binaryDigest := runningTestBinary(t)
+	var stale bytes.Buffer
+	if code := run([]string{"serve", "--state-dir", root, "--expected-revision", "2",
+		"--binary", binaryPath, "--binary-sha256", binaryDigest}, &stale); code != 1 ||
+		!strings.Contains(stale.String(), `"code":"state_conflict"`) {
+		t.Fatalf("stale pinned service start: exit=%d output=%s", code, stale.String())
+	}
+	var wrongBinary bytes.Buffer
+	if code := run([]string{"serve", "--state-dir", root, "--expected-revision", "1",
+		"--binary", filepath.Join(filepath.Dir(root), "docker"), "--binary-sha256", strings.Repeat("0", 64)}, &wrongBinary); code != 1 ||
+		!strings.Contains(wrongBinary.String(), `"code":"state_conflict"`) {
+		t.Fatalf("unreviewed executable start: exit=%d output=%s", code, wrongBinary.String())
+	}
+	store, err := attachedworkerlocal.NewStore(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := store.Status(context.Background())
+	if err != nil || status.DaemonObservation != "unknown" {
+		t.Fatalf("rejected service left live observation: status=%+v err=%v", status, err)
+	}
+}
+
+func runningTestBinary(t *testing.T) (string, string) {
+	t.Helper()
+	path, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err = filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path, fmt.Sprintf("%x", sha256.Sum256(contents))
+}
+
+func TestPackagePlanAndApplyStayUnregistered(t *testing.T) {
+	root, _ := initializeCLIStore(t)
+	store, err := attachedworkerlocal.NewStore(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := store.LoadSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mode := string(attachedworkerpackage.ModeSystemdUser)
+	if runtime.GOOS == "darwin" {
+		mode = string(attachedworkerpackage.ModeLaunchd)
+	}
+	base := []string{"--state-dir", root, "--package-mode", mode,
+		"--install-dir", filepath.Join(filepath.Dir(root), "units"),
+		"--binary", snapshot.Manifest.OCI.DockerPath,
+		"--binary-sha256", snapshot.Manifest.OCI.DockerSHA256}
+	var planned bytes.Buffer
+	if code := run(append([]string{"package-plan"}, base...), &planned); code != 0 {
+		t.Fatalf("package plan exit=%d output=%s", code, planned.String())
+	}
+	var plan attachedworkerpackage.PlanV1
+	if err := json.Unmarshal(planned.Bytes(), &plan); err != nil || plan.PlanSHA256 == "" || plan.NextInstallRevision != 1 {
+		t.Fatalf("decode package plan: plan=%+v err=%v", plan, err)
+	}
+	var stale bytes.Buffer
+	if code := run(append(append([]string{"package-apply"}, base...), "--plan-sha256", strings.Repeat("0", 64)), &stale); code != 1 ||
+		!strings.Contains(stale.String(), `"state_conflict"`) {
+		t.Fatalf("unreviewed package apply exit=%d output=%s", code, stale.String())
+	}
+	var applied bytes.Buffer
+	if code := run(append(append([]string{"package-apply"}, base...), "--plan-sha256", plan.PlanSHA256), &applied); code != 0 {
+		t.Fatalf("package apply exit=%d output=%s", code, applied.String())
+	}
+	var receipt attachedworkerpackage.ReceiptV1
+	if err := json.Unmarshal(applied.Bytes(), &receipt); err != nil || receipt.InstallRevision != 1 ||
+		receipt.Registration != "not_attempted" {
+		t.Fatalf("package apply did not preserve default-off registration: receipt=%+v err=%v", receipt, err)
+	}
+}
+
+func initializeCLIStore(t *testing.T) (string, ed25519.PrivateKey) {
+	t.Helper()
+	parent := shortCLIHome(t)
 	dockerPath := filepath.Join(parent, "docker")
 	if err := os.WriteFile(dockerPath, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
 		t.Fatal(err)
@@ -173,4 +337,22 @@ func initializeCLIStore(t *testing.T) (string, ed25519.PrivateKey) {
 		t.Fatal(err)
 	}
 	return root, privateKey
+}
+
+func shortCLIHome(t *testing.T) string {
+	t.Helper()
+	base := "/tmp"
+	if runtime.GOOS == "darwin" {
+		base = "/private/tmp"
+	}
+	parent, err := os.MkdirTemp(base, "aw137-cli-")
+	if err != nil {
+		t.Fatalf("create short private CLI test root: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(parent); err != nil {
+			t.Errorf("remove CLI test root %q: %v", parent, err)
+		}
+	})
+	return parent
 }

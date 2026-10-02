@@ -1,0 +1,442 @@
+// Package attachedworkerpackage stages exact, default-off service artifacts.
+// It does not register, start, or auto-restart an OS service or container.
+package attachedworkerpackage
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"encoding/xml"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"strings"
+
+	"gitcode.com/urandon/sessionless/internal/attachedworkerlocal"
+)
+
+const VersionV1 = uint32(1)
+
+var (
+	ErrInvalid   = errors.New("attached worker package plan is invalid")
+	ErrConflict  = errors.New("attached worker package revision conflicts")
+	ErrAmbiguous = errors.New("attached worker package write is ambiguous")
+	ErrIO        = errors.New("attached worker package operation failed")
+	safePath     = regexp.MustCompile(`^/[A-Za-z0-9_./-]+$`)
+	imageDigest  = regexp.MustCompile(`^[A-Za-z0-9._:/-]+@sha256:[0-9a-f]{64}$`)
+)
+
+type Mode string
+
+const (
+	ModeLaunchd           Mode = "launchd"
+	ModeSystemdUser       Mode = "systemd-user"
+	ModeRootlessContainer Mode = "rootless-container"
+)
+
+// Config is entirely explicit. ContainerImage is a pinned daemon-service
+// image, never the harness image from the installation manifest.
+type Config struct {
+	Mode           Mode
+	StateRoot      string
+	InstallDir     string
+	BinaryPath     string
+	BinarySHA256   string
+	ContainerImage string
+}
+
+// PlanV1 is the exact artifact and rollback precondition shown to the
+// operator. It contains no secret, but paths remain local operator data.
+type PlanV1 struct {
+	Version                 uint32 `json:"version"`
+	Mode                    Mode   `json:"mode"`
+	OwnerUserID             string `json:"owner_user_id"`
+	WorkerID                string `json:"worker_id"`
+	ManifestRevision        uint64 `json:"manifest_revision"`
+	ExpectedInstallRevision uint64 `json:"expected_install_revision"`
+	NextInstallRevision     uint64 `json:"next_install_revision"`
+	UnitPath                string `json:"unit_path"`
+	UnitSHA256              string `json:"unit_sha256"`
+	RollbackSHA256          string `json:"rollback_sha256,omitempty"`
+	BinarySHA256            string `json:"binary_sha256"`
+	ContainerImage          string `json:"container_image,omitempty"`
+	PlanSHA256              string `json:"plan_sha256"`
+}
+
+// ReceiptV1 is local package-stage evidence, not service registration or
+// runtime health. A mismatch with the staged unit fails closed.
+type ReceiptV1 struct {
+	Version          uint32 `json:"version"`
+	InstallRevision  uint64 `json:"install_revision"`
+	ManifestRevision uint64 `json:"manifest_revision"`
+	OwnerUserID      string `json:"owner_user_id"`
+	WorkerID         string `json:"worker_id"`
+	Mode             Mode   `json:"mode"`
+	UnitSHA256       string `json:"unit_sha256"`
+	BinarySHA256     string `json:"binary_sha256"`
+	PlanSHA256       string `json:"plan_sha256"`
+	RollbackSHA256   string `json:"rollback_sha256,omitempty"`
+	Registration     string `json:"registration"`
+}
+
+// Plan reads the exact enrolled installation, pinned binary, prior staged
+// receipt and unit. It does not create a directory or mutate service state.
+func Plan(ctx context.Context, config Config, expectedInstallRevision uint64) (PlanV1, error) {
+	if ctx == nil || ctx.Err() != nil || validateConfig(config) != nil {
+		return PlanV1{}, ErrInvalid
+	}
+	store, err := attachedworkerlocal.NewStore(config.StateRoot, nil)
+	if err != nil {
+		return PlanV1{}, ErrInvalid
+	}
+	snapshot, err := store.LoadSnapshot(ctx)
+	if err != nil || snapshot.Manifest.Lifecycle != attachedworkerlocal.LifecycleActive {
+		return PlanV1{}, errors.Join(ErrInvalid, err)
+	}
+	manifest := snapshot.Manifest
+	if err := verifyBinary(config.BinaryPath, config.BinarySHA256); err != nil {
+		return PlanV1{}, err
+	}
+	unit, err := render(config, manifest)
+	if err != nil {
+		return PlanV1{}, err
+	}
+	unitPath, receiptPath := paths(config, manifest)
+	previous, previousUnit, err := readPrevious(config.InstallDir, unitPath, receiptPath, manifest)
+	if err != nil {
+		return PlanV1{}, err
+	}
+	if previous.InstallRevision != expectedInstallRevision || expectedInstallRevision == ^uint64(0) {
+		return PlanV1{}, ErrConflict
+	}
+	plan := PlanV1{
+		Version: VersionV1, Mode: config.Mode, OwnerUserID: string(manifest.OwnerUserID),
+		WorkerID: string(manifest.WorkerID), ManifestRevision: manifest.Revision,
+		ExpectedInstallRevision: expectedInstallRevision, NextInstallRevision: expectedInstallRevision + 1,
+		UnitPath: unitPath, UnitSHA256: digest(unit), BinarySHA256: config.BinarySHA256,
+		ContainerImage: config.ContainerImage,
+	}
+	if len(previousUnit) > 0 {
+		plan.RollbackSHA256 = digest(previousUnit)
+	}
+	plan.PlanSHA256 = planDigest(plan)
+	return plan, nil
+}
+
+// Apply stages one reviewed exact plan under the installation runtime lock.
+// It intentionally does not call launchctl, systemctl or Docker. A caller
+// must not infer that a staged artifact is a running service.
+func Apply(ctx context.Context, config Config, plan PlanV1) (receiptResult ReceiptV1, resultErr error) {
+	if ctx == nil || ctx.Err() != nil || plan.Version != VersionV1 ||
+		plan.PlanSHA256 == "" || plan.PlanSHA256 != planDigest(plan) {
+		return ReceiptV1{}, ErrInvalid
+	}
+	store, err := attachedworkerlocal.NewStore(config.StateRoot, nil)
+	if err != nil {
+		return ReceiptV1{}, ErrInvalid
+	}
+	lease, err := store.AcquireRuntime(ctx)
+	if err != nil {
+		return ReceiptV1{}, err
+	}
+	defer func() { resultErr = errors.Join(resultErr, lease.Close()) }()
+	current, err := Plan(ctx, config, plan.ExpectedInstallRevision)
+	if err != nil || current != plan {
+		return ReceiptV1{}, errors.Join(ErrConflict, err)
+	}
+	snapshot, err := store.LoadSnapshot(ctx)
+	if err != nil || snapshot.Manifest.Revision != plan.ManifestRevision {
+		return ReceiptV1{}, errors.Join(ErrConflict, err)
+	}
+	unit, err := render(config, snapshot.Manifest)
+	if err != nil || digest(unit) != plan.UnitSHA256 {
+		return ReceiptV1{}, ErrConflict
+	}
+	unitPath, receiptPath := paths(config, snapshot.Manifest)
+	_, oldUnit, err := readPrevious(config.InstallDir, unitPath, receiptPath, snapshot.Manifest)
+	if err != nil {
+		return ReceiptV1{}, err
+	}
+	if err := ensurePrivateDir(config.InstallDir, true); err != nil {
+		return ReceiptV1{}, err
+	}
+	receipt := ReceiptV1{
+		Version: VersionV1, InstallRevision: plan.NextInstallRevision,
+		ManifestRevision: plan.ManifestRevision, OwnerUserID: plan.OwnerUserID,
+		WorkerID: plan.WorkerID, Mode: plan.Mode, UnitSHA256: plan.UnitSHA256,
+		BinarySHA256: plan.BinarySHA256, PlanSHA256: plan.PlanSHA256,
+		RollbackSHA256: plan.RollbackSHA256, Registration: "not_attempted",
+	}
+	encoded, err := json.Marshal(receipt)
+	if err != nil {
+		return ReceiptV1{}, ErrInvalid
+	}
+	if err := writeAtomic(unitPath, unit); err != nil {
+		return ReceiptV1{}, errors.Join(ErrAmbiguous, err)
+	}
+	if err := writeAtomic(receiptPath, append(encoded, '\n')); err != nil {
+		if errors.Is(err, ErrAmbiguous) {
+			return ReceiptV1{}, err
+		}
+		// Best-effort exact rollback; a failed rollback remains unknown and
+		// requires operator reconciliation rather than a success receipt.
+		rollbackErr := rollback(unitPath, oldUnit)
+		return ReceiptV1{}, errors.Join(ErrAmbiguous, err, rollbackErr)
+	}
+	return receipt, nil
+}
+
+func validateConfig(config Config) error {
+	if !canonicalPath(config.StateRoot) || !canonicalPath(config.InstallDir) ||
+		!canonicalPath(config.BinaryPath) || within(config.StateRoot, config.InstallDir) ||
+		len(config.BinarySHA256) != 64 {
+		return ErrInvalid
+	}
+	if _, err := hex.DecodeString(config.BinarySHA256); err != nil {
+		return ErrInvalid
+	}
+	switch config.Mode {
+	case ModeLaunchd:
+		if runtime.GOOS != "darwin" || config.ContainerImage != "" {
+			return ErrInvalid
+		}
+	case ModeSystemdUser:
+		if runtime.GOOS != "linux" || config.ContainerImage != "" {
+			return ErrInvalid
+		}
+	case ModeRootlessContainer:
+		if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+			return ErrInvalid
+		}
+		if !imageDigest.MatchString(config.ContainerImage) {
+			return ErrInvalid
+		}
+	default:
+		return ErrInvalid
+	}
+	return nil
+}
+
+func within(parent, child string) bool {
+	relative, err := filepath.Rel(parent, child)
+	return err == nil && (relative == "." || relative != ".." &&
+		!filepath.IsAbs(relative) && !strings.HasPrefix(relative, ".."+string(filepath.Separator)))
+}
+
+func canonicalPath(path string) bool {
+	return safePath.MatchString(path) && filepath.Clean(path) == path && filepath.Dir(path) != path
+}
+
+func verifyBinary(path, expected string) error {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 ||
+		info.Mode().Perm()&0o022 != 0 || info.Size() <= 0 || info.Size() > 128<<20 {
+		return ErrInvalid
+	}
+	canonical, err := filepath.EvalSymlinks(path)
+	if err != nil || canonical != path {
+		return ErrInvalid
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return ErrIO
+	}
+	defer file.Close()
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, file); err != nil {
+		return ErrIO
+	}
+	if hex.EncodeToString(hasher.Sum(nil)) != expected {
+		return ErrConflict
+	}
+	return nil
+}
+
+// VerifyRunningBinary checks the explicit service path against the executable
+// selected by the OS before the process is allowed to acquire runtime state.
+func VerifyRunningBinary(path, expected string) error {
+	actual, err := os.Executable()
+	if err != nil {
+		return ErrInvalid
+	}
+	actual, err = filepath.EvalSymlinks(actual)
+	if err != nil || actual != path {
+		return ErrConflict
+	}
+	return verifyBinary(path, expected)
+}
+
+func render(config Config, manifest attachedworkerlocal.ManifestV1) ([]byte, error) {
+	if manifest.Validate() != nil || manifest.Lifecycle != attachedworkerlocal.LifecycleActive {
+		return nil, ErrInvalid
+	}
+	switch config.Mode {
+	case ModeLaunchd:
+		var path, state bytes.Buffer
+		_ = xml.EscapeText(&path, []byte(config.BinaryPath))
+		_ = xml.EscapeText(&state, []byte(config.StateRoot))
+		label := "com.sessionless.attached-worker." + shortID(manifest)
+		return []byte(fmt.Sprintf("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict><key>Label</key><string>%s</string><key>ProgramArguments</key><array><string>%s</string><string>serve</string><string>--state-dir</string><string>%s</string><string>--expected-revision</string><string>%d</string><string>--binary</string><string>%s</string><string>--binary-sha256</string><string>%s</string></array><key>RunAtLoad</key><false/><key>KeepAlive</key><false/></dict></plist>\n", label, path.String(), state.String(), manifest.Revision, path.String(), config.BinarySHA256)), nil
+	case ModeSystemdUser:
+		return []byte(fmt.Sprintf("[Unit]\nDescription=Sessionless attached worker %s\n[Service]\nType=exec\nExecStart=%s serve --state-dir %s --expected-revision %d --binary %s --binary-sha256 %s\nRestart=no\nUMask=0077\nNoNewPrivileges=yes\n[Install]\nWantedBy=default.target\n", shortID(manifest), config.BinaryPath, config.StateRoot, manifest.Revision, config.BinaryPath, config.BinarySHA256)), nil
+	case ModeRootlessContainer:
+		return json.MarshalIndent(struct {
+			Version          uint32 `json:"version"`
+			Image            string `json:"image"`
+			StateRoot        string `json:"state_root"`
+			ManifestRevision uint64 `json:"manifest_revision"`
+			AutoRestart      bool   `json:"auto_restart"`
+		}{Version: 1, Image: config.ContainerImage, StateRoot: config.StateRoot,
+			ManifestRevision: manifest.Revision, AutoRestart: false}, "", "  ")
+	default:
+		return nil, ErrInvalid
+	}
+}
+
+func shortID(manifest attachedworkerlocal.ManifestV1) string {
+	hash := sha256.Sum256([]byte(string(manifest.WorkerID)))
+	return hex.EncodeToString(hash[:8])
+}
+
+func paths(config Config, manifest attachedworkerlocal.ManifestV1) (string, string) {
+	name := "sessionless-attached-worker-" + shortID(manifest)
+	switch config.Mode {
+	case ModeLaunchd:
+		name += ".plist"
+	case ModeSystemdUser:
+		name += ".service"
+	case ModeRootlessContainer:
+		name += ".container.json"
+	}
+	unit := filepath.Join(config.InstallDir, name)
+	return unit, unit + ".receipt.json"
+}
+
+func readPrevious(directory, unitPath, receiptPath string, manifest attachedworkerlocal.ManifestV1) (ReceiptV1, []byte, error) {
+	if err := ensurePrivateDir(directory, false); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return ReceiptV1{}, nil, nil
+		}
+		return ReceiptV1{}, nil, err
+	}
+	unit, unitErr := readRegular(unitPath)
+	receiptBytes, receiptErr := readRegular(receiptPath)
+	if errors.Is(unitErr, os.ErrNotExist) && errors.Is(receiptErr, os.ErrNotExist) {
+		return ReceiptV1{}, nil, nil
+	}
+	if unitErr != nil || receiptErr != nil {
+		return ReceiptV1{}, nil, ErrConflict
+	}
+	var receipt ReceiptV1
+	decoder := json.NewDecoder(bytes.NewReader(receiptBytes))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&receipt) != nil || decoder.Decode(new(any)) != io.EOF || receipt.Version != VersionV1 ||
+		receipt.InstallRevision == 0 || receipt.OwnerUserID != string(manifest.OwnerUserID) ||
+		receipt.WorkerID != string(manifest.WorkerID) || receipt.UnitSHA256 != digest(unit) ||
+		receipt.Registration != "not_attempted" {
+		return ReceiptV1{}, nil, ErrConflict
+	}
+	return receipt, unit, nil
+}
+
+func ensurePrivateDir(directory string, create bool) error {
+	if create {
+		if err := os.Mkdir(directory, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+			return errors.Join(ErrIO, err)
+		}
+	}
+	info, err := os.Lstat(directory)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode().Perm() != 0o700 || !ownedByCurrentUser(info) {
+		return ErrInvalid
+	}
+	canonical, err := filepath.EvalSymlinks(directory)
+	if err != nil || canonical != directory {
+		return ErrInvalid
+	}
+	return nil
+}
+
+func readRegular(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || !ownedByCurrentUser(info) || info.Size() > 64<<10 {
+		return nil, ErrInvalid
+	}
+	return os.ReadFile(path)
+}
+
+func writeAtomic(path string, payload []byte) (resultErr error) {
+	directory := filepath.Dir(path)
+	file, err := os.CreateTemp(directory, ".sessionless-stage-")
+	if err != nil {
+		return errors.Join(ErrIO, err)
+	}
+	defer func() { _ = os.Remove(file.Name()) }()
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		return errors.Join(ErrIO, err)
+	}
+	if _, err := file.Write(payload); err != nil {
+		_ = file.Close()
+		return errors.Join(ErrIO, err)
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return errors.Join(ErrIO, err)
+	}
+	if err := file.Close(); err != nil {
+		return errors.Join(ErrIO, err)
+	}
+	if err := os.Rename(file.Name(), path); err != nil {
+		return errors.Join(ErrIO, err)
+	}
+	dir, err := os.Open(directory)
+	if err != nil {
+		return ErrAmbiguous
+	}
+	defer dir.Close()
+	if err := dir.Sync(); err != nil {
+		return ErrAmbiguous
+	}
+	return nil
+}
+
+func rollback(unitPath string, old []byte) error {
+	if len(old) > 0 {
+		return writeAtomic(unitPath, old)
+	}
+	if err := os.Remove(unitPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return ErrAmbiguous
+	}
+	directory, err := os.Open(filepath.Dir(unitPath))
+	if err != nil {
+		return ErrAmbiguous
+	}
+	defer directory.Close()
+	if err := directory.Sync(); err != nil {
+		return ErrAmbiguous
+	}
+	return nil
+}
+
+func digest(payload []byte) string {
+	hash := sha256.Sum256(payload)
+	return hex.EncodeToString(hash[:])
+}
+
+func planDigest(plan PlanV1) string {
+	plan.PlanSHA256 = ""
+	encoded, _ := json.Marshal(plan)
+	return digest(encoded)
+}

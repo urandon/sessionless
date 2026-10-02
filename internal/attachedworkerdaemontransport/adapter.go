@@ -115,6 +115,10 @@ type Config struct {
 	ActiveCancelTimeout    time.Duration
 	ReportTimeout          time.Duration
 	Now                    func() time.Time
+	// ActiveHeartbeatSettled is an optional, non-blocking, content-free
+	// observation after an active heartbeat has fully settled in the session.
+	// It grants no process or protocol authority.
+	ActiveHeartbeatSettled chan<- struct{}
 }
 
 type MaterializationRequestV1 struct {
@@ -398,6 +402,12 @@ func (adapter *Adapter) pollActiveControl(
 		return "", false, errors.Join(ErrReconciliationRequired, classifySessionError(err))
 	}
 	if response == nil {
+		if adapter.config.ActiveHeartbeatSettled != nil {
+			select {
+			case adapter.config.ActiveHeartbeatSettled <- struct{}{}:
+			default:
+			}
+		}
 		return "", false, nil
 	}
 	if !frameMatchesCurrentSession(*response, adapter.session.Snapshot()) {

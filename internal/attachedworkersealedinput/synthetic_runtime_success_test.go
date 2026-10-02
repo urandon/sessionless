@@ -238,6 +238,11 @@ func TestSyntheticPinnedRuntimeCommitsAcceptedAttemptAndLocalDrain(t *testing.T)
 	exchange, factory := fixture.exchange, fixture.factory
 	authorizer, jobs, blobs := fixture.authorizer, fixture.jobs, fixture.blobs
 	commandLog, materializationRoot := fixture.commandLog, fixture.materializationRoot
+	activeHeartbeatSettled := make(chan struct{}, 1)
+	config.Adapter.ActiveHeartbeatSettled = activeHeartbeatSettled
+	// Keep the next active-control poll outside this bounded attempt. The
+	// settled signal below, not elapsed time, releases the pinned process.
+	config.Runtime.ActiveControlInterval = time.Minute
 	owner, err := ConnectSyntheticPinnedRuntime(context.Background(), config)
 	if err != nil {
 		t.Fatalf("connect joined pinned runtime: %v", err)
@@ -287,32 +292,26 @@ func TestSyntheticPinnedRuntimeCommitsAcceptedAttemptAndLocalDrain(t *testing.T)
 	done := make(chan error, 1)
 	go func() { done <- owner.Run(runCtx) }()
 	// The active-control watcher sends an immediate unavailable heartbeat.
-	// Let the pinned process exit only after that heartbeat's checkpoint is
-	// durable. Otherwise process completion may cancel an in-flight exchange
-	// after its network effect but before its local commit, legitimately fencing
-	// the session instead of producing the successful-path terminal.
+	// Let the pinned process exit only after ExchangeAction has returned and
+	// the watcher is no longer in an ambiguous network operation. A checkpoint
+	// can become visible just before that return and is not itself a barrier.
 	checkpointFile := filepath.Join(fixture.stateRoot, attachedworkerlocal.ReconnectCheckpointFileName)
-	checkpointDeadline := time.NewTimer(5 * time.Second)
-	defer checkpointDeadline.Stop()
-	checkpointPoll := time.NewTicker(10 * time.Millisecond)
-	defer checkpointPoll.Stop()
-	for {
-		encoded, readErr := os.ReadFile(checkpointFile)
-		var activeCheckpoint attachedworkerlocal.ReconnectCheckpointV1
-		if readErr == nil && json.Unmarshal(encoded, &activeCheckpoint) == nil &&
-			activeCheckpoint.ConnectionGeneration == 2 &&
-			activeCheckpoint.MachineSnapshot.Attempt.Summary.State == attachedworkerprotocol.AttemptClaimed &&
-			activeCheckpoint.MachineSnapshot.Worker.Sequence >= 6 {
-			break
-		}
-		select {
-		case err := <-done:
-			t.Fatalf("runtime stopped before active heartbeat checkpoint: %v; read error=%v; checkpoint=%+v", err, readErr, activeCheckpoint)
-		case <-checkpointDeadline.C:
-			cancelRun()
-			t.Fatalf("active heartbeat checkpoint not durable: read error=%v; checkpoint=%+v", readErr, activeCheckpoint)
-		case <-checkpointPoll.C:
-		}
+	select {
+	case <-activeHeartbeatSettled:
+	case err := <-done:
+		t.Fatalf("runtime stopped before active heartbeat settled: %v", err)
+	case <-time.After(5 * time.Second):
+		cancelRun()
+		t.Fatal("active heartbeat did not settle")
+	}
+	encoded, readErr := os.ReadFile(checkpointFile)
+	var activeCheckpoint attachedworkerlocal.ReconnectCheckpointV1
+	if readErr != nil || json.Unmarshal(encoded, &activeCheckpoint) != nil ||
+		activeCheckpoint.ConnectionGeneration != 2 ||
+		activeCheckpoint.MachineSnapshot.Attempt.Summary.State != attachedworkerprotocol.AttemptClaimed ||
+		activeCheckpoint.MachineSnapshot.Worker.Sequence < 6 {
+		cancelRun()
+		t.Fatalf("settled active heartbeat lacks durable claimed checkpoint: read error=%v checkpoint=%+v", readErr, activeCheckpoint)
 	}
 	if err := os.WriteFile(filepath.Join(filepath.Dir(fixture.stateRoot), "active-heartbeat-committed"), nil, 0o600); err != nil {
 		t.Fatal(err)

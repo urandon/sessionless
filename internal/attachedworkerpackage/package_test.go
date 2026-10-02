@@ -364,6 +364,10 @@ func packageFixture(t *testing.T) (*attachedworkerlocal.Store, Config) {
 }
 
 func packageFixtureAt(t *testing.T, parent string) (*attachedworkerlocal.Store, Config) {
+	return packageFixtureAtWorker(t, parent, "worker-001")
+}
+
+func packageFixtureAtWorker(t *testing.T, parent, workerID string) (*attachedworkerlocal.Store, Config) {
 	t.Helper()
 	binary := filepath.Join(parent, "attached-worker")
 	if err := os.WriteFile(binary, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
@@ -390,7 +394,7 @@ func packageFixtureAt(t *testing.T, parent string) (*attachedworkerlocal.Store, 
 	now := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	manifest := attachedworkerlocal.ManifestV1{
 		Version: 1, Revision: 1, ControlPlaneOrigin: "https://control.example",
-		TenantID: "tenant-001", OwnerUserID: "user-001", WorkerID: "worker-001", EnrollmentGeneration: 1,
+		TenantID: "tenant-001", OwnerUserID: "user-001", WorkerID: domain.AttachedWorkerID(workerID), EnrollmentGeneration: 1,
 		IdentityKeyFingerprint: string(domain.DigestAttachedWorkerIdentityKey(public)),
 		OCI: attachedworkerlocal.OCIConfigV1{DockerPath: binary, DockerSHA256: digest(binaryContent), CLIConfigDir: cli,
 			Host: "unix:///private/tmp/sessionless-docker.sock", EngineID: "engine-001-abcdef", InstallationID: "install-001",

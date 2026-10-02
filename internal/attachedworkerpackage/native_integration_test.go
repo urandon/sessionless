@@ -2,6 +2,7 @@ package attachedworkerpackage
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -58,7 +59,11 @@ func TestNativePlatformIntegration(t *testing.T) {
 			t.Errorf("remove exact test root: %v", err)
 		}
 	})
-	store, config := packageFixtureAt(t, parent)
+	var suffix [16]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		t.Fatal(err)
+	}
+	store, config := packageFixtureAtWorker(t, parent, "worker-"+hex.EncodeToString(suffix[:]))
 	if rootless {
 		config.Mode = ModeRootlessContainer
 		config.ContainerImage = os.Getenv("SESSIONLESS_ROOTLESS_IMAGE")
@@ -94,6 +99,18 @@ func TestNativePlatformIntegration(t *testing.T) {
 			t.Errorf("cleanup inspect: %v", inspectErr)
 			return
 		}
+		if !state.loaded {
+			if state.containerPresent {
+				t.Errorf("cleanup refused container without exact test-owned unit")
+				return
+			}
+			safeToRemove = true
+			return
+		}
+		if state.path != stage.UnitPath {
+			t.Errorf("cleanup refused foreign service path %s", state.path)
+			return
+		}
 		if rootless && state.containerPresent && !state.active {
 			containerName := "sessionless-attached-worker-" + shortID(snapshot.Manifest)
 			if _, err := rootlessDockerOutput(cleanupCtx, config.InstallDir, "container", "stop", "--time", "10", containerName); err != nil {
@@ -109,14 +126,6 @@ func TestNativePlatformIntegration(t *testing.T) {
 				t.Errorf("cleanup inspect after exact stop: %v", inspectErr)
 				return
 			}
-		}
-		if !state.loaded {
-			safeToRemove = true
-			return
-		}
-		if state.path != stage.UnitPath {
-			t.Errorf("cleanup refused foreign service path %s", state.path)
-			return
 		}
 		if state.active {
 			controlDir, dirErr := attachedworkerservice.Directory(config.StateRoot)

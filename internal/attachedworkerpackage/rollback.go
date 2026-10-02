@@ -49,6 +49,13 @@ func RollbackPlan(ctx context.Context, config Config, expectedInstallRevision ui
 		return RollbackPlanV1{}, err
 	}
 	unitPath, receiptPath := paths(config, manifest)
+	if err := checkNoNativePending(unitPath); err != nil {
+		return RollbackPlanV1{}, err
+	}
+	registration, err := readNativeReceipt(unitPath)
+	if err != nil || registration.Action == NativeRegister {
+		return RollbackPlanV1{}, errors.Join(ErrConflict, err)
+	}
 	current, _, err := readPrevious(config.InstallDir, unitPath, receiptPath, manifest)
 	if err != nil || current.InstallRevision != expectedInstallRevision || current.Mode != config.Mode ||
 		current.ManifestRevision != manifest.Revision || current.RollbackSHA256 == "" ||

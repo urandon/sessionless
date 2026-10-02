@@ -112,6 +112,13 @@ func Plan(ctx context.Context, config Config, expectedInstallRevision uint64) (P
 		return PlanV1{}, err
 	}
 	unitPath, receiptPath := paths(config, manifest)
+	if err := checkNoNativePending(unitPath); err != nil {
+		return PlanV1{}, err
+	}
+	registration, err := readNativeReceipt(unitPath)
+	if err != nil || registration.Action == NativeRegister {
+		return PlanV1{}, errors.Join(ErrConflict, err)
+	}
 	previous, previousUnit, err := readPrevious(config.InstallDir, unitPath, receiptPath, manifest)
 	if err != nil {
 		return PlanV1{}, err
@@ -391,6 +398,16 @@ func readRegular(path string) ([]byte, error) {
 }
 
 func writeAtomic(path string, payload []byte) (resultErr error) {
+	return writeAtomicWithSync(path, payload, (*os.File).Sync, (*os.File).Sync)
+}
+
+// writeAtomicWithSync keeps the pre-rename and post-rename durability points
+// separately injectable for deterministic fault tests. A failed directory
+// fsync means the new name may already be visible and is always ambiguous.
+func writeAtomicWithSync(path string, payload []byte, syncFile, syncDirectory func(*os.File) error) (resultErr error) {
+	if syncFile == nil || syncDirectory == nil {
+		return ErrInvalid
+	}
 	directory := filepath.Dir(path)
 	file, err := os.CreateTemp(directory, ".sessionless-stage-")
 	if err != nil {
@@ -405,7 +422,7 @@ func writeAtomic(path string, payload []byte) (resultErr error) {
 		_ = file.Close()
 		return errors.Join(ErrIO, err)
 	}
-	if err := file.Sync(); err != nil {
+	if err := syncFile(file); err != nil {
 		_ = file.Close()
 		return errors.Join(ErrIO, err)
 	}
@@ -420,7 +437,7 @@ func writeAtomic(path string, payload []byte) (resultErr error) {
 		return ErrAmbiguous
 	}
 	defer dir.Close()
-	if err := dir.Sync(); err != nil {
+	if err := syncDirectory(dir); err != nil {
 		return ErrAmbiguous
 	}
 	return nil

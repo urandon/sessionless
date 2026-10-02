@@ -310,12 +310,44 @@ func TestServiceArtifactRenderModesRemainDefaultOff(t *testing.T) {
 	}
 }
 
+func TestAtomicStageFaultsDistinguishPreAndPostRename(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "unit.service")
+	if err := os.WriteFile(target, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fault := errors.New("injected fsync failure")
+	if err := writeAtomicWithSync(target, []byte("new"),
+		func(*os.File) error { return fault }, (*os.File).Sync); !errors.Is(err, ErrIO) || errors.Is(err, ErrAmbiguous) {
+		t.Fatalf("pre-rename failure classification: %v", err)
+	}
+	if actual, err := os.ReadFile(target); err != nil || string(actual) != "old" {
+		t.Fatalf("pre-rename failure changed target: %q %v", actual, err)
+	}
+	if err := writeAtomicWithSync(target, []byte("new"), (*os.File).Sync,
+		func(*os.File) error { return fault }); !errors.Is(err, ErrAmbiguous) {
+		t.Fatalf("post-rename failure classification: %v", err)
+	}
+	if actual, err := os.ReadFile(target); err != nil || string(actual) != "new" {
+		t.Fatalf("post-rename ambiguity was not visible: %q %v", actual, err)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "unit.service" {
+		t.Fatalf("fault left temporary output: %+v %v", entries, err)
+	}
+}
+
 func packageFixture(t *testing.T) (*attachedworkerlocal.Store, Config) {
 	t.Helper()
 	parent, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
+	return packageFixtureAt(t, parent)
+}
+
+func packageFixtureAt(t *testing.T, parent string) (*attachedworkerlocal.Store, Config) {
+	t.Helper()
 	binary := filepath.Join(parent, "attached-worker")
 	if err := os.WriteFile(binary, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
 		t.Fatal(err)

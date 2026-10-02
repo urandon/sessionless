@@ -166,6 +166,7 @@ func nativeCommand(ctx context.Context, mode Mode, args ...string) (string, erro
 		env = []string{"PATH=/usr/bin:/bin"}
 	case ModeSystemdUser:
 		binary = "/usr/bin/systemctl"
+		args = append([]string{"--user"}, args...)
 		runtimeDir := "/run/user/" + strconv.Itoa(os.Getuid())
 		info, err := os.Lstat(runtimeDir)
 		if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 || !ownedByCurrentUser(info) {

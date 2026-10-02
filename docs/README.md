@@ -107,6 +107,7 @@ and link to it.
 - [OCI isolation profile](attached-worker-oci.md)
 - [Local state and lifecycle CLI](attached-worker-local-state.md)
 - [Foreground preflight](attached-worker-foreground.md)
+- [Service package staging and local control](attached-worker-packaging.md)
 - [Observability and control UX](attached-worker-ux.md)
 
 ## Research and design

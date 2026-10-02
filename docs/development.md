@@ -184,6 +184,14 @@ composes the supervisor with the existing credential runner. It remains a
 library boundary: `attached-worker run` does not call it and ordinary tests do
 not contact an engine or provider.
 
+The #137 [service package staging and local control](attached-worker-packaging.md)
+adds a single lease-holding, still feature-disabled `attached-worker serve`
+mode, a versioned permission-bound local status/doctor/drain/stop endpoint,
+and exact launchd/systemd-user/rootless-container artifact plan/apply receipts.
+Staging does not register or start an OS service or container, and does not
+enable transport, credentials, harness execution, or provider calls. #137
+remains open until those separate packaging and platform gates are proved.
+
 The owner-facing AW-06a information architecture, read-model safety boundary,
 and control-action gates are documented in
 [attached-worker-ux.md](attached-worker-ux.md). WebUI and CLI implementations

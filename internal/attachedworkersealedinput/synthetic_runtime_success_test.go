@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -58,9 +59,18 @@ func newJoinedSuccessFixture(t *testing.T) joinedSuccessFixture {
 	image := "registry.example/worker@sha256:" + strings.Repeat("b", 64)
 	commandLog := filepath.Join(root, "oci-commands.log")
 	cli := filepath.Join(root, "pinned-oci")
+	sleepPath, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Fatalf("locate host sleep for bounded OCI stub wait: %v", err)
+	}
+	sleepPath, err = filepath.Abs(sleepPath)
+	if err != nil {
+		t.Fatalf("resolve host sleep for bounded OCI stub wait: %v", err)
+	}
 	script := strings.NewReplacer(
 		"@ROOT@", rootPathInShell(t, root),
 		"@IMAGE@", image,
+		"@SLEEP@", rootPathInShell(t, sleepPath),
 	).Replace(`#!/bin/sh
 shift 4
 printf '%s\n' "$*" >> '@ROOT@/oci-commands.log'
@@ -102,7 +112,7 @@ case "$1:$2" in
 	    while [ ! -f '@ROOT@/active-heartbeat-committed' ]; do
 	      attempts=$((attempts + 1))
 	      [ "$attempts" -lt 500 ] || exit 98
-	      sleep 0.01
+	      '@SLEEP@' 0.01
 	    done
 	    while IFS= read -r line; do :; done
 	    exit 0;;

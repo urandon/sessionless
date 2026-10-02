@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -131,7 +132,13 @@ func TestNativePlatformIntegration(t *testing.T) {
 	if err := json.Unmarshal(integrationCLI(t, ctx, binary, append([]string{"native-plan"}, registerArgs...)...), &register); err != nil {
 		t.Fatal(err)
 	}
-	integrationCLI(t, ctx, binary, append(append([]string{"native-apply"}, registerArgs...), "--plan-sha256", register.PlanSHA256)...)
+	if runtime.GOOS == "linux" {
+		if _, err := applyNative(ctx, config, register, diagnosticSystemdManager{}); err != nil {
+			t.Fatalf("diagnostic native registration: %v", err)
+		}
+	} else {
+		integrationCLI(t, ctx, binary, append(append([]string{"native-apply"}, registerArgs...), "--plan-sha256", register.PlanSHA256)...)
+	}
 	var inspection NativeInspectionV1
 	if err := json.Unmarshal(integrationCLI(t, ctx, binary, append([]string{"native-inspect"}, baseArgs...)...), &inspection); err != nil {
 		t.Fatal(err)
@@ -164,6 +171,22 @@ func TestNativePlatformIntegration(t *testing.T) {
 	if err != nil || inspection.Status != "unregistered" {
 		t.Fatalf("unregister readback: %+v %v", inspection, err)
 	}
+}
+
+// Diagnostic wrapper used only by this opt-in test to explain a Linux user
+// manager failure that the public CLI correctly reduces to a typed code.
+type diagnosticSystemdManager struct{ osNativeManager }
+
+func (diagnosticSystemdManager) register(ctx context.Context, mode Mode, _, path string) error {
+	output, err := nativeCommand(ctx, mode, "link", path)
+	if err != nil {
+		return fmt.Errorf("systemctl link: %w; output=%q", err, output)
+	}
+	output, err = nativeCommand(ctx, mode, "daemon-reload")
+	if err != nil {
+		return fmt.Errorf("systemctl daemon-reload: %w; output=%q", err, output)
+	}
+	return nil
 }
 
 func waitForManagerInactive(ctx context.Context, manager osNativeManager, config Config, name, unitPath string) error {

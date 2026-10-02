@@ -49,6 +49,13 @@ func RollbackPlan(ctx context.Context, config Config, expectedInstallRevision ui
 		return RollbackPlanV1{}, err
 	}
 	unitPath, receiptPath := paths(config, manifest)
+	if err := checkNoNativePending(unitPath); err != nil {
+		return RollbackPlanV1{}, err
+	}
+	registration, err := readNativeReceipt(unitPath)
+	if err != nil || registration.Action == NativeRegister {
+		return RollbackPlanV1{}, errors.Join(ErrConflict, err)
+	}
 	current, _, err := readPrevious(config.InstallDir, unitPath, receiptPath, manifest)
 	if err != nil || current.InstallRevision != expectedInstallRevision || current.Mode != config.Mode ||
 		current.ManifestRevision != manifest.Revision || current.RollbackSHA256 == "" ||
@@ -84,7 +91,7 @@ func RollbackPlan(ctx context.Context, config Config, expectedInstallRevision ui
 // ApplyRollback stages the archived exact unit as a new monotonic revision.
 // It does not load, restart, enable, or claim the health of an OS service.
 func ApplyRollback(ctx context.Context, config Config, plan RollbackPlanV1) (result ReceiptV1, resultErr error) {
-	if ctx == nil || ctx.Err() != nil || plan.Version != VersionV1 ||
+	if ctx == nil || ctx.Err() != nil || validateConfig(config) != nil || plan.Version != VersionV1 ||
 		plan.PlanSHA256 == "" || plan.PlanSHA256 != rollbackPlanDigest(plan) {
 		return ReceiptV1{}, ErrInvalid
 	}
@@ -92,6 +99,11 @@ func ApplyRollback(ctx context.Context, config Config, plan RollbackPlanV1) (res
 	if err != nil {
 		return ReceiptV1{}, ErrInvalid
 	}
+	operation, err := acquireOperationLease(config.InstallDir)
+	if err != nil {
+		return ReceiptV1{}, err
+	}
+	defer func() { resultErr = errors.Join(resultErr, operation.Close()) }()
 	lease, err := store.AcquireRuntime(ctx)
 	if err != nil {
 		return ReceiptV1{}, err

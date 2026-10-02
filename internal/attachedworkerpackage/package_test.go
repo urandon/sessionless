@@ -299,14 +299,58 @@ func TestServiceArtifactRenderModesRemainDefaultOff(t *testing.T) {
 			t.Errorf("%s artifact enables retry or embeds secret path: %s", mode, text)
 		}
 		if mode == ModeRootlessContainer {
-			if !strings.Contains(text, `"manifest_revision": 1`) || !strings.Contains(text, candidate.ContainerImage) ||
-				strings.Contains(text, "command") {
-				t.Errorf("rootless intent claims an unverified runnable command or misses pins: %s", text)
+			for _, required := range []string{"ExecStart=/usr/bin/env -i", "--pull never", "--network none",
+				"--read-only", "--cap-drop ALL", "--user 0:0", "--binary-sha256 " + config.BinarySHA256,
+				"--expected-revision 1", candidate.ContainerImage, "--mount type=bind,src=" + config.StateRoot,
+				"--restart no", "ExecStopPost=-/usr/bin/env -i", "Restart=no"} {
+				if !strings.Contains(text, required) {
+					t.Errorf("rootless unit misses %q: %s", required, text)
+				}
 			}
 		} else if !strings.Contains(text, "--expected-revision") || !strings.Contains(text, "--binary-sha256") ||
 			!strings.Contains(text, config.BinarySHA256) {
 			t.Errorf("%s artifact misses startup pins: %s", mode, text)
 		}
+	}
+}
+
+func TestRootlessImageDigestIgnoresOnlyOptionalTag(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	withTag := "gcr.io/distroless/static-debian12:nonroot@sha256:" + digest
+	withoutTag := "gcr.io/distroless/static-debian12@sha256:" + digest
+	if canonicalImageDigest(withTag) != withoutTag || canonicalImageDigest(withoutTag) != withoutTag {
+		t.Fatal("tagged and untagged exact digest did not normalize")
+	}
+	if canonicalImageDigest("gcr.io/other:nonroot@sha256:"+digest) == withoutTag ||
+		canonicalImageDigest("gcr.io/distroless/static-debian12:nonroot@sha256:"+strings.Repeat("b", 64)) == withoutTag {
+		t.Fatal("repository or digest drift normalized as the same image")
+	}
+}
+
+func TestAtomicStageFaultsDistinguishPreAndPostRename(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "unit.service")
+	if err := os.WriteFile(target, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fault := errors.New("injected fsync failure")
+	if err := writeAtomicWithSync(target, []byte("new"),
+		func(*os.File) error { return fault }, (*os.File).Sync); !errors.Is(err, ErrIO) || errors.Is(err, ErrAmbiguous) {
+		t.Fatalf("pre-rename failure classification: %v", err)
+	}
+	if actual, err := os.ReadFile(target); err != nil || string(actual) != "old" {
+		t.Fatalf("pre-rename failure changed target: %q %v", actual, err)
+	}
+	if err := writeAtomicWithSync(target, []byte("new"), (*os.File).Sync,
+		func(*os.File) error { return fault }); !errors.Is(err, ErrAmbiguous) {
+		t.Fatalf("post-rename failure classification: %v", err)
+	}
+	if actual, err := os.ReadFile(target); err != nil || string(actual) != "new" {
+		t.Fatalf("post-rename ambiguity was not visible: %q %v", actual, err)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "unit.service" {
+		t.Fatalf("fault left temporary output: %+v %v", entries, err)
 	}
 }
 
@@ -316,6 +360,15 @@ func packageFixture(t *testing.T) (*attachedworkerlocal.Store, Config) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return packageFixtureAt(t, parent)
+}
+
+func packageFixtureAt(t *testing.T, parent string) (*attachedworkerlocal.Store, Config) {
+	return packageFixtureAtWorker(t, parent, "worker-001")
+}
+
+func packageFixtureAtWorker(t *testing.T, parent, workerID string) (*attachedworkerlocal.Store, Config) {
+	t.Helper()
 	binary := filepath.Join(parent, "attached-worker")
 	if err := os.WriteFile(binary, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
 		t.Fatal(err)
@@ -341,7 +394,7 @@ func packageFixture(t *testing.T) (*attachedworkerlocal.Store, Config) {
 	now := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	manifest := attachedworkerlocal.ManifestV1{
 		Version: 1, Revision: 1, ControlPlaneOrigin: "https://control.example",
-		TenantID: "tenant-001", OwnerUserID: "user-001", WorkerID: "worker-001", EnrollmentGeneration: 1,
+		TenantID: "tenant-001", OwnerUserID: "user-001", WorkerID: domain.AttachedWorkerID(workerID), EnrollmentGeneration: 1,
 		IdentityKeyFingerprint: string(domain.DigestAttachedWorkerIdentityKey(public)),
 		OCI: attachedworkerlocal.OCIConfigV1{DockerPath: binary, DockerSHA256: digest(binaryContent), CLIConfigDir: cli,
 			Host: "unix:///private/tmp/sessionless-docker.sock", EngineID: "engine-001-abcdef", InstallationID: "install-001",

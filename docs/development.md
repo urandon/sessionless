@@ -190,6 +190,13 @@ mode, a versioned permission-bound local status/doctor/drain/stop endpoint,
 and exact launchd/systemd-user/rootless-container artifact plan/apply/rollback
 receipts. `make attached-worker-build` builds only its native binary;
 `make attached-worker-package-test` repeats its focused race/shuffle tests.
+The opt-in `make attached-worker-native-integration` exercises one exact
+test-owned launchd or systemd user-service lifecycle. The separate opt-in
+`make attached-worker-rootless-integration` runs the same lifecycle on Linux
+against an already provisioned rootless Docker engine and preloaded immutable
+execution-base image; the pinned CI gate provisions those inputs. See
+[attached-worker-packaging.md](attached-worker-packaging.md) for the
+registration/start/inspect/drain/stop contract and remaining #137 gates.
 Staging does not register or start an OS service or container, and does not
 enable transport, credentials, harness execution, or provider calls. #137
 remains open until those separate packaging and platform gates are proved.

@@ -112,6 +112,13 @@ func Plan(ctx context.Context, config Config, expectedInstallRevision uint64) (P
 		return PlanV1{}, err
 	}
 	unitPath, receiptPath := paths(config, manifest)
+	if err := checkNoNativePending(unitPath); err != nil {
+		return PlanV1{}, err
+	}
+	registration, err := readNativeReceipt(unitPath)
+	if err != nil || registration.Action == NativeRegister {
+		return PlanV1{}, errors.Join(ErrConflict, err)
+	}
 	previous, previousUnit, err := readPrevious(config.InstallDir, unitPath, receiptPath, manifest)
 	if err != nil {
 		return PlanV1{}, err
@@ -138,7 +145,7 @@ func Plan(ctx context.Context, config Config, expectedInstallRevision uint64) (P
 // It intentionally does not call launchctl, systemctl or Docker. A caller
 // must not infer that a staged artifact is a running service.
 func Apply(ctx context.Context, config Config, plan PlanV1) (receiptResult ReceiptV1, resultErr error) {
-	if ctx == nil || ctx.Err() != nil || plan.Version != VersionV1 ||
+	if ctx == nil || ctx.Err() != nil || validateConfig(config) != nil || plan.Version != VersionV1 ||
 		plan.PlanSHA256 == "" || plan.PlanSHA256 != planDigest(plan) {
 		return ReceiptV1{}, ErrInvalid
 	}
@@ -146,6 +153,11 @@ func Apply(ctx context.Context, config Config, plan PlanV1) (receiptResult Recei
 	if err != nil {
 		return ReceiptV1{}, ErrInvalid
 	}
+	operation, err := acquireOperationLease(config.InstallDir)
+	if err != nil {
+		return ReceiptV1{}, err
+	}
+	defer func() { resultErr = errors.Join(resultErr, operation.Close()) }()
 	lease, err := store.AcquireRuntime(ctx)
 	if err != nil {
 		return ReceiptV1{}, err
@@ -170,6 +182,11 @@ func Apply(ctx context.Context, config Config, plan PlanV1) (receiptResult Recei
 	}
 	if err := ensurePrivateDir(config.InstallDir, true); err != nil {
 		return ReceiptV1{}, err
+	}
+	if config.Mode == ModeRootlessContainer {
+		if err := prepareRootlessDirectories(config); err != nil {
+			return ReceiptV1{}, err
+		}
 	}
 	receipt := ReceiptV1{
 		Version: VersionV1, InstallRevision: plan.NextInstallRevision,
@@ -225,7 +242,7 @@ func validateConfig(config Config) error {
 			return ErrInvalid
 		}
 	case ModeRootlessContainer:
-		if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		if runtime.GOOS != "linux" {
 			return ErrInvalid
 		}
 		if !imageDigest.MatchString(config.ContainerImage) {
@@ -300,14 +317,7 @@ func render(config Config, manifest attachedworkerlocal.ManifestV1) ([]byte, err
 	case ModeSystemdUser:
 		return []byte(fmt.Sprintf("[Unit]\nDescription=Sessionless attached worker %s\n[Service]\nType=exec\nExecStart=%s serve --state-dir %s --expected-revision %d --binary %s --binary-sha256 %s\nRestart=no\nUMask=0077\nNoNewPrivileges=yes\n[Install]\nWantedBy=default.target\n", shortID(manifest), config.BinaryPath, config.StateRoot, manifest.Revision, config.BinaryPath, config.BinarySHA256)), nil
 	case ModeRootlessContainer:
-		return json.MarshalIndent(struct {
-			Version          uint32 `json:"version"`
-			Image            string `json:"image"`
-			StateRoot        string `json:"state_root"`
-			ManifestRevision uint64 `json:"manifest_revision"`
-			AutoRestart      bool   `json:"auto_restart"`
-		}{Version: 1, Image: config.ContainerImage, StateRoot: config.StateRoot,
-			ManifestRevision: manifest.Revision, AutoRestart: false}, "", "  ")
+		return renderRootless(config, manifest)
 	default:
 		return nil, ErrInvalid
 	}
@@ -323,10 +333,8 @@ func paths(config Config, manifest attachedworkerlocal.ManifestV1) (string, stri
 	switch config.Mode {
 	case ModeLaunchd:
 		name += ".plist"
-	case ModeSystemdUser:
+	case ModeSystemdUser, ModeRootlessContainer:
 		name += ".service"
-	case ModeRootlessContainer:
-		name += ".container.json"
 	}
 	unit := filepath.Join(config.InstallDir, name)
 	return unit, unit + ".receipt.json"
@@ -391,6 +399,16 @@ func readRegular(path string) ([]byte, error) {
 }
 
 func writeAtomic(path string, payload []byte) (resultErr error) {
+	return writeAtomicWithSync(path, payload, (*os.File).Sync, (*os.File).Sync)
+}
+
+// writeAtomicWithSync keeps the pre-rename and post-rename durability points
+// separately injectable for deterministic fault tests. A failed directory
+// fsync means the new name may already be visible and is always ambiguous.
+func writeAtomicWithSync(path string, payload []byte, syncFile, syncDirectory func(*os.File) error) (resultErr error) {
+	if syncFile == nil || syncDirectory == nil {
+		return ErrInvalid
+	}
 	directory := filepath.Dir(path)
 	file, err := os.CreateTemp(directory, ".sessionless-stage-")
 	if err != nil {
@@ -405,7 +423,7 @@ func writeAtomic(path string, payload []byte) (resultErr error) {
 		_ = file.Close()
 		return errors.Join(ErrIO, err)
 	}
-	if err := file.Sync(); err != nil {
+	if err := syncFile(file); err != nil {
 		_ = file.Close()
 		return errors.Join(ErrIO, err)
 	}
@@ -420,7 +438,7 @@ func writeAtomic(path string, payload []byte) (resultErr error) {
 		return ErrAmbiguous
 	}
 	defer dir.Close()
-	if err := dir.Sync(); err != nil {
+	if err := syncDirectory(dir); err != nil {
 		return ErrAmbiguous
 	}
 	return nil

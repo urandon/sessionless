@@ -19,7 +19,7 @@ test "$(id -u)" != 0 || {
 	exit 2
 }
 
-for command_name in awk curl go id journalctl sha256sum systemctl systemd-run tar; do
+for command_name in awk curl docker go id journalctl make sha256sum systemctl systemd-run tar; do
 	command -v "$command_name" >/dev/null 2>&1 || {
 		printf '%s is required\n' "$command_name" >&2
 		exit 1
@@ -216,6 +216,11 @@ ATTACHED_WORKER_OCI_DOCKER_PATH="$docker_bin" \
 ATTACHED_WORKER_OCI_DOCKER_HOST="$docker_host" \
 ATTACHED_WORKER_OCI_BOUNDARY=linux-rootless \
 	"$repo_root/scripts/test-attached-worker-oci.sh"
+
+# The service image is an execution base, not the harness image. Preload its
+# immutable digest before the user service starts; the service has --pull never.
+"$docker_bin" --host "$docker_host" pull "$DISTROLESS_STATIC_IMAGE" >/dev/null
+SESSIONLESS_ROOTLESS_IMAGE="$DISTROLESS_STATIC_IMAGE" make attached-worker-rootless-integration
 
 engine_id=$("$docker_bin" --host "$docker_host" info --format '{{.ID}}')
 engine_arch=$("$docker_bin" --host "$docker_host" info --format '{{.Architecture}}')

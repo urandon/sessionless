@@ -56,6 +56,8 @@ func runWithContext(parent context.Context, arguments []string, output io.Writer
 	containerImage := flags.String("container-image", "", "pinned daemon-service image for rootless-container plan")
 	expectedInstallRevision := flags.Uint64("expected-install-revision", 0, "exact prior package revision")
 	planSHA256 := flags.String("plan-sha256", "", "digest of reviewed package plan")
+	nativeAction := flags.String("native-action", "", "register or unregister an exact user service")
+	expectedRegistrationRevision := flags.Uint64("expected-registration-revision", 0, "exact native registration revision")
 	if err := flags.Parse(arguments[1:]); err != nil || flags.NArg() != 0 || *stateRoot == "" {
 		return writeResult(output, commandErrorV1{Version: 1, Code: attachedworkerlocal.CodeInvalid}, 2)
 	}
@@ -65,11 +67,17 @@ func runWithContext(parent context.Context, arguments []string, output io.Writer
 	}
 	packageCommand := command == "package-plan" || command == "package-apply" ||
 		command == "package-rollback-plan" || command == "package-rollback-apply"
-	if !packageCommand && command != "serve" && (*packageMode != "" || *installDir != "" || *binaryPath != "" ||
-		*binarySHA256 != "" || *containerImage != "" || *expectedInstallRevision != 0 || *planSHA256 != "") {
+	nativeCommand := command == "native-plan" || command == "native-apply" || command == "native-reconcile" ||
+		command == "native-inspect" || command == "native-start"
+	if !packageCommand && !nativeCommand && command != "serve" && (*packageMode != "" || *installDir != "" || *binaryPath != "" ||
+		*binarySHA256 != "" || *containerImage != "" || *expectedInstallRevision != 0 || *planSHA256 != "" ||
+		*nativeAction != "" || *expectedRegistrationRevision != 0) {
 		return writeResult(output, commandErrorV1{Version: 1, Code: attachedworkerlocal.CodeInvalid}, 2)
 	}
 	if packageCommand {
+		if *nativeAction != "" || *expectedRegistrationRevision != 0 {
+			return writeResult(output, commandErrorV1{Version: 1, Code: attachedworkerlocal.CodeInvalid}, 2)
+		}
 		applyCommand := command == "package-apply" || command == "package-rollback-apply"
 		if *expectedRevision != 0 || *idempotencyKey != "" || (*planSHA256 != "") != applyCommand {
 			return writeResult(output, commandErrorV1{Version: 1, Code: attachedworkerlocal.CodeInvalid}, 2)
@@ -111,9 +119,60 @@ func runWithContext(parent context.Context, arguments []string, output io.Writer
 		}
 		return writeResult(output, receipt, 0)
 	}
+	if nativeCommand {
+		if *expectedRevision != 0 || *idempotencyKey != "" ||
+			(attachedworkerpackage.Mode(*packageMode) != attachedworkerpackage.ModeRootlessContainer && *containerImage != "") ||
+			(*planSHA256 != "") != (command == "native-apply" || command == "native-reconcile") ||
+			(command != "native-start" && *expectedRegistrationRevision != 0) ||
+			((command == "native-reconcile" || command == "native-inspect" || command == "native-start") && *nativeAction != "") ||
+			((command == "native-reconcile" || command == "native-inspect") && *expectedInstallRevision != 0) ||
+			(command == "native-start" && (*expectedInstallRevision == 0 || *expectedRegistrationRevision == 0)) {
+			return writeResult(output, commandErrorV1{Version: 1, Code: attachedworkerlocal.CodeInvalid}, 2)
+		}
+		ctx, cancel := context.WithTimeout(parent, commandTimeout)
+		defer cancel()
+		config := attachedworkerpackage.Config{Mode: attachedworkerpackage.Mode(*packageMode), StateRoot: *stateRoot,
+			InstallDir: *installDir, BinaryPath: *binaryPath, BinarySHA256: *binarySHA256, ContainerImage: *containerImage}
+		if command == "native-inspect" {
+			result, inspectErr := attachedworkerpackage.NativeInspect(ctx, config)
+			if inspectErr != nil {
+				return writeResult(output, commandErrorV1{Version: 1, Code: packageCode(inspectErr)}, 1)
+			}
+			return writeResult(output, result, 0)
+		}
+		if command == "native-start" {
+			result, startErr := attachedworkerpackage.NativeStart(ctx, config, *expectedInstallRevision, *expectedRegistrationRevision)
+			if startErr != nil {
+				return writeResult(output, commandErrorV1{Version: 1, Code: packageCode(startErr)}, 1)
+			}
+			return writeResult(output, result, 0)
+		}
+		if command == "native-reconcile" {
+			result, reconcileErr := attachedworkerpackage.ReconcileNative(ctx, config, *planSHA256)
+			if reconcileErr != nil {
+				return writeResult(output, commandErrorV1{Version: 1, Code: packageCode(reconcileErr)}, 1)
+			}
+			return writeResult(output, result, 0)
+		}
+		plan, planErr := attachedworkerpackage.NativePlan(ctx, config, attachedworkerpackage.NativeAction(*nativeAction), *expectedInstallRevision)
+		if planErr != nil {
+			return writeResult(output, commandErrorV1{Version: 1, Code: packageCode(planErr)}, 1)
+		}
+		if command == "native-plan" {
+			return writeResult(output, plan, 0)
+		}
+		if plan.PlanSHA256 != *planSHA256 {
+			return writeResult(output, commandErrorV1{Version: 1, Code: attachedworkerlocal.CodeConflict}, 1)
+		}
+		receipt, applyErr := attachedworkerpackage.ApplyNative(ctx, config, plan)
+		if applyErr != nil {
+			return writeResult(output, commandErrorV1{Version: 1, Code: packageCode(applyErr)}, 1)
+		}
+		return writeResult(output, receipt, 0)
+	}
 	if command == "serve" {
 		if *idempotencyKey != "" || *packageMode != "" || *installDir != "" || *containerImage != "" ||
-			*expectedInstallRevision != 0 || *planSHA256 != "" ||
+			*expectedInstallRevision != 0 || *planSHA256 != "" || *nativeAction != "" || *expectedRegistrationRevision != 0 ||
 			*expectedRevision == 0 || *binaryPath == "" || *binarySHA256 == "" {
 			return writeResult(output, commandErrorV1{Version: 1, Code: attachedworkerlocal.CodeInvalid}, 2)
 		}

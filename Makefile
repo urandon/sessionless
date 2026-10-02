@@ -175,6 +175,7 @@ attached-worker-build: prepare
 		-o "$(BIN_DIR)/attached-worker" ./cmd/attached-worker
 
 attached-worker-package-test: prepare
+	go test -race -count=1 ./internal/attachedworkerpackage ./cmd/attached-worker
 	go test -race -count=20 -shuffle=on ./internal/attachedworkerpackage ./cmd/attached-worker
 
 docs-check:

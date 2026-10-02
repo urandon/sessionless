@@ -304,7 +304,9 @@ func TestSyntheticPinnedRuntimeCommitsAcceptedAttemptAndLocalDrain(t *testing.T)
 	for activeHeartbeatSettled.Load() == 0 {
 		select {
 		case err := <-done:
-			t.Fatalf("runtime stopped before active heartbeat settled: %v", err)
+			commands, commandErr := os.ReadFile(commandLog)
+			checkpoint, checkpointErr := os.ReadFile(checkpointFile)
+			t.Fatalf("runtime stopped before active heartbeat settled: %v; protocol steps=%d last-worker=%s platform=%v; status=%+v; commands error=%v commands=%q; checkpoint error=%v checkpoint=%s", err, exchange.steps, exchange.lastWorkerKind, exchange.lastPlatformErr, owner.Status(), commandErr, commands, checkpointErr, checkpoint)
 		case <-settleDeadline.C:
 			cancelRun()
 			t.Fatal("active heartbeat did not settle")

@@ -193,8 +193,14 @@ receipts. `make attached-worker-build` builds only its native binary;
 The opt-in `make attached-worker-crash-integration` builds that exact binary,
 starts a test-owned synthetic/denied-credential service, kills its exact PID,
 and verifies authenticated idle reconnect and lease retirement after restart.
-It needs no provider credentials, Docker engine, OS service registration, or
-cloud resources; ordinary `make test` skips this process-kill fixture.
+`make attached-worker-active-crash-integration` forks the command dispatch in
+a test binary with an injected clock, kills its active attempt owner, and
+verifies that restart fences the non-idle checkpoint without replaying input.
+The shipped binary retains the 15-minute minimum heartbeat interval; this
+bounded test does not claim exact-binary active-crash coverage.
+These fixtures need no provider credentials, Docker engine, OS service
+registration, or cloud resources; ordinary `make test` skips both process-kill
+fixtures.
 The opt-in `make attached-worker-native-integration` exercises one exact
 test-owned launchd or systemd user-service lifecycle. The separate opt-in
 `make attached-worker-rootless-integration` runs the same lifecycle on Linux

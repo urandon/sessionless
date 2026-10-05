@@ -51,6 +51,9 @@ jobs:
       - name: Exercise exact-binary synthetic crash and reconnect
         run: make attached-worker-crash-integration
 
+      - name: Exercise active-crash fencing through command dispatch
+        run: make attached-worker-active-crash-integration
+
       - name: Remove Linux linger setting
         if: always() && runner.os == 'Linux'
         run: sudo loginctl disable-linger "$(id -un)"

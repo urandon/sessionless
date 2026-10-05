@@ -17,7 +17,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -65,6 +67,55 @@ func TestActivatedServeCrashRestartCheckpoint(t *testing.T) {
 		t.Skip("opt-in exact-binary crash/restart integration")
 	}
 	testActivatedSyntheticCommand(t, true, true, false, false, true)
+}
+
+func TestActivatedServeActiveCrashFencesRestart(t *testing.T) {
+	if os.Getenv("SESSIONLESS_ATTACHED_WORKER_ACTIVE_CRASH_INTEGRATION") != "1" {
+		t.Skip("opt-in test-binary active-crash integration")
+	}
+	testActivatedSyntheticCommand(t, true, false, false, false, true)
+}
+
+// This child is the ordinary command dispatch in a separate OS process, with
+// only the test connector clock substituted so the 15-minute production
+// heartbeat minimum can be exercised without waiting 15 minutes in CI.
+func TestActivatedServeCrashChild(t *testing.T) {
+	if os.Getenv("SESSIONLESS_ATTACHED_WORKER_CRASH_CHILD") != "1" {
+		t.Skip("test-owned service child")
+	}
+	stateRoot := os.Getenv("SESSIONLESS_ATTACHED_WORKER_CHILD_STATE")
+	profilePath := os.Getenv("SESSIONLESS_ATTACHED_WORKER_CHILD_PROFILE")
+	binary := os.Getenv("SESSIONLESS_ATTACHED_WORKER_CHILD_BINARY")
+	binaryDigest := os.Getenv("SESSIONLESS_ATTACHED_WORKER_CHILD_BINARY_DIGEST")
+	profileDigest := os.Getenv("SESSIONLESS_ATTACHED_WORKER_CHILD_PROFILE_DIGEST")
+	clockString := os.Getenv("SESSIONLESS_ATTACHED_WORKER_CHILD_CLOCK_NANOS")
+	expectReconciliation := os.Getenv("SESSIONLESS_ATTACHED_WORKER_CHILD_EXPECT_RECONCILIATION") == "true"
+	os.Clearenv()
+	clockValue, err := strconv.ParseInt(clockString, 10, 64)
+	if err != nil {
+		t.Fatalf("parse child clock: %v", err)
+	}
+	var clockNanos atomic.Int64
+	clockStart := time.Unix(0, clockValue).UTC()
+	clockNanos.Store(clockStart.UnixNano())
+	testClock := func() time.Time { return time.Unix(0, clockNanos.Load()).UTC() }
+	connector := func(ctx context.Context, store *attachedworkerlocal.Store, profile attachedworkeractivation.ProfileV1) (*attachedworkersealedinput.SyntheticRuntime, error) {
+		owner, err := attachedworkeractivation.ConnectWithClock(ctx, store, profile, testClock)
+		if expectReconciliation && errors.Is(err, attachedworkerdaemontransport.ErrReconciliationRequired) {
+			fmt.Fprintln(os.Stdout, "active_checkpoint_reconciliation_confirmed")
+		}
+		if err == nil {
+			clockNanos.Store(clockStart.Add(16 * time.Minute).UnixNano())
+		}
+		return owner, err
+	}
+	var output bytes.Buffer
+	code := runWithContextAndConnector(context.Background(), []string{"serve", "--state-dir", stateRoot,
+		"--expected-revision", "1", "--binary", binary, "--binary-sha256", binaryDigest,
+		"--activation-profile", profilePath, "--activation-sha256", profileDigest}, &output, connector)
+	if code != 0 {
+		t.Fatalf("child serve exit=%d output=%s", code, output.String())
+	}
 }
 
 func testActivatedSyntheticCommand(t *testing.T, service, idle, restart, cancelActive, crashRestart bool) {
@@ -273,6 +324,9 @@ esac
 		return owner, err
 	}
 	if crashRestart {
+		if !idle {
+			t.Cleanup(peer.releaseSealed)
+		}
 		testActivatedCrashRestart(t, ctx, peer, store, stateRoot, profilePath, &crashChildrenExited)
 		return
 	}
@@ -652,6 +706,28 @@ func startActivatedCrashChild(binary, binaryDigest, stateRoot, profilePath, prof
 	return child, nil
 }
 
+func startActivatedCrashTestChild(binary, binaryDigest, stateRoot, profilePath, profileDigest string, clockStart time.Time, expectReconciliation bool) (*activatedCrashChild, error) {
+	child := &activatedCrashChild{done: make(chan error, 1)}
+	child.command = exec.Command(binary, "-test.run=^TestActivatedServeCrashChild$")
+	child.command.Env = []string{
+		"SESSIONLESS_ATTACHED_WORKER_CRASH_CHILD=1",
+		"SESSIONLESS_ATTACHED_WORKER_CHILD_STATE=" + stateRoot,
+		"SESSIONLESS_ATTACHED_WORKER_CHILD_PROFILE=" + profilePath,
+		"SESSIONLESS_ATTACHED_WORKER_CHILD_BINARY=" + binary,
+		"SESSIONLESS_ATTACHED_WORKER_CHILD_BINARY_DIGEST=" + binaryDigest,
+		"SESSIONLESS_ATTACHED_WORKER_CHILD_PROFILE_DIGEST=" + profileDigest,
+		"SESSIONLESS_ATTACHED_WORKER_CHILD_CLOCK_NANOS=" + strconv.FormatInt(clockStart.UnixNano(), 10),
+		"SESSIONLESS_ATTACHED_WORKER_CHILD_EXPECT_RECONCILIATION=" + strconv.FormatBool(expectReconciliation),
+	}
+	child.command.Stdout = &child.output
+	child.command.Stderr = &child.output
+	if err := child.command.Start(); err != nil {
+		return nil, err
+	}
+	go func() { child.done <- child.command.Wait() }()
+	return child, nil
+}
+
 func (child *activatedCrashChild) killAndWait(ctx context.Context) error {
 	if child == nil || child.reaped {
 		return nil
@@ -681,6 +757,13 @@ func testActivatedCrashRestart(t *testing.T, ctx context.Context, peer *commandS
 	store *attachedworkerlocal.Store, stateRoot, profilePath string, childrenExited *bool) {
 	t.Helper()
 	binary := os.Getenv("SESSIONLESS_ATTACHED_WORKER_BINARY")
+	if !peer.idle {
+		var err error
+		binary, err = os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 	canonical, err := filepath.EvalSymlinks(binary)
 	if err != nil || canonical != binary || !filepath.IsAbs(binary) {
 		t.Fatalf("exact built binary path required: %v", err)
@@ -718,7 +801,16 @@ func testActivatedCrashRestart(t *testing.T, ctx context.Context, peer *commandS
 	})
 	start := func() *activatedCrashChild {
 		t.Helper()
-		child, err := startActivatedCrashChild(binary, hex.EncodeToString(binaryDigest[:]), stateRoot, profilePath, profileDigest)
+		var child *activatedCrashChild
+		var err error
+		if !peer.idle {
+			peer.mu.Lock()
+			clockStart := peer.now
+			peer.mu.Unlock()
+			child, err = startActivatedCrashTestChild(binary, hex.EncodeToString(binaryDigest[:]), stateRoot, profilePath, profileDigest, clockStart, len(children) != 0)
+		} else {
+			child, err = startActivatedCrashChild(binary, hex.EncodeToString(binaryDigest[:]), stateRoot, profilePath, profileDigest)
+		}
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -747,6 +839,16 @@ func testActivatedCrashRestart(t *testing.T, ctx context.Context, peer *commandS
 	}
 	first := start()
 	waitReady(first, 2)
+	if !peer.idle {
+		select {
+		case <-peer.sealedStarted:
+		case err := <-first.done:
+			first.reaped = true
+			t.Fatalf("first child exited before accepted active attempt: %v; output=%s", err, first.output.String())
+		case <-ctx.Done():
+			t.Fatalf("first child did not reach accepted active attempt: %v", ctx.Err())
+		}
+	}
 	for {
 		snapshot, err := store.LoadSnapshot(ctx)
 		if err == nil && snapshot.Manifest.Revision == 2 && snapshot.ObservationPresent {
@@ -781,11 +883,76 @@ func testActivatedCrashRestart(t *testing.T, ctx context.Context, peer *commandS
 	}
 	checkpoint, checkpointErr := lease.LoadReconnectCheckpoint(ctx)
 	closeErr := lease.Close()
-	if checkpointErr != nil || closeErr != nil || checkpoint.MachineSnapshot.Attempt.Summary.State != attachedworkerprotocol.AttemptIdle {
-		t.Fatalf("crash checkpoint is not idle: checkpoint=%+v load=%v close=%v", checkpoint, checkpointErr, closeErr)
+	if checkpointErr != nil || closeErr != nil {
+		t.Fatalf("load crash checkpoint: load=%v close=%v", checkpointErr, closeErr)
 	}
-	peer.setPreviousCheckpoint(checkpoint, time.Now().UTC())
+	if peer.idle && checkpoint.MachineSnapshot.Attempt.Summary.State != attachedworkerprotocol.AttemptIdle {
+		t.Fatalf("idle crash checkpoint attempt state=%s", checkpoint.MachineSnapshot.Attempt.Summary.State)
+	}
+	if !peer.idle && (checkpoint.MachineSnapshot.Attempt.Summary.State != attachedworkerprotocol.AttemptClaimed ||
+		!reflect.DeepEqual(checkpoint.MachineSnapshot.Attempt.Summary.Binding, peer.binding)) {
+		t.Fatalf("active crash checkpoint is not the accepted attempt: state=%s run=%s attempt=%s",
+			checkpoint.MachineSnapshot.Attempt.Summary.State, checkpoint.MachineSnapshot.Attempt.Summary.Binding.RunID,
+			checkpoint.MachineSnapshot.Attempt.Summary.Binding.AttemptID)
+	}
+	restartNow := time.Now().UTC()
+	if !peer.idle {
+		peer.mu.Lock()
+		restartNow = peer.now.Add(16 * time.Minute)
+		peer.mu.Unlock()
+	}
+	peer.setPreviousCheckpoint(checkpoint, restartNow)
 	second := start()
+	if !peer.idle {
+		select {
+		case err := <-second.done:
+			second.reaped = true
+			if err == nil {
+				t.Fatalf("active-crash restart was admitted: %s", second.output.String())
+			}
+			if !strings.Contains(second.output.String(), "active_checkpoint_reconciliation_confirmed") ||
+				!strings.Contains(second.output.String(), `"code":"local_io_failed"`) {
+				t.Fatalf("active-crash reconnect failed outside reconciliation: %s", second.output.String())
+			}
+		case <-ctx.Done():
+			t.Fatalf("active-crash restart did not fail closed: %v", ctx.Err())
+		}
+		peer.mu.Lock()
+		reconnectChallenges, reconnectActivations := peer.reconnectChallenges, peer.reconnectActivations
+		peerError := peer.lastError
+		peer.mu.Unlock()
+		if reconnectChallenges != 1 || reconnectActivations != 1 || peerError != "" {
+			t.Fatalf("active-crash restart did not fence after signed reconnect acceptance: challenges=%d activations=%d peer_error=%q", reconnectChallenges, reconnectActivations, peerError)
+		}
+		after, err := store.LoadSnapshot(ctx)
+		if err != nil || after.Manifest.Revision != 3 || after.Manifest.ConnectionGeneration != 2 {
+			t.Fatalf("active-crash restart did not persist reconnect generation: revision=%d generation=%d error=%v", after.Manifest.Revision, after.Manifest.ConnectionGeneration, err)
+		}
+		restartedLease, err := store.AcquireRuntime(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		restartedCheckpoint, checkpointErr := restartedLease.LoadReconnectCheckpoint(ctx)
+		closeErr = restartedLease.Close()
+		if checkpointErr != nil || closeErr != nil || restartedCheckpoint.ManifestRevision != 3 ||
+			restartedCheckpoint.ConnectionGeneration != 2 || restartedCheckpoint.ConnectionID == checkpoint.ConnectionID ||
+			restartedCheckpoint.MachineSnapshot.Attempt.Summary.State != attachedworkerprotocol.AttemptClaimed ||
+			!reflect.DeepEqual(restartedCheckpoint.MachineSnapshot.Attempt.Summary.Binding, checkpoint.MachineSnapshot.Attempt.Summary.Binding) {
+			t.Fatalf("active-crash restart did not persist non-idle manifest checkpoint: revision=%d generation=%d connection=%s attempt=%s load=%v close=%v",
+				restartedCheckpoint.ManifestRevision, restartedCheckpoint.ConnectionGeneration, restartedCheckpoint.ConnectionID,
+				restartedCheckpoint.MachineSnapshot.Attempt.Summary.State, checkpointErr, closeErr)
+		}
+		select {
+		case <-peer.sealedStarted:
+			t.Fatal("active-crash restart replayed sealed credential read")
+		default:
+		}
+		var status bytes.Buffer
+		if code := runWithContext(ctx, []string{"live-status", "--state-dir", stateRoot}, &status); code == 0 {
+			t.Fatalf("active-crash restart published live control: %s", status.String())
+		}
+		return
+	}
 	waitReady(second, 3)
 	var stop bytes.Buffer
 	if code := runWithContext(ctx, []string{"stop", "--state-dir", stateRoot, "--expected-revision", "3"}, &stop); code != 0 {

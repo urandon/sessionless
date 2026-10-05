@@ -133,7 +133,7 @@ func TestActivatedRootlessServiceAcceptsSyntheticAttempt(t *testing.T) {
 			UserID: 1000, GroupID: 1000, DiskBytes: 1 << 30, CredentialFileBytes: 1024,
 			MemoryBytes: 64 << 20, PIDsLimit: 64, StopSeconds: 10,
 		},
-		Harness:   attachedworkerlocal.HarnessConfigV1{Executable: docker, SHA256: dockerHash},
+		Harness:   attachedworkerlocal.HarnessConfigV1{Executable: docker, SHA256: dockerHash, Arguments: []string{}},
 		Lifecycle: attachedworkerlocal.LifecycleActive, CreatedAt: now.Add(-time.Minute), UpdatedAt: now.Add(-time.Minute),
 	}
 	secret := attachedworkerlocal.SecretRecordV1{

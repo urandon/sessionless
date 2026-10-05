@@ -43,37 +43,41 @@ import (
 // the connector boundary. OCI preflight is a pinned stub: any container start
 // or provider invocation is a test failure.
 func TestActivatedRunAcceptsSyntheticAttemptAndDeniesInput(t *testing.T) {
-	testActivatedSyntheticCommand(t, false, false, false, false, false)
+	testActivatedSyntheticCommand(t, false, false, false, false, false, false)
+}
+
+func TestActivatedRunAcknowledgesRemoteCancelBeforeMaterialization(t *testing.T) {
+	testActivatedSyntheticCommand(t, false, false, false, false, false, true)
 }
 
 func TestActivatedServeDrainsAcceptedSyntheticAttempt(t *testing.T) {
-	testActivatedSyntheticCommand(t, true, false, false, false, false)
+	testActivatedSyntheticCommand(t, true, false, false, false, false, false)
 }
 
 func TestActivatedServeStopsIdle(t *testing.T) {
-	testActivatedSyntheticCommand(t, true, true, false, false, false)
+	testActivatedSyntheticCommand(t, true, true, false, false, false, false)
 }
 
 func TestActivatedServeReconnectsAfterIdleStop(t *testing.T) {
-	testActivatedSyntheticCommand(t, true, true, true, false, false)
+	testActivatedSyntheticCommand(t, true, true, true, false, false, false)
 }
 
 func TestActivatedServeCancelsAcceptedSyntheticAttempt(t *testing.T) {
-	testActivatedSyntheticCommand(t, true, false, false, true, false)
+	testActivatedSyntheticCommand(t, true, false, false, true, false, false)
 }
 
 func TestActivatedServeCrashRestartCheckpoint(t *testing.T) {
 	if os.Getenv("SESSIONLESS_ATTACHED_WORKER_BINARY") == "" {
 		t.Skip("opt-in exact-binary crash/restart integration")
 	}
-	testActivatedSyntheticCommand(t, true, true, false, false, true)
+	testActivatedSyntheticCommand(t, true, true, false, false, true, false)
 }
 
 func TestActivatedServeActiveCrashFencesRestart(t *testing.T) {
 	if os.Getenv("SESSIONLESS_ATTACHED_WORKER_ACTIVE_CRASH_INTEGRATION") != "1" {
 		t.Skip("opt-in test-binary active-crash integration")
 	}
-	testActivatedSyntheticCommand(t, true, false, false, false, true)
+	testActivatedSyntheticCommand(t, true, false, false, false, true, false)
 }
 
 // This child is the ordinary command dispatch in a separate OS process, with
@@ -118,7 +122,7 @@ func TestActivatedServeCrashChild(t *testing.T) {
 	}
 }
 
-func testActivatedSyntheticCommand(t *testing.T, service, idle, restart, cancelActive, crashRestart bool) {
+func testActivatedSyntheticCommand(t *testing.T, service, idle, restart, cancelActive, crashRestart, cancelBeforeMaterialization bool) {
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		t.Skip("pinned OCI fixture is Unix-only")
 	}
@@ -232,7 +236,8 @@ esac
 		t.Fatal(err)
 	}
 	peer := &commandSyntheticPeer{public: public, offer: offer, binding: binding, now: testNow, idle: idle,
-		terminal: make(chan attachedworkerprotocol.TerminalV1, 1)}
+		cancelBeforeMaterialization: cancelBeforeMaterialization,
+		terminal:                    make(chan attachedworkerprotocol.TerminalV1, 1)}
 	if service {
 		peer.sealedGate = make(chan struct{})
 		peer.sealedStarted = make(chan struct{}, 1)
@@ -339,18 +344,22 @@ esac
 		done <- runWithContextAndConnector(ctx, []string{"run", "--state-dir", stateRoot,
 			"--activation-profile", profilePath}, &output, connector)
 	}()
+	var terminal attachedworkerprotocol.TerminalV1
+	var earlyExitCode *int
 	select {
-	case terminal := <-peer.terminal:
-		if terminal.Status != attachedworkerprotocol.TerminalFailed || terminal.Result != attachedworkerprotocol.TerminalResultFailed {
-			t.Errorf("denied synthetic terminal=%+v", terminal)
-		}
+	case terminal = <-peer.terminal:
 	case code := <-done:
-		commands, _ := os.ReadFile(commandLog)
-		snapshot, snapshotErr := store.LoadSnapshot(context.Background())
-		peer.mu.Lock()
-		steps, challenges, activations, exchanges, lastError, lastKind := peer.steps, peer.challenges, peer.activations, peer.exchanges, peer.lastError, peer.lastKind
-		peer.mu.Unlock()
-		t.Fatalf("command exited before accepted synthetic terminal: code=%d output=%s commands=%q revision=%d snapshot_error=%v exchange_steps=%d challenges=%d activations=%d exchanges=%d last_kind=%s peer_error=%q", code, output.String(), commands, snapshot.Manifest.Revision, snapshotErr, steps, challenges, activations, exchanges, lastKind, lastError)
+		earlyExitCode = &code
+		select {
+		case terminal = <-peer.terminal:
+		default:
+			commands, _ := os.ReadFile(commandLog)
+			snapshot, snapshotErr := store.LoadSnapshot(context.Background())
+			peer.mu.Lock()
+			steps, challenges, activations, exchanges, lastError, lastKind := peer.steps, peer.challenges, peer.activations, peer.exchanges, peer.lastError, peer.lastKind
+			peer.mu.Unlock()
+			t.Fatalf("command exited before synthetic terminal: code=%d output=%s commands=%q revision=%d snapshot_error=%v exchange_steps=%d challenges=%d activations=%d exchanges=%d last_kind=%s peer_error=%q", code, output.String(), commands, snapshot.Manifest.Revision, snapshotErr, steps, challenges, activations, exchanges, lastKind, lastError)
+		}
 	case <-ctx.Done():
 		var code int
 		select {
@@ -363,19 +372,39 @@ esac
 		peer.mu.Unlock()
 		t.Fatalf("accepted synthetic attempt did not reach terminal: exit=%d output=%s steps=%d challenges=%d activations=%d exchanges=%d last_kind=%s peer_error=%q", code, output.String(), steps, challenges, activations, exchanges, lastKind, lastError)
 	}
-	select {
-	case code := <-done:
-		if code != 1 {
-			t.Fatalf("denied input command exit=%d output=%s", code, output.String())
+	wantStatus, wantResult := attachedworkerprotocol.TerminalFailed, attachedworkerprotocol.TerminalResultFailed
+	if cancelBeforeMaterialization {
+		wantStatus, wantResult = attachedworkerprotocol.TerminalCancelled, attachedworkerprotocol.TerminalResultCancelled
+	}
+	if terminal.Status != wantStatus || terminal.Result != wantResult {
+		t.Errorf("synthetic terminal=%+v, want status=%s result=%s", terminal, wantStatus, wantResult)
+	}
+	if earlyExitCode != nil {
+		if *earlyExitCode != 1 {
+			t.Fatalf("synthetic command exit=%d output=%s", *earlyExitCode, output.String())
 		}
-	case <-ctx.Done():
-		t.Fatal("command did not stop after denied synthetic input")
+	} else {
+		select {
+		case code := <-done:
+			if code != 1 {
+				t.Fatalf("synthetic command exit=%d output=%s", code, output.String())
+			}
+		case <-ctx.Done():
+			t.Fatal("command did not stop after synthetic terminal")
+		}
 	}
 	peer.mu.Lock()
-	steps, denied := peer.steps, peer.denied
+	steps, denied, cancelAcked := peer.steps, peer.denied, peer.cancelAcked
 	peer.mu.Unlock()
-	if steps != 3 || denied != 1 {
-		t.Errorf("protocol steps=%d denied sealed requests=%d, want 3 and 1", steps, denied)
+	wantSteps, wantDenied := 3, 1
+	if cancelBeforeMaterialization {
+		wantSteps, wantDenied = 4, 0
+	}
+	if steps != wantSteps || denied != wantDenied {
+		t.Errorf("protocol steps=%d denied sealed requests=%d, want %d and %d", steps, denied, wantSteps, wantDenied)
+	}
+	if cancelBeforeMaterialization && cancelAcked != 1 {
+		t.Errorf("pre-materialization cancel acknowledgements=%d, want 1", cancelAcked)
 	}
 	commands, err := os.ReadFile(commandLog)
 	if err != nil {
@@ -406,6 +435,22 @@ esac
 	}
 	if got, err := store.LoadSnapshot(context.Background()); err != nil || got.Manifest.Revision != 2 || got.ObservationPresent {
 		t.Fatalf("owned command did not retire runtime observation: snapshot=%+v error=%v", got, err)
+	}
+	if cancelBeforeMaterialization {
+		lease, err := store.AcquireRuntime(context.Background())
+		if err != nil {
+			t.Fatalf("acquire cancelled command proof lease: %v", err)
+		}
+		checkpoint, checkpointErr := lease.LoadReconnectCheckpoint(context.Background())
+		closeErr := lease.Close()
+		attempt := checkpoint.MachineSnapshot.Attempt
+		if checkpointErr != nil || closeErr != nil ||
+			attempt.Summary.State != attachedworkerprotocol.AttemptTerminalCommitted ||
+			attempt.Summary.CancelRevision != 1 || attempt.Summary.TerminalStatus != attachedworkerprotocol.TerminalCancelled ||
+			attempt.Summary.TerminalResult != attachedworkerprotocol.TerminalResultCancelled || attempt.PendingWorkerTerminal != nil ||
+			checkpoint.MachineSnapshot.Worker.Sequence != 7 || checkpoint.MachineSnapshot.Platform.Sequence != 5 {
+			t.Fatalf("cancelled command lacked durable terminal acknowledgement: attempt=%+v worker_sequence=%d platform_sequence=%d load=%v close=%v", attempt.Summary, checkpoint.MachineSnapshot.Worker.Sequence, checkpoint.MachineSnapshot.Platform.Sequence, checkpointErr, closeErr)
+		}
 	}
 }
 
@@ -979,28 +1024,30 @@ func testActivatedCrashRestart(t *testing.T, ctx context.Context, peer *commandS
 }
 
 type commandSyntheticPeer struct {
-	mu                   sync.Mutex
-	public               ed25519.PublicKey
-	now                  time.Time
-	offer                attachedworkerprotocol.VersionOfferV1
-	binding              attachedworkerprotocol.AttemptBindingV1
-	challenge            domain.AttachedWorkerAttachChallenge
-	steps                int
-	denied               int
-	challenges           int
-	activations          int
-	reconnectChallenges  int
-	reconnectActivations int
-	exchanges            int
-	lastError            string
-	lastKind             attachedworkerprotocol.MessageKind
-	terminal             chan attachedworkerprotocol.TerminalV1
-	idle                 bool
-	previousCheckpoint   attachedworkerlocal.ReconnectCheckpointV1
-	previousConfig       attachedworkerprotocol.MachineConfig
-	sealedGate           chan struct{}
-	sealedStarted        chan struct{}
-	sealedRelease        sync.Once
+	mu                          sync.Mutex
+	public                      ed25519.PublicKey
+	now                         time.Time
+	offer                       attachedworkerprotocol.VersionOfferV1
+	binding                     attachedworkerprotocol.AttemptBindingV1
+	challenge                   domain.AttachedWorkerAttachChallenge
+	steps                       int
+	denied                      int
+	challenges                  int
+	activations                 int
+	reconnectChallenges         int
+	reconnectActivations        int
+	exchanges                   int
+	lastError                   string
+	lastKind                    attachedworkerprotocol.MessageKind
+	terminal                    chan attachedworkerprotocol.TerminalV1
+	idle                        bool
+	cancelBeforeMaterialization bool
+	cancelAcked                 int
+	previousCheckpoint          attachedworkerlocal.ReconnectCheckpointV1
+	previousConfig              attachedworkerprotocol.MachineConfig
+	sealedGate                  chan struct{}
+	sealedStarted               chan struct{}
+	sealedRelease               sync.Once
 }
 
 func (peer *commandSyntheticPeer) setPreviousCheckpoint(checkpoint attachedworkerlocal.ReconnectCheckpointV1, now time.Time) {
@@ -1265,11 +1312,15 @@ func (peer *commandSyntheticPeer) exchange(batch attachedworkerprotocol.BatchV1)
 	}
 	step := peer.steps
 	peer.steps++
+	platformSequence := uint64(3 + step)
+	if peer.cancelBeforeMaterialization && step == 3 {
+		platformSequence--
+	}
 	platform := attachedworkerprotocol.FrameV1{
 		Version:   worker.Version,
-		MessageID: attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionPlatformToWorker, uint64(3+step)),
+		MessageID: attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionPlatformToWorker, platformSequence),
 		WorkerID:  worker.WorkerID, EnrollmentGeneration: worker.EnrollmentGeneration,
-		ConnectionGeneration: worker.ConnectionGeneration, Sequence: uint64(3 + step), Ack: worker.Sequence,
+		ConnectionGeneration: worker.ConnectionGeneration, Sequence: platformSequence, Ack: worker.Sequence,
 	}
 	switch step {
 	case 0:
@@ -1282,11 +1333,41 @@ func (peer *commandSyntheticPeer) exchange(batch attachedworkerprotocol.BatchV1)
 		if worker.Kind != attachedworkerprotocol.MessageLeaseClaim || worker.LeaseClaim == nil || worker.Sequence != 5 || worker.Ack != 3 {
 			return nil, fmt.Errorf("invalid lease claim envelope")
 		}
+		if peer.cancelBeforeMaterialization {
+			platform.Kind = attachedworkerprotocol.MessageCancel
+			platform.Cancel = &attachedworkerprotocol.CancelV1{
+				Binding: peer.binding, AttemptSequence: 2, CancelRevision: 1, Code: attachedworkerprotocol.CancelRequested,
+			}
+			break
+		}
 		platform.Kind = attachedworkerprotocol.MessageLeaseAccepted
 		platform.LeaseAccepted = &attachedworkerprotocol.LeaseAcceptedV1{Binding: peer.binding, AttemptSequence: 2}
 	case 2:
+		if peer.cancelBeforeMaterialization {
+			if worker.Kind != attachedworkerprotocol.MessageCancelAck || worker.CancelAck == nil ||
+				worker.Sequence != 6 || worker.CancelAck.AttemptSequence != 2 || worker.CancelAck.CancelRevision != 1 ||
+				!reflect.DeepEqual(worker.CancelAck.Binding, peer.binding) || worker.Ack != 4 {
+				return nil, fmt.Errorf("invalid pre-materialization cancel acknowledgement: kind=%s sequence=%d ack=%d", worker.Kind, worker.Sequence, worker.Ack)
+			}
+			peer.cancelAcked++
+			return nil, nil
+		}
 		if worker.Kind != attachedworkerprotocol.MessageTerminal || worker.Terminal == nil || worker.Sequence < 6 || worker.Ack != 4 {
 			return nil, fmt.Errorf("invalid terminal envelope")
+		}
+		platform.Kind = attachedworkerprotocol.MessageTerminalAck
+		platform.TerminalAck = &attachedworkerprotocol.TerminalAckV1{
+			Binding: peer.binding, AttemptSequence: 3, TerminalSequence: worker.Terminal.TerminalSequence,
+			Status: worker.Terminal.Status, Result: worker.Terminal.Result,
+			EvidenceDigest: append([]byte(nil), worker.Terminal.EvidenceDigest...),
+		}
+		peer.terminal <- *worker.Terminal
+	case 3:
+		if !peer.cancelBeforeMaterialization || worker.Kind != attachedworkerprotocol.MessageTerminal || worker.Terminal == nil ||
+			worker.Sequence != 7 || worker.Terminal.AttemptSequence != 3 || !reflect.DeepEqual(worker.Terminal.Binding, peer.binding) ||
+			worker.Terminal.Status != attachedworkerprotocol.TerminalCancelled ||
+			worker.Terminal.Result != attachedworkerprotocol.TerminalResultCancelled || worker.Ack != 4 {
+			return nil, fmt.Errorf("invalid pre-materialization cancellation terminal: kind=%s sequence=%d ack=%d", worker.Kind, worker.Sequence, worker.Ack)
 		}
 		platform.Kind = attachedworkerprotocol.MessageTerminalAck
 		platform.TerminalAck = &attachedworkerprotocol.TerminalAckV1{

@@ -1,9 +1,13 @@
 package attachedworkerpackage
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -11,9 +15,239 @@ import (
 	"testing"
 	"time"
 
+	"gitcode.com/urandon/sessionless/internal/attachedworkeractivation"
+	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemon"
+	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemontransport"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerlocal"
+	"gitcode.com/urandon/sessionless/internal/attachedworkerprotocol"
 	"gitcode.com/urandon/sessionless/internal/domain"
 )
+
+func TestPackageStagesOnlyExplicitPrivateSyntheticProfile(t *testing.T) {
+	store, config := packageFixture(t)
+	snapshot, err := store.LoadSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := snapshot.Manifest
+	// Keep a previously staged disabled unit so the test can prove that its
+	// stale exact-revision archive is not a valid rollback after activation.
+	disabledPlan, err := Plan(context.Background(), config, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Apply(context.Background(), config, disabledPlan); err != nil {
+		t.Fatal(err)
+	}
+	harnessDigest, err := hex.DecodeString(manifest.Harness.SHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability := attachedworkerprotocol.CapabilityManifestV1{
+		WorkerID: string(manifest.WorkerID), EnrollmentGeneration: manifest.EnrollmentGeneration, Revision: 1,
+		ProtocolOffer: attachedworkerprotocol.VersionOfferV1{
+			Window:    attachedworkerprotocol.VersionWindow{Minimum: 1, Maximum: 1},
+			Supported: []attachedworkerprotocol.ProtocolVersion{attachedworkerprotocol.ProtocolVersionV1},
+		},
+		OperatingSystem: runtime.GOOS, Architecture: runtime.GOARCH, BuildID: "package-test",
+		HarnessName: "synthetic", HarnessVersion: "1", HarnessSurface: attachedworkerprotocol.HarnessSurfaceSessionTurn,
+		HarnessExecutableDigest: harnessDigest,
+		IsolationEvidence: []attachedworkerprotocol.IsolationEvidenceV1{
+			attachedworkerprotocol.IsolationFilesystemBoundary, attachedworkerprotocol.IsolationNetworkBoundary,
+			attachedworkerprotocol.IsolationProcessBoundary,
+		},
+		Features: []attachedworkerprotocol.ProtocolFeatureV1{
+			attachedworkerprotocol.FeatureCancellation, attachedworkerprotocol.FeatureProgress,
+			attachedworkerprotocol.FeatureReconnect,
+		}, MaxConcurrentAttempts: 1,
+	}
+	capabilityDigest, err := attachedworkerprotocol.ManifestDigestV1(capability)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var executableDigest attachedworkerdaemon.ExecutableDigest
+	copy(executableDigest[:], harnessDigest)
+	installationDigest, err := attachedworkeractivation.InstallationDigestV1(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := attachedworkeractivation.ProfileV1{
+		Version: 1, Mode: "synthetic-denied", ManifestRevision: manifest.Revision,
+		ControlPlaneOrigin: manifest.ControlPlaneOrigin, TenantID: manifest.TenantID,
+		OwnerUserID: manifest.OwnerUserID, WorkerID: manifest.WorkerID,
+		EnrollmentGeneration: manifest.EnrollmentGeneration, ConnectionGeneration: manifest.ConnectionGeneration,
+		InstallationSHA256:     installationDigest,
+		ExpectedWorkerRevision: 1, Capability: capability,
+		LocalProfile: attachedworkerdaemontransport.LocalProfileV1{
+			Name: "synthetic", CapabilityDigest: domain.AttachedWorkerCapabilityDigest(hex.EncodeToString(capabilityDigest)),
+			Executable: manifest.Harness.Executable, ExecutableDigest: executableDigest,
+		},
+		MaterializationRoot: filepath.Join(filepath.Dir(config.StateRoot), "materialized"),
+		ScratchRoot:         filepath.Join(filepath.Dir(config.StateRoot), "scratch"), MaxInputBytes: 4096,
+	}
+	privateDir := filepath.Join(filepath.Dir(config.StateRoot), "activation")
+	if err := os.Mkdir(privateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	config.ActivationProfile = filepath.Join(privateDir, "profile.json")
+	encoded, err := json.Marshal(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config.ActivationProfile, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := Plan(context.Background(), config, 1)
+	if err != nil || plan.ActivationProfile != config.ActivationProfile {
+		t.Fatalf("explicit activation plan=%+v error=%v", plan, err)
+	}
+	unit, err := render(config, manifest)
+	if err != nil || !strings.Contains(string(unit), "--activation-profile") ||
+		!strings.Contains(string(unit), config.ActivationProfile) ||
+		!strings.Contains(string(unit), "--activation-sha256") {
+		t.Fatalf("activation unit=%q error=%v", unit, err)
+	}
+	profile.MaxInputBytes = 2048
+	changed, err := json.Marshal(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config.ActivationProfile, changed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Apply(context.Background(), config, plan); !errors.Is(err, ErrConflict) {
+		t.Fatalf("same-path changed profile applied: %v", err)
+	}
+	if err := os.WriteFile(config.ActivationProfile, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := Apply(context.Background(), config, plan)
+	if err != nil {
+		t.Fatalf("stage exact activation unit: %v", err)
+	}
+	manager := &fakeNativeManager{}
+	register, err := nativePlan(context.Background(), config, NativeRegister, receipt.InstallRevision, manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := applyNative(context.Background(), config, register, manager); err != nil {
+		t.Fatal(err)
+	}
+	advanceConnection := func() error {
+		current, err := store.LoadSnapshot(context.Background())
+		if err != nil {
+			return err
+		}
+		secret, err := store.LoadSecret(context.Background())
+		if err != nil {
+			return err
+		}
+		next := current.Manifest
+		next.Revision++
+		next.ConnectionGeneration++
+		next.UpdatedAt = next.UpdatedAt.Add(time.Minute)
+		secret.ManifestRevision = next.Revision
+		secret.ConnectionGeneration = next.ConnectionGeneration
+		secret.ConnectionSecret = bytes.Repeat([]byte{byte('s' + next.ConnectionGeneration%2)}, 32)
+		return store.Update(context.Background(), current.Manifest.Revision, next, secret)
+	}
+	manager.onStart = advanceConnection
+	started, err := nativeStart(context.Background(), config, receipt.InstallRevision, 1, manager)
+	if err != nil || started.Status != "registered" || !started.OSActive || started.ManifestRevision != manifest.Revision+1 {
+		t.Fatalf("activated start readback=%+v error=%v", started, err)
+	}
+	manager.state.active = false
+	unregister, err := nativePlan(context.Background(), config, NativeUnregister, receipt.InstallRevision, manager)
+	if err != nil {
+		t.Fatalf("plan activated unregister: %v", err)
+	}
+	manager.unregisterErr = errors.New("ambiguous native unregister")
+	if _, err := applyNative(context.Background(), config, unregister, manager); !errors.Is(err, ErrAmbiguous) {
+		t.Fatalf("expected pending native unregister: %v", err)
+	}
+	if _, err := os.Stat(nativePendingPath(unregister.UnitPath)); err != nil {
+		t.Fatalf("pending native marker absent: %v", err)
+	}
+	if err := advanceConnection(); err != nil {
+		t.Fatalf("real reconnect state update with pending native marker: %v", err)
+	}
+	unregisterCalls := manager.unregisterCalls
+	reconciled, err := reconcileNative(context.Background(), config, unregister.PlanSHA256, manager)
+	if err != nil || reconciled.Status != "completed" || reconciled.Receipt == nil ||
+		reconciled.Receipt.RegistrationRevision != unregister.NextRegistrationRevision ||
+		manager.unregisterCalls != unregisterCalls {
+		t.Fatalf("pending native reconcile after reconnect=%+v error=%v manager=%+v", reconciled, err, manager)
+	}
+	if _, err := os.Stat(nativePendingPath(unregister.UnitPath)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("resolved pending native marker remains: %v", err)
+	}
+	manager.unregisterErr = nil
+	disabledConfig := config
+	disabledConfig.ActivationProfile = ""
+	stagedBefore, err := os.ReadFile(plan.UnitPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RollbackPlan(context.Background(), disabledConfig, receipt.InstallRevision); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale archived unit rollback=%v", err)
+	}
+	stagedAfter, err := os.ReadFile(plan.UnitPath)
+	if err != nil || !bytes.Equal(stagedBefore, stagedAfter) {
+		t.Fatalf("rollback preview mutated unit: %v", err)
+	}
+	freshDisabled, err := Plan(context.Background(), disabledConfig, receipt.InstallRevision)
+	if err != nil || freshDisabled.ManifestRevision != manifest.Revision+2 {
+		t.Fatalf("fresh disabled plan=%+v error=%v", freshDisabled, err)
+	}
+	disabledReceipt, err := Apply(context.Background(), disabledConfig, freshDisabled)
+	if err != nil || disabledReceipt.ActivationProfile != "" {
+		t.Fatalf("stage fresh disabled unit=%+v error=%v", disabledReceipt, err)
+	}
+	disabledUnit, err := os.ReadFile(freshDisabled.UnitPath)
+	if err != nil || bytes.Contains(disabledUnit, []byte("--activation-profile")) ||
+		!bytes.Contains(disabledUnit, []byte(fmt.Sprintf("--expected-revision %d", manifest.Revision+2))) &&
+			!bytes.Contains(disabledUnit, []byte(fmt.Sprintf("<string>%d</string>", manifest.Revision+2))) {
+		t.Fatalf("fresh disabled unit=%q error=%v", disabledUnit, err)
+	}
+	if _, err := Plan(context.Background(), disabledConfig, disabledReceipt.InstallRevision); !errors.Is(err, ErrConflict) {
+		t.Fatalf("second stage after terminal unregister must preserve the exact recovery chain: %v", err)
+	}
+	manager.onStart = nil
+	registerDisabled, err := nativePlan(context.Background(), disabledConfig, NativeRegister, disabledReceipt.InstallRevision, manager)
+	if err != nil {
+		t.Fatalf("plan disabled register: %v", err)
+	}
+	if _, err := applyNative(context.Background(), disabledConfig, registerDisabled, manager); err != nil {
+		t.Fatalf("register disabled unit: %v", err)
+	}
+	disabledStarted, err := nativeStart(context.Background(), disabledConfig, disabledReceipt.InstallRevision, registerDisabled.NextRegistrationRevision, manager)
+	if err != nil || disabledStarted.Status != "registered" || !disabledStarted.OSActive {
+		t.Fatalf("start disabled unit=%+v error=%v", disabledStarted, err)
+	}
+	reconnected := manifest
+	reconnected.Revision += 2
+	reconnected.ConnectionGeneration += 2
+	if err := validateStagedActivation(config, reconnected, receipt, unit); err != nil {
+		t.Fatalf("paired connection progression rejected staged unit: %v", err)
+	}
+	if err := os.WriteFile(config.ActivationProfile, changed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateStagedActivation(config, reconnected, receipt, unit); !errors.Is(err, ErrConflict) {
+		t.Fatalf("changed registered profile accepted: %v", err)
+	}
+	profile.OwnerUserID = "other-owner"
+	stale, err := json.Marshal(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config.ActivationProfile, stale, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Plan(context.Background(), config, 1); err == nil {
+		t.Fatal("stale operator profile was accepted for package update")
+	}
+}
 
 func TestStageExactServiceArtifactAndFencedUpdate(t *testing.T) {
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {

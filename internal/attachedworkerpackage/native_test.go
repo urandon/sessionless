@@ -22,6 +22,7 @@ type fakeNativeManager struct {
 	unregisterCalls  int
 	startCalls       int
 	inspectAfterCall bool
+	onStart          func() error
 }
 
 type blockedStartManager struct {
@@ -63,6 +64,11 @@ func (m *fakeNativeManager) unregister(_ context.Context, _ Mode, _, _ string) e
 
 func (m *fakeNativeManager) start(_ context.Context, _ Mode, _, _ string) error {
 	m.startCalls++
+	if m.onStart != nil {
+		if err := m.onStart(); err != nil {
+			return err
+		}
+	}
 	m.state.active = true
 	return nil
 }

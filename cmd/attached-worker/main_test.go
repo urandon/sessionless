@@ -118,6 +118,37 @@ func TestRunForegroundIsExplicitlyDisabledAndLeavesNoObservation(t *testing.T) {
 	}
 }
 
+func TestActivationGateRejectsMissingOrUnsafeProfileBeforeRuntime(t *testing.T) {
+	root, _ := initializeCLIStore(t)
+	profile := filepath.Join(filepath.Dir(root), "activation.json")
+	for _, command := range []string{"run", "serve"} {
+		var output bytes.Buffer
+		arguments := []string{command, "--state-dir", root, "--activation-profile", profile}
+		if command == "serve" {
+			binaryPath, binaryDigest := runningTestBinary(t)
+			arguments = append(arguments, "--expected-revision", "1", "--binary", binaryPath, "--binary-sha256", binaryDigest)
+		}
+		if code := run(arguments, &output); code != 2 || !strings.Contains(output.String(), `"code":"state_invalid"`) {
+			t.Fatalf("%s missing gate exit=%d output=%s", command, code, output.String())
+		}
+	}
+	if err := os.WriteFile(profile, []byte(`{"version":1,"mode":"synthetic-denied"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if code := run([]string{"run", "--state-dir", root, "--activation-profile", profile}, &output); code != 2 {
+		t.Fatalf("unsafe gate exit=%d output=%s", code, output.String())
+	}
+	store, err := attachedworkerlocal.NewStore(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := store.Status(context.Background())
+	if err != nil || status.DaemonObservation != "unknown" || status.ObservationRevision != 0 {
+		t.Fatalf("rejected gate touched runtime: status=%+v error=%v", status, err)
+	}
+}
+
 func TestServeOwnsOneDisabledForegroundAndLocalControl(t *testing.T) {
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		t.Skip("service control requires Unix-domain sockets")

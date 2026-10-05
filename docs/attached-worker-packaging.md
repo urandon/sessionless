@@ -12,9 +12,9 @@ disabled.
 path, and binary digest validates the
 enrolled local installation, takes its kernel-backed `runtime.lock`, writes
 content-free local observation, and holds that one lease until an operator
-stop or process signal. The shipped foreground owner remains
-`feature_disabled`: it starts no poll, container, harness, credential use, or
-provider call. On signal it closes admission through drain, performs bounded
+stop or process signal. Without an explicit activation profile, the foreground
+owner remains `feature_disabled`: it starts no poll, container, harness,
+credential use, or provider call. On signal it closes admission through drain, performs bounded
 shutdown, retires its observation, and releases the lease. A failed cleanup is
 reported as unknown, not stopped.
 
@@ -50,6 +50,48 @@ The long-lived binary clears its inherited process environment before it
 starts the service. Existing `status` and `doctor` remain historical local
 state reads; use the `live-*` commands to ask the current owner. Neither
 surface proves a control-plane connection.
+
+## Explicit synthetic activation (#165, in progress)
+
+The optional `--activation-profile` is a private, owner-owned `0600` JSON file
+in a canonical `0700` directory. It pins the tenant, owner, worker,
+enrollment, initial manifest revision, control-plane HTTPS origin, capability,
+executable digest, `installation_sha256` of the manifest's OCI and harness
+configuration, local materialization/scratch bounds, and an optional
+private TLS root bundle. Only `mode=synthetic-denied` is accepted: the existing
+session/daemon/transport stack may connect and run a synthetic attempt, but
+provider credentials and provider calls remain denied. The long-lived command
+clears its inherited environment. A successful reconnect may advance only
+the paired manifest revision and connection generation; any other local
+manifest change needs a newly reviewed profile.
+
+Launchd/systemd units staged with this opt-in carry both the profile path and
+`--activation-sha256`. The digest covers the exact profile and trust-bundle
+bytes, and a same-path edit causes a failed start or native readback until a
+new reviewed package plan is staged. The local control socket is opened only
+after the single runtime reaches its running state. `drain` and `stop` still
+require the current live manifest revision, not the unit's installation
+baseline. A raw operator `run` may omit the digest; a service `serve` may not.
+
+The rootless-container unit still uses `--network none` and rejects an
+activation profile. Enabling its outbound synthetic transport would need a
+separate reviewed network/engine authority design and platform proof; do not
+turn on container networking or mount a Docker socket implicitly. The #165
+gate is not complete until its required end-to-end acceptance and independent
+review are recorded.
+
+After an activated connection advances the live manifest revision, an older
+archived unit with `--expected-revision` for the prior manifest is not a safe
+rollback target. The rollback preview fails closed. To return to the disabled
+owner, stop the active service, unregister it, review a new `package-plan`
+without `--activation-profile` against the current manifest, apply that exact
+plan, then register and explicitly start the new disabled unit. This is a new
+package update, not replay of an old unit or an automatic rollback.
+The terminal `unregister` receipt authorizes only one replacement stage before
+the new unit is registered. A second `package-plan` at that point fails
+closed: to correct the staged unit, register it while disabled, unregister it
+again, and then review and stage the correction. This keeps every service
+change linked to exact OS registration evidence.
 
 ## Reviewed package plan and staged receipt
 

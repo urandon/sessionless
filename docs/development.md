@@ -196,10 +196,14 @@ test-owned launchd or systemd user-service lifecycle. The separate opt-in
 against an already provisioned rootless Docker engine and preloaded immutable
 execution-base image; the pinned CI gate provisions those inputs. See
 [attached-worker-packaging.md](attached-worker-packaging.md) for the
-registration/start/inspect/drain/stop contract and remaining #137 gates.
-Staging does not register or start an OS service or container, and does not
-enable transport, credentials, harness execution, or provider calls. #137
-remains open until those separate packaging and platform gates are proved.
+registration/start/inspect/drain/stop contract and the #137 evidence.
+Staging does not register or start an OS service or container. With no explicit
+private activation profile, the foreground owner remains feature-disabled.
+The opt-in #165 synthetic/denied-credential path is described in
+[attached-worker-packaging.md](attached-worker-packaging.md); it never enables
+provider credentials or provider calls. The rootless service remains offline
+and does not accept that profile. #137's package/service gate is closed;
+#165's activated rootless design and end-to-end acceptance remain open.
 
 The owner-facing AW-06a information architecture, read-model safety boundary,
 and control-action gates are documented in

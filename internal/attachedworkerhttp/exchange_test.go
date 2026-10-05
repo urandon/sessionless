@@ -212,6 +212,86 @@ func TestClientUsesHTTPSHeaderOnlyBearerAndRequiresEmpty204(t *testing.T) {
 	}
 }
 
+func TestByteBearerClientCopiesAndRevokesConnectionAuthority(t *testing.T) {
+	var calls atomic.Int32
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		if got := request.Header.Get("Authorization"); got != "Bearer session-token" {
+			return nil, fmt.Errorf("authorization header mismatch")
+		}
+		return &http.Response{StatusCode: http.StatusNoContent, Body: http.NoBody}, nil
+	})
+	bearer := []byte("session-token")
+	client, err := NewClientFromBearerBytes(ClientBytesConfig{
+		BaseURL: "https://control.example", Bearer: bearer,
+		HTTPClient: &http.Client{Transport: transport}, RequestTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clear(bearer)
+	if _, err := client.Exchange(context.Background(), testBatch(1)); err != nil || calls.Load() != 1 {
+		t.Fatalf("copied bearer exchange err=%v calls=%d", err, calls.Load())
+	}
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.bearer) != 0 {
+		t.Fatalf("closed client retained %d bearer bytes", len(client.bearer))
+	}
+	if _, err := client.Exchange(context.Background(), testBatch(1)); err == nil || calls.Load() != 1 {
+		t.Fatalf("closed client exchanged err=%v calls=%d", err, calls.Load())
+	}
+	if printed := fmt.Sprintf("%+v %#v", client, client); strings.Contains(printed, "session-token") {
+		t.Fatal("client formatting exposed bearer")
+	}
+	for _, invalid := range [][]byte{nil, []byte("bad token"), []byte("abc=def")} {
+		if _, err := NewClientFromBearerBytes(ClientBytesConfig{BaseURL: "https://control.example", Bearer: invalid}); !errors.Is(err, ErrInvalidRequest) {
+			t.Fatalf("invalid bearer %q accepted: %v", invalid, err)
+		}
+	}
+}
+
+func TestByteBearerClientCloseCancelsInFlightExchange(t *testing.T) {
+	entered := make(chan struct{})
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		close(entered)
+		<-request.Context().Done()
+		return nil, request.Context().Err()
+	})
+	client, err := NewClientFromBearerBytes(ClientBytesConfig{
+		BaseURL: "https://control.example", Bearer: []byte("session-token"),
+		HTTPClient: &http.Client{Transport: transport}, RequestTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, exchangeErr := client.Exchange(context.Background(), testBatch(1))
+		done <- exchangeErr
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("exchange never entered test transport")
+	}
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("revoked exchange succeeded")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("close did not cancel in-flight exchange")
+	}
+}
+
 func TestClientAcceptsStrictBoundedPlatformBatch(t *testing.T) {
 	token, _ := ParseBearerToken("secret-worker-token")
 	want := testBatch(2)

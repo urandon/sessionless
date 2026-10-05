@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync"
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerprotocol"
@@ -221,17 +222,46 @@ type ClientConfig struct {
 	RequestTimeout time.Duration
 }
 
+// ClientBytesConfig accepts the one-connection bearer as caller-owned bytes.
+// The client copies it and clears its own copy on Close; callers must clear
+// their input after construction.
+type ClientBytesConfig struct {
+	BaseURL        string
+	Bearer         []byte
+	HTTPClient     *http.Client
+	RequestTimeout time.Duration
+}
+
 type Client struct {
 	endpoint *url.URL
-	token    BearerToken
 	http     http.Client
 	timeout  time.Duration
+
+	mu     sync.Mutex
+	bearer []byte
+	life   context.Context
+	cancel context.CancelFunc
+	closed bool
 }
 
 func NewClient(config ClientConfig) (*Client, error) {
+	if !config.Token.valid() {
+		return nil, ErrInvalidRequest
+	}
+	bearer := config.Token.Bytes()
+	defer clear(bearer)
+	return NewClientFromBearerBytes(ClientBytesConfig{
+		BaseURL: config.BaseURL, Bearer: bearer, HTTPClient: config.HTTPClient,
+		RequestTimeout: config.RequestTimeout,
+	})
+}
+
+// NewClientFromBearerBytes avoids retaining a connection bearer in an
+// immutable string outside the transient HTTP Authorization header.
+func NewClientFromBearerBytes(config ClientBytesConfig) (*Client, error) {
 	base, err := url.Parse(config.BaseURL)
 	if err != nil || base.Scheme != "https" || base.Host == "" || base.User != nil || base.RawQuery != "" || base.Fragment != "" ||
-		(base.Path != "" && base.Path != "/") || !config.Token.valid() {
+		(base.Path != "" && base.Path != "/") || !validToken68Bytes(config.Bearer) {
 		return nil, ErrInvalidRequest
 	}
 	base.Path = ExchangePathV1
@@ -247,24 +277,39 @@ func NewClient(config ClientConfig) (*Client, error) {
 		httpClient = *config.HTTPClient
 	}
 	httpClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return &Client{endpoint: base, token: config.Token, http: httpClient, timeout: timeout}, nil
+	life, cancel := context.WithCancel(context.Background())
+	return &Client{endpoint: base, bearer: append([]byte(nil), config.Bearer...),
+		http: httpClient, timeout: timeout, life: life, cancel: cancel}, nil
 }
 
 func (client *Client) Exchange(ctx context.Context, batch attachedworkerprotocol.BatchV1) (*attachedworkerprotocol.BatchV1, error) {
-	if client == nil || client.endpoint == nil || !client.token.valid() {
+	if client == nil || ctx == nil || client.endpoint == nil {
 		return nil, &ExchangeError{Kind: ErrorProtocol}
 	}
+	client.mu.Lock()
+	if client.closed || !validToken68Bytes(client.bearer) {
+		client.mu.Unlock()
+		return nil, &ExchangeError{Kind: ErrorUnavailable}
+	}
+	authorization := "Bearer " + string(client.bearer)
+	life := client.life
+	client.mu.Unlock()
 	encoded, err := attachedworkerprotocol.EncodeBatchV1(batch)
 	if err != nil {
 		return nil, &ExchangeError{Kind: ErrorProtocol}
 	}
 	requestContext, cancel := context.WithTimeout(ctx, client.timeout)
 	defer cancel()
+	stop := context.AfterFunc(life, cancel)
+	defer stop()
+	if life.Err() != nil {
+		return nil, &ExchangeError{Kind: ErrorUnavailable}
+	}
 	request, err := http.NewRequestWithContext(requestContext, http.MethodPost, client.endpoint.String(), bytes.NewReader(encoded))
 	if err != nil {
 		return nil, &ExchangeError{Kind: ErrorProtocol}
 	}
-	request.Header.Set("Authorization", client.token.headerValue())
+	request.Header.Set("Authorization", authorization)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json")
 	response, err := client.http.Do(request)
@@ -300,6 +345,26 @@ func (client *Client) Exchange(ctx context.Context, batch attachedworkerprotocol
 	}
 	return &decoded, nil
 }
+
+// Close revokes this connection's exchange authority and cancels in-flight
+// requests. It never closes a caller-supplied shared HTTP transport.
+func (client *Client) Close() error {
+	if client == nil {
+		return nil
+	}
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if !client.closed {
+		client.closed = true
+		clear(client.bearer)
+		client.bearer = nil
+		client.cancel()
+	}
+	return nil
+}
+
+func (*Client) String() string   { return "[attached-worker HTTP client: REDACTED]" }
+func (*Client) GoString() string { return "[attached-worker HTTP client: REDACTED]" }
 
 func statusError(status int) error {
 	// Retry-After is intentionally ignored. The header is controlled by the

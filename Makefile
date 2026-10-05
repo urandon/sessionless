@@ -177,8 +177,8 @@ attached-worker-build: prepare
 		-o "$(BIN_DIR)/attached-worker" ./cmd/attached-worker
 
 attached-worker-package-test: prepare
-	go test -race -count=1 ./internal/attachedworkerpackage ./cmd/attached-worker
-	go test -race -count=20 -shuffle=on ./internal/attachedworkerpackage ./cmd/attached-worker
+	go test -race -count=1 ./internal/attachedworkeractivation ./internal/attachedworkerpackage ./internal/attachedworkersession ./cmd/attached-worker
+	go test -race -count=20 -shuffle=on ./internal/attachedworkeractivation ./internal/attachedworkerpackage ./internal/attachedworkersession ./cmd/attached-worker
 
 attached-worker-native-integration: attached-worker-build
 	SESSIONLESS_NATIVE_INTEGRATION=1 SESSIONLESS_ATTACHED_WORKER_BINARY="$(CURDIR)/$(BIN_DIR)/attached-worker" \

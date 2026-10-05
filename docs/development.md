@@ -190,6 +190,11 @@ mode, a versioned permission-bound local status/doctor/drain/stop endpoint,
 and exact launchd/systemd-user/rootless-container artifact plan/apply/rollback
 receipts. `make attached-worker-build` builds only its native binary;
 `make attached-worker-package-test` repeats its focused race/shuffle tests.
+The opt-in `make attached-worker-crash-integration` builds that exact binary,
+starts a test-owned synthetic/denied-credential service, kills its exact PID,
+and verifies authenticated idle reconnect and lease retirement after restart.
+It needs no provider credentials, Docker engine, OS service registration, or
+cloud resources; ordinary `make test` skips this process-kill fixture.
 The opt-in `make attached-worker-native-integration` exercises one exact
 test-owned launchd or systemd user-service lifecycle. The separate opt-in
 `make attached-worker-rootless-integration` runs the same lifecycle on Linux

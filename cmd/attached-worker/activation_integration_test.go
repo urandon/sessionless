@@ -9,16 +9,19 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -38,26 +41,33 @@ import (
 // the connector boundary. OCI preflight is a pinned stub: any container start
 // or provider invocation is a test failure.
 func TestActivatedRunAcceptsSyntheticAttemptAndDeniesInput(t *testing.T) {
-	testActivatedSyntheticCommand(t, false, false, false, false)
+	testActivatedSyntheticCommand(t, false, false, false, false, false)
 }
 
 func TestActivatedServeDrainsAcceptedSyntheticAttempt(t *testing.T) {
-	testActivatedSyntheticCommand(t, true, false, false, false)
+	testActivatedSyntheticCommand(t, true, false, false, false, false)
 }
 
 func TestActivatedServeStopsIdle(t *testing.T) {
-	testActivatedSyntheticCommand(t, true, true, false, false)
+	testActivatedSyntheticCommand(t, true, true, false, false, false)
 }
 
 func TestActivatedServeReconnectsAfterIdleStop(t *testing.T) {
-	testActivatedSyntheticCommand(t, true, true, true, false)
+	testActivatedSyntheticCommand(t, true, true, true, false, false)
 }
 
 func TestActivatedServeCancelsAcceptedSyntheticAttempt(t *testing.T) {
-	testActivatedSyntheticCommand(t, true, false, false, true)
+	testActivatedSyntheticCommand(t, true, false, false, true, false)
 }
 
-func testActivatedSyntheticCommand(t *testing.T, service, idle, restart, cancelActive bool) {
+func TestActivatedServeCrashRestartCheckpoint(t *testing.T) {
+	if os.Getenv("SESSIONLESS_ATTACHED_WORKER_BINARY") == "" {
+		t.Skip("opt-in exact-binary crash/restart integration")
+	}
+	testActivatedSyntheticCommand(t, true, true, false, false, true)
+}
+
+func testActivatedSyntheticCommand(t *testing.T, service, idle, restart, cancelActive, crashRestart bool) {
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		t.Skip("pinned OCI fixture is Unix-only")
 	}
@@ -69,6 +79,7 @@ func testActivatedSyntheticCommand(t *testing.T, service, idle, restart, cancelA
 	serviceExited := make(chan struct{})
 	var restartStarted atomic.Bool
 	restartExited := make(chan struct{})
+	crashChildrenExited := true
 	if service {
 		// Unix-domain socket paths are bounded (especially on Darwin), while
 		// Go's nested test directory can exceed sockaddr_un before Serve starts.
@@ -81,6 +92,10 @@ func testActivatedSyntheticCommand(t *testing.T, service, idle, restart, cancelA
 			t.Fatal(err)
 		}
 		t.Cleanup(func() {
+			if !crashChildrenExited {
+				t.Errorf("preserving test root while crashed service child may still own it: %s", root)
+				return
+			}
 			if serviceStarted.Load() {
 				select {
 				case <-serviceExited:
@@ -236,7 +251,11 @@ esac
 	if err := os.WriteFile(profilePath, encoded, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	timeout := 10 * time.Second
+	if crashRestart {
+		timeout = 30 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	t.Cleanup(cancel)
 	done := make(chan int, 1)
 	var output bytes.Buffer
@@ -252,6 +271,10 @@ esac
 			connected <- owner
 		}
 		return owner, err
+	}
+	if crashRestart {
+		testActivatedCrashRestart(t, ctx, peer, store, stateRoot, profilePath, &crashChildrenExited)
+		return
 	}
 	if service {
 		testActivatedServiceControl(t, ctx, peer, store, stateRoot, profilePath, connector,
@@ -425,21 +448,7 @@ func testActivatedServiceControl(t *testing.T, ctx context.Context, peer *comman
 			if checkpointErr != nil || closeErr != nil {
 				t.Fatalf("load durable reconnect checkpoint: load=%v close=%v", checkpointErr, closeErr)
 			}
-			peer.mu.Lock()
-			peer.now = testClock()
-			peer.previousCheckpoint = checkpoint
-			peer.previousConfig = attachedworkerprotocol.MachineConfig{
-				Auth: attachedworkerprotocol.AuthContextV1{
-					TenantID: string(checkpoint.TenantID), OwnerUserID: string(checkpoint.OwnerUserID),
-					WorkerID: string(checkpoint.WorkerID), IdentityPublicKey: peer.public,
-					EnrollmentGeneration: checkpoint.EnrollmentGeneration,
-					ConnectionGeneration: checkpoint.ConnectionGeneration,
-					Version:              checkpoint.ProtocolVersion, ChannelBinding: append([]byte(nil), checkpoint.ChannelBinding...),
-				},
-				WorkerOffer: checkpoint.WorkerOffer, PlatformOffer: checkpoint.PlatformOffer,
-				ImplementedVersions: []attachedworkerprotocol.ProtocolVersion{attachedworkerprotocol.ProtocolVersionV1},
-			}
-			peer.mu.Unlock()
+			peer.setPreviousCheckpoint(checkpoint, testClock())
 			restartCtx, restartCancel := context.WithCancel(ctx)
 			var restartOutput bytes.Buffer
 			restartDone := make(chan int, 1)
@@ -600,6 +609,208 @@ drainLoop:
 	}
 }
 
+type activatedCrashChild struct {
+	command *exec.Cmd
+	done    chan error
+	output  boundedCrashOutput
+	reaped  bool
+}
+
+type boundedCrashOutput struct {
+	mu   sync.Mutex
+	data []byte
+}
+
+func (output *boundedCrashOutput) Write(p []byte) (int, error) {
+	const limit = 64 << 10
+	output.mu.Lock()
+	if remaining := limit - len(output.data); remaining > 0 {
+		output.data = append(output.data, p[:min(len(p), remaining)]...)
+	}
+	output.mu.Unlock()
+	return len(p), nil
+}
+
+func (output *boundedCrashOutput) String() string {
+	output.mu.Lock()
+	defer output.mu.Unlock()
+	return string(output.data)
+}
+
+func startActivatedCrashChild(binary, binaryDigest, stateRoot, profilePath, profileDigest string) (*activatedCrashChild, error) {
+	child := &activatedCrashChild{done: make(chan error, 1)}
+	child.command = exec.Command(binary, "serve", "--state-dir", stateRoot,
+		"--expected-revision", "1", "--binary", binary, "--binary-sha256", binaryDigest,
+		"--activation-profile", profilePath, "--activation-sha256", profileDigest)
+	child.command.Env = []string{}
+	child.command.Stdout = &child.output
+	child.command.Stderr = &child.output
+	if err := child.command.Start(); err != nil {
+		return nil, err
+	}
+	go func() { child.done <- child.command.Wait() }()
+	return child, nil
+}
+
+func (child *activatedCrashChild) killAndWait(ctx context.Context) error {
+	if child == nil || child.reaped {
+		return nil
+	}
+	killErr := child.command.Process.Kill()
+	select {
+	case err := <-child.done:
+		child.reaped = true
+		if killErr != nil {
+			return fmt.Errorf("kill exact child: %w (wait: %v)", killErr, err)
+		}
+		var exited *exec.ExitError
+		if !errors.As(err, &exited) {
+			return fmt.Errorf("killed child returned %v", err)
+		}
+		status, ok := exited.Sys().(syscall.WaitStatus)
+		if !ok || !status.Signaled() || status.Signal() != syscall.SIGKILL {
+			return fmt.Errorf("child did not die from SIGKILL: %v", err)
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func testActivatedCrashRestart(t *testing.T, ctx context.Context, peer *commandSyntheticPeer,
+	store *attachedworkerlocal.Store, stateRoot, profilePath string, childrenExited *bool) {
+	t.Helper()
+	binary := os.Getenv("SESSIONLESS_ATTACHED_WORKER_BINARY")
+	canonical, err := filepath.EvalSymlinks(binary)
+	if err != nil || canonical != binary || !filepath.IsAbs(binary) {
+		t.Fatalf("exact built binary path required: %v", err)
+	}
+	content, err := os.ReadFile(binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binaryDigest := sha256.Sum256(content)
+	_, profileDigest, err := attachedworkeractivation.ReadProfileWithDigest(profilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	children := make([]*activatedCrashChild, 0, 2)
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		allReaped := true
+		for _, child := range children {
+			if child.reaped {
+				continue
+			}
+			if err := child.command.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+				t.Errorf("kill exact crash-test child: %v", err)
+			}
+			select {
+			case <-child.done:
+				child.reaped = true
+			case <-cleanupCtx.Done():
+				t.Errorf("crash-test child did not exit after cleanup kill: %v", cleanupCtx.Err())
+				allReaped = false
+			}
+		}
+		*childrenExited = allReaped
+	})
+	start := func() *activatedCrashChild {
+		t.Helper()
+		child, err := startActivatedCrashChild(binary, hex.EncodeToString(binaryDigest[:]), stateRoot, profilePath, profileDigest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		*childrenExited = false
+		children = append(children, child)
+		return child
+	}
+	waitReady := func(child *activatedCrashChild, revision uint64) {
+		t.Helper()
+		want := fmt.Sprintf(`"manifest_revision":%d`, revision)
+		for {
+			var status bytes.Buffer
+			if runWithContext(ctx, []string{"live-status", "--state-dir", stateRoot}, &status) == 0 &&
+				strings.Contains(status.String(), want) {
+				return
+			}
+			select {
+			case err := <-child.done:
+				child.reaped = true
+				t.Fatalf("child exited before revision %d: %v; output=%s", revision, err, child.output.String())
+			case <-time.After(10 * time.Millisecond):
+			case <-ctx.Done():
+				t.Fatalf("child did not reach revision %d: %v", revision, ctx.Err())
+			}
+		}
+	}
+	first := start()
+	waitReady(first, 2)
+	for {
+		snapshot, err := store.LoadSnapshot(ctx)
+		if err == nil && snapshot.Manifest.Revision == 2 && snapshot.ObservationPresent {
+			break
+		}
+		select {
+		case err := <-first.done:
+			first.reaped = true
+			t.Fatalf("first child exited before durable observation: %v; output=%s", err, first.output.String())
+		case <-time.After(10 * time.Millisecond):
+		case <-ctx.Done():
+			t.Fatalf("first child did not persist observation before crash: %v", ctx.Err())
+		}
+	}
+	if err := first.killAndWait(ctx); err != nil {
+		if first.reaped {
+			t.Fatalf("first service was not killed exactly: %v; output=%s", err, first.output.String())
+		}
+		t.Fatalf("first service was not killed exactly before deadline: %v", err)
+	}
+	var unavailable bytes.Buffer
+	if code := runWithContext(ctx, []string{"live-status", "--state-dir", stateRoot}, &unavailable); code == 0 {
+		t.Fatalf("crashed service still answered live control: %s", unavailable.String())
+	}
+	snapshot, err := store.LoadSnapshot(ctx)
+	if err != nil || snapshot.Manifest.Revision != 2 || !snapshot.ObservationPresent {
+		t.Fatalf("crash did not leave exact local observation: snapshot=%+v error=%v", snapshot, err)
+	}
+	lease, err := store.AcquireRuntime(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint, checkpointErr := lease.LoadReconnectCheckpoint(ctx)
+	closeErr := lease.Close()
+	if checkpointErr != nil || closeErr != nil || checkpoint.MachineSnapshot.Attempt.Summary.State != attachedworkerprotocol.AttemptIdle {
+		t.Fatalf("crash checkpoint is not idle: checkpoint=%+v load=%v close=%v", checkpoint, checkpointErr, closeErr)
+	}
+	peer.setPreviousCheckpoint(checkpoint, time.Now().UTC())
+	second := start()
+	waitReady(second, 3)
+	var stop bytes.Buffer
+	if code := runWithContext(ctx, []string{"stop", "--state-dir", stateRoot, "--expected-revision", "3"}, &stop); code != 0 {
+		t.Fatalf("restarted child stop exit=%d output=%s", code, stop.String())
+	}
+	select {
+	case err := <-second.done:
+		second.reaped = true
+		if err != nil {
+			t.Fatalf("restarted child exit=%v output=%s", err, second.output.String())
+		}
+	case <-ctx.Done():
+		t.Fatal("restarted child did not exit after stop")
+	}
+	peer.mu.Lock()
+	reconnectChallenges, reconnectActivations := peer.reconnectChallenges, peer.reconnectActivations
+	peer.mu.Unlock()
+	if reconnectChallenges != 1 || reconnectActivations != 1 {
+		t.Fatalf("crashed service did not authenticate reconnect: challenges=%d activations=%d", reconnectChallenges, reconnectActivations)
+	}
+	if snapshot, err := store.LoadSnapshot(ctx); err != nil || snapshot.Manifest.Revision != 3 || snapshot.ObservationPresent {
+		t.Fatalf("restarted service did not retire lease: snapshot=%+v error=%v", snapshot, err)
+	}
+}
+
 type commandSyntheticPeer struct {
 	mu                   sync.Mutex
 	public               ed25519.PublicKey
@@ -623,6 +834,24 @@ type commandSyntheticPeer struct {
 	sealedGate           chan struct{}
 	sealedStarted        chan struct{}
 	sealedRelease        sync.Once
+}
+
+func (peer *commandSyntheticPeer) setPreviousCheckpoint(checkpoint attachedworkerlocal.ReconnectCheckpointV1, now time.Time) {
+	peer.mu.Lock()
+	defer peer.mu.Unlock()
+	peer.now = now
+	peer.previousCheckpoint = checkpoint
+	peer.previousConfig = attachedworkerprotocol.MachineConfig{
+		Auth: attachedworkerprotocol.AuthContextV1{
+			TenantID: string(checkpoint.TenantID), OwnerUserID: string(checkpoint.OwnerUserID),
+			WorkerID: string(checkpoint.WorkerID), IdentityPublicKey: peer.public,
+			EnrollmentGeneration: checkpoint.EnrollmentGeneration,
+			ConnectionGeneration: checkpoint.ConnectionGeneration,
+			Version:              checkpoint.ProtocolVersion, ChannelBinding: append([]byte(nil), checkpoint.ChannelBinding...),
+		},
+		WorkerOffer: checkpoint.WorkerOffer, PlatformOffer: checkpoint.PlatformOffer,
+		ImplementedVersions: []attachedworkerprotocol.ProtocolVersion{attachedworkerprotocol.ProtocolVersionV1},
+	}
 }
 
 func (peer *commandSyntheticPeer) releaseSealed() {

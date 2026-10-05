@@ -36,6 +36,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/attachedworkersealedinput"
 	"gitcode.com/urandon/sessionless/internal/attachedworkertransport"
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 )
 
 // This drives the shipped run CLI dispatch through an actual TLS bootstrap,
@@ -43,41 +44,45 @@ import (
 // the connector boundary. OCI preflight is a pinned stub: any container start
 // or provider invocation is a test failure.
 func TestActivatedRunAcceptsSyntheticAttemptAndDeniesInput(t *testing.T) {
-	testActivatedSyntheticCommand(t, false, false, false, false, false, false)
+	testActivatedSyntheticCommand(t, false, false, false, false, false, false, false)
 }
 
 func TestActivatedRunAcknowledgesRemoteCancelBeforeMaterialization(t *testing.T) {
-	testActivatedSyntheticCommand(t, false, false, false, false, false, true)
+	testActivatedSyntheticCommand(t, false, false, false, false, false, true, false)
 }
 
 func TestActivatedServeDrainsAcceptedSyntheticAttempt(t *testing.T) {
-	testActivatedSyntheticCommand(t, true, false, false, false, false, false)
+	testActivatedSyntheticCommand(t, true, false, false, false, false, false, false)
 }
 
 func TestActivatedServeStopsIdle(t *testing.T) {
-	testActivatedSyntheticCommand(t, true, true, false, false, false, false)
+	testActivatedSyntheticCommand(t, true, true, false, false, false, false, false)
 }
 
 func TestActivatedServeReconnectsAfterIdleStop(t *testing.T) {
-	testActivatedSyntheticCommand(t, true, true, true, false, false, false)
+	testActivatedSyntheticCommand(t, true, true, true, false, false, false, false)
 }
 
 func TestActivatedServeCancelsAcceptedSyntheticAttempt(t *testing.T) {
-	testActivatedSyntheticCommand(t, true, false, false, true, false, false)
+	testActivatedSyntheticCommand(t, true, false, false, true, false, false, false)
+}
+
+func TestActivatedServeAcknowledgesRemoteCancelDuringActiveAttempt(t *testing.T) {
+	testActivatedSyntheticCommand(t, true, false, false, false, false, false, true)
 }
 
 func TestActivatedServeCrashRestartCheckpoint(t *testing.T) {
 	if os.Getenv("SESSIONLESS_ATTACHED_WORKER_BINARY") == "" {
 		t.Skip("opt-in exact-binary crash/restart integration")
 	}
-	testActivatedSyntheticCommand(t, true, true, false, false, true, false)
+	testActivatedSyntheticCommand(t, true, true, false, false, true, false, false)
 }
 
 func TestActivatedServeActiveCrashFencesRestart(t *testing.T) {
 	if os.Getenv("SESSIONLESS_ATTACHED_WORKER_ACTIVE_CRASH_INTEGRATION") != "1" {
 		t.Skip("opt-in test-binary active-crash integration")
 	}
-	testActivatedSyntheticCommand(t, true, false, false, false, true, false)
+	testActivatedSyntheticCommand(t, true, false, false, false, true, false, false)
 }
 
 // This child is the ordinary command dispatch in a separate OS process, with
@@ -122,7 +127,69 @@ func TestActivatedServeCrashChild(t *testing.T) {
 	}
 }
 
-func testActivatedSyntheticCommand(t *testing.T, service, idle, restart, cancelActive, crashRestart, cancelBeforeMaterialization bool) {
+func commandSealedInput(t *testing.T, now time.Time, capabilityDigest []byte) (attachedworkerdaemontransport.SealedInputV1, []byte, []byte) {
+	t.Helper()
+	const tenant, owner, runID, attemptID = "tenant-command", "owner-command", "run-command", "attempt-command"
+	contextBytes := []byte("synthetic command context")
+	artifactBytes := []byte("synthetic command artifact")
+	blob := func(name string, body []byte) domain.BlobRef {
+		sum := sha256.Sum256(body)
+		return domain.BlobRef{TenantID: tenant, Key: "tenants/" + tenant + "/" + name,
+			Size: int64(len(body)), SHA256: hex.EncodeToString(sum[:])}
+	}
+	policy := domain.DigestAttachedWorkerCapability([]byte("command synthetic policy"))
+	placement := domain.ExecutionPlacementV2{
+		Version: domain.ExecutionPlacementVersionV2, Kind: domain.ExecutionPlacementAttachedWorker,
+		FallbackPolicy: domain.ExecutionFallbackDenied, OwnerUserID: owner, WorkerID: "worker-command",
+		CapabilityDigest: domain.AttachedWorkerCapabilityDigest(hex.EncodeToString(capabilityDigest)),
+		PolicyDigest:     domain.AttachedWorkerPolicyDigest(policy),
+	}
+	placementDigest, err := domain.ExecutionPlacementDigest(placement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := sessionlessharness.NewDeterministicFixtureManagedAuthorityV2(
+		tenant, owner, runID, attemptID, "subscription-command", now.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := authority.HarnessBinding.Clone()
+	binding.ExecutionPlacementDigest = string(placementDigest)
+	job := domain.WorkerJob{
+		TenantID: tenant, RunID: runID, SessionID: "session-command", TriggerEventID: "event-command",
+		AttemptID: attemptID, ReservationID: "reservation-command", InputManifestID: "manifest-command",
+		ContextSnapshot: blob("context", contextBytes), CredentialOwnerUserID: owner,
+		ExecutionPlacementV2: placement, HarnessBinding: binding,
+		Limits: domain.ProductLimits{
+			MaxTenantQueueDepth: 8, MaxActiveRuns: 1, MaxRuntime: time.Minute, MaxTurns: 10,
+			MaxInputBytes: 1 << 20, MaxContextBytes: 1 << 20, MaxContextEvents: 100,
+			MaxArtifacts: 10, MaxToolEvents: 20, MaxToolEventBytes: 1 << 18,
+		},
+	}
+	manifest := domain.ArtifactManifest{ID: job.InputManifestID, TenantID: tenant, RunID: runID,
+		CreatedAt: now.Add(-time.Minute), Artifacts: []domain.Artifact{{
+			Name: "alpha", MediaType: "text/plain", Blob: blob("alpha", artifactBytes),
+		}}}
+	contextDigest, err := domain.AttachedWorkerJobContextDigestV1(job, manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decode := func(value string) []byte {
+		t.Helper()
+		result, err := hex.DecodeString(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	return attachedworkerdaemontransport.SealedInputV1{
+		Job: job, Manifest: manifest, Context: contextBytes,
+		Artifacts: []attachedworkerdaemontransport.SealedArtifactV1{{Name: "alpha", Body: artifactBytes}},
+	}, decode(string(contextDigest)), decode(string(placement.PolicyDigest))
+}
+
+func testActivatedSyntheticCommand(t *testing.T, service, idle, restart, cancelActive, crashRestart, cancelBeforeMaterialization, cancelDuringActive bool) {
+	t.Helper()
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		t.Skip("pinned OCI fixture is Unix-only")
 	}
@@ -193,6 +260,56 @@ case "$1:$2" in
   *) exit 97;;
 esac
 `, quotedLog, image))
+	if cancelDuringActive {
+		sleepPath, err := exec.LookPath("sleep")
+		if err != nil {
+			t.Fatalf("locate bounded OCI stub sleep: %v", err)
+		}
+		cliBytes = []byte(strings.NewReplacer("@ROOT@", root, "@IMAGE@", image, "@SLEEP@", sleepPath).Replace(`#!/bin/sh
+shift 4
+printf '%s\n' "$*" >> '@ROOT@/oci-commands.log'
+case "$1:$2" in
+  version:*) printf '%s\n' '{"Client":{"ApiVersion":"1.45"},"Server":{"ApiVersion":"1.45","Os":"linux"}}';;
+  info:*) printf '%s\n' '{"ID":"engine-001-abcdef","OSType":"linux","CgroupVersion":"2","MemoryLimit":true,"PidsLimit":true,"SwapLimit":true,"SecurityOptions":["name=seccomp,profile=builtin","name=rootless"]}';;
+  image:inspect) printf '%s\n' '{"Os":"linux","RepoDigests":["@IMAGE@"],"Config":{}}';;
+  container:ls) exit 0;;
+  container:create)
+    shift 2
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --name) printf '%s\n' "$2" > '@ROOT@/name'; shift 2;;
+        --workdir) printf '%s\n' "$2" > '@ROOT@/workdir'; shift 2;;
+        --tmpfs) printf '%s\n' "$2" > '@ROOT@/tmpfs'; shift 2;;
+        --mount) printf '%s\n' "$2" > '@ROOT@/mount'; shift 2;;
+        --entrypoint) printf '%s\n' "$2" > '@ROOT@/entrypoint'; shift 2;;
+        *) shift;;
+      esac
+    done
+    printf '%s\n' 'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd';;
+  container:inspect)
+    case "$4" in
+      '{{json .State}}') printf '%s\n' '{"Running":false}';;
+      *)
+        IFS= read -r name < '@ROOT@/name'
+        IFS= read -r workdir < '@ROOT@/workdir'
+        IFS= read -r tmpfs < '@ROOT@/tmpfs'
+        IFS= read -r mount < '@ROOT@/mount'
+        IFS= read -r entrypoint < '@ROOT@/entrypoint'
+        tmpfs_path=${tmpfs%%:*}
+        tmpfs_opts=${tmpfs#*:}
+        mount_src=${mount#*src=}; mount_src=${mount_src%%,*}
+        attempt_root=${workdir%/work}
+        printf '{"Id":"%s","Name":"/%s","State":{"Status":"created"},"Config":{"Image":"@IMAGE@","User":"1000:1000","WorkingDir":"%s","StopSignal":"SIGTERM","StopTimeout":10,"Entrypoint":["%s"],"Cmd":[],"Env":["HOME=%s/home","TMPDIR=%s/tmp","XDG_CONFIG_HOME=%s/xdg/config","XDG_CACHE_HOME=%s/xdg/cache","XDG_DATA_HOME=%s/xdg/data","PATH=","LANG=C.UTF-8","LC_ALL=C.UTF-8","NO_COLOR=1"],"Healthcheck":{"Test":["NONE"]},"Labels":{"dev.sessionless.attached-worker.profile":"sessionless.oci.docker.v1","dev.sessionless.attached-worker.installation":"install-command","dev.sessionless.attached-worker.engine":"engine-001-abcdef"}},"HostConfig":{"NetworkMode":"none","ReadonlyRootfs":true,"IpcMode":"private","CgroupnsMode":"private","CapDrop":["ALL"],"SecurityOpt":["no-new-privileges:true"],"PidsLimit":64,"Memory":67108864,"MemorySwap":67108864,"ShmSize":1048576,"Tmpfs":{"%s":"%s"},"Ulimits":[{"Name":"fsize","Soft":1024,"Hard":1024}],"Init":true,"LogConfig":{"Type":"none"},"RestartPolicy":{"Name":"no"}},"Mounts":[{"Type":"bind","Source":"%s","Destination":"%s","RW":false}]}\n' 'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd' "$name" "$workdir" "$entrypoint" "$attempt_root" "$attempt_root" "$attempt_root" "$attempt_root" "$attempt_root" "$tmpfs_path" "$tmpfs_opts" "$mount_src" "$mount_src";;
+    esac;;
+  container:start)
+    : > '@ROOT@/oci-started'
+    while [ ! -f '@ROOT@/cancelled' ]; do '@SLEEP@' 0.01; done;;
+  container:stop|container:kill) : > '@ROOT@/cancelled';;
+  container:rm) exit 0;;
+  *) exit 97;;
+esac
+`))
+	}
 	if err := os.WriteFile(cli, cliBytes, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -232,15 +349,27 @@ esac
 		ContextDigest: bytes.Repeat([]byte{0x61}, sha256.Size), CapabilityDigest: append([]byte(nil), capabilityDigest...),
 		PolicyDigest: bytes.Repeat([]byte{0x62}, sha256.Size),
 	}
+	var sealedInput *attachedworkerdaemontransport.SealedInputV1
+	if cancelDuringActive {
+		input, contextDigest, policyDigest := commandSealedInput(t, testNow, capabilityDigest)
+		sealedInput = &input
+		binding.ContextDigest = contextDigest
+		binding.PolicyDigest = policyDigest
+	}
 	if err := binding.Validate(); err != nil {
 		t.Fatal(err)
 	}
 	peer := &commandSyntheticPeer{public: public, offer: offer, binding: binding, now: testNow, idle: idle,
 		cancelBeforeMaterialization: cancelBeforeMaterialization,
+		cancelDuringActive:          cancelDuringActive,
+		ociStartedPath:              filepath.Join(root, "oci-started"),
+		sealedInput:                 sealedInput,
 		terminal:                    make(chan attachedworkerprotocol.TerminalV1, 1)}
 	if service {
-		peer.sealedGate = make(chan struct{})
 		peer.sealedStarted = make(chan struct{}, 1)
+		if !cancelDuringActive {
+			peer.sealedGate = make(chan struct{})
+		}
 	}
 	server := httptest.NewTLSServer(http.HandlerFunc(peer.serveHTTP))
 	t.Cleanup(server.Close)
@@ -310,6 +439,8 @@ esac
 	timeout := 10 * time.Second
 	if crashRestart {
 		timeout = 30 * time.Second
+	} else if cancelDuringActive {
+		timeout = 20 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	t.Cleanup(cancel)
@@ -337,7 +468,7 @@ esac
 	}
 	if service {
 		testActivatedServiceControl(t, ctx, peer, store, stateRoot, profilePath, connector,
-			connected, testClock, &serviceStarted, serviceExited, &restartStarted, restartExited, idle, restart, cancelActive)
+			connected, testClock, &serviceStarted, serviceExited, &restartStarted, restartExited, idle, restart, cancelActive, cancelDuringActive)
 		return
 	}
 	go func() {
@@ -458,7 +589,7 @@ func testActivatedServiceControl(t *testing.T, ctx context.Context, peer *comman
 	store *attachedworkerlocal.Store, stateRoot, profilePath string, connector activationConnector,
 	connected <-chan *attachedworkersealedinput.SyntheticRuntime, testClock func() time.Time,
 	serviceStarted *atomic.Bool, serviceExited chan struct{}, restartStarted *atomic.Bool,
-	restartExited chan struct{}, idle, restart, cancelActive bool) {
+	restartExited chan struct{}, idle, restart, cancelActive, cancelDuringActive bool) {
 	t.Helper()
 	profile, pin, err := attachedworkeractivation.ReadProfileWithDigest(profilePath)
 	if err != nil {
@@ -480,7 +611,7 @@ func testActivatedServiceControl(t *testing.T, ctx context.Context, peer *comman
 		t.Fatal(err)
 	}
 	sum := sha256.Sum256(content)
-	var output bytes.Buffer
+	var output boundedCrashOutput
 	done := make(chan int, 1)
 	serviceCtx, serviceCancel := context.WithCancel(ctx)
 	t.Cleanup(func() {
@@ -629,6 +760,86 @@ func testActivatedServiceControl(t *testing.T, ctx context.Context, peer *comman
 		t.Fatalf("service exited before accepted attempt: code=%d output=%s", code, output.String())
 	case <-ctx.Done():
 		t.Fatal("service did not reach accepted synthetic attempt")
+	}
+	if cancelDuringActive {
+		var terminal attachedworkerprotocol.TerminalV1
+		select {
+		case terminal = <-peer.terminal:
+		case code := <-done:
+			peer.mu.Lock()
+			steps, acknowledgements, exchanges, peerError, lastKind := peer.steps, peer.cancelAcked, peer.exchanges, peer.lastError, peer.lastKind
+			peer.mu.Unlock()
+			commands, _ := os.ReadFile(filepath.Join(filepath.Dir(stateRoot), "oci-commands.log"))
+			t.Fatalf("service exited before remote-cancel terminal: code=%d output=%s steps=%d ack=%d exchanges=%d peer_error=%q last_kind=%s status=%+v commands=%q",
+				code, output.String(), steps, acknowledgements, exchanges, peerError, lastKind, runtimeOwner.Status(), commands)
+		case <-ctx.Done():
+			peer.mu.Lock()
+			steps, acknowledgements, exchanges, peerError, lastKind := peer.steps, peer.cancelAcked, peer.exchanges, peer.lastError, peer.lastKind
+			peer.mu.Unlock()
+			t.Fatalf("active remote Cancel did not reach terminal: steps=%d ack=%d exchanges=%d peer_error=%q last_kind=%s status=%+v output=%s",
+				steps, acknowledgements, exchanges, peerError, lastKind, runtimeOwner.Status(), output.String())
+		}
+		if terminal.Status != attachedworkerprotocol.TerminalCancelled || terminal.Result != attachedworkerprotocol.TerminalResultCancelled {
+			t.Errorf("active remote-cancel terminal status=%s result=%s, want cancelled/cancelled", terminal.Status, terminal.Result)
+		}
+		ready := time.NewTicker(10 * time.Millisecond)
+		defer ready.Stop()
+		for runtimeOwner.Status().Completed != 1 || runtimeOwner.Status().Active {
+			select {
+			case code := <-done:
+				t.Fatalf("service exited before remote-cancel commit: code=%d output=%s", code, output.String())
+			case <-ready.C:
+			case <-ctx.Done():
+				t.Fatalf("remote-cancel terminal not reported: status=%+v", runtimeOwner.Status())
+			}
+		}
+		var stop bytes.Buffer
+		if code := runWithContext(ctx, []string{"stop", "--state-dir", stateRoot,
+			"--expected-revision", "2"}, &stop); code != 0 {
+			t.Fatalf("stop after remote cancellation: code=%d output=%s", code, stop.String())
+		}
+		select {
+		case code := <-done:
+			if code != 0 {
+				t.Fatalf("stopped service exit=%d output=%s", code, output.String())
+			}
+		case <-ctx.Done():
+			t.Fatal("service did not stop after remote cancellation")
+		}
+		peer.mu.Lock()
+		steps, acknowledged, denied, peerError, activeHeartbeatSequence := peer.steps, peer.cancelAcked, peer.denied, peer.lastError, peer.activeCancelHeartbeatSequence
+		peer.mu.Unlock()
+		if steps != 5 || acknowledged != 1 || denied != 0 || peerError != "" {
+			t.Errorf("remote-cancel exchange steps=%d ack=%d denied=%d error=%q, want 5/1/0/empty", steps, acknowledged, denied, peerError)
+		}
+		if _, err := os.Stat(filepath.Join(filepath.Dir(stateRoot), "oci-started")); err != nil {
+			t.Errorf("accepted attempt never started pinned OCI process: %v", err)
+		}
+		commands, err := os.ReadFile(filepath.Join(filepath.Dir(stateRoot), "oci-commands.log"))
+		if err != nil || strings.Count(string(commands), "container create ") != 1 ||
+			strings.Count(string(commands), "container start ") != 1 || strings.Count(string(commands), "container rm ") != 1 {
+			t.Errorf("remote cancel did not clean up one pinned OCI process: commands=%q read=%v", commands, err)
+		}
+		if snapshot, err := store.LoadSnapshot(context.Background()); err != nil || snapshot.ObservationPresent {
+			t.Fatalf("remote-cancel service retained runtime observation: snapshot=%+v error=%v", snapshot, err)
+		}
+		lease, err := store.AcquireRuntime(ctx)
+		if err != nil {
+			t.Fatalf("acquire remote-cancel checkpoint: %v", err)
+		}
+		checkpoint, checkpointErr := lease.LoadReconnectCheckpoint(ctx)
+		closeErr := lease.Close()
+		attempt := checkpoint.MachineSnapshot.Attempt
+		if checkpointErr != nil || closeErr != nil || attempt.Summary.State != attachedworkerprotocol.AttemptTerminalCommitted ||
+			attempt.Summary.CancelRevision != 1 || attempt.Summary.TerminalStatus != attachedworkerprotocol.TerminalCancelled ||
+			attempt.Summary.TerminalResult != attachedworkerprotocol.TerminalResultCancelled || attempt.PendingWorkerTerminal != nil ||
+			checkpoint.MachineSnapshot.Worker.Sequence != activeHeartbeatSequence+2 || checkpoint.MachineSnapshot.Platform.Sequence != 6 {
+			t.Fatalf("remote-cancel checkpoint state=%s cancel_revision=%d terminal=%s/%s pending=%+v worker_sequence=%d platform_sequence=%d load=%v close=%v",
+				attempt.Summary.State, attempt.Summary.CancelRevision, attempt.Summary.TerminalStatus,
+				attempt.Summary.TerminalResult, attempt.PendingWorkerTerminal,
+				checkpoint.MachineSnapshot.Worker.Sequence, checkpoint.MachineSnapshot.Platform.Sequence, checkpointErr, closeErr)
+		}
+		return
 	}
 	if cancelActive {
 		serviceCancel()
@@ -1024,30 +1235,34 @@ func testActivatedCrashRestart(t *testing.T, ctx context.Context, peer *commandS
 }
 
 type commandSyntheticPeer struct {
-	mu                          sync.Mutex
-	public                      ed25519.PublicKey
-	now                         time.Time
-	offer                       attachedworkerprotocol.VersionOfferV1
-	binding                     attachedworkerprotocol.AttemptBindingV1
-	challenge                   domain.AttachedWorkerAttachChallenge
-	steps                       int
-	denied                      int
-	challenges                  int
-	activations                 int
-	reconnectChallenges         int
-	reconnectActivations        int
-	exchanges                   int
-	lastError                   string
-	lastKind                    attachedworkerprotocol.MessageKind
-	terminal                    chan attachedworkerprotocol.TerminalV1
-	idle                        bool
-	cancelBeforeMaterialization bool
-	cancelAcked                 int
-	previousCheckpoint          attachedworkerlocal.ReconnectCheckpointV1
-	previousConfig              attachedworkerprotocol.MachineConfig
-	sealedGate                  chan struct{}
-	sealedStarted               chan struct{}
-	sealedRelease               sync.Once
+	mu                            sync.Mutex
+	public                        ed25519.PublicKey
+	now                           time.Time
+	offer                         attachedworkerprotocol.VersionOfferV1
+	binding                       attachedworkerprotocol.AttemptBindingV1
+	challenge                     domain.AttachedWorkerAttachChallenge
+	steps                         int
+	denied                        int
+	challenges                    int
+	activations                   int
+	reconnectChallenges           int
+	reconnectActivations          int
+	exchanges                     int
+	lastError                     string
+	lastKind                      attachedworkerprotocol.MessageKind
+	terminal                      chan attachedworkerprotocol.TerminalV1
+	idle                          bool
+	cancelBeforeMaterialization   bool
+	cancelDuringActive            bool
+	activeCancelHeartbeatSequence uint64
+	ociStartedPath                string
+	cancelAcked                   int
+	previousCheckpoint            attachedworkerlocal.ReconnectCheckpointV1
+	previousConfig                attachedworkerprotocol.MachineConfig
+	sealedGate                    chan struct{}
+	sealedStarted                 chan struct{}
+	sealedInput                   *attachedworkerdaemontransport.SealedInputV1
+	sealedRelease                 sync.Once
 }
 
 func (peer *commandSyntheticPeer) setPreviousCheckpoint(checkpoint attachedworkerlocal.ReconnectCheckpointV1, now time.Time) {
@@ -1141,11 +1356,13 @@ func (peer *commandSyntheticPeer) serveHTTP(writer http.ResponseWriter, request 
 		writer.WriteHeader(http.StatusOK)
 		_, _ = writer.Write(encoded)
 	case attachedworkersealedinput.PathV1:
-		if peer.sealedGate != nil {
+		if peer.sealedStarted != nil {
 			select {
 			case peer.sealedStarted <- struct{}{}:
 			default:
 			}
+		}
+		if peer.sealedGate != nil {
 			select {
 			case <-peer.sealedGate:
 			case <-request.Context().Done():
@@ -1153,8 +1370,16 @@ func (peer *commandSyntheticPeer) serveHTTP(writer http.ResponseWriter, request 
 			}
 		}
 		peer.mu.Lock()
-		peer.denied++
+		input := peer.sealedInput
+		if input == nil {
+			peer.denied++
+		}
 		peer.mu.Unlock()
+		if input != nil {
+			writer.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(writer).Encode(input)
+			return
+		}
 		writer.WriteHeader(http.StatusUnauthorized)
 	default:
 		writer.WriteHeader(http.StatusNotFound)
@@ -1308,12 +1533,22 @@ func (peer *commandSyntheticPeer) exchange(batch attachedworkerprotocol.BatchV1)
 	peer.mu.Lock()
 	defer peer.mu.Unlock()
 	if peer.steps == 2 && worker.Kind == attachedworkerprotocol.MessageHeartbeat {
-		return nil, nil
+		if !peer.cancelDuringActive {
+			return nil, nil
+		}
+		if _, err := os.Stat(peer.ociStartedPath); errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		} else if err != nil {
+			return nil, fmt.Errorf("inspect active OCI start: %w", err)
+		}
 	}
 	step := peer.steps
 	peer.steps++
 	platformSequence := uint64(3 + step)
 	if peer.cancelBeforeMaterialization && step == 3 {
+		platformSequence--
+	}
+	if peer.cancelDuringActive && step == 4 {
 		platformSequence--
 	}
 	platform := attachedworkerprotocol.FrameV1{
@@ -1343,6 +1578,18 @@ func (peer *commandSyntheticPeer) exchange(batch attachedworkerprotocol.BatchV1)
 		platform.Kind = attachedworkerprotocol.MessageLeaseAccepted
 		platform.LeaseAccepted = &attachedworkerprotocol.LeaseAcceptedV1{Binding: peer.binding, AttemptSequence: 2}
 	case 2:
+		if peer.cancelDuringActive {
+			if worker.Kind != attachedworkerprotocol.MessageHeartbeat || worker.Heartbeat == nil ||
+				worker.Heartbeat.Available || worker.Heartbeat.ActiveAttempts != 1 || worker.Ack != 4 {
+				return nil, fmt.Errorf("invalid active-control heartbeat: kind=%s sequence=%d ack=%d", worker.Kind, worker.Sequence, worker.Ack)
+			}
+			peer.activeCancelHeartbeatSequence = worker.Sequence
+			platform.Kind = attachedworkerprotocol.MessageCancel
+			platform.Cancel = &attachedworkerprotocol.CancelV1{
+				Binding: peer.binding, AttemptSequence: 3, CancelRevision: 1, Code: attachedworkerprotocol.CancelRequested,
+			}
+			break
+		}
 		if peer.cancelBeforeMaterialization {
 			if worker.Kind != attachedworkerprotocol.MessageCancelAck || worker.CancelAck == nil ||
 				worker.Sequence != 6 || worker.CancelAck.AttemptSequence != 2 || worker.CancelAck.CancelRevision != 1 ||
@@ -1363,6 +1610,15 @@ func (peer *commandSyntheticPeer) exchange(batch attachedworkerprotocol.BatchV1)
 		}
 		peer.terminal <- *worker.Terminal
 	case 3:
+		if peer.cancelDuringActive {
+			if worker.Kind != attachedworkerprotocol.MessageCancelAck || worker.CancelAck == nil ||
+				worker.Sequence != peer.activeCancelHeartbeatSequence+1 || worker.CancelAck.AttemptSequence != 2 || worker.CancelAck.CancelRevision != 1 ||
+				!reflect.DeepEqual(worker.CancelAck.Binding, peer.binding) || worker.Ack != 5 {
+				return nil, fmt.Errorf("invalid active cancel acknowledgement: kind=%s sequence=%d ack=%d", worker.Kind, worker.Sequence, worker.Ack)
+			}
+			peer.cancelAcked++
+			return nil, nil
+		}
 		if !peer.cancelBeforeMaterialization || worker.Kind != attachedworkerprotocol.MessageTerminal || worker.Terminal == nil ||
 			worker.Sequence != 7 || worker.Terminal.AttemptSequence != 3 || !reflect.DeepEqual(worker.Terminal.Binding, peer.binding) ||
 			worker.Terminal.Status != attachedworkerprotocol.TerminalCancelled ||
@@ -1372,6 +1628,20 @@ func (peer *commandSyntheticPeer) exchange(batch attachedworkerprotocol.BatchV1)
 		platform.Kind = attachedworkerprotocol.MessageTerminalAck
 		platform.TerminalAck = &attachedworkerprotocol.TerminalAckV1{
 			Binding: peer.binding, AttemptSequence: 3, TerminalSequence: worker.Terminal.TerminalSequence,
+			Status: worker.Terminal.Status, Result: worker.Terminal.Result,
+			EvidenceDigest: append([]byte(nil), worker.Terminal.EvidenceDigest...),
+		}
+		peer.terminal <- *worker.Terminal
+	case 4:
+		if !peer.cancelDuringActive || worker.Kind != attachedworkerprotocol.MessageTerminal || worker.Terminal == nil ||
+			worker.Sequence != peer.activeCancelHeartbeatSequence+2 || worker.Terminal.AttemptSequence != 3 || !reflect.DeepEqual(worker.Terminal.Binding, peer.binding) ||
+			worker.Terminal.Status != attachedworkerprotocol.TerminalCancelled ||
+			worker.Terminal.Result != attachedworkerprotocol.TerminalResultCancelled || worker.Ack != 5 {
+			return nil, fmt.Errorf("invalid active cancellation terminal: kind=%s sequence=%d ack=%d", worker.Kind, worker.Sequence, worker.Ack)
+		}
+		platform.Kind = attachedworkerprotocol.MessageTerminalAck
+		platform.TerminalAck = &attachedworkerprotocol.TerminalAckV1{
+			Binding: peer.binding, AttemptSequence: 4, TerminalSequence: worker.Terminal.TerminalSequence,
 			Status: worker.Terminal.Status, Result: worker.Terminal.Result,
 			EvidenceDigest: append([]byte(nil), worker.Terminal.EvidenceDigest...),
 		}

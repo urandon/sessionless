@@ -1,9 +1,9 @@
 # Attached-worker daemon and supervisor boundary
 
-Issue #77 introduces the local Go boundary that will become the owner-managed
-attached-worker daemon. The current AW-05a slice is deliberately a library
-contract, not an enabled product daemon or a claim that host isolation is
-complete.
+Issue #77 introduced the local Go supervisor boundary. The shipped
+`attached-worker run/serve` can now opt into a private #165 synthetic-denied
+profile using the same daemon and pinned isolation stack. This is not a real
+provider turn or a claim that the #79 release security gate is complete.
 
 ## What is implemented
 
@@ -69,11 +69,11 @@ implementation, tests, and security review. The test launcher in this package
 is fixture-only evidence for process lifecycle behavior; it is not exported and
 must never be used by a binary.
 
-Darwin and Linux currently have process-group mechanics. Neither platform has
-a product-enabled filesystem/network launcher yet. The feature-disabled
-[OCI isolation profile](attached-worker-oci.md) is the first reviewed launcher
-implementation; its separate Darwin/Colima and Linux-rootless release gates
-are complete under #106, while daemon composition and packaging remain gated.
+Darwin and Linux have process-group mechanics and the reviewed
+[OCI isolation profile](attached-worker-oci.md). Its separate Darwin/Colima
+and Linux-rootless isolation gates were completed under #106. #165 can use the
+profile only for explicit synthetic-denied activation; it does not enable a
+provider workload or bypass the #79 release gate.
 Other platforms fail closed before process creation. In particular, isolated `HOME`,
 Seatbelt-free process launch, a container-like directory layout, or a
 child-reported denial does not satisfy this contract.
@@ -100,7 +100,7 @@ new invocation, and allows the current invocation to finish. `Shutdown` also
 cancels the active invocation and waits only the configured shutdown grace.
 `RequestDrain` is the non-blocking remote-control boundary: it performs the
 same admission closure but leaves waiting and the eventual `Drained`
-acknowledgement to the feature-disabled foreground composition. It never
+acknowledgement to the opt-in foreground composition. It never
 implies cancellation of the current invocation.
 The invocation runner and result sink are cancellation-aware ports; a component
 that ignores context violates the daemon contract.
@@ -109,23 +109,12 @@ Status contains only stable scope identifiers, state, counters, timestamps,
 and sanitized failure codes. It cannot represent prompts, results, credentials,
 paths, raw stderr, provider errors, or auth material.
 
-## Still required before #77 can close
+## Remaining gates for #77
 
-- #132 adds the manifest-pinned local execution-stack assembly boundary. It
-  verifies the Docker CLI and harness digests, reconciles installation-owned
-  OCI residue, and composes the supervisor with the generation-CAS credential
-  runner without enabling the shipped command.
-- live activation behind the feature-disabled
-  [foreground preflight](attached-worker-foreground.md), plus reviewed
-  OS-service and container packaging;
-- product activation of the feature-disabled
-  [session-to-daemon composition](attached-worker-daemon-transport.md),
-  including concrete authenticated materialization and durable restart
-  reconciliation for ambiguous active control, with the AW-04 attempt
-  protocol;
-- crash/restart recovery that fences or resumes the exact durable attempt;
-- the two-owner security and recovery gate in #79.
-
-Until those items land, the `attached-worker run` binary performs local
-preflight only and cannot construct this daemon. The attached-worker daemon
-remains feature-disabled.
+#132 delivered the manifest-pinned execution stack. #165 is the reviewed,
+default-off synthetic activation and packaged-service child: it must pass
+its exact-head command, native-service, rootless, and restart proofs before
+merge. Its ambiguous active restart remains fenced rather than replayed.
+The two-owner security/recovery gate #79 and provider-specific activation
+remain separate. Without an explicit #165 profile, `attached-worker run`
+still performs local preflight only and returns `feature_disabled`.

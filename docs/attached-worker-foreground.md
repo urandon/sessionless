@@ -1,9 +1,10 @@
 # Attached-worker foreground preflight
 
-Issue [#108](https://gitcode.com/urandon/sessionless/issues/108) adds the
-feature-disabled foreground ownership shell for AW-05. It composes only the
-durable local-state lifecycle. It does not enable enrollment, transport,
-dispatch, provider execution, or the reviewed OCI launcher.
+Issue [#108](https://gitcode.com/urandon/sessionless/issues/108) established
+the default-off foreground ownership shell for AW-05. Issue #165 adds an
+explicit, private `synthetic-denied` activation profile through the shipped
+`run`/`serve` commands. Without that profile, the original disabled behavior
+remains. Neither path enables real provider credentials or a provider turn.
 
 ## State machine
 
@@ -28,8 +29,8 @@ with `last_failure_code=feature_disabled`. It carries forward only already
 validated counters and never attempts to infer server state. A started shell
 retains `runtime.lock` until its explicit, idempotent drain/shutdown lifecycle
 persists `draining`, persists `stopped`, durably retires the final observation,
-and releases the lock. The command entrypoint performs that sequence
-immediately because live activation remains unavailable.
+and releases the lock. Without an activation profile, the command entrypoint
+performs that sequence immediately.
 
 Shutdown runs exactly once under a separate bounded cleanup context. A caller
 may bound how long it waits, but cancellation cannot abort that cleanup; a
@@ -57,34 +58,34 @@ The foreground entrypoint is explicit:
 attached-worker run --state-dir /absolute/symlink-free/path
 ```
 
-The current command always exits non-zero with one bounded JSON object whose
-code is `feature_disabled` after successful preflight and cleanup. It reports
+Without an activation profile, the command exits non-zero with one bounded
+JSON object whose code is `feature_disabled` after successful preflight and
+cleanup. It reports
 only constant local facts such as `network_action=not_attempted`,
 `process_action=not_attempted`, `credential_action=not_attempted`, and
 `server_connection_state=unknown`. It never emits the state path, endpoint,
 identity material, connection secret, command line, environment, stdout, or
 stderr.
 
+The opt-in profile and service packaging are specified in
+[attached-worker packaging](attached-worker-packaging.md). An activated owner
+uses the existing authenticated session, daemon, and pinned OCI stack; its
+local control remains content-free. A remote Cancel for the exact active
+attempt cancels only that workload and sends a bounded `CancelAck` even though
+the local invocation context has been cancelled. Lost or divergent ack or
+terminal evidence remains reconciliation-required, never a replay grant.
+
 Malformed, partial, logged-out, busy, unsupported, or ambiguous state retains
 the stable result code owned by `attachedworkerlocal`. A local observation is
 not daemon health, attach acceptance, an AW-04 attempt, or terminal authority.
 
-## Deferred live composition
+## Composition boundary
 
 `internal/attachedworkerforeground.ActivationPorts` names the exact existing
 bootstrap, source, result-sink, invocation-runner, and daemon authority seams.
-The product constructor deliberately accepts none of them, and executable
-tests prove that even package-injected spies receive zero calls. A later
-reviewed child must first define the connection-session contract:
-
-- how bootstrap issues an exact connection identity and bearer;
-- whether and how that material is persisted or renewed;
-- generation fencing, rotation, logout, and crash recovery;
-- AW-03 source/result-sink construction and AW-04 conformance authority;
-- daemon, invocation runner, provider credential, and OCI launcher ownership;
-- bounded drain, replay, ambiguous completion, and remote evidence.
-
-Until that contract lands, no repository binary can construct a live
-activation. OS-service/container packaging, authenticated local control,
-self-update, destructive uninstall, owner-facing UX, and #79 two-owner E2E are
-also separate gates.
+The historical #108 constructor remains disabled without an operator profile.
+The #165 profile instead connects the shipped command to the accepted
+generation-fenced session and pinned stack for synthetic, credential-denied
+attempts. It neither selects a provider from ambient state nor changes the
+separate #79 two-owner security/recovery release gate. Provider-specific
+activation, automatic start/update, and cloud deployment are not implied.

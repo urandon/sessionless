@@ -86,8 +86,10 @@ or changed profile bytes. This grants the trusted service process the same
 user's rootless engine authority; it does **not** grant the isolated harness
 container that socket or network. Docker's bridge is not an egress firewall;
 the application transport itself pins the HTTPS origin, and the exact service
-binary/image must remain trusted. Rootless activated service integration and
-independent security review are still required before #165 can merge.
+binary/image must remain trusted. The opt-in Linux rootless service gate proves
+one signed synthetic-denied attempt against a test-owned rootless engine;
+exact-head CI and independent security review remain merge gates for changes
+to this path.
 
 After an activated connection advances the live manifest revision, an older
 archived unit with `--expected-revision` for the prior manifest is not a safe

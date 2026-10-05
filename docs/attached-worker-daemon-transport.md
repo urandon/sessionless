@@ -76,14 +76,17 @@ second claim or materialization can start, partial returned stdin is cleared,
 and the accepted attempt remains reconciliation-required rather than being
 reported as a fabricated terminal failure.
 
-The feature-disabled active-attempt watcher closes the in-process control gap
-without reusing `Source.Next`. While the exact invocation remains active it
+The active-attempt watcher is used only by the explicit #165 synthetic-denied
+activation; the default command remains disabled. It closes the in-process
+control gap without reusing `Source.Next`. While the exact invocation remains active it
 sends session-owned unavailable/one-active presence heartbeats. An exact
 same-binding `CancelV1` is accepted only under the current connection and lease
 authority. The watcher then calls the daemon's full-identity `CancelActive`
 boundary and emits `CancelAckV1`; the daemon applies the local cancellation
-function at most once. A lost or divergent acknowledgement retains the local
-effect as reconciliation-required and never repeats it.
+function at most once. Since that exact local effect cancels the invocation
+context shared with the watcher, the accepted acknowledgement uses a separate
+bounded reporting context. A lost or divergent acknowledgement retains the
+local effect as reconciliation-required and never repeats it.
 
 Local cancellation application has its own bounded timeout and ignores caller
 cancellation once an exact remote cancel has been accepted. If an injected

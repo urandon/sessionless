@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - 'ai/issue-137-*'
+      - 'codex/issue-165-*'
     paths:
       - .github/workflows/attached-worker-oci-rootless.yml
       - Makefile

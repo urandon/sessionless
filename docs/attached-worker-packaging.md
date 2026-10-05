@@ -65,7 +65,7 @@ clears its inherited environment. A successful reconnect may advance only
 the paired manifest revision and connection generation; any other local
 manifest change needs a newly reviewed profile.
 
-Launchd/systemd units staged with this opt-in carry both the profile path and
+Launchd/systemd/rootless-container units staged with this opt-in carry both the profile path and
 `--activation-sha256`. The digest covers the exact profile and trust-bundle
 bytes, and a same-path edit causes a failed start or native readback until a
 new reviewed package plan is staged. The local control socket is opened only
@@ -73,12 +73,21 @@ after the single runtime reaches its running state. `drain` and `stop` still
 require the current live manifest revision, not the unit's installation
 baseline. A raw operator `run` may omit the digest; a service `serve` may not.
 
-The rootless-container unit still uses `--network none` and rejects an
-activation profile. Enabling its outbound synthetic transport would need a
-separate reviewed network/engine authority design and platform proof; do not
-turn on container networking or mount a Docker socket implicitly. The #165
-gate is not complete until its required end-to-end acceptance and independent
-review are recorded.
+The rootless-container unit remains offline (`--network none`, no Docker
+socket) without an activation profile. An explicit synthetic profile renders a
+different, digest-pinned unit with bridge networking for the trusted service
+process and narrowly named bind mounts for the current user's rootless Docker
+socket, pinned OCI CLI/config, profile/trust, and private materialization and
+scratch roots. Writable roots must be the dedicated `materialized` and
+`scratch` siblings of the state directory, not an arbitrary owner-private
+directory. Package planning rejects a foreign OCI host, non-rootless
+boundary, nonempty OCI client config, broad/overlapping writable mount root,
+or changed profile bytes. This grants the trusted service process the same
+user's rootless engine authority; it does **not** grant the isolated harness
+container that socket or network. Docker's bridge is not an egress firewall;
+the application transport itself pins the HTTPS origin, and the exact service
+binary/image must remain trusted. Rootless activated service integration and
+independent security review are still required before #165 can merge.
 
 After an activated connection advances the live manifest revision, an older
 archived unit with `--expected-revision` for the prior manifest is not a safe

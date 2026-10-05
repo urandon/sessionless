@@ -64,6 +64,10 @@ docker_url="https://download.docker.com/linux/static/stable/x86_64/docker-${ATTA
 extras_url="https://download.docker.com/linux/static/stable/x86_64/docker-rootless-extras-${ATTACHED_WORKER_ROOTLESS_DOCKER_VERSION}.tgz"
 unit_name=sessionless-rootless-docker.service
 service_started=false
+fixture_registry_name="sessionless-aw165-registry-$$"
+fixture_registry_started=false
+fixture_tag=''
+fixture_digest=''
 
 test ! -e "$tool_root" && test ! -e "$data_root" && test ! -e "$exec_root" && test ! -e "$state_root" || {
 	printf '%s\n' 'a rootless gate-owned path already exists' >&2
@@ -87,6 +91,21 @@ cleanup_path() {
 cleanup() {
 	status=$?
 	trap - EXIT HUP INT TERM
+	if test "$fixture_registry_started" = true; then
+		"$docker_bin" --host "$docker_host" container rm --force --volumes "$fixture_registry_name" >/dev/null 2>&1 || true
+		if test -n "$fixture_tag"; then
+			"$docker_bin" --host "$docker_host" image rm --force "$fixture_tag" >/dev/null 2>&1 || true
+		fi
+		if test -n "$fixture_digest"; then
+			"$docker_bin" --host "$docker_host" image rm --force "$fixture_digest" >/dev/null 2>&1 || true
+		fi
+		if "$docker_bin" --host "$docker_host" container inspect "$fixture_registry_name" >/dev/null 2>&1 || \
+			{ test -n "$fixture_tag" && "$docker_bin" --host "$docker_host" image inspect "$fixture_tag" >/dev/null 2>&1; } || \
+			{ test -n "$fixture_digest" && "$docker_bin" --host "$docker_host" image inspect "$fixture_digest" >/dev/null 2>&1; }; then
+			printf '%s\n' 'activated OCI fixture remained after cleanup' >&2
+			status=1
+		fi
+	fi
 	if test "$service_started" = true; then
 		if systemctl --user is-active --quiet "$unit_name" && \
 			! systemctl --user stop "$unit_name" >/dev/null 2>&1; then
@@ -217,12 +236,53 @@ ATTACHED_WORKER_OCI_DOCKER_HOST="$docker_host" \
 ATTACHED_WORKER_OCI_BOUNDARY=linux-rootless \
 	"$repo_root/scripts/test-attached-worker-oci.sh"
 
+# The OCI harness fixture must have no inherited environment, ports, volumes,
+# or healthcheck. Registry itself is not a valid harness image. Keep this
+# separate immutable fixture loaded for the subsequent activated-service test.
+"$docker_bin" --host "$docker_host" run --detach --rm --name "$fixture_registry_name" \
+	--log-driver none --publish 127.0.0.1::5000 \
+	--tmpfs /var/lib/registry:rw,nosuid,nodev,noexec,size=64m \
+	"$LOCAL_REGISTRY_IMAGE" >/dev/null
+fixture_registry_started=true
+fixture_registry_port=$("$docker_bin" --host "$docker_host" port "$fixture_registry_name" 5000/tcp | sed -n 's/.*://p' | tail -1)
+case "$fixture_registry_port" in
+	''|*[!0-9]*) printf '%s\n' 'could not resolve activated fixture registry port' >&2; exit 1 ;;
+esac
+fixture_ready=false
+attempt=0
+while test "$attempt" -lt 50; do
+	if curl --connect-timeout 1 --max-time 1 --fail --silent \
+		"http://127.0.0.1:$fixture_registry_port/v2/" >/dev/null 2>&1; then
+		fixture_ready=true
+		break
+	fi
+	attempt=$((attempt + 1))
+	sleep 0.1
+done
+test "$fixture_ready" = true || {
+	printf '%s\n' 'activated fixture registry did not become ready' >&2
+	exit 1
+}
+tar -cf "$tool_root/rootfs.tar" --files-from /dev/null
+fixture_tag="127.0.0.1:$fixture_registry_port/sessionless-aw165-fixture:local"
+"$docker_bin" --host "$docker_host" image import --platform linux/amd64 "$tool_root/rootfs.tar" "$fixture_tag" >/dev/null
+"$docker_bin" --host "$docker_host" push "$fixture_tag" >/dev/null
+fixture_digest=$("$docker_bin" --host "$docker_host" image inspect --format '{{index .RepoDigests 0}}' "$fixture_tag")
+case "$fixture_digest" in
+	*@sha256:????????????????????????????????????????????????????????????????) ;;
+	*) printf '%s\n' 'activated harness fixture is not an immutable digest' >&2; exit 1 ;;
+esac
+
 # The service image is an execution base, not the harness image. Preload its
 # immutable digest before the user service starts; the service has --pull never.
 "$docker_bin" --host "$docker_host" pull "$DISTROLESS_STATIC_IMAGE" >/dev/null
+engine_id=$("$docker_bin" --host "$docker_host" info --format '{{.ID}}')
+ATTACHED_WORKER_OCI_DOCKER_PATH="$docker_bin" \
+ATTACHED_WORKER_OCI_DOCKER_HOST="$docker_host" \
+ATTACHED_WORKER_OCI_ENGINE_ID="$engine_id" \
+ATTACHED_WORKER_OCI_IMAGE="$fixture_digest" \
 SESSIONLESS_ROOTLESS_IMAGE="$DISTROLESS_STATIC_IMAGE" make attached-worker-rootless-integration
 
-engine_id=$("$docker_bin" --host "$docker_host" info --format '{{.ID}}')
 engine_arch=$("$docker_bin" --host "$docker_host" info --format '{{.Architecture}}')
 engine_os=$("$docker_bin" --host "$docker_host" info --format '{{.OperatingSystem}}')
 engine_kernel=$("$docker_bin" --host "$docker_host" info --format '{{.KernelVersion}}')

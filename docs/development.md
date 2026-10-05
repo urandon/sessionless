@@ -214,7 +214,8 @@ The opt-in #165 synthetic/denied-credential path is described in
 [attached-worker-packaging.md](attached-worker-packaging.md); it never enables
 provider credentials or provider calls. The rootless service remains offline
 and does not accept that profile. #137's package/service gate is closed;
-#165's activated rootless design and end-to-end acceptance remain open.
+#165's explicit activated rootless unit is in progress; its end-to-end
+platform acceptance and independent security review remain open.
 
 The owner-facing AW-06a information architecture, read-model safety boundary,
 and control-action gates are documented in

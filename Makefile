@@ -197,6 +197,8 @@ attached-worker-native-integration: attached-worker-build
 attached-worker-rootless-integration: attached-worker-build
 	SESSIONLESS_ROOTLESS_INTEGRATION=1 SESSIONLESS_ATTACHED_WORKER_BINARY="$(CURDIR)/$(BIN_DIR)/attached-worker" \
 		go test -race -count=1 -run '^TestNativePlatformIntegration$$' ./internal/attachedworkerpackage
+	SESSIONLESS_ROOTLESS_ACTIVATION_INTEGRATION=1 SESSIONLESS_ATTACHED_WORKER_BINARY="$(CURDIR)/$(BIN_DIR)/attached-worker" \
+		go test -race -count=1 -run '^TestActivatedRootlessServiceAcceptsSyntheticAttempt$$' ./cmd/attached-worker
 
 docs-check:
 	@node ./scripts/check-markdown-links.mjs

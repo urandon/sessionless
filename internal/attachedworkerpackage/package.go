@@ -263,7 +263,7 @@ func validateConfig(config Config) error {
 			return ErrInvalid
 		}
 	case ModeRootlessContainer:
-		if runtime.GOOS != "linux" || config.ActivationProfile != "" {
+		if runtime.GOOS != "linux" {
 			return ErrInvalid
 		}
 		if !imageDigest.MatchString(config.ContainerImage) {
@@ -348,7 +348,9 @@ func render(config Config, manifest attachedworkerlocal.ManifestV1) ([]byte, err
 		activationSHA256 = pin
 		// A service unit keeps the reviewed installation baseline. Successful
 		// connections advance the live manifest but do not mutate this unit.
-		manifest.Revision = profile.ManifestRevision
+		if config.Mode != ModeRootlessContainer {
+			manifest.Revision = profile.ManifestRevision
+		}
 	}
 	switch config.Mode {
 	case ModeLaunchd:

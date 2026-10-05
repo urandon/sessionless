@@ -548,6 +548,136 @@ func TestServiceArtifactRenderModesRemainDefaultOff(t *testing.T) {
 	}
 }
 
+func TestRootlessActivatedUnitPinsOnlyExplicitAuthority(t *testing.T) {
+	store, config := packageFixture(t)
+	snapshot, err := store.LoadSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := snapshot.Manifest
+	manifest.OCI.Host = "unix://" + rootlessDockerSocket()
+	manifest.OCI.Boundary = attachedworkerlocal.BoundaryLinuxRootless
+	config.Mode = ModeRootlessContainer
+	config.ContainerImage = "registry.example/daemon@sha256:" + strings.Repeat("a", 64)
+	parent := filepath.Dir(config.StateRoot)
+	materialization := filepath.Join(parent, "materialized")
+	scratch := filepath.Join(parent, "scratch")
+	privateDir := filepath.Join(parent, "activation")
+	for _, directory := range []string{materialization, scratch, privateDir} {
+		if err := os.Mkdir(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	harnessDigest, err := hex.DecodeString(manifest.Harness.SHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability := attachedworkerprotocol.CapabilityManifestV1{
+		WorkerID: string(manifest.WorkerID), EnrollmentGeneration: manifest.EnrollmentGeneration, Revision: 1,
+		ProtocolOffer: attachedworkerprotocol.VersionOfferV1{
+			Window:    attachedworkerprotocol.VersionWindow{Minimum: 1, Maximum: 1},
+			Supported: []attachedworkerprotocol.ProtocolVersion{attachedworkerprotocol.ProtocolVersionV1},
+		},
+		OperatingSystem: runtime.GOOS, Architecture: runtime.GOARCH, BuildID: "rootless-package-test",
+		HarnessName: "synthetic", HarnessVersion: "1", HarnessSurface: attachedworkerprotocol.HarnessSurfaceSessionTurn,
+		HarnessExecutableDigest: harnessDigest,
+		IsolationEvidence: []attachedworkerprotocol.IsolationEvidenceV1{
+			attachedworkerprotocol.IsolationFilesystemBoundary, attachedworkerprotocol.IsolationNetworkBoundary,
+			attachedworkerprotocol.IsolationProcessBoundary,
+		},
+		Features: []attachedworkerprotocol.ProtocolFeatureV1{
+			attachedworkerprotocol.FeatureCancellation, attachedworkerprotocol.FeatureProgress,
+			attachedworkerprotocol.FeatureReconnect,
+		}, MaxConcurrentAttempts: 1,
+	}
+	capabilityDigest, err := attachedworkerprotocol.ManifestDigestV1(capability)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installationDigest, err := attachedworkeractivation.InstallationDigestV1(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var executableDigest attachedworkerdaemon.ExecutableDigest
+	copy(executableDigest[:], harnessDigest)
+	profile := attachedworkeractivation.ProfileV1{
+		Version: 1, Mode: "synthetic-denied", ManifestRevision: manifest.Revision,
+		ControlPlaneOrigin: manifest.ControlPlaneOrigin, TenantID: manifest.TenantID,
+		OwnerUserID: manifest.OwnerUserID, WorkerID: manifest.WorkerID,
+		EnrollmentGeneration: manifest.EnrollmentGeneration, InstallationSHA256: installationDigest,
+		ExpectedWorkerRevision: 1, Capability: capability,
+		LocalProfile: attachedworkerdaemontransport.LocalProfileV1{
+			Name: "synthetic", CapabilityDigest: domain.AttachedWorkerCapabilityDigest(hex.EncodeToString(capabilityDigest)),
+			Executable: manifest.Harness.Executable, ExecutableDigest: executableDigest,
+		},
+		MaterializationRoot: materialization, ScratchRoot: scratch, MaxInputBytes: 4096,
+	}
+	config.ActivationProfile = filepath.Join(privateDir, "profile.json")
+	encoded, err := json.Marshal(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config.ActivationProfile, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unit, err := render(config, manifest)
+	if err != nil {
+		t.Fatalf("render explicit rootless activation: %v", err)
+	}
+	text := string(unit)
+	for _, required := range []string{
+		"--network bridge", "--read-only", "--cap-drop ALL", "--pull never", "--restart no",
+		"--mount type=bind,src=" + rootlessDockerSocket() + ",dst=" + rootlessDockerSocket(),
+		"--mount type=bind,src=" + manifest.OCI.DockerPath + ",dst=" + manifest.OCI.DockerPath + ",bind-propagation=rprivate,readonly",
+		"--mount type=bind,src=" + privateDir + ",dst=" + privateDir + ",bind-propagation=rprivate,readonly",
+		"--mount type=bind,src=" + materialization + ",dst=" + materialization,
+		"--mount type=bind,src=" + scratch + ",dst=" + scratch,
+		"--activation-profile " + config.ActivationProfile + " --activation-sha256 ",
+	} {
+		if !strings.Contains(text, required) {
+			t.Errorf("activated rootless unit misses %q: %s", required, text)
+		}
+	}
+	if strings.Contains(text, "--network host") || strings.Contains(text, "--privileged") ||
+		strings.Contains(text, "--publish") || strings.Contains(text, "--mount type=bind,src="+parent+",dst="+parent) {
+		t.Errorf("activated rootless unit broadened authority: %s", text)
+	}
+	badHost := manifest
+	badHost.OCI.Host = "unix:///run/docker.sock"
+	if _, err := render(config, badHost); !errors.Is(err, ErrInvalid) {
+		t.Errorf("foreign engine host render error=%v, want invalid", err)
+	}
+	if err := os.WriteFile(filepath.Join(manifest.OCI.CLIConfigDir, "context.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := render(config, manifest); !errors.Is(err, ErrInvalid) {
+		t.Errorf("ambient Docker context render error=%v, want invalid", err)
+	}
+	if err := os.Remove(filepath.Join(manifest.OCI.CLIConfigDir, "context.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(privateDir, "unrelated-secret"), []byte("private"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := render(config, manifest); !errors.Is(err, ErrInvalid) {
+		t.Errorf("unreviewed private directory content render error=%v, want invalid", err)
+	}
+	if err := os.Remove(filepath.Join(privateDir, "unrelated-secret")); err != nil {
+		t.Fatal(err)
+	}
+	profile.MaterializationRoot = parent
+	broad, err := json.Marshal(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config.ActivationProfile, broad, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := render(config, manifest); !errors.Is(err, ErrInvalid) {
+		t.Errorf("broad writable root render error=%v, want invalid", err)
+	}
+}
+
 func TestRootlessImageDigestIgnoresOnlyOptionalTag(t *testing.T) {
 	digest := strings.Repeat("a", 64)
 	withTag := "gcr.io/distroless/static-debian12:nonroot@sha256:" + digest

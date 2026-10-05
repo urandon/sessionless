@@ -3,6 +3,7 @@ package attachedworkerpackage
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 
+	"gitcode.com/urandon/sessionless/internal/attachedworkeractivation"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerlocal"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerservice"
 )
@@ -43,20 +45,126 @@ func renderRootless(config Config, manifest attachedworkerlocal.ManifestV1) ([]b
 	name := "sessionless-attached-worker-" + shortID(manifest)
 	socket := rootlessDockerSocket()
 	client := fmt.Sprintf("%s --host unix://%s --config %s", rootlessDockerBinary, socket, rootlessDockerConfig(config))
+	network := "none"
+	mounts := ""
+	activationArgs := ""
+	if config.ActivationProfile != "" {
+		profile, pin, err := attachedworkeractivation.ReadProfileWithDigest(config.ActivationProfile)
+		profileDir := filepath.Dir(config.ActivationProfile)
+		trustDir := ""
+		if profile.TLSRootPEMPath != "" {
+			trustDir = filepath.Dir(profile.TLSRootPEMPath)
+		}
+		unsafeMountRoot := func(path string) bool {
+			return within(config.StateRoot, path) || within(path, config.StateRoot) ||
+				within(config.InstallDir, path) || within(path, config.InstallDir)
+		}
+		unsafeWritableRoot := func(path string) bool {
+			if unsafeMountRoot(path) || within(path, manifest.OCI.CLIConfigDir) ||
+				within(path, rootlessDockerSocket()) || within(path, manifest.OCI.DockerPath) ||
+				within(path, profile.LocalProfile.Executable) || within(path, config.BinaryPath) ||
+				within(path, config.ActivationProfile) {
+				return true
+			}
+			return profile.TLSRootPEMPath != "" && within(path, profile.TLSRootPEMPath)
+		}
+		if err != nil || attachedworkeractivation.ValidateForManifest(profile, manifest) != nil ||
+			manifest.OCI.Boundary != attachedworkerlocal.BoundaryLinuxRootless ||
+			manifest.OCI.Host != "unix://"+socket ||
+			profile.MaterializationRoot != filepath.Join(filepath.Dir(config.StateRoot), "materialized") ||
+			profile.ScratchRoot != filepath.Join(filepath.Dir(config.StateRoot), "scratch") ||
+			!canonicalPath(manifest.OCI.DockerPath) || !canonicalPath(manifest.OCI.CLIConfigDir) ||
+			!canonicalPath(profile.MaterializationRoot) || !canonicalPath(profile.ScratchRoot) ||
+			!canonicalPath(profile.LocalProfile.Executable) ||
+			unsafeMountRoot(profileDir) || trustDir != "" && unsafeMountRoot(trustDir) ||
+			unsafeWritableRoot(profile.MaterializationRoot) || unsafeWritableRoot(profile.ScratchRoot) ||
+			unsafeMountRoot(manifest.OCI.CLIConfigDir) ||
+			within(profile.MaterializationRoot, profile.ScratchRoot) ||
+			within(profile.ScratchRoot, profile.MaterializationRoot) {
+			return nil, ErrInvalid
+		}
+		if err := verifyBinary(manifest.OCI.DockerPath, manifest.OCI.DockerSHA256); err != nil {
+			return nil, err
+		}
+		if err := verifyBinary(profile.LocalProfile.Executable, hex.EncodeToString(profile.LocalProfile.ExecutableDigest[:])); err != nil {
+			return nil, err
+		}
+		for _, directory := range []string{manifest.OCI.CLIConfigDir, profile.MaterializationRoot, profile.ScratchRoot} {
+			if err := ensurePrivateDir(directory, false); err != nil {
+				return nil, ErrInvalid
+			}
+		}
+		entries, err := os.ReadDir(manifest.OCI.CLIConfigDir)
+		if err != nil || len(entries) != 0 {
+			return nil, ErrInvalid
+		}
+		privateFiles := func(directory string, allowed ...string) bool {
+			if err := ensurePrivateDir(directory, false); err != nil {
+				return false
+			}
+			entries, err := os.ReadDir(directory)
+			if err != nil || len(entries) != len(allowed) {
+				return false
+			}
+			for _, entry := range entries {
+				found := false
+				for _, name := range allowed {
+					found = found || entry.Name() == name
+				}
+				if !found {
+					return false
+				}
+			}
+			return true
+		}
+		profileName := filepath.Base(config.ActivationProfile)
+		if trustDir == profileDir {
+			if !privateFiles(profileDir, profileName, filepath.Base(profile.TLSRootPEMPath)) {
+				return nil, ErrInvalid
+			}
+		} else if !privateFiles(profileDir, profileName) ||
+			trustDir != "" && !privateFiles(trustDir, filepath.Base(profile.TLSRootPEMPath)) {
+			return nil, ErrInvalid
+		}
+		mount := func(path string, readonly bool) string {
+			value := " --mount type=bind,src=" + path + ",dst=" + path + ",bind-propagation=rprivate"
+			if readonly {
+				value += ",readonly"
+			}
+			return value
+		}
+		mounts = mount(socket, false) + mount(manifest.OCI.DockerPath, true) +
+			mount(manifest.OCI.CLIConfigDir, true) + mount(profileDir, true) +
+			mount(profile.MaterializationRoot, false) + mount(profile.ScratchRoot, false)
+		if profile.LocalProfile.Executable != manifest.OCI.DockerPath && profile.LocalProfile.Executable != config.BinaryPath {
+			mounts += mount(profile.LocalProfile.Executable, true)
+		}
+		if profile.TLSRootPEMPath != "" {
+			if !canonicalPath(profile.TLSRootPEMPath) {
+				return nil, ErrInvalid
+			}
+			if trustDir != profileDir {
+				mounts += mount(trustDir, true)
+			}
+		}
+		activationArgs = " --activation-profile " + config.ActivationProfile + " --activation-sha256 " + pin
+		network = "bridge"
+		manifest.Revision = profile.ManifestRevision
+	}
 	unit := fmt.Sprintf(`[Unit]
 Description=Sessionless rootless attached worker %s
 [Service]
 Type=exec
-ExecStart=/usr/bin/env -i PATH=/usr/bin:/bin %s container run --rm --pull never --name %s --network none --read-only --cap-drop ALL --no-healthcheck --ipc private --cgroupns private --security-opt no-new-privileges=true --pids-limit 64 --memory 268435456 --memory-swap 268435456 --log-driver none --restart no --stop-signal SIGTERM --stop-timeout 10 --user 0:0 --mount type=bind,src=%s,dst=%s,bind-propagation=rprivate --mount type=bind,src=%s,dst=%s,bind-propagation=rprivate --mount type=bind,src=%s,dst=%s,bind-propagation=rprivate,readonly --entrypoint %s %s serve --state-dir %s --expected-revision %d --binary %s --binary-sha256 %s
+ExecStart=/usr/bin/env -i PATH=/usr/bin:/bin %s container run --rm --pull never --name %s --network %s --read-only --cap-drop ALL --no-healthcheck --ipc private --cgroupns private --security-opt no-new-privileges=true --pids-limit 64 --memory 268435456 --memory-swap 268435456 --log-driver none --restart no --stop-signal SIGTERM --stop-timeout 10 --user 0:0 --mount type=bind,src=%s,dst=%s,bind-propagation=rprivate --mount type=bind,src=%s,dst=%s,bind-propagation=rprivate --mount type=bind,src=%s,dst=%s,bind-propagation=rprivate,readonly%s --entrypoint %s %s serve --state-dir %s --expected-revision %d --binary %s --binary-sha256 %s%s
 ExecStop=/usr/bin/env -i PATH=/usr/bin:/bin %s container stop --time 10 %s
 ExecStopPost=-/usr/bin/env -i PATH=/usr/bin:/bin %s container stop --time 10 %s
 Restart=no
 UMask=0077
 NoNewPrivileges=yes
-`, shortID(manifest), client, name, config.StateRoot, config.StateRoot,
-		controlDir, controlDir, config.BinaryPath, config.BinaryPath, config.BinaryPath,
+`, shortID(manifest), client, name, network, config.StateRoot, config.StateRoot,
+		controlDir, controlDir, config.BinaryPath, config.BinaryPath, mounts, config.BinaryPath,
 		config.ContainerImage, config.StateRoot, manifest.Revision, config.BinaryPath,
-		config.BinarySHA256, client, name, client, name)
+		config.BinarySHA256, activationArgs, client, name, client, name)
 	return []byte(unit), nil
 }
 

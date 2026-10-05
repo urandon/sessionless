@@ -26,6 +26,7 @@ type RollbackPlanV1 struct {
 	TargetReceiptSHA256     string `json:"target_receipt_sha256"`
 	BinarySHA256            string `json:"binary_sha256"`
 	ContainerImage          string `json:"container_image,omitempty"`
+	ActivationProfile       string `json:"activation_profile,omitempty"`
 	PlanSHA256              string `json:"plan_sha256"`
 }
 
@@ -69,7 +70,8 @@ func RollbackPlan(ctx context.Context, config Config, expectedInstallRevision ui
 	if target.OwnerUserID != string(manifest.OwnerUserID) || target.WorkerID != string(manifest.WorkerID) ||
 		target.Mode != config.Mode || target.ManifestRevision != manifest.Revision ||
 		target.BinaryPath != config.BinaryPath || target.BinarySHA256 != config.BinarySHA256 ||
-		target.ContainerImage != config.ContainerImage || target.InstallRevision >= current.InstallRevision {
+		target.ContainerImage != config.ContainerImage || target.ActivationProfile != config.ActivationProfile ||
+		validateActivationProfile(config, manifest) != nil || target.InstallRevision >= current.InstallRevision {
 		return RollbackPlanV1{}, ErrConflict
 	}
 	rendered, err := render(config, manifest)
@@ -83,6 +85,7 @@ func RollbackPlan(ctx context.Context, config Config, expectedInstallRevision ui
 		UnitPath: unitPath, CurrentUnitSHA256: current.UnitSHA256,
 		TargetUnitSHA256: current.RollbackSHA256, TargetReceiptSHA256: current.RollbackReceiptSHA256,
 		BinarySHA256: config.BinarySHA256, ContainerImage: config.ContainerImage,
+		ActivationProfile: config.ActivationProfile,
 	}
 	plan.PlanSHA256 = rollbackPlanDigest(plan)
 	return plan, nil
@@ -131,7 +134,7 @@ func ApplyRollback(ctx context.Context, config Config, plan RollbackPlanV1) (res
 		ManifestRevision: plan.ManifestRevision, OwnerUserID: plan.OwnerUserID,
 		WorkerID: plan.WorkerID, Mode: plan.Mode, UnitSHA256: plan.TargetUnitSHA256,
 		BinaryPath: config.BinaryPath, BinarySHA256: plan.BinarySHA256,
-		ContainerImage: plan.ContainerImage, PlanSHA256: plan.PlanSHA256,
+		ContainerImage: plan.ContainerImage, ActivationProfile: plan.ActivationProfile, PlanSHA256: plan.PlanSHA256,
 		RollbackSHA256:        plan.CurrentUnitSHA256,
 		RollbackReceiptSHA256: digest(encodeReceipt(current)), Registration: "not_attempted",
 	}

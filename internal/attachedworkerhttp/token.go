@@ -2,7 +2,6 @@ package attachedworkerhttp
 
 import (
 	"errors"
-	"strings"
 )
 
 const maxBearerTokenBytes = 4096
@@ -41,15 +40,43 @@ func validToken68(value string) bool {
 	}
 	padding := false
 	payload := false
-	for _, character := range value {
+	for index := 0; index < len(value); index++ {
+		character := value[index]
 		if character == '=' {
 			padding = true
 			continue
 		}
-		if padding || !strings.ContainsRune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~+/", character) {
+		if padding || !token68Byte(character) {
 			return false
 		}
 		payload = true
 	}
 	return payload
+}
+
+// validToken68Bytes lets the connection-local HTTP client validate a bearer
+// without first retaining it in an immutable Go string.
+func validToken68Bytes(value []byte) bool {
+	if len(value) == 0 || len(value) > maxBearerTokenBytes {
+		return false
+	}
+	padding := false
+	payload := false
+	for _, character := range value {
+		if character == '=' {
+			padding = true
+			continue
+		}
+		if padding || !token68Byte(character) {
+			return false
+		}
+		payload = true
+	}
+	return payload
+}
+
+func token68Byte(value byte) bool {
+	return value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z' ||
+		value >= '0' && value <= '9' || value == '-' || value == '.' ||
+		value == '_' || value == '~' || value == '+' || value == '/'
 }

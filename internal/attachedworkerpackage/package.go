@@ -18,6 +18,7 @@ import (
 	"runtime"
 	"strings"
 
+	"gitcode.com/urandon/sessionless/internal/attachedworkeractivation"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerlocal"
 )
 
@@ -43,12 +44,13 @@ const (
 // Config is entirely explicit. ContainerImage is a pinned daemon-service
 // image, never the harness image from the installation manifest.
 type Config struct {
-	Mode           Mode
-	StateRoot      string
-	InstallDir     string
-	BinaryPath     string
-	BinarySHA256   string
-	ContainerImage string
+	Mode              Mode
+	StateRoot         string
+	InstallDir        string
+	BinaryPath        string
+	BinarySHA256      string
+	ContainerImage    string
+	ActivationProfile string
 }
 
 // PlanV1 is the exact artifact and rollback precondition shown to the
@@ -67,6 +69,7 @@ type PlanV1 struct {
 	RollbackReceiptSHA256   string `json:"rollback_receipt_sha256,omitempty"`
 	BinarySHA256            string `json:"binary_sha256"`
 	ContainerImage          string `json:"container_image,omitempty"`
+	ActivationProfile       string `json:"activation_profile,omitempty"`
 	PlanSHA256              string `json:"plan_sha256"`
 }
 
@@ -83,6 +86,7 @@ type ReceiptV1 struct {
 	BinaryPath            string `json:"binary_path,omitempty"`
 	BinarySHA256          string `json:"binary_sha256"`
 	ContainerImage        string `json:"container_image,omitempty"`
+	ActivationProfile     string `json:"activation_profile,omitempty"`
 	PlanSHA256            string `json:"plan_sha256"`
 	RollbackSHA256        string `json:"rollback_sha256,omitempty"`
 	RollbackReceiptSHA256 string `json:"rollback_receipt_sha256,omitempty"`
@@ -104,6 +108,9 @@ func Plan(ctx context.Context, config Config, expectedInstallRevision uint64) (P
 		return PlanV1{}, errors.Join(ErrInvalid, err)
 	}
 	manifest := snapshot.Manifest
+	if err := validateActivationProfile(config, manifest); err != nil {
+		return PlanV1{}, err
+	}
 	if err := verifyBinary(config.BinaryPath, config.BinarySHA256); err != nil {
 		return PlanV1{}, err
 	}
@@ -123,6 +130,12 @@ func Plan(ctx context.Context, config Config, expectedInstallRevision uint64) (P
 	if err != nil {
 		return PlanV1{}, err
 	}
+	// A terminal unregister can justify one replacement of its exact unit.
+	// Staging another replacement before registration would sever that
+	// evidence chain and leave the new unit impossible to reconcile safely.
+	if registration.Action == NativeUnregister && previous.InstallRevision != registration.InstallRevision {
+		return PlanV1{}, ErrConflict
+	}
 	if previous.InstallRevision != expectedInstallRevision || expectedInstallRevision == ^uint64(0) {
 		return PlanV1{}, ErrConflict
 	}
@@ -131,7 +144,7 @@ func Plan(ctx context.Context, config Config, expectedInstallRevision uint64) (P
 		WorkerID: string(manifest.WorkerID), ManifestRevision: manifest.Revision,
 		ExpectedInstallRevision: expectedInstallRevision, NextInstallRevision: expectedInstallRevision + 1,
 		UnitPath: unitPath, UnitSHA256: digest(unit), BinarySHA256: config.BinarySHA256,
-		ContainerImage: config.ContainerImage,
+		ContainerImage: config.ContainerImage, ActivationProfile: config.ActivationProfile,
 	}
 	if len(previousUnit) > 0 {
 		plan.RollbackSHA256 = digest(previousUnit)
@@ -193,7 +206,7 @@ func Apply(ctx context.Context, config Config, plan PlanV1) (receiptResult Recei
 		ManifestRevision: plan.ManifestRevision, OwnerUserID: plan.OwnerUserID,
 		WorkerID: plan.WorkerID, Mode: plan.Mode, UnitSHA256: plan.UnitSHA256,
 		BinaryPath: config.BinaryPath, BinarySHA256: plan.BinarySHA256,
-		ContainerImage: plan.ContainerImage, PlanSHA256: plan.PlanSHA256,
+		ContainerImage: plan.ContainerImage, ActivationProfile: plan.ActivationProfile, PlanSHA256: plan.PlanSHA256,
 		RollbackSHA256:        plan.RollbackSHA256,
 		RollbackReceiptSHA256: plan.RollbackReceiptSHA256, Registration: "not_attempted",
 	}
@@ -232,6 +245,14 @@ func validateConfig(config Config) error {
 	if _, err := hex.DecodeString(config.BinarySHA256); err != nil {
 		return ErrInvalid
 	}
+	if config.ActivationProfile != "" {
+		if !canonicalPath(config.ActivationProfile) || within(config.StateRoot, config.ActivationProfile) {
+			return ErrInvalid
+		}
+		if _, err := attachedworkeractivation.ReadProfile(config.ActivationProfile); err != nil {
+			return ErrInvalid
+		}
+	}
 	switch config.Mode {
 	case ModeLaunchd:
 		if runtime.GOOS != "darwin" || config.ContainerImage != "" {
@@ -249,6 +270,17 @@ func validateConfig(config Config) error {
 			return ErrInvalid
 		}
 	default:
+		return ErrInvalid
+	}
+	return nil
+}
+
+func validateActivationProfile(config Config, manifest attachedworkerlocal.ManifestV1) error {
+	if config.ActivationProfile == "" {
+		return nil
+	}
+	profile, err := attachedworkeractivation.ReadProfile(config.ActivationProfile)
+	if err != nil || attachedworkeractivation.ValidateForManifest(profile, manifest) != nil {
 		return ErrInvalid
 	}
 	return nil
@@ -307,20 +339,87 @@ func render(config Config, manifest attachedworkerlocal.ManifestV1) ([]byte, err
 	if manifest.Validate() != nil || manifest.Lifecycle != attachedworkerlocal.LifecycleActive {
 		return nil, ErrInvalid
 	}
+	activationSHA256 := ""
+	if config.ActivationProfile != "" {
+		profile, pin, err := attachedworkeractivation.ReadProfileWithDigest(config.ActivationProfile)
+		if err != nil || attachedworkeractivation.ValidateForManifest(profile, manifest) != nil {
+			return nil, ErrInvalid
+		}
+		activationSHA256 = pin
+		// A service unit keeps the reviewed installation baseline. Successful
+		// connections advance the live manifest but do not mutate this unit.
+		if config.Mode != ModeRootlessContainer {
+			manifest.Revision = profile.ManifestRevision
+		}
+	}
 	switch config.Mode {
 	case ModeLaunchd:
-		var path, state bytes.Buffer
+		var path, state, activation bytes.Buffer
 		_ = xml.EscapeText(&path, []byte(config.BinaryPath))
 		_ = xml.EscapeText(&state, []byte(config.StateRoot))
+		if config.ActivationProfile != "" {
+			var escaped bytes.Buffer
+			_ = xml.EscapeText(&escaped, []byte(config.ActivationProfile))
+			activation.WriteString("<string>--activation-profile</string><string>")
+			activation.Write(escaped.Bytes())
+			activation.WriteString("</string><string>--activation-sha256</string><string>")
+			activation.WriteString(activationSHA256)
+			activation.WriteString("</string>")
+		}
 		label := "com.sessionless.attached-worker." + shortID(manifest)
-		return []byte(fmt.Sprintf("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict><key>Label</key><string>%s</string><key>ProgramArguments</key><array><string>%s</string><string>serve</string><string>--state-dir</string><string>%s</string><string>--expected-revision</string><string>%d</string><string>--binary</string><string>%s</string><string>--binary-sha256</string><string>%s</string></array><key>RunAtLoad</key><false/><key>KeepAlive</key><false/></dict></plist>\n", label, path.String(), state.String(), manifest.Revision, path.String(), config.BinarySHA256)), nil
+		return []byte(fmt.Sprintf("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict><key>Label</key><string>%s</string><key>ProgramArguments</key><array><string>%s</string><string>serve</string><string>--state-dir</string><string>%s</string><string>--expected-revision</string><string>%d</string><string>--binary</string><string>%s</string><string>--binary-sha256</string><string>%s</string>%s</array><key>RunAtLoad</key><false/><key>KeepAlive</key><false/></dict></plist>\n", label, path.String(), state.String(), manifest.Revision, path.String(), config.BinarySHA256, activation.String())), nil
 	case ModeSystemdUser:
-		return []byte(fmt.Sprintf("[Unit]\nDescription=Sessionless attached worker %s\n[Service]\nType=exec\nExecStart=%s serve --state-dir %s --expected-revision %d --binary %s --binary-sha256 %s\nRestart=no\nUMask=0077\nNoNewPrivileges=yes\n[Install]\nWantedBy=default.target\n", shortID(manifest), config.BinaryPath, config.StateRoot, manifest.Revision, config.BinaryPath, config.BinarySHA256)), nil
+		activation := ""
+		if config.ActivationProfile != "" {
+			activation = " --activation-profile " + config.ActivationProfile + " --activation-sha256 " + activationSHA256
+		}
+		return []byte(fmt.Sprintf("[Unit]\nDescription=Sessionless attached worker %s\n[Service]\nType=exec\nExecStart=%s serve --state-dir %s --expected-revision %d --binary %s --binary-sha256 %s%s\nRestart=no\nUMask=0077\nNoNewPrivileges=yes\n[Install]\nWantedBy=default.target\n", shortID(manifest), config.BinaryPath, config.StateRoot, manifest.Revision, config.BinaryPath, config.BinarySHA256, activation)), nil
 	case ModeRootlessContainer:
 		return renderRootless(config, manifest)
 	default:
 		return nil, ErrInvalid
 	}
+}
+
+// validateStagedActivation prevents same-path profile or trust-bundle edits
+// from silently changing the authority of a registered service.
+func validateStagedActivation(config Config, manifest attachedworkerlocal.ManifestV1, staged ReceiptV1, unit []byte) error {
+	if staged.ActivationProfile != config.ActivationProfile || validateActivationProfile(config, manifest) != nil {
+		return ErrConflict
+	}
+	if config.ActivationProfile == "" && staged.ManifestRevision != manifest.Revision {
+		return ErrConflict
+	}
+	if config.ActivationProfile != "" {
+		profile, err := attachedworkeractivation.ReadProfile(config.ActivationProfile)
+		if err != nil || staged.ManifestRevision < profile.ManifestRevision || staged.ManifestRevision > manifest.Revision {
+			return ErrConflict
+		}
+	}
+	currentUnit, err := render(config, manifest)
+	if err != nil || !bytes.Equal(currentUnit, unit) || digest(currentUnit) != staged.UnitSHA256 {
+		return ErrConflict
+	}
+	return nil
+}
+
+func validRegistrationManifestRevision(config Config, manifest attachedworkerlocal.ManifestV1, staged ReceiptV1, revision uint64) bool {
+	if config.ActivationProfile == "" {
+		return revision == manifest.Revision
+	}
+	return revision >= staged.ManifestRevision && revision <= manifest.Revision
+}
+
+// A completed unregister remains valid evidence after a newly staged unit
+// replaces exactly that unit, even if the connection advanced meanwhile.
+// A registered receipt never crosses that package boundary.
+func validRegistrationForStage(config Config, manifest attachedworkerlocal.ManifestV1, staged ReceiptV1, registration NativeReceiptV1) bool {
+	if validRegistrationManifestRevision(config, manifest, staged, registration.ManifestRevision) {
+		return true
+	}
+	return registration.Action == NativeUnregister && registration.ManifestRevision < manifest.Revision &&
+		registration.InstallRevision != ^uint64(0) && registration.InstallRevision+1 == staged.InstallRevision &&
+		registration.UnitSHA256 == staged.RollbackSHA256
 }
 
 func shortID(manifest attachedworkerlocal.ManifestV1) string {

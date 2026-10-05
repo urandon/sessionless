@@ -12,9 +12,9 @@ disabled.
 path, and binary digest validates the
 enrolled local installation, takes its kernel-backed `runtime.lock`, writes
 content-free local observation, and holds that one lease until an operator
-stop or process signal. The shipped foreground owner remains
-`feature_disabled`: it starts no poll, container, harness, credential use, or
-provider call. On signal it closes admission through drain, performs bounded
+stop or process signal. Without an explicit activation profile, the foreground
+owner remains `feature_disabled`: it starts no poll, container, harness,
+credential use, or provider call. On signal it closes admission through drain, performs bounded
 shutdown, retires its observation, and releases the lease. A failed cleanup is
 reported as unknown, not stopped.
 
@@ -50,6 +50,59 @@ The long-lived binary clears its inherited process environment before it
 starts the service. Existing `status` and `doctor` remain historical local
 state reads; use the `live-*` commands to ask the current owner. Neither
 surface proves a control-plane connection.
+
+## Explicit synthetic activation (#165, in progress)
+
+The optional `--activation-profile` is a private, owner-owned `0600` JSON file
+in a canonical `0700` directory. It pins the tenant, owner, worker,
+enrollment, initial manifest revision, control-plane HTTPS origin, capability,
+executable digest, `installation_sha256` of the manifest's OCI and harness
+configuration, local materialization/scratch bounds, and an optional
+private TLS root bundle. Only `mode=synthetic-denied` is accepted: the existing
+session/daemon/transport stack may connect and run a synthetic attempt, but
+provider credentials and provider calls remain denied. The long-lived command
+clears its inherited environment. A successful reconnect may advance only
+the paired manifest revision and connection generation; any other local
+manifest change needs a newly reviewed profile.
+
+Launchd/systemd/rootless-container units staged with this opt-in carry both the profile path and
+`--activation-sha256`. The digest covers the exact profile and trust-bundle
+bytes, and a same-path edit causes a failed start or native readback until a
+new reviewed package plan is staged. The local control socket is opened only
+after the single runtime reaches its running state. `drain` and `stop` still
+require the current live manifest revision, not the unit's installation
+baseline. A raw operator `run` may omit the digest; a service `serve` may not.
+
+The rootless-container unit remains offline (`--network none`, no Docker
+socket) without an activation profile. An explicit synthetic profile renders a
+different, digest-pinned unit with bridge networking for the trusted service
+process and narrowly named bind mounts for the current user's rootless Docker
+socket, pinned OCI CLI/config, profile/trust, and private materialization and
+scratch roots. Writable roots must be the dedicated `materialized` and
+`scratch` siblings of the state directory, not an arbitrary owner-private
+directory. Package planning rejects a foreign OCI host, non-rootless
+boundary, nonempty OCI client config, broad/overlapping writable mount root,
+or changed profile bytes. This grants the trusted service process the same
+user's rootless engine authority; it does **not** grant the isolated harness
+container that socket or network. Docker's bridge is not an egress firewall;
+the application transport itself pins the HTTPS origin, and the exact service
+binary/image must remain trusted. The opt-in Linux rootless service gate proves
+one signed synthetic-denied attempt against a test-owned rootless engine;
+exact-head CI and independent security review remain merge gates for changes
+to this path.
+
+After an activated connection advances the live manifest revision, an older
+archived unit with `--expected-revision` for the prior manifest is not a safe
+rollback target. The rollback preview fails closed. To return to the disabled
+owner, stop the active service, unregister it, review a new `package-plan`
+without `--activation-profile` against the current manifest, apply that exact
+plan, then register and explicitly start the new disabled unit. This is a new
+package update, not replay of an old unit or an automatic rollback.
+The terminal `unregister` receipt authorizes only one replacement stage before
+the new unit is registered. A second `package-plan` at that point fails
+closed: to correct the staged unit, register it while disabled, unregister it
+again, and then review and stage the correction. This keeps every service
+change linked to exact OS registration evidence.
 
 ## Reviewed package plan and staged receipt
 
@@ -201,5 +254,8 @@ does not use provider credentials, Docker, or cloud resources.
 lifecycle test against an already running, explicitly configured rootless
 Docker engine and a preloaded `SESSIONLESS_ROOTLESS_IMAGE`. The pinned Linux
 rootless CI gate provisions its own test-owned engine and runs this target;
-ordinary tests never start Docker. The Mac user-service gate uses launchd
-instead. #79 remains the separate two-owner security/recovery release gate.
+ordinary tests never start Docker. The exact-binary accepted-attempt proof
+waits through the shipped 15-minute post-Manifest heartbeat cooldown; the CI
+fixture does not shorten the production cadence. The Mac user-service gate
+uses launchd instead. #79 remains the separate two-owner security/recovery
+release gate.

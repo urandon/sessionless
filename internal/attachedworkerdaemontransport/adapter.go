@@ -431,7 +431,7 @@ func (adapter *Adapter) pollActiveControl(
 		if cancelErr != nil {
 			return "", false, errors.Join(ErrReconciliationRequired, ErrAttemptUnavailable)
 		}
-		if err := adapter.acknowledgeCancel(ctx, active, *response.Cancel); err != nil {
+		if err := adapter.acknowledgeCancelAfterLocalCancellation(ctx, active, *response.Cancel); err != nil {
 			return "", false, err
 		}
 		active.cancelAcknowledged = true
@@ -536,7 +536,7 @@ func (adapter *Adapter) pollActiveCancellation(
 	if cancelErr != nil {
 		return false, errors.Join(ErrReconciliationRequired, ErrAttemptUnavailable)
 	}
-	if err := adapter.acknowledgeCancel(ctx, active, *response.Cancel); err != nil {
+	if err := adapter.acknowledgeCancelAfterLocalCancellation(ctx, active, *response.Cancel); err != nil {
 		return false, err
 	}
 	active.cancelAcknowledged = true
@@ -679,6 +679,16 @@ func (adapter *Adapter) acknowledgeCancel(ctx context.Context, active *activeAtt
 	active.nextWorkerAttemptSequence++
 	active.cancelAcknowledged = true
 	return nil
+}
+
+// The exact local cancellation can cancel the invocation context that also
+// drives its active-control watcher. Keep only the already accepted CancelAck
+// exchange alive for a bounded interval; an ambiguous result still fences the
+// attempt for reconciliation.
+func (adapter *Adapter) acknowledgeCancelAfterLocalCancellation(ctx context.Context, active *activeAttempt, cancel attachedworkerprotocol.CancelV1) error {
+	ackCtx, cancelAck := context.WithTimeout(context.WithoutCancel(ctx), adapter.config.ReportTimeout)
+	defer cancelAck()
+	return adapter.acknowledgeCancel(ackCtx, active, cancel)
 }
 
 func (adapter *Adapter) invocationFromInput(

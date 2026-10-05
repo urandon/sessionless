@@ -52,11 +52,11 @@ func reconcileNative(ctx context.Context, config Config, expectedPlanSHA256 stri
 		return NativeReconciliationV1{}, err
 	}
 	unitPath, receiptPath := paths(config, manifest)
-	staged, _, err := readPrevious(config.InstallDir, unitPath, receiptPath, manifest)
+	staged, stagedUnit, err := readPrevious(config.InstallDir, unitPath, receiptPath, manifest)
 	if err != nil {
 		return NativeReconciliationV1{}, err
 	}
-	if staged.ContainerImage != config.ContainerImage {
+	if staged.ContainerImage != config.ContainerImage || validateStagedActivation(config, manifest, staged, stagedUnit) != nil {
 		return NativeReconciliationV1{}, ErrConflict
 	}
 	encoded, err := readRegular(nativePendingPath(unitPath))
@@ -71,7 +71,8 @@ func reconcileNative(ctx context.Context, config Config, expectedPlanSHA256 stri
 		(plan.Action != NativeRegister && plan.Action != NativeUnregister) ||
 		plan.PlanSHA256 != expectedPlanSHA256 || plan.PlanSHA256 != nativePlanDigest(plan) ||
 		plan.Mode != config.Mode || plan.OwnerUserID != string(manifest.OwnerUserID) ||
-		plan.WorkerID != string(manifest.WorkerID) || plan.ManifestRevision != manifest.Revision ||
+		plan.WorkerID != string(manifest.WorkerID) ||
+		!validRegistrationManifestRevision(config, manifest, staged, plan.ManifestRevision) ||
 		plan.InstallRevision != staged.InstallRevision || plan.UnitPath != unitPath ||
 		plan.UnitSHA256 != staged.UnitSHA256 || plan.BinarySHA256 != config.BinarySHA256 ||
 		plan.NextRegistrationRevision == 0 || plan.ExpectedRegistrationRevision == ^uint64(0) ||

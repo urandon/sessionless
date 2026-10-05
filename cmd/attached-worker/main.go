@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"gitcode.com/urandon/sessionless/internal/attachedworkeractivation"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerforeground"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerlocal"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerpackage"
@@ -25,7 +26,7 @@ type commandErrorV1 struct {
 }
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "serve" {
+	if len(os.Args) > 1 && (os.Args[1] == "serve" || os.Args[1] == "run") {
 		// The long-lived owner must not retain ambient HOME, API keys,
 		// provider configuration, Docker context, or process tokens.
 		os.Clearenv()
@@ -40,6 +41,15 @@ func run(arguments []string, output io.Writer) int {
 }
 
 func runWithContext(parent context.Context, arguments []string, output io.Writer) int {
+	return runWithContextAndConnector(parent, arguments, output, nil)
+}
+
+// Tests supply a deterministic clock only at the connector boundary. The
+// shipped command always uses the production connector and real time.
+func runWithContextAndConnector(parent context.Context, arguments []string, output io.Writer, connector activationConnector) int {
+	if connector == nil {
+		connector = attachedworkeractivation.Connect
+	}
 	if parent == nil || len(arguments) == 0 || output == nil {
 		return writeResult(output, commandErrorV1{Version: 1, Code: attachedworkerlocal.CodeInvalid}, 2)
 	}
@@ -47,6 +57,8 @@ func runWithContext(parent context.Context, arguments []string, output io.Writer
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	stateRoot := flags.String("state-dir", "", "explicit absolute attached-worker state directory")
+	activationProfile := flags.String("activation-profile", "", "explicit private synthetic activation profile")
+	activationSHA256 := flags.String("activation-sha256", "", "exact private profile and trust bundle digest")
 	expectedRevision := flags.Uint64("expected-revision", 0, "exact local manifest revision")
 	idempotencyKey := flags.String("idempotency-key", "", "logout request idempotency key")
 	packageMode := flags.String("package-mode", "", "launchd, systemd-user, or rootless-container")
@@ -74,6 +86,10 @@ func runWithContext(parent context.Context, arguments []string, output io.Writer
 		*nativeAction != "" || *expectedRegistrationRevision != 0) {
 		return writeResult(output, commandErrorV1{Version: 1, Code: attachedworkerlocal.CodeInvalid}, 2)
 	}
+	if (*activationProfile != "" && command != "run" && command != "serve" && !packageCommand && !nativeCommand) ||
+		(*activationSHA256 != "" && (command != "run" && command != "serve" || *activationProfile == "")) {
+		return writeResult(output, commandErrorV1{Version: 1, Code: attachedworkerlocal.CodeInvalid}, 2)
+	}
 	if packageCommand {
 		if *nativeAction != "" || *expectedRegistrationRevision != 0 {
 			return writeResult(output, commandErrorV1{Version: 1, Code: attachedworkerlocal.CodeInvalid}, 2)
@@ -85,7 +101,8 @@ func runWithContext(parent context.Context, arguments []string, output io.Writer
 		ctx, cancel := context.WithTimeout(parent, commandTimeout)
 		defer cancel()
 		config := attachedworkerpackage.Config{Mode: attachedworkerpackage.Mode(*packageMode), StateRoot: *stateRoot,
-			InstallDir: *installDir, BinaryPath: *binaryPath, BinarySHA256: *binarySHA256, ContainerImage: *containerImage}
+			InstallDir: *installDir, BinaryPath: *binaryPath, BinarySHA256: *binarySHA256,
+			ContainerImage: *containerImage, ActivationProfile: *activationProfile}
 		if command == "package-rollback-plan" || command == "package-rollback-apply" {
 			plan, planErr := attachedworkerpackage.RollbackPlan(ctx, config, *expectedInstallRevision)
 			if planErr != nil {
@@ -132,7 +149,8 @@ func runWithContext(parent context.Context, arguments []string, output io.Writer
 		ctx, cancel := context.WithTimeout(parent, commandTimeout)
 		defer cancel()
 		config := attachedworkerpackage.Config{Mode: attachedworkerpackage.Mode(*packageMode), StateRoot: *stateRoot,
-			InstallDir: *installDir, BinaryPath: *binaryPath, BinarySHA256: *binarySHA256, ContainerImage: *containerImage}
+			InstallDir: *installDir, BinaryPath: *binaryPath, BinarySHA256: *binarySHA256,
+			ContainerImage: *containerImage, ActivationProfile: *activationProfile}
 		if command == "native-inspect" {
 			result, inspectErr := attachedworkerpackage.NativeInspect(ctx, config)
 			if inspectErr != nil {
@@ -180,6 +198,12 @@ func runWithContext(parent context.Context, arguments []string, output io.Writer
 			if err := attachedworkerpackage.VerifyRunningBinary(*binaryPath, *binarySHA256); err != nil {
 				return writeResult(output, commandErrorV1{Version: 1, Code: packageCode(err)}, 1)
 			}
+		}
+		if *activationProfile != "" {
+			if len(*activationSHA256) != 64 {
+				return writeResult(output, commandErrorV1{Version: 1, Code: attachedworkerlocal.CodeInvalid}, 2)
+			}
+			return serveActivatedWithConnector(parent, store, *stateRoot, *activationProfile, *activationSHA256, *expectedRevision, output, connector)
 		}
 		foreground, foregroundErr := attachedworkerforeground.New(store, attachedworkerforeground.Config{})
 		if foregroundErr != nil {
@@ -236,6 +260,9 @@ func runWithContext(parent context.Context, arguments []string, output io.Writer
 	case "run":
 		if *expectedRevision != 0 || *idempotencyKey != "" {
 			return writeResult(output, commandErrorV1{Version: 1, Code: attachedworkerlocal.CodeInvalid}, 2)
+		}
+		if *activationProfile != "" {
+			return runActivatedWithConnector(parent, store, *activationProfile, *activationSHA256, output, connector)
 		}
 		foreground, foregroundErr := attachedworkerforeground.New(store, attachedworkerforeground.Config{})
 		if foregroundErr != nil {

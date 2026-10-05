@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - 'ai/issue-137-*'
+      - 'ai/issue-165-*'
+      - 'codex/issue-165-*'
   workflow_dispatch:
 
 permissions:
@@ -45,6 +47,12 @@ jobs:
 
       - name: Exercise exact service lifecycle
         run: make attached-worker-native-integration
+
+      - name: Exercise exact-binary synthetic crash and reconnect
+        run: make attached-worker-crash-integration
+
+      - name: Exercise active-crash fencing through command dispatch
+        run: make attached-worker-active-crash-integration
 
       - name: Remove Linux linger setting
         if: always() && runner.os == 'Linux'

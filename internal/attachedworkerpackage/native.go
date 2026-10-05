@@ -92,10 +92,11 @@ func nativePlan(ctx context.Context, config Config, action NativeAction, expecte
 		return NativePlanV1{}, err
 	}
 	unitPath, receiptPath := paths(config, manifest)
-	staged, _, err := readPrevious(config.InstallDir, unitPath, receiptPath, manifest)
+	staged, stagedUnit, err := readPrevious(config.InstallDir, unitPath, receiptPath, manifest)
 	if err != nil || staged.InstallRevision != expectedInstallRevision || staged.Mode != config.Mode ||
-		staged.ManifestRevision != manifest.Revision || staged.BinaryPath != config.BinaryPath ||
-		staged.BinarySHA256 != config.BinarySHA256 || staged.ContainerImage != config.ContainerImage {
+		staged.BinaryPath != config.BinaryPath ||
+		staged.BinarySHA256 != config.BinarySHA256 || staged.ContainerImage != config.ContainerImage ||
+		validateStagedActivation(config, manifest, staged, stagedUnit) != nil {
 		return NativePlanV1{}, errors.Join(ErrConflict, err)
 	}
 	registration, err := readNativeReceipt(unitPath)
@@ -108,7 +109,7 @@ func nativePlan(ctx context.Context, config Config, action NativeAction, expecte
 	if registration.Version != 0 && (registration.Mode != config.Mode ||
 		registration.OwnerUserID != string(manifest.OwnerUserID) ||
 		registration.WorkerID != string(manifest.WorkerID) ||
-		registration.ManifestRevision != manifest.Revision) {
+		!validRegistrationForStage(config, manifest, staged, registration)) {
 		return NativePlanV1{}, ErrConflict
 	}
 	state, err := manager.inspect(ctx, config.Mode, nativeName(manifest), unitPath)

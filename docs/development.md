@@ -190,16 +190,32 @@ mode, a versioned permission-bound local status/doctor/drain/stop endpoint,
 and exact launchd/systemd-user/rootless-container artifact plan/apply/rollback
 receipts. `make attached-worker-build` builds only its native binary;
 `make attached-worker-package-test` repeats its focused race/shuffle tests.
+The opt-in `make attached-worker-crash-integration` builds that exact binary,
+starts a test-owned synthetic/denied-credential service, kills its exact PID,
+and verifies authenticated idle reconnect and lease retirement after restart.
+`make attached-worker-active-crash-integration` forks the command dispatch in
+a test binary with an injected clock, kills its active attempt owner, and
+verifies that restart fences the non-idle checkpoint without replaying input.
+The shipped binary retains the 15-minute minimum heartbeat interval; this
+bounded test does not claim exact-binary active-crash coverage.
+These fixtures need no provider credentials, Docker engine, OS service
+registration, or cloud resources; ordinary `make test` skips both process-kill
+fixtures.
 The opt-in `make attached-worker-native-integration` exercises one exact
 test-owned launchd or systemd user-service lifecycle. The separate opt-in
 `make attached-worker-rootless-integration` runs the same lifecycle on Linux
 against an already provisioned rootless Docker engine and preloaded immutable
 execution-base image; the pinned CI gate provisions those inputs. See
 [attached-worker-packaging.md](attached-worker-packaging.md) for the
-registration/start/inspect/drain/stop contract and remaining #137 gates.
-Staging does not register or start an OS service or container, and does not
-enable transport, credentials, harness execution, or provider calls. #137
-remains open until those separate packaging and platform gates are proved.
+registration/start/inspect/drain/stop contract and the #137 evidence.
+Staging does not register or start an OS service or container. With no explicit
+private activation profile, the foreground owner remains feature-disabled.
+The opt-in #165 synthetic/denied-credential path is described in
+[attached-worker-packaging.md](attached-worker-packaging.md); it never enables
+provider credentials or provider calls. The rootless service remains offline
+and does not accept that profile. #137's package/service gate is closed;
+#165's explicit activated rootless unit is in progress; its end-to-end
+platform acceptance and independent security review remain open.
 
 The owner-facing AW-06a information architecture, read-model safety boundary,
 and control-action gates are documented in

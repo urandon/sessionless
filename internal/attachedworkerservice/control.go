@@ -82,7 +82,7 @@ func Directory(stateRoot string) (string, error) {
 // Serve holds the one foreground owner until an explicit shutdown or signal.
 // A response to shutdown is sent only after its bounded cleanup has finished.
 func Serve(ctx context.Context, directory string, owner Owner, doctor Doctor) (resultErr error) {
-	if ctx == nil || owner == nil || doctor == nil ||
+	if ctx == nil || ctx.Err() != nil || owner == nil || doctor == nil ||
 		(runtime.GOOS != "darwin" && runtime.GOOS != "linux") {
 		return ErrInvalid
 	}
@@ -107,6 +107,9 @@ func Serve(ctx context.Context, directory string, owner Owner, doctor Doctor) (r
 			resultErr = errors.Join(resultErr, ErrIO)
 		}
 	}()
+	if err := ctx.Err(); err != nil {
+		return errors.Join(err, stopOwner(owner))
+	}
 	for {
 		if err := unixListener.SetDeadline(time.Now().Add(250 * time.Millisecond)); err != nil {
 			return errors.Join(ErrIO, err)

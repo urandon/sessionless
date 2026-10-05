@@ -91,7 +91,11 @@ release gates and explicit configuration are satisfied.
   [cloud-development runbook](docs/cloud-development.md).
 - **Contributor:** read [CONTRIBUTING.md](CONTRIBUTING.md),
   [development.md](docs/development.md), and the
-  [Go testing practices](docs/testing-best-practices.md).
+  [Go testing practices](docs/testing-best-practices.md). The opt-in
+  `make attached-worker-crash-integration` verifies test-owned exact-binary
+  idle restart; `make attached-worker-active-crash-integration` checks active
+  restart fencing in a clock-controlled test process. Neither needs Docker
+  or provider credentials.
 - **Architect or security reviewer:** start with the
   [domain/runtime contracts](docs/contracts.md) and
   [security documentation](docs/README.md#security-and-trust-boundaries).

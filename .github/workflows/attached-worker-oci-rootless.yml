@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - 'ai/issue-137-*'
+      - 'codex/issue-165-*'
     paths:
       - .github/workflows/attached-worker-oci-rootless.yml
       - Makefile
@@ -35,7 +36,7 @@ jobs:
   rootless:
     name: Linux rootless isolation matrix
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Checkout mirrored commit
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6

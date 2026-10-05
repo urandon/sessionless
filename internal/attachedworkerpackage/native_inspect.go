@@ -42,10 +42,11 @@ func nativeInspect(ctx context.Context, config Config, manager nativeManager) (N
 		return NativeInspectionV1{}, err
 	}
 	unitPath, receiptPath := paths(config, manifest)
-	staged, _, err := readPrevious(config.InstallDir, unitPath, receiptPath, manifest)
+	staged, stagedUnit, err := readPrevious(config.InstallDir, unitPath, receiptPath, manifest)
 	if err != nil || staged.Version != VersionV1 || staged.Mode != config.Mode ||
-		staged.ManifestRevision != manifest.Revision || staged.BinaryPath != config.BinaryPath ||
-		staged.BinarySHA256 != config.BinarySHA256 || staged.ContainerImage != config.ContainerImage {
+		staged.BinaryPath != config.BinaryPath ||
+		staged.BinarySHA256 != config.BinarySHA256 || staged.ContainerImage != config.ContainerImage ||
+		validateStagedActivation(config, manifest, staged, stagedUnit) != nil {
 		return NativeInspectionV1{}, errors.Join(ErrConflict, err)
 	}
 	registration, err := readNativeReceipt(unitPath)
@@ -70,7 +71,7 @@ func nativeInspect(ctx context.Context, config Config, manager nativeManager) (N
 	if registration.Version != 0 && (registration.Mode != config.Mode ||
 		registration.OwnerUserID != string(manifest.OwnerUserID) ||
 		registration.WorkerID != string(manifest.WorkerID) ||
-		registration.ManifestRevision != manifest.Revision) {
+		!validRegistrationForStage(config, manifest, staged, registration)) {
 		return result, nil
 	}
 	switch {
@@ -138,7 +139,8 @@ func nativeStart(ctx context.Context, config Config, expectedInstallRevision, ex
 	for {
 		result, err := nativeInspect(readbackCtx, config, manager)
 		if err == nil && result.Status == "registered" && result.OSActive &&
-			result.ManifestRevision == inspection.ManifestRevision &&
+			result.ManifestRevision >= inspection.ManifestRevision &&
+			(config.ActivationProfile != "" || result.ManifestRevision == inspection.ManifestRevision) &&
 			result.InstallRevision == expectedInstallRevision &&
 			result.RegistrationRevision == expectedRegistrationRevision {
 			return result, nil

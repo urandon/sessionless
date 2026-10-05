@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -56,7 +57,7 @@ func TestActivatedRootlessServiceAcceptsSyntheticAttempt(t *testing.T) {
 	}
 	binaryHash := fileSHA256(t, binary)
 	dockerHash := fileSHA256(t, docker)
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	t.Cleanup(cancel)
 	root, err := os.MkdirTemp("/tmp", "aw165-rootless-")
 	if err != nil {
@@ -285,9 +286,11 @@ func TestActivatedRootlessServiceAcceptsSyntheticAttempt(t *testing.T) {
 		}
 	case <-ctx.Done():
 		peer.mu.Lock()
-		steps, denied, lastError := peer.steps, peer.denied, peer.lastError
+		steps, denied, challenges, activations, lastError := peer.steps, peer.denied, peer.challenges, peer.activations, peer.lastError
 		peer.mu.Unlock()
-		t.Fatalf("activated rootless service missed accepted attempt: steps=%d denied=%d peer_error=%q: %v", steps, denied, lastError, ctx.Err())
+		t.Fatalf("activated rootless service missed accepted attempt: steps=%d denied=%d challenges=%d activations=%d peer_error=%q: %v; %s",
+			steps, denied, challenges, activations, lastError, ctx.Err(),
+			rootlessServiceDiagnostics(config, filepath.Base(plan.UnitPath), docker, host, workerID))
 	}
 	var status bytes.Buffer
 	if code := runWithContext(ctx, []string{"live-status", "--state-dir", stateRoot}, &status); code != 0 {
@@ -306,6 +309,79 @@ func TestActivatedRootlessServiceAcceptsSyntheticAttempt(t *testing.T) {
 	if steps != 3 || denied != 1 || challenges != 1 || activations != 1 {
 		t.Errorf("rootless signed attempt proof: steps=%d denied=%d challenge=%d activate=%d", steps, denied, challenges, activations)
 	}
+}
+
+func rootlessServiceDiagnostics(config attachedworkerpackage.Config, unit, docker, host, workerID string) string {
+	probe := func(name string, args ...string) (string, error) {
+		probeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		command := exec.CommandContext(probeCtx, name, args...)
+		output := &boundedDiagnosticOutput{}
+		command.Stdout, command.Stderr = output, output
+		err := command.Run()
+		return output.String(), err
+	}
+	show, showErr := probe("/usr/bin/systemctl", "--user", "show", unit,
+		"--property=ActiveState,SubState,Result,ExecMainStatus", "--no-pager")
+	journal, journalErr := probe("/usr/bin/journalctl", "--user-unit", unit,
+		"--no-pager", "-n", "20", "-o", "cat")
+	sum := sha256.Sum256([]byte(workerID))
+	container := fmt.Sprintf("sessionless-attached-worker-%x", sum[:8])
+	containerState, containerErr := probe(docker, "--host", host,
+		"--config", filepath.Join(config.InstallDir, "docker-config"), "container", "inspect",
+		"--format", "{{json .State}}", container)
+	inspectCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	inspection, inspectErr := attachedworkerpackage.NativeInspect(inspectCtx, config)
+	return fmt.Sprintf("native=%+v native_error=%v systemd=%q systemd_error=%v container_state=%q container_error=%v journal_tail=%q journal_error=%v",
+		inspection, inspectErr, strings.TrimSpace(show), showErr,
+		strings.TrimSpace(containerState), containerErr, strings.TrimSpace(journal), journalErr)
+}
+
+type boundedDiagnosticOutput struct {
+	mu   sync.Mutex
+	data []byte
+}
+
+func TestBoundedDiagnosticOutputKeepsTail(t *testing.T) {
+	output := &boundedDiagnosticOutput{}
+	if _, err := output.Write(bytes.Repeat([]byte{'a'}, 2999)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := output.Write([]byte("bc")); err != nil {
+		t.Fatal(err)
+	}
+	if got := output.String(); len(got) != 3000 || !strings.HasSuffix(got, "bc") {
+		t.Fatalf("bounded diagnostic tail length=%d retains suffix=%t", len(got), strings.HasSuffix(got, "bc"))
+	}
+	if _, err := output.Write(bytes.Repeat([]byte{'z'}, 5000)); err != nil {
+		t.Fatal(err)
+	}
+	if got := output.String(); got != strings.Repeat("z", 3000) {
+		t.Fatalf("oversized diagnostic write retained %d bytes, want last 3000", len(got))
+	}
+}
+
+func (output *boundedDiagnosticOutput) Write(data []byte) (int, error) {
+	output.mu.Lock()
+	defer output.mu.Unlock()
+	const limit = 3000
+	if len(data) >= limit {
+		output.data = append(output.data[:0], data[len(data)-limit:]...)
+	} else {
+		if overflow := len(output.data) + len(data) - limit; overflow > 0 {
+			copy(output.data, output.data[overflow:])
+			output.data = output.data[:len(output.data)-overflow]
+		}
+		output.data = append(output.data, data...)
+	}
+	return len(data), nil
+}
+
+func (output *boundedDiagnosticOutput) String() string {
+	output.mu.Lock()
+	defer output.mu.Unlock()
+	return string(output.data)
 }
 
 func fileSHA256(t *testing.T, path string) string {

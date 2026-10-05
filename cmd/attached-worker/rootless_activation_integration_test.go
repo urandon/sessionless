@@ -32,6 +32,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/attachedworkerlocal"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerpackage"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerprotocol"
+	"gitcode.com/urandon/sessionless/internal/attachedworkertransport"
 	"gitcode.com/urandon/sessionless/internal/domain"
 )
 
@@ -57,7 +58,10 @@ func TestActivatedRootlessServiceAcceptsSyntheticAttempt(t *testing.T) {
 	}
 	binaryHash := fileSHA256(t, binary)
 	dockerHash := fileSHA256(t, docker)
-	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+	// The shipped binary has no test clock. Its accepted Manifest starts the
+	// mandatory first cooldown, so exact-binary proof must wait for the real
+	// cadence rather than weakening production polling for a CI fixture.
+	ctx, cancel := context.WithTimeout(context.Background(), attachedworkertransport.MinimumHeartbeatInterval+5*time.Minute)
 	t.Cleanup(cancel)
 	root, err := os.MkdirTemp("/tmp", "aw165-rootless-")
 	if err != nil {
@@ -279,6 +283,37 @@ func TestActivatedRootlessServiceAcceptsSyntheticAttempt(t *testing.T) {
 	if _, err := attachedworkerpackage.NativeStart(ctx, config, 1, 1); err != nil {
 		t.Fatalf("start activated rootless service: %v", err)
 	}
+	handshakeDeadline := time.NewTimer(30 * time.Second)
+	defer handshakeDeadline.Stop()
+	handshakeTick := time.NewTicker(100 * time.Millisecond)
+	defer handshakeTick.Stop()
+	for {
+		peer.mu.Lock()
+		challenges, activations, lastError := peer.challenges, peer.activations, peer.lastError
+		peer.mu.Unlock()
+		if lastError != "" {
+			t.Fatalf("rootless signed handshake was rejected: %s; %s", lastError,
+				rootlessServiceDiagnostics(config, filepath.Base(plan.UnitPath), docker, host, workerID))
+		}
+		if challenges == 1 && activations == 1 {
+			snapshot, err := store.LoadSnapshot(ctx)
+			if err == nil && snapshot.Manifest.Revision == 2 && snapshot.Manifest.ConnectionGeneration == 1 {
+				break
+			}
+		}
+		select {
+		case <-handshakeDeadline.C:
+			t.Fatalf("rootless service did not complete initial signed handshake: challenges=%d activations=%d; %s",
+				challenges, activations, rootlessServiceDiagnostics(config, filepath.Base(plan.UnitPath), docker, host, workerID))
+		case <-ctx.Done():
+			t.Fatalf("rootless service handshake deadline: %v", ctx.Err())
+		case <-handshakeTick.C:
+		}
+	}
+	// Start the attempt budget only after the signed Manifest has advanced
+	// durable local state. This preserves the real 15-minute first cooldown.
+	attemptDeadline := time.NewTimer(attachedworkertransport.MinimumHeartbeatInterval + 2*time.Minute)
+	defer attemptDeadline.Stop()
 	select {
 	case terminal := <-peer.terminal:
 		if terminal.Status != attachedworkerprotocol.TerminalFailed || terminal.Result != attachedworkerprotocol.TerminalResultFailed {
@@ -291,6 +326,12 @@ func TestActivatedRootlessServiceAcceptsSyntheticAttempt(t *testing.T) {
 		t.Fatalf("activated rootless service missed accepted attempt: steps=%d denied=%d challenges=%d activations=%d peer_error=%q: %v; %s",
 			steps, denied, challenges, activations, lastError, ctx.Err(),
 			rootlessServiceDiagnostics(config, filepath.Base(plan.UnitPath), docker, host, workerID))
+	case <-attemptDeadline.C:
+		peer.mu.Lock()
+		steps, denied, lastError := peer.steps, peer.denied, peer.lastError
+		peer.mu.Unlock()
+		t.Fatalf("rootless accepted attempt missed post-Manifest cadence deadline: steps=%d denied=%d peer_error=%q; %s",
+			steps, denied, lastError, rootlessServiceDiagnostics(config, filepath.Base(plan.UnitPath), docker, host, workerID))
 	}
 	var status bytes.Buffer
 	if code := runWithContext(ctx, []string{"live-status", "--state-dir", stateRoot}, &status); code != 0 {

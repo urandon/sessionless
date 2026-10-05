@@ -252,5 +252,8 @@ does not use provider credentials, Docker, or cloud resources.
 lifecycle test against an already running, explicitly configured rootless
 Docker engine and a preloaded `SESSIONLESS_ROOTLESS_IMAGE`. The pinned Linux
 rootless CI gate provisions its own test-owned engine and runs this target;
-ordinary tests never start Docker. The Mac user-service gate uses launchd
-instead. #79 remains the separate two-owner security/recovery release gate.
+ordinary tests never start Docker. The exact-binary accepted-attempt proof
+waits through the shipped 15-minute post-Manifest heartbeat cooldown; the CI
+fixture does not shorten the production cadence. The Mac user-service gate
+uses launchd instead. #79 remains the separate two-owner security/recovery
+release gate.

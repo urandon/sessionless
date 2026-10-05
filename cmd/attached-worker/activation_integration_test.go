@@ -38,22 +38,26 @@ import (
 // the connector boundary. OCI preflight is a pinned stub: any container start
 // or provider invocation is a test failure.
 func TestActivatedRunAcceptsSyntheticAttemptAndDeniesInput(t *testing.T) {
-	testActivatedSyntheticCommand(t, false, false, false)
+	testActivatedSyntheticCommand(t, false, false, false, false)
 }
 
 func TestActivatedServeDrainsAcceptedSyntheticAttempt(t *testing.T) {
-	testActivatedSyntheticCommand(t, true, false, false)
+	testActivatedSyntheticCommand(t, true, false, false, false)
 }
 
 func TestActivatedServeStopsIdle(t *testing.T) {
-	testActivatedSyntheticCommand(t, true, true, false)
+	testActivatedSyntheticCommand(t, true, true, false, false)
 }
 
 func TestActivatedServeReconnectsAfterIdleStop(t *testing.T) {
-	testActivatedSyntheticCommand(t, true, true, true)
+	testActivatedSyntheticCommand(t, true, true, true, false)
 }
 
-func testActivatedSyntheticCommand(t *testing.T, service, idle, restart bool) {
+func TestActivatedServeCancelsAcceptedSyntheticAttempt(t *testing.T) {
+	testActivatedSyntheticCommand(t, true, false, false, true)
+}
+
+func testActivatedSyntheticCommand(t *testing.T, service, idle, restart, cancelActive bool) {
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		t.Skip("pinned OCI fixture is Unix-only")
 	}
@@ -251,7 +255,7 @@ esac
 	}
 	if service {
 		testActivatedServiceControl(t, ctx, peer, store, stateRoot, profilePath, connector,
-			connected, testClock, &serviceStarted, serviceExited, &restartStarted, restartExited, idle, restart)
+			connected, testClock, &serviceStarted, serviceExited, &restartStarted, restartExited, idle, restart, cancelActive)
 		return
 	}
 	go func() {
@@ -332,7 +336,7 @@ func testActivatedServiceControl(t *testing.T, ctx context.Context, peer *comman
 	store *attachedworkerlocal.Store, stateRoot, profilePath string, connector activationConnector,
 	connected <-chan *attachedworkersealedinput.SyntheticRuntime, testClock func() time.Time,
 	serviceStarted *atomic.Bool, serviceExited chan struct{}, restartStarted *atomic.Bool,
-	restartExited chan struct{}, idle, restart bool) {
+	restartExited chan struct{}, idle, restart, cancelActive bool) {
 	t.Helper()
 	profile, pin, err := attachedworkeractivation.ReadProfileWithDigest(profilePath)
 	if err != nil {
@@ -517,6 +521,21 @@ func testActivatedServiceControl(t *testing.T, ctx context.Context, peer *comman
 		t.Fatalf("service exited before accepted attempt: code=%d output=%s", code, output.String())
 	case <-ctx.Done():
 		t.Fatal("service did not reach accepted synthetic attempt")
+	}
+	if cancelActive {
+		serviceCancel()
+		select {
+		case code := <-done:
+			if code != 0 {
+				t.Fatalf("cancelled service exit=%d output=%s", code, output.String())
+			}
+		case <-ctx.Done():
+			t.Fatal("cancelled service did not terminate by deadline")
+		}
+		if snapshot, err := store.LoadSnapshot(context.Background()); err != nil || snapshot.ObservationPresent {
+			t.Fatalf("cancelled service retained runtime lease observation: snapshot=%+v error=%v", snapshot, err)
+		}
+		return
 	}
 	var status bytes.Buffer
 	if code := runWithContext(ctx, []string{"live-status", "--state-dir", stateRoot}, &status); code != 0 {

@@ -38,18 +38,22 @@ import (
 // the connector boundary. OCI preflight is a pinned stub: any container start
 // or provider invocation is a test failure.
 func TestActivatedRunAcceptsSyntheticAttemptAndDeniesInput(t *testing.T) {
-	testActivatedSyntheticCommand(t, false, false)
+	testActivatedSyntheticCommand(t, false, false, false)
 }
 
 func TestActivatedServeDrainsAcceptedSyntheticAttempt(t *testing.T) {
-	testActivatedSyntheticCommand(t, true, false)
+	testActivatedSyntheticCommand(t, true, false, false)
 }
 
 func TestActivatedServeStopsIdle(t *testing.T) {
-	testActivatedSyntheticCommand(t, true, true)
+	testActivatedSyntheticCommand(t, true, true, false)
 }
 
-func testActivatedSyntheticCommand(t *testing.T, service, idle bool) {
+func TestActivatedServeReconnectsAfterIdleStop(t *testing.T) {
+	testActivatedSyntheticCommand(t, true, true, true)
+}
+
+func testActivatedSyntheticCommand(t *testing.T, service, idle, restart bool) {
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		t.Skip("pinned OCI fixture is Unix-only")
 	}
@@ -59,6 +63,8 @@ func testActivatedSyntheticCommand(t *testing.T, service, idle bool) {
 	}
 	var serviceStarted atomic.Bool
 	serviceExited := make(chan struct{})
+	var restartStarted atomic.Bool
+	restartExited := make(chan struct{})
 	if service {
 		// Unix-domain socket paths are bounded (especially on Darwin), while
 		// Go's nested test directory can exceed sockaddr_un before Serve starts.
@@ -76,6 +82,14 @@ func testActivatedSyntheticCommand(t *testing.T, service, idle bool) {
 				case <-serviceExited:
 				default:
 					t.Errorf("preserving test root while service may still own it: %s", root)
+					return
+				}
+			}
+			if restartStarted.Load() {
+				select {
+				case <-restartExited:
+				default:
+					t.Errorf("preserving test root while restarted service may still own it: %s", root)
 					return
 				}
 			}
@@ -237,7 +251,7 @@ esac
 	}
 	if service {
 		testActivatedServiceControl(t, ctx, peer, store, stateRoot, profilePath, connector,
-			connected, &serviceStarted, serviceExited, idle)
+			connected, testClock, &serviceStarted, serviceExited, &restartStarted, restartExited, idle, restart)
 		return
 	}
 	go func() {
@@ -316,8 +330,9 @@ esac
 
 func testActivatedServiceControl(t *testing.T, ctx context.Context, peer *commandSyntheticPeer,
 	store *attachedworkerlocal.Store, stateRoot, profilePath string, connector activationConnector,
-	connected <-chan *attachedworkersealedinput.SyntheticRuntime, serviceStarted *atomic.Bool,
-	serviceExited chan struct{}, idle bool) {
+	connected <-chan *attachedworkersealedinput.SyntheticRuntime, testClock func() time.Time,
+	serviceStarted *atomic.Bool, serviceExited chan struct{}, restartStarted *atomic.Bool,
+	restartExited chan struct{}, idle, restart bool) {
 	t.Helper()
 	profile, pin, err := attachedworkeractivation.ReadProfileWithDigest(profilePath)
 	if err != nil {
@@ -396,6 +411,104 @@ func testActivatedServiceControl(t *testing.T, ctx context.Context, peer *comman
 		if snapshot, err := store.LoadSnapshot(context.Background()); err != nil || snapshot.ObservationPresent {
 			t.Fatalf("idle service retained runtime observation: snapshot=%+v error=%v", snapshot, err)
 		}
+		if restart {
+			lease, err := store.AcquireRuntime(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkpoint, checkpointErr := lease.LoadReconnectCheckpoint(ctx)
+			closeErr := lease.Close()
+			if checkpointErr != nil || closeErr != nil {
+				t.Fatalf("load durable reconnect checkpoint: load=%v close=%v", checkpointErr, closeErr)
+			}
+			peer.mu.Lock()
+			peer.now = testClock()
+			peer.previousCheckpoint = checkpoint
+			peer.previousConfig = attachedworkerprotocol.MachineConfig{
+				Auth: attachedworkerprotocol.AuthContextV1{
+					TenantID: string(checkpoint.TenantID), OwnerUserID: string(checkpoint.OwnerUserID),
+					WorkerID: string(checkpoint.WorkerID), IdentityPublicKey: peer.public,
+					EnrollmentGeneration: checkpoint.EnrollmentGeneration,
+					ConnectionGeneration: checkpoint.ConnectionGeneration,
+					Version:              checkpoint.ProtocolVersion, ChannelBinding: append([]byte(nil), checkpoint.ChannelBinding...),
+				},
+				WorkerOffer: checkpoint.WorkerOffer, PlatformOffer: checkpoint.PlatformOffer,
+				ImplementedVersions: []attachedworkerprotocol.ProtocolVersion{attachedworkerprotocol.ProtocolVersionV1},
+			}
+			peer.mu.Unlock()
+			restartCtx, restartCancel := context.WithCancel(ctx)
+			var restartOutput bytes.Buffer
+			restartDone := make(chan int, 1)
+			connectionErrors := make(chan error, 1)
+			restartConnector := func(ctx context.Context, store *attachedworkerlocal.Store,
+				profile attachedworkeractivation.ProfileV1) (*attachedworkersealedinput.SyntheticRuntime, error) {
+				owner, err := connector(ctx, store, profile)
+				if err != nil {
+					connectionErrors <- err
+				}
+				return owner, err
+			}
+			t.Cleanup(func() {
+				restartCancel()
+				select {
+				case <-restartExited:
+				case <-time.After(2 * time.Second):
+					t.Errorf("restarted service did not exit after cancellation; state root preserved")
+				}
+			})
+			restartStarted.Store(true)
+			go func() {
+				defer close(restartExited)
+				restartDone <- runWithContextAndConnector(restartCtx, []string{"serve", "--state-dir", stateRoot,
+					"--expected-revision", "1", "--binary", binary, "--binary-sha256", hex.EncodeToString(sum[:]),
+					"--activation-profile", profilePath, "--activation-sha256", pin}, &restartOutput, restartConnector)
+			}()
+			for {
+				var status bytes.Buffer
+				if runWithContext(ctx, []string{"live-status", "--state-dir", stateRoot}, &status) == 0 &&
+					strings.Contains(status.String(), `"manifest_revision":3`) {
+					break
+				}
+				select {
+				case code := <-restartDone:
+					var connectionErr error
+					select {
+					case connectionErr = <-connectionErrors:
+					default:
+					}
+					peer.mu.Lock()
+					lastError, lastKind, exchanges := peer.lastError, peer.lastKind, peer.exchanges
+					peer.mu.Unlock()
+					t.Fatalf("restarted service exited before readiness: code=%d output=%s connection=%v peer_error=%q peer_kind=%s exchanges=%d", code, restartOutput.String(), connectionErr, lastError, lastKind, exchanges)
+				case <-time.After(10 * time.Millisecond):
+				case <-ctx.Done():
+					t.Fatal("restarted service did not become ready")
+				}
+			}
+			var stopAgain bytes.Buffer
+			if code := runWithContext(ctx, []string{"stop", "--state-dir", stateRoot,
+				"--expected-revision", "3"}, &stopAgain); code != 0 {
+				t.Fatalf("restarted service stop exit=%d output=%s", code, stopAgain.String())
+			}
+			select {
+			case code := <-restartDone:
+				if code != 0 {
+					t.Fatalf("restarted service exit=%d output=%s", code, restartOutput.String())
+				}
+			case <-ctx.Done():
+				t.Fatal("restarted service ignored stop")
+			}
+			if snapshot, err := store.LoadSnapshot(context.Background()); err != nil ||
+				snapshot.Manifest.Revision != 3 || snapshot.ObservationPresent {
+				t.Fatalf("restarted service retained lease or wrong revision: snapshot=%+v error=%v", snapshot, err)
+			}
+			peer.mu.Lock()
+			reconnectChallenges, reconnectActivations := peer.reconnectChallenges, peer.reconnectActivations
+			peer.mu.Unlock()
+			if reconnectChallenges != 1 || reconnectActivations != 1 {
+				t.Fatalf("restart did not complete signed reconnect: challenges=%d activations=%d", reconnectChallenges, reconnectActivations)
+			}
+		}
 		return
 	}
 	select {
@@ -469,24 +582,28 @@ drainLoop:
 }
 
 type commandSyntheticPeer struct {
-	mu            sync.Mutex
-	public        ed25519.PublicKey
-	now           time.Time
-	offer         attachedworkerprotocol.VersionOfferV1
-	binding       attachedworkerprotocol.AttemptBindingV1
-	challenge     domain.AttachedWorkerAttachChallenge
-	steps         int
-	denied        int
-	challenges    int
-	activations   int
-	exchanges     int
-	lastError     string
-	lastKind      attachedworkerprotocol.MessageKind
-	terminal      chan attachedworkerprotocol.TerminalV1
-	idle          bool
-	sealedGate    chan struct{}
-	sealedStarted chan struct{}
-	sealedRelease sync.Once
+	mu                   sync.Mutex
+	public               ed25519.PublicKey
+	now                  time.Time
+	offer                attachedworkerprotocol.VersionOfferV1
+	binding              attachedworkerprotocol.AttemptBindingV1
+	challenge            domain.AttachedWorkerAttachChallenge
+	steps                int
+	denied               int
+	challenges           int
+	activations          int
+	reconnectChallenges  int
+	reconnectActivations int
+	exchanges            int
+	lastError            string
+	lastKind             attachedworkerprotocol.MessageKind
+	terminal             chan attachedworkerprotocol.TerminalV1
+	idle                 bool
+	previousCheckpoint   attachedworkerlocal.ReconnectCheckpointV1
+	previousConfig       attachedworkerprotocol.MachineConfig
+	sealedGate           chan struct{}
+	sealedStarted        chan struct{}
+	sealedRelease        sync.Once
 }
 
 func (peer *commandSyntheticPeer) releaseSealed() {
@@ -590,6 +707,8 @@ func mustReadBounded(request *http.Request) []byte {
 func (peer *commandSyntheticPeer) issueChallenge(input attachedworkerhttp.ChallengeRequestV1) (attachedworkerhttp.ChallengeResponseV1, error) {
 	peer.mu.Lock()
 	peer.challenges++
+	sequence, now := peer.challenges, peer.now
+	previous := peer.previousCheckpoint
 	peer.mu.Unlock()
 	transcript, err := attachedworkertransport.ChallengeRequestProofTranscriptV1(input.TenantLocator, input.OwnerLocator,
 		domain.AttachedWorkerID(input.Hello.WorkerID), input.Hello.EnrollmentGeneration, input.Hello.ConnectionGeneration-1,
@@ -599,12 +718,18 @@ func (peer *commandSyntheticPeer) issueChallenge(input attachedworkerhttp.Challe
 	if err != nil || !ed25519.Verify(peer.public, transcript, input.Proof) {
 		return attachedworkerhttp.ChallengeResponseV1{}, fmt.Errorf("invalid challenge proof")
 	}
-	now := peer.now
+	if input.Purpose == domain.AttachedWorkerAttachReconnect {
+		peer.mu.Lock()
+		peer.reconnectChallenges++
+		peer.mu.Unlock()
+	}
 	platformNonce := bytes.Repeat([]byte{0x52}, 32)
 	challenge := domain.AttachedWorkerAttachChallenge{
-		TenantID: input.TenantLocator, OwnerUserID: input.OwnerLocator, ID: "challenge-command",
-		WorkerID: domain.AttachedWorkerID(input.Hello.WorkerID), ConnectionID: "connection-command",
-		Purpose: input.Purpose, Audience: input.ExpectedAudience, ExpectedWorkerRevision: input.ExpectedWorkerRevision,
+		TenantID: input.TenantLocator, OwnerUserID: input.OwnerLocator,
+		ID:           domain.AttachedWorkerChallengeID(fmt.Sprintf("challenge-command-%d", sequence)),
+		WorkerID:     domain.AttachedWorkerID(input.Hello.WorkerID),
+		ConnectionID: domain.AttachedWorkerConnectionID(fmt.Sprintf("connection-command-%d", sequence)),
+		Purpose:      input.Purpose, Audience: input.ExpectedAudience, ExpectedWorkerRevision: input.ExpectedWorkerRevision,
 		ExpectedEnrollmentGeneration: input.Hello.EnrollmentGeneration,
 		ExpectedConnectionGeneration: input.Hello.ConnectionGeneration - 1, TargetConnectionGeneration: input.Hello.ConnectionGeneration,
 		WorkerProtocolMinimum: 1, WorkerProtocolMaximum: 1, WorkerProtocolVersions: []uint32{1},
@@ -612,6 +737,16 @@ func (peer *commandSyntheticPeer) issueChallenge(input attachedworkerhttp.Challe
 		SelectedProtocolVersion: 1, WorkerNonceDigest: domain.DigestAttachedWorkerChallenge(input.Hello.Hello.WorkerNonce),
 		PlatformNonceDigest: domain.DigestAttachedWorkerChallenge(platformNonce),
 		CreatedAt:           now, ExpiresAt: now.Add(time.Minute), RetainUntil: now.Add(time.Hour), Revision: 1,
+	}
+	if input.Purpose == domain.AttachedWorkerAttachReconnect {
+		encoded, err := attachedworkerprotocol.EncodeMachineSnapshotV1(previous.MachineSnapshot)
+		if err != nil {
+			return attachedworkerhttp.ChallengeResponseV1{}, err
+		}
+		challenge.ExpectedConnectionID = previous.ConnectionID
+		challenge.ExpectedConnectionRevision = 2
+		challenge.ExpectedCapabilityDigest = previous.CapabilityDigest
+		challenge.ExpectedProtocolSnapshot = encoded
 	}
 	peer.mu.Lock()
 	peer.challenge = challenge
@@ -631,6 +766,9 @@ func (peer *commandSyntheticPeer) activate(input attachedworkerhttp.ActivateRequ
 	peer.mu.Lock()
 	peer.activations++
 	challenge := peer.challenge
+	now := peer.now
+	previous := peer.previousCheckpoint
+	previousConfig := peer.previousConfig
 	peer.mu.Unlock()
 	channel := attachedworkertransport.ConnectionChannelBinding(challenge.ID, challenge.WorkerNonceDigest,
 		challenge.PlatformNonceDigest, input.ConnectionSecretDigest)
@@ -644,29 +782,47 @@ func (peer *commandSyntheticPeer) activate(input attachedworkerhttp.ActivateRequ
 		ConnectionGeneration: challenge.TargetConnectionGeneration, Version: input.Attach.Version,
 		ChannelBinding: channelBytes,
 	}
-	if attachedworkerprotocol.VerifyAttachV1(auth, input.Attach) != nil {
-		return attachedworkerhttp.ActivateResponseV1{}, fmt.Errorf("invalid attach proof")
-	}
-	accepted := attachedworkerprotocol.FrameV1{
-		Version: input.Attach.Version, MessageID: attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionPlatformToWorker, 2),
-		WorkerID: input.Attach.WorkerID, EnrollmentGeneration: input.Attach.EnrollmentGeneration,
-		ConnectionGeneration: input.Attach.ConnectionGeneration, Sequence: 2, Ack: 2,
-		Kind: attachedworkerprotocol.MessageAttachAccepted, AttachAccepted: &attachedworkerprotocol.AttachAcceptedV1{
-			WorkerOffer: input.Attach.Attach.WorkerOffer, PlatformOffer: input.Attach.Attach.PlatformOffer,
-			SelectedVersion: input.Attach.Version, WorkerNonce: append([]byte(nil), input.Attach.Attach.WorkerNonce...),
-			PlatformNonce:    append([]byte(nil), input.Attach.Attach.PlatformNonce...),
-			CapabilityDigest: append([]byte(nil), input.Attach.Attach.CapabilityDigest...),
-		},
+	var accepted attachedworkerprotocol.FrameV1
+	var capabilityDigest []byte
+	if challenge.Purpose == domain.AttachedWorkerAttachReconnect {
+		if attachedworkerprotocol.VerifyReconnectV1(auth, input.Attach) != nil {
+			return attachedworkerhttp.ActivateResponseV1{}, fmt.Errorf("invalid reconnect proof")
+		}
+		accepted, _, err = attachedworkerprotocol.BuildReconnectAcceptedSnapshotV1(
+			previousConfig, previous.MachineSnapshot, auth, input.Attach)
+		if err != nil {
+			return attachedworkerhttp.ActivateResponseV1{}, err
+		}
+		peer.mu.Lock()
+		peer.reconnectActivations++
+		peer.mu.Unlock()
+		capabilityDigest = input.Attach.Reconnect.CapabilityDigest
+	} else {
+		if attachedworkerprotocol.VerifyAttachV1(auth, input.Attach) != nil {
+			return attachedworkerhttp.ActivateResponseV1{}, fmt.Errorf("invalid attach proof")
+		}
+		capabilityDigest = input.Attach.Attach.CapabilityDigest
+		accepted = attachedworkerprotocol.FrameV1{
+			Version: input.Attach.Version, MessageID: attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionPlatformToWorker, 2),
+			WorkerID: input.Attach.WorkerID, EnrollmentGeneration: input.Attach.EnrollmentGeneration,
+			ConnectionGeneration: input.Attach.ConnectionGeneration, Sequence: 2, Ack: 2,
+			Kind: attachedworkerprotocol.MessageAttachAccepted, AttachAccepted: &attachedworkerprotocol.AttachAcceptedV1{
+				WorkerOffer: input.Attach.Attach.WorkerOffer, PlatformOffer: input.Attach.Attach.PlatformOffer,
+				SelectedVersion: input.Attach.Version, WorkerNonce: append([]byte(nil), input.Attach.Attach.WorkerNonce...),
+				PlatformNonce:    append([]byte(nil), input.Attach.Attach.PlatformNonce...),
+				CapabilityDigest: append([]byte(nil), input.Attach.Attach.CapabilityDigest...),
+			},
+		}
 	}
 	return attachedworkerhttp.ActivateResponseV1{Connection: attachedworkerhttp.ActivateConnectionV1{
 		TenantID: challenge.TenantID, OwnerUserID: challenge.OwnerUserID, WorkerID: challenge.WorkerID,
 		ID: challenge.ConnectionID, ActivationChallengeID: challenge.ID,
 		EnrollmentGeneration: input.Attach.EnrollmentGeneration, ConnectionGeneration: input.Attach.ConnectionGeneration,
 		ProtocolVersion:  uint32(input.Attach.Version),
-		CapabilityDigest: domain.AttachedWorkerCapabilityDigest(hex.EncodeToString(input.Attach.Attach.CapabilityDigest)),
+		CapabilityDigest: domain.AttachedWorkerCapabilityDigest(hex.EncodeToString(capabilityDigest)),
 		SecretDigest:     input.ConnectionSecretDigest, ChannelBinding: channel,
 		State: domain.AttachedWorkerConnectionAttaching, PlatformSequence: 2, WorkerSequence: 2,
-		PlatformAck: 2, WorkerAck: 1, ConnectedAt: peer.now, AuthExpiresAt: peer.now.Add(time.Hour), Revision: 1,
+		PlatformAck: 2, WorkerAck: 1, ConnectedAt: now, AuthExpiresAt: now.Add(time.Hour), Revision: 1,
 	}, Accepted: accepted}, nil
 }
 

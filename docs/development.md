@@ -213,6 +213,12 @@ require this exact-YDB gate before image publication. The YDB
 target needs `YDB_CONNECTION_STRING` and credentials appropriate for the
 already migrated test database. Neither gate enables real provider access;
 the wider #79 security E2E is not complete merely because these checks pass.
+The YDB gate also holds an owner-A terminal pending, revokes A, and verifies
+that server-side materialization cannot turn the stale terminal evidence into
+canonical run finalization while owner B remains authorized. The terminal
+commit checks the current unrevoked owner-scoped worker and connection head in
+the same transaction as the canonical write; an already committed terminal may
+still be replayed idempotently.
 The opt-in `make attached-worker-native-integration` exercises one exact
 test-owned launchd or systemd user-service lifecycle. The separate opt-in
 `make attached-worker-rootless-integration` runs the same lifecycle on Linux

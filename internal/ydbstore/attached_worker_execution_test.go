@@ -12,6 +12,81 @@ import (
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
 
+func TestAW07TerminalCommitRequiresCurrentOwnerHead(t *testing.T) {
+	t.Parallel()
+	baseWorker := domain.AttachedWorker{
+		TenantID: "tenant-1", OwnerUserID: "owner-a", ID: "worker-collision",
+		DesiredState:         domain.AttachedWorkerDesiredActive,
+		EnrollmentGeneration: 3, ConnectionGeneration: 7,
+	}
+	baseConnection := domain.AttachedWorkerConnection{
+		TenantID: baseWorker.TenantID, OwnerUserID: baseWorker.OwnerUserID, WorkerID: baseWorker.ID,
+		ID: "connection-a", State: domain.AttachedWorkerConnectionOnline,
+		EnrollmentGeneration: 3, ConnectionGeneration: 7,
+	}
+	baseAttempt := domain.AttachedWorkerAttemptV1{
+		TenantID: baseWorker.TenantID, OwnerUserID: baseWorker.OwnerUserID, WorkerID: baseWorker.ID,
+		ConnectionID: baseConnection.ID, EnrollmentGeneration: 3, ConnectionGeneration: 7,
+	}
+	for _, test := range []struct {
+		name   string
+		change func(*domain.AttachedWorker, *domain.AttachedWorkerConnection, *domain.AttachedWorkerAttemptV1)
+		want   bool
+	}{
+		{name: "current active", want: true},
+		{name: "current draining", change: func(w *domain.AttachedWorker, c *domain.AttachedWorkerConnection, _ *domain.AttachedWorkerAttemptV1) {
+			w.DesiredState, c.State = domain.AttachedWorkerDesiredDrain, domain.AttachedWorkerConnectionDraining
+		}, want: true},
+		{name: "offline after accepted terminal", change: func(_ *domain.AttachedWorker, c *domain.AttachedWorkerConnection, _ *domain.AttachedWorkerAttemptV1) {
+			c.State = domain.AttachedWorkerConnectionOffline
+		}, want: true},
+		{name: "unconfirmed reconnect", change: func(_ *domain.AttachedWorker, c *domain.AttachedWorkerConnection, _ *domain.AttachedWorkerAttemptV1) {
+			c.State = domain.AttachedWorkerConnectionAttaching
+		}},
+		{name: "superseded connection", change: func(_ *domain.AttachedWorker, c *domain.AttachedWorkerConnection, _ *domain.AttachedWorkerAttemptV1) {
+			c.State = domain.AttachedWorkerConnectionSuperseded
+		}},
+		{name: "revoked worker", change: func(w *domain.AttachedWorker, _ *domain.AttachedWorkerConnection, _ *domain.AttachedWorkerAttemptV1) {
+			w.DesiredState = domain.AttachedWorkerDesiredRevoked
+		}},
+		{name: "revoked connection", change: func(_ *domain.AttachedWorker, c *domain.AttachedWorkerConnection, _ *domain.AttachedWorkerAttemptV1) {
+			c.State = domain.AttachedWorkerConnectionRevoked
+		}},
+		{name: "foreign worker owner", change: func(w *domain.AttachedWorker, _ *domain.AttachedWorkerConnection, _ *domain.AttachedWorkerAttemptV1) {
+			w.OwnerUserID = "owner-b"
+		}},
+		{name: "foreign connection owner", change: func(_ *domain.AttachedWorker, c *domain.AttachedWorkerConnection, _ *domain.AttachedWorkerAttemptV1) {
+			c.OwnerUserID = "owner-b"
+		}},
+		{name: "worker enrollment advanced", change: func(w *domain.AttachedWorker, _ *domain.AttachedWorkerConnection, _ *domain.AttachedWorkerAttemptV1) {
+			w.EnrollmentGeneration++
+		}},
+		{name: "worker connection advanced", change: func(w *domain.AttachedWorker, _ *domain.AttachedWorkerConnection, _ *domain.AttachedWorkerAttemptV1) {
+			w.ConnectionGeneration++
+		}},
+		{name: "connection enrollment advanced", change: func(_ *domain.AttachedWorker, c *domain.AttachedWorkerConnection, _ *domain.AttachedWorkerAttemptV1) {
+			c.EnrollmentGeneration++
+		}},
+		{name: "connection generation advanced", change: func(_ *domain.AttachedWorker, c *domain.AttachedWorkerConnection, _ *domain.AttachedWorkerAttemptV1) {
+			c.ConnectionGeneration++
+		}},
+		{name: "connection replaced", change: func(_ *domain.AttachedWorker, c *domain.AttachedWorkerConnection, _ *domain.AttachedWorkerAttemptV1) {
+			c.ID = "connection-b"
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			worker, connection, attempt := baseWorker, baseConnection, baseAttempt
+			if test.change != nil {
+				test.change(&worker, &connection, &attempt)
+			}
+			if got := attachedWorkerTerminalCommitAuthorityCurrent(worker, connection, attempt); got != test.want {
+				t.Fatalf("current terminal authority=%t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
 func TestValidateAttachedWorkerAttemptOfferRequiresCanonicalLease(t *testing.T) {
 	t.Parallel()
 	leaseID, err := domain.NewAttachedWorkerLeaseIDV1("tenant-1", "run-1", "attempt-1")

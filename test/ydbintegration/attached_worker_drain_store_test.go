@@ -830,7 +830,9 @@ func attachedWorkerOfferForDrain(t *testing.T, store *ydbstore.Store, client *yd
 	defer cancel()
 	runID := "run-drain-" + suffix
 	updateDigest := sha256.Sum256([]byte(suffix))
-	updateID := int64(binary.BigEndian.Uint64(updateDigest[:8]) & (1<<63 - 1))
+	// YDB JsonDocument round-trips small decimal IDs without exponent notation;
+	// larger 64-bit values are serialized as floats and cannot decode to int64.
+	updateID := int64(binary.BigEndian.Uint32(updateDigest[:4]))
 	ingress := ingressFixture(worker.TenantID, runID, updateID, now)
 	// Keep subscription authority distinct when two owners share one tenant.
 	// The generic ingress fixture derives this ID only from the tenant.

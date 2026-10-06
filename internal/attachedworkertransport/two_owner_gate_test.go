@@ -84,6 +84,156 @@ func TestAW07TwoOwnersCannotExchangeOrStealConnectionAuthority(t *testing.T) {
 	}
 }
 
+// Reconnect is a stronger collision than the initial attach: both owners have
+// a previous protocol snapshot and a valid challenge with the same locator.
+// A cloned signing key must still be bound to the owner in the reconnect proof.
+func TestAW07ClonedOwnerReconnectCannotCrossActivate(t *testing.T) {
+	_, aStore, aWorker, aKey := newTransportFixture(t)
+	bWorker := aWorker
+	bWorker.OwnerUserID = "owner-b"
+	bStore := &transportMemoryStore{worker: bWorker, now: aStore.now}
+	router := &twoOwnerTransportStore{owners: map[twoOwnerScope]*transportMemoryStore{
+		{aWorker.TenantID, aWorker.OwnerUserID, aWorker.ID}: aStore,
+		{bWorker.TenantID, bWorker.OwnerUserID, bWorker.ID}: bStore,
+	}}
+	attachService, err := NewService(ServiceConfig{
+		IDs: transportIDs{}, Audience: "sessionless:attached-worker:v1", PlatformOffer: testOffer(),
+		ImplementedVersions: []attachedworkerprotocol.ProtocolVersion{1}, ChallengeLifetime: 5 * time.Minute,
+		ChallengeRetention: time.Hour, PresenceTTL: 20 * time.Minute, AuthTTL: time.Hour,
+		CheckpointInterval: MinimumHeartbeatInterval, Random: bytes.NewReader(bytes.Repeat([]byte{0x35}, 256)),
+	}, router, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := readyTransportFixtureOnService(t, attachService, aStore, aWorker, aKey, 0x62)
+	b := readyTransportFixtureOnService(t, attachService, bStore, bWorker, aKey, 0x63)
+	reconnectService, err := NewService(ServiceConfig{
+		IDs: reconnectTransportIDs{}, Audience: "sessionless:attached-worker:v1", PlatformOffer: testOffer(),
+		ImplementedVersions: []attachedworkerprotocol.ProtocolVersion{1}, ChallengeLifetime: 5 * time.Minute,
+		ChallengeRetention: time.Hour, PresenceTTL: 20 * time.Minute, AuthTTL: time.Hour,
+		CheckpointInterval: MinimumHeartbeatInterval, Random: bytes.NewReader(bytes.Repeat([]byte{0x45}, 256)),
+	}, router, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aRequest := aw07ReconnectActivation(t, reconnectService, a, 0x72)
+	bRequest := aw07ReconnectActivation(t, reconnectService, b, 0x72)
+	if aRequest.ChallengeID != bRequest.ChallengeID || a.connection.ID != b.connection.ID ||
+		a.worker.TenantID != b.worker.TenantID || a.worker.ID != b.worker.ID ||
+		!bytes.Equal(a.worker.IdentityPublicKey, b.worker.IdentityPublicKey) ||
+		aRequest.ConnectionSecretDigest != bRequest.ConnectionSecretDigest ||
+		aStore.challenge.WorkerNonceDigest != bStore.challenge.WorkerNonceDigest ||
+		aStore.challenge.PlatformNonceDigest != bStore.challenge.PlatformNonceDigest {
+		t.Fatal("reconnect fixture must share tenant, worker/key, prior connection, challenge, nonces, and next secret")
+	}
+	for _, tc := range []struct {
+		name string
+		from ActivateRequest
+		to   readyTransportFixture
+	}{
+		{"a_to_b", aRequest, b}, {"b_to_a", bRequest, a},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.to.store.mu.Lock()
+			beforeWorker, beforeConnection, beforeChallenge := tc.to.store.worker, tc.to.store.connection, tc.to.store.challenge
+			tc.to.store.mu.Unlock()
+			_, err := reconnectService.Activate(context.Background(), tc.to.worker.TenantID, tc.to.worker.OwnerUserID, tc.from)
+			if !errors.Is(err, ErrTransportUnauthorized) {
+				t.Fatalf("foreign reconnect activation error=%v, want unauthorized", err)
+			}
+			tc.to.store.mu.Lock()
+			unchanged := reflect.DeepEqual(tc.to.store.worker, beforeWorker) &&
+				reflect.DeepEqual(tc.to.store.connection, beforeConnection) &&
+				reflect.DeepEqual(tc.to.store.challenge, beforeChallenge)
+			tc.to.store.mu.Unlock()
+			if !unchanged {
+				t.Fatal("foreign reconnect changed target owner authority")
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name    string
+		worker  domain.AttachedWorker
+		request ActivateRequest
+		before  domain.AttachedWorkerConnection
+	}{
+		{"owner_a", a.worker, aRequest, a.connection},
+		{"owner_b", b.worker, bRequest, b.connection},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			activation, err := reconnectService.Activate(context.Background(), tc.worker.TenantID, tc.worker.OwnerUserID, tc.request)
+			if err != nil || activation.Accepted.Kind != attachedworkerprotocol.MessageReconnectAccepted ||
+				activation.Connection.ID == tc.before.ID ||
+				activation.Connection.ConnectionGeneration != tc.before.ConnectionGeneration+1 ||
+				activation.Connection.State != domain.AttachedWorkerConnectionAttaching {
+				t.Fatalf("own reconnect activation=%+v err=%v", activation, err)
+			}
+		})
+	}
+}
+
+func aw07ReconnectActivation(t *testing.T, service *Service, fixture readyTransportFixture, secretByte byte) ActivateRequest {
+	t.Helper()
+	fixture.store.mu.Lock()
+	worker, previous := fixture.store.worker, fixture.store.connection
+	fixture.store.mu.Unlock()
+	challengeRequest := signedChallengeRequest(t, worker, fixture.privateKey)
+	challengeRequest.Purpose = domain.AttachedWorkerAttachReconnect
+	proof, err := SignChallengeRequest(fixture.privateKey, worker.TenantID, worker.OwnerUserID, worker, challengeRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	challengeRequest.Proof = proof
+	grant, err := service.IssueChallenge(context.Background(), worker.TenantID, worker.OwnerUserID, challengeRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousConfig, previousSnapshot, err := service.protocolStateForConnection(worker, previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerMachine, err := attachedworkerprotocol.RestoreConformanceMachine(previousConfig, previousSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextSecret, err := ParseConnectionSecret(bytes.Repeat([]byte{secretByte}, connectionSecretBytes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextBinding := ConnectionChannelBinding(grant.Challenge.ID, grant.Challenge.WorkerNonceDigest, grant.Challenge.PlatformNonceDigest, nextSecret.Digest())
+	nextBindingBytes, err := decodeChannelBinding(nextBinding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextAuth := attachedworkerprotocol.AuthContextV1{
+		TenantID: string(worker.TenantID), OwnerUserID: string(worker.OwnerUserID), WorkerID: string(worker.ID),
+		IdentityPublicKey: worker.IdentityPublicKey, EnrollmentGeneration: worker.EnrollmentGeneration,
+		ConnectionGeneration: grant.Challenge.TargetConnectionGeneration, Version: 1, ChannelBinding: nextBindingBytes,
+	}
+	claim, err := workerMachine.BeginReconnect(nextAuth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconnect, err := attachedworkerprotocol.BuildReconnectV1(claim, attachedworkerprotocol.ReconnectNegotiationV1{
+		WorkerOffer: challengeRequest.Hello.Hello.Offer, PlatformOffer: grant.Frame.Challenge.PlatformOffer,
+		SelectedVersion: grant.Frame.Challenge.SelectedVersion, WorkerNonce: challengeRequest.Hello.Hello.WorkerNonce,
+		PlatformNonce: grant.Frame.Challenge.PlatformNonce, CapabilityDigest: mustDecodeHex(string(previous.CapabilityDigest)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame := attachedworkerprotocol.FrameV1{
+		Version: 1, MessageID: attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionWorkerToPlatform, 2),
+		WorkerID: string(worker.ID), EnrollmentGeneration: worker.EnrollmentGeneration,
+		ConnectionGeneration: grant.Challenge.TargetConnectionGeneration, Sequence: 2, Ack: 1,
+		Kind: attachedworkerprotocol.MessageReconnect, Reconnect: &reconnect,
+	}
+	if err := attachedworkerprotocol.SignReconnectV1(fixture.privateKey, nextAuth, &frame); err != nil {
+		t.Fatal(err)
+	}
+	return ActivateRequest{ChallengeID: grant.Challenge.ID, ConnectionSecretDigest: nextSecret.Digest(), Attach: frame}
+}
+
 type twoOwnerScope struct {
 	tenant domain.TenantID
 	owner  domain.UserID

@@ -236,6 +236,14 @@ across revocation: B remains readable, while A's post-read authority check
 discards the held bytes. Cross-owner bearer borrowing is denied before any
 object read. This still does not prove the two-daemon process or provider
 resource boundaries.
+The gate additionally repeats this held-read/revocation case with A and B as
+separate test-owned OS client processes. Each child receives only an
+owner-scoped HTTPS bearer and request, not inherited YDB or object-store
+credentials: a cross-owner request cannot open an object, B reads its own
+context and artifact while A is held, and A receives no material after
+revocation. This covers the network/process boundary of sealed-input
+delivery. It is not an OS sandbox, credential-path, activated-daemon OCI, or
+provider-resource proof; #79 remains open for that joined scenario.
 The opt-in `make attached-worker-native-integration` exercises one exact
 test-owned launchd or systemd user-service lifecycle. The separate opt-in
 `make attached-worker-rootless-integration` runs the same lifecycle on Linux

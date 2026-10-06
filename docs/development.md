@@ -220,6 +220,9 @@ canonical run finalization while owner B remains authorized. The terminal
 commit checks the current unrevoked owner-scoped worker and connection head in
 the same transaction as the canonical write; an already committed terminal may
 still be replayed idempotently.
+The same gate reconnects an idle owner A while owner B retains a claimed job,
+then proves that A's old bearer and generation stay fenced after A claims a
+new job and after A is revoked; B's claim remains authorized throughout.
 The opt-in `make attached-worker-native-integration` exercises one exact
 test-owned launchd or systemd user-service lifecycle. The separate opt-in
 `make attached-worker-rootless-integration` runs the same lifecycle on Linux

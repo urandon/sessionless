@@ -288,9 +288,18 @@ func aw07ClaimedInput(t *testing.T, store *ydbstore.Store, client *ydbclient.Cli
 	secret domain.AttachedWorkerConnectionSecretDigest, now time.Time, suffix string,
 ) aw07ClaimedAuthorization {
 	t.Helper()
+	return aw07ClaimedInputWithPayload(t, store, client, worker, connection, secret, now, suffix, nil, nil)
+}
+
+func aw07ClaimedInputWithPayload(t *testing.T, store *ydbstore.Store, client *ydbclient.Client,
+	worker domain.AttachedWorker, connection domain.AttachedWorkerConnection,
+	secret domain.AttachedWorkerConnectionSecretDigest, now time.Time, suffix string,
+	contextBody, artifactBody []byte,
+) aw07ClaimedAuthorization {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	offer := attachedWorkerOfferForDrain(t, store, client, worker, connection, now, suffix)
+	offer := attachedWorkerOfferForDrainWithPayload(t, store, client, worker, connection, now, suffix, contextBody, artifactBody)
 	batch, err := attachedworkerprotocol.DecodeBatchV1(offer.Outbound.Payload)
 	if err != nil || len(batch.Frames) != 1 || batch.Frames[0].LeaseOffer == nil {
 		t.Fatalf("decode owner %s offer: frames=%d err=%v", suffix, len(batch.Frames), err)

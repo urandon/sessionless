@@ -8,6 +8,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"testing"
@@ -734,15 +735,28 @@ func TestAttachedWorkerDrainSerializesAgainstRevocation(t *testing.T) {
 }
 
 func readyAttachedWorkerForDrain(t *testing.T, suffix string) (*ydbstore.Store, *ydbclient.Client, domain.AttachedWorker, domain.AttachedWorkerConnection, domain.AttachedWorkerConnectionSecretDigest, ed25519.PrivateKey, []byte, time.Time) {
+	return readyAttachedWorkerForDrainWithIdentity(t, suffix, "", "")
+}
+
+func readyAttachedWorkerForDrainWithIdentity(t *testing.T, suffix string, tenantID domain.TenantID, workerID domain.AttachedWorkerID) (*ydbstore.Store, *ydbclient.Client, domain.AttachedWorker, domain.AttachedWorkerConnection, domain.AttachedWorkerConnectionSecretDigest, ed25519.PrivateKey, []byte, time.Time) {
 	t.Helper()
 	suffix = attachedWorkerDrainTestSuffix(t, suffix)
 	store, client := openStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	t.Cleanup(cancel)
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	tenantID := domain.TenantID(uniqueID("tenant-worker-" + suffix))
+	if tenantID == "" {
+		tenantID = domain.TenantID(uniqueID("tenant-worker-" + suffix))
+	}
 	ownerID := domain.UserID(uniqueID("owner-worker-" + suffix))
 	enrollment, createAudit := attachedWorkerEnrollmentFixture(suffix, tenantID, ownerID, now.Add(-time.Second))
+	// This helper establishes a ready worker before the scenario under test;
+	// enrollment expiry is not the assertion and must outlive a slow CI run.
+	enrollment.ExpiresAt = now.Add(30 * time.Minute)
+	if workerID != "" {
+		enrollment.WorkerID = workerID
+		createAudit.WorkerID = workerID
+	}
 	if err := store.CreateAttachedWorkerEnrollment(ctx, enrollment, createAudit); err != nil {
 		t.Fatal(err)
 	}
@@ -815,7 +829,14 @@ func attachedWorkerOfferForDrain(t *testing.T, store *ydbstore.Store, client *yd
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	runID := "run-drain-" + suffix
-	ingress := ingressFixture(worker.TenantID, runID, 9801, now)
+	updateDigest := sha256.Sum256([]byte(suffix))
+	// YDB JsonDocument round-trips small decimal IDs without exponent notation;
+	// larger 64-bit values are serialized as floats and cannot decode to int64.
+	updateID := int64(binary.BigEndian.Uint32(updateDigest[:4]))
+	ingress := ingressFixture(worker.TenantID, runID, updateID, now)
+	// Keep subscription authority distinct when two owners share one tenant.
+	// The generic ingress fixture derives this ID only from the tenant.
+	ingress.Run.SubscriptionConnectionID = domain.SubscriptionConnectionID("subscription-" + suffix)
 	policyDigest := domain.AttachedWorkerPolicyDigest(domain.DigestAttachedWorkerCapability([]byte("policy-" + suffix)))
 	placement := domain.ExecutionPlacementV2{
 		Version: domain.ExecutionPlacementVersionV2, Kind: domain.ExecutionPlacementAttachedWorker,

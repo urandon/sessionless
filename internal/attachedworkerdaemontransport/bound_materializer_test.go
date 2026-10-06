@@ -176,6 +176,7 @@ func TestBoundMaterializerRejectsSwappedOrTamperedInput(t *testing.T) {
 		want   error
 	}{
 		{name: "cross owner", mutate: func(input *SealedInputV1) { input.Job.ExecutionPlacementV2.OwnerUserID = "owner-2" }, want: ErrSealedInputInvalid},
+		{name: "cross credential owner", mutate: func(input *SealedInputV1) { input.Job.CredentialOwnerUserID = "owner-2" }, want: ErrSealedInputInvalid},
 		{name: "cross attempt", mutate: func(input *SealedInputV1) { input.Job.AttemptID = "attempt-2" }, want: ErrSealedInputInvalid},
 		{name: "context digest drift", mutate: func(input *SealedInputV1) { input.Job.Limits.MaxTurns++ }, want: ErrSealedInputInvalid},
 		{name: "context bytes drift", mutate: func(input *SealedInputV1) { input.Context[0] ^= 1 }, want: ErrSealedInputInvalid},

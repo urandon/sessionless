@@ -20,16 +20,20 @@ grep -F 'id-token: write' "$workflow" >/dev/null
 grep -F 'contents: write' "$workflow" >/dev/null
 
 validate_job=$(sed -n '/^  validate:/,/^  verify:/p' "$workflow")
-verify_job=$(sed -n '/^  verify:/,/^  images:/p' "$workflow")
+verify_job=$(sed -n '/^  verify:/,/^  security-ydb:/p' "$workflow")
+security_ydb_job=$(sed -n '/^  security-ydb:/,/^  images:/p' "$workflow")
 images_job=$(sed -n '/^  images:/,/^  release:/p' "$workflow")
 release_job=$(sed -n '/^  release:/,$p' "$workflow")
-for read_only_job in "$validate_job" "$verify_job"; do
+for read_only_job in "$validate_job" "$verify_job" "$security_ydb_job"; do
   printf '%s\n' "$read_only_job" | grep -F 'contents: read' >/dev/null
   if printf '%s\n' "$read_only_job" | grep -Eq 'contents: write|id-token: write'; then
     printf '%s\n' 'read-only release job has a privileged permission' >&2
     exit 1
   fi
 done
+printf '%s\n' "$security_ydb_job" | grep -F 'make attached-worker-security-ydb-gate' >/dev/null
+printf '%s\n' "$security_ydb_job" | grep -F 'make migrate-local' >/dev/null
+printf '%s\n' "$images_job" | grep -F -- '- security-ydb' >/dev/null
 printf '%s\n' "$images_job" | grep -F 'contents: read' >/dev/null
 printf '%s\n' "$images_job" | grep -F 'id-token: write' >/dev/null
 if printf '%s\n' "$images_job" | grep -F 'contents: write' >/dev/null; then
@@ -66,7 +70,7 @@ if grep -F 'ref: refs/tags/' "$workflow" >/dev/null; then
   printf '%s\n' 'downstream release checkout must use the validated immutable source SHA' >&2
   exit 1
 fi
-test "$(grep -Fc 'ref: ${{ needs.validate.outputs.source_sha }}' "$workflow")" -eq 3
+test "$(grep -Fc 'ref: ${{ needs.validate.outputs.source_sha }}' "$workflow")" -eq 4
 grep -F 'sh scripts/verify-release-tag.sh' "$workflow" >/dev/null
 test "$(grep -c 'verify-release-tag.sh' "$workflow")" -ge 4
 grep -F 'IMAGE_REPRODUCIBILITY_RETAIN_REGISTRY: "1"' "$workflow" >/dev/null

@@ -323,6 +323,26 @@ esac
 			t.Fatal(err)
 		}
 	}
+	// Keep a test-owned path next to, but outside, every worker attempt root.
+	// Shutdown, cancellation, and crash recovery may clean their own roots;
+	// they must never remove or rewrite an unrelated host file.
+	sentinelPath := filepath.Join(root, "external-sentinel")
+	sentinelBody := []byte("outside attached-worker attempt authority\n")
+	if err := os.WriteFile(sentinelPath, sentinelBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		got, err := os.ReadFile(sentinelPath)
+		if err != nil || !bytes.Equal(got, sentinelBody) {
+			t.Errorf("external sentinel changed: content=%q err=%v", got, err)
+		}
+		for _, dir := range []string{materializationRoot, scratchRoot} {
+			entries, err := os.ReadDir(dir)
+			if err != nil || len(entries) != 0 {
+				t.Errorf("attempt root not cleaned: root=%s entries=%v err=%v", dir, entries, err)
+			}
+		}
+	})
 	offer := attachedworkerprotocol.VersionOfferV1{Window: attachedworkerprotocol.VersionWindow{Minimum: 1, Maximum: 1},
 		Supported: []attachedworkerprotocol.ProtocolVersion{attachedworkerprotocol.ProtocolVersionV1}}
 	capability := attachedworkerprotocol.CapabilityManifestV1{

@@ -111,6 +111,9 @@ jobs:
       - name: Run YDB integration suite
         run: make ydb-integration
 
+      - name: Prove attached-worker two-owner YDB authority gate
+        run: make attached-worker-security-ydb-gate
+
       - name: Stop YDB Local
         if: always()
         run: docker stop sessionless-ydb || true

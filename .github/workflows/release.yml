@@ -80,11 +80,73 @@ jobs:
       - name: Run repository verification contract
         run: make ci
 
+  security-ydb:
+    name: Prove tagged two-owner attached-worker authority
+    needs:
+      - validate
+      - verify
+    if: needs.validate.outputs.valid == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    env:
+      YDB_CONNECTION_STRING: grpc://localhost:2136/local?go_query_mode=scripting&go_fake_tx=scripting&go_query_bind=declare,numeric
+      YDB_ANONYMOUS_CREDENTIALS: "1"
+    steps:
+      - name: Checkout verified tag
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.validate.outputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up pinned Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Start pinned YDB Local
+        run: |
+          . tools/versions.env
+          docker run --detach --rm --name sessionless-release-ydb \
+            --hostname localhost \
+            --publish 2136:2136 \
+            --publish 8765:8765 \
+            --env YDB_USE_IN_MEMORY_PDISKS=true \
+            "ydbplatform/local-ydb:${YDB_LOCAL_IMAGE_VERSION}"
+
+      - name: Wait for YDB Local
+        run: |
+          for attempt in $(seq 1 90); do
+            if curl --fail --silent --show-error \
+              http://localhost:8765/monitoring/cluster >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs sessionless-release-ydb
+          exit 1
+
+      - name: Apply schema twice
+        run: |
+          make migrate-local
+          make migrate-local
+
+      - name: Prove two-owner YDB authority on exact tag
+        run: make attached-worker-security-ydb-gate
+
+      - name: Stop YDB Local
+        if: always()
+        run: docker stop sessionless-release-ydb || true
+
   images:
     name: Publish or verify release images
     needs:
       - validate
       - verify
+      - security-ydb
     if: needs.validate.outputs.valid == 'true'
     environment: release
     runs-on: ubuntu-latest

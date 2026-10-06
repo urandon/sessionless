@@ -202,7 +202,8 @@ These fixtures need no provider credentials, Docker engine, OS service
 registration, or cloud resources; ordinary `make test` skips both process-kill
 fixtures.
 The #79 `make attached-worker-security-gate` makes the two-owner transport
-collision/secret-theft check, sealed-input owner and credential denials,
+collision/secret-theft and cloned-identity reconnect checks, sealed-input
+owner and credential denials,
 protocol cancel/revoke fencing, CLI attempt-root/sentinel checks, and both
 crash/restart fixtures non-optional in `make ci`. The YDB CI job separately
 runs `make attached-worker-security-ydb-gate` after migration: two distinct

@@ -201,6 +201,18 @@ bounded test does not claim exact-binary active-crash coverage.
 These fixtures need no provider credentials, Docker engine, OS service
 registration, or cloud resources; ordinary `make test` skips both process-kill
 fixtures.
+The #79 `make attached-worker-security-gate` makes the two-owner transport
+collision/secret-theft check, sealed-input owner and credential denials,
+protocol cancel/revoke fencing, CLI attempt-root/sentinel checks, and both
+crash/restart fixtures non-optional in `make ci`. The YDB CI job separately
+runs `make attached-worker-security-ydb-gate` after migration: two distinct
+owners in one tenant hold live claimed attempts under a deliberately colliding
+worker ID and identity key, cross-owner sealed-input requests are denied, and
+revoking one worker does not revoke the other's claim. Tagged releases also
+require this exact-YDB gate before image publication. The YDB
+target needs `YDB_CONNECTION_STRING` and credentials appropriate for the
+already migrated test database. Neither gate enables real provider access;
+the wider #79 security E2E is not complete merely because these checks pass.
 The opt-in `make attached-worker-native-integration` exercises one exact
 test-owned launchd or systemd user-service lifecycle. The separate opt-in
 `make attached-worker-rootless-integration` runs the same lifecycle on Linux

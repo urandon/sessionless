@@ -1083,12 +1083,17 @@ func newTransportServiceWithBroker(t *testing.T, store *transportMemoryStore, br
 func newReadyTransportFixture(t *testing.T) readyTransportFixture {
 	t.Helper()
 	service, store, worker, privateKey := newTransportFixture(t)
+	return readyTransportFixtureOnService(t, service, store, worker, privateKey, 0x62)
+}
+
+func readyTransportFixtureOnService(t *testing.T, service *Service, store *transportMemoryStore, worker domain.AttachedWorker, privateKey ed25519.PrivateKey, secretByte byte) readyTransportFixture {
+	t.Helper()
 	request := signedChallengeRequest(t, worker, privateKey)
 	grant, err := service.IssueChallenge(context.Background(), worker.TenantID, worker.OwnerUserID, request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	secret, _ := ParseConnectionSecret(bytes.Repeat([]byte{0x62}, connectionSecretBytes))
+	secret, _ := ParseConnectionSecret(bytes.Repeat([]byte{secretByte}, connectionSecretBytes))
 	manifest := testCapabilityManifest(worker)
 	capabilityDigest, err := attachedworkerprotocol.ManifestDigestV1(manifest)
 	if err != nil {

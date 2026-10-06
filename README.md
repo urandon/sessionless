@@ -95,7 +95,9 @@ release gates and explicit configuration are satisfied.
   `make attached-worker-crash-integration` verifies test-owned exact-binary
   idle restart; `make attached-worker-active-crash-integration` checks active
   restart fencing in a clock-controlled test process. Neither needs Docker
-  or provider credentials.
+  or provider credentials. `make attached-worker-security-gate` repeats the
+  two-owner transport and recovery checks under the race detector;
+  `make attached-worker-security-ydb-gate` requires an already migrated YDB.
 - **Architect or security reviewer:** start with the
   [domain/runtime contracts](docs/contracts.md) and
   [security documentation](docs/README.md#security-and-trust-boundaries).

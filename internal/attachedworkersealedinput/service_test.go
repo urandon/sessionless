@@ -193,6 +193,20 @@ func TestLoadFailsClosedBeforeReadAndAfterRevisionLoss(t *testing.T) {
 	}
 }
 
+// The job store is tenant/run keyed, not owner keyed. Even if an upstream
+// authorizer accidentally approves a forged owner scope, no bytes for the
+// other owner's job may pass the service's independent job binding check.
+func TestAW07ForeignOwnerCannotReadSameTenantJobOrArtifact(t *testing.T) {
+	service, authorizer, jobs, blobs, request := fixtureInput(t)
+	request.OwnerUserID = "owner-2"
+	input, err := service.Load(context.Background(), []byte("test-connection-bearer"), request)
+	if !errors.Is(err, ErrUnauthorized) || len(input.Context) != 0 || len(input.Artifacts) != 0 ||
+		authorizer.calls != 1 || jobs.calls != 1 || blobs.calls != 0 {
+		t.Fatalf("foreign owner read same-tenant job: err=%v auth=%d jobs=%d blobs=%d input=%+v",
+			err, authorizer.calls, jobs.calls, blobs.calls, input)
+	}
+}
+
 func TestLoadRejectsChangedRevisionAfterBlobRead(t *testing.T) {
 	service, authorizer, jobs, blobs, request := fixtureInput(t)
 	authorizer.secondRevision = 8

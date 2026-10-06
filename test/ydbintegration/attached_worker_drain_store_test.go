@@ -774,7 +774,10 @@ func readyAttachedWorkerForDrainWithIdentity(t *testing.T, suffix string, tenant
 	}
 	channelBytes := bytes.Repeat([]byte{0x72}, 32)
 	canonicalManifest, capabilityDigest, attachedSnapshot, readySnapshot, manifestSignature := attachedWorkerProtocolSnapshotFixture(t, worker, challenge, privateKey, channelBytes)
-	secretDigest := domain.DigestAttachedWorkerConnectionSecret([]byte("drain-race-bearer-" + suffix))
+	// Keep the synthetic bearer recoverable by the transport-level integration
+	// test while still unique to this test-owned worker scope.
+	secretBytes := sha256.Sum256([]byte("drain-race-bearer-" + string(ownerID)))
+	secretDigest := domain.DigestAttachedWorkerConnectionSecret(secretBytes[:])
 	activated, err := store.ActivateAttachedWorkerConnection(ctx, ports.AttachedWorkerConnectionActivation{
 		TenantID: tenantID, OwnerUserID: ownerID, WorkerID: worker.ID, ChallengeID: challenge.ID,
 		Purpose: domain.AttachedWorkerAttachInitial, ExpectedChallengeRevision: challenge.Revision,

@@ -832,7 +832,7 @@ func attachedWorkerOfferForDrain(t *testing.T, store *ydbstore.Store, client *yd
 	return attachedWorkerOfferForDrainWithPayload(t, store, client, worker, connection, now, suffix, nil, nil)
 }
 
-func attachedWorkerOfferForDrainWithPayload(t *testing.T, store *ydbstore.Store, client *ydbclient.Client, worker domain.AttachedWorker, connection domain.AttachedWorkerConnection, now time.Time, suffix string, contextBody, artifactBody []byte) ports.AttachedWorkerAttemptResult {
+func attachedWorkerOfferForDrainWithPayload(t *testing.T, store *ydbstore.Store, client *ydbclient.Client, worker domain.AttachedWorker, connection domain.AttachedWorkerConnection, now time.Time, suffix string, contextBody, artifactBody []byte, maxRuntime ...time.Duration) ports.AttachedWorkerAttemptResult {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -901,6 +901,12 @@ func attachedWorkerOfferForDrainWithPayload(t *testing.T, store *ydbstore.Store,
 		MaxTenantQueueDepth: 8, MaxActiveRuns: 1, MaxRuntime: 5 * time.Minute,
 		MaxTurns: 8, MaxInputBytes: 1 << 20, MaxContextBytes: 1 << 20,
 		MaxContextEvents: 64, MaxArtifacts: 8, MaxToolEvents: 16, MaxToolEventBytes: 1 << 18,
+	}
+	if len(maxRuntime) > 1 {
+		t.Fatal("at most one maxRuntime override is allowed")
+	}
+	if len(maxRuntime) == 1 {
+		limits.MaxRuntime = maxRuntime[0]
 	}
 	reservation := domain.QuotaReservation{
 		ID: domain.QuotaReservationID("reservation-" + runID), TenantID: worker.TenantID, RunID: ingress.Run.ID,

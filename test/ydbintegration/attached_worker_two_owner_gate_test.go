@@ -165,6 +165,115 @@ func TestAW07RevocationFencesPendingTerminalBeforeRunFinalization(t *testing.T) 
 	aw07Authorized(t, bStore, ctx, b)
 }
 
+// An idle owner can recover with a rotated connection while another owner in
+// the same tenant continues a claimed attempt. Neither the old bearer nor the
+// old connection generation may regain sealed-input authority afterward.
+func TestAW07TwoOwnerReconnectKeepsPeerClaimAndFencesOldBearer(t *testing.T) {
+	aStore, aClient, aWorker, aConnection, aSecret, aKey, aManifest, aNow := readyAttachedWorkerForDrain(t, "aw07-reconnect-a")
+	bStore, bClient, bWorker, bConnection, bSecret, _, _, bNow := readyAttachedWorkerForDrainWithIdentity(t,
+		"aw07-reconnect-b", aWorker.TenantID, aWorker.ID)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	b := aw07ClaimedInput(t, bStore, bClient, bWorker, bConnection, bSecret, bNow, attachedWorkerDrainTestSuffix(t, "aw07-peer-claim"))
+	aw07Authorized(t, bStore, ctx, b)
+
+	// The reconnect protocol fixture requires the challenge's reconnect nonce
+	// pair, selected by this exact fixture mode.
+	challengeCreate := attachedWorkerChallengeCreateFixture(aWorker, "reconnect")
+	challengeCreate.Lifetime = 10 * time.Minute
+	challengeCreate.Purpose = domain.AttachedWorkerAttachReconnect
+	challengeCreate.ExpectedConnectionID = aConnection.ID
+	challengeCreate.ExpectedConnectionRevision = aConnection.Revision
+	challengeCreate.ExpectedCapabilityDigest = aConnection.CapabilityDigest
+	challengeCreate.ExpectedProtocolSnapshot = append([]byte(nil), aConnection.ProtocolSnapshot...)
+	challenge, err := aStore.CreateAttachedWorkerAttachChallenge(ctx, challengeCreate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	channelBytes := bytes.Repeat([]byte{0x7a}, 32)
+	attachedSnapshot, readySnapshot, manifestSignature := attachedWorkerReconnectProtocolSnapshotFixture(
+		t, aWorker, aConnection, challenge, aKey, channelBytes,
+	)
+	newSecret := domain.DigestAttachedWorkerConnectionSecret([]byte("aw07-reconnected-owner-a"))
+	activated, err := aStore.ActivateAttachedWorkerConnection(ctx, ports.AttachedWorkerConnectionActivation{
+		TenantID: aWorker.TenantID, OwnerUserID: aWorker.OwnerUserID, WorkerID: aWorker.ID,
+		ChallengeID: challenge.ID, Purpose: challenge.Purpose, ExpectedChallengeRevision: challenge.Revision,
+		ExpectedWorkerRevision: aWorker.Revision, ExpectedEnrollmentGeneration: aWorker.EnrollmentGeneration,
+		ExpectedConnectionGeneration: aWorker.ConnectionGeneration,
+		ExpectedConnectionID:         aConnection.ID, ExpectedConnectionRevision: aConnection.Revision,
+		ExpectedPreviousCapabilityDigest: aConnection.CapabilityDigest,
+		ExpectedPreviousProtocolSnapshot: append([]byte(nil), aConnection.ProtocolSnapshot...),
+		PresentedWorkerNonceDigest:       challenge.WorkerNonceDigest, PresentedPlatformNonceDigest: challenge.PlatformNonceDigest,
+		ConnectionSecretDigest: newSecret, ChannelBinding: domain.NewAttachedWorkerChannelBinding(channelBytes),
+		ExpectedCapabilityDigest: aConnection.CapabilityDigest, ProtocolSnapshot: attachedSnapshot, AuthTTL: time.Hour,
+	})
+	if err != nil || activated.Status != ports.AttachedWorkerConnectionActivated ||
+		activated.Connection.ID == aConnection.ID ||
+		activated.Connection.ConnectionGeneration != aConnection.ConnectionGeneration+1 {
+		t.Fatalf("owner A reconnect activation = %+v err=%v", activated, err)
+	}
+	aw07Authorized(t, bStore, ctx, b)
+	aWorker, found, err := aStore.LoadAttachedWorker(ctx, aWorker.TenantID, aWorker.OwnerUserID, aWorker.ID)
+	if err != nil || !found {
+		t.Fatalf("owner A worker after reconnect activation: found=%t err=%v", found, err)
+	}
+	accepted, err := aStore.AcceptAttachedWorkerManifest(ctx, ports.AttachedWorkerManifestAcceptance{
+		TenantID: aWorker.TenantID, OwnerUserID: aWorker.OwnerUserID, WorkerID: aWorker.ID,
+		ConnectionID: activated.Connection.ID, ConnectionGeneration: activated.Connection.ConnectionGeneration,
+		ExpectedConnectionRevision: activated.Connection.Revision, ExpectedWorkerRevision: aWorker.Revision,
+		PresentedSecretDigest: newSecret,
+		Capability: ports.AttachedWorkerCapabilityTarget{
+			ManifestRevision: 1, Digest: aConnection.CapabilityDigest, ProtocolVersion: challenge.SelectedProtocolVersion,
+			IdentityKeyDigest: domain.DigestAttachedWorkerIdentityKey(aWorker.IdentityPublicKey), CanonicalManifest: aManifest,
+			ManifestPayload: []byte(`{"version":1,"surface":"codex-exec"}`), Signature: manifestSignature,
+		},
+		PlatformSequence: 2, WorkerSequence: 3, PlatformAck: 2, WorkerAck: 2,
+		ProtocolSnapshot: readySnapshot, PresenceTTL: 10 * time.Minute,
+	})
+	if err != nil || accepted.Status != ports.AttachedWorkerConnectionAuthorized {
+		t.Fatalf("owner A reconnect manifest = %+v err=%v", accepted, err)
+	}
+	aWorker, found, err = aStore.LoadAttachedWorker(ctx, aWorker.TenantID, aWorker.OwnerUserID, aWorker.ID)
+	if err != nil || !found {
+		t.Fatalf("owner A worker after reconnect manifest: found=%t err=%v", found, err)
+	}
+	a := aw07ClaimedInput(t, aStore, aClient, aWorker, accepted.Connection, newSecret, aNow,
+		attachedWorkerDrainTestSuffix(t, "aw07-recovered-claim"))
+	aw07Authorized(t, aStore, ctx, a)
+	aw07Authorized(t, bStore, ctx, b)
+	for _, tc := range []struct {
+		name   string
+		change func(*ports.AttachedWorkerSealedInputAuthorization)
+	}{
+		{"old_bearer", func(request *ports.AttachedWorkerSealedInputAuthorization) {
+			request.ConnectionID = aConnection.ID
+			request.ConnectionGeneration = aConnection.ConnectionGeneration
+			request.PresentedSecretDigest = aSecret
+		}},
+		{"old_generation", func(request *ports.AttachedWorkerSealedInputAuthorization) {
+			request.ConnectionGeneration = aConnection.ConnectionGeneration
+		}},
+		{"old_secret", func(request *ports.AttachedWorkerSealedInputAuthorization) {
+			request.PresentedSecretDigest = aSecret
+		}},
+		{"old_locator", func(request *ports.AttachedWorkerSealedInputAuthorization) {
+			request.ConnectionID = aConnection.ID
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stale := a.request
+			tc.change(&stale)
+			aw07Denied(t, aStore, ctx, stale)
+			aw07Authorized(t, bStore, ctx, b)
+		})
+	}
+	aw07Authorized(t, aStore, ctx, a)
+	aw07Authorized(t, bStore, ctx, b)
+	aw07Revoke(t, aStore, ctx, aWorker)
+	aw07Denied(t, aStore, ctx, a.request)
+	aw07Authorized(t, bStore, ctx, b)
+}
+
 type aw07ClaimedAuthorization struct {
 	request            ports.AttachedWorkerSealedInputAuthorization
 	revision           uint64

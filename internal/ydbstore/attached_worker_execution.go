@@ -1107,6 +1107,15 @@ func (store *Store) CommitAttachedWorkerTerminal(ctx context.Context, request po
 			result.Status = ports.AttachedWorkerExecutionNotFound
 			return nil
 		}
+		// A pending terminal is only evidence, not durable finalization
+		// authority. Revocation or a replaced connection can occur after the
+		// worker frame was accepted but before server-side materialization.
+		// Check the current owner-scoped head in this transaction before any
+		// canonical run or session event is written.
+		if !attachedWorkerTerminalCommitAuthorityCurrent(worker, connection, attempt) {
+			result.Status = ports.AttachedWorkerExecutionFenced
+			return nil
+		}
 		config, snapshot, err := loadAttachedWorkerProtocolAuthorityTx(ctx, tx, worker, connection)
 		if err != nil {
 			return err
@@ -1164,6 +1173,23 @@ func (store *Store) CommitAttachedWorkerTerminal(ctx context.Context, request po
 		return nil
 	})
 	return result, err
+}
+
+func attachedWorkerTerminalCommitAuthorityCurrent(worker domain.AttachedWorker,
+	connection domain.AttachedWorkerConnection, attempt domain.AttachedWorkerAttemptV1,
+) bool {
+	connectionReady := connection.State == domain.AttachedWorkerConnectionOnline ||
+		connection.State == domain.AttachedWorkerConnectionDraining ||
+		connection.State == domain.AttachedWorkerConnectionOffline
+	return worker.DesiredState != domain.AttachedWorkerDesiredRevoked &&
+		connectionReady &&
+		worker.TenantID == attempt.TenantID && worker.OwnerUserID == attempt.OwnerUserID && worker.ID == attempt.WorkerID &&
+		connection.TenantID == attempt.TenantID && connection.OwnerUserID == attempt.OwnerUserID &&
+		connection.WorkerID == attempt.WorkerID && connection.ID == attempt.ConnectionID &&
+		worker.EnrollmentGeneration == attempt.EnrollmentGeneration &&
+		worker.ConnectionGeneration == attempt.ConnectionGeneration &&
+		connection.EnrollmentGeneration == attempt.EnrollmentGeneration &&
+		connection.ConnectionGeneration == attempt.ConnectionGeneration
 }
 
 func (store *Store) FenceAttachedWorkerAttempt(ctx context.Context, request ports.AttachedWorkerAttemptFence) (result ports.AttachedWorkerAttemptResult, err error) {

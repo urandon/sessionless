@@ -5,6 +5,7 @@ package ydbintegration
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -74,33 +75,103 @@ func TestAW07TwoOwnerClaimAndRevocationKeepSealedInputIsolated(t *testing.T) {
 
 	// A deny-first revocation fences A's old generation without touching B's
 	// already claimed job, credential owner, or connection authority.
-	worker, found, err := aStore.LoadAttachedWorker(ctx, aWorker.TenantID, aWorker.OwnerUserID, aWorker.ID)
-	if err != nil || !found {
-		t.Fatalf("load owner A before revoke: found=%t err=%v", found, err)
-	}
-	revoked := worker
-	revoked.DesiredState = domain.AttachedWorkerDesiredRevoked
-	revoked.EnrollmentGeneration++
-	revoked.ConnectionGeneration++
-	revoked.Revision++
-	revoked.UpdatedAt = worker.UpdatedAt.Add(time.Microsecond).UTC().Truncate(time.Microsecond)
-	revoked.RevokedAt = revoked.UpdatedAt
-	changed, err := aStore.RevokeAttachedWorker(ctx, ports.AttachedWorkerRevokeMutation{
-		TenantID: worker.TenantID, OwnerUserID: worker.OwnerUserID, WorkerID: worker.ID,
-		ExpectedRevision: worker.Revision, Next: revoked,
-		Audit: attachedWorkerMutationAudit(revoked, domain.AttachedWorkerAuditWorkerRevoked, revoked.UpdatedAt),
-		At:    revoked.UpdatedAt,
-	})
-	if err != nil || !changed {
-		t.Fatalf("revoke owner A: changed=%t err=%v", changed, err)
-	}
+	aw07Revoke(t, aStore, ctx, aWorker)
 	aw07Denied(t, aStore, ctx, a.request)
+	aw07Authorized(t, bStore, ctx, b)
+
+	// An old worker can still possess a previously valid terminal payload.
+	// Neither its own revoked scope nor the other owner's scope may turn it
+	// into canonical run finalization without a committed terminal head.
+	baseline := aw07RunStatus(t, aStore, ctx, a.request.TenantID, a.attempt.RunID)
+	materialization, _ := attachedWorkerFailureForDrain(t, aStore, a.attempt, "aw07-stale-terminal")
+	for _, test := range []struct {
+		name   string
+		store  *ydbstore.Store
+		owner  domain.UserID
+		worker domain.AttachedWorkerID
+		want   ports.AttachedWorkerExecutionStatus
+	}{
+		{name: "revoked_owner", store: aStore, owner: a.request.OwnerUserID,
+			worker: a.request.WorkerID, want: ports.AttachedWorkerExecutionConflict},
+		{name: "foreign_owner", store: bStore, owner: b.request.OwnerUserID,
+			worker: b.request.WorkerID, want: ports.AttachedWorkerExecutionNotFound},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result, err := test.store.CommitAttachedWorkerTerminal(ctx, ports.AttachedWorkerTerminalCommit{
+				TenantID: a.request.TenantID, OwnerUserID: test.owner, WorkerID: test.worker,
+				AttemptID: a.request.AttemptID, LeaseGeneration: a.request.LeaseGeneration,
+				Materialization: materialization,
+			})
+			if err != nil || result.Status != test.want || result.Outbound != nil {
+				t.Fatalf("stale terminal commit status=%s outbound=%v err=%v, want %s without ack",
+					result.Status, result.Outbound, err, test.want)
+			}
+		})
+	}
+	if got := aw07RunStatus(t, aStore, ctx, a.request.TenantID, a.attempt.RunID); got != baseline {
+		t.Fatalf("stale terminal changed owner A run status from %s to %s", baseline, got)
+	}
+	aw07Authorized(t, bStore, ctx, b)
+}
+
+// A terminal accepted before revocation is not itself canonical result
+// authority. Revocation must fence the later server-side materialization,
+// including when another owner still has a healthy claimed attempt.
+func TestAW07RevocationFencesPendingTerminalBeforeRunFinalization(t *testing.T) {
+	aStore, aClient, aWorker, aConnection, aSecret, _, _, aNow := readyAttachedWorkerForDrain(t, "aw07-terminal-a")
+	bStore, bClient, bWorker, bConnection, bSecret, _, _, bNow := readyAttachedWorkerForDrainWithIdentity(t,
+		"aw07-terminal-b", aWorker.TenantID, aWorker.ID)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	a := aw07ClaimedInput(t, aStore, aClient, aWorker, aConnection, aSecret, aNow, attachedWorkerDrainTestSuffix(t, "aw07-terminal-a"))
+	b := aw07ClaimedInput(t, bStore, bClient, bWorker, bConnection, bSecret, bNow, attachedWorkerDrainTestSuffix(t, "aw07-terminal-b"))
+	materialization, evidence := attachedWorkerFailureForDrain(t, aStore, a.attempt, "aw07-revoked-terminal")
+	terminalFrame := attachedworkerprotocol.FrameV1{
+		Version:   a.accepted.Version,
+		MessageID: attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionWorkerToPlatform, a.nextWorkerSequence),
+		WorkerID:  string(a.request.WorkerID), EnrollmentGeneration: a.request.EnrollmentGeneration,
+		ConnectionGeneration: a.request.ConnectionGeneration, Sequence: a.nextWorkerSequence,
+		Ack: a.accepted.Sequence, Kind: attachedworkerprotocol.MessageTerminal,
+		Terminal: &attachedworkerprotocol.TerminalV1{
+			Binding: a.binding, AttemptSequence: 2, TerminalSequence: 1,
+			Status: attachedworkerprotocol.TerminalFailed, Result: attachedworkerprotocol.TerminalResultFailed,
+			EvidenceDigest: evidence,
+		},
+	}
+	terminal, err := aStore.ExchangeAttachedWorkerAttempt(ctx, ports.AttachedWorkerAttemptExchange{
+		TenantID: a.request.TenantID, OwnerUserID: a.request.OwnerUserID, WorkerID: a.request.WorkerID,
+		ConnectionID: a.request.ConnectionID, AttemptID: a.request.AttemptID,
+		LeaseGeneration: a.request.LeaseGeneration, PresentedSecretDigest: a.request.PresentedSecretDigest,
+		InboundFrame: terminalFrame,
+	})
+	if err != nil || terminal.Status != ports.AttachedWorkerExecutionApplied ||
+		terminal.Attempt.State != domain.AttachedWorkerAttemptTerminalPending {
+		t.Fatalf("owner A terminal must be pending before revocation: result=%+v err=%v", terminal, err)
+	}
+	baseline := aw07RunStatus(t, aStore, ctx, a.request.TenantID, a.attempt.RunID)
+	aw07Revoke(t, aStore, ctx, aWorker)
+	result, err := aStore.CommitAttachedWorkerTerminal(ctx, ports.AttachedWorkerTerminalCommit{
+		TenantID: a.request.TenantID, OwnerUserID: a.request.OwnerUserID, WorkerID: a.request.WorkerID,
+		AttemptID: a.request.AttemptID, LeaseGeneration: a.request.LeaseGeneration,
+		Materialization: materialization,
+	})
+	if err != nil || result.Status != ports.AttachedWorkerExecutionFenced || result.Outbound != nil {
+		t.Fatalf("revoked terminal materialization status=%s outbound=%v err=%v, want fenced without ack",
+			result.Status, result.Outbound, err)
+	}
+	if got := aw07RunStatus(t, aStore, ctx, a.request.TenantID, a.attempt.RunID); got != baseline {
+		t.Fatalf("revoked terminal changed owner A run status from %s to %s", baseline, got)
+	}
 	aw07Authorized(t, bStore, ctx, b)
 }
 
 type aw07ClaimedAuthorization struct {
-	request  ports.AttachedWorkerSealedInputAuthorization
-	revision uint64
+	request            ports.AttachedWorkerSealedInputAuthorization
+	revision           uint64
+	attempt            domain.AttachedWorkerAttemptV1
+	binding            attachedworkerprotocol.AttemptBindingV1
+	accepted           attachedworkerprotocol.FrameV1
+	nextWorkerSequence uint64
 }
 
 func aw07ClaimedInput(t *testing.T, store *ydbstore.Store, client *ydbclient.Client,
@@ -135,8 +206,12 @@ func aw07ClaimedInput(t *testing.T, store *ydbstore.Store, client *ydbclient.Cli
 		InboundFrame: claimFrame,
 	})
 	if err != nil || claim.Status != ports.AttachedWorkerExecutionApplied ||
-		claim.Attempt.State != domain.AttachedWorkerAttemptClaimed {
+		claim.Attempt.State != domain.AttachedWorkerAttemptClaimed || claim.Outbound == nil {
 		t.Fatalf("claim owner %s: result=%+v err=%v", suffix, claim, err)
+	}
+	acceptedBatch, err := attachedworkerprotocol.DecodeBatchV1(claim.Outbound.Payload)
+	if err != nil || len(acceptedBatch.Frames) != 1 || acceptedBatch.Frames[0].LeaseAccepted == nil {
+		t.Fatalf("decode owner %s accepted claim: frames=%d err=%v", suffix, len(acceptedBatch.Frames), err)
 	}
 	request := ports.AttachedWorkerSealedInputAuthorization{
 		TenantID: worker.TenantID, OwnerUserID: worker.OwnerUserID, WorkerID: worker.ID,
@@ -156,7 +231,56 @@ func aw07ClaimedInput(t *testing.T, store *ydbstore.Store, client *ydbclient.Cli
 		authorized.AttemptRevision != claim.Attempt.Revision {
 		t.Fatalf("authorize owner %s claimed head: result=%+v err=%v", suffix, authorized, err)
 	}
-	return aw07ClaimedAuthorization{request: request, revision: authorized.AttemptRevision}
+	return aw07ClaimedAuthorization{
+		request: request, revision: authorized.AttemptRevision, attempt: claim.Attempt,
+		binding: offerFrame.LeaseOffer.Binding, accepted: acceptedBatch.Frames[0],
+		nextWorkerSequence: claimFrame.Sequence + 1,
+	}
+}
+
+func aw07Revoke(t *testing.T, store *ydbstore.Store, ctx context.Context, worker domain.AttachedWorker) {
+	t.Helper()
+	current, found, err := store.LoadAttachedWorker(ctx, worker.TenantID, worker.OwnerUserID, worker.ID)
+	if err != nil || !found {
+		t.Fatalf("load owner %s before revoke: found=%t err=%v", worker.OwnerUserID, found, err)
+	}
+	revoked := current
+	revoked.DesiredState = domain.AttachedWorkerDesiredRevoked
+	revoked.EnrollmentGeneration++
+	revoked.ConnectionGeneration++
+	revoked.Revision++
+	revoked.UpdatedAt = current.UpdatedAt.Add(time.Microsecond).UTC().Truncate(time.Microsecond)
+	revoked.RevokedAt = revoked.UpdatedAt
+	changed, err := store.RevokeAttachedWorker(ctx, ports.AttachedWorkerRevokeMutation{
+		TenantID: worker.TenantID, OwnerUserID: worker.OwnerUserID, WorkerID: worker.ID,
+		ExpectedRevision: current.Revision, Next: revoked,
+		Audit: attachedWorkerMutationAudit(revoked, domain.AttachedWorkerAuditWorkerRevoked, revoked.UpdatedAt),
+		At:    revoked.UpdatedAt,
+	})
+	if err != nil || !changed {
+		t.Fatalf("revoke owner %s: changed=%t err=%v", worker.OwnerUserID, changed, err)
+	}
+}
+
+func aw07RunStatus(t *testing.T, store *ydbstore.Store, ctx context.Context,
+	tenant domain.TenantID, runID domain.RunID,
+) domain.RunStatus {
+	t.Helper()
+	var status domain.RunStatus
+	if err := store.Transact(ctx, tenant, func(tx ports.StateTx) error {
+		run, found, err := tx.GetRun(ctx, runID)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return fmt.Errorf("run %s not found", runID)
+		}
+		status = run.Status
+		return nil
+	}); err != nil {
+		t.Fatalf("load run %s status: %v", runID, err)
+	}
+	return status
 }
 
 func aw07Denied(t *testing.T, store *ydbstore.Store, ctx context.Context, request ports.AttachedWorkerSealedInputAuthorization) {

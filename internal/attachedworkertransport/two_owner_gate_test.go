@@ -19,9 +19,11 @@ import (
 // tenant-owner-worker tuple, never from a globally unique-looking ID.
 func TestAW07TwoOwnersCannotExchangeOrStealConnectionAuthority(t *testing.T) {
 	_, aStore, aWorker, aKey := newTransportFixture(t)
-	bKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x79}, ed25519.SeedSize))
+	// A copied identity key must not turn a worker ID into cross-owner
+	// authority. Keep the two owners in one tenant to exercise that boundary.
+	bKey := aKey
 	bWorker := aWorker
-	bWorker.TenantID, bWorker.OwnerUserID = "tenant-b", "owner-b"
+	bWorker.OwnerUserID = "owner-b"
 	bWorker.IdentityPublicKey = append([]byte(nil), bKey.Public().(ed25519.PublicKey)...)
 	bStore := &transportMemoryStore{worker: bWorker, now: aStore.now}
 	router := &twoOwnerTransportStore{owners: map[twoOwnerScope]*transportMemoryStore{
@@ -39,8 +41,9 @@ func TestAW07TwoOwnersCannotExchangeOrStealConnectionAuthority(t *testing.T) {
 	}
 	a := readyTransportFixtureOnService(t, service, aStore, aWorker, aKey, 0x62)
 	b := readyTransportFixtureOnService(t, service, bStore, bWorker, bKey, 0x63)
-	if a.connection.ID != b.connection.ID || a.worker.ID != b.worker.ID {
-		t.Fatal("fixture must collide in unscoped worker and connection locators")
+	if a.connection.ID != b.connection.ID || a.worker.ID != b.worker.ID ||
+		a.worker.TenantID != b.worker.TenantID || !bytes.Equal(a.worker.IdentityPublicKey, b.worker.IdentityPublicKey) {
+		t.Fatal("fixture must share tenant, worker locator, connection locator, and cloned identity key")
 	}
 
 	// A valid proof for one owner must not create a challenge for the other.

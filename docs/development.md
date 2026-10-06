@@ -204,7 +204,9 @@ fixtures.
 The #79 `make attached-worker-security-gate` makes the two-owner transport
 collision/secret-theft and cloned-identity reconnect checks, sealed-input
 owner and credential denials,
-protocol cancel/revoke fencing, CLI attempt-root/sentinel checks, and both
+HTTP client/poller response-loss fencing (no retry before reconciliation while
+the peer continues), protocol cancel/revoke fencing, CLI attempt-root/sentinel
+checks, and both
 crash/restart fixtures non-optional in `make ci`. The YDB CI job separately
 runs `make attached-worker-security-ydb-gate` after migration: two distinct
 owners in one tenant hold live claimed attempts under a deliberately colliding

@@ -829,6 +829,11 @@ func attachedWorkerDrainTestSuffix(t *testing.T, prefix string) string {
 
 func attachedWorkerOfferForDrain(t *testing.T, store *ydbstore.Store, client *ydbclient.Client, worker domain.AttachedWorker, connection domain.AttachedWorkerConnection, now time.Time, suffix string) ports.AttachedWorkerAttemptResult {
 	t.Helper()
+	return attachedWorkerOfferForDrainWithPayload(t, store, client, worker, connection, now, suffix, nil, nil)
+}
+
+func attachedWorkerOfferForDrainWithPayload(t *testing.T, store *ydbstore.Store, client *ydbclient.Client, worker domain.AttachedWorker, connection domain.AttachedWorkerConnection, now time.Time, suffix string, contextBody, artifactBody []byte) ports.AttachedWorkerAttemptResult {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	runID := "run-drain-" + suffix
@@ -837,6 +842,22 @@ func attachedWorkerOfferForDrain(t *testing.T, store *ydbstore.Store, client *yd
 	// larger 64-bit values are serialized as floats and cannot decode to int64.
 	updateID := int64(binary.BigEndian.Uint32(updateDigest[:4]))
 	ingress := ingressFixture(worker.TenantID, runID, updateID, now)
+	if contextBody != nil {
+		digest := sha256.Sum256(contextBody)
+		ingress.Dispatch.ContextSnapshot.Size = int64(len(contextBody))
+		ingress.Dispatch.ContextSnapshot.SHA256 = hex.EncodeToString(digest[:])
+	}
+	if artifactBody != nil {
+		digest := sha256.Sum256(artifactBody)
+		ingress.InputManifest.Artifacts = []domain.Artifact{{
+			Name: "owner-artifact", MediaType: "text/plain",
+			Blob: domain.BlobRef{
+				TenantID: worker.TenantID,
+				Key:      domain.SessionObjectPrefix(worker.TenantID, ingress.Run.SessionID) + "attached-worker/" + suffix,
+				Size:     int64(len(artifactBody)), SHA256: hex.EncodeToString(digest[:]),
+			},
+		}}
+	}
 	// Keep subscription authority distinct when two owners share one tenant.
 	// The generic ingress fixture derives this ID only from the tenant.
 	ingress.Run.SubscriptionConnectionID = domain.SubscriptionConnectionID("subscription-" + suffix)

@@ -229,7 +229,13 @@ It also runs a joined TLS/YDB response-loss test: A's presence update commits
 before its HTTP response is dropped, B progresses through the same control
 plane, A requires reconciliation without replay, and revoking A does not
 revoke B's sealed-input authority. This is not yet the two-daemon process,
-artifact, and provider-resource canary proof required to close #79.
+artifact, and provider-resource canary proof required to close #79. The same
+YDB gate now drives two claimed owners through the real HTTPS sealed-input
+endpoint with separate context and artifact bytes. A's artifact read is held
+across revocation: B remains readable, while A's post-read authority check
+discards the held bytes. Cross-owner bearer borrowing is denied before any
+object read. This still does not prove the two-daemon process or provider
+resource boundaries.
 The opt-in `make attached-worker-native-integration` exercises one exact
 test-owned launchd or systemd user-service lifecycle. The separate opt-in
 `make attached-worker-rootless-integration` runs the same lifecycle on Linux

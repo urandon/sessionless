@@ -482,10 +482,14 @@ func TestSupervisorPreservesOutputLimitFailureOverProcessExit(t *testing.T) {
 			{Name: helperEnabled, Value: "1"}, {Name: helperMode, Value: "output-bomb-exit"},
 		},
 	})
-	if err != nil || result.FailureCode != "stdout_limit_exceeded" || result.ExitCode != 3 ||
+	// The output reader may observe the overflow before Wait observes the
+	// helper's exit. In that ordering the supervisor terminates it, so -1
+	// (signaled) is as valid as the helper's natural exit 3.
+	validExit := result.ExitCode == 3 || result.ExitCode == -1 && result.TermSent
+	if err != nil || result.FailureCode != "stdout_limit_exceeded" || !validExit ||
 		result.StdoutBytes != 128 || len(result.Stdout) != 128 || !result.CleanupSucceeded {
-		t.Fatalf("overflow must outrank exit: failure=%q exit=%d stdout_bytes=%d prefix_bytes=%d cleanup=%t err=%v",
-			result.FailureCode, result.ExitCode, result.StdoutBytes, len(result.Stdout), result.CleanupSucceeded, err)
+		t.Fatalf("overflow must outrank exit: failure=%q exit=%d term=%t stdout_bytes=%d prefix_bytes=%d cleanup=%t err=%v",
+			result.FailureCode, result.ExitCode, result.TermSent, result.StdoutBytes, len(result.Stdout), result.CleanupSucceeded, err)
 	}
 }
 

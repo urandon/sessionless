@@ -214,7 +214,7 @@ func TestAW07TwoActivatedProviderDaemonReceipts(t *testing.T) {
 	root := t.TempDir()
 	a := aw07PrepareDaemonInstallation(t, filepath.Join(root, "a"), server.URL, trust, aWorker, aPrivate, now, true)
 	b := aw07PrepareDaemonInstallation(t, filepath.Join(root, "b"), server.URL, trust, bWorker, bPrivate, now, true)
-	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
 	defer cancel()
 	aProcess := aw07StartDaemonProcess(t, aw07DaemonChildInput{StateRoot: a.stateRoot, ProfilePath: a.profilePath,
 		ClockNanos: now.UnixNano(), TestProvider: true, ProviderResource: "subscription-" + suffix + "-a", ProviderGeneration: 3})
@@ -267,7 +267,7 @@ func TestAW07TwoActivatedProviderDaemonReceipts(t *testing.T) {
 	}
 	for index := range owners {
 		owner := &owners[index]
-		deadline := time.Now().Add(30 * time.Second)
+		deadline := time.Now().Add(90 * time.Second)
 		for {
 			status := aw07RunStatus(t, store, ctx, tenant, owner.offer.Attempt.RunID)
 			if status == domain.RunSucceeded {

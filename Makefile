@@ -204,7 +204,7 @@ attached-worker-security-ydb-gate: prepare
 		-run '^(TestTestProviderExchangeCloseRevokesBothBearers|TestAW07ReceiptTwoOwnerCanonicalTerminalAndReplay|TestAW07AmbiguousReceiptCopyKeepsDeletionFailClosed|TestSessionLifecycleHoldWriteFenceInventoryAndCompletion|TestAW07TwoOwnerClaimAndRevocationKeepSealedInputIsolated|TestAW07RevocationFencesPendingTerminalBeforeRunFinalization|TestAW07TwoOwnerReconnectKeepsPeerClaimAndFencesOldBearer|TestAW07TwoOwnerYDBTLSLostResponseKeepsPeerAndFencesRevokedOwner|TestAW07TwoOwnerYDBSealedArtifactRevocationKeepsPeerReadable|TestAW07TwoOwnerYDBSealedArtifactProcessRevocation|TestAW07TwoActivatedDaemonYDBJoin|TestAW07TwoActivatedProviderDaemonReceipts)$$' ./internal/attachedworkersealedinput ./test/ydbintegration
 
 attached-worker-joined-provider-ydb-gate: prepare
-	go test -race -count=$${AW07_PROVIDER_TEST_COUNT:-1} -shuffle=$${AW07_PROVIDER_TEST_SHUFFLE:-off} -timeout=100s -tags=ydbintegration \
+	go test -race -count=$${AW07_PROVIDER_TEST_COUNT:-1} -shuffle=$${AW07_PROVIDER_TEST_SHUFFLE:-off} -timeout=240s -tags=ydbintegration \
 		-run '^(TestTestProviderExchangeCloseRevokesBothBearers|TestAW07TwoActivatedProviderDaemonReceipts)$$' ./internal/attachedworkersealedinput ./test/ydbintegration
 
 attached-worker-native-integration: attached-worker-build

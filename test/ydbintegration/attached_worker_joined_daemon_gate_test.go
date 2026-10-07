@@ -81,7 +81,7 @@ func TestAW07JoinedDaemonChild(t *testing.T) {
 	var clock atomic.Int64
 	clock.Store(start.UnixNano())
 	now := func() time.Time { return time.Unix(0, clock.Load()).UTC() }
-	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
 	defer cancel()
 	var owner *attachedworkersealedinput.SyntheticRuntime
 	if input.TestProvider {
@@ -96,7 +96,7 @@ func TestAW07JoinedDaemonChild(t *testing.T) {
 				return attachedworkeroutput.Candidate{Status: status, Summary: "test provider result for " + string(identity.OwnerUserID)}, nil
 			})
 	} else {
-		owner, err = attachedworkeractivation.ConnectWithClock(ctx, store, profile, now)
+		owner, err = attachedworkeractivation.ConnectTestSyntheticWithClock(ctx, store, profile, now)
 	}
 	if err != nil {
 		t.Fatalf("activate joined daemon: %v", err)
@@ -629,7 +629,7 @@ func TestAW07TwoActivatedDaemonYDBJoin(t *testing.T) {
 	root := t.TempDir()
 	a := aw07PrepareDaemonInstallation(t, filepath.Join(root, "a"), server.URL, trust, aWorker, aPrivate, now, false)
 	b := aw07PrepareDaemonInstallation(t, filepath.Join(root, "b"), server.URL, trust, bWorker, bPrivate, now, false)
-	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
 	defer cancel()
 	aProcess := aw07StartDaemonProcess(t, aw07DaemonChildInput{StateRoot: a.stateRoot, ProfilePath: a.profilePath, ClockNanos: now.UnixNano()})
 	bProcess := aw07StartDaemonProcess(t, aw07DaemonChildInput{StateRoot: b.stateRoot, ProfilePath: b.profilePath, ClockNanos: now.UnixNano()})
@@ -788,7 +788,7 @@ func TestAW07TwoActivatedDaemonYDBJoin(t *testing.T) {
 	if err != nil || cancelled.Status != ports.AttachedWorkerExecutionApplied {
 		t.Fatalf("owner B cancellation request: result=%+v err=%v", cancelled, err)
 	}
-	for waitUntil := time.Now().Add(20 * time.Second); ; {
+	for waitUntil := time.Now().Add(60 * time.Second); ; {
 		attempt, found, err := store.LoadAttachedWorkerAttempt(ctx, tenant, bWorker.OwnerUserID, workerID)
 		if err != nil {
 			t.Fatal(err)

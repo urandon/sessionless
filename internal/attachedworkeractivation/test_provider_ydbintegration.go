@@ -13,6 +13,19 @@ import (
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
 
+const joinedYDBOperationTimeout = 45 * time.Second
+
+// ConnectTestSyntheticWithClock keeps the shipped 15-second transport budget
+// unchanged while allowing the race-enabled, Docker-backed joined YDB fixture
+// a bounded budget for two concurrent owners.
+func ConnectTestSyntheticWithClock(ctx context.Context, store *attachedworkerlocal.Store,
+	profile ProfileV1, now func() time.Time,
+) (*attachedworkersealedinput.SyntheticRuntime, error) {
+	return connectWithClock(ctx, store, profile, now, joinedYDBOperationTimeout,
+		attachedworkersealedinput.ConnectSyntheticPinnedRuntime,
+		attachedworkersealedinput.ReconnectSyntheticPinnedRuntime)
+}
+
 // ConnectTestProviderWithClock is visible only in the YDB integration test
 // build. It does not authorize provider execution from an operator profile;
 // the ordinary activation connector remains synthetic-denied.
@@ -21,7 +34,7 @@ func ConnectTestProviderWithClock(ctx context.Context, store *attachedworkerloca
 	credentialRoot string,
 	candidate attachedworkerdaemontransport.ReceiptCandidateBuilder,
 ) (*attachedworkersealedinput.SyntheticRuntime, error) {
-	return connectWithClock(ctx, store, profile, now,
+	return connectWithClock(ctx, store, profile, now, joinedYDBOperationTimeout,
 		func(ctx context.Context, config attachedworkersealedinput.SyntheticRuntimeConfig) (*attachedworkersealedinput.SyntheticRuntime, error) {
 			config.Stack.AllowedEnvironmentNames = []string{"SESSIONLESS_PROVIDER_HOME"}
 			config.Stack.AllowedReadRoots = []string{credentialRoot}

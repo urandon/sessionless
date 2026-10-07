@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/subtle"
 	"errors"
+	"fmt"
 	"math"
 	"time"
 
@@ -454,8 +455,15 @@ func (store *Store) AuthorizeAttachedWorkerExchange(
 		return result, err
 	}
 	result.Status = ports.AttachedWorkerConnectionDenied
-	err = store.Transact(ctx, request.TenantID, func(state ports.StateTx) error {
+	stage := "begin"
+	err = store.Transact(ctx, request.TenantID, func(state ports.StateTx) (callbackErr error) {
+		defer func() {
+			if callbackErr == nil {
+				stage = "commit transaction"
+			}
+		}()
 		tx := state.(*stateTx)
+		stage = "read connection"
 		connection, found, err := readAttachedWorkerConnectionTx(ctx, tx, request.OwnerUserID, request.WorkerID)
 		if err != nil {
 			return err
@@ -473,6 +481,7 @@ func (store *Store) AuthorizeAttachedWorkerExchange(
 			result.Status = ports.AttachedWorkerConnectionConflict
 			return nil
 		}
+		stage = "read worker"
 		worker, workerFound, err := readAttachedWorkerTx(ctx, tx, request.OwnerUserID, request.WorkerID)
 		if err != nil {
 			return err
@@ -490,10 +499,12 @@ func (store *Store) AuthorizeAttachedWorkerExchange(
 			result.Status = ports.AttachedWorkerConnectionConflict
 			return nil
 		}
+		stage = "load protocol authority"
 		if _, _, err := loadAttachedWorkerProtocolAuthorityTx(ctx, tx, worker, connection); err != nil {
 			result.Status = ports.AttachedWorkerConnectionConflict
 			return nil
 		}
+		stage = "read capability manifest"
 		manifest, manifestFound, err := readAttachedWorkerManifestTx(ctx, tx, request.OwnerUserID, request.WorkerID, connection.CapabilityDigest)
 		if err != nil {
 			return err
@@ -515,6 +526,7 @@ func (store *Store) AuthorizeAttachedWorkerExchange(
 			result.Status = ports.AttachedWorkerConnectionConflict
 			return nil
 		}
+		stage = "read transaction time"
 		at, err := store.attachedWorkerTransactionTime(ctx, tx)
 		if err != nil {
 			return err
@@ -546,21 +558,28 @@ func (store *Store) AuthorizeAttachedWorkerExchange(
 		if err := connection.Validate(); err != nil {
 			return err
 		}
+		stage = "reload protocol authority"
 		if _, _, err := loadAttachedWorkerProtocolAuthorityTx(ctx, tx, worker, connection); err != nil {
 			return ErrAttachedWorkerConnectionConflict
 		}
+		stage = "delete previous presence expiry"
 		if err := deleteAttachedWorkerPresenceExpiryTx(ctx, tx, previousExpiry); err != nil {
 			return err
 		}
+		stage = "upsert connection"
 		if err := upsertAttachedWorkerConnectionTx(ctx, tx, connection); err != nil {
 			return err
 		}
+		stage = "insert presence expiry"
 		if err := insertAttachedWorkerPresenceExpiryTx(ctx, tx, attachedWorkerPresenceExpiry(connection)); err != nil {
 			return err
 		}
 		result = ports.AttachedWorkerAuthorizationResult{Status: ports.AttachedWorkerConnectionAuthorized, Connection: connection, Checkpointed: true}
 		return nil
 	})
+	if err != nil {
+		return result, fmt.Errorf("authorize attached worker exchange at %s: %w", stage, err)
+	}
 	return result, err
 }
 

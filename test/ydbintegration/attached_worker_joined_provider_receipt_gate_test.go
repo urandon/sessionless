@@ -121,7 +121,7 @@ func TestAW07TwoActivatedProviderDaemonReceipts(t *testing.T) {
 	statusRecorder := &aw07HTTPStatusRecorder{}
 	mux.Handle(attachedworkerhttp.ChallengePathV1, bootstrap)
 	mux.Handle(attachedworkerhttp.AttachPathV1, bootstrap)
-	mux.Handle(attachedworkerhttp.ExchangePathV1, exchange)
+	mux.Handle(attachedworkerhttp.ExchangePathV1, statusRecorder.wrap("exchange", exchange))
 	mux.Handle(attachedworkersealedinput.PathV1, statusRecorder.wrap("sealed", attachedworkersealedinput.Handler(sealed)))
 	mux.Handle(attachedworkerreceipt.PathV1, statusRecorder.wrap("receipt", attachedworkerreceipt.Handler(receipts)))
 	server := httptest.NewTLSServer(mux)

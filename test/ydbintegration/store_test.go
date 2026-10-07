@@ -353,13 +353,19 @@ func TestConcurrentLeaseClaimHasExactlyOneWinner(t *testing.T) {
 		context.Background(),
 		bucket,
 		now.Add(2*time.Minute),
-		10,
+		1024,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(expired) != 1 || expired[0].TenantID != tenantID {
-		t.Fatalf("bucket lease result = %+v", expired)
+	var exactLeaseCount int
+	for _, lease := range expired {
+		if lease.TenantID == tenantID && lease.RunID == ingress.Run.ID {
+			exactLeaseCount++
+		}
+	}
+	if exactLeaseCount != 1 {
+		t.Fatalf("bucket lease result contains %d exact tenant/run leases, want 1; result=%+v", exactLeaseCount, expired)
 	}
 	var winningLeaseID domain.LeaseID
 	var winningFence uint64

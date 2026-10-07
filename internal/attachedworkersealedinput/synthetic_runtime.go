@@ -49,13 +49,18 @@ type syntheticRuntimePort interface {
 // or process owner.
 type SyntheticRuntime struct {
 	runtime syntheticRuntimePort
-	source  *SessionSourceFactory
+	source  runtimeSource
 
 	mu      sync.Mutex
 	started bool
 	cancel  context.CancelFunc
 	done    chan struct{}
 	err     error
+}
+
+type runtimeSource interface {
+	revokeSource() error
+	Close() error
 }
 
 // ConnectSyntheticPinnedRuntime links the session-generated bearer to the

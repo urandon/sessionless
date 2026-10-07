@@ -10,7 +10,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"time"
 
+	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemon"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemontransport"
 	"gitcode.com/urandon/sessionless/internal/attachedworkertransport"
 	"gitcode.com/urandon/sessionless/internal/domain"
@@ -43,6 +45,9 @@ type Service struct {
 	authorizer Authorizer
 	jobs       JobStore
 	blobs      BlobStore
+	// Only the ydbintegration-tagged test constructor may enable this path.
+	allowTestProvider bool
+	testProviderNow   func() time.Time
 }
 
 func NewService(authorizer Authorizer, jobs JobStore, blobs BlobStore) (*Service, error) {
@@ -87,7 +92,7 @@ func (service *Service) Load(ctx context.Context, bearer []byte, request attache
 	}
 	job, manifest := state.Job, state.InputManifest
 	if job.ContextWindow != nil || job.WorkspaceSnapshot != nil || job.SkillBundle != nil ||
-		job.HarnessBinding.Backend.ProviderContractKind != domain.ProviderContractCredentiallessFixtureV1 {
+		job.HarnessBinding.Backend.ProviderContractKind != domain.ProviderContractCredentiallessFixtureV1 && !service.allowTestProvider {
 		return result, ErrUnsupported
 	}
 	if len(manifest.Artifacts) > maxArtifacts || uint64(len(manifest.Artifacts)) > uint64(job.Limits.MaxArtifacts) ||
@@ -100,6 +105,13 @@ func (service *Service) Load(ctx context.Context, bearer []byte, request attache
 			clearResult(&result)
 		}
 	}()
+	if job.HarnessBinding.Backend.ProviderContractKind != domain.ProviderContractCredentiallessFixtureV1 {
+		credential, credentialErr := service.testProviderCredential(ctx, request, job)
+		if credentialErr != nil {
+			return result, credentialErr
+		}
+		result.Credential = credential
+	}
 	remaining := int64(maxInputBytes)
 	result.Context, err = service.readExact(ctx, request.TenantID, job.ContextSnapshot, remaining)
 	if err != nil {
@@ -123,6 +135,50 @@ func (service *Service) Load(ctx context.Context, bearer []byte, request attache
 		return result, authorizationError(checkErr)
 	}
 	return result, nil
+}
+
+type credentialJobStore interface {
+	LoadWorkerCredentialInvocation(context.Context, domain.TenantID, domain.RunID, domain.AttemptID, domain.LeaseID) (ports.WorkerCredentialInvocationState, bool, error)
+}
+
+// testProviderCredential is reachable only from the ydbintegration-tagged
+// constructor. The credential request is built from authoritative run,
+// attempt and lease state, never from a worker-supplied resource selector.
+func (service *Service) testProviderCredential(ctx context.Context, request attachedworkerdaemontransport.MaterializationRequestV1, job domain.WorkerJob) (*attachedworkerdaemon.CredentialInvocation, error) {
+	if !service.allowTestProvider || job.HarnessBinding.Backend.ProviderContractKind != domain.ProviderContractInvocationV1 ||
+		job.HarnessBinding.Backend.CredentialDeliveryKind != domain.ProviderCredentialDeliveryFileV1 ||
+		job.HarnessBinding.Resource.Kind != domain.ProviderResourceSubscriptionV1 {
+		return nil, ErrUnsupported
+	}
+	store, ok := service.jobs.(credentialJobStore)
+	if !ok {
+		return nil, ErrUnsupported
+	}
+	authoritative, found, err := store.LoadWorkerCredentialInvocation(ctx, request.TenantID,
+		domain.RunID(request.Attempt.RunID), domain.AttemptID(request.Attempt.AttemptID), domain.LeaseID(request.Attempt.LeaseID))
+	if err != nil {
+		return nil, ErrUnavailable
+	}
+	fence, fenceErr := domain.NewAttachedWorkerFenceTokenV1(request.TenantID, request.OwnerUserID,
+		request.WorkerID, domain.RunID(request.Attempt.RunID), domain.AttemptID(request.Attempt.AttemptID),
+		domain.LeaseID(request.Attempt.LeaseID), request.Attempt.LeaseGeneration)
+	if !found || fenceErr != nil || string(fence) != request.Attempt.FenceToken ||
+		authoritative.Lease.FenceToken != request.Attempt.LeaseGeneration ||
+		authoritative.Lease.ExpiresAt.UnixMicro() != request.Attempt.ExpiresAtUnixMicro ||
+		authoritative.Attempt.WorkerID != string(request.WorkerID) ||
+		authoritative.Run.SubscriptionConnectionID != domain.SubscriptionConnectionID(job.HarnessBinding.Resource.ResourceID) {
+		return nil, ErrUnauthorized
+	}
+	issue := ports.CredentialIssueRequest{
+		OwnerUserID: job.CredentialOwnerUserID, Run: authoritative.Run,
+		Attempt: authoritative.Attempt, Lease: authoritative.Lease,
+		ExpiresAt: authoritative.Lease.ExpiresAt, ProviderResource: job.HarnessBinding.Resource,
+	}
+	if service.testProviderNow == nil || issue.ValidateAt(service.testProviderNow()) != nil {
+		return nil, ErrUnauthorized
+	}
+	return &attachedworkerdaemon.CredentialInvocation{IssueRequest: issue,
+		HomeEnvironment: "SESSIONLESS_PROVIDER_HOME", ExpectedBindingGeneration: job.HarnessBinding.Resource.CredentialGeneration}, nil
 }
 
 func sameJob(request attachedworkerdaemontransport.MaterializationRequestV1, state ports.WorkerJobState) bool {

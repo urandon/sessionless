@@ -56,17 +56,26 @@ func (invocation Invocation) Validate() error {
 	if invocation.Credential == nil {
 		return nil
 	}
-	credential := invocation.Credential
+	return invocation.Credential.ValidateFor(invocation.Identity)
+}
+
+// ValidateFor checks that a credential request is bound to the exact local
+// invocation. The sealed-input boundary uses the same predicate before a
+// process or credential lifecycle receives the request.
+func (credential CredentialInvocation) ValidateFor(identity InvocationIdentity) error {
+	if identity.Validate() != nil {
+		return ErrInvocationInvalid
+	}
 	request := credential.IssueRequest
 	if !environmentNamePattern.MatchString(credential.HomeEnvironment) || reservedEnvironmentName(credential.HomeEnvironment) ||
 		credential.ExpectedBindingGeneration == 0 ||
-		request.OwnerUserID != invocation.Identity.OwnerUserID ||
-		request.Run.TenantID != invocation.Identity.TenantID ||
-		request.Run.ID != invocation.Identity.RunID ||
-		request.Attempt.ID != invocation.Identity.AttemptID ||
-		request.Lease.ID != invocation.Identity.LeaseID ||
-		request.Lease.WorkerID != string(invocation.Identity.WorkerID) ||
-		request.Lease.FenceToken != invocation.Identity.FenceToken ||
+		request.OwnerUserID != identity.OwnerUserID ||
+		request.Run.TenantID != identity.TenantID ||
+		request.Run.ID != identity.RunID ||
+		request.Attempt.ID != identity.AttemptID ||
+		request.Lease.ID != identity.LeaseID ||
+		request.Lease.WorkerID != string(identity.WorkerID) ||
+		request.Lease.FenceToken != identity.FenceToken ||
 		request.Attempt.ValidateForRun(request.Run) != nil ||
 		request.Lease.ValidateForAttempt(request.Run, request.Attempt) != nil {
 		return ErrInvocationInvalid

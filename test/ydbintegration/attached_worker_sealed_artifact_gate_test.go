@@ -5,6 +5,8 @@ package ydbintegration
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net/http/httptest"
@@ -196,6 +198,31 @@ func (blobs *aw07ArtifactBlobs) Open(ctx context.Context, tenant domain.TenantID
 		return io.NopCloser(&aw07HeldEOFReader{body: body, ctx: ctx, blobs: blobs}), nil
 	}
 	return io.NopCloser(bytes.NewReader(body)), nil
+}
+
+func (blobs *aw07ArtifactBlobs) Put(_ context.Context, tenant domain.TenantID, key string, body io.Reader) (domain.BlobRef, error) {
+	content, err := io.ReadAll(body)
+	if err != nil {
+		return domain.BlobRef{}, err
+	}
+	digest := sha256.Sum256(content)
+	blobs.mu.Lock()
+	defer blobs.mu.Unlock()
+	if existing, found := blobs.objects[key]; found && !bytes.Equal(existing, content) {
+		return domain.BlobRef{}, errors.New("test blob overwrite mismatch")
+	}
+	blobs.objects[key] = append([]byte(nil), content...)
+	return domain.BlobRef{TenantID: tenant, Key: key, Size: int64(len(content)), SHA256: hex.EncodeToString(digest[:])}, nil
+}
+
+func (blobs *aw07ArtifactBlobs) Delete(_ context.Context, tenant domain.TenantID, ref domain.BlobRef) error {
+	if tenant != ref.TenantID {
+		return errors.New("foreign tenant blob delete")
+	}
+	blobs.mu.Lock()
+	delete(blobs.objects, ref.Key)
+	blobs.mu.Unlock()
+	return nil
 }
 
 func (blobs *aw07ArtifactBlobs) totalOpens() int {

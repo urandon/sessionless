@@ -215,7 +215,15 @@ revoking one worker does not revoke the other's claim. Tagged releases also
 require this exact-YDB gate before image publication. The YDB
 target needs `YDB_CONNECTION_STRING` and credentials appropriate for the
 already migrated test database. Neither gate enables real provider access;
-the wider #79 security E2E is not complete merely because these checks pass.
+the wider #79 security E2E still needs the rootless platform proof and joined
+crash/reconnect cases.
+The tagged YDB gate includes `TestAW07TwoActivatedProviderDaemonReceipts`:
+two activated daemons with colliding worker IDs use distinct test-only
+subscription resources, credential generations, sealed inputs, credential
+file mounts, receipt publication, and canonical terminal commits. For a
+focused local diagnosis against migrated YDB, run
+`make attached-worker-joined-provider-ydb-gate`. The fake provider issues no
+real secret and the fake OCI client cannot execute a provider call.
 The YDB gate also holds an owner-A terminal pending, revokes A, and verifies
 that server-side materialization cannot turn the stale terminal evidence into
 canonical run finalization while owner B remains authorized. The terminal
@@ -228,22 +236,22 @@ new job and after A is revoked; B's claim remains authorized throughout.
 It also runs a joined TLS/YDB response-loss test: A's presence update commits
 before its HTTP response is dropped, B progresses through the same control
 plane, A requires reconciliation without replay, and revoking A does not
-revoke B's sealed-input authority. This is not yet the two-daemon process,
-artifact, and provider-resource canary proof required to close #79. The same
+revoke B's sealed-input authority. This response-loss case alone is not the
+two-daemon process, artifact, and provider-resource canary proof. The same
 YDB gate now drives two claimed owners through the real HTTPS sealed-input
 endpoint with separate context and artifact bytes. A's artifact read is held
 across revocation: B remains readable, while A's post-read authority check
 discards the held bytes. Cross-owner bearer borrowing is denied before any
-object read. This still does not prove the two-daemon process or provider
-resource boundaries.
+object read. This sealed-input case alone does not prove the two-daemon
+process or provider-resource boundaries.
 The gate additionally repeats this held-read/revocation case with A and B as
 separate test-owned OS client processes. Each child receives only an
 owner-scoped HTTPS bearer and request, not inherited YDB or object-store
 credentials: a cross-owner request cannot open an object, B reads its own
 context and artifact while A is held, and A receives no material after
 revocation. This covers the network/process boundary of sealed-input
-delivery. It is not an OS sandbox, credential-path, activated-daemon OCI, or
-provider-resource proof; #79 remains open for that joined scenario.
+delivery. By itself it is not an OS sandbox, credential-path,
+activated-daemon OCI, or provider-resource proof.
 The YDB gate also starts two separately activated daemon processes with
 colliding worker locator and identity key against the same TLS/YDB control
 plane. Each claims its own job and reads its own sealed context and artifact.
@@ -251,14 +259,16 @@ The synthetic OCI client is test-owned, so this proves transport-to-daemon
 composition, exact owner-specific object reads, active A revocation without
 stopping B, B cancellation-to-pending-terminal behavior, exact digest
 fail-closure, and attempt-root/sentinel cleanup, not a real OCI or provider
-resource boundary. #79 remains open for the rootless two-owner canary and the
+resource boundary. The joined provider test above adds the test credential and
+receipt path, but #79 remains open for the rootless two-owner canary and the
 remaining crash/reconnect races in the same joined scenario.
 The receipt YDB gate separately pins distinct test-only provider resource IDs
 and credential generations to the two owners. It rejects a successful receipt
 without credential-release evidence, then proves an owner-A canonical receipt
 and TerminalAck leave owner B's run untouched. This is a storage and protocol
-authority check, not an activated credential lifecycle or provider invocation;
-those and the rootless two-owner platform proof remain open for #79.
+authority check by itself. The joined provider test above now exercises the
+activated test-only credential lifecycle; the real rootless two-owner platform
+proof remains open for #79.
 The opt-in `make attached-worker-native-integration` exercises one exact
 test-owned launchd or systemd user-service lifecycle. The separate opt-in
 `make attached-worker-rootless-integration` runs the same lifecycle on Linux

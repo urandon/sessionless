@@ -25,7 +25,7 @@ LDFLAGS := -s -w \
 	-X gitcode.com/urandon/sessionless/internal/buildinfo.Commit=$(COMMIT) \
 	-X gitcode.com/urandon/sessionless/internal/buildinfo.BuiltAt=$(BUILT_AT)
 
-.PHONY: help prepare go-cache-status go-cache-clean go-cache-policy-test tools web-tools go-package-layout generate fmt fmt-check lint test build dockerless-build attached-worker-build attached-worker-package-test attached-worker-crash-integration attached-worker-active-crash-integration attached-worker-security-gate attached-worker-security-ydb-gate attached-worker-native-integration attached-worker-rootless-integration docs-check readme-visual-preview web-install web-openapi-check web-check web-build web-stage web-ci web-browser-install web-browser-test integration ydb-integration local-integration e2e-local e2e-local-dockerless attached-worker-oci-integration attached-worker-oci-linux-rootless-ci provider-conformance provider-conformance-fuzz ci image-publication-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test dockerless-stand-policy-test budget-policy-test web-deployment-policy-test terraform-ci cloudflare-edge-ci \
+.PHONY: help prepare go-cache-status go-cache-clean go-cache-policy-test tools web-tools go-package-layout generate fmt fmt-check lint test build dockerless-build attached-worker-build attached-worker-package-test attached-worker-crash-integration attached-worker-active-crash-integration attached-worker-security-gate attached-worker-security-ydb-gate attached-worker-joined-provider-ydb-gate attached-worker-native-integration attached-worker-rootless-integration docs-check readme-visual-preview web-install web-openapi-check web-check web-build web-stage web-ci web-browser-install web-browser-test integration ydb-integration local-integration e2e-local e2e-local-dockerless attached-worker-oci-integration attached-worker-oci-linux-rootless-ci provider-conformance provider-conformance-fuzz ci image-publication-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test dockerless-stand-policy-test budget-policy-test web-deployment-policy-test terraform-ci cloudflare-edge-ci \
 	compose-config images dev-up dev-seed migrate-local migration-status partition-status partition-backfill cloud-app-reset-plan cloud-app-reset session-delete-request session-delete-plan session-delete session-hold session-release-hold \
 	worker-once web-bootstrap dev-down dev-reset dockerless-up dockerless-status dockerless-worker-once dockerless-logs dockerless-down repowise-install repowise-index repowise-update repowise-status repowise-doctor repowise-mcp repowise-mcp-smoke repowise-evaluate repowise-stop repowise-uninstall-plan repowise-uninstall repowise-policy-test clean
 
@@ -50,6 +50,7 @@ help:
 		'make attached-worker-active-crash-integration run test-binary active-crash fencing fixture' \
 		'make attached-worker-security-gate run the two-owner and recovery race gate' \
 		'make attached-worker-security-ydb-gate run the two-owner YDB authority gate against migrated YDB' \
+		'make attached-worker-joined-provider-ydb-gate run the focused test-only provider daemon/receipt gate' \
 		'make attached-worker-native-integration run an opt-in test-owned user-service lifecycle' \
 		'make attached-worker-rootless-integration run an opt-in Linux rootless user-service lifecycle' \
 		'make integration    run foundation integration tests' \
@@ -200,7 +201,11 @@ attached-worker-security-gate: attached-worker-crash-integration attached-worker
 
 attached-worker-security-ydb-gate: prepare
 	go test -race -count=1 -tags=ydbintegration \
-		-run '^(TestAW07ReceiptTwoOwnerCanonicalTerminalAndReplay|TestAW07AmbiguousReceiptCopyKeepsDeletionFailClosed|TestSessionLifecycleHoldWriteFenceInventoryAndCompletion|TestAW07TwoOwnerClaimAndRevocationKeepSealedInputIsolated|TestAW07RevocationFencesPendingTerminalBeforeRunFinalization|TestAW07TwoOwnerReconnectKeepsPeerClaimAndFencesOldBearer|TestAW07TwoOwnerYDBTLSLostResponseKeepsPeerAndFencesRevokedOwner|TestAW07TwoOwnerYDBSealedArtifactRevocationKeepsPeerReadable|TestAW07TwoOwnerYDBSealedArtifactProcessRevocation|TestAW07TwoActivatedDaemonYDBJoin)$$' ./test/ydbintegration
+		-run '^(TestTestProviderExchangeCloseRevokesBothBearers|TestAW07ReceiptTwoOwnerCanonicalTerminalAndReplay|TestAW07AmbiguousReceiptCopyKeepsDeletionFailClosed|TestSessionLifecycleHoldWriteFenceInventoryAndCompletion|TestAW07TwoOwnerClaimAndRevocationKeepSealedInputIsolated|TestAW07RevocationFencesPendingTerminalBeforeRunFinalization|TestAW07TwoOwnerReconnectKeepsPeerClaimAndFencesOldBearer|TestAW07TwoOwnerYDBTLSLostResponseKeepsPeerAndFencesRevokedOwner|TestAW07TwoOwnerYDBSealedArtifactRevocationKeepsPeerReadable|TestAW07TwoOwnerYDBSealedArtifactProcessRevocation|TestAW07TwoActivatedDaemonYDBJoin|TestAW07TwoActivatedProviderDaemonReceipts)$$' ./internal/attachedworkersealedinput ./test/ydbintegration
+
+attached-worker-joined-provider-ydb-gate: prepare
+	go test -race -count=$${AW07_PROVIDER_TEST_COUNT:-1} -shuffle=$${AW07_PROVIDER_TEST_SHUFFLE:-off} -timeout=100s -tags=ydbintegration \
+		-run '^(TestTestProviderExchangeCloseRevokesBothBearers|TestAW07TwoActivatedProviderDaemonReceipts)$$' ./internal/attachedworkersealedinput ./test/ydbintegration
 
 attached-worker-native-integration: attached-worker-build
 	SESSIONLESS_NATIVE_INTEGRATION=1 SESSIONLESS_ATTACHED_WORKER_BINARY="$(CURDIR)/$(BIN_DIR)/attached-worker" \

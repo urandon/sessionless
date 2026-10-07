@@ -57,6 +57,10 @@ type AttemptBroker interface {
 	ExchangeAttachedWorkerAttempt(context.Context, ports.AttachedWorkerAttemptExchange) (ports.AttachedWorkerAttemptResult, error)
 }
 
+type receiptTerminalCommitBroker interface {
+	CommitAttachedWorkerTerminal(context.Context, ports.AttachedWorkerTerminalCommit) (ports.AttachedWorkerAttemptResult, error)
+}
+
 type DrainBroker interface {
 	RequestAttachedWorkerDrain(context.Context, ports.AttachedWorkerDrainRequest) (ports.AttachedWorkerDrainResult, error)
 	PollAttachedWorkerControl(context.Context, ports.AttachedWorkerControlPoll) (ports.AttachedWorkerDrainResult, error)
@@ -76,6 +80,7 @@ type Service struct {
 	checkpointInterval time.Duration
 	store              ports.AttachedWorkerTransportStore
 	attemptBroker      AttemptBroker
+	receiptFinalizer   receiptTerminalCommitBroker
 	drainBroker        DrainBroker
 }
 
@@ -974,6 +979,19 @@ func (service *Service) exchangeAttemptFrame(ctx context.Context, bearer Connect
 	}
 	if !attemptResultMatchesBinding(result.Attempt, bearer, connection, binding) {
 		return nil, ErrTransportUnauthorized
+	}
+	if frame.Kind == attachedworkerprotocol.MessageTerminal && service.receiptFinalizer != nil {
+		committed, commitErr := service.receiptFinalizer.CommitAttachedWorkerTerminal(ctx, ports.AttachedWorkerTerminalCommit{
+			TenantID: bearer.tenantID, OwnerUserID: bearer.ownerUserID, WorkerID: bearer.workerID,
+			AttemptID: attemptID, LeaseGeneration: binding.LeaseGeneration,
+			Materialization: ports.AttachedWorkerTerminalMaterialization{
+				EvidenceDigest: domain.AttachedWorkerTerminalEvidenceDigest(hex.EncodeToString(frame.Terminal.EvidenceDigest)),
+			},
+		})
+		if commitErr != nil || committed.Status != ports.AttachedWorkerExecutionApplied &&
+			committed.Status != ports.AttachedWorkerExecutionReplayed {
+			return nil, ErrTransportBackend
+		}
 	}
 	return service.pollPlatformFrame(ctx, bearer, connection)
 }

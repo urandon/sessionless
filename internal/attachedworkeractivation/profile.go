@@ -148,6 +148,16 @@ func Connect(ctx context.Context, store *attachedworkerlocal.Store, profile Prof
 // shipped command always calls Connect, which uses the real clock and the
 // immutable 15-minute transport minimum.
 func ConnectWithClock(ctx context.Context, store *attachedworkerlocal.Store, profile ProfileV1, now func() time.Time) (*attachedworkersealedinput.SyntheticRuntime, error) {
+	return connectWithClock(ctx, store, profile, now,
+		attachedworkersealedinput.ConnectSyntheticPinnedRuntime,
+		attachedworkersealedinput.ReconnectSyntheticPinnedRuntime)
+}
+
+type runtimeConnector func(context.Context, attachedworkersealedinput.SyntheticRuntimeConfig) (*attachedworkersealedinput.SyntheticRuntime, error)
+
+func connectWithClock(ctx context.Context, store *attachedworkerlocal.Store, profile ProfileV1, now func() time.Time,
+	initial, reconnect runtimeConnector,
+) (*attachedworkersealedinput.SyntheticRuntime, error) {
 	if ctx == nil || ctx.Err() != nil || store == nil {
 		return nil, ErrInvalidProfile
 	}
@@ -216,9 +226,17 @@ func ConnectWithClock(ctx context.Context, store *attachedworkerlocal.Store, pro
 	}
 	var owner *attachedworkersealedinput.SyntheticRuntime
 	if snapshot.Manifest.ConnectionGeneration == 0 {
-		owner, err = attachedworkersealedinput.ConnectSyntheticPinnedRuntime(ctx, config)
+		if initial == nil {
+			transport.CloseIdleConnections()
+			return nil, ErrInvalidProfile
+		}
+		owner, err = initial(ctx, config)
 	} else {
-		owner, err = attachedworkersealedinput.ReconnectSyntheticPinnedRuntime(ctx, config)
+		if reconnect == nil {
+			transport.CloseIdleConnections()
+			return nil, ErrInvalidProfile
+		}
+		owner, err = reconnect(ctx, config)
 	}
 	if err != nil {
 		transport.CloseIdleConnections()

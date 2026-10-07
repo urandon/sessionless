@@ -58,7 +58,8 @@ var ErrAttachedWorkerReceiptPutNotDispatched = errors.New("attached-worker recei
 // CreateAttachedWorkerOutputReceipt rechecks the exact owner/bearer/lease in
 // the YDB write transaction after non-transactional object verification. A
 // lost response can replay the immutable record by exact nonce/fingerprint.
-// No activation path calls this method until the receipt protocol is wired.
+// The production activation path remains synthetic-denied; the
+// ydbintegration-only provider gate exercises receipt publication end to end.
 func (store *Store) CreateAttachedWorkerOutputReceipt(
 	ctx context.Context,
 	blobs ports.BlobStore,

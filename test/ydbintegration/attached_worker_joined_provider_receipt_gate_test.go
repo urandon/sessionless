@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -68,8 +69,15 @@ func (recorder *aw07HTTPStatusRecorder) snapshot() string {
 // operation that failed without changing the production response contract.
 type aw07BackendRecorder struct {
 	*ydbstore.Store
-	mu       sync.Mutex
-	failures []string
+	probeDB     *sql.DB
+	probeCtx    context.Context
+	probeOnce   sync.Once
+	probeMu     sync.Mutex
+	probeClosed bool
+	probeWG     sync.WaitGroup
+	mu          sync.Mutex
+	failures    []string
+	probes      []string
 }
 
 func (recorder *aw07BackendRecorder) record(operation string, err error) {
@@ -84,7 +92,42 @@ func (recorder *aw07BackendRecorder) record(operation string, err error) {
 func (recorder *aw07BackendRecorder) snapshot() string {
 	recorder.mu.Lock()
 	defer recorder.mu.Unlock()
-	return strings.Join(recorder.failures, "; ")
+	return strings.Join(append(append([]string(nil), recorder.failures...), recorder.probes...), "; ")
+}
+
+// A single independent point-read probe distinguishes a stalled interactive
+// authorization transaction from an unavailable YDB Table service. It never
+// changes the authorization result and records no row, bearer, or payload.
+func (recorder *aw07BackendRecorder) probeExchangeRead(request ports.AttachedWorkerExchangeAuthorization) {
+	started := time.Now()
+	ctx, cancel := context.WithTimeout(recorder.probeCtx, 2*time.Second)
+	defer cancel()
+	readCtx := ydb.WithTxControl(ctx, table.OnlineReadOnlyTxControl())
+	stage := "connection"
+	var raw string
+	err := recorder.probeDB.QueryRowContext(readCtx,
+		`SELECT record FROM attached_worker_connections WHERE tenant_id=$1 AND owner_user_id=$2 AND worker_id=$3`,
+		request.TenantID, request.OwnerUserID, request.WorkerID,
+	).Scan(&raw)
+	if err == nil {
+		var connection domain.AttachedWorkerConnection
+		err = json.Unmarshal([]byte(raw), &connection)
+		if err == nil {
+			stage = "manifest"
+			err = recorder.probeDB.QueryRowContext(readCtx,
+				`SELECT record FROM attached_worker_capability_manifests
+				 WHERE tenant_id=$1 AND owner_user_id=$2 AND worker_id=$3 AND capability_digest=$4`,
+				request.TenantID, request.OwnerUserID, request.WorkerID, connection.CapabilityDigest,
+			).Scan(&raw)
+		}
+	}
+	stats := recorder.probeDB.Stats()
+	recorder.mu.Lock()
+	recorder.probes = append(recorder.probes,
+		fmt.Sprintf("independent online-RO probe stage=%s duration=%s error-type=%T deadline=%t pool-open=%d pool-in-use=%d pool-waits=%d",
+			stage, time.Since(started).Round(time.Millisecond), err, errors.Is(err, context.DeadlineExceeded),
+			stats.OpenConnections, stats.InUse, stats.WaitCount))
+	recorder.mu.Unlock()
 }
 
 func (recorder *aw07BackendRecorder) LoadAttachedWorkerConnection(ctx context.Context, tenant domain.TenantID,
@@ -106,7 +149,30 @@ func (recorder *aw07BackendRecorder) LoadAttachedWorker(ctx context.Context, ten
 func (recorder *aw07BackendRecorder) AuthorizeAttachedWorkerExchange(ctx context.Context,
 	request ports.AttachedWorkerExchangeAuthorization,
 ) (ports.AttachedWorkerAuthorizationResult, error) {
+	finished := make(chan struct{})
+	recorder.probeMu.Lock()
+	if !recorder.probeClosed {
+		recorder.probeWG.Add(1)
+		go func() {
+			defer recorder.probeWG.Done()
+			timer := time.NewTimer(5 * time.Second)
+			defer timer.Stop()
+			select {
+			case <-finished:
+				return
+			case <-timer.C:
+			}
+			select {
+			case <-finished:
+				return
+			default:
+			}
+			recorder.probeOnce.Do(func() { recorder.probeExchangeRead(request) })
+		}()
+	}
+	recorder.probeMu.Unlock()
 	result, err := recorder.Store.AuthorizeAttachedWorkerExchange(ctx, request)
+	close(finished)
 	recorder.record("authorize exchange", err)
 	return result, err
 }
@@ -193,7 +259,24 @@ func TestAW07TwoActivatedProviderDaemonReceipts(t *testing.T) {
 	aWorker, aPrivate := aw07CreateDaemonEnrollment(t, store, tenant, domain.UserID(uniqueID("owner-a-"+suffix)), workerID, suffix+"-a", now)
 	bWorker, bPrivate := aw07CreateDaemonEnrollment(t, store, tenant, domain.UserID(uniqueID("owner-b-"+suffix)), workerID, suffix+"-b", now)
 	blobs := &aw07ArtifactBlobs{objects: make(map[string][]byte), opens: make(map[string]int)}
-	backend := &aw07BackendRecorder{Store: store}
+	probeCtx, cancelProbe := context.WithCancel(context.Background())
+	backend := &aw07BackendRecorder{Store: store, probeDB: client.DB, probeCtx: probeCtx}
+	t.Cleanup(func() {
+		backend.probeMu.Lock()
+		backend.probeClosed = true
+		backend.probeMu.Unlock()
+		cancelProbe()
+		finished := make(chan struct{})
+		go func() {
+			backend.probeWG.Wait()
+			close(finished)
+		}()
+		select {
+		case <-finished:
+		case <-time.After(3 * time.Second):
+			t.Error("joined YDB diagnostic probe did not stop after cancellation")
+		}
+	})
 	service, err := attachedworkertransport.NewTestReceiptFinalizingService(attachedworkertransport.ServiceConfig{
 		IDs: testkit.NewSequenceIDGenerator("aw07-provider-"), Audience: "sessionless:attached-worker:v1",
 		PlatformOffer: attachedworkerprotocol.VersionOfferV1{

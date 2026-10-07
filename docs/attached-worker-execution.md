@@ -102,6 +102,10 @@ transaction; process evidence remains a separate observation. The #79 joined
 daemon gate exercises the current fail-closed side of this boundary, not a
 successful provider turn.
 
+The proposed server-owned receipt and two-owner proof order are specified in
+[the output-receipt contract](attached-worker-output-receipt.md). It requires
+owner review before implementation or production enablement.
+
 The positive path must preserve these separate authorities:
 
 1. An authenticated, bounded output submission creates an immutable receipt

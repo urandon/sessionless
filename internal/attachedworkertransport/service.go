@@ -877,6 +877,10 @@ func platformAttemptBinding(frame attachedworkerprotocol.FrameV1) (attachedworke
 		if frame.LeaseOffer != nil {
 			return frame.LeaseOffer.Binding, true
 		}
+	case attachedworkerprotocol.MessageLeaseAccepted:
+		if frame.LeaseAccepted != nil {
+			return frame.LeaseAccepted.Binding, true
+		}
 	case attachedworkerprotocol.MessageCancel:
 		if frame.Cancel != nil {
 			return frame.Cancel.Binding, true

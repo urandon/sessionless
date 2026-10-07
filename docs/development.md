@@ -244,6 +244,15 @@ context and artifact while A is held, and A receives no material after
 revocation. This covers the network/process boundary of sealed-input
 delivery. It is not an OS sandbox, credential-path, activated-daemon OCI, or
 provider-resource proof; #79 remains open for that joined scenario.
+The YDB gate also starts two separately activated daemon processes with
+colliding worker locator and identity key against the same TLS/YDB control
+plane. Each claims its own job and reads its own sealed context and artifact.
+The synthetic OCI client is test-owned, so this proves transport-to-daemon
+composition, exact owner-specific object reads, active A revocation without
+stopping B, B cancellation-to-pending-terminal behavior, exact digest
+fail-closure, and attempt-root/sentinel cleanup, not a real OCI or provider
+resource boundary. #79 remains open for the rootless two-owner canary and the
+remaining crash/reconnect races in the same joined scenario.
 The opt-in `make attached-worker-native-integration` exercises one exact
 test-owned launchd or systemd user-service lifecycle. The separate opt-in
 `make attached-worker-rootless-integration` runs the same lifecycle on Linux

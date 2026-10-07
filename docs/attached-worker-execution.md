@@ -90,6 +90,37 @@ exact status and evidence digest in `terminal_pending`. TerminalAck is created
 only in the transaction that successfully applies the already-validated
 server-side materialization:
 
+The currently activated synthetic-denied daemon computes its Terminal digest
+from typed process and cleanup evidence, not from a canonical artifact manifest
+and ordered session events. Those are different commitments. No adapter may
+reinterpret that process digest as a canonical output digest, invent output
+events, or acknowledge this terminal merely because the process stopped. It
+remains `terminal_pending` and the daemon requires reconciliation. A positive
+commit path needs an immutable, owner/attempt/lease-bound canonical output
+receipt whose digest is exactly the digest checked by the YDB materialization
+transaction; process evidence remains a separate observation. The #79 joined
+daemon gate exercises the current fail-closed side of this boundary, not a
+successful provider turn.
+
+The proposed server-owned receipt and two-owner proof order are specified in
+[the output-receipt contract](attached-worker-output-receipt.md). It requires
+owner review before implementation or production enablement.
+
+The positive path must preserve these separate authorities:
+
+1. An authenticated, bounded output submission creates an immutable receipt
+   scoped to tenant, owner, worker, run, attempt, reservation, lease and numeric
+   fence. It identifies the validated manifest and ordered canonical events;
+   the server computes the same `runFinalizationDigest` as YDB.
+2. The worker Terminal commits that receipt digest, while its process/cleanup
+   evidence has a distinct type and digest. A missing, changed or foreign
+   receipt leaves the attempt pending; neither digest may substitute for the
+   other.
+3. The YDB terminal transaction checks the receipt, current owner-scoped
+   connection and lease authority, and exact canonical materialization before
+   writing TerminalAck. Reconnect may replay only the same receipt and terminal
+   sequence; revoke or a stale generation cannot finalize them.
+
 - `succeeded` requires a canonical WorkerCompletion;
 - `failed` requires a non-cancelled WorkerFailure;
 - `cancelled` requires a cancelled WorkerFailure.

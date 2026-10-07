@@ -88,6 +88,22 @@ func TestAW04AcceptsOnlyTransactionalAttemptBroker(t *testing.T) {
 	}
 }
 
+func TestAW04LeaseAcceptedIsRecognizedAsPlatformAttemptBinding(t *testing.T) {
+	binding := attachedworkerprotocol.AttemptBindingV1{RunID: "run-1", AttemptID: "attempt-1"}
+	frame := attachedworkerprotocol.FrameV1{
+		Kind:          attachedworkerprotocol.MessageLeaseAccepted,
+		LeaseAccepted: &attachedworkerprotocol.LeaseAcceptedV1{Binding: binding},
+	}
+	got, ok := platformAttemptBinding(frame)
+	if !ok || got.RunID != binding.RunID || got.AttemptID != binding.AttemptID {
+		t.Fatalf("LeaseAccepted platform binding missing: got=%+v ok=%t", got, ok)
+	}
+	frame.LeaseAccepted = nil
+	if _, ok := platformAttemptBinding(frame); ok {
+		t.Fatal("nil LeaseAccepted unexpectedly supplied authority")
+	}
+}
+
 func TestAW04ActiveHeartbeatRequiresBrokerAndPollsStrictPlatformFrame(t *testing.T) {
 	for _, kind := range []attachedworkerprotocol.MessageKind{attachedworkerprotocol.MessageLeaseOffer, attachedworkerprotocol.MessageCancel, attachedworkerprotocol.MessageTerminalAck} {
 		t.Run(string(kind), func(t *testing.T) {

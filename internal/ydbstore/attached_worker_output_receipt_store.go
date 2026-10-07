@@ -34,6 +34,7 @@ type AttachedWorkerOutputReceiptV1 struct {
 	ObservationDigest    string                                       `json:"observation_digest"`
 	Observation          attachedworkeroutput.ProcessObservationV1    `json:"observation"`
 	CredentialRequired   bool                                         `json:"credential_required"`
+	HarnessBindingDigest domain.HarnessBindingDigestV1                `json:"harness_binding_digest"`
 	Status               domain.AttachedWorkerTerminalStatus          `json:"status"`
 	CanonicalDigest      domain.AttachedWorkerTerminalEvidenceDigest  `json:"canonical_digest"`
 	Materialization      ports.AttachedWorkerTerminalMaterialization  `json:"materialization"`
@@ -108,6 +109,10 @@ func (store *Store) CreateAttachedWorkerOutputReceipt(
 		return AttachedWorkerOutputReceiptResult{Status: ports.AttachedWorkerExecutionFenced}, nil
 	}
 	credentialRequired := loaded.Job.HarnessBinding.Backend.ProviderContractKind != domain.ProviderContractCredentiallessFixtureV1
+	bindingDigest, err := loaded.Job.HarnessBinding.Digest()
+	if err != nil {
+		return AttachedWorkerOutputReceiptResult{Status: ports.AttachedWorkerExecutionFenced}, nil
+	}
 	if err := request.Observation.ValidateFor(request.Candidate.Status, credentialRequired); err != nil {
 		return result, err
 	}
@@ -128,8 +133,8 @@ func (store *Store) CreateAttachedWorkerOutputReceipt(
 		Version: 1, CopyInProgress: true, Binding: receiptBindingWithoutBearer(request.Authorization),
 		Nonce: request.Nonce, CandidateFingerprint: fingerprint,
 		ObservationDigest: observationDigest, Observation: request.Observation,
-		CredentialRequired: credentialRequired,
-		Status:             request.Candidate.Status, CanonicalDigest: digest,
+		CredentialRequired: credentialRequired, HarnessBindingDigest: bindingDigest,
+		Status: request.Candidate.Status, CanonicalDigest: digest,
 		Materialization: materialization, CreatedAt: prepareAt,
 	}
 	for _, artifact := range request.Candidate.Artifacts {
@@ -223,6 +228,11 @@ func (store *Store) outputReceiptHeadTransaction(
 			status = ports.AttachedWorkerExecutionFenced
 			return nil
 		}
+		bindingDigest, err := job.HarnessBinding.Digest()
+		if err != nil {
+			status = ports.AttachedWorkerExecutionFenced
+			return nil
+		}
 		if _, deleting, err := readSessionDeletionTx(ctx, tx, job.SessionID); err != nil {
 			return err
 		} else if deleting {
@@ -236,6 +246,7 @@ func (store *Store) outputReceiptHeadTransaction(
 		if priorFound {
 			if prior.Nonce != request.Nonce || prior.CandidateFingerprint != fingerprint ||
 				prior.ObservationDigest != observationDigest || prior.Status != request.Candidate.Status ||
+				prior.HarnessBindingDigest != bindingDigest ||
 				!sameReceiptStableBinding(prior.Binding, auth) {
 				status = ports.AttachedWorkerExecutionConflict
 				return nil
@@ -301,7 +312,7 @@ func (store *Store) outputReceiptHeadTransaction(
 		}
 		if prepared.CreatedAt.After(at) || prepared.Status != request.Candidate.Status ||
 			prepared.Nonce != request.Nonce || prepared.CandidateFingerprint != fingerprint ||
-			prepared.ObservationDigest != observationDigest ||
+			prepared.ObservationDigest != observationDigest || prepared.HarnessBindingDigest != bindingDigest ||
 			!sameReceiptBinding(prepared.Binding, auth) {
 			return ErrAttachedWorkerAttemptConflict
 		}
@@ -358,6 +369,11 @@ func (store *Store) finishAttachedWorkerOutputReceipt(ctx context.Context,
 			return err
 		}
 		if !jobFound {
+			result.Status = ports.AttachedWorkerExecutionFenced
+			return nil
+		}
+		bindingDigest, err := job.HarnessBinding.Digest()
+		if err != nil || bindingDigest != planned.HarnessBindingDigest {
 			result.Status = ports.AttachedWorkerExecutionFenced
 			return nil
 		}
@@ -465,6 +481,7 @@ func validateAttachedWorkerReceiptRecord(record AttachedWorkerOutputReceiptV1, t
 		record.Binding.WorkerID != worker || record.Binding.AttemptID != attempt ||
 		record.Binding.LeaseGeneration != generation || record.Binding.PresentedSecretDigest != "" ||
 		record.Nonce.Validate() != nil || record.CanonicalDigest.Validate() != nil ||
+		record.HarnessBindingDigest.Validate() != nil ||
 		record.Observation.ValidateFor(record.Status, record.CredentialRequired) != nil {
 		return ErrAttachedWorkerAttemptConflict
 	}
@@ -649,10 +666,15 @@ func resolveAttachedWorkerTerminalMaterializationTx(ctx context.Context, tx *sta
 	if attempt.State == domain.AttachedWorkerAttemptTerminalPending {
 		job, found, err := readJSON[domain.WorkerJob](ctx, tx.sqlTx,
 			`SELECT payload FROM worker_jobs WHERE tenant_id=$1 AND run_id=$2`, tx.tenantID, attempt.RunID)
-		if err != nil || !found || job.AttemptID != attempt.AttemptID || job.ReservationID != attempt.ReservationID ||
+		if err != nil || !found {
+			return ports.AttachedWorkerTerminalMaterialization{}, ErrAttachedWorkerAttemptConflict
+		}
+		bindingDigest, digestErr := job.HarnessBinding.Digest()
+		if job.AttemptID != attempt.AttemptID || job.ReservationID != attempt.ReservationID ||
 			job.ExecutionPlacementV2.Kind != domain.ExecutionPlacementAttachedWorker ||
 			job.ExecutionPlacementV2.OwnerUserID != attempt.OwnerUserID || job.ExecutionPlacementV2.WorkerID != attempt.WorkerID ||
 			job.ExecutionPlacementV2.CapabilityDigest != attempt.CapabilityDigest || job.ExecutionPlacementV2.PolicyDigest != attempt.PolicyDigest ||
+			digestErr != nil || bindingDigest != receipt.HarnessBindingDigest ||
 			receipt.CredentialRequired != (job.HarnessBinding.Backend.ProviderContractKind != domain.ProviderContractCredentiallessFixtureV1) {
 			return ports.AttachedWorkerTerminalMaterialization{}, ErrAttachedWorkerAttemptConflict
 		}

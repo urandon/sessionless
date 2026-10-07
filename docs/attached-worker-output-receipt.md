@@ -60,7 +60,9 @@ exit status, a provider thread ID, or caller-selected event IDs.
    before copying any canonical objects; a second transaction marks it ready
    after exact object verification. Finalization accepts only ready receipts.
    The receipt stores the candidate fingerprint, generated event
-   IDs, canonical digest, full execution binding, idempotency nonce, candidate
+   IDs, canonical digest, full execution binding (including the admitted
+   provider resource and credential generation via the harness-binding digest),
+   idempotency nonce, candidate
    fingerprint, and a distinct digest of the typed process observation.
    The key is tenant/owner/worker/attempt/lease generation; one attempt has
    at most one receipt. An exact retry with the same nonce and fingerprint

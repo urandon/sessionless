@@ -336,6 +336,36 @@ func TestAW07ReceiptTwoOwnerCanonicalTerminalAndReplay(t *testing.T) {
 	if result, err := aStore.CommitAttachedWorkerTerminal(ctx, withCallerOutput); err == nil && result.Outbound != nil {
 		t.Fatalf("receipt profile accepted caller output: result=%+v", result)
 	}
+	// A ready receipt commits the exact admitted provider resource and
+	// credential generation, not just the fact that some credential is needed.
+	// Model a changed durable job between receipt publication and TerminalAck.
+	originalJob, err := json.Marshal(loaded.Job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedJob := loaded.Job
+	changedJob.HarnessBinding.Resource.CredentialGeneration++
+	changedPayload, err := json.Marshal(changedJob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeJob := func(payload []byte) {
+		t.Helper()
+		if _, err := aClient.DB.ExecContext(ctx,
+			`UPDATE worker_jobs SET payload=CAST($3 AS JsonDocument) WHERE tenant_id=$1 AND run_id=$2`,
+			a.request.TenantID, a.request.RunID, string(payload)); err != nil {
+			t.Fatalf("replace test-owned worker job: %v", err)
+		}
+	}
+	writeJob(changedPayload)
+	defer writeJob(originalJob)
+	if result, err := aStore.CommitAttachedWorkerTerminal(ctx, commit); err == nil && result.Outbound != nil {
+		t.Fatalf("changed provider credential generation accepted receipt: result=%+v", result)
+	}
+	if status := aw07RunStatus(t, aStore, ctx, a.request.TenantID, a.request.RunID); status.Terminal() {
+		t.Fatalf("changed provider binding finalized canonical run as %s", status)
+	}
+	writeJob(originalJob)
 	committed, err := aStore.CommitAttachedWorkerTerminal(ctx, commit)
 	if err != nil || committed.Status != ports.AttachedWorkerExecutionApplied || committed.Outbound == nil ||
 		aw07RunStatus(t, aStore, ctx, a.request.TenantID, a.request.RunID) != domain.RunSucceeded {

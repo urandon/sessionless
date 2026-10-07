@@ -833,6 +833,10 @@ func attachedWorkerOfferForDrain(t *testing.T, store *ydbstore.Store, client *yd
 }
 
 func attachedWorkerOfferForDrainWithPayload(t *testing.T, store *ydbstore.Store, client *ydbclient.Client, worker domain.AttachedWorker, connection domain.AttachedWorkerConnection, now time.Time, suffix string, contextBody, artifactBody []byte, maxRuntime ...time.Duration) ports.AttachedWorkerAttemptResult {
+	return attachedWorkerOfferForDrainWithPayloadAndBinding(t, store, client, worker, connection, now, suffix, contextBody, artifactBody, nil, maxRuntime...)
+}
+
+func attachedWorkerOfferForDrainWithPayloadAndBinding(t *testing.T, store *ydbstore.Store, client *ydbclient.Client, worker domain.AttachedWorker, connection domain.AttachedWorkerConnection, now time.Time, suffix string, contextBody, artifactBody []byte, amendBinding func(*domain.HarnessBindingV1), maxRuntime ...time.Duration) ports.AttachedWorkerAttemptResult {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -875,6 +879,12 @@ func attachedWorkerOfferForDrainWithPayload(t *testing.T, store *ydbstore.Store,
 	binding.OwnerUserID = worker.OwnerUserID
 	binding.Resource.OwnerUserID = worker.OwnerUserID
 	binding.ExecutionPlacementDigest = string(placementDigest)
+	if amendBinding != nil {
+		amendBinding(&binding)
+	}
+	if err := binding.ValidateForScope(worker.TenantID, worker.OwnerUserID, ingress.Run.ID, ingress.Attempt.ID, placement); err != nil {
+		t.Fatalf("owner %s test binding: %v", suffix, err)
+	}
 	ingress.Dispatch.ExecutionPlacementV2 = placement
 	ingress.Dispatch.HarnessBinding = binding
 	ingress.Dispatch.SubstrateBinding = nil

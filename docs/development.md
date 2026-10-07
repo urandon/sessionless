@@ -253,6 +253,12 @@ stopping B, B cancellation-to-pending-terminal behavior, exact digest
 fail-closure, and attempt-root/sentinel cleanup, not a real OCI or provider
 resource boundary. #79 remains open for the rootless two-owner canary and the
 remaining crash/reconnect races in the same joined scenario.
+The receipt YDB gate separately pins distinct test-only provider resource IDs
+and credential generations to the two owners. It rejects a successful receipt
+without credential-release evidence, then proves an owner-A canonical receipt
+and TerminalAck leave owner B's run untouched. This is a storage and protocol
+authority check, not an activated credential lifecycle or provider invocation;
+those and the rootless two-owner platform proof remain open for #79.
 The opt-in `make attached-worker-native-integration` exercises one exact
 test-owned launchd or systemd user-service lifecycle. The separate opt-in
 `make attached-worker-rootless-integration` runs the same lifecycle on Linux

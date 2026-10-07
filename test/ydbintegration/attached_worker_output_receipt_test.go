@@ -68,6 +68,23 @@ func (binder aw07ReceiptBinder) BindOutputReceiptBearer(bearer []byte, auth port
 	return auth, nil
 }
 
+// The provider is test-only: its resource and credential generation are
+// owner-specific authority facts, not a real key or an enabled backend.
+func aw07TestProviderBinding(owner domain.UserID, suffix string, generation uint64, now time.Time) func(*domain.HarnessBindingV1) {
+	return func(binding *domain.HarnessBindingV1) {
+		binding.Backend.BackendKind = domain.HarnessBackendDirectOpenRouterV1
+		binding.Backend.ProviderContractKind = domain.ProviderContractInvocationV1
+		binding.Backend.CredentialDeliveryKind = domain.ProviderCredentialDeliveryDirectV1
+		binding.Resource = domain.ProviderResourceBindingV1{
+			Kind: domain.ProviderResourceSubscriptionV1, ResourceID: "subscription-" + suffix,
+			OwnerUserID: owner, Revision: 1, CredentialMode: domain.ProviderCredentialInvocationV1,
+			CredentialGeneration: generation,
+		}
+		expires := now.Add(time.Hour)
+		binding.EvidenceExpiresAt = &expires
+	}
+}
+
 func TestAW07ReceiptTwoOwnerCanonicalTerminalAndReplay(t *testing.T) {
 	aStore, aClient, aWorker, aConnection, aSecret, _, _, aNow := readyAttachedWorkerForDrainWithIdentity(t,
 		"receipt-a", "", "", attachedworkerprotocol.FeatureOutputReceipt)
@@ -75,8 +92,12 @@ func TestAW07ReceiptTwoOwnerCanonicalTerminalAndReplay(t *testing.T) {
 		"receipt-b", aWorker.TenantID, aWorker.ID, attachedworkerprotocol.FeatureOutputReceipt)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	a := aw07ClaimedInput(t, aStore, aClient, aWorker, aConnection, aSecret, aNow, attachedWorkerDrainTestSuffix(t, "receipt-a"))
-	b := aw07ClaimedInput(t, bStore, bClient, bWorker, bConnection, bSecret, bNow, attachedWorkerDrainTestSuffix(t, "receipt-b"))
+	aSuffix := attachedWorkerDrainTestSuffix(t, "receipt-a")
+	bSuffix := attachedWorkerDrainTestSuffix(t, "receipt-b")
+	a := aw07ClaimedInputWithPayloadAndBinding(t, aStore, aClient, aWorker, aConnection, aSecret, aNow,
+		aSuffix, nil, nil, aw07TestProviderBinding(aWorker.OwnerUserID, aSuffix, 3, aNow))
+	b := aw07ClaimedInputWithPayloadAndBinding(t, bStore, bClient, bWorker, bConnection, bSecret, bNow,
+		bSuffix, nil, nil, aw07TestProviderBinding(bWorker.OwnerUserID, bSuffix, 7, bNow))
 	if a.request.OwnerUserID == b.request.OwnerUserID || a.request.WorkerID != b.request.WorkerID {
 		t.Fatal("receipt gate requires colliding worker locator under distinct owners")
 	}
@@ -84,6 +105,18 @@ func TestAW07ReceiptTwoOwnerCanonicalTerminalAndReplay(t *testing.T) {
 	loaded, found, err := aStore.LoadWorkerJob(ctx, a.request.TenantID, a.request.RunID)
 	if err != nil || !found {
 		t.Fatalf("load pinned job: found=%t err=%v", found, err)
+	}
+	peer, found, err := bStore.LoadWorkerJob(ctx, b.request.TenantID, b.request.RunID)
+	if err != nil || !found {
+		t.Fatalf("load peer job: found=%t err=%v", found, err)
+	}
+	if loaded.Job.HarnessBinding.Resource.ResourceID == peer.Job.HarnessBinding.Resource.ResourceID ||
+		loaded.Job.HarnessBinding.Resource.CredentialGeneration != 3 ||
+		peer.Job.HarnessBinding.Resource.CredentialGeneration != 7 ||
+		loaded.Job.HarnessBinding.Resource.OwnerUserID != a.request.OwnerUserID ||
+		peer.Job.HarnessBinding.Resource.OwnerUserID != b.request.OwnerUserID {
+		t.Fatalf("test provider authority not owner-distinct: A=%+v B=%+v",
+			loaded.Job.HarnessBinding.Resource, peer.Job.HarnessBinding.Resource)
 	}
 	seedCanonicalMembership(t, aClient.DB, a.request.TenantID, a.request.OwnerUserID, aNow)
 	credentialRequired := loaded.Job.HarnessBinding.Backend.ProviderContractKind != domain.ProviderContractCredentiallessFixtureV1
@@ -94,6 +127,12 @@ func TestAW07ReceiptTwoOwnerCanonicalTerminalAndReplay(t *testing.T) {
 			Version: 1, DescendantsReaped: true, BoundaryReleased: true, CleanupSucceeded: true,
 			CredentialReleaseRequired: credentialRequired, CredentialReleased: credentialRequired,
 		},
+	}
+	withoutCredentialRelease := request
+	withoutCredentialRelease.Observation.CredentialReleased = false
+	if result, err := aStore.CreateAttachedWorkerOutputReceipt(ctx, blobs, withoutCredentialRelease); err != nil ||
+		result.Status != ports.AttachedWorkerExecutionFenced || result.Receipt.Version != 0 {
+		t.Fatalf("provider receipt without credential release was not fenced: result=%+v err=%v", result, err)
 	}
 	foreign := request
 	foreign.Authorization.OwnerUserID = b.request.OwnerUserID

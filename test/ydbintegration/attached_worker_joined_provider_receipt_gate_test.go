@@ -78,6 +78,9 @@ type aw07BackendRecorder struct {
 	mu          sync.Mutex
 	failures    []string
 	probes      []string
+	probePhase  string
+	probeAt     time.Time
+	watchdogs   uint64
 }
 
 func (recorder *aw07BackendRecorder) record(operation string, err error) {
@@ -92,7 +95,20 @@ func (recorder *aw07BackendRecorder) record(operation string, err error) {
 func (recorder *aw07BackendRecorder) snapshot() string {
 	recorder.mu.Lock()
 	defer recorder.mu.Unlock()
-	return strings.Join(append(append([]string(nil), recorder.failures...), recorder.probes...), "; ")
+	parts := append(append([]string(nil), recorder.failures...), recorder.probes...)
+	if recorder.watchdogs > 0 {
+		stats := recorder.probeDB.Stats()
+		parts = append(parts, fmt.Sprintf("watchdogs-fired=%d probe-phase=%s probe-age=%s pool-open=%d pool-in-use=%d pool-waits=%d",
+			recorder.watchdogs, recorder.probePhase, time.Since(recorder.probeAt).Round(time.Millisecond),
+			stats.OpenConnections, stats.InUse, stats.WaitCount))
+	}
+	return strings.Join(parts, "; ")
+}
+
+func (recorder *aw07BackendRecorder) markProbePhase(phase string) {
+	recorder.mu.Lock()
+	recorder.probePhase = phase
+	recorder.mu.Unlock()
 }
 
 // A single independent point-read probe distinguishes a stalled interactive
@@ -100,6 +116,7 @@ func (recorder *aw07BackendRecorder) snapshot() string {
 // changes the authorization result and records no row, bearer, or payload.
 func (recorder *aw07BackendRecorder) probeExchangeRead(request ports.AttachedWorkerExchangeAuthorization) {
 	started := time.Now()
+	recorder.markProbePhase("connection-read")
 	ctx, cancel := context.WithTimeout(recorder.probeCtx, 2*time.Second)
 	defer cancel()
 	readCtx := ydb.WithTxControl(ctx, table.OnlineReadOnlyTxControl())
@@ -114,6 +131,7 @@ func (recorder *aw07BackendRecorder) probeExchangeRead(request ports.AttachedWor
 		err = json.Unmarshal([]byte(raw), &connection)
 		if err == nil {
 			stage = "manifest"
+			recorder.markProbePhase("manifest-read")
 			err = recorder.probeDB.QueryRowContext(readCtx,
 				`SELECT record FROM attached_worker_capability_manifests
 				 WHERE tenant_id=$1 AND owner_user_id=$2 AND worker_id=$3 AND capability_digest=$4`,
@@ -127,6 +145,7 @@ func (recorder *aw07BackendRecorder) probeExchangeRead(request ports.AttachedWor
 		fmt.Sprintf("independent online-RO probe stage=%s duration=%s error-type=%T deadline=%t pool-open=%d pool-in-use=%d pool-waits=%d",
 			stage, time.Since(started).Round(time.Millisecond), err, errors.Is(err, context.DeadlineExceeded),
 			stats.OpenConnections, stats.InUse, stats.WaitCount))
+	recorder.probePhase = "completed"
 	recorder.mu.Unlock()
 }
 
@@ -167,6 +186,13 @@ func (recorder *aw07BackendRecorder) AuthorizeAttachedWorkerExchange(ctx context
 				return
 			default:
 			}
+			recorder.mu.Lock()
+			recorder.watchdogs++
+			if recorder.watchdogs == 1 {
+				recorder.probeAt = time.Now()
+				recorder.probePhase = "scheduled"
+			}
+			recorder.mu.Unlock()
 			recorder.probeOnce.Do(func() { recorder.probeExchangeRead(request) })
 		}()
 	}

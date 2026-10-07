@@ -217,6 +217,10 @@ target needs `YDB_CONNECTION_STRING` and credentials appropriate for the
 already migrated test database. Neither gate enables real provider access;
 the wider #79 security E2E still needs the rootless platform proof and joined
 crash/reconnect cases.
+CI also runs that security gate in its own job with a newly started YDB Local,
+alongside the full YDB integration job. Both jobs must pass before runtime
+images are checked; this distinguishes a joined-gate failure from contention
+or accumulated state in the broader integration suite without dropping either.
 The tagged YDB gate includes `TestAW07TwoActivatedProviderDaemonReceipts`:
 two activated daemons with colliding worker IDs use distinct test-only
 subscription resources, credential generations, sealed inputs, credential

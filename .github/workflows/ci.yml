@@ -118,6 +118,58 @@ jobs:
         if: always()
         run: docker stop sessionless-ydb || true
 
+  ydb-security-isolated:
+    name: Attached-worker isolated YDB security gate
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      YDB_CONNECTION_STRING: grpc://localhost:2136/local?go_query_mode=scripting&go_fake_tx=scripting&go_query_bind=declare,numeric
+      YDB_ANONYMOUS_CREDENTIALS: "1"
+    steps:
+      - name: Checkout mirrored commit
+        uses: actions/checkout@v6
+
+      - name: Set up pinned Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Start pinned YDB Local
+        run: |
+          . tools/versions.env
+          docker run --detach --rm --name sessionless-security-ydb \
+            --hostname localhost \
+            --publish 2136:2136 \
+            --publish 8765:8765 \
+            --env YDB_USE_IN_MEMORY_PDISKS=true \
+            "ydbplatform/local-ydb:${YDB_LOCAL_IMAGE_VERSION}"
+
+      - name: Wait for YDB Local
+        run: |
+          for attempt in $(seq 1 90); do
+            if curl --fail --silent --show-error \
+              http://localhost:8765/monitoring/cluster >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs sessionless-security-ydb
+          exit 1
+
+      - name: Apply schema twice
+        run: |
+          make migrate-local
+          make migrate-local
+
+      - name: Prove attached-worker two-owner YDB authority gate
+        run: make attached-worker-security-ydb-gate
+
+      - name: Stop YDB Local
+        if: always()
+        run: docker stop sessionless-security-ydb || true
+
   local-stand:
     name: Local multi-service stand
     needs: verify
@@ -191,6 +243,7 @@ jobs:
     needs:
       - verify
       - ydb
+      - ydb-security-isolated
       - local-stand
       - terraform
       - cloudflare-edge

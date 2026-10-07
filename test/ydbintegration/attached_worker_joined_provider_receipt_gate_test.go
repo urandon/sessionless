@@ -5,6 +5,7 @@ package ydbintegration
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -16,6 +17,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	ydb "github.com/ydb-platform/ydb-go-sdk/v3"
+	"github.com/ydb-platform/ydb-go-sdk/v3/table"
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerhttp"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerprotocol"
@@ -140,6 +144,29 @@ func (recorder *aw07BackendRecorder) CommitAttachedWorkerTerminal(ctx context.Co
 		recorder.record("commit terminal", fmt.Errorf("status=%s", result.Status))
 	}
 	return result, err
+}
+
+// Poll the canonical row without starting a second serializable transaction
+// while two activated daemons are exchanging and committing their own work.
+func aw07JoinedRunStatus(t *testing.T, db *sql.DB, ctx context.Context,
+	tenant domain.TenantID, runID domain.RunID,
+) domain.RunStatus {
+	t.Helper()
+	readCtx := ydb.WithTxControl(ctx, table.OnlineReadOnlyTxControl())
+	var payload string
+	if err := db.QueryRowContext(readCtx,
+		`SELECT payload FROM runs WHERE tenant_id = $1 AND run_id = $2`, tenant, runID,
+	).Scan(&payload); err != nil {
+		t.Fatalf("read canonical run %s for tenant %s: %v", runID, tenant, err)
+	}
+	var run domain.Run
+	if err := json.Unmarshal([]byte(payload), &run); err != nil {
+		t.Fatalf("decode canonical run %s for tenant %s: %v", runID, tenant, err)
+	}
+	if run.ID != runID || run.TenantID != tenant {
+		t.Fatalf("canonical run identity: got %s/%s, want %s/%s", run.TenantID, run.ID, tenant, runID)
+	}
+	return run.Status
 }
 
 // A real activated daemon and HTTPS exchange must take two independently
@@ -269,7 +296,7 @@ func TestAW07TwoActivatedProviderDaemonReceipts(t *testing.T) {
 		owner := &owners[index]
 		deadline := time.Now().Add(90 * time.Second)
 		for {
-			status := aw07RunStatus(t, store, ctx, tenant, owner.offer.Attempt.RunID)
+			status := aw07JoinedRunStatus(t, client.DB, ctx, tenant, owner.offer.Attempt.RunID)
 			if status == domain.RunSucceeded {
 				break
 			}
@@ -280,7 +307,7 @@ func TestAW07TwoActivatedProviderDaemonReceipts(t *testing.T) {
 					owner.name, status, owner.process.stdout.String(), owner.process.stderr.String(),
 					statusRecorder.snapshot(), backend.snapshot(), blobs.totalOpens(), lifecycle, aw07ReadOCICommands(t, owner.install.commandLog))
 			}
-			time.Sleep(20 * time.Millisecond)
+			time.Sleep(250 * time.Millisecond)
 		}
 		attempt, found, err := store.LoadAttachedWorkerAttempt(ctx, tenant, owner.worker.OwnerUserID, workerID)
 		if err != nil || !found || attempt.State != domain.AttachedWorkerAttemptTerminalCommitted {

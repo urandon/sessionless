@@ -86,6 +86,7 @@ jobs:
           . tools/versions.env
           docker run --detach --rm --name sessionless-ydb \
             --hostname localhost \
+            --no-healthcheck \
             --publish 2136:2136 \
             --publish 8765:8765 \
             --env YDB_USE_IN_MEMORY_PDISKS=true \
@@ -148,6 +149,7 @@ jobs:
           . tools/versions.env
           docker run --detach --rm --name sessionless-security-ydb \
             --hostname localhost \
+            --no-healthcheck \
             --publish 2136:2136 \
             --publish 8765:8765 \
             --env YDB_USE_IN_MEMORY_PDISKS=true \

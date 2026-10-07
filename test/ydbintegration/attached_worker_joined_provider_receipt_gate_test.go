@@ -168,6 +168,12 @@ func (recorder *aw07BackendRecorder) LoadAttachedWorker(ctx context.Context, ten
 func (recorder *aw07BackendRecorder) AuthorizeAttachedWorkerExchange(ctx context.Context,
 	request ports.AttachedWorkerExchangeAuthorization,
 ) (ports.AttachedWorkerAuthorizationResult, error) {
+	started := time.Now()
+	startContextErr := ctx.Err()
+	startDeadline := "none"
+	if deadline, ok := ctx.Deadline(); ok {
+		startDeadline = time.Until(deadline).Round(time.Millisecond).String()
+	}
 	finished := make(chan struct{})
 	recorder.probeMu.Lock()
 	if !recorder.probeClosed {
@@ -199,7 +205,8 @@ func (recorder *aw07BackendRecorder) AuthorizeAttachedWorkerExchange(ctx context
 	recorder.probeMu.Unlock()
 	result, err := recorder.Store.AuthorizeAttachedWorkerExchange(ctx, request)
 	close(finished)
-	recorder.record("authorize exchange", err)
+	recorder.record(fmt.Sprintf("authorize exchange duration=%s context-at-start=%v context-at-end=%v deadline-remaining-at-start=%s",
+		time.Since(started).Round(time.Millisecond), startContextErr, ctx.Err(), startDeadline), err)
 	return result, err
 }
 

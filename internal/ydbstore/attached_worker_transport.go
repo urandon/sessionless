@@ -10,6 +10,8 @@ import (
 	"math"
 	"time"
 
+	"github.com/ydb-platform/ydb-go-sdk/v3/retry"
+
 	"gitcode.com/urandon/sessionless/internal/attachedworkerprotocol"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
@@ -455,11 +457,18 @@ func (store *Store) AuthorizeAttachedWorkerExchange(
 		return result, err
 	}
 	result.Status = ports.AttachedWorkerConnectionDenied
-	stage := "begin"
+	stage := "no callback"
+	callbackAttempts := 0
+	firstFailureStage := "none"
+	firstFailureStatusCode := "unavailable"
 	err = store.Transact(ctx, request.TenantID, func(state ports.StateTx) (callbackErr error) {
+		callbackAttempts++
 		defer func() {
-			if callbackErr == nil {
-				stage = "commit transaction"
+			if callbackErr != nil && firstFailureStage == "none" {
+				firstFailureStage = stage
+				firstFailureStatusCode = fmt.Sprint(retry.Check(callbackErr).StatusCode())
+			} else if callbackErr == nil {
+				stage = "callback completed"
 			}
 		}()
 		tx := state.(*stateTx)
@@ -578,7 +587,8 @@ func (store *Store) AuthorizeAttachedWorkerExchange(
 		return nil
 	})
 	if err != nil {
-		return result, fmt.Errorf("authorize attached worker exchange at %s: %w", stage, err)
+		return result, fmt.Errorf("authorize attached worker exchange, last callback stage %s after %d callback attempts (first callback failure at %s, YDB status %s): %w",
+			stage, callbackAttempts, firstFailureStage, firstFailureStatusCode, err)
 	}
 	return result, err
 }

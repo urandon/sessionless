@@ -163,6 +163,9 @@ jobs:
           make migrate-local
           make migrate-local
 
+      - name: Prove joined provider receipts before other YDB tests
+        run: make attached-worker-joined-provider-ydb-gate
+
       - name: Prove attached-worker two-owner YDB authority gate
         run: make attached-worker-security-ydb-gate
 

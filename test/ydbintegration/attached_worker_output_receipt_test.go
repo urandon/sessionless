@@ -343,12 +343,6 @@ func TestAW07ReceiptTwoOwnerCanonicalTerminalAndReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	changedJob := loaded.Job
-	changedJob.HarnessBinding.Resource.CredentialGeneration++
-	changedPayload, err := json.Marshal(changedJob)
-	if err != nil {
-		t.Fatal(err)
-	}
 	writeJob := func(payload []byte) {
 		t.Helper()
 		if _, err := aClient.DB.ExecContext(ctx,
@@ -357,15 +351,34 @@ func TestAW07ReceiptTwoOwnerCanonicalTerminalAndReplay(t *testing.T) {
 			t.Fatalf("replace test-owned worker job: %v", err)
 		}
 	}
-	writeJob(changedPayload)
 	defer writeJob(originalJob)
-	if result, err := aStore.CommitAttachedWorkerTerminal(ctx, commit); err == nil && result.Outbound != nil {
-		t.Fatalf("changed provider credential generation accepted receipt: result=%+v", result)
+	for _, scenario := range []struct {
+		name   string
+		mutate func(*domain.WorkerJob)
+	}{
+		{"credential generation", func(job *domain.WorkerJob) { job.HarnessBinding.Resource.CredentialGeneration++ }},
+		{"provider resource", func(job *domain.WorkerJob) { job.HarnessBinding.Resource.ResourceID += "-other" }},
+		{"provider contract", func(job *domain.WorkerJob) {
+			job.HarnessBinding.Backend.ProviderContractKind = domain.ProviderContractCredentiallessFixtureV1
+		}},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			changedJob := loaded.Job
+			scenario.mutate(&changedJob)
+			changedPayload, err := json.Marshal(changedJob)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeJob(changedPayload)
+			if result, err := aStore.CommitAttachedWorkerTerminal(ctx, commit); err == nil && result.Outbound != nil {
+				t.Fatalf("changed %s accepted receipt: result=%+v", scenario.name, result)
+			}
+			if status := aw07RunStatus(t, aStore, ctx, a.request.TenantID, a.request.RunID); status.Terminal() {
+				t.Fatalf("changed %s finalized canonical run as %s", scenario.name, status)
+			}
+			writeJob(originalJob)
+		})
 	}
-	if status := aw07RunStatus(t, aStore, ctx, a.request.TenantID, a.request.RunID); status.Terminal() {
-		t.Fatalf("changed provider binding finalized canonical run as %s", status)
-	}
-	writeJob(originalJob)
 	committed, err := aStore.CommitAttachedWorkerTerminal(ctx, commit)
 	if err != nil || committed.Status != ports.AttachedWorkerExecutionApplied || committed.Outbound == nil ||
 		aw07RunStatus(t, aStore, ctx, a.request.TenantID, a.request.RunID) != domain.RunSucceeded {

@@ -114,6 +114,13 @@ jobs:
       - name: Prove attached-worker two-owner YDB authority gate
         run: make attached-worker-security-ydb-gate
 
+      - name: Capture failed YDB Local state
+        if: failure()
+        run: |
+          timeout 10s docker inspect --format '{{json .State}}' sessionless-ydb || true
+          timeout 10s docker stats --no-stream --format '{{.MemUsage}} {{.CPUPerc}}' sessionless-ydb || true
+          timeout 10s docker logs --timestamps --tail 200 sessionless-ydb || true
+
       - name: Stop YDB Local
         if: always()
         run: docker stop sessionless-ydb || true
@@ -168,6 +175,13 @@ jobs:
 
       - name: Prove attached-worker two-owner YDB authority gate
         run: make attached-worker-security-ydb-gate
+
+      - name: Capture failed YDB Local state
+        if: failure()
+        run: |
+          timeout 10s docker inspect --format '{{json .State}}' sessionless-security-ydb || true
+          timeout 10s docker stats --no-stream --format '{{.MemUsage}} {{.CPUPerc}}' sessionless-security-ydb || true
+          timeout 10s docker logs --timestamps --tail 200 sessionless-security-ydb || true
 
       - name: Stop YDB Local
         if: always()

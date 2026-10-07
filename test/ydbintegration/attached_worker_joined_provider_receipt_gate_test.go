@@ -214,7 +214,7 @@ func TestAW07TwoActivatedProviderDaemonReceipts(t *testing.T) {
 	root := t.TempDir()
 	a := aw07PrepareDaemonInstallation(t, filepath.Join(root, "a"), server.URL, trust, aWorker, aPrivate, now, true)
 	b := aw07PrepareDaemonInstallation(t, filepath.Join(root, "b"), server.URL, trust, bWorker, bPrivate, now, true)
-	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)
 	defer cancel()
 	aProcess := aw07StartDaemonProcess(t, aw07DaemonChildInput{StateRoot: a.stateRoot, ProfilePath: a.profilePath,
 		ClockNanos: now.UnixNano(), TestProvider: true, ProviderResource: "subscription-" + suffix + "-a", ProviderGeneration: 3})
@@ -262,11 +262,12 @@ func TestAW07TwoActivatedProviderDaemonReceipts(t *testing.T) {
 		blobs.mu.Unlock()
 	}
 	for index := range owners {
-		owners[index].process.commandLine(t, "RUN")
-		owners[index].process.await(t, ctx, "AW07_DAEMON_RUNNING")
-	}
-	for index := range owners {
 		owner := &owners[index]
+		// Keep both owner-scoped daemons connected and both offers available,
+		// but complete one provider turn at a time. Concurrent YDB Local
+		// provider turns are a load test, not this authority-boundary proof.
+		owner.process.commandLine(t, "RUN")
+		owner.process.await(t, ctx, "AW07_DAEMON_RUNNING")
 		deadline := time.Now().Add(90 * time.Second)
 		for {
 			status := aw07RunStatus(t, store, ctx, tenant, owner.offer.Attempt.RunID)

@@ -345,37 +345,67 @@ func TestConcurrentLeaseClaimHasExactlyOneWinner(t *testing.T) {
 	assertCount(t, client, "lease_heads", tenantID, 1)
 	assertCount(t, client, "lease_expiry", tenantID, 1)
 	assertCount(t, client, "lease_expiry_v2", tenantID, 1)
-	bucket, err := ydbpartition.BucketV1(string(ingress.Run.ID))
-	if err != nil {
-		t.Fatal(err)
-	}
-	expired, err := store.ListExpiredLeasesByBucket(
-		context.Background(),
-		bucket,
-		now.Add(2*time.Minute),
-		1024,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var exactLeaseCount int
-	for _, lease := range expired {
-		if lease.TenantID == tenantID && lease.RunID == ingress.Run.ID {
-			exactLeaseCount++
-		}
-	}
-	if exactLeaseCount != 1 {
-		t.Fatalf("bucket lease result contains %d exact tenant/run leases, want 1; result=%+v", exactLeaseCount, expired)
-	}
+	queryCtx, queryCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer queryCancel()
 	var winningLeaseID domain.LeaseID
 	var winningFence uint64
 	var winningWorker string
-	if err := client.DB.QueryRowContext(context.Background(),
+	if err := client.DB.QueryRowContext(queryCtx,
 		`SELECT lease_id, worker_id, fence_token FROM lease_heads
 		 WHERE tenant_id = $1 AND run_id = $2`,
 		tenantID, ingress.Run.ID,
 	).Scan(&winningLeaseID, &winningWorker, &winningFence); err != nil {
 		t.Fatal(err)
+	}
+	bucket, err := ydbpartition.BucketV1(string(ingress.Run.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var indexedLeaseID domain.LeaseID
+	var indexedFence uint64
+	if err := client.DB.QueryRowContext(queryCtx,
+		`SELECT lease_id, fence_token FROM lease_expiry_v2
+		 WHERE shard_bucket = $1 AND expires_at = $2 AND tenant_id = $3 AND run_id = $4`,
+		bucket, now.Add(time.Minute), tenantID, ingress.Run.ID,
+	).Scan(&indexedLeaseID, &indexedFence); err != nil {
+		t.Fatal(err)
+	}
+	if indexedLeaseID != winningLeaseID || indexedFence != winningFence {
+		t.Fatalf("indexed lease = %s/%d, winner = %s/%d", indexedLeaseID, indexedFence, winningLeaseID, winningFence)
+	}
+	const pageLimit = 10
+	before := now.Add(2 * time.Minute)
+	expired, err := store.ListExpiredLeasesByBucket(
+		queryCtx,
+		bucket,
+		before,
+		pageLimit,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(expired) == 0 || len(expired) > pageLimit {
+		t.Fatalf("bounded bucket lease result has %d rows, want 1..%d", len(expired), pageLimit)
+	}
+	var exactLeaseCount int
+	for _, lease := range expired {
+		returnedBucket, err := ydbpartition.BucketV1(string(lease.RunID))
+		if err != nil || returnedBucket != bucket || lease.ExpiresAt.After(before) {
+			t.Fatalf("bounded bucket lease result = %+v, bucket=%d err=%v", lease, returnedBucket, err)
+		}
+		if lease.TenantID == tenantID && lease.RunID == ingress.Run.ID {
+			exactLeaseCount++
+			if lease.LeaseID != winningLeaseID || lease.Fence != winningFence ||
+				!lease.ExpiresAt.Equal(now.Add(time.Minute)) {
+				t.Fatalf("bucket result for own run = %+v, winner = %s/%d", lease, winningLeaseID, winningFence)
+			}
+		}
+	}
+	// A fresh database proves this run appears in the global traversal. A
+	// saturated shared bucket may page it out, so the exact-key check above is
+	// the stable per-run assertion in long-lived developer databases.
+	if exactLeaseCount > 1 || len(expired) < pageLimit && exactLeaseCount != 1 {
+		t.Fatalf("bucket page has %d exact tenant/run leases in %d rows, want 1 when unsaturated", exactLeaseCount, len(expired))
 	}
 	replayed, err := store.ClaimLease(context.Background(), ydbstore.LeaseClaim{
 		TenantID: tenantID, RunID: ingress.Run.ID, AttemptID: ingress.Attempt.ID,

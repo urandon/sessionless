@@ -59,6 +59,89 @@ func (recorder *aw07HTTPStatusRecorder) snapshot() string {
 	return strings.Join(recorder.statuses, ",")
 }
 
+// The serving adapter deliberately hides backend details from the worker. Keep
+// them in this test-only recorder so a sanitized 503 still identifies the YDB
+// operation that failed without changing the production response contract.
+type aw07BackendRecorder struct {
+	*ydbstore.Store
+	mu       sync.Mutex
+	failures []string
+}
+
+func (recorder *aw07BackendRecorder) record(operation string, err error) {
+	if err == nil {
+		return
+	}
+	recorder.mu.Lock()
+	recorder.failures = append(recorder.failures, fmt.Sprintf("%s: %v", operation, err))
+	recorder.mu.Unlock()
+}
+
+func (recorder *aw07BackendRecorder) snapshot() string {
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	return strings.Join(recorder.failures, "; ")
+}
+
+func (recorder *aw07BackendRecorder) LoadAttachedWorkerConnection(ctx context.Context, tenant domain.TenantID,
+	owner domain.UserID, worker domain.AttachedWorkerID,
+) (domain.AttachedWorkerConnection, bool, error) {
+	connection, found, err := recorder.Store.LoadAttachedWorkerConnection(ctx, tenant, owner, worker)
+	recorder.record("load connection", err)
+	return connection, found, err
+}
+
+func (recorder *aw07BackendRecorder) LoadAttachedWorker(ctx context.Context, tenant domain.TenantID,
+	owner domain.UserID, worker domain.AttachedWorkerID,
+) (domain.AttachedWorker, bool, error) {
+	value, found, err := recorder.Store.LoadAttachedWorker(ctx, tenant, owner, worker)
+	recorder.record("load worker", err)
+	return value, found, err
+}
+
+func (recorder *aw07BackendRecorder) AuthorizeAttachedWorkerExchange(ctx context.Context,
+	request ports.AttachedWorkerExchangeAuthorization,
+) (ports.AttachedWorkerAuthorizationResult, error) {
+	result, err := recorder.Store.AuthorizeAttachedWorkerExchange(ctx, request)
+	recorder.record("authorize exchange", err)
+	return result, err
+}
+
+func (recorder *aw07BackendRecorder) PollAttachedWorkerControl(ctx context.Context,
+	request ports.AttachedWorkerControlPoll,
+) (ports.AttachedWorkerDrainResult, error) {
+	result, err := recorder.Store.PollAttachedWorkerControl(ctx, request)
+	recorder.record("poll control", err)
+	return result, err
+}
+
+func (recorder *aw07BackendRecorder) PollAttachedWorkerAttempt(ctx context.Context,
+	request ports.AttachedWorkerAttemptPoll,
+) (ports.AttachedWorkerAttemptResult, error) {
+	result, err := recorder.Store.PollAttachedWorkerAttempt(ctx, request)
+	recorder.record("poll attempt", err)
+	return result, err
+}
+
+func (recorder *aw07BackendRecorder) ExchangeAttachedWorkerAttempt(ctx context.Context,
+	request ports.AttachedWorkerAttemptExchange,
+) (ports.AttachedWorkerAttemptResult, error) {
+	result, err := recorder.Store.ExchangeAttachedWorkerAttempt(ctx, request)
+	recorder.record("exchange attempt", err)
+	return result, err
+}
+
+func (recorder *aw07BackendRecorder) CommitAttachedWorkerTerminal(ctx context.Context,
+	request ports.AttachedWorkerTerminalCommit,
+) (ports.AttachedWorkerAttemptResult, error) {
+	result, err := recorder.Store.CommitAttachedWorkerTerminal(ctx, request)
+	recorder.record("commit terminal", err)
+	if err == nil && result.Status != ports.AttachedWorkerExecutionApplied && result.Status != ports.AttachedWorkerExecutionReplayed {
+		recorder.record("commit terminal", fmt.Errorf("status=%s", result.Status))
+	}
+	return result, err
+}
+
 // A real activated daemon and HTTPS exchange must take two independently
 // authorized provider-shaped turns through credential issue/release, canonical
 // receipt publication, and TerminalAck. The provider and OCI engine are test
@@ -83,6 +166,7 @@ func TestAW07TwoActivatedProviderDaemonReceipts(t *testing.T) {
 	aWorker, aPrivate := aw07CreateDaemonEnrollment(t, store, tenant, domain.UserID(uniqueID("owner-a-"+suffix)), workerID, suffix+"-a", now)
 	bWorker, bPrivate := aw07CreateDaemonEnrollment(t, store, tenant, domain.UserID(uniqueID("owner-b-"+suffix)), workerID, suffix+"-b", now)
 	blobs := &aw07ArtifactBlobs{objects: make(map[string][]byte), opens: make(map[string]int)}
+	backend := &aw07BackendRecorder{Store: store}
 	service, err := attachedworkertransport.NewTestReceiptFinalizingService(attachedworkertransport.ServiceConfig{
 		IDs: testkit.NewSequenceIDGenerator("aw07-provider-"), Audience: "sessionless:attached-worker:v1",
 		PlatformOffer: attachedworkerprotocol.VersionOfferV1{
@@ -93,7 +177,7 @@ func TestAW07TwoActivatedProviderDaemonReceipts(t *testing.T) {
 		ChallengeLifetime:   5 * time.Minute, ChallengeRetention: time.Hour,
 		PresenceTTL: 20 * time.Minute, AuthTTL: time.Hour,
 		CheckpointInterval: attachedworkertransport.MinimumHeartbeatInterval,
-	}, store, store)
+	}, backend, backend)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,9 +276,9 @@ func TestAW07TwoActivatedProviderDaemonReceipts(t *testing.T) {
 			if status.Terminal() || strings.Contains(owner.process.stdout.String(), "AW07_DAEMON_RUN_EXIT=") &&
 				strings.Contains(owner.process.stdout.String(), "materialization failed") || time.Now().After(deadline) {
 				lifecycle, _ := os.ReadFile(filepath.Join(filepath.Dir(owner.install.stateRoot), "credentials", "lifecycle.log"))
-				t.Fatalf("%s did not commit successful canonical receipt: status=%s stdout=%s stderr=%s HTTP=%s blob-opens=%d credential-lifecycle=%q OCI=%s",
+				t.Fatalf("%s did not commit successful canonical receipt: status=%s stdout=%s stderr=%s HTTP=%s backend=%s blob-opens=%d credential-lifecycle=%q OCI=%s",
 					owner.name, status, owner.process.stdout.String(), owner.process.stderr.String(),
-					statusRecorder.snapshot(), blobs.totalOpens(), lifecycle, aw07ReadOCICommands(t, owner.install.commandLog))
+					statusRecorder.snapshot(), backend.snapshot(), blobs.totalOpens(), lifecycle, aw07ReadOCICommands(t, owner.install.commandLog))
 			}
 			time.Sleep(20 * time.Millisecond)
 		}

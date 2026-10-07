@@ -50,10 +50,12 @@ func (writer *aw07StatusWriter) WriteHeader(status int) {
 
 func (recorder *aw07HTTPStatusRecorder) wrap(path string, handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		started := time.Now()
 		observed := &aw07StatusWriter{ResponseWriter: writer, status: http.StatusOK}
 		handler.ServeHTTP(observed, request)
 		recorder.mu.Lock()
-		recorder.statuses = append(recorder.statuses, fmt.Sprintf("%s:%d", path, observed.status))
+		recorder.statuses = append(recorder.statuses, fmt.Sprintf("%s:%d:%s", path, observed.status,
+			time.Since(started).Round(time.Millisecond)))
 		recorder.mu.Unlock()
 	})
 }
@@ -89,6 +91,17 @@ func (recorder *aw07BackendRecorder) record(operation string, err error) {
 	}
 	recorder.mu.Lock()
 	recorder.failures = append(recorder.failures, fmt.Sprintf("%s: %v", operation, err))
+	recorder.mu.Unlock()
+}
+
+func (recorder *aw07BackendRecorder) recordSlow(operation string, started time.Time, ctx context.Context) {
+	duration := time.Since(started)
+	if duration < 100*time.Millisecond {
+		return
+	}
+	recorder.mu.Lock()
+	recorder.probes = append(recorder.probes, fmt.Sprintf("slow %s duration=%s context-at-end=%v",
+		operation, duration.Round(time.Millisecond), ctx.Err()))
 	recorder.mu.Unlock()
 }
 
@@ -152,7 +165,9 @@ func (recorder *aw07BackendRecorder) probeExchangeRead(request ports.AttachedWor
 func (recorder *aw07BackendRecorder) LoadAttachedWorkerConnection(ctx context.Context, tenant domain.TenantID,
 	owner domain.UserID, worker domain.AttachedWorkerID,
 ) (domain.AttachedWorkerConnection, bool, error) {
+	started := time.Now()
 	connection, found, err := recorder.Store.LoadAttachedWorkerConnection(ctx, tenant, owner, worker)
+	recorder.recordSlow("load connection", started, ctx)
 	recorder.record("load connection", err)
 	return connection, found, err
 }
@@ -160,7 +175,9 @@ func (recorder *aw07BackendRecorder) LoadAttachedWorkerConnection(ctx context.Co
 func (recorder *aw07BackendRecorder) LoadAttachedWorker(ctx context.Context, tenant domain.TenantID,
 	owner domain.UserID, worker domain.AttachedWorkerID,
 ) (domain.AttachedWorker, bool, error) {
+	started := time.Now()
 	value, found, err := recorder.Store.LoadAttachedWorker(ctx, tenant, owner, worker)
+	recorder.recordSlow("load worker", started, ctx)
 	recorder.record("load worker", err)
 	return value, found, err
 }

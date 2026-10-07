@@ -775,10 +775,10 @@ func ensureSessionRunsTerminalTx(ctx context.Context, tx *stateTx, sessionID dom
 	return rows.Err()
 }
 
-// A pending receipt is a durable reservation for an Object Storage write that
-// may still be in flight. Deletion must not inventory or remove its keys until
-// the writer has reached the ready state (or a separate quiescent abort proves
-// that no writer can resume).
+// A pending receipt may contain an ambiguous Object Storage write even after
+// the local Put call returns with an error: its remote write can complete late.
+// Deletion therefore waits for a ready receipt or a separate proof that no
+// writer can resume or complete. CopyInProgress alone is not that proof.
 func ensureNoPendingAttachedWorkerReceiptsTx(ctx context.Context, tx *stateTx, sessionID domain.SessionID) error {
 	runIDs, err := listSessionRunIDsTx(ctx, tx, sessionID, maxSessionDeletionRows+1)
 	if err != nil {

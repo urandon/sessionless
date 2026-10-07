@@ -3,6 +3,7 @@
 package ydbintegration
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -30,7 +31,27 @@ type aw07ReceiptBinder struct {
 
 type failReceiptBlobs struct {
 	ports.BlobStore
-	failures int
+	failures      int
+	notDispatched bool
+}
+
+type lateReceiptBlobs struct {
+	ports.BlobStore
+	release chan struct{}
+	done    chan error
+}
+
+func (blobs *lateReceiptBlobs) Put(ctx context.Context, tenant domain.TenantID, key string, body io.Reader) (domain.BlobRef, error) {
+	content, err := io.ReadAll(body)
+	if err != nil {
+		return domain.BlobRef{}, err
+	}
+	go func() {
+		<-blobs.release
+		_, putErr := blobs.BlobStore.Put(context.WithoutCancel(ctx), tenant, key, bytes.NewReader(content))
+		blobs.done <- putErr
+	}()
+	return domain.BlobRef{}, errors.New("simulated lost response while remote put is still in flight")
 }
 
 type blockingReceiptBlobs struct {
@@ -53,6 +74,9 @@ func (blobs *blockingReceiptBlobs) Put(ctx context.Context, tenant domain.Tenant
 func (blobs *failReceiptBlobs) Put(ctx context.Context, tenant domain.TenantID, key string, body io.Reader) (domain.BlobRef, error) {
 	if blobs.failures > 0 {
 		blobs.failures--
+		if blobs.notDispatched {
+			return domain.BlobRef{}, ydbstore.ErrAttachedWorkerReceiptPutNotDispatched
+		}
 		return domain.BlobRef{}, errors.New("simulated canonical copy outage")
 	}
 	return blobs.BlobStore.Put(ctx, tenant, key, body)
@@ -151,7 +175,7 @@ func TestAW07ReceiptTwoOwnerCanonicalTerminalAndReplay(t *testing.T) {
 	}
 	// Both bounded HTTPS attempts fail, leaving the prepared YDB receipt
 	// visible while no canonical object has been copied.
-	unstableBlobs := &failReceiptBlobs{BlobStore: blobs, failures: 2}
+	unstableBlobs := &failReceiptBlobs{BlobStore: blobs, failures: 2, notDispatched: true}
 	service, err := attachedworkerreceipt.NewService(aw07ReceiptBinder{bearer: []byte("receipt-bearer-a"), auth: a.request}, aStore, unstableBlobs)
 	if err != nil {
 		t.Fatal(err)
@@ -322,5 +346,89 @@ func TestAW07ReceiptTwoOwnerCanonicalTerminalAndReplay(t *testing.T) {
 	}
 	if got := aw07RunStatus(t, bStore, ctx, b.request.TenantID, b.request.RunID); got != domain.RunRunning {
 		t.Fatalf("owner B run mutated by owner A receipt: %s", got)
+	}
+}
+
+func TestAW07AmbiguousReceiptCopyKeepsDeletionFailClosed(t *testing.T) {
+	store, client, worker, connection, secret, _, _, now := readyAttachedWorkerForDrainWithIdentity(t,
+		"receipt-copy-failure", "", "", attachedworkerprotocol.FeatureOutputReceipt)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	claimed := aw07ClaimedInput(t, store, client, worker, connection, secret, now,
+		attachedWorkerDrainTestSuffix(t, "receipt-copy-failure"))
+	loaded, found, err := store.LoadWorkerJob(ctx, claimed.request.TenantID, claimed.request.RunID)
+	if err != nil || !found {
+		t.Fatalf("load failed-copy job: found=%t err=%v", found, err)
+	}
+	seedCanonicalMembership(t, client.DB, claimed.request.TenantID, claimed.request.OwnerUserID, now)
+	blobs := newSessionAPITestBlobs()
+	late := &lateReceiptBlobs{BlobStore: blobs, release: make(chan struct{}), done: make(chan error, 1)}
+	defer func() {
+		select {
+		case <-late.release:
+		default:
+			close(late.release)
+		}
+	}()
+	request := ydbstore.AttachedWorkerOutputReceiptRequest{
+		Authorization: claimed.request, Nonce: "receipt-copy-failure",
+		Candidate: attachedworkeroutput.Candidate{Status: domain.AttachedWorkerTerminalSucceeded, Summary: "copy failed"},
+		Observation: attachedworkeroutput.ProcessObservationV1{
+			Version: 1, DescendantsReaped: true, BoundaryReleased: true, CleanupSucceeded: true,
+		},
+	}
+	if _, err := store.CreateAttachedWorkerOutputReceipt(ctx, late, request); err == nil {
+		t.Fatal("lost remote-write response unexpectedly produced a ready receipt")
+	}
+	var payload string
+	if err := client.DB.QueryRowContext(ctx,
+		`SELECT payload FROM attached_worker_output_receipts WHERE tenant_id=$1 AND run_id=$2 AND owner_user_id=$3 AND worker_id=$4 AND attempt_id=$5 AND lease_generation=$6`,
+		claimed.request.TenantID, claimed.request.RunID, claimed.request.OwnerUserID, claimed.request.WorkerID,
+		claimed.request.AttemptID, claimed.request.LeaseGeneration,
+	).Scan(&payload); err != nil {
+		t.Fatalf("read pending failed-copy receipt: %v", err)
+	}
+	var pending ydbstore.AttachedWorkerOutputReceiptV1
+	if err := json.Unmarshal([]byte(payload), &pending); err != nil || pending.Ready || !pending.CopyInProgress ||
+		pending.Materialization.Completion == nil {
+		t.Fatalf("ambiguous write did not retain the pending copy barrier: %+v err=%v", pending, err)
+	}
+	// Revocation deterministically fences the same retry path as an expired
+	// lease, without making this test depend on the database wall clock.
+	aw07Revoke(t, store, ctx, worker)
+	if result, err := store.CreateAttachedWorkerOutputReceipt(ctx, blobs, request); err != nil ||
+		result.Status != ports.AttachedWorkerExecutionFenced {
+		t.Fatalf("revoked exact retry was not fenced: result=%+v err=%v", result, err)
+	}
+	if _, err := client.DB.ExecContext(ctx,
+		`UPDATE runs_by_session SET status=$1 WHERE tenant_id=$2 AND session_id=$3 AND run_id=$4`,
+		domain.RunFailed, claimed.request.TenantID, loaded.Job.SessionID, claimed.request.RunID,
+	); err != nil {
+		t.Fatalf("mark abandoned run terminal for deletion: %v", err)
+	}
+	deletion := domain.SessionDeletion{
+		TenantID: claimed.request.TenantID, SessionID: loaded.Job.SessionID,
+		RequestedBy: claimed.request.OwnerUserID, Reason: "failed receipt copy after revocation",
+		State: domain.SessionDeletionRequested, RequestedAt: now.Add(time.Second),
+	}
+	if _, err := store.RequestSessionDeletion(ctx, deletion); err == nil ||
+		!strings.Contains(err.Error(), "pending attached-worker output receipt") {
+		t.Fatalf("deletion escaped an ambiguous remote write: %v", err)
+	}
+	close(late.release)
+	select {
+	case err := <-late.done:
+		if err != nil {
+			t.Fatalf("late remote write failed: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("late remote write did not settle: %v", ctx.Err())
+	}
+	if _, copied := blobs.values[pending.Materialization.Completion.Events[0].Payload.Key]; !copied {
+		t.Fatal("fixture did not complete the remote write after the local failure")
+	}
+	if _, err := store.RequestSessionDeletion(ctx, deletion); err == nil ||
+		!strings.Contains(err.Error(), "pending attached-worker output receipt") {
+		t.Fatalf("late write released the deletion barrier without a quiescence proof: %v", err)
 	}
 }

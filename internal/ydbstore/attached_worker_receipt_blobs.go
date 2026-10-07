@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkeroutput"
@@ -71,7 +72,10 @@ func (planned *plannedReceiptBlobs) Delete(context.Context, domain.TenantID, dom
 func (planned *plannedReceiptBlobs) Commit(ctx context.Context) error {
 	for _, item := range planned.items {
 		written, err := planned.upstream.Put(ctx, item.ref.TenantID, item.ref.Key, bytes.NewReader(item.body))
-		if err != nil || written != item.ref {
+		if err != nil {
+			return errors.Join(attachedworkeroutput.ErrCandidateInvalid, err)
+		}
+		if written != item.ref {
 			return attachedworkeroutput.ErrCandidateInvalid
 		}
 		reader, err := planned.upstream.Open(ctx, item.ref.TenantID, item.ref)

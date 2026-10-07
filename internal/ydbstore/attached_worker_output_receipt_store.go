@@ -48,6 +48,12 @@ type AttachedWorkerOutputReceiptResult struct {
 
 var ErrAttachedWorkerReceiptCopyInProgress = errors.New("attached-worker receipt canonical object copy is in progress")
 
+// ErrAttachedWorkerReceiptPutNotDispatched may be returned by a BlobStore.Put
+// only when it can prove that no remote write was started. An ordinary Put
+// error, including timeout or lost response, is ambiguous and must retain the
+// durable copy barrier.
+var ErrAttachedWorkerReceiptPutNotDispatched = errors.New("attached-worker receipt object put was not dispatched")
+
 // CreateAttachedWorkerOutputReceipt rechecks the exact owner/bearer/lease in
 // the YDB write transaction after non-transactional object verification. A
 // lost response can replay the immutable record by exact nonce/fingerprint.
@@ -148,7 +154,10 @@ func (store *Store) CreateAttachedWorkerOutputReceipt(
 		return result, ErrAttachedWorkerReceiptCopyInProgress
 	}
 	if err := planned.Commit(ctx); err != nil {
-		return result, errors.Join(err, store.releaseAttachedWorkerReceiptCopy(ctx, record))
+		if errors.Is(err, ErrAttachedWorkerReceiptPutNotDispatched) {
+			return result, errors.Join(err, store.releaseAttachedWorkerReceiptCopy(ctx, record))
+		}
+		return result, err
 	}
 	result, err = store.finishAttachedWorkerOutputReceipt(ctx, request, record)
 	if err != nil || result.Status != ports.AttachedWorkerExecutionApplied && result.Status != ports.AttachedWorkerExecutionReplayed {
@@ -393,9 +402,10 @@ func (store *Store) finishAttachedWorkerOutputReceipt(ctx context.Context,
 	return result, err
 }
 
-// Only the synchronous copy caller may release its write ownership. A crash
-// leaves CopyInProgress set, preventing another copy or session deletion until
-// an explicit quiescence protocol proves the original writer cannot resume.
+// Only a caller that proved no remote write was dispatched, or verified every
+// planned object before a YDB finish error, may release copy ownership. A
+// crash or ambiguous Put error retains CopyInProgress until an explicit
+// quiescence protocol proves no remote writer can complete.
 func (store *Store) releaseAttachedWorkerReceiptCopy(ctx context.Context, planned AttachedWorkerOutputReceiptV1) error {
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()

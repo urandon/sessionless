@@ -76,9 +76,12 @@ exit status, a provider thread ID, or caller-selected event IDs.
    Receipt preparation and ready transitions check deletion state in their
    YDB transactions. Only one durable copy writer may hold a pending receipt.
    A duplicate request cannot copy concurrently; after a synchronous copy
-   failure the first writer releases that right for an exact retry. A crash
-   leaves it held, fail-closed. Clearing a stranded pending receipt requires
-   a separate quiescence proof, not an age-based automatic delete.
+   failure proven to have happened before any remote `Put` was dispatched,
+   the first writer releases that right for an exact retry. A timeout or lost
+   Object Storage response is ambiguous: its write may still complete after
+   the local call returns. That case retains the copy barrier and blocks both
+   retry and session deletion until a separate remote-quiescence proof exists.
+   A crash is treated the same way; age alone is not a quiescence proof.
 4. The observation records bounded, content-free exit/cancel/deadline,
    descendant reap, isolation teardown/release, attempt-root cleanup and
    credential lifecycle outcomes. It is authenticated and bound to the same

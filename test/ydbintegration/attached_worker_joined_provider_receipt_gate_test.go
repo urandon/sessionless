@@ -280,7 +280,9 @@ func TestAW07TwoActivatedProviderDaemonReceipts(t *testing.T) {
 					owner.name, status, owner.process.stdout.String(), owner.process.stderr.String(),
 					statusRecorder.snapshot(), backend.snapshot(), blobs.totalOpens(), lifecycle, aw07ReadOCICommands(t, owner.install.commandLog))
 			}
-			time.Sleep(20 * time.Millisecond)
+			// Each status observation is a serializable YDB transaction. Keep
+			// the bounded poll from competing with the two live daemon turns.
+			time.Sleep(250 * time.Millisecond)
 		}
 		attempt, found, err := store.LoadAttachedWorkerAttempt(ctx, tenant, owner.worker.OwnerUserID, workerID)
 		if err != nil || !found || attempt.State != domain.AttachedWorkerAttemptTerminalCommitted {

@@ -34,8 +34,9 @@ type RuntimeConfig struct {
 }
 
 type activeControlWatcher interface {
-	WatchActiveControl(
+	WatchActiveControlUntil(
 		context.Context,
+		<-chan struct{},
 		attachedworkerdaemon.InvocationIdentity,
 		ActiveAttemptController,
 		time.Duration,
@@ -702,6 +703,7 @@ func (runner *activeControlRunner) Run(
 ) (attachedworkerdaemon.InvocationResult, error) {
 	watchCtx, cancelWatch := context.WithCancel(ctx)
 	defer cancelWatch()
+	stopWatch := make(chan struct{})
 	runDone := make(chan runnerOutcome, 1)
 	watchDone := make(chan controlOutcome, 1)
 	go func() {
@@ -709,15 +711,19 @@ func (runner *activeControlRunner) Run(
 		runDone <- runnerOutcome{result: result, err: err}
 	}()
 	go func() {
-		control, err := runner.watcher.WatchActiveControl(watchCtx, invocation.Identity, runner.target, runner.interval)
+		control, err := runner.watcher.WatchActiveControlUntil(watchCtx, stopWatch, invocation.Identity, runner.target, runner.interval)
 		watchDone <- controlOutcome{control: control, err: err}
 	}()
 
 	select {
 	case outcome := <-runDone:
-		cancelWatch()
+		// A completed delegate stops future heartbeats but must not cancel an
+		// already dispatched exchange. Its outcome is ambiguous until the
+		// watcher settles; timeout below still fences the session.
+		close(stopWatch)
 		control := runner.waitControl(watchDone)
 		if control.err != nil && !errors.Is(control.err, context.Canceled) {
+			cancelWatch()
 			return outcome.result, errors.Join(outcome.err, ErrReconciliationRequired, control.err)
 		}
 		return outcome.result, outcome.err

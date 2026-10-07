@@ -378,39 +378,56 @@ func (adapter *Adapter) WatchActiveControl(
 	target ActiveAttemptController,
 	interval time.Duration,
 ) (ActiveControl, error) {
+	return adapter.WatchActiveControlUntil(ctx, nil, identity, target, interval)
+}
+
+// WatchActiveControlUntil stops between control exchanges when stop is closed.
+// Unlike cancellation of ctx, this never abandons an already dispatched
+// heartbeat whose outcome must be known before terminal reporting.
+func (adapter *Adapter) WatchActiveControlUntil(
+	ctx context.Context,
+	stop <-chan struct{},
+	identity attachedworkerdaemon.InvocationIdentity,
+	target ActiveAttemptController,
+	interval time.Duration,
+) (ActiveControl, error) {
 	if interval <= 0 || interval > time.Minute {
 		return "", ErrInvalidConfiguration
 	}
-	return adapter.watchActiveControl(ctx, identity, target, func(ctx context.Context) error {
-		timer := time.NewTimer(interval)
-		defer timer.Stop()
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-timer.C:
-			return nil
-		}
-	})
+	return adapter.watchActiveControl(ctx, stop, identity, target, interval)
 }
-
-type activeControlWait func(context.Context) error
 
 func (adapter *Adapter) watchActiveControl(
 	ctx context.Context,
+	stop <-chan struct{},
 	identity attachedworkerdaemon.InvocationIdentity,
 	target ActiveAttemptController,
-	wait activeControlWait,
+	interval time.Duration,
 ) (ActiveControl, error) {
-	if adapter == nil || ctx == nil || target == nil || wait == nil || identity.Validate() != nil {
+	if adapter == nil || ctx == nil || target == nil || interval <= 0 || identity.Validate() != nil {
 		return "", ErrInvalidConfiguration
 	}
 	for {
+		select {
+		case <-stop:
+			return "", nil
+		case <-ctx.Done():
+			return "", ctx.Err()
+		default:
+		}
 		control, handled, err := adapter.pollActiveControl(ctx, identity, target)
 		if err != nil || handled {
 			return control, err
 		}
-		if err := wait(ctx); err != nil {
-			return "", err
+		timer := time.NewTimer(interval)
+		select {
+		case <-stop:
+			timer.Stop()
+			return "", nil
+		case <-ctx.Done():
+			timer.Stop()
+			return "", ctx.Err()
+		case <-timer.C:
 		}
 	}
 }
@@ -506,6 +523,8 @@ func (adapter *Adapter) pollActiveControl(
 		return "", false, ErrInvalidAuthority
 	}
 }
+
+type activeControlWait func(context.Context) error
 
 func (adapter *Adapter) watchActiveCancellation(
 	ctx context.Context,

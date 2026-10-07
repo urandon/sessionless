@@ -814,6 +814,56 @@ func TestAdapterContinuesActiveControlAfterDrainAndAcceptsLaterCancel(t *testing
 	}
 }
 
+func TestAdapterStopWaitsForInFlightActiveHeartbeat(t *testing.T) {
+	fixture := newAdapterFixture(t)
+	invocation, available, err := fixture.adapter.Next(context.Background())
+	if err != nil || !available {
+		t.Fatalf("Next available=%t error=%v", available, err)
+	}
+	fixture.session.activeHeartbeatStarted = make(chan struct{}, 1)
+	fixture.session.activeHeartbeatRelease = make(chan struct{})
+	stop := make(chan struct{})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	type watchOutcome struct {
+		control ActiveControl
+		err     error
+	}
+	done := make(chan watchOutcome, 1)
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		control, err := fixture.adapter.WatchActiveControlUntil(ctx, stop, invocation.Identity,
+			&fakeActiveController{}, time.Minute)
+		done <- watchOutcome{control: control, err: err}
+	}()
+	t.Cleanup(func() {
+		cancel()
+		waitRuntimeSignal(t, finished, "active heartbeat watcher did not stop during cleanup")
+	})
+	waitRuntimeSignal(t, fixture.session.activeHeartbeatStarted, "active heartbeat did not start")
+	close(stop)
+	select {
+	case outcome := <-done:
+		t.Fatalf("watcher returned before in-flight heartbeat settled: %+v", outcome)
+	default:
+	}
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("stop canceled the in-flight heartbeat context: %v", err)
+	}
+	close(fixture.session.activeHeartbeatRelease)
+	select {
+	case outcome := <-done:
+		if outcome.control != "" || outcome.err != nil {
+			t.Fatalf("settled active heartbeat control=%q error=%v", outcome.control, outcome.err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("watcher did not stop after heartbeat settlement: %v", ctx.Err())
+	}
+	if len(fixture.session.actions) != 3 || fixture.session.actions[2].Heartbeat == nil {
+		t.Fatalf("active heartbeat actions=%+v", fixture.session.actions)
+	}
+}
+
 func TestActiveCancellationReachesExactRunningDaemonInvocation(t *testing.T) {
 	fixture := newAdapterFixture(t)
 	fixture.session.activeCancel = &attachedworkerprotocol.CancelV1{
@@ -1193,6 +1243,8 @@ type fakeSession struct {
 	activeCancel               *attachedworkerprotocol.CancelV1
 	activeDrain                *attachedworkerprotocol.DrainV1
 	activeHeartbeatErr         error
+	activeHeartbeatStarted     chan struct{}
+	activeHeartbeatRelease     chan struct{}
 	cancelAckErr               error
 	cancelAckStarted           chan struct{}
 	cancelAckRelease           chan struct{}
@@ -1220,7 +1272,7 @@ func (fake *fakeSession) RetireReceiptSubmission(_ context.Context, payload []by
 
 func (fake *fakeSession) Snapshot() attachedworkersession.SnapshotV1 { return fake.snapshot }
 
-func (fake *fakeSession) ExchangeAction(_ context.Context, action attachedworkersession.ActionV1) (*attachedworkerprotocol.FrameV1, error) {
+func (fake *fakeSession) ExchangeAction(ctx context.Context, action attachedworkersession.ActionV1) (*attachedworkerprotocol.FrameV1, error) {
 	fake.actions = append(fake.actions, action)
 	snapshot := fake.snapshot
 	switch {
@@ -1232,6 +1284,19 @@ func (fake *fakeSession) ExchangeAction(_ context.Context, action attachedworker
 			return nil, nil
 		}
 		if !action.Heartbeat.Available && action.Heartbeat.ActiveAttempts == 1 {
+			if fake.activeHeartbeatStarted != nil {
+				select {
+				case fake.activeHeartbeatStarted <- struct{}{}:
+				default:
+				}
+			}
+			if fake.activeHeartbeatRelease != nil {
+				select {
+				case <-fake.activeHeartbeatRelease:
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
 			if fake.activeHeartbeatErr != nil {
 				return nil, fake.activeHeartbeatErr
 			}

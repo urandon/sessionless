@@ -1,9 +1,10 @@
-# Attached-worker canonical output receipt (proposed #166 contract)
+# Attached-worker canonical output receipt (#166 implementation contract)
 
-Status: proposed for owner review under
+Status: design owned by the implementation/review process under
 [#166](https://gitcode.com/urandon/sessionless/issues/166), a bounded child of
-#79. This document is not an enablement decision. The current activated daemon
-remains `synthetic-denied`, and #79 is not complete.
+#79. It does not require product-owner approval for each field. This document
+is not an enablement decision: the current activated daemon remains
+`synthetic-denied`, and #79 is not complete.
 
 ## Why a receipt is necessary
 
@@ -38,9 +39,14 @@ exit status, a provider thread ID, or caller-selected event IDs.
    teardown. Fenced,
    pre-claim-cancelled, retired and expired attempts admit no new receipt.
    These rules must match the existing protocol reducer, not bypass it.
-2. The daemon seals the bounded candidate, process observation and an opaque
-   attempt-scoped idempotency nonce in its local durable recovery state before
-   submission; losing that state cannot trigger re-execution. The server
+2. Before submission, the daemon seals the bounded candidate, process
+   observation and an opaque attempt-scoped idempotency nonce through its
+   exclusive runtime lease in a private, durable local checkpoint. Exact
+   resubmission is allowed; divergent overwrite is denied. The current
+   reconnect constructor fences a sealed but unfinished submission before
+   network access or fresh dispatch. Automatic post-crash replay is **not yet
+   wired**; a lost response after the bounded same-process retry therefore
+   leaves an explicit unknown outcome, never an invented ACK. The server
    validates the canonical manifest and ordered events against the run,
    limits, tenant-scoped immutable blob references, event-kind rules, and
    terminal status. It allocates canonical event IDs, checks the referenced
@@ -49,16 +55,30 @@ exit status, a provider thread ID, or caller-selected event IDs.
    verified references enter YDB. No provider credential or raw prompt/result
    enters transport logs or audit summaries. Bounded canonical display text,
    where the Session event contract requires it, remains tenant-scoped.
-3. The server computes the same `runFinalizationDigest` used by YDB. One
-   serializable insert-or-read stores the immutable candidate, generated event
+3. The server computes the same `runFinalizationDigest` used by YDB. A
+   serializable preparation transaction stores a pending immutable receipt
+   before copying any canonical objects; a second transaction marks it ready
+   after exact object verification. Finalization accepts only ready receipts.
+   The receipt stores the candidate fingerprint, generated event
    IDs, canonical digest, full execution binding, idempotency nonce, candidate
    fingerprint, and a distinct digest of the typed process observation.
    The key is tenant/owner/worker/attempt/lease generation; one attempt has
    at most one receipt. An exact retry with the same nonce and fingerprint
-   returns those *persisted* event IDs and digest. A changed nonce, candidate,
+   returns those *persisted* event IDs and digest only when ready. A changed nonce, candidate,
    status, observation or binding conflicts. After a lost response, the daemon
-   queries/replays this exact key and never submits a fresh outcome. Retention
-   covers the Terminal/ACK and historical replay windows.
+   queries/replays this exact key and never submits a fresh outcome. The
+   current server implementation supports exact retry, and the HTTPS client
+   retries the identical request once after an ambiguous transport/server
+   failure. Local crash replay is still missing. Retention covers the
+   Terminal/ACK and historical replay windows. A pending receipt also acts
+   as a deletion barrier: session deletion cannot be requested, inventoried,
+   started, or completed while an Object Storage copy may still be in flight.
+   Receipt preparation and ready transitions check deletion state in their
+   YDB transactions. Only one durable copy writer may hold a pending receipt.
+   A duplicate request cannot copy concurrently; after a synchronous copy
+   failure the first writer releases that right for an exact retry. A crash
+   leaves it held, fail-closed. Clearing a stranded pending receipt requires
+   a separate quiescence proof, not an age-based automatic delete.
 4. The observation records bounded, content-free exit/cancel/deadline,
    descendant reap, isolation teardown/release, attempt-root cleanup and
    credential lifecycle outcomes. It is authenticated and bound to the same
@@ -97,7 +117,7 @@ feature. The existing `synthetic-denied` profile still emits process digests
 and must never be reinterpreted as receipt-capable. The single V1 Terminal
 digest field carries the canonical digest only for the negotiated path;
 process observation is stored separately before Terminal. Missing feature,
-receipt or observation fails closed, without a V1 downgrade fallback.
+ready receipt or observation fails closed, without a V1 downgrade fallback.
 
 The server must not continue accepting `AttachedWorkerTerminalCommit` with
 caller-supplied materialization once the receipt path is active. That method

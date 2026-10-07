@@ -139,6 +139,7 @@ var applicationTables = []string{
 	"provider_credential_bindings",
 	"attached_worker_attempt_deadlines_v1",
 	"attached_worker_attempt_messages",
+	"attached_worker_output_receipts",
 	"attached_worker_attempt_heads",
 	"attached_worker_presence_expiry_v1",
 	"attached_worker_connections",

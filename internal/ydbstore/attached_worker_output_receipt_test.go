@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/ports"
 )
 
 func TestAttachedWorkerOutputReceiptStatusAdmissible(t *testing.T) {
@@ -52,6 +53,108 @@ func TestAttachedWorkerOutputReceiptStatusAdmissible(t *testing.T) {
 			candidate.CancelDeadline = tc.cancelDeadline
 			if got := attachedWorkerOutputReceiptStatusAdmissible(candidate, tc.status, tc.at); got != tc.want {
 				t.Errorf("receipt admissible state=%s status=%s at=%s: got %t, want %t", tc.state, tc.status, tc.at.Format(time.RFC3339), got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAttachedWorkerOutputReceiptRequiresCurrentBearerAndExactOwnerHead(t *testing.T) {
+	t.Parallel()
+	at := time.Date(2026, time.October, 7, 10, 0, 0, 0, time.UTC)
+	secret := domain.DigestAttachedWorkerConnectionSecret([]byte("receipt-secret"))
+	capability := domain.DigestAttachedWorkerCapability([]byte("receipt-capability"))
+	contextDigest := domain.AttachedWorkerContextDigest(domain.DigestAttachedWorkerCapability([]byte("receipt-context")))
+	policy := domain.AttachedWorkerPolicyDigest(domain.DigestAttachedWorkerCapability([]byte("receipt-policy")))
+	fence, err := domain.NewAttachedWorkerFenceTokenV1("tenant-a", "owner-a", "worker-collision", "run-a", "attempt-a", "lease-a", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := ports.AttachedWorkerSealedInputAuthorization{
+		TenantID: "tenant-a", OwnerUserID: "owner-a", WorkerID: "worker-collision",
+		ConnectionID: "connection-a", PresentedSecretDigest: secret,
+		EnrollmentGeneration: 2, ConnectionGeneration: 3,
+		RunID: "run-a", AttemptID: "attempt-a", AttemptSequence: 1,
+		LeaseID: "lease-a", LeaseGeneration: 5, FenceToken: fence,
+		LeaseExpiresAtUnixMicro: at.Add(time.Minute).UnixMicro(),
+		ContextDigest:           contextDigest, CapabilityDigest: capability, PolicyDigest: policy,
+	}
+	worker := domain.AttachedWorker{
+		TenantID: request.TenantID, OwnerUserID: request.OwnerUserID, ID: request.WorkerID,
+		DesiredState:         domain.AttachedWorkerDesiredActive,
+		EnrollmentGeneration: 2, ConnectionGeneration: 3,
+	}
+	connection := domain.AttachedWorkerConnection{
+		TenantID: request.TenantID, OwnerUserID: request.OwnerUserID, WorkerID: request.WorkerID,
+		ID: request.ConnectionID, SecretDigest: secret, State: domain.AttachedWorkerConnectionOnline,
+		EnrollmentGeneration: 2, ConnectionGeneration: 3,
+		AuthExpiresAt: at.Add(time.Hour), PresenceExpiresAt: at.Add(time.Minute),
+	}
+	attempt := domain.AttachedWorkerAttemptV1{
+		TenantID: request.TenantID, OwnerUserID: request.OwnerUserID, WorkerID: request.WorkerID,
+		ConnectionID: request.ConnectionID, EnrollmentGeneration: 2, ConnectionGeneration: 3,
+		ExecutionConnectionID: request.ConnectionID, ExecutionConnectionGeneration: 3,
+		RunID: request.RunID, AttemptID: request.AttemptID, LeaseID: request.LeaseID,
+		LeaseGeneration: 5, FenceToken: fence, LeaseExpiresAt: at.Add(time.Minute),
+		ContextDigest: contextDigest, CapabilityDigest: capability, PolicyDigest: policy,
+		State: domain.AttachedWorkerAttemptClaimed, Revision: 7,
+	}
+	if err := validateAttachedWorkerSealedInputAuthorization(request); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		status domain.AttachedWorkerTerminalStatus
+		change func(*ports.AttachedWorkerSealedInputAuthorization, *domain.AttachedWorker, *domain.AttachedWorkerConnection, *domain.AttachedWorkerAttemptV1)
+		want   bool
+	}{
+		{name: "current success", status: domain.AttachedWorkerTerminalSucceeded, want: true},
+		{name: "foreign owner", status: domain.AttachedWorkerTerminalSucceeded, change: func(r *ports.AttachedWorkerSealedInputAuthorization, _ *domain.AttachedWorker, _ *domain.AttachedWorkerConnection, _ *domain.AttachedWorkerAttemptV1) {
+			r.OwnerUserID = "owner-b"
+		}},
+		{name: "wrong bearer", status: domain.AttachedWorkerTerminalSucceeded, change: func(r *ports.AttachedWorkerSealedInputAuthorization, _ *domain.AttachedWorker, _ *domain.AttachedWorkerConnection, _ *domain.AttachedWorkerAttemptV1) {
+			r.PresentedSecretDigest = domain.DigestAttachedWorkerConnectionSecret([]byte("stolen"))
+		}},
+		{name: "rotated connection", status: domain.AttachedWorkerTerminalSucceeded, change: func(_ *ports.AttachedWorkerSealedInputAuthorization, _ *domain.AttachedWorker, c *domain.AttachedWorkerConnection, _ *domain.AttachedWorkerAttemptV1) {
+			c.ID = "connection-b"
+		}},
+		{name: "rebound current connection cannot originate output", status: domain.AttachedWorkerTerminalSucceeded, change: func(r *ports.AttachedWorkerSealedInputAuthorization, w *domain.AttachedWorker, c *domain.AttachedWorkerConnection, a *domain.AttachedWorkerAttemptV1) {
+			r.ConnectionID, c.ID, a.ConnectionID = "connection-b", "connection-b", "connection-b"
+			r.ConnectionGeneration, w.ConnectionGeneration, c.ConnectionGeneration, a.ConnectionGeneration = 4, 4, 4, 4
+		}},
+		{name: "stale generation", status: domain.AttachedWorkerTerminalSucceeded, change: func(r *ports.AttachedWorkerSealedInputAuthorization, _ *domain.AttachedWorker, _ *domain.AttachedWorkerConnection, _ *domain.AttachedWorkerAttemptV1) {
+			r.ConnectionGeneration++
+		}},
+		{name: "stale fence", status: domain.AttachedWorkerTerminalSucceeded, change: func(r *ports.AttachedWorkerSealedInputAuthorization, _ *domain.AttachedWorker, _ *domain.AttachedWorkerConnection, _ *domain.AttachedWorkerAttemptV1) {
+			r.LeaseGeneration++
+		}},
+		{name: "capability bait and switch", status: domain.AttachedWorkerTerminalSucceeded, change: func(r *ports.AttachedWorkerSealedInputAuthorization, _ *domain.AttachedWorker, _ *domain.AttachedWorkerConnection, _ *domain.AttachedWorkerAttemptV1) {
+			r.CapabilityDigest = domain.DigestAttachedWorkerCapability([]byte("changed"))
+		}},
+		{name: "revoked", status: domain.AttachedWorkerTerminalSucceeded, change: func(_ *ports.AttachedWorkerSealedInputAuthorization, w *domain.AttachedWorker, _ *domain.AttachedWorkerConnection, _ *domain.AttachedWorkerAttemptV1) {
+			w.DesiredState = domain.AttachedWorkerDesiredRevoked
+		}},
+		{name: "cancel cannot become success", status: domain.AttachedWorkerTerminalSucceeded, change: func(_ *ports.AttachedWorkerSealedInputAuthorization, _ *domain.AttachedWorker, _ *domain.AttachedWorkerConnection, a *domain.AttachedWorkerAttemptV1) {
+			a.State, a.CancelRevision, a.CancelDeadline = domain.AttachedWorkerAttemptCancelAcknowledged, 1, at.Add(time.Second)
+		}},
+		{name: "cancelled after acknowledged deadline", status: domain.AttachedWorkerTerminalCancelled, change: func(_ *ports.AttachedWorkerSealedInputAuthorization, _ *domain.AttachedWorker, _ *domain.AttachedWorkerConnection, a *domain.AttachedWorkerAttemptV1) {
+			a.State, a.CancelRevision, a.CancelDeadline = domain.AttachedWorkerAttemptCancelAcknowledged, 1, at.Add(-time.Second)
+		}, want: true},
+		{name: "fenced", status: domain.AttachedWorkerTerminalFailed, change: func(_ *ports.AttachedWorkerSealedInputAuthorization, _ *domain.AttachedWorker, _ *domain.AttachedWorkerConnection, a *domain.AttachedWorkerAttemptV1) {
+			a.State = domain.AttachedWorkerAttemptFencedUnknown
+		}},
+		{name: "attempt changed", status: domain.AttachedWorkerTerminalSucceeded, change: func(r *ports.AttachedWorkerSealedInputAuthorization, _ *domain.AttachedWorker, _ *domain.AttachedWorkerConnection, a *domain.AttachedWorkerAttemptV1) {
+			r.ExpectedAttemptRevision = a.Revision
+			a.Revision++
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r, w, c, a := request, worker, connection, attempt
+			if tc.change != nil {
+				tc.change(&r, &w, &c, &a)
+			}
+			if got := attachedWorkerOutputReceiptAuthorized(r, tc.status, at, w, c, a); got != tc.want {
+				t.Errorf("receipt authority status=%s state=%s revision=%d: got %t, want %t", tc.status, a.State, a.Revision, got, tc.want)
 			}
 		})
 	}

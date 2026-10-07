@@ -43,6 +43,7 @@ The V1 inventory is fixed:
 - `logout-intent.json` — crash-recovery barrier for a local logout;
 - `runtime-observation.json` — optional content-free AW-05 daemon observation;
 - `reconnect-checkpoint.json` — secret-free, revisioned idle or active reconnect evidence;
+- `output-receipt-checkpoint.json` — optional private, bounded post-run receipt submission sealed before network publication; not server authority;
 - `state.lock` — advisory serialization for state reads and mutations;
 - `runtime.lock` — advisory one-process foreground ownership.
 
@@ -52,11 +53,16 @@ missing state. Darwin and Linux use a non-blocking kernel `flock`; process death
 releases the authority, so timestamps are never used to guess that a lock is
 stale. Other platforms return `platform_unsupported`.
 
-Only the holder of `runtime.lock` can persist `runtime-observation.json` or the
-[durable reconnect checkpoint](attached-worker-reconnect-checkpoint.md). Both
-use exact manifest bindings, revision CAS, strict bounded JSON, and atomic
-write/fsync discipline. A configuration update or local logout durably removes
-stale reconnect and observation evidence before committing new manifest state.
+Only the holder of `runtime.lock` can persist `runtime-observation.json`, the
+[durable reconnect checkpoint](attached-worker-reconnect-checkpoint.md), or the
+output-receipt checkpoint. They use exact manifest bindings, strict bounded
+JSON, and atomic write/fsync discipline; observation/reconnect use revision CAS,
+while the receipt allows only byte-identical resubmission. A configuration
+update or local logout durably removes
+stale reconnect, receipt and observation evidence before committing new manifest state.
+The receipt checkpoint is retired only after a verified TerminalAck. Until a
+reviewed crash replay exists, its presence fences reconnect before network
+access or fresh dispatch; it cannot trigger provider re-execution.
 
 JSON decoding is size bounded, UTF-8 only, case-insensitive duplicate-key
 rejecting, unknown-field rejecting, and single-value only. Unsupported schema
@@ -84,7 +90,7 @@ Local logout is a small journaled transition:
 
 1. atomically persist `logout-intent.json` for the exact manifest revision and
    caller-supplied idempotency key;
-2. durably remove any prior daemon observation and reconnect checkpoint;
+2. durably remove any prior daemon observation, reconnect checkpoint and receipt checkpoint;
 3. durably remove `secret.json`;
 4. atomically commit the `logged_out` manifest and content-free receipt;
 5. durably remove the intent.

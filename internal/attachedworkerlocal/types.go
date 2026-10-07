@@ -25,12 +25,14 @@ const (
 	SecretVersionV1              = uint32(1)
 	ReceiptVersionV1             = uint32(1)
 	ReconnectCheckpointVersionV1 = uint32(1)
+	ReceiptCheckpointVersionV1   = uint32(1)
 
 	ManifestFileName            = "manifest.json"
 	SecretFileName              = "secret.json"
 	LogoutIntentFileName        = "logout-intent.json"
 	ObservationFileName         = "runtime-observation.json"
 	ReconnectCheckpointFileName = "reconnect-checkpoint.json"
+	ReceiptCheckpointFileName   = "output-receipt-checkpoint.json"
 	StateLockFileName           = "state.lock"
 	RuntimeLockFileName         = "runtime.lock"
 
@@ -178,6 +180,26 @@ type ReconnectCheckpointV1 struct {
 	MachineSnapshot       attachedworkerprotocol.MachineSnapshotV1 `json:"machine_snapshot"`
 	CheckpointedAt        time.Time                                `json:"checkpointed_at"`
 }
+
+// ReceiptCheckpointV1 seals one exact post-run submission before any network
+// effect. Its payload may contain bounded canonical output, so formatting is
+// redacted and the file remains private to the installation runtime owner.
+// It is local recovery evidence, never server or execution authority.
+type ReceiptCheckpointV1 struct {
+	Version              uint32                            `json:"version"`
+	ManifestRevision     uint64                            `json:"manifest_revision"`
+	TenantID             domain.TenantID                   `json:"tenant_id"`
+	OwnerUserID          domain.UserID                     `json:"owner_user_id"`
+	WorkerID             domain.AttachedWorkerID           `json:"worker_id"`
+	EnrollmentGeneration uint64                            `json:"enrollment_generation"`
+	ConnectionGeneration uint64                            `json:"connection_generation"`
+	ConnectionID         domain.AttachedWorkerConnectionID `json:"connection_id"`
+	PayloadSHA256        string                            `json:"payload_sha256"`
+	Payload              []byte                            `json:"payload"`
+}
+
+func (ReceiptCheckpointV1) String() string   { return "ReceiptCheckpointV1{[REDACTED]}" }
+func (ReceiptCheckpointV1) GoString() string { return "ReceiptCheckpointV1{[REDACTED]}" }
 
 func (checkpoint ReconnectCheckpointV1) Validate(manifest ManifestV1) error {
 	machine := checkpoint.MachineSnapshot

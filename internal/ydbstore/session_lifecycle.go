@@ -241,6 +241,9 @@ func (store *Store) RequestSessionDeletion(
 		if err := ensureSessionRunsTerminalTx(ctx, tx, deletion.SessionID); err != nil {
 			return err
 		}
+		if err := ensureNoPendingAttachedWorkerReceiptsTx(ctx, tx, deletion.SessionID); err != nil {
+			return err
+		}
 		if err := writeSessionDeletionTx(ctx, tx, deletion); err != nil {
 			return err
 		}
@@ -307,6 +310,9 @@ func (store *Store) StartSessionDeletion(
 			return nil
 		}
 		if err := ensureSessionRunsTerminalTx(ctx, tx, sessionID); err != nil {
+			return err
+		}
+		if err := ensureNoPendingAttachedWorkerReceiptsTx(ctx, tx, sessionID); err != nil {
 			return err
 		}
 		if err := deletion.Start(at); err != nil {
@@ -468,6 +474,24 @@ func (store *Store) BuildSessionDeletionInventory(
 		}
 		inventory.RunRows++
 		inventory.RunIDs = append(inventory.RunIDs, runID)
+		receipts, err := store.listRunOutputReceipts(ctx, tenantID, runID, maxRows-rowsUsed+1)
+		if err != nil {
+			return inventory, err
+		}
+		for _, receipt := range receipts {
+			if !receipt.Ready {
+				return inventory, domain.ValidationError{Field: "session_deletion.receipts", Reason: "pending attached-worker output receipt blocks exact-object inventory"}
+			}
+			if err := addRow(); err != nil {
+				return inventory, err
+			}
+			inventory.ReceiptRows++
+			for _, ref := range attachedWorkerReceiptObjectRefs(receipt) {
+				if err := addObject(ref); err != nil {
+					return inventory, err
+				}
+			}
+		}
 		manifestIDs, err := store.listRunManifestIDs(ctx, tenantID, runID, maxRows-rowsUsed+1)
 		if err != nil {
 			return inventory, err
@@ -603,6 +627,9 @@ func (store *Store) CompleteSessionDeletion(
 			return err
 		}
 		if err := ensureSessionRunsTerminalTx(ctx, tx, sessionID); err != nil {
+			return err
+		}
+		if err := ensureNoPendingAttachedWorkerReceiptsTx(ctx, tx, sessionID); err != nil {
 			return err
 		}
 		if err := deleteSessionRowsTx(ctx, tx, sessionID); err != nil {
@@ -746,6 +773,55 @@ func ensureSessionRunsTerminalTx(ctx context.Context, tx *stateTx, sessionID dom
 		}
 	}
 	return rows.Err()
+}
+
+// A pending receipt is a durable reservation for an Object Storage write that
+// may still be in flight. Deletion must not inventory or remove its keys until
+// the writer has reached the ready state (or a separate quiescent abort proves
+// that no writer can resume).
+func ensureNoPendingAttachedWorkerReceiptsTx(ctx context.Context, tx *stateTx, sessionID domain.SessionID) error {
+	runIDs, err := listSessionRunIDsTx(ctx, tx, sessionID, maxSessionDeletionRows+1)
+	if err != nil {
+		return err
+	}
+	// Count both run-index reads and receipt rows against one transaction-wide
+	// bound; a per-run limit would permit quadratic scans.
+	total := uint64(len(runIDs))
+	for _, runID := range runIDs {
+		rows, err := tx.sqlTx.QueryContext(ctx,
+			`SELECT payload FROM attached_worker_output_receipts
+			 WHERE tenant_id=$1 AND run_id=$2 LIMIT $3`, tx.tenantID, runID, maxSessionDeletionRows-total+1)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			total++
+			if total > maxSessionDeletionRows {
+				rows.Close()
+				return domain.ValidationError{Field: "session_deletion.receipts", Reason: "exceeds the hard deletion bound"}
+			}
+			var payload string
+			if err := rows.Scan(&payload); err != nil {
+				rows.Close()
+				return err
+			}
+			var receipt AttachedWorkerOutputReceiptV1
+			if err := json.Unmarshal([]byte(payload), &receipt); err != nil {
+				rows.Close()
+				return err
+			}
+			if !receipt.Ready {
+				rows.Close()
+				return domain.ValidationError{Field: "session_deletion.receipts", Reason: "pending attached-worker output receipt blocks deletion"}
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+	}
+	return nil
 }
 
 func deleteSessionRowsTx(ctx context.Context, tx *stateTx, sessionID domain.SessionID) error {
@@ -901,6 +977,7 @@ func deleteSessionRowsTx(ctx context.Context, tx *stateTx, sessionID domain.Sess
 			}
 		}
 		for _, query := range []string{
+			`DELETE FROM attached_worker_output_receipts WHERE tenant_id = $1 AND run_id = $2`,
 			`DELETE FROM artifact_manifests_by_run WHERE tenant_id = $1 AND run_id = $2`,
 			`DELETE FROM frontend_projections_by_run WHERE tenant_id = $1 AND run_id = $2`,
 			`DELETE FROM telegram_deliveries_by_run WHERE tenant_id = $1 AND run_id = $2`,

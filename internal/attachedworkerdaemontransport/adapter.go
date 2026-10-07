@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemon"
+	"gitcode.com/urandon/sessionless/internal/attachedworkeroutput"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerprotocol"
 	"gitcode.com/urandon/sessionless/internal/attachedworkersession"
 	"gitcode.com/urandon/sessionless/internal/domain"
@@ -84,6 +85,33 @@ type ActiveAttemptController interface {
 	RequestDrain(context.Context) error
 }
 
+// ReceiptPublisher is a separate authenticated, mutating channel. Publishing
+// does not finalize a run; it only returns the server's immutable commitment.
+type ReceiptPublisher interface {
+	Publish(context.Context, ReceiptSubmissionV1) (ReceiptCommitmentV1, error)
+}
+
+// ReceiptJournal is the one connection owner's durable post-run seal. It is
+// not server authority and never permits another invocation after a crash.
+type ReceiptJournal interface {
+	SealReceiptSubmission(context.Context, []byte) error
+	RetireReceiptSubmission(context.Context, []byte) error
+}
+
+type ReceiptSubmissionV1 struct {
+	Request     MaterializationRequestV1
+	Nonce       domain.IdempotencyKey
+	Candidate   attachedworkeroutput.Candidate
+	Observation attachedworkeroutput.ProcessObservationV1
+}
+
+type ReceiptCommitmentV1 struct {
+	Status          domain.AttachedWorkerTerminalStatus
+	CanonicalDigest []byte
+}
+
+type ReceiptCandidateBuilder func(attachedworkerdaemon.InvocationIdentity, attachedworkerdaemon.InvocationResult, error, domain.AttachedWorkerTerminalStatus) (attachedworkeroutput.Candidate, error)
+
 type ActiveControl string
 
 const (
@@ -110,6 +138,9 @@ func (profile LocalProfileV1) GoString() string { return profile.String() }
 
 type Config struct {
 	Profile                LocalProfileV1
+	CapabilityManifest     *attachedworkerprotocol.CapabilityManifestV1
+	ReceiptPublisher       ReceiptPublisher
+	ReceiptCandidate       ReceiptCandidateBuilder
 	MaterializationRoot    string
 	MaxInputBytes          int
 	MaterializationTimeout time.Duration
@@ -192,6 +223,16 @@ func New(session SessionPort, materializer Materializer, config Config) (*Adapte
 	if err != nil {
 		return nil, err
 	}
+	if config.CapabilityManifest != nil {
+		for _, feature := range config.CapabilityManifest.Features {
+			if feature == attachedworkerprotocol.FeatureOutputReceipt {
+				if _, ok := session.(ReceiptJournal); !ok {
+					return nil, ErrInvalidConfiguration
+				}
+				break
+			}
+		}
+	}
 	adapter := &Adapter{session: session, materializer: materializer, config: config, gate: make(chan struct{}, 1)}
 	adapter.gate <- struct{}{}
 	return adapter, nil
@@ -201,6 +242,14 @@ func New(session SessionPort, materializer Materializer, config Config) (*Adapte
 // before a reconnect advances the generation or sends a Manifest.
 func prepareAdapterConfig(config Config) (Config, error) {
 	config.Profile = cloneProfile(config.Profile)
+	if config.CapabilityManifest != nil {
+		manifest := *config.CapabilityManifest
+		manifest.ProtocolOffer.Supported = append([]attachedworkerprotocol.ProtocolVersion(nil), manifest.ProtocolOffer.Supported...)
+		manifest.HarnessExecutableDigest = append([]byte(nil), manifest.HarnessExecutableDigest...)
+		manifest.IsolationEvidence = append([]attachedworkerprotocol.IsolationEvidenceV1(nil), manifest.IsolationEvidence...)
+		manifest.Features = append([]attachedworkerprotocol.ProtocolFeatureV1(nil), manifest.Features...)
+		config.CapabilityManifest = &manifest
+	}
 	if config.MaxInputBytes == 0 {
 		config.MaxInputBytes = defaultMaxInputBytes
 	}
@@ -758,9 +807,19 @@ func (adapter *Adapter) completeOwned(
 		return authorityErr
 	}
 	status, terminalResult := classifyTerminal(active.cancelRevision, result, runErr)
-	evidence, err := terminalEvidenceDigest(active.request, identity, result, runErr, status, terminalResult)
-	if err != nil {
-		return ErrTerminalEvidenceInvalid
+	var evidence []byte
+	var sealedReceipt []byte
+	defer func() { clearBytes(sealedReceipt) }()
+	if adapter.receiptEnabled() {
+		evidence, sealedReceipt, err = adapter.publishReceipt(ctx, active, result, runErr, status)
+		if err != nil {
+			return err
+		}
+	} else {
+		evidence, err = terminalEvidenceDigest(active.request, identity, result, runErr, status, terminalResult)
+		if err != nil {
+			return ErrTerminalEvidenceInvalid
+		}
 	}
 	terminal := attachedworkerprotocol.TerminalV1{
 		Binding: cloneAttemptBinding(active.request.Attempt), AttemptSequence: active.nextWorkerAttemptSequence,
@@ -773,6 +832,11 @@ func (adapter *Adapter) completeOwned(
 	if !frameMatchesCurrentSession(*response, adapter.session.Snapshot()) || response.Kind != attachedworkerprotocol.MessageTerminalAck ||
 		response.TerminalAck == nil || !terminalMatchesAck(terminal, *response.TerminalAck, active.nextPlatformAttemptSequence) {
 		return ErrReconciliationRequired
+	}
+	if len(sealedReceipt) != 0 {
+		if err := adapter.session.(ReceiptJournal).RetireReceiptSubmission(ctx, sealedReceipt); err != nil {
+			return errors.Join(ErrReconciliationRequired, err)
+		}
 	}
 	if active.drainRevision != 0 {
 		ackResponse, ackErr := adapter.session.ExchangeAction(ctx, attachedworkersession.ActionV1{
@@ -795,6 +859,69 @@ func (adapter *Adapter) completeOwned(
 	adapter.last = &completedAttempt{identity: identity, fingerprint: fingerprint}
 	adapter.mu.Unlock()
 	return nil
+}
+
+func (adapter *Adapter) receiptEnabled() bool {
+	if adapter.config.CapabilityManifest == nil {
+		return false
+	}
+	for _, feature := range adapter.config.CapabilityManifest.Features {
+		if feature == attachedworkerprotocol.FeatureOutputReceipt {
+			return true
+		}
+	}
+	return false
+}
+
+func (adapter *Adapter) publishReceipt(ctx context.Context, active *activeAttempt, result attachedworkerdaemon.InvocationResult,
+	runErr error, status attachedworkerprotocol.TerminalStatus,
+) ([]byte, []byte, error) {
+	if !result.CleanupComplete() {
+		return nil, nil, ErrTerminalEvidenceInvalid
+	}
+	canonicalStatus := domain.AttachedWorkerTerminalStatus(status)
+	candidate, err := adapter.config.ReceiptCandidate(active.identity, result, runErr, canonicalStatus)
+	if err != nil || candidate.Status != canonicalStatus {
+		return nil, nil, ErrTerminalEvidenceInvalid
+	}
+	observation := attachedworkeroutput.ProcessObservationV1{
+		Version: 1, ExitCode: result.Process.ExitCode, Cancelled: result.Process.Cancelled,
+		Deadline: result.Process.Deadline, ProcessFailureCode: safeFailureCode(result.Process.FailureCode),
+		InvocationFailureCode: safeFailureCode(result.FailureCode), RunnerFailed: runErr != nil,
+		DescendantsReaped: result.Process.DescendantsReaped, BoundaryReleased: result.Process.BoundaryReleased,
+		CleanupSucceeded:          result.Process.CleanupSucceeded,
+		CredentialReleaseRequired: result.CredentialReleaseRequired, CredentialReleased: result.CredentialReleased,
+	}
+	if observation.ValidateFor(canonicalStatus, result.CredentialReleaseRequired) != nil {
+		return nil, nil, ErrTerminalEvidenceInvalid
+	}
+	nonce := receiptNonce(active.identity)
+	submission := ReceiptSubmissionV1{
+		Request: active.request, Nonce: nonce, Candidate: candidate, Observation: observation,
+	}
+	sealed, err := json.Marshal(submission)
+	if err != nil || len(sealed) == 0 || len(sealed) > 128<<10 {
+		return nil, nil, ErrTerminalEvidenceInvalid
+	}
+	defer clearBytes(sealed)
+	if err := adapter.session.(ReceiptJournal).SealReceiptSubmission(ctx, sealed); err != nil {
+		return nil, nil, errors.Join(ErrReconciliationRequired, err)
+	}
+	commitment, err := adapter.config.ReceiptPublisher.Publish(ctx, submission)
+	if err != nil {
+		return nil, nil, errors.Join(ErrReconciliationRequired, err)
+	}
+	if commitment.Status != canonicalStatus || len(commitment.CanonicalDigest) != sha256.Size {
+		return nil, nil, ErrTerminalEvidenceInvalid
+	}
+	return append([]byte(nil), commitment.CanonicalDigest...), bytes.Clone(sealed), nil
+}
+
+func receiptNonce(identity attachedworkerdaemon.InvocationIdentity) domain.IdempotencyKey {
+	digest := sha256.Sum256([]byte(fmt.Sprintf("sessionless:attached-worker-receipt:v1:%s:%s:%s:%s:%s:%s:%d",
+		identity.TenantID, identity.OwnerUserID, identity.WorkerID, identity.RunID, identity.AttemptID,
+		identity.LeaseID, identity.FenceToken)))
+	return domain.IdempotencyKey("receipt-" + hex.EncodeToString(digest[:]))
 }
 
 func (adapter *Adapter) readySnapshot() (attachedworkersession.SnapshotV1, error) {
@@ -899,6 +1026,23 @@ func validateConfig(config Config) error {
 		}
 		seen[variable.Name] = struct{}{}
 	}
+	receiptFeature := false
+	if config.CapabilityManifest != nil {
+		if config.CapabilityManifest.Validate() != nil {
+			return ErrInvalidConfiguration
+		}
+		digest, err := attachedworkerprotocol.ManifestDigestV1(*config.CapabilityManifest)
+		if err != nil || profile.CapabilityDigest != domain.AttachedWorkerCapabilityDigest(hex.EncodeToString(digest)) {
+			return ErrInvalidConfiguration
+		}
+		for _, feature := range config.CapabilityManifest.Features {
+			receiptFeature = receiptFeature || feature == attachedworkerprotocol.FeatureOutputReceipt
+		}
+	}
+	if receiptFeature != (config.ReceiptPublisher != nil && config.ReceiptCandidate != nil) ||
+		!receiptFeature && (config.ReceiptPublisher != nil || config.ReceiptCandidate != nil) {
+		return ErrInvalidConfiguration
+	}
 	return nil
 }
 
@@ -972,7 +1116,8 @@ func classifyTerminal(
 	runErr error,
 ) (attachedworkerprotocol.TerminalStatus, attachedworkerprotocol.TerminalResult) {
 	process := result.Process
-	if cancelRevision > 0 && process.Cancelled {
+	preRunCancel := result.FailureCode == "cancelled_before_materialization" && !result.CredentialReleaseRequired
+	if cancelRevision > 0 && process.Cancelled && (result.FailureCode == "" || preRunCancel) && result.CleanupComplete() {
 		return attachedworkerprotocol.TerminalCancelled, attachedworkerprotocol.TerminalResultCancelled
 	}
 	if result.Succeeded(runErr) {
@@ -1063,7 +1208,9 @@ func validateInvocationResult(result attachedworkerdaemon.InvocationResult) erro
 	if process.StdoutBytes < 0 || process.StdoutBytes > maxTerminalStdoutBytes ||
 		process.StderrBytes < 0 || process.StderrBytes > maxTerminalStderrBytes ||
 		len(process.Stdout) > process.StdoutBytes || len(process.Stdout) > maxTerminalStdoutBytes ||
-		process.Duration < 0 || (result.CredentialChanged && result.CredentialGeneration == 0) {
+		process.Duration < 0 || (result.CredentialChanged && result.CredentialGeneration == 0) ||
+		(!result.CredentialReleaseRequired && (result.CredentialChanged || result.CredentialGeneration != 0)) ||
+		(result.CredentialReleased && !result.CredentialReleaseRequired) {
 		return ErrTerminalEvidenceInvalid
 	}
 	if !validCommittedDigests(result.CommittedArtifactDigests) || !validCommittedDigests(result.CommittedEventDigests) {

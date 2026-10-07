@@ -78,6 +78,44 @@ func TestConnectorRestoresIdleCheckpointThroughAuthoritativeReconnect(t *testing
 	}
 }
 
+func TestSealedReceiptFencesReconnectBeforeNetworkOrFreshDispatch(t *testing.T) {
+	fixture := newSessionFixture(t)
+	initial := mustReadySession(t, fixture)
+	payload := []byte(`{"nonce":"receipt-a","candidate":{"summary":"sealed"}}`)
+	if err := initial.SealReceiptSubmission(context.Background(), payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := initial.SealReceiptSubmission(context.Background(), payload); err != nil {
+		t.Fatalf("exact local seal retry: %v", err)
+	}
+	if err := initial.SealReceiptSubmission(context.Background(), []byte(`{"nonce":"receipt-b"}`)); !errors.Is(err, attachedworkerlocal.ErrStateConflict) {
+		t.Fatalf("divergent local seal: %v", err)
+	}
+	if err := initial.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	bootstrap := &reconnectBootstrap{}
+	connector, err := New(fixture.store, bootstrap, &fakeFactory{exchange: &fakeExchange{}}, fixture.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := connector.Reconnect(context.Background(), ReconnectInputV1(fixture.input)); !errors.Is(err, ErrReconciliationRequired) {
+		t.Fatalf("sealed outcome reconnect: %v", err)
+	}
+	if bootstrap.challengeCalls.Load() != 0 || bootstrap.activateCalls.Load() != 0 {
+		t.Fatal("sealed outcome crossed network before local recovery authority")
+	}
+	lease, err := fixture.store.AcquireRuntime(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Close()
+	checkpoint, err := lease.LoadReceiptCheckpoint(context.Background())
+	if err != nil || !bytes.Equal(checkpoint.Payload, payload) {
+		t.Fatalf("sealed outcome lost across failed reconnect: checkpoint=%+v err=%v", checkpoint, err)
+	}
+}
+
 func TestReconnectRuntimePreflightFailsBeforeGenerationAndNetwork(t *testing.T) {
 	fixture := newSessionFixture(t)
 	initial := mustReadySession(t, fixture)

@@ -625,6 +625,8 @@ func (store *Store) ExchangeAttachedWorkerAttempt(ctx context.Context, request p
 			}
 			post, outboundMessage, next.PlatformAttemptSequence = acceptedPost, &message, message.AttemptSequence
 			next.State = domain.AttachedWorkerAttemptClaimed
+			next.ExecutionConnectionID = attempt.ConnectionID
+			next.ExecutionConnectionGeneration = attempt.ConnectionGeneration
 			loaded, found, err := loadWorkerJobStateTx(ctx, tx, attempt.RunID)
 			if err != nil || !found {
 				return err
@@ -828,15 +830,10 @@ func (store *Store) reconcileRetiredAttachedWorkerTerminalTx(
 	binding := terminalFrame.Terminal.Binding
 	if terminalMessage.MaterializationReservationID == "" ||
 		terminalMessage.MaterializationReservationID != ackMessage.MaterializationReservationID ||
-		terminalMessage.MaterializationReservationID != attachedWorkerMaterializationReservationID(request.Materialization) ||
 		terminalMessage.ExecutionConnectionID == "" || terminalMessage.ExecutionConnectionID != ackMessage.ExecutionConnectionID {
 		return false, ErrAttachedWorkerAttemptConflict
 	}
-	evidence, err := attachedWorkerTerminalMaterializationDigest(domain.AttachedWorkerTerminalStatus(terminalFrame.Terminal.Status), request.Materialization)
-	if err != nil || evidence != request.Materialization.EvidenceDigest ||
-		evidence != domain.AttachedWorkerTerminalEvidenceDigest(hex.EncodeToString(terminalFrame.Terminal.EvidenceDigest)) {
-		return false, ErrAttachedWorkerAttemptConflict
-	}
+	evidence := domain.AttachedWorkerTerminalEvidenceDigest(hex.EncodeToString(terminalFrame.Terminal.EvidenceDigest))
 	reservationID := terminalMessage.MaterializationReservationID
 	at := canonicalAttachedWorkerTime(ackMessage.CreatedAt)
 	createdAt := canonicalAttachedWorkerTime(terminalMessage.CreatedAt)
@@ -859,7 +856,15 @@ func (store *Store) reconcileRetiredAttachedWorkerTerminalTx(
 	if reconstructed.Validate() != nil {
 		return false, ErrAttachedWorkerAttemptConflict
 	}
-	if err := validateAttachedWorkerTerminalMaterializationBinding(reconstructed, request.Materialization); err != nil {
+	materialization, err := resolveAttachedWorkerTerminalMaterializationTx(ctx, tx, reconstructed, request.Materialization)
+	if err != nil || terminalMessage.MaterializationReservationID != attachedWorkerMaterializationReservationID(materialization) {
+		return false, ErrAttachedWorkerAttemptConflict
+	}
+	computed, err := attachedWorkerTerminalMaterializationDigest(reconstructed.TerminalStatus, materialization)
+	if err != nil || computed != evidence || materialization.EvidenceDigest != evidence {
+		return false, ErrAttachedWorkerAttemptConflict
+	}
+	if err := validateAttachedWorkerTerminalMaterializationBinding(reconstructed, materialization); err != nil {
 		return false, err
 	}
 	runStatus := domain.RunSucceeded
@@ -1063,12 +1068,16 @@ func (store *Store) CommitAttachedWorkerTerminal(ctx context.Context, request po
 			result.Status = ports.AttachedWorkerExecutionNotFound
 			return nil
 		}
+		materialization, err := resolveAttachedWorkerTerminalMaterializationTx(ctx, tx, attempt, request.Materialization)
+		if err != nil {
+			return err
+		}
 		if attempt.State == domain.AttachedWorkerAttemptTerminalCommitted && attempt.TerminalEvidenceDigest == request.Materialization.EvidenceDigest {
 			at, err := store.attachedWorkerTransactionTime(ctx, tx)
 			if err != nil {
 				return err
 			}
-			if err := materializeAttachedWorkerTerminalTx(ctx, state, tx, attempt, request.Materialization, at); err != nil {
+			if err := materializeAttachedWorkerTerminalTx(ctx, state, tx, attempt, materialization, at); err != nil {
 				return err
 			}
 			key := domain.AttachedWorkerAttemptMessageV1{OwnerUserID: attempt.OwnerUserID, WorkerID: attempt.WorkerID, AttemptID: attempt.AttemptID, Direction: domain.AttachedWorkerAttemptPlatformToWorker, AttemptSequence: attempt.PlatformAttemptSequence}
@@ -1124,7 +1133,7 @@ func (store *Store) CommitAttachedWorkerTerminal(ctx context.Context, request po
 		if err != nil {
 			return err
 		}
-		if err := materializeAttachedWorkerTerminalTx(ctx, state, tx, attempt, request.Materialization, at); err != nil {
+		if err := materializeAttachedWorkerTerminalTx(ctx, state, tx, attempt, materialization, at); err != nil {
 			return err
 		}
 		ackFrame, post, err := attachedworkerprotocol.BuildTerminalAckTransitionV1(config, snapshot, attachedworkerprotocol.TerminalAckAuthorityV1{NowUnixMicro: at.UnixMicro()})
@@ -1588,8 +1597,8 @@ func validateAttachedWorkerTerminalCommit(request ports.AttachedWorkerTerminalCo
 	if err := request.Materialization.EvidenceDigest.Validate(); err != nil {
 		return err
 	}
-	if request.LeaseGeneration == 0 || (request.Materialization.Completion == nil) == (request.Materialization.Failure == nil) {
-		return domain.ValidationError{Field: "attached_worker_attempt.terminal_commit", Reason: "requires an exact lease generation and one canonical materialization"}
+	if request.LeaseGeneration == 0 || (request.Materialization.Completion != nil && request.Materialization.Failure != nil) {
+		return domain.ValidationError{Field: "attached_worker_attempt.terminal_commit", Reason: "requires an exact lease generation and at most one caller materialization"}
 	}
 	return nil
 }

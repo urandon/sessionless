@@ -196,6 +196,7 @@ type SessionDeletionInventory struct {
 	ManifestRows    uint64    `json:"manifest_rows"`
 	DeliveryRows    uint64    `json:"delivery_rows"`
 	CheckpointRows  uint64    `json:"checkpoint_rows"`
+	ReceiptRows     uint64    `json:"receipt_rows"`
 	ParticipantRows uint64    `json:"participant_rows"`
 	BindingRows     uint64    `json:"binding_rows"`
 	ProjectionRows  uint64    `json:"projection_rows"`

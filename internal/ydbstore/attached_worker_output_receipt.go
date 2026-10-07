@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/ports"
 )
 
 // attachedWorkerOutputReceiptStatusAdmissible is the state/status part of the
@@ -37,4 +38,42 @@ func attachedWorkerOutputReceiptStatusAdmissible(
 	default:
 		return false
 	}
+}
+
+// attachedWorkerOutputReceiptAuthorized is the full current-head predicate
+// used by the mutating receipt path. It deliberately differs from the
+// read-only sealed-input gate: cancellation can admit only cancelled output,
+// while every binding and the presented bearer remain exact.
+func attachedWorkerOutputReceiptAuthorized(
+	request ports.AttachedWorkerSealedInputAuthorization,
+	status domain.AttachedWorkerTerminalStatus,
+	at time.Time,
+	worker domain.AttachedWorker,
+	connection domain.AttachedWorkerConnection,
+	attempt domain.AttachedWorkerAttemptV1,
+) bool {
+	poll := ports.AttachedWorkerAttemptPoll{
+		TenantID: request.TenantID, OwnerUserID: request.OwnerUserID, WorkerID: request.WorkerID,
+		ConnectionID: request.ConnectionID, PresentedSecretDigest: request.PresentedSecretDigest,
+	}
+	return attachedWorkerAttemptPollAuthorized(poll, at, worker, connection) &&
+		attachedWorkerTerminalCommitAuthorityCurrent(worker, connection, attempt) &&
+		attachedWorkerOutputReceiptStatusAdmissible(attempt, status, at) &&
+		request.AttemptSequence == 1 &&
+		worker.EnrollmentGeneration == request.EnrollmentGeneration &&
+		connection.ConnectionGeneration == request.ConnectionGeneration &&
+		attempt.TenantID == request.TenantID && attempt.OwnerUserID == request.OwnerUserID &&
+		attempt.WorkerID == request.WorkerID && attempt.ConnectionID == request.ConnectionID &&
+		attempt.ExecutionConnectionID == request.ConnectionID &&
+		attempt.ExecutionConnectionGeneration == request.ConnectionGeneration &&
+		attempt.EnrollmentGeneration == request.EnrollmentGeneration &&
+		attempt.ConnectionGeneration == request.ConnectionGeneration &&
+		attempt.RunID == request.RunID && attempt.AttemptID == request.AttemptID &&
+		attempt.LeaseID == request.LeaseID && attempt.LeaseGeneration == request.LeaseGeneration &&
+		attempt.FenceToken == request.FenceToken &&
+		attempt.LeaseExpiresAt.UnixMicro() == request.LeaseExpiresAtUnixMicro &&
+		attempt.ContextDigest == request.ContextDigest &&
+		attempt.CapabilityDigest == request.CapabilityDigest &&
+		attempt.PolicyDigest == request.PolicyDigest &&
+		(request.ExpectedAttemptRevision == 0 || attempt.Revision == request.ExpectedAttemptRevision)
 }

@@ -82,6 +82,34 @@ func TestSealedInputRouteIsDefaultOffAndExplicitlyInjected(t *testing.T) {
 	}
 }
 
+func TestOutputReceiptRouteIsDefaultOffAndExplicitlyInjected(t *testing.T) {
+	t.Parallel()
+	request := httptest.NewRequest(http.MethodPost, "/attached-worker/v1/output-receipt", nil)
+	recorder := httptest.NewRecorder()
+	NewHandler(discardLogger(), buildinfo.Current("test")).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("default receipt route status=%d, want 404", recorder.Code)
+	}
+	calls := 0
+	handler := NewHandlerWithOptions(discardLogger(), buildinfo.Current("test"), Options{
+		AttachedWorkerOutputReceipt: http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			calls++
+			writer.WriteHeader(http.StatusNoContent)
+		}),
+	})
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNoContent || calls != 1 {
+		t.Fatalf("injected receipt route status=%d calls=%d", recorder.Code, calls)
+	}
+	request = httptest.NewRequest(http.MethodGet, "/attached-worker/v1/output-receipt", nil)
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNotFound || calls != 1 {
+		t.Fatalf("wrong method entered receipt route: status=%d calls=%d", recorder.Code, calls)
+	}
+}
+
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewJSONHandler(io.Discard, nil))
 }

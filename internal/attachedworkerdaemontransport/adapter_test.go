@@ -16,12 +16,101 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemon"
+	"gitcode.com/urandon/sessionless/internal/attachedworkeroutput"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerprotocol"
 	"gitcode.com/urandon/sessionless/internal/attachedworkersession"
 	"gitcode.com/urandon/sessionless/internal/domain"
 )
 
 var adapterTestTime = time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+
+type receiptPublisherFixture struct {
+	calls      int
+	submission ReceiptSubmissionV1
+	err        error
+}
+
+func (publisher *receiptPublisherFixture) Publish(_ context.Context, submission ReceiptSubmissionV1) (ReceiptCommitmentV1, error) {
+	publisher.calls++
+	publisher.submission = submission
+	if publisher.err != nil {
+		return ReceiptCommitmentV1{}, publisher.err
+	}
+	return ReceiptCommitmentV1{Status: domain.AttachedWorkerTerminalSucceeded, CanonicalDigest: bytes.Repeat([]byte{0xab}, sha256.Size)}, nil
+}
+
+func TestReceiptCapableAdapterRequiresPinnedFeatureAndPublishesBeforeTerminal(t *testing.T) {
+	fixture := newAdapterFixture(t)
+	manifest := attachedworkerprotocol.CapabilityManifestV1{
+		WorkerID: string(fixture.snapshot.WorkerID), EnrollmentGeneration: fixture.snapshot.EnrollmentGeneration,
+		Revision: 1, ProtocolOffer: attachedworkerprotocol.VersionOfferV1{
+			Window:    attachedworkerprotocol.VersionWindow{Minimum: 1, Maximum: 1},
+			Supported: []attachedworkerprotocol.ProtocolVersion{attachedworkerprotocol.ProtocolVersionV1},
+		},
+		OperatingSystem: "linux", Architecture: "arm64", BuildID: "receipt-test",
+		HarnessName: "test-provider", HarnessVersion: "1", HarnessSurface: attachedworkerprotocol.HarnessSurfaceSessionTurn,
+		HarnessExecutableDigest: bytes.Repeat([]byte{0x73}, sha256.Size),
+		IsolationEvidence: []attachedworkerprotocol.IsolationEvidenceV1{
+			attachedworkerprotocol.IsolationFilesystemBoundary, attachedworkerprotocol.IsolationNetworkBoundary,
+			attachedworkerprotocol.IsolationProcessBoundary,
+		},
+		Features: []attachedworkerprotocol.ProtocolFeatureV1{
+			attachedworkerprotocol.FeatureCancellation, attachedworkerprotocol.FeatureOutputReceipt,
+			attachedworkerprotocol.FeatureProgress, attachedworkerprotocol.FeatureReconnect,
+		}, MaxConcurrentAttempts: 1,
+	}
+	digest, err := attachedworkerprotocol.ManifestDigestV1(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.config.CapabilityManifest = &manifest
+	fixture.config.Profile.CapabilityDigest = domain.AttachedWorkerCapabilityDigest(hex.EncodeToString(digest))
+	fixture.snapshot.CapabilityDigest = fixture.config.Profile.CapabilityDigest
+	fixture.binding.CapabilityDigest = bytes.Clone(digest)
+	fixture.session.snapshot = fixture.snapshot
+	fixture.session.binding = fixture.binding
+	if _, err := New(fixture.session, fixture.materializer, fixture.config); !errors.Is(err, ErrInvalidConfiguration) {
+		t.Fatalf("receipt feature without publisher error=%v, want invalid config", err)
+	}
+	publisher := &receiptPublisherFixture{err: errors.New("lost receipt response")}
+	fixture.config.ReceiptPublisher = publisher
+	fixture.config.ReceiptCandidate = func(_ attachedworkerdaemon.InvocationIdentity, _ attachedworkerdaemon.InvocationResult, _ error, status domain.AttachedWorkerTerminalStatus) (attachedworkeroutput.Candidate, error) {
+		return attachedworkeroutput.Candidate{Status: status, Summary: "server-owned summary"}, nil
+	}
+	fixture.adapter, err = New(fixture.session, fixture.materializer, fixture.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Features[1] = attachedworkerprotocol.FeatureProgress
+	if !fixture.adapter.receiptEnabled() {
+		t.Fatal("caller mutated pinned receipt feature after adapter construction")
+	}
+	invocation, available, err := fixture.adapter.Next(context.Background())
+	if err != nil || !available {
+		t.Fatalf("Next available=%t error=%v", available, err)
+	}
+	result := successfulResult()
+	if err := fixture.adapter.Complete(context.Background(), invocation.Identity, result, nil); !errors.Is(err, ErrReconciliationRequired) || len(fixture.session.actions) != 2 {
+		t.Fatalf("lost receipt error=%v actions=%d, want no Terminal", err, len(fixture.session.actions))
+	}
+	if len(fixture.session.receiptSeal) == 0 || fixture.session.receiptRetired {
+		t.Fatal("receipt was not sealed before the failed publisher response")
+	}
+	firstNonce := publisher.submission.Nonce
+	if firstNonce.Validate() != nil || publisher.submission.Observation.ValidateFor(domain.AttachedWorkerTerminalSucceeded, false) != nil ||
+		publisher.submission.Candidate.Summary != "server-owned summary" {
+		t.Fatalf("invalid receipt submission: %+v", publisher.submission)
+	}
+	publisher.err = nil
+	if err := fixture.adapter.Complete(context.Background(), invocation.Identity, result, nil); err != nil {
+		t.Fatalf("exact retry: %v", err)
+	}
+	if publisher.calls != 2 || publisher.submission.Nonce != firstNonce || !fixture.session.receiptRetired || len(fixture.session.actions) != 3 ||
+		fixture.session.actions[2].Terminal == nil ||
+		!bytes.Equal(fixture.session.actions[2].Terminal.EvidenceDigest, bytes.Repeat([]byte{0xab}, sha256.Size)) {
+		t.Fatalf("receipt-before-terminal calls=%d actions=%+v", publisher.calls, fixture.session.actions)
+	}
+}
 
 func TestAdapterMaterializesOnlyAcceptedAuthorityAndCommitsTypedTerminal(t *testing.T) {
 	fixture := newAdapterFixture(t)
@@ -389,7 +478,11 @@ func TestTerminalClassificationAndEvidenceKeepFailureModesDistinct(t *testing.T)
 		{name: "deadline", result: attachedworkerdaemon.InvocationResult{Process: attachedworkerdaemon.AttemptResult{Deadline: true}}, wantStatus: attachedworkerprotocol.TerminalFailed, wantResult: attachedworkerprotocol.TerminalResultFailed},
 		{name: "cleanup", result: attachedworkerdaemon.InvocationResult{Process: attachedworkerdaemon.AttemptResult{ExitCode: 0, DescendantsReaped: true, BoundaryReleased: true}}, wantStatus: attachedworkerprotocol.TerminalFailed, wantResult: attachedworkerprotocol.TerminalResultFailed},
 		{name: "runner", result: attachedworkerdaemon.InvocationResult{}, runErr: errors.New("fixture runner failure"), wantStatus: attachedworkerprotocol.TerminalFailed, wantResult: attachedworkerprotocol.TerminalResultFailed},
-		{name: "cancelled", cancelRevision: 1, result: attachedworkerdaemon.InvocationResult{Process: attachedworkerdaemon.AttemptResult{Cancelled: true}}, runErr: context.Canceled, wantStatus: attachedworkerprotocol.TerminalCancelled, wantResult: attachedworkerprotocol.TerminalResultCancelled},
+		{name: "cancelled", cancelRevision: 1, result: attachedworkerdaemon.InvocationResult{Process: attachedworkerdaemon.AttemptResult{Cancelled: true, DescendantsReaped: true, BoundaryReleased: true, CleanupSucceeded: true}}, runErr: context.Canceled, wantStatus: attachedworkerprotocol.TerminalCancelled, wantResult: attachedworkerprotocol.TerminalResultCancelled},
+		{name: "cancelled before materialization", cancelRevision: 1, result: attachedworkerdaemon.InvocationResult{Process: attachedworkerdaemon.AttemptResult{Cancelled: true, DescendantsReaped: true, BoundaryReleased: true, CleanupSucceeded: true}, FailureCode: "cancelled_before_materialization"}, runErr: context.Canceled, wantStatus: attachedworkerprotocol.TerminalCancelled, wantResult: attachedworkerprotocol.TerminalResultCancelled},
+		{name: "cancelled with failed cleanup", cancelRevision: 1, result: attachedworkerdaemon.InvocationResult{Process: attachedworkerdaemon.AttemptResult{Cancelled: true, DescendantsReaped: true, BoundaryReleased: true}}, runErr: context.Canceled, wantStatus: attachedworkerprotocol.TerminalFailed, wantResult: attachedworkerprotocol.TerminalResultFailed},
+		{name: "cancelled with failed credential release", cancelRevision: 1, result: attachedworkerdaemon.InvocationResult{Process: attachedworkerdaemon.AttemptResult{Cancelled: true, DescendantsReaped: true, BoundaryReleased: true, CleanupSucceeded: true}, CredentialReleaseRequired: true}, runErr: context.Canceled, wantStatus: attachedworkerprotocol.TerminalFailed, wantResult: attachedworkerprotocol.TerminalResultFailed},
+		{name: "cancelled with failed credential writeback", cancelRevision: 1, result: attachedworkerdaemon.InvocationResult{Process: attachedworkerdaemon.AttemptResult{Cancelled: true, DescendantsReaped: true, BoundaryReleased: true, CleanupSucceeded: true}, CredentialReleaseRequired: true, CredentialReleased: true, FailureCode: "credential_writeback_failed"}, runErr: attachedworkerdaemon.ErrCredentialFinalization, wantStatus: attachedworkerprotocol.TerminalFailed, wantResult: attachedworkerprotocol.TerminalResultFailed},
 	}
 	seen := make(map[string]string, len(cases))
 	for _, test := range cases {
@@ -503,6 +596,12 @@ func TestAdapterRejectsUnsafeConfigurationAndTerminalEvidence(t *testing.T) {
 			{name: "credential generation missing", mutate: func(result *attachedworkerdaemon.InvocationResult) {
 				result.CredentialChanged = true
 				result.CredentialGeneration = 0
+			}},
+			{name: "credential release without requirement", mutate: func(result *attachedworkerdaemon.InvocationResult) {
+				result.CredentialReleased = true
+			}},
+			{name: "credential generation without release requirement", mutate: func(result *attachedworkerdaemon.InvocationResult) {
+				result.CredentialGeneration = 1
 			}},
 			{name: "duplicate committed artifact digest", mutate: func(result *attachedworkerdaemon.InvocationResult) {
 				result.CommittedArtifactDigests = append(result.CommittedArtifactDigests, result.CommittedArtifactDigests[0])
@@ -1099,6 +1198,24 @@ type fakeSession struct {
 	cancelAckRelease           chan struct{}
 	mutateTerminalAck          func(*attachedworkerprotocol.TerminalAckV1)
 	terminalAckAttemptSequence uint64
+	receiptSeal                []byte
+	receiptRetired             bool
+}
+
+func (fake *fakeSession) SealReceiptSubmission(_ context.Context, payload []byte) error {
+	if len(fake.receiptSeal) != 0 && !bytes.Equal(fake.receiptSeal, payload) {
+		return ErrReconciliationRequired
+	}
+	fake.receiptSeal = bytes.Clone(payload)
+	return nil
+}
+
+func (fake *fakeSession) RetireReceiptSubmission(_ context.Context, payload []byte) error {
+	if !bytes.Equal(fake.receiptSeal, payload) {
+		return ErrReconciliationRequired
+	}
+	fake.receiptRetired = true
+	return nil
 }
 
 func (fake *fakeSession) Snapshot() attachedworkersession.SnapshotV1 { return fake.snapshot }

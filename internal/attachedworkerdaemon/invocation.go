@@ -75,12 +75,23 @@ func (invocation Invocation) Validate() error {
 }
 
 type InvocationResult struct {
-	Process                  AttemptResult
-	CredentialChanged        bool
-	CredentialGeneration     uint64
-	FailureCode              string
-	CommittedArtifactDigests []CommittedEvidenceDigest
-	CommittedEventDigests    []CommittedEvidenceDigest
+	Process                   AttemptResult
+	CredentialChanged         bool
+	CredentialGeneration      uint64
+	CredentialReleaseRequired bool `json:",omitempty"`
+	CredentialReleased        bool `json:",omitempty"`
+	FailureCode               string
+	CommittedArtifactDigests  []CommittedEvidenceDigest
+	CommittedEventDigests     []CommittedEvidenceDigest
+}
+
+// CleanupComplete is a necessary, not sufficient, condition for a terminal
+// acknowledgement. The output receipt must independently prove canonical
+// materialization before the server may commit a result.
+func (result InvocationResult) CleanupComplete() bool {
+	return result.Process.DescendantsReaped && result.Process.BoundaryReleased &&
+		result.Process.CleanupSucceeded &&
+		(!result.CredentialReleaseRequired || result.CredentialReleased)
 }
 
 // Succeeded reports the same process-level success predicate used by the
@@ -89,8 +100,7 @@ type InvocationResult struct {
 func (result InvocationResult) Succeeded(runErr error) bool {
 	process := result.Process
 	return runErr == nil && !process.Cancelled && !process.Deadline && process.ExitCode == 0 &&
-		process.FailureCode == "" && result.FailureCode == "" && process.DescendantsReaped &&
-		process.BoundaryReleased && process.CleanupSucceeded
+		process.FailureCode == "" && result.FailureCode == "" && result.CleanupComplete()
 }
 
 // CommittedEvidenceDigest is content-addressed evidence already committed by
@@ -151,8 +161,11 @@ func (runner *InvocationRunner) Run(
 		handle, invocation.Identity, invocation.Credential.IssueRequest.Run.SubscriptionConnectionID,
 		invocation.Credential.ExpectedBindingGeneration,
 	) {
-		_ = runner.releaseCredential(ctx, handle)
-		return InvocationResult{FailureCode: "credential_handle_mismatch"}, ErrCredentialUnavailable
+		releaseErr := runner.releaseCredential(ctx, handle)
+		if releaseErr != nil {
+			return InvocationResult{CredentialReleaseRequired: true, FailureCode: "credential_release_failed"}, ErrCredentialFinalization
+		}
+		return InvocationResult{CredentialReleaseRequired: true, CredentialReleased: true, FailureCode: "credential_handle_mismatch"}, ErrCredentialUnavailable
 	}
 	materialization, err := runner.credentials.Materialize(ctx, handle)
 	root, rootErr := validateDirectoryPath(materialization.RootDir)
@@ -161,9 +174,9 @@ func (runner *InvocationRunner) Run(
 		root != materialization.RootDir || authFile != materialization.AuthFile {
 		releaseErr := runner.releaseCredential(ctx, handle)
 		if releaseErr != nil {
-			return InvocationResult{FailureCode: "credential_release_failed"}, ErrCredentialFinalization
+			return InvocationResult{CredentialReleaseRequired: true, FailureCode: "credential_release_failed"}, ErrCredentialFinalization
 		}
-		return InvocationResult{FailureCode: "credential_materialization_failed"}, ErrCredentialUnavailable
+		return InvocationResult{CredentialReleaseRequired: true, CredentialReleased: true, FailureCode: "credential_materialization_failed"}, ErrCredentialUnavailable
 	}
 	processSpec := cloneAttemptSpec(invocation.Process)
 	processSpec.AdditionalReadRoots = append(processSpec.AdditionalReadRoots, materialization.RootDir)
@@ -178,7 +191,8 @@ func (runner *InvocationRunner) Run(
 	releaseErr := runner.releaseCredential(ctx, handle)
 	result := InvocationResult{
 		Process: processResult, CredentialChanged: writeBack.Changed,
-		CredentialGeneration: writeBack.Generation,
+		CredentialGeneration:      writeBack.Generation,
+		CredentialReleaseRequired: true, CredentialReleased: releaseErr == nil,
 	}
 	if writeBackErr != nil {
 		result.FailureCode = "credential_writeback_failed"

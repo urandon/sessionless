@@ -697,6 +697,26 @@ func (service *Service) AuthorizeSealedInputBearer(
 	return result.AttemptRevision, nil
 }
 
+// BindOutputReceiptBearer derives the secret digest from the authenticated
+// connection bearer. It does not authorize a write: the receipt store must
+// recheck the complete, mutable attempt head in its insert transaction.
+func (service *Service) BindOutputReceiptBearer(
+	rawBearer []byte,
+	request ports.AttachedWorkerSealedInputAuthorization,
+) (ports.AttachedWorkerSealedInputAuthorization, error) {
+	if service == nil || service.store == nil {
+		return ports.AttachedWorkerSealedInputAuthorization{}, ErrTransportUnauthorized
+	}
+	bearer, err := ParseConnectionBearer(rawBearer)
+	if err != nil || request.TenantID != bearer.tenantID || request.OwnerUserID != bearer.ownerUserID ||
+		request.WorkerID != bearer.workerID || request.ConnectionID != bearer.connectionID ||
+		request.PresentedSecretDigest != "" {
+		return ports.AttachedWorkerSealedInputAuthorization{}, ErrTransportUnauthorized
+	}
+	request.PresentedSecretDigest = bearer.secret.Digest()
+	return request, nil
+}
+
 func (service *Service) Exchange(ctx context.Context, bearer ConnectionBearer, batch attachedworkerprotocol.BatchV1) (*attachedworkerprotocol.BatchV1, error) {
 	if service == nil || service.store == nil || validateBatch(batch) != nil || len(batch.Frames) == 0 {
 		return nil, ErrTransportUnauthorized

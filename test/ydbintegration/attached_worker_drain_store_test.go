@@ -76,7 +76,7 @@ func TestAttachedWorkerDrainIsDurableReplayableAndOwnerScoped(t *testing.T) {
 		Capability: ports.AttachedWorkerCapabilityTarget{
 			ManifestRevision: 1, Digest: capabilityDigest, ProtocolVersion: challenge.SelectedProtocolVersion,
 			IdentityKeyDigest: domain.DigestAttachedWorkerIdentityKey(worker.IdentityPublicKey),
-			CanonicalManifest: canonicalManifest, ManifestPayload: []byte(`{"version":1,"surface":"codex-exec"}`),
+			CanonicalManifest: canonicalManifest, ManifestPayload: attachedWorkerManifestPayloadFixture(t, readySnapshot),
 			Signature: manifestSignature,
 		},
 		PlatformSequence: 2, WorkerSequence: 3, PlatformAck: 2, WorkerAck: 2,
@@ -646,7 +646,7 @@ func TestAttachedWorkerDrainReenvelopesAfterReconnect(t *testing.T) {
 		Capability: ports.AttachedWorkerCapabilityTarget{
 			ManifestRevision: 1, Digest: drain.Connection.CapabilityDigest, ProtocolVersion: reconnectChallenge.SelectedProtocolVersion,
 			IdentityKeyDigest: domain.DigestAttachedWorkerIdentityKey(worker.IdentityPublicKey), CanonicalManifest: canonicalManifest,
-			ManifestPayload: []byte(`{"version":1,"surface":"codex-exec"}`), Signature: reconnectManifestSignature,
+			ManifestPayload: attachedWorkerManifestPayloadFixture(t, reconnectReadySnapshot), Signature: reconnectManifestSignature,
 		},
 		PlatformSequence: 2, WorkerSequence: 3, PlatformAck: 2, WorkerAck: 2,
 		ProtocolSnapshot: reconnectReadySnapshot, PresenceTTL: 10 * time.Minute,
@@ -738,7 +738,7 @@ func readyAttachedWorkerForDrain(t *testing.T, suffix string) (*ydbstore.Store, 
 	return readyAttachedWorkerForDrainWithIdentity(t, suffix, "", "")
 }
 
-func readyAttachedWorkerForDrainWithIdentity(t *testing.T, suffix string, tenantID domain.TenantID, workerID domain.AttachedWorkerID) (*ydbstore.Store, *ydbclient.Client, domain.AttachedWorker, domain.AttachedWorkerConnection, domain.AttachedWorkerConnectionSecretDigest, ed25519.PrivateKey, []byte, time.Time) {
+func readyAttachedWorkerForDrainWithIdentity(t *testing.T, suffix string, tenantID domain.TenantID, workerID domain.AttachedWorkerID, features ...attachedworkerprotocol.ProtocolFeatureV1) (*ydbstore.Store, *ydbclient.Client, domain.AttachedWorker, domain.AttachedWorkerConnection, domain.AttachedWorkerConnectionSecretDigest, ed25519.PrivateKey, []byte, time.Time) {
 	t.Helper()
 	suffix = attachedWorkerDrainTestSuffix(t, suffix)
 	store, client := openStore(t)
@@ -773,7 +773,7 @@ func readyAttachedWorkerForDrainWithIdentity(t *testing.T, suffix string, tenant
 		t.Fatal(err)
 	}
 	channelBytes := bytes.Repeat([]byte{0x72}, 32)
-	canonicalManifest, capabilityDigest, attachedSnapshot, readySnapshot, manifestSignature := attachedWorkerProtocolSnapshotFixture(t, worker, challenge, privateKey, channelBytes)
+	canonicalManifest, capabilityDigest, attachedSnapshot, readySnapshot, manifestSignature := attachedWorkerProtocolSnapshotFixture(t, worker, challenge, privateKey, channelBytes, features...)
 	// Keep the synthetic bearer recoverable by the transport-level integration
 	// test while still unique to this test-owned worker scope.
 	secretBytes := sha256.Sum256([]byte("drain-race-bearer-" + string(ownerID)))
@@ -802,7 +802,7 @@ func readyAttachedWorkerForDrainWithIdentity(t *testing.T, suffix string, tenant
 		Capability: ports.AttachedWorkerCapabilityTarget{
 			ManifestRevision: 1, Digest: capabilityDigest, ProtocolVersion: challenge.SelectedProtocolVersion,
 			IdentityKeyDigest: domain.DigestAttachedWorkerIdentityKey(worker.IdentityPublicKey),
-			CanonicalManifest: canonicalManifest, ManifestPayload: []byte(`{"version":1,"surface":"codex-exec"}`),
+			CanonicalManifest: canonicalManifest, ManifestPayload: attachedWorkerManifestPayloadFixture(t, readySnapshot),
 			Signature: manifestSignature,
 		},
 		PlatformSequence: 2, WorkerSequence: 3, PlatformAck: 2, WorkerAck: 2,

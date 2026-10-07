@@ -225,7 +225,7 @@ func TestAW07TwoOwnerReconnectKeepsPeerClaimAndFencesOldBearer(t *testing.T) {
 		Capability: ports.AttachedWorkerCapabilityTarget{
 			ManifestRevision: 1, Digest: aConnection.CapabilityDigest, ProtocolVersion: challenge.SelectedProtocolVersion,
 			IdentityKeyDigest: domain.DigestAttachedWorkerIdentityKey(aWorker.IdentityPublicKey), CanonicalManifest: aManifest,
-			ManifestPayload: []byte(`{"version":1,"surface":"codex-exec"}`), Signature: manifestSignature,
+			ManifestPayload: attachedWorkerManifestPayloadFixture(t, readySnapshot), Signature: manifestSignature,
 		},
 		PlatformSequence: 2, WorkerSequence: 3, PlatformAck: 2, WorkerAck: 2,
 		ProtocolSnapshot: readySnapshot, PresenceTTL: 10 * time.Minute,

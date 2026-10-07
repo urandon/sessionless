@@ -201,8 +201,9 @@ func ConnectWithClock(ctx context.Context, store *attachedworkerlocal.Store, pro
 		SealedEndpoint: profile.ControlPlaneOrigin + attachedworkersealedinput.PathV1,
 		SealedClient:   client, MaxInputBytes: profile.MaxInputBytes, Now: now,
 		Adapter: attachedworkerdaemontransport.Config{
-			Profile: profile.LocalProfile, MaterializationRoot: profile.MaterializationRoot,
-			MaxInputBytes: profile.MaxInputBytes, Now: now,
+			Profile: profile.LocalProfile, CapabilityManifest: &profile.Capability,
+			MaterializationRoot: profile.MaterializationRoot,
+			MaxInputBytes:       profile.MaxInputBytes, Now: now,
 		},
 		Poll: attachedworkertransport.Config{
 			Enabled: true, PollInterval: attachedworkertransport.MinimumHeartbeatInterval,

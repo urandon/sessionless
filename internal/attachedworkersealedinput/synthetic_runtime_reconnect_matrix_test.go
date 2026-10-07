@@ -116,8 +116,8 @@ func TestSyntheticPinnedReconnectFencesPersistedNonIdleHeads(t *testing.T) {
 				t.Fatalf("non-idle checkpoint reopened runtime: owner=%v error=%v", owner, err)
 			}
 			if newExchange.closed.Load() != 1 || len(newExchange.idleHeartbeat) != 0 {
-				t.Errorf("fenced reconnect exchange closed=%d polls=%d, want 1/0",
-					newExchange.closed.Load(), len(newExchange.idleHeartbeat))
+				t.Errorf("fenced reconnect exchange closed=%d polls=%d, want 1/0; reconnect error=%v",
+					newExchange.closed.Load(), len(newExchange.idleHeartbeat), err)
 			}
 			commands, err := os.ReadFile(fixture.commandLog)
 			if err != nil {

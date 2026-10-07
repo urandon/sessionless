@@ -255,6 +255,9 @@ func (store *Store) updateWithRuntimeLease(ctx context.Context, expectedRevision
 	if err := store.removeDurable(ReconnectCheckpointFileName); err != nil {
 		return err
 	}
+	if err := store.removeDurable(ReceiptCheckpointFileName); err != nil {
+		return err
+	}
 	if err := store.removeDurable(ObservationFileName); err != nil {
 		return err
 	}
@@ -581,6 +584,7 @@ func (store *Store) validateInventory() error {
 		}
 		switch entry.Name() {
 		case ManifestFileName, SecretFileName, LogoutIntentFileName, ObservationFileName, ReconnectCheckpointFileName,
+			ReceiptCheckpointFileName,
 			StateLockFileName, RuntimeLockFileName:
 		default:
 			return ErrInvalidState

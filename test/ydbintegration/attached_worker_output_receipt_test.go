@@ -358,13 +358,22 @@ func TestAW07ReceiptTwoOwnerCanonicalTerminalAndReplay(t *testing.T) {
 	}{
 		{"credential generation", func(job *domain.WorkerJob) { job.HarnessBinding.Resource.CredentialGeneration++ }},
 		{"provider resource", func(job *domain.WorkerJob) { job.HarnessBinding.Resource.ResourceID += "-other" }},
-		{"provider contract", func(job *domain.WorkerJob) {
-			job.HarnessBinding.Backend.ProviderContractKind = domain.ProviderContractCredentiallessFixtureV1
+		{"backend profile", func(job *domain.WorkerJob) {
+			digest := job.HarnessBinding.Backend.BackendProfileDigest
+			if digest[0] == 'a' {
+				job.HarnessBinding.Backend.BackendProfileDigest = "b" + digest[1:]
+			} else {
+				job.HarnessBinding.Backend.BackendProfileDigest = "a" + digest[1:]
+			}
 		}},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			changedJob := loaded.Job
 			scenario.mutate(&changedJob)
+			if err := changedJob.HarnessBinding.ValidateForScope(changedJob.TenantID, changedJob.CredentialOwnerUserID,
+				changedJob.RunID, changedJob.AttemptID, changedJob.ExecutionPlacementV2); err != nil {
+				t.Fatalf("changed %s binding is invalid fixture: %v", scenario.name, err)
+			}
 			changedPayload, err := json.Marshal(changedJob)
 			if err != nil {
 				t.Fatal(err)

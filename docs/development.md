@@ -224,8 +224,6 @@ file mounts, receipt publication, and canonical terminal commits. For a
 focused local diagnosis against migrated YDB, run
 `make attached-worker-joined-provider-ydb-gate`. The fake provider issues no
 real secret and the fake OCI client cannot execute a provider call.
-Both daemons remain connected while their provider turns execute in sequence;
-this gate does not measure simultaneous provider-turn throughput.
 The race-enabled joined YDB fixture uses a bounded 45-second per-exchange
 budget for Docker-backed CI contention; shipped activation retains its
 15-second operation and HTTP request timeouts.

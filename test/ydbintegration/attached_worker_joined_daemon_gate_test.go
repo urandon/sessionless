@@ -81,7 +81,7 @@ func TestAW07JoinedDaemonChild(t *testing.T) {
 	var clock atomic.Int64
 	clock.Store(start.UnixNano())
 	now := func() time.Time { return time.Unix(0, clock.Load()).UTC() }
-	ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
 	defer cancel()
 	var owner *attachedworkersealedinput.SyntheticRuntime
 	if input.TestProvider {

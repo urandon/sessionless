@@ -580,6 +580,18 @@ func attachedWorkerReconnectProtocolSnapshotFixture(
 	privateKey ed25519.PrivateKey,
 	channelBinding []byte,
 ) ([]byte, []byte, []byte) {
+	return attachedWorkerReconnectProtocolSnapshotFixtureWithManifest(t, worker, previous, challenge, privateKey, channelBinding, nil)
+}
+
+func attachedWorkerReconnectProtocolSnapshotFixtureWithManifest(
+	t *testing.T,
+	worker domain.AttachedWorker,
+	previous domain.AttachedWorkerConnection,
+	challenge domain.AttachedWorkerAttachChallenge,
+	privateKey ed25519.PrivateKey,
+	channelBinding []byte,
+	canonicalManifest []byte,
+) ([]byte, []byte, []byte) {
 	t.Helper()
 	previousSnapshot, err := attachedworkerprotocol.DecodeMachineSnapshotV1(previous.ProtocolSnapshot)
 	if err != nil {
@@ -644,6 +656,11 @@ func attachedWorkerReconnectProtocolSnapshotFixture(
 	nextConfig := previousConfig
 	nextConfig.Auth = nextAuth
 	manifest := attachedWorkerCapabilityManifestFixture(worker, previousSnapshot.Hello.Offer)
+	if canonicalManifest != nil {
+		if err := json.Unmarshal(canonicalManifest, &manifest); err != nil {
+			t.Fatal(err)
+		}
+	}
 	manifestFrame := attachedworkerprotocol.FrameV1{
 		Version:   attachedworkerprotocol.ProtocolVersion(previous.ProtocolVersion),
 		MessageID: attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionWorkerToPlatform, 3),

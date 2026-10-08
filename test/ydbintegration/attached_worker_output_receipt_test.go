@@ -10,6 +10,7 @@ import (
 	"errors"
 	"io"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -110,7 +111,7 @@ func aw07TestProviderBinding(owner domain.UserID, suffix string, generation uint
 }
 
 func TestAW07ReceiptTwoOwnerCanonicalTerminalAndReplay(t *testing.T) {
-	aStore, aClient, aWorker, aConnection, aSecret, _, _, aNow := readyAttachedWorkerForDrainWithIdentity(t,
+	aStore, aClient, aWorker, aConnection, aSecret, aKey, aManifest, aNow := readyAttachedWorkerForDrainWithIdentity(t,
 		"receipt-a", "", "", attachedworkerprotocol.FeatureOutputReceipt)
 	bStore, bClient, bWorker, bConnection, bSecret, _, _, bNow := readyAttachedWorkerForDrainWithIdentity(t,
 		"receipt-b", aWorker.TenantID, aWorker.ID, attachedworkerprotocol.FeatureOutputReceipt)
@@ -377,6 +378,95 @@ func TestAW07ReceiptTwoOwnerCanonicalTerminalAndReplay(t *testing.T) {
 		pending.Attempt.State != domain.AttachedWorkerAttemptTerminalPending {
 		t.Fatalf("receipt terminal pending: result=%+v err=%v", pending, err)
 	}
+	// A transport reconnect may rotate the bearer after Terminal evidence is
+	// persisted. The immutable execution receipt must remain recoverable only
+	// through the current owner-scoped head, without re-running the provider.
+	previous, found, err := aStore.LoadAttachedWorkerConnection(ctx, aWorker.TenantID, aWorker.OwnerUserID, aWorker.ID)
+	if err != nil || !found {
+		t.Fatalf("load receipt owner's terminal-pending connection: found=%t err=%v", found, err)
+	}
+	currentWorker, found, err := aStore.LoadAttachedWorker(ctx, aWorker.TenantID, aWorker.OwnerUserID, aWorker.ID)
+	if err != nil || !found {
+		t.Fatalf("load receipt owner before reconnect: found=%t err=%v", found, err)
+	}
+	challengeCreate := attachedWorkerChallengeCreateFixture(currentWorker, "reconnect")
+	challengeCreate.Lifetime = 10 * time.Minute
+	challengeCreate.Purpose = domain.AttachedWorkerAttachReconnect
+	challengeCreate.ExpectedConnectionID = previous.ID
+	challengeCreate.ExpectedConnectionRevision = previous.Revision
+	challengeCreate.ExpectedCapabilityDigest = previous.CapabilityDigest
+	challengeCreate.ExpectedProtocolSnapshot = append([]byte(nil), previous.ProtocolSnapshot...)
+	challenge, err := aStore.CreateAttachedWorkerAttachChallenge(ctx, challengeCreate)
+	if err != nil {
+		t.Fatalf("create receipt reconnect challenge: %v", err)
+	}
+	channel := bytes.Repeat([]byte{0x7b}, 32)
+	attachedSnapshot, readySnapshot, manifestSignature := attachedWorkerReconnectProtocolSnapshotFixtureWithManifest(
+		t, currentWorker, previous, challenge, aKey, channel, aManifest)
+	rotatedSecret := domain.DigestAttachedWorkerConnectionSecret([]byte("receipt-owner-a-reconnected"))
+	activated, err := aStore.ActivateAttachedWorkerConnection(ctx, ports.AttachedWorkerConnectionActivation{
+		TenantID: currentWorker.TenantID, OwnerUserID: currentWorker.OwnerUserID, WorkerID: currentWorker.ID,
+		ChallengeID: challenge.ID, Purpose: challenge.Purpose, ExpectedChallengeRevision: challenge.Revision,
+		ExpectedWorkerRevision: currentWorker.Revision, ExpectedEnrollmentGeneration: currentWorker.EnrollmentGeneration,
+		ExpectedConnectionGeneration: currentWorker.ConnectionGeneration,
+		ExpectedConnectionID:         previous.ID, ExpectedConnectionRevision: previous.Revision,
+		ExpectedPreviousCapabilityDigest: previous.CapabilityDigest,
+		ExpectedPreviousProtocolSnapshot: append([]byte(nil), previous.ProtocolSnapshot...),
+		PresentedWorkerNonceDigest:       challenge.WorkerNonceDigest, PresentedPlatformNonceDigest: challenge.PlatformNonceDigest,
+		ConnectionSecretDigest: rotatedSecret, ChannelBinding: domain.NewAttachedWorkerChannelBinding(channel),
+		ExpectedCapabilityDigest: previous.CapabilityDigest, ProtocolSnapshot: attachedSnapshot, AuthTTL: time.Hour,
+	})
+	if err != nil || activated.Status != ports.AttachedWorkerConnectionActivated ||
+		activated.Connection.ID == previous.ID ||
+		activated.Connection.ConnectionGeneration != previous.ConnectionGeneration+1 {
+		t.Fatalf("activate receipt reconnect: result=%+v err=%v", activated, err)
+	}
+	currentWorker, found, err = aStore.LoadAttachedWorker(ctx, aWorker.TenantID, aWorker.OwnerUserID, aWorker.ID)
+	if err != nil || !found {
+		t.Fatalf("load receipt owner after activation: found=%t err=%v", found, err)
+	}
+	acceptedReconnect, err := aStore.AcceptAttachedWorkerManifest(ctx, ports.AttachedWorkerManifestAcceptance{
+		TenantID: currentWorker.TenantID, OwnerUserID: currentWorker.OwnerUserID, WorkerID: currentWorker.ID,
+		ConnectionID: activated.Connection.ID, ConnectionGeneration: activated.Connection.ConnectionGeneration,
+		ExpectedConnectionRevision: activated.Connection.Revision, ExpectedWorkerRevision: currentWorker.Revision,
+		PresentedSecretDigest: rotatedSecret,
+		Capability: ports.AttachedWorkerCapabilityTarget{
+			ManifestRevision: 1, Digest: previous.CapabilityDigest, ProtocolVersion: challenge.SelectedProtocolVersion,
+			IdentityKeyDigest: domain.DigestAttachedWorkerIdentityKey(currentWorker.IdentityPublicKey),
+			CanonicalManifest: aManifest, ManifestPayload: attachedWorkerManifestPayloadFixture(t, readySnapshot),
+			Signature: manifestSignature,
+		},
+		PlatformSequence: 2, WorkerSequence: 3, PlatformAck: 2, WorkerAck: 2,
+		ProtocolSnapshot: readySnapshot, PresenceTTL: 10 * time.Minute,
+	})
+	if err != nil || acceptedReconnect.Status != ports.AttachedWorkerConnectionAuthorized {
+		t.Fatalf("authorize receipt reconnect: result=%+v err=%v", acceptedReconnect, err)
+	}
+	if stale, err := aStore.CreateAttachedWorkerOutputReceipt(ctx, blobs, request); err != nil ||
+		stale.Status == ports.AttachedWorkerExecutionApplied || stale.Status == ports.AttachedWorkerExecutionReplayed {
+		t.Fatalf("old bearer recovered ready receipt: result=%+v err=%v", stale, err)
+	}
+	if stale, err := aStore.ExchangeAttachedWorkerAttempt(ctx, ports.AttachedWorkerAttemptExchange{
+		TenantID: a.request.TenantID, OwnerUserID: a.request.OwnerUserID, WorkerID: a.request.WorkerID,
+		ConnectionID: a.request.ConnectionID, AttemptID: a.request.AttemptID,
+		LeaseGeneration: a.request.LeaseGeneration, PresentedSecretDigest: a.request.PresentedSecretDigest,
+		InboundFrame: terminal,
+	}); err != nil || stale.Status != ports.AttachedWorkerExecutionDenied || stale.Outbound != nil {
+		t.Fatalf("old terminal envelope was not denied after reconnect: result=%+v err=%v", stale, err)
+	}
+	rotated := request
+	rotated.Authorization.ConnectionID = acceptedReconnect.Connection.ID
+	rotated.Authorization.ConnectionGeneration = acceptedReconnect.Connection.ConnectionGeneration
+	rotated.Authorization.PresentedSecretDigest = rotatedSecret
+	rotated.Authorization.ExpectedAttemptRevision = 0
+	recovered, err := aStore.CreateAttachedWorkerOutputReceipt(ctx, blobs, rotated)
+	if err != nil || recovered.Status != ports.AttachedWorkerExecutionReplayed ||
+		recovered.Receipt.CanonicalDigest != created.Receipt.CanonicalDigest ||
+		recovered.Receipt.Nonce != created.Receipt.Nonce ||
+		!reflect.DeepEqual(recovered.Receipt.Materialization, created.Receipt.Materialization) {
+		t.Fatalf("current bearer did not recover exact ready receipt: result=%+v err=%v", recovered, err)
+	}
+	aw07Authorized(t, bStore, ctx, b)
 	commit := ports.AttachedWorkerTerminalCommit{
 		TenantID: a.request.TenantID, OwnerUserID: a.request.OwnerUserID, WorkerID: a.request.WorkerID,
 		AttemptID: a.request.AttemptID, LeaseGeneration: a.request.LeaseGeneration,

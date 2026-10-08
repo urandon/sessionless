@@ -3,6 +3,8 @@ package attachedworkerpackage
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -112,6 +114,11 @@ func nativePlan(ctx context.Context, config Config, action NativeAction, expecte
 		!validRegistrationForStage(config, manifest, staged, registration)) {
 		return NativePlanV1{}, ErrConflict
 	}
+	if action == NativeRegister {
+		if err := checkLegacyNativeRuntime(ctx, config, manifest, manager); err != nil {
+			return NativePlanV1{}, err
+		}
+	}
 	state, err := manager.inspect(ctx, config.Mode, nativeName(manifest), unitPath)
 	if err != nil {
 		return NativePlanV1{}, errors.Join(ErrIO, err)
@@ -216,6 +223,23 @@ func applyNative(ctx context.Context, config Config, plan NativePlanV1, manager 
 
 func nativeName(manifest attachedworkerlocal.ManifestV1) string {
 	return "com.sessionless.attached-worker." + shortID(manifest)
+}
+
+func checkLegacyNativeRuntime(ctx context.Context, config Config, manifest attachedworkerlocal.ManifestV1, manager nativeManager) error {
+	oldUnit := legacyWorkerOnlyUnitPath(config, manifest)
+	if oldUnit == "" {
+		return ErrInvalid
+	}
+	oldHash := sha256.Sum256([]byte(string(manifest.WorkerID)))
+	oldName := "com.sessionless.attached-worker." + hex.EncodeToString(oldHash[:8])
+	state, err := manager.inspect(ctx, config.Mode, oldName, oldUnit)
+	if err != nil {
+		return errors.Join(ErrIO, err)
+	}
+	if state.loaded || state.active || state.containerPresent {
+		return ErrConflict
+	}
+	return nil
 }
 
 func nativeReceiptPath(unitPath string) string { return unitPath + ".native-receipt.json" }

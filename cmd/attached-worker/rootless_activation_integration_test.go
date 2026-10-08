@@ -66,18 +66,23 @@ func TestActivatedRootlessServiceAcceptsSyntheticAttempt(t *testing.T) {
 	// Each owner waits after its signed activation until both independently
 	// named services are live. This proves concurrent activation, not merely
 	// two sequential successes on the same rootless engine.
+	var locatorNonce [8]byte
+	if _, err := rand.Read(locatorNonce[:]); err != nil {
+		t.Fatal(err)
+	}
+	sharedWorkerID := "worker-rootless-" + hex.EncodeToString(locatorNonce[:])
 	var activated atomic.Int32
 	allActivated := make(chan struct{})
 	for _, owner := range []string{"owner-a", "owner-b"} {
 		owner := owner
 		t.Run(owner, func(t *testing.T) {
 			t.Parallel()
-			testActivatedRootlessOwner(t, domain.UserID(owner), &activated, allActivated)
+			testActivatedRootlessOwner(t, domain.UserID(owner), sharedWorkerID, &activated, allActivated)
 		})
 	}
 }
 
-func testActivatedRootlessOwner(t *testing.T, ownerID domain.UserID, activated *atomic.Int32, allActivated chan struct{}) {
+func testActivatedRootlessOwner(t *testing.T, ownerID domain.UserID, workerID string, activated *atomic.Int32, allActivated chan struct{}) {
 	t.Helper()
 	binary := os.Getenv("SESSIONLESS_ATTACHED_WORKER_BINARY")
 	docker := os.Getenv("ATTACHED_WORKER_OCI_DOCKER_PATH")
@@ -123,7 +128,8 @@ func testActivatedRootlessOwner(t *testing.T, ownerID domain.UserID, activated *
 	if _, err := rand.Read(nonce[:]); err != nil {
 		t.Fatal(err)
 	}
-	workerID := "worker-rootless-" + string(ownerID) + "-" + hex.EncodeToString(nonce[:])
+	// Two independent owners deliberately choose the same worker locator.
+	// A worker-only unit/container name would collide on this shared host.
 	now := time.Now().UTC()
 	offer := attachedworkerprotocol.VersionOfferV1{Window: attachedworkerprotocol.VersionWindow{Minimum: 1, Maximum: 1},
 		Supported: []attachedworkerprotocol.ProtocolVersion{attachedworkerprotocol.ProtocolVersionV1}}
@@ -272,8 +278,7 @@ func testActivatedRootlessOwner(t *testing.T, ownerID domain.UserID, activated *
 			return
 		}
 		if inspection.ContainerPresent {
-			sum := sha256.Sum256([]byte(workerID))
-			name := fmt.Sprintf("sessionless-attached-worker-%x", sum[:8])
+			name := strings.TrimSuffix(filepath.Base(plan.UnitPath), ".service")
 			command := exec.CommandContext(cleanupCtx, docker, "--host", host,
 				"--config", filepath.Join(config.InstallDir, "docker-config"),
 				"container", "stop", "--time", "10", name)
@@ -326,7 +331,7 @@ func testActivatedRootlessOwner(t *testing.T, ownerID domain.UserID, activated *
 		peer.mu.Unlock()
 		if lastError != "" {
 			t.Fatalf("rootless signed handshake was rejected: %s; %s", lastError,
-				rootlessServiceDiagnostics(config, filepath.Base(plan.UnitPath), docker, host, workerID))
+				rootlessServiceDiagnostics(config, filepath.Base(plan.UnitPath), docker, host))
 		}
 		if challenges == 1 && activations == 1 {
 			snapshot, err := store.LoadSnapshot(ctx)
@@ -337,7 +342,7 @@ func testActivatedRootlessOwner(t *testing.T, ownerID domain.UserID, activated *
 		select {
 		case <-handshakeDeadline.C:
 			t.Fatalf("rootless service did not complete initial signed handshake: challenges=%d activations=%d; %s",
-				challenges, activations, rootlessServiceDiagnostics(config, filepath.Base(plan.UnitPath), docker, host, workerID))
+				challenges, activations, rootlessServiceDiagnostics(config, filepath.Base(plan.UnitPath), docker, host))
 		case <-ctx.Done():
 			t.Fatalf("rootless service handshake deadline: %v", ctx.Err())
 		case <-handshakeTick.C:
@@ -370,13 +375,13 @@ func testActivatedRootlessOwner(t *testing.T, ownerID domain.UserID, activated *
 		peer.mu.Unlock()
 		t.Fatalf("activated rootless service missed accepted attempt: steps=%d denied=%d challenges=%d activations=%d peer_error=%q: %v; %s",
 			steps, denied, challenges, activations, lastError, ctx.Err(),
-			rootlessServiceDiagnostics(config, filepath.Base(plan.UnitPath), docker, host, workerID))
+			rootlessServiceDiagnostics(config, filepath.Base(plan.UnitPath), docker, host))
 	case <-attemptDeadline.C:
 		peer.mu.Lock()
 		steps, denied, lastError := peer.steps, peer.denied, peer.lastError
 		peer.mu.Unlock()
 		t.Fatalf("rootless accepted attempt missed post-Manifest cadence deadline: steps=%d denied=%d peer_error=%q; %s",
-			steps, denied, lastError, rootlessServiceDiagnostics(config, filepath.Base(plan.UnitPath), docker, host, workerID))
+			steps, denied, lastError, rootlessServiceDiagnostics(config, filepath.Base(plan.UnitPath), docker, host))
 	}
 	var status bytes.Buffer
 	if code := runWithContext(ctx, []string{"live-status", "--state-dir", stateRoot}, &status); code != 0 {
@@ -391,7 +396,7 @@ func testActivatedRootlessOwner(t *testing.T, ownerID domain.UserID, activated *
 			peer.mu.Unlock()
 			t.Fatalf("activated rootless owner=%s %s code=%d output=%s steps=%d exchanges=%d last_kind=%s peer_error=%q; %s",
 				ownerID, command, code, output.String(), steps, exchanges, lastKind, lastError,
-				rootlessServiceDiagnostics(config, filepath.Base(plan.UnitPath), docker, host, workerID))
+				rootlessServiceDiagnostics(config, filepath.Base(plan.UnitPath), docker, host))
 		}
 	}
 	for _, path := range []string{profile.MaterializationRoot, profile.ScratchRoot} {
@@ -408,7 +413,7 @@ func testActivatedRootlessOwner(t *testing.T, ownerID domain.UserID, activated *
 	}
 }
 
-func rootlessServiceDiagnostics(config attachedworkerpackage.Config, unit, docker, host, workerID string) string {
+func rootlessServiceDiagnostics(config attachedworkerpackage.Config, unit, docker, host string) string {
 	probe := func(name string, args ...string) (string, error) {
 		probeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -422,8 +427,7 @@ func rootlessServiceDiagnostics(config attachedworkerpackage.Config, unit, docke
 		"--property=ActiveState,SubState,Result,ExecMainStatus", "--no-pager")
 	journal, journalErr := probe("/usr/bin/journalctl", "--user-unit", unit,
 		"--no-pager", "-n", "20", "-o", "cat")
-	sum := sha256.Sum256([]byte(workerID))
-	container := fmt.Sprintf("sessionless-attached-worker-%x", sum[:8])
+	container := strings.TrimSuffix(unit, ".service")
 	containerState, containerErr := probe(docker, "--host", host,
 		"--config", filepath.Join(config.InstallDir, "docker-config"), "container", "inspect",
 		"--format", "{{json .State}}", container)

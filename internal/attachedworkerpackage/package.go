@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
@@ -119,6 +120,9 @@ func Plan(ctx context.Context, config Config, expectedInstallRevision uint64) (P
 		return PlanV1{}, err
 	}
 	unitPath, receiptPath := paths(config, manifest)
+	if err := checkLegacyWorkerOnlyUnit(config, manifest); err != nil {
+		return PlanV1{}, err
+	}
 	if err := checkNoNativePending(unitPath); err != nil {
 		return PlanV1{}, err
 	}
@@ -189,6 +193,9 @@ func Apply(ctx context.Context, config Config, plan PlanV1) (receiptResult Recei
 		return ReceiptV1{}, ErrConflict
 	}
 	unitPath, receiptPath := paths(config, snapshot.Manifest)
+	if err := checkLegacyWorkerOnlyUnit(config, snapshot.Manifest); err != nil {
+		return ReceiptV1{}, err
+	}
 	previous, oldUnit, err := readPrevious(config.InstallDir, unitPath, receiptPath, snapshot.Manifest)
 	if err != nil {
 		return ReceiptV1{}, err
@@ -423,8 +430,50 @@ func validRegistrationForStage(config Config, manifest attachedworkerlocal.Manif
 }
 
 func shortID(manifest attachedworkerlocal.ManifestV1) string {
-	hash := sha256.Sum256([]byte(string(manifest.WorkerID)))
+	// The same worker locator may be enrolled by different owners (or tenants)
+	// on one host. OS unit and container names must follow the authority scope,
+	// not the caller-chosen locator alone. Length prefixes make the tuple unique
+	// even if an identifier contains a separator.
+	var identity []byte
+	for _, part := range []string{string(manifest.TenantID), string(manifest.OwnerUserID), string(manifest.WorkerID)} {
+		identity = binary.BigEndian.AppendUint32(identity, uint32(len(part)))
+		identity = append(identity, part...)
+	}
+	hash := sha256.Sum256(identity)
 	return hex.EncodeToString(hash[:8])
+}
+
+// Before the scoped naming change, units were named from WorkerID alone.
+// Do not silently stage a second unit while a legacy unit or registration
+// receipt may still own the same installation. It must be explicitly stopped
+// and unregistered under its old exact name first.
+func checkLegacyWorkerOnlyUnit(config Config, manifest attachedworkerlocal.ManifestV1) error {
+	oldUnit := legacyWorkerOnlyUnitPath(config, manifest)
+	if oldUnit == "" {
+		return ErrInvalid
+	}
+	for _, path := range []string{oldUnit, oldUnit + ".receipt.json", nativeReceiptPath(oldUnit), nativePendingPath(oldUnit)} {
+		if _, err := os.Lstat(path); err == nil {
+			return ErrConflict
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return errors.Join(ErrConflict, err)
+		}
+	}
+	return nil
+}
+
+func legacyWorkerOnlyUnitPath(config Config, manifest attachedworkerlocal.ManifestV1) string {
+	oldHash := sha256.Sum256([]byte(string(manifest.WorkerID)))
+	oldName := "sessionless-attached-worker-" + hex.EncodeToString(oldHash[:8])
+	switch config.Mode {
+	case ModeLaunchd:
+		oldName += ".plist"
+	case ModeSystemdUser, ModeRootlessContainer:
+		oldName += ".service"
+	default:
+		return ""
+	}
+	return filepath.Join(config.InstallDir, oldName)
 }
 
 func paths(config Config, manifest attachedworkerlocal.ManifestV1) (string, string) {

@@ -185,6 +185,15 @@ revision on startup. Neither staging nor registration starts or enables the
 service. The rootless unit pins an image digest and manifest revision and
 remains default-off until the explicit native start.
 
+Unit and rootless-container names are derived from the tenant, owner and
+worker tuple. Different owners may choose the same worker ID on one host
+without sharing an OS unit or container. An older worker-ID-only unit or
+registration receipt in the installation directory blocks staging under the
+new name. Native registration and inspection also reject a still-loaded old
+unit or surviving rootless container even if its files have disappeared.
+Stop and unregister that exact legacy unit first, then reconcile its staged
+files; the package never silently starts a second unit beside it.
+
 ## Exact native user-service lifecycle
 
 On Darwin, `launchd` uses only the current `gui/<uid>` domain. On Linux,

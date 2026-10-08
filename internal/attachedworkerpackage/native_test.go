@@ -41,9 +41,12 @@ func (m *blockedStartManager) start(ctx context.Context, mode Mode, name, path s
 	}
 }
 
-func (m *fakeNativeManager) inspect(_ context.Context, _ Mode, _, _ string) (nativeState, error) {
+func (m *fakeNativeManager) inspect(_ context.Context, _ Mode, _, path string) (nativeState, error) {
 	if m.inspectAfterCall && m.readbackErr != nil {
 		return nativeState{}, m.readbackErr
+	}
+	if m.state.path != "" && m.state.path != path {
+		return nativeState{}, nil
 	}
 	return m.state, nil
 }
@@ -85,6 +88,53 @@ func nativeFixture(t *testing.T) (*attachedworkerlocal.Store, Config, *fakeNativ
 		t.Fatal(err)
 	}
 	return store, config, &fakeNativeManager{}
+}
+
+func TestNativeRegistrationAndInspectionFenceLoadedLegacyUnit(t *testing.T) {
+	for _, scenario := range []struct {
+		name  string
+		state nativeState
+	}{
+		{name: "loaded unit", state: nativeState{loaded: true}},
+		{name: "orphan rootless container", state: nativeState{containerPresent: true}},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			var store *attachedworkerlocal.Store
+			var config Config
+			var manager *fakeNativeManager
+			if scenario.state.containerPresent {
+				if runtime.GOOS != "linux" {
+					t.Skip("rootless orphan container is Linux-only")
+				}
+				store, config = packageFixture(t)
+				config.Mode = ModeRootlessContainer
+				config.ContainerImage = "registry.example/base@sha256:" + strings.Repeat("a", 64)
+				stage, err := Plan(context.Background(), config, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := Apply(context.Background(), config, stage); err != nil {
+					t.Fatal(err)
+				}
+				manager = &fakeNativeManager{}
+			} else {
+				store, config, manager = nativeFixture(t)
+			}
+			snapshot, err := store.LoadSnapshot(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			manager.state = scenario.state
+			manager.state.path = legacyWorkerOnlyUnitPath(config, snapshot.Manifest)
+			if _, err := nativePlan(context.Background(), config, NativeRegister, 1, manager); !errors.Is(err, ErrConflict) {
+				t.Fatalf("legacy runtime did not fence registration: %v", err)
+			}
+			inspection, err := nativeInspect(context.Background(), config, manager)
+			if err != nil || inspection.Status != "reconciliation_required" {
+				t.Fatalf("legacy runtime inspection=%+v err=%v", inspection, err)
+			}
+		})
+	}
 }
 
 func TestRootlessNativePlanPinsStagedImageAndCreatesPrivateClientConfig(t *testing.T) {

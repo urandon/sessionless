@@ -25,6 +25,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerhttp"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerlocal"
+	"gitcode.com/urandon/sessionless/internal/attachedworkeroutput"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerprotocol"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerreceipt"
 	"gitcode.com/urandon/sessionless/internal/attachedworkersealedinput"
@@ -542,6 +543,24 @@ func TestAW07TwoActivatedProviderDaemonReceipts(t *testing.T) {
 		t.Fatal(err)
 	}
 	rawBearer := bBearer.Bytes()
+	// A successful provider process with failed attempt-root cleanup is not a
+	// committable output, even under the correct owner's live bearer. The real
+	// B daemon remains paused on its original valid submission.
+	unclean := bRequest
+	unclean.Authorization.PresentedSecretDigest = ""
+	unclean.Observation.CleanupSucceeded = false
+	bound, err := service.BindOutputReceiptBearer(rawBearer, unclean.Authorization)
+	if err != nil {
+		t.Fatalf("current owner bearer was rejected before cleanup validation: %v", err)
+	}
+	unclean.Authorization = bound
+	if _, err := store.CreateAttachedWorkerOutputReceipt(ctx, blobs, unclean); !errors.Is(err, attachedworkeroutput.ErrCandidateInvalid) {
+		t.Fatalf("failed cleanup did not cause typed candidate rejection: %v", err)
+	}
+	unclean.Authorization.PresentedSecretDigest = ""
+	if _, err := directReceipts.Create(ctx, rawBearer, unclean); !errors.Is(err, attachedworkerreceipt.ErrUnavailable) {
+		t.Fatalf("unclean provider receipt was accepted or misclassified: %v", err)
+	}
 	_, foreignErr := directReceipts.Create(ctx, rawBearer, foreign)
 	for index := range rawBearer {
 		rawBearer[index] = 0

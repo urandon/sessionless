@@ -84,6 +84,14 @@ exit status, a provider thread ID, or caller-selected event IDs.
    the local call returns. That case retains the copy barrier and blocks both
    retry and session deletion until a separate remote-quiescence proof exists.
    A crash is treated the same way; age alone is not a quiescence proof.
+   The S3 adapter uses one SDK attempt for `PutObject` and disables Go HTTP
+   replay of body-bearing PUTs; otherwise a hidden first attempt could finish
+   after a later successful retry and invalidate the ready/deletion decision.
+   This does not solve an ambiguous single request: it remains pending until
+   remote quiescence is proven. An upstream proxy that retries PUTs without
+   exposing that fact is outside this adapter contract and must not be used
+   for the receipt copy path. Zero-byte candidate objects are rejected before
+   any receipt copy: HTTP/2 can retry a bodyless PUT even without `GetBody`.
 4. The observation records bounded, content-free exit/cancel/deadline,
    descendant reap, isolation teardown/release, attempt-root cleanup and
    credential lifecycle outcomes. It is authenticated and bound to the same

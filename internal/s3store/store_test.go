@@ -54,6 +54,62 @@ type fakeS3ObjectAPI struct {
 	copy func(*s3.CopyObjectInput) (*s3.CopyObjectOutput, error)
 }
 
+type putOptionsCapture struct {
+	*fakeS3ObjectAPI
+	options s3.Options
+	calls   int
+}
+
+func (capture *putOptionsCapture) PutObject(_ context.Context, _ *s3.PutObjectInput,
+	optFns ...func(*s3.Options),
+) (*s3.PutObjectOutput, error) {
+	capture.calls++
+	for _, option := range optFns {
+		option(&capture.options)
+	}
+	return &s3.PutObjectOutput{}, nil
+}
+
+func TestPutObjectDisablesHiddenSDKAndHTTPRetries(t *testing.T) {
+	configured, err := New(context.Background(), Config{
+		Region: "us-east-1", Bucket: "artifact-bucket", Endpoint: "https://storage.example",
+		AccessKeyID: "test-key", SecretAccessKey: "test-secret",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientOptions := configured.s3Client.(*s3.Client).Options()
+	if _, ok := clientOptions.HTTPClient.(noReplayPutHTTPClient); !ok {
+		t.Fatalf("S3 client does not suppress net/http PUT replay: %T", clientOptions.HTTPClient)
+	}
+	capture := &putOptionsCapture{fakeS3ObjectAPI: &fakeS3ObjectAPI{}}
+	store := &Store{bucket: "artifact-bucket", maxObjectBytes: 1024, s3Client: capture}
+	if _, err := store.Put(context.Background(), "tenant-a", "inputs/receipt.txt", strings.NewReader("receipt")); err != nil {
+		t.Fatal(err)
+	}
+	if capture.calls != 1 || capture.options.RetryMaxAttempts != 1 {
+		t.Fatalf("PutObject calls=%d max-attempts=%d", capture.calls, capture.options.RetryMaxAttempts)
+	}
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodPut,
+		"https://storage.example/receipt", bytes.NewReader([]byte("receipt")))
+	if err != nil || request.GetBody == nil {
+		t.Fatalf("test request is not replayable: %v", err)
+	}
+	seen := false
+	client := noReplayPutHTTPClient{delegate: &http.Client{Transport: roundTripFunc(func(got *http.Request) (*http.Response, error) {
+		seen = true
+		if got.GetBody != nil {
+			t.Fatal("body-bearing PUT remained replayable in net/http")
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: http.NoBody}, nil
+	})}}
+	response, err := client.Do(request)
+	if err != nil || !seen {
+		t.Fatalf("single-attempt HTTP client: seen=%t err=%v", seen, err)
+	}
+	_ = response.Body.Close()
+}
+
 func (fake *fakeS3ObjectAPI) PutObject(
 	context.Context, *s3.PutObjectInput, ...func(*s3.Options),
 ) (*s3.PutObjectOutput, error) {
@@ -514,6 +570,9 @@ func TestIAMObjectClientUsesBearerTokenForObjectLifecycle(t *testing.T) {
 		response := &http.Response{Header: make(http.Header), Body: http.NoBody}
 		switch request.Method {
 		case http.MethodPut:
+			if request.GetBody != nil {
+				t.Fatal("IAM body-bearing PUT remained replayable in net/http")
+			}
 			body, err := io.ReadAll(request.Body)
 			if err != nil {
 				t.Fatal(err)

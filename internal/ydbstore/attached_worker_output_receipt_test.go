@@ -1,12 +1,24 @@
 package ydbstore
 
 import (
+	"bytes"
+	"errors"
 	"testing"
 	"time"
 
+	"gitcode.com/urandon/sessionless/internal/attachedworkeroutput"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
+
+func TestPlannedReceiptBlobsRejectsEmptyCanonicalObjectBeforeRemotePut(t *testing.T) {
+	t.Parallel()
+	planned := &plannedReceiptBlobs{}
+	_, err := planned.Put(t.Context(), "tenant-a", "sessions/session-a/empty", bytes.NewReader(nil))
+	if !errors.Is(err, attachedworkeroutput.ErrCandidateInvalid) || len(planned.items) != 0 {
+		t.Fatalf("empty canonical object planned: items=%d err=%v", len(planned.items), err)
+	}
+}
 
 func TestAttachedWorkerOutputReceiptStatusAdmissible(t *testing.T) {
 	t.Parallel()

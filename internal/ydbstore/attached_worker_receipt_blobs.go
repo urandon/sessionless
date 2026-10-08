@@ -32,7 +32,7 @@ type plannedReceiptObject struct {
 
 func (planned *plannedReceiptBlobs) Put(_ context.Context, tenant domain.TenantID, key string, body io.Reader) (domain.BlobRef, error) {
 	content, err := io.ReadAll(io.LimitReader(body, maxPlannedReceiptBytes-planned.total+1))
-	if err != nil || planned.total+int64(len(content)) > maxPlannedReceiptBytes {
+	if err != nil || len(content) == 0 || planned.total+int64(len(content)) > maxPlannedReceiptBytes {
 		return domain.BlobRef{}, attachedworkeroutput.ErrCandidateInvalid
 	}
 	digest := sha256.Sum256(content)

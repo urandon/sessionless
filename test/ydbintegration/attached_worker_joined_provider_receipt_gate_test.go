@@ -25,7 +25,6 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerhttp"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerlocal"
-	"gitcode.com/urandon/sessionless/internal/attachedworkeroutput"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerprotocol"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerreceipt"
 	"gitcode.com/urandon/sessionless/internal/attachedworkersealedinput"
@@ -558,11 +557,16 @@ func TestAW07TwoActivatedProviderDaemonReceipts(t *testing.T) {
 	// daemon is held at the barrier. This negative check is about cleanup, not
 	// the optional optimistic revision supplied by that earlier snapshot.
 	unclean.Authorization.ExpectedAttemptRevision = 0
-	if result, err := store.CreateAttachedWorkerOutputReceipt(ctx, blobs, unclean); !errors.Is(err, attachedworkeroutput.ErrCandidateInvalid) {
-		t.Fatalf("failed cleanup did not cause typed candidate rejection: result=%+v err=%v", result, err)
+	current, err := store.AuthorizeAttachedWorkerSealedInput(ctx, unclean.Authorization)
+	if err != nil || current.Status != ports.AttachedWorkerExecutionApplied {
+		t.Fatalf("current owner head was not live before cleanup rejection: result=%+v err=%v", current, err)
+	}
+	if result, err := store.CreateAttachedWorkerOutputReceipt(ctx, blobs, unclean); err != nil ||
+		result.Status != ports.AttachedWorkerExecutionFenced || result.Receipt.Version != 0 {
+		t.Fatalf("failed cleanup did not fence receipt creation: result=%+v err=%v", result, err)
 	}
 	unclean.Authorization.PresentedSecretDigest = ""
-	if _, err := directReceipts.Create(ctx, rawBearer, unclean); !errors.Is(err, attachedworkerreceipt.ErrUnavailable) {
+	if _, err := directReceipts.Create(ctx, rawBearer, unclean); !errors.Is(err, attachedworkerreceipt.ErrUnauthorized) {
 		t.Fatalf("unclean provider receipt was accepted or misclassified: %v", err)
 	}
 	_, foreignErr := directReceipts.Create(ctx, rawBearer, foreign)

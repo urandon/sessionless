@@ -657,9 +657,14 @@ func attachedWorkerReconnectProtocolSnapshotFixtureWithManifest(
 	nextConfig.Auth = nextAuth
 	manifest := attachedWorkerCapabilityManifestFixture(worker, previousSnapshot.Hello.Offer)
 	if canonicalManifest != nil {
-		if err := json.Unmarshal(canonicalManifest, &manifest); err != nil {
-			t.Fatal(err)
+		if previousSnapshot.Manifest == nil {
+			t.Fatal("reconnect snapshot has no accepted manifest")
 		}
+		encoded, err := attachedworkerprotocol.CanonicalManifestBytesV1(*previousSnapshot.Manifest)
+		if err != nil || !bytes.Equal(encoded, canonicalManifest) {
+			t.Fatalf("reconnect manifest differs from accepted canonical manifest: %v", err)
+		}
+		manifest = *previousSnapshot.Manifest
 	}
 	manifestFrame := attachedworkerprotocol.FrameV1{
 		Version:   attachedworkerprotocol.ProtocolVersion(previous.ProtocolVersion),

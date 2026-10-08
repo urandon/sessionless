@@ -38,6 +38,30 @@ type aw07HTTPStatusRecorder struct {
 	statuses []string
 }
 
+// Hold both owner submissions before YDB can create a receipt. This proves
+// that neither activated daemon can finalize merely from process success.
+type aw07ReceiptBarrier struct {
+	store    *ydbstore.Store
+	arrivals chan domain.UserID
+	release  chan struct{}
+}
+
+func (barrier *aw07ReceiptBarrier) CreateAttachedWorkerOutputReceipt(ctx context.Context, blobs ports.BlobStore,
+	request ydbstore.AttachedWorkerOutputReceiptRequest,
+) (ydbstore.AttachedWorkerOutputReceiptResult, error) {
+	select {
+	case barrier.arrivals <- request.Authorization.OwnerUserID:
+	case <-ctx.Done():
+		return ydbstore.AttachedWorkerOutputReceiptResult{}, ctx.Err()
+	}
+	select {
+	case <-barrier.release:
+	case <-ctx.Done():
+		return ydbstore.AttachedWorkerOutputReceiptResult{}, ctx.Err()
+	}
+	return barrier.store.CreateAttachedWorkerOutputReceipt(ctx, blobs, request)
+}
+
 type aw07StatusWriter struct {
 	http.ResponseWriter
 	status int
@@ -357,7 +381,11 @@ func TestAW07TwoActivatedProviderDaemonReceipts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	receipts, err := attachedworkerreceipt.NewService(service, store, blobs)
+	receiptBarrier := &aw07ReceiptBarrier{store: store, arrivals: make(chan domain.UserID, 4), release: make(chan struct{})}
+	var releaseReceipts sync.Once
+	release := func() { releaseReceipts.Do(func() { close(receiptBarrier.release) }) }
+	defer release()
+	receipts, err := attachedworkerreceipt.NewService(service, receiptBarrier, blobs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -425,6 +453,30 @@ func TestAW07TwoActivatedProviderDaemonReceipts(t *testing.T) {
 		owners[index].process.commandLine(t, "RUN")
 		owners[index].process.await(t, ctx, "AW07_DAEMON_RUNNING")
 	}
+	seen := make(map[domain.UserID]bool, len(owners))
+	for len(seen) < len(owners) {
+		select {
+		case owner := <-receiptBarrier.arrivals:
+			seen[owner] = true
+		case <-ctx.Done():
+			t.Fatalf("both owners did not reach receipt publication: seen=%v HTTP=%s backend=%s: %v",
+				seen, statusRecorder.snapshot(), backend.snapshot(), ctx.Err())
+		}
+	}
+	for index := range owners {
+		owner := &owners[index]
+		if !seen[owner.worker.OwnerUserID] {
+			t.Fatalf("%s did not reach receipt publication: seen=%v", owner.name, seen)
+		}
+		if status := aw07JoinedRunStatus(t, client.DB, ctx, tenant, owner.offer.Attempt.RunID); status == domain.RunSucceeded {
+			t.Fatalf("%s finalized before its receipt was stored", owner.name)
+		}
+		attempt, found, err := store.LoadAttachedWorkerAttempt(ctx, tenant, owner.worker.OwnerUserID, workerID)
+		if err != nil || !found || attempt.State == domain.AttachedWorkerAttemptTerminalCommitted {
+			t.Fatalf("%s terminal ACK before receipt: found=%t attempt=%+v err=%v", owner.name, found, attempt, err)
+		}
+	}
+	release()
 	for index := range owners {
 		owner := &owners[index]
 		deadline := time.Now().Add(90 * time.Second)

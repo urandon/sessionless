@@ -554,8 +554,12 @@ func TestAW07TwoActivatedProviderDaemonReceipts(t *testing.T) {
 		t.Fatalf("current owner bearer was rejected before cleanup validation: %v", err)
 	}
 	unclean.Authorization = bound
-	if _, err := store.CreateAttachedWorkerOutputReceipt(ctx, blobs, unclean); !errors.Is(err, attachedworkeroutput.ErrCandidateInvalid) {
-		t.Fatalf("failed cleanup did not cause typed candidate rejection: %v", err)
+	// A concurrent heartbeat may advance the attempt revision while the real
+	// daemon is held at the barrier. This negative check is about cleanup, not
+	// the optional optimistic revision supplied by that earlier snapshot.
+	unclean.Authorization.ExpectedAttemptRevision = 0
+	if result, err := store.CreateAttachedWorkerOutputReceipt(ctx, blobs, unclean); !errors.Is(err, attachedworkeroutput.ErrCandidateInvalid) {
+		t.Fatalf("failed cleanup did not cause typed candidate rejection: result=%+v err=%v", result, err)
 	}
 	unclean.Authorization.PresentedSecretDigest = ""
 	if _, err := directReceipts.Create(ctx, rawBearer, unclean); !errors.Is(err, attachedworkerreceipt.ErrUnavailable) {

@@ -23,6 +23,7 @@ import (
 	"github.com/ydb-platform/ydb-go-sdk/v3/table"
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerhttp"
+	"gitcode.com/urandon/sessionless/internal/attachedworkerlocal"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerprotocol"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerreceipt"
 	"gitcode.com/urandon/sessionless/internal/attachedworkersealedinput"
@@ -42,7 +43,7 @@ type aw07HTTPStatusRecorder struct {
 // that neither activated daemon can finalize merely from process success.
 type aw07ReceiptBarrier struct {
 	store    *ydbstore.Store
-	arrivals chan domain.UserID
+	arrivals chan ydbstore.AttachedWorkerOutputReceiptRequest
 	release  chan struct{}
 }
 
@@ -50,7 +51,7 @@ func (barrier *aw07ReceiptBarrier) CreateAttachedWorkerOutputReceipt(ctx context
 	request ydbstore.AttachedWorkerOutputReceiptRequest,
 ) (ydbstore.AttachedWorkerOutputReceiptResult, error) {
 	select {
-	case barrier.arrivals <- request.Authorization.OwnerUserID:
+	case barrier.arrivals <- request:
 	case <-ctx.Done():
 		return ydbstore.AttachedWorkerOutputReceiptResult{}, ctx.Err()
 	}
@@ -391,7 +392,7 @@ func TestAW07TwoActivatedProviderDaemonReceipts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	receiptBarrier := &aw07ReceiptBarrier{store: store, arrivals: make(chan domain.UserID, 4), release: make(chan struct{})}
+	receiptBarrier := &aw07ReceiptBarrier{store: store, arrivals: make(chan ydbstore.AttachedWorkerOutputReceiptRequest, 4), release: make(chan struct{})}
 	var releaseReceipts sync.Once
 	release := func() { releaseReceipts.Do(func() { close(receiptBarrier.release) }) }
 	defer release()
@@ -463,20 +464,20 @@ func TestAW07TwoActivatedProviderDaemonReceipts(t *testing.T) {
 		owners[index].process.commandLine(t, "RUN")
 		owners[index].process.await(t, ctx, "AW07_DAEMON_RUNNING")
 	}
-	seen := make(map[domain.UserID]bool, len(owners))
+	seen := make(map[domain.UserID]ydbstore.AttachedWorkerOutputReceiptRequest, len(owners))
 	for len(seen) < len(owners) {
 		select {
-		case owner := <-receiptBarrier.arrivals:
-			seen[owner] = true
+		case request := <-receiptBarrier.arrivals:
+			seen[request.Authorization.OwnerUserID] = request
 		case <-ctx.Done():
-			t.Fatalf("both owners did not reach receipt publication: seen=%v HTTP=%s backend=%s: %v",
-				seen, statusRecorder.snapshot(), backend.snapshot(), ctx.Err())
+			t.Fatalf("both owners did not reach receipt publication: arrivals=%d HTTP=%s backend=%s: %v",
+				len(seen), statusRecorder.snapshot(), backend.snapshot(), ctx.Err())
 		}
 	}
 	for index := range owners {
 		owner := &owners[index]
-		if !seen[owner.worker.OwnerUserID] {
-			t.Fatalf("%s did not reach receipt publication: seen=%v", owner.name, seen)
+		if _, arrived := seen[owner.worker.OwnerUserID]; !arrived {
+			t.Fatalf("%s did not reach receipt publication: arrivals=%d", owner.name, len(seen))
 		}
 		if status := aw07JoinedRunStatus(t, client.DB, ctx, tenant, owner.offer.Attempt.RunID); status == domain.RunSucceeded {
 			t.Fatalf("%s finalized before its receipt was stored", owner.name)
@@ -484,6 +485,61 @@ func TestAW07TwoActivatedProviderDaemonReceipts(t *testing.T) {
 		attempt, found, err := store.LoadAttachedWorkerAttempt(ctx, tenant, owner.worker.OwnerUserID, workerID)
 		if err != nil || !found || attempt.State == domain.AttachedWorkerAttemptTerminalCommitted {
 			t.Fatalf("%s terminal ACK before receipt: found=%t attempt=%+v err=%v", owner.name, found, attempt, err)
+		}
+	}
+	// Both real daemons are paused before the receipt write. Reuse B's actual
+	// connection bearer with A's sealed result and attempt locator: neither
+	// bearer binding nor the YDB store may turn it into B's canonical output.
+	bLocal, err := attachedworkerlocal.NewStore(b.stateRoot, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bSecret, err := bLocal.LoadSecret(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bConnectionSecret, err := attachedworkertransport.ParseConnectionSecret(bSecret.ConnectionSecret)
+	for index := range bSecret.ConnectionSecret {
+		bSecret.ConnectionSecret[index] = 0
+	}
+	for index := range bSecret.IdentityPrivateKey {
+		bSecret.IdentityPrivateKey[index] = 0
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	bRequest := seen[bWorker.OwnerUserID]
+	bBearer, err := attachedworkertransport.NewConnectionBearer(tenant, bWorker.OwnerUserID, workerID,
+		bRequest.Authorization.ConnectionID, bConnectionSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign := seen[aWorker.OwnerUserID]
+	foreign.Authorization = bRequest.Authorization
+	foreign.Authorization.RunID = seen[aWorker.OwnerUserID].Authorization.RunID
+	foreign.Authorization.AttemptID = seen[aWorker.OwnerUserID].Authorization.AttemptID
+	foreign.Authorization.LeaseID = seen[aWorker.OwnerUserID].Authorization.LeaseID
+	foreign.Authorization.LeaseGeneration = seen[aWorker.OwnerUserID].Authorization.LeaseGeneration
+	foreign.Authorization.PresentedSecretDigest = ""
+	directReceipts, err := attachedworkerreceipt.NewService(service, store, blobs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawBearer := bBearer.Bytes()
+	_, foreignErr := directReceipts.Create(ctx, rawBearer, foreign)
+	for index := range rawBearer {
+		rawBearer[index] = 0
+	}
+	if !errors.Is(foreignErr, attachedworkerreceipt.ErrUnauthorized) {
+		t.Fatalf("foreign owner result accepted or misclassified: %v", foreignErr)
+	}
+	for _, owner := range owners {
+		var count int64
+		if err := client.DB.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM attached_worker_output_receipts WHERE tenant_id=$1 AND run_id=$2`,
+			tenant, owner.offer.Attempt.RunID,
+		).Scan(&count); err != nil || count != 0 {
+			t.Fatalf("%s receipt created before barrier release: count=%d err=%v", owner.name, count, err)
 		}
 	}
 	release()

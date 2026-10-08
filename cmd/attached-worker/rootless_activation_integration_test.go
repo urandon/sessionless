@@ -145,7 +145,7 @@ func testActivatedRootlessOwner(t *testing.T, ownerID domain.UserID, activated *
 	if err != nil {
 		t.Fatal(err)
 	}
-	peer := &commandSyntheticPeer{public: public, offer: offer, now: now,
+	peer := &commandSyntheticPeer{public: public, offer: offer, now: now, allowPostTerminalIdle: true,
 		terminal: make(chan attachedworkerprotocol.TerminalV1, 1)}
 	server, trust := rootlessPeerServer(t, peer, now)
 	peer.binding = attachedworkerprotocol.AttemptBindingV1{
@@ -386,7 +386,12 @@ func testActivatedRootlessOwner(t *testing.T, ownerID domain.UserID, activated *
 		var output bytes.Buffer
 		if code := runWithContext(ctx, []string{command, "--state-dir", stateRoot,
 			"--expected-revision", "2"}, &output); code != 0 {
-			t.Fatalf("activated rootless %s code=%d output=%s", command, code, output.String())
+			peer.mu.Lock()
+			steps, exchanges, lastError, lastKind := peer.steps, peer.exchanges, peer.lastError, peer.lastKind
+			peer.mu.Unlock()
+			t.Fatalf("activated rootless owner=%s %s code=%d output=%s steps=%d exchanges=%d last_kind=%s peer_error=%q; %s",
+				ownerID, command, code, output.String(), steps, exchanges, lastKind, lastError,
+				rootlessServiceDiagnostics(config, filepath.Base(plan.UnitPath), docker, host, workerID))
 		}
 	}
 	for _, path := range []string{profile.MaterializationRoot, profile.ScratchRoot} {

@@ -1272,6 +1272,7 @@ type commandSyntheticPeer struct {
 	lastKind                      attachedworkerprotocol.MessageKind
 	terminal                      chan attachedworkerprotocol.TerminalV1
 	idle                          bool
+	allowPostTerminalIdle         bool
 	cancelBeforeMaterialization   bool
 	cancelDuringActive            bool
 	activeCancelHeartbeatSequence uint64
@@ -1283,6 +1284,20 @@ type commandSyntheticPeer struct {
 	sealedStarted                 chan struct{}
 	sealedInput                   *attachedworkerdaemontransport.SealedInputV1
 	sealedRelease                 sync.Once
+}
+
+func TestCommandSyntheticPeerPostTerminalIdle(t *testing.T) {
+	peer := &commandSyntheticPeer{steps: 3, allowPostTerminalIdle: true}
+	heartbeat := attachedworkerprotocol.FrameV1{Kind: attachedworkerprotocol.MessageHeartbeat,
+		Heartbeat: &attachedworkerprotocol.HeartbeatV1{ActiveAttempts: 0}}
+	response, err := peer.exchange(attachedworkerprotocol.BatchV1{Frames: []attachedworkerprotocol.FrameV1{heartbeat}})
+	if err != nil || response != nil || peer.steps != 3 {
+		t.Fatalf("post-terminal idle heartbeat: response=%+v err=%v steps=%d", response, err, peer.steps)
+	}
+	heartbeat.Heartbeat.ActiveAttempts = 1
+	if _, err := peer.exchange(attachedworkerprotocol.BatchV1{Frames: []attachedworkerprotocol.FrameV1{heartbeat}}); err == nil {
+		t.Fatal("post-terminal heartbeat still claiming an active attempt was accepted")
+	}
 }
 
 func (peer *commandSyntheticPeer) setPreviousCheckpoint(checkpoint attachedworkerlocal.ReconnectCheckpointV1, now time.Time) {
@@ -1541,12 +1556,19 @@ func (peer *commandSyntheticPeer) exchange(batch attachedworkerprotocol.BatchV1)
 		return nil, fmt.Errorf("expected one frame")
 	}
 	worker := batch.Frames[0]
+	peer.mu.Lock()
+	postTerminalIdle := peer.allowPostTerminalIdle && peer.steps >= 3
+	peer.lastKind = worker.Kind
+	peer.mu.Unlock()
+	if postTerminalIdle && worker.Kind == attachedworkerprotocol.MessageHeartbeat {
+		if worker.Heartbeat == nil || worker.Heartbeat.ActiveAttempts != 0 {
+			return nil, fmt.Errorf("invalid post-terminal idle heartbeat")
+		}
+		return nil, nil
+	}
 	if peer.idle && worker.Kind == attachedworkerprotocol.MessageHeartbeat {
 		return nil, nil
 	}
-	peer.mu.Lock()
-	peer.lastKind = worker.Kind
-	peer.mu.Unlock()
 	if worker.Kind == attachedworkerprotocol.MessageManifest {
 		return nil, nil
 	}

@@ -242,6 +242,14 @@ func (store *Store) updateWithRuntimeLease(ctx context.Context, expectedRevision
 		!generationSecretChange(current.ConnectionGeneration, next.ConnectionGeneration, currentSecret.ConnectionSecret, nextSecret.ConnectionSecret) {
 		return ErrStateConflict
 	}
+	// A sealed provider outcome is not disposable reconnect state. A generic
+	// generation update must never erase it before a verified TerminalAck;
+	// recovery needs its own explicit, crash-safe transition.
+	if _, found, err := store.loadReceiptCheckpointOptionalLocked(current); err != nil {
+		return err
+	} else if found {
+		return ErrStateConflict
+	}
 	encodedSecret, err := encodeSecretRecord(nextSecret)
 	if err != nil {
 		return err
@@ -253,9 +261,6 @@ func (store *Store) updateWithRuntimeLease(ctx context.Context, expectedRevision
 	// Secret authority is replaced first. A crash before the manifest commit
 	// leaves a detectable generation/revision mismatch and therefore fails closed.
 	if err := store.removeDurable(ReconnectCheckpointFileName); err != nil {
-		return err
-	}
-	if err := store.removeDurable(ReceiptCheckpointFileName); err != nil {
 		return err
 	}
 	if err := store.removeDurable(ObservationFileName); err != nil {

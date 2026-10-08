@@ -68,6 +68,21 @@ func TestReceiptCheckpointSealsExactPayloadAcrossRuntimeRestart(t *testing.T) {
 	if err != nil || loaded.PayloadSHA256 != checkpoint.PayloadSHA256 || !bytes.Equal(loaded.Payload, payload) {
 		t.Fatalf("restart checkpoint=%+v err=%v", loaded, err)
 	}
+	rotated := next
+	rotated.Revision++
+	rotated.ConnectionGeneration++
+	rotated.UpdatedAt = next.UpdatedAt.Add(time.Second)
+	rotatedSecret := nextSecret
+	rotatedSecret.ManifestRevision = rotated.Revision
+	rotatedSecret.ConnectionGeneration = rotated.ConnectionGeneration
+	rotatedSecret.ConnectionSecret = bytes.Repeat([]byte{0x42}, 32)
+	if err := restarted.Update(context.Background(), next.Revision, rotated, rotatedSecret); !errors.Is(err, ErrStateConflict) {
+		t.Fatalf("generic generation update discarded sealed outcome: %v", err)
+	}
+	preserved, err := restarted.LoadReceiptCheckpoint(context.Background())
+	if err != nil || preserved.PayloadSHA256 != checkpoint.PayloadSHA256 || !bytes.Equal(preserved.Payload, payload) {
+		t.Fatalf("failed generation update changed sealed outcome: checkpoint=%+v err=%v", preserved, err)
+	}
 	if err := restarted.RetireReceiptCheckpoint(context.Background(), mutated); !errors.Is(err, ErrStateConflict) {
 		t.Fatalf("foreign retirement: %v", err)
 	}

@@ -619,6 +619,8 @@ func TestAW07TwoActivatedDaemonYDBJoin(t *testing.T) {
 	workerID := domain.AttachedWorkerID(uniqueID("worker-" + suffix))
 	aWorker, aPrivate := aw07CreateDaemonEnrollment(t, store, tenant, domain.UserID(uniqueID("owner-a-"+suffix)), workerID, suffix+"-a", now)
 	bWorker, bPrivate := aw07CreateDaemonEnrollment(t, store, tenant, domain.UserID(uniqueID("owner-b-"+suffix)), workerID, suffix+"-b", now)
+	seedCanonicalMembership(t, client.DB, tenant, aWorker.OwnerUserID, now)
+	seedCanonicalMembership(t, client.DB, tenant, bWorker.OwnerUserID, now)
 	probeCtx, cancelProbe := context.WithCancel(context.Background())
 	backend := &aw07BackendRecorder{Store: store, probeDB: client.DB, probeCtx: probeCtx}
 	t.Cleanup(func() {

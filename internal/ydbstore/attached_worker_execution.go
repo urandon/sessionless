@@ -64,6 +64,14 @@ func (store *Store) AuthorizeAttachedWorkerSealedInput(
 	}
 	err = store.Transact(ctx, request.TenantID, func(state ports.StateTx) error {
 		tx := state.(*stateTx)
+		member, err := attachedWorkerOwnerAuthorizedTx(ctx, tx, request.OwnerUserID)
+		if err != nil {
+			return err
+		}
+		if !member {
+			result.Status = ports.AttachedWorkerExecutionDenied
+			return nil
+		}
 		at, err := store.attachedWorkerTransactionTime(ctx, tx)
 		if err != nil {
 			return err
@@ -186,6 +194,14 @@ func (store *Store) OfferAttachedWorkerAttempt(ctx context.Context, request port
 // connection snapshot, attempt ledger, and deadline with an existing scheduler
 // transaction. Callers must validate request before entering the transaction.
 func (store *Store) offerAttachedWorkerAttemptTx(ctx context.Context, tx *stateTx, request ports.AttachedWorkerAttemptOffer, result *ports.AttachedWorkerAttemptResult) error {
+	member, err := attachedWorkerOwnerAuthorizedTx(ctx, tx, request.OwnerUserID)
+	if err != nil {
+		return err
+	}
+	if !member {
+		result.Status = ports.AttachedWorkerExecutionDenied
+		return nil
+	}
 	existing, found, err := readAttachedWorkerAttemptTx(ctx, tx, request.OwnerUserID, request.WorkerID)
 	if err != nil {
 		return err
@@ -335,6 +351,14 @@ func (store *Store) PollAttachedWorkerAttempt(ctx context.Context, request ports
 	}
 	err = store.Transact(ctx, request.TenantID, func(state ports.StateTx) error {
 		tx := state.(*stateTx)
+		member, err := attachedWorkerOwnerAuthorizedTx(ctx, tx, request.OwnerUserID)
+		if err != nil {
+			return err
+		}
+		if !member {
+			result.Status = ports.AttachedWorkerExecutionDenied
+			return nil
+		}
 		at, err := store.attachedWorkerTransactionTime(ctx, tx)
 		if err != nil {
 			return err
@@ -496,6 +520,14 @@ func (store *Store) ExchangeAttachedWorkerAttempt(ctx context.Context, request p
 	}
 	err = store.Transact(ctx, request.TenantID, func(state ports.StateTx) error {
 		tx := state.(*stateTx)
+		member, err := attachedWorkerOwnerAuthorizedTx(ctx, tx, request.OwnerUserID)
+		if err != nil {
+			return err
+		}
+		if !member {
+			result.Status = ports.AttachedWorkerExecutionDenied
+			return nil
+		}
 		attempt, found, err := readAttachedWorkerAttemptTx(ctx, tx, request.OwnerUserID, request.WorkerID)
 		if err != nil {
 			return err
@@ -1047,6 +1079,14 @@ func (store *Store) CommitAttachedWorkerTerminal(ctx context.Context, request po
 	}
 	err = store.Transact(ctx, request.TenantID, func(state ports.StateTx) error {
 		tx := state.(*stateTx)
+		member, err := attachedWorkerOwnerAuthorizedTx(ctx, tx, request.OwnerUserID)
+		if err != nil {
+			return err
+		}
+		if !member {
+			result.Status = ports.AttachedWorkerExecutionFenced
+			return nil
+		}
 		attempt, found, err := readAttachedWorkerAttemptTx(ctx, tx, request.OwnerUserID, request.WorkerID)
 		if err != nil {
 			return err

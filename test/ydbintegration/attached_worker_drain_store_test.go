@@ -22,7 +22,7 @@ import (
 )
 
 func TestAttachedWorkerDrainIsDurableReplayableAndOwnerScoped(t *testing.T) {
-	store, _ := openStore(t)
+	store, client := openStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -30,6 +30,7 @@ func TestAttachedWorkerDrainIsDurableReplayableAndOwnerScoped(t *testing.T) {
 	tenantID := domain.TenantID(uniqueID("tenant-worker-" + suffix))
 	ownerID := domain.UserID(uniqueID("owner-worker-" + suffix))
 	otherOwnerID := domain.UserID(uniqueID("other-owner-worker-" + suffix))
+	seedCanonicalMembership(t, client.DB, tenantID, ownerID, now)
 
 	enrollment, createAudit := attachedWorkerEnrollmentFixture(suffix, tenantID, ownerID, now.Add(-time.Second))
 	if err := store.CreateAttachedWorkerEnrollment(ctx, enrollment, createAudit); err != nil {
@@ -749,6 +750,7 @@ func readyAttachedWorkerForDrainWithIdentity(t *testing.T, suffix string, tenant
 		tenantID = domain.TenantID(uniqueID("tenant-worker-" + suffix))
 	}
 	ownerID := domain.UserID(uniqueID("owner-worker-" + suffix))
+	seedCanonicalMembership(t, client.DB, tenantID, ownerID, now)
 	enrollment, createAudit := attachedWorkerEnrollmentFixture(suffix, tenantID, ownerID, now.Add(-time.Second))
 	// This helper establishes a ready worker before the scenario under test;
 	// enrollment expiry is not the assertion and must outlive a slow CI run.

@@ -190,6 +190,14 @@ func (store *Store) outputReceiptHeadTransaction(
 			*ownsCopy = false
 		}
 		tx := state.(*stateTx)
+		member, err := attachedWorkerOwnerAuthorizedTx(ctx, tx, auth.OwnerUserID)
+		if err != nil {
+			return err
+		}
+		if !member {
+			status = ports.AttachedWorkerExecutionFenced
+			return nil
+		}
 		at, err := store.attachedWorkerTransactionTime(ctx, tx)
 		if err != nil {
 			return err
@@ -343,6 +351,14 @@ func (store *Store) finishAttachedWorkerOutputReceipt(ctx context.Context,
 	auth := request.Authorization
 	err = store.Transact(ctx, auth.TenantID, func(state ports.StateTx) error {
 		tx := state.(*stateTx)
+		member, err := attachedWorkerOwnerAuthorizedTx(ctx, tx, auth.OwnerUserID)
+		if err != nil {
+			return err
+		}
+		if !member {
+			result.Status = ports.AttachedWorkerExecutionFenced
+			return nil
+		}
 		at, err := store.attachedWorkerTransactionTime(ctx, tx)
 		if err != nil {
 			return err

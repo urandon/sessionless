@@ -357,6 +357,8 @@ func TestAW07TwoActivatedProviderDaemonReceipts(t *testing.T) {
 	workerID := domain.AttachedWorkerID(uniqueID("worker-" + suffix))
 	aWorker, aPrivate := aw07CreateDaemonEnrollment(t, store, tenant, domain.UserID(uniqueID("owner-a-"+suffix)), workerID, suffix+"-a", now)
 	bWorker, bPrivate := aw07CreateDaemonEnrollment(t, store, tenant, domain.UserID(uniqueID("owner-b-"+suffix)), workerID, suffix+"-b", now)
+	seedCanonicalMembership(t, client.DB, tenant, aWorker.OwnerUserID, now)
+	seedCanonicalMembership(t, client.DB, tenant, bWorker.OwnerUserID, now)
 	blobs := &aw07ArtifactBlobs{objects: make(map[string][]byte), opens: make(map[string]int)}
 	probeCtx, cancelProbe := context.WithCancel(context.Background())
 	backend := &aw07BackendRecorder{Store: store, probeDB: client.DB, probeCtx: probeCtx}
@@ -470,7 +472,6 @@ func TestAW07TwoActivatedProviderDaemonReceipts(t *testing.T) {
 		if err != nil || !found || len(job.InputManifest.Artifacts) != 1 {
 			t.Fatalf("%s worker job: found=%t err=%v", owner.name, found, err)
 		}
-		seedCanonicalMembership(t, client.DB, tenant, owner.worker.OwnerUserID, now)
 		blobs.mu.Lock()
 		blobs.objects[job.Job.ContextSnapshot.Key] = owner.context
 		blobs.objects[job.InputManifest.Artifacts[0].Blob.Key] = owner.artifact

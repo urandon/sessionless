@@ -5,6 +5,7 @@ package ydbintegration
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -22,8 +23,45 @@ import (
 	"gitcode.com/urandon/sessionless/internal/attachedworkerreceipt"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/ydbpartition"
 	"gitcode.com/urandon/sessionless/internal/ydbstore"
 )
+
+func setAW07MembershipStatus(t *testing.T, db *sql.DB, tenant domain.TenantID, owner domain.UserID,
+	status domain.TenantMembershipStatus, version uint64, createdAt time.Time,
+) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	membership := domain.TenantMembership{
+		TenantID: tenant, UserID: owner, Role: domain.TenantMembershipOwner,
+		Status: status, SecurityVersion: version, CreatedAt: createdAt,
+		UpdatedAt: createdAt.Add(time.Duration(version) * time.Second),
+	}
+	if err := membership.Validate(); err != nil {
+		t.Fatalf("membership fixture for owner %s: %v", owner, err)
+	}
+	payload, err := json.Marshal(membership)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bucket, err := ydbpartition.BucketV1(string(owner))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`UPDATE tenant_memberships SET status=$1, security_version=$2, updated_at=$3,
+		 record=CAST($4 AS JsonDocument) WHERE user_bucket=$5 AND user_id=$6 AND tenant_id=$7`,
+		status, version, membership.UpdatedAt, string(payload), bucket, owner, tenant); err != nil {
+		t.Fatalf("set owner %s membership to %s: %v", owner, status, err)
+	}
+	var got domain.TenantMembershipStatus
+	if err := db.QueryRowContext(ctx,
+		`SELECT status FROM tenant_memberships WHERE user_bucket=$1 AND user_id=$2 AND tenant_id=$3`,
+		bucket, owner, tenant).Scan(&got); err != nil || got != status {
+		t.Fatalf("read owner %s membership after update: got=%s want=%s err=%v", owner, got, status, err)
+	}
+}
 
 type aw07ReceiptBinder struct {
 	bearer []byte
@@ -143,7 +181,6 @@ func TestAW07ReceiptTwoOwnerCanonicalTerminalAndReplay(t *testing.T) {
 		t.Fatalf("test provider authority not owner-distinct: A=%+v B=%+v",
 			loaded.Job.HarnessBinding.Resource, peer.Job.HarnessBinding.Resource)
 	}
-	seedCanonicalMembership(t, aClient.DB, a.request.TenantID, a.request.OwnerUserID, aNow)
 	credentialRequired := loaded.Job.HarnessBinding.Backend.ProviderContractKind != domain.ProviderContractCredentiallessFixtureV1
 	request := ydbstore.AttachedWorkerOutputReceiptRequest{
 		Authorization: a.request, Nonce: "receipt-nonce-a",
@@ -153,6 +190,38 @@ func TestAW07ReceiptTwoOwnerCanonicalTerminalAndReplay(t *testing.T) {
 			CredentialReleaseRequired: credentialRequired, CredentialReleased: credentialRequired,
 		},
 	}
+	setAW07MembershipStatus(t, aClient.DB, a.request.TenantID, a.request.OwnerUserID,
+		domain.TenantMembershipSuspended, 2, aNow)
+	if denied, err := aStore.OfferAttachedWorkerAttempt(ctx, ports.AttachedWorkerAttemptOffer{
+		TenantID: a.request.TenantID, OwnerUserID: a.request.OwnerUserID, WorkerID: a.request.WorkerID,
+		RunID: a.request.RunID, AttemptID: a.request.AttemptID,
+		ReservationID: a.attempt.ReservationID, LeaseID: a.request.LeaseID, LeaseTTL: 20 * time.Minute,
+	}); err != nil || denied.Status != ports.AttachedWorkerExecutionDenied {
+		t.Fatalf("suspended owner received offer: result=%+v err=%v", denied, err)
+	}
+	if denied, err := aStore.PollAttachedWorkerAttempt(ctx, ports.AttachedWorkerAttemptPoll{
+		TenantID: a.request.TenantID, OwnerUserID: a.request.OwnerUserID, WorkerID: a.request.WorkerID,
+		ConnectionID: a.request.ConnectionID, PresentedSecretDigest: a.request.PresentedSecretDigest,
+	}); err != nil || denied.Status != ports.AttachedWorkerExecutionDenied {
+		t.Fatalf("suspended owner polled attempt: result=%+v err=%v", denied, err)
+	}
+	if denied, err := aStore.PollAttachedWorkerControl(ctx, ports.AttachedWorkerControlPoll{
+		TenantID: a.request.TenantID, OwnerUserID: a.request.OwnerUserID, WorkerID: a.request.WorkerID,
+		ConnectionID: a.request.ConnectionID, PresentedSecretDigest: a.request.PresentedSecretDigest,
+	}); err != nil || denied.Status != ports.AttachedWorkerExecutionDenied {
+		t.Fatalf("suspended owner polled control: result=%+v err=%v", denied, err)
+	}
+	if denied, err := aStore.AuthorizeAttachedWorkerSealedInput(ctx, a.request); err != nil ||
+		denied.Status != ports.AttachedWorkerExecutionDenied {
+		t.Fatalf("suspended owner read sealed input: result=%+v err=%v", denied, err)
+	}
+	if denied, err := aStore.CreateAttachedWorkerOutputReceipt(ctx, blobs, request); err != nil ||
+		denied.Status != ports.AttachedWorkerExecutionFenced || denied.Receipt.Version != 0 {
+		t.Fatalf("suspended owner published receipt: result=%+v err=%v", denied, err)
+	}
+	aw07Authorized(t, bStore, ctx, b)
+	setAW07MembershipStatus(t, aClient.DB, a.request.TenantID, a.request.OwnerUserID,
+		domain.TenantMembershipActive, 3, aNow)
 	for _, scenario := range []struct {
 		name   string
 		mutate func(*attachedworkeroutput.ProcessObservationV1)
@@ -529,6 +598,18 @@ func TestAW07ReceiptTwoOwnerCanonicalTerminalAndReplay(t *testing.T) {
 			writeJob(originalJob)
 		})
 	}
+	setAW07MembershipStatus(t, aClient.DB, a.request.TenantID, a.request.OwnerUserID,
+		domain.TenantMembershipSuspended, 4, aNow)
+	if denied, err := aStore.CommitAttachedWorkerTerminal(ctx, commit); err != nil ||
+		denied.Status != ports.AttachedWorkerExecutionFenced || denied.Outbound != nil {
+		t.Fatalf("suspended owner finalized ready receipt: result=%+v err=%v", denied, err)
+	}
+	if status := aw07RunStatus(t, aStore, ctx, a.request.TenantID, a.request.RunID); status.Terminal() {
+		t.Fatalf("suspended owner changed canonical run to %s", status)
+	}
+	aw07Authorized(t, bStore, ctx, b)
+	setAW07MembershipStatus(t, aClient.DB, a.request.TenantID, a.request.OwnerUserID,
+		domain.TenantMembershipActive, 5, aNow)
 	committed, err := aStore.CommitAttachedWorkerTerminal(ctx, commit)
 	if err != nil || committed.Status != ports.AttachedWorkerExecutionApplied || committed.Outbound == nil ||
 		aw07RunStatus(t, aStore, ctx, a.request.TenantID, a.request.RunID) != domain.RunSucceeded {
@@ -540,7 +621,6 @@ func TestAW07ReceiptTwoOwnerCanonicalTerminalAndReplay(t *testing.T) {
 	// Owner B has the same worker locator but a distinct ready receipt. A
 	// revocation between Terminal evidence and canonical finalization must
 	// strand B's receipt without ACK or product mutation, while A stays done.
-	seedCanonicalMembership(t, bClient.DB, b.request.TenantID, b.request.OwnerUserID, bNow)
 	bCredentialRequired := peer.Job.HarnessBinding.Backend.ProviderContractKind != domain.ProviderContractCredentiallessFixtureV1
 	bReceiptRequest := ydbstore.AttachedWorkerOutputReceiptRequest{
 		Authorization: b.request, Nonce: "receipt-nonce-b",
@@ -640,7 +720,6 @@ func TestAW07AmbiguousReceiptCopyKeepsDeletionFailClosed(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("load failed-copy job: found=%t err=%v", found, err)
 	}
-	seedCanonicalMembership(t, client.DB, claimed.request.TenantID, claimed.request.OwnerUserID, now)
 	blobs := newSessionAPITestBlobs()
 	late := &lateReceiptBlobs{BlobStore: blobs, release: make(chan struct{}), done: make(chan error, 1)}
 	defer func() {

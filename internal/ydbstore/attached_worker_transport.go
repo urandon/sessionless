@@ -472,6 +472,15 @@ func (store *Store) AuthorizeAttachedWorkerExchange(
 			}
 		}()
 		tx := state.(*stateTx)
+		stage = "authorize owner membership"
+		member, err := attachedWorkerOwnerAuthorizedTx(ctx, tx, request.OwnerUserID)
+		if err != nil {
+			return err
+		}
+		if !member {
+			result.Status = ports.AttachedWorkerConnectionDenied
+			return nil
+		}
 		stage = "read connection"
 		connection, found, err := readAttachedWorkerConnectionTx(ctx, tx, request.OwnerUserID, request.WorkerID)
 		if err != nil {

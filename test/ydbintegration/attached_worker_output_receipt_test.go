@@ -152,11 +152,31 @@ func TestAW07ReceiptTwoOwnerCanonicalTerminalAndReplay(t *testing.T) {
 			CredentialReleaseRequired: credentialRequired, CredentialReleased: credentialRequired,
 		},
 	}
-	withoutCredentialRelease := request
-	withoutCredentialRelease.Observation.CredentialReleased = false
-	if result, err := aStore.CreateAttachedWorkerOutputReceipt(ctx, blobs, withoutCredentialRelease); err != nil ||
-		result.Status != ports.AttachedWorkerExecutionFenced || result.Receipt.Version != 0 {
-		t.Fatalf("provider receipt without credential release was not fenced: result=%+v err=%v", result, err)
+	for _, scenario := range []struct {
+		name   string
+		mutate func(*attachedworkeroutput.ProcessObservationV1)
+	}{
+		{name: "credential release", mutate: func(observation *attachedworkeroutput.ProcessObservationV1) {
+			observation.CredentialReleased = false
+		}},
+		{name: "descendant reap", mutate: func(observation *attachedworkeroutput.ProcessObservationV1) {
+			observation.DescendantsReaped = false
+		}},
+		{name: "boundary release", mutate: func(observation *attachedworkeroutput.ProcessObservationV1) {
+			observation.BoundaryReleased = false
+		}},
+		{name: "attempt root cleanup", mutate: func(observation *attachedworkeroutput.ProcessObservationV1) {
+			observation.CleanupSucceeded = false
+		}},
+	} {
+		t.Run("missing "+scenario.name, func(t *testing.T) {
+			unsafe := request
+			scenario.mutate(&unsafe.Observation)
+			if result, err := aStore.CreateAttachedWorkerOutputReceipt(ctx, blobs, unsafe); err != nil ||
+				result.Status != ports.AttachedWorkerExecutionFenced || result.Receipt.Version != 0 {
+				t.Fatalf("unsafe process observation was not fenced: result=%+v err=%v", result, err)
+			}
+		})
 	}
 	foreign := request
 	foreign.Authorization.OwnerUserID = b.request.OwnerUserID
@@ -293,6 +313,37 @@ func TestAW07ReceiptTwoOwnerCanonicalTerminalAndReplay(t *testing.T) {
 	if err != nil || created.Status != ports.AttachedWorkerExecutionReplayed ||
 		created.Receipt.Materialization.Completion == nil {
 		t.Fatalf("read back HTTPS-created receipt: result=%+v err=%v", created, err)
+	}
+	foreignReplay := request
+	foreignReplay.Authorization = b.request
+	foreignReplay.Authorization.RunID = a.request.RunID
+	foreignReplay.Authorization.AttemptID = a.request.AttemptID
+	foreignReplay.Authorization.LeaseID = a.request.LeaseID
+	foreignReplay.Authorization.LeaseGeneration = a.request.LeaseGeneration
+	if result, err := bStore.CreateAttachedWorkerOutputReceipt(ctx, blobs, foreignReplay); err != nil ||
+		result.Status == ports.AttachedWorkerExecutionApplied || result.Status == ports.AttachedWorkerExecutionReplayed ||
+		result.Receipt.Version != 0 {
+		t.Fatalf("owner B replayed owner A's ready receipt: result=%+v err=%v", result, err)
+	}
+	for _, scenario := range []struct {
+		name   string
+		mutate func(*ydbstore.AttachedWorkerOutputReceiptRequest)
+	}{
+		{name: "nonce", mutate: func(candidate *ydbstore.AttachedWorkerOutputReceiptRequest) {
+			candidate.Nonce = "receipt-nonce-other"
+		}},
+		{name: "observation", mutate: func(candidate *ydbstore.AttachedWorkerOutputReceiptRequest) {
+			candidate.Observation.ExitCode++
+		}},
+	} {
+		t.Run("divergent "+scenario.name, func(t *testing.T) {
+			changed := request
+			scenario.mutate(&changed)
+			if result, err := aStore.CreateAttachedWorkerOutputReceipt(ctx, blobs, changed); err != nil ||
+				result.Status != ports.AttachedWorkerExecutionConflict || result.Receipt.Version != 0 {
+				t.Fatalf("divergent %s replay was not rejected: result=%+v err=%v", scenario.name, result, err)
+			}
+		})
 	}
 	request.Candidate.Summary = "divergent"
 	if result, err := aStore.CreateAttachedWorkerOutputReceipt(ctx, blobs, request); err != nil || result.Status != ports.AttachedWorkerExecutionConflict {

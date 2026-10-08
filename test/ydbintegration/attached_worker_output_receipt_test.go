@@ -447,8 +447,95 @@ func TestAW07ReceiptTwoOwnerCanonicalTerminalAndReplay(t *testing.T) {
 	if replay, err := aStore.CommitAttachedWorkerTerminal(ctx, commit); err != nil || replay.Status != ports.AttachedWorkerExecutionReplayed || replay.Outbound == nil {
 		t.Fatalf("terminal ACK replay: result=%+v err=%v", replay, err)
 	}
+	// Owner B has the same worker locator but a distinct ready receipt. A
+	// revocation between Terminal evidence and canonical finalization must
+	// strand B's receipt without ACK or product mutation, while A stays done.
+	seedCanonicalMembership(t, bClient.DB, b.request.TenantID, b.request.OwnerUserID, bNow)
+	bCredentialRequired := peer.Job.HarnessBinding.Backend.ProviderContractKind != domain.ProviderContractCredentiallessFixtureV1
+	bReceiptRequest := ydbstore.AttachedWorkerOutputReceiptRequest{
+		Authorization: b.request, Nonce: "receipt-nonce-b",
+		Candidate: attachedworkeroutput.Candidate{Status: domain.AttachedWorkerTerminalSucceeded, Summary: "owner B answer"},
+		Observation: attachedworkeroutput.ProcessObservationV1{
+			Version: 1, DescendantsReaped: true, BoundaryReleased: true, CleanupSucceeded: true,
+			CredentialReleaseRequired: bCredentialRequired, CredentialReleased: bCredentialRequired,
+		},
+	}
+	bReceipt, err := bStore.CreateAttachedWorkerOutputReceipt(ctx, blobs, bReceiptRequest)
+	if err != nil || bReceipt.Status != ports.AttachedWorkerExecutionApplied || !bReceipt.Receipt.Ready {
+		t.Fatalf("owner B receipt before revocation: %+v err=%v", bReceipt, err)
+	}
+	bDigest, err := hex.DecodeString(string(bReceipt.Receipt.CanonicalDigest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bTerminal := attachedworkerprotocol.FrameV1{
+		Version:   b.accepted.Version,
+		MessageID: attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionWorkerToPlatform, b.nextWorkerSequence),
+		WorkerID:  string(b.request.WorkerID), EnrollmentGeneration: b.request.EnrollmentGeneration,
+		ConnectionGeneration: b.request.ConnectionGeneration, Sequence: b.nextWorkerSequence,
+		Ack: b.accepted.Sequence, Kind: attachedworkerprotocol.MessageTerminal,
+		Terminal: &attachedworkerprotocol.TerminalV1{Binding: b.binding, AttemptSequence: 2, TerminalSequence: 1,
+			Status: attachedworkerprotocol.TerminalSucceeded, Result: attachedworkerprotocol.TerminalResultCompleted,
+			EvidenceDigest: bDigest},
+	}
+	bPending, err := bStore.ExchangeAttachedWorkerAttempt(ctx, ports.AttachedWorkerAttemptExchange{
+		TenantID: b.request.TenantID, OwnerUserID: b.request.OwnerUserID, WorkerID: b.request.WorkerID,
+		ConnectionID: b.request.ConnectionID, AttemptID: b.request.AttemptID,
+		LeaseGeneration: b.request.LeaseGeneration, PresentedSecretDigest: b.request.PresentedSecretDigest,
+		InboundFrame: bTerminal,
+	})
+	if err != nil || bPending.Status != ports.AttachedWorkerExecutionApplied ||
+		bPending.Attempt.State != domain.AttachedWorkerAttemptTerminalPending {
+		t.Fatalf("owner B terminal was not pending before revocation: %+v err=%v", bPending, err)
+	}
+	var bEventsBefore int64
+	if err := bClient.DB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM session_events WHERE tenant_id=$1 AND session_id=$2`,
+		b.request.TenantID, peer.Job.SessionID,
+	).Scan(&bEventsBefore); err != nil {
+		t.Fatalf("count owner B canonical events before revocation: %v", err)
+	}
+	aw07Revoke(t, bStore, ctx, bWorker)
+	bCommit := ports.AttachedWorkerTerminalCommit{
+		TenantID: b.request.TenantID, OwnerUserID: b.request.OwnerUserID, WorkerID: b.request.WorkerID,
+		AttemptID: b.request.AttemptID, LeaseGeneration: b.request.LeaseGeneration,
+		Materialization: ports.AttachedWorkerTerminalMaterialization{EvidenceDigest: bReceipt.Receipt.CanonicalDigest},
+	}
+	if result, err := bStore.CommitAttachedWorkerTerminal(ctx, bCommit); err != nil ||
+		result.Status != ports.AttachedWorkerExecutionFenced || result.Outbound != nil {
+		t.Fatalf("revoked ready receipt produced ACK: %+v err=%v", result, err)
+	}
+	bAttempt, found, err := bStore.LoadAttachedWorkerAttempt(ctx, b.request.TenantID, b.request.OwnerUserID, b.request.WorkerID)
+	if err != nil || !found || bAttempt.State == domain.AttachedWorkerAttemptTerminalCommitted {
+		t.Fatalf("revoked owner B attempt committed Terminal: found=%t attempt=%+v err=%v", found, bAttempt, err)
+	}
+	var bACKCount int64
+	if err := bClient.DB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM attached_worker_attempt_messages
+		 WHERE tenant_id=$1 AND owner_user_id=$2 AND worker_id=$3 AND attempt_id=$4
+		 AND direction=$5 AND kind=$6`,
+		b.request.TenantID, b.request.OwnerUserID, b.request.WorkerID, b.request.AttemptID,
+		string(domain.AttachedWorkerAttemptPlatformToWorker), string(domain.AttachedWorkerAttemptMessageTerminalCommitted),
+	).Scan(&bACKCount); err != nil || bACKCount != 0 {
+		t.Fatalf("revoked owner B durable TerminalAck count=%d err=%v", bACKCount, err)
+	}
 	if got := aw07RunStatus(t, bStore, ctx, b.request.TenantID, b.request.RunID); got != domain.RunRunning {
-		t.Fatalf("owner B run mutated by owner A receipt: %s", got)
+		t.Fatalf("owner B revoked receipt mutated canonical run: %s", got)
+	}
+	var bEventsAfter int64
+	if err := bClient.DB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM session_events WHERE tenant_id=$1 AND session_id=$2`,
+		b.request.TenantID, peer.Job.SessionID,
+	).Scan(&bEventsAfter); err != nil || bEventsAfter != bEventsBefore {
+		t.Fatalf("revoked receipt changed owner B Session events: before=%d after=%d err=%v",
+			bEventsBefore, bEventsAfter, err)
+	}
+	if got := aw07RunStatus(t, aStore, ctx, a.request.TenantID, a.request.RunID); got != domain.RunSucceeded {
+		t.Fatalf("owner B revoke changed owner A canonical run: %s", got)
+	}
+	if replay, err := aStore.CommitAttachedWorkerTerminal(ctx, commit); err != nil ||
+		replay.Status != ports.AttachedWorkerExecutionReplayed || replay.Outbound == nil {
+		t.Fatalf("owner A committed receipt was not replayable after B revoke: %+v err=%v", replay, err)
 	}
 }
 

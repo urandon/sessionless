@@ -23,6 +23,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -36,9 +37,9 @@ import (
 	"gitcode.com/urandon/sessionless/internal/domain"
 )
 
-// Opt-in CI only: this starts one exact test-owned systemd user unit under an
-// already provisioned rootless engine. The peer is local to the runner; no
-// provider, cloud deployment, or external credential is involved.
+// Opt-in CI only: this starts two independently owned systemd user units under
+// one provisioned rootless engine. Peers are local to the runner; no provider,
+// cloud deployment, or external credential is involved.
 func TestActivatedRootlessServiceAcceptsSyntheticAttempt(t *testing.T) {
 	if os.Getenv("SESSIONLESS_ROOTLESS_ACTIVATION_INTEGRATION") != "1" {
 		t.Skip("opt-in activated Linux rootless user-service integration")
@@ -46,6 +47,38 @@ func TestActivatedRootlessServiceAcceptsSyntheticAttempt(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() == 0 {
 		t.Fatal("activated rootless service test requires non-root Linux")
 	}
+	sentinelRoot := t.TempDir()
+	for _, name := range []string{"owner-a", "owner-b"} {
+		path := filepath.Join(sentinelRoot, name)
+		if err := os.WriteFile(path, []byte(name+" external sentinel\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		for _, name := range []string{"owner-a", "owner-b"} {
+			path := filepath.Join(sentinelRoot, name)
+			body, err := os.ReadFile(path)
+			if err != nil || string(body) != name+" external sentinel\n" {
+				t.Errorf("%s external sentinel changed: body=%q err=%v", name, body, err)
+			}
+		}
+	})
+	// Each owner waits after its signed activation until both independently
+	// named services are live. This proves concurrent activation, not merely
+	// two sequential successes on the same rootless engine.
+	var activated atomic.Int32
+	allActivated := make(chan struct{})
+	for _, owner := range []string{"owner-a", "owner-b"} {
+		owner := owner
+		t.Run(owner, func(t *testing.T) {
+			t.Parallel()
+			testActivatedRootlessOwner(t, domain.UserID(owner), &activated, allActivated)
+		})
+	}
+}
+
+func testActivatedRootlessOwner(t *testing.T, ownerID domain.UserID, activated *atomic.Int32, allActivated chan struct{}) {
+	t.Helper()
 	binary := os.Getenv("SESSIONLESS_ATTACHED_WORKER_BINARY")
 	docker := os.Getenv("ATTACHED_WORKER_OCI_DOCKER_PATH")
 	host := os.Getenv("ATTACHED_WORKER_OCI_DOCKER_HOST")
@@ -90,7 +123,7 @@ func TestActivatedRootlessServiceAcceptsSyntheticAttempt(t *testing.T) {
 	if _, err := rand.Read(nonce[:]); err != nil {
 		t.Fatal(err)
 	}
-	workerID := "worker-rootless-" + hex.EncodeToString(nonce[:])
+	workerID := "worker-rootless-" + string(ownerID) + "-" + hex.EncodeToString(nonce[:])
 	now := time.Now().UTC()
 	offer := attachedworkerprotocol.VersionOfferV1{Window: attachedworkerprotocol.VersionWindow{Minimum: 1, Maximum: 1},
 		Supported: []attachedworkerprotocol.ProtocolVersion{attachedworkerprotocol.ProtocolVersionV1}}
@@ -129,7 +162,7 @@ func TestActivatedRootlessServiceAcceptsSyntheticAttempt(t *testing.T) {
 	}
 	manifest := attachedworkerlocal.ManifestV1{
 		Version: 1, Revision: 1, ControlPlaneOrigin: server.URL,
-		TenantID: "tenant-rootless", OwnerUserID: "owner-rootless", WorkerID: domain.AttachedWorkerID(workerID),
+		TenantID: "tenant-rootless", OwnerUserID: ownerID, WorkerID: domain.AttachedWorkerID(workerID),
 		EnrollmentGeneration: 1, IdentityKeyFingerprint: string(domain.DigestAttachedWorkerIdentityKey(public)),
 		OCI: attachedworkerlocal.OCIConfigV1{
 			DockerPath: docker, DockerSHA256: dockerHash, CLIConfigDir: filepath.Join(root, "oci-config"),
@@ -310,6 +343,18 @@ func TestActivatedRootlessServiceAcceptsSyntheticAttempt(t *testing.T) {
 		case <-handshakeTick.C:
 		}
 	}
+	if activated.Add(1) == 2 {
+		close(allActivated)
+	}
+	activationDeadline := time.NewTimer(time.Minute)
+	defer activationDeadline.Stop()
+	select {
+	case <-allActivated:
+	case <-activationDeadline.C:
+		t.Fatalf("rootless owner %s did not observe both activated services; activated=%d", ownerID, activated.Load())
+	case <-ctx.Done():
+		t.Fatalf("rootless owner %s waiting for second activation: %v", ownerID, ctx.Err())
+	}
 	// Start the attempt budget only after the signed Manifest has advanced
 	// durable local state. This preserves the real 15-minute first cooldown.
 	attemptDeadline := time.NewTimer(attachedworkertransport.MinimumHeartbeatInterval + 2*time.Minute)
@@ -342,6 +387,12 @@ func TestActivatedRootlessServiceAcceptsSyntheticAttempt(t *testing.T) {
 		if code := runWithContext(ctx, []string{command, "--state-dir", stateRoot,
 			"--expected-revision", "2"}, &output); code != 0 {
 			t.Fatalf("activated rootless %s code=%d output=%s", command, code, output.String())
+		}
+	}
+	for _, path := range []string{profile.MaterializationRoot, profile.ScratchRoot} {
+		entries, err := os.ReadDir(path)
+		if err != nil || len(entries) != 0 {
+			t.Errorf("rootless attempt root not cleaned: path=%s entries=%v err=%v", path, entries, err)
 		}
 	}
 	peer.mu.Lock()

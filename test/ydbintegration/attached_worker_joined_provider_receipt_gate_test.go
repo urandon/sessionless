@@ -193,6 +193,9 @@ func (recorder *aw07BackendRecorder) LoadAttachedWorkerConnection(ctx context.Co
 	connection, found, err := recorder.Store.LoadAttachedWorkerConnection(ctx, tenant, owner, worker)
 	recorder.recordSlow("load connection", started, ctx)
 	recorder.record("load connection", err)
+	if err == nil && !found {
+		recorder.record("load connection", fmt.Errorf("owner=%s: not found", owner))
+	}
 	return connection, found, err
 }
 
@@ -248,6 +251,10 @@ func (recorder *aw07BackendRecorder) AuthorizeAttachedWorkerExchange(ctx context
 	close(finished)
 	recorder.record(fmt.Sprintf("authorize exchange duration=%s context-at-start=%v context-at-end=%v deadline-remaining-at-start=%s",
 		time.Since(started).Round(time.Millisecond), startContextErr, ctx.Err(), startDeadline), err)
+	if err == nil && result.Status != ports.AttachedWorkerConnectionAuthorized {
+		recorder.record("authorize exchange", fmt.Errorf("owner=%s status=%s expected-revision=%d worker-sequence=%d worker-ack=%d",
+			request.OwnerUserID, result.Status, request.ExpectedConnectionRevision, request.WorkerSequence, request.WorkerAck))
+	}
 	return result, err
 }
 
@@ -272,6 +279,9 @@ func (recorder *aw07BackendRecorder) ExchangeAttachedWorkerAttempt(ctx context.C
 ) (ports.AttachedWorkerAttemptResult, error) {
 	result, err := recorder.Store.ExchangeAttachedWorkerAttempt(ctx, request)
 	recorder.record("exchange attempt", err)
+	if err == nil && result.Status != ports.AttachedWorkerExecutionApplied && result.Status != ports.AttachedWorkerExecutionReplayed {
+		recorder.record("exchange attempt", fmt.Errorf("owner=%s frame=%s status=%s", request.OwnerUserID, request.InboundFrame.Kind, result.Status))
+	}
 	return result, err
 }
 

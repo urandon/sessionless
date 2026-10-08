@@ -317,6 +317,40 @@ type aw07DaemonInstallation struct {
 	sentinelBody        []byte
 }
 
+// Record only failed exchange metadata; bearer bytes and frame payloads never
+// enter test logs. This distinguishes a core rejection from an HTTP adapter
+// failure when a joined daemon reports reconciliation.
+type aw07ExchangeFailureRecorder struct {
+	inner attachedworkerhttp.CoreExchange
+	mu    sync.Mutex
+	items []string
+}
+
+func (recorder *aw07ExchangeFailureRecorder) ExchangeBearer(ctx context.Context, bearer []byte,
+	batch attachedworkerprotocol.BatchV1,
+) (*attachedworkerprotocol.BatchV1, error) {
+	response, err := recorder.inner.ExchangeBearer(ctx, bearer, batch)
+	if err != nil {
+		frame := attachedworkerprotocol.FrameV1{}
+		if len(batch.Frames) > 0 {
+			frame = batch.Frames[0]
+		}
+		recorder.mu.Lock()
+		if len(recorder.items) < 16 {
+			recorder.items = append(recorder.items, fmt.Sprintf("kind=%s sequence=%d ack=%d error=%v",
+				frame.Kind, frame.Sequence, frame.Ack, err))
+		}
+		recorder.mu.Unlock()
+	}
+	return response, err
+}
+
+func (recorder *aw07ExchangeFailureRecorder) snapshot() string {
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	return strings.Join(recorder.items, "; ")
+}
+
 type aw07ObservedAuthorizer struct {
 	inner   *attachedworkertransport.Service
 	mu      sync.Mutex
@@ -621,7 +655,8 @@ func TestAW07TwoActivatedDaemonYDBJoin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	adapter, err := attachedworkerhttp.NewCoreExchangeAdapter(service)
+	coreFailures := &aw07ExchangeFailureRecorder{inner: service}
+	adapter, err := attachedworkerhttp.NewCoreExchangeAdapter(coreFailures)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -816,8 +851,8 @@ func TestAW07TwoActivatedDaemonYDBJoin(t *testing.T) {
 			break
 		}
 		if time.Now().After(waitUntil) {
-			t.Fatalf("owner B cancellation did not reach pending terminal evidence: found=%t state=%s HTTP=%s backend=%s A stdout=%s B stdout=%s",
-				found, attempt.State, statusRecorder.snapshot(), backend.snapshot(), aProcess.stdout.String(), bProcess.stdout.String())
+			t.Fatalf("owner B cancellation did not reach pending terminal evidence: found=%t state=%s HTTP=%s core=%s backend=%s A stdout=%s B stdout=%s",
+				found, attempt.State, statusRecorder.snapshot(), coreFailures.snapshot(), backend.snapshot(), aProcess.stdout.String(), bProcess.stdout.String())
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

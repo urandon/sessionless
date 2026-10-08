@@ -929,10 +929,11 @@ drainLoop:
 		t.Fatal("service did not exit after drain")
 	}
 	peer.mu.Lock()
-	steps, denied := peer.steps, peer.denied
+	steps, denied, lastKind, lastError := peer.steps, peer.denied, peer.lastKind, peer.lastError
 	peer.mu.Unlock()
 	if steps != 2 || denied != 1 {
-		t.Fatalf("drained accepted attempt exchanged %d protocol steps, denied %d sealed reads", steps, denied)
+		t.Fatalf("drained accepted attempt exchanged %d protocol steps, denied %d sealed reads; last_kind=%s peer_error=%q status=%+v",
+			steps, denied, lastKind, lastError, runtimeOwner.Status())
 	}
 	if snapshot, err := store.LoadSnapshot(context.Background()); err != nil || snapshot.ObservationPresent {
 		t.Fatalf("service did not retire runtime lease observation: snapshot=%+v error=%v", snapshot, err)

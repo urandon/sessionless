@@ -80,3 +80,30 @@ func TestSealedInputBearerGateDerivesSecretAndRejectsForeignScope(t *testing.T) 
 		t.Fatalf("backend failure revision=%d error=%v, want sanitized backend error", revision, err)
 	}
 }
+
+func TestOutputReceiptBearerBindingDoesNotTrustCallerSecretOrCrossOwner(t *testing.T) {
+	secret, err := ParseConnectionSecret([]byte("12345678901234567890123456789012"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bearer, err := NewConnectionBearer("tenant-1", "owner-1", "worker-1", "connection-1", secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{store: &sealedInputAuthorizerFixture{}}
+	request := ports.AttachedWorkerSealedInputAuthorization{
+		TenantID: "tenant-1", OwnerUserID: "owner-1", WorkerID: "worker-1", ConnectionID: "connection-1",
+	}
+	bound, err := service.BindOutputReceiptBearer(bearer.Bytes(), request)
+	if err != nil || bound.PresentedSecretDigest != secret.Digest() {
+		t.Fatalf("bound=%+v error=%v", bound, err)
+	}
+	for _, changed := range []ports.AttachedWorkerSealedInputAuthorization{
+		{TenantID: "tenant-1", OwnerUserID: "owner-2", WorkerID: "worker-1", ConnectionID: "connection-1"},
+		{TenantID: "tenant-1", OwnerUserID: "owner-1", WorkerID: "worker-1", ConnectionID: "connection-1", PresentedSecretDigest: secret.Digest()},
+	} {
+		if _, err := service.BindOutputReceiptBearer(bearer.Bytes(), changed); !errors.Is(err, ErrTransportUnauthorized) {
+			t.Fatalf("changed=%+v error=%v, want unauthorized", changed, err)
+		}
+	}
+}

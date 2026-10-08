@@ -167,7 +167,8 @@ func TestInvocationRunnerFinalizesCredentialAfterCancellation(t *testing.T) {
 	if err := <-errorChannel; err != nil {
 		t.Fatalf("run invocation: %v", err)
 	}
-	if !result.Process.Cancelled || !result.CredentialChanged || result.CredentialGeneration != 2 || result.FailureCode != "" {
+	if !result.Process.Cancelled || !result.CredentialChanged || result.CredentialGeneration != 2 ||
+		!result.CredentialReleaseRequired || !result.CredentialReleased || result.FailureCode != "" {
 		t.Fatalf("unexpected invocation result: %+v", result)
 	}
 	credentials.mu.Lock()
@@ -197,13 +198,49 @@ func TestInvocationRunnerReleaseStillRunsAfterWriteBackFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := runner.Run(context.Background(), validCredentialInvocation(t))
-	if !errors.Is(err, ErrCredentialFinalization) || result.FailureCode != "credential_writeback_failed" {
+	if !errors.Is(err, ErrCredentialFinalization) || result.FailureCode != "credential_writeback_failed" ||
+		!result.CredentialReleaseRequired || !result.CredentialReleased {
 		t.Fatalf("unexpected finalization failure: result=%+v err=%v", result, err)
 	}
 	credentials.mu.Lock()
 	defer credentials.mu.Unlock()
 	if !equalStrings(credentials.order, []string{"issue", "materialize", "writeback", "release"}) {
 		t.Fatalf("release did not follow writeback failure: %#v", credentials.order)
+	}
+}
+
+func TestInvocationRunnerReleaseEvidenceFailsClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		credential bool
+		releaseErr error
+		wantError  error
+		wantNeed   bool
+		wantDone   bool
+	}{
+		{name: "credentialless fixture", wantDone: false},
+		{name: "credential released", credential: true, wantNeed: true, wantDone: true},
+		{name: "credential release failed", credential: true, releaseErr: errors.New("private backend detail"), wantError: ErrCredentialFinalization, wantNeed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			invocation := validCredentialInvocation(t)
+			var credentials *fakeCredentialLifecycle
+			if tc.credential {
+				credentials = &fakeCredentialLifecycle{base: credentialFixtureBase(t), releaseErr: tc.releaseErr}
+			} else {
+				invocation.Credential = nil
+			}
+			runner, err := NewInvocationRunner(InvocationRunnerConfig{}, completeProcessRunner{}, credentials)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, runErr := runner.Run(context.Background(), invocation)
+			if !errors.Is(runErr, tc.wantError) || result.CredentialReleaseRequired != tc.wantNeed ||
+				result.CredentialReleased != tc.wantDone || result.Succeeded(runErr) != (tc.wantError == nil) {
+				t.Errorf("release observation: result=%+v err=%v; want error=%v required=%t released=%t success=%t",
+					result, runErr, tc.wantError, tc.wantNeed, tc.wantDone, tc.wantError == nil)
+			}
+		})
 	}
 }
 
@@ -220,6 +257,12 @@ type immediateProcessRunner struct{}
 
 func (*immediateProcessRunner) Run(context.Context, AttemptSpec) (AttemptResult, error) {
 	return AttemptResult{ExitCode: 0, DescendantsReaped: true, CleanupSucceeded: true}, nil
+}
+
+type completeProcessRunner struct{}
+
+func (completeProcessRunner) Run(context.Context, AttemptSpec) (AttemptResult, error) {
+	return AttemptResult{ExitCode: 0, DescendantsReaped: true, BoundaryReleased: true, CleanupSucceeded: true}, nil
 }
 
 type countingProcessRunner struct{ calls int }
@@ -239,13 +282,37 @@ func TestInvocationRunnerRejectsCredentialGenerationMismatchBeforeSpawn(t *testi
 	invocation := validCredentialInvocation(t)
 	invocation.Credential.ExpectedBindingGeneration = 2
 	result, err := runner.Run(context.Background(), invocation)
-	if !errors.Is(err, ErrCredentialUnavailable) || result.FailureCode != "credential_handle_mismatch" || process.calls != 0 {
+	if !errors.Is(err, ErrCredentialUnavailable) || result.FailureCode != "credential_handle_mismatch" ||
+		!result.CredentialReleaseRequired || !result.CredentialReleased || process.calls != 0 {
 		t.Fatalf("generation mismatch result=%+v err=%v calls=%d", result, err, process.calls)
 	}
 	credentials.mu.Lock()
 	defer credentials.mu.Unlock()
 	if !equalStrings(credentials.order, []string{"issue", "release"}) {
 		t.Fatalf("generation mismatch order = %#v", credentials.order)
+	}
+}
+
+func TestInvocationRunnerHandleMismatchAndFailedReleaseCannotSpawn(t *testing.T) {
+	process := &countingProcessRunner{}
+	credentials := &fakeCredentialLifecycle{
+		base: credentialFixtureBase(t), releaseErr: errors.New("private cleanup failure"),
+	}
+	runner, err := NewInvocationRunner(InvocationRunnerConfig{}, process, credentials)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invocation := validCredentialInvocation(t)
+	invocation.Credential.ExpectedBindingGeneration++
+	result, runErr := runner.Run(context.Background(), invocation)
+	if !errors.Is(runErr, ErrCredentialFinalization) || result.FailureCode != "credential_release_failed" ||
+		!result.CredentialReleaseRequired || result.CredentialReleased || result.Succeeded(runErr) || process.calls != 0 {
+		t.Errorf("failed release after handle mismatch: result=%+v err=%v process calls=%d", result, runErr, process.calls)
+	}
+	credentials.mu.Lock()
+	defer credentials.mu.Unlock()
+	if !equalStrings(credentials.order, []string{"issue", "release"}) {
+		t.Errorf("handle mismatch must attempt release before spawn: order=%#v", credentials.order)
 	}
 }
 

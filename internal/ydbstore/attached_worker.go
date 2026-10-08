@@ -28,6 +28,17 @@ var (
 	ErrAttachedWorkerAuditConflict      = errors.New("attached worker audit conflicts with existing state")
 )
 
+// A worker connection is owner-scoped authority, not a replacement for the
+// owner's current tenant membership. Recheck membership inside each daemon
+// transaction that can disclose input, advance execution, or finalize output.
+func attachedWorkerOwnerAuthorizedTx(ctx context.Context, tx *stateTx, owner domain.UserID) (bool, error) {
+	err := authorizeTenantWriteTx(ctx, tx, owner)
+	if errors.Is(err, domain.ErrMembershipDenied) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 func (store *Store) CreateAttachedWorkerEnrollment(
 	ctx context.Context,
 	enrollment domain.AttachedWorkerEnrollment,

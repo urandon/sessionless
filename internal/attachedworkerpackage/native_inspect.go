@@ -59,6 +59,12 @@ func nativeInspect(ctx context.Context, config Config, manager nativeManager) (N
 	if err := checkNoNativePending(unitPath); err != nil {
 		return result, nil
 	}
+	if err := checkLegacyNativeRuntime(ctx, config, manifest, manager); err != nil {
+		if errors.Is(err, ErrConflict) {
+			return result, nil
+		}
+		return result, err
+	}
 	state, err := manager.inspect(ctx, config.Mode, nativeName(manifest), unitPath)
 	if err != nil {
 		return result, errors.Join(ErrIO, err)

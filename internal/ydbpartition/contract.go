@@ -119,6 +119,7 @@ var policies = []Policy{
 	},
 	hot("attached_worker_attempt_heads", []string{"tenant_id", "owner_user_id", "worker_id"}, ClassEntity, "one owner-scoped concurrency-one attempt contention row per attached worker"),
 	hot("attached_worker_attempt_messages", []string{"tenant_id", "owner_user_id", "worker_id", "attempt_id", "direction", "attempt_sequence"}, ClassOrdered, "bounded directional replay records are ordered behind one exact worker attempt"),
+	hot("attached_worker_output_receipts", []string{"tenant_id", "run_id", "owner_user_id", "worker_id", "attempt_id", "lease_generation"}, ClassEntity, "immutable output receipts are point-addressable by run and enumerated for exact session deletion"),
 	{
 		LogicalName: "attached_worker_attempt_deadlines", PhysicalTable: "attached_worker_attempt_deadlines_v1",
 		PrimaryKey: []string{"shard_bucket", "deadline_at", "tenant_id", "owner_user_id", "worker_id", "attempt_id", "kind"},

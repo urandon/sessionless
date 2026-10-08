@@ -6,8 +6,11 @@ import (
 	"crypto/ed25519"
 	"crypto/subtle"
 	"errors"
+	"fmt"
 	"math"
 	"time"
+
+	"github.com/ydb-platform/ydb-go-sdk/v3/retry"
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerprotocol"
 	"gitcode.com/urandon/sessionless/internal/domain"
@@ -454,8 +457,31 @@ func (store *Store) AuthorizeAttachedWorkerExchange(
 		return result, err
 	}
 	result.Status = ports.AttachedWorkerConnectionDenied
-	err = store.Transact(ctx, request.TenantID, func(state ports.StateTx) error {
+	stage := "no callback"
+	callbackAttempts := 0
+	firstFailureStage := "none"
+	firstFailureStatusCode := "unavailable"
+	err = store.Transact(ctx, request.TenantID, func(state ports.StateTx) (callbackErr error) {
+		callbackAttempts++
+		defer func() {
+			if callbackErr != nil && firstFailureStage == "none" {
+				firstFailureStage = stage
+				firstFailureStatusCode = fmt.Sprint(retry.Check(callbackErr).StatusCode())
+			} else if callbackErr == nil {
+				stage = "callback completed"
+			}
+		}()
 		tx := state.(*stateTx)
+		stage = "authorize owner membership"
+		member, err := attachedWorkerOwnerAuthorizedTx(ctx, tx, request.OwnerUserID)
+		if err != nil {
+			return err
+		}
+		if !member {
+			result.Status = ports.AttachedWorkerConnectionDenied
+			return nil
+		}
+		stage = "read connection"
 		connection, found, err := readAttachedWorkerConnectionTx(ctx, tx, request.OwnerUserID, request.WorkerID)
 		if err != nil {
 			return err
@@ -473,6 +499,7 @@ func (store *Store) AuthorizeAttachedWorkerExchange(
 			result.Status = ports.AttachedWorkerConnectionConflict
 			return nil
 		}
+		stage = "read worker"
 		worker, workerFound, err := readAttachedWorkerTx(ctx, tx, request.OwnerUserID, request.WorkerID)
 		if err != nil {
 			return err
@@ -490,10 +517,12 @@ func (store *Store) AuthorizeAttachedWorkerExchange(
 			result.Status = ports.AttachedWorkerConnectionConflict
 			return nil
 		}
+		stage = "load protocol authority"
 		if _, _, err := loadAttachedWorkerProtocolAuthorityTx(ctx, tx, worker, connection); err != nil {
 			result.Status = ports.AttachedWorkerConnectionConflict
 			return nil
 		}
+		stage = "read capability manifest"
 		manifest, manifestFound, err := readAttachedWorkerManifestTx(ctx, tx, request.OwnerUserID, request.WorkerID, connection.CapabilityDigest)
 		if err != nil {
 			return err
@@ -515,6 +544,7 @@ func (store *Store) AuthorizeAttachedWorkerExchange(
 			result.Status = ports.AttachedWorkerConnectionConflict
 			return nil
 		}
+		stage = "read transaction time"
 		at, err := store.attachedWorkerTransactionTime(ctx, tx)
 		if err != nil {
 			return err
@@ -546,21 +576,29 @@ func (store *Store) AuthorizeAttachedWorkerExchange(
 		if err := connection.Validate(); err != nil {
 			return err
 		}
+		stage = "reload protocol authority"
 		if _, _, err := loadAttachedWorkerProtocolAuthorityTx(ctx, tx, worker, connection); err != nil {
 			return ErrAttachedWorkerConnectionConflict
 		}
+		stage = "delete previous presence expiry"
 		if err := deleteAttachedWorkerPresenceExpiryTx(ctx, tx, previousExpiry); err != nil {
 			return err
 		}
+		stage = "upsert connection"
 		if err := upsertAttachedWorkerConnectionTx(ctx, tx, connection); err != nil {
 			return err
 		}
+		stage = "insert presence expiry"
 		if err := insertAttachedWorkerPresenceExpiryTx(ctx, tx, attachedWorkerPresenceExpiry(connection)); err != nil {
 			return err
 		}
 		result = ports.AttachedWorkerAuthorizationResult{Status: ports.AttachedWorkerConnectionAuthorized, Connection: connection, Checkpointed: true}
 		return nil
 	})
+	if err != nil {
+		return result, fmt.Errorf("authorize attached worker exchange, last callback stage %s after %d callback attempts (first callback failure at %s, YDB status %s): %w",
+			stage, callbackAttempts, firstFailureStage, firstFailureStatusCode, err)
+	}
 	return result, err
 }
 

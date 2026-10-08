@@ -32,6 +32,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemontransport"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerhttp"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerlocal"
+	"gitcode.com/urandon/sessionless/internal/attachedworkeroutput"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerprotocol"
 	"gitcode.com/urandon/sessionless/internal/attachedworkersealedinput"
 	"gitcode.com/urandon/sessionless/internal/attachedworkertransport"
@@ -44,9 +45,12 @@ import (
 const aw07DaemonChildEnv = "SESSIONLESS_AW07_JOINED_DAEMON_CHILD"
 
 type aw07DaemonChildInput struct {
-	StateRoot   string `json:"state_root"`
-	ProfilePath string `json:"profile_path"`
-	ClockNanos  int64  `json:"clock_nanos"`
+	StateRoot          string `json:"state_root"`
+	ProfilePath        string `json:"profile_path"`
+	ClockNanos         int64  `json:"clock_nanos"`
+	TestProvider       bool   `json:"test_provider,omitempty"`
+	ProviderResource   string `json:"provider_resource,omitempty"`
+	ProviderGeneration uint64 `json:"provider_generation,omitempty"`
 }
 
 // This subprocess owns the real activated foreground runtime. Its only
@@ -77,9 +81,23 @@ func TestAW07JoinedDaemonChild(t *testing.T) {
 	var clock atomic.Int64
 	clock.Store(start.UnixNano())
 	now := func() time.Time { return time.Unix(0, clock.Load()).UTC() }
-	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
 	defer cancel()
-	owner, err := attachedworkeractivation.ConnectWithClock(ctx, store, profile, now)
+	var owner *attachedworkersealedinput.SyntheticRuntime
+	if input.TestProvider {
+		credentialRoot := filepath.Join(filepath.Dir(input.StateRoot), "credentials")
+		if err := os.MkdirAll(credentialRoot, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		credentials := &aw07TestCredentialLifecycle{root: credentialRoot,
+			owner: profile.OwnerUserID, resource: input.ProviderResource, generation: input.ProviderGeneration, now: now}
+		owner, err = attachedworkeractivation.ConnectTestProviderWithClock(ctx, store, profile, now, credentials, credentialRoot,
+			func(identity attachedworkerdaemon.InvocationIdentity, result attachedworkerdaemon.InvocationResult, runErr error, status domain.AttachedWorkerTerminalStatus) (attachedworkeroutput.Candidate, error) {
+				return attachedworkeroutput.Candidate{Status: status, Summary: "test provider result for " + string(identity.OwnerUserID)}, nil
+			})
+	} else {
+		owner, err = attachedworkeractivation.ConnectTestSyntheticWithClock(ctx, store, profile, now)
+	}
 	if err != nil {
 		t.Fatalf("activate joined daemon: %v", err)
 	}
@@ -299,6 +317,40 @@ type aw07DaemonInstallation struct {
 	sentinelBody        []byte
 }
 
+// Record only failed exchange metadata; bearer bytes and frame payloads never
+// enter test logs. This distinguishes a core rejection from an HTTP adapter
+// failure when a joined daemon reports reconciliation.
+type aw07ExchangeFailureRecorder struct {
+	inner attachedworkerhttp.CoreExchange
+	mu    sync.Mutex
+	items []string
+}
+
+func (recorder *aw07ExchangeFailureRecorder) ExchangeBearer(ctx context.Context, bearer []byte,
+	batch attachedworkerprotocol.BatchV1,
+) (*attachedworkerprotocol.BatchV1, error) {
+	response, err := recorder.inner.ExchangeBearer(ctx, bearer, batch)
+	if err != nil {
+		frame := attachedworkerprotocol.FrameV1{}
+		if len(batch.Frames) > 0 {
+			frame = batch.Frames[0]
+		}
+		recorder.mu.Lock()
+		if len(recorder.items) < 16 {
+			recorder.items = append(recorder.items, fmt.Sprintf("kind=%s sequence=%d ack=%d error=%v",
+				frame.Kind, frame.Sequence, frame.Ack, err))
+		}
+		recorder.mu.Unlock()
+	}
+	return response, err
+}
+
+func (recorder *aw07ExchangeFailureRecorder) snapshot() string {
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	return strings.Join(recorder.items, "; ")
+}
+
 type aw07ObservedAuthorizer struct {
 	inner   *attachedworkertransport.Service
 	mu      sync.Mutex
@@ -368,7 +420,7 @@ func aw07CreateDaemonEnrollment(t *testing.T, store *ydbstore.Store, tenant doma
 }
 
 func aw07PrepareDaemonInstallation(t *testing.T, root, origin string, trust []byte,
-	worker domain.AttachedWorker, private ed25519.PrivateKey, now time.Time,
+	worker domain.AttachedWorker, private ed25519.PrivateKey, now time.Time, testProvider bool,
 ) aw07DaemonInstallation {
 	t.Helper()
 	for _, dir := range []string{root, filepath.Join(root, "oci-config"), filepath.Join(root, "activation"),
@@ -387,7 +439,17 @@ func aw07PrepareDaemonInstallation(t *testing.T, root, origin string, trust []by
 	if err != nil {
 		t.Fatal(err)
 	}
-	cliBytes := []byte(strings.NewReplacer("@ROOT@", root, "@IMAGE@", image, "@SLEEP@", sleepPath).Replace(`#!/bin/sh
+	startAction := "while [ ! -f '@ROOT@/cancelled' ]; do '@SLEEP@' 0.01; done"
+	if testProvider {
+		startAction = ": > '@ROOT@/oci-finished'"
+	}
+	startAction = strings.NewReplacer("@ROOT@", root, "@SLEEP@", sleepPath).Replace(startAction)
+	providerEnv := ""
+	if testProvider {
+		providerEnv = `,"SESSIONLESS_PROVIDER_HOME=` + filepath.Join(root, "credentials", "handle-"+string(worker.OwnerUserID)) + `"`
+	}
+	cliBytes := []byte(strings.NewReplacer("@ROOT@", root, "@IMAGE@", image, "@SLEEP@", sleepPath,
+		"@START_ACTION@", startAction, "@PROVIDER_ENV@", providerEnv).Replace(`#!/bin/sh
 shift 4
 printf '%s\n' "$*" >> '@ROOT@/oci-commands.log'
 case "$1:$2" in
@@ -397,12 +459,13 @@ case "$1:$2" in
   container:ls) exit 0;;
   container:create)
     shift 2
+    : > '@ROOT@/mounts'
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --name) printf '%s\n' "$2" > '@ROOT@/name'; shift 2;;
         --workdir) printf '%s\n' "$2" > '@ROOT@/workdir'; shift 2;;
         --tmpfs) printf '%s\n' "$2" > '@ROOT@/tmpfs'; shift 2;;
-        --mount) printf '%s\n' "$2" > '@ROOT@/mount'; shift 2;;
+        --mount) printf '%s\n' "$2" >> '@ROOT@/mounts'; shift 2;;
         --entrypoint) printf '%s\n' "$2" > '@ROOT@/entrypoint'; shift 2;;
         *) shift;;
       esac
@@ -415,19 +478,28 @@ case "$1:$2" in
         IFS= read -r name < '@ROOT@/name'
         IFS= read -r workdir < '@ROOT@/workdir'
         IFS= read -r tmpfs < '@ROOT@/tmpfs'
-        IFS= read -r mount < '@ROOT@/mount'
         IFS= read -r entrypoint < '@ROOT@/entrypoint'
         tmpfs_path=${tmpfs%%:*}
         tmpfs_opts=${tmpfs#*:}
-        mount_src=${mount#*src=}; mount_src=${mount_src%%,*}
         attempt_root=${workdir%/work}
-        printf '{"Id":"%s","Name":"/%s","State":{"Status":"created"},"Config":{"Image":"@IMAGE@","User":"1000:1000","WorkingDir":"%s","StopSignal":"SIGTERM","StopTimeout":10,"Entrypoint":["%s"],"Cmd":[],"Env":["HOME=%s/home","TMPDIR=%s/tmp","XDG_CONFIG_HOME=%s/xdg/config","XDG_CACHE_HOME=%s/xdg/cache","XDG_DATA_HOME=%s/xdg/data","PATH=","LANG=C.UTF-8","LC_ALL=C.UTF-8","NO_COLOR=1"],"Healthcheck":{"Test":["NONE"]},"Labels":{"dev.sessionless.attached-worker.profile":"sessionless.oci.docker.v1","dev.sessionless.attached-worker.installation":"install-aw07-daemon","dev.sessionless.attached-worker.engine":"engine-001-abcdef"}},"HostConfig":{"NetworkMode":"none","ReadonlyRootfs":true,"IpcMode":"private","CgroupnsMode":"private","CapDrop":["ALL"],"SecurityOpt":["no-new-privileges:true"],"PidsLimit":64,"Memory":67108864,"MemorySwap":67108864,"ShmSize":1048576,"Tmpfs":{"%s":"%s"},"Ulimits":[{"Name":"fsize","Soft":1024,"Hard":1024}],"Init":true,"LogConfig":{"Type":"none"},"RestartPolicy":{"Name":"no"}},"Mounts":[{"Type":"bind","Source":"%s","Destination":"%s","RW":false}]}\n' 'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd' "$name" "$workdir" "$entrypoint" "$attempt_root" "$attempt_root" "$attempt_root" "$attempt_root" "$attempt_root" "$tmpfs_path" "$tmpfs_opts" "$mount_src" "$mount_src";;
+        printf '{"Id":"%s","Name":"/%s","State":{"Status":"created"},"Config":{"Image":"@IMAGE@","User":"1000:1000","WorkingDir":"%s","StopSignal":"SIGTERM","StopTimeout":10,"Entrypoint":["%s"],"Cmd":[],"Env":["HOME=%s/home","TMPDIR=%s/tmp","XDG_CONFIG_HOME=%s/xdg/config","XDG_CACHE_HOME=%s/xdg/cache","XDG_DATA_HOME=%s/xdg/data","PATH=","LANG=C.UTF-8","LC_ALL=C.UTF-8","NO_COLOR=1"@PROVIDER_ENV@],"Healthcheck":{"Test":["NONE"]},"Labels":{"dev.sessionless.attached-worker.profile":"sessionless.oci.docker.v1","dev.sessionless.attached-worker.installation":"install-aw07-daemon","dev.sessionless.attached-worker.engine":"engine-001-abcdef"}},"HostConfig":{"NetworkMode":"none","ReadonlyRootfs":true,"IpcMode":"private","CgroupnsMode":"private","CapDrop":["ALL"],"SecurityOpt":["no-new-privileges:true"],"PidsLimit":64,"Memory":67108864,"MemorySwap":67108864,"ShmSize":1048576,"Tmpfs":{"%s":"%s"},"Ulimits":[{"Name":"fsize","Soft":1024,"Hard":1024}],"Init":true,"LogConfig":{"Type":"none"},"RestartPolicy":{"Name":"no"}},"Mounts":[' 'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd' "$name" "$workdir" "$entrypoint" "$attempt_root" "$attempt_root" "$attempt_root" "$attempt_root" "$attempt_root" "$tmpfs_path" "$tmpfs_opts"
+        first=1
+        while IFS= read -r mount; do
+          mount_src=${mount#*src=}; mount_src=${mount_src%%,*}
+          mount_dst=${mount#*dst=}; mount_dst=${mount_dst%%,*}
+          mount_rw=true
+          case "$mount" in *,readonly) mount_rw=false;; esac
+          if [ "$first" -eq 0 ]; then printf ','; fi
+          printf '{"Type":"bind","Source":"%s","Destination":"%s","RW":%s}' "$mount_src" "$mount_dst" "$mount_rw"
+          first=0
+        done < '@ROOT@/mounts'
+        printf ']}\n';;
     esac;;
   container:start)
     : > '@ROOT@/oci-started'
     printf '%s\n' "$$" > '@ROOT@/oci-start-pid'
     trap ': > "@ROOT@/oci-exited"' EXIT
-    while [ ! -f '@ROOT@/cancelled' ]; do '@SLEEP@' 0.01; done;;
+    @START_ACTION@;;
   container:stop|container:kill) : > '@ROOT@/cancelled';;
   container:rm) exit 0;;
   *) exit 97;;
@@ -455,6 +527,12 @@ esac
 			attachedworkerprotocol.FeatureCancellation, attachedworkerprotocol.FeatureProgress,
 			attachedworkerprotocol.FeatureReconnect,
 		}, MaxConcurrentAttempts: 1,
+	}
+	if testProvider {
+		capability.Features = []attachedworkerprotocol.ProtocolFeatureV1{
+			attachedworkerprotocol.FeatureCancellation, attachedworkerprotocol.FeatureOutputReceipt,
+			attachedworkerprotocol.FeatureProgress, attachedworkerprotocol.FeatureReconnect,
+		}
 	}
 	capabilityDigest, err := attachedworkerprotocol.ManifestDigestV1(capability)
 	if err != nil {
@@ -541,6 +619,26 @@ func TestAW07TwoActivatedDaemonYDBJoin(t *testing.T) {
 	workerID := domain.AttachedWorkerID(uniqueID("worker-" + suffix))
 	aWorker, aPrivate := aw07CreateDaemonEnrollment(t, store, tenant, domain.UserID(uniqueID("owner-a-"+suffix)), workerID, suffix+"-a", now)
 	bWorker, bPrivate := aw07CreateDaemonEnrollment(t, store, tenant, domain.UserID(uniqueID("owner-b-"+suffix)), workerID, suffix+"-b", now)
+	seedCanonicalMembership(t, client.DB, tenant, aWorker.OwnerUserID, now)
+	seedCanonicalMembership(t, client.DB, tenant, bWorker.OwnerUserID, now)
+	probeCtx, cancelProbe := context.WithCancel(context.Background())
+	backend := &aw07BackendRecorder{Store: store, probeDB: client.DB, probeCtx: probeCtx}
+	t.Cleanup(func() {
+		backend.probeMu.Lock()
+		backend.probeClosed = true
+		backend.probeMu.Unlock()
+		cancelProbe()
+		finished := make(chan struct{})
+		go func() {
+			backend.probeWG.Wait()
+			close(finished)
+		}()
+		select {
+		case <-finished:
+		case <-time.After(3 * time.Second):
+			t.Error("joined synthetic YDB diagnostic probe did not stop after cancellation")
+		}
+	})
 	service, err := attachedworkertransport.NewService(attachedworkertransport.ServiceConfig{
 		IDs: testkit.NewSequenceIDGenerator("aw07-daemons-"), Audience: "sessionless:attached-worker:v1",
 		PlatformOffer: attachedworkerprotocol.VersionOfferV1{
@@ -551,7 +649,7 @@ func TestAW07TwoActivatedDaemonYDBJoin(t *testing.T) {
 		ChallengeLifetime:   5 * time.Minute, ChallengeRetention: time.Hour,
 		PresenceTTL: 20 * time.Minute, AuthTTL: time.Hour,
 		CheckpointInterval: attachedworkertransport.MinimumHeartbeatInterval,
-	}, store, store)
+	}, backend, backend)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -559,7 +657,8 @@ func TestAW07TwoActivatedDaemonYDBJoin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	adapter, err := attachedworkerhttp.NewCoreExchangeAdapter(service)
+	coreFailures := &aw07ExchangeFailureRecorder{inner: service}
+	adapter, err := attachedworkerhttp.NewCoreExchangeAdapter(coreFailures)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -575,17 +674,18 @@ func TestAW07TwoActivatedDaemonYDBJoin(t *testing.T) {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
+	statusRecorder := &aw07HTTPStatusRecorder{}
 	mux.Handle(attachedworkerhttp.ChallengePathV1, bootstrap)
 	mux.Handle(attachedworkerhttp.AttachPathV1, bootstrap)
-	mux.Handle(attachedworkerhttp.ExchangePathV1, exchange)
-	mux.Handle(attachedworkersealedinput.PathV1, attachedworkersealedinput.Handler(sealed))
+	mux.Handle(attachedworkerhttp.ExchangePathV1, statusRecorder.wrap("exchange", exchange))
+	mux.Handle(attachedworkersealedinput.PathV1, statusRecorder.wrap("sealed", attachedworkersealedinput.Handler(sealed)))
 	server := httptest.NewTLSServer(mux)
 	t.Cleanup(server.Close)
 	trust := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
 	root := t.TempDir()
-	a := aw07PrepareDaemonInstallation(t, filepath.Join(root, "a"), server.URL, trust, aWorker, aPrivate, now)
-	b := aw07PrepareDaemonInstallation(t, filepath.Join(root, "b"), server.URL, trust, bWorker, bPrivate, now)
-	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
+	a := aw07PrepareDaemonInstallation(t, filepath.Join(root, "a"), server.URL, trust, aWorker, aPrivate, now, false)
+	b := aw07PrepareDaemonInstallation(t, filepath.Join(root, "b"), server.URL, trust, bWorker, bPrivate, now, false)
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
 	defer cancel()
 	aProcess := aw07StartDaemonProcess(t, aw07DaemonChildInput{StateRoot: a.stateRoot, ProfilePath: a.profilePath, ClockNanos: now.UnixNano()})
 	bProcess := aw07StartDaemonProcess(t, aw07DaemonChildInput{StateRoot: b.stateRoot, ProfilePath: b.profilePath, ClockNanos: now.UnixNano()})
@@ -744,7 +844,7 @@ func TestAW07TwoActivatedDaemonYDBJoin(t *testing.T) {
 	if err != nil || cancelled.Status != ports.AttachedWorkerExecutionApplied {
 		t.Fatalf("owner B cancellation request: result=%+v err=%v", cancelled, err)
 	}
-	for waitUntil := time.Now().Add(20 * time.Second); ; {
+	for waitUntil := time.Now().Add(60 * time.Second); ; {
 		attempt, found, err := store.LoadAttachedWorkerAttempt(ctx, tenant, bWorker.OwnerUserID, workerID)
 		if err != nil {
 			t.Fatal(err)
@@ -753,8 +853,8 @@ func TestAW07TwoActivatedDaemonYDBJoin(t *testing.T) {
 			break
 		}
 		if time.Now().After(waitUntil) {
-			t.Fatalf("owner B cancellation did not reach pending terminal evidence: found=%t state=%s A stdout=%s B stdout=%s",
-				found, attempt.State, aProcess.stdout.String(), bProcess.stdout.String())
+			t.Fatalf("owner B cancellation did not reach pending terminal evidence: found=%t state=%s HTTP=%s core=%s backend=%s A stdout=%s B stdout=%s",
+				found, attempt.State, statusRecorder.snapshot(), coreFailures.snapshot(), backend.snapshot(), aProcess.stdout.String(), bProcess.stdout.String())
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

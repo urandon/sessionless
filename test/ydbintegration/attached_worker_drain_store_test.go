@@ -22,7 +22,7 @@ import (
 )
 
 func TestAttachedWorkerDrainIsDurableReplayableAndOwnerScoped(t *testing.T) {
-	store, _ := openStore(t)
+	store, client := openStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -30,6 +30,7 @@ func TestAttachedWorkerDrainIsDurableReplayableAndOwnerScoped(t *testing.T) {
 	tenantID := domain.TenantID(uniqueID("tenant-worker-" + suffix))
 	ownerID := domain.UserID(uniqueID("owner-worker-" + suffix))
 	otherOwnerID := domain.UserID(uniqueID("other-owner-worker-" + suffix))
+	seedCanonicalMembership(t, client.DB, tenantID, ownerID, now)
 
 	enrollment, createAudit := attachedWorkerEnrollmentFixture(suffix, tenantID, ownerID, now.Add(-time.Second))
 	if err := store.CreateAttachedWorkerEnrollment(ctx, enrollment, createAudit); err != nil {
@@ -76,7 +77,7 @@ func TestAttachedWorkerDrainIsDurableReplayableAndOwnerScoped(t *testing.T) {
 		Capability: ports.AttachedWorkerCapabilityTarget{
 			ManifestRevision: 1, Digest: capabilityDigest, ProtocolVersion: challenge.SelectedProtocolVersion,
 			IdentityKeyDigest: domain.DigestAttachedWorkerIdentityKey(worker.IdentityPublicKey),
-			CanonicalManifest: canonicalManifest, ManifestPayload: []byte(`{"version":1,"surface":"codex-exec"}`),
+			CanonicalManifest: canonicalManifest, ManifestPayload: attachedWorkerManifestPayloadFixture(t, readySnapshot),
 			Signature: manifestSignature,
 		},
 		PlatformSequence: 2, WorkerSequence: 3, PlatformAck: 2, WorkerAck: 2,
@@ -646,7 +647,7 @@ func TestAttachedWorkerDrainReenvelopesAfterReconnect(t *testing.T) {
 		Capability: ports.AttachedWorkerCapabilityTarget{
 			ManifestRevision: 1, Digest: drain.Connection.CapabilityDigest, ProtocolVersion: reconnectChallenge.SelectedProtocolVersion,
 			IdentityKeyDigest: domain.DigestAttachedWorkerIdentityKey(worker.IdentityPublicKey), CanonicalManifest: canonicalManifest,
-			ManifestPayload: []byte(`{"version":1,"surface":"codex-exec"}`), Signature: reconnectManifestSignature,
+			ManifestPayload: attachedWorkerManifestPayloadFixture(t, reconnectReadySnapshot), Signature: reconnectManifestSignature,
 		},
 		PlatformSequence: 2, WorkerSequence: 3, PlatformAck: 2, WorkerAck: 2,
 		ProtocolSnapshot: reconnectReadySnapshot, PresenceTTL: 10 * time.Minute,
@@ -738,7 +739,7 @@ func readyAttachedWorkerForDrain(t *testing.T, suffix string) (*ydbstore.Store, 
 	return readyAttachedWorkerForDrainWithIdentity(t, suffix, "", "")
 }
 
-func readyAttachedWorkerForDrainWithIdentity(t *testing.T, suffix string, tenantID domain.TenantID, workerID domain.AttachedWorkerID) (*ydbstore.Store, *ydbclient.Client, domain.AttachedWorker, domain.AttachedWorkerConnection, domain.AttachedWorkerConnectionSecretDigest, ed25519.PrivateKey, []byte, time.Time) {
+func readyAttachedWorkerForDrainWithIdentity(t *testing.T, suffix string, tenantID domain.TenantID, workerID domain.AttachedWorkerID, features ...attachedworkerprotocol.ProtocolFeatureV1) (*ydbstore.Store, *ydbclient.Client, domain.AttachedWorker, domain.AttachedWorkerConnection, domain.AttachedWorkerConnectionSecretDigest, ed25519.PrivateKey, []byte, time.Time) {
 	t.Helper()
 	suffix = attachedWorkerDrainTestSuffix(t, suffix)
 	store, client := openStore(t)
@@ -749,6 +750,7 @@ func readyAttachedWorkerForDrainWithIdentity(t *testing.T, suffix string, tenant
 		tenantID = domain.TenantID(uniqueID("tenant-worker-" + suffix))
 	}
 	ownerID := domain.UserID(uniqueID("owner-worker-" + suffix))
+	seedCanonicalMembership(t, client.DB, tenantID, ownerID, now)
 	enrollment, createAudit := attachedWorkerEnrollmentFixture(suffix, tenantID, ownerID, now.Add(-time.Second))
 	// This helper establishes a ready worker before the scenario under test;
 	// enrollment expiry is not the assertion and must outlive a slow CI run.
@@ -773,7 +775,7 @@ func readyAttachedWorkerForDrainWithIdentity(t *testing.T, suffix string, tenant
 		t.Fatal(err)
 	}
 	channelBytes := bytes.Repeat([]byte{0x72}, 32)
-	canonicalManifest, capabilityDigest, attachedSnapshot, readySnapshot, manifestSignature := attachedWorkerProtocolSnapshotFixture(t, worker, challenge, privateKey, channelBytes)
+	canonicalManifest, capabilityDigest, attachedSnapshot, readySnapshot, manifestSignature := attachedWorkerProtocolSnapshotFixture(t, worker, challenge, privateKey, channelBytes, features...)
 	// Keep the synthetic bearer recoverable by the transport-level integration
 	// test while still unique to this test-owned worker scope.
 	secretBytes := sha256.Sum256([]byte("drain-race-bearer-" + string(ownerID)))
@@ -802,7 +804,7 @@ func readyAttachedWorkerForDrainWithIdentity(t *testing.T, suffix string, tenant
 		Capability: ports.AttachedWorkerCapabilityTarget{
 			ManifestRevision: 1, Digest: capabilityDigest, ProtocolVersion: challenge.SelectedProtocolVersion,
 			IdentityKeyDigest: domain.DigestAttachedWorkerIdentityKey(worker.IdentityPublicKey),
-			CanonicalManifest: canonicalManifest, ManifestPayload: []byte(`{"version":1,"surface":"codex-exec"}`),
+			CanonicalManifest: canonicalManifest, ManifestPayload: attachedWorkerManifestPayloadFixture(t, readySnapshot),
 			Signature: manifestSignature,
 		},
 		PlatformSequence: 2, WorkerSequence: 3, PlatformAck: 2, WorkerAck: 2,
@@ -833,6 +835,10 @@ func attachedWorkerOfferForDrain(t *testing.T, store *ydbstore.Store, client *yd
 }
 
 func attachedWorkerOfferForDrainWithPayload(t *testing.T, store *ydbstore.Store, client *ydbclient.Client, worker domain.AttachedWorker, connection domain.AttachedWorkerConnection, now time.Time, suffix string, contextBody, artifactBody []byte, maxRuntime ...time.Duration) ports.AttachedWorkerAttemptResult {
+	return attachedWorkerOfferForDrainWithPayloadAndBinding(t, store, client, worker, connection, now, suffix, contextBody, artifactBody, nil, maxRuntime...)
+}
+
+func attachedWorkerOfferForDrainWithPayloadAndBinding(t *testing.T, store *ydbstore.Store, client *ydbclient.Client, worker domain.AttachedWorker, connection domain.AttachedWorkerConnection, now time.Time, suffix string, contextBody, artifactBody []byte, amendBinding func(*domain.HarnessBindingV1), maxRuntime ...time.Duration) ports.AttachedWorkerAttemptResult {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -875,6 +881,12 @@ func attachedWorkerOfferForDrainWithPayload(t *testing.T, store *ydbstore.Store,
 	binding.OwnerUserID = worker.OwnerUserID
 	binding.Resource.OwnerUserID = worker.OwnerUserID
 	binding.ExecutionPlacementDigest = string(placementDigest)
+	if amendBinding != nil {
+		amendBinding(&binding)
+	}
+	if err := binding.ValidateForScope(worker.TenantID, worker.OwnerUserID, ingress.Run.ID, ingress.Attempt.ID, placement); err != nil {
+		t.Fatalf("owner %s test binding: %v", suffix, err)
+	}
 	ingress.Dispatch.ExecutionPlacementV2 = placement
 	ingress.Dispatch.HarnessBinding = binding
 	ingress.Dispatch.SubstrateBinding = nil

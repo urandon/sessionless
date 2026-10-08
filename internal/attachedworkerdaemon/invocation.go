@@ -56,17 +56,26 @@ func (invocation Invocation) Validate() error {
 	if invocation.Credential == nil {
 		return nil
 	}
-	credential := invocation.Credential
+	return invocation.Credential.ValidateFor(invocation.Identity)
+}
+
+// ValidateFor checks that a credential request is bound to the exact local
+// invocation. The sealed-input boundary uses the same predicate before a
+// process or credential lifecycle receives the request.
+func (credential CredentialInvocation) ValidateFor(identity InvocationIdentity) error {
+	if identity.Validate() != nil {
+		return ErrInvocationInvalid
+	}
 	request := credential.IssueRequest
 	if !environmentNamePattern.MatchString(credential.HomeEnvironment) || reservedEnvironmentName(credential.HomeEnvironment) ||
 		credential.ExpectedBindingGeneration == 0 ||
-		request.OwnerUserID != invocation.Identity.OwnerUserID ||
-		request.Run.TenantID != invocation.Identity.TenantID ||
-		request.Run.ID != invocation.Identity.RunID ||
-		request.Attempt.ID != invocation.Identity.AttemptID ||
-		request.Lease.ID != invocation.Identity.LeaseID ||
-		request.Lease.WorkerID != string(invocation.Identity.WorkerID) ||
-		request.Lease.FenceToken != invocation.Identity.FenceToken ||
+		request.OwnerUserID != identity.OwnerUserID ||
+		request.Run.TenantID != identity.TenantID ||
+		request.Run.ID != identity.RunID ||
+		request.Attempt.ID != identity.AttemptID ||
+		request.Lease.ID != identity.LeaseID ||
+		request.Lease.WorkerID != string(identity.WorkerID) ||
+		request.Lease.FenceToken != identity.FenceToken ||
 		request.Attempt.ValidateForRun(request.Run) != nil ||
 		request.Lease.ValidateForAttempt(request.Run, request.Attempt) != nil {
 		return ErrInvocationInvalid
@@ -75,12 +84,23 @@ func (invocation Invocation) Validate() error {
 }
 
 type InvocationResult struct {
-	Process                  AttemptResult
-	CredentialChanged        bool
-	CredentialGeneration     uint64
-	FailureCode              string
-	CommittedArtifactDigests []CommittedEvidenceDigest
-	CommittedEventDigests    []CommittedEvidenceDigest
+	Process                   AttemptResult
+	CredentialChanged         bool
+	CredentialGeneration      uint64
+	CredentialReleaseRequired bool `json:",omitempty"`
+	CredentialReleased        bool `json:",omitempty"`
+	FailureCode               string
+	CommittedArtifactDigests  []CommittedEvidenceDigest
+	CommittedEventDigests     []CommittedEvidenceDigest
+}
+
+// CleanupComplete is a necessary, not sufficient, condition for a terminal
+// acknowledgement. The output receipt must independently prove canonical
+// materialization before the server may commit a result.
+func (result InvocationResult) CleanupComplete() bool {
+	return result.Process.DescendantsReaped && result.Process.BoundaryReleased &&
+		result.Process.CleanupSucceeded &&
+		(!result.CredentialReleaseRequired || result.CredentialReleased)
 }
 
 // Succeeded reports the same process-level success predicate used by the
@@ -89,8 +109,7 @@ type InvocationResult struct {
 func (result InvocationResult) Succeeded(runErr error) bool {
 	process := result.Process
 	return runErr == nil && !process.Cancelled && !process.Deadline && process.ExitCode == 0 &&
-		process.FailureCode == "" && result.FailureCode == "" && process.DescendantsReaped &&
-		process.BoundaryReleased && process.CleanupSucceeded
+		process.FailureCode == "" && result.FailureCode == "" && result.CleanupComplete()
 }
 
 // CommittedEvidenceDigest is content-addressed evidence already committed by
@@ -151,8 +170,11 @@ func (runner *InvocationRunner) Run(
 		handle, invocation.Identity, invocation.Credential.IssueRequest.Run.SubscriptionConnectionID,
 		invocation.Credential.ExpectedBindingGeneration,
 	) {
-		_ = runner.releaseCredential(ctx, handle)
-		return InvocationResult{FailureCode: "credential_handle_mismatch"}, ErrCredentialUnavailable
+		releaseErr := runner.releaseCredential(ctx, handle)
+		if releaseErr != nil {
+			return InvocationResult{CredentialReleaseRequired: true, FailureCode: "credential_release_failed"}, ErrCredentialFinalization
+		}
+		return InvocationResult{CredentialReleaseRequired: true, CredentialReleased: true, FailureCode: "credential_handle_mismatch"}, ErrCredentialUnavailable
 	}
 	materialization, err := runner.credentials.Materialize(ctx, handle)
 	root, rootErr := validateDirectoryPath(materialization.RootDir)
@@ -161,9 +183,9 @@ func (runner *InvocationRunner) Run(
 		root != materialization.RootDir || authFile != materialization.AuthFile {
 		releaseErr := runner.releaseCredential(ctx, handle)
 		if releaseErr != nil {
-			return InvocationResult{FailureCode: "credential_release_failed"}, ErrCredentialFinalization
+			return InvocationResult{CredentialReleaseRequired: true, FailureCode: "credential_release_failed"}, ErrCredentialFinalization
 		}
-		return InvocationResult{FailureCode: "credential_materialization_failed"}, ErrCredentialUnavailable
+		return InvocationResult{CredentialReleaseRequired: true, CredentialReleased: true, FailureCode: "credential_materialization_failed"}, ErrCredentialUnavailable
 	}
 	processSpec := cloneAttemptSpec(invocation.Process)
 	processSpec.AdditionalReadRoots = append(processSpec.AdditionalReadRoots, materialization.RootDir)
@@ -178,7 +200,8 @@ func (runner *InvocationRunner) Run(
 	releaseErr := runner.releaseCredential(ctx, handle)
 	result := InvocationResult{
 		Process: processResult, CredentialChanged: writeBack.Changed,
-		CredentialGeneration: writeBack.Generation,
+		CredentialGeneration:      writeBack.Generation,
+		CredentialReleaseRequired: true, CredentialReleased: releaseErr == nil,
 	}
 	if writeBackErr != nil {
 		result.FailureCode = "credential_writeback_failed"

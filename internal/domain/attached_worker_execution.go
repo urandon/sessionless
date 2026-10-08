@@ -487,35 +487,37 @@ func (status AttachedWorkerTerminalStatus) Valid() bool {
 // fenced_unknown head blocks both retry and canonical finalization until a
 // later explicit resolution contract is introduced.
 type AttachedWorkerAttemptV1 struct {
-	Version                 uint32                               `json:"version"`
-	TenantID                TenantID                             `json:"tenant_id"`
-	OwnerUserID             UserID                               `json:"owner_user_id"`
-	WorkerID                AttachedWorkerID                     `json:"worker_id"`
-	ConnectionID            AttachedWorkerConnectionID           `json:"connection_id"`
-	RunID                   RunID                                `json:"run_id"`
-	AttemptID               AttemptID                            `json:"attempt_id"`
-	ReservationID           QuotaReservationID                   `json:"reservation_id"`
-	LeaseID                 LeaseID                              `json:"lease_id"`
-	LeaseGeneration         uint64                               `json:"lease_generation"`
-	FenceToken              AttachedWorkerFenceToken             `json:"fence_token"`
-	EnrollmentGeneration    uint64                               `json:"enrollment_generation"`
-	ConnectionGeneration    uint64                               `json:"connection_generation"`
-	ContextDigest           AttachedWorkerContextDigest          `json:"context_digest"`
-	CapabilityDigest        AttachedWorkerCapabilityDigest       `json:"capability_digest"`
-	PolicyDigest            AttachedWorkerPolicyDigest           `json:"policy_digest"`
-	State                   AttachedWorkerAttemptState           `json:"state"`
-	PlatformAttemptSequence uint64                               `json:"platform_attempt_sequence"`
-	WorkerAttemptSequence   uint64                               `json:"worker_attempt_sequence"`
-	ProgressSequence        uint64                               `json:"progress_sequence"`
-	CancelRevision          uint64                               `json:"cancel_revision"`
-	TerminalSequence        uint64                               `json:"terminal_sequence"`
-	TerminalStatus          AttachedWorkerTerminalStatus         `json:"terminal_status,omitempty"`
-	TerminalEvidenceDigest  AttachedWorkerTerminalEvidenceDigest `json:"terminal_evidence_digest,omitempty"`
-	LeaseExpiresAt          time.Time                            `json:"lease_expires_at"`
-	CancelDeadline          time.Time                            `json:"cancel_deadline,omitempty"`
-	CreatedAt               time.Time                            `json:"created_at"`
-	UpdatedAt               time.Time                            `json:"updated_at"`
-	Revision                uint64                               `json:"revision"`
+	Version                       uint32                               `json:"version"`
+	TenantID                      TenantID                             `json:"tenant_id"`
+	OwnerUserID                   UserID                               `json:"owner_user_id"`
+	WorkerID                      AttachedWorkerID                     `json:"worker_id"`
+	ConnectionID                  AttachedWorkerConnectionID           `json:"connection_id"`
+	ExecutionConnectionID         AttachedWorkerConnectionID           `json:"execution_connection_id,omitempty"`
+	RunID                         RunID                                `json:"run_id"`
+	AttemptID                     AttemptID                            `json:"attempt_id"`
+	ReservationID                 QuotaReservationID                   `json:"reservation_id"`
+	LeaseID                       LeaseID                              `json:"lease_id"`
+	LeaseGeneration               uint64                               `json:"lease_generation"`
+	FenceToken                    AttachedWorkerFenceToken             `json:"fence_token"`
+	EnrollmentGeneration          uint64                               `json:"enrollment_generation"`
+	ConnectionGeneration          uint64                               `json:"connection_generation"`
+	ExecutionConnectionGeneration uint64                               `json:"execution_connection_generation,omitempty"`
+	ContextDigest                 AttachedWorkerContextDigest          `json:"context_digest"`
+	CapabilityDigest              AttachedWorkerCapabilityDigest       `json:"capability_digest"`
+	PolicyDigest                  AttachedWorkerPolicyDigest           `json:"policy_digest"`
+	State                         AttachedWorkerAttemptState           `json:"state"`
+	PlatformAttemptSequence       uint64                               `json:"platform_attempt_sequence"`
+	WorkerAttemptSequence         uint64                               `json:"worker_attempt_sequence"`
+	ProgressSequence              uint64                               `json:"progress_sequence"`
+	CancelRevision                uint64                               `json:"cancel_revision"`
+	TerminalSequence              uint64                               `json:"terminal_sequence"`
+	TerminalStatus                AttachedWorkerTerminalStatus         `json:"terminal_status,omitempty"`
+	TerminalEvidenceDigest        AttachedWorkerTerminalEvidenceDigest `json:"terminal_evidence_digest,omitempty"`
+	LeaseExpiresAt                time.Time                            `json:"lease_expires_at"`
+	CancelDeadline                time.Time                            `json:"cancel_deadline,omitempty"`
+	CreatedAt                     time.Time                            `json:"created_at"`
+	UpdatedAt                     time.Time                            `json:"updated_at"`
+	Revision                      uint64                               `json:"revision"`
 }
 
 func (attempt AttachedWorkerAttemptV1) Validate() error {
@@ -533,6 +535,17 @@ func (attempt AttachedWorkerAttemptV1) Validate() error {
 	}
 	if err := attempt.ConnectionID.Validate(); err != nil {
 		return err
+	}
+	if (attempt.ExecutionConnectionID == "") != (attempt.ExecutionConnectionGeneration == 0) {
+		return ValidationError{Field: "attached_worker_attempt.execution_connection", Reason: "ID and generation must be present together"}
+	}
+	if attempt.ExecutionConnectionID != "" {
+		if err := attempt.ExecutionConnectionID.Validate(); err != nil {
+			return err
+		}
+		if attempt.ExecutionConnectionGeneration > attempt.ConnectionGeneration {
+			return ValidationError{Field: "attached_worker_attempt.execution_connection_generation", Reason: "must not exceed current generation"}
+		}
 	}
 	if err := attempt.RunID.Validate(); err != nil {
 		return err

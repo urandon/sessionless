@@ -92,6 +92,7 @@ func TestAttachedWorkerTablesAreExplicitlyResettable(t *testing.T) {
 	want := map[string]bool{
 		"attached_worker_attempt_deadlines_v1": false,
 		"attached_worker_attempt_messages":     false,
+		"attached_worker_output_receipts":      false,
 		"attached_worker_attempt_heads":        false,
 		"attached_worker_audit_events":         false,
 		"attached_worker_enrollments":          false,

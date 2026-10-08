@@ -242,6 +242,14 @@ func (store *Store) updateWithRuntimeLease(ctx context.Context, expectedRevision
 		!generationSecretChange(current.ConnectionGeneration, next.ConnectionGeneration, currentSecret.ConnectionSecret, nextSecret.ConnectionSecret) {
 		return ErrStateConflict
 	}
+	// A sealed provider outcome is not disposable reconnect state. A generic
+	// generation update must never erase it before a verified TerminalAck;
+	// recovery needs its own explicit, crash-safe transition.
+	if _, found, err := store.loadReceiptCheckpointOptionalLocked(current); err != nil {
+		return err
+	} else if found {
+		return ErrStateConflict
+	}
 	encodedSecret, err := encodeSecretRecord(nextSecret)
 	if err != nil {
 		return err
@@ -581,6 +589,7 @@ func (store *Store) validateInventory() error {
 		}
 		switch entry.Name() {
 		case ManifestFileName, SecretFileName, LogoutIntentFileName, ObservationFileName, ReconnectCheckpointFileName,
+			ReceiptCheckpointFileName,
 			StateLockFileName, RuntimeLockFileName:
 		default:
 			return ErrInvalidState

@@ -238,6 +238,11 @@ type FrontendProjectionWakePublisher interface {
 	PublishFrontendProjectionWake(context.Context, domain.TenantID, domain.RunID, time.Time) error
 }
 
+// For nonempty receipt objects, BlobStore.Put must not hide retries of an
+// ambiguously failed remote write. A successful return is used as evidence
+// that no earlier write to that key remains in flight; an ambiguous error
+// instead retains the deletion barrier. The receipt path rejects empty
+// objects because HTTP transports may replay bodyless PUTs.
 type BlobStore interface {
 	Put(ctx context.Context, tenantID domain.TenantID, key string, body io.Reader) (domain.BlobRef, error)
 	Open(ctx context.Context, tenantID domain.TenantID, ref domain.BlobRef) (io.ReadCloser, error)

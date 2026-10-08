@@ -116,6 +116,14 @@ func (store *Store) PollAttachedWorkerControl(ctx context.Context, request ports
 	}
 	err = store.Transact(ctx, request.TenantID, func(state ports.StateTx) error {
 		tx := state.(*stateTx)
+		member, err := attachedWorkerOwnerAuthorizedTx(ctx, tx, request.OwnerUserID)
+		if err != nil {
+			return err
+		}
+		if !member {
+			result.Status = ports.AttachedWorkerExecutionDenied
+			return nil
+		}
 		at, err := store.attachedWorkerTransactionTime(ctx, tx)
 		if err != nil {
 			return err
@@ -234,6 +242,14 @@ func (store *Store) ExchangeAttachedWorkerControl(ctx context.Context, request p
 	}
 	err = store.Transact(ctx, request.TenantID, func(state ports.StateTx) error {
 		tx := state.(*stateTx)
+		member, err := attachedWorkerOwnerAuthorizedTx(ctx, tx, request.OwnerUserID)
+		if err != nil {
+			return err
+		}
+		if !member {
+			result.Status = ports.AttachedWorkerExecutionDenied
+			return nil
+		}
 		at, err := store.attachedWorkerTransactionTime(ctx, tx)
 		if err != nil {
 			return err

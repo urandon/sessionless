@@ -57,6 +57,10 @@ type AttemptBroker interface {
 	ExchangeAttachedWorkerAttempt(context.Context, ports.AttachedWorkerAttemptExchange) (ports.AttachedWorkerAttemptResult, error)
 }
 
+type receiptTerminalCommitBroker interface {
+	CommitAttachedWorkerTerminal(context.Context, ports.AttachedWorkerTerminalCommit) (ports.AttachedWorkerAttemptResult, error)
+}
+
 type DrainBroker interface {
 	RequestAttachedWorkerDrain(context.Context, ports.AttachedWorkerDrainRequest) (ports.AttachedWorkerDrainResult, error)
 	PollAttachedWorkerControl(context.Context, ports.AttachedWorkerControlPoll) (ports.AttachedWorkerDrainResult, error)
@@ -76,6 +80,7 @@ type Service struct {
 	checkpointInterval time.Duration
 	store              ports.AttachedWorkerTransportStore
 	attemptBroker      AttemptBroker
+	receiptFinalizer   receiptTerminalCommitBroker
 	drainBroker        DrainBroker
 }
 
@@ -697,7 +702,33 @@ func (service *Service) AuthorizeSealedInputBearer(
 	return result.AttemptRevision, nil
 }
 
+// BindOutputReceiptBearer derives the secret digest from the authenticated
+// connection bearer. It does not authorize a write: the receipt store must
+// recheck the complete, mutable attempt head in its insert transaction.
+func (service *Service) BindOutputReceiptBearer(
+	rawBearer []byte,
+	request ports.AttachedWorkerSealedInputAuthorization,
+) (ports.AttachedWorkerSealedInputAuthorization, error) {
+	if service == nil || service.store == nil {
+		return ports.AttachedWorkerSealedInputAuthorization{}, ErrTransportUnauthorized
+	}
+	bearer, err := ParseConnectionBearer(rawBearer)
+	if err != nil || request.TenantID != bearer.tenantID || request.OwnerUserID != bearer.ownerUserID ||
+		request.WorkerID != bearer.workerID || request.ConnectionID != bearer.connectionID ||
+		request.PresentedSecretDigest != "" {
+		return ports.AttachedWorkerSealedInputAuthorization{}, ErrTransportUnauthorized
+	}
+	request.PresentedSecretDigest = bearer.secret.Digest()
+	return request, nil
+}
+
 func (service *Service) Exchange(ctx context.Context, bearer ConnectionBearer, batch attachedworkerprotocol.BatchV1) (*attachedworkerprotocol.BatchV1, error) {
+	return service.exchange(ctx, bearer, batch, true)
+}
+
+func (service *Service) exchange(ctx context.Context, bearer ConnectionBearer, batch attachedworkerprotocol.BatchV1,
+	retryConcurrentCheckpoint bool,
+) (*attachedworkerprotocol.BatchV1, error) {
 	if service == nil || service.store == nil || validateBatch(batch) != nil || len(batch.Frames) == 0 {
 		return nil, ErrTransportUnauthorized
 	}
@@ -787,6 +818,13 @@ func (service *Service) Exchange(ctx context.Context, bearer ConnectionBearer, b
 	})
 	if err != nil {
 		return nil, ErrTransportBackend
+	}
+	// A concurrent platform frame (for example Cancel) may advance the
+	// connection revision after our read but before this heartbeat checkpoint.
+	// Re-read once and validate the same frame and bearer against the new
+	// authority; revoked, denied, and persistent conflicts remain fail-closed.
+	if authorized.Status == ports.AttachedWorkerConnectionConflict && retryConcurrentCheckpoint {
+		return service.exchange(ctx, bearer, batch, false)
 	}
 	if authorized.Status != ports.AttachedWorkerConnectionAuthorized || authorized.Connection.Validate() != nil ||
 		authorized.Connection.TenantID != bearer.tenantID || authorized.Connection.OwnerUserID != bearer.ownerUserID ||
@@ -954,6 +992,19 @@ func (service *Service) exchangeAttemptFrame(ctx context.Context, bearer Connect
 	}
 	if !attemptResultMatchesBinding(result.Attempt, bearer, connection, binding) {
 		return nil, ErrTransportUnauthorized
+	}
+	if frame.Kind == attachedworkerprotocol.MessageTerminal && service.receiptFinalizer != nil {
+		committed, commitErr := service.receiptFinalizer.CommitAttachedWorkerTerminal(ctx, ports.AttachedWorkerTerminalCommit{
+			TenantID: bearer.tenantID, OwnerUserID: bearer.ownerUserID, WorkerID: bearer.workerID,
+			AttemptID: attemptID, LeaseGeneration: binding.LeaseGeneration,
+			Materialization: ports.AttachedWorkerTerminalMaterialization{
+				EvidenceDigest: domain.AttachedWorkerTerminalEvidenceDigest(hex.EncodeToString(frame.Terminal.EvidenceDigest)),
+			},
+		})
+		if commitErr != nil || committed.Status != ports.AttachedWorkerExecutionApplied &&
+			committed.Status != ports.AttachedWorkerExecutionReplayed {
+			return nil, ErrTransportBackend
+		}
 	}
 	return service.pollPlatformFrame(ctx, bearer, connection)
 }

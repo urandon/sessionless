@@ -10,8 +10,9 @@ import (
 )
 
 type Options struct {
-	TelegramWebhook           http.Handler
-	AttachedWorkerSealedInput http.Handler
+	TelegramWebhook             http.Handler
+	AttachedWorkerSealedInput   http.Handler
+	AttachedWorkerOutputReceipt http.Handler
 }
 
 // NewHandler builds the control API routing tree without optional frontend
@@ -32,6 +33,9 @@ func NewHandlerWithOptions(logger *slog.Logger, info buildinfo.Info, options Opt
 	}
 	if options.AttachedWorkerSealedInput != nil {
 		mux.Handle("POST /attached-worker/v1/sealed-input", options.AttachedWorkerSealedInput)
+	}
+	if options.AttachedWorkerOutputReceipt != nil {
+		mux.Handle("POST /attached-worker/v1/output-receipt", options.AttachedWorkerOutputReceipt)
 	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		logger.Info("route not found", "method", r.Method, "path", r.URL.Path)

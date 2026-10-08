@@ -249,6 +249,28 @@ func TestSessionLifecycleHoldWriteFenceInventoryAndCompletion(t *testing.T) {
 	if _, err := store.ReleaseSessionLegalHold(ctx, tenantID, session.ID, userID, now.Add(7*time.Second)); err != nil {
 		t.Fatal(err)
 	}
+	// A two-phase receipt reserves exact Object Storage keys before copying.
+	// Even if its run is terminal, deletion must wait for the writer to settle.
+	if _, err := client.DB.ExecContext(ctx,
+		`INSERT INTO attached_worker_output_receipts
+		 (tenant_id,run_id,owner_user_id,worker_id,attempt_id,lease_generation,
+		  canonical_digest,candidate_fingerprint,created_at,payload)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,CAST($10 AS JsonDocument))`,
+		tenantID, run.ID, userID, domain.AttachedWorkerID("pending-receipt-worker"), attempt.ID,
+		uint64(1), canonicalDigest, canonicalDigest, now, `{"ready":false}`,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RequestSessionDeletion(ctx, request); err == nil {
+		t.Fatal("pending receipt allowed destructive deletion request")
+	}
+	if _, err := client.DB.ExecContext(ctx,
+		`DELETE FROM attached_worker_output_receipts
+		 WHERE tenant_id=$1 AND run_id=$2 AND owner_user_id=$3 AND worker_id=$4 AND attempt_id=$5 AND lease_generation=$6`,
+		tenantID, run.ID, userID, domain.AttachedWorkerID("pending-receipt-worker"), attempt.ID, uint64(1),
+	); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := store.RequestSessionDeletion(ctx, request); err != nil {
 		t.Fatal(err)
 	}

@@ -7,6 +7,8 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/hex"
+	"encoding/json"
+	"slices"
 	"testing"
 	"time"
 
@@ -86,7 +88,7 @@ func TestAttachedWorkerTransportTwoPhaseAttachAuthorizationAndExpiry(t *testing.
 		Capability: ports.AttachedWorkerCapabilityTarget{
 			ManifestRevision: 1, Digest: capabilityDigest, ProtocolVersion: challenge.SelectedProtocolVersion,
 			IdentityKeyDigest: domain.DigestAttachedWorkerIdentityKey(worker.IdentityPublicKey),
-			CanonicalManifest: canonicalManifest, ManifestPayload: []byte(`{"version":1,"surface":"codex-exec"}`),
+			CanonicalManifest: canonicalManifest, ManifestPayload: attachedWorkerManifestPayloadFixture(t, readySnapshot),
 			Signature: manifestSignature,
 		},
 		PlatformSequence: 2, WorkerSequence: 3, PlatformAck: 2, WorkerAck: 2, ProtocolSnapshot: readySnapshot, PresenceTTL: time.Microsecond,
@@ -251,7 +253,7 @@ func TestAttachedWorkerTransportTwoPhaseAttachAuthorizationAndExpiry(t *testing.
 		Capability: ports.AttachedWorkerCapabilityTarget{
 			ManifestRevision: 1, Digest: capabilityDigest, ProtocolVersion: reconnectChallenge.SelectedProtocolVersion,
 			IdentityKeyDigest: domain.DigestAttachedWorkerIdentityKey(worker.IdentityPublicKey),
-			CanonicalManifest: canonicalManifest, ManifestPayload: []byte(`{"version":1,"surface":"codex-exec"}`),
+			CanonicalManifest: canonicalManifest, ManifestPayload: attachedWorkerManifestPayloadFixture(t, reconnectReadySnapshot),
 			Signature: reconnectManifestSignature,
 		},
 		PlatformSequence: 2, WorkerSequence: 3, PlatformAck: 2, WorkerAck: 2,
@@ -372,7 +374,7 @@ func TestAttachedWorkerTransportRevocationCleansStalePresenceExpiry(t *testing.T
 		Capability: ports.AttachedWorkerCapabilityTarget{
 			ManifestRevision: 1, Digest: capabilityDigest, ProtocolVersion: challenge.SelectedProtocolVersion,
 			IdentityKeyDigest: domain.DigestAttachedWorkerIdentityKey(worker.IdentityPublicKey),
-			CanonicalManifest: canonicalManifest, ManifestPayload: []byte(`{"version":1,"surface":"revoke-expiry"}`),
+			CanonicalManifest: canonicalManifest, ManifestPayload: attachedWorkerManifestPayloadFixture(t, readySnapshot),
 			Signature: manifestSignature,
 		},
 		PlatformSequence: 2, WorkerSequence: 3, PlatformAck: 2, WorkerAck: 2, ProtocolSnapshot: readySnapshot, PresenceTTL: time.Microsecond,
@@ -466,6 +468,7 @@ func attachedWorkerProtocolSnapshotFixture(
 	challenge domain.AttachedWorkerAttachChallenge,
 	privateKey ed25519.PrivateKey,
 	channelBinding []byte,
+	features ...attachedworkerprotocol.ProtocolFeatureV1,
 ) ([]byte, domain.AttachedWorkerCapabilityDigest, []byte, []byte, []byte) {
 	t.Helper()
 	offer := attachedworkerprotocol.VersionOfferV1{
@@ -473,6 +476,8 @@ func attachedWorkerProtocolSnapshotFixture(
 		Supported: []attachedworkerprotocol.ProtocolVersion{1},
 	}
 	manifest := attachedWorkerCapabilityManifestFixture(worker, offer)
+	manifest.Features = append(manifest.Features, features...)
+	slices.Sort(manifest.Features)
 	canonicalManifest, err := attachedworkerprotocol.CanonicalManifestBytesV1(manifest)
 	if err != nil {
 		t.Fatal(err)
@@ -534,6 +539,19 @@ func attachedWorkerProtocolSnapshotFixture(
 	return canonicalManifest, capabilityDigest, attachedBytes, readyBytes, append([]byte(nil), manifestFrame.Manifest.Signature...)
 }
 
+func attachedWorkerManifestPayloadFixture(t *testing.T, snapshotBytes []byte) []byte {
+	t.Helper()
+	snapshot, err := attachedworkerprotocol.DecodeMachineSnapshotV1(snapshotBytes)
+	if err != nil || snapshot.Manifest == nil {
+		t.Fatalf("decode signed manifest snapshot: %v", err)
+	}
+	payload, err := json.Marshal(snapshot.Manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return payload
+}
+
 func attachedWorkerCapabilityManifestFixture(worker domain.AttachedWorker, offer attachedworkerprotocol.VersionOfferV1) attachedworkerprotocol.CapabilityManifestV1 {
 	return attachedworkerprotocol.CapabilityManifestV1{
 		WorkerID: string(worker.ID), EnrollmentGeneration: worker.EnrollmentGeneration, Revision: 1, ProtocolOffer: offer,
@@ -561,6 +579,18 @@ func attachedWorkerReconnectProtocolSnapshotFixture(
 	challenge domain.AttachedWorkerAttachChallenge,
 	privateKey ed25519.PrivateKey,
 	channelBinding []byte,
+) ([]byte, []byte, []byte) {
+	return attachedWorkerReconnectProtocolSnapshotFixtureWithManifest(t, worker, previous, challenge, privateKey, channelBinding, nil)
+}
+
+func attachedWorkerReconnectProtocolSnapshotFixtureWithManifest(
+	t *testing.T,
+	worker domain.AttachedWorker,
+	previous domain.AttachedWorkerConnection,
+	challenge domain.AttachedWorkerAttachChallenge,
+	privateKey ed25519.PrivateKey,
+	channelBinding []byte,
+	canonicalManifest []byte,
 ) ([]byte, []byte, []byte) {
 	t.Helper()
 	previousSnapshot, err := attachedworkerprotocol.DecodeMachineSnapshotV1(previous.ProtocolSnapshot)
@@ -626,6 +656,16 @@ func attachedWorkerReconnectProtocolSnapshotFixture(
 	nextConfig := previousConfig
 	nextConfig.Auth = nextAuth
 	manifest := attachedWorkerCapabilityManifestFixture(worker, previousSnapshot.Hello.Offer)
+	if canonicalManifest != nil {
+		if previousSnapshot.Manifest == nil {
+			t.Fatal("reconnect snapshot has no accepted manifest")
+		}
+		encoded, err := attachedworkerprotocol.CanonicalManifestBytesV1(*previousSnapshot.Manifest)
+		if err != nil || !bytes.Equal(encoded, canonicalManifest) {
+			t.Fatalf("reconnect manifest differs from accepted canonical manifest: %v", err)
+		}
+		manifest = *previousSnapshot.Manifest
+	}
 	manifestFrame := attachedworkerprotocol.FrameV1{
 		Version:   attachedworkerprotocol.ProtocolVersion(previous.ProtocolVersion),
 		MessageID: attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionWorkerToPlatform, 3),

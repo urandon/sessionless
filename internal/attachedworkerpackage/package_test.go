@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -715,6 +716,69 @@ func TestAtomicStageFaultsDistinguishPreAndPostRename(t *testing.T) {
 	entries, err := os.ReadDir(root)
 	if err != nil || len(entries) != 1 || entries[0].Name() != "unit.service" {
 		t.Fatalf("fault left temporary output: %+v %v", entries, err)
+	}
+}
+
+func TestPackageUnitNameScopesCollidingWorkerLocator(t *testing.T) {
+	base := attachedworkerlocal.ManifestV1{
+		TenantID: "tenant-a", OwnerUserID: "owner-a", WorkerID: "shared-worker",
+	}
+	otherOwner := base
+	otherOwner.OwnerUserID = "owner-b"
+	otherTenant := base
+	otherTenant.TenantID = "tenant-b"
+	config := Config{Mode: ModeRootlessContainer, InstallDir: t.TempDir()}
+	basePath, _ := paths(config, base)
+	for name, manifest := range map[string]attachedworkerlocal.ManifestV1{
+		"other owner":  otherOwner,
+		"other tenant": otherTenant,
+	} {
+		path, _ := paths(config, manifest)
+		if path == basePath || nativeName(manifest) == nativeName(base) {
+			t.Fatalf("%s with the same worker locator shares a service/container name", name)
+		}
+	}
+	if path, _ := paths(config, base); path != basePath {
+		t.Fatal("scoped service name is not deterministic")
+	}
+}
+
+func TestPackageRefusesLegacyWorkerOnlyUnit(t *testing.T) {
+	for _, fixture := range []struct {
+		name   string
+		suffix string
+	}{
+		{name: "unit"},
+		{name: "stage-receipt", suffix: ".receipt.json"},
+		{name: "native-receipt", suffix: ".native-receipt.json"},
+		{name: "native-pending", suffix: ".native-pending.json"},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			store, config := packageFixture(t)
+			snapshot, err := store.LoadSnapshot(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(config.InstallDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			legacyHash := sha256.Sum256([]byte("worker-001"))
+			legacyName := fmt.Sprintf("sessionless-attached-worker-%x", legacyHash[:8])
+			if config.Mode == ModeLaunchd {
+				legacyName += ".plist"
+			} else {
+				legacyName += ".service"
+			}
+			if err := os.WriteFile(filepath.Join(config.InstallDir, legacyName+fixture.suffix), []byte("legacy"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := checkLegacyWorkerOnlyUnit(config, snapshot.Manifest); !errors.Is(err, ErrConflict) {
+				t.Fatalf("legacy unit %q did not fence replacement: %v", fixture.name, err)
+			}
+			if _, err := Plan(context.Background(), config, 0); !errors.Is(err, ErrConflict) {
+				t.Fatalf("package plan did not fence legacy %s: %v", fixture.name, err)
+			}
+		})
 	}
 }
 

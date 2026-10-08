@@ -278,6 +278,80 @@ func TestActiveControlRunnerTreatsParentCancellationDeterministically(t *testing
 	}
 }
 
+func TestActiveControlRunnerSettlesInFlightHeartbeatBeforeTerminal(t *testing.T) {
+	delegate := &runtimeRunner{started: make(chan struct{}, 1), release: make(chan struct{})}
+	watcher := &settlingControlWatcher{
+		started: make(chan struct{}), stopObserved: make(chan struct{}),
+		release: make(chan struct{}), canceled: make(chan struct{}),
+	}
+	runner := &activeControlRunner{
+		delegate: delegate, watcher: watcher, target: &fakeActiveController{},
+		interval: time.Second, cleanup: time.Second,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	done := make(chan error, 1)
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		_, err := runner.Run(ctx, runtimeInvocation("attempt-settled-heartbeat"))
+		done <- err
+	}()
+	t.Cleanup(func() {
+		cancel()
+		waitRuntimeSignal(t, finished, "settled-heartbeat runner did not stop during cleanup")
+	})
+	waitRuntimeSignal(t, delegate.started, "delegate did not start")
+	waitRuntimeSignal(t, watcher.started, "heartbeat did not start")
+	close(delegate.release)
+	waitRuntimeSignal(t, watcher.stopObserved, "delegate completion did not stop future heartbeats")
+	select {
+	case err := <-done:
+		t.Fatalf("runner returned before in-flight heartbeat settled: %v", err)
+	default:
+	}
+	close(watcher.release)
+	if err := waitRuntimeResult(t, done, "runner did not settle heartbeat"); err != nil {
+		t.Fatalf("settled heartbeat result: %v", err)
+	}
+	select {
+	case <-watcher.canceled:
+		t.Fatal("delegate completion canceled an in-flight heartbeat")
+	default:
+	}
+}
+
+func TestActiveControlRunnerFencesUnsettledHeartbeatAtCleanupDeadline(t *testing.T) {
+	delegate := &runtimeRunner{started: make(chan struct{}, 1), release: make(chan struct{})}
+	watcher := &settlingControlWatcher{
+		started: make(chan struct{}), stopObserved: make(chan struct{}),
+		release: make(chan struct{}), canceled: make(chan struct{}),
+	}
+	runner := &activeControlRunner{
+		delegate: delegate, watcher: watcher, target: &fakeActiveController{},
+		interval: time.Second, cleanup: 50 * time.Millisecond,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	done := make(chan error, 1)
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		_, err := runner.Run(ctx, runtimeInvocation("attempt-unsettled-heartbeat"))
+		done <- err
+	}()
+	t.Cleanup(func() {
+		cancel()
+		waitRuntimeSignal(t, finished, "unsettled-heartbeat runner did not stop during cleanup")
+	})
+	waitRuntimeSignal(t, delegate.started, "delegate did not start")
+	waitRuntimeSignal(t, watcher.started, "heartbeat did not start")
+	close(delegate.release)
+	waitRuntimeSignal(t, watcher.stopObserved, "delegate completion did not stop future heartbeats")
+	if err := waitRuntimeResult(t, done, "runner did not fence unsettled heartbeat"); !errors.Is(err, ErrReconciliationRequired) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("unsettled heartbeat result=%v", err)
+	}
+	waitRuntimeSignal(t, watcher.canceled, "unsettled heartbeat was not canceled after cleanup deadline")
+}
+
 func TestSafeRuntimeCleanupTimeoutUsesOnlyValidBound(t *testing.T) {
 	for _, invalid := range []time.Duration{-time.Second, 0, time.Minute + time.Nanosecond} {
 		if got := safeRuntimeCleanupTimeout(invalid); got != defaultRuntimeCleanupTimeout {
@@ -403,8 +477,55 @@ type runtimeWatcher struct {
 	identity     attachedworkerdaemon.InvocationIdentity
 }
 
-func (watcher *runtimeWatcher) WatchActiveControl(
+type settlingControlWatcher struct {
+	started      chan struct{}
+	stopObserved chan struct{}
+	release      chan struct{}
+	canceled     chan struct{}
+}
+
+func (watcher *settlingControlWatcher) WatchActiveControlUntil(
 	ctx context.Context,
+	stop <-chan struct{},
+	_ attachedworkerdaemon.InvocationIdentity,
+	_ ActiveAttemptController,
+	_ time.Duration,
+) (ActiveControl, error) {
+	close(watcher.started)
+	select {
+	case <-watcher.release:
+	case <-stop:
+		close(watcher.stopObserved)
+		select {
+		case <-watcher.release:
+		case <-ctx.Done():
+			close(watcher.canceled)
+			return "", errors.Join(ErrReconciliationRequired, ctx.Err())
+		}
+	case <-ctx.Done():
+		close(watcher.canceled)
+		return "", errors.Join(ErrReconciliationRequired, ctx.Err())
+	}
+	if err := ctx.Err(); err != nil {
+		close(watcher.canceled)
+		return "", errors.Join(ErrReconciliationRequired, err)
+	}
+	select {
+	case <-stop:
+		if err := ctx.Err(); err != nil {
+			close(watcher.canceled)
+			return "", errors.Join(ErrReconciliationRequired, err)
+		}
+		return "", nil
+	case <-ctx.Done():
+		close(watcher.canceled)
+		return "", errors.Join(ErrReconciliationRequired, ctx.Err())
+	}
+}
+
+func (watcher *runtimeWatcher) WatchActiveControlUntil(
+	ctx context.Context,
+	stop <-chan struct{},
 	identity attachedworkerdaemon.InvocationIdentity,
 	target ActiveAttemptController,
 	_ time.Duration,
@@ -421,15 +542,23 @@ func (watcher *runtimeWatcher) WatchActiveControl(
 		if err := target.RequestDrain(ctx); err != nil {
 			return "", err
 		}
-		<-ctx.Done()
-		return "", ctx.Err()
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-stop:
+			return "", nil
+		}
 	}
 	switch watcher.control {
 	case ActiveControlCancelled:
 		return watcher.control, target.CancelActive(ctx, identity)
 	default:
-		<-ctx.Done()
-		return "", ctx.Err()
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-stop:
+			return "", nil
+		}
 	}
 }
 

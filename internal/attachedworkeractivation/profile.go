@@ -148,7 +148,18 @@ func Connect(ctx context.Context, store *attachedworkerlocal.Store, profile Prof
 // shipped command always calls Connect, which uses the real clock and the
 // immutable 15-minute transport minimum.
 func ConnectWithClock(ctx context.Context, store *attachedworkerlocal.Store, profile ProfileV1, now func() time.Time) (*attachedworkersealedinput.SyntheticRuntime, error) {
-	if ctx == nil || ctx.Err() != nil || store == nil {
+	return connectWithClock(ctx, store, profile, now, 15*time.Second,
+		attachedworkersealedinput.ConnectSyntheticPinnedRuntime,
+		attachedworkersealedinput.ReconnectSyntheticPinnedRuntime)
+}
+
+type runtimeConnector func(context.Context, attachedworkersealedinput.SyntheticRuntimeConfig) (*attachedworkersealedinput.SyntheticRuntime, error)
+
+func connectWithClock(ctx context.Context, store *attachedworkerlocal.Store, profile ProfileV1, now func() time.Time,
+	operationTimeout time.Duration,
+	initial, reconnect runtimeConnector,
+) (*attachedworkersealedinput.SyntheticRuntime, error) {
+	if ctx == nil || ctx.Err() != nil || store == nil || operationTimeout <= 0 || operationTimeout > time.Minute {
 		return nil, ErrInvalidProfile
 	}
 	snapshot, err := store.LoadSnapshot(ctx)
@@ -174,13 +185,15 @@ func ConnectWithClock(ctx context.Context, store *attachedworkerlocal.Store, pro
 	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}}
-	bootstrap, err := attachedworkerhttp.NewBootstrapClient(attachedworkerhttp.BootstrapClientConfig{BaseURL: profile.ControlPlaneOrigin, HTTPClient: client})
+	bootstrap, err := attachedworkerhttp.NewBootstrapClient(attachedworkerhttp.BootstrapClientConfig{
+		BaseURL: profile.ControlPlaneOrigin, HTTPClient: client, RequestTimeout: operationTimeout,
+	})
 	if err != nil {
 		transport.CloseIdleConnections()
 		return nil, ErrInvalidProfile
 	}
 	exchange, err := attachedworkersession.NewHTTPExchangeFactory(attachedworkersession.HTTPExchangeFactoryConfig{
-		BaseURL: profile.ControlPlaneOrigin, RootCAs: roots,
+		BaseURL: profile.ControlPlaneOrigin, RootCAs: roots, RequestTimeout: operationTimeout,
 	})
 	if err != nil {
 		transport.CloseIdleConnections()
@@ -192,7 +205,7 @@ func ConnectWithClock(ctx context.Context, store *attachedworkerlocal.Store, pro
 		Session: attachedworkersession.Config{
 			Audience: "sessionless:attached-worker:v1", WorkerOffer: offer,
 			ImplementedVersions: []attachedworkerprotocol.ProtocolVersion{attachedworkerprotocol.ProtocolVersionV1},
-			OperationTimeout:    15 * time.Second, Now: now,
+			OperationTimeout:    operationTimeout, Now: now,
 		},
 		Connect: attachedworkersession.ConnectInputV1{
 			ExpectedWorkerRevision: profile.ExpectedWorkerRevision,
@@ -201,8 +214,9 @@ func ConnectWithClock(ctx context.Context, store *attachedworkerlocal.Store, pro
 		SealedEndpoint: profile.ControlPlaneOrigin + attachedworkersealedinput.PathV1,
 		SealedClient:   client, MaxInputBytes: profile.MaxInputBytes, Now: now,
 		Adapter: attachedworkerdaemontransport.Config{
-			Profile: profile.LocalProfile, MaterializationRoot: profile.MaterializationRoot,
-			MaxInputBytes: profile.MaxInputBytes, Now: now,
+			Profile: profile.LocalProfile, CapabilityManifest: &profile.Capability,
+			MaterializationRoot: profile.MaterializationRoot,
+			MaxInputBytes:       profile.MaxInputBytes, ReportTimeout: operationTimeout, Now: now,
 		},
 		Poll: attachedworkertransport.Config{
 			Enabled: true, PollInterval: attachedworkertransport.MinimumHeartbeatInterval,
@@ -215,9 +229,17 @@ func ConnectWithClock(ctx context.Context, store *attachedworkerlocal.Store, pro
 	}
 	var owner *attachedworkersealedinput.SyntheticRuntime
 	if snapshot.Manifest.ConnectionGeneration == 0 {
-		owner, err = attachedworkersealedinput.ConnectSyntheticPinnedRuntime(ctx, config)
+		if initial == nil {
+			transport.CloseIdleConnections()
+			return nil, ErrInvalidProfile
+		}
+		owner, err = initial(ctx, config)
 	} else {
-		owner, err = attachedworkersealedinput.ReconnectSyntheticPinnedRuntime(ctx, config)
+		if reconnect == nil {
+			transport.CloseIdleConnections()
+			return nil, ErrInvalidProfile
+		}
+		owner, err = reconnect(ctx, config)
 	}
 	if err != nil {
 		transport.CloseIdleConnections()

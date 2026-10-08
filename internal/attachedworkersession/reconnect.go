@@ -130,6 +130,21 @@ func (connector *Connector) reconnect(ctx context.Context, input ConnectInputV1)
 		result.reconciliation = true
 		return result
 	}
+	// The process outcome is sealed but active recovery is not yet authorized
+	// by this constructor. Refuse any network reconnect or fresh dispatch
+	// rather than silently discarding the post-run submission.
+	journal, ok := lease.(receiptCheckpointLease)
+	if !ok {
+		result.err = ErrReconciliationRequired
+		result.reconciliation = true
+		return result
+	}
+	if _, journalErr := journal.LoadReceiptCheckpoint(ctx); journalErr == nil ||
+		!errors.Is(journalErr, attachedworkerlocal.ErrStateMissing) {
+		result.err = ErrReconciliationRequired
+		result.reconciliation = true
+		return result
+	}
 	manifest := localSnapshot.Manifest
 	if validateCapabilityAuthority(manifest, input.CapabilityManifest, connector.config.WorkerOffer) != nil ||
 		checkpoint.Validate(manifest) != nil || manifest.ConnectionGeneration == 0 ||

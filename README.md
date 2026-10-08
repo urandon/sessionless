@@ -97,7 +97,9 @@ release gates and explicit configuration are satisfied.
   restart fencing in a clock-controlled test process. Neither needs Docker
   or provider credentials. `make attached-worker-security-gate` repeats the
   two-owner transport and recovery checks under the race detector;
-  `make attached-worker-security-ydb-gate` requires an already migrated YDB.
+  `make attached-worker-security-ydb-gate` requires an already migrated YDB;
+  `make attached-worker-joined-provider-ydb-gate` runs its focused, test-only
+  credential-and-receipt daemon scenario.
 - **Architect or security reviewer:** start with the
   [domain/runtime contracts](docs/contracts.md) and
   [security documentation](docs/README.md#security-and-trust-boundaries).

@@ -276,6 +276,12 @@ func TestManifestDigestIsCanonicalAndSensitive(t *testing.T) {
 	changed.Features = []ProtocolFeatureV1{FeatureProgress, FeatureCancellation}
 	requireCode(t, changed.Validate(), ErrorMalformedFrame)
 	changed = fixture.manifest
+	changed.Features = []ProtocolFeatureV1{FeatureCancellation, FeatureOutputReceipt, FeatureProgress, FeatureReconnect}
+	fourth, err := ManifestDigestV1(changed)
+	if err != nil || bytes.Equal(first, fourth) {
+		t.Fatalf("output receipt must be a negotiated, digest-bound feature: digest=%x err=%v", fourth, err)
+	}
+	changed = fixture.manifest
 	changed.IsolationEvidence = append(changed.IsolationEvidence, IsolationProcessBoundary)
 	requireCode(t, changed.Validate(), ErrorMalformedFrame)
 }

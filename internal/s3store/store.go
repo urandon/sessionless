@@ -88,6 +88,21 @@ type iamObjectClient struct {
 	presign  ycstorage.PresignServiceClient
 }
 
+// A successful immutable Put must not follow an earlier ambiguous write to
+// the same key: that earlier write could finish after deletion. Suppress the
+// net/http transport's replay of body-bearing PUTs in addition to the SDK's
+// operation-level retry policy. A failed single request remains ambiguous and
+// the receipt layer retains its deletion barrier.
+type noReplayPutHTTPClient struct{ delegate s3.HTTPClient }
+
+func (client noReplayPutHTTPClient) Do(request *http.Request) (*http.Response, error) {
+	if request.Method == http.MethodPut && request.Body != nil {
+		request = request.Clone(request.Context())
+		request.GetBody = nil
+	}
+	return client.delegate.Do(request)
+}
+
 func New(ctx context.Context, config Config) (*Store, error) {
 	if strings.TrimSpace(config.Region) == "" {
 		return nil, fmt.Errorf("S3 region is required")
@@ -152,6 +167,7 @@ func New(ctx context.Context, config Config) (*Store, error) {
 	}
 
 	client := s3.NewFromConfig(awsConfig, func(options *s3.Options) {
+		options.HTTPClient = noReplayPutHTTPClient{delegate: options.HTTPClient}
 		options.UsePathStyle = config.ForcePathStyle
 		options.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
 		options.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
@@ -473,7 +489,7 @@ func (store *Store) Put(
 			Key:           aws.String(objectKey),
 			Body:          bytes.NewReader(data),
 			ContentLength: aws.Int64(int64(len(data))),
-		})
+		}, func(options *s3.Options) { options.RetryMaxAttempts = 1 })
 	}
 	if err != nil {
 		return domain.BlobRef{}, fmt.Errorf("put S3 object: %w", err)
@@ -924,6 +940,9 @@ func (client *iamObjectClient) doWithHeaders(
 		request.Header.Set("x-amz-checksum-mode", "ENABLED")
 	}
 	request.ContentLength = contentLength
+	if method == http.MethodPut && request.Body != nil {
+		request.GetBody = nil
+	}
 	response, err := client.http.Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("Object Storage %s: %w", method, err)

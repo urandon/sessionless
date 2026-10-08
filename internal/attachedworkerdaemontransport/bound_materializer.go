@@ -11,6 +11,7 @@ import (
 	"sort"
 	"time"
 
+	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemon"
 	"gitcode.com/urandon/sessionless/internal/domain"
 )
 
@@ -40,10 +41,11 @@ type SealedArtifactV1 struct {
 }
 
 type SealedInputV1 struct {
-	Job       domain.WorkerJob
-	Manifest  domain.ArtifactManifest
-	Context   []byte
-	Artifacts []SealedArtifactV1
+	Job        domain.WorkerJob
+	Manifest   domain.ArtifactManifest
+	Context    []byte
+	Artifacts  []SealedArtifactV1
+	Credential *attachedworkerdaemon.CredentialInvocation `json:"Credential,omitempty"`
 }
 
 // BoundMaterializer is the credential-free, in-memory synthetic input path.
@@ -54,6 +56,8 @@ type BoundMaterializer struct {
 	source   SealedInputSource
 	maxBytes int
 	now      func() time.Time
+	// Only the ydbintegration-tagged test constructor can enable this path.
+	allowTestProvider bool
 }
 
 func NewBoundMaterializer(source SealedInputSource, maxBytes int, now func() time.Time) (*BoundMaterializer, error) {
@@ -127,9 +131,36 @@ func (materializer *BoundMaterializer) Materialize(ctx context.Context, request 
 	if err != nil || !digestEquals(request.Attempt.ContextDigest, string(digest)) {
 		return MaterializedInputV1{}, ErrSealedInputInvalid
 	}
+	provider := job.HarnessBinding.Backend.ProviderContractKind == domain.ProviderContractInvocationV1
 	if job.ContextWindow != nil || job.WorkspaceSnapshot != nil || job.SkillBundle != nil ||
-		job.HarnessBinding.Backend.ProviderContractKind != domain.ProviderContractCredentiallessFixtureV1 {
+		provider && !materializer.allowTestProvider ||
+		!provider && job.HarnessBinding.Backend.ProviderContractKind != domain.ProviderContractCredentiallessFixtureV1 {
 		return MaterializedInputV1{}, ErrSealedInputUnsupported
+	}
+	if provider {
+		identity := attachedworkerdaemon.InvocationIdentity{
+			TenantID: request.TenantID, OwnerUserID: request.OwnerUserID, WorkerID: request.WorkerID,
+			RunID: domain.RunID(request.Attempt.RunID), AttemptID: domain.AttemptID(request.Attempt.AttemptID),
+			LeaseID: domain.LeaseID(request.Attempt.LeaseID), FenceToken: request.Attempt.LeaseGeneration,
+		}
+		fence, fenceErr := domain.NewAttachedWorkerFenceTokenV1(identity.TenantID, identity.OwnerUserID,
+			identity.WorkerID, identity.RunID, identity.AttemptID, identity.LeaseID, identity.FenceToken)
+		if job.HarnessBinding.Backend.CredentialDeliveryKind != domain.ProviderCredentialDeliveryFileV1 ||
+			job.HarnessBinding.Resource.Kind != domain.ProviderResourceSubscriptionV1 ||
+			fenceErr != nil || string(fence) != request.Attempt.FenceToken ||
+			input.Credential == nil || input.Credential.ValidateFor(identity) != nil ||
+			input.Credential.HomeEnvironment != "SESSIONLESS_PROVIDER_HOME" ||
+			input.Credential.ExpectedBindingGeneration != job.HarnessBinding.Resource.CredentialGeneration ||
+			input.Credential.IssueRequest.ProviderResource != job.HarnessBinding.Resource ||
+			input.Credential.IssueRequest.Run.ID != job.RunID ||
+			input.Credential.IssueRequest.Attempt.ID != job.AttemptID ||
+			input.Credential.IssueRequest.Lease.ID != domain.LeaseID(request.Attempt.LeaseID) ||
+			input.Credential.IssueRequest.Lease.FenceToken != request.Attempt.LeaseGeneration ||
+			input.Credential.IssueRequest.ValidateAt(materializer.now().UTC()) != nil {
+			return MaterializedInputV1{}, ErrSealedInputInvalid
+		}
+	} else if input.Credential != nil {
+		return MaterializedInputV1{}, ErrSealedInputInvalid
 	}
 	if !blobMatches(job.ContextSnapshot, input.Context, materializer.maxBytes) ||
 		uint64(len(input.Context)) > job.Limits.MaxContextBytes ||
@@ -166,7 +197,12 @@ func (materializer *BoundMaterializer) Materialize(ctx context.Context, request 
 		clearBytes(envelope)
 		return MaterializedInputV1{}, ErrSealedInputInvalid
 	}
-	return MaterializedInputV1{Stdin: envelope}, nil
+	result := MaterializedInputV1{Stdin: envelope}
+	if provider {
+		credential := *input.Credential
+		result.Credential = &credential
+	}
+	return result, nil
 }
 
 // boundedSealedMetadata rejects oversized source-controlled typed metadata

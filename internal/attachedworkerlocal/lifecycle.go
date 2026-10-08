@@ -338,6 +338,9 @@ func (store *Store) Logout(ctx context.Context, input LogoutInputV1) (result Log
 	if err := store.removeDurable(ReconnectCheckpointFileName); err != nil {
 		return LogoutResultV1{Version: 1, Code: Code(err)}, err
 	}
+	if err := store.removeDurable(ReceiptCheckpointFileName); err != nil {
+		return LogoutResultV1{Version: 1, Code: Code(err)}, err
+	}
 	if err := store.removeDurable(SecretFileName); err != nil {
 		return LogoutResultV1{Version: 1, Code: Code(err)}, err
 	}
@@ -416,6 +419,7 @@ func (store *Store) UninstallPlan(ctx context.Context) (result UninstallPlanV1, 
 		{"logout_intent", LogoutIntentFileName, false}, {"state_lock", StateLockFileName, true},
 		{"runtime_lock", RuntimeLockFileName, true}, {"runtime_observation", ObservationFileName, false},
 		{"reconnect_checkpoint", ReconnectCheckpointFileName, false},
+		{"receipt_checkpoint", ReceiptCheckpointFileName, false},
 	} {
 		present, err := store.filePresentSecure(entry.name)
 		if err != nil {

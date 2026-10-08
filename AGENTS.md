@@ -3,8 +3,11 @@
 ## Product direction
 - Build a multi-frontend product whose canonical conversation state is an
   append-only `Session` event stream owned by Sessionless.
-- Telegram is the first frontend adapter, not the source of truth. WebUI and
-  later frontends bind external conversations to the same canonical sessions.
+- Telegram is an implemented frontend adapter, not the source of truth.
+  WebUI is the first MVP launch frontend; Telegram messaging/Cloudflare rollout
+  is deferred until after MVP. All frontends bind to the same canonical sessions.
+- Follow `docs/mvp-delivery-plan.md` for current release scope. Do not promote
+  post-MVP sharing, administration or exhaustive recovery work into hidden gates.
 - `/new` creates a new session and atomically switches the current frontend
   binding. It never mutates or truncates an existing session.
 - Support user messages with images/files and project AI results back to every

@@ -51,7 +51,7 @@ starts the service. Existing `status` and `doctor` remain historical local
 state reads; use the `live-*` commands to ask the current owner. Neither
 surface proves a control-plane connection.
 
-## Explicit synthetic activation (#165, in progress)
+## Explicit synthetic activation (#165, implemented)
 
 The optional `--activation-profile` is a private, owner-owned `0600` JSON file
 in a canonical `0700` directory. It pins the tenant, owner, worker,
@@ -266,5 +266,6 @@ rootless CI gate provisions its own test-owned engine and runs this target;
 ordinary tests never start Docker. The exact-binary accepted-attempt proof
 waits through the shipped 15-minute post-Manifest heartbeat cooldown; the CI
 fixture does not shorten the production cadence. The Mac user-service gate
-uses launchd instead. #79 remains the separate two-owner security/recovery
-release gate.
+uses launchd instead. #79/#166 completed the separate bounded two-owner
+isolation/terminal gate. Real-provider rollout-platform evidence remains in
+#133; this synthetic fixture does not enable it.

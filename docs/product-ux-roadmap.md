@@ -24,6 +24,15 @@ migration, provider/credential access or runtime activation is authorized here.
 
 ## 1. Track map: reuse before adding epics
 
+Release rebaseline (2026-10-09): [WebUI-first MVP](mvp-delivery-plan.md)
+owns current launch gates and the remaining-work Gantt. The chart below stays
+a historical post-MVP design scenario, not a release schedule. #138/#139 are
+closed accepted design deliveries; #141–#145 now belong to chat usability epic
+#155, not mandatory work to close #29. No full selector/admin/recovery track
+becomes a launch dependency through this roadmap. Parent/registration names in
+the tables below describe the pinned 2026-10-01 design snapshot, not current
+tracker parentage; the owning live chat implementation epic is #155.
+
 | Track | Existing owner | Proposed work / boundary |
 |---|---|---|
 | Current authenticated WebUI delivery | #29; #30–#33 closed; #34/#35 open in inspected snapshot | Continue deployment → E2E under existing gates. No UX research dependency added |

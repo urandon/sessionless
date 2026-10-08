@@ -215,9 +215,9 @@ worker ID and identity key, cross-owner sealed-input requests are denied, and
 revoking one worker does not revoke the other's claim. Tagged releases also
 require this exact-YDB gate before image publication. The YDB
 target needs `YDB_CONNECTION_STRING` and credentials appropriate for the
-already migrated test database. Neither gate enables real provider access;
-the wider #79 security E2E still needs the rootless platform proof and joined
-crash/reconnect cases.
+already migrated test database. Neither gate enables real provider access.
+The bounded #79/#166 gate is now closed; rollout-platform isolation and egress
+remain #133's responsibility, not a new exhaustive #79 reopening condition.
 CI also runs the focused joined-provider gate first, then the complete security
 gate, in its own job with a newly started YDB Local alongside the full YDB
 integration job. Both jobs must pass before runtime images are checked. The
@@ -269,15 +269,15 @@ composition, exact owner-specific object reads, active A revocation without
 stopping B, B cancellation-to-pending-terminal behavior, exact digest
 fail-closure, and attempt-root/sentinel cleanup, not a real OCI or provider
 resource boundary. The joined provider test above adds the test credential and
-receipt path, but #79 remains open for the rootless two-owner canary and the
-remaining crash/reconnect races in the same joined scenario.
+receipt path and completed the narrowed #79 gate. It does not claim a real
+provider turn or an exhaustive rootless two-owner crash/reconnect matrix.
 The receipt YDB gate separately pins distinct test-only provider resource IDs
 and credential generations to the two owners. It rejects a successful receipt
 without credential-release evidence, then proves an owner-A canonical receipt
 and TerminalAck leave owner B's run untouched. This is a storage and protocol
 authority check by itself. The joined provider test above now exercises the
-activated test-only credential lifecycle; the real rootless two-owner platform
-proof remains open for #79.
+activated test-only credential lifecycle. Actual rollout-platform egress and
+isolation proof remains required by #133 before enabling real credentials.
 The opt-in `make attached-worker-native-integration` exercises one exact
 test-owned launchd or systemd user-service lifecycle. The separate opt-in
 `make attached-worker-rootless-integration` runs the same lifecycle on Linux
@@ -289,10 +289,11 @@ Staging does not register or start an OS service or container. With no explicit
 private activation profile, the foreground owner remains feature-disabled.
 The opt-in #165 synthetic/denied-credential path is described in
 [attached-worker-packaging.md](attached-worker-packaging.md); it never enables
-provider credentials or provider calls. The rootless service remains offline
-and does not accept that profile. #137's package/service gate is closed;
-#165's explicit activated rootless unit is in progress; its end-to-end
-platform acceptance and independent security review remain open.
+provider credentials or provider calls. #137/#165 are closed, including the
+explicit activated rootless service path using narrowly configured host-engine
+authority. The default unactivated rootless service remains offline. This
+synthetic platform proof does not enable a real provider or remove #133's
+rollout-specific egress/isolation gate.
 
 The owner-facing AW-06a information architecture, read-model safety boundary,
 and control-action gates are documented in
@@ -387,6 +388,11 @@ endpoint instead of replacing it with YDB Local's host-facing discovery
 address. Cloud deployments retain normal endpoint discovery and balancing.
 
 ## Web authentication development
+
+For release scope, see the [WebUI-first MVP delivery plan](mvp-delivery-plan.md).
+The following describes the implemented Telegram OIDC path, not an already
+shipped independent login. #168 owns that bounded adapter change; no bot
+webhook initialization is required for the existing invitation/bootstrap path.
 
 The Web BFF and Telegram-shaped OIDC fixture are separate Go processes. The
 fixture generates an ephemeral RS256 key at process start and refuses to start

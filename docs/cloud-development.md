@@ -570,6 +570,12 @@ queues, or other state-bearing resources.
 
 ### 9. Verify the Yandex foundation
 
+The [WebUI-first MVP plan](mvp-delivery-plan.md) does not require the Telegram
+messaging edge or Cloudflare runtime deployment. The commands here are the
+implemented smoke, not complete browser/product proof. Current login and this
+smoke still target Telegram OIDC; #168/#34 must update and verify them for the
+selected independent issuer before #35's release proof.
+
 ```sh
 export CLOUD_API_URL="$(./scripts/cloud-terraform.sh output -raw api_url)"
 export CONTROL_CONTAINER_URL="$(./scripts/cloud-terraform.sh output -json control_slot_urls | jq -r .blue)"
@@ -581,6 +587,16 @@ export WEB_IMAGE_REF="$(./scripts/cloud-terraform.sh output -raw web_image_ref)"
 export WEB_PREPARED_INSTANCES="$(./scripts/cloud-terraform.sh output -raw web_prepared_instances)"
 export WEB_CONCURRENCY="$(./scripts/cloud-terraform.sh output -raw web_concurrency)"
 ./scripts/cloud-web-smoke.sh
+```
+
+### Optional post-MVP Telegram edge deployment
+
+Run this section only under a separately authorized Telegram transport rollout.
+It is not a prerequisite for using the WebUI or its Yandex DNS/certificate.
+Parent-zone DNS configuration alone does not authorize Cloudflare Workers or
+Telegram webhook deployment.
+
+```sh
 
 export CLOUDFLARE_ACCOUNT_ID='loaded from the Cloudflare account metadata'
 export CLOUDFLARE_API_TOKEN='loaded by credential-store command'

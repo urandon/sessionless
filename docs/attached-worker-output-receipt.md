@@ -1,10 +1,11 @@
 # Attached-worker canonical output receipt (#166 implementation contract)
 
-Status: design owned by the implementation/review process under
-[#166](https://gitcode.com/urandon/sessionless/issues/166), a bounded child of
-#79. It does not require product-owner approval for each field. This document
-is not an enablement decision: the current activated daemon remains
-`synthetic-denied`, and #79 is not complete.
+Status: implemented and independently reviewed under closed
+[#166](https://gitcode.com/urandon/sessionless/issues/166) and
+[#79](https://gitcode.com/urandon/sessionless/issues/79), merged in MR !147.
+The bounded two-owner positive receipt/TerminalAck gate passed; the real
+provider remains disabled. #76/#133 own normal product composition and rollout
+under the [WebUI-first MVP plan](mvp-delivery-plan.md).
 
 ## Why a receipt is necessary
 
@@ -12,10 +13,11 @@ The daemon's current Terminal digest commits process, isolation, credential
 lifecycle, and cleanup observations. `CommitAttachedWorkerTerminal` requires a
 different commitment: `runFinalizationDigest` of the canonical run status,
 artifact manifest, and ordered session-event identities. The digests cannot be
-substituted. The current joined-daemon gate correctly leaves the attempt in
-`terminal_pending`; it cannot prove a successful provider turn or TerminalAck.
-There is no production caller that supplies canonical materialization to
-`CommitAttachedWorkerTerminal` today.
+substituted. The old synthetic-denied joined profile correctly leaves an
+attempt in `terminal_pending`; it is not positive receipt proof. The separate
+credential-bearing test-provider gate now proves canonical success and
+TerminalAck for both owners. Normal production startup still does not compose
+the receipt finalizer; test success does not authorize provider activation.
 
 The positive path needs one server-owned, immutable output receipt. It is not
 authority delegated to a worker and is never constructed from process stdout,
@@ -132,10 +134,12 @@ digest field carries the canonical digest only for the negotiated path;
 process observation is stored separately before Terminal. Missing feature,
 ready receipt or observation fails closed, without a V1 downgrade fallback.
 
-The server must not continue accepting `AttachedWorkerTerminalCommit` with
-caller-supplied materialization once the receipt path is active. That method
-should load the immutable receipt inside its transaction; otherwise a second
-materialization authority remains possible. Migration/rollout must be explicit:
+For attempts whose pinned capability manifest negotiates `FeatureOutputReceipt`,
+`AttachedWorkerTerminalCommit` loads the immutable receipt inside its transaction
+and rejects caller-supplied materialization. The legacy non-receipt profile
+still has a supplied-materialization branch; it is not this positive-result
+path. Activation must require the receipt feature, never downgrade to that
+legacy authority. Migration and production rollout must remain explicit:
 no dual-write fallback from receipt to the old caller-supplied path.
 
 ## Proof order and dependency boundary
@@ -149,8 +153,8 @@ be production-enabled to run the #79 security gate. Unsupported provider
 policy, egress, filesystem isolation, or credential mode still denies before
 invocation.
 
-Required deterministic cases, using two activated daemon processes and one
-authoritative YDB control plane:
+The closed #79 gate uses a joined daemon/test-provider path and one authoritative
+YDB control plane. Its bounded acceptance includes:
 
 | Case | Required observation |
 | --- | --- |
@@ -158,14 +162,15 @@ authoritative YDB control plane:
 | Cross-owner output or receipt replay | No receipt, canonical event, or ACK in the foreign scope. |
 | Same-key divergent output; lost response | Divergence conflicts; exact retry returns one immutable receipt. |
 | Revoke, stale generation, authorized reconnect | Old bearer/envelope cannot finalize; only an exact server-rebound current attempt can recover one receipt. |
-| Cancel, crash, network loss, split brain | One fenced outcome; no invented success or duplicate provider effect. |
+| Applicable cancel, stale fence and ambiguous outcome negatives | No invented success or automatic repeated provider effect. Existing crash/protocol safety gates remain, without an exhaustive interleaving requirement. |
 | Process success without receipt, receipt without cleanup, lost submission response | No premature ACK; exact nonce/fingerprint recovery or a fenced unknown outcome. |
-| Rootless two-owner canary | Actual filesystem/network/process isolation, no ambient credential path, clean attempt roots, untouched sentinels. |
 
-Run the joined cases in the mandatory race-clean release gate. Keep the real
-rootless canary separately opt-in until the CI runner and exact pinned image
-are reviewed; do not present mock OCI or a local Mac dockerless run as that
-platform proof. #79 closes only after the receipt implementation, credential
-test path, joined/rootless evidence, exact-head CI, and independent review all
-pass. This proposal itself grants no permission for provider calls, cloud
-deployment, credential writes, or production enablement.
+The mandatory race-clean joined-provider/YDB gate, exact-head CI and independent
+review passed for #79/#166. Actual filesystem/network/process isolation remains
+a separate rollout-platform gate in #133; mock OCI or local Mac dockerless
+evidence does not prove a different rootless platform. A new joined two-owner
+rootless canary and exhaustive cancel/crash/network/split-brain simulation are
+not conditions for reopening #79. Automatic post-crash replay and remote
+quiescence after ambiguous PUT remain later hardening; the current path blocks
+instead of repeating provider effects or claiming success. This contract alone
+grants no provider-call, deployment, credential-write or enablement authority.

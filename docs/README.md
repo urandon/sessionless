@@ -8,6 +8,7 @@ and link to it.
 ## Start here
 
 - [Product overview and delivery status](../README.md)
+- [WebUI-first MVP scope, remaining gates and delivery plan](mvp-delivery-plan.md)
 - [Deterministic local product flow](local-e2e.md)
 - [Local development stand](local-development-stand.md)
 - [Component and command map](components.md)
@@ -18,6 +19,7 @@ and link to it.
 | Question | Canonical owner |
 | --- | --- |
 | What is shipped, experimental, or planned? | [Root README](../README.md) and the linked delivery epics |
+| What remains for the first MVP release? | [WebUI-first delivery plan](mvp-delivery-plan.md) and its owning issues |
 | Which component or command do I need? | [Component and command map](components.md) |
 | How do I install tools and run repository gates? | [Development](development.md) |
 | How does the local runtime start, persist, and recover? | [Local development stand](local-development-stand.md) |

@@ -228,14 +228,15 @@ func TestHeartbeatAuthorizationRetainsConcurrentPendingCancel(t *testing.T) {
 	batch.Frames[0].Cancel.AttemptSequence = 3
 	cancel.Attempt.PlatformAttemptSequence = 3
 	cancel.Outbound.AttemptSequence = 3
-	cancel.Outbound.Payload, err = attachedworkerprotocol.EncodeBatchV1(batch)
-	if err != nil {
-		t.Fatal(err)
-	}
 	// Cancel is committed before the heartbeat checkpoint, so it cannot ACK
 	// the heartbeat that the platform has not authorized yet.
 	frame := batch.Frames[0]
 	frame.Ack = fixture.connection.WorkerSequence
+	batch.Frames[0] = frame
+	cancel.Outbound.Payload, err = attachedworkerprotocol.EncodeBatchV1(batch)
+	if err != nil {
+		t.Fatal(err)
+	}
 	snapshot, err = attachedworkerprotocol.ApplyMachineFrameV1(
 		config, snapshot, attachedworkerprotocol.DirectionPlatformToWorker, frame, fixture.store.now.UnixMicro(),
 	)
@@ -265,7 +266,7 @@ func TestHeartbeatAuthorizationRetainsConcurrentPendingCancel(t *testing.T) {
 		return cancel, nil
 	}}
 	response, err := newTransportServiceWithBroker(t, store, broker).Exchange(context.Background(), fixture.bearer, heartbeat)
-	if err != nil || response == nil || len(response.Frames) != 1 || response.Frames[0].Kind != attachedworkerprotocol.MessageCancel ||
+	if err != nil || response == nil || len(response.Frames) != 1 || !reflect.DeepEqual(response.Frames[0], frame) ||
 		store.calls != 2 || polls != 1 {
 		t.Fatalf("concurrent cancel response=%+v err=%v authorization calls=%d polls=%d", response, err, store.calls, polls)
 	}

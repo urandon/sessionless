@@ -9,13 +9,14 @@ pluggable agent workers do the work.**
 
 > **MVP in progress.** The canonical session core, Telegram path, local WebUI,
 > deterministic worker, and feature-disabled provider adapters are implemented.
-> Cloud WebUI rollout, provider composition, and the attached-worker runtime are
-> the remaining MVP delivery tracks.
+> The first launch frontend is WebUI. Its own-worker product composition,
+> Telegram-independent login and cloud E2E remain; Telegram messaging and the
+> Cloudflare reachability edge are deferred until after MVP.
 
 [Explore the documentation](docs/README.md) ·
 [Run the local stand](docs/local-development-stand.md#lifecycle) ·
 [Run Dockerless on macOS](docs/macos-dockerless-development.md) ·
-[See the MVP plan](https://gitcode.com/urandon/sessionless/issues/6)
+[See the MVP plan](docs/mvp-delivery-plan.md)
 
 ![Sessionless WebUI showing a canonical conversation, its completed assistant response, and ready compute capacity](docs/assets/sessionless-webui-session.jpg)
 
@@ -76,8 +77,8 @@ explicitly confirmed reset command.
 | --- | --- | --- |
 | Canonical core and Telegram | **Implemented** | Ordered sessions/events, YDB state, durable ingress/delivery, deterministic two-tenant E2E; tracked by [MVP epic #6](https://gitcode.com/urandon/sessionless/issues/6). |
 | WebUI | **Implemented locally** | Authenticated Go BFF, canonical API, and Svelte UI are complete; cloud deployment and tenant-isolation E2E remain in [WebUI epic #29](https://gitcode.com/urandon/sessionless/issues/29). |
-| Provider and serverless harness | **Experimental, feature-disabled** | Immutable contracts, conformance fixtures, credential lifecycle, isolation/egress boundaries, and Codex/Pi/OpenCode adapters exist; composition and credentialed cloud E2E remain in [provider epic #13](https://gitcode.com/urandon/sessionless/issues/13). |
-| Attached workers | **Protocol foundation implemented** | Owner-scoped identity and capability conformance are complete; transport, fenced dispatch, daemon, UX, and security E2E remain in [attached-worker epic #72](https://gitcode.com/urandon/sessionless/issues/72). |
+| Provider and serverless harness | **Experimental, feature-disabled** | Adapter contracts exist. MVP selects owner-local `codex exec`, not cloud-hosted App Server; reversible real-provider activation remains in [#133](https://gitcode.com/urandon/sessionless/issues/133) and acceptance in [#13](https://gitcode.com/urandon/sessionless/issues/13). |
+| Attached workers | **Daemon and bounded security gate implemented; rollout disabled** | #77/#79/#166 are closed. Own-worker onboarding, Web-to-worker production wiring, measured transport cost and real-provider rollout remain in [#72](https://gitcode.com/urandon/sessionless/issues/72); test receipt success is not product activation. |
 | Personal-agent research | **Planned / post-MVP** | Memory, tools, web search, subagents, analytics, and federation stay outside the MVP gate until promoted through their research issues. |
 
 “Implemented” means code plus repository checks exist. It does not imply a

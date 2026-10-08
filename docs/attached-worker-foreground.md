@@ -87,5 +87,5 @@ The historical #108 constructor remains disabled without an operator profile.
 The #165 profile instead connects the shipped command to the accepted
 generation-fenced session and pinned stack for synthetic, credential-denied
 attempts. It neither selects a provider from ambient state nor changes the
-separate #79 two-owner security/recovery release gate. Provider-specific
+completed bounded #79 two-owner isolation/terminal gate. Provider-specific
 activation, automatic start/update, and cloud deployment are not implied.

@@ -585,6 +585,24 @@ func TestAW07TwoActivatedDaemonYDBJoin(t *testing.T) {
 	workerID := domain.AttachedWorkerID(uniqueID("worker-" + suffix))
 	aWorker, aPrivate := aw07CreateDaemonEnrollment(t, store, tenant, domain.UserID(uniqueID("owner-a-"+suffix)), workerID, suffix+"-a", now)
 	bWorker, bPrivate := aw07CreateDaemonEnrollment(t, store, tenant, domain.UserID(uniqueID("owner-b-"+suffix)), workerID, suffix+"-b", now)
+	probeCtx, cancelProbe := context.WithCancel(context.Background())
+	backend := &aw07BackendRecorder{Store: store, probeDB: client.DB, probeCtx: probeCtx}
+	t.Cleanup(func() {
+		backend.probeMu.Lock()
+		backend.probeClosed = true
+		backend.probeMu.Unlock()
+		cancelProbe()
+		finished := make(chan struct{})
+		go func() {
+			backend.probeWG.Wait()
+			close(finished)
+		}()
+		select {
+		case <-finished:
+		case <-time.After(3 * time.Second):
+			t.Error("joined synthetic YDB diagnostic probe did not stop after cancellation")
+		}
+	})
 	service, err := attachedworkertransport.NewService(attachedworkertransport.ServiceConfig{
 		IDs: testkit.NewSequenceIDGenerator("aw07-daemons-"), Audience: "sessionless:attached-worker:v1",
 		PlatformOffer: attachedworkerprotocol.VersionOfferV1{
@@ -595,7 +613,7 @@ func TestAW07TwoActivatedDaemonYDBJoin(t *testing.T) {
 		ChallengeLifetime:   5 * time.Minute, ChallengeRetention: time.Hour,
 		PresenceTTL: 20 * time.Minute, AuthTTL: time.Hour,
 		CheckpointInterval: attachedworkertransport.MinimumHeartbeatInterval,
-	}, store, store)
+	}, backend, backend)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -619,10 +637,11 @@ func TestAW07TwoActivatedDaemonYDBJoin(t *testing.T) {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
+	statusRecorder := &aw07HTTPStatusRecorder{}
 	mux.Handle(attachedworkerhttp.ChallengePathV1, bootstrap)
 	mux.Handle(attachedworkerhttp.AttachPathV1, bootstrap)
-	mux.Handle(attachedworkerhttp.ExchangePathV1, exchange)
-	mux.Handle(attachedworkersealedinput.PathV1, attachedworkersealedinput.Handler(sealed))
+	mux.Handle(attachedworkerhttp.ExchangePathV1, statusRecorder.wrap("exchange", exchange))
+	mux.Handle(attachedworkersealedinput.PathV1, statusRecorder.wrap("sealed", attachedworkersealedinput.Handler(sealed)))
 	server := httptest.NewTLSServer(mux)
 	t.Cleanup(server.Close)
 	trust := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
@@ -797,8 +816,8 @@ func TestAW07TwoActivatedDaemonYDBJoin(t *testing.T) {
 			break
 		}
 		if time.Now().After(waitUntil) {
-			t.Fatalf("owner B cancellation did not reach pending terminal evidence: found=%t state=%s A stdout=%s B stdout=%s",
-				found, attempt.State, aProcess.stdout.String(), bProcess.stdout.String())
+			t.Fatalf("owner B cancellation did not reach pending terminal evidence: found=%t state=%s HTTP=%s backend=%s A stdout=%s B stdout=%s",
+				found, attempt.State, statusRecorder.snapshot(), backend.snapshot(), aProcess.stdout.String(), bProcess.stdout.String())
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

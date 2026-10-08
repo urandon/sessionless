@@ -156,6 +156,57 @@ func TestAW04ActiveHeartbeatRequiresBrokerAndPollsStrictPlatformFrame(t *testing
 	}
 }
 
+type transportCheckpointRaceStore struct {
+	*transportMemoryStore
+	mode  string
+	calls int
+}
+
+func (store *transportCheckpointRaceStore) AuthorizeAttachedWorkerExchange(ctx context.Context,
+	request ports.AttachedWorkerExchangeAuthorization,
+) (ports.AttachedWorkerAuthorizationResult, error) {
+	store.calls++
+	if store.calls == 1 || store.mode == "persistent" {
+		store.transportMemoryStore.mu.Lock()
+		store.connection.Revision++
+		if store.mode == "revoked" {
+			store.connection.State = domain.AttachedWorkerConnectionRevoked
+		}
+		store.transportMemoryStore.mu.Unlock()
+	}
+	return store.transportMemoryStore.AuthorizeAttachedWorkerExchange(ctx, request)
+}
+
+func TestHeartbeatAuthorizationRereadsOneConcurrentConnectionAdvance(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		mode      string
+		wantCalls int
+		wantPolls int
+		wantError error
+	}{
+		{name: "concurrent checkpoint", mode: "once", wantCalls: 2, wantPolls: 1},
+		{name: "persistent conflict", mode: "persistent", wantCalls: 2, wantError: ErrTransportUnauthorized},
+		{name: "revoked during checkpoint", mode: "revoked", wantCalls: 1, wantError: ErrTransportUnauthorized},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newReadyTransportFixture(t)
+			store := &transportCheckpointRaceStore{transportMemoryStore: fixture.store, mode: test.mode}
+			polls := 0
+			broker := transportAttemptBroker{poll: func(context.Context, ports.AttachedWorkerAttemptPoll) (ports.AttachedWorkerAttemptResult, error) {
+				polls++
+				return ports.AttachedWorkerAttemptResult{Status: ports.AttachedWorkerExecutionNotFound}, nil
+			}}
+			service := newTransportServiceWithBroker(t, store, broker)
+			response, err := service.Exchange(context.Background(), fixture.bearer, fixture.heartbeat(0))
+			if !errors.Is(err, test.wantError) || response != nil || store.calls != test.wantCalls || polls != test.wantPolls {
+				t.Fatalf("mode=%s response=%+v error=%v auth_calls=%d polls=%d; want error=%v calls=%d polls=%d",
+					test.mode, response, err, store.calls, polls, test.wantError, test.wantCalls, test.wantPolls)
+			}
+		})
+	}
+}
+
 func TestAW04cDrainPollingPrecedesAttemptDeliveryAndFallsThroughWhenInactive(t *testing.T) {
 	t.Run("normal worker falls through to attempt delivery", func(t *testing.T) {
 		fixture := newReadyTransportFixture(t)
@@ -1084,7 +1135,7 @@ type readyTransportFixture struct {
 	secret     ConnectionSecret
 }
 
-func newTransportServiceWithBroker(t *testing.T, store *transportMemoryStore, broker AttemptBroker) *Service {
+func newTransportServiceWithBroker(t *testing.T, store ports.AttachedWorkerTransportStore, broker AttemptBroker) *Service {
 	t.Helper()
 	service, err := NewService(ServiceConfig{IDs: transportIDs{}, Audience: "sessionless:attached-worker:v1", PlatformOffer: testOffer(),
 		ImplementedVersions: []attachedworkerprotocol.ProtocolVersion{1}, ChallengeLifetime: 5 * time.Minute, ChallengeRetention: time.Hour,

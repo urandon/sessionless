@@ -723,6 +723,12 @@ func (service *Service) BindOutputReceiptBearer(
 }
 
 func (service *Service) Exchange(ctx context.Context, bearer ConnectionBearer, batch attachedworkerprotocol.BatchV1) (*attachedworkerprotocol.BatchV1, error) {
+	return service.exchange(ctx, bearer, batch, true)
+}
+
+func (service *Service) exchange(ctx context.Context, bearer ConnectionBearer, batch attachedworkerprotocol.BatchV1,
+	retryConcurrentCheckpoint bool,
+) (*attachedworkerprotocol.BatchV1, error) {
 	if service == nil || service.store == nil || validateBatch(batch) != nil || len(batch.Frames) == 0 {
 		return nil, ErrTransportUnauthorized
 	}
@@ -812,6 +818,13 @@ func (service *Service) Exchange(ctx context.Context, bearer ConnectionBearer, b
 	})
 	if err != nil {
 		return nil, ErrTransportBackend
+	}
+	// A concurrent platform frame (for example Cancel) may advance the
+	// connection revision after our read but before this heartbeat checkpoint.
+	// Re-read once and validate the same frame and bearer against the new
+	// authority; revoked, denied, and persistent conflicts remain fail-closed.
+	if authorized.Status == ports.AttachedWorkerConnectionConflict && retryConcurrentCheckpoint {
+		return service.exchange(ctx, bearer, batch, false)
 	}
 	if authorized.Status != ports.AttachedWorkerConnectionAuthorized || authorized.Connection.Validate() != nil ||
 		authorized.Connection.TenantID != bearer.tenantID || authorized.Connection.OwnerUserID != bearer.ownerUserID ||

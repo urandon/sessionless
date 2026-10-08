@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -42,14 +43,21 @@ type aw07HTTPStatusRecorder struct {
 // Hold both owner submissions before YDB can create a receipt. This proves
 // that neither activated daemon can finalize merely from process success.
 type aw07ReceiptBarrier struct {
-	store    *ydbstore.Store
-	arrivals chan ydbstore.AttachedWorkerOutputReceiptRequest
-	release  chan struct{}
+	store       *ydbstore.Store
+	arrivals    chan ydbstore.AttachedWorkerOutputReceiptRequest
+	release     chan struct{}
+	loseOwner   domain.UserID
+	lostReceipt chan ydbstore.AttachedWorkerOutputReceiptV1
+	lost        atomic.Bool
+	ownerCalls  atomic.Uint32
 }
 
 func (barrier *aw07ReceiptBarrier) CreateAttachedWorkerOutputReceipt(ctx context.Context, blobs ports.BlobStore,
 	request ydbstore.AttachedWorkerOutputReceiptRequest,
 ) (ydbstore.AttachedWorkerOutputReceiptResult, error) {
+	if request.Authorization.OwnerUserID == barrier.loseOwner {
+		barrier.ownerCalls.Add(1)
+	}
 	select {
 	case barrier.arrivals <- request:
 	case <-ctx.Done():
@@ -60,7 +68,13 @@ func (barrier *aw07ReceiptBarrier) CreateAttachedWorkerOutputReceipt(ctx context
 	case <-ctx.Done():
 		return ydbstore.AttachedWorkerOutputReceiptResult{}, ctx.Err()
 	}
-	return barrier.store.CreateAttachedWorkerOutputReceipt(ctx, blobs, request)
+	result, err := barrier.store.CreateAttachedWorkerOutputReceipt(ctx, blobs, request)
+	if err == nil && result.Status == ports.AttachedWorkerExecutionApplied && result.Receipt.Ready &&
+		request.Authorization.OwnerUserID == barrier.loseOwner && barrier.lost.CompareAndSwap(false, true) {
+		barrier.lostReceipt <- result.Receipt
+		return ydbstore.AttachedWorkerOutputReceiptResult{}, errors.New("simulated lost receipt response after durable commit")
+	}
+	return result, err
 }
 
 type aw07StatusWriter struct {
@@ -392,7 +406,9 @@ func TestAW07TwoActivatedProviderDaemonReceipts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	receiptBarrier := &aw07ReceiptBarrier{store: store, arrivals: make(chan ydbstore.AttachedWorkerOutputReceiptRequest, 4), release: make(chan struct{})}
+	receiptBarrier := &aw07ReceiptBarrier{store: store, arrivals: make(chan ydbstore.AttachedWorkerOutputReceiptRequest, 4),
+		release: make(chan struct{}), loseOwner: aWorker.OwnerUserID,
+		lostReceipt: make(chan ydbstore.AttachedWorkerOutputReceiptV1, 1)}
 	var releaseReceipts sync.Once
 	release := func() { releaseReceipts.Do(func() { close(receiptBarrier.release) }) }
 	defer release()
@@ -543,6 +559,7 @@ func TestAW07TwoActivatedProviderDaemonReceipts(t *testing.T) {
 		}
 	}
 	release()
+	readyByOwner := make(map[domain.UserID]ydbstore.AttachedWorkerOutputReceiptV1, len(owners))
 	for index := range owners {
 		owner := &owners[index]
 		deadline := time.Now().Add(90 * time.Second)
@@ -581,6 +598,7 @@ func TestAW07TwoActivatedProviderDaemonReceipts(t *testing.T) {
 			receipt.Binding.RunID != owner.offer.Attempt.RunID {
 			t.Fatalf("%s receipt not owner-bound and ready: receipt=%+v err=%v", owner.name, receipt, err)
 		}
+		readyByOwner[owner.worker.OwnerUserID] = receipt
 		payloadRef := receipt.Materialization.Completion.Events[0].Payload
 		blobs.mu.Lock()
 		payload := append([]byte(nil), blobs.objects[payloadRef.Key]...)
@@ -604,6 +622,42 @@ func TestAW07TwoActivatedProviderDaemonReceipts(t *testing.T) {
 			!strings.Contains(commands, "--network none") || !strings.Contains(commands, "SESSIONLESS_PROVIDER_HOME") {
 			t.Fatalf("%s provider boundary was not launched: %s", owner.name, commands)
 		}
+		var receiptCount int64
+		if err := client.DB.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM attached_worker_output_receipts WHERE tenant_id=$1 AND run_id=$2`,
+			tenant, owner.offer.Attempt.RunID,
+		).Scan(&receiptCount); err != nil || receiptCount != 1 {
+			t.Fatalf("%s durable receipts=%d, want one; err=%v", owner.name, receiptCount, err)
+		}
+	}
+	if !receiptBarrier.lost.Load() || receiptBarrier.ownerCalls.Load() != 2 ||
+		!strings.Contains(statusRecorder.snapshot(), "receipt:503:") {
+		t.Fatalf("lost-response replay not observed: injected=%t owner-A-calls=%d HTTP=%s",
+			receiptBarrier.lost.Load(), receiptBarrier.ownerCalls.Load(), statusRecorder.snapshot())
+	}
+	var firstReady ydbstore.AttachedWorkerOutputReceiptV1
+	select {
+	case firstReady = <-receiptBarrier.lostReceipt:
+	default:
+		t.Fatal("lost response was not injected after a ready durable receipt")
+	}
+	finalReady := readyByOwner[aWorker.OwnerUserID]
+	if firstReady.Nonce != finalReady.Nonce || firstReady.CandidateFingerprint != finalReady.CandidateFingerprint ||
+		firstReady.CanonicalDigest != finalReady.CanonicalDigest || firstReady.Materialization.Completion == nil ||
+		len(firstReady.Materialization.Completion.Events) != 1 ||
+		firstReady.Materialization.Completion.Events[0].ID != finalReady.Materialization.Completion.Events[0].ID {
+		t.Fatal("lost-response retry did not recover the original immutable receipt and event ID")
+	}
+	var replayRequest ydbstore.AttachedWorkerOutputReceiptRequest
+	select {
+	case replayRequest = <-receiptBarrier.arrivals:
+	default:
+		t.Fatal("no second owner-A receipt submission was captured")
+	}
+	firstRequestBytes, firstErr := json.Marshal(seen[aWorker.OwnerUserID])
+	replayRequestBytes, replayErr := json.Marshal(replayRequest)
+	if firstErr != nil || replayErr != nil || !bytes.Equal(firstRequestBytes, replayRequestBytes) {
+		t.Fatalf("lost-response retry changed typed receipt submission: first-encode=%v replay-encode=%v", firstErr, replayErr)
 	}
 	for index := range owners {
 		owner := &owners[index]

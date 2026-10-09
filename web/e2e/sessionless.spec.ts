@@ -20,7 +20,7 @@ test.describe('authentication boundaries', () => {
         name: 'No workspace access for this account',
       }),
     ).toBeVisible();
-    await expect(page.getByText(/Signing in never creates tenant access by itself/)).toBeVisible();
+    await expect(page.getByText('Signing in never creates tenant access by itself.')).toBeVisible();
     await expect(page.getByText(/ask your workspace operator/)).toBeVisible();
     await expect(page.getByText(/invitation or account bootstrap/)).toBeVisible();
     await expect(page.getByText(/Telegram/)).toHaveCount(0);

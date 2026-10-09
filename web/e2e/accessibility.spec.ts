@@ -25,7 +25,9 @@ test.describe('accessible states', () => {
     const signIn = page.getByRole('link', { name: 'Continue to sign in' });
     for (let step = 0; step < 8; step += 1) {
       await page.keyboard.press('Tab');
-      if (await signIn.evaluate((element) => element === element.ownerDocument.activeElement)) break;
+      if (await signIn.evaluate((element) => element === element.ownerDocument.activeElement)) {
+        break;
+      }
     }
     await expect(signIn).toBeFocused();
     await expect(signIn).toHaveCSS('outline-style', 'solid');

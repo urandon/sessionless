@@ -97,7 +97,7 @@ module "edge" {
 }
 
 module "web" {
-  source                              = "../modules/web"
+  source = "../modules/web"
 
   folder_id                           = module.foundation.folder_id
   name_prefix                         = var.name_prefix
@@ -127,7 +127,7 @@ module "web" {
   deletion_protection                 = var.deletion_protection
   labels                              = local.labels
 
-  depends_on                          = [module.foundation]
+  depends_on = [module.foundation]
 }
 
 resource "terraform_data" "external_guardrails" {

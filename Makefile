@@ -205,7 +205,7 @@ attached-worker-security-ydb-gate: prepare
 
 attached-worker-joined-provider-ydb-gate: prepare
 	go test -race -count=$${AW07_PROVIDER_TEST_COUNT:-1} -shuffle=$${AW07_PROVIDER_TEST_SHUFFLE:-off} -timeout=$${AW07_PROVIDER_TEST_TIMEOUT:-240s} -tags=ydbintegration \
-		-run '^(TestTestProviderExchangeCloseRevokesBothBearers|TestAW07TwoActivatedProviderDaemonReceipts)$$' ./internal/attachedworkersealedinput ./test/ydbintegration
+		-run '^(TestTestProviderExchangeCloseRevokesBothBearers|TestAW07TwoActivatedProviderDaemonReceipts|TestWebAttachedJoinedProviderDaemonReceipts|TestWebAttachedProductIngressUsesCanonicalScheduler|TestWebAttachedProductIngressRevocationBeforeAdmissionRollsBackOffer)$$' ./internal/attachedworkersealedinput ./test/ydbintegration
 
 attached-worker-native-integration: attached-worker-build
 	SESSIONLESS_NATIVE_INTEGRATION=1 SESSIONLESS_ATTACHED_WORKER_BINARY="$(CURDIR)/$(BIN_DIR)/attached-worker" \

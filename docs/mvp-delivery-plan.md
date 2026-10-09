@@ -50,17 +50,17 @@ existing owners, but #144/#145 in their entirety are not new launch gates.
   bounded positive two-owner/terminal proof. Source-head CI
   [37845334744, attempt 2](https://github.com/urandon/sessionless/actions/runs/37845334744/attempts/2)
   passed all eight jobs. This does not enable a real provider.
-- The shipped BFF still composes `NewDeterministicFixtureBinderV1`; the ingress
-  binder returns `ManagedExecutionAuthorityV2`, not attached admission.
-  #76 must bridge the existing authorities, not create a second scheduler.
-- `cmd/control-api` does not inject the sealed-input/output-receipt handler
-  seams. The receipt terminal-finalizer composition is currently exposed by a
-  YDB-integration test helper, not normal production startup. #76/#133 own that
-  composition handoff. Library/test success is not product activation.
-- Without `TELEGRAM_WEBHOOK_SECRET`, `cmd/control-api` currently starts only a
-  health handler; full startup initializes Telegram dependencies. #76 must split
-  shared control/attached startup from optional Telegram webhook initialization
-  and test real routes with no Telegram bot/secret configuration.
+- #76/#169 add a default-off normal Web-to-attached bridge: explicit
+  owner/resource pins, the existing canonical `AdmitDispatch`, sealed canonical
+  context, and receipt-only terminal finalization. The default BFF remains the
+  deterministic managed fixture. A tagged joined proof starts from Web API
+  submission and reads the final canonical result through Session/Web refresh;
+  its provider credentials and response-loss injection remain test-only.
+- The normal `cmd/control-api` attached composition is explicitly enabled
+  independently of Telegram and includes bootstrap/exchange/sealed-input/receipt
+  handlers. Without either enabled frontend it remains health-only. Normal
+  sealed input is credentialless: source composition and synthetic CI evidence
+  are not real-provider product activation. #133 owns that next handoff.
 - #75 transport is implemented in disabled slices; #129 still owns measured
   cloud cadence/cost and bounded reconnect rollout evidence. #78 still owns
   enrollment and interactive lifecycle gaps despite delivered read diagnostics.

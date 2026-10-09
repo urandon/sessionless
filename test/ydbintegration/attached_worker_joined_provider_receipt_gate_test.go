@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -29,8 +30,11 @@ import (
 	"gitcode.com/urandon/sessionless/internal/attachedworkerreceipt"
 	"gitcode.com/urandon/sessionless/internal/attachedworkersealedinput"
 	"gitcode.com/urandon/sessionless/internal/attachedworkertransport"
+	"gitcode.com/urandon/sessionless/internal/buildinfo"
+	"gitcode.com/urandon/sessionless/internal/controlapi"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 	"gitcode.com/urandon/sessionless/internal/testkit"
 	"gitcode.com/urandon/sessionless/internal/ydbstore"
 )
@@ -339,6 +343,16 @@ func aw07JoinedRunStatus(t *testing.T, db *sql.DB, ctx context.Context,
 // receipt publication, and TerminalAck. The provider and OCI engine are test
 // doubles; both are compiled only into this YDB gate.
 func TestAW07TwoActivatedProviderDaemonReceipts(t *testing.T) {
+	testJoinedProviderDaemonReceipts(t, false)
+}
+
+// The same authenticated daemon/receipt proof starts with normal Web product
+// ingress and canonical admission, rather than manually seeded worker jobs.
+func TestWebAttachedJoinedProviderDaemonReceipts(t *testing.T) {
+	testJoinedProviderDaemonReceipts(t, true)
+}
+
+func testJoinedProviderDaemonReceipts(t *testing.T, normalWeb bool) {
 	store, client := openStore(t)
 	var now time.Time
 	clockCtx, clockCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -378,7 +392,7 @@ func TestAW07TwoActivatedProviderDaemonReceipts(t *testing.T) {
 			t.Error("joined YDB diagnostic probe did not stop after cancellation")
 		}
 	})
-	service, err := attachedworkertransport.NewTestReceiptFinalizingService(attachedworkertransport.ServiceConfig{
+	service, err := attachedworkertransport.NewReceiptFinalizingService(attachedworkertransport.ServiceConfig{
 		IDs: testkit.NewSequenceIDGenerator("aw07-provider-"), Audience: "sessionless:attached-worker:v1",
 		PlatformOffer: attachedworkerprotocol.VersionOfferV1{
 			Window:    attachedworkerprotocol.VersionWindow{Minimum: 1, Maximum: 1},
@@ -425,12 +439,33 @@ func TestAW07TwoActivatedProviderDaemonReceipts(t *testing.T) {
 	mux.Handle(attachedworkerhttp.ExchangePathV1, statusRecorder.wrap("exchange", exchange))
 	mux.Handle(attachedworkersealedinput.PathV1, statusRecorder.wrap("sealed", attachedworkersealedinput.Handler(sealed)))
 	mux.Handle(attachedworkerreceipt.PathV1, statusRecorder.wrap("receipt", attachedworkerreceipt.Handler(receipts)))
-	server := httptest.NewTLSServer(mux)
+	var serving http.Handler = mux
+	if normalWeb {
+		options, err := controlapi.AttachedWorkerOptions("sessionless:attached-worker:v1", store, blobs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Only these two test-provider seams differ: credential capability and
+		// response-loss injection. Bootstrap/exchange/finalization use the
+		// normal control composition, with no Telegram webhook configuration.
+		options.AttachedWorkerExchange = statusRecorder.wrap("exchange", options.AttachedWorkerExchange)
+		options.AttachedWorkerSealedInput = statusRecorder.wrap("sealed", attachedworkersealedinput.Handler(sealed))
+		options.AttachedWorkerOutputReceipt = statusRecorder.wrap("receipt", attachedworkerreceipt.Handler(receipts))
+		serving = controlapi.NewHandlerWithOptions(slog.Default(), buildinfo.Info{}, options)
+	}
+	server := httptest.NewTLSServer(serving)
 	t.Cleanup(server.Close)
 	trust := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
 	root := t.TempDir()
-	a := aw07PrepareDaemonInstallation(t, filepath.Join(root, "a"), server.URL, trust, aWorker, aPrivate, now, true)
-	b := aw07PrepareDaemonInstallation(t, filepath.Join(root, "b"), server.URL, trust, bWorker, bPrivate, now, true)
+	inputLimit := 4096
+	if normalWeb {
+		// Canonical input includes the complete admitted job, immutable proof
+		// and credential issue metadata, not only the provider stdin. Match
+		// the explicit Web admission budget; keep the old synthetic gate small.
+		inputLimit = 1 << 20
+	}
+	a := aw07PrepareDaemonInstallationWithInputLimit(t, filepath.Join(root, "a"), server.URL, trust, aWorker, aPrivate, now, true, inputLimit)
+	b := aw07PrepareDaemonInstallationWithInputLimit(t, filepath.Join(root, "b"), server.URL, trust, bWorker, bPrivate, now, true, inputLimit)
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
 	defer cancel()
 	aProcess := aw07StartDaemonProcess(t, aw07DaemonChildInput{StateRoot: a.stateRoot, ProfilePath: a.profilePath,
@@ -446,6 +481,7 @@ func TestAW07TwoActivatedProviderDaemonReceipts(t *testing.T) {
 		install    aw07DaemonInstallation
 		process    *aw07DaemonProcess
 		generation uint64
+		web        *aw169WebFixture
 		context    []byte
 		artifact   []byte
 		suffix     string
@@ -463,6 +499,33 @@ func TestAW07TwoActivatedProviderDaemonReceipts(t *testing.T) {
 			t.Fatalf("%s active connection: found=%t err=%v", owner.name, found, err)
 		}
 		binding := aw07TestProviderBinding(owner.worker.OwnerUserID, owner.suffix, owner.generation, now)
+		if normalWeb {
+			// The template is still test-provider-only. The ingress, dispatch,
+			// reservation, window and offer are normal product authorities.
+			managed, err := sessionlessharness.NewDeterministicFixtureManagedAuthorityV2(tenant, owner.worker.OwnerUserID,
+				"template-run", "template-attempt", domain.SubscriptionConnectionID("subscription-"+owner.suffix), now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			template := managed.HarnessBinding.Clone()
+			binding(&template)
+			template.Backend.CredentialDeliveryKind = domain.ProviderCredentialDeliveryFileV1
+			owner.web = newAW169OnlineWebFixture(t, ctx, store, client, owner.worker, connection, template, blobs, now)
+			response, request := owner.web.submit(t, string(owner.context), domain.IdempotencyKey("joined-message-"+owner.name))
+			request.Limits.MaxRuntime = 20 * time.Minute
+			admitted, err := store.AdmitDispatch(ctx, request)
+			if err != nil || !admitted.Admitted || admitted.Delivery != ports.DispatchDeliveryAttachedOffer {
+				t.Fatalf("%s normal Web admission: result=%+v err=%v", owner.name, admitted, err)
+			}
+			owner.offer, err = store.PollAttachedWorkerAttempt(ctx, ports.AttachedWorkerAttemptPoll{
+				TenantID: tenant, OwnerUserID: owner.worker.OwnerUserID, WorkerID: workerID,
+				ConnectionID: connection.ID, PresentedSecretDigest: connection.SecretDigest,
+			})
+			if err != nil || owner.offer.Status != ports.AttachedWorkerExecutionApplied || owner.offer.Attempt.RunID != response.RunID {
+				t.Fatalf("%s normal Web offer: result=%+v err=%v", owner.name, owner.offer, err)
+			}
+			continue
+		}
 		owner.offer = attachedWorkerOfferForDrainWithPayloadAndBinding(t, store, client, owner.worker, connection, now,
 			owner.suffix, owner.context, owner.artifact, func(value *domain.HarnessBindingV1) {
 				binding(value)
@@ -486,9 +549,20 @@ func TestAW07TwoActivatedProviderDaemonReceipts(t *testing.T) {
 		select {
 		case request := <-receiptBarrier.arrivals:
 			seen[request.Authorization.OwnerUserID] = request
+		case line, ok := <-aProcess.events:
+			if !ok || strings.Contains(line, "AW07_DAEMON_RUN_EXIT=") {
+				t.Fatalf("owner A exited before receipt publication: arrivals=%d stdout=%s stderr=%s HTTP=%s backend=%s",
+					len(seen), aProcess.stdout.String(), aProcess.stderr.String(), statusRecorder.snapshot(), backend.snapshot())
+			}
+		case line, ok := <-bProcess.events:
+			if !ok || strings.Contains(line, "AW07_DAEMON_RUN_EXIT=") {
+				t.Fatalf("owner B exited before receipt publication: arrivals=%d stdout=%s stderr=%s HTTP=%s backend=%s",
+					len(seen), bProcess.stdout.String(), bProcess.stderr.String(), statusRecorder.snapshot(), backend.snapshot())
+			}
 		case <-ctx.Done():
-			t.Fatalf("both owners did not reach receipt publication: arrivals=%d HTTP=%s backend=%s: %v",
-				len(seen), statusRecorder.snapshot(), backend.snapshot(), ctx.Err())
+			t.Fatalf("both owners did not reach receipt publication: arrivals=%d HTTP=%s backend=%s A stdout=%s stderr=%s B stdout=%s stderr=%s: %v",
+				len(seen), statusRecorder.snapshot(), backend.snapshot(), aProcess.stdout.String(), aProcess.stderr.String(),
+				bProcess.stdout.String(), bProcess.stderr.String(), ctx.Err())
 		}
 	}
 	for index := range owners {
@@ -649,6 +723,16 @@ func TestAW07TwoActivatedProviderDaemonReceipts(t *testing.T) {
 		if !strings.Contains(commands, "container start --attach --interactive") ||
 			!strings.Contains(commands, "--network none") || !strings.Contains(commands, "SESSIONLESS_PROVIDER_HOME") {
 			t.Fatalf("%s provider boundary was not launched: %s", owner.name, commands)
+		}
+		if normalWeb {
+			if strings.Count(commands, "container start --attach --interactive") != 1 {
+				t.Fatalf("%s normal Web job invoked provider more than once: %s", owner.name, commands)
+			}
+			history, err := owner.web.sessions.HistoryAfter(ctx, tenant, owner.worker.OwnerUserID, owner.web.session.ID, 0, 10)
+			if err != nil || len(history.Items) != 2 || history.Items[1].Event.Kind != domain.SessionEventAssistantMessage ||
+				!bytes.Contains(history.Items[1].Payload, []byte("test provider result for "+string(owner.worker.OwnerUserID))) {
+				t.Fatalf("%s normal Session/Web refresh lacks canonical result: history=%+v err=%v", owner.name, history, err)
+			}
 		}
 		var receiptCount int64
 		if err := client.DB.QueryRowContext(ctx,

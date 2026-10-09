@@ -329,12 +329,12 @@ func TestBoundMaterializerEnforcesAdmittedBudgetsAndLeaseAfterLoad(t *testing.T)
 	})
 }
 
-func TestBoundMaterializerRejectsSupportedDigestButUnsupportedMode(t *testing.T) {
+func TestBoundMaterializerRejectsCanonicalWindowWithoutProof(t *testing.T) {
 	materializer, source, request := sealedMaterializerFixture(t)
 	source.input.Job.ContextWindow = &domain.SessionContextWindow{ThroughSequence: 1}
 	resealSealedRequest(t, &source.input, &request)
-	if _, err := materializer.Materialize(context.Background(), request); !errors.Is(err, ErrSealedInputUnsupported) {
-		t.Fatalf("valid context window returned %v, want unsupported", err)
+	if _, err := materializer.Materialize(context.Background(), request); !errors.Is(err, ErrSealedInputInvalid) {
+		t.Fatalf("canonical window without proof returned %v, want invalid", err)
 	}
 }
 

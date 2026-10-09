@@ -55,6 +55,36 @@ subscription credentials into this repository.
 
 ## Fast path
 
+### Attached execution composition (default off)
+
+The normal Web BFF can use the existing attached scheduler admission path with
+`WEB_ATTACHED_EXECUTION_ENABLED=true` and `WEB_ATTACHED_RESOURCE_PINS` containing
+a JSON array of `sessionlessharness.AttachedResourcePin` values. Each entry pins
+the tenant, owner, subscription resource, worker, enrollment generation,
+capability and policy digests, and an explicit expiring harness-binding
+template. The template has no run, attempt or placement digest; ingress fills
+those from the canonical request. Configuration is bounded to 64 entries and
+64 KiB, rejects unknown fields, and cannot silently fall back to managed work.
+Enrollment rotation requires replacing the pin. Live worker authority is checked
+before ingress and again by the existing atomic `AdmitDispatch` transaction.
+
+`ATTACHED_WORKER_CONTROL_ENABLED=true` with an explicit
+`ATTACHED_WORKER_CONTROL_AUDIENCE` mounts authenticated challenge, attach,
+exchange, sealed-input and output-receipt routes in the normal control API.
+This requires the existing YDB and Object Storage configuration, but not a
+Telegram token or webhook secret. With both Telegram and attached control off,
+the control API remains health-only. Both flags default to false; malformed or
+partial enabled configuration fails startup.
+
+Canonical context windows are retained and sealed using the same event/snapshot
+codecs as the managed worker. Materialization verifies the exact session,
+snapshot, event window, trigger, immutable references and size limits. Terminal
+publication uses a ready server-owned receipt, not caller-supplied completion
+material. This composition does **not** activate a real provider or grant a
+credential: the production sealed-input constructor remains credentialless.
+The credential-bearing provider proof uses only the integration-test adapter;
+real-provider activation remains the separately reviewed #133 workstream.
+
 ```sh
 make web-ci
 make generate

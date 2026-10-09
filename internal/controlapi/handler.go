@@ -6,11 +6,14 @@ import (
 	"log/slog"
 	"net/http"
 
+	"gitcode.com/urandon/sessionless/internal/attachedworkerhttp"
 	"gitcode.com/urandon/sessionless/internal/buildinfo"
 )
 
 type Options struct {
 	TelegramWebhook             http.Handler
+	AttachedWorkerBootstrap     http.Handler
+	AttachedWorkerExchange      http.Handler
 	AttachedWorkerSealedInput   http.Handler
 	AttachedWorkerOutputReceipt http.Handler
 }
@@ -30,6 +33,13 @@ func NewHandlerWithOptions(logger *slog.Logger, info buildinfo.Info, options Opt
 	})
 	if options.TelegramWebhook != nil {
 		mux.Handle("POST /telegram/webhook", options.TelegramWebhook)
+	}
+	if options.AttachedWorkerBootstrap != nil {
+		mux.Handle("POST "+attachedworkerhttp.ChallengePathV1, options.AttachedWorkerBootstrap)
+		mux.Handle("POST "+attachedworkerhttp.AttachPathV1, options.AttachedWorkerBootstrap)
+	}
+	if options.AttachedWorkerExchange != nil {
+		mux.Handle("POST "+attachedworkerhttp.ExchangePathV1, options.AttachedWorkerExchange)
 	}
 	if options.AttachedWorkerSealedInput != nil {
 		mux.Handle("POST /attached-worker/v1/sealed-input", options.AttachedWorkerSealedInput)

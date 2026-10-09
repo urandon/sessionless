@@ -547,8 +547,10 @@ Use a short-lived operator IAM token only in the child process environment:
 ```sh
 export YDB_CONNECTION_STRING="$(./scripts/cloud-terraform.sh output -raw ydb_connection_string)"
 export YDB_ACCESS_TOKEN_CREDENTIALS="$(yc iam create-token)"
+export SCHEMA_MIGRATION_TIMEOUT=20m
 go run ./cmd/schema-migrate
 go run ./cmd/schema-migrate status
+unset SCHEMA_MIGRATION_TIMEOUT
 export TERRAFORM_LOCK_YDB_CONNECTION_STRING='the reviewed bootstrap lock database DSN'
 export DEPLOYMENT_ENVIRONMENT='cloud-dev'
 go run ./cmd/deployment-lock with -- go run ./cmd/schema-backfill
@@ -560,10 +562,24 @@ terraform -chdir=infra/terraform/cloud-dev show /secure/path/cloud-dev.tfplan
 ./scripts/cloud-terraform.sh apply /secure/path/cloud-dev.tfplan
 ```
 
-The first execution-placement cutover is fresh-environment-only. Before the
-locked backfill, keep Web BFF, control API, reconciler, and worker runtime
-stopped and run the typed cloud-app reset so `dispatch_outbox` and
-`worker_jobs` are empty. The backfill checks both tables and writes the marker
+The migration CLI defaults to a two-minute deadline. A complete cloud baseline
+may require longer, so this reviewed cloud procedure admits a bounded
+`SCHEMA_MIGRATION_TIMEOUT=20m` for both migration and status, then unsets it.
+Explicit values must be positive Go durations no greater than 20 minutes;
+invalid values fail before opening YDB or generating a migration owner.
+The migration lock lease is the greater of five minutes and the admitted
+request deadline plus one minute, so it outlives a single migration and its
+bounded cleanup even though renewal occurs only between migrations. The
+default remains five minutes; a crashed maximum-budget process may leave its
+lease active until expiry, at most 21 minutes. Checksums and DDL semantics are
+unchanged. After a deadline failure, resume migrations on the same database;
+never repeat an already successful pre-production reset.
+
+The first execution-placement cutover is fresh-environment-only. Keep Web BFF,
+control API, reconciler, and worker runtime stopped throughout any approved
+one-time reset, baseline migration, and locked backfill so `dispatch_outbox`
+and `worker_jobs` remain empty. Do not repeat a successful reset when resuming
+migrations. The backfill checks both tables and writes the marker
 in one serializable transaction; all four serving binaries fail startup without
 it. Do not use this sequence as a rolling upgrade or retained-data backfill.
 

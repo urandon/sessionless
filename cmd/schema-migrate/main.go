@@ -30,6 +30,10 @@ func main() {
 }
 
 func run() error {
+	timeout, err := migrationTimeout(os.Getenv("SCHEMA_MIGRATION_TIMEOUT"))
+	if err != nil {
+		return err
+	}
 	connectionString := os.Getenv("YDB_CONNECTION_STRING")
 	if connectionString == "" {
 		return errors.New("YDB_CONNECTION_STRING is required")
@@ -41,14 +45,14 @@ func run() error {
 	migrator, err := ydbmigrate.New(ydbmigrate.Config{
 		ConnectionString: connectionString,
 		OwnerID:          owner,
-		LockTTL:          5 * time.Minute,
+		LockTTL:          migrationLockTTL(timeout),
 	}, ydbmigrations.Files)
 	if err != nil {
 		return err
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
-	timeoutCtx, timeoutCancel := context.WithTimeout(ctx, 2*time.Minute)
+	timeoutCtx, timeoutCancel := context.WithTimeout(ctx, timeout)
 	defer timeoutCancel()
 	if slices.Contains(os.Args[1:], "status") {
 		statuses, err := migrator.Status(timeoutCtx)
@@ -67,6 +71,29 @@ func run() error {
 		return fmt.Errorf("usage: schema-migrate [status]")
 	}
 	return migrator.Up(timeoutCtx)
+}
+
+// Keep ordinary/local invocations bounded as before, while allowing operators
+// to admit a longer complete cloud baseline.
+func migrationTimeout(value string) (time.Duration, error) {
+	if value == "" {
+		return 2 * time.Minute, nil
+	}
+	timeout, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("parse SCHEMA_MIGRATION_TIMEOUT: %w", err)
+	}
+	if timeout <= 0 || timeout > 20*time.Minute {
+		return 0, errors.New("SCHEMA_MIGRATION_TIMEOUT must be positive and no greater than 20m")
+	}
+	return timeout, nil
+}
+
+// Renewal occurs between migrations, so a single migration's lease must
+// outlive the admitted request plus bounded cleanup. Preserve the default
+// five-minute lease while leaving a one-minute margin for longer requests.
+func migrationLockTTL(timeout time.Duration) time.Duration {
+	return max(5*time.Minute, timeout+time.Minute)
 }
 
 func ownerID() (string, error) {

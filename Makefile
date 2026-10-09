@@ -26,6 +26,7 @@ LDFLAGS := -s -w \
 	-X gitcode.com/urandon/sessionless/internal/buildinfo.BuiltAt=$(BUILT_AT)
 
 .PHONY: help prepare go-cache-status go-cache-clean go-cache-policy-test tools web-tools go-package-layout generate fmt fmt-check lint test build dockerless-build attached-worker-build attached-worker-package-test attached-worker-crash-integration attached-worker-active-crash-integration attached-worker-security-gate attached-worker-security-ydb-gate attached-worker-joined-provider-ydb-gate attached-worker-native-integration attached-worker-rootless-integration docs-check readme-visual-preview web-install web-openapi-check web-check web-build web-stage web-ci web-browser-install web-browser-test integration ydb-integration local-integration e2e-local e2e-local-dockerless attached-worker-oci-integration attached-worker-oci-linux-rootless-ci provider-conformance provider-conformance-fuzz ci image-publication-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test dockerless-stand-policy-test budget-policy-test web-deployment-policy-test terraform-ci cloudflare-edge-ci \
+	cloud-web-smoke cloud-web-smoke-test \
 	compose-config images dev-up dev-seed migrate-local migration-status partition-status partition-backfill cloud-app-reset-plan cloud-app-reset session-delete-request session-delete-plan session-delete session-hold session-release-hold \
 	worker-once web-bootstrap dev-down dev-reset dockerless-up dockerless-status dockerless-worker-once dockerless-logs dockerless-down repowise-install repowise-index repowise-update repowise-status repowise-doctor repowise-mcp repowise-mcp-smoke repowise-evaluate repowise-stop repowise-uninstall-plan repowise-uninstall repowise-policy-test clean
 
@@ -71,6 +72,8 @@ help:
 		'make local-stand-policy-test validate bounded local logging, YDB readiness, and reset guards' \
 		'make dockerless-stand-policy-test validate native orchestration safety and Docker isolation' \
 		'make terraform-ci   validate Terraform, run a mocked Web plan, and enforce policies' \
+		'make cloud-web-smoke-test credential-free selected-login cloud smoke fixtures' \
+		'make cloud-web-smoke run non-destructive cloud Web checks only under approved rollout authority' \
 		'make cloudflare-edge-ci test and dry-run bundle the Telegram edge Worker' \
 		'make images         build control-plane and worker images' \
 		'make dev-up         start, initialize, migrate, seed, and verify the local stand' \
@@ -306,7 +309,7 @@ provider-conformance-fuzz: prepare
 	go test -run='^$$' -fuzz=FuzzOpenCodeJSONLParserNeverCommitsMalformedTerminal -fuzztime=2s ./internal/opencodeopenrouter
 	go test -run='^$$' -fuzz=FuzzResponseParserNeverCommitsMalformedTerminal -fuzztime=2s ./internal/directopenrouter
 
-ci: docs-check web-ci generate test build integration attached-worker-security-gate image-publication-test image-build-inputs-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test dockerless-stand-policy-test go-cache-policy-test
+ci: docs-check cloud-web-smoke-test web-ci generate test build integration attached-worker-security-gate image-publication-test image-build-inputs-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test dockerless-stand-policy-test go-cache-policy-test
 
 image-publication-test:
 	@./scripts/test-image-publication.sh
@@ -341,6 +344,12 @@ web-secret-load-test:
 
 web-deployment-policy-test:
 	@./scripts/test-web-deployment-policy.sh
+
+cloud-web-smoke-test:
+	@node --test scripts/test-cloud-web-smoke.mjs
+
+cloud-web-smoke:
+	@./scripts/cloud-web-smoke.sh
 
 terraform-ci:
 	$(TERRAFORM) fmt -recursive -check -diff infra/terraform

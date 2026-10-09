@@ -500,6 +500,21 @@ provider login. Registered-client callback, Yandex endpoint reachability from
 the deployed runtime and cloud browser smoke remain #34/#35 rollout evidence;
 access to the Yandex Cloud console does not prove these endpoints reachable.
 
+The selected-provider cloud smoke has a credential-free local entry point:
+
+```sh
+make cloud-web-smoke-test
+```
+
+It runs Node.js standard-library fixtures with fake curl/yc clients and checks
+positive redirects, fail-closed configuration/response handling, redaction and
+temporary-file cleanup. No Docker, YDB, cloud token or provider login is needed.
+Repository CI runs the same target under the pinned Node.js version. The live
+`make cloud-web-smoke` command requires separately approved cloud rollout
+authority and explicit provider/public client configuration; see the
+[cloud runbook](cloud-development.md#9-verify-the-yandex-foundation). A passing
+login-start check does not prove an actual account callback or logged-in session.
+
 ### Existing Telegram fixture
 
 The Web BFF and Telegram-shaped OIDC fixture are separate Go processes. The

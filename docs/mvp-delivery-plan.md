@@ -50,6 +50,12 @@ existing owners, but #144/#145 in their entirety are not new launch gates.
 ## What is proved versus what is still missing
 
 - #30–#33 delivered the local Web BFF/API/UI, not cloud product E2E.
+- #171 is delivered by MR !151 (merge `03d4d74`), with exact source-head
+  [CI 37936566555](https://github.com/urandon/sessionless/actions/runs/37936566555)
+  passing all eight jobs. Selected Yandex OAuth, client-bound account checks,
+  audited first-identity bootstrap and browser/YDB fixtures are implemented.
+  #168 remains open for the real registered callback and cloud login joined
+  under #34/#35; repository proof is not a real-provider login.
 - #77 delivered the daemon/supervisor; #81 delivered a disabled Codex adapter.
 - #79/#166 are closed: MR !147 supplied the server-owned output receipt and
   bounded positive two-owner/terminal proof. Source-head CI
@@ -84,7 +90,7 @@ exact snapshot; the primary agent owns integration, CI/merge and tracker status.
 
 | Owner | Inputs and concrete actions | Exit evidence |
 | --- | --- | --- |
-| #168 / #171 independent Yandex login | Implement the selected OAuth/PKCE adapter and `(yandex, account id)` identity through existing auth/session ports; update sign-in, secret mapping and membership bootstrap runbook | Browser/YDB positives and negatives; exact app-client binding; no Telegram prerequisite or automatic account linking; real callback verified with #34/#35 |
+| #168 / #171 independent Yandex login — implementation delivered | MR !151 provides selected OAuth/PKCE, `(yandex, account id)` identity, sign-in, secret mapping and audited membership bootstrap; #173 adapts the selected-provider cloud smoke | Browser/YDB positives and negatives passed exact source-head CI 37936566555; no Telegram prerequisite or automatic account linking. Real registered callback/session proof remains with #34/#35 |
 | #78 / #170 minimum owner onboarding — delivered | MR !150 provides documented authenticated enrollment/rotation/revoke and private native setup; one exact own resource and honest current status/ineligibility | Exact source-head CI 37923615654 passed eight jobs, including fresh YDB proof; another owner is denied. Operator-assisted invitation/bootstrap is allowed and documented; broader lifecycle/catalog work is not a launch gate |
 | #76 product bridge — delivered | MR !149 composes Web ingress admission, exact own-resource scheduling/dispatch, sealed input and receipt/finalizer behind default-off gates; Telegram initialization is optional | Exact source-head CI 37917810200, eight jobs passed; credential-bearing test-provider submission → fenced worker → canonical answer/manifest → TerminalAck → Web refresh; cross-owner/stale/ambiguous negatives |
 | #129 / #75 transport rollout | Freeze a synthetic cloud-dev experiment manifest, budgets and teardown; measure idle cadence and the bounded reconnect cases already specified in #129 | Attributed request/RU/duration/egress/RUB observations and go/conditional/no-go, not inferred zero cost. Cloud execution requires its approved manifest |
@@ -114,8 +120,8 @@ flowchart TD
     RELEASE --> MVP["#6 WebUI-first pilot"]
 ```
 
-#34 infrastructure preparation, #129 experiment preparation and #168/#171
-implementation may proceed independently. Their final joins are gates; graph
+#34 infrastructure preparation and #129 experiment preparation may proceed
+independently; #171's repository implementation is delivered. Their final joins are gates; graph
 edges do not mean every preparatory action must wait. #129 is required for
 cloud-connected rollout, not for local test-provider bridge development.
 
@@ -136,7 +142,7 @@ gantt
     axisFormat %d %b
     excludes weekends
     section Independent preparation
-    Yandex OAuth login (#168 / #171)     :auth, 2026-10-09, 5d
+    Yandex OAuth implementation (#171)  :done, auth, 2026-10-09, 1d
     Minimum onboarding (#170 delivered) :done, enroll, 2026-10-09, 1d
     Product bridge (#76 delivered)      :done, bridge, 2026-10-09, 1d
     Cadence experiment decision (#129)  :cost, 2026-10-09, 3d

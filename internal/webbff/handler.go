@@ -1,5 +1,5 @@
 // Package webbff implements the same-origin authentication BFF. It owns
-// browser cookies and protocol orchestration while delegating Telegram tokens
+// browser cookies and protocol orchestration while delegating provider tokens
 // and durable authorization state to narrow ports.
 package webbff
 
@@ -48,6 +48,8 @@ type Config struct {
 	AllowLoopbackObjectStorage bool
 	OIDCPolicy                 domain.OIDCVerificationPolicy
 	Provider                   ports.OIDCProvider
+	OAuthProvider              ports.OAuthIdentityProvider
+	OAuthClientID              string
 	Store                      ports.WebAuthStore
 	Sessions                   *sessionapi.Service
 	API                        *webapi.Service
@@ -82,8 +84,25 @@ type Handler struct {
 }
 
 func New(config Config) (*Handler, error) {
-	if config.Provider == nil || config.Store == nil || config.IDs == nil || config.Clock == nil {
+	if (config.Provider == nil) == (config.OAuthProvider == nil) || config.Store == nil || config.IDs == nil || config.Clock == nil {
 		return nil, errors.New("web BFF provider, store, ID generator, and clock are required")
+	}
+	callbackPath := webcontract.RouteOIDCCallback
+	if config.OAuthProvider != nil {
+		callbackPath = webcontract.RouteLoginCallback
+		if err := domain.ValidateOpaqueID("oauth.client_id", config.OAuthClientID); err != nil {
+			return nil, err
+		}
+		if config.OIDCPolicy.Issuer != "" || config.OIDCPolicy.Audience != "" || len(config.OIDCPolicy.AllowedAlgorithms) != 0 || config.OIDCPolicy.MaxClockSkew != 0 {
+			return nil, errors.New("OAuth and OIDC configuration must not be mixed")
+		}
+	} else {
+		if config.OAuthClientID != "" {
+			return nil, errors.New("OAuth client ID requires the OAuth provider")
+		}
+		if err := config.OIDCPolicy.Validate(); err != nil {
+			return nil, err
+		}
 	}
 	if config.Random == nil {
 		config.Random = rand.Reader
@@ -108,11 +127,8 @@ func New(config Config) (*Handler, error) {
 		return nil, errors.New("WEB_BASE_URL must be an HTTPS origin")
 	}
 	redirect, err := url.Parse(config.RedirectURI)
-	if err != nil || redirect.Scheme != "https" || redirect.Host != base.Host || redirect.Path != webcontract.RouteOIDCCallback || redirect.RawQuery != "" || redirect.Fragment != "" {
-		return nil, errors.New("Telegram redirect URI must be the exact same-origin callback")
-	}
-	if err := config.OIDCPolicy.Validate(); err != nil {
-		return nil, err
+	if err != nil || redirect.Scheme != "https" || redirect.Host != base.Host || redirect.User != nil || redirect.Path != callbackPath || redirect.RawPath != "" || redirect.RawQuery != "" || redirect.Fragment != "" || redirect.String() != config.BaseURL+callbackPath {
+		return nil, errors.New("login redirect URI must be the exact selected same-origin callback")
 	}
 	objectStorageOrigin, err := validateObjectStorageOrigin(
 		config.ObjectStorageOrigin, config.AllowLoopbackObjectStorage,
@@ -189,8 +205,12 @@ func (handler *Handler) routes() {
 	handler.mux.HandleFunc("GET /healthz", handler.health)
 	handler.mux.HandleFunc("GET /readyz", handler.ready)
 	handler.mux.HandleFunc("GET /version", handler.version)
-	handler.mux.HandleFunc("GET "+webcontract.RouteOIDCStart, handler.startLogin)
-	handler.mux.HandleFunc("GET "+webcontract.RouteOIDCCallback, handler.loginCallback)
+	handler.mux.HandleFunc("GET "+webcontract.RouteLoginStart, handler.startLogin)
+	handler.mux.HandleFunc("GET "+webcontract.RouteLoginCallback, handler.loginCallback)
+	if handler.config.Provider != nil {
+		handler.mux.HandleFunc("GET "+webcontract.RouteOIDCStart, handler.startLogin)
+		handler.mux.HandleFunc("GET "+webcontract.RouteOIDCCallback, handler.loginCallback)
+	}
 	handler.mux.HandleFunc("POST "+webcontract.RouteLogout, handler.logout)
 	handler.mux.HandleFunc("GET "+webcontract.RouteMe, handler.me)
 	handler.mux.HandleFunc("GET "+webcontract.RouteTenants, handler.tenants)
@@ -790,13 +810,17 @@ func (handler *Handler) startLogin(w http.ResponseWriter, request *http.Request)
 		handler.writeLoginError(w, request, "challenge_generation_failed", err, nil, "")
 		return
 	}
-	nonce, err := handler.secret("nonce_", 32)
-	if err != nil {
-		handler.writeLoginError(w, request, "challenge_generation_failed", err, nil, "")
-		return
+	nonce := ""
+	if handler.config.Provider != nil {
+		nonce, err = handler.secret("nonce_", 32)
+		if err != nil {
+			handler.writeLoginError(w, request, "challenge_generation_failed", err, nil, "")
+			return
+		}
 	}
 	now := handler.config.Clock.Now().UTC()
 	challenge := domain.OIDCLoginChallenge{
+		Provider: handler.loginProvider(), Issuer: handler.loginIssuer(), Audience: handler.loginAudience(),
 		StateDigest: domain.DigestSecret(state), BrowserBindingDigest: domain.DigestSecret(browserBinding),
 		PKCEVerifier: verifier, Nonce: nonce, RedirectPath: start.ReturnTo,
 		CreatedAt: now, ExpiresAt: now.Add(handler.config.ChallengeTTL),
@@ -806,11 +830,18 @@ func (handler *Handler) startLogin(w http.ResponseWriter, request *http.Request)
 		return
 	}
 	digest := sha256.Sum256([]byte(verifier))
-	authorizationURL, err := handler.config.Provider.AuthorizationURL(request.Context(), ports.OIDCAuthorizationRequest{
-		Provider: domain.IdentityProviderTelegram, RedirectURI: handler.config.RedirectURI,
-		State: state, Nonce: nonce, CodeChallenge: base64.RawURLEncoding.EncodeToString(digest[:]),
-		Scopes: []string{"openid", "profile"},
-	})
+	var authorizationURL string
+	if handler.config.OAuthProvider != nil {
+		authorizationURL, err = handler.config.OAuthProvider.AuthorizationURL(request.Context(), ports.OAuthAuthorizationRequest{
+			RedirectURI: handler.config.RedirectURI, State: state, CodeChallenge: base64.RawURLEncoding.EncodeToString(digest[:]),
+		})
+	} else {
+		authorizationURL, err = handler.config.Provider.AuthorizationURL(request.Context(), ports.OIDCAuthorizationRequest{
+			Provider: domain.IdentityProviderTelegram, RedirectURI: handler.config.RedirectURI,
+			State: state, Nonce: nonce, CodeChallenge: base64.RawURLEncoding.EncodeToString(digest[:]),
+			Scopes: []string{"openid", "profile"},
+		})
+	}
 	if err != nil {
 		handler.writeLoginError(w, request, "provider_authorization_failed", err, nil, "")
 		return
@@ -844,20 +875,19 @@ func (handler *Handler) loginCallback(w http.ResponseWriter, request *http.Reque
 		handler.writeCallbackFailure(w, request, "login_challenge_rejected", nil, "")
 		return
 	}
+	if !handler.matchesLoginBinding(challenge, request.URL.Path) {
+		handler.writeCallbackFailure(w, request, "login_provider_binding_rejected", nil, "")
+		return
+	}
 	if callback.Error != "" {
 		handler.writeCallbackFailure(w, request, "provider_denied", nil, "")
 		return
 	}
-	claims, err := handler.config.Provider.ExchangeAndVerify(request.Context(), ports.OIDCTokenRequest{
-		Provider: domain.IdentityProviderTelegram, Code: callback.Code,
-		RedirectURI: handler.config.RedirectURI, PKCEVerifier: challenge.PKCEVerifier,
-		ExpectedNonce: challenge.Nonce, Policy: handler.config.OIDCPolicy, Now: now,
-	})
-	if err != nil {
+	verifiedSubject, err := handler.exchangeLogin(request.Context(), callback.Code, challenge, now)
+	if err != nil || verifiedSubject.Validate() != nil || verifiedSubject.Provider != handler.loginProvider() {
 		handler.writeCallbackFailure(w, request, "provider_verification_failed", nil, "")
 		return
 	}
-	verifiedSubject := domain.ExternalSubject{Provider: domain.IdentityProviderTelegram, Subject: claims.Subject}
 	candidate, err := handler.config.IDs.NewID(request.Context(), ports.IDUser)
 	if err != nil {
 		handler.writeCallbackFailure(w, request, "user_id_generation_failed", &verifiedSubject, "")
@@ -893,6 +923,56 @@ func (handler *Handler) loginCallback(w http.ResponseWriter, request *http.Reque
 	handler.setSessionCookies(w, rawSession, rawCSRF)
 	w.Header().Set("Location", challenge.RedirectPath)
 	w.WriteHeader(http.StatusSeeOther)
+}
+
+func (handler *Handler) loginProvider() domain.IdentityProvider {
+	if handler.config.OAuthProvider != nil {
+		return domain.IdentityProviderYandex
+	}
+	return domain.IdentityProviderTelegram
+}
+
+func (handler *Handler) loginIssuer() string {
+	if handler.config.OAuthProvider != nil {
+		return domain.YandexOAuthIssuer
+	}
+	return handler.config.OIDCPolicy.Issuer
+}
+
+func (handler *Handler) loginAudience() string {
+	if handler.config.OAuthProvider != nil {
+		return handler.config.OAuthClientID
+	}
+	return handler.config.OIDCPolicy.Audience
+}
+
+func (handler *Handler) matchesLoginBinding(challenge domain.OIDCLoginChallenge, callbackPath string) bool {
+	if challenge.Validate() != nil {
+		return false
+	}
+	if challenge.Provider == "" {
+		return handler.config.Provider != nil && callbackPath == webcontract.RouteOIDCCallback
+	}
+	return challenge.Provider == handler.loginProvider() && challenge.Issuer == handler.loginIssuer() && challenge.Audience == handler.loginAudience()
+}
+
+func (handler *Handler) exchangeLogin(ctx context.Context, code string, challenge domain.OIDCLoginChallenge, now time.Time) (domain.ExternalSubject, error) {
+	if handler.config.OAuthProvider != nil {
+		return handler.config.OAuthProvider.ExchangeAndVerify(ctx, ports.OAuthTokenRequest{
+			Code: code, RedirectURI: handler.config.RedirectURI, PKCEVerifier: challenge.PKCEVerifier,
+		})
+	}
+	claims, err := handler.config.Provider.ExchangeAndVerify(ctx, ports.OIDCTokenRequest{
+		Provider: domain.IdentityProviderTelegram, Code: code, RedirectURI: handler.config.RedirectURI,
+		PKCEVerifier: challenge.PKCEVerifier, ExpectedNonce: challenge.Nonce, Policy: handler.config.OIDCPolicy, Now: now,
+	})
+	if err != nil {
+		return domain.ExternalSubject{}, err
+	}
+	if err := claims.Verify(handler.config.OIDCPolicy, challenge.Nonce, now); err != nil {
+		return domain.ExternalSubject{}, err
+	}
+	return domain.ExternalSubject{Provider: domain.IdentityProviderTelegram, Subject: claims.Subject}, nil
 }
 
 func (handler *Handler) me(w http.ResponseWriter, request *http.Request) {
@@ -1234,7 +1314,7 @@ func (handler *Handler) securityEvent(
 ) domain.WebSecurityAuditEvent {
 	event := domain.WebSecurityAuditEvent{
 		RequestID: requestIDFrom(request), Action: action,
-		Provider: domain.IdentityProviderTelegram, TenantID: tenantID, UserID: userID,
+		Provider: handler.loginProvider(), TenantID: tenantID, UserID: userID,
 		MembershipSecurityVersion: membershipVersion, ReasonCode: reason,
 		OccurredAt: handler.config.Clock.Now().UTC(),
 	}

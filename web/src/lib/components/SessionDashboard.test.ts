@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ConditionalResult, SessionPage } from '$lib/api/client';
+import { ApiError, type ConditionalResult, type SessionPage } from '$lib/api/client';
 import SessionDashboard, { type DashboardApi } from './SessionDashboard.svelte';
 
 const identity = {
@@ -42,6 +42,53 @@ function api(overrides: Partial<DashboardApi> = {}): DashboardApi {
 }
 
 describe('SessionDashboard', () => {
+  it('offers the configured sign-in without requiring Telegram or granting access', async () => {
+    const client = api({
+      getIdentity: vi
+        .fn()
+        .mockRejectedValue(new ApiError('unauthenticated', 'Sign in required', 401)),
+      listSessions: vi
+        .fn()
+        .mockRejectedValue(new ApiError('unauthenticated', 'Sign in required', 401)),
+    });
+
+    render(SessionDashboard, { client });
+
+    expect(await screen.findByRole('link', { name: 'Continue to sign in' })).toHaveAttribute(
+      'href',
+      '/auth/login/start?return_to=%2F',
+    );
+    expect(screen.queryByText(/Telegram/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Workspace')).not.toBeInTheDocument();
+    expect(client.createSession).not.toHaveBeenCalled();
+    expect(client.selectTenant).not.toHaveBeenCalled();
+  });
+
+  it('offers operator recovery without guessing why workspace access was denied', async () => {
+    const client = api({
+      getIdentity: vi
+        .fn()
+        .mockRejectedValue(new ApiError('access_denied', 'Access unavailable', 403)),
+      listSessions: vi
+        .fn()
+        .mockRejectedValue(new ApiError('access_denied', 'Access unavailable', 403)),
+    });
+
+    render(SessionDashboard, { client });
+
+    expect(
+      await screen.findByRole('heading', { name: 'No workspace access for this account' }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Recovery steps' })).toHaveAttribute(
+      'href',
+      '/login?auth_error=access_denied',
+    );
+    expect(screen.queryByText(/No workspace is linked|Telegram/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Workspace')).not.toBeInTheDocument();
+    expect(client.createSession).not.toHaveBeenCalled();
+    expect(client.selectTenant).not.toHaveBeenCalled();
+  });
+
   it('loads identity and canonical sessions into an accessible workspace', async () => {
     const client = api();
 

@@ -116,6 +116,8 @@ module "web" {
   scheduler_ymq_secret_id             = module.foundation.scheduler_ymq_secret_id
   scheduler_ymq_secret_version_id     = module.foundation.scheduler_ymq_secret_version_id
   telegram_oidc_client_id             = var.telegram_oidc_client_id
+  login_provider                      = var.web_login_provider
+  yandex_login_client_id              = var.yandex_login_client_id
   allowed_mcp_servers                 = var.web_allowed_mcp_servers
   max_upload_bytes                    = var.web_max_upload_bytes
   memory_mb                           = var.web_memory_mb

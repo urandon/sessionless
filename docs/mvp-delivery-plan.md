@@ -29,11 +29,16 @@ permission for other plans or credentials.
 Telegram messaging and the Cloudflare reachability edge are **post-MVP**.
 Their implementations and regression fixtures remain; they are not release
 gates. The owner's Telegram/Yandex webhook-delay observation is motivation to
-avoid that transport dependency, not a measurement of OIDC availability.
-Current Web authentication still uses Telegram OIDC.
-[#168](https://gitcode.com/urandon/sessionless/issues/168) owns one independent
-OIDC login, reusing membership, invitation/bootstrap and session controls;
-no bot initialization, password system or broad SSO framework is required.
+avoid that transport dependency, not a measurement of login-endpoint availability.
+The owner selected Yandex ID for independent Web login: Authorization Code
+OAuth with S256 PKCE and the trusted account API, not an OIDC/JWKS protocol.
+[#168](https://gitcode.com/urandon/sessionless/issues/168) owns this login;
+its bounded implementation is [#171](https://gitcode.com/urandon/sessionless/issues/171).
+It reuses membership, invitation/bootstrap and session controls; no bot
+initialization, password system or broad SSO framework is required. Existing
+Telegram OIDC configurations remain supported but are not the pilot prerequisite.
+Explicit late linking of Yandex and Telegram accounts is
+[post-MVP #172](https://gitcode.com/urandon/sessionless/issues/172), not a launch gate.
 
 Resource sharing/federation, a multi-resource picker, full administration,
 analytics, other messengers and exhaustive distributed-failure simulations
@@ -64,10 +69,11 @@ existing owners, but #144/#145 in their entirety are not new launch gates.
   sealed input is credentialless: source composition and synthetic CI evidence
   are not real-provider product activation. #133 owns that next handoff.
 - #75 transport is implemented in disabled slices; #129 still owns measured
-  cloud cadence/cost and bounded reconnect rollout evidence. #78 still owns
-  interactive lifecycle gaps despite delivered read diagnostics. Its #170
-  minimum [private-file onboarding](attached-worker-onboarding.md) supplies
-  fresh enrollment, exact own-resource registration and native identity setup;
+  cloud cadence/cost and bounded reconnect rollout evidence. #78's #170 minimum
+  [private-file onboarding](attached-worker-onboarding.md) is delivered by
+  MR !150 (merge `102756e`): fresh enrollment, exact own-resource registration
+  and native identity setup, with operator-assisted invitation/bootstrap.
+  Broader interactive lifecycle work remains in #78 but is not a new MVP gate;
   entitlement/quota remain unknown until #133 activation evidence.
 
 ## Actionable remaining work
@@ -78,8 +84,8 @@ exact snapshot; the primary agent owns integration, CI/merge and tracker status.
 
 | Owner | Inputs and concrete actions | Exit evidence |
 | --- | --- | --- |
-| #168 independent login | Select one supported issuer; implement its adapter and issuer-scoped identity mapping through existing auth/session ports; update sign-in and bootstrap runbook | Browser/YDB positives and negatives; no Telegram prerequisite; real callback verified with #34/#35 |
-| #78 minimum owner onboarding | Reuse #73/#82/#104/#131; provide documented authenticated enrollment/rotation/revoke and local setup; bind one exact own resource; expose current status/ineligibility | A fresh pilot owner can enroll and recover/revoke without manual database edits; another owner is denied. Operator-assisted invitation/bootstrap is allowed and documented; a full control catalog is not required |
+| #168 / #171 independent Yandex login | Implement the selected OAuth/PKCE adapter and `(yandex, account id)` identity through existing auth/session ports; update sign-in, secret mapping and membership bootstrap runbook | Browser/YDB positives and negatives; exact app-client binding; no Telegram prerequisite or automatic account linking; real callback verified with #34/#35 |
+| #78 / #170 minimum owner onboarding — delivered | MR !150 provides documented authenticated enrollment/rotation/revoke and private native setup; one exact own resource and honest current status/ineligibility | Exact source-head CI 37923615654 passed eight jobs, including fresh YDB proof; another owner is denied. Operator-assisted invitation/bootstrap is allowed and documented; broader lifecycle/catalog work is not a launch gate |
 | #76 product bridge — delivered | MR !149 composes Web ingress admission, exact own-resource scheduling/dispatch, sealed input and receipt/finalizer behind default-off gates; Telegram initialization is optional | Exact source-head CI 37917810200, eight jobs passed; credential-bearing test-provider submission → fenced worker → canonical answer/manifest → TerminalAck → Web refresh; cross-owner/stale/ambiguous negatives |
 | #129 / #75 transport rollout | Freeze a synthetic cloud-dev experiment manifest, budgets and teardown; measure idle cadence and the bounded reconnect cases already specified in #129 | Attributed request/RU/duration/egress/RUB observations and go/conditional/no-go, not inferred zero cost. Cloud execution requires its approved manifest |
 | #133 real Codex activation | Consume #76 and closed #79/#166; pin exact artifact/resource/policy; prove egress/isolation on the rollout platform; compose prepared driver and receipt sink; enable one resource reversibly | One authorized real subscription turn, canonical result and explicit failures; no ambient credentials, API fallback or automatic second invocation. #129 decision required before cloud transport rollout |
@@ -92,9 +98,9 @@ exact snapshot; the primary agent owns integration, CI/merge and tracker status.
 
 ```mermaid
 flowchart TD
-    AUTH["#168 independent OIDC"] --> WEB["#34 cloud Web rollout"]
+    AUTH["#168 / #171 Yandex OAuth login"] --> WEB["#34 cloud Web rollout"]
     AUTH --> E2E["#35 browser product E2E"]
-    ENROLL["#78 minimum own-worker onboarding"] --> REAL["#133 real Codex activation"]
+    ENROLL["#78 / #170 minimum onboarding delivered"] --> REAL["#133 real Codex activation"]
     BRIDGE["#76 Web-to-attached product bridge"] --> REAL
     SAFETY["#77 / #81 / #79 / #166 delivered"] --> REAL
     COST["#129 measured cadence and rollout decision"] --> REAL
@@ -108,7 +114,7 @@ flowchart TD
     RELEASE --> MVP["#6 WebUI-first pilot"]
 ```
 
-#34 infrastructure preparation, #129 experiment preparation and #168/#78/#76
+#34 infrastructure preparation, #129 experiment preparation and #168/#171
 implementation may proceed independently. Their final joins are gates; graph
 edges do not mean every preparatory action must wait. #129 is required for
 cloud-connected rollout, not for local test-provider bridge development.
@@ -118,7 +124,7 @@ cloud-connected rollout, not for local test-provider bridge development.
 This is a dependency/capacity **scenario**, anchored on 2026-10-09, with
 provisional engineering allowances. It is not measured remaining effort,
 a staffed calendar or a release date. Re-estimate after first concrete checks;
-cloud experiment authorization, issuer registration and actual availability can
+cloud experiment authorization, application registration and actual availability can
 extend elapsed time. The #129 box includes preparation/observation/decision,
 not permission to skip its fixed 24-hour cohorts. Existing milestone dates are
 unchanged planning horizons, not extra gates.
@@ -130,8 +136,8 @@ gantt
     axisFormat %d %b
     excludes weekends
     section Independent preparation
-    One OIDC login (#168)               :auth, 2026-10-09, 5d
-    Minimum owner onboarding (#78)      :enroll, 2026-10-09, 3d
+    Yandex OAuth login (#168 / #171)     :auth, 2026-10-09, 5d
+    Minimum onboarding (#170 delivered) :done, enroll, 2026-10-09, 1d
     Product bridge (#76 delivered)      :done, bridge, 2026-10-09, 1d
     Cadence experiment decision (#129)  :cost, 2026-10-09, 3d
     Cloud infrastructure prep (#34)     :prep, 2026-10-09, 3d

@@ -19,6 +19,8 @@ const (
 	RouteLogin                     = "/login"
 	RouteOIDCStart                 = "/auth/telegram/start"
 	RouteOIDCCallback              = "/auth/telegram/callback"
+	RouteLoginStart                = "/auth/login/start"
+	RouteLoginCallback             = "/auth/login/callback"
 	RouteLogout                    = "/auth/logout"
 	RouteMe                        = "/api/web/v1/me"
 	RouteTenants                   = "/api/web/v1/tenants"

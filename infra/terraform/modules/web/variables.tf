@@ -27,12 +27,31 @@ variable "web_secret_id" { type = string }
 variable "web_secret_version_id" { type = string }
 variable "scheduler_ymq_secret_id" { type = string }
 variable "scheduler_ymq_secret_version_id" { type = string }
+variable "login_provider" {
+  description = "Explicit Web login provider; existing Telegram deployments remain unchanged until selected."
+  type        = string
+  default     = "telegram"
+  validation {
+    condition     = contains(["telegram", "yandex"], var.login_provider)
+    error_message = "login_provider must be telegram or yandex."
+  }
+}
+variable "yandex_login_client_id" {
+  description = "Non-secret Yandex OAuth client identifier, required only when selected."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.login_provider != "yandex" || (length(trimspace(var.yandex_login_client_id)) > 0 && var.yandex_login_client_id == trimspace(var.yandex_login_client_id))
+    error_message = "yandex_login_client_id must be non-empty and without surrounding whitespace when Yandex is selected."
+  }
+}
 variable "telegram_oidc_client_id" {
   description = "Non-secret numeric Telegram OIDC client identifier."
   type        = string
+  default     = ""
   validation {
-    condition     = can(regex("^[0-9]+$", var.telegram_oidc_client_id))
-    error_message = "telegram_oidc_client_id must contain only decimal digits."
+    condition     = var.login_provider != "telegram" || can(regex("^[0-9]+$", var.telegram_oidc_client_id))
+    error_message = "telegram_oidc_client_id must contain only decimal digits when Telegram is selected."
   }
 }
 variable "allowed_mcp_servers" {

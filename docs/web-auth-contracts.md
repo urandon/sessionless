@@ -1,19 +1,22 @@
 # Web authentication and API contracts
 
-This document freezes the WEB-01 contracts. WEB-02 now implements the Go BFF,
+This document freezes the WEB-01 contracts. WEB-02 implements the Go BFF,
 Telegram OIDC adapter, YDB auth tables, and operator bootstrap described here.
-The canonical resource API and browser application remain WEB-03 and WEB-04.
+WEB-07 (#168/#171) adds the explicitly selected Yandex OAuth variant below,
+without changing membership, session or API authority. The canonical resource
+API and browser application remain WEB-03 and WEB-04.
 
 The WebUI is a projection over canonical Sessionless sessions and events.
-Telegram is the first identity provider for the WebUI, but Telegram chats,
-updates, usernames, and transport identifiers do not grant product access.
+Yandex ID is the WebUI-first MVP login; the original Telegram configuration
+remains supported. Provider accounts, chats, usernames and transport identifiers
+do not grant product access.
 
 ## Trust boundaries
 
 ```mermaid
 flowchart LR
     Browser["Untrusted browser"] -->|"opaque cookie + exact Origin + CSRF"| BFF["Go Web BFF"]
-    BFF -->|"code + PKCE verifier"| OIDC["Telegram OIDC"]
+    BFF -->|"code + PKCE verifier"| OIDC["Selected Yandex OAuth or Telegram OIDC"]
     BFF -->|"digests and resolved IDs"| Auth["YDB auth records"]
     BFF -->|"authorized tenant + session"| Core["Canonical application ports"]
     BFF -->|"short-lived upload capability"| Storage["Object Storage"]
@@ -28,9 +31,37 @@ untrusted input and resolves authority from the current web session, an active
 tenant membership, and (for session resources) a session participant record.
 Authentication alone never creates a tenant or membership.
 
+## Selected Yandex OAuth variant (#171)
+
+`WEB_LOGIN_PROVIDER=yandex` selects one fixed Authorization Code + S256 PKCE
+adapter. `/auth/login/start` and `/auth/login/callback` are the neutral routes;
+Telegram-only legacy routes are available only when Telegram is selected.
+Missing selected credentials never cause a fallback to the other provider.
+
+The adapter pins `https://oauth.yandex.ru/authorize`,
+`https://oauth.yandex.ru/token` and `https://login.yandex.ru/info?format=json`.
+It requests only `login:info`, exchanges the code privately with client
+authentication, and uses the transient access token only in the account API's
+`Authorization: OAuth` header. The returned numeric `id` is accepted only with
+an exact configured `client_id`. No profile email, name, login or `psuid`
+selects or links a canonical user. Tokens do not cross `OAuthIdentityProvider`.
+
+This is not OIDC: no ID token, JWKS or nonce is assumed. Its durable single-use
+challenge binds browser, selected provider, client, callback and PKCE verifier.
+Consume occurs before exchange, with one total bounded token/account timeout, no
+redirect following or automatic token retry, and strict bounded JSON parsing.
+Existing sessions still require a fresh active membership and security version.
+Telegram's nonce/signature/JWKS rules below apply to its OIDC path only.
+
+Official contracts: [Yandex code exchange](https://yandex.ru/dev/id/doc/ru/codes/code-url)
+and [account information](https://yandex.ru/dev/id/doc/ru/user-information).
+See [configuration and proof](web-bff.md#yandex-provider-configuration) and
+[development](development.md#yandex-id-login). Explicit dual-proof identity
+linking is post-MVP [#172](https://gitcode.com/urandon/sessionless/issues/172).
+
 ## Telegram OIDC flow
 
-The selected flow is Authorization Code with PKCE `S256`. Telegram documents
+When Telegram is selected, the flow is Authorization Code with PKCE `S256`. Telegram documents
 the authorization, token, and JWKS endpoints and requires server-side ID-token
 validation. OAuth security guidance recommends PKCE for confidential web
 clients as well as public clients, transaction-specific state/nonce values,
@@ -100,7 +131,7 @@ verified identity claims only; provider tokens cannot cross the port.
 ## Identity, membership, and enrollment
 
 An `ExternalSubject(provider, subject)` maps immutably to one internal
-`UserID`. A successful OIDC exchange may create or refresh this mapping. It may
+`UserID`. A successful verified provider exchange may create or refresh this mapping. It may
 not create a tenant membership by itself.
 
 An active `TenantMembership(tenant_id, user_id)` is the authorization source.
@@ -133,6 +164,11 @@ exposes it as an operator-only command with these requirements:
 - atomically create the membership and append a redacted audit record;
 - be idempotent only for the exact same user, tenant, role, operator, and reason;
 - refuse every environment except `cloud-dev`.
+
+The optional first-identity mode also requires exact provider/subject
+confirmation. Identity, membership and audited grant commit atomically. A
+subject already owned by another user, or a target user with any different
+external identity, is rejected; operator bootstrap is not an account-link path.
 
 This procedure does not depend on a Telegram webhook. General membership
 administration and production bootstrap are outside the MVP contract.
@@ -172,6 +208,8 @@ resolved to a membership before session rotation.
 
 | Method and path | Request selector/body | Authorization and result |
 | --- | --- | --- |
+| `GET /auth/login/start` | optional local `return_to` | create selected-provider/browser-bound challenge; redirect |
+| `GET /auth/login/callback` | exactly one of `code` or `error`, plus `state` | consume selected-provider/client-bound challenge; verify account; resolve membership; stable denial without provider details |
 | `GET /auth/telegram/start` | optional local `return_to` | create browser-bound challenge; redirect |
 | `GET /auth/telegram/callback` | exactly one of `code` or `error`, plus `state` | consume challenge; verify claims; resolve enrollment; on failure redirect to stable `access_denied`, or `temporarily_unavailable` when durable failure audit cannot be written; never expose provider details |
 | `POST /auth/logout` | none | CSRF; revoke current digest; clear cookies |

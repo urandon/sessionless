@@ -108,6 +108,9 @@ jobs:
           make migrate-local
           make migrate-local
 
+      - name: Prove Yandex login and operator bootstrap against fresh YDB
+        run: make web-auth-ydb-gate
+
       - name: Run YDB integration suite
         run: make ydb-integration
 

@@ -9,16 +9,22 @@ test.describe('authentication boundaries', () => {
     await page.goto('/');
 
     await expect(page.getByRole('heading', { name: 'Your sessions, in one place' })).toBeVisible();
-    const signIn = page.getByRole('link', { name: 'Continue with Telegram' });
-    await expect(signIn).toHaveAttribute('href', '/auth/telegram/start?return_to=%2F');
+    const signIn = page.getByRole('link', { name: 'Continue to sign in' });
+    await expect(signIn).toHaveAttribute('href', '/auth/login/start?return_to=%2F');
+    await expect(page.getByText(/Telegram/)).toHaveCount(0);
+    await expect(page.getByLabel('Workspace')).toHaveCount(0);
 
     await page.goto('/login?auth_error=access_denied');
     await expect(
       page.getByRole('heading', {
-        name: 'This Telegram account has no Sessionless workspace yet',
+        name: 'No workspace access for this account',
       }),
     ).toBeVisible();
     await expect(page.getByText('Signing in never creates tenant access by itself.')).toBeVisible();
+    await expect(page.getByText(/ask your workspace operator/)).toBeVisible();
+    await expect(page.getByText(/invitation or account bootstrap/)).toBeVisible();
+    await expect(page.getByText(/Telegram/)).toHaveCount(0);
+    expect(canonicalApi.requests.filter((request) => request.method !== 'GET')).toEqual([]);
   });
 
   test('does not reveal whether an inaccessible deep-linked session exists', async ({
@@ -46,11 +52,26 @@ test.describe('authentication boundaries', () => {
     const signIn = page.getByRole('link', { name: 'Sign in' });
     await expect(signIn).toHaveAttribute('href', `/login?return_to=%2Fsessions%2F${sessionId}`);
     await signIn.click();
-    await expect(page.getByRole('link', { name: 'Continue with Telegram' })).toHaveAttribute(
+    await expect(page.getByRole('link', { name: 'Continue to sign in' })).toHaveAttribute(
       'href',
-      `/auth/telegram/start?return_to=%2Fsessions%2F${sessionId}`,
+      `/auth/login/start?return_to=%2Fsessions%2F${sessionId}`,
     );
   });
+
+  for (const candidate of [
+    'https://outside.example/path',
+    '//outside.example/path',
+    '/\\outside.example/path',
+    '/sessions/unsafe\npath',
+  ]) {
+    test(`uses the safe root return for ${JSON.stringify(candidate)}`, async ({ page }) => {
+      await page.goto(`/login?return_to=${encodeURIComponent(candidate)}`);
+      await expect(page.getByRole('link', { name: 'Continue to sign in' })).toHaveAttribute(
+        'href',
+        '/auth/login/start?return_to=%2F',
+      );
+    });
+  }
 });
 
 test.describe('canonical session workflow', () => {

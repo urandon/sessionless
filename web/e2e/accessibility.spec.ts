@@ -22,12 +22,28 @@ test.describe('accessible states', () => {
 
     await page.goto('/login');
     await expect(page.getByRole('heading', { name: 'Sign in to Sessionless' })).toBeVisible();
+    const signIn = page.getByRole('link', { name: 'Continue to sign in' });
+    for (let step = 0; step < 8; step += 1) {
+      await page.keyboard.press('Tab');
+      if (await signIn.evaluate((element) => element === element.ownerDocument.activeElement)) {
+        break;
+      }
+    }
+    await expect(signIn).toBeFocused();
+    await expect(signIn).toHaveCSS('outline-style', 'solid');
+    await expectNoSeriousOrCriticalViolations(page);
+
+    await page.goto('/login?auth_error=access_denied');
+    await expect(
+      page.getByRole('heading', { name: 'No workspace access for this account' }),
+    ).toBeVisible();
+    await expect(page.getByText(/ask your workspace operator/)).toBeVisible();
     await expectNoSeriousOrCriticalViolations(page);
 
     canonicalApi.auth = 'access-denied';
     await page.goto('/');
     await expect(
-      page.getByRole('heading', { name: 'No workspace is linked to this account' }),
+      page.getByRole('heading', { name: 'No workspace access for this account' }),
     ).toBeVisible();
     await expectNoSeriousOrCriticalViolations(page);
   });

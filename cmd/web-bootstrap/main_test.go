@@ -33,6 +33,30 @@ func TestGrantFromEnvironmentRequiresConnectionCoordinates(t *testing.T) {
 	}
 }
 
+func TestExplicitBootstrapIdentityIsOptionalBoundAndNeverEmail(t *testing.T) {
+	t.Setenv("WEB_BOOTSTRAP_EXTERNAL_PROVIDER", "")
+	t.Setenv("WEB_BOOTSTRAP_EXTERNAL_SUBJECT", "")
+	if s, err := bootstrapSubjectFromEnvironment(); err != nil || s != nil {
+		t.Fatal("legacy bootstrap changed")
+	}
+	t.Setenv("WEB_BOOTSTRAP_EXTERNAL_PROVIDER", "yandex")
+	t.Setenv("WEB_BOOTSTRAP_EXTERNAL_SUBJECT", "424242")
+	if s, err := bootstrapSubjectFromEnvironment(); err != nil || s.Provider != domain.IdentityProviderYandex || s.Subject != "424242" {
+		t.Fatalf("subject=%+v err=%v", s, err)
+	}
+	for _, bad := range []string{"", "alice@example.invalid", "alice", "0424242"} {
+		t.Setenv("WEB_BOOTSTRAP_EXTERNAL_SUBJECT", bad)
+		if _, err := bootstrapSubjectFromEnvironment(); err == nil {
+			t.Fatalf("unsafe subject accepted: %q", bad)
+		}
+	}
+	t.Setenv("WEB_BOOTSTRAP_EXTERNAL_SUBJECT", "424242")
+	t.Setenv("WEB_BOOTSTRAP_EXTERNAL_PROVIDER", "untrusted")
+	if _, err := bootstrapSubjectFromEnvironment(); err == nil {
+		t.Fatal("untrusted provider accepted")
+	}
+}
+
 func setGrantEnvironment(t *testing.T) {
 	t.Helper()
 	t.Setenv("WEB_BOOTSTRAP_TENANT_ID", "ten_alpha")

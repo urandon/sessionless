@@ -8,6 +8,12 @@ artifact_ice_transition_days  = 365
 telegram_secret_version_id = "replace-secret-version-id"
 web_bff_secret_version_id  = "replace-web-secret-version-id"
 telegram_oidc_client_id    = "123456789"
+# Preserve existing Telegram configuration unless Yandex is explicitly selected.
+# Yandex setup: set web_login_provider = "yandex", set yandex_login_client_id to
+# the registered non-secret application ID, and load YANDEX_LOGIN_CLIENT_SECRET
+# with WEB_LOGIN_PROVIDER=yandex via cloud-web-secret-load.sh outside Terraform.
+web_login_provider     = "telegram"
+yandex_login_client_id = ""
 
 # Immutable commit SHA tags are preferred. Both control slots may initially point to the same SHA.
 control_blue_image_tag  = "replace-commit-sha"

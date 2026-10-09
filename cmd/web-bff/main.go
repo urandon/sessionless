@@ -20,6 +20,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/idgen"
 	"gitcode.com/urandon/sessionless/internal/outboxwake"
+	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/s3store"
 	"gitcode.com/urandon/sessionless/internal/sessionapi"
 	"gitcode.com/urandon/sessionless/internal/sessioningress"
@@ -29,6 +30,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/webbff"
 	"gitcode.com/urandon/sessionless/internal/webcontract"
 	"gitcode.com/urandon/sessionless/internal/webstatic"
+	"gitcode.com/urandon/sessionless/internal/yandexoauth"
 	"gitcode.com/urandon/sessionless/internal/ydbclient"
 	"gitcode.com/urandon/sessionless/internal/ydbstore"
 )
@@ -81,17 +83,9 @@ func webListenAddress() string {
 
 func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(), error) {
 	baseURL := os.Getenv("WEB_BASE_URL")
-	redirectURI := baseURL + webcontract.RouteOIDCCallback
 	environment := envOrDefault("SESSIONLESS_ENVIRONMENT", "cloud-dev")
 	allowLocal := environment == "local"
-	provider, err := telegramoidc.New(telegramoidc.Config{
-		Issuer:                envOrDefault("TELEGRAM_OIDC_ISSUER", telegramoidc.DefaultIssuer),
-		AuthorizationEndpoint: envOrDefault("TELEGRAM_OIDC_AUTHORIZATION_ENDPOINT", telegramoidc.DefaultAuthorizationEndpoint),
-		TokenEndpoint:         envOrDefault("TELEGRAM_OIDC_TOKEN_ENDPOINT", telegramoidc.DefaultTokenEndpoint),
-		JWKSURL:               envOrDefault("TELEGRAM_OIDC_JWKS_URL", telegramoidc.DefaultJWKSURL),
-		ClientID:              os.Getenv("TELEGRAM_OIDC_CLIENT_ID"), ClientSecret: os.Getenv("TELEGRAM_OIDC_CLIENT_SECRET"),
-		RedirectURI: redirectURI, AllowedAlgorithms: []string{"RS256"}, AllowLoopbackProvider: allowLocal,
-	})
+	login, err := webLoginFromEnvironment(os.Getenv, baseURL, allowLocal)
 	if err != nil {
 		return nil, func() {}, err
 	}
@@ -221,15 +215,12 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 		return nil, func() {}, err
 	}
 	backend, err := webbff.New(webbff.Config{
-		BaseURL: baseURL, RedirectURI: redirectURI,
+		BaseURL: baseURL, RedirectURI: login.redirectURI,
 		ObjectStorageOrigin:        os.Getenv("WEB_OBJECT_STORAGE_ORIGIN"),
 		AllowLoopbackObjectStorage: allowLocal,
-		OIDCPolicy: domain.OIDCVerificationPolicy{
-			Issuer:   envOrDefault("TELEGRAM_OIDC_ISSUER", telegramoidc.DefaultIssuer),
-			Audience: os.Getenv("TELEGRAM_OIDC_CLIENT_ID"), AllowedAlgorithms: []string{"RS256"},
-			MaxClockSkew: 30 * time.Second,
-		},
-		Provider: provider, Store: store, Sessions: sessions, API: api, AttachedWorkers: attachedWorkers,
+		OIDCPolicy:                 login.policy, Provider: login.oidc,
+		OAuthProvider: login.oauth, OAuthClientID: login.clientID,
+		Store: store, Sessions: sessions, API: api, AttachedWorkers: attachedWorkers,
 		AttachedWorkerControls: attachedWorkerControls, IDs: ids, Clock: systemClock{},
 		Logger: logger, Build: buildinfo.Current(component),
 	})
@@ -247,6 +238,46 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 		return nil, func() {}, err
 	}
 	return handler, closeYDB, nil
+}
+
+type webLoginConfig struct {
+	redirectURI string
+	clientID    string
+	policy      domain.OIDCVerificationPolicy
+	oidc        ports.OIDCProvider
+	oauth       ports.OAuthIdentityProvider
+}
+
+// Provider selection is deployment authority, never browser input. Missing
+// selected credentials fail closed, rather than falling back to Telegram.
+func webLoginFromEnvironment(getenv func(string) string, baseURL string, local bool) (webLoginConfig, error) {
+	selected := getenv("WEB_LOGIN_PROVIDER")
+	if selected == "" {
+		selected = "telegram"
+	} // Preserve existing deployed configuration.
+	switch selected {
+	case "yandex":
+		redirect := baseURL + webcontract.RouteLoginCallback
+		p, err := yandexoauth.New(yandexoauth.Config{
+			ClientID: getenv("YANDEX_LOGIN_CLIENT_ID"), ClientSecret: getenv("YANDEX_LOGIN_CLIENT_SECRET"), RedirectURI: redirect,
+			AuthorizationEndpoint: getenv("YANDEX_LOGIN_AUTHORIZATION_ENDPOINT"), TokenEndpoint: getenv("YANDEX_LOGIN_TOKEN_ENDPOINT"), InfoEndpoint: getenv("YANDEX_LOGIN_INFO_ENDPOINT"), AllowLoopbackProvider: local,
+		})
+		return webLoginConfig{redirectURI: redirect, clientID: getenv("YANDEX_LOGIN_CLIENT_ID"), oauth: p}, err
+	case "telegram":
+		value := func(name, fallback string) string {
+			if v := getenv(name); v != "" {
+				return v
+			}
+			return fallback
+		}
+		redirect := baseURL + webcontract.RouteOIDCCallback
+		p, err := telegramoidc.New(telegramoidc.Config{
+			Issuer: value("TELEGRAM_OIDC_ISSUER", telegramoidc.DefaultIssuer), AuthorizationEndpoint: value("TELEGRAM_OIDC_AUTHORIZATION_ENDPOINT", telegramoidc.DefaultAuthorizationEndpoint), TokenEndpoint: value("TELEGRAM_OIDC_TOKEN_ENDPOINT", telegramoidc.DefaultTokenEndpoint), JWKSURL: value("TELEGRAM_OIDC_JWKS_URL", telegramoidc.DefaultJWKSURL), ClientID: getenv("TELEGRAM_OIDC_CLIENT_ID"), ClientSecret: getenv("TELEGRAM_OIDC_CLIENT_SECRET"), RedirectURI: redirect, AllowedAlgorithms: []string{"RS256"}, AllowLoopbackProvider: local,
+		})
+		return webLoginConfig{redirectURI: redirect, oidc: p, policy: domain.OIDCVerificationPolicy{Issuer: value("TELEGRAM_OIDC_ISSUER", telegramoidc.DefaultIssuer), Audience: getenv("TELEGRAM_OIDC_CLIENT_ID"), AllowedAlgorithms: []string{"RS256"}, MaxClockSkew: 30 * time.Second}}, err
+	default:
+		return webLoginConfig{}, errors.New("WEB_LOGIN_PROVIDER must be yandex or telegram")
+	}
 }
 
 func envBool(name string) bool {

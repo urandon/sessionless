@@ -1,7 +1,7 @@
 locals {
   login_client_environment = var.login_provider == "yandex" ? {
     YANDEX_LOGIN_CLIENT_ID = var.yandex_login_client_id
-  } : {
+    } : {
     TELEGRAM_OIDC_CLIENT_ID = var.telegram_oidc_client_id
   }
   login_secret_environment = var.login_provider == "yandex" ? "YANDEX_LOGIN_CLIENT_SECRET" : "TELEGRAM_OIDC_CLIENT_SECRET"

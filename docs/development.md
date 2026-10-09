@@ -83,7 +83,9 @@ publication uses a ready server-owned receipt, not caller-supplied completion
 material. This composition does **not** activate a real provider or grant a
 credential: the production sealed-input constructor remains credentialless.
 The credential-bearing provider proof uses only the integration-test adapter;
-real-provider activation remains the separately reviewed #133 workstream.
+real attached-provider activation remains the separately reviewed #133
+workstream, optional for the managed-cloud MVP. #175 owns managed real-profile
+composition; #90/#92 own its platform and rollout proof.
 
 ```sh
 make web-ci
@@ -353,8 +355,9 @@ lost responses replay the same private grant/claim/rotation, not a new key.
 The provider-neutral local credential binding, invocation handle, secure
 materialization, crash recovery, write-back, and deny-first revocation contract
 is documented in [credential-lifecycle.md](credential-lifecycle.md). Phase B0
-is also intentionally not activated in worker runtime while #18 and #13 remain
-open.
+is intentionally not activated in worker runtime until the selected profile's
+credential/isolation/rollout evidence passes. Telegram rollout #18 is not a
+managed-cloud MVP prerequisite.
 
 The feature-disabled serverless authority, local isolation supervisor, and
 attested provider-egress/credential composition boundaries are documented in
@@ -363,13 +366,18 @@ attested provider-egress/credential composition boundaries are documented in
 [serverless-egress.md](serverless-egress.md), and the PR-03d
 [Yandex substrate evidence plan](yandex-serverless-substrate.md). None registers
 a concrete cloud launcher, provider proxy, secret backend, or production route.
+The [current MVP plan](mvp-delivery-plan.md) requires this managed cloud path
+without user-maintained compute. #175 composes one real cheap/free-model profile
+into normal Web/control/worker flow, including admitted file/image processing;
+#90/#92 remain evidence gates. This promotion does not enable runtime, authorize
+live calls or import ambient credentials. Attached #129/#133 are optional work.
 
 The feature-disabled native [direct OpenRouter reference backend](direct-openrouter.md)
 pins one non-streaming Chat Completions request and strict observed-route
 response contract. Its tests use only a local fake boundary; no production HTTP
 boundary, key lookup, DNS request, or provider call is enabled.
 
-The [native provider composition](provider-composition.md) accepts four explicit
+The [native provider composition](provider-composition.md) accepts five explicit
 pinned drivers and assembles their disabled registrations below the existing
 exact-match harness registry. It performs no profile or executable discovery,
 does not select a default backend, and is not wired into `worker-runtime`.

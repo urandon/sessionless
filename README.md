@@ -9,10 +9,11 @@ pluggable agent workers do the work.**
 
 > **MVP in progress.** The canonical session core, Telegram path, local WebUI,
 > deterministic worker, and feature-disabled provider adapters are implemented.
-> The first launch frontend is WebUI. Its default-off own-worker bridge is
-> implemented; Yandex ID login is the Telegram-independent MVP path. Real
-> provider activation, registered cloud login and product E2E remain; Telegram messaging and the
-> Cloudflare reachability edge are deferred until after MVP.
+> The first launch frontend is WebUI with Yandex ID login. MVP now requires
+> Sessionless-managed cloud execution with one real low-cost model, without a
+> user-maintained worker. This is planned, not activated: platform proof, real
+> provider composition and browser product E2E remain. Attached workers are an
+> optional route; Telegram messaging/Cloudflare rollout stays post-MVP.
 
 [Explore the documentation](docs/README.md) ·
 [Run the local stand](docs/local-development-stand.md#lifecycle) ·
@@ -78,8 +79,8 @@ explicitly confirmed reset command.
 | --- | --- | --- |
 | Canonical core and Telegram | **Implemented** | Ordered sessions/events, YDB state, durable ingress/delivery, deterministic two-tenant E2E; tracked by [MVP epic #6](https://gitcode.com/urandon/sessionless/issues/6). |
 | WebUI | **Implemented locally** | Authenticated Go BFF, canonical API, and Svelte UI include the selected [Yandex ID login](docs/development.md#yandex-id-login); registered-client cloud callback and tenant-isolation product E2E remain in [WebUI epic #29](https://gitcode.com/urandon/sessionless/issues/29). |
-| Provider and serverless harness | **Experimental, feature-disabled** | Adapter contracts exist. MVP selects owner-local `codex exec`, not cloud-hosted App Server; reversible real-provider activation remains in [#133](https://gitcode.com/urandon/sessionless/issues/133) and acceptance in [#13](https://gitcode.com/urandon/sessionless/issues/13). |
-| Attached workers | **Daemon, bounded security gate and default-off Web bridge implemented; rollout disabled** | #76/#77/#79/#166 are closed. [Private owner onboarding](docs/attached-worker-onboarding.md) creates one exact resource without database surgery. Measured transport cost and real-provider rollout remain in [#72](https://gitcode.com/urandon/sessionless/issues/72); enrollment or test receipt success is not product activation. |
+| Provider and serverless harness | **Required for MVP; feature-disabled** | Existing contracts feed [#90 platform proof](https://gitcode.com/urandon/sessionless/issues/90), [#175 managed real-profile composition](https://gitcode.com/urandon/sessionless/issues/175) and [#92 rollout proof](https://gitcode.com/urandon/sessionless/issues/92). One explicit cheap/free-model profile, no user host, no automatic paid fallback. [The delivery plan](docs/mvp-delivery-plan.md) preserves file/image acceptance and measured cost gates. |
+| Attached workers | **Optional MVP route; implemented foundation, rollout disabled** | #76/#77/#79/#166 are closed. [Private owner onboarding](docs/attached-worker-onboarding.md) creates one exact resource without database surgery. #129/#133 still own measured transport and owner-local Codex activation under [#72](https://gitcode.com/urandon/sessionless/issues/72), but do not block the managed-cloud pilot. Enrollment or test receipts are not product activation. |
 | Personal-agent research | **Planned / post-MVP** | Memory, tools, web search, subagents, analytics, and federation stay outside the MVP gate until promoted through their research issues. |
 
 “Implemented” means code plus repository checks exist. It does not imply a

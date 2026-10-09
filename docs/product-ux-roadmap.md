@@ -24,7 +24,7 @@ migration, provider/credential access or runtime activation is authorized here.
 
 ## 1. Track map: reuse before adding epics
 
-Release rebaseline (2026-10-09): [WebUI-first MVP](mvp-delivery-plan.md)
+Release rebaseline (2026-10-10): [managed-cloud WebUI-first MVP](mvp-delivery-plan.md)
 owns current launch gates and the remaining-work Gantt. The chart below stays
 a historical post-MVP design scenario, not a release schedule. #138/#139 are
 closed accepted design deliveries; #141–#145 now belong to chat usability epic

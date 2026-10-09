@@ -127,6 +127,7 @@ type InvocationRunnerConfig struct {
 
 type InvocationRunner struct {
 	process     ProcessRunner
+	prepared    PreparedProcessRunner
 	credentials ports.CredentialLifecycle
 	grace       time.Duration
 }
@@ -136,7 +137,11 @@ func NewInvocationRunner(
 	process ProcessRunner,
 	credentials ports.CredentialLifecycle,
 ) (*InvocationRunner, error) {
-	if process == nil {
+	return newInvocationRunner(config, process, nil, credentials)
+}
+
+func newInvocationRunner(config InvocationRunnerConfig, process ProcessRunner, prepared PreparedProcessRunner, credentials ports.CredentialLifecycle) (*InvocationRunner, error) {
+	if (process == nil) == (prepared == nil) || prepared != nil && credentials == nil {
 		return nil, ErrInvocationInvalid
 	}
 	if config.CredentialFinalizeGrace <= 0 {
@@ -145,14 +150,16 @@ func NewInvocationRunner(
 	if config.CredentialFinalizeGrace > time.Minute {
 		return nil, ErrInvocationInvalid
 	}
-	return &InvocationRunner{process: process, credentials: credentials, grace: config.CredentialFinalizeGrace}, nil
+	return &InvocationRunner{process: process, prepared: prepared, credentials: credentials, grace: config.CredentialFinalizeGrace}, nil
 }
 
 func (runner *InvocationRunner) Run(
 	ctx context.Context,
 	invocation Invocation,
 ) (InvocationResult, error) {
-	if ctx == nil || ctx.Err() != nil || invocation.Validate() != nil {
+	if runner == nil || runner.process == nil && runner.prepared == nil ||
+		ctx == nil || ctx.Err() != nil || invocation.Validate() != nil ||
+		runner.prepared != nil && invocation.Credential == nil {
 		return InvocationResult{}, ErrInvocationInvalid
 	}
 	if invocation.Credential == nil {
@@ -168,7 +175,7 @@ func (runner *InvocationRunner) Run(
 	}
 	if handle.Validate() != nil || !credentialHandleMatchesInvocation(
 		handle, invocation.Identity, invocation.Credential.IssueRequest.Run.SubscriptionConnectionID,
-		invocation.Credential.ExpectedBindingGeneration,
+		invocation.Credential.ExpectedBindingGeneration, invocation.Credential.IssueRequest.ProviderResource,
 	) {
 		releaseErr := runner.releaseCredential(ctx, handle)
 		if releaseErr != nil {
@@ -187,13 +194,7 @@ func (runner *InvocationRunner) Run(
 		}
 		return InvocationResult{CredentialReleaseRequired: true, CredentialReleased: true, FailureCode: "credential_materialization_failed"}, ErrCredentialUnavailable
 	}
-	processSpec := cloneAttemptSpec(invocation.Process)
-	processSpec.AdditionalReadRoots = append(processSpec.AdditionalReadRoots, materialization.RootDir)
-	processSpec.credentialWriteFile = materialization.AuthFile
-	processSpec.Environment = append(processSpec.Environment, EnvironmentVariable{
-		Name: invocation.Credential.HomeEnvironment, Value: materialization.RootDir,
-	})
-	processResult, processErr := runner.process.Run(ctx, processSpec)
+	processResult, processErr := runner.runPreparedProcess(ctx, invocation, handle, materialization)
 	writeBackCtx, cancelWriteBack := context.WithTimeout(context.WithoutCancel(ctx), runner.grace)
 	writeBack, writeBackErr := runner.credentials.WriteBack(writeBackCtx, handle, materialization)
 	cancelWriteBack()
@@ -219,12 +220,33 @@ func credentialHandleMatchesInvocation(
 	identity InvocationIdentity,
 	connectionID domain.SubscriptionConnectionID,
 	expectedGeneration uint64,
+	expectedResource domain.ProviderResourceBindingV1,
 ) bool {
 	return handle.TenantID == identity.TenantID && handle.OwnerUserID == identity.OwnerUserID &&
 		handle.SubscriptionConnectionID == connectionID &&
 		handle.RunID == identity.RunID && handle.AttemptID == identity.AttemptID &&
 		handle.WorkerID == string(identity.WorkerID) && handle.LeaseID == identity.LeaseID &&
-		handle.LeaseFence == identity.FenceToken && handle.BindingGeneration == expectedGeneration
+		handle.LeaseFence == identity.FenceToken && handle.BindingGeneration == expectedGeneration &&
+		handle.ProviderResource == expectedResource
+}
+
+func (runner *InvocationRunner) runPreparedProcess(ctx context.Context, invocation Invocation, handle ports.CredentialHandle, materialization ports.CredentialMaterialization) (AttemptResult, error) {
+	processSpec := cloneAttemptSpec(invocation.Process)
+	processSpec.AdditionalReadRoots = append(processSpec.AdditionalReadRoots, materialization.RootDir)
+	processSpec.credentialWriteFile = materialization.AuthFile
+	processSpec.Environment = append(processSpec.Environment, EnvironmentVariable{
+		Name: invocation.Credential.HomeEnvironment, Value: materialization.RootDir,
+	})
+	if runner.prepared == nil {
+		return runner.process.Run(ctx, processSpec)
+	}
+	// The prepared executor borrows this isolated input only for the call. It
+	// receives no lifecycle port and cannot supply credential release evidence.
+	defer clear(processSpec.Stdin)
+	return runner.prepared.RunPrepared(ctx, PreparedInvocationV1{
+		Identity: invocation.Identity, Process: processSpec,
+		Credential: handle.ProviderInvocationCredential(), Materialization: materialization.ProviderMaterialization(),
+	})
 }
 
 func (runner *InvocationRunner) releaseCredential(

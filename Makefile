@@ -26,12 +26,14 @@ LDFLAGS := -s -w \
 	-X gitcode.com/urandon/sessionless/internal/buildinfo.BuiltAt=$(BUILT_AT)
 
 .PHONY: help prepare go-cache-status go-cache-clean go-cache-policy-test tools web-tools go-package-layout generate fmt fmt-check lint test build dockerless-build attached-worker-build attached-worker-package-test attached-worker-crash-integration attached-worker-active-crash-integration attached-worker-security-gate attached-worker-security-ydb-gate attached-worker-joined-provider-ydb-gate attached-worker-native-integration attached-worker-rootless-integration docs-check readme-visual-preview web-install web-openapi-check web-check web-build web-stage web-ci web-browser-install web-browser-test integration ydb-integration local-integration e2e-local e2e-local-dockerless attached-worker-oci-integration attached-worker-oci-linux-rootless-ci provider-conformance provider-conformance-fuzz ci image-publication-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test dockerless-stand-policy-test budget-policy-test web-deployment-policy-test terraform-ci cloudflare-edge-ci \
-	cloud-web-smoke cloud-web-smoke-test \
+	cloud-web-smoke cloud-web-smoke-test attached-worker-experiment-plan attached-worker-experiment-test \
 	compose-config images dev-up dev-seed migrate-local migration-status partition-status partition-backfill cloud-app-reset-plan cloud-app-reset session-delete-request session-delete-plan session-delete session-hold session-release-hold \
 	worker-once web-bootstrap dev-down dev-reset dockerless-up dockerless-status dockerless-worker-once dockerless-logs dockerless-down repowise-install repowise-index repowise-update repowise-status repowise-doctor repowise-mcp repowise-mcp-smoke repowise-evaluate repowise-stop repowise-uninstall-plan repowise-uninstall repowise-policy-test clean
 
 help:
 	@printf '%s\n' \
+		'make attached-worker-experiment-plan print the offline #129 draft; no cloud execution' \
+		'make attached-worker-experiment-test validate the offline plan and existing cadence regressions' \
 		'make attached-worker-admin ARGS="..." operator-only private enrollment/rotation handoff' \
 		'make attached-worker-setup ARGS="..." native private setup without service installation/activation' \
 		'make go-cache-status show shared Go cache and worktree-local output paths' \
@@ -147,6 +149,14 @@ go-cache-clean:
 
 go-cache-policy-test:
 	@./scripts/test-go-worktree-cache-policy.sh
+
+ATTACHED_WORKER_EXPERIMENT_MANIFEST ?= docs/experiments/attached-worker-transport-draft.json
+
+attached-worker-experiment-plan: prepare
+	@go run ./cmd/attached-worker-experiment -manifest "$(ATTACHED_WORKER_EXPERIMENT_MANIFEST)"
+
+attached-worker-experiment-test: prepare
+	go test -race -count=1 -shuffle=on ./cmd/attached-worker-experiment ./internal/attachedworkerexperiment ./internal/attachedworkertransport ./internal/attachedworkerdaemontransport
 
 generate: prepare go-package-layout
 	go generate $(GO_PACKAGE_PATTERNS)

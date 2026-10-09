@@ -130,6 +130,7 @@ func newAW169WebFixture(t *testing.T) *aw169WebFixture {
 	aw169Membership(t, ctx, client, tenant, owner, now)
 	enrollment, audit := attachedWorkerEnrollmentFixture(suffix, tenant, owner, now.Add(-time.Second))
 	enrollment.ExpiresAt = now.Add(time.Hour)
+	enrollment.RetainUntil = enrollment.ExpiresAt.Add(time.Hour)
 	if err := store.CreateAttachedWorkerEnrollment(ctx, enrollment, audit); err != nil {
 		t.Fatal(err)
 	}

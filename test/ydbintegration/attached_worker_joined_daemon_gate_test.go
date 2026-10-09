@@ -423,6 +423,13 @@ func aw07PrepareDaemonInstallation(t *testing.T, root, origin string, trust []by
 	worker domain.AttachedWorker, private ed25519.PrivateKey, now time.Time, testProvider bool,
 ) aw07DaemonInstallation {
 	t.Helper()
+	return aw07PrepareDaemonInstallationWithInputLimit(t, root, origin, trust, worker, private, now, testProvider, 4096)
+}
+
+func aw07PrepareDaemonInstallationWithInputLimit(t *testing.T, root, origin string, trust []byte,
+	worker domain.AttachedWorker, private ed25519.PrivateKey, now time.Time, testProvider bool, maxInputBytes int,
+) aw07DaemonInstallation {
+	t.Helper()
 	for _, dir := range []string{root, filepath.Join(root, "oci-config"), filepath.Join(root, "activation"),
 		filepath.Join(root, "materialized"), filepath.Join(root, "scratch")} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -587,7 +594,7 @@ esac
 			Executable: cli, ExecutableDigest: attachedworkerdaemon.ExecutableDigest(cliDigest),
 		},
 		TLSRootPEMPath: trustPath, MaterializationRoot: filepath.Join(root, "materialized"),
-		ScratchRoot: filepath.Join(root, "scratch"), MaxInputBytes: 4096,
+		ScratchRoot: filepath.Join(root, "scratch"), MaxInputBytes: maxInputBytes,
 	}
 	profilePath := filepath.Join(root, "activation", "profile.json")
 	encoded, err := json.Marshal(profile)

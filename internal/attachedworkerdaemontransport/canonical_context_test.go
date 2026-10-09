@@ -83,6 +83,31 @@ func TestCanonicalMaterializerVerifiesHistoryAndPreservesHistoricalFiles(t *test
 	}
 }
 
+// A tiny provider stdin does not mean its full canonical authority/proof
+// fits the old 4 KiB synthetic-only installation budget.
+func TestCanonicalMaterializerIncludesProofInLocalInstallationBudget(t *testing.T) {
+	for _, limit := range []int{4096, 32 << 10} {
+		t.Run(fmt.Sprintf("local-limit-%d", limit), func(t *testing.T) {
+			materializer, source, request := canonicalMaterializerFixture(t)
+			encoded, err := json.Marshal(source.input)
+			if err != nil || len(encoded) <= 4096 || len(encoded) >= 32<<10 {
+				t.Fatalf("canonical fixture must distinguish local proof budgets: bytes=%d err=%v", len(encoded), err)
+			}
+			clearBytes(encoded)
+			materializer.maxBytes = limit
+			result, err := materializer.Materialize(context.Background(), request)
+			defer clearBytes(result.Stdin)
+			if limit == 4096 {
+				if !errors.Is(err, ErrSealedInputInvalid) || len(result.Stdin) != 0 {
+					t.Fatalf("undersized installation released canonical input: bytes=%d err=%v", len(result.Stdin), err)
+				}
+			} else if err != nil || len(result.Stdin) == 0 {
+				t.Fatalf("admitted canonical input failed with sufficient installation budget: %v", err)
+			}
+		})
+	}
+}
+
 func TestCanonicalMaterializerRejectsProofTamperingAndCleansBuffers(t *testing.T) {
 	for _, test := range []struct {
 		name   string

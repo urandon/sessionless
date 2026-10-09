@@ -457,8 +457,15 @@ func testJoinedProviderDaemonReceipts(t *testing.T, normalWeb bool) {
 	t.Cleanup(server.Close)
 	trust := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
 	root := t.TempDir()
-	a := aw07PrepareDaemonInstallation(t, filepath.Join(root, "a"), server.URL, trust, aWorker, aPrivate, now, true)
-	b := aw07PrepareDaemonInstallation(t, filepath.Join(root, "b"), server.URL, trust, bWorker, bPrivate, now, true)
+	inputLimit := 4096
+	if normalWeb {
+		// Canonical input includes the complete admitted job, immutable proof
+		// and credential issue metadata, not only the provider stdin. Match
+		// the explicit Web admission budget; keep the old synthetic gate small.
+		inputLimit = 1 << 20
+	}
+	a := aw07PrepareDaemonInstallationWithInputLimit(t, filepath.Join(root, "a"), server.URL, trust, aWorker, aPrivate, now, true, inputLimit)
+	b := aw07PrepareDaemonInstallationWithInputLimit(t, filepath.Join(root, "b"), server.URL, trust, bWorker, bPrivate, now, true, inputLimit)
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
 	defer cancel()
 	aProcess := aw07StartDaemonProcess(t, aw07DaemonChildInput{StateRoot: a.stateRoot, ProfilePath: a.profilePath,
@@ -542,9 +549,20 @@ func testJoinedProviderDaemonReceipts(t *testing.T, normalWeb bool) {
 		select {
 		case request := <-receiptBarrier.arrivals:
 			seen[request.Authorization.OwnerUserID] = request
+		case line, ok := <-aProcess.events:
+			if !ok || strings.Contains(line, "AW07_DAEMON_RUN_EXIT=") {
+				t.Fatalf("owner A exited before receipt publication: arrivals=%d stdout=%s stderr=%s HTTP=%s backend=%s",
+					len(seen), aProcess.stdout.String(), aProcess.stderr.String(), statusRecorder.snapshot(), backend.snapshot())
+			}
+		case line, ok := <-bProcess.events:
+			if !ok || strings.Contains(line, "AW07_DAEMON_RUN_EXIT=") {
+				t.Fatalf("owner B exited before receipt publication: arrivals=%d stdout=%s stderr=%s HTTP=%s backend=%s",
+					len(seen), bProcess.stdout.String(), bProcess.stderr.String(), statusRecorder.snapshot(), backend.snapshot())
+			}
 		case <-ctx.Done():
-			t.Fatalf("both owners did not reach receipt publication: arrivals=%d HTTP=%s backend=%s: %v",
-				len(seen), statusRecorder.snapshot(), backend.snapshot(), ctx.Err())
+			t.Fatalf("both owners did not reach receipt publication: arrivals=%d HTTP=%s backend=%s A stdout=%s stderr=%s B stdout=%s stderr=%s: %v",
+				len(seen), statusRecorder.snapshot(), backend.snapshot(), aProcess.stdout.String(), aProcess.stderr.String(),
+				bProcess.stdout.String(), bProcess.stderr.String(), ctx.Err())
 		}
 	}
 	for index := range owners {

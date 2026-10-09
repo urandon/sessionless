@@ -92,7 +92,7 @@ release gates and explicit configuration are satisfied.
 - **Operator:** use the [local stand](docs/local-development-stand.md), then the
   [cloud-development runbook](docs/cloud-development.md). `make cloud-web-smoke-test`
   checks selected-login smoke fixtures without credentials; `make cloud-web-smoke`
-  runs read-only cloud checks only under approved rollout authority.
+  runs non-destructive cloud checks only under approved rollout authority.
 - **Contributor:** read [CONTRIBUTING.md](CONTRIBUTING.md),
   [development.md](docs/development.md), and the
   [Go testing practices](docs/testing-best-practices.md). The opt-in

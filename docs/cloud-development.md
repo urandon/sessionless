@@ -628,11 +628,13 @@ make cloud-web-smoke
 For an existing Telegram-selected deployment, explicitly set
 `WEB_LOGIN_PROVIDER=telegram` and `TELEGRAM_OIDC_CLIENT_ID` instead. Its expected
 callback remains `/auth/telegram/callback`; Yandex uses `/auth/login/callback`.
-Do not add provider client secrets to the smoke environment. The read-only
+Do not add provider client secrets to the smoke environment. The non-destructive
 invocation obtains a short-lived operator IAM token through `yc`, keeps it only
 in a private curl config, and cleans the private temporary directory on success
 or failure. Run the live command only under #34's approved rollout authority;
-the fake test command is safe without cloud credentials.
+the fake test command is safe without cloud credentials. The login-start GET
+creates a transient persisted login challenge; it does not grant membership,
+create a logged-in session or exchange a provider code.
 
 Passing this smoke proves private invocation, managed HTTPS/security headers,
 the selected login-start contract and route/cost configuration checks. It does

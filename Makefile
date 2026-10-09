@@ -73,7 +73,7 @@ help:
 		'make dockerless-stand-policy-test validate native orchestration safety and Docker isolation' \
 		'make terraform-ci   validate Terraform, run a mocked Web plan, and enforce policies' \
 		'make cloud-web-smoke-test credential-free selected-login cloud smoke fixtures' \
-		'make cloud-web-smoke run read-only cloud Web checks only under approved rollout authority' \
+		'make cloud-web-smoke run non-destructive cloud Web checks only under approved rollout authority' \
 		'make cloudflare-edge-ci test and dry-run bundle the Telegram edge Worker' \
 		'make images         build control-plane and worker images' \
 		'make dev-up         start, initialize, migrate, seed, and verify the local stand' \

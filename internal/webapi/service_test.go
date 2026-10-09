@@ -141,6 +141,69 @@ func TestSubmitMessageCommittedRetryDoesNotRequireCurrentComputeConnection(t *te
 	}
 }
 
+func TestSubmitMessageAttachedAuthorityUsesNormalCanonicalIngressAndStableRetry(t *testing.T) {
+	binder := &attachedIngressBinder{}
+	harness := newHarnessWithBinder(t, binder)
+	uploadID := prepareCommittedUpload(t, harness, []byte("private file"), "input.txt", "text/plain")
+	request := webcontract.CreateMessageRequest{IdempotencyKey: "attached-message-1", Text: "ordinary browser submission", UploadIDs: []domain.UploadIntentID{uploadID}}
+	first, err := harness.service.SubmitMessage(context.Background(), "tenant-a", "user-a", "session-a", request)
+	if err != nil {
+		t.Fatalf("normal Web attached submission: %v", err)
+	}
+	if len(harness.backend.commits) != 1 {
+		t.Fatalf("canonical commits=%d want=1", len(harness.backend.commits))
+	}
+	commit := harness.backend.commits[0]
+	if commit.ExecutionPlacementV2.Kind != domain.ExecutionPlacementAttachedWorker || commit.ExecutionPlacementV2.OwnerUserID != "user-a" ||
+		commit.HarnessBinding.Resource.ResourceID != "connection-a" || commit.SubscriptionConnectionID != "connection-a" ||
+		commit.SubstrateBinding != nil || commit.AdmissionCostCeiling != nil || len(commit.Artifacts) != 2 {
+		t.Fatalf("normal ingress authority/artifacts=%+v", commit)
+	}
+	// Current compute removal and binder disable must not replay the admitted
+	// effect. The canonical duplicate lookup precedes those mutable dependencies.
+	harness.backend.connections = nil
+	binder.disabled = true
+	second, err := harness.service.SubmitMessage(context.Background(), "tenant-a", "user-a", "session-a", request)
+	if err != nil || !first.Created || second.Created || first.RunID != second.RunID || binder.calls != 1 ||
+		len(harness.backend.commits) != 1 || harness.backend.resolveCalls != 1 {
+		t.Fatalf("first=%+v second=%+v err=%v binder calls=%d compute calls=%d commits=%d", first, second, err, binder.calls, harness.backend.resolveCalls, len(harness.backend.commits))
+	}
+}
+
+type attachedIngressBinder struct {
+	calls    int
+	disabled bool
+}
+
+func (binder *attachedIngressBinder) BindHarness(ctx context.Context, request ports.HarnessBindingRequest) (ports.ExecutionAuthorityV2, error) {
+	binder.calls++
+	if binder.disabled {
+		return ports.ExecutionAuthorityV2{}, sessionlessharness.ErrAttachedResourceUnavailable
+	}
+	authority, err := sessionlessharness.NewDeterministicFixtureBinderV1().BindHarness(ctx, request)
+	if err != nil {
+		return ports.ExecutionAuthorityV2{}, err
+	}
+	authority.SubstrateBinding, authority.AdmissionCostCeiling = nil, nil
+	authority.ExecutionPlacementV2 = domain.ExecutionPlacementV2{Version: domain.ExecutionPlacementVersionV2, Kind: domain.ExecutionPlacementAttachedWorker,
+		FallbackPolicy: domain.ExecutionFallbackDenied, OwnerUserID: request.OwnerUserID, WorkerID: "worker-a",
+		CapabilityDigest: domain.AttachedWorkerCapabilityDigest(strings.Repeat("a", 64)), PolicyDigest: domain.AttachedWorkerPolicyDigest(authority.HarnessBinding.EffectivePolicyDigest)}
+	digest, err := domain.ExecutionPlacementDigest(authority.ExecutionPlacementV2)
+	if err != nil {
+		return ports.ExecutionAuthorityV2{}, err
+	}
+	authority.HarnessBinding.ExecutionPlacementDigest = string(digest)
+	authority.HarnessBinding.Backend.BackendKind = domain.HarnessBackendCodexExecV1
+	authority.HarnessBinding.Backend.ArtifactKind = domain.HarnessArtifactExecutableV1
+	authority.HarnessBinding.Backend.ProviderContractKind = domain.ProviderContractInvocationV1
+	authority.HarnessBinding.Backend.CredentialDeliveryKind = domain.ProviderCredentialDeliveryFileV1
+	authority.HarnessBinding.Resource = domain.ProviderResourceBindingV1{Kind: domain.ProviderResourceSubscriptionV1, ResourceID: string(request.SubscriptionConnectionID), OwnerUserID: request.OwnerUserID,
+		Revision: 1, CredentialMode: domain.ProviderCredentialInvocationV1, CredentialGeneration: 1}
+	expiry := request.At.Add(time.Hour)
+	authority.HarnessBinding.EvidenceExpiresAt = &expiry
+	return authority, nil
+}
+
 func TestSubmitMessageRejectsChangedContentForSameIdempotencyKeyBeforeDependencies(t *testing.T) {
 	harness := newHarness(t)
 	request := webcontract.CreateMessageRequest{IdempotencyKey: "message-request-1", Text: "first"}
@@ -384,6 +447,11 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
+	return newHarnessWithBinder(t, sessionlessharness.NewDeterministicFixtureBinderV1())
+}
+
+func newHarnessWithBinder(t *testing.T, binder ports.HarnessBinder) *harness {
+	t.Helper()
 	backend := newFakeBackend()
 	blobs := &fakeBlobs{values: make(map[string][]byte)}
 	objects := &fakeObjects{metadata: make(map[string]ports.ObjectMetadata)}
@@ -395,7 +463,7 @@ func newHarness(t *testing.T) *harness {
 		t.Fatal(err)
 	}
 	ingress, err := sessioningress.New(sessioningress.Config{
-		IDKey: bytes.Repeat([]byte("i"), 32), HarnessBinder: sessionlessharness.NewDeterministicFixtureBinderV1(),
+		IDKey: bytes.Repeat([]byte("i"), 32), HarnessBinder: binder,
 	}, backend, blobs)
 	if err != nil {
 		t.Fatal(err)

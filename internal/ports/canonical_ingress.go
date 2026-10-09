@@ -109,8 +109,8 @@ type CanonicalUserEventCommit struct {
 	AllowedMCPServers        []string
 	ExecutionPlacementV2     domain.ExecutionPlacementV2
 	HarnessBinding           domain.HarnessBindingV1
-	SubstrateBinding         domain.SubstrateBindingV1
-	AdmissionCostCeiling     domain.AdmissionCostCeilingV1
+	SubstrateBinding         *domain.SubstrateBindingV1
+	AdmissionCostCeiling     *domain.AdmissionCostCeilingV1
 	CommittedAt              time.Time
 }
 
@@ -130,6 +130,73 @@ type ManagedExecutionAuthorityV2 struct {
 	HarnessBinding       domain.HarnessBindingV1
 	SubstrateBinding     domain.SubstrateBindingV1
 	AdmissionCostCeiling domain.AdmissionCostCeilingV1
+}
+
+// ExecutionAuthorityV2 preserves the existing placement union at ingress.
+// Managed placement carries substrate/cost authority; attached placement
+// carries neither. It is sealed once before the canonical transaction, not a
+// second admission or execution state machine.
+type ExecutionAuthorityV2 struct {
+	ExecutionPlacementV2 domain.ExecutionPlacementV2
+	HarnessBinding       domain.HarnessBindingV1
+	SubstrateBinding     *domain.SubstrateBindingV1
+	AdmissionCostCeiling *domain.AdmissionCostCeilingV1
+}
+
+func (authority ManagedExecutionAuthorityV2) ExecutionAuthority() ExecutionAuthorityV2 {
+	substrate := authority.SubstrateBinding
+	cost := authority.AdmissionCostCeiling.Clone()
+	return ExecutionAuthorityV2{
+		ExecutionPlacementV2: authority.ExecutionPlacementV2, HarnessBinding: authority.HarnessBinding.Clone(),
+		SubstrateBinding: &substrate, AdmissionCostCeiling: &cost,
+	}
+}
+
+func (authority ExecutionAuthorityV2) Clone() ExecutionAuthorityV2 {
+	clone := authority
+	clone.HarnessBinding = authority.HarnessBinding.Clone()
+	if authority.SubstrateBinding != nil {
+		substrate := *authority.SubstrateBinding
+		clone.SubstrateBinding = &substrate
+	}
+	if authority.AdmissionCostCeiling != nil {
+		cost := authority.AdmissionCostCeiling.Clone()
+		clone.AdmissionCostCeiling = &cost
+	}
+	return clone
+}
+
+func (authority ExecutionAuthorityV2) ValidateForScope(request HarnessBindingRequest) error {
+	if err := domain.ValidateExecutionAuthorityProjection(authority.ExecutionPlacementV2, authority.SubstrateBinding, authority.AdmissionCostCeiling); err != nil {
+		return err
+	}
+	if authority.ExecutionPlacementV2.Kind == domain.ExecutionPlacementManaged {
+		return (ManagedExecutionAuthorityV2{
+			ExecutionPlacementV2: authority.ExecutionPlacementV2, HarnessBinding: authority.HarnessBinding,
+			SubstrateBinding: *authority.SubstrateBinding, AdmissionCostCeiling: *authority.AdmissionCostCeiling,
+		}).ValidateForScope(request)
+	}
+	for _, validate := range []func() error{request.TenantID.Validate, request.OwnerUserID.Validate, request.RunID.Validate, request.AttemptID.Validate, request.SubscriptionConnectionID.Validate} {
+		if err := validate(); err != nil {
+			return err
+		}
+	}
+	if request.At.IsZero() {
+		return domain.ValidationError{Field: "execution_authority.at", Reason: "must not be zero"}
+	}
+	if authority.ExecutionPlacementV2.OwnerUserID != request.OwnerUserID {
+		return domain.ValidationError{Field: "execution_authority.owner", Reason: "must match the ingress owner"}
+	}
+	if err := authority.HarnessBinding.ValidateForScope(request.TenantID, request.OwnerUserID, request.RunID, request.AttemptID, authority.ExecutionPlacementV2); err != nil {
+		return err
+	}
+	if authority.HarnessBinding.Resource.Kind != domain.ProviderResourceSubscriptionV1 || authority.HarnessBinding.Resource.ResourceID != string(request.SubscriptionConnectionID) {
+		return domain.ValidationError{Field: "execution_authority.resource", Reason: "must match the exact selected subscription resource"}
+	}
+	if authority.HarnessBinding.EffectivePolicyDigest != string(authority.ExecutionPlacementV2.PolicyDigest) {
+		return domain.ValidationError{Field: "execution_authority.policy", Reason: "must match the attached placement policy"}
+	}
+	return authority.HarnessBinding.ValidateAt(request.At.UTC())
 }
 
 func (authority ManagedExecutionAuthorityV2) ValidateForScope(request HarnessBindingRequest) error {
@@ -194,7 +261,7 @@ func (authority ManagedExecutionAuthorityV2) ValidateForScope(request HarnessBin
 }
 
 type HarnessBinder interface {
-	BindHarness(context.Context, HarnessBindingRequest) (ManagedExecutionAuthorityV2, error)
+	BindHarness(context.Context, HarnessBindingRequest) (ExecutionAuthorityV2, error)
 }
 
 type CanonicalUserEventResult struct {

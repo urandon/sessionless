@@ -381,10 +381,14 @@ func (store *Store) CommitCanonicalUserEvent(
 			Origin:                &origin, Status: domain.DispatchPending, IdempotencyKey: request.IdempotencyKey,
 			CreatedAt: request.CommittedAt, UpdatedAt: request.CommittedAt,
 		}
-		substrate := request.SubstrateBinding
-		cost := request.AdmissionCostCeiling.Clone()
-		dispatch.SubstrateBinding = &substrate
-		dispatch.AdmissionCostCeiling = &cost
+		if request.SubstrateBinding != nil {
+			substrate := *request.SubstrateBinding
+			dispatch.SubstrateBinding = &substrate
+		}
+		if request.AdmissionCostCeiling != nil {
+			cost := request.AdmissionCostCeiling.Clone()
+			dispatch.AdmissionCostCeiling = &cost
+		}
 		if err := state.PutRun(ctx, run); err != nil {
 			return err
 		}
@@ -537,12 +541,14 @@ func validateCanonicalCommit(request ports.CanonicalUserEventCommit) error {
 	if err := request.ExecutionPlacementV2.Validate(); err != nil {
 		return err
 	}
-	if err := domain.ValidateExecutionAuthorityProjection(request.ExecutionPlacementV2, &request.SubstrateBinding, &request.AdmissionCostCeiling); err != nil {
-		return err
+	authority := ports.ExecutionAuthorityV2{
+		ExecutionPlacementV2: request.ExecutionPlacementV2, HarnessBinding: request.HarnessBinding,
+		SubstrateBinding: request.SubstrateBinding, AdmissionCostCeiling: request.AdmissionCostCeiling,
 	}
-	if err := request.HarnessBinding.ValidateForScope(
-		request.TenantID, request.UserID, request.RunID, request.AttemptID, request.ExecutionPlacementV2,
-	); err != nil {
+	if err := authority.ValidateForScope(ports.HarnessBindingRequest{
+		TenantID: request.TenantID, OwnerUserID: request.UserID, RunID: request.RunID, AttemptID: request.AttemptID,
+		SubscriptionConnectionID: request.SubscriptionConnectionID, At: request.CommittedAt,
+	}); err != nil {
 		return err
 	}
 	return validateMutationDigest(request.MutationDigest)

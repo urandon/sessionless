@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,8 +15,6 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemontransport"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerprotocol"
-	"gitcode.com/urandon/sessionless/internal/buildinfo"
-	"gitcode.com/urandon/sessionless/internal/controlapi"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
@@ -252,16 +249,15 @@ func TestBlobReaderRejectsValidForeignTenantRefWithoutOpen(t *testing.T) {
 
 func TestHTTPSourceToBoundMaterializer(t *testing.T) {
 	service, authorizer, _, blobs, request := fixtureInput(t)
-	router := controlapi.NewHandlerWithOptions(
-		slog.New(slog.NewTextHandler(io.Discard, nil)), buildinfo.Current("test"),
-		controlapi.Options{AttachedWorkerSealedInput: Handler(service)},
-	)
+	router := http.NewServeMux()
+	router.Handle(PathV1, Handler(service))
 	server := httptest.NewTLSServer(router)
 	defer server.Close()
 	source, err := NewClientSource(server.URL+PathV1, server.Client(), []byte("test-connection-bearer"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = source.Close() })
 	materializer, err := attachedworkerdaemontransport.NewBoundMaterializer(source, 4096, func() time.Time { return time.Unix(20, 0).UTC() })
 	if err != nil {
 		t.Fatal(err)
@@ -289,7 +285,7 @@ func TestHTTPSourceToBoundMaterializer(t *testing.T) {
 		t.Fatal(err)
 	}
 	response.Body.Close()
-	if response.StatusCode != http.StatusNotFound {
+	if response.StatusCode != http.StatusBadRequest {
 		t.Fatalf("GET status=%d", response.StatusCode)
 	}
 }

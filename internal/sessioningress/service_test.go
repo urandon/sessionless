@@ -374,8 +374,8 @@ func testIngressConfig(key string) sessioningress.Config {
 
 type invalidHarnessBinder struct{}
 
-func (invalidHarnessBinder) BindHarness(context.Context, ports.HarnessBindingRequest) (ports.ManagedExecutionAuthorityV2, error) {
-	return ports.ManagedExecutionAuthorityV2{}, nil
+func (invalidHarnessBinder) BindHarness(context.Context, ports.HarnessBindingRequest) (ports.ExecutionAuthorityV2, error) {
+	return ports.ExecutionAuthorityV2{}, nil
 }
 
 type memoryCanonicalStore struct {

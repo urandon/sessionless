@@ -404,8 +404,8 @@ func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 	)
 	request.ExecutionPlacementV2 = authority.ExecutionPlacementV2
 	request.HarnessBinding = authority.HarnessBinding
-	request.SubstrateBinding = authority.SubstrateBinding
-	request.AdmissionCostCeiling = authority.AdmissionCostCeiling
+	request.SubstrateBinding = authority.ExecutionAuthority().SubstrateBinding
+	request.AdmissionCostCeiling = authority.ExecutionAuthority().AdmissionCostCeiling
 	start := make(chan struct{})
 	results := make(chan ports.CanonicalUserEventResult, 2)
 	errorsByCommit := make(chan error, 2)
@@ -816,8 +816,8 @@ func TestCanonicalFailureAndCancellationFinalizationAreAtomicAndIdempotent(t *te
 			)
 			request.ExecutionPlacementV2 = authority.ExecutionPlacementV2
 			request.HarnessBinding = authority.HarnessBinding
-			request.SubstrateBinding = authority.SubstrateBinding
-			request.AdmissionCostCeiling = authority.AdmissionCostCeiling
+			request.SubstrateBinding = authority.ExecutionAuthority().SubstrateBinding
+			request.AdmissionCostCeiling = authority.ExecutionAuthority().AdmissionCostCeiling
 			if _, err := store.CommitCanonicalUserEvent(ctx, request); err != nil {
 				t.Fatal(err)
 			}

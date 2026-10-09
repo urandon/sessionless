@@ -13,12 +13,17 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemon"
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/sessioncontext"
 )
 
 const (
 	defaultMaxSealedInputBytes = 1 << 20
 	maxSealedCollectionItems   = 64
 	maxSealedMetadataValue     = 4096
+	// A resource safety ceiling, separate from the artifact collection cap.
+	// Normal contexts use the admitted MaxContextEvents (currently 512), and
+	// all proofs additionally remain inside the serialized byte budget.
+	MaxSealedContextRecordsV1 = 4096
 )
 
 var (
@@ -41,17 +46,18 @@ type SealedArtifactV1 struct {
 }
 
 type SealedInputV1 struct {
-	Job        domain.WorkerJob
-	Manifest   domain.ArtifactManifest
-	Context    []byte
-	Artifacts  []SealedArtifactV1
-	Credential *attachedworkerdaemon.CredentialInvocation `json:"Credential,omitempty"`
+	Job              domain.WorkerJob
+	Manifest         domain.ArtifactManifest
+	Context          []byte
+	Artifacts        []SealedArtifactV1
+	Credential       *attachedworkerdaemon.CredentialInvocation `json:"Credential,omitempty"`
+	CanonicalContext *sessioncontext.CanonicalProof             `json:"CanonicalContext,omitempty"`
 }
 
 // BoundMaterializer is the credential-free, in-memory synthetic input path.
-// It creates no host read root and cannot select a process or credential. A
-// separate reviewed path is required for context windows, workspace/skill
-// bundles, provider credentials, and large artifact staging.
+// It creates no host read root and cannot select a process or credential.
+// Canonical windows use codec-verified immutable proofs. Workspace/skill
+// bundles, provider credentials, and large artifact staging remain gated.
 type BoundMaterializer struct {
 	source   SealedInputSource
 	maxBytes int
@@ -74,10 +80,17 @@ func NewBoundMaterializer(source SealedInputSource, maxBytes int, now func() tim
 }
 
 type sealedEnvelopeV1 struct {
-	Version   uint32             `json:"version"`
-	Kind      string             `json:"kind"`
-	Context   []byte             `json:"context"`
-	Artifacts []SealedArtifactV1 `json:"artifacts"`
+	Version            uint32                      `json:"version"`
+	Kind               string                      `json:"kind"`
+	Context            []byte                      `json:"context"`
+	Artifacts          []SealedArtifactV1          `json:"artifacts"`
+	ContextAttachments []sealedContextAttachmentV1 `json:"context_attachments,omitempty"`
+}
+
+type sealedContextAttachmentV1 struct {
+	Name      string `json:"name"`
+	MediaType string `json:"media_type"`
+	Body      []byte `json:"body"`
 }
 
 func (materializer *BoundMaterializer) Materialize(ctx context.Context, request MaterializationRequestV1) (MaterializedInputV1, error) {
@@ -124,6 +137,10 @@ func (materializer *BoundMaterializer) Materialize(ctx context.Context, request 
 		}
 		remaining -= len(artifact.Body)
 	}
+	if input.CanonicalContext != nil && (!boundedCanonicalProof(input.CanonicalContext, materializer.maxBytes) ||
+		!BoundedSerializedCanonicalInputV1(input, materializer.maxBytes)) {
+		return MaterializedInputV1{}, ErrSealedInputInvalid
+	}
 	if job.HarnessBinding.ValidateForScope(job.TenantID, request.OwnerUserID, job.RunID, job.AttemptID, job.ExecutionPlacementV2) != nil {
 		return MaterializedInputV1{}, ErrSealedInputInvalid
 	}
@@ -132,7 +149,7 @@ func (materializer *BoundMaterializer) Materialize(ctx context.Context, request 
 		return MaterializedInputV1{}, ErrSealedInputInvalid
 	}
 	provider := job.HarnessBinding.Backend.ProviderContractKind == domain.ProviderContractInvocationV1
-	if job.ContextWindow != nil || job.WorkspaceSnapshot != nil || job.SkillBundle != nil ||
+	if job.WorkspaceSnapshot != nil || job.SkillBundle != nil ||
 		provider && !materializer.allowTestProvider ||
 		!provider && job.HarnessBinding.Backend.ProviderContractKind != domain.ProviderContractCredentiallessFixtureV1 {
 		return MaterializedInputV1{}, ErrSealedInputUnsupported
@@ -162,10 +179,33 @@ func (materializer *BoundMaterializer) Materialize(ctx context.Context, request 
 	} else if input.Credential != nil {
 		return MaterializedInputV1{}, ErrSealedInputInvalid
 	}
-	if !blobMatches(job.ContextSnapshot, input.Context, materializer.maxBytes) ||
-		uint64(len(input.Context)) > job.Limits.MaxContextBytes ||
+	var contextAttachments []sealedContextAttachmentV1
+	kind := "sessionless.attached-worker.synthetic-input.v1"
+	if job.ContextWindow != nil {
+		if job.ContextWindow.ThroughSequence > MaxSealedContextRecordsV1 || input.CanonicalContext == nil || !boundedCanonicalProof(input.CanonicalContext, materializer.maxBytes) {
+			return MaterializedInputV1{}, ErrSealedInputInvalid
+		}
+		history, refs, projectionErr := sessioncontext.ProjectCanonical(job, input.CanonicalContext, uint64(materializer.maxBytes))
+		defer clearBytes(history)
+		contextLimit := job.Limits.MaxContextBytes
+		if contextLimit > uint64(materializer.maxBytes) {
+			contextLimit = uint64(materializer.maxBytes)
+		}
+		if projectionErr != nil || !bytes.Equal(history, input.Context) ||
+			sessioncontext.VerifyCanonicalAttachments(history, refs, input.CanonicalContext, contextLimit) != nil {
+			return MaterializedInputV1{}, ErrSealedInputInvalid
+		}
+		for _, attachment := range input.CanonicalContext.Attachments {
+			contextAttachments = append(contextAttachments, sealedContextAttachmentV1{Name: attachment.Name, MediaType: attachment.MediaType, Body: attachment.Body})
+		}
+		kind = "sessionless.attached-worker.canonical-input.v1"
+	} else if input.CanonicalContext != nil || !blobMatches(job.ContextSnapshot, input.Context, materializer.maxBytes) {
+		return MaterializedInputV1{}, ErrSealedInputInvalid
+	}
+	if uint64(len(input.Context)) > job.Limits.MaxContextBytes ||
 		len(input.Artifacts) != len(input.Manifest.Artifacts) ||
-		uint64(len(input.Artifacts)) > uint64(job.Limits.MaxArtifacts) {
+		uint64(len(input.Artifacts)+len(contextAttachments)) > uint64(job.Limits.MaxArtifacts) ||
+		len(input.Artifacts)+len(contextAttachments) > maxSealedCollectionItems {
 		return MaterializedInputV1{}, ErrSealedInputInvalid
 	}
 	byName := make(map[string]domain.Artifact, len(input.Manifest.Artifacts))
@@ -174,6 +214,12 @@ func (materializer *BoundMaterializer) Materialize(ctx context.Context, request 
 	}
 	seen := make(map[string]struct{}, len(input.Artifacts))
 	remaining = materializer.maxBytes - len(input.Context)
+	for _, attachment := range contextAttachments {
+		if len(attachment.Body) > remaining {
+			return MaterializedInputV1{}, ErrSealedInputInvalid
+		}
+		remaining -= len(attachment.Body)
+	}
 	for _, artifact := range input.Artifacts {
 		sealed, found := byName[artifact.Name]
 		if _, duplicate := seen[artifact.Name]; !found || duplicate ||
@@ -189,8 +235,9 @@ func (materializer *BoundMaterializer) Materialize(ctx context.Context, request 
 	// The fixed envelope is for synthetic harnesses only. No blob key, host
 	// path, executable, environment, or credential is serialized into stdin.
 	envelope, err := json.Marshal(sealedEnvelopeV1{
-		Version: 1, Kind: "sessionless.attached-worker.synthetic-input.v1",
+		Version: 1, Kind: kind,
 		Context: input.Context, Artifacts: input.Artifacts,
+		ContextAttachments: contextAttachments,
 	})
 	if err != nil || len(envelope) == 0 || len(envelope) > materializer.maxBytes ||
 		uint64(len(envelope)) > job.Limits.MaxInputBytes {
@@ -209,6 +256,10 @@ func (materializer *BoundMaterializer) Materialize(ctx context.Context, request 
 // without copying it. No digest, sort, path normalization, or JSON encoding
 // runs until this bounded walk succeeds.
 func boundedSealedMetadata(value reflect.Value, budget int) bool {
+	return boundedMetadataWithCollectionLimit(value, budget, maxSealedCollectionItems)
+}
+
+func boundedMetadataWithCollectionLimit(value reflect.Value, budget, maxItems int) bool {
 	if budget <= 0 {
 		return false
 	}
@@ -234,7 +285,7 @@ func boundedSealedMetadata(value reflect.Value, budget int) bool {
 			budget -= size
 			return true
 		case reflect.Slice, reflect.Array:
-			if current.Len() > maxSealedCollectionItems {
+			if current.Len() > maxItems {
 				return false
 			}
 			for index := 0; index < current.Len(); index++ {
@@ -280,11 +331,67 @@ func digestEquals(raw []byte, encoded string) bool {
 }
 
 func clearSealedInput(input *SealedInputV1) {
+	input.CanonicalContext.Clear()
 	clearBytes(input.Context)
 	for index := range input.Artifacts {
 		clearBytes(input.Artifacts[index].Body)
 	}
 	*input = SealedInputV1{}
+}
+
+// Proof metadata and raw bytes are bounded before decoding, hashing or JSON
+// serialization. Payload byte slices are content, not metadata collections.
+func boundedCanonicalProof(proof *sessioncontext.CanonicalProof, budget int) bool {
+	if proof == nil || !BoundedCanonicalInputMetadataV1(proof.Input, budget) ||
+		len(proof.EventBodies) > MaxSealedContextRecordsV1 || len(proof.Attachments) > maxSealedCollectionItems {
+		return false
+	}
+	remaining := budget
+	consume := func(body []byte) bool {
+		if len(body) > remaining {
+			return false
+		}
+		remaining -= len(body)
+		return true
+	}
+	if !consume(proof.SnapshotBytes) {
+		return false
+	}
+	for _, body := range proof.EventBodies {
+		if !consume(body) {
+			return false
+		}
+	}
+	for _, attachment := range proof.Attachments {
+		if !boundedSealedMetadata(reflect.ValueOf(attachment.AttachmentRef), budget) || !consume(attachment.Body) {
+			return false
+		}
+	}
+	encoded, err := json.Marshal(proof)
+	defer clearBytes(encoded)
+	return err == nil && len(encoded) <= budget
+}
+
+func BoundedCanonicalProofV1(proof *sessioncontext.CanonicalProof, maxBytes int) bool {
+	return boundedCanonicalProof(proof, maxBytes)
+}
+
+func BoundedCanonicalInputMetadataV1(input domain.SessionContextInput, maxBytes int) bool {
+	return boundedMetadataWithCollectionLimit(reflect.ValueOf(input), maxBytes, MaxSealedContextRecordsV1)
+}
+
+// Include base64 expansion and the proof plus projected-history duplication
+// in the admitted serialized input budget, not only raw blob sizes.
+func BoundedSerializedCanonicalInputV1(input SealedInputV1, maxBytes int) bool {
+	if maxBytes <= 0 || uint64(maxBytes) > input.Job.Limits.MaxInputBytes {
+		maxBytes = int(input.Job.Limits.MaxInputBytes)
+	}
+	if maxBytes <= 0 {
+		return false
+	}
+	encoded, err := json.Marshal(input)
+	defer clearBytes(encoded)
+	return err == nil && len(encoded) <= maxBytes
 }
 
 var _ Materializer = (*BoundMaterializer)(nil)

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -71,15 +72,16 @@ func buildHandler(
 	logger *slog.Logger,
 ) (http.Handler, func(), error) {
 	info := buildinfo.Current(component)
+	attached, err := attachedControlConfigFromEnv(os.Getenv)
+	if err != nil {
+		return nil, func() {}, err
+	}
 	webhookSecret := os.Getenv("TELEGRAM_WEBHOOK_SECRET")
 	if webhookSecret == "" {
 		logger.Warn("Telegram webhook is disabled", "reason", "TELEGRAM_WEBHOOK_SECRET is unset")
-		return controlapi.NewHandler(logger, info), func() {}, nil
 	}
-	identityKey := []byte(os.Getenv("TELEGRAM_IDENTITY_HMAC_KEY"))
-	identity, err := telegramingress.NewIdentityResolver(identityKey)
-	if err != nil {
-		return nil, func() {}, err
+	if webhookSecret == "" && !attached.enabled {
+		return controlapi.NewHandler(logger, info), func() {}, nil
 	}
 	ydb, err := ydbclient.Open(ctx, os.Getenv("YDB_CONNECTION_STRING"))
 	if err != nil {
@@ -92,21 +94,25 @@ func buildHandler(
 			logger.Error("close YDB", "error", err)
 		}
 	}
+	// Every unsuccessful startup after opening YDB owns its cleanup. On
+	// success that ownership transfers to main's shutdown callback.
+	ready := false
+	defer func() {
+		if !ready {
+			closeYDB()
+		}
+	}()
 	state, err := ydbstore.New(ydb.DB, ydbstore.Options{})
 	if err != nil {
-		closeYDB()
 		return nil, func() {}, err
 	}
 	if err := state.RequireExecutionPlacementCutover(ctx); err != nil {
-		closeYDB()
 		return nil, func() {}, fmt.Errorf("require execution placement cutover: %w", err)
 	}
 	if err := state.RequireHarnessBindingCutover(ctx); err != nil {
-		closeYDB()
 		return nil, func() {}, fmt.Errorf("require harness binding cutover: %w", err)
 	}
 	if err := state.RequireManagedExecutionAuthorityV2Cutover(ctx); err != nil {
-		closeYDB()
 		return nil, func() {}, fmt.Errorf("require managed execution authority v2 cutover: %w", err)
 	}
 	blobs, err := s3store.New(ctx, s3store.Config{
@@ -117,16 +123,41 @@ func buildHandler(
 		IAMMetadataCredentials: envBool("S3_IAM_METADATA_CREDENTIALS"),
 	})
 	if err != nil {
-		closeYDB()
 		return nil, func() {}, fmt.Errorf("open object storage: %w", err)
+	}
+	options := controlapi.Options{}
+	if attached.enabled {
+		options, err = controlapi.AttachedWorkerOptions(attached.audience, state, blobs)
+		if err != nil {
+			return nil, func() {}, err
+		}
+	}
+	if webhookSecret != "" {
+		options.TelegramWebhook, err = buildTelegramWebhook(ctx, logger, webhookSecret, state, blobs)
+		if err != nil {
+			return nil, func() {}, err
+		}
+	}
+	ready = true
+	return controlapi.NewHandlerWithOptions(logger, info, options), closeYDB, nil
+}
+
+// Telegram alone owns its bot identity and queues. Attached-only startup
+// neither reads nor validates that optional frontend's configuration.
+func buildTelegramWebhook(ctx context.Context, logger *slog.Logger, webhookSecret string,
+	state *ydbstore.Store, blobs *s3store.Store,
+) (http.Handler, error) {
+	identityKey := []byte(os.Getenv("TELEGRAM_IDENTITY_HMAC_KEY"))
+	identity, err := telegramingress.NewIdentityResolver(identityKey)
+	if err != nil {
+		return nil, err
 	}
 	fileClient, err := telegramingress.NewBotFileClient(
 		envOrDefault("TELEGRAM_API_BASE_URL", "https://api.telegram.org"),
 		os.Getenv("TELEGRAM_BOT_TOKEN"), nil, 0,
 	)
 	if err != nil {
-		closeYDB()
-		return nil, func() {}, err
+		return nil, err
 	}
 	queueConfig := func(queueURL string) sqsqueue.Config {
 		return sqsqueue.Config{
@@ -138,23 +169,19 @@ func buildHandler(
 	}
 	dispatchWakeQueue, err := sqsqueue.New(ctx, queueConfig(os.Getenv("SCHEDULER_WAKE_QUEUE_URL")))
 	if err != nil {
-		closeYDB()
-		return nil, func() {}, fmt.Errorf("open scheduler wake queue: %w", err)
+		return nil, fmt.Errorf("open scheduler wake queue: %w", err)
 	}
 	deliveryWakeQueue, err := sqsqueue.New(ctx, queueConfig(os.Getenv("DELIVERY_QUEUE_URL")))
 	if err != nil {
-		closeYDB()
-		return nil, func() {}, fmt.Errorf("open delivery wake queue: %w", err)
+		return nil, fmt.Errorf("open delivery wake queue: %w", err)
 	}
 	dispatchWakePublisher, err := outboxwake.NewPublisher(dispatchWakeQueue)
 	if err != nil {
-		closeYDB()
-		return nil, func() {}, err
+		return nil, err
 	}
 	deliveryWakePublisher, err := outboxwake.NewPublisher(deliveryWakeQueue)
 	if err != nil {
-		closeYDB()
-		return nil, func() {}, err
+		return nil, err
 	}
 	canonicalIngress, err := sessioningress.New(sessioningress.Config{
 		IDKey:                 identityKey,
@@ -165,8 +192,7 @@ func buildHandler(
 		},
 	}, state, blobs)
 	if err != nil {
-		closeYDB()
-		return nil, func() {}, err
+		return nil, err
 	}
 	processor, err := telegramingress.NewProcessor(
 		telegramingress.ProcessorConfig{
@@ -180,17 +206,42 @@ func buildHandler(
 		identity, idgen.New(), systemClock{}, fileClient, canonicalIngress, state,
 	)
 	if err != nil {
-		closeYDB()
-		return nil, func() {}, err
+		return nil, err
 	}
 	webhook, err := telegramingress.NewWebhook(webhookSecret, processor, logger)
 	if err != nil {
-		closeYDB()
-		return nil, func() {}, err
+		return nil, err
 	}
-	return controlapi.NewHandlerWithOptions(logger, info, controlapi.Options{
-		TelegramWebhook: webhook,
-	}), closeYDB, nil
+	return webhook, nil
+}
+
+type attachedControlConfig struct {
+	enabled  bool
+	audience string
+}
+
+// Only exact explicit values activate the route; typos must never silently
+// downgrade an intended deployment to health-only or enable a worker path.
+func attachedControlConfigFromEnv(getenv func(string) string) (attachedControlConfig, error) {
+	var config attachedControlConfig
+	switch getenv("ATTACHED_WORKER_CONTROL_ENABLED") {
+	case "", "false":
+		return config, nil
+	case "true":
+		config.enabled = true
+	default:
+		return config, fmt.Errorf("ATTACHED_WORKER_CONTROL_ENABLED must be true or false")
+	}
+	config.audience = getenv("ATTACHED_WORKER_CONTROL_AUDIENCE")
+	if config.audience == "" || config.audience != strings.TrimSpace(config.audience) || len(config.audience) > 256 {
+		return attachedControlConfig{}, fmt.Errorf("ATTACHED_WORKER_CONTROL_AUDIENCE is required and must be an exact audience of at most 256 bytes")
+	}
+	for _, name := range []string{"YDB_CONNECTION_STRING", "S3_REGION", "S3_BUCKET"} {
+		if strings.TrimSpace(getenv(name)) == "" {
+			return attachedControlConfig{}, fmt.Errorf("%s is required for attached worker control", name)
+		}
+	}
+	return config, nil
 }
 
 func firstNonEmpty(values ...string) string {

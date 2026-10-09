@@ -23,7 +23,6 @@ import (
 	"gitcode.com/urandon/sessionless/internal/s3store"
 	"gitcode.com/urandon/sessionless/internal/sessionapi"
 	"gitcode.com/urandon/sessionless/internal/sessioningress"
-	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 	"gitcode.com/urandon/sessionless/internal/sqsqueue"
 	"gitcode.com/urandon/sessionless/internal/telegramoidc"
 	"gitcode.com/urandon/sessionless/internal/webapi"
@@ -172,8 +171,13 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 		return nil, func() {}, err
 	}
 	identityKey := []byte(os.Getenv("SESSION_API_ID_HMAC_KEY"))
+	harnessBinder, err := webHarnessBinderFromEnv(os.Getenv, store)
+	if err != nil {
+		closeYDB()
+		return nil, func() {}, err
+	}
 	canonicalIngress, err := sessioningress.New(sessioningress.Config{
-		IDKey: identityKey, HarnessBinder: sessionlessharness.NewDeterministicFixtureBinderV1(), DispatchWakePublisher: dispatchWakePublisher,
+		IDKey: identityKey, HarnessBinder: harnessBinder, DispatchWakePublisher: dispatchWakePublisher,
 		WakePublishError: func(publishErr error) {
 			logger.Warn("durable web dispatch wake publication deferred to recovery", "error", publishErr)
 		},

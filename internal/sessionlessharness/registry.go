@@ -272,7 +272,7 @@ func NewDeterministicFixtureManagedAuthorityV2(
 	subscriptionConnectionID domain.SubscriptionConnectionID,
 	at time.Time,
 ) (ports.ManagedExecutionAuthorityV2, error) {
-	return NewDeterministicFixtureBinderV1().BindHarness(context.Background(), ports.HarnessBindingRequest{
+	return NewDeterministicFixtureBinderV1().bindManagedHarness(context.Background(), ports.HarnessBindingRequest{
 		TenantID: tenantID, OwnerUserID: ownerUserID, RunID: runID, AttemptID: attemptID,
 		SubscriptionConnectionID: subscriptionConnectionID, At: at,
 	})
@@ -357,7 +357,15 @@ func ValidateDeterministicFixtureBindingV1(binding domain.HarnessBindingV1) Fail
 	return ""
 }
 
-func (binder *DeterministicFixtureBinder) BindHarness(_ context.Context, request ports.HarnessBindingRequest) (ports.ManagedExecutionAuthorityV2, error) {
+func (binder *DeterministicFixtureBinder) BindHarness(ctx context.Context, request ports.HarnessBindingRequest) (ports.ExecutionAuthorityV2, error) {
+	managed, err := binder.bindManagedHarness(ctx, request)
+	if err != nil {
+		return ports.ExecutionAuthorityV2{}, err
+	}
+	return managed.ExecutionAuthority(), nil
+}
+
+func (binder *DeterministicFixtureBinder) bindManagedHarness(_ context.Context, request ports.HarnessBindingRequest) (ports.ManagedExecutionAuthorityV2, error) {
 	if binder == nil {
 		return ports.ManagedExecutionAuthorityV2{}, errors.New("deterministic harness binder must not be nil")
 	}

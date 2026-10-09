@@ -182,7 +182,7 @@ of returned byte buffers so they can be cleared after encoding. A rejected or
 expired attempt fails without a source call.
 
 This is a credential-free synthetic boundary, not a production input API or a
-Codex prompt format. Context windows, workspace/skill bundles, invocation
+Codex prompt format. Workspace/skill bundles, invocation
 credentials, and large-file staging remain fail-closed and require separate
 reviewed composition. No shipped command constructs this materializer or starts
 the daemon.
@@ -198,8 +198,11 @@ job, manifest, or blob bytes. The optional `attachedworkersealedinput` route
 uses it before tenant-scoped immutable blob reads and again with the observed
 attempt revision after those reads. Its HTTPS-only local client source refuses
 redirects and caps request, response, and content sizes. The route is
-injectable into `controlapi.Options`, but is **not** wired into the shipped
-control API; the feature remains default-off.
+injectable into `controlapi.Options` and wired into the shipped control API
+only with `ATTACHED_WORKER_CONTROL_ENABLED=true` and an explicit audience.
+Canonical context windows carry exact snapshot/event proofs; the client checks
+the scope, trigger, immutable body hashes and projected bytes before execution.
+The feature remains default-off and normal composition remains credentialless.
 
 The default-off `attachedworkersealedinput.ConnectSyntheticPinnedRuntime`
 constructor now composes that bounded source with the pinned foreground
@@ -209,8 +212,9 @@ session's `ExchangeFactory.Open`; it cannot fetch sealed input before that
 connection is accepted, and its exchange close clears the retained bearer.
 `SyntheticRuntime` also owns explicit pre-run and active-run cleanup, including
 an interrupted run and failed post-connect construction. This is a library
-entrypoint only: no shipped command invokes it, and the control API still does
-not mount the optional sealed-input route. The matching default-off
+entrypoint only: no shipped command invokes it. The control API mounts the
+optional sealed-input route only through the explicit default-off composition
+described above. The matching default-off
 `ReconnectSyntheticPinnedRuntime` goes through the same sealed-input source,
 pin verification, and credential-denying stack, but requires the connector's
 durable idle reconciliation before it can poll. Non-idle or ambiguous recovery

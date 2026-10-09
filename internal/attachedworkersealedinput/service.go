@@ -91,12 +91,12 @@ func (service *Service) Load(ctx context.Context, bearer []byte, request attache
 		return result, ErrUnauthorized
 	}
 	job, manifest := state.Job, state.InputManifest
-	if job.ContextWindow != nil || job.WorkspaceSnapshot != nil || job.SkillBundle != nil ||
+	if job.WorkspaceSnapshot != nil || job.SkillBundle != nil ||
 		job.HarnessBinding.Backend.ProviderContractKind != domain.ProviderContractCredentiallessFixtureV1 && !service.allowTestProvider {
 		return result, ErrUnsupported
 	}
 	if len(manifest.Artifacts) > maxArtifacts || uint64(len(manifest.Artifacts)) > uint64(job.Limits.MaxArtifacts) ||
-		job.ContextSnapshot.Size > maxInputBytes || job.ContextSnapshot.Size < 0 {
+		job.ContextWindow == nil && (job.ContextSnapshot.Size > maxInputBytes || job.ContextSnapshot.Size < 0) {
 		return result, ErrInvalid
 	}
 	result.Job, result.Manifest = job, manifest
@@ -113,11 +113,27 @@ func (service *Service) Load(ctx context.Context, bearer []byte, request attache
 		result.Credential = credential
 	}
 	remaining := int64(maxInputBytes)
-	result.Context, err = service.readExact(ctx, request.TenantID, job.ContextSnapshot, remaining)
+	if job.ContextWindow == nil {
+		result.Context, err = service.readExact(ctx, request.TenantID, job.ContextSnapshot, remaining)
+	} else {
+		result.Context, result.CanonicalContext, err = service.canonicalContext(ctx, job)
+	}
 	if err != nil {
 		return result, err
 	}
 	remaining -= int64(len(result.Context))
+	if result.CanonicalContext != nil {
+		if len(result.CanonicalContext.Attachments)+len(manifest.Artifacts) > maxArtifacts ||
+			uint64(len(result.CanonicalContext.Attachments)+len(manifest.Artifacts)) > uint64(job.Limits.MaxArtifacts) {
+			return result, ErrInvalid
+		}
+		for _, attachment := range result.CanonicalContext.Attachments {
+			remaining -= int64(len(attachment.Body))
+		}
+		if remaining < 0 {
+			return result, ErrInvalid
+		}
+	}
 	for _, artifact := range manifest.Artifacts {
 		if artifact.Blob.Size < 0 || artifact.Blob.Size > remaining {
 			return result, ErrInvalid
@@ -128,6 +144,9 @@ func (service *Service) Load(ctx context.Context, bearer []byte, request attache
 		}
 		result.Artifacts = append(result.Artifacts, attachedworkerdaemontransport.SealedArtifactV1{Name: artifact.Name, Body: body})
 		remaining -= int64(len(body))
+	}
+	if result.CanonicalContext != nil && !attachedworkerdaemontransport.BoundedSerializedCanonicalInputV1(result, maxInputBytes) {
+		return result, ErrInvalid
 	}
 	authorization.ExpectedAttemptRevision = revision
 	observed, checkErr := service.authorizer.AuthorizeSealedInputBearer(ctx, bearer, authorization)
@@ -242,6 +261,7 @@ func authorizationError(err error) error {
 }
 
 func clearResult(input *attachedworkerdaemontransport.SealedInputV1) {
+	input.CanonicalContext.Clear()
 	clearBytes(input.Context)
 	for index := range input.Artifacts {
 		clearBytes(input.Artifacts[index].Body)

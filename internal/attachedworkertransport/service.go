@@ -115,6 +115,23 @@ func NewService(config ServiceConfig, store ports.AttachedWorkerTransportStore, 
 	return service, nil
 }
 
+// NewReceiptFinalizingService composes the existing transport with the
+// canonical receipt finalizer. Only an authenticated receipt-capable manifest
+// can reach this path; terminal frames supply a digest, never output material.
+// The broker remains responsible for transactional owner/lease/receipt checks.
+func NewReceiptFinalizingService(config ServiceConfig, store ports.AttachedWorkerTransportStore, broker AttemptBroker) (*Service, error) {
+	finalizer, ok := broker.(receiptTerminalCommitBroker)
+	if !ok {
+		return nil, ErrTransportConfig
+	}
+	service, err := NewService(config, store, broker)
+	if err != nil {
+		return nil, err
+	}
+	service.receiptFinalizer = finalizer
+	return service, nil
+}
+
 type DrainRequest struct {
 	WorkerID               domain.AttachedWorkerID
 	ExpectedWorkerRevision uint64
@@ -979,6 +996,15 @@ func (service *Service) exchangeAttemptFrame(ctx context.Context, bearer Connect
 	if attemptID.Validate() != nil || binding.LeaseGeneration == 0 {
 		return nil, ErrTransportUnauthorized
 	}
+	if frame.Kind == attachedworkerprotocol.MessageTerminal && service.receiptFinalizer != nil {
+		_, _, snapshot, err := service.loadConnectionProtocolState(ctx, bearer, connection)
+		if err != nil {
+			return nil, err
+		}
+		if !receiptCapableManifest(snapshot.Manifest) {
+			return nil, ErrTransportUnauthorized
+		}
+	}
 	result, err := service.attemptBroker.ExchangeAttachedWorkerAttempt(ctx, ports.AttachedWorkerAttemptExchange{
 		TenantID: bearer.tenantID, OwnerUserID: bearer.ownerUserID, WorkerID: bearer.workerID,
 		ConnectionID: bearer.connectionID, AttemptID: attemptID, LeaseGeneration: binding.LeaseGeneration,
@@ -1007,6 +1033,18 @@ func (service *Service) exchangeAttemptFrame(ctx context.Context, bearer Connect
 		}
 	}
 	return service.pollPlatformFrame(ctx, bearer, connection)
+}
+
+func receiptCapableManifest(manifest *attachedworkerprotocol.CapabilityManifestV1) bool {
+	if manifest == nil {
+		return false
+	}
+	for _, feature := range manifest.Features {
+		if feature == attachedworkerprotocol.FeatureOutputReceipt {
+			return true
+		}
+	}
+	return false
 }
 
 func (service *Service) exchangeControlFrame(ctx context.Context, bearer ConnectionBearer, connection domain.AttachedWorkerConnection, frame attachedworkerprotocol.FrameV1) (*attachedworkerprotocol.BatchV1, error) {

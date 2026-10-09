@@ -428,6 +428,15 @@ address. Cloud deployments retain normal endpoint discovery and balancing.
 
 ## Web authentication development
 
+Cloud preflight is Dockerless: it checks the cloud toolchain, billing gate and
+Terraform configuration, not a local container engine. `make terraform-ci`
+includes a credential-free regression with Docker absent from its command path.
+It also checks Terraform's actual mocked, targeted Web plan: Web readiness must
+wait for its registry, YDB, Object Storage, Lockbox, KMS and logging permissions,
+without pulling publication/GC identity activation or unrelated runtime modules
+into that graph. This is a dependency boundary, not permission to skip the
+reviewed full deployment plan or to use targeting for ordinary deployments.
+
 For release scope, see the [WebUI-first MVP delivery plan](mvp-delivery-plan.md).
 The MVP login selected in #168/#171 is Yandex ID OAuth, independent of Telegram
 and bot setup. The existing Telegram OIDC configuration remains the default for

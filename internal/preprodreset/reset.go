@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"unicode"
 )
 
 const RequiredObjectPrefix = "tenants/"
@@ -72,10 +73,8 @@ func BuildPlan(target Target, requireConfirmation bool) (Plan, error) {
 	if strings.TrimSpace(target.FolderID) == "" || containsProduction(target.FolderID) {
 		return Plan{}, fmt.Errorf("cloud-dev folder identity is missing or production-like")
 	}
-	connection, err := url.Parse(target.YDBConnection)
-	if err != nil || connection.Scheme != "grpcs" || connection.Host == "" ||
-		strings.Trim(connection.Path, "/") == "" || connection.User != nil || connection.Fragment != "" ||
-		containsProduction(target.YDBConnection) {
+	connection, err := cloudDevYDBConnection(target.YDBConnection)
+	if err != nil {
 		return Plan{}, fmt.Errorf("cloud-dev YDB connection must be an explicit non-production grpcs endpoint")
 	}
 	bucket := strings.ToLower(strings.TrimSpace(target.ArtifactBucket))
@@ -89,9 +88,52 @@ func BuildPlan(target Target, requireConfirmation bool) (Plan, error) {
 		return Plan{}, fmt.Errorf("typed reset confirmation does not match the resolved cloud-dev target")
 	}
 	redacted := target
-	redacted.YDBConnection = connection.Scheme + "://" + connection.Host + connection.Path
+	redacted.YDBConnection = connection.String()
 	redacted.Confirmation = ""
 	return Plan{Target: redacted, Tables: append([]string(nil), applicationTables...)}, nil
+}
+
+// Yandex's public DSN selects the database through a query parameter, while
+// older callers use the endpoint path. Admit exactly one unambiguous selector;
+// dropping the query would lose the identity of the database being planned.
+func cloudDevYDBConnection(value string) (*url.URL, error) {
+	connection, err := url.Parse(value)
+	if err != nil || connection.Scheme != "grpcs" || connection.Hostname() == "" ||
+		connection.User != nil || strings.Contains(value, "#") || connection.Opaque != "" ||
+		connection.ForceQuery || containsProduction(value) {
+		return nil, fmt.Errorf("invalid cloud-dev YDB endpoint")
+	}
+	query, err := url.ParseQuery(connection.RawQuery)
+	if err != nil {
+		return nil, fmt.Errorf("invalid cloud-dev YDB query")
+	}
+	database := connection.Path
+	if connection.RawQuery != "" {
+		selectors, exists := query["database"]
+		if !exists || len(query) != 1 || len(selectors) != 1 ||
+			(connection.Path != "" && connection.Path != "/") {
+			return nil, fmt.Errorf("ambiguous cloud-dev YDB database selector")
+		}
+		database = selectors[0]
+		connection.RawQuery = url.Values{"database": {database}}.Encode()
+	}
+	if !explicitDatabasePath(database) || containsProduction(database) {
+		return nil, fmt.Errorf("invalid cloud-dev YDB database")
+	}
+	return connection, nil
+}
+
+func explicitDatabasePath(database string) bool {
+	if !strings.HasPrefix(database, "/") || strings.Contains(database, "\\") ||
+		strings.IndexFunc(database, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
+		return false
+	}
+	for _, segment := range strings.Split(strings.TrimPrefix(database, "/"), "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return false
+		}
+	}
+	return true
 }
 
 func Execute(

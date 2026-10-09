@@ -24,9 +24,21 @@ variable "ydb_connection_string" { type = string }
 variable "artifact_bucket_name" { type = string }
 variable "scheduler_wake_queue_url" { type = string }
 variable "web_secret_id" { type = string }
-variable "web_secret_version_id" { type = string }
+variable "web_secret_version_id" {
+  type = string
+  validation {
+    condition     = length(trimspace(var.web_secret_version_id)) > 0 && var.web_secret_version_id == trimspace(var.web_secret_version_id)
+    error_message = "web_secret_version_id must pin a non-empty Lockbox version without surrounding whitespace."
+  }
+}
 variable "scheduler_ymq_secret_id" { type = string }
-variable "scheduler_ymq_secret_version_id" { type = string }
+variable "scheduler_ymq_secret_version_id" {
+  type = string
+  validation {
+    condition     = length(trimspace(var.scheduler_ymq_secret_version_id)) > 0 && var.scheduler_ymq_secret_version_id == trimspace(var.scheduler_ymq_secret_version_id)
+    error_message = "scheduler_ymq_secret_version_id must pin a non-empty Lockbox version without surrounding whitespace."
+  }
+}
 variable "login_provider" {
   description = "Explicit Web login provider; existing Telegram deployments remain unchanged until selected."
   type        = string

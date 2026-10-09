@@ -1,4 +1,11 @@
-mock_provider "yandex" {}
+mock_provider "yandex" {
+  mock_resource "yandex_iam_service_account" {
+    defaults = { id = "service-account-test" }
+  }
+  mock_resource "yandex_iam_service_account_static_access_key" {
+    defaults = { output_to_lockbox_version_id = "scheduler-version-test" }
+  }
+}
 
 run "yandex_login_web_module" {
   command = plan
@@ -33,9 +40,13 @@ run "yandex_login_web_module" {
       length([
         for secret in yandex_serverless_container.web.secrets : secret
         if secret.key == "oidc-client-secret" && secret.environment_variable == "YANDEX_LOGIN_CLIENT_SECRET"
-      ]) == 1
+      ]) == 1 &&
+      alltrue([
+        for secret in yandex_serverless_container.web.secrets :
+        secret.version_id == (contains(["access-key", "secret-key"], secret.key) ? "scheduler-version-test" : "web-version-test")
+      ])
     )
-    error_message = "Yandex selection must not require or inject Telegram client configuration and must bind the selected secret from Lockbox."
+    error_message = "Yandex selection must not inject Telegram configuration and every Lockbox secret must use its pinned payload version."
   }
   assert {
     condition = (
@@ -205,4 +216,163 @@ run "reject_foreign_release_subject" {
   }
 
   expect_failures = [var.github_release_oidc_subject]
+}
+
+
+# Foundation must remain bootstrappable before out-of-band Web payload loading.
+run "foundation_bootstrap_without_web_payload" {
+  command = plan
+  plan_options { target = [module.foundation] }
+  variables {
+    cloud_id                    = "cloud-test"
+    base_domain                 = "sessionless.triborg.dev"
+    artifact_bucket_name        = "sessionless-test-artifacts"
+    telegram_secret_version_id  = ""
+    web_bff_secret_version_id   = ""
+    web_login_provider          = "yandex"
+    yandex_login_client_id      = "yandex-client-test"
+    control_blue_image_tag      = "0000000000000000000000000000000000000000"
+    control_green_image_tag     = "0000000000000000000000000000000000000000"
+    runtime_image_tag           = "0000000000000000000000000000000000000000"
+    web_image_ref               = "cr.yandex/crptestregistry/web-bff@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    github_oidc_subject         = "repo:immutable-test-subject:ref:refs/heads/main"
+    github_release_oidc_subject = "repo:urandon/sessionless:environment:release"
+    billing_account_id          = "billing-test"
+    budget_id                   = "budget-test"
+  }
+}
+# Exercise Terraform's real target expansion, not a source-text approximation.
+# The policy runner inspects this plan's machine-readable resource changes.
+run "isolated_web_rollout" {
+  command = plan
+  plan_options { target = [module.web] }
+  variables {
+    cloud_id                    = "cloud-test"
+    base_domain                 = "sessionless.triborg.dev"
+    artifact_bucket_name        = "sessionless-test-artifacts"
+    telegram_secret_version_id  = ""
+    web_bff_secret_version_id   = "web-version-test"
+    web_login_provider          = "yandex"
+    yandex_login_client_id      = "yandex-client-test"
+    control_blue_image_tag      = "0000000000000000000000000000000000000000"
+    control_green_image_tag     = "0000000000000000000000000000000000000000"
+    runtime_image_tag           = "0000000000000000000000000000000000000000"
+    web_image_ref               = "cr.yandex/crptestregistry/web-bff@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    github_oidc_subject         = "repo:immutable-test-subject:ref:refs/heads/main"
+    github_release_oidc_subject = "repo:urandon/sessionless:environment:release"
+    billing_account_id          = "billing-test"
+    budget_id                   = "budget-test"
+  }
+}
+
+run "reject_empty_web_version" {
+  command = plan
+  module { source = "../modules/web" }
+  variables {
+    folder_id                           = "folder-test"
+    name_prefix                         = "sessionless-test"
+    base_domain                         = "sessionless.example.com"
+    dns_zone_id                         = "dns-test"
+    service_account_id                  = "web-test"
+    gateway_service_account_id          = "gateway-test"
+    registry_cleaner_service_account_id = "cleaner-test"
+    source_sha                          = "0000000000000000000000000000000000000000"
+    image_ref                           = "cr.yandex/crptestregistry/web-bff@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ydb_connection_string               = "grpc://example.invalid/local"
+    artifact_bucket_name                = "test-artifacts"
+    scheduler_wake_queue_url            = "https://example.invalid/queue"
+    web_secret_id                       = "web-secret-test"
+    web_secret_version_id               = ""
+    scheduler_ymq_secret_id             = "scheduler-secret-test"
+    scheduler_ymq_secret_version_id     = "scheduler-version-test"
+    log_group_id                        = "logs-test"
+    deletion_protection                 = true
+    login_provider                      = "yandex"
+    yandex_login_client_id              = "yandex-client-test"
+  }
+  expect_failures = [var.web_secret_version_id]
+}
+
+run "reject_whitespace_web_version" {
+  command = plan
+  module { source = "../modules/web" }
+  variables {
+    folder_id                           = "folder-test"
+    name_prefix                         = "sessionless-test"
+    base_domain                         = "sessionless.example.com"
+    dns_zone_id                         = "dns-test"
+    service_account_id                  = "web-test"
+    gateway_service_account_id          = "gateway-test"
+    registry_cleaner_service_account_id = "cleaner-test"
+    source_sha                          = "0000000000000000000000000000000000000000"
+    image_ref                           = "cr.yandex/crptestregistry/web-bff@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ydb_connection_string               = "grpc://example.invalid/local"
+    artifact_bucket_name                = "test-artifacts"
+    scheduler_wake_queue_url            = "https://example.invalid/queue"
+    web_secret_id                       = "web-secret-test"
+    web_secret_version_id               = "   "
+    scheduler_ymq_secret_id             = "scheduler-secret-test"
+    scheduler_ymq_secret_version_id     = "scheduler-version-test"
+    log_group_id                        = "logs-test"
+    deletion_protection                 = true
+    login_provider                      = "yandex"
+    yandex_login_client_id              = "yandex-client-test"
+  }
+  expect_failures = [var.web_secret_version_id]
+}
+
+run "reject_empty_scheduler_version" {
+  command = plan
+  module { source = "../modules/web" }
+  variables {
+    folder_id                           = "folder-test"
+    name_prefix                         = "sessionless-test"
+    base_domain                         = "sessionless.example.com"
+    dns_zone_id                         = "dns-test"
+    service_account_id                  = "web-test"
+    gateway_service_account_id          = "gateway-test"
+    registry_cleaner_service_account_id = "cleaner-test"
+    source_sha                          = "0000000000000000000000000000000000000000"
+    image_ref                           = "cr.yandex/crptestregistry/web-bff@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ydb_connection_string               = "grpc://example.invalid/local"
+    artifact_bucket_name                = "test-artifacts"
+    scheduler_wake_queue_url            = "https://example.invalid/queue"
+    web_secret_id                       = "web-secret-test"
+    web_secret_version_id               = "web-version-test"
+    scheduler_ymq_secret_id             = "scheduler-secret-test"
+    scheduler_ymq_secret_version_id     = ""
+    log_group_id                        = "logs-test"
+    deletion_protection                 = true
+    login_provider                      = "yandex"
+    yandex_login_client_id              = "yandex-client-test"
+  }
+  expect_failures = [var.scheduler_ymq_secret_version_id]
+}
+
+run "reject_whitespace_scheduler_version" {
+  command = plan
+  module { source = "../modules/web" }
+  variables {
+    folder_id                           = "folder-test"
+    name_prefix                         = "sessionless-test"
+    base_domain                         = "sessionless.example.com"
+    dns_zone_id                         = "dns-test"
+    service_account_id                  = "web-test"
+    gateway_service_account_id          = "gateway-test"
+    registry_cleaner_service_account_id = "cleaner-test"
+    source_sha                          = "0000000000000000000000000000000000000000"
+    image_ref                           = "cr.yandex/crptestregistry/web-bff@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ydb_connection_string               = "grpc://example.invalid/local"
+    artifact_bucket_name                = "test-artifacts"
+    scheduler_wake_queue_url            = "https://example.invalid/queue"
+    web_secret_id                       = "web-secret-test"
+    web_secret_version_id               = "web-version-test"
+    scheduler_ymq_secret_id             = "scheduler-secret-test"
+    scheduler_ymq_secret_version_id     = " \t "
+    log_group_id                        = "logs-test"
+    deletion_protection                 = true
+    login_provider                      = "yandex"
+    yandex_login_client_id              = "yandex-client-test"
+  }
+  expect_failures = [var.scheduler_ymq_secret_version_id]
 }

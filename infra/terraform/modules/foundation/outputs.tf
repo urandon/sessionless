@@ -2,6 +2,20 @@ output "folder_id" { value = yandex_resourcemanager_folder.environment.id }
 output "dns_zone_id" { value = yandex_dns_zone.environment.id }
 output "dns_zone_name" { value = yandex_dns_zone.environment.zone }
 output "service_account_ids" { value = { for name, account in yandex_iam_service_account.runtime : name => account.id } }
+output "web_ready_service_account_id" {
+  description = "Web BFF identity after its runtime and gateway permissions are ready; independent of release/GC publication identities."
+  value       = yandex_iam_service_account.runtime["web-bff"].id
+  depends_on = [
+    yandex_container_registry_iam_binding.runtime_puller,
+    yandex_ydb_database_iam_binding.runtime_editor,
+    yandex_storage_bucket_iam_binding.runtime_editor,
+    yandex_lockbox_secret_iam_member.web_bff,
+    yandex_lockbox_secret_iam_member.scheduler_ymq["web-bff"],
+    yandex_kms_symmetric_key_iam_member.runtime_secret_decrypter["web-bff"],
+    yandex_resourcemanager_folder_iam_member.runtime["web-bff:logging.writer"],
+    yandex_resourcemanager_folder_iam_member.runtime["web-gateway:logging.writer"],
+  ]
+}
 output "ydb_connection_string" { value = yandex_ydb_database_serverless.application.ydb_full_endpoint }
 output "artifact_bucket_name" { value = yandex_storage_bucket.artifacts.bucket }
 output "dispatch_queue_url" { value = yandex_message_queue.dispatch.id }

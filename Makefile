@@ -357,7 +357,13 @@ terraform-ci:
 	$(TERRAFORM) -chdir=infra/terraform/bootstrap validate
 	$(TERRAFORM) -chdir=infra/terraform/cloud-dev init -backend=false -input=false
 	$(TERRAFORM) -chdir=infra/terraform/cloud-dev validate
-	$(TERRAFORM) -chdir=infra/terraform/cloud-dev test -filter=web_deployment.tftest.hcl
+	@plan_log=$$(mktemp "$${TMPDIR:-/tmp}/sessionless-web-plan.XXXXXX"); \
+	trap 'rm -f "$$plan_log"' EXIT HUP INT TERM; \
+	if ! $(TERRAFORM) -chdir=infra/terraform/cloud-dev test -filter=web_deployment.tftest.hcl -verbose -json >"$$plan_log"; then \
+		cat "$$plan_log"; exit 1; \
+	fi; \
+	./scripts/test-web-deployment-policy.sh --plan-json "$$plan_log"
+	sh scripts/test-cloud-preflight.sh
 	$(MAKE) budget-policy-test
 	$(MAKE) web-secret-load-test
 	$(MAKE) web-deployment-policy-test

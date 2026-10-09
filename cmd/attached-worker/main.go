@@ -54,6 +54,9 @@ func runWithContextAndConnector(parent context.Context, arguments []string, outp
 		return writeResult(output, commandErrorV1{Version: 1, Code: attachedworkerlocal.CodeInvalid}, 2)
 	}
 	command := arguments[0]
+	if isOnboardingCommand(command) {
+		return runOnboarding(parent, arguments, output)
+	}
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	stateRoot := flags.String("state-dir", "", "explicit absolute attached-worker state directory")

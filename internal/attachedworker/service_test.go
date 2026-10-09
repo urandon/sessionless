@@ -20,6 +20,68 @@ import (
 
 var attachedWorkerTestTime = time.Date(2026, 8, 25, 9, 0, 0, 0, time.UTC)
 
+func TestPreparedEnrollmentHasNoEffectsAndPersistsExactGrant(t *testing.T) {
+	service, store, clock := newAttachedWorkerTestService(t)
+	grant, err := service.PrepareEnrollment(context.Background(), "tenant-a", "owner-a", CreateEnrollmentRequest{
+		DisplayName: "laptop", Audience: "sessionless:attached-worker:v1", ExpiresAt: clock.Now().Add(5 * time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(store.enrollments) != 0 || len(store.audits) != 0 {
+		t.Fatal("prepare mutated enrollment persistence")
+	}
+	clock.Advance(time.Minute)
+	if err := service.PersistEnrollment(context.Background(), grant); err != nil {
+		t.Fatalf("persist exact retained grant: %v", err)
+	}
+	persisted := store.enrollments[enrollmentKey("tenant-a", "owner-a", grant.Enrollment.ID)]
+	if !reflect.DeepEqual(persisted, grant.Enrollment) || len(store.audits) != 1 || !store.audits[0].OccurredAt.Equal(grant.Enrollment.CreatedAt) {
+		t.Fatalf("persist changed prepared grant or audit: enrollment=%#v audit=%#v", persisted, store.audits)
+	}
+}
+
+func TestPersistPreparedEnrollmentRejectsTamperedOrExpiredGrant(t *testing.T) {
+	tests := []struct {
+		name   string
+		change func(*EnrollmentGrant, *mutableClock)
+	}{
+		{name: "secret", change: func(g *EnrollmentGrant, _ *mutableClock) { g.Secret.value[0] ^= 1 }},
+		{name: "digest", change: func(g *EnrollmentGrant, _ *mutableClock) {
+			g.Enrollment.BootstrapDigest = domain.DigestWorkerBootstrap([]byte("wrong"))
+		}},
+		{name: "revision", change: func(g *EnrollmentGrant, _ *mutableClock) { g.Enrollment.Revision++ }},
+		{name: "consumed", change: func(g *EnrollmentGrant, _ *mutableClock) {
+			g.Enrollment.ConsumedAt = g.Enrollment.CreatedAt.Add(time.Second)
+		}},
+		{name: "future creation", change: func(g *EnrollmentGrant, c *mutableClock) { g.Enrollment.CreatedAt = c.Now().Add(time.Second) }},
+		{name: "expired", change: func(g *EnrollmentGrant, c *mutableClock) { c.Set(g.Enrollment.ExpiresAt) }},
+		{name: "unbounded lifetime", change: func(g *EnrollmentGrant, _ *mutableClock) {
+			g.Enrollment.ExpiresAt = g.Enrollment.CreatedAt.Add(time.Hour)
+			g.Enrollment.RetainUntil = g.Enrollment.ExpiresAt.Add(24 * time.Hour)
+		}},
+		{name: "retention", change: func(g *EnrollmentGrant, _ *mutableClock) {
+			g.Enrollment.RetainUntil = g.Enrollment.RetainUntil.Add(time.Second)
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service, store, clock := newAttachedWorkerTestService(t)
+			grant, err := service.PrepareEnrollment(context.Background(), "tenant-a", "owner-a", CreateEnrollmentRequest{DisplayName: "laptop", Audience: "worker", ExpiresAt: clock.Now().Add(5 * time.Minute)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			test.change(&grant, clock)
+			if err := service.PersistEnrollment(context.Background(), grant); !errors.Is(err, ErrEnrollmentDenied) {
+				t.Fatalf("persist %s: got %v, want enrollment denied", test.name, err)
+			}
+			if len(store.enrollments) != 0 || len(store.audits) != 0 {
+				t.Fatal("invalid prepared grant reached persistence")
+			}
+		})
+	}
+}
+
 func TestEnrollmentClaimIsSingleUseUnderConcurrency(t *testing.T) {
 	service, store, clock := newAttachedWorkerTestService(t)
 	grant := createAttachedWorkerTestEnrollment(t, service, clock)

@@ -7,7 +7,7 @@ SESSIONLESS_GO_CACHE_ROOT ?= $(if $(GIT_COMMON_DIR),$(GIT_COMMON_DIR)/sessionles
 GO_CACHE_DIR := $(SESSIONLESS_GO_CACHE_ROOT)/go-build
 GO_MOD_CACHE_DIR := $(SESSIONLESS_GO_CACHE_ROOT)/go-mod
 GO_TMP_DIR := $(CURDIR)/.build/tmp
-COMPONENTS := control-api web-bff reconciler telegram-sender telegram-fake oidc-fake worker-runtime attached-worker schema-migrate schema-inspect schema-backfill preprod-reset deployment-lock registry-gc release-notes github-release web-bootstrap session-delete
+COMPONENTS := control-api web-bff reconciler telegram-sender telegram-fake oidc-fake worker-runtime attached-worker attached-worker-admin schema-migrate schema-inspect schema-backfill preprod-reset deployment-lock registry-gc release-notes github-release web-bootstrap session-delete
 GO_PACKAGE_PATTERNS := ./cmd/... ./internal/... ./migrations/...
 WEB_DIR := web
 WEB_BUILD_DIR := $(WEB_DIR)/build
@@ -31,6 +31,8 @@ LDFLAGS := -s -w \
 
 help:
 	@printf '%s\n' \
+		'make attached-worker-admin ARGS="..." operator-only private enrollment/rotation handoff' \
+		'make attached-worker-setup ARGS="..." native private setup without service installation/activation' \
 		'make go-cache-status show shared Go cache and worktree-local output paths' \
 		'make go-cache-clean  remove the repository-shared Go cache after builds stop' \
 		'make go-cache-policy-test validate shared-cache and worktree isolation' \
@@ -203,9 +205,17 @@ attached-worker-security-ydb-gate: prepare
 	go test -race -count=1 -tags=ydbintegration \
 		-run '^(TestTestProviderExchangeCloseRevokesBothBearers|TestAW07ReceiptTwoOwnerCanonicalTerminalAndReplay|TestAW07AmbiguousReceiptCopyKeepsDeletionFailClosed|TestSessionLifecycleHoldWriteFenceInventoryAndCompletion|TestAW07TwoOwnerClaimAndRevocationKeepSealedInputIsolated|TestAW07RevocationFencesPendingTerminalBeforeRunFinalization|TestAW07TwoOwnerReconnectKeepsPeerClaimAndFencesOldBearer|TestAW07TwoOwnerYDBTLSLostResponseKeepsPeerAndFencesRevokedOwner|TestAW07TwoOwnerYDBSealedArtifactRevocationKeepsPeerReadable|TestAW07TwoOwnerYDBSealedArtifactProcessRevocation|TestAW07TwoActivatedDaemonYDBJoin|TestAW07TwoActivatedProviderDaemonReceipts)$$' ./internal/attachedworkersealedinput ./test/ydbintegration
 
+.PHONY: attached-worker-admin attached-worker-setup
+
+attached-worker-admin: prepare
+	go run ./cmd/attached-worker-admin $(ARGS)
+
+attached-worker-setup: prepare
+	go run ./cmd/attached-worker $(ARGS)
+
 attached-worker-joined-provider-ydb-gate: prepare
 	go test -race -count=$${AW07_PROVIDER_TEST_COUNT:-1} -shuffle=$${AW07_PROVIDER_TEST_SHUFFLE:-off} -timeout=$${AW07_PROVIDER_TEST_TIMEOUT:-240s} -tags=ydbintegration \
-		-run '^(TestTestProviderExchangeCloseRevokesBothBearers|TestAW07TwoActivatedProviderDaemonReceipts|TestWebAttachedJoinedProviderDaemonReceipts|TestWebAttachedProductIngressUsesCanonicalScheduler|TestWebAttachedProductIngressRevocationBeforeAdmissionRollsBackOffer)$$' ./internal/attachedworkersealedinput ./test/ydbintegration
+		-run '^(TestTestProviderExchangeCloseRevokesBothBearers|TestAW07TwoActivatedProviderDaemonReceipts|TestWebAttachedJoinedProviderDaemonReceipts|TestWebAttachedProductIngressUsesCanonicalScheduler|TestWebAttachedProductIngressRevocationBeforeAdmissionRollsBackOffer|TestAttachedWorkerOnboardingFreshOwnerNativeHandoffAndResourceProjection|TestAttachedWorkerOnboardingOwnerMembershipAndResourceConflicts|TestAttachedWorkerOnboardingSignedRotationReplayAndRevocation)$$' ./internal/attachedworkersealedinput ./test/ydbintegration
 
 attached-worker-native-integration: attached-worker-build
 	SESSIONLESS_NATIVE_INTEGRATION=1 SESSIONLESS_ATTACHED_WORKER_BINARY="$(CURDIR)/$(BIN_DIR)/attached-worker" \

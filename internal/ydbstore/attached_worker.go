@@ -44,6 +44,10 @@ func (store *Store) CreateAttachedWorkerEnrollment(
 	enrollment domain.AttachedWorkerEnrollment,
 	audit domain.AttachedWorkerAuditEvent,
 ) error {
+	return store.createAttachedWorkerEnrollment(ctx, enrollment, audit, false)
+}
+
+func (store *Store) createAttachedWorkerEnrollment(ctx context.Context, enrollment domain.AttachedWorkerEnrollment, audit domain.AttachedWorkerAuditEvent, authorize bool) error {
 	enrollment = canonicalAttachedWorkerEnrollment(enrollment)
 	audit = canonicalAttachedWorkerAuditEvent(audit)
 	if err := validateAttachedWorkerEnrollmentCreate(enrollment, audit); err != nil {
@@ -51,6 +55,11 @@ func (store *Store) CreateAttachedWorkerEnrollment(
 	}
 	return store.Transact(ctx, enrollment.TenantID, func(state ports.StateTx) error {
 		tx := state.(*stateTx)
+		if authorize {
+			if err := authorizeTenantWriteTx(ctx, tx, enrollment.OwnerUserID); err != nil {
+				return err
+			}
+		}
 		existing, found, err := readAttachedWorkerEnrollmentTx(ctx, tx, enrollment.OwnerUserID, enrollment.ID)
 		if err != nil {
 			return err
@@ -112,6 +121,10 @@ func (store *Store) ClaimAttachedWorkerEnrollment(
 	ctx context.Context,
 	mutation ports.AttachedWorkerClaimMutation,
 ) (result ports.AttachedWorkerClaimResult, err error) {
+	return store.claimAttachedWorkerEnrollment(ctx, mutation, false)
+}
+
+func (store *Store) claimAttachedWorkerEnrollment(ctx context.Context, mutation ports.AttachedWorkerClaimMutation, authorize bool) (result ports.AttachedWorkerClaimResult, err error) {
 	mutation = canonicalAttachedWorkerClaimMutation(mutation)
 	if err := validateAttachedWorkerClaimMutation(mutation); err != nil {
 		return result, err
@@ -119,6 +132,11 @@ func (store *Store) ClaimAttachedWorkerEnrollment(
 	result.Status = ports.AttachedWorkerDenied
 	err = store.Transact(ctx, mutation.TenantID, func(state ports.StateTx) error {
 		tx := state.(*stateTx)
+		if authorize {
+			if err := authorizeTenantWriteTx(ctx, tx, mutation.OwnerUserID); err != nil {
+				return err
+			}
+		}
 		enrollment, found, err := readAttachedWorkerEnrollmentTx(
 			ctx, tx, mutation.OwnerUserID, mutation.EnrollmentID,
 		)
@@ -254,12 +272,26 @@ func (store *Store) CompareAndSwapAttachedWorker(
 	ctx context.Context,
 	mutation ports.AttachedWorkerCASMutation,
 ) (swapped bool, err error) {
+	return store.compareAndSwapAttachedWorker(ctx, mutation, false)
+}
+
+func (store *Store) compareAndSwapAttachedWorker(ctx context.Context, mutation ports.AttachedWorkerCASMutation, authorize bool) (swapped bool, err error) {
 	mutation = canonicalAttachedWorkerCASMutation(mutation)
 	if err := validateAttachedWorkerCASMutation(mutation); err != nil {
 		return false, err
 	}
 	err = store.Transact(ctx, mutation.Next.TenantID, func(state ports.StateTx) error {
 		tx := state.(*stateTx)
+		if authorize {
+			if err := authorizeTenantWriteTx(ctx, tx, mutation.Next.OwnerUserID); err != nil {
+				return err
+			}
+			if mutation.Audit.Action == domain.AttachedWorkerAuditIdentityRotated {
+				if err := requireDisabledOnboardingResourceTx(ctx, tx, mutation.Next); err != nil {
+					return err
+				}
+			}
+		}
 		current, found, err := readAttachedWorkerTx(ctx, tx, mutation.Next.OwnerUserID, mutation.Next.ID)
 		if err != nil {
 			return err
@@ -281,6 +313,9 @@ func (store *Store) CompareAndSwapAttachedWorker(
 		if current.Revision != mutation.ExpectedRevision {
 			swapped = false
 			return nil
+		}
+		if authorize && mutation.Audit.Action == domain.AttachedWorkerAuditIdentityRotated && !mutation.Next.UpdatedAt.After(current.UpdatedAt) {
+			return ErrAttachedWorkerConflict
 		}
 		if err := validateAttachedWorkerCASTransition(current, mutation); err != nil {
 			return err

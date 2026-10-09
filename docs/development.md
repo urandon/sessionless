@@ -330,6 +330,15 @@ and control-action gates are documented in
 [attached-worker-ux.md](attached-worker-ux.md). WebUI and CLI implementations
 must consume that contract rather than deriving lifecycle state client-side.
 
+The minimum #78/#170 [private owner onboarding](attached-worker-onboarding.md)
+uses `make attached-worker-admin ARGS="..."` with existing operator YDB
+authority and typed confirmation, and `make attached-worker-setup ARGS="..."`
+on the owner host. It retains a private pending identity before claim delivery,
+registers one exact owner resource through production APIs, and completes local
+state only from the matching receipt. No SQL fixture edits, service startup,
+provider credentials or activation are implied. Eligibility remains unknown;
+lost responses replay the same private grant/claim/rotation, not a new key.
+
 The provider-neutral local credential binding, invocation handle, secure
 materialization, crash recovery, write-back, and deny-first revocation contract
 is documented in [credential-lifecycle.md](credential-lifecycle.md). Phase B0

@@ -51,6 +51,7 @@ help:
 		'make dockerless-build build only native binaries used by the Dockerless stand' \
 		'make attached-worker-build build the native attached-worker without WebUI tooling' \
 		'make attached-worker-package-test run focused package and CLI race/shuffle tests' \
+		'make attached-worker-receipt-session-test verify offline session-bound receipt lifecycle' \
 		'make attached-worker-crash-integration run opt-in exact-binary crash/reconnect fixture' \
 		'make attached-worker-active-crash-integration run test-binary active-crash fencing fixture' \
 		'make attached-worker-security-gate run the two-owner and recovery race gate' \
@@ -199,6 +200,12 @@ attached-worker-build: prepare
 attached-worker-package-test: prepare
 	go test -race -count=1 ./internal/attachedworkeractivation ./internal/attachedworkerpackage ./internal/attachedworkersession ./cmd/attached-worker
 	go test -race -count=20 -shuffle=on ./internal/attachedworkeractivation ./internal/attachedworkerpackage ./internal/attachedworkersession ./cmd/attached-worker
+
+.PHONY: attached-worker-receipt-session-test
+attached-worker-receipt-session-test: prepare
+	go test -race -count=1 ./internal/attachedworkersealedinput ./internal/attachedworkerreceipt
+	go test -race -count=20 -shuffle=on -run '^(TestReceiptSession.*|TestOrdinarySessionSourceStillDeniesReceiptChannel)$$' ./internal/attachedworkersealedinput
+	go test -race -count=1 -tags=ydbintegration -run '^TestTestProviderExchangeCloseRevokesBothBearers$$' ./internal/attachedworkersealedinput
 
 attached-worker-crash-integration: attached-worker-build
 	SESSIONLESS_ATTACHED_WORKER_BINARY="$(CURDIR)/$(BIN_DIR)/attached-worker" \

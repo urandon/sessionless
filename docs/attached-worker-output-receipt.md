@@ -16,12 +16,47 @@ artifact manifest, and ordered session-event identities. The digests cannot be
 substituted. The old synthetic-denied joined profile correctly leaves an
 attempt in `terminal_pending`; it is not positive receipt proof. The separate
 credential-bearing test-provider gate now proves canonical success and
-TerminalAck for both owners. Normal production startup still does not compose
-the receipt finalizer; test success does not authorize provider activation.
+TerminalAck for both owners. The normal Web/control bridge now supplies the
+server receipt/finalizer; the worker's prepared Codex driver and credential
+composition remain disabled under #133. Test success does not authorize
+provider activation.
 
 The positive path needs one server-owned, immutable output receipt. It is not
 authority delegated to a worker and is never constructed from process stdout,
 exit status, a provider thread ID, or caller-selected event IDs.
+
+## Default-off receipt-session library (#133 preparation)
+
+`attachedworkersealedinput.NewReceiptSessionSourceFactory` explicitly joins the
+existing sealed-input source, accepted exchange and receipt publisher. It
+accepts only input/receipt HTTPS endpoints on the exact same origin. Neither
+HTTP channel is available before the session accepts `Open`; both retain
+copies of that connection's bearer, never a later ambient credential. One
+open/close state machine arbitrates acquisition and retirement, including a
+delegate that returns after close. Session close revokes both clients and
+cancels in-flight reads/publications without waiting for delegate close; outer
+factory close releases the acquired exchange. Transport delegates still own
+their exchange cancellation/close contract. Server-side transactional owner,
+attempt, lease and policy authorization remains mandatory.
+
+The receipt client owns the existing bounded exact response-loss replay. This
+seam never retries an invocation or constructs a replacement candidate. The
+YDB-tagged provider fixture reuses it instead of its own bearer/lifecycle
+wrapper. Verify the seam without a real HTTP server, provider or YDB process:
+
+```sh
+make attached-worker-receipt-session-test
+```
+
+These fake-transport tests prove pre-open/post-close denial, same accepted
+bearer, exact receipt replay, acquisition failure/race cleanup, and cancellation
+on session/factory close. They are lifecycle proof, not cloud/provider E2E.
+The ordinary activation path still calls `NewSessionSourceFactory`, whose
+receipt channel is unavailable. `synthetic-denied`, normal service/materializer
+provider denial, `DeniedCredentialLifecycle` and OCI network denial are
+unchanged. Local credential custody, typed canonical input/result composition,
+one credential/process owner, prepared driver, artifact/policy pins and reviewed
+egress remain #133 work; #129 still gates cloud transport rollout.
 
 ## Authority and data flow
 

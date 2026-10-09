@@ -17,13 +17,11 @@ import (
 func TestTestProviderExchangeCloseRevokesBothBearers(t *testing.T) {
 	server := httptest.NewTLSServer(http.NotFoundHandler())
 	defer server.Close()
-	base, err := NewSessionSourceFactory(server.URL+PathV1, server.Client(),
+	source, err := NewReceiptSessionSourceFactory(server.URL+PathV1, server.URL+attachedworkerreceipt.PathV1, server.Client(),
 		&exchangeFixture{port: &exchangePortFixture{}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	source := &testProviderSource{SessionSourceFactory: base,
-		receiptEndpoint: server.URL + attachedworkerreceipt.PathV1}
 	exchange, err := source.Open(attachedworkersession.ConnectionBindingV1{}, []byte("test-provider-bearer"))
 	if err != nil {
 		t.Fatal(err)

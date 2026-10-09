@@ -112,6 +112,17 @@ operator-only schema, reset, deployment-lock, and Web bootstrap commands. The
 Makefile is the authoritative component inventory; documentation deliberately
 does not duplicate a count that drifts as slices are added.
 
+### Offline attached transport experiment preparation
+
+The [#129 Phase-0 plan](attached-worker-transport-experiment.md) prepares
+three 24-hour observation cohorts and their proposed limits. Run
+`make attached-worker-experiment-plan` to print schedule bounds from the
+canonical poller, and `make attached-worker-experiment-test` for the offline
+validator and existing cadence regressions. The planner neither contacts a
+control plane nor starts a worker; its result is always `draft_not_authorized`.
+It is a development command, excluded from deployed component/release assets.
+No measured cost or approved execution manifest is supplied by this target.
+
 ### Worktrees and Go caches
 
 `make` resolves the repository's Git common directory and shares

@@ -103,7 +103,7 @@ module "web" {
   name_prefix                         = var.name_prefix
   base_domain                         = var.base_domain
   dns_zone_id                         = module.foundation.dns_zone_id
-  service_account_id                  = module.foundation.service_account_ids["web-bff"]
+  service_account_id                  = module.foundation.web_ready_service_account_id
   gateway_service_account_id          = module.foundation.service_account_ids["web-gateway"]
   registry_cleaner_service_account_id = module.foundation.registry_cleaner_service_account_id
   source_sha                          = var.runtime_image_tag
@@ -126,8 +126,6 @@ module "web" {
   log_group_id                        = module.foundation.log_group_id
   deletion_protection                 = var.deletion_protection
   labels                              = local.labels
-
-  depends_on = [module.foundation]
 }
 
 resource "terraform_data" "external_guardrails" {

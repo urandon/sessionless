@@ -47,11 +47,47 @@ require_regex "$cloud_root" 'login_provider[[:space:]]*=[[:space:]]*var\.web_log
 require_regex "$cloud_root" 'yandex_login_client_id[[:space:]]*=[[:space:]]*var\.yandex_login_client_id'
 require_literal "$web_variables" '^cr\\.yandex/[^/]+/web-bff@sha256:[0-9a-f]{64}$'
 require_literal "$web_variables" 'var.concurrency >= 1 && var.concurrency <= 8'
-require_regex "$cloud_root" 'service_account_id[[:space:]]*=[[:space:]]*module\.foundation\.service_account_ids\["web-bff"\]'
+require_regex "$cloud_root" 'service_account_id[[:space:]]*=[[:space:]]*module\.foundation\.web_ready_service_account_id'
 require_regex "$cloud_root" 'gateway_service_account_id[[:space:]]*=[[:space:]]*module\.foundation\.service_account_ids\["web-gateway"\]'
 require_literal "$foundation" '"control-api", "web-bff", "reconciler", "telegram-sender", "worker-runtime"'
 require_literal "$foundation" 'for name in ["api", "web-bff", "scheduler", "worker", "telegram-sender"]'
 require_literal "$terraform_wrapper" 'CLOUD_DEV_IMAGE_TFVARS is required for every non-foundation plan'
+
+if [ "${1:-}" = "--plan-json" ] && [ "$#" -eq 2 ]; then
+  # Inspect Terraform's actual mocked target expansion. Source checks alone
+  # cannot prove that a module dependency is absent from the execution graph.
+  jq -e -s '
+    [.[] | select(.type == "test_run" and .test_run.run == "foundation_bootstrap_without_web_payload" and .test_run.status == "pass")] as $bootstrap |
+    [.[] | select(.type == "test_plan" and .["@testrun"] == "isolated_web_rollout")] as $plans |
+    ($bootstrap | length) == 1 and
+    ($plans | length) == 1 and
+    ($plans[0].test_plan.resource_changes | map(.address)) as $addresses |
+    all([
+      "module.web.yandex_serverless_container.web",
+      "module.foundation.yandex_container_registry_iam_binding.runtime_puller",
+      "module.foundation.yandex_ydb_database_iam_binding.runtime_editor",
+      "module.foundation.yandex_storage_bucket_iam_binding.runtime_editor",
+      "module.foundation.yandex_lockbox_secret_iam_member.web_bff",
+      "module.foundation.yandex_lockbox_secret_iam_member.scheduler_ymq[\"web-bff\"]",
+      "module.foundation.yandex_kms_symmetric_key_iam_member.runtime_secret_decrypter[\"web-bff\"]",
+      "module.foundation.yandex_resourcemanager_folder_iam_member.runtime[\"web-bff:logging.writer\"]",
+      "module.foundation.yandex_resourcemanager_folder_iam_member.runtime[\"web-gateway:logging.writer\"]"
+    ][]; . as $required | $addresses | index($required) != null) and
+    all($addresses[];
+      (startswith("module.runtime.") or startswith("module.edge.") or
+       contains("yandex_iam_workload_identity_oidc_federation.") or
+       contains("yandex_iam_workload_identity_federated_credential.") or
+       contains("yandex_container_repository_") or
+       contains("yandex_container_repository.runtime") or
+       contains("yandex_iam_service_account_static_access_key.queue_provisioner")) | not)
+  ' "$2" >/dev/null || {
+    printf '%s\n' 'targeted Web plan must retain every runtime permission and exclude publication/GC and unrelated runtime graphs' >&2
+    exit 1
+  }
+elif [ "$#" -ne 0 ]; then
+  printf '%s\n' 'usage: test-web-deployment-policy.sh [--plan-json terraform-test.jsonl]' >&2
+  exit 1
+fi
 
 if grep -Fq 'allUsers' "$web_module"; then
   printf '%s\n' 'Web container must not have an anonymous invoker binding' >&2

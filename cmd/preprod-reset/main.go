@@ -55,7 +55,25 @@ func main() {
 	if err != nil {
 		log.Fatalf("open guarded reset Object Storage target: %v", err)
 	}
-	result, err := preprodreset.Execute(ctx, target, ydb.DB, objects, preprodreset.SQLProviderCredentialResetGuard{DB: ydb.DB})
+	credentialGuard := preprodreset.SQLProviderCredentialResetGuard{
+		DB: ydb.DB,
+		TableInventory: func(ctx context.Context) ([]string, error) {
+			database := ydb.DatabasePath()
+			if database == "" {
+				return nil, fmt.Errorf("guarded reset YDB database root is missing")
+			}
+			directory, err := ydb.Scheme().ListDirectory(ctx, database)
+			if err != nil {
+				return nil, err
+			}
+			names := make([]string, 0, len(directory.Children))
+			for _, entry := range directory.Children {
+				names = append(names, entry.Name)
+			}
+			return names, nil
+		},
+	}
+	result, err := preprodreset.Execute(ctx, target, ydb.DB, objects, credentialGuard)
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-for tool in terraform yc curl jq docker go; do
+for tool in terraform yc curl jq go; do
   command -v "$tool" >/dev/null 2>&1 || {
     printf 'required tool is missing: %s\n' "$tool" >&2
     exit 1

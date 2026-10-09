@@ -181,18 +181,17 @@
       <p class="eyebrow">Canonical conversations</p>
       <h1 id="page-title">Your sessions, in one place</h1>
       <p class="lede">
-        Sign in to continue a conversation across Web, Telegram, and future frontends without
-        changing its history.
+        Sign in to continue a conversation across frontends without changing its history.
       </p>
     </div>
     <!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- Go BFF auth route -->
-    <a class="button primary" href="/auth/telegram/start?return_to=%2F">Continue with Telegram</a>
+    <a class="button primary" href="/auth/login/start?return_to=%2F">Continue to sign in</a>
   </section>
 {:else if view === 'access-denied'}
   <section class="narrow panel" aria-labelledby="access-title">
     <p class="eyebrow">Access unavailable</p>
-    <h1 id="access-title">No workspace is linked to this account</h1>
-    <p>Signing in proves identity but never creates tenant membership.</p>
+    <h1 id="access-title">No workspace access for this account</h1>
+    <p>Workspace access could not be authorized. Signing in never creates tenant membership.</p>
     <!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- query-bearing recovery route -->
     <a class="button primary" href={`${resolve('/login')}?auth_error=access_denied`}
       >Recovery steps</a

@@ -24,7 +24,14 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
+	subject, err := bootstrapSubjectFromEnvironment()
+	if err != nil {
+		fatal(err)
+	}
 	expected := fmt.Sprintf("BOOTSTRAP %s INTO %s", grant.UserID, grant.TenantID)
+	if subject != nil {
+		expected += " FOR " + subject.String()
+	}
 	fmt.Fprintf(os.Stderr, "Type %q to create the audited cloud-dev membership: ", expected)
 	confirmation, err := bufio.NewReader(os.Stdin).ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
@@ -44,7 +51,12 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
-	membership, err := store.BootstrapDevelopmentMembership(ctx, grant)
+	var membership domain.TenantMembership
+	if subject != nil {
+		membership, err = store.BootstrapDevelopmentMembershipForSubject(ctx, grant, *subject)
+	} else {
+		membership, err = store.BootstrapDevelopmentMembership(ctx, grant)
+	}
 	if err != nil {
 		fatal(err)
 	}
@@ -54,6 +66,33 @@ func main() {
 	}); err != nil {
 		fatal(err)
 	}
+}
+
+// Optional explicit provisioning is privileged cloud-dev bootstrap before
+// first sign-in, not a browser claim or an account-link command.
+func bootstrapSubjectFromEnvironment() (*domain.ExternalSubject, error) {
+	p, s := os.Getenv("WEB_BOOTSTRAP_EXTERNAL_PROVIDER"), os.Getenv("WEB_BOOTSTRAP_EXTERNAL_SUBJECT")
+	if p == "" && s == "" {
+		return nil, nil
+	}
+	if p != "yandex" && p != "telegram" {
+		return nil, errors.New("bootstrap external provider must be yandex or telegram")
+	}
+	subject := domain.ExternalSubject{Provider: domain.IdentityProvider(p), Subject: s}
+	if subject.Validate() != nil {
+		return nil, errors.New("bootstrap external subject is invalid")
+	}
+	if p == "yandex" {
+		if s[0] == '0' {
+			return nil, errors.New("Yandex bootstrap requires canonical numeric account id")
+		}
+		for _, c := range s {
+			if c < '0' || c > '9' {
+				return nil, errors.New("Yandex bootstrap requires numeric account id, not email or username")
+			}
+		}
+	}
+	return &subject, nil
 }
 
 func grantFromEnvironment(now time.Time) (domain.DevelopmentBootstrapGrant, error) {

@@ -429,15 +429,86 @@ address. Cloud deployments retain normal endpoint discovery and balancing.
 ## Web authentication development
 
 For release scope, see the [WebUI-first MVP delivery plan](mvp-delivery-plan.md).
-The following describes the implemented Telegram OIDC path, not an already
-shipped independent login. #168 owns that bounded adapter change; no bot
-webhook initialization is required for the existing invitation/bootstrap path.
+The MVP login selected in #168/#171 is Yandex ID OAuth, independent of Telegram
+and bot setup. The existing Telegram OIDC configuration remains the default for
+backward compatibility; selecting Yandex is explicit and never falls back to
+Telegram when credentials are absent or verification fails.
+
+### Yandex ID login
+
+Set `WEB_LOGIN_PROVIDER=yandex`, `YANDEX_LOGIN_CLIENT_ID` to the registered
+application's client ID, and inject `YANDEX_LOGIN_CLIENT_SECRET` from the
+operator's credential store. `WEB_BASE_URL` is the exact public HTTPS origin;
+register its `/auth/login/callback` URL with Yandex ID. Browser sign-in starts at
+`/auth/login/start`. Request only the `login:info` permission, not email or avatar
+access. The BFF uses these pinned production endpoints:
+
+| Operation | Endpoint |
+| --- | --- |
+| Browser authorization | `https://oauth.yandex.ru/authorize` |
+| Server-side code exchange | `https://oauth.yandex.ru/token` |
+| Verified account information | `https://login.yandex.ru/info?format=json` |
+
+This is Authorization Code OAuth with S256 PKCE, not OIDC: there is no Yandex
+ID-token/JWKS/nonce verification path. The callback consumes a single-use,
+browser-bound challenge with the selected provider and client binding. The BFF
+exchanges the code privately, then calls the account API with the transient
+access token in the `Authorization: OAuth` header. It accepts the JSON account
+`id` only after `client_id` matches the configured application exactly. The
+canonical identity is `(yandex, id)`; email, login and display name never select
+the user. Access/refresh tokens are not persisted or sent to the browser.
+See the official [code exchange](https://yandex.ru/dev/id/doc/ru/codes/code-url)
+and [account API](https://yandex.ru/dev/id/doc/ru/user-information) contracts.
+
+For cloud configuration, select Terraform `web_login_provider = "yandex"` and
+set non-secret `yandex_login_client_id`. Load the secret with the existing
+[Web Lockbox loading workflow](cloud-development.md), using the matching
+`WEB_LOGIN_PROVIDER=yandex` in the loader environment. The historical Lockbox
+key `oidc-client-secret` stores the selected login secret; Terraform maps that
+key to `YANDEX_LOGIN_CLIENT_SECRET` for Yandex or `TELEGRAM_OIDC_CLIENT_SECRET`
+for Telegram. The key name does not make Yandex an OIDC provider. Never put the
+client secret in Terraform variables/state, command arguments, checked-in
+files, container images or logs.
+
+Successful provider verification alone grants no tenant access. Pilot access
+requires a separate audited operator invitation or the existing
+[cloud-development membership bootstrap](web-bff.md#audited-cloud-development-bootstrap)
+for the canonical Sessionless user. A new identity without active membership
+cannot create a Web session, read another user's sessions or inherit quota.
+Equal Telegram/Yandex subject strings or emails are not account links. Explicit
+late linking of two proved accounts is [post-MVP #172](https://gitcode.com/urandon/sessionless/issues/172),
+not an MVP prerequisite.
+
+For operator-assisted first access in `cloud-dev`, the existing
+`make web-bootstrap` accepts optional `WEB_BOOTSTRAP_EXTERNAL_PROVIDER=yandex`
+and `WEB_BOOTSTRAP_EXTERNAL_SUBJECT` with the operator-verified canonical numeric
+Yandex account `id` (not its email or username). Supply the existing target
+`WEB_BOOTSTRAP_USER_ID`, tenant, role, operator and reason as documented in the
+bootstrap runbook. The typed confirmation becomes exactly
+`BOOTSTRAP <user> INTO <tenant> FOR yandex:<id>`. Identity provisioning, membership
+and its audit are one transaction. A subject owned by another user or a target
+user with any different external identity is rejected; this is first-identity
+provisioning, not a privileged shortcut for late linking. Without both optional
+variables, the original bootstrap still requires an existing external identity.
+Neither mode is available in production or accepts authority-bearing arguments.
+
+`YANDEX_LOGIN_AUTHORIZATION_ENDPOINT`, `YANDEX_LOGIN_TOKEN_ENDPOINT` and
+`YANDEX_LOGIN_INFO_ENDPOINT` overrides are accepted only for explicit loopback
+fixtures when `SESSIONLESS_ENVIRONMENT=local`; they are not cloud proxy knobs.
+Repository adapter/BFF/YDB/browser checks use synthetic accounts, not a real
+provider login. Registered-client callback, Yandex endpoint reachability from
+the deployed runtime and cloud browser smoke remain #34/#35 rollout evidence;
+access to the Yandex Cloud console does not prove these endpoints reachable.
+
+### Existing Telegram fixture
 
 The Web BFF and Telegram-shaped OIDC fixture are separate Go processes. The
 fixture generates an ephemeral RS256 key at process start and refuses to start
 unless `SESSIONLESS_ENVIRONMENT=local`. Production and cloud-development
-processes always use Telegram's real issuer and receive the client secret from
-the process environment or Lockbox.
+processes selecting Telegram use its real issuer and receive the client secret
+from the process environment or Lockbox. `WEB_LOGIN_PROVIDER=telegram` (or an
+empty selector) preserves the legacy `/auth/telegram/callback` registration.
+These fixture values do not configure Yandex login.
 
 Build the binaries and run the credential-free repository checks:
 

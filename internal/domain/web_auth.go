@@ -55,7 +55,11 @@ func (digest SecretDigest) Matches(secret string) bool {
 
 type IdentityProvider string
 
-const IdentityProviderTelegram IdentityProvider = "telegram"
+const (
+	IdentityProviderTelegram IdentityProvider = "telegram"
+	IdentityProviderYandex   IdentityProvider = "yandex"
+	YandexOAuthIssuer                         = "https://oauth.yandex.ru"
+)
 
 func (provider IdentityProvider) Validate() error {
 	return ValidateOpaqueID("identity_provider", string(provider))
@@ -356,14 +360,19 @@ func SelectEnrollmentSource(
 }
 
 type OIDCLoginChallenge struct {
-	StateDigest          SecretDigest `json:"state_digest"`
-	BrowserBindingDigest SecretDigest `json:"browser_binding_digest"`
-	PKCEVerifier         string       `json:"pkce_verifier"`
-	Nonce                string       `json:"nonce"`
-	RedirectPath         string       `json:"redirect_path"`
-	CreatedAt            time.Time    `json:"created_at"`
-	ExpiresAt            time.Time    `json:"expires_at"`
-	ConsumedAt           *time.Time   `json:"consumed_at,omitempty"`
+	// Binding is persisted with the one-use challenge, not selected by a browser.
+	// Empty binding exists only for outstanding legacy Telegram challenges.
+	Provider             IdentityProvider `json:"provider,omitempty"`
+	Issuer               string           `json:"issuer,omitempty"`
+	Audience             string           `json:"audience,omitempty"`
+	StateDigest          SecretDigest     `json:"state_digest"`
+	BrowserBindingDigest SecretDigest     `json:"browser_binding_digest"`
+	PKCEVerifier         string           `json:"pkce_verifier"`
+	Nonce                string           `json:"nonce"`
+	RedirectPath         string           `json:"redirect_path"`
+	CreatedAt            time.Time        `json:"created_at"`
+	ExpiresAt            time.Time        `json:"expires_at"`
+	ConsumedAt           *time.Time       `json:"consumed_at,omitempty"`
 }
 
 func (challenge OIDCLoginChallenge) Validate() error {
@@ -376,7 +385,30 @@ func (challenge OIDCLoginChallenge) Validate() error {
 	if err := ValidatePKCEVerifier(challenge.PKCEVerifier); err != nil {
 		return err
 	}
-	if err := ValidateOpaqueID("oidc_challenge.nonce", challenge.Nonce); err != nil {
+	if challenge.Provider == "" {
+		if challenge.Issuer != "" || challenge.Audience != "" {
+			return ValidationError{Field: "login_challenge.binding", Reason: "must be complete"}
+		}
+	} else {
+		if challenge.Provider != IdentityProviderTelegram && challenge.Provider != IdentityProviderYandex {
+			return ValidationError{Field: "login_challenge.provider", Reason: "is unsupported"}
+		}
+		issuer, err := url.Parse(challenge.Issuer)
+		if err != nil || issuer.Scheme != "https" || issuer.Host == "" || issuer.User != nil || issuer.Path != "" || issuer.RawQuery != "" || issuer.Fragment != "" || issuer.String() != challenge.Issuer {
+			return ValidationError{Field: "login_challenge.issuer", Reason: "must be an exact HTTPS origin"}
+		}
+		if err := ValidateOpaqueID("login_challenge.audience", challenge.Audience); err != nil {
+			return err
+		}
+		if challenge.Provider == IdentityProviderYandex && challenge.Issuer != YandexOAuthIssuer {
+			return ValidationError{Field: "login_challenge.issuer", Reason: "must be the pinned Yandex OAuth authority"}
+		}
+	}
+	if challenge.Provider == IdentityProviderYandex {
+		if challenge.Nonce != "" {
+			return ValidationError{Field: "login_challenge.nonce", Reason: "OAuth does not use an OIDC nonce"}
+		}
+	} else if err := ValidateOpaqueID("oidc_challenge.nonce", challenge.Nonce); err != nil {
 		return err
 	}
 	if !safeLocalRedirect(challenge.RedirectPath) {

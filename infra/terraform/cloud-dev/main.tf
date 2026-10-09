@@ -97,7 +97,7 @@ module "edge" {
 }
 
 module "web" {
-  source = "../modules/web"
+  source                              = "../modules/web"
 
   folder_id                           = module.foundation.folder_id
   name_prefix                         = var.name_prefix
@@ -116,6 +116,8 @@ module "web" {
   scheduler_ymq_secret_id             = module.foundation.scheduler_ymq_secret_id
   scheduler_ymq_secret_version_id     = module.foundation.scheduler_ymq_secret_version_id
   telegram_oidc_client_id             = var.telegram_oidc_client_id
+  login_provider                      = var.web_login_provider
+  yandex_login_client_id              = var.yandex_login_client_id
   allowed_mcp_servers                 = var.web_allowed_mcp_servers
   max_upload_bytes                    = var.web_max_upload_bytes
   memory_mb                           = var.web_memory_mb
@@ -125,7 +127,7 @@ module "web" {
   deletion_protection                 = var.deletion_protection
   labels                              = local.labels
 
-  depends_on = [module.foundation]
+  depends_on                          = [module.foundation]
 }
 
 resource "terraform_data" "external_guardrails" {

@@ -1,5 +1,106 @@
 mock_provider "yandex" {}
 
+run "yandex_login_web_module" {
+  command = plan
+  module { source = "../modules/web" }
+  variables {
+    folder_id                           = "folder-test"
+    name_prefix                         = "sessionless-test"
+    base_domain                         = "sessionless.example.com"
+    dns_zone_id                         = "dns-test"
+    service_account_id                  = "web-test"
+    gateway_service_account_id          = "gateway-test"
+    registry_cleaner_service_account_id = "cleaner-test"
+    source_sha                          = "0000000000000000000000000000000000000000"
+    image_ref                           = "cr.yandex/crptestregistry/web-bff@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ydb_connection_string               = "grpc://example.invalid/local"
+    artifact_bucket_name                = "test-artifacts"
+    scheduler_wake_queue_url            = "https://example.invalid/queue"
+    web_secret_id                       = "web-secret-test"
+    web_secret_version_id               = "web-version-test"
+    scheduler_ymq_secret_id             = "scheduler-secret-test"
+    scheduler_ymq_secret_version_id     = "scheduler-version-test"
+    log_group_id                        = "logs-test"
+    deletion_protection                 = true
+    login_provider                      = "yandex"
+    yandex_login_client_id              = "yandex-client-test"
+  }
+  assert {
+    condition = (
+      yandex_serverless_container.web.image[0].environment["WEB_LOGIN_PROVIDER"] == "yandex" &&
+      yandex_serverless_container.web.image[0].environment["YANDEX_LOGIN_CLIENT_ID"] == "yandex-client-test" &&
+      !contains(keys(yandex_serverless_container.web.image[0].environment), "TELEGRAM_OIDC_CLIENT_ID") &&
+      length([
+        for secret in yandex_serverless_container.web.secrets : secret
+        if secret.key == "oidc-client-secret" && secret.environment_variable == "YANDEX_LOGIN_CLIENT_SECRET"
+      ]) == 1
+    )
+    error_message = "Yandex selection must not require or inject Telegram client configuration and must bind the selected secret from Lockbox."
+  }
+  assert {
+    condition = (
+      contains(keys(local.api_paths), "/auth/login/start") &&
+      contains(keys(local.api_paths), "/auth/login/callback") &&
+      !contains(keys(local.api_paths), "/{proxy+}")
+    )
+    error_message = "The generic login routes must use the explicit gateway allowlist."
+  }
+}
+
+run "reject_missing_yandex_login_client" {
+  command = plan
+  module { source = "../modules/web" }
+  variables {
+    folder_id                           = "folder-test"
+    name_prefix                         = "sessionless-test"
+    base_domain                         = "sessionless.example.com"
+    dns_zone_id                         = "dns-test"
+    service_account_id                  = "web-test"
+    gateway_service_account_id          = "gateway-test"
+    registry_cleaner_service_account_id = "cleaner-test"
+    source_sha                          = "0000000000000000000000000000000000000000"
+    image_ref                           = "cr.yandex/crptestregistry/web-bff@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ydb_connection_string               = "grpc://example.invalid/local"
+    artifact_bucket_name                = "test-artifacts"
+    scheduler_wake_queue_url            = "https://example.invalid/queue"
+    web_secret_id                       = "web-secret-test"
+    web_secret_version_id               = "web-version-test"
+    scheduler_ymq_secret_id             = "scheduler-secret-test"
+    scheduler_ymq_secret_version_id     = "scheduler-version-test"
+    log_group_id                        = "logs-test"
+    deletion_protection                 = true
+    login_provider                      = "yandex"
+  }
+  expect_failures = [var.yandex_login_client_id]
+}
+
+run "reject_unknown_login_provider" {
+  command = plan
+  module { source = "../modules/web" }
+  variables {
+    folder_id                           = "folder-test"
+    name_prefix                         = "sessionless-test"
+    base_domain                         = "sessionless.example.com"
+    dns_zone_id                         = "dns-test"
+    service_account_id                  = "web-test"
+    gateway_service_account_id          = "gateway-test"
+    registry_cleaner_service_account_id = "cleaner-test"
+    source_sha                          = "0000000000000000000000000000000000000000"
+    image_ref                           = "cr.yandex/crptestregistry/web-bff@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ydb_connection_string               = "grpc://example.invalid/local"
+    artifact_bucket_name                = "test-artifacts"
+    scheduler_wake_queue_url            = "https://example.invalid/queue"
+    web_secret_id                       = "web-secret-test"
+    web_secret_version_id               = "web-version-test"
+    scheduler_ymq_secret_id             = "scheduler-secret-test"
+    scheduler_ymq_secret_version_id     = "scheduler-version-test"
+    log_group_id                        = "logs-test"
+    deletion_protection                 = true
+    login_provider                      = "unknown"
+  }
+  expect_failures = [var.login_provider]
+}
+
 run "web_deployment_plan" {
   command = plan
 

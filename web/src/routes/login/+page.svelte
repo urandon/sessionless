@@ -7,7 +7,7 @@
     page.url.searchParams.get('auth_error') === 'temporarily_unavailable',
   );
   const returnTo = $derived(safeReturnTo(page.url.searchParams.get('return_to')));
-  const authStart = $derived(`/auth/telegram/start?return_to=${encodeURIComponent(returnTo)}`);
+  const authStart = $derived(`/auth/login/start?return_to=${encodeURIComponent(returnTo)}`);
 
   function safeReturnTo(candidate: string | null): string {
     if (
@@ -34,10 +34,11 @@
 <section class="narrow panel" aria-labelledby="login-title">
   {#if accessDenied}
     <p class="eyebrow">Access unavailable</p>
-    <h1 id="login-title">This Telegram account has no Sessionless workspace yet</h1>
+    <h1 id="login-title">No workspace access for this account</h1>
     <p>
-      Initialize your workspace through the Sessionless Telegram bot, then return here and sign in
-      again. Signing in never creates tenant access by itself.
+      Sign-in could not authorize workspace access. If you need access, ask your workspace operator
+      for an invitation or account bootstrap, then return here and sign in again. Signing in never
+      creates tenant access by itself.
     </p>
   {:else if temporarilyUnavailable}
     <p class="eyebrow">Temporarily unavailable</p>
@@ -47,12 +48,12 @@
     <p class="eyebrow">Welcome back</p>
     <h1 id="login-title">Sign in to Sessionless</h1>
     <p>
-      Telegram verifies your identity. Workspace access still comes from Sessionless membership.
+      Your sign-in provider verifies identity. Workspace access comes from Sessionless membership.
     </p>
   {/if}
   <div class="actions">
     <!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- Go BFF auth route -->
-    <a class="button primary" href={authStart}>Continue with Telegram</a>
+    <a class="button primary" href={authStart}>Continue to sign in</a>
     <a class="button" href={resolve('/')}>Back to sessions</a>
   </div>
 </section>

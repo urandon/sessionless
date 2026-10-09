@@ -1,13 +1,14 @@
-# Web BFF and Telegram OIDC
+# Web BFF and provider-scoped login
 
 ## Boundary
 
-`web-bff` is a same-origin Go backend-for-frontend. Telegram proves ownership
-of an external identity; it does not grant tenant access. Every authenticated
+`web-bff` is a same-origin Go backend-for-frontend. The selected Yandex OAuth or
+legacy Telegram OIDC adapter proves an external identity; it does not grant
+tenant access. Every authenticated
 request is authorized against a current Sessionless tenant membership stored in
 YDB. Browser-provided tenant IDs are selectors only.
 
-The browser receives opaque first-party session and CSRF cookies. Telegram
+The browser receives opaque first-party session and CSRF cookies. Provider
 tokens, authorization codes, PKCE verifiers, OIDC nonces, and client secrets are
 never returned to browser JavaScript or written to logs.
 
@@ -16,18 +17,20 @@ sequenceDiagram
     participant Browser
     participant BFF as Web BFF
     participant YDB
-    participant Telegram as Telegram OIDC
+    participant Yandex as Yandex ID OAuth
 
-    Browser->>BFF: GET /auth/telegram/start
-    BFF->>YDB: Store one-time state, nonce and PKCE challenge
+    Browser->>BFF: GET /auth/login/start
+    BFF->>YDB: Store one-time browser/provider/client-bound PKCE challenge
     BFF-->>Browser: Secure browser-binding cookie + 303
-    Browser->>Telegram: Authorization Code + PKCE request
-    Telegram-->>Browser: callback with code and state
-    Browser->>BFF: GET /auth/telegram/callback
+    Browser->>Yandex: Authorization Code + S256 PKCE request
+    Yandex-->>Browser: callback with code and state
+    Browser->>BFF: GET /auth/login/callback
     BFF->>YDB: Consume challenge exactly once
-    BFF->>Telegram: Exchange code with client authentication + verifier
-    Telegram-->>BFF: RS256 ID token
-    BFF->>BFF: Verify signature, issuer, audience, nonce and time claims
+    BFF->>Yandex: Exchange code with private client authentication + verifier
+    Yandex-->>BFF: Transient access token
+    BFF->>Yandex: GET account JSON with OAuth authorization header
+    Yandex-->>BFF: Account id and application client_id
+    BFF->>BFF: Verify exact client_id and canonical numeric id
     BFF->>YDB: Resolve identity and list active memberships
     BFF->>YDB: Create revocable first-party session
     BFF-->>Browser: __Host-sessionless + CSRF cookies
@@ -38,8 +41,9 @@ sequenceDiagram
 | Method | Route | Purpose |
 | --- | --- | --- |
 | `GET` | `/healthz`, `/readyz`, `/version` | Process health and build metadata |
-| `GET` | `/auth/telegram/start` | Create a one-time login challenge and redirect to Telegram |
-| `GET` | `/auth/telegram/callback` | Consume the challenge, verify Telegram OIDC, and create a Web session |
+| `GET` | `/auth/login/start` | Create a one-time login challenge for the deployment-selected provider |
+| `GET` | `/auth/login/callback` | Consume the challenge, verify the selected identity, and create a membership-authorized Web session |
+| `GET` | `/auth/telegram/start`, `/auth/telegram/callback` | Legacy aliases mounted only when Telegram is selected; existing Telegram callback registration is preserved |
 | `POST` | `/auth/logout` | Revoke the current Web session |
 | `GET` | `/api/web/v1/me` | Return the current identity and active tenant |
 | `GET` | `/api/web/v1/tenants` | Return the caller's active memberships |
@@ -91,7 +95,7 @@ confirmation digest, and an idempotency key. Durable receipts report local
 state while remote acknowledgement and remote erasure remain `unknown`; no
 browser button is enabled by this backend slice.
 
-Any failed OIDC callback, including provider denial or missing enrollment,
+Any failed login callback, including provider denial or missing enrollment,
 redirects to the stable same-origin `/login?auth_error=access_denied` recovery
 route and creates no Web session. Provider error names and descriptions are
 never reflected into the URL or response body. Membership is created only by
@@ -105,7 +109,9 @@ audit-storage detail is reflected to the browser.
 
 ## Telegram provider configuration
 
-The implementation follows Telegram's OIDC Authorization Code flow with PKCE
+This compatibility path remains the default when `WEB_LOGIN_PROVIDER` is empty
+or `telegram`; the MVP independently selects `yandex`. The implementation
+follows Telegram's OIDC Authorization Code flow with PKCE
 `S256`. The production defaults are:
 
 - issuer `https://oauth.telegram.org`;
@@ -122,6 +128,28 @@ accepted only for loopback addresses in the local environment.
 
 Source: [Telegram Login: OIDC integration](https://core.telegram.org/bots/telegram-login).
 
+## Yandex provider configuration
+
+`WEB_LOGIN_PROVIDER=yandex` selects Authorization Code OAuth with S256 PKCE.
+Register exactly `WEB_BASE_URL` plus `/auth/login/callback` and request only
+`login:info`. The pinned defaults are `https://oauth.yandex.ru/authorize`,
+`https://oauth.yandex.ru/token` and `https://login.yandex.ru/info?format=json`.
+The BFF privately authenticates its client for code exchange, retrieves account
+JSON with the access token in the `Authorization: OAuth` header, and requires
+the returned `client_id` to equal the configured application. Only the canonical
+numeric account `id` becomes the `(yandex, id)` identity; email, login, display
+name and the application-scoped `psuid` do not select a Sessionless user.
+Access/refresh tokens are discarded after the callback and never persisted.
+
+This path is not OIDC: it does not assume an ID token, JWKS or nonce. Its
+single-use browser challenge is bound to Yandex and the configured application,
+so a challenge issued for another provider/client cannot complete this login.
+Missing selected credentials fail startup; there is no Telegram fallback.
+Endpoint overrides are restricted to explicit loopback fixtures in `local`.
+
+Sources: Yandex ID [code exchange](https://yandex.ru/dev/id/doc/ru/codes/code-url)
+and [account information](https://yandex.ru/dev/id/doc/ru/user-information).
+
 ## Runtime configuration and secrets
 
 | Variable | Meaning |
@@ -131,6 +159,10 @@ Source: [Telegram Login: OIDC integration](https://core.telegram.org/bots/telegr
 | `WEB_PORT` | BFF listen port |
 | `PORT` | Serverless platform listen port; takes precedence over `WEB_PORT` when set |
 | `WEB_OBJECT_STORAGE_ORIGIN` | Exact browser-facing capability origin; required with the Web API, HTTPS except loopback HTTP in `local` |
+| `WEB_LOGIN_PROVIDER` | `yandex` for the independent MVP path; empty or `telegram` preserves existing deployments |
+| `YANDEX_LOGIN_CLIENT_ID` | Registered Yandex application client ID, required when selected |
+| `YANDEX_LOGIN_CLIENT_SECRET` | Private Yandex client secret, required when selected |
+| `YANDEX_LOGIN_AUTHORIZATION_ENDPOINT`, `YANDEX_LOGIN_TOKEN_ENDPOINT`, `YANDEX_LOGIN_INFO_ENDPOINT` | Optional local-loopback fixture overrides; public endpoints are pinned by default |
 | `TELEGRAM_OIDC_ISSUER` | Expected ID-token issuer |
 | `TELEGRAM_OIDC_AUTHORIZATION_ENDPOINT` | Telegram authorization endpoint |
 | `TELEGRAM_OIDC_TOKEN_ENDPOINT` | Server-side token endpoint |
@@ -152,6 +184,10 @@ Source: [Telegram Login: OIDC integration](https://core.telegram.org/bots/telegr
 The client secret must be injected into the process environment from an OS
 secret store locally and Lockbox in Yandex Cloud. It must not be present in
 Terraform state, container arguments, images, DSNs, repository files, or logs.
+The existing Lockbox key `oidc-client-secret` remains a generic storage key for
+the selected login secret: it maps to the Yandex or Telegram environment variable
+according to the explicit deployment selector. This is not an OIDC assertion
+about Yandex. The secret loader and Terraform must use the same provider.
 
 `oidc-fake` is a Go-only local fixture. It uses the `OIDC_FIXTURE_*` variables,
 generates one ephemeral RSA key per process, supports one-time authorization
@@ -212,11 +248,11 @@ contract through the AWS SDK.
 
 | Table | Primary key | Hot-path access |
 | --- | --- | --- |
-| `external_identities` | `(shard_bucket, provider, subject)` | Point lookup from verified Telegram subject |
+| `external_identities` | `(shard_bucket, provider, subject)` | Point lookup from a verified provider-scoped account identity |
 | `external_identities_by_user` | `(user_bucket, user_id, provider, subject)` | Bounded reverse lookup |
 | `tenant_memberships` | `(user_bucket, user_id, tenant_id)` | Bounded user-prefix list or point membership check |
 | `tenant_invitations` | `(tenant_id, invitation_id)` | Point consume with TTL |
-| `oidc_login_challenges` | `(shard_bucket, state_digest)` | One-time point consume with TTL |
+| `oidc_login_challenges` | `(shard_bucket, state_digest)` | One-time browser/provider/client-bound challenge consume with TTL; legacy table name retained for OAuth too |
 | `web_sessions` | `(shard_bucket, session_digest)` | Point authorize, rotate, and revoke with TTL |
 | `web_security_audit_events` | `(shard_bucket, occurred_at, request_id)` | Durable login-failure and CSRF-rejection audit without requiring a resolved tenant |
 | `development_bootstrap_grants` | `(tenant_id, user_id)` | Exact idempotency ledger for cloud-dev grants |
@@ -233,12 +269,18 @@ Telegram ingestion atomically materializes the same external-identity mapping
 and owner membership used by the Web BFF. Therefore a user who already owns a
 Telegram tenant can sign in through OIDC without a separate data copy or a
 transport identifier becoming a product identity.
+Yandex sign-in does not reuse that Telegram mapping merely because subject
+strings or emails match. A new Yandex identity requires its own invitation or
+audited bootstrap membership. Late linking two authenticated login methods to
+one user is [post-MVP #172](https://gitcode.com/urandon/sessionless/issues/172),
+not implicit inheritance and not a pilot release gate.
 
 ## Audited cloud-development bootstrap
 
 Bootstrap is deliberately unavailable in production and never accepts secret
-or authority-bearing command-line arguments. The external identity must already
-exist. Set the target and operator metadata in the environment, then type the
+or authority-bearing command-line arguments. In the original mode, the external
+identity must already exist. Set the target and operator metadata in the
+environment, then type the
 exact confirmation requested on standard input:
 
 ```sh
@@ -256,10 +298,22 @@ The command requires `BOOTSTRAP <user> INTO <tenant>` exactly. A successful
 grant creates or verifies one membership and appends an audit event. Repeating
 the exact grant is idempotent; changed role, operator, or reason is a conflict.
 
+For explicit first-identity provisioning before the pilot's first sign-in, also
+set `WEB_BOOTSTRAP_EXTERNAL_PROVIDER=yandex` and
+`WEB_BOOTSTRAP_EXTERNAL_SUBJECT` to the operator-verified numeric Yandex account
+`id`, not an email or username. Both optional variables are required together.
+The confirmation is then exactly
+`BOOTSTRAP <user> INTO <tenant> FOR yandex:<id>`. The existing identity resolver,
+membership and audit commit in one transaction. A subject mapped to another
+user or a target user with any different external identity is rejected without
+a partial grant. This does not implement privileged account linking. Leave
+both optional variables empty to retain the existing-identity mode.
+
 ## Verification
 
 Credential-free unit tests cover the complete local authorization-code flow,
-PKCE, one-time code use, RS256 verification, membership denial, secure cookie
+PKCE, one-time code use, Telegram RS256 verification, Yandex account/client
+verification, membership denial, secure cookie
 attributes, CSRF rejection, tenant rotation, old-session rejection, and logout.
 YDB integration tests prove exactly one winner for concurrent challenge
 consumption, stable external-identity resolution, tenant isolation, membership
@@ -271,7 +325,18 @@ Run the repository-supported checks:
 make test
 make build
 make ydb-integration
+make web-auth-ydb-gate
 ```
+
+`web-auth-ydb-gate` requires an already migrated test YDB and repeats
+`TestYandexLoginYDBFreshIdentityMembershipIsolationReplayAndRevocation` and
+`TestYandexBootstrapYDBAtomicFirstIdentityAndNoLink` with `-race -count=3
+-shuffle=on` and a five-minute suite bound. It covers production YDB identity,
+challenge, membership and session adapters against test-owned OAuth endpoints;
+CI uses a fresh YDB fixture. Documented test coverage is not evidence that a
+particular revision passed: record exact-head results before merge. A real
+registered callback and deployed-platform reachability remain #34/#35 cloud
+proof, not a claim made by synthetic tests.
 
 Login failures and CSRF rejections are synchronously persisted to
 `web_security_audit_events`; a failed audit write fails the request with

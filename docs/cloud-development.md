@@ -7,6 +7,9 @@ for the Yandex-only control plane. The environment is intentionally separate
 from the permanent Terraform-state bootstrap root. GitCode is the source
 repository; its GitHub push mirror builds verified immutable images on hosted
 runners and publishes them to Yandex Container Registry.
+WebUI is the MVP launch frontend. Its selected independent login is Yandex ID
+OAuth; client registration and real deployed callback proof remain explicit
+rollout steps, not consequences of a green Terraform plan or fixture test.
 
 ## Runtime topology
 
@@ -129,7 +132,7 @@ only Object Storage](https://yandex.cloud/en/docs/iam/concepts/authorization/eph
 and the Terraform provider can [write generated static-key material directly to
 Lockbox](https://yandex.cloud/en/docs/terraform/resources/iam_service_account_static_access_key).
 
-Never put IAM tokens, access keys, Telegram secrets, or subscription
+Never put IAM tokens, access keys, login client secrets, Telegram secrets, or subscription
 credentials into Terraform variables, plans, shell history, or repository
 files. The wrapper reads the provisioning key from Lockbox into the Terraform
 provider process environment only. The writer-only runtime YMQ key is mounted
@@ -339,27 +342,45 @@ export TELEGRAM_IDENTITY_HMAC_KEY='loaded by credential-store command'
 unset TELEGRAM_BOT_TOKEN TELEGRAM_WEBHOOK_SECRET TELEGRAM_IDENTITY_HMAC_KEY
 ```
 
-Copy the returned version ID into the external tfvars file. Load the Web-only
-OIDC and signing material into its separate Lockbox secret. The OIDC client ID
+Copy the returned version ID into the external tfvars file. Telegram transport
+secret loading above is only needed for a separately enabled Telegram path; it
+does not register or authorize WebUI login. Load the Web-only selected login
+secret and signing material into its separate Lockbox secret. The login client ID
 is non-secret configuration; the client secret and both HMAC keys never enter
 Terraform:
 
 ```sh
 export WEB_BFF_SECRET_ID="$(./scripts/cloud-terraform.sh output -raw web_bff_secret_id)"
-export TELEGRAM_OIDC_CLIENT_SECRET='loaded by credential-store command'
+export WEB_LOGIN_PROVIDER=yandex
+export YANDEX_LOGIN_CLIENT_SECRET='loaded by credential-store command'
 export SESSION_API_CURSOR_HMAC_KEY='loaded by credential-store command'
 export SESSION_API_ID_HMAC_KEY='loaded by credential-store command'
 ./scripts/cloud-web-secret-load.sh
-unset TELEGRAM_OIDC_CLIENT_SECRET SESSION_API_CURSOR_HMAC_KEY SESSION_API_ID_HMAC_KEY
+unset YANDEX_LOGIN_CLIENT_SECRET SESSION_API_CURSOR_HMAC_KEY SESSION_API_ID_HMAC_KEY
+unset WEB_LOGIN_PROVIDER
 ```
 
-Copy only the returned Web secret version ID into the external tfvars file. In
-BotFather, register the exact allowed Web URL
-`https://web.dev.sessionless.triborg.dev` and exact callback
-`https://web.dev.sessionless.triborg.dev/auth/telegram/callback`. Wildcards,
-HTTP aliases and direct container URLs are not allowed.
+Copy only the returned Web secret version ID into the external tfvars file. Set
+`web_login_provider = "yandex"` and the non-secret `yandex_login_client_id` to
+the registered Yandex ID application. Register its exact callback
+`https://web.dev.sessionless.triborg.dev/auth/login/callback` and the `login:info`
+permission. This is Authorization Code OAuth with S256 PKCE plus verified
+account JSON (`id` and exact `client_id`), not Yandex OIDC/JWKS/ID-token handling.
+See [Yandex login development](development.md#yandex-id-login).
 
-After both secret versions are recorded, configure the GitHub mirror with
+The loader and deployment selectors must agree. The historical Lockbox key
+`oidc-client-secret` contains the selected secret and maps to
+`YANDEX_LOGIN_CLIENT_SECRET` for Yandex. Existing deployments remain Telegram
+by default: for that compatibility path use `WEB_LOGIN_PROVIDER=telegram` and
+`TELEGRAM_OIDC_CLIENT_SECRET` when loading, Terraform
+`web_login_provider = "telegram"` with `telegram_oidc_client_id`, and the
+existing BotFather registration for
+`https://web.dev.sessionless.triborg.dev/auth/telegram/callback`. Wildcards,
+HTTP aliases and direct container URLs are not allowed for either provider.
+Provider login alone grants no tenant membership; use a validated invitation or
+the [audited cloud-dev bootstrap](web-bff.md#audited-cloud-development-bootstrap).
+
+After required secret versions are recorded, configure the GitHub mirror with
 Terraform's non-secret outputs:
 
 ```sh
@@ -572,9 +593,15 @@ queues, or other state-bearing resources.
 
 The [WebUI-first MVP plan](mvp-delivery-plan.md) does not require the Telegram
 messaging edge or Cloudflare runtime deployment. The commands here are the
-implemented smoke, not complete browser/product proof. Current login and this
-smoke still target Telegram OIDC; #168/#34 must update and verify them for the
-selected independent issuer before #35's release proof.
+implemented smoke, not complete browser/product proof. The BFF now supports
+the selected Yandex OAuth path, but `cloud-web-smoke.sh` still tests the legacy
+Telegram start route/redirect. Use that script only for a Telegram-selected
+deployment until #34 adapts its assertion to the explicit selector; it cannot
+validate a Yandex login and is not a reason to switch the pilot back to Telegram.
+#34/#35 must verify the registered Yandex callback, runtime connectivity to
+`oauth.yandex.ru` and `login.yandex.ru`, active membership/session creation and
+re-login/denial behavior before accepting the independent login's cloud proof.
+Yandex Cloud console availability is not evidence for those endpoints.
 
 ```sh
 export CLOUD_API_URL="$(./scripts/cloud-terraform.sh output -raw api_url)"
@@ -586,6 +613,7 @@ export WEB_CONTAINER_URL="$(./scripts/cloud-terraform.sh output -raw web_contain
 export WEB_IMAGE_REF="$(./scripts/cloud-terraform.sh output -raw web_image_ref)"
 export WEB_PREPARED_INSTANCES="$(./scripts/cloud-terraform.sh output -raw web_prepared_instances)"
 export WEB_CONCURRENCY="$(./scripts/cloud-terraform.sh output -raw web_concurrency)"
+# Legacy Telegram-selected smoke only; #34 owns selected-Yandex cloud proof.
 ./scripts/cloud-web-smoke.sh
 ```
 
@@ -623,7 +651,8 @@ unset CONFIRM_EXTERNAL_TELEGRAM_EDGE
 The Web smoke proves anonymous direct invocation is denied, authenticated
 private health works, the managed hostname and certificate are usable, the
 public version is `web-bff`, auth/API cache policy and browser security headers
-survive the gateway, Telegram is the only OIDC redirect target, and unrelated
+survive the gateway, the legacy Telegram deployment redirects only to its
+pinned OIDC target, and unrelated
 mutation routes are not exposed. For an explicit cold-start exercise, set
 `WEB_COLD_START_WAIT_SECONDS` to the approved idle window before running the
 same script and record the printed first-byte latency without publishing auth
@@ -727,8 +756,9 @@ The Web BFF has no blue/green slots. Retain the previous digest-only Web tfvars
 file, create a saved plan that changes only `web_image_ref` back to that
 known-good digest, review it, and apply it under the same deployment lock. Do
 not use an entire old image manifest because that would also roll back control
-and worker components. Repeat `cloud-web-smoke.sh`, including the real OIDC
-login, after rollback; re-promotion is another reviewed saved plan and never a
+and worker components. Repeat the selected-provider smoke and a real login
+after rollback (`cloud-web-smoke.sh` remains Telegram-only until adapted under
+#34); re-promotion is another reviewed saved plan and never a
 rebuild.
 
 ## Follow-up monitoring and operational checks (#19)

@@ -297,6 +297,31 @@ func (store *Store) Enroll(ctx context.Context, request ports.EnrollmentRequest)
 func (store *Store) BootstrapDevelopmentMembership(
 	ctx context.Context,
 	grant domain.DevelopmentBootstrapGrant,
+) (domain.TenantMembership, error) {
+	return store.bootstrapDevelopmentMembership(ctx, grant, nil)
+}
+
+// BootstrapDevelopmentMembershipForSubject provisions a first login identity
+// under an explicit operator grant. It never links a second identity to a user.
+// Mapping, grant and membership commit together, including on retry.
+func (store *Store) BootstrapDevelopmentMembershipForSubject(
+	ctx context.Context,
+	grant domain.DevelopmentBootstrapGrant,
+	subject domain.ExternalSubject,
+) (domain.TenantMembership, error) {
+	if subject.Provider != domain.IdentityProviderYandex && subject.Provider != domain.IdentityProviderTelegram {
+		return domain.TenantMembership{}, domain.ErrMembershipDenied
+	}
+	if err := subject.Validate(); err != nil {
+		return domain.TenantMembership{}, err
+	}
+	return store.bootstrapDevelopmentMembership(ctx, grant, &subject)
+}
+
+func (store *Store) bootstrapDevelopmentMembership(
+	ctx context.Context,
+	grant domain.DevelopmentBootstrapGrant,
+	subject *domain.ExternalSubject,
 ) (result domain.TenantMembership, err error) {
 	if err := grant.Validate(); err != nil {
 		return result, err
@@ -318,6 +343,38 @@ func (store *Store) BootstrapDevelopmentMembership(
 		userBucket, err := webBucket(string(grant.UserID))
 		if err != nil {
 			return err
+		}
+		if subject != nil {
+			rows, err := tx.QueryContext(ctx,
+				`SELECT provider, subject FROM external_identities_by_user
+				 WHERE user_bucket = $1 AND user_id = $2
+				 ORDER BY provider, subject LIMIT 2`, userBucket, grant.UserID)
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var provider, externalSubject string
+				if err := rows.Scan(&provider, &externalSubject); err != nil {
+					return err
+				}
+				if provider != string(subject.Provider) || externalSubject != subject.Subject {
+					return domain.ErrMembershipDenied
+				}
+			}
+			if err := rows.Err(); err != nil {
+				return err
+			}
+			if err := rows.Close(); err != nil {
+				return err
+			}
+			identity, _, err := resolveOrCreateExternalIdentityTx(ctx, tx, *subject, grant.UserID, grant.GrantedAt)
+			if err != nil {
+				return err
+			}
+			if identity.UserID != grant.UserID {
+				return domain.ErrMembershipDenied
+			}
 		}
 		var provider string
 		if err := tx.QueryRowContext(ctx,

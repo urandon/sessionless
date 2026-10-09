@@ -34,6 +34,17 @@ require_literal "$web_module" 'SESSIONLESS_ENVIRONMENT     = "cloud-dev"'
 require_literal "$web_module" 'key                  = "oidc-client-secret"'
 require_literal "$web_module" 'key                  = "session-cursor-hmac-key"'
 require_literal "$web_module" 'key                  = "session-id-hmac-key"'
+require_literal "$web_module" 'WEB_LOGIN_PROVIDER          = var.login_provider'
+require_literal "$web_module" 'YANDEX_LOGIN_CLIENT_ID = var.yandex_login_client_id'
+require_literal "$web_module" 'environment_variable = local.login_secret_environment'
+require_literal "$web_module" 'var.login_provider == "yandex" ? "YANDEX_LOGIN_CLIENT_SECRET" : "TELEGRAM_OIDC_CLIENT_SECRET"'
+require_literal "$web_module" '"/auth/login/start"'
+require_literal "$web_module" '"/auth/login/callback"'
+require_literal "$web_module" '"/auth/telegram/callback"'
+require_literal "$web_variables" 'contains(["telegram", "yandex"], var.login_provider)'
+require_literal "$web_variables" 'var.login_provider != "yandex" ||'
+require_regex "$cloud_root" 'login_provider[[:space:]]*=[[:space:]]*var\.web_login_provider'
+require_regex "$cloud_root" 'yandex_login_client_id[[:space:]]*=[[:space:]]*var\.yandex_login_client_id'
 require_literal "$web_variables" '^cr\\.yandex/[^/]+/web-bff@sha256:[0-9a-f]{64}$'
 require_literal "$web_variables" 'var.concurrency >= 1 && var.concurrency <= 8'
 require_regex "$cloud_root" 'service_account_id[[:space:]]*=[[:space:]]*module\.foundation\.service_account_ids\["web-bff"\]'
@@ -50,7 +61,7 @@ if grep -Fq '{proxy+}' "$web_module"; then
   printf '%s\n' 'Web gateway must use the explicit route allowlist, not a catch-all proxy' >&2
   exit 1
 fi
-if grep -R -E 'variable "(telegram_oidc_client_secret|session_api_cursor_hmac_key|session_api_id_hmac_key)"' \
+if grep -R -E 'variable "(telegram_oidc_client_secret|yandex_login_client_secret|session_api_cursor_hmac_key|session_api_id_hmac_key)"' \
   "$repo_root/infra/terraform" >/dev/null; then
   printf '%s\n' 'secret payloads must not be Terraform variables' >&2
   exit 1

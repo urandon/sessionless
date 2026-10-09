@@ -1,4 +1,13 @@
 locals {
+  login_client_environment = var.login_provider == "yandex" ? {
+    YANDEX_LOGIN_CLIENT_ID = var.yandex_login_client_id
+  } : {
+    TELEGRAM_OIDC_CLIENT_ID = var.telegram_oidc_client_id
+  }
+  login_secret_environment = var.login_provider == "yandex" ? "YANDEX_LOGIN_CLIENT_SECRET" : "TELEGRAM_OIDC_CLIENT_SECRET"
+}
+
+locals {
   fqdn                  = "web.dev.${trimsuffix(var.base_domain, ".")}"
   origin                = "https://${local.fqdn}"
   object_storage_origin = "https://${var.artifact_bucket_name}.storage.yandexcloud.net"
@@ -19,6 +28,8 @@ locals {
     "/healthz"                  = { get = { operationId = "webHealth", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
     "/readyz"                   = { get = { operationId = "webReady", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
     "/version"                  = { get = { operationId = "webVersion", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
+    "/auth/login/start"         = { get = { operationId = "webLoginStart", responses = local.redirect_response, "x-yc-apigateway-integration" = local.gateway_integration } }
+    "/auth/login/callback"      = { get = { operationId = "webLoginCallback", responses = local.redirect_response, "x-yc-apigateway-integration" = local.gateway_integration } }
     "/auth/telegram/start"      = { get = { operationId = "webOIDCStart", responses = local.redirect_response, "x-yc-apigateway-integration" = local.gateway_integration } }
     "/auth/telegram/callback"   = { get = { operationId = "webOIDCCallback", responses = local.redirect_response, "x-yc-apigateway-integration" = local.gateway_integration } }
     "/auth/logout"              = { post = { operationId = "webLogout", responses = local.ok_response, "x-yc-apigateway-integration" = local.gateway_integration } }
@@ -83,13 +94,13 @@ resource "yandex_serverless_container" "web" {
   provision_policy { min_instances = 0 }
   image {
     url = var.image_ref
-    environment = {
+    environment = merge({
       SESSIONLESS_ENVIRONMENT     = "cloud-dev"
       WEB_BASE_URL                = local.origin
       WEB_OBJECT_STORAGE_ORIGIN   = local.object_storage_origin
       WEB_MAX_UPLOAD_BYTES        = tostring(var.max_upload_bytes)
       WEB_ALLOWED_MCP_SERVERS     = join(",", var.allowed_mcp_servers)
-      TELEGRAM_OIDC_CLIENT_ID     = var.telegram_oidc_client_id
+      WEB_LOGIN_PROVIDER          = var.login_provider
       YDB_CONNECTION_STRING       = var.ydb_connection_string
       YDB_METADATA_CREDENTIALS    = "1"
       S3_ENDPOINT                 = "https://storage.yandexcloud.net"
@@ -101,7 +112,7 @@ resource "yandex_serverless_container" "web" {
       QUEUE_REGION                = "ru-central1"
       SCHEDULER_WAKE_QUEUE_URL    = var.scheduler_wake_queue_url
       DEPLOYMENT_IMAGE            = var.image_ref
-    }
+    }, local.login_client_environment)
   }
   metadata_options {
     aws_v1_http_endpoint = 1
@@ -111,7 +122,7 @@ resource "yandex_serverless_container" "web" {
     id                   = var.web_secret_id
     version_id           = var.web_secret_version_id
     key                  = "oidc-client-secret"
-    environment_variable = "TELEGRAM_OIDC_CLIENT_SECRET"
+    environment_variable = local.login_secret_environment
   }
   secrets {
     id                   = var.web_secret_id

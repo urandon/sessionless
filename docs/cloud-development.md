@@ -593,11 +593,16 @@ queues, or other state-bearing resources.
 
 The [WebUI-first MVP plan](mvp-delivery-plan.md) does not require the Telegram
 messaging edge or Cloudflare runtime deployment. The commands here are the
-implemented smoke, not complete browser/product proof. The BFF now supports
-the selected Yandex OAuth path, but `cloud-web-smoke.sh` still tests the legacy
-Telegram start route/redirect. Use that script only for a Telegram-selected
-deployment until #34 adapts its assertion to the explicit selector; it cannot
-validate a Yandex login and is not a reason to switch the pilot back to Telegram.
+implemented smoke, not complete browser/product proof. `make cloud-web-smoke`
+requires explicit `WEB_LOGIN_PROVIDER` and the selected non-secret client ID
+before making requests. It checks the neutral `/auth/login/start` response:
+HTTP 303, pinned provider authority/path, exact client/callback, scopes, state
+and S256 PKCE. Only legacy Telegram selection requires an OIDC nonce. It never
+follows the provider redirect or prints code/state/cookie-bearing headers.
+The script uses Node.js standard-library parsing, curl and `yc`; no additional
+package installation is needed. Its credential-free fixtures run with
+`make cloud-web-smoke-test` and are included in the repository CI contract.
+These fixtures do not contact cloud services or identity providers.
 #34/#35 must verify the registered Yandex callback, runtime connectivity to
 `oauth.yandex.ru` and `login.yandex.ru`, active membership/session creation and
 re-login/denial behavior before accepting the independent login's cloud proof.
@@ -613,9 +618,27 @@ export WEB_CONTAINER_URL="$(./scripts/cloud-terraform.sh output -raw web_contain
 export WEB_IMAGE_REF="$(./scripts/cloud-terraform.sh output -raw web_image_ref)"
 export WEB_PREPARED_INSTANCES="$(./scripts/cloud-terraform.sh output -raw web_prepared_instances)"
 export WEB_CONCURRENCY="$(./scripts/cloud-terraform.sh output -raw web_concurrency)"
-# Legacy Telegram-selected smoke only; #34 owns selected-Yandex cloud proof.
-./scripts/cloud-web-smoke.sh
+export WEB_LOGIN_PROVIDER=yandex
+# Use the same non-secret registered client ID as yandex_login_client_id in the
+# approved deployment config, not a client secret or an account ID.
+export YANDEX_LOGIN_CLIENT_ID='registered-client-id'
+make cloud-web-smoke
 ```
+
+For an existing Telegram-selected deployment, explicitly set
+`WEB_LOGIN_PROVIDER=telegram` and `TELEGRAM_OIDC_CLIENT_ID` instead. Its expected
+callback remains `/auth/telegram/callback`; Yandex uses `/auth/login/callback`.
+Do not add provider client secrets to the smoke environment. The read-only
+invocation obtains a short-lived operator IAM token through `yc`, keeps it only
+in a private curl config, and cleans the private temporary directory on success
+or failure. Run the live command only under #34's approved rollout authority;
+the fake test command is safe without cloud credentials.
+
+Passing this smoke proves private invocation, managed HTTPS/security headers,
+the selected login-start contract and route/cost configuration checks. It does
+not exchange an authorization code, create a logged-in session, establish
+membership, measure token/account endpoint connectivity or prove a cold start
+unless the separately approved idle-wait measurement was actually run.
 
 ### Optional post-MVP Telegram edge deployment
 
@@ -757,9 +780,9 @@ file, create a saved plan that changes only `web_image_ref` back to that
 known-good digest, review it, and apply it under the same deployment lock. Do
 not use an entire old image manifest because that would also roll back control
 and worker components. Repeat the selected-provider smoke and a real login
-after rollback (`cloud-web-smoke.sh` remains Telegram-only until adapted under
-#34); re-promotion is another reviewed saved plan and never a
-rebuild.
+after rollback with the same explicit provider/client configuration via
+`make cloud-web-smoke`; re-promotion is another reviewed saved plan and never
+a rebuild. A login-start redirect alone is not rollback proof for a real account.
 
 ## Follow-up monitoring and operational checks (#19)
 

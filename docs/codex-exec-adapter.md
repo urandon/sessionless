@@ -138,6 +138,52 @@ cancel means cancellation won while the attempt was active and is reflected in
 the returned process observation; once finish wins, later cancellation reports
 not-active instead of a false acknowledgement.
 
+## Shared prepared execution owner — 2026-10-09
+
+The local preparation for [#133](https://gitcode.com/urandon/sessionless/issues/133)
+adds `attachedworkerdaemon.NewPreparedInvocationRunner`. It configures a
+`PreparedProcessRunner` inside the existing `InvocationRunner`, not another
+credential owner. Both the ordinary and prepared modes use the same
+Issue → Materialize → execute → WriteBack → Release implementation and bounded
+finalization contexts. The returned handle must match the complete admitted
+resource binding, including revision, as well as owner/run/attempt/worker/lease
+and credential generation. A mismatch retires acquired authority before any
+executor call.
+
+The executor receives `PreparedInvocationV1`: identity, cloned credential-bound
+process metadata, and already-issued provider-neutral credential/materialization
+projections. It gets no lifecycle port and returns only actual `AttemptResult`
+and error; credential release/generation/finalization evidence is assigned by
+the outer runner. Borrowed stdin is cleared when the prepared call returns.
+This private input is excluded from JSON and formatted without scope, paths,
+prompt or credential details. Prepared mode requires credentials explicitly and
+denies credentialless input; it has no fallback to the ordinary process runner.
+
+The offline joined test feeds those once-prepared projections into the existing
+Codex `Driver.Execute` using a fake process boundary. It verifies one lifecycle
+sequence and one process call, semantic summary/checkpoint reduction, ambiguous
+protocol failure without retry, and finalization failure overriding driver
+success. The fake supplies process cleanup observations separately: successful
+driver reduction alone is never proof that a supervisor/isolation boundary was
+actually cleaned up. This joined test does not exercise the concrete
+`NewPreparedAttachedWorkerDriverV1` constructor or a real Codex process; existing
+runtime tests above own that constructor's fake-executable proof.
+
+Run `make attached-worker-prepared-invocation-test` for both complete package
+race suites and 20 shuffled focused repetitions. These tests need no network,
+provider, YDB, model, credential bytes or new downloaded dependency.
+
+No shipped stack or foreground constructor selects the prepared executor.
+It is not an invocation replay latch: the existing accepted-attempt owner and
+one-shot prepared Codex process boundary retain that authority. Remaining #133
+work must preserve typed accepted job/binding/context after proof verification,
+privately stage `context/history.jsonl`, and join bounded semantic output with
+actual process observations into a receipt candidate only after credential
+finalization. Do not recover authority from the synthetic stdin envelope,
+expose `Stack`'s raw supervisor, or wrap another lifecycle around this runner.
+Normal provider materialization, runtime activation and OCI egress remain
+disabled; this library seam is not real-provider rollout or completion of #133.
+
 ## Why production remains disabled
 
 The package is not wired into any binary. Its local `Enabled` field is only a

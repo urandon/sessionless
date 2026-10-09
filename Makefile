@@ -52,6 +52,7 @@ help:
 		'make attached-worker-build build the native attached-worker without WebUI tooling' \
 		'make attached-worker-package-test run focused package and CLI race/shuffle tests' \
 		'make attached-worker-receipt-session-test verify offline session-bound receipt lifecycle' \
+		'make attached-worker-prepared-invocation-test verify single-owner prepared execution lifecycle' \
 		'make attached-worker-crash-integration run opt-in exact-binary crash/reconnect fixture' \
 		'make attached-worker-active-crash-integration run test-binary active-crash fencing fixture' \
 		'make attached-worker-security-gate run the two-owner and recovery race gate' \
@@ -206,6 +207,11 @@ attached-worker-receipt-session-test: prepare
 	go test -race -count=1 ./internal/attachedworkersealedinput ./internal/attachedworkerreceipt
 	go test -race -count=20 -shuffle=on -run '^(TestReceiptSession.*|TestOrdinarySessionSourceStillDeniesReceiptChannel)$$' ./internal/attachedworkersealedinput
 	go test -race -count=1 -tags=ydbintegration -run '^TestTestProviderExchangeCloseRevokesBothBearers$$' ./internal/attachedworkersealedinput
+
+.PHONY: attached-worker-prepared-invocation-test
+attached-worker-prepared-invocation-test: prepare
+	go test -race -count=1 ./internal/attachedworkerdaemon ./internal/codexexec
+	go test -race -count=20 -shuffle=on -run '^TestPrepared' ./internal/attachedworkerdaemon ./internal/codexexec
 
 attached-worker-crash-integration: attached-worker-build
 	SESSIONLESS_ATTACHED_WORKER_BINARY="$(CURDIR)/$(BIN_DIR)/attached-worker" \

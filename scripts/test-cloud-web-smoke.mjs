@@ -91,3 +91,56 @@ test('validator does not expose malformed auth input or excessive stdin',()=>{
     const r=spawnSync(process.execPath,[check,'login'],{env:{...process.env,...environment('yandex')},input,encoding:'utf8',timeout:3000,maxBuffer:65536});assert.equal(r.status,1);assert.equal(r.stdout,'');assert.equal(r.stderr,'cloud Web smoke validation failed\n');
   }
 });
+
+const rootSecurityFields = [
+  ['X-Content-Type-Options','nosniff'], ['Referrer-Policy','strict-origin-when-cross-origin'],
+  ['Cache-Control','no-store'], ['Content-Security-Policy',"default-src 'self'; frame-ancestors 'none'"],
+];
+const rootWithHSTS = (policies, extra=[]) => headers(200,[
+  ...policies.map(value=>['Strict-Transport-Security',value]), ...rootSecurityFields, ...extra,
+]);
+function checkRoot(input) {
+  const r=spawnSync(process.execPath,[check,'root'],{env:{...process.env,...environment('yandex')},input,encoding:'utf8',timeout:3000,maxBuffer:65536});
+  assert.equal(r.error,undefined);assert.equal(r.stdout,'');
+  assert.equal(r.stderr,r.status===0?'':'cloud Web smoke validation failed\n','invalid headers must never be reflected');
+  return r.status;
+}
+const appHSTS = 'max-age=31536000; includeSubDomains';
+const gatewayHSTS = 'max-age=31536000; includeSubdomains; preload';
+for(const [name,policies] of [
+  ['singleton',[appHSTS]], ['exact managed wire fields',[appHSTS,gatewayHSTS]],
+  ['reversed managed fields',[gatewayHSTS,appHSTS]],
+  ['longer max-age',['max-age=63072000; includeSubDomains']],
+  ['case and whitespace',['\tPRELOAD ; IncludeSubDomains ; MAX-AGE = 31536000\t']],
+])test(`HSTS accepts ${name}`,()=>{assert.equal(checkRoot(rootWithHSTS(policies)),0)});
+for(const [name,policies] of [
+  ['missing',[]], ['empty',['']], ['weak',['max-age=31535999; includeSubDomains']],
+  ['weak first field',['max-age=0; includeSubDomains',appHSTS]],
+  ['weak later field',[appHSTS,'max-age=0; includeSubDomains']],
+  ['missing includeSubDomains',['max-age=31536000; preload']],
+  ['missing max-age',['includeSubDomains; preload']],
+  ['comma combined',[`${appHSTS}, ${gatewayHSTS}`]],
+  ['comma in later field',[appHSTS,`${appHSTS}, ${gatewayHSTS}`]],
+  ['duplicate max-age',['max-age=31536000; MAX-AGE=31536000; includeSubDomains']],
+  ['conflicting max-age',['max-age=31536000; max-age=0; includeSubDomains']],
+  ['duplicate includeSubDomains',['max-age=31536000; includeSubDomains; INCLUDESUBDOMAINS']],
+  ['duplicate preload',['max-age=31536000; includeSubDomains; preload; PRELOAD']],
+  ['negative max-age',['max-age=-31536000; includeSubDomains']],
+  ['fractional max-age',['max-age=31536000.5; includeSubDomains']],
+  ['exponent max-age',['max-age=3.1536e7; includeSubDomains']],
+  ['quoted max-age',['max-age="31536000"; includeSubDomains']],
+  ['empty directive',['max-age=31536000;; includeSubDomains']],
+  ['valued includeSubDomains',['max-age=31536000; includeSubDomains=true']],
+  ['valued preload',['max-age=31536000; includeSubDomains; preload=true']],
+  ['unknown directive',[`${appHSTS}; HSTS_LEAK_MARKER`]],
+  ['malformed later field',[appHSTS,'HSTS_LEAK_MARKER']],
+])test(`HSTS rejects ${name}`,()=>{assert.equal(checkRoot(rootWithHSTS(policies)),1)});
+for(const [name,value] of rootSecurityFields)test(`root keeps singleton ${name}`,()=>{
+  assert.equal(checkRoot(rootWithHSTS([appHSTS,gatewayHSTS],[[name.toLowerCase(),value]])),1);
+});
+test('managed separate HSTS smoke succeeds and cleans owned files',t=>{
+  const r=run(t,'yandex',f=>{f.root=rootWithHSTS([appHSTS,gatewayHSTS])});
+  assert.equal(r.status,0,r.stderr);
+  const rootCall=r.calls.find(c=>c.client==='curl'&&c.argv.at(-1)===web+'/');
+  assert.ok(rootCall.argv.includes('Accept: text/html'),'root probe must request HTML navigation');
+});

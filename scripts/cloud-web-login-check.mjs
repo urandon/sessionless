@@ -33,7 +33,27 @@ function headers(text) {
     const match = /^([!#$%&'*+.^_`|~0-9A-Za-z-]+):[ \t]*([^\r\n]*)$/.exec(line); requireTrue(match !== null);
     const key = match[1].toLowerCase(), values = fields.get(key) || []; values.push(match[2]); fields.set(key, values);
   }
-  return { status, get(key) { const v = fields.get(key); requireTrue(v?.length === 1); return v[0]; } };
+  return {
+    status,
+    get(key) { const v = fields.get(key); requireTrue(v?.length === 1); return v[0]; },
+    checkHSTS() {
+      const policies = fields.get('strict-transport-security'); requireTrue(policies?.length > 0);
+      // RFC 6797 processes the first STS field. Require every wire field to be
+      // independently strong; a comma-combined value is not an STS policy.
+      for (const policy of policies) {
+        requireTrue(!policy.includes(',')); const seen = new Set();
+        for (const raw of policy.split(';')) {
+          const directive = raw.replace(/^[ \t]+|[ \t]+$/g, '');
+          const age = /^max-age[ \t]*=[ \t]*([0-9]+)$/i.exec(directive);
+          const name = age ? 'max-age' : directive.toLowerCase();
+          requireTrue(!seen.has(name)); seen.add(name);
+          if (age) requireTrue(BigInt(age[1]) >= 31536000n);
+          else requireTrue(name === 'includesubdomains' || name === 'preload');
+        }
+        requireTrue(seen.has('max-age') && seen.has('includesubdomains'));
+      }
+    },
+  };
 }
 function login(text, selected) {
   const h = headers(text); requireTrue(h.status === 303 && h.get('cache-control') === 'no-store');
@@ -51,7 +71,7 @@ try {
   switch (process.argv[2]) {
     case 'config': break;
     case 'login': login(stdin(), selected); break;
-    case 'root': { const h = headers(stdin()); requireTrue(h.status === 200 && h.get('strict-transport-security') === 'max-age=31536000; includeSubDomains' && h.get('x-content-type-options') === 'nosniff' && h.get('referrer-policy') === 'strict-origin-when-cross-origin' && h.get('cache-control') === 'no-store'); requireTrue(h.get('content-security-policy').split(';').map(s => s.trim()).includes("frame-ancestors 'none'")); break; }
+    case 'root': { const h = headers(stdin()); h.checkHSTS(); requireTrue(h.status === 200 && h.get('x-content-type-options') === 'nosniff' && h.get('referrer-policy') === 'strict-origin-when-cross-origin' && h.get('cache-control') === 'no-store'); requireTrue(h.get('content-security-policy').split(';').map(s => s.trim()).includes("frame-ancestors 'none'")); break; }
     case 'me': { const h = headers(stdin()); requireTrue(h.status === 401 && h.get('cache-control') === 'no-store'); break; }
     case 'version': requireTrue(JSON.parse(stdin()).component === 'web-bff'); break;
     case 'iam-config': { const token = stdin().replace(/\n$/, ''); requireTrue(/^[A-Za-z0-9._~-]{1,8192}$/.test(token)); process.stdout.write(`header = "Authorization: Bearer ${token}"\nfail\n`); break; }

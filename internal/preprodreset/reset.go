@@ -39,11 +39,47 @@ type ProviderCredentialResetGuard interface {
 	AssertProviderCredentialsDrained(context.Context) error
 }
 
-type SQLProviderCredentialResetGuard struct{ DB *sql.DB }
+type SQLProviderCredentialResetGuard struct {
+	DB *sql.DB
+	// TableInventory, when supplied, must return a successful, complete native
+	// scheme inventory of the same open YDB connection's exact database root.
+	// Only authoritative absence of all five tables admits a legacy baseline.
+	// SQL or inventory errors are never interpreted as absence.
+	TableInventory func(context.Context) ([]string, error)
+}
 
 func (guard SQLProviderCredentialResetGuard) AssertProviderCredentialsDrained(ctx context.Context) error {
 	if guard.DB == nil {
 		return fmt.Errorf("provider credential reset guard requires YDB")
+	}
+	if guard.TableInventory != nil {
+		tables, err := guard.TableInventory(ctx)
+		if err != nil {
+			return fmt.Errorf("verify provider credential table inventory: %w", err)
+		}
+		present := make(map[string]bool, len(tables))
+		for _, table := range tables {
+			present[table] = true
+		}
+		credentialTables := []string{
+			"provider_credential_cleanup_ready_v1",
+			"provider_credential_cleanups",
+			"provider_credential_candidate_fences",
+			"provider_credential_bindings",
+			"provider_credential_audit_events",
+		}
+		found := 0
+		for _, table := range credentialTables {
+			if present[table] {
+				found++
+			}
+		}
+		if found == 0 {
+			return nil
+		}
+		if found != len(credentialTables) {
+			return fmt.Errorf("provider credential reset requires a complete credential schema or an authoritative pre-credential baseline")
+		}
 	}
 	for _, table := range []string{"provider_credential_cleanup_ready_v1", "provider_credential_cleanups", "provider_credential_candidate_fences", "provider_credential_bindings"} {
 		var count uint64

@@ -42,15 +42,20 @@ type Config struct {
 	Random              io.Reader
 	MaxEnrollmentTTL    time.Duration
 	EnrollmentRetention time.Duration
+	// RequireAdvancingRotationTime is used by native onboarding, whose local
+	// manifest commit requires a strictly newer timestamp. Legacy AW-01 callers
+	// retain their existing default behavior.
+	RequireAdvancingRotationTime bool
 }
 
 type Service struct {
-	clock     ports.Clock
-	ids       ports.IDGenerator
-	random    io.Reader
-	maxTTL    time.Duration
-	retention time.Duration
-	store     ports.AttachedWorkerStore
+	clock              ports.Clock
+	ids                ports.IDGenerator
+	random             io.Reader
+	maxTTL             time.Duration
+	retention          time.Duration
+	store              ports.AttachedWorkerStore
+	strictRotationTime bool
 }
 
 func New(config Config, store ports.AttachedWorkerStore) (*Service, error) {
@@ -66,6 +71,7 @@ func New(config Config, store ports.AttachedWorkerStore) (*Service, error) {
 	return &Service{
 		clock: config.Clock, ids: config.IDs, random: config.Random,
 		maxTTL: config.MaxEnrollmentTTL, retention: config.EnrollmentRetention, store: store,
+		strictRotationTime: config.RequireAdvancingRotationTime,
 	}, nil
 }
 
@@ -116,6 +122,20 @@ func (service *Service) CreateEnrollment(
 	ownerUserID domain.UserID,
 	request CreateEnrollmentRequest,
 ) (EnrollmentGrant, error) {
+	grant, err := service.PrepareEnrollment(ctx, tenantID, ownerUserID, request)
+	if err != nil {
+		return EnrollmentGrant{}, err
+	}
+	if err := service.PersistEnrollment(ctx, grant); err != nil {
+		return EnrollmentGrant{}, err
+	}
+	return grant, nil
+}
+
+// PrepareEnrollment generates one transient grant without mutating server state.
+// A privileged caller durably retains it before PersistEnrollment, allowing an
+// ambiguous persistence response to retry the same IDs and secret.
+func (service *Service) PrepareEnrollment(ctx context.Context, tenantID domain.TenantID, ownerUserID domain.UserID, request CreateEnrollmentRequest) (EnrollmentGrant, error) {
 	now := canonicalPersistenceTime(service.clock.Now())
 	if err := validateOwnerScope(tenantID, ownerUserID); err != nil {
 		return EnrollmentGrant{}, err
@@ -150,18 +170,32 @@ func (service *Service) CreateEnrollment(
 	if err := enrollment.Validate(); err != nil {
 		return EnrollmentGrant{}, err
 	}
+	return EnrollmentGrant{Enrollment: enrollment, Secret: secret}, nil
+}
+
+// PersistEnrollment accepts only the exact prepared, unused grant. It never
+// generates replacement authority and never sends the raw secret to persistence.
+func (service *Service) PersistEnrollment(ctx context.Context, grant EnrollmentGrant) error {
+	enrollment := grant.Enrollment
+	now := canonicalPersistenceTime(service.clock.Now())
+	if enrollment.Validate() != nil || enrollment.Revision != 1 || !enrollment.ConsumedAt.IsZero() ||
+		!equalDigest(grant.Secret.Digest(), enrollment.BootstrapDigest) || enrollment.CreatedAt.After(now) ||
+		!enrollment.ExpiresAt.After(now) || enrollment.ExpiresAt.Sub(enrollment.CreatedAt) > service.maxTTL ||
+		!enrollment.RetainUntil.Equal(canonicalPersistenceTime(enrollment.ExpiresAt.Add(service.retention))) {
+		return ErrEnrollmentDenied
+	}
 	audit := domain.AttachedWorkerAuditEvent{
 		Version:  domain.AttachedWorkerAuditEventVersionV1,
-		TenantID: tenantID, OwnerUserID: ownerUserID, WorkerID: workerID, EnrollmentID: enrollmentID,
-		Action: domain.AttachedWorkerAuditEnrollmentCreated, OccurredAt: now,
+		TenantID: enrollment.TenantID, OwnerUserID: enrollment.OwnerUserID, WorkerID: enrollment.WorkerID, EnrollmentID: enrollment.ID,
+		Action: domain.AttachedWorkerAuditEnrollmentCreated, OccurredAt: enrollment.CreatedAt,
 	}
 	if err := audit.Validate(); err != nil {
-		return EnrollmentGrant{}, ErrBackend
+		return ErrBackend
 	}
 	if err := service.store.CreateAttachedWorkerEnrollment(ctx, enrollment, audit); err != nil {
-		return EnrollmentGrant{}, ErrBackend
+		return ErrBackend
 	}
-	return EnrollmentGrant{Enrollment: enrollment, Secret: secret}, nil
+	return nil
 }
 
 type ClaimRequest struct {
@@ -465,6 +499,9 @@ func (service *Service) mutateWorker(
 		return domain.AttachedWorker{}, ErrWorkerConflict
 	}
 	now := canonicalPersistenceTime(service.clock.Now())
+	if action == domain.AttachedWorkerAuditIdentityRotated && service.strictRotationTime && !now.After(worker.UpdatedAt) {
+		return domain.AttachedWorker{}, ErrWorkerConflict
+	}
 	next := cloneWorker(worker)
 	if err := mutate(&next, now); err != nil {
 		return domain.AttachedWorker{}, err

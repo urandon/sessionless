@@ -983,6 +983,7 @@ func deleteSessionRowsTx(ctx context.Context, tx *stateTx, sessionID domain.Sess
 			`DELETE FROM telegram_deliveries_by_run WHERE tenant_id = $1 AND run_id = $2`,
 			`DELETE FROM checkpoint_objects_by_run WHERE tenant_id = $1 AND run_id = $2`,
 			`DELETE FROM run_finalizations WHERE tenant_id = $1 AND run_id = $2`,
+			`DELETE FROM run_explanation_heads_v1 WHERE tenant_id = $1 AND run_id = $2`,
 			`DELETE FROM worker_jobs WHERE tenant_id = $1 AND run_id = $2`,
 			`DELETE FROM runs WHERE tenant_id = $1 AND run_id = $2`,
 		} {

@@ -10,6 +10,15 @@ one migration would make crash recovery ambiguous.
 
 ## Baseline freeze
 
+Migration `00102` adds the bounded, non-authoritative `run_explanation_heads_v1`
+read projection (design 0.1.2, #187). Apply its additive schema only under
+separate migration authority, then upgrade every canonical writer before
+enabling a consumer. No HTTP route is mounted by #187; historical missing
+locators remain unknown, with no backfill. Rollback disables consumers and
+preserves this table/canonical state. Session deletion removes its exact
+tenant/run row even while the route is disabled. No destructive down migration
+or production apply is authorized by this change.
+
 Before the first production deployment, the migration baseline may be rebased
 in a reviewed change. Local, CI, and the current pre-production `cloud-dev`
 database contain disposable development data and must be recreated from the

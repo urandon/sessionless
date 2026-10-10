@@ -262,6 +262,7 @@ var applicationTables = []string{
 	"runs_by_session",
 	"run_idempotency",
 	"run_finalizations",
+	"run_explanation_heads_v1",
 	"runs",
 	"artifact_manifests",
 	"telegram_updates",

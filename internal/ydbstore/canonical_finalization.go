@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/runexplanation"
 	"gitcode.com/urandon/sessionless/internal/ydbpartition"
 )
 
@@ -143,6 +144,7 @@ func appendCanonicalFinalizationTx(
 	digest string,
 	drafts []domain.SessionEventDraft,
 	at time.Time,
+	sourceNotice *runexplanation.NoticeInput,
 ) error {
 	if len(drafts) == 0 {
 		return domain.ValidationError{Field: "worker_finalization.events", Reason: "must not be empty for a canonical run"}
@@ -178,6 +180,14 @@ func appendCanonicalFinalizationTx(
 		return err
 	}
 	previous := session
+	terminal := run
+	terminal.Status, terminal.UpdatedAt = status, at
+	if status.Terminal() {
+		terminal.FinishedAt = &at
+	}
+	var notice *runexplanation.NoticeInput
+	var noticeID domain.SessionEventID
+	var noticeSequence uint64
 	for _, draft := range drafts {
 		eventAt := draft.CreatedAt
 		if eventAt.Before(session.UpdatedAt) {
@@ -194,6 +204,9 @@ func appendCanonicalFinalizationTx(
 		}
 		if err := insertSessionEventTx(ctx, tx, event); err != nil {
 			return err
+		}
+		if canonicalNoticeMatchesDraft(sourceNotice, draft) {
+			notice, noticeID, noticeSequence = sourceNotice, event.ID, event.Sequence
 		}
 		if draft.ProjectionEligible() {
 			for _, binding := range bindings {
@@ -212,10 +225,8 @@ func appendCanonicalFinalizationTx(
 			displayText = draft.DisplayText
 		}
 	}
-	terminal := run
-	terminal.Status, terminal.UpdatedAt = status, at
-	if status.Terminal() {
-		terminal.FinishedAt = &at
+	if err := recordTerminalExplanationTx(ctx, tx, terminal, notice, noticeID, noticeSequence, at); err != nil {
+		return err
 	}
 	if err := updateSessionDisplayMessageTx(ctx, tx, session, displayText, nil, &terminal); err != nil {
 		return err

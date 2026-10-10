@@ -118,6 +118,7 @@ and link to it.
 Draft detailed contracts:
 
 - [Conversation execution evidence (#182, draft)](design/conversation-execution-evidence.md)
+- [Eligible compute choice contract (#142, draft)](design/eligible-compute-choice.md)
 
 The [research index](research/README.md) separates evidence and open decisions
 from committed runtime contracts. It covers:

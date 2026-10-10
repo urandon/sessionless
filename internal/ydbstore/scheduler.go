@@ -198,7 +198,10 @@ func (store *Store) AdmitDispatch(
 				result.Admitted = true
 				result.State = slot.State
 				result.Code = "already_admitted"
-				return recordAdmissionExplanationTx(ctx, tx, run, attempt, outbox.ExecutionPlacementV2, result.Code, request.Now)
+				// Exact reservation/job replay observes the existing canonical
+				// decision, not a new admission. Preserve its original projection
+				// fingerprint/time/revision; historical missing heads stay unknown.
+				return nil
 			}
 		}
 

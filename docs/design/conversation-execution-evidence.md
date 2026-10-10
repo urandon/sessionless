@@ -339,6 +339,11 @@ read-only behavior and SDK commit retries (14-statement successful short retry;
 all eleven data query plans, authorization changes after BFF preauthorization,
 read-only participation/no activity refresh, reason supersession/replay,
 historical/mismatched selectors and finalize/read then delete/read snapshots.
+Fixture-only native connector barriers hold the serializable reader open after
+an exact canonical/auth query while finalization, deletion or membership mutation
+commits; successful reads must match an entire committed snapshot, not merely
+validate. Exact successful-admission replay preserves the complete head record
+and revision, including when the replay request carries a later observation time.
 An explicit sentinel-aborted central Run write proves canonical phase and
 projection record/revision roll back together, preserving the committed reason.
 Test execution receipts and exact-head CI are recorded in the implementation

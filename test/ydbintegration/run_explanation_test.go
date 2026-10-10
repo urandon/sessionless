@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"os"
 	"reflect"
-	"sync"
 	"testing"
 	"time"
 
@@ -238,6 +237,41 @@ func TestRunExplanationYDBReasonSupersessionReplayReadmissionAndInvalidation(t *
 	}
 }
 
+func TestRunExplanationYDBSuccessfulAdmissionReplayPreservesExactHead(t *testing.T) {
+	f := newExplanationYDBFixture(t)
+	request := f.admission
+	if result, err := f.store.AdmitDispatch(f.ctx, request); err != nil || !result.Admitted || result.Code != "admitted" {
+		t.Fatalf("initial admission=%+v error=%v", result, err)
+	}
+	before := readExplanationYDB(t, f)
+	if before.Admission.ReasonCode != runexplanation.ReasonAdmitted {
+		t.Fatalf("initial admission explanation=%+v", before.Admission)
+	}
+	readHead := func() (uint64, string) {
+		t.Helper()
+		var revision uint64
+		var record string
+		if err := f.client.DB.QueryRowContext(f.ctx, `SELECT revision,CAST(record AS String) FROM run_explanation_heads_v1 WHERE tenant_id=$1 AND run_id=$2`, f.auth.TenantID, f.ingress.Run.ID).Scan(&revision, &record); err != nil {
+			t.Fatal(err)
+		}
+		return revision, record
+	}
+	revisionBefore, recordBefore := readHead()
+	for _, replayAt := range []time.Time{request.Now, request.Now.Add(time.Second)} {
+		request.Now = replayAt
+		if result, err := f.store.AdmitDispatch(f.ctx, request); err != nil || !result.Admitted || result.Code != "already_admitted" {
+			t.Fatalf("successful admission replay=%+v error=%v", result, err)
+		}
+		revisionAfter, recordAfter := readHead()
+		if revisionAfter != revisionBefore || recordAfter != recordBefore {
+			t.Fatalf("successful admission replay invented head observation: revision %d -> %d at %s", revisionBefore, revisionAfter, replayAt)
+		}
+		if after := readExplanationYDB(t, f); !reflect.DeepEqual(after.Admission, before.Admission) {
+			t.Fatalf("successful replay changed committed admission: before=%+v after=%+v", before.Admission, after.Admission)
+		}
+	}
+}
+
 func TestRunExplanationYDBCanonicalAndProjectionRollbackTogether(t *testing.T) {
 	f := newExplanationYDBFixture(t)
 	request := f.admission
@@ -435,6 +469,46 @@ func TestRunExplanationYDBSecurityVersionRecheckAndOpaqueTargets(t *testing.T) {
 	}
 }
 
+func TestRunExplanationYDBSecurityMutationDuringReaderTransaction(t *testing.T) {
+	f := newExplanationYDBFixture(t)
+	before := readExplanationYDB(t, f)
+	reader, barrier := explanationBarrierStore(t, f, "FROM tenant_memberships WHERE user_bucket=$1 AND user_id=$2 AND tenant_id=$3")
+	type readResult struct {
+		value webcontract.RunExplanationV1
+		err   error
+	}
+	read := make(chan readResult, 1)
+	go func() {
+		value, err := reader.ReadRunExplanationV1(f.ctx, f.auth, f.ingress.Run.ID)
+		read <- readResult{value: value, err: err}
+	}()
+	awaitExplanationReadBarrier(t, f, barrier)
+	membership := domain.TenantMembership{TenantID: f.auth.TenantID, UserID: f.auth.UserID, Role: domain.TenantMembershipOwner, Status: domain.TenantMembershipActive, SecurityVersion: 2, CreatedAt: f.web.IssuedAt, UpdatedAt: f.now}
+	encoded, err := json.Marshal(membership)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bucket, err := ydbpartition.BucketV1(string(f.auth.UserID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.client.DB.ExecContext(f.ctx, `UPDATE tenant_memberships SET record=CAST($1 AS JsonDocument) WHERE user_bucket=$2 AND user_id=$3 AND tenant_id=$4`, string(encoded), bucket, f.auth.UserID, f.auth.TenantID); err != nil {
+		t.Fatalf("change current authority while reader transaction is open: %v", err)
+	}
+	barrier.releaseReader()
+	raced := <-read
+	if raced.err == nil {
+		// A read serialized before the authority mutation must still be one
+		// complete old-authority snapshot, never an independently joined mix.
+		assertExplanationSnapshot(t, raced.value, before)
+	} else if !errors.Is(raced.err, domain.ErrMembershipVersionChanged) {
+		t.Fatalf("authority/read snapshot race: %v", raced.err)
+	}
+	if _, err := f.store.ReadRunExplanationV1(f.ctx, f.auth, f.ingress.Run.ID); !errors.Is(err, domain.ErrMembershipVersionChanged) {
+		t.Fatalf("post-mutation stale authority error=%v", err)
+	}
+}
+
 func TestRunExplanationYDBFinalizeReadDeleteSnapshotsAndExactEvent(t *testing.T) {
 	f := newExplanationYDBFixture(t)
 	if result, err := f.store.AdmitDispatch(f.ctx, f.admission); err != nil || !result.Admitted {
@@ -458,32 +532,33 @@ func TestRunExplanationYDBFinalizeReadDeleteSnapshotsAndExactEvent(t *testing.T)
 	notice.Payload.SHA256 = hex.EncodeToString(sum[:])
 	notice.Payload.Size = int64(len(encoded))
 	failure := ports.WorkerFailure{TenantID: f.auth.TenantID, RunID: f.ingress.Run.ID, AttemptID: f.ingress.Attempt.ID, ReservationID: f.admission.ReservationID, LeaseID: lease.ID, Fence: lease.FenceToken, At: at, Code: "harness_failed", Events: []domain.SessionEventDraft{notice}}
-	start := make(chan struct{})
-	var wait sync.WaitGroup
-	errs := make(chan error, 2)
-	wait.Add(2)
-	go func() { defer wait.Done(); <-start; errs <- f.store.FailWorkerJob(f.ctx, failure) }()
+	beforeFinalization := readExplanationYDB(t, f)
+	type readResult struct {
+		value webcontract.RunExplanationV1
+		err   error
+	}
+	reader, barrier := explanationBarrierStore(t, f, "FROM runs WHERE tenant_id=$1 AND run_id=$2")
+	read := make(chan readResult, 1)
 	go func() {
-		defer wait.Done()
-		<-start
-		value, err := f.store.ReadRunExplanationV1(f.ctx, f.auth, f.ingress.Run.ID)
-		if err == nil {
-			err = value.Validate()
-		}
-		errs <- err
+		value, err := reader.ReadRunExplanationV1(f.ctx, f.auth, f.ingress.Run.ID)
+		read <- readResult{value: value, err: err}
 	}()
-	close(start)
-	wait.Wait()
-	close(errs)
-	for err := range errs {
-		if err != nil {
-			t.Fatalf("finalize/read snapshot race: %v", err)
-		}
+	awaitExplanationReadBarrier(t, f, barrier)
+	// The reader has already read canonical Run inside its native transaction.
+	// Commit the owning finalizer before letting it read projection/Attempt.
+	if err := f.store.FailWorkerJob(f.ctx, failure); err != nil {
+		t.Fatalf("finalize while reader transaction is open: %v", err)
+	}
+	barrier.releaseReader()
+	raced := <-read
+	if raced.err != nil {
+		t.Fatalf("finalize/read snapshot race: %v", raced.err)
 	}
 	value := readExplanationYDB(t, f)
 	if value.Status != domain.RunFailed || value.Terminal.EventID != notice.ID || value.Terminal.EventSequence != 1 || value.Terminal.ReasonCode != runexplanation.ExecutionFailed {
 		t.Fatalf("exact allocated terminal metadata=%+v", value.Terminal)
 	}
+	assertExplanationSnapshot(t, raced.value, beforeFinalization, value)
 	if err := f.store.FailWorkerJob(f.ctx, failure); err != nil {
 		t.Fatalf("durable replay: %v", err)
 	}
@@ -502,33 +577,23 @@ func TestRunExplanationYDBFinalizeReadDeleteSnapshotsAndExactEvent(t *testing.T)
 	if _, err := f.store.StartSessionDeletion(f.ctx, f.auth.TenantID, deletion.SessionID, f.now); err != nil {
 		t.Fatal(err)
 	}
-	start = make(chan struct{})
-	errs = make(chan error, 2)
-	wait.Add(2)
+	beforeDeletion := readExplanationYDB(t, f)
+	reader, barrier = explanationBarrierStore(t, f, "FROM runs WHERE tenant_id=$1 AND run_id=$2")
+	read = make(chan readResult, 1)
 	go func() {
-		defer wait.Done()
-		<-start
-		_, err := f.store.CompleteSessionDeletion(f.ctx, f.auth.TenantID, deletion.SessionID, f.now, uint64(len(inventory.Objects)), inventory.TotalBytes)
-		errs <- err
+		value, err := reader.ReadRunExplanationV1(f.ctx, f.auth, f.ingress.Run.ID)
+		read <- readResult{value: value, err: err}
 	}()
-	go func() {
-		defer wait.Done()
-		<-start
-		value, err := f.store.ReadRunExplanationV1(f.ctx, f.auth, f.ingress.Run.ID)
-		if errors.Is(err, ports.ErrRunExplanationNotFound) {
-			err = nil
-		} else if err == nil {
-			err = value.Validate()
-		}
-		errs <- err
-	}()
-	close(start)
-	wait.Wait()
-	close(errs)
-	for err := range errs {
-		if err != nil {
-			t.Fatalf("delete/read snapshot race: %v", err)
-		}
+	awaitExplanationReadBarrier(t, f, barrier)
+	if _, err := f.store.CompleteSessionDeletion(f.ctx, f.auth.TenantID, deletion.SessionID, f.now, uint64(len(inventory.Objects)), inventory.TotalBytes); err != nil {
+		t.Fatalf("delete while reader transaction is open: %v", err)
+	}
+	barrier.releaseReader()
+	raced = <-read
+	if raced.err == nil {
+		assertExplanationSnapshot(t, raced.value, beforeDeletion)
+	} else if !errors.Is(raced.err, ports.ErrRunExplanationNotFound) {
+		t.Fatalf("delete/read snapshot race: %v", raced.err)
 	}
 	if _, err := f.store.ReadRunExplanationV1(f.ctx, f.auth, f.ingress.Run.ID); !errors.Is(err, ports.ErrRunExplanationNotFound) {
 		t.Fatalf("deleted Run read error=%v", err)
@@ -537,4 +602,21 @@ func TestRunExplanationYDBFinalizeReadDeleteSnapshotsAndExactEvent(t *testing.T)
 	if err := f.client.DB.QueryRowContext(f.ctx, `SELECT COUNT(*) FROM run_explanation_heads_v1 WHERE tenant_id=$1 AND run_id=$2`, f.auth.TenantID, f.ingress.Run.ID).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("orphan projection count=%d err=%v", count, err)
 	}
+}
+
+// ReadAt is the sole transaction-clock field; every canonical and derived
+// response field must match one entire committed snapshot, not merely Validate.
+func assertExplanationSnapshot(t *testing.T, actual webcontract.RunExplanationV1, allowed ...webcontract.RunExplanationV1) {
+	t.Helper()
+	if err := actual.Validate(); err != nil {
+		t.Fatalf("snapshot response invalid: %v", err)
+	}
+	actual.ReadAt = time.Time{}
+	for _, expected := range allowed {
+		expected.ReadAt = time.Time{}
+		if reflect.DeepEqual(actual, expected) {
+			return
+		}
+	}
+	t.Fatalf("resource response is not an entire allowed committed snapshot: %+v", actual)
 }

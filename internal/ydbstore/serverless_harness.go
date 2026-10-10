@@ -30,7 +30,19 @@ func (store *Store) ReserveAttemptEffect(ctx context.Context, request ports.Rese
 	if err := request.Validate(); err != nil {
 		return result, err
 	}
+	if store.attemptEffectGrantIssuer == nil {
+		return result, errors.New("attempt effect grant issuer is not configured")
+	}
+	// Do not mint process-local grants inside a retryable transaction callback.
+	// An unconfirmed commit must expose neither a grant nor a stale result from
+	// an earlier callback. Only the last successfully committed candidate wins.
+	var candidate struct {
+		status ports.AttemptEffectReservationStatusV1
+		record attemptEffectRecordV1
+		at     time.Time
+	}
 	err = store.Transact(ctx, request.TenantID, func(state ports.StateTx) error {
+		candidate.status, candidate.record, candidate.at = "", attemptEffectRecordV1{}, time.Time{}
 		tx := state.(*stateTx)
 		at, err := store.attachedWorkerTransactionTime(ctx, tx)
 		if err != nil {
@@ -47,15 +59,9 @@ func (store *Store) ReserveAttemptEffect(ctx context.Context, request ports.Rese
 			if !attemptEffectRequestMatchesRecord(request, existing) {
 				return domain.ValidationError{Field: "reserve_attempt_effect", Reason: "does not match the persisted attempt effect scope"}
 			}
-			observationGrant, err := store.mintAttemptEffectObservationGrant(existing, at)
-			if err != nil {
-				return err
-			}
-			result = ports.ReserveAttemptEffectResultV1{
-				Status: ports.AttemptEffectReconcileOnlyV1, Reservation: existing.Reservation.Clone(), ObservationGrant: &observationGrant,
-			}
+			candidate.status, candidate.record, candidate.at = ports.AttemptEffectReconcileOnlyV1, existing, at
 			if existing.Reservation.PhysicalInvocationClaimID != request.PhysicalInvocationClaimID {
-				return result.Validate()
+				return nil
 			}
 			current, authorized, err := currentServerlessInvocationAuthorityTx(ctx, tx, request, at)
 			if err != nil {
@@ -63,14 +69,10 @@ func (store *Store) ReserveAttemptEffect(ctx context.Context, request ports.Rese
 			}
 			currentDigest, digestErr := current.Digest()
 			if !authorized || digestErr != nil || currentDigest != existing.Reservation.InvocationAuthorityDigest {
-				return result.Validate()
+				return nil
 			}
-			grant, err := store.mintAttemptEffectGrant(current, existing.Reservation, at)
-			if err != nil {
-				return err
-			}
-			result.Status, result.Grant, result.ObservationGrant = ports.AttemptEffectReplayedV1, &grant, nil
-			return result.Validate()
+			candidate.status = ports.AttemptEffectReplayedV1
+			return nil
 		}
 		authority, authorized, err := currentServerlessInvocationAuthorityTx(ctx, tx, request, at)
 		if err != nil {
@@ -100,14 +102,30 @@ func (store *Store) ReserveAttemptEffect(ctx context.Context, request ports.Rese
 		); err != nil {
 			return err
 		}
-		grant, err := store.mintAttemptEffectGrant(authority, reservation, at)
-		if err != nil {
-			return err
-		}
-		result = ports.ReserveAttemptEffectResultV1{Status: ports.AttemptEffectOwnedV1, Reservation: reservation.Clone(), Grant: &grant}
-		return result.Validate()
+		candidate.status, candidate.record, candidate.at = ports.AttemptEffectOwnedV1, record, at
+		return nil
 	})
-	return result, err
+	if err != nil {
+		return ports.ReserveAttemptEffectResultV1{}, err
+	}
+	result = ports.ReserveAttemptEffectResultV1{Status: candidate.status, Reservation: candidate.record.Reservation.Clone()}
+	if candidate.status == ports.AttemptEffectReconcileOnlyV1 {
+		grant, mintErr := store.mintAttemptEffectObservationGrant(candidate.record, candidate.at)
+		if mintErr != nil {
+			return ports.ReserveAttemptEffectResultV1{}, mintErr
+		}
+		result.ObservationGrant = &grant
+	} else {
+		grant, mintErr := store.mintAttemptEffectGrant(candidate.record.Authority, candidate.record.Reservation, candidate.at)
+		if mintErr != nil {
+			return ports.ReserveAttemptEffectResultV1{}, mintErr
+		}
+		result.Grant = &grant
+	}
+	if err := result.Validate(); err != nil {
+		return ports.ReserveAttemptEffectResultV1{}, err
+	}
+	return result, nil
 }
 
 func currentServerlessInvocationAuthorityTx(ctx context.Context, tx *stateTx, request ports.ReserveAttemptEffectRequestV1, at time.Time) (domain.ServerlessInvocationAuthorityV1, bool, error) {

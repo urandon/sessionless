@@ -711,8 +711,12 @@ the actual serializable deployment backfill: earlier markers are insufficient,
 each dispatch/job/effect backlog denies the transition, dry-run writes no
 monetary receipt, and an empty-backlog commit records database time. A repeated
 backfill preserves that exact receipt even after new jobs exist. The test
-restores the exact prior schema-marker rows and removes only its random owned
-backlog fixtures; it never resets existing tenant data. It does not certify a
+refuses every source inventory traversed by that full backfill before changing
+schema state. It restores all six exact prior receipt rows, including the
+lifecycle-index receipt and original absence; the serving-marker fixture also
+restores both rows it touches. A nested cleanup regression verifies prior
+absence and timestamp. Only random owned backlog fixtures are removed; the
+gate never resets existing tenant data. It does not certify a
 real deployment or authorize old writers to remain active during cutover.
 
 `make partition-status` emits the live primary keys, partition settings, counts,

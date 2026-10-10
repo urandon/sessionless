@@ -106,17 +106,11 @@ func TestAdmissionCostV2ServingGateRequiresDistinctCommittedMarker(t *testing.T)
 	if err := client.DB.QueryRowContext(ctx, "SELECT CurrentUtcTimestamp()").Scan(&at); err != nil || at.IsZero() {
 		t.Fatalf("database cutover clock=%v error=%v", at, err)
 	}
-	// The schema is shared by sequential integration tests; restore the exact
-	// fixture marker even on failure. No parallel test mutates deployment gates.
-	t.Cleanup(func() {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cleanupCancel()
-		if _, err := client.DB.ExecContext(cleanupCtx,
-			`UPSERT INTO managed_execution_authority_v2_cutover_state (cutover_id,completed_at) VALUES ($1,$2)`,
-			ydbpartition.AdmissionCostV2CutoverID, at); err != nil {
-			t.Errorf("restore monetary successor fixture marker: %v", err)
-		}
-	})
+	// Both rows are shared schema state. Restore their exact prior values or
+	// absence, not a newly invented successful cutover after every test.
+	for _, id := range []string{ydbpartition.AdmissionCostV2CutoverID, "managed-execution-authority-v2-empty-cutover"} {
+		preserveAdmissionCostFixtureReceipt(t, ctx, client.DB, "managed_execution_authority_v2_cutover_state", "cutover_id", id)
+	}
 	if _, err := client.DB.ExecContext(ctx,
 		`DELETE FROM managed_execution_authority_v2_cutover_state WHERE cutover_id=$1`,
 		ydbpartition.AdmissionCostV2CutoverID); err != nil {

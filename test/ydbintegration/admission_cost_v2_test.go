@@ -31,6 +31,20 @@ func TestAdmissionCostV2YDBCutover(t *testing.T) {
 		}
 		return at.UTC()
 	}
+	// The full entry point can backfill these sources too. Refuse unrelated
+	// inventory before replacing any receipt; this is a disposable DB proof.
+	for _, table := range []string{
+		"dispatch_outbox", "worker_jobs", "attempt_effect_reservations",
+		"lease_expiry", "dispatch_ready", "telegram_delivery_ready", "quota_expiry",
+		"artifact_manifests", "frontend_bindings", "frontend_projection_outbox",
+		"telegram_delivery_outbox", "checkpoints",
+	} {
+		var tenant string
+		if err := db.QueryRowContext(ctx, "SELECT tenant_id FROM "+table+" LIMIT 1").Scan(&tenant); !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("disposable empty %s precondition: tenant=%q error=%v; no existing data will be removed", table, tenant, err)
+		}
+	}
+	preserveAdmissionCostFixtureReceipt(t, ctx, db, "session_lifecycle_backfill_state", "backfill_id", "session-lifecycle-indexes-v1")
 	markers := []struct{ table, id string }{
 		{"execution_placement_cutover_state", "execution-placement-v1-empty-cutover"},
 		{"harness_binding_cutover_state", "harness-binding-v1-empty-cutover"},
@@ -39,39 +53,13 @@ func TestAdmissionCostV2YDBCutover(t *testing.T) {
 		{"managed_execution_authority_v2_cutover_state", ydbpartition.AdmissionCostV2CutoverID},
 	}
 	for _, marker := range markers {
-		var previous time.Time
-		err := db.QueryRowContext(ctx, "SELECT completed_at FROM "+marker.table+" WHERE cutover_id=$1", marker.id).Scan(&previous)
-		found := err == nil
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			t.Fatalf("read original receipt %s: %v", marker.id, err)
-		}
-		// Register before the first mutation. Each cleanup restores only its
-		// exact original row, including original absence, under a fresh bound.
-		t.Cleanup(func() {
-			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cleanupCancel()
-			var err error
-			if found {
-				_, err = db.ExecContext(cleanupCtx, "UPSERT INTO "+marker.table+" (cutover_id,completed_at) VALUES ($1,$2)", marker.id, previous)
-			} else {
-				_, err = db.ExecContext(cleanupCtx, "DELETE FROM "+marker.table+" WHERE cutover_id=$1", marker.id)
-			}
-			if err != nil {
-				t.Errorf("restore exact receipt %s: %v", marker.id, err)
-			}
-		})
+		preserveAdmissionCostFixtureReceipt(t, ctx, db, marker.table, "cutover_id", marker.id)
 		if marker.id == ydbpartition.AdmissionCostV2CutoverID {
 			if _, err := db.ExecContext(ctx, "DELETE FROM "+marker.table+" WHERE cutover_id=$1", marker.id); err != nil {
 				t.Fatal(err)
 			}
 		} else if _, err := db.ExecContext(ctx, "UPSERT INTO "+marker.table+" (cutover_id,completed_at) VALUES ($1,$2)", marker.id, clock()); err != nil {
 			t.Fatal(err)
-		}
-	}
-	for _, table := range []string{"dispatch_outbox", "worker_jobs", "attempt_effect_reservations"} {
-		var tenant string
-		if err := db.QueryRowContext(ctx, "SELECT tenant_id FROM "+table+" LIMIT 1").Scan(&tenant); !errors.Is(err, sql.ErrNoRows) {
-			t.Fatalf("disposable empty %s precondition: tenant=%q error=%v; no existing data will be removed", table, tenant, err)
 		}
 	}
 	assertMissing := func(t *testing.T) {
@@ -163,4 +151,93 @@ func TestAdmissionCostV2YDBCutover(t *testing.T) {
 			t.Fatalf("immutable committed receipt=%v repeat=%v error=%v", receipt, repeated, err)
 		}
 	})
+}
+
+// Only compile-time fixture table/key constants may reach this helper. Register
+// before mutation; cleanup restores exact timestamp or absence, never an
+// invented deployment receipt. It runs before the enclosing DB cleanup.
+func preserveAdmissionCostFixtureReceipt(t *testing.T, ctx context.Context, db *sql.DB, table, key, id string) {
+	t.Helper()
+	var previous time.Time
+	err := db.QueryRowContext(ctx, "SELECT completed_at FROM "+table+" WHERE "+key+"=$1", id).Scan(&previous)
+	found := err == nil
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("read original receipt %s/%s: %v", table, id, err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		var err error
+		if found {
+			_, err = db.ExecContext(cleanupCtx, "UPSERT INTO "+table+" ("+key+",completed_at) VALUES ($1,$2)", id, previous)
+		} else {
+			_, err = db.ExecContext(cleanupCtx, "DELETE FROM "+table+" WHERE "+key+"=$1", id)
+		}
+		if err != nil {
+			t.Errorf("restore exact receipt %s/%s: %v", table, id, err)
+		}
+	})
+}
+
+// The deployment entry point also writes the lifecycle index receipt. The
+// cutover fixture must leave it exactly as it was, including prior absence.
+func TestAdmissionCostV2YDBCutoverRestoresLifecycleReceipt(t *testing.T) {
+	requireExplanationTrueTransactions(t)
+	_, client := openStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	t.Cleanup(cancel)
+	const id = "session-lifecycle-indexes-v1"
+	const read = `SELECT completed_at FROM session_lifecycle_backfill_state WHERE backfill_id=$1`
+	const remove = `DELETE FROM session_lifecycle_backfill_state WHERE backfill_id=$1`
+	const put = `UPSERT INTO session_lifecycle_backfill_state (backfill_id,completed_at) VALUES ($1,$2)`
+	var original time.Time
+	err := client.DB.QueryRowContext(ctx, read, id).Scan(&original)
+	originalFound := err == nil
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		var err error
+		if originalFound {
+			_, err = client.DB.ExecContext(cleanupCtx, put, id, original)
+		} else {
+			_, err = client.DB.ExecContext(cleanupCtx, remove, id)
+		}
+		if err != nil {
+			t.Errorf("restore outer lifecycle receipt: %v", err)
+		}
+	})
+	for _, found := range []bool{false, true} {
+		name := "original_absence"
+		if found {
+			name = "original_timestamp"
+		}
+		t.Run(name, func(t *testing.T) {
+			var before time.Time
+			if found {
+				if err := client.DB.QueryRowContext(ctx, `SELECT CurrentUtcTimestamp()`).Scan(&before); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := client.DB.ExecContext(ctx, put, id, before); err != nil {
+					t.Fatal(err)
+				}
+			} else if _, err := client.DB.ExecContext(ctx, remove, id); err != nil {
+				t.Fatal(err)
+			}
+			if !t.Run("cutover", TestAdmissionCostV2YDBCutover) {
+				t.Fatal("nested deployment cutover failed")
+			}
+			var after time.Time
+			err := client.DB.QueryRowContext(ctx, read, id).Scan(&after)
+			if found {
+				if err != nil || !after.Equal(before) {
+					t.Fatalf("prior lifecycle timestamp changed: before=%v after=%v error=%v", before, after, err)
+				}
+			} else if !errors.Is(err, sql.ErrNoRows) {
+				t.Fatalf("fixture left lifecycle receipt after original absence: after=%v error=%v", after, err)
+			}
+		})
+	}
 }

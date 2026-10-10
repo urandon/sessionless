@@ -283,6 +283,12 @@ send may conservatively produce an ambiguous attempt. Safety wins over an
 automatic duplicate call. A provider idempotency key may improve reconciliation
 only when the exact provider contract proves its semantics.
 
+The YDB adapter mints ownership or reconciliation grants only after its
+serializable transaction confirms commit, never inside a retryable callback.
+Failed or unconfirmed transactions return no result or grant. If grant minting
+fails after commit, the durable reservation remains fenced; the failure is not
+permission to create a new physical claim or repeat a provider effect.
+
 The prepared invocation is a short-lived, non-durable, non-JSON capability
 with an unexported process-local authenticator. It is issued
 only after exact substrate and harness preflight, the final authority gate, the

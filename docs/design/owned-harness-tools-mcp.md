@@ -1,6 +1,6 @@
 # Constrained tools and MCP for the owned harness
 
-Version: 0.1.1 draft, 2026-10-10. Design owner: [#179](https://gitcode.com/urandon/sessionless/issues/179), composed by [#180](https://gitcode.com/urandon/sessionless/issues/180). Requires independent review and explicit owner acceptance. This is a proposed public-data profile, not an enabled MCP connection or a live service guarantee.
+Version: 0.2.0 draft, 2026-10-10. Design owner: [#179](https://gitcode.com/urandon/sessionless/issues/179), composed by [#180](https://gitcode.com/urandon/sessionless/issues/180). Requires independent review and explicit owner acceptance. This is a proposed public-data profile, not an enabled MCP connection or a live service guarantee.
 
 ## Useful minimum
 
@@ -8,7 +8,7 @@ Choose the documented OpenAI Docs MCP endpoint `https://developers.openai.com/mc
 
 The endpoint/tool are documented by [Docs MCP](https://developers.openai.com/learn/docs-mcp). The actual initialized protocol version, server descriptor, tool input/output schemas and result variants must be captured under separately authorized public-data experiments before exact-profile enablement. Example JSON in documentation is not an observed live catalog and cannot freeze a production schema. This draft does not assume the example's fields, free pricing, availability, retention or SLA.
 
-Keep the model-visible built-in surface empty beyond this admitted MCP tool for the first profile. Immutable context/input materialization and output finalization remain trusted runtime operations. The model needs no shell, package installation or arbitrary filesystem access to answer a public documentation question with citations. A future artifact-ID/range reader requires a distinct bounded policy; do not add it implicitly to make a fixture pass.
+The owner's PR !160 request adds a separate model-visible [bounded web_search](owned-harness-web-search.md) built-in. Docs MCP remains the constrained MCP proof capability, not a substitute for general search. Both count in one aggregate four-dispatch tool budget; no shell, package installation or arbitrary filesystem access is added. Immutable context/input materialization and output finalization remain trusted runtime operations. A future artifact-ID/range reader requires a distinct bounded policy; do not add it implicitly to make a fixture pass.
 
 ## Placement and network authority
 
@@ -62,7 +62,8 @@ Authenticated durable operation observations remain available when the backend e
 | New central MCP gateway | Defer unless exact-substrate evidence requires it; would add session/credential/error custody obligations |
 | Microsoft Learn MCP | Alternative public-doc candidate; not automatic fallback or frozen schema |
 | Own documentation corpus | Defer; useful but not an implemented service and adds corpus/index ownership |
-| Generic web search/page retrieval | Separate #94 research; no hidden release gate for this bounded locator task |
+| Bounded general web search | Owner-required PR !160 addition; #94 comparison feeds its separate sealed built-in contract, not an expansion of the Docs MCP catalog |
+| Full-page fetch/find/browser | Broader #94 remains separate; no hidden release gate for the bounded search/MCP minimum |
 | Private OAuth, generic discovery, resources/prompts/sampling/elicitation/tasks | Exclude from first profile |
 
 Before enablement, capture the actual handshake/catalog/result and evidence of useful public queries, then freeze the exact artifact/descriptor/validator/profile. Review terms, data handling, availability and possible charges; unknown cost is not zero. Provider model/tool calling support, monetary admission and exact proxy enforcement are separate gates. A documented endpoint is not enough to enable it.

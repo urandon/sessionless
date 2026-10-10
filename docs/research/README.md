@@ -27,6 +27,7 @@ opt-in developer tools, never production or mandatory CI dependencies.
 | --- | --- | --- |
 | #45, #28 | [Memory and permissions](memory-and-permissions.md) | Versioned, scoped derived memory over canonical Session events; event-driven consolidation plus scheduled repair. |
 | #46 | [Tooling, MCP, and permissions](tooling-mcp-and-permissions.md) | Sessionless-owned capability/effect policy, narrow built-ins, worker/MCP isolation and call-time authorization. |
+| #94, #179, #180 | [Managed MVP web search](web-search-mvp.md) | 2026-10-10 bounded provider/harness comparison and Tavily Basic engineering-fit proposal; not full #94 completion, benchmark or live enablement. |
 | #47 | [Attachable workers](attachable-workers.md) | Outbound enrolled Go worker, fenced attempts, long-poll first, connection gateway only after measured need. |
 | #48, #51 | [AI resources and federation](ai-resources-and-federation.md) | Separate provider, transport, billing, harness, placement, credential generation, and sharing policy; no silent fallback. |
 | #48 | [OpenAI subscription resource policy](openai-subscription-resource-policy.md) | Conditional owner-local and managed-workspace subscription routes; personal cloud custody/account sharing and App Server production remain no-go. |

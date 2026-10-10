@@ -1,12 +1,14 @@
 # Sessionless owned agent harness minimum
 
-Version: 0.1.1 draft, 2026-10-10. Design owner: [#180](https://gitcode.com/urandon/sessionless/issues/180); implementation parent: [#176](https://gitcode.com/urandon/sessionless/issues/176). Independent review and explicit product-owner acceptance are required before implementation decomposition. This draft does not enable a provider, MCP connection or cloud profile.
+Version: 0.2.0 draft, 2026-10-10. Design owner: [#180](https://gitcode.com/urandon/sessionless/issues/180); implementation parent: [#176](https://gitcode.com/urandon/sessionless/issues/176). Independent review and explicit product-owner acceptance are required before implementation decomposition. This draft does not enable a provider, MCP connection or cloud profile.
 
 ## Decision and scope
 
 The managed MVP must execute an actual bounded agent loop: authorized input, a model-generated structured tool call, a useful MCP result, model continuation and a durable answer visible in WebUI. It must also compact a derived context view without rewriting canonical history. A single tool-free request is foundation evidence, not this outcome. The independently required attached-worker path remains [#72](https://gitcode.com/urandon/sessionless/issues/72) with [#129](https://gitcode.com/urandon/sessionless/issues/129) and the selected activation candidate [#133](https://gitcode.com/urandon/sessionless/issues/133).
 
-Choose a Go-owned sequential loop inside the existing isolated managed runtime. Sessionless owns Session, Run, Attempt, lease/fence, admission, effects, quota and terminal commit. Native harness threads, local transcripts, checkpoints and model call IDs never replace these authorities. The exact compaction and tool contracts are [derived compaction](owned-harness-compaction.md) and [constrained MCP](owned-harness-tools-mcp.md), both version 0.1.1.
+The owner's PR !160 request also requires bounded general web search, not only official-document location. Add a trusted search adapter with durable source-linked results and WebUI citations. Full-page fetch/find/browser and private queries remain outside this slice; constrained MCP remains independently required.
+
+Choose a Go-owned sequential loop inside the existing isolated managed runtime. Sessionless owns Session, Run, Attempt, lease/fence, admission, effects, quota and terminal commit. Native harness threads, local transcripts, checkpoints and model call IDs never replace these authorities. The exact compaction and tool contracts are [derived compaction](owned-harness-compaction.md), [constrained MCP](owned-harness-tools-mcp.md) and [bounded web search](owned-harness-web-search.md), package version 0.2.0.
 
 ## Research and current implementation
 
@@ -18,16 +20,16 @@ The following observations use main `d3eb8fdc069938c05be23212e834a7cc3d82a03e`; 
 | --- | --- | --- |
 | [Execution ports](../../internal/ports/ports.go), HarnessDriver and closed registry | Exact preflight/execute/cancel, context/artifact input, result and operational event sink | Sealed agent policy, typed structured model response, subordinate durable operations and authenticated error observations |
 | [Outer runtime](../serverless-harness.md), substrate and prepared invocation | One physical claimant, lease/fence, exact allocation and cleanup evidence | Explicit multi-operation loop profile; the one-provider-turn profile does not authorize repeated calls |
-| [Egress boundary](../serverless-egress.md) | Single attested proxy, fixed destinations, scoped credential lifecycle, denied ambient network | New bounded loop session and MCP policy on that proxy; current POST-only provider boundary cannot implement MCP transport by configuration |
+| [Egress boundary](../serverless-egress.md) | Single attested proxy, fixed destinations, scoped credential lifecycle, denied ambient network | New bounded loop, MCP and search policies on that proxy; current POST-only provider boundary neither implements MCP transport nor authorizes a search endpoint by configuration |
 | [Canonical context](../../internal/domain/serverless_context.go), ContextWindow and immutable snapshots | Exact admitted history and artifact references | Separate derived summary manifest, complete tool units and validation on fresh restore |
 | ExecutionToolEvent and WorkerCompletion/WorkerFailure | Canonical tool call/result vocabulary and fenced terminal transactions | Mid-loop durable observations before continuation, not only terminal arrays |
 | [Backend registry](../../internal/sessionlessharness/registry.go) | Sanitized errors and bound provider evidence | Error branch drops ToolEvents/Outputs/Summary; never rely on these to preserve a sent tool operation |
 
 ## Authority and policy binding
 
-Proposed `AgentLoopPolicyV1` is immutable server-owned configuration with a digest, exact backend/provider/model revisions, input modalities/data class, instruction version, compaction policy digest, MCP grant digest, finite limits and expiry. The model and queue message cannot select or modify it. It is admitted with the existing resource/placement/substrate authority, not discovered from the environment.
+Proposed `AgentLoopPolicyV1` is immutable server-owned configuration with a digest, exact backend/provider/model revisions, input modalities/data class, instruction version, compaction policy digest, MCP and web-search grant digests, finite limits and expiry. The model and queue message cannot select or modify it. It is admitted with the existing resource/placement/substrate authority, not discovered from the environment.
 
-Construct digests in one acyclic order: independent tool/data policy and resource/profile identifiers → scoped MCPToolGrantV1 → AgentLoopPolicyV1 → HarnessBindingV2 → invocation authority. The grant must not contain the enclosing agent-policy, harness-binding or invocation-authority digest. Execution capabilities and observations bind those completed digests later; they do not enter the earlier policy/grant construction.
+Construct digests in one acyclic order: independent tool/data policy and resource/profile identifiers → scoped MCPToolGrantV1 and WebSearchGrantV1 → AgentLoopPolicyV1 → HarnessBindingV2 → invocation authority. Neither grant may contain the enclosing agent-policy, harness-binding or invocation-authority digest. Execution capabilities and observations bind those completed digests later; they do not enter the earlier policy/grant construction.
 
 Introduce one canonical successor `HarnessBindingV2` sealing this digest. Its explicit owned-agent profile requires a nonempty agent policy; other reviewed backend kinds explicitly exclude it. No V1 decoder fallback, zero-value owned profile or silent migration is allowed. Update all affected constructors, persisted dispatch/jobs, digest validation and conformance fixtures in a bounded writer-first, empty-backlog cutover. Existing delivered behavior is retained through the canonical successor, not a legacy alias. Do not invent a second owner/resource selector in ExecutionRequest.
 
@@ -48,7 +50,7 @@ Text streams are optional operational progress, not canonical partial assistant 
 
 ## Durable subordinate operations
 
-Extend the existing Attempt effect store, rather than creating another session store or scheduler. Proposed `AttemptOperationV1` has one identity `(tenant_id, run_id, attempt_id, physical_invocation_claim_id, operation_sequence)` and kind `model | compaction | mcp_tool`. It seals the parent effect reservation, lease/fence, policy/profile digests, request digest, predecessor observation digest, scoped tool call ID where applicable, reserved limits and deadline. Request content lives in an authorized immutable blob, not public evidence.
+Extend the existing Attempt effect store, rather than creating another session store or scheduler. Proposed `AttemptOperationV1` has one identity `(tenant_id, run_id, attempt_id, physical_invocation_claim_id, operation_sequence)` and kind `model | compaction | mcp_tool | web_search`. It seals the parent effect reservation, lease/fence, policy/profile digests, request digest, predecessor observation digest, scoped tool call ID where applicable, reserved limits and deadline. Request content lives in an authorized immutable blob, not public evidence.
 
 The existing outer reservation still decides the sole physical claimant. Before network effects, an atomic store operation validates current authority, appends the reservation and debits the aggregate budget. It returns a process-local one-use operation capability, not a serializable permission. Reservation and observation are immutable; an observation records `completed | rejected_before_send | accepted_outcome_unknown`, bounded sanitized reason, response reference/digest and usage provenance. The effect reservation and subordinate rows share Attempt authority and retention/deletion rules. They do not create terminal, retry or quota authority.
 
@@ -74,7 +76,7 @@ These are proposed upper bounds for the first public-data profile, not measured 
 | --- | --- |
 | Concurrent operations | 1; no tool batch or parallel model requests |
 | Physical model calls | 8 total, including at most 2 compaction generations; no automatic retry |
-| Physical tools/call dispatches | 4; identical regenerated calls are denied, not retried |
+| Physical tool dispatches | 4 across MCP and search, including at most 2 web searches; identical regenerated calls are denied, not retried |
 | Model input tokens | 32,768 per call, 131,072 aggregate reserved input tokens |
 | Model output tokens | 2,048 per call, 16,384 aggregate; summary consumes this budget too |
 | Active wall time | 120 seconds or the shorter authority/cost window |
@@ -87,7 +89,7 @@ These are proposed upper bounds for the first public-data profile, not measured 
 
 Check token fit against the exact model window after instructions, schemas, media overhead and output reserve, using a calibrated tokenizer or a proven conservative estimator. Unknown fit fails before send. Reserving upper bounds before operations prevents a late usage report from overspending the admitted ceiling. Reconcile observed use without granting an automatic extra call.
 
-Reuse AdmissionCostCeilingV1 currency, fresh price revision and substrate/provider/total microunit ceilings. Admission must include all model and compaction calls, active and cleanup time, delivery overhead and network/storage bounds. MCP service charges require separately reviewed price/terms evidence and allocation within the total ceiling; anonymous access is not proof of zero price. If current cost authority cannot represent this, require a versioned canonical extension before live enablement. Unknown external cost is not silently excluded. The above numeric caps do not substitute for monetary admission.
+Reuse AdmissionCostCeilingV1 currency, fresh price revision and substrate/provider/total microunit ceilings. Admission must include all model and compaction calls, active and cleanup time, delivery overhead and network/storage bounds. MCP and search service charges require separately reviewed price/terms evidence and allocation within the total ceiling; anonymous access is not proof of zero price. If current cost authority cannot represent this, require a versioned canonical extension before live enablement. Unknown external cost is not silently excluded. The above numeric caps do not substitute for monetary admission.
 
 ## Alternatives and MVP exclusions
 
@@ -97,6 +99,7 @@ Reuse AdmissionCostCeilingV1 currency, fresh price revision and substrate/provid
 | Hosted/native agent transcript as authority | Reject; it would replace canonical Sessionless history/effects |
 | Provider-native opaque compaction | Defer to a separately compatible exact profile, never a portable fallback |
 | OpenAI Docs search via constrained MCP | Candidate from #179; useful public-document locator, subject to actual descriptor and live proof gates |
+| Provider-neutral built-in web search | Required owner addition; Tavily Basic proposal from #94 comparison, sealed grant/price/egress and source-linked WebUI output; no native opaque search loop |
 | Shell/browser, memory, subagents, skill marketplace | Defer; not required to demonstrate this minimum |
 | Generic MCP discovery, OAuth/private sessions, resources/prompts/sampling | Defer; would expand capabilities and credential/data-flow scope |
 | Automatic retries, model fallback and warm native resume | Reject in the first profile; unknown effects remain reconcile-only |
@@ -114,7 +117,8 @@ Use [Go testing practices](../testing-best-practices.md), fake clocks/barriers a
 | Compaction and restore | Two compactions, exact lineage/suffix, unchanged canonical bytes, protected constraints and no unknown-effect cut |
 | Cancellation and bounds | Before-send denial, after-send unknown, late reply, endless progress, every budget dimension, independent cleanup |
 | Result injection and export | Tool text cannot grant effects; safe public errors; no secrets/hidden reasoning; truthful usage and failed-backend observations |
-| Product outcome | Separately authorized real model/MCP continuation, durable canonical WebUI answer, two-owner isolation and exact profile/cleanup/cost evidence |
+| Web search and citations | Explicit query consent, exact source references, zero private-query/forbidden-domain sends, bounded billing/errors and durable source-linked WebUI output |
+| Product outcome | Separately authorized real model/search and model/MCP continuations, durable canonical WebUI answer, two-owner isolation and exact profile/cleanup/cost evidence |
 
 Deterministic tests establish contract behavior, not summary fidelity or useful real-model behavior. Live trials require explicit public inputs, exact artifacts/model/descriptor/policy, finite budgets and owner authority. Retain separate omission/hallucination, task success, citation usefulness, token reduction, latency and cost results. Safety failures cannot be averaged away by quality scores.
 
@@ -122,7 +126,7 @@ Keep the owned-agent profile disabled until accepted design, deterministic confo
 
 ## Design acceptance and implementation handoff
 
-Owner decisions requested: accept the sequential/no-replay minimum; the public Docs MCP candidate and its data boundary; derived-summary policy with explicit no-fit/unsupported outcomes; proposed finite ceilings subject to exact-profile calibration; and required canonical authority/egress extensions. No specific paid provider/model or cloud profile is selected by this draft.
+Owner decisions requested: accept the sequential/no-replay minimum; public Docs MCP plus bounded web-search design/data boundary and proposed initial search provider; derived-summary policy with explicit no-fit/unsupported outcomes; proposed finite ceilings subject to exact-profile calibration; and required canonical authority/egress extensions. The owner's search scope request is not acceptance of this exact design or paid/credentialed enablement. No specific paid model or cloud profile is selected by this draft.
 
 After independent review and explicit acceptance of an exact version, reuse #176 and create real linked implementation children in this order:
 
@@ -130,7 +134,7 @@ After independent review and explicit acceptance of an exact version, reuse #176
 2. Trusted multi-operation provider session, credential custody and aggregate evidence.
 3. Sequential loop and normalized error/terminal projection.
 4. Derived compaction storage/publication/restore and fidelity fixtures.
-5. Frozen MCP client/grant and extended attested proxy transport.
+5. Frozen MCP client/grant, bounded search adapter/grant/credential/cost contracts and extended attested proxy transport; source citation manifest and WebUI projection.
 6. Joined deterministic conformance and quality experiment preparation.
 7. Exact-profile live/substrate/two-owner acceptance and WebUI activation through existing #90/#92/#175.
 

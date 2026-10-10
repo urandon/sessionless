@@ -1,6 +1,6 @@
 # Derived context compaction for the owned harness
 
-Version: 0.1.1 draft, 2026-10-10. Design scope: [#178](https://gitcode.com/urandon/sessionless/issues/178) and [#180](https://gitcode.com/urandon/sessionless/issues/180). Requires independent review and explicit owner acceptance with [the minimum harness](owned-agent-harness-minimum.md). A shorter context is not permission to rewrite Session events or replay tools.
+Version: 0.2.0 draft, 2026-10-10. Design scope: [#178](https://gitcode.com/urandon/sessionless/issues/178) and [#180](https://gitcode.com/urandon/sessionless/issues/180). Requires independent review and explicit owner acceptance with [the minimum harness](owned-agent-harness-minimum.md). Compaction semantics remain unchanged from 0.1.1; package version includes the web-search addition. A shorter context is not permission to rewrite Session events or replay tools.
 
 ## Selected approach
 

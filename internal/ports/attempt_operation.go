@@ -103,6 +103,7 @@ func (*AttemptOperationCapabilityV1) UnmarshalJSON([]byte) error {
 
 // Observation grants are domain-separated from send permission. They remain
 // usable within their own bounded reconciliation window after execution expires.
+// Reissuing one never extends the original operation deadline plus cleanup.
 type AttemptOperationObservationGrantV1 struct {
 	Version       uint32
 	Reservation   domain.AttemptOperationReservationV1
@@ -123,7 +124,7 @@ func (v AttemptOperationObservationGrantV1) Validate() error {
 	if err := v.Reservation.Validate(); err != nil {
 		return err
 	}
-	if v.IssuedAt.IsZero() || v.IssuedAt.Before(v.Reservation.ReservedAt) || !v.ExpiresAt.After(v.IssuedAt) || v.ExpiresAt.After(v.IssuedAt.Add(v.Reservation.Operation.CleanupDuration)) || len(v.Authenticator) != 32 {
+	if v.IssuedAt.IsZero() || v.IssuedAt.Before(v.Reservation.ReservedAt) || !v.ExpiresAt.After(v.IssuedAt) || v.ExpiresAt.After(v.IssuedAt.Add(v.Reservation.Operation.CleanupDuration)) || v.ExpiresAt.After(v.Reservation.Operation.Deadline.Add(v.Reservation.Operation.CleanupDuration)) || len(v.Authenticator) != 32 {
 		return operationPortError("observation_grant", "requires a bounded process-local MAC grant")
 	}
 	return nil

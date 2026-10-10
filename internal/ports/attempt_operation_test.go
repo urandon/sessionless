@@ -121,14 +121,20 @@ func TestAttemptOperationObservationWindowIndependentOfExecution(t *testing.T) {
 	t.Parallel()
 	r := operationPortFixture(t)
 	g := r.ObservationGrant.Clone()
-	g.IssuedAt = r.Reservation.Operation.Deadline.Add(time.Hour)
-	g.ExpiresAt = g.IssuedAt.Add(30 * time.Second)
+	g.IssuedAt = r.Reservation.Operation.Deadline.Add(time.Second)
+	g.ExpiresAt = r.Reservation.Operation.Deadline.Add(30 * time.Second)
 	if err := g.Validate(); err != nil {
 		t.Fatalf("bounded historical reconciliation denied: %v", err)
 	}
 	g.ExpiresAt = g.ExpiresAt.Add(time.Nanosecond)
 	if err := g.Validate(); err == nil {
 		t.Fatal("unbounded reconciliation window accepted")
+	}
+	g = r.ObservationGrant.Clone()
+	g.IssuedAt = r.Reservation.Operation.Deadline.Add(time.Hour)
+	g.ExpiresAt = g.IssuedAt.Add(30 * time.Second)
+	if err := g.Validate(); err == nil {
+		t.Fatal("late reconciliation grant restarted the original cleanup window")
 	}
 	c := r.Capability.Clone()
 	c.ExpiresAt = c.ExpiresAt.Add(time.Nanosecond)

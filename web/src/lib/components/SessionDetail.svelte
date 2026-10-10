@@ -6,6 +6,7 @@
     ConditionalResult,
     DownloadCapability,
     EventPage,
+    Identity,
     Run,
     RunPage,
     SessionEvent,
@@ -15,6 +16,8 @@
   } from '$lib/api/client';
 
   export interface SessionDetailApi {
+    getIdentity: CanonicalApiClient['getIdentity'];
+    getRunExplanation: CanonicalApiClient['getRunExplanation'];
     getSession: CanonicalApiClient['getSession'];
     listEvents: CanonicalApiClient['listEvents'];
     listRuns: CanonicalApiClient['listRuns'];
@@ -49,6 +52,11 @@
   import { resolve } from '$app/paths';
 
   import { ApiError } from '$lib/api/client';
+  import RunExplanationDrawer from './RunExplanationDrawer.svelte';
+  import {
+    RunExplanationController,
+    type RunExplanationState,
+  } from '$lib/run-explanation/controller';
   import { boundedUTF8, downloadCapability, hashFile, putUpload } from '$lib/session/fileTransfer';
 
   let {
@@ -57,12 +65,16 @@
     hashFileFn = hashFile,
     putUploadFn = putUpload,
     downloadCapabilityFn = downloadCapability,
+    explanationNow = Date.now,
+    explanationEnabled = import.meta.env.VITE_RUN_EXPLANATION_ENABLED === 'true',
   }: {
     client: SessionDetailApi;
     sessionId: string;
     hashFileFn?: typeof hashFile;
     putUploadFn?: typeof putUpload;
     downloadCapabilityFn?: typeof downloadCapability;
+    explanationNow?: () => number;
+    explanationEnabled?: boolean;
   } = $props();
 
   const maxEvents = 100;
@@ -97,6 +109,18 @@
   let runETag: string | undefined;
   let lastSequence = 0;
   let composer = $state<HTMLTextAreaElement>();
+  let conversationHeading = $state<HTMLHeadingElement>();
+  let identity = $state<Identity>();
+  let explanationState = $state<RunExplanationState>({ phase: 'idle', nextRefreshAt: 0 });
+  let explanationRunId = $state<string>();
+  let explanationController: RunExplanationController | undefined;
+  let explanationTrigger: HTMLButtonElement | undefined;
+  let identityAbort: AbortController | undefined;
+  let identityGeneration = 0;
+  let lastIdentityScope: { webIdentity: string; tenantId: string } | undefined;
+  let accessGeneration = 0;
+  let alive = false;
+  const identityScope = $derived(scopeForIdentity(identity));
 
   const runByTrigger = $derived(new Map(runs.map((run) => [run.trigger_event_id, run])));
   const computeReady = $derived(computeAllowsSend(compute));
@@ -109,14 +133,47 @@
   );
 
   onMount(() => {
+    alive = true;
     abortController = new AbortController();
+    if (explanationEnabled)
+      explanationController = new RunExplanationController({
+        read: (runId, expectedSessionId, signal) =>
+          client.getRunExplanation(runId, expectedSessionId, signal),
+        now: explanationNow,
+      });
+    explanationController?.setVisible(false);
+    const unsubscribe = explanationController?.subscribe((state) => {
+      explanationState = state;
+      if (state.phase === 'permission-lost') {
+        // Never reconstitute permission from stale identity props on reopen.
+        identity = undefined;
+        identityGeneration += 1;
+        identityAbort?.abort();
+      }
+    });
     const visibility = (): void => {
       clearPoll();
-      if (!document.hidden && view === 'ready') schedulePoll(0);
+      if (document.hidden) {
+        identityGeneration += 1;
+        identityAbort?.abort();
+        identity = undefined;
+        closeExplanation(false);
+      } else {
+        // Ordinary auth lifecycle, not a drawer-open probe or explanation poll.
+        if (explanationEnabled) void refreshIdentity();
+        if (view === 'ready') schedulePoll(0);
+      }
     };
     document.addEventListener('visibilitychange', visibility);
+    if (explanationEnabled) void refreshIdentity();
     void loadInitial();
     return () => {
+      alive = false;
+      accessGeneration += 1;
+      identityGeneration += 1;
+      identityAbort?.abort();
+      unsubscribe?.();
+      explanationController?.dispose();
       document.removeEventListener('visibilitychange', visibility);
       clearPoll();
       abortController?.abort();
@@ -124,6 +181,7 @@
   });
 
   async function loadInitial(): Promise<void> {
+    const generation = accessGeneration;
     view = 'loading';
     errorMessage = '';
     canWrite = true;
@@ -135,15 +193,19 @@
         client.listEvents(sessionId, { limit: maxEvents, signal }),
         client.listRuns(sessionId, { limit: maxRuns, signal }),
       ]);
+      if (!alive || generation !== accessGeneration || signal?.aborted) return;
       applySession(sessionResult);
       applyEvents(eventResult, true);
       applyRuns(runResult);
       await loadComputeAccess(signal);
+      if (!alive || generation !== accessGeneration || signal?.aborted) return;
       view = 'ready';
       schedulePoll(nextPollDelay(sessionResult, eventResult, runResult));
     } catch (error) {
+      if (!alive || generation !== accessGeneration) return;
       if (isAbort(error)) return;
-      showLoadFailure(error);
+      if (isReadPermissionLoss(error)) discardReadAccess(error);
+      else showLoadFailure(error);
     }
   }
 
@@ -173,6 +235,7 @@
 
   async function poll(): Promise<void> {
     if (document.hidden || abortController?.signal.aborted || view !== 'ready') return;
+    const generation = accessGeneration;
     try {
       const signal = abortController?.signal;
       const afterSequence = lastSequence || undefined;
@@ -186,6 +249,7 @@
         }),
         client.listRuns(sessionId, { limit: maxRuns, etag: runETag, signal }),
       ]);
+      if (!alive || generation !== accessGeneration || signal?.aborted) return;
       applySession(sessionResult);
       applyEvents(eventResult, false, afterSequence);
       applyRuns(runResult);
@@ -193,7 +257,12 @@
       pollMessage = '';
       schedulePoll(nextPollDelay(sessionResult, eventResult, runResult));
     } catch (error) {
+      if (!alive || generation !== accessGeneration) return;
       if (isAbort(error)) return;
+      if (isReadPermissionLoss(error)) {
+        discardReadAccess(error);
+        return;
+      }
       pollFailures += 1;
       if (pollFailures >= maxPollFailures) {
         pollMessage = 'Live updates paused after repeated connection failures.';
@@ -202,6 +271,127 @@
       pollMessage = 'Live update delayed. Retrying…';
       schedulePoll(Math.min(15000, 1000 * 2 ** (pollFailures - 1)));
     }
+  }
+
+  function scopeForIdentity(
+    value?: Identity,
+  ): { webIdentity: string; tenantId: string } | undefined {
+    if (
+      !value ||
+      typeof value.user_id !== 'string' ||
+      !value.user_id ||
+      typeof value.provider !== 'string' ||
+      !value.provider ||
+      !Array.isArray(value.tenants)
+    )
+      return;
+    const active = value.tenants.filter((tenant) => tenant.active === true);
+    if (active.length !== 1 || typeof active[0]?.tenant_id !== 'string' || !active[0].tenant_id)
+      return;
+    return {
+      webIdentity: JSON.stringify([value.user_id, value.provider]),
+      tenantId: active[0].tenant_id,
+    };
+  }
+
+  async function refreshIdentity(): Promise<void> {
+    const generation = ++identityGeneration;
+    identityAbort?.abort();
+    const abort = new AbortController();
+    identityAbort = abort;
+    try {
+      const next = await client.getIdentity(abort.signal);
+      if (!alive || generation !== identityGeneration || abort.signal.aborted || document.hidden)
+        return;
+      const previous = lastIdentityScope,
+        nextScope = scopeForIdentity(next);
+      const changed =
+        previous &&
+        nextScope &&
+        (previous.webIdentity !== nextScope.webIdentity ||
+          previous.tenantId !== nextScope.tenantId);
+      if (!nextScope || changed) {
+        closeExplanation(false);
+        explanationController?.setScope(undefined);
+      }
+      identity = nextScope ? next : undefined;
+      if (nextScope) lastIdentityScope = nextScope;
+      if (changed) {
+        // An actual auth-scope change is not a recoverable transport error.
+        // Discard private transcript/drafts and fence all earlier reads first.
+        accessGeneration += 1;
+        abortController?.abort();
+        abortController = new AbortController();
+        events = [];
+        runs = [];
+        session = undefined;
+        compute = undefined;
+        message = '';
+        selectedFiles = [];
+        submission = undefined;
+        sessionETag = eventETag = runETag = undefined;
+        eventETagSequence = undefined;
+        lastSequence = 0;
+        clearPoll();
+        void loadInitial();
+      }
+    } catch (error) {
+      if (!alive || generation !== identityGeneration || abort.signal.aborted) return;
+      identity = undefined;
+      closeExplanation(false);
+      explanationController?.setScope(undefined);
+      if (isReadPermissionLoss(error)) discardReadAccess(error);
+    }
+  }
+
+  function isReadPermissionLoss(error: unknown): boolean {
+    return error instanceof ApiError && [401, 403, 404].includes(error.status);
+  }
+
+  function discardReadAccess(error: unknown): void {
+    accessGeneration += 1;
+    identityGeneration += 1;
+    identityAbort?.abort();
+    identity = undefined;
+    closeExplanation(false);
+    explanationController?.setScope(undefined);
+    clearPoll();
+    abortController?.abort();
+    events = [];
+    runs = [];
+    session = undefined;
+    compute = undefined;
+    message = '';
+    selectedFiles = [];
+    submission = undefined;
+    showLoadFailure(error);
+  }
+
+  function explanationRun(event: SessionEvent): string | undefined {
+    // Both selectors are already authorized canonical correlation. Never guess
+    // from notice content, temporal adjacency or reconstructed opaque IDs.
+    return event.run_id ?? runByTrigger.get(event.event_id)?.run_id;
+  }
+
+  function openExplanation(runId: string, trigger: HTMLButtonElement): void {
+    if (!explanationEnabled || !identityScope || !explanationController || document.hidden) return;
+    explanationTrigger = trigger;
+    explanationRunId = runId;
+    explanationController.setScope({ ...identityScope, sessionId, runId });
+    explanationController.setVisible(true);
+    void explanationController.refresh();
+  }
+
+  function closeExplanation(restoreFocus = true): void {
+    explanationRunId = undefined;
+    explanationController?.setVisible(false);
+    if (restoreFocus) {
+      if (explanationTrigger?.isConnected && !explanationTrigger.disabled)
+        explanationTrigger.focus();
+      else if (composer?.isConnected && !composer.disabled) composer.focus();
+      else conversationHeading?.focus();
+    }
+    explanationTrigger = undefined;
   }
 
   function restartPolling(): void {
@@ -596,7 +786,9 @@
       <div>
         <a class="back-link" href={resolve('/')}>← All sessions</a>
         <p class="eyebrow">Canonical session</p>
-        <h1 id="conversation-title">{session?.title || 'Conversation'}</h1>
+        <h1 id="conversation-title" bind:this={conversationHeading} tabindex="-1">
+          {session?.title || 'Conversation'}
+        </h1>
         <p class="resource-id" aria-label="Session identifier">{sessionId}</p>
       </div>
       {#if canWrite}
@@ -694,11 +886,33 @@
                   Run {runLabel(runByTrigger.get(event.event_id))}
                 </span>
               {/if}
+              {#if explanationEnabled && explanationRun(event)}
+                <button
+                  class="button quiet"
+                  type="button"
+                  disabled={!identityScope}
+                  aria-expanded={explanationRunId === explanationRun(event)}
+                  aria-controls={explanationRunId ? 'run-explanation-panel' : undefined}
+                  onclick={(click) => openExplanation(explanationRun(event)!, click.currentTarget)}
+                  >Explain run</button
+                >
+              {/if}
             </li>
           {/each}
         </ol>
       {/if}
     </section>
+
+    {#if explanationRunId}
+      <RunExplanationDrawer
+        state={explanationState}
+        onClose={() => closeExplanation()}
+        onRefresh={() => void explanationController?.refresh()}
+        refreshDisabled={!identityScope ||
+          explanationState.phase === 'loading' ||
+          explanationState.phase === 'permission-lost'}
+      />
+    {/if}
 
     <form
       class="composer"

@@ -946,6 +946,10 @@
         "required": ["event_id", "sequence", "kind", "content", "created_at"],
         "properties": {
           "event_id": { "type": "string" },
+          "run_id": {
+            "type": "string",
+            "description": "Optional authorized canonical Run correlation; generic unlinked events omit it."
+          },
           "sequence": { "type": "integer", "minimum": 1 },
           "kind": {
             "type": "string",

@@ -122,8 +122,8 @@ export class CanonicalApiClient {
     this.#now = options.now ?? Date.now;
   }
 
-  getIdentity(): Promise<Identity> {
-    return this.#json<Identity>('/api/web/v1/me');
+  getIdentity(signal?: AbortSignal): Promise<Identity> {
+    return this.#json<Identity>('/api/web/v1/me', { signal });
   }
 
   listTenants(): Promise<TenantPage> {

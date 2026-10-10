@@ -12,4 +12,6 @@
   <title>Session · Sessionless</title>
 </svelte:head>
 
-<SessionDetail {client} {sessionId} />
+{#key sessionId}
+  <SessionDetail {client} {sessionId} />
+{/key}

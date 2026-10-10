@@ -1,11 +1,11 @@
 # Compute choice context evidence
 
-Version: **0.1.1 draft**, 2026-10-11.
+Version: **0.1.1**, 2026-10-11.
 Owner: [#142](https://gitcode.com/urandon/sessionless/issues/142).
 Implementation epic: [#155](https://gitcode.com/urandon/sessionless/issues/155).
 Source baseline: `f589fece3811b7a04eeacf5cbaff4ca4d5c1c978`.
-Status: engineering amendment requiring independent review and implementation;
-not a deployed source of eligibility.
+Status: independently reviewed engineering amendment; implementation remains
+partial, not a deployed source of eligibility.
 
 Compute selection must account for the entire canonical context that an
 invocation will consume. Persist bounded, writer-derived facts at every event
@@ -123,14 +123,30 @@ artifact references; media/name hints alone cannot certify an image or safe
 content. Any historical attachment rejects initial codex-text compatibility,
 even where its bytes are separately verified. All material stays PRIVATE.
 
-Extract the current compiler's exact event parsing/role-frame rendering into
+The current compiler's exact event parsing/role-frame rendering now resides in
 pure `internal/canonicalprompt`, importing domain but not ports, worker or
-sessioncontext. Both the prepared constructor and codexexec use that helper.
-The helper preserves current strict unknown-field/trailing-data behavior, user
+sessioncontext. codexexec uses that actual helper; the prepared constructor
+still needs implementation and must reuse it. The helper preserves current
+strict unknown-field/trailing-data behavior, user
 version 1/no attachments, assistant schema v1, nonempty valid UTF-8/no NUL,
 and rejection of all other event kinds. It must not silently tighten accepted
 payload semantics or skip an incompatible record. The driver still verifies
 full decoded history and exact trigger before rendering.
+
+This extraction supplies shared rendering semantics only, not prepared material,
+persisted prefix facts or positive eligibility. Its 2 MiB helper-input ceiling
+allows frame-limit testing independently of the driver's 1 MiB full-JSONL
+ceiling; it does not enlarge the driver limit or the future constructor's 1 MiB
+payload-inspection ceiling. Individual frames are bounded by 1 MiB including
+their role framing, and the driver separately bounds the header plus all frames.
+Literal golden tests preserve Go JSON's case-folded fields, duplicate/null
+behavior and invalid-string replacement, as well as Unicode and whitespace.
+Canonical hash/size and record validation remain separate consumer predicates.
+Driver tests reach the exact JSONL ceiling using legal record whitespace while
+the resulting prompt stays small; one more source byte fails before execution.
+The pure frame test reaches its own ceiling, where adding the header exceeds the
+full-prompt ceiling. This is not evidence that an oversize rendered prompt is
+reachable through the stricter current full-JSONL input limit.
 
 `sessionmaterial` may depend on that pure helper and domain; ports may reference
 the opaque prepared type, but must not import sessioncontext, which already

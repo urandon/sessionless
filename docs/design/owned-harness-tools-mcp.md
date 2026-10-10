@@ -1,6 +1,6 @@
 # Constrained tools and MCP for the owned harness
 
-Version: 0.2.0 draft, 2026-10-10. Design owner: [#179](https://gitcode.com/urandon/sessionless/issues/179), composed by [#180](https://gitcode.com/urandon/sessionless/issues/180). Requires independent review and explicit owner acceptance. This is a proposed public-data profile, not an enabled MCP connection or a live service guarantee.
+Version: 0.2.1 draft, 2026-10-10. Design owner: [#179](https://gitcode.com/urandon/sessionless/issues/179), composed by [#180](https://gitcode.com/urandon/sessionless/issues/180). Requires independent review and explicit design acceptance under the project protocol. This is a proposed public-data profile, not an enabled MCP connection or a live service guarantee.
 
 ## Useful minimum
 

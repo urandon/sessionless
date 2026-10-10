@@ -1,6 +1,6 @@
 # Sessionless owned agent harness minimum
 
-Version: 0.2.0 draft, 2026-10-10. Design owner: [#180](https://gitcode.com/urandon/sessionless/issues/180); implementation parent: [#176](https://gitcode.com/urandon/sessionless/issues/176). Independent review and explicit product-owner acceptance are required before implementation decomposition. This draft does not enable a provider, MCP connection or cloud profile.
+Version: 0.2.1 draft, 2026-10-10. Design owner: [#180](https://gitcode.com/urandon/sessionless/issues/180); implementation parent: [#176](https://gitcode.com/urandon/sessionless/issues/176). Independent review and explicit design acceptance under the project protocol are required before implementation decomposition. This draft does not enable a provider, MCP connection or cloud profile.
 
 ## Decision and scope
 
@@ -8,7 +8,7 @@ The managed MVP must execute an actual bounded agent loop: authorized input, a m
 
 The owner's PR !160 request also requires bounded general web search, not only official-document location. Add a trusted search adapter with durable source-linked results and WebUI citations. Full-page fetch/find/browser and private queries remain outside this slice; constrained MCP remains independently required.
 
-Choose a Go-owned sequential loop inside the existing isolated managed runtime. Sessionless owns Session, Run, Attempt, lease/fence, admission, effects, quota and terminal commit. Native harness threads, local transcripts, checkpoints and model call IDs never replace these authorities. The exact compaction and tool contracts are [derived compaction](owned-harness-compaction.md), [constrained MCP](owned-harness-tools-mcp.md) and [bounded web search](owned-harness-web-search.md), package version 0.2.0.
+Choose a Go-owned sequential loop inside the existing isolated managed runtime. Sessionless owns Session, Run, Attempt, lease/fence, admission, effects, quota and terminal commit. Native harness threads, local transcripts, checkpoints and model call IDs never replace these authorities. The exact compaction and tool contracts are [derived compaction](owned-harness-compaction.md), [constrained MCP](owned-harness-tools-mcp.md) and [bounded web search](owned-harness-web-search.md), package version 0.2.1.
 
 ## Research and current implementation
 
@@ -43,7 +43,7 @@ The prepared invocation is consumed once at entry to the reviewed loop boundary.
 2. Build the current view from trusted instructions, the current task, an admitted derived summary where applicable and the original complete suffix. Perform compaction only at a safe boundary and within the same aggregate limits.
 3. Atomically reserve one model operation and its worst-case call/token/cost budget, then send once through the trusted loop session. Persist the validated normalized response before any requested tool can be admitted.
 4. A final answer proceeds to fenced output finalization. A complete structured call is validated against the frozen catalog/grant. Partial argument chunks cannot dispatch. The first profile permits one tool call per response; a multi-call response fails before any of its calls are sent.
-5. Atomically reserve the tool operation, recheck authorization immediately before send, dispatch once and persist the validated bounded outcome. Only a durable known outcome permits another model operation. Protocol/domain errors remain distinct; no physical retry or route fallback follows from an error.
+5. For web search, obtain the exact durable query-consent decision within the same claim and remaining wall-time/authority windows; missing or denied consent stops without a search send. Atomically reserve the tool operation with its required consent receipt, recheck authorization immediately before send, dispatch once and persist the validated bounded outcome. Only a durable known outcome permits another model operation. Protocol/domain errors remain distinct; no physical retry or route fallback follows from an error.
 6. Repeat within the finite budget. Finalize immutable output/artifact manifests, credential release and workspace/process cleanup. The existing canonical transaction alone commits terminal outcome. Missing cleanup evidence cannot become success.
 
 Text streams are optional operational progress, not canonical partial assistant messages. A model length-stop, malformed call, duplicate call ID, missing result, unknown accepted operation or exhausted budget produces a bounded stop reason rather than a fabricated successful answer.
@@ -134,7 +134,7 @@ After independent review and explicit acceptance of an exact version, reuse #176
 2. Trusted multi-operation provider session, credential custody and aggregate evidence.
 3. Sequential loop and normalized error/terminal projection.
 4. Derived compaction storage/publication/restore and fidelity fixtures.
-5. Frozen MCP client/grant, bounded search adapter/grant/credential/cost contracts and extended attested proxy transport; source citation manifest and WebUI projection.
+5. Frozen MCP client/grant, bounded search adapter/grant/credential/cost contracts and extended attested proxy transport; a named query-consent WebUI/BFF/worker bridge with durable receipt and same-claim expiry/cancellation tests; source citation manifest and WebUI projection. Consent is a search-activation prerequisite, not resumed execution authority.
 6. Joined deterministic conformance and quality experiment preparation.
 7. Exact-profile live/substrate/two-owner acceptance and WebUI activation through existing #90/#92/#175.
 

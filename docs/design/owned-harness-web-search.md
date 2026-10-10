@@ -1,6 +1,6 @@
 # Bounded web search for the owned harness
 
-Version: 0.2.0 draft, 2026-10-10. Owners: [#94](https://gitcode.com/urandon/sessionless/issues/94),
+Version: 0.2.1 draft, 2026-10-10. Owners: [#94](https://gitcode.com/urandon/sessionless/issues/94),
 [#179](https://gitcode.com/urandon/sessionless/issues/179),
 [#180](https://gitcode.com/urandon/sessionless/issues/180); implementation #176.
 Independent exact-version review and owner acceptance precede implementation.
@@ -55,13 +55,60 @@ independently filter each result using hostname equality or dot-boundary
 subdomain matching, never string suffix/substring matching. Required date filters
 use a separately admitted dated profile and observed dates, never prompt claims.
 
-Public input classification and consent are admission facts. The first profile
-uses an explicitly public task; the UI displays and approves the exact search
-arguments before dispatch. A model-generated query does not inherit permission
-to disclose private transcript, attachments, identifiers or secrets. Bind consent
-to the query digest; any changed query requires its own consent. If this UX or
-public-data proof is unavailable, the tool is disabled for that task. Regex or
-model assertions alone cannot authorize private-data transmission.
+Public task classification and permission to request search consent are frozen
+admission facts, not approval of an unknown future query. The first profile uses
+an explicitly public task. After a complete model response is durably recorded,
+the UI displays the exact generated arguments and receives their approval before
+dispatch. A model-generated query does not inherit permission to disclose private
+transcript, attachments, identifiers or secrets. Any changed query requires a new
+decision. If this UX or public-data proof is unavailable, the tool is disabled
+for that task. Regex or model assertions cannot authorize private transmission.
+
+## Query consent within the existing claim
+
+Proposed `WebSearchConsentRequestV1` is a trusted pending decision in the existing
+Attempt effect store, not a model instruction or another scheduler. It binds
+tenant, Session, initiating user, Run/Attempt, physical invocation claim, lease/
+fence, durable model-response digest and call ID, exact argument/query digests,
+search grant and completed policy/binding digests, consent/revocation revisions,
+and an absolute expiry. Exact arguments use an authorized immutable blob; public
+execution evidence contains only the pending status and opaque locator, never
+query text. Allow one pending decision at a time and at most two requests per
+Attempt; their rows/blobs count within the existing aggregate storage bounds.
+Do not reserve a search operation, debit its monetary budget or contact the
+search provider merely to obtain consent.
+
+Bounded authenticated BFF reads return the exact query only to its initiating
+user with current Session participation and required task/resource consent
+authority. The decision endpoint uses the established Web session/CSRF rules;
+it accepts only the opaque request identity, expected revision and approve/deny,
+not replacement arguments, a new principal or a longer deadline. A resource
+transaction rechecks Web session and membership security versions, participation,
+consent authority, exact request digests and current Run/Attempt/claim/fence,
+cancellation, grant/policy and expiry. A compare-and-set transition writes one
+immutable `WebSearchConsentDecisionV1` with the same bindings, authenticated
+actor, decision and observed time. Duplicate identical decisions recover that
+receipt; conflicting, stale or foreign decisions fail closed. Approval cannot
+mint a grant, extend its scope or create a transferable dispatch capability.
+
+The original worker waits within its sole physical claim. Waiting consumes the
+same 120-second active wall-time ceiling and every shorter lease, grant, price,
+allocation and cost window; it is not a pause or deadline extension. Reads and
+UI refreshes have finite per-request and aggregate budgets. Deadline, denial,
+cancellation or revocation ends the pending request with an explicit stop and
+zero search sends. A late approval cannot reopen it. Worker loss is reconcile-
+only: even a durable approval does not authorize a new worker, renewed admission,
+resume, fresh Run replay or replacement claim to send this query.
+
+Approval is necessary, never sufficient. The existing reserve operation atomically
+rechecks the exact approved receipt and all current authority, then reserves the
+search budget and binds its digest to `AttemptOperationV1`. The one-use egress
+capability binds that receipt, query and original claim; recheck cancellation,
+expiry and revocation at the existing before-send gate. A winning denial before
+that gate yields zero sends; revocation after a possible send follows the existing
+outcome-unknown and no-replay rules, not a remote-rollback promise. Only a known,
+durable result allows model continuation. Arbitrary bounded model-generated
+public queries remain supported; there is no static-query substitute.
 
 ## Adapter and network boundary
 
@@ -176,6 +223,12 @@ late replies, cancellation, persistence failure and crash with zero replay.
 Verify model continuation uses only durable results and citation manifests reject
 invented/cross-owner sources. Test refreshed/compacted views retain exact source
 lineage and unchanged canonical facts. Use documented Go testing practices.
+Consent fixtures use fake time and controlled barriers: approval before expiry,
+denial/expiry/revocation winning before reserve or send, changed membership/fence/
+arguments, duplicate versus conflicting decisions, approval lost-response recovery,
+late approval, bounded polling and worker loss after approval. Assert exact
+receipt/claim binding, no deadline extension and zero unauthorized or replayed
+sends, not merely a UI status or model assertion.
 
 Live acceptance is separately authorized: frozen public queries/options/artifacts,
 credential and billing owner, finite request/model budget, data terms and exact
@@ -185,8 +238,11 @@ freshness, latency, error rate and full cost independently under the research
 evaluation plan. Scripted tests alone cannot satisfy this gate.
 
 After accepted #180 design, create bounded linked #176 children for grant/resource/
-credential/metering contracts, trusted adapter/proxy and canonical operation
-integration, citation manifest/WebUI projection, and deterministic/live evaluation.
+credential/metering contracts, a query-consent WebUI/BFF/worker bridge with its
+durable decision/authority and same-claim wait contracts, trusted adapter/proxy
+and canonical operation integration, citation manifest/WebUI projection, and
+deterministic/live evaluation. The consent bridge is a named prerequisite of
+search activation; deterministic proof alone does not authorize a paid/live call.
 Reuse common MCP/loop/cost groundwork; do not duplicate ledgers or supervisors.
 #94's broader provider matrix, NEEDLE reproduction, private queries and
 PageFetchV1/browser research remain open, not hidden extra MVP gates.

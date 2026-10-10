@@ -683,6 +683,12 @@ Compute-write denial does not revoke participant reads. Recoverable transport
 failures retain drafts; retained evidence is explicitly historical. The shared
 controller enforces single-flight and a five-second identity/tenant floor across
 close/reopen/Run selection, with server backoff and no explanation polling.
+Existing send/upload/archive/compute/download operations capture their original
+view generation and AbortSignal too: after observed authorization change or
+unmount, every asynchronous continuation checks scope before the next request,
+state update, capability use or focus change. Old uploads never adopt a new
+scope's signal. Already submitted operations may have committed; disposal is
+not rollback, and no automatic resubmission or undo is attempted.
 
 Against an explicitly approved disposable YDB only, use:
 

@@ -210,11 +210,15 @@
   }
 
   async function loadComputeAccess(signal?: AbortSignal): Promise<void> {
+    const generation = accessGeneration;
     try {
-      compute = await client.getComputeStatus(sessionId, signal);
+      const result = await client.getComputeStatus(sessionId, signal);
+      requireCurrentAccess(generation, signal);
+      compute = result;
       canWrite = true;
       computeUnavailable = false;
     } catch (error) {
+      requireCurrentAccess(generation, signal);
       if (
         error instanceof ApiError &&
         (error.code === 'access_denied' || error.code === 'not_found')
@@ -322,16 +326,7 @@
         accessGeneration += 1;
         abortController?.abort();
         abortController = new AbortController();
-        events = [];
-        runs = [];
-        session = undefined;
-        compute = undefined;
-        message = '';
-        selectedFiles = [];
-        submission = undefined;
-        sessionETag = eventETag = runETag = undefined;
-        eventETagSequence = undefined;
-        lastSequence = 0;
+        clearPrivateState();
         clearPoll();
         void loadInitial();
       }
@@ -357,14 +352,35 @@
     explanationController?.setScope(undefined);
     clearPoll();
     abortController?.abort();
+    clearPrivateState();
+    showLoadFailure(error);
+  }
+
+  function clearPrivateState(): void {
     events = [];
     runs = [];
-    session = undefined;
-    compute = undefined;
+    session = compute = undefined;
     message = '';
     selectedFiles = [];
     submission = undefined;
-    showLoadFailure(error);
+    submitting = archivePending = false;
+    archiveKey = undefined;
+    archiveTarget = undefined;
+    downloading = undefined;
+    transferMessage = errorMessage = pollMessage = '';
+    pollFailures = 0;
+    sessionETag = eventETag = runETag = undefined;
+    eventETagSequence = undefined;
+    lastSequence = 0;
+  }
+
+  function currentAccess(generation: number, signal?: AbortSignal): boolean {
+    return alive && generation === accessGeneration && !signal?.aborted;
+  }
+
+  function requireCurrentAccess(generation: number, signal?: AbortSignal): void {
+    if (!currentAccess(generation, signal))
+      throw new DOMException('View scope discarded.', 'AbortError');
   }
 
   function explanationRun(event: SessionEvent): string | undefined {
@@ -449,6 +465,8 @@
 
   async function toggleArchived(): Promise<void> {
     if (!canWrite || !session || archivePending) return;
+    const generation = accessGeneration,
+      signal = abortController?.signal;
     archivePending = true;
     errorMessage = '';
     const desired = session.status === 'active';
@@ -457,18 +475,26 @@
       archiveTarget = desired;
     }
     try {
-      session = await client.setSessionArchived(sessionId, {
-        archived: desired,
-        idempotency_key: archiveKey ?? newIdempotencyKey(),
-      });
+      const result = await client.setSessionArchived(
+        sessionId,
+        {
+          archived: desired,
+          idempotency_key: archiveKey ?? newIdempotencyKey(),
+        },
+        signal,
+      );
+      requireCurrentAccess(generation, signal);
+      session = result;
       archiveKey = undefined;
       archiveTarget = undefined;
       await tick();
+      requireCurrentAccess(generation, signal);
       composer?.focus();
     } catch (error) {
-      errorMessage = publicMessage(error, 'Unable to update this session.');
+      if (currentAccess(generation, signal) && !isAbort(error))
+        errorMessage = publicMessage(error, 'Unable to update this session.');
     } finally {
-      archivePending = false;
+      if (currentAccess(generation, signal)) archivePending = false;
     }
   }
 
@@ -521,6 +547,8 @@
 
   async function send(): Promise<void> {
     if (!canWrite || submitting || (!canSubmit && !submission)) return;
+    const generation = accessGeneration,
+      signal = abortController?.signal;
     submission ??= {
       idempotencyKey: newIdempotencyKey(),
       text: message.trim(),
@@ -531,7 +559,9 @@
     errorMessage = '';
     transferMessage = 'Checking compute and quota…';
     try {
-      compute = await client.getComputeStatus(sessionId, abortController?.signal);
+      const result = await client.getComputeStatus(sessionId, signal);
+      requireCurrentAccess(generation, signal);
+      compute = result;
       if (!computeAllowsSend(compute)) {
         errorMessage = computeLabel(compute);
         transferMessage = '';
@@ -539,13 +569,22 @@
       }
       transferMessage = 'Preparing your message…';
       const uploadIds: string[] = [];
-      for (const item of activeSubmission.files) uploadIds.push(await uploadOne(item));
+      for (const item of activeSubmission.files) {
+        uploadIds.push(await uploadOne(item, generation, signal));
+        requireCurrentAccess(generation, signal);
+      }
+      requireCurrentAccess(generation, signal);
       transferMessage = 'Sending message…';
-      const created = await client.createMessage(sessionId, {
-        idempotency_key: activeSubmission.idempotencyKey,
-        text: activeSubmission.text || undefined,
-        upload_ids: uploadIds.length > 0 ? uploadIds : undefined,
-      });
+      const created = await client.createMessage(
+        sessionId,
+        {
+          idempotency_key: activeSubmission.idempotencyKey,
+          text: activeSubmission.text || undefined,
+          upload_ids: uploadIds.length > 0 ? uploadIds : undefined,
+        },
+        signal,
+      );
+      requireCurrentAccess(generation, signal);
       message = '';
       selectedFiles = [];
       submission = undefined;
@@ -568,9 +607,10 @@
       clearPoll();
       schedulePoll(0);
       await tick();
+      requireCurrentAccess(generation, signal);
       composer?.focus();
     } catch (error) {
-      if (!isAbort(error)) {
+      if (currentAccess(generation, signal) && !isAbort(error)) {
         errorMessage = publicMessage(
           error,
           'The message was not sent. Retry keeps the same request.',
@@ -578,27 +618,41 @@
         transferMessage = '';
       }
     } finally {
-      submitting = false;
+      if (currentAccess(generation, signal)) submitting = false;
     }
   }
 
-  async function uploadOne(item: SelectedFile): Promise<string> {
+  async function uploadOne(
+    item: SelectedFile,
+    generation: number,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    requireCurrentAccess(generation, signal);
     if (item.uploadId) return item.uploadId;
     item.state = 'hashing';
     item.progress = 0;
     transferMessage = `Hashing ${item.file.name}…`;
     const digests = await hashFileFn(item.file, (fraction) => {
-      item.progress = fraction * 0.2;
+      if (currentAccess(generation, signal)) item.progress = fraction * 0.2;
     });
-    const intent: UploadIntent = await client.createUpload({
-      session_id: sessionId,
-      idempotency_key: item.uploadKey,
-      name: boundedUTF8(item.file.name, 255, 'attachment'),
-      media_type: boundedUTF8(item.file.type, 127, 'application/octet-stream'),
-      size: item.file.size,
-      sha256: digests.sha256,
-      content_md5: digests.contentMD5,
-    });
+    requireCurrentAccess(generation, signal);
+    const intent: UploadIntent = await client.createUpload(
+      {
+        session_id: sessionId,
+        idempotency_key: item.uploadKey,
+        name: boundedUTF8(item.file.name, 255, 'attachment'),
+        media_type: boundedUTF8(item.file.type, 127, 'application/octet-stream'),
+        size: item.file.size,
+        sha256: digests.sha256,
+        content_md5: digests.contentMD5,
+      },
+      signal,
+    );
+    if (!currentAccess(generation, signal)) {
+      intent.url = '';
+      intent.headers = {};
+      requireCurrentAccess(generation, signal);
+    }
     item.state = 'uploading';
     transferMessage = `Uploading ${item.file.name}…`;
     const uploadID = intent.upload_id;
@@ -606,18 +660,20 @@
       intent,
       item.file,
       (fraction) => {
-        item.progress = 0.2 + fraction * 0.75;
+        if (currentAccess(generation, signal)) item.progress = 0.2 + fraction * 0.75;
       },
       undefined,
-      abortController?.signal,
+      signal,
     );
     intent.url = '';
     intent.headers = {};
     await transfer;
+    requireCurrentAccess(generation, signal);
     item.state = 'committing';
     item.progress = 0.97;
     transferMessage = `Verifying ${item.file.name}…`;
-    const committed: UploadCommit = await client.commitUpload(uploadID);
+    const committed: UploadCommit = await client.commitUpload(uploadID, signal);
+    requireCurrentAccess(generation, signal);
     item.uploadId = committed.upload_id;
     item.state = 'ready';
     item.progress = 1;
@@ -645,6 +701,8 @@
   ): Promise<void> {
     const key = `${event.event_id}:${index}`;
     if (downloading) return;
+    const generation = accessGeneration,
+      signal = abortController?.signal;
     downloading = key;
     errorMessage = '';
     try {
@@ -652,21 +710,29 @@
         sessionId,
         event.sequence,
         index,
+        signal,
       );
+      if (!currentAccess(generation, signal)) {
+        capability.url = '';
+        capability.headers = undefined;
+        requireCurrentAccess(generation, signal);
+      }
       const download = downloadCapabilityFn(
         capability,
         attachment.size,
         attachment.name,
         undefined,
-        abortController?.signal,
+        signal,
       );
       capability.url = '';
       capability.headers = undefined;
       await download;
+      requireCurrentAccess(generation, signal);
     } catch (error) {
-      errorMessage = publicMessage(error, 'The attachment could not be downloaded.');
+      if (currentAccess(generation, signal) && !isAbort(error))
+        errorMessage = publicMessage(error, 'The attachment could not be downloaded.');
     } finally {
-      downloading = undefined;
+      if (currentAccess(generation, signal)) downloading = undefined;
     }
   }
 
@@ -695,9 +761,17 @@
 
   async function refreshCompute(): Promise<void> {
     if (!canWrite || submitting) return;
+    const generation = accessGeneration,
+      signal = abortController?.signal;
     errorMessage = '';
-    await loadComputeAccess(abortController?.signal);
-    if (computeUnavailable) errorMessage = 'Unable to refresh compute status.';
+    try {
+      await loadComputeAccess(signal);
+      requireCurrentAccess(generation, signal);
+      if (computeUnavailable) errorMessage = 'Unable to refresh compute status.';
+    } catch (error) {
+      if (currentAccess(generation, signal) && !isAbort(error))
+        errorMessage = publicMessage(error, 'Unable to refresh compute status.');
+    }
   }
 
   function computeAllowsSend(status: ComputeStatus | undefined): boolean {

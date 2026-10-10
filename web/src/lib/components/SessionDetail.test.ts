@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { describe, expect, it, vi } from 'vitest';
+import { tick } from 'svelte';
 
 import {
   ApiError,
@@ -560,4 +561,241 @@ describe('SessionDetail explanation lifecycle', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Close explanation' }));
     expect(screen.getByRole('heading', { name: 'Canonical planning' })).toHaveFocus();
   });
+
+  function switchedScope(overrides: Partial<SessionDetailApi> = {}): SessionDetailApi {
+    return withRun({
+      getIdentity: vi
+        .fn()
+        .mockResolvedValueOnce(identity)
+        .mockResolvedValue({
+          ...identity,
+          tenants: [{ tenant_id: 'ten-2', role: 'owner', active: true }],
+        }),
+      getSession: vi
+        .fn()
+        .mockResolvedValueOnce(fresh(session))
+        .mockResolvedValue(fresh({ ...session, title: 'New authorized scope' })),
+      ...overrides,
+    });
+  }
+
+  async function observeSwitch(): Promise<void> {
+    await fireEvent(document, new Event('visibilitychange'));
+    await screen.findByRole('heading', { name: 'New authorized scope' });
+    await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled());
+  }
+
+  it('never restores a discarded private title from an old archive response', async () => {
+    const pending = barrier<SessionSummary>();
+    const client = switchedScope({ setSessionArchived: vi.fn().mockReturnValue(pending.promise) });
+    render(SessionDetail, { client, sessionId: 'ses-1', explanationEnabled: true });
+    await fireEvent.click(await screen.findByRole('button', { name: 'Archive' }));
+    await waitFor(() => expect(client.setSessionArchived).toHaveBeenCalledOnce());
+    const signal = vi.mocked(client.setSessionArchived).mock.calls[0]?.[2];
+    await observeSwitch();
+    expect(signal?.aborted).toBe(true);
+    pending.resolve({ ...session, title: 'OLD PRIVATE TITLE', status: 'archived' });
+    await pending.promise;
+    await tick();
+    expect(screen.getByRole('heading', { name: 'New authorized scope' })).toBeInTheDocument();
+    expect(screen.queryByText('OLD PRIVATE TITLE')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Archive' })).toBeEnabled();
+  });
+
+  it.each(['compute', 'hash', 'intent', 'put', 'commit', 'message'] as const)(
+    'fences a discarded file submission paused at %s, without follow-up effects or new-scope state overwrite',
+    async (stage) => {
+      const release = barrier<void>();
+      const digests = { sha256: 'a'.repeat(64), contentMD5: 'kAFQmDzST7DWlj99KOF/cg==' };
+      const intent = {
+        upload_id: 'up-old',
+        method: 'PUT' as const,
+        url: 'https://objects.example/private',
+        headers: {},
+        expires_at: '2026-10-10T12:30:00Z',
+      };
+      const hashFileFn = vi.fn(async () => {
+        if (stage === 'hash') await release.promise;
+        return digests;
+      });
+      const putUploadFn = vi.fn(async () => {
+        if (stage === 'put') await release.promise;
+      });
+      const createUpload = vi
+        .fn<SessionDetailApi['createUpload']>()
+        .mockImplementation(async () => {
+          if (stage === 'intent') await release.promise;
+          return intent;
+        });
+      const commitUpload = vi
+        .fn<SessionDetailApi['commitUpload']>()
+        .mockImplementation(async () => {
+          if (stage === 'commit') await release.promise;
+          return { upload_id: 'up-old', name: 'old.txt', media_type: 'text/plain', size: 3 };
+        });
+      const createMessage = vi
+        .fn<SessionDetailApi['createMessage']>()
+        .mockImplementation(async () => {
+          if (stage === 'message') await release.promise;
+          return {
+            session_id: 'ses-1',
+            event_id: 'old-created',
+            sequence: 2,
+            run_id: 'old-run',
+            created: true,
+            compute: {
+              provider: 'openai',
+              entitlement: 'active',
+              quota: 'available',
+              observed_at: '2026-10-10T12:00:00Z',
+            },
+          };
+        });
+      let computeReads = 0;
+      const getComputeStatus = vi
+        .fn<SessionDetailApi['getComputeStatus']>()
+        .mockImplementation(async () => {
+          if (computeReads++ === 1 && stage === 'compute') await release.promise;
+          return {
+            availability: 'ready',
+            connection: {
+              provider: 'openai',
+              entitlement: 'active',
+              quota: 'available',
+              observed_at: '2026-10-10T12:00:00Z',
+            },
+          };
+        });
+      const client = switchedScope({ getComputeStatus, createUpload, commitUpload, createMessage });
+      render(SessionDetail, {
+        client,
+        sessionId: 'ses-1',
+        explanationEnabled: true,
+        hashFileFn,
+        putUploadFn,
+      });
+      await fireEvent.input(await screen.findByLabelText('Message'), {
+        target: { value: 'OLD PRIVATE DRAFT' },
+      });
+      await fireEvent.change(screen.getByLabelText('Attach files'), {
+        target: { files: [new File(['abc'], 'old.txt', { type: 'text/plain' })] },
+      });
+      await fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+      const paused = {
+        compute: getComputeStatus,
+        hash: hashFileFn,
+        intent: createUpload,
+        put: putUploadFn,
+        commit: commitUpload,
+        message: createMessage,
+      }[stage];
+      await waitFor(() => expect(paused).toHaveBeenCalledTimes(stage === 'compute' ? 2 : 1));
+      const originalSignal = getComputeStatus.mock.calls[1]?.[1];
+      await observeSwitch();
+      expect(originalSignal?.aborted).toBe(true);
+      await fireEvent.input(screen.getByLabelText('Message'), {
+        target: { value: 'New scope draft' },
+      });
+      release.resolve();
+      await release.promise;
+      await tick();
+      expect(createUpload).toHaveBeenCalledTimes(['compute', 'hash'].includes(stage) ? 0 : 1);
+      expect(putUploadFn).toHaveBeenCalledTimes(
+        ['compute', 'hash', 'intent'].includes(stage) ? 0 : 1,
+      );
+      expect(commitUpload).toHaveBeenCalledTimes(['commit', 'message'].includes(stage) ? 1 : 0);
+      expect(createMessage).toHaveBeenCalledTimes(stage === 'message' ? 1 : 0);
+      expect(screen.getByLabelText('Message')).toHaveValue('New scope draft');
+      expect(screen.queryByText('old.txt')).not.toBeInTheDocument();
+      expect(screen.queryByText('Message sent. Waiting for the agent…')).not.toBeInTheDocument();
+      if (stage === 'intent') expect(intent.url).toBe('');
+    },
+  );
+
+  it('never starts a discarded attachment download from a late capability response', async () => {
+    const pending = barrier<Awaited<ReturnType<SessionDetailApi['getAttachmentCapability']>>>();
+    const client = switchedScope({
+      listEvents: vi.fn().mockResolvedValue(
+        fresh<EventPage>({
+          items: [
+            {
+              event_id: 'evt-old',
+              sequence: 1,
+              kind: 'assistant_message',
+              created_at: '2026-10-10T12:00:00Z',
+              content: {
+                attachments: [{ name: 'old-download.txt', media_type: 'text/plain', size: 3 }],
+              },
+            },
+          ],
+        }),
+      ),
+      getAttachmentCapability: vi.fn().mockReturnValue(pending.promise),
+    });
+    const downloadCapabilityFn = vi.fn().mockResolvedValue(undefined);
+    render(SessionDetail, {
+      client,
+      sessionId: 'ses-1',
+      explanationEnabled: true,
+      downloadCapabilityFn,
+    });
+    await fireEvent.click(await screen.findByRole('button', { name: /old-download.txt/ }));
+    await waitFor(() => expect(client.getAttachmentCapability).toHaveBeenCalledOnce());
+    const signal = vi.mocked(client.getAttachmentCapability).mock.calls[0]?.[3];
+    await observeSwitch();
+    expect(signal?.aborted).toBe(true);
+    const capability = {
+      method: 'GET' as const,
+      url: 'https://objects.example/private',
+      headers: {},
+      expires_at: '2026-10-10T12:30:00Z',
+    };
+    pending.resolve(capability);
+    await pending.promise;
+    await tick();
+    expect(downloadCapabilityFn).not.toHaveBeenCalled();
+    expect(capability.url).toBe('');
+  });
+
+  it.each(['initial', 'refresh'] as const)(
+    'does not replace new-scope compute with a stale %s read',
+    async (stage) => {
+      const pending = barrier<Awaited<ReturnType<SessionDetailApi['getComputeStatus']>>>();
+      const ready = {
+        availability: 'ready' as const,
+        connection: {
+          provider: 'openai',
+          entitlement: 'active' as const,
+          quota: 'available' as const,
+          observed_at: '2026-10-10T12:00:00Z',
+        },
+      };
+      const exhausted = {
+        ...ready,
+        connection: { ...ready.connection, quota: 'exhausted' as const },
+      };
+      const getComputeStatus = vi.fn<SessionDetailApi['getComputeStatus']>();
+      if (stage === 'initial') getComputeStatus.mockReturnValueOnce(pending.promise);
+      else getComputeStatus.mockResolvedValueOnce(exhausted).mockReturnValueOnce(pending.promise);
+      getComputeStatus.mockResolvedValue(ready);
+      const client = switchedScope({ getComputeStatus });
+      render(SessionDetail, { client, sessionId: 'ses-1', explanationEnabled: true });
+      if (stage === 'initial') await waitFor(() => expect(getComputeStatus).toHaveBeenCalledOnce());
+      else {
+        await fireEvent.click(await screen.findByRole('button', { name: /^Refresh$/ }));
+        await waitFor(() => expect(getComputeStatus).toHaveBeenCalledTimes(2));
+      }
+      const signal = getComputeStatus.mock.calls[stage === 'initial' ? 0 : 1]?.[1];
+      await observeSwitch();
+      expect(signal?.aborted).toBe(true);
+      pending.resolve(exhausted);
+      await pending.promise;
+      await tick();
+      await fireEvent.input(screen.getByLabelText('Message'), {
+        target: { value: 'New scope message' },
+      });
+      expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled();
+      expect(screen.queryByRole('button', { name: /^Refresh$/ })).not.toBeInTheDocument();
+    },
+  );
 });

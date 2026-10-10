@@ -118,6 +118,7 @@ and link to it.
 The [research index](research/README.md) separates evidence and open decisions
 from committed runtime contracts. It covers:
 
+- [Session retention, replay and upload cleanup draft](design/session-retention-replay.md)
 - [AI resources, routing, and federation](research/ai-resources-and-federation.md)
 - [OpenAI subscription resource policy](research/openai-subscription-resource-policy.md)
 - [Attachable workers](research/attachable-workers.md)

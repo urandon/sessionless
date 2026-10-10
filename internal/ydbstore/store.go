@@ -183,9 +183,10 @@ func (err callbackError) Error() string { return err.err.Error() }
 func (err callbackError) Unwrap() error { return err.err }
 
 type stateTx struct {
-	store    *Store
-	sqlTx    *sql.Tx
-	tenantID domain.TenantID
+	store            *Store
+	sqlTx            *sql.Tx
+	tenantID         domain.TenantID
+	explanationQuery rowQuery // readonly resource budget; nil on canonical writers
 }
 
 func (tx *stateTx) GetRun(ctx context.Context, id domain.RunID) (domain.Run, bool, error) {
@@ -253,6 +254,9 @@ func (tx *stateTx) PutRun(ctx context.Context, run domain.Run) error {
 		!stored.CreatedAt.Equal(run.CreatedAt)) {
 		return domain.ValidationError{Field: "run", Reason: "immutable identity fields cannot change"}
 	}
+	if err := invalidateRunExplanationTx(ctx, tx, run); err != nil {
+		return err
+	}
 	payload, err := marshal(run)
 	if err != nil {
 		return err
@@ -304,6 +308,9 @@ func (tx *stateTx) PutAttempt(ctx context.Context, attempt domain.Attempt) error
 		return err
 	}
 	if err := attempt.ValidateForRun(run); err != nil {
+		return err
+	}
+	if err := invalidateAttemptExplanationTx(ctx, tx, run, attempt); err != nil {
 		return err
 	}
 	payload, err := marshal(attempt)
@@ -648,6 +655,17 @@ func (tx *stateTx) PutDispatchOutbox(
 	}
 	if err := outbox.ValidateForAttempt(run, attempt); err != nil {
 		return err
+	}
+	if outbox.Status == domain.DispatchPending {
+		head, err := readExplanationHeadTx(ctx, tx, run.ID)
+		if err != nil {
+			return err
+		}
+		if head == nil || head.SelectedAttemptID != attempt.ID {
+			if err := selectExplanationTx(ctx, tx, run, attempt, outbox.ExecutionPlacementV2, outbox.UpdatedAt); err != nil {
+				return err
+			}
+		}
 	}
 	payload, err := marshal(outbox)
 	if err != nil {

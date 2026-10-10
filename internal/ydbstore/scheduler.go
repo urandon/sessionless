@@ -136,7 +136,8 @@ func (store *Store) AdmitDispatch(
 		if outbox.ContextWindow != nil {
 			result.ThroughSequence = outbox.ContextWindow.ThroughSequence
 		}
-		if _, found, err := state.GetAttempt(ctx, request.AttemptID); err != nil {
+		attempt, found, err := state.GetAttempt(ctx, request.AttemptID)
+		if err != nil {
 			return err
 		} else if !found {
 			return fmt.Errorf("attempt %q not found", request.AttemptID)
@@ -197,7 +198,7 @@ func (store *Store) AdmitDispatch(
 				result.Admitted = true
 				result.State = slot.State
 				result.Code = "already_admitted"
-				return nil
+				return recordAdmissionExplanationTx(ctx, tx, run, attempt, outbox.ExecutionPlacementV2, result.Code, request.Now)
 			}
 		}
 
@@ -234,7 +235,7 @@ func (store *Store) AdmitDispatch(
 			if run.Status == domain.RunQuotaBlocked &&
 				previousState == decision.State &&
 				equalOptionalTime(previousBlockedUntil, decision.RetryAt) {
-				return nil
+				return recordAdmissionExplanationTx(ctx, tx, run, attempt, outbox.ExecutionPlacementV2, decision.Code, request.Now)
 			}
 			if run.Status != domain.RunQuotaBlocked && !run.Status.Terminal() {
 				if err := run.Transition(domain.RunQuotaBlocked, request.Now); err != nil {
@@ -245,6 +246,9 @@ func (store *Store) AdmitDispatch(
 				}
 			}
 			if err := writeSchedulerSlot(ctx, tx, slot); err != nil {
+				return err
+			}
+			if err := recordAdmissionExplanationTx(ctx, tx, run, attempt, outbox.ExecutionPlacementV2, decision.Code, request.Now); err != nil {
 				return err
 			}
 			return appendSchedulerAudit(
@@ -269,6 +273,9 @@ func (store *Store) AdmitDispatch(
 			}
 		}
 		if err := state.PutRun(ctx, run); err != nil {
+			return err
+		}
+		if err := recordAdmissionExplanationTx(ctx, tx, run, attempt, outbox.ExecutionPlacementV2, decision.Code, request.Now); err != nil {
 			return err
 		}
 		reservation := domain.QuotaReservation{

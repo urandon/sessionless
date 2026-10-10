@@ -27,6 +27,7 @@ LDFLAGS := -s -w \
 
 .PHONY: help prepare go-cache-status go-cache-clean go-cache-policy-test tools web-tools go-package-layout generate fmt fmt-check lint test build dockerless-build attached-worker-build attached-worker-package-test attached-worker-crash-integration attached-worker-active-crash-integration attached-worker-security-gate attached-worker-security-ydb-gate attached-worker-joined-provider-ydb-gate attached-worker-native-integration attached-worker-rootless-integration docs-check readme-visual-preview web-install web-openapi-check web-check web-build web-stage web-ci web-browser-install web-browser-test integration ydb-integration local-integration e2e-local e2e-local-dockerless attached-worker-oci-integration attached-worker-oci-linux-rootless-ci provider-conformance provider-conformance-fuzz ci image-publication-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test dockerless-stand-policy-test budget-policy-test web-deployment-policy-test terraform-ci cloudflare-edge-ci \
 	cloud-web-smoke cloud-web-smoke-test attached-worker-experiment-plan attached-worker-experiment-test \
+	serverless-egress-conformance \
 	compose-config images dev-up dev-seed migrate-local migration-status partition-status partition-backfill cloud-app-reset-plan cloud-app-reset session-delete-request session-delete-plan session-delete session-hold session-release-hold \
 	worker-once web-bootstrap dev-down dev-reset dockerless-up dockerless-status dockerless-worker-once dockerless-logs dockerless-down repowise-install repowise-index repowise-update repowise-status repowise-doctor repowise-mcp repowise-mcp-smoke repowise-evaluate repowise-stop repowise-uninstall-plan repowise-uninstall repowise-policy-test clean
 
@@ -68,6 +69,7 @@ help:
 		'make attached-worker-oci-integration run the opt-in real Docker Engine isolation matrix' \
 		'make attached-worker-oci-linux-rootless-ci run the pinned Linux rootless release gate' \
 		'make provider-conformance run the credential-free harness/provider registry fixtures' \
+		'make serverless-egress-conformance verify the test-only prepared authority/egress seam; no cloud or provider' \
 		'make provider-conformance-fuzz run the bounded native harness parser fuzz gates' \
 		'make image-publication-test validate immutable image publication guards' \
 		'make image-publish-policy-test validate explicit credentialed publication intent' \
@@ -311,6 +313,11 @@ e2e-local: prepare
 e2e-local-dockerless: prepare
 	@SESSIONLESS_LOCAL_ORCHESTRATOR=dockerless ./scripts/e2e-local.sh
 
+serverless-egress-conformance: prepare
+	go vet ./internal/serverlessharness ./internal/serverlessegress ./internal/yandexsubstrate
+	go test -race -count=1 -shuffle=on -timeout=2m ./internal/serverlessharness ./internal/serverlessegress ./internal/yandexsubstrate
+	go test -race -count=50 -shuffle=on -timeout=2m -run '^TestJoinedEgress' ./internal/serverlessegress
+
 provider-conformance: prepare
 	go vet ./internal/domain ./internal/ports ./internal/sessionlessharness ./internal/harnessconformance ./internal/codexexec ./internal/codexopenrouter ./internal/piopenrouter ./internal/opencodeopenrouter ./internal/directopenrouter ./internal/providercomposition
 	go test -race -count=50 -shuffle=on -timeout=5m ./internal/domain ./internal/ports ./internal/sessionlessharness ./internal/harnessconformance ./internal/providercomposition
@@ -332,7 +339,7 @@ provider-conformance-fuzz: prepare
 	go test -run='^$$' -fuzz=FuzzOpenCodeJSONLParserNeverCommitsMalformedTerminal -fuzztime=2s ./internal/opencodeopenrouter
 	go test -run='^$$' -fuzz=FuzzResponseParserNeverCommitsMalformedTerminal -fuzztime=2s ./internal/directopenrouter
 
-ci: docs-check cloud-web-smoke-test web-ci generate test build integration attached-worker-security-gate image-publication-test image-build-inputs-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test dockerless-stand-policy-test go-cache-policy-test
+ci: docs-check cloud-web-smoke-test web-ci generate test build integration attached-worker-security-gate serverless-egress-conformance image-publication-test image-build-inputs-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test dockerless-stand-policy-test go-cache-policy-test
 
 image-publication-test:
 	@./scripts/test-image-publication.sh

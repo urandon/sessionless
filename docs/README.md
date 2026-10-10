@@ -115,6 +115,10 @@ and link to it.
 
 ## Research and design
 
+Draft detailed contracts:
+
+- [Conversation execution evidence (#182, draft)](design/conversation-execution-evidence.md)
+
 The [research index](research/README.md) separates evidence and open decisions
 from committed runtime contracts. It covers:
 
@@ -123,6 +127,7 @@ from committed runtime contracts. It covers:
   [constrained MCP](design/owned-harness-tools-mcp.md) and
   [bounded web search](design/owned-harness-web-search.md); design review and owner
   acceptance remain required, not runtime activation evidence
+- [Session retention, replay and upload cleanup draft](design/session-retention-replay.md)
 - [AI resources, routing, and federation](research/ai-resources-and-federation.md)
 - [OpenAI subscription resource policy](research/openai-subscription-resource-policy.md)
 - [Attachable workers](research/attachable-workers.md)

@@ -140,10 +140,14 @@ content-free fencing records so a stale worker fence can never be reused. The
 deletion tombstone, released hold, and lifecycle audit events remain so a
 deleted ID cannot be silently recreated and an incident can be reconstructed.
 
-The retention/deletion semantics for payload-free API idempotency, mutation,
-and Web upload-intent records are tracked separately in issue #57. Until that
-decision is implemented, the deletion contract does not claim that every row
-which happens to contain a `session_id` is erased.
+API idempotency, mutation and Web upload-intent retention are tracked separately
+in issue #57. These records are not uniformly payload-free or non-sensitive:
+upload workflow metadata includes filenames, hashes and object identities.
+The [retention and replay design](design/session-retention-replay.md) proposes
+versioned policy, bounded retry namespaces, upload ownership and scope-specific
+completion; it is not implemented or accepted by this lifecycle contract.
+Current deletion does not claim to erase these four tables or every row which
+happens to contain a `session_id`.
 
 Tenant/account deletion is an orchestration of these single-session state
 machines. It must enumerate authorized session IDs and invoke this exact

@@ -33,6 +33,12 @@ import (
 
 var joinedTestTime = time.Date(2026, 9, 7, 8, 0, 0, 0, time.UTC)
 
+// Joined protocol tests exercise real local-store and pinned-process setup, not
+// a connection latency SLO. Match the ordinary session operation budget so a
+// one-second setup race cannot decide the ownership/protocol assertion. Keep
+// completion barriers and their bounded waits separate from this failure bound.
+const joinedProtocolOperationTimeout = 15 * time.Second
+
 // This exercises the exported, default-off composition. The pinned shell
 // executable answers only read-only OCI preflight commands; any container
 // creation or start is a test failure, not an implicit Docker dependency.
@@ -156,7 +162,7 @@ esac
 		Store: store, Bootstrap: &joinedBootstrap{now: joinedTestTime, publicKey: public, offer: offer}, Exchange: factory,
 		Session: attachedworkersession.Config{
 			Audience: "sessionless:attached-worker:v1", WorkerOffer: offer,
-			ImplementedVersions: []attachedworkerprotocol.ProtocolVersion{1}, OperationTimeout: time.Second,
+			ImplementedVersions: []attachedworkerprotocol.ProtocolVersion{1}, OperationTimeout: joinedProtocolOperationTimeout,
 			Random: bytes.NewReader(append(bytes.Repeat([]byte{0x41}, 32), bytes.Repeat([]byte{0x42}, 32)...)), Now: clock.Now,
 		},
 		Connect:        attachedworkersession.ConnectInputV1{ExpectedWorkerRevision: 7, CapabilityManifest: capability},

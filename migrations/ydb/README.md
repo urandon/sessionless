@@ -19,6 +19,32 @@ preserves this table/canonical state. Session deletion removes its exact
 tenant/run row even while the route is disabled. No destructive down migration
 or production apply is authorized by this change.
 
+Migrations `00103` and `00104` add the finite shared read-rate slots and checked
+writer-first deployment receipt for #188 (evidence design 0.1.3). They do not
+mount the route or create a receipt. `WEB_RUN_EXPLANATION_ENABLED` is absent/false
+by default. Explicit true additionally requires `WEB_RUN_EXPLANATION_WRITER_COMMIT`
+to be the exact lower-case 40-hex deployed projection-writer commit, matched by
+`run-explanation-rated-v1-writer-first-cutover` in
+`run_explanation_cutover_state_v1`. Receipt version, writer, schema and rated
+reader versions must all be 1; `old_writer_count` must be zero, completion must
+not be in the future, and a 64-hex SHA-256 digest must link the separately retained
+old-writer inventory/drain evidence. A flag alone, branch name or missing table
+is insufficient. Startup checks both exact-key table schemas without writing.
+
+Under separate deployment authority: apply the additive migrations; upgrade all
+canonical writers (scheduler/admission, workers, reconcilers, attached completion
+and session deletion); inventory each deployed instance and drain every old
+writer; preserve its inventory/commit/drain evidence; then record the exact
+typed cutover receipt and enable the BFF with the matching deployment pin.
+These repository changes do not perform any of those cloud steps. Rollback
+disables the route, retaining both projection and cutover evidence. Session/Run
+projection deletion is never gated on read enablement. Rate rows hold only
+hashes and bounded 30-second debit receipts, expire logically after ten minutes,
+and occupy only slots 0–4095. No independent TTL is enabled: it could delete a
+corrupt row based on a mismatched expiry column before validation. Logical reuse
+checks the whole row and exact expiry equality, while the finite slot space
+bounds physical metadata without a cleanup requirement.
+
 Before the first production deployment, the migration baseline may be rebased
 in a reviewed change. Local, CI, and the current pre-production `cloud-dev`
 database contain disposable development data and must be recreated from the

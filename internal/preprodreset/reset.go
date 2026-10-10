@@ -263,6 +263,8 @@ var applicationTables = []string{
 	"run_idempotency",
 	"run_finalizations",
 	"run_explanation_heads_v1",
+	"run_explanation_rate_slots_v1",
+	"run_explanation_cutover_state_v1",
 	"runs",
 	"artifact_manifests",
 	"telegram_updates",

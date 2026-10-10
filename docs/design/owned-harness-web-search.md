@@ -1,12 +1,16 @@
 # Bounded web search for the owned harness
 
-Version: 0.2.1 draft, 2026-10-10. Owners: [#94](https://gitcode.com/urandon/sessionless/issues/94),
+Version: 0.2.1, accepted engineering design, 2026-10-10. Owners: [#94](https://gitcode.com/urandon/sessionless/issues/94),
 [#179](https://gitcode.com/urandon/sessionless/issues/179),
 [#180](https://gitcode.com/urandon/sessionless/issues/180); implementation #176.
-Independent exact-version review and owner acceptance precede implementation.
-This proposes one search profile; it grants no credential, purchase or live-call
-authority. [The comparison](../research/web-search-mvp.md) owns the sources and
-remaining broader research.
+Accepted with [the minimum harness](owned-agent-harness-minimum.md) at exact
+`42139dfb5cefb266adb77f221c0743b53cfb5217` in independently reviewed and CI-verified
+[!160](https://gitcode.com/urandon/sessionless/pull/160), under the owner's
+agreed-MVP engineering delegation. [#194](https://gitcode.com/urandon/sessionless/issues/194)
+and [#195](https://gitcode.com/urandon/sessionless/issues/195) remain uncompleted.
+This selects one engineering search profile; it grants no credential, purchase
+or live-call authority. [The comparison](../research/web-search-mvp.md) owns the
+sources and remaining broader research.
 
 ## Required product capability
 

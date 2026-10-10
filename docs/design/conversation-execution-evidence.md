@@ -1,6 +1,6 @@
 # Conversation execution evidence
 
-Version: **0.1.3 engineering amendment draft**, 2026-10-10.
+Version: **0.1.3 accepted engineering amendment**, 2026-10-10.
 Baseline: **0.1.2 accepted**. Owner: [#182](https://gitcode.com/urandon/sessionless/issues/182) (closed).
 Consumers: [#141](https://gitcode.com/urandon/sessionless/issues/141) and
 [#155](https://gitcode.com/urandon/sessionless/issues/155).
@@ -11,8 +11,11 @@ not an additional gate for either MVP execution track.
 
 The 0.1.3 amendment below is owned by implementation [#188](https://gitcode.com/urandon/sessionless/issues/188).
 It resolves the shared server-rate mechanism without changing public fields,
-product scope or accepted numeric ceilings. It is not accepted or implemented
-until its independent requirements-led review and implementation evidence exist.
+product scope or accepted numeric ceilings. The primary accepted the amendment
+under the owner's agreed-feature delegation after independent original-goal
+review CLEAN at exact draft `6c0f610c401e25e5e89cc8fb03c9c885a13a374a`.
+This is design acceptance only; rated adapter, migrations, native/CI and rollout
+evidence remain implementation obligations of #188, not completed delivery.
 
 The conversation drawer reads one authorized Run and its recorded evidence.
 It keeps admission, canonical completion and Attempt observations distinct.

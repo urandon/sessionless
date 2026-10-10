@@ -260,6 +260,30 @@
         }
       }
     },
+    "/api/web/v1/runs/{run_id}/explanation": {
+      "get": {
+        "operationId": "getRunExplanation",
+        "description": "Participant READ-authorized exact Run evidence, design 0.1.2. Selector only: no query or body. Default-off until writer/schema cutover. No compute, retry or cancellation authority. Maximum 16 KiB; no ETag or 304.",
+        "parameters": [{ "$ref": "#/components/parameters/RunID" }],
+        "responses": {
+          "200": {
+            "description": "Safe transaction-consistent evidence",
+            "headers": { "Cache-Control": { "schema": { "type": "string", "const": "no-store" } } },
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/RunExplanationV1" } }
+            }
+          },
+          "429": {
+            "description": "Authenticated user/tenant rate limit, without resource details",
+            "headers": { "Retry-After": { "schema": { "type": "string" } } },
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
     "/api/web/v1/sessions/{session_id}/events/{sequence}/attachments/{index}": {
       "get": {
         "operationId": "getAttachmentCapability",
@@ -509,6 +533,281 @@
       }
     },
     "schemas": {
+      "RunExplanationV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "version",
+          "run_id",
+          "session_id",
+          "read_at",
+          "status",
+          "created_at",
+          "updated_at",
+          "admission",
+          "terminal",
+          "attempt",
+          "attached",
+          "coverage"
+        ],
+        "properties": {
+          "version": {
+            "type": "integer",
+            "const": 1
+          },
+          "run_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+          },
+          "session_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+          },
+          "read_at": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "Z$"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunExplanationStatusV1"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "Z$"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "Z$"
+          },
+          "finished_at": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "Z$"
+          },
+          "admission": {
+            "$ref": "#/components/schemas/RunExplanationAdmissionV1"
+          },
+          "terminal": {
+            "$ref": "#/components/schemas/RunExplanationTerminalV1"
+          },
+          "attempt": {
+            "$ref": "#/components/schemas/RunExplanationAttemptV1"
+          },
+          "attached": {
+            "$ref": "#/components/schemas/RunExplanationAttachedV1"
+          },
+          "coverage": {
+            "$ref": "#/components/schemas/RunExplanationCoverageV1"
+          }
+        }
+      },
+      "RunExplanationStatusV1": {
+        "type": "string",
+        "enum": [
+          "created",
+          "admitted",
+          "queued",
+          "running",
+          "succeeded",
+          "failed",
+          "cancelled",
+          "quota_blocked"
+        ]
+      },
+      "RunExplanationAdmissionReasonV1": {
+        "type": "string",
+        "enum": [
+          "admitted",
+          "subscription_attention_required",
+          "capacity_draining",
+          "quota_reset_pending",
+          "quota_exhausted_reset_unknown",
+          "runtime_limit_exceeded",
+          "turn_limit_exceeded",
+          "input_limit_exceeded",
+          "context_limit_exceeded",
+          "artifact_limit_exceeded",
+          "capacity_busy",
+          "workspace_queue_limit",
+          "workspace_active_run_limit"
+        ]
+      },
+      "RunExplanationTerminalReasonV1": {
+        "type": "string",
+        "enum": [
+          "execution_failed",
+          "result_persistence_failed",
+          "canonical_cancelled",
+          "unclassified_failure"
+        ]
+      },
+      "RunExplanationAttachedFactV1": {
+        "type": "string",
+        "enum": [
+          "offer_recorded",
+          "claim_recorded",
+          "terminal_candidate_recorded",
+          "terminal_commit_recorded",
+          "fenced_outcome_unknown",
+          "receipt_retired"
+        ]
+      },
+      "RunExplanationAdmissionV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["availability"],
+        "properties": {
+          "availability": {
+            "type": "string",
+            "enum": ["recorded", "unknown"]
+          },
+          "outcome": {
+            "type": "string",
+            "enum": ["admitted", "denied"]
+          },
+          "reason_code": {
+            "$ref": "#/components/schemas/RunExplanationAdmissionReasonV1"
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "Z$"
+          },
+          "decision_revision": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 1
+          },
+          "coverage": {
+            "type": "string",
+            "enum": ["last_recorded_decision"]
+          }
+        }
+      },
+      "RunExplanationTerminalV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["availability"],
+        "properties": {
+          "availability": {
+            "type": "string",
+            "enum": ["recorded", "unknown", "not_applicable"]
+          },
+          "reason_code": {
+            "$ref": "#/components/schemas/RunExplanationTerminalReasonV1"
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "Z$"
+          },
+          "event_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+          },
+          "event_sequence": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 1
+          }
+        }
+      },
+      "RunExplanationAttemptV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["availability"],
+        "properties": {
+          "availability": {
+            "type": "string",
+            "enum": ["recorded", "unknown"]
+          },
+          "attempt_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+          },
+          "number": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 1,
+            "maximum": 4294967295
+          },
+          "status": {
+            "type": "string",
+            "enum": ["created", "running", "succeeded", "failed", "cancelled"]
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "Z$"
+          },
+          "finished_at": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "Z$"
+          }
+        }
+      },
+      "RunExplanationAttachedV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["availability"],
+        "properties": {
+          "availability": {
+            "type": "string",
+            "enum": ["recorded", "unknown"]
+          },
+          "fact": {
+            "$ref": "#/components/schemas/RunExplanationAttachedFactV1"
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "Z$"
+          },
+          "valid_until": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "Z$"
+          },
+          "freshness": {
+            "type": "string",
+            "enum": ["within_lease", "expired", "durable"]
+          }
+        }
+      },
+      "RunExplanationCoverageV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["admission", "terminal", "attempt", "operational"],
+        "properties": {
+          "admission": {
+            "type": "string",
+            "enum": ["recorded", "unknown"]
+          },
+          "terminal": {
+            "type": "string",
+            "enum": ["recorded", "unknown", "not_applicable"]
+          },
+          "attempt": {
+            "type": "string",
+            "enum": ["recorded", "unknown"]
+          },
+          "operational": {
+            "type": "string",
+            "enum": ["recorded", "unknown"]
+          }
+        }
+      },
       "ErrorEnvelope": {
         "type": "object",
         "additionalProperties": false,

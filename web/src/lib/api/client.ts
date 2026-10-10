@@ -1,4 +1,5 @@
 import type { components } from './generated';
+import { parseRunExplanationText } from '../run-explanation/validate';
 
 type Schemas = components['schemas'];
 
@@ -11,6 +12,7 @@ export type SessionEvent = Schemas['SessionEvent'];
 export type Attachment = Schemas['Attachment'];
 export type RunPage = Schemas['RunPage'];
 export type Run = Schemas['Run'];
+export type RunExplanationV1 = Schemas['RunExplanationV1'];
 export type ComputeStatus = Schemas['ComputeStatus'];
 export type CreateMessageResponse = Schemas['CreateMessageResponse'];
 export type UploadIntent = Schemas['UploadIntent'];
@@ -50,13 +52,21 @@ export class ApiError extends Error {
   readonly code: PublicErrorCode;
   readonly requestId?: string;
   readonly status: number;
+  readonly retryAfterMs?: number;
 
-  constructor(code: PublicErrorCode, message: string, status: number, requestId?: string) {
+  constructor(
+    code: PublicErrorCode,
+    message: string,
+    status: number,
+    requestId?: string,
+    retryAfterMs?: number,
+  ) {
     super(message);
     this.name = 'ApiError';
     this.code = code;
     this.requestId = requestId;
     this.status = status;
+    this.retryAfterMs = retryAfterMs;
   }
 }
 
@@ -67,6 +77,7 @@ export type ConditionalResult<T> =
 export interface ApiClientOptions {
   fetch?: typeof globalThis.fetch;
   readCSRFToken?: () => string | undefined;
+  now?: () => number;
 }
 
 export interface ListSessionsQuery {
@@ -103,10 +114,12 @@ interface RequestOptions extends RequestInit {
 export class CanonicalApiClient {
   readonly #fetch: typeof globalThis.fetch;
   readonly #readCSRFToken: () => string | undefined;
+  readonly #now: () => number;
 
   constructor(options: ApiClientOptions = {}) {
     this.#fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.#readCSRFToken = options.readCSRFToken ?? readCSRFCookie;
+    this.#now = options.now ?? Date.now;
   }
 
   getIdentity(): Promise<Identity> {
@@ -229,6 +242,53 @@ export class CanonicalApiClient {
 
   getRun(runId: string, etag?: string, signal?: AbortSignal): Promise<ConditionalResult<Run>> {
     return this.#conditional<Run>(`/api/web/v1/runs/${selector(runId)}`, etag, signal);
+  }
+
+  // expectedSessionId is local correlation, never an authorization/query selector.
+  async getRunExplanation(
+    runId: string,
+    expectedSessionId: string,
+    signal?: AbortSignal,
+  ): Promise<RunExplanationV1> {
+    let response: Response;
+    const aborted = () => {
+      if (signal?.aborted) throw new DOMException('Request aborted.', 'AbortError');
+    };
+    aborted();
+    try {
+      response = await this.#fetch(`/api/web/v1/runs/${selector(runId)}/explanation`, {
+        method: 'GET',
+        cache: 'no-store',
+        credentials: 'same-origin',
+        referrerPolicy: 'no-referrer',
+        headers: { Accept: 'application/json' },
+        signal,
+      });
+    } catch {
+      aborted();
+      throw explanationError(503);
+    }
+    if (signal?.aborted) void response.body?.cancel().catch(() => undefined);
+    aborted();
+    const retryAfterMs = finiteRetryAfter(response.headers, this.#now());
+    if (response.status !== 200) {
+      // Never retain a private body, server message, ETag, or 304 cache result.
+      try {
+        await response.body?.cancel();
+      } catch {
+        /* best-effort */
+      }
+      aborted();
+      throw explanationError(response.status, retryAfterMs);
+    }
+    try {
+      const body = await readBoundedText(response, 16 * 1024, signal);
+      aborted();
+      return parseRunExplanationText(body, runId, expectedSessionId);
+    } catch {
+      aborted();
+      throw explanationError(503, retryAfterMs);
+    }
   }
 
   getAttachmentCapability(
@@ -391,7 +451,11 @@ async function parsePublicError(response: Response): Promise<ApiError> {
   }
 }
 
-async function readBoundedText(response: Response, limit: number): Promise<string> {
+async function readBoundedText(
+  response: Response,
+  limit: number,
+  signal?: AbortSignal,
+): Promise<string> {
   const contentLength = response.headers.get('Content-Length');
   if (contentLength && /^\d+$/.test(contentLength) && Number(contentLength) > limit) {
     try {
@@ -404,10 +468,18 @@ async function readBoundedText(response: Response, limit: number): Promise<strin
   if (!response.body) return '';
 
   const reader = response.body.getReader();
+  const cancel = () => {
+    void reader.cancel().catch(() => undefined);
+  };
+  signal?.addEventListener('abort', cancel, { once: true });
   const chunks: Uint8Array[] = [];
   let total = 0;
   try {
     while (true) {
+      if (signal?.aborted) {
+        cancel();
+        throw new DOMException('Request aborted.', 'AbortError');
+      }
       const { done, value } = await reader.read();
       if (done) break;
       total += value.byteLength;
@@ -418,6 +490,7 @@ async function readBoundedText(response: Response, limit: number): Promise<strin
       chunks.push(value);
     }
   } finally {
+    signal?.removeEventListener('abort', cancel);
     reader.releaseLock();
   }
 
@@ -428,6 +501,43 @@ async function readBoundedText(response: Response, limit: number): Promise<strin
     offset += chunk.byteLength;
   }
   return new TextDecoder('utf-8', { fatal: true }).decode(body);
+}
+
+function explanationError(status: number, retryAfterMs?: number): ApiError {
+  const code: PublicErrorCode =
+    status === 401
+      ? 'unauthenticated'
+      : status === 403
+        ? 'access_denied'
+        : status === 404
+          ? 'not_found'
+          : status === 429
+            ? 'rate_limited'
+            : 'temporarily_unavailable';
+  return new ApiError(
+    code,
+    'Run evidence is unavailable. Please try again.',
+    status,
+    undefined,
+    retryAfterMs,
+  );
+}
+
+function finiteRetryAfter(headers: Headers, now: number): number | undefined {
+  const raw = headers.get('Retry-After');
+  if (!raw) return undefined;
+  let ms: number;
+  if (/^\d+$/.test(raw)) ms = Number(raw) * 1000;
+  else {
+    // Accept HTTP-date, not Date.parse's permissive numeric/date guesses.
+    if (!/^[A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT$/.test(raw))
+      return undefined;
+    const at = Date.parse(raw);
+    if (!Number.isFinite(at) || new Date(at).toUTCString() !== raw || !Number.isFinite(now))
+      return undefined;
+    ms = Math.max(0, at - now);
+  }
+  return Number.isSafeInteger(ms) ? ms : undefined;
 }
 
 function parsePollAfter(headers: Headers): number | undefined {

@@ -228,6 +228,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/web/v1/runs/{run_id}/explanation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Participant READ-authorized exact Run evidence, design 0.1.2. Selector only: no query or body. Default-off until writer/schema cutover. No compute, retry or cancellation authority. Maximum 16 KiB; no ETag or 304. */
+        get: operations["getRunExplanation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/web/v1/sessions/{session_id}/events/{sequence}/attachments/{index}": {
         parameters: {
             query?: never;
@@ -360,6 +377,91 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        RunExplanationV1: {
+            /** @constant */
+            version: 1;
+            run_id: string;
+            session_id: string;
+            /** Format: date-time */
+            read_at: string;
+            status: components["schemas"]["RunExplanationStatusV1"];
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+            /** Format: date-time */
+            finished_at?: string;
+            admission: components["schemas"]["RunExplanationAdmissionV1"];
+            terminal: components["schemas"]["RunExplanationTerminalV1"];
+            attempt: components["schemas"]["RunExplanationAttemptV1"];
+            attached: components["schemas"]["RunExplanationAttachedV1"];
+            coverage: components["schemas"]["RunExplanationCoverageV1"];
+        };
+        /** @enum {string} */
+        RunExplanationStatusV1: "created" | "admitted" | "queued" | "running" | "succeeded" | "failed" | "cancelled" | "quota_blocked";
+        /** @enum {string} */
+        RunExplanationAdmissionReasonV1: "admitted" | "subscription_attention_required" | "capacity_draining" | "quota_reset_pending" | "quota_exhausted_reset_unknown" | "runtime_limit_exceeded" | "turn_limit_exceeded" | "input_limit_exceeded" | "context_limit_exceeded" | "artifact_limit_exceeded" | "capacity_busy" | "workspace_queue_limit" | "workspace_active_run_limit";
+        /** @enum {string} */
+        RunExplanationTerminalReasonV1: "execution_failed" | "result_persistence_failed" | "canonical_cancelled" | "unclassified_failure";
+        /** @enum {string} */
+        RunExplanationAttachedFactV1: "offer_recorded" | "claim_recorded" | "terminal_candidate_recorded" | "terminal_commit_recorded" | "fenced_outcome_unknown" | "receipt_retired";
+        RunExplanationAdmissionV1: {
+            /** @enum {string} */
+            availability: "recorded" | "unknown";
+            /** @enum {string} */
+            outcome?: "admitted" | "denied";
+            reason_code?: components["schemas"]["RunExplanationAdmissionReasonV1"];
+            /** Format: date-time */
+            observed_at?: string;
+            /** Format: uint64 */
+            decision_revision?: number;
+            /** @enum {string} */
+            coverage?: "last_recorded_decision";
+        };
+        RunExplanationTerminalV1: {
+            /** @enum {string} */
+            availability: "recorded" | "unknown" | "not_applicable";
+            reason_code?: components["schemas"]["RunExplanationTerminalReasonV1"];
+            /** Format: date-time */
+            observed_at?: string;
+            event_id?: string;
+            /** Format: uint64 */
+            event_sequence?: number;
+        };
+        RunExplanationAttemptV1: {
+            /** @enum {string} */
+            availability: "recorded" | "unknown";
+            attempt_id?: string;
+            /** Format: uint32 */
+            number?: number;
+            /** @enum {string} */
+            status?: "created" | "running" | "succeeded" | "failed" | "cancelled";
+            /** Format: date-time */
+            updated_at?: string;
+            /** Format: date-time */
+            finished_at?: string;
+        };
+        RunExplanationAttachedV1: {
+            /** @enum {string} */
+            availability: "recorded" | "unknown";
+            fact?: components["schemas"]["RunExplanationAttachedFactV1"];
+            /** Format: date-time */
+            observed_at?: string;
+            /** Format: date-time */
+            valid_until?: string;
+            /** @enum {string} */
+            freshness?: "within_lease" | "expired" | "durable";
+        };
+        RunExplanationCoverageV1: {
+            /** @enum {string} */
+            admission: "recorded" | "unknown";
+            /** @enum {string} */
+            terminal: "recorded" | "unknown" | "not_applicable";
+            /** @enum {string} */
+            attempt: "recorded" | "unknown";
+            /** @enum {string} */
+            operational: "recorded" | "unknown";
+        };
         ErrorEnvelope: {
             error: components["schemas"]["PublicError"];
         };
@@ -1246,6 +1348,40 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getRunExplanation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: components["parameters"]["RunID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Safe transaction-consistent evidence */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunExplanationV1"];
+                };
+            };
+            /** @description Authenticated user/tenant rate limit, without resource details */
+            429: {
+                headers: {
+                    "Retry-After"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
             };
             default: components["responses"]["Error"];
         };

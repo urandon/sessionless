@@ -117,6 +117,11 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 		closeYDB()
 		return nil, func() {}, fmt.Errorf("require managed execution authority v2 cutover: %w", err)
 	}
+	runExplanations, err := runExplanationsFromEnvironment(ctx, os.Getenv, store)
+	if err != nil {
+		closeYDB()
+		return nil, func() {}, fmt.Errorf("require run explanation cutover: %w", err)
+	}
 	maxUploadBytes, err := envPositiveInt64("WEB_MAX_UPLOAD_BYTES", 32<<20)
 	if err != nil {
 		closeYDB()
@@ -220,7 +225,7 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 		AllowLoopbackObjectStorage: allowLocal,
 		OIDCPolicy:                 login.policy, Provider: login.oidc,
 		OAuthProvider: login.oauth, OAuthClientID: login.clientID,
-		Store: store, Sessions: sessions, API: api, AttachedWorkers: attachedWorkers,
+		Store: store, Sessions: sessions, API: api, RunExplanations: runExplanations, AttachedWorkers: attachedWorkers,
 		AttachedWorkerControls: attachedWorkerControls, IDs: ids, Clock: systemClock{},
 		Logger: logger, Build: buildinfo.Current(component),
 	})

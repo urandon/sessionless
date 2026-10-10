@@ -68,11 +68,17 @@ const (
 	CapacityBusy                  AdmissionReason = "capacity_busy"
 	WorkspaceQueueLimit           AdmissionReason = "workspace_queue_limit"
 	WorkspaceActiveRunLimit       AdmissionReason = "workspace_active_run_limit"
+	ComputeUnavailable            AdmissionReason = "compute_unavailable"
+	ChoiceStale                   AdmissionReason = "choice_stale"
+	ConsentRequired               AdmissionReason = "consent_required"
+	ComputePolicyDenied           AdmissionReason = "compute_policy_denied"
 )
 
 func (v AdmissionReason) Valid() bool {
 	switch v {
 	case ReasonAdmitted, SubscriptionAttentionRequired, CapacityDraining, QuotaResetPending, QuotaExhaustedResetUnknown, RuntimeLimitExceeded, TurnLimitExceeded, InputLimitExceeded, ContextLimitExceeded, ArtifactLimitExceeded, CapacityBusy, WorkspaceQueueLimit, WorkspaceActiveRunLimit:
+		return true
+	case ComputeUnavailable, ChoiceStale, ConsentRequired, ComputePolicyDenied:
 		return true
 	}
 	return false

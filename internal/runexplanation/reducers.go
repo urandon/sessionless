@@ -39,6 +39,14 @@ func MapAdmission(code string) (AdmissionOutcome, AdmissionReason) {
 		return Denied, WorkspaceQueueLimit
 	case "tenant_active_run_limit":
 		return Denied, WorkspaceActiveRunLimit
+	case "compute_choice_unavailable":
+		return Denied, ComputeUnavailable
+	case "compute_choice_stale":
+		return Denied, ChoiceStale
+	case "compute_choice_consent_required":
+		return Denied, ConsentRequired
+	case "compute_choice_policy_denied":
+		return Denied, ComputePolicyDenied
 	default:
 		return "", ""
 	}

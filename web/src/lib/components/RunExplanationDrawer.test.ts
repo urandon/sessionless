@@ -127,6 +127,10 @@ describe('RunExplanationDrawer', () => {
     ['capacity_busy', 'Capacity was busy.'],
     ['workspace_queue_limit', 'The workspace queue limit was reached.'],
     ['workspace_active_run_limit', 'The workspace active Run limit was reached.'],
+    ['compute_unavailable', 'The selected compute was unavailable.'],
+    ['choice_stale', 'The selected compute choice was stale.'],
+    ['consent_required', 'Consent for the selected compute was required.'],
+    ['compute_policy_denied', 'Policy denied the selected compute.'],
   ] as const)('uses fixed historical admission copy for %s', (reason, copy) => {
     const value = explanation();
     value.admission.reason_code = reason;

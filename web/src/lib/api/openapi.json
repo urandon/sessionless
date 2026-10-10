@@ -635,7 +635,11 @@
           "artifact_limit_exceeded",
           "capacity_busy",
           "workspace_queue_limit",
-          "workspace_active_run_limit"
+          "workspace_active_run_limit",
+          "compute_unavailable",
+          "choice_stale",
+          "consent_required",
+          "compute_policy_denied"
         ]
       },
       "RunExplanationTerminalReasonV1": {

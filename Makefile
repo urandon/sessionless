@@ -63,6 +63,7 @@ help:
 		'make attached-worker-rootless-integration run an opt-in Linux rootless user-service lifecycle' \
 		'make integration    run foundation integration tests' \
 		'make ydb-integration run YDB Local schema and concurrency tests' \
+		'make run-explanation-ydb-gate prove bounded participant reads/writers using true data transactions' \
 		'make local-integration run YDB/S3/SQS/Telegram adapter tests against the local stand' \
 		'make e2e-local      run the deterministic two-tenant black-box slice' \
 		'make e2e-local-dockerless run the same slice with host processes and no Docker' \
@@ -296,6 +297,12 @@ integration: prepare
 
 ydb-integration: prepare
 	go test -race -tags=ydbintegration ./test/ydbintegration/...
+
+.PHONY: run-explanation-ydb-gate
+RUN_EXPLANATION_YDB_COUNT ?= 3
+run-explanation-ydb-gate: prepare
+	SESSIONLESS_RUN_EXPLANATION_YDB_GATE=1 go test -race -count=$(RUN_EXPLANATION_YDB_COUNT) -shuffle=on -timeout=5m -tags=ydbintegration \
+		-run '^TestRunExplanationYDB' ./test/ydbintegration
 
 .PHONY: web-auth-ydb-gate
 web-auth-ydb-gate: prepare

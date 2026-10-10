@@ -431,7 +431,7 @@ func (store *Store) CompleteWorkerJob(
 			func(run domain.Run) error {
 				return appendCanonicalFinalizationTx(
 					ctx, tx, run, domain.RunSucceeded, finalizationDigest,
-					completion.Events, completion.At,
+					completion.Events, completion.At, nil,
 				)
 			},
 		)
@@ -569,7 +569,7 @@ func (store *Store) FailWorkerJob(ctx context.Context, failure ports.WorkerFailu
 			failure.LeaseID, failure.Fence, failure.At, failure.Code, failure.ReconciliationEvidence,
 			func(run domain.Run) error {
 				return appendCanonicalFinalizationTx(
-					ctx, tx, run, runStatus, finalizationDigest, failure.Events, failure.At,
+					ctx, tx, run, runStatus, finalizationDigest, failure.Events, failure.At, canonicalFailureNotice(failure.Code, failure.Cancelled),
 				)
 			},
 		)

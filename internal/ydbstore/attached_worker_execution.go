@@ -1699,7 +1699,7 @@ func materializeAttachedWorkerTerminalTx(ctx context.Context, state ports.StateT
 		}
 		return completeWorkerSuccessTx(ctx, state, tx, run, canonicalAttempt, reservation, attempt.LeaseID, attempt.LeaseGeneration, at, completion.Manifest, completion.Usage, nil, false,
 			func(run domain.Run) error {
-				return appendCanonicalFinalizationTx(ctx, tx, run, domain.RunSucceeded, digest, completion.Events, at)
+				return appendCanonicalFinalizationTx(ctx, tx, run, domain.RunSucceeded, digest, completion.Events, at, nil)
 			})
 	}
 	failure := *materialization.Failure
@@ -1729,7 +1729,7 @@ func materializeAttachedWorkerTerminalTx(ctx context.Context, state ports.StateT
 	}
 	return failWorkerTx(ctx, state, tx, run, canonicalAttempt, reservation, runStatus, attemptStatus, attempt.LeaseID, attempt.LeaseGeneration, at, failure.Code, nil,
 		func(run domain.Run) error {
-			return appendCanonicalFinalizationTx(ctx, tx, run, runStatus, digest, failure.Events, at)
+			return appendCanonicalFinalizationTx(ctx, tx, run, runStatus, digest, failure.Events, at, canonicalFailureNotice(failure.Code, failure.Cancelled))
 		})
 }
 

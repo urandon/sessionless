@@ -642,6 +642,22 @@ idempotent DDL operation per file, and a forward-only production policy. See
 `migrations/ydb/README.md` for crash repair and `docs/ydb-state-store.md` for
 keys and transaction procedures.
 
+Run explanation storage (#187) has a separate true-transaction proof target.
+Against an explicitly approved disposable YDB only, use:
+
+```sh
+YDB_CONNECTION_STRING='grpc://127.0.0.1:2136/local?go_query_mode=data&go_query_bind=declare,numeric' \
+YDB_ANONYMOUS_CREDENTIALS=1 make run-explanation-ydb-gate
+```
+
+The target runs only `TestRunExplanationYDB` fixtures with race detection,
+three uncached shuffled repeats and a five-minute timeout. It rejects any
+fake-transaction option or non-data mode; the legacy scripting suite skips
+these serialized proofs instead of claiming fake commits prove atomicity.
+Fixtures apply embedded test schema only in that disposable database, use
+random test-scoped tenant identities, and register bounded cleanup immediately.
+No route, provider, runtime or production migration is activated by this test.
+
 `make partition-status` emits the live primary keys, partition settings, counts,
 and contract drift as JSON. The bucketed ready/expiry expand/backfill/cutover
 procedure is documented in

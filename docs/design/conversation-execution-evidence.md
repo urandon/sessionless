@@ -1,10 +1,11 @@
 # Conversation execution evidence
 
-Version: **0.1.2 draft**, 2026-10-10. Owner: [#182](https://gitcode.com/urandon/sessionless/issues/182).
+Version: **0.1.2 accepted**, 2026-10-10. Owner: [#182](https://gitcode.com/urandon/sessionless/issues/182) (closed).
 Consumers: [#141](https://gitcode.com/urandon/sessionless/issues/141) and
 [#155](https://gitcode.com/urandon/sessionless/issues/155).
-Status: proposed detailed read contract; independent review and owner acceptance
-are required before implementation. This post-MVP high-stream prerequisite is
+Status: accepted detailed read contract, independently reviewed CLEAN and merged
+in !161 under explicit owner delegation. Implementation handoff: #186 and #187
+under #155, followed by BFF #188 and drawer #141. This post-MVP high-stream prerequisite is
 not an additional gate for either MVP execution track.
 
 The conversation drawer reads one authorized Run and its recorded evidence.
@@ -37,8 +38,8 @@ canonical admission/finalization is absent.
 | Reuse worker-owner diagnostics | Reject as a participant shortcut. Ownership and participation are separate predicates. |
 
 No new RunStatus, admission policy, cancellation machine, retry decision or
-effect ledger is introduced. All new types below are proposals, not currently
-implemented contracts. Existing canonical ports remain the execution authority.
+effect ledger is introduced. The fields below are the accepted implementation
+contract; rollout remains separately gated. Existing canonical ports remain the execution authority.
 
 ## Read boundary
 
@@ -237,7 +238,7 @@ authority. It still cannot claim absence of a reason outside the loaded page.
 
 ## Query cost and rollout limits
 
-These are proposed numeric limits requiring exact-version review and acceptance:
+These are accepted numeric limits; implementation must prove them at its exact version:
 
 | Limit | Proposed ceiling |
 | --- | --- |
@@ -270,6 +271,86 @@ call or cleanup operation.
 
 ## Verification and implementation handoff
 
+### #187 storage writer and query manifest
+
+The additive storage implementation uses #186's `runexplanation.HeadV1` and
+pure reducers. Migration `00102` creates `run_explanation_heads_v1`; no reader,
+scheduler or worker consumes that table as execution authority. No route is
+mounted here, and there is no backfill or migration activation. Record the
+deployed migration head, exact writer commit and drained old-writer inventory
+as deployment cutover evidence before a consumer is enabled.
+
+| Owning source | Atomic projection behavior |
+| --- | --- |
+| `ydbstore/store.go` `PutRun` | All production Run upserts pass here. Invalidate a denial whose exact phase/time changed, admitted evidence on return to created/quota-blocked, and incompatible terminal basis. Never synthesize an admission observation. |
+| `PutAttempt` | All production Attempt upserts pass here. An independently written newer Attempt invalidates prior evidence; only canonical creation/admission selects an Attempt. Older Attempt writes do not replace the selector. |
+| `PutDispatchOutbox`, `canonical_ingress.go` | Run + Attempt + initial pending outbox creation selects the exact Attempt and immutable placement within the ingress transaction. No whole outbox/WorkerJob is stored in the head. |
+| `scheduler.go` `AdmitDispatch` | Record canonical supported/unsupported scheduler decisions after the Run phase is committed in the same transaction; changed reasons survive equal state/retry-time early return. Identical observation replay leaves revision unchanged; `dispatch_not_pending` never overwrites evidence. Readmission supersedes denial. |
+| `scheduler.go` `ExpireQuotaReservation` | Central Run hook invalidates evidence when returning to quota-blocked; expiry does not become an invented new admission decision. |
+| `worker.go` start/success/failure | Central Run/Attempt hooks preserve or invalidate basis. Canonical completion/failure calls the owning finalizer below; legacy Telegram finalizers never produce canonical notice metadata. |
+| `attached_worker_execution.go` terminal materialization; output receipt path | The exact canonical finalizer records terminal evidence, separately from the attached head receipt. Receipt finalization/signature identities are unchanged. |
+| `canonical_finalization.go` `appendCanonicalFinalizationTx` | Only after allocating the real canonical event does this transaction capture its ID/sequence. Owning failure schema/code/flag are bound to the immutable blob's exact canonical JSON size/SHA256, with no blob read or reconstructed ID. Unsupported historical payloads remain unknown. The existing finalization digest is unchanged, so durable managed/attached replays retain their identity and evidence. Success clears failure evidence. |
+| `operations.go` legacy ingress, succeeded command without Attempt, unused `CompleteRun` | Central hooks apply. Initial pending legacy ingress may select its actual Attempt/placement; commands without Attempt remain unknown. No legacy finalizer fabricates a canonical notice or new Attempt. |
+| `session_lifecycle.go` per-Run deletion | Delete the exact tenant/run head alongside canonical cleanup, even while the route is absent/disabled. The schema/reset inventory includes this additive table. |
+
+Source inventory searches production `PutRun`/`PutAttempt` call sites and
+direct Run/Attempt DML: the only upserts are central `store.go`; callers are
+canonical ingress, scheduler, worker and operations. Attached terminal writers
+delegate to the same worker helpers and canonical finalizer.
+
+`RunExplanationReadStoreV1` returns the safe validated Web contract only. One
+serializable resource operation samples `CurrentUtcTimestamp()`, rereads the
+exact Web session/membership identity and authenticated security version,
+then checks the exact canonical Session's current READ participant. It does
+not call activity-refreshing `AuthorizeWebSession` or any owner compute API.
+Expired/revoked sessions and denied/version-changed membership keep canonical
+errors; inaccessible targets use one opaque not-found error. Other failures
+become content-free temporary unavailability.
+
+| Statement | Primary-key lookup / selected source |
+| --- | --- |
+| 1 | Transaction clock; no table |
+| 2 | Web session `(shard_bucket, session_digest)` |
+| 3 | Membership `(user_bucket, user_id, tenant_id)` |
+| 4 | Run `(tenant_id, run_id)` |
+| 5 | Session `(tenant_id, session_id)` |
+| 6 | Participant `(tenant_id, session_id, user_id)` |
+| 7 | Explanation head `(tenant_id, run_id)` |
+| 8 | Exact selected Attempt `(tenant_id, attempt_id)` |
+| 9 | Optional attached receipt `(tenant_id, owner_user_id, worker_id)` |
+| 10 | Its exact canonical lease `(tenant_id, lease_id)` |
+| 11 | Current worker binding; bounded generation/state/time columns only |
+| 12 | Current connection binding; bounded ID/generation/state/time columns only, no record/secret/signature |
+
+The fullest single snapshot is 12 statements; a historical locator-less read
+is 7. A resource-owned budget counts actual statements across **all transaction
+retries**, failing before statement 21 rather than resetting per callback.
+The same three-second context bounds every retry. Typed JSON sources are capped
+in SQL at 8193 transferred bytes and rejected above 8 KiB before decoding; head
+encoding is independently validated at 8 KiB. The response validator/marshaller
+caps the safe fixed-field body at 16 KiB. Missing/mismatched selected source or
+replacement attached target stays unknown, without reading replacement joins.
+No range/audit/transcript/history/blob read, activity/presence write, capability,
+repair, reconciliation or worker/provider call occurs.
+
+Offline SQL fixtures count the actual full read path, serializable isolation,
+read-only behavior and SDK commit retries (14-statement successful short retry;
+20-statement rejection on repeated/attached retries). Tagged YDB fixtures cover
+all eleven data query plans, authorization changes after BFF preauthorization,
+read-only participation/no activity refresh, reason supersession/replay,
+historical/mismatched selectors and finalize/read then delete/read snapshots.
+Fixture-only native connector barriers hold the serializable reader open after
+an exact canonical/auth query while finalization, deletion or membership mutation
+commits; successful reads must match an entire committed snapshot, not merely
+validate. Exact successful-admission replay preserves the complete head record
+and revision, including when the replay request carries a later observation time.
+An explicit sentinel-aborted central Run write proves canonical phase and
+projection record/revision roll back together, preserving the committed reason.
+Test execution receipts and exact-head CI are recorded in the implementation
+handoff, not inferred from this manifest. A fake-transaction scripting test
+connection proves SQL/schema/plan behavior, not true serializable race behavior;
+the latter requires the real transaction adapter in exact-head CI.
+
 Use [Go testing practices](../testing-best-practices.md), fake clocks for pure
 reducers and one sampled YDB time authority for lease integration boundaries.
 Do not use sleeps or an old green CI result as proof of the new contract.
@@ -288,14 +369,12 @@ Do not use sleeps or an old green CI result as proof of the new contract.
 | Body/query/rate/deadline limits; readonly opening | Bounded resources and zero probes, capability issuance, repair or runtime side effects |
 | Hide/unmount/scope change during request; keyboard/focus/zoom | Discarded response cannot restore data; unsent draft/focus survive; existing drawer matrix is met |
 
-The implementation epic is the existing #155, not a new epic. After owner
-acceptance, register linked bounded children for (1) domain/transport projection
-contracts and pure reducer fixtures, (2) YDB canonical writer integration,
-bounded authorized read/deletion/migration fixtures, and (3) BFF/OpenAPI client
-integration and negative/cache/budget proof. Then #141 implements the drawer
-against those contracts with browser/accessibility evidence. These are proposed
-slices, not linked registered tasks or a completed implementation checklist.
-#182 stays open until its accepted version and real handoff are recorded.
+The implementation epic is the existing #155, not a new epic. Registered bounded
+children include #186 (domain/transport projection contracts and pure reducers)
+and #187 (YDB canonical writers, authorized bounded reads/deletion/migration fixtures).
+BFF #188 owns OpenAPI integration and negative/cache/budget proof separately. Then #141
+implements the drawer with browser/accessibility evidence. #182 is closed after
+accepted-version review and handoff; registration is not implementation completion.
 
 Each child must name this design version, #155, predecessors, work/domain/priority
 labels, Product UX milestone and exact acceptance. None may absorb #142–#145

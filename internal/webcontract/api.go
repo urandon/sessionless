@@ -450,7 +450,10 @@ type SessionSummary struct {
 }
 
 type SessionEvent struct {
-	EventID   domain.SessionEventID   `json:"event_id"`
+	EventID domain.SessionEventID `json:"event_id"`
+	// RunID is optional canonical correlation, never inferred from an event ID
+	// or adjacency. The authorized event projector is wired separately (#188).
+	RunID     *domain.RunID           `json:"run_id,omitempty"`
 	Sequence  uint64                  `json:"sequence"`
 	Kind      domain.SessionEventKind `json:"kind"`
 	Content   EventContent            `json:"content"`

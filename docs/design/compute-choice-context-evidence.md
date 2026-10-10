@@ -1,11 +1,11 @@
 # Compute choice context evidence
 
-Version: **0.1.1**, 2026-10-11.
+Version: **0.1.2**, 2026-10-11.
 Owner: [#142](https://gitcode.com/urandon/sessionless/issues/142).
 Implementation epic: [#155](https://gitcode.com/urandon/sessionless/issues/155).
 Source baseline: `f589fece3811b7a04eeacf5cbaff4ca4d5c1c978`.
-Status: independently reviewed engineering amendment; implementation remains
-partial, not a deployed source of eligibility.
+Status: engineering contract with shared rendering and final-record measurement
+implemented; implementation remains partial, not a deployed source of eligibility.
 
 Compute selection must account for the entire canonical context that an
 invocation will consume. Persist bounded, writer-derived facts at every event
@@ -133,7 +133,7 @@ and rejection of all other event kinds. It must not silently tighten accepted
 payload semantics or skip an incompatible record. The driver still verifies
 full decoded history and exact trigger before rendering.
 
-This extraction supplies shared rendering semantics only, not prepared material,
+This extraction supplies shared rendering semantics, not prepared material,
 persisted prefix facts or positive eligibility. Its 2 MiB helper-input ceiling
 allows frame-limit testing independently of the driver's 1 MiB full-JSONL
 ceiling; it does not enlarge the driver limit or the future constructor's 1 MiB
@@ -147,6 +147,32 @@ the resulting prompt stays small; one more source byte fails before execution.
 The pure frame test reaches its own ceiling, where adding the header exceeds the
 full-prompt ceiling. This is not evidence that an oversize rendered prompt is
 reachable through the stricter current full-JSONL input limit.
+
+`sessioncontext.MeasureRecordV1` now measures one final record through the
+actual `EncodeRecord` and the same private per-record decoder used by
+`DecodeJSONL`. It preserves sequence N greater than one; full-history decoding
+still separately requires contiguous sequence 1 through N. The constructor
+inspects at most 1,048,576 payload bytes and 8,192 total raw bytes across the
+event's identity, kind, idempotency, payload-reference and optional author/Run
+strings before hashing, parsing or encoding. Actual encoded JSONL, including
+the newline, is independently capped at 1,056,768 bytes. These are projection
+inspection ceilings, not new canonical-history write limits or full-context
+capacity. Unknown returns a content-free error and an unverified zero value,
+never a successful zero measure.
+
+The opaque result retains only cloned final metadata, exact encoded byte count
+and SHA-256. It retains no transcript bytes, rejects JSON serialization and
+formats without private identities. Matching requires semantic metadata and
+the codec's exact timestamp representation: a location name alone may differ,
+but changing the encoded offset cannot reuse the old record digest. Neither
+measurement nor decoding silently rewrites timestamps to UTC. Payload JSON
+whose whitespace, HTML escaping or other representation changes under the
+codec fails hash-preserving round-trip and remains unknown. Measurable tool,
+notice or attachment-bearing source is not automatically renderer-compatible.
+
+This implements the final-record measurement seam only. The prepared-material
+constructor, writer integration, atomic folds, prefix/boundary persistence and
+native verification remain required; no current positive eligibility uses it.
 
 `sessionmaterial` may depend on that pure helper and domain; ports may reference
 the opaque prepared type, but must not import sessioncontext, which already

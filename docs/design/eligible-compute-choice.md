@@ -1,6 +1,6 @@
 # Eligible compute choice contract
 
-Version: **0.1.0 draft**, 2026-10-10.
+Version: **0.1.1 draft**, 2026-10-10.
 Owner: [#142](https://gitcode.com/urandon/sessionless/issues/142).
 Implementation epic: [#155](https://gitcode.com/urandon/sessionless/issues/155).
 UI consumer: [#143](https://gitcode.com/urandon/sessionless/issues/143).
@@ -116,6 +116,8 @@ it never truncates a registry into apparent completeness. A writer-checked
 deployment manifest digest and schema version are recorded in a cutover receipt.
 Every serving instance must match it. Different or obsolete instance registries
 fail closed, rather than giving load-balanced clients contradictory selections.
+This global digest is private deployment evidence: neither public revisions nor
+cursor invalidation depend on changes to another writer's registered subset.
 
 Only trusted configuration installation may publish this receipt after all
 writers/readers and drain checks pass. The browser has no registration/update
@@ -123,6 +125,15 @@ endpoint. Registry material is immutable for one approved revision; changing
 backend/resource/model/route/policy/placement or disclosure replaces the
 revision. Neither that receipt nor a registration supersedes current resource,
 membership, consent, price or execution authority.
+
+Configuration installation builds an exact `(tenant, owner)` index of reviewed,
+disclosable registrations. Only that authenticated subset is sorted by opaque
+choice_id and assigned pagination positions, before candidate evaluation. The
+public registry_revision hashes that subset's IDs and registration/disclosure
+revisions, with authenticated scope, not the global manifest digest or positions.
+Foreign-only additions, removals or edits leave this revision and page progress
+unchanged. Initial publication is owner-only; dynamic beneficiary discovery is
+disabled until a separately reviewed bounded disclosure/use-grant index exists.
 
 Each list/send transaction resolves these private facts for a candidate:
 
@@ -134,7 +145,7 @@ Each list/send transaction resolves these private facts for a candidate:
 | Route and billing | Exact ProviderRouteV1 tuple and ProviderRoutePolicyV1 revision/digest; transport/upstream/endpoint/billing identities stay private. Fallback remains deny. |
 | Policy and disclosure | Provider terms verdict/window; effective policy, privacy/data-residency/region and disclosure revision; material changes invalidate the selector. |
 | Placement | Exact attached enrollment/connection/capability/policy authority or managed substrate/profile/proxy/isolation/egress revision and expiry. Reconnect may change current connection evidence and invalidate a preview; it never switches the pinned resource. |
-| Capability and input | Reviewed required model/tool/modality profile. Actual input class and committed upload metadata are derived on the server at send; a browser hint cannot reclassify private data as public. |
+| Capability and input | Reviewed required model/tool/modality profile for the whole admitted context, not only the newest message. Initial classification is conservatively private; committed upload metadata and context provenance are server-owned. A browser hint cannot reclassify data as public. |
 | Capacity and price | Distinct entitlement/quota, monetary price/currency/budget, platform limits and local capacity observations with source and expiry. Missing required facts deny; zero is never invented. Reservations remain canonical admission's job. |
 
 The implementation must use bounded exact current readers for these facts. It
@@ -144,12 +155,80 @@ unavailable, not eligible. #142 owns integration of existing readers and the
 missing commit-time checks; it does not enable a new provider or implement a
 general federation/policy registry under another name.
 
+### Initial adapter source and query manifest
+
+The initial enabled adapter is exact owned attached compute, conditional on all
+required evidence being present. The following is a required #142 implementation
+manifest, not a claim that these new guarded readers/schema already exist.
+All statements use the same Serializable transaction and shared statement/byte
+counter; existing unbounded readJSON helpers cannot bypass it. Exact keys are
+derived from the authenticated scope and reviewed registration, never the HTTP
+request. String/JSON columns use a database-side byte prefix of ceiling plus one
+and reject oversize before decoding; scalar identity must agree with the record.
+
+| Shared read/write | Exact key, selected data and owner |
+| --- | --- |
+| Clock | `SELECT CurrentUtcTimestamp()` once per attempt; database clock, no process-time substitute. |
+| Web session | `web_sessions(shard_bucket, session_digest)`: bounded record including active tenant/user, revoke/expiry/security version/CSRF digest; current Web-auth writer. |
+| Membership | `tenant_memberships(user_bucket, user_id, tenant_id)`: bounded record; current membership writer. Apply WRITE, not the existing explanation reader's READ permission. |
+| Session | `sessions(tenant_id, session_id)`: bounded canonical record including status and LastEventSequence; current Session writer. No transcript scan. |
+| Participation | `session_participants(tenant_id, session_id, user_id)`: bounded record and WRITE predicate; current participant writer. |
+| Private cutover | New finite singleton `compute_choice_cutover_v1(cutover_id = serving)`: version, private manifest digest, schema/writer revision, enabled flag and bounded record. Trusted configuration installer owns it; no browser writer. Missing/mismatch disables the surface. |
+| List rate | New `compute_choice_rate_slots_v1(slot_id)`: four exact slot record/expire_at reads, at most one UPSERT of a validated debit receipt; finite 4096 slots. |
+
+| Per attached candidate | Exact key, selected data and predicate |
+| --- | --- |
+| Subscription | `subscription_connections(tenant_id, subscription_connection_id)`: ID, actor_id, provider, entitlement_state, quota_state, observed_at; validate exact pin and current entitlement/quota. |
+| Resource owner | `actors(tenant_id, actor_id)`: user_id; must equal the authenticated registration owner. Membership was already checked in the shared reads. |
+| Worker | `attached_workers(tenant_id, owner_user_id, worker_id)`: bounded record, exact tenant/owner/ID, enrollment and connection generations, desired/observed state, revision; same canonical enrollment writer as readAttachedWorkerTx. |
+| Connection | `attached_worker_connections(tenant_id, owner_user_id, worker_id)`: bounded record, exact identity/generations, capability digest, state, presence/auth expiry and ProtocolSnapshot. Restore protocol authority locally from this record as loadAttachedWorkerProtocolAuthorityTx does; no extra SQL or worker RPC. |
+| Slot preview | `subscription_scheduler_slots(tenant_id, subscription_connection_id)`: state, active_run_id, active_reservation_id, blocked_until, updated_at; read-only. Missing slot yields unknown capacity, never ensureSchedulerSlot's initializing write. |
+| Platform preview | `tenant_scheduler_counters(tenant_id)`: queue_depth, active_runs; read-only against reviewed platform limits. Missing counters yield unknown, never readSchedulerCounters' initializing INSERT. |
+
+Thus an initial maximum list attempt is eleven shared statements plus six per
+examined candidate: 35 for four candidates, below the 64-statement ceiling.
+Protocol restore and conservative classification add no SQL. Fresh-send choice
+work reuses the five current identity/Session reads where already performed in
+the *same* transaction, plus one cutover read, six candidate reads and one receipt
+INSERT: at most thirteen added statements per attempt, bounded to 24 across
+retries; inherited ingress statements remain counted by its own total ceiling.
+Admission uses these current candidate checks with its existing canonical
+reservation/lease transaction, not a nested resolver transaction. Integration
+must also count any Session/access rechecks, snapshot selection, outbox/job and
+reservation work in the scheduler's finite transaction budget; the 35-statement
+list count is not an admission budget or proof.
+
+Backend/model, route, catalog, capability/privacy/terms, subscription billing
+semantics, hard limits and disclosure are immutable operator-reviewed evidence
+in this version's checked manifest. The adapter verifies exact scope, digests,
+windows and private-context permission. The current database cutover guards the
+configuration revision; a process template alone cannot authorize execution.
+Changing any of these facts requires trusted replacement and cutover; dynamic
+provider price/catalog/terms changes are not supported by this adapter. Missing
+price/monetary-budget evidence when required makes it unavailable; subscription
+quota or locally installed software is not a zero-price assertion. Existing
+worker/connection/subscription revocation remains a separate same-transaction
+read, not a configuration refresh. There is no credential row read for this
+subscription adapter and no invented general use-grant source.
+
+Managed real-provider and beneficiary adapters are disabled here: main lacks
+their current catalog/route/price/use-grant and substrate/proxy authority readers.
+Their owning binder/authority work must provide an independently reviewed exact
+query manifest and fit the same per-candidate ceiling before enablement. #142
+owns the new cutover/finite-rate/selection receipt and commit/admission integration
+above; it does not close the missing managed-authority work or advertise a
+fixture as eligible real compute. Backend delivery is not complete until the
+required attached and managed integration cases are actually supported.
+
 `choice_revision` is SHA-256 over a domain-separated, length-prefixed canonical
 encoding of the registration revision, authenticated tenant/user/Session,
 membership security version, requested input profile and the exact relevant
 authority/evidence revisions and validity windows above. It excludes Run/Attempt
 IDs, which do not exist at listing. Stable evidence revisions are pinned; sampled
 read time and continuously changing utilization counters are not digest inputs.
+It also binds canonical Session.LastEventSequence and the conservative private
+context policy/disclosure revision. An intervening event requires a refreshed
+choice rather than silently expanding the data to which this send consented.
 The server recomputes the digest at send. A digest is a conflict fence, not a
 bearer capability, resource grant or proof that capacity has been reserved.
 
@@ -171,7 +250,7 @@ ComputeChoicesPageV1 has these closed fields:
 | Field | Meaning and disclosure |
 | --- | --- |
 | `version`, `session_id`, `read_at` | Version 1 and exact authorized Session; read_at is sampled DB time, not remote observation time. |
-| `input_kind`, `registry_revision`, `coverage` | Requested preview; opaque manifest revision; coverage `page` or `complete`, not total entitled inventory. |
+| `input_kind`, `registry_revision`, `coverage` | Requested preview; opaque authenticated-subset revision, never global deployment revision; coverage `page` or `complete`, not total entitled inventory. |
 | `choices` | At most four visible entries. Each has opaque choice_id, choice_revision, curated model/provider labels, placement `attached` or `managed`, state and safe disclosure. No raw binding. |
 | Entry `state` and `reason_code` | `eligible`, `unavailable` or `unknown`; closed safe reason only for a choice already disclosable to this writer. Eligible means all required preview predicates held at read, not reservation or a running process. |
 | Entry `observed_at`, `valid_until`, `freshness` | Required source window; freshness `current` or `expired`. Missing required evidence yields unknown without fabricated timestamps. valid_until is the earliest required source expiry. |
@@ -187,14 +266,15 @@ quota/price is not displayed as zero, unlimited or free. Labels are reviewed
 display strings, never endpoint/host names or credential-derived strings.
 
 CursorV1 is a bounded opaque token with a server MAC. It binds the authenticated
-tenant/user/Session/membership security version, registry revision, input_kind,
+tenant/user/Session/membership security version, scoped registry revision, input_kind,
 last examined candidate position and expiry. It carries no public authority IDs
 or raw registry material. Maximum encoded length is 512 bytes; validity is at
 most 60 seconds and no later than the shortest relevant authority expiry.
 Every page reauthorizes and recomputes eligibility; the cursor is not a snapshot
 lease or permission. Changed scope/registry or expiry returns `choice_stale`.
 
-Pagination advances by examined registry positions, not returned entries. A
+Pagination advances by examined authenticated-subset positions, not global
+registry positions or returned entries. A
 page examines at most four candidates, may be empty with a cursor, and never
 loops internally to fill a page or scans hidden candidates past its budget.
 No provider/worker RPC, blob issuance, credential refresh, activity update,
@@ -213,15 +293,37 @@ when the list contains one candidate. Existing upload/text bounds remain in
 force. The new fields add at most 384 decoded bytes to the request envelope.
 
 The writer's explicit send acknowledges the selected, displayed disclosure for
-this message only. The server compares disclosure_revision with the current
+this invocation's entire canonical context prefix plus the new message, not
+only its new text/uploads. The server compares disclosure_revision with the current
 reviewed disclosure and records the actor, exact resource/use scope, derived
-input class, disclosure revision and event in the atomic selection receipt.
+context class, prior through-sequence, disclosure revision and event in the atomic selection receipt.
 This narrow consent is not a resource-use grant, provider-terms approval,
 permission to change route, or consent for a later tool/search operation.
 Material disclosure/input-policy changes return `consent_required` and require
 an explicit refreshed choice/send. Merely opening the list creates no consent.
 #143 must show this disclosure before send, including the host operator's
 technical access to admitted execution data; UI redaction is not confidentiality.
+
+Main's Session has no authoritative public/private aggregation registry.
+Consequently this version treats *all* admitted material as private: history,
+uploads/artifacts, selected compaction snapshot, replay suffix, instructions and
+any allowed overlays, as well as the new message. A benign new text never lowers
+that class. Public-only routes, missing privacy permission, incompatible
+residency/egress policy or unknown provenance deny. Writer consent does not
+override another participant's rights or canonical Session/data restrictions;
+where those restrictions cannot be proven, the choice is unavailable.
+
+At commit the prior prefix must match the preview's LastEventSequence; the newly
+committed triggering sequence becomes the immutable ContextWindow upper bound.
+At admission `selectAdmittedContextWindow` may choose a newer valid snapshot for
+that same prefix, but it must prove exact tenant/Session/through-sequence and
+source coverage, reapply the private-context policy and modality/context limits,
+and reject absent or conflicting provenance. No extra history, late private
+overlay, unconsented remote extraction, or silent truncation to fit a model is
+allowed. A replacement snapshot is not permission to broaden disclosure. Future
+tool/search input needs its own operation policy/consent; it cannot reuse this
+selection receipt as blanket egress permission. A later public-classification
+feature needs a separately accepted provenance/classification contract.
 
 Fresh canonical commit performs the following in its one Serializable
 transaction, with a reset candidate on every retry callback:
@@ -230,7 +332,8 @@ transaction, with a reset candidate on every retry callback:
 2. Check the existing exact message idempotency key and mutation identity.
 3. Resolve the exact visible registration and every required current source;
    recompute choice/disclosure revision and validate at sampled DB time.
-4. Validate actual input/upload class and modality, applicable policy/consent and
+4. Validate whole-context private class/provenance and actual upload modality,
+   exact prior prefix, applicable policy/consent and
    capability. Reject changed material or unavailable authority before dispatch.
 5. Build server-owned canonical authority for the generated Run/Attempt from
    that exact tuple; write the event, Run, Attempt, manifest, outbox, idempotency
@@ -264,11 +367,69 @@ replacement. Budget/capacity is reserved only there, and the effect boundary
 still requires its own current lease/fence checks. No read or selector creates
 an Attempt before the normal canonical send.
 
+## Typed outcomes and precedence
+
+Use the existing ErrorEnvelope `{error: {code, message, request_id}}`; messages
+are curated fixed copy with no source IDs/revisions or provider errors. #142 adds
+only the closed codes below to webcontract.ErrorCode/HTTPStatus and OpenAPI;
+the present main enum does not already contain compute-specific codes.
+
+| Outcome | HTTP / code and required behavior |
+| --- | --- |
+| Oversize body/query, malformed fields/version/key/cursor | 413 `payload_too_large` for body; 400 `invalid_request` for other syntax. No resource resolution. |
+| Invalid/revoked/expired cookie | 401 `unauthenticated`; no Session/choice information. |
+| Inactive/denied membership | 403 `access_denied`; no Session/choice information. |
+| Invalid same-session CSRF or Origin on send | 403 `csrf_failed`; no idempotency or choice disclosure. |
+| Missing/deleted/foreign/nonparticipant Session | 404 `not_found`; identical shape. |
+| Changed text/uploads/order/selector under an existing message key | 409 `conflict`; original receipt is not replaced. |
+| Unknown/foreign/hidden/withdrawn selector or lost owner-use permission | 409 `compute_unavailable`; never distinguish absent versus revoked versus foreign. |
+| Still disclosable choice but stale resource/credential/route/catalog/price/capability/placement revision, changed Session prefix, expired evidence or cursor scope/revision/expiry | 409 `choice_stale`; explicit refreshed list and new send required, no automatic retry. A selector that became hidden uses compute_unavailable instead. |
+| Material disclosure changed for a still disclosable choice | 409 `consent_required`; refreshed display and explicit send required. |
+| Matching visible selector but private-context/modality/provenance/egress/terms policy denies | 409 `compute_policy_denied`; safe fixed copy, no private policy details. |
+| Matching visible selector but profile/health/capacity/budget is unavailable or unknown | 409 `compute_unavailable`; no dispatch or implied free capacity. |
+| List limiter denial | 429 `rate_limited`, bounded Retry-After, no choices or cursor. |
+| Transaction retry/deadline/statement/byte exhaustion, source corruption, private cutover mismatch or unresolved commit | 503 `temporarily_unavailable`; no speculative success or refund. Exact-key recovery may find a committed receipt. |
+
+After bounded syntax checks, resolve cookie, WRITE membership, CSRF/Origin (send)
+and exact Session access in that order. Then look up idempotency: an exact
+authorized replay returns the original receipt *before* mutable catalog checks;
+a different digest returns conflict. For fresh sends, check disclosability
+before comparing revisions, disclosure before generic choice staleness, then
+policy/provenance and live availability. Service corruption/budget failure never
+returns a partially evaluated choice or receipt. Disabled routes have the
+existing unmounted-route 404, not a fake compute_unavailable success contract.
+
+After committed send, HTTP success remains historical receipt, not admission.
+Any later refusal must be written by the canonical admission-decision writer
+with its existing revision and transaction, and mapped by MapAdmission to a
+recorded `denied` explanation. #142 must extend its closed AdmissionReason,
+DTO/OpenAPI validators, reducers and safe UI-copy catalog together before the
+choice path is enabled; otherwise the current mapper silently returns unknown.
+Proposed additional raw decision code → public reason mappings are:
+
+| Canonical decision code | Recorded safe admission reason |
+| --- | --- |
+| `compute_choice_unavailable` | `compute_unavailable` |
+| `compute_choice_stale` | `choice_stale` |
+| `compute_choice_consent_required` | `consent_required` |
+| `compute_choice_policy_denied` | `compute_policy_denied` |
+
+Use the same disclosability/staleness/consent/policy precedence for this recorded
+decision. Existing capacity/quota/runtime/context/turn/artifact decisions retain
+their accepted exact mappings; missing required capacity/budget facts use
+compute_choice_unavailable, never an invented quota amount. Transaction failure
+records no decision: explanation stays last recorded decision/unknown until
+confirmed retry. A decision does not manufacture terminal Run status or bypass
+the canonical Run lifecycle; transport ACK is neither admission nor terminal.
+This is an explicit additive amendment to the execution-evidence contract in
+#142, not a claim that its accepted 0.1.3 enum has already changed.
+
 ## Receipts privacy and lifecycle
 
 ComputeChoiceReceiptV1 is an append-only subordinate receipt keyed by canonical
 tenant/Run, atomically written with ingress. It binds the Session/event/actor,
-message mutation digest, choice/revision/disclosure, derived input class, exact
+message mutation digest, choice/revision/disclosure, conservative context class
+and canonical prefix/trigger sequences, exact
 private authority digest and committed time. Scalar columns and the encoded
 record must agree. It is neither another Run lifecycle nor a resource registry.
 
@@ -295,10 +456,10 @@ design review and implementation counter tests; they are not measured RU/cost.
 
 | Operation | Finite ceiling and enforcement |
 | --- | --- |
-| Catalog | 64 registered candidates globally per serving manifest; pure in-memory owner-prefix enumeration only after DB authorization. No database/world inventory scan. |
+| Catalog | 64 registered candidates globally per private serving manifest; pure exact tenant/owner disclosable-subset index only after DB authorization, before positions/revisions. No database/world inventory scan or public global-revision fence. |
 | List work | Four examined candidates; at most twelve bounded current-source point statements per candidate. No candidate whose reader exceeds that bound is enabled. |
 | List transaction | At most 64 SQL statements in one attempt and 96 in total across retries, including auth/clock/manifest/rate work; three-second overall resource deadline. A shared counter survives retries; budget exhaustion rolls back and returns temporary unavailability. |
-| List payload | Each source record at most 8 KiB, total materialized records at most 512 KiB; serialized public response at most 16 KiB. Validate encoded length before parsing untrusted persisted records. |
+| List payload | Ordinary source records at most 8 KiB; attached connection record at most 128 KiB, including the existing at-most-64-KiB ProtocolSnapshot and JSON/base64 overhead. Total materialized records at most 768 KiB per attempt and 1 MiB across retries; serialized public response at most 16 KiB. Database prefix-read limits and pre-parse counters enforce these ceilings; larger records are unavailable, not partially decoded eligible. |
 | HTTP list | Raw query at most 1 KiB, one instance of each accepted query key, cursor at most 512 bytes; no GET body decoding. No ETag/304 fast path. |
 | Fresh send choice work | One registration, at most twelve current-source point statements; at most 24 added statements including receipt/manifest/auth/CSRF, counted across retries inside the existing bounded ingress transaction. Exhaustion denies without a canonical message. Existing ingress/upload/object limits are not enlarged. |
 | Receipt | At most 4 KiB private record and 1 KiB public selection receipt. One receipt per Run, no unbounded per-retry history. |
@@ -342,7 +503,10 @@ document. #144/#145 cancellation/recovery remain separate and unchanged.
 | Commit failure, callback retry, lost commit response, delete during replay | No speculative receipt; callback resets; exact committed recovery only; no resurrection or duplicate effect. |
 | Same writer in two tabs or different Session | Per-send exact selectors cannot change another request/default; cursor/revision binds the authenticated Session. |
 | Config mixed across serving instances, disabled profile, unknown current reader | Fail closed against checked registry receipt; deterministic fixture never claims real-provider readiness. |
-| Page contains hidden candidates, empty page with cursor, malformed/expired cursor | Finite examined positions, safe progress, no total/count leakage, no unbounded fill loop or auth bypass. |
+| Page contains unavailable own candidates, empty page with cursor, malformed/expired cursor | Finite authenticated-subset positions, safe progress, no total/count leakage, no unbounded fill loop or auth bypass. |
+| Foreign-only catalog add/remove/edit during own pagination | Own public registry_revision and cursor/page progress unchanged; no global digest/position or foreign-only cursor-stale signal. |
+| Private history with public-looking new text; snapshot replacement or late overlay | Whole admitted context stays private; weaker route denied, exact canonical prefix/provenance checked; no new data or silent truncation under prior consent. |
+| List → fresh send → admission outcomes | Every precedence/table row has an exact HTTP/code or canonical recorded-reason fixture, including hidden revocation, payload conflict, consent change and exhausted retry; validators and safe-copy mapping do not fall back to unknown. |
 | Statement/byte/rate/deadline saturation and transaction retries | Counters include every source and attempt; no probes, activity refresh, hidden product writes or unbounded limiter keys. |
 | Browser scope loss/hide/unmount, stale list, send denied, keyboard/focus | #143 discards late data, retains only same-scope unsent content, explicit retry and truthful receipt; relevant shared accessibility/browser matrix passes. |
 | Session deletion/legal hold and schema/cutover | Receipt/index follow canonical bounded lifecycle; real YDB rollback/deletion and absent-reader/writer-first gates, not a fake-only proof. |

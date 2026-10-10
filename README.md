@@ -106,6 +106,9 @@ release gates and explicit configuration are satisfied.
   `make attached-worker-security-ydb-gate` requires an already migrated YDB;
   `make attached-worker-joined-provider-ydb-gate` runs its focused, test-only
   credential-and-receipt daemon scenario.
+  `make serverless-egress-conformance` verifies the real prepared
+  authority-to-egress seam with test-only credential/proxy ports; it needs
+  neither Docker nor cloud/provider credentials and does not enable a backend.
 - **Architect or security reviewer:** start with the
   [domain/runtime contracts](docs/contracts.md) and
   [security documentation](docs/README.md#security-and-trust-boundaries).

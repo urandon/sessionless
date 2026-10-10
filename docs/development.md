@@ -376,6 +376,21 @@ into normal Web/control/worker flow, including admitted file/image processing.
 rollout. This scope correction does not enable runtime, authorize live calls or
 import ambient credentials.
 
+For a Dockerless, credential-free check of the prepared authority-to-egress
+seam, run:
+
+```sh
+make serverless-egress-conformance
+```
+
+This runs vet, uncached race/shuffle package suites and 50 repeated joined
+cases using the real registry, invocation capability and PR-03c boundary with
+test-only credential/proxy ports. It does not contact an external provider,
+enable a runtime profile or prove normal worker credential custody, canonical
+terminal commit, cloud isolation or billed cost. See the
+[substrate evidence boundary](yandex-serverless-substrate.md) for what remains.
+The same target is included in `make ci`.
+
 The feature-disabled native [direct OpenRouter reference backend](direct-openrouter.md)
 pins one non-streaming Chat Completions request and strict observed-route
 response contract. Its tests use only a local fake boundary; no production HTTP

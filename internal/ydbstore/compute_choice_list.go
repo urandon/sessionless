@@ -12,6 +12,9 @@ import (
 type computeChoiceAttachedRegistration struct {
 	enumeration computechoice.Registration
 	pin         computeChoiceAttachedPin
+	// Optional canonical evidence is only a PRIVATE structural projection.
+	// Missing is unknown; present does not create an approved full manifest.
+	evidence *computeChoiceProviderEvidence
 }
 
 type computeChoiceCatalogKey struct {
@@ -27,6 +30,7 @@ type computeChoiceCatalogKey struct {
 type computeChoiceAttachedCatalog struct {
 	registry *computechoice.Registry
 	bindings map[computeChoiceCatalogKey]computeChoiceAttachedPin
+	evidence map[computeChoiceCatalogKey]*computeChoiceProviderEvidence
 	cutover  computeChoiceCutoverPins
 	cursor   *computechoice.CursorCodec
 }
@@ -37,6 +41,7 @@ func newComputeChoiceAttachedCatalog(cutover computeChoiceCutoverPins, cursor *c
 	}
 	registrations := make([]computechoice.Registration, 0, len(entries))
 	bindings := make(map[computeChoiceCatalogKey]computeChoiceAttachedPin, len(entries))
+	evidence := make(map[computeChoiceCatalogKey]*computeChoiceProviderEvidence, len(entries))
 	for _, entry := range entries {
 		pin := entry.pin
 		registration := entry.enumeration
@@ -48,18 +53,26 @@ func newComputeChoiceAttachedCatalog(cutover computeChoiceCutoverPins, cursor *c
 			return nil, errComputeChoiceSource
 		}
 		bindings[key] = pin
+		if entry.evidence != nil {
+			item, err := newComputeChoiceProviderEvidence(entry.evidence.template, entry.evidence.bundle)
+			if err != nil || item.template.TenantID != pin.tenantID || item.template.OwnerUserID != pin.ownerUserID || item.template.Resource.ResourceID != string(pin.subscriptionID) {
+				return nil, errComputeChoiceSource
+			}
+			evidence[key] = item
+		}
 		registrations = append(registrations, registration)
 	}
 	registry, err := computechoice.NewRegistry(registrations)
 	if err != nil {
 		return nil, errComputeChoiceSource
 	}
-	return &computeChoiceAttachedCatalog{registry: registry, bindings: bindings, cutover: cutover, cursor: cursor}, nil
+	return &computeChoiceAttachedCatalog{registry: registry, bindings: bindings, evidence: evidence, cutover: cutover, cursor: cursor}, nil
 }
 
 type computeChoiceAttachedCandidate struct {
 	registration computechoice.Registration
 	sources      computeChoiceAttachedSnapshot
+	provider     computeChoiceProviderSnapshot
 }
 
 type computeChoiceAttachedPage struct {
@@ -144,7 +157,11 @@ func (store *Store) readRatedComputeChoiceAttachedPage(ctx context.Context, dige
 			if err != nil {
 				return err
 			}
-			result.candidates = append(result.candidates, computeChoiceAttachedCandidate{registration: registration, sources: sources})
+			provider, err := observeComputeChoiceProviderEvidence(query, auth, pin, catalog.evidence[computeChoiceCatalogKey{auth.scope.TenantID, auth.scope.UserID, registration.ChoiceID}])
+			if err != nil {
+				return err
+			}
+			result.candidates = append(result.candidates, computeChoiceAttachedCandidate{registration: registration, sources: sources, provider: provider})
 		}
 		pending = result
 		return nil

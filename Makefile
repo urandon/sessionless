@@ -306,6 +306,11 @@ run-explanation-ydb-gate: prepare
 	SESSIONLESS_RUN_EXPLANATION_YDB_GATE=1 go test -race -count=$(RUN_EXPLANATION_YDB_COUNT) -shuffle=on -timeout=10m -tags=ydbintegration \
 		-run '^TestRunExplanationYDB' ./test/ydbintegration
 
+.PHONY: admission-cost-ydb-gate
+admission-cost-ydb-gate: prepare
+	SESSIONLESS_RUN_EXPLANATION_YDB_GATE=1 go test -race -count=3 -shuffle=on -timeout=5m -tags=ydbintegration \
+		-run '^(TestAdmissionCostV2YDB|TestAdmissionCostV2ServingGate)' ./test/ydbintegration
+
 .PHONY: web-auth-ydb-gate
 web-auth-ydb-gate: prepare
 	go test -race -count=3 -shuffle=on -timeout=5m -tags=ydbintegration \

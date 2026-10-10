@@ -36,6 +36,7 @@ const (
 	RouteUploads                   = "/api/web/v1/uploads"
 	RouteUploadCommit              = "/api/web/v1/uploads/{upload_id}/commit"
 	RouteRun                       = "/api/web/v1/runs/{run_id}"
+	RouteRunExplanation            = "/api/web/v1/runs/{run_id}/explanation"
 	RouteEventAttachment           = "/api/web/v1/sessions/{session_id}/events/{sequence}/attachments/{index}"
 	RouteRunArtifact               = "/api/web/v1/sessions/{session_id}/runs/{run_id}/artifact-manifests/{manifest_id}/artifacts/{index}"
 	RouteAttachedWorkers           = "/api/web/v1/attached-workers"

@@ -53,6 +53,7 @@ type Config struct {
 	Store                      ports.WebAuthStore
 	Sessions                   *sessionapi.Service
 	API                        *webapi.Service
+	RunExplanations            ports.RunExplanationRatedReadStoreV1
 	AttachedWorkers            AttachedWorkerReadService
 	AttachedWorkerControls     AttachedWorkerControlService
 	IDs                        ports.IDGenerator
@@ -236,6 +237,9 @@ func (handler *Handler) routes() {
 		handler.mux.HandleFunc("GET "+webcontract.RouteAttachedWorkers, handler.listAttachedWorkers)
 		handler.mux.HandleFunc("GET "+webcontract.RouteAttachedWorker, handler.getAttachedWorker)
 		handler.mux.HandleFunc("GET "+webcontract.RouteAttachedWorkerDiagnostics, handler.getAttachedWorkerDiagnostics)
+	}
+	if handler.config.RunExplanations != nil {
+		handler.mux.HandleFunc("GET "+webcontract.RouteRunExplanation, handler.getRunExplanation)
 	}
 	if handler.config.AttachedWorkerControls != nil {
 		handler.mux.HandleFunc("POST "+webcontract.RouteAttachedWorkerActionPlan, handler.planAttachedWorkerAction)
@@ -1461,8 +1465,18 @@ func projectEvent(item sessionapi.Event) webcontract.SessionEvent {
 	}
 	return webcontract.SessionEvent{
 		EventID: item.Event.ID, Sequence: item.Event.Sequence, Kind: item.Event.Kind,
-		Content: content, CreatedAt: item.Event.CreatedAt,
+		RunID: cloneEventRunID(item.Event.RunID), Content: content, CreatedAt: item.Event.CreatedAt,
 	}
+}
+
+// Copy only canonical correlation from the already participant-authorized
+// event. Do not infer linkage/reasons or perform per-event runtime reads.
+func cloneEventRunID(id *domain.RunID) *domain.RunID {
+	if id == nil || id.Validate() != nil {
+		return nil
+	}
+	copy := *id
+	return &copy
 }
 
 func queryLimit(request *http.Request, fallback uint32) uint32 {

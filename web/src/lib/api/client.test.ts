@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { ApiError, CanonicalApiClient } from './client';
+import { barrier, explanation } from '../run-explanation/test-fixtures';
 
 describe('CanonicalApiClient', () => {
   it('uses same-origin credentials and the CSRF header for mutations', async () => {
@@ -192,5 +193,269 @@ describe('CanonicalApiClient', () => {
     const failure = await client.getIdentity().catch((error: unknown) => error);
     expect(failure).toMatchObject({ code: 'temporarily_unavailable', status: 503 });
     expect(JSON.stringify(failure)).not.toContain('signed-url');
+  });
+});
+
+describe('Run explanation transport', () => {
+  it.each(['9007199254740991.1', '1e0', '18446744073709551615', '-0'])(
+    'rejects inexact/noncanonical integer token %s before numeric rounding',
+    async (token) => {
+      const raw = JSON.stringify(explanation()).replace(
+        '"decision_revision":1',
+        `"decision_revision":${token}`,
+      );
+      const request = vi.fn<typeof fetch>().mockResolvedValue(new Response(raw));
+      await expect(
+        new CanonicalApiClient({ fetch: request }).getRunExplanation('run-1', 'ses-1'),
+      ).rejects.toMatchObject({ code: 'temporarily_unavailable' });
+    },
+  );
+
+  it('honors an HTTP-date Retry-After using the injected time authority', async () => {
+    const request = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response('private-provider-secret', {
+        status: 429,
+        headers: { 'Retry-After': 'Sat, 10 Oct 2026 12:00:12 GMT' },
+      }),
+    );
+    const client = new CanonicalApiClient({
+      fetch: request,
+      now: () => Date.parse('2026-10-10T12:00:00Z'),
+    });
+    const error = await client
+      .getRunExplanation('run-1', 'ses-1')
+      .catch((failure: unknown) => failure);
+    expect(error).toMatchObject({ retryAfterMs: 12000 });
+    expect(JSON.stringify(error)).not.toContain('private-provider-secret');
+  });
+
+  it('maps transport detail to a content-free error and does not fetch an already aborted read', async () => {
+    const request = vi.fn<typeof fetch>().mockRejectedValue(new Error('secret-token'));
+    const client = new CanonicalApiClient({ fetch: request });
+    const error = await client
+      .getRunExplanation('run-1', 'ses-1')
+      .catch((failure: unknown) => failure);
+    expect(error).toMatchObject({ status: 503, code: 'temporarily_unavailable' });
+    expect(JSON.stringify(error)).not.toContain('secret-token');
+    const abort = new AbortController();
+    abort.abort();
+    await expect(client.getRunExplanation('run-1', 'ses-1', abort.signal)).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    expect(request).toHaveBeenCalledOnce();
+  });
+
+  it('uses selector-only no-store GET and local exact Session/Run correlation', async () => {
+    const request = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(Response.json(explanation(), { headers: { ETag: 'ignored' } }));
+    const client = new CanonicalApiClient({ fetch: request, readCSRFToken: () => 'must-not-send' });
+    await expect(client.getRunExplanation('run-1', 'ses-1')).resolves.toEqual(explanation());
+    expect(request.mock.calls[0]?.[0]).toBe('/api/web/v1/runs/run-1/explanation');
+    const options = request.mock.calls[0]?.[1];
+    expect(options).toMatchObject({
+      method: 'GET',
+      cache: 'no-store',
+      credentials: 'same-origin',
+      referrerPolicy: 'no-referrer',
+    });
+    expect(options?.body).toBeUndefined();
+    expect([...new Headers(options?.headers).keys()]).toEqual(['accept']);
+  });
+
+  it.each([401, 403, 404, 429, 503, 304])(
+    'rejects status %i without reading or keeping its body',
+    async (status) => {
+      const cancel = vi.fn();
+      const body = status === 304 ? null : new ReadableStream<Uint8Array>({ cancel });
+      const request = vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response(body, { status, headers: { 'Retry-After': '12' } }));
+      const failure = await new CanonicalApiClient({ fetch: request })
+        .getRunExplanation('run-1', 'ses-1')
+        .catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(ApiError);
+      expect(failure).toMatchObject({
+        status,
+        retryAfterMs: 12000,
+        message: 'Run evidence is unavailable. Please try again.',
+      });
+      if (body) expect(cancel).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each(['-1', 'Infinity', 'NaN', '1e309', '999999999999999999999', '1.5'])(
+    'ignores non-finite/invalid Retry-After %s',
+    async (retry) => {
+      const request = vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response(null, { status: 429, headers: { 'Retry-After': retry } }));
+      await expect(
+        new CanonicalApiClient({ fetch: request }).getRunExplanation('run-1', 'ses-1'),
+      ).rejects.toMatchObject({ retryAfterMs: undefined });
+    },
+  );
+
+  it('stops a streamed explanation body at 16 KiB without relying on Content-Length', async () => {
+    const cancel = vi.fn();
+    let pulls = 0;
+    const body = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          pulls++;
+          controller.enqueue(new Uint8Array(4096));
+        },
+        cancel,
+      },
+      { highWaterMark: 0 },
+    );
+    const request = vi.fn<typeof fetch>().mockResolvedValue(new Response(body));
+    await expect(
+      new CanonicalApiClient({ fetch: request }).getRunExplanation('run-1', 'ses-1'),
+    ).rejects.toMatchObject({ code: 'temporarily_unavailable' });
+    expect(pulls).toBe(5);
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it('rejects Content-Length over 16 KiB before reading', async () => {
+    const pull = vi.fn(),
+      cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({ pull, cancel }, { highWaterMark: 0 });
+    const request = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(body, { headers: { 'Content-Length': '16385' } }));
+    await expect(
+      new CanonicalApiClient({ fetch: request }).getRunExplanation('run-1', 'ses-1'),
+    ).rejects.toBeInstanceOf(ApiError);
+    expect(pull).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it('accepts the exact 16 KiB body ceiling', async () => {
+    const raw = JSON.stringify(explanation());
+    const request = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(raw + ' '.repeat(16384 - raw.length)));
+    await expect(
+      new CanonicalApiClient({ fetch: request }).getRunExplanation('run-1', 'ses-1'),
+    ).resolves.toEqual(explanation());
+  });
+
+  it('aborts during a blocked body read and cancels the stream', async () => {
+    const started = barrier<void>(),
+      cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>(
+      {
+        pull() {
+          started.resolve();
+        },
+        cancel,
+      },
+      { highWaterMark: 0 },
+    );
+    const request = vi.fn<typeof fetch>().mockResolvedValue(new Response(body));
+    const abort = new AbortController();
+    const read = new CanonicalApiClient({ fetch: request }).getRunExplanation(
+      'run-1',
+      'ses-1',
+      abort.signal,
+    );
+    await started.promise;
+    abort.abort();
+    await expect(read).rejects.toMatchObject({ name: 'AbortError' });
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it('does not restore a success when fetch ignores its aborted signal', async () => {
+    const pending = barrier<Response>(),
+      request = vi.fn<typeof fetch>().mockReturnValue(pending.promise);
+    const abort = new AbortController();
+    const read = new CanonicalApiClient({ fetch: request }).getRunExplanation(
+      'run-1',
+      'ses-1',
+      abort.signal,
+    );
+    abort.abort();
+    pending.resolve(Response.json(explanation()));
+    await expect(read).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
+  it.each([
+    [
+      'private envelope field',
+      (v: Record<string, unknown>) => {
+        v.owner_user_id = 'secret';
+      },
+    ],
+    [
+      'private nested field',
+      (v: Record<string, unknown>) => {
+        (v.attached as Record<string, unknown>).worker_id = 'secret';
+      },
+    ],
+    [
+      'foreign Run',
+      (v: Record<string, unknown>) => {
+        v.run_id = 'run-other';
+      },
+    ],
+    [
+      'foreign Session',
+      (v: Record<string, unknown>) => {
+        v.session_id = 'ses-other';
+      },
+    ],
+    [
+      'unknown variant fields',
+      (v: Record<string, unknown>) => {
+        v.admission = { availability: 'unknown', reason_code: 'admitted' };
+      },
+    ],
+    [
+      'unsafe revision',
+      (v: Record<string, unknown>) => {
+        (v.admission as Record<string, unknown>).decision_revision = Number.MAX_SAFE_INTEGER + 1;
+      },
+    ],
+    [
+      'wrong coverage',
+      (v: Record<string, unknown>) => {
+        (v.coverage as Record<string, unknown>).operational = 'unknown';
+      },
+    ],
+    [
+      'invented freshness',
+      (v: Record<string, unknown>) => {
+        (v.attached as Record<string, unknown>).freshness = 'within_lease';
+      },
+    ],
+    [
+      'invalid enum',
+      (v: Record<string, unknown>) => {
+        (v.admission as Record<string, unknown>).reason_code = 'raw-provider-cause';
+      },
+    ],
+    [
+      'invalid UTC',
+      (v: Record<string, unknown>) => {
+        v.read_at = '2026-10-10T12:00:10+03:00';
+      },
+    ],
+    [
+      'invalid calendar',
+      (v: Record<string, unknown>) => {
+        v.read_at = '2026-02-30T12:00:10Z';
+      },
+    ],
+  ])('fails closed for %s without retaining body values', async (_name, mutate) => {
+    const v = explanation() as unknown as Record<string, unknown>;
+    mutate(v);
+    const request = vi.fn<typeof fetch>().mockResolvedValue(Response.json(v));
+    const error = await new CanonicalApiClient({ fetch: request })
+      .getRunExplanation('run-1', 'ses-1')
+      .catch((failure: unknown) => failure);
+    expect(error).toBeInstanceOf(ApiError);
+    expect(JSON.stringify(error)).not.toContain('secret');
+    expect(JSON.stringify(error)).not.toContain('raw-provider-cause');
   });
 });

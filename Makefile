@@ -300,8 +300,10 @@ ydb-integration: prepare
 
 .PHONY: run-explanation-ydb-gate
 RUN_EXPLANATION_YDB_COUNT ?= 3
+# Suite allowance covers additive native fixtures; each resource still has its
+# own three-second context and twenty-statement aggregate ceiling.
 run-explanation-ydb-gate: prepare
-	SESSIONLESS_RUN_EXPLANATION_YDB_GATE=1 go test -race -count=$(RUN_EXPLANATION_YDB_COUNT) -shuffle=on -timeout=5m -tags=ydbintegration \
+	SESSIONLESS_RUN_EXPLANATION_YDB_GATE=1 go test -race -count=$(RUN_EXPLANATION_YDB_COUNT) -shuffle=on -timeout=10m -tags=ydbintegration \
 		-run '^TestRunExplanationYDB' ./test/ydbintegration
 
 .PHONY: web-auth-ydb-gate

@@ -10,10 +10,11 @@ pluggable agent workers do the work.**
 > **MVP in progress.** The canonical session core, Telegram path, local WebUI,
 > deterministic worker, and feature-disabled provider adapters are implemented.
 > The first launch frontend is WebUI with Yandex ID login. MVP now requires
-> Sessionless-managed cloud execution with one real low-cost model, without a
-> user-maintained worker. This is planned, not activated: platform proof, real
-> provider composition and browser product E2E remain. Attached workers are an
-> optional route; Telegram messaging/Cloudflare rollout stays post-MVP.
+> both one ready-made harness on an attached worker and Sessionless-managed
+> cloud execution without a user-maintained host. The managed path needs a real
+> bounded agent loop, compaction, useful constrained MCP and web search. These
+> capabilities and their product E2E remain unactivated; delivered adapters and
+> fixtures are groundwork. Telegram messaging/Cloudflare rollout stays post-MVP.
 
 [Explore the documentation](docs/README.md) ·
 [Run the local stand](docs/local-development-stand.md#lifecycle) ·
@@ -79,9 +80,9 @@ explicitly confirmed reset command.
 | --- | --- | --- |
 | Canonical core and Telegram | **Implemented** | Ordered sessions/events, YDB state, durable ingress/delivery, deterministic two-tenant E2E; tracked by [MVP epic #6](https://gitcode.com/urandon/sessionless/issues/6). |
 | WebUI | **Implemented locally** | Authenticated Go BFF, canonical API, and Svelte UI include the selected [Yandex ID login](docs/development.md#yandex-id-login); registered-client cloud callback and tenant-isolation product E2E remain in [WebUI epic #29](https://gitcode.com/urandon/sessionless/issues/29). |
-| Provider and serverless harness | **Required for MVP; feature-disabled** | Existing contracts feed [#90 platform proof](https://gitcode.com/urandon/sessionless/issues/90), [#175 managed real-profile composition](https://gitcode.com/urandon/sessionless/issues/175) and [#92 rollout proof](https://gitcode.com/urandon/sessionless/issues/92). One explicit cheap/free-model profile, no user host, no automatic paid fallback. [The delivery plan](docs/mvp-delivery-plan.md) preserves file/image acceptance and measured cost gates. |
-| Attached workers | **Optional MVP route; implemented foundation, rollout disabled** | #76/#77/#79/#166 are closed. [Private owner onboarding](docs/attached-worker-onboarding.md) creates one exact resource without database surgery. #129/#133 still own measured transport and owner-local Codex activation under [#72](https://gitcode.com/urandon/sessionless/issues/72), but do not block the managed-cloud pilot. Enrollment or test receipts are not product activation. |
-| Personal-agent research | **Planned / post-MVP** | Memory, tools, web search, subagents, analytics, and federation stay outside the MVP gate until promoted through their research issues. |
+| Provider and serverless harness | **Required for MVP; feature-disabled** | [#176](https://gitcode.com/urandon/sessionless/issues/176) owns the bounded loop, derived compaction, useful constrained MCP and bounded web search; [#180 design acceptance](https://gitcode.com/urandon/sessionless/issues/180) precedes real linked implementation children. #175/#90/#92 join implementation, platform and rollout proof without a user host. A single tool-free API smoke is insufficient. |
+| Attached workers | **Required MVP route; implemented foundation, rollout disabled** | #76/#77/#79/#166 are closed. [Private owner onboarding](docs/attached-worker-onboarding.md) creates one exact resource without database surgery. #129/#133 own measured transport and the selected Codex activation under [#72](https://gitcode.com/urandon/sessionless/issues/72). One supported ready-made harness suffices; replacing the candidate needs reviewed scope/evidence. Neither enrollment nor test receipts are product activation. |
+| Personal-agent research | **Bounded required findings; broader product work post-MVP** | Relevant loop/compaction/tools/search research feeds the managed MVP. General memory, subagents, browser/shell, analytics and federation do not become hidden launch gates. [The delivery plan](docs/mvp-delivery-plan.md) keeps both execution paths required. |
 
 “Implemented” means code plus repository checks exist. It does not imply a
 production SLA. “Experimental” paths remain disabled unless their documented

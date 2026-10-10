@@ -84,8 +84,9 @@ material. This composition does **not** activate a real provider or grant a
 credential: the production sealed-input constructor remains credentialless.
 The credential-bearing provider proof uses only the integration-test adapter;
 real attached-provider activation remains the separately reviewed #133
-workstream, optional for the managed-cloud MVP. #175 owns managed real-profile
-composition; #90/#92 own its platform and rollout proof.
+workstream. It is required for the selected attached MVP path, independently of
+managed implementation. #176/#180 own the agent-harness minimum/design;
+#175 owns managed composition and #90/#92 its platform and rollout proof.
 
 ```sh
 make web-ci
@@ -367,10 +368,13 @@ attested provider-egress/credential composition boundaries are documented in
 [Yandex substrate evidence plan](yandex-serverless-substrate.md). None registers
 a concrete cloud launcher, provider proxy, secret backend, or production route.
 The [current MVP plan](mvp-delivery-plan.md) requires this managed cloud path
-without user-maintained compute. #175 composes one real cheap/free-model profile
-into normal Web/control/worker flow, including admitted file/image processing;
-#90/#92 remain evidence gates. This promotion does not enable runtime, authorize
-live calls or import ambient credentials. Attached #129/#133 are optional work.
+without user-maintained compute alongside the required attached route. #176
+research and #180 accepted design precede linked implementation of the bounded
+loop, compaction, useful constrained MCP and web search; #175 joins that harness
+into normal Web/control/worker flow, including admitted file/image processing.
+#90/#92 remain managed evidence gates; #129/#133 independently gate attached
+rollout. This scope correction does not enable runtime, authorize live calls or
+import ambient credentials.
 
 The feature-disabled native [direct OpenRouter reference backend](direct-openrouter.md)
 pins one non-streaming Chat Completions request and strict observed-route

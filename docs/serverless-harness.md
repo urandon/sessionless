@@ -16,11 +16,18 @@ host in [the MVP plan](mvp-delivery-plan.md). Existing #86–#89/#91 contract
 deliveries are reused, not reopened. #90 owns platform evidence;
 [#175](https://gitcode.com/urandon/sessionless/issues/175) owns exact real-profile
 composition into normal Web/control/worker flow; #92 owns rollout evidence.
-Attached subscription activation #133 is optional for that launch.
+Attached execution under #72 is also required; #133 is its existing Codex
+activation candidate, not a predecessor of independent managed implementation.
 
-The first bounded profile below remains tool-free; this promotion does not
-authorize arbitrary shell/MCP/plugins or cloud custody of consumer subscription
-credentials. OpenCode Zen's free-model API is a candidate for synthetic/public
+The first bounded profile below remains tool-free outer-runtime groundwork;
+it cannot satisfy the managed agent-harness MVP on its own. #176 requires a
+bounded model/tool/result loop, derived compaction, useful constrained MCP and
+bounded general web search. Research #177–#179 and the promoted #94 slice feed
+#180's exact design acceptance before actual linked implementation children.
+[PR !160](https://gitcode.com/urandon/sessionless/pull/160) is the 0.2.0 draft,
+not accepted or activated by this release-scope correction. This does not
+authorize arbitrary shell/plugins, unrestricted MCP, or cloud custody of
+consumer subscription credentials. OpenCode Zen's free-model API is a candidate for synthetic/public
 text proof, not implicit permission to deploy its CLI or export private files.
 MVP still requires useful text/file/image input and durable results: #175 must
 account for admitted modalities and any bounded preprocessing under exact policy;

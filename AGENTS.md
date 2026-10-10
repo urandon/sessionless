@@ -8,9 +8,12 @@
   is deferred until after MVP. All frontends bind to the same canonical sessions.
 - Follow `docs/mvp-delivery-plan.md` for current release scope. Do not promote
   post-MVP sharing, administration or exhaustive recovery work into hidden gates.
-- MVP must offer explicit Sessionless-managed cloud execution without a user
-  host. Attached workers remain an optional route, not a launch prerequisite or
-  silent fallback. Real profiles stay disabled until their bounded rollout gates pass.
+- MVP requires both one supported ready-made harness on an attached worker and
+  Sessionless-managed execution without a user host. The managed harness also
+  needs a bounded model/tool/result loop, derived compaction, useful constrained
+  MCP and bounded web search. Follow research, accepted design, then linked
+  implementation tasks; neither route is a silent fallback. Real profiles stay
+  disabled until their own bounded rollout gates pass.
 - `/new` creates a new session and atomically switches the current frontend
   binding. It never mutates or truncates an existing session.
 - Support user messages with images/files and project AI results back to every

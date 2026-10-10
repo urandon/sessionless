@@ -1,13 +1,17 @@
 # Native provider composition
 
 MVP direction changed on 2026-10-10: [the delivery plan](mvp-delivery-plan.md)
-requires one managed cloud profile without a user host. The five registrations
+requires both an attached ready-made harness and managed execution without a
+user host. The five registrations
 described below remain disabled implementation evidence. [#175](https://gitcode.com/urandon/sessionless/issues/175)
 owns the missing normal worker composition and exact low-cost provider profile.
 OpenCode Zen is not an existing OpenRouter registration: compatible wire shape
 does not authorize an endpoint/model/credential override. An API profile does
 not imply the OpenCode CLI runs in cloud. #90/#92 retain platform/rollout gates;
-#133 retains the separate optional owner-local subscription path.
+#133 retains the selected attached Codex path, required independently for MVP.
+#176/#180 own research and accepted design for the managed bounded loop,
+compaction, useful constrained MCP and web search before linked implementation.
+A tool-free API registration alone does not implement that agent minimum.
 
 `internal/providercomposition` is the closed composition boundary for the five
 reviewed native provider adapters below the Sessionless-owned harness registry:

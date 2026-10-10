@@ -216,7 +216,7 @@ esac
 		Store: store, Bootstrap: &joinedBootstrap{now: joinedTestTime, publicKey: public, offer: offer}, Exchange: factory,
 		Session: attachedworkersession.Config{
 			Audience: "sessionless:attached-worker:v1", WorkerOffer: offer,
-			ImplementedVersions: []attachedworkerprotocol.ProtocolVersion{1}, OperationTimeout: time.Second,
+			ImplementedVersions: []attachedworkerprotocol.ProtocolVersion{1}, OperationTimeout: joinedProtocolOperationTimeout,
 			Random: bytes.NewReader(append(bytes.Repeat([]byte{0x41}, 32), bytes.Repeat([]byte{0x42}, 32)...)), Now: clock.Now,
 		},
 		Connect:        attachedworkersession.ConnectInputV1{ExpectedWorkerRevision: 7, CapabilityManifest: capability},

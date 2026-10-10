@@ -110,7 +110,7 @@ type CanonicalUserEventCommit struct {
 	ExecutionPlacementV2     domain.ExecutionPlacementV2
 	HarnessBinding           domain.HarnessBindingV2
 	SubstrateBinding         *domain.SubstrateBindingV1
-	AdmissionCostCeiling     *domain.AdmissionCostCeilingV1
+	AdmissionCostCeiling     *domain.AdmissionCostCeilingV2
 	CommittedAt              time.Time
 }
 
@@ -129,7 +129,7 @@ type ManagedExecutionAuthorityV2 struct {
 	ExecutionPlacementV2 domain.ExecutionPlacementV2
 	HarnessBinding       domain.HarnessBindingV2
 	SubstrateBinding     domain.SubstrateBindingV1
-	AdmissionCostCeiling domain.AdmissionCostCeilingV1
+	AdmissionCostCeiling domain.AdmissionCostCeilingV2
 }
 
 // ExecutionAuthorityV2 preserves the existing placement union at ingress.
@@ -140,7 +140,7 @@ type ExecutionAuthorityV2 struct {
 	ExecutionPlacementV2 domain.ExecutionPlacementV2
 	HarnessBinding       domain.HarnessBindingV2
 	SubstrateBinding     *domain.SubstrateBindingV1
-	AdmissionCostCeiling *domain.AdmissionCostCeilingV1
+	AdmissionCostCeiling *domain.AdmissionCostCeilingV2
 }
 
 func (authority ManagedExecutionAuthorityV2) ExecutionAuthority() ExecutionAuthorityV2 {

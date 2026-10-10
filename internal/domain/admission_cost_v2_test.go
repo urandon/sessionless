@@ -664,7 +664,7 @@ func admissionCostV2SubstrateFixture(t testing.TB, cost domain.AdmissionCostCeil
 		OuterHarnessArtifactDigest: strings.Repeat("c", 64), WorkloadMode: domain.SubstrateWorkloadInProcessDirectV1, IsolationProfileDigest: strings.Repeat("d", 64),
 		EgressPolicyDigest: strings.Repeat("e", 64), CleanupPolicyDigest: strings.Repeat("f", 64), EgressProxyArtifactDigest: strings.Repeat("1", 64), EgressProxyIdentityDigest: strings.Repeat("2", 64),
 		// Transitional typed field only: this is not V1 runtime compatibility.
-		AdmissionCostCeilingDigest: domain.AdmissionCostCeilingDigestV1(digest),
+		AdmissionCostCeilingDigest: domain.AdmissionCostCeilingDigestV2(digest),
 		Limits: domain.SubstrateLimitsV1{InvocationTimeout: time.Hour, ExecutionTimeout: cost.MaxActiveDuration, CleanupTimeout: cost.MaxCleanupAndReconcileDuration,
 			CPUMillis: cost.ConfiguredVCPUMillis, MemoryBytes: cost.ConfiguredMemoryBytes, ScratchBytes: 1 << 20, StdoutBytes: 1 << 20, StderrBytes: 1 << 20, NativeEventCount: 100, ArtifactBytes: 1 << 20},
 	}
@@ -693,7 +693,7 @@ func TestAdmissionCostV2RetainsExactSubstrateFiniteCoverage(t *testing.T) {
 			if err != nil {
 				t.Fatalf("independently valid changed %s cost: %v", name, err)
 			}
-			other.AdmissionCostCeilingDigest = domain.AdmissionCostCeilingDigestV1(digest)
+			other.AdmissionCostCeilingDigest = domain.AdmissionCostCeilingDigestV2(digest)
 			if err := candidate.ValidateForSubstrate(other); err == nil {
 				t.Errorf("digest-resealed insufficient %s coverage accepted", name)
 			}
@@ -701,7 +701,7 @@ func TestAdmissionCostV2RetainsExactSubstrateFiniteCoverage(t *testing.T) {
 	}
 	for name, mutate := range map[string]func(*domain.SubstrateBindingV1){
 		"digest": func(v *domain.SubstrateBindingV1) {
-			v.AdmissionCostCeilingDigest = domain.AdmissionCostCeilingDigestV1(strings.Repeat("9", 64))
+			v.AdmissionCostCeilingDigest = domain.AdmissionCostCeilingDigestV2(strings.Repeat("9", 64))
 		},
 		"log_overflow":      func(v *domain.SubstrateBindingV1) { v.Limits.StdoutBytes = ^uint64(0); v.Limits.StderrBytes = 1 },
 		"invalid_substrate": func(v *domain.SubstrateBindingV1) { v.Version = 0 },

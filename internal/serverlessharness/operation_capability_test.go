@@ -49,7 +49,7 @@ func operationIssuerFixture(t *testing.T, capacity int) (*OperationCapabilityIss
 		Sequence: 1, Kind: domain.AttemptOperationModelV1, CallID: "model-issuer", RequestRef: "request-issuer", RequestDigest: hash,
 		Deadline: at.Add(10 * time.Second), CleanupDuration: 5 * time.Second,
 		Debit:        domain.AttemptOperationDebitV1{Operations: 1, ModelCalls: 1, InputTokens: 100, OutputTokens: 20, BodyBytes: 1000, ResponseBytes: 1000, AmountMicrounits: 1, ActiveDuration: 10 * time.Second},
-		RequestBytes: 100, ResultBytes: 900, ContextBytes: 100, Currency: "USD", PriceRevision: "price-issuer", AdmissionCostCeilingDigest: domain.AdmissionCostCeilingDigestV1(hash),
+		RequestBytes: 100, ResultBytes: 900, ContextBytes: 100, Currency: "USD", PriceRevision: "price-issuer", AdmissionCostCeilingDigest: domain.AdmissionCostCeilingDigestV2(hash),
 	}
 	digest, err := op.Digest()
 	if err != nil {

@@ -351,7 +351,7 @@ func validIdentity(t *testing.T, descriptor domain.HarnessBackendDescriptorV1) p
 	binding.EvidenceExpiresAt = &expiresAt
 	placement := authority.ExecutionPlacementV2
 	var substrate *domain.SubstrateBindingV1
-	var cost *domain.AdmissionCostCeilingV1
+	var cost *domain.AdmissionCostCeilingV2
 	if descriptor.BackendKind == domain.HarnessBackendCodexExecV1 {
 		placement = domain.ExecutionPlacementV2{
 			Version:        domain.ExecutionPlacementVersionV2,

@@ -14,11 +14,14 @@ import (
 // A test-owned SQL connector exercises the real transaction/query sequence
 // without a mutable schema, credentials, external clock, or database process.
 type harnessV2CutoverSQL struct {
-	markers                    map[string]time.Time
-	filled                     string
-	queries                    []string
-	beginOptions               driver.TxOptions
-	writes, commits, rollbacks int
+	markers                         map[string]time.Time
+	markerID, markerTable           string
+	clock                           time.Time
+	failQuery, failExec, failCommit bool
+	filled                          string
+	queries                         []string
+	beginOptions                    driver.TxOptions
+	writes, commits, rollbacks      int
 }
 
 func (fixture *harnessV2CutoverSQL) Connect(context.Context) (driver.Conn, error) {
@@ -36,12 +39,25 @@ func (fixture *harnessV2CutoverSQL) BeginTx(_ context.Context, options driver.Tx
 	fixture.beginOptions = options
 	return fixture, nil
 }
-func (fixture *harnessV2CutoverSQL) Commit() error   { fixture.commits++; return nil }
+func (fixture *harnessV2CutoverSQL) Commit() error {
+	fixture.commits++
+	if fixture.failCommit {
+		return errors.New("scripted commit failure")
+	}
+	return nil
+}
 func (fixture *harnessV2CutoverSQL) Rollback() error { fixture.rollbacks++; return nil }
 func (fixture *harnessV2CutoverSQL) QueryContext(_ context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	fixture.queries = append(fixture.queries, query)
+	if fixture.failQuery {
+		return nil, errors.New("scripted query failure")
+	}
+	if query == "SELECT CurrentUtcTimestamp()" {
+		return &harnessV2CutoverRows{column: "clock", value: fixture.clock}, nil
+	}
 	if strings.HasPrefix(query, "SELECT completed_at") {
-		if len(args) != 1 || args[0].Value != "harness-binding-v2-empty-cutover" {
+		if query != "SELECT completed_at FROM "+fixture.expectedTable()+" WHERE cutover_id=$1" ||
+			len(args) != 1 || args[0].Value != fixture.expectedMarker() {
 			return nil, errors.New("successor did not select its exact additive marker")
 		}
 		if at, found := fixture.markers[args[0].Value.(string)]; found {
@@ -57,11 +73,30 @@ func (fixture *harnessV2CutoverSQL) QueryContext(_ context.Context, query string
 	return nil, errors.New("unexpected successor query: " + query)
 }
 func (fixture *harnessV2CutoverSQL) ExecContext(_ context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
-	if query != "UPSERT INTO harness_binding_cutover_state (cutover_id,completed_at) VALUES ($1,$2)" || len(args) != 2 || args[0].Value != "harness-binding-v2-empty-cutover" {
+	if query != "UPSERT INTO "+fixture.expectedTable()+" (cutover_id,completed_at) VALUES ($1,$2)" || len(args) != 2 || args[0].Value != fixture.expectedMarker() {
 		return nil, errors.New("unexpected successor marker write")
+	}
+	if fixture.failExec {
+		return nil, errors.New("scripted write failure")
+	}
+	if fixture.markerID != "" && (args[1].Value != fixture.clock.UTC() || fixture.clock.IsZero()) {
+		return nil, errors.New("wrong database clock")
 	}
 	fixture.writes++
 	return driver.RowsAffected(1), nil
+}
+
+func (fixture *harnessV2CutoverSQL) expectedMarker() string {
+	if fixture.markerID != "" {
+		return fixture.markerID
+	}
+	return "harness-binding-v2-empty-cutover"
+}
+func (fixture *harnessV2CutoverSQL) expectedTable() string {
+	if fixture.markerTable != "" {
+		return fixture.markerTable
+	}
+	return "harness_binding_cutover_state"
 }
 
 type harnessV2CutoverDriver struct{}

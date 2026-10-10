@@ -1539,7 +1539,7 @@ func cloneSubstrateBinding(value *domain.SubstrateBindingV1) *domain.SubstrateBi
 	return &clone
 }
 
-func cloneAdmissionCostCeiling(value *domain.AdmissionCostCeilingV1) *domain.AdmissionCostCeilingV1 {
+func cloneAdmissionCostCeiling(value *domain.AdmissionCostCeilingV2) *domain.AdmissionCostCeilingV2 {
 	if value == nil {
 		return nil
 	}

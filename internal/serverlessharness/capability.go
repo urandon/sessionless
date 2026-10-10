@@ -39,7 +39,7 @@ type PreparedInvocation struct {
 	authorityDigest   domain.ServerlessInvocationAuthorityDigestV1
 	reservationDigest domain.AttemptEffectReservationDigestV1
 	allocationDigest  domain.PreparedAllocationDigestV1
-	costDigest        domain.AdmissionCostCeilingDigestV1
+	costDigest        domain.AdmissionCostCeilingDigestV2
 	issuedAt          time.Time
 	executeDeadline   time.Time
 	authenticator     [32]byte

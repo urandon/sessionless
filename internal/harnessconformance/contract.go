@@ -182,7 +182,7 @@ type FixtureV1 struct {
 	Placement            domain.ExecutionPlacementV2   `json:"execution_placement"`
 	Binding              domain.HarnessBindingV2       `json:"binding"`
 	SubstrateBinding     domain.SubstrateBindingV1     `json:"substrate_binding"`
-	AdmissionCostCeiling domain.AdmissionCostCeilingV1 `json:"admission_cost_ceiling"`
+	AdmissionCostCeiling domain.AdmissionCostCeilingV2 `json:"admission_cost_ceiling"`
 	EvidenceBundle       *EvidenceBundleV1             `json:"evidence_bundle,omitempty"`
 	Operation            OperationV1                   `json:"operation"`
 	Expected             ExpectedV1                    `json:"expected"`
@@ -254,10 +254,10 @@ func (fixture FixtureV1) Validate() error {
 	return nil
 }
 
-func fixtureExecutionAuthority(fixture FixtureV1) (*domain.SubstrateBindingV1, *domain.AdmissionCostCeilingV1) {
+func fixtureExecutionAuthority(fixture FixtureV1) (*domain.SubstrateBindingV1, *domain.AdmissionCostCeilingV2) {
 	if fixture.Placement.Kind == domain.ExecutionPlacementAttachedWorker {
 		if fixture.SubstrateBinding != (domain.SubstrateBindingV1{}) ||
-			fixture.AdmissionCostCeiling != (domain.AdmissionCostCeilingV1{}) {
+			fixture.AdmissionCostCeiling != (domain.AdmissionCostCeilingV2{}) {
 			return &fixture.SubstrateBinding, &fixture.AdmissionCostCeiling
 		}
 		return nil, nil

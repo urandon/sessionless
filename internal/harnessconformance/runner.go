@@ -154,7 +154,7 @@ func cloneFixtureSubstrate(value *domain.SubstrateBindingV1) *domain.SubstrateBi
 	return &clone
 }
 
-func cloneFixtureCost(value *domain.AdmissionCostCeilingV1) *domain.AdmissionCostCeilingV1 {
+func cloneFixtureCost(value *domain.AdmissionCostCeilingV2) *domain.AdmissionCostCeilingV2 {
 	if value == nil {
 		return nil
 	}

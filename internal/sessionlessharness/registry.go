@@ -383,8 +383,8 @@ func (binder *DeterministicFixtureBinder) bindManagedHarness(_ context.Context, 
 		return ports.ManagedExecutionAuthorityV2{}, domain.ValidationError{Field: "harness_binding.at", Reason: "must not be zero"}
 	}
 	zero := uint64(0)
-	cost := domain.AdmissionCostCeilingV1{
-		Version: domain.AdmissionCostCeilingVersionV1, Currency: "USD", PriceRevision: "deterministic-fixture-v1",
+	cost := domain.AdmissionCostCeilingV2{
+		Version: domain.AdmissionCostCeilingVersionV2, Currency: "USD", PriceRevision: "deterministic-fixture-v1",
 		PriceObservedAt: request.At.UTC(), PriceExpiresAt: request.At.UTC().Add(30 * 24 * time.Hour), MaxDeliveries: 5,
 		MaxPreEffectDurationPerDelivery: time.Minute, MaxActiveDuration: 40 * time.Minute, MaxCleanupAndReconcileDuration: 5 * time.Minute,
 		ConfiguredMemoryBytes: 256 << 20, ConfiguredVCPUMillis: 1000, MaxIngressBytes: 1 << 20, MaxEgressBytes: 1 << 20,
@@ -458,7 +458,7 @@ func cloneSubstrateBinding(value *domain.SubstrateBindingV1) *domain.SubstrateBi
 	return &clone
 }
 
-func cloneAdmissionCostCeiling(value *domain.AdmissionCostCeilingV1) *domain.AdmissionCostCeilingV1 {
+func cloneAdmissionCostCeiling(value *domain.AdmissionCostCeilingV2) *domain.AdmissionCostCeilingV2 {
 	if value == nil {
 		return nil
 	}

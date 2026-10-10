@@ -168,7 +168,7 @@ ServerlessInvocationAuthorityV1 {
   version
   harness_binding: HarnessBindingV2
   substrate_binding: SubstrateBindingV1
-  admission_cost_ceiling: AdmissionCostCeilingV1
+  admission_cost_ceiling: AdmissionCostCeilingV2
   lease: existing domain.Lease
   context_manifest_digest, input_manifest_digest
   invocation_deadline
@@ -260,7 +260,7 @@ ManagedExecutionPlacementV2 {
 
 The full `SubstrateBindingV1` is server-owned and persisted with the dispatch;
 its digest is included in the placement, and `HarnessBindingV2` already seals
-the placement digest. The exact `AdmissionCostCeilingV1` is persisted in the
+the placement digest. The exact `AdmissionCostCeilingV2` is persisted in the
 dispatch and copied unchanged into `WorkerJob`; its digest is sealed by the
 substrate binding and therefore by placement and harness authority. The
 implementation must choose one canonical persisted
@@ -822,7 +822,8 @@ Admission keeps provider cost and substrate cost independent. A free provider
 model does not make compute, egress, logging, storage, or retries free.
 
 ```text
-AdmissionCostCeilingV1 {
+AdmissionCostCeilingV2 {
+  version: 2
   currency, price_revision, price_observed_at, price_expires_at
   max_deliveries, max_pre_effect_duration_per_delivery
   max_active_duration, max_cleanup_and_reconcile_duration
@@ -831,6 +832,7 @@ AdmissionCostCeilingV1 {
   substrate_price: unknown | known(amounts...)
   provider_price: unknown | known_free | known(amounts...)
   max_substrate_amount?, max_provider_amount?, max_total_amount?
+  mcp_tool_cost?, web_search_cost?  # separately scoped price/terms evidence
 }
 
 PostRunCostObservationV1 {
@@ -846,6 +848,7 @@ admitted_substrate_ceiling =
 
 admitted_total_ceiling =
   admitted_substrate_ceiling + admitted_provider_ceiling
+  + all present MCP/search service ceilings
 ```
 
 Admission validates canonical currency, fresh price revision, nonzero bounds,
@@ -857,6 +860,25 @@ The canonical ceiling digest covers every field, including currency, price
 revision and expiry, maximum deliveries, per-delivery pre-effect duration,
 active duration, cleanup/reconcile duration, resource sizes and aggregate
 amount ceilings; there is no partial or caller-selected projection.
+The explicit owned-agent public profile requires both MCP and search components,
+matching the policy's tenant, owner and independent grant digests. Their billing
+owner, resource/profile revisions, revocation and approved price/terms must be
+reloaded at atomic operation admission; structural equality is not live authority.
+Single-turn profiles must omit both components and grant no external-tool access.
+Each unknown required price makes total monetary authority unavailable. A free
+endpoint needs independently reviewed zero-price and terms evidence.
+
+Deployment requires the separate `admission-cost-v2-empty-cutover` marker in
+`managed_execution_authority_v2_cutover_state`. Stop old writers/readers, drain
+`dispatch_outbox`, `worker_jobs` and `attempt_effect_reservations`, then run
+the repository's `make partition-backfill` before starting new writers/readers.
+The deployment transaction checks all three inventories serializably and uses
+the database clock for its receipt; dry-run never writes it. Earlier placement,
+harness or managed-chain markers do not satisfy this guard. All four serving
+entry points deny startup without the distinct committed marker. No V1 decoder,
+conversion or replay is permitted; historical digest-only receipts stay
+historical. This migration contract does not activate an owned loop or provider.
+
 Observed/reconciled post-run cost is recorded separately and never substituted
 into the pre-run ceiling.
 

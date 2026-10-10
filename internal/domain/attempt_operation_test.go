@@ -16,7 +16,7 @@ func operationFixture() domain.AttemptOperationV1 {
 		TenantID: "tenant-operation", SessionID: "session-operation", OwnerUserID: "owner-operation", RunID: "run-operation", AttemptID: "attempt-operation", LeaseID: "lease-operation", FenceToken: 1, PhysicalInvocationClaimID: "claim-operation",
 		EffectReservationDigest: domain.AttemptEffectReservationDigestV1(hash), InvocationAuthorityDigest: domain.ServerlessInvocationAuthorityDigestV1(hash), HarnessBindingDigest: domain.HarnessBindingDigestV2(hash), AgentLoopPolicyDigest: domain.AgentLoopPolicyDigestV1(hash),
 	}, Sequence: 1, Kind: domain.AttemptOperationModelV1, CallID: "model-1", RequestRef: "request-1", RequestDigest: hash, Deadline: time.Date(2026, 10, 10, 12, 0, 10, 0, time.UTC), CleanupDuration: 30 * time.Second,
-		Debit: domain.AttemptOperationDebitV1{Operations: 1, ModelCalls: 1, InputTokens: 100, OutputTokens: 20, BodyBytes: 1000, ResponseBytes: 1000, AmountMicrounits: 1, ActiveDuration: 10 * time.Second}, RequestBytes: 100, ResultBytes: 900, ContextBytes: 100, Currency: "USD", PriceRevision: "offline-price.v1", AdmissionCostCeilingDigest: domain.AdmissionCostCeilingDigestV1(hash)}
+		Debit: domain.AttemptOperationDebitV1{Operations: 1, ModelCalls: 1, InputTokens: 100, OutputTokens: 20, BodyBytes: 1000, ResponseBytes: 1000, AmountMicrounits: 1, ActiveDuration: 10 * time.Second}, RequestBytes: 100, ResultBytes: 900, ContextBytes: 100, Currency: "USD", PriceRevision: "offline-price.v1", AdmissionCostCeilingDigest: domain.AdmissionCostCeilingDigestV2(hash)}
 }
 
 func operationReservationFixture(t *testing.T, op domain.AttemptOperationV1) domain.AttemptOperationReservationV1 {
@@ -373,6 +373,7 @@ func TestAttemptOperationExactParentAndAllDeadlines(t *testing.T) {
 	a.AdmissionCostCeiling.MaxProviderAmountMicrounits = &amount
 	total := *a.AdmissionCostCeiling.MaxSubstrateAmountMicrounits + amount
 	a.AdmissionCostCeiling.MaxTotalAmountMicrounits = &total
+	a.AdmissionCostCeiling = withOwnedServiceCostFixture(t, a.AdmissionCostCeiling, *b.AgentLoopPolicy)
 	costDigest, err := a.AdmissionCostCeiling.Digest()
 	if err != nil {
 		t.Fatal(err)

@@ -357,11 +357,20 @@ func (binding HarnessBindingV2) validateAgentLoopPolicy() error {
 // ValidateAdmissionCostCeiling seals the same monetary authority at every
 // persisted job, execution and invocation boundary; a policy cannot substitute
 // its own independently valid ceiling for the admitted outer authority.
-func (binding HarnessBindingV2) ValidateAdmissionCostCeiling(cost *AdmissionCostCeilingV1) error {
+func (binding HarnessBindingV2) ValidateAdmissionCostCeiling(cost *AdmissionCostCeilingV2) error {
 	if err := binding.Validate(); err != nil {
 		return err
 	}
 	if binding.AgentLoopPolicy == nil {
+		if cost != nil {
+			if err := cost.Validate(); err != nil {
+				return err
+			}
+			if cost.MCPToolCost != nil || cost.WebSearchCost != nil {
+				return ValidationError{Field: "harness_binding.admission_cost_ceiling",
+					Reason: "single-turn and attached profiles cannot carry external service budgets"}
+			}
+		}
 		return nil
 	}
 	if cost == nil {

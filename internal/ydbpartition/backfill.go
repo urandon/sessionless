@@ -62,11 +62,15 @@ func BackfillSchemaIndexes(ctx context.Context, db *sql.DB, dryRun bool) ([]Back
 	if err != nil {
 		return nil, err
 	}
+	costCutover, err := verifyAdmissionCostV2Cutover(ctx, db, dryRun)
+	if err != nil {
+		return nil, err
+	}
 	results, err := BackfillReadyExpiryV2(ctx, db, dryRun)
 	if err != nil {
 		return nil, err
 	}
-	results = append([]BackfillResult{cutover, harnessCutover, harnessV2Cutover, authorityCutover}, results...)
+	results = append([]BackfillResult{cutover, harnessCutover, harnessV2Cutover, authorityCutover, costCutover}, results...)
 	operations := []func(context.Context, *sql.DB, bool) (BackfillResult, error){
 		backfillArtifactManifestsByRun,
 		backfillFrontendBindingsBySession,

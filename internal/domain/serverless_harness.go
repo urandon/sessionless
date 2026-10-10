@@ -10,12 +10,10 @@ import (
 
 const (
 	SubstrateBindingVersionV1              uint32 = 1
-	AdmissionCostCeilingVersionV1          uint32 = 1
 	ServerlessInvocationAuthorityVersionV1 uint32 = 1
 	PreparedAllocationVersionV1            uint32 = 1
 	AttemptEffectReservationVersionV1      uint32 = 1
 	ServerlessProviderEffectSequenceV1     uint64 = 1
-	maxServerlessDeliveriesV1                     = 100
 	maxServerlessInvocationV1                     = 24 * time.Hour
 )
 
@@ -23,7 +21,6 @@ type (
 	SubstrateKindV1                       string
 	SubstrateWorkloadModeV1               string
 	SubstrateBindingDigestV1              string
-	AdmissionCostCeilingDigestV1          string
 	ServerlessInvocationAuthorityDigestV1 string
 	PreparedAllocationDigestV1            string
 	AttemptEffectReservationDigestV1      string
@@ -86,157 +83,6 @@ func (limits SubstrateLimitsV1) Validate() error {
 	return nil
 }
 
-// AdmissionCostCeilingV1 is the pre-effect cost and redelivery authority.
-// Unknown prices are representable but ValidateAt rejects them for admission.
-type AdmissionCostCeilingV1 struct {
-	Version                         uint32               `json:"version"`
-	Currency                        string               `json:"currency"`
-	PriceRevision                   string               `json:"price_revision"`
-	PriceObservedAt                 time.Time            `json:"price_observed_at"`
-	PriceExpiresAt                  time.Time            `json:"price_expires_at"`
-	MaxDeliveries                   uint32               `json:"max_deliveries"`
-	MaxPreEffectDurationPerDelivery time.Duration        `json:"max_pre_effect_duration_per_delivery"`
-	MaxActiveDuration               time.Duration        `json:"max_active_duration"`
-	MaxCleanupAndReconcileDuration  time.Duration        `json:"max_cleanup_and_reconcile_duration"`
-	ConfiguredMemoryBytes           uint64               `json:"configured_memory_bytes"`
-	ConfiguredVCPUMillis            uint64               `json:"configured_vcpu_millis"`
-	MaxIngressBytes                 uint64               `json:"max_ingress_bytes"`
-	MaxEgressBytes                  uint64               `json:"max_egress_bytes"`
-	MaxLogBytes                     uint64               `json:"max_log_bytes"`
-	MaxEvidenceBytes                uint64               `json:"max_evidence_bytes"`
-	SubstratePriceState             CostEvidenceStateV1  `json:"substrate_price_state"`
-	ProviderPriceState              ProviderPriceStateV1 `json:"provider_price_state"`
-	MaxSubstrateAmountMicrounits    *uint64              `json:"max_substrate_amount_microunits,omitempty"`
-	MaxProviderAmountMicrounits     *uint64              `json:"max_provider_amount_microunits,omitempty"`
-	MaxTotalAmountMicrounits        *uint64              `json:"max_total_amount_microunits,omitempty"`
-}
-
-func (value AdmissionCostCeilingV1) Clone() AdmissionCostCeilingV1 {
-	clone := value
-	clone.MaxSubstrateAmountMicrounits = cloneUint64(value.MaxSubstrateAmountMicrounits)
-	clone.MaxProviderAmountMicrounits = cloneUint64(value.MaxProviderAmountMicrounits)
-	clone.MaxTotalAmountMicrounits = cloneUint64(value.MaxTotalAmountMicrounits)
-	return clone
-}
-
-func (value AdmissionCostCeilingV1) Validate() error {
-	if value.Version != AdmissionCostCeilingVersionV1 {
-		return ValidationError{Field: "admission_cost_ceiling.version", Reason: "must equal 1"}
-	}
-	if !validCurrencyV1(value.Currency) {
-		return ValidationError{Field: "admission_cost_ceiling.currency", Reason: "must be three uppercase ASCII letters"}
-	}
-	if err := validateProviderToken("admission_cost_ceiling.price_revision", value.PriceRevision, 128); err != nil {
-		return err
-	}
-	if value.PriceObservedAt.IsZero() || !value.PriceExpiresAt.After(value.PriceObservedAt) {
-		return ValidationError{Field: "admission_cost_ceiling.price_expires_at", Reason: "must be after a non-zero observation time"}
-	}
-	if value.MaxDeliveries == 0 || value.MaxDeliveries > maxServerlessDeliveriesV1 {
-		return ValidationError{Field: "admission_cost_ceiling.max_deliveries", Reason: "must be positive and bounded"}
-	}
-	for field, duration := range map[string]time.Duration{
-		"max_pre_effect_duration_per_delivery": value.MaxPreEffectDurationPerDelivery,
-		"max_active_duration":                  value.MaxActiveDuration,
-		"max_cleanup_and_reconcile_duration":   value.MaxCleanupAndReconcileDuration,
-	} {
-		if duration <= 0 || duration > maxServerlessInvocationV1 {
-			return ValidationError{Field: "admission_cost_ceiling." + field, Reason: "must be positive and bounded"}
-		}
-	}
-	for field, quantity := range map[string]uint64{
-		"configured_memory_bytes": value.ConfiguredMemoryBytes, "configured_vcpu_millis": value.ConfiguredVCPUMillis,
-		"max_ingress_bytes": value.MaxIngressBytes, "max_egress_bytes": value.MaxEgressBytes,
-		"max_log_bytes": value.MaxLogBytes, "max_evidence_bytes": value.MaxEvidenceBytes,
-	} {
-		if quantity == 0 {
-			return ValidationError{Field: "admission_cost_ceiling." + field, Reason: "must be positive"}
-		}
-	}
-	if err := validateCostAmounts(value); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (value AdmissionCostCeilingV1) ValidateAt(now time.Time) error {
-	if err := value.Validate(); err != nil {
-		return err
-	}
-	if now.IsZero() || !now.UTC().Before(value.PriceExpiresAt.UTC()) {
-		return ValidationError{Field: "admission_cost_ceiling.price_expires_at", Reason: "must be later than authoritative admission time"}
-	}
-	if value.SubstratePriceState != CostEvidenceKnownV1 || value.ProviderPriceState == ProviderPriceUnknownV1 || value.MaxTotalAmountMicrounits == nil {
-		return ValidationError{Field: "admission_cost_ceiling", Reason: "unknown price cannot authorize execution"}
-	}
-	return nil
-}
-
-// ValidateForSubstrate turns the cost ceiling into enforceable runtime
-// authority. It must cover the exact selected substrate profile; a merely
-// digest-linked but smaller budget cannot authorize execution.
-func (value AdmissionCostCeilingV1) ValidateForSubstrate(substrate SubstrateBindingV1) error {
-	if err := value.Validate(); err != nil {
-		return err
-	}
-	if err := substrate.Validate(); err != nil {
-		return err
-	}
-	digest, _ := value.Digest()
-	if substrate.AdmissionCostCeilingDigest != digest {
-		return ValidationError{Field: "admission_cost_ceiling", Reason: "must be the exact ceiling sealed by the substrate"}
-	}
-	limits := substrate.Limits
-	if value.ConfiguredMemoryBytes != limits.MemoryBytes || value.ConfiguredVCPUMillis != limits.CPUMillis {
-		return ValidationError{Field: "admission_cost_ceiling.configuration", Reason: "memory and CPU must exact-match the substrate profile"}
-	}
-	if value.MaxActiveDuration != limits.ExecutionTimeout || value.MaxCleanupAndReconcileDuration < limits.CleanupTimeout {
-		return ValidationError{Field: "admission_cost_ceiling.duration", Reason: "must cover exact execution and cleanup limits"}
-	}
-	if value.MaxPreEffectDurationPerDelivery > limits.InvocationTimeout-value.MaxActiveDuration-value.MaxCleanupAndReconcileDuration {
-		return ValidationError{Field: "admission_cost_ceiling.duration", Reason: "pre-effect, active and cleanup ceilings must fit inside invocation timeout"}
-	}
-	if value.MaxIngressBytes < limits.ArtifactBytes || value.MaxEgressBytes < limits.ArtifactBytes {
-		return ValidationError{Field: "admission_cost_ceiling.artifact_bytes", Reason: "ingress and egress ceilings must cover the substrate artifact bound"}
-	}
-	if limits.StdoutBytes > ^uint64(0)-limits.StderrBytes || value.MaxLogBytes < limits.StdoutBytes+limits.StderrBytes {
-		return ValidationError{Field: "admission_cost_ceiling.max_log_bytes", Reason: "must cover bounded stdout and stderr"}
-	}
-	minimumEvidence := limits.StdoutBytes
-	if limits.StderrBytes > minimumEvidence {
-		minimumEvidence = limits.StderrBytes
-	}
-	if value.MaxEvidenceBytes < minimumEvidence {
-		return ValidationError{Field: "admission_cost_ceiling.max_evidence_bytes", Reason: "must cover one bounded substrate evidence stream"}
-	}
-	return nil
-}
-
-func (value AdmissionCostCeilingV1) Digest() (AdmissionCostCeilingDigestV1, error) {
-	if err := value.Validate(); err != nil {
-		return "", err
-	}
-	digest := newServerlessDigest("sessionless.admission-cost-ceiling.v1")
-	digest.uint(uint64(value.Version))
-	digest.str(value.Currency)
-	digest.str(value.PriceRevision)
-	digest.instant(value.PriceObservedAt)
-	digest.instant(value.PriceExpiresAt)
-	digest.uint(uint64(value.MaxDeliveries))
-	digest.duration(value.MaxPreEffectDurationPerDelivery)
-	digest.duration(value.MaxActiveDuration)
-	digest.duration(value.MaxCleanupAndReconcileDuration)
-	for _, quantity := range []uint64{value.ConfiguredMemoryBytes, value.ConfiguredVCPUMillis, value.MaxIngressBytes, value.MaxEgressBytes, value.MaxLogBytes, value.MaxEvidenceBytes} {
-		digest.uint(quantity)
-	}
-	digest.str(string(value.SubstratePriceState))
-	digest.str(string(value.ProviderPriceState))
-	digest.optionalUint(value.MaxSubstrateAmountMicrounits)
-	digest.optionalUint(value.MaxProviderAmountMicrounits)
-	digest.optionalUint(value.MaxTotalAmountMicrounits)
-	return AdmissionCostCeilingDigestV1(digest.sum()), nil
-}
-
 // SubstrateBindingV1 is one immutable, server-owned runtime profile. It does
 // not select a provider and has no fallback semantics.
 type SubstrateBindingV1 struct {
@@ -255,7 +101,7 @@ type SubstrateBindingV1 struct {
 	CleanupPolicyDigest        string                       `json:"cleanup_policy_digest"`
 	EgressProxyArtifactDigest  string                       `json:"egress_proxy_artifact_digest"`
 	EgressProxyIdentityDigest  string                       `json:"egress_proxy_identity_digest"`
-	AdmissionCostCeilingDigest AdmissionCostCeilingDigestV1 `json:"admission_cost_ceiling_digest"`
+	AdmissionCostCeilingDigest AdmissionCostCeilingDigestV2 `json:"admission_cost_ceiling_digest"`
 	Limits                     SubstrateLimitsV1            `json:"limits"`
 }
 
@@ -336,14 +182,10 @@ func (digest SubstrateBindingDigestV1) Validate() error {
 	return validateSHA256("substrate_binding_digest", string(digest))
 }
 
-func (digest AdmissionCostCeilingDigestV1) Validate() error {
-	return validateSHA256("admission_cost_ceiling_digest", string(digest))
-}
-
 // ValidateExecutionAuthorityProjection enforces the tagged placement union.
 // Managed V2 always carries the exact substrate and cost authority; attached
 // workers carry neither and remain governed by their existing protocol.
-func ValidateExecutionAuthorityProjection(placement ExecutionPlacementV2, substrate *SubstrateBindingV1, cost *AdmissionCostCeilingV1) error {
+func ValidateExecutionAuthorityProjection(placement ExecutionPlacementV2, substrate *SubstrateBindingV1, cost *AdmissionCostCeilingV2) error {
 	if err := placement.Validate(); err != nil {
 		return err
 	}
@@ -432,46 +274,6 @@ func validCurrencyV1(value string) bool {
 		}
 	}
 	return true
-}
-
-func validateCostAmounts(value AdmissionCostCeilingV1) error {
-	switch value.SubstratePriceState {
-	case CostEvidenceUnknownV1:
-		if value.MaxSubstrateAmountMicrounits != nil || value.MaxTotalAmountMicrounits != nil {
-			return ValidationError{Field: "admission_cost_ceiling.substrate_price_state", Reason: "unknown price must not carry numeric ceilings"}
-		}
-	case CostEvidenceKnownV1:
-		if value.MaxSubstrateAmountMicrounits == nil {
-			return ValidationError{Field: "admission_cost_ceiling.max_substrate_amount_microunits", Reason: "is required for known substrate price"}
-		}
-	default:
-		return ValidationError{Field: "admission_cost_ceiling.substrate_price_state", Reason: "is unsupported"}
-	}
-	switch value.ProviderPriceState {
-	case ProviderPriceUnknownV1:
-		if value.MaxProviderAmountMicrounits != nil || value.MaxTotalAmountMicrounits != nil {
-			return ValidationError{Field: "admission_cost_ceiling.provider_price_state", Reason: "unknown price must not carry numeric ceilings"}
-		}
-	case ProviderPriceKnownFreeV1:
-		if value.MaxProviderAmountMicrounits == nil || *value.MaxProviderAmountMicrounits != 0 {
-			return ValidationError{Field: "admission_cost_ceiling.max_provider_amount_microunits", Reason: "known free requires an explicit zero"}
-		}
-	case ProviderPriceKnownV1:
-		if value.MaxProviderAmountMicrounits == nil {
-			return ValidationError{Field: "admission_cost_ceiling.max_provider_amount_microunits", Reason: "is required for known provider price"}
-		}
-	default:
-		return ValidationError{Field: "admission_cost_ceiling.provider_price_state", Reason: "is unsupported"}
-	}
-	if value.SubstratePriceState == CostEvidenceKnownV1 && value.ProviderPriceState != ProviderPriceUnknownV1 {
-		if value.MaxTotalAmountMicrounits == nil {
-			return ValidationError{Field: "admission_cost_ceiling.max_total_amount_microunits", Reason: "is required when all prices are known"}
-		}
-		if *value.MaxSubstrateAmountMicrounits > ^uint64(0)-*value.MaxProviderAmountMicrounits || *value.MaxTotalAmountMicrounits != *value.MaxSubstrateAmountMicrounits+*value.MaxProviderAmountMicrounits {
-			return ValidationError{Field: "admission_cost_ceiling.max_total_amount_microunits", Reason: "must equal the bounded substrate and provider ceilings without overflow"}
-		}
-	}
-	return nil
 }
 
 func validateServerlessLease(lease Lease) error {

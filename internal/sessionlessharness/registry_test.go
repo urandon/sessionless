@@ -373,6 +373,45 @@ func TestRegistryOwnedAgentDeniesAllOneShotDispatchAndCancellation(t *testing.T)
 			MaxMCPOutboundMessages: 1, MaxMCPCatalogPages: 1, MaxMCPInboundFrames: 1, MaxMCPInboundBytes: 1, MaxOperations: 1, MaxAggregateBodyBytes: 1,
 		},
 	}
+	// Synthetic, explicitly free service evidence is only a denial fixture.
+	// Construct independent service components, then reseal the entire chain.
+	for _, service := range []struct {
+		kind  domain.ExternalServiceKindV1
+		grant string
+		slot  **domain.ExternalServiceCostCeilingV1
+	}{
+		{domain.ExternalServiceMCPToolV1, policy.MCPToolGrantDigest, &policy.AdmissionCostCeiling.MCPToolCost},
+		{domain.ExternalServiceWebSearchV1, policy.WebSearchGrantDigest, &policy.AdmissionCostCeiling.WebSearchCost},
+	} {
+		zero := uint64(0)
+		*service.slot = &domain.ExternalServiceCostCeilingV1{
+			Version: domain.ExternalServiceCostCeilingVersionV1, Kind: service.kind,
+			TenantID: binding.TenantID, OwnerUserID: binding.OwnerUserID, BillingOwnerUserID: binding.OwnerUserID,
+			ResourceID: string(service.kind) + "-fixture", ResourceRevision: 1, RevocationGeneration: 1,
+			ProfileID: "scripted-profile", ProfileRevision: 1, ScopedGrantDigest: service.grant,
+			Currency: policy.AdmissionCostCeiling.Currency, PriceRevision: "scripted-free-only.v1",
+			PriceObservedAt: policy.AdmissionCostCeiling.PriceObservedAt, PriceExpiresAt: policy.AdmissionCostCeiling.PriceExpiresAt,
+			PriceEvidenceDigest: strings.Repeat("e", 64), TermsEvidenceDigest: strings.Repeat("f", 64),
+			PriceState: domain.ExternalServicePriceKnownFreeV1, MaxAmountMicrounits: &zero,
+		}
+	}
+	ownedCost := policy.AdmissionCostCeiling.Clone()
+	identity.AdmissionCostCeiling = &ownedCost
+	costDigest, err := ownedCost.Digest()
+	if err != nil {
+		t.Fatalf("owned fixture cost digest: %v", err)
+	}
+	identity.SubstrateBinding.AdmissionCostCeilingDigest = costDigest
+	substrateDigest, err := identity.SubstrateBinding.Digest()
+	if err != nil {
+		t.Fatalf("owned fixture substrate digest: %v", err)
+	}
+	identity.ExecutionPlacementV2.SubstrateBindingDigest = string(substrateDigest)
+	placementDigest, err := domain.ExecutionPlacementDigest(identity.ExecutionPlacementV2)
+	if err != nil {
+		t.Fatalf("owned fixture placement digest: %v", err)
+	}
+	binding.ExecutionPlacementDigest = string(placementDigest)
 	binding.AgentLoopPolicy = &policy
 	identity.HarnessBinding = binding
 	request.HarnessBinding, request.ExecutionPlacementV2 = binding.Clone(), identity.ExecutionPlacementV2
@@ -433,12 +472,12 @@ func cloneSubstrateBindingForTestPointer(value *domain.SubstrateBindingV1) *doma
 	return cloneSubstrateBindingForTest(*value)
 }
 
-func cloneAdmissionCostCeilingForTest(value domain.AdmissionCostCeilingV1) *domain.AdmissionCostCeilingV1 {
+func cloneAdmissionCostCeilingForTest(value domain.AdmissionCostCeilingV2) *domain.AdmissionCostCeilingV2 {
 	clone := value.Clone()
 	return &clone
 }
 
-func cloneAdmissionCostCeilingForTestPointer(value *domain.AdmissionCostCeilingV1) *domain.AdmissionCostCeilingV1 {
+func cloneAdmissionCostCeilingForTestPointer(value *domain.AdmissionCostCeilingV2) *domain.AdmissionCostCeilingV2 {
 	if value == nil {
 		return nil
 	}

@@ -139,6 +139,28 @@ func (store *Store) RequireManagedExecutionAuthorityV2Cutover(ctx context.Contex
 	return nil
 }
 
+// RequireAdmissionCostV2Cutover denies startup until the distinct monetary
+// successor marker commits. Earlier authority markers are not sufficient.
+func (store *Store) RequireAdmissionCostV2Cutover(ctx context.Context) error {
+	if store == nil || store.db == nil {
+		return errors.New("YDB store must not be nil")
+	}
+	var completedAt time.Time
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT completed_at FROM managed_execution_authority_v2_cutover_state WHERE cutover_id=$1`,
+		ydbpartition.AdmissionCostV2CutoverID,
+	).Scan(&completedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errors.New("admission cost v2 cutover is not complete")
+		}
+		return fmt.Errorf("read admission cost v2 cutover marker: %w", err)
+	}
+	if completedAt.IsZero() {
+		return errors.New("admission cost v2 cutover marker has no completion time")
+	}
+	return nil
+}
+
 func (store *Store) Transact(
 	ctx context.Context,
 	tenantID domain.TenantID,

@@ -6,7 +6,7 @@ const AdmissionCostCeilingVersionV2 uint32 = 2
 
 type AdmissionCostCeilingDigestV2 string
 
-// AdmissionCostCeilingV2 is the canonical monetary successor candidate, not
+// AdmissionCostCeilingV2 is the canonical monetary successor, not
 // another ledger or live permission. Independent service grant and price/terms
 // evidence precede each component, which precedes this ceiling and loop policy.
 // An absent service component grants no service authority, not free access.
@@ -207,9 +207,7 @@ func (value AdmissionCostCeilingV2) ValidateAt(now time.Time) error {
 }
 
 // ValidateForSubstrate retains the delivered exact finite substrate coverage.
-// String comparison is temporary compile linkage to the existing substrate's
-// typed digest field, not V1 decoding, conversion or compatible-runtime proof.
-// The canonical field and all consumers must cut over before V2 publication.
+// The substrate seals the canonical V2 digest; no legacy decoder is permitted.
 func (value AdmissionCostCeilingV2) ValidateForSubstrate(substrate SubstrateBindingV1) error {
 	if err := value.Validate(); err != nil {
 		return err
@@ -218,7 +216,7 @@ func (value AdmissionCostCeilingV2) ValidateForSubstrate(substrate SubstrateBind
 		return err
 	}
 	digest, _ := value.Digest()
-	if string(substrate.AdmissionCostCeilingDigest) != string(digest) {
+	if substrate.AdmissionCostCeilingDigest != digest {
 		return ValidationError{Field: "admission_cost_ceiling", Reason: "must be the exact ceiling sealed by the substrate"}
 	}
 	limits := substrate.Limits

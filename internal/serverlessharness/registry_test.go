@@ -173,6 +173,45 @@ func TestSubstrateRegistryRejectsOwnedAndUnspecifiedProfilesBeforeAllocation(t *
 			MaxMCPOutboundMessages: 1, MaxMCPCatalogPages: 1, MaxMCPInboundFrames: 1, MaxMCPInboundBytes: 1, MaxOperations: 1, MaxAggregateBodyBytes: 1,
 		},
 	}
+	// Synthetic, explicitly free service evidence is only a denial fixture.
+	// Construct independent service components, then reseal the entire chain.
+	for _, service := range []struct {
+		kind  domain.ExternalServiceKindV1
+		grant string
+		slot  **domain.ExternalServiceCostCeilingV1
+	}{
+		{domain.ExternalServiceMCPToolV1, binding.AgentLoopPolicy.MCPToolGrantDigest, &binding.AgentLoopPolicy.AdmissionCostCeiling.MCPToolCost},
+		{domain.ExternalServiceWebSearchV1, binding.AgentLoopPolicy.WebSearchGrantDigest, &binding.AgentLoopPolicy.AdmissionCostCeiling.WebSearchCost},
+	} {
+		zero := uint64(0)
+		*service.slot = &domain.ExternalServiceCostCeilingV1{
+			Version: domain.ExternalServiceCostCeilingVersionV1, Kind: service.kind,
+			TenantID: binding.TenantID, OwnerUserID: binding.OwnerUserID, BillingOwnerUserID: binding.OwnerUserID,
+			ResourceID: string(service.kind) + "-fixture", ResourceRevision: 1, RevocationGeneration: 1,
+			ProfileID: "scripted-profile", ProfileRevision: 1, ScopedGrantDigest: service.grant,
+			Currency: binding.AgentLoopPolicy.AdmissionCostCeiling.Currency, PriceRevision: "scripted-free-only.v1",
+			PriceObservedAt: binding.AgentLoopPolicy.AdmissionCostCeiling.PriceObservedAt, PriceExpiresAt: binding.AgentLoopPolicy.AdmissionCostCeiling.PriceExpiresAt,
+			PriceEvidenceDigest: strings.Repeat("e", 64), TermsEvidenceDigest: strings.Repeat("f", 64),
+			PriceState: domain.ExternalServicePriceKnownFreeV1, MaxAmountMicrounits: &zero,
+		}
+	}
+	base.AdmissionCostCeiling = binding.AgentLoopPolicy.AdmissionCostCeiling.Clone()
+	costDigest, err := base.AdmissionCostCeiling.Digest()
+	if err != nil {
+		t.Fatalf("owned fixture cost digest: %v", err)
+	}
+	(&base.SubstrateBinding).AdmissionCostCeilingDigest = costDigest
+	substrateDigest, err := (&base.SubstrateBinding).Digest()
+	if err != nil {
+		t.Fatalf("owned fixture substrate digest: %v", err)
+	}
+	base.ExecutionPlacementV2.SubstrateBindingDigest = string(substrateDigest)
+	placementDigest, err := domain.ExecutionPlacementDigest(base.ExecutionPlacementV2)
+	if err != nil {
+		t.Fatalf("owned fixture placement digest: %v", err)
+	}
+	binding.ExecutionPlacementDigest = string(placementDigest)
+	allocation.SubstrateBindingDigest = substrateDigest
 	if err := base.ValidateAt(at); err != nil {
 		t.Fatalf("valid owned authority: %v", err)
 	}

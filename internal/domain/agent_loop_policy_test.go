@@ -13,7 +13,7 @@ import (
 
 func agentLoopPolicyFixture() domain.AgentLoopPolicyV1 {
 	at := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
-	substrateAmount, providerAmount, totalAmount := uint64(10), uint64(20), uint64(30)
+	substrateAmount, providerAmount, totalAmount := uint64(10), uint64(20), uint64(100)
 	return domain.AgentLoopPolicyV1{
 		Version: domain.AgentLoopPolicyVersionV1, TenantID: "tenant-189", OwnerUserID: "owner-189", RunID: "run-189", AttemptID: "attempt-189",
 		Profile: domain.AgentLoopOwnedPublicV1, ProfileRevision: 1,
@@ -34,15 +34,91 @@ func agentLoopPolicyFixture() domain.AgentLoopPolicyV1 {
 			MaxContextViewBytes: 1 << 20, MaxSummaryBytes: 16 << 10, MaxToolArgumentBytes: 4 << 10, MaxToolResultBytes: 64 << 10,
 			MaxMCPOutboundMessages: 12, MaxMCPCatalogPages: 1, MaxMCPInboundFrames: 128, MaxMCPInboundBytes: 256 << 10, MaxOperations: 12, MaxAggregateBodyBytes: 1 << 20,
 		},
-		AdmissionCostCeiling: domain.AdmissionCostCeilingV1{
-			Version: domain.AdmissionCostCeilingVersionV1, Currency: "USD", PriceRevision: "offline-price.v1", PriceObservedAt: at.Add(-time.Hour), PriceExpiresAt: at.Add(time.Hour),
+		AdmissionCostCeiling: domain.AdmissionCostCeilingV2{
+			Version: domain.AdmissionCostCeilingVersionV2, Currency: "USD", PriceRevision: "offline-price.v1", PriceObservedAt: at.Add(-time.Hour), PriceExpiresAt: at.Add(time.Hour),
 			MaxDeliveries: 1, MaxPreEffectDurationPerDelivery: time.Second, MaxActiveDuration: 120 * time.Second, MaxCleanupAndReconcileDuration: 30 * time.Second,
 			ConfiguredMemoryBytes: 1 << 20, ConfiguredVCPUMillis: 100, MaxIngressBytes: 1 << 20, MaxEgressBytes: 1 << 20, MaxLogBytes: 1 << 20, MaxEvidenceBytes: 1 << 20,
 			SubstratePriceState: domain.CostEvidenceKnownV1, ProviderPriceState: domain.ProviderPriceKnownV1,
 			MaxSubstrateAmountMicrounits: &substrateAmount, MaxProviderAmountMicrounits: &providerAmount, MaxTotalAmountMicrounits: &totalAmount,
+			MCPToolCost:   agentLoopServiceCostFixture(domain.ExternalServiceMCPToolV1, strings.Repeat("3", 64), 30, at),
+			WebSearchCost: agentLoopServiceCostFixture(domain.ExternalServiceWebSearchV1, strings.Repeat("4", 64), 40, at),
 		},
 		IssuedAt: at, ExpiresAt: at.Add(30 * time.Minute),
 	}
+}
+
+// Scripted evidence, not a claim about the current price of any public service.
+func agentLoopServiceCostFixture(kind domain.ExternalServiceKindV1, grant string, amount uint64, at time.Time) *domain.ExternalServiceCostCeilingV1 {
+	return &domain.ExternalServiceCostCeilingV1{
+		Version: domain.ExternalServiceCostCeilingVersionV1, Kind: kind, TenantID: "tenant-189",
+		OwnerUserID: "owner-189", BillingOwnerUserID: "billing-189",
+		ResourceID: string(kind) + "-resource", ResourceRevision: 1, RevocationGeneration: 1,
+		ProfileID: string(kind) + "-profile", ProfileRevision: 1, ScopedGrantDigest: grant,
+		Currency: "USD", PriceRevision: "scripted-service-price.v1", PriceObservedAt: at.Add(-time.Hour), PriceExpiresAt: at.Add(time.Hour),
+		PriceEvidenceDigest: strings.Repeat("8", 64), TermsEvidenceDigest: strings.Repeat("9", 64),
+		PriceState: domain.ExternalServicePriceKnownPaidV1, MaxAmountMicrounits: &amount,
+	}
+}
+
+func TestAgentLoopPolicySealsExactExternalServiceAuthority(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"mcp", "search"} {
+		for _, axis := range []string{"missing", "tenant", "owner", "grant"} {
+			t.Run(kind+"/"+axis, func(t *testing.T) {
+				policy := agentLoopPolicyFixture()
+				slot := &policy.AdmissionCostCeiling.MCPToolCost
+				if kind == "search" {
+					slot = &policy.AdmissionCostCeiling.WebSearchCost
+				}
+				switch axis {
+				case "missing":
+					*policy.AdmissionCostCeiling.MaxTotalAmountMicrounits -= *(*slot).MaxAmountMicrounits
+					*slot = nil
+				case "tenant":
+					// Keep the enclosing cost internally consistent but outside the policy.
+					policy.AdmissionCostCeiling.MCPToolCost.TenantID = "other-tenant"
+					policy.AdmissionCostCeiling.WebSearchCost.TenantID = "other-tenant"
+				case "owner":
+					policy.AdmissionCostCeiling.MCPToolCost.OwnerUserID = "other-owner"
+					policy.AdmissionCostCeiling.WebSearchCost.OwnerUserID = "other-owner"
+				case "grant":
+					(*slot).ScopedGrantDigest = strings.Repeat("7", 64)
+				}
+				if err := policy.AdmissionCostCeiling.Validate(); err != nil {
+					t.Fatalf("independently valid cost fixture: %v", err)
+				}
+				if err := policy.Validate(); err == nil {
+					t.Fatalf("owned policy accepted changed %s service %s authority", kind, axis)
+				}
+			})
+		}
+	}
+}
+
+// Construct a coherent V2 authority for tests joining a fixture substrate to
+// an owned policy. All price/terms evidence remains scripted, not live proof.
+func withOwnedServiceCostFixture(t testing.TB, outer domain.AdmissionCostCeilingV2, policy domain.AgentLoopPolicyV1) domain.AdmissionCostCeilingV2 {
+	t.Helper()
+	cost := outer.Clone()
+	for _, service := range []struct {
+		source *domain.ExternalServiceCostCeilingV1
+		slot   **domain.ExternalServiceCostCeilingV1
+		grant  string
+	}{
+		{policy.AdmissionCostCeiling.MCPToolCost, &cost.MCPToolCost, policy.MCPToolGrantDigest},
+		{policy.AdmissionCostCeiling.WebSearchCost, &cost.WebSearchCost, policy.WebSearchGrantDigest},
+	} {
+		component := service.source.Clone()
+		component.TenantID, component.OwnerUserID, component.ScopedGrantDigest = policy.TenantID, policy.OwnerUserID, service.grant
+		component.PriceObservedAt, component.PriceExpiresAt = cost.PriceObservedAt, cost.PriceExpiresAt
+		component.Currency = cost.Currency
+		*cost.MaxTotalAmountMicrounits += *component.MaxAmountMicrounits
+		*service.slot = &component
+	}
+	if err := cost.Validate(); err != nil {
+		t.Fatalf("composed scripted service cost: %v", err)
+	}
+	return cost
 }
 
 func TestAgentLoopPolicyAcceptsMaximumAndSmallerCeilings(t *testing.T) {
@@ -169,7 +245,7 @@ func TestAgentLoopPolicyRequiredFieldsAndClosedProfile(t *testing.T) {
 			v.ExpiresAt = time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
 			v.AdmissionCostCeiling.PriceExpiresAt = v.ExpiresAt
 		},
-		"cost":                  func(v *domain.AgentLoopPolicyV1) { v.AdmissionCostCeiling = domain.AdmissionCostCeilingV1{} },
+		"cost":                  func(v *domain.AgentLoopPolicyV1) { v.AdmissionCostCeiling = domain.AdmissionCostCeilingV2{} },
 		"active_cost_coverage":  func(v *domain.AgentLoopPolicyV1) { v.AdmissionCostCeiling.MaxActiveDuration = time.Second },
 		"cleanup_cost_coverage": func(v *domain.AgentLoopPolicyV1) { v.AdmissionCostCeiling.MaxCleanupAndReconcileDuration = time.Second },
 	} {
@@ -306,9 +382,13 @@ func TestAgentLoopPolicyDigestBindsEverySealedField(t *testing.T) {
 		t.Fatal(err)
 	}
 	mutations := map[string]func(*domain.AgentLoopPolicyV1){
-		"tenant": func(v *domain.AgentLoopPolicyV1) { v.TenantID = "other-tenant" },
+		"tenant": func(v *domain.AgentLoopPolicyV1) {
+			v.TenantID = "other-tenant"
+			v.AdmissionCostCeiling.MCPToolCost.TenantID, v.AdmissionCostCeiling.WebSearchCost.TenantID = v.TenantID, v.TenantID
+		},
 		"owner": func(v *domain.AgentLoopPolicyV1) {
 			v.OwnerUserID, v.Resource.OwnerUserID = "other-owner", "other-owner"
+			v.AdmissionCostCeiling.MCPToolCost.OwnerUserID, v.AdmissionCostCeiling.WebSearchCost.OwnerUserID = v.OwnerUserID, v.OwnerUserID
 		},
 		"run":              func(v *domain.AgentLoopPolicyV1) { v.RunID = "other-run" },
 		"attempt":          func(v *domain.AgentLoopPolicyV1) { v.AttemptID = "other-attempt" },
@@ -343,6 +423,12 @@ func TestAgentLoopPolicyDigestBindsEverySealedField(t *testing.T) {
 	for _, field := range []string{"ProviderCatalogDigest", "ProviderRouteDigest", "CapabilityEvidenceDigest", "PrivacyPolicyDigest", "EffectivePolicyDigest", "CompactionPolicyDigest", "MCPToolGrantDigest", "WebSearchGrantDigest"} {
 		mutations[field] = func(v *domain.AgentLoopPolicyV1) {
 			reflect.ValueOf(v).Elem().FieldByName(field).SetString(strings.Repeat("9", 64))
+			switch field {
+			case "MCPToolGrantDigest":
+				v.AdmissionCostCeiling.MCPToolCost.ScopedGrantDigest = v.MCPToolGrantDigest
+			case "WebSearchGrantDigest":
+				v.AdmissionCostCeiling.WebSearchCost.ScopedGrantDigest = v.WebSearchGrantDigest
+			}
 		}
 	}
 	limitsType := reflect.TypeOf(base.Limits)
@@ -383,6 +469,8 @@ func TestAgentLoopPolicyDigestConstructionIsIndependentAndDomainSeparated(t *tes
 	policy.CompactionPolicyDigest = independent("fixture.compaction.v1")
 	policy.MCPToolGrantDigest = independent("fixture.scoped-mcp-grant.v1")
 	policy.WebSearchGrantDigest = independent("fixture.scoped-search-grant.v1")
+	policy.AdmissionCostCeiling.MCPToolCost.ScopedGrantDigest = policy.MCPToolGrantDigest
+	policy.AdmissionCostCeiling.WebSearchCost.ScopedGrantDigest = policy.WebSearchGrantDigest
 	digest, err := policy.Digest()
 	if err != nil {
 		t.Fatal(err)

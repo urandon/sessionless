@@ -136,7 +136,7 @@ type AgentLoopPolicyV1 struct {
 	MCPToolGrantDigest       string                     `json:"mcp_tool_grant_digest"`
 	WebSearchGrantDigest     string                     `json:"web_search_grant_digest"`
 	Limits                   AgentLoopLimitsV1          `json:"limits"`
-	AdmissionCostCeiling     AdmissionCostCeilingV1     `json:"admission_cost_ceiling"`
+	AdmissionCostCeiling     AdmissionCostCeilingV2     `json:"admission_cost_ceiling"`
 	IssuedAt                 time.Time                  `json:"issued_at"`
 	ExpiresAt                time.Time                  `json:"expires_at"`
 }
@@ -217,6 +217,21 @@ func (value AgentLoopPolicyV1) Validate() error {
 	}
 	if err := value.AdmissionCostCeiling.Validate(); err != nil {
 		return err
+	}
+	// Both services are required by this explicit owned public profile.
+	// Single-turn profiles exclude them and carry no tool authority.
+	for _, service := range []struct {
+		name, grant string
+		cost        *ExternalServiceCostCeilingV1
+	}{
+		{"mcp_tool_cost", value.MCPToolGrantDigest, value.AdmissionCostCeiling.MCPToolCost},
+		{"web_search_cost", value.WebSearchGrantDigest, value.AdmissionCostCeiling.WebSearchCost},
+	} {
+		if service.cost == nil || service.cost.TenantID != value.TenantID ||
+			service.cost.OwnerUserID != value.OwnerUserID || service.cost.ScopedGrantDigest != service.grant {
+			return ValidationError{Field: "agent_loop_policy.admission_cost_ceiling." + service.name,
+				Reason: "requires the exact tenant, owner and independent scoped service grant"}
+		}
 	}
 	if value.IssuedAt.IsZero() || value.IssuedAt.UTC().Year() < 1 || value.ExpiresAt.UTC().Year() > 9999 || !value.ExpiresAt.After(value.IssuedAt) || value.IssuedAt.Before(value.AdmissionCostCeiling.PriceObservedAt) || value.ExpiresAt.After(value.AdmissionCostCeiling.PriceExpiresAt) {
 		return ValidationError{Field: "agent_loop_policy.expires_at", Reason: "must bound a nonzero canonical UTC policy window inside the admitted price window"}

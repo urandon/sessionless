@@ -94,6 +94,12 @@ func TestHarnessBindingV2RejectsEveryPolicyAuthorityAxisMismatch(t *testing.T) {
 			}
 			if field == "OwnerUserID" {
 				candidate.AgentLoopPolicy.Resource.OwnerUserID = candidate.AgentLoopPolicy.OwnerUserID
+				candidate.AgentLoopPolicy.AdmissionCostCeiling.MCPToolCost.OwnerUserID = candidate.AgentLoopPolicy.OwnerUserID
+				candidate.AgentLoopPolicy.AdmissionCostCeiling.WebSearchCost.OwnerUserID = candidate.AgentLoopPolicy.OwnerUserID
+			}
+			if field == "TenantID" {
+				candidate.AgentLoopPolicy.AdmissionCostCeiling.MCPToolCost.TenantID = candidate.AgentLoopPolicy.TenantID
+				candidate.AgentLoopPolicy.AdmissionCostCeiling.WebSearchCost.TenantID = candidate.AgentLoopPolicy.TenantID
 			}
 			if err := candidate.AgentLoopPolicy.Validate(); err != nil {
 				t.Fatalf("independently valid mismatched policy %s: %v", field, err)
@@ -127,8 +133,11 @@ func TestHarnessBindingV2SealsFullPolicyDigestAndClonesPolicy(t *testing.T) {
 	}
 	for name, mutate := range map[string]func(*domain.AgentLoopPolicyV1){
 		"instruction": func(v *domain.AgentLoopPolicyV1) { v.InstructionVersion = "instructions.v2" },
-		"grant":       func(v *domain.AgentLoopPolicyV1) { v.WebSearchGrantDigest = strings.Repeat("7", 64) },
-		"limits":      func(v *domain.AgentLoopPolicyV1) { v.Limits.MaxActiveDuration-- },
+		"grant": func(v *domain.AgentLoopPolicyV1) {
+			v.WebSearchGrantDigest = strings.Repeat("7", 64)
+			v.AdmissionCostCeiling.WebSearchCost.ScopedGrantDigest = v.WebSearchGrantDigest
+		},
+		"limits": func(v *domain.AgentLoopPolicyV1) { v.Limits.MaxActiveDuration-- },
 		"modalities": func(v *domain.AgentLoopPolicyV1) {
 			v.InputModalities = []domain.AgentInputModalityV1{domain.AgentInputFileV1, domain.AgentInputTextV1}
 		},
@@ -176,6 +185,33 @@ func TestHarnessBindingV2RejectsSubstitutedMonetaryAuthorityAndExpiry(t *testing
 	}
 }
 
+func TestHarnessBindingV2SingleTurnCannotAcquireExternalServiceBudgets(t *testing.T) {
+	t.Parallel()
+	managed := deterministicManagedAuthority(t, "tenant-v2", "owner-v2", "run-v2", "attempt-v2", time.Unix(10, 0).UTC())
+	plain := managed.AdmissionCostCeiling.Clone()
+	if err := managed.HarnessBinding.ValidateAdmissionCostCeiling(&plain); err != nil {
+		t.Fatalf("existing single-turn successor cost: %v", err)
+	}
+	for _, kind := range []string{"mcp", "search", "both"} {
+		t.Run(kind, func(t *testing.T) {
+			cost, _ := admissionCostV2Fixture(t)
+			if kind == "mcp" {
+				cost.WebSearchCost = nil
+			}
+			if kind == "search" {
+				cost.MCPToolCost = nil
+			}
+			setAdmissionCostV2Total(&cost)
+			if err := cost.Validate(); err != nil {
+				t.Fatalf("independently valid cost: %v", err)
+			}
+			if err := managed.HarnessBinding.ValidateAdmissionCostCeiling(&cost); err == nil {
+				t.Fatalf("single-turn profile accepted %s service allocation", kind)
+			}
+		})
+	}
+}
+
 func TestDispatchOutboxRejectsIndependentlyValidSubstitutedLoopCost(t *testing.T) {
 
 	t.Parallel()
@@ -195,7 +231,9 @@ func TestDispatchOutboxRejectsIndependentlyValidSubstitutedLoopCost(t *testing.T
 			policy := binding.AgentLoopPolicy
 			policy.TenantID, policy.OwnerUserID = binding.TenantID, binding.OwnerUserID
 			policy.RunID, policy.AttemptID = binding.RunID, binding.AttemptID
-			policy.Resource, policy.AdmissionCostCeiling = binding.Resource, cost.Clone()
+			policy.Resource = binding.Resource
+			cost = withOwnedServiceCostFixture(t, cost, *policy)
+			policy.AdmissionCostCeiling = cost.Clone()
 			dispatch := domain.DispatchOutbox{
 				ID: "dispatch-owned-cost", TenantID: run.TenantID, RunID: run.ID, AttemptID: attempt.ID,
 				InputManifestID: "manifest-owned-cost", ContextSnapshot: validBlob(),

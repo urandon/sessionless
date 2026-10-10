@@ -190,7 +190,7 @@ type AttemptOperationV1 struct {
 	SummaryBytes                 uint64                              `json:"summary_bytes"`
 	Currency                     string                              `json:"currency"`
 	PriceRevision                string                              `json:"price_revision"`
-	AdmissionCostCeilingDigest   AdmissionCostCeilingDigestV1        `json:"admission_cost_ceiling_digest"`
+	AdmissionCostCeilingDigest   AdmissionCostCeilingDigestV2        `json:"admission_cost_ceiling_digest"`
 	ExternalChargeEvidenceDigest string                              `json:"external_charge_evidence_digest"`
 }
 

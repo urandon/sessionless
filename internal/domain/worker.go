@@ -24,7 +24,7 @@ type WorkerJob struct {
 	ExecutionPlacementV2  ExecutionPlacementV2    `json:"execution_placement"`
 	HarnessBinding        HarnessBindingV2        `json:"harness_binding"`
 	SubstrateBinding      *SubstrateBindingV1     `json:"substrate_binding,omitempty"`
-	AdmissionCostCeiling  *AdmissionCostCeilingV1 `json:"admission_cost_ceiling,omitempty"`
+	AdmissionCostCeiling  *AdmissionCostCeilingV2 `json:"admission_cost_ceiling,omitempty"`
 	Limits                ProductLimits           `json:"limits"`
 	Origin                *FrontendEventOrigin    `json:"origin,omitempty"`
 	// Compatibility bridge for legacy Telegram jobs until #37 projects results from the

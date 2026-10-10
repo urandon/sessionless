@@ -261,8 +261,8 @@ func newBoundaryFixture(t *testing.T, delivery domain.ProviderCredentialDelivery
 		CPUMillis: 1000, MemoryBytes: 256 << 20, ScratchBytes: 64 << 20, StdoutBytes: 128, StderrBytes: 128,
 		NativeEventCount: 128, ArtifactBytes: 512,
 	}
-	cost := domain.AdmissionCostCeilingV1{
-		Version: domain.AdmissionCostCeilingVersionV1, Currency: "USD", PriceRevision: "fixture-v1",
+	cost := domain.AdmissionCostCeilingV2{
+		Version: domain.AdmissionCostCeilingVersionV2, Currency: "USD", PriceRevision: "fixture-v1",
 		PriceObservedAt: now.Add(-time.Minute), PriceExpiresAt: now.Add(50 * time.Minute), MaxDeliveries: 1,
 		MaxPreEffectDurationPerDelivery: 5 * time.Minute, MaxActiveDuration: limits.ExecutionTimeout,
 		MaxCleanupAndReconcileDuration: limits.CleanupTimeout, ConfiguredMemoryBytes: limits.MemoryBytes,

@@ -602,8 +602,8 @@ func childPreparedFixtureWithLimits(
 		CPUMillis: 1000, MemoryBytes: 256 << 20, ScratchBytes: 64 << 20,
 		StdoutBytes: stdoutBytes, StderrBytes: stderrBytes, NativeEventCount: 128, ArtifactBytes: 1 << 20,
 	}
-	cost := domain.AdmissionCostCeilingV1{
-		Version: domain.AdmissionCostCeilingVersionV1, Currency: "USD", PriceRevision: "fixture-v1",
+	cost := domain.AdmissionCostCeilingV2{
+		Version: domain.AdmissionCostCeilingVersionV2, Currency: "USD", PriceRevision: "fixture-v1",
 		PriceObservedAt: now.Add(-time.Minute), PriceExpiresAt: now.Add(time.Hour), MaxDeliveries: 2,
 		MaxPreEffectDurationPerDelivery: time.Minute, MaxActiveDuration: limits.ExecutionTimeout,
 		MaxCleanupAndReconcileDuration: limits.CleanupTimeout, ConfiguredMemoryBytes: limits.MemoryBytes,

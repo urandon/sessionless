@@ -146,7 +146,7 @@ type SubstrateExecutionEvidenceV1 struct {
 	Version                    uint32                                `json:"version"`
 	InvocationAuthorityDigest  ServerlessInvocationAuthorityDigestV1 `json:"invocation_authority_digest"`
 	SubstrateBindingDigest     SubstrateBindingDigestV1              `json:"substrate_binding_digest"`
-	AdmissionCostCeilingDigest AdmissionCostCeilingDigestV1          `json:"admission_cost_ceiling_digest"`
+	AdmissionCostCeilingDigest AdmissionCostCeilingDigestV2          `json:"admission_cost_ceiling_digest"`
 	PreparedInvocationDigest   PreparedInvocationDigestV1            `json:"prepared_invocation_digest"`
 	EffectReservationDigest    AttemptEffectReservationDigestV1      `json:"effect_reservation_digest"`
 	PreparedAllocationDigest   PreparedAllocationDigestV1            `json:"prepared_allocation_digest"`

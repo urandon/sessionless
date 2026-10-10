@@ -34,6 +34,17 @@ func TestSessionLifecycleHoldWriteFenceInventoryAndCompletion(t *testing.T) {
 		"managed-execution-authority-v2-empty-cutover", time.Now().UTC().Truncate(time.Microsecond)); err != nil {
 		t.Fatal(err)
 	}
+	// This scenario deliberately fills the canonical backlog before invoking the
+	// idempotent index backfill. Establish its own monetary successor receipt.
+	var cutoverAt time.Time
+	if err := client.DB.QueryRowContext(ctx, "SELECT CurrentUtcTimestamp()").Scan(&cutoverAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.DB.ExecContext(ctx,
+		`UPSERT INTO managed_execution_authority_v2_cutover_state (cutover_id,completed_at) VALUES ($1,$2)`,
+		ydbpartition.AdmissionCostV2CutoverID, cutoverAt); err != nil {
+		t.Fatal(err)
+	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	runSuffix := fmt.Sprintf("%d", now.UnixNano())
 	tenantID := domain.TenantID(uniqueID("tenant-lifecycle-" + runSuffix))

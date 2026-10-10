@@ -98,6 +98,48 @@ func TestManagedExecutionAuthorityV2ServingGateRequiresCommittedMarker(t *testin
 	}
 }
 
+func TestAdmissionCostV2ServingGateRequiresDistinctCommittedMarker(t *testing.T) {
+	store, client := openStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	var at time.Time
+	if err := client.DB.QueryRowContext(ctx, "SELECT CurrentUtcTimestamp()").Scan(&at); err != nil || at.IsZero() {
+		t.Fatalf("database cutover clock=%v error=%v", at, err)
+	}
+	// The schema is shared by sequential integration tests; restore the exact
+	// fixture marker even on failure. No parallel test mutates deployment gates.
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		if _, err := client.DB.ExecContext(cleanupCtx,
+			`UPSERT INTO managed_execution_authority_v2_cutover_state (cutover_id,completed_at) VALUES ($1,$2)`,
+			ydbpartition.AdmissionCostV2CutoverID, at); err != nil {
+			t.Errorf("restore monetary successor fixture marker: %v", err)
+		}
+	})
+	if _, err := client.DB.ExecContext(ctx,
+		`DELETE FROM managed_execution_authority_v2_cutover_state WHERE cutover_id=$1`,
+		ydbpartition.AdmissionCostV2CutoverID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.DB.ExecContext(ctx,
+		`UPSERT INTO managed_execution_authority_v2_cutover_state (cutover_id,completed_at) VALUES ($1,$2)`,
+		"managed-execution-authority-v2-empty-cutover", at); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RequireAdmissionCostV2Cutover(ctx); err == nil {
+		t.Fatal("earlier managed authority marker accepted as monetary successor")
+	}
+	if _, err := client.DB.ExecContext(ctx,
+		`UPSERT INTO managed_execution_authority_v2_cutover_state (cutover_id,completed_at) VALUES ($1,$2)`,
+		ydbpartition.AdmissionCostV2CutoverID, at); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RequireAdmissionCostV2Cutover(ctx); err != nil {
+		t.Fatalf("committed monetary successor rejected: %v", err)
+	}
+}
+
 func TestMigrationsAreRepeatable(t *testing.T) {
 	connectionString := requireConnectionString(t)
 	for run := 1; run <= 2; run++ {
@@ -1497,7 +1539,7 @@ func cloneSubstrateBindingForIntegration(value domain.SubstrateBindingV1) *domai
 	return &clone
 }
 
-func cloneAdmissionCostForIntegration(value domain.AdmissionCostCeilingV1) *domain.AdmissionCostCeilingV1 {
+func cloneAdmissionCostForIntegration(value domain.AdmissionCostCeilingV2) *domain.AdmissionCostCeilingV2 {
 	clone := value.Clone()
 	return &clone
 }

@@ -213,6 +213,42 @@ func TestInvalidTerminalEvidenceRemainsUnknown(t *testing.T) {
 	}
 }
 
+func TestAdmissionCannotOverwriteCanonicalTerminal(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		status domain.RunStatus
+		notice runexplanation.NoticeInput
+	}{
+		{name: "failed", status: domain.RunFailed, notice: runexplanation.NoticeInput{Schema: runexplanation.TerminalNoticeSchemaV1, Code: "harness_failed"}},
+		{name: "cancelled", status: domain.RunCancelled, notice: runexplanation.NoticeInput{Schema: runexplanation.TerminalNoticeSchemaV1, Code: "cancelled", Cancelled: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := fixture(t, false)
+			transition(t, &s, tc.status, time.Second)
+			head, changed, _, err := runexplanation.RecordTerminal(*s.Head, s.Run, *s.Attempt, &tc.notice, "canonical-terminal", 19, s.ReadAt)
+			if err != nil || !changed {
+				t.Fatalf("record %s terminal: changed=%v err=%v", tc.status, changed, err)
+			}
+			s.Head = &head
+			before := projection(t, s)
+			for _, code := range []string{"future_code", "admitted", "subscription_slot_busy"} {
+				next, changed, err := runexplanation.RecordAdmission(head, s.Run, *s.Attempt, code, s.ReadAt.Add(time.Second))
+				if !errors.Is(err, runexplanation.ErrInvalidSource) || changed {
+					t.Errorf("terminal=%s admission=%q changed=%v err=%v next=%+v; want rejected decision", tc.status, code, changed, err, next)
+				}
+				if got := projection(t, s); !reflect.DeepEqual(got, before) {
+					t.Errorf("rejected admission mutated terminal evidence: got=%+v want=%+v", got, before)
+				}
+			}
+			next, changed, err := runexplanation.RecordAdmission(head, s.Run, *s.Attempt, "dispatch_not_pending", s.ReadAt.Add(time.Second))
+			if err != nil || changed || !reflect.DeepEqual(next, head) {
+				t.Errorf("terminal dispatch observation changed=%v err=%v next=%+v; want unchanged canonical evidence", changed, err, next)
+			}
+		})
+	}
+}
+
 func TestDenialDoesNotSurviveReenteredCanonicalPhase(t *testing.T) {
 	t.Parallel()
 	s := fixture(t, false)

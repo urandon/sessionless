@@ -224,11 +224,16 @@ func RecordAdmission(head HeadV1, run domain.Run, attempt domain.Attempt, code s
 	if code == "dispatch_not_pending" {
 		return clone(head), false, nil
 	}
+	// Unsupported codes still represent admission observations. No admission
+	// decision can reopen a canonical terminal phase or erase its finalization.
+	if run.Status.Terminal() {
+		return HeadV1{}, false, ErrInvalidSource
+	}
 	if domain.ValidateOpaqueID("decision_code", code) != nil {
 		return HeadV1{}, false, ErrInvalidSource
 	}
 	outcome, reason := MapAdmission(code)
-	if (outcome == Admitted && (run.Status == domain.RunCreated || run.Status == domain.RunQuotaBlocked || run.Status.Terminal())) ||
+	if (outcome == Admitted && (run.Status == domain.RunCreated || run.Status == domain.RunQuotaBlocked)) ||
 		(outcome == Denied && run.Status != domain.RunQuotaBlocked) {
 		return HeadV1{}, false, ErrInvalidSource
 	}

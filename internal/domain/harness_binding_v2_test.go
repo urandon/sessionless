@@ -175,3 +175,80 @@ func TestHarnessBindingV2RejectsSubstitutedMonetaryAuthorityAndExpiry(t *testing
 		t.Fatal("owned policy accepted at exclusive expiry")
 	}
 }
+
+func TestDispatchOutboxRejectsIndependentlyValidSubstitutedLoopCost(t *testing.T) {
+
+	t.Parallel()
+	for _, axis := range []string{"policy", "outer"} {
+		t.Run(axis, func(t *testing.T) {
+			run, attempt := validRun(), validAttempt()
+			binding := ownedAgentBindingFixture(t)
+			at := binding.AgentLoopPolicy.IssuedAt
+			authority := deterministicManagedAuthority(t, run.TenantID, "user-1", run.ID, attempt.ID, at)
+			cost := authority.AdmissionCostCeiling.Clone()
+			cost.ProviderPriceState = domain.ProviderPriceKnownV1
+			*cost.MaxProviderAmountMicrounits, *cost.MaxTotalAmountMicrounits = 1, 1
+			substrate := authority.SubstrateBinding
+			binding.TenantID, binding.OwnerUserID = run.TenantID, "user-1"
+			binding.RunID, binding.AttemptID = run.ID, attempt.ID
+			binding.Resource.OwnerUserID = binding.OwnerUserID
+			policy := binding.AgentLoopPolicy
+			policy.TenantID, policy.OwnerUserID = binding.TenantID, binding.OwnerUserID
+			policy.RunID, policy.AttemptID = binding.RunID, binding.AttemptID
+			policy.Resource, policy.AdmissionCostCeiling = binding.Resource, cost.Clone()
+			dispatch := domain.DispatchOutbox{
+				ID: "dispatch-owned-cost", TenantID: run.TenantID, RunID: run.ID, AttemptID: attempt.ID,
+				InputManifestID: "manifest-owned-cost", ContextSnapshot: validBlob(),
+				HarnessBinding: binding, SubstrateBinding: &substrate, AdmissionCostCeiling: &cost,
+				CredentialOwnerUserID: binding.OwnerUserID,
+				DeliveryChat:          domain.TelegramChatRef{TenantID: run.TenantID, ChatID: -1000123}, ReplyToMessageID: 77,
+				Status: domain.DispatchPending, IdempotencyKey: "dispatch-owned-cost", CreatedAt: at, UpdatedAt: at,
+			}
+			sealOuter := func() {
+				t.Helper()
+				digest, err := cost.Digest()
+				if err != nil {
+					t.Fatalf("valid outer cost: %v", err)
+				}
+				substrate.AdmissionCostCeilingDigest = digest
+				substrateDigest, err := substrate.Digest()
+				if err != nil {
+					t.Fatalf("valid substrate: %v", err)
+				}
+				placement, err := domain.ManagedExecutionPlacementV2(string(substrateDigest))
+				if err != nil {
+					t.Fatalf("valid placement: %v", err)
+				}
+				dispatch.ExecutionPlacementV2 = placement
+				placementDigest, err := domain.ExecutionPlacementDigest(placement)
+				if err != nil {
+					t.Fatalf("valid placement digest: %v", err)
+				}
+				dispatch.HarnessBinding.ExecutionPlacementDigest = string(placementDigest)
+			}
+			sealOuter()
+			if err := dispatch.ValidateForAttempt(run, attempt); err != nil {
+				t.Fatalf("coherent owned dispatch rejected: %v", err)
+			}
+			changed := &dispatch.HarnessBinding.AgentLoopPolicy.AdmissionCostCeiling
+			if axis == "outer" {
+				changed = &cost
+			}
+			*changed.MaxProviderAmountMicrounits++
+			*changed.MaxTotalAmountMicrounits++
+			sealOuter()
+			if err := dispatch.HarnessBinding.ValidateForScope(run.TenantID, binding.OwnerUserID, run.ID, attempt.ID, dispatch.ExecutionPlacementV2); err != nil {
+				t.Fatalf("independently valid policy/binding: %v", err)
+			}
+			if err := domain.ValidateExecutionAuthorityProjection(dispatch.ExecutionPlacementV2, &substrate, &cost); err != nil {
+				t.Fatalf("independently valid outer projection: %v", err)
+			}
+			if err := dispatch.HarnessBinding.ValidateAdmissionCostCeiling(&cost); err == nil {
+				t.Fatal("fixture did not substitute monetary authority")
+			}
+			if err := dispatch.ValidateForAttempt(run, attempt); err == nil {
+				t.Fatalf("dispatch persisted independently valid substituted %s monetary authority", axis)
+			}
+		})
+	}
+}

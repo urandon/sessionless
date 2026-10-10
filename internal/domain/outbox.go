@@ -101,6 +101,9 @@ func (outbox DispatchOutbox) ValidateForAttempt(run Run, attempt Attempt) error 
 	); err != nil {
 		return err
 	}
+	if err := outbox.HarnessBinding.ValidateAdmissionCostCeiling(outbox.AdmissionCostCeiling); err != nil {
+		return err
+	}
 	if outbox.Origin == nil && outbox.DeliveryChat.ChatID == 0 {
 		return ValidationError{Field: "dispatch_outbox.origin", Reason: "a frontend origin or legacy delivery target is required"}
 	}

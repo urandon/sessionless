@@ -302,7 +302,7 @@ func aw07ClaimedInputWithPayload(t *testing.T, store *ydbstore.Store, client *yd
 func aw07ClaimedInputWithPayloadAndBinding(t *testing.T, store *ydbstore.Store, client *ydbclient.Client,
 	worker domain.AttachedWorker, connection domain.AttachedWorkerConnection,
 	secret domain.AttachedWorkerConnectionSecretDigest, now time.Time, suffix string,
-	contextBody, artifactBody []byte, amendBinding func(*domain.HarnessBindingV1),
+	contextBody, artifactBody []byte, amendBinding func(*domain.HarnessBindingV2),
 ) aw07ClaimedAuthorization {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)

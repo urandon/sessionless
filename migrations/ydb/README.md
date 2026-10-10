@@ -159,12 +159,23 @@ retained-data migration requires a separately reviewed bounded backfill.
 Web BFF, control API, reconciler, and worker runtime refuse startup before the
 marker. Serving readers never reinterpret a missing placement as managed.
 
-Migration `00088` records the separate one-time HarnessBindingV1 empty-backlog
+Migration `00088` originally recorded the separate one-time HarnessBindingV1 empty-backlog
 cutover. Stop every ingress, scheduler, reconciler, managed worker, and attached
 worker admission process; drain `dispatch_outbox` and `worker_jobs`; then run
-the serializable cutover. Every serving binary refuses to start without this
-second marker. It never permits a legacy zero binding to be interpreted as the
-deterministic backend.
+the serializable cutover. That historical migration and V1 marker are preserved;
+the V1 marker does not authorize the successor reader.
+
+The HarnessBindingV2 writer-first cutover uses a new
+`harness-binding-v2-empty-cutover` key in the same cutover-state table. Under the
+deployment lock, stop all binding writers and readers; one serializable cutover
+transaction requires `dispatch_outbox`, `worker_jobs`, and
+`attempt_effect_reservations` empty before writing this key. Those tables can
+contain nested binding authority. Current serving binaries require the V2 key
+and never decode V1 or zero bindings as single-turn/default execution. Historical
+scalar/digest-only effect reconciliation and attached-worker output receipts are
+not erased or required empty by this cutover. This is not a data backfill or
+authority to apply migrations, drain/reset production, or activate the owned
+agent profile; retained nested authority requires a separately approved rollout.
 
 Migrations `00089`-`00093` add the owner-scoped provider credential authority
 for API and router accounts. The binding row contains only resource revisions,

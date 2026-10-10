@@ -27,7 +27,7 @@ const (
 var ErrIdempotencyConflict = errors.New("idempotency key already belongs to another run")
 
 const executionPlacementCutoverID = "execution-placement-v1-empty-cutover"
-const harnessBindingCutoverID = "harness-binding-v1-empty-cutover"
+const harnessBindingCutoverID = "harness-binding-v2-empty-cutover"
 const managedExecutionAuthorityV2CutoverID = "managed-execution-authority-v2-empty-cutover"
 
 type Options struct {
@@ -93,6 +93,9 @@ func (store *Store) RequireExecutionPlacementCutover(ctx context.Context) error 
 	return nil
 }
 
+// RequireHarnessBindingCutover requires the successor marker, not the historical
+// V1 gate. A committed V2 marker proves dispatch/jobs and nested effect authority
+// were empty before the canonical writer/reader cutover.
 func (store *Store) RequireHarnessBindingCutover(ctx context.Context) error {
 	if store == nil || store.db == nil {
 		return errors.New("YDB store must not be nil")

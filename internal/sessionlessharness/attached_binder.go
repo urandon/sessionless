@@ -25,7 +25,7 @@ type AttachedResourcePin struct {
 	EnrollmentGeneration     uint64                                `json:"enrollment_generation"`
 	CapabilityDigest         domain.AttachedWorkerCapabilityDigest `json:"capability_digest"`
 	PolicyDigest             domain.AttachedWorkerPolicyDigest     `json:"policy_digest"`
-	Binding                  domain.HarnessBindingV1               `json:"binding"`
+	Binding                  domain.HarnessBindingV2               `json:"binding"`
 }
 
 type AttachedResourceBinderConfig struct {

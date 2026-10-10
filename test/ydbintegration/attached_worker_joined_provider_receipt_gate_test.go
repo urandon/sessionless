@@ -527,7 +527,7 @@ func testJoinedProviderDaemonReceipts(t *testing.T, normalWeb bool) {
 			continue
 		}
 		owner.offer = attachedWorkerOfferForDrainWithPayloadAndBinding(t, store, client, owner.worker, connection, now,
-			owner.suffix, owner.context, owner.artifact, func(value *domain.HarnessBindingV1) {
+			owner.suffix, owner.context, owner.artifact, func(value *domain.HarnessBindingV2) {
 				binding(value)
 				value.Backend.CredentialDeliveryKind = domain.ProviderCredentialDeliveryFileV1
 			}, 20*time.Minute)

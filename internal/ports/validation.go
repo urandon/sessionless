@@ -251,6 +251,9 @@ func (request ExecutionRequest) Validate() error {
 	if err := request.HarnessBinding.ValidateForScope(request.TenantID, request.OwnerUserID, request.RunID, request.AttemptID, request.ExecutionPlacementV2); err != nil {
 		return err
 	}
+	if err := request.HarnessBinding.ValidateAdmissionCostCeiling(request.AdmissionCostCeiling); err != nil {
+		return err
+	}
 	if !filepath.IsAbs(request.WorkDir) || filepath.Clean(request.WorkDir) != request.WorkDir {
 		return domain.ValidationError{Field: "execution.work_dir", Reason: "must be a normalized absolute path"}
 	}
@@ -368,6 +371,9 @@ func (identity ExecutionIdentity) Validate() error {
 		return err
 	}
 	if err := identity.HarnessBinding.Validate(); err != nil {
+		return err
+	}
+	if err := identity.HarnessBinding.ValidateAdmissionCostCeiling(identity.AdmissionCostCeiling); err != nil {
 		return err
 	}
 	return identity.HarnessBinding.ValidateForScope(identity.TenantID, identity.OwnerUserID, identity.RunID, identity.AttemptID, identity.ExecutionPlacementV2)

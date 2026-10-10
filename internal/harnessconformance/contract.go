@@ -56,7 +56,7 @@ func (bundle EvidenceBundleV1) Clone() EvidenceBundleV1 {
 	return bundle
 }
 
-func (bundle EvidenceBundleV1) ValidateForBinding(binding domain.HarnessBindingV1) error {
+func (bundle EvidenceBundleV1) ValidateForBinding(binding domain.HarnessBindingV2) error {
 	if err := binding.Validate(); err != nil {
 		return err
 	}
@@ -144,7 +144,7 @@ func (bundle EvidenceBundleV1) ValidateForBinding(binding domain.HarnessBindingV
 	return nil
 }
 
-func (bundle EvidenceBundleV1) ValidateExecutionEvidence(binding domain.HarnessBindingV1, evidence domain.ProviderExecutionEvidenceV1) error {
+func (bundle EvidenceBundleV1) ValidateExecutionEvidence(binding domain.HarnessBindingV2, evidence domain.ProviderExecutionEvidenceV1) error {
 	if err := bundle.ValidateForBinding(binding); err != nil {
 		return err
 	}
@@ -180,7 +180,7 @@ type FixtureV1 struct {
 	Version              uint32                        `json:"version"`
 	FixtureID            string                        `json:"fixture_id"`
 	Placement            domain.ExecutionPlacementV2   `json:"execution_placement"`
-	Binding              domain.HarnessBindingV1       `json:"binding"`
+	Binding              domain.HarnessBindingV2       `json:"binding"`
 	SubstrateBinding     domain.SubstrateBindingV1     `json:"substrate_binding"`
 	AdmissionCostCeiling domain.AdmissionCostCeilingV1 `json:"admission_cost_ceiling"`
 	EvidenceBundle       *EvidenceBundleV1             `json:"evidence_bundle,omitempty"`
@@ -214,6 +214,9 @@ func (fixture FixtureV1) Validate() error {
 	}
 	substrate, cost := fixtureExecutionAuthority(fixture)
 	if err := domain.ValidateExecutionAuthorityProjection(fixture.Placement, substrate, cost); err != nil {
+		return err
+	}
+	if err := fixture.Binding.ValidateAdmissionCostCeiling(cost); err != nil {
 		return err
 	}
 	switch fixture.Operation {
@@ -298,7 +301,7 @@ type ResultV1 struct {
 	Version                         uint32                          `json:"version"`
 	FixtureID                       string                          `json:"fixture_id"`
 	FixtureDigest                   domain.ProviderEvidenceDigestV1 `json:"fixture_digest"`
-	BindingDigest                   domain.HarnessBindingDigestV1   `json:"binding_digest"`
+	BindingDigest                   domain.HarnessBindingDigestV2   `json:"binding_digest"`
 	RegistryContract                RegistryContractV1              `json:"registry_contract"`
 	BackendProtocol                 BackendProtocolStateV1          `json:"backend_protocol"`
 	FailureCode                     sessionlessharness.FailureCode  `json:"failure_code,omitempty"`

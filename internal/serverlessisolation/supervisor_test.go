@@ -647,8 +647,8 @@ func childPreparedFixtureWithLimits(
 		BackendProfileDigest: digestText("backend-profile"), ProviderContractKind: domain.ProviderContractInvocationV1,
 		CredentialDeliveryKind: domain.ProviderCredentialDeliveryFileV1,
 	}
-	binding := domain.HarnessBindingV1{
-		Version: domain.HarnessBindingVersionV1, TenantID: "tenant-1", OwnerUserID: "user-1",
+	binding := domain.HarnessBindingV2{
+		Version: domain.HarnessBindingVersionV2, Profile: domain.HarnessExecutionSingleTurnV2, TenantID: "tenant-1", OwnerUserID: "user-1",
 		RunID: "run-1", AttemptID: "attempt-1", Backend: backend,
 		Resource: domain.ProviderResourceBindingV1{
 			Kind: domain.ProviderResourceSubscriptionV1, ResourceID: "subscription-1", OwnerUserID: "user-1",

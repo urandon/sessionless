@@ -35,7 +35,7 @@ type DispatchOutbox struct {
 	AllowedMCPServers     []string                `json:"allowed_mcp_servers,omitempty"`
 	CredentialOwnerUserID UserID                  `json:"credential_owner_user_id,omitempty"`
 	ExecutionPlacementV2  ExecutionPlacementV2    `json:"execution_placement"`
-	HarnessBinding        HarnessBindingV1        `json:"harness_binding"`
+	HarnessBinding        HarnessBindingV2        `json:"harness_binding"`
 	SubstrateBinding      *SubstrateBindingV1     `json:"substrate_binding,omitempty"`
 	AdmissionCostCeiling  *AdmissionCostCeilingV1 `json:"admission_cost_ceiling,omitempty"`
 	Origin                *FrontendEventOrigin    `json:"origin,omitempty"`

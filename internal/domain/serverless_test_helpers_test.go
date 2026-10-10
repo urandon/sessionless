@@ -18,7 +18,7 @@ func deterministicManagedAuthority(t testing.TB, tenant domain.TenantID, owner d
 	return authority
 }
 
-func deterministicHarnessBindingForPlacement(t testing.TB, tenant domain.TenantID, owner domain.UserID, run domain.RunID, attempt domain.AttemptID, placement domain.ExecutionPlacementV2, at time.Time) domain.HarnessBindingV1 {
+func deterministicHarnessBindingForPlacement(t testing.TB, tenant domain.TenantID, owner domain.UserID, run domain.RunID, attempt domain.AttemptID, placement domain.ExecutionPlacementV2, at time.Time) domain.HarnessBindingV2 {
 	t.Helper()
 	authority := deterministicManagedAuthority(t, tenant, owner, run, attempt, at)
 	digest, err := domain.ExecutionPlacementDigest(placement)

@@ -186,7 +186,7 @@ func invocationIdentity(t *testing.T, expires time.Time) ports.ExecutionIdentity
 		t.Fatal(err)
 	}
 	descriptor := domain.HarnessBackendDescriptorV1{HarnessKind: domain.HarnessKindSessionlessV1, HarnessVersion: "1", BackendKind: domain.HarnessBackendCodexExecV1, ArtifactKind: domain.HarnessArtifactExecutableV1, ArtifactDigest: strings.Repeat("1", 64), NativeProtocolVersion: "codex-jsonl.v1", BackendProfileDigest: strings.Repeat("2", 64), ProviderContractKind: domain.ProviderContractInvocationV1, CredentialDeliveryKind: domain.ProviderCredentialDeliveryFileV1}
-	binding := domain.HarnessBindingV1{Version: 1, TenantID: "tenant-1", OwnerUserID: "user-1", RunID: "run-1", AttemptID: "attempt-1", Backend: descriptor, Resource: domain.ProviderResourceBindingV1{Kind: domain.ProviderResourceSubscriptionV1, ResourceID: "subscription-1", OwnerUserID: "user-1", Revision: 1, CredentialMode: domain.ProviderCredentialInvocationV1, CredentialGeneration: 1}, ModelVendorID: "openai", ModelID: "codex-model", InputDataClass: domain.ProviderDataPrivateV1, ProviderCatalogDigest: strings.Repeat("3", 64), ProviderRouteDigest: strings.Repeat("4", 64), PrivacyPolicyDigest: strings.Repeat("5", 64), CapabilityEvidenceDigest: strings.Repeat("6", 64), EffectivePolicyDigest: strings.Repeat("7", 64), ExecutionPlacementDigest: string(placementDigest), EvidenceExpiresAt: &expires}
+	binding := domain.HarnessBindingV2{Version: domain.HarnessBindingVersionV2, Profile: domain.HarnessExecutionSingleTurnV2, TenantID: "tenant-1", OwnerUserID: "user-1", RunID: "run-1", AttemptID: "attempt-1", Backend: descriptor, Resource: domain.ProviderResourceBindingV1{Kind: domain.ProviderResourceSubscriptionV1, ResourceID: "subscription-1", OwnerUserID: "user-1", Revision: 1, CredentialMode: domain.ProviderCredentialInvocationV1, CredentialGeneration: 1}, ModelVendorID: "openai", ModelID: "codex-model", InputDataClass: domain.ProviderDataPrivateV1, ProviderCatalogDigest: strings.Repeat("3", 64), ProviderRouteDigest: strings.Repeat("4", 64), PrivacyPolicyDigest: strings.Repeat("5", 64), CapabilityEvidenceDigest: strings.Repeat("6", 64), EffectivePolicyDigest: strings.Repeat("7", 64), ExecutionPlacementDigest: string(placementDigest), EvidenceExpiresAt: &expires}
 	return ports.ExecutionIdentity{
 		TenantID: "tenant-1", OwnerUserID: "user-1", RunID: "run-1", AttemptID: "attempt-1", ExecutionPlacementV2: placement, HarnessBinding: binding,
 		SubstrateBinding: cloneSubstrateBindingForTest(authority.SubstrateBinding), AdmissionCostCeiling: cloneAdmissionCostCeilingForTest(authority.AdmissionCostCeiling),
@@ -199,7 +199,7 @@ func TestRegistryFreshnessGatesStartButNotCancellation(t *testing.T) {
 	expires := now.Add(time.Minute)
 	identity := invocationIdentity(t, expires)
 	driver := &recordingDriver{}
-	registry, err := sessionlessharness.NewRegistry(func() time.Time { return now }, sessionlessharness.Registration{Descriptor: identity.HarnessBinding.Backend, Enabled: true, ValidateBinding: func(domain.HarnessBindingV1) sessionlessharness.FailureCode { return "" }, Driver: driver})
+	registry, err := sessionlessharness.NewRegistry(func() time.Time { return now }, sessionlessharness.Registration{Descriptor: identity.HarnessBinding.Backend, Enabled: true, ValidateBinding: func(domain.HarnessBindingV2) sessionlessharness.FailureCode { return "" }, Driver: driver})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +225,7 @@ func TestRegistryDisabledRegistrationCannotStartButCanCancel(t *testing.T) {
 	driver := &recordingDriver{}
 	registry, err := sessionlessharness.NewRegistry(func() time.Time { return now }, sessionlessharness.Registration{
 		Descriptor: identity.HarnessBinding.Backend, Enabled: false,
-		ValidateBinding: func(domain.HarnessBindingV1) sessionlessharness.FailureCode { return "" }, Driver: driver,
+		ValidateBinding: func(domain.HarnessBindingV2) sessionlessharness.FailureCode { return "" }, Driver: driver,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -250,7 +250,7 @@ func TestRegistryRejectsOwnerPlacementAndInvalidValidatorCode(t *testing.T) {
 	now := time.Unix(100, 0).UTC()
 	identity := invocationIdentity(t, now.Add(time.Minute))
 	driver := &recordingDriver{}
-	registry, err := sessionlessharness.NewRegistry(func() time.Time { return now }, sessionlessharness.Registration{Descriptor: identity.HarnessBinding.Backend, Enabled: true, ValidateBinding: func(domain.HarnessBindingV1) sessionlessharness.FailureCode {
+	registry, err := sessionlessharness.NewRegistry(func() time.Time { return now }, sessionlessharness.Registration{Descriptor: identity.HarnessBinding.Backend, Enabled: true, ValidateBinding: func(domain.HarnessBindingV2) sessionlessharness.FailureCode {
 		return sessionlessharness.FailureCode("private_provider_detail")
 	}, Driver: driver})
 	if err != nil {
@@ -259,7 +259,7 @@ func TestRegistryRejectsOwnerPlacementAndInvalidValidatorCode(t *testing.T) {
 	if err := registry.Preflight(context.Background(), identity); err == nil || strings.Contains(err.Error(), "private_provider_detail") {
 		t.Fatalf("validator error not sanitized: %v", err)
 	}
-	registry, err = sessionlessharness.NewRegistry(func() time.Time { return now }, sessionlessharness.Registration{Descriptor: identity.HarnessBinding.Backend, Enabled: true, ValidateBinding: func(domain.HarnessBindingV1) sessionlessharness.FailureCode { return "" }, Driver: driver})
+	registry, err = sessionlessharness.NewRegistry(func() time.Time { return now }, sessionlessharness.Registration{Descriptor: identity.HarnessBinding.Backend, Enabled: true, ValidateBinding: func(domain.HarnessBindingV2) sessionlessharness.FailureCode { return "" }, Driver: driver})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -293,7 +293,7 @@ func TestRegistrySelectsExactBackendAmongMultipleRegistrations(t *testing.T) {
 			codex := &recordingDriver{}
 			fixture := &recordingDriver{}
 			fixtureRegistration := sessionlessharness.Registration{Descriptor: sessionlessharness.DeterministicFixtureDescriptorV1(), Enabled: true, ValidateBinding: sessionlessharness.ValidateDeterministicFixtureBindingV1, Driver: fixture}
-			codexRegistration := sessionlessharness.Registration{Descriptor: identity.HarnessBinding.Backend, Enabled: true, ValidateBinding: func(domain.HarnessBindingV1) sessionlessharness.FailureCode { return "" }, Driver: codex}
+			codexRegistration := sessionlessharness.Registration{Descriptor: identity.HarnessBinding.Backend, Enabled: true, ValidateBinding: func(domain.HarnessBindingV2) sessionlessharness.FailureCode { return "" }, Driver: codex}
 			registrations := []sessionlessharness.Registration{fixtureRegistration, codexRegistration}
 			if reverse {
 				registrations[0], registrations[1] = registrations[1], registrations[0]
@@ -344,6 +344,74 @@ func TestRegistrySanitizesBackendErrorsAndRetainsValidFailureEvidence(t *testing
 }
 
 var _ ports.HarnessDriver = (*recordingDriver)(nil)
+
+func TestRegistryOwnedAgentDeniesAllOneShotDispatchAndCancellation(t *testing.T) {
+	t.Parallel()
+	now := time.Unix(100, 0).UTC()
+	_, _, request := registryFixture(t)
+	identity := invocationIdentity(t, now.Add(time.Minute))
+	binding := identity.HarnessBinding.Clone()
+	binding.Backend.BackendKind = domain.HarnessBackendDirectOpenRouterV1
+	binding.Backend.CredentialDeliveryKind = domain.ProviderCredentialDeliveryDirectV1
+	binding.Resource.Kind = domain.ProviderResourceRouterAccountV1
+	binding.InputDataClass = domain.ProviderDataPublicV1
+	binding.Profile = domain.HarnessExecutionOwnedAgentV2
+	policy := domain.AgentLoopPolicyV1{
+		Version: domain.AgentLoopPolicyVersionV1, Profile: domain.AgentLoopOwnedPublicV1, ProfileRevision: 1,
+		TenantID: binding.TenantID, OwnerUserID: binding.OwnerUserID, RunID: binding.RunID, AttemptID: binding.AttemptID,
+		Backend: binding.Backend, Resource: binding.Resource, ModelVendorID: binding.ModelVendorID, ModelID: binding.ModelID,
+		ProviderCatalogDigest: binding.ProviderCatalogDigest, ProviderRouteDigest: binding.ProviderRouteDigest,
+		CapabilityEvidenceDigest: binding.CapabilityEvidenceDigest, PrivacyPolicyDigest: binding.PrivacyPolicyDigest, EffectivePolicyDigest: binding.EffectivePolicyDigest,
+		InputDataClass: binding.InputDataClass, InputModalities: []domain.AgentInputModalityV1{domain.AgentInputTextV1},
+		InstructionVersion: "instructions.v1", CompactionPolicyDigest: strings.Repeat("8", 64), MCPToolGrantDigest: strings.Repeat("9", 64), WebSearchGrantDigest: strings.Repeat("a", 64),
+		AdmissionCostCeiling: identity.AdmissionCostCeiling.Clone(), IssuedAt: now, ExpiresAt: *binding.EvidenceExpiresAt,
+		Limits: domain.AgentLoopLimitsV1{
+			MaxConcurrentOperations: 1, MaxModelCalls: 1, MaxCompactionCalls: 1, MaxToolDispatches: 1, MaxWebSearches: 1,
+			MaxInputTokensPerCall: 1, MaxAggregateInputTokens: 1, MaxOutputTokensPerCall: 1, MaxAggregateOutputTokens: 1,
+			MaxActiveDuration: time.Second, MaxNetworkOperationDuration: time.Second, MaxCleanupDuration: time.Second,
+			MaxContextViewBytes: 1, MaxSummaryBytes: 1, MaxToolArgumentBytes: 1, MaxToolResultBytes: 1,
+			MaxMCPOutboundMessages: 1, MaxMCPCatalogPages: 1, MaxMCPInboundFrames: 1, MaxMCPInboundBytes: 1, MaxOperations: 1, MaxAggregateBodyBytes: 1,
+		},
+	}
+	binding.AgentLoopPolicy = &policy
+	identity.HarnessBinding = binding
+	request.HarnessBinding, request.ExecutionPlacementV2 = binding.Clone(), identity.ExecutionPlacementV2
+	request.AdmissionCostCeiling, request.SubstrateBinding = identity.AdmissionCostCeiling, identity.SubstrateBinding
+	request.Credential = ports.ProviderInvocationCredentialV1{
+		HandleID: "synthetic-opaque-handle", TenantID: binding.TenantID, OwnerUserID: binding.OwnerUserID,
+		RunID: binding.RunID, AttemptID: binding.AttemptID, WorkerID: "synthetic-worker", LeaseID: "synthetic-lease",
+		LeaseFence: 1, ProviderResource: binding.Resource, ExpiresAt: *binding.EvidenceExpiresAt,
+	}
+	request.CredentialMaterialization = ports.ProviderCredentialMaterializationV1{Kind: domain.ProviderCredentialDeliveryDirectV1}
+	if err := request.Validate(); err != nil {
+		t.Fatalf("structurally valid owned request: %v", err)
+	}
+	for _, enabled := range []bool{true, false} {
+		t.Run(fmt.Sprintf("registration_enabled_%t", enabled), func(t *testing.T) {
+			driver := &recordingDriver{}
+			validatorCalls := 0
+			registry, err := sessionlessharness.NewRegistry(func() time.Time { return now }, sessionlessharness.Registration{
+				Descriptor: binding.Backend, Enabled: enabled, Driver: driver,
+				ValidateBinding: func(domain.HarnessBindingV2) sessionlessharness.FailureCode { validatorCalls++; return "" },
+			})
+			if err != nil {
+				t.Fatalf("exact descriptor registration: %v", err)
+			}
+			for name, invoke := range map[string]func() error{
+				"preflight": func() error { return registry.Preflight(context.Background(), identity) },
+				"execute":   func() error { _, err := registry.Execute(context.Background(), request, noopSink{}); return err },
+				"cancel":    func() error { return registry.Cancel(context.Background(), identity) },
+			} {
+				if err := invoke(); err == nil || !strings.Contains(err.Error(), string(sessionlessharness.FailureHarnessBackendUnsupported)) {
+					t.Errorf("owned %s error=%v, want categorically unsupported", name, err)
+				}
+			}
+			if validatorCalls != 0 || driver.preflightCalls != 0 || driver.executeCalls != 0 || driver.cancelCalls != 0 {
+				t.Fatalf("owned authority reached one-shot backend: validator=%d preflight=%d execute=%d cancel=%d", validatorCalls, driver.preflightCalls, driver.executeCalls, driver.cancelCalls)
+			}
+		})
+	}
+}
 
 func identityForRequest(request ports.ExecutionRequest) ports.ExecutionIdentity {
 	return ports.ExecutionIdentity{

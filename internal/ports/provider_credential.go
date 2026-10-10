@@ -168,7 +168,7 @@ type ProviderCredentialCleanupPageV1 struct {
 }
 
 type ProviderCredentialIssueRequestV1 struct {
-	HarnessBinding domain.HarnessBindingV1
+	HarnessBinding domain.HarnessBindingV2
 	WorkerID       string
 	LeaseID        domain.LeaseID
 	LeaseFence     uint64
@@ -203,7 +203,7 @@ type ProviderCredentialDeliveryTemplateV1 struct {
 	EnvironmentName string
 }
 
-func (template ProviderCredentialDeliveryTemplateV1) ValidateForBinding(binding domain.HarnessBindingV1) error {
+func (template ProviderCredentialDeliveryTemplateV1) ValidateForBinding(binding domain.HarnessBindingV2) error {
 	if err := binding.Validate(); err != nil {
 		return err
 	}
@@ -229,7 +229,7 @@ func (template ProviderCredentialDeliveryTemplateV1) ValidateForBinding(binding 
 }
 
 type ProviderCredentialDeliveryPlannerV1 interface {
-	PlanProviderCredentialDelivery(context.Context, domain.HarnessBindingV1) (ProviderCredentialDeliveryTemplateV1, error)
+	PlanProviderCredentialDelivery(context.Context, domain.HarnessBindingV2) (ProviderCredentialDeliveryTemplateV1, error)
 }
 
 type ProviderCredentialConsumerV1 func(ProviderCredentialMaterializationV1, []byte) error

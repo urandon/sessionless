@@ -79,7 +79,7 @@ or substrate fallback occurs inside an attempt.
 ```text
 canonical Sessionless authority
   Session / Run / Attempt / Lease / fence / cancellation / terminal commit
-  HarnessBindingV1 / provider resource generation / policy evidence
+  HarnessBindingV2 / explicit execution profile / resource generation / policy evidence
   ExecutionPlacementV2 + sealed substrate profile digest
                          |
                          v
@@ -107,13 +107,17 @@ network enforcement, cleanup, and evidence collection. A substrate invocation
 ID is a diagnostic correlation value. It can never reclaim a lease, authorize
 a retry, resume a conversation, select another backend, or commit a terminal.
 
-## Existing contracts reused unchanged
+## Canonical contracts composed by the runtime
 
 The design composes existing contracts instead of copying them:
 
-- `domain.HarnessBindingV1` seals tenant, owner, run, attempt, backend
+- `domain.HarnessBindingV2` seals tenant, owner, run, attempt, backend
   descriptor, provider resource revision and credential generation, model and
-  data class, evidence digests, placement digest, and evidence expiry;
+  data class, evidence digests, placement digest, and evidence expiry. It requires
+  an explicit `single_turn` or `owned_agent` profile; zero is invalid. An owned
+  binding also seals the complete immutable `AgentLoopPolicyV1`, including its
+  finite ceilings, independent compaction/MCP/search digests, policy window and
+  exact existing monetary authority. A single-turn binding forbids a loop policy;
 - `sessionlessharness.Registry` is the exact no-default/no-discovery backend
   registry and already separates `Preflight`, `Execute`, and expiry-tolerant
   `Cancel`;
@@ -128,6 +132,13 @@ The design composes existing contracts instead of copying them:
   cleanup, terminal evidence, and canonical terminal commit separate;
 - #82 is the only public UX vocabulary. Substrate-native logs and states do not
   add a second read model.
+
+The V2 foundation does not activate the owned loop. Existing one-shot drivers
+and registry composition reject `owned_agent` before preparation or allocation.
+Its structural policy validation is not proof of current resource, revocation,
+lease, price or tool-grant authority and does not debit a budget or issue an
+execution capability. Operation reservation and consent persistence remain
+separate #189 obligations; provider custody and the reviewed loop are #190/#191.
 
 ## Proposed provider-neutral runtime contract
 
@@ -155,7 +166,7 @@ SubstrateBindingV1 {
 
 ServerlessInvocationAuthorityV1 {
   version
-  harness_binding: HarnessBindingV1
+  harness_binding: HarnessBindingV2
   substrate_binding: SubstrateBindingV1
   admission_cost_ceiling: AdmissionCostCeilingV1
   lease: existing domain.Lease
@@ -227,7 +238,7 @@ opaque internal PreparedInvocation capability
 ```
 
 `ServerlessInvocationAuthorityV1` is constructed only after the canonical
-lease is claimed. It references the already sealed `HarnessBindingV1`; it does
+lease is claimed. It references the already sealed `HarnessBindingV2`; it does
 not repeat or override model, route, provider, credential, or placement fields.
 The existing `Lease` supplies the exact run, attempt, worker, fence, acquisition,
 and expiry authority; those fields are exact-compared with the binding rather
@@ -248,7 +259,7 @@ ManagedExecutionPlacementV2 {
 ```
 
 The full `SubstrateBindingV1` is server-owned and persisted with the dispatch;
-its digest is included in the placement, and `HarnessBindingV1` already seals
+its digest is included in the placement, and `HarnessBindingV2` already seals
 the placement digest. The exact `AdmissionCostCeilingV1` is persisted in the
 dispatch and copied unchanged into `WorkerJob`; its digest is sealed by the
 substrate binding and therefore by placement and harness authority. The

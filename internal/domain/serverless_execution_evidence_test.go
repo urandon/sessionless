@@ -33,7 +33,7 @@ func validSubstrateEvidenceInputs(t testing.TB) (domain.ServerlessInvocationAuth
 	return authority, reservation, allocation, domain.PreparedInvocationDigestV1(strings.Repeat("f", 64))
 }
 
-func completedProviderEvidence(t testing.TB, binding domain.HarnessBindingV1) domain.ProviderExecutionEvidenceV1 {
+func completedProviderEvidence(t testing.TB, binding domain.HarnessBindingV2) domain.ProviderExecutionEvidenceV1 {
 	t.Helper()
 	value, err := (domain.ProviderExecutionEvidenceV1{
 		AcceptanceClass:     domain.ProviderAcceptanceAcceptedV1,

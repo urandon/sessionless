@@ -108,7 +108,7 @@ type CanonicalUserEventCommit struct {
 	DispatchID               domain.DispatchOutboxID
 	AllowedMCPServers        []string
 	ExecutionPlacementV2     domain.ExecutionPlacementV2
-	HarnessBinding           domain.HarnessBindingV1
+	HarnessBinding           domain.HarnessBindingV2
 	SubstrateBinding         *domain.SubstrateBindingV1
 	AdmissionCostCeiling     *domain.AdmissionCostCeilingV1
 	CommittedAt              time.Time
@@ -127,7 +127,7 @@ type HarnessBindingRequest struct {
 
 type ManagedExecutionAuthorityV2 struct {
 	ExecutionPlacementV2 domain.ExecutionPlacementV2
-	HarnessBinding       domain.HarnessBindingV1
+	HarnessBinding       domain.HarnessBindingV2
 	SubstrateBinding     domain.SubstrateBindingV1
 	AdmissionCostCeiling domain.AdmissionCostCeilingV1
 }
@@ -138,7 +138,7 @@ type ManagedExecutionAuthorityV2 struct {
 // second admission or execution state machine.
 type ExecutionAuthorityV2 struct {
 	ExecutionPlacementV2 domain.ExecutionPlacementV2
-	HarnessBinding       domain.HarnessBindingV1
+	HarnessBinding       domain.HarnessBindingV2
 	SubstrateBinding     *domain.SubstrateBindingV1
 	AdmissionCostCeiling *domain.AdmissionCostCeilingV1
 }
@@ -190,6 +190,9 @@ func (authority ExecutionAuthorityV2) ValidateForScope(request HarnessBindingReq
 	if err := authority.HarnessBinding.ValidateForScope(request.TenantID, request.OwnerUserID, request.RunID, request.AttemptID, authority.ExecutionPlacementV2); err != nil {
 		return err
 	}
+	if err := authority.HarnessBinding.ValidateAdmissionCostCeiling(authority.AdmissionCostCeiling); err != nil {
+		return err
+	}
 	if authority.HarnessBinding.Resource.Kind != domain.ProviderResourceSubscriptionV1 || authority.HarnessBinding.Resource.ResourceID != string(request.SubscriptionConnectionID) {
 		return domain.ValidationError{Field: "execution_authority.resource", Reason: "must match the exact selected subscription resource"}
 	}
@@ -238,6 +241,9 @@ func (authority ManagedExecutionAuthorityV2) ValidateForScope(request HarnessBin
 		return domain.ValidationError{Field: "managed_execution_authority.admission_cost_ceiling", Reason: "must match the substrate binding"}
 	}
 	if err := authority.AdmissionCostCeiling.ValidateForSubstrate(authority.SubstrateBinding); err != nil {
+		return err
+	}
+	if err := authority.HarnessBinding.ValidateAdmissionCostCeiling(&authority.AdmissionCostCeiling); err != nil {
 		return err
 	}
 	if err := authority.HarnessBinding.ValidateForScope(request.TenantID, request.OwnerUserID, request.RunID, request.AttemptID, authority.ExecutionPlacementV2); err != nil {

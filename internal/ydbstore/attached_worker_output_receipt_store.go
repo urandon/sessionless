@@ -34,7 +34,7 @@ type AttachedWorkerOutputReceiptV1 struct {
 	ObservationDigest    string                                       `json:"observation_digest"`
 	Observation          attachedworkeroutput.ProcessObservationV1    `json:"observation"`
 	CredentialRequired   bool                                         `json:"credential_required"`
-	HarnessBindingDigest domain.HarnessBindingDigestV1                `json:"harness_binding_digest"`
+	HarnessBindingDigest domain.HarnessBindingDigestV2                `json:"harness_binding_digest"`
 	Status               domain.AttachedWorkerTerminalStatus          `json:"status"`
 	CanonicalDigest      domain.AttachedWorkerTerminalEvidenceDigest  `json:"canonical_digest"`
 	Materialization      ports.AttachedWorkerTerminalMaterialization  `json:"materialization"`

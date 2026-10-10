@@ -554,7 +554,7 @@ type managedCredential struct {
 // materialization, process launch, or provider network access. The current
 // production lifecycle is deliberately subscription+file only; other sealed
 // provider tuples stay feature-disabled until their owning lifecycle exists.
-func (manager *Manager) validateProviderCredentialPlan(binding domain.HarnessBindingV1) error {
+func (manager *Manager) validateProviderCredentialPlan(binding domain.HarnessBindingV2) error {
 	if err := binding.Validate(); err != nil {
 		return ErrCredentialOrchestration
 	}

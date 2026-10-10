@@ -296,8 +296,8 @@ func newBoundaryFixture(t *testing.T, delivery domain.ProviderCredentialDelivery
 		t.Fatal(err)
 	}
 	evidenceExpiry := now.Add(40 * time.Minute)
-	binding := domain.HarnessBindingV1{
-		Version: domain.HarnessBindingVersionV1, TenantID: scope.TenantID, OwnerUserID: scope.OwnerUserID,
+	binding := domain.HarnessBindingV2{
+		Version: domain.HarnessBindingVersionV2, Profile: domain.HarnessExecutionSingleTurnV2, TenantID: scope.TenantID, OwnerUserID: scope.OwnerUserID,
 		RunID: "run-1", AttemptID: "attempt-1", Backend: backend, Resource: resource,
 		ModelVendorID: route.ModelVendorID, ModelID: route.ModelID, InputDataClass: inputClass,
 		ProviderCatalogDigest: digestFixture("catalog"), ProviderRouteDigest: string(routeDigest),

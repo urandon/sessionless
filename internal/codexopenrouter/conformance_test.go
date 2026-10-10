@@ -268,8 +268,8 @@ func nativeCodexConformanceFixture(t *testing.T, driver *Driver, knownRoute bool
 	if err != nil {
 		t.Fatal(err)
 	}
-	binding := domain.HarnessBindingV1{
-		Version: 1, TenantID: "tenant-conformance", OwnerUserID: "user-conformance", RunID: "run-conformance", AttemptID: "attempt-conformance",
+	binding := domain.HarnessBindingV2{
+		Version: domain.HarnessBindingVersionV2, Profile: domain.HarnessExecutionSingleTurnV2, TenantID: "tenant-conformance", OwnerUserID: "user-conformance", RunID: "run-conformance", AttemptID: "attempt-conformance",
 		Backend: driver.DescriptorV1(), Resource: resource, ModelVendorID: ModelVendorIDV1, ModelID: ModelIDV1,
 		InputDataClass: domain.ProviderDataExternallyShareableV1, ProviderCatalogDigest: string(catalogDigest),
 		ProviderRouteDigest: string(routeDigest), PrivacyPolicyDigest: string(privacyDigest),

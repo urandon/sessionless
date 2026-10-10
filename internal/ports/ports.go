@@ -477,7 +477,7 @@ type ExecutionRequest struct {
 	CredentialMaterialization ProviderCredentialMaterializationV1
 	AllowedMCPServers         []string
 	ExecutionPlacementV2      domain.ExecutionPlacementV2
-	HarnessBinding            domain.HarnessBindingV1
+	HarnessBinding            domain.HarnessBindingV2
 	SubstrateBinding          *domain.SubstrateBindingV1
 	AdmissionCostCeiling      *domain.AdmissionCostCeilingV1
 }
@@ -535,7 +535,7 @@ type ExecutionIdentity struct {
 	RunID                domain.RunID
 	AttemptID            domain.AttemptID
 	ExecutionPlacementV2 domain.ExecutionPlacementV2
-	HarnessBinding       domain.HarnessBindingV1
+	HarnessBinding       domain.HarnessBindingV2
 	SubstrateBinding     *domain.SubstrateBindingV1
 	AdmissionCostCeiling *domain.AdmissionCostCeilingV1
 }

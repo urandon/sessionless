@@ -9,13 +9,14 @@ import (
 	"unicode/utf8"
 )
 
-const HarnessBindingVersionV1 uint32 = 1
+const HarnessBindingVersionV2 uint32 = 2
 
 type (
 	HarnessKindV1                    string
 	HarnessBackendKindV1             string
 	HarnessArtifactKindV1            string
-	HarnessBindingDigestV1           string
+	HarnessBindingDigestV2           string
+	HarnessExecutionProfileV2        string
 	ProviderContractKindV1           string
 	ProviderResourceKindV1           string
 	ProviderCredentialModeV1         string
@@ -23,6 +24,9 @@ type (
 )
 
 const (
+	HarnessExecutionSingleTurnV2 HarnessExecutionProfileV2 = "single_turn"
+	HarnessExecutionOwnedAgentV2 HarnessExecutionProfileV2 = "owned_agent"
+
 	HarnessKindSessionlessV1 HarnessKindV1 = "sessionless_harness"
 
 	HarnessBackendDeterministicFixtureV1 HarnessBackendKindV1 = "deterministic_fixture"
@@ -181,11 +185,13 @@ func (resource ProviderResourceBindingV1) ValidateForBackend(backend HarnessBack
 	return nil
 }
 
-// HarnessBindingV1 is sealed by a server-owned binder before durable dispatch.
+// HarnessBindingV2 is sealed by a server-owned binder before durable dispatch.
 // It is immutable execution authority, never a public request DTO or a second
 // run/attempt state machine.
-type HarnessBindingV1 struct {
+type HarnessBindingV2 struct {
 	Version                  uint32                     `json:"version"`
+	Profile                  HarnessExecutionProfileV2  `json:"profile"`
+	AgentLoopPolicy          *AgentLoopPolicyV1         `json:"agent_loop_policy,omitempty"`
 	TenantID                 TenantID                   `json:"tenant_id"`
 	OwnerUserID              UserID                     `json:"owner_user_id"`
 	RunID                    RunID                      `json:"run_id"`
@@ -204,8 +210,12 @@ type HarnessBindingV1 struct {
 	EvidenceExpiresAt        *time.Time                 `json:"evidence_expires_at,omitempty"`
 }
 
-func (binding HarnessBindingV1) Clone() HarnessBindingV1 {
+func (binding HarnessBindingV2) Clone() HarnessBindingV2 {
 	clone := binding
+	if binding.AgentLoopPolicy != nil {
+		policy := binding.AgentLoopPolicy.Clone()
+		clone.AgentLoopPolicy = &policy
+	}
 	if binding.EvidenceExpiresAt != nil {
 		value := binding.EvidenceExpiresAt.UTC()
 		clone.EvidenceExpiresAt = &value
@@ -213,9 +223,24 @@ func (binding HarnessBindingV1) Clone() HarnessBindingV1 {
 	return clone
 }
 
-func (binding HarnessBindingV1) Validate() error {
-	if binding.Version != HarnessBindingVersionV1 {
-		return ValidationError{Field: "harness_binding.version", Reason: "must equal 1"}
+func (binding HarnessBindingV2) Validate() error {
+	if binding.Version != HarnessBindingVersionV2 {
+		return ValidationError{Field: "harness_binding.version", Reason: "must equal 2"}
+	}
+	switch binding.Profile {
+	case HarnessExecutionSingleTurnV2:
+		if binding.AgentLoopPolicy != nil {
+			return ValidationError{Field: "harness_binding.agent_loop_policy", Reason: "must be absent for single_turn"}
+		}
+	case HarnessExecutionOwnedAgentV2:
+		if binding.AgentLoopPolicy == nil {
+			return ValidationError{Field: "harness_binding.agent_loop_policy", Reason: "is required for owned_agent"}
+		}
+		if err := binding.validateAgentLoopPolicy(); err != nil {
+			return err
+		}
+	default:
+		return ValidationError{Field: "harness_binding.profile", Reason: "requires explicit single_turn or owned_agent"}
 	}
 	for _, validate := range []func() error{binding.TenantID.Validate, binding.OwnerUserID.Validate, binding.RunID.Validate, binding.AttemptID.Validate, binding.Backend.Validate, binding.Resource.Validate} {
 		if err := validate(); err != nil {
@@ -266,12 +291,17 @@ func (binding HarnessBindingV1) Validate() error {
 
 // ValidateAt applies the time-dependent evidence fence immediately before a
 // backend can receive credentials or start a process/network operation.
-func (binding HarnessBindingV1) ValidateAt(now time.Time) error {
+func (binding HarnessBindingV2) ValidateAt(now time.Time) error {
 	if err := binding.Validate(); err != nil {
 		return err
 	}
 	if now.IsZero() {
 		return ValidationError{Field: "harness_binding.now", Reason: "must not be zero"}
+	}
+	if binding.AgentLoopPolicy != nil {
+		if err := binding.AgentLoopPolicy.ValidateAt(now); err != nil {
+			return err
+		}
 	}
 	if binding.Backend.ProviderContractKind == ProviderContractCredentiallessFixtureV1 {
 		return nil
@@ -282,7 +312,7 @@ func (binding HarnessBindingV1) ValidateAt(now time.Time) error {
 	return nil
 }
 
-func (binding HarnessBindingV1) ValidateForScope(tenantID TenantID, ownerUserID UserID, runID RunID, attemptID AttemptID, placement ExecutionPlacementV2) error {
+func (binding HarnessBindingV2) ValidateForScope(tenantID TenantID, ownerUserID UserID, runID RunID, attemptID AttemptID, placement ExecutionPlacementV2) error {
 	if err := binding.Validate(); err != nil {
 		return err
 	}
@@ -296,15 +326,67 @@ func (binding HarnessBindingV1) ValidateForScope(tenantID TenantID, ownerUserID 
 	if binding.ExecutionPlacementDigest != string(placementDigest) {
 		return ValidationError{Field: "harness_binding.execution_placement_digest", Reason: "must match the admitted placement"}
 	}
+	if binding.Profile == HarnessExecutionOwnedAgentV2 && placement.Kind != ExecutionPlacementManaged {
+		return ValidationError{Field: "harness_binding.profile", Reason: "owned_agent requires managed placement"}
+	}
 	return nil
 }
 
-func (binding HarnessBindingV1) Digest() (HarnessBindingDigestV1, error) {
+func (binding HarnessBindingV2) validateAgentLoopPolicy() error {
+	policy := binding.AgentLoopPolicy
+	if _, err := policy.Digest(); err != nil {
+		return err
+	}
+	if binding.Backend.BackendKind != HarnessBackendDirectOpenRouterV1 || binding.Backend.ProviderContractKind != ProviderContractInvocationV1 ||
+		binding.Backend.CredentialDeliveryKind != ProviderCredentialDeliveryDirectV1 || binding.Resource.CredentialMode != ProviderCredentialInvocationV1 ||
+		(binding.Resource.Kind != ProviderResourceAPIAccountV1 && binding.Resource.Kind != ProviderResourceRouterAccountV1) || binding.InputDataClass != ProviderDataPublicV1 {
+		return ValidationError{Field: "harness_binding.profile", Reason: "owned_agent requires the reviewed direct provider public-data axes"}
+	}
+	if policy.TenantID != binding.TenantID || policy.OwnerUserID != binding.OwnerUserID || policy.RunID != binding.RunID || policy.AttemptID != binding.AttemptID ||
+		policy.Backend != binding.Backend || policy.Resource != binding.Resource || policy.ModelVendorID != binding.ModelVendorID || policy.ModelID != binding.ModelID ||
+		policy.InputDataClass != binding.InputDataClass || policy.ProviderCatalogDigest != binding.ProviderCatalogDigest || policy.ProviderRouteDigest != binding.ProviderRouteDigest ||
+		policy.CapabilityEvidenceDigest != binding.CapabilityEvidenceDigest || policy.PrivacyPolicyDigest != binding.PrivacyPolicyDigest || policy.EffectivePolicyDigest != binding.EffectivePolicyDigest {
+		return ValidationError{Field: "harness_binding.agent_loop_policy", Reason: "must exact-match all binding scope, backend, resource, model, data and evidence axes"}
+	}
+	if binding.EvidenceExpiresAt == nil || policy.ExpiresAt.After(*binding.EvidenceExpiresAt) {
+		return ValidationError{Field: "harness_binding.agent_loop_policy.expires_at", Reason: "must fit the binding evidence window"}
+	}
+	return nil
+}
+
+// ValidateAdmissionCostCeiling seals the same monetary authority at every
+// persisted job, execution and invocation boundary; a policy cannot substitute
+// its own independently valid ceiling for the admitted outer authority.
+func (binding HarnessBindingV2) ValidateAdmissionCostCeiling(cost *AdmissionCostCeilingV1) error {
+	if err := binding.Validate(); err != nil {
+		return err
+	}
+	if binding.AgentLoopPolicy == nil {
+		return nil
+	}
+	if cost == nil {
+		return ValidationError{Field: "harness_binding.agent_loop_policy.admission_cost_ceiling", Reason: "requires admitted outer monetary authority"}
+	}
+	outerDigest, err := cost.Digest()
+	if err != nil {
+		return err
+	}
+	policyDigest, err := binding.AgentLoopPolicy.AdmissionCostCeiling.Digest()
+	if err != nil {
+		return err
+	}
+	if outerDigest != policyDigest {
+		return ValidationError{Field: "harness_binding.agent_loop_policy.admission_cost_ceiling", Reason: "must exact-match admitted outer monetary authority"}
+	}
+	return nil
+}
+
+func (binding HarnessBindingV2) Digest() (HarnessBindingDigestV2, error) {
 	if err := binding.Validate(); err != nil {
 		return "", err
 	}
 	hash := sha256.New()
-	hash.Write([]byte("sessionless.harness-binding.v1\x00"))
+	hash.Write([]byte("sessionless.harness-binding.v2\x00"))
 	appendString := func(value string) {
 		var size [8]byte
 		binary.BigEndian.PutUint64(size[:], uint64(len(value)))
@@ -317,6 +399,14 @@ func (binding HarnessBindingV1) Digest() (HarnessBindingDigestV1, error) {
 		hash.Write(encoded[:])
 	}
 	appendUint(uint64(binding.Version))
+	appendString(string(binding.Profile))
+	if binding.AgentLoopPolicy == nil {
+		appendUint(0)
+	} else {
+		appendUint(1)
+		policyDigest, _ := binding.AgentLoopPolicy.Digest()
+		appendString(string(policyDigest))
+	}
 	for _, value := range []string{
 		string(binding.TenantID), string(binding.OwnerUserID), string(binding.RunID), string(binding.AttemptID),
 		string(binding.Backend.HarnessKind), binding.Backend.HarnessVersion, string(binding.Backend.BackendKind),
@@ -338,14 +428,14 @@ func (binding HarnessBindingV1) Digest() (HarnessBindingDigestV1, error) {
 		appendUint(1)
 		appendString(binding.EvidenceExpiresAt.UTC().Format(time.RFC3339Nano))
 	}
-	return HarnessBindingDigestV1(hex.EncodeToString(hash.Sum(nil))), nil
+	return HarnessBindingDigestV2(hex.EncodeToString(hash.Sum(nil))), nil
 }
 
-func (digest HarnessBindingDigestV1) Validate() error {
+func (digest HarnessBindingDigestV2) Validate() error {
 	return validateSHA256("harness_binding_digest", string(digest))
 }
 
-func ExecutionPlacementDigest(placement ExecutionPlacementV2) (HarnessBindingDigestV1, error) {
+func ExecutionPlacementDigest(placement ExecutionPlacementV2) (HarnessBindingDigestV2, error) {
 	if err := placement.Validate(); err != nil {
 		return "", err
 	}
@@ -362,7 +452,7 @@ func ExecutionPlacementDigest(placement ExecutionPlacementV2) (HarnessBindingDig
 		hash.Write(size[:])
 		hash.Write([]byte(value))
 	}
-	return HarnessBindingDigestV1(hex.EncodeToString(hash.Sum(nil))), nil
+	return HarnessBindingDigestV2(hex.EncodeToString(hash.Sum(nil))), nil
 }
 
 func validateProviderToken(field, value string, maxBytes int) error {

@@ -55,8 +55,8 @@ func registrationV1(driver *Driver, enabled bool) (sessionlessharness.Registrati
 	}, nil
 }
 
-func (driver *Driver) validateBinding(binding domain.HarnessBindingV1) sessionlessharness.FailureCode {
-	if driver == nil || binding.Validate() != nil {
+func (driver *Driver) validateBinding(binding domain.HarnessBindingV2) sessionlessharness.FailureCode {
+	if driver == nil || binding.Profile != domain.HarnessExecutionSingleTurnV2 || binding.Validate() != nil {
 		return sessionlessharness.FailureHarnessBindingInvalid
 	}
 	if binding.Backend != driver.descriptor {
@@ -162,7 +162,7 @@ func (driver *Driver) BackendProtocolState() harnessconformance.BackendProtocolS
 	return harnessconformance.BackendProtocolUnsupportedV1
 }
 
-func reduceEvidence(binding domain.HarnessBindingV1, requestBytes uint64, parsed responseObservation, parseErr error, transport ResultV1, invokeErr error) (domain.ProviderExecutionEvidenceV1, error) {
+func reduceEvidence(binding domain.HarnessBindingV2, requestBytes uint64, parsed responseObservation, parseErr error, transport ResultV1, invokeErr error) (domain.ProviderExecutionEvidenceV1, error) {
 	evidence := domain.ProviderExecutionEvidenceV1{
 		AcceptanceClass: domain.ProviderAcceptanceUnknownV1, FinishClass: domain.ProviderFinishFailedV1,
 		RouteState: domain.ProviderEvidenceUnknownV1, PolicyVerdict: domain.ProviderPolicyConditionalV1,

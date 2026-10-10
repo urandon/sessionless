@@ -326,8 +326,8 @@ func validDriverRequest(t *testing.T) (ports.ExecutionRequest, AuthorityV1) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	binding := domain.HarnessBindingV1{
-		Version: 1, TenantID: "tenant-a", OwnerUserID: "owner-a",
+	binding := domain.HarnessBindingV2{
+		Version: domain.HarnessBindingVersionV2, Profile: domain.HarnessExecutionSingleTurnV2, TenantID: "tenant-a", OwnerUserID: "owner-a",
 		RunID: "run-a", AttemptID: "attempt-a", Backend: descriptor,
 		Resource: resource, ModelVendorID: ModelVendorIDV1, ModelID: "gpt-fixture",
 		InputDataClass:           domain.ProviderDataPrivateV1,

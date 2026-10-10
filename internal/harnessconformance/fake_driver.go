@@ -83,7 +83,7 @@ func (recorder *SideEffectRecorder) increment(update func(*SideEffectsV1)) {
 // evidence that a Codex, OpenCode, Pi, or OpenRouter native protocol adapter
 // exists or conforms.
 type FixtureDriver struct {
-	binding    domain.HarnessBindingV1
+	binding    domain.HarnessBindingV2
 	bundle     *EvidenceBundleV1
 	recorder   *SideEffectRecorder
 	executeErr error
@@ -106,7 +106,7 @@ func RegistrationForFixture(fixture FixtureV1, recorder *SideEffectRecorder) (se
 		Descriptor: fixture.Binding.Backend,
 		Enabled:    true,
 		Driver:     driver,
-		ValidateBinding: func(candidate domain.HarnessBindingV1) sessionlessharness.FailureCode {
+		ValidateBinding: func(candidate domain.HarnessBindingV2) sessionlessharness.FailureCode {
 			recorder.recordValidator()
 			if err := candidate.Validate(); err != nil {
 				return sessionlessharness.FailureHarnessBindingInvalid

@@ -423,6 +423,12 @@ func (registry *SubstrateRegistryV1) resolve(authority domain.ServerlessInvocati
 	if err := authority.Validate(); err != nil {
 		return SubstrateRegistrationV1{}, "", substrateErrorV1{code: SubstrateFailureAuthorityInvalidV1}
 	}
+	// All current substrate registrations are reviewed for one-shot execution.
+	// Deny owned-agent authority before allocation/preflight as well as cancel
+	// and reconcile; a matching substrate is not a multi-operation adapter.
+	if authority.HarnessBinding.Profile != domain.HarnessExecutionSingleTurnV2 {
+		return SubstrateRegistrationV1{}, "", substrateErrorV1{code: SubstrateFailureUnsupportedV1}
+	}
 	digest, _ := authority.SubstrateBinding.Digest()
 	registration, found := registry.registrations[digest]
 	if !found {

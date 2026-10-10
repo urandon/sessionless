@@ -53,7 +53,7 @@ func TestHarnessBindingServingGateRequiresCommittedMarker(t *testing.T) {
 	ctx := context.Background()
 	if _, err := client.DB.ExecContext(ctx,
 		`DELETE FROM harness_binding_cutover_state WHERE cutover_id=$1`,
-		"harness-binding-v1-empty-cutover"); err != nil {
+		"harness-binding-v2-empty-cutover"); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.RequireHarnessBindingCutover(ctx); err == nil {
@@ -62,6 +62,14 @@ func TestHarnessBindingServingGateRequiresCommittedMarker(t *testing.T) {
 	if _, err := client.DB.ExecContext(ctx,
 		`UPSERT INTO harness_binding_cutover_state (cutover_id,completed_at) VALUES ($1,$2)`,
 		"harness-binding-v1-empty-cutover", time.Now().UTC().Truncate(time.Microsecond)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RequireHarnessBindingCutover(ctx); err == nil {
+		t.Fatal("historical V1 marker accepted as successor cutover")
+	}
+	if _, err := client.DB.ExecContext(ctx,
+		`UPSERT INTO harness_binding_cutover_state (cutover_id,completed_at) VALUES ($1,$2)`,
+		"harness-binding-v2-empty-cutover", time.Now().UTC().Truncate(time.Microsecond)); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.RequireHarnessBindingCutover(ctx); err != nil {

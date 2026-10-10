@@ -48,7 +48,7 @@ type fixedDeliveryPlanner struct {
 	calls    int
 }
 
-func (planner *fixedDeliveryPlanner) PlanProviderCredentialDelivery(_ context.Context, binding domain.HarnessBindingV1) (ports.ProviderCredentialDeliveryTemplateV1, error) {
+func (planner *fixedDeliveryPlanner) PlanProviderCredentialDelivery(_ context.Context, binding domain.HarnessBindingV2) (ports.ProviderCredentialDeliveryTemplateV1, error) {
 	planner.calls++
 	if binding.Validate() != nil {
 		return ports.ProviderCredentialDeliveryTemplateV1{}, errors.New("private invalid binding")
@@ -67,8 +67,8 @@ func invocationFixture(t *testing.T, delivery domain.ProviderCredentialDeliveryK
 		ArtifactKind: domain.HarnessArtifactExecutableV1, ArtifactDigest: strings.Repeat("1", 64), NativeProtocolVersion: "openrouter-http.v1",
 		BackendProfileDigest: strings.Repeat("2", 64), ProviderContractKind: domain.ProviderContractInvocationV1, CredentialDeliveryKind: delivery,
 	}
-	binding := domain.HarnessBindingV1{
-		Version: domain.HarnessBindingVersionV1, TenantID: "tenant-a", OwnerUserID: owner, RunID: "run-a", AttemptID: "attempt-a",
+	binding := domain.HarnessBindingV2{
+		Version: domain.HarnessBindingVersionV2, Profile: domain.HarnessExecutionSingleTurnV2, TenantID: "tenant-a", OwnerUserID: owner, RunID: "run-a", AttemptID: "attempt-a",
 		Backend: descriptor, Resource: resource, ModelVendorID: "openrouter", ModelID: "stealth-ox-alpha", InputDataClass: domain.ProviderDataPublicV1,
 		ProviderCatalogDigest: strings.Repeat("3", 64), ProviderRouteDigest: strings.Repeat("4", 64), PrivacyPolicyDigest: strings.Repeat("5", 64),
 		CapabilityEvidenceDigest: strings.Repeat("6", 64), EffectivePolicyDigest: strings.Repeat("7", 64), ExecutionPlacementDigest: strings.Repeat("8", 64), EvidenceExpiresAt: &expires,

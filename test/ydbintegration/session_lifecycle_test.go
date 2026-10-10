@@ -26,7 +26,7 @@ func TestSessionLifecycleHoldWriteFenceInventoryAndCompletion(t *testing.T) {
 	}
 	if _, err := client.DB.ExecContext(ctx,
 		`UPSERT INTO harness_binding_cutover_state (cutover_id,completed_at) VALUES ($1,$2)`,
-		"harness-binding-v1-empty-cutover", time.Now().UTC().Truncate(time.Microsecond)); err != nil {
+		"harness-binding-v2-empty-cutover", time.Now().UTC().Truncate(time.Microsecond)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := client.DB.ExecContext(ctx,

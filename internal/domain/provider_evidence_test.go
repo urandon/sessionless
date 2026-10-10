@@ -11,7 +11,7 @@ import (
 
 func TestProviderAuthorityDTOsContainNoSecretOrPayloadFields(t *testing.T) {
 	t.Parallel()
-	for _, value := range []any{domain.ProviderRouterResourceV1{}, domain.ProviderRoutePolicyV1{}, domain.ProviderCatalogObservationV1{}, domain.ProviderCapabilityEvidenceV1{}, domain.ProviderPrivacyEvidenceV1{}, domain.ProviderPriceObservationV1{}, domain.ProviderPolicyEvidenceV1{}, domain.ProviderExecutionEvidenceV1{}, domain.HarnessBindingV1{}} {
+	for _, value := range []any{domain.ProviderRouterResourceV1{}, domain.ProviderRoutePolicyV1{}, domain.ProviderCatalogObservationV1{}, domain.ProviderCapabilityEvidenceV1{}, domain.ProviderPrivacyEvidenceV1{}, domain.ProviderPriceObservationV1{}, domain.ProviderPolicyEvidenceV1{}, domain.ProviderExecutionEvidenceV1{}, domain.HarnessBindingV2{}} {
 		walkProviderAuthorityType(t, reflect.TypeOf(value), map[reflect.Type]bool{})
 	}
 }
@@ -30,13 +30,46 @@ func walkProviderAuthorityType(t *testing.T, typ reflect.Type, seen map[reflect.
 	}
 	for i := 0; i < typ.NumField(); i++ {
 		field := typ.Field(i)
-		name := strings.ToLower(field.Name + " " + field.Tag.Get("json"))
-		for _, forbidden := range []string{"secret", "api_key", "bearer", "credential_material", "prompt", "instruction", "provider_response", "raw_body"} {
-			if strings.Contains(name, forbidden) {
-				t.Fatalf("%s exposes forbidden field %s", typ.Name(), field.Name)
-			}
+		if providerAuthorityFieldForbidden(typ, field) {
+			t.Fatalf("%s exposes forbidden field %s", typ.Name(), field.Name)
 		}
 		walkProviderAuthorityType(t, field.Type, seen)
+	}
+}
+
+func providerAuthorityFieldForbidden(typ reflect.Type, field reflect.StructField) bool {
+	// Only the bounded metadata revision is allowed, never instruction content.
+	if typ == reflect.TypeOf(domain.AgentLoopPolicyV1{}) && field.Name == "InstructionVersion" && field.Tag.Get("json") == "instruction_version" && field.Type.Kind() == reflect.String {
+		return false
+	}
+	name := strings.ToLower(field.Name + " " + field.Tag.Get("json"))
+	for _, forbidden := range []string{"secret", "api_key", "bearer", "credential_material", "prompt", "instruction", "provider_response", "raw_body"} {
+		if strings.Contains(name, forbidden) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestProviderAuthorityInstructionWhitelistIsExactMetadataOnly(t *testing.T) {
+	t.Parallel()
+	policyType := reflect.TypeOf(domain.AgentLoopPolicyV1{})
+	metadata, found := policyType.FieldByName("InstructionVersion")
+	if !found || providerAuthorityFieldForbidden(policyType, metadata) {
+		t.Fatal("exact instruction-version metadata must be allowed")
+	}
+	for _, field := range []reflect.StructField{
+		{Name: "InstructionContent", Type: reflect.TypeOf(""), Tag: `json:"instruction_content"`},
+		{Name: "InstructionVersion", Type: reflect.TypeOf(""), Tag: `json:"instruction_content"`},
+		{Name: "RawInstruction", Type: reflect.TypeOf(""), Tag: `json:"raw_instruction"`},
+		{Name: "Bearer", Type: reflect.TypeOf(""), Tag: `json:"bearer"`},
+	} {
+		if !providerAuthorityFieldForbidden(policyType, field) {
+			t.Errorf("raw authority field %s tag=%s incorrectly whitelisted", field.Name, field.Tag)
+		}
+	}
+	if !providerAuthorityFieldForbidden(reflect.TypeOf(domain.HarnessBindingV2{}), metadata) {
+		t.Fatal("instruction-version exception escaped the exact policy DTO")
 	}
 }
 

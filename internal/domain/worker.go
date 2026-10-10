@@ -22,7 +22,7 @@ type WorkerJob struct {
 	AllowedMCPServers     []string                `json:"allowed_mcp_servers,omitempty"`
 	CredentialOwnerUserID UserID                  `json:"credential_owner_user_id,omitempty"`
 	ExecutionPlacementV2  ExecutionPlacementV2    `json:"execution_placement"`
-	HarnessBinding        HarnessBindingV1        `json:"harness_binding"`
+	HarnessBinding        HarnessBindingV2        `json:"harness_binding"`
 	SubstrateBinding      *SubstrateBindingV1     `json:"substrate_binding,omitempty"`
 	AdmissionCostCeiling  *AdmissionCostCeilingV1 `json:"admission_cost_ceiling,omitempty"`
 	Limits                ProductLimits           `json:"limits"`
@@ -99,6 +99,9 @@ func (job WorkerJob) ValidateForRun(run Run) error {
 	if err := job.HarnessBinding.ValidateForScope(
 		job.TenantID, job.CredentialOwnerUserID, job.RunID, job.AttemptID, job.ExecutionPlacementV2,
 	); err != nil {
+		return err
+	}
+	if err := job.HarnessBinding.ValidateAdmissionCostCeiling(job.AdmissionCostCeiling); err != nil {
 		return err
 	}
 	if err := job.Limits.Validate(); err != nil {

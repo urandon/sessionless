@@ -196,7 +196,7 @@ func newAW169WebFixture(t *testing.T) *aw169WebFixture {
 // or lease; those belong exclusively to the canonical scheduler transaction.
 // at must come from YDB, and the supplied blob store remains test-owned.
 func newAW169OnlineWebFixture(t *testing.T, ctx context.Context, store *ydbstore.Store, client *ydbclient.Client,
-	worker domain.AttachedWorker, connection domain.AttachedWorkerConnection, binding domain.HarnessBindingV1, blobs ports.BlobStore, at time.Time,
+	worker domain.AttachedWorker, connection domain.AttachedWorkerConnection, binding domain.HarnessBindingV2, blobs ports.BlobStore, at time.Time,
 ) *aw169WebFixture {
 	t.Helper()
 	now := at.UTC().Truncate(time.Microsecond)

@@ -1,12 +1,18 @@
 # Conversation execution evidence
 
-Version: **0.1.2 accepted**, 2026-10-10. Owner: [#182](https://gitcode.com/urandon/sessionless/issues/182) (closed).
+Version: **0.1.3 engineering amendment draft**, 2026-10-10.
+Baseline: **0.1.2 accepted**. Owner: [#182](https://gitcode.com/urandon/sessionless/issues/182) (closed).
 Consumers: [#141](https://gitcode.com/urandon/sessionless/issues/141) and
 [#155](https://gitcode.com/urandon/sessionless/issues/155).
 Status: accepted detailed read contract, independently reviewed CLEAN and merged
 in !161 under explicit owner delegation. Implementation handoff: #186 and #187
 under #155, followed by BFF #188 and drawer #141. This post-MVP high-stream prerequisite is
 not an additional gate for either MVP execution track.
+
+The 0.1.3 amendment below is owned by implementation [#188](https://gitcode.com/urandon/sessionless/issues/188).
+It resolves the shared server-rate mechanism without changing public fields,
+product scope or accepted numeric ceilings. It is not accepted or implemented
+until its independent requirements-led review and implementation evidence exist.
 
 The conversation drawer reads one authorized Run and its recorded evidence.
 It keeps admission, canonical completion and Attempt observations distinct.
@@ -381,3 +387,108 @@ labels, Product UX milestone and exact acceptance. None may absorb #142–#145
 selection/cancellation commands or broaden MVP release gates. All production
 changes require independent exact-snapshot review, proportional tests, exact-head
 CI, merge and parent synchronization under the project protocol.
+
+## 0.1.3 amendment: transaction-scoped global read rate
+
+The existing `ReadRunExplanationV1` port remains genuinely read-only and retains
+its expected identity/tenant/security-version recheck. Its delivered #187 proof
+is not reclassified as a rate-limited HTTP implementation. A distinct internal
+`ReadRatedRunExplanationV1` port accepts only the BFF's digest of the first-party
+Web-session cookie, its generated request ID and the Run selector. No HTTP
+tenant, user, security-version or idempotency field is accepted as authority.
+
+The BFF must not call activity-refreshing `AuthorizeWebSession` on this route.
+The rated port samples YDB time and resolves the current canonical Web session,
+identity, active tenant and READ membership/security version in one serializable
+transaction before limiter or resource access. Missing/revoked/expired sessions
+keep existing unauthenticated precedence; denied/version-changed membership
+remains access_denied. Shared extracted readers preserve the pure port's exact
+expected-context checks. Construct the resource `stateTx` only after resolving
+its canonical tenant; do not nest another authorization transaction or add an
+optional trusted/bypass flag.
+
+Only the following bounded rate metadata may be written on the rated path;
+canonical state, explanation heads, session activity, presence and runtime
+authority remain untouched. This is the explicit exception to the baseline's
+read-only wording, not a new scheduler, execution budget or effect ledger.
+
+### Finite shared authority
+
+Use an additive YDB rate-slot table with integer primary keys in `[0,4095]`.
+Every replica uses the same versioned hash and constants. Derive four distinct
+candidate keys from a domain-separated, length-framed hash of the **resolved**
+tenant and user. Read all four exact keys. Prefer an existing matching identity;
+otherwise choose an empty or logically expired slot in deterministic order.
+Live occupants are never evicted. If all candidates are occupied, return the
+same content-free 429 with a fixed five-second Retry-After. Capacity/collision
+denial is explicit, not permission to bypass the limit or scan for another slot.
+The finite key space proves physical cardinality at most 4,096 without a global
+counter, range read or cleanup dependency.
+
+Each typed row has a fixed schema/version, the internal identity hash,
+theoretical-arrival timestamp (TAT), last debit time, logical expiry, and at most
+16 bounded debit-replay receipts. A receipt binds the server request ID, a digest
+of its exact resource selector and debit time; it grants no resource access.
+No cookie credential/digest, raw resource ID or response body is stored there.
+The transferred and encoded row is capped at 8 KiB before decoding/writing.
+Invalid, oversized, unsupported or inconsistent rows fail sanitized unavailable;
+they never become an empty/free bucket, including when their expiry is old.
+
+At sampled transaction time `now`, allow iff `TAT <= now + 5 seconds`, and on
+allowance set `TAT = max(TAT, now) + 5 seconds`. An empty slot starts at `now`.
+This admits two initial requests and the third only after five seconds. Denial
+changes neither TAT nor expiry; its Retry-After is the positive rounded-up number
+of seconds until eligibility. Future/unbounded or backwards-clock inconsistencies
+fail closed; no arithmetic wraps or invents replenishment. A charged row's
+logical expiry is ten minutes after its last debit, safely after full refill and
+receipt retention. Logical expiry alone permits reuse; optional asynchronous
+TTL cleanup cannot authorize earlier reuse.
+
+### Commit, retry and resource outcomes
+
+The server-generated request ID is stable only within one bounded HTTP request;
+client headers never select it. Retain debit receipts for 30 seconds (at most
+16; never evict a still-required receipt to admit another read). The rate ceiling
+and three-second request deadline bound admitted receipts in that window. A
+matching-ID retry still performs fresh current session/member authorization and
+exact resource-selector matching, but does not debit again. A reused ID with a
+different selector fails closed. This makes the existing idempotent SDK
+transaction retry policy safe for an ambiguous successful debit commit; the
+receipt is not a response cache or a substitute for participant authorization.
+
+After rate allowance, run the same exact Run/Session/participant and evidence
+queries as the pure port. Success and opaque not-found are **committed outcomes**,
+not callback errors: an authorized guessed/missing/inaccessible resource still
+consumes its debit. Authorized rate denial is likewise published only after a
+successful transaction commit, with no debit. Actual authorization/backend/
+validation failures abort. An unresolved commit returns sanitized unavailable;
+never claim the debit was refunded. Reset the pending outcome on every callback
+attempt so an aborted attempt cannot leave a stale successful response. There is
+no handler retry loop or automatic retry of an uncertain HTTP request.
+
+### Budget and rollout proof
+
+One three-second outer context starts before the route's first database access.
+One statement budget lives outside the SDK retry callback and counts reads **and
+writes** across all attempts, failing before statement 21. The fullest attempt
+is at most 17 statements: three clock/session/member statements, four rate-key
+reads, one debit write, and the existing nine resource/evidence statements.
+Short/historical paths consume less; retries may exhaust the budget and fail
+unavailable rather than widen it. The pure port's 12-statement full path remains
+unchanged. Neither port reads history, audit ranges, blobs or worker/provider APIs.
+
+The route remains absent by default. Explicit enablement requires the additive
+schema and a checked deployment cutover receipt naming the projection writer
+version, schema/rated-reader version, exact deployed writer commit and drained
+old-writer inventory. A boolean environment flag alone is insufficient. Cutover
+checks do not apply migrations, repair/backfill data or prove a cloud deployment.
+Existing per-Run projection deletion remains enabled independently of this route.
+
+Required deterministic/native verification adds: two independent store/handler
+instances competing for the third debit; committed 404 charging; current auth
+before 429; unchanged LastSeenAt/idle/absolute expiry; same-ID replay after a
+committed debit and after permission loss; mismatched-selector replay rejection;
+known rollback versus ambiguous commit; fixed cardinality/collision/expiry and
+corrupt-row denial; aggregate read/write retry exhaustion; and pure-port unchanged
+read-only/error behavior. Exact-head CI must cover the actual rated adapter,
+not merely the pure arithmetic or fake-transaction scripting plans.

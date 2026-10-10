@@ -233,6 +233,12 @@ state.
 
 ## Crash repair
 
+The [Session retention and replay draft](../../docs/design/session-retention-replay.md)
+owns the proposed four-table retention, versioned replay/ownership indexes,
+historical coverage and cutover design for #159 / #57. It adds no executable
+migration, TTL or current coverage marker. Existing migration behavior below
+remains unchanged until that contract and its implementation are accepted.
+
 When a migration fails:
 
 1. stop concurrent deploys and run `schema-migrate status`;

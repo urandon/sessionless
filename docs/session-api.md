@@ -146,6 +146,12 @@ short-lived exact-object capability; it never exposes a BlobRef or storage key.
 
 ## Verification
 
+The [retention and replay draft](design/session-retention-replay.md) proposes
+a separately accepted v2 namespace protocol and deleted-target replay semantics
+for issue #159 / epic #57. The v1 routes and caller-key behavior above remain
+the current implementation; no namespace endpoint or finite replay guarantee
+is enabled by the draft.
+
 ```sh
 make test
 make build

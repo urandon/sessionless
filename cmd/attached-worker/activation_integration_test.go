@@ -51,7 +51,7 @@ func TestActivatedRunAcknowledgesRemoteCancelBeforeMaterialization(t *testing.T)
 	testActivatedSyntheticCommand(t, false, false, false, false, false, true, false)
 }
 
-func TestActivatedServeDrainsAcceptedSyntheticAttempt(t *testing.T) {
+func TestActivatedServeDrainsDuringAcceptedMaterialization(t *testing.T) {
 	testActivatedSyntheticCommand(t, true, false, false, false, false, false, false)
 }
 
@@ -891,7 +891,9 @@ func testActivatedServiceControl(t *testing.T, ctx context.Context, peer *comman
 			"--expected-revision", "2"}, &drain)
 	}()
 	// Wait for the actual daemon transition, not an elapsed-time guess. The
-	// held sealed read keeps the attempt active while drain closes admission.
+	// held sealed read is still inside Source.Next, before daemon admission.
+	// Cancellation may settle its result or leave it reconciliation-required;
+	// neither outcome permits a process launch or invents successful completion.
 	ticker := time.NewTicker(time.Millisecond)
 	defer ticker.Stop()
 	drainCompleted := false
@@ -929,14 +931,176 @@ drainLoop:
 		t.Fatal("service did not exit after drain")
 	}
 	peer.mu.Lock()
-	steps, denied, lastKind, lastError := peer.steps, peer.denied, peer.lastKind, peer.lastError
+	steps, denied, reads, lastKind, lastError := peer.steps, peer.denied, peer.sealedReads, peer.lastKind, peer.lastError
 	peer.mu.Unlock()
-	if steps != 2 || denied != 1 {
-		t.Fatalf("drained accepted attempt exchanged %d protocol steps, denied %d sealed reads; last_kind=%s peer_error=%q status=%+v",
-			steps, denied, lastKind, lastError, runtimeOwner.Status())
-	}
 	if snapshot, err := store.LoadSnapshot(context.Background()); err != nil || snapshot.ObservationPresent {
 		t.Fatalf("service did not retire runtime lease observation: snapshot=%+v error=%v", snapshot, err)
+	}
+	lease, err := store.AcquireRuntime(ctx)
+	if err != nil {
+		t.Fatalf("drained materialization retained runtime lease: %v", err)
+	}
+	checkpoint, checkpointErr := lease.LoadReconnectCheckpoint(ctx)
+	closeErr := lease.Close()
+	if checkpointErr != nil || closeErr != nil {
+		t.Fatalf("load drained materialization checkpoint: load=%v close=%v", checkpointErr, closeErr)
+	}
+	var terminal *attachedworkerprotocol.TerminalV1
+	select {
+	case observed := <-peer.terminal:
+		terminal = &observed
+	default:
+	}
+	evidence := drainedMaterializationEvidence{
+		steps: steps, denied: denied, reads: reads, lastKind: lastKind, peerError: lastError,
+		status: runtimeOwner.Status(), snapshot: checkpoint.MachineSnapshot, terminal: terminal,
+	}
+	if err := validateDrainedMaterializationEvidence(evidence, peer.binding); err != nil {
+		t.Fatalf("drained materialization: %v; steps=%d reads=%d denied=%d kind=%s state=%s daemon=%+v",
+			err, steps, reads, denied, lastKind, checkpoint.MachineSnapshot.Attempt.Summary.State, evidence.status)
+	}
+	commands, err := os.ReadFile(filepath.Join(filepath.Dir(stateRoot), "oci-commands.log"))
+	if err != nil || strings.Contains(string(commands), "container create ") || strings.Contains(string(commands), "container start ") {
+		t.Fatalf("drained materialization launched an OCI workload: read=%v commands=%q", err, commands)
+	}
+}
+
+// This validates the causal outcome, not which ready select case wins. The
+// production checkpoint loader independently validates the complete snapshot.
+// A settled cancellation commits a failed terminal; an unresolved read retains
+// the exact claimed binding for fenced reconciliation, never idle/replay.
+type drainedMaterializationEvidence struct {
+	steps, denied, reads int
+	lastKind             attachedworkerprotocol.MessageKind
+	peerError            string
+	status               attachedworkerdaemon.Status
+	snapshot             attachedworkerprotocol.MachineSnapshotV1
+	terminal             *attachedworkerprotocol.TerminalV1
+}
+
+func validateDrainedMaterializationEvidence(evidence drainedMaterializationEvidence, binding attachedworkerprotocol.AttemptBindingV1) error {
+	status := evidence.status
+	if status.State != attachedworkerdaemon.DaemonStopped || status.Active ||
+		status.ActiveAttempt != (attachedworkerdaemon.InvocationIdentity{}) ||
+		status.Accepted != 0 || status.Completed != 0 || status.Committed != 0 || status.Failed != 0 {
+		return errors.New("materialization was incorrectly admitted as a daemon invocation")
+	}
+	if evidence.peerError != "" || evidence.reads != 1 || evidence.denied < 0 || evidence.denied > 1 {
+		return errors.New("unexpected sealed read or protocol failure")
+	}
+	snapshot := evidence.snapshot
+	attempt := snapshot.Attempt.Summary
+	if !reflect.DeepEqual(attempt.Binding, binding) || snapshot.Attempt.PendingWorkerTerminal != nil ||
+		attempt.CancelRevision != 0 || attempt.ProgressSequence != 0 {
+		return errors.New("drained checkpoint changed binding or retained an unconfirmed terminal")
+	}
+	switch evidence.steps {
+	case 2:
+		if evidence.lastKind != attachedworkerprotocol.MessageLeaseClaim || evidence.terminal != nil ||
+			attempt.State != attachedworkerprotocol.AttemptClaimed || attempt.TerminalStatus != "" ||
+			attempt.TerminalResult != "" || attempt.TerminalSequence != 0 || len(attempt.TerminalEvidenceDigest) != 0 ||
+			attempt.WorkerSequence != 1 || attempt.PlatformSequence != 2 ||
+			snapshot.Worker.Sequence != 5 || snapshot.Platform.Sequence != 4 {
+			return errors.New("unresolved materialization did not retain exact claimed reconciliation state")
+		}
+	case 3:
+		terminal := evidence.terminal
+		if evidence.lastKind != attachedworkerprotocol.MessageTerminal || terminal == nil || terminal.Validate() != nil ||
+			!reflect.DeepEqual(terminal.Binding, binding) || terminal.Status != attachedworkerprotocol.TerminalFailed ||
+			terminal.Result != attachedworkerprotocol.TerminalResultFailed || terminal.AttemptSequence != 2 || terminal.TerminalSequence != 1 ||
+			attempt.State != attachedworkerprotocol.AttemptTerminalCommitted || attempt.TerminalStatus != terminal.Status ||
+			attempt.TerminalResult != terminal.Result || attempt.TerminalSequence != terminal.TerminalSequence ||
+			!bytes.Equal(attempt.TerminalEvidenceDigest, terminal.EvidenceDigest) ||
+			attempt.WorkerSequence != 2 || attempt.PlatformSequence != 3 ||
+			snapshot.Worker.Sequence != 6 || snapshot.Platform.Sequence != 5 {
+			return errors.New("settled materialization lacks exact failed terminal acknowledgement")
+		}
+	default:
+		return errors.New("drain admitted additional protocol work")
+	}
+	return nil
+}
+
+func TestDrainedMaterializationEvidenceRejectsFalseCompletion(t *testing.T) {
+	binding := attachedworkerprotocol.AttemptBindingV1{
+		RunID: "run-drain", AttemptID: "attempt-drain", LeaseID: "lease-drain",
+		LeaseGeneration: 1, FenceToken: "fence-drain", ExpiresAtUnixMicro: 2000000000000000,
+		ContextDigest: bytes.Repeat([]byte{1}, sha256.Size), CapabilityDigest: bytes.Repeat([]byte{2}, sha256.Size),
+		PolicyDigest: bytes.Repeat([]byte{3}, sha256.Size),
+	}
+	fixture := func(settled bool) drainedMaterializationEvidence {
+		evidence := drainedMaterializationEvidence{
+			steps: 2, reads: 1, lastKind: attachedworkerprotocol.MessageLeaseClaim,
+			status: attachedworkerdaemon.Status{State: attachedworkerdaemon.DaemonStopped},
+		}
+		evidence.snapshot.Attempt.Summary = attachedworkerprotocol.AttemptSummaryV1{
+			State: attachedworkerprotocol.AttemptClaimed, Binding: binding, WorkerSequence: 1, PlatformSequence: 2,
+		}
+		evidence.snapshot.Worker.Sequence, evidence.snapshot.Platform.Sequence = 5, 4
+		if settled {
+			evidence.steps, evidence.lastKind = 3, attachedworkerprotocol.MessageTerminal
+			evidence.terminal = &attachedworkerprotocol.TerminalV1{
+				Binding: binding, AttemptSequence: 2, TerminalSequence: 1,
+				Status: attachedworkerprotocol.TerminalFailed, Result: attachedworkerprotocol.TerminalResultFailed,
+				EvidenceDigest: bytes.Repeat([]byte{4}, sha256.Size),
+			}
+			attempt := &evidence.snapshot.Attempt.Summary
+			attempt.State = attachedworkerprotocol.AttemptTerminalCommitted
+			attempt.TerminalStatus, attempt.TerminalResult = evidence.terminal.Status, evidence.terminal.Result
+			attempt.TerminalSequence, attempt.TerminalEvidenceDigest = 1, append([]byte(nil), evidence.terminal.EvidenceDigest...)
+			attempt.WorkerSequence, attempt.PlatformSequence = 2, 3
+			evidence.snapshot.Worker.Sequence, evidence.snapshot.Platform.Sequence = 6, 5
+		}
+		return evidence
+	}
+	// These fixtures test the additional causal assertions, not whole snapshot
+	// encoding. The integration scenario loads a cryptographically validated
+	// real checkpoint; adapter tests independently exercise both actual paths.
+	for _, test := range []struct {
+		name    string
+		settled bool
+		mutate  func(*drainedMaterializationEvidence)
+		wantErr bool
+	}{
+		{name: "unresolved cancelled HTTP request"},
+		{name: "unresolved denied HTTP request", mutate: func(e *drainedMaterializationEvidence) { e.denied = 1 }},
+		{name: "settled cancelled HTTP request", settled: true},
+		{name: "settled denied HTTP request", settled: true, mutate: func(e *drainedMaterializationEvidence) { e.denied = 1 }},
+		{name: "idle loses accepted authority", mutate: func(e *drainedMaterializationEvidence) {
+			e.snapshot.Attempt.Summary.State = attachedworkerprotocol.AttemptIdle
+		}, wantErr: true},
+		{name: "changed binding", mutate: func(e *drainedMaterializationEvidence) {
+			e.snapshot.Attempt.Summary.Binding.AttemptID = "another-attempt"
+		}, wantErr: true},
+		{name: "pending terminal", settled: true, mutate: func(e *drainedMaterializationEvidence) {
+			e.snapshot.Attempt.PendingWorkerTerminal = &attachedworkerprotocol.MachinePendingTerminalSnapshotV1{}
+		}, wantErr: true},
+		{name: "false successful terminal", settled: true, mutate: func(e *drainedMaterializationEvidence) {
+			e.terminal.Status, e.terminal.Result = attachedworkerprotocol.TerminalSucceeded, attachedworkerprotocol.TerminalResultCompleted
+			e.snapshot.Attempt.Summary.TerminalStatus, e.snapshot.Attempt.Summary.TerminalResult = e.terminal.Status, e.terminal.Result
+		}, wantErr: true},
+		{name: "missing observed terminal", settled: true, mutate: func(e *drainedMaterializationEvidence) { e.terminal = nil }, wantErr: true},
+		{name: "divergent evidence", settled: true, mutate: func(e *drainedMaterializationEvidence) { e.snapshot.Attempt.Summary.TerminalEvidenceDigest[0] ^= 1 }, wantErr: true},
+		{name: "uncommitted terminal", settled: true, mutate: func(e *drainedMaterializationEvidence) {
+			e.snapshot.Attempt.Summary.State = attachedworkerprotocol.AttemptTerminalPending
+		}, wantErr: true},
+		{name: "unresolved fabricated terminal", mutate: func(e *drainedMaterializationEvidence) { e.snapshot.Attempt.Summary.TerminalSequence = 1 }, wantErr: true},
+		{name: "extra dispatch", mutate: func(e *drainedMaterializationEvidence) { e.steps++ }, wantErr: true},
+		{name: "second sealed read", mutate: func(e *drainedMaterializationEvidence) { e.reads++ }, wantErr: true},
+		{name: "daemon admitted invocation", mutate: func(e *drainedMaterializationEvidence) { e.status.Accepted++ }, wantErr: true},
+		{name: "daemon still active", mutate: func(e *drainedMaterializationEvidence) { e.status.Active = true }, wantErr: true},
+		{name: "peer rejected protocol", mutate: func(e *drainedMaterializationEvidence) { e.peerError = "invalid terminal" }, wantErr: true},
+		{name: "extra checkpoint exchange", settled: true, mutate: func(e *drainedMaterializationEvidence) { e.snapshot.Worker.Sequence++ }, wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			evidence := fixture(test.settled)
+			if test.mutate != nil {
+				test.mutate(&evidence)
+			}
+			if err := validateDrainedMaterializationEvidence(evidence, binding); (err != nil) != test.wantErr {
+				t.Fatalf("drained evidence error=%v, want error=%t", err, test.wantErr)
+			}
+		})
 	}
 }
 
@@ -1264,6 +1428,7 @@ type commandSyntheticPeer struct {
 	challenge                     domain.AttachedWorkerAttachChallenge
 	steps                         int
 	denied                        int
+	sealedReads                   int
 	challenges                    int
 	activations                   int
 	reconnectChallenges           int
@@ -1392,6 +1557,9 @@ func (peer *commandSyntheticPeer) serveHTTP(writer http.ResponseWriter, request 
 		writer.WriteHeader(http.StatusOK)
 		_, _ = writer.Write(encoded)
 	case attachedworkersealedinput.PathV1:
+		peer.mu.Lock()
+		peer.sealedReads++
+		peer.mu.Unlock()
 		if peer.sealedStarted != nil {
 			select {
 			case peer.sealedStarted <- struct{}{}:

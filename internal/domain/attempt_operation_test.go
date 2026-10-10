@@ -122,6 +122,29 @@ func TestAttemptOperationClosedKindsAndExactReceiptFields(t *testing.T) {
 	}
 }
 
+func TestAttemptOperationInitialCompactionAndNoInitialTool(t *testing.T) {
+	t.Parallel()
+	first := operationFixture()
+	first.Kind = domain.AttemptOperationCompactionV1
+	first.Debit.CompactionCalls = 1
+	first.SummaryBytes = 100
+	if err := first.Validate(); err != nil {
+		t.Fatalf("accepted pre-model initial compaction rejected: %v", err)
+	}
+	if err := first.Debit.ValidateForPolicy(agentLoopPolicyFixture()); err != nil {
+		t.Fatalf("initial compaction must debit model and compaction ceilings: %v", err)
+	}
+	for _, kind := range []domain.AttemptOperationKindV1{domain.AttemptOperationMCPToolV1, domain.AttemptOperationWebSearchV1} {
+		t.Run(string(kind), func(t *testing.T) {
+			tool := toolOperationFixture()
+			tool.Kind, tool.Sequence, tool.PredecessorObservationDigest = kind, 1, ""
+			if err := tool.Validate(); err == nil {
+				t.Fatal("initial tool without durable model predecessor accepted")
+			}
+		})
+	}
+}
+
 func TestAttemptOperationDebitEveryDimensionAndOverflow(t *testing.T) {
 	t.Parallel()
 	policy := agentLoopPolicyFixture()
@@ -239,6 +262,44 @@ func TestAttemptOperationObservationUnknownBlocksContinuationAndForgery(t *testi
 	}
 }
 
+func TestAttemptOperationPartialObservedUsageRetainedAndOverrunStops(t *testing.T) {
+	t.Parallel()
+	r := operationReservationFixture(t, operationFixture())
+	for _, metric := range []struct {
+		name    string
+		ceiling uint64
+		set     func(*domain.AttemptOperationUsageV1, *uint64)
+	}{
+		{"input", r.Operation.Debit.InputTokens, func(v *domain.AttemptOperationUsageV1, n *uint64) { v.InputTokens = n }},
+		{"output", r.Operation.Debit.OutputTokens, func(v *domain.AttemptOperationUsageV1, n *uint64) { v.OutputTokens = n }},
+		{"amount", r.Operation.Debit.AmountMicrounits, func(v *domain.AttemptOperationUsageV1, n *uint64) { v.AmountMicrounits = n }},
+	} {
+		t.Run(metric.name, func(t *testing.T) {
+			for _, overrun := range []bool{false, true} {
+				o := completedOperationFixture(t, r)
+				o.Usage = domain.AttemptOperationUsageV1{State: domain.AttemptOperationUsageObservedV1}
+				measured := metric.ceiling
+				if overrun {
+					measured++
+				}
+				metric.set(&o.Usage, &measured)
+				if err := o.ValidateForReservation(r); err != nil {
+					t.Fatalf("truthful partial %s usage rejected (overrun=%v): %v", metric.name, overrun, err)
+				}
+				next := toolOperationFixture()
+				next.Scope, next.ModelResponseDigest = r.Operation.Scope, o.ResponseDigest
+				next.PredecessorObservationDigest, _ = o.Digest()
+				if err := next.ValidatePredecessor(r, o); (err != nil) != overrun {
+					t.Fatalf("partial %s overrun=%v continuation error=%v", metric.name, overrun, err)
+				}
+			}
+		})
+	}
+	if err := (domain.AttemptOperationUsageV1{State: domain.AttemptOperationUsageObservedV1}).Validate(); err == nil {
+		t.Fatal("empty observed usage invented measurements")
+	}
+}
+
 func TestAttemptOperationDigestIsolationAndEveryField(t *testing.T) {
 	t.Parallel()
 	base := toolOperationFixture()
@@ -349,6 +410,21 @@ func TestAttemptOperationExactParentAndAllDeadlines(t *testing.T) {
 	op.Deadline = at.Add(10 * time.Second)
 	if err := op.ValidateForParent(a, parent); err != nil {
 		t.Fatalf("exact parent operation: %v", err)
+	}
+	initialCompaction := op.Clone()
+	initialCompaction.Kind = domain.AttemptOperationCompactionV1
+	initialCompaction.Debit.CompactionCalls = 1
+	initialCompaction.SummaryBytes = 100
+	if err := initialCompaction.ValidateForParent(a, parent); err != nil {
+		t.Fatalf("initial compaction must retain exact parent and model budget: %v", err)
+	}
+	compactionReservation := operationReservationFixture(t, initialCompaction)
+	if err := compactionReservation.ValidateForParent(a, parent); err != nil {
+		t.Fatalf("initial compaction aggregate reservation: %v", err)
+	}
+	compactionReservation.AggregateDebit.CompactionCalls = 0
+	if err := compactionReservation.ValidateForParent(a, parent); err == nil {
+		t.Fatal("initial compaction omitted its aggregate compaction debit")
 	}
 	for name, mutate := range map[string]func(*domain.AttemptOperationV1){"foreign_tenant": func(v *domain.AttemptOperationV1) { v.Scope.TenantID = "foreign" }, "foreign_owner": func(v *domain.AttemptOperationV1) { v.Scope.OwnerUserID = "foreign" }, "new_claim": func(v *domain.AttemptOperationV1) { v.Scope.PhysicalInvocationClaimID = "new-claim" }, "new_fence": func(v *domain.AttemptOperationV1) { v.Scope.FenceToken++ }, "new_policy": func(v *domain.AttemptOperationV1) {
 		v.Scope.AgentLoopPolicyDigest = domain.AgentLoopPolicyDigestV1(strings.Repeat("9", 64))

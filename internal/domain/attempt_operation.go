@@ -219,8 +219,8 @@ func (v AttemptOperationV1) Validate() error {
 		return err
 	}
 	if v.Sequence == 1 {
-		if v.PredecessorObservationDigest != "" || v.Kind != AttemptOperationModelV1 {
-			return operationError("predecessor", "the first operation must be a model with no predecessor")
+		if v.PredecessorObservationDigest != "" || (v.Kind != AttemptOperationModelV1 && v.Kind != AttemptOperationCompactionV1) {
+			return operationError("predecessor", "the first operation must be a model or pre-model compaction with no predecessor")
 		}
 	} else if err := v.PredecessorObservationDigest.Validate(); err != nil {
 		return err
@@ -403,10 +403,13 @@ func (v AttemptOperationReservationV1) Digest() (AttemptOperationReservationDige
 // outside the reservation is retained as authenticated evidence and stops work;
 // it must not be rejected simply to hide a billing/usage overrun.
 type AttemptOperationUsageV1 struct {
-	State            AttemptOperationUsageStateV1 `json:"state"`
-	InputTokens      *uint64                      `json:"input_tokens,omitempty"`
-	OutputTokens     *uint64                      `json:"output_tokens,omitempty"`
-	AmountMicrounits *uint64                      `json:"amount_microunits,omitempty"`
+	State AttemptOperationUsageStateV1 `json:"state"`
+	// Each present metric is measured; nil is explicitly unknown, never zero.
+	// Observed permits partial reports so known overruns cannot be discarded
+	// merely because another metric (for example billed amount) is absent.
+	InputTokens      *uint64 `json:"input_tokens,omitempty"`
+	OutputTokens     *uint64 `json:"output_tokens,omitempty"`
+	AmountMicrounits *uint64 `json:"amount_microunits,omitempty"`
 }
 
 func (v AttemptOperationUsageV1) Clone() AttemptOperationUsageV1 {
@@ -419,10 +422,10 @@ func (v AttemptOperationUsageV1) Validate() error {
 	if v.State == AttemptOperationUsageUnknownV1 && v.InputTokens == nil && v.OutputTokens == nil && v.AmountMicrounits == nil {
 		return nil
 	}
-	if v.State == AttemptOperationUsageObservedV1 && v.InputTokens != nil && v.OutputTokens != nil && v.AmountMicrounits != nil {
+	if v.State == AttemptOperationUsageObservedV1 && (v.InputTokens != nil || v.OutputTokens != nil || v.AmountMicrounits != nil) {
 		return nil
 	}
-	return operationError("observation.usage", "requires explicit complete observed values or absent unknown values")
+	return operationError("observation.usage", "requires at least one measured metric or wholly absent unknown metrics")
 }
 
 type AttemptOperationObservationV1 struct {
@@ -514,7 +517,9 @@ func (v AttemptOperationV1) ValidatePredecessor(r AttemptOperationReservationV1,
 	if v.Scope != r.Operation.Scope || v.Sequence != r.Operation.Sequence+1 || v.PredecessorObservationDigest != digest || o.Outcome != AttemptOperationCompletedV1 {
 		return operationError("predecessor", "requires the exact known durable prior operation in the same claim")
 	}
-	if o.Usage.State == AttemptOperationUsageObservedV1 && (*o.Usage.InputTokens > r.Operation.Debit.InputTokens || *o.Usage.OutputTokens > r.Operation.Debit.OutputTokens || *o.Usage.AmountMicrounits > r.Operation.Debit.AmountMicrounits) {
+	if (o.Usage.InputTokens != nil && *o.Usage.InputTokens > r.Operation.Debit.InputTokens) ||
+		(o.Usage.OutputTokens != nil && *o.Usage.OutputTokens > r.Operation.Debit.OutputTokens) ||
+		(o.Usage.AmountMicrounits != nil && *o.Usage.AmountMicrounits > r.Operation.Debit.AmountMicrounits) {
 		return operationError("predecessor.usage", "observed overrun stops further effects")
 	}
 	if v.Kind == AttemptOperationMCPToolV1 || v.Kind == AttemptOperationWebSearchV1 {

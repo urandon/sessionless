@@ -1,11 +1,12 @@
 # Compute choice context evidence
 
-Version: **0.1.2**, 2026-10-11.
+Version: **0.1.3**, 2026-10-11.
 Owner: [#142](https://gitcode.com/urandon/sessionless/issues/142).
 Implementation epic: [#155](https://gitcode.com/urandon/sessionless/issues/155).
 Source baseline: `f589fece3811b7a04eeacf5cbaff4ca4d5c1c978`.
-Status: engineering contract with shared rendering and final-record measurement
-implemented; implementation remains partial, not a deployed source of eligibility.
+Status: engineering contract with shared rendering, prepared source material and
+final-record measurement implemented; canonical writer integration remains
+partial, not a deployed source of eligibility.
 
 Compute selection must account for the entire canonical context that an
 invocation will consume. Persist bounded, writer-derived facts at every event
@@ -106,13 +107,23 @@ payloads, modalities or prompt metrics.
 
 ## Verified contribution and shared renderer
 
-Introduce a server-internal prepared material type in `internal/sessionmaterial`
+`sessionmaterial.PreparedV1` is a server-internal prepared material type
 with private fields, no JSON serializer and a bounded constructor over actual
 payload bytes and exact immutable reference. It clones inputs, verifies scope,
 hash/size and the canonical payload schema, and has no caller-supplied
 classification/compatible/approved flag. Byte-bearing proof is transient;
 database records retain only bounded measures/digests. Release the private byte
 copy after commit/failure with the existing sensitive-buffer discipline.
+
+`PrepareV1` accepts the stable event identity before sequence/time allocation.
+`SessionEvent.ValidateMaterialIdentity` reuses the canonical domain predicates
+without manufacturing a provisional sequence or timestamp; ordinary final
+`Validate` retains its existing error precedence and optional author/Run rules.
+Preparation owns cloned payload bytes and optional identity pointers. Ordinary
+value copies share one release lifetime; explicit `Clone` owns independent
+bytes. `Release` is idempotent, clears owned storage and invalidates aliases.
+Concurrent copying/release is synchronized; neither JSON nor formatting exposes
+the private material.
 
 V1 inspects at most 1 MiB of one payload, sufficient for the initial compiler's
 independent full-history limit. An oversize or unrecognized contribution becomes
@@ -123,20 +134,37 @@ artifact references; media/name hints alone cannot certify an image or safe
 content. Any historical attachment rejects initial codex-text compatibility,
 even where its bytes are separately verified. All material stays PRIVATE.
 
+Identity strings total at most 8 KiB. At most 64 ordered attachment references
+and 64 KiB of aggregate attachment metadata are inspected; names, media types
+and keys each have a 4096-byte ceiling. The descriptor's name is at most 4072
+bytes and must be a safe nonempty basename. Its canonical manifest name must
+equal `attachment-%02d-<descriptor name>` at the same one-based position, with
+identical media type and BlobRef. The constructor excludes the leading
+`message.json` payload artifact, validates each reference's event namespace and
+checks the referenced-size sum against MaxInt64. It does not read attachment
+bodies or prove media type, content safety or authorization.
+
+Recognized source envelopes are user version 1, assistant-message schema v1,
+tool-event schema v1 and run-terminal-notice schema v1. Unknown fields, trailing
+data, unsupported schemas, hash/size/scope mismatch or exceeded inspection bounds
+produce an unverified result. A recognized tool, notice or attachment-bearing
+source can have known source measures while remaining incompatible with the
+initial text renderer; these cases are not successful empty text contributions.
+
 The current compiler's exact event parsing/role-frame rendering now resides in
 pure `internal/canonicalprompt`, importing domain but not ports, worker or
-sessioncontext. codexexec uses that actual helper; the prepared constructor
-still needs implementation and must reuse it. The helper preserves current
+sessioncontext. Both codexexec and the prepared constructor use that actual
+helper. The helper preserves current
 strict unknown-field/trailing-data behavior, user
 version 1/no attachments, assistant schema v1, nonempty valid UTF-8/no NUL,
 and rejection of all other event kinds. It must not silently tighten accepted
 payload semantics or skip an incompatible record. The driver still verifies
 full decoded history and exact trigger before rendering.
 
-This extraction supplies shared rendering semantics, not prepared material,
-persisted prefix facts or positive eligibility. Its 2 MiB helper-input ceiling
+The shared renderer alone supplies neither persisted prefix facts nor positive
+eligibility. Its 2 MiB helper-input ceiling
 allows frame-limit testing independently of the driver's 1 MiB full-JSONL
-ceiling; it does not enlarge the driver limit or the future constructor's 1 MiB
+ceiling; it does not enlarge the driver limit or the constructor's 1 MiB
 payload-inspection ceiling. Individual frames are bounded by 1 MiB including
 their role framing, and the driver separately bounds the header plus all frames.
 Literal golden tests preserve Go JSON's case-folded fields, duplicate/null
@@ -170,9 +198,18 @@ whose whitespace, HTML escaping or other representation changes under the
 codec fails hash-preserving round-trip and remains unknown. Measurable tool,
 notice or attachment-bearing source is not automatically renderer-compatible.
 
-This implements the final-record measurement seam only. The prepared-material
-constructor, writer integration, atomic folds, prefix/boundary persistence and
-native verification remain required; no current positive eligibility uses it.
+`sessioncontext.MeasurePreparedRecordV1` binds a live preparation to the actual
+validated final event, comparing every stable identity field while leaving the
+allocated sequence/time unchanged. It copies bytes atomically, measures through
+`MeasureRecordV1` and clears that private copy on every return. Its opaque result
+retains only cloned final metadata and bounded measures/digests, not the payload
+or preparation handle. Released, zero, mismatched or non-round-tripping material
+cannot supply verified final measurements. No metadata-only caller can forge a
+verified result from public scalar measures.
+
+This implements preparation and final-record measurement only. Writer
+integration, atomic folds, prefix/boundary persistence and native verification
+remain required; no current positive eligibility uses these helpers.
 
 `sessionmaterial` may depend on that pure helper and domain; ports may reference
 the opaque prepared type, but must not import sessioncontext, which already

@@ -251,6 +251,32 @@ type SessionEvent struct {
 }
 
 func (event SessionEvent) Validate() error {
+	if err := event.validateMaterialScope(); err != nil {
+		return err
+	}
+	if event.Sequence == 0 {
+		return ValidationError{Field: "session_event.sequence", Reason: "must be positive"}
+	}
+	if err := event.validateMaterialBody(); err != nil {
+		return err
+	}
+	if event.CreatedAt.IsZero() {
+		return ValidationError{Field: "session_event.created_at", Reason: "must not be zero"}
+	}
+	return nil
+}
+
+// ValidateMaterialIdentity validates exactly the source identity known before
+// append allocation. Sequence and CreatedAt remain the final writer's authority;
+// this does not validate an append or confer access to the source material.
+func (event SessionEvent) ValidateMaterialIdentity() error {
+	if err := event.validateMaterialScope(); err != nil {
+		return err
+	}
+	return event.validateMaterialBody()
+}
+
+func (event SessionEvent) validateMaterialScope() error {
 	if err := event.ID.Validate(); err != nil {
 		return err
 	}
@@ -260,9 +286,10 @@ func (event SessionEvent) Validate() error {
 	if err := event.SessionID.Validate(); err != nil {
 		return err
 	}
-	if event.Sequence == 0 {
-		return ValidationError{Field: "session_event.sequence", Reason: "must be positive"}
-	}
+	return nil
+}
+
+func (event SessionEvent) validateMaterialBody() error {
 	if !event.Kind.Valid() {
 		return ValidationError{Field: "session_event.kind", Reason: "is unknown"}
 	}
@@ -287,9 +314,6 @@ func (event SessionEvent) Validate() error {
 	}
 	if err := ValidateSessionEventBlob(event.TenantID, event.SessionID, event.ID, event.Payload); err != nil {
 		return err
-	}
-	if event.CreatedAt.IsZero() {
-		return ValidationError{Field: "session_event.created_at", Reason: "must not be zero"}
 	}
 	return nil
 }

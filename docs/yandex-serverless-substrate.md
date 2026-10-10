@@ -150,21 +150,43 @@ unknown. It may still produce a `conditional` or `no_go` report, but never
 
 ## Work needed before the cloud run
 
-The remaining implementation slice is composition, not a timeout increase:
+The remaining implementation slice is composition, not a timeout increase.
+The opaque `ExactExecutionPreparerV1`/`SubstrateRegistryV1` ownership and
+reconcile-only surfaces already exist, as does the full-lifecycle Manager
+watchdog. `cmd/worker-runtime` currently registers only the credentialless
+deterministic in-process substrate; it does not register a credentialed PR-03c
+production adapter.
 
-1. carry the newly reserved PR-03a ownership grant through an attested PR-03b
-   prepared invocation and consume it exactly once at the PR-03c provider
-   boundary; keep foreign physical claims reconcile-only;
-2. compose the full-lifecycle worker watchdog with PR-03b process supervision
-   and PR-03c transport cancellation, then retain its deterministic local race
-   cohorts as promotion gates;
-3. cancel transport and PR-03b process supervision on renewal/fence loss and
-   block every event, artifact, terminal commit, and trigger acknowledgement;
-4. compose PR-03c egress and invocation credentials only after the fresh
-   effect-ownership grant, and keep reconciliation credential-free;
-5. expose fixed-code, content-free probe observations and generate the report
-   from private evidence;
-6. update the cloud profile only after the local race suite proves the above.
+`internal/serverlessegress/registry_composition_test.go` joins the real exact
+preparer, registry, capability issuer and PR-03c `BoundaryV1` to synchronous,
+synthetic credential/proxy ports. `make serverless-egress-conformance` covers
+exact-scope execution and evidence sealing, pre-effect substitution denial,
+issued-handle substitution, sequential and concurrent replay, authenticated
+observation-only reconciliation, cancellation during a silent proxy call and
+failed credential release. The request codec's required handle is explicitly
+fixture-preseeded: it carries no secret and is never issued or materialized.
+Only Boundary owns the one observed synthetic issue/materialize/release cycle.
+This test does **not** prove Manager credential custody, canonical terminal
+commit, production driver reachability, network/OS isolation, warm-container
+cleanup, platform timing or billed cost. All resource quantities remain unknown.
+
+Before cloud execution:
+
+1. complete #175's normal API/router activation and credential-custody
+   integration. Manager's current required-credential path admits subscription
+   file delivery, whereas PR-03c owns API/router invocation credentials. Do not
+   silently issue twice or use the test projection as a production adapter;
+2. compose the single Boundary-owned credential lifecycle and transport
+   cancellation with the worker watchdog, retaining local renewal/fence-loss
+   and canonical-finalization regressions as separate gates;
+3. freeze the production-disabled tool-free in-process probe candidate and its
+   exact allocation/egress/cleanup attestations. PR-03b process supervision is
+   additionally required when the chosen workload starts a child process;
+   this one-shot probe does not enable a CLI or tool profile;
+4. expose fixed-code, content-free observations and generate the report from
+   private evidence; the fail-closed evaluator is not itself a probe collector;
+5. update the cloud lease/profile only after local composition gates pass,
+   then obtain authorization for the exact bounded cloud cohorts above.
 
 Until that composition lands and the cloud cohorts run, production provider
 profiles remain disabled.

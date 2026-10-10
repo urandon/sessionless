@@ -118,6 +118,10 @@ and link to it.
 The [research index](research/README.md) separates evidence and open decisions
 from committed runtime contracts. It covers:
 
+- [Owned agent harness minimum draft](design/owned-agent-harness-minimum.md), with
+  [derived compaction](design/owned-harness-compaction.md) and
+  [constrained MCP](design/owned-harness-tools-mcp.md); design review and owner
+  acceptance remain required, not runtime activation evidence
 - [AI resources, routing, and federation](research/ai-resources-and-federation.md)
 - [OpenAI subscription resource policy](research/openai-subscription-resource-policy.md)
 - [Attachable workers](research/attachable-workers.md)

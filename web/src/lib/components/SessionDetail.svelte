@@ -6,6 +6,7 @@
     ConditionalResult,
     DownloadCapability,
     EventPage,
+    Identity,
     Run,
     RunPage,
     SessionEvent,
@@ -15,6 +16,8 @@
   } from '$lib/api/client';
 
   export interface SessionDetailApi {
+    getIdentity: CanonicalApiClient['getIdentity'];
+    getRunExplanation: CanonicalApiClient['getRunExplanation'];
     getSession: CanonicalApiClient['getSession'];
     listEvents: CanonicalApiClient['listEvents'];
     listRuns: CanonicalApiClient['listRuns'];
@@ -49,6 +52,11 @@
   import { resolve } from '$app/paths';
 
   import { ApiError } from '$lib/api/client';
+  import RunExplanationDrawer from './RunExplanationDrawer.svelte';
+  import {
+    RunExplanationController,
+    type RunExplanationState,
+  } from '$lib/run-explanation/controller';
   import { boundedUTF8, downloadCapability, hashFile, putUpload } from '$lib/session/fileTransfer';
 
   let {
@@ -57,12 +65,16 @@
     hashFileFn = hashFile,
     putUploadFn = putUpload,
     downloadCapabilityFn = downloadCapability,
+    explanationNow = Date.now,
+    explanationEnabled = import.meta.env.VITE_RUN_EXPLANATION_ENABLED === 'true',
   }: {
     client: SessionDetailApi;
     sessionId: string;
     hashFileFn?: typeof hashFile;
     putUploadFn?: typeof putUpload;
     downloadCapabilityFn?: typeof downloadCapability;
+    explanationNow?: () => number;
+    explanationEnabled?: boolean;
   } = $props();
 
   const maxEvents = 100;
@@ -97,6 +109,18 @@
   let runETag: string | undefined;
   let lastSequence = 0;
   let composer = $state<HTMLTextAreaElement>();
+  let conversationHeading = $state<HTMLHeadingElement>();
+  let identity = $state<Identity>();
+  let explanationState = $state<RunExplanationState>({ phase: 'idle', nextRefreshAt: 0 });
+  let explanationRunId = $state<string>();
+  let explanationController: RunExplanationController | undefined;
+  let explanationTrigger: HTMLButtonElement | undefined;
+  let identityAbort: AbortController | undefined;
+  let identityGeneration = 0;
+  let lastIdentityScope: { webIdentity: string; tenantId: string } | undefined;
+  let accessGeneration = 0;
+  let alive = false;
+  const identityScope = $derived(scopeForIdentity(identity));
 
   const runByTrigger = $derived(new Map(runs.map((run) => [run.trigger_event_id, run])));
   const computeReady = $derived(computeAllowsSend(compute));
@@ -109,14 +133,47 @@
   );
 
   onMount(() => {
+    alive = true;
     abortController = new AbortController();
+    if (explanationEnabled)
+      explanationController = new RunExplanationController({
+        read: (runId, expectedSessionId, signal) =>
+          client.getRunExplanation(runId, expectedSessionId, signal),
+        now: explanationNow,
+      });
+    explanationController?.setVisible(false);
+    const unsubscribe = explanationController?.subscribe((state) => {
+      explanationState = state;
+      if (state.phase === 'permission-lost') {
+        // Never reconstitute permission from stale identity props on reopen.
+        identity = undefined;
+        identityGeneration += 1;
+        identityAbort?.abort();
+      }
+    });
     const visibility = (): void => {
       clearPoll();
-      if (!document.hidden && view === 'ready') schedulePoll(0);
+      if (document.hidden) {
+        identityGeneration += 1;
+        identityAbort?.abort();
+        identity = undefined;
+        closeExplanation(false);
+      } else {
+        // Ordinary auth lifecycle, not a drawer-open probe or explanation poll.
+        if (explanationEnabled) void refreshIdentity();
+        if (view === 'ready') schedulePoll(0);
+      }
     };
     document.addEventListener('visibilitychange', visibility);
+    if (explanationEnabled) void refreshIdentity();
     void loadInitial();
     return () => {
+      alive = false;
+      accessGeneration += 1;
+      identityGeneration += 1;
+      identityAbort?.abort();
+      unsubscribe?.();
+      explanationController?.dispose();
       document.removeEventListener('visibilitychange', visibility);
       clearPoll();
       abortController?.abort();
@@ -124,6 +181,7 @@
   });
 
   async function loadInitial(): Promise<void> {
+    const generation = accessGeneration;
     view = 'loading';
     errorMessage = '';
     canWrite = true;
@@ -135,24 +193,32 @@
         client.listEvents(sessionId, { limit: maxEvents, signal }),
         client.listRuns(sessionId, { limit: maxRuns, signal }),
       ]);
+      if (!alive || generation !== accessGeneration || signal?.aborted) return;
       applySession(sessionResult);
       applyEvents(eventResult, true);
       applyRuns(runResult);
       await loadComputeAccess(signal);
+      if (!alive || generation !== accessGeneration || signal?.aborted) return;
       view = 'ready';
       schedulePoll(nextPollDelay(sessionResult, eventResult, runResult));
     } catch (error) {
+      if (!alive || generation !== accessGeneration) return;
       if (isAbort(error)) return;
-      showLoadFailure(error);
+      if (isReadPermissionLoss(error)) discardReadAccess(error);
+      else showLoadFailure(error);
     }
   }
 
   async function loadComputeAccess(signal?: AbortSignal): Promise<void> {
+    const generation = accessGeneration;
     try {
-      compute = await client.getComputeStatus(sessionId, signal);
+      const result = await client.getComputeStatus(sessionId, signal);
+      requireCurrentAccess(generation, signal);
+      compute = result;
       canWrite = true;
       computeUnavailable = false;
     } catch (error) {
+      requireCurrentAccess(generation, signal);
       if (
         error instanceof ApiError &&
         (error.code === 'access_denied' || error.code === 'not_found')
@@ -173,6 +239,7 @@
 
   async function poll(): Promise<void> {
     if (document.hidden || abortController?.signal.aborted || view !== 'ready') return;
+    const generation = accessGeneration;
     try {
       const signal = abortController?.signal;
       const afterSequence = lastSequence || undefined;
@@ -186,6 +253,7 @@
         }),
         client.listRuns(sessionId, { limit: maxRuns, etag: runETag, signal }),
       ]);
+      if (!alive || generation !== accessGeneration || signal?.aborted) return;
       applySession(sessionResult);
       applyEvents(eventResult, false, afterSequence);
       applyRuns(runResult);
@@ -193,7 +261,12 @@
       pollMessage = '';
       schedulePoll(nextPollDelay(sessionResult, eventResult, runResult));
     } catch (error) {
+      if (!alive || generation !== accessGeneration) return;
       if (isAbort(error)) return;
+      if (isReadPermissionLoss(error)) {
+        discardReadAccess(error);
+        return;
+      }
       pollFailures += 1;
       if (pollFailures >= maxPollFailures) {
         pollMessage = 'Live updates paused after repeated connection failures.';
@@ -202,6 +275,139 @@
       pollMessage = 'Live update delayed. Retrying…';
       schedulePoll(Math.min(15000, 1000 * 2 ** (pollFailures - 1)));
     }
+  }
+
+  function scopeForIdentity(
+    value?: Identity,
+  ): { webIdentity: string; tenantId: string } | undefined {
+    if (
+      !value ||
+      typeof value.user_id !== 'string' ||
+      !value.user_id ||
+      typeof value.provider !== 'string' ||
+      !value.provider ||
+      !Array.isArray(value.tenants)
+    )
+      return;
+    const active = value.tenants.filter((tenant) => tenant.active === true);
+    if (active.length !== 1 || typeof active[0]?.tenant_id !== 'string' || !active[0].tenant_id)
+      return;
+    return {
+      webIdentity: JSON.stringify([value.user_id, value.provider]),
+      tenantId: active[0].tenant_id,
+    };
+  }
+
+  async function refreshIdentity(): Promise<void> {
+    const generation = ++identityGeneration;
+    identityAbort?.abort();
+    const abort = new AbortController();
+    identityAbort = abort;
+    try {
+      const next = await client.getIdentity(abort.signal);
+      if (!alive || generation !== identityGeneration || abort.signal.aborted || document.hidden)
+        return;
+      const previous = lastIdentityScope,
+        nextScope = scopeForIdentity(next);
+      const changed =
+        previous &&
+        nextScope &&
+        (previous.webIdentity !== nextScope.webIdentity ||
+          previous.tenantId !== nextScope.tenantId);
+      if (!nextScope || changed) {
+        closeExplanation(false);
+        explanationController?.setScope(undefined);
+      }
+      identity = nextScope ? next : undefined;
+      if (nextScope) lastIdentityScope = nextScope;
+      if (changed) {
+        // An actual auth-scope change is not a recoverable transport error.
+        // Discard private transcript/drafts and fence all earlier reads first.
+        accessGeneration += 1;
+        abortController?.abort();
+        abortController = new AbortController();
+        clearPrivateState();
+        clearPoll();
+        void loadInitial();
+      }
+    } catch (error) {
+      if (!alive || generation !== identityGeneration || abort.signal.aborted) return;
+      identity = undefined;
+      closeExplanation(false);
+      explanationController?.setScope(undefined);
+      if (isReadPermissionLoss(error)) discardReadAccess(error);
+    }
+  }
+
+  function isReadPermissionLoss(error: unknown): boolean {
+    return error instanceof ApiError && [401, 403, 404].includes(error.status);
+  }
+
+  function discardReadAccess(error: unknown): void {
+    accessGeneration += 1;
+    identityGeneration += 1;
+    identityAbort?.abort();
+    identity = undefined;
+    closeExplanation(false);
+    explanationController?.setScope(undefined);
+    clearPoll();
+    abortController?.abort();
+    clearPrivateState();
+    showLoadFailure(error);
+  }
+
+  function clearPrivateState(): void {
+    events = [];
+    runs = [];
+    session = compute = undefined;
+    message = '';
+    selectedFiles = [];
+    submission = undefined;
+    submitting = archivePending = false;
+    archiveKey = undefined;
+    archiveTarget = undefined;
+    downloading = undefined;
+    transferMessage = errorMessage = pollMessage = '';
+    pollFailures = 0;
+    sessionETag = eventETag = runETag = undefined;
+    eventETagSequence = undefined;
+    lastSequence = 0;
+  }
+
+  function currentAccess(generation: number, signal?: AbortSignal): boolean {
+    return alive && generation === accessGeneration && !signal?.aborted;
+  }
+
+  function requireCurrentAccess(generation: number, signal?: AbortSignal): void {
+    if (!currentAccess(generation, signal))
+      throw new DOMException('View scope discarded.', 'AbortError');
+  }
+
+  function explanationRun(event: SessionEvent): string | undefined {
+    // Both selectors are already authorized canonical correlation. Never guess
+    // from notice content, temporal adjacency or reconstructed opaque IDs.
+    return event.run_id ?? runByTrigger.get(event.event_id)?.run_id;
+  }
+
+  function openExplanation(runId: string, trigger: HTMLButtonElement): void {
+    if (!explanationEnabled || !identityScope || !explanationController || document.hidden) return;
+    explanationTrigger = trigger;
+    explanationRunId = runId;
+    explanationController.setScope({ ...identityScope, sessionId, runId });
+    explanationController.setVisible(true);
+    void explanationController.refresh();
+  }
+
+  function closeExplanation(restoreFocus = true): void {
+    explanationRunId = undefined;
+    explanationController?.setVisible(false);
+    if (restoreFocus) {
+      if (explanationTrigger?.isConnected && !explanationTrigger.disabled)
+        explanationTrigger.focus();
+      else if (composer?.isConnected && !composer.disabled) composer.focus();
+      else conversationHeading?.focus();
+    }
+    explanationTrigger = undefined;
   }
 
   function restartPolling(): void {
@@ -259,6 +465,8 @@
 
   async function toggleArchived(): Promise<void> {
     if (!canWrite || !session || archivePending) return;
+    const generation = accessGeneration,
+      signal = abortController?.signal;
     archivePending = true;
     errorMessage = '';
     const desired = session.status === 'active';
@@ -267,18 +475,26 @@
       archiveTarget = desired;
     }
     try {
-      session = await client.setSessionArchived(sessionId, {
-        archived: desired,
-        idempotency_key: archiveKey ?? newIdempotencyKey(),
-      });
+      const result = await client.setSessionArchived(
+        sessionId,
+        {
+          archived: desired,
+          idempotency_key: archiveKey ?? newIdempotencyKey(),
+        },
+        signal,
+      );
+      requireCurrentAccess(generation, signal);
+      session = result;
       archiveKey = undefined;
       archiveTarget = undefined;
       await tick();
+      requireCurrentAccess(generation, signal);
       composer?.focus();
     } catch (error) {
-      errorMessage = publicMessage(error, 'Unable to update this session.');
+      if (currentAccess(generation, signal) && !isAbort(error))
+        errorMessage = publicMessage(error, 'Unable to update this session.');
     } finally {
-      archivePending = false;
+      if (currentAccess(generation, signal)) archivePending = false;
     }
   }
 
@@ -331,6 +547,8 @@
 
   async function send(): Promise<void> {
     if (!canWrite || submitting || (!canSubmit && !submission)) return;
+    const generation = accessGeneration,
+      signal = abortController?.signal;
     submission ??= {
       idempotencyKey: newIdempotencyKey(),
       text: message.trim(),
@@ -341,7 +559,9 @@
     errorMessage = '';
     transferMessage = 'Checking compute and quota…';
     try {
-      compute = await client.getComputeStatus(sessionId, abortController?.signal);
+      const result = await client.getComputeStatus(sessionId, signal);
+      requireCurrentAccess(generation, signal);
+      compute = result;
       if (!computeAllowsSend(compute)) {
         errorMessage = computeLabel(compute);
         transferMessage = '';
@@ -349,13 +569,22 @@
       }
       transferMessage = 'Preparing your message…';
       const uploadIds: string[] = [];
-      for (const item of activeSubmission.files) uploadIds.push(await uploadOne(item));
+      for (const item of activeSubmission.files) {
+        uploadIds.push(await uploadOne(item, generation, signal));
+        requireCurrentAccess(generation, signal);
+      }
+      requireCurrentAccess(generation, signal);
       transferMessage = 'Sending message…';
-      const created = await client.createMessage(sessionId, {
-        idempotency_key: activeSubmission.idempotencyKey,
-        text: activeSubmission.text || undefined,
-        upload_ids: uploadIds.length > 0 ? uploadIds : undefined,
-      });
+      const created = await client.createMessage(
+        sessionId,
+        {
+          idempotency_key: activeSubmission.idempotencyKey,
+          text: activeSubmission.text || undefined,
+          upload_ids: uploadIds.length > 0 ? uploadIds : undefined,
+        },
+        signal,
+      );
+      requireCurrentAccess(generation, signal);
       message = '';
       selectedFiles = [];
       submission = undefined;
@@ -378,9 +607,10 @@
       clearPoll();
       schedulePoll(0);
       await tick();
+      requireCurrentAccess(generation, signal);
       composer?.focus();
     } catch (error) {
-      if (!isAbort(error)) {
+      if (currentAccess(generation, signal) && !isAbort(error)) {
         errorMessage = publicMessage(
           error,
           'The message was not sent. Retry keeps the same request.',
@@ -388,27 +618,41 @@
         transferMessage = '';
       }
     } finally {
-      submitting = false;
+      if (currentAccess(generation, signal)) submitting = false;
     }
   }
 
-  async function uploadOne(item: SelectedFile): Promise<string> {
+  async function uploadOne(
+    item: SelectedFile,
+    generation: number,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    requireCurrentAccess(generation, signal);
     if (item.uploadId) return item.uploadId;
     item.state = 'hashing';
     item.progress = 0;
     transferMessage = `Hashing ${item.file.name}…`;
     const digests = await hashFileFn(item.file, (fraction) => {
-      item.progress = fraction * 0.2;
+      if (currentAccess(generation, signal)) item.progress = fraction * 0.2;
     });
-    const intent: UploadIntent = await client.createUpload({
-      session_id: sessionId,
-      idempotency_key: item.uploadKey,
-      name: boundedUTF8(item.file.name, 255, 'attachment'),
-      media_type: boundedUTF8(item.file.type, 127, 'application/octet-stream'),
-      size: item.file.size,
-      sha256: digests.sha256,
-      content_md5: digests.contentMD5,
-    });
+    requireCurrentAccess(generation, signal);
+    const intent: UploadIntent = await client.createUpload(
+      {
+        session_id: sessionId,
+        idempotency_key: item.uploadKey,
+        name: boundedUTF8(item.file.name, 255, 'attachment'),
+        media_type: boundedUTF8(item.file.type, 127, 'application/octet-stream'),
+        size: item.file.size,
+        sha256: digests.sha256,
+        content_md5: digests.contentMD5,
+      },
+      signal,
+    );
+    if (!currentAccess(generation, signal)) {
+      intent.url = '';
+      intent.headers = {};
+      requireCurrentAccess(generation, signal);
+    }
     item.state = 'uploading';
     transferMessage = `Uploading ${item.file.name}…`;
     const uploadID = intent.upload_id;
@@ -416,18 +660,20 @@
       intent,
       item.file,
       (fraction) => {
-        item.progress = 0.2 + fraction * 0.75;
+        if (currentAccess(generation, signal)) item.progress = 0.2 + fraction * 0.75;
       },
       undefined,
-      abortController?.signal,
+      signal,
     );
     intent.url = '';
     intent.headers = {};
     await transfer;
+    requireCurrentAccess(generation, signal);
     item.state = 'committing';
     item.progress = 0.97;
     transferMessage = `Verifying ${item.file.name}…`;
-    const committed: UploadCommit = await client.commitUpload(uploadID);
+    const committed: UploadCommit = await client.commitUpload(uploadID, signal);
+    requireCurrentAccess(generation, signal);
     item.uploadId = committed.upload_id;
     item.state = 'ready';
     item.progress = 1;
@@ -455,6 +701,8 @@
   ): Promise<void> {
     const key = `${event.event_id}:${index}`;
     if (downloading) return;
+    const generation = accessGeneration,
+      signal = abortController?.signal;
     downloading = key;
     errorMessage = '';
     try {
@@ -462,21 +710,29 @@
         sessionId,
         event.sequence,
         index,
+        signal,
       );
+      if (!currentAccess(generation, signal)) {
+        capability.url = '';
+        capability.headers = undefined;
+        requireCurrentAccess(generation, signal);
+      }
       const download = downloadCapabilityFn(
         capability,
         attachment.size,
         attachment.name,
         undefined,
-        abortController?.signal,
+        signal,
       );
       capability.url = '';
       capability.headers = undefined;
       await download;
+      requireCurrentAccess(generation, signal);
     } catch (error) {
-      errorMessage = publicMessage(error, 'The attachment could not be downloaded.');
+      if (currentAccess(generation, signal) && !isAbort(error))
+        errorMessage = publicMessage(error, 'The attachment could not be downloaded.');
     } finally {
-      downloading = undefined;
+      if (currentAccess(generation, signal)) downloading = undefined;
     }
   }
 
@@ -505,9 +761,17 @@
 
   async function refreshCompute(): Promise<void> {
     if (!canWrite || submitting) return;
+    const generation = accessGeneration,
+      signal = abortController?.signal;
     errorMessage = '';
-    await loadComputeAccess(abortController?.signal);
-    if (computeUnavailable) errorMessage = 'Unable to refresh compute status.';
+    try {
+      await loadComputeAccess(signal);
+      requireCurrentAccess(generation, signal);
+      if (computeUnavailable) errorMessage = 'Unable to refresh compute status.';
+    } catch (error) {
+      if (currentAccess(generation, signal) && !isAbort(error))
+        errorMessage = publicMessage(error, 'Unable to refresh compute status.');
+    }
   }
 
   function computeAllowsSend(status: ComputeStatus | undefined): boolean {
@@ -596,7 +860,9 @@
       <div>
         <a class="back-link" href={resolve('/')}>← All sessions</a>
         <p class="eyebrow">Canonical session</p>
-        <h1 id="conversation-title">{session?.title || 'Conversation'}</h1>
+        <h1 id="conversation-title" bind:this={conversationHeading} tabindex="-1">
+          {session?.title || 'Conversation'}
+        </h1>
         <p class="resource-id" aria-label="Session identifier">{sessionId}</p>
       </div>
       {#if canWrite}
@@ -694,11 +960,33 @@
                   Run {runLabel(runByTrigger.get(event.event_id))}
                 </span>
               {/if}
+              {#if explanationEnabled && explanationRun(event)}
+                <button
+                  class="button quiet"
+                  type="button"
+                  disabled={!identityScope}
+                  aria-expanded={explanationRunId === explanationRun(event)}
+                  aria-controls={explanationRunId ? 'run-explanation-panel' : undefined}
+                  onclick={(click) => openExplanation(explanationRun(event)!, click.currentTarget)}
+                  >Explain run</button
+                >
+              {/if}
             </li>
           {/each}
         </ol>
       {/if}
     </section>
+
+    {#if explanationRunId}
+      <RunExplanationDrawer
+        state={explanationState}
+        onClose={() => closeExplanation()}
+        onRefresh={() => void explanationController?.refresh()}
+        refreshDisabled={!identityScope ||
+          explanationState.phase === 'loading' ||
+          explanationState.phase === 'permission-lost'}
+      />
+    {/if}
 
     <form
       class="composer"

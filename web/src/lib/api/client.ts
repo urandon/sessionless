@@ -122,8 +122,8 @@ export class CanonicalApiClient {
     this.#now = options.now ?? Date.now;
   }
 
-  getIdentity(): Promise<Identity> {
-    return this.#json<Identity>('/api/web/v1/me');
+  getIdentity(signal?: AbortSignal): Promise<Identity> {
+    return this.#json<Identity>('/api/web/v1/me', { signal });
   }
 
   listTenants(): Promise<TenantPage> {
@@ -199,21 +199,24 @@ export class CanonicalApiClient {
   setSessionArchived(
     sessionId: string,
     request: Schemas['ArchiveSessionRequest'],
+    signal?: AbortSignal,
   ): Promise<SessionSummary> {
     return this.#json<SessionSummary>(`/api/web/v1/sessions/${selector(sessionId)}/archive`, {
       method: 'POST',
       mutation: true,
       body: JSON.stringify(request),
+      signal,
     });
   }
 
   createMessage(
     sessionId: string,
     request: Schemas['CreateMessageRequest'],
+    signal?: AbortSignal,
   ): Promise<CreateMessageResponse> {
     return this.#json<CreateMessageResponse>(
       `/api/web/v1/sessions/${selector(sessionId)}/messages`,
-      { method: 'POST', mutation: true, body: JSON.stringify(request) },
+      { method: 'POST', mutation: true, body: JSON.stringify(request), signal },
     );
   }
 
@@ -223,20 +226,25 @@ export class CanonicalApiClient {
     });
   }
 
-  createUpload(request: Schemas['CreateUploadRequest']): Promise<UploadIntent> {
+  createUpload(
+    request: Schemas['CreateUploadRequest'],
+    signal?: AbortSignal,
+  ): Promise<UploadIntent> {
     return this.#json<UploadIntent>('/api/web/v1/uploads', {
       method: 'POST',
       mutation: true,
       body: JSON.stringify(request),
+      signal,
     });
   }
 
-  commitUpload(uploadId: string): Promise<UploadCommit> {
+  commitUpload(uploadId: string, signal?: AbortSignal): Promise<UploadCommit> {
     const request: Schemas['CommitUploadRequest'] = { upload_id: uploadId };
     return this.#json<UploadCommit>(`/api/web/v1/uploads/${selector(uploadId)}/commit`, {
       method: 'POST',
       mutation: true,
       body: JSON.stringify(request),
+      signal,
     });
   }
 
@@ -295,9 +303,11 @@ export class CanonicalApiClient {
     sessionId: string,
     sequence: number,
     index: number,
+    signal?: AbortSignal,
   ): Promise<DownloadCapability> {
     return this.#json<DownloadCapability>(
       `/api/web/v1/sessions/${selector(sessionId)}/events/${boundedInteger(sequence)}/attachments/${boundedInteger(index)}`,
+      { signal },
     );
   }
 
@@ -355,6 +365,7 @@ export class CanonicalApiClient {
 
   async #request(path: string, options: RequestOptions): Promise<Response> {
     if (!path.startsWith('/')) throw new TypeError('API path must be same-origin.');
+    if (options.signal?.aborted) throw new DOMException('Request aborted.', 'AbortError');
 
     const { mutation, ...requestOptions } = options;
     const headers = new Headers(requestOptions.headers);

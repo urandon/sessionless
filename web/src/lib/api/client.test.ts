@@ -4,6 +4,52 @@ import { ApiError, CanonicalApiClient } from './client';
 import { barrier, explanation } from '../run-explanation/test-fixtures';
 
 describe('CanonicalApiClient', () => {
+  it('forwards one captured signal to message/archive/upload/commit/capability requests and rejects already discarded scope before fetch', async () => {
+    const request = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({}));
+    const readCSRFToken = vi.fn().mockReturnValue('csrf');
+    const client = new CanonicalApiClient({ fetch: request, readCSRFToken });
+    const abort = new AbortController();
+    const operations = [
+      () =>
+        client.setSessionArchived(
+          'ses-1',
+          { archived: true, idempotency_key: 'archive-key' },
+          abort.signal,
+        ),
+      () =>
+        client.createMessage(
+          'ses-1',
+          { text: 'draft', idempotency_key: 'message-key' },
+          abort.signal,
+        ),
+      () =>
+        client.createUpload(
+          {
+            session_id: 'ses-1',
+            idempotency_key: 'upload-key',
+            name: 'a.txt',
+            media_type: 'text/plain',
+            size: 3,
+            sha256: 'a'.repeat(64),
+            content_md5: 'kAFQmDzST7DWlj99KOF/cg==',
+          },
+          abort.signal,
+        ),
+      () => client.commitUpload('up-1', abort.signal),
+      () => client.getAttachmentCapability('ses-1', 1, 0, abort.signal),
+    ];
+    for (const operation of operations) await operation();
+    expect(request).toHaveBeenCalledTimes(5);
+    for (const [, options] of request.mock.calls) expect(options?.signal).toBe(abort.signal);
+    request.mockClear();
+    readCSRFToken.mockClear();
+    abort.abort();
+    for (const operation of operations)
+      await expect(operation()).rejects.toMatchObject({ name: 'AbortError' });
+    expect(request).not.toHaveBeenCalled();
+    expect(readCSRFToken).not.toHaveBeenCalled();
+  });
+
   it('uses same-origin credentials and the CSRF header for mutations', async () => {
     const request = vi.fn<typeof fetch>().mockResolvedValue(
       Response.json(

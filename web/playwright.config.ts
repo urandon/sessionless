@@ -37,6 +37,8 @@ export default defineConfig({
   ],
   webServer: {
     command: 'npm run dev -- --host 127.0.0.1 --port 4173 --strictPort',
+    // Fixture-only rollout opt-in. Production builds remain disabled by default.
+    env: { VITE_RUN_EXPLANATION_ENABLED: 'true' },
     url: baseURL,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,

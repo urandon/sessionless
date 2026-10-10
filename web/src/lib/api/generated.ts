@@ -534,6 +534,8 @@ export interface components {
         };
         SessionEvent: {
             event_id: string;
+            /** @description Optional authorized canonical Run correlation; generic unlinked events omit it. */
+            run_id?: string;
             sequence: number;
             /** @enum {string} */
             kind: "user_message" | "assistant_message" | "tool_call" | "tool_result" | "system_notice";

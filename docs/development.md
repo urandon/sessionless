@@ -643,6 +643,53 @@ idempotent DDL operation per file, and a forward-only production policy. See
 keys and transaction procedures.
 
 Run explanation storage (#187) has a separate true-transaction proof target.
+The read-only conversation explanation drawer (#141) is absent in default WebUI
+builds. `VITE_RUN_EXPLANATION_ENABLED=true make web-stage` opts the frontend build
+in only after the deployment's writer/schema cutover receipt has been checked
+and the BFF's separately guarded explanation route has been enabled. The build
+flag is not evidence of deployment readiness, does not enable the BFF, and does
+not authorize migration or cloud activation. Rollback rebuilds without the flag
+and disables the route; canonical conversations remain usable. Playwright opts
+in against its intercepted canonical API fixtures, not a live deployment.
+
+The drawer is a bounded nonmodal in-flow panel, not a new primary page. Opening
+focuses its heading once; Escape from inside or Close returns to the trigger,
+enabled composer, or conversation heading. Its close/refresh header stays
+reachable while the secondary evidence scrolls. Refresh never resets input or
+focus. Explain uses an authorized event's optional `run_id` or the exact loaded
+Run's `trigger_event_id`; generic notices and adjacent events are never guessed.
+
+| Display or control | Authorized source and meaning |
+| --- | --- |
+| Canonical Run, timestamps | `RunExplanationV1.run_id/status/created_at/updated_at`; only canonical status denotes completion |
+| Admission | `admission` closed reason/outcome and observation time; last recorded decision, not current entitlement |
+| Terminal reason | `terminal` closed supported reason; unknown is not diagnosed from raw notice payloads |
+| Selected Attempt | `attempt` exact selector/number/state/update time; not a process heartbeat or history |
+| Attached receipt/freshness | `attached` closed fact and server assessment at `read_at`; not physical liveness or canonical completion |
+| Partial/unknown coverage | `coverage` per source; never inferred as success, readiness, or complete history |
+| Explain/Refresh | Existing bounded explanation GET only; no compute refresh, repair, capability, provider or command calls |
+| Close | Local disposal/focus only, not cancellation of execution |
+
+State is memory-only and fenced by actual `/me` user/provider, exactly one active
+tenant, Session, Run and request generation. Identity is read during ordinary
+view initialization/visibility revalidation, not drawer open/refresh (the
+existing identity route can renew session idle time). There is no new identity
+poller or invented browser-session epoch. Hidden/unmounted/closed views discard
+pending explanation responses, including transports that ignore abort. An
+observed scope change clears old private drafts/history; actual canonical read
+authorization loss clears private view state. Opaque explanation denial removes
+only explanation authority, leaving separately authorized transcript access.
+Compute-write denial does not revoke participant reads. Recoverable transport
+failures retain drafts; retained evidence is explicitly historical. The shared
+controller enforces single-flight and a five-second identity/tenant floor across
+close/reopen/Run selection, with server backoff and no explanation polling.
+Existing send/upload/archive/compute/download operations capture their original
+view generation and AbortSignal too: after observed authorization change or
+unmount, every asynchronous continuation checks scope before the next request,
+state update, capability use or focus change. Old uploads never adopt a new
+scope's signal. Already submitted operations may have committed; disposal is
+not rollback, and no automatic resubmission or undo is attempted.
+
 Against an explicitly approved disposable YDB only, use:
 
 ```sh

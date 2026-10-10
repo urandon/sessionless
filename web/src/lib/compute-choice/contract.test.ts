@@ -64,6 +64,16 @@ function page(): Page {
 }
 
 describe('unmounted closed compute-choice OpenAPI contract', () => {
+  it.each(['模型 😀', 'café e\u0301', 'model\u00a0name'])(
+    'accepts reviewed ordinary Unicode display copy %s',
+    (label) => {
+      const value = page();
+      choice(value).model_label = label;
+      choice(value).provider_label = label;
+      expect(validate(value), JSON.stringify(validate.errors)).toBe(true);
+    },
+  );
+
   it('accepts typed public observations without manufacturing execution authority', () => {
     const value = page();
     expect(validate(value), JSON.stringify(validate.errors)).toBe(true);
@@ -110,6 +120,20 @@ describe('unmounted closed compute-choice OpenAPI contract', () => {
   });
 
   it.each([
+    ['newline label', (v: Page) => Reflect.set(choice(v), 'model_label', 'model\nsecret')],
+    ['bidi label', (v: Page) => Reflect.set(choice(v), 'model_label', 'model\u202esecret')],
+    ['leading space label', (v: Page) => Reflect.set(choice(v), 'model_label', ' model')],
+    ['trailing space label', (v: Page) => Reflect.set(choice(v), 'model_label', 'model ')],
+    ['tab label', (v: Page) => Reflect.set(choice(v), 'model_label', 'model\tname')],
+    ['format label', (v: Page) => Reflect.set(choice(v), 'model_label', 'model\u200bname')],
+    ['leading NBSP label', (v: Page) => Reflect.set(choice(v), 'model_label', '\u00a0model')],
+    ['trailing NBSP label', (v: Page) => Reflect.set(choice(v), 'model_label', 'model\u00a0')],
+    ['control NEL label', (v: Page) => Reflect.set(choice(v), 'model_label', 'model\u0085name')],
+    ['control DEL label', (v: Page) => Reflect.set(choice(v), 'model_label', 'model\u007fname')],
+    [
+      'provider bidi label',
+      (v: Page) => Reflect.set(choice(v), 'provider_label', 'provider\u202ename'),
+    ],
     ['private page key', (v: Page) => Reflect.set(v, 'tenant_id', 'private-tenant')],
     ['version', (v: Page) => Reflect.set(v, 'version', 2)],
     ['input', (v: Page) => Reflect.set(v, 'input_kind', 'public')],

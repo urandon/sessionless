@@ -178,6 +178,14 @@ func TestComputeChoicesRejectContradictoryShape(t *testing.T) {
 		{"invalid_utf8", func(v *webcontract.ComputeChoicesPageV1) { v.Choices[0].ModelLabel = string([]byte{0xff}) }},
 		{"control_label", func(v *webcontract.ComputeChoicesPageV1) { v.Choices[0].ProviderLabel = "provider\nsecret" }},
 		{"bidi_label", func(v *webcontract.ComputeChoicesPageV1) { v.Choices[0].ProviderLabel = "provider\u202esecret" }},
+		{"leading_space_label", func(v *webcontract.ComputeChoicesPageV1) { v.Choices[0].ModelLabel = " model" }},
+		{"trailing_space_label", func(v *webcontract.ComputeChoicesPageV1) { v.Choices[0].ModelLabel = "model " }},
+		{"tab_label", func(v *webcontract.ComputeChoicesPageV1) { v.Choices[0].ModelLabel = "model\tname" }},
+		{"format_label", func(v *webcontract.ComputeChoicesPageV1) { v.Choices[0].ModelLabel = "model\u200bname" }},
+		{"leading_nbsp_label", func(v *webcontract.ComputeChoicesPageV1) { v.Choices[0].ModelLabel = "\u00a0model" }},
+		{"trailing_nbsp_label", func(v *webcontract.ComputeChoicesPageV1) { v.Choices[0].ModelLabel = "model\u00a0" }},
+		{"control_nel_label", func(v *webcontract.ComputeChoicesPageV1) { v.Choices[0].ModelLabel = "model\u0085name" }},
+		{"control_del_label", func(v *webcontract.ComputeChoicesPageV1) { v.Choices[0].ModelLabel = "model\u007fname" }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -284,5 +292,22 @@ func TestComputeChoicesAggregateWindowCannotOutliveCapacity(t *testing.T) {
 	v.Choices[0].ValidUntil = &expiry
 	if err := v.Validate(); err != nil {
 		t.Fatalf("aggregate at shortest known source expiry: %v", err)
+	}
+}
+
+func TestComputeChoicesOrdinaryUnicodeLabels(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, label string }{
+		{"multilingual_emoji", "模型 😀"},
+		{"combining_marks", "café e\u0301"},
+		{"internal_nbsp", "model\u00a0name"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := computeChoicesFixture()
+			v.Choices[0].ModelLabel, v.Choices[0].ProviderLabel = tc.label, tc.label
+			if _, err := json.Marshal(v); err != nil {
+				t.Fatalf("ordinary reviewed label %q rejected: %v", tc.label, err)
+			}
+		})
 	}
 }

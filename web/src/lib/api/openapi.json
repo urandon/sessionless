@@ -681,6 +681,7 @@
         "type": "string",
         "minLength": 1,
         "maxLength": 128,
+        "pattern": "^(?!\\p{White_Space})(?![\\s\\S]*[\\p{Cc}\\p{Cf}])(?![\\s\\S]*\\p{White_Space}$)[\\s\\S]+$",
         "description": "Operator-reviewed UTF-8 display copy, at most 128 encoded bytes (not merely code points), without leading/trailing space, control or format characters. No endpoint/host/account/credential-derived copy. Syntactic validation cannot certify review."
       },
       "ComputeChoiceDisclosureV1": {

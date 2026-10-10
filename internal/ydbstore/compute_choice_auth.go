@@ -89,6 +89,9 @@ func readComputeChoiceAuth(ctx context.Context, query *computeChoiceQuery, diges
 	if err := query.QueryRowContext(ctx, `SELECT CurrentUtcTimestamp()`).Scan(&at); err != nil {
 		return result, query.readError(err)
 	}
+	if err := query.budget.RecordMaterialized(computechoice.SourceOrdinary, 8); err != nil {
+		return result, err
+	}
 	if at.IsZero() {
 		return result, errComputeChoiceSource
 	}
@@ -105,6 +108,9 @@ func readComputeChoiceAuth(ctx context.Context, query *computeChoiceQuery, diges
 		return result, query.readError(err)
 	}
 	var cookie domain.WebSession
+	if err := query.budget.RecordMaterialized(computechoice.SourceOrdinary, 4*8); err != nil {
+		return result, err
+	}
 	if err := decodeComputeChoiceRecord(query.budget, encoded, &cookie, computeChoiceCookieFields, userID, tenantID, csrf); err != nil {
 		return result, err
 	}
@@ -131,6 +137,9 @@ func readComputeChoiceAuth(ctx context.Context, query *computeChoiceQuery, diges
 		return result, query.readError(err)
 	}
 	var membership domain.TenantMembership
+	if err := query.budget.RecordMaterialized(computechoice.SourceOrdinary, 8); err != nil {
+		return result, err
+	}
 	if err := decodeComputeChoiceRecord(query.budget, encoded, &membership, computeChoiceMembershipFields, role, status); err != nil {
 		return result, err
 	}
@@ -150,6 +159,9 @@ func readComputeChoiceAuth(ctx context.Context, query *computeChoiceQuery, diges
 		return result, query.readError(err)
 	}
 	var session domain.Session
+	if err := query.budget.RecordMaterialized(computechoice.SourceOrdinary, 2*8); err != nil {
+		return result, err
+	}
 	if err := decodeComputeChoiceRecord(query.budget, encoded, &session, computeChoiceSessionFields, userID, status); err != nil {
 		return result, err
 	}

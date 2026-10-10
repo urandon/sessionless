@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"time"
+
+	"gitcode.com/urandon/sessionless/internal/computechoice"
 )
 
 // Private trusted deployment pins must describe the FULL reviewed binding
@@ -51,6 +53,9 @@ func readComputeChoiceCutover(ctx context.Context, query *computeChoiceQuery, pi
 		return query.readError(err)
 	}
 	var record computeChoiceCutoverRecord
+	if err := query.budget.RecordMaterialized(computechoice.SourceOrdinary, 3*4+1+2*8); err != nil {
+		return err
+	}
 	if err := decodeComputeChoiceRecord(query.budget, encoded, &record, computeChoiceCutoverFields, scalar.ManifestDigest, scalar.WriterCommit, scalar.DrainedInventoryDigest); err != nil {
 		return err
 	}

@@ -10,6 +10,24 @@ one migration would make crash recovery ambiguous.
 
 ## Baseline freeze
 
+Migrations `00110` and `00111` add the exact-key installed-profile and
+per-Attempt/component spending current projections for #189. Their lossless
+`String` records and physical scalars are strictly correlated by bounded private
+readers; revocation tombstones and Attempt attachments have no independent TTL.
+These tables do not authenticate installation or funding, create balances,
+enable a runtime, or publish approval. Trusted source publication/CAS/audit,
+original admission references, Session retention joins and writer-first rollout
+remain mandatory before any consumer is mounted. There is no serving consumer
+in this prerequisite slice. Apply only under separate migration authority.
+
+`make owned-current-ydb-gate` verifies exact schema/read correlation and native
+serializable read-versus-revocation conflict on an explicitly disposable migrated
+loopback YDB. Set `SESSIONLESS_OWNED_CURRENT_YDB_DISPOSABLE=1` and the usual
+`YDB_CONNECTION_STRING`/credential environment. Raw test-owned rows are scripted
+storage controls, not evidence of trusted publication, permitted payment or
+profile activation. The suite removes only its unique exact-key rows; it does
+not drop tables or alter shared serving receipts.
+
 Migration `00102` adds the bounded, non-authoritative `run_explanation_heads_v1`
 read projection (design 0.1.2, #187). Apply its additive schema only under
 separate migration authority, then upgrade every canonical writer before

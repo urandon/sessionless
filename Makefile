@@ -311,6 +311,12 @@ admission-cost-ydb-gate: prepare
 	SESSIONLESS_RUN_EXPLANATION_YDB_GATE=1 go test -race -count=3 -shuffle=on -timeout=5m -tags=ydbintegration \
 		-run '^(TestAdmissionCostV2YDB|TestAdmissionCostV2ServingGate)' ./test/ydbintegration
 
+.PHONY: owned-current-ydb-gate
+# Explicit disposable loopback DB required; never publication/activation proof.
+owned-current-ydb-gate: prepare
+	SESSIONLESS_OWNED_CURRENT_YDB_GATE=1 go test -race -count=3 -shuffle=on -timeout=5m \
+		-run '^TestOwnedCurrentYDB' ./internal/ydbstore
+
 .PHONY: web-auth-ydb-gate
 web-auth-ydb-gate: prepare
 	go test -race -count=3 -shuffle=on -timeout=5m -tags=ydbintegration \

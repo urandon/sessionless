@@ -272,7 +272,7 @@ func nativeOpenCodeConformanceFixture(t *testing.T, driver *Driver) harnessconfo
 		CapabilityEvidenceDigest: string(capabilityDigest), EffectivePolicyDigest: string(policyDigest),
 		ExecutionPlacementDigest: string(placementDigest), EvidenceExpiresAt: &expires,
 	}
-	bundle := harnessconformance.EvidenceBundleV1{
+	bundle := domain.ProviderEvidenceBundleV1{
 		Catalog: catalog, Route: route, Capability: capability, Privacy: privacy, Price: price, Policy: policy,
 	}
 	fixture := harnessconformance.FixtureV1{

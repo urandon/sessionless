@@ -132,7 +132,7 @@ func subscriptionConformanceFixture(
 	binding.CapabilityEvidenceDigest = string(capabilityDigest)
 	binding.EffectivePolicyDigest = string(policyDigest)
 	binding.EvidenceExpiresAt = &expires
-	bundle := harnessconformance.EvidenceBundleV1{
+	bundle := domain.ProviderEvidenceBundleV1{
 		Catalog: catalog, Route: route, Capability: capability,
 		Privacy: privacy, Price: price, Policy: policy,
 	}

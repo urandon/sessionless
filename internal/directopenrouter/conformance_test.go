@@ -198,7 +198,7 @@ func nativeConformanceFixture(t *testing.T, driver *Driver) harnessconformance.F
 		Version: harnessconformance.VersionV1, FixtureID: "direct-openrouter-native-preflight",
 		Placement: authority.ExecutionPlacementV2, Binding: binding, SubstrateBinding: authority.SubstrateBinding,
 		AdmissionCostCeiling: authority.AdmissionCostCeiling,
-		EvidenceBundle:       &harnessconformance.EvidenceBundleV1{Catalog: catalog, Route: route, Capability: capability, Privacy: privacy, Price: price, Policy: policy},
+		EvidenceBundle:       &domain.ProviderEvidenceBundleV1{Catalog: catalog, Route: route, Capability: capability, Privacy: privacy, Price: price, Policy: policy},
 		Operation:            harnessconformance.OperationPreflightV1,
 		Expected:             harnessconformance.ExpectedV1{RegistryContract: harnessconformance.RegistryContractPassV1, BackendProtocol: harnessconformance.BackendProtocolSupportedV1},
 	}

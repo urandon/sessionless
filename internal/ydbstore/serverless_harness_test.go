@@ -31,6 +31,7 @@ type effectCommitFixture struct {
 	premature                int
 	preparationTimePresent   uint64
 	preparationDigestPresent uint64
+	allocationPresent        uint64
 	issuer                   *serverlessharness.CapabilityIssuer
 }
 
@@ -81,18 +82,19 @@ func (f *effectCommitFixture) QueryContext(_ context.Context, query string, args
 	if err != nil {
 		return nil, err
 	}
-	return &effectCommitRows{payload: payload, preparationTimePresent: f.preparationTimePresent, preparationDigestPresent: f.preparationDigestPresent}, nil
+	return &effectCommitRows{payload: payload, preparationTimePresent: f.preparationTimePresent, preparationDigestPresent: f.preparationDigestPresent, allocationPresent: f.allocationPresent}, nil
 }
 
 type effectCommitRows struct {
 	payload                  string
 	preparationTimePresent   uint64
 	preparationDigestPresent uint64
+	allocationPresent        uint64
 	done                     bool
 }
 
 func (*effectCommitRows) Columns() []string {
-	return []string{"record", "owned_present", "digest_present", "preparation_time_present", "preparation_digest_present"}
+	return []string{"record", "owned_present", "digest_present", "preparation_time_present", "preparation_digest_present", "allocation_present"}
 }
 func (*effectCommitRows) Close() error { return nil }
 func (r *effectCommitRows) Next(out []driver.Value) error {
@@ -103,6 +105,7 @@ func (r *effectCommitRows) Next(out []driver.Value) error {
 	out[0] = r.payload
 	out[1], out[2] = int64(0), int64(0)
 	out[3], out[4] = r.preparationTimePresent, r.preparationDigestPresent
+	out[5] = r.allocationPresent
 	return nil
 }
 func (f *effectCommitFixture) MintAttemptEffectOwnershipGrant(a domain.ServerlessInvocationAuthorityV1, r domain.AttemptEffectReservationV1, expires time.Time) (ports.AttemptEffectOwnershipGrantV1, error) {
@@ -127,7 +130,7 @@ func (f *effectCommitFixture) MintAttemptEffectObservationGrant(a domain.Serverl
 }
 
 func TestAttemptEffectGrantsRequireConfirmedCommit(t *testing.T) {
-	for _, name := range []string{"success", "commit_failure", "retry_success", "retry_read_failure", "mint_failure", "missing_issuer", "orphan_preparation_time", "orphan_preparation_digest", "legacy_preparation_pair"} {
+	for _, name := range []string{"success", "commit_failure", "retry_success", "retry_read_failure", "mint_failure", "missing_issuer", "orphan_preparation_time", "orphan_preparation_digest", "legacy_preparation_pair", "orphan_allocation"} {
 		t.Run(name, func(t *testing.T) {
 			at := time.Unix(20, 0).UTC()
 			managed, err := sessionlessharness.NewDeterministicFixtureManagedAuthorityV2("tenant-test", "user-test", "run-test", "attempt-test", "subscription-test", time.Unix(10, 0).UTC())
@@ -163,6 +166,9 @@ func TestAttemptEffectGrantsRequireConfirmedCommit(t *testing.T) {
 			}
 			if name == "orphan_preparation_digest" || name == "legacy_preparation_pair" {
 				f.preparationDigestPresent = 1
+			}
+			if name == "orphan_allocation" {
+				f.allocationPresent = 1
 			}
 			db := sql.OpenDB(f)
 			db.SetMaxOpenConns(1)

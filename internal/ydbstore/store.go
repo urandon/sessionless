@@ -41,6 +41,7 @@ type Options struct {
 	AttemptSpendingPublicationVerifier ports.AttemptSpendingPublicationVerifierV1
 	OwnedAttemptEffectSourceVerifier   ports.OwnedAttemptEffectSourceVerifierV1
 	OwnedPreparationGrantVerifier      ports.OwnedPreparationGrantVerifierV1
+	OwnedAllocationPublicationVerifier ports.OwnedAllocationPublicationVerifierV1
 }
 
 type Store struct {
@@ -54,6 +55,7 @@ type Store struct {
 	attemptSpendingPublicationVerifier ports.AttemptSpendingPublicationVerifierV1
 	ownedAttemptEffectSourceVerifier   ports.OwnedAttemptEffectSourceVerifierV1
 	ownedPreparationGrantVerifier      ports.OwnedPreparationGrantVerifierV1
+	ownedAllocationPublicationVerifier ports.OwnedAllocationPublicationVerifierV1
 }
 
 func New(db *sql.DB, options Options) (*Store, error) {
@@ -80,6 +82,7 @@ func New(db *sql.DB, options Options) (*Store, error) {
 		attemptSpendingPublicationVerifier: options.AttemptSpendingPublicationVerifier,
 		ownedAttemptEffectSourceVerifier:   options.OwnedAttemptEffectSourceVerifier,
 		ownedPreparationGrantVerifier:      options.OwnedPreparationGrantVerifier,
+		ownedAllocationPublicationVerifier: options.OwnedAllocationPublicationVerifier,
 	}, nil
 }
 

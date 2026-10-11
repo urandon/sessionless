@@ -1,6 +1,6 @@
 # Current authority for the owned agent harness
 
-Version: 0.1.9, engineering draft, 2026-10-11. Implementation owner:
+Version: 0.1.10, engineering draft, 2026-10-11. Implementation owner:
 [#189](https://gitcode.com/urandon/sessionless/issues/189), under
 [#176](https://gitcode.com/urandon/sessionless/issues/176). This extension
 defines the current-authority requirements of the accepted
@@ -415,9 +415,60 @@ The bridge does not
 recover a process-local MAC after restart, prove production installation or debit
 monetary setup/operation budgets. Original unknown preparation requires bounded
 reconciliation/cleanup by its owning supervisor, not execution resume. Trusted
-registration/readback and retention/cancellation integration remain mandatory
-next work. The burn is retained with its original parent, not independently aged
+proxy registration and complete retention/cancellation integration remain mandatory
+work. The burn is retained with its original parent, not independently aged
 out or deleted; full shared Session cleanup coverage remains an open #189 gate.
+
+### Allocation registration from actual preparation
+
+The [private allocation producer](../../internal/serverlessharness/owned_allocation_preparation.go)
+fixes the concrete existing `InProcessExecutionSubstrateV1`, its issuer and the
+credential-free fixture binding at construction. It invokes the confirmed-burn
+preflight path itself; it does not sign caller allocations or accept arbitrary
+prepared capabilities. The resulting observation seals the complete original
+authority, parent and prepared-allocation digests, original prepared capability
+digest and expiry, observation time and the linked substrate's in-process
+identity. Generation one describes that original instance, not a cloud process.
+Only the observation leaves this wrapper; the executable prepared token does not.
+
+The [registration Store](../../internal/ydbstore/owned_allocation_registration.go)
+authenticates that producer observation and reloads the same original parent,
+confirmed burn and retained Final/source. First publication also joins all current
+canonical authority in the same bounded serializable transaction. The observation
+cannot precede the actual burn or come from the future. Publication uses database
+time and the minimum original authority deadlines, never a renewed setup window.
+The create-once attachment consists of six nullable columns on the existing sole
+parent: original/current canonical records and their digests, the original
+publication-intent digest and the previous digest of the latest lifecycle CAS.
+All fields are absent together before creation; partial or unrelated bytes deny
+without repair. Public legacy readers reject any of these owned child columns.
+
+The original active snapshot remains immutable. Retirement/revocation changes
+only the current lifecycle, generation and database update time under exact
+predecessor CAS. Exact lost-acknowledgement recovery returns the retained result;
+conflicting or superseded transitions deny. No transition resurrects an active
+head or changes its original fields. Historical readback authenticates the
+retained parent/source, snapshot and exact original intent without requiring a
+surviving process MAC. Current readback additionally joins current canonical
+authority and active-window checks. Neither returns execution permission.
+
+After an uncertain publication response, retry the SAME observation or read
+retained history. Never call preparation again. Missing registration after a burn
+remains unknown and reconcile-only; restart cannot manufacture or replace it.
+
+Shared Session deletion uses the existing tenant-scoped Final reverse inventory
+and the same transaction as legal-hold, terminal-Run and pending-receipt gates.
+It can erase an unprepared original parent with its Final. Any burn or allocation
+child blocks completion and preserves both until an authenticated no-residual
+effect/cleanup disposition is implemented. A retired record alone is not that
+proof. This is retention fencing, not completion of burned-allocation cleanup.
+
+Provider, MCP and search proxy publication remains unsupported: the existing
+egress package has a contract/boundary but no concrete trusted proxy producer.
+Copied artifact digests or scripted DNS/TLS booleans cannot prove enforcement.
+Real proxy implementation, setup/operation debits, before-send one-use checks,
+installed production source custody and complete unknown-effect/retention
+disposition remain required before owned serving or #189 closure.
 
 ## Transaction and resource bounds
 

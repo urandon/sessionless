@@ -12,35 +12,52 @@ const ownedAttemptPreparationBurnSQL = `SELECT
  CASE WHEN preparation_started_at IS NULL THEN CAST(0 AS Uint64) ELSE CAST(1 AS Uint64) END,
  CASE WHEN preparation_parent_digest IS NULL THEN CAST(0 AS Uint64) ELSE CAST(1 AS Uint64) END,
  COALESCE(preparation_started_at,CAST(0 AS Timestamp)),
- COALESCE(SUBSTRING(CAST(preparation_parent_digest AS String),0,65),CAST('' AS String))
+ COALESCE(SUBSTRING(CAST(preparation_parent_digest AS String),0,65),CAST('' AS String)),
+ CASE WHEN allocation_original_record IS NOT NULL OR allocation_original_digest IS NOT NULL
+ OR allocation_current_record IS NOT NULL OR allocation_current_digest IS NOT NULL
+ OR allocation_publication_digest IS NOT NULL OR allocation_transition_parent_digest IS NOT NULL
+ THEN CAST(1 AS Uint64) ELSE CAST(0 AS Uint64) END
  FROM attempt_effect_reservations WHERE tenant_id=$1 AND attempt_id=$2 AND kind=$3`
 
 const ownedAttemptPreparationBurnUpdateSQL = `UPDATE attempt_effect_reservations
  SET preparation_started_at=$1,preparation_parent_digest=$2
  WHERE tenant_id=$3 AND attempt_id=$4 AND kind=$5 AND owned_digest=$2
- AND record IS NULL AND preparation_started_at IS NULL AND preparation_parent_digest IS NULL`
+ AND record IS NULL AND preparation_started_at IS NULL AND preparation_parent_digest IS NULL
+ AND allocation_original_record IS NULL AND allocation_original_digest IS NULL
+ AND allocation_current_record IS NULL AND allocation_current_digest IS NULL
+ AND allocation_publication_digest IS NULL AND allocation_transition_parent_digest IS NULL`
 
 // A burn is preserved with its original sole parent, including after expiry or
 // cancellation. It is NOT a registration, successful-preparation observation,
 // fresh send capability or a new Attempt lifecycle. Do not clear it on failure.
 func readOwnedPreparationBurn(ctx context.Context, q *ownedAuthorityQuery, parent domain.OwnedAttemptEffectParentV1) (bool, error) {
-	var timePresent, digestPresent uint64
+	burned, _, err := readOwnedPreparationBurnObservation(ctx, q, parent)
+	return burned, err
+}
+
+// The canonical validator is shared with authentic post-preparation publication,
+// which must not precede this exact committed setup burn.
+func readOwnedPreparationBurnObservation(ctx context.Context, q *ownedAuthorityQuery, parent domain.OwnedAttemptEffectParentV1) (bool, time.Time, error) {
+	var timePresent, digestPresent, allocationPresent uint64
 	var startedAt time.Time
 	var digest string
 	r := parent.Reservation
-	err := q.scanMetadata(ctx, ownedAttemptPreparationBurnSQL, []any{r.TenantID, r.AttemptID, r.Kind}, &timePresent, &digestPresent, &startedAt, &digest)
+	err := q.scanMetadata(ctx, ownedAttemptPreparationBurnSQL, []any{r.TenantID, r.AttemptID, r.Kind}, &timePresent, &digestPresent, &startedAt, &digest, &allocationPresent)
 	if err != nil {
-		return false, q.budget.deny()
+		return false, time.Time{}, q.budget.deny()
 	}
 	if timePresent == 0 && digestPresent == 0 && digest == "" {
-		return false, nil
+		if allocationPresent != 0 {
+			return false, time.Time{}, q.budget.deny()
+		}
+		return false, time.Time{}, nil
 	}
 	expected, digestErr := parent.Digest()
 	if timePresent != 1 || digestPresent != 1 || digestErr != nil || len(digest) != 64 || digest != expected ||
 		!ownedEffectTime(startedAt) || startedAt.Before(r.ReservedAt) || startedAt.After(q.at) || !startedAt.Before(parent.PreparationExpiresAt) {
-		return false, q.budget.deny()
+		return false, time.Time{}, q.budget.deny()
 	}
-	return true, nil
+	return true, startedAt.UTC(), nil
 }
 
 // Private trusted composition only. true means this logical call confirmed the

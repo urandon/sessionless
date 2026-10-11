@@ -151,7 +151,7 @@ func (c ownedAttemptEffectParentConn) QueryContext(ctx context.Context, statemen
 	case ownedAttemptPreparationBurnSQL:
 		c.fixture.burnReads++
 		c.fixture.base.recordQuery(statement, args)
-		return &explanationFixtureRows{values: append([]driver.Value(nil), c.fixture.burnRow...)}, nil
+		return &explanationFixtureRows{values: append(append([]driver.Value(nil), c.fixture.burnRow...), uint64(0))}, nil
 	case ownedAttemptEffectLeaseSQL:
 		c.fixture.leaseReads++
 		c.fixture.base.recordQuery(statement, args)

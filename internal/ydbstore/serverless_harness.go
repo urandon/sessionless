@@ -257,18 +257,22 @@ func (store *Store) mintAttemptEffectObservationGrant(record attemptEffectRecord
 
 func readAttemptEffectRecordTx(ctx context.Context, tx *stateTx, attemptID domain.AttemptID) (attemptEffectRecordV1, bool, error) {
 	var raw string
-	var ownedPresent, digestPresent, preparationTimePresent, preparationDigestPresent uint64
+	var ownedPresent, digestPresent, preparationTimePresent, preparationDigestPresent, allocationPresent uint64
 	err := tx.sqlTx.QueryRowContext(ctx, `SELECT SUBSTRING(CAST(record AS String),0,32769),
  CASE WHEN owned_record IS NULL THEN CAST(0 AS Uint64) ELSE CAST(1 AS Uint64) END,
  CASE WHEN owned_digest IS NULL THEN CAST(0 AS Uint64) ELSE CAST(1 AS Uint64) END,
  CASE WHEN preparation_started_at IS NULL THEN CAST(0 AS Uint64) ELSE CAST(1 AS Uint64) END,
- CASE WHEN preparation_parent_digest IS NULL THEN CAST(0 AS Uint64) ELSE CAST(1 AS Uint64) END
+ CASE WHEN preparation_parent_digest IS NULL THEN CAST(0 AS Uint64) ELSE CAST(1 AS Uint64) END,
+ CASE WHEN allocation_original_record IS NOT NULL OR allocation_original_digest IS NOT NULL
+ OR allocation_current_record IS NOT NULL OR allocation_current_digest IS NOT NULL
+ OR allocation_publication_digest IS NOT NULL OR allocation_transition_parent_digest IS NOT NULL
+ THEN CAST(1 AS Uint64) ELSE CAST(0 AS Uint64) END
  FROM attempt_effect_reservations WHERE tenant_id=$1 AND attempt_id=$2 AND kind=$3`,
-		tx.tenantID, attemptID, domain.ProviderEffectTurnV1).Scan(&raw, &ownedPresent, &digestPresent, &preparationTimePresent, &preparationDigestPresent)
+		tx.tenantID, attemptID, domain.ProviderEffectTurnV1).Scan(&raw, &ownedPresent, &digestPresent, &preparationTimePresent, &preparationDigestPresent, &allocationPresent)
 	if errors.Is(err, sql.ErrNoRows) {
 		return attemptEffectRecordV1{}, false, nil
 	}
-	if err != nil || ownedPresent != 0 || digestPresent != 0 || preparationTimePresent != 0 || preparationDigestPresent != 0 || len(raw) > ownedAuthorityHeadBytes {
+	if err != nil || ownedPresent != 0 || digestPresent != 0 || preparationTimePresent != 0 || preparationDigestPresent != 0 || allocationPresent != 0 || len(raw) > ownedAuthorityHeadBytes {
 		return attemptEffectRecordV1{}, false, domain.ErrMembershipDenied
 	}
 	var record attemptEffectRecordV1

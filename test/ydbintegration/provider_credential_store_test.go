@@ -5,6 +5,7 @@ package ydbintegration
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -19,12 +20,30 @@ func TestProviderCredentialAuthorityReplayRotationCleanupAndRevoke(t *testing.T)
 	store, _ := openStore(t)
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Microsecond)
+	nonce := strconv.FormatInt(time.Now().UnixNano(), 10)
 	locator := ports.ProviderCredentialLocatorV1{
-		TenantID:     domain.TenantID(uniqueID("provider-credential-tenant")),
+		TenantID:     domain.TenantID(uniqueID("provider-credential-tenant-" + nonce)),
 		OwnerUserID:  domain.UserID(uniqueID("provider-credential-owner")),
 		ResourceKind: domain.ProviderResourceRouterAccountV1,
 		ResourceID:   uniqueID("openrouter-account"),
 	}
+	registerCleanup := func(owned ports.ProviderCredentialLocatorV1) {
+		t.Cleanup(func() {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			items, err := store.ListProviderCredentialCleanups(cleanupCtx, owned, 8)
+			if err != nil {
+				t.Errorf("owned cleanup enumeration: %v", err)
+				return
+			}
+			for _, item := range items {
+				if err := store.AcknowledgeProviderCredentialCleanup(cleanupCtx, item); err != nil {
+					t.Errorf("owned cleanup acknowledgment: %v", err)
+				}
+			}
+		})
+	}
+	registerCleanup(locator)
 	first := providerCredentialBindingFixture(t, locator, 1, 1, "lockbox/provider/candidate-1", "openrouter-key-1", now)
 	applied, err := store.CompareAndSwapProviderCredential(ctx, 0, first)
 	if err != nil || !applied.Applied || applied.Binding != first || applied.AuditReceiptID == "" {
@@ -52,9 +71,63 @@ func TestProviderCredentialAuthorityReplayRotationCleanupAndRevoke(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	page, err := store.ListDueProviderCredentialCleanups(ctx, bucket, now.Add(2*time.Second), ports.ProviderCredentialCleanupCursorV1{}, 8)
-	if err != nil || len(page.Items) != 1 || page.Items[0].Cleanup != cleanups[0] || !page.NextCursor.Present {
-		t.Fatalf("global cleanup page=%+v err=%v", page, err)
+	// A shard is shared, including on a fresh stand within one shuffled suite.
+	// Add a deliberate earlier same-shard item so isolation is not accidental.
+	other := locator
+	foundBucket := false
+	for attempt := 0; attempt < 4096; attempt++ {
+		other.ResourceID = uniqueID("global-cleanup-control")
+		otherBucket, err := ydbpartition.BucketV1(strings.Join([]string{string(other.TenantID), string(other.OwnerUserID), string(other.ResourceKind), other.ResourceID}, "\x00"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if otherBucket == bucket {
+			foundBucket = true
+			break
+		}
+	}
+	if !foundBucket {
+		t.Fatal("same-shard control fixture search exhausted")
+	}
+	registerCleanup(other)
+	otherFirst := providerCredentialBindingFixture(t, other, 1, 1, "lockbox/provider/control-1", "control-key-1", now)
+	otherSecond := providerCredentialBindingFixture(t, other, 2, 2, "lockbox/provider/control-2", "control-key-2", now.Add(500*time.Millisecond))
+	for index, binding := range []domain.ProviderCredentialBindingV1{otherFirst, otherSecond} {
+		if result, err := store.CompareAndSwapProviderCredential(ctx, uint64(index), binding); err != nil || !result.Applied {
+			t.Fatalf("control swap=%+v err=%v", result, err)
+		}
+	}
+	cursor := ports.ProviderCredentialCleanupCursorV1{}
+	foundOwn, foundControl := false, false
+	for pageIndex := 0; pageIndex < 64; pageIndex++ {
+		page, err := store.ListDueProviderCredentialCleanups(ctx, bucket, now.Add(2*time.Second), cursor, 8)
+		if err != nil || len(page.Items)+int(page.SkippedInvalid) > 8 {
+			t.Fatalf("global cleanup page=%+v err=%v", page, err)
+		}
+		for _, item := range page.Items {
+			if item.Cleanup == cleanups[0] {
+				if foundOwn || !item.CreatedAt.Equal(second.UpdatedAt) {
+					t.Fatalf("duplicate or mistimed own cleanup=%+v", item)
+				}
+				foundOwn = true
+			}
+			if item.Cleanup.Locator == other && item.Cleanup.CredentialGeneration == 1 && item.Cleanup.Reference == otherFirst.SecretRef {
+				foundControl = true
+			}
+		}
+		if len(page.Items)+int(page.SkippedInvalid) > 0 && (!page.NextCursor.Present || page.NextCursor == cursor) {
+			t.Fatalf("non-advancing global cleanup cursor=%+v", page)
+		}
+		if foundOwn && foundControl {
+			break
+		}
+		if !page.HasMore {
+			t.Fatalf("global enumeration missed own/control cleanup: own=%v control=%v page=%+v", foundOwn, foundControl, page)
+		}
+		cursor = page.NextCursor
+	}
+	if !foundOwn || !foundControl {
+		t.Fatalf("global cleanup scan budget exhausted: own=%v control=%v", foundOwn, foundControl)
 	}
 	if err := store.AcknowledgeProviderCredentialCleanup(ctx, cleanups[0]); err != nil {
 		t.Fatal(err)

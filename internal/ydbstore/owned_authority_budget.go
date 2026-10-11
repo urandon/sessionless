@@ -102,10 +102,11 @@ func (b *ownedAuthorityBudget) check() error {
 }
 
 type ownedAuthorityQuery struct {
-	tx       *sql.Tx
-	budget   *ownedAuthorityBudget
-	callback int
-	at       time.Time
+	tx            *sql.Tx
+	budget        *ownedAuthorityBudget
+	callback      int
+	at            time.Time
+	metadataCache map[string]ownedMetadataCacheEntry // opt-in; only this callback
 }
 
 func (q *ownedAuthorityQuery) QueryRowContext(ctx context.Context, statement string, args ...any) *sql.Row {
@@ -124,6 +125,7 @@ func (q *ownedAuthorityQuery) ExecContext(ctx context.Context, statement string,
 	if err := q.budget.statement(ctx, q.callback); err != nil {
 		return nil, err
 	}
+	q.invalidateMetadata(statement)
 	return q.tx.ExecContext(ctx, statement, args...)
 }
 

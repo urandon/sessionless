@@ -1,6 +1,6 @@
 # Current authority for the owned agent harness
 
-Version: 0.1.3, engineering draft, 2026-10-11. Implementation owner:
+Version: 0.1.4, engineering draft, 2026-10-11. Implementation owner:
 [#189](https://gitcode.com/urandon/sessionless/issues/189), under
 [#176](https://gitcode.com/urandon/sessionless/issues/176). This extension
 defines the current-authority requirements of the accepted
@@ -376,6 +376,62 @@ This prerequisite does not wire a serving owned admission caller, establish
 the complete scheduler's worst-case bounds, authenticate installation, create
 a final admission attachment or complete retention. Those remaining gates
 above are unchanged; a small helper-only transaction is not their proof.
+
+The complete existing scheduler callback is now shared by ordinary serving
+admission and a private bounded **managed-only** composition. It is not a second
+scheduler or an enabled owned admission port. The attached serving path keeps
+its existing transaction and lease/transport writes; it is not silently subjected
+to the managed 32-statement limit. All decisions and speculative result fields
+are reset on every SDK callback and cleared on an unconfirmed result, including
+ordinary serving admission. A rolled-back `admitted` decision cannot survive a
+retry that observes a cancelled/nonpending outbox.
+
+The private managed composition samples database time before its outbox read,
+uses that time for every existing decision/write and preserves the original
+absolute capacity hold deadline (no retry renewal). It includes entitlement,
+slot, counters, canonical Run/quota/Job/index writes, explanation, complete
+snapshot selection and audit. Scalar prefixes/collectors charge all returned
+metadata before closed enum, exact integer, timestamp and canonical identity
+validation. Historical reservation ID collisions cannot recreate a hold; exact
+slot/reservation/Job replay remains read-only and cannot refresh its expiry.
+
+Its opt-in metadata cache is private to one callback and serializable snapshot.
+It only caches explicitly bounded canonical point JSON and explanation-head
+reads, including absence. Every SQL write invalidates its table before execution;
+unknown/qualified syntax clears the cache conservatively. A retry starts with a
+new empty cache; cached values cannot bypass a failed budget or deadline. Only
+actual SQL/materialized bytes are charged; bounded cached bytes were already
+charged on their original read. No profile/funding/proxy permission is cached
+across callbacks or inferred from this optimization.
+
+Explanation selection and admission use the same ordered pure reducers and
+retain every revision/fingerprint/time transition, but the bounded composition
+persists their final head once rather than writing and reloading an intermediate
+selection. Ordinary writers retain their existing persistence path. Canonical
+Run invalidation and previous-Attempt selection ordering remain separate and
+mandatory; replay never creates missing historical evidence.
+
+Bounded previous-Attempt ordering requires the exact queried identity, canonical
+tenant/Run correlation, valid domain shape and no historical timestamp after the
+callback's database time; a missing previous row cannot certify ordering. The
+existing Job writer validates the input manifest's exact physical identity,
+canonical scope/shape and creation time before persisting the Job. Outbox update
+time and replay Job/reservation historical times are similarly bounded by that
+same clock. Future absolute hold/expiry deadlines remain legitimate. These
+checks reuse existing reads, add no SQL, and do not alter ordinary legacy writers.
+
+Instrumented whole-callback controls currently observe 28 SQL for cold managed
+slot/counters/explanation and 31 SQL for a cold prior-denied explanation with
+previous-Attempt selection. Three complete callbacks observe 84 total statements.
+These are credential-free single-turn controls, not the future owned maximum:
+current Session/principal/profile/four spending/final-attachment joins are still
+absent and must fit the SAME original limits, not another helper budget. Native
+whole-graph evidence is recorded separately in #189. Structurally unbounded
+legacy MCP lists and manifest arrays have not acquired a new supported maximum;
+the private capped path does not change serving producer/consumer contracts.
+Writer-first finite owned configuration bounds and the final atomic writer,
+current authority, retention and authentic installation gates remain required
+before any serving cutover. Neither these graphs nor their green tests close #189.
 
 ## Terminal and retention integration
 

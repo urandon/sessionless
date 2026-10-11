@@ -211,6 +211,17 @@ func (s *ownedCurrentScalar) Scan(value any) error {
 				s.valid = true
 			}
 		}
+	case *uint32:
+		switch v := value.(type) {
+		case uint64:
+			if v <= uint64(^uint32(0)) {
+				*destination, s.valid = uint32(v), true
+			}
+		case int64:
+			if v >= 0 && uint64(v) <= uint64(^uint32(0)) {
+				*destination, s.valid = uint32(v), true
+			}
+		}
 	case *time.Time:
 		if v, ok := value.(time.Time); ok {
 			*destination = v

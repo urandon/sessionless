@@ -91,313 +91,388 @@ func (store *Store) AdmitDispatch(
 	result.RunID = request.RunID
 	result.AttemptID = request.AttemptID
 	err = store.Transact(ctx, request.TenantID, func(state ports.StateTx) error {
-		tx := state.(*stateTx)
-		outbox, found, err := readJSON[domain.DispatchOutbox](ctx, tx.sqlTx,
-			`SELECT payload FROM dispatch_outbox
-			 WHERE tenant_id = $1 AND dispatch_outbox_id = $2`,
-			request.TenantID, request.OutboxID,
-		)
-		if err != nil {
-			return err
-		}
-		if !found {
-			return fmt.Errorf("dispatch outbox %q not found", request.OutboxID)
-		}
-		if outbox.RunID != request.RunID || outbox.AttemptID != request.AttemptID {
-			return domain.ValidationError{
-				Field: "dispatch candidate", Reason: "does not match the stored outbox",
-			}
-		}
-		if err := outbox.HarnessBinding.ValidateForScope(
-			outbox.TenantID, outbox.CredentialOwnerUserID, outbox.RunID, outbox.AttemptID, outbox.ExecutionPlacementV2,
-		); err != nil {
-			return err
-		}
-		// Source bytes are not final admission. Until the same-Tx bounded
-		// attachment/current-source writer is wired, neither a valid source nor
-		// an old Job may make an owned Attempt admitted through the legacy path.
-		if outbox.HarnessBinding.Profile == domain.HarnessExecutionOwnedAgentV2 {
+		result = ports.DispatchAdmissionResult{RunID: request.RunID, AttemptID: request.AttemptID}
+		return store.admitDispatchTx(ctx, state.(*stateTx), request, &result)
+	})
+	if err != nil {
+		result = ports.DispatchAdmissionResult{RunID: request.RunID, AttemptID: request.AttemptID}
+	}
+	return result, err
+}
+
+// Compose the complete existing managed graph into one callback/clock/budget.
+// This is private groundwork, not a serving port; the owned gate remains closed.
+func (store *Store) admitBoundedManagedDispatch(ctx context.Context, request ports.DispatchAdmissionRequest) (result ports.DispatchAdmissionResult, err error) {
+	if err = validateAdmissionRequest(request); err != nil {
+		return result, err
+	}
+	err = store.ownedAuthorityTx(ctx, func(ctx context.Context, q *ownedAuthorityQuery) error {
+		result = ports.DispatchAdmissionResult{RunID: request.RunID, AttemptID: request.AttemptID}
+		q.metadataCache = make(map[string]ownedMetadataCacheEntry)
+		current := request
+		current.Now = q.at
+		if !current.HoldUntil.After(q.at) {
 			return domain.ErrMembershipDenied
 		}
-		switch outbox.ExecutionPlacementV2.Kind {
-		case domain.ExecutionPlacementManaged:
-			result.Delivery = ports.DispatchDeliveryManagedQueue
-		case domain.ExecutionPlacementAttachedWorker:
-			result.Delivery = ports.DispatchDeliveryAttachedOffer
-		default:
-			return domain.ValidationError{Field: "dispatch_outbox.execution_placement", Reason: "is unknown"}
-		}
-		if outbox.Status != domain.DispatchPending {
-			result.Code = "dispatch_not_pending"
-			return nil
-		}
-		run, found, err := state.GetRun(ctx, request.RunID)
-		if err != nil {
-			return err
-		}
-		if !found {
-			return fmt.Errorf("run %q not found", request.RunID)
-		}
-		result.SessionID = run.SessionID
-		if outbox.ContextWindow != nil {
-			result.ThroughSequence = outbox.ContextWindow.ThroughSequence
-		}
-		attempt, found, err := state.GetAttempt(ctx, request.AttemptID)
-		if err != nil {
-			return err
-		} else if !found {
-			return fmt.Errorf("attempt %q not found", request.AttemptID)
-		}
+		return store.admitDispatchTx(ctx, q.canonicalState(store, request.TenantID), current, &result)
+	})
+	if err != nil {
+		result = ports.DispatchAdmissionResult{RunID: request.RunID, AttemptID: request.AttemptID}
+	}
+	return result, err
+}
 
-		var entitlementValue, quotaValue string
-		if err := tx.sqlTx.QueryRowContext(ctx,
+func (store *Store) admitDispatchTx(ctx context.Context, tx *stateTx, request ports.DispatchAdmissionRequest, result *ports.DispatchAdmissionResult) error {
+	var state ports.StateTx = tx
+	outbox, found, err := readJSON[domain.DispatchOutbox](ctx, tx.sqlTx,
+		`SELECT payload FROM dispatch_outbox
+			 WHERE tenant_id = $1 AND dispatch_outbox_id = $2`,
+		request.TenantID, request.OutboxID,
+	)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("dispatch outbox %q not found", request.OutboxID)
+	}
+	if q, bounded := tx.sqlTx.(*ownedAuthorityQuery); bounded && (outbox.ID != request.OutboxID || outbox.TenantID != request.TenantID) {
+		return q.budget.deny()
+	}
+	if outbox.RunID != request.RunID || outbox.AttemptID != request.AttemptID {
+		return domain.ValidationError{
+			Field: "dispatch candidate", Reason: "does not match the stored outbox",
+		}
+	}
+	if err := outbox.HarnessBinding.ValidateForScope(
+		outbox.TenantID, outbox.CredentialOwnerUserID, outbox.RunID, outbox.AttemptID, outbox.ExecutionPlacementV2,
+	); err != nil {
+		return err
+	}
+	// Source bytes are not final admission. Until the same-Tx bounded
+	// attachment/current-source writer is wired, neither a valid source nor
+	// an old Job may make an owned Attempt admitted through the legacy path.
+	if outbox.HarnessBinding.Profile == domain.HarnessExecutionOwnedAgentV2 {
+		return domain.ErrMembershipDenied
+	}
+	if _, bounded := tx.sqlTx.(*ownedAuthorityQuery); bounded && outbox.ExecutionPlacementV2.Kind != domain.ExecutionPlacementManaged {
+		return domain.ErrMembershipDenied
+	}
+	switch outbox.ExecutionPlacementV2.Kind {
+	case domain.ExecutionPlacementManaged:
+		result.Delivery = ports.DispatchDeliveryManagedQueue
+	case domain.ExecutionPlacementAttachedWorker:
+		result.Delivery = ports.DispatchDeliveryAttachedOffer
+	default:
+		return domain.ValidationError{Field: "dispatch_outbox.execution_placement", Reason: "is unknown"}
+	}
+	if outbox.Status != domain.DispatchPending {
+		result.Code = "dispatch_not_pending"
+		return nil
+	}
+	run, found, err := state.GetRun(ctx, request.RunID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("run %q not found", request.RunID)
+	}
+	result.SessionID = run.SessionID
+	if outbox.ContextWindow != nil {
+		result.ThroughSequence = outbox.ContextWindow.ThroughSequence
+	}
+	attempt, found, err := state.GetAttempt(ctx, request.AttemptID)
+	if err != nil {
+		return err
+	} else if !found {
+		return fmt.Errorf("attempt %q not found", request.AttemptID)
+	}
+	if q, bounded := tx.sqlTx.(*ownedAuthorityQuery); bounded {
+		if run.ID != request.RunID || run.TenantID != request.TenantID || attempt.ID != request.AttemptID ||
+			run.CancellationRequestedAt != nil || run.Status.Terminal() || run.UpdatedAt.After(q.at) || attempt.UpdatedAt.After(q.at) || outbox.UpdatedAt.After(q.at) || outbox.ValidateForAttempt(run, attempt) != nil {
+			return q.budget.deny()
+		}
+		if err := ensureSessionWritableTx(ctx, tx, run.SessionID); err != nil {
+			return q.budget.deny()
+		}
+	}
+
+	var entitlementValue, quotaValue string
+	var entitlementErr error
+	if q, bounded := tx.sqlTx.(*ownedAuthorityQuery); bounded {
+		entitlementErr = q.scanMetadata(ctx,
+			`SELECT SUBSTRING(CAST(entitlement_state AS String),0,33), SUBSTRING(CAST(quota_state AS String),0,33)
+				 FROM subscription_connections WHERE tenant_id=$1 AND subscription_connection_id=$2`,
+			[]any{request.TenantID, run.SubscriptionConnectionID}, &entitlementValue, &quotaValue)
+		if entitlementErr == nil && (!domain.EntitlementState(entitlementValue).Valid() || !domain.ProviderQuotaState(quotaValue).Valid()) {
+			entitlementErr = q.budget.deny()
+		}
+	} else {
+		entitlementErr = tx.sqlTx.QueryRowContext(ctx,
 			`SELECT entitlement_state, quota_state
 			 FROM subscription_connections
 			 WHERE tenant_id = $1 AND subscription_connection_id = $2`,
 			request.TenantID, run.SubscriptionConnectionID,
-		).Scan(&entitlementValue, &quotaValue); err != nil {
-			return err
-		}
-		slot, err := ensureSchedulerSlot(
-			ctx, tx, run.SubscriptionConnectionID,
-			domain.EntitlementState(entitlementValue), request.Now,
+		).Scan(&entitlementValue, &quotaValue)
+	}
+	if entitlementErr != nil {
+		return entitlementErr
+	}
+	slot, err := ensureSchedulerSlot(
+		ctx, tx, run.SubscriptionConnectionID,
+		domain.EntitlementState(entitlementValue), request.Now,
+	)
+	if err != nil {
+		return err
+	}
+	if slot.ActiveRunID == request.RunID &&
+		slot.ActiveReservationID == request.ReservationID {
+		reservation, found, err := readJSON[domain.QuotaReservation](ctx, tx.sqlTx,
+			`SELECT payload FROM quota_reservations
+				 WHERE tenant_id = $1 AND quota_reservation_id = $2`,
+			request.TenantID, request.ReservationID,
 		)
 		if err != nil {
 			return err
 		}
-		if slot.ActiveRunID == request.RunID &&
-			slot.ActiveReservationID == request.ReservationID {
-			reservation, found, err := readJSON[domain.QuotaReservation](ctx, tx.sqlTx,
-				`SELECT payload FROM quota_reservations
-				 WHERE tenant_id = $1 AND quota_reservation_id = $2`,
-				request.TenantID, request.ReservationID,
+		if found && reservation.Status == domain.ReservationHeld {
+			job, jobFound, err := readJSON[domain.WorkerJob](ctx, tx.sqlTx,
+				`SELECT payload FROM worker_jobs WHERE tenant_id=$1 AND run_id=$2`,
+				request.TenantID, request.RunID,
 			)
 			if err != nil {
 				return err
 			}
-			if found && reservation.Status == domain.ReservationHeld {
-				job, jobFound, err := readJSON[domain.WorkerJob](ctx, tx.sqlTx,
-					`SELECT payload FROM worker_jobs WHERE tenant_id=$1 AND run_id=$2`,
-					request.TenantID, request.RunID,
-				)
-				if err != nil {
-					return err
-				}
-				outboxBindingDigest, outboxErr := outbox.HarnessBinding.Digest()
-				jobBindingDigest, jobErr := job.HarnessBinding.Digest()
-				outboxPlacementDigest, outboxPlacementErr := domain.ExecutionPlacementDigest(outbox.ExecutionPlacementV2)
-				jobPlacementDigest, jobPlacementErr := domain.ExecutionPlacementDigest(job.ExecutionPlacementV2)
-				authorityMatches := outbox.SubstrateBinding == nil && job.SubstrateBinding == nil && outbox.AdmissionCostCeiling == nil && job.AdmissionCostCeiling == nil
-				if outbox.SubstrateBinding != nil && job.SubstrateBinding != nil && outbox.AdmissionCostCeiling != nil && job.AdmissionCostCeiling != nil {
-					outboxSubstrateDigest, outboxSubstrateErr := outbox.SubstrateBinding.Digest()
-					jobSubstrateDigest, jobSubstrateErr := job.SubstrateBinding.Digest()
-					outboxCostDigest, outboxCostErr := outbox.AdmissionCostCeiling.Digest()
-					jobCostDigest, jobCostErr := job.AdmissionCostCeiling.Digest()
-					authorityMatches = outboxSubstrateErr == nil && jobSubstrateErr == nil && outboxCostErr == nil && jobCostErr == nil &&
-						outboxSubstrateDigest == jobSubstrateDigest && outboxCostDigest == jobCostDigest
-				}
-				if !jobFound || outboxErr != nil || jobErr != nil || outboxBindingDigest != jobBindingDigest ||
-					outboxPlacementErr != nil || jobPlacementErr != nil || outboxPlacementDigest != jobPlacementDigest || !authorityMatches ||
-					job.AttemptID != request.AttemptID || job.ReservationID != request.ReservationID || job.OwnedExecutionSourceRecord != outbox.OwnedExecutionSourceRecord {
-					return domain.ValidationError{Field: "worker_job.harness_binding", Reason: "does not match the admitted outbox authority"}
-				}
-				result.Admitted = true
-				result.State = slot.State
-				result.Code = "already_admitted"
-				// Exact reservation/job replay observes the existing canonical
-				// decision, not a new admission. Preserve its original projection
-				// fingerprint/time/revision; historical missing heads stay unknown.
-				return nil
+			outboxBindingDigest, outboxErr := outbox.HarnessBinding.Digest()
+			jobBindingDigest, jobErr := job.HarnessBinding.Digest()
+			outboxPlacementDigest, outboxPlacementErr := domain.ExecutionPlacementDigest(outbox.ExecutionPlacementV2)
+			jobPlacementDigest, jobPlacementErr := domain.ExecutionPlacementDigest(job.ExecutionPlacementV2)
+			authorityMatches := outbox.SubstrateBinding == nil && job.SubstrateBinding == nil && outbox.AdmissionCostCeiling == nil && job.AdmissionCostCeiling == nil
+			if outbox.SubstrateBinding != nil && job.SubstrateBinding != nil && outbox.AdmissionCostCeiling != nil && job.AdmissionCostCeiling != nil {
+				outboxSubstrateDigest, outboxSubstrateErr := outbox.SubstrateBinding.Digest()
+				jobSubstrateDigest, jobSubstrateErr := job.SubstrateBinding.Digest()
+				outboxCostDigest, outboxCostErr := outbox.AdmissionCostCeiling.Digest()
+				jobCostDigest, jobCostErr := job.AdmissionCostCeiling.Digest()
+				authorityMatches = outboxSubstrateErr == nil && jobSubstrateErr == nil && outboxCostErr == nil && jobCostErr == nil &&
+					outboxSubstrateDigest == jobSubstrateDigest && outboxCostDigest == jobCostDigest
 			}
+			if !jobFound || outboxErr != nil || jobErr != nil || outboxBindingDigest != jobBindingDigest ||
+				outboxPlacementErr != nil || jobPlacementErr != nil || outboxPlacementDigest != jobPlacementDigest || !authorityMatches ||
+				job.AttemptID != request.AttemptID || job.ReservationID != request.ReservationID || job.OwnedExecutionSourceRecord != outbox.OwnedExecutionSourceRecord {
+				return domain.ValidationError{Field: "worker_job.harness_binding", Reason: "does not match the admitted outbox authority"}
+			}
+			if q, bounded := tx.sqlTx.(*ownedAuthorityQuery); bounded {
+				if reservation.ID != request.ReservationID || reservation.ValidateForRun(run) != nil ||
+					job.ValidateForRun(run) != nil || job.InputManifestID != outbox.InputManifestID ||
+					job.CreatedAt.After(q.at) || reservation.HeldAt.After(q.at) || reservation.UpdatedAt.After(q.at) ||
+					!reservation.ExpiresAt.After(q.at) {
+					return q.budget.deny()
+				}
+			}
+			result.Admitted = true
+			result.State = slot.State
+			result.Code = "already_admitted"
+			// Exact reservation/job replay observes the existing canonical
+			// decision, not a new admission. Preserve its original projection
+			// fingerprint/time/revision; historical missing heads stay unknown.
+			return nil
 		}
+	}
 
-		queueDepth, activeRuns, err := readSchedulerCounters(ctx, tx, request.Now)
-		if err != nil {
-			return err
-		}
-		decision, err := scheduler.Evaluate(
-			request.Now,
-			request.Limits,
-			request.Workload,
-			scheduler.Snapshot{
-				Entitlement: domain.EntitlementState(entitlementValue),
-				Quota:       domain.ProviderQuotaState(quotaValue),
-				Slot:        slot,
-				QueueDepth:  queueDepth,
-				ActiveRuns:  activeRuns,
-			},
-		)
-		if err != nil {
-			return err
-		}
-		result.Admitted = decision.Admit
-		result.State = decision.State
-		result.Code = decision.Code
-		result.RetryAt = decision.RetryAt
-		previousState := slot.State
-		previousBlockedUntil := slot.BlockedUntil
-		slot.State = decision.State
-		slot.BlockedUntil = decision.RetryAt
-		slot.UpdatedAt = request.Now
+	queueDepth, activeRuns, err := readSchedulerCounters(ctx, tx, request.Now)
+	if err != nil {
+		return err
+	}
+	decision, err := scheduler.Evaluate(
+		request.Now,
+		request.Limits,
+		request.Workload,
+		scheduler.Snapshot{
+			Entitlement: domain.EntitlementState(entitlementValue),
+			Quota:       domain.ProviderQuotaState(quotaValue),
+			Slot:        slot,
+			QueueDepth:  queueDepth,
+			ActiveRuns:  activeRuns,
+		},
+	)
+	if err != nil {
+		return err
+	}
+	result.Admitted = decision.Admit
+	result.State = decision.State
+	result.Code = decision.Code
+	result.RetryAt = decision.RetryAt
+	previousState := slot.State
+	previousBlockedUntil := slot.BlockedUntil
+	slot.State = decision.State
+	slot.BlockedUntil = decision.RetryAt
+	slot.UpdatedAt = request.Now
 
-		if !decision.Admit {
-			if run.Status == domain.RunQuotaBlocked &&
-				previousState == decision.State &&
-				equalOptionalTime(previousBlockedUntil, decision.RetryAt) {
-				return recordAdmissionExplanationTx(ctx, tx, run, attempt, outbox.ExecutionPlacementV2, decision.Code, request.Now)
-			}
-			if run.Status != domain.RunQuotaBlocked && !run.Status.Terminal() {
-				if err := run.Transition(domain.RunQuotaBlocked, request.Now); err != nil {
-					return err
-				}
-				if err := state.PutRun(ctx, run); err != nil {
-					return err
-				}
-			}
-			if err := writeSchedulerSlot(ctx, tx, slot); err != nil {
-				return err
-			}
-			if err := recordAdmissionExplanationTx(ctx, tx, run, attempt, outbox.ExecutionPlacementV2, decision.Code, request.Now); err != nil {
-				return err
-			}
-			return appendSchedulerAudit(
-				ctx, tx, request.Now, "scheduler.admission_blocked",
-				"run", string(request.RunID), decision.Code,
-				map[string]any{"scheduler_state": decision.State},
-			)
+	if !decision.Admit {
+		if run.Status == domain.RunQuotaBlocked &&
+			previousState == decision.State &&
+			equalOptionalTime(previousBlockedUntil, decision.RetryAt) {
+			return recordAdmissionExplanationTx(ctx, tx, run, attempt, outbox.ExecutionPlacementV2, decision.Code, request.Now)
 		}
-
-		switch run.Status {
-		case domain.RunCreated, domain.RunQuotaBlocked:
-			if err := run.Transition(domain.RunAdmitted, request.Now); err != nil {
+		if run.Status != domain.RunQuotaBlocked && !run.Status.Terminal() {
+			if err := run.Transition(domain.RunQuotaBlocked, request.Now); err != nil {
 				return err
 			}
-			if err := run.Transition(domain.RunQueued, request.Now); err != nil {
+			if err := state.PutRun(ctx, run); err != nil {
 				return err
-			}
-		case domain.RunQueued:
-		default:
-			return domain.ValidationError{
-				Field: "run.status", Reason: "is not eligible for scheduler admission",
 			}
 		}
-		if err := state.PutRun(ctx, run); err != nil {
+		if err := writeSchedulerSlot(ctx, tx, slot); err != nil {
 			return err
 		}
 		if err := recordAdmissionExplanationTx(ctx, tx, run, attempt, outbox.ExecutionPlacementV2, decision.Code, request.Now); err != nil {
 			return err
 		}
-		reservation := domain.QuotaReservation{
-			ID: request.ReservationID, TenantID: request.TenantID,
-			RunID:                    request.RunID,
-			SubscriptionConnectionID: run.SubscriptionConnectionID,
-			Status:                   domain.ReservationHeld, CapacityUnits: 1,
-			HeldAt: request.Now, ExpiresAt: request.HoldUntil,
-			UpdatedAt: request.Now,
+		return appendSchedulerAudit(
+			ctx, tx, request.Now, "scheduler.admission_blocked",
+			"run", string(request.RunID), decision.Code,
+			map[string]any{"scheduler_state": decision.State},
+		)
+	}
+	if q, bounded := tx.sqlTx.(*ownedAuthorityQuery); bounded {
+		// Only the exact slot/reservation/job branch above can recover a hold.
+		// A colliding historical ID cannot be overwritten to renew capacity.
+		_, found, err := readJSON[domain.QuotaReservation](ctx, q,
+			`SELECT payload FROM quota_reservations
+			 WHERE tenant_id = $1 AND quota_reservation_id = $2`, request.TenantID, request.ReservationID)
+		if err != nil || found {
+			return q.budget.deny()
 		}
-		if err := state.PutQuotaReservation(ctx, reservation); err != nil {
+	}
+
+	switch run.Status {
+	case domain.RunCreated, domain.RunQuotaBlocked:
+		if err := run.Transition(domain.RunAdmitted, request.Now); err != nil {
 			return err
 		}
-		contextWindow, err := selectAdmittedContextWindow(ctx, tx, run.SessionID, outbox.ContextWindow)
+		if err := run.Transition(domain.RunQueued, request.Now); err != nil {
+			return err
+		}
+	case domain.RunQueued:
+	default:
+		return domain.ValidationError{
+			Field: "run.status", Reason: "is not eligible for scheduler admission",
+		}
+	}
+	if err := state.PutRun(ctx, run); err != nil {
+		return err
+	}
+	if err := recordAdmissionExplanationTx(ctx, tx, run, attempt, outbox.ExecutionPlacementV2, decision.Code, request.Now); err != nil {
+		return err
+	}
+	reservation := domain.QuotaReservation{
+		ID: request.ReservationID, TenantID: request.TenantID,
+		RunID:                    request.RunID,
+		SubscriptionConnectionID: run.SubscriptionConnectionID,
+		Status:                   domain.ReservationHeld, CapacityUnits: 1,
+		HeldAt: request.Now, ExpiresAt: request.HoldUntil,
+		UpdatedAt: request.Now,
+	}
+	if err := state.PutQuotaReservation(ctx, reservation); err != nil {
+		return err
+	}
+	contextWindow, err := selectAdmittedContextWindow(ctx, tx, run.SessionID, outbox.ContextWindow)
+	if err != nil {
+		return err
+	}
+	job := domain.WorkerJob{
+		TenantID: request.TenantID, RunID: request.RunID,
+		SessionID: run.SessionID, TriggerEventID: run.TriggerEventID,
+		AttemptID: request.AttemptID, ReservationID: request.ReservationID,
+		InputManifestID:            outbox.InputManifestID,
+		ContextSnapshot:            outbox.ContextSnapshot,
+		ContextWindow:              contextWindow,
+		WorkspaceSnapshot:          outbox.WorkspaceSnapshot,
+		SkillBundle:                outbox.SkillBundle,
+		AllowedMCPServers:          append([]string(nil), outbox.AllowedMCPServers...),
+		CredentialOwnerUserID:      outbox.CredentialOwnerUserID,
+		ExecutionPlacementV2:       outbox.ExecutionPlacementV2,
+		HarnessBinding:             outbox.HarnessBinding.Clone(),
+		Limits:                     request.Limits,
+		Origin:                     outbox.Origin,
+		DeliveryChat:               outbox.DeliveryChat,
+		ReplyToMessageID:           outbox.ReplyToMessageID,
+		CreatedAt:                  request.Now,
+		OwnedExecutionSourceRecord: outbox.OwnedExecutionSourceRecord,
+	}
+	if outbox.SubstrateBinding != nil {
+		substrate := *outbox.SubstrateBinding
+		job.SubstrateBinding = &substrate
+	}
+	if outbox.AdmissionCostCeiling != nil {
+		cost := outbox.AdmissionCostCeiling.Clone()
+		job.AdmissionCostCeiling = &cost
+	}
+	if err := state.PutWorkerJob(ctx, job); err != nil {
+		return err
+	}
+	if result.Delivery == ports.DispatchDeliveryAttachedOffer {
+		leaseID, err := domain.NewAttachedWorkerLeaseIDV1(request.TenantID, request.RunID, request.AttemptID)
 		if err != nil {
 			return err
 		}
-		job := domain.WorkerJob{
-			TenantID: request.TenantID, RunID: request.RunID,
-			SessionID: run.SessionID, TriggerEventID: run.TriggerEventID,
+		leaseTTL, err := domain.AttachedWorkerLeaseTTLForLimitsV1(job.Limits)
+		if err != nil {
+			return err
+		}
+		offerRequest := ports.AttachedWorkerAttemptOffer{
+			TenantID: request.TenantID, OwnerUserID: job.ExecutionPlacementV2.OwnerUserID,
+			WorkerID: job.ExecutionPlacementV2.WorkerID, RunID: request.RunID,
 			AttemptID: request.AttemptID, ReservationID: request.ReservationID,
-			InputManifestID:            outbox.InputManifestID,
-			ContextSnapshot:            outbox.ContextSnapshot,
-			ContextWindow:              contextWindow,
-			WorkspaceSnapshot:          outbox.WorkspaceSnapshot,
-			SkillBundle:                outbox.SkillBundle,
-			AllowedMCPServers:          append([]string(nil), outbox.AllowedMCPServers...),
-			CredentialOwnerUserID:      outbox.CredentialOwnerUserID,
-			ExecutionPlacementV2:       outbox.ExecutionPlacementV2,
-			HarnessBinding:             outbox.HarnessBinding.Clone(),
-			Limits:                     request.Limits,
-			Origin:                     outbox.Origin,
-			DeliveryChat:               outbox.DeliveryChat,
-			ReplyToMessageID:           outbox.ReplyToMessageID,
-			CreatedAt:                  request.Now,
-			OwnedExecutionSourceRecord: outbox.OwnedExecutionSourceRecord,
+			LeaseID: leaseID, LeaseTTL: leaseTTL,
 		}
-		if outbox.SubstrateBinding != nil {
-			substrate := *outbox.SubstrateBinding
-			job.SubstrateBinding = &substrate
-		}
-		if outbox.AdmissionCostCeiling != nil {
-			cost := outbox.AdmissionCostCeiling.Clone()
-			job.AdmissionCostCeiling = &cost
-		}
-		if err := state.PutWorkerJob(ctx, job); err != nil {
+		if err := validateAttachedWorkerAttemptOffer(offerRequest); err != nil {
 			return err
 		}
-		if result.Delivery == ports.DispatchDeliveryAttachedOffer {
-			leaseID, err := domain.NewAttachedWorkerLeaseIDV1(request.TenantID, request.RunID, request.AttemptID)
-			if err != nil {
-				return err
-			}
-			leaseTTL, err := domain.AttachedWorkerLeaseTTLForLimitsV1(job.Limits)
-			if err != nil {
-				return err
-			}
-			offerRequest := ports.AttachedWorkerAttemptOffer{
-				TenantID: request.TenantID, OwnerUserID: job.ExecutionPlacementV2.OwnerUserID,
-				WorkerID: job.ExecutionPlacementV2.WorkerID, RunID: request.RunID,
-				AttemptID: request.AttemptID, ReservationID: request.ReservationID,
-				LeaseID: leaseID, LeaseTTL: leaseTTL,
-			}
-			if err := validateAttachedWorkerAttemptOffer(offerRequest); err != nil {
-				return err
-			}
-			var offer ports.AttachedWorkerAttemptResult
-			if err := store.offerAttachedWorkerAttemptTx(ctx, tx, offerRequest, &offer); err != nil {
-				return err
-			}
-			if offer.Status != ports.AttachedWorkerExecutionApplied && offer.Status != ports.AttachedWorkerExecutionReplayed {
-				return ErrAttachedWorkerAttemptConflict
-			}
-			// The canonical attached-worker lease may outlive the ordinary queue
-			// reservation hold. Keep quota fenced through the exact fixed lease;
-			// otherwise the expiry reconciler could release capacity before a late
-			// but still-authorized claim.
-			if reservation.ExpiresAt.Before(offer.Attempt.LeaseExpiresAt) {
-				reservation.ExpiresAt = offer.Attempt.LeaseExpiresAt
-				reservation.UpdatedAt = request.Now
-				if err := state.PutQuotaReservation(ctx, reservation); err != nil {
-					return err
-				}
-			}
-		}
-		slot.State = domain.SchedulerPressured
-		slot.ActiveRunID = request.RunID
-		slot.ActiveReservationID = request.ReservationID
-		slot.BlockedUntil = nil
-		if err := writeSchedulerSlot(ctx, tx, slot); err != nil {
+		var offer ports.AttachedWorkerAttemptResult
+		if err := store.offerAttachedWorkerAttemptTx(ctx, tx, offerRequest, &offer); err != nil {
 			return err
 		}
-		if result.Delivery == ports.DispatchDeliveryManagedQueue {
-			if _, err := tx.sqlTx.ExecContext(ctx,
-				`UPDATE tenant_scheduler_counters
+		if offer.Status != ports.AttachedWorkerExecutionApplied && offer.Status != ports.AttachedWorkerExecutionReplayed {
+			return ErrAttachedWorkerAttemptConflict
+		}
+		// The canonical attached-worker lease may outlive the ordinary queue
+		// reservation hold. Keep quota fenced through the exact fixed lease;
+		// otherwise the expiry reconciler could release capacity before a late
+		// but still-authorized claim.
+		if reservation.ExpiresAt.Before(offer.Attempt.LeaseExpiresAt) {
+			reservation.ExpiresAt = offer.Attempt.LeaseExpiresAt
+			reservation.UpdatedAt = request.Now
+			if err := state.PutQuotaReservation(ctx, reservation); err != nil {
+				return err
+			}
+		}
+	}
+	slot.State = domain.SchedulerPressured
+	slot.ActiveRunID = request.RunID
+	slot.ActiveReservationID = request.ReservationID
+	slot.BlockedUntil = nil
+	if err := writeSchedulerSlot(ctx, tx, slot); err != nil {
+		return err
+	}
+	if result.Delivery == ports.DispatchDeliveryManagedQueue {
+		if _, err := tx.sqlTx.ExecContext(ctx,
+			`UPDATE tenant_scheduler_counters
 				 SET queue_depth = queue_depth + $1, updated_at = $2
 				 WHERE tenant_id = $3`,
-				uint32(1), request.Now, request.TenantID,
-			); err != nil {
-				return err
-			}
+			uint32(1), request.Now, request.TenantID,
+		); err != nil {
+			return err
 		}
-		return appendSchedulerAudit(
-			ctx, tx, request.Now, "scheduler.admitted",
-			"run", string(request.RunID), "held",
-			map[string]any{
-				"reservation_id": request.ReservationID,
-				"capacity_units": uint32(1),
-				"delivery":       result.Delivery,
-			},
-		)
-	})
-	return result, err
+	}
+	return appendSchedulerAudit(
+		ctx, tx, request.Now, "scheduler.admitted",
+		"run", string(request.RunID), "held",
+		map[string]any{
+			"reservation_id": request.ReservationID,
+			"capacity_units": uint32(1),
+			"delivery":       result.Delivery,
+		},
+	)
 }
 
 const admittedSnapshotMetadataBytes = 32 << 10
@@ -659,12 +734,23 @@ func ensureSchedulerSlot(
 	}
 	var state, activeRun, activeReservation string
 	var blockedUntil, updatedAt time.Time
-	err := tx.sqlTx.QueryRowContext(ctx,
-		`SELECT state, active_run_id, active_reservation_id, blocked_until, updated_at
+	var err error
+	if q, bounded := tx.sqlTx.(*ownedAuthorityQuery); bounded {
+		err = q.scanMetadata(ctx,
+			`SELECT SUBSTRING(CAST(state AS String),0,33), SUBSTRING(CAST(active_run_id AS String),0,161), SUBSTRING(CAST(active_reservation_id AS String),0,161), blocked_until, updated_at
+			 FROM subscription_scheduler_slots WHERE tenant_id=$1 AND subscription_connection_id=$2`,
+			[]any{tx.tenantID, connectionID}, &state, &activeRun, &activeReservation, &blockedUntil, &updatedAt)
+		if err == nil && (len(state) > 32 || len(activeRun) > 160 || len(activeReservation) > 160 || updatedAt.After(q.at)) {
+			err = q.budget.deny()
+		}
+	} else {
+		err = tx.sqlTx.QueryRowContext(ctx,
+			`SELECT state, active_run_id, active_reservation_id, blocked_until, updated_at
 		 FROM subscription_scheduler_slots
 		 WHERE tenant_id = $1 AND subscription_connection_id = $2`,
-		tx.tenantID, connectionID,
-	).Scan(&state, &activeRun, &activeReservation, &blockedUntil, &updatedAt)
+			tx.tenantID, connectionID,
+		).Scan(&state, &activeRun, &activeReservation, &blockedUntil, &updatedAt)
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		slot.State = domain.SchedulerReauthRequired
 		if entitlement == domain.EntitlementActive {
@@ -718,11 +804,17 @@ func readSchedulerCounters(
 	tx *stateTx,
 	initializeAt time.Time,
 ) (queueDepth uint32, activeRuns uint32, err error) {
-	err = tx.sqlTx.QueryRowContext(ctx,
-		`SELECT queue_depth, active_runs FROM tenant_scheduler_counters
+	if q, bounded := tx.sqlTx.(*ownedAuthorityQuery); bounded {
+		err = q.scanMetadata(ctx,
+			`SELECT queue_depth, active_runs FROM tenant_scheduler_counters
+			 WHERE tenant_id = $1`, []any{tx.tenantID}, &queueDepth, &activeRuns)
+	} else {
+		err = tx.sqlTx.QueryRowContext(ctx,
+			`SELECT queue_depth, active_runs FROM tenant_scheduler_counters
 		 WHERE tenant_id = $1`,
-		tx.tenantID,
-	).Scan(&queueDepth, &activeRuns)
+			tx.tenantID,
+		).Scan(&queueDepth, &activeRuns)
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		_, err = tx.sqlTx.ExecContext(ctx,
 			`INSERT INTO tenant_scheduler_counters

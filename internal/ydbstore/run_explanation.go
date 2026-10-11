@@ -53,11 +53,10 @@ func explanationQueryTx(tx *stateTx) rowQuery {
 func readExplanationJSON[T any](ctx context.Context, query rowQuery, statement string, args ...any) (value T, found bool, err error) {
 	var encoded string
 	if q, ok := query.(*ownedAuthorityQuery); ok {
-		returned, scanErr := scanOwnedCurrentRow(q.QueryRowContext(ctx, statement, args...), &encoded)
-		if q.budget.materialized(q.callback, returned) != nil {
-			return value, false, domain.ErrMembershipDenied
+		if statement != `SELECT SUBSTRING(CAST(record AS String), 0, 8193) FROM run_explanation_heads_v1 WHERE tenant_id=$1 AND run_id=$2` {
+			return value, false, q.budget.deny()
 		}
-		err = scanErr
+		encoded, err = q.readMetadata(ctx, statement, runexplanation.MaxProjectionBytes, args...)
 	} else {
 		err = query.QueryRowContext(ctx, statement, args...).Scan(&encoded)
 	}

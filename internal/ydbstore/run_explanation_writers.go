@@ -39,29 +39,51 @@ func writeExplanationHeadTx(ctx context.Context, tx *stateTx, head runexplanatio
 // Selection is owned exclusively by ingress/admission, never by a read or an
 // arbitrary lifecycle write. Historical rows are not repaired here.
 func selectExplanationTx(ctx context.Context, tx *stateTx, run domain.Run, attempt domain.Attempt, placement domain.ExecutionPlacementV2, at time.Time) error {
-	head, err := readExplanationHeadTx(ctx, tx, run.ID)
-	if err != nil {
-		return err
-	}
-	if head != nil && head.SelectedAttemptID != attempt.ID {
-		previous, found, err := tx.GetAttempt(ctx, head.SelectedAttemptID)
-		if err != nil {
-			return err
-		}
-		if found && attempt.Number <= previous.Number {
-			return runexplanation.ErrStaleObservation
-		}
-	}
-	next, changed, err := runexplanation.Select(head, run, attempt, placement, at)
+	next, changed, err := selectedExplanationTx(ctx, tx, run, attempt, placement, at)
 	if err != nil || !changed {
 		return err
 	}
 	return writeExplanationHeadTx(ctx, tx, next)
 }
 
+func selectedExplanationTx(ctx context.Context, tx *stateTx, run domain.Run, attempt domain.Attempt, placement domain.ExecutionPlacementV2, at time.Time) (runexplanation.HeadV1, bool, error) {
+	head, err := readExplanationHeadTx(ctx, tx, run.ID)
+	if err != nil {
+		return runexplanation.HeadV1{}, false, err
+	}
+	if head != nil && head.SelectedAttemptID != attempt.ID {
+		previous, found, err := tx.GetAttempt(ctx, head.SelectedAttemptID)
+		if err != nil {
+			return runexplanation.HeadV1{}, false, err
+		}
+		if q, bounded := tx.sqlTx.(*ownedAuthorityQuery); bounded {
+			if !found || previous.ID != head.SelectedAttemptID || previous.ValidateForRun(run) != nil || previous.UpdatedAt.After(q.at) || previous.FinishedAt != nil && previous.FinishedAt.After(q.at) {
+				return runexplanation.HeadV1{}, false, q.budget.deny()
+			}
+		}
+		if found && attempt.Number <= previous.Number {
+			return runexplanation.HeadV1{}, false, runexplanation.ErrStaleObservation
+		}
+	}
+	return runexplanation.Select(head, run, attempt, placement, at)
+}
+
 func recordAdmissionExplanationTx(ctx context.Context, tx *stateTx, run domain.Run, attempt domain.Attempt, placement domain.ExecutionPlacementV2, code string, at time.Time) error {
 	if code == "dispatch_not_pending" {
 		return nil
+	}
+	if _, bounded := tx.sqlTx.(*ownedAuthorityQuery); bounded {
+		selected, selectionChanged, err := selectedExplanationTx(ctx, tx, run, attempt, placement, at)
+		if err != nil {
+			return err
+		}
+		next, admissionChanged, err := runexplanation.RecordAdmission(selected, run, attempt, code, at)
+		if err != nil || (!selectionChanged && !admissionChanged) {
+			return err
+		}
+		// Run the SAME ordered reducers (including both revision advances),
+		// but publish their final head once within this serializable snapshot.
+		return writeExplanationHeadTx(ctx, tx, next)
 	}
 	if err := selectExplanationTx(ctx, tx, run, attempt, placement, at); err != nil {
 		return err

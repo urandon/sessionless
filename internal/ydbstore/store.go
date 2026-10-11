@@ -677,6 +677,11 @@ func (tx *stateTx) PutWorkerJob(ctx context.Context, job domain.WorkerJob) error
 	if !found || manifest.RunID != job.RunID {
 		return domain.ValidationError{Field: "worker_job.input_manifest_id", Reason: "must reference the owning run"}
 	}
+	if q, bounded := tx.sqlTx.(*ownedAuthorityQuery); bounded {
+		if manifest.ID != job.InputManifestID || manifest.ValidateForRun(run) != nil || manifest.CreatedAt.After(q.at) {
+			return q.budget.deny()
+		}
+	}
 	payload, err := marshal(job)
 	if err != nil {
 		return err

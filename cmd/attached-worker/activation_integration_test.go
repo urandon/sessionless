@@ -363,9 +363,14 @@ esac
 	if err != nil {
 		t.Fatal(err)
 	}
+	fence, err := domain.NewAttachedWorkerFenceTokenV1("tenant-command", "owner-command", "worker-command",
+		"run-command", "attempt-command", "lease-command", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
 	binding := attachedworkerprotocol.AttemptBindingV1{
 		RunID: "run-command", AttemptID: "attempt-command", LeaseID: "lease-command",
-		LeaseGeneration: 7, FenceToken: "fence-command", ExpiresAtUnixMicro: testNow.Add(30 * time.Minute).UnixMicro(),
+		LeaseGeneration: 7, FenceToken: string(fence), ExpiresAtUnixMicro: testNow.Add(30 * time.Minute).UnixMicro(),
 		ContextDigest: bytes.Repeat([]byte{0x61}, sha256.Size), CapabilityDigest: append([]byte(nil), capabilityDigest...),
 		PolicyDigest: bytes.Repeat([]byte{0x62}, sha256.Size),
 	}
@@ -436,6 +441,12 @@ esac
 	if err != nil {
 		t.Fatal(err)
 	}
+	maxInputBytes := 4096
+	if cancelDuringActive {
+		// This positive fixture includes the authenticated accepted head in
+		// its serialized input. Denied modes retain their original 4 KiB cap.
+		maxInputBytes = 8192
+	}
 	profile := attachedworkeractivation.ProfileV1{
 		Version: 1, Mode: "synthetic-denied", ManifestRevision: 1,
 		ControlPlaneOrigin: server.URL, TenantID: manifest.TenantID, OwnerUserID: manifest.OwnerUserID,
@@ -446,7 +457,7 @@ esac
 			Executable: cli, ExecutableDigest: attachedworkerdaemon.ExecutableDigest(cliDigest),
 		},
 		TLSRootPEMPath: trustPath, MaterializationRoot: materializationRoot, ScratchRoot: scratchRoot,
-		MaxInputBytes: 4096,
+		MaxInputBytes: maxInputBytes,
 	}
 	profilePath := filepath.Join(activationDir, "profile.json")
 	encoded, err := json.Marshal(profile)
@@ -788,10 +799,13 @@ func testActivatedServiceControl(t *testing.T, ctx context.Context, peer *comman
 		case code := <-done:
 			peer.mu.Lock()
 			steps, acknowledgements, exchanges, peerError, lastKind := peer.steps, peer.cancelAcked, peer.exchanges, peer.lastError, peer.lastKind
+			sealedWire, sealedWireErr := json.Marshal(peer.sealedInput)
 			peer.mu.Unlock()
+			sealedWireBytes := len(sealedWire)
+			clear(sealedWire)
 			commands, _ := os.ReadFile(filepath.Join(filepath.Dir(stateRoot), "oci-commands.log"))
-			t.Fatalf("service exited before remote-cancel terminal: code=%d output=%s steps=%d ack=%d exchanges=%d peer_error=%q last_kind=%s status=%+v commands=%q",
-				code, output.String(), steps, acknowledgements, exchanges, peerError, lastKind, runtimeOwner.Status(), commands)
+			t.Fatalf("service exited before remote-cancel terminal: code=%d output=%s steps=%d ack=%d exchanges=%d peer_error=%q last_kind=%s sealed_wire_bytes=%d admitted_profile_cap=%d sealed_wire_error=%v status=%+v commands=%q",
+				code, output.String(), steps, acknowledgements, exchanges, peerError, lastKind, sealedWireBytes, profile.MaxInputBytes, sealedWireErr, runtimeOwner.Status(), commands)
 		case <-ctx.Done():
 			peer.mu.Lock()
 			steps, acknowledgements, exchanges, peerError, lastKind := peer.steps, peer.cancelAcked, peer.exchanges, peer.lastError, peer.lastKind
@@ -828,7 +842,13 @@ func testActivatedServiceControl(t *testing.T, ctx context.Context, peer *comman
 		}
 		peer.mu.Lock()
 		steps, acknowledged, denied, peerError, activeHeartbeatSequence := peer.steps, peer.cancelAcked, peer.denied, peer.lastError, peer.activeCancelHeartbeatSequence
+		oldBudgetFits := attachedworkerdaemontransport.BoundedSerializedCanonicalInputV1(*peer.sealedInput, 4096)
+		admittedBudgetFits := attachedworkerdaemontransport.BoundedSerializedCanonicalInputV1(*peer.sealedInput, profile.MaxInputBytes)
 		peer.mu.Unlock()
+		if oldBudgetFits || !admittedBudgetFits {
+			t.Errorf("serialized accepted-head fixture budget old_4096_fits=%t admitted_%d_fits=%t, want false/true",
+				oldBudgetFits, profile.MaxInputBytes, admittedBudgetFits)
+		}
 		if steps != 5 || acknowledged != 1 || denied != 0 || peerError != "" {
 			t.Errorf("remote-cancel exchange steps=%d ack=%d denied=%d error=%q, want 5/1/0/empty", steps, acknowledged, denied, peerError)
 		}
@@ -1575,6 +1595,9 @@ func (peer *commandSyntheticPeer) serveHTTP(writer http.ResponseWriter, request 
 		}
 		peer.mu.Lock()
 		input := peer.sealedInput
+		if input != nil && input.AcceptedAttempt.State != domain.AttachedWorkerAttemptClaimed {
+			input = nil
+		}
 		if input == nil {
 			peer.denied++
 		}
@@ -1717,6 +1740,45 @@ func (peer *commandSyntheticPeer) activate(input attachedworkerhttp.ActivateRequ
 	}, Accepted: accepted}, nil
 }
 
+// The test-owned peer publishes its original admitted job's head only after
+// accepting the exact claim. Incoming materialization requests never construct
+// authority, and an old/missing-head response is not a positive fixture.
+func (peer *commandSyntheticPeer) acceptSealedInput() error {
+	if peer.sealedInput == nil {
+		return nil
+	}
+	input, challenge, binding := peer.sealedInput, peer.challenge, peer.binding
+	job := input.Job
+	digest, err := domain.AttachedWorkerJobContextDigestV1(job, input.Manifest)
+	if err != nil || job.TenantID != challenge.TenantID || job.CredentialOwnerUserID != challenge.OwnerUserID ||
+		job.ExecutionPlacementV2.OwnerUserID != challenge.OwnerUserID || job.ExecutionPlacementV2.WorkerID != challenge.WorkerID ||
+		job.RunID != domain.RunID(binding.RunID) || job.AttemptID != domain.AttemptID(binding.AttemptID) ||
+		string(digest) != hex.EncodeToString(binding.ContextDigest) ||
+		string(job.ExecutionPlacementV2.CapabilityDigest) != hex.EncodeToString(binding.CapabilityDigest) ||
+		string(job.ExecutionPlacementV2.PolicyDigest) != hex.EncodeToString(binding.PolicyDigest) {
+		return errors.New("test peer admitted sealed job does not match original claim authority")
+	}
+	head := domain.AttachedWorkerAttemptV1{
+		Version:  domain.AttachedWorkerAttemptVersionV1,
+		TenantID: challenge.TenantID, OwnerUserID: challenge.OwnerUserID, WorkerID: challenge.WorkerID,
+		ConnectionID: challenge.ConnectionID, ExecutionConnectionID: challenge.ConnectionID,
+		EnrollmentGeneration: challenge.ExpectedEnrollmentGeneration,
+		ConnectionGeneration: challenge.TargetConnectionGeneration, ExecutionConnectionGeneration: challenge.TargetConnectionGeneration,
+		RunID: job.RunID, AttemptID: job.AttemptID, ReservationID: job.ReservationID,
+		LeaseID: domain.LeaseID(binding.LeaseID), LeaseGeneration: binding.LeaseGeneration,
+		FenceToken:    domain.AttachedWorkerFenceToken(binding.FenceToken),
+		ContextDigest: digest, CapabilityDigest: job.ExecutionPlacementV2.CapabilityDigest, PolicyDigest: job.ExecutionPlacementV2.PolicyDigest,
+		State: domain.AttachedWorkerAttemptClaimed, PlatformAttemptSequence: 2, WorkerAttemptSequence: 1,
+		LeaseExpiresAt: time.UnixMicro(binding.ExpiresAtUnixMicro).UTC(),
+		CreatedAt:      peer.now, UpdatedAt: peer.now, Revision: 2,
+	}
+	if err := head.Validate(); err != nil {
+		return fmt.Errorf("test peer original accepted sealed head: %w", err)
+	}
+	input.AcceptedAttempt = head
+	return nil
+}
+
 func (peer *commandSyntheticPeer) exchange(batch attachedworkerprotocol.BatchV1) (*attachedworkerprotocol.BatchV1, error) {
 	peer.mu.Lock()
 	peer.exchanges++
@@ -1776,7 +1838,10 @@ func (peer *commandSyntheticPeer) exchange(batch attachedworkerprotocol.BatchV1)
 		platform.Kind = attachedworkerprotocol.MessageLeaseOffer
 		platform.LeaseOffer = &attachedworkerprotocol.LeaseOfferV1{Binding: peer.binding, AttemptSequence: 1}
 	case 1:
-		if worker.Kind != attachedworkerprotocol.MessageLeaseClaim || worker.LeaseClaim == nil || worker.Sequence != 5 || worker.Ack != 3 {
+		if worker.Kind != attachedworkerprotocol.MessageLeaseClaim || worker.LeaseClaim == nil || worker.Sequence != 5 || worker.Ack != 3 ||
+			worker.WorkerID != string(peer.challenge.WorkerID) || worker.EnrollmentGeneration != peer.challenge.ExpectedEnrollmentGeneration ||
+			worker.ConnectionGeneration != peer.challenge.TargetConnectionGeneration || worker.LeaseClaim.AttemptSequence != 1 ||
+			!reflect.DeepEqual(worker.LeaseClaim.Binding, peer.binding) {
 			return nil, fmt.Errorf("invalid lease claim envelope")
 		}
 		if peer.cancelBeforeMaterialization {
@@ -1785,6 +1850,9 @@ func (peer *commandSyntheticPeer) exchange(batch attachedworkerprotocol.BatchV1)
 				Binding: peer.binding, AttemptSequence: 2, CancelRevision: 1, Code: attachedworkerprotocol.CancelRequested,
 			}
 			break
+		}
+		if err := peer.acceptSealedInput(); err != nil {
+			return nil, err
 		}
 		platform.Kind = attachedworkerprotocol.MessageLeaseAccepted
 		platform.LeaseAccepted = &attachedworkerprotocol.LeaseAcceptedV1{Binding: peer.binding, AttemptSequence: 2}

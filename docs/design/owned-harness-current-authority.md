@@ -1,6 +1,6 @@
 # Current authority for the owned agent harness
 
-Version: 0.1.6, engineering draft, 2026-10-11. Implementation owner:
+Version: 0.1.7, engineering draft, 2026-10-11. Implementation owner:
 [#189](https://gitcode.com/urandon/sessionless/issues/189), under
 [#176](https://gitcode.com/urandon/sessionless/issues/176). This extension
 defines the current-authority requirements of the accepted
@@ -489,6 +489,17 @@ explicit fixture publication verifiers and a deterministic-fixture backend.
 Public `AdmitDispatch` and both serving registries remain closed to owned profiles.
 Publication fixtures exercise actual Store writers but are not authentic runtime
 installation or permission for live provider/tool/search effects.
+
+The legacy public `ReserveAttemptEffect` also explicitly rejects any profile
+other than `single_turn`, or any agent-loop policy. Its current-authority helper
+does so before principal/resource/lease checks and a new parent INSERT; its
+persisted-record branch does so before replay or reconciliation capability
+minting, even for a different claimant. A fixture backend/resource alone is not
+owned authority. Unsupported records remain retained, not deleted, normalized
+or reclassified as single-turn history. Legitimate single-turn historical
+reconciliation retains its existing structural, post-commit contract. A dedicated
+bounded owned parent and authenticated history/cleanup composition still needs
+implementation; registry denial or this serving guard does not prove it.
 
 One exact-key thirteen-column join checks canonical active Session, deletion
 absence, writable membership and participation at the callback's database time.

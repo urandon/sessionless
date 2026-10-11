@@ -56,6 +56,13 @@ func (store *Store) ReserveAttemptEffect(ctx context.Context, request ports.Rese
 			if err := existing.validate(); err != nil {
 				return fmt.Errorf("invalid persisted attempt effect: %w", err)
 			}
+			// This public path has only single-turn fixture authority. Neither a
+			// structurally valid owned record nor its historical claim proves the
+			// current Final/profile/funding joins needed by the owned path. Do not
+			// mint even an observation capability from an unsupported record.
+			if existing.Authority.HarnessBinding.Profile != domain.HarnessExecutionSingleTurnV2 || existing.Authority.HarnessBinding.AgentLoopPolicy != nil {
+				return domain.ValidationError{Field: "reserve_attempt_effect", Reason: "execution profile is not supported by the single-turn reservation path"}
+			}
 			if !attemptEffectRequestMatchesRecord(request, existing) {
 				return domain.ValidationError{Field: "reserve_attempt_effect", Reason: "does not match the persisted attempt effect scope"}
 			}
@@ -138,6 +145,12 @@ func currentServerlessInvocationAuthorityTx(ctx context.Context, tx *stateTx, re
 		return domain.ServerlessInvocationAuthorityV1{}, false, nil
 	}
 	if loaded.Job.ExecutionPlacementV2.Kind != domain.ExecutionPlacementManaged || loaded.Job.SubstrateBinding == nil || loaded.Job.AdmissionCostCeiling == nil {
+		return domain.ServerlessInvocationAuthorityV1{}, false, nil
+	}
+	// Owned admission is a separate, bounded current-authority composition.
+	// A fixture backend/resource does not imply a single-turn execution profile,
+	// and downstream registry denial cannot replace this durable fence.
+	if loaded.Job.HarnessBinding.Profile != domain.HarnessExecutionSingleTurnV2 || loaded.Job.HarnessBinding.AgentLoopPolicy != nil {
 		return domain.ServerlessInvocationAuthorityV1{}, false, nil
 	}
 	if err := currentServerlessSessionPrincipalTx(ctx, tx.sqlTx, loaded, at); err != nil {

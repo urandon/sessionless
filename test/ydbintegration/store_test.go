@@ -27,7 +27,10 @@ import (
 )
 
 var idSequence atomic.Uint64
-var idProcessNonce = rand.Text()
+
+// RFC 4648 base32 is uppercase. Lowercasing is one-to-one for that alphabet
+// and preserves its entropy while satisfying canonical OCI installation IDs.
+var idProcessNonce = strings.ToLower(rand.Text())
 
 func TestExecutionPlacementServingGateRequiresCommittedMarker(t *testing.T) {
 	store, client := openStore(t)

@@ -38,7 +38,10 @@ type DispatchOutbox struct {
 	HarnessBinding        HarnessBindingV2        `json:"harness_binding"`
 	SubstrateBinding      *SubstrateBindingV1     `json:"substrate_binding,omitempty"`
 	AdmissionCostCeiling  *AdmissionCostCeilingV2 `json:"admission_cost_ceiling,omitempty"`
-	Origin                *FrontendEventOrigin    `json:"origin,omitempty"`
+	// Strict producer bytes preserve exact integers inside this JSON projection.
+	// Original intent is not final admission or source authentication.
+	OwnedExecutionSourceRecord string               `json:"owned_execution_source_record,omitempty"`
+	Origin                     *FrontendEventOrigin `json:"origin,omitempty"`
 	// DeliveryChat and ReplyToMessageID are the compatibility bridge for the
 	// pre-canonical Telegram worker flow. New ingress paths use Origin; #37
 	// removes this bridge when Telegram projects canonical assistant events.
@@ -102,6 +105,11 @@ func (outbox DispatchOutbox) ValidateForAttempt(run Run, attempt Attempt) error 
 		return err
 	}
 	if err := outbox.HarnessBinding.ValidateAdmissionCostCeiling(outbox.AdmissionCostCeiling); err != nil {
+		return err
+	}
+	if err := ValidateOwnedExecutionSourceRecord(outbox.OwnedExecutionSourceRecord,
+		AttemptExecutionSourceScopeV1{TenantID: outbox.TenantID, SessionID: run.SessionID, OwnerUserID: outbox.CredentialOwnerUserID, RunID: outbox.RunID, AttemptID: outbox.AttemptID},
+		outbox.ExecutionPlacementV2, outbox.HarnessBinding, outbox.SubstrateBinding, outbox.AdmissionCostCeiling); err != nil {
 		return err
 	}
 	if outbox.Origin == nil && outbox.DeliveryChat.ChatID == 0 {

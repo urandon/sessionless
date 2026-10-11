@@ -278,13 +278,13 @@ func (service *Service) IngestBound(
 	attemptID := domain.AttemptID(service.stableID("attempt", input.Actor.TenantID, plan.RunID, "1"))
 	executionAuthority, err := service.harnessBinder.BindHarness(ctx, ports.HarnessBindingRequest{
 		TenantID: input.Actor.TenantID, OwnerUserID: input.Actor.UserID,
-		RunID: plan.RunID, AttemptID: attemptID, SubscriptionConnectionID: input.SubscriptionConnectionID,
+		RunID: plan.RunID, AttemptID: attemptID, SessionID: input.Binding.SessionID, SubscriptionConnectionID: input.SubscriptionConnectionID,
 		At: input.ReceivedAt.UTC(),
 	})
 	if err != nil {
 		return ports.CanonicalUserEventResult{}, err
 	}
-	if err := executionAuthority.ValidateForScope(ports.HarnessBindingRequest{TenantID: input.Actor.TenantID, OwnerUserID: input.Actor.UserID, RunID: plan.RunID, AttemptID: attemptID, SubscriptionConnectionID: input.SubscriptionConnectionID, At: input.ReceivedAt.UTC()}); err != nil {
+	if err := executionAuthority.ValidateForScope(ports.HarnessBindingRequest{TenantID: input.Actor.TenantID, OwnerUserID: input.Actor.UserID, RunID: plan.RunID, AttemptID: attemptID, SessionID: input.Binding.SessionID, SubscriptionConnectionID: input.SubscriptionConnectionID, At: input.ReceivedAt.UTC()}); err != nil {
 		return ports.CanonicalUserEventResult{}, err
 	}
 
@@ -343,7 +343,8 @@ func (service *Service) IngestBound(
 	result, err := service.store.CommitCanonicalUserEvent(ctx, ports.CanonicalUserEventCommit{
 		TenantID: input.Actor.TenantID, UserID: input.Actor.UserID,
 		BindingID: input.Binding.ID, ExpectedBindingRevision: input.Binding.Revision,
-		Origin: origin, IdempotencyKey: plan.IdempotencyKey, MutationDigest: input.MutationDigest,
+		SessionID: input.Binding.SessionID,
+		Origin:    origin, IdempotencyKey: plan.IdempotencyKey, MutationDigest: input.MutationDigest,
 		ExpireAt: input.ReceivedAt.UTC().Add(service.retention),
 		EventID:  plan.EventID, Payload: payloadRef, PreparedMaterial: prepared, DisplayText: input.Text,
 		RunID:                    plan.RunID,
@@ -351,12 +352,13 @@ func (service *Service) IngestBound(
 		SubscriptionConnectionID: input.SubscriptionConnectionID,
 		ManifestID:               domain.ArtifactManifestID(service.stableID("manifest", input.Actor.TenantID, plan.RunID)),
 		Artifacts:                artifacts, DispatchID: plan.DispatchID,
-		AllowedMCPServers:    append([]string(nil), input.AllowedMCPServers...),
-		ExecutionPlacementV2: executionAuthority.ExecutionPlacementV2,
-		HarnessBinding:       executionAuthority.HarnessBinding.Clone(),
-		SubstrateBinding:     executionAuthority.Clone().SubstrateBinding,
-		AdmissionCostCeiling: executionAuthority.Clone().AdmissionCostCeiling,
-		CommittedAt:          input.ReceivedAt.UTC(),
+		AllowedMCPServers:          append([]string(nil), input.AllowedMCPServers...),
+		ExecutionPlacementV2:       executionAuthority.ExecutionPlacementV2,
+		HarnessBinding:             executionAuthority.HarnessBinding.Clone(),
+		SubstrateBinding:           executionAuthority.Clone().SubstrateBinding,
+		AdmissionCostCeiling:       executionAuthority.Clone().AdmissionCostCeiling,
+		OwnedExecutionSourceRecord: executionAuthority.OwnedExecutionSourceRecord,
+		CommittedAt:                input.ReceivedAt.UTC(),
 	})
 	if err != nil {
 		return ports.CanonicalUserEventResult{}, err
@@ -403,13 +405,13 @@ func (service *Service) Ingest(ctx context.Context, input UserInput) (ports.Cano
 	attemptID := domain.AttemptID(service.stableID("attempt", input.Actor.TenantID, runID, "1"))
 	executionAuthority, err := service.harnessBinder.BindHarness(ctx, ports.HarnessBindingRequest{
 		TenantID: input.Actor.TenantID, OwnerUserID: input.Actor.UserID,
-		RunID: runID, AttemptID: attemptID, SubscriptionConnectionID: input.SubscriptionConnectionID,
+		RunID: runID, AttemptID: attemptID, SessionID: state.Session.ID, SubscriptionConnectionID: input.SubscriptionConnectionID,
 		At: input.ReceivedAt.UTC(),
 	})
 	if err != nil {
 		return ports.CanonicalUserEventResult{}, err
 	}
-	if err := executionAuthority.ValidateForScope(ports.HarnessBindingRequest{TenantID: input.Actor.TenantID, OwnerUserID: input.Actor.UserID, RunID: runID, AttemptID: attemptID, SubscriptionConnectionID: input.SubscriptionConnectionID, At: input.ReceivedAt.UTC()}); err != nil {
+	if err := executionAuthority.ValidateForScope(ports.HarnessBindingRequest{TenantID: input.Actor.TenantID, OwnerUserID: input.Actor.UserID, RunID: runID, AttemptID: attemptID, SessionID: state.Session.ID, SubscriptionConnectionID: input.SubscriptionConnectionID, At: input.ReceivedAt.UTC()}); err != nil {
 		return ports.CanonicalUserEventResult{}, err
 	}
 	origin := domain.FrontendEventOrigin{
@@ -466,22 +468,24 @@ func (service *Service) Ingest(ctx context.Context, input UserInput) (ports.Cano
 	result, err := service.store.CommitCanonicalUserEvent(ctx, ports.CanonicalUserEventCommit{
 		TenantID: input.Actor.TenantID, UserID: input.Actor.UserID,
 		BindingID: state.Binding.ID, ExpectedBindingRevision: state.Binding.Revision,
-		Origin: origin, IdempotencyKey: idempotencyKey,
+		SessionID: state.Session.ID,
+		Origin:    origin, IdempotencyKey: idempotencyKey,
 		ExpireAt: input.ReceivedAt.UTC().Add(service.retention),
 		EventID:  eventID, Payload: payloadRef, PreparedMaterial: prepared,
-		DisplayText:              input.Text,
-		RunID:                    runID,
-		AttemptID:                attemptID,
-		SubscriptionConnectionID: input.SubscriptionConnectionID,
-		ManifestID:               domain.ArtifactManifestID(service.stableID("manifest", input.Actor.TenantID, runID)),
-		Artifacts:                artifacts,
-		DispatchID:               dispatchID,
-		AllowedMCPServers:        append([]string(nil), input.AllowedMCPServers...),
-		ExecutionPlacementV2:     executionAuthority.ExecutionPlacementV2,
-		HarnessBinding:           executionAuthority.HarnessBinding.Clone(),
-		SubstrateBinding:         executionAuthority.Clone().SubstrateBinding,
-		AdmissionCostCeiling:     executionAuthority.Clone().AdmissionCostCeiling,
-		CommittedAt:              input.ReceivedAt.UTC(),
+		DisplayText:                input.Text,
+		RunID:                      runID,
+		AttemptID:                  attemptID,
+		SubscriptionConnectionID:   input.SubscriptionConnectionID,
+		ManifestID:                 domain.ArtifactManifestID(service.stableID("manifest", input.Actor.TenantID, runID)),
+		Artifacts:                  artifacts,
+		DispatchID:                 dispatchID,
+		AllowedMCPServers:          append([]string(nil), input.AllowedMCPServers...),
+		ExecutionPlacementV2:       executionAuthority.ExecutionPlacementV2,
+		HarnessBinding:             executionAuthority.HarnessBinding.Clone(),
+		SubstrateBinding:           executionAuthority.Clone().SubstrateBinding,
+		AdmissionCostCeiling:       executionAuthority.Clone().AdmissionCostCeiling,
+		OwnedExecutionSourceRecord: executionAuthority.OwnedExecutionSourceRecord,
+		CommittedAt:                input.ReceivedAt.UTC(),
 	})
 	if err != nil {
 		return ports.CanonicalUserEventResult{}, err

@@ -1,6 +1,6 @@
 # Current authority for the owned agent harness
 
-Version: 0.1.1, engineering draft, 2026-10-11. Implementation owner:
+Version: 0.1.2, engineering draft, 2026-10-11. Implementation owner:
 [#189](https://gitcode.com/urandon/sessionless/issues/189), under
 [#176](https://gitcode.com/urandon/sessionless/issues/176). This extension
 defines the current-authority requirements of the accepted
@@ -158,12 +158,36 @@ an operation; this additional exact source proves who permits its envelope.
 
 ### Attempt admission attachment
 
+Ingress and scheduler admission are two distinct phases. The server binder
+produces `AttemptExecutionSourceV1` before a capacity reservation exists. It
+fixes tenant/Session/principal/Run/Attempt, the original installed-profile
+reference, exactly four ordered spending snapshots, completed policy/binding/
+placement/substrate/cost digests, exact currency and aggregate amount, and
+original `IssuedAt`/exclusive `ExpiresAt`. It contains **no reservation ID**.
+The canonical ingress transaction fences this asserted Session against its
+actually authorized frontend binding revision and Session before any event,
+Run, Attempt or outbox write. A caller/binder Session is not authority.
+
+Carry the source as exact bounded quoted String bytes through authority ports,
+canonical commit and dispatch outbox. Early application idempotency lookup
+precedes the binder; concurrent-miss transaction recovery compares the original
+source bytes as well as execution digests. It never rebuilds a source at the
+new delivery time or selects another payer/profile. Owned records require the
+source; single-turn/attached records explicitly exclude it. This is a tagged
+contract, not a legacy decoder or compatibility fallback. Old owned backlog
+must be proven empty before cutover; runtime registrations remain disabled.
+
 `AttemptExecutionAdmissionV1` is an immutable attachment to the existing
 canonical admitted WorkerJob, keyed `(tenant_id, attempt_id)`, and created in
-the same existing admission/dispatch transaction. It records exact Run, Session,
-principal, completed policy/binding/substrate/cost digests, source current-head
-locators/generations/digests and the explicit approved funding allocation for
-this Attempt. Missing attachment is not reconstructed from the Job as a fallback.
+the same existing admission/dispatch transaction. Its canonical body contains
+version, that exact original `Source`, the actual `ReservationID` and one
+database `AdmittedAt`. Admission time must be inside the original source
+window. It does not replace `IssuedAt` in policy construction, refresh any
+source deadline or reseal the execution package. The source records exact Run,
+Session, principal, completed execution digests, current-head references and
+approved funding allocations. Missing final attachment is not reconstructed
+from the Job or source as a fallback. Structural validation of either phase
+does not establish authentic approval, current permission or held capacity.
 
 Each funding component references its exact current spending-authorization
 head and names its payer, allocation identity/generation,
@@ -225,9 +249,11 @@ The [current worker](../../internal/worker/manager.go) reserves the outer effect
 before `SubstrateRegistry.Prepare` obtains its allocation. Preserve that order:
 
 1. Trusted installation produces independent registration/evidence/grant/price
-   facts and authenticated per-Attempt spending heads. Admission builds policy,
-   HarnessBindingV2, placement/substrate/cost
-   and the immutable Attempt admission attachment from those facts.
+   facts and authenticated per-Attempt spending heads. Ingress builds the
+   original policy, HarnessBindingV2, placement/substrate/cost and immutable
+   source package from those facts, fenced to the canonical Session. Scheduler
+   admission rereads the original current authorities and adds actual capacity
+   reservation/DB admission time in a create-once attachment with WorkerJob.
 2. The existing serializable outer reservation validates current Job/Run/Attempt,
    Session/resource/lease, installed approval and funding, then confirms one
    physical claimant. Its grant permits the bounded preparation boundary only;
@@ -316,6 +342,15 @@ lookup. Prove actual statement/byte maxima with legitimate worst-case native
 fixtures before acceptance. No table scan, arbitrary blob fetch, credential
 materialization, provider RPC or allocation preflight belongs in a transaction.
 Public errors remain fixed content-free denial categories.
+
+The source-only phase implementation does not establish these admission
+bounds. Static inventory of the legacy managed happy path at `5b416` found
+approximately 32 statements already, before the additional original/current
+authority checks; missing rows and helper branches add more. This is an
+inventory, not native measurement. Do not count only new head reads, raise the
+ceiling implicitly, or accept an unbounded legacy helper as a bounded writer.
+Keep owned scheduler admission closed until the complete existing transaction
+is refactored and its legitimate worst-case native fixtures meet these bounds.
 
 ## Terminal and retention integration
 

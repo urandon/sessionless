@@ -217,29 +217,34 @@ func TestDispatchOutboxRejectsIndependentlyValidSubstitutedLoopCost(t *testing.T
 	t.Parallel()
 	for _, axis := range []string{"policy", "outer"} {
 		t.Run(axis, func(t *testing.T) {
+			scope, profile, sources, at := admissionSourcesFixture(t)
+			// Explicit synthetic paid provider allocation: this is fixture
+			// funding, not a live API or a replacement payer authorization.
+			profile.CostCeiling.ProviderPriceState = domain.ProviderPriceKnownV1
+			*profile.CostCeiling.MaxProviderAmountMicrounits = 1
+			*profile.CostCeiling.MaxTotalAmountMicrounits += 1
+			profile.Substrate.AdmissionCostCeilingDigest, _ = profile.CostCeiling.Digest()
+			for i := range sources {
+				sources[i] = ownedSpendingFixture(t, profile, sources[i].Locator.ComponentKind)
+			}
+			pkg := mustAdmissionPackage(t, scope, profile, sources, at)
 			run, attempt := validRun(), validAttempt()
-			binding := ownedAgentBindingFixture(t)
-			at := binding.AgentLoopPolicy.IssuedAt
-			authority := deterministicManagedAuthority(t, run.TenantID, "user-1", run.ID, attempt.ID, at)
-			cost := authority.AdmissionCostCeiling.Clone()
-			cost.ProviderPriceState = domain.ProviderPriceKnownV1
-			*cost.MaxProviderAmountMicrounits, *cost.MaxTotalAmountMicrounits = 1, 1
-			substrate := authority.SubstrateBinding
-			binding.TenantID, binding.OwnerUserID = run.TenantID, "user-1"
-			binding.RunID, binding.AttemptID = run.ID, attempt.ID
-			binding.Resource.OwnerUserID = binding.OwnerUserID
-			policy := binding.AgentLoopPolicy
-			policy.TenantID, policy.OwnerUserID = binding.TenantID, binding.OwnerUserID
-			policy.RunID, policy.AttemptID = binding.RunID, binding.AttemptID
-			policy.Resource = binding.Resource
-			cost = withOwnedServiceCostFixture(t, cost, *policy)
-			policy.AdmissionCostCeiling = cost.Clone()
+			run.TenantID, run.SessionID, run.ID = scope.TenantID, scope.SessionID, scope.RunID
+			attempt.TenantID, attempt.RunID, attempt.ID = scope.TenantID, scope.RunID, scope.AttemptID
+			binding, substrate, cost := pkg.Binding.Clone(), pkg.Substrate, pkg.Cost.Clone()
+			record, err := domain.EncodeAttemptExecutionSourceV1(pkg.Source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			blob := validBlob()
+			blob.TenantID, blob.Key = scope.TenantID, "tenants/"+string(scope.TenantID)+"/input"
 			dispatch := domain.DispatchOutbox{
 				ID: "dispatch-owned-cost", TenantID: run.TenantID, RunID: run.ID, AttemptID: attempt.ID,
-				InputManifestID: "manifest-owned-cost", ContextSnapshot: validBlob(),
+				InputManifestID: "manifest-owned-cost", ContextSnapshot: blob,
 				HarnessBinding: binding, SubstrateBinding: &substrate, AdmissionCostCeiling: &cost,
-				CredentialOwnerUserID: binding.OwnerUserID,
-				DeliveryChat:          domain.TelegramChatRef{TenantID: run.TenantID, ChatID: -1000123}, ReplyToMessageID: 77,
+				OwnedExecutionSourceRecord: string(record),
+				CredentialOwnerUserID:      binding.OwnerUserID,
+				DeliveryChat:               domain.TelegramChatRef{TenantID: run.TenantID, ChatID: -1000123}, ReplyToMessageID: 77,
 				Status: domain.DispatchPending, IdempotencyKey: "dispatch-owned-cost", CreatedAt: at, UpdatedAt: at,
 			}
 			sealOuter := func() {

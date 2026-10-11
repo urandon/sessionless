@@ -66,6 +66,12 @@ func ownedSpendingFixture(t testing.TB, p domain.OwnedAgentProfileCurrentV1, kin
 		ResourceID: p.Resource.ResourceID, ResourceRevision: p.Resource.Revision, ResourceGeneration: p.Resource.CredentialGeneration, ProfileID: string(p.Locator.Profile), ProfileRevision: p.ProfileRevision, ScopedGrantDigest: p.EffectivePolicyDigest, Currency: p.CostCeiling.Currency, PriceRevision: p.CostCeiling.PriceRevision, PriceEvidenceDigest: p.ProviderPriceDigest, TermsEvidenceDigest: p.ProviderTermsDigest, PriceState: domain.ExternalServicePriceKnownFreeV1, MaxAmountMicrounits: new(uint64), RevocationGeneration: 1, State: domain.OwnedAgentCurrentActiveV1, Window: p.Window, UpdatedAt: p.UpdatedAt, MutationID: "publish-original-attempt",
 	}
 	switch kind {
+	case domain.AttemptSpendingProviderV1:
+		amount := *p.CostCeiling.MaxProviderAmountMicrounits
+		v.MaxAmountMicrounits = &amount
+		if p.CostCeiling.ProviderPriceState == domain.ProviderPriceKnownV1 {
+			v.PriceState = domain.ExternalServicePriceKnownPaidV1
+		}
 	case domain.AttemptSpendingSubstrateV1:
 		v.ResourceID, v.ResourceRevision, v.ResourceGeneration = p.Substrate.ProfileID, p.Substrate.ProfileRevision, p.RevocationGeneration
 		v.ProfileID, v.ProfileRevision = p.Substrate.ProfileID, p.Substrate.ProfileRevision

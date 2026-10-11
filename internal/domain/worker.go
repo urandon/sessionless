@@ -25,8 +25,11 @@ type WorkerJob struct {
 	HarnessBinding        HarnessBindingV2        `json:"harness_binding"`
 	SubstrateBinding      *SubstrateBindingV1     `json:"substrate_binding,omitempty"`
 	AdmissionCostCeiling  *AdmissionCostCeilingV2 `json:"admission_cost_ceiling,omitempty"`
-	Limits                ProductLimits           `json:"limits"`
-	Origin                *FrontendEventOrigin    `json:"origin,omitempty"`
+	// Original strict ingress bytes; missing final admission is NEVER recovered
+	// from this historical job projection.
+	OwnedExecutionSourceRecord string               `json:"owned_execution_source_record,omitempty"`
+	Limits                     ProductLimits        `json:"limits"`
+	Origin                     *FrontendEventOrigin `json:"origin,omitempty"`
 	// Compatibility bridge for legacy Telegram jobs until #37 projects results from the
 	// canonical session stream.
 	DeliveryChat     TelegramChatRef `json:"delivery_chat"`
@@ -102,6 +105,11 @@ func (job WorkerJob) ValidateForRun(run Run) error {
 		return err
 	}
 	if err := job.HarnessBinding.ValidateAdmissionCostCeiling(job.AdmissionCostCeiling); err != nil {
+		return err
+	}
+	if err := ValidateOwnedExecutionSourceRecord(job.OwnedExecutionSourceRecord,
+		AttemptExecutionSourceScopeV1{TenantID: job.TenantID, SessionID: run.SessionID, OwnerUserID: job.CredentialOwnerUserID, RunID: job.RunID, AttemptID: job.AttemptID},
+		job.ExecutionPlacementV2, job.HarnessBinding, job.SubstrateBinding, job.AdmissionCostCeiling); err != nil {
 		return err
 	}
 	if err := job.Limits.Validate(); err != nil {

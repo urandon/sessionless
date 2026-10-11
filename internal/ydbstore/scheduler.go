@@ -113,6 +113,12 @@ func (store *Store) AdmitDispatch(
 		); err != nil {
 			return err
 		}
+		// Source bytes are not final admission. Until the same-Tx bounded
+		// attachment/current-source writer is wired, neither a valid source nor
+		// an old Job may make an owned Attempt admitted through the legacy path.
+		if outbox.HarnessBinding.Profile == domain.HarnessExecutionOwnedAgentV2 {
+			return domain.ErrMembershipDenied
+		}
 		switch outbox.ExecutionPlacementV2.Kind {
 		case domain.ExecutionPlacementManaged:
 			result.Delivery = ports.DispatchDeliveryManagedQueue
@@ -192,7 +198,7 @@ func (store *Store) AdmitDispatch(
 				}
 				if !jobFound || outboxErr != nil || jobErr != nil || outboxBindingDigest != jobBindingDigest ||
 					outboxPlacementErr != nil || jobPlacementErr != nil || outboxPlacementDigest != jobPlacementDigest || !authorityMatches ||
-					job.AttemptID != request.AttemptID || job.ReservationID != request.ReservationID {
+					job.AttemptID != request.AttemptID || job.ReservationID != request.ReservationID || job.OwnedExecutionSourceRecord != outbox.OwnedExecutionSourceRecord {
 					return domain.ValidationError{Field: "worker_job.harness_binding", Reason: "does not match the admitted outbox authority"}
 				}
 				result.Admitted = true
@@ -300,20 +306,21 @@ func (store *Store) AdmitDispatch(
 			TenantID: request.TenantID, RunID: request.RunID,
 			SessionID: run.SessionID, TriggerEventID: run.TriggerEventID,
 			AttemptID: request.AttemptID, ReservationID: request.ReservationID,
-			InputManifestID:       outbox.InputManifestID,
-			ContextSnapshot:       outbox.ContextSnapshot,
-			ContextWindow:         contextWindow,
-			WorkspaceSnapshot:     outbox.WorkspaceSnapshot,
-			SkillBundle:           outbox.SkillBundle,
-			AllowedMCPServers:     append([]string(nil), outbox.AllowedMCPServers...),
-			CredentialOwnerUserID: outbox.CredentialOwnerUserID,
-			ExecutionPlacementV2:  outbox.ExecutionPlacementV2,
-			HarnessBinding:        outbox.HarnessBinding.Clone(),
-			Limits:                request.Limits,
-			Origin:                outbox.Origin,
-			DeliveryChat:          outbox.DeliveryChat,
-			ReplyToMessageID:      outbox.ReplyToMessageID,
-			CreatedAt:             request.Now,
+			InputManifestID:            outbox.InputManifestID,
+			ContextSnapshot:            outbox.ContextSnapshot,
+			ContextWindow:              contextWindow,
+			WorkspaceSnapshot:          outbox.WorkspaceSnapshot,
+			SkillBundle:                outbox.SkillBundle,
+			AllowedMCPServers:          append([]string(nil), outbox.AllowedMCPServers...),
+			CredentialOwnerUserID:      outbox.CredentialOwnerUserID,
+			ExecutionPlacementV2:       outbox.ExecutionPlacementV2,
+			HarnessBinding:             outbox.HarnessBinding.Clone(),
+			Limits:                     request.Limits,
+			Origin:                     outbox.Origin,
+			DeliveryChat:               outbox.DeliveryChat,
+			ReplyToMessageID:           outbox.ReplyToMessageID,
+			CreatedAt:                  request.Now,
+			OwnedExecutionSourceRecord: outbox.OwnedExecutionSourceRecord,
 		}
 		if outbox.SubstrateBinding != nil {
 			substrate := *outbox.SubstrateBinding

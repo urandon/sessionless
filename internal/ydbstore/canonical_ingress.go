@@ -293,7 +293,12 @@ func (store *Store) CommitCanonicalUserEvent(
 			}
 			storedBindingDigest, storedErr := outbox.HarnessBinding.Digest()
 			requestBindingDigest, requestErr := request.HarnessBinding.Digest()
-			if !found || storedErr != nil || requestErr != nil || storedBindingDigest != requestBindingDigest {
+			if !found || storedErr != nil || requestErr != nil || storedBindingDigest != requestBindingDigest || outbox.OwnedExecutionSourceRecord != request.OwnedExecutionSourceRecord {
+				return domain.ErrEventIdempotencyConflict
+			}
+			if err := domain.ValidateOwnedExecutionSourceRecord(outbox.OwnedExecutionSourceRecord,
+				domain.AttemptExecutionSourceScopeV1{TenantID: request.TenantID, SessionID: run.SessionID, OwnerUserID: request.UserID, RunID: run.ID, AttemptID: request.AttemptID},
+				outbox.ExecutionPlacementV2, outbox.HarnessBinding, outbox.SubstrateBinding, outbox.AdmissionCostCeiling); err != nil {
 				return domain.ErrEventIdempotencyConflict
 			}
 			result = ports.CanonicalUserEventResult{
@@ -327,6 +332,13 @@ func (store *Store) CommitCanonicalUserEvent(
 		}
 		if !found || session.Status != domain.SessionActive {
 			return domain.ValidationError{Field: "session", Reason: "must be active for canonical ingress"}
+		}
+		// A binder-supplied Session is only an assertion. Fence the original
+		// package against this actually authorized canonical binding/Session.
+		if err := domain.ValidateOwnedExecutionSourceRecord(request.OwnedExecutionSourceRecord,
+			domain.AttemptExecutionSourceScopeV1{TenantID: request.TenantID, SessionID: session.ID, OwnerUserID: request.UserID, RunID: request.RunID, AttemptID: request.AttemptID},
+			request.ExecutionPlacementV2, request.HarnessBinding, request.SubstrateBinding, request.AdmissionCostCeiling); err != nil {
+			return domain.ErrMembershipDenied
 		}
 		if err := domain.ValidateSessionEventBlob(request.TenantID, session.ID, request.EventID, request.Payload); err != nil {
 			return err
@@ -375,12 +387,13 @@ func (store *Store) CommitCanonicalUserEvent(
 		dispatch := domain.DispatchOutbox{
 			ID: request.DispatchID, TenantID: request.TenantID, RunID: request.RunID,
 			AttemptID: request.AttemptID, InputManifestID: request.ManifestID,
-			AllowedMCPServers:     append([]string(nil), request.AllowedMCPServers...),
-			CredentialOwnerUserID: request.UserID,
-			ExecutionPlacementV2:  request.ExecutionPlacementV2,
-			HarnessBinding:        request.HarnessBinding.Clone(),
-			ContextWindow:         &domain.SessionContextWindow{ThroughSequence: sequence},
-			Origin:                &origin, Status: domain.DispatchPending, IdempotencyKey: request.IdempotencyKey,
+			AllowedMCPServers:          append([]string(nil), request.AllowedMCPServers...),
+			CredentialOwnerUserID:      request.UserID,
+			ExecutionPlacementV2:       request.ExecutionPlacementV2,
+			HarnessBinding:             request.HarnessBinding.Clone(),
+			OwnedExecutionSourceRecord: request.OwnedExecutionSourceRecord,
+			ContextWindow:              &domain.SessionContextWindow{ThroughSequence: sequence},
+			Origin:                     &origin, Status: domain.DispatchPending, IdempotencyKey: request.IdempotencyKey,
 			CreatedAt: request.CommittedAt, UpdatedAt: request.CommittedAt,
 		}
 		if request.SubstrateBinding != nil {
@@ -556,9 +569,10 @@ func validateCanonicalCommit(request ports.CanonicalUserEventCommit) error {
 	authority := ports.ExecutionAuthorityV2{
 		ExecutionPlacementV2: request.ExecutionPlacementV2, HarnessBinding: request.HarnessBinding,
 		SubstrateBinding: request.SubstrateBinding, AdmissionCostCeiling: request.AdmissionCostCeiling,
+		OwnedExecutionSourceRecord: request.OwnedExecutionSourceRecord,
 	}
 	if err := authority.ValidateForScope(ports.HarnessBindingRequest{
-		TenantID: request.TenantID, OwnerUserID: request.UserID, RunID: request.RunID, AttemptID: request.AttemptID,
+		TenantID: request.TenantID, OwnerUserID: request.UserID, SessionID: request.SessionID, RunID: request.RunID, AttemptID: request.AttemptID,
 		SubscriptionConnectionID: request.SubscriptionConnectionID, At: request.CommittedAt,
 	}); err != nil {
 		return err

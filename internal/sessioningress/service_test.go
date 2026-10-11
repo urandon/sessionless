@@ -372,6 +372,72 @@ func testIngressConfig(key string) sessioningress.Config {
 	}
 }
 
+type sessionRecordingBinder struct {
+	requests []ports.HarnessBindingRequest
+}
+
+func (b *sessionRecordingBinder) BindHarness(ctx context.Context, request ports.HarnessBindingRequest) (ports.ExecutionAuthorityV2, error) {
+	b.requests = append(b.requests, request)
+	return sessionlessharness.NewDeterministicFixtureBinderV1().BindHarness(ctx, request)
+}
+
+func TestIngressBindingUsesResolvedSessionAndReplaySkipsBinder(t *testing.T) {
+	t.Parallel()
+	for _, bound := range []bool{false, true} {
+		name := "resolved_frontend"
+		if bound {
+			name = "bound_web"
+		}
+		t.Run(name, func(t *testing.T) {
+			store, blobs := newMemoryCanonicalStore(), newMemoryBlobs()
+			binder := &sessionRecordingBinder{}
+			config := testIngressConfig("s")
+			config.HarnessBinder = binder
+			service, err := sessioningress.New(config, store, blobs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := time.Date(2026, 10, 11, 4, 0, 0, 0, time.UTC)
+			adapter := syntheticfrontend.New(service, "tenant-a", "user-a", "conversation-a")
+			state, err := adapter.EnsureSession(t.Context(), now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var first, replay ports.CanonicalUserEventResult
+			if bound {
+				state.Binding.Frontend = "web"
+				state.Binding.ExternalConversationID = string(state.Session.ID)
+				store.bindings[state.Binding.ID] = state.Binding
+				input := sessioningress.BoundUserInput{Actor: sessioningress.Actor{TenantID: "tenant-a", UserID: "user-a", Frontend: "web", ExternalConversationID: string(state.Session.ID)}, Binding: state.Binding, ExternalEventID: "source-once", ReceivedAt: now, Text: "hello", SubscriptionConnectionID: "fixture-connection"}
+				first, err = service.IngestBound(t.Context(), input)
+				if err != nil {
+					t.Fatal(err)
+				}
+				input.ReceivedAt = now.Add(time.Minute)
+				replay, err = service.IngestBound(t.Context(), input)
+			} else {
+				first, err = adapter.Send(t.Context(), "source-once", "hello", "fixture-connection", now)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := adapter.NewSession(t.Context(), state.Binding.Revision, "switch-after-source", now.Add(time.Second)); err != nil {
+					t.Fatal(err)
+				}
+				replay, err = adapter.Send(t.Context(), "source-once", "hello", "fixture-connection", now.Add(time.Minute))
+			}
+			if err != nil || !first.Created || replay.Created || replay.SessionID != state.Session.ID || replay.RunID != first.RunID {
+				t.Fatalf("original ingress/replay: err=%v first=%+v replay=%+v", err, first, replay)
+			}
+			if len(binder.requests) != 1 || len(store.commits) != 1 {
+				t.Fatalf("replay reissued original source: binder=%d commits=%d", len(binder.requests), len(store.commits))
+			}
+			if binder.requests[0].SessionID != state.Session.ID || store.commits[0].SessionID != state.Session.ID || binder.requests[0].RunID != first.RunID {
+				t.Fatalf("binder/commit lost original resolved Session: binder=%+v commitSession=%s", binder.requests[0], store.commits[0].SessionID)
+			}
+		})
+	}
+}
+
 type invalidHarnessBinder struct{}
 
 func (invalidHarnessBinder) BindHarness(context.Context, ports.HarnessBindingRequest) (ports.ExecutionAuthorityV2, error) {

@@ -32,6 +32,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/attachedworkersealedinput"
 	"gitcode.com/urandon/sessionless/internal/attachedworkertransport"
 	"gitcode.com/urandon/sessionless/internal/buildinfo"
+	"gitcode.com/urandon/sessionless/internal/codexexec"
 	"gitcode.com/urandon/sessionless/internal/controlapi"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
@@ -415,16 +416,16 @@ func aw07JoinedRunStatus(t *testing.T, db *sql.DB, ctx context.Context,
 // receipt publication, and TerminalAck. The provider and OCI engine are test
 // doubles; both are compiled only into this YDB gate.
 func TestAW07TwoActivatedProviderDaemonReceipts(t *testing.T) {
-	testJoinedProviderDaemonReceipts(t, false)
+	testJoinedProviderDaemonReceipts(t, false, false)
 }
 
 // The same authenticated daemon/receipt proof starts with normal Web product
 // ingress and canonical admission, rather than manually seeded worker jobs.
 func TestWebAttachedJoinedProviderDaemonReceipts(t *testing.T) {
-	testJoinedProviderDaemonReceipts(t, true)
+	testJoinedProviderDaemonReceipts(t, true, false)
 }
 
-func testJoinedProviderDaemonReceipts(t *testing.T, normalWeb bool) {
+func testJoinedProviderDaemonReceipts(t *testing.T, normalWeb, preparedCodex bool) {
 	store, client := openStore(t)
 	var now time.Time
 	clockCtx, clockCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -535,14 +536,14 @@ func testJoinedProviderDaemonReceipts(t *testing.T, normalWeb bool) {
 	t.Cleanup(server.Close)
 	trust := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
 	root := t.TempDir()
-	a := aw07PrepareDaemonInstallationWithInputLimit(t, filepath.Join(root, "a"), server.URL, trust, aWorker, aPrivate, now, true, inputLimit)
-	b := aw07PrepareDaemonInstallationWithInputLimit(t, filepath.Join(root, "b"), server.URL, trust, bWorker, bPrivate, now, true, inputLimit)
+	a := aw07PrepareDaemonInstallationMode(t, filepath.Join(root, "a"), server.URL, trust, aWorker, aPrivate, now, true, preparedCodex, inputLimit)
+	b := aw07PrepareDaemonInstallationMode(t, filepath.Join(root, "b"), server.URL, trust, bWorker, bPrivate, now, true, preparedCodex, inputLimit)
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
 	defer cancel()
 	aProcess := aw07StartDaemonProcess(t, aw07DaemonChildInput{StateRoot: a.stateRoot, ProfilePath: a.profilePath,
-		ClockNanos: now.UnixNano(), TestProvider: true, ProviderResource: "subscription-" + suffix + "-a", ProviderGeneration: 3})
+		ClockNanos: now.UnixNano(), TestProvider: true, PreparedCodex: preparedCodex, ProviderResource: "subscription-" + suffix + "-a", ProviderGeneration: 3})
 	bProcess := aw07StartDaemonProcess(t, aw07DaemonChildInput{StateRoot: b.stateRoot, ProfilePath: b.profilePath,
-		ClockNanos: now.UnixNano(), TestProvider: true, ProviderResource: "subscription-" + suffix + "-b", ProviderGeneration: 7})
+		ClockNanos: now.UnixNano(), TestProvider: true, PreparedCodex: preparedCodex, ProviderResource: "subscription-" + suffix + "-b", ProviderGeneration: 7})
 	for _, process := range []*aw07DaemonProcess{aProcess, bProcess} {
 		process.await(t, ctx, "AW07_DAEMON_CONNECTED")
 	}
@@ -570,6 +571,19 @@ func testJoinedProviderDaemonReceipts(t *testing.T, normalWeb bool) {
 			t.Fatalf("%s active connection: found=%t err=%v", owner.name, found, err)
 		}
 		binding := aw07TestProviderBinding(owner.worker.OwnerUserID, owner.suffix, owner.generation, now)
+		if preparedCodex {
+			config := aw133PreparedConfig(t, filepath.Join(filepath.Dir(owner.install.stateRoot), "pinned-codex-fixture"), clock)
+			adapter, err := codexexec.New(config, aw133DescriptorOnlyRunner{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			originalBinding := binding
+			binding = func(value *domain.HarnessBindingV2) {
+				originalBinding(value)
+				value.Backend = adapter.DescriptorV1()
+				value.ModelVendorID, value.ModelID = codexexec.ModelVendorIDV1, config.Model
+			}
+		}
 		if normalWeb {
 			// The template is still test-provider-only. The ingress, dispatch,
 			// reservation, window and offer are normal product authorities.
@@ -794,8 +808,12 @@ func testJoinedProviderDaemonReceipts(t *testing.T, normalWeb bool) {
 			t.Fatalf("%s credential files remain: %v, err=%v", owner.name, entries, err)
 		}
 		commands := aw07ReadOCICommands(t, owner.install.commandLog)
+		credentialHome := "SESSIONLESS_PROVIDER_HOME"
+		if preparedCodex {
+			credentialHome = codexexec.CredentialHomeEnvironmentV1
+		}
 		if !strings.Contains(commands, "container start --attach --interactive") ||
-			!strings.Contains(commands, "--network none") || !strings.Contains(commands, "SESSIONLESS_PROVIDER_HOME") {
+			!strings.Contains(commands, "--network none") || !strings.Contains(commands, credentialHome) {
 			t.Fatalf("%s provider boundary was not launched: %s", owner.name, commands)
 		}
 		if normalWeb {

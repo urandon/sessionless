@@ -1,6 +1,6 @@
 # Go-supervised Codex exec backend
 
-Status date: **2026-09-17**. This is the feature-disabled implementation of
+Status date: **2026-10-11**. This is the feature-disabled implementation of
 [#81](https://gitcode.com/urandon/sessionless/issues/81). It is a disabled
 backend contract, canonical `HarnessDriver` bridge, concrete accepted-authority
 resolver, prepared Go-supervisor boundary, and fake-process evidence,
@@ -193,16 +193,68 @@ source and client must upgrade together. Old or missing-head responses are
 rejected, with no legacy decoder or compatibility fallback. Profiles remain
 disabled during this coordinated contract roll-forward.
 
-No shipped stack or foreground constructor selects the prepared executor.
-It is not an invocation replay latch: the existing accepted-attempt owner and
-one-shot prepared Codex process boundary retain that authority. Remaining #133
-work must consume that verified typed input, privately stage
-`context/history.jsonl`, and join bounded semantic output with
-actual process observations into a receipt candidate only after credential
-finalization. Do not recover authority from the synthetic stdin envelope,
-expose `Stack`'s raw supervisor, or wrap another lifecycle around this runner.
-Normal provider materialization, runtime activation and OCI egress remain
-disabled; this library seam is not real-provider rollout or completion of #133.
+## Explicit prepared Stack composition — 2026-10-11
+
+The normal library `attachedworkerstack.New` can now select the concrete
+text-only composition with an explicit `Config.PreparedCodex`. Nil keeps the
+ordinary stack; shipped activation remains nil and denies provider input.
+The selected artifact, fixed argv, model, original accepted head and immutable
+subscription binding are rejoined before credential Issue. Missing typed input,
+attachments, extra artifacts, workspace, skills, MCP and unsupported canonical history fail closed,
+without silently discarding material or decoding synthetic stdin for authority.
+The sole `message.json` / `application/json` ingress envelope is supported only
+when its complete immutable reference and bytes equal the final projected
+user-message trigger, including the original tenant, Session, author, Run and
+admitted sequence boundary. The original verified projection can contain that
+trigger in a snapshot; a tail-only proof is not required. This envelope is
+consumed through canonical history, never staged as an arbitrary attachment.
+
+Prepared Stack execution additionally requires one bind to the genuine Session
+returned by the authenticated Connector. Preflight still pins/reconciles the
+original manifest before any generation or network effect. Initial construction
+binds only after readiness; reconnect additionally requires the existing idle,
+no-terminal reconciliation. The bound generation is exactly manifest +1, never
+a repaired snapshot. Each Run rechecks the original Session's current readiness,
+authentication window and exact accepted-head connection/capability identity.
+Absent, expired, closed, fenced, foreign or second bindings deny before Issue;
+post-network construction failures close that same Session without reattaching.
+
+`PreparedAttachedWorkerRunnerV1` privately stages the verified canonical
+`context/history.jsonl` in fresh 0700/0600 task-owned storage, uses the original
+constructor and real Go supervisor, and leaves the supervisor's attempt cwd
+unchanged. Held directory descriptors bound cleanup to the original staging
+objects. The sole outer `InvocationRunner` still owns Issue, Materialize,
+WriteBack and Release; no second credential lifecycle is introduced.
+
+Only the concrete prepared boundary can mint the private same-run observation,
+after the supervisor returns and final cancel/finish arbitration settles.
+The driver keeps its bounded semantic result separately from that actual
+observation. Neither raw stdout nor a public observer callback supplies receipt
+authority. A single private finalized slot joins the exact returned outer result
+only after WriteBack/Release and successful staging cleanup. Unknown outcomes
+and incomplete cleanup remain reconciliation-only, never resend authority.
+
+Pinned foreground construction installs the concrete Stack candidate only when
+the original output-receipt feature and publisher are present, rejecting a
+caller-supplied builder. Candidate retries remain immutable; the normal adapter
+retires the slot only after matching TerminalAck and receipt-journal retirement
+(or the owning runtime closes). This is not a new durable replay owner: original
+accepted-attempt authority and the one-shot boundary retain that responsibility.
+
+Local fake-executable tests exercise normal Stack selection, genuine supervisor
+observation, both cancel/finish orders, held/failing credential finalization,
+owner/pin/staging denials and lost receipt/ACK responses without another spawn.
+`TestWebAttachedPreparedCodexCanonicalReceipt` is the separately run,
+`ydbintegration`-tagged two-owner fixture through actual Web admission, YDB
+accepted head, TLS sealed input, normal Stack and canonical receipt finalizer.
+Its engine/provider remain fixed test executables; compilation alone is not
+native runtime evidence. The test-only producer/materializer select `CODEX_HOME`
+only for the exact admitted Codex backend, and remain unavailable in shipped
+constructors.
+
+File/image output, real artifact/platform/egress evidence and live activation
+remain separate unfinished gates. This text-only library delivery is neither
+real-provider rollout nor completion of #133 or the MVP.
 
 ## Why production remains disabled
 
@@ -214,9 +266,8 @@ requires all of the following:
   tuple for
   eligible personal subscription, owner-managed attached worker, local credential
   custody, and exact Codex exec surface, including its expiry/re-review gate;
-- product foreground activation of the already concrete authority resolver and
-  prepared process/cancellation composition. The closed registry carries the
-  production-shaped driver but keeps registration and the command path disabled;
+- explicit product foreground activation of the concrete library composition.
+  The closed registry and shipped command/profile keep provider selection disabled;
 - reviewed production egress isolation. The current AW-05 isolation profile
   correctly requires `NetworkDenied=true`, so it can run fake contract tests
   but cannot perform a real provider turn;

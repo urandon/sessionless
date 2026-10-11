@@ -36,9 +36,16 @@ type PreparedProcessBoundaryConfigV1 struct {
 
 type activePreparedProcess struct {
 	authority AuthorityV1
+	context   context.Context
 	cancel    context.CancelFunc
 	cancelled bool
 	finished  bool
+}
+
+type preparedObservation struct {
+	boundary  *PreparedProcessBoundaryV1
+	authority AuthorityV1
+	process   attachedworkerdaemon.AttemptResult
 }
 
 // PreparedProcessBoundaryV1 runs at most one exact prepared Codex process for
@@ -89,7 +96,7 @@ func (boundary *PreparedProcessBoundaryV1) Run(ctx context.Context, invocation P
 		return ProcessResultV1{}, ErrProcessBoundaryUnavailable
 	}
 	runCtx, cancel := context.WithCancel(ctx)
-	active := &activePreparedProcess{authority: invocation.Authority, cancel: cancel}
+	active := &activePreparedProcess{authority: invocation.Authority, context: runCtx, cancel: cancel}
 	boundary.mu.Lock()
 	switch {
 	case boundary.active != nil:
@@ -105,10 +112,20 @@ func (boundary *PreparedProcessBoundaryV1) Run(ctx context.Context, invocation P
 		boundary.active = active
 		boundary.mu.Unlock()
 	}
+	var observed *attachedworkerdaemon.AttemptResult
 	defer func() {
 		if boundary.finish(active) {
 			result.Cancelled = true
+			if observed != nil {
+				observed.Cancelled = true
+			}
 			runErr = errors.Join(runErr, context.Canceled)
+		}
+		if observed != nil {
+			// Raw protocol bytes are owned by the semantic reducer, not this witness.
+			zeroBytes(observed.Stdout)
+			observed.Stdout = nil
+			result.original = &preparedObservation{boundary: boundary, authority: invocation.Authority, process: *observed}
 		}
 		cancel()
 	}()
@@ -135,9 +152,10 @@ func (boundary *PreparedProcessBoundaryV1) Run(ctx context.Context, invocation P
 		return ProcessResultV1{}, ErrProcessBoundaryUnavailable
 	}
 	expiryCtx, cancelExpiry := context.WithDeadline(runCtx, deadline)
-	observed, runErr := boundary.supervisor.Run(expiryCtx, prepared)
+	actual, runErr := boundary.supervisor.Run(expiryCtx, prepared)
+	observed = &actual
 	cancelExpiry()
-	result = mapPreparedProcessResult(invocation, observed)
+	result = mapPreparedProcessResult(invocation, actual)
 	return result, runErr
 }
 
@@ -170,6 +188,12 @@ func (boundary *PreparedProcessBoundaryV1) finish(active *activePreparedProcess)
 		return false
 	}
 	if !active.finished {
+		// Normal daemon cancellation arrives through this original context,
+		// including after natural process exit while real teardown is held.
+		// It must settle under the same mutex as explicit Cancel and finish.
+		if active.context != nil && errors.Is(active.context.Err(), context.Canceled) {
+			active.cancelled = true
+		}
 		active.finished = true
 		if boundary.active == active {
 			boundary.active = nil

@@ -10,6 +10,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemon"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerlocal"
+	"gitcode.com/urandon/sessionless/internal/attachedworkeroutput"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerprotocol"
 	"gitcode.com/urandon/sessionless/internal/attachedworkersession"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerstack"
@@ -83,11 +84,12 @@ func (port concreteInitialConnectPort) Connect(ctx context.Context, input attach
 // It remains feature-disabled because no product constructor or command path
 // can create it.
 type ForegroundRuntime struct {
-	daemon   *attachedworkerdaemon.Daemon
-	source   wakeSource
-	closer   sessionCloser
-	observer runtimeObservationPort
-	cleanup  time.Duration
+	daemon          *attachedworkerdaemon.Daemon
+	source          wakeSource
+	closer          sessionCloser
+	observer        runtimeObservationPort
+	cleanup         time.Duration
+	preparedReceipt *preflightRunner
 
 	mu   sync.Mutex
 	used bool
@@ -157,6 +159,11 @@ func connectPinnedForegroundRuntime(
 	if err != nil {
 		return nil, err
 	}
+	if stackConfig.PreparedCodex != nil {
+		if err := installPreparedReceipt(&adapterConfig, input.CapabilityManifest, runner); err != nil {
+			return nil, err
+		}
+	}
 	sessionConfig.RuntimePreflight = preflight
 	connector, err := newConnector(store, bootstrap, exchange, sessionConfig)
 	if err != nil {
@@ -180,6 +187,10 @@ func pinnedRuntimePreflight(
 	}
 	stackConfig.AllowedEnvironmentNames = slices.Clone(stackConfig.AllowedEnvironmentNames)
 	stackConfig.AllowedReadRoots = slices.Clone(stackConfig.AllowedReadRoots)
+	if stackConfig.PreparedCodex != nil {
+		prepared := *stackConfig.PreparedCodex
+		stackConfig.PreparedCodex = &prepared
+	}
 	// The selected capability and the local invocation profile must already
 	// agree before acquiring the local lease or constructing a connector.
 	digest, err := attachedworkerprotocol.ManifestDigestV1(capability)
@@ -216,6 +227,57 @@ func pinnedRuntimePreflight(
 // Connect. It never dispatches unless the lease-held preflight installed a
 // fully verified runner. A failed preflight cannot leave process authority.
 type preflightRunner struct{ current *attachedworkerdaemon.Runner }
+
+func installPreparedReceipt(config *Config, capability attachedworkerprotocol.CapabilityManifestV1, runner *preflightRunner) error {
+	if config.ReceiptCandidate != nil || config.ReceiptPublisher == nil || !slices.Contains(capability.Features, attachedworkerprotocol.FeatureOutputReceipt) {
+		return ErrInvalidConfiguration
+	}
+	config.ReceiptCandidate = runner.receiptCandidate
+	config.preparedReceipt = runner
+	return nil
+}
+func (runner *preflightRunner) preparedStack() (*attachedworkerstack.Stack, error) {
+	if !runner.ready() {
+		return nil, ErrReconciliationRequired
+	}
+	stack, ok := (*runner.current).(*attachedworkerstack.Stack)
+	if !ok {
+		return nil, ErrInvalidConfiguration
+	}
+	return stack, nil
+}
+func (runner *preflightRunner) receiptCandidate(identity attachedworkerdaemon.InvocationIdentity, result attachedworkerdaemon.InvocationResult, err error, status domain.AttachedWorkerTerminalStatus) (attachedworkeroutput.Candidate, error) {
+	stack, stackErr := runner.preparedStack()
+	if stackErr != nil {
+		return attachedworkeroutput.Candidate{}, stackErr
+	}
+	return stack.ReceiptCandidate(identity, result, err, status)
+}
+func (runner *preflightRunner) retireReceipt(identity attachedworkerdaemon.InvocationIdentity) error {
+	stack, err := runner.preparedStack()
+	if err != nil {
+		return err
+	}
+	return stack.RetireReceipt(identity)
+}
+func (runner *preflightRunner) closePrepared(ctx context.Context) error {
+	if !runner.ready() {
+		return nil
+	}
+	stack, err := runner.preparedStack()
+	if err != nil {
+		return err
+	}
+	return stack.Close(ctx)
+}
+
+func (runner *preflightRunner) bindPrepared(session *attachedworkersession.Session) error {
+	stack, err := runner.preparedStack()
+	if err != nil {
+		return err
+	}
+	return stack.BindPreparedConnection(session)
+}
 
 func (runner *preflightRunner) ready() bool {
 	return runner != nil && runner.current != nil && *runner.current != nil
@@ -300,6 +362,15 @@ func connectForegroundRuntime(
 	if _, err := adapter.readySnapshot(); err != nil {
 		return cleanup(errors.Join(ErrReconciliationRequired, err))
 	}
+	if adapterConfig.preparedReceipt != nil {
+		original, ok := session.(*attachedworkersession.Session)
+		if !ok {
+			return cleanup(ErrReconciliationRequired)
+		}
+		if err := adapterConfig.preparedReceipt.bindPrepared(original); err != nil {
+			return cleanup(errors.Join(ErrReconciliationRequired, err))
+		}
+	}
 	source, err := NewPreparedCadencedSource(adapter, preparedPoll)
 	if err != nil {
 		return cleanup(errors.Join(ErrReconciliationRequired, err))
@@ -308,6 +379,7 @@ func connectForegroundRuntime(
 	if err != nil {
 		return cleanup(errors.Join(ErrReconciliationRequired, err))
 	}
+	runtime.preparedReceipt = adapterConfig.preparedReceipt
 	if err := ctx.Err(); err != nil {
 		return cleanup(errors.Join(ErrReconciliationRequired, err))
 	}
@@ -407,6 +479,11 @@ func reconnectPinnedForegroundRuntime(
 	if err != nil {
 		return nil, err
 	}
+	if stackConfig.PreparedCodex != nil {
+		if err := installPreparedReceipt(&adapterConfig, input.CapabilityManifest, runner); err != nil {
+			return nil, err
+		}
+	}
 	sessionConfig.RuntimePreflight = preflight
 	port, err := newConnector(store, bootstrap, exchange, sessionConfig)
 	if err != nil {
@@ -424,10 +501,20 @@ func reconnectPinnedForegroundRuntime(
 	if !runner.ready() || ctx.Err() != nil {
 		return cleanup(errors.Join(ErrReconciliationRequired, ctx.Err()))
 	}
+	if adapterConfig.preparedReceipt != nil {
+		original, ok := cadence.session.(*attachedworkersession.Session)
+		if !ok {
+			return cleanup(ErrReconciliationRequired)
+		}
+		if err := adapterConfig.preparedReceipt.bindPrepared(original); err != nil {
+			return cleanup(errors.Join(ErrReconciliationRequired, err))
+		}
+	}
 	runtime, err := NewForegroundRuntime(cadence, runner, config)
 	if err != nil {
 		return cleanup(err)
 	}
+	runtime.preparedReceipt = adapterConfig.preparedReceipt
 	return runtime, nil
 }
 
@@ -548,6 +635,9 @@ func (runtime *ForegroundRuntime) Run(ctx context.Context) error {
 		}
 	}
 	closeCtx, cancel := context.WithTimeout(cleanupParent, runtime.cleanup)
+	if runtime.preparedReceipt != nil {
+		runErr = errors.Join(runErr, runtime.preparedReceipt.closePrepared(closeCtx))
+	}
 	closeErr := runtime.closer.Close(closeCtx)
 	cancel()
 	if closeErr != nil {

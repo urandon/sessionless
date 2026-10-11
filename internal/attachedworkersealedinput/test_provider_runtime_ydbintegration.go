@@ -18,7 +18,9 @@ func ConnectTestProviderPinnedRuntime(ctx context.Context, config SyntheticRunti
 	receiptEndpoint string,
 ) (*SyntheticRuntime, error) {
 	if ctx == nil || ctx.Err() != nil || config.Store == nil || config.Bootstrap == nil ||
-		credentials == nil || candidate == nil || receiptEndpoint == "" {
+		credentials == nil || receiptEndpoint == "" ||
+		(config.Stack.PreparedCodex == nil && candidate == nil) ||
+		(config.Stack.PreparedCodex != nil && candidate != nil) {
 		return nil, ErrInvalid
 	}
 	source, err := NewReceiptSessionSourceFactory(config.SealedEndpoint, receiptEndpoint, config.SealedClient, config.Exchange)

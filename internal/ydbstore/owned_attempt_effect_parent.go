@@ -65,26 +65,19 @@ func (store *Store) reserveBoundedOwnedAttemptEffect(ctx context.Context, reques
 			if parent.Reservation.ReservedAt.After(q.at) || !attemptEffectRequestMatchesRecord(request, attemptEffectRecordV1{Authority: parent.Authority, Reservation: parent.Reservation}) {
 				return q.budget.deny()
 			}
+			burned, err := readOwnedPreparationBurn(ctx, q, *parent)
+			if err != nil {
+				return err
+			}
 			// Retained, authenticated history is observation-only for a losing
 			// claimant or an exhausted ORIGINAL preparation window. No current
 			// source replacement, clock renewal, preparation or cancellation right.
-			if parent.Reservation.PhysicalInvocationClaimID != request.PhysicalInvocationClaimID || !q.at.Before(parent.PreparationExpiresAt) {
+			if burned || parent.Reservation.PhysicalInvocationClaimID != request.PhysicalInvocationClaimID || !q.at.Before(parent.PreparationExpiresAt) {
 				candidate, status, at = parent.Clone(), ports.AttemptEffectReconcileOnlyV1, q.at
 				return nil
 			}
-			current, currentFinal, err := store.currentOwnedAttemptEffectAuthority(ctx, q, request)
-			if err != nil || parent.ValidateForAdmission(currentFinal) != nil ||
-				!current.Lease.AcquiredAt.Equal(parent.Authority.Lease.AcquiredAt) || current.Lease.WorkerID != parent.Authority.Lease.WorkerID ||
-				current.Lease.ExpiresAt.Before(parent.Authority.Lease.ExpiresAt) || current.InvocationDeadline.Before(parent.Authority.InvocationDeadline) {
-				return q.budget.deny()
-			}
-			// Renewal may keep the same physical lease active but cannot change
-			// the original authority digest or invocation/preparation deadline.
-			current.Lease = parent.Authority.Lease
-			current.InvocationDeadline = parent.Authority.InvocationDeadline
-			digest, err := current.Digest()
-			if err != nil || digest != parent.Reservation.InvocationAuthorityDigest || parent.Authority.ValidateAt(q.at) != nil {
-				return q.budget.deny()
+			if err := store.validateCurrentOwnedAttemptParent(ctx, q, request, *parent); err != nil {
+				return err
 			}
 			candidate, status, at = parent.Clone(), ports.AttemptEffectReplayedV1, q.at
 			return nil

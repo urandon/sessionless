@@ -1,6 +1,6 @@
 # Current authority for the owned agent harness
 
-Version: 0.1.8, engineering draft, 2026-10-11. Implementation owner:
+Version: 0.1.9, engineering draft, 2026-10-11. Implementation owner:
 [#189](https://gitcode.com/urandon/sessionless/issues/189), under
 [#176](https://gitcode.com/urandon/sessionless/issues/176). This extension
 defines the current-authority requirements of the accepted
@@ -351,14 +351,73 @@ at most thirty seconds of its cleanup window; a monotonic clock high-water
 rejects rewind after pruning. This is separate from the original one-use
 execution gate and does not weaken it.
 
-These are prerequisites, not durable post-claim registration. A restarted
-issuer is not proof that preparation never happened. Current sole-parent
-readback, trusted supervisor/proxy publication, create-once atomic registration,
+These are prerequisites, not durable post-claim registration. The durable
+preparation burn below prevents a restarted issuer from repeating setup; it is
+not proof that setup never happened or that an allocation was registered.
+Current sole-parent readback, trusted supervisor/proxy publication, create-once atomic registration,
 lost-ACK recovery without new preparation, shared retention and real worker/
 operation integration remain mandatory. The process-local prepared capability
 MAC/digest is not rebuilt after restart as substitute history. Both serving
 registries remain closed to owned execution. No live effect, credential,
 network, deployment or #189 completion is claimed by these contracts.
+
+### Durable preparation burn and actual private preflight bridge
+
+The private [canonical burn](../../internal/ydbstore/owned_attempt_preparation.go)
+adds two nullable columns to the SAME sole-parent row: `preparation_started_at`
+and `preparation_parent_digest`. Both are absent, or both are present with the
+exact original parent digest and database timestamp within the original
+preparation window. The timestamp never moves forward on recovery. Legacy
+authority-producing readers reject either marker, even with an otherwise valid
+legacy body; the owned reader rejects partial, foreign or future markers.
+There is no new ledger, claim, TTL, lifecycle state or mutable parent body.
+
+Before the first transition, authenticate the original process-local grant
+using an explicitly supplied bounded verifier, then reread the original parent,
+Final and source provenance plus the COMPLETE current Run/Attempt/Job/input,
+held capacity, Session/principal, profile/four spending and physical worker
+lease/head/fence authority in the existing serializable bounded callback. The
+conditional update fixes both marker columns without replacing parent bytes.
+No preflight, model/tool/send, resolver or credential I/O occurs in that callback.
+
+Only a confirmed fresh transition returns preparation permission to the trusted
+private composer. A retry that sees its own committed lost acknowledgement
+returns already-consumed, NOT fresh. Callback candidates reset; terminal unknown
+commit, cancellation or failed post-commit grant validation returns no permission.
+Known rollback can retry the unconsumed transition because no physical preparation
+has occurred. A crash after commit and before preflight deliberately strands the
+original setup envelope; it must not refund or silently prepare another allocation.
+
+The [actual preflight bridge](../../internal/serverlessharness/owned_preparation.go)
+is fixed to the exact credential-free deterministic fixture implementation and
+substrate. It authenticates the owned grant, consumes the process-local fence,
+confirms durable consumption and rechecks grant/context before calling the
+existing trusted driver once OUTSIDE SQL. It bounds the child context by the
+ORIGINAL reservation/setup/grant expiry, validates the actual observation and
+returns an authentic process-local prepared capability. Any partial/unknown
+preflight or invalid observation returns no capability and never clears the burn.
+
+An authentic remint with a NEW issuer/key/map cannot undo the database marker.
+Subsequent sole-parent readback is authenticated observation-only even for the
+original claim: no fresh preparation, send or cancellation right. A fresh result
+boolean is private evidence of the exact committed transition, never a queue
+approval field or a substitute for the installed source keeper.
+
+This joins durable storage to the actual fixture preparation boundary, NOT to
+owned serving. The bridge exposes no Execute, Cancel or endpoint selector; both
+public owned registries remain closed. It does not publish an allocation/proxy,
+and its result uses the existing `PreparedInvocation` type accepted by trusted
+substrates. That type does NOT intrinsically block a direct `Execute` call.
+The private serving composer must not hand it to execution before the required
+registration and per-operation debit/authority gates are joined. The capability
+is an authentic preparation result, not sufficient owned-operation authorization.
+The bridge does not
+recover a process-local MAC after restart, prove production installation or debit
+monetary setup/operation budgets. Original unknown preparation requires bounded
+reconciliation/cleanup by its owning supervisor, not execution resume. Trusted
+registration/readback and retention/cancellation integration remain mandatory
+next work. The burn is retained with its original parent, not independently aged
+out or deleted; full shared Session cleanup coverage remains an open #189 gate.
 
 ## Transaction and resource bounds
 
@@ -604,8 +663,8 @@ proofs, not production installation, activation or cloud E2E.
 
 This is a durable sole-parent prerequisite, not a serving owned-admission port,
 physical preparation proof, a production installation or an aggregate debit
-implementation. Parent/funding/unknown-effect cleanup, durable preparation burn
-and trusted allocation/proxy publication, subordinate worst-case debits and
+implementation. Parent/funding/unknown-effect cleanup, trusted allocation/proxy
+publication after the durable preparation burn, subordinate worst-case debits and
 before-send checks still need integration. Both public serving gates remain
 closed. Only the separately authorized disposable native test database receives
 the additive migration; no shared/cloud schema application is implied.

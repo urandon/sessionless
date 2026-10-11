@@ -20,16 +20,18 @@ import (
 // This connector drives the actual Store.Transact retry/commit boundary. It
 // supplies one immutable existing reservation, not production YDB evidence.
 type effectCommitFixture struct {
-	record        attemptEffectRecordV1
-	active        bool
-	begins        int
-	commits       int
-	commitFailure error
-	failRetryRead bool
-	mintFailure   bool
-	grantCalls    int
-	premature     int
-	issuer        *serverlessharness.CapabilityIssuer
+	record                   attemptEffectRecordV1
+	active                   bool
+	begins                   int
+	commits                  int
+	commitFailure            error
+	failRetryRead            bool
+	mintFailure              bool
+	grantCalls               int
+	premature                int
+	preparationTimePresent   uint64
+	preparationDigestPresent uint64
+	issuer                   *serverlessharness.CapabilityIssuer
 }
 
 func (f *effectCommitFixture) Connect(context.Context) (driver.Conn, error) { return f, nil }
@@ -79,16 +81,18 @@ func (f *effectCommitFixture) QueryContext(_ context.Context, query string, args
 	if err != nil {
 		return nil, err
 	}
-	return &effectCommitRows{payload: payload}, nil
+	return &effectCommitRows{payload: payload, preparationTimePresent: f.preparationTimePresent, preparationDigestPresent: f.preparationDigestPresent}, nil
 }
 
 type effectCommitRows struct {
-	payload string
-	done    bool
+	payload                  string
+	preparationTimePresent   uint64
+	preparationDigestPresent uint64
+	done                     bool
 }
 
 func (*effectCommitRows) Columns() []string {
-	return []string{"record", "owned_present", "digest_present"}
+	return []string{"record", "owned_present", "digest_present", "preparation_time_present", "preparation_digest_present"}
 }
 func (*effectCommitRows) Close() error { return nil }
 func (r *effectCommitRows) Next(out []driver.Value) error {
@@ -98,6 +102,7 @@ func (r *effectCommitRows) Next(out []driver.Value) error {
 	r.done = true
 	out[0] = r.payload
 	out[1], out[2] = int64(0), int64(0)
+	out[3], out[4] = r.preparationTimePresent, r.preparationDigestPresent
 	return nil
 }
 func (f *effectCommitFixture) MintAttemptEffectOwnershipGrant(a domain.ServerlessInvocationAuthorityV1, r domain.AttemptEffectReservationV1, expires time.Time) (ports.AttemptEffectOwnershipGrantV1, error) {
@@ -122,7 +127,7 @@ func (f *effectCommitFixture) MintAttemptEffectObservationGrant(a domain.Serverl
 }
 
 func TestAttemptEffectGrantsRequireConfirmedCommit(t *testing.T) {
-	for _, name := range []string{"success", "commit_failure", "retry_success", "retry_read_failure", "mint_failure", "missing_issuer"} {
+	for _, name := range []string{"success", "commit_failure", "retry_success", "retry_read_failure", "mint_failure", "missing_issuer", "orphan_preparation_time", "orphan_preparation_digest", "legacy_preparation_pair"} {
 		t.Run(name, func(t *testing.T) {
 			at := time.Unix(20, 0).UTC()
 			managed, err := sessionlessharness.NewDeterministicFixtureManagedAuthorityV2("tenant-test", "user-test", "run-test", "attempt-test", "subscription-test", time.Unix(10, 0).UTC())
@@ -153,6 +158,12 @@ func TestAttemptEffectGrantsRequireConfirmedCommit(t *testing.T) {
 			}
 			f.failRetryRead = name == "retry_read_failure"
 			f.mintFailure = name == "mint_failure"
+			if name == "orphan_preparation_time" || name == "legacy_preparation_pair" {
+				f.preparationTimePresent = 1
+			}
+			if name == "orphan_preparation_digest" || name == "legacy_preparation_pair" {
+				f.preparationDigestPresent = 1
+			}
 			db := sql.OpenDB(f)
 			db.SetMaxOpenConns(1)
 			t.Cleanup(func() {
@@ -185,6 +196,9 @@ func TestAttemptEffectGrantsRequireConfirmedCommit(t *testing.T) {
 				wantCalls = 1
 				if result.Status != ports.AttemptEffectReconcileOnlyV1 || result.Grant != nil || result.ObservationGrant == nil || issuer.VerifyObservationGrant(*result.ObservationGrant) != nil {
 					t.Fatalf("invalid committed reconcile-only result: %+v", result)
+				}
+				if f.preparationTimePresent != 0 || f.preparationDigestPresent != 0 {
+					t.Fatal("valid legacy row unexpectedly carried owned preparation burn markers")
 				}
 			} else if result.Status != "" || result.Grant != nil || result.ObservationGrant != nil || result.Reservation.AttemptID != "" {
 				t.Errorf("unconfirmed transaction leaked a result: %+v", result)

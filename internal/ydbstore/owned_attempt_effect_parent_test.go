@@ -44,12 +44,22 @@ func (f *ownedAttemptEffectSourceVerifierFixture) VerifyOwnedAttemptEffectSource
 }
 
 type ownedAttemptEffectGrantFixture struct {
-	issuer     *serverlessharness.CapabilityIssuer
-	sql        *ownedAttemptEffectParentSQLFixture
-	calls      int
-	premature  int
-	activeSeen int
-	fail       bool
+	issuer           *serverlessharness.CapabilityIssuer
+	sql              *ownedAttemptEffectParentSQLFixture
+	calls            int
+	premature        int
+	activeSeen       int
+	fail             bool
+	verifyCalls      int
+	rejectVerifyCall int
+}
+
+func (f *ownedAttemptEffectGrantFixture) VerifyGrant(grant ports.AttemptEffectOwnershipGrantV1) error {
+	f.verifyCalls++
+	if f.rejectVerifyCall != 0 && f.verifyCalls == f.rejectVerifyCall {
+		return errors.New("test preparation verifier rejected grant")
+	}
+	return f.issuer.VerifyGrant(grant)
 }
 
 func (f *ownedAttemptEffectGrantFixture) MintAttemptEffectOwnershipGrant(a domain.ServerlessInvocationAuthorityV1, r domain.AttemptEffectReservationV1, expires time.Time) (ports.AttemptEffectOwnershipGrantV1, error) {
@@ -81,9 +91,13 @@ type ownedAttemptEffectParentSQLFixture struct {
 	graph              *managedAdmissionGraphFixture
 	parentRow          []driver.Value
 	pendingParentRow   []driver.Value
+	burnRow            []driver.Value
+	pendingBurnRow     []driver.Value
 	leaseRow           []driver.Value
 	activeTransactions int
 	inserts            int
+	burnReads          int
+	burnUpdates        int
 	parentReads        int
 	leaseReads         int
 	insertError        error
@@ -134,6 +148,10 @@ func (c ownedAttemptEffectParentConn) QueryContext(ctx context.Context, statemen
 		c.fixture.parentReads++
 		c.fixture.base.recordQuery(statement, args)
 		return &explanationFixtureRows{values: append([]driver.Value(nil), c.fixture.parentRow...)}, nil
+	case ownedAttemptPreparationBurnSQL:
+		c.fixture.burnReads++
+		c.fixture.base.recordQuery(statement, args)
+		return &explanationFixtureRows{values: append([]driver.Value(nil), c.fixture.burnRow...)}, nil
 	case ownedAttemptEffectLeaseSQL:
 		c.fixture.leaseReads++
 		c.fixture.base.recordQuery(statement, args)
@@ -144,6 +162,18 @@ func (c ownedAttemptEffectParentConn) QueryContext(ctx context.Context, statemen
 }
 
 func (c ownedAttemptEffectParentConn) ExecContext(ctx context.Context, statement string, args []driver.NamedValue) (driver.Result, error) {
+	if statement == ownedAttemptPreparationBurnUpdateSQL {
+		if len(args) != 5 || c.fixture.parentRow == nil || args[1].Value != c.fixture.parentRow[14] {
+			return nil, errors.New("owned preparation burn UPDATE did not bind the exact persisted parent")
+		}
+		result, err := c.fixture.base.ExecContext(ctx, statement, args)
+		if err != nil {
+			return nil, err
+		}
+		c.fixture.burnUpdates++
+		c.fixture.pendingBurnRow = []driver.Value{uint64(1), uint64(1), args[0].Value, args[1].Value}
+		return result, nil
+	}
 	if strings.Contains(statement, "INSERT INTO attempt_effect_reservations") {
 		if c.fixture.insertError != nil {
 			return nil, c.fixture.insertError
@@ -175,13 +205,18 @@ func (tx ownedAttemptEffectParentTx) Commit() error {
 	if mode != "rollback" && tx.fixture.pendingParentRow != nil {
 		tx.fixture.parentRow = append([]driver.Value(nil), tx.fixture.pendingParentRow...)
 	}
+	if mode != "rollback" && tx.fixture.pendingBurnRow != nil {
+		tx.fixture.burnRow = append([]driver.Value(nil), tx.fixture.pendingBurnRow...)
+	}
 	tx.fixture.pendingParentRow = nil
+	tx.fixture.pendingBurnRow = nil
 	tx.fixture.activeTransactions--
 	return err
 }
 
 func (tx ownedAttemptEffectParentTx) Rollback() error {
 	tx.fixture.pendingParentRow = nil
+	tx.fixture.pendingBurnRow = nil
 	tx.fixture.activeTransactions--
 	return tx.inner.Rollback()
 }
@@ -245,7 +280,8 @@ func newOwnedAttemptEffectParentFixture(t *testing.T) *ownedAttemptEffectParentF
 	}
 	leaseValues := []driver.Value{string(lease.TenantID), string(lease.RunID), string(lease.ID), string(lease.AttemptID), lease.WorkerID, lease.FenceToken, lease.ExpiresAt, at,
 		string(lease.TenantID), string(lease.ID), string(lease.RunID), string(lease.AttemptID), lease.WorkerID, lease.FenceToken, lease.AcquiredAt, lease.ExpiresAt, leaseRaw}
-	sqlFixture := &ownedAttemptEffectParentSQLFixture{base: base, graph: graph, leaseRow: leaseValues}
+	sqlFixture := &ownedAttemptEffectParentSQLFixture{base: base, graph: graph, leaseRow: leaseValues,
+		burnRow: []driver.Value{uint64(0), uint64(0), time.Unix(0, 0).UTC(), ""}}
 	contextDigest, inputDigest, err := domain.ServerlessWorkerJobDigestsV1(state.Job, state.InputManifest)
 	if err != nil {
 		t.Fatal(err)
@@ -279,7 +315,7 @@ func newOwnedAttemptEffectParentFixture(t *testing.T) *ownedAttemptEffectParentF
 		t.Fatal(err)
 	}
 	probe.issuer = issuer
-	store, err = New(db, Options{AttemptEffectGrantIssuer: probe, OwnedAttemptEffectSourceVerifier: verifier})
+	store, err = New(db, Options{AttemptEffectGrantIssuer: probe, OwnedAttemptEffectSourceVerifier: verifier, OwnedPreparationGrantVerifier: probe})
 	if err != nil {
 		t.Fatal(err)
 	}

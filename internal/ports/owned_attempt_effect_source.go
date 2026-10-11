@@ -15,3 +15,11 @@ import "gitcode.com/urandon/sessionless/internal/domain"
 type OwnedAttemptEffectSourceVerifierV1 interface {
 	VerifyOwnedAttemptEffectSource(domain.AttemptExecutionSourceV1) error
 }
+
+// OwnedPreparationGrantVerifierV1 authenticates the process-local sole owner's
+// grant before a durable preparation burn. It is NOT installed-source approval
+// or proof that physical preparation succeeded. Verification is local, bounded,
+// has no I/O and is repeated after the fresh burn's confirmed commit.
+type OwnedPreparationGrantVerifierV1 interface {
+	VerifyGrant(AttemptEffectOwnershipGrantV1) error
+}

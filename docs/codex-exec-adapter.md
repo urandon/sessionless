@@ -258,6 +258,11 @@ real-provider rollout nor completion of #133 or the MVP.
 
 ## Why production remains disabled
 
+The separate [attached media and artifact design](design/attached-harness-media-and-artifacts.md)
+under [#198](https://gitcode.com/urandon/sessionless/issues/198) defines an accepted
+versioned engineering extension for file/image input and structured file outputs.
+It is not implemented or enabled and does not widen this delivered text-only contract.
+
 The package is not wired into any binary. Its local `Enabled` field is only a
 reversible component gate and is not provider authorization. Production still
 requires all of the following:

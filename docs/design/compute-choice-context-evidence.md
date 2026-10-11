@@ -1,12 +1,14 @@
 # Compute choice context evidence
 
-Version: **0.1.3**, 2026-10-11.
+Version: **0.1.5**, 2026-10-11.
 Owner: [#142](https://gitcode.com/urandon/sessionless/issues/142).
 Implementation epic: [#155](https://gitcode.com/urandon/sessionless/issues/155).
 Source baseline: `f589fece3811b7a04eeacf5cbaff4ca4d5c1c978`.
-Status: engineering contract with shared rendering, prepared source material and
-final-record measurement implemented; canonical writer integration remains
-partial, not a deployed source of eligibility.
+Status: engineering contract with shared rendering, prepared source material,
+final-record measurement and transactional event-prefix persistence implemented.
+Attached receipt byte re-verification, snapshot fact publication, complete
+writer work budgets and native integration remain required. No positive
+eligibility or serving profile is enabled by these facts.
 
 Compute selection must account for the entire canonical context that an
 invocation will consume. Persist bounded, writer-derived facts at every event
@@ -33,7 +35,7 @@ The owner-prioritized #155 product stream does not become a hidden MVP gate.
 | `internal/sessioncontext/builder.go`, `internal/ydbstore/sessions.go` | The snapshot manifest is persisted before the object. Metadata can exist while the object is missing; current snapshot selection cannot prove object availability. |
 | `internal/sessioncontext/projection.go`, `internal/worker/context.go` | Existing canonical projection verifies scoped contiguous snapshot-plus-tail material and attachment bytes. Reuse it at consumption; its blob I/O/history enumeration cannot run in a bounded list transaction. |
 | `internal/codexexec/driver.go` | The actual initial compiler accepts exact user envelope v1 with no attachments and assistant schema v1, and rejects tools/notices. Both history JSONL and rendered prompt have independent 1 MiB limits. A failed-run notice can make later reuse incompatible. |
-| `internal/ydbstore/canonical_ingress.go`, `internal/ydbstore/canonical_finalization.go`, `internal/ydbstore/sessions.go` | All production event inserts converge on insertSessionEventTx, but that helper and the general append port currently receive metadata, not verified payload bytes. |
+| `internal/ydbstore/canonical_ingress.go`, `internal/ydbstore/canonical_finalization.go`, `internal/ydbstore/sessions.go` | All production event inserts converge on insertSessionEventTx and persist the prefix in the same transaction. Metadata-only paths produce unknown facts; verified ingress/managed envelopes supply transient prepared bytes. |
 
 | Alternative | Decision |
 | --- | --- |
@@ -52,10 +54,10 @@ endpoint, browser-visible authority or arbitrary profile map.
 
 | Field group | Exact meaning and bound |
 | --- | --- |
-| Identity | Version 1, canonical tenant_id/session_id, through_sequence, last_event_id or absent only at genesis; scalar keys agree with the record. IDs use canonical domain validation and the total record ceiling. |
+| Identity | Version 1, canonical tenant_id/session_id, through_sequence and last_event_id. Only exact genesis or a reproducible unknown-legacy predecessor seed lacks a last event/contribution; every folded boundary carries both. Scalar keys agree with the record. IDs use canonical domain validation and the total record ceiling. |
 | Contract | Exact RecordSchemaV1 and the fixed `codex-text-v1` renderer contract identity, each at most 128 UTF-8 bytes. This is compiler identity, not approval of a backend artifact. |
 | Coverage | Closed `complete` or `unknown`, with fixed reason bits for unverified legacy prefix, missing/invalid contribution, unsupported evidence version, non-round-tripping codec material or arithmetic saturation. Coverage cannot improve merely by appending valid text. |
-| Boundary | A 64-lowercase-hex prefix digest and, for a verified last event, exact canonical encoded-record SHA-256. The chain is domain-separated and length-prefixed; timestamps are final canonical UTC values, not preparation timestamps. |
+| Boundary | A 64-lowercase-hex prefix digest and, for a verified last event, exact canonical encoded-record SHA-256. The chain is domain-separated and length-prefixed; it seals the final semantic instant and original codec timestamp representation, never a preparation timestamp or a rewritten event. |
 | Source measures | Five named event-kind counts; verified payload bytes, encoded JSONL bytes, maximum encoded record bytes, tool-envelope bytes, historical attachment count and referenced attachment bytes. Counts/bytes are distinct uint64 quantities capped at MaxInt64; no bytes-as-tokens field. |
 | Renderer measures | Fixed codex compatible-record and incompatible-record counts, rendered-frame bytes and unknown-record count. No arbitrary caller-supplied renderer or extensible list in V1. |
 
@@ -83,6 +85,18 @@ their existing retention/creation limits. The worst-case additional record
 storage is 8 KiB per event/snapshot plus 8 KiB per Session, excluding database
 overhead. No cache refresh creates additional versions.
 
+Persist the strictly encoded JSON record in a YDB String column and cast the
+write parameter to String. Do not use JsonDocument: an independent native
+round-trip experiment rounded 9007199254740993 and emitted MaxInt64/MaxUint64
+as floating-point exponent values. One valid large attachment reference can
+therefore make a later canonical append unreadable, even without long history.
+The strict Go decoder and exact scalar/record parity remain mandatory; do not
+coerce or silently lower the integer limits. Native regressions check an actual
+MaxInt64 reference followed by another append and exact bytes in all three
+record tables. Fresh isolated test generations must be reprovisioned when
+changing these unpublished migrations; never edit applied shared/deployed
+migration checksums or repair facts in place.
+
 Genesis is SHA-256 of a fixed V1 genesis domain and canonical tenant/Session
 identity, at sequence zero, with exact zero counts and renderer header accounted
 separately. Only createSessionTx for a genuinely new empty Session initializes
@@ -91,12 +105,27 @@ older history are unknown, never manufactured genesis.
 
 For each verified event, hash the actual EncodeRecord output after final
 sequence, Run/origin and canonical timestamp assignment. Fold the prior prefix
-digest, event sequence/identity, encoded-record digest and the canonical
-contribution encoding under a V1 fold domain. EncodeRecord followed by decode
+digest, the entire canonical previous common record, and the final contribution
+encoding under `sessionless.session-material.fold.v1`. The contribution binds
+event sequence/identity and encoded-record digest; retaining a digest while
+changing previous measures cannot retain the next fold digest. EncodeRecord followed by decode
 must preserve payload hash/size and exact semantic record; merely json.Valid is
 insufficient because RawMessage encoding can change payload representation.
 Non-round-tripping payloads contribute unknown, not normalized replacement
 bytes under the old immutable hash.
+
+V1 frames every item with an eight-byte big-endian byte length; numeric frames
+contain eight-byte big-endian values. Genesis and unknown-legacy seeds use
+distinct `sessionless.session-material.genesis.v1` and
+`sessionless.session-material.unknown-legacy.v1` domains, canonical scope and
+sequence. Final identity uses `sessionless.session-material.final-identity.v1`
+and binds every final event field, including explicit optional author/Run
+presence. Timestamp frames contain the semantic UTC RFC3339Nano instant and
+then the unchanged codec RFC3339Nano representation. This distinguishes valid
+fixed-zone offsets containing seconds even where the codec prints identical
+minute offsets. UTC is a hash frame only, not normalization of stored metadata.
+Independent literal goldens fix this encoding; snapshot folds must use the same
+engine rather than a second codec or alternate digest convention.
 
 For an unverified append, chain its exact final event metadata and a fixed
 unknown-contribution marker instead. If the previous row is missing, use an
@@ -207,9 +236,9 @@ or preparation handle. Released, zero, mismatched or non-round-tripping material
 cannot supply verified final measurements. No metadata-only caller can forge a
 verified result from public scalar measures.
 
-This implements preparation and final-record measurement only. Writer
-integration, atomic folds, prefix/boundary persistence and native verification
-remain required; no current positive eligibility uses these helpers.
+Preparation, final-record measurement and atomic event-prefix folds now share
+the actual production append path. Native verification, complete writer work
+budgets and positive eligibility integration remain required.
 
 `sessionmaterial` may depend on that pure helper and domain; ports may reference
 the opaque prepared type, but must not import sessioncontext, which already
@@ -257,6 +286,33 @@ conflicting payload/contribution identity fails. Callback retry resets temporary
 output, lost acknowledgement uses canonical exact-key recovery, and rollback
 publishes neither speculative aggregate nor partial batch. Existing deletion
 fences apply to every writer. No second event sequencer is introduced.
+
+The append helper loads current facts and the independent predecessor boundary
+once per Session in a transaction callback, then keeps only the exact common
+records it has written in that same callback. SDK retry creates a fresh stateTx;
+speculative cache entries never cross callbacks. Present current/anchor
+disagreement fails closed, while both genuinely missing legacy facts produce an
+unknown predecessor seed. Existing user idempotency keeps the original event,
+payload, origin and timestamp: regenerated staging object keys do not refold or
+upgrade its facts. General append has an explicit server-internal
+`AppendPreparedSessionEventV1` path; its original metadata-only port remains
+unknown rather than accepting public scalar claims.
+
+Managed completion/failure retains prepared tool, assistant and notice
+envelopes through retries, then releases them on return. The inspection owner
+admits at most 64 preparations and 4 MiB of actual owned payload bytes; excess
+otherwise-valid canonical events still append unknown facts. Individual V1
+inspection ceilings remain unchanged. Producer temporary envelope buffers are
+cleared on success and error. Finalization measures each event after its actual
+sequence and timestamp clamp, not from provisional draft metadata.
+
+Receipt-capable attached finalization currently loads serialized durable
+materialization. Transient preparations intentionally cannot survive JSON
+storage. Its events therefore append unknown facts until a bounded authorized
+receipt read and actual canonical envelope byte re-verification occur outside
+the transaction, with the receipt and current authority rechecked at commit.
+Candidate output, a receipt digest or an in-memory preparation from an earlier
+receipt-creation operation cannot replace this integration.
 
 ## List send admission and consumption
 

@@ -19,6 +19,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/sessionmaterial"
 )
 
 type Config struct {
@@ -316,19 +317,26 @@ func (service *Service) IngestBound(
 	if err != nil {
 		return ports.CanonicalUserEventResult{}, fmt.Errorf("encode canonical event envelope: %w", err)
 	}
+	defer clear(payload)
 	uploadToken, err := newUploadToken()
 	if err != nil {
 		return ports.CanonicalUserEventResult{}, err
 	}
-	payloadRef, err := service.blobs.Put(
-		ctx, input.Actor.TenantID,
-		domain.SessionEventObjectPrefix(input.Actor.TenantID, input.Binding.SessionID, plan.EventID)+
-			"uploads/"+uploadToken+"/message.json",
-		bytes.NewReader(payload),
-	)
+	payloadKey := domain.SessionEventObjectPrefix(input.Actor.TenantID, input.Binding.SessionID, plan.EventID) +
+		"uploads/" + uploadToken + "/message.json"
+	payloadRef, err := service.blobs.Put(ctx, input.Actor.TenantID, payloadKey, bytes.NewReader(payload))
 	if err != nil {
 		return ports.CanonicalUserEventResult{}, fmt.Errorf("store canonical event envelope: %w", err)
 	}
+	if err := sessionmaterial.ValidateStoredPayloadV1(input.Actor.TenantID, payloadKey, payloadRef, payload); err != nil {
+		return ports.CanonicalUserEventResult{}, err
+	}
+	prepared, _ := sessionmaterial.PrepareV1(domain.SessionEvent{
+		ID: plan.EventID, TenantID: input.Actor.TenantID, SessionID: input.Binding.SessionID,
+		Kind: domain.SessionEventUserMessage, AuthorUserID: &input.Actor.UserID,
+		RunID: &plan.RunID, IdempotencyKey: plan.IdempotencyKey, Payload: payloadRef,
+	}, payload, artifacts)
+	defer prepared.Release()
 	artifacts = append([]domain.Artifact{{
 		Name: "message.json", MediaType: "application/json", Blob: payloadRef,
 	}}, artifacts...)
@@ -337,7 +345,7 @@ func (service *Service) IngestBound(
 		BindingID: input.Binding.ID, ExpectedBindingRevision: input.Binding.Revision,
 		Origin: origin, IdempotencyKey: plan.IdempotencyKey, MutationDigest: input.MutationDigest,
 		ExpireAt: input.ReceivedAt.UTC().Add(service.retention),
-		EventID:  plan.EventID, Payload: payloadRef, DisplayText: input.Text,
+		EventID:  plan.EventID, Payload: payloadRef, PreparedMaterial: prepared, DisplayText: input.Text,
 		RunID:                    plan.RunID,
 		AttemptID:                attemptID,
 		SubscriptionConnectionID: input.SubscriptionConnectionID,
@@ -437,12 +445,21 @@ func (service *Service) Ingest(ctx context.Context, input UserInput) (ports.Cano
 	if err != nil {
 		return ports.CanonicalUserEventResult{}, fmt.Errorf("encode canonical event envelope: %w", err)
 	}
-	payloadRef, err := service.blobs.Put(
-		ctx, input.Actor.TenantID, uploadPrefix+"message.json", bytes.NewReader(payload),
-	)
+	defer clear(payload)
+	payloadKey := uploadPrefix + "message.json"
+	payloadRef, err := service.blobs.Put(ctx, input.Actor.TenantID, payloadKey, bytes.NewReader(payload))
 	if err != nil {
 		return ports.CanonicalUserEventResult{}, fmt.Errorf("store canonical event envelope: %w", err)
 	}
+	if err := sessionmaterial.ValidateStoredPayloadV1(input.Actor.TenantID, payloadKey, payloadRef, payload); err != nil {
+		return ports.CanonicalUserEventResult{}, err
+	}
+	prepared, _ := sessionmaterial.PrepareV1(domain.SessionEvent{
+		ID: eventID, TenantID: input.Actor.TenantID, SessionID: state.Session.ID,
+		Kind: domain.SessionEventUserMessage, AuthorUserID: &input.Actor.UserID,
+		RunID: &runID, IdempotencyKey: idempotencyKey, Payload: payloadRef,
+	}, payload, artifacts)
+	defer prepared.Release()
 	artifacts = append([]domain.Artifact{{
 		Name: "message.json", MediaType: "application/json", Blob: payloadRef,
 	}}, artifacts...)
@@ -451,7 +468,7 @@ func (service *Service) Ingest(ctx context.Context, input UserInput) (ports.Cano
 		BindingID: state.Binding.ID, ExpectedBindingRevision: state.Binding.Revision,
 		Origin: origin, IdempotencyKey: idempotencyKey,
 		ExpireAt: input.ReceivedAt.UTC().Add(service.retention),
-		EventID:  eventID, Payload: payloadRef,
+		EventID:  eventID, Payload: payloadRef, PreparedMaterial: prepared,
 		DisplayText:              input.Text,
 		RunID:                    runID,
 		AttemptID:                attemptID,

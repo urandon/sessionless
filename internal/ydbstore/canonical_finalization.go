@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/runexplanation"
 	"gitcode.com/urandon/sessionless/internal/ydbpartition"
 )
@@ -143,6 +144,7 @@ func appendCanonicalFinalizationTx(
 	status domain.RunStatus,
 	digest string,
 	drafts []domain.SessionEventDraft,
+	materials *ports.CanonicalEventMaterialSetV1,
 	at time.Time,
 	sourceNotice *runexplanation.NoticeInput,
 ) error {
@@ -202,7 +204,7 @@ func appendCanonicalFinalizationTx(
 		if _, err := domain.AppendSessionEvent(&session, event, nil); err != nil {
 			return err
 		}
-		if err := insertSessionEventTx(ctx, tx, event); err != nil {
+		if err := insertSessionEventTx(ctx, tx, event, materials.ForEvent(draft.ID)); err != nil {
 			return err
 		}
 		if canonicalNoticeMatchesDraft(sourceNotice, draft) {

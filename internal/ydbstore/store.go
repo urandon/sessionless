@@ -39,6 +39,7 @@ type Options struct {
 	AttemptEffectGrantIssuer           ports.AttemptEffectOwnershipGrantIssuerV1
 	OwnedProfilePublicationVerifier    ports.OwnedProfilePublicationVerifierV1
 	AttemptSpendingPublicationVerifier ports.AttemptSpendingPublicationVerifierV1
+	OwnedAttemptEffectSourceVerifier   ports.OwnedAttemptEffectSourceVerifierV1
 }
 
 type Store struct {
@@ -50,6 +51,7 @@ type Store struct {
 	attemptEffectGrantIssuer           ports.AttemptEffectOwnershipGrantIssuerV1
 	ownedProfilePublicationVerifier    ports.OwnedProfilePublicationVerifierV1
 	attemptSpendingPublicationVerifier ports.AttemptSpendingPublicationVerifierV1
+	ownedAttemptEffectSourceVerifier   ports.OwnedAttemptEffectSourceVerifierV1
 }
 
 func New(db *sql.DB, options Options) (*Store, error) {
@@ -74,6 +76,7 @@ func New(db *sql.DB, options Options) (*Store, error) {
 		attemptEffectGrantIssuer:           options.AttemptEffectGrantIssuer,
 		ownedProfilePublicationVerifier:    options.OwnedProfilePublicationVerifier,
 		attemptSpendingPublicationVerifier: options.AttemptSpendingPublicationVerifier,
+		ownedAttemptEffectSourceVerifier:   options.OwnedAttemptEffectSourceVerifier,
 	}, nil
 }
 

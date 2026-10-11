@@ -87,14 +87,17 @@ type effectCommitRows struct {
 	done    bool
 }
 
-func (*effectCommitRows) Columns() []string { return []string{"record"} }
-func (*effectCommitRows) Close() error      { return nil }
+func (*effectCommitRows) Columns() []string {
+	return []string{"record", "owned_present", "digest_present"}
+}
+func (*effectCommitRows) Close() error { return nil }
 func (r *effectCommitRows) Next(out []driver.Value) error {
 	if r.done {
 		return io.EOF
 	}
 	r.done = true
 	out[0] = r.payload
+	out[1], out[2] = int64(0), int64(0)
 	return nil
 }
 func (f *effectCommitFixture) MintAttemptEffectOwnershipGrant(a domain.ServerlessInvocationAuthorityV1, r domain.AttemptEffectReservationV1, expires time.Time) (ports.AttemptEffectOwnershipGrantV1, error) {

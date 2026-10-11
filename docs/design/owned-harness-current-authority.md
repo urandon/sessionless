@@ -1,6 +1,6 @@
 # Current authority for the owned agent harness
 
-Version: 0.1.7, engineering draft, 2026-10-11. Implementation owner:
+Version: 0.1.8, engineering draft, 2026-10-11. Implementation owner:
 [#189](https://gitcode.com/urandon/sessionless/issues/189), under
 [#176](https://gitcode.com/urandon/sessionless/issues/176). This extension
 defines the current-authority requirements of the accepted
@@ -498,8 +498,9 @@ minting, even for a different claimant. A fixture backend/resource alone is not
 owned authority. Unsupported records remain retained, not deleted, normalized
 or reclassified as single-turn history. Legitimate single-turn historical
 reconciliation retains its existing structural, post-commit contract. A dedicated
-bounded owned parent and authenticated history/cleanup composition still needs
-implementation; registry denial or this serving guard does not prove it.
+bounded private owned parent is described below; its remaining preparation,
+funding and authenticated cleanup composition still needs integration. Registry
+denial or this serving guard does not prove those parts.
 
 One exact-key thirteen-column join checks canonical active Session, deletion
 absence, writable membership and participation at the callback's database time.
@@ -551,6 +552,63 @@ and pending attached receipts gate deletion; an orphan index denies completion.
 Global profile revocation heads/audits are retained. This covers only the Final
 child: per-Attempt funding, outer effect/evidence, subordinate operation and
 consent cleanup/unknown-effect disposition remain mandatory before #189 closure.
+
+## Durable outer-parent composition
+
+The private owned reserver uses the SAME `attempt_effect_reservations` primary
+key `(tenant_id, attempt_id, kind)` and original `ProviderEffectTurnV1` as the
+single-turn path. Additive nullable `owned_record String` and `owned_digest Utf8`
+columns form a mutually exclusive tagged row: a legacy body excludes both owned
+columns; an owned body requires its digest and excludes the legacy body. Both
+authority-producing readers reject mixed, incomplete and empty representations.
+There is no second claim table, kind, replacement UPSERT or legacy fallback.
+
+`OwnedAttemptEffectParentV1` preserves the exact original Final digest and scope,
+invocation authority, outer reservation and absolute preparation deadline. Its
+strict complete codec remains 32 KiB. Every returned physical scalar is bounded,
+charged and correlated before authority is used. Source is retained in the
+original Final, not duplicated or reconstructed from Job after loss.
+
+The create path composes canonical Run/Job/Attempt/held capacity/input manifest,
+the original Final, an explicitly installed local source verifier, the existing
+Session/write-rights and profile/four-spending joins, and a bounded complete
+lease-head/lease join under one `ownedAuthorityQuery` clock and whole-call
+budget. The private fixture source keeper authenticates exact original published
+sources; structural rows, fixture labels or a digest do not satisfy installation
+approval. No production keeper is supplied or implicitly enabled by an option.
+
+An INSERT fixes the preparation deadline once. Exact same-claim recovery requires
+all current authorities again and mints only after confirmed commit/readback,
+using that ORIGINAL deadline. Lease renewal cannot replace the original lease
+acquisition, worker, digest or invocation deadline. Shorter authority denies;
+extension does not extend the sealed window. A losing claimant or an exhausted
+original preparation window can obtain only an authenticated historical
+observation grant, never preparation, send or cancellation ownership. Missing
+Final/source provenance and any malformed, failed or over-budget read return a
+zero result, not an observation fallback. Speculative callback results are reset
+on every retry and never escape a terminal commit error or failed post-commit mint.
+
+Native canonical publication/Final/lease/start/reserve/readback controls exercise
+five scenarios and ten subcases, including two actual competing claims, current
+revocation and independently valid opposing legacy bodies. They pass uncached
+race/shuffle and three repeats. Scripted controls cover coherent lease renewal
+and shortening, exhausted preparation, known rollback, committed lost ACK,
+terminal retry exhaustion and failed post-commit mint. A review-derived future
+Run `StartedAt` counterexample fails both cold and exact replay before the
+private DB-time guard and passes after it; native canonical Start remains a
+legitimate past/current-time control. Complete reservation value digests, not
+the address of independently cloned optional upstream pointers, bind result
+grants. The nonnil upstream regression is reproduced before that fix and
+retained in the native positive path. These are bounded private prerequisite
+proofs, not production installation, activation or cloud E2E.
+
+This is a durable sole-parent prerequisite, not a serving owned-admission port,
+physical preparation proof, a production installation or an aggregate debit
+implementation. Parent/funding/unknown-effect cleanup, durable preparation burn
+and trusted allocation/proxy publication, subordinate worst-case debits and
+before-send checks still need integration. Both public serving gates remain
+closed. Only the separately authorized disposable native test database receives
+the additive migration; no shared/cloud schema application is implied.
 
 ## Terminal and retention integration
 

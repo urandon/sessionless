@@ -2,6 +2,7 @@ package ydbstore
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"time"
@@ -255,10 +256,24 @@ func (store *Store) mintAttemptEffectObservationGrant(record attemptEffectRecord
 }
 
 func readAttemptEffectRecordTx(ctx context.Context, tx *stateTx, attemptID domain.AttemptID) (attemptEffectRecordV1, bool, error) {
-	return readJSON[attemptEffectRecordV1](ctx, tx.sqlTx,
-		`SELECT record FROM attempt_effect_reservations
-		 WHERE tenant_id=$1 AND attempt_id=$2 AND kind=$3`,
-		tx.tenantID, attemptID, domain.ProviderEffectTurnV1)
+	var raw string
+	var ownedPresent, digestPresent uint64
+	err := tx.sqlTx.QueryRowContext(ctx, `SELECT SUBSTRING(CAST(record AS String),0,32769),
+ CASE WHEN owned_record IS NULL THEN CAST(0 AS Uint64) ELSE CAST(1 AS Uint64) END,
+ CASE WHEN owned_digest IS NULL THEN CAST(0 AS Uint64) ELSE CAST(1 AS Uint64) END
+ FROM attempt_effect_reservations WHERE tenant_id=$1 AND attempt_id=$2 AND kind=$3`,
+		tx.tenantID, attemptID, domain.ProviderEffectTurnV1).Scan(&raw, &ownedPresent, &digestPresent)
+	if errors.Is(err, sql.ErrNoRows) {
+		return attemptEffectRecordV1{}, false, nil
+	}
+	if err != nil || ownedPresent != 0 || digestPresent != 0 || len(raw) > ownedAuthorityHeadBytes {
+		return attemptEffectRecordV1{}, false, domain.ErrMembershipDenied
+	}
+	var record attemptEffectRecordV1
+	if decodeOwnedEffectCanonicalJSON(raw, &record) != nil {
+		return attemptEffectRecordV1{}, false, domain.ErrMembershipDenied
+	}
+	return record, true, nil
 }
 
 func attemptEffectRequestMatchesRecord(request ports.ReserveAttemptEffectRequestV1, record attemptEffectRecordV1) bool {

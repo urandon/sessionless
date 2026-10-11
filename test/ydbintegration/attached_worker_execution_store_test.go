@@ -4,6 +4,8 @@ package ydbintegration
 
 import (
 	"context"
+	"crypto/rand"
+	"database/sql"
 	"fmt"
 	"testing"
 	"time"
@@ -115,7 +117,7 @@ func TestAttachedWorkerSealedInputAuthorizationReadsClaimedHeadTransactionally(t
 func TestAttachedWorkerAttemptDeadlinePaginationIsLosslessAndBounded(t *testing.T) {
 	store, client := openStore(t)
 	ctx := context.Background()
-	tenantID := domain.TenantID(uniqueID("tenant-attempt-deadline"))
+	tenantID := domain.TenantID("tenant-attempt-deadline-" + rand.Text())
 	ownerID := domain.UserID(uniqueID("owner-attempt-deadline"))
 	workerID := domain.AttachedWorkerID(uniqueID("worker-attempt-deadline"))
 	attemptID := domain.AttemptID(uniqueID("attempt-deadline"))
@@ -124,6 +126,9 @@ func TestAttachedWorkerAttemptDeadlinePaginationIsLosslessAndBounded(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	start := ports.AttachedWorkerAttemptDeadlineCursor{Present: true, DeadlineAt: deadlineAt,
+		TenantID: tenantID, OwnerUserID: ownerID, WorkerID: workerID, AttemptID: attemptID}
+	cleanupAttemptDeadlineFixture(t, client.DB, bucket, start)
 	for index, kind := range []domain.AttachedWorkerAttemptDeadlineKind{
 		domain.AttachedWorkerDeadlineCancelAck,
 		domain.AttachedWorkerDeadlineLeaseExpiry,
@@ -139,7 +144,7 @@ func TestAttachedWorkerAttemptDeadlinePaginationIsLosslessAndBounded(t *testing.
 		}
 	}
 
-	first, err := store.ListDueAttachedWorkerAttemptDeadlines(ctx, bucket, deadlineAt, ports.AttachedWorkerAttemptDeadlineCursor{}, 1)
+	first, err := store.ListDueAttachedWorkerAttemptDeadlines(ctx, bucket, deadlineAt, start, 1)
 	if err != nil || len(first.Items) != 1 {
 		t.Fatalf("first deadline page = %#v, %v", first, err)
 	}
@@ -161,7 +166,7 @@ func TestAttachedWorkerAttemptDeadlinePaginationIsLosslessAndBounded(t *testing.
 func TestAttachedWorkerAttemptDeadlinePageSkipsPoisonRowByRawKey(t *testing.T) {
 	store, client := openStore(t)
 	ctx := context.Background()
-	tenantID := domain.TenantID(uniqueID("tenant-attempt-poison"))
+	tenantID := domain.TenantID("tenant-attempt-poison-" + rand.Text())
 	ownerID := domain.UserID(uniqueID("owner-attempt-poison"))
 	workerID := domain.AttachedWorkerID(uniqueID("worker-attempt-poison"))
 	attemptID := domain.AttemptID(uniqueID("attempt-poison"))
@@ -170,6 +175,9 @@ func TestAttachedWorkerAttemptDeadlinePageSkipsPoisonRowByRawKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	start := ports.AttachedWorkerAttemptDeadlineCursor{Present: true, DeadlineAt: deadlineAt,
+		TenantID: tenantID, OwnerUserID: ownerID, WorkerID: workerID, AttemptID: attemptID}
+	cleanupAttemptDeadlineFixture(t, client.DB, bucket, start)
 	for _, kind := range []string{"aaa_invalid", string(domain.AttachedWorkerDeadlineLeaseExpiry)} {
 		if _, err := client.DB.ExecContext(ctx,
 			`INSERT INTO attached_worker_attempt_deadlines_v1
@@ -179,7 +187,9 @@ func TestAttachedWorkerAttemptDeadlinePageSkipsPoisonRowByRawKey(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	poison, err := store.ListDueAttachedWorkerAttemptDeadlines(ctx, bucket, deadlineAt, ports.AttachedWorkerAttemptDeadlineCursor{}, 1)
+	// Buckets are shared with other fixtures. Seek immediately before our raw
+	// key rather than assuming this shard contains no older unrelated row.
+	poison, err := store.ListDueAttachedWorkerAttemptDeadlines(ctx, bucket, deadlineAt, start, 1)
 	if err != nil || len(poison.Items) != 0 || poison.SkippedInvalid != 1 || !poison.HasMore || poison.NextCursor.Kind != "aaa_invalid" {
 		t.Fatalf("poison page = %#v, %v", poison, err)
 	}
@@ -194,6 +204,7 @@ func TestAttachedWorkerAttemptDeadlineCursorRepresentsEmptyRawComponents(t *test
 	ctx := context.Background()
 	deadlineAt := time.Now().UTC().Truncate(time.Microsecond)
 	bucket := uint32(0)
+	cleanupAttemptDeadlineFixture(t, client.DB, bucket, ports.AttachedWorkerAttemptDeadlineCursor{DeadlineAt: deadlineAt})
 	if _, err := client.DB.ExecContext(ctx,
 		`INSERT INTO attached_worker_attempt_deadlines_v1
 		 (shard_bucket,deadline_at,tenant_id,owner_user_id,worker_id,attempt_id,kind,lease_generation,attempt_revision)
@@ -205,8 +216,10 @@ func TestAttachedWorkerAttemptDeadlineCursorRepresentsEmptyRawComponents(t *test
 	var ownerID domain.UserID
 	var workerID domain.AttachedWorkerID
 	var attemptID domain.AttemptID
-	for candidate := 0; ; candidate++ {
-		tenantID = domain.TenantID(uniqueID(fmt.Sprintf("tenant-after-empty-poison-%d", candidate)))
+	nonce := rand.Text()
+	foundBucket := false
+	for candidate := 0; candidate < 4096; candidate++ {
+		tenantID = domain.TenantID(fmt.Sprintf("tenant-after-empty-poison-%s-%d", nonce, candidate))
 		ownerID = domain.UserID(uniqueID(fmt.Sprintf("owner-after-empty-poison-%d", candidate)))
 		workerID = domain.AttachedWorkerID(uniqueID(fmt.Sprintf("worker-after-empty-poison-%d", candidate)))
 		attemptID = domain.AttemptID(uniqueID(fmt.Sprintf("attempt-after-empty-poison-%d", candidate)))
@@ -215,9 +228,15 @@ func TestAttachedWorkerAttemptDeadlineCursorRepresentsEmptyRawComponents(t *test
 			t.Fatal(err)
 		}
 		if validBucket == bucket {
+			foundBucket = true
 			break
 		}
 	}
+	if !foundBucket {
+		t.Fatal("could not construct a bucket-zero fixture within 4096 candidates")
+	}
+	cleanupAttemptDeadlineFixture(t, client.DB, bucket, ports.AttachedWorkerAttemptDeadlineCursor{
+		DeadlineAt: deadlineAt, TenantID: tenantID, OwnerUserID: ownerID, WorkerID: workerID, AttemptID: attemptID})
 	if _, err := client.DB.ExecContext(ctx,
 		`INSERT INTO attached_worker_attempt_deadlines_v1
 		 (shard_bucket,deadline_at,tenant_id,owner_user_id,worker_id,attempt_id,kind,lease_generation,attempt_revision)
@@ -225,11 +244,47 @@ func TestAttachedWorkerAttemptDeadlineCursorRepresentsEmptyRawComponents(t *test
 		bucket, deadlineAt, tenantID, ownerID, workerID, attemptID, domain.AttachedWorkerDeadlineLeaseExpiry, uint64(1), uint64(1)); err != nil {
 		t.Fatal(err)
 	}
-	poison, err := store.ListDueAttachedWorkerAttemptDeadlines(ctx, bucket, deadlineAt, ports.AttachedWorkerAttemptDeadlineCursor{}, 1)
+	// The initial query is shard-global. Keep its positive native coverage,
+	// comparing the first physical key rather than assuming our fixture is first.
+	expectedFirst := ports.AttachedWorkerAttemptDeadlineCursor{Present: true}
+	if err := client.DB.QueryRowContext(ctx, `SELECT deadline_at,tenant_id,owner_user_id,worker_id,attempt_id,kind
+	 FROM attached_worker_attempt_deadlines_v1 WHERE shard_bucket=$1 AND deadline_at <= $2
+	 ORDER BY deadline_at,tenant_id,owner_user_id,worker_id,attempt_id,kind LIMIT 1`, bucket, deadlineAt).Scan(
+		&expectedFirst.DeadlineAt, &expectedFirst.TenantID, &expectedFirst.OwnerUserID,
+		&expectedFirst.WorkerID, &expectedFirst.AttemptID, &expectedFirst.Kind); err != nil {
+		t.Fatalf("read initial physical deadline key: %v", err)
+	}
+	initial, err := store.ListDueAttachedWorkerAttemptDeadlines(ctx, bucket, deadlineAt, ports.AttachedWorkerAttemptDeadlineCursor{}, 1)
+	if err != nil || !initial.NextCursor.DeadlineAt.Equal(expectedFirst.DeadlineAt) {
+		t.Fatalf("initial deadline page = %#v, expected first key %#v, error=%v", initial, expectedFirst, err)
+	}
+	expectedFirst.DeadlineAt = initial.NextCursor.DeadlineAt
+	if initial.NextCursor != expectedFirst || uint64(len(initial.Items))+initial.SkippedInvalid != 1 || !initial.HasMore {
+		t.Fatalf("initial deadline page = %#v, expected exactly first physical key %#v", initial, expectedFirst)
+	}
+	// The raw empty key itself must be returned, so seek from the immediately
+	// preceding timestamp, not from the beginning of a shared shard. The suite
+	// is serial: older fixtures cannot enter this one-microsecond query window.
+	start := ports.AttachedWorkerAttemptDeadlineCursor{Present: true, DeadlineAt: deadlineAt.Add(-time.Microsecond)}
+	poison, err := store.ListDueAttachedWorkerAttemptDeadlines(ctx, bucket, deadlineAt, start, 1)
 	if err != nil || !poison.NextCursor.Present || poison.NextCursor.TenantID != "" || poison.SkippedInvalid != 1 {
 		t.Fatalf("empty poison page = %#v, %v", poison, err)
 	}
-	if _, err := store.ListDueAttachedWorkerAttemptDeadlines(ctx, bucket, deadlineAt, poison.NextCursor, 1); err != nil {
-		t.Fatalf("continue after empty poison: %v", err)
+	valid, err := store.ListDueAttachedWorkerAttemptDeadlines(ctx, bucket, deadlineAt, poison.NextCursor, 1)
+	if err != nil || len(valid.Items) != 1 || valid.Items[0].TenantID != tenantID || valid.Items[0].Kind != domain.AttachedWorkerDeadlineLeaseExpiry {
+		t.Fatalf("continue after empty poison: page=%#v error=%v", valid, err)
 	}
+}
+
+func cleanupAttemptDeadlineFixture(t *testing.T, db *sql.DB, bucket uint32, key ports.AttachedWorkerAttemptDeadlineCursor) {
+	t.Helper()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := db.ExecContext(ctx, `DELETE FROM attached_worker_attempt_deadlines_v1
+		 WHERE shard_bucket=$1 AND deadline_at=$2 AND tenant_id=$3 AND owner_user_id=$4 AND worker_id=$5 AND attempt_id=$6`,
+			bucket, key.DeadlineAt, key.TenantID, key.OwnerUserID, key.WorkerID, key.AttemptID); err != nil {
+			t.Errorf("cleanup owned deadline fixture bucket=%d key=%#v: %v", bucket, key, err)
+		}
+	})
 }

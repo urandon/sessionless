@@ -23,6 +23,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/queuecontract"
 	"gitcode.com/urandon/sessionless/internal/serverlessharness"
+	"gitcode.com/urandon/sessionless/internal/sessionmaterial"
 )
 
 type Config struct {
@@ -427,8 +428,9 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 	}
 	finishedAt := manager.clock.Now().UTC()
 	var events []domain.SessionEventDraft
+	var eventMaterials *ports.CanonicalEventMaterialSetV1
 	if loaded.Job.Origin != nil {
-		events, err = manager.canonicalCompletionEvents(
+		events, eventMaterials, err = manager.canonicalCompletionEvents(
 			executionCtx, loaded, result, manifest, finishedAt,
 		)
 		if err != nil {
@@ -438,6 +440,7 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 			return manager.finishFailure(ctx, message, loaded, lease, false, "canonical_result_upload_failed")
 		}
 	}
+	defer eventMaterials.Release()
 	if stopped := stopActiveInvocation(); stopped.Failed() {
 		return manager.handleActiveStop(message, loaded, lease, stopped)
 	}
@@ -462,7 +465,7 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 			TenantID: loaded.Run.TenantID, RunID: loaded.Run.ID,
 			AttemptID: loaded.Attempt.ID, ReservationID: loaded.Reservation.ID,
 			LeaseID: lease.ID, Fence: lease.FenceToken, At: finishedAt,
-			Manifest: manifest, Events: events, SubstrateEvidence: &substrateEvidence,
+			Manifest: manifest, Events: events, PreparedEvents: eventMaterials, SubstrateEvidence: &substrateEvidence,
 		}); err != nil {
 			return manager.retry(ctx, message, err)
 		}
@@ -1146,10 +1149,17 @@ func (manager *Manager) canonicalCompletionEvents(
 	result ports.ExecutionResult,
 	manifest domain.ArtifactManifest,
 	at time.Time,
-) ([]domain.SessionEventDraft, error) {
+) ([]domain.SessionEventDraft, *ports.CanonicalEventMaterialSetV1, error) {
+	materials := ports.NewCanonicalEventMaterialSetV1()
+	success := false
+	defer func() {
+		if !success {
+			materials.Release()
+		}
+	}()
 	maxToolEvents, maxToolEventBytes := loaded.Job.Limits.EffectiveToolEventLimits()
 	if uint64(len(result.ToolEvents)) > uint64(maxToolEvents) {
-		return nil, domain.ValidationError{
+		return nil, nil, domain.ValidationError{
 			Field: "execution_result.tool_events", Reason: "exceeds the admitted event count limit",
 		}
 	}
@@ -1157,29 +1167,30 @@ func (manager *Manager) canonicalCompletionEvents(
 	var rawBytes, encodedBytes uint64
 	for _, tool := range result.ToolEvents {
 		if uint64(len(tool.Payload)) > maxToolEventBytes-rawBytes {
-			return nil, domain.ValidationError{
+			return nil, nil, domain.ValidationError{
 				Field: "execution_result.tool_events", Reason: "exceeds the admitted byte limit",
 			}
 		}
 		rawBytes += uint64(len(tool.Payload))
 		if tool.Kind != domain.SessionEventToolCall && tool.Kind != domain.SessionEventToolResult {
-			return nil, domain.ValidationError{Field: "execution_tool_event.kind", Reason: "must be tool_call or tool_result"}
+			return nil, nil, domain.ValidationError{Field: "execution_tool_event.kind", Reason: "must be tool_call or tool_result"}
 		}
 		if strings.TrimSpace(tool.CallID) == "" || strings.TrimSpace(tool.ToolName) == "" {
-			return nil, domain.ValidationError{Field: "execution_tool_event", Reason: "requires call and tool names"}
+			return nil, nil, domain.ValidationError{Field: "execution_tool_event", Reason: "requires call and tool names"}
 		}
 		if !json.Valid(tool.Payload) {
-			return nil, domain.ValidationError{Field: "execution_tool_event.payload", Reason: "must be valid JSON"}
+			return nil, nil, domain.ValidationError{Field: "execution_tool_event.payload", Reason: "must be valid JSON"}
 		}
 		payload, err := json.Marshal(toolEventEnvelope{
 			Schema: "sessionless.tool-event.v1", CallID: tool.CallID,
 			ToolName: tool.ToolName, Content: json.RawMessage(tool.Payload),
 		})
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
+		defer clear(payload)
 		if uint64(len(payload)) > maxToolEventBytes-encodedBytes {
-			return nil, domain.ValidationError{
+			return nil, nil, domain.ValidationError{
 				Field: "execution_result.tool_events", Reason: "exceeds the admitted byte limit",
 			}
 		}
@@ -1194,10 +1205,11 @@ func (manager *Manager) canonicalCompletionEvents(
 			"evt", string(loaded.Run.ID), fmt.Sprintf("tool-%04d", index+1),
 			string(tool.Kind), tool.CallID,
 		))
-		draft, err := manager.putCanonicalEventDraft(ctx, loaded, eventID, tool.Kind, tool.Payload, at)
+		draft, material, err := manager.putCanonicalEventDraft(ctx, loaded, eventID, tool.Kind, tool.Payload, at)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
+		materials.Adopt(draft.ID, material)
 		events = append(events, draft)
 	}
 	payload, err := json.Marshal(assistantEventEnvelope{
@@ -1205,17 +1217,20 @@ func (manager *Manager) canonicalCompletionEvents(
 		Summary: normalizedSummary(result.Summary), ArtifactManifestID: manifest.ID,
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	defer clear(payload)
 	eventID := domain.SessionEventID(stableID("evt", string(loaded.Run.ID), "assistant"))
-	draft, err := manager.putCanonicalEventDraft(
+	draft, material, err := manager.putCanonicalEventDraft(
 		ctx, loaded, eventID, domain.SessionEventAssistantMessage, payload, at,
 	)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	materials.Adopt(draft.ID, material)
 	draft.DisplayText = normalizedSummary(result.Summary)
-	return append(events, draft), nil
+	success = true
+	return append(events, draft), materials, nil
 }
 
 func (manager *Manager) canonicalFailureEvents(
@@ -1224,21 +1239,24 @@ func (manager *Manager) canonicalFailureEvents(
 	cancelled bool,
 	code string,
 	at time.Time,
-) ([]domain.SessionEventDraft, error) {
+) ([]domain.SessionEventDraft, *ports.CanonicalEventMaterialSetV1, error) {
 	payload, err := json.Marshal(failureEventEnvelope{
 		Schema: "sessionless.run-terminal-notice.v1", Code: code, Cancelled: cancelled,
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	defer clear(payload)
 	eventID := domain.SessionEventID(stableID("evt", string(loaded.Run.ID), "terminal-notice"))
-	draft, err := manager.putCanonicalEventDraft(
+	draft, material, err := manager.putCanonicalEventDraft(
 		ctx, loaded, eventID, domain.SessionEventSystemNotice, payload, at,
 	)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return []domain.SessionEventDraft{draft}, nil
+	materials := ports.NewCanonicalEventMaterialSetV1()
+	materials.Adopt(draft.ID, material)
+	return []domain.SessionEventDraft{draft}, materials, nil
 }
 
 func (manager *Manager) putCanonicalEventDraft(
@@ -1248,14 +1266,17 @@ func (manager *Manager) putCanonicalEventDraft(
 	kind domain.SessionEventKind,
 	payload []byte,
 	at time.Time,
-) (domain.SessionEventDraft, error) {
+) (domain.SessionEventDraft, *sessionmaterial.PreparedV1, error) {
 	digest := digestHex(payload)
 	key := domain.SessionEventObjectPrefix(
 		loaded.Run.TenantID, loaded.Run.SessionID, eventID,
 	) + "payloads/sha256/" + digest + ".json"
 	ref, err := manager.blobs.Put(ctx, loaded.Run.TenantID, key, bytes.NewReader(payload))
 	if err != nil {
-		return domain.SessionEventDraft{}, err
+		return domain.SessionEventDraft{}, nil, err
+	}
+	if err := sessionmaterial.ValidateStoredPayloadV1(loaded.Run.TenantID, key, ref, payload); err != nil {
+		return domain.SessionEventDraft{}, nil, err
 	}
 	draft := domain.SessionEventDraft{
 		ID: eventID, Kind: kind,
@@ -1264,7 +1285,10 @@ func (manager *Manager) putCanonicalEventDraft(
 		)),
 		Payload: ref, CreatedAt: at,
 	}
-	return draft, draft.ValidateForRun(loaded.Run)
+	if err := draft.ValidateForRun(loaded.Run); err != nil {
+		return domain.SessionEventDraft{}, nil, err
+	}
+	return draft, ports.PrepareCanonicalDraftV1(loaded.Run, draft, payload), nil
 }
 
 func (manager *Manager) finishFailure(
@@ -1303,10 +1327,11 @@ func (manager *Manager) finishFailureWithReconciliation(
 	}
 	failedAt := manager.clock.Now().UTC()
 	if loaded.Job.Origin != nil {
-		events, err := manager.canonicalFailureEvents(ctx, loaded, cancelled, code, failedAt)
+		events, materials, err := manager.canonicalFailureEvents(ctx, loaded, cancelled, code, failedAt)
 		if err != nil {
 			return manager.retry(ctx, message, err)
 		}
+		defer materials.Release()
 		lease, err = manager.ensureLease(ctx, loaded.Run.TenantID, lease)
 		if err != nil {
 			return manager.retry(ctx, message, err)
@@ -1315,7 +1340,7 @@ func (manager *Manager) finishFailureWithReconciliation(
 			TenantID: loaded.Run.TenantID, RunID: loaded.Run.ID,
 			AttemptID: loaded.Attempt.ID, ReservationID: loaded.Reservation.ID,
 			LeaseID: lease.ID, Fence: lease.FenceToken,
-			At: failedAt, Cancelled: cancelled, Code: code, Events: events,
+			At: failedAt, Cancelled: cancelled, Code: code, Events: events, PreparedEvents: materials,
 			ReconciliationEvidence: reconciliationEvidence,
 		}); err != nil {
 			return manager.retry(ctx, message, err)

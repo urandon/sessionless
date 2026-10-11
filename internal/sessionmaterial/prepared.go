@@ -129,6 +129,21 @@ func (prepared *PreparedV1) Clone() (*PreparedV1, error) {
 	return &PreparedV1{state: &preparedState{identity: cloneIdentity(state.identity), payload: bytes.Clone(state.payload), measures: state.measures, live: true}}, nil
 }
 
+// OwnedBytesV1 is a memory-budget observation, not serialized source proof.
+// It never exposes the payload or stable identity, and a released alias cannot
+// claim that it still owns a measured buffer.
+func (prepared *PreparedV1) OwnedBytesV1() (uint64, bool) {
+	if prepared == nil || prepared.state == nil {
+		return 0, false
+	}
+	prepared.state.mu.RLock()
+	defer prepared.state.mu.RUnlock()
+	if !prepared.state.live {
+		return 0, false
+	}
+	return uint64(len(prepared.state.payload)), true
+}
+
 // Release invalidates all ordinary copies/aliases and clears owned bytes.
 // Independent explicit clones retain their own lifetime. No implicit reuse or
 // refresh can resurrect released preparation. Concurrent copy/release is safe.

@@ -12,6 +12,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/sessionmaterial"
 )
 
 func (store *Store) EnsureFrontendSession(
@@ -234,6 +235,7 @@ func (store *Store) CommitCanonicalUserEvent(
 		return result, err
 	}
 	err = store.Transact(ctx, request.TenantID, func(state ports.StateTx) error {
+		result = ports.CanonicalUserEventResult{}
 		tx := state.(*stateTx)
 		if err := authorizeTenantWriteTx(ctx, tx, request.UserID); err != nil {
 			return err
@@ -347,7 +349,7 @@ func (store *Store) CommitCanonicalUserEvent(
 		if _, err := domain.AppendSessionEvent(&session, event, nil); err != nil {
 			return err
 		}
-		if err := insertSessionEventTx(ctx, tx, event); err != nil {
+		if err := insertSessionEventTx(ctx, tx, event, request.PreparedMaterial); err != nil {
 			return err
 		}
 		if err := updateSessionTx(ctx, tx, previous, session); err != nil {
@@ -421,6 +423,9 @@ func (store *Store) CommitCanonicalUserEvent(
 		}
 		return nil
 	})
+	if err != nil {
+		return ports.CanonicalUserEventResult{}, err
+	}
 	return result, err
 }
 
@@ -466,8 +471,12 @@ func authorizeSessionWriteTx(ctx context.Context, tx *stateTx, sessionID domain.
 	return participant.Authorize(tx.tenantID, sessionID, userID, true)
 }
 
-func insertSessionEventTx(ctx context.Context, tx *stateTx, event domain.SessionEvent) error {
+func insertSessionEventTx(ctx context.Context, tx *stateTx, event domain.SessionEvent, prepared *sessionmaterial.PreparedV1) error {
 	if err := event.Validate(); err != nil {
+		return err
+	}
+	prefix, err := prepareSessionMaterialFoldTx(ctx, tx, event, prepared)
+	if err != nil {
 		return err
 	}
 	record, err := marshal(event)
@@ -498,7 +507,10 @@ func insertSessionEventTx(ctx context.Context, tx *stateTx, event domain.Session
 		event.TenantID, event.SessionID, event.IdempotencyKey,
 		event.Sequence, event.ID, event.CreatedAt,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	return writeSessionMaterialFoldTx(ctx, tx, prefix)
 }
 
 func validateCanonicalCommit(request ports.CanonicalUserEventCommit) error {

@@ -613,6 +613,7 @@ type WorkerCompletion struct {
 	At                time.Time
 	Manifest          domain.ArtifactManifest
 	Events            []domain.SessionEventDraft
+	PreparedEvents    *CanonicalEventMaterialSetV1 `json:"-"`
 	Usage             []domain.UsageObservation
 	SubstrateEvidence *domain.SubstrateExecutionEvidenceV1
 }
@@ -628,6 +629,7 @@ type WorkerFailure struct {
 	Cancelled              bool
 	Code                   string
 	Events                 []domain.SessionEventDraft
+	PreparedEvents         *CanonicalEventMaterialSetV1 `json:"-"`
 	ReconciliationEvidence *domain.AttemptEffectReconciliationEvidenceV1
 }
 

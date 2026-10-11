@@ -1,6 +1,7 @@
 package attachedworkerdaemon
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"sync"
@@ -9,6 +10,106 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 )
+
+type ownedCarrierSourceFunc func(context.Context) (Invocation, bool, error)
+
+func (source ownedCarrierSourceFunc) Next(ctx context.Context) (Invocation, bool, error) {
+	return source(ctx)
+}
+
+type ownedCarrierRunnerFunc func(context.Context, Invocation) (InvocationResult, error)
+
+func (runner ownedCarrierRunnerFunc) Run(ctx context.Context, input Invocation) (InvocationResult, error) {
+	return runner(ctx, input)
+}
+
+type ownedCarrierSinkFunc func(context.Context, InvocationIdentity, InvocationResult, error) error
+
+func (sink ownedCarrierSinkFunc) Complete(ctx context.Context, identity InvocationIdentity, result InvocationResult, err error) error {
+	return sink(ctx, identity, result, err)
+}
+
+func TestDaemonClearsOwnedTypedInputOnDiscardAndBeforeSink(t *testing.T) {
+	for _, mode := range []string{"source error", "unavailable", "invalid", "admission closed", "run return", "run error"} {
+		t.Run(mode, func(t *testing.T) {
+			input := canonicalVerifiedInvocation(t)
+			originalIdentity := input.Identity
+			v := input.VerifiedInput
+			borrowed := [][]byte{v.Context, v.Artifacts[0].Body, v.CanonicalContext.EventBodies[0], v.CanonicalContext.Attachments[0].Body}
+			assertCleared := func() {
+				t.Helper()
+				for index, body := range borrowed {
+					if !bytes.Equal(body, make([]byte, len(body))) {
+						t.Errorf("mode=%s body=%d remains at discard/sink", mode, index)
+					}
+				}
+				if v.Job.TenantID != "" || v.CanonicalContext != nil {
+					t.Errorf("mode=%s retained metadata/proof", mode)
+				}
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			var daemon *Daemon
+			calls, sends := 0, 0
+			failure := errors.New("owned source/runner failure")
+			source := ownedCarrierSourceFunc(func(context.Context) (Invocation, bool, error) {
+				switch mode {
+				case "source error":
+					return input, false, failure
+				case "unavailable":
+					cancel()
+					return input, false, nil
+				case "invalid":
+					input.Identity.OwnerUserID = ""
+					return input, true, nil
+				case "admission closed":
+					if err := daemon.RequestDrain(t.Context()); err != nil {
+						t.Fatalf("drain: %v", err)
+					}
+				}
+				return input, true, nil
+			})
+			runner := ownedCarrierRunnerFunc(func(_ context.Context, actual Invocation) (InvocationResult, error) {
+				calls++
+				if actual.VerifiedInput.ValidateFor(actual.Identity) != nil {
+					t.Fatal("runner received cleared/invalid canonical data")
+				}
+				if mode == "run error" {
+					return InvocationResult{}, failure
+				}
+				return InvocationResult{}, nil
+			})
+			sink := ownedCarrierSinkFunc(func(_ context.Context, identity InvocationIdentity, _ InvocationResult, _ error) error {
+				sends++
+				if identity != originalIdentity {
+					t.Error("clearing replaced terminal identity")
+				}
+				assertCleared()
+				return daemon.RequestDrain(t.Context())
+			})
+			var err error
+			daemon, err = NewDaemon(DaemonConfig{}, source, runner, sink)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = daemon.Run(ctx)
+			assertCleared()
+			wantCalls := 0
+			if mode == "run return" || mode == "run error" {
+				wantCalls = 1
+			}
+			if calls != wantCalls || sends != wantCalls {
+				t.Errorf("mode=%s run/sink=%d/%d want=%d", mode, calls, sends, wantCalls)
+			}
+			if (mode == "source error" || mode == "run error") && !errors.Is(err, failure) {
+				t.Errorf("mode=%s err=%v want causal failure", mode, err)
+			}
+			if mode == "invalid" && !errors.Is(err, ErrInvocationInvalid) {
+				t.Errorf("invalid err=%v", err)
+			}
+		})
+	}
+}
 
 type channelSource struct {
 	invocations chan Invocation

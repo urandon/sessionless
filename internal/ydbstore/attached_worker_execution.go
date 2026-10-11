@@ -95,6 +95,7 @@ func (store *Store) AuthorizeAttachedWorkerSealedInput(
 		}
 		result.Status = ports.AttachedWorkerExecutionApplied
 		result.AttemptRevision = attempt.Revision
+		result.Attempt = attempt
 		return nil
 	})
 	if err != nil {

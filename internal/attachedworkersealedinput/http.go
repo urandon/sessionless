@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemontransport"
+	"gitcode.com/urandon/sessionless/internal/ports"
 )
 
 const PathV1 = "/attached-worker/v1/sealed-input"
@@ -141,6 +142,14 @@ func (source *ClientSource) Load(ctx context.Context, request attachedworkerdaem
 	decoder.DisallowUnknownFields()
 	var input attachedworkerdaemontransport.SealedInputV1
 	if decoder.Decode(&input) != nil || decoder.Decode(new(any)) != io.EOF || ctx.Err() != nil {
+		clearResult(&input)
+		return attachedworkerdaemontransport.SealedInputV1{}, ErrUnavailable
+	}
+	authorization := ports.AuthorizationForAttachedInput(request.TenantID, request.OwnerUserID, request.WorkerID,
+		request.ConnectionID, request.EnrollmentGeneration, request.ConnectionGeneration, request.Attempt, request.AttemptSequence)
+	if !(ports.AttachedWorkerSealedInputAuthorizationResult{Status: ports.AttachedWorkerExecutionApplied,
+		AttemptRevision: input.AcceptedAttempt.Revision, Attempt: input.AcceptedAttempt}).Matches(authorization) ||
+		!attachedworkerdaemontransport.BoundedSerializedCanonicalInputV1(input, maxInputBytes) {
 		clearResult(&input)
 		return attachedworkerdaemontransport.SealedInputV1{}, ErrUnavailable
 	}

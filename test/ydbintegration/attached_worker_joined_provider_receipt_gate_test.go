@@ -24,6 +24,7 @@ import (
 	ydb "github.com/ydb-platform/ydb-go-sdk/v3"
 	"github.com/ydb-platform/ydb-go-sdk/v3/table"
 
+	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemontransport"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerhttp"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerlocal"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerprotocol"
@@ -40,8 +41,24 @@ import (
 )
 
 type aw07HTTPStatusRecorder struct {
-	mu       sync.Mutex
-	statuses []string
+	mu             sync.Mutex
+	statuses       []string
+	inputLimit     int
+	inputSizes     map[domain.UserID]aw07InputSizeObservation
+	inputReady     chan struct{}
+	inputReadyOnce sync.Once
+}
+
+// The authenticated head belongs to the finite response budget, along with
+// job/proof/artifacts and test-only credential metadata. Native unique IDs
+// make these positive responses exceed the former 4 KiB fixture limit.
+// Production limits and negative fixtures are unchanged.
+const aw07JoinedInputLimit = 16 << 10
+
+type aw07InputSizeObservation struct {
+	bytes   int
+	oldFits bool
+	fits    bool
 }
 
 // Hold both owner submissions before YDB can create a receipt. This proves
@@ -83,7 +100,10 @@ func (barrier *aw07ReceiptBarrier) CreateAttachedWorkerOutputReceipt(ctx context
 
 type aw07StatusWriter struct {
 	http.ResponseWriter
-	status int
+	status     int
+	bytes      int
+	inputLimit int
+	body       []byte
 }
 
 func (writer *aw07StatusWriter) WriteHeader(status int) {
@@ -91,14 +111,46 @@ func (writer *aw07StatusWriter) WriteHeader(status int) {
 	writer.ResponseWriter.WriteHeader(status)
 }
 
+func (writer *aw07StatusWriter) Write(body []byte) (int, error) {
+	n, err := writer.ResponseWriter.Write(body)
+	writer.bytes += n
+	if writer.inputLimit > 0 && len(writer.body)+n <= writer.inputLimit+1 {
+		writer.body = append(writer.body, body[:n]...)
+	}
+	return n, err
+}
+
 func (recorder *aw07HTTPStatusRecorder) wrap(path string, handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		started := time.Now()
 		observed := &aw07StatusWriter{ResponseWriter: writer, status: http.StatusOK}
+		if path == "sealed" {
+			observed.inputLimit = recorder.inputLimit
+		}
+		defer func() { clear(observed.body) }()
 		handler.ServeHTTP(observed, request)
+		var input attachedworkerdaemontransport.SealedInputV1
+		var size aw07InputSizeObservation
+		if observed.inputLimit > 0 && observed.status == http.StatusOK &&
+			observed.bytes == len(observed.body) && json.Unmarshal(observed.body, &input) == nil {
+			size = aw07InputSizeObservation{bytes: observed.bytes,
+				oldFits: attachedworkerdaemontransport.BoundedSerializedCanonicalInputV1(input, 4096),
+				fits:    attachedworkerdaemontransport.BoundedSerializedCanonicalInputV1(input, recorder.inputLimit)}
+		}
 		recorder.mu.Lock()
-		recorder.statuses = append(recorder.statuses, fmt.Sprintf("%s:%d:%s", path, observed.status,
-			time.Since(started).Round(time.Millisecond)))
+		if size.bytes > 0 {
+			if recorder.inputSizes == nil {
+				recorder.inputSizes = make(map[domain.UserID]aw07InputSizeObservation)
+			}
+			if len(recorder.inputSizes) < 2 || recorder.inputSizes[input.AcceptedAttempt.OwnerUserID].bytes > 0 {
+				recorder.inputSizes[input.AcceptedAttempt.OwnerUserID] = size
+			}
+			if len(recorder.inputSizes) == 2 && recorder.inputReady != nil {
+				recorder.inputReadyOnce.Do(func() { close(recorder.inputReady) })
+			}
+		}
+		recorder.statuses = append(recorder.statuses, fmt.Sprintf("%s:%d:%s:%dbytes", path, observed.status,
+			time.Since(started).Round(time.Millisecond), observed.bytes))
 		recorder.mu.Unlock()
 	})
 }
@@ -107,6 +159,26 @@ func (recorder *aw07HTTPStatusRecorder) snapshot() string {
 	recorder.mu.Lock()
 	defer recorder.mu.Unlock()
 	return strings.Join(recorder.statuses, ",")
+}
+
+func (recorder *aw07HTTPStatusRecorder) assertInputBudgets(t *testing.T, ctx context.Context, owners ...domain.UserID) {
+	t.Helper()
+	select {
+	case <-recorder.inputReady:
+	case <-ctx.Done():
+		t.Fatalf("both sealed input responses were not observed before deadline: %v", ctx.Err())
+	}
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	for _, owner := range owners {
+		observed, found := recorder.inputSizes[owner]
+		if !found || observed.bytes <= 4096 || observed.oldFits || !observed.fits || observed.bytes > recorder.inputLimit+1 {
+			t.Errorf("sealed input budget: observed=%t bytes=%d old_4096_fits=%t admitted_%d_fits=%t",
+				found, observed.bytes, observed.oldFits, recorder.inputLimit, observed.fits)
+		}
+		t.Logf("sealed input: bytes=%d old_4096_fits=%t admitted_%d_fits=%t",
+			observed.bytes, observed.oldFits, recorder.inputLimit, observed.fits)
+	}
 }
 
 // The serving adapter deliberately hides backend details from the worker. Keep
@@ -433,7 +505,13 @@ func testJoinedProviderDaemonReceipts(t *testing.T, normalWeb bool) {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	statusRecorder := &aw07HTTPStatusRecorder{}
+	inputLimit := aw07JoinedInputLimit
+	if normalWeb {
+		// Match explicit canonical Web admission, including proof and
+		// credential metadata. Only synthetic positives use 16 KiB.
+		inputLimit = 1 << 20
+	}
+	statusRecorder := &aw07HTTPStatusRecorder{inputLimit: inputLimit, inputReady: make(chan struct{})}
 	mux.Handle(attachedworkerhttp.ChallengePathV1, bootstrap)
 	mux.Handle(attachedworkerhttp.AttachPathV1, bootstrap)
 	mux.Handle(attachedworkerhttp.ExchangePathV1, statusRecorder.wrap("exchange", exchange))
@@ -457,13 +535,6 @@ func testJoinedProviderDaemonReceipts(t *testing.T, normalWeb bool) {
 	t.Cleanup(server.Close)
 	trust := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
 	root := t.TempDir()
-	inputLimit := 4096
-	if normalWeb {
-		// Canonical input includes the complete admitted job, immutable proof
-		// and credential issue metadata, not only the provider stdin. Match
-		// the explicit Web admission budget; keep the old synthetic gate small.
-		inputLimit = 1 << 20
-	}
 	a := aw07PrepareDaemonInstallationWithInputLimit(t, filepath.Join(root, "a"), server.URL, trust, aWorker, aPrivate, now, true, inputLimit)
 	b := aw07PrepareDaemonInstallationWithInputLimit(t, filepath.Join(root, "b"), server.URL, trust, bWorker, bPrivate, now, true, inputLimit)
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
@@ -567,6 +638,9 @@ func testJoinedProviderDaemonReceipts(t *testing.T, normalWeb bool) {
 	}
 	for index := range owners {
 		owner := &owners[index]
+		if index == 0 {
+			statusRecorder.assertInputBudgets(t, ctx, aWorker.OwnerUserID, bWorker.OwnerUserID)
+		}
 		if _, arrived := seen[owner.worker.OwnerUserID]; !arrived {
 			t.Fatalf("%s did not reach receipt publication: arrivals=%d", owner.name, len(seen))
 		}

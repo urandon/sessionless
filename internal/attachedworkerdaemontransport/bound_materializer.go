@@ -13,6 +13,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemon"
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/sessioncontext"
 )
 
@@ -46,6 +47,7 @@ type SealedArtifactV1 struct {
 }
 
 type SealedInputV1 struct {
+	AcceptedAttempt  domain.AttachedWorkerAttemptV1
 	Job              domain.WorkerJob
 	Manifest         domain.ArtifactManifest
 	Context          []byte
@@ -112,6 +114,15 @@ func (materializer *BoundMaterializer) Materialize(ctx context.Context, request 
 		return MaterializedInputV1{}, ErrSealedInputInvalid
 	}
 	job := input.Job
+	if !boundedSealedMetadata(reflect.ValueOf(input.AcceptedAttempt), materializer.maxBytes) {
+		return MaterializedInputV1{}, ErrSealedInputInvalid
+	}
+	authorization := ports.AuthorizationForAttachedInput(request.TenantID, request.OwnerUserID, request.WorkerID,
+		request.ConnectionID, request.EnrollmentGeneration, request.ConnectionGeneration, request.Attempt, request.AttemptSequence)
+	if !(ports.AttachedWorkerSealedInputAuthorizationResult{Status: ports.AttachedWorkerExecutionApplied,
+		AttemptRevision: input.AcceptedAttempt.Revision, Attempt: input.AcceptedAttempt}).Matches(authorization) {
+		return MaterializedInputV1{}, ErrSealedInputInvalid
+	}
 	if job.TenantID != request.TenantID || job.RunID != domain.RunID(request.Attempt.RunID) ||
 		job.AttemptID != domain.AttemptID(request.Attempt.AttemptID) ||
 		job.CredentialOwnerUserID != request.OwnerUserID ||
@@ -137,8 +148,8 @@ func (materializer *BoundMaterializer) Materialize(ctx context.Context, request 
 		}
 		remaining -= len(artifact.Body)
 	}
-	if input.CanonicalContext != nil && (!boundedCanonicalProof(input.CanonicalContext, materializer.maxBytes) ||
-		!BoundedSerializedCanonicalInputV1(input, materializer.maxBytes)) {
+	if input.CanonicalContext != nil && !boundedCanonicalProof(input.CanonicalContext, materializer.maxBytes) ||
+		!BoundedSerializedCanonicalInputV1(input, materializer.maxBytes) {
 		return MaterializedInputV1{}, ErrSealedInputInvalid
 	}
 	if job.HarnessBinding.ValidateForScope(job.TenantID, request.OwnerUserID, job.RunID, job.AttemptID, job.ExecutionPlacementV2) != nil {
@@ -244,7 +255,17 @@ func (materializer *BoundMaterializer) Materialize(ctx context.Context, request 
 		clearBytes(envelope)
 		return MaterializedInputV1{}, ErrSealedInputInvalid
 	}
-	result := MaterializedInputV1{Stdin: envelope}
+	verified := &attachedworkerdaemon.VerifiedAttachedInputV1{AcceptedAttempt: input.AcceptedAttempt,
+		Job: input.Job, Manifest: input.Manifest, Context: input.Context, CanonicalContext: input.CanonicalContext}
+	for _, artifact := range input.Artifacts {
+		verified.Artifacts = append(verified.Artifacts, attachedworkerdaemon.VerifiedAttachedArtifactV1{Name: artifact.Name, Body: artifact.Body})
+	}
+	owned, cloneErr := verified.Clone()
+	if cloneErr != nil {
+		clearBytes(envelope)
+		return MaterializedInputV1{}, ErrSealedInputInvalid
+	}
+	result := MaterializedInputV1{Stdin: envelope, VerifiedInput: owned}
 	if provider {
 		credential := *input.Credential
 		result.Credential = &credential

@@ -12,6 +12,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemon"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/sessioncontext"
 )
 
 type preparedOwnerLifecycle struct {
@@ -73,6 +74,10 @@ func (execute *preparedOwnerExecutor) RunPrepared(ctx context.Context, prepared 
 	execute.calls++
 	execute.owner.order = append(execute.owner.order, "execute")
 	request := execute.request
+	if prepared.VerifiedInput == nil || prepared.VerifiedInput.ValidateFor(prepared.Identity) != nil ||
+		prepared.VerifiedInput.Job.HarnessBinding.Resource != request.HarnessBinding.Resource || prepared.VerifiedInput.CanonicalContext == nil {
+		execute.t.Error("executor lost verified typed job/resource/canonical proof")
+	}
 	if request.Credential.HandleID != "" || request.CredentialMaterialization.Kind != "" {
 		execute.t.Error("execution template already contained a credential")
 	}
@@ -170,6 +175,7 @@ func TestPreparedOwnerFeedsCodexDriverWithoutAnotherCredentialLifecycle(t *testi
 					},
 				},
 			}
+			invocation.VerifiedInput = preparedOwnerTypedInput(t, request, authority)
 			result, runErr := runner.Run(context.Background(), invocation)
 			if executor.calls != 1 || boundary.runs != 1 || result.Succeeded(runErr) != tc.wantSuccess ||
 				!result.CredentialReleaseRequired || result.CredentialReleased != (tc.releaseErr == nil) {
@@ -186,4 +192,42 @@ func TestPreparedOwnerFeedsCodexDriverWithoutAnotherCredentialLifecycle(t *testi
 			}
 		})
 	}
+}
+
+func preparedOwnerTypedInput(t *testing.T, request ports.ExecutionRequest, authority AuthorityV1) *attachedworkerdaemon.VerifiedAttachedInputV1 {
+	t.Helper()
+	history, err := os.ReadFile(filepath.Join(request.WorkDir, "context", "history.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, err := sessioncontext.DecodeJSONL(history, request.TenantID, request.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof := &sessioncontext.CanonicalProof{Input: domain.SessionContextInput{TenantID: request.TenantID, SessionID: request.SessionID}}
+	for _, record := range records {
+		proof.Input.Events = append(proof.Input.Events, record.Event)
+		proof.EventBodies = append(proof.EventBodies, record.Payload)
+	}
+	job := domain.WorkerJob{TenantID: request.TenantID, RunID: request.RunID, AttemptID: request.AttemptID,
+		SessionID: request.SessionID, TriggerEventID: request.TriggerEventID, ReservationID: authority.ReservationID,
+		InputManifestID: "prepared-owner-manifest", ContextWindow: request.ContextWindow,
+		CredentialOwnerUserID: request.OwnerUserID, ExecutionPlacementV2: request.ExecutionPlacementV2, HarnessBinding: request.HarnessBinding,
+		Limits: domain.ProductLimits{MaxTenantQueueDepth: 1, MaxActiveRuns: 1, MaxRuntime: time.Minute, MaxTurns: 1,
+			MaxInputBytes: 1 << 20, MaxContextBytes: 1 << 20, MaxContextEvents: 10, MaxArtifacts: 10, MaxToolEvents: 10, MaxToolEventBytes: 4096}}
+	manifest := domain.ArtifactManifest{ID: job.InputManifestID, TenantID: job.TenantID, RunID: job.RunID, CreatedAt: driverNow}
+	head := attemptForAuthority(authority, domain.AttachedWorkerAttemptClaimed)
+	head.ContextDigest, err = domain.AttachedWorkerJobContextDigestV1(job, manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := &attachedworkerdaemon.VerifiedAttachedInputV1{AcceptedAttempt: head, Job: job, Manifest: manifest,
+		Context: history, CanonicalContext: proof}
+	cloned, err := input.Clone()
+	if err != nil {
+		t.Fatalf("prepared owner typed fixture: %v", err)
+	}
+	cloned.Clear()
+	t.Cleanup(input.Clear)
+	return input
 }

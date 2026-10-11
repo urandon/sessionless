@@ -115,26 +115,33 @@ func (daemon *Daemon) Run(parent context.Context) error {
 		pollCancel()
 		daemon.setPollCancel(nil)
 		if err != nil {
+			invocation.VerifiedInput.Clear()
 			if daemon.draining() || parent.Err() != nil {
 				return nil
 			}
 			return err
 		}
 		if !available {
+			invocation.VerifiedInput.Clear()
 			if !daemon.waitIdle(parent) {
 				return nil
 			}
 			continue
 		}
 		if invocation.Validate() != nil {
+			invocation.VerifiedInput.Clear()
 			return ErrInvocationInvalid
 		}
 		if !daemon.beginAttempt(invocation.Identity) {
+			invocation.VerifiedInput.Clear()
 			return nil
 		}
 		attemptCtx, attemptCancel := context.WithCancel(parent)
 		daemon.setActiveCancel(attemptCancel)
 		result, runErr := daemon.runner.Run(attemptCtx, invocation)
+		// Run is synchronous: the runner no longer borrows these source-owned
+		// buffers. Keep the independent identity for the existing terminal owner.
+		invocation.VerifiedInput.Clear()
 		attemptCancel()
 		daemon.setActiveCancel(nil)
 		reportCtx, reportCancel := context.WithTimeout(context.WithoutCancel(parent), daemon.config.ReportGrace)

@@ -26,6 +26,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/attachedworkerprotocol"
 	"gitcode.com/urandon/sessionless/internal/attachedworkersession"
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/ports"
 )
 
 const (
@@ -174,9 +175,10 @@ func (request MaterializationRequestV1) String() string {
 func (request MaterializationRequestV1) GoString() string { return request.String() }
 
 type MaterializedInputV1 struct {
-	Stdin      []byte
-	ReadRoots  []string
-	Credential *attachedworkerdaemon.CredentialInvocation
+	Stdin         []byte
+	ReadRoots     []string
+	Credential    *attachedworkerdaemon.CredentialInvocation
+	VerifiedInput *attachedworkerdaemon.VerifiedAttachedInputV1 `json:"-"`
 }
 
 func (input MaterializedInputV1) String() string {
@@ -725,7 +727,7 @@ func (adapter *Adapter) claimAndMaterialize(
 	if authorityErr := adapter.validateActiveAuthority(active); authorityErr != nil {
 		return attachedworkerdaemon.Invocation{}, false, authorityErr
 	}
-	invocation, err := adapter.invocationFromInput(active.identity, input)
+	invocation, err := adapter.invocationFromInput(active.identity, active.request, input)
 	if err != nil {
 		reportCtx, cancelReport := context.WithTimeout(context.WithoutCancel(ctx), adapter.config.ReportTimeout)
 		reportErr := adapter.completeOwned(reportCtx, active.identity, attachedworkerdaemon.InvocationResult{FailureCode: "invocation_materialization_invalid"}, err)
@@ -761,6 +763,7 @@ func (adapter *Adapter) acknowledgeCancelAfterLocalCancellation(ctx context.Cont
 
 func (adapter *Adapter) invocationFromInput(
 	identity attachedworkerdaemon.InvocationIdentity,
+	request MaterializationRequestV1,
 	input MaterializedInputV1,
 ) (attachedworkerdaemon.Invocation, error) {
 	if len(input.Stdin) == 0 || len(input.Stdin) > adapter.config.MaxInputBytes {
@@ -783,6 +786,21 @@ func (adapter *Adapter) invocationFromInput(
 			AdditionalReadRoots: readRoots, Stdin: append([]byte(nil), input.Stdin...),
 		},
 		Credential: credential,
+	}
+	if input.VerifiedInput != nil {
+		authorization := ports.AuthorizationForAttachedInput(request.TenantID, request.OwnerUserID, request.WorkerID,
+			request.ConnectionID, request.EnrollmentGeneration, request.ConnectionGeneration, request.Attempt, request.AttemptSequence)
+		head := input.VerifiedInput.AcceptedAttempt
+		if !(ports.AttachedWorkerSealedInputAuthorizationResult{Status: ports.AttachedWorkerExecutionApplied,
+			AttemptRevision: head.Revision, Attempt: head}).Matches(authorization) {
+			clearInvocation(&invocation)
+			return attachedworkerdaemon.Invocation{}, ErrInvalidAuthority
+		}
+		invocation.VerifiedInput, err = input.VerifiedInput.Clone()
+		if err != nil {
+			clearInvocation(&invocation)
+			return attachedworkerdaemon.Invocation{}, ErrInvalidAuthority
+		}
 	}
 	if invocation.Validate() != nil {
 		clearInvocation(&invocation)
@@ -1378,6 +1396,7 @@ func clearMaterializedInput(input *MaterializedInputV1) {
 		return
 	}
 	clearBytes(input.Stdin)
+	input.VerifiedInput.Clear()
 	*input = MaterializedInputV1{}
 }
 
@@ -1386,6 +1405,7 @@ func clearInvocation(invocation *attachedworkerdaemon.Invocation) {
 		return
 	}
 	clearBytes(invocation.Process.Stdin)
+	invocation.VerifiedInput.Clear()
 	*invocation = attachedworkerdaemon.Invocation{}
 }
 

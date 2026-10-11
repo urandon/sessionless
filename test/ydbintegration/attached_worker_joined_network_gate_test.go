@@ -199,8 +199,10 @@ func TestAW07TwoOwnerYDBTLSLostResponseKeepsPeerAndFencesRevokedOwner(t *testing
 	}
 	bRequest := b.request
 	bRequest.PresentedSecretDigest = ""
-	if revision, err := service.AuthorizeSealedInputBearer(ctx, bBearer, bRequest); err != nil || revision != b.revision {
-		t.Errorf("revoking A changed B authority: revision=%d want=%d err=%v", revision, b.revision, err)
+	if result, err := service.AuthorizeSealedInputBearer(ctx, bBearer, bRequest); err != nil ||
+		result.AttemptRevision != b.revision || result.Attempt != b.attempt || !result.Matches(bRequest) {
+		t.Errorf("revoking A changed B authority: revision=%d want=%d head_matches=%t scope_matches=%t err=%v",
+			result.AttemptRevision, b.revision, result.Attempt == b.attempt, result.Matches(bRequest), err)
 	}
 }
 

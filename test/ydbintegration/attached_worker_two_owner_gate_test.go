@@ -354,7 +354,7 @@ func aw07ClaimedInputWithPayloadAndBinding(t *testing.T, store *ydbstore.Store, 
 	}
 	authorized, err := store.AuthorizeAttachedWorkerSealedInput(ctx, request)
 	if err != nil || authorized.Status != ports.AttachedWorkerExecutionApplied ||
-		authorized.AttemptRevision != claim.Attempt.Revision {
+		authorized.AttemptRevision != claim.Attempt.Revision || authorized.Attempt != claim.Attempt || !authorized.Matches(request) {
 		t.Fatalf("authorize owner %s claimed head: result=%+v err=%v", suffix, authorized, err)
 	}
 	return aw07ClaimedAuthorization{
@@ -420,7 +420,8 @@ func aw07Denied(t *testing.T, store *ydbstore.Store, ctx context.Context, reques
 func aw07Authorized(t *testing.T, store *ydbstore.Store, ctx context.Context, owner aw07ClaimedAuthorization) {
 	t.Helper()
 	result, err := store.AuthorizeAttachedWorkerSealedInput(ctx, owner.request)
-	if err != nil || result.Status != ports.AttachedWorkerExecutionApplied || result.AttemptRevision != owner.revision {
+	if err != nil || result.Status != ports.AttachedWorkerExecutionApplied || result.AttemptRevision != owner.revision ||
+		result.Attempt != owner.attempt || !result.Matches(owner.request) {
 		t.Fatalf("owner's exact claimed authority changed: result=%+v err=%v", result, err)
 	}
 }

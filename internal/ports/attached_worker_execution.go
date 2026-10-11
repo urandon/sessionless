@@ -2,6 +2,7 @@ package ports
 
 import (
 	"context"
+	"encoding/hex"
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerprotocol"
@@ -94,6 +95,43 @@ type AttachedWorkerSealedInputAuthorization struct {
 type AttachedWorkerSealedInputAuthorizationResult struct {
 	Status          AttachedWorkerExecutionStatus
 	AttemptRevision uint64
+	// Attempt is the actual claimed head read in the authorization transaction,
+	// not a reconstruction from the worker's wire binding.
+	Attempt domain.AttachedWorkerAttemptV1
+}
+
+// Matches checks the complete immutable materialization scope. A matching
+// value is not an issuer: only an authenticated authorizer may produce it.
+func (result AttachedWorkerSealedInputAuthorizationResult) Matches(request AttachedWorkerSealedInputAuthorization) bool {
+	a := result.Attempt
+	return result.Status == AttachedWorkerExecutionApplied && result.AttemptRevision != 0 &&
+		a.Validate() == nil && a.Revision == result.AttemptRevision && a.State == domain.AttachedWorkerAttemptClaimed &&
+		a.TenantID == request.TenantID && a.OwnerUserID == request.OwnerUserID && a.WorkerID == request.WorkerID &&
+		a.ConnectionID == request.ConnectionID && a.EnrollmentGeneration == request.EnrollmentGeneration &&
+		a.ConnectionGeneration == request.ConnectionGeneration && a.RunID == request.RunID && a.AttemptID == request.AttemptID &&
+		a.LeaseID == request.LeaseID && a.LeaseGeneration == request.LeaseGeneration && a.FenceToken == request.FenceToken &&
+		a.LeaseExpiresAt.UnixMicro() == request.LeaseExpiresAtUnixMicro && a.ContextDigest == request.ContextDigest &&
+		a.CapabilityDigest == request.CapabilityDigest && a.PolicyDigest == request.PolicyDigest &&
+		request.AttemptSequence == 1 &&
+		(request.ExpectedAttemptRevision == 0 || a.Revision == request.ExpectedAttemptRevision)
+}
+
+// AuthorizationForAttachedInput derives only comparison fields from an already
+// authenticated local request. It never constructs or authorizes an attempt.
+func AuthorizationForAttachedInput(tenant domain.TenantID, owner domain.UserID, worker domain.AttachedWorkerID,
+	connection domain.AttachedWorkerConnectionID, enrollment, generation uint64,
+	binding attachedworkerprotocol.AttemptBindingV1, sequence uint64,
+) AttachedWorkerSealedInputAuthorization {
+	return AttachedWorkerSealedInputAuthorization{
+		TenantID: tenant, OwnerUserID: owner, WorkerID: worker, ConnectionID: connection,
+		EnrollmentGeneration: enrollment, ConnectionGeneration: generation,
+		RunID: domain.RunID(binding.RunID), AttemptID: domain.AttemptID(binding.AttemptID), AttemptSequence: sequence,
+		LeaseID: domain.LeaseID(binding.LeaseID), LeaseGeneration: binding.LeaseGeneration,
+		FenceToken: domain.AttachedWorkerFenceToken(binding.FenceToken), LeaseExpiresAtUnixMicro: binding.ExpiresAtUnixMicro,
+		ContextDigest:    domain.AttachedWorkerContextDigest(hex.EncodeToString(binding.ContextDigest)),
+		CapabilityDigest: domain.AttachedWorkerCapabilityDigest(hex.EncodeToString(binding.CapabilityDigest)),
+		PolicyDigest:     domain.AttachedWorkerPolicyDigest(hex.EncodeToString(binding.PolicyDigest)),
+	}
 }
 
 type AttachedWorkerSealedInputAuthorizer interface {

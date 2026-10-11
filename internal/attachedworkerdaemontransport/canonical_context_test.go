@@ -53,6 +53,7 @@ func canonicalMaterializerFixture(t *testing.T) (*BoundMaterializer, *sealedSour
 		t.Fatal(err)
 	}
 	request.Attempt.ContextDigest = mustSealedDigest(t, string(digest))
+	source.input.AcceptedAttempt.ContextDigest = digest
 	return materializer, source, request
 }
 
@@ -62,8 +63,13 @@ func TestCanonicalMaterializerVerifiesHistoryAndPreservesHistoricalFiles(t *test
 	firstBody := proof.EventBodies[0]
 	fileBody := proof.Attachments[0].Body
 	result, err := materializer.Materialize(context.Background(), request)
+	defer clearMaterializedInput(&result)
 	if err != nil {
 		t.Fatalf("Materialize canonical history: %v", err)
+	}
+	if result.VerifiedInput == nil || result.VerifiedInput.CanonicalContext == nil ||
+		len(result.VerifiedInput.CanonicalContext.EventBodies) != 2 || len(result.VerifiedInput.CanonicalContext.Attachments) != 2 {
+		t.Fatal("canonical proof did not survive verified materialization")
 	}
 	defer clearBytes(result.Stdin)
 	var envelope sealedEnvelopeV1
@@ -177,6 +183,7 @@ func TestCanonicalMaterializerEnforcesToolAndSerializedBudgets(t *testing.T) {
 						t.Fatal(err)
 					}
 					request.Attempt.ContextDigest = mustSealedDigest(t, string(digest))
+					source.input.AcceptedAttempt.ContextDigest = digest
 					result, err := materializer.Materialize(context.Background(), request)
 					defer clearBytes(result.Stdin)
 					if reduced {
@@ -241,6 +248,7 @@ func TestCanonicalMaterializerAcceptsMoreThanArtifactCountOfHistoryRecords(t *te
 				t.Fatal(err)
 			}
 			request.Attempt.ContextDigest = mustSealedDigest(t, string(digest))
+			source.input.AcceptedAttempt.ContextDigest = digest
 			result, err := materializer.Materialize(context.Background(), request)
 			if err != nil {
 				t.Fatalf("materialize 65-event history, snapshot=%t: %v", snapshot, err)

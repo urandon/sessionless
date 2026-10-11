@@ -173,11 +173,31 @@ Run `make attached-worker-prepared-invocation-test` for both complete package
 race suites and 20 shuffled focused repetitions. These tests need no network,
 provider, YDB, model, credential bytes or new downloaded dependency.
 
+The authenticated sealed-input authorization transaction now projects its
+actual claimed `AttachedWorkerAttemptV1` along with the revision. Both input
+authorization gates require the same exact head; the bounded HTTPS client and
+materializer independently match it to the accepted request. The serialized
+input budget includes that head even for credential-free snapshot input.
+
+`VerifiedAttachedInputV1` preserves the typed job, manifest, projected history,
+original canonical proof and artifact bytes after verification. It passes from
+materialization through `Invocation` to `PreparedInvocationV1`, never by
+decoding synthetic stdin. It is a private-runtime, redacted, non-wire carrier,
+not an issuer or a new authorization decision. Each ownership boundary clones
+finite input, and borrowed buffers are cleared after prepared execution; the
+daemon clears its source-owned carrier on discard and before terminal reporting.
+Prepared mode rejects absent or mismatched typed input before credential Issue.
+Ordinary credential-free executable behavior and normal provider denial remain
+unchanged. The strict sealed-input HTTPS response now includes `AcceptedAttempt`:
+source and client must upgrade together. Old or missing-head responses are
+rejected, with no legacy decoder or compatibility fallback. Profiles remain
+disabled during this coordinated contract roll-forward.
+
 No shipped stack or foreground constructor selects the prepared executor.
 It is not an invocation replay latch: the existing accepted-attempt owner and
 one-shot prepared Codex process boundary retain that authority. Remaining #133
-work must preserve typed accepted job/binding/context after proof verification,
-privately stage `context/history.jsonl`, and join bounded semantic output with
+work must consume that verified typed input, privately stage
+`context/history.jsonl`, and join bounded semantic output with
 actual process observations into a receipt candidate only after credential
 finalization. Do not recover authority from the synthetic stdin envelope,
 expose `Stack`'s raw supervisor, or wrap another lifecycle around this runner.

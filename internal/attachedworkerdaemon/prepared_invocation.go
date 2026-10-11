@@ -16,6 +16,7 @@ type PreparedInvocationV1 struct {
 	Process         AttemptSpec                               `json:"-"`
 	Credential      ports.ProviderInvocationCredentialV1      `json:"-"`
 	Materialization ports.ProviderCredentialMaterializationV1 `json:"-"`
+	VerifiedInput   *VerifiedAttachedInputV1                  `json:"-"`
 }
 
 func (PreparedInvocationV1) String() string {

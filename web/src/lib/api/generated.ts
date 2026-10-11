@@ -400,7 +400,7 @@ export interface components {
         /** @enum {string} */
         RunExplanationStatusV1: "created" | "admitted" | "queued" | "running" | "succeeded" | "failed" | "cancelled" | "quota_blocked";
         /** @enum {string} */
-        RunExplanationAdmissionReasonV1: "admitted" | "subscription_attention_required" | "capacity_draining" | "quota_reset_pending" | "quota_exhausted_reset_unknown" | "runtime_limit_exceeded" | "turn_limit_exceeded" | "input_limit_exceeded" | "context_limit_exceeded" | "artifact_limit_exceeded" | "capacity_busy" | "workspace_queue_limit" | "workspace_active_run_limit";
+        RunExplanationAdmissionReasonV1: "admitted" | "subscription_attention_required" | "capacity_draining" | "quota_reset_pending" | "quota_exhausted_reset_unknown" | "runtime_limit_exceeded" | "turn_limit_exceeded" | "input_limit_exceeded" | "context_limit_exceeded" | "artifact_limit_exceeded" | "capacity_busy" | "workspace_queue_limit" | "workspace_active_run_limit" | "compute_unavailable" | "choice_stale" | "consent_required" | "compute_policy_denied";
         /** @enum {string} */
         RunExplanationTerminalReasonV1: "execution_failed" | "result_persistence_failed" | "canonical_cancelled" | "unclassified_failure";
         /** @enum {string} */

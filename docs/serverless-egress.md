@@ -2,8 +2,8 @@
 
 Issue #89 adds the feature-disabled boundary between one authenticated
 `PreparedInvocation`, the #85 provider-credential lifecycle, and one attested
-provider proxy. It does not register a concrete proxy, secret backend, provider
-endpoint, or production route.
+provider proxy. The #189 concrete transport described below remains unregistered;
+neither boundary nor transport enables a secret backend or production route.
 
 ## Fixed effect order
 
@@ -72,6 +72,68 @@ There is no redirect follow, endpoint discovery, base-URL override, provider
 fallback, alternate model, or generic internet mode. A different origin,
 method, path, route, model, proxy artifact, or identity requires a new sealed
 policy and a newly admitted attempt.
+
+## Concrete pinned HTTPS transport
+
+`PinnedHTTPSProxyV1` implements the transport interface for the exact
+DirectOpenRouter endpoint, route tuple and headers in
+`internal/directopenrouter/contract.go`. Its public constructor accepts a sealed
+policy, trusted clock and finite time bounds, not an HTTP client, endpoint
+override, resolver, dialer, certificate callback or caller-selected roots.
+It accepts only direct materialization with one bounded Bearer credential;
+file, environment and credentialless conversion are denied.
+
+Preflight consumes the object's preparation before resolving the fixed host.
+It rejects empty or more than eight answers and rejects the entire answer set
+if any address belongs to a forbidden class. The canonical sorted address set
+determines the attestation digest. One literal numeric address is dialed at
+port 443; a verified TLS handshake with the fixed DNS name and HTTP/1.1 ALPN
+completes before preflight returns. Preflight sends no HTTP request. Invocation
+uses that original connection without another lookup, alternative address,
+redirect, discovery, ambient proxy or automatic retry.
+
+Invocation exact-compares the retained policy and attestation, then consumes
+the object before writing once, including when a write or reply is partial.
+The original caller deadline bounds the entire lifetime, capped at 60 seconds;
+each preflight or invocation is capped at 30 seconds and at the remaining
+lifetime. Cancellation closes the owned connection. Explicit `Close` also
+releases an abandoned preflight and is safe to repeat. It does not drain a
+response or wait for a TLS shutdown handshake.
+
+Request and opaque response bodies are capped at one MiB or the smaller policy
+limit, credentials at 4096 bytes, response headers at 16 KiB and 100 fields,
+chunk framing at a separate 16 KiB, and chunk-size lines at 256 bytes. Ambiguous
+framing, trailers, informational responses, redirects, compression, cookies,
+authentication challenges and non-200 responses fail closed. Transport-owned
+request, payload and credential copies are cleared after synchronous use;
+private connection errors are replaced with package sentinels.
+
+HTTP 200 returns bounded opaque bytes with `AcceptanceUnknown`. Fixed route
+metadata records the intended transport tuple; it does not validate JSON model
+or provider restrictions and is not evidence of actual upstream execution.
+The DirectOpenRouter codec and parser must establish those facts before
+composition may publish actual-model or provider-acceptance evidence. The
+existing one-shot `BoundaryV1` is not wired to this concrete proxy by startup.
+
+This process-local connection attestation is not durable registered proxy
+authority. Original-source and allocation joins, authenticated create-once
+registration/current readback, operation debits, typed consent, production
+custody and the multi-operation session remain separate #189/#190 work. MCP
+and general web search require their own reviewed service policies, not a
+widening of this fixed provider endpoint.
+
+Synthetic package tests use a private test-only resolver/dialer/root seam to
+route the selected public numeric address to an owned loopback TLS peer. They
+exercise real certificate and DNS-name validation, fixed Host/SNI and headers,
+no HTTP during preflight, exactly one physical request, DNS changes, hostile
+address sets, policy/attestation tampering, partial TLS writes, bounded hostile
+responses, concurrency, cancellation and abandoned-connection cleanup. They
+do not establish cloud routing or live-provider behavior. The public
+constructor has no such test seam.
+
+The restrictions follow the DNS/IP allowlisting and redirect-denial guidance in
+the [OWASP SSRF prevention cheat sheet](https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html)
+and Go's [TLS certificate and name verification contract](https://pkg.go.dev/crypto/tls#Config).
 
 ## Credential boundary
 
@@ -143,14 +205,15 @@ The deterministic package tests cover:
 - JSON and string marker scans for payload, secret, delivery path, and provider
   response.
 
-Tests use only fake in-memory endpoints and credentials. No provider key,
-provider request, cloud credential, or production network route is required.
+Boundary tests use fake in-memory endpoints and credentials; concrete transport
+tests additionally use owned synthetic loopback TLS peers. No real provider key,
+external provider request, cloud credential or production route is required.
 
 ## Still disabled
 
-This package is a composition contract, not a production transport. Enabling
-the first direct tool-free cloud profile still requires a reviewed concrete
-proxy and encrypted secret adapter, infrastructure-enforced proxy-only egress,
+The boundary and concrete transport remain feature-disabled prerequisites.
+Enabling the first direct tool-free cloud profile still requires reviewed
+proxy registration and encrypted secret composition, infrastructure-enforced proxy-only egress,
 cloud-dev DNS/private-address probes, warm-instance residue tests, exact image
 promotion, two-owner E2E, and the PR-03d through PR-03f rollout gates in
 [serverless-harness.md](serverless-harness.md).

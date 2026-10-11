@@ -88,26 +88,46 @@ func readOwnedCurrentSnapshot(ctx context.Context, q *ownedAuthorityQuery, scope
 }
 
 func readOwnedProfileCurrent(ctx context.Context, q *ownedAuthorityQuery, ref domain.OwnedAgentProfileReferenceV1) (domain.OwnedAgentProfileCurrentV1, error) {
+	p, found, err := loadOwnedProfileProjection(ctx, q, ref.Locator)
+	actualDigest, digestErr := p.Digest()
+	if err != nil || !found || digestErr != nil || p.RevocationGeneration != ref.RevocationGeneration || actualDigest != ref.Digest || p.ValidateAt(q.at) != nil {
+		return domain.OwnedAgentProfileCurrentV1{}, domain.ErrMembershipDenied
+	}
+	return p, nil
+}
+
+// Publication may inspect an absent head or a disabled/revoked tombstone.
+// This structural load is NEVER current permission; effect readers additionally
+// require the original reference and active DB-time freshness above.
+func loadOwnedProfileProjection(ctx context.Context, q *ownedAuthorityQuery, l domain.OwnedAgentProfileLocatorV1) (domain.OwnedAgentProfileCurrentV1, bool, error) {
+	denied := func() (domain.OwnedAgentProfileCurrentV1, bool, error) {
+		return domain.OwnedAgentProfileCurrentV1{}, false, domain.ErrMembershipDenied
+	}
+	if l.Validate() != nil {
+		return denied()
+	}
 	var raw, state, digest, installation string
 	var version, revision, generation, installationRevision uint64
 	var published, expires, updated time.Time
-	l := ref.Locator
 	row := q.QueryRowContext(ctx, ownedProfileCurrentSQL, l.TenantID, l.OwnerUserID, l.Profile, l.BackendProfileDigest, l.ResourceKind, l.ResourceID, l.ModelVendorID, l.ModelID, l.InputDataClass)
 	returned, err := scanOwnedCurrentRow(row, &raw, &version, &revision, &generation, &state, &digest, &installation, &installationRevision, &published, &expires, &updated)
 	// Scan every returned scalar even when an earlier column is NULL/malformed.
 	// Charge all returned bytes before validation, never just the assigned fields.
 	charged := q.budget.materialized(q.callback, returned)
+	if charged == nil && err == sql.ErrNoRows {
+		return domain.OwnedAgentProfileCurrentV1{}, false, nil
+	}
 	if charged != nil || err != nil || len(raw) > ownedAuthorityHeadBytes || len(state) > 16 || len(digest) != 64 || len(installation) > 160 {
-		return domain.OwnedAgentProfileCurrentV1{}, domain.ErrMembershipDenied
+		return denied()
 	}
 	p, err := domain.DecodeOwnedAgentProfileCurrentV1([]byte(raw))
 	actualDigest, digestErr := p.Digest()
-	if err != nil || digestErr != nil || p.Locator != l || p.RevocationGeneration != ref.RevocationGeneration || actualDigest != ref.Digest ||
+	if err != nil || digestErr != nil || p.Locator != l ||
 		uint64(p.Version) != version || p.ProfileRevision != revision || p.RevocationGeneration != generation || string(p.State) != state || actualDigest != digest ||
-		p.InstallationID != installation || p.InstallationRevision != installationRevision || !p.Window.PublishedAt.Equal(published) || !p.Window.ExpiresAt.Equal(expires) || !p.UpdatedAt.Equal(updated) || p.ValidateAt(q.at) != nil {
-		return domain.OwnedAgentProfileCurrentV1{}, domain.ErrMembershipDenied
+		p.InstallationID != installation || p.InstallationRevision != installationRevision || !p.Window.PublishedAt.Equal(published) || !p.Window.ExpiresAt.Equal(expires) || !p.UpdatedAt.Equal(updated) {
+		return denied()
 	}
-	return p, nil
+	return p, true, nil
 }
 
 func readOwnedSpendingCurrent(ctx context.Context, q *ownedAuthorityQuery, ref ownedSpendingReference) (domain.AttemptSpendingAuthorizationCurrentV1, error) {
@@ -190,6 +210,9 @@ func scanOwnedCurrentRow(row *sql.Row, destinations ...any) (uint64, error) {
 		arguments[i] = &scalars[i]
 	}
 	scanErr := row.Scan(arguments...)
+	if scanErr == sql.ErrNoRows {
+		return 0, sql.ErrNoRows
+	}
 	var returned uint64
 	for _, scalar := range scalars {
 		if scalar.bytes > ownedAuthorityMaxBytes-returned {

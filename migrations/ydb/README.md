@@ -15,7 +15,7 @@ per-Attempt/component spending current projections for #189. Their lossless
 `String` records and physical scalars are strictly correlated by bounded private
 readers; revocation tombstones and Attempt attachments have no independent TTL.
 These tables do not authenticate installation or funding, create balances,
-enable a runtime, or publish approval. Trusted source publication/CAS/audit,
+enable a runtime, or publish approval. Trusted source publication,
 original admission references, Session retention joins and writer-first rollout
 remain mandatory before any consumer is mounted. There is no serving consumer
 in this prerequisite slice. Apply only under separate migration authority.
@@ -27,6 +27,21 @@ loopback YDB. Set `SESSIONLESS_OWNED_CURRENT_YDB_DISPOSABLE=1` and the usual
 storage controls, not evidence of trusted publication, permitted payment or
 profile activation. The suite removes only its unique exact-key rows; it does
 not drop tables or alter shared serving receipts.
+
+Migration `00112` adds immutable exact-key profile publication receipts. The
+Store's bounded profile CAS/audit writer requires an explicitly installed local
+verifier, authenticated exact intent/predecessor and a fresh nonrenewable grant;
+the default Store denies before SQL. Only update time and active publication time
+are assigned from the transaction DB clock. Exact replay returns the historical
+receipt without rewriting a current head, even after a later revocation. An
+expired grant cannot mutate or recover a receipt; later historical lookup needs
+its separately bounded authority. No production issuer/source composition is
+installed, and no live/public installation API or runtime consumer is enabled.
+Synthetic test-only verifier receipts prove storage CAS/audit/lost-ACK behavior,
+not actual installed-source approval, payer permission or operation atomicity.
+Profile audit/tombstones follow owning-registration retention with no Session TTL;
+per-Attempt spending publication/admission and canonical retention remain required.
+The explicit native gate also tests create/create and replace/revoke conflicts.
 
 Migration `00102` adds the bounded, non-authoritative `run_explanation_heads_v1`
 read projection (design 0.1.2, #187). Apply its additive schema only under

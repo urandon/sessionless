@@ -32,19 +32,21 @@ const harnessBindingCutoverID = "harness-binding-v2-empty-cutover"
 const managedExecutionAuthorityV2CutoverID = "managed-execution-authority-v2-empty-cutover"
 
 type Options struct {
-	IdempotencyRetention     time.Duration
-	OperationalRetention     time.Duration
-	WebSessionIdleTTL        time.Duration
-	AttemptEffectGrantIssuer ports.AttemptEffectOwnershipGrantIssuerV1
+	IdempotencyRetention            time.Duration
+	OperationalRetention            time.Duration
+	WebSessionIdleTTL               time.Duration
+	AttemptEffectGrantIssuer        ports.AttemptEffectOwnershipGrantIssuerV1
+	OwnedProfilePublicationVerifier ports.OwnedProfilePublicationVerifierV1
 }
 
 type Store struct {
-	db                       *sql.DB
-	idempotencyRetention     time.Duration
-	operationalRetention     time.Duration
-	webSessionIdleTTL        time.Duration
-	attachedWorkerNow        func(context.Context, *sql.Tx) (time.Time, error)
-	attemptEffectGrantIssuer ports.AttemptEffectOwnershipGrantIssuerV1
+	db                              *sql.DB
+	idempotencyRetention            time.Duration
+	operationalRetention            time.Duration
+	webSessionIdleTTL               time.Duration
+	attachedWorkerNow               func(context.Context, *sql.Tx) (time.Time, error)
+	attemptEffectGrantIssuer        ports.AttemptEffectOwnershipGrantIssuerV1
+	ownedProfilePublicationVerifier ports.OwnedProfilePublicationVerifierV1
 }
 
 func New(db *sql.DB, options Options) (*Store, error) {
@@ -61,12 +63,13 @@ func New(db *sql.DB, options Options) (*Store, error) {
 		options.WebSessionIdleTTL = defaultWebSessionIdleTTL
 	}
 	return &Store{
-		db:                       db,
-		idempotencyRetention:     options.IdempotencyRetention,
-		operationalRetention:     options.OperationalRetention,
-		webSessionIdleTTL:        options.WebSessionIdleTTL,
-		attachedWorkerNow:        currentAttachedWorkerTransactionTime,
-		attemptEffectGrantIssuer: options.AttemptEffectGrantIssuer,
+		db:                              db,
+		idempotencyRetention:            options.IdempotencyRetention,
+		operationalRetention:            options.OperationalRetention,
+		webSessionIdleTTL:               options.WebSessionIdleTTL,
+		attachedWorkerNow:               currentAttachedWorkerTransactionTime,
+		attemptEffectGrantIssuer:        options.AttemptEffectGrantIssuer,
+		ownedProfilePublicationVerifier: options.OwnedProfilePublicationVerifier,
 	}, nil
 }
 

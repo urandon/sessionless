@@ -463,12 +463,15 @@ child blocks completion and preserves both until an authenticated no-residual
 effect/cleanup disposition is implemented. A retired record alone is not that
 proof. This is retention fencing, not completion of burned-allocation cleanup.
 
-Provider, MCP and search proxy publication remains unsupported: the existing
-egress package has a contract/boundary but no concrete trusted proxy producer.
-Copied artifact digests or scripted DNS/TLS booleans cannot prove enforcement.
-Real proxy implementation, setup/operation debits, before-send one-use checks,
-installed production source custody and complete unknown-effect/retention
-disposition remain required before owned serving or #189 closure.
+Provider, MCP and search proxy publication remains unsupported. The concrete
+provider-only [PinnedHTTPSProxyV1](../../internal/serverlessegress/pinned_https_proxy.go)
+implements bounded DNS-pinned HTTPS transport, but is not registered by startup
+and supplies no durable proxy registration or operation debit. MCP and search
+proxy producers remain unimplemented. Copied artifact digests or scripted
+DNS/TLS booleans cannot prove enforcement. Durable proxy publication/integration,
+setup/operation debits, before-send one-use checks, installed production source
+custody and complete unknown-effect/retention disposition remain required before
+owned serving or #189 closure.
 
 ## Transaction and resource bounds
 

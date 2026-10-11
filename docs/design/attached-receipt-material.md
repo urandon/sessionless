@@ -1,13 +1,14 @@
 # Attached receipt canonical material verification
 
-Version: 0.1.1, 2026-10-11.
+Version: 0.1.2, 2026-10-12.
 Owner: [#142](https://gitcode.com/urandon/sessionless/issues/142), under
 [#155](https://gitcode.com/urandon/sessionless/issues/155).
 Source: `6c503bfbc0023f94d9b5dabbd0f6143e47888c87` and the accepted
 [compute choice context evidence contract 0.1.5](compute-choice-context-evidence.md).
-Status: independently reviewed engineering contract accepted under the agreed-feature
-engineering delegation; implementation, maximum-case evidence and enablement
-remain separate gates.
+Status: independently reviewed maximum-evidence clarification accepted under the
+agreed-feature engineering delegation. Implementation, maximum-case evidence
+and enablement remain separate gates.
+Clarification baseline: `ed4f5bd8b8c2835f56ce68d1d820401d1e31c72d`.
 
 Receipt-capable attached finalization must prepare canonical material from the
 actual immutable envelopes referenced by its durable receipt. A private
@@ -169,9 +170,31 @@ global Store.Transact defaults to hide that gap. The operation-specific wrapper
 owns callback/deadline and byte/statement charging.
 
 The supported bounded profile must enumerate READY success with and without
-artifacts, failure and cancelled output, all 64 planned envelope slots,
-maximum permitted manifest/ref metadata, a legitimate connection rebind,
-committed/retired/historical replay and maximum retained 64-message ledgers.
+artifacts, failure and cancelled output, maximum permitted manifest/ref
+metadata, a legitimate connection rebind and committed/retired/historical replay.
+Derive each normal maximum from the actual trusted producer and protocol shape;
+keep internal capacity and excess-denial evidence separately identified.
+
+At the clarification baseline, `internal/attachedworkeroutput/materialize.go`
+produces exactly one assistant envelope on success (lines 169–185), with or
+without artifact bodies, or one terminal-notice envelope for failed/cancelled
+output (lines 98–117). Artifact bodies are not additional canonical envelopes.
+The 64 preparation slots and 64 whole-operation Opens remain hard internal
+ceilings, not evidence of a normal 64-envelope receipt producer. Test that full
+internal capacity and its excess handling through the private bounded machinery,
+without fabricating READY rows or adding a producer merely to obtain a normal
+positive. An internal capacity test cannot replace producer-reachable native
+maximum evidence. A future real multi-envelope producer needs its explicit
+reviewed contract and normal-path proof before that profile is supported.
+
+Similarly, MaxAttemptMessages = 64 bounds retained messages per direction;
+it does not establish 64 legal messages of each terminal kind. Derive valid
+protocol histories independently, exercise their maximum reachable forms, and
+keep structurally invalid/excess histories as denial controls. The current
+by-kind reader's LIMIT 65 is excess detection, not a persisted-record byte cap.
+None of these distinctions reduces the accepted numerical ceilings or removes
+required slot, ledger, corruption or exhaustion tests.
+
 Existing ProductLimits.MaxArtifacts, BlobRef.Key and Artifact.MediaType do not
 establish a universal metadata ceiling. The profile therefore requires each
 authorized persisted record and all returned material to fit the declared
@@ -191,6 +214,21 @@ finalization, message, presence/deadline and protocol write. Maximum native test
 must cover the supported partitions, retry and recovery exhaustion. An omitted
 inherited record, scalar or statement is not assumed free.
 
+Include variable frontend projection work in that inventory.
+`appendCanonicalFinalizationTx` calls `currentSessionBindingsTx` with the
+inherited maxSessionDeletionRows = 10,000 and writes projections for eligible
+events (`internal/ydbstore/canonical_finalization.go`, lines 180 and 208–215;
+`internal/ydbstore/session_lifecycle.go`, line 20). Count binding-index and
+legacy-index branches, individual binding reads, current Session/explanation
+updates, lifecycle checks and every resulting write in the same operation
+budget. A single produced envelope does not make this fanout constant or free.
+Inventory the complete reachable helper graph, exact projected scalar/record
+widths and legally supported combinations before claiming a positive maximum
+fits. Do not truncate bindings, skip projections/checks, raise ceilings or alter
+global finalization behavior to manufacture a passing receipt profile. If a
+valid supported maximum does not fit, use the existing contract-amendment rule
+with complete accounting before implementation acceptance.
+
 ## Implementation and evidence checklist
 
 - [ ] Add bounded read-only preflight and a private sealed prepared-commit seam;
@@ -198,7 +236,9 @@ inherited record, scalar or statement is not assumed free.
 - [ ] Add the outside-SQL coordinator and actual control API broker composition,
       retaining polling, exchange, drain and legacy nonreceipt behavior.
 - [ ] Account for every inherited DB statement, projected record/scalar byte,
-      callback, envelope Open/read and deadline; prove supported maximum cases.
+      callback, envelope Open/read and deadline, including frontend/lifecycle
+      fanout; prove source-reachable normal maxima and separately labelled full
+      internal capacity/excess cases.
 - [ ] Test foreign scope/key, mutated full receipt, forged hint/preparation,
       receipt replacement, deletion/revocation/expiry after read, unsupported and
       oversize UNKNOWN, missing/corrupt objects, and reader close/clear failures.

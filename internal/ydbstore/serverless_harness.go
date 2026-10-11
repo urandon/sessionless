@@ -140,6 +140,20 @@ func currentServerlessInvocationAuthorityTx(ctx context.Context, tx *stateTx, re
 	if loaded.Job.ExecutionPlacementV2.Kind != domain.ExecutionPlacementManaged || loaded.Job.SubstrateBinding == nil || loaded.Job.AdmissionCostCeiling == nil {
 		return domain.ServerlessInvocationAuthorityV1{}, false, nil
 	}
+	if err := currentServerlessSessionPrincipalTx(ctx, tx.sqlTx, loaded, at); err != nil {
+		if errors.Is(err, domain.ErrMembershipDenied) {
+			return domain.ServerlessInvocationAuthorityV1{}, false, nil
+		}
+		return domain.ServerlessInvocationAuthorityV1{}, false, err
+	}
+	if err := currentServerlessProviderResourceTx(ctx, tx.sqlTx, loaded.Job.HarnessBinding, at); err != nil {
+		if errors.Is(err, domain.ErrMembershipDenied) {
+			return domain.ServerlessInvocationAuthorityV1{}, false, nil
+		}
+		return domain.ServerlessInvocationAuthorityV1{}, false, err
+	}
+	// Current principal/resource prerequisites do not authorize a reviewed live
+	// profile, price/billing or allocation/proxy. Keep the fixture gate closed.
 	if loaded.Job.HarnessBinding.Backend.BackendKind != domain.HarnessBackendDeterministicFixtureV1 ||
 		loaded.Job.HarnessBinding.Resource.Kind != domain.ProviderResourceCredentiallessFixtureV1 {
 		return domain.ServerlessInvocationAuthorityV1{}, false, nil

@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"math"
 	"strings"
@@ -349,6 +348,17 @@ func (store *Store) ListDueProviderCredentialCleanups(
 	return page, nil
 }
 
+const providerCredentialReadSQL = `SELECT resource_revision, credential_generation, SUBSTRING(CAST(candidate_mutation_id AS String),0,161), SUBSTRING(CAST(state AS String),0,161), SUBSTRING(CAST(secret_ref AS String),0,513),
+        SUBSTRING(CAST(secret_fingerprint AS String),0,65), updated_at, SUBSTRING(CAST(record AS String),0,8193)
+ FROM provider_credential_bindings
+ WHERE tenant_id=$1 AND owner_user_id=$2 AND resource_kind=$3 AND resource_id=$4`
+
+var providerCredentialRecordFields = map[string]bool{
+	"version": true, "tenant_id": true, "owner_user_id": true, "resource_kind": true, "resource_id": true,
+	"resource_revision": true, "credential_generation": true, "candidate_mutation_id": true, "state": true,
+	"secret_fingerprint": false, "updated_at": true,
+}
+
 func readProviderCredential(
 	ctx context.Context,
 	query rowQuery,
@@ -358,10 +368,7 @@ func readProviderCredential(
 	var candidateMutationID, state, secretRef, fingerprint, record string
 	var updatedAt time.Time
 	err := query.QueryRowContext(ctx,
-		`SELECT resource_revision, credential_generation, candidate_mutation_id, state, secret_ref,
-		        secret_fingerprint, updated_at, record
-		 FROM provider_credential_bindings
-		 WHERE tenant_id=$1 AND owner_user_id=$2 AND resource_kind=$3 AND resource_id=$4`,
+		providerCredentialReadSQL,
 		locator.TenantID, locator.OwnerUserID, locator.ResourceKind, locator.ResourceID,
 	).Scan(&resourceRevision, &credentialGeneration, &candidateMutationID, &state, &secretRef, &fingerprint, &updatedAt, &record)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -370,13 +377,11 @@ func readProviderCredential(
 	if err != nil {
 		return domain.ProviderCredentialBindingV1{}, false, err
 	}
-	var binding domain.ProviderCredentialBindingV1
-	decoder := json.NewDecoder(strings.NewReader(record))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&binding); err != nil {
-		return domain.ProviderCredentialBindingV1{}, false, fmt.Errorf("decode provider credential record: %w", err)
+	if len(record) == 0 || len(record) > 8192 {
+		return domain.ProviderCredentialBindingV1{}, false, ErrProviderCredentialConflict
 	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+	var binding domain.ProviderCredentialBindingV1
+	if decodeCurrentExecutionRecord(record, &binding, providerCredentialRecordFields) != nil {
 		return domain.ProviderCredentialBindingV1{}, false, ErrProviderCredentialConflict
 	}
 	if secretRef != "" {

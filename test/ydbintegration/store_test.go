@@ -641,10 +641,11 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 		TenantID: tenantID, Frontend: domain.FrontendTelegram,
 		ExternalID: "worker-chat-" + string(tenantID), ID: domain.ConversationID("conversation-" + string(tenantID)),
 	}
-	if _, err := store.EnsureTelegramIdentity(ctx, ports.TelegramIdentityRequest{
+	identity, err := store.EnsureTelegramIdentity(ctx, ports.TelegramIdentityRequest{
 		TenantID: tenantID, Actor: actor, Conversation: conversation,
 		SubscriptionConnectionID: connectionID, Provider: "codex", ObservedAt: now,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := client.DB.ExecContext(ctx,
@@ -665,6 +666,12 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 		t.Fatal(err)
 	}
 	ingress := ingressFixture(tenantID, uniqueID("run-worker"), 6201, now)
+	managed := mustManagedAuthorityV2(t, tenantID, identity.UserID, ingress.Run.ID, ingress.Attempt.ID, connectionID, now)
+	ingress.Dispatch.CredentialOwnerUserID = identity.UserID
+	ingress.Dispatch.HarnessBinding = managed.HarnessBinding
+	ingress.Dispatch.ExecutionPlacementV2 = managed.ExecutionPlacementV2
+	ingress.Dispatch.SubstrateBinding = cloneSubstrateBindingForIntegration(managed.SubstrateBinding)
+	ingress.Dispatch.AdmissionCostCeiling = cloneAdmissionCostForIntegration(managed.AdmissionCostCeiling)
 	if _, err := store.IngestTelegram(ctx, ingress); err != nil {
 		t.Fatal(err)
 	}
@@ -745,6 +752,44 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 		TenantID: tenantID, RunID: ingress.Run.ID, AttemptID: ingress.Attempt.ID,
 		LeaseID: lease.ID, FenceToken: lease.FenceToken, PhysicalInvocationClaimID: uniqueID("physical-claim"),
 	}
+	// The legacy loading fixture deliberately did not create canonical access
+	// rows. Establish them through the real store before current effect authority
+	// is exercised; no missing-row legacy fallback is execution permission.
+	principal := loaded.Job.CredentialOwnerUserID
+	setupAt := databaseNow()
+	if err := store.CreateSession(ctx,
+		domain.Session{ID: loaded.Run.SessionID, TenantID: tenantID, CreatedBy: principal, Status: domain.SessionActive, CreatedAt: setupAt, UpdatedAt: setupAt},
+		domain.SessionParticipant{TenantID: tenantID, SessionID: loaded.Run.SessionID, UserID: principal, Role: domain.SessionParticipantOwner, Status: domain.SessionParticipantActive, CreatedAt: setupAt, UpdatedAt: setupAt},
+	); err != nil {
+		t.Fatal(err)
+	}
+	// A current write-principal revocation must deny a NEW effect even when the
+	// immutable job and physical lease remain valid. Restore the owned row before
+	// asserting so this fixture never leaks revocation into later lifecycle work.
+	var originalParticipant string
+	if err := client.DB.QueryRowContext(ctx, `SELECT record FROM session_participants WHERE tenant_id=$1 AND session_id=$2 AND user_id=$3`, tenantID, loaded.Run.SessionID, loaded.Job.CredentialOwnerUserID).Scan(&originalParticipant); err != nil {
+		t.Fatal(err)
+	}
+	var removedParticipant domain.SessionParticipant
+	if err := json.Unmarshal([]byte(originalParticipant), &removedParticipant); err != nil {
+		t.Fatal(err)
+	}
+	removedParticipant.Status = domain.SessionParticipantRemoved
+	removedPayload, err := json.Marshal(removedParticipant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.DB.ExecContext(ctx, `UPDATE session_participants SET status=$1,record=CAST($2 AS JsonDocument) WHERE tenant_id=$3 AND session_id=$4 AND user_id=$5`, removedParticipant.Status, removedPayload, tenantID, loaded.Run.SessionID, loaded.Job.CredentialOwnerUserID); err != nil {
+		t.Fatal(err)
+	}
+	denied, deniedErr := store.ReserveAttemptEffect(ctx, effectRequest)
+	if _, err := client.DB.ExecContext(ctx, `UPDATE session_participants SET status=$1,record=CAST($2 AS JsonDocument) WHERE tenant_id=$3 AND session_id=$4 AND user_id=$5`, domain.SessionParticipantActive, originalParticipant, tenantID, loaded.Run.SessionID, loaded.Job.CredentialOwnerUserID); err != nil {
+		t.Fatal(err)
+	}
+	if deniedErr == nil || denied.Grant != nil || denied.ObservationGrant != nil || denied.Status != "" {
+		t.Fatalf("removed current participant received new effect authority: status=%q grant=%t observation=%t error=%v", denied.Status, denied.Grant != nil, denied.ObservationGrant != nil, deniedErr)
+	}
+	assertCount(t, client, "attempt_effect_reservations", tenantID, 0)
 	effect, err := store.ReserveAttemptEffect(ctx, effectRequest)
 	if err != nil || effect.Status != ports.AttemptEffectOwnedV1 {
 		t.Fatalf("reserve first provider effect = %#v, %v", effect, err)

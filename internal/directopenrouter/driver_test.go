@@ -311,8 +311,8 @@ func validExecutionRequest(t *testing.T, driver *Driver) ports.ExecutionRequest 
 		t.Fatal(err)
 	}
 	expires := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
-	binding := domain.HarnessBindingV1{
-		Version: 1, TenantID: "tenant-a", OwnerUserID: "user-a", RunID: "run-a", AttemptID: "attempt-a", Backend: driver.DescriptorV1(),
+	binding := domain.HarnessBindingV2{
+		Version: domain.HarnessBindingVersionV2, Profile: domain.HarnessExecutionSingleTurnV2, TenantID: "tenant-a", OwnerUserID: "user-a", RunID: "run-a", AttemptID: "attempt-a", Backend: driver.DescriptorV1(),
 		Resource:      domain.ProviderResourceBindingV1{Kind: domain.ProviderResourceRouterAccountV1, ResourceID: "openrouter-a", OwnerUserID: "user-a", Revision: 3, CredentialMode: domain.ProviderCredentialInvocationV1, CredentialGeneration: 7},
 		ModelVendorID: ModelVendorIDV1, ModelID: ModelIDV1, InputDataClass: domain.ProviderDataExternallyShareableV1,
 		ProviderCatalogDigest: strings.Repeat("1", 64), ProviderRouteDigest: strings.Repeat("2", 64), PrivacyPolicyDigest: strings.Repeat("3", 64), CapabilityEvidenceDigest: strings.Repeat("4", 64), EffectivePolicyDigest: strings.Repeat("5", 64), ExecutionPlacementDigest: string(placementDigest), EvidenceExpiresAt: &expires,

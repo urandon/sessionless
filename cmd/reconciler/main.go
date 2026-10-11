@@ -56,6 +56,10 @@ func main() {
 		logger.Error("require managed execution authority v2 cutover", "error", err)
 		os.Exit(1)
 	}
+	if err := state.RequireAdmissionCostV2Cutover(ctx); err != nil {
+		logger.Error("require admission cost v2 cutover", "error", err)
+		os.Exit(1)
+	}
 	queue, err := sqsqueue.New(ctx, sqsqueue.Config{
 		Endpoint:        os.Getenv("QUEUE_ENDPOINT"),
 		Region:          envOrDefault("QUEUE_REGION", "ru-central1"),

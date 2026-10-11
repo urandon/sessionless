@@ -15,7 +15,7 @@ import (
 // conformance or whole-context provenance. Those remain required before any
 // positive public eligibility projection. No route consumes these facts.
 type computeChoiceProviderEvidence struct {
-	template domain.HarnessBindingV1
+	template domain.HarnessBindingV2
 	bundle   domain.ProviderEvidenceBundleV1
 	material []byte
 }
@@ -24,7 +24,7 @@ func (*computeChoiceProviderEvidence) MarshalJSON() ([]byte, error) {
 	return nil, computechoice.ErrPrivateRegistrationNotSerializable
 }
 
-func newComputeChoiceProviderEvidence(template domain.HarnessBindingV1, bundle domain.ProviderEvidenceBundleV1) (*computeChoiceProviderEvidence, error) {
+func newComputeChoiceProviderEvidence(template domain.HarnessBindingV2, bundle domain.ProviderEvidenceBundleV1) (*computeChoiceProviderEvidence, error) {
 	if template.RunID != "" || template.AttemptID != "" || template.ExecutionPlacementDigest != "" || template.InputDataClass != domain.ProviderDataPrivateV1 ||
 		template.Backend.ProviderContractKind != domain.ProviderContractInvocationV1 || template.Resource.Kind != domain.ProviderResourceSubscriptionV1 {
 		return nil, errComputeChoiceSource
@@ -39,7 +39,7 @@ func newComputeChoiceProviderEvidence(template domain.HarnessBindingV1, bundle d
 		return nil, errComputeChoiceSource
 	}
 	material, err := json.Marshal(struct {
-		Template domain.HarnessBindingV1         `json:"template"`
+		Template domain.HarnessBindingV2         `json:"template"`
 		Bundle   domain.ProviderEvidenceBundleV1 `json:"bundle"`
 	}{template, bundle})
 	if err != nil || len(material) > computechoice.MaxOrdinaryRecordBytes {

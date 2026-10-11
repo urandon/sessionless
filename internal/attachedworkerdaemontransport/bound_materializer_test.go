@@ -203,16 +203,16 @@ func TestBoundMaterializerRejectsSwappedOrTamperedInput(t *testing.T) {
 func TestBoundMaterializerRejectsResealedForeignHarnessBinding(t *testing.T) {
 	tests := []struct {
 		name   string
-		mutate func(*domain.HarnessBindingV1)
+		mutate func(*domain.HarnessBindingV2)
 	}{
-		{name: "tenant", mutate: func(binding *domain.HarnessBindingV1) { binding.TenantID = "tenant-2" }},
-		{name: "owner", mutate: func(binding *domain.HarnessBindingV1) {
+		{name: "tenant", mutate: func(binding *domain.HarnessBindingV2) { binding.TenantID = "tenant-2" }},
+		{name: "owner", mutate: func(binding *domain.HarnessBindingV2) {
 			binding.OwnerUserID = "owner-2"
 			binding.Resource.OwnerUserID = "owner-2"
 		}},
-		{name: "run", mutate: func(binding *domain.HarnessBindingV1) { binding.RunID = "run-2" }},
-		{name: "attempt", mutate: func(binding *domain.HarnessBindingV1) { binding.AttemptID = "attempt-2" }},
-		{name: "placement", mutate: func(binding *domain.HarnessBindingV1) {
+		{name: "run", mutate: func(binding *domain.HarnessBindingV2) { binding.RunID = "run-2" }},
+		{name: "attempt", mutate: func(binding *domain.HarnessBindingV2) { binding.AttemptID = "attempt-2" }},
+		{name: "placement", mutate: func(binding *domain.HarnessBindingV2) {
 			binding.ExecutionPlacementDigest = strings.Repeat("a", 64)
 		}},
 	}

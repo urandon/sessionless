@@ -19,7 +19,7 @@ var _ ports.RunExplanationReadStoreV1 = (*Store)(nil)
 // A failed commit may retry the full snapshot, but cannot spend >20 statements.
 type explanationStatementBudget struct{ used int }
 type explanationBudgetQuery struct {
-	tx     *sql.Tx
+	tx     stateSQLExecutor
 	budget *explanationStatementBudget
 }
 
@@ -52,7 +52,14 @@ func explanationQueryTx(tx *stateTx) rowQuery {
 // value in SQL, before decoding; corrupt oversize rows fail content-free.
 func readExplanationJSON[T any](ctx context.Context, query rowQuery, statement string, args ...any) (value T, found bool, err error) {
 	var encoded string
-	err = query.QueryRowContext(ctx, statement, args...).Scan(&encoded)
+	if q, ok := query.(*ownedAuthorityQuery); ok {
+		if statement != `SELECT SUBSTRING(CAST(record AS String), 0, 8193) FROM run_explanation_heads_v1 WHERE tenant_id=$1 AND run_id=$2` {
+			return value, false, q.budget.deny()
+		}
+		encoded, err = q.readMetadata(ctx, statement, runexplanation.MaxProjectionBytes, args...)
+	} else {
+		err = query.QueryRowContext(ctx, statement, args...).Scan(&encoded)
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return value, false, nil
 	}
@@ -60,6 +67,9 @@ func readExplanationJSON[T any](ctx context.Context, query rowQuery, statement s
 		return value, false, err
 	}
 	if len(encoded) > runexplanation.MaxProjectionBytes || json.Unmarshal([]byte(encoded), &value) != nil {
+		if q, ok := query.(*ownedAuthorityQuery); ok {
+			return value, false, q.budget.deny()
+		}
 		return value, false, runexplanation.ErrCorruptProjection
 	}
 	return value, true, nil

@@ -46,7 +46,7 @@ const (
 type Registration struct {
 	Descriptor      domain.HarnessBackendDescriptorV1
 	Enabled         bool
-	ValidateBinding func(domain.HarnessBindingV1) FailureCode
+	ValidateBinding func(domain.HarnessBindingV2) FailureCode
 	Driver          ports.HarnessDriver
 }
 
@@ -169,12 +169,17 @@ func (registry *Registry) Cancel(ctx context.Context, identity ports.ExecutionId
 	return nil
 }
 
-func (registry *Registry) resolve(binding domain.HarnessBindingV1, requireFresh bool) (Registration, string, error) {
+func (registry *Registry) resolve(binding domain.HarnessBindingV2, requireFresh bool) (Registration, string, error) {
 	if registry == nil {
 		return Registration{}, "", harnessError(FailureHarnessBackendUnsupported)
 	}
 	if err := binding.Validate(); err != nil {
 		return Registration{}, "", harnessError(FailureHarnessBindingInvalid)
+	}
+	// The existing registry is one-shot only. A matching descriptor cannot
+	// authorize the separately reviewed multi-operation adapter, including Cancel.
+	if binding.Profile != domain.HarnessExecutionSingleTurnV2 {
+		return Registration{}, "", harnessError(FailureHarnessBackendUnsupported)
 	}
 	if requireFresh {
 		if err := binding.ValidateAt(registry.now().UTC()); err != nil {
@@ -331,7 +336,7 @@ func DeterministicFixtureDescriptorV1() domain.HarnessBackendDescriptorV1 {
 // of a descriptive label or an installed executable claim.
 const deterministicFixtureProfileArtifactV1 = "sessionless.deterministic-fixture-profile.v1\nprotocol=sessionless.deterministic.v1\nmodel=deterministic-fixture-v1\ncredentials=none\nnetwork=denied\n"
 
-func ValidateDeterministicFixtureBindingV1(binding domain.HarnessBindingV1) FailureCode {
+func ValidateDeterministicFixtureBindingV1(binding domain.HarnessBindingV2) FailureCode {
 	if err := binding.Validate(); err != nil {
 		return FailureHarnessBindingInvalid
 	}
@@ -378,8 +383,8 @@ func (binder *DeterministicFixtureBinder) bindManagedHarness(_ context.Context, 
 		return ports.ManagedExecutionAuthorityV2{}, domain.ValidationError{Field: "harness_binding.at", Reason: "must not be zero"}
 	}
 	zero := uint64(0)
-	cost := domain.AdmissionCostCeilingV1{
-		Version: domain.AdmissionCostCeilingVersionV1, Currency: "USD", PriceRevision: "deterministic-fixture-v1",
+	cost := domain.AdmissionCostCeilingV2{
+		Version: domain.AdmissionCostCeilingVersionV2, Currency: "USD", PriceRevision: "deterministic-fixture-v1",
 		PriceObservedAt: request.At.UTC(), PriceExpiresAt: request.At.UTC().Add(30 * 24 * time.Hour), MaxDeliveries: 5,
 		MaxPreEffectDurationPerDelivery: time.Minute, MaxActiveDuration: 40 * time.Minute, MaxCleanupAndReconcileDuration: 5 * time.Minute,
 		ConfiguredMemoryBytes: 256 << 20, ConfiguredVCPUMillis: 1000, MaxIngressBytes: 1 << 20, MaxEgressBytes: 1 << 20,
@@ -415,8 +420,8 @@ func (binder *DeterministicFixtureBinder) bindManagedHarness(_ context.Context, 
 	if err != nil {
 		return ports.ManagedExecutionAuthorityV2{}, err
 	}
-	binding := domain.HarnessBindingV1{
-		Version:  domain.HarnessBindingVersionV1,
+	binding := domain.HarnessBindingV2{
+		Version: domain.HarnessBindingVersionV2, Profile: domain.HarnessExecutionSingleTurnV2,
 		TenantID: request.TenantID, OwnerUserID: request.OwnerUserID, RunID: request.RunID, AttemptID: request.AttemptID,
 		Backend: binder.descriptor,
 		Resource: domain.ProviderResourceBindingV1{
@@ -453,7 +458,7 @@ func cloneSubstrateBinding(value *domain.SubstrateBindingV1) *domain.SubstrateBi
 	return &clone
 }
 
-func cloneAdmissionCostCeiling(value *domain.AdmissionCostCeilingV1) *domain.AdmissionCostCeilingV1 {
+func cloneAdmissionCostCeiling(value *domain.AdmissionCostCeilingV2) *domain.AdmissionCostCeilingV2 {
 	if value == nil {
 		return nil
 	}

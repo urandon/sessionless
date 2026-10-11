@@ -490,6 +490,16 @@ func (store *Store) BuildSessionDeletionInventory(
 	if err != nil {
 		return inventory, err
 	}
+	admissions, err := listOwnedSessionAdmissionKeys(ctx, store.db, tenantID, sessionID, maxRows-rowsUsed)
+	if err != nil {
+		return inventory, err
+	}
+	for range admissions {
+		if err := addRow(); err != nil {
+			return inventory, err
+		}
+		inventory.OwnedAdmissionRows++
+	}
 	for _, runID := range runIDs {
 		if err := addRow(); err != nil {
 			return inventory, err
@@ -853,6 +863,9 @@ func deleteSessionRowsTx(ctx context.Context, tx *stateTx, sessionID domain.Sess
 	}
 	if !found {
 		return fmt.Errorf("session %q not found before deletion completion", sessionID)
+	}
+	if err := deleteOwnedSessionAdmissionsTx(ctx, tx, sessionID); err != nil {
+		return err
 	}
 	participants, err := activeSessionParticipants(ctx, tx, sessionID, maxSessionDeletionRows)
 	if err != nil {

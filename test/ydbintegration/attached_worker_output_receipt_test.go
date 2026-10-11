@@ -133,8 +133,8 @@ func (binder aw07ReceiptBinder) BindOutputReceiptBearer(bearer []byte, auth port
 
 // The provider is test-only: its resource and credential generation are
 // owner-specific authority facts, not a real key or an enabled backend.
-func aw07TestProviderBinding(owner domain.UserID, suffix string, generation uint64, now time.Time) func(*domain.HarnessBindingV1) {
-	return func(binding *domain.HarnessBindingV1) {
+func aw07TestProviderBinding(owner domain.UserID, suffix string, generation uint64, now time.Time) func(*domain.HarnessBindingV2) {
+	return func(binding *domain.HarnessBindingV2) {
 		binding.Backend.BackendKind = domain.HarnessBackendDirectOpenRouterV1
 		binding.Backend.ProviderContractKind = domain.ProviderContractInvocationV1
 		binding.Backend.CredentialDeliveryKind = domain.ProviderCredentialDeliveryDirectV1

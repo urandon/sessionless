@@ -11,7 +11,7 @@ import (
 )
 
 // Independent domain fixture: no registry, conformance runner or provider call.
-func providerBundleFixture(t *testing.T) (domain.ProviderEvidenceBundleV1, domain.HarnessBindingV1) {
+func providerBundleFixture(t *testing.T) (domain.ProviderEvidenceBundleV1, domain.HarnessBindingV2) {
 	t.Helper()
 	scope := providerEvidenceScope()
 	observed := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
@@ -24,7 +24,7 @@ func providerBundleFixture(t *testing.T) (domain.ProviderEvidenceBundleV1, domai
 		Price:      domain.ProviderPriceObservationV1{Version: 1, Scope: scope, State: domain.ProviderEvidenceSupportedV1, ModelVendorID: "stealth", ModelID: "ox-alpha", Currency: "USD", InputMicrounitsPerMTokens: 1, OutputMicrounitsPerMTokens: 2, ObservedAt: observed, ExpiresAt: expires},
 		Policy:     domain.ProviderPolicyEvidenceV1{Version: 1, Scope: scope, PolicyID: "reviewed-private-policy", Revision: 3, DecisionOwner: "review-owner", EvidenceSource: "reviewed-terms", Verdict: domain.ProviderPolicyGoV1, AllowedDataClasses: []domain.ProviderDataClassV1{domain.ProviderDataPrivateV1}, ObservedAt: observed, ExpiresAt: expires},
 	}
-	binding := domain.HarnessBindingV1{Version: 1, TenantID: scope.TenantID, OwnerUserID: scope.OwnerUserID, RunID: "bundle-run", AttemptID: "bundle-attempt", Backend: scope.Backend, Resource: scope.Resource, ModelVendorID: "stealth", ModelID: "ox-alpha", InputDataClass: domain.ProviderDataPrivateV1, ExecutionPlacementDigest: strings.Repeat("e", 64), EvidenceExpiresAt: &expires}
+	binding := domain.HarnessBindingV2{Version: domain.HarnessBindingVersionV2, Profile: domain.HarnessExecutionSingleTurnV2, TenantID: scope.TenantID, OwnerUserID: scope.OwnerUserID, RunID: "bundle-run", AttemptID: "bundle-attempt", Backend: scope.Backend, Resource: scope.Resource, ModelVendorID: "stealth", ModelID: "ox-alpha", InputDataClass: domain.ProviderDataPrivateV1, ExecutionPlacementDigest: strings.Repeat("e", 64), EvidenceExpiresAt: &expires}
 	sealProviderBundleFixture(t, &bundle, &binding)
 	if err := bundle.ValidateForBinding(binding); err != nil {
 		t.Fatalf("independent bundle fixture: %v", err)
@@ -32,7 +32,7 @@ func providerBundleFixture(t *testing.T) (domain.ProviderEvidenceBundleV1, domai
 	return bundle, binding
 }
 
-func sealProviderBundleFixture(t *testing.T, bundle *domain.ProviderEvidenceBundleV1, binding *domain.HarnessBindingV1) {
+func sealProviderBundleFixture(t *testing.T, bundle *domain.ProviderEvidenceBundleV1, binding *domain.HarnessBindingV2) {
 	t.Helper()
 	for _, item := range []struct {
 		digest func() (domain.ProviderEvidenceDigestV1, error)

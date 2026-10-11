@@ -117,6 +117,10 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 		closeYDB()
 		return nil, func() {}, fmt.Errorf("require managed execution authority v2 cutover: %w", err)
 	}
+	if err := store.RequireAdmissionCostV2Cutover(ctx); err != nil {
+		closeYDB()
+		return nil, func() {}, fmt.Errorf("require admission cost v2 cutover: %w", err)
+	}
 	runExplanations, err := runExplanationsFromEnvironment(ctx, os.Getenv, store)
 	if err != nil {
 		closeYDB()

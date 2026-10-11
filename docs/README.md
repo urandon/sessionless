@@ -120,6 +120,7 @@ Detailed engineering contracts:
 - [Conversation execution evidence (#182, draft)](design/conversation-execution-evidence.md)
 - [Eligible compute choice contract (#142, draft)](design/eligible-compute-choice.md)
 - [Compute choice context evidence (#142, draft)](design/compute-choice-context-evidence.md)
+- [Owned harness current authority (#189, draft)](design/owned-harness-current-authority.md)
 - [Attached receipt canonical material verification (#142)](design/attached-receipt-material.md)
 
 The [research index](research/README.md) separates evidence and open decisions

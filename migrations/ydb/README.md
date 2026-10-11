@@ -10,6 +10,55 @@ one migration would make crash recovery ambiguous.
 
 ## Baseline freeze
 
+Migrations `00110` and `00111` add the exact-key installed-profile and
+per-Attempt/component spending current projections for #189. Their lossless
+`String` records and physical scalars are strictly correlated by bounded private
+readers; revocation tombstones and Attempt attachments have no independent TTL.
+These tables do not authenticate installation or funding, create balances,
+enable a runtime, or publish approval. Trusted source publication,
+original admission references, Session retention joins and writer-first rollout
+remain mandatory before any consumer is mounted. There is no serving consumer
+in this prerequisite slice. Apply only under separate migration authority.
+
+`make owned-current-ydb-gate` verifies exact schema/read correlation and native
+serializable read-versus-revocation conflict on an explicitly disposable migrated
+loopback YDB. Set `SESSIONLESS_OWNED_CURRENT_YDB_DISPOSABLE=1` and the usual
+`YDB_CONNECTION_STRING`/credential environment. Raw test-owned rows are scripted
+storage controls, not evidence of trusted publication, permitted payment or
+profile activation. The suite removes only its unique exact-key rows; it does
+not drop tables or alter shared serving receipts.
+
+Migration `00112` adds immutable exact-key profile publication receipts. The
+Store's bounded profile CAS/audit writer requires an explicitly installed local
+verifier, authenticated exact intent/predecessor and a fresh nonrenewable grant;
+the default Store denies before SQL. Only update time and active publication time
+are assigned from the transaction DB clock. Exact replay returns the historical
+receipt without rewriting a current head, even after a later revocation. An
+expired grant cannot mutate or recover a receipt; later historical lookup needs
+its separately bounded authority. No production issuer/source composition is
+installed, and no live/public installation API or runtime consumer is enabled.
+Synthetic test-only verifier receipts prove storage CAS/audit/lost-ACK behavior,
+not actual installed-source approval, payer permission or operation atomicity.
+Profile audit/tombstones follow owning-registration retention with no Session TTL;
+per-Attempt spending publication/admission and canonical retention remain required.
+The explicit native gate also tests create/create and replace/revoke conflicts.
+
+Migration `00113` adds immutable per-Attempt/component spending publication
+receipts with a tenant/Session cleanup index and no independent TTL. The
+default-deny Store writer requires a separately installed source-owner verifier;
+initial creation also point-joins the original active profile generation/digest
+and component/payer/price envelope in the same serializable DB-time snapshot.
+Only create-on-absence and exact predecessor revocation are permitted: no
+top-up, renewal, reassignment or balance is introduced. Fresh authenticated
+cleanup revoke may retain an expired/revoked source's original envelope.
+Historical replay never rewrites a missing/revoked head and does not establish
+current permission. Speculative outputs are discarded after ambiguous commits.
+The native gate exercises all four components, source revocation and concurrent
+create/create and revoke/revoke. Test-only exact-intent allowlist/HMAC remains
+synthetic; authentic installed/admission composition, canonical Attempt joins,
+aggregate operation debits and Session retention integration remain mandatory.
+No production verifier, serving caller or paid/live authority is installed.
+
 Migration `00102` adds the bounded, non-authoritative `run_explanation_heads_v1`
 read projection (design 0.1.2, #187). Apply its additive schema only under
 separate migration authority, then upgrade every canonical writer before
@@ -194,12 +243,23 @@ retained-data migration requires a separately reviewed bounded backfill.
 Web BFF, control API, reconciler, and worker runtime refuse startup before the
 marker. Serving readers never reinterpret a missing placement as managed.
 
-Migration `00088` records the separate one-time HarnessBindingV1 empty-backlog
+Migration `00088` originally recorded the separate one-time HarnessBindingV1 empty-backlog
 cutover. Stop every ingress, scheduler, reconciler, managed worker, and attached
 worker admission process; drain `dispatch_outbox` and `worker_jobs`; then run
-the serializable cutover. Every serving binary refuses to start without this
-second marker. It never permits a legacy zero binding to be interpreted as the
-deterministic backend.
+the serializable cutover. That historical migration and V1 marker are preserved;
+the V1 marker does not authorize the successor reader.
+
+The HarnessBindingV2 writer-first cutover uses a new
+`harness-binding-v2-empty-cutover` key in the same cutover-state table. Under the
+deployment lock, stop all binding writers and readers; one serializable cutover
+transaction requires `dispatch_outbox`, `worker_jobs`, and
+`attempt_effect_reservations` empty before writing this key. Those tables can
+contain nested binding authority. Current serving binaries require the V2 key
+and never decode V1 or zero bindings as single-turn/default execution. Historical
+scalar/digest-only effect reconciliation and attached-worker output receipts are
+not erased or required empty by this cutover. This is not a data backfill or
+authority to apply migrations, drain/reset production, or activate the owned
+agent profile; retained nested authority requires a separately approved rollout.
 
 Migrations `00089`-`00093` add the owner-scoped provider credential authority
 for API and router accounts. The binding row contains only resource revisions,

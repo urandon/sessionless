@@ -19,21 +19,13 @@ import (
 func TestSessionLifecycleHoldWriteFenceInventoryAndCompletion(t *testing.T) {
 	store, client := openStore(t)
 	ctx := context.Background()
-	if _, err := client.DB.ExecContext(ctx,
-		`UPSERT INTO execution_placement_cutover_state (cutover_id,completed_at) VALUES ($1,$2)`,
-		"execution-placement-v1-empty-cutover", time.Now().UTC().Truncate(time.Microsecond)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := client.DB.ExecContext(ctx,
-		`UPSERT INTO harness_binding_cutover_state (cutover_id,completed_at) VALUES ($1,$2)`,
-		"harness-binding-v1-empty-cutover", time.Now().UTC().Truncate(time.Microsecond)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := client.DB.ExecContext(ctx,
-		`UPSERT INTO managed_execution_authority_v2_cutover_state (cutover_id,completed_at) VALUES ($1,$2)`,
-		"managed-execution-authority-v2-empty-cutover", time.Now().UTC().Truncate(time.Microsecond)); err != nil {
-		t.Fatal(err)
-	}
+	// openStore establishes actual predecessor cutovers before any suite
+	// backlog. This upgrade scenario removes its index receipt below, so keep
+	// the shared database's exact prior receipt rather than a new timestamp.
+	preserveCtx, preserveCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer preserveCancel()
+	preserveAdmissionCostFixtureReceipt(t, preserveCtx, client.DB, "session_lifecycle_backfill_state", "backfill_id", "session-lifecycle-indexes-v1")
+	preserveCancel()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	runSuffix := fmt.Sprintf("%d", now.UnixNano())
 	tenantID := domain.TenantID(uniqueID("tenant-lifecycle-" + runSuffix))

@@ -2,6 +2,7 @@ package ydbstore
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"time"
@@ -30,7 +31,19 @@ func (store *Store) ReserveAttemptEffect(ctx context.Context, request ports.Rese
 	if err := request.Validate(); err != nil {
 		return result, err
 	}
+	if store.attemptEffectGrantIssuer == nil {
+		return result, errors.New("attempt effect grant issuer is not configured")
+	}
+	// Do not mint process-local grants inside a retryable transaction callback.
+	// An unconfirmed commit must expose neither a grant nor a stale result from
+	// an earlier callback. Only the last successfully committed candidate wins.
+	var candidate struct {
+		status ports.AttemptEffectReservationStatusV1
+		record attemptEffectRecordV1
+		at     time.Time
+	}
 	err = store.Transact(ctx, request.TenantID, func(state ports.StateTx) error {
+		candidate.status, candidate.record, candidate.at = "", attemptEffectRecordV1{}, time.Time{}
 		tx := state.(*stateTx)
 		at, err := store.attachedWorkerTransactionTime(ctx, tx)
 		if err != nil {
@@ -44,18 +57,19 @@ func (store *Store) ReserveAttemptEffect(ctx context.Context, request ports.Rese
 			if err := existing.validate(); err != nil {
 				return fmt.Errorf("invalid persisted attempt effect: %w", err)
 			}
+			// This public path has only single-turn fixture authority. Neither a
+			// structurally valid owned record nor its historical claim proves the
+			// current Final/profile/funding joins needed by the owned path. Do not
+			// mint even an observation capability from an unsupported record.
+			if existing.Authority.HarnessBinding.Profile != domain.HarnessExecutionSingleTurnV2 || existing.Authority.HarnessBinding.AgentLoopPolicy != nil {
+				return domain.ValidationError{Field: "reserve_attempt_effect", Reason: "execution profile is not supported by the single-turn reservation path"}
+			}
 			if !attemptEffectRequestMatchesRecord(request, existing) {
 				return domain.ValidationError{Field: "reserve_attempt_effect", Reason: "does not match the persisted attempt effect scope"}
 			}
-			observationGrant, err := store.mintAttemptEffectObservationGrant(existing, at)
-			if err != nil {
-				return err
-			}
-			result = ports.ReserveAttemptEffectResultV1{
-				Status: ports.AttemptEffectReconcileOnlyV1, Reservation: existing.Reservation.Clone(), ObservationGrant: &observationGrant,
-			}
+			candidate.status, candidate.record, candidate.at = ports.AttemptEffectReconcileOnlyV1, existing, at
 			if existing.Reservation.PhysicalInvocationClaimID != request.PhysicalInvocationClaimID {
-				return result.Validate()
+				return nil
 			}
 			current, authorized, err := currentServerlessInvocationAuthorityTx(ctx, tx, request, at)
 			if err != nil {
@@ -63,14 +77,10 @@ func (store *Store) ReserveAttemptEffect(ctx context.Context, request ports.Rese
 			}
 			currentDigest, digestErr := current.Digest()
 			if !authorized || digestErr != nil || currentDigest != existing.Reservation.InvocationAuthorityDigest {
-				return result.Validate()
+				return nil
 			}
-			grant, err := store.mintAttemptEffectGrant(current, existing.Reservation, at)
-			if err != nil {
-				return err
-			}
-			result.Status, result.Grant, result.ObservationGrant = ports.AttemptEffectReplayedV1, &grant, nil
-			return result.Validate()
+			candidate.status = ports.AttemptEffectReplayedV1
+			return nil
 		}
 		authority, authorized, err := currentServerlessInvocationAuthorityTx(ctx, tx, request, at)
 		if err != nil {
@@ -100,14 +110,30 @@ func (store *Store) ReserveAttemptEffect(ctx context.Context, request ports.Rese
 		); err != nil {
 			return err
 		}
-		grant, err := store.mintAttemptEffectGrant(authority, reservation, at)
-		if err != nil {
-			return err
-		}
-		result = ports.ReserveAttemptEffectResultV1{Status: ports.AttemptEffectOwnedV1, Reservation: reservation.Clone(), Grant: &grant}
-		return result.Validate()
+		candidate.status, candidate.record, candidate.at = ports.AttemptEffectOwnedV1, record, at
+		return nil
 	})
-	return result, err
+	if err != nil {
+		return ports.ReserveAttemptEffectResultV1{}, err
+	}
+	result = ports.ReserveAttemptEffectResultV1{Status: candidate.status, Reservation: candidate.record.Reservation.Clone()}
+	if candidate.status == ports.AttemptEffectReconcileOnlyV1 {
+		grant, mintErr := store.mintAttemptEffectObservationGrant(candidate.record, candidate.at)
+		if mintErr != nil {
+			return ports.ReserveAttemptEffectResultV1{}, mintErr
+		}
+		result.ObservationGrant = &grant
+	} else {
+		grant, mintErr := store.mintAttemptEffectGrant(candidate.record.Authority, candidate.record.Reservation, candidate.at)
+		if mintErr != nil {
+			return ports.ReserveAttemptEffectResultV1{}, mintErr
+		}
+		result.Grant = &grant
+	}
+	if err := result.Validate(); err != nil {
+		return ports.ReserveAttemptEffectResultV1{}, err
+	}
+	return result, nil
 }
 
 func currentServerlessInvocationAuthorityTx(ctx context.Context, tx *stateTx, request ports.ReserveAttemptEffectRequestV1, at time.Time) (domain.ServerlessInvocationAuthorityV1, bool, error) {
@@ -122,6 +148,26 @@ func currentServerlessInvocationAuthorityTx(ctx context.Context, tx *stateTx, re
 	if loaded.Job.ExecutionPlacementV2.Kind != domain.ExecutionPlacementManaged || loaded.Job.SubstrateBinding == nil || loaded.Job.AdmissionCostCeiling == nil {
 		return domain.ServerlessInvocationAuthorityV1{}, false, nil
 	}
+	// Owned admission is a separate, bounded current-authority composition.
+	// A fixture backend/resource does not imply a single-turn execution profile,
+	// and downstream registry denial cannot replace this durable fence.
+	if loaded.Job.HarnessBinding.Profile != domain.HarnessExecutionSingleTurnV2 || loaded.Job.HarnessBinding.AgentLoopPolicy != nil {
+		return domain.ServerlessInvocationAuthorityV1{}, false, nil
+	}
+	if err := currentServerlessSessionPrincipalTx(ctx, tx.sqlTx, loaded, at); err != nil {
+		if errors.Is(err, domain.ErrMembershipDenied) {
+			return domain.ServerlessInvocationAuthorityV1{}, false, nil
+		}
+		return domain.ServerlessInvocationAuthorityV1{}, false, err
+	}
+	if err := currentServerlessProviderResourceTx(ctx, tx.sqlTx, loaded.Job.HarnessBinding, at); err != nil {
+		if errors.Is(err, domain.ErrMembershipDenied) {
+			return domain.ServerlessInvocationAuthorityV1{}, false, nil
+		}
+		return domain.ServerlessInvocationAuthorityV1{}, false, err
+	}
+	// Current principal/resource prerequisites do not authorize a reviewed live
+	// profile, price/billing or allocation/proxy. Keep the fixture gate closed.
 	if loaded.Job.HarnessBinding.Backend.BackendKind != domain.HarnessBackendDeterministicFixtureV1 ||
 		loaded.Job.HarnessBinding.Resource.Kind != domain.ProviderResourceCredentiallessFixtureV1 {
 		return domain.ServerlessInvocationAuthorityV1{}, false, nil
@@ -130,7 +176,7 @@ func currentServerlessInvocationAuthorityTx(ctx context.Context, tx *stateTx, re
 	if err != nil || !found {
 		return domain.ServerlessInvocationAuthorityV1{}, false, err
 	}
-	if lease.ID != request.LeaseID || lease.AttemptID != request.AttemptID || lease.FenceToken != request.FenceToken {
+	if err := validateCurrentServerlessLease(loaded, lease, request, at); err != nil {
 		return domain.ServerlessInvocationAuthorityV1{}, false, nil
 	}
 	if err := requireLeaseOwnership(ctx, tx, request.RunID, request.LeaseID, request.FenceToken, at); err != nil {
@@ -158,6 +204,28 @@ func currentServerlessInvocationAuthorityTx(ctx context.Context, tx *stateTx, re
 		return domain.ServerlessInvocationAuthorityV1{}, false, nil
 	}
 	return authority, true, nil
+}
+
+// This validates only the existing canonical lifecycle join. It does not
+// establish owned-profile, price/billing, provider-generation, participation or
+// allocation/proxy authority. The fixture-only gate above remains unchanged.
+// Lease head scalars have already been checked by readCanonicalLeaseHeadTx;
+// explicitly join its worker to the current Attempt, not merely its ID/fence.
+func validateCurrentServerlessLease(loaded ports.WorkerJobState, lease domain.Lease, request ports.ReserveAttemptEffectRequestV1, at time.Time) error {
+	if err := validateLoadedWorkerJob(loaded); err != nil {
+		return err
+	}
+	if err := lease.ValidateForAttempt(loaded.Run, loaded.Attempt); err != nil {
+		return err
+	}
+	if request.TenantID != loaded.Run.TenantID || request.RunID != loaded.Run.ID || request.AttemptID != loaded.Job.AttemptID ||
+		lease.ID != request.LeaseID || lease.AttemptID != request.AttemptID || lease.FenceToken != request.FenceToken ||
+		lease.WorkerID != loaded.Attempt.WorkerID || at.IsZero() || !lease.ActiveAt(at) ||
+		loaded.Run.Status != domain.RunRunning || loaded.Attempt.Status != domain.AttemptRunning || loaded.Run.CancellationRequestedAt != nil ||
+		loaded.Run.UpdatedAt.After(at) || loaded.Attempt.UpdatedAt.After(at) || loaded.Job.CreatedAt.After(at) {
+		return domain.ValidationError{Field: "serverless_invocation.current_lease", Reason: "must join the current running job, worker, physical lease and authoritative time"}
+	}
+	return nil
 }
 
 func (store *Store) mintAttemptEffectGrant(authority domain.ServerlessInvocationAuthorityV1, reservation domain.AttemptEffectReservationV1, at time.Time) (ports.AttemptEffectOwnershipGrantV1, error) {
@@ -188,10 +256,30 @@ func (store *Store) mintAttemptEffectObservationGrant(record attemptEffectRecord
 }
 
 func readAttemptEffectRecordTx(ctx context.Context, tx *stateTx, attemptID domain.AttemptID) (attemptEffectRecordV1, bool, error) {
-	return readJSON[attemptEffectRecordV1](ctx, tx.sqlTx,
-		`SELECT record FROM attempt_effect_reservations
-		 WHERE tenant_id=$1 AND attempt_id=$2 AND kind=$3`,
-		tx.tenantID, attemptID, domain.ProviderEffectTurnV1)
+	var raw string
+	var ownedPresent, digestPresent, preparationTimePresent, preparationDigestPresent, allocationPresent uint64
+	err := tx.sqlTx.QueryRowContext(ctx, `SELECT SUBSTRING(CAST(record AS String),0,32769),
+ CASE WHEN owned_record IS NULL THEN CAST(0 AS Uint64) ELSE CAST(1 AS Uint64) END,
+ CASE WHEN owned_digest IS NULL THEN CAST(0 AS Uint64) ELSE CAST(1 AS Uint64) END,
+ CASE WHEN preparation_started_at IS NULL THEN CAST(0 AS Uint64) ELSE CAST(1 AS Uint64) END,
+ CASE WHEN preparation_parent_digest IS NULL THEN CAST(0 AS Uint64) ELSE CAST(1 AS Uint64) END,
+ CASE WHEN allocation_original_record IS NOT NULL OR allocation_original_digest IS NOT NULL
+ OR allocation_current_record IS NOT NULL OR allocation_current_digest IS NOT NULL
+ OR allocation_publication_digest IS NOT NULL OR allocation_transition_parent_digest IS NOT NULL
+ THEN CAST(1 AS Uint64) ELSE CAST(0 AS Uint64) END
+ FROM attempt_effect_reservations WHERE tenant_id=$1 AND attempt_id=$2 AND kind=$3`,
+		tx.tenantID, attemptID, domain.ProviderEffectTurnV1).Scan(&raw, &ownedPresent, &digestPresent, &preparationTimePresent, &preparationDigestPresent, &allocationPresent)
+	if errors.Is(err, sql.ErrNoRows) {
+		return attemptEffectRecordV1{}, false, nil
+	}
+	if err != nil || ownedPresent != 0 || digestPresent != 0 || preparationTimePresent != 0 || preparationDigestPresent != 0 || allocationPresent != 0 || len(raw) > ownedAuthorityHeadBytes {
+		return attemptEffectRecordV1{}, false, domain.ErrMembershipDenied
+	}
+	var record attemptEffectRecordV1
+	if decodeOwnedEffectCanonicalJSON(raw, &record) != nil {
+		return attemptEffectRecordV1{}, false, domain.ErrMembershipDenied
+	}
+	return record, true, nil
 }
 
 func attemptEffectRequestMatchesRecord(request ports.ReserveAttemptEffectRequestV1, record attemptEffectRecordV1) bool {

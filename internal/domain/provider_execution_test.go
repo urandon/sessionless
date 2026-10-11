@@ -41,7 +41,7 @@ func TestProviderExecutionEvidenceBindsAuthorityAndPreservesUnknownVsZero(t *tes
 
 	for name, mutate := range map[string]func(*domain.ProviderExecutionEvidenceV1){
 		"binding": func(value *domain.ProviderExecutionEvidenceV1) {
-			value.BindingDigest = domain.HarnessBindingDigestV1(strings.Repeat("a", 64))
+			value.BindingDigest = domain.HarnessBindingDigestV2(strings.Repeat("a", 64))
 		},
 		"vendor": func(value *domain.ProviderExecutionEvidenceV1) { value.ActualModelVendorID = "other-vendor" },
 		"model":  func(value *domain.ProviderExecutionEvidenceV1) { value.ActualModelID = "other-model" },

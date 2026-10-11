@@ -142,6 +142,133 @@ type substrateSinkNoop struct{}
 
 func (substrateSinkNoop) Emit(context.Context, ports.ExecutionEvent) error { return nil }
 
+func TestSubstrateRegistryRejectsOwnedAndUnspecifiedProfilesBeforeAllocation(t *testing.T) {
+	t.Parallel()
+	base, _, allocation, at := capabilityFixture(t)
+	binding := &base.HarnessBinding
+	binding.Backend.BackendKind = domain.HarnessBackendDirectOpenRouterV1
+	binding.Backend.ProviderContractKind = domain.ProviderContractInvocationV1
+	binding.Backend.CredentialDeliveryKind = domain.ProviderCredentialDeliveryDirectV1
+	binding.Resource.Kind = domain.ProviderResourceRouterAccountV1
+	binding.Resource.CredentialMode = domain.ProviderCredentialInvocationV1
+	binding.Resource.CredentialGeneration = 1
+	binding.InputDataClass = domain.ProviderDataPublicV1
+	binding.Profile = domain.HarnessExecutionOwnedAgentV2
+	expires := at.Add(time.Minute)
+	binding.EvidenceExpiresAt = &expires
+	binding.AgentLoopPolicy = &domain.AgentLoopPolicyV1{
+		Version: domain.AgentLoopPolicyVersionV1, Profile: domain.AgentLoopOwnedPublicV1, ProfileRevision: 1,
+		TenantID: binding.TenantID, OwnerUserID: binding.OwnerUserID, RunID: binding.RunID, AttemptID: binding.AttemptID,
+		Backend: binding.Backend, Resource: binding.Resource, ModelVendorID: binding.ModelVendorID, ModelID: binding.ModelID,
+		ProviderCatalogDigest: binding.ProviderCatalogDigest, ProviderRouteDigest: binding.ProviderRouteDigest,
+		CapabilityEvidenceDigest: binding.CapabilityEvidenceDigest, PrivacyPolicyDigest: binding.PrivacyPolicyDigest, EffectivePolicyDigest: binding.EffectivePolicyDigest,
+		InputDataClass: binding.InputDataClass, InputModalities: []domain.AgentInputModalityV1{domain.AgentInputTextV1},
+		InstructionVersion: "instructions.v1", CompactionPolicyDigest: strings.Repeat("8", 64), MCPToolGrantDigest: strings.Repeat("9", 64), WebSearchGrantDigest: strings.Repeat("a", 64),
+		AdmissionCostCeiling: base.AdmissionCostCeiling.Clone(), IssuedAt: at, ExpiresAt: expires,
+		Limits: domain.AgentLoopLimitsV1{
+			MaxConcurrentOperations: 1, MaxModelCalls: 1, MaxCompactionCalls: 1, MaxToolDispatches: 1, MaxWebSearches: 1,
+			MaxInputTokensPerCall: 1, MaxAggregateInputTokens: 1, MaxOutputTokensPerCall: 1, MaxAggregateOutputTokens: 1,
+			MaxActiveDuration: time.Second, MaxNetworkOperationDuration: time.Second, MaxCleanupDuration: time.Second,
+			MaxContextViewBytes: 1, MaxSummaryBytes: 1, MaxToolArgumentBytes: 1, MaxToolResultBytes: 1,
+			MaxMCPOutboundMessages: 1, MaxMCPCatalogPages: 1, MaxMCPInboundFrames: 1, MaxMCPInboundBytes: 1, MaxOperations: 1, MaxAggregateBodyBytes: 1,
+		},
+	}
+	// Synthetic, explicitly free service evidence is only a denial fixture.
+	// Construct independent service components, then reseal the entire chain.
+	for _, service := range []struct {
+		kind  domain.ExternalServiceKindV1
+		grant string
+		slot  **domain.ExternalServiceCostCeilingV1
+	}{
+		{domain.ExternalServiceMCPToolV1, binding.AgentLoopPolicy.MCPToolGrantDigest, &binding.AgentLoopPolicy.AdmissionCostCeiling.MCPToolCost},
+		{domain.ExternalServiceWebSearchV1, binding.AgentLoopPolicy.WebSearchGrantDigest, &binding.AgentLoopPolicy.AdmissionCostCeiling.WebSearchCost},
+	} {
+		zero := uint64(0)
+		*service.slot = &domain.ExternalServiceCostCeilingV1{
+			Version: domain.ExternalServiceCostCeilingVersionV1, Kind: service.kind,
+			TenantID: binding.TenantID, OwnerUserID: binding.OwnerUserID, BillingOwnerUserID: binding.OwnerUserID,
+			ResourceID: string(service.kind) + "-fixture", ResourceRevision: 1, RevocationGeneration: 1,
+			ProfileID: "scripted-profile", ProfileRevision: 1, ScopedGrantDigest: service.grant,
+			Currency: binding.AgentLoopPolicy.AdmissionCostCeiling.Currency, PriceRevision: "scripted-free-only.v1",
+			PriceObservedAt: binding.AgentLoopPolicy.AdmissionCostCeiling.PriceObservedAt, PriceExpiresAt: binding.AgentLoopPolicy.AdmissionCostCeiling.PriceExpiresAt,
+			PriceEvidenceDigest: strings.Repeat("e", 64), TermsEvidenceDigest: strings.Repeat("f", 64),
+			PriceState: domain.ExternalServicePriceKnownFreeV1, MaxAmountMicrounits: &zero,
+		}
+	}
+	base.AdmissionCostCeiling = binding.AgentLoopPolicy.AdmissionCostCeiling.Clone()
+	costDigest, err := base.AdmissionCostCeiling.Digest()
+	if err != nil {
+		t.Fatalf("owned fixture cost digest: %v", err)
+	}
+	(&base.SubstrateBinding).AdmissionCostCeilingDigest = costDigest
+	substrateDigest, err := (&base.SubstrateBinding).Digest()
+	if err != nil {
+		t.Fatalf("owned fixture substrate digest: %v", err)
+	}
+	base.ExecutionPlacementV2.SubstrateBindingDigest = string(substrateDigest)
+	placementDigest, err := domain.ExecutionPlacementDigest(base.ExecutionPlacementV2)
+	if err != nil {
+		t.Fatalf("owned fixture placement digest: %v", err)
+	}
+	binding.ExecutionPlacementDigest = string(placementDigest)
+	allocation.SubstrateBindingDigest = substrateDigest
+	if err := base.ValidateAt(at); err != nil {
+		t.Fatalf("valid owned authority: %v", err)
+	}
+	for _, profile := range []domain.HarnessExecutionProfileV2{domain.HarnessExecutionOwnedAgentV2, "", "unreviewed"} {
+		t.Run("profile_"+string(profile), func(t *testing.T) {
+			authority := base.Clone()
+			authority.HarnessBinding.Profile = profile
+			issuer, err := NewCapabilityIssuer(func() time.Time { return at }, nil)
+			if err != nil {
+				t.Fatalf("new issuer: %v", err)
+			}
+			driver := &substrateRegistryRecordingDriver{allocation: allocation}
+			registry, err := NewSubstrateRegistryV1(func() time.Time { return at }, issuer, SubstrateRegistrationV1{Binding: authority.SubstrateBinding, Enabled: true, Driver: driver})
+			if err != nil {
+				t.Fatalf("new exact registry: %v", err)
+			}
+			if _, err := registry.preflight(context.Background(), authority); err == nil {
+				t.Error("unsupported profile allocated/preflighted substrate")
+			}
+			if _, err := registry.Cancel(context.Background(), authority); err == nil {
+				t.Error("unsupported profile routed cancel")
+			}
+			if _, err := registry.Reconcile(context.Background(), authority); err == nil {
+				t.Error("unsupported profile routed reconcile")
+			}
+			if profile == domain.HarnessExecutionOwnedAgentV2 {
+				reservation, err := domain.BuildAttemptEffectReservationV1(authority, "synthetic-owned-claim", nil, at)
+				if err != nil {
+					t.Fatalf("synthetic owned reservation: %v", err)
+				}
+				grant, err := issuer.MintAttemptEffectOwnershipGrant(authority, reservation, expires)
+				if err != nil {
+					t.Fatalf("synthetic owned grant: %v", err)
+				}
+				prepared, err := issuer.Issue(grant, allocation)
+				if err != nil {
+					t.Fatalf("synthetic owned prepared authority: %v", err)
+				}
+				request := executionRequestForAuthority(authority)
+				request.Credential = ports.ProviderInvocationCredentialV1{HandleID: "synthetic-owned-handle", TenantID: binding.TenantID, OwnerUserID: binding.OwnerUserID,
+					RunID: binding.RunID, AttemptID: binding.AttemptID, WorkerID: authority.Lease.WorkerID, LeaseID: authority.Lease.ID,
+					LeaseFence: authority.Lease.FenceToken, ProviderResource: binding.Resource, ExpiresAt: expires}
+				request.CredentialMaterialization = ports.ProviderCredentialMaterializationV1{Kind: domain.ProviderCredentialDeliveryDirectV1}
+				if err := request.Validate(); err != nil {
+					t.Fatalf("synthetic owned execution request: %v", err)
+				}
+				if _, _, err := registry.Execute(context.Background(), prepared, request, substrateSinkNoop{}, substrateHarnessNoop{}); err == nil {
+					t.Error("owned profile reached execution")
+				}
+			}
+			if driver.preflightCalls != 0 || driver.executeCalls != 0 || driver.cancelCalls != 0 || driver.reconcileCalls != 0 {
+				t.Fatalf("unsupported profile=%q driver calls preflight=%d execute=%d cancel=%d reconcile=%d, want all zero", profile, driver.preflightCalls, driver.executeCalls, driver.cancelCalls, driver.reconcileCalls)
+			}
+		})
+	}
+}
+
 func TestSubstrateRegistryPreparesOnlyAuthenticatedEffectOwner(t *testing.T) {
 	t.Parallel()
 	authority, reservation, allocation, at := capabilityFixture(t)

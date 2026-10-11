@@ -504,6 +504,11 @@ func readAttachedWorkerAuditEventTx(
 }
 
 func (store *Store) attachedWorkerTransactionTime(ctx context.Context, tx *stateTx) (time.Time, error) {
+	// An owned callback already sampled its authoritative database clock. A
+	// legacy clock hook must not reset that snapshot or escape SQL accounting.
+	if q, ok := tx.sqlTx.(*ownedAuthorityQuery); ok {
+		return q.at, nil
+	}
 	now := store.attachedWorkerNow
 	if now == nil {
 		now = currentAttachedWorkerTransactionTime
@@ -519,7 +524,7 @@ func (store *Store) attachedWorkerTransactionTime(ctx context.Context, tx *state
 	return at, nil
 }
 
-func currentAttachedWorkerTransactionTime(ctx context.Context, tx *sql.Tx) (time.Time, error) {
+func currentAttachedWorkerTransactionTime(ctx context.Context, tx rowQuery) (time.Time, error) {
 	var at time.Time
 	if err := tx.QueryRowContext(ctx, `SELECT CurrentUtcTimestamp()`).Scan(&at); err != nil {
 		return time.Time{}, fmt.Errorf("read attached worker transaction time: %w", err)

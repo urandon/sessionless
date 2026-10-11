@@ -33,7 +33,7 @@ func validSubstrateEvidenceInputs(t testing.TB) (domain.ServerlessInvocationAuth
 	return authority, reservation, allocation, domain.PreparedInvocationDigestV1(strings.Repeat("f", 64))
 }
 
-func completedProviderEvidence(t testing.TB, binding domain.HarnessBindingV1) domain.ProviderExecutionEvidenceV1 {
+func completedProviderEvidence(t testing.TB, binding domain.HarnessBindingV2) domain.ProviderExecutionEvidenceV1 {
 	t.Helper()
 	value, err := (domain.ProviderExecutionEvidenceV1{
 		AcceptanceClass:     domain.ProviderAcceptanceAcceptedV1,
@@ -117,7 +117,7 @@ func TestSubstrateExecutionEvidenceExactBindingAndMutationResistance(t *testing.
 			candidate.SubstrateBindingDigest = domain.SubstrateBindingDigestV1(strings.Repeat("b", 64))
 		},
 		"cost": func(candidate *domain.SubstrateExecutionEvidenceV1) {
-			candidate.AdmissionCostCeilingDigest = domain.AdmissionCostCeilingDigestV1(strings.Repeat("c", 64))
+			candidate.AdmissionCostCeilingDigest = domain.AdmissionCostCeilingDigestV2(strings.Repeat("c", 64))
 		},
 		"prepared": func(candidate *domain.SubstrateExecutionEvidenceV1) {
 			candidate.PreparedInvocationDigest = domain.PreparedInvocationDigestV1(strings.Repeat("d", 64))

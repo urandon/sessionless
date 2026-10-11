@@ -622,7 +622,7 @@ func (store *Store) RevokeWebSession(ctx context.Context, sessionDigest domain.S
 
 func resolveOrCreateExternalIdentityTx(
 	ctx context.Context,
-	tx *sql.Tx,
+	tx stateSQLExecutor,
 	subject domain.ExternalSubject,
 	candidateUserID domain.UserID,
 	at time.Time,
@@ -675,7 +675,7 @@ func resolveOrCreateExternalIdentityTx(
 
 func readExternalIdentityTx(
 	ctx context.Context,
-	tx *sql.Tx,
+	tx rowQuery,
 	subject domain.ExternalSubject,
 ) (domain.ExternalIdentity, bool, error) {
 	bucket, err := webBucket(subject.String())
@@ -689,7 +689,7 @@ func readExternalIdentityTx(
 	)
 }
 
-func putMembershipTx(ctx context.Context, tx *sql.Tx, membership domain.TenantMembership) error {
+func putMembershipTx(ctx context.Context, tx stateSQLExecutor, membership domain.TenantMembership) error {
 	if err := membership.Validate(); err != nil {
 		return err
 	}
@@ -715,7 +715,7 @@ func putMembershipTx(ctx context.Context, tx *sql.Tx, membership domain.TenantMe
 
 func readMembershipTx(
 	ctx context.Context,
-	tx *sql.Tx,
+	tx rowQuery,
 	userID domain.UserID,
 	tenantID domain.TenantID,
 ) (domain.TenantMembership, bool, error) {

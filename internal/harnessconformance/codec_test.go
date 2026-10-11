@@ -34,11 +34,17 @@ func TestFixtureCodecRoundTripAndStrictRejection(t *testing.T) {
 	tooLongString := []byte(`"` + strings.Repeat("a", maxJSONStringBytes+1) + `"`)
 	invalidUTF8 := append([]byte(nil), encoded...)
 	invalidUTF8[len(invalidUTF8)-1] = 0xff
+	legacyCost := bytes.Replace(encoded, []byte(`"admission_cost_ceiling":{"version":2`),
+		[]byte(`"admission_cost_ceiling":{"version":1`), 1)
+	if bytes.Equal(legacyCost, encoded) {
+		t.Fatal("canonical fixture must contain the monetary V2 successor")
+	}
 	for name, candidate := range map[string][]byte{
 		"empty": nil, "bom": append([]byte{0xef, 0xbb, 0xbf}, encoded...), "duplicate": duplicate,
 		"case collision": caseCollision, "unknown": unknown, "null": nullValue, "trailing": append(encoded, []byte(`{}`)...),
 		"noncanonical number": noncanonicalNumber, "depth": tooDeep, "array": tooManyItems, "string": tooLongString,
 		"invalid utf8": invalidUTF8, "total bytes": bytes.Repeat([]byte(" "), MaxFixtureBytes+1),
+		"legacy admission cost": legacyCost,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := DecodeFixtureV1(candidate); !errors.Is(err, ErrInvalidFixture) {

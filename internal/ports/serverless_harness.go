@@ -81,7 +81,7 @@ func (result ReserveAttemptEffectResultV1) Validate() error {
 		if err := result.ObservationGrant.Validate(); err != nil {
 			return err
 		}
-		if result.ObservationGrant.Reservation != result.Reservation {
+		if !sameAttemptEffectReservation(result.Reservation, result.ObservationGrant.Reservation, result.ObservationGrant.Authority) {
 			return domain.ValidationError{Field: "reserve_attempt_effect.observation_grant", Reason: "must bind the returned reservation"}
 		}
 		return nil
@@ -95,10 +95,20 @@ func (result ReserveAttemptEffectResultV1) Validate() error {
 	if err := result.Grant.Validate(); err != nil {
 		return err
 	}
-	if result.Grant.Reservation != result.Reservation {
+	if !sameAttemptEffectReservation(result.Reservation, result.Grant.Reservation, result.Grant.Authority) {
 		return domain.ValidationError{Field: "reserve_attempt_effect.grant", Reason: "must bind the returned reservation"}
 	}
 	return nil
+}
+
+// Bind canonical values, not Go pointer identities: grants and returned
+// reservations independently clone the optional upstream digest. The complete
+// authority-bound digest includes every scalar, optional presence/value and
+// original timestamp; a changed or missing value must still fail closed.
+func sameAttemptEffectReservation(a, b domain.AttemptEffectReservationV1, authority domain.ServerlessInvocationAuthorityV1) bool {
+	aDigest, aErr := a.DigestForAuthority(authority)
+	bDigest, bErr := b.DigestForAuthority(authority)
+	return aErr == nil && bErr == nil && aDigest == bDigest
 }
 
 // AttemptEffectOwnershipGrantV1 is a public-shaped but MAC-authenticated

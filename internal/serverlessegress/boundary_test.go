@@ -261,8 +261,8 @@ func newBoundaryFixture(t *testing.T, delivery domain.ProviderCredentialDelivery
 		CPUMillis: 1000, MemoryBytes: 256 << 20, ScratchBytes: 64 << 20, StdoutBytes: 128, StderrBytes: 128,
 		NativeEventCount: 128, ArtifactBytes: 512,
 	}
-	cost := domain.AdmissionCostCeilingV1{
-		Version: domain.AdmissionCostCeilingVersionV1, Currency: "USD", PriceRevision: "fixture-v1",
+	cost := domain.AdmissionCostCeilingV2{
+		Version: domain.AdmissionCostCeilingVersionV2, Currency: "USD", PriceRevision: "fixture-v1",
 		PriceObservedAt: now.Add(-time.Minute), PriceExpiresAt: now.Add(50 * time.Minute), MaxDeliveries: 1,
 		MaxPreEffectDurationPerDelivery: 5 * time.Minute, MaxActiveDuration: limits.ExecutionTimeout,
 		MaxCleanupAndReconcileDuration: limits.CleanupTimeout, ConfiguredMemoryBytes: limits.MemoryBytes,
@@ -296,8 +296,8 @@ func newBoundaryFixture(t *testing.T, delivery domain.ProviderCredentialDelivery
 		t.Fatal(err)
 	}
 	evidenceExpiry := now.Add(40 * time.Minute)
-	binding := domain.HarnessBindingV1{
-		Version: domain.HarnessBindingVersionV1, TenantID: scope.TenantID, OwnerUserID: scope.OwnerUserID,
+	binding := domain.HarnessBindingV2{
+		Version: domain.HarnessBindingVersionV2, Profile: domain.HarnessExecutionSingleTurnV2, TenantID: scope.TenantID, OwnerUserID: scope.OwnerUserID,
 		RunID: "run-1", AttemptID: "attempt-1", Backend: backend, Resource: resource,
 		ModelVendorID: route.ModelVendorID, ModelID: route.ModelID, InputDataClass: inputClass,
 		ProviderCatalogDigest: digestFixture("catalog"), ProviderRouteDigest: string(routeDigest),

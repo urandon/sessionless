@@ -236,6 +236,12 @@ func (store *Store) LoadWorkerCredentialInvocation(
 }
 
 func validateLoadedWorkerJob(state ports.WorkerJobState) error {
+	// Point-addressable rows are not authority merely because their lookup keys
+	// match. Validate the complete persisted job against the canonical Run,
+	// including Session/trigger, owner and sealed placement/policy/cost.
+	if err := state.Job.ValidateForRun(state.Run); err != nil {
+		return err
+	}
 	if err := state.Attempt.ValidateForRun(state.Run); err != nil {
 		return err
 	}

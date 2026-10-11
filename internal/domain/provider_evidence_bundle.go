@@ -24,7 +24,7 @@ func (bundle ProviderEvidenceBundleV1) Clone() ProviderEvidenceBundleV1 {
 	return bundle
 }
 
-func (bundle ProviderEvidenceBundleV1) ValidateForBinding(binding HarnessBindingV1) error {
+func (bundle ProviderEvidenceBundleV1) ValidateForBinding(binding HarnessBindingV2) error {
 	if err := binding.Validate(); err != nil {
 		return err
 	}
@@ -112,7 +112,7 @@ func (bundle ProviderEvidenceBundleV1) ValidateForBinding(binding HarnessBinding
 	return nil
 }
 
-func (bundle ProviderEvidenceBundleV1) ValidateExecutionEvidence(binding HarnessBindingV1, evidence ProviderExecutionEvidenceV1) error {
+func (bundle ProviderEvidenceBundleV1) ValidateExecutionEvidence(binding HarnessBindingV2, evidence ProviderExecutionEvidenceV1) error {
 	if err := bundle.ValidateForBinding(binding); err != nil {
 		return err
 	}

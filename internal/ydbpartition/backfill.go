@@ -54,7 +54,15 @@ func BackfillSchemaIndexes(ctx context.Context, db *sql.DB, dryRun bool) ([]Back
 	if err != nil {
 		return nil, err
 	}
+	harnessV2Cutover, err := verifyHarnessBindingV2Cutover(ctx, db, dryRun)
+	if err != nil {
+		return nil, err
+	}
 	authorityCutover, err := verifyManagedExecutionAuthorityV2Cutover(ctx, db, dryRun)
+	if err != nil {
+		return nil, err
+	}
+	costCutover, err := verifyAdmissionCostV2Cutover(ctx, db, dryRun)
 	if err != nil {
 		return nil, err
 	}
@@ -62,7 +70,7 @@ func BackfillSchemaIndexes(ctx context.Context, db *sql.DB, dryRun bool) ([]Back
 	if err != nil {
 		return nil, err
 	}
-	results = append([]BackfillResult{cutover, harnessCutover, authorityCutover}, results...)
+	results = append([]BackfillResult{cutover, harnessCutover, harnessV2Cutover, authorityCutover, costCutover}, results...)
 	operations := []func(context.Context, *sql.DB, bool) (BackfillResult, error){
 		backfillArtifactManifestsByRun,
 		backfillFrontendBindingsBySession,
@@ -174,6 +182,54 @@ func verifyHarnessBindingCutover(ctx context.Context, db *sql.DB, dryRun bool) (
 		}
 	}
 	return BackfillResult{Table: "harness_binding_cutover_v1"}, nil
+}
+
+// verifyHarnessBindingV2Cutover is the successor writer-first deployment fence.
+// Effect reservations nest the invocation's binding and must also be drained:
+// its changed digest cannot be retrofitted onto an earlier physical claim.
+// Digest-only reconciliation evidence and historical output receipts remain
+// immutable history; neither is decoded as new binding authority.
+func verifyHarnessBindingV2Cutover(ctx context.Context, db *sql.DB, dryRun bool) (BackfillResult, error) {
+	const cutoverID = "harness-binding-v2-empty-cutover"
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return BackfillResult{}, fmt.Errorf("begin harness binding v2 cutover: %w", err)
+	}
+	defer tx.Rollback()
+	var completedAt time.Time
+	err = tx.QueryRowContext(ctx,
+		`SELECT completed_at FROM harness_binding_cutover_state WHERE cutover_id=$1`, cutoverID,
+	).Scan(&completedAt)
+	if err == nil {
+		if completedAt.IsZero() {
+			return BackfillResult{}, errors.New("harness binding v2 cutover marker has no completion time")
+		}
+		return BackfillResult{Table: "harness_binding_cutover_v2"}, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return BackfillResult{}, fmt.Errorf("read harness binding v2 cutover marker: %w", err)
+	}
+	for _, table := range []string{"dispatch_outbox", "worker_jobs", "attempt_effect_reservations"} {
+		var tenantID string
+		err := tx.QueryRowContext(ctx, "SELECT tenant_id FROM "+table+" LIMIT 1").Scan(&tenantID)
+		if err == nil {
+			return BackfillResult{}, fmt.Errorf("harness binding v2 cutover requires empty %s; drain before deployment", table)
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return BackfillResult{}, fmt.Errorf("verify empty %s for harness binding v2: %w", table, err)
+		}
+	}
+	if !dryRun {
+		if _, err := tx.ExecContext(ctx,
+			`UPSERT INTO harness_binding_cutover_state (cutover_id,completed_at) VALUES ($1,$2)`,
+			cutoverID, time.Now().UTC()); err != nil {
+			return BackfillResult{}, fmt.Errorf("mark harness binding v2 cutover: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return BackfillResult{}, fmt.Errorf("commit harness binding v2 cutover: %w", err)
+		}
+	}
+	return BackfillResult{Table: "harness_binding_cutover_v2"}, nil
 }
 
 // verifyExecutionPlacementCutover is the enforced no-production-data gate for

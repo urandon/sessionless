@@ -46,7 +46,7 @@ const (
 // Unknown route and usage remain explicit instead of being inferred.
 type ProviderExecutionEvidenceV1 struct {
 	Version               uint32                         `json:"version"`
-	BindingDigest         HarnessBindingDigestV1         `json:"binding_digest"`
+	BindingDigest         HarnessBindingDigestV2         `json:"binding_digest"`
 	AcceptanceClass       ProviderAcceptanceClassV1      `json:"acceptance_class"`
 	FinishClass           ProviderFinishClassV1          `json:"finish_class"`
 	RouteState            ProviderEvidenceStateV1        `json:"route_state"`
@@ -79,7 +79,7 @@ func (value ProviderExecutionEvidenceV1) Clone() ProviderExecutionEvidenceV1 {
 	return clone
 }
 
-func (value ProviderExecutionEvidenceV1) SealForBinding(binding HarnessBindingV1) (ProviderExecutionEvidenceV1, error) {
+func (value ProviderExecutionEvidenceV1) SealForBinding(binding HarnessBindingV2) (ProviderExecutionEvidenceV1, error) {
 	if err := binding.Validate(); err != nil {
 		return ProviderExecutionEvidenceV1{}, err
 	}
@@ -103,7 +103,7 @@ func (value ProviderExecutionEvidenceV1) SealForBinding(binding HarnessBindingV1
 	return value, nil
 }
 
-func (value ProviderExecutionEvidenceV1) ValidateForBinding(binding HarnessBindingV1) error {
+func (value ProviderExecutionEvidenceV1) ValidateForBinding(binding HarnessBindingV2) error {
 	if err := binding.Validate(); err != nil {
 		return err
 	}

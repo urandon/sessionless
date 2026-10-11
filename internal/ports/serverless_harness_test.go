@@ -61,7 +61,8 @@ func TestReserveAttemptEffectResultRequiresExactAuthority(t *testing.T) {
 		ContextManifestDigest: strings.Repeat("b", 64), InputManifestDigest: strings.Repeat("c", 64),
 		InvocationDeadline: at.Add(50 * time.Minute),
 	}
-	reservation, err := domain.BuildAttemptEffectReservationV1(authority, "physical-claim-1", nil, at)
+	upstream := strings.Repeat("d", 64)
+	reservation, err := domain.BuildAttemptEffectReservationV1(authority, "physical-claim-1", &upstream, at)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,6 +73,9 @@ func TestReserveAttemptEffectResultRequiresExactAuthority(t *testing.T) {
 	grant, err := issuer.MintAttemptEffectOwnershipGrant(authority, reservation, at.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if grant.Reservation.UpstreamIdempotencyKeyDigest == reservation.UpstreamIdempotencyKeyDigest {
+		t.Fatal("grant must independently clone the original upstream value")
 	}
 	observationGrant, err := issuer.MintAttemptEffectObservationGrant(authority, reservation, at, at.Add(time.Minute))
 	if err != nil {
@@ -88,6 +92,31 @@ func TestReserveAttemptEffectResultRequiresExactAuthority(t *testing.T) {
 	}
 	if err := reconcile.Validate(); err != nil {
 		t.Fatalf("reconcile-only result rejected: %v", err)
+	}
+	for _, status := range []ports.AttemptEffectReservationStatusV1{ports.AttemptEffectOwnedV1, ports.AttemptEffectReplayedV1, ports.AttemptEffectReconcileOnlyV1} {
+		for _, change := range []string{"missing", "different", "changed_time"} {
+			t.Run(string(status)+"/"+change, func(t *testing.T) {
+				candidate := reservation.Clone()
+				switch change {
+				case "missing":
+					candidate.UpstreamIdempotencyKeyDigest = nil
+				case "different":
+					value := strings.Repeat("e", 64)
+					candidate.UpstreamIdempotencyKeyDigest = &value
+				case "changed_time":
+					candidate.ReservedAt = candidate.ReservedAt.Add(time.Microsecond)
+				}
+				result := ports.ReserveAttemptEffectResultV1{Status: status, Reservation: candidate}
+				if status == ports.AttemptEffectReconcileOnlyV1 {
+					result.ObservationGrant = ptr(observationGrant.Clone())
+				} else {
+					result.Grant = ptr(grant.Clone())
+				}
+				if err := result.Validate(); err == nil {
+					t.Fatal("result accepted a value differing from the authenticated original reservation")
+				}
+			})
+		}
 	}
 	invalid := ports.ReserveAttemptEffectResultV1{Status: "unknown", Reservation: reservation}
 	if err := invalid.Validate(); err == nil {

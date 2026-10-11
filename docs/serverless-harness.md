@@ -79,7 +79,7 @@ or substrate fallback occurs inside an attempt.
 ```text
 canonical Sessionless authority
   Session / Run / Attempt / Lease / fence / cancellation / terminal commit
-  HarnessBindingV1 / provider resource generation / policy evidence
+  HarnessBindingV2 / explicit execution profile / resource generation / policy evidence
   ExecutionPlacementV2 + sealed substrate profile digest
                          |
                          v
@@ -107,13 +107,17 @@ network enforcement, cleanup, and evidence collection. A substrate invocation
 ID is a diagnostic correlation value. It can never reclaim a lease, authorize
 a retry, resume a conversation, select another backend, or commit a terminal.
 
-## Existing contracts reused unchanged
+## Canonical contracts composed by the runtime
 
 The design composes existing contracts instead of copying them:
 
-- `domain.HarnessBindingV1` seals tenant, owner, run, attempt, backend
+- `domain.HarnessBindingV2` seals tenant, owner, run, attempt, backend
   descriptor, provider resource revision and credential generation, model and
-  data class, evidence digests, placement digest, and evidence expiry;
+  data class, evidence digests, placement digest, and evidence expiry. It requires
+  an explicit `single_turn` or `owned_agent` profile; zero is invalid. An owned
+  binding also seals the complete immutable `AgentLoopPolicyV1`, including its
+  finite ceilings, independent compaction/MCP/search digests, policy window and
+  exact existing monetary authority. A single-turn binding forbids a loop policy;
 - `sessionlessharness.Registry` is the exact no-default/no-discovery backend
   registry and already separates `Preflight`, `Execute`, and expiry-tolerant
   `Cancel`;
@@ -128,6 +132,13 @@ The design composes existing contracts instead of copying them:
   cleanup, terminal evidence, and canonical terminal commit separate;
 - #82 is the only public UX vocabulary. Substrate-native logs and states do not
   add a second read model.
+
+The V2 foundation does not activate the owned loop. Existing one-shot drivers
+and registry composition reject `owned_agent` before preparation or allocation.
+Its structural policy validation is not proof of current resource, revocation,
+lease, price or tool-grant authority and does not debit a budget or issue an
+execution capability. Operation reservation and consent persistence remain
+separate #189 obligations; provider custody and the reviewed loop are #190/#191.
 
 ## Proposed provider-neutral runtime contract
 
@@ -155,9 +166,9 @@ SubstrateBindingV1 {
 
 ServerlessInvocationAuthorityV1 {
   version
-  harness_binding: HarnessBindingV1
+  harness_binding: HarnessBindingV2
   substrate_binding: SubstrateBindingV1
-  admission_cost_ceiling: AdmissionCostCeilingV1
+  admission_cost_ceiling: AdmissionCostCeilingV2
   lease: existing domain.Lease
   context_manifest_digest, input_manifest_digest
   invocation_deadline
@@ -227,7 +238,7 @@ opaque internal PreparedInvocation capability
 ```
 
 `ServerlessInvocationAuthorityV1` is constructed only after the canonical
-lease is claimed. It references the already sealed `HarnessBindingV1`; it does
+lease is claimed. It references the already sealed `HarnessBindingV2`; it does
 not repeat or override model, route, provider, credential, or placement fields.
 The existing `Lease` supplies the exact run, attempt, worker, fence, acquisition,
 and expiry authority; those fields are exact-compared with the binding rather
@@ -248,8 +259,8 @@ ManagedExecutionPlacementV2 {
 ```
 
 The full `SubstrateBindingV1` is server-owned and persisted with the dispatch;
-its digest is included in the placement, and `HarnessBindingV1` already seals
-the placement digest. The exact `AdmissionCostCeilingV1` is persisted in the
+its digest is included in the placement, and `HarnessBindingV2` already seals
+the placement digest. The exact `AdmissionCostCeilingV2` is persisted in the
 dispatch and copied unchanged into `WorkerJob`; its digest is sealed by the
 substrate binding and therefore by placement and harness authority. The
 implementation must choose one canonical persisted
@@ -271,6 +282,12 @@ second lifecycle or retry state machine. A crash after reservation but before
 send may conservatively produce an ambiguous attempt. Safety wins over an
 automatic duplicate call. A provider idempotency key may improve reconciliation
 only when the exact provider contract proves its semantics.
+
+The YDB adapter mints ownership or reconciliation grants only after its
+serializable transaction confirms commit, never inside a retryable callback.
+Failed or unconfirmed transactions return no result or grant. If grant minting
+fails after commit, the durable reservation remains fenced; the failure is not
+permission to create a new physical claim or repeat a provider effect.
 
 The prepared invocation is a short-lived, non-durable, non-JSON capability
 with an unexported process-local authenticator. It is issued
@@ -811,7 +828,8 @@ Admission keeps provider cost and substrate cost independent. A free provider
 model does not make compute, egress, logging, storage, or retries free.
 
 ```text
-AdmissionCostCeilingV1 {
+AdmissionCostCeilingV2 {
+  version: 2
   currency, price_revision, price_observed_at, price_expires_at
   max_deliveries, max_pre_effect_duration_per_delivery
   max_active_duration, max_cleanup_and_reconcile_duration
@@ -820,6 +838,7 @@ AdmissionCostCeilingV1 {
   substrate_price: unknown | known(amounts...)
   provider_price: unknown | known_free | known(amounts...)
   max_substrate_amount?, max_provider_amount?, max_total_amount?
+  mcp_tool_cost?, web_search_cost?  # separately scoped price/terms evidence
 }
 
 PostRunCostObservationV1 {
@@ -835,6 +854,7 @@ admitted_substrate_ceiling =
 
 admitted_total_ceiling =
   admitted_substrate_ceiling + admitted_provider_ceiling
+  + all present MCP/search service ceilings
 ```
 
 Admission validates canonical currency, fresh price revision, nonzero bounds,
@@ -846,6 +866,25 @@ The canonical ceiling digest covers every field, including currency, price
 revision and expiry, maximum deliveries, per-delivery pre-effect duration,
 active duration, cleanup/reconcile duration, resource sizes and aggregate
 amount ceilings; there is no partial or caller-selected projection.
+The explicit owned-agent public profile requires both MCP and search components,
+matching the policy's tenant, owner and independent grant digests. Their billing
+owner, resource/profile revisions, revocation and approved price/terms must be
+reloaded at atomic operation admission; structural equality is not live authority.
+Single-turn profiles must omit both components and grant no external-tool access.
+Each unknown required price makes total monetary authority unavailable. A free
+endpoint needs independently reviewed zero-price and terms evidence.
+
+Deployment requires the separate `admission-cost-v2-empty-cutover` marker in
+`managed_execution_authority_v2_cutover_state`. Stop old writers/readers, drain
+`dispatch_outbox`, `worker_jobs` and `attempt_effect_reservations`, then run
+the repository's `make partition-backfill` before starting new writers/readers.
+The deployment transaction checks all three inventories serializably and uses
+the database clock for its receipt; dry-run never writes it. Earlier placement,
+harness or managed-chain markers do not satisfy this guard. All four serving
+entry points deny startup without the distinct committed marker. No V1 decoder,
+conversion or replay is permitted; historical digest-only receipts stay
+historical. This migration contract does not activate an owned loop or provider.
+
 Observed/reconciled post-run cost is recorded separately and never substituted
 into the pre-run ceiling.
 

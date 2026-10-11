@@ -23,11 +23,15 @@ var ErrInvalidPreparedInvocation = errors.New("invalid prepared invocation")
 
 type Clock func() time.Time
 
+const preparationClaimCapacityV1 = 1024
+
 type CapabilityIssuer struct {
-	key      [32]byte
-	clock    Clock
-	mu       sync.Mutex
-	consumed map[domain.AttemptEffectReservationDigestV1]struct{}
+	key             [32]byte
+	clock           Clock
+	mu              sync.Mutex
+	consumed        map[domain.AttemptEffectReservationDigestV1]struct{}
+	prepared        map[domain.AttemptEffectReservationDigestV1]time.Time
+	preparationTime time.Time
 }
 
 // PreparedInvocation has no exported fields and no JSON representation. A
@@ -39,7 +43,7 @@ type PreparedInvocation struct {
 	authorityDigest   domain.ServerlessInvocationAuthorityDigestV1
 	reservationDigest domain.AttemptEffectReservationDigestV1
 	allocationDigest  domain.PreparedAllocationDigestV1
-	costDigest        domain.AdmissionCostCeilingDigestV1
+	costDigest        domain.AdmissionCostCeilingDigestV2
 	issuedAt          time.Time
 	executeDeadline   time.Time
 	authenticator     [32]byte
@@ -52,7 +56,11 @@ func NewCapabilityIssuer(clock Clock, entropy io.Reader) (*CapabilityIssuer, err
 	if entropy == nil {
 		entropy = rand.Reader
 	}
-	issuer := &CapabilityIssuer{clock: clock, consumed: make(map[domain.AttemptEffectReservationDigestV1]struct{})}
+	issuer := &CapabilityIssuer{
+		clock:    clock,
+		consumed: make(map[domain.AttemptEffectReservationDigestV1]struct{}),
+		prepared: make(map[domain.AttemptEffectReservationDigestV1]time.Time),
+	}
 	if _, err := io.ReadFull(entropy, issuer.key[:]); err != nil {
 		return nil, ErrInvalidPreparedInvocation
 	}
@@ -159,6 +167,65 @@ func (issuer *CapabilityIssuer) VerifyGrant(grant ports.AttemptEffectOwnershipGr
 		return ErrInvalidPreparedInvocation
 	}
 	return issuer.verifyGrant(grant, issuer.clock().UTC())
+}
+
+// ConsumePreparationGrant burns the authenticated parent's preparation right
+// BEFORE substrate preflight can allocate anything. All registries sharing an
+// issuer share this fence; rebuilding a registry or reminting a grant cannot
+// authorize another preparation for the same parent. Failure after the burn
+// remains reconciliation/cleanup-only, never an automatic preparation retry.
+//
+// This process-local fence is not durable registration/restart recovery. A new
+// process still requires the canonical sole-claim and original allocation's
+// durable readback; neither this map nor a valid MAC establishes those facts.
+func (issuer *CapabilityIssuer) ConsumePreparationGrant(grant ports.AttemptEffectOwnershipGrantV1) error {
+	if issuer == nil || issuer.clock == nil {
+		return ErrInvalidPreparedInvocation
+	}
+	grant = grant.Clone()
+	issuer.mu.Lock()
+	defer issuer.mu.Unlock()
+	// Sample and validate inside the same serialized high-water section.
+	// Sampling outside it confuses legitimate reverse lock acquisition by two
+	// distinct parents with a clock rewind and can strand the earlier parent.
+	now := issuer.clock().UTC()
+	if issuer.verifyGrant(grant, now) != nil || now.IsZero() || now.Year() < 1 || now.Year() > 9999 {
+		return ErrInvalidPreparedInvocation
+	}
+	cleanup := min(grant.Authority.SubstrateBinding.Limits.CleanupTimeout, 30*time.Second)
+	retainUntil := grant.Authority.InvocationDeadline.UTC().Add(cleanup)
+	if retainUntil.Year() > 9999 {
+		return ErrInvalidPreparedInvocation
+	}
+	digest, err := grant.Reservation.DigestForAuthority(grant.Authority)
+	if err != nil {
+		return ErrInvalidPreparedInvocation
+	}
+	if issuer.prepared == nil || now.Before(issuer.preparationTime) {
+		return ErrInvalidPreparedInvocation
+	}
+	issuer.preparationTime = now
+	// Prune only after the parent's immutable invocation and cleanup windows.
+	// The monotonic high-water clock prevents later rewind from reviving a
+	// pruned parent's authenticated grant. Capacity exhaustion denies BEFORE I/O.
+	for old, until := range issuer.prepared {
+		if !now.Before(until) {
+			delete(issuer.prepared, old)
+		}
+	}
+	if _, exists := issuer.prepared[digest]; exists {
+		return ErrInvalidPreparedInvocation
+	}
+	if len(issuer.prepared) >= preparationClaimCapacityV1 {
+		return ErrInvalidPreparedInvocation
+	}
+	// Consumption of an execution capability also fences later preparation,
+	// including a capability issued directly by a trusted substrate composer.
+	if _, exists := issuer.consumed[digest]; exists {
+		return ErrInvalidPreparedInvocation
+	}
+	issuer.prepared[digest] = retainUntil
+	return nil
 }
 
 // VerifyObservationGrant authenticates read-only authority for a historical

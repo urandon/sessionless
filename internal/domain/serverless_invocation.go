@@ -6,10 +6,10 @@ import "time"
 // after the lease is claimed. Queue delivery fields are not authority.
 type ServerlessInvocationAuthorityV1 struct {
 	Version               uint32                 `json:"version"`
-	HarnessBinding        HarnessBindingV1       `json:"harness_binding"`
+	HarnessBinding        HarnessBindingV2       `json:"harness_binding"`
 	ExecutionPlacementV2  ExecutionPlacementV2   `json:"execution_placement"`
 	SubstrateBinding      SubstrateBindingV1     `json:"substrate_binding"`
-	AdmissionCostCeiling  AdmissionCostCeilingV1 `json:"admission_cost_ceiling"`
+	AdmissionCostCeiling  AdmissionCostCeilingV2 `json:"admission_cost_ceiling"`
 	Lease                 Lease                  `json:"lease"`
 	ContextManifestDigest string                 `json:"context_manifest_digest"`
 	InputManifestDigest   string                 `json:"input_manifest_digest"`
@@ -57,6 +57,9 @@ func (value ServerlessInvocationAuthorityV1) Validate() error {
 		return err
 	}
 	if err := value.HarnessBinding.ValidateForScope(value.Lease.TenantID, value.HarnessBinding.OwnerUserID, value.Lease.RunID, value.Lease.AttemptID, value.ExecutionPlacementV2); err != nil {
+		return err
+	}
+	if err := value.HarnessBinding.ValidateAdmissionCostCeiling(&value.AdmissionCostCeiling); err != nil {
 		return err
 	}
 	if err := validateServerlessLease(value.Lease); err != nil {
@@ -253,9 +256,9 @@ type AttemptEffectReservationV1 struct {
 	PhysicalInvocationClaimID    string                                `json:"physical_invocation_claim_id"`
 	EffectSequence               uint64                                `json:"effect_sequence"`
 	InvocationAuthorityDigest    ServerlessInvocationAuthorityDigestV1 `json:"invocation_authority_digest"`
-	HarnessBindingDigest         HarnessBindingDigestV1                `json:"harness_binding_digest"`
+	HarnessBindingDigest         HarnessBindingDigestV2                `json:"harness_binding_digest"`
 	SubstrateBindingDigest       SubstrateBindingDigestV1              `json:"substrate_binding_digest"`
-	AdmissionCostCeilingDigest   AdmissionCostCeilingDigestV1          `json:"admission_cost_ceiling_digest"`
+	AdmissionCostCeilingDigest   AdmissionCostCeilingDigestV2          `json:"admission_cost_ceiling_digest"`
 	Kind                         ProviderEffectKindV1                  `json:"kind"`
 	UpstreamIdempotencyKeyDigest *string                               `json:"upstream_idempotency_key_digest,omitempty"`
 	ReservedAt                   time.Time                             `json:"reserved_at"`

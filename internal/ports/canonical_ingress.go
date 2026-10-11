@@ -90,30 +90,32 @@ func (request CanonicalSessionSwitchRequest) Validate() error {
 // event sequence and write the event, run, attempt, manifest, dispatch outbox,
 // and frontend deduplication fact.
 type CanonicalUserEventCommit struct {
-	TenantID                 domain.TenantID
-	UserID                   domain.UserID
-	BindingID                domain.FrontendBindingID
-	ExpectedBindingRevision  uint64
-	Origin                   domain.FrontendEventOrigin
-	IdempotencyKey           domain.IdempotencyKey
-	MutationDigest           string
-	ExpireAt                 time.Time
-	EventID                  domain.SessionEventID
-	Payload                  domain.BlobRef
-	PreparedMaterial         *sessionmaterial.PreparedV1 `json:"-"`
-	DisplayText              string
-	RunID                    domain.RunID
-	AttemptID                domain.AttemptID
-	SubscriptionConnectionID domain.SubscriptionConnectionID
-	ManifestID               domain.ArtifactManifestID
-	Artifacts                []domain.Artifact
-	DispatchID               domain.DispatchOutboxID
-	AllowedMCPServers        []string
-	ExecutionPlacementV2     domain.ExecutionPlacementV2
-	HarnessBinding           domain.HarnessBindingV1
-	SubstrateBinding         *domain.SubstrateBindingV1
-	AdmissionCostCeiling     *domain.AdmissionCostCeilingV1
-	CommittedAt              time.Time
+	TenantID                   domain.TenantID
+	UserID                     domain.UserID
+	SessionID                  domain.SessionID
+	BindingID                  domain.FrontendBindingID
+	ExpectedBindingRevision    uint64
+	Origin                     domain.FrontendEventOrigin
+	IdempotencyKey             domain.IdempotencyKey
+	MutationDigest             string
+	ExpireAt                   time.Time
+	EventID                    domain.SessionEventID
+	Payload                    domain.BlobRef
+	PreparedMaterial           *sessionmaterial.PreparedV1 `json:"-"`
+	DisplayText                string
+	RunID                      domain.RunID
+	AttemptID                  domain.AttemptID
+	SubscriptionConnectionID   domain.SubscriptionConnectionID
+	ManifestID                 domain.ArtifactManifestID
+	Artifacts                  []domain.Artifact
+	DispatchID                 domain.DispatchOutboxID
+	AllowedMCPServers          []string
+	ExecutionPlacementV2       domain.ExecutionPlacementV2
+	HarnessBinding             domain.HarnessBindingV2
+	SubstrateBinding           *domain.SubstrateBindingV1
+	AdmissionCostCeiling       *domain.AdmissionCostCeilingV2
+	OwnedExecutionSourceRecord string
+	CommittedAt                time.Time
 }
 
 // HarnessBindingRequest contains only server-derived authority. Frontend
@@ -121,6 +123,7 @@ type CanonicalUserEventCommit struct {
 type HarnessBindingRequest struct {
 	TenantID                 domain.TenantID
 	OwnerUserID              domain.UserID
+	SessionID                domain.SessionID
 	RunID                    domain.RunID
 	AttemptID                domain.AttemptID
 	SubscriptionConnectionID domain.SubscriptionConnectionID
@@ -128,10 +131,11 @@ type HarnessBindingRequest struct {
 }
 
 type ManagedExecutionAuthorityV2 struct {
-	ExecutionPlacementV2 domain.ExecutionPlacementV2
-	HarnessBinding       domain.HarnessBindingV1
-	SubstrateBinding     domain.SubstrateBindingV1
-	AdmissionCostCeiling domain.AdmissionCostCeilingV1
+	ExecutionPlacementV2       domain.ExecutionPlacementV2
+	HarnessBinding             domain.HarnessBindingV2
+	SubstrateBinding           domain.SubstrateBindingV1
+	AdmissionCostCeiling       domain.AdmissionCostCeilingV2
+	OwnedExecutionSourceRecord string
 }
 
 // ExecutionAuthorityV2 preserves the existing placement union at ingress.
@@ -139,10 +143,11 @@ type ManagedExecutionAuthorityV2 struct {
 // carries neither. It is sealed once before the canonical transaction, not a
 // second admission or execution state machine.
 type ExecutionAuthorityV2 struct {
-	ExecutionPlacementV2 domain.ExecutionPlacementV2
-	HarnessBinding       domain.HarnessBindingV1
-	SubstrateBinding     *domain.SubstrateBindingV1
-	AdmissionCostCeiling *domain.AdmissionCostCeilingV1
+	ExecutionPlacementV2       domain.ExecutionPlacementV2
+	HarnessBinding             domain.HarnessBindingV2
+	SubstrateBinding           *domain.SubstrateBindingV1
+	AdmissionCostCeiling       *domain.AdmissionCostCeilingV2
+	OwnedExecutionSourceRecord string
 }
 
 func (authority ManagedExecutionAuthorityV2) ExecutionAuthority() ExecutionAuthorityV2 {
@@ -151,6 +156,7 @@ func (authority ManagedExecutionAuthorityV2) ExecutionAuthority() ExecutionAutho
 	return ExecutionAuthorityV2{
 		ExecutionPlacementV2: authority.ExecutionPlacementV2, HarnessBinding: authority.HarnessBinding.Clone(),
 		SubstrateBinding: &substrate, AdmissionCostCeiling: &cost,
+		OwnedExecutionSourceRecord: authority.OwnedExecutionSourceRecord,
 	}
 }
 
@@ -169,6 +175,11 @@ func (authority ExecutionAuthorityV2) Clone() ExecutionAuthorityV2 {
 }
 
 func (authority ExecutionAuthorityV2) ValidateForScope(request HarnessBindingRequest) error {
+	if err := domain.ValidateOwnedExecutionSourceRecord(authority.OwnedExecutionSourceRecord,
+		domain.AttemptExecutionSourceScopeV1{TenantID: request.TenantID, SessionID: request.SessionID, OwnerUserID: request.OwnerUserID, RunID: request.RunID, AttemptID: request.AttemptID},
+		authority.ExecutionPlacementV2, authority.HarnessBinding, authority.SubstrateBinding, authority.AdmissionCostCeiling); err != nil {
+		return err
+	}
 	if err := domain.ValidateExecutionAuthorityProjection(authority.ExecutionPlacementV2, authority.SubstrateBinding, authority.AdmissionCostCeiling); err != nil {
 		return err
 	}
@@ -176,6 +187,7 @@ func (authority ExecutionAuthorityV2) ValidateForScope(request HarnessBindingReq
 		return (ManagedExecutionAuthorityV2{
 			ExecutionPlacementV2: authority.ExecutionPlacementV2, HarnessBinding: authority.HarnessBinding,
 			SubstrateBinding: *authority.SubstrateBinding, AdmissionCostCeiling: *authority.AdmissionCostCeiling,
+			OwnedExecutionSourceRecord: authority.OwnedExecutionSourceRecord,
 		}).ValidateForScope(request)
 	}
 	for _, validate := range []func() error{request.TenantID.Validate, request.OwnerUserID.Validate, request.RunID.Validate, request.AttemptID.Validate, request.SubscriptionConnectionID.Validate} {
@@ -192,6 +204,9 @@ func (authority ExecutionAuthorityV2) ValidateForScope(request HarnessBindingReq
 	if err := authority.HarnessBinding.ValidateForScope(request.TenantID, request.OwnerUserID, request.RunID, request.AttemptID, authority.ExecutionPlacementV2); err != nil {
 		return err
 	}
+	if err := authority.HarnessBinding.ValidateAdmissionCostCeiling(authority.AdmissionCostCeiling); err != nil {
+		return err
+	}
 	if authority.HarnessBinding.Resource.Kind != domain.ProviderResourceSubscriptionV1 || authority.HarnessBinding.Resource.ResourceID != string(request.SubscriptionConnectionID) {
 		return domain.ValidationError{Field: "execution_authority.resource", Reason: "must match the exact selected subscription resource"}
 	}
@@ -202,6 +217,11 @@ func (authority ExecutionAuthorityV2) ValidateForScope(request HarnessBindingReq
 }
 
 func (authority ManagedExecutionAuthorityV2) ValidateForScope(request HarnessBindingRequest) error {
+	if err := domain.ValidateOwnedExecutionSourceRecord(authority.OwnedExecutionSourceRecord,
+		domain.AttemptExecutionSourceScopeV1{TenantID: request.TenantID, SessionID: request.SessionID, OwnerUserID: request.OwnerUserID, RunID: request.RunID, AttemptID: request.AttemptID},
+		authority.ExecutionPlacementV2, authority.HarnessBinding, &authority.SubstrateBinding, &authority.AdmissionCostCeiling); err != nil {
+		return err
+	}
 	for _, validate := range []func() error{
 		request.TenantID.Validate, request.OwnerUserID.Validate, request.RunID.Validate,
 		request.AttemptID.Validate, request.SubscriptionConnectionID.Validate,
@@ -240,6 +260,9 @@ func (authority ManagedExecutionAuthorityV2) ValidateForScope(request HarnessBin
 		return domain.ValidationError{Field: "managed_execution_authority.admission_cost_ceiling", Reason: "must match the substrate binding"}
 	}
 	if err := authority.AdmissionCostCeiling.ValidateForSubstrate(authority.SubstrateBinding); err != nil {
+		return err
+	}
+	if err := authority.HarnessBinding.ValidateAdmissionCostCeiling(&authority.AdmissionCostCeiling); err != nil {
 		return err
 	}
 	if err := authority.HarnessBinding.ValidateForScope(request.TenantID, request.OwnerUserID, request.RunID, request.AttemptID, authority.ExecutionPlacementV2); err != nil {

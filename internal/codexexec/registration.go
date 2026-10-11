@@ -90,8 +90,8 @@ func processArguments(model string) []string {
 	}
 }
 
-func (driver *Driver) validateHarnessBinding(binding domain.HarnessBindingV1) sessionlessharness.FailureCode {
-	if driver == nil || binding.Validate() != nil {
+func (driver *Driver) validateHarnessBinding(binding domain.HarnessBindingV2) sessionlessharness.FailureCode {
+	if driver == nil || binding.Profile != domain.HarnessExecutionSingleTurnV2 || binding.Validate() != nil {
 		return sessionlessharness.FailureHarnessBindingInvalid
 	}
 	if binding.Backend != driver.descriptor {

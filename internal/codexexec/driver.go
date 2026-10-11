@@ -218,7 +218,7 @@ func executionIdentity(request ports.ExecutionRequest) ports.ExecutionIdentity {
 }
 
 func reduceDriverEvidence(
-	binding domain.HarnessBindingV1,
+	binding domain.HarnessBindingV2,
 	parsed ProtocolResultV1,
 	process ProcessResultV1,
 	runErr error,

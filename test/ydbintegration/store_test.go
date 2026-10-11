@@ -4,6 +4,7 @@ package ydbintegration
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,9 +28,28 @@ import (
 
 var idSequence atomic.Uint64
 
+// RFC 4648 base32 is uppercase. Lowercasing is one-to-one for that alphabet
+// and preserves its entropy while satisfying canonical OCI installation IDs.
+var idProcessNonce = strings.ToLower(rand.Text())
+
+// Cutover proof tests temporarily remove shared receipts. Only the first
+// store opened for an exact database connection may run the real setup;
+// nested opens must not repair the negative control underneath those tests.
+var integrationCutoverSetups = struct {
+	sync.Mutex
+	byConnection map[string]*integrationCutoverSetup
+}{byConnection: make(map[string]*integrationCutoverSetup)}
+
+type integrationCutoverSetup struct {
+	once    sync.Once
+	failure string
+}
+
 func TestExecutionPlacementServingGateRequiresCommittedMarker(t *testing.T) {
 	store, client := openStore(t)
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	preserveAdmissionCostFixtureReceipt(t, ctx, client.DB, "execution_placement_cutover_state", "cutover_id", "execution-placement-v1-empty-cutover")
 	if _, err := client.DB.ExecContext(ctx,
 		`DELETE FROM execution_placement_cutover_state WHERE cutover_id=$1`,
 		"execution-placement-v1-empty-cutover"); err != nil {
@@ -50,10 +70,14 @@ func TestExecutionPlacementServingGateRequiresCommittedMarker(t *testing.T) {
 
 func TestHarnessBindingServingGateRequiresCommittedMarker(t *testing.T) {
 	store, client := openStore(t)
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	for _, id := range []string{"harness-binding-v1-empty-cutover", "harness-binding-v2-empty-cutover"} {
+		preserveAdmissionCostFixtureReceipt(t, ctx, client.DB, "harness_binding_cutover_state", "cutover_id", id)
+	}
 	if _, err := client.DB.ExecContext(ctx,
 		`DELETE FROM harness_binding_cutover_state WHERE cutover_id=$1`,
-		"harness-binding-v1-empty-cutover"); err != nil {
+		"harness-binding-v2-empty-cutover"); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.RequireHarnessBindingCutover(ctx); err == nil {
@@ -64,6 +88,14 @@ func TestHarnessBindingServingGateRequiresCommittedMarker(t *testing.T) {
 		"harness-binding-v1-empty-cutover", time.Now().UTC().Truncate(time.Microsecond)); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.RequireHarnessBindingCutover(ctx); err == nil {
+		t.Fatal("historical V1 marker accepted as successor cutover")
+	}
+	if _, err := client.DB.ExecContext(ctx,
+		`UPSERT INTO harness_binding_cutover_state (cutover_id,completed_at) VALUES ($1,$2)`,
+		"harness-binding-v2-empty-cutover", time.Now().UTC().Truncate(time.Microsecond)); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.RequireHarnessBindingCutover(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +103,9 @@ func TestHarnessBindingServingGateRequiresCommittedMarker(t *testing.T) {
 
 func TestManagedExecutionAuthorityV2ServingGateRequiresCommittedMarker(t *testing.T) {
 	store, client := openStore(t)
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	preserveAdmissionCostFixtureReceipt(t, ctx, client.DB, "managed_execution_authority_v2_cutover_state", "cutover_id", "managed-execution-authority-v2-empty-cutover")
 	if _, err := client.DB.ExecContext(ctx,
 		`DELETE FROM managed_execution_authority_v2_cutover_state WHERE cutover_id=$1`,
 		"managed-execution-authority-v2-empty-cutover"); err != nil {
@@ -87,6 +121,42 @@ func TestManagedExecutionAuthorityV2ServingGateRequiresCommittedMarker(t *testin
 	}
 	if err := store.RequireManagedExecutionAuthorityV2Cutover(ctx); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestAdmissionCostV2ServingGateRequiresDistinctCommittedMarker(t *testing.T) {
+	store, client := openStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	var at time.Time
+	if err := client.DB.QueryRowContext(ctx, "SELECT CurrentUtcTimestamp()").Scan(&at); err != nil || at.IsZero() {
+		t.Fatalf("database cutover clock=%v error=%v", at, err)
+	}
+	// Both rows are shared schema state. Restore their exact prior values or
+	// absence, not a newly invented successful cutover after every test.
+	for _, id := range []string{ydbpartition.AdmissionCostV2CutoverID, "managed-execution-authority-v2-empty-cutover"} {
+		preserveAdmissionCostFixtureReceipt(t, ctx, client.DB, "managed_execution_authority_v2_cutover_state", "cutover_id", id)
+	}
+	if _, err := client.DB.ExecContext(ctx,
+		`DELETE FROM managed_execution_authority_v2_cutover_state WHERE cutover_id=$1`,
+		ydbpartition.AdmissionCostV2CutoverID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.DB.ExecContext(ctx,
+		`UPSERT INTO managed_execution_authority_v2_cutover_state (cutover_id,completed_at) VALUES ($1,$2)`,
+		"managed-execution-authority-v2-empty-cutover", at); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RequireAdmissionCostV2Cutover(ctx); err == nil {
+		t.Fatal("earlier managed authority marker accepted as monetary successor")
+	}
+	if _, err := client.DB.ExecContext(ctx,
+		`UPSERT INTO managed_execution_authority_v2_cutover_state (cutover_id,completed_at) VALUES ($1,$2)`,
+		ydbpartition.AdmissionCostV2CutoverID, at); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RequireAdmissionCostV2Cutover(ctx); err != nil {
+		t.Fatalf("committed monetary successor rejected: %v", err)
 	}
 }
 
@@ -565,25 +635,44 @@ func TestConcurrentSchedulerAdmissionReservesOneSubscriptionSlot(t *testing.T) {
 }
 
 func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
-	store, client, grantIssuer := openStoreWithIssuer(t)
+	_, client := openStore(t)
 	tenantID := domain.TenantID(uniqueID("tenant-worker"))
-	now := time.Now().UTC().Truncate(time.Microsecond)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	t.Cleanup(cancel)
+	databaseNow := func() time.Time {
+		t.Helper()
+		var at time.Time
+		if err := client.DB.QueryRowContext(ctx, "SELECT CurrentUtcTimestamp()").Scan(&at); err != nil || at.IsZero() {
+			t.Fatalf("worker lifecycle database clock=%v error=%v", at, err)
+		}
+		return at.UTC()
+	}
+	grantIssuer, err := serverlessharness.NewCapabilityIssuer(databaseNow, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := ydbstore.New(client.DB, ydbstore.Options{AttemptEffectGrantIssuer: grantIssuer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := databaseNow()
 	connectionID := domain.SubscriptionConnectionID("subscription-" + string(tenantID))
 	actor := domain.ActorRef{
 		TenantID: tenantID, Frontend: domain.FrontendTelegram,
-		ExternalID: "worker-user", ID: domain.ActorID(uniqueID("actor")),
+		ExternalID: "worker-user-" + string(tenantID), ID: domain.ActorID(uniqueID("actor")),
 	}
 	conversation := domain.ConversationRef{
 		TenantID: tenantID, Frontend: domain.FrontendTelegram,
-		ExternalID: "worker-chat", ID: domain.ConversationID("conversation-" + string(tenantID)),
+		ExternalID: "worker-chat-" + string(tenantID), ID: domain.ConversationID("conversation-" + string(tenantID)),
 	}
-	if _, err := store.EnsureTelegramIdentity(context.Background(), ports.TelegramIdentityRequest{
+	identity, err := store.EnsureTelegramIdentity(ctx, ports.TelegramIdentityRequest{
 		TenantID: tenantID, Actor: actor, Conversation: conversation,
 		SubscriptionConnectionID: connectionID, Provider: "codex", ObservedAt: now,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.DB.ExecContext(context.Background(),
+	if _, err := client.DB.ExecContext(ctx,
 		`UPDATE subscription_connections
 		 SET entitlement_state = $1, quota_state = $2, updated_at = $3
 		 WHERE tenant_id = $4 AND subscription_connection_id = $5`,
@@ -592,7 +681,7 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.DB.ExecContext(context.Background(),
+	if _, err := client.DB.ExecContext(ctx,
 		`UPDATE subscription_scheduler_slots
 		 SET state = $1, updated_at = $2
 		 WHERE tenant_id = $3 AND subscription_connection_id = $4`,
@@ -601,7 +690,13 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 		t.Fatal(err)
 	}
 	ingress := ingressFixture(tenantID, uniqueID("run-worker"), 6201, now)
-	if _, err := store.IngestTelegram(context.Background(), ingress); err != nil {
+	managed := mustManagedAuthorityV2(t, tenantID, identity.UserID, ingress.Run.ID, ingress.Attempt.ID, connectionID, now)
+	ingress.Dispatch.CredentialOwnerUserID = identity.UserID
+	ingress.Dispatch.HarnessBinding = managed.HarnessBinding
+	ingress.Dispatch.ExecutionPlacementV2 = managed.ExecutionPlacementV2
+	ingress.Dispatch.SubstrateBinding = cloneSubstrateBindingForIntegration(managed.SubstrateBinding)
+	ingress.Dispatch.AdmissionCostCeiling = cloneAdmissionCostForIntegration(managed.AdmissionCostCeiling)
+	if _, err := store.IngestTelegram(ctx, ingress); err != nil {
 		t.Fatal(err)
 	}
 	reservationID := domain.QuotaReservationID(uniqueID("reservation-worker"))
@@ -613,12 +708,13 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 	})
 	// Expiry behavior is covered separately. Keep this scenario independent of
 	// runner speed while it exercises legacy loading and provider-effect fencing.
-	admissionRequest.HoldUntil = now.Add(30 * time.Minute)
-	admission, err := store.AdmitDispatch(context.Background(), admissionRequest)
+	admissionRequest.Now = databaseNow()
+	admissionRequest.HoldUntil = admissionRequest.Now.Add(30 * time.Minute)
+	admission, err := store.AdmitDispatch(ctx, admissionRequest)
 	if err != nil || !admission.Admitted {
 		t.Fatalf("admission = %+v, %v", admission, err)
 	}
-	loaded, found, err := store.LoadWorkerJob(context.Background(), tenantID, ingress.Run.ID)
+	loaded, found, err := store.LoadWorkerJob(ctx, tenantID, ingress.Run.ID)
 	if err != nil || !found {
 		t.Fatalf("load worker job = found:%t error:%v", found, err)
 	}
@@ -643,7 +739,7 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.DB.ExecContext(context.Background(),
+	if _, err := client.DB.ExecContext(ctx,
 		`UPDATE worker_jobs
 		 SET payload = CAST($1 AS JsonDocument)
 		 WHERE tenant_id = $2 AND run_id = $3`,
@@ -651,7 +747,7 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	loaded, found, err = store.LoadWorkerJob(context.Background(), tenantID, ingress.Run.ID)
+	loaded, found, err = store.LoadWorkerJob(ctx, tenantID, ingress.Run.ID)
 	if err != nil || !found {
 		t.Fatalf("load legacy worker job = found:%t error:%v", found, err)
 	}
@@ -664,12 +760,8 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 			2*loaded.Job.Limits.MaxTurns, loaded.Job.Limits.MaxContextBytes,
 		)
 	}
-	var workerNow time.Time
-	if err := client.DB.QueryRowContext(context.Background(), `SELECT CurrentUtcTimestamp()`).Scan(&workerNow); err != nil {
-		t.Fatal(err)
-	}
-	workerNow = workerNow.UTC().Truncate(time.Microsecond)
-	lease, err := store.ClaimWorkerLease(context.Background(), ports.WorkerLeaseRequest{
+	workerNow := databaseNow()
+	lease, err := store.ClaimWorkerLease(ctx, ports.WorkerLeaseRequest{
 		TenantID: tenantID, RunID: ingress.Run.ID, AttemptID: ingress.Attempt.ID,
 		LeaseID: domain.LeaseID(uniqueID("lease-worker")), WorkerID: "worker-integration",
 		Now: workerNow, ExpiresAt: workerNow.Add(30 * time.Minute),
@@ -677,14 +769,52 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.StartWorkerJob(context.Background(), loaded, lease, workerNow.Add(2*time.Second)); err != nil {
+	if err := store.StartWorkerJob(ctx, loaded, lease, databaseNow()); err != nil {
 		t.Fatal(err)
 	}
 	effectRequest := ports.ReserveAttemptEffectRequestV1{
 		TenantID: tenantID, RunID: ingress.Run.ID, AttemptID: ingress.Attempt.ID,
 		LeaseID: lease.ID, FenceToken: lease.FenceToken, PhysicalInvocationClaimID: uniqueID("physical-claim"),
 	}
-	effect, err := store.ReserveAttemptEffect(context.Background(), effectRequest)
+	// The legacy loading fixture deliberately did not create canonical access
+	// rows. Establish them through the real store before current effect authority
+	// is exercised; no missing-row legacy fallback is execution permission.
+	principal := loaded.Job.CredentialOwnerUserID
+	setupAt := databaseNow()
+	if err := store.CreateSession(ctx,
+		domain.Session{ID: loaded.Run.SessionID, TenantID: tenantID, CreatedBy: principal, Status: domain.SessionActive, CreatedAt: setupAt, UpdatedAt: setupAt},
+		domain.SessionParticipant{TenantID: tenantID, SessionID: loaded.Run.SessionID, UserID: principal, Role: domain.SessionParticipantOwner, Status: domain.SessionParticipantActive, CreatedAt: setupAt, UpdatedAt: setupAt},
+	); err != nil {
+		t.Fatal(err)
+	}
+	// A current write-principal revocation must deny a NEW effect even when the
+	// immutable job and physical lease remain valid. Restore the owned row before
+	// asserting so this fixture never leaks revocation into later lifecycle work.
+	var originalParticipant string
+	if err := client.DB.QueryRowContext(ctx, `SELECT record FROM session_participants WHERE tenant_id=$1 AND session_id=$2 AND user_id=$3`, tenantID, loaded.Run.SessionID, loaded.Job.CredentialOwnerUserID).Scan(&originalParticipant); err != nil {
+		t.Fatal(err)
+	}
+	var removedParticipant domain.SessionParticipant
+	if err := json.Unmarshal([]byte(originalParticipant), &removedParticipant); err != nil {
+		t.Fatal(err)
+	}
+	removedParticipant.Status = domain.SessionParticipantRemoved
+	removedPayload, err := json.Marshal(removedParticipant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.DB.ExecContext(ctx, `UPDATE session_participants SET status=$1,record=CAST($2 AS JsonDocument) WHERE tenant_id=$3 AND session_id=$4 AND user_id=$5`, removedParticipant.Status, removedPayload, tenantID, loaded.Run.SessionID, loaded.Job.CredentialOwnerUserID); err != nil {
+		t.Fatal(err)
+	}
+	denied, deniedErr := store.ReserveAttemptEffect(ctx, effectRequest)
+	if _, err := client.DB.ExecContext(ctx, `UPDATE session_participants SET status=$1,record=CAST($2 AS JsonDocument) WHERE tenant_id=$3 AND session_id=$4 AND user_id=$5`, domain.SessionParticipantActive, originalParticipant, tenantID, loaded.Run.SessionID, loaded.Job.CredentialOwnerUserID); err != nil {
+		t.Fatal(err)
+	}
+	if deniedErr == nil || denied.Grant != nil || denied.ObservationGrant != nil || denied.Status != "" {
+		t.Fatalf("removed current participant received new effect authority: status=%q grant=%t observation=%t error=%v", denied.Status, denied.Grant != nil, denied.ObservationGrant != nil, deniedErr)
+	}
+	assertCount(t, client, "attempt_effect_reservations", tenantID, 0)
+	effect, err := store.ReserveAttemptEffect(ctx, effectRequest)
 	if err != nil || effect.Status != ports.AttemptEffectOwnedV1 {
 		t.Fatalf("reserve first provider effect = %#v, %v", effect, err)
 	}
@@ -692,13 +822,13 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 		t.Fatalf("reserved effect authority = %#v", effect)
 	}
 	substrateEvidence := successfulSubstrateExecutionEvidence(t, grantIssuer, effect)
-	replayed, err := store.ReserveAttemptEffect(context.Background(), effectRequest)
+	replayed, err := store.ReserveAttemptEffect(ctx, effectRequest)
 	if err != nil || replayed.Status != ports.AttemptEffectReplayedV1 || replayed.Reservation != effect.Reservation {
 		t.Fatalf("exact provider effect replay = %#v, %v", replayed, err)
 	}
 	contender := effectRequest
 	contender.PhysicalInvocationClaimID = uniqueID("physical-contender")
-	reconcile, err := store.ReserveAttemptEffect(context.Background(), contender)
+	reconcile, err := store.ReserveAttemptEffect(ctx, contender)
 	if err != nil || reconcile.Status != ports.AttemptEffectReconcileOnlyV1 || reconcile.Reservation != effect.Reservation ||
 		reconcile.Grant != nil || reconcile.ObservationGrant == nil || grantIssuer.VerifyObservationGrant(*reconcile.ObservationGrant) != nil {
 		t.Fatalf("contending provider effect = %#v, %v", reconcile, err)
@@ -710,7 +840,7 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 		reconcileAuthority, reconcile.Reservation, domain.SubstrateOperationObservationV1{
 			State: domain.SubstrateOperationObservedV1, InvocationAuthority: reconcileAuthorityDigest,
 			SubstrateBinding: reconcileSubstrateDigest, PhysicalInvocationID: "integration-runtime-operation",
-			ObservedAt: now.Add(7 * time.Second),
+			ObservedAt: databaseNow(),
 		},
 	)
 	if err != nil {
@@ -719,16 +849,16 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 	reconciliationRecord := ports.AttemptEffectReconciliationRecordV1{
 		TenantID: tenantID, RunID: ingress.Run.ID, AttemptID: ingress.Attempt.ID, Evidence: reconciliationEvidence,
 	}
-	if err := store.RecordAttemptEffectReconciliation(context.Background(), reconciliationRecord); err != nil {
+	if err := store.RecordAttemptEffectReconciliation(ctx, reconciliationRecord); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RecordAttemptEffectReconciliation(context.Background(), reconciliationRecord); err != nil {
+	if err := store.RecordAttemptEffectReconciliation(ctx, reconciliationRecord); err != nil {
 		t.Fatalf("idempotent reconciliation evidence replay: %v", err)
 	}
 	divergent := effectRequest
 	divergentDigest := strings.Repeat("d", 64)
 	divergent.UpstreamIdempotencyKeyDigest = &divergentDigest
-	if _, err := store.ReserveAttemptEffect(context.Background(), divergent); err == nil {
+	if _, err := store.ReserveAttemptEffect(ctx, divergent); err == nil {
 		t.Fatal("divergent upstream idempotency authority was accepted")
 	}
 	assertCount(t, client, "attempt_effect_reservations", tenantID, 1)
@@ -742,22 +872,23 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 				"checkpoints/checkpoint.json",
 			Size: 2, SHA256: strings.Repeat("1", 64),
 		},
-		CreatedAt: workerNow.Add(3 * time.Second),
+		CreatedAt: databaseNow(),
 	}
-	if err := store.CommitWorkerEvent(context.Background(), ports.WorkerEventCommit{
+	if err := store.CommitWorkerEvent(ctx, ports.WorkerEventCommit{
 		Checkpoint: checkpoint, LeaseID: lease.ID, Fence: lease.FenceToken,
 		At: checkpoint.CreatedAt,
 	}); err != nil {
 		t.Fatal(err)
 	}
+	renewedAt := databaseNow()
 	lease, err = store.RenewWorkerLease(
-		context.Background(), tenantID, lease.ID, lease.FenceToken,
-		workerNow.Add(30*time.Second), workerNow.Add(30*time.Minute),
+		ctx, tenantID, lease.ID, lease.FenceToken,
+		renewedAt, renewedAt.Add(30*time.Minute),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	finishedAt := workerNow.Add(40 * time.Second)
+	finishedAt := databaseNow()
 	manifest := domain.ArtifactManifest{
 		ID:       domain.ArtifactManifestID(uniqueID("manifest-output")),
 		TenantID: tenantID, RunID: ingress.Run.ID, CreatedAt: finishedAt,
@@ -770,14 +901,14 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 		IdempotencyKey: domain.IdempotencyKey(uniqueID("delivery-key")),
 		CreatedAt:      finishedAt, UpdatedAt: finishedAt,
 	}
-	if err := store.CompleteLegacyTelegramWorkerJob(context.Background(), ports.LegacyTelegramWorkerCompletion{
+	if err := store.CompleteLegacyTelegramWorkerJob(ctx, ports.LegacyTelegramWorkerCompletion{
 		TenantID: tenantID, RunID: ingress.Run.ID, AttemptID: ingress.Attempt.ID,
 		ReservationID: reservationID, LeaseID: lease.ID, Fence: lease.FenceToken,
 		At: finishedAt, Manifest: manifest, Delivery: delivery, SubstrateEvidence: &substrateEvidence,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	terminal, found, err := store.LoadWorkerJob(context.Background(), tenantID, ingress.Run.ID)
+	terminal, found, err := store.LoadWorkerJob(ctx, tenantID, ingress.Run.ID)
 	if err != nil || !found {
 		t.Fatalf("load terminal worker job = found:%t error:%v", found, err)
 	}
@@ -1295,6 +1426,7 @@ func openStoreWithIssuer(t *testing.T) (*ydbstore.Store, *ydbclient.Client, *ser
 			t.Errorf("close YDB client: %v", err)
 		}
 	})
+	establishIntegrationCutovers(t, connectionString, client)
 	grantIssuer, err := serverlessharness.NewCapabilityIssuer(time.Now, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -1304,6 +1436,36 @@ func openStoreWithIssuer(t *testing.T) (*ydbstore.Store, *ydbclient.Client, *ser
 		t.Fatal(err)
 	}
 	return store, client, grantIssuer
+}
+
+func establishIntegrationCutovers(t *testing.T, connectionString string, client *ydbclient.Client) {
+	t.Helper()
+	integrationCutoverSetups.Lock()
+	setup := integrationCutoverSetups.byConnection[connectionString]
+	if setup == nil {
+		// The suite normally has one database. Bound retained state even if a
+		// misconfigured caller supplies many distinct connection strings.
+		if len(integrationCutoverSetups.byConnection) >= 16 {
+			integrationCutoverSetups.Unlock()
+			t.Fatal("integration cutover setup exceeded 16 distinct database connections")
+		}
+		setup = &integrationCutoverSetup{}
+		integrationCutoverSetups.byConnection[connectionString] = setup
+	}
+	integrationCutoverSetups.Unlock()
+	setup.once.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		// Missing receipts are created only by the unchanged production
+		// transactions proving their empty-cutover guards before backlog is
+		// enqueued. An existing incomplete database must fail honestly.
+		if _, err := ydbpartition.BackfillSchemaIndexes(ctx, client.DB, false); err != nil {
+			setup.failure = fmt.Sprintf("backfill: %.2048s", err)
+		}
+	})
+	if setup.failure != "" {
+		t.Fatalf("integration real cutover setup failed; missing predecessors with existing backlog cannot be bypassed: %s", setup.failure)
+	}
 }
 
 func successfulSubstrateExecutionEvidence(
@@ -1489,13 +1651,16 @@ func cloneSubstrateBindingForIntegration(value domain.SubstrateBindingV1) *domai
 	return &clone
 }
 
-func cloneAdmissionCostForIntegration(value domain.AdmissionCostCeilingV1) *domain.AdmissionCostCeilingV1 {
+func cloneAdmissionCostForIntegration(value domain.AdmissionCostCeilingV2) *domain.AdmissionCostCeilingV2 {
 	clone := value.Clone()
 	return &clone
 }
 
 func uniqueID(prefix string) string {
-	return fmt.Sprintf("%s-%d", prefix, idSequence.Add(1))
+	// A process-local counter alone collides with retained data when a focused
+	// native test binary runs again. The nonce isolates separate processes; the
+	// counter retains deterministic uniqueness/order within this one process.
+	return fmt.Sprintf("%s-%s-%d", prefix, idProcessNonce, idSequence.Add(1))
 }
 
 func assertCount(

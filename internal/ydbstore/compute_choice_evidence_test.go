@@ -13,7 +13,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/domain"
 )
 
-func computeChoiceEvidenceFixture(t *testing.T, at time.Time, pin computeChoiceAttachedPin) (domain.HarnessBindingV1, domain.ProviderEvidenceBundleV1) {
+func computeChoiceEvidenceFixture(t *testing.T, at time.Time, pin computeChoiceAttachedPin) (domain.HarnessBindingV2, domain.ProviderEvidenceBundleV1) {
 	t.Helper()
 	backend := domain.HarnessBackendDescriptorV1{HarnessKind: domain.HarnessKindSessionlessV1, HarnessVersion: "1", BackendKind: domain.HarnessBackendCodexExecV1, ArtifactKind: domain.HarnessArtifactExecutableV1, ArtifactDigest: strings.Repeat("a", 64), NativeProtocolVersion: "1", BackendProfileDigest: strings.Repeat("b", 64), ProviderContractKind: domain.ProviderContractInvocationV1, CredentialDeliveryKind: domain.ProviderCredentialDeliveryFileV1}
 	resource := domain.ProviderResourceBindingV1{Kind: domain.ProviderResourceSubscriptionV1, ResourceID: string(pin.subscriptionID), OwnerUserID: pin.ownerUserID, Revision: 1, CredentialMode: domain.ProviderCredentialInvocationV1, CredentialGeneration: 1}
@@ -27,12 +27,12 @@ func computeChoiceEvidenceFixture(t *testing.T, at time.Time, pin computeChoiceA
 		Price:      domain.ProviderPriceObservationV1{Version: 1, Scope: scope, State: domain.ProviderEvidenceUnknownV1, ModelVendorID: "openai", ModelID: "reviewed-model", ObservedAt: observed, ExpiresAt: expires},
 		Policy:     domain.ProviderPolicyEvidenceV1{Version: 1, Scope: scope, PolicyID: "policy-v1", Revision: 1, DecisionOwner: "operator-review", EvidenceSource: "reviewed-source", Verdict: domain.ProviderPolicyConditionalV1, AllowedDataClasses: []domain.ProviderDataClassV1{domain.ProviderDataPrivateV1}, ObservedAt: observed, ExpiresAt: expires},
 	}
-	template := domain.HarnessBindingV1{Version: 1, TenantID: pin.tenantID, OwnerUserID: pin.ownerUserID, Backend: backend, Resource: resource, ModelVendorID: "openai", ModelID: "reviewed-model", InputDataClass: domain.ProviderDataPrivateV1}
+	template := domain.HarnessBindingV2{Version: domain.HarnessBindingVersionV2, Profile: domain.HarnessExecutionSingleTurnV2, TenantID: pin.tenantID, OwnerUserID: pin.ownerUserID, Backend: backend, Resource: resource, ModelVendorID: "openai", ModelID: "reviewed-model", InputDataClass: domain.ProviderDataPrivateV1}
 	sealComputeChoiceEvidence(t, &template, &bundle)
 	return template, bundle
 }
 
-func sealComputeChoiceEvidence(t *testing.T, template *domain.HarnessBindingV1, bundle *domain.ProviderEvidenceBundleV1) {
+func sealComputeChoiceEvidence(t *testing.T, template *domain.HarnessBindingV2, bundle *domain.ProviderEvidenceBundleV1) {
 	t.Helper()
 	catalog, err := bundle.Catalog.Digest()
 	if err != nil {

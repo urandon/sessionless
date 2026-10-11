@@ -22,11 +22,14 @@ type WorkerJob struct {
 	AllowedMCPServers     []string                `json:"allowed_mcp_servers,omitempty"`
 	CredentialOwnerUserID UserID                  `json:"credential_owner_user_id,omitempty"`
 	ExecutionPlacementV2  ExecutionPlacementV2    `json:"execution_placement"`
-	HarnessBinding        HarnessBindingV1        `json:"harness_binding"`
+	HarnessBinding        HarnessBindingV2        `json:"harness_binding"`
 	SubstrateBinding      *SubstrateBindingV1     `json:"substrate_binding,omitempty"`
-	AdmissionCostCeiling  *AdmissionCostCeilingV1 `json:"admission_cost_ceiling,omitempty"`
-	Limits                ProductLimits           `json:"limits"`
-	Origin                *FrontendEventOrigin    `json:"origin,omitempty"`
+	AdmissionCostCeiling  *AdmissionCostCeilingV2 `json:"admission_cost_ceiling,omitempty"`
+	// Original strict ingress bytes; missing final admission is NEVER recovered
+	// from this historical job projection.
+	OwnedExecutionSourceRecord string               `json:"owned_execution_source_record,omitempty"`
+	Limits                     ProductLimits        `json:"limits"`
+	Origin                     *FrontendEventOrigin `json:"origin,omitempty"`
 	// Compatibility bridge for legacy Telegram jobs until #37 projects results from the
 	// canonical session stream.
 	DeliveryChat     TelegramChatRef `json:"delivery_chat"`
@@ -99,6 +102,14 @@ func (job WorkerJob) ValidateForRun(run Run) error {
 	if err := job.HarnessBinding.ValidateForScope(
 		job.TenantID, job.CredentialOwnerUserID, job.RunID, job.AttemptID, job.ExecutionPlacementV2,
 	); err != nil {
+		return err
+	}
+	if err := job.HarnessBinding.ValidateAdmissionCostCeiling(job.AdmissionCostCeiling); err != nil {
+		return err
+	}
+	if err := ValidateOwnedExecutionSourceRecord(job.OwnedExecutionSourceRecord,
+		AttemptExecutionSourceScopeV1{TenantID: job.TenantID, SessionID: run.SessionID, OwnerUserID: job.CredentialOwnerUserID, RunID: job.RunID, AttemptID: job.AttemptID},
+		job.ExecutionPlacementV2, job.HarnessBinding, job.SubstrateBinding, job.AdmissionCostCeiling); err != nil {
 		return err
 	}
 	if err := job.Limits.Validate(); err != nil {

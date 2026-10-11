@@ -1,6 +1,6 @@
 # Sessionless owned agent harness minimum
 
-Version: 0.2.1 draft, 2026-10-10. Design owner: [#180](https://gitcode.com/urandon/sessionless/issues/180); implementation parent: [#176](https://gitcode.com/urandon/sessionless/issues/176). Independent review and explicit design acceptance under the project protocol are required before implementation decomposition. This draft does not enable a provider, MCP connection or cloud profile.
+Version: 0.2.1, accepted engineering design, 2026-10-10. Design owner: [#180](https://gitcode.com/urandon/sessionless/issues/180); implementation parent: [#176](https://gitcode.com/urandon/sessionless/issues/176). The exact package at `42139dfb5cefb266adb77f221c0743b53cfb5217` received independent original-goal review, exact-head CI and guarded merge in [!160](https://gitcode.com/urandon/sessionless/pull/160), under the owner's agreed-MVP engineering delegation. The linked implementation checklist is registered in #176. No additional manual human PR sign-off is required; unresolved findings and exact-head verification remain gates. Engineering acceptance does not enable a provider, MCP connection or cloud profile.
 
 ## Decision and scope
 
@@ -34,6 +34,12 @@ Construct digests in one acyclic order: independent tool/data policy and resourc
 Introduce one canonical successor `HarnessBindingV2` sealing this digest. Its explicit owned-agent profile requires a nonempty agent policy; other reviewed backend kinds explicitly exclude it. No V1 decoder fallback, zero-value owned profile or silent migration is allowed. Update all affected constructors, persisted dispatch/jobs, digest validation and conformance fixtures in a bounded writer-first, empty-backlog cutover. Existing delivered behavior is retained through the canonical successor, not a legacy alias. Do not invent a second owner/resource selector in ExecutionRequest.
 
 Operation admission must reload current Run/Attempt/lease/fence, cancellation, resource generation/revocation, profile, policy, price and proxy/allocation freshness. The deadline is the minimum of all authority windows and the remaining attempt/call budget. A lease renewal, where needed, uses the existing lease port; progress never renews time or authority by itself. Failed freshness checks stop before the next effect.
+
+The [current authority extension](owned-harness-current-authority.md) specifies
+the #189 engineering draft for trusted current registration, explicit funding
+and post-claim allocation/proxy observation. It supplies this existing
+requirement, not a new MVP feature or runtime activation. Its independent review
+and concrete persistence/integration evidence remain required.
 
 The prepared invocation is consumed once at entry to the reviewed loop boundary. A new `ProviderLoopSessionV1` inside that trusted boundary materializes the invocation credential once, owns its bounded lifetime and releases it under independent cleanup. Each model operation is authorized separately within that session. This is a required versioned extension: do not call the existing one-shot BoundaryV1 repeatedly, retain its callback, or weaken its at-most-once materializer. Neither the model nor the MCP client receives provider credential bytes. The loop session has no endpoint/model override and cannot outlive the original invocation authority.
 
@@ -124,18 +130,18 @@ Deterministic tests establish contract behavior, not summary fidelity or useful 
 
 Keep the owned-agent profile disabled until accepted design, deterministic conformance, independent exact-head review/CI, measured substrate/egress proof #90, two-owner #92 and product activation #175 are proven. Disablement denies new work while exact cancellation/reconciliation remains available. Rollback never changes endpoint/model implicitly or replays an effect. #35/#13/#14 join both MVP paths; neither can disappear because the other is easier.
 
-## Design acceptance and implementation handoff
+## Accepted engineering choices and implementation handoff
 
-Owner decisions requested: accept the sequential/no-replay minimum; public Docs MCP plus bounded web-search design/data boundary and proposed initial search provider; derived-summary policy with explicit no-fit/unsupported outcomes; proposed finite ceilings subject to exact-profile calibration; and required canonical authority/egress extensions. The owner's search scope request is not acceptance of this exact design or paid/credentialed enablement. No specific paid model or cloud profile is selected by this draft.
+The independently reviewed engineering package accepts the sequential/no-replay minimum; public Docs MCP plus bounded web-search design/data boundary and initial search-provider candidate; derived-summary policy with explicit no-fit/unsupported outcomes; finite ceilings subject to exact-profile calibration; and required canonical authority/egress extensions. This is the agreed-MVP engineering handoff recorded in #176, not another human PR/design approval gate. Exact-profile calibration, credentials, terms, paid calls and cloud enablement retain their separate authority and proof requirements; no specific paid model or cloud profile is activated.
 
-After independent review and explicit acceptance of an exact version, reuse #176 and create real linked implementation children in this order:
+The exact-version review, CI and merge have completed. #176 now owns these real linked implementation children in dependency order:
 
-1. Canonical policy/binding and subordinate operation persistence, budgets and cutover.
-2. Trusted multi-operation provider session, credential custody and aggregate evidence.
-3. Sequential loop and normalized error/terminal projection.
-4. Derived compaction storage/publication/restore and fidelity fixtures.
-5. Frozen MCP client/grant, bounded search adapter/grant/credential/cost contracts and extended attested proxy transport; a named query-consent WebUI/BFF/worker bridge with durable receipt and same-claim expiry/cancellation tests; source citation manifest and WebUI projection. Consent is a search-activation prerequisite, not resumed execution authority.
-6. Joined deterministic conformance and quality experiment preparation.
+1. [#189](https://gitcode.com/urandon/sessionless/issues/189): canonical policy/binding and subordinate operation persistence, budgets, typed consent/storage/receipt contracts and cutover.
+2. [#190](https://gitcode.com/urandon/sessionless/issues/190): trusted multi-operation provider session, credential custody and aggregate evidence.
+3. [#191](https://gitcode.com/urandon/sessionless/issues/191): sequential loop and normalized error/terminal projection.
+4. [#192](https://gitcode.com/urandon/sessionless/issues/192): derived compaction storage/publication/restore and fidelity fixtures.
+5. [#193](https://gitcode.com/urandon/sessionless/issues/193): frozen MCP client/grant and attested transport; [#194](https://gitcode.com/urandon/sessionless/issues/194): bounded search adapter/grant/credential/cost contracts and proxy transport; [#195](https://gitcode.com/urandon/sessionless/issues/195): exact-query consent WebUI/BFF/original-worker bridge; [#196](https://gitcode.com/urandon/sessionless/issues/196): source citations and WebUI projection. Consent is a search-activation prerequisite, not resumed execution authority. #194 tests #189 receipts with the isolated fixture store and remains disabled until #195.
+6. [#197](https://gitcode.com/urandon/sessionless/issues/197): joined deterministic conformance and quality experiment preparation.
 7. Exact-profile live/substrate/two-owner acceptance and WebUI activation through existing #90/#92/#175.
 
-These are decomposition outcomes, not created issue IDs or completed checklist rows. Each child must name this accepted version, #176, predecessor evidence, owning milestone, work-type/domain/priority labels and its bounded tests/non-goals. Sync #178/#179/#180 and release parents; correct and re-review superseded optional-track wording in PR !159 before merge. Until acceptance, #176 remains pending implementation decomposition.
+Registration is not completion: each actual child retains its acceptance checklist, this accepted version, #176, predecessor evidence, owning milestone, work-type/domain/priority labels and bounded tests/non-goals. Synchronize authoritative implementation receipts with #176 and release parents. Historical pending-decomposition/manual-signoff wording is superseded by !160 and the #176 handoff; both required MVP execution paths remain unchanged.

@@ -219,7 +219,10 @@ func (registry *SubstrateRegistryV1) Prepare(
 	if registry.issuer.VerifyGrant(grant) != nil {
 		return PreparedInvocation{}, substrateErrorV1{code: SubstrateFailureAuthorityInvalidV1}
 	}
-	allocation, err := registry.Preflight(ctx, grant.Authority)
+	if registry.issuer.ConsumePreparationGrant(grant) != nil {
+		return PreparedInvocation{}, substrateErrorV1{code: SubstrateFailureAuthorityInvalidV1}
+	}
+	allocation, err := registry.preflight(ctx, grant.Authority)
 	if err != nil {
 		return PreparedInvocation{}, err
 	}
@@ -287,7 +290,12 @@ func (reconciliation *preparedReconciliationV1) Reconcile(ctx context.Context) (
 	return evidence, nil
 }
 
-func (registry *SubstrateRegistryV1) Preflight(ctx context.Context, authority domain.ServerlessInvocationAuthorityV1) (domain.PreparedAllocationV1, error) {
+// Physical preflight is private: raw structural authority is not permission
+// to allocate. The sole caller burns its authenticated parent right first.
+func (registry *SubstrateRegistryV1) preflight(ctx context.Context, authority domain.ServerlessInvocationAuthorityV1) (domain.PreparedAllocationV1, error) {
+	if ctx == nil || ctx.Err() != nil {
+		return domain.PreparedAllocationV1{}, substrateErrorV1{code: SubstrateFailureAuthorityInvalidV1}
+	}
 	registration, _, err := registry.resolve(authority, true)
 	if err != nil {
 		return domain.PreparedAllocationV1{}, err
@@ -422,6 +430,12 @@ func (registry *SubstrateRegistryV1) resolve(authority domain.ServerlessInvocati
 	}
 	if err := authority.Validate(); err != nil {
 		return SubstrateRegistrationV1{}, "", substrateErrorV1{code: SubstrateFailureAuthorityInvalidV1}
+	}
+	// All current substrate registrations are reviewed for one-shot execution.
+	// Deny owned-agent authority before allocation/preflight as well as cancel
+	// and reconcile; a matching substrate is not a multi-operation adapter.
+	if authority.HarnessBinding.Profile != domain.HarnessExecutionSingleTurnV2 {
+		return SubstrateRegistrationV1{}, "", substrateErrorV1{code: SubstrateFailureUnsupportedV1}
 	}
 	digest, _ := authority.SubstrateBinding.Digest()
 	registration, found := registry.registrations[digest]

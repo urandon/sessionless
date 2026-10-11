@@ -838,7 +838,7 @@ func attachedWorkerOfferForDrainWithPayload(t *testing.T, store *ydbstore.Store,
 	return attachedWorkerOfferForDrainWithPayloadAndBinding(t, store, client, worker, connection, now, suffix, contextBody, artifactBody, nil, maxRuntime...)
 }
 
-func attachedWorkerOfferForDrainWithPayloadAndBinding(t *testing.T, store *ydbstore.Store, client *ydbclient.Client, worker domain.AttachedWorker, connection domain.AttachedWorkerConnection, now time.Time, suffix string, contextBody, artifactBody []byte, amendBinding func(*domain.HarnessBindingV1), maxRuntime ...time.Duration) ports.AttachedWorkerAttemptResult {
+func attachedWorkerOfferForDrainWithPayloadAndBinding(t *testing.T, store *ydbstore.Store, client *ydbclient.Client, worker domain.AttachedWorker, connection domain.AttachedWorkerConnection, now time.Time, suffix string, contextBody, artifactBody []byte, amendBinding func(*domain.HarnessBindingV2), maxRuntime ...time.Duration) ports.AttachedWorkerAttemptResult {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

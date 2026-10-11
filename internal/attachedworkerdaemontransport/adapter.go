@@ -138,6 +138,8 @@ func (profile LocalProfileV1) String() string {
 func (profile LocalProfileV1) GoString() string { return profile.String() }
 
 type Config struct {
+	// Installed only by the normal pinned-runtime composition.
+	preparedReceipt        *preflightRunner
 	Profile                LocalProfileV1
 	CapabilityManifest     *attachedworkerprotocol.CapabilityManifestV1
 	ReceiptPublisher       ReceiptPublisher
@@ -889,6 +891,11 @@ func (adapter *Adapter) completeOwned(
 		})
 		if drainedErr != nil || drainedResponse != nil {
 			return errors.Join(ErrReconciliationRequired, classifySessionError(drainedErr))
+		}
+	}
+	if adapter.config.preparedReceipt != nil {
+		if err := adapter.config.preparedReceipt.retireReceipt(identity); err != nil {
+			return errors.Join(ErrReconciliationRequired, err)
 		}
 	}
 	adapter.mu.Lock()

@@ -51,6 +51,9 @@ func (invocation ProcessInvocationV1) String() string {
 func (invocation ProcessInvocationV1) GoString() string { return invocation.String() }
 
 type ProcessResultV1 struct {
+	// original is minted only by the concrete boundary after final arbitration.
+	// Neither a public ProcessBoundary nor semantic reduction can manufacture it.
+	original                     *preparedObservation
 	ExitCode                     int
 	StdoutBytes                  int
 	StderrBytes                  int

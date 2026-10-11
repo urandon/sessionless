@@ -49,6 +49,7 @@ type aw07DaemonChildInput struct {
 	ProfilePath        string `json:"profile_path"`
 	ClockNanos         int64  `json:"clock_nanos"`
 	TestProvider       bool   `json:"test_provider,omitempty"`
+	PreparedCodex      bool   `json:"prepared_codex,omitempty"`
 	ProviderResource   string `json:"provider_resource,omitempty"`
 	ProviderGeneration uint64 `json:"provider_generation,omitempty"`
 }
@@ -90,11 +91,16 @@ func TestAW07JoinedDaemonChild(t *testing.T) {
 			t.Fatal(err)
 		}
 		credentials := &aw07TestCredentialLifecycle{root: credentialRoot,
-			owner: profile.OwnerUserID, resource: input.ProviderResource, generation: input.ProviderGeneration, now: now}
-		owner, err = attachedworkeractivation.ConnectTestProviderWithClock(ctx, store, profile, now, credentials, credentialRoot,
-			func(identity attachedworkerdaemon.InvocationIdentity, result attachedworkerdaemon.InvocationResult, runErr error, status domain.AttachedWorkerTerminalStatus) (attachedworkeroutput.Candidate, error) {
-				return attachedworkeroutput.Candidate{Status: status, Summary: "test provider result for " + string(identity.OwnerUserID)}, nil
-			})
+			owner: profile.OwnerUserID, resource: input.ProviderResource, generation: input.ProviderGeneration, now: now, requireRotation: input.PreparedCodex}
+		if input.PreparedCodex {
+			prepared := aw133PreparedConfig(t, profile.LocalProfile.Executable, now)
+			owner, err = attachedworkeractivation.ConnectTestPreparedCodexWithClock(ctx, store, profile, now, credentials, credentialRoot, prepared)
+		} else {
+			owner, err = attachedworkeractivation.ConnectTestProviderWithClock(ctx, store, profile, now, credentials, credentialRoot,
+				func(identity attachedworkerdaemon.InvocationIdentity, result attachedworkerdaemon.InvocationResult, runErr error, status domain.AttachedWorkerTerminalStatus) (attachedworkeroutput.Candidate, error) {
+					return attachedworkeroutput.Candidate{Status: status, Summary: "test provider result for " + string(identity.OwnerUserID)}, nil
+				})
+		}
 	} else {
 		owner, err = attachedworkeractivation.ConnectTestSyntheticWithClock(ctx, store, profile, now)
 	}
@@ -430,6 +436,13 @@ func aw07PrepareDaemonInstallationWithInputLimit(t *testing.T, root, origin stri
 	worker domain.AttachedWorker, private ed25519.PrivateKey, now time.Time, testProvider bool, maxInputBytes int,
 ) aw07DaemonInstallation {
 	t.Helper()
+	return aw07PrepareDaemonInstallationMode(t, root, origin, trust, worker, private, now, testProvider, false, maxInputBytes)
+}
+
+func aw07PrepareDaemonInstallationMode(t *testing.T, root, origin string, trust []byte,
+	worker domain.AttachedWorker, private ed25519.PrivateKey, now time.Time, testProvider, preparedCodex bool, maxInputBytes int,
+) aw07DaemonInstallation {
+	t.Helper()
 	for _, dir := range []string{root, filepath.Join(root, "oci-config"), filepath.Join(root, "activation"),
 		filepath.Join(root, "materialized"), filepath.Join(root, "scratch")} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -454,6 +467,27 @@ func aw07PrepareDaemonInstallationWithInputLimit(t *testing.T, root, origin stri
 	providerEnv := ""
 	if testProvider {
 		providerEnv = `,"SESSIONLESS_PROVIDER_HOME=` + filepath.Join(root, "credentials", "handle-"+string(worker.OwnerUserID)) + `"`
+	}
+	harnessPath := filepath.Join(root, "pinned-oci")
+	harnessArguments := []string{}
+	commandJSON := "[]"
+	if preparedCodex {
+		harnessPath = filepath.Join(root, "pinned-codex-fixture")
+		harnessArguments = aw133PreparedArguments()
+		encoded, err := json.Marshal(harnessArguments)
+		if err != nil {
+			t.Fatal(err)
+		}
+		commandJSON = string(encoded)
+		credentialDir := filepath.Join(root, "credentials", "handle-"+string(worker.OwnerUserID))
+		providerEnv = `,"CODEX_HOME=` + credentialDir + `"`
+		// The fake engine actually executes this pinned fake provider. This
+		// remains a credential-free fixture, not platform or egress evidence.
+		script := "#!/bin/sh\n[ -f \"$CODEX_HOME/auth.json\" ] || exit 81\n[ -z \"$OPENAI_API_KEY\" ] || exit 82\nwhile IFS= read -r line; do :; done\nprintf '%s' '{\"rotated\":true}' >\"$CODEX_HOME/auth.json\"\nprintf '%s\\n' '{\"type\":\"thread.started\",\"thread_id\":\"native-fixture\"}' '{\"type\":\"turn.started\"}' '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"test provider result for " + string(worker.OwnerUserID) + "\"}}' '{\"type\":\"turn.completed\"}'\n"
+		if err := os.WriteFile(harnessPath, []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		startAction = "IFS= read -r workdir < '" + root + "/workdir'\n    cd \"$workdir\" || exit 83\n    CODEX_HOME='" + credentialDir + "' '" + harnessPath + "' " + strings.Join(harnessArguments, " ") + " || exit 84\n    rotated=\n    IFS= read -r rotated < '" + credentialDir + "/auth.json' || [ -n \"$rotated\" ] || exit 85\n    printf '%s' \"$rotated\" >\"${workdir%/work}/.sessionless-auth-stage\""
 	}
 	cliBytes := []byte(strings.NewReplacer("@ROOT@", root, "@IMAGE@", image, "@SLEEP@", sleepPath,
 		"@START_ACTION@", startAction, "@PROVIDER_ENV@", providerEnv).Replace(`#!/bin/sh
@@ -512,11 +546,18 @@ case "$1:$2" in
   *) exit 97;;
 esac
 `))
+	if preparedCodex {
+		cliBytes = bytes.ReplaceAll(cliBytes, []byte(`"Cmd":[]`), []byte(`"Cmd":`+commandJSON))
+	}
 	cli := filepath.Join(root, "pinned-oci")
 	if err := os.WriteFile(cli, cliBytes, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	cliDigest := sha256.Sum256(cliBytes)
+	harnessDigest, err := attachedworkerdaemon.DigestExecutable(harnessPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	capability := attachedworkerprotocol.CapabilityManifestV1{
 		WorkerID: string(worker.ID), EnrollmentGeneration: worker.EnrollmentGeneration, Revision: 1,
 		ProtocolOffer: attachedworkerprotocol.VersionOfferV1{
@@ -525,7 +566,7 @@ esac
 		},
 		OperatingSystem: runtime.GOOS, Architecture: runtime.GOARCH, BuildID: "aw07-daemon-test",
 		HarnessName: "synthetic", HarnessVersion: "1", HarnessSurface: attachedworkerprotocol.HarnessSurfaceSessionTurn,
-		HarnessExecutableDigest: append([]byte(nil), cliDigest[:]...),
+		HarnessExecutableDigest: append([]byte(nil), harnessDigest[:]...),
 		IsolationEvidence: []attachedworkerprotocol.IsolationEvidenceV1{
 			attachedworkerprotocol.IsolationFilesystemBoundary, attachedworkerprotocol.IsolationNetworkBoundary,
 			attachedworkerprotocol.IsolationProcessBoundary,
@@ -560,7 +601,7 @@ esac
 			Boundary: boundary, Image: image, UserID: 1000, GroupID: 1000, DiskBytes: 1 << 30,
 			CredentialFileBytes: 1024, MemoryBytes: 64 << 20, PIDsLimit: 64, StopSeconds: 10,
 		},
-		Harness:   attachedworkerlocal.HarnessConfigV1{Executable: cli, SHA256: hex.EncodeToString(cliDigest[:]), Arguments: []string{}},
+		Harness:   attachedworkerlocal.HarnessConfigV1{Executable: harnessPath, SHA256: hex.EncodeToString(harnessDigest[:]), Arguments: harnessArguments},
 		Lifecycle: attachedworkerlocal.LifecycleActive, CreatedAt: now.Add(-time.Minute), UpdatedAt: now.Add(-time.Minute),
 	}
 	secret := attachedworkerlocal.SecretRecordV1{
@@ -591,7 +632,7 @@ esac
 		ExpectedWorkerRevision: worker.Revision, Capability: capability,
 		LocalProfile: attachedworkerdaemontransport.LocalProfileV1{
 			Name: "synthetic", CapabilityDigest: domain.AttachedWorkerCapabilityDigest(hex.EncodeToString(capabilityDigest)),
-			Executable: cli, ExecutableDigest: attachedworkerdaemon.ExecutableDigest(cliDigest),
+			Executable: harnessPath, ExecutableDigest: harnessDigest, Arguments: harnessArguments,
 		},
 		TLSRootPEMPath: trustPath, MaterializationRoot: filepath.Join(root, "materialized"),
 		ScratchRoot: filepath.Join(root, "scratch"), MaxInputBytes: maxInputBytes,

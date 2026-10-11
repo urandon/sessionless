@@ -16,11 +16,12 @@ import (
 // This lifecycle can exist only inside the YDB gate's test binary. It issues
 // no real provider secret and records only owner-scoped lifecycle milestones.
 type aw07TestCredentialLifecycle struct {
-	root       string
-	owner      domain.UserID
-	resource   string
-	generation uint64
-	now        func() time.Time
+	root            string
+	owner           domain.UserID
+	resource        string
+	generation      uint64
+	now             func() time.Time
+	requireRotation bool
 }
 
 func (lifecycle *aw07TestCredentialLifecycle) Issue(_ context.Context, request ports.CredentialIssueRequest) (ports.CredentialHandle, error) {
@@ -66,6 +67,13 @@ func (lifecycle *aw07TestCredentialLifecycle) WriteBack(_ context.Context, handl
 	if err := lifecycle.check(handle); err != nil || materialization.Validate() != nil ||
 		materialization.RootDir != filepath.Join(lifecycle.root, handle.HandleID) {
 		return ports.CredentialWriteBackResult{}, errors.New("test provider writeback authority mismatch")
+	}
+	if lifecycle.requireRotation {
+		body, err := os.ReadFile(materialization.AuthFile)
+		defer clear(body)
+		if err != nil || string(body) != `{"rotated":true}` {
+			return ports.CredentialWriteBackResult{}, errors.New("actual pinned fixture rotation missing")
+		}
 	}
 	return ports.CredentialWriteBackResult{Generation: lifecycle.generation}, lifecycle.record("writeback")
 }

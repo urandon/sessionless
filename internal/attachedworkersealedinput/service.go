@@ -15,6 +15,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemon"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemontransport"
 	"gitcode.com/urandon/sessionless/internal/attachedworkertransport"
+	"gitcode.com/urandon/sessionless/internal/codexexec"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
@@ -196,8 +197,12 @@ func (service *Service) testProviderCredential(ctx context.Context, request atta
 	if service.testProviderNow == nil || issue.ValidateAt(service.testProviderNow()) != nil {
 		return nil, ErrUnauthorized
 	}
+	home := "SESSIONLESS_PROVIDER_HOME"
+	if job.HarnessBinding.Backend.BackendKind == domain.HarnessBackendCodexExecV1 {
+		home = codexexec.CredentialHomeEnvironmentV1
+	}
 	return &attachedworkerdaemon.CredentialInvocation{IssueRequest: issue,
-		HomeEnvironment: "SESSIONLESS_PROVIDER_HOME", ExpectedBindingGeneration: job.HarnessBinding.Resource.CredentialGeneration}, nil
+		HomeEnvironment: home, ExpectedBindingGeneration: job.HarnessBinding.Resource.CredentialGeneration}, nil
 }
 
 func sameJob(request attachedworkerdaemontransport.MaterializationRequestV1, state ports.WorkerJobState) bool {

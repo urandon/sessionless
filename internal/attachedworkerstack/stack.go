@@ -8,15 +8,21 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
+	"sync"
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemon"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerlocal"
 	"gitcode.com/urandon/sessionless/internal/attachedworkeroci"
+	"gitcode.com/urandon/sessionless/internal/attachedworkeroutput"
+	"gitcode.com/urandon/sessionless/internal/attachedworkersession"
+	"gitcode.com/urandon/sessionless/internal/codexexec"
+	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
 
@@ -33,6 +39,8 @@ var (
 // Config contains only explicit operator-owned local bounds. No value is
 // discovered from the process environment, HOME, PATH, or Docker contexts.
 type Config struct {
+	// Nil preserves the ordinary stack. Shipped configurations remain nil.
+	PreparedCodex           *codexexec.Config
 	ScratchRoot             string
 	Timeout                 time.Duration
 	TerminationGrace        time.Duration
@@ -66,13 +74,110 @@ func (evidence EvidenceV1) GoString() string { return evidence.String() }
 // wrapper rejects any invocation whose executable, digest, or argv differs
 // from the exact installed manifest.
 type Stack struct {
-	runner   attachedworkerdaemon.Runner
-	evidence EvidenceV1
+	mu              sync.Mutex
+	runner          attachedworkerdaemon.Runner
+	evidence        EvidenceV1
+	prepared        *codexexec.PreparedAttachedWorkerRunnerV1
+	scope           preparedStackScope
+	connection      *attachedworkersession.Session
+	boundID         domain.AttachedWorkerConnectionID
+	boundCapability domain.AttachedWorkerCapabilityDigest
+	now             func() time.Time
+	closed          bool
+}
+
+type preparedStackScope struct {
+	tenant                 domain.TenantID
+	owner                  domain.UserID
+	worker                 domain.AttachedWorkerID
+	enrollment, connection uint64
+}
+
+func (stack *Stack) String() string {
+	return fmt.Sprintf("Stack{evidence:%s private:[redacted]}", stack.Evidence())
+}
+func (stack *Stack) GoString() string { return stack.String() }
+
+func (stack *Stack) ReceiptCandidate(identity attachedworkerdaemon.InvocationIdentity, result attachedworkerdaemon.InvocationResult, err error, status domain.AttachedWorkerTerminalStatus) (attachedworkeroutput.Candidate, error) {
+	if stack == nil || stack.prepared == nil {
+		return attachedworkeroutput.Candidate{}, ErrInvalidConfiguration
+	}
+	return stack.prepared.ReceiptCandidate(identity, result, err, status)
+}
+func (stack *Stack) RetireReceipt(identity attachedworkerdaemon.InvocationIdentity) error {
+	if stack == nil || stack.prepared == nil {
+		return ErrInvalidConfiguration
+	}
+	return stack.prepared.RetireReceipt(identity)
+}
+func (stack *Stack) Close(ctx context.Context) error {
+	if stack == nil {
+		return ErrInvalidConfiguration
+	}
+	if stack.prepared == nil {
+		return nil
+	}
+	stack.mu.Lock()
+	stack.closed = true
+	stack.connection = nil
+	stack.mu.Unlock()
+	return stack.prepared.Close(ctx)
+}
+
+// BindPreparedConnection retains only the original authenticated Connector
+// Session. A snapshot or a caller assertion cannot install connection authority.
+// The preflight manifest remains fixed; the Connector owns its single increment.
+func (stack *Stack) BindPreparedConnection(session *attachedworkersession.Session) error {
+	if stack == nil || stack.prepared == nil || session == nil {
+		return ErrInvalidConfiguration
+	}
+	stack.mu.Lock()
+	defer stack.mu.Unlock()
+	if stack.closed || stack.connection != nil {
+		return ErrReconciliationRequired
+	}
+	snapshot := session.Snapshot()
+	if !stack.validPreparedConnection(snapshot) {
+		return ErrReconciliationRequired
+	}
+	stack.connection = session
+	stack.boundID, stack.boundCapability = snapshot.ConnectionID, snapshot.CapabilityDigest
+	return nil
+}
+
+// Called under mu; every Run reads the current original Session, never a cached
+// readiness bit. Authentication and lease lifetimes are not extended here.
+func (stack *Stack) validPreparedConnection(snapshot attachedworkersession.SnapshotV1) bool {
+	return stack.now != nil && stack.scope.connection != math.MaxUint64 &&
+		snapshot.Version == attachedworkersession.SnapshotVersionV1 && snapshot.State == attachedworkersession.StateReady &&
+		snapshot.TenantID == stack.scope.tenant && snapshot.OwnerUserID == stack.scope.owner &&
+		snapshot.WorkerID == stack.scope.worker && snapshot.EnrollmentGeneration == stack.scope.enrollment &&
+		snapshot.ConnectionGeneration == stack.scope.connection+1 && snapshot.ProtocolVersion == 1 &&
+		snapshot.ConnectionID.Validate() == nil && snapshot.CapabilityDigest.Validate() == nil &&
+		snapshot.AuthenticationExpires != nil && stack.now().Before(*snapshot.AuthenticationExpires)
 }
 
 func (stack *Stack) Run(ctx context.Context, invocation attachedworkerdaemon.Invocation) (attachedworkerdaemon.InvocationResult, error) {
 	if stack == nil || stack.runner == nil {
 		return attachedworkerdaemon.InvocationResult{}, ErrInvalidConfiguration
+	}
+	if stack.prepared != nil {
+		stack.mu.Lock()
+		if stack.closed || stack.connection == nil {
+			stack.mu.Unlock()
+			return attachedworkerdaemon.InvocationResult{}, ErrReconciliationRequired
+		}
+		snapshot := stack.connection.Snapshot()
+		current := stack.validPreparedConnection(snapshot) && snapshot.ConnectionID == stack.boundID && snapshot.CapabilityDigest == stack.boundCapability
+		input := invocation.VerifiedInput
+		matched := input != nil && input.AcceptedAttempt.TenantID == stack.scope.tenant && input.AcceptedAttempt.OwnerUserID == stack.scope.owner &&
+			input.AcceptedAttempt.WorkerID == stack.scope.worker && input.AcceptedAttempt.EnrollmentGeneration == stack.scope.enrollment &&
+			input.AcceptedAttempt.ConnectionGeneration == snapshot.ConnectionGeneration && input.AcceptedAttempt.ConnectionID == snapshot.ConnectionID &&
+			input.AcceptedAttempt.CapabilityDigest == snapshot.CapabilityDigest
+		stack.mu.Unlock()
+		if !current || !matched {
+			return attachedworkerdaemon.InvocationResult{}, ErrInvocationMismatch
+		}
 	}
 	return stack.runner.Run(ctx, invocation)
 }
@@ -116,6 +221,14 @@ func newStack(
 	deps dependencies,
 ) (*Stack, error) {
 	manifest.Harness.Arguments = slices.Clone(manifest.Harness.Arguments)
+	if config.PreparedCodex != nil {
+		prepared := *config.PreparedCodex
+		config.PreparedCodex = &prepared
+		if !prepared.Enabled || prepared.Executable != manifest.Harness.Executable ||
+			fmt.Sprintf("%x", prepared.ExecutableDigest) != manifest.Harness.SHA256 {
+			return nil, ErrArtifactMismatch
+		}
+	}
 	if ctx == nil || credentials == nil || manifest.Validate() != nil ||
 		manifest.Lifecycle != attachedworkerlocal.LifecycleActive || deps.digest == nil ||
 		deps.newLauncher == nil || deps.newSupervisor == nil || deps.newRunner == nil {
@@ -178,11 +291,23 @@ func newStack(
 	if supervisor == nil {
 		return nil, ErrInvalidConfiguration
 	}
-	runner, err := deps.newRunner(
-		attachedworkerdaemon.InvocationRunnerConfig{CredentialFinalizeGrace: config.CredentialFinalizeGrace},
-		supervisor,
-		credentials,
-	)
+	var prepared *codexexec.PreparedAttachedWorkerRunnerV1
+	var runner attachedworkerdaemon.Runner
+	if config.PreparedCodex != nil {
+		concrete, ok := supervisor.(*attachedworkerdaemon.Supervisor)
+		if !ok {
+			return nil, ErrInvalidConfiguration
+		}
+		prepared, err = codexexec.NewPreparedAttachedWorkerRunnerV1(*config.PreparedCodex, root, concrete, credentials,
+			attachedworkerdaemon.InvocationRunnerConfig{CredentialFinalizeGrace: config.CredentialFinalizeGrace})
+		runner = prepared
+	} else {
+		runner, err = deps.newRunner(
+			attachedworkerdaemon.InvocationRunnerConfig{CredentialFinalizeGrace: config.CredentialFinalizeGrace},
+			supervisor,
+			credentials,
+		)
+	}
 	if err != nil {
 		return nil, errors.Join(ErrInvalidConfiguration, err)
 	}
@@ -194,7 +319,12 @@ func newStack(
 		arguments: append([]string(nil), manifest.Harness.Arguments...),
 	}
 	profile := launcher.Profile()
-	return &Stack{runner: pinned, evidence: EvidenceV1{
+	clock := func() time.Time { return time.Now().UTC() }
+	if config.PreparedCodex != nil && config.PreparedCodex.Now != nil {
+		clock = config.PreparedCodex.Now
+	}
+	return &Stack{runner: pinned, prepared: prepared, now: clock, scope: preparedStackScope{tenant: manifest.TenantID, owner: manifest.OwnerUserID,
+		worker: manifest.WorkerID, enrollment: manifest.EnrollmentGeneration, connection: manifest.ConnectionGeneration}, evidence: EvidenceV1{
 		Version: evidenceVersionV1, ManifestRevision: manifest.Revision, Boundary: manifest.OCI.Boundary,
 		IsolationProfile: profile.Name, ReconciledResidue: residue,
 	}}, nil

@@ -76,6 +76,12 @@ func (driver *Driver) Execute(
 	request ports.ExecutionRequest,
 	sink ports.ExecutionEventSink,
 ) (ports.ExecutionResult, error) {
+	return driver.execute(ctx, request, sink, nil)
+}
+
+// execute's private witness output is available only to the concrete prepared
+// composition. The public HarnessDriver contract remains unchanged.
+func (driver *Driver) execute(ctx context.Context, request ports.ExecutionRequest, sink ports.ExecutionEventSink, original **preparedObservation) (ports.ExecutionResult, error) {
 	if driver == nil || !driver.config.Enabled {
 		return ports.ExecutionResult{}, disabledHarnessError()
 	}
@@ -114,6 +120,9 @@ func (driver *Driver) Execute(
 		Stdin: append([]byte(nil), prompt...),
 	}
 	process, runErr := driver.boundary.Run(ctx, invocation)
+	if original != nil {
+		*original = process.original
+	}
 	zeroBytes(invocation.Stdin)
 	parsed := ParseProtocolV1(process.Stdout)
 	zeroBytes(process.Stdout)

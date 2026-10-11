@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemon"
+	"gitcode.com/urandon/sessionless/internal/codexexec"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/sessioncontext"
@@ -166,6 +167,10 @@ func (materializer *BoundMaterializer) Materialize(ctx context.Context, request 
 		return MaterializedInputV1{}, ErrSealedInputUnsupported
 	}
 	if provider {
+		home := "SESSIONLESS_PROVIDER_HOME"
+		if job.HarnessBinding.Backend.BackendKind == domain.HarnessBackendCodexExecV1 {
+			home = codexexec.CredentialHomeEnvironmentV1
+		}
 		identity := attachedworkerdaemon.InvocationIdentity{
 			TenantID: request.TenantID, OwnerUserID: request.OwnerUserID, WorkerID: request.WorkerID,
 			RunID: domain.RunID(request.Attempt.RunID), AttemptID: domain.AttemptID(request.Attempt.AttemptID),
@@ -177,7 +182,7 @@ func (materializer *BoundMaterializer) Materialize(ctx context.Context, request 
 			job.HarnessBinding.Resource.Kind != domain.ProviderResourceSubscriptionV1 ||
 			fenceErr != nil || string(fence) != request.Attempt.FenceToken ||
 			input.Credential == nil || input.Credential.ValidateFor(identity) != nil ||
-			input.Credential.HomeEnvironment != "SESSIONLESS_PROVIDER_HOME" ||
+			input.Credential.HomeEnvironment != home ||
 			input.Credential.ExpectedBindingGeneration != job.HarnessBinding.Resource.CredentialGeneration ||
 			input.Credential.IssueRequest.ProviderResource != job.HarnessBinding.Resource ||
 			input.Credential.IssueRequest.Run.ID != job.RunID ||

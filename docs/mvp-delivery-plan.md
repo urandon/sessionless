@@ -1,6 +1,6 @@
 # WebUI-first MVP delivery plan
 
-Status: product-owner-directed two-track scope correction, 2026-10-10;
+Status: product-owner-directed two-track scope correction, reconciled 2026-10-11;
 managed delivery [#176](https://gitcode.com/urandon/sessionless/issues/176)/
 [#175](https://gitcode.com/urandon/sessionless/issues/175), attached delivery
 [#72](https://gitcode.com/urandon/sessionless/issues/72).
@@ -91,9 +91,13 @@ not hidden launch gates. The [UX roadmap](product-ux-roadmap.md) remains separat
 ## What is proved versus what is still missing
 
 - #30–#33 implement local Web BFF/API/UI. #171/#173 deliver selected Yandex
-  login/smoke fixtures (MR !151/!152), not complete browser cloud product proof.
-  The user has reported a successful dev login/session creation; #34/#35 still
-  own exact rollout/cold-start/rollback and joined execution evidence.
+  login/smoke fixtures (MR !151/!152). #34 is closed after its independently
+  reviewed [live completion receipt](https://gitcode.com/urandon/sessionless/issues/34#note_193130589):
+  immutable Web image promotion/rollback, HTTPS/private invocation checks,
+  zero prepared instances and observed cold start, plus real Yandex re-login
+  retaining the original canonical session. The 100 RUB/month budget admission
+  is proved, not actual monthly spend or alert delivery. This Web-only rollout
+  does not activate either AI path or complete #35's joined browser product proof.
 - #86–#89/#91 are closed contract/disabled-adapter deliveries. #90 substrate
   evidence and #92 rollout proof remain open. The normal `worker-runtime` still
   uses the deterministic harness; managed real-provider composition is missing.
@@ -105,6 +109,15 @@ not hidden launch gates. The [UX roadmap](product-ux-roadmap.md) remains separat
   Their deterministic/test-provider proof is not cloud AI execution. #129/#75
   measured transport and #133 real Codex activation remain required attached
   rollout work, independent of managed implementation.
+- [!182](https://gitcode.com/urandon/sessionless/pull/182) is merged as
+  `8ee9e76e1294dffaa2f13145ebfa39955ae402b8`: the default-off typed-input
+  prerequisite preserves the authentic accepted head, canonical context and
+  bounded artifacts through sealed input and materialization. All eight
+  exact-source CI jobs passed on `146a53a1321ba4f3c6f319a7e2dbc69004ab79ed`.
+  This does not yet join normal prepared Codex execution to a durable WebUI
+  answer, support its full file/image flow or activate #133. The next composition
+  must bind the preflight Stack to its genuine authenticated current Session
+  without a second attach, credential lifecycle or provider execution.
 - #177 loop/export research is closed; #178/#179 research phases are accepted.
   [PR !160](https://gitcode.com/urandon/sessionless/pull/160) merged engineering
   package **0.2.1**: minimum, compaction, tools/MCP and bounded web-search designs.
@@ -118,6 +131,11 @@ not hidden launch gates. The [UX roadmap](product-ux-roadmap.md) remains separat
   runtime activation. Tavily Basic/public-web mode and numeric ceilings remain
   proposed first-profile choices subject to exact-profile calibration; they are
   not an enabled service, measured winner or granted paid/live budget.
+- Incremental #189 implementation foundations from !180/!181 are in main:
+  owned admission/preparation fences, bounded pinned provider HTTPS transport,
+  allocation observations and closed operation/consent storage. #189 and all
+  #190–#197 outcomes remain open; these disabled foundations do not implement
+  the complete sequential agent, real tool continuation or managed activation.
 - Dev user feedback shows disabled Send with `not_configured` compute.
   Successful login/session creation does not supply a real execution resource.
   #175 owns explicit managed entitlement/profile admission and normal dispatch;
@@ -152,7 +170,7 @@ not an additional MVP release requirement.
 | #92 managed canary | Join #90 and #175 under a separately approved manifest; prove two-owner/tenant isolation, credential/egress/cleanup, ambiguous no-replay, metering, budget and rollback | Actual bounded cloud-dev receipts for one real profile; public-safe evidence and reversible activation, no inferred zero cost |
 | #129/#75 attached transport | Freeze and review the exact synthetic experiment, finite budgets/teardown; measure fixed 24-hour cohorts and bounded reconnect cases | Attributed request/RU/duration/egress/RUB and go/conditional/no-go; approved cloud execution only, never inferred free/zero cost |
 | #133/#72 attached activation | Reuse delivered #76/#77/#79/#81/#166/#170; pin one exact harness/artifact/resource/policy, prove actual-platform egress/isolation and compose prepared driver/receipt finalizer reversibly | One authorized real turn yields a durable WebUI answer; #129 verdict gates cloud-connected transport, not independent managed implementation; no ambient credentials or blind repeat |
-| #34 / #168 Web rollout/login | Reconcile reported dev login against exact image/config/migration; finish private HTTPS/zero-prepared-instance/cold-start/session/rollback evidence | Real registered-client and deployment evidence, not health/apply alone |
+| #34 delivered / #168 login handoff | Reuse #34's exact live Web-only rollout/rollback and real re-login/session receipt; preserve the deployed profile and join it with both execution routes in #35 | #34 is closed; existing deployment evidence is not an AI execution or full #35 receipt, and actual spend/notification proof remains separate |
 | #19 alerts | Cover exercised Web/control/YDB/storage/queue/managed-worker/attached paths and an accessible operator channel | Controlled failure/recovery notification with no payload/secret logging or Telegram dependency |
 | #35 product E2E | Prove both #72/#133 attached and #175/#92 managed paths with #34/#168 login/Web rollout; fresh users obtain canonical answers/artifacts from text/file/image and refresh/re-login | Exact commit/image/config/migration/profile plus two-owner/tenant positives/negatives. Managed proof uses no user host; tool/MCP/search/compaction continuation is real, not a tool-free or fake-only smoke |
 | #13 / #14 release | Consolidate both route proofs and audit exercised security, cost, incidents and rollback | Explicit two-track go/no-go, no unresolved critical isolation/credential/duplicate-effect/data-loss findings; no exhaustive world-simulation gate |
@@ -169,7 +187,7 @@ extensions on the exact substrate; the older proof alone cannot cover them.
 
 ```mermaid
 flowchart TD
-    AUTH["#168/#171 Yandex login"] --> WEB["#34 cloud Web proof"]
+    AUTH["#168/#171 Yandex login"] --> WEB["#34 cloud Web proof delivered"]
     CONTRACTS["#86–#89/#91 delivered contracts"] --> PLATFORM["#90 substrate evidence"]
     CONTRACTS --> PROFILE["#175 managed real-profile composition"]
     RESEARCH["#177–#179 and bounded #94 findings"] --> DESIGN["#180 exact accepted design"]
@@ -223,7 +241,7 @@ gantt
     Accepted design (#180)             :done, milestone, design, 2026-10-10, 0d
     Agent implementation (#176 scenario) :agent, after design, 8d
     Managed profile and join (#175)    :profile, after agent, 5d
-    Web login and rollout proof (#34)  :web, 2026-10-10, 3d
+    Web login and rollout proof (#34)  :done, milestone, web, 2026-10-10, 0d
     Attached cadence verdict (#129)   :cadence, 2026-10-10, 3d
     Selected attached activation (#133) :attached, after cadence, 5d
     section Product evidence

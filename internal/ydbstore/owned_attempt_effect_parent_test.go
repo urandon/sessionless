@@ -87,20 +87,22 @@ func (f *ownedAttemptEffectGrantFixture) MintAttemptEffectObservationGrant(a dom
 // path with only the bounded effect-parent and current lease point reads.
 // Its row state is test-owned and does not model native YDB isolation.
 type ownedAttemptEffectParentSQLFixture struct {
-	base               *ownedFinalScript
-	graph              *managedAdmissionGraphFixture
-	parentRow          []driver.Value
-	pendingParentRow   []driver.Value
-	burnRow            []driver.Value
-	pendingBurnRow     []driver.Value
-	leaseRow           []driver.Value
-	activeTransactions int
-	inserts            int
-	burnReads          int
-	burnUpdates        int
-	parentReads        int
-	leaseReads         int
-	insertError        error
+	base                 *ownedFinalScript
+	graph                *managedAdmissionGraphFixture
+	parentRow            []driver.Value
+	pendingParentRow     []driver.Value
+	burnRow              []driver.Value
+	pendingBurnRow       []driver.Value
+	accountingRow        []driver.Value
+	pendingAccountingRow []driver.Value
+	leaseRow             []driver.Value
+	activeTransactions   int
+	inserts              int
+	burnReads            int
+	burnUpdates          int
+	parentReads          int
+	leaseReads           int
+	insertError          error
 }
 
 type ownedAttemptEffectParentConnector struct {
@@ -156,12 +158,33 @@ func (c ownedAttemptEffectParentConn) QueryContext(ctx context.Context, statemen
 		c.fixture.leaseReads++
 		c.fixture.base.recordQuery(statement, args)
 		return &explanationFixtureRows{values: append([]driver.Value(nil), c.fixture.leaseRow...)}, nil
+	case ownedOperationAccountingSQL:
+		c.fixture.base.recordQuery(statement, args)
+		row := c.fixture.accountingRow
+		if c.fixture.pendingAccountingRow != nil {
+			row = c.fixture.pendingAccountingRow
+		}
+		if row == nil {
+			row = []driver.Value{uint64(0), uint64(0), "", ""}
+		}
+		return &explanationFixtureRows{values: append([]driver.Value(nil), row...)}, nil
 	default:
 		return c.fixture.base.QueryContext(ctx, statement, args)
 	}
 }
 
 func (c ownedAttemptEffectParentConn) ExecContext(ctx context.Context, statement string, args []driver.NamedValue) (driver.Result, error) {
+	if statement == ownedOperationAccountingWriteSQL {
+		if len(args) != 6 || c.fixture.parentRow == nil || args[5].Value != c.fixture.parentRow[14] {
+			return nil, errors.New("operation accounting UPDATE did not bind the exact original parent")
+		}
+		result, err := c.fixture.base.ExecContext(ctx, statement, args)
+		if err != nil {
+			return nil, err
+		}
+		c.fixture.pendingAccountingRow = []driver.Value{uint64(1), uint64(1), args[0].Value, args[1].Value}
+		return result, nil
+	}
 	if statement == ownedAttemptPreparationBurnUpdateSQL {
 		if len(args) != 5 || c.fixture.parentRow == nil || args[1].Value != c.fixture.parentRow[14] {
 			return nil, errors.New("owned preparation burn UPDATE did not bind the exact persisted parent")
@@ -208,8 +231,12 @@ func (tx ownedAttemptEffectParentTx) Commit() error {
 	if mode != "rollback" && tx.fixture.pendingBurnRow != nil {
 		tx.fixture.burnRow = append([]driver.Value(nil), tx.fixture.pendingBurnRow...)
 	}
+	if mode != "rollback" && tx.fixture.pendingAccountingRow != nil {
+		tx.fixture.accountingRow = append([]driver.Value(nil), tx.fixture.pendingAccountingRow...)
+	}
 	tx.fixture.pendingParentRow = nil
 	tx.fixture.pendingBurnRow = nil
+	tx.fixture.pendingAccountingRow = nil
 	tx.fixture.activeTransactions--
 	return err
 }
@@ -217,6 +244,7 @@ func (tx ownedAttemptEffectParentTx) Commit() error {
 func (tx ownedAttemptEffectParentTx) Rollback() error {
 	tx.fixture.pendingParentRow = nil
 	tx.fixture.pendingBurnRow = nil
+	tx.fixture.pendingAccountingRow = nil
 	tx.fixture.activeTransactions--
 	return tx.inner.Rollback()
 }

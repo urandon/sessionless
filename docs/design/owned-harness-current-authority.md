@@ -463,15 +463,42 @@ child blocks completion and preserves both until an authenticated no-residual
 effect/cleanup disposition is implemented. A retired record alone is not that
 proof. This is retention fencing, not completion of burned-allocation cleanup.
 
-Provider, MCP and search proxy publication remains unsupported. The concrete
-provider-only [PinnedHTTPSProxyV1](../../internal/serverlessegress/pinned_https_proxy.go)
-implements bounded DNS-pinned HTTPS transport, but is not registered by startup
-and supplies no durable proxy registration or operation debit. MCP and search
-proxy producers remain unimplemented. Copied artifact digests or scripted
-DNS/TLS booleans cannot prove enforcement. Durable proxy publication/integration,
-setup/operation debits, before-send one-use checks, installed production source
-custody and complete unknown-effect/retention disposition remain required before
-owned serving or #189 closure.
+The #189 implementation now includes durable original/per-operation proxy
+publication, setup and subordinate component/aggregate debits, immutable
+observations and fresh-Store history recovery, and current-authority one-use
+before-send gates. The canonical consent Store implements request creation,
+authenticated actor read/CSRF decision and reconciliation; web-search reserve
+and before-send rejoin the exact stored request/decision, model arguments,
+original browser, membership/security version and grant.
+
+The genuine local TLS producer is credential-free and compiled only with the
+`ydbintegration` tag. It exercises the actual pinned transport and Store gates
+for model, MCP fixture, search fixture and compaction. Its fixed private origin,
+grant/protocol and observed dispatch counts are not a live provider, generic MCP
+catalog, search service or supported production substrate. The public
+[PinnedHTTPSProxyV1](../../internal/serverlessegress/pinned_https_proxy.go) remains
+unwired by startup. A copied digest, fixture codec, synthetic round trip or fresh
+Store object is not production custody, OS-restart or cloud-E2E evidence.
+
+Repeated positive-priced model calls now use the existing canonical
+`ProviderPriceObservationV1` rate body. The private original fixture producer
+seals its bounded metadata before authenticated profile publication; Store
+rejoins its structured domain digest, current profile/spending, exact scope,
+revision and time windows before an upward-rounded quote and atomic debit.
+The original provider ceiling remains shared across model and compaction
+operations. Missing, unknown or changed rates deny; a caller quote or guessed
+division of the Attempt ceiling is not price authority. This metadata is not
+an additional Session payload, monetary ledger or live-provider rate issuer.
+
+A native canonical worker-failure transaction and exact replay preserve the
+committed original operation/result and its debit; a fresh Store/issuer reads
+that history without minting resend permission. This is a storage-terminal
+proof, not integration of a production backend agent loop or its public output
+projection. Complete authenticated residual disposition and shared
+prepared-parent cleanup are not implemented. Allocation retirement alone never
+permits erasure. The original #189 acceptance matrix and frozen exact-artifact
+independent review remain required; neither fixture success nor green
+prerequisite CI completes #189 or enables owned serving.
 
 ## Transaction and resource bounds
 
@@ -611,8 +638,9 @@ minting, even for a different claimant. A fixture backend/resource alone is not
 owned authority. Unsupported records remain retained, not deleted, normalized
 or reclassified as single-turn history. Legitimate single-turn historical
 reconciliation retains its existing structural, post-commit contract. A dedicated
-bounded private owned parent is described below; its remaining preparation,
-funding and authenticated cleanup composition still needs integration. Registry
+bounded private owned parent is described below; preparation/funding/operation
+composition now has the joined local fixture proofs summarized above, while
+authenticated concrete cleanup and real serving remain incomplete. Registry
 denial or this serving guard does not prove those parts.
 
 One exact-key thirteen-column join checks canonical active Session, deletion
@@ -715,13 +743,14 @@ grants. The nonnil upstream regression is reproduced before that fix and
 retained in the native positive path. These are bounded private prerequisite
 proofs, not production installation, activation or cloud E2E.
 
-This is a durable sole-parent prerequisite, not a serving owned-admission port,
-physical preparation proof, a production installation or an aggregate debit
-implementation. Parent/funding/unknown-effect cleanup, trusted allocation/proxy
-publication after the durable preparation burn, subordinate worst-case debits and
-before-send checks still need integration. Both public serving gates remain
-closed. Only the separately authorized disposable native test database receives
-the additive migration; no shared/cloud schema application is implied.
+The sole-parent evidence in this section is a prerequisite, not by itself a
+serving owned-admission port, physical preparation, production installation or
+aggregate-debit proof. The joined local implementation summarized above now
+covers post-burn allocation/proxy publication, subordinate debits and before-send
+checks using genuine credential-free fixture producers. Parent/funding/unknown
+effect cleanup remains incomplete. Both public serving gates remain closed.
+Only the separately authorized disposable native test database receives the
+additive migration; no shared/cloud schema application is implied.
 
 ## Terminal and retention integration
 

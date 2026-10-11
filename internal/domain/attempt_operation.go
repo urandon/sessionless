@@ -242,8 +242,8 @@ func (v AttemptOperationV1) Validate() error {
 	}
 	tool := v.Kind == AttemptOperationMCPToolV1 || v.Kind == AttemptOperationWebSearchV1
 	if tool {
-		if v.Debit.ModelCalls != 0 || v.Debit.CompactionCalls != 0 || v.Debit.ToolDispatches != 1 || v.Debit.InputTokens != 0 || v.Debit.OutputTokens != 0 || v.RequestBytes > 4<<10 || v.ResultBytes > 64<<10 || v.ContextBytes != 0 || v.SummaryBytes != 0 || v.Sequence == 1 || v.Debit.AmountMicrounits == 0 {
-			return operationError("tool", "requires one bounded priced tool dispatch")
+		if v.Debit.ModelCalls != 0 || v.Debit.CompactionCalls != 0 || v.Debit.ToolDispatches != 1 || v.Debit.InputTokens != 0 || v.Debit.OutputTokens != 0 || v.RequestBytes > 4<<10 || v.ResultBytes > 64<<10 || v.ContextBytes != 0 || v.SummaryBytes != 0 || v.Sequence == 1 {
+			return operationError("tool", "requires one bounded tool dispatch with independent price evidence")
 		}
 		for name, digest := range map[string]string{"model_response_digest": v.ModelResponseDigest, "arguments_digest": v.ArgumentsDigest, "tool_grant_digest": v.ToolGrantDigest, "external_charge_evidence_digest": v.ExternalChargeEvidenceDigest} {
 			if err := ValidateSHA256Digest("attempt_operation."+name, digest); err != nil {
@@ -309,8 +309,13 @@ func (v AttemptOperationV1) ValidateForParent(a ServerlessInvocationAuthorityV1,
 	}
 	if v.Kind == AttemptOperationMCPToolV1 || v.Kind == AttemptOperationWebSearchV1 {
 		expected := p.MCPToolGrantDigest
+		component := a.AdmissionCostCeiling.MCPToolCost
 		if v.Kind == AttemptOperationWebSearchV1 {
 			expected = p.WebSearchGrantDigest
+			component = a.AdmissionCostCeiling.WebSearchCost
+		}
+		if component == nil || component.MaxAmountMicrounits == nil || component.PriceState == ExternalServicePriceUnknownV1 || v.Debit.AmountMicrounits > *component.MaxAmountMicrounits || (v.Debit.AmountMicrounits == 0 && component.PriceState != ExternalServicePriceKnownFreeV1) {
+			return operationError("tool.price", "zero requires an explicitly evidenced known-free completed component; unknown never means zero")
 		}
 		if v.ToolGrantDigest != expected || v.RequestBytes > p.Limits.MaxToolArgumentBytes || v.ResultBytes > p.Limits.MaxToolResultBytes {
 			return operationError("tool", "must bind the exact completed grant and tool ceilings")
@@ -336,11 +341,14 @@ func (v AttemptOperationObservationDigestV1) Validate() error {
 }
 
 type AttemptOperationReservationV1 struct {
-	Version         uint32                   `json:"version"`
-	Operation       AttemptOperationV1       `json:"operation"`
-	OperationDigest AttemptOperationDigestV1 `json:"operation_digest"`
-	ReservedAt      time.Time                `json:"reserved_at"`
-	AggregateDebit  AttemptOperationDebitV1  `json:"aggregate_debit"`
+	Version                    uint32                             `json:"version"`
+	Operation                  AttemptOperationV1                 `json:"operation"`
+	OperationDigest            AttemptOperationDigestV1           `json:"operation_digest"`
+	ReservedAt                 time.Time                          `json:"reserved_at"`
+	AggregateDebit             AttemptOperationDebitV1            `json:"aggregate_debit"`
+	RegisteredAllocationDigest RegisteredAllocationDigestV1       `json:"registered_allocation_digest"`
+	RegisteredProxyDigest      RegisteredProxyAttestationDigestV1 `json:"registered_proxy_digest"`
+	ComponentAmounts           [4]uint64                          `json:"component_amounts"`
 }
 
 func (v AttemptOperationReservationV1) Clone() AttemptOperationReservationV1 {
@@ -351,6 +359,19 @@ func (v AttemptOperationReservationV1) Clone() AttemptOperationReservationV1 {
 func (v AttemptOperationReservationV1) Validate() error {
 	if v.Version != 1 {
 		return operationError("reservation.version", "must equal 1")
+	}
+	if v.RegisteredAllocationDigest.Validate() != nil || v.RegisteredProxyDigest.Validate() != nil {
+		return operationError("reservation.registration", "requires the exact registered allocation and proxy observations")
+	}
+	var amount uint64
+	for _, component := range v.ComponentAmounts {
+		if component > math.MaxUint64-amount {
+			return operationError("reservation.component_amounts", "must not overflow")
+		}
+		amount += component
+	}
+	if amount < v.AggregateDebit.AmountMicrounits {
+		return operationError("reservation.component_amounts", "cannot omit cumulative monetary reservations")
 	}
 	digest, err := v.Operation.Digest()
 	if err != nil {

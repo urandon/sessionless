@@ -31,6 +31,37 @@ type ownedAuthorityBudget struct {
 	failed                                             bool
 }
 
+type ownedAuthorityCallContextKey struct{}
+
+// Private public-call composition: helper transactions must not reset the
+// original deadline, callback/statement/metadata or SDK retry budgets. This
+// carrier is not an execution permission and is never returned to callers.
+func ownedAuthorityCallContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(ctx, ownedAuthorityDeadline)
+	if _, present := ctx.Value(ownedAuthorityCallContextKey{}).(*ownedAuthorityBudget); !present {
+		ctx = context.WithValue(ctx, ownedAuthorityCallContextKey{}, &ownedAuthorityBudget{})
+	}
+	return ctx, cancel
+}
+
+// Charge bounded immutable authority-body materialization OUTSIDE callbacks to
+// the same logical metadata budget. No external I/O belongs in an SQL callback;
+// no absent context budget is silently replaced with an unbounded allowance.
+func chargeOwnedAuthorityBody(ctx context.Context, bytes uint64) error {
+	b, present := ctx.Value(ownedAuthorityCallContextKey{}).(*ownedAuthorityBudget)
+	if !present || ctx.Err() != nil {
+		return domain.ErrMembershipDenied
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.failed || b.active || bytes > ownedAuthorityMaxBytes-b.bytes {
+		b.failed = true
+		return domain.ErrMembershipDenied
+	}
+	b.bytes += bytes
+	return nil
+}
+
 // Acquire is the SDK's second/subsequent-attempt hook. Bound connection/Begin
 // failures too: no fourth transaction callback or unbounded pre-callback retry.
 func (b *ownedAuthorityBudget) Acquire(ctx context.Context) error {
@@ -109,8 +140,10 @@ type ownedAuthorityQuery struct {
 	callback            int
 	at                  time.Time
 	metadataCache       map[string]ownedMetadataCacheEntry // opt-in; only this callback
-	ownedAdmission      bool                               // private composition only, never a serving enablement
-	schedulerSlotAbsent bool                               // same-callback cold slot; final decision still writes canonically
+	currentParentStore  *Store                             // successful exact join, only this callback before a write
+	currentParentKey    string
+	ownedAdmission      bool // private composition only, never a serving enablement
+	schedulerSlotAbsent bool // same-callback cold slot; final decision still writes canonically
 	explanationPending  map[domain.RunID]runexplanation.HeadV1
 }
 
@@ -127,6 +160,9 @@ func (q *ownedAuthorityQuery) QueryRowContext(ctx context.Context, statement str
 }
 
 func (q *ownedAuthorityQuery) ExecContext(ctx context.Context, statement string, args ...any) (sql.Result, error) {
+	// Even a rejected or failed write attempt invalidates this successful join.
+	// It must never authorize a later read across an intervening mutation.
+	q.currentParentStore, q.currentParentKey = nil, ""
 	if err := q.budget.statement(ctx, q.callback); err != nil {
 		return nil, err
 	}
@@ -156,9 +192,12 @@ func (q *ownedAuthorityQuery) canonicalState(store *Store, tenant domain.TenantI
 // speculative outputs on every callback; only a confirmed result may escape.
 // The installed publisher/reserver is intentionally not wired by this slice.
 func (store *Store) ownedAuthorityTx(ctx context.Context, fn func(context.Context, *ownedAuthorityQuery) error) error {
-	ctx, cancel := context.WithTimeout(ctx, ownedAuthorityDeadline)
+	ctx, cancel := ownedAuthorityCallContext(ctx)
 	defer cancel()
-	b := &ownedAuthorityBudget{}
+	b := ctx.Value(ownedAuthorityCallContextKey{}).(*ownedAuthorityBudget)
+	if ctx.Err() != nil || b.check() != nil {
+		return domain.ErrMembershipDenied
+	}
 	err := retry.DoTx(ctx, store.db, func(ctx context.Context, tx *sql.Tx) error {
 		callback, err := b.begin()
 		if err != nil {

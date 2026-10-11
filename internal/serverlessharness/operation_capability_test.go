@@ -56,6 +56,9 @@ func operationIssuerFixture(t *testing.T, capacity int) (*OperationCapabilityIss
 		t.Fatalf("operation fixture: %v", err)
 	}
 	r := domain.AttemptOperationReservationV1{Version: 1, Operation: op, OperationDigest: digest, ReservedAt: at, AggregateDebit: op.Debit}
+	r.RegisteredAllocationDigest = domain.RegisteredAllocationDigestV1(strings.Repeat("1", 64))
+	r.RegisteredProxyDigest = domain.RegisteredProxyAttestationDigestV1(strings.Repeat("2", 64))
+	r.ComponentAmounts[0] = op.Debit.AmountMicrounits
 	if err := r.Validate(); err != nil {
 		t.Fatalf("reservation fixture: %v", err)
 	}

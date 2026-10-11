@@ -1,0 +1,240 @@
+package ydbstore
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"time"
+
+	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/ports"
+)
+
+const ownedProxyRegistrationSQL = `SELECT
+ CASE WHEN proxy_original_record IS NULL THEN CAST(0 AS Uint64) ELSE CAST(1 AS Uint64) END,
+ CASE WHEN proxy_original_digest IS NULL THEN CAST(0 AS Uint64) ELSE CAST(1 AS Uint64) END,
+ CASE WHEN proxy_current_record IS NULL THEN CAST(0 AS Uint64) ELSE CAST(1 AS Uint64) END,
+ CASE WHEN proxy_current_digest IS NULL THEN CAST(0 AS Uint64) ELSE CAST(1 AS Uint64) END,
+ CASE WHEN proxy_policy_body IS NULL THEN CAST(0 AS Uint64) ELSE CAST(1 AS Uint64) END,
+ CASE WHEN proxy_attestation_body IS NULL THEN CAST(0 AS Uint64) ELSE CAST(1 AS Uint64) END,
+ COALESCE(SUBSTRING(proxy_original_record,0,32769),CAST('' AS String)),
+ COALESCE(SUBSTRING(CAST(proxy_original_digest AS String),0,65),CAST('' AS String)),
+ COALESCE(SUBSTRING(proxy_current_record,0,32769),CAST('' AS String)),
+ COALESCE(SUBSTRING(CAST(proxy_current_digest AS String),0,65),CAST('' AS String)),
+ COALESCE(SUBSTRING(proxy_policy_body,0,16385),CAST('' AS String)),
+ COALESCE(SUBSTRING(proxy_attestation_body,0,16385),CAST('' AS String))
+ FROM attempt_effect_reservations WHERE tenant_id=$1 AND attempt_id=$2 AND kind=$3`
+
+const ownedProxyRegistrationCreateSQL = `UPDATE attempt_effect_reservations
+ SET proxy_original_record=$1,proxy_original_digest=$2,proxy_current_record=$1,proxy_current_digest=$2,
+ proxy_policy_body=$3,proxy_attestation_body=$4
+ WHERE tenant_id=$5 AND attempt_id=$6 AND kind=$7 AND owned_digest=$8
+ AND record IS NULL AND allocation_current_digest=$9
+ AND proxy_original_record IS NULL AND proxy_original_digest IS NULL
+ AND proxy_current_record IS NULL AND proxy_current_digest IS NULL
+ AND proxy_policy_body IS NULL AND proxy_attestation_body IS NULL`
+
+const ownedOperationProxyRegistrationSQL = `SELECT
+ CASE WHEN original_record IS NULL THEN CAST(0 AS Uint64) ELSE CAST(1 AS Uint64) END,
+ CASE WHEN original_digest IS NULL THEN CAST(0 AS Uint64) ELSE CAST(1 AS Uint64) END,
+ CASE WHEN current_record IS NULL THEN CAST(0 AS Uint64) ELSE CAST(1 AS Uint64) END,
+ CASE WHEN current_digest IS NULL THEN CAST(0 AS Uint64) ELSE CAST(1 AS Uint64) END,
+ CASE WHEN policy_body IS NULL THEN CAST(0 AS Uint64) ELSE CAST(1 AS Uint64) END,
+ CASE WHEN attestation_body IS NULL THEN CAST(0 AS Uint64) ELSE CAST(1 AS Uint64) END,
+ COALESCE(SUBSTRING(original_record,0,32769),CAST('' AS String)),
+ COALESCE(SUBSTRING(CAST(original_digest AS String),0,65),CAST('' AS String)),
+ COALESCE(SUBSTRING(current_record,0,32769),CAST('' AS String)),
+ COALESCE(SUBSTRING(CAST(current_digest AS String),0,65),CAST('' AS String)),
+ COALESCE(SUBSTRING(policy_body,0,16385),CAST('' AS String)),
+ COALESCE(SUBSTRING(attestation_body,0,16385),CAST('' AS String)),
+ SUBSTRING(CAST(service_kind AS String),0,33)
+ FROM attempt_operation_proxies_v1 WHERE tenant_id=$1 AND attempt_id=$2 AND sequence=$3`
+
+type ownedProxySnapshot struct {
+	original, current           domain.RegisteredProxyAttestationV1
+	policy                      ports.ServerlessEgressPolicyV1
+	attestation                 ports.ServerlessEgressProxyAttestationV1
+	policyBody, attestationBody []byte
+}
+
+// PublishOwnedProxy preserves observation produced by an actual original TLS
+// connection. It is not registration by startup or permission to send. The
+// ordinary Store has no installed owned source keeper and fails closed.
+func (store *Store) PublishOwnedProxy(ctx context.Context, request ports.ReserveAttemptEffectRequestV1, proof ports.OwnedProxyPublicationV1) (domain.RegisteredProxyAttestationV1, bool, error) {
+	deny := func() (domain.RegisteredProxyAttestationV1, bool, error) {
+		return domain.RegisteredProxyAttestationV1{}, false, domain.ErrMembershipDenied
+	}
+	if !store.validOwnedAllocationContext(ctx) || request.Validate() != nil || store.ownedProxyPublicationVerifier == nil || proof.Validate() != nil {
+		return deny()
+	}
+	proof = proof.Clone()
+	policy, attestation, err := proof.Bodies()
+	if err != nil || store.ownedProxyPublicationVerifier.VerifyOwnedProxyPublication(proof.Clone(), proof.ObservedAt) != nil {
+		return deny()
+	}
+	allocationDigest, sourceDigest, observedAt, policyBody, attestationBody := proof.RegisteredAllocationDigest, proof.SourceDigest, proof.ObservedAt, proof.PolicyBody, proof.AttestationBody
+	var result domain.RegisteredProxyAttestationV1
+	var replayed bool
+	err = store.ownedAuthorityTx(ctx, func(ctx context.Context, q *ownedAuthorityQuery) error {
+		result, replayed = domain.RegisteredProxyAttestationV1{}, false
+		q.metadataCache = make(map[string]ownedMetadataCacheEntry)
+		parent, source, burnAt, err := store.readOwnedAllocationParent(ctx, q, request)
+		if err != nil {
+			return err
+		}
+		allocation, err := readOwnedAllocationSnapshots(ctx, q, parent, source, burnAt)
+		if err != nil || allocation == nil {
+			return q.budget.deny()
+		}
+		ad, _ := allocation.original.Digest()
+		sd, _ := source.Digest()
+		pd, _ := policy.Digest()
+		if ad != allocationDigest || sd != sourceDigest || proof.Scope != source.Scope || proof.LeaseID != parent.Reservation.LeaseID || proof.FenceToken != parent.Reservation.FenceToken || proof.PhysicalInvocationClaimID != parent.Reservation.PhysicalInvocationClaimID || observedAt.Before(allocation.original.Window.ObservedAt) || observedAt.After(q.at) || pd != allocation.original.Substrate.EgressPolicyDigest {
+			return q.budget.deny()
+		}
+		if proof.OperationSequence > parent.Authority.HarnessBinding.AgentLoopPolicy.Limits.MaxOperations || (proof.OperationSequence == 1 && proof.ServiceKind != domain.RegisteredProxyProviderV1) {
+			return q.budget.deny()
+		}
+		old, err := readOwnedProxySnapshotAt(ctx, q, parent, source, allocation.original, proof.OperationSequence)
+		if err != nil {
+			return err
+		}
+		if old != nil {
+			if old.original.ServiceKind != proof.ServiceKind || !bytes.Equal(old.policyBody, policyBody) || !bytes.Equal(old.attestationBody, attestationBody) || old.original.Window.ObservedAt != observedAt {
+				return q.budget.deny()
+			}
+			result, replayed = old.current.Clone(), true
+			return nil // exact retained observation, never new transport or expiry
+		}
+		if allocation.current.ValidateAt(q.at) != nil || store.validateCurrentOwnedAttemptParent(ctx, q, request, parent) != nil {
+			return q.budget.deny()
+		}
+		accounting, err := readOwnedAttemptAccounting(ctx, q, parent, source)
+		if err != nil || accounting == nil || !accounting.SetupReservedAt.Equal(burnAt) {
+			return q.budget.deny()
+		}
+		if proof.OperationSequence != accounting.Aggregate.Operations+1 {
+			return q.budget.deny()
+		}
+		if proof.OperationSequence > 1 {
+			previous, err := readOwnedOperation(ctx, q, domain.AttemptOperationV1{Scope: ownedOperationScope(parent), Sequence: proof.OperationSequence - 1})
+			if err != nil || previous == nil || previous.observation == nil || !ownedObservationAllowsSuccessor(previous.reservation, *previous.observation) {
+				return q.budget.deny()
+			}
+		}
+		expires := attestation.ExpiresAt.UTC().Truncate(time.Microsecond)
+		if allocation.original.Window.ExpiresAt.Before(expires) {
+			expires = allocation.original.Window.ExpiresAt
+		}
+		if !q.at.Before(expires) {
+			return q.budget.deny()
+		}
+		routeBody, _ := json.Marshal(policy.Route)
+		routeSum := sha256.Sum256(routeBody)
+		value, err := domain.BuildRegisteredProxyAttestationV1(allocation.original, source, proof.ServiceKind, hex.EncodeToString(routeSum[:]), pd, attestation.ResolutionSetDigest,
+			ports.OwnedProxyBodyReferenceV1("policy", policyBody), ports.OwnedProxyBodyReferenceV1("attestation", attestationBody),
+			domain.OwnedAgentAuthorityWindowV1{ObservedAt: observedAt, PublishedAt: q.at, ExpiresAt: expires})
+		if err != nil {
+			return q.budget.deny()
+		}
+		raw, err := domain.EncodeRegisteredProxyAttestationV1(value)
+		digest, de := value.Digest()
+		parentDigest, pe := parent.Digest()
+		if err != nil || de != nil || pe != nil {
+			return q.budget.deny()
+		}
+		r := parent.Reservation
+		if proof.OperationSequence == 1 {
+			if _, err := q.ExecContext(ctx, ownedProxyRegistrationCreateSQL, string(raw), string(digest), string(policyBody), string(attestationBody), r.TenantID, r.AttemptID, r.Kind, parentDigest, string(ad)); err != nil {
+				return err
+			}
+		} else {
+			if _, err := q.ExecContext(ctx, `INSERT INTO attempt_operation_proxies_v1 (tenant_id,attempt_id,sequence,service_kind,original_record,original_digest,current_record,current_digest,policy_body,attestation_body) VALUES ($1,$2,$3,$4,$5,$6,$5,$6,$7,$8)`, r.TenantID, r.AttemptID, proof.OperationSequence, proof.ServiceKind, string(raw), string(digest), string(policyBody), string(attestationBody)); err != nil {
+				return err
+			}
+		}
+		actual, err := readOwnedProxySnapshotAt(ctx, q, parent, source, allocation.original, proof.OperationSequence)
+		if err != nil || actual == nil {
+			return q.budget.deny()
+		}
+		actualDigest, _ := actual.current.Digest()
+		if actualDigest != digest {
+			return q.budget.deny()
+		}
+		result = actual.current.Clone()
+		return nil
+	})
+	if err != nil || ctx.Err() != nil {
+		return deny()
+	}
+	return result.Clone(), replayed, nil
+}
+
+func readOwnedProxySnapshot(ctx context.Context, q *ownedAuthorityQuery, parent domain.OwnedAttemptEffectParentV1, source domain.AttemptExecutionSourceV1, allocation domain.RegisteredAllocationV1) (*ownedProxySnapshot, error) {
+	return readOwnedProxySnapshotAt(ctx, q, parent, source, allocation, 1)
+}
+func readOwnedProxySnapshotAt(ctx context.Context, q *ownedAuthorityQuery, parent domain.OwnedAttemptEffectParentV1, source domain.AttemptExecutionSourceV1, allocation domain.RegisteredAllocationV1, sequence uint64) (*ownedProxySnapshot, error) {
+	if sequence == 0 || parent.Authority.HarnessBinding.AgentLoopPolicy == nil || sequence > parent.Authority.HarnessBinding.AgentLoopPolicy.Limits.MaxOperations {
+		return nil, q.budget.deny()
+	}
+	var flags [6]uint64
+	var originalRaw, originalDigest, currentRaw, currentDigest, policyRaw, attestationRaw string
+	r := parent.Reservation
+	query, args := ownedProxyRegistrationSQL, []any{r.TenantID, r.AttemptID, r.Kind}
+	dest := []any{&flags[0], &flags[1], &flags[2], &flags[3], &flags[4], &flags[5], &originalRaw, &originalDigest, &currentRaw, &currentDigest, &policyRaw, &attestationRaw}
+	var service string
+	if sequence > 1 {
+		query, args = ownedOperationProxyRegistrationSQL, []any{r.TenantID, r.AttemptID, sequence}
+		dest = append(dest, &service)
+	}
+	err := q.scanMetadata(ctx, query, args, dest...)
+	if err == sql.ErrNoRows && sequence > 1 {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, q.budget.deny()
+	}
+	if flags == [6]uint64{} && originalRaw == "" && originalDigest == "" && currentRaw == "" && currentDigest == "" && policyRaw == "" && attestationRaw == "" {
+		return nil, nil
+	}
+	for _, flag := range flags {
+		if flag != 1 {
+			return nil, q.budget.deny()
+		}
+	}
+	if len(originalRaw) > ownedAuthorityHeadBytes || len(currentRaw) > ownedAuthorityHeadBytes || len(policyRaw) > 16<<10 || len(attestationRaw) > 16<<10 {
+		return nil, q.budget.deny()
+	}
+	original, oe := domain.DecodeRegisteredProxyAttestationV1([]byte(originalRaw))
+	if sequence > 1 && string(original.ServiceKind) != service {
+		return nil, q.budget.deny()
+	}
+	current, ce := domain.DecodeRegisteredProxyAttestationV1([]byte(currentRaw))
+	od, ode := original.Digest()
+	cd, cde := current.Digest()
+	// Initial writer supports no replacement/revocation yet; reject divergent
+	// heads rather than normalizing or reconstructing active permission.
+	if oe != nil || ce != nil || ode != nil || cde != nil || string(od) != originalDigest || string(cd) != currentDigest || originalRaw != currentRaw || original.ValidateInitial() != nil || original.ValidateForAllocation(allocation, source) != nil || original.Window.PublishedAt.After(q.at) {
+		return nil, q.budget.deny()
+	}
+	var policy ports.ServerlessEgressPolicyV1
+	var attestation ports.ServerlessEgressProxyAttestationV1
+	if json.Unmarshal([]byte(policyRaw), &policy) != nil || json.Unmarshal([]byte(attestationRaw), &attestation) != nil {
+		return nil, q.budget.deny()
+	}
+	pb, _ := json.Marshal(policy)
+	ab, _ := json.Marshal(attestation)
+	if !bytes.Equal(pb, []byte(policyRaw)) || !bytes.Equal(ab, []byte(attestationRaw)) || original.PolicyBody != ports.OwnedProxyBodyReferenceV1("policy", pb) || original.AttestationBody != ports.OwnedProxyBodyReferenceV1("attestation", ab) {
+		return nil, q.budget.deny()
+	}
+	pd, pe := policy.Digest()
+	routeBody, _ := json.Marshal(policy.Route)
+	routeSum := sha256.Sum256(routeBody)
+	if pe != nil || original.TransportDigest != hex.EncodeToString(routeSum[:]) || original.PolicyDigest != pd || original.ResolutionSetDigest != attestation.ResolutionSetDigest || attestation.ValidateForPolicy(policy, original.Window.PublishedAt, attestation.ExpiresAt) != nil || original.Window.ExpiresAt.After(attestation.ExpiresAt) {
+		return nil, q.budget.deny()
+	}
+	return &ownedProxySnapshot{original, current, policy, attestation, pb, ab}, nil
+}

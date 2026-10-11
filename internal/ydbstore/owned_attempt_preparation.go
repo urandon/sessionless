@@ -2,6 +2,9 @@ package ydbstore
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
@@ -98,6 +101,12 @@ func (store *Store) beginBoundedOwnedAttemptPreparation(ctx context.Context, gra
 			return err
 		}
 		if burned {
+			if store.attemptOperationIssuer != nil {
+				accounting, err := readOwnedAttemptAccounting(ctx, q, *parent, final.Source)
+				if err != nil || accounting == nil {
+					return q.budget.deny()
+				}
+			}
 			return nil // retained historical observation only, never another burn
 		}
 		if parent.Authority.ValidateAt(q.at) != nil || !q.at.Before(parent.PreparationExpiresAt) || store.validateCurrentOwnedAttemptParent(ctx, q, request, *parent) != nil {
@@ -106,6 +115,11 @@ func (store *Store) beginBoundedOwnedAttemptPreparation(ctx context.Context, gra
 		digest, err := parent.Digest()
 		if err != nil {
 			return q.budget.deny()
+		}
+		if store.attemptOperationIssuer != nil {
+			if err := reserveOwnedSetupAccounting(ctx, q, *parent, final.Source); err != nil {
+				return err
+			}
 		}
 		if _, err := q.ExecContext(ctx, ownedAttemptPreparationBurnUpdateSQL, q.at, digest, r.TenantID, r.AttemptID, r.Kind); err != nil {
 			return err
@@ -123,6 +137,31 @@ func (store *Store) beginBoundedOwnedAttemptPreparation(ctx context.Context, gra
 }
 
 func (store *Store) validateCurrentOwnedAttemptParent(ctx context.Context, q *ownedAuthorityQuery, request ports.ReserveAttemptEffectRequestV1, parent domain.OwnedAttemptEffectParentV1) error {
+	if store == nil || ctx == nil || q == nil || q.budget == nil {
+		return domain.ErrMembershipDenied
+	}
+	q.budget.mu.Lock()
+	active := q.budget.active && q.callback == q.budget.callbacks && !q.budget.failed
+	q.budget.mu.Unlock()
+	if !active {
+		return q.budget.deny()
+	}
+	parentDigest, err := parent.Digest()
+	if err != nil || ctx.Err() != nil || q.budget.check() != nil || request.PhysicalInvocationClaimID != parent.Reservation.PhysicalInvocationClaimID || !attemptEffectRequestMatchesRecord(request, attemptEffectRecordV1{Authority: parent.Authority, Reservation: parent.Reservation}) {
+		return q.budget.deny()
+	}
+	raw, err := json.Marshal(struct {
+		Parent  string
+		Request ports.ReserveAttemptEffectRequestV1
+	}{parentDigest, request})
+	if err != nil || len(raw) > ownedAuthorityHeadBytes {
+		return q.budget.deny()
+	}
+	hash := sha256.Sum256(raw)
+	key := hex.EncodeToString(hash[:])
+	if q.currentParentStore == store && q.currentParentKey == key {
+		return nil // exact successful current join in this callback, with no intervening Exec
+	}
 	current, final, err := store.currentOwnedAttemptEffectAuthority(ctx, q, request)
 	if err != nil || parent.ValidateForAdmission(final) != nil ||
 		!current.Lease.AcquiredAt.Equal(parent.Authority.Lease.AcquiredAt) || current.Lease.WorkerID != parent.Authority.Lease.WorkerID ||
@@ -135,5 +174,6 @@ func (store *Store) validateCurrentOwnedAttemptParent(ctx context.Context, q *ow
 	if err != nil || digest != parent.Reservation.InvocationAuthorityDigest || parent.Authority.ValidateAt(q.at) != nil {
 		return q.budget.deny()
 	}
+	q.currentParentStore, q.currentParentKey = store, key
 	return nil
 }

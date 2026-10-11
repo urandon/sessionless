@@ -42,6 +42,11 @@ type Options struct {
 	OwnedAttemptEffectSourceVerifier   ports.OwnedAttemptEffectSourceVerifierV1
 	OwnedPreparationGrantVerifier      ports.OwnedPreparationGrantVerifierV1
 	OwnedAllocationPublicationVerifier ports.OwnedAllocationPublicationVerifierV1
+	AttemptOperationIssuer             ports.AttemptOperationCapabilityIssuerV1
+	AttemptOperationBodies             ports.AttemptOperationBodyStoreV1
+	OwnedProxyPublicationVerifier      ports.OwnedProxyPublicationVerifierV1
+	OwnedOperationResidualCustody      ports.OwnedOperationResidualCustodyV1
+	OwnedProviderPriceCustody          ports.OwnedProviderPriceCustodyV1
 }
 
 type Store struct {
@@ -56,6 +61,11 @@ type Store struct {
 	ownedAttemptEffectSourceVerifier   ports.OwnedAttemptEffectSourceVerifierV1
 	ownedPreparationGrantVerifier      ports.OwnedPreparationGrantVerifierV1
 	ownedAllocationPublicationVerifier ports.OwnedAllocationPublicationVerifierV1
+	attemptOperationIssuer             ports.AttemptOperationCapabilityIssuerV1
+	attemptOperationBodies             ports.AttemptOperationBodyStoreV1
+	ownedProxyPublicationVerifier      ports.OwnedProxyPublicationVerifierV1
+	ownedOperationResidualCustody      ports.OwnedOperationResidualCustodyV1
+	ownedProviderPriceCustody          ports.OwnedProviderPriceCustodyV1
 }
 
 func New(db *sql.DB, options Options) (*Store, error) {
@@ -71,6 +81,11 @@ func New(db *sql.DB, options Options) (*Store, error) {
 	if options.WebSessionIdleTTL <= 0 {
 		options.WebSessionIdleTTL = defaultWebSessionIdleTTL
 	}
+	if options.OwnedOperationResidualCustody != nil {
+		// One privately installed ORIGINAL keeper owns both reads and disposal.
+		// Never compose residual proof with an unrelated caller-selected body store.
+		options.AttemptOperationBodies = options.OwnedOperationResidualCustody
+	}
 	return &Store{
 		db:                                 db,
 		idempotencyRetention:               options.IdempotencyRetention,
@@ -83,6 +98,11 @@ func New(db *sql.DB, options Options) (*Store, error) {
 		ownedAttemptEffectSourceVerifier:   options.OwnedAttemptEffectSourceVerifier,
 		ownedPreparationGrantVerifier:      options.OwnedPreparationGrantVerifier,
 		ownedAllocationPublicationVerifier: options.OwnedAllocationPublicationVerifier,
+		attemptOperationIssuer:             options.AttemptOperationIssuer,
+		attemptOperationBodies:             options.AttemptOperationBodies,
+		ownedProxyPublicationVerifier:      options.OwnedProxyPublicationVerifier,
+		ownedOperationResidualCustody:      options.OwnedOperationResidualCustody,
+		ownedProviderPriceCustody:          options.OwnedProviderPriceCustody,
 	}, nil
 }
 

@@ -436,6 +436,37 @@ func TestWebSearchConsentReceiptExactAndNoDeadlineExtension(t *testing.T) {
 	})
 }
 
+func TestWebSearchConsentPendingReconcileHasNoBrowserActor(t *testing.T) {
+	t.Parallel()
+	f := newConsentFixture(t)
+	f.authority.WebSession = domain.WebSession{}
+	if _, err := domain.StopWebSearchConsentV1(f.state, 1, f.authority, f.clock.Now()); !errors.Is(err, domain.ErrWebSearchConsentAuthority) {
+		t.Fatal("healthy pending request with no browser session was stopped", err)
+	}
+	f.clock.Advance(time.Minute)
+	stopped, err := domain.StopWebSearchConsentV1(f.state, 1, f.authority, f.clock.Now())
+	if err != nil || stopped.Status != domain.WebSearchConsentExpiredV1 || stopped.Decision != nil {
+		t.Fatal("pending expiry must not fabricate browser revocation/decision", err)
+	}
+	f = newConsentFixture(t)
+	f.authority.WebSession = domain.WebSession{}
+	f.authority.Participant.Status = domain.SessionParticipantRemoved
+	stopped, err = domain.StopWebSearchConsentV1(f.state, 1, f.authority, f.clock.Now())
+	if err != nil || stopped.Status != domain.WebSearchConsentRevokedV1 || stopped.Decision != nil {
+		t.Fatal("actual removed participation must stop pending consent", err)
+	}
+}
+
+func TestWebSearchConsentDecisionReplayRequiresOriginalBrowserSession(t *testing.T) {
+	t.Parallel()
+	f := newConsentFixture(t)
+	f.state, _ = approveConsent(t, f)
+	f.authority.WebSession.SessionDigest = domain.SecretDigest(consentHash("different-valid-session"))
+	if _, err := decideConsent(f, domain.WebSearchConsentApproveV1); !errors.Is(err, domain.ErrWebSearchConsentConflict) {
+		t.Fatal("different browser session recovered original decision", err)
+	}
+}
+
 func TestWebSearchConsentStopAndWorkerLossNeverReopen(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

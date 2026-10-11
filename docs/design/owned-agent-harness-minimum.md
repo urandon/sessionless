@@ -35,6 +35,12 @@ Introduce one canonical successor `HarnessBindingV2` sealing this digest. Its ex
 
 Operation admission must reload current Run/Attempt/lease/fence, cancellation, resource generation/revocation, profile, policy, price and proxy/allocation freshness. The deadline is the minimum of all authority windows and the remaining attempt/call budget. A lease renewal, where needed, uses the existing lease port; progress never renews time or authority by itself. Failed freshness checks stop before the next effect.
 
+The [current authority extension](owned-harness-current-authority.md) specifies
+the #189 engineering draft for trusted current registration, explicit funding
+and post-claim allocation/proxy observation. It supplies this existing
+requirement, not a new MVP feature or runtime activation. Its independent review
+and concrete persistence/integration evidence remain required.
+
 The prepared invocation is consumed once at entry to the reviewed loop boundary. A new `ProviderLoopSessionV1` inside that trusted boundary materializes the invocation credential once, owns its bounded lifetime and releases it under independent cleanup. Each model operation is authorized separately within that session. This is a required versioned extension: do not call the existing one-shot BoundaryV1 repeatedly, retain its callback, or weaken its at-most-once materializer. Neither the model nor the MCP client receives provider credential bytes. The loop session has no endpoint/model override and cannot outlive the original invocation authority.
 
 ## Sequential execution

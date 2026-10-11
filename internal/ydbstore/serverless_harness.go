@@ -148,7 +148,7 @@ func currentServerlessInvocationAuthorityTx(ctx context.Context, tx *stateTx, re
 	if err != nil || !found {
 		return domain.ServerlessInvocationAuthorityV1{}, false, err
 	}
-	if lease.ID != request.LeaseID || lease.AttemptID != request.AttemptID || lease.FenceToken != request.FenceToken {
+	if err := validateCurrentServerlessLease(loaded, lease, request, at); err != nil {
 		return domain.ServerlessInvocationAuthorityV1{}, false, nil
 	}
 	if err := requireLeaseOwnership(ctx, tx, request.RunID, request.LeaseID, request.FenceToken, at); err != nil {
@@ -176,6 +176,28 @@ func currentServerlessInvocationAuthorityTx(ctx context.Context, tx *stateTx, re
 		return domain.ServerlessInvocationAuthorityV1{}, false, nil
 	}
 	return authority, true, nil
+}
+
+// This validates only the existing canonical lifecycle join. It does not
+// establish owned-profile, price/billing, provider-generation, participation or
+// allocation/proxy authority. The fixture-only gate above remains unchanged.
+// Lease head scalars have already been checked by readCanonicalLeaseHeadTx;
+// explicitly join its worker to the current Attempt, not merely its ID/fence.
+func validateCurrentServerlessLease(loaded ports.WorkerJobState, lease domain.Lease, request ports.ReserveAttemptEffectRequestV1, at time.Time) error {
+	if err := validateLoadedWorkerJob(loaded); err != nil {
+		return err
+	}
+	if err := lease.ValidateForAttempt(loaded.Run, loaded.Attempt); err != nil {
+		return err
+	}
+	if request.TenantID != loaded.Run.TenantID || request.RunID != loaded.Run.ID || request.AttemptID != loaded.Job.AttemptID ||
+		lease.ID != request.LeaseID || lease.AttemptID != request.AttemptID || lease.FenceToken != request.FenceToken ||
+		lease.WorkerID != loaded.Attempt.WorkerID || at.IsZero() || !lease.ActiveAt(at) ||
+		loaded.Run.Status != domain.RunRunning || loaded.Attempt.Status != domain.AttemptRunning || loaded.Run.CancellationRequestedAt != nil ||
+		loaded.Run.UpdatedAt.After(at) || loaded.Attempt.UpdatedAt.After(at) || loaded.Job.CreatedAt.After(at) {
+		return domain.ValidationError{Field: "serverless_invocation.current_lease", Reason: "must join the current running job, worker, physical lease and authoritative time"}
+	}
+	return nil
 }
 
 func (store *Store) mintAttemptEffectGrant(authority domain.ServerlessInvocationAuthorityV1, reservation domain.AttemptEffectReservationV1, at time.Time) (ports.AttemptEffectOwnershipGrantV1, error) {

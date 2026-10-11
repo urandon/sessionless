@@ -4,6 +4,7 @@ package ydbintegration
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,6 +27,7 @@ import (
 )
 
 var idSequence atomic.Uint64
+var idProcessNonce = rand.Text()
 
 func TestExecutionPlacementServingGateRequiresCommittedMarker(t *testing.T) {
 	store, client := openStore(t)
@@ -609,25 +611,43 @@ func TestConcurrentSchedulerAdmissionReservesOneSubscriptionSlot(t *testing.T) {
 }
 
 func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
-	store, client, grantIssuer := openStoreWithIssuer(t)
+	_, client := openStore(t)
 	tenantID := domain.TenantID(uniqueID("tenant-worker"))
-	now := time.Now().UTC().Truncate(time.Microsecond)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	t.Cleanup(cancel)
+	databaseNow := func() time.Time {
+		t.Helper()
+		var at time.Time
+		if err := client.DB.QueryRowContext(ctx, "SELECT CurrentUtcTimestamp()").Scan(&at); err != nil || at.IsZero() {
+			t.Fatalf("worker lifecycle database clock=%v error=%v", at, err)
+		}
+		return at.UTC()
+	}
+	grantIssuer, err := serverlessharness.NewCapabilityIssuer(databaseNow, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := ydbstore.New(client.DB, ydbstore.Options{AttemptEffectGrantIssuer: grantIssuer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := databaseNow()
 	connectionID := domain.SubscriptionConnectionID("subscription-" + string(tenantID))
 	actor := domain.ActorRef{
 		TenantID: tenantID, Frontend: domain.FrontendTelegram,
-		ExternalID: "worker-user", ID: domain.ActorID(uniqueID("actor")),
+		ExternalID: "worker-user-" + string(tenantID), ID: domain.ActorID(uniqueID("actor")),
 	}
 	conversation := domain.ConversationRef{
 		TenantID: tenantID, Frontend: domain.FrontendTelegram,
-		ExternalID: "worker-chat", ID: domain.ConversationID("conversation-" + string(tenantID)),
+		ExternalID: "worker-chat-" + string(tenantID), ID: domain.ConversationID("conversation-" + string(tenantID)),
 	}
-	if _, err := store.EnsureTelegramIdentity(context.Background(), ports.TelegramIdentityRequest{
+	if _, err := store.EnsureTelegramIdentity(ctx, ports.TelegramIdentityRequest{
 		TenantID: tenantID, Actor: actor, Conversation: conversation,
 		SubscriptionConnectionID: connectionID, Provider: "codex", ObservedAt: now,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.DB.ExecContext(context.Background(),
+	if _, err := client.DB.ExecContext(ctx,
 		`UPDATE subscription_connections
 		 SET entitlement_state = $1, quota_state = $2, updated_at = $3
 		 WHERE tenant_id = $4 AND subscription_connection_id = $5`,
@@ -636,7 +656,7 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.DB.ExecContext(context.Background(),
+	if _, err := client.DB.ExecContext(ctx,
 		`UPDATE subscription_scheduler_slots
 		 SET state = $1, updated_at = $2
 		 WHERE tenant_id = $3 AND subscription_connection_id = $4`,
@@ -645,7 +665,7 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 		t.Fatal(err)
 	}
 	ingress := ingressFixture(tenantID, uniqueID("run-worker"), 6201, now)
-	if _, err := store.IngestTelegram(context.Background(), ingress); err != nil {
+	if _, err := store.IngestTelegram(ctx, ingress); err != nil {
 		t.Fatal(err)
 	}
 	reservationID := domain.QuotaReservationID(uniqueID("reservation-worker"))
@@ -657,12 +677,13 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 	})
 	// Expiry behavior is covered separately. Keep this scenario independent of
 	// runner speed while it exercises legacy loading and provider-effect fencing.
-	admissionRequest.HoldUntil = now.Add(30 * time.Minute)
-	admission, err := store.AdmitDispatch(context.Background(), admissionRequest)
+	admissionRequest.Now = databaseNow()
+	admissionRequest.HoldUntil = admissionRequest.Now.Add(30 * time.Minute)
+	admission, err := store.AdmitDispatch(ctx, admissionRequest)
 	if err != nil || !admission.Admitted {
 		t.Fatalf("admission = %+v, %v", admission, err)
 	}
-	loaded, found, err := store.LoadWorkerJob(context.Background(), tenantID, ingress.Run.ID)
+	loaded, found, err := store.LoadWorkerJob(ctx, tenantID, ingress.Run.ID)
 	if err != nil || !found {
 		t.Fatalf("load worker job = found:%t error:%v", found, err)
 	}
@@ -687,7 +708,7 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.DB.ExecContext(context.Background(),
+	if _, err := client.DB.ExecContext(ctx,
 		`UPDATE worker_jobs
 		 SET payload = CAST($1 AS JsonDocument)
 		 WHERE tenant_id = $2 AND run_id = $3`,
@@ -695,7 +716,7 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	loaded, found, err = store.LoadWorkerJob(context.Background(), tenantID, ingress.Run.ID)
+	loaded, found, err = store.LoadWorkerJob(ctx, tenantID, ingress.Run.ID)
 	if err != nil || !found {
 		t.Fatalf("load legacy worker job = found:%t error:%v", found, err)
 	}
@@ -708,12 +729,8 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 			2*loaded.Job.Limits.MaxTurns, loaded.Job.Limits.MaxContextBytes,
 		)
 	}
-	var workerNow time.Time
-	if err := client.DB.QueryRowContext(context.Background(), `SELECT CurrentUtcTimestamp()`).Scan(&workerNow); err != nil {
-		t.Fatal(err)
-	}
-	workerNow = workerNow.UTC().Truncate(time.Microsecond)
-	lease, err := store.ClaimWorkerLease(context.Background(), ports.WorkerLeaseRequest{
+	workerNow := databaseNow()
+	lease, err := store.ClaimWorkerLease(ctx, ports.WorkerLeaseRequest{
 		TenantID: tenantID, RunID: ingress.Run.ID, AttemptID: ingress.Attempt.ID,
 		LeaseID: domain.LeaseID(uniqueID("lease-worker")), WorkerID: "worker-integration",
 		Now: workerNow, ExpiresAt: workerNow.Add(30 * time.Minute),
@@ -721,14 +738,14 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.StartWorkerJob(context.Background(), loaded, lease, workerNow.Add(2*time.Second)); err != nil {
+	if err := store.StartWorkerJob(ctx, loaded, lease, databaseNow()); err != nil {
 		t.Fatal(err)
 	}
 	effectRequest := ports.ReserveAttemptEffectRequestV1{
 		TenantID: tenantID, RunID: ingress.Run.ID, AttemptID: ingress.Attempt.ID,
 		LeaseID: lease.ID, FenceToken: lease.FenceToken, PhysicalInvocationClaimID: uniqueID("physical-claim"),
 	}
-	effect, err := store.ReserveAttemptEffect(context.Background(), effectRequest)
+	effect, err := store.ReserveAttemptEffect(ctx, effectRequest)
 	if err != nil || effect.Status != ports.AttemptEffectOwnedV1 {
 		t.Fatalf("reserve first provider effect = %#v, %v", effect, err)
 	}
@@ -736,13 +753,13 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 		t.Fatalf("reserved effect authority = %#v", effect)
 	}
 	substrateEvidence := successfulSubstrateExecutionEvidence(t, grantIssuer, effect)
-	replayed, err := store.ReserveAttemptEffect(context.Background(), effectRequest)
+	replayed, err := store.ReserveAttemptEffect(ctx, effectRequest)
 	if err != nil || replayed.Status != ports.AttemptEffectReplayedV1 || replayed.Reservation != effect.Reservation {
 		t.Fatalf("exact provider effect replay = %#v, %v", replayed, err)
 	}
 	contender := effectRequest
 	contender.PhysicalInvocationClaimID = uniqueID("physical-contender")
-	reconcile, err := store.ReserveAttemptEffect(context.Background(), contender)
+	reconcile, err := store.ReserveAttemptEffect(ctx, contender)
 	if err != nil || reconcile.Status != ports.AttemptEffectReconcileOnlyV1 || reconcile.Reservation != effect.Reservation ||
 		reconcile.Grant != nil || reconcile.ObservationGrant == nil || grantIssuer.VerifyObservationGrant(*reconcile.ObservationGrant) != nil {
 		t.Fatalf("contending provider effect = %#v, %v", reconcile, err)
@@ -754,7 +771,7 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 		reconcileAuthority, reconcile.Reservation, domain.SubstrateOperationObservationV1{
 			State: domain.SubstrateOperationObservedV1, InvocationAuthority: reconcileAuthorityDigest,
 			SubstrateBinding: reconcileSubstrateDigest, PhysicalInvocationID: "integration-runtime-operation",
-			ObservedAt: now.Add(7 * time.Second),
+			ObservedAt: databaseNow(),
 		},
 	)
 	if err != nil {
@@ -763,16 +780,16 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 	reconciliationRecord := ports.AttemptEffectReconciliationRecordV1{
 		TenantID: tenantID, RunID: ingress.Run.ID, AttemptID: ingress.Attempt.ID, Evidence: reconciliationEvidence,
 	}
-	if err := store.RecordAttemptEffectReconciliation(context.Background(), reconciliationRecord); err != nil {
+	if err := store.RecordAttemptEffectReconciliation(ctx, reconciliationRecord); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RecordAttemptEffectReconciliation(context.Background(), reconciliationRecord); err != nil {
+	if err := store.RecordAttemptEffectReconciliation(ctx, reconciliationRecord); err != nil {
 		t.Fatalf("idempotent reconciliation evidence replay: %v", err)
 	}
 	divergent := effectRequest
 	divergentDigest := strings.Repeat("d", 64)
 	divergent.UpstreamIdempotencyKeyDigest = &divergentDigest
-	if _, err := store.ReserveAttemptEffect(context.Background(), divergent); err == nil {
+	if _, err := store.ReserveAttemptEffect(ctx, divergent); err == nil {
 		t.Fatal("divergent upstream idempotency authority was accepted")
 	}
 	assertCount(t, client, "attempt_effect_reservations", tenantID, 1)
@@ -786,22 +803,23 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 				"checkpoints/checkpoint.json",
 			Size: 2, SHA256: strings.Repeat("1", 64),
 		},
-		CreatedAt: workerNow.Add(3 * time.Second),
+		CreatedAt: databaseNow(),
 	}
-	if err := store.CommitWorkerEvent(context.Background(), ports.WorkerEventCommit{
+	if err := store.CommitWorkerEvent(ctx, ports.WorkerEventCommit{
 		Checkpoint: checkpoint, LeaseID: lease.ID, Fence: lease.FenceToken,
 		At: checkpoint.CreatedAt,
 	}); err != nil {
 		t.Fatal(err)
 	}
+	renewedAt := databaseNow()
 	lease, err = store.RenewWorkerLease(
-		context.Background(), tenantID, lease.ID, lease.FenceToken,
-		workerNow.Add(30*time.Second), workerNow.Add(30*time.Minute),
+		ctx, tenantID, lease.ID, lease.FenceToken,
+		renewedAt, renewedAt.Add(30*time.Minute),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	finishedAt := workerNow.Add(40 * time.Second)
+	finishedAt := databaseNow()
 	manifest := domain.ArtifactManifest{
 		ID:       domain.ArtifactManifestID(uniqueID("manifest-output")),
 		TenantID: tenantID, RunID: ingress.Run.ID, CreatedAt: finishedAt,
@@ -814,14 +832,14 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 		IdempotencyKey: domain.IdempotencyKey(uniqueID("delivery-key")),
 		CreatedAt:      finishedAt, UpdatedAt: finishedAt,
 	}
-	if err := store.CompleteLegacyTelegramWorkerJob(context.Background(), ports.LegacyTelegramWorkerCompletion{
+	if err := store.CompleteLegacyTelegramWorkerJob(ctx, ports.LegacyTelegramWorkerCompletion{
 		TenantID: tenantID, RunID: ingress.Run.ID, AttemptID: ingress.Attempt.ID,
 		ReservationID: reservationID, LeaseID: lease.ID, Fence: lease.FenceToken,
 		At: finishedAt, Manifest: manifest, Delivery: delivery, SubstrateEvidence: &substrateEvidence,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	terminal, found, err := store.LoadWorkerJob(context.Background(), tenantID, ingress.Run.ID)
+	terminal, found, err := store.LoadWorkerJob(ctx, tenantID, ingress.Run.ID)
 	if err != nil || !found {
 		t.Fatalf("load terminal worker job = found:%t error:%v", found, err)
 	}
@@ -1539,7 +1557,10 @@ func cloneAdmissionCostForIntegration(value domain.AdmissionCostCeilingV2) *doma
 }
 
 func uniqueID(prefix string) string {
-	return fmt.Sprintf("%s-%d", prefix, idSequence.Add(1))
+	// A process-local counter alone collides with retained data when a focused
+	// native test binary runs again. The nonce isolates separate processes; the
+	// counter retains deterministic uniqueness/order within this one process.
+	return fmt.Sprintf("%s-%s-%d", prefix, idProcessNonce, idSequence.Add(1))
 }
 
 func assertCount(

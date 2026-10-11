@@ -4,8 +4,9 @@ Status: product-owner-directed two-track scope correction, 2026-10-10;
 managed delivery [#176](https://gitcode.com/urandon/sessionless/issues/176)/
 [#175](https://gitcode.com/urandon/sessionless/issues/175), attached delivery
 [#72](https://gitcode.com/urandon/sessionless/issues/72).
-Source snapshot: accepted `d3eb8fdc069938c05be23212e834a7cc3d82a03e` and
-live issue read-back on 2026-10-10. The
+Scope baseline: accepted `d3eb8fdc069938c05be23212e834a7cc3d82a03e`;
+engineering design and implementation-checklist status reconciled against live
+PR/issue read-back on 2026-10-10. The
 [owner's two-track decision](https://gitcode.com/urandon/sessionless/wiki/MVP-Execution-Tracks-2026-10-10.md)
 supersedes both the attached-only scheduling baseline from #167 and the
 attached-optional interpretation in the earlier !159 draft, not their delivered
@@ -105,11 +106,18 @@ not hidden launch gates. The [UX roadmap](product-ux-roadmap.md) remains separat
   measured transport and #133 real Codex activation remain required attached
   rollout work, independent of managed implementation.
 - #177 loop/export research is closed; #178/#179 research phases are accepted.
-  [PR !160](https://gitcode.com/urandon/sessionless/pull/160) publishes the 0.2.0
-  draft minimum, compaction, tools/MCP and search designs. Independent CLEAN and
-  exact-head CI are documentation evidence, not owner acceptance or executable
-  agent behavior. Tavily Basic/public-web mode and numeric budgets remain
-  proposals. #180 acceptance precedes actual #176 implementation children.
+  [PR !160](https://gitcode.com/urandon/sessionless/pull/160) merged engineering
+  package **0.2.1**: minimum, compaction, tools/MCP and bounded web-search designs.
+  Primary acceptance under the owner's agreed-MVP engineering delegation cites
+  independently derived requirements-led review and resolved findings at
+  `42139dfb5cefb266adb77f221c0743b53cfb5217`, plus all eight exact-head CI jobs in
+  [run 38049014235](https://github.com/urandon/sessionless/actions/runs/38049014235).
+  Merge `f6d754693df3fb291ff35c03ed166dcd3622eeef` is in main; #180 is closed and
+  #176 has nine linked implementation children, **#189–#197**, still open.
+  These are accepted engineering contracts, not implemented agent behavior or
+  runtime activation. Tavily Basic/public-web mode and numeric ceilings remain
+  proposed first-profile choices subject to exact-profile calibration; they are
+  not an enabled service, measured winner or granted paid/live budget.
 - Dev user feedback shows disabled Send with `not_configured` compute.
   Successful login/session creation does not supply a real execution resource.
   #175 owns explicit managed entitlement/profile admission and normal dispatch;
@@ -123,14 +131,22 @@ snapshots; CI watchers report exact heads. Follow the
 [autonomous task-flow protocol](https://gitcode.com/urandon/sessionless/wiki/Autonomous-Development-and-Agent-Orchestration.md):
 relevant research → versioned reviewed and accepted design → real linked
 implementation children → proportional tests/review/exact-head CI → integration.
+For agreed MVP/features, ordinary engineering design acceptance is delegated to
+the primary with research and independent requirements-led review; manual human
+PR review or repeated engineering signoff is not required. The reviewer derives
+its own objective from the original scope and contracts before inspecting the
+candidate. Ask the owner for actual product/scope changes, material unresolved
+choices outside delegation or new external-operation authority. Merge gates and
+separate live-operation approvals remain unchanged.
 Owner high/critical signals receive explicit triage; only the owner assigns
 critical. Existing owners are reused; no broad research program becomes a hidden
-release gate.
+release gate. In particular, owner-high #155 remains a post-MVP scheduling signal,
+not an additional MVP release requirement.
 
 | Owner | Concrete actions | Exit evidence |
 | --- | --- | --- |
-| #177/#178/#179 and bounded #94 research → #180 design | Reuse accepted source findings; accept/correct the exact !160 minimum, compaction, MCP and search design; retain unknowns, exclusions and independent review | Versioned owner-accepted contract; research acceptance and green docs CI do not implement it |
-| #176 agent implementation | After #180 acceptance, populate this existing epic with actual linked mandatory children for loop/effects/exports, compaction, useful MCP, web search/citations and deterministic regressions | Every child has scope, predecessors, labels/milestone, tests/review/exact-head CI; proposed slices are not created or delivered children |
+| #177/#178/#179 and bounded #94 research → #180 design | Reuse accepted !160 package 0.2.1 and source findings; resolve newly uncovered questions in bounded tasks rather than reopening completed acceptance | #180 is closed after primary engineering acceptance under delegation; research/design and green docs CI do not implement the agent |
+| #176 agent implementation | Deliver the existing linked #189–#197 checklist in predecessor order: policy/budgets, provider session, loop/exports, compaction, useful MCP, web-search grants, exact-query consent, citations and joined conformance | Every child retains scope, predecessors, labels/milestone, tests/review/exact-head CI; registration is not delivery and all nine implementation outcomes remain open |
 | #90 platform | Execute its bounded synthetic cloud-dev manifest; measure cold/warm isolation, erasure, egress, lease/redelivery and cost; keep no-go explicit | Exact immutable platform/profile and go/conditional/no-go. No real key/user payload required for this spike |
 | #175 managed profile | Join implemented #176 agent capabilities with one real provider/model/auth/data/capability tuple, entitlement and normal Web/control/worker dispatch/result flow; account for files/images and durable outputs | Reviewed implementation, exact-profile tool/egress/cost compatibility and deterministic negatives/exact CI; no user host dependency. Registration or a single tool-free call does not activate |
 | #92 managed canary | Join #90 and #175 under a separately approved manifest; prove two-owner/tenant isolation, credential/egress/cleanup, ambiguous no-replay, metering, budget and rollback | Actual bounded cloud-dev receipts for one real profile; public-safe evidence and reversible activation, no inferred zero cost |
@@ -190,9 +206,10 @@ Dependency scenario anchored on 2026-10-10. Durations are provisional engineerin
 allowances, not measured effort, staffing or a promised release date. Live canary
 authorization, provider availability and platform findings can extend elapsed
 time. Re-estimate after first evidence; existing milestone dates remain planning
-horizons. Re-estimate managed implementation after accepted design creates real
-children; the aggregate box below is not an invented implementation issue or
-staffed schedule. This replaces earlier one-track charts, not historical receipts.
+horizons. Re-estimate managed implementation from the existing #189–#197 children
+as delivery evidence accumulates; the aggregate box below is not a staffed
+schedule. Design acceptance is complete, not a future three-day approval task.
+This replaces earlier one-track charts, not historical receipts.
 
 ```mermaid
 gantt
@@ -203,7 +220,7 @@ gantt
     section Independent preparation
     Existing contracts delivered       :done, milestone, contracts, 2026-10-10, 0d
     Substrate evidence (#90)           :crit, platform, 2026-10-10, 3d
-    Research and design acceptance (#180) :design, 2026-10-10, 3d
+    Accepted design (#180)             :done, milestone, design, 2026-10-10, 0d
     Agent implementation (#176 scenario) :agent, after design, 8d
     Managed profile and join (#175)    :profile, after agent, 5d
     Web login and rollout proof (#34)  :web, 2026-10-10, 3d

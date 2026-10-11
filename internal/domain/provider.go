@@ -337,10 +337,20 @@ func (binding HarnessBindingV2) validateAgentLoopPolicy() error {
 	if _, err := policy.Digest(); err != nil {
 		return err
 	}
-	if binding.Backend.BackendKind != HarnessBackendDirectOpenRouterV1 || binding.Backend.ProviderContractKind != ProviderContractInvocationV1 ||
-		binding.Backend.CredentialDeliveryKind != ProviderCredentialDeliveryDirectV1 || binding.Resource.CredentialMode != ProviderCredentialInvocationV1 ||
-		(binding.Resource.Kind != ProviderResourceAPIAccountV1 && binding.Resource.Kind != ProviderResourceRouterAccountV1) || binding.InputDataClass != ProviderDataPublicV1 {
-		return ValidationError{Field: "harness_binding.profile", Reason: "owned_agent requires the reviewed direct provider public-data axes"}
+	// The closed credential-free fixture is a structural test profile, not an
+	// installed multi-operation driver or permission to dispatch. Registries
+	// retain their owned-agent gates until actual session/loop composition exists.
+	fixture := binding.Backend.BackendKind == HarnessBackendDeterministicFixtureV1 &&
+		binding.Backend.ArtifactKind == HarnessArtifactEmbeddedProfileV1 &&
+		binding.Backend.ProviderContractKind == ProviderContractCredentiallessFixtureV1 &&
+		binding.Backend.CredentialDeliveryKind == ProviderCredentialDeliveryNoneV1 &&
+		binding.Resource.Kind == ProviderResourceCredentiallessFixtureV1 &&
+		binding.Resource.CredentialMode == ProviderCredentialNoneV1 && binding.Resource.CredentialGeneration == 0
+	direct := binding.Backend.BackendKind == HarnessBackendDirectOpenRouterV1 && binding.Backend.ProviderContractKind == ProviderContractInvocationV1 &&
+		binding.Backend.CredentialDeliveryKind == ProviderCredentialDeliveryDirectV1 && binding.Resource.CredentialMode == ProviderCredentialInvocationV1 &&
+		(binding.Resource.Kind == ProviderResourceAPIAccountV1 || binding.Resource.Kind == ProviderResourceRouterAccountV1)
+	if (!fixture && !direct) || binding.InputDataClass != ProviderDataPublicV1 {
+		return ValidationError{Field: "harness_binding.profile", Reason: "owned_agent requires the closed fixture or reviewed direct public-data axes"}
 	}
 	if policy.TenantID != binding.TenantID || policy.OwnerUserID != binding.OwnerUserID || policy.RunID != binding.RunID || policy.AttemptID != binding.AttemptID ||
 		policy.Backend != binding.Backend || policy.Resource != binding.Resource || policy.ModelVendorID != binding.ModelVendorID || policy.ModelID != binding.ModelID ||
@@ -348,7 +358,7 @@ func (binding HarnessBindingV2) validateAgentLoopPolicy() error {
 		policy.CapabilityEvidenceDigest != binding.CapabilityEvidenceDigest || policy.PrivacyPolicyDigest != binding.PrivacyPolicyDigest || policy.EffectivePolicyDigest != binding.EffectivePolicyDigest {
 		return ValidationError{Field: "harness_binding.agent_loop_policy", Reason: "must exact-match all binding scope, backend, resource, model, data and evidence axes"}
 	}
-	if binding.EvidenceExpiresAt == nil || policy.ExpiresAt.After(*binding.EvidenceExpiresAt) {
+	if !fixture && (binding.EvidenceExpiresAt == nil || policy.ExpiresAt.After(*binding.EvidenceExpiresAt)) {
 		return ValidationError{Field: "harness_binding.agent_loop_policy.expires_at", Reason: "must fit the binding evidence window"}
 	}
 	return nil

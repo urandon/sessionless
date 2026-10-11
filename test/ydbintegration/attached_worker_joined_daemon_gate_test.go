@@ -360,13 +360,13 @@ type aw07ObservedAuthorizer struct {
 
 func (authorizer *aw07ObservedAuthorizer) AuthorizeSealedInputBearer(ctx context.Context, bearer []byte,
 	request ports.AttachedWorkerSealedInputAuthorization,
-) (uint64, error) {
-	revision, err := authorizer.inner.AuthorizeSealedInputBearer(ctx, bearer, request)
+) (ports.AttachedWorkerSealedInputAuthorizationResult, error) {
+	result, err := authorizer.inner.AuthorizeSealedInputBearer(ctx, bearer, request)
 	authorizer.mu.Lock()
 	authorizer.calls++
 	authorizer.lastErr = err
 	authorizer.mu.Unlock()
-	return revision, err
+	return result, err
 }
 
 func (authorizer *aw07ObservedAuthorizer) snapshot() (int, error) {
@@ -423,7 +423,7 @@ func aw07PrepareDaemonInstallation(t *testing.T, root, origin string, trust []by
 	worker domain.AttachedWorker, private ed25519.PrivateKey, now time.Time, testProvider bool,
 ) aw07DaemonInstallation {
 	t.Helper()
-	return aw07PrepareDaemonInstallationWithInputLimit(t, root, origin, trust, worker, private, now, testProvider, 4096)
+	return aw07PrepareDaemonInstallationWithInputLimit(t, root, origin, trust, worker, private, now, testProvider, aw07JoinedInputLimit)
 }
 
 func aw07PrepareDaemonInstallationWithInputLimit(t *testing.T, root, origin string, trust []byte,
@@ -681,7 +681,7 @@ func TestAW07TwoActivatedDaemonYDBJoin(t *testing.T) {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	statusRecorder := &aw07HTTPStatusRecorder{}
+	statusRecorder := &aw07HTTPStatusRecorder{inputLimit: aw07JoinedInputLimit, inputReady: make(chan struct{})}
 	mux.Handle(attachedworkerhttp.ChallengePathV1, bootstrap)
 	mux.Handle(attachedworkerhttp.AttachPathV1, bootstrap)
 	mux.Handle(attachedworkerhttp.ExchangePathV1, statusRecorder.wrap("exchange", exchange))
@@ -800,6 +800,7 @@ func TestAW07TwoActivatedDaemonYDBJoin(t *testing.T) {
 			time.Sleep(20 * time.Millisecond)
 		}
 	}
+	statusRecorder.assertInputBudgets(t, ctx, aWorker.OwnerUserID, bWorker.OwnerUserID)
 	for _, active := range []struct {
 		installation aw07DaemonInstallation
 		process      *aw07DaemonProcess

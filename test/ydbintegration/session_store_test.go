@@ -329,7 +329,15 @@ func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 	store, client, grantIssuer := openStoreWithIssuer(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	now := time.Now().UTC().Truncate(time.Microsecond)
+	databaseNow := func() time.Time {
+		t.Helper()
+		var at time.Time
+		if err := client.DB.QueryRowContext(ctx, `SELECT CurrentUtcTimestamp()`).Scan(&at); err != nil || at.IsZero() {
+			t.Fatalf("canonical fixture database clock=%v error=%v", at, err)
+		}
+		return at.UTC().Truncate(time.Microsecond)
+	}
+	now := databaseNow()
 	tenantID := domain.TenantID(uniqueID("tenant-ingress"))
 	userID := domain.UserID(uniqueID("user-ingress"))
 	seedCanonicalMembership(t, client.DB, tenantID, userID, now)
@@ -349,7 +357,7 @@ func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 	secondID := domain.SessionID(uniqueID("session-ingress-second"))
 	state, err = store.CreateAndSwitchFrontendSession(ctx, ports.CanonicalSessionSwitchRequest{
 		TenantID: tenantID, UserID: userID, BindingID: bindingID,
-		ExpectedRevision: state.Binding.Revision, SessionID: secondID, At: now.Add(time.Second),
+		ExpectedRevision: state.Binding.Revision, SessionID: secondID, At: databaseNow(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -357,7 +365,7 @@ func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 	thirdID := domain.SessionID(uniqueID("session-ingress-third"))
 	state, err = store.CreateAndSwitchFrontendSession(ctx, ports.CanonicalSessionSwitchRequest{
 		TenantID: tenantID, UserID: userID, BindingID: bindingID,
-		ExpectedRevision: state.Binding.Revision, SessionID: thirdID, At: now.Add(2 * time.Second),
+		ExpectedRevision: state.Binding.Revision, SessionID: thirdID, At: databaseNow(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -367,12 +375,12 @@ func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 	}
 	if _, err := store.CreateAndSwitchFrontendSession(ctx, ports.CanonicalSessionSwitchRequest{
 		TenantID: tenantID, UserID: userID, BindingID: bindingID,
-		ExpectedRevision: 1, SessionID: domain.SessionID(uniqueID("stale-session")), At: now.Add(3 * time.Second),
+		ExpectedRevision: 1, SessionID: domain.SessionID(uniqueID("stale-session")), At: databaseNow(),
 	}); err == nil {
 		t.Fatal("stale binding switch succeeded")
 	}
 
-	committedAt := now.Add(3 * time.Second)
+	committedAt := databaseNow()
 	eventID := domain.SessionEventID(uniqueID("event-ingress"))
 	runID := domain.RunID(uniqueID("run-ingress"))
 	payload := domain.BlobRef{
@@ -435,7 +443,7 @@ func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 	fourthID := domain.SessionID(uniqueID("session-ingress-fourth"))
 	state, err = store.CreateAndSwitchFrontendSession(ctx, ports.CanonicalSessionSwitchRequest{
 		TenantID: tenantID, UserID: userID, BindingID: bindingID,
-		ExpectedRevision: state.Binding.Revision, SessionID: fourthID, At: committedAt.Add(time.Second),
+		ExpectedRevision: state.Binding.Revision, SessionID: fourthID, At: databaseNow(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -526,12 +534,13 @@ func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 	}
 	assertCount(t, client, "worker_jobs", tenantID, 1)
 	assertCount(t, client, "quota_reservations", tenantID, 1)
+	secondaryBoundAt := databaseNow()
 	secondaryBinding := domain.FrontendBinding{
 		ID:       domain.FrontendBindingID(uniqueID("binding-secondary")),
 		TenantID: tenantID, Frontend: domain.Frontend("synthetic"),
 		ExternalConversationID: uniqueID("conversation-secondary"),
 		SessionID:              thirdID, Revision: 1,
-		CreatedAt: committedAt.Add(2 * time.Second), UpdatedAt: committedAt.Add(2 * time.Second),
+		CreatedAt: secondaryBoundAt, UpdatedAt: secondaryBoundAt,
 	}
 	if err := store.BindFrontend(ctx, secondaryBinding); err != nil {
 		t.Fatal(err)
@@ -550,11 +559,7 @@ func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 	if loaded.Job.CredentialOwnerUserID != userID {
 		t.Fatalf("credential owner round-trip = %q, want %q", loaded.Job.CredentialOwnerUserID, userID)
 	}
-	var workerNow time.Time
-	if err := client.DB.QueryRowContext(ctx, `SELECT CurrentUtcTimestamp()`).Scan(&workerNow); err != nil {
-		t.Fatal(err)
-	}
-	workerNow = workerNow.UTC().Truncate(time.Microsecond)
+	workerNow := databaseNow()
 	lease, err := store.ClaimWorkerLease(ctx, ports.WorkerLeaseRequest{
 		TenantID: tenantID, RunID: request.RunID, AttemptID: request.AttemptID,
 		LeaseID: domain.LeaseID(uniqueID("canonical-lease")), WorkerID: "canonical-worker",
@@ -563,19 +568,72 @@ func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	startedAt := workerNow
+	startedAt := databaseNow()
 	for _, persistedAt := range []time.Time{
 		loaded.Run.UpdatedAt,
 		loaded.Attempt.UpdatedAt,
 		loaded.Reservation.UpdatedAt,
+		loaded.Job.CreatedAt,
+		lease.AcquiredAt,
 	} {
 		if startedAt.Before(persistedAt) {
-			startedAt = persistedAt
+			t.Fatalf("sampled database start=%v precedes persisted authority=%v", startedAt, persistedAt)
 		}
 	}
-	startedAt = startedAt.Add(time.Second)
 	if err := store.StartWorkerJob(ctx, loaded, lease, startedAt); err != nil {
 		t.Fatal(err)
+	}
+	futureUpdatedAt := databaseNow().Add(6 * time.Minute)
+	if !t.Run("future_run_update_denies_effect", func(t *testing.T) {
+		var original string
+		var originalUpdatedAt time.Time
+		if err := client.DB.QueryRowContext(ctx,
+			`SELECT CAST(payload AS String), updated_at FROM runs WHERE tenant_id=$1 AND run_id=$2`,
+			tenantID, request.RunID,
+		).Scan(&original, &originalUpdatedAt); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cleanupCancel()
+			if _, err := client.DB.ExecContext(cleanupCtx,
+				`UPDATE runs SET payload=CAST($1 AS JsonDocument), updated_at=$2 WHERE tenant_id=$3 AND run_id=$4`,
+				original, originalUpdatedAt, tenantID, request.RunID,
+			); err != nil {
+				t.Errorf("restore exact canonical Run after future-time counterexample: %v", err)
+			}
+		})
+		var futureRun domain.Run
+		if err := json.Unmarshal([]byte(original), &futureRun); err != nil {
+			t.Fatal(err)
+		}
+		// Deliberately beyond the enclosing five-minute failure bound, not a
+		// freshness extension or a sleep to force the real clock to catch up.
+		futureRun.UpdatedAt = futureUpdatedAt
+		if err := futureRun.Validate(); err != nil {
+			t.Fatalf("future-time control must remain structurally valid: %v", err)
+		}
+		futurePayload, err := json.Marshal(futureRun)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := client.DB.ExecContext(ctx,
+			`UPDATE runs SET payload=CAST($1 AS JsonDocument), updated_at=$2 WHERE tenant_id=$3 AND run_id=$4`,
+			string(futurePayload), futureRun.UpdatedAt, tenantID, request.RunID,
+		); err != nil {
+			t.Fatal(err)
+		}
+		denied, err := store.ReserveAttemptEffect(ctx, ports.ReserveAttemptEffectRequestV1{
+			TenantID: tenantID, RunID: request.RunID, AttemptID: request.AttemptID,
+			LeaseID: lease.ID, FenceToken: lease.FenceToken, PhysicalInvocationClaimID: uniqueID("future-canonical-claim"),
+		})
+		var invalid domain.ValidationError
+		if !errors.As(err, &invalid) || invalid.Field != "reserve_attempt_effect" || denied.Status != "" || denied.Grant != nil || denied.ObservationGrant != nil {
+			t.Fatalf("future canonical Run effect=%#v error=%v, want authority denial without a grant", denied, err)
+		}
+		assertCount(t, client, "attempt_effect_reservations", tenantID, 0)
+	}) {
+		return
 	}
 	effect, err := store.ReserveAttemptEffect(ctx, ports.ReserveAttemptEffectRequestV1{
 		TenantID: tenantID, RunID: request.RunID, AttemptID: request.AttemptID,
@@ -596,7 +654,10 @@ func TestFrontendNeutralCanonicalIngressIsAtomicAndTenantScoped(t *testing.T) {
 		invocation.Attempt.WorkerID != lease.WorkerID || invocation.Lease != lease {
 		t.Fatalf("authoritative credential invocation = %#v", invocation)
 	}
-	finishedAt := startedAt.Add(time.Second)
+	finishedAt := databaseNow()
+	if finishedAt.Before(startedAt) {
+		t.Fatalf("sampled database completion=%v precedes start=%v", finishedAt, startedAt)
+	}
 	terminalEvents := []domain.SessionEventDraft{
 		canonicalTerminalDraft(tenantID, thirdID, "tool-call", domain.SessionEventToolCall, finishedAt),
 		canonicalTerminalDraft(tenantID, thirdID, "tool-result", domain.SessionEventToolResult, finishedAt),

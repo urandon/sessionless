@@ -32,9 +32,24 @@ var idSequence atomic.Uint64
 // and preserves its entropy while satisfying canonical OCI installation IDs.
 var idProcessNonce = strings.ToLower(rand.Text())
 
+// Cutover proof tests temporarily remove shared receipts. Only the first
+// store opened for an exact database connection may run the real setup;
+// nested opens must not repair the negative control underneath those tests.
+var integrationCutoverSetups = struct {
+	sync.Mutex
+	byConnection map[string]*integrationCutoverSetup
+}{byConnection: make(map[string]*integrationCutoverSetup)}
+
+type integrationCutoverSetup struct {
+	once    sync.Once
+	failure string
+}
+
 func TestExecutionPlacementServingGateRequiresCommittedMarker(t *testing.T) {
 	store, client := openStore(t)
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	preserveAdmissionCostFixtureReceipt(t, ctx, client.DB, "execution_placement_cutover_state", "cutover_id", "execution-placement-v1-empty-cutover")
 	if _, err := client.DB.ExecContext(ctx,
 		`DELETE FROM execution_placement_cutover_state WHERE cutover_id=$1`,
 		"execution-placement-v1-empty-cutover"); err != nil {
@@ -55,7 +70,11 @@ func TestExecutionPlacementServingGateRequiresCommittedMarker(t *testing.T) {
 
 func TestHarnessBindingServingGateRequiresCommittedMarker(t *testing.T) {
 	store, client := openStore(t)
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	for _, id := range []string{"harness-binding-v1-empty-cutover", "harness-binding-v2-empty-cutover"} {
+		preserveAdmissionCostFixtureReceipt(t, ctx, client.DB, "harness_binding_cutover_state", "cutover_id", id)
+	}
 	if _, err := client.DB.ExecContext(ctx,
 		`DELETE FROM harness_binding_cutover_state WHERE cutover_id=$1`,
 		"harness-binding-v2-empty-cutover"); err != nil {
@@ -84,7 +103,9 @@ func TestHarnessBindingServingGateRequiresCommittedMarker(t *testing.T) {
 
 func TestManagedExecutionAuthorityV2ServingGateRequiresCommittedMarker(t *testing.T) {
 	store, client := openStore(t)
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	preserveAdmissionCostFixtureReceipt(t, ctx, client.DB, "managed_execution_authority_v2_cutover_state", "cutover_id", "managed-execution-authority-v2-empty-cutover")
 	if _, err := client.DB.ExecContext(ctx,
 		`DELETE FROM managed_execution_authority_v2_cutover_state WHERE cutover_id=$1`,
 		"managed-execution-authority-v2-empty-cutover"); err != nil {
@@ -1405,6 +1426,7 @@ func openStoreWithIssuer(t *testing.T) (*ydbstore.Store, *ydbclient.Client, *ser
 			t.Errorf("close YDB client: %v", err)
 		}
 	})
+	establishIntegrationCutovers(t, connectionString, client)
 	grantIssuer, err := serverlessharness.NewCapabilityIssuer(time.Now, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -1414,6 +1436,36 @@ func openStoreWithIssuer(t *testing.T) (*ydbstore.Store, *ydbclient.Client, *ser
 		t.Fatal(err)
 	}
 	return store, client, grantIssuer
+}
+
+func establishIntegrationCutovers(t *testing.T, connectionString string, client *ydbclient.Client) {
+	t.Helper()
+	integrationCutoverSetups.Lock()
+	setup := integrationCutoverSetups.byConnection[connectionString]
+	if setup == nil {
+		// The suite normally has one database. Bound retained state even if a
+		// misconfigured caller supplies many distinct connection strings.
+		if len(integrationCutoverSetups.byConnection) >= 16 {
+			integrationCutoverSetups.Unlock()
+			t.Fatal("integration cutover setup exceeded 16 distinct database connections")
+		}
+		setup = &integrationCutoverSetup{}
+		integrationCutoverSetups.byConnection[connectionString] = setup
+	}
+	integrationCutoverSetups.Unlock()
+	setup.once.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		// Missing receipts are created only by the unchanged production
+		// transactions proving their empty-cutover guards before backlog is
+		// enqueued. An existing incomplete database must fail honestly.
+		if _, err := ydbpartition.BackfillSchemaIndexes(ctx, client.DB, false); err != nil {
+			setup.failure = fmt.Sprintf("backfill: %.2048s", err)
+		}
+	})
+	if setup.failure != "" {
+		t.Fatalf("integration real cutover setup failed; missing predecessors with existing backlog cannot be bypassed: %s", setup.failure)
+	}
 }
 
 func successfulSubstrateExecutionEvidence(

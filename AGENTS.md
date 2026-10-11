@@ -37,6 +37,28 @@
   [`docs/testing-best-practices.md`](docs/testing-best-practices.md), including
   its deterministic-time, isolation, cleanup, race, and exact-CI requirements.
 
+## Engineering acceptance and orchestration
+
+- Follow the [autonomous development protocol](https://gitcode.com/urandon/sessionless/wiki/Autonomous-Development-and-Agent-Orchestration.md).
+  Routine research, engineering design and implementation within agreed
+  MVP/features are delegated to agents; do not require manual human PR review
+  or repeat owner approval of those engineering choices.
+- An independent reviewer starts from the original goal, issue and authoritative
+  contracts, derives its own requirements and evidence matrix before inspecting
+  the candidate, and reports unresolved findings and limitations. Primary design
+  acceptance cites that review, research and applicable checks; it is not a claim
+  that the owner personally reviewed the PR.
+- Merge still requires independent review of the exact stabilized artifact,
+  proportionate tests, all required CI on the current exact head and the primary
+  merge audit. Green CI alone does not accept a design or complete a feature.
+- Return to the owner for changes to product/features or MVP scope, material
+  unresolved product/policy/UX choices outside delegation, or new external
+  authority. Engineering delegation does not itself authorize deployment,
+  paid/live calls, credentials, migration application or destructive operations.
+- Research feeds accepted versioned design, then linked implementation children.
+  Keep epic checklists, priority disposition and current evidence synchronized
+  before handoff/compaction; preserve both MVP tracks and owner-assigned priorities.
+
 ## Current repository state
 - The repository contains a Go control plane, YDB migrations/state adapters,
   queue and blob adapters, a local/cloud development stand, a deterministic

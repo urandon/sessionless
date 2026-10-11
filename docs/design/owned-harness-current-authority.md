@@ -1,6 +1,6 @@
 # Current authority for the owned agent harness
 
-Version: 0.1.5, engineering draft, 2026-10-11. Implementation owner:
+Version: 0.1.6, engineering draft, 2026-10-11. Implementation owner:
 [#189](https://gitcode.com/urandon/sessionless/issues/189), under
 [#176](https://gitcode.com/urandon/sessionless/issues/176). This extension
 defines the current-authority requirements of the accepted
@@ -310,6 +310,55 @@ after failed or ambiguous commits; minting stays outside retryable callbacks.
 Historical reservations and authenticated observations remain readable after
 revocation/expiry for reconciliation and canonical terminal evidence. Their
 readback never mints a send capability or renews an original deadline.
+
+### Bounded structural registration and process-local preparation fence
+
+[Registered preparation contracts](../../internal/domain/registered_allocation.go)
+now define the strict initial allocation/proxy shapes, canonical codecs and
+domain-separated complete digests. The allocation preserves the exact original
+Source, profile/four spending references, parent claim, lease/fence/worker,
+prepared capability digest and absolute expiry, invocation deadline and actual
+allocation identity/generation. It seals the complete prepared attestation by
+digest rather than embedding or truncating its legitimate 64-by-4096-byte argv.
+The record is not permission to reinterpret a single-turn backend as owned.
+
+The proxy record references the exact original active allocation snapshot and
+scoped service grant. Its observation cannot precede that allocation's
+observation, and its publication/expiry must fit the allocation window. The
+provider policy must match the existing sealed substrate policy. Immutable
+policy/attestation body references are bounded but do not prove actual body
+contents, fixed destination or DNS/TLS enforcement: only the actual trusted
+proxy producer may establish those facts. No caller-selected URL, generic
+approval boolean or parallel network-policy validator is introduced. The
+MCP/search trusted body-verifying producer bridge is still missing.
+
+Structural historical decoding/digests remain available after retirement or
+revocation. Correlation to a proxy requires its preserved original allocation
+snapshot/digest, not a current tombstone normalized back into active state.
+Fresh permission additionally requires unchanged active current heads and the
+complete canonical transaction checks. Transitions preserve all original bytes
+apart from monotonic lifecycle generation/state/update time; replacement,
+renewal, resurrection and generation overflow deny.
+
+The existing [capability issuer](../../internal/serverlessharness/capability.go)
+now consumes an authenticated parent's preparation right before physical
+preflight. All registries sharing the issuer share that fence; registry rebuild,
+authentic grant remint, concurrent requests and unknown partial-preparation
+failure cannot prepare the same parent again. Physical registry preflight is
+private. The process-local map has a finite 1024-parent capacity and fails
+closed before I/O when full. Tombstones survive the original invocation plus
+at most thirty seconds of its cleanup window; a monotonic clock high-water
+rejects rewind after pruning. This is separate from the original one-use
+execution gate and does not weaken it.
+
+These are prerequisites, not durable post-claim registration. A restarted
+issuer is not proof that preparation never happened. Current sole-parent
+readback, trusted supervisor/proxy publication, create-once atomic registration,
+lost-ACK recovery without new preparation, shared retention and real worker/
+operation integration remain mandatory. The process-local prepared capability
+MAC/digest is not rebuilt after restart as substitute history. Both serving
+registries remain closed to owned execution. No live effect, credential,
+network, deployment or #189 completion is claimed by these contracts.
 
 ## Transaction and resource bounds
 

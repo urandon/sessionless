@@ -286,17 +286,19 @@ func TestJoinedEgressReservationReplaySendsOnce(t *testing.T) {
 		if _, _, err := execution.Execute(context.Background(), fixture.projection, joinedUnusedSink{}, joinedUnusedHarness{}); err != nil {
 			t.Fatalf("first execute: %v; boundary=%v seal=%v", err, fixture.driver.boundaryErr, fixture.driver.sealErr)
 		}
-		// Later preparation changes the capability, not its durable reservation.
+		// Redelivery may neither allocate again nor obtain a fresh capability.
+		// Only the original opaque execution remains, with its one-use send gate.
 		fixture.clock.now = fixture.clock.now.Add(time.Second)
-		for _, replay := range []serverlessharness.PreparedExecutionV1{execution, fixture.prepare(t)} {
-			_, evidence, err := replay.Execute(context.Background(), fixture.projection, joinedUnusedSink{}, joinedUnusedHarness{})
-			if err == nil || evidence.EvidenceDigest != "" {
-				t.Fatalf("replay accepted: err=%v evidence=%s", err, evidence.EvidenceDigest)
-			}
+		if replay, err := fixture.preparer.PrepareExecution(t.Context(), fixture.owned); err == nil || replay != nil {
+			t.Errorf("redelivery prepared another allocation/capability: execution=%v err=%v", replay, err)
+		}
+		_, evidence, err := execution.Execute(context.Background(), fixture.projection, joinedUnusedSink{}, joinedUnusedHarness{})
+		if err == nil || evidence.EvidenceDigest != "" {
+			t.Fatalf("original execution replay accepted: err=%v evidence=%s", err, evidence.EvidenceDigest)
 		}
 		digests := fixture.driver.preparedDigests
-		if len(digests) != 3 || digests[0] != digests[1] || digests[0] == digests[2] {
-			t.Errorf("same/fresh capability digests=%v, want first=second and first!=third", digests)
+		if len(digests) != 2 || digests[0] != digests[1] || fixture.driver.preflights != 1 {
+			t.Errorf("original capability digests=%v preparation calls=%d, want two equal digests and one preparation", digests, fixture.driver.preflights)
 		}
 		assertJoinedEffects(t, fixture, 1, 1, 1, 1, 1)
 	})
@@ -397,8 +399,11 @@ func TestJoinedEgressActiveRedeliveryThenCancellationStopsProxyAndReleases(t *te
 			t.Fatalf("proxy did not start: %v", ctx.Err())
 		}
 		// Retry the same durable owner while the first accepted send is silent.
-		// A newly prepared opaque session must share the issuer's reservation CAS.
-		_, replayEvidence, replayErr := fixture.prepare(t).Execute(ctx, fixture.projection, joinedUnusedSink{}, joinedUnusedHarness{})
+		// Deny before a second allocation; the original handle cannot send again.
+		if replay, err := fixture.preparer.PrepareExecution(ctx, fixture.owned); err == nil || replay != nil {
+			t.Errorf("active redelivery prepared another allocation/capability: execution=%v err=%v", replay, err)
+		}
+		_, replayEvidence, replayErr := execution.Execute(ctx, fixture.projection, joinedUnusedSink{}, joinedUnusedHarness{})
 		if replayErr == nil || replayEvidence.EvidenceDigest != "" {
 			t.Errorf("active redelivery accepted: err=%v evidence=%s", replayErr, replayEvidence.EvidenceDigest)
 		}
@@ -410,6 +415,9 @@ func TestJoinedEgressActiveRedeliveryThenCancellationStopsProxyAndReleases(t *te
 		}
 		if !fixture.credentials.releaseContextLive {
 			t.Error("credential release inherited cancelled execution context")
+		}
+		if fixture.driver.preflights != 1 {
+			t.Errorf("active redelivery prepared allocations=%d, want 1", fixture.driver.preflights)
 		}
 		assertJoinedEffects(t, fixture, 1, 1, 1, 1, 1)
 	})

@@ -228,7 +228,7 @@ func TestSubstrateRegistryRejectsOwnedAndUnspecifiedProfilesBeforeAllocation(t *
 			if err != nil {
 				t.Fatalf("new exact registry: %v", err)
 			}
-			if _, err := registry.Preflight(context.Background(), authority); err == nil {
+			if _, err := registry.preflight(context.Background(), authority); err == nil {
 				t.Error("unsupported profile allocated/preflighted substrate")
 			}
 			if _, err := registry.Cancel(context.Background(), authority); err == nil {

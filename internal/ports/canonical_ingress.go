@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/sessionmaterial"
 )
 
 // FrontendSessionRequest is the membership-gated request for resolving or
@@ -99,6 +100,7 @@ type CanonicalUserEventCommit struct {
 	ExpireAt                 time.Time
 	EventID                  domain.SessionEventID
 	Payload                  domain.BlobRef
+	PreparedMaterial         *sessionmaterial.PreparedV1 `json:"-"`
 	DisplayText              string
 	RunID                    domain.RunID
 	AttemptID                domain.AttemptID

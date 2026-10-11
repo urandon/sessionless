@@ -80,6 +80,44 @@ func TestAdmissionMappingClosed(t *testing.T) {
 	}
 }
 
+func TestComputeChoiceAdmissionDenialsRecorded(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		code string
+		want runexplanation.AdmissionReason
+	}{
+		{code: "compute_choice_unavailable", want: "compute_unavailable"},
+		{code: "compute_choice_stale", want: "choice_stale"},
+		{code: "compute_choice_consent_required", want: "consent_required"},
+		{code: "compute_choice_policy_denied", want: "compute_policy_denied"},
+	}
+	for _, tc := range cases {
+		for _, attached := range []bool{false, true} {
+			placement := "managed"
+			if attached {
+				placement = "attached"
+			}
+			t.Run(tc.code+"/"+placement, func(t *testing.T) {
+				s := fixture(t, attached)
+				transition(t, &s, domain.RunQuotaBlocked, time.Second)
+				recordAdmission(t, &s, tc.code)
+				got := projection(t, s).Admission
+				if got.Availability != runexplanation.Recorded || got.Outcome != runexplanation.Denied || got.ReasonCode != tc.want || !got.ReasonCode.Valid() {
+					t.Errorf("code=%q placement=%s admission=%+v want recorded denied %q", tc.code, placement, got, tc.want)
+				}
+				next, changed, err := runexplanation.RecordAdmission(*s.Head, s.Run, *s.Attempt, tc.code, s.ReadAt)
+				if err != nil || changed || !reflect.DeepEqual(next, *s.Head) {
+					t.Errorf("exact denial replay code=%q changed=%v err=%v", tc.code, changed, err)
+				}
+				// Public reasons are not aliases for canonical admission inputs.
+				if outcome, reason := runexplanation.MapAdmission(string(tc.want)); outcome != "" || reason != "" {
+					t.Errorf("public reason %q accepted as canonical decision: %q/%q", tc.want, outcome, reason)
+				}
+			})
+		}
+	}
+}
+
 func TestAdmissionReplayReasonChangeReadmission(t *testing.T) {
 	t.Parallel()
 	s := fixture(t, false)

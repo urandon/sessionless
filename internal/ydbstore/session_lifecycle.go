@@ -433,6 +433,28 @@ func (store *Store) BuildSessionDeletionInventory(
 		}
 	}
 
+	// Count actual rows, including orphan or malformed material facts. Facts own
+	// no additional objects; they share the SAME total inventory row ceiling.
+	for _, material := range []struct {
+		statement string
+		count     *uint64
+	}{
+		{`SELECT session_id FROM session_material_current_v1 WHERE tenant_id=$1 AND session_id=$2 LIMIT $3`, &inventory.MaterialCurrentRows},
+		{`SELECT sequence FROM session_material_boundaries_v1 WHERE tenant_id=$1 AND session_id=$2 ORDER BY sequence ASC LIMIT $3`, &inventory.MaterialBoundaryRows},
+		{`SELECT snapshot_version FROM session_snapshot_material_v1 WHERE tenant_id=$1 AND session_id=$2 ORDER BY snapshot_version ASC LIMIT $3`, &inventory.MaterialSnapshotRows},
+	} {
+		count, err := countSessionMaterialRows(ctx, store.db, material.statement, tenantID, sessionID, maxRows-rowsUsed)
+		if err != nil {
+			return inventory, err
+		}
+		for range count {
+			if err := addRow(); err != nil {
+				return inventory, err
+			}
+			(*material.count)++
+		}
+	}
+
 	participantCount, err := store.countSessionParticipantRows(ctx, tenantID, sessionID, maxRows-rowsUsed)
 	if err != nil {
 		return inventory, err
@@ -996,6 +1018,9 @@ func deleteSessionRowsTx(ctx context.Context, tx *stateTx, sessionID domain.Sess
 	for _, query := range []string{
 		`DELETE FROM frontend_projections_by_session WHERE tenant_id = $1 AND session_id = $2`,
 		`DELETE FROM runs_by_session WHERE tenant_id = $1 AND session_id = $2`,
+		`DELETE FROM session_snapshot_material_v1 WHERE tenant_id = $1 AND session_id = $2`,
+		`DELETE FROM session_material_boundaries_v1 WHERE tenant_id = $1 AND session_id = $2`,
+		`DELETE FROM session_material_current_v1 WHERE tenant_id = $1 AND session_id = $2`,
 		`DELETE FROM session_snapshots WHERE tenant_id = $1 AND session_id = $2`,
 		`DELETE FROM session_event_idempotency WHERE tenant_id = $1 AND session_id = $2`,
 		`DELETE FROM session_events WHERE tenant_id = $1 AND session_id = $2`,

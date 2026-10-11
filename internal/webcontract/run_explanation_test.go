@@ -89,6 +89,48 @@ func TestRunExplanationSafeManifestAndHistoricalOmission(t *testing.T) {
 	}
 }
 
+func TestComputeChoiceAdmissionDenialManifest(t *testing.T) {
+	t.Parallel()
+	for _, reason := range []runexplanation.AdmissionReason{
+		runexplanation.ComputeUnavailable, runexplanation.ChoiceStale,
+		runexplanation.ConsentRequired, runexplanation.ComputePolicyDenied,
+	} {
+		t.Run(string(reason), func(t *testing.T) {
+			value, _ := explanationFixture(t)
+			value.Status = domain.RunQuotaBlocked
+			value.FinishedAt = nil
+			at := value.UpdatedAt
+			value.Admission = runexplanation.Admission{Availability: runexplanation.Recorded,
+				Outcome: runexplanation.Denied, ReasonCode: reason, ObservedAt: &at,
+				DecisionRevision: 1, Coverage: runexplanation.LastRecordedDecision}
+			value.Terminal = runexplanation.Terminal{Availability: runexplanation.NotApplicable}
+			value.Coverage.Admission = runexplanation.Recorded
+			value.Coverage.Terminal = runexplanation.NotApplicable
+			if err := value.Validate(); err != nil {
+				t.Fatalf("recorded denial reason=%q: %v", reason, err)
+			}
+			encoded, err := json.Marshal(value)
+			if err != nil || !strings.Contains(string(encoded), `"reason_code":"`+string(reason)+`"`) {
+				t.Fatalf("encode reason=%q err=%v JSON=%s", reason, err, encoded)
+			}
+			for _, private := range []string{"private-tenant", "private-worker", "private-subscription", "compute_choice_"} {
+				if strings.Contains(string(encoded), private) {
+					t.Errorf("safe denial reason=%q leaked %q", reason, private)
+				}
+			}
+			value.Admission.Outcome = runexplanation.Admitted
+			if err := value.Validate(); err == nil {
+				t.Errorf("denial reason=%q accepted as admitted", reason)
+			}
+			value.Admission.Outcome = runexplanation.Denied
+			value.Status = domain.RunRunning
+			if err := value.Validate(); err == nil {
+				t.Errorf("denial reason=%q manufactured a running Run", reason)
+			}
+		})
+	}
+}
+
 func TestRunExplanationRejectsCorruptTransport(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

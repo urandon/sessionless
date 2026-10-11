@@ -120,20 +120,8 @@ func DecodeJSONL(data []byte, tenantID domain.TenantID, sessionID domain.Session
 	scanner.Buffer(make([]byte, 64<<10), len(data))
 	result := make([]EventPayload, 0)
 	for scanner.Scan() {
-		var record Record
-		if err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
-			return nil, fmt.Errorf("decode context record: %w", err)
-		}
-		if record.Schema != RecordSchemaV1 {
-			return nil, fmt.Errorf("unsupported context record schema %q", record.Schema)
-		}
-		if record.Event.TenantID != tenantID || record.Event.SessionID != sessionID {
-			return nil, domain.ValidationError{
-				Field: "context_record.event", Reason: "crosses the requested tenant or session boundary",
-			}
-		}
-		payload := append([]byte(nil), record.Payload...)
-		if err := validateEventPayload(record.Event, payload); err != nil {
+		record, err := decodeRecordV1(scanner.Bytes(), tenantID, sessionID)
+		if err != nil {
 			return nil, err
 		}
 		if record.Event.Sequence != uint64(len(result)+1) {
@@ -141,12 +129,35 @@ func DecodeJSONL(data []byte, tenantID domain.TenantID, sessionID domain.Session
 				Field: "context_record.event.sequence", Reason: "must start at one and be contiguous",
 			}
 		}
-		result = append(result, EventPayload{Event: record.Event, Payload: payload})
+		result = append(result, record)
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("scan context JSONL: %w", err)
 	}
 	return result, nil
+}
+
+// decodeRecordV1 is the single-record predicate shared by complete-history
+// decoding and final record measurement. Contiguous history is a separate
+// DecodeJSONL predicate; a final record at N must retain its actual sequence.
+func decodeRecordV1(data []byte, tenantID domain.TenantID, sessionID domain.SessionID) (EventPayload, error) {
+	var record Record
+	if err := json.Unmarshal(data, &record); err != nil {
+		return EventPayload{}, fmt.Errorf("decode context record: %w", err)
+	}
+	if record.Schema != RecordSchemaV1 {
+		return EventPayload{}, fmt.Errorf("unsupported context record schema %q", record.Schema)
+	}
+	if record.Event.TenantID != tenantID || record.Event.SessionID != sessionID {
+		return EventPayload{}, domain.ValidationError{
+			Field: "context_record.event", Reason: "crosses the requested tenant or session boundary",
+		}
+	}
+	if err := validateEventPayload(record.Event, record.Payload); err != nil {
+		clear(record.Payload)
+		return EventPayload{}, err
+	}
+	return EventPayload{Event: record.Event, Payload: record.Payload}, nil
 }
 
 func validateEventPayload(event domain.SessionEvent, payload []byte) error {

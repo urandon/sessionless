@@ -130,7 +130,7 @@ export function validateRunExplanation(
       choice(a.outcome, 'admitted denied') &&
         choice(
           a.reason_code,
-          'admitted subscription_attention_required capacity_draining quota_reset_pending quota_exhausted_reset_unknown runtime_limit_exceeded turn_limit_exceeded input_limit_exceeded context_limit_exceeded artifact_limit_exceeded capacity_busy workspace_queue_limit workspace_active_run_limit',
+          'admitted subscription_attention_required capacity_draining quota_reset_pending quota_exhausted_reset_unknown runtime_limit_exceeded turn_limit_exceeded input_limit_exceeded context_limit_exceeded artifact_limit_exceeded capacity_busy workspace_queue_limit workspace_active_run_limit compute_unavailable choice_stale consent_required compute_policy_denied',
         ),
     );
     requireValid(

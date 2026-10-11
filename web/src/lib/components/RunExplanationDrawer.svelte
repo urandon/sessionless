@@ -48,6 +48,10 @@
     capacity_busy: 'Capacity was busy.',
     workspace_queue_limit: 'The workspace queue limit was reached.',
     workspace_active_run_limit: 'The workspace active Run limit was reached.',
+    compute_unavailable: 'The selected compute was unavailable.',
+    choice_stale: 'The selected compute choice was stale.',
+    consent_required: 'Consent for the selected compute was required.',
+    compute_policy_denied: 'Policy denied the selected compute.',
   };
   const terminalReason: Record<NonNullable<RunExplanationV1['terminal']['reason_code']>, string> = {
     execution_failed: 'An execution phase failure was recorded.',

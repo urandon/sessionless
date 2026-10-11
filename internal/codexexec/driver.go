@@ -3,14 +3,11 @@ package codexexec
 import (
 	"bytes"
 	"context"
-	"encoding/json"
-	"fmt"
 	"io"
 	"path/filepath"
-	"strings"
 	"time"
-	"unicode/utf8"
 
+	"gitcode.com/urandon/sessionless/internal/canonicalprompt"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/harnessconformance"
 	"gitcode.com/urandon/sessionless/internal/ports"
@@ -296,63 +293,21 @@ func compileCanonicalPrompt(request ports.ExecutionRequest) ([]byte, error) {
 		return nil, ErrContract
 	}
 	var output bytes.Buffer
-	output.WriteString("Sessionless canonical transcript v1\n")
+	defer func() { zeroBytes(output.Bytes()) }()
+	output.WriteString(canonicalprompt.HeaderV1)
 	for _, record := range records {
-		var role, text string
-		switch record.Event.Kind {
-		case domain.SessionEventUserMessage:
-			var payload struct {
-				Version     uint32            `json:"version"`
-				Origin      json.RawMessage   `json:"origin"`
-				Text        string            `json:"text"`
-				Metadata    map[string]string `json:"metadata"`
-				Attachments []json.RawMessage `json:"attachments"`
-			}
-			if decodeExactJSON(record.Payload, &payload) != nil ||
-				payload.Version != 1 || len(payload.Attachments) != 0 {
-				return nil, ErrContract
-			}
-			role, text = "user", payload.Text
-		case domain.SessionEventAssistantMessage:
-			var payload struct {
-				Schema             string `json:"schema"`
-				Summary            string `json:"summary"`
-				ArtifactManifestID string `json:"artifact_manifest_id"`
-			}
-			if decodeExactJSON(record.Payload, &payload) != nil ||
-				payload.Schema != "sessionless.assistant-message.v1" {
-				return nil, ErrContract
-			}
-			role, text = "assistant", payload.Summary
-		default:
+		frame, err := canonicalprompt.RenderFrameV1(record.Event.Kind, record.Payload)
+		if err != nil {
 			return nil, ErrContract
 		}
-		if !validPromptText(text) {
+		if len(frame) > maxInstructionBytes-output.Len() {
+			zeroBytes(frame)
 			return nil, ErrContract
 		}
-		_, _ = fmt.Fprintf(&output, "[%s]\n%s\n", role, text)
-		if output.Len() > maxInstructionBytes {
-			return nil, ErrContract
-		}
+		_, _ = output.Write(frame)
+		zeroBytes(frame)
 	}
 	return append([]byte(nil), output.Bytes()...), nil
-}
-
-func decodeExactJSON(value []byte, target any) error {
-	decoder := json.NewDecoder(bytes.NewReader(value))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(target); err != nil {
-		return err
-	}
-	if decoder.Decode(&struct{}{}) != io.EOF {
-		return ErrContract
-	}
-	return nil
-}
-
-func validPromptText(value string) bool {
-	return value != "" && len(value) <= maxInstructionBytes &&
-		utf8.ValidString(value) && !strings.ContainsRune(value, 0)
 }
 
 func zeroBytes(value []byte) {

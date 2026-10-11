@@ -377,6 +377,77 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description Unmounted compute-choice contract. Shape is not authorization, eligibility, reservation or execution. Producer reauthorizes and joins all current evidence. Encoded response is limited to 16384 UTF-8 bytes including JSON escaping. */
+        ComputeChoicesPageV1: {
+            /** @constant */
+            version: 1;
+            session_id: string;
+            /** Format: date-time */
+            read_at: string;
+            input_kind: components["schemas"]["ComputeChoiceInputKindV1"];
+            registry_revision: components["schemas"]["ComputeChoiceRevisionV1"];
+            /** @enum {string} */
+            coverage: "page" | "complete";
+            /** @description Distinct visible opaque choice IDs; zero entries permitted. No entitled inventory total. */
+            choices: components["schemas"]["ComputeChoiceV1"][];
+            /** @description Canonical bounded CursorV1 encoding, below 512-byte ceiling. Shape does not prove MAC/scope; issuer caps at 60s and shortest required authority expiry. */
+            next_cursor?: string;
+        } & unknown;
+        ComputeChoiceRevisionV1: string;
+        /** @enum {string} */
+        ComputeChoiceInputKindV1: "text" | "image" | "file" | "mixed";
+        /** @description Real source windows are all-or-none; observed_at <= read_at and valid_until > observed_at. Current iff read_at < valid_until (expired at equality). Producer supplies shortest required expiry; missing evidence never invents timestamps. Unknown semantic evidence may retain a real window. Eligible requires all current predicates and supported input_kind, not just this shape. */
+        ComputeChoiceV1: {
+            choice_id: string;
+            choice_revision: components["schemas"]["ComputeChoiceRevisionV1"];
+            model_label: components["schemas"]["ComputeChoiceLabelV1"];
+            provider_label: components["schemas"]["ComputeChoiceLabelV1"];
+            /** @enum {string} */
+            placement: "attached" | "managed";
+            /** @enum {string} */
+            state: "eligible" | "unavailable" | "unknown";
+            /** @enum {string} */
+            reason_code?: "profile_disabled" | "evidence_stale" | "capability_unavailable" | "consent_required" | "capacity_unavailable" | "policy_unavailable" | "unknown";
+            /** Format: date-time */
+            observed_at?: string;
+            /** Format: date-time */
+            valid_until?: string;
+            /** @enum {string} */
+            freshness?: "current" | "expired";
+            disclosure_revision: components["schemas"]["ComputeChoiceRevisionV1"];
+            disclosure: components["schemas"]["ComputeChoiceDisclosureV1"];
+            capacity: components["schemas"]["ComputeChoiceCapacityV1"];
+        } & ((unknown | unknown) & unknown & unknown);
+        /** @description Operator-reviewed UTF-8 display copy, at most 128 encoded bytes (not merely code points), without leading/trailing space, control or format characters. No endpoint/host/account/credential-derived copy. Syntactic validation cannot certify review. */
+        ComputeChoiceLabelV1: string;
+        /** @description Disclosure of whole-context private processing and host-operator access; listing is not acknowledgement, provider terms approval, a use grant or later tool/search consent. */
+        ComputeChoiceDisclosureV1: {
+            /** @constant */
+            data_class: "private";
+            input_kinds: components["schemas"]["ComputeChoiceInputKindV1"][];
+            /** @constant */
+            provider_processing: true;
+            /** @constant */
+            host_operator_access: true;
+            /** @constant */
+            fallback: "deny";
+            /** @constant */
+            text: "The selected provider processes the entire admitted conversation context and new input as private data. The execution host operator can technically access admitted data. Only the listed input kinds are supported. No alternate resource or provider is selected automatically.";
+        };
+        /** @description Current source-window-only availability observation, not a reservation. Missing required source is unknown without fabricated timestamps. No quantities, quota, invoice, price, budget, free/unlimited assertion or other member information. */
+        ComputeChoiceCapacityV1: {
+            /** @constant */
+            state: "unknown";
+        } | {
+            /** @enum {string} */
+            state: "available" | "unavailable";
+            /** Format: date-time */
+            observed_at: string;
+            /** Format: date-time */
+            valid_until: string;
+            /** @enum {string} */
+            freshness: "current" | "expired";
+        };
         RunExplanationV1: {
             /** @constant */
             version: 1;
@@ -400,7 +471,7 @@ export interface components {
         /** @enum {string} */
         RunExplanationStatusV1: "created" | "admitted" | "queued" | "running" | "succeeded" | "failed" | "cancelled" | "quota_blocked";
         /** @enum {string} */
-        RunExplanationAdmissionReasonV1: "admitted" | "subscription_attention_required" | "capacity_draining" | "quota_reset_pending" | "quota_exhausted_reset_unknown" | "runtime_limit_exceeded" | "turn_limit_exceeded" | "input_limit_exceeded" | "context_limit_exceeded" | "artifact_limit_exceeded" | "capacity_busy" | "workspace_queue_limit" | "workspace_active_run_limit";
+        RunExplanationAdmissionReasonV1: "admitted" | "subscription_attention_required" | "capacity_draining" | "quota_reset_pending" | "quota_exhausted_reset_unknown" | "runtime_limit_exceeded" | "turn_limit_exceeded" | "input_limit_exceeded" | "context_limit_exceeded" | "artifact_limit_exceeded" | "capacity_busy" | "workspace_queue_limit" | "workspace_active_run_limit" | "compute_unavailable" | "choice_stale" | "consent_required" | "compute_policy_denied";
         /** @enum {string} */
         RunExplanationTerminalReasonV1: "execution_failed" | "result_persistence_failed" | "canonical_cancelled" | "unclassified_failure";
         /** @enum {string} */

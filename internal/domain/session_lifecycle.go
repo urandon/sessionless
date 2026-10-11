@@ -187,21 +187,24 @@ func (hold *SessionLegalHold) Release(userID UserID, at time.Time) error {
 }
 
 type SessionDeletionInventory struct {
-	TenantID        TenantID  `json:"tenant_id"`
-	SessionID       SessionID `json:"session_id"`
-	Objects         []BlobRef `json:"objects"`
-	EventRows       uint64    `json:"event_rows"`
-	SnapshotRows    uint64    `json:"snapshot_rows"`
-	RunRows         uint64    `json:"run_rows"`
-	ManifestRows    uint64    `json:"manifest_rows"`
-	DeliveryRows    uint64    `json:"delivery_rows"`
-	CheckpointRows  uint64    `json:"checkpoint_rows"`
-	ReceiptRows     uint64    `json:"receipt_rows"`
-	ParticipantRows uint64    `json:"participant_rows"`
-	BindingRows     uint64    `json:"binding_rows"`
-	ProjectionRows  uint64    `json:"projection_rows"`
-	RunIDs          []RunID   `json:"run_ids"`
-	TotalBytes      uint64    `json:"total_bytes"`
+	TenantID             TenantID  `json:"tenant_id"`
+	SessionID            SessionID `json:"session_id"`
+	Objects              []BlobRef `json:"objects"`
+	EventRows            uint64    `json:"event_rows"`
+	SnapshotRows         uint64    `json:"snapshot_rows"`
+	MaterialCurrentRows  uint64    `json:"material_current_rows"`
+	MaterialBoundaryRows uint64    `json:"material_boundary_rows"`
+	MaterialSnapshotRows uint64    `json:"material_snapshot_rows"`
+	RunRows              uint64    `json:"run_rows"`
+	ManifestRows         uint64    `json:"manifest_rows"`
+	DeliveryRows         uint64    `json:"delivery_rows"`
+	CheckpointRows       uint64    `json:"checkpoint_rows"`
+	ReceiptRows          uint64    `json:"receipt_rows"`
+	ParticipantRows      uint64    `json:"participant_rows"`
+	BindingRows          uint64    `json:"binding_rows"`
+	ProjectionRows       uint64    `json:"projection_rows"`
+	RunIDs               []RunID   `json:"run_ids"`
+	TotalBytes           uint64    `json:"total_bytes"`
 }
 
 func (inventory SessionDeletionInventory) Validate(maxObjects uint64) error {

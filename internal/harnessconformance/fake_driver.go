@@ -84,7 +84,7 @@ func (recorder *SideEffectRecorder) increment(update func(*SideEffectsV1)) {
 // exists or conforms.
 type FixtureDriver struct {
 	binding    domain.HarnessBindingV2
-	bundle     *EvidenceBundleV1
+	bundle     *domain.ProviderEvidenceBundleV1
 	recorder   *SideEffectRecorder
 	executeErr error
 }

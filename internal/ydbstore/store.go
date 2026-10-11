@@ -14,6 +14,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/sessioncontext"
 	"gitcode.com/urandon/sessionless/internal/ydbpartition"
 )
 
@@ -211,7 +212,8 @@ type stateTx struct {
 	store            *Store
 	sqlTx            *sql.Tx
 	tenantID         domain.TenantID
-	explanationQuery rowQuery // readonly resource budget; nil on canonical writers
+	explanationQuery rowQuery                                                    // readonly resource budget; nil on canonical writers
+	materialPrefixes map[domain.SessionID]sessioncontext.SessionMaterialPrefixV1 // callback-local, never across SDK retries
 }
 
 func (tx *stateTx) GetRun(ctx context.Context, id domain.RunID) (domain.Run, bool, error) {

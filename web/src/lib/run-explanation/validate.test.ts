@@ -30,6 +30,10 @@ describe('closed RunExplanationV1 manifest', () => {
     'capacity_busy',
     'workspace_queue_limit',
     'workspace_active_run_limit',
+    'compute_unavailable',
+    'choice_stale',
+    'consent_required',
+    'compute_policy_denied',
   ] as const)('retains distinct last admission denial %s', (reason) => {
     const v = explanation();
     v.status = 'quota_blocked';

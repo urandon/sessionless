@@ -13,6 +13,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/sessionmaterial"
 	"gitcode.com/urandon/sessionless/internal/ydbpartition"
 )
 
@@ -234,6 +235,18 @@ func (store *Store) AppendSessionEvent(
 	ctx context.Context,
 	event domain.SessionEvent,
 ) (created bool, err error) {
+	return store.appendSessionEventMaterialV1(ctx, event, nil)
+}
+
+// AppendPreparedSessionEventV1 is an explicit server-internal verified path;
+// it is not a public request schema or a metadata-compatible proof alias.
+// The caller owns preparation across every transaction retry and releases it
+// after this operation returns. Exact idempotent replay never refolds history.
+func (store *Store) AppendPreparedSessionEventV1(ctx context.Context, event domain.SessionEvent, prepared *sessionmaterial.PreparedV1) (bool, error) {
+	return store.appendSessionEventMaterialV1(ctx, event, prepared)
+}
+
+func (store *Store) appendSessionEventMaterialV1(ctx context.Context, event domain.SessionEvent, prepared *sessionmaterial.PreparedV1) (created bool, err error) {
 	if err := event.TenantID.Validate(); err != nil {
 		return false, err
 	}
@@ -244,6 +257,7 @@ func (store *Store) AppendSessionEvent(
 		return false, err
 	}
 	err = store.Transact(ctx, event.TenantID, func(state ports.StateTx) error {
+		created = false
 		tx := state.(*stateTx)
 		if err := ensureSessionWritableTx(ctx, tx, event.SessionID); err != nil {
 			return err
@@ -293,12 +307,15 @@ func (store *Store) AppendSessionEvent(
 		if err != nil {
 			return err
 		}
-		if err := insertSessionEventTx(ctx, tx, candidate); err != nil {
+		if err := insertSessionEventTx(ctx, tx, candidate, prepared); err != nil {
 			return err
 		}
 		return updateSessionTx(ctx, tx, previous, session)
 	})
-	return created, err
+	if err != nil {
+		return false, err
+	}
+	return created, nil
 }
 
 func (store *Store) PutSessionSnapshot(ctx context.Context, snapshot domain.SessionSnapshot) error {
@@ -633,6 +650,9 @@ func createSessionTx(ctx context.Context, tx *stateTx, session domain.Session, o
 		owner.TenantID, owner.SessionID, owner.UserID, owner.Role, owner.Status,
 		owner.CreatedAt, owner.UpdatedAt, participantRecord,
 	); err != nil {
+		return err
+	}
+	if err := createSessionMaterialGenesisTx(ctx, tx, session); err != nil {
 		return err
 	}
 	return insertActivityTx(ctx, tx, session, owner.UserID)

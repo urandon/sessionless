@@ -115,21 +115,24 @@ and link to it.
 
 ## Research and design
 
-Draft detailed contracts:
+Detailed engineering contracts:
 
 - [Conversation execution evidence (#182, draft)](design/conversation-execution-evidence.md)
 - [Eligible compute choice contract (#142, draft)](design/eligible-compute-choice.md)
 - [Compute choice context evidence (#142, draft)](design/compute-choice-context-evidence.md)
 - [Owned harness current authority (#189, draft)](design/owned-harness-current-authority.md)
+- [Attached receipt canonical material verification (#142)](design/attached-receipt-material.md)
 
 The [research index](research/README.md) separates evidence and open decisions
 from committed runtime contracts. It covers:
 
-- [Owned agent harness minimum draft](design/owned-agent-harness-minimum.md), with
+- [Owned agent harness minimum](design/owned-agent-harness-minimum.md), with
   [derived compaction](design/owned-harness-compaction.md),
   [constrained MCP](design/owned-harness-tools-mcp.md) and
-  [bounded web search](design/owned-harness-web-search.md); design review and owner
-  acceptance remain required, not runtime activation evidence
+  [bounded web search](design/owned-harness-web-search.md); the engineering
+  package is accepted with independent review under agreed-MVP delegation.
+  Follow the [MVP plan](mvp-delivery-plan.md) for implementation and separate
+  activation gates; accepted design is not implemented agent behavior
 - [Session retention, replay and upload cleanup draft](design/session-retention-replay.md)
 - [AI resources, routing, and federation](research/ai-resources-and-federation.md)
 - [OpenAI subscription resource policy](research/openai-subscription-resource-policy.md)

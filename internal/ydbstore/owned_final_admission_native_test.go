@@ -44,6 +44,9 @@ func newNativeOwnedFinalGraph(t *testing.T) nativeOwnedFinalGraph {
 func nativeOwnedFinalGraphFrom(t *testing.T, g nativeManagedAdmissionGraph, preservePreviousHead bool) nativeOwnedFinalGraph {
 	t.Helper()
 	f, store := g.f, g.f.store
+	if store.ownedProviderPriceCustody == nil {
+		installNativeOwnedProviderPrice(t, f, false)
+	}
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
@@ -69,6 +72,11 @@ func nativeOwnedFinalGraphFrom(t *testing.T, g nativeManagedAdmissionGraph, pres
 		t.Fatalf("actual profile publication err=%v replay=%v", err, profileReceipt.Replayed)
 	}
 	result.profileReceipt = profileReceipt
+	if keeper, ok := store.ownedProviderPriceCustody.(*nativeOwnedProviderPriceCustody); ok {
+		keeper.bindActualPublication(t, profileReceipt)
+	} else {
+		t.Fatal("native fixture must retain its original concrete price producer")
+	}
 	f.profile = profileReceipt.Profile.Clone()
 	f.ref = domain.OwnedAgentProfileReferenceV1{Locator: f.profile.Locator, RevocationGeneration: f.profile.RevocationGeneration, Digest: profileReceipt.Digest}
 	for i := range f.spending {

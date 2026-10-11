@@ -97,6 +97,11 @@ func deleteUnpreparedOwnedParentTx(ctx context.Context, tx *stateTx, final domai
  OR allocation_original_record IS NOT NULL OR allocation_original_digest IS NOT NULL
  OR allocation_current_record IS NOT NULL OR allocation_current_digest IS NOT NULL
  OR allocation_publication_digest IS NOT NULL OR allocation_transition_parent_digest IS NOT NULL
+ OR proxy_original_record IS NOT NULL OR proxy_original_digest IS NOT NULL
+ OR proxy_current_record IS NOT NULL OR proxy_current_digest IS NOT NULL
+ OR proxy_policy_body IS NOT NULL OR proxy_attestation_body IS NOT NULL
+ OR operation_accounting_record IS NOT NULL OR operation_accounting_digest IS NOT NULL
+ OR web_search_consent_record IS NOT NULL OR web_search_consent_digest IS NOT NULL
  THEN CAST(1 AS Uint64) ELSE CAST(0 AS Uint64) END
  FROM attempt_effect_reservations WHERE tenant_id=$1 AND attempt_id=$2 AND kind=$3`,
 		tx.tenantID, final.Source.Scope.AttemptID, domain.ProviderEffectTurnV1).Scan(&raw, &digest, &legacy, &recordPresent, &digestPresent, &children)

@@ -45,7 +45,11 @@ type nativeOwnedParentGraph struct {
 
 func newNativeOwnedParentGraph(t *testing.T) nativeOwnedParentGraph {
 	t.Helper()
-	g := newNativeOwnedFinalGraph(t)
+	return nativeOwnedParentGraphFromFinal(t, newNativeOwnedFinalGraph(t))
+}
+
+func nativeOwnedParentGraphFromFinal(t *testing.T, g nativeOwnedFinalGraph) nativeOwnedParentGraph {
+	t.Helper()
 	// Keep the complete parent scenario shorter than its original immutable
 	// preparation/runtime windows; the ordinary graph's one-minute product
 	// ceiling is not an accidental timing gate for this native authority test.

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -47,15 +48,26 @@ type PinnedHTTPSProxyV1 struct {
 	cancel                         context.CancelFunc
 	stopLifetime                   func() bool
 	attestation                    ProxyAttestationV1
+	observedAt                     time.Time
+	publicationAllocation          domain.RegisteredAllocationDigestV1
+	publicationSource              string
+	publicationKey                 [32]byte
+	publicationScope               domain.AttemptExecutionSourceScopeV1
+	publicationLease               domain.LeaseID
+	publicationFence               uint64
+	publicationClaim               string
 	deps                           pinnedHTTPSDependencies
 }
 
 // Dependencies are private: production has no URL, resolver, dialer, root-CA
 // or HTTP-client override. Same-package tests use synthetic TLS peers only.
 type pinnedHTTPSDependencies struct {
-	lookup func(context.Context, string) ([]netip.Addr, error)
-	dial   func(context.Context, string, string) (net.Conn, error)
-	roots  *x509.CertPool
+	fixtureSequence uint64
+	fixtureService  domain.RegisteredProxyServiceKindV1
+	fixture         bool // private test-only fixed credential-free route; never set by public constructor
+	lookup          func(context.Context, string) ([]netip.Addr, error)
+	dial            func(context.Context, string, string) (net.Conn, error)
+	roots           *x509.CertPool
 }
 
 var _ Proxy = (*PinnedHTTPSProxyV1)(nil)
@@ -72,7 +84,7 @@ func NewPinnedHTTPSProxyV1(policy PolicyV1, clock ports.Clock, operationTimeout,
 func newPinnedHTTPSProxyV1(policy PolicyV1, clock ports.Clock, operationTimeout, totalTimeout time.Duration, deps pinnedHTTPSDependencies) (*PinnedHTTPSProxyV1, error) {
 	if _, err := policy.Digest(); err != nil || clock == nil || deps.lookup == nil || deps.dial == nil ||
 		operationTimeout <= 0 || operationTimeout > 30*time.Second || totalTimeout <= 0 || totalTimeout > 60*time.Second || operationTimeout > totalTimeout ||
-		policy.Endpoint.MaxRequestBytes > pinnedMaxBody || policy.Endpoint.MaxResponseBytes > pinnedMaxBody || len(policy.Endpoint.Path) > 2048 || !pinnedReviewedRoute(policy) {
+		policy.Endpoint.MaxRequestBytes > pinnedMaxBody || policy.Endpoint.MaxResponseBytes > pinnedMaxBody || len(policy.Endpoint.Path) > 2048 || (!pinnedReviewedRoute(policy) && !(deps.fixture && pinnedFixtureRoute(policy))) {
 		return nil, ErrConfig
 	}
 	for _, b := range []byte(policy.Endpoint.Path) {
@@ -82,6 +94,9 @@ func newPinnedHTTPSProxyV1(policy PolicyV1, clock ports.Clock, operationTimeout,
 	}
 	p := &PinnedHTTPSProxyV1{policy: policy, clock: clock, operationTimeout: operationTimeout, totalTimeout: totalTimeout, deps: deps}
 	p.self = p
+	if _, err := rand.Read(p.publicationKey[:]); err != nil {
+		return nil, ErrConfig
+	}
 	return p, nil
 }
 
@@ -164,19 +179,26 @@ func (p *PinnedHTTPSProxyV1) Preflight(ctx context.Context, policy PolicyV1) (Pr
 	if p.state != 1 || op.Err() != nil || !validTime || !now.Before(expires) || secure.SetDeadline(expires) != nil {
 		return ProxyAttestationV1{}, ErrProxyAttestation
 	}
-	p.conn, p.attestation, p.state = secure, att, 2
+	p.conn, p.attestation, p.observedAt, p.state = secure, att, now, 2
 	ok = true
 	return att, nil
 }
 
 func (p *PinnedHTTPSProxyV1) Invoke(ctx context.Context, invocation ProxyInvocationV1) (result ProxyResultV1, returnedErr error) {
+	return p.invoke(ctx, invocation, nil)
+}
+
+// beforeSend is never retained and is used only by the owned composition.
+// Burn this concrete connection before that bounded current-authority join;
+// a denial or lost acknowledgement cannot make this connection sendable again.
+func (p *PinnedHTTPSProxyV1) invoke(ctx context.Context, invocation ProxyInvocationV1, beforeSend func(context.Context) error) (result ProxyResultV1, returnedErr error) {
 	result.Acceptance = domain.ProviderAcceptanceUnknownV1
 	if p == nil || p.self != p || ctx == nil {
 		return result, ErrEgress
 	}
 	p.mu.Lock()
 	now, validTime := p.sampleLocked()
-	if p.state != 2 || ctx.Err() != nil || p.lifetime.Err() != nil || !validTime || !now.Before(p.attestation.ExpiresAt) ||
+	if p.state != 2 || (p.publicationAllocation != "" && beforeSend == nil) || ctx.Err() != nil || p.lifetime.Err() != nil || !validTime || !now.Before(p.attestation.ExpiresAt) ||
 		invocation.Policy != p.policy || invocation.Attestation != p.attestation || uint64(len(invocation.Payload)) > p.policy.Endpoint.MaxRequestBytes || !pinnedCredential(invocation) {
 		p.mu.Unlock()
 		return result, ErrEgress
@@ -196,6 +218,12 @@ func (p *PinnedHTTPSProxyV1) Invoke(ctx context.Context, invocation ProxyInvocat
 		deadline = d
 	}
 	if conn.SetDeadline(deadline) != nil || op.Err() != nil || ctx.Err() != nil {
+		return result, ErrEgress
+	}
+	if beforeSend != nil && beforeSend(op) != nil {
+		return result, ErrEgress
+	}
+	if op.Err() != nil || ctx.Err() != nil {
 		return result, ErrEgress
 	}
 	payload, secret := bytes.Clone(invocation.Payload), bytes.Clone(invocation.Secret)
@@ -251,6 +279,9 @@ func pinnedCredential(v ProxyInvocationV1) bool {
 	if m.RootDir != "" || m.FilePath != "" || m.EnvironmentName != "" {
 		return false
 	}
+	if pinnedFixtureRoute(v.Policy) {
+		return m.Kind == domain.ProviderCredentialDeliveryNoneV1 && len(v.Secret) == 0
+	}
 	if m.Kind != domain.ProviderCredentialDeliveryDirectV1 || len(v.Secret) == 0 || len(v.Secret) > pinnedMaxSecret {
 		return false
 	}
@@ -291,6 +322,13 @@ func pinnedReviewedRoute(p PolicyV1) bool {
 		r.BackendKind == domain.HarnessBackendDirectOpenRouterV1 && r.ModelVendorID == directopenrouter.ModelVendorIDV1 && r.ModelID == directopenrouter.ModelIDV1 &&
 		r.TransportKind == domain.ProviderTransportRouterAPIV1 && r.TransportProvider == directopenrouter.TransportProviderV1 && r.UpstreamProviderID == directopenrouter.ProviderIDV1 &&
 		r.EndpointID == directopenrouter.EndpointIDV1 && r.BillingKind == domain.ProviderBillingRouterAccountV1 && domain.ValidateOpaqueID("proxy.billing_authority", r.BillingAuthority) == nil
+}
+
+// This fixed test-only class is not a no-auth OpenRouter route. It is reachable
+// only with the private dependencies of the tagged synthetic TLS fixture.
+func pinnedFixtureRoute(p PolicyV1) bool {
+	r := p.Route
+	return p.Endpoint.Host == "fixture.sessionless.dev" && p.Endpoint.Path == "/owned-operation" && r.BackendKind == domain.HarnessBackendDeterministicFixtureV1 && r.ModelVendorID == "fixture-vendor" && r.TransportKind == domain.ProviderTransportDirectAPIV1 && r.TransportProvider == "deterministic-fixture" && r.UpstreamProviderID == "synthetic" && r.EndpointID == "owned-operation" && r.BillingKind == domain.ProviderBillingNoneV1 && domain.ValidateOpaqueID("fixture.resource", r.BillingAuthority) == nil
 }
 
 func pinnedPublicAddresses(addresses []netip.Addr) ([]string, string, error) {

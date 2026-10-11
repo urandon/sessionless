@@ -10,6 +10,13 @@ import (
 
 var ErrAttemptOperationCapabilityNotSerializable = errors.New("attempt operation capabilities are process-local")
 
+// Actual authorized immutable bytes, never an approval boolean or claimed
+// digest. Implementations must enforce the original scoped object identity and
+// hard cap before materialization. Reads occur outside retryable SQL callbacks.
+type AttemptOperationBodyStoreV1 interface {
+	ReadAttemptOperationBody(context.Context, domain.AttemptOperationScopeV1, string, uint64) ([]byte, error)
+}
+
 type AttemptOperationReservationStatusV1 string
 
 const (

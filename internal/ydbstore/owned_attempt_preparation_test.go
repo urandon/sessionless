@@ -21,6 +21,123 @@ func beginOwnedPreparation(t *testing.T, f *ownedAttemptEffectParentFixture, gra
 	return f.store.beginBoundedOwnedAttemptPreparation(ctx, grant)
 }
 
+func TestBoundedOwnedCurrentParentMemoIsExactAndWriteInvalidated(t *testing.T) {
+	f := newOwnedAttemptEffectParentFixture(t)
+	created := f.reserve(t, f.request)
+	if created.Grant == nil {
+		t.Fatal("create actual parent before current-join memo control")
+	}
+	parent, err := domain.DecodeOwnedAttemptEffectParentV1([]byte(f.sql.parentRow[13].(string)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = f.store.ownedAuthorityTx(t.Context(), func(ctx context.Context, q *ownedAuthorityQuery) error {
+		q.metadataCache = make(map[string]ownedMetadataCacheEntry)
+		if err := f.store.validateCurrentOwnedAttemptParent(ctx, q, f.request, parent); err != nil {
+			return err
+		}
+		before := len(f.graph.statements)
+		if err := f.store.validateCurrentOwnedAttemptParent(ctx, q, f.request, parent); err != nil || len(f.graph.statements) != before {
+			t.Error("same exact successful join was not reused within its callback")
+			return q.budget.deny()
+		}
+		key := q.currentParentKey
+		otherStore := *f.store
+		if err := otherStore.validateCurrentOwnedAttemptParent(ctx, q, f.request, parent); err != nil || q.currentParentStore != &otherStore {
+			t.Error("join was incorrectly shared across Store compositions")
+			return q.budget.deny()
+		}
+		if q.currentParentKey != key {
+			t.Error("exact binding changed across equivalent current joins")
+			return q.budget.deny()
+		}
+		digest, _ := parent.Digest()
+		if _, err := q.ExecContext(ctx, ownedAttemptPreparationBurnUpdateSQL, q.at, digest, parent.Reservation.TenantID, parent.Reservation.AttemptID, parent.Reservation.Kind); err != nil {
+			return err
+		}
+		if q.currentParentKey != "" || q.currentParentStore != nil {
+			t.Error("successful authority join survived an Exec")
+			return q.budget.deny()
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A changed selector must not reuse an earlier successful current join.
+	err = f.store.ownedAuthorityTx(t.Context(), func(ctx context.Context, q *ownedAuthorityQuery) error {
+		if q.currentParentKey != "" || q.currentParentStore != nil {
+			t.Error("current join leaked into a new callback")
+		}
+		q.metadataCache = make(map[string]ownedMetadataCacheEntry)
+		if err := f.store.validateCurrentOwnedAttemptParent(ctx, q, f.request, parent); err != nil {
+			return err
+		}
+		changed := f.request
+		changed.PhysicalInvocationClaimID += "-changed"
+		if f.store.validateCurrentOwnedAttemptParent(ctx, q, changed, parent) == nil {
+			t.Error("changed physical claim reused a successful join")
+		}
+		return q.budget.deny()
+	})
+	if err == nil {
+		t.Fatal("changed binding must deny the transaction")
+	}
+}
+
+func TestBoundedOwnedCurrentParentMemoCannotEscapeFinishedCallback(t *testing.T) {
+	f := newOwnedAttemptEffectParentFixture(t)
+	created := f.reserve(t, f.request)
+	if created.Grant == nil {
+		t.Fatal("create actual parent before finished callback control")
+	}
+	parent, err := domain.DecodeOwnedAttemptEffectParentV1([]byte(f.sql.parentRow[13].(string)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var retained *ownedAuthorityQuery
+	err = f.store.ownedAuthorityTx(t.Context(), func(ctx context.Context, q *ownedAuthorityQuery) error {
+		q.metadataCache = make(map[string]ownedMetadataCacheEntry)
+		if err := f.store.validateCurrentOwnedAttemptParent(ctx, q, f.request, parent); err != nil {
+			return err
+		}
+		retained = q // deliberate test misuse: production never exports this query
+		return nil
+	})
+	if err != nil || retained == nil || retained.currentParentKey == "" {
+		t.Fatalf("authentic successful original callback: %v", err)
+	}
+	before := len(f.graph.statements)
+	if f.store.validateCurrentOwnedAttemptParent(t.Context(), retained, f.request, parent) == nil || len(f.graph.statements) != before {
+		t.Fatal("finished callback memo escaped its transaction or issued SQL")
+	}
+}
+
+func TestBoundedOwnedCurrentParentMemoInvalidatesBeforeRejectedExec(t *testing.T) {
+	for _, name := range []string{"cancelled", "over_budget"} {
+		t.Run(name, func(t *testing.T) {
+			b := &ownedAuthorityBudget{}
+			callback, err := b.begin()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer b.finish(callback)
+			q := &ownedAuthorityQuery{budget: b, callback: callback, currentParentStore: &Store{}, currentParentKey: "test successful memo"}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if name == "cancelled" {
+				cancel()
+			} else {
+				b.callbackStatements = ownedAuthorityMaxStatements
+			}
+			// No sql.Tx exists: reaching physical Exec would panic this control.
+			if _, err := q.ExecContext(ctx, "UPDATE never_executed SET value=$1", "fixture"); err == nil || q.currentParentStore != nil || q.currentParentKey != "" {
+				t.Fatal("rejected Exec retained a successful current-authority memo")
+			}
+		})
+	}
+}
+
 func TestBoundedOwnedAttemptPreparationBurnsOriginalParentOnce(t *testing.T) {
 	f := newOwnedAttemptEffectParentFixture(t)
 	created := f.reserve(t, f.request)

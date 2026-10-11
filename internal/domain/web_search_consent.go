@@ -459,7 +459,7 @@ func DecideWebSearchConsentV1(state WebSearchConsentStateV1, expectedRevision ui
 		return WebSearchConsentStateV1{}, err
 	}
 	if state.Decision != nil && (state.Status == WebSearchConsentApprovedV1 || state.Status == WebSearchConsentDeniedV1) {
-		if state.Decision.Choice != choice || state.Decision.ActorUserID != authority.WebSession.UserID || state.Decision.MembershipSecurityVersion != authority.Membership.SecurityVersion {
+		if state.Decision.Choice != choice || state.Decision.ActorUserID != authority.WebSession.UserID || state.Decision.WebSessionDigest != sessionDigest || state.Decision.MembershipSecurityVersion != authority.Membership.SecurityVersion {
 			return WebSearchConsentStateV1{}, ErrWebSearchConsentConflict
 		}
 		return state.Clone(), nil
@@ -496,6 +496,20 @@ func StopWebSearchConsentV1(state WebSearchConsentStateV1, expectedRevision uint
 	if err := authority.Lease.ValidateForAttempt(authority.Run, authority.Attempt); err != nil {
 		return WebSearchConsentStateV1{}, err
 	}
+	// Pending requests have no selected browser session. Reconciliation must
+	// not fabricate one or infer revocation from an empty session projection.
+	// Membership/participation still come from actual current transaction rows.
+	// An approved receipt instead retains its ORIGINAL authenticated session.
+	actorErr := authority.ValidateActor(state.Request, at)
+	if state.Decision == nil {
+		actorErr = authority.Membership.Authorize(state.Request.InitiatingUserID, state.Request.Scope.TenantID, TenantPermissionWrite)
+		if actorErr == nil {
+			actorErr = authority.Participant.Authorize(state.Request.Scope.TenantID, state.Request.Scope.SessionID, state.Request.InitiatingUserID, true)
+		}
+		if at.Before(authority.Membership.UpdatedAt) || at.Before(authority.Participant.UpdatedAt) {
+			return WebSearchConsentStateV1{}, ErrWebSearchConsentAuthority
+		}
+	}
 	status := WebSearchConsentStatusV1("")
 	switch {
 	case authority.Run.CancellationRequestedAt != nil || authority.Run.Status == RunCancelled || authority.Attempt.Status == AttemptCancelled:
@@ -504,7 +518,7 @@ func StopWebSearchConsentV1(state WebSearchConsentStateV1, expectedRevision uint
 		status = WebSearchConsentReconcileOnlyV1
 	case authority.Scope != state.Request.Scope || authority.InitiatingUserID != state.Request.InitiatingUserID || authority.GrantDigest != state.Request.GrantDigest || authority.ConsentRevision != state.Request.ConsentRevision || authority.RevocationGeneration != state.Request.RevocationGeneration || authority.DataClass != ProviderDataPublicV1:
 		status = WebSearchConsentRevokedV1
-	case authority.ValidateActor(state.Request, at) != nil || (state.Decision != nil && state.Decision.MembershipSecurityVersion != authority.Membership.SecurityVersion):
+	case actorErr != nil || (state.Decision != nil && (state.Decision.WebSessionDigest != authority.WebSession.SessionDigest || state.Decision.MembershipSecurityVersion != authority.Membership.SecurityVersion)):
 		status = WebSearchConsentRevokedV1
 	default:
 		for _, expiry := range []time.Time{state.Request.ExpiresAt, authority.Lease.ExpiresAt, authority.InvocationDeadline, authority.ActiveDeadline, authority.GrantExpiresAt, authority.PolicyExpiresAt, authority.PriceExpiresAt, authority.AllocationExpiresAt} {

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
-	"database/sql"
 	"testing"
 	"time"
 
@@ -16,7 +15,7 @@ func TestAttachedWorkerTransactionClockIsAttemptScopedAndExpiryIsExclusive(t *te
 	expiresAt := time.Date(2026, 8, 25, 10, 0, 0, 123456000, time.UTC)
 	times := []time.Time{expiresAt.Add(-time.Microsecond), expiresAt}
 	index := 0
-	store := &Store{attachedWorkerNow: func(context.Context, *sql.Tx) (time.Time, error) {
+	store := &Store{attachedWorkerNow: func(context.Context, rowQuery) (time.Time, error) {
 		at := times[index]
 		index++
 		return at, nil

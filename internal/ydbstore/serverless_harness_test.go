@@ -165,7 +165,7 @@ func TestAttemptEffectGrantsRequireConfirmedCommit(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			store.attachedWorkerNow = func(context.Context, *sql.Tx) (time.Time, error) { return at, nil }
+			store.attachedWorkerNow = func(context.Context, rowQuery) (time.Time, error) { return at, nil }
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			t.Cleanup(cancel)
 			request := ports.ReserveAttemptEffectRequestV1{TenantID: r.TenantID, RunID: r.RunID, AttemptID: r.AttemptID, LeaseID: r.LeaseID, FenceToken: r.FenceToken, PhysicalInvocationClaimID: "contending-claim"}

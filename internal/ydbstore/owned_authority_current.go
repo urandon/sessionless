@@ -220,7 +220,7 @@ func (s *ownedCurrentScalar) Scan(value any) error {
 	return nil
 }
 
-func scanOwnedCurrentRow(row *sql.Row, destinations ...any) (uint64, error) {
+func scanOwnedCurrentRow(row interface{ Scan(...any) error }, destinations ...any) (uint64, error) {
 	scalars := make([]ownedCurrentScalar, len(destinations))
 	arguments := make([]any, len(destinations))
 	for i, destination := range destinations {

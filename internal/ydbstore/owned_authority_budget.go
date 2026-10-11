@@ -127,6 +127,19 @@ func (q *ownedAuthorityQuery) ExecContext(ctx context.Context, statement string,
 	return q.tx.ExecContext(ctx, statement, args...)
 }
 
+func (q *ownedAuthorityQuery) QueryContext(ctx context.Context, statement string, args ...any) (*sql.Rows, error) {
+	if err := q.budget.statement(ctx, q.callback); err != nil {
+		return nil, err
+	}
+	return q.tx.QueryContext(ctx, statement, args...)
+}
+
+// Compose canonical helpers into THIS callback, clock and logical-call budget.
+// This is not an admission port, another transaction, or a standalone preflight.
+func (q *ownedAuthorityQuery) canonicalState(store *Store, tenant domain.TenantID) *stateTx {
+	return &stateTx{store: store, sqlTx: q, tenantID: tenant}
+}
+
 // This private composition primitive establishes the actual serializable DB
 // clock and shared budget. It exports no standalone preflight permission. A
 // future reservation MUST compose all its authority/debit reads here and clear

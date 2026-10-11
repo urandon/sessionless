@@ -45,7 +45,7 @@ type Store struct {
 	idempotencyRetention               time.Duration
 	operationalRetention               time.Duration
 	webSessionIdleTTL                  time.Duration
-	attachedWorkerNow                  func(context.Context, *sql.Tx) (time.Time, error)
+	attachedWorkerNow                  func(context.Context, rowQuery) (time.Time, error)
 	attemptEffectGrantIssuer           ports.AttemptEffectOwnershipGrantIssuerV1
 	ownedProfilePublicationVerifier    ports.OwnedProfilePublicationVerifierV1
 	attemptSpendingPublicationVerifier ports.AttemptSpendingPublicationVerifierV1
@@ -216,7 +216,7 @@ func (err callbackError) Unwrap() error { return err.err }
 
 type stateTx struct {
 	store            *Store
-	sqlTx            *sql.Tx
+	sqlTx            stateSQLExecutor
 	tenantID         domain.TenantID
 	explanationQuery rowQuery                                                    // readonly resource budget; nil on canonical writers
 	materialPrefixes map[domain.SessionID]sessioncontext.SessionMaterialPrefixV1 // callback-local, never across SDK retries
@@ -265,11 +265,25 @@ func (tx *stateTx) PutRun(ctx context.Context, run domain.Run) error {
 		return err
 	}
 	var existing string
-	err := tx.sqlTx.QueryRowContext(ctx,
-		`SELECT run_id FROM run_idempotency
+	var err error
+	if q, ok := tx.sqlTx.(*ownedAuthorityQuery); ok {
+		returned, scanErr := scanOwnedCurrentRow(q.QueryRowContext(ctx,
+			`SELECT SUBSTRING(CAST(run_id AS String),0,161) FROM run_idempotency
+			 WHERE tenant_id = $1 AND idempotency_key = $2`, tx.tenantID, run.IdempotencyKey), &existing)
+		if q.budget.materialized(q.callback, returned) != nil {
+			return domain.ErrMembershipDenied
+		}
+		err = scanErr
+		if err == nil && len(existing) > 160 {
+			return q.budget.deny()
+		}
+	} else {
+		err = tx.sqlTx.QueryRowContext(ctx,
+			`SELECT run_id FROM run_idempotency
 		 WHERE tenant_id = $1 AND idempotency_key = $2`,
-		tx.tenantID, run.IdempotencyKey,
-	).Scan(&existing)
+			tx.tenantID, run.IdempotencyKey,
+		).Scan(&existing)
+	}
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
@@ -924,6 +938,14 @@ type rowQuery interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
+// A canonical helper may execute SQL, but cannot unwrap or commit a transaction.
+// The owned path supplies its one callback-scoped, budgeted executor here.
+type stateSQLExecutor interface {
+	rowQuery
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
 func readJSON[T any](
 	ctx context.Context,
 	query rowQuery,
@@ -931,7 +953,11 @@ func readJSON[T any](
 	args ...any,
 ) (value T, found bool, err error) {
 	var payload string
-	err = query.QueryRowContext(ctx, statement, args...).Scan(&payload)
+	if bounded, ok := query.(*ownedAuthorityQuery); ok {
+		payload, err = bounded.readCanonicalJSON(ctx, statement, args...)
+	} else {
+		err = query.QueryRowContext(ctx, statement, args...).Scan(&payload)
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return value, false, nil
 	}
@@ -939,6 +965,9 @@ func readJSON[T any](
 		return value, false, err
 	}
 	if err := json.Unmarshal([]byte(payload), &value); err != nil {
+		if bounded, ok := query.(*ownedAuthorityQuery); ok {
+			return value, false, bounded.budget.deny()
+		}
 		return value, false, fmt.Errorf("decode stored JSON: %w", err)
 	}
 	return value, true, nil

@@ -1,6 +1,6 @@
 # Current authority for the owned agent harness
 
-Version: 0.1.2, engineering draft, 2026-10-11. Implementation owner:
+Version: 0.1.3, engineering draft, 2026-10-11. Implementation owner:
 [#189](https://gitcode.com/urandon/sessionless/issues/189), under
 [#176](https://gitcode.com/urandon/sessionless/issues/176). This extension
 defines the current-authority requirements of the accepted
@@ -351,6 +351,31 @@ inventory, not native measurement. Do not count only new head reads, raise the
 ceiling implicitly, or accept an unbounded legacy helper as a bounded writer.
 Keep owned scheduler admission closed until the complete existing transaction
 is refactored and its legitimate worst-case native fixtures meet these bounds.
+
+The executor prerequisite composes existing canonical StateTx helpers into the
+same private `ownedAuthorityQuery`, callback and sampled database clock. Its
+interface exposes only SQL queries/writes, not a raw transaction or commit.
+Known canonical JSON point reads use an explicit full-query whitelist and SQL
+cap-plus-one prefixes. Run, Attempt, Session and capacity metadata are capped
+at 32 KiB; source-bearing outer Job/outbox and manifest metadata at 128 KiB,
+separate from the strict 32-KiB inner Source/current-head bound. Every consumed
+scalar is charged before validation; unsupported JSON query forms have no
+unbounded fallback. Existing scalar/helper reads still need an explicit bound
+and collector before inclusion in the eventual complete admission graph.
+
+Snapshot selection transfers at most sixteen 32-KiB-plus-one metadata records,
+never their blob/conversation bodies. The canonical snapshot producer has a
+fixed field set, 160-byte opaque identities and one exact derived object key;
+32 KiB comfortably covers that legitimate shape. On the owned path, selection
+drains, charges and closes the complete bounded result set even after finding
+the first valid snapshot. A later oversized row or stream failure denies that
+callback. Legacy single-turn/attached selection retains its first-valid behavior
+and skips oversized corrupt metadata without downloading the complete cell.
+
+This prerequisite does not wire a serving owned admission caller, establish
+the complete scheduler's worst-case bounds, authenticate installation, create
+a final admission attachment or complete retention. Those remaining gates
+above are unchanged; a small helper-only transaction is not their proof.
 
 ## Terminal and retention integration
 

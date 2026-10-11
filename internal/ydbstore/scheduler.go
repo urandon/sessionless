@@ -400,6 +400,12 @@ func (store *Store) AdmitDispatch(
 	return result, err
 }
 
+const admittedSnapshotMetadataBytes = 32 << 10
+
+const admittedSnapshotMetadataSQL = `SELECT SUBSTRING(CAST(record AS String),0,32769) FROM session_snapshots
+		 WHERE tenant_id = $1 AND session_id = $2 AND through_sequence <= $3
+		 ORDER BY version DESC LIMIT $4`
+
 func selectAdmittedContextWindow(
 	ctx context.Context,
 	tx *stateTx,
@@ -418,34 +424,64 @@ func selectAdmittedContextWindow(
 	window.SnapshotVersion = nil
 	window.AfterSequence = 0
 	rows, err := tx.sqlTx.QueryContext(ctx,
-		`SELECT record FROM session_snapshots
-		 WHERE tenant_id = $1 AND session_id = $2 AND through_sequence <= $3
-		 ORDER BY version DESC LIMIT $4`,
+		admittedSnapshotMetadataSQL,
 		tx.tenantID, sessionID, window.ThroughSequence, uint64(16),
 	)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	bounded, owned := tx.sqlTx.(*ownedAuthorityQuery)
+	var selected *domain.SessionContextWindow
+	count := 0
 	for rows.Next() {
-		var payload []byte
-		if err := rows.Scan(&payload); err != nil {
-			return nil, err
+		count++
+		var payload string
+		if owned {
+			returned, scanErr := scanOwnedCurrentRow(rows, &payload)
+			if bounded.budget.materialized(bounded.callback, returned) != nil {
+				return nil, domain.ErrMembershipDenied
+			}
+			if scanErr != nil || len(payload) > admittedSnapshotMetadataBytes || count > 16 {
+				return nil, bounded.budget.deny()
+			}
+		} else {
+			var raw []byte
+			if err := rows.Scan(&raw); err != nil {
+				return nil, err
+			}
+			payload = string(raw)
 		}
-		var snapshot domain.SessionSnapshot
-		if err := json.Unmarshal(payload, &snapshot); err != nil || snapshot.Validate() != nil {
+		if len(payload) > admittedSnapshotMetadataBytes {
+			// Legacy selection already ignores malformed snapshot metadata. Do
+			// not transfer an oversized cell merely to discover it cannot decode.
 			continue
 		}
-		if snapshot.TenantID != tx.tenantID || snapshot.SessionID != sessionID {
+		var snapshot domain.SessionSnapshot
+		if err := json.Unmarshal([]byte(payload), &snapshot); err != nil || snapshot.Validate() != nil {
+			continue
+		}
+		if snapshot.TenantID != tx.tenantID || snapshot.SessionID != sessionID || snapshot.ThroughSequence > window.ThroughSequence {
 			continue
 		}
 		version := snapshot.Version
 		window.SnapshotVersion = &version
 		window.AfterSequence = snapshot.ThroughSequence
-		return &window, nil
+		if !owned {
+			return &window, nil
+		}
+		if selected == nil {
+			copy := window
+			selected = &copy
+		}
+		// database/sql may have materialized the whole bounded result set.
+		// Drain and charge it even after selecting the first valid snapshot.
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	if selected != nil {
+		return selected, nil
 	}
 	return &window, nil
 }

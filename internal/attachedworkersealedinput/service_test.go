@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -27,9 +28,88 @@ type authorizerFixture struct {
 	revision       uint64
 	secondRevision uint64
 	bearer         []byte
+	mutateHead     func(*domain.AttachedWorkerAttemptV1, int)
 }
 
-func (fixture *authorizerFixture) AuthorizeSealedInputBearer(_ context.Context, bearer []byte, request ports.AttachedWorkerSealedInputAuthorization) (uint64, error) {
+func TestLoadRejectsMissingOrChangedAuthenticatedHead(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		mutate    func(*domain.AttachedWorkerAttemptV1, int)
+		wantBlobs int
+	}{
+		{name: "missing", mutate: func(head *domain.AttachedWorkerAttemptV1, _ int) { *head = domain.AttachedWorkerAttemptV1{} }},
+		{name: "state", mutate: func(head *domain.AttachedWorkerAttemptV1, _ int) { head.State = domain.AttachedWorkerAttemptOffered }},
+		{name: "connection", mutate: func(head *domain.AttachedWorkerAttemptV1, _ int) { head.ConnectionID = "other-connection" }},
+		{name: "reservation", mutate: func(head *domain.AttachedWorkerAttemptV1, _ int) { head.ReservationID = "other-reservation" }},
+		{name: "same revision changed head", mutate: func(head *domain.AttachedWorkerAttemptV1, call int) {
+			if call == 2 {
+				head.UpdatedAt = head.UpdatedAt.Add(time.Microsecond)
+			}
+		}, wantBlobs: 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service, authorizer, _, blobs, request := fixtureInput(t)
+			authorizer.mutateHead = test.mutate
+			input, err := service.Load(t.Context(), []byte("test-connection-bearer"), request)
+			if !errors.Is(err, ErrUnauthorized) || len(input.Context) != 0 || input.AcceptedAttempt.Version != 0 || blobs.calls != test.wantBlobs {
+				t.Fatalf("head=%s err=%v bytes=%d head-version=%d blobs=%d want=%d", test.name, err, len(input.Context), input.AcceptedAttempt.Version, blobs.calls, test.wantBlobs)
+			}
+		})
+	}
+}
+
+func TestClientSealedInputChecksExactHeadAndAdmittedSerializedBudget(t *testing.T) {
+	for _, mode := range []string{"unchanged", "missing head", "foreign connection", "unclaimed", "zero revision", "serialized budget"} {
+		t.Run(mode, func(t *testing.T) {
+			service, _, _, _, request := fixtureInput(t)
+			input, err := service.Load(t.Context(), []byte("test-connection-bearer"), request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer clearResult(&input)
+			switch mode {
+			case "missing head":
+				input.AcceptedAttempt = domain.AttachedWorkerAttemptV1{}
+			case "foreign connection":
+				input.AcceptedAttempt.ConnectionID = "other-connection"
+			case "unclaimed":
+				input.AcceptedAttempt.State = domain.AttachedWorkerAttemptOffered
+			case "zero revision":
+				input.AcceptedAttempt.Revision = 0
+			case "serialized budget":
+				input.Job.Limits.MaxInputBytes = 1
+			}
+			body, err := json.Marshal(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer clear(body)
+			calls := 0
+			client, err := NewClientSource("https://control.invalid"+PathV1, &http.Client{Transport: receiptRoundTrip(func(*http.Request) (*http.Response, error) {
+				calls++
+				return receiptJSONResponse(http.StatusOK, body), nil
+			})}, []byte("test-connection-bearer"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+			loaded, err := client.Load(t.Context(), request)
+			defer clearResult(&loaded)
+			if calls != 1 {
+				t.Fatalf("client retries=%d want1", calls)
+			}
+			if mode == "unchanged" {
+				if err != nil || loaded.AcceptedAttempt != input.AcceptedAttempt {
+					t.Fatalf("exact head not preserved: %v", err)
+				}
+			} else if !errors.Is(err, ErrUnavailable) || len(loaded.Context) != 0 || loaded.AcceptedAttempt.Version != 0 {
+				t.Fatalf("mode=%s err=%v leaked bytes=%d head-version=%d", mode, err, len(loaded.Context), loaded.AcceptedAttempt.Version)
+			}
+		})
+	}
+}
+
+func (fixture *authorizerFixture) AuthorizeSealedInputBearer(_ context.Context, bearer []byte, request ports.AttachedWorkerSealedInputAuthorization) (ports.AttachedWorkerSealedInputAuthorizationResult, error) {
 	fixture.calls++
 	fixture.requests = append(fixture.requests, request)
 	wantBearer := fixture.bearer
@@ -37,12 +117,28 @@ func (fixture *authorizerFixture) AuthorizeSealedInputBearer(_ context.Context, 
 		wantBearer = []byte("test-connection-bearer")
 	}
 	if !bytes.Equal(bearer, wantBearer) || fixture.calls == fixture.denyAt {
-		return 0, ErrUnauthorized
+		return ports.AttachedWorkerSealedInputAuthorizationResult{}, ErrUnauthorized
 	}
+	revision := fixture.revision
 	if fixture.calls == 2 && fixture.secondRevision != 0 {
-		return fixture.secondRevision, nil
+		revision = fixture.secondRevision
 	}
-	return fixture.revision, nil
+	// This is an explicit synthetic authorizer fixture, not the production
+	// projection. Production returns the exact head read in its authorization Tx.
+	at := time.UnixMicro(request.LeaseExpiresAtUnixMicro).UTC().Add(-time.Hour)
+	head := domain.AttachedWorkerAttemptV1{Version: 1, TenantID: request.TenantID, OwnerUserID: request.OwnerUserID,
+		WorkerID: request.WorkerID, ConnectionID: request.ConnectionID, RunID: request.RunID, AttemptID: request.AttemptID,
+		ReservationID: "reservation-1", LeaseID: request.LeaseID, LeaseGeneration: request.LeaseGeneration,
+		FenceToken: request.FenceToken, EnrollmentGeneration: request.EnrollmentGeneration,
+		ConnectionGeneration: request.ConnectionGeneration, ContextDigest: request.ContextDigest,
+		CapabilityDigest: request.CapabilityDigest, PolicyDigest: request.PolicyDigest,
+		State: domain.AttachedWorkerAttemptClaimed, PlatformAttemptSequence: 2, WorkerAttemptSequence: 1,
+		LeaseExpiresAt: time.UnixMicro(request.LeaseExpiresAtUnixMicro).UTC(), CreatedAt: at, UpdatedAt: at, Revision: revision}
+	if fixture.mutateHead != nil {
+		fixture.mutateHead(&head, fixture.calls)
+	}
+	return ports.AttachedWorkerSealedInputAuthorizationResult{Status: ports.AttachedWorkerExecutionApplied,
+		AttemptRevision: revision, Attempt: head}, nil
 }
 
 type jobFixture struct {
@@ -128,6 +224,12 @@ func fixtureInput(t *testing.T) (*Service, *authorizerFixture, *jobFixture, *blo
 			PolicyDigest:     decodeDigest(t, string(placement.PolicyDigest)),
 		},
 	}
+	fence, err := domain.NewAttachedWorkerFenceTokenV1(job.TenantID, request.OwnerUserID, request.WorkerID,
+		job.RunID, job.AttemptID, domain.LeaseID(request.Attempt.LeaseID), request.Attempt.LeaseGeneration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Attempt.FenceToken = string(fence)
 	authorizer := &authorizerFixture{revision: 7}
 	jobs := &jobFixture{state: ports.WorkerJobState{Job: job, InputManifest: manifest}}
 	blobs := &blobFixture{contents: map[string][]byte{job.ContextSnapshot.Key: contextBytes, manifest.Artifacts[0].Blob.Key: artifactBytes}}
@@ -196,6 +298,12 @@ func TestLoadFailsClosedBeforeReadAndAfterRevisionLoss(t *testing.T) {
 func TestAW07ForeignOwnerCannotReadSameTenantJobOrArtifact(t *testing.T) {
 	service, authorizer, jobs, blobs, request := fixtureInput(t)
 	request.OwnerUserID = "owner-2"
+	fence, err := domain.NewAttachedWorkerFenceTokenV1(request.TenantID, request.OwnerUserID, request.WorkerID,
+		domain.RunID(request.Attempt.RunID), domain.AttemptID(request.Attempt.AttemptID), domain.LeaseID(request.Attempt.LeaseID), request.Attempt.LeaseGeneration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Attempt.FenceToken = string(fence)
 	input, err := service.Load(context.Background(), []byte("test-connection-bearer"), request)
 	if !errors.Is(err, ErrUnauthorized) || len(input.Context) != 0 || len(input.Artifacts) != 0 ||
 		authorizer.calls != 1 || jobs.calls != 1 || blobs.calls != 0 {

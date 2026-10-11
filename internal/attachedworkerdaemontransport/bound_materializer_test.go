@@ -7,14 +7,148 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemon"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerprotocol"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 )
+
+type ownedTypedMaterializerFunc func(context.Context, MaterializationRequestV1) (MaterializedInputV1, error)
+
+func (materialize ownedTypedMaterializerFunc) Materialize(ctx context.Context, request MaterializationRequestV1) (MaterializedInputV1, error) {
+	return materialize(ctx, request)
+}
+
+func TestBoundMaterializerTypedCarrierIsClonedAndRejoinedByAdapter(t *testing.T) {
+	for _, tamper := range []bool{false, true} {
+		t.Run(fmt.Sprintf("tamper=%t", tamper), func(t *testing.T) {
+			materializer, _, request := canonicalMaterializerFixture(t)
+			input, err := materializer.Materialize(t.Context(), request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer clearMaterializedInput(&input)
+			if tamper {
+				input.VerifiedInput.AcceptedAttempt.ConnectionGeneration++
+			}
+			i := attachedworkerdaemon.InvocationIdentity{TenantID: request.TenantID, OwnerUserID: request.OwnerUserID,
+				WorkerID: request.WorkerID, RunID: domain.RunID(request.Attempt.RunID), AttemptID: domain.AttemptID(request.Attempt.AttemptID),
+				LeaseID: domain.LeaseID(request.Attempt.LeaseID), FenceToken: request.Attempt.LeaseGeneration}
+			fixture := newAdapterFixture(t)
+			if len(input.Stdin) <= fixture.adapter.config.MaxInputBytes {
+				t.Fatalf("fixture must exercise original adapter cap: stdin=%d cap=%d", len(input.Stdin), fixture.adapter.config.MaxInputBytes)
+			}
+			t.Logf("canonical fixture stdin=%d exceeds unrelated small fixture adapter cap=%d; admitted input cap=%d",
+				len(input.Stdin), fixture.adapter.config.MaxInputBytes, input.VerifiedInput.Job.Limits.MaxInputBytes)
+			denied, capErr := fixture.adapter.invocationFromInput(i, request, input)
+			clearInvocation(&denied)
+			if !errors.Is(capErr, ErrInvalidAuthority) {
+				t.Fatalf("original adapter cap was not enforced: %v", capErr)
+			}
+			// This adapter now uses the same finite admitted job budget as the
+			// canonical materializer, rather than the unrelated 1 KiB fixture.
+			fixture.adapter.config.MaxInputBytes = int(input.VerifiedInput.Job.Limits.MaxInputBytes)
+			invocation, err := fixture.adapter.invocationFromInput(i, request, input)
+			defer clearInvocation(&invocation)
+			if tamper {
+				if !errors.Is(err, ErrInvalidAuthority) || invocation.VerifiedInput != nil {
+					t.Fatalf("changed authenticated head admitted: %v", err)
+				}
+				return
+			}
+			clearMaterializedInput(&input)
+			if err != nil || invocation.VerifiedInput.ValidateFor(i) != nil {
+				t.Fatalf("adapter lost independent typed ownership: %v", err)
+			}
+		})
+	}
+}
+
+func TestBoundMaterializerLateOwnedCarrierIsClearedBeforeGateRelease(t *testing.T) {
+	materializer, _, request := canonicalMaterializerFixture(t)
+	input, err := materializer.Materialize(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clearMaterializedInput(&input)
+	borrowed := [][]byte{input.VerifiedInput.Context, input.VerifiedInput.Artifacts[0].Body,
+		input.VerifiedInput.CanonicalContext.EventBodies[0], input.VerifiedInput.CanonicalContext.Attachments[0].Body}
+	fixture := newAdapterFixture(t)
+	started, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	fixture.adapter.materializer = ownedTypedMaterializerFunc(func(context.Context, MaterializationRequestV1) (MaterializedInputV1, error) {
+		close(started)
+		<-release
+		return input, nil
+	})
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	bound, stop := context.WithTimeout(t.Context(), time.Minute)
+	defer stop()
+	if err := fixture.adapter.acquire(bound); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		unblock()
+		cleanup, stopCleanup := context.WithTimeout(context.Background(), time.Minute)
+		defer stopCleanup()
+		if err := fixture.adapter.acquire(cleanup); err != nil {
+			t.Errorf("late carrier owner did not settle: %v", err)
+			return
+		}
+		fixture.adapter.release()
+	})
+	type outcome struct {
+		err         error
+		ambiguous   bool
+		releaseGate bool
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		gate := true
+		_, err, ambiguous := fixture.adapter.materializeOwned(ctx, request, &gate)
+		if gate {
+			fixture.adapter.release()
+		}
+		done <- outcome{err: err, ambiguous: ambiguous, releaseGate: gate}
+	}()
+	select {
+	case <-started:
+	case <-bound.Done():
+		t.Fatal("materializer did not start")
+	}
+	cancel()
+	var actual outcome
+	select {
+	case actual = <-done:
+	case <-bound.Done():
+		unblock()
+		t.Fatal("cancellation did not return")
+	}
+	unblock()
+	if !errors.Is(actual.err, context.Canceled) || !actual.ambiguous || actual.releaseGate {
+		t.Errorf("late operation err=%v ambiguous=%t gate=%t", actual.err, actual.ambiguous, actual.releaseGate)
+	}
+	// The existing late-result owner releases this gate only after Clear. Its
+	// channel send establishes quiescence without a sleep or speculative poll.
+	if err := fixture.adapter.acquire(bound); err != nil {
+		t.Fatal("late cleanup did not release owned gate")
+	}
+	defer fixture.adapter.release()
+	for index, body := range borrowed {
+		if !bytes.Equal(body, make([]byte, len(body))) {
+			t.Errorf("late body=%d retained", index)
+		}
+	}
+}
 
 type sealedSourceFixture struct {
 	input     SealedInputV1
@@ -87,11 +221,25 @@ func sealedMaterializerFixture(t *testing.T) (*BoundMaterializer, *sealedSourceF
 			PolicyDigest:     mustSealedDigest(t, string(placement.PolicyDigest)),
 		},
 	}
+	fence, err := domain.NewAttachedWorkerFenceTokenV1(job.TenantID, request.OwnerUserID, request.WorkerID,
+		job.RunID, job.AttemptID, domain.LeaseID(request.Attempt.LeaseID), request.Attempt.LeaseGeneration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Attempt.FenceToken = string(fence)
+	head := domain.AttachedWorkerAttemptV1{Version: 1, TenantID: job.TenantID, OwnerUserID: request.OwnerUserID,
+		WorkerID: request.WorkerID, ConnectionID: request.ConnectionID, RunID: job.RunID, AttemptID: job.AttemptID,
+		ReservationID: job.ReservationID, LeaseID: domain.LeaseID(request.Attempt.LeaseID), LeaseGeneration: request.Attempt.LeaseGeneration,
+		FenceToken: fence, EnrollmentGeneration: request.EnrollmentGeneration, ConnectionGeneration: request.ConnectionGeneration,
+		ContextDigest: contextDigest, CapabilityDigest: placement.CapabilityDigest, PolicyDigest: placement.PolicyDigest,
+		State: domain.AttachedWorkerAttemptClaimed, PlatformAttemptSequence: 2, WorkerAttemptSequence: 1,
+		CreatedAt: now, UpdatedAt: now, LeaseExpiresAt: time.UnixMicro(request.Attempt.ExpiresAtUnixMicro).UTC(), Revision: 7}
 	source := &sealedSourceFixture{input: SealedInputV1{
-		Job: job, Manifest: manifest, Context: contextBytes,
+		AcceptedAttempt: head,
+		Job:             job, Manifest: manifest, Context: contextBytes,
 		Artifacts: []SealedArtifactV1{{Name: "alpha", Body: artifactBytes}},
 	}}
-	materializer, err := NewBoundMaterializer(source, 4096, func() time.Time { return now })
+	materializer, err := NewBoundMaterializer(source, 8192, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,6 +266,7 @@ func mustSealedDigest(t *testing.T, encoded string) []byte {
 func TestBoundMaterializerSealsAcceptedSyntheticInput(t *testing.T) {
 	materializer, source, request := sealedMaterializerFixture(t)
 	result, err := materializer.Materialize(context.Background(), request)
+	defer clearMaterializedInput(&result)
 	if err != nil {
 		t.Fatalf("Materialize accepted input: %v", err)
 	}
@@ -127,6 +276,10 @@ func TestBoundMaterializerSealsAcceptedSyntheticInput(t *testing.T) {
 	}
 	if len(result.ReadRoots) != 0 || result.Credential != nil {
 		t.Fatalf("synthetic input gained host or credential authority: %+v", result)
+	}
+	if result.VerifiedInput == nil || result.VerifiedInput.AcceptedAttempt != source.input.AcceptedAttempt ||
+		string(result.VerifiedInput.Context) != "synthetic canonical context" || len(result.VerifiedInput.Artifacts) != 1 {
+		t.Fatal("verified typed materialization lost actual head/job/body")
 	}
 	var envelope sealedEnvelopeV1
 	if err := json.Unmarshal(result.Stdin, &envelope); err != nil {
@@ -434,4 +587,5 @@ func resealSealedRequest(t *testing.T, input *SealedInputV1, request *Materializ
 		t.Fatal(err)
 	}
 	request.Attempt.ContextDigest = mustSealedDigest(t, string(digest))
+	input.AcceptedAttempt.ContextDigest = digest
 }

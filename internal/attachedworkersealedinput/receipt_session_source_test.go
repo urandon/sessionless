@@ -69,6 +69,17 @@ func receiptJSONResponse(status int, data []byte) *http.Response {
 
 func TestReceiptSessionBindsBearerAndReplaysOnlyExactSubmission(t *testing.T) {
 	submission := receiptSubmission(t)
+	service, _, _, _, _ := fixtureInput(t)
+	sealedInput, err := service.Load(t.Context(), []byte("test-connection-bearer"), submission.Request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { clearResult(&sealedInput) })
+	sealedBody, err := json.Marshal(sealedInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { clear(sealedBody) })
 	var receiptBodies [][]byte
 	var sealedReads, semanticEffects int
 	transport := receiptRoundTrip(func(request *http.Request) (*http.Response, error) {
@@ -80,7 +91,7 @@ func TestReceiptSessionBindsBearerAndReplaysOnlyExactSubmission(t *testing.T) {
 		}
 		if request.URL.Path == PathV1 {
 			sealedReads++
-			return receiptJSONResponse(http.StatusOK, []byte(`{}`)), nil
+			return receiptJSONResponse(http.StatusOK, sealedBody), nil
 		}
 		if request.URL.Path != attachedworkerreceipt.PathV1 {
 			return nil, errors.New("unexpected fixture path")

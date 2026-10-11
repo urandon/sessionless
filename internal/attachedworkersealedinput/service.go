@@ -30,7 +30,7 @@ var (
 )
 
 type Authorizer interface {
-	AuthorizeSealedInputBearer(context.Context, []byte, ports.AttachedWorkerSealedInputAuthorization) (uint64, error)
+	AuthorizeSealedInputBearer(context.Context, []byte, ports.AttachedWorkerSealedInputAuthorization) (ports.AttachedWorkerSealedInputAuthorizationResult, error)
 }
 
 type JobStore interface {
@@ -79,15 +79,15 @@ func (service *Service) Load(ctx context.Context, bearer []byte, request attache
 		CapabilityDigest: domain.AttachedWorkerCapabilityDigest(hex.EncodeToString(request.Attempt.CapabilityDigest)),
 		PolicyDigest:     domain.AttachedWorkerPolicyDigest(hex.EncodeToString(request.Attempt.PolicyDigest)),
 	}
-	revision, err := service.authorizer.AuthorizeSealedInputBearer(ctx, bearer, authorization)
-	if err != nil || revision == 0 {
+	authorized, err := service.authorizer.AuthorizeSealedInputBearer(ctx, bearer, authorization)
+	if err != nil || !authorized.Matches(authorization) {
 		return result, authorizationError(err)
 	}
 	state, found, err := service.jobs.LoadWorkerJob(ctx, request.TenantID, authorization.RunID)
 	if err != nil {
 		return result, ErrUnavailable
 	}
-	if !found || !sameJob(request, state) {
+	if !found || !sameJob(request, state) || state.Job.ReservationID != authorized.Attempt.ReservationID {
 		return result, ErrUnauthorized
 	}
 	job, manifest := state.Job, state.InputManifest
@@ -99,7 +99,7 @@ func (service *Service) Load(ctx context.Context, bearer []byte, request attache
 		job.ContextWindow == nil && (job.ContextSnapshot.Size > maxInputBytes || job.ContextSnapshot.Size < 0) {
 		return result, ErrInvalid
 	}
-	result.Job, result.Manifest = job, manifest
+	result.Job, result.Manifest, result.AcceptedAttempt = job, manifest, authorized.Attempt
 	defer func() {
 		if err != nil {
 			clearResult(&result)
@@ -145,12 +145,12 @@ func (service *Service) Load(ctx context.Context, bearer []byte, request attache
 		result.Artifacts = append(result.Artifacts, attachedworkerdaemontransport.SealedArtifactV1{Name: artifact.Name, Body: body})
 		remaining -= int64(len(body))
 	}
-	if result.CanonicalContext != nil && !attachedworkerdaemontransport.BoundedSerializedCanonicalInputV1(result, maxInputBytes) {
+	if !attachedworkerdaemontransport.BoundedSerializedCanonicalInputV1(result, maxInputBytes) {
 		return result, ErrInvalid
 	}
-	authorization.ExpectedAttemptRevision = revision
+	authorization.ExpectedAttemptRevision = authorized.AttemptRevision
 	observed, checkErr := service.authorizer.AuthorizeSealedInputBearer(ctx, bearer, authorization)
-	if checkErr != nil || observed != revision {
+	if checkErr != nil || ctx.Err() != nil || !observed.Matches(authorization) || observed.Attempt != authorized.Attempt {
 		return result, authorizationError(checkErr)
 	}
 	return result, nil

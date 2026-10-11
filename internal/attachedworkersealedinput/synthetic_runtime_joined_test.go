@@ -403,7 +403,7 @@ type joinedDenyAuthorizer struct {
 	badScope bool
 }
 
-func (authorizer *joinedDenyAuthorizer) AuthorizeSealedInputBearer(_ context.Context, bearer []byte, request ports.AttachedWorkerSealedInputAuthorization) (uint64, error) {
+func (authorizer *joinedDenyAuthorizer) AuthorizeSealedInputBearer(_ context.Context, bearer []byte, request ports.AttachedWorkerSealedInputAuthorization) (ports.AttachedWorkerSealedInputAuthorizationResult, error) {
 	authorizer.factory.mu.Lock()
 	validBearer := bytes.Equal(bearer, authorizer.factory.bearer)
 	authorizer.factory.mu.Unlock()
@@ -413,9 +413,9 @@ func (authorizer *joinedDenyAuthorizer) AuthorizeSealedInputBearer(_ context.Con
 	authorizer.badScope = authorizer.badScope || badScope
 	authorizer.mu.Unlock()
 	if badScope {
-		return 0, errors.New("joined proof received wrong sealed-input scope")
+		return ports.AttachedWorkerSealedInputAuthorizationResult{}, errors.New("joined proof received wrong sealed-input scope")
 	}
-	return 0, ErrUnauthorized
+	return ports.AttachedWorkerSealedInputAuthorizationResult{}, ErrUnauthorized
 }
 
 type joinedNoJobStore struct{}

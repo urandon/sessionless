@@ -43,9 +43,10 @@ type CredentialInvocation struct {
 }
 
 type Invocation struct {
-	Identity   InvocationIdentity
-	Process    AttemptSpec
-	Credential *CredentialInvocation
+	Identity      InvocationIdentity
+	Process       AttemptSpec
+	Credential    *CredentialInvocation
+	VerifiedInput *VerifiedAttachedInputV1 `json:"-"`
 }
 
 func (invocation Invocation) Validate() error {
@@ -159,7 +160,7 @@ func (runner *InvocationRunner) Run(
 ) (InvocationResult, error) {
 	if runner == nil || runner.process == nil && runner.prepared == nil ||
 		ctx == nil || ctx.Err() != nil || invocation.Validate() != nil ||
-		runner.prepared != nil && invocation.Credential == nil {
+		runner.prepared != nil && invocation.VerifiedInput.validateCredential(invocation.Identity, invocation.Credential) != nil {
 		return InvocationResult{}, ErrInvocationInvalid
 	}
 	if invocation.Credential == nil {
@@ -168,6 +169,19 @@ func (runner *InvocationRunner) Run(
 	}
 	if runner.credentials == nil {
 		return InvocationResult{FailureCode: "credential_lifecycle_unavailable"}, ErrCredentialUnavailable
+	}
+	// Freeze an independent owned copy before acquiring a credential. Executor
+	// mutations cannot affect the caller or the finalization owner's inputs.
+	if runner.prepared != nil {
+		owned, err := invocation.VerifiedInput.Clone()
+		if err != nil {
+			return InvocationResult{}, ErrInvocationInvalid
+		}
+		defer owned.Clear()
+		invocation.VerifiedInput = owned
+		if ctx.Err() != nil {
+			return InvocationResult{}, ErrInvocationInvalid
+		}
 	}
 	handle, err := runner.credentials.Issue(ctx, invocation.Credential.IssueRequest)
 	if err != nil {
@@ -243,9 +257,11 @@ func (runner *InvocationRunner) runPreparedProcess(ctx context.Context, invocati
 	// The prepared executor borrows this isolated input only for the call. It
 	// receives no lifecycle port and cannot supply credential release evidence.
 	defer clear(processSpec.Stdin)
+	defer invocation.VerifiedInput.Clear()
 	return runner.prepared.RunPrepared(ctx, PreparedInvocationV1{
 		Identity: invocation.Identity, Process: processSpec,
 		Credential: handle.ProviderInvocationCredential(), Materialization: materialization.ProviderMaterialization(),
+		VerifiedInput: invocation.VerifiedInput,
 	})
 }
 

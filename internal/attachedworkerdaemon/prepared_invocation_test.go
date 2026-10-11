@@ -62,12 +62,13 @@ func TestPreparedInvocationSharesTheExistingCredentialOwner(t *testing.T) {
 	for _, prepared := range []bool{false, true} {
 		t.Run(fmt.Sprintf("prepared=%t", prepared), func(t *testing.T) {
 			credentials := &fakeCredentialLifecycle{base: credentialFixtureBase(t)}
-			invocation := validCredentialInvocation(t)
+			invocation := validPreparedCredentialInvocation(t)
 			invocation.Process.Arguments = []string{"pinned-argument"}
 			invocation.Process.Environment = []EnvironmentVariable{{Name: "PINNED", Value: "fixture"}}
 			invocation.Process.Stdin = []byte("private fixture input")
 			calls := 0
 			var borrowed []byte
+			var borrowedTyped []byte
 			execute := func(spec AttemptSpec) (AttemptResult, error) {
 				calls++
 				credentials.record("execute")
@@ -89,6 +90,12 @@ func TestPreparedInvocationSharesTheExistingCredentialOwner(t *testing.T) {
 						t.Errorf("prepared projection differs from validated invocation authority")
 					}
 					borrowed = input.Process.Stdin
+					if input.VerifiedInput.ValidateFor(input.Identity) != nil || input.VerifiedInput.Job.HarnessBinding.Resource != input.Credential.ProviderResource {
+						t.Error("executor lost typed scope/resource/context")
+					}
+					borrowedTyped = input.VerifiedInput.Context
+					input.VerifiedInput.Context[0] ^= 1
+					input.VerifiedInput.Job.HarnessBinding.ModelID = "executor mutation"
 					result, runErr := execute(input.Process)
 					// Only the callback's copies change. Lifecycle finalization uses
 					// the outer owner's original handle and materialization.
@@ -126,6 +133,14 @@ func TestPreparedInvocationSharesTheExistingCredentialOwner(t *testing.T) {
 					t.Fatal("prepared borrowed stdin survived callback")
 				}
 			}
+			for _, value := range borrowedTyped {
+				if value != 0 {
+					t.Fatal("prepared borrowed typed context survived callback")
+				}
+			}
+			if invocation.VerifiedInput.Job.HarnessBinding.ModelID != "fixture" || string(invocation.VerifiedInput.Context) != "private typed context" {
+				t.Error("executor mutated caller-owned typed input")
+			}
 		})
 	}
 }
@@ -138,6 +153,17 @@ func TestPreparedInvocationRejectsAuthorityBeforeExecution(t *testing.T) {
 		wantFailure string
 	}{
 		{name: "credentialless", mutate: func(input *Invocation, _ *preparedCredentialFixture) { input.Credential = nil }},
+		{name: "missing typed input", mutate: func(input *Invocation, _ *preparedCredentialFixture) { input.VerifiedInput = nil }},
+		{name: "missing accepted head", mutate: func(input *Invocation, _ *preparedCredentialFixture) {
+			input.VerifiedInput.AcceptedAttempt = domain.AttachedWorkerAttemptV1{}
+		}},
+		{name: "unclaimed head", mutate: func(input *Invocation, _ *preparedCredentialFixture) {
+			input.VerifiedInput.AcceptedAttempt.State = domain.AttachedWorkerAttemptOffered
+		}},
+		{name: "changed context", mutate: func(input *Invocation, _ *preparedCredentialFixture) { input.VerifiedInput.Context[0] ^= 1 }},
+		{name: "foreign typed owner", mutate: func(input *Invocation, _ *preparedCredentialFixture) {
+			input.VerifiedInput.Job.CredentialOwnerUserID = "other-owner"
+		}},
 		{name: "wrong invocation owner", mutate: func(input *Invocation, _ *preparedCredentialFixture) { input.Identity.OwnerUserID = "other-owner" }},
 		{name: "issue failed", mutate: func(_ *Invocation, fixture *preparedCredentialFixture) {
 			fixture.issueErr = errors.New("private issue error")
@@ -163,7 +189,7 @@ func TestPreparedInvocationRejectsAuthorityBeforeExecution(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			credentials := &preparedCredentialFixture{fakeCredentialLifecycle: &fakeCredentialLifecycle{base: credentialFixtureBase(t)}}
-			invocation := validCredentialInvocation(t)
+			invocation := validPreparedCredentialInvocation(t)
 			tc.mutate(&invocation, credentials)
 			calls := 0
 			runner, err := NewPreparedInvocationRunner(InvocationRunnerConfig{}, preparedExecutorFunc(func(context.Context, PreparedInvocationV1) (AttemptResult, error) {
@@ -215,7 +241,7 @@ func TestPreparedInvocationFinalizationCannotBecomeSuccess(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, runErr := runner.Run(context.Background(), validCredentialInvocation(t))
+			result, runErr := runner.Run(context.Background(), validPreparedCredentialInvocation(t))
 			if runErr == nil || calls != 1 || result.Succeeded(runErr) || result.FailureCode != tc.wantFailure ||
 				result.CredentialReleased != (tc.releaseErr == nil) {
 				t.Errorf("finalization result=%+v err=%v calls=%d", result, runErr, calls)
@@ -243,7 +269,7 @@ func TestPreparedInvocationCancellationStillFinalizes(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	invocation := validCredentialInvocation(t)
+	invocation := validPreparedCredentialInvocation(t)
 	type completion struct {
 		result InvocationResult
 		err    error
@@ -309,7 +335,7 @@ func TestPreparedAndOrdinaryInvocationRejectResourceRevisionDrift(t *testing.T) 
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, runErr := runner.Run(context.Background(), validCredentialInvocation(t))
+			result, runErr := runner.Run(context.Background(), validPreparedCredentialInvocation(t))
 			if !errors.Is(runErr, ErrCredentialUnavailable) || calls != 0 || !result.CredentialReleased ||
 				result.FailureCode != "credential_handle_mismatch" {
 				t.Errorf("resource drift: calls=%d result=%+v err=%v", calls, result, runErr)
@@ -343,7 +369,7 @@ func TestPreparedInvocationConstructorAndProjectionFailClosed(t *testing.T) {
 		})
 	}
 	for _, runner := range []*InvocationRunner{nil, {}} {
-		if _, err := runner.Run(context.Background(), validCredentialInvocation(t)); !errors.Is(err, ErrInvocationInvalid) {
+		if _, err := runner.Run(context.Background(), validPreparedCredentialInvocation(t)); !errors.Is(err, ErrInvocationInvalid) {
 			t.Errorf("zero/nil runner err=%v", err)
 		}
 	}

@@ -13,6 +13,14 @@ import (
 )
 
 func readExplanationHeadTx(ctx context.Context, tx *stateTx, id domain.RunID) (*runexplanation.HeadV1, error) {
+	if q, bounded := tx.sqlTx.(*ownedAuthorityQuery); bounded && q.explanationPending != nil {
+		if ctx.Err() != nil || q.budget.check() != nil {
+			return nil, q.budget.deny()
+		}
+		if head, found := q.explanationPending[id]; found {
+			return &head, nil
+		}
+	}
 	head, found, err := readExplanationJSON[runexplanation.HeadV1](ctx, explanationQueryTx(tx),
 		`SELECT SUBSTRING(CAST(record AS String), 0, 8193) FROM run_explanation_heads_v1 WHERE tenant_id=$1 AND run_id=$2`, tx.tenantID, id)
 	if err != nil || !found {
@@ -31,6 +39,16 @@ func writeExplanationHeadTx(ctx context.Context, tx *stateTx, head runexplanatio
 	encoded, err := json.Marshal(head)
 	if err != nil {
 		return runexplanation.ErrCorruptProjection
+	}
+	if q, bounded := tx.sqlTx.(*ownedAuthorityQuery); bounded && q.explanationPending != nil {
+		if ctx.Err() != nil || q.budget.check() != nil || len(encoded) > 8192 {
+			return q.budget.deny()
+		}
+		// Preserve every pure reducer/revision in this callback, publishing only
+		// the final derived projection before commit. No canonical authority is
+		// deferred and a retry starts with a new empty map.
+		q.explanationPending[head.RunID] = head
+		return nil
 	}
 	_, err = tx.sqlTx.ExecContext(ctx, `UPSERT INTO run_explanation_heads_v1 (tenant_id,run_id,revision,record) VALUES ($1,$2,$3,CAST($4 AS JsonDocument))`, head.TenantID, head.RunID, head.Revision, string(encoded))
 	return err

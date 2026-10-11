@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/runexplanation"
 	"github.com/ydb-platform/ydb-go-sdk/v3/retry"
 )
 
@@ -25,6 +26,7 @@ type ownedAuthorityBudget struct {
 	mu                                                 sync.Mutex
 	retries, callbacks, statements, callbackStatements int
 	bytes                                              uint64
+	writes                                             int // actual Exec dispatches, including speculative retries
 	active                                             bool
 	failed                                             bool
 }
@@ -102,11 +104,14 @@ func (b *ownedAuthorityBudget) check() error {
 }
 
 type ownedAuthorityQuery struct {
-	tx            *sql.Tx
-	budget        *ownedAuthorityBudget
-	callback      int
-	at            time.Time
-	metadataCache map[string]ownedMetadataCacheEntry // opt-in; only this callback
+	tx                  *sql.Tx
+	budget              *ownedAuthorityBudget
+	callback            int
+	at                  time.Time
+	metadataCache       map[string]ownedMetadataCacheEntry // opt-in; only this callback
+	ownedAdmission      bool                               // private composition only, never a serving enablement
+	schedulerSlotAbsent bool                               // same-callback cold slot; final decision still writes canonically
+	explanationPending  map[domain.RunID]runexplanation.HeadV1
 }
 
 func (q *ownedAuthorityQuery) QueryRowContext(ctx context.Context, statement string, args ...any) *sql.Row {
@@ -126,6 +131,9 @@ func (q *ownedAuthorityQuery) ExecContext(ctx context.Context, statement string,
 		return nil, err
 	}
 	q.invalidateMetadata(statement)
+	q.budget.mu.Lock()
+	q.budget.writes++
+	q.budget.mu.Unlock()
 	return q.tx.ExecContext(ctx, statement, args...)
 }
 

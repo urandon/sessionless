@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -621,5 +622,183 @@ func TestOwnedAdmissionSourceMandatoryAtWriterBoundaries(t *testing.T) {
 	legacy.OwnedExecutionSourceRecord = string(raw)
 	if legacy.ValidateForScope(request) == nil {
 		t.Fatal("single-turn accepted owned source bytes")
+	}
+}
+
+// Every growing value is an actual bounded field, not JSON padding. In
+// particular, model tokens permit '<', which the canonical JSON producer
+// expands to six bytes. The five profile references retain that expansion.
+// This is a structural credential-free fixture, not installed live authority.
+func maximalAdmissionProducerSourcesFixture(t testing.TB) (domain.AttemptExecutionSourceScopeV1, domain.OwnedAgentProfileCurrentV1, [4]domain.AttemptSpendingAuthorizationCurrentV1, time.Time) {
+	t.Helper()
+	_, p, _, issued := admissionSourcesFixture(t)
+	const maxIDBytes = 160
+	const maxRevision = ^uint64(0)
+	scope := domain.AttemptExecutionSourceScopeV1{
+		TenantID: domain.TenantID(strings.Repeat("t", maxIDBytes)), SessionID: domain.SessionID(strings.Repeat("s", maxIDBytes)),
+		OwnerUserID: domain.UserID(strings.Repeat("o", maxIDBytes)), RunID: domain.RunID(strings.Repeat("r", maxIDBytes)), AttemptID: domain.AttemptID(strings.Repeat("a", maxIDBytes)),
+	}
+	p.Locator.TenantID, p.Locator.OwnerUserID = scope.TenantID, scope.OwnerUserID
+	p.Locator.ResourceID = strings.Repeat("e", maxIDBytes)
+	p.Locator.ModelVendorID, p.Locator.ModelID = strings.Repeat("<", 128), strings.Repeat("<", 256)
+	p.Resource.ResourceID, p.Resource.OwnerUserID, p.Resource.Revision = p.Locator.ResourceID, scope.OwnerUserID, maxRevision
+	p.ProfileRevision, p.RevocationGeneration, p.InstallationRevision = maxRevision, maxRevision, maxRevision
+	p.InstallationID = strings.Repeat("i", maxIDBytes)
+	p.BillingOwnerUserID = domain.UserID(strings.Repeat("b", maxIDBytes))
+	p.Substrate.ProfileID, p.Substrate.ProfileRevision = strings.Repeat("u", maxIDBytes), maxRevision
+	p.CostCeiling.PriceRevision = strings.Repeat("v", 128)
+	p.CostCeiling.ProviderPriceState = domain.ProviderPriceKnownV1
+	p.SubstratePriceState = domain.ExternalServicePriceKnownPaidV1
+	// All four finite positive amounts have the longest decimal width possible
+	// together without overflowing the required exact aggregate sum.
+	const providerAmount uint64 = 10_000_000_000_000_000_000
+	amount := (^uint64(0) - providerAmount) / 3
+	*p.CostCeiling.MaxProviderAmountMicrounits, *p.CostCeiling.MaxSubstrateAmountMicrounits = providerAmount, amount
+	*p.CostCeiling.MaxTotalAmountMicrounits = providerAmount + amount*3
+	for _, service := range []*domain.ExternalServiceCostCeilingV1{p.CostCeiling.MCPToolCost, p.CostCeiling.WebSearchCost} {
+		service.TenantID, service.OwnerUserID, service.BillingOwnerUserID = scope.TenantID, scope.OwnerUserID, p.BillingOwnerUserID
+		service.ResourceID, service.ProfileID, service.PriceRevision = strings.Repeat("c", maxIDBytes), strings.Repeat("p", maxIDBytes), strings.Repeat("v", maxIDBytes)
+		service.ResourceRevision, service.RevocationGeneration, service.ProfileRevision = maxRevision, maxRevision, maxRevision
+		service.PriceState, *service.MaxAmountMicrounits = domain.ExternalServicePriceKnownPaidV1, amount
+	}
+	var err error
+	p.Substrate.AdmissionCostCeilingDigest, err = p.CostCeiling.Digest()
+	if err != nil {
+		t.Fatalf("maximal finite cost projection: %v", err)
+	}
+	if err := p.ValidateAt(issued); err != nil {
+		t.Fatalf("maximal profile must remain structurally valid/current: %v", err)
+	}
+	var spending [4]domain.AttemptSpendingAuthorizationCurrentV1
+	for i, kind := range [4]domain.AttemptSpendingComponentKindV1{domain.AttemptSpendingProviderV1, domain.AttemptSpendingSubstrateV1, domain.AttemptSpendingMCPToolV1, domain.AttemptSpendingWebSearchV1} {
+		spending[i] = ownedSpendingFixture(t, p, kind)
+		v := &spending[i]
+		v.Locator.AttemptID, v.RunID, v.SessionID = scope.AttemptID, scope.RunID, scope.SessionID
+		v.MutationID = strings.Repeat("m", maxIDBytes)
+		bindOwnedSpendingSource(t, v)
+		v.SourceAuthorization.Ref = strings.Repeat("f", maxIDBytes)
+		if err := v.ValidateAgainstProfile(p, issued); err != nil {
+			t.Fatalf("maximal %s source must remain exact/current: %v", kind, err)
+		}
+	}
+	return scope, p, spending, issued
+}
+
+func TestOwnedAdmissionProducerBoundPreservesMaximalSourceThroughFinal(t *testing.T) {
+	t.Parallel()
+	scope, profile, spending, issued := maximalAdmissionProducerSourcesFixture(t)
+	pkg := mustAdmissionPackage(t, scope, profile, spending, issued)
+	original, err := domain.EncodeAttemptExecutionSourceV1(pkg.Source)
+	if err != nil {
+		t.Fatalf("maximal source encoding: %v", err)
+	}
+	if len(original) > domain.OwnedExecutionSourceProducerMaxBytesV1 {
+		t.Fatalf("producer returned %d source bytes above supported bound %d", len(original), domain.OwnedExecutionSourceProducerMaxBytesV1)
+	}
+	if err := domain.ValidateOwnedExecutionSourceRecord(string(original), scope, pkg.Placement, pkg.Binding, &pkg.Substrate, &pkg.Cost); err != nil {
+		t.Fatalf("maximal original source rejected at writer boundary: %v", err)
+	}
+	historical, err := domain.DecodeAttemptExecutionSourceV1(original)
+	if err != nil {
+		t.Fatalf("historical structural Source decoding: %v", err)
+	}
+	historicalBytes, err := domain.EncodeAttemptExecutionSourceV1(historical)
+	if err != nil || !bytes.Equal(historicalBytes, original) {
+		t.Errorf("historical Source codec changed original bytes: err=%v", err)
+	}
+	reservationID := domain.QuotaReservationID(strings.Repeat("q", 160))
+	admitted := issued.Add(time.Minute + 123455*time.Microsecond) // exact .123456 UTC fraction
+	final, err := domain.BuildAttemptExecutionAdmissionV1(pkg.Source, reservationID, admitted)
+	if err != nil {
+		t.Fatalf("maximal source to final: source_bytes=%d reservation_bytes=%d admitted=%s err=%v", len(original), len(reservationID), admitted, err)
+	}
+	raw, err := domain.EncodeAttemptExecutionAdmissionV1(final)
+	if err != nil || len(raw) > domain.OwnedAgentCurrentMaxRecordBytesV1 {
+		t.Fatalf("bounded final: bytes=%d bound=%d err=%v", len(raw), domain.OwnedAgentCurrentMaxRecordBytesV1, err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("independently read final source bytes: %v", err)
+	}
+	if !bytes.Equal(fields["source"], original) {
+		t.Error("final wrapper rewrote the exact original canonical source bytes")
+	}
+	retained, err := domain.EncodeAttemptExecutionSourceV1(final.Source)
+	if err != nil || !bytes.Equal(retained, original) {
+		t.Errorf("retained original source: err=%v exact_bytes=%v", err, bytes.Equal(retained, original))
+	}
+	decoded, err := domain.DecodeAttemptExecutionAdmissionV1(raw)
+	if err != nil || decoded.ReservationID != reservationID || !decoded.AdmittedAt.Equal(admitted) || decoded.AdmittedAt.Nanosecond() != 123456000 {
+		t.Errorf("maximal final identity/microseconds roundtrip: reservation_bytes=%d time=%s err=%v", len(decoded.ReservationID), decoded.AdmittedAt, err)
+	}
+	// Independently measured maximal ID/timestamp wrapper overhead must fit
+	// the producer's headroom, not only this particular source's free space.
+	overhead := len(raw) - len(original)
+	const finalWrapper = `{"version":1,"source":,"reservation_id":"","admitted_at":""}`
+	expectedOverhead := len(finalWrapper) + len(reservationID) + len(admitted.UTC().Format(time.RFC3339Nano))
+	if overhead != expectedOverhead {
+		t.Errorf("final wrapper byte framing changed: got=%d want independent=%d", overhead, expectedOverhead)
+	}
+	if domain.OwnedExecutionSourceProducerMaxBytesV1+overhead > domain.OwnedAgentCurrentMaxRecordBytesV1 {
+		t.Errorf("producer boundary cannot fit final wrapper: producer=%d overhead=%d codec=%d", domain.OwnedExecutionSourceProducerMaxBytesV1, overhead, domain.OwnedAgentCurrentMaxRecordBytesV1)
+	}
+	t.Logf("legitimate maximal-field Source=%d Final=%d wrapper=%d producer_bound=%d codec_bound=%d", len(original), len(raw), overhead, domain.OwnedExecutionSourceProducerMaxBytesV1, domain.OwnedAgentCurrentMaxRecordBytesV1)
+	for _, tc := range []struct {
+		name string
+		id   domain.QuotaReservationID
+		at   time.Time
+	}{
+		{name: "reservation_cap_plus_one", id: domain.QuotaReservationID(strings.Repeat("q", 161)), at: admitted},
+		{name: "submicrosecond_time", id: reservationID, at: admitted.Add(time.Nanosecond)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := domain.BuildAttemptExecutionAdmissionV1(pkg.Source, tc.id, tc.at)
+			if err == nil || !reflect.DeepEqual(got, domain.AttemptExecutionAdmissionV1{}) {
+				t.Errorf("invalid final %s returned usable attachment: err=%v got=%+v", tc.name, err, got)
+			}
+			unchanged, encodeErr := domain.EncodeAttemptExecutionSourceV1(pkg.Source)
+			if encodeErr != nil || !bytes.Equal(unchanged, original) {
+				t.Errorf("rejected final mutated original source: err=%v", encodeErr)
+			}
+		})
+	}
+}
+
+func TestOwnedAdmissionProducerRecordBoundRejectsBeforeHistoricalCodec(t *testing.T) {
+	t.Parallel()
+	scope, profile, spending, issued := admissionSourcesFixture(t)
+	pkg := mustAdmissionPackage(t, scope, profile, spending, issued)
+	if domain.OwnedAgentCurrentMaxRecordBytesV1 != 32<<10 || domain.OwnedExecutionSourceProducerMaxBytesV1 <= 0 || domain.OwnedExecutionSourceProducerMaxBytesV1 >= domain.OwnedAgentCurrentMaxRecordBytesV1 {
+		t.Fatal("new producer bound must be strictly below the unchanged historical 32-KiB codec")
+	}
+	for _, size := range []int{domain.OwnedExecutionSourceProducerMaxBytesV1 + 1, domain.OwnedAgentCurrentMaxRecordBytesV1, domain.OwnedAgentCurrentMaxRecordBytesV1 + 1} {
+		// Deliberately INVALID inputs test early bounded rejection only. They
+		// are not padded positive controls or historical canonical records.
+		record := strings.Repeat("x", size)
+		err := domain.ValidateOwnedExecutionSourceRecord(record, scope, pkg.Placement, pkg.Binding, &pkg.Substrate, &pkg.Cost)
+		var validation domain.ValidationError
+		if !errors.As(err, &validation) || validation.Field != "owned_execution_source" || !strings.Contains(validation.Reason, "bounded room") {
+			t.Errorf("oversized record size=%d did not hit producer boundary before decode: err=%v", size, err)
+		}
+		got, decodeErr := domain.DecodeAttemptExecutionSourceV1([]byte(record))
+		if decodeErr == nil || !reflect.DeepEqual(got, domain.AttemptExecutionSourceV1{}) {
+			t.Errorf("invalid historical record size=%d returned usable source: err=%v", size, decodeErr)
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*domain.OwnedAgentProfileCurrentV1)
+	}{
+		{name: "model_id_cap_plus_one", mutate: func(p *domain.OwnedAgentProfileCurrentV1) { p.Locator.ModelID = strings.Repeat("<", 257) }},
+		{name: "vendor_id_cap_plus_one", mutate: func(p *domain.OwnedAgentProfileCurrentV1) { p.Locator.ModelVendorID = strings.Repeat("<", 129) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := profile.Clone()
+			tc.mutate(&p)
+			got, err := domain.BuildOwnedAgentExecutionPackageV1(scope, p, cloneAdmissionSources(spending), issued)
+			if err == nil || !reflect.DeepEqual(got, domain.OwnedAgentExecutionPackageV1{}) {
+				t.Errorf("invalid producer %s returned usable package: err=%v got=%+v", tc.name, err, got)
+			}
+		})
 	}
 }

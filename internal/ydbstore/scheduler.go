@@ -12,6 +12,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/runexplanation"
 	"gitcode.com/urandon/sessionless/internal/scheduler"
 	"gitcode.com/urandon/sessionless/internal/ydbpartition"
 )
@@ -103,23 +104,47 @@ func (store *Store) AdmitDispatch(
 // Compose the complete existing managed graph into one callback/clock/budget.
 // This is private groundwork, not a serving port; the owned gate remains closed.
 func (store *Store) admitBoundedManagedDispatch(ctx context.Context, request ports.DispatchAdmissionRequest) (result ports.DispatchAdmissionResult, err error) {
+	return store.admitBoundedDispatch(ctx, request, false)
+}
+
+// Still private: neither serving admission nor either registry is enabled.
+// Trusted installation/funding publication must be explicitly composed first.
+func (store *Store) admitBoundedOwnedDispatch(ctx context.Context, request ports.DispatchAdmissionRequest) (ports.DispatchAdmissionResult, error) {
+	if store.ownedProfilePublicationVerifier == nil || store.attemptSpendingPublicationVerifier == nil {
+		return ports.DispatchAdmissionResult{}, domain.ErrMembershipDenied
+	}
+	return store.admitBoundedDispatch(ctx, request, true)
+}
+
+func (store *Store) admitBoundedDispatch(ctx context.Context, request ports.DispatchAdmissionRequest, owned bool) (result ports.DispatchAdmissionResult, err error) {
 	if err = validateAdmissionRequest(request); err != nil {
 		return result, err
 	}
 	err = store.ownedAuthorityTx(ctx, func(ctx context.Context, q *ownedAuthorityQuery) error {
 		result = ports.DispatchAdmissionResult{RunID: request.RunID, AttemptID: request.AttemptID}
-		q.metadataCache = make(map[string]ownedMetadataCacheEntry)
-		current := request
-		current.Now = q.at
-		if !current.HoldUntil.After(q.at) {
-			return domain.ErrMembershipDenied
-		}
-		return store.admitDispatchTx(ctx, q.canonicalState(store, request.TenantID), current, &result)
+		return store.admitBoundedDispatchCallback(ctx, q, request, owned, &result)
 	})
 	if err != nil {
 		result = ports.DispatchAdmissionResult{RunID: request.RunID, AttemptID: request.AttemptID}
 	}
 	return result, err
+}
+
+// The complete production callback is also directly measurable by native
+// tests; there is no alternative test scheduler or extra observer authority.
+func (store *Store) admitBoundedDispatchCallback(ctx context.Context, q *ownedAuthorityQuery, request ports.DispatchAdmissionRequest, owned bool, result *ports.DispatchAdmissionResult) error {
+	q.metadataCache = make(map[string]ownedMetadataCacheEntry)
+	q.ownedAdmission = owned
+	q.explanationPending = make(map[domain.RunID]runexplanation.HeadV1)
+	current := request
+	current.Now = q.at
+	if !current.HoldUntil.After(q.at) {
+		return q.budget.deny()
+	}
+	if err := store.admitDispatchTx(ctx, q.canonicalState(store, request.TenantID), current, result); err != nil {
+		return err
+	}
+	return q.flushAdmissionExplanation(ctx, request.RunID, request.TenantID)
 }
 
 func (store *Store) admitDispatchTx(ctx context.Context, tx *stateTx, request ports.DispatchAdmissionRequest, result *ports.DispatchAdmissionResult) error {
@@ -148,10 +173,10 @@ func (store *Store) admitDispatchTx(ctx context.Context, tx *stateTx, request po
 	); err != nil {
 		return err
 	}
-	// Source bytes are not final admission. Until the same-Tx bounded
-	// attachment/current-source writer is wired, neither a valid source nor
-	// an old Job may make an owned Attempt admitted through the legacy path.
-	if outbox.HarnessBinding.Profile == domain.HarnessExecutionOwnedAgentV2 {
+	q, bounded := tx.sqlTx.(*ownedAuthorityQuery)
+	owned := outbox.HarnessBinding.Profile == domain.HarnessExecutionOwnedAgentV2
+	// The public/legacy path cannot enable owned admission from queue bytes.
+	if owned && (!bounded || !q.ownedAdmission) || bounded && q.ownedAdmission && !owned {
 		return domain.ErrMembershipDenied
 	}
 	if _, bounded := tx.sqlTx.(*ownedAuthorityQuery); bounded && outbox.ExecutionPlacementV2.Kind != domain.ExecutionPlacementManaged {
@@ -186,12 +211,33 @@ func (store *Store) admitDispatchTx(ctx context.Context, tx *stateTx, request po
 	} else if !found {
 		return fmt.Errorf("attempt %q not found", request.AttemptID)
 	}
+	var ownedSource domain.AttemptExecutionSourceV1
+	var final *domain.AttemptExecutionAdmissionV1
 	if q, bounded := tx.sqlTx.(*ownedAuthorityQuery); bounded {
 		if run.ID != request.RunID || run.TenantID != request.TenantID || attempt.ID != request.AttemptID ||
 			run.CancellationRequestedAt != nil || run.Status.Terminal() || run.UpdatedAt.After(q.at) || attempt.UpdatedAt.After(q.at) || outbox.UpdatedAt.After(q.at) || outbox.ValidateForAttempt(run, attempt) != nil {
 			return q.budget.deny()
 		}
-		if err := ensureSessionWritableTx(ctx, tx, run.SessionID); err != nil {
+		if owned {
+			ownedSource, err = domain.DecodeAttemptExecutionSourceV1([]byte(outbox.OwnedExecutionSourceRecord))
+			if err != nil || outbox.SubstrateBinding == nil || outbox.AdmissionCostCeiling == nil ||
+				ownedSource.Scope != (domain.AttemptExecutionSourceScopeV1{TenantID: run.TenantID, SessionID: run.SessionID, OwnerUserID: outbox.CredentialOwnerUserID, RunID: run.ID, AttemptID: attempt.ID}) ||
+				ownedSource.ValidateForExecution(outbox.ExecutionPlacementV2, outbox.HarnessBinding, *outbox.SubstrateBinding, *outbox.AdmissionCostCeiling) != nil ||
+				outbox.HarnessBinding.Backend.BackendKind != domain.HarnessBackendDeterministicFixtureV1 ||
+				currentServerlessProviderResourceTx(ctx, q, outbox.HarnessBinding, q.at) != nil {
+				return q.budget.deny()
+			}
+			if err := readOwnedAdmissionPrincipal(ctx, q, ownedSource.Scope); err != nil {
+				return err
+			}
+			if _, err := readOwnedAdmissionSources(ctx, q, ownedSource); err != nil {
+				return err
+			}
+			final, err = readOwnedAdmission(ctx, q, ownedSource.Scope)
+			if err != nil {
+				return err
+			}
+		} else if err := ensureSessionWritableTx(ctx, tx, run.SessionID); err != nil {
 			return q.budget.deny()
 		}
 	}
@@ -267,6 +313,9 @@ func (store *Store) admitDispatchTx(ctx context.Context, tx *stateTx, request po
 					!reservation.ExpiresAt.After(q.at) {
 					return q.budget.deny()
 				}
+				if owned && !ownedAdmissionMatches(final, ownedSource, outbox.OwnedExecutionSourceRecord, reservation, job) {
+					return q.budget.deny()
+				}
 			}
 			result.Admitted = true
 			result.State = slot.State
@@ -277,6 +326,9 @@ func (store *Store) admitDispatchTx(ctx context.Context, tx *stateTx, request po
 			return nil
 		}
 	}
+	if owned && final != nil {
+		return q.budget.deny()
+	} // never replace orphan/conflicting history
 
 	queueDepth, activeRuns, err := readSchedulerCounters(ctx, tx, request.Now)
 	if err != nil {
@@ -311,6 +363,11 @@ func (store *Store) admitDispatchTx(ctx context.Context, tx *stateTx, request po
 		if run.Status == domain.RunQuotaBlocked &&
 			previousState == decision.State &&
 			equalOptionalTime(previousBlockedUntil, decision.RetryAt) {
+			if q, bounded := tx.sqlTx.(*ownedAuthorityQuery); bounded && q.ownedAdmission && q.schedulerSlotAbsent {
+				if err := writeSchedulerSlot(ctx, tx, slot); err != nil {
+					return err
+				}
+			}
 			return recordAdmissionExplanationTx(ctx, tx, run, attempt, outbox.ExecutionPlacementV2, decision.Code, request.Now)
 		}
 		if run.Status != domain.RunQuotaBlocked && !run.Status.Terminal() {
@@ -341,6 +398,15 @@ func (store *Store) admitDispatchTx(ctx context.Context, tx *stateTx, request po
 			 WHERE tenant_id = $1 AND quota_reservation_id = $2`, request.TenantID, request.ReservationID)
 		if err != nil || found {
 			return q.budget.deny()
+		}
+		if owned {
+			admission, err := domain.BuildAttemptExecutionAdmissionV1(ownedSource, request.ReservationID, q.at)
+			if err != nil {
+				return q.budget.deny()
+			}
+			if err := writeOwnedAdmission(ctx, q, admission); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -757,6 +823,15 @@ func ensureSchedulerSlot(
 			slot.State = domain.SchedulerReady
 		}
 		slot.UpdatedAt = at
+		if q, bounded := tx.sqlTx.(*ownedAuthorityQuery); bounded && q.ownedAdmission {
+			// The absent key is already part of this serializable read set.
+			// Do not publish a redundant provisional Ready slot before the
+			// actual admission/denial decision. Every successful cold branch
+			// still writes that final canonical slot, including an unchanged
+			// quota-blocked denial; any failure rolls the whole callback back.
+			q.schedulerSlotAbsent = true
+			return slot, slot.Validate()
+		}
 		if err := writeSchedulerSlot(ctx, tx, slot); err != nil {
 			return slot, err
 		}

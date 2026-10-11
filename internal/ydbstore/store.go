@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/ydb-platform/ydb-go-sdk/v3/retry"
@@ -686,11 +687,17 @@ func (tx *stateTx) PutWorkerJob(ctx context.Context, job domain.WorkerJob) error
 	if err != nil {
 		return err
 	}
-	_, err = tx.sqlTx.ExecContext(ctx,
-		`UPSERT INTO worker_jobs
+	statement := `UPSERT INTO worker_jobs
 		 (tenant_id, run_id, attempt_id, reservation_id, created_at,
 		  retention_expire_at, payload)
-		 VALUES ($1, $2, $3, $4, $5, $6, CAST($7 AS JsonDocument))`,
+		 VALUES ($1, $2, $3, $4, $5, $6, CAST($7 AS JsonDocument))`
+	if q, bounded := tx.sqlTx.(*ownedAuthorityQuery); bounded && q.ownedAdmission {
+		// Exact admitted replay returns before this writer. A fresh owned
+		// admission must not replace a pre-existing Job without its Final.
+		// INSERT detects that collision without another authority read.
+		statement = strings.Replace(statement, "UPSERT INTO", "INSERT INTO", 1)
+	}
+	_, err = tx.sqlTx.ExecContext(ctx, statement,
 		job.TenantID, job.RunID, job.AttemptID, job.ReservationID,
 		job.CreatedAt, job.CreatedAt.Add(tx.store.operationalRetention), payload,
 	)

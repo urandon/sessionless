@@ -1,6 +1,6 @@
 # Current authority for the owned agent harness
 
-Version: 0.1.4, engineering draft, 2026-10-11. Implementation owner:
+Version: 0.1.5, engineering draft, 2026-10-11. Implementation owner:
 [#189](https://gitcode.com/urandon/sessionless/issues/189), under
 [#176](https://gitcode.com/urandon/sessionless/issues/176). This extension
 defines the current-authority requirements of the accepted
@@ -372,7 +372,7 @@ the first valid snapshot. A later oversized row or stream failure denies that
 callback. Legacy single-turn/attached selection retains its first-valid behavior
 and skips oversized corrupt metadata without downloading the complete cell.
 
-This prerequisite does not wire a serving owned admission caller, establish
+That executor-only prerequisite did not wire a serving owned admission caller, establish
 the complete scheduler's worst-case bounds, authenticate installation, create
 a final admission attachment or complete retention. Those remaining gates
 above are unchanged; a small helper-only transaction is not their proof.
@@ -423,7 +423,7 @@ checks reuse existing reads, add no SQL, and do not alter ordinary legacy writer
 Instrumented whole-callback controls currently observe 28 SQL for cold managed
 slot/counters/explanation and 31 SQL for a cold prior-denied explanation with
 previous-Attempt selection. Three complete callbacks observe 84 total statements.
-These are credential-free single-turn controls, not the future owned maximum:
+These are historical credential-free single-turn controls, not the owned maximum:
 current Session/principal/profile/four spending/final-attachment joins are still
 absent and must fit the SAME original limits, not another helper budget. Native
 whole-graph evidence is recorded separately in #189. Structurally unbounded
@@ -432,6 +432,65 @@ the private capped path does not change serving producer/consumer contracts.
 Writer-first finite owned configuration bounds and the final atomic writer,
 current authority, retention and authentic installation gates remain required
 before any serving cutover. Neither these graphs nor their green tests close #189.
+
+### Private owned Final admission composition
+
+The same complete callback now has a private owned composition, still requiring
+explicit fixture publication verifiers and a deterministic-fixture backend.
+Public `AdmitDispatch` and both serving registries remain closed to owned profiles.
+Publication fixtures exercise actual Store writers but are not authentic runtime
+installation or permission for live provider/tool/search effects.
+
+One exact-key thirteen-column join checks canonical active Session, deletion
+absence, writable membership and participation at the callback's database time.
+One exact-key fifty-five-column join checks the original installed-profile head
+and all four original spending heads, their physical scalars, exact generations,
+digests, payer, allocations and original windows. These are single SELECTs,
+not batches of hidden statements or replacement-source discovery. Every returned
+scalar is charged before validation; YDB JOIN relations use input-key equality,
+with complete original locator predicates in WHERE.
+
+The final immutable `(tenant, Attempt)` record preserves the exact original
+Source, actual capacity reservation and sampled database admission time. Final
+and its `(tenant, Session, Attempt)` reverse key use INSERT, in the SAME existing
+transaction as canonical Run, quota/expiry indices, Job, explanation, slot,
+counters and audit. The bounded owned Job writer also uses INSERT: a Job lacking
+its Final cannot be overwritten or converted into fresh historical authority.
+Exact replay requires the original Final, Job and held reservation and unchanged
+current sources; it executes no writes, does not reconstruct absent history and
+never renews the original absolute hold deadline.
+
+Source producers reserve 512 bytes inside the unchanged 32-KiB authority codec
+for Final's wrapper. Historical structural Source decoding remains distinct from
+permission to publish a new producer package. A coherent maximal-field fixture
+measures Source29,806 bytes and Final30,053 bytes; the independently calculated
+160-byte-reservation/microsecond-timestamp wrapper is 247 bytes. No padded JSON
+is accepted as a legitimate producer, and outer MCP/manifest configuration
+still needs its writer-first supported bound before serving cutover.
+
+Canonical Run writes and ordered invalidation/selection/admission reducers remain
+immediate within the callback. Only the derived explanation's final head is
+published once before commit; its pending values and the metadata cache are fresh
+on every retry. An absent owned scheduler slot is observed in the same read set
+without first writing a redundant provisional Ready slot. Every successful cold
+admission or denial still persists the final canonical slot, including the
+unchanged quota-blocked denial branch; failure rolls back the complete graph.
+
+Native complete prior-denied owned admission with sixteen snapshots measures
+32 SQL, fourteen writes and approximately 50 KiB metadata, within the ORIGINAL
+10s/3-callback/32-per-callback/96-total/4-MiB limits. Exact replay measures eleven
+SQL and zero writes. Scripted committed lost-ACK recovery and known rollback
+reuse the same callback and budget; native contention, public-source revocation,
+late failure and real-Job collision controls check canonical atomic outcomes.
+These controls do not prove execution effects, every possible supported producer
+shape, authenticated installed sources or completion of the whole #189 contract.
+
+Final's reverse key joins the existing bounded Session inventory and shared
+CompleteSessionDeletion workflow. Same-transaction legal holds, terminal Runs
+and pending attached receipts gate deletion; an orphan index denies completion.
+Global profile revocation heads/audits are retained. This covers only the Final
+child: per-Attempt funding, outer effect/evidence, subordinate operation and
+consent cleanup/unknown-effect disposition remain mandatory before #189 closure.
 
 ## Terminal and retention integration
 

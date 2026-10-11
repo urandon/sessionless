@@ -5,6 +5,12 @@ import (
 	"time"
 )
 
+// Writer-first supported shape reserves room in the SAME 32-KiB authority
+// codec for Final's bounded reservation ID, timestamp and version wrapper.
+// Historical structural Source decoding still has its original 32-KiB cap;
+// that is not permission to publish an unadmittable new producer package.
+const OwnedExecutionSourceProducerMaxBytesV1 = (32 << 10) - 512
+
 // This original identity is fixed at canonical ingress, before scheduler
 // admission. It contains NO reservation: that authority does not yet exist.
 type AttemptExecutionSourceScopeV1 struct {
@@ -252,7 +258,7 @@ func BuildOwnedAgentExecutionPackageV1(scope AttemptExecutionSourceScopeV1, prof
 		attachment.ValidateAgainstCurrentSources(profile, spending, at) != nil {
 		return denied()
 	}
-	if _, err := EncodeAttemptExecutionSourceV1(attachment); err != nil {
+	if raw, err := EncodeAttemptExecutionSourceV1(attachment); err != nil || len(raw) > OwnedExecutionSourceProducerMaxBytesV1 {
 		return denied()
 	}
 	return OwnedAgentExecutionPackageV1{Source: attachment, Placement: placement, Binding: binding.Clone(), Substrate: profile.Substrate, Cost: profile.CostCeiling.Clone()}, nil
@@ -381,6 +387,9 @@ func ValidateOwnedExecutionSourceRecord(record string, scope AttemptExecutionSou
 	}
 	if substrate == nil || cost == nil {
 		return ValidationError{Field: "owned_execution_source", Reason: "requires exact managed execution projection"}
+	}
+	if len(record) > OwnedExecutionSourceProducerMaxBytesV1 {
+		return ValidationError{Field: "owned_execution_source", Reason: "must leave bounded room for its final admission attachment"}
 	}
 	source, err := DecodeAttemptExecutionSourceV1([]byte(record))
 	if err != nil || source.Scope != scope || source.ValidateForExecution(placement, binding, *substrate, *cost) != nil {

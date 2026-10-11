@@ -43,6 +43,22 @@ Profile audit/tombstones follow owning-registration retention with no Session TT
 per-Attempt spending publication/admission and canonical retention remain required.
 The explicit native gate also tests create/create and replace/revoke conflicts.
 
+Migration `00113` adds immutable per-Attempt/component spending publication
+receipts with a tenant/Session cleanup index and no independent TTL. The
+default-deny Store writer requires a separately installed source-owner verifier;
+initial creation also point-joins the original active profile generation/digest
+and component/payer/price envelope in the same serializable DB-time snapshot.
+Only create-on-absence and exact predecessor revocation are permitted: no
+top-up, renewal, reassignment or balance is introduced. Fresh authenticated
+cleanup revoke may retain an expired/revoked source's original envelope.
+Historical replay never rewrites a missing/revoked head and does not establish
+current permission. Speculative outputs are discarded after ambiguous commits.
+The native gate exercises all four components, source revocation and concurrent
+create/create and revoke/revoke. Test-only exact-intent allowlist/HMAC remains
+synthetic; authentic installed/admission composition, canonical Attempt joins,
+aggregate operation debits and Session retention integration remain mandatory.
+No production verifier, serving caller or paid/live authority is installed.
+
 Migration `00102` adds the bounded, non-authoritative `run_explanation_heads_v1`
 read projection (design 0.1.2, #187). Apply its additive schema only under
 separate migration authority, then upgrade every canonical writer before

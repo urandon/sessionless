@@ -131,24 +131,42 @@ func loadOwnedProfileProjection(ctx context.Context, q *ownedAuthorityQuery, l d
 }
 
 func readOwnedSpendingCurrent(ctx context.Context, q *ownedAuthorityQuery, ref ownedSpendingReference) (domain.AttemptSpendingAuthorizationCurrentV1, error) {
-	var raw, state, digest, run, session, owner string
-	var version, generation uint64
-	var published, expires, updated time.Time
-	l := ref.locator
-	row := q.QueryRowContext(ctx, ownedSpendingCurrentSQL, l.TenantID, l.AttemptID, l.ComponentKind, l.BillingOwnerUserID)
-	returned, err := scanOwnedCurrentRow(row, &raw, &version, &generation, &state, &digest, &run, &session, &owner, &published, &expires, &updated)
-	charged := q.budget.materialized(q.callback, returned)
-	if charged != nil || err != nil || len(raw) > ownedAuthorityHeadBytes || len(state) > 16 || len(digest) != 64 || len(run) > 160 || len(session) > 160 || len(owner) > 160 {
-		return domain.AttemptSpendingAuthorizationCurrentV1{}, domain.ErrMembershipDenied
-	}
-	v, err := domain.DecodeAttemptSpendingAuthorizationCurrentV1([]byte(raw))
-	actualDigest, digestErr := v.Digest()
-	if err != nil || digestErr != nil || v.Locator != l || v.RevocationGeneration != ref.generation || actualDigest != ref.digest ||
-		uint64(v.Version) != version || v.RevocationGeneration != generation || string(v.State) != state || actualDigest != digest || string(v.RunID) != run || string(v.SessionID) != session || string(v.OwnerUserID) != owner ||
-		!v.Window.PublishedAt.Equal(published) || !v.Window.ExpiresAt.Equal(expires) || !v.UpdatedAt.Equal(updated) || v.ValidateAt(q.at) != nil {
+	v, found, err := loadOwnedSpendingProjection(ctx, q, ref.locator)
+	digest, digestErr := v.Digest()
+	if err != nil || !found || digestErr != nil || v.RevocationGeneration != ref.generation || digest != ref.digest || v.ValidateAt(q.at) != nil {
 		return domain.AttemptSpendingAuthorizationCurrentV1{}, domain.ErrMembershipDenied
 	}
 	return v, nil
+}
+
+// Structural tombstone/absence lookup for publication only, not permission.
+func loadOwnedSpendingProjection(ctx context.Context, q *ownedAuthorityQuery, l domain.AttemptSpendingAuthorizationLocatorV1) (domain.AttemptSpendingAuthorizationCurrentV1, bool, error) {
+	denied := func() (domain.AttemptSpendingAuthorizationCurrentV1, bool, error) {
+		return domain.AttemptSpendingAuthorizationCurrentV1{}, false, domain.ErrMembershipDenied
+	}
+	if l.Validate() != nil {
+		return denied()
+	}
+	var raw, state, digest, run, session, owner string
+	var version, generation uint64
+	var published, expires, updated time.Time
+	row := q.QueryRowContext(ctx, ownedSpendingCurrentSQL, l.TenantID, l.AttemptID, l.ComponentKind, l.BillingOwnerUserID)
+	returned, err := scanOwnedCurrentRow(row, &raw, &version, &generation, &state, &digest, &run, &session, &owner, &published, &expires, &updated)
+	charged := q.budget.materialized(q.callback, returned)
+	if charged == nil && err == sql.ErrNoRows {
+		return domain.AttemptSpendingAuthorizationCurrentV1{}, false, nil
+	}
+	if charged != nil || err != nil || len(raw) > ownedAuthorityHeadBytes || len(state) > 16 || len(digest) != 64 || len(run) > 160 || len(session) > 160 || len(owner) > 160 {
+		return denied()
+	}
+	v, err := domain.DecodeAttemptSpendingAuthorizationCurrentV1([]byte(raw))
+	actualDigest, digestErr := v.Digest()
+	if err != nil || digestErr != nil || v.Locator != l ||
+		uint64(v.Version) != version || v.RevocationGeneration != generation || string(v.State) != state || actualDigest != digest || string(v.RunID) != run || string(v.SessionID) != session || string(v.OwnerUserID) != owner ||
+		!v.Window.PublishedAt.Equal(published) || !v.Window.ExpiresAt.Equal(expires) || !v.UpdatedAt.Equal(updated) {
+		return denied()
+	}
+	return v, true, nil
 }
 
 // Never let database/sql stop assigning subsequent columns at the first invalid

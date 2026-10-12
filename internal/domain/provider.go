@@ -208,6 +208,8 @@ type HarnessBindingV2 struct {
 	EffectivePolicyDigest    string                     `json:"effective_policy_digest"`
 	ExecutionPlacementDigest string                     `json:"execution_placement_digest"`
 	EvidenceExpiresAt        *time.Time                 `json:"evidence_expires_at,omitempty"`
+	// Comparison with the independently issued T/R mapping, not owner permission.
+	AttachedPiAPIInvocationPolicyDigest AttachedPiAPIInvocationPolicyMappingDigestV1 `json:"attached_pi_api_invocation_policy_digest,omitempty"`
 }
 
 func (binding HarnessBindingV2) Clone() HarnessBindingV2 {
@@ -286,7 +288,26 @@ func (binding HarnessBindingV2) Validate() error {
 	if binding.EvidenceExpiresAt != nil && binding.EvidenceExpiresAt.IsZero() {
 		return ValidationError{Field: "harness_binding.evidence_expires_at", Reason: "must not point to zero time"}
 	}
+	if err := binding.validateAttachedPiAPIPolicyCarrier(); err != nil {
+		return err
+	}
 	return nil
+}
+
+// This closes the structural carrier arm only. Current P/E/T/R/M provenance,
+// owner decision and spending checks remain prerequisites at admission/use.
+func (binding HarnessBindingV2) validateAttachedPiAPIPolicyCarrier() error {
+	field := "harness_binding.attached_pi_api_invocation_policy_digest"
+	selected := IsAttachedPiSDKNativeDescriptorV1(binding.Backend) &&
+		binding.Profile == HarnessExecutionSingleTurnV2 && binding.AgentLoopPolicy == nil &&
+		binding.Resource.Kind == ProviderResourceAPIAccountV1 && binding.Resource.CredentialMode == ProviderCredentialInvocationV1
+	if !selected {
+		if binding.AttachedPiAPIInvocationPolicyDigest != "" {
+			return ValidationError{Field: field, Reason: "must be absent outside the reviewed Pi SDK API arm"}
+		}
+		return nil
+	}
+	return binding.AttachedPiAPIInvocationPolicyDigest.Validate()
 }
 
 // ValidateAt applies the time-dependent evidence fence immediately before a
@@ -328,6 +349,10 @@ func (binding HarnessBindingV2) ValidateForScope(tenantID TenantID, ownerUserID 
 	}
 	if binding.Profile == HarnessExecutionOwnedAgentV2 && placement.Kind != ExecutionPlacementManaged {
 		return ValidationError{Field: "harness_binding.profile", Reason: "owned_agent requires managed placement"}
+	}
+	if binding.AttachedPiAPIInvocationPolicyDigest != "" &&
+		(placement.Kind != ExecutionPlacementAttachedWorker || placement.OwnerUserID != binding.OwnerUserID) {
+		return ValidationError{Field: "harness_binding.attached_pi_api_invocation_policy_digest", Reason: "requires the same owner's attached placement"}
 	}
 	return nil
 }
@@ -446,6 +471,12 @@ func (binding HarnessBindingV2) Digest() (HarnessBindingDigestV2, error) {
 	} else {
 		appendUint(1)
 		appendString(binding.EvidenceExpiresAt.UTC().Format(time.RFC3339Nano))
+	}
+	// Absent existing routes retain their complete original preimage. The new
+	// arm appends a distinct length-delimited tag and exact canonical M hash.
+	if binding.AttachedPiAPIInvocationPolicyDigest != "" {
+		appendString("sessionless.attached-pi-api-invocation-policy-mapping.v1")
+		appendString(string(binding.AttachedPiAPIInvocationPolicyDigest))
 	}
 	return HarnessBindingDigestV2(hex.EncodeToString(hash.Sum(nil))), nil
 }

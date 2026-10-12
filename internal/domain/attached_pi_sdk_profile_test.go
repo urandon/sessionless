@@ -58,6 +58,7 @@ func piSDKFixtureBinding(t testing.TB, p AttachedPiSDKNativeProfileV1) (HarnessB
 	b := HarnessBindingV2{Version: HarnessBindingVersionV2, Profile: HarnessExecutionSingleTurnV2, TenantID: "local-fixture-tenant", OwnerUserID: pl.OwnerUserID, RunID: "local-fixture-run", AttemptID: "local-fixture-attempt", Backend: d,
 		Resource: ProviderResourceBindingV1{Kind: ProviderResourceAPIAccountV1, ResourceID: "local-fixture-resource", OwnerUserID: pl.OwnerUserID, Revision: 1, CredentialMode: ProviderCredentialInvocationV1, CredentialGeneration: 1}, ModelVendorID: p.Model.ModelVendorID, ModelID: p.Model.ModelID, InputDataClass: ProviderDataPublicV1,
 		ProviderCatalogDigest: piSDKFixtureDigest("catalog"), ProviderRouteDigest: piSDKFixtureDigest("route"), PrivacyPolicyDigest: piSDKFixtureDigest("privacy"), CapabilityEvidenceDigest: piSDKFixtureDigest("capability-evidence"), EffectivePolicyDigest: piSDKFixtureDigest("effective-policy"), ExecutionPlacementDigest: string(pd), EvidenceExpiresAt: &expiry}
+	b.AttachedPiAPIInvocationPolicyDigest = AttachedPiAPIInvocationPolicyMappingDigestV1(piSDKFixtureDigest("structural-mapping-not-owner-permission"))
 	if err := p.ValidateBindingIdentity(b, pl); err != nil {
 		t.Fatalf("local structural binding setup: %v", err)
 	}

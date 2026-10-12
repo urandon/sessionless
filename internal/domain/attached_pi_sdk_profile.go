@@ -279,7 +279,7 @@ func IsAttachedPiSDKNativeDescriptorV1(d HarnessBackendDescriptorV1) bool {
 // ValidateBindingIdentity must be called on the privately retained SOURCE-OWNED
 // EXPECTED P, never a P supplied by a job/browser/child. Equality is structural:
 // serving, E/T/R/M/current owner/resource/spending and runtime proof are separate.
-// This prerequisite does not require the future original-binding M carrier.
+// The original-binding M carrier is structural; its presence is not provenance.
 func (p AttachedPiSDKNativeProfileV1) ValidateBindingIdentity(binding HarnessBindingV2, placement ExecutionPlacementV2) error {
 	d, err := p.Descriptor()
 	if err != nil {

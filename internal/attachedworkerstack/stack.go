@@ -40,7 +40,9 @@ var (
 // discovered from the process environment, HOME, PATH, or Docker contexts.
 type Config struct {
 	// Nil preserves the ordinary stack. Shipped configurations remain nil.
-	PreparedCodex           *codexexec.Config
+	PreparedCodex *codexexec.Config
+	// Separate explicit media selection; never inferred from input presence.
+	PreparedCodexMedia      *codexexec.MediaConfigV1
 	ScratchRoot             string
 	Timeout                 time.Duration
 	TerminationGrace        time.Duration
@@ -221,6 +223,19 @@ func newStack(
 	deps dependencies,
 ) (*Stack, error) {
 	manifest.Harness.Arguments = slices.Clone(manifest.Harness.Arguments)
+	if config.PreparedCodex != nil && config.PreparedCodexMedia != nil {
+		return nil, ErrInvalidConfiguration
+	}
+	if config.PreparedCodexMedia != nil {
+		media := config.PreparedCodexMedia.Clone()
+		config.PreparedCodexMedia = &media
+		if media.Backend.Executable != manifest.Harness.Executable || fmt.Sprintf("%x", media.Backend.ExecutableDigest) != manifest.Harness.SHA256 {
+			return nil, ErrArtifactMismatch
+		}
+		if _, err := media.DescriptorV1(); err != nil {
+			return nil, ErrInvalidConfiguration
+		}
+	}
 	if config.PreparedCodex != nil {
 		prepared := *config.PreparedCodex
 		config.PreparedCodex = &prepared
@@ -243,6 +258,11 @@ func newStack(
 	root, err := privateCanonicalDirectory(config.ScratchRoot)
 	if err != nil || root != config.ScratchRoot {
 		return nil, ErrInvalidConfiguration
+	}
+	if config.PreparedCodexMedia != nil {
+		// Only owner-generated attempt subdirectories below this verified 0700
+		// root are passed as actual read roots by the concrete media boundary.
+		config.AllowedReadRoots = append(slices.Clone(config.AllowedReadRoots), root)
 	}
 	dockerDigest, err := strictExecutableDigest(manifest.OCI.DockerPath, deps.digest)
 	if err != nil || !digestMatches(dockerDigest, manifest.OCI.DockerSHA256) {
@@ -293,13 +313,17 @@ func newStack(
 	}
 	var prepared *codexexec.PreparedAttachedWorkerRunnerV1
 	var runner attachedworkerdaemon.Runner
-	if config.PreparedCodex != nil {
+	if config.PreparedCodex != nil || config.PreparedCodexMedia != nil {
 		concrete, ok := supervisor.(*attachedworkerdaemon.Supervisor)
 		if !ok {
 			return nil, ErrInvalidConfiguration
 		}
-		prepared, err = codexexec.NewPreparedAttachedWorkerRunnerV1(*config.PreparedCodex, root, concrete, credentials,
-			attachedworkerdaemon.InvocationRunnerConfig{CredentialFinalizeGrace: config.CredentialFinalizeGrace})
+		outerConfig := attachedworkerdaemon.InvocationRunnerConfig{CredentialFinalizeGrace: config.CredentialFinalizeGrace}
+		if config.PreparedCodexMedia != nil {
+			prepared, err = codexexec.NewPreparedMediaAttachedWorkerRunnerV1(*config.PreparedCodexMedia, root, concrete, credentials, outerConfig)
+		} else {
+			prepared, err = codexexec.NewPreparedAttachedWorkerRunnerV1(*config.PreparedCodex, root, concrete, credentials, outerConfig)
+		}
 		runner = prepared
 	} else {
 		runner, err = deps.newRunner(
@@ -322,6 +346,9 @@ func newStack(
 	clock := func() time.Time { return time.Now().UTC() }
 	if config.PreparedCodex != nil && config.PreparedCodex.Now != nil {
 		clock = config.PreparedCodex.Now
+	}
+	if config.PreparedCodexMedia != nil && config.PreparedCodexMedia.Backend.Now != nil {
+		clock = config.PreparedCodexMedia.Backend.Now
 	}
 	return &Stack{runner: pinned, prepared: prepared, now: clock, scope: preparedStackScope{tenant: manifest.TenantID, owner: manifest.OwnerUserID,
 		worker: manifest.WorkerID, enrollment: manifest.EnrollmentGeneration, connection: manifest.ConnectionGeneration}, evidence: EvidenceV1{

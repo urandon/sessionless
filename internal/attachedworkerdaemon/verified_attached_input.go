@@ -6,7 +6,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"reflect"
+	"strconv"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/sessioncontext"
@@ -73,7 +76,15 @@ func (input *VerifiedAttachedInputV1) Clone() (*VerifiedAttachedInputV1, error) 
 		LeaseID: input.AcceptedAttempt.LeaseID, FenceToken: input.AcceptedAttempt.LeaseGeneration}) != nil {
 		return nil, ErrInvocationInvalid
 	}
-	encoded, err := json.Marshal(input.copyShape())
+	shape := input.copyShape()
+	limit := maxVerifiedAttachedInputBytes
+	if input.Job.Limits.MaxInputBytes < uint64(limit) {
+		limit = int(input.Job.Limits.MaxInputBytes)
+	}
+	if !BoundedJSONAllocationV1(shape, limit) {
+		return nil, ErrInvocationInvalid
+	}
+	encoded, err := json.Marshal(shape)
 	defer clear(encoded)
 	if err != nil || len(encoded) > maxVerifiedAttachedInputBytes || uint64(len(encoded)) > input.Job.Limits.MaxInputBytes {
 		return nil, ErrInvocationInvalid
@@ -89,6 +100,179 @@ func (input *VerifiedAttachedInputV1) Clone() (*VerifiedAttachedInputV1, error) 
 		result.Artifacts = append(result.Artifacts, VerifiedAttachedArtifactV1{Name: artifact.Name, Body: artifact.Body})
 	}
 	return result, nil
+}
+
+// BoundedJSONAllocationV1 prospectively accounts for the closed canonical
+// carrier's encoding/json shapes, including base64 and HTML/Unicode escaping.
+// It is a size check, not source or execution authority. Unknown/custom shapes
+// fail closed. Callers still perform the exact encoded-size check afterwards.
+func BoundedJSONAllocationV1(value any, limit int) bool {
+	if limit <= 0 || limit > maxVerifiedAttachedInputBytes {
+		return false
+	}
+	remaining := limit
+	consume := func(n int) bool {
+		if n < 0 || n > remaining {
+			return false
+		}
+		remaining -= n
+		return true
+	}
+	quoted := func(value string) int {
+		if remaining < 2 || len(value) > remaining-2 {
+			return remaining + 1
+		}
+		n := 2
+		for len(value) > 0 {
+			r, size := utf8.DecodeRuneInString(value)
+			value = value[size:]
+			switch r {
+			case '"', '\\', '\b', '\f', '\n', '\r', '\t':
+				n += 2
+			case '<', '>', '&', '\u2028', '\u2029':
+				n += 6
+			default:
+				if r < 0x20 {
+					n += 6
+				} else if r == utf8.RuneError && size == 1 {
+					n += 6
+				} else {
+					n += size
+				}
+			}
+			if n > remaining {
+				return remaining + 1
+			}
+		}
+		return n
+	}
+	empty := func(v reflect.Value) bool {
+		switch v.Kind() {
+		case reflect.Array, reflect.Map, reflect.Slice, reflect.String:
+			return v.Len() == 0
+		case reflect.Bool, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64, reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Float32, reflect.Float64, reflect.Interface, reflect.Pointer:
+			return v.IsZero()
+		}
+		return false
+	}
+	var measure func(reflect.Value, int) bool
+	measure = func(v reflect.Value, depth int) bool {
+		if depth > 20 {
+			return false
+		}
+		if !v.IsValid() {
+			return consume(4)
+		}
+		if v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface {
+			if v.IsNil() {
+				return consume(4)
+			}
+			return measure(v.Elem(), depth+1)
+		}
+		if v.Type() == reflect.TypeOf(sessioncontext.AttachmentPayload{}) {
+			attachment := v.Interface().(sessioncontext.AttachmentPayload)
+			return measure(reflect.ValueOf(struct {
+				Name      string         `json:"name"`
+				MediaType string         `json:"media_type"`
+				Blob      domain.BlobRef `json:"blob"`
+				Body      []byte         `json:"body"`
+			}{attachment.Name, attachment.MediaType, attachment.Blob, attachment.Body}), depth+1)
+		}
+		if v.Type() == reflect.TypeOf(time.Time{}) {
+			encoded, err := v.Interface().(time.Time).MarshalJSON()
+			return err == nil && consume(len(encoded))
+		}
+		if v.Type().Implements(reflect.TypeOf((*json.Marshaler)(nil)).Elem()) {
+			return false
+		}
+		switch v.Kind() {
+		case reflect.Interface, reflect.Pointer:
+			if v.IsNil() {
+				return consume(4)
+			}
+			return measure(v.Elem(), depth+1)
+		case reflect.String:
+			return consume(quoted(v.String()))
+		case reflect.Bool:
+			if v.Bool() {
+				return consume(4)
+			}
+			return consume(5)
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			return consume(len(strconv.FormatInt(v.Int(), 10)))
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			return consume(len(strconv.FormatUint(v.Uint(), 10)))
+		case reflect.Slice:
+			if v.IsNil() {
+				return consume(4)
+			}
+			if v.Type().Elem().Kind() == reflect.Uint8 {
+				if v.Len() > limit {
+					return false
+				}
+				return consume(2 + 4*((v.Len()+2)/3))
+			}
+			fallthrough
+		case reflect.Array:
+			if v.Len() > 4096 || !consume(2) {
+				return false
+			}
+			for i := 0; i < v.Len(); i++ {
+				if i > 0 && !consume(1) {
+					return false
+				}
+				if !measure(v.Index(i), depth+1) {
+					return false
+				}
+			}
+			return true
+		case reflect.Struct:
+			if !consume(2) {
+				return false
+			}
+			fields := 0
+			for i := 0; i < v.NumField(); i++ {
+				f := v.Type().Field(i)
+				if f.PkgPath != "" {
+					continue
+				}
+				tag := strings.Split(f.Tag.Get("json"), ",")
+				if tag[0] == "-" {
+					continue
+				}
+				omit := false
+				for _, option := range tag[1:] {
+					if option == "omitempty" && empty(v.Field(i)) {
+						omit = true
+					}
+					if option == "string" || option == "omitzero" {
+						return false
+					}
+				}
+				if omit {
+					continue
+				}
+				if f.Anonymous && tag[0] == "" {
+					return false
+				}
+				name := tag[0]
+				if name == "" {
+					name = f.Name
+				}
+				if fields > 0 && !consume(1) {
+					return false
+				}
+				fields++
+				if !consume(quoted(name)+1) || !measure(v.Field(i), depth+1) {
+					return false
+				}
+			}
+			return true
+		default:
+			return false
+		}
+	}
+	return measure(reflect.ValueOf(value), 0)
 }
 
 func clearVerifiedCopy(value *verifiedAttachedCopy) {

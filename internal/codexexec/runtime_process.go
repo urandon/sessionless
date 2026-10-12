@@ -1,6 +1,7 @@
 package codexexec
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -43,9 +44,11 @@ type activePreparedProcess struct {
 }
 
 type preparedObservation struct {
-	boundary  *PreparedProcessBoundaryV1
-	authority AuthorityV1
-	process   attachedworkerdaemon.AttemptResult
+	boundary           *PreparedProcessBoundaryV1
+	authority          AuthorityV1
+	process            attachedworkerdaemon.AttemptResult
+	mediaAssociation   [32]byte
+	mediaProfileDigest string
 }
 
 // PreparedProcessBoundaryV1 runs at most one exact prepared Codex process for
@@ -53,12 +56,13 @@ type preparedObservation struct {
 // or releases a credential. Exact cancellation and terminal observation are
 // arbitrated under one lock so they cannot both report success.
 type PreparedProcessBoundaryV1 struct {
-	supervisor *attachedworkerdaemon.Supervisor
-	authority  AuthorityV1
-	executable string
-	digest     attachedworkerdaemon.ExecutableDigest
-	arguments  []string
-	now        func() time.Time
+	supervisor  *attachedworkerdaemon.Supervisor
+	authority   AuthorityV1
+	executable  string
+	digest      attachedworkerdaemon.ExecutableDigest
+	arguments   []string
+	now         func() time.Time
+	mediaConfig *MediaConfigV1
 
 	mu       sync.Mutex
 	consumed bool
@@ -126,6 +130,10 @@ func (boundary *PreparedProcessBoundaryV1) Run(ctx context.Context, invocation P
 			zeroBytes(observed.Stdout)
 			observed.Stdout = nil
 			result.original = &preparedObservation{boundary: boundary, authority: invocation.Authority, process: *observed}
+			if invocation.media != nil {
+				result.original.mediaAssociation = invocation.media.associationDigest
+				result.original.mediaProfileDigest = invocation.Identity.HarnessBinding.Backend.BackendProfileDigest
+			}
 		}
 		cancel()
 	}()
@@ -138,6 +146,17 @@ func (boundary *PreparedProcessBoundaryV1) Run(ctx context.Context, invocation P
 			Value: invocation.CredentialMaterialization.RootDir,
 		}},
 		Stdin: append([]byte(nil), invocation.Stdin...),
+	}
+	if invocation.media != nil {
+		// Only the owner-created private original stage can expand native argv;
+		// the installed static command, cwd, replacement environment and the
+		// supervisor's one actual process stay unchanged.
+		spec.Arguments = append([]string(nil), boundary.arguments[:len(boundary.arguments)-1]...)
+		for _, path := range invocation.mediaStage.imagePaths() {
+			spec.Arguments = append(spec.Arguments, "--image", path)
+		}
+		spec.Arguments = append(spec.Arguments, "-")
+		spec.AdditionalReadRoots = []string{invocation.mediaStage.path}
 	}
 	defer zeroBytes(spec.Stdin)
 	prepared, err := attachedworkerdaemon.BindPreparedCredential(
@@ -203,6 +222,14 @@ func (boundary *PreparedProcessBoundaryV1) finish(active *activePreparedProcess)
 }
 
 func (boundary *PreparedProcessBoundaryV1) validateInvocation(invocation ProcessInvocationV1) error {
+	if boundary.mediaConfig != nil {
+		descriptor, err := boundary.mediaConfig.DescriptorV1()
+		if err != nil || boundary.mediaConfig.eligibility() != nil || invocation.Identity.HarnessBinding.Backend != descriptor || invocation.media == nil || invocation.mediaStage == nil || invocation.mediaStage.path != invocation.WorkDir || !bytes.Equal(invocation.Stdin, invocation.media.prompt) || invocation.mediaStage.verifyImages(invocation.media) != nil {
+			return ErrContract
+		}
+	} else if invocation.media != nil || invocation.mediaStage != nil {
+		return ErrContract
+	}
 	if invocation.Authority.Validate() != nil || invocation.Authority != boundary.authority ||
 		invocation.Identity.Validate() != nil || invocation.Executable != boundary.executable ||
 		invocation.ExecutableDigest != boundary.digest || !sameStrings(invocation.Arguments, boundary.arguments) ||

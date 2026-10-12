@@ -17,6 +17,7 @@ type preparedHistory struct {
 	root, work, context                            int
 	name, path                                     string
 	workIdentity, contextIdentity, historyIdentity *unix.Stat_t
+	images                                         []preparedImage
 }
 
 func stagePreparedHistory(root string, body []byte) (*preparedHistory, error) {
@@ -97,6 +98,7 @@ func (stage *preparedHistory) remove() error {
 		}
 	}
 	if stage.context >= 0 {
+		result = errors.Join(result, stage.removeImages())
 		remove(stage.context, "history.jsonl", 0, stage.historyIdentity)
 		_ = unix.Close(stage.context)
 		stage.context = -1

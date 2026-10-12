@@ -415,6 +415,9 @@ func BoundedSerializedCanonicalInputV1(input SealedInputV1, maxBytes int) bool {
 	if maxBytes <= 0 {
 		return false
 	}
+	if !attachedworkerdaemon.BoundedJSONAllocationV1(input, maxBytes) {
+		return false
+	}
 	encoded, err := json.Marshal(input)
 	defer clearBytes(encoded)
 	return err == nil && len(encoded) <= maxBytes

@@ -27,11 +27,14 @@ var completedCheckpointV1 = []byte(`{"schema":"sessionless.codex-exec-checkpoint
 // invocation credential and cannot issue a second credential behind the
 // canonical worker's back.
 type Driver struct {
-	config     Config
-	descriptor domain.HarnessBackendDescriptorV1
-	authority  AuthorityResolverV1
-	boundary   ProcessBoundaryV1
-	now        func() time.Time
+	config      Config
+	descriptor  domain.HarnessBackendDescriptorV1
+	authority   AuthorityResolverV1
+	boundary    ProcessBoundaryV1
+	now         func() time.Time
+	mediaConfig *MediaConfigV1
+	media       *mediaInput
+	mediaStage  *preparedHistory
 }
 
 func NewDriver(config Config, authority AuthorityResolverV1, boundary ProcessBoundaryV1) (*Driver, error) {
@@ -100,7 +103,7 @@ func (driver *Driver) execute(ctx context.Context, request ports.ExecutionReques
 	if err != nil || driver.validateExecutionAuthority(request, authority) != nil {
 		return ports.ExecutionResult{}, driverError(domain.ErrorPolicyDenied, sessionlessharness.FailureEffectivePolicyMismatch)
 	}
-	prompt, err := compileCanonicalPrompt(request)
+	prompt, err := driver.compilePrompt(request)
 	if err != nil {
 		zeroBytes(prompt)
 		return ports.ExecutionResult{}, driverError(domain.ErrorTerminal, sessionlessharness.FailureHarnessBindingInvalid)
@@ -118,6 +121,10 @@ func (driver *Driver) execute(ctx context.Context, request ports.ExecutionReques
 		RequireProviderEffectFence: true, MaxProviderEffects: maxProviderEffectsV1,
 		MaxStdoutBytes: maxJSONLOutputBytes, MaxStderrBytes: maxProcessStderrBytesV1,
 		Stdin: append([]byte(nil), prompt...),
+	}
+	if driver.media != nil {
+		invocation.media = driver.media
+		invocation.mediaStage = driver.mediaStage
 	}
 	process, runErr := driver.boundary.Run(ctx, invocation)
 	if original != nil {
@@ -144,6 +151,16 @@ func (driver *Driver) execute(ctx context.Context, request ports.ExecutionReques
 		return result, driverError(domain.ErrorTerminal, sessionlessharness.FailureHarnessBackendFailed)
 	}
 	return result, nil
+}
+
+func (driver *Driver) compilePrompt(request ports.ExecutionRequest) ([]byte, error) {
+	if driver.mediaConfig == nil {
+		return compileCanonicalPrompt(request)
+	}
+	if driver.mediaConfig.eligibility() != nil || driver.media == nil || driver.mediaStage == nil || driver.mediaStage.path != request.WorkDir || driver.mediaStage.verifyImages(driver.media) != nil {
+		return nil, ErrContract
+	}
+	return append([]byte(nil), driver.media.prompt...), nil
 }
 
 func (driver *Driver) Cancel(ctx context.Context, identity ports.ExecutionIdentity) error {

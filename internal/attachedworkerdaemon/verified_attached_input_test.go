@@ -14,6 +14,47 @@ import (
 	"gitcode.com/urandon/sessionless/internal/sessioncontext"
 )
 
+func TestVerifiedProspectiveJSONAllocationMatchesCompleteWire(t *testing.T) {
+	input := canonicalVerifiedInvocation(t).VerifiedInput
+	shape := input.copyShape()
+	encoded, err := json.Marshal(shape)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clear(encoded)
+	if !BoundedJSONAllocationV1(shape, len(encoded)) || BoundedJSONAllocationV1(shape, len(encoded)-1) {
+		t.Fatalf("complete canonical copy exact boundary=%d was not respected", len(encoded))
+	}
+	for _, value := range []any{
+		struct {
+			Name string
+			Body []byte
+			At   *time.Time
+		}{Name: "<quoted>&\u2028\u2029\x00\xff", Body: []byte{0, 1, 2, 3, 4}},
+		struct {
+			Empty []byte `json:"empty,omitempty"`
+			Body  []byte
+			Value *int
+		}{Body: []byte{}},
+	} {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !BoundedJSONAllocationV1(value, len(encoded)) || BoundedJSONAllocationV1(value, len(encoded)-1) {
+			t.Fatalf("escaping/base64/null framing=%q failed exact prospective boundary", encoded)
+		}
+	}
+	// The raw body fits 1MiB but its base64+metadata allocation does not.
+	value := struct{ Body []byte }{Body: make([]byte, 786432)}
+	if BoundedJSONAllocationV1(value, 1<<20) {
+		t.Fatal("base64 expansion escaped inherited complete-input ceiling")
+	}
+	if BoundedJSONAllocationV1(map[string]string{"unknown": "shape"}, 1<<20) {
+		t.Fatal("unknown carrier shape gained an estimate")
+	}
+}
+
 // Unit-only admitted fixture. This is not a production authority producer or
 // proof that the concrete driver/stack has been activated.
 func validPreparedCredentialInvocation(t *testing.T) Invocation {

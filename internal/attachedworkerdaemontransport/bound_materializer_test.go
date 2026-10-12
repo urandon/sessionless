@@ -19,6 +19,22 @@ import (
 	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 )
 
+func TestBoundSerializedCanonicalInputProspectiveCompleteBoundary(t *testing.T) {
+	input := SealedInputV1{Job: domain.WorkerJob{Limits: domain.ProductLimits{MaxInputBytes: 1 << 20}}, Context: []byte("escaped <task>& data"), Artifacts: []SealedArtifactV1{{Name: "same-name", Body: []byte{0, 1, 2, 3}}}}
+	encoded, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clear(encoded)
+	if !BoundedSerializedCanonicalInputV1(input, len(encoded)) || BoundedSerializedCanonicalInputV1(input, len(encoded)-1) {
+		t.Fatalf("complete sealed source boundary=%d not respected", len(encoded))
+	}
+	input.Context = make([]byte, 786432)
+	if BoundedSerializedCanonicalInputV1(input, 1<<20) {
+		t.Fatal("raw-fitting source base64/wire overflow admitted")
+	}
+}
+
 type ownedTypedMaterializerFunc func(context.Context, MaterializationRequestV1) (MaterializedInputV1, error)
 
 func (materialize ownedTypedMaterializerFunc) Materialize(ctx context.Context, request MaterializationRequestV1) (MaterializedInputV1, error) {

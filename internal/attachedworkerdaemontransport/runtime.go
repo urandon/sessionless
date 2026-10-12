@@ -159,7 +159,7 @@ func connectPinnedForegroundRuntime(
 	if err != nil {
 		return nil, err
 	}
-	if stackConfig.PreparedCodex != nil {
+	if stackConfig.PreparedCodex != nil || stackConfig.PreparedCodexMedia != nil {
 		if err := installPreparedReceipt(&adapterConfig, input.CapabilityManifest, runner); err != nil {
 			return nil, err
 		}
@@ -190,6 +190,10 @@ func pinnedRuntimePreflight(
 	if stackConfig.PreparedCodex != nil {
 		prepared := *stackConfig.PreparedCodex
 		stackConfig.PreparedCodex = &prepared
+	}
+	if stackConfig.PreparedCodexMedia != nil {
+		media := stackConfig.PreparedCodexMedia.Clone()
+		stackConfig.PreparedCodexMedia = &media
 	}
 	// The selected capability and the local invocation profile must already
 	// agree before acquiring the local lease or constructing a connector.
@@ -479,7 +483,7 @@ func reconnectPinnedForegroundRuntime(
 	if err != nil {
 		return nil, err
 	}
-	if stackConfig.PreparedCodex != nil {
+	if stackConfig.PreparedCodex != nil || stackConfig.PreparedCodexMedia != nil {
 		if err := installPreparedReceipt(&adapterConfig, input.CapabilityManifest, runner); err != nil {
 			return nil, err
 		}

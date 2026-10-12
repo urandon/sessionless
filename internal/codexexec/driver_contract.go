@@ -19,6 +19,8 @@ type AuthorityResolverV1 interface {
 // ProcessInvocationV1 carries no credential bytes. Its materialization is the
 // invocation-private location already prepared by canonical orchestration.
 type ProcessInvocationV1 struct {
+	media                          *mediaInput
+	mediaStage                     *preparedHistory
 	Authority                      AuthorityV1                               `json:"-"`
 	Identity                       ports.ExecutionIdentity                   `json:"-"`
 	Credential                     ports.ProviderInvocationCredentialV1      `json:"-"`

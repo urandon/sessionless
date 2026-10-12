@@ -131,6 +131,11 @@ func newPreparedStackFixtureMode(t *testing.T, holdTeardown bool) (*Stack, attac
 }
 func newPreparedStackSessionFixture(t *testing.T, holdTeardown, bind bool, clock func() time.Time) (*Stack, attachedworkerdaemon.Invocation, *preparedStackLifecycle, *preparedStackLauncher, *attachedworkersession.Session, *attachedworkerlocal.Store, *preparedSessionPeer) {
 	t.Helper()
+	return newPreparedStackSessionFixturePolicy(t, holdTeardown, bind, clock, nil)
+}
+
+func newPreparedStackSessionFixturePolicy(t *testing.T, holdTeardown, bind bool, clock func() time.Time, selectMedia func(codexexec.Config) (codexexec.MediaConfigV1, error)) (*Stack, attachedworkerdaemon.Invocation, *preparedStackLifecycle, *preparedStackLauncher, *attachedworkersession.Session, *attachedworkerlocal.Store, *preparedSessionPeer) {
+	t.Helper()
 	fixture := newFixture(t)
 	fixture.manifest.ConnectionGeneration = 0
 	script := `#!/bin/sh
@@ -160,6 +165,18 @@ printf '%s\n' '{"type":"thread.started","thread_id":"private"}' '{"type":"turn.s
 		config.Now = clock
 	}
 	fixture.config.PreparedCodex = &config
+	var media *codexexec.MediaConfigV1
+	if selectMedia != nil {
+		config.Model = "sessionless-media-fixture"
+		selected, err := selectMedia(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		media = &selected
+		fixture.config.PreparedCodex = nil
+		fixture.config.PreparedCodexMedia = media
+		fixture.manifest.Harness.Arguments[len(fixture.manifest.Harness.Arguments)-2] = config.Model
+	}
 	fixture.config.Timeout = 20 * time.Second
 	fixture.config.TerminationGrace = time.Second
 	fixture.config.MaxStdoutBytes = 4 << 20
@@ -213,7 +230,14 @@ printf '%s\n' '{"type":"thread.started","thread_id":"private"}' '{"type":"turn.s
 	if err != nil {
 		t.Fatal(err)
 	}
-	binding := domain.HarnessBindingV2{Version: 2, Profile: domain.HarnessExecutionSingleTurnV2, TenantID: i.TenantID, OwnerUserID: i.OwnerUserID, RunID: i.RunID, AttemptID: i.AttemptID, Backend: adapter.DescriptorV1(), Resource: resource, ModelVendorID: codexexec.ModelVendorIDV1, ModelID: "gpt-fixture", InputDataClass: domain.ProviderDataPrivateV1, ProviderCatalogDigest: strings.Repeat("1", 64), ProviderRouteDigest: strings.Repeat("2", 64), PrivacyPolicyDigest: strings.Repeat("3", 64), CapabilityEvidenceDigest: strings.Repeat("4", 64), EffectivePolicyDigest: strings.Repeat("5", 64), ExecutionPlacementDigest: string(placementDigest), EvidenceExpiresAt: &expires}
+	descriptor := adapter.DescriptorV1()
+	if media != nil {
+		descriptor, err = media.DescriptorV1()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	binding := domain.HarnessBindingV2{Version: 2, Profile: domain.HarnessExecutionSingleTurnV2, TenantID: i.TenantID, OwnerUserID: i.OwnerUserID, RunID: i.RunID, AttemptID: i.AttemptID, Backend: descriptor, Resource: resource, ModelVendorID: codexexec.ModelVendorIDV1, ModelID: config.Model, InputDataClass: domain.ProviderDataPrivateV1, ProviderCatalogDigest: strings.Repeat("1", 64), ProviderRouteDigest: strings.Repeat("2", 64), PrivacyPolicyDigest: strings.Repeat("3", 64), CapabilityEvidenceDigest: strings.Repeat("4", 64), EffectivePolicyDigest: strings.Repeat("5", 64), ExecutionPlacementDigest: string(placementDigest), EvidenceExpiresAt: &expires}
 	job := domain.WorkerJob{TenantID: i.TenantID, RunID: i.RunID, SessionID: "prepared-session", TriggerEventID: "prepared-trigger", AttemptID: i.AttemptID, ReservationID: "prepared-reservation", InputManifestID: "prepared-manifest", ContextWindow: &domain.SessionContextWindow{ThroughSequence: 1}, CredentialOwnerUserID: i.OwnerUserID, ExecutionPlacementV2: placement, HarnessBinding: binding, Limits: domain.ProductLimits{MaxTenantQueueDepth: 1, MaxActiveRuns: 1, MaxRuntime: time.Hour, MaxTurns: 1, MaxInputBytes: 1 << 20, MaxContextBytes: 1 << 20, MaxContextEvents: 10, MaxArtifacts: 10, MaxToolEvents: 10, MaxToolEventBytes: 4096}}
 	manifest := domain.ArtifactManifest{ID: job.InputManifestID, TenantID: i.TenantID, RunID: i.RunID, CreatedAt: now}
 	payload := []byte(`{"version":1,"text":"public unit input"}`)
@@ -244,6 +268,25 @@ printf '%s\n' '{"type":"thread.started","thread_id":"private"}' '{"type":"turn.s
 		t.Fatal("invalid admitted unit fixture")
 	}
 	return stack, invocation, owner, launcher, session, store, peer
+}
+
+func TestNormalStackMediaProductionUnknownGuardDeniesBeforeIssue(t *testing.T) {
+	stack, invocation, lifecycle, launcher, _, _, _ := newPreparedStackSessionFixturePolicy(t, false, true, nil, func(config codexexec.Config) (codexexec.MediaConfigV1, error) {
+		return codexexec.MediaConfigV1{Backend: config}, nil
+	})
+	result, err := stack.Run(context.Background(), invocation)
+	if !errors.Is(err, codexexec.ErrMediaNativeGuardUnavailable) || result.Succeeded(err) {
+		t.Fatalf("normal genuine Session unknown native guard result=%+v err=%v", result, err)
+	}
+	lifecycle.mu.Lock()
+	effects := len(lifecycle.order)
+	lifecycle.mu.Unlock()
+	launcher.mu.Lock()
+	launches := launcher.calls
+	launcher.mu.Unlock()
+	if effects != 0 || launches != 0 {
+		t.Fatalf("unknown native guard lifecycle=%d launches=%d", effects, launches)
+	}
 }
 
 func TestNormalStackPreparedCodexHoldsCandidateUntilOuterFinalization(t *testing.T) {

@@ -15,18 +15,22 @@ import (
 	"gitcode.com/urandon/sessionless/internal/sessioncontext"
 )
 
-// PreparedAttachedWorkerRunnerV1 is a fixed text-only composition, not a spawn
-// port or an issuer. Its sole InvocationRunner owns the credential lifecycle.
+// PreparedAttachedWorkerRunnerV1 is an explicitly selected fixed composition,
+// not a spawn port or an issuer. The old constructor remains text-only. Its
+// sole InvocationRunner owns the credential lifecycle.
 // One pending/finalized slot is kept until exact receipt retirement or Close.
 type PreparedAttachedWorkerRunnerV1 struct {
-	config     Config
-	scratch    string
-	supervisor *attachedworkerdaemon.Supervisor
-	outer      *attachedworkerdaemon.InvocationRunner
-	mu         sync.Mutex
-	slot       *preparedResultSlot
-	last       attachedworkerdaemon.InvocationIdentity
-	closed     bool
+	config        Config
+	mediaConfig   *MediaConfigV1
+	scratch       string
+	supervisor    *attachedworkerdaemon.Supervisor
+	outer         *attachedworkerdaemon.InvocationRunner
+	mu            sync.Mutex
+	slot          *preparedResultSlot
+	last          attachedworkerdaemon.InvocationIdentity
+	closed        bool
+	preparing     bool
+	preparingDone chan struct{}
 }
 
 type preparedResultSlot struct {
@@ -34,6 +38,8 @@ type preparedResultSlot struct {
 	driver                                *Driver
 	request                               ports.ExecutionRequest
 	stage                                 *preparedHistory
+	media                                 *mediaInput
+	mediaAssociation                      [32]byte
 	semantic                              ports.ExecutionResult
 	candidate                             attachedworkeroutput.Candidate
 	original                              *preparedObservation
@@ -71,7 +77,29 @@ func (owner *PreparedAttachedWorkerRunnerV1) String() string {
 func (owner *PreparedAttachedWorkerRunnerV1) GoString() string { return owner.String() }
 
 func (owner *PreparedAttachedWorkerRunnerV1) Run(ctx context.Context, invocation attachedworkerdaemon.Invocation) (attachedworkerdaemon.InvocationResult, error) {
-	if owner == nil || ctx == nil || ctx.Err() != nil || invocation.Validate() != nil || invocation.Credential == nil ||
+	if owner == nil || ctx == nil || ctx.Err() != nil {
+		return attachedworkerdaemon.InvocationResult{}, ErrContract
+	}
+	if owner.mediaConfig != nil {
+		// One owner may hold only one media preflight/decoder/copy set. Reject
+		// concurrent/replayed calls before source projection or deep allocation.
+		owner.mu.Lock()
+		if owner.closed || owner.preparing || owner.slot != nil || owner.last == invocation.Identity {
+			owner.mu.Unlock()
+			return attachedworkerdaemon.InvocationResult{}, ErrProcessAlreadyConsumed
+		}
+		owner.preparing = true
+		owner.preparingDone = make(chan struct{})
+		owner.mu.Unlock()
+		defer func() {
+			owner.mu.Lock()
+			owner.preparing = false
+			close(owner.preparingDone)
+			owner.preparingDone = nil
+			owner.mu.Unlock()
+		}()
+	}
+	if invocation.Validate() != nil || invocation.Credential == nil ||
 		invocation.VerifiedInput.ValidateFor(invocation.Identity) != nil {
 		return attachedworkerdaemon.InvocationResult{}, ErrContract
 	}
@@ -81,8 +109,23 @@ func (owner *PreparedAttachedWorkerRunnerV1) Run(ctx context.Context, invocation
 	}
 	defer input.Clear()
 	job := input.Job
+	var media *mediaInput
+	if owner.mediaConfig != nil {
+		descriptor, descriptorErr := owner.mediaConfig.DescriptorV1()
+		if !owner.config.Enabled || descriptorErr != nil || descriptor != job.HarnessBinding.Backend || !preparedIngressEnvelope(input) {
+			return attachedworkerdaemon.InvocationResult{}, ErrContract
+		}
+		media, err = prepareMediaInput(input)
+		if err != nil {
+			return attachedworkerdaemon.InvocationResult{}, err
+		}
+		defer media.clear()
+		if err = owner.mediaConfig.eligibility(); err != nil {
+			return attachedworkerdaemon.InvocationResult{}, err
+		}
+	}
 	// Unsupported authority-bearing material is rejected, never stripped.
-	if job.ContextWindow == nil || input.CanonicalContext == nil || !preparedTextEnvelope(input) ||
+	if job.ContextWindow == nil || input.CanonicalContext == nil || (media == nil && !preparedTextEnvelope(input)) ||
 		job.WorkspaceSnapshot != nil || job.SkillBundle != nil || len(job.AllowedMCPServers) != 0 ||
 		invocation.Process.Executable != owner.config.Executable || invocation.Process.ExecutableDigest != owner.config.ExecutableDigest ||
 		!sameStrings(invocation.Process.Arguments, processArguments(owner.config.Model)) {
@@ -91,6 +134,18 @@ func (owner *PreparedAttachedWorkerRunnerV1) Run(ctx context.Context, invocation
 	driver, err := NewPreparedAttachedWorkerDriverV1(owner.config, input.AcceptedAttempt, job.HarnessBinding.Resource, owner.supervisor)
 	if err != nil {
 		return attachedworkerdaemon.InvocationResult{}, err
+	}
+	if media != nil {
+		driver.mediaConfig = owner.mediaConfig
+		driver.descriptor, err = owner.mediaConfig.DescriptorV1()
+		if err != nil {
+			return attachedworkerdaemon.InvocationResult{}, err
+		}
+		boundary, ok := driver.boundary.(*PreparedProcessBoundaryV1)
+		if !ok {
+			return attachedworkerdaemon.InvocationResult{}, ErrContract
+		}
+		boundary.mediaConfig = owner.mediaConfig
 	}
 	request := ports.ExecutionRequest{TenantID: job.TenantID, OwnerUserID: job.CredentialOwnerUserID, RunID: job.RunID,
 		SessionID: job.SessionID, TriggerEventID: job.TriggerEventID, AttemptID: job.AttemptID,
@@ -104,13 +159,22 @@ func (owner *PreparedAttachedWorkerRunnerV1) Run(ctx context.Context, invocation
 		return attachedworkerdaemon.InvocationResult{}, err
 	}
 	request.WorkDir = stage.path
-	prompt, err := compileCanonicalPrompt(request)
+	if media != nil {
+		if err = stage.stageImages(media); err != nil {
+			return attachedworkerdaemon.InvocationResult{}, errors.Join(err, stage.remove())
+		}
+		driver.media, driver.mediaStage = media, stage
+	}
+	prompt, err := driver.compilePrompt(request)
 	zeroBytes(prompt)
 	if err != nil {
 		return attachedworkerdaemon.InvocationResult{}, errors.Join(err, stage.remove())
 	}
 	runCtx, cancel := context.WithCancel(ctx)
-	slot := &preparedResultSlot{identity: invocation.Identity, driver: driver, request: request, stage: stage, cancel: cancel, done: make(chan struct{})}
+	slot := &preparedResultSlot{identity: invocation.Identity, driver: driver, request: request, stage: stage, media: media, cancel: cancel, done: make(chan struct{})}
+	if media != nil {
+		slot.mediaAssociation = media.associationDigest
+	}
 	owner.mu.Lock()
 	if owner.closed || owner.slot != nil || owner.last == invocation.Identity {
 		owner.mu.Unlock()
@@ -142,6 +206,13 @@ func (owner *PreparedAttachedWorkerRunnerV1) Run(ctx context.Context, invocation
 // predicate; decoding that projection also handles snapshot-contained triggers.
 func preparedTextEnvelope(input *attachedworkerdaemon.VerifiedAttachedInputV1) bool {
 	if input == nil || input.CanonicalContext == nil || input.Job.ContextWindow == nil || len(input.CanonicalContext.Attachments) != 0 {
+		return false
+	}
+	return preparedIngressEnvelope(input)
+}
+
+func preparedIngressEnvelope(input *attachedworkerdaemon.VerifiedAttachedInputV1) bool {
+	if input == nil || input.CanonicalContext == nil || input.Job.ContextWindow == nil {
 		return false
 	}
 	if len(input.Artifacts) == 0 && len(input.Manifest.Artifacts) == 0 {
@@ -190,6 +261,9 @@ func (executor *preparedExecutor) RunPrepared(ctx context.Context, prepared atta
 	semantic, err := driver.execute(ctx, request, sink, &original)
 	boundary, concrete := driver.boundary.(*PreparedProcessBoundaryV1)
 	if original == nil || !concrete || original.boundary != boundary || original.authority != boundary.authority {
+		return attachedworkerdaemon.AttemptResult{}, errors.Join(err, ErrContract)
+	}
+	if owner.mediaConfig != nil && (original.mediaAssociation != slot.mediaAssociation || original.mediaProfileDigest != request.HarnessBinding.Backend.BackendProfileDigest) {
 		return attachedworkerdaemon.AttemptResult{}, errors.Join(err, ErrContract)
 	}
 	owner.mu.Lock()
@@ -278,17 +352,37 @@ func (owner *PreparedAttachedWorkerRunnerV1) Close(ctx context.Context) error {
 	owner.mu.Lock()
 	owner.closed = true
 	slot := owner.slot
+	mediaDone := owner.preparingDone
 	if slot == nil {
 		owner.mu.Unlock()
+		if mediaDone != nil {
+			select {
+			case <-mediaDone:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
 		return nil
 	}
 	if slot.finalized {
 		owner.clearSlotLocked()
 		owner.mu.Unlock()
+		if mediaDone != nil {
+			select {
+			case <-mediaDone:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
 		return nil
 	}
 	slot.cancel()
 	done := slot.done
+	if mediaDone != nil {
+		done = mediaDone
+	}
 	owner.mu.Unlock()
 	select {
 	case <-done:

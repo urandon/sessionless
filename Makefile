@@ -409,6 +409,7 @@ PI_SDK_TRANSPORT_TEST_COUNT ?= 1
 
 pi-sdk-transport-test: prepare
 	@node --permission --allow-fs-read="$(CURDIR)/internal/pisdktransport" --no-addons --disable-proto=throw internal/pisdktransport/framing.test.mjs
+	@node --permission --allow-fs-read="$(CURDIR)/internal/pisdktransport" --no-addons --disable-proto=throw internal/pisdktransport/response.test.mjs
 	go test -race -count=$(PI_SDK_TRANSPORT_TEST_COUNT) -shuffle=on -timeout=30s ./internal/pisdktransport
 
 cloud-web-smoke-test:

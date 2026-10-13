@@ -163,7 +163,8 @@ the Pi physical transport, using the same pinned development Node and shared
 Go caches. It also runs in `make ci`. Use
 `make pi-sdk-transport-test PI_SDK_TRANSPORT_TEST_COUNT=20` for bounded Go
 race/shuffle repetition. The Node unit suite imports only the repo-owned
-framer and built-in assertions; it performs no SDK imports or network calls.
+framer, response plumbing and built-in assertions; it performs no SDK imports
+or network calls.
 
 The fixed-arena framer emits complete original frames with the exact SDK
 LF/LF, CR/CR and CRLF/CRLF delimiters, independently of fragment boundaries.
@@ -184,6 +185,28 @@ irreversible one-send, abortable whole-response/effect guard, genuine SDK/Pi
 composition, media/lifecycle/output and actual platform gates remain required
 by the [Pi profile design](design/pi-sdk-attached-media-profile.md).
 No adapter registration or activation is enabled by these tests or assets.
+
+The same target checks a private guarded-response module using genuine
+in-memory WHATWG `Response`/`ReadableStream`, not an HTTP/provider fixture.
+It bounds normalized headers, accepts status200/SSE/identity encoding only,
+delivers one original validated frame per pull with no read-ahead, and stops
+the owned reader and private fetch controller on denial, overflow, terminal,
+cancellation or incomplete EOF. Cancellation is never held by an upstream
+cancel promise. Invalid entry configuration has typed errors and cleans up
+available genuine owned response/controller capabilities without stealing an
+externally locked reader.
+
+The caller must prearm the original parent signal from its original monotonic
+deadline and bind the supplied private controller to the same physical fetch;
+the SDK provides only its borrowed signal, not a mutable controller. Unit
+abort observations prove propagation, not that integration or deadline origin.
+The fixed synchronous callback is plumbing for the future closed semantic
+policy, not a tool/effect validator supplied by this asset. Responses uses
+[typed semantic events](https://developers.openai.com/api/docs/guides/streaming-responses);
+the exact pinned SDK/Pi source remains authoritative for that future policy.
+Preallocated HTTP headers/chunks, decompression and the complete native
+allocation ledger remain wider qualification requirements. No real SDK
+execution, request/send authorization or profile activation is established.
 
 ### Worktrees and Go caches
 

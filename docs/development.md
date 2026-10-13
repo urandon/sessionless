@@ -163,7 +163,7 @@ the Pi physical transport, using the same pinned development Node and shared
 Go caches. It also runs in `make ci`. Use
 `make pi-sdk-transport-test PI_SDK_TRANSPORT_TEST_COUNT=20` for bounded Go
 race/shuffle repetition. The Node unit suite imports only the repo-owned
-framer, response plumbing and built-in assertions; it performs no SDK imports
+framer, response plumbing, closed frame policy and built-in assertions; it performs no SDK imports
 or network calls.
 
 The fixed-arena framer emits complete original frames with the exact SDK
@@ -200,13 +200,45 @@ The caller must prearm the original parent signal from its original monotonic
 deadline and bind the supplied private controller to the same physical fetch;
 the SDK provides only its borrowed signal, not a mutable controller. Unit
 abort observations prove propagation, not that integration or deadline origin.
-The fixed synchronous callback is plumbing for the future closed semantic
-policy, not a tool/effect validator supplied by this asset. Responses uses
+The response asset requires a fixed synchronous callback; it does not itself
+choose an effect policy or establish the callback's authority. Responses uses
 [typed semantic events](https://developers.openai.com/api/docs/guides/streaming-responses);
-the exact pinned SDK/Pi source remains authoritative for that future policy.
+the exact pinned SDK/Pi source remains authoritative for the separate policy.
 Preallocated HTTP headers/chunks, decompression and the complete native
 allocation ledger remain wider qualification requirements. No real SDK
 execution, request/send authorization or profile activation is established.
+
+The private `createResponsesFramePolicy` asset checks every semantic message
+inside each original frame before forwarding any bytes. It uses fatal UTF-8,
+SDK-compatible line/field semantics and complete JSON grammar with decoded-key
+duplicate, depth and cumulative node checks before object parsing. Its closed
+19-event subset admits message/refusal/reasoning forms, not tool/effect calls
+or nested tool items in terminal responses. It preserves original bytes for the
+genuine SDK/Pi parsers instead of replacing them. Line-leading BOMs, nonempty
+annotations/logprobs and compound terminal-plus-DONE messages are deliberately
+outside this subset. A DONE marker or EOF cannot manufacture completion;
+incomplete is a terminal condition, not successful final-output evidence.
+
+The parent supplies deeply frozen, bounded admitted request echoes and the
+existing canonical native limits, without defaults or alternative wire names.
+Known neutral omitted/null echoes, optional matched `store:false` and bounded
+default obfuscation on four safe delta families are explicit compatibility
+cases, not permissive unknown-key handling or identity/spending authority.
+An explicitly selected `service_tier` must echo the same literal value in this
+lane. Resolving an `auto` request to an actual serving tier is not qualified by
+this equality check; it needs a separately bound mapping and spending policy.
+Tests include mixed semantic delimiters, pending CR across original frames,
+ordinary schema positives, nested effect denials and real in-memory response
+host cleanup. Their source-derived decoder oracle is not a genuine SDK run.
+
+The policy shares explicit component copy credit after reserving the framer's
+bounded writes/copies and arena clear. This does not certify complete parsed
+object/SDK/Pi/native allocation, immediate garbage collection or process
+residency. Parent pre-Issue reservation/model fit, actual postauth one-send,
+same-fetch/original-deadline provenance, genuine SDK composition, strict
+same-run final/custody and platform/profile activation remain required. Stage
+the bound framing, response and policy assets together; embed digest tests also
+check each accessor against its exact expected path and independent copies.
 
 ### Worktrees and Go caches
 

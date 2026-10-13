@@ -126,6 +126,36 @@ control plane nor starts a worker; its result is always `draft_not_authorized`.
 It is a development command, excluded from deployed component/release assets.
 No measured cost or approved execution manifest is supplied by this target.
 
+### Private Pi bootstrap helper checks (default off)
+
+`make pi-sdk-bootstrap-test` verifies the repo-owned embedded construction
+helpers for [#203](https://gitcode.com/urandon/sessionless/issues/203). The Node
+unit suite imports only the helper and built-in modules: no third-party install,
+SDK import, credentials, native addons, worker/child processes or network.
+Constructor spies verify argument contracts, not genuine SDK conformance.
+The Go race test checks embedded bytes, digest and independent caller copies.
+Use `make pi-sdk-bootstrap-test PI_SDK_BOOTSTRAP_TEST_COUNT=20` for its bounded
+race/shuffle repetition, with the same repository-shared Go caches.
+The target also runs in `make ci`, using its normal pinned development Node.
+Development Node is not automatically the eligible Pi serving runtime.
+The process runs `node:test` directly, without test-discovery child processes.
+Its Node permission flags restrict filesystem/child/worker/addon access; they
+are not a production isolation proof or a Node 24 network boundary. This unit
+suite imports and calls no networking API. See the exact
+[Node 24.19 permission limitations](https://nodejs.org/download/release/v24.19.0/docs/api/permissions.html).
+
+These helpers use a literal read-only CredentialStore, in-memory factories,
+fixed retry/image/settings choices and an empty ResourceLoader. They expose
+construction options, not a prompt/CLI/RPC API or enabled adapter. They do not
+import Pi or erase its eager clipboard/Jiti/Undici initialization. The original
+supervisor must still qualify the real SDK graph and closed `PI_OFFLINE=1`
+environment, guard selected model/auth and actual physical send, reserve full
+canonical/media allocations, and enforce every accepted
+[Pi profile gate](design/pi-sdk-attached-media-profile.md). Missing-provider
+credential reads return `undefined` per upstream; ambient fallback must be
+denied by the real driver, not inferred from these helper tests. Disposal drops
+the helper's retained key reference; JavaScript string zeroization is not claimed.
+
 ### Worktrees and Go caches
 
 `make` resolves the repository's Git common directory and shares

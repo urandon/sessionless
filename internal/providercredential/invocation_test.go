@@ -114,7 +114,9 @@ func invocationFixture(t *testing.T, delivery domain.ProviderCredentialDeliveryK
 	}
 	t.Cleanup(func() {
 		if service.files != nil {
-			_ = service.files.Close()
+			if err := service.files.Close(); err != nil {
+				t.Errorf("close owned provider credential descriptors: %v", err)
+			}
 		}
 	})
 	request := ports.ProviderCredentialIssueRequestV1{HarnessBinding: binding, WorkerID: "worker-a", LeaseID: "lease-a", LeaseFence: 1, ExpiresAt: now.Add(30 * time.Minute)}
@@ -325,34 +327,46 @@ func TestInvocationFenceWaitsForActiveConsumerAndBlocksLaterUse(t *testing.T) {
 	}
 	consumerStarted := make(chan struct{})
 	releaseConsumer := make(chan struct{})
-	materialized := make(chan error, 1)
+	var releaseOnce sync.Once
+	stopConsumer := func() { releaseOnce.Do(func() { close(releaseConsumer) }) }
+	t.Cleanup(stopConsumer)
+	materialized := make(chan struct{})
+	var materializeErr error
 	go func() {
-		materialized <- service.MaterializeProviderCredential(context.Background(), handle, func(ports.ProviderCredentialMaterializationV1, []byte) error {
+		defer close(materialized)
+		materializeErr = service.MaterializeProviderCredential(context.Background(), handle, func(ports.ProviderCredentialMaterializationV1, []byte) error {
 			close(consumerStarted)
 			<-releaseConsumer
 			return nil
 		})
 	}()
-	<-consumerStarted
-	fenced := make(chan error, 1)
-	var started sync.WaitGroup
-	started.Add(1)
+	t.Cleanup(func() { stopConsumer(); waitImmutableEvent(t, materialized, "active consumer cleanup") })
+	waitImmutableEvent(t, consumerStarted, "active consumer start")
+	state := service.handles[handle.HandleID]
+	// This directly observes the callback's lock ownership, rather than
+	// inferring it from the absence of a result during a scheduler window.
+	if state.mu.TryLock() {
+		state.mu.Unlock()
+		t.Fatal("active consumer does not retain the fence state mutex")
+	}
+	fenceStarted := make(chan struct{})
+	fenced := make(chan struct{})
+	var fenceErr error
 	go func() {
-		started.Done()
-		fenced <- service.FenceProviderCredentialInvocations(context.Background(), testLocator("user-a"), 2)
+		defer close(fenced)
+		close(fenceStarted)
+		fenceErr = service.FenceProviderCredentialInvocations(context.Background(), testLocator("user-a"), 2)
 	}()
-	started.Wait()
-	select {
-	case err := <-fenced:
-		t.Fatalf("fence returned before active consumer stopped: %v", err)
-	case <-time.After(20 * time.Millisecond):
+	t.Cleanup(func() { stopConsumer(); waitImmutableEvent(t, fenced, "waiting fence cleanup") })
+	waitImmutableEvent(t, fenceStarted, "fence call initiation")
+	stopConsumer()
+	waitImmutableEvent(t, materialized, "active consumer completion")
+	if materializeErr != nil {
+		t.Fatal(materializeErr)
 	}
-	close(releaseConsumer)
-	if err := <-materialized; err != nil {
-		t.Fatal(err)
-	}
-	if err := <-fenced; err != nil {
-		t.Fatal(err)
+	waitImmutableEvent(t, fenced, "waiting fence completion")
+	if fenceErr != nil {
+		t.Fatal(fenceErr)
 	}
 	if err := service.MaterializeProviderCredential(context.Background(), handle, func(ports.ProviderCredentialMaterializationV1, []byte) error { return nil }); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("post-fence materialization error=%v", err)

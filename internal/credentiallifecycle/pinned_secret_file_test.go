@@ -30,6 +30,7 @@ func TestPinnedSecretFileSystemRecoversCrashResidueBeforeReuse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = first.Close() })
 	file, err := first.Create("provider.json", []byte("provider-secret-marker"), 1024)
 	if err != nil {
 		t.Fatal(err)
@@ -38,6 +39,13 @@ func TestPinnedSecretFileSystemRecoversCrashResidueBeforeReuse(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A process crash closes all descriptors without running Cleanup.
+	if file.pinned.creator != nil {
+		if err := file.pinned.creator.Close(); err != nil {
+			t.Fatal(err)
+		}
+		file.pinned.creator = nil
+		file.pinned.fileFD = -1
+	}
 	if err := unix.Close(file.pinned.dirFD); err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +57,7 @@ func TestPinnedSecretFileSystemRecoversCrashResidueBeforeReuse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restart recovery failed: %v", err)
 	}
-	defer second.Close()
+	t.Cleanup(func() { _ = second.Close() })
 	if _, err := os.Lstat(file.FilePath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("crash-retained credential survived restart: %v", err)
 	}
@@ -61,7 +69,7 @@ func TestPinnedSecretFileSystemRequiresExclusiveRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer first.Close()
+	t.Cleanup(func() { _ = first.Close() })
 	if _, err := NewPinnedSecretFileSystem(root); err == nil {
 		t.Fatal("second service acquired an active provider credential scratch root")
 	}

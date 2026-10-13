@@ -403,6 +403,14 @@ pi-sdk-bootstrap-test: prepare
 	@node --permission --allow-fs-read="$(CURDIR)/internal/pisdkbootstrap" --no-addons --disable-proto=throw internal/pisdkbootstrap/resources.test.mjs
 	go test -race -count=$(PI_SDK_BOOTSTRAP_TEST_COUNT) -shuffle=on -timeout=30s ./internal/pisdkbootstrap
 
+.PHONY: pi-sdk-transport-test
+ci: pi-sdk-transport-test
+PI_SDK_TRANSPORT_TEST_COUNT ?= 1
+
+pi-sdk-transport-test: prepare
+	@node --permission --allow-fs-read="$(CURDIR)/internal/pisdktransport" --no-addons --disable-proto=throw internal/pisdktransport/framing.test.mjs
+	go test -race -count=$(PI_SDK_TRANSPORT_TEST_COUNT) -shuffle=on -timeout=30s ./internal/pisdktransport
+
 cloud-web-smoke-test:
 	@node --test scripts/test-cloud-web-smoke.mjs
 

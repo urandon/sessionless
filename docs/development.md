@@ -156,6 +156,35 @@ credential reads return `undefined` per upstream; ambient fallback must be
 denied by the real driver, not inferred from these helper tests. Disposal drops
 the helper's retained key reference; JavaScript string zeroization is not claimed.
 
+### Private Pi SSE framing checks (default off)
+
+`make pi-sdk-transport-test` tests the embedded byte-framing predecessor of
+the Pi physical transport, using the same pinned development Node and shared
+Go caches. It also runs in `make ci`. Use
+`make pi-sdk-transport-test PI_SDK_TRANSPORT_TEST_COUNT=20` for bounded Go
+race/shuffle repetition. The Node unit suite imports only the repo-owned
+framer and built-in assertions; it performs no SDK imports or network calls.
+
+The fixed-arena framer emits complete original frames with the exact SDK
+LF/LF, CR/CR and CRLF/CRLF delimiters, independently of fragment boundaries.
+It enforces the existing canonical native profile's body/chunk/line/event,
+event-count and explicit input/output copy budgets. Incomplete EOF, overflow,
+reentry or early consumer return closes the framer; delivered byte copies are
+independent of later arena reuse. This removes repeated fragment-prefix
+concatenation before the genuine SDK parser, without replacing that parser.
+
+This primitive does **not** validate UTF-8/JSON, reject tool/effect frames,
+enforce an HTTP request or cancel a response reader. Its trusted owner must
+validate each complete frame before delivery and preserve bounded downstream
+backpressure. The explicit copy budget covers only arena writes and emitted
+copies, not the complete SDK/V8/Pi/Undici allocation ledger; arena clearing
+also performs bounded work. Unit fixture values are not serving limits.
+Full allocation admission before conversion/Issue, exact postauth request,
+irreversible one-send, abortable whole-response/effect guard, genuine SDK/Pi
+composition, media/lifecycle/output and actual platform gates remain required
+by the [Pi profile design](design/pi-sdk-attached-media-profile.md).
+No adapter registration or activation is enabled by these tests or assets.
+
 ### Worktrees and Go caches
 
 `make` resolves the repository's Git common directory and shares

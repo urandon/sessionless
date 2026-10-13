@@ -22,6 +22,11 @@ func TestPolicySourceHasStableDigestAndIndependentCopies(t *testing.T) {
 	checkModuleSource(t, "policy.mjs", PolicySource)
 }
 
+func TestRequestSourceHasStableDigestAndIndependentCopies(t *testing.T) {
+	t.Parallel()
+	checkModuleSource(t, "request.mjs", RequestSource)
+}
+
 func checkModuleSource(t *testing.T, path string, source func() ([]byte, string)) {
 	t.Helper()
 	wantBytes, err := modules.ReadFile(path)

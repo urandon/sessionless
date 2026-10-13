@@ -8,7 +8,7 @@ import (
 	"encoding/hex"
 )
 
-//go:embed framing.mjs response.mjs policy.mjs
+//go:embed framing.mjs response.mjs policy.mjs request.mjs
 var modules embed.FS
 
 // FramingSource returns independent bytes and their digest for the trusted
@@ -29,9 +29,17 @@ func ResponseSource() ([]byte, string) {
 // PolicySource returns independent bytes and digest of the closed Responses
 // frame policy. The trusted owner supplies admitted limits and request echoes;
 // this asset does not prove their provenance, authorize a send or register a
-// driver. Stage all three bound modules together for their relative imports.
+// driver. Stage all bound modules together for their relative imports.
 func PolicySource() ([]byte, string) {
 	return moduleSource("policy.mjs")
+}
+
+// RequestSource returns independent bytes and digest of the private one-send
+// request owner. Its injected parent capability is not current-owner authority;
+// this asset neither registers a driver nor supplies the original admitted
+// request, deadline, source authorization or complete native allocation ledger.
+func RequestSource() ([]byte, string) {
+	return moduleSource("request.mjs")
 }
 
 func moduleSource(name string) ([]byte, string) {

@@ -240,6 +240,30 @@ same-run final/custody and platform/profile activation remain required. Stage
 the bound framing, response and policy assets together; embed digest tests also
 check each accessor against its exact expected path and independent copies.
 
+The same target exercises the private `createPhysicalFetchOwner` using complete
+synthetic admitted requests and in-memory transport capabilities. Its only
+options are `limits`, `admittedRequest`, `originalSignal`, `parentUse` and
+`physicalFetch`. It captures the exact serialized body, endpoint, method and
+normalized headers before awaiting authorization, spends its one-shot latch on
+first entry, and keeps one physical controller linked throughout the response.
+The owner constructs the fixed frame policy internally; it does not accept an
+external validator with another independent full budget.
+
+Known logical request, header, echo, JSON and response copies share checked
+allocation, copy-work and node reservations. Downstream framing, response and
+policy modules receive the same reduced canonical limits; the original limits
+remain immutable. These counters do not bound native objects, V8/GC, SDK or
+network allocations, and cannot retroactively reserve conversions before Issue.
+Fixtures neither choose serving numbers nor authorize a smaller original input.
+
+The isolated `parentUse.authorizePhysicalSend()` capability takes no arguments;
+its synthetic test implementation is not a current source authorization or a
+production binding. Actual parent comparison, phase transport, original cutoff,
+complete pre-Issue model-fit/allocation proof and credential lifecycle remain
+mandatory before genuine SDK composition or registration. No SDK/model/HTTP
+call, profile activation or full adapter completion is proved by this target.
+Stage the bound framing, response, policy and request assets together.
+
 ### Worktrees and Go caches
 
 `make` resolves the repository's Git common directory and shares

@@ -46,6 +46,13 @@ type providerInvocationState struct {
 	consumed bool
 	revoked  bool
 	released bool
+	// These values describe local immutable materialization, not owner, Run or
+	// remote-phase permission. CandidateMutationID is only mutation metadata.
+	binding           domain.ProviderCredentialBindingV1
+	plan              ports.ProviderCredentialMaterializationV1
+	callbackSucceeded bool
+	finalizeAttempted bool
+	finalized         bool
 }
 
 func NewInvocationService(config InvocationConfig, planner ports.ProviderCredentialDeliveryPlannerV1, bindings ports.ProviderCredentialBindingStore, secrets ports.ProviderCredentialSecretStore) (*InvocationService, error) {
@@ -164,12 +171,113 @@ func (service *InvocationService) MaterializeProviderCredential(ctx context.Cont
 	if err != nil {
 		return err
 	}
+	if handle.ProviderResource.Kind == domain.ProviderResourceAPIAccountV1 && plan.Kind == domain.ProviderCredentialDeliveryFileV1 {
+		state.binding, state.plan = binding, plan
+	}
 	callbackSecret := secret
 	if plan.Kind == domain.ProviderCredentialDeliveryFileV1 {
 		callbackSecret = nil
 	}
 	if err := consume(plan, callbackSecret); err != nil {
 		return ErrBackend
+	}
+	state.callbackSucceeded = true
+	return nil
+}
+
+// FinalizeProviderCredentialFile verifies local immutable integrity only.
+// The last binding read is a current-generation snapshot, not an atomic FS/DB
+// observation or a fresh remote immutable_finalize/owner/head authorization.
+func (service *InvocationService) FinalizeProviderCredentialFile(ctx context.Context, handle ports.ProviderInvocationCredentialV1, plan ports.ProviderCredentialMaterializationV1) error {
+	if ctx == nil || handle.Validate() != nil || plan.Validate() != nil {
+		return ErrInvalid
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	service.mu.Lock()
+	state, found := service.handles[handle.HandleID]
+	// The original handle is immutable. Compare its complete tuple before
+	// checking busy state so a foreign tuple cannot observe callback activity.
+	if !found || state.handle != handle {
+		service.mu.Unlock()
+		return ErrNotFound
+	}
+	service.mu.Unlock()
+	if !state.mu.TryLock() {
+		return ErrConsumed
+	}
+	defer state.mu.Unlock()
+	if handle.ProviderResource.Kind != domain.ProviderResourceAPIAccountV1 || state.template.Kind != domain.ProviderCredentialDeliveryFileV1 || plan != state.plan {
+		return ErrDeliveryMismatch
+	}
+	if state.revoked || state.released || !state.callbackSucceeded || state.file == nil {
+		return ErrNotFound
+	}
+	if state.finalizeAttempted {
+		return ErrConsumed
+	}
+	// Every begun attempt is irreversible, including cancelled, stale or
+	// ambiguous work. A failure cannot be retried or become cached permission.
+	state.finalizeAttempted = true
+	if err := service.immutableFinalizeLive(ctx, handle); err != nil {
+		return err
+	}
+	if err := service.immutableFinalizeCurrentBinding(ctx, state); err != nil {
+		return err
+	}
+	if err := service.immutableFinalizeLive(ctx, handle); err != nil {
+		return err
+	}
+	// Lock order: per-handle state -> provider wrapper -> pinned file. No
+	// lifecycle reentry or remote callback occurs while these locks are held.
+	err := service.files.VerifyImmutable(ctx, state.file, state.binding.SecretFingerprint, service.maxBytes)
+	if liveErr := service.immutableFinalizeLive(ctx, handle); liveErr != nil {
+		return liveErr
+	}
+	if err != nil {
+		return ErrDeliveryMismatch
+	}
+	if err := service.immutableFinalizeCurrentBinding(ctx, state); err != nil {
+		return err
+	}
+	if err := service.immutableFinalizeLive(ctx, handle); err != nil {
+		return err
+	}
+	state.finalized = true
+	return nil
+}
+
+func (service *InvocationService) immutableFinalizeLive(ctx context.Context, handle ports.ProviderInvocationCredentialV1) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !service.clock.Now().UTC().Before(handle.ExpiresAt) {
+		return ErrExpired
+	}
+	return nil
+}
+
+func (service *InvocationService) immutableFinalizeCurrentBinding(ctx context.Context, state *providerInvocationState) error {
+	if err := service.immutableFinalizeLive(ctx, state.handle); err != nil {
+		return err
+	}
+	locator := ports.ProviderCredentialLocatorV1{TenantID: state.handle.TenantID, OwnerUserID: state.handle.OwnerUserID, ResourceKind: state.handle.ProviderResource.Kind, ResourceID: state.handle.ProviderResource.ResourceID}
+	current, found, err := service.bindings.LoadProviderCredential(ctx, locator)
+	if liveErr := service.immutableFinalizeLive(ctx, state.handle); liveErr != nil {
+		return liveErr
+	}
+	if err != nil {
+		return ErrBackend
+	}
+	if !found || !providerCredentialBindingMatchesResource(current, state.handle.ProviderResource) || !current.UpdatedAt.Equal(state.binding.UpdatedAt) {
+		return ErrNotFound
+	}
+	// Compare every actual canonical field, using instant equality for time
+	// rather than representation equality (location/monotonic metadata).
+	current.UpdatedAt = state.binding.UpdatedAt
+	if current != state.binding {
+		return ErrNotFound
 	}
 	return nil
 }
@@ -234,7 +342,13 @@ func (service *InvocationService) FenceProviderCredentialInvocations(_ context.C
 func (service *InvocationService) materializationPlanLocked(state *providerInvocationState, secret []byte) (ports.ProviderCredentialMaterializationV1, error) {
 	switch state.template.Kind {
 	case domain.ProviderCredentialDeliveryFileV1:
-		file, err := service.files.Create(state.template.FileName, secret, service.maxBytes)
+		var file *credentiallifecycle.PinnedSecretFile
+		var err error
+		if state.handle.ProviderResource.Kind == domain.ProviderResourceAPIAccountV1 {
+			file, err = service.files.CreateImmutable(state.template.FileName, secret, service.maxBytes)
+		} else {
+			file, err = service.files.Create(state.template.FileName, secret, service.maxBytes)
+		}
 		if err != nil {
 			return ports.ProviderCredentialMaterializationV1{}, ErrDeliveryMismatch
 		}
@@ -305,4 +419,5 @@ func providerCredentialBindingMatchesResource(binding domain.ProviderCredentialB
 }
 
 var _ ports.ProviderResourceCredentialLifecycleV1 = (*InvocationService)(nil)
+var _ ports.ProviderCredentialImmutableFileFinalizerV1 = (*InvocationService)(nil)
 var _ ports.ProviderCredentialInvocationRevokerV1 = (*InvocationService)(nil)

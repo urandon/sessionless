@@ -30,6 +30,10 @@ func (*secureCredentialFS) createNamed(string, []byte, int64) (*pinnedMaterializ
 	return nil, ErrCredentialMaterialization
 }
 
+func (*secureCredentialFS) createNamedMode(string, []byte, int64, bool, map[*pinnedMaterialization]struct{}) (*pinnedMaterialization, error) {
+	return nil, ErrCredentialMaterialization
+}
+
 func (*secureCredentialFS) read(*pinnedMaterialization, int64) ([]byte, error) {
 	return nil, ErrCredentialMaterialization
 }

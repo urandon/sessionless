@@ -29,10 +29,13 @@ type secureCredentialFS struct {
 }
 
 type pinnedMaterialization struct {
-	public   ports.CredentialMaterialization
-	name     string
-	fileName string
-	dirFD    int
+	public    ports.CredentialMaterialization
+	name      string
+	fileName  string
+	dirFD     int
+	fileFD    int
+	creator   *os.File
+	immutable *immutableSecretFile
 
 	mu     sync.Mutex
 	closed bool
@@ -218,6 +221,10 @@ func (filesystem *secureCredentialFS) create(secret []byte, maxBytes int64) (*pi
 }
 
 func (filesystem *secureCredentialFS) createNamed(fileName string, secret []byte, maxBytes int64) (*pinnedMaterialization, error) {
+	return filesystem.createNamedMode(fileName, secret, maxBytes, false, nil)
+}
+
+func (filesystem *secureCredentialFS) createNamedMode(fileName string, secret []byte, maxBytes int64, immutable bool, owned map[*pinnedMaterialization]struct{}) (*pinnedMaterialization, error) {
 	if filesystem == nil || filesystem.rootFD < 0 || len(secret) == 0 || int64(len(secret)) > maxBytes {
 		return nil, ErrCredentialMaterialization
 	}
@@ -228,45 +235,73 @@ func (filesystem *secureCredentialFS) createNamed(fileName string, secret []byte
 	if err != nil {
 		return nil, err
 	}
-	dirFD, err := unix.Openat(filesystem.rootFD, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
-	if err != nil {
-		_ = unix.Unlinkat(filesystem.rootFD, name, unix.AT_REMOVEDIR)
-		return nil, ErrCredentialMaterialization
-	}
 	pinned := &pinnedMaterialization{
 		name:     name,
 		fileName: fileName,
-		dirFD:    dirFD,
+		dirFD:    -1,
+		fileFD:   -1,
 		public: ports.CredentialMaterialization{
 			RootDir:  filepath.Join(filesystem.rootPath, name),
 			AuthFile: filepath.Join(filesystem.rootPath, name, fileName),
 		},
 	}
+	if owned != nil {
+		owned[pinned] = struct{}{}
+	}
+	cleanupCreate := func() {
+		if filesystem.cleanup(pinned) == nil && owned != nil {
+			delete(owned, pinned)
+		}
+	}
+	dirFD, err := unix.Openat(filesystem.rootFD, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		// A failed open still owns the freshly created namespace. If its
+		// bounded removal fails, retain registry ownership of the residue.
+		if unix.Unlinkat(filesystem.rootFD, name, unix.AT_REMOVEDIR) == nil && owned != nil {
+			delete(owned, pinned)
+		}
+		return nil, ErrCredentialMaterialization
+	}
+	pinned.dirFD = dirFD
 	if err := validateDirectoryFD(dirFD); err != nil {
-		_ = filesystem.cleanup(pinned)
+		cleanupCreate()
 		return nil, err
 	}
-	authFD, err := unix.Openat(dirFD, fileName, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	access := unix.O_WRONLY
+	if immutable {
+		access = unix.O_RDWR
+	}
+	authFD, err := unix.Openat(dirFD, fileName, access|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
 	if err != nil {
-		_ = filesystem.cleanup(pinned)
+		cleanupCreate()
 		return nil, ErrCredentialMaterialization
 	}
 	file := os.NewFile(uintptr(authFD), fileName)
 	if file == nil {
 		_ = unix.Close(authFD)
-		_ = filesystem.cleanup(pinned)
+		cleanupCreate()
 		return nil, ErrCredentialMaterialization
 	}
 	written, writeErr := file.Write(secret)
 	chmodErr := file.Chmod(0o600)
+	if immutable {
+		// Keep this actual creator-opened descriptor, never close and reopen it.
+		pinned.fileFD = authFD
+		pinned.creator = file
+		if writeErr != nil || written != len(secret) || chmodErr != nil || captureImmutable(pinned, file, secret, maxBytes) != nil {
+			cleanupCreate()
+			return nil, ErrCredentialMaterialization
+		}
+		return pinned, nil
+	}
 	closeErr := file.Close()
 	if writeErr != nil || written != len(secret) || chmodErr != nil || closeErr != nil {
-		_ = filesystem.cleanup(pinned)
+		cleanupCreate()
 		return nil, ErrCredentialMaterialization
 	}
 	verified, err := filesystem.read(pinned, maxBytes)
 	if err != nil {
-		_ = filesystem.cleanup(pinned)
+		cleanupCreate()
 		return nil, err
 	}
 	zero(verified)
@@ -328,28 +363,41 @@ func (filesystem *secureCredentialFS) read(pinned *pinnedMaterialization, maxByt
 	return content, nil
 }
 
-func (filesystem *secureCredentialFS) cleanup(pinned *pinnedMaterialization) error {
-	if !filesystem.validPinned(pinned) {
+func (filesystem *secureCredentialFS) cleanup(pinned *pinnedMaterialization) (result error) {
+	if pinned == nil {
 		return ErrCredentialMaterialization
 	}
 	pinned.mu.Lock()
+	defer pinned.mu.Unlock()
 	if pinned.closed {
-		result := pinned.result
-		pinned.mu.Unlock()
-		return result
+		return pinned.result
 	}
 	dirFD := pinned.dirFD
 	pinned.closed = true
-	pinned.mu.Unlock()
-	defer unix.Close(dirFD)
+	defer func() {
+		if closePinnedDescriptors(pinned) != nil {
+			pinned.result = ErrCredentialMaterialization
+		}
+		result = pinned.result
+	}()
 	finish := func(err error) error {
-		pinned.mu.Lock()
 		pinned.result = err
-		pinned.mu.Unlock()
 		return err
+	}
+	if !filesystem.validPinned(pinned) {
+		return finish(ErrCredentialMaterialization)
 	}
 	if err := validateDirectoryFD(dirFD); err != nil {
 		return finish(err)
+	}
+	if pinned.immutable != nil {
+		// Unlink only our original inode, never an attacker replacement at its
+		// public name. Missing entries still permit bounded owned teardown.
+		var entry unix.Stat_t
+		err := unix.Fstatat(dirFD, pinned.fileName, &entry, unix.AT_SYMLINK_NOFOLLOW)
+		if err != nil && !errors.Is(err, unix.ENOENT) || err == nil && (!sameIdentity(entry, pinned.immutable.file) || entry.Mode&unix.S_IFMT != unix.S_IFREG) {
+			return finish(ErrCredentialMaterialization)
+		}
 	}
 	if err := unix.Unlinkat(dirFD, pinned.fileName, 0); err != nil && !errors.Is(err, unix.ENOENT) {
 		return finish(ErrCredentialMaterialization)

@@ -395,6 +395,14 @@ web-secret-load-test:
 web-deployment-policy-test:
 	@./scripts/test-web-deployment-policy.sh
 
+.PHONY: pi-sdk-bootstrap-test
+ci: pi-sdk-bootstrap-test
+PI_SDK_BOOTSTRAP_TEST_COUNT ?= 1
+
+pi-sdk-bootstrap-test: prepare
+	@node --permission --allow-fs-read="$(CURDIR)/internal/pisdkbootstrap" --no-addons --disable-proto=throw internal/pisdkbootstrap/resources.test.mjs
+	go test -race -count=$(PI_SDK_BOOTSTRAP_TEST_COUNT) -shuffle=on -timeout=30s ./internal/pisdkbootstrap
+
 cloud-web-smoke-test:
 	@node --test scripts/test-cloud-web-smoke.mjs
 

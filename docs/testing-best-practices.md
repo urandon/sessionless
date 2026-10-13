@@ -31,6 +31,11 @@ Use one time authority per scenario.
 - Pure domain and in-process concurrency tests must use an injected clock or
   [`testing/synctest`](https://pkg.go.dev/testing/synctest) where its isolation
   constraints fit. Advance logical time explicitly and wait for quiescence.
+- Define subtests outside `synctest.Test`: its inner `*testing.T` forbids
+  `Run`, `Parallel`, and `Deadline`. Its `Cleanup` callbacks run inside the
+  bubble before `synctest.Test` returns. Keep bubble channels and timers
+  inside that bubble; external process tests remain outside it. These limits
+  are part of the official [`synctest.Test` contract](https://pkg.go.dev/testing/synctest#Test).
 - Integration tests against an external system whose clock is authoritative
   must sample that clock and derive all related start, expiry, renewal, and
   completion timestamps from the sampled value. Do not combine `time.Now()`
@@ -44,6 +49,11 @@ Use one time authority per scenario.
   a bounded total deadline, and a useful timeout diagnostic.
 - A deadline is a failure bound, not synchronization. Synchronize goroutines
   with channels, mutexes, wait groups, contexts, or `synctest.Wait`.
+- Do not assume `select` prioritizes completion over a ready deadline: the
+  [Go specification](https://go.dev/ref/spec#Select_statements) permits either
+  ready case. For readiness or cleanup failure bounds, recheck completion
+  before reporting it still pending. Expiry tests must instead establish the
+  expiry decision from their authoritative clock.
 
 The Go team documents why real-time sleeps make concurrent tests slow and
 flaky, and recommends fake time plus a way to wait for quiescence in

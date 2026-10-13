@@ -32,8 +32,7 @@ printf '%s\n' '{"type":"turn.completed"}'
 	result, err := driver.Execute(context.Background(), request, &fixtureEventSink{})
 	if err != nil || result.Summary != "prepared result" || result.ProviderEvidence == nil ||
 		result.ProviderEvidence.FinishClass != domain.ProviderFinishCompletedV1 {
-		process, processErr := recording.snapshot()
-		t.Fatalf("Execute() result=%+v error=%v process=%+v process_error=%v", result, err, process, processErr)
+		t.Fatalf("Execute() result=%+v error=%v boundary_observation=%+v", result, err, recording.snapshot())
 	}
 	if content, err := os.ReadFile(authFile); err != nil || string(content) != `{"rotated":true}` {
 		t.Fatalf("prepared credential after Execute = %q, %v", content, err)
@@ -126,9 +125,9 @@ exit 91
 	case <-time.After(5 * time.Second):
 		t.Fatal("Execute() did not return after final authority check")
 	}
-	process, processErr := recording.snapshot()
-	if !process.Cancelled || !errors.Is(processErr, context.Canceled) {
-		t.Fatalf("early-exit arbitration process=%+v error=%v", process, processErr)
+	observed := recording.snapshot()
+	if !observed.Returned || !observed.Process.Cancelled || !errors.Is(observed.Err, context.Canceled) {
+		t.Fatalf("early-exit arbitration observation=%+v", observed)
 	}
 	if got := launcher.prepareCount(); got != 0 {
 		t.Fatalf("expired authority reached isolation preparation %d times", got)
@@ -171,25 +170,77 @@ printf '%s\n' '{"type":"turn.started"}'
 : >"$CODEX_HOME/started"
 while :; do :; done
 `)
-	request, _, driver, _, authFile, recording := preparedDriverFixture(t, fixture)
+	request, authority, driver, launcher, authFile, recording := preparedDriverFixture(t, fixture)
 	runCtx, stopRun := context.WithCancel(context.Background())
-	t.Cleanup(stopRun)
 	result := make(chan error, 1)
+	executeDone := make(chan struct{})
+	// Registered after fixture TempDirs and BEFORE launch: one callback cancels
+	// then joins, so even Fatal paths cannot skip the owned execution join.
+	t.Cleanup(func() {
+		if err := cancelAndJoinPreparedExecution(stopRun, executeDone, 10*time.Second); err != nil {
+			t.Errorf("test-owned Execute cleanup not joined/quiescent: %v observation=%+v", err, recording.snapshot())
+		}
+	})
+	var executeResult ports.ExecutionResult
 	go func() {
-		_, err := driver.Execute(runCtx, request, &fixtureEventSink{})
+		defer close(executeDone)
+		var err error
+		executeResult, err = driver.Execute(runCtx, request, &fixtureEventSink{})
 		result <- err
 	}()
 	waitForPathOrResult(t, filepath.Join(filepath.Dir(authFile), "started"), result, recording, 5*time.Second)
 	if err := driver.Cancel(context.Background(), executionIdentity(request)); err != nil {
 		t.Fatalf("Cancel() error = %v", err)
 	}
+	returned := time.NewTimer(10 * time.Second)
+	defer returned.Stop()
 	select {
 	case err := <-result:
 		if err == nil {
 			t.Fatal("cancelled Execute() error = nil")
 		}
-	case <-time.After(10 * time.Second):
+	case <-returned.C:
 		t.Fatal("cancelled Execute() did not stop within 10s")
+	}
+	// Same original 10s window, not a second result/grace deadline. This channel
+	// is independent of result, which readiness failures may already consume.
+	select {
+	case <-executeDone:
+	case <-returned.C:
+		// When both channels are already ready, select can choose the timer.
+		// Recheck this SAME completion, without extending the original bound.
+		select {
+		case <-executeDone:
+		default:
+			t.Fatal("cancelled Execute goroutine did not join within original 10s window")
+		}
+	}
+	observed := recording.snapshot()
+	process := observed.Process
+	if !observed.Returned || !process.Cancelled || !errors.Is(observed.Err, context.Canceled) ||
+		errors.Is(observed.Err, context.DeadlineExceeded) || process.Deadline || process.OutputLimitExceeded ||
+		!process.ProcessStopped || !process.DescendantsStopped || !process.CleanupSucceeded ||
+		!process.PrivateStateRemoved || !process.CredentialStateQuiesced {
+		t.Fatalf("exact cancellation lacks authentic joined teardown: observation=%+v", observed)
+	}
+	prepared := recording.delegate.(*PreparedProcessBoundaryV1)
+	if process.original == nil || process.original.boundary != prepared || process.original.authority != authority ||
+		!process.original.process.Cancelled || process.original.process.Deadline ||
+		!process.original.process.DescendantsReaped || !process.original.process.BoundaryReleased ||
+		!process.original.process.CleanupSucceeded ||
+		(!process.original.process.TermSent && !process.original.process.KillSent) {
+		t.Fatalf("exact cancellation original same-run witness missing: observation=%+v", observed)
+	}
+	if executeResult.ProviderEvidence == nil || executeResult.ProviderEvidence.FinishClass != domain.ProviderFinishCancelledV1 ||
+		executeResult.ProviderEvidence.FailureCode != domain.ProviderExecutionFailureCancelledV1 {
+		t.Fatalf("Execute cancellation evidence=%+v", executeResult.ProviderEvidence)
+	}
+	launch := launcher.snapshot()
+	if _, err := os.Stat(filepath.Dir(launch.Directory)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("actual private attempt root remains after joined cancellation: %v", err)
+	}
+	if data, err := os.ReadFile(authFile); err != nil || string(data) != `{"fixture":true}` {
+		t.Fatalf("public prepared credential changed after cancellation: bytes=%q error=%v", data, err)
 	}
 }
 
@@ -261,8 +312,15 @@ type recordingPreparedBoundary struct {
 	delegate  ProcessBoundaryV1
 	beforeRun func()
 	mu        sync.Mutex
-	result    ProcessResultV1
-	err       error
+	observed  preparedBoundaryObservation
+}
+
+// Returned describes delegate.Run completion, NOT preparation/process start.
+// Result/error/completion are read atomically as this one canonical test tuple.
+type preparedBoundaryObservation struct {
+	Returned bool
+	Process  ProcessResultV1
+	Err      error
 }
 
 func (boundary *recordingPreparedBoundary) Run(ctx context.Context, invocation ProcessInvocationV1) (ProcessResultV1, error) {
@@ -270,8 +328,10 @@ func (boundary *recordingPreparedBoundary) Run(ctx context.Context, invocation P
 		boundary.beforeRun()
 	}
 	result, err := boundary.delegate.Run(ctx, invocation)
+	recorded := result
+	recorded.Stdout = append([]byte(nil), result.Stdout...)
 	boundary.mu.Lock()
-	boundary.result, boundary.err = result, err
+	boundary.observed = preparedBoundaryObservation{Returned: true, Process: recorded, Err: err}
 	boundary.mu.Unlock()
 	return result, err
 }
@@ -280,10 +340,12 @@ func (boundary *recordingPreparedBoundary) Cancel(ctx context.Context, authority
 	return boundary.delegate.Cancel(ctx, authority)
 }
 
-func (boundary *recordingPreparedBoundary) snapshot() (ProcessResultV1, error) {
+func (boundary *recordingPreparedBoundary) snapshot() preparedBoundaryObservation {
 	boundary.mu.Lock()
 	defer boundary.mu.Unlock()
-	return boundary.result, boundary.err
+	observed := boundary.observed
+	observed.Process.Stdout = append([]byte(nil), observed.Process.Stdout...)
+	return observed
 }
 
 func writePreparedCodexFixture(t *testing.T, source string) string {
@@ -309,12 +371,10 @@ func waitForPathOrResult(t *testing.T, path string, result <-chan error, recordi
 		}
 		select {
 		case err := <-result:
-			process, processErr := recording.snapshot()
-			t.Fatalf("process exited before readiness: execute_error=%v process=%+v process_error=%v", err, process, processErr)
+			t.Fatalf("Execute returned before readiness: execute_error=%v boundary_observation=%+v", err, recording.snapshot())
 		case <-ticker.C:
 		case <-deadline.C:
-			process, processErr := recording.snapshot()
-			t.Fatalf("process readiness marker %q missing after %s: process=%+v process_error=%v", path, timeout, process, processErr)
+			t.Fatalf("process readiness marker %q missing after %s: boundary_observation=%+v", path, timeout, recording.snapshot())
 		}
 	}
 }

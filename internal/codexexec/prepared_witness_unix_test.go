@@ -90,7 +90,11 @@ func TestPreparedWitnessAgreesWithRealSupervisorDeferredCancellation(t *testing.
 			case <-ctx.Done():
 				t.Fatal("real supervisor/driver did not settle")
 			}
-			process, runErr := recording.snapshot()
+			observed := recording.snapshot()
+			process, runErr := observed.Process, observed.Err
+			if !observed.Returned {
+				t.Fatalf("settled Execute has pending boundary observation: %+v", observed)
+			}
 			if process.original == nil || process.original.boundary != boundary || process.original.process.Cancelled != process.Cancelled || process.Cancelled != cancelWins ||
 				!process.original.process.DescendantsReaped || !process.original.process.BoundaryReleased || !process.original.process.CleanupSucceeded {
 				t.Fatalf("final-arbitrated same-run witness: process=%+v original_present=%t run_err=%v", process, process.original != nil, runErr)

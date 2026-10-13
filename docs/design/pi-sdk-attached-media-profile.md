@@ -1,12 +1,17 @@
 # Pi SDK attached media profile
 
-Version: 0.1.2, 2026-10-12.
+Version: 0.1.3, 2026-10-13.
 Owner: [#202](https://gitcode.com/urandon/sessionless/issues/202), under
 [#72](https://gitcode.com/urandon/sessionless/issues/72).
 Status: engineering contract accepted under agreed-MVP delegation following
 independent requirements-led review. Publication and implementation remain
 separate; no eligible runtime profile or activation is created by this document.
 Version 0.1.2 adds the accepted attached API authority and spending contract.
+Version 0.1.3 explicitly amends its previously undefined `CallerDeadline`
+representation to distributed server/parent enforcement, without assuming
+synchronized wall clocks. This is not an authenticated database-epoch caller
+expiry or proof that the server knows the parent's true deadline. Exact source
+deadline provenance and enclosing phase protocol remain implementation gates.
 The native media requirements accepted in version 0.1.1 remain unchanged.
 
 Use Pi's existing SDK agent loop and standard Responses provider with typed
@@ -317,9 +322,9 @@ The read-only `AttachedPiAPIUseAuthorizerV1.AuthorizeAttachedPiAPIUse` operation
 uses the original Session-bound HTTPS source/transport seam and its
 bearer-derived scope. Its closed request carries original
 `AttachedWorkerSealedInputAuthorization`, expected original HarnessBindingDigest,
-the expected canonical AttachedPiAPIInvocationPolicyDigest, earlier
-CallerDeadline and one fixed phase: `pre_issue`, `physical_send` or
-`immutable_finalize`. These are comparison fields, not provider selectors,
+the expected canonical AttachedPiAPIInvocationPolicyDigest, the versioned
+send-relative CallerDeadline defined below and one fixed phase: `pre_issue`,
+`physical_send` or `immutable_finalize`. These are comparison fields, not provider selectors,
 grants or credential overrides. The server derives model/resource/profile
 from the stored original job. The response contains only fixed status, actual
 accepted head/revision, actual binding/policy digests, CheckedAt and UseExpiresAt;
@@ -349,20 +354,94 @@ the one `physical_send` authorization RPC. A denied, lost, late, malformed or
 uncertain reply yields zero send and leaves the permit spent. This phase has
 no auth-RPC retry, model resend, second child/runner, crash replay or queued
 permission. Send only after a matching successful fresh serializable snapshot
-and original local cancellation/deadline check. UseExpiresAt is the minimum
-of original caller deadline, lease expiry, connection auth/presence expiry,
-binding evidence and T/R expiry; no renewal extends that lifetime.
+and original local cancellation/deadline check. Server authority is bounded by
+every original applicable authentic Job/Run/lease, connection auth/presence,
+binding evidence and T/R expiry, including any genuinely stored server-side
+caller/run deadline. The request can tighten, never enlarge, those bounds.
+The genuine parent separately enforces its true retained local deadlines;
+no renewal extends either lifetime.
 
-CheckedAt and UseExpiresAt come from one server snapshot. Let the server
-remaining duration be UseExpiresAt minus CheckedAt. The parent records the full
-authorization round trip using its monotonic clock, subtracts that elapsed
-duration and a declared conservative safety slack, and clamps the result to
-its already-existing earlier caller/run/process deadlines. Anchor the remaining
-interval to the parent monotonic receive time; validate timestamp/duration
-arithmetic and deny nonpositive, overflowed, late or uncertain authority.
-Never compare unsynchronized parent UTC directly with a database epoch, reset
-lifetime after the reply or remint the consumed permit. Deterministic skew,
-round-trip delay, expiry and overflow cases must prove this translation.
+#### CallerDeadline representation and distributed enforcement
+
+The new canonical `AttachedPiAPICallerDeadlineV1` has exactly `Version uint32`
+equal to 1 and `RemainingNanoseconds uint64`. Under `CallerDeadline`, its
+canonical JSON is `{"version":1,"remaining_nanoseconds":N}`. Both fields are
+required and non-null. N is a canonical unsigned decimal integer in
+1..9223372036854775807: no sign, fraction, exponent, leading zero, string or
+coercion. Reject missing/wrong/zero version, zero/overflow, duplicate or unknown
+fields, trailing data and aliases. There is no absolute epoch/time.Time or
+legacy arm; this operation is new, not a compatibility read of an existing wire.
+Pin exact UTF-8 producer bytes and strict decoder parity. A uint64 cast or
+DisallowUnknownFields alone does not prove this grammar.
+
+This leaf describes an **untrusted send-relative tightening allowance**, not
+owner authority or a server-authenticated true local caller deadline. Before
+implementing the operation, derive its complete fixed request/reply body caps
+and framing from the actual authorization/comparison/version/phase fields and
+original per-root limits. The leaf grammar does not establish that enclosing
+envelope, impose a smaller whole-job/media cap or manufacture runtime eligibility.
+
+At original invocation/source construction, retain the actual governing local
+deadline objects and monotonic provenance. Immediately before a phase RPC,
+select their earliest applicable deadline L and monotonic send sample s; send
+W = L - s. Preparation elapsed before s reduces W. A missing, unknown,
+wall-only, saturated or lost-monotonic required bound denies. Never start a
+fresh context/process/grace timeout per phase. Prove the actual producer-field
+and one-time anchor mapping before implementation; an existing UTC lease check
+does not establish cross-clock provenance.
+
+For pre_issue, retain original caller/run/whole-invocation bounds after the
+complete canonical/media/fit/allocation checks. For physical_send, retain the
+same applicable invocation/model/process/caller/run/use bounds, without reset
+since pre_issue. For immutable_finalize, after callback return/unlock and
+process quiescence, retain the applicable original credential/use/invocation
+and current-authority bounds. Do not intersect unrelated timers merely to
+obtain a passing fixture, or turn cleanup grace into model/spend/publication
+permission. Owned Release/process/staging cleanup retains its original
+independently bounded grace and is attempted even after model-context
+cancellation. Its anchors are not restarted; historical control/ACK/failure
+paths retain their separate original predicates.
+
+Let a be the CheckedAt timestamp of the final successful fresh serializable
+snapshot **inside this same measured RPC**, and D the earliest applicable
+authentic server deadline. Validate exact positive B = D - a. Clamp
+U = min(B, W) before Add and validate UseExpiresAt = a + U. A larger malicious
+W cannot extend B but can misstate the true parent deadline. The server derives
+no permission from W and does not certify that true local L remains future.
+
+Record receive sample r from the same original monotonic clock, full elapsed
+R = r - s, and positive declared conservative safety slack S. After authentic
+status and exact phase/head/revision/binding/M matching, translate to
+F = r + min(U - R - S, L - r), only with positive exact arithmetic and retained
+monotonic provenance. Thus F <= s + U - S <= s + W - S < L and the server window
+is conservatively bounded by s + B - S. Clamp before Add, not after overflowing
+or saturating an endpoint. Recheck original cancellation and F immediately at
+the actual physical-send/Finalize use boundary; delayed use does not reanchor F.
+
+The final successful snapshot must physically occur within s..r, including all
+internal transaction-retry, processing and transport time in R. Return only
+that final snapshot's timestamps/current tuple. Cached materialization,
+asynchronous or another-RPC timestamps invalidate the argument. No extra clock
+RPC, token-count call, application physical_send auth retry or renewable token
+is introduced. Never compare independent parent UTC with the database epoch,
+reset R/L/F after a reply or remint the consumed permit. Joint genuine-parent
+and server enforcement is not attestation against a malicious owner-controlled
+host.
+
+Required counterexample: with L = s + 1 second and the server snapshot after
+1.5 seconds, B may still be 60 seconds and the server may return a + 1 second.
+That reply does not prove the true caller is live. The genuine parent's full
+R >= 1.5 seconds yields zero permission and zero send. Claiming independent
+server rejection requires another genuinely stored authentic server bound;
+do not invent synchronized clocks or infer it from the request.
+
+Deterministic controls retain independent epochs with identical monotonic
+elapsed time, work before RPC, caller exhaustion before snapshot, genuine
+shorter server bound/max-window clamping, malformed/overflow/lost-monotonic
+values, full R/slack/equality exhaustion, delayed use, wrong phase/head/M,
+cancelled context, retry delay inside R and a causal cached-snapshot denial.
+Restore legitimate controls and preserve complete original two-image/two-owner,
+G+1/Fence, failure/cleanup/historical ACK and native-runtime obligations.
 
 Authorization linearizes at the successful serializable current-authority
 snapshot's database order, not atomically with network bytes. Revoke/rotate

@@ -1114,11 +1114,12 @@
           "paths": [
             "internal/ydbstore/owned_attempt_effect_parent.go",
             "internal/ydbstore/owned_authority_canonical.go",
+            "internal/ydbstore/ready_expiry_repair.go",
             "internal/ydbstore/run_explanation.go",
             "internal/ydbstore/store.go",
             "internal/ydbstore/web_search_consent_reconcile.go"
           ],
-          "total": 5
+          "total": 6
         },
         "writers": {
           "paths": [
@@ -1384,9 +1385,10 @@
             "internal/ydbstore/canonical_ingress.go",
             "internal/ydbstore/operations.go",
             "internal/ydbstore/owned_authority_canonical.go",
+            "internal/ydbstore/ready_expiry_repair.go",
             "internal/ydbstore/scheduler.go"
           ],
-          "total": 4
+          "total": 5
         },
         "writers": {
           "paths": [
@@ -1466,9 +1468,10 @@
         },
         "writers": {
           "paths": [
+            "internal/ydbstore/ready_expiry_repair.go",
             "internal/ydbstore/store.go"
           ],
-          "total": 1
+          "total": 2
         }
       },
       "entityGroup": "queue-index",
@@ -2030,10 +2033,11 @@
           "paths": [
             "internal/ydbstore/attached_worker_execution_helpers.go",
             "internal/ydbstore/operations.go",
+            "internal/ydbstore/ready_expiry_repair.go",
             "internal/ydbstore/store.go",
             "internal/ydbstore/worker.go"
           ],
-          "total": 4
+          "total": 5
         }
       },
       "entityGroup": "expiry-index",
@@ -2065,10 +2069,11 @@
             "internal/ydbstore/attached_worker_execution_helpers.go",
             "internal/ydbstore/operations.go",
             "internal/ydbstore/owned_attempt_effect_parent.go",
+            "internal/ydbstore/ready_expiry_repair.go",
             "internal/ydbstore/web_search_consent_reconcile.go",
             "internal/ydbstore/worker.go"
           ],
-          "total": 5
+          "total": 6
         },
         "writers": {
           "paths": [
@@ -2108,10 +2113,11 @@
             "internal/ydbstore/attached_worker_execution_helpers.go",
             "internal/ydbstore/operations.go",
             "internal/ydbstore/owned_attempt_effect_parent.go",
+            "internal/ydbstore/ready_expiry_repair.go",
             "internal/ydbstore/run_explanation_attached.go",
             "internal/ydbstore/store.go"
           ],
-          "total": 7
+          "total": 8
         },
         "writers": {
           "paths": [
@@ -2579,9 +2585,10 @@
         },
         "writers": {
           "paths": [
+            "internal/ydbstore/ready_expiry_repair.go",
             "internal/ydbstore/store.go"
           ],
-          "total": 1
+          "total": 2
         }
       },
       "entityGroup": "expiry-index",
@@ -2615,9 +2622,10 @@
             "internal/ydbstore/operations.go",
             "internal/ydbstore/owned_attempt_effect_parent.go",
             "internal/ydbstore/owned_authority_canonical.go",
+            "internal/ydbstore/ready_expiry_repair.go",
             "internal/ydbstore/scheduler.go"
           ],
-          "total": 7
+          "total": 8
         },
         "writers": {
           "paths": [
@@ -2841,11 +2849,12 @@
           "paths": [
             "internal/ydbstore/owned_attempt_effect_parent.go",
             "internal/ydbstore/owned_authority_canonical.go",
+            "internal/ydbstore/ready_expiry_repair.go",
             "internal/ydbstore/run_explanation.go",
             "internal/ydbstore/session_api.go",
             "internal/ydbstore/session_lifecycle.go"
           ],
-          "total": 9
+          "total": 10
         },
         "writers": {
           "paths": [
@@ -3051,10 +3060,11 @@
           "paths": [
             "internal/ydbstore/owned_admission_principal.go",
             "internal/ydbstore/owned_authority_canonical.go",
+            "internal/ydbstore/ready_expiry_repair.go",
             "internal/ydbstore/serverless_current_authority.go",
             "internal/ydbstore/session_lifecycle.go"
           ],
-          "total": 4
+          "total": 5
         },
         "writers": {
           "paths": [
@@ -3728,10 +3738,11 @@
           "paths": [
             "internal/ydbpartition/backfill.go",
             "internal/ydbstore/operations.go",
+            "internal/ydbstore/ready_expiry_repair.go",
             "internal/ydbstore/session_lifecycle.go",
             "internal/ydbstore/store.go"
           ],
-          "total": 4
+          "total": 5
         },
         "writers": {
           "paths": [
@@ -3811,10 +3822,11 @@
         },
         "writers": {
           "paths": [
+            "internal/ydbstore/ready_expiry_repair.go",
             "internal/ydbstore/session_lifecycle.go",
             "internal/ydbstore/store.go"
           ],
-          "total": 2
+          "total": 3
         }
       },
       "entityGroup": "queue-index",

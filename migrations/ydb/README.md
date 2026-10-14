@@ -149,6 +149,12 @@ for that separate ready/expiry backfill, tuple verification and reader/writer
 drain. The legacy CREATE migrations and reset ownership remain until separately
 authorized physical retirement; the source registry still covers 105 tables.
 
+For a single authorized missing v2 tuple, use
+[`make ready-expiry-repair`](../../docs/ready-expiry-repair.md). This bounded
+operator command validates retained sources and Session deletion fences in the
+same transaction. It is not a migration or replacement for the four-family
+upgrade backfill; ambiguous metadata completion never grants external replay.
+
 Both commands require `YDB_CONNECTION_STRING`. Authentication is selected by
 the official YDB environment credential chain:
 

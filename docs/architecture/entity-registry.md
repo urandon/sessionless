@@ -56,9 +56,12 @@ legacy scheduling consumers. Retained v2 entries distinguish SELECT readers
 from UPSERT/DELETE writers. These remain bounded static samples, not a complete
 runtime graph.
 
-Bounded operator-only metadata repair and its loss/ambiguity controls remain
-required by #206; the compatible writer/bootstrap step alone does not implement
-repair or complete that task. Physical retirement and effective-schema tracking
+The [bounded operator repair](../ready-expiry-repair.md) reconstructs one selected
+v2 tuple from retained, correlated sources in a serializable transaction. It
+adds no table and changes no canonical parent or external effect. Its source
+and output refusal limits do not establish environment rollout; deployment
+handoff and physical retirement still require their own evidence. Physical
+retirement and effective-schema tracking
 belong to [#207](https://gitcode.com/urandon/sessionless/issues/207), under the
 separate rollout authority described in the design.
 

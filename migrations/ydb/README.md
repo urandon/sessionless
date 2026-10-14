@@ -8,6 +8,19 @@ the Goose library. Every file contains exactly one idempotent schema operation.
 YDB does not support transactional DDL, so grouping multiple operations into
 one migration would make crash recovery ambiguous.
 
+## Entity and durability registry
+
+Maintain the [application entity registry](../../docs/architecture/entity-registry.md)
+alongside table, primary-key, consumer and retention changes. It distinguishes
+physical schema observations from reviewed logical-state decisions. New tables
+must justify separate storage against reuse of authoritative records or indexes.
+Run `make entity-registry-check` and `make entity-registry-test`; both are part
+of `make docs-check` and read source files without connecting to YDB.
+The [state storage simplification design](../../docs/design/state-storage-simplification.md)
+is a draft, not migration or table-retirement authority. Reports and reduction
+decisions belong in [#205](https://gitcode.com/urandon/sessionless/issues/205)
+comments. Baseline compaction in #174 is separate from actual schema reduction.
+
 ## Baseline freeze
 
 Migrations `00110` and `00111` add the exact-key installed-profile and

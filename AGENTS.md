@@ -25,8 +25,11 @@
 - The serverless control plane routes work to workers rather than processing AI
   work inline.
 - Assume hosting targets Yandex Cloud serverless primitives unless requirements change.
-- Persist canonical and operational state in YDB and large immutable payloads
-  in Object Storage. Partition and authorize both by tenant.
+- Persist canonical and correctness-critical durable state in YDB and large
+  immutable payloads in Object Storage. Partition and authorize both by tenant.
+  Classify operational durability, reconstruction and retention through the
+  [entity registry](docs/architecture/entity-registry.md); do not default every
+  progress observation or intermediate execution state to permanent storage.
 
 ## Implementation preferences
 - Backend language priority: Go first, then TypeScript, then Python.
@@ -36,6 +39,13 @@
 - All Go tests and test reviews must follow
   [`docs/testing-best-practices.md`](docs/testing-best-practices.md), including
   its deterministic-time, isolation, cleanup, race, and exact-CI requirements.
+- Entity/table changes must update the [entity registry](docs/architecture/entity-registry.md)
+  and justify separate storage against reuse of existing records, fields or
+  indexes. Preserve the smallest necessary durable fence/effect/custody facts;
+  missing transient state must not authorize blind external replay.
+  Run `make entity-registry-check` and `make entity-registry-test` with schema
+  changes. Applied migrations and runtime guarantees change only through their
+  reviewed implementation and separately authorized rollout.
 
 ## Engineering acceptance and orchestration
 

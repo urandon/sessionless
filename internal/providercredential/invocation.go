@@ -282,32 +282,68 @@ func (service *InvocationService) immutableFinalizeCurrentBinding(ctx context.Co
 	return nil
 }
 
-func (service *InvocationService) ReleaseProviderCredential(_ context.Context, handle ports.ProviderInvocationCredentialV1) error {
-	if handle.Validate() != nil {
+func (service *InvocationService) ReleaseProviderCredential(ctx context.Context, handle ports.ProviderInvocationCredentialV1) error {
+	if ctx == nil || handle.Validate() != nil {
 		return ErrInvalid
 	}
-	service.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// No-Done callers retain the original wait-after-callback ordering.
+	// Cancellable cleanup instead refuses contention without a detached
+	// waiter. The registry error is generic: no handle was inspected yet.
+	finite := ctx.Done() != nil
+	if finite {
+		if !service.mu.TryLock() {
+			return ErrBackend
+		}
+		defer service.mu.Unlock()
+	} else {
+		service.mu.Lock()
+	}
 	state, found := service.handles[handle.HandleID]
-	service.mu.Unlock()
+	if !finite {
+		service.mu.Unlock()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if !found {
 		return nil
 	}
-	state.mu.Lock()
+	// The stored handle is immutable. Compare its entire tuple before
+	// disclosing per-handle contention, just as immutable Finalize does.
 	if state.handle != handle {
-		state.mu.Unlock()
 		return ErrNotFound
 	}
+	if finite {
+		if !state.mu.TryLock() {
+			return ErrConsumed
+		}
+	} else {
+		state.mu.Lock()
+	}
+	if err := ctx.Err(); err != nil {
+		state.mu.Unlock()
+		return err
+	}
+	// Context checks bound admission, not the interruptibility of filesystem
+	// syscalls. Preserve the original irreversible revocation tombstone
+	// before cleanup, including failures with partial residue. The tombstone
+	// is not successful cleanup evidence: an error retains state/file custody.
 	state.released = true
 	if err := service.cleanupProviderCredentialFileLocked(state); err != nil {
 		state.mu.Unlock()
 		return ErrDeliveryMismatch
 	}
 	state.mu.Unlock()
-	service.mu.Lock()
+	if !finite {
+		service.mu.Lock()
+		defer service.mu.Unlock()
+	}
 	if service.handles[handle.HandleID] == state {
 		delete(service.handles, handle.HandleID)
 	}
-	service.mu.Unlock()
 	return nil
 }
 

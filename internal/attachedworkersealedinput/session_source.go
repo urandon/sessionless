@@ -11,6 +11,8 @@ import (
 	"gitcode.com/urandon/sessionless/internal/attachedworkerprotocol"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerreceipt"
 	"gitcode.com/urandon/sessionless/internal/attachedworkersession"
+	"gitcode.com/urandon/sessionless/internal/attachedworkertransport"
+	"gitcode.com/urandon/sessionless/internal/pisdkphasewire"
 )
 
 // SessionSourceFactory binds sealed-input reads to the bearer produced by one
@@ -23,11 +25,13 @@ type SessionSourceFactory struct {
 	endpoint        string
 	client          *http.Client
 	receiptEndpoint string
+	phaseEndpoint   string
 
 	mu        sync.Mutex
 	state     sourceState
 	source    *ClientSource
 	publisher *attachedworkerreceipt.ClientPublisher
+	phase     *PiAPIClient
 	port      attachedworkersession.ExchangePort
 	cancel    context.CancelFunc
 	life      context.Context
@@ -81,6 +85,39 @@ func NewReceiptSessionSourceFactory(endpoint, receiptEndpoint string, client *ht
 	return factory, nil
 }
 
+// NewPiPhaseSessionSourceFactory explicitly composes input, receipt and phase
+// metadata for the SAME accepted Session/bearer/origin. Existing constructors
+// and normal composition are unchanged. There is no server operation/issuer or
+// driver/credential/profile activation here; the BoundMaterializer API path
+// remains unsupported and all original currentness/deadline gates remain open.
+func NewPiPhaseSessionSourceFactory(endpoint, receiptEndpoint, phaseEndpoint string, client *http.Client, delegate attachedworkersession.ExchangeFactory) (*SessionSourceFactory, error) {
+	phaseURL, err := piEndpoint(phaseEndpoint)
+	if err != nil {
+		return nil, ErrInvalid
+	}
+	inputURL, inputErr := url.Parse(endpoint)
+	receiptURL, receiptErr := url.Parse(receiptEndpoint)
+	if inputErr != nil || receiptErr != nil || !exactPiCompanionEndpoint(inputURL, endpoint, PathV1) || !exactPiCompanionEndpoint(receiptURL, receiptEndpoint, attachedworkerreceipt.PathV1) || inputURL.Scheme != phaseURL.Scheme || inputURL.Host != phaseURL.Host || receiptURL.Scheme != phaseURL.Scheme || receiptURL.Host != phaseURL.Host {
+		return nil, ErrInvalid
+	}
+	private, transport, err := piHTTPClient(client, phaseURL.Hostname())
+	if err != nil {
+		return nil, ErrInvalid
+	}
+	factory, err := NewReceiptSessionSourceFactory(endpoint, receiptEndpoint, private, delegate)
+	if err != nil {
+		transport.CloseIdleConnections()
+		return nil, err
+	}
+	factory.phaseEndpoint = phaseEndpoint
+	return factory, nil
+}
+
+func exactPiCompanionEndpoint(u *url.URL, endpoint, path string) bool {
+	return u != nil && u.Scheme == "https" && u.Host != "" && u.User == nil && u.Opaque == "" && u.Path == path &&
+		u.RawPath == "" && u.RawQuery == "" && !u.ForceQuery && u.Fragment == "" && u.String() == endpoint
+}
+
 func (factory *SessionSourceFactory) Open(binding attachedworkersession.ConnectionBindingV1, bearer []byte) (attachedworkersession.ExchangePort, error) {
 	if factory == nil || factory.delegate == nil || factory.cancel == nil {
 		return nil, ErrInvalid
@@ -92,6 +129,13 @@ func (factory *SessionSourceFactory) Open(binding attachedworkersession.Connecti
 	}
 	factory.state = sourceOpening
 	factory.mu.Unlock()
+	if factory.phaseEndpoint != "" {
+		_, bearerErr := attachedworkertransport.ParseConnectionBearer(bearer)
+		if !validPiBinding(binding) || bearerErr != nil {
+			_ = factory.Close()
+			return nil, ErrInvalid
+		}
+	}
 
 	source, err := NewClientSource(factory.endpoint, factory.client, bearer)
 	if err != nil {
@@ -107,10 +151,38 @@ func (factory *SessionSourceFactory) Open(binding attachedworkersession.Connecti
 			return nil, ErrInvalid
 		}
 	}
+	var phase *PiAPIClient
+	if factory.phaseEndpoint != "" {
+		phase, err = NewPiAPIClient(factory.phaseEndpoint, factory.client, binding, bearer)
+		if err != nil {
+			_ = source.Close()
+			_ = publisher.Close()
+			_ = factory.Close()
+			return nil, ErrInvalid
+		}
+	}
+	// In the new phase branch, publish only ownership slots (NOT open state)
+	// before a possibly held delegate.Open. Retirement can clear/cancel every
+	// newly retained bearer without waiting for that delegate to return.
+	if phase != nil {
+		factory.mu.Lock()
+		if factory.state != sourceOpening {
+			factory.mu.Unlock()
+			_ = source.Close()
+			_ = publisher.Close()
+			_ = phase.Close()
+			return nil, ErrUnavailable
+		}
+		factory.source = source
+		factory.publisher = publisher
+		factory.phase = phase
+		factory.mu.Unlock()
+	}
 	exchange, err := factory.delegate.Open(binding, bearer)
 	if err != nil || exchange == nil {
 		_ = source.Close()
 		_ = publisher.Close()
+		_ = phase.Close()
 		_ = factory.Close()
 		if closer, ok := exchange.(interface{ Close() error }); ok {
 			_ = closer.Close()
@@ -122,6 +194,7 @@ func (factory *SessionSourceFactory) Open(binding attachedworkersession.Connecti
 		factory.mu.Unlock()
 		_ = source.Close()
 		_ = publisher.Close()
+		_ = phase.Close()
 		if closer, ok := exchange.(interface{ Close() error }); ok {
 			_ = closer.Close()
 		}
@@ -129,10 +202,33 @@ func (factory *SessionSourceFactory) Open(binding attachedworkersession.Connecti
 	}
 	factory.source = source
 	factory.publisher = publisher
+	factory.phase = phase
 	factory.port = exchange
 	factory.state = sourceOpen
 	factory.mu.Unlock()
 	return &sourceClosingExchange{delegate: exchange, source: factory}, nil
+}
+
+// RequestPiAPIUse exposes only the SAME accepted session's phase metadata
+// channel. It never computes a new deadline/permit or proves source currentness.
+func (factory *SessionSourceFactory) RequestPiAPIUse(ctx context.Context, request pisdkphasewire.Request) (pisdkphasewire.Reply, error) {
+	if factory == nil || ctx == nil || ctx.Err() != nil {
+		return pisdkphasewire.Reply{}, ErrInvalid
+	}
+	factory.mu.Lock()
+	phase := factory.phase
+	open := factory.state == sourceOpen
+	factory.mu.Unlock()
+	if !open || phase == nil {
+		return pisdkphasewire.Reply{}, ErrUnavailable
+	}
+	reply, err := phase.RequestPiAPIUse(ctx, request)
+	factory.mu.Lock()
+	defer factory.mu.Unlock()
+	if factory.state != sourceOpen || ctx.Err() != nil {
+		return pisdkphasewire.Reply{}, ErrUnavailable
+	}
+	return reply, err
 }
 
 func (factory *SessionSourceFactory) Load(ctx context.Context, request attachedworkerdaemontransport.MaterializationRequestV1) (attachedworkerdaemontransport.SealedInputV1, error) {
@@ -188,14 +284,16 @@ func (factory *SessionSourceFactory) revokeSource() error {
 	factory.mu.Lock()
 	source := factory.source
 	publisher := factory.publisher
+	phase := factory.phase
 	factory.source = nil
 	factory.publisher = nil
+	factory.phase = nil
 	factory.state = sourceClosed
 	if factory.cancel != nil {
 		factory.cancel()
 	}
 	factory.mu.Unlock()
-	return errors.Join(source.Close(), publisher.Close())
+	return errors.Join(source.Close(), publisher.Close(), phase.Close())
 }
 
 // Close revokes the bearer and closes the acquired exchange. The outer

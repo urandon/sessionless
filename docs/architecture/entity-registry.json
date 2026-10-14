@@ -1402,7 +1402,7 @@
     {
       "table": "dispatch_ready",
       "migration": "00020_create_dispatch_ready.sql",
-      "role": "Ready-work scheduling/access-path projection.",
+      "role": "Legacy ready/expiry projection retained in physical schema, immutable history and reset ownership; no serving SQL readers or writers after the compatible v2-only code step.",
       "primaryKey": [
         "tenant_id",
         "available_at",
@@ -1422,24 +1422,17 @@
       },
       "knownRefs": {
         "readers": {
-          "paths": [
-            "internal/ydbpartition/backfill.go",
-            "internal/ydbstore/scheduler.go",
-            "internal/ydbstore/store.go"
-          ],
-          "total": 3
+          "paths": [],
+          "total": 0
         },
         "writers": {
-          "paths": [
-            "internal/ydbpartition/backfill.go",
-            "internal/ydbstore/store.go"
-          ],
-          "total": 2
+          "paths": [],
+          "total": 0
         }
       },
       "entityGroup": "queue-index",
       "durabilityReview": "pending",
-      "proposedDisposition": "review"
+      "proposedDisposition": "retire-after-v2-only-rollout"
     },
     {
       "table": "dispatch_ready_v2",
@@ -1467,17 +1460,15 @@
       "knownRefs": {
         "readers": {
           "paths": [
-            "internal/ydbstore/scheduler.go",
-            "internal/ydbstore/store.go"
+            "internal/ydbstore/scheduler.go"
           ],
-          "total": 2
+          "total": 1
         },
         "writers": {
           "paths": [
-            "internal/ydbpartition/backfill.go",
             "internal/ydbstore/store.go"
           ],
-          "total": 2
+          "total": 1
         }
       },
       "entityGroup": "queue-index",
@@ -1973,7 +1964,7 @@
     {
       "table": "lease_expiry",
       "migration": "00019_create_lease_expiry.sql",
-      "role": "Expiry/deadline access-path projection.",
+      "role": "Legacy ready/expiry projection retained in physical schema, immutable history and reset ownership; no serving SQL readers or writers after the compatible v2-only code step.",
       "primaryKey": [
         "tenant_id",
         "expires_at",
@@ -1993,26 +1984,17 @@
       },
       "knownRefs": {
         "readers": {
-          "paths": [
-            "internal/ydbpartition/backfill.go",
-            "internal/ydbstore/attached_worker_execution_helpers.go",
-            "internal/ydbstore/operations.go",
-            "internal/ydbstore/store.go",
-            "internal/ydbstore/worker.go"
-          ],
-          "total": 5
+          "paths": [],
+          "total": 0
         },
         "writers": {
-          "paths": [
-            "internal/ydbpartition/backfill.go",
-            "internal/ydbstore/store.go"
-          ],
-          "total": 2
+          "paths": [],
+          "total": 0
         }
       },
       "entityGroup": "expiry-index",
       "durabilityReview": "pending",
-      "proposedDisposition": "review"
+      "proposedDisposition": "retire-after-v2-only-rollout"
     },
     {
       "table": "lease_expiry_v2",
@@ -2040,19 +2022,18 @@
       "knownRefs": {
         "readers": {
           "paths": [
+            "internal/ydbstore/operations.go"
+          ],
+          "total": 1
+        },
+        "writers": {
+          "paths": [
             "internal/ydbstore/attached_worker_execution_helpers.go",
             "internal/ydbstore/operations.go",
             "internal/ydbstore/store.go",
             "internal/ydbstore/worker.go"
           ],
           "total": 4
-        },
-        "writers": {
-          "paths": [
-            "internal/ydbpartition/backfill.go",
-            "internal/ydbstore/store.go"
-          ],
-          "total": 2
         }
       },
       "entityGroup": "expiry-index",
@@ -2534,7 +2515,7 @@
     {
       "table": "quota_expiry",
       "migration": "00022_create_quota_expiry.sql",
-      "role": "Expiry/deadline access-path projection.",
+      "role": "Legacy ready/expiry projection retained in physical schema, immutable history and reset ownership; no serving SQL readers or writers after the compatible v2-only code step.",
       "primaryKey": [
         "tenant_id",
         "expires_at",
@@ -2554,24 +2535,17 @@
       },
       "knownRefs": {
         "readers": {
-          "paths": [
-            "internal/ydbpartition/backfill.go",
-            "internal/ydbstore/scheduler.go",
-            "internal/ydbstore/store.go"
-          ],
-          "total": 3
+          "paths": [],
+          "total": 0
         },
         "writers": {
-          "paths": [
-            "internal/ydbpartition/backfill.go",
-            "internal/ydbstore/store.go"
-          ],
-          "total": 2
+          "paths": [],
+          "total": 0
         }
       },
       "entityGroup": "expiry-index",
       "durabilityReview": "pending",
-      "proposedDisposition": "review"
+      "proposedDisposition": "retire-after-v2-only-rollout"
     },
     {
       "table": "quota_expiry_v2",
@@ -2599,17 +2573,15 @@
       "knownRefs": {
         "readers": {
           "paths": [
-            "internal/ydbstore/scheduler.go",
-            "internal/ydbstore/store.go"
+            "internal/ydbstore/scheduler.go"
           ],
-          "total": 2
+          "total": 1
         },
         "writers": {
           "paths": [
-            "internal/ydbpartition/backfill.go",
             "internal/ydbstore/store.go"
           ],
-          "total": 2
+          "total": 1
         }
       },
       "entityGroup": "expiry-index",
@@ -3775,7 +3747,7 @@
     {
       "table": "telegram_delivery_ready",
       "migration": "00021_create_telegram_delivery_ready.sql",
-      "role": "Ready-work scheduling/access-path projection.",
+      "role": "Legacy ready/expiry projection retained in physical schema, immutable history and reset ownership; no serving SQL readers or writers after the compatible v2-only code step.",
       "primaryKey": [
         "tenant_id",
         "available_at",
@@ -3795,25 +3767,17 @@
       },
       "knownRefs": {
         "readers": {
-          "paths": [
-            "internal/ydbpartition/backfill.go",
-            "internal/ydbstore/operations.go",
-            "internal/ydbstore/session_lifecycle.go",
-            "internal/ydbstore/store.go"
-          ],
-          "total": 4
+          "paths": [],
+          "total": 0
         },
         "writers": {
-          "paths": [
-            "internal/ydbpartition/backfill.go",
-            "internal/ydbstore/store.go"
-          ],
-          "total": 2
+          "paths": [],
+          "total": 0
         }
       },
       "entityGroup": "queue-index",
       "durabilityReview": "pending",
-      "proposedDisposition": "review"
+      "proposedDisposition": "retire-after-v2-only-rollout"
     },
     {
       "table": "telegram_delivery_ready_v2",
@@ -3841,15 +3805,13 @@
       "knownRefs": {
         "readers": {
           "paths": [
-            "internal/ydbstore/operations.go",
-            "internal/ydbstore/session_lifecycle.go",
-            "internal/ydbstore/store.go"
+            "internal/ydbstore/operations.go"
           ],
-          "total": 3
+          "total": 1
         },
         "writers": {
           "paths": [
-            "internal/ydbpartition/backfill.go",
+            "internal/ydbstore/session_lifecycle.go",
             "internal/ydbstore/store.go"
           ],
           "total": 2

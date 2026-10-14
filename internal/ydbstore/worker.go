@@ -770,13 +770,6 @@ func finishWorkerScheduling(
 		return err
 	}
 	if _, err := tx.sqlTx.ExecContext(ctx,
-		`DELETE FROM lease_expiry
-		 WHERE tenant_id = $1 AND expires_at = $2 AND run_id = $3`,
-		run.TenantID, expiresAt, run.ID,
-	); err != nil {
-		return err
-	}
-	if _, err := tx.sqlTx.ExecContext(ctx,
 		`DELETE FROM lease_expiry_v2
 		 WHERE shard_bucket = $1 AND expires_at = $2
 		 AND tenant_id = $3 AND run_id = $4`,

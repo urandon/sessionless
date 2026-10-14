@@ -970,7 +970,6 @@ func deleteSessionRowsTx(ctx context.Context, tx *stateTx, sessionID domain.Sess
 				query string
 				args  []any
 			}{
-				{`DELETE FROM telegram_delivery_ready WHERE tenant_id = $1 AND available_at = $2 AND telegram_delivery_id = $3`, []any{tx.tenantID, availableAt, delivery.ID}},
 				{`DELETE FROM telegram_delivery_ready_v2 WHERE shard_bucket = $1 AND available_at = $2 AND tenant_id = $3 AND telegram_delivery_id = $4`, []any{bucket, availableAt, tx.tenantID, delivery.ID}},
 				{`DELETE FROM telegram_delivery_outbox WHERE tenant_id = $1 AND telegram_delivery_id = $2`, []any{tx.tenantID, delivery.ID}},
 			} {

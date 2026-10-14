@@ -114,10 +114,12 @@ load-based auto-partitioning and otherwise use YDB defaults. Exact thresholds
 may be tuned later from cloud measurements; none of those operational values
 are part of the runtime schema contract.
 
-The four legacy tenant-first ready/expiry tables remain during the compatibility
-window. New code dual-writes legacy and v2 rows. Serving code must use the v2
-layout for global traversal; legacy scans are allowed only in the backfill
-command.
+The four legacy tenant-first ready/expiry tables remain physically present
+until separately authorized retirement. Serving code reads and writes only the
+v2 layout; it does not need legacy rows for normal cleanup or bootstrap. Their
+CREATE history and reset ownership remain. Retained-work upgrades must first
+complete the dual-writing predecessor's backfill and reader/writer drain;
+source-only write reduction is not physical table removal.
 
 ## Inspection
 
@@ -148,21 +150,26 @@ throughput, RU consumption, or split/merge latency.
 2. **Dual write:** deploy the control revision that writes both legacy and v2
    ready/expiry rows. The previous revision remains compatible because the
    legacy tables are untouched.
-3. **Backfill:** run `make partition-backfill`. The command scans only the four
-   legacy tables and idempotently upserts v2 rows. Rerunning is safe. Use
-   `.build/bin/schema-backfill --dry-run` to report row counts without writes.
-4. **Verify:** compare legacy/v2 logical counts, run `make partition-status`,
+3. **Backfill:** use the version-pinned dual-writing predecessor recorded in
+   [#206 execution comments](https://gitcode.com/urandon/sessionless/issues/206)
+   for `make partition-backfill` and its dry-run. That predecessor copies legacy
+   ready/expiry rows into v2 idempotently; the new normal command backfills only
+   lifecycle indexes and cannot replace this upgrade step.
+4. **Verify:** compare legacy/v2 logical keys and tuples, run `make partition-status`,
    and exercise duplicate ingress, lease renewal, quota transitions, dispatch,
    and delivery retry.
-5. **Cut over:** deploy bounded-bucket readers from the scheduler/reconciler
-   task and confirm no legacy-only writes for at least one maximum lease/retry
-   window.
-6. **Contract:** stop legacy dual writes and drop legacy tables only through a
-   later reviewed migration. No automatic down migration is provided.
+5. **Cut over:** drain actual old readers/writers over the configured maximum
+   lease/retry window before deploying v2-only code. A lifecycle cutover marker
+   does not establish this separate ready/expiry verification or drain.
+6. **Contract:** the compatible code step stops legacy writes while physical
+   tables remain. Drop them only through the separately reviewed and authorized
+   retirement in [#207](https://gitcode.com/urandon/sessionless/issues/207). An
+   old dual-writing binary needs its schema and discovery coverage restored
+   before rollback; neither rollback nor repair may replay unknown effects.
 
-The current project has no cloud production data. This procedure is still
-executable so cloud-dev and later environments do not invent a different
-primary-key migration protocol.
+The procedure requires explicit environment authority and retained-data
+evidence. It does not certify any environment's data as disposable or authorize
+a reset, table deletion or deployment.
 
 Migrations `00039` and `00040` add the scheduler slot and tenant counter point
 tables. Both use tenant-first keys and load-aware splitting. They are not
@@ -177,7 +184,9 @@ Deterministic tests cover:
 - high-entropy operational ID generation;
 - every bucket derivation golden vector;
 - exactly 16 bounded ready/expiry targets;
-- migration repeatability, v1/v2 dual writes, and bucketed expiry reads.
+- migration repeatability, v2-only writes with legacy absence, and bucketed
+  expiry reads. Source controls, authorized native runs and deployed capacity
+  evidence remain distinct.
 
 Cloud-dev and release-candidate tests must add:
 

@@ -2,7 +2,11 @@ package attachedworkerdaemon
 
 import (
 	"context"
+	"reflect"
+	"time"
 
+	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/pisdkphasewire"
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
 
@@ -17,6 +21,7 @@ type PreparedInvocationV1 struct {
 	Credential      ports.ProviderInvocationCredentialV1      `json:"-"`
 	Materialization ports.ProviderCredentialMaterializationV1 `json:"-"`
 	VerifiedInput   *VerifiedAttachedInputV1                  `json:"-"`
+	APIRequest      *PreparedAPIRequestV1                     `json:"-"`
 }
 
 func (PreparedInvocationV1) String() string {
@@ -40,4 +45,92 @@ type PreparedProcessRunner interface {
 // No shipped foreground/profile constructor uses this default-off library seam.
 func NewPreparedInvocationRunner(config InvocationRunnerConfig, executor PreparedProcessRunner, credentials ports.CredentialLifecycle) (*InvocationRunner, error) {
 	return newInvocationRunner(config, nil, executor, credentials)
+}
+
+// PreparedAPIRequestV1 is complete borrowed request DATA, never admission,
+// native fit, currentness, or a physical-send capability. Every buffer is
+// prospectively funded by the SAME parent ledger before it is transferred.
+type PreparedAPIRequestV1 struct {
+	Profile                      domain.AttachedPiSDKNativeProfileV1 `json:"-"`
+	Body, Model, Schema, Headers []byte                              `json:"-"`
+}
+
+func (PreparedAPIRequestV1) String() string     { return "PreparedAPIRequestV1{data:[redacted]}" }
+func (v PreparedAPIRequestV1) GoString() string { return v.String() }
+
+// PreparedAPILedgerV1 borrows the existing canonical ledger's actual methods.
+// It is NOT a snapshot certificate or fresh budget; prior debits survive.
+type PreparedAPILedgerV1 interface {
+	Reserve(copyBytes, liveBytes, nodes uint64) error
+	EndLive(uint64) error
+}
+
+// PreparedAPIRetirementV1 belongs to the original retirement owner. Context
+// returns its once-selected applicable cutoff, including elapsed retirement
+// already begun during callback/process cleanup. It must not restart grace.
+// First retirement after normal completion is allowed; model-use permission
+// never follows from this independently cancellable cleanup context.
+type PreparedAPIRetirementV1 interface {
+	Context() (context.Context, error)
+}
+
+// PreparedAPIDataV1 transfers funded independent parent/child copies, not a
+// grant. Prepare must fund all cloning, validation and comparison work BEFORE
+// allocation, including the process projection. No runner-side Clone/stringify
+// replenishes that ledger. A real source-derived implementation is absent.
+type PreparedAPIDataV1 struct {
+	Issue                                                      ports.ProviderCredentialIssueRequestV1       `json:"-"`
+	ParentInput, ChildInput                                    *VerifiedAttachedInputV1                     `json:"-"`
+	ParentRequest, ChildRequest                                PreparedAPIRequestV1                         `json:"-"`
+	ParentProcess, ChildProcess                                AttemptSpec                                  `json:"-"`
+	Authorization                                              ports.AttachedWorkerSealedInputAuthorization `json:"-"`
+	Entry, CallerDeadline, InvocationDeadline, ProcessDeadline time.Time                                    `json:"-"`
+	SafetySlack                                                time.Duration                                `json:"-"`
+	Ledger                                                     PreparedAPILedgerV1                          `json:"-"`
+	Retirement                                                 PreparedAPIRetirementV1                      `json:"-"`
+	// Original composite data owner clears its buffers/live reservations; it
+	// never refunds cumulative work/nodes or manufactures credential cleanup.
+	Custody interface{ Clear() } `json:"-"`
+}
+
+func (PreparedAPIDataV1) String() string     { return "PreparedAPIDataV1{data:[redacted]}" }
+func (v PreparedAPIDataV1) GoString() string { return v.String() }
+
+// PreparedAPIParentV1 is trusted engineering DI, NOT child/wire configuration.
+// Prepare owns the full original canonical/native/profile/fit admission and
+// original deadline provenance; returned DATA cannot certify those facts.
+// Observe must use the genuine SAME authenticated owner/source transaction and
+// sole requested RPC. Matching PiAPIClient metadata alone DOES NOT implement
+// this contract. No shipped production composition supplies an implementation;
+// ordinary constructors/materializers remain API-denying. Synthetic local
+// collaborators qualify orchestration only, never serving/source/S/hard-F.
+type PreparedAPIParentV1 interface {
+	PrepareOriginalAPIInvocation(context.Context, InvocationIdentity, *VerifiedAttachedInputV1, AttemptSpec) (*PreparedAPIDataV1, error)
+	ObserveOriginalAPIPhase(context.Context, pisdkphasewire.Request) (pisdkphasewire.Reply, error)
+}
+
+func nilPreparedAPIDependency(value any) bool {
+	if value == nil {
+		return true
+	}
+	v := reflect.ValueOf(value)
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Interface, reflect.Func, reflect.Map, reflect.Slice, reflect.Chan:
+		return v.IsNil()
+	}
+	return false
+}
+
+// NewPreparedAPIInvocationRunner is an explicit default-off library seam.
+// Merely implementing the DATA interfaces does not supply source authority;
+// normal production registration is intentionally untouched/unavailable.
+func NewPreparedAPIInvocationRunner(executor PreparedProcessRunner, credentials ports.ProviderResourceCredentialLifecycleV1, parent PreparedAPIParentV1) (*InvocationRunner, error) {
+	if nilPreparedAPIDependency(executor) || nilPreparedAPIDependency(credentials) || nilPreparedAPIDependency(parent) {
+		return nil, ErrInvocationInvalid
+	}
+	finalizer, ok := credentials.(ports.ProviderCredentialImmutableFileFinalizerV1)
+	if !ok || nilPreparedAPIDependency(finalizer) {
+		return nil, ErrCredentialUnavailable
+	}
+	return &InvocationRunner{prepared: executor, apiCredentials: credentials, apiFinalizer: finalizer, apiParent: parent}, nil
 }

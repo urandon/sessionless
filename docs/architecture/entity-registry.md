@@ -12,6 +12,27 @@ lookup projections; a current execution record may contain several bounded
 operational fields. Separate physical storage requires a concrete access,
 lifecycle or transaction reason, not one table for every state or proof.
 
+## Logical entity groups
+
+The following groups map the first reviewed questions to physical storage.
+They overlap where a table contains both current and historical data; a group
+is not a request for another table. The complete physical list remains in JSON.
+
+| Logical entity | Physical mapping | Required or proposed durability |
+| --- | --- | --- |
+| Canonical conversation and useful output | `sessions`, `session_events`, `artifact_manifests`, `run_finalizations` | Durable acknowledged content and exact finalization; large immutable bytes have separate storage ownership. |
+| Accepted Run identity and cancellation | `runs`, `run_idempotency`, `runs_by_session` | Durable accepted identity/cancellation; the lookup projection has a separate reconstruction/lifecycle decision. |
+| Current execution | `attempts`, `lease_heads`, `leases`, `worker_jobs` | Current owner/fence/expiry and admitted input remain transactional; a merged layout needs replacement of existing joins. |
+| Historical execution detail | Historical `attempts`/`leases`, `checkpoints`, diagnostics | Evaluate bounded retention, derived views or ephemeral progress separately from current execution. No blanket permanent-history requirement. |
+| Irreversible effect and output custody | `attempt_effect_reservations`, reconciliation evidence, `attached_worker_output_receipts` | Retain exact accepted/ambiguous effect identity and custody until owning reconciliation/retention permits retirement. |
+| Ready and expiry discovery | `lease_expiry`, `dispatch_ready`, `quota_expiry`, `telegram_delivery_ready` and their `_v2` counterparts | Proposed single v2 projection per family; retire four predecessors through the linked first reduction contract. |
+
+The [consumer and durability study](../research/state-storage-and-durability.md)
+records actual joins, default retention, old-index callers and source write
+counts. The [first reduction contract](../design/state-storage-simplification.md#first-reduction-contract)
+does not accept the exploratory Run/Attempt/Lease layout or classify every
+remaining physical table. Unknown owner/retention decisions stay open in #205.
+
 ## What the inventory establishes
 
 Each record identifies a table, its CREATE migration and primary key. The

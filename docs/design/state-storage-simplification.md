@@ -1,6 +1,7 @@
 # State storage simplification
 
-Version: 0.1. Status: draft design for
+Version: 0.2. Status: proposed first index-retirement design; Run/Attempt/Lease
+layout remains exploratory. Owning task:
 [#205](https://gitcode.com/urandon/sessionless/issues/205).
 
 Keep accepted conversation content and the smallest state that prevents
@@ -86,8 +87,10 @@ and state how that reduction is measured.
 
 ## Harness comparison
 
-The source comparison uses the repository's recorded competitor snapshots,
-not a claim about their latest releases:
+The detailed [source comparison and consumer study](../research/state-storage-and-durability.md)
+compares local harnesses, managed checkpoint boundaries and the actual
+Sessionless transaction dependencies. The local snapshots below are not claims
+about competitors' latest releases:
 
 | Harness | Persistence observation | Relevant lesson |
 | --- | --- | --- |
@@ -99,8 +102,124 @@ not a claim about their latest releases:
 Sessionless also coordinates multiple principals, workers, queues, credentials
 and external effects. Those require a larger correctness kernel than a local
 single-user harness. They do not justify indefinite retention of every derived
-status. A managed-checkpoint comparison and the actual write-path measurements
-remain required before selecting the runtime reduction design.
+status. Temporal replay and LangGraph's durability modes support separating
+durable results and decisions from transient working state; neither removes
+external-effect reconciliation. Actual transaction-cost measurements are
+separate from the source write counts used for the first reduction.
+
+## First reduction contract
+
+Retain `lease_expiry_v2`, `dispatch_ready_v2`, `quota_expiry_v2` and
+`telegram_delivery_ready_v2` as the sole serving discovery indexes. Retire
+their four unversioned predecessors after the existing migration and drain
+conditions. Change no Run, Attempt, Lease, worker-job, cancellation, effect,
+quota or canonical-finalization authority in this slice.
+
+The proposed active schema has four fewer tables: 105 to 101 at the inspected
+baseline. New lease/held-reservation/active-delivery writes lose one UPSERT;
+their replacement branches lose one DELETE and one UPSERT. Pending dispatch
+loses the same two writes; its nonpending branch loses one DELETE. Surrounding
+transaction work is unchanged. The research report gives the scoped counts.
+
+### Reader writer and cleanup mapping
+
+| Family | Retained read | Writer and cleanup scope |
+| --- | --- | --- |
+| Lease expiry | Defined/tested `ListExpiredLeasesByBucket`, fixed 16 buckets; no production caller established | `PutLease`, normal worker release, operations release and attached-worker transitions; remove the obsolete `ListExpiredLeases` method after caller verification |
+| Dispatch ready | Scheduler v2 selector | `PutDispatchOutbox`, deployment backfill and its tests |
+| Quota expiry | Scheduler v2 selector | `PutQuotaReservation`, backfill and reservation/owned-admission tests |
+| Telegram delivery ready | Bucketed delivery selector | `PutTelegramDeliveryOutbox`, Session deletion, backfill and tests; no Telegram rollout |
+
+Update partition inspection policy, reset/bootstrap source contracts and the
+entity registry with the intended active layout. Preserve historical schema
+identity where migration checksums require it. Reset allowlists and migration
+history are not proof that a table remains an active product entity.
+
+### Loss and ambiguous operation behavior
+
+Ready/expiry entries discover work; they do not authorize publication, quota
+spending or provider calls. Every recovered candidate still passes the existing
+exact owning-record, status, cancellation, current lease/fence and expiry
+checks. A duplicate or stale entry cannot become a second effect claim.
+
+Losing the retained index can delay discovery. It must produce an explicit
+repair/unavailable condition, not lost canonical content or an automatic
+replacement model/upload call. Repair copies metadata from bounded,
+authorized authoritative inputs, without executing the underlying work. The
+selected repair is an operator-only metadata operation on explicit tenant and
+bounded exact entity locators, not a serving global scan or automatic replay.
+It point-reads the source and current ownership in the same serializable
+transaction as the projection write. It changes no parent record, TTL, fence
+or status. Missing, invalid, retired or changed sources are not fabricated.
+An elapsed lease/reservation deadline can still require expiry discovery:
+copy its original due time, never extend it or grant publication authority.
+
+| Projection | Authoritative repair input | Tuple and eligibility |
+| --- | --- | --- |
+| Lease expiry v2 | Exact Run's `lease_heads` and its selected `leases` row | Matching tenant/run/lease/attempt/worker/fence/expiry; bucket from Run ID. Never reconstruct a superseded body as the current lease. |
+| Dispatch ready v2 | Exact `dispatch_outbox` record | Pending status and its immutable ID/Run/Attempt/created time; bucket from outbox ID. |
+| Quota expiry v2 | Exact `quota_reservations` record | Held status with its expiry and owning identity; bucket from reservation ID. Terminal reservations are not re-admitted. |
+| Telegram ready v2 | Exact `telegram_delivery_outbox` record | Pending/retry/sending eligibility, unchanged `telegramDeliveryAvailableAt` calculation and owning identity; bucket from delivery ID. This is not sending a message. |
+
+Repair authority and the locator/output bound are explicit command inputs;
+these are implementation verification requirements, not a grant to run it.
+No repair row or permanent repair ledger is needed. Unrecoverable source loss
+remains unavailable/reconcile-only. A retained v2 index is never reconstructed
+from a table that has already been removed.
+
+### Upgrade retained data and rollback
+
+1. Preserve the existing dual-writing revision until its v2 backfill and logical
+   key/tuple verification complete. Do not treat a lifecycle marker as evidence
+   for this separate retirement.
+2. Inventory and drain actual legacy-only writers/readers using the existing
+   deployment controls. Observe the configured maximum lease/retry window;
+   do not invent a fixed duration from source defaults. No new runtime marker,
+   mode switch or retirement table is introduced.
+3. Deploy v2-only code while old physical tables remain. Normal, attached,
+   deletion and backfill paths must no longer depend on them. Verify retained
+   work and legitimate terminal publication through existing authorities.
+4. Retire the four physical tables under separately granted migration/reset
+   authority. For disposable environments, an authorized fresh-schema rebuild
+   is an alternative; it is not permission to destroy retained user data.
+
+Before physical retirement, rollback may restore the old code while retaining
+v2. Restore any legacy discovery coverage needed by its readers first. After
+retirement, an old dual-writing binary is not a valid rollback: restore its
+required schema/metadata from v2 and owning records under the applicable
+authority, or keep the forward v2-only revision. Neither path resends effects.
+
+A shorter baseline in #174 alone does not implement this contract. Source
+definitions, intended active layout and applied table counts remain separate.
+Use four idempotent forward DROP definitions, one owned legacy table per
+migration, only after the v2-only code rollout. The registry checker must
+explicitly validate their ownership/order and distinguish historical CREATE
+coverage from intended active schema before those definitions are added.
+Keep all original CREATE mappings as historical lineage and mark their
+retirement operation; do not silently delete applied CREATE migrations.
+The authorized fresh-schema alternative still uses the complete ordered
+forward history; a separate future baseline squash may consume this layout.
+
+### Implementation handoff and verification
+
+Use two bounded children linked in #205 comments after independent design
+acceptance:
+
+1. V2-only readers/writers/cleanup and backfill transition, with updated
+   source contracts and deterministic tests. Old tables remain present during
+   this compatible code rollout; source write reductions are measurable now.
+2. Physical legacy-index retirement and effective-schema inventory, preserving
+   checksum/retained-data rules, upgrade and rollback controls. No migration
+   application or reset is implied by implementing this repository change.
+
+Tests verify the named write reductions, new/replacement/terminal branches,
+all 16 buckets, duplicate ingress, quota and delivery transitions, attached
+lease release, Session deletion and successful canonical output. Stale workers,
+cancel/revoke and ambiguous model/upload acceptance retain the existing deny
+or reconcile-only outcomes. Missing-index tests must distinguish availability
+loss from effect authority and prove the selected metadata-only repair path.
+Use exact-head CI and focused checks; this design adds no live provider,
+cloud deployment or unauthorized local YDB run.
 
 ## Implementation and verification order
 

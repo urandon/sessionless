@@ -264,6 +264,29 @@ mandatory before genuine SDK composition or registration. No SDK/model/HTTP
 call, profile activation or full adapter completion is proved by this target.
 Stage the bound framing, response, policy and request assets together.
 
+### Isolated Pi phase-wire checks (non-serving)
+
+`internal/pisdkphasewire` contains a disconnected Go codec for the complete
+canonical phase request, seven-key applied/one-key denied reply, original
+31-field attempt head and exact seconds/nanoseconds time representation. Its
+ordered byte grammar rejects unknown, reordered, escaped and noncanonical
+fields before bounded owned copies. Encoding premeasures one exact allocation.
+SPU1 inspection validates the first 17 bytes and checked lengths before body
+allocation; complete raw UTF-8 bodies are preserved without JSON normalization.
+
+Run the focused package with the pinned Go toolchain and repository-shared
+caches, using `go test -race -count=1 -shuffle=on ./internal/pisdkphasewire`.
+These ordinary unit tests are also included by `make test`. Tests distinguish
+conservative syntax ceilings from constructor-backed structural fixtures.
+
+The package reports combined logical copy/node accounting, not reservations,
+native memory/GC bounds or serving limits. A positive symbolic body limit,
+decoded applied reply or exact tuple/body comparison grants nothing. There is
+no source/HTTP/IPC pump, runner, credential or provider registration. Authentic
+same-RPC/current-owner phase production, source-owned full pre-Issue projection,
+shared/native fit, original deadline/cutoff bridge and cross-language parity
+remain required by the [Pi profile](design/pi-sdk-attached-media-profile.md).
+
 ### Worktrees and Go caches
 
 `make` resolves the repository's Git common directory and shares

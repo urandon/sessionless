@@ -287,6 +287,28 @@ same-RPC/current-owner phase production, source-owned full pre-Issue projection,
 shared/native fit, original deadline/cutoff bridge and cross-language parity
 remain required by the [Pi profile](design/pi-sdk-attached-media-profile.md).
 
+### Explicit Pi phase-session client checks (default off)
+
+`NewPiPhaseSessionSourceFactory` composes the existing sealed-input and receipt
+channels with fixed `/attached-worker/v1/pi-api-use` metadata on the same HTTPS
+origin and accepted Session/bearer. Existing constructors and normal activation
+are unchanged. The new client requires explicit positive HTTP timeout, header
+and TLS bounds; it copies trust and uses a private H1-only nonpooled transport,
+with redirects, decompression and request-body replay disabled. Each phase call
+performs one `Do`, uses the closed phase codec and checks the complete static
+tuple/binding/policy. Session retirement cancels pending work and clears its
+owned bearer before a blocked exchange delegate can delay cleanup.
+
+Run `go test -race -count=1 -shuffle=on ./internal/attachedworkersealedinput`
+with pinned Go and shared caches. The new cases use test-owned loopback TLS and
+channel barriers, not a live service/provider. Client timeout is an existing
+failure bound, not a new phase permission window; original caller context is
+retained without computing W/L/S/F. Header/body arenas and static equality are
+not complete native/shared-ledger admission or authenticated current-source
+proof. The endpoint has no new server handler, source authorizer or serving
+registration. Original phase/deadline/credential/SDK/custody integration and
+the full [Pi profile gates](design/pi-sdk-attached-media-profile.md) remain open.
+
 ### Worktrees and Go caches
 
 `make` resolves the repository's Git common directory and shares

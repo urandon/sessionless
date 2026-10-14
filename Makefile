@@ -404,7 +404,11 @@ pi-sdk-bootstrap-test: prepare
 	go test -race -count=$(PI_SDK_BOOTSTRAP_TEST_COUNT) -shuffle=on -timeout=30s ./internal/pisdkbootstrap
 
 .PHONY: pi-sdk-transport-test
-ci: pi-sdk-transport-test
+ci: pi-sdk-transport-test pi-sdk-body-producer-test
+
+.PHONY: pi-sdk-body-producer-test
+pi-sdk-body-producer-test: prepare
+	@node --permission --allow-fs-read="$(CURDIR)/internal/pisdkmedia/native" --no-addons --disable-proto=throw internal/pisdkmedia/native/request_contract.test.mjs
 PI_SDK_TRANSPORT_TEST_COUNT ?= 1
 
 pi-sdk-transport-test: prepare

@@ -287,6 +287,58 @@ same-RPC/current-owner phase production, source-owned full pre-Issue projection,
 shared/native fit, original deadline/cutoff bridge and cross-language parity
 remain required by the [Pi profile](design/pi-sdk-attached-media-profile.md).
 
+### Complete Pi request-data producer checks (non-serving)
+
+`internal/pisdkmedia` projects the original canonical snapshot plus tail through
+the existing Codex media association kernel into quoted typed Pi task data and
+one independently expected complete Responses body. Historical text, text/JSON
+files (including their original number lexemes), assistant summary and original
+PNG/JPEG bytes remain in order; image blocks follow their exact source label.
+This is not a replacement Pi agent, SDK, parser, request client or native session.
+
+One explicit logical ledger funds bounded source prerequisites before validation,
+Clone and kernel work (stage A), then measures those funded data (stage B), then
+atomically reserves the combined remaining typed output, one expected emission,
+declared SDK/string/header/phase copies and response/echo demands (stage C).
+Early missing prerequisites or failed stage-A reservation precede Clone. Late
+aggregate overflow may have lawfully funded Clone/kernel work but returns no
+partial plan and does no further unfunded emission or Issue. Cumulative copy and
+node charges never reset/refund; logical live reservation release does not prove
+native object reclamation. The original 96MiB Go validator ceiling is reported
+separately, not debited as a child-P memory certificate. Response A/D/N values
+reuse the accepted physical owner's equations and the joint remaining nodes,
+not fresh independent full-P pools. All fixture limits are synthetic DATA.
+The caller context is required and retained unchanged, checked before funded
+work, at parser nodes and original block visits; no deadline or grace is created.
+This does not interrupt the existing synchronous canonical codec or establish
+the separately missing hard Go-F/JavaScript physical-controller bridge.
+
+The closed ordered Go emitter preserves ECMAScript property ordering (including
+array-index keys), escaping, safe integer values and original file contents as
+strings. Unsupported fractional/exponent schema numbers deny rather than claim
+unqualified binary64 parity; such numbers inside quoted files remain unchanged.
+The SDK-free `request_contract.mjs` checks the actual complete own payload
+against the immutable expected projection, permits only source undefined cache
+omissions, freezes the checked source-owned tree and adds only fixed truncation
+and strict-schema fields. Its one-shot result is DATA, never authorization.
+
+Run `go test -race -count=1 -shuffle=on ./internal/pisdkmedia ./internal/codexexec`
+with the pinned Go and shared caches. `make pi-sdk-body-producer-test` is the
+separate pinned-Node pure unit CI gate. It imports only the new data contract;
+it must not glob or run the adjacent bootstrap/boundary/SDK tests. Tests include
+the 3000x1000 plus small-image cohort, repeated names, complete snapshot/tail
+equivalence, staged accounting, byte/node/depth first-over cases and builtin
+`JSON.stringify` differential goldens. No credential, SDK import/constructor,
+provider call, native YDB process or network is needed for these checks.
+
+No production Pi final-schema literal is supplied by this component; generic
+schema-data tests do not select the strict final/custody contract owned by #200.
+Missing genuine model/compat/header/source-owned profile, tokenizer/output-clamp
+and full native-fit evidence, currentness, original S/hard cutoff, credential
+cleanup and genuine standard SDK composition remain unavailable. Ordinary
+registration remains disabled. The full [Pi profile](design/pi-sdk-attached-media-profile.md)
+and both MVP tracks remain required; passing these units is not their completion.
+
 ### Explicit Pi phase-session client checks (default off)
 
 `NewPiPhaseSessionSourceFactory` composes the existing sealed-input and receipt

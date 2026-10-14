@@ -586,11 +586,6 @@ func allocateAttachedWorkerLeaseTx(ctx context.Context, tx *stateTx, runID domai
 			return domain.Lease{}, false, bucketErr
 		}
 		if _, deleteErr := tx.sqlTx.ExecContext(ctx,
-			`DELETE FROM lease_expiry WHERE tenant_id=$1 AND expires_at=$2 AND run_id=$3`,
-			tx.tenantID, currentExpiry, runID); deleteErr != nil {
-			return domain.Lease{}, false, deleteErr
-		}
-		if _, deleteErr := tx.sqlTx.ExecContext(ctx,
 			`DELETE FROM lease_expiry_v2 WHERE shard_bucket=$1 AND expires_at=$2 AND tenant_id=$3 AND run_id=$4`,
 			bucket, currentExpiry, tx.tenantID, runID); deleteErr != nil {
 			return domain.Lease{}, false, deleteErr

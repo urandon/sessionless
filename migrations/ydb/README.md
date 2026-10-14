@@ -141,6 +141,14 @@ make cloud-app-reset-plan
 make cloud-app-reset
 ```
 
+`make partition-backfill` populates lifecycle indexes and their cutover markers.
+It no longer copies the four legacy ready/expiry tables. Before deploying the
+compatible v2-only code with retained work, use the dual-writing predecessor
+pinned in [#206 execution comments](https://gitcode.com/urandon/sessionless/issues/206)
+for that separate ready/expiry backfill, tuple verification and reader/writer
+drain. The legacy CREATE migrations and reset ownership remain until separately
+authorized physical retirement; the source registry still covers 105 tables.
+
 Both commands require `YDB_CONNECTION_STRING`. Authentication is selected by
 the official YDB environment credential chain:
 

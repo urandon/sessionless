@@ -25,13 +25,42 @@ is not a request for another table. The complete physical list remains in JSON.
 | Current execution | `attempts`, `lease_heads`, `leases`, `worker_jobs` | Current owner/fence/expiry and admitted input remain transactional; a merged layout needs replacement of existing joins. |
 | Historical execution detail | Historical `attempts`/`leases`, `checkpoints`, diagnostics | Evaluate bounded retention, derived views or ephemeral progress separately from current execution. No blanket permanent-history requirement. |
 | Irreversible effect and output custody | `attempt_effect_reservations`, reconciliation evidence, `attached_worker_output_receipts` | Retain exact accepted/ambiguous effect identity and custody until owning reconciliation/retention permits retirement. |
-| Ready and expiry discovery | `lease_expiry`, `dispatch_ready`, `quota_expiry`, `telegram_delivery_ready` and their `_v2` counterparts | Proposed single v2 projection per family; retire four predecessors through the linked first reduction contract. |
+| Ready and expiry discovery | `lease_expiry`, `dispatch_ready`, `quota_expiry`, `telegram_delivery_ready` and their `_v2` counterparts | Single v2 serving projection per family; retain legacy physical/history/reset ownership until the linked retirement contract permits removal. |
 
 The [consumer and durability study](../research/state-storage-and-durability.md)
 records actual joins, default retention, old-index callers and source write
 counts. The [first reduction contract](../design/state-storage-simplification.md#first-reduction-contract)
 does not accept the exploratory Run/Attempt/Lease layout or classify every
 remaining physical table. Unknown owner/retention decisions stay open in #205.
+
+## Source and rollout boundary
+
+The [compatible code step](https://gitcode.com/urandon/sessionless/issues/206)
+removes unversioned ready/expiry writes, ordinary cleanup and the unused tenant
+lease-expiry reader. Normal bootstrap backfills lifecycle indexes only; it no
+longer copies the four legacy ready/expiry tables. The four legacy CREATE
+records and reset ownership remain: source write reduction is not physical
+table removal, and the registry still covers 105 CREATE tables.
+
+Before deploying v2-only code with retained work, complete ready/expiry v2
+backfill and exact tuple verification using the compatible dual-writing
+predecessor, then drain its actual old readers/writers over the configured
+lease/retry window. The lifecycle cutover marker is not that verification.
+The predecessor handoff and rollback evidence belong in #206 execution
+comments; no deployment or backfill execution is granted by a source check.
+
+Legacy `knownRefs` entries with no serving SQL readers/writers do not mean the
+physical table is absent. Reset allowlists, immutable migrations, v2 logical
+partition names and test-owned cleanup are retained metadata/ownership, not
+legacy scheduling consumers. Retained v2 entries distinguish SELECT readers
+from UPSERT/DELETE writers. These remain bounded static samples, not a complete
+runtime graph.
+
+Bounded operator-only metadata repair and its loss/ambiguity controls remain
+required by #206; the compatible writer/bootstrap step alone does not implement
+repair or complete that task. Physical retirement and effective-schema tracking
+belong to [#207](https://gitcode.com/urandon/sessionless/issues/207), under the
+separate rollout authority described in the design.
 
 ## What the inventory establishes
 

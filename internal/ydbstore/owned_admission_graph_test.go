@@ -331,7 +331,10 @@ func TestBoundedManagedAdmissionThreeCompleteCallbacksUseFreshCache(t *testing.T
 	store, f, request := managedGraphFixture(t)
 	f.commitModes = []string{"rollback", "rollback", ""}
 	result, err := store.admitBoundedManagedDispatch(t.Context(), request)
-	if err != nil || !result.Admitted || f.commits != 3 || len(f.statements) != 84 || f.persistedWrites != 13 {
+	// Each fresh callback loses one duplicate legacy quota UPSERT. The final
+	// committed callback likewise persists one fewer write; retries stay exact.
+	readyExpiryNoLegacy(t, f.statements)
+	if err != nil || !result.Admitted || f.commits != 3 || len(f.statements) != 81 || f.persistedWrites != 12 {
 		t.Fatalf("complete retries err=%v result=%+v commits=%d SQL=%d persisted=%d", err, result, f.commits, len(f.statements), f.persistedWrites)
 	}
 	queries := 0

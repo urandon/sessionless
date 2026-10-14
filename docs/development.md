@@ -971,7 +971,14 @@ real deployment or authorize old writers to remain active during cutover.
 and contract drift as JSON. The bucketed ready/expiry expand/backfill/cutover
 procedure is documented in
 [ydb-partitioning.md](ydb-partitioning.md). `make partition-backfill` is a
-deployment migration command, not a normal serving operation.
+deployment migration command for lifecycle indexes, not a normal serving
+operation. Before deploying v2-only ready/expiry code with retained work, use
+the compatible dual-writing predecessor pinned in
+[#206 execution comments](https://gitcode.com/urandon/sessionless/issues/206)
+to backfill those four projections and verify their tuples. The current command
+does not scan their legacy tables; its lifecycle marker does not prove this
+separate ready/expiry handoff. No environment operation is authorized by a
+source or unit-test pass.
 
 Local defaults use `YDB_ANONYMOUS_CREDENTIALS=1`. Cloud deployments use the
 YDB environment credential chain and metadata credentials; do not place access

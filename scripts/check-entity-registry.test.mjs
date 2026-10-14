@@ -156,4 +156,3 @@ test("rejects blank required fields and incomplete retention metadata", () => {
   assert.match(errors.join("\n"), /required field role is blank/);
   assert.match(errors.join("\n"), /schema_ttl requires interval and column/);
 });
-

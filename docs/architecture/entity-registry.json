@@ -1,0 +1,4291 @@
+{
+  "schema": "sessionless-ydb-entity-registry/v1",
+  "sourceDirectory": "migrations/ydb",
+  "observedKeyScopeNote": "Primary-key columns are structural observations only; they do not establish authenticated tenant or owner authorization.",
+  "recordCount": 105,
+  "records": [
+    {
+      "table": "actors",
+      "migration": "00002_create_actors.sql",
+      "role": "Operational or canonical domain state; authority and retention require source review.",
+      "primaryKey": [
+        "tenant_id",
+        "actor_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "actor_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/attached_worker_onboarding.go",
+            "internal/ydbstore/compute_choice_attached.go",
+            "internal/ydbstore/web_upload.go"
+          ],
+          "total": 3
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/attached_worker_onboarding.go",
+            "internal/ydbstore/operations.go"
+          ],
+          "total": 2
+        }
+      },
+      "entityGroup": "canonical-operational",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "artifact_manifests",
+      "migration": "00015_create_artifact_manifests.sql",
+      "role": "Operational or canonical domain state; authority and retention require source review.",
+      "primaryKey": [
+        "tenant_id",
+        "artifact_manifest_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "artifact_manifest_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbpartition/backfill.go",
+            "internal/ydbstore/attached_worker_execution_helpers.go",
+            "internal/ydbstore/operations.go",
+            "internal/ydbstore/owned_attempt_effect_parent.go",
+            "internal/ydbstore/owned_authority_canonical.go"
+          ],
+          "total": 10
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbpartition/backfill.go",
+            "internal/ydbstore/store.go"
+          ],
+          "total": 2
+        }
+      },
+      "entityGroup": "canonical-operational",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "artifact_manifests_by_run",
+      "migration": "00062_create_artifact_manifests_by_run.sql",
+      "role": "Secondary keyed lookup projection; canonical ownership must be confirmed at its source.",
+      "primaryKey": [
+        "tenant_id",
+        "run_id",
+        "artifact_manifest_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "run_id",
+          "artifact_manifest_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/session_lifecycle.go"
+          ],
+          "total": 1
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbpartition/backfill.go",
+            "internal/ydbstore/store.go"
+          ],
+          "total": 2
+        }
+      },
+      "entityGroup": "access-projection",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "attached_worker_action_operations",
+      "migration": "00100_create_attached_worker_action_operations.sql",
+      "role": "Attached-worker identity, transport, or execution state.",
+      "primaryKey": [
+        "tenant_id",
+        "owner_user_id",
+        "operation_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "owner_user_id",
+          "operation_id"
+        ]
+      },
+      "retention": {
+        "kind": "schema_ttl",
+        "interval": "PT0S",
+        "column": "retention_expire_at"
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/attached_worker_action.go"
+          ],
+          "total": 1
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/attached_worker_action.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "attached-worker",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "attached_worker_action_plans",
+      "migration": "00099_create_attached_worker_action_plans.sql",
+      "role": "Attached-worker identity, transport, or execution state.",
+      "primaryKey": [
+        "tenant_id",
+        "owner_user_id",
+        "plan_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "owner_user_id",
+          "plan_id"
+        ]
+      },
+      "retention": {
+        "kind": "schema_ttl",
+        "interval": "PT0S",
+        "column": "retention_expire_at"
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/attached_worker_action.go"
+          ],
+          "total": 1
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/attached_worker_action.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "attached-worker",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "attached_worker_attach_challenges",
+      "migration": "00080_create_attached_worker_attach_challenges.sql",
+      "role": "Attached-worker identity, transport, or execution state.",
+      "primaryKey": [
+        "tenant_id",
+        "owner_user_id",
+        "worker_id",
+        "challenge_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "owner_user_id",
+          "worker_id",
+          "challenge_id"
+        ]
+      },
+      "retention": {
+        "kind": "schema_ttl",
+        "interval": "PT0S",
+        "column": "retain_until"
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/attached_worker_transport.go",
+            "internal/ydbstore/attached_worker_transport_helpers.go"
+          ],
+          "total": 2
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/attached_worker_transport_helpers.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "attached-worker",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "attached_worker_attempt_deadlines_v1",
+      "migration": "00086_create_attached_worker_attempt_deadlines_v1.sql",
+      "role": "Expiry/deadline access-path projection.",
+      "primaryKey": [
+        "shard_bucket",
+        "deadline_at",
+        "tenant_id",
+        "owner_user_id",
+        "worker_id",
+        "attempt_id",
+        "kind"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "shard_bucket",
+          "deadline_at",
+          "tenant_id",
+          "owner_user_id",
+          "worker_id",
+          "attempt_id",
+          "kind"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/attached_worker_execution.go",
+            "internal/ydbstore/attached_worker_execution_helpers.go"
+          ],
+          "total": 2
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/attached_worker_execution_helpers.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "expiry-index",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "attached_worker_attempt_heads",
+      "migration": "00084_create_attached_worker_attempt_heads.sql",
+      "role": "Attached-worker identity, transport, or execution state.",
+      "primaryKey": [
+        "tenant_id",
+        "owner_user_id",
+        "worker_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "owner_user_id",
+          "worker_id"
+        ]
+      },
+      "retention": {
+        "kind": "schema_ttl",
+        "interval": "PT0S",
+        "column": "retention_expire_at"
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/attached_worker_execution.go",
+            "internal/ydbstore/attached_worker_execution_helpers.go",
+            "internal/ydbstore/run_explanation_attached.go"
+          ],
+          "total": 3
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/attached_worker_execution_helpers.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "attached-worker",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "attached_worker_attempt_messages",
+      "migration": "00085_create_attached_worker_attempt_messages.sql",
+      "role": "Attached-worker identity, transport, or execution state.",
+      "primaryKey": [
+        "tenant_id",
+        "owner_user_id",
+        "worker_id",
+        "attempt_id",
+        "direction",
+        "attempt_sequence"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "owner_user_id",
+          "worker_id",
+          "attempt_id",
+          "direction",
+          "attempt_sequence"
+        ]
+      },
+      "retention": {
+        "kind": "schema_ttl",
+        "interval": "PT0S",
+        "column": "retention_expire_at"
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/attached_worker_execution.go",
+            "internal/ydbstore/attached_worker_execution_helpers.go"
+          ],
+          "total": 2
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/attached_worker_execution_helpers.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "attached-worker",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "attached_worker_audit_events",
+      "migration": "00079_create_attached_worker_audit_events.sql",
+      "role": "Audit or evidence record; lifecycle authority requires source review.",
+      "primaryKey": [
+        "tenant_id",
+        "owner_user_id",
+        "worker_id",
+        "worker_revision"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "owner_user_id",
+          "worker_id",
+          "worker_revision"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/attached_worker.go"
+          ],
+          "total": 1
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/attached_worker.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "audit-evidence",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "attached_worker_capability_manifests",
+      "migration": "00081_create_attached_worker_capability_manifests.sql",
+      "role": "Attached-worker identity, transport, or execution state.",
+      "primaryKey": [
+        "tenant_id",
+        "owner_user_id",
+        "worker_id",
+        "capability_digest"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "owner_user_id",
+          "worker_id",
+          "capability_digest"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/attached_worker_transport.go",
+            "internal/ydbstore/attached_worker_transport_helpers.go"
+          ],
+          "total": 2
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/attached_worker_transport_helpers.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "attached-worker",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "attached_worker_connections",
+      "migration": "00082_create_attached_worker_connections.sql",
+      "role": "Attached-worker identity, transport, or execution state.",
+      "primaryKey": [
+        "tenant_id",
+        "owner_user_id",
+        "worker_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "owner_user_id",
+          "worker_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/attached_worker_transport.go",
+            "internal/ydbstore/attached_worker_transport_helpers.go",
+            "internal/ydbstore/compute_choice_attached.go",
+            "internal/ydbstore/run_explanation_attached.go"
+          ],
+          "total": 4
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/attached_worker_transport_helpers.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "attached-worker",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "attached_worker_control_messages",
+      "migration": "00098_create_attached_worker_control_messages.sql",
+      "role": "Attached-worker identity, transport, or execution state.",
+      "primaryKey": [
+        "tenant_id",
+        "owner_user_id",
+        "worker_id",
+        "drain_revision",
+        "direction"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "owner_user_id",
+          "worker_id",
+          "drain_revision",
+          "direction"
+        ]
+      },
+      "retention": {
+        "kind": "schema_ttl",
+        "interval": "PT0S",
+        "column": "retention_expire_at"
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/attached_worker_drain.go"
+          ],
+          "total": 1
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/attached_worker_drain.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "attached-worker",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "attached_worker_enrollments",
+      "migration": "00078_create_attached_worker_enrollments.sql",
+      "role": "Attached-worker identity, transport, or execution state.",
+      "primaryKey": [
+        "tenant_id",
+        "owner_user_id",
+        "enrollment_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "owner_user_id",
+          "enrollment_id"
+        ]
+      },
+      "retention": {
+        "kind": "schema_ttl",
+        "interval": "PT0S",
+        "column": "retain_until"
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/attached_worker.go"
+          ],
+          "total": 1
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/attached_worker.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "attached-worker",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "attached_worker_output_receipts",
+      "migration": "00101_create_attached_worker_output_receipts.sql",
+      "role": "Attached-worker identity, transport, or execution state.",
+      "primaryKey": [
+        "tenant_id",
+        "run_id",
+        "owner_user_id",
+        "worker_id",
+        "attempt_id",
+        "lease_generation"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "run_id",
+          "owner_user_id",
+          "worker_id",
+          "attempt_id",
+          "lease_generation"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/attached_worker_output_receipt_store.go",
+            "internal/ydbstore/session_lifecycle.go"
+          ],
+          "total": 2
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/attached_worker_output_receipt_store.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "attached-worker",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "attached_worker_presence_expiry_v1",
+      "migration": "00083_create_attached_worker_presence_expiry_v1.sql",
+      "role": "Expiry/deadline access-path projection.",
+      "primaryKey": [
+        "shard_bucket",
+        "presence_expires_at",
+        "tenant_id",
+        "owner_user_id",
+        "worker_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "shard_bucket",
+          "presence_expires_at",
+          "tenant_id",
+          "owner_user_id",
+          "worker_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/attached_worker_transport.go",
+            "internal/ydbstore/attached_worker_transport_helpers.go"
+          ],
+          "total": 2
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/attached_worker_transport_helpers.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "expiry-index",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "attached_workers",
+      "migration": "00077_create_attached_workers.sql",
+      "role": "Attached-worker identity, transport, or execution state.",
+      "primaryKey": [
+        "tenant_id",
+        "owner_user_id",
+        "worker_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "owner_user_id",
+          "worker_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/attached_worker.go",
+            "internal/ydbstore/compute_choice_attached.go",
+            "internal/ydbstore/run_explanation_attached.go"
+          ],
+          "total": 3
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/attached_worker.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "attached-worker",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "attempt_effect_reconciliation_evidence",
+      "migration": "00097_create_attempt_effect_reconciliation_evidence.sql",
+      "role": "Audit or evidence record; lifecycle authority requires source review.",
+      "primaryKey": [
+        "tenant_id",
+        "attempt_id",
+        "evidence_digest"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "attempt_id",
+          "evidence_digest"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/attempt_effect_reconciliation.go"
+          ],
+          "total": 1
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/attempt_effect_reconciliation.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "audit-evidence",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "attempt_effect_reservations",
+      "migration": "00094_create_attempt_effect_reservations.sql",
+      "role": "Attempt-scoped effect, operation, spending, or admission state.",
+      "primaryKey": [
+        "tenant_id",
+        "attempt_id",
+        "kind"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "attempt_id",
+          "kind"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/attempt_operation_accounting.go",
+            "internal/ydbstore/owned_admission_retention.go",
+            "internal/ydbstore/owned_allocation_registration.go",
+            "internal/ydbstore/owned_attempt_effect_parent.go",
+            "internal/ydbstore/owned_attempt_preparation.go"
+          ],
+          "total": 8
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/owned_attempt_effect_parent.go",
+            "internal/ydbstore/serverless_harness.go"
+          ],
+          "total": 2
+        }
+      },
+      "entityGroup": "attempt-accounting",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "attempt_execution_admissions_by_session_v1",
+      "migration": "00115_create_attempt_execution_admissions_by_session_v1.sql",
+      "role": "Secondary keyed lookup projection; canonical ownership must be confirmed at its source.",
+      "primaryKey": [
+        "tenant_id",
+        "session_id",
+        "attempt_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "session_id",
+          "attempt_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/owned_admission_retention.go"
+          ],
+          "total": 1
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/owned_final_admission.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "access-projection",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "attempt_execution_admissions_v1",
+      "migration": "00114_create_attempt_execution_admissions_v1.sql",
+      "role": "Attempt-scoped effect, operation, spending, or admission state.",
+      "primaryKey": [
+        "tenant_id",
+        "attempt_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "attempt_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/owned_admission_retention.go",
+            "internal/ydbstore/owned_final_admission.go"
+          ],
+          "total": 2
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/owned_final_admission.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "attempt-accounting",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "attempt_operation_calls_v1",
+      "migration": "00122_add_attempt_operation_calls.sql",
+      "role": "Attempt-scoped effect, operation, spending, or admission state.",
+      "primaryKey": [
+        "tenant_id",
+        "attempt_id",
+        "call_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "attempt_id",
+          "call_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/attempt_operation.go"
+          ],
+          "total": 1
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/attempt_operation.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "attempt-accounting",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "attempt_operation_proxies_v1",
+      "migration": "00124_add_owned_operation_proxies.sql",
+      "role": "Attempt-scoped effect, operation, spending, or admission state.",
+      "primaryKey": [
+        "tenant_id",
+        "attempt_id",
+        "sequence"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "attempt_id",
+          "sequence"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/owned_proxy_registration.go"
+          ],
+          "total": 1
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/owned_proxy_registration.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "attempt-accounting",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "attempt_operations_v1",
+      "migration": "00121_add_attempt_operation_records.sql",
+      "role": "Attempt-scoped effect, operation, spending, or admission state.",
+      "primaryKey": [
+        "tenant_id",
+        "attempt_id",
+        "sequence"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "attempt_id",
+          "sequence"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/attempt_operation.go",
+            "internal/ydbstore/attempt_operation_mcp_semantics.go"
+          ],
+          "total": 2
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/attempt_operation.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "attempt-accounting",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "attempt_spending_authorization_current_v1",
+      "migration": "00111_create_attempt_spending_authorization_current_v1.sql",
+      "role": "Attempt-scoped effect, operation, spending, or admission state.",
+      "primaryKey": [
+        "tenant_id",
+        "attempt_id",
+        "component_kind",
+        "billing_owner_user_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "attempt_id",
+          "component_kind",
+          "billing_owner_user_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/owned_authority_current.go",
+            "internal/ydbstore/owned_authority_join.go"
+          ],
+          "total": 2
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/attempt_spending_publication.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "attempt-accounting",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "attempt_spending_publication_audit_v1",
+      "migration": "00113_create_attempt_spending_publication_audit_v1.sql",
+      "role": "Audit or evidence record; lifecycle authority requires source review.",
+      "primaryKey": [
+        "tenant_id",
+        "attempt_id",
+        "component_kind",
+        "billing_owner_user_id",
+        "mutation_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "attempt_id",
+          "component_kind",
+          "billing_owner_user_id",
+          "mutation_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/attempt_spending_publication.go"
+          ],
+          "total": 1
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/attempt_spending_publication.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "audit-evidence",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "attempts",
+      "migration": "00009_create_attempts.sql",
+      "role": "Operational or canonical domain state; authority and retention require source review.",
+      "primaryKey": [
+        "tenant_id",
+        "attempt_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "attempt_id"
+        ]
+      },
+      "retention": {
+        "kind": "schema_ttl",
+        "interval": "PT0S",
+        "column": "retention_expire_at"
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/owned_attempt_effect_parent.go",
+            "internal/ydbstore/owned_authority_canonical.go",
+            "internal/ydbstore/run_explanation.go",
+            "internal/ydbstore/store.go",
+            "internal/ydbstore/web_search_consent_reconcile.go"
+          ],
+          "total": 5
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/store.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "canonical-operational",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "audit_events",
+      "migration": "00018_create_audit_events.sql",
+      "role": "Audit or evidence record; lifecycle authority requires source review.",
+      "primaryKey": [
+        "tenant_id",
+        "occurred_at",
+        "audit_event_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "occurred_at",
+          "audit_event_id"
+        ]
+      },
+      "retention": {
+        "kind": "schema_ttl",
+        "interval": "PT0S",
+        "column": "expire_at"
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [],
+          "total": 0
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/scheduler.go",
+            "internal/ydbstore/session_lifecycle.go",
+            "internal/ydbstore/web_auth.go"
+          ],
+          "total": 3
+        }
+      },
+      "entityGroup": "audit-evidence",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "checkpoint_objects_by_run",
+      "migration": "00066_create_checkpoint_objects_by_run.sql",
+      "role": "Secondary keyed lookup projection; canonical ownership must be confirmed at its source.",
+      "primaryKey": [
+        "tenant_id",
+        "run_id",
+        "checkpoint_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "run_id",
+          "checkpoint_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/session_lifecycle.go"
+          ],
+          "total": 1
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbpartition/backfill.go",
+            "internal/ydbstore/store.go"
+          ],
+          "total": 2
+        }
+      },
+      "entityGroup": "access-projection",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "checkpoints",
+      "migration": "00012_create_checkpoints.sql",
+      "role": "Operational or canonical domain state; authority and retention require source review.",
+      "primaryKey": [
+        "tenant_id",
+        "attempt_id",
+        "sequence"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "attempt_id",
+          "sequence"
+        ]
+      },
+      "retention": {
+        "kind": "schema_ttl",
+        "interval": "PT0S",
+        "column": "retention_expire_at"
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbpartition/backfill.go",
+            "internal/ydbstore/session_lifecycle.go",
+            "internal/ydbstore/worker.go"
+          ],
+          "total": 3
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/store.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "canonical-operational",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "compute_choice_cutover_v1",
+      "migration": "00105_create_compute_choice_cutover_v1.sql",
+      "role": "Deployment or consumer cutover receipt; not canonical business state.",
+      "primaryKey": [
+        "cutover_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "cutover_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/compute_choice_cutover.go"
+          ],
+          "total": 1
+        },
+        "writers": {
+          "paths": [],
+          "total": 0
+        }
+      },
+      "entityGroup": "cutover",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "compute_choice_rate_slots_v1",
+      "migration": "00106_create_compute_choice_rate_slots_v1.sql",
+      "role": "Finite bounded rate-control slots.",
+      "primaryKey": [
+        "slot_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "slot_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/compute_choice_rate.go"
+          ],
+          "total": 1
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/compute_choice_rate.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "rate-control",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "development_bootstrap_grants",
+      "migration": "00055_create_development_bootstrap_grants.sql",
+      "role": "Identity, authentication, membership, or Web-session state.",
+      "primaryKey": [
+        "tenant_id",
+        "user_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "user_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/web_auth.go"
+          ],
+          "total": 1
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/web_auth.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "identity-web",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "dispatch_outbox",
+      "migration": "00016_create_dispatch_outbox.sql",
+      "role": "Operational queue, scheduler, or dispatch state.",
+      "primaryKey": [
+        "tenant_id",
+        "dispatch_outbox_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "dispatch_outbox_id"
+        ]
+      },
+      "retention": {
+        "kind": "schema_ttl",
+        "interval": "PT0S",
+        "column": "retention_expire_at"
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/canonical_ingress.go",
+            "internal/ydbstore/operations.go",
+            "internal/ydbstore/owned_authority_canonical.go",
+            "internal/ydbstore/scheduler.go"
+          ],
+          "total": 4
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/store.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "operational-queue",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "dispatch_ready",
+      "migration": "00020_create_dispatch_ready.sql",
+      "role": "Ready-work scheduling/access-path projection.",
+      "primaryKey": [
+        "tenant_id",
+        "available_at",
+        "dispatch_outbox_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "available_at",
+          "dispatch_outbox_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbpartition/backfill.go",
+            "internal/ydbstore/scheduler.go",
+            "internal/ydbstore/store.go"
+          ],
+          "total": 3
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbpartition/backfill.go",
+            "internal/ydbstore/store.go"
+          ],
+          "total": 2
+        }
+      },
+      "entityGroup": "queue-index",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "dispatch_ready_v2",
+      "migration": "00024_create_dispatch_ready_v2.sql",
+      "role": "Ready-work scheduling/access-path projection.",
+      "primaryKey": [
+        "shard_bucket",
+        "available_at",
+        "tenant_id",
+        "dispatch_outbox_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "shard_bucket",
+          "available_at",
+          "tenant_id",
+          "dispatch_outbox_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/scheduler.go",
+            "internal/ydbstore/store.go"
+          ],
+          "total": 2
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbpartition/backfill.go",
+            "internal/ydbstore/store.go"
+          ],
+          "total": 2
+        }
+      },
+      "entityGroup": "queue-index",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "execution_placement_cutover_state",
+      "migration": "00087_create_execution_placement_cutover_state.sql",
+      "role": "Deployment or consumer cutover receipt; not canonical business state.",
+      "primaryKey": [
+        "cutover_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "cutover_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbpartition/backfill.go",
+            "internal/ydbstore/store.go"
+          ],
+          "total": 2
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbpartition/backfill.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "cutover",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "external_identities",
+      "migration": "00049_create_external_identities.sql",
+      "role": "Operational or canonical domain state; authority and retention require source review.",
+      "primaryKey": [
+        "shard_bucket",
+        "provider",
+        "subject"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "shard_bucket",
+          "provider",
+          "subject"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/web_auth.go"
+          ],
+          "total": 1
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/web_auth.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "canonical-operational",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "external_identities_by_user",
+      "migration": "00050_create_external_identities_by_user.sql",
+      "role": "Secondary keyed lookup projection; canonical ownership must be confirmed at its source.",
+      "primaryKey": [
+        "user_bucket",
+        "user_id",
+        "provider",
+        "subject"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "user_bucket",
+          "user_id",
+          "provider",
+          "subject"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/web_auth.go"
+          ],
+          "total": 1
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/web_auth.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "access-projection",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "frontend_binding_keys",
+      "migration": "00044_create_frontend_binding_keys.sql",
+      "role": "Frontend binding or ingress idempotency state.",
+      "primaryKey": [
+        "tenant_id",
+        "frontend",
+        "external_conversation_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "frontend",
+          "external_conversation_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/canonical_ingress.go",
+            "internal/ydbstore/operations.go",
+            "internal/ydbstore/session_api.go",
+            "internal/ydbstore/session_lifecycle.go",
+            "internal/ydbstore/sessions.go"
+          ],
+          "total": 5
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/sessions.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "frontend-ingress",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "frontend_bindings",
+      "migration": "00043_create_frontend_bindings.sql",
+      "role": "Frontend binding or ingress idempotency state.",
+      "primaryKey": [
+        "tenant_id",
+        "binding_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "binding_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbpartition/backfill.go",
+            "internal/ydbstore/canonical_finalization.go",
+            "internal/ydbstore/session_lifecycle.go",
+            "internal/ydbstore/sessions.go",
+            "internal/ydbstore/web_auth.go"
+          ],
+          "total": 5
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbpartition/backfill.go",
+            "internal/ydbstore/sessions.go"
+          ],
+          "total": 2
+        }
+      },
+      "entityGroup": "frontend-ingress",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "frontend_bindings_by_session",
+      "migration": "00063_create_frontend_bindings_by_session.sql",
+      "role": "Secondary keyed lookup projection; canonical ownership must be confirmed at its source.",
+      "primaryKey": [
+        "tenant_id",
+        "session_id",
+        "binding_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "session_id",
+          "binding_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/canonical_finalization.go",
+            "internal/ydbstore/session_lifecycle.go",
+            "internal/ydbstore/sessions.go"
+          ],
+          "total": 3
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbpartition/backfill.go",
+            "internal/ydbstore/sessions.go"
+          ],
+          "total": 2
+        }
+      },
+      "entityGroup": "access-projection",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "frontend_ingress_idempotency",
+      "migration": "00057_create_frontend_ingress_idempotency.sql",
+      "role": "Frontend binding or ingress idempotency state.",
+      "primaryKey": [
+        "tenant_id",
+        "binding_id",
+        "idempotency_key"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "binding_id",
+          "idempotency_key"
+        ]
+      },
+      "retention": {
+        "kind": "schema_ttl",
+        "interval": "PT0S",
+        "column": "expire_at"
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/canonical_ingress.go"
+          ],
+          "total": 1
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/canonical_ingress.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "frontend-ingress",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "frontend_projection_outbox",
+      "migration": "00058_create_frontend_projection_outbox.sql",
+      "role": "Rebuildable frontend projection, work queue, or related outbox.",
+      "primaryKey": [
+        "tenant_id",
+        "frontend_projection_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "frontend_projection_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbpartition/backfill.go",
+            "internal/ydbstore/session_lifecycle.go",
+            "internal/ydbstore/telegram_projection.go"
+          ],
+          "total": 3
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/canonical_finalization.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "frontend-projection",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "frontend_projection_ready_v1",
+      "migration": "00072_create_frontend_projection_ready_v1.sql",
+      "role": "Ready-work scheduling/access-path projection.",
+      "primaryKey": [
+        "frontend",
+        "shard_bucket",
+        "created_at",
+        "tenant_id",
+        "frontend_projection_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "frontend",
+          "shard_bucket",
+          "created_at",
+          "tenant_id",
+          "frontend_projection_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/telegram_projection.go"
+          ],
+          "total": 1
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbpartition/backfill.go",
+            "internal/ydbstore/canonical_finalization.go"
+          ],
+          "total": 2
+        }
+      },
+      "entityGroup": "queue-index",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "frontend_projections_by_run",
+      "migration": "00071_create_frontend_projections_by_run.sql",
+      "role": "Secondary keyed lookup projection; canonical ownership must be confirmed at its source.",
+      "primaryKey": [
+        "tenant_id",
+        "run_id",
+        "frontend",
+        "frontend_projection_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "run_id",
+          "frontend",
+          "frontend_projection_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/session_lifecycle.go",
+            "internal/ydbstore/telegram_projection.go"
+          ],
+          "total": 2
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbpartition/backfill.go",
+            "internal/ydbstore/canonical_finalization.go"
+          ],
+          "total": 2
+        }
+      },
+      "entityGroup": "access-projection",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "frontend_projections_by_session",
+      "migration": "00064_create_frontend_projections_by_session.sql",
+      "role": "Secondary keyed lookup projection; canonical ownership must be confirmed at its source.",
+      "primaryKey": [
+        "tenant_id",
+        "session_id",
+        "frontend_projection_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "session_id",
+          "frontend_projection_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/session_lifecycle.go",
+            "internal/ydbstore/telegram_projection.go"
+          ],
+          "total": 2
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbpartition/backfill.go",
+            "internal/ydbstore/canonical_finalization.go"
+          ],
+          "total": 2
+        }
+      },
+      "entityGroup": "access-projection",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "harness_binding_cutover_state",
+      "migration": "00088_create_harness_binding_cutover_state.sql",
+      "role": "Deployment or consumer cutover receipt; not canonical business state.",
+      "primaryKey": [
+        "cutover_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "cutover_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbpartition/backfill.go",
+            "internal/ydbstore/store.go"
+          ],
+          "total": 2
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbpartition/backfill.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "cutover",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "lease_expiry",
+      "migration": "00019_create_lease_expiry.sql",
+      "role": "Expiry/deadline access-path projection.",
+      "primaryKey": [
+        "tenant_id",
+        "expires_at",
+        "run_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "expires_at",
+          "run_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbpartition/backfill.go",
+            "internal/ydbstore/attached_worker_execution_helpers.go",
+            "internal/ydbstore/operations.go",
+            "internal/ydbstore/store.go",
+            "internal/ydbstore/worker.go"
+          ],
+          "total": 5
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbpartition/backfill.go",
+            "internal/ydbstore/store.go"
+          ],
+          "total": 2
+        }
+      },
+      "entityGroup": "expiry-index",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "lease_expiry_v2",
+      "migration": "00023_create_lease_expiry_v2.sql",
+      "role": "Expiry/deadline access-path projection.",
+      "primaryKey": [
+        "shard_bucket",
+        "expires_at",
+        "tenant_id",
+        "run_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "shard_bucket",
+          "expires_at",
+          "tenant_id",
+          "run_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/attached_worker_execution_helpers.go",
+            "internal/ydbstore/operations.go",
+            "internal/ydbstore/store.go",
+            "internal/ydbstore/worker.go"
+          ],
+          "total": 4
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbpartition/backfill.go",
+            "internal/ydbstore/store.go"
+          ],
+          "total": 2
+        }
+      },
+      "entityGroup": "expiry-index",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "lease_heads",
+      "migration": "00010_create_lease_heads.sql",
+      "role": "Operational or canonical domain state; authority and retention require source review.",
+      "primaryKey": [
+        "tenant_id",
+        "run_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "run_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/attached_worker_execution_helpers.go",
+            "internal/ydbstore/operations.go",
+            "internal/ydbstore/owned_attempt_effect_parent.go",
+            "internal/ydbstore/web_search_consent_reconcile.go",
+            "internal/ydbstore/worker.go"
+          ],
+          "total": 5
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/attached_worker_execution_helpers.go",
+            "internal/ydbstore/operations.go"
+          ],
+          "total": 2
+        }
+      },
+      "entityGroup": "canonical-operational",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "leases",
+      "migration": "00011_create_leases.sql",
+      "role": "Operational or canonical domain state; authority and retention require source review.",
+      "primaryKey": [
+        "tenant_id",
+        "lease_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "lease_id"
+        ]
+      },
+      "retention": {
+        "kind": "schema_ttl",
+        "interval": "PT0S",
+        "column": "retention_expire_at"
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/attached_worker_execution_helpers.go",
+            "internal/ydbstore/operations.go",
+            "internal/ydbstore/owned_attempt_effect_parent.go",
+            "internal/ydbstore/run_explanation_attached.go",
+            "internal/ydbstore/store.go"
+          ],
+          "total": 7
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/store.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "canonical-operational",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "managed_execution_authority_v2_cutover_state",
+      "migration": "00095_create_managed_execution_authority_v2_cutover_state.sql",
+      "role": "Deployment or consumer cutover receipt; not canonical business state.",
+      "primaryKey": [
+        "cutover_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "cutover_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbpartition/admission_cost_v2_cutover.go",
+            "internal/ydbpartition/backfill.go",
+            "internal/ydbstore/store.go"
+          ],
+          "total": 3
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbpartition/admission_cost_v2_cutover.go",
+            "internal/ydbpartition/backfill.go"
+          ],
+          "total": 2
+        }
+      },
+      "entityGroup": "cutover",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "oidc_login_challenges",
+      "migration": "00053_create_oidc_login_challenges.sql",
+      "role": "Identity, authentication, membership, or Web-session state.",
+      "primaryKey": [
+        "shard_bucket",
+        "state_digest"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "shard_bucket",
+          "state_digest"
+        ]
+      },
+      "retention": {
+        "kind": "schema_ttl",
+        "interval": "PT0S",
+        "column": "expires_at"
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/web_auth.go"
+          ],
+          "total": 1
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/web_auth.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "identity-web",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "owned_agent_profile_current_v1",
+      "migration": "00110_create_owned_agent_profile_current_v1.sql",
+      "role": "Operational or canonical domain state; authority and retention require source review.",
+      "primaryKey": [
+        "tenant_id",
+        "owner_user_id",
+        "profile",
+        "backend_profile_digest",
+        "resource_kind",
+        "resource_id",
+        "model_vendor_id",
+        "model_id",
+        "input_data_class"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "owner_user_id",
+          "profile",
+          "backend_profile_digest",
+          "resource_kind",
+          "resource_id",
+          "model_vendor_id",
+          "model_id",
+          "input_data_class"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/owned_authority_current.go",
+            "internal/ydbstore/owned_authority_join.go"
+          ],
+          "total": 2
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/owned_profile_publication.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "canonical-operational",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "owned_profile_publication_audit_v1",
+      "migration": "00112_create_owned_profile_publication_audit_v1.sql",
+      "role": "Audit or evidence record; lifecycle authority requires source review.",
+      "primaryKey": [
+        "tenant_id",
+        "locator_digest",
+        "mutation_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "locator_digest",
+          "mutation_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/owned_profile_publication.go"
+          ],
+          "total": 1
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/owned_profile_publication.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "audit-evidence",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "provider_credential_audit_events",
+      "migration": "00092_create_provider_credential_audit_events.sql",
+      "role": "Audit or evidence record; lifecycle authority requires source review.",
+      "primaryKey": [
+        "tenant_id",
+        "owner_user_id",
+        "resource_kind",
+        "resource_id",
+        "resource_revision"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "owner_user_id",
+          "resource_kind",
+          "resource_id",
+          "resource_revision"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/provider_credential.go"
+          ],
+          "total": 1
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/provider_credential.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "audit-evidence",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "provider_credential_bindings",
+      "migration": "00089_create_provider_credential_bindings.sql",
+      "role": "Provider-credential binding, cleanup, or audit state.",
+      "primaryKey": [
+        "tenant_id",
+        "owner_user_id",
+        "resource_kind",
+        "resource_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "owner_user_id",
+          "resource_kind",
+          "resource_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/provider_credential.go"
+          ],
+          "total": 1
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/provider_credential.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "credential-lifecycle",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "provider_credential_candidate_fences",
+      "migration": "00093_create_provider_credential_candidate_fences.sql",
+      "role": "Provider-credential binding, cleanup, or audit state.",
+      "primaryKey": [
+        "tenant_id",
+        "owner_user_id",
+        "resource_kind",
+        "resource_id",
+        "mutation_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "owner_user_id",
+          "resource_kind",
+          "resource_id",
+          "mutation_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/provider_credential.go"
+          ],
+          "total": 1
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/provider_credential.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "credential-lifecycle",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "provider_credential_cleanup_ready_v1",
+      "migration": "00091_create_provider_credential_cleanup_ready_v1.sql",
+      "role": "Ready-work scheduling/access-path projection.",
+      "primaryKey": [
+        "shard_bucket",
+        "created_at",
+        "tenant_id",
+        "owner_user_id",
+        "resource_kind",
+        "resource_id",
+        "credential_generation",
+        "secret_ref"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "shard_bucket",
+          "created_at",
+          "tenant_id",
+          "owner_user_id",
+          "resource_kind",
+          "resource_id",
+          "credential_generation",
+          "secret_ref"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/provider_credential.go"
+          ],
+          "total": 1
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/provider_credential.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "queue-index",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "provider_credential_cleanups",
+      "migration": "00090_create_provider_credential_cleanups.sql",
+      "role": "Provider-credential binding, cleanup, or audit state.",
+      "primaryKey": [
+        "tenant_id",
+        "owner_user_id",
+        "resource_kind",
+        "resource_id",
+        "credential_generation",
+        "secret_ref"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "owner_user_id",
+          "resource_kind",
+          "resource_id",
+          "credential_generation",
+          "secret_ref"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/provider_credential.go"
+          ],
+          "total": 1
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/provider_credential.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "credential-lifecycle",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "quota_expiry",
+      "migration": "00022_create_quota_expiry.sql",
+      "role": "Expiry/deadline access-path projection.",
+      "primaryKey": [
+        "tenant_id",
+        "expires_at",
+        "quota_reservation_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "expires_at",
+          "quota_reservation_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbpartition/backfill.go",
+            "internal/ydbstore/scheduler.go",
+            "internal/ydbstore/store.go"
+          ],
+          "total": 3
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbpartition/backfill.go",
+            "internal/ydbstore/store.go"
+          ],
+          "total": 2
+        }
+      },
+      "entityGroup": "expiry-index",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "quota_expiry_v2",
+      "migration": "00026_create_quota_expiry_v2.sql",
+      "role": "Expiry/deadline access-path projection.",
+      "primaryKey": [
+        "shard_bucket",
+        "expires_at",
+        "tenant_id",
+        "quota_reservation_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "shard_bucket",
+          "expires_at",
+          "tenant_id",
+          "quota_reservation_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/scheduler.go",
+            "internal/ydbstore/store.go"
+          ],
+          "total": 2
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbpartition/backfill.go",
+            "internal/ydbstore/store.go"
+          ],
+          "total": 2
+        }
+      },
+      "entityGroup": "expiry-index",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "quota_reservations",
+      "migration": "00013_create_quota_reservations.sql",
+      "role": "Operational or canonical domain state; authority and retention require source review.",
+      "primaryKey": [
+        "tenant_id",
+        "quota_reservation_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "quota_reservation_id"
+        ]
+      },
+      "retention": {
+        "kind": "schema_ttl",
+        "interval": "PT0S",
+        "column": "retention_expire_at"
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/attached_worker_execution_helpers.go",
+            "internal/ydbstore/operations.go",
+            "internal/ydbstore/owned_attempt_effect_parent.go",
+            "internal/ydbstore/owned_authority_canonical.go",
+            "internal/ydbstore/scheduler.go"
+          ],
+          "total": 7
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/store.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "canonical-operational",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "run_explanation_cutover_state_v1",
+      "migration": "00104_create_run_explanation_cutover_state_v1.sql",
+      "role": "Deployment or consumer cutover receipt; not canonical business state.",
+      "primaryKey": [
+        "cutover_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "cutover_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/run_explanation_cutover.go"
+          ],
+          "total": 1
+        },
+        "writers": {
+          "paths": [],
+          "total": 0
+        }
+      },
+      "entityGroup": "cutover",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "run_explanation_heads_v1",
+      "migration": "00102_create_run_explanation_heads_v1.sql",
+      "role": "Operational or canonical domain state; authority and retention require source review.",
+      "primaryKey": [
+        "tenant_id",
+        "run_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "run_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/run_explanation.go",
+            "internal/ydbstore/run_explanation_cutover.go",
+            "internal/ydbstore/run_explanation_writers.go",
+            "internal/ydbstore/session_lifecycle.go"
+          ],
+          "total": 4
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/owned_final_admission.go",
+            "internal/ydbstore/run_explanation_writers.go"
+          ],
+          "total": 2
+        }
+      },
+      "entityGroup": "canonical-operational",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "run_explanation_rate_slots_v1",
+      "migration": "00103_create_run_explanation_rate_slots_v1.sql",
+      "role": "Finite bounded rate-control slots.",
+      "primaryKey": [
+        "slot_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "slot_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/run_explanation_cutover.go",
+            "internal/ydbstore/run_explanation_rated.go"
+          ],
+          "total": 2
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/run_explanation_rated.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "rate-control",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "run_finalizations",
+      "migration": "00059_create_run_finalizations.sql",
+      "role": "Operational or canonical domain state; authority and retention require source review.",
+      "primaryKey": [
+        "tenant_id",
+        "run_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "run_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/canonical_finalization.go",
+            "internal/ydbstore/session_lifecycle.go"
+          ],
+          "total": 2
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/canonical_finalization.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "canonical-operational",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "run_idempotency",
+      "migration": "00008_create_run_idempotency.sql",
+      "role": "Operational or canonical domain state; authority and retention require source review.",
+      "primaryKey": [
+        "tenant_id",
+        "idempotency_key"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "idempotency_key"
+        ]
+      },
+      "retention": {
+        "kind": "schema_ttl",
+        "interval": "PT0S",
+        "column": "expire_at"
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/session_lifecycle.go",
+            "internal/ydbstore/store.go"
+          ],
+          "total": 2
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/store.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "canonical-operational",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "runs",
+      "migration": "00007_create_runs.sql",
+      "role": "Operational or canonical domain state; authority and retention require source review.",
+      "primaryKey": [
+        "tenant_id",
+        "run_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "run_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/owned_attempt_effect_parent.go",
+            "internal/ydbstore/owned_authority_canonical.go",
+            "internal/ydbstore/run_explanation.go",
+            "internal/ydbstore/session_api.go",
+            "internal/ydbstore/session_lifecycle.go"
+          ],
+          "total": 9
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/store.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "canonical-operational",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "runs_by_session",
+      "migration": "00048_create_runs_by_session.sql",
+      "role": "Secondary keyed lookup projection; canonical ownership must be confirmed at its source.",
+      "primaryKey": [
+        "tenant_id",
+        "session_id",
+        "created_at",
+        "run_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "session_id",
+          "created_at",
+          "run_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/session_api.go",
+            "internal/ydbstore/session_lifecycle.go",
+            "internal/ydbstore/sessions.go"
+          ],
+          "total": 3
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/store.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "access-projection",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "session_activity",
+      "migration": "00047_create_session_activity.sql",
+      "role": "Session lifecycle, API idempotency, or materialized display state.",
+      "primaryKey": [
+        "tenant_id",
+        "user_id",
+        "status",
+        "activity_bucket",
+        "updated_at",
+        "session_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "user_id",
+          "status",
+          "activity_bucket",
+          "updated_at",
+          "session_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/session_api.go",
+            "internal/ydbstore/sessions.go"
+          ],
+          "total": 2
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/sessions.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "session-lifecycle",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "session_api_idempotency",
+      "migration": "00068_create_session_api_idempotency.sql",
+      "role": "Session lifecycle, API idempotency, or materialized display state.",
+      "primaryKey": [
+        "tenant_id",
+        "user_id",
+        "idempotency_key"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "user_id",
+          "idempotency_key"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/session_api.go"
+          ],
+          "total": 1
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/session_api.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "session-lifecycle",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "session_api_mutations",
+      "migration": "00070_create_session_api_mutations.sql",
+      "role": "Session lifecycle, API idempotency, or materialized display state.",
+      "primaryKey": [
+        "tenant_id",
+        "user_id",
+        "idempotency_key",
+        "kind"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "user_id",
+          "idempotency_key",
+          "kind"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/session_api.go"
+          ],
+          "total": 1
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/session_api.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "session-lifecycle",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "session_deletions",
+      "migration": "00061_create_session_deletions.sql",
+      "role": "Session lifecycle, API idempotency, or materialized display state.",
+      "primaryKey": [
+        "tenant_id",
+        "session_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "session_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/owned_admission_principal.go",
+            "internal/ydbstore/owned_authority_canonical.go",
+            "internal/ydbstore/serverless_current_authority.go",
+            "internal/ydbstore/session_lifecycle.go"
+          ],
+          "total": 4
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/session_lifecycle.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "session-lifecycle",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "session_displays",
+      "migration": "00069_create_session_displays.sql",
+      "role": "Session lifecycle, API idempotency, or materialized display state.",
+      "primaryKey": [
+        "tenant_id",
+        "session_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "session_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/session_api.go",
+            "internal/ydbstore/session_lifecycle.go"
+          ],
+          "total": 2
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/session_api.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "session-lifecycle",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "session_event_idempotency",
+      "migration": "00042_create_session_event_idempotency.sql",
+      "role": "Session lifecycle, API idempotency, or materialized display state.",
+      "primaryKey": [
+        "tenant_id",
+        "session_id",
+        "idempotency_key"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "session_id",
+          "idempotency_key"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/session_lifecycle.go",
+            "internal/ydbstore/sessions.go"
+          ],
+          "total": 2
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/canonical_ingress.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "session-lifecycle",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "session_events",
+      "migration": "00004_create_session_events.sql",
+      "role": "Session lifecycle, API idempotency, or materialized display state.",
+      "primaryKey": [
+        "tenant_id",
+        "session_id",
+        "sequence"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "session_id",
+          "sequence"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbpartition/backfill.go",
+            "internal/ydbstore/canonical_ingress.go",
+            "internal/ydbstore/session_api.go",
+            "internal/ydbstore/session_lifecycle.go",
+            "internal/ydbstore/sessions.go"
+          ],
+          "total": 7
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/canonical_ingress.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "session-lifecycle",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "session_legal_holds",
+      "migration": "00060_create_session_legal_holds.sql",
+      "role": "Session lifecycle, API idempotency, or materialized display state.",
+      "primaryKey": [
+        "tenant_id",
+        "session_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "session_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/owned_authority_canonical.go",
+            "internal/ydbstore/session_lifecycle.go"
+          ],
+          "total": 2
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/session_lifecycle.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "session-lifecycle",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "session_lifecycle_backfill_state",
+      "migration": "00067_create_session_lifecycle_backfill_state.sql",
+      "role": "Resumable backfill checkpoint/control state.",
+      "primaryKey": [
+        "backfill_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "backfill_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/session_lifecycle.go"
+          ],
+          "total": 1
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbpartition/backfill.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "backfill-control",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "session_material_boundaries_v1",
+      "migration": "00108_create_session_material_boundaries_v1.sql",
+      "role": "Session material projection/boundary state.",
+      "primaryKey": [
+        "tenant_id",
+        "session_id",
+        "sequence"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "session_id",
+          "sequence"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/session_lifecycle.go",
+            "internal/ydbstore/session_material_writers.go"
+          ],
+          "total": 2
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/session_material_writers.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "session-material",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "session_material_current_v1",
+      "migration": "00107_create_session_material_current_v1.sql",
+      "role": "Session material projection/boundary state.",
+      "primaryKey": [
+        "tenant_id",
+        "session_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "session_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/session_lifecycle.go",
+            "internal/ydbstore/session_material_writers.go"
+          ],
+          "total": 2
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/session_material_writers.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "session-material",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "session_participants",
+      "migration": "00045_create_session_participants.sql",
+      "role": "Session lifecycle, API idempotency, or materialized display state.",
+      "primaryKey": [
+        "tenant_id",
+        "session_id",
+        "user_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "session_id",
+          "user_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/canonical_ingress.go",
+            "internal/ydbstore/compute_choice_auth.go",
+            "internal/ydbstore/owned_admission_principal.go",
+            "internal/ydbstore/owned_authority_canonical.go",
+            "internal/ydbstore/run_explanation.go"
+          ],
+          "total": 12
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/sessions.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "session-lifecycle",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "session_snapshot_material_v1",
+      "migration": "00109_create_session_snapshot_material_v1.sql",
+      "role": "Session material projection/boundary state.",
+      "primaryKey": [
+        "tenant_id",
+        "session_id",
+        "snapshot_version"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "session_id",
+          "snapshot_version"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/session_lifecycle.go"
+          ],
+          "total": 1
+        },
+        "writers": {
+          "paths": [],
+          "total": 0
+        }
+      },
+      "entityGroup": "session-material",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "session_snapshots",
+      "migration": "00046_create_session_snapshots.sql",
+      "role": "Session lifecycle, API idempotency, or materialized display state.",
+      "primaryKey": [
+        "tenant_id",
+        "session_id",
+        "version"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "session_id",
+          "version"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/scheduler.go",
+            "internal/ydbstore/session_lifecycle.go",
+            "internal/ydbstore/sessions.go",
+            "internal/ydbstore/worker.go"
+          ],
+          "total": 4
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/sessions.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "session-lifecycle",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "sessions",
+      "migration": "00003_create_sessions.sql",
+      "role": "Operational or canonical domain state; authority and retention require source review.",
+      "primaryKey": [
+        "tenant_id",
+        "session_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "session_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/compute_choice_auth.go",
+            "internal/ydbstore/owned_admission_principal.go",
+            "internal/ydbstore/owned_authority_canonical.go",
+            "internal/ydbstore/run_explanation.go",
+            "internal/ydbstore/session_lifecycle.go"
+          ],
+          "total": 6
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/sessions.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "canonical-operational",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "subscription_connections",
+      "migration": "00006_create_subscription_connections.sql",
+      "role": "Operational or canonical domain state; authority and retention require source review.",
+      "primaryKey": [
+        "tenant_id",
+        "subscription_connection_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "subscription_connection_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/attached_worker_onboarding.go",
+            "internal/ydbstore/compute_choice_attached.go",
+            "internal/ydbstore/operations.go",
+            "internal/ydbstore/scheduler.go",
+            "internal/ydbstore/session_api.go"
+          ],
+          "total": 7
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/attached_worker_onboarding.go",
+            "internal/ydbstore/operations.go"
+          ],
+          "total": 2
+        }
+      },
+      "entityGroup": "canonical-operational",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "subscription_connections_by_user",
+      "migration": "00076_create_subscription_connections_by_user.sql",
+      "role": "Secondary keyed lookup projection; canonical ownership must be confirmed at its source.",
+      "primaryKey": [
+        "tenant_id",
+        "user_id",
+        "subscription_connection_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "user_id",
+          "subscription_connection_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/attached_worker_onboarding.go",
+            "internal/ydbstore/web_upload.go"
+          ],
+          "total": 2
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/attached_worker_onboarding.go",
+            "internal/ydbstore/operations.go"
+          ],
+          "total": 2
+        }
+      },
+      "entityGroup": "access-projection",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "subscription_scheduler_slots",
+      "migration": "00039_create_subscription_scheduler_slots.sql",
+      "role": "Operational queue, scheduler, or dispatch state.",
+      "primaryKey": [
+        "tenant_id",
+        "subscription_connection_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "subscription_connection_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/compute_choice_attached.go",
+            "internal/ydbstore/operations.go",
+            "internal/ydbstore/scheduler.go"
+          ],
+          "total": 3
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/operations.go",
+            "internal/ydbstore/scheduler.go"
+          ],
+          "total": 2
+        }
+      },
+      "entityGroup": "operational-queue",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "substrate_execution_evidence",
+      "migration": "00096_create_substrate_execution_evidence.sql",
+      "role": "Audit or evidence record; lifecycle authority requires source review.",
+      "primaryKey": [
+        "tenant_id",
+        "attempt_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "attempt_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/substrate_execution_evidence.go"
+          ],
+          "total": 1
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/substrate_execution_evidence.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "audit-evidence",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "telegram_deliveries_by_run",
+      "migration": "00065_create_telegram_deliveries_by_run.sql",
+      "role": "Secondary keyed lookup projection; canonical ownership must be confirmed at its source.",
+      "primaryKey": [
+        "tenant_id",
+        "run_id",
+        "telegram_delivery_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "run_id",
+          "telegram_delivery_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/session_lifecycle.go",
+            "internal/ydbstore/telegram_projection.go"
+          ],
+          "total": 2
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbpartition/backfill.go",
+            "internal/ydbstore/store.go"
+          ],
+          "total": 2
+        }
+      },
+      "entityGroup": "access-projection",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "telegram_delivery_outbox",
+      "migration": "00017_create_telegram_delivery_outbox.sql",
+      "role": "Operational queue, scheduler, or dispatch state.",
+      "primaryKey": [
+        "tenant_id",
+        "telegram_delivery_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "telegram_delivery_id"
+        ]
+      },
+      "retention": {
+        "kind": "schema_ttl",
+        "interval": "PT0S",
+        "column": "retention_expire_at"
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbpartition/backfill.go",
+            "internal/ydbstore/operations.go",
+            "internal/ydbstore/session_lifecycle.go",
+            "internal/ydbstore/store.go"
+          ],
+          "total": 4
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/store.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "operational-queue",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "telegram_delivery_ready",
+      "migration": "00021_create_telegram_delivery_ready.sql",
+      "role": "Ready-work scheduling/access-path projection.",
+      "primaryKey": [
+        "tenant_id",
+        "available_at",
+        "telegram_delivery_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "available_at",
+          "telegram_delivery_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbpartition/backfill.go",
+            "internal/ydbstore/operations.go",
+            "internal/ydbstore/session_lifecycle.go",
+            "internal/ydbstore/store.go"
+          ],
+          "total": 4
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbpartition/backfill.go",
+            "internal/ydbstore/store.go"
+          ],
+          "total": 2
+        }
+      },
+      "entityGroup": "queue-index",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "telegram_delivery_ready_v2",
+      "migration": "00025_create_telegram_delivery_ready_v2.sql",
+      "role": "Ready-work scheduling/access-path projection.",
+      "primaryKey": [
+        "shard_bucket",
+        "available_at",
+        "tenant_id",
+        "telegram_delivery_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "shard_bucket",
+          "available_at",
+          "tenant_id",
+          "telegram_delivery_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/operations.go",
+            "internal/ydbstore/session_lifecycle.go",
+            "internal/ydbstore/store.go"
+          ],
+          "total": 3
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbpartition/backfill.go",
+            "internal/ydbstore/store.go"
+          ],
+          "total": 2
+        }
+      },
+      "entityGroup": "queue-index",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "telegram_updates",
+      "migration": "00005_create_telegram_updates.sql",
+      "role": "Operational or canonical domain state; authority and retention require source review.",
+      "primaryKey": [
+        "tenant_id",
+        "source_id",
+        "update_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "source_id",
+          "update_id"
+        ]
+      },
+      "retention": {
+        "kind": "schema_ttl",
+        "interval": "PT0S",
+        "column": "expire_at"
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/operations.go"
+          ],
+          "total": 1
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/operations.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "canonical-operational",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "tenant_invitations",
+      "migration": "00052_create_tenant_invitations.sql",
+      "role": "Identity, authentication, membership, or Web-session state.",
+      "primaryKey": [
+        "tenant_id",
+        "invitation_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "invitation_id"
+        ]
+      },
+      "retention": {
+        "kind": "schema_ttl",
+        "interval": "PT0S",
+        "column": "expires_at"
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/web_auth.go"
+          ],
+          "total": 1
+        },
+        "writers": {
+          "paths": [],
+          "total": 0
+        }
+      },
+      "entityGroup": "identity-web",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "tenant_memberships",
+      "migration": "00051_create_tenant_memberships.sql",
+      "role": "Identity, authentication, membership, or Web-session state.",
+      "primaryKey": [
+        "user_bucket",
+        "user_id",
+        "tenant_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "user_bucket",
+          "user_id",
+          "tenant_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/compute_choice_auth.go",
+            "internal/ydbstore/owned_admission_principal.go",
+            "internal/ydbstore/owned_authority_canonical.go",
+            "internal/ydbstore/run_explanation.go",
+            "internal/ydbstore/web_auth.go"
+          ],
+          "total": 7
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/web_auth.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "identity-web",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "tenant_scheduler_counters",
+      "migration": "00040_create_tenant_scheduler_counters.sql",
+      "role": "Operational queue, scheduler, or dispatch state.",
+      "primaryKey": [
+        "tenant_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/compute_choice_attached.go",
+            "internal/ydbstore/operations.go",
+            "internal/ydbstore/scheduler.go"
+          ],
+          "total": 3
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/operations.go",
+            "internal/ydbstore/scheduler.go"
+          ],
+          "total": 2
+        }
+      },
+      "entityGroup": "operational-queue",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "tenants",
+      "migration": "00001_create_tenants.sql",
+      "role": "Operational or canonical domain state; authority and retention require source review.",
+      "primaryKey": [
+        "tenant_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [],
+          "total": 0
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/operations.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "canonical-operational",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "usage_observations",
+      "migration": "00014_create_usage_observations.sql",
+      "role": "Operational or canonical domain state; authority and retention require source review.",
+      "primaryKey": [
+        "tenant_id",
+        "subscription_connection_id",
+        "observed_at",
+        "usage_observation_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "subscription_connection_id",
+          "observed_at",
+          "usage_observation_id"
+        ]
+      },
+      "retention": {
+        "kind": "schema_ttl",
+        "interval": "PT0S",
+        "column": "retention_expire_at"
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [],
+          "total": 0
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/store.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "canonical-operational",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "web_security_audit_events",
+      "migration": "00056_create_web_security_audit_events.sql",
+      "role": "Audit or evidence record; lifecycle authority requires source review.",
+      "primaryKey": [
+        "shard_bucket",
+        "occurred_at",
+        "request_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "shard_bucket",
+          "occurred_at",
+          "request_id"
+        ]
+      },
+      "retention": {
+        "kind": "schema_ttl",
+        "interval": "PT0S",
+        "column": "expire_at"
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [],
+          "total": 0
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/web_auth.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "audit-evidence",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "web_sessions",
+      "migration": "00054_create_web_sessions.sql",
+      "role": "Identity, authentication, membership, or Web-session state.",
+      "primaryKey": [
+        "shard_bucket",
+        "session_digest"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "shard_bucket",
+          "session_digest"
+        ]
+      },
+      "retention": {
+        "kind": "schema_ttl",
+        "interval": "PT0S",
+        "column": "absolute_expires_at"
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/compute_choice_auth.go",
+            "internal/ydbstore/run_explanation.go",
+            "internal/ydbstore/web_auth.go",
+            "internal/ydbstore/web_search_consent_authority.go",
+            "internal/ydbstore/web_search_consent_reconcile.go"
+          ],
+          "total": 5
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/web_auth.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "identity-web",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "web_upload_intent_creations",
+      "migration": "00074_create_web_upload_intent_creations.sql",
+      "role": "Identity, authentication, membership, or Web-session state.",
+      "primaryKey": [
+        "tenant_id",
+        "user_id",
+        "creation_idempotency_key"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "user_id",
+          "creation_idempotency_key"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/web_upload.go"
+          ],
+          "total": 1
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/web_upload.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "identity-web",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "web_upload_intents",
+      "migration": "00073_create_web_upload_intents.sql",
+      "role": "Identity, authentication, membership, or Web-session state.",
+      "primaryKey": [
+        "tenant_id",
+        "upload_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "upload_id"
+        ]
+      },
+      "retention": {
+        "kind": "unknown",
+        "statement": "No TTL clause in this CREATE migration; runtime/deployment retention not inferred."
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/web_upload.go"
+          ],
+          "total": 1
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/web_upload.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "identity-web",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    },
+    {
+      "table": "worker_jobs",
+      "migration": "00041_create_worker_jobs.sql",
+      "role": "Operational queue, scheduler, or dispatch state.",
+      "primaryKey": [
+        "tenant_id",
+        "run_id"
+      ],
+      "observedKeyScope": {
+        "basis": "primary_key",
+        "columns": [
+          "tenant_id",
+          "run_id"
+        ]
+      },
+      "retention": {
+        "kind": "schema_ttl",
+        "interval": "PT0S",
+        "column": "retention_expire_at"
+      },
+      "knownRefs": {
+        "readers": {
+          "paths": [
+            "internal/ydbstore/attached_worker_execution_helpers.go",
+            "internal/ydbstore/attached_worker_output_receipt_store.go",
+            "internal/ydbstore/owned_attempt_effect_parent.go",
+            "internal/ydbstore/owned_authority_canonical.go",
+            "internal/ydbstore/scheduler.go"
+          ],
+          "total": 7
+        },
+        "writers": {
+          "paths": [
+            "internal/ydbstore/store.go"
+          ],
+          "total": 1
+        }
+      },
+      "entityGroup": "operational-queue",
+      "durabilityReview": "pending",
+      "proposedDisposition": "review"
+    }
+  ]
+}

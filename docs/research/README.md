@@ -25,6 +25,7 @@ opt-in developer tools, never production or mandatory CI dependencies.
 
 | Track | Report | Primary outcome |
 | --- | --- | --- |
+| #205 | [State storage and durability](state-storage-and-durability.md) | Harness/checkpoint comparison, logical-state kernel and a concrete four-index retirement proposal; actual table reduction and execution layout remain separate work. |
 | #45, #28 | [Memory and permissions](memory-and-permissions.md) | Versioned, scoped derived memory over canonical Session events; event-driven consolidation plus scheduled repair. |
 | #46 | [Tooling, MCP, and permissions](tooling-mcp-and-permissions.md) | Sessionless-owned capability/effect policy, narrow built-ins, worker/MCP isolation and call-time authorization. |
 | #94, #179, #180 | [Managed MVP web search](web-search-mvp.md) | 2026-10-10 bounded provider/harness comparison and Tavily Basic engineering-fit proposal; not full #94 completion, benchmark or live enablement. |

@@ -55,6 +55,19 @@ subscription credentials into this repository.
 
 ## Fast path
 
+### Entity registry and state storage
+
+Maintain the [entity registry](architecture/entity-registry.md) when table,
+primary-key, consumer or retention decisions change. It separates observed
+physical schema from the logical durability decisions in
+[state storage simplification](design/state-storage-simplification.md).
+Run `make entity-registry-check` and `make entity-registry-test`; both also run
+through `make docs-check`. These commands read source migrations and registry
+metadata only. They neither connect to YDB nor authorize schema application.
+Reports and unresolved reduction decisions belong in
+[#205](https://gitcode.com/urandon/sessionless/issues/205), not migration comments
+or the original task description.
+
 ### Attached execution composition (default off)
 
 The normal Web BFF can use the existing attached scheduler admission path with

@@ -256,7 +256,14 @@ attached-worker-rootless-integration: attached-worker-build
 	SESSIONLESS_ROOTLESS_ACTIVATION_INTEGRATION=1 SESSIONLESS_ATTACHED_WORKER_BINARY="$(CURDIR)/$(BIN_DIR)/attached-worker" \
 		go test -race -count=1 -timeout=22m -run '^TestActivatedRootlessServiceAcceptsSyntheticAttempt$$' ./cmd/attached-worker
 
-docs-check:
+.PHONY: entity-registry-check entity-registry-test
+entity-registry-check:
+	@node ./scripts/check-entity-registry.mjs
+
+entity-registry-test:
+	@node --test ./scripts/check-entity-registry.test.mjs
+
+docs-check: entity-registry-check entity-registry-test
 	@node ./scripts/check-markdown-links.mjs
 
 readme-visual-preview: web-build

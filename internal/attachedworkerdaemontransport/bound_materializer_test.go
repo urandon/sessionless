@@ -62,7 +62,7 @@ func TestBoundMaterializerTypedCarrierIsClonedAndRejoinedByAdapter(t *testing.T)
 			}
 			t.Logf("canonical fixture stdin=%d exceeds unrelated small fixture adapter cap=%d; admitted input cap=%d",
 				len(input.Stdin), fixture.adapter.config.MaxInputBytes, input.VerifiedInput.Job.Limits.MaxInputBytes)
-			denied, capErr := fixture.adapter.invocationFromInput(i, request, input)
+			denied, capErr := fixture.adapter.invocationFromInput(i, request, &input)
 			clearInvocation(&denied)
 			if !errors.Is(capErr, ErrInvalidAuthority) {
 				t.Fatalf("original adapter cap was not enforced: %v", capErr)
@@ -70,7 +70,7 @@ func TestBoundMaterializerTypedCarrierIsClonedAndRejoinedByAdapter(t *testing.T)
 			// This adapter now uses the same finite admitted job budget as the
 			// canonical materializer, rather than the unrelated 1 KiB fixture.
 			fixture.adapter.config.MaxInputBytes = int(input.VerifiedInput.Job.Limits.MaxInputBytes)
-			invocation, err := fixture.adapter.invocationFromInput(i, request, input)
+			invocation, err := fixture.adapter.invocationFromInput(i, request, &input)
 			defer clearInvocation(&invocation)
 			if tamper {
 				if !errors.Is(err, ErrInvalidAuthority) || invocation.VerifiedInput != nil {

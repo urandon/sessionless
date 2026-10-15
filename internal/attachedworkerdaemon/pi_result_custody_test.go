@@ -310,7 +310,7 @@ func TestPiResultCustodyPreIssueAccountingAndPartition(t *testing.T) {
 	inv, p, _ := apiOwnerFixture(t)
 	ctx, cancel := context.WithTimeout(t.Context(), time.Hour)
 	t.Cleanup(cancel)
-	data, err := p.PrepareOriginalAPIInvocation(ctx, inv.Identity, inv.VerifiedInput, inv.Process)
+	data, err := p.PrepareOriginalAPIInvocation(ctx, inv.Identity, inv.VerifiedInput, inv.Process, inv.InputAcquisition)
 	if err != nil {
 		t.Fatal(err)
 	}

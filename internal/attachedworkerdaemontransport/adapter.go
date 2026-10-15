@@ -157,6 +157,7 @@ type Config struct {
 }
 
 type MaterializationRequestV1 struct {
+	acquisition          *PiInputAcquisitionV1
 	TenantID             domain.TenantID
 	OwnerUserID          domain.UserID
 	WorkerID             domain.AttachedWorkerID
@@ -177,6 +178,7 @@ func (request MaterializationRequestV1) String() string {
 func (request MaterializationRequestV1) GoString() string { return request.String() }
 
 type MaterializedInputV1 struct {
+	acquisition   *PiInputAcquisitionV1
 	Stdin         []byte
 	ReadRoots     []string
 	Credential    *attachedworkerdaemon.CredentialInvocation
@@ -655,6 +657,33 @@ func (adapter *Adapter) claimAndMaterialize(
 	if offer.Validate() != nil || offer.AttemptSequence != 1 || !adapter.attemptMatchesSnapshot(offer.Binding, snapshot) {
 		return attachedworkerdaemon.Invocation{}, false, ErrInvalidAuthority
 	}
+	// The optional Pi arm begins at the original acquisition entry, BEFORE
+	// claim/request/active/materialization digest copies. Ordinary arms retain
+	// their existing construction. This private owner is not wire authority.
+	var acquisition *PiInputAcquisitionV1
+	var request MaterializationRequestV1
+	if m, ok := adapter.materializer.(*BoundMaterializer); ok && m.piProfile != nil {
+		borrowed := MaterializationRequestV1{TenantID: snapshot.TenantID, OwnerUserID: snapshot.OwnerUserID, WorkerID: snapshot.WorkerID,
+			EnrollmentGeneration: snapshot.EnrollmentGeneration, ConnectionGeneration: snapshot.ConnectionGeneration, ConnectionID: snapshot.ConnectionID,
+			Attempt: offer.Binding, AttemptSequence: offer.AttemptSequence}
+		var beginErr error
+		acquisition, beginErr = m.beginOriginalInput(ctx, borrowed)
+		if beginErr != nil {
+			return attachedworkerdaemon.Invocation{}, false, beginErr
+		}
+		request, beginErr = acquisition.Request()
+		if beginErr != nil {
+			acquisition.Clear()
+			return attachedworkerdaemon.Invocation{}, false, beginErr
+		}
+	}
+	// On a late materializer, its actual join owns this cleanup instead. On
+	// success ownership transfers to Invocation.Clear, after the SAME Run.
+	defer func() {
+		if acquisition != nil {
+			acquisition.Clear()
+		}
+	}()
 	claim := attachedworkerprotocol.LeaseClaimV1{Binding: cloneAttemptBinding(offer.Binding), AttemptSequence: offer.AttemptSequence}
 	response, err := adapter.session.ExchangeAction(ctx, attachedworkersession.ActionV1{LeaseClaim: &claim})
 	if err != nil {
@@ -663,7 +692,9 @@ func (adapter *Adapter) claimAndMaterialize(
 	if response == nil || !frameMatchesSnapshot(*response, snapshot) {
 		return attachedworkerdaemon.Invocation{}, false, ErrReconciliationRequired
 	}
-	request := materializationRequest(snapshot, offer.Binding, offer.AttemptSequence)
+	if acquisition == nil {
+		request = materializationRequest(snapshot, offer.Binding, offer.AttemptSequence)
+	}
 	active, err := newActiveAttempt(request)
 	if err != nil {
 		return attachedworkerdaemon.Invocation{}, false, err
@@ -677,7 +708,9 @@ func (adapter *Adapter) claimAndMaterialize(
 		}
 		active.nextWorkerAttemptSequence = offer.AttemptSequence + 1
 		active.nextPlatformAttemptSequence = accepted.AttemptSequence + 1
-		adapter.setActive(active)
+		if err := adapter.setActive(active); err != nil {
+			return attachedworkerdaemon.Invocation{}, false, err
+		}
 	case attachedworkerprotocol.MessageCancel:
 		cancel := response.Cancel
 		if cancel == nil || cancel.Validate() != nil || cancel.AttemptSequence != offer.AttemptSequence+1 ||
@@ -687,7 +720,9 @@ func (adapter *Adapter) claimAndMaterialize(
 		active.nextWorkerAttemptSequence = offer.AttemptSequence + 1
 		active.nextPlatformAttemptSequence = cancel.AttemptSequence + 1
 		active.cancelRevision = cancel.CancelRevision
-		adapter.setActive(active)
+		if err := adapter.setActive(active); err != nil {
+			return attachedworkerdaemon.Invocation{}, false, err
+		}
 		if err := adapter.acknowledgeCancel(ctx, active, *cancel); err != nil {
 			return attachedworkerdaemon.Invocation{}, false, err
 		}
@@ -704,6 +739,7 @@ func (adapter *Adapter) claimAndMaterialize(
 
 	input, materializeErr, materializationAmbiguous := adapter.materializeOwned(ctx, cloneMaterializationRequest(request), releaseGate)
 	if materializationAmbiguous {
+		acquisition = nil // materializeOwned's late-result join retains it
 		return attachedworkerdaemon.Invocation{}, false, errors.Join(ErrMaterializationFailed, ErrReconciliationRequired, materializeErr)
 	}
 	defer clearMaterializedInput(&input)
@@ -729,13 +765,14 @@ func (adapter *Adapter) claimAndMaterialize(
 	if authorityErr := adapter.validateActiveAuthority(active); authorityErr != nil {
 		return attachedworkerdaemon.Invocation{}, false, authorityErr
 	}
-	invocation, err := adapter.invocationFromInput(active.identity, active.request, input)
+	invocation, err := adapter.invocationFromInput(active.identity, active.request, &input)
 	if err != nil {
 		reportCtx, cancelReport := context.WithTimeout(context.WithoutCancel(ctx), adapter.config.ReportTimeout)
 		reportErr := adapter.completeOwned(reportCtx, active.identity, attachedworkerdaemon.InvocationResult{FailureCode: "invocation_materialization_invalid"}, err)
 		cancelReport()
 		return attachedworkerdaemon.Invocation{}, false, errors.Join(ErrMaterializationFailed, reportErr)
 	}
+	acquisition = nil // transferred to the invocation, not a cleared local copy
 	return invocation, true, nil
 }
 
@@ -766,8 +803,14 @@ func (adapter *Adapter) acknowledgeCancelAfterLocalCancellation(ctx context.Cont
 func (adapter *Adapter) invocationFromInput(
 	identity attachedworkerdaemon.InvocationIdentity,
 	request MaterializationRequestV1,
-	input MaterializedInputV1,
+	input *MaterializedInputV1,
 ) (attachedworkerdaemon.Invocation, error) {
+	if input == nil {
+		return attachedworkerdaemon.Invocation{}, ErrInvalidAuthority
+	}
+	if input.acquisition != nil {
+		return adapter.takePiInvocation(identity, request, input)
+	}
 	if len(input.Stdin) == 0 || len(input.Stdin) > adapter.config.MaxInputBytes {
 		return attachedworkerdaemon.Invocation{}, ErrInvalidAuthority
 	}
@@ -902,6 +945,9 @@ func (adapter *Adapter) completeOwned(
 	adapter.active = nil
 	adapter.last = &completedAttempt{identity: identity, fingerprint: fingerprint}
 	adapter.mu.Unlock()
+	if err := active.request.acquisition.retireActiveControl(&active.request); err != nil {
+		return errors.Join(ErrReconciliationRequired, err)
+	}
 	return nil
 }
 
@@ -1377,6 +1423,7 @@ func (adapter *Adapter) materializeOwned(
 		go func() {
 			outcome := <-result
 			clearMaterializedInput(&outcome.input)
+			request.acquisition.Clear()
 			adapter.release()
 		}()
 		return MaterializedInputV1{}, operationErr, true
@@ -1404,6 +1451,7 @@ func clearMaterializedInput(input *MaterializedInputV1) {
 	}
 	clearBytes(input.Stdin)
 	input.VerifiedInput.Clear()
+	input.acquisition.Clear()
 	*input = MaterializedInputV1{}
 }
 
@@ -1411,9 +1459,7 @@ func clearInvocation(invocation *attachedworkerdaemon.Invocation) {
 	if invocation == nil {
 		return
 	}
-	clearBytes(invocation.Process.Stdin)
-	invocation.VerifiedInput.Clear()
-	*invocation = attachedworkerdaemon.Invocation{}
+	invocation.Clear()
 }
 
 func clearBytes(value []byte) {
@@ -1466,10 +1512,14 @@ func (adapter *Adapter) currentActive() *activeAttempt {
 	return adapter.active
 }
 
-func (adapter *Adapter) setActive(active *activeAttempt) {
+func (adapter *Adapter) setActive(active *activeAttempt) error {
 	adapter.mu.Lock()
+	defer adapter.mu.Unlock()
+	if err := active.request.acquisition.retainActiveControl(active.request); err != nil {
+		return err
+	}
 	adapter.active = active
-	adapter.mu.Unlock()
+	return nil
 }
 
 func (adapter *Adapter) String() string {

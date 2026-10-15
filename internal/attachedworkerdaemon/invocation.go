@@ -48,10 +48,44 @@ type CredentialInvocation struct {
 }
 
 type Invocation struct {
-	Identity      InvocationIdentity
-	Process       AttemptSpec
-	Credential    *CredentialInvocation
-	VerifiedInput *VerifiedAttachedInputV1 `json:"-"`
+	Identity         InvocationIdentity
+	Process          AttemptSpec
+	Credential       *CredentialInvocation
+	VerifiedInput    *VerifiedAttachedInputV1   `json:"-"`
+	InputAcquisition PreparedInputAcquisitionV1 `json:"-"`
+}
+
+// Clear relinquishes the invocation's owned DATA only after its synchronous
+// runner has joined. Acquisition is outside the reflected input data graph;
+// it is never cloned into independent parent/child partitions or wire input.
+func (invocation *Invocation) Clear() {
+	if invocation == nil {
+		return
+	}
+	invocation.ClearInput()
+	*invocation = Invocation{}
+}
+
+// ClearInput preserves the identity used by the original terminal sink after
+// Run returns. No accounting owner is retained by terminal/reconcile DATA.
+func (invocation *Invocation) ClearInput() {
+	if invocation == nil {
+		return
+	}
+	clear(invocation.Process.Stdin)
+	invocation.VerifiedInput.Clear()
+	if !nilPreparedAPIDependency(invocation.InputAcquisition) {
+		// Only this arm transferred independent funded process slices. Drop
+		// them before ending their live debit; the original terminal sink uses
+		// Identity, not the retired process. Ordinary borrowed profiles retain
+		// their existing ownership contract.
+		clear(invocation.Process.Arguments)
+		clear(invocation.Process.Environment)
+		clear(invocation.Process.AdditionalReadRoots)
+		invocation.Process = AttemptSpec{}
+		invocation.InputAcquisition.Clear()
+	}
+	invocation.InputAcquisition = nil
 }
 
 func (invocation Invocation) Validate() error {
@@ -179,6 +213,7 @@ func (runner *InvocationRunner) Run(
 	}
 	if runner == nil || runner.process == nil && runner.prepared == nil ||
 		ctx == nil || ctx.Err() != nil || invocation.Validate() != nil ||
+		!nilPreparedAPIDependency(invocation.InputAcquisition) ||
 		runner.prepared != nil && invocation.VerifiedInput.validateCredential(invocation.Identity, invocation.Credential) != nil {
 		return InvocationResult{}, ErrInvocationInvalid
 	}
@@ -258,6 +293,16 @@ func (runner *InvocationRunner) runPreparedAPI(ctx context.Context, invocation I
 		invocation.VerifiedInput == nil || !invocation.VerifiedInput.bounded() {
 		return result, ErrInvocationInvalid
 	}
+	if !nilPreparedAPIDependency(invocation.InputAcquisition) {
+		original := invocation.InputAcquisition.OriginalContext()
+		// Check the incoming original BEFORE beginPiInvocation derives its
+		// cancellation child. Deadline/value equality is not cancellation
+		// lineage. Fail closed for non-comparable custom contexts rather than
+		// risking an interface comparison panic or accepting an unrelated one.
+		if original == nil || !reflect.TypeOf(ctx).Comparable() || !reflect.TypeOf(original).Comparable() || ctx != original {
+			return result, ErrInvocationInvalid
+		}
+	}
 	ctx, finish, err := runner.beginPiInvocation(ctx, invocation.Identity)
 	if err != nil {
 		return result, err
@@ -274,7 +319,7 @@ func (runner *InvocationRunner) runPreparedAPI(ctx context.Context, invocation I
 func (runner *InvocationRunner) runOwnedPreparedAPI(ctx context.Context, invocation Invocation) (result InvocationResult, runErr error) {
 	// Prepare funds StageA/B/C and transfers independent owned originals plus
 	// child copies. The subscription Clone path is deliberately not used here.
-	data, err := runner.apiParent.PrepareOriginalAPIInvocation(ctx, invocation.Identity, invocation.VerifiedInput, invocation.Process)
+	data, err := runner.apiParent.PrepareOriginalAPIInvocation(ctx, invocation.Identity, invocation.VerifiedInput, invocation.Process, invocation.InputAcquisition)
 	var slot *piResultCustody
 	var handle ports.ProviderInvocationCredentialV1
 	var bufferCustody interface{ Clear() }
@@ -431,6 +476,14 @@ func (runner *InvocationRunner) observeAPIPhase(ctx context.Context, data *Prepa
 }
 
 func (data *PreparedAPIDataV1) validateOriginal(invocation Invocation, ctx context.Context) error {
+	if !nilPreparedAPIDependency(invocation.InputAcquisition) {
+		a := invocation.InputAcquisition
+		original := a.OriginalContext()
+		if original == nil || original.Err() != nil || a.OriginalEntry().IsZero() || data.Entry != a.OriginalEntry() ||
+			!samePiLedger(data.Ledger, a.OriginalLedger()) {
+			return ErrInvocationInvalid
+		}
+	}
 	if nilPreparedAPIDependency(data.Ledger) || nilPreparedAPIDependency(data.Custody) || nilPreparedAPIDependency(data.Retirement) ||
 		!apiInputsIndependent(data.ParentInput, data.ChildInput) || !apiInputsIndependent(data.ParentInput, invocation.VerifiedInput) || !apiInputsIndependent(data.ChildInput, invocation.VerifiedInput) ||
 		data.ParentInput.validateAPIRequest(invocation.Identity, data.Issue) != nil || data.ChildInput.validateAPIRequest(invocation.Identity, data.Issue) != nil ||

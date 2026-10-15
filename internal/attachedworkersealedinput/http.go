@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemontransport"
+	"gitcode.com/urandon/sessionless/internal/attachedworkertransport"
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
 
@@ -111,6 +112,27 @@ func (source *ClientSource) Load(ctx context.Context, request attachedworkerdaem
 		source.mu.Unlock()
 		return attachedworkerdaemontransport.SealedInputV1{}, ErrUnavailable
 	}
+	acquisition := request.PiInputAcquisitionV1()
+	arenaBytes := maxResponseBytes + 1
+	if acquisition != nil {
+		// The closed API wire is also its complete canonical carrier. A body
+		// above the inherited/profile seal can never become a lawful input, so
+		// stop at that MIN plus one sentinel rather than allocate the larger
+		// legacy transport carrier. No admitted input is truncated or dropped.
+		arenaBytes = min(maxResponseBytes, maxInputBytes, int(acquisition.Profile().Limits.CanonicalInputBytes)) + 1
+		// The installed original owner funds the per-call bearer clone, its
+		// header/string appearances, request encoder/returned buffer and fixed
+		// response arena BEFORE any of those allocations or the HTTP request.
+		// Logical payload accounting is not net/http/encoding/json heap fit.
+		bearerBytes := uint64(len(source.bearer))
+		headerBytes := uint64(len("AuthorizationBearer Content-Typeapplication/jsonAcceptapplication/json"))
+		if acquisition.BeginSourceRead(request) != nil || bearerBytes > attachedworkertransport.ConnectionBearerMaxBytes ||
+			acquisition.Reserve(3*bearerBytes+headerBytes+3*maxRequestBytes+2*uint64(arenaBytes)+uint64(len(source.endpoint)),
+				3*bearerBytes+headerBytes+2*maxRequestBytes+uint64(arenaBytes)+uint64(len(source.endpoint)), 0) != nil {
+			source.mu.Unlock()
+			return input, ErrUnavailable
+		}
+	}
 	bearer := append([]byte(nil), source.bearer...)
 	life := source.life
 	source.mu.Unlock()
@@ -145,6 +167,10 @@ func (source *ClientSource) Load(ctx context.Context, request attachedworkerdaem
 	if err != nil {
 		return attachedworkerdaemontransport.SealedInputV1{}, ErrInvalid
 	}
+	if acquisition != nil {
+		httpRequest.GetBody = nil
+		httpRequest.Close = true
+	}
 	httpRequest.Header.Set("Authorization", "Bearer "+string(bearer))
 	defer httpRequest.Header.Del("Authorization")
 	httpRequest.Header.Set("Content-Type", "application/json")
@@ -167,23 +193,52 @@ func (source *ClientSource) Load(ctx context.Context, request attachedworkerdaem
 	if response.StatusCode != http.StatusOK || response.Header.Get("Content-Type") != "application/json" {
 		return attachedworkerdaemontransport.SealedInputV1{}, ErrUnavailable
 	}
-	body, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
+	var body []byte
+	if acquisition == nil {
+		body, err = io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
+	} else {
+		// One already-funded arena, including the overflow/EOF sentinel. Read
+		// never grows it. The outer acquisition owns reservation retirement.
+		body = make([]byte, arenaBytes)
+		var n int
+		n, err = io.ReadFull(response.Body, body)
+		body = body[:n]
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			err = nil
+		}
+	}
 	if err != nil || len(body) > maxResponseBytes {
 		clearBytes(body)
 		return attachedworkerdaemontransport.SealedInputV1{}, ErrUnavailable
 	}
 	defer clearBytes(body)
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.DisallowUnknownFields()
-	if decoder.Decode(&input) != nil || decoder.Decode(new(any)) != io.EOF || requestCtx.Err() != nil {
+	if acquisition != nil {
+		input, err = decodePiAcquiredInput(requestCtx, body, acquisition)
+	} else {
+		decoder := json.NewDecoder(bytes.NewReader(body))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&input) != nil || decoder.Decode(new(any)) != io.EOF {
+			err = ErrUnavailable
+		}
+	}
+	if err != nil || requestCtx.Err() != nil {
 		clearResult(&input)
 		return attachedworkerdaemontransport.SealedInputV1{}, ErrUnavailable
 	}
 	authorization := ports.AuthorizationForAttachedInput(request.TenantID, request.OwnerUserID, request.WorkerID,
 		request.ConnectionID, request.EnrollmentGeneration, request.ConnectionGeneration, request.Attempt, request.AttemptSequence)
+	seal := maxInputBytes
+	if acquisition != nil {
+		seal = min(seal, int(acquisition.Profile().Limits.CanonicalInputBytes))
+		// The existing seal check re-encodes the complete carrier. Fund both
+		// encoder and returned payload before that walk/marshal, not afterward.
+		if acquisition.Reserve(3*uint64(seal), 2*uint64(seal), 0) != nil {
+			return input, ErrUnavailable
+		}
+	}
 	if !(ports.AttachedWorkerSealedInputAuthorizationResult{Status: ports.AttachedWorkerExecutionApplied,
 		AttemptRevision: input.AcceptedAttempt.Revision, Attempt: input.AcceptedAttempt}).Matches(authorization) ||
-		!attachedworkerdaemontransport.BoundedSerializedCanonicalInputV1(input, maxInputBytes) {
+		!attachedworkerdaemontransport.BoundedSerializedCanonicalInputV1(input, seal) {
 		clearResult(&input)
 		return attachedworkerdaemontransport.SealedInputV1{}, ErrUnavailable
 	}

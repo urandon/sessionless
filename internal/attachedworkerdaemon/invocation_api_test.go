@@ -85,7 +85,7 @@ type apiTestParent struct {
 	afterClear   func()
 }
 
-func (p *apiTestParent) PrepareOriginalAPIInvocation(ctx context.Context, id InvocationIdentity, input *VerifiedAttachedInputV1, process AttemptSpec) (*PreparedAPIDataV1, error) {
+func (p *apiTestParent) PrepareOriginalAPIInvocation(ctx context.Context, id InvocationIdentity, input *VerifiedAttachedInputV1, process AttemptSpec, acquisition PreparedInputAcquisitionV1) (*PreparedAPIDataV1, error) {
 	p.order = append(p.order, "prepare")
 	if p.prepareErr != nil {
 		return nil, p.prepareErr

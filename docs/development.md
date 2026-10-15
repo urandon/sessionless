@@ -629,6 +629,37 @@ isolation, installed native/tariff qualification, a real model turn or either
 MVP route's activation. Use `make test` with repository-shared Go caches;
 native integration remains separately gated.
 
+### Original Pi input acquisition (default off)
+
+`NewPiBoundMaterializer` explicitly selects the canonical API-input arm using
+an already selected immutable local profile. The ordinary materializer remains
+API-denying. The original Adapter creates one private accounting owner before
+claim/request input copies; the authenticated Session source carries it into
+the existing HTTP load. Limits never come from the response.
+
+The HTTP arm reserves its fixed MIN(profile canonical limit, inherited 1 MiB,
+transport cap) arena plus overflow sentinel before reading. A closed preflight
+rejects unknown, duplicate, case-aliased or escaped field names, malformed
+base64/UTF-8/integers, excess nesting and collections before typed decoding.
+Decoded strings, collections, copy work and the complete re-encoded seal use
+the same accumulated ledger. These are logical payload/work bounds, not a
+certificate for Go, SDK or native heap fit.
+
+Canonical data moves through materializer and adapter without synthetic stdin
+or another Verified-input clone. The existing API runner receives the original
+owner separately from its independent input partitions; a different caller
+context, entry anchor or ledger is rejected before credential Issue. Temporary
+HTTP/materialization contexts do not replace the original invocation lifetime.
+Source reading and materialization are each single-use, including failures.
+
+Input cleanup waits for the actual borrower or late materializer to return.
+The active request's digest buffers remain charged through ambiguous terminal
+acknowledgement and retire only with the original exact ACK and active slot.
+This does not fund all future receipt/upload/TLS representations or supply the
+genuine native-qualified private parent, SDK transport or exporter. The full
+profile, source-currentness, output and activation gates remain required;
+neither constructor nor a synthetic local test enables a worker profile.
+
 ### Worktrees and Go caches
 
 `make` resolves the repository's Git common directory and shares

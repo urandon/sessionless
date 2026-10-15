@@ -78,6 +78,17 @@ type PreparedAPILedgerV1 interface {
 	EndLive(uint64) error
 }
 
+// PreparedInputAcquisitionV1 is the trusted local source input's original
+// accounting/custody owner, not authorization or a native-fit certificate.
+// The genuine parent consumes the same ledger/entry; it cannot replenish them
+// after HTTP decode or derive a new context from remaining durations.
+type PreparedInputAcquisitionV1 interface {
+	OriginalContext() context.Context
+	OriginalEntry() time.Time
+	OriginalLedger() PreparedAPILedgerV1
+	Clear()
+}
+
 // PreparedAPIRetirementV1 belongs to the original retirement owner. Context
 // returns its once-selected applicable cutoff, including elapsed retirement
 // already begun during callback/process cleanup. It must not restart grace.
@@ -123,7 +134,7 @@ type PreparedAPIParentV1 interface {
 	// This does not transfer permission to Clear caller-aliased buffers. The
 	// parent must retain private resource ownership, not derive cleanup from
 	// paths in an unvalidated record. With a nil record it retains cleanup.
-	PrepareOriginalAPIInvocation(context.Context, InvocationIdentity, *VerifiedAttachedInputV1, AttemptSpec) (*PreparedAPIDataV1, error)
+	PrepareOriginalAPIInvocation(context.Context, InvocationIdentity, *VerifiedAttachedInputV1, AttemptSpec, PreparedInputAcquisitionV1) (*PreparedAPIDataV1, error)
 	ObserveOriginalAPIPhase(context.Context, pisdkphasewire.Request) (pisdkphasewire.Reply, error)
 	// RetireOriginalAPIStaging invokes the SAME original preparation's actual
 	// resource owner after any acquired credential's Release attempt, or on

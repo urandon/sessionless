@@ -115,7 +115,7 @@ func (daemon *Daemon) Run(parent context.Context) error {
 		if err != nil {
 			daemon.setPollCancel(nil)
 			pollCancel()
-			invocation.VerifiedInput.Clear()
+			invocation.ClearInput()
 			if daemon.draining() || parent.Err() != nil {
 				return nil
 			}
@@ -124,7 +124,7 @@ func (daemon *Daemon) Run(parent context.Context) error {
 		if !available {
 			daemon.setPollCancel(nil)
 			pollCancel()
-			invocation.VerifiedInput.Clear()
+			invocation.ClearInput()
 			if !daemon.waitIdle(parent) {
 				return nil
 			}
@@ -133,13 +133,13 @@ func (daemon *Daemon) Run(parent context.Context) error {
 		if invocation.Validate() != nil {
 			daemon.setPollCancel(nil)
 			pollCancel()
-			invocation.VerifiedInput.Clear()
+			invocation.ClearInput()
 			return ErrInvocationInvalid
 		}
 		if !daemon.beginAttempt(invocation.Identity, pollCancel) {
 			daemon.setPollCancel(nil)
 			pollCancel()
-			invocation.VerifiedInput.Clear()
+			invocation.ClearInput()
 			return nil
 		}
 		result, runErr := func() (InvocationResult, error) {
@@ -148,7 +148,7 @@ func (daemon *Daemon) Run(parent context.Context) error {
 			// buffers after synchronous Run returns, then cancel, never before.
 			defer daemon.setActiveCancel(nil)
 			defer pollCancel()
-			defer invocation.VerifiedInput.Clear()
+			defer invocation.ClearInput()
 			return daemon.runner.Run(pollCtx, invocation)
 		}()
 		reportCtx, reportCancel := context.WithTimeout(context.WithoutCancel(parent), daemon.config.ReportGrace)

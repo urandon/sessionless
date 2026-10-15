@@ -312,7 +312,7 @@ type executionTestParent struct {
 	clonePayload              uint64
 }
 
-func (p *executionTestParent) PrepareOriginalAPIInvocation(ctx context.Context, _ attachedworkerdaemon.InvocationIdentity, input *attachedworkerdaemon.VerifiedAttachedInputV1, process attachedworkerdaemon.AttemptSpec) (*attachedworkerdaemon.PreparedAPIDataV1, error) {
+func (p *executionTestParent) PrepareOriginalAPIInvocation(ctx context.Context, _ attachedworkerdaemon.InvocationIdentity, input *attachedworkerdaemon.VerifiedAttachedInputV1, process attachedworkerdaemon.AttemptSpec, acquisition attachedworkerdaemon.PreparedInputAcquisitionV1) (*attachedworkerdaemon.PreparedAPIDataV1, error) {
 	p.order = append(p.order, "prepare")
 	// This fixture has no legacy Artifacts copyShape slice. Both existing
 	// Clone calls enforce their 1MiB encoded envelope before Marshal/Unmarshal:

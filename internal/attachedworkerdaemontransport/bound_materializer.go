@@ -57,8 +57,10 @@ type SealedInputV1 struct {
 	CanonicalContext *sessioncontext.CanonicalProof             `json:"CanonicalContext,omitempty"`
 }
 
-// BoundMaterializer is the credential-free, in-memory synthetic input path.
-// It creates no host read root and cannot select a process or credential.
+// BoundMaterializer normally selects the credential-free synthetic input path.
+// The explicit Pi constructor instead moves canonical API data under one
+// pre-read accounting owner. Neither arm creates a host read root or selects
+// a process, credential, native-fit certificate or activation profile.
 // Canonical windows use codec-verified immutable proofs. Workspace/skill
 // bundles, provider credentials, and large artifact staging remain gated.
 type BoundMaterializer struct {
@@ -67,6 +69,7 @@ type BoundMaterializer struct {
 	now      func() time.Time
 	// Only the ydbintegration-tagged test constructor can enable this path.
 	allowTestProvider bool
+	piProfile         *domain.AttachedPiSDKNativeProfileV1
 }
 
 func NewBoundMaterializer(source SealedInputSource, maxBytes int, now func() time.Time) (*BoundMaterializer, error) {
@@ -105,12 +108,18 @@ func (materializer *BoundMaterializer) Materialize(ctx context.Context, request 
 		materializer.now().UTC().UnixMicro() >= request.Attempt.ExpiresAtUnixMicro {
 		return MaterializedInputV1{}, ErrSealedInputInvalid
 	}
+	if materializer.piProfile != nil && !request.acquisition.beginMaterialization(request) || materializer.piProfile == nil && request.acquisition != nil {
+		return MaterializedInputV1{}, ErrSealedInputInvalid
+	}
 	input, err := materializer.source.Load(ctx, cloneMaterializationRequest(request))
 	if err != nil || ctx.Err() != nil {
 		clearSealedInput(&input)
 		return MaterializedInputV1{}, errors.Join(ErrMaterializationFailed, ctx.Err())
 	}
 	defer clearSealedInput(&input)
+	if request.acquisition != nil {
+		return materializer.takePiInput(ctx, request, &input)
+	}
 	if materializer.now().UTC().UnixMicro() >= request.Attempt.ExpiresAtUnixMicro {
 		return MaterializedInputV1{}, ErrSealedInputInvalid
 	}

@@ -123,6 +123,7 @@ Detailed engineering contracts:
 - [Owned harness current authority (#189, draft)](design/owned-harness-current-authority.md)
 - [Attached receipt canonical material verification (#142)](design/attached-receipt-material.md)
 - [Pi SDK attached media profile (#202, engineering design)](design/pi-sdk-attached-media-profile.md)
+- [Pi SDK supervisor HTTP transport (#202/#203, draft)](design/pi-sdk-supervisor-http-transport.md)
 
 The [research index](research/README.md) separates evidence and open decisions
 from committed runtime contracts. It covers:

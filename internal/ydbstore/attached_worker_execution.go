@@ -63,6 +63,7 @@ func (store *Store) AuthorizeAttachedWorkerSealedInput(
 		return result, err
 	}
 	err = store.Transact(ctx, request.TenantID, func(state ports.StateTx) error {
+		result = ports.AttachedWorkerSealedInputAuthorizationResult{}
 		tx := state.(*stateTx)
 		member, err := attachedWorkerOwnerAuthorizedTx(ctx, tx, request.OwnerUserID)
 		if err != nil {
@@ -92,6 +93,22 @@ func (store *Store) AuthorizeAttachedWorkerSealedInput(
 		if !workerFound || !connectionFound || !attemptFound ||
 			!attachedWorkerSealedInputAuthorized(request, at, worker, connection, attempt) {
 			return nil
+		}
+		// The head contains no binding. Identify the original stored job before
+		// deciding whether the closed Pi API source needs its current R/M gate.
+		job, found, err := readJSON[domain.WorkerJob](ctx, tx.sqlTx,
+			`SELECT payload FROM worker_jobs WHERE tenant_id=$1 AND run_id=$2`, request.TenantID, request.RunID)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return nil
+		}
+		if err := store.currentAttachedPiAPIInputTx(ctx, tx, request, worker, connection, attempt, job, at); err != nil {
+			if errors.Is(err, domain.ErrMembershipDenied) {
+				return nil
+			}
+			return err
 		}
 		result.Status = ports.AttachedWorkerExecutionApplied
 		result.AttemptRevision = attempt.Revision

@@ -80,6 +80,8 @@ type ClientSource struct {
 	mu       sync.Mutex
 	bearer   []byte
 	closed   bool
+	life     context.Context
+	cancel   context.CancelFunc
 }
 
 func NewClientSource(endpoint string, client *http.Client, bearer []byte) (*ClientSource, error) {
@@ -88,7 +90,8 @@ func NewClientSource(endpoint string, client *http.Client, bearer []byte) (*Clie
 		parsed.Path != PathV1 || parsed.RawQuery != "" || parsed.Fragment != "" || len(bearer) == 0 {
 		return nil, ErrInvalid
 	}
-	result := &ClientSource{endpoint: endpoint, bearer: append([]byte(nil), bearer...)}
+	life, cancel := context.WithCancel(context.Background())
+	result := &ClientSource{endpoint: endpoint, bearer: append([]byte(nil), bearer...), life: life, cancel: cancel}
 	if client != nil {
 		result.client = *client
 	}
@@ -99,24 +102,46 @@ func NewClientSource(endpoint string, client *http.Client, bearer []byte) (*Clie
 	return result, nil
 }
 
-func (source *ClientSource) Load(ctx context.Context, request attachedworkerdaemontransport.MaterializationRequestV1) (attachedworkerdaemontransport.SealedInputV1, error) {
+func (source *ClientSource) Load(ctx context.Context, request attachedworkerdaemontransport.MaterializationRequestV1) (input attachedworkerdaemontransport.SealedInputV1, loadErr error) {
 	if source == nil || ctx == nil || ctx.Err() != nil {
 		return attachedworkerdaemontransport.SealedInputV1{}, ErrInvalid
 	}
 	source.mu.Lock()
-	if source.closed {
+	if source.closed || source.life == nil {
 		source.mu.Unlock()
 		return attachedworkerdaemontransport.SealedInputV1{}, ErrUnavailable
 	}
 	bearer := append([]byte(nil), source.bearer...)
+	life := source.life
 	source.mu.Unlock()
+	requestCtx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(life, cancel)
+	defer func() { stop(); cancel() }()
+	// Registered BEFORE all body/temporary cleanup: a held Body.Close cannot
+	// publish decoded input after this source or its caller has been revoked.
+	// The final lock linearizes transfer to the caller; a later Close must not
+	// clear buffers whose ownership has already transferred to that caller.
+	defer func() {
+		source.mu.Lock()
+		revoked := source.closed || life.Err() != nil || requestCtx.Err() != nil
+		source.mu.Unlock()
+		if revoked || loadErr != nil {
+			clearResult(&input)
+			if revoked {
+				loadErr = ErrUnavailable
+			}
+		}
+	}()
 	defer clearBytes(bearer)
+	if life.Err() != nil || requestCtx.Err() != nil {
+		return input, ErrUnavailable
+	}
 	data, err := json.Marshal(request)
 	if err != nil || len(data) > maxRequestBytes {
 		return attachedworkerdaemontransport.SealedInputV1{}, ErrInvalid
 	}
 	defer clearBytes(data)
-	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, source.endpoint, bytes.NewReader(data))
+	httpRequest, err := http.NewRequestWithContext(requestCtx, http.MethodPost, source.endpoint, bytes.NewReader(data))
 	if err != nil {
 		return attachedworkerdaemontransport.SealedInputV1{}, ErrInvalid
 	}
@@ -126,9 +151,19 @@ func (source *ClientSource) Load(ctx context.Context, request attachedworkerdaem
 	httpRequest.Header.Set("Accept", "application/json")
 	response, err := source.client.Do(httpRequest)
 	if err != nil {
+		if response != nil && response.Body != nil {
+			_ = response.Body.Close()
+		}
 		return attachedworkerdaemontransport.SealedInputV1{}, ErrUnavailable
 	}
-	defer response.Body.Close()
+	if response == nil || response.Body == nil {
+		return input, ErrUnavailable
+	}
+	defer func() {
+		if response.Body.Close() != nil {
+			loadErr = ErrUnavailable
+		}
+	}()
 	if response.StatusCode != http.StatusOK || response.Header.Get("Content-Type") != "application/json" {
 		return attachedworkerdaemontransport.SealedInputV1{}, ErrUnavailable
 	}
@@ -140,8 +175,7 @@ func (source *ClientSource) Load(ctx context.Context, request attachedworkerdaem
 	defer clearBytes(body)
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
-	var input attachedworkerdaemontransport.SealedInputV1
-	if decoder.Decode(&input) != nil || decoder.Decode(new(any)) != io.EOF || ctx.Err() != nil {
+	if decoder.Decode(&input) != nil || decoder.Decode(new(any)) != io.EOF || requestCtx.Err() != nil {
 		clearResult(&input)
 		return attachedworkerdaemontransport.SealedInputV1{}, ErrUnavailable
 	}
@@ -156,15 +190,22 @@ func (source *ClientSource) Load(ctx context.Context, request attachedworkerdaem
 	return input, nil
 }
 
+// Close revokes this source and cancels in-flight calls; it does not claim
+// those calls have joined. The original acquisition owner must still await
+// Load (including a held transport/body Close) before retiring its buffers.
 func (source *ClientSource) Close() error {
 	if source == nil {
 		return nil
 	}
 	source.mu.Lock()
-	defer source.mu.Unlock()
 	clearBytes(source.bearer)
 	source.bearer = nil
 	source.closed = true
+	cancel := source.cancel
+	source.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	return nil
 }
 

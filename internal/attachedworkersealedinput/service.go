@@ -1,5 +1,5 @@
-// Package attachedworkersealedinput serves only immutable, synthetic input for
-// the exact claimed attached-worker attempt. It cannot select a process,
+// Package attachedworkersealedinput serves bounded immutable input for the
+// exact claimed attached-worker attempt. It cannot select a process,
 // credential, host path, or provider operation.
 package attachedworkersealedinput
 
@@ -92,8 +92,17 @@ func (service *Service) Load(ctx context.Context, bearer []byte, request attache
 		return result, ErrUnauthorized
 	}
 	job, manifest := state.Job, state.InputManifest
+	// This arm carries canonical data only. The real authorizer checks the
+	// original stored Pi API aggregate and current owner policy before and
+	// after blob reads; a mapping in this DTO is not itself authority. No
+	// subscription lifecycle credential is returned for an API account.
+	piAPI := domain.IsAttachedPiSDKNativeDescriptorV1(job.HarnessBinding.Backend) &&
+		job.HarnessBinding.Resource.Kind == domain.ProviderResourceAPIAccountV1 &&
+		job.HarnessBinding.AttachedPiAPIInvocationPolicyDigest != "" &&
+		job.HarnessBinding.ValidateForScope(request.TenantID, request.OwnerUserID, job.RunID, job.AttemptID, job.ExecutionPlacementV2) == nil &&
+		job.ContextWindow != nil && len(job.AllowedMCPServers) == 0
 	if job.WorkspaceSnapshot != nil || job.SkillBundle != nil ||
-		job.HarnessBinding.Backend.ProviderContractKind != domain.ProviderContractCredentiallessFixtureV1 && !service.allowTestProvider {
+		job.HarnessBinding.Backend.ProviderContractKind != domain.ProviderContractCredentiallessFixtureV1 && !piAPI && !service.allowTestProvider {
 		return result, ErrUnsupported
 	}
 	if len(manifest.Artifacts) > maxArtifacts || uint64(len(manifest.Artifacts)) > uint64(job.Limits.MaxArtifacts) ||
@@ -106,7 +115,7 @@ func (service *Service) Load(ctx context.Context, bearer []byte, request attache
 			clearResult(&result)
 		}
 	}()
-	if job.HarnessBinding.Backend.ProviderContractKind != domain.ProviderContractCredentiallessFixtureV1 {
+	if job.HarnessBinding.Backend.ProviderContractKind != domain.ProviderContractCredentiallessFixtureV1 && !piAPI {
 		credential, credentialErr := service.testProviderCredential(ctx, request, job)
 		if credentialErr != nil {
 			return result, credentialErr

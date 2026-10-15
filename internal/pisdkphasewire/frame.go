@@ -8,40 +8,84 @@ import (
 )
 
 const (
-	HeaderBytes                = 17
-	ChildMetadataMaxBytes      = 129
-	ChildMetadataNodes         = 7
-	ChildRequest          byte = 1
-	ParentReply           byte = 2
-	ParentRetire          byte = 3
+	HeaderBytes           = 17
+	ChildMetadataMaxBytes = 129
+	ChildMetadataNodes    = 7
+	UseMetadataBytes      = 9
+	// Retain the inherited 1 MiB ceiling; callers must select smaller original bounds.
+	TransportMaxFrameBytes      = 1 << 20
+	Initialize             byte = 1
+	PhysicalRequest        byte = 2
+	UseResult              byte = 3
+	StructuredFinal        byte = 4
+	Retire                 byte = 5
 )
 
-// Header is only a structural length preflight; it is not an allocation grant.
+// FrameLimits are structural caps, NOT an allocation/Issue grant. Concrete
+// producers must qualify their complete original copy/node ledger and native
+// fit, and supply the MIN of all inherited bounds before real allocation/use.
+type FrameLimits struct {
+	InitializeBodyBytes uint64
+	RequestBodyBytes    uint64
+	FinalBodyBytes      uint64
+	FrameBytes          uint64
+}
+
+func (l FrameLimits) valid() bool {
+	return l.FrameBytes >= HeaderBytes+ChildMetadataMaxBytes+1 && l.FrameBytes <= TransportMaxFrameBytes &&
+		l.InitializeBodyBytes > 0 && l.InitializeBodyBytes <= l.FrameBytes-HeaderBytes &&
+		l.RequestBodyBytes > 0 && l.RequestBodyBytes <= l.FrameBytes-HeaderBytes-ChildMetadataMaxBytes &&
+		l.FinalBodyBytes > 0 && l.FinalBodyBytes <= l.FrameBytes-HeaderBytes
+}
+
+type Direction byte
+
+const (
+	ParentToChild Direction = 1
+	ChildToParent Direction = 2
+)
+
+// Header is only a structural length preflight; no body is read or allocated.
+// A stream consumer MUST compare Direction to its expected peer before reading
+// or allocating either declared region. This classifier is not authentication.
 type Header struct {
 	Kind          byte
+	Direction     Direction
 	MetadataBytes uint32
 	RawBodyBytes  uint64
 	TotalBytes    uint64
 }
 
-// InspectHeader accepts EXACTLY the first 17 bytes, before any body buffer/read.
-// maxNativeBodyBytes is an explicit positive NON-SERVING symbolic input; the
-// real original source-owned P/platform/all-copy fit must precede genuine use.
-func InspectHeader(b []byte, maxNativeBodyBytes uint64) (Header, error) {
-	if len(b) != HeaderBytes || maxNativeBodyBytes == 0 || string(b[:4]) != "SPU1" {
+// InspectHeader accepts EXACTLY 17 bytes and canonical SPU2 only. Run before
+// allocating/reading either declared region; never resynchronize malformed IO.
+func InspectHeader(b []byte, limits FrameLimits) (Header, error) {
+	if len(b) != HeaderBytes || !limits.valid() || string(b[:4]) != "SPU2" {
 		return Header{}, ErrInvalid
 	}
 	h := Header{Kind: b[4], MetadataBytes: binary.BigEndian.Uint32(b[5:9]), RawBodyBytes: binary.BigEndian.Uint64(b[9:17])}
 	switch h.Kind {
-	case ChildRequest:
-		if h.MetadataBytes != ChildMetadataMaxBytes || h.RawBodyBytes == 0 || h.RawBodyBytes > maxNativeBodyBytes {
+	case Initialize:
+		h.Direction = ParentToChild
+		if h.MetadataBytes != 0 || h.RawBodyBytes == 0 || h.RawBodyBytes > limits.InitializeBodyBytes {
 			return Header{}, ErrInvalid
 		}
-	case ParentReply:
-		if h.MetadataBytes < DeniedReplyBytes || h.MetadataBytes > ReplyMaxBytes || h.RawBodyBytes != 0 {
+	case PhysicalRequest:
+		h.Direction = ChildToParent
+		if h.MetadataBytes != ChildMetadataMaxBytes || h.RawBodyBytes == 0 || h.RawBodyBytes > limits.RequestBodyBytes {
 			return Header{}, ErrInvalid
 		}
-	case ParentRetire:
+	case UseResult:
+		h.Direction = ParentToChild
+		if h.MetadataBytes != UseMetadataBytes || h.RawBodyBytes != 0 {
+			return Header{}, ErrInvalid
+		}
+	case StructuredFinal:
+		h.Direction = ChildToParent
+		if h.MetadataBytes != 0 || h.RawBodyBytes == 0 || h.RawBodyBytes > limits.FinalBodyBytes {
+			return Header{}, ErrInvalid
+		}
+	case Retire:
+		h.Direction = ParentToChild
 		if h.MetadataBytes != 0 || h.RawBodyBytes != 0 {
 			return Header{}, ErrInvalid
 		}
@@ -50,27 +94,40 @@ func InspectHeader(b []byte, maxNativeBodyBytes uint64) (Header, error) {
 	}
 	fixed := uint64(HeaderBytes) + uint64(h.MetadataBytes)
 	maxInt := uint64(^uint(0) >> 1)
-	if fixed > maxInt || h.RawBodyBytes > maxInt-fixed {
+	if fixed > maxInt || h.RawBodyBytes > maxInt-fixed || fixed > limits.FrameBytes || h.RawBodyBytes > limits.FrameBytes-fixed {
 		return Header{}, ErrInvalid
 	}
 	h.TotalBytes = fixed + h.RawBodyBytes
 	return h, nil
 }
 
-// Frame contains owned structural copies, not a source snapshot/send permit.
-// Child body must remain the COMPLETE independently compared original UTF8.
+// UseAllowance is private relative data from the SAME original parent, not a
+// Source reply or transferable permit. Subtract the full IPC elapsed duration
+// under qualified clock conversions; receipt-now + N is NOT valid.
+type UseAllowance struct {
+	Allowed              bool
+	RemainingNanoseconds uint64
+}
+
+func (u UseAllowance) valid() bool {
+	if !u.Allowed {
+		return u.RemainingNanoseconds == 0
+	}
+	return u.RemainingNanoseconds > 0 && u.RemainingNanoseconds <= math.MaxInt64
+}
+
+// Frame owns structural copies, not source/fit/send/final-custody authority.
+// Direction/order/counts must be enforced separately by the owned stream pump.
 type Frame struct {
 	Kind                 byte
 	BackendProfileDigest string
-	Reply                Reply
+	Use                  UseAllowance
 	Body                 []byte
 }
 
-// CompareBodyProfile performs byte identity only. The independent original
-// pre-Issue projection/source-owned P must already exist; equality never creates
-// its provenance, SAME-RPC binding, native fit or permission.
+// CompareBodyProfile proves byte identity only, not provenance or native fit.
 func CompareBodyProfile(f Frame, expectedBody []byte, expectedProfileDigest string) error {
-	if f.Kind != ChildRequest || !digest(expectedProfileDigest) || f.BackendProfileDigest != expectedProfileDigest ||
+	if f.Kind != PhysicalRequest || !digest(expectedProfileDigest) || f.BackendProfileDigest != expectedProfileDigest ||
 		len(expectedBody) == 0 || !bytes.Equal(f.Body, expectedBody) {
 		return ErrInvalid
 	}
@@ -89,75 +146,80 @@ func parseChildMetadata(p *parser) string {
 	return d
 }
 
-func EncodeFrame(f Frame, maxNativeBodyBytes uint64) ([]byte, error) {
-	if maxNativeBodyBytes == 0 {
-		return nil, ErrInvalid
-	}
-	w := writer{}
+func EncodeFrame(f Frame, limits FrameLimits) ([]byte, error) {
+	var metadataBytes uint32
 	switch f.Kind {
-	case ChildRequest:
-		if !digest(f.BackendProfileDigest) || f.Reply != (Reply{}) || len(f.Body) == 0 {
+	case Initialize, StructuredFinal:
+		if f.BackendProfileDigest != "" || f.Use != (UseAllowance{}) {
 			return nil, ErrInvalid
 		}
-		writeChildMetadata(&w, f.BackendProfileDigest)
-	case ParentReply:
-		if f.BackendProfileDigest != "" || len(f.Body) != 0 || !validReply(f.Reply) {
+	case PhysicalRequest:
+		if !digest(f.BackendProfileDigest) || f.Use != (UseAllowance{}) {
 			return nil, ErrInvalid
 		}
-		writeReply(&w, f.Reply)
-	case ParentRetire:
-		if f.BackendProfileDigest != "" || f.Reply != (Reply{}) || len(f.Body) != 0 {
+		metadataBytes = ChildMetadataMaxBytes
+	case UseResult:
+		if f.BackendProfileDigest != "" || !f.Use.valid() {
+			return nil, ErrInvalid
+		}
+		metadataBytes = UseMetadataBytes
+	case Retire:
+		if f.BackendProfileDigest != "" || f.Use != (UseAllowance{}) {
 			return nil, ErrInvalid
 		}
 	default:
 		return nil, ErrInvalid
 	}
 	var header [HeaderBytes]byte
-	copy(header[:4], "SPU1")
+	copy(header[:4], "SPU2")
 	header[4] = f.Kind
-	binary.BigEndian.PutUint32(header[5:9], uint32(w.n))
+	binary.BigEndian.PutUint32(header[5:9], metadataBytes)
 	binary.BigEndian.PutUint64(header[9:17], uint64(len(f.Body)))
-	h, err := InspectHeader(header[:], maxNativeBodyBytes)
-	if err != nil {
-		return nil, err
-	}
-	if f.Kind == ChildRequest && !utf8.Valid(f.Body) {
+	h, err := InspectHeader(header[:], limits)
+	if err != nil || !utf8.Valid(f.Body) {
 		return nil, ErrInvalid
 	}
 	b := make([]byte, int(h.TotalBytes))
-	copy(b[:HeaderBytes], header[:])
-	meta := writer{b: b[HeaderBytes : HeaderBytes+int(h.MetadataBytes)]}
-	if f.Kind == ChildRequest {
-		writeChildMetadata(&meta, f.BackendProfileDigest)
-	} else if f.Kind == ParentReply {
-		writeReply(&meta, f.Reply)
-	}
-	if meta.n != int(h.MetadataBytes) {
-		return nil, ErrInvalid
+	copy(b, header[:])
+	metadata := b[HeaderBytes : HeaderBytes+int(h.MetadataBytes)]
+	if f.Kind == PhysicalRequest {
+		w := writer{b: metadata}
+		writeChildMetadata(&w, f.BackendProfileDigest)
+		if w.n != len(metadata) {
+			return nil, ErrInvalid
+		}
+	} else if f.Kind == UseResult {
+		if f.Use.Allowed {
+			metadata[0] = 1
+		}
+		binary.BigEndian.PutUint64(metadata[1:], f.Use.RemainingNanoseconds)
 	}
 	copy(b[HeaderBytes+int(h.MetadataBytes):], f.Body)
 	return b, nil
 }
 
-// DecodeFrame rejects truncation, extra frames/trailing bytes and invalid UTF8.
-// The header can and must be inspected separately before a real caller allocates
-// or receives a complete body. This helper does not operate an IPC pump.
-func DecodeFrame(b []byte, maxNativeBodyBytes uint64) (Frame, error) {
+// DecodeFrame rejects truncation/trailing data and owns returned body/profile.
+// It is not a stream pump, strict-final validator or Init schema. Real pumps
+// must inspect headers before bounded assembly of legal fragmented progress.
+func DecodeFrame(b []byte, limits FrameLimits) (Frame, error) {
 	if len(b) < HeaderBytes {
 		return Frame{}, ErrInvalid
 	}
-	h, err := InspectHeader(b[:HeaderBytes], maxNativeBodyBytes)
+	h, err := InspectHeader(b[:HeaderBytes], limits)
 	if err != nil || h.TotalBytes != uint64(len(b)) {
 		return Frame{}, ErrInvalid
 	}
 	metadata := b[HeaderBytes : HeaderBytes+int(h.MetadataBytes)]
 	body := b[HeaderBytes+int(h.MetadataBytes):]
+	if !utf8.Valid(body) {
+		return Frame{}, ErrInvalid
+	}
 	f := Frame{Kind: h.Kind}
 	switch h.Kind {
-	case ChildRequest:
+	case PhysicalRequest:
 		pre := parser{b: metadata, ok: true}
 		parseChildMetadata(&pre)
-		if !pre.ok || pre.i != len(metadata) || !utf8.Valid(body) {
+		if !pre.ok || pre.i != len(metadata) {
 			return Frame{}, ErrInvalid
 		}
 		p := parser{b: metadata, ok: true, owned: true}
@@ -165,62 +227,34 @@ func DecodeFrame(b []byte, maxNativeBodyBytes uint64) (Frame, error) {
 		if !p.ok || p.i != len(metadata) {
 			return Frame{}, ErrInvalid
 		}
-		f.Body = make([]byte, len(body))
-		copy(f.Body, body)
-	case ParentReply:
-		f.Reply, err = DecodeReply(metadata)
-		if err != nil {
-			return Frame{}, err
+	case UseResult:
+		if metadata[0] > 1 {
+			return Frame{}, ErrInvalid
 		}
+		f.Use = UseAllowance{Allowed: metadata[0] == 1, RemainingNanoseconds: binary.BigEndian.Uint64(metadata[1:])}
+		if !f.Use.valid() {
+			return Frame{}, ErrInvalid
+		}
+	}
+	if len(body) != 0 {
+		f.Body = bytes.Clone(body)
 	}
 	return f, nil
 }
 
-// Counts describes only caller-supplied counts. Passing it proves neither an
-// actual single invocation nor measured source RPC/cancellation ownership.
-type Counts struct {
-	PreIssueRequests, PreIssueReplies           uint64
-	PhysicalSendRequests, PhysicalSendReplies   uint64
-	FinalizeRequests, FinalizeReplies           uint64
-	ChildRequests, ParentReplies, ParentRetires uint64
+// WireAccounting counts one complete successful exchange including retire.
+// It deliberately makes NO copy/node/heap/Issue-fit claim. Old SPU1 allocation
+// totals cannot certify Init + complete request + relative use + final.
+type WireAccounting struct {
+	ParentStdinBytes uint64
+	ChildStdoutBytes uint64
+	TotalIPCBytes    uint64
 }
 
-func ValidateCounts(c Counts) error {
-	for _, v := range [...]uint64{c.PreIssueRequests, c.PreIssueReplies, c.PhysicalSendRequests, c.PhysicalSendReplies, c.FinalizeRequests, c.FinalizeReplies, c.ChildRequests, c.ParentReplies, c.ParentRetires} {
-		if v > 1 {
-			return ErrInvalid
-		}
+func MeasureWireAccounting(initialize, request, final uint64) (WireAccounting, error) {
+	if initialize == 0 || request == 0 || final == 0 || initialize > math.MaxUint64-223 ||
+		request > math.MaxUint64-223-initialize || final > math.MaxUint64-223-initialize-request {
+		return WireAccounting{}, ErrInvalid
 	}
-	if c.PreIssueReplies > c.PreIssueRequests || c.PhysicalSendReplies > c.PhysicalSendRequests || c.FinalizeReplies > c.FinalizeRequests ||
-		c.ParentReplies > c.ChildRequests || c.ChildRequests > c.PhysicalSendRequests {
-		return ErrInvalid
-	}
-	return nil
-}
-
-// Accounting is a pure conservative combined logical declaration. There is no
-// credit pool/refund/default/grant, native/GC claim or original body replacement.
-type Accounting struct {
-	RemoteBodyBytes  uint64
-	IPCBytes         uint64
-	ApplicationBytes uint64
-	LogicalCopyBytes uint64
-	JSONNodes        uint64
-}
-
-func MeasureAccounting(n uint64) (Accounting, error) {
-	if n == 0 || n > (math.MaxUint64-58421)/2 {
-		return Accounting{}, ErrInvalid
-	}
-	return Accounting{RemoteBodyBytes: 15195, IPCBytes: 3170 + n, ApplicationBytes: 18365 + n, LogicalCopyBytes: 58421 + 2*n, JSONNodes: SharedNodes}, nil
-}
-
-// CheckSharedRemainder compares ONCE against an explicit original ledger
-// remainder. It neither reserves it nor authorizes use/Issue/serving.
-func CheckSharedRemainder(n, copyRemainder, nodeRemainder uint64) (Accounting, error) {
-	a, err := MeasureAccounting(n)
-	if err != nil || a.LogicalCopyBytes > copyRemainder || a.JSONNodes > nodeRemainder {
-		return Accounting{}, ErrInvalid
-	}
-	return a, nil
+	return WireAccounting{ParentStdinBytes: initialize + 60, ChildStdoutBytes: request + final + 163, TotalIPCBytes: initialize + request + final + 223}, nil
 }

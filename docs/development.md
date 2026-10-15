@@ -271,17 +271,26 @@ canonical phase request, seven-key applied/one-key denied reply, original
 31-field attempt head and exact seconds/nanoseconds time representation. Its
 ordered byte grammar rejects unknown, reordered, escaped and noncanonical
 fields before bounded owned copies. Encoding premeasures one exact allocation.
-SPU1 inspection validates the first 17 bytes and checked lengths before body
-allocation; complete raw UTF-8 bodies are preserved without JSON normalization.
+The private process-frame codec accepts only canonical SPU2, replacing its
+non-serving SPU1 predecessor without aliases. Header inspection validates all
+17 bytes, explicit per-kind/body/frame bounds, platform-safe totals and fixed
+sender direction before payload allocation. A future stream owner must reject
+the wrong peer at this preflight. Complete UTF-8 Init, physical-request and
+final bodies remain byte-exact; use metadata is binary status plus uint64
+relative nanoseconds, not a Source reply or serialized Go clock. Complete-frame
+decoding is not an actual duplex stream pump or an Init/final schema validator.
 
 Run the focused package with the pinned Go toolchain and repository-shared
 caches, using `go test -race -count=1 -shuffle=on ./internal/pisdkphasewire`.
 These ordinary unit tests are also included by `make test`. Tests distinguish
 conservative syntax ceilings from constructor-backed structural fixtures.
 
-The package reports combined logical copy/node accounting, not reservations,
-native memory/GC bounds or serving limits. A positive symbolic body limit,
-decoded applied reply or exact tuple/body comparison grants nothing. There is
+The process-frame helper reports only checked successful wire totals, including
+one retire: parent stdin I+60, child stdout B+L+163, total I+B+L+223 for positive
+actual Init/request/final byte lengths. These are not the predecessor's logical
+copy/node totals, reservations, native/GC bounds or serving limits. The complete
+original producer/copy/node ledger must still be established before Issue.
+Explicit structural caps, a decoded applied reply or exact byte comparison grant nothing. There is
 no source/HTTP/IPC pump, runner, credential or provider registration. Authentic
 same-RPC/current-owner phase production, source-owned full pre-Issue projection,
 shared/native fit, original deadline/cutoff bridge and cross-language parity

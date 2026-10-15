@@ -235,6 +235,8 @@ var applicationTables = []string{
 	"external_identities_by_user",
 	"external_identities",
 	"telegram_delivery_ready_v2",
+	// Optional historical cleanup only; these four legacy indexes are absent
+	// from the effective schema. DROP IF EXISTS retains old-environment ownership.
 	"telegram_delivery_ready",
 	"telegram_delivery_outbox",
 	"telegram_deliveries_by_run",

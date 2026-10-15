@@ -52,6 +52,24 @@ func TestBuildPlanRequiresResolvedNonProductionTarget(t *testing.T) {
 	}
 }
 
+func TestResetRetainsOnlyExplicitHistoricalReadyExpiryCleanup(t *testing.T) {
+	plan, err := BuildPlan(validTarget(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, old := range []string{"lease_expiry", "dispatch_ready", "quota_expiry", "telegram_delivery_ready"} {
+		counts := map[string]int{old: 0, old + "_v2": 0}
+		for _, table := range plan.Tables {
+			if _, ok := counts[table]; ok {
+				counts[table]++
+			}
+		}
+		if counts[old] != 1 || counts[old+"_v2"] != 1 {
+			t.Errorf("historical optional cleanup and retained successor ownership=%v", counts)
+		}
+	}
+}
+
 func TestBuildPlanYDBDatabaseSelectors(t *testing.T) {
 	for _, test := range []struct {
 		name       string

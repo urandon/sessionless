@@ -348,7 +348,7 @@ func TestSessionLifecycleHoldWriteFenceInventoryAndCompletion(t *testing.T) {
 	assertCount(t, client, "runs", tenantID, 0)
 	assertCount(t, client, "telegram_delivery_outbox", tenantID, 0)
 	assertCount(t, client, "telegram_deliveries_by_run", tenantID, 0)
-	assertCount(t, client, "telegram_delivery_ready", tenantID, 0)
+	assertRetiredReadyExpiryAbsent(t, client)
 	assertCount(t, client, "telegram_delivery_ready_v2", tenantID, 0)
 	assertCount(t, client, "checkpoint_objects_by_run", tenantID, 0)
 	assertCount(t, client, "frontend_projection_outbox", tenantID, 0)

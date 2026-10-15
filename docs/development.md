@@ -324,6 +324,24 @@ They are not Pi SDK/native clock/egress proof. Real Init/schema/all-copy ledger,
 same-JS guarded fetch/clock conversion, private final custody and genuine
 Source/admission/READY/terminal remain required before serving registration.
 
+The private Node child half in `internal/pisdktransport/stdio.mjs` speaks the
+same SPU2 over owned standard streams. `make pi-sdk-transport-test` includes
+credential-free child/actual-fetch-guard controls: full original body/P, exact
+BigInt nanoseconds, full IPC elapsed subtraction, delayed actual-use assertion,
+one-shot failure, Retire/EOF, fragmented/backpressured streams and cancellation.
+Its fixed arena and bounded wire copies are not a full native allocation or
+clock-fit certificate. Disposal joins actual pending writes before clearing
+borrowed payloads; a nonconforming injected writer is not made quiescent by
+detaching a timeout. Successful Final is still DATA, not a private producer.
+
+The ordinary `TestPiStdioNodeSameSupervisor` also runs the actual pinned Node
+24.19.0 process through the same Supervisor and canonical Go codec, with an
+empty replacement environment and exact module-only Node filesystem permission.
+This uses a synthetic Source/profile/opaque Init and no SDK/model/key/network;
+it is not real platform isolation, closed Init/bootstrap, full native fit or
+provider eligibility. The full Init producer and genuine Pi bootstrap linkage
+remain unfinished, rather than being inferred from the transport tests.
+
 ### Complete Pi request-data producer checks (non-serving)
 
 `internal/pisdkmedia` projects the original canonical snapshot plus tail through

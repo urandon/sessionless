@@ -8,7 +8,7 @@ import (
 	"encoding/hex"
 )
 
-//go:embed framing.mjs response.mjs policy.mjs request.mjs
+//go:embed framing.mjs response.mjs policy.mjs request.mjs stdio.mjs
 var modules embed.FS
 
 // FramingSource returns independent bytes and their digest for the trusted
@@ -40,6 +40,12 @@ func PolicySource() ([]byte, string) {
 // request, deadline, source authorization or complete native allocation ledger.
 func RequestSource() ([]byte, string) {
 	return moduleSource("request.mjs")
+}
+
+// StdioSource returns the private child SPU2 module, not the test process
+// fixture, SDK bootstrap, source grant or full native/clock fit certificate.
+func StdioSource() ([]byte, string) {
+	return moduleSource("stdio.mjs")
 }
 
 func moduleSource(name string) ([]byte, string) {

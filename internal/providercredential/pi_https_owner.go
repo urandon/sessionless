@@ -123,8 +123,11 @@ func (s *preparedPiFileUse) beginHTTPS(frame pisdkhttpwire.Frame) (_ *piHTTPSRes
 	if e = s.responseScan.scan(ctx, view, use.secret); e != nil || ctx.Err() != nil || s.stopped.Load() || use.ctx.Err() != nil || !use.active.Load() || s.file.ctx.Err() != nil {
 		return nil, ErrDeliveryMismatch
 	}
-	// Grammar/raw/scalar checks are necessary but NOT closed effect/terminal or
-	// exact Pi semantic/signature approval. This borrow remains UNAPPROVED DATA.
+	if e = s.responseScan.scanPiSemantics(); e != nil || ctx.Err() != nil || s.stopped.Load() || use.ctx.Err() != nil || !use.active.Load() || s.file.ctx.Err() != nil {
+		return nil, ErrDeliveryMismatch
+	}
+	// Grammar/raw/scalar/assembly checks are necessary but NOT closed effect,
+	// request-echo, identity or terminal approval. Borrow remains UNAPPROVED DATA.
 	b.view = view
 	s.httpBorrow.Store(true)
 	return b, nil

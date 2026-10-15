@@ -14,8 +14,8 @@ import (
 )
 
 // Private parsed DATA, NOT an allow predicate, replay grant or Pi parser. The
-// closed native effect/echo policy and exact Pi semantic/signature assemblies
-// must still run on these nodes before ANY response bytes enter IPC.
+// closed native effect/echo policy must still run on these nodes before ANY
+// response bytes enter IPC. Semantic scanning is also reject-only, not approval.
 type piResponseNode struct {
 	kind             byte // o/a/s/d/t/f/n; object keys are separate s nodes
 	key, child, next int32
@@ -27,6 +27,7 @@ type piResponseEvent struct {
 	root             int32
 	nameFrom, nameTo uint32
 	named            bool
+	slot             piResponseSlot // at most one new Pi output block per event
 }
 
 type piResponseScan struct {
@@ -42,6 +43,8 @@ type piResponseScan struct {
 	ctx                  context.Context
 	raw, key             []byte // borrowed originals; original use gate must remain held
 	spent                atomic.Bool
+	parsed               atomic.Bool
+	semanticSpent        atomic.Bool
 	denied               bool
 	erased               atomic.Bool
 }
@@ -74,7 +77,7 @@ func newPiResponseScan(ledger attachedworkerdaemon.PreparedAPILedgerV1, l domain
 	if live > l.ResponseAllocationBytes || httpLive > l.ResponseAllocationBytes-live || initialWork > l.ResponseCopyWorkBytes {
 		return nil, ErrInvalid
 	}
-	if ledger.Reserve(l.ResponseCopyWorkBytes, live, 6+3*n) != nil {
+	if ledger.Reserve(l.ResponseCopyWorkBytes, live, 6+3*n+events) != nil {
 		return nil, ErrInvalid
 	}
 	return &piResponseScan{limits: l, nodes: make([]piResponseNode, int(n+1)), text: make([]uint16, int(r)), data: make([]byte, int(e)),
@@ -212,6 +215,7 @@ func (q *piResponseScan) scan(ctx context.Context, view piUnapprovedHTTPView, ke
 	if start != len(view.entity) || ctx.Err() != nil || q.denied {
 		return ErrInvalid
 	}
+	q.parsed.Store(true)
 	return nil
 }
 
@@ -306,6 +310,7 @@ func (q *piResponseScan) frame(start, end int) error {
 
 func (q *piResponseScan) clear() {
 	q.spent.Store(true)
+	q.semanticSpent.Store(true)
 	if !q.erased.CompareAndSwap(false, true) {
 		return
 	}

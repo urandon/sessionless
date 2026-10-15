@@ -304,15 +304,26 @@ matcher and one state per retained output block, rather than repeatedly
 copying the accumulated text. Reset and feed exact done-event replacement
 segments and separators in order. Preserve states of overwritten blocks while
 they remain in Pi's output list; no matching state is a profile grant. The
-exact arena, slot lookup, parser-node and work bounds still require their own
-implementation-derived prospective schedule.
+private scanner stores one possible slot record inside each prepaid event
+record. Every item-added or done-without-slot event can create at most one
+block, so V event records bound all retained blocks without allocation by
+output_index. Replaced/detached records retain their checked matcher state
+until the whole graph is retired. Lookup walks preceding records in reverse,
+charging32 bytes before each record read. Each event prepays256 bytes of fixed
+state reads/mutations; graph member lookups and UTF-16 matching charge their
+ordinary scanner costs separately. Join traversal charges32 bytes per part
+before inspecting it, then feeds exact strings and separators without a copied
+accumulated output. Both reasoning joins are checked before fallback selection.
+These logical charges do not attest the real Pi heap or native backend fit.
 
 ### Private parsed response data
 
 The parent scanner constructs a fixed private graph from the complete bounded
 HTTP entity. Grammar and raw/scalar matching are necessary checks, not the
-closed event/effect/terminal policy or Pi semantic approval. Its private nodes
-must pass those remaining checks before replay; scanner success alone never
+closed event/effect/terminal policy. A separate private, single-use consumer
+checks the exact Pi text/thinking assemblies on its graph before returning the
+unapproved HTTP borrow. Its nodes must pass the remaining closed policy before
+replay; grammar or semantic-scanner success alone never
 authorizes IPC, custody or an eligible runtime. Keep the native guard and real
 Pi parser in place.
 
@@ -329,8 +340,9 @@ canonical replay-header block. Lowercasing an admitted header name can create
 a literal match absent from the original raw spelling. Scan every decoded JSON
 key and string independently too. The ASCII-token matcher retains only the
 original borrowed key, a prepaid failure table and bounded matching state;
-it does not join unrelated scalars. Exact cross-event semantic assemblies are
-a separate mandatory consumer of the graph.
+it does not join unrelated scalars. Cross-event semantic scanning shares this
+same matcher, key alias, Source context and remaining work credit. It requires
+successful parse completion and never grants a new budget or replay witness.
 
 Preserve native LF-LF, CR-CR and CRLF-CRLF boundaries. Reset lookbehind after
 each byte-frame boundary, count comment-only frames, and reject an incomplete
@@ -350,7 +362,8 @@ do not remove any possible node/event cohort within R. Let M be scanner-state
 size, T node size and D event-record size. Explicit arenas occupy
 `A = M + (N+1)*T + 2*R + E + V*D + 4*K`. Reserve
 `A + 2*R + 96*N + 8192` live bytes, the original ResponseCopyWorkBytes cumulative
-credit and `6 + 3*N` allocation nodes before allocation. This includes two
+credit and `6 + 3*N + V` allocation nodes before allocation. The additional V
+funds possible retained semantic blocks inside the event arena. This includes two
 R-byte numeric conversion/error-copy allowances and bounded metadata. The
 scanner live sum plus the original receiver's `2*H + R + sizeof(receiver)`
 must fit original ResponseAllocationBytes; unknown fit denies.

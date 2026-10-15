@@ -269,7 +269,7 @@ func TestPiResponseScanProspectiveFunding(t *testing.T) {
 	live := uint64(reflect.TypeOf(piResponseScan{}).Size()) + (n+1)*uint64(reflect.TypeOf(piResponseNode{}).Size()) + 4*l.ResponseBodyBytes + l.SSEEventBytes + events*uint64(reflect.TypeOf(piResponseEvent{}).Size()) + 4*64 + 96*n + 8192
 	for _, mode := range []string{"exact", "work short", "live short", "nodes short", "allocation exact", "allocation short"} {
 		t.Run(mode, func(t *testing.T) {
-			credit := &piFileLedger{maxCopy: l.ResponseCopyWorkBytes, maxLive: live, maxNodes: 6 + 3*n}
+			credit := &piFileLedger{maxCopy: l.ResponseCopyWorkBytes, maxLive: live, maxNodes: 6 + 3*n + events}
 			limits := l
 			switch mode {
 			case "work short":
@@ -291,11 +291,11 @@ func TestPiResponseScanProspectiveFunding(t *testing.T) {
 				}
 				return
 			}
-			if err != nil || q.live != live || credit.copy != l.ResponseCopyWorkBytes || credit.nodes != 6+3*n {
+			if err != nil || q.live != live || credit.copy != l.ResponseCopyWorkBytes || credit.nodes != 6+3*n+events {
 				t.Fatal("exact budget", err)
 			}
 			q.clear()
-			if credit.EndLive(live) != nil || credit.live != 0 || credit.copy != l.ResponseCopyWorkBytes || credit.nodes != 6+3*n {
+			if credit.EndLive(live) != nil || credit.live != 0 || credit.copy != l.ResponseCopyWorkBytes || credit.nodes != 6+3*n+events {
 				t.Fatal("retirement replenished cumulative work/nodes")
 			}
 		})

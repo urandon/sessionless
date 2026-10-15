@@ -1,6 +1,6 @@
 # Pi SDK supervisor HTTP transport draft
 
-Version: 0.1.3. Engineering proposal under
+Version: 0.1.4. Engineering proposal under
 [#202](https://gitcode.com/urandon/sessionless/issues/202) and
 [#203](https://gitcode.com/urandon/sessionless/issues/203).
 
@@ -19,6 +19,9 @@ The fixed HTTP receive subsection permits separate source acceptance of its
 private zero-effect framing parser. That parser produces unapproved DATA;
 it cannot authorize a connection or forward a response. Executable transport
 acceptance still requires the complete sink, semantic guard and fit contracts.
+The supervisor process IO and outbound preflight contracts below may likewise
+receive separate engineering acceptance; structural sequence checks do not
+qualify a source parent, file consumer or installed runtime.
 
 ## Concrete readiness findings
 
@@ -422,6 +425,151 @@ its fixed state and all buffers on the original ledger before Issue. This
 package supplies no HMAC/key access, semantic response-header admission,
 quarantine approval, Source permission, resource-fit certificate or serving
 registration. The original owner must provide each of those independently.
+
+## Supervisor owned process IO
+
+Extend the existing full-run boundary, not the model request API. The
+source-owned Pi parent creates and retains the exact concrete file-owned
+driver before Issue; it accepts no caller-selected driver, response, endpoint
+or approval. The existing `PreparedPiExecutionV1` checks the original
+projection and Init and enters the same Supervisor. That Supervisor creates
+the actual pipes and gives the retained driver a run-scoped process IO lease
+through the existing `PreparedProcessRunner` invocation. This inner driver is
+the IO arm of that run: it must not launch another process or InvocationRunner,
+acquire another credential, or own Finalize/Release.
+
+Supervisor fully writes and commits Initialize before starting its sole child
+reader. A fast child's Fetch may already be buffered at that point; it is then
+read against the committed Initialize state, not rejected against a pending
+parent write. The control reader remains active after admitting that Fetch and
+before the driver can begin Source/network use.
+
+The lease has a daemon-private constructor and shared once-only state. It binds
+the exact supervisor, pre-Issue plan, original send, owner context, identity,
+credential/materialization, ledger, P and Init. Zero, foreign, copied/replayed
+or replacement state cannot start another run. Native/wire input cannot select
+a Go implementation. The installed source factory and its concrete private
+driver are trusted Go code; the child and all wire data remain untrusted.
+Arbitrary-driver library fixtures exercise mechanics only: they cannot make
+the genuine source parent eligible, replace its driver or clear
+`ErrMissingProducer`. No caller-supplied eligibility bit or success receipt is
+introduced.
+
+### Lease operations and custody
+
+The lease exposes only borrowed nonsecret process DATA: the actual Fetch
+request, parent SPU3 frame writes and cancellation. It exposes no raw file,
+reader/writer replacement, socket, URL, credential writer, successful HTTP
+response, permission or observation constructor. Supervisor owns Initialize
+and the sole control reader. A driver-returned `AttemptResult`, Final, digest
+or approval is ignored; a driver error fails the run.
+
+Keep the actual request in its own retained arena, separate from controls and
+Final. Freeze the daemon's actual-read digest and original association before
+exposing a borrowed request view. Retain it until the driver and all HTTP
+borrowers join; mutation is prohibited while borrowed, and no later phase may
+reuse its backing array. Parent frames are copied/encoded into a separate
+daemon-owned prepaid arena before validation and IO. The caller must not mutate
+concurrently during that snapshot; mutation after it or after return cannot
+change the actual committed bytes. Private Final is copied only from actual
+child stdout into another retained arena, never from driver-returned data.
+
+Only Supervisor may stamp the observation, after exact request comparison,
+complete SPU3 ordering/count/digest checks, actual Final and stdout EOF,
+successful process reap and isolation/pipe cleanup. The original custody
+checks for the same private send, stamp, tuple, ledger and authorized Source
+remain mandatory. Pipe observation does not prove the provider-private HMAC,
+secret scan or quarantine. Those checks belong to the source factory's exact
+file-owned driver and its original private lifetime; structural IO success
+cannot replace them.
+
+Imports remain `pisdkmedia -> providercredential -> attachedworkerdaemon` and
+`pisdkmedia -> attachedworkerdaemon`. Do not add the reverse edge from the
+provider to media or from the daemon to the provider merely to reach pipes.
+
+### Concurrent control and completed writes
+
+One coordinator serializes every global Sequence transition. One child reader
+remains active throughout quarantine, replay and final drain. It may inspect
+bounded raw header/control metadata in direction-specific fixed storage, but
+must not leave a `BeginHeader` transaction open while an outbound frame commits.
+The leaf Sequence has a single pending transaction, not two independent
+directional machines.
+
+Before each parent frame, encode its immutable snapshot into the owned arena
+and call `Sequence.PreflightWrite`. This checks all current structural
+transition conditions without advancing phase, response hash, counters or
+pending/failure state. It shares the canonical transition validator with
+`Accept`, accepts parent frames only and rejects an open staged transaction.
+It is not a write grant: on any error the owning seam calls `Abort` and fails
+the run rather than probing another candidate frame. Reserve one outbound record, attempt
+the actual bounded pipe write, then call `Accept` on exactly those encoded
+bytes only after the entire write succeeds. Partial writes, errors,
+cancellation and any failed preflight abort the run without advancing,
+resynchronizing or retrying a frame. The coordinator prevents any other global
+transition between that preflight and commit.
+
+Immediately before writing Response start, arm the replay observation epoch.
+Before each admitted part, consume its sole credit and arm only the next legal
+credit epoch; the final part admits no further Pull. Before Response end, arm
+only the Final epoch. A legal child control can arrive before its prerequisite
+parent Write returns, even when the child has already consumed all those bytes.
+Keep at most one fixed pending Pull header plus four metadata bytes, or a
+pending Final header during End. A pending Final body is not read until the
+complete End write commits. Full child `BeginHeader -> PreflightMetadata ->
+AcceptBody` occurs only once its prerequisite parent transition has committed.
+
+The reader probes one first header byte and then takes the coordinator lock;
+that lock acquisition is the parent-observation linearization point. Reserve
+the allowed kind, index and outbound epoch there and do not reclassify a
+fragmented header when later phase changes occur. Any newly observed header
+prefix during quarantine, while another credit is pending, or after Final
+burns the run.
+Validate the remaining header/caps and nested metadata before any body read.
+This is a claim about parent observation, not kernel queue or child send time.
+
+After recording a pending Pull the reader continues observing the pipe using
+fixed header scratch; it does not wait for the parent write or credit consumer.
+The writer/coordinator can commit the completed pending control once its
+prerequisite write completes. A second observed header while that sole credit
+is still pending is rejected before its metadata/body. Pausing the reader
+would let speculative Pull(1) wait behind pending Pull(0), then appear lawful
+after part(0) begins; correct indices alone do not prevent that laundering.
+There is no queue, per-frame reader goroutine or alternate reader.
+
+Before starting Response start, independently require the same original send
+to be authorized, not failed/invalid/retired, and inside its original live F.
+Structural Fetch-to-Start order is insufficient. No new parent write may begin
+after withdrawal. If the child consumes End, emits Final and exits before the
+parent's End Write returns, normal-exit Source withdrawal must still permit
+that already-started successful write and pending Final to commit under the
+live IO/F bound. Invalid use, expiry or IO cancellation still deny both. This
+preserves the original deadline monitor's normal Final-drain contract without
+granting more Source/network time.
+
+### Preparation and verification
+
+Prepare request, outbound and Final arenas, fixed control/probe records,
+coordinator, hash/Sequence state, notifications and owned join records before
+Issue on the same original ledger. Keep maximum copy/scan work, live bytes and
+nodes, directional wire totals and process caps explicit in the implementation
+schedule. Outbound preflight and commit both scan the admitted bytes; neither
+may borrow an uncharged second full-profile pool. Do not reduce original
+history/image/1MiB-seal cohorts or raise inherited ceilings to make fixtures fit.
+The Sequence includes a prepaid 32-byte digest scratch array for End checks;
+it is zero outside its gate and does not change the accumulated SHA state.
+Reserve it with Sequence metadata before Issue, not as a per-check allocation.
+Retire only after reader, driver, writes, socket borrowers and process cleanup
+join. App metadata accounting is not full runtime/native allocator qualification.
+
+Verification must cover foreign/replayed lease/tuple/driver substitution,
+driver-returned fake success/Final, request/outbound/Final alias mutation,
+header and Hq denial before body reads, quarantine bytes, fragmented old-epoch
+headers, pending Pull plus speculative next Pull, short/error/held parent writes,
+legitimate credit before Write return, End/Final/normal-exit-before-return,
+actual EOF, cancellation and original F expiry. A test-owned process may prove
+these pipe mechanics; only the genuine source-selected driver and qualified
+SDK/profile can supply actual provider, semantic and native evidence.
 
 ## Physical connection and deadlines
 

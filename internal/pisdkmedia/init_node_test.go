@@ -17,23 +17,7 @@ func TestCompleteInitPinnedNodeOriginalCohort(t *testing.T) {
 	// Same existing pin as the SPU2 process controls. No installation, SDK,
 	// constructor probe, native build, network, live credential or provider.
 	t.Setenv("NODE_OPTIONS", "--invalid-ambient-options-must-not-be-inherited")
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Fatal("pinned Node prerequisite:", err)
-	}
-	node, err = filepath.EvalSymlinks(node)
-	if err != nil {
-		t.Fatal(err)
-	}
-	probeContext, cancelProbe := context.WithTimeout(t.Context(), 20*time.Second)
-	t.Cleanup(cancelProbe)
-	probe := exec.CommandContext(probeContext, node, "--version")
-	probe.Env = []string{}
-	var version boundedInitDiagnostic
-	probe.Stdout, probe.Stderr = &version, &version
-	if err := probe.Run(); err != nil || strings.TrimSpace(version.String()) != "v24.19.0" {
-		t.Fatalf("Node version=%q err=%v; want v24.19.0", version.String(), err)
-	}
+	node := pinnedInitTestNode(t)
 	root, err := filepath.Abs("../..")
 	if err != nil {
 		t.Fatal(err)
@@ -104,6 +88,32 @@ func TestCompleteInitPinnedNodeOriginalCohort(t *testing.T) {
 			t.Log(strings.TrimSpace(output.String()))
 		})
 	}
+}
+
+// Ordinary SDK-free tests use the CI-provisioned executable, not an operator's
+// Homebrew location. Missing or wrong versions fail; no download or skip can
+// turn an unavailable prerequisite into a successful causal control.
+func pinnedInitTestNode(t *testing.T) string {
+	t.Helper()
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Fatal("pinned Node prerequisite:", err)
+	}
+	node, err = filepath.EvalSymlinks(node)
+	if err != nil {
+		t.Fatal(err)
+	}
+	probeContext, cancelProbe := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancelProbe()
+	probe := exec.CommandContext(probeContext, node, "--version")
+	probe.Env = []string{}
+	probe.WaitDelay = 3 * time.Second
+	var version boundedInitDiagnostic
+	probe.Stdout, probe.Stderr = &version, &version
+	if err := probe.Run(); err != nil || strings.TrimSpace(version.String()) != "v24.19.0" {
+		t.Fatalf("Node version=%q err=%v; want v24.19.0", version.String(), err)
+	}
+	return node
 }
 
 func TestInitSourceExactIndependentBytes(t *testing.T) {

@@ -11,12 +11,14 @@ import (
 )
 
 func TestPreparedEntrySDKFreeControls(t *testing.T) {
+	t.Setenv("NODE_OPTIONS", "--invalid-ambient-options-must-not-be-inherited")
+	node := pinnedInitTestNode(t)
 	for _, mutant := range []bool{false, true} {
-		t.Run(map[bool]string{false: "actual-entry", true: "eager-sdk-import-mutant"}[mutant], func(t *testing.T) { testPreparedEntrySDKFreeControls(t, mutant) })
+		t.Run(map[bool]string{false: "actual-entry", true: "eager-sdk-import-mutant"}[mutant], func(t *testing.T) { testPreparedEntrySDKFreeControls(t, node, mutant) })
 	}
 }
 
-func testPreparedEntrySDKFreeControls(t *testing.T, mutant bool) {
+func testPreparedEntrySDKFreeControls(t *testing.T, node string, mutant bool) {
 	t.Helper()
 	// Stage only repo-owned modules. No SDK link exists: an eager SDK import
 	// fails this test before any assertion, without substituting an SDK factory.
@@ -63,7 +65,7 @@ func testPreparedEntrySDKFreeControls(t *testing.T, mutant bool) {
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "/opt/homebrew/Cellar/node@24/24.19.0/bin/node", "--permission", "--allow-fs-read="+root,
+	cmd := exec.CommandContext(ctx, node, "--permission", "--allow-fs-read="+root,
 		"--allow-fs-write="+dataRoot, "--no-addons", "--disable-proto=throw", controlPath, dataRoot)
 	cmd.Env = []string{}
 	cmd.WaitDelay = 3 * time.Second

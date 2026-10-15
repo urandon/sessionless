@@ -481,7 +481,8 @@ exercises the NEW connection through the actual original InvocationRunner,
 concrete executor, Supervisor, credential service and genuine Pi/standard SDK.
 History/snapshot-tail, postvalidation model/schema/header/head/ledger/file/argv/
 environment substitution, forged public send, callback cancellation, Source
-denial, Close during active send and failed Release are distinct controls.
+denial, Close during active send, post-run raw-final mutation and failed Release
+are distinct controls.
 Source transactions, OS isolation and HTTP remain explicit synthetic test
 collaborators; a passing test does not establish a serving profile or egress.
 Ordinary `TestPreparedPiExecutionBeforeIssueOwnershipAndDenials` launches nothing

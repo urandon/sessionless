@@ -144,7 +144,7 @@ func TestPreparedPiSameOriginalSupervisor(t *testing.T) {
 			positive := mode == "history" || mode == "snapshot-tail" || mode == "close-during-send"
 			if positive {
 				if !result.Succeeded(runErr) || finalErr != nil || final.Answer != "native entry answer" || len(final.Artifacts) != 0 {
-					t.Fatalf("same owner result: run=%v final=%v failure=%s process=%v launches=%d order=%v", runErr, finalErr, result.FailureCode, result.Process, launcher.launches, parent.order)
+					t.Fatalf("same owner result: run=%v final=%v failure=%s process=%v launches=%d order=%v prepared=%v accounting=%+v remaining=%+v", runErr, finalErr, result.FailureCode, result.Process, launcher.launches, parent.order, parent.data != nil, ledger.Accounting(), ledger.Remaining())
 				}
 				want := []string{"prepare", "pre_issue", "issue", "materialize", "physical_send", "unlocked", "immutable_finalize", "finalize", "release", "clear"}
 				if !reflect.DeepEqual(parent.order, want) {
@@ -266,13 +266,25 @@ type executionTestParent struct {
 	order                     []string
 	deny                      bool
 	closeDuring, closeBlocked bool
+	clonePayload              uint64
 }
 
 func (p *executionTestParent) PrepareOriginalAPIInvocation(ctx context.Context, _ attachedworkerdaemon.InvocationIdentity, input *attachedworkerdaemon.VerifiedAttachedInputV1, process attachedworkerdaemon.AttemptSpec) (*attachedworkerdaemon.PreparedAPIDataV1, error) {
 	p.order = append(p.order, "prepare")
-	// Explicit finite synthetic fixture bound before independent graph copies;
-	// NOT the production full canonical/native/Source fit producer.
-	if err := p.ledger.Reserve(8<<20, 8<<20, 4096); err != nil {
+	// This fixture has no legacy Artifacts copyShape slice. Both existing
+	// Clone calls enforce their 1MiB encoded envelope before Marshal/Unmarshal:
+	// two encoded + two decoded payload appearances <=4MiB. Add exact lengths
+	// for independent parent/child request buffers and bounded process arrays.
+	// This is logical payload only, NOT a full native/heap/Source fit producer.
+	if len(input.Artifacts) != 0 {
+		return nil, errors.New("unsupported fixture clone shape")
+	}
+	p.clonePayload = 4 << 20
+	for _, v := range [][]byte{p.request.Body, p.request.Model, p.request.Schema, p.request.Headers} {
+		p.clonePayload += 2 * uint64(len(v))
+	}
+	p.clonePayload += 64 * uint64(len(process.Arguments)+len(process.Environment)+len(process.AdditionalReadRoots)+1)
+	if err := p.ledger.Reserve(p.clonePayload, p.clonePayload, 4096); err != nil {
 		return nil, err
 	}
 	a, err := input.Clone()
@@ -322,7 +334,7 @@ func (p *executionTestParent) Clear() {
 		clear(r.Schema)
 		clear(r.Headers)
 	}
-	_ = p.ledger.EndLive(8 << 20)
+	_ = p.ledger.EndLive(p.clonePayload)
 }
 func (p *executionTestParent) ObserveOriginalAPIPhase(_ context.Context, r pisdkphasewire.Request) (pisdkphasewire.Reply, error) {
 	p.order = append(p.order, string(r.Phase))

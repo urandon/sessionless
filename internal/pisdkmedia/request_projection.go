@@ -61,6 +61,7 @@ type RequestProjectionV1 struct {
 	scope                 ports.ProviderInvocationCredentialV1
 	binding               domain.HarnessBindingV2
 	bindingEvidenceExpiry time.Time
+	head                  domain.AttachedWorkerAttemptV1
 }
 
 type requestSnapshotV1 struct {
@@ -636,7 +637,7 @@ func CompileOriginalRequestV1(ctx context.Context, identity attachedworkerdaemon
 	}
 	binding.EvidenceExpiresAt = nil
 	return &RequestProjectionV1{ctx: ctx, body: emit.out, data: data, ledger: ledger, bodyDigest: sha256.Sum256(emit.out), live: work, config: snapshotRequest(c, schema),
-		binding: binding, bindingEvidenceExpiry: bindingEvidenceExpiry,
+		binding: binding, bindingEvidenceExpiry: bindingEvidenceExpiry, head: input.AcceptedAttempt,
 		scope: ports.ProviderInvocationCredentialV1{TenantID: identity.TenantID, OwnerUserID: identity.OwnerUserID, RunID: identity.RunID, AttemptID: identity.AttemptID,
 			WorkerID: string(identity.WorkerID), LeaseID: identity.LeaseID, LeaseFence: identity.FenceToken, ProviderResource: input.Job.HarnessBinding.Resource},
 		accounting: RequestAccountingV1{Before: before, After: ledger.Accounting(), BodyBytes: measure.bytes, BodyUTF16: measure.units, BodyNodes: measure.nodes, TypedBlocks: blocks, HeaderBytes: headers, GoValidationCeiling: 96 << 20, ResponseAllocationBytes: a, ResponseCopyWorkBytes: d, ResponseJSONNodes: downNodes, EchoBytes: echo, EchoNodes: echoNodes}}, nil

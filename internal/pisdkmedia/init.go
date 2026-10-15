@@ -45,11 +45,13 @@ type InitDecodeLimitsV1 struct {
 // Clear. No constructor here enables a registration or constructs any SDK.
 type InitPlanV1 struct {
 	ctx                      context.Context
+	request                  *RequestProjectionV1
 	credentialFile           *providercredential.PreparedImmutableAPIFileV1
 	credentialMax, pathBytes uint64
 	ledger                   *codexexec.CanonicalMediaLedgerV1
 	wire                     []byte
 	prefixDigest             [32]byte
+	modelDigest              [32]byte
 	prefixLen                int
 	accounting               InitAccountingV1
 	live                     uint64
@@ -556,7 +558,7 @@ func PrepareInitV1(ctx context.Context, request *RequestProjectionV1, modelJSON 
 	}
 	bootstrapCopy += 128 + 6*pathBytes // two canonical realpath strings and bounded pathname visits
 	bootstrapLive += 128 + 2*pathBytes
-	work, e := checkedAdd(maximum, maximum, childCopy, 2*argumentBytes, bootstrapCopy)
+	work, e := checkedAdd(maximum, maximum, childCopy, 2*argumentBytes, bootstrapCopy, uint64(len(modelJSON)))
 	live, e2 := checkedAdd(maximum, childCopy, argumentBytes, bootstrapLive)
 	nodes, e3 := checkedAdd(m.nodes+1, childNodes)
 	if e != nil || e2 != nil || e3 != nil || request.ledger.Reserve(work, live, nodes) != nil {
@@ -577,9 +579,9 @@ func PrepareInitV1(ctx context.Context, request *RequestProjectionV1, modelJSON 
 	// prefix. Their exact reserved logical live appearances retire here.
 	after := request.ledger.Accounting()
 	after.LiveBytes -= transientLive // retired by the deferred cleanup before return
-	return &InitPlanV1{ctx: request.ctx, credentialFile: credentialFile, credentialMax: s.credentialMax, pathBytes: pathBytes, ledger: request.ledger,
+	return &InitPlanV1{ctx: request.ctx, request: request, credentialFile: credentialFile, credentialMax: s.credentialMax, pathBytes: pathBytes, ledger: request.ledger,
 		entryArguments: entryArguments,
-		wire:           w.out, prefixLen: len(w.out), prefixDigest: sha256.Sum256(w.out), live: live,
+		wire:           w.out, prefixLen: len(w.out), prefixDigest: sha256.Sum256(w.out), modelDigest: sha256.Sum256(modelJSON), live: live,
 		decodeLimits: InitDecodeLimitsV1{BodyBytes: maximum, CopyBytes: childCopy, JSONNodes: childNodes, JSONDepth: l.JSONDepth, ProfileBytes: uint64(len(profileJSON)), RequestBytes: uint64(len(request.body))},
 		accounting:   InitAccountingV1{Before: before, After: after, PrefixBytes: m.bytes, MaximumBodyBytes: maximum, FilePathBytes: pathBytes, JSONNodes: m.nodes + 1, GoArenaBytes: maximum, GoEmissionBytes: maximum, GoValidationBytes: validation, ChildCopyBytes: childCopy, ChildJSONNodes: childNodes, EntryArgumentBytes: argumentBytes, BootstrapCopyBytes: bootstrapCopy, BootstrapLiveBytes: bootstrapLive}}, nil
 }

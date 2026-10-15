@@ -58,6 +58,7 @@ func (initLocalPlanner) PlanProviderCredentialDelivery(context.Context, domain.H
 }
 
 type initCredentials struct {
+	root    string
 	service *providercredential.InvocationService
 	source  *providercredential.PreparedImmutableAPIFileV1
 	request ports.ProviderCredentialIssueRequestV1
@@ -65,6 +66,10 @@ type initCredentials struct {
 }
 
 func initFixtureCredentials(t *testing.T, p *RequestProjectionV1) *initCredentials {
+	return initFixtureCredentialsAt(t, p, time.Unix(100, 0).UTC())
+}
+
+func initFixtureCredentialsAt(t *testing.T, p *RequestProjectionV1, now time.Time) *initCredentials {
 	t.Helper()
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -86,7 +91,6 @@ func initFixtureCredentials(t *testing.T, p *RequestProjectionV1) *initCredentia
 			t.Error("close actual original namespace:", err)
 		}
 	})
-	now := time.Unix(100, 0).UTC()
 	expires := now.Add(time.Hour)
 	s := p.scope
 	b := p.binding
@@ -112,7 +116,7 @@ func initFixtureCredentials(t *testing.T, p *RequestProjectionV1) *initCredentia
 	if store.loads != 0 || store.reads != 0 || store.recovers != 0 {
 		t.Fatal("pre-Issue source touched backend")
 	}
-	return &initCredentials{service: service, source: source, request: request, store: store}
+	return &initCredentials{service: service, source: source, request: request, store: store, root: root}
 }
 
 func (c *initCredentials) consume(t *testing.T, fn func(ports.ProviderInvocationCredentialV1, ports.ProviderCredentialMaterializationV1) error) {

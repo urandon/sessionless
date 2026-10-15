@@ -452,8 +452,41 @@ Init, SPU2, genuine Pi/standard Responses SDK/parser and exact structured final.
 Only a public noncredential literal, synthetic parent allowance and fake HTTP
 sink are used; it performs no account discovery, model call, install or rebuild.
 The strict parsed final is DATA, not the private same-run custody carrier owned
-by #200. The sole production Supervisor/Source/final producer join is still
-required; neither direct-child testing nor file checks certify that join.
+by #200. Direct-child testing and file checks do not certify Source/native fit
+or the full production composition.
+
+`PreparePiExecutionV1` implements the existing `PreparedProcessRunner` seam,
+not another invocation/credential owner. The original complete producer prepares
+the request/Init, exact expected request metadata and process argv, then this
+component's original-ledger stdio plan and independent process snapshot before
+Issue. During the existing synchronous Materialize callback, it verifies the
+same head/profile/body/model/schema/headers/ledger/argv/environment, fills only
+the concrete original Init locator, and invokes the same `Supervisor.RunPreparedPi`
+with the original private physical-send capability and owner context. A public
+`Authorize` implementation is not an alternative capability. All failures spend
+the executor; Close cannot clear active process/collection buffers or rearm it.
+
+The original InvocationRunner still owns callback unlock, immutable-finalize
+phase, actual Finalize and independent Release. Its independently owned
+parent/child data copies may be cleared at return; the original full producer
+must retain the separate borrowed request/Init and this executor's observation
+through `FinalData` and `Close`, then clear its originals. FinalData is one-shot
+strict parsed DATA gated by this actual observation and successful result DATA,
+not private finalization/custody evidence manufactured from public flags.
+
+With the existing exact local SDK/Node prerequisites only,
+`go test -tags=pi_sdk_functional -race -count=1 -run
+'^TestPreparedPiSameOriginalSupervisor$' -timeout=150s ./internal/pisdkmedia`
+exercises the NEW connection through the actual original InvocationRunner,
+concrete executor, Supervisor, credential service and genuine Pi/standard SDK.
+History/snapshot-tail, postvalidation model/schema/header/head/ledger/file/argv/
+environment substitution, forged public send, callback cancellation, Source
+denial, Close during active send and failed Release are distinct controls.
+Source transactions, OS isolation and HTTP remain explicit synthetic test
+collaborators; a passing test does not establish a serving profile or egress.
+Ordinary `TestPreparedPiExecutionBeforeIssueOwnershipAndDenials` launches nothing
+and checks pre-Issue association, independent metadata, exact live cleanup and
+combined first-over denial on the original ledger.
 
 Missing genuine model/compat/header/source-owned profile, tokenizer/output-clamp
 and full native-fit evidence, currentness, original S/hard cutoff, credential

@@ -617,6 +617,61 @@ fund its fixed signals and use condition rechecks, distinct reader/writer
 wakeups and broadcast cancellation. Structural event tests do not prove that
 future notification or actual-pipe implementation.
 
+### Private process pipe binding
+
+The daemon-private [SPU3 IO arm](../../internal/attachedworkerdaemon/pi_http_stdio.go)
+attaches only through the existing Supervisor's actual stdin/stdout pipes,
+launcher, attestation, process group and cleanup. It is mutually exclusive with
+the old SPU2 arm and ordinary stdin. The arm is single-use, belongs to its
+Supervisor and original ledger/send IO context, and exposes no public driver
+registration. It does not create a producer stamp, qualify the original
+Issue/Materialize tuple or install a source-selected credential/HTTP driver.
+
+The start hook returns after launching a fixed pump, so a blocked Init write
+cannot prevent the Supervisor's cancellation/process loop from running. The
+pump commits the full Init before starting the sole reader and trusted Go
+driver. Seven preallocated signals separate request readiness, credit, End,
+write completion, reader completion, cancellation watcher and aggregate
+completion. Wakeups are coalesced state hints, never credits. Only the Final
+body may wait for End; pending Pull and unused credit do not pause the reader.
+
+The reader uses fixed header/Pull scratch and the coordinator's existing
+request/Final arenas. Every positive read contributes to bounded counters and
+the actual stdout digest, even when the read also fails. Header and nested Hq
+validation precede body reads. Before exposing a borrowed request, freeze the
+digest of its actual full wire bytes. The kernel still checks structured Final
+and actual stdout EOF; neither driver return nor a successful parent write
+can supply those observations.
+
+In addition to the kernel reservation, fund the IO arm's struct, seven fixed
+signal allowances of 256 bytes each, a 512-byte SHA state allowance and a
+2048-byte context/parent-edge allowance before construction. Reserve sixteen
+logical records and `8*ChildWire + 2*ParentWire + 2*Metadata` work. No new frame
+or parser arena is allocated at read time. These are application-storage
+bounds under the audited Go tuple, not qualification of runtime channels,
+goroutine stacks, allocator overhead or an installed native profile.
+
+Descriptor publication and withdrawal share one lock. Withdrawal marks the
+arm stopped and closes actual endpoints outside the lock; any late attach
+closes its descriptors instead of installing them. Lease admission closes
+before driver return joins the one active writer. A rejected concurrent writer
+retains admission ownership through its failure/cancellation path, so it cannot
+outlive that join and race retirement. The lease's owner pointer is immutable;
+late calls deny through lifecycle/context checks, not pointer mutation.
+The aggregate completion
+includes reader, driver and writes, not stdout EOF alone. Normal child exit
+withdraws Source but preserves an already-started End and bounded Final drain;
+invalid use or original IO-context cancellation closes the actual pipes.
+
+A bounded cleanup timeout reports unresolved ownership, not a completed join.
+Keep buffers and live debits while a trusted Go driver still borrows them;
+retire only after its actual return. Run selection and retirement claim the
+same atomic lifecycle before reading or clearing mutable plan aliases. The
+genuine source-selected driver must
+join all subordinate HTTP/file borrowers before returning. Standalone process
+fixtures prove these IO mechanics, not real Pi, Source, file/HMAC/quarantine,
+platform isolation, private custody or the complete prepared producer.
+
 ## Physical connection and deadlines
 
 ### Fixed HTTP receive boundary

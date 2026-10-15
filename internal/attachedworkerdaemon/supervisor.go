@@ -154,6 +154,7 @@ type AttemptSpec struct {
 	Stdin               []byte `json:"-"`
 	credentialWriteFile string
 	piStdio             *piStdioBridge // explicit private prepared arm; never LaunchSpec/wire
+	piHTTP              *piHTTPStdio   // private SPU3 mechanics; never a producer stamp
 }
 
 func (spec AttemptSpec) String() string {
@@ -306,6 +307,12 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 	if parent == nil || parent.Err() != nil {
 		return AttemptResult{}, ErrSupervisorConfig
 	}
+	if spec.piHTTP != nil {
+		if err := spec.piHTTP.selectForRun(parent); err != nil {
+			return AttemptResult{}, ErrSupervisorConfig
+		}
+		defer spec.piHTTP.state.Store(2)
+	}
 	if err := supervisor.validateAttemptSpec(spec); err != nil {
 		return AttemptResult{}, err
 	}
@@ -342,6 +349,19 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 		stdoutComplete, readerErr = finishOutputReader(stdoutDone, stdoutReader, supervisor.grace, "stdout")
 		if readerErr != nil {
 			err = errors.Join(err, readerErr)
+		}
+		if spec.piHTTP != nil {
+			joined := spec.piHTTP.stopAndJoin(supervisor.grace)
+			if spec.piHTTP.send.deadline.expired.Load() {
+				result.Deadline = true
+			}
+			if !joined || !spec.piHTTP.complete || spec.piHTTP.failure.Load() {
+				stdoutComplete = false
+				if result.FailureCode == "" {
+					result.FailureCode = "pi_http_stdio_incomplete"
+				}
+				err = errors.Join(err, ErrSupervisorConfig)
+			}
 		}
 		stderrComplete, readerErr = finishOutputReader(stderrDone, stderrReader, supervisor.grace, "stderr")
 		if readerErr != nil {
@@ -418,7 +438,7 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 		!equalStrings(attested.Arguments, launch.Arguments) {
 		return result, ErrSupervisorConfig
 	}
-	if spec.piStdio != nil {
+	if spec.piStdio != nil || spec.piHTTP != nil {
 		stdinReader, stdinWriter, err = os.Pipe()
 		if err != nil {
 			return result, ErrSupervisorConfig
@@ -455,9 +475,12 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 	_ = stdoutWriter.Close()
 	_ = stderrWriter.Close()
 	processGroupID := command.Process.Pid
-	stdout = &boundedBuffer{limit: supervisor.maxStdout, discard: spec.piStdio != nil}
+	stdout = &boundedBuffer{limit: supervisor.maxStdout, discard: spec.piStdio != nil || spec.piHTTP != nil}
 	if spec.piStdio != nil {
 		stdout.limit = min(stdout.limit, int(spec.piStdio.plan.profile.Limits.ProcessStdoutBytes))
+	}
+	if spec.piHTTP != nil {
+		stdout.limit = min(stdout.limit, int(spec.piHTTP.core.limits.ChildBytes))
 	}
 	stderr = &boundedBuffer{limit: supervisor.maxStderr, discard: true}
 	violation = make(chan string, 2)
@@ -468,6 +491,8 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 	}
 	if spec.piStdio != nil {
 		stdoutDone = spec.piStdio.start(stdoutSource, stdoutReader, stdinWriter, stdout, violation, startedAt.Add(supervisor.timeout))
+	} else if spec.piHTTP != nil {
+		stdoutDone = spec.piHTTP.start(stdoutSource, stdoutReader, stdinWriter, stdout, violation)
 	} else {
 		stdoutDone = copyBounded(stdoutSource, stdout, violation, "stdout_limit_exceeded")
 	}
@@ -488,6 +513,9 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 		if spec.piStdio != nil {
 			spec.piStdio.send.revoke()
 		}
+		if spec.piHTTP != nil {
+			spec.piHTTP.send.revoke()
+		}
 	case result.FailureCode = <-violation:
 	case <-parent.Done():
 		if errors.Is(parent.Err(), context.DeadlineExceeded) {
@@ -499,10 +527,15 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 		result.Deadline = true
 	}
 	if !processWaited {
-		if spec.piStdio != nil {
+		if spec.piStdio != nil || spec.piHTTP != nil {
 			// Model use is over: do not grant the ordinary TERM grace as more
 			// model time, especially when the workload outlives its OCI client.
-			spec.piStdio.revoke()
+			if spec.piStdio != nil {
+				spec.piStdio.revoke()
+			}
+			if spec.piHTTP != nil {
+				spec.piHTTP.fail()
+			}
 			result.KillSent = signalProcessGroup(processGroupID, processKill) == nil
 			_ = callBoundary(supervisor.grace, boundary.ForceStop)
 		} else {
@@ -627,6 +660,10 @@ func inspectBoundary(boundary IsolationBoundary, timeout time.Duration) (bool, e
 }
 
 func (supervisor *Supervisor) validateAttemptSpec(spec AttemptSpec) error {
+	if spec.piHTTP != nil && (spec.piStdio != nil || len(spec.Stdin) != 0 || spec.piHTTP.owner != supervisor ||
+		spec.piHTTP.send == nil || !samePiLedger(spec.piHTTP.ledger, spec.piHTTP.send.ledger)) {
+		return ErrSupervisorConfig
+	}
 	if spec.piStdio != nil && (len(spec.Stdin) != 0 || spec.piStdio.plan == nil || spec.piStdio.plan.owner != supervisor) {
 		return ErrSupervisorConfig
 	}

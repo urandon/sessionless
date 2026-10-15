@@ -131,6 +131,7 @@ func TestDeterministicLocalMultiUserSlice(t *testing.T) {
 		beforeState := slice.terminalState(runA)
 		slice.publishDuplicate(runA)
 		slice.runWorker(nil)
+		slice.waitTelegramDeliveryDrain(runA)
 		slice.assertTerminalState(runA, beforeState)
 	})
 
@@ -144,13 +145,17 @@ func TestDeterministicLocalMultiUserSlice(t *testing.T) {
 		})
 		slice.waitRunStatus(run, domain.RunFailed)
 		slice.assertCheckpointCount(run, 0)
+		// Canonical failure commits a notice before the asynchronous frontend
+		// projector materializes its delivery. Snapshot only after that work.
+		slice.waitTelegramDeliveryDrain(run)
 		beforeState := slice.terminalState(run)
-		if beforeState.Effects != 1 {
-			t.Fatalf("run %s effect reservations = %d, want 1", run.RunID, beforeState.Effects)
+		if beforeState.Effects != 1 || beforeState.Deliveries != 1 {
+			t.Fatalf("run %s baseline = %+v, want exactly one effect and one delivery", run.RunID, beforeState)
 		}
 		slice.publishDuplicate(run)
 		slice.runWorker(nil)
 		slice.waitRunStatus(run, domain.RunFailed)
+		slice.waitTelegramDeliveryDrain(run)
 		slice.assertTerminalState(run, beforeState)
 	})
 
@@ -164,13 +169,15 @@ func TestDeterministicLocalMultiUserSlice(t *testing.T) {
 		})
 		slice.waitRunStatus(run, domain.RunFailed)
 		slice.assertCheckpointCount(run, 1)
+		slice.waitTelegramDeliveryDrain(run)
 		beforeState := slice.terminalState(run)
-		if beforeState.Effects != 1 {
-			t.Fatalf("run %s effect reservations = %d, want 1", run.RunID, beforeState.Effects)
+		if beforeState.Effects != 1 || beforeState.Deliveries != 1 {
+			t.Fatalf("run %s baseline = %+v, want exactly one effect and one delivery", run.RunID, beforeState)
 		}
 		slice.publishDuplicate(run)
 		slice.runWorker(nil)
 		slice.waitRunStatus(run, domain.RunFailed)
+		slice.waitTelegramDeliveryDrain(run)
 		slice.assertTerminalState(run, beforeState)
 	})
 
@@ -946,20 +953,28 @@ func (slice *localSlice) assertDeliveryWasRetried(runs ...runRef) {
 
 func (slice *localSlice) deliveryForRun(run runRef) domain.TelegramDeliveryOutbox {
 	slice.t.Helper()
+	delivery, err := slice.readDeliveryForRun(slice.ctx, run)
+	if err != nil {
+		slice.t.Fatal(err)
+	}
+	return delivery
+}
+
+func (slice *localSlice) readDeliveryForRun(ctx context.Context, run runRef) (domain.TelegramDeliveryOutbox, error) {
 	var payload string
 	if err := slice.db.QueryRowContext(
-		slice.ctx,
+		ctx,
 		`SELECT payload FROM telegram_delivery_outbox
 		 WHERE tenant_id = $1 AND run_id = $2 LIMIT 1`,
 		run.TenantID, run.RunID,
 	).Scan(&payload); err != nil {
-		slice.t.Fatal(err)
+		return domain.TelegramDeliveryOutbox{}, err
 	}
 	var delivery domain.TelegramDeliveryOutbox
 	if err := json.Unmarshal([]byte(payload), &delivery); err != nil {
-		slice.t.Fatal(err)
+		return domain.TelegramDeliveryOutbox{}, err
 	}
-	return delivery
+	return delivery, nil
 }
 
 func (slice *localSlice) injectTelegramFailure(method string, count, status int) {

@@ -160,6 +160,26 @@ func TestAttemptOutputUploadPlanRejectsMalformedWholePlan(t *testing.T) {
 	}
 }
 
+func TestAttemptOutputUploadPlanRejectsMetadataBeforeEncoding(t *testing.T) {
+	plan := uploadTestPlan(t)
+	// Test-owned invalid metadata, allocated before measurement. The threshold
+	// distinguishes encoding this 256KiB string from constant-size validation;
+	// it is NOT a product/native heap budget or a zero-allocation promise.
+	plan.Ordinals[0].Metadata.Name = strings.Repeat("x", 256<<10)
+	var result error
+	measurement := testing.Benchmark(func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			result = plan.Validate()
+		}
+	})
+	if result != ErrCandidateInvalid {
+		t.Fatalf("overbound metadata validation=%v, want invalid", result)
+	}
+	if got := measurement.AllocedBytesPerOp(); got >= 64<<10 {
+		t.Fatalf("rejected 256KiB metadata reached dependent encoder/hash allocation: got %d bytes/op, want <64KiB", got)
+	}
+}
+
 func TestAttemptOutputUploadSpendIsIrreversibleAndDoesNotRenewWindow(t *testing.T) {
 	original := uploadTestPlan(t)
 	at := original.Identity.CreatedAt.Add(time.Second)

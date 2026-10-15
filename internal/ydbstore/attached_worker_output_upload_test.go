@@ -149,3 +149,58 @@ func TestAttemptOutputUploadReceiptPublicProjectionAndIndexBinding(t *testing.T)
 		}
 	}
 }
+
+func TestAttemptOutputUploadReceiptBoundExactCandidateReplay(t *testing.T) {
+	record := uploadReceiptData(t)
+	ordinal := &record.UploadPlan.Ordinals[0]
+	ordinal.State = attachedworkeroutput.UploadOrdinalSourceVerifiedV1
+	ordinal.GrantDigest = strings.Repeat("d", 64)
+	ordinal.Source = &domain.BlobRef{TenantID: record.Binding.TenantID, Key: ordinal.Key, Size: ordinal.Metadata.Size, SHA256: ordinal.Metadata.SHA256}
+	record.UploadPlan.Phase = attachedworkeroutput.UploadPlanReceiptBoundV1
+	record.SourceRefs = []domain.BlobRef{*ordinal.Source}
+	request := AttachedWorkerOutputReceiptRequest{Authorization: record.Binding, Nonce: record.Nonce, Observation: record.Observation,
+		Candidate: attachedworkeroutput.Candidate{Status: domain.AttachedWorkerTerminalSucceeded, Summary: "answer", Artifacts: []attachedworkeroutput.ArtifactCandidate{
+			{Name: ordinal.Metadata.Name, MediaType: ordinal.Metadata.MediaType, Source: *ordinal.Source},
+		}}}
+	var err error
+	record.CandidateFingerprint, err = attachedworkeroutput.CandidateFingerprint(request.Candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.Materialization = ports.AttachedWorkerTerminalMaterialization{Completion: &ports.WorkerCompletion{
+		Manifest: domain.ArtifactManifest{ID: "upload-canonical-manifest"},
+		Events:   []domain.SessionEventDraft{{ID: "upload-canonical-event", Kind: domain.SessionEventAssistantMessage, IdempotencyKey: "upload-canonical-key", DisplayText: "answer"}},
+	}}
+	record.CanonicalDigest, err = attachedWorkerTerminalMaterializationDigest(record.Status, record.Materialization)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.Materialization.EvidenceDigest = record.CanonicalDigest
+	// This checks the exact candidate decision used by the real transaction,
+	// with a strict-valid bound canonical storage fixture. It is not native YDB,
+	// actual object existence or authenticated end-to-end receipt proof.
+	for _, ready := range []bool{false, true} {
+		record.Ready = ready
+		if err := validateUploadReceiptData(record); err != nil {
+			t.Fatalf("strict bound record ready=%t: %v", ready, err)
+		}
+		if !sameOutputReceiptCandidate(record, request, record.CandidateFingerprint, record.ObservationDigest, record.HarnessBindingDigest) {
+			t.Fatalf("exact receipt_bound candidate rejected at real comparison gate (ready=%t)", ready)
+		}
+		other := request
+		other.Nonce = "divergent-nonce"
+		if sameOutputReceiptCandidate(record, other, record.CandidateFingerprint, record.ObservationDigest, record.HarnessBindingDigest) {
+			t.Fatalf("divergent bound candidate accepted (ready=%t)", ready)
+		}
+	}
+	for _, phase := range []attachedworkeroutput.UploadPlanPhaseV1{attachedworkeroutput.UploadPlanActiveV1, attachedworkeroutput.UploadPlanSettledAbandonedV1} {
+		record.UploadPlan.Phase = phase
+		if sameOutputReceiptCandidate(record, request, record.CandidateFingerprint, record.ObservationDigest, record.HarnessBindingDigest) {
+			t.Fatalf("ordinary Create bypassed %s plan", phase)
+		}
+	}
+	record.UploadPlan = nil
+	if !sameOutputReceiptCandidate(record, request, record.CandidateFingerprint, record.ObservationDigest, record.HarnessBindingDigest) {
+		t.Fatal("existing canonical no-upload exact candidate replay changed")
+	}
+}

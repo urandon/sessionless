@@ -256,17 +256,7 @@ func (store *Store) outputReceiptHeadTransaction(
 			return err
 		}
 		if priorFound {
-			// Ordinary failure/answer-only Create must not replace pre-Put
-			// custody, reset consumed ordinals or bypass source verification.
-			// The upload-specific transaction will own the exact bind operation.
-			if prior.UploadPlan != nil {
-				status = ports.AttachedWorkerExecutionConflict
-				return nil
-			}
-			if prior.Nonce != request.Nonce || prior.CandidateFingerprint != fingerprint ||
-				prior.ObservationDigest != observationDigest || prior.Status != request.Candidate.Status ||
-				prior.HarnessBindingDigest != bindingDigest ||
-				!sameReceiptStableBinding(prior.Binding, auth) {
+			if !sameOutputReceiptCandidate(prior, request, fingerprint, observationDigest, bindingDigest) {
 				status = ports.AttachedWorkerExecutionConflict
 				return nil
 			}
@@ -345,6 +335,19 @@ func (store *Store) outputReceiptHeadTransaction(
 		return nil
 	})
 	return status, err
+}
+
+// Input prior has already passed the closed stored-row validator. This exact
+// candidate comparison is not currentness, a source witness or a send grant.
+func sameOutputReceiptCandidate(prior AttachedWorkerOutputReceiptV1, request AttachedWorkerOutputReceiptRequest,
+	fingerprint, observationDigest string, bindingDigest domain.HarnessBindingDigestV2,
+) bool {
+	if prior.UploadPlan != nil {
+		return false
+	}
+	return prior.Nonce == request.Nonce && prior.CandidateFingerprint == fingerprint &&
+		prior.ObservationDigest == observationDigest && prior.Status == request.Candidate.Status &&
+		prior.HarnessBindingDigest == bindingDigest && sameReceiptStableBinding(prior.Binding, request.Authorization)
 }
 
 func sameOutputReceiptPlan(left, right AttachedWorkerOutputReceiptV1) bool {

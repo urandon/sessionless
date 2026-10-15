@@ -1,6 +1,6 @@
 # Pi SDK supervisor HTTP transport draft
 
-Version: 0.1.0. Engineering proposal under
+Version: 0.1.1. Engineering proposal under
 [#202](https://gitcode.com/urandon/sessionless/issues/202) and
 [#203](https://gitcode.com/urandon/sessionless/issues/203).
 
@@ -68,6 +68,79 @@ profile digest, exact request digest and canonical nonsecret-header digest.
 The transcript encoding and cross-language vectors must be fixed before code;
 string concatenation or a caller-chosen digest format is not a substitute.
 
+### Authorization transcript
+
+Let `u32(x)` be exactly four unsigned big-endian bytes and `bytes(x)` the
+specified byte sequence, never a JSON string or hexadecimal text. The domain
+prefix is ASCII `Sessionless/Pi/SPU3/Auth/1` followed by one zero byte. Append
+these seven fields in order, each as `u32(length) || bytes`:
+
+1. The 32-byte pre-Issue random invocation nonce.
+2. The 32 decoded bytes of the original harness-binding SHA-256 digest.
+3. The 32 decoded bytes of the backend-profile SHA-256 digest P.
+4. The four ASCII bytes `POST`.
+5. The exact UTF-8 sealed endpoint, without normalization or a trailing zero.
+6. The 32-byte SHA-256 digest of the canonical nonsecret header block below.
+7. The 32-byte SHA-256 digest of the complete actual SDK request body.
+
+The MAC is the raw 32-byte HMAC-SHA256 of that transcript. Its key is the exact
+visible-ASCII token after the single literal `Bearer ` prefix at the actual
+SDK hook, without trimming, case conversion or another decoding step. The
+parent computes it from its original active materialization's token and uses
+constant-time equality. An attempted comparison consumes the plan even on
+wrong scope, malformed data or mismatch; it is not a repeatable key oracle.
+Transcript and digest buffers are prospectively funded before Issue. No MAC
+result substitutes for actual body/header equality or original physical-send
+authorization.
+
+A canonical header block starts with a big-endian uint16 pair count. Each pair
+is `u16(name length) || lowercase ASCII name || u32(value length) || value`.
+Names are in ascending ASCII order, unique, and have no zero-length value.
+Values are exact visible ASCII from the SDK's validated header snapshot;
+CR/LF, other controls and non-ASCII bytes deny. All lengths count bytes.
+The request block contains exactly the eleven existing allowed SDK headers
+other than `authorization`, with the same pinned values from the original
+request projection. It includes no `host`, content-length, connection or URL
+override. The fixed parent HTTP implementation supplies its own sealed Host,
+exact body content-length and connection-close framing. Response headers use
+the same encoding but a separate admitted response-header policy; they are
+never reflected from the request block.
+
+The synthetic transcript vector uses nonce bytes `00..1f`, a binding of 32
+`11` bytes, P of 32 `22` bytes, endpoint
+`https://api.example.invalid/v1/responses`, body `{"fixture":true}` and key
+`fixture-only-api-key`. Header values, in canonical name order, are:
+
+```text
+accept: application/json
+content-type: application/json
+user-agent: fixture/1
+x-stainless-arch: arm64
+x-stainless-lang: js
+x-stainless-os: Linux
+x-stainless-package-version: 6.40.0
+x-stainless-retry-count: 0
+x-stainless-runtime: node
+x-stainless-runtime-version: v24.19.0
+x-stainless-timeout: 30
+```
+
+The header block is 331 bytes; the domain prefix is 27 bytes including its
+zero terminator; the transcript is 259 bytes. Expected values are:
+
+```text
+headers SHA256  4eb66216ea83097b10b2fd2ad62e11739725fdb164324c97fd8a7fcd89cd04b8
+body SHA256     ffbc2dfc402782325da71132100e74ff511d1585dd80e4ea196ed4bcace3fef2
+transcript SHA  32c4a36582a2d76aa57cb01339c6834ff63a5a41e534eb7d2d59300b6b1844ba
+HMAC SHA256     39dea11e34ea383bc5a3299aeba6577bc397e2737d0792df93ad0f67912a0e04
+```
+
+These are byte-encoding vectors, not an admitted SDK request or an enabled
+endpoint. The eventual Go and pinned Node implementations must independently
+reproduce them and reject one-bit changes in every field, the key, field order,
+length encoding and header order. Equality of one synthetic vector alone does
+not establish either runtime's conformance.
+
 The file owner's proposed private capability must verify that commitment
 against its original active Materialize record, exact handle/resource/generation,
 immutable descriptor and fingerprint. It must not read a secret backend again,
@@ -83,6 +156,61 @@ to that sink without exposing it as return data. This is an explicit proposed
 extension of the original file owner's internal consumer contract; it is not
 permission to reinterpret `file` as the public `direct` delivery arm.
 
+### Package and lifetime ownership
+
+Keep the fixed HTTP, HMAC and quarantine implementation private inside
+`providercredential`, next to `immutableAPIFileUse`. The original synchronous
+Materialize already owns a verified secret slice until callback cleanup joins
+and the existing `zero(secret)` runs. A new private field may borrow that same
+slice during the callback; no backend reread, additional plaintext file API,
+key-returning method or file-callback plaintext is introduced. Verify the same
+immutable file and fingerprint before comparing the SDK commitment.
+
+The new file consumer binds its pre-Issue transport recipe to the SAME
+`PreparedImmutableAPIFileV1` pointer, context, frozen binding, body/profile and
+ledger. After Issue it accepts only the actual acquired handle and original
+Materialize record. The recipe has no arbitrary URL, writer, fetch function,
+secret parameter or caller-supplied successful response. It exposes only a
+bounded approved response view after the guard, borrowed until replay joins.
+Retain the exact original Materialize context separately from the derived
+cancellable consumer context: the former is compared to the send's owner
+context, while the latter bounds and cancels borrowed IO.
+
+Do not replace the daemon's private physical-send owner with a structural
+`Authorize` interface or caller callback. Add a daemon-owned binder that type
+asserts the actual private `*preparedAPIPhysicalSend` and returns an opaque
+borrow with unexported fields and no public constructor. The original runner
+seals identity and ledger at creation, the validated handle once after Issue,
+and the actual materialization once before executor entry. The binder checks
+those exact values, original outer use context, complete body and profile.
+Provider passes values from its private active file-use record, not a wire DTO.
+
+Bind before any blocking Source call. On shutdown the borrow can nonblockingly
+revoke the SAME original send before joining; only its one subsequent consume
+may call the existing physical-send Source authorizer. The SPU3 pump must not
+also call Authorize as SPU2 does. A failed HMAC/file/request comparison burns
+and revokes the attempt with no connection; no wrapper can reset the original
+send, mint F or create source eligibility. All original Source verification
+remains in the runner's existing closure.
+
+This introduces the production import direction `providercredential` to
+`attachedworkerdaemon`, not the reverse; the daemon's present transitive
+production dependency closure does not reach providercredential. Relocate only
+the existing genuine-service receiver integration test and its exclusive
+helpers from the daemon's internal test package to an external integration
+test, preserving the actual receiver assertion through a test-only bridge if
+needed. Do not weaken the test or move the Source owner to conceal a cycle.
+
+Use one nonqueueing file-use gate. No state-mutex reentry occurs inside its
+Materialize callback. One attempted verification spends send authority; the
+same borrowed record remains alive only for the bounded response guard and
+cleanup. Callback retirement marks it inactive, cancels its derived context,
+revokes the original send, joins its transport/control borrowers, drops its
+secret alias, and only then lets the existing secret zeroing and state unlock
+proceed. Cancellation must reach a held Source RPC as well as socket and pipe
+IO; waiting for the gate before revoking would deadlock retirement. Finalize
+and Release remain after callback unlock, never nested inside the consumer.
+
 Before any response bytes enter parent-to-child IPC, quarantine the complete
 bounded response, including headers, until valid terminal data and actual HTTP
 EOF/join. Check UTF-8/JSON/SSE structure and effects, decoded strings, and the
@@ -91,7 +219,7 @@ without returning the key. A key split across two valid `response.output_text.de
 events must reject the entire response before either frame is forwarded. Raw
 chunk matching, per-frame matching and a final child-side check are insufficient.
 
-Reserve the entire quarantine, frame offsets, decoded strings, semantic joins,
+Reserve the entire quarantine, parser offsets, decoded strings, semantic joins,
 matching work and subsequent IPC copies on the SAME ledger before Issue.
 Neither incremental buffer growth nor a fresh budget after receiving a frame
 is allowed. Inherited total-response and per-frame limits remain binding;
@@ -100,13 +228,64 @@ rejects without forwarding. The closing design must specify the exact admitted
 semantic streams, escape handling and cumulative bounds and prove they fit;
 it must not silently truncate the response or narrow the original input cohorts.
 
-Only after the complete guard succeeds may the parent forward the original
-frames unchanged. Pull credit controls this replay, not upstream reading.
+Only after the complete guard succeeds may the parent replay the original
+bytes unchanged in fixed-size transport chunks. Pull credit controls this
+replay, not upstream reading.
 This candidate explicitly replaces live one-credit streaming with a bounded
 whole-response quarantine; it does not promise time-to-first-token streaming.
 The native guard remains in place, and parity and split/escaped cross-event
 tests must establish the shared rejection contract. Neither guard replaces
 Pi's Responses parser.
+
+### Actual Pi semantic assemblies
+
+The secret guard follows the pinned
+`packages/ai/src/api/openai-responses-shared.ts` `processResponsesStream`
+behavior, not a guessed grouping by `content_index` or `item_id`:
+
+- `output_item.added` creates a new empty text or thinking block and associates
+  it with `output_index`. Replacement leaves the previous output block in the
+  output list; the guard must not discard that block's confidentiality state.
+- Both `output_text.delta` and `refusal.delta` append to the same text slot.
+  Both `reasoning_summary_text.delta` and `reasoning_text.delta` append to the
+  same thinking slot. A matching slot is looked up by output_index and type.
+- `reasoning_summary_part.done` appends the literal two newline characters to
+  the thinking slot. The guard checks the result after every append, even if
+  a later event would overwrite it.
+- `output_item.done` uses the existing slot, or creates one when absent. For a
+  reasoning slot it replaces thinking with `summary.text.join("\n\n")`, or
+  `content.text.join("\n\n")`, or its existing text, using Pi's nonempty
+  fallback order. For a message slot it replaces text with all output_text and
+  refusal content joined with the empty separator. It then removes the slot
+  mapping, not the output block. Later reuse of the index creates another block.
+- Standalone text/refusal/reasoning `*.done` events do not replace a Pi slot.
+  Their decoded strings still receive scalar checks. Reasoning signatures,
+  terminal backfill and all nested terminal output strings receive scalar
+  checks too. Tool and unknown item/event variants remain denied by policy.
+
+Scan the entire raw quarantined body and admitted header names/values for the
+literal credential before replay, including SSE comments, field names and
+matches across raw chunk/frame boundaries. Also scan every decoded JSON
+key/string, including JSON escape decoding. Neither matching domain replaces
+the other: the native policy ignores comment lines, which may still carry raw
+secret bytes. Check each intermediate
+semantic block above. Bootstrap admits exactly one final text block; it must
+not invent a join across distinct blocks to turn a rejected result into a final.
+Keep the native final check as
+defense in depth. The parent shadow is only a reject/allow predicate: no
+shadow-produced message, final or synthesized SSE event enters Pi. Bounded
+parity tests against the exact pinned Pi source must cover mixed text/refusal,
+mixed summary/reasoning, done-only content, overwrite, index reuse and escapes.
+Changed Pi assembly semantics require a new qualified artifact, not permissive
+unknown-event handling.
+
+The guard can check appends with a prospectively allocated failure-function
+matcher and one state per retained output block, rather than repeatedly
+copying the accumulated text. Reset and feed exact done-event replacement
+segments and separators in order. Preserve states of overwritten blocks while
+they remain in Pi's output list; no matching state is a profile grant. The
+exact arena, slot lookup, parser-node and work bounds still require their own
+implementation-derived prospective schedule.
 
 ## Closed duplex protocol
 
@@ -117,22 +296,111 @@ Old profiles and artifacts must not be silently reinterpreted: exact transport,
 bootstrap and native artifact commitments select the new grammar. Historical
 reconciliation is not permission to execute an old transport.
 
-| Frame | Direction | Exact role |
+| Kind | Frame and direction | Exact metadata and body |
 | --- | --- | --- |
-| Initialize | Parent to child | Complete pre-funded Init, original file locator and nonce, once; no key, bearer or new source selector. |
-| Fetch request | Child to parent | Exact complete SDK body, backend-profile binding, canonical nonsecret headers and authorization commitment, once. No URL override or raw Authorization. |
-| Response start | Parent to child | Only validated fixed status200 and bounded admitted SSE/identity headers after the whole response passes quarantine and EOF/join. No reusable use permit. |
-| Response part | Parent to child | One bounded original SSE frame from the fully approved quarantine, preserving its bytes; no synthesized model event. |
-| Pull | Child to parent | One credit for replaying one next approved response part; no additional upstream read, queue growth or model-use permission. |
-| Response end | Parent to child | Valid terminal SSE plus actual bounded HTTP EOF, once. |
-| Structured final | Child to parent | Strict provider-authored final after the genuine parser and loop complete. |
-| Retire | Parent to child | Revokes and joins the same request/process; never creates cleanup or model-use authority. |
+| 1 | Initialize, parent to child | 96 metadata bytes: nonce32, original binding digest32, P32. Body is the complete original bounded Init with the original file locator, once. |
+| 2 | Fetch request, child to parent | `P32 || MAC32 || u32(Hq) || request-header-block`. Metadata length is exactly `68 + Hq`; body is the complete actual SDK request, once. No URL override or raw Authorization. |
+| 3 | Response start, parent to child | 46 metadata bytes: `u16(200) || u32(N) || u64(R) || response-digest32`. Body is the admitted response-header block. Only after full quarantine and EOF/join. |
+| 4 | Response part, parent to child | Four metadata bytes `u32(index)`, zero-based. Body is one original byte chunk from approved quarantine, unchanged; exactly C bytes except the positive final remainder. |
+| 5 | Pull, child to parent | Four metadata bytes `u32(next index)` and zero body. One credit for that next approved part, never upstream reading. |
+| 6 | Response end, parent to child | 44 metadata bytes: `u32(N) || u64(R) || response-digest32`; zero body. |
+| 7 | Structured final, child to parent | Zero metadata; strict provider-authored original final body after Pi parser/loop and verified Response end. |
+| 8 | Retire, parent to child | Zero metadata and body; at most once, revokes and joins; never grants use or cleanup permission. |
 
-The implementation design must close every kind value, metadata field/length,
-direction, count and transition and derive exact maximum wire/copy/live/node
-totals before this protocol is executable. It must retain full original bodies,
-history and both image cohorts within the existing 1MiB seal/frame and other
-MIN bounds. No old SPU2 wire totals can be borrowed for these extra frames.
+All integers are unsigned big-endian; digest and MAC fields contain raw bytes,
+not hex. `Hq` is the exact request-header-block size, `N` the positive number
+of replay chunks, and `R` their total raw byte count. Before replay, the full
+body must contain complete admitted SSE frames with bounded comments and no
+partial frame or bytes after the sole terminal frame. Header parsing must reject unknown kind,
+wrong direction, unexpected metadata length or inconsistent nested Hq before
+body assembly. There is no wire error text, use allowance or retry frame.
+The response digest is SHA-256 of exactly the concatenation of Response part
+bodies: HTTP entity bytes after transfer-framing removal, with identity content
+encoding. It excludes response headers, HTTP status/framing, and SPU3 headers
+and metadata. Parent and child hash the same byte sequence without reencoding.
+
+After Initialize the sole Fetch request is the only legal child frame. The
+parent validates the complete request before attempting physical authorization.
+During quarantine no response frame is emitted and no Pull is legal. After
+Response start, child sends Pull(0), receives part(0), then repeats in strict
+order. At most one Pull and one corresponding part are in flight; speculative,
+duplicate or skipped credit burns the attempt. After part(N-1), parent emits
+Response end without another Pull. Child validates count, raw digest and total
+before closing the reconstructed response stream. Structured final is legal
+only after that end and genuine Pi completion. Completion also requires actual
+child EOF, successful process quiescence and original lifecycle retirement.
+Early final, premature EOF, extra stdout, malformed/truncated IO, cancellation
+and any comparison failure close the invocation without resynchronization.
+Retire is permitted from any nonretired state and invalidates remaining work.
+
+Select chunk capacity C before Issue as the minimum of the original
+ResponseChunkBytes and process-frame body capacity `FrameCap - 21`. For actual
+positive R, `N = 1 + floor((R - 1) / C)`. A Response part is opaque bytes and
+may split a UTF-8 scalar, SSE line or event; only the complete reassembled SSE
+grammar receives UTF-8 validation. Do not reuse SPU2's unconditional per-body
+UTF-8 decoder for these chunks. The child feeds these bytes to the existing
+incremental native framer and genuine SDK parser. Transport chunking does not
+rewrite SSE bytes or turn comments into model events. IPC counts are independent
+of SSE framing: keep the native framer's SSEEvents counter for every complete
+frame, including comment-only frames, and the policy's counter for dispatched
+events. Byte chunking replaces neither original counter with the replay count.
+
+One bounded control reader remains active during HTTP quarantine so an early
+child frame cannot hide in an unread pipe and later become fresh credit. Arm
+the replay state immediately before writing Response start; a single pending
+Pull may then wait for that write to finish, but cannot produce a part sooner.
+State checks refer to parent observation, not an unverifiable child send time.
+Use fixed pending records, not a general queue or per-frame goroutines.
+
+The child withholds part(N-1) from its reconstructed Response body until it has
+also read and verified Response end. The existing native guarded-response
+helper cancels at a terminal event rather than observing underlying EOF, so
+it cannot independently establish this guarantee. Local stream cancellation
+after that already-verified end may dispose the replay reader, but must not
+retire the whole invocation before Pi emits its final. Original invocation
+cancellation at any point still revokes all remaining work.
+
+### Directional wire accounting
+
+Let I, B and L be complete Init, request and final body ceilings; Hq and Hs the
+request and response header-block ceilings; R the total response ceiling; N
+the replay chunk count ceiling derived from R and C; and FrameCap the inherited
+process-frame ceiling. Reserve maximums, not observed successful lengths.
+Checked arithmetic must establish all these inequalities before Issue:
+
+```text
+113 + I         <= FrameCap       initialize
+85 + Hq + B     <= FrameCap       fetch request
+63 + Hs         <= FrameCap       response start
+21 + C          <= FrameCap       each part
+61              <= FrameCap       response end
+17 + L          <= FrameCap       structured final
+21              <= FrameCap       pull
+17              <= FrameCap       retire
+
+parent stdin = I + R + Hs + 254 + 21*N
+child stdout = B + L + Hq + 102 + 21*N
+total IPC    = I + B + L + R + Hq + Hs + 356 + 42*N
+frame count  = 6 + 2*N
+```
+
+The parent stdin total must fit the existing 4MiB supervisor ceiling, child
+stdout its original configured MIN ceiling, every frame the inherited 1MiB
+MIN ceiling, and the aggregate frame count the original process event budget.
+SSE event, line and body bounds remain independently enforced inside the
+quarantine; replay chunk count is not the SSE event count. Use those original
+bounds together;
+do not lower only the tested count or increase process bounds to make it fit.
+These are application wire counts, not a replacement for complete allocation,
+native heap, pipe or HTTP/TLS accounting.
+
+The implementation design must additionally close response-header admission,
+capability ownership and exact maximum copy/live/node/HTTP totals before this
+protocol is executable. It must retain full original bodies, history and both
+image cohorts within the existing 1MiB seal/frame and other MIN bounds. No old
+SPU2 wire totals can be borrowed for these extra frames. The wire magic is
+selected by a newly committed native/profile artifact; existing SPU2 profiles
+must never execute this grammar under unchanged commitments.
 
 ## Physical connection and deadlines
 

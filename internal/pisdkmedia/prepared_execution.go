@@ -113,7 +113,7 @@ func PreparePiExecutionV1(s *attachedworkerdaemon.Supervisor, request *RequestPr
 		return nil, ErrProjection
 	}
 	live := 64*count + 512
-	work := 4*uint64(len(request.body)) + 2*argumentBytes + 4*processBytes + 4*uint64(len(expected.Model)+len(expected.Schema)+len(expected.Headers)) + 2*measure.bytes
+	work := 4*uint64(len(request.body)) + 2*argumentBytes + 4*processBytes + 4*uint64(len(expected.Model)+len(expected.Schema)+len(expected.Headers)) + 2*measure.bytes + 2*l.StructuredFinalBytes
 	// Extra executor comparisons/hash visits are prospectively funded in the
 	// original cumulative ledger. No new payload arena or native-fit claim.
 	if err := request.ledger.Reserve(work, live+measure.bytes, count+measure.nodes); err != nil {
@@ -249,7 +249,9 @@ func (p *PreparedPiExecutionV1) FinalData(ctx context.Context, result attachedwo
 		return attachedworkeroutput.StructuredFinalV1{}, ErrProjection
 	}
 	actual, ok := result.Process.PiStdioObservationV1()
-	if !ok || actual.StdoutDigest != p.observation.StdoutDigest || actual.FinalDigest != p.observation.FinalDigest ||
+	if !ok || uint64(len(actual.Final)) > p.profile.Limits.StructuredFinalBytes ||
+		actual.StdoutDigest != p.observation.StdoutDigest || actual.FinalDigest != p.observation.FinalDigest ||
+		sha256.Sum256(actual.Final) != p.observation.FinalDigest ||
 		!bytes.Equal(actual.Final, p.observation.Final) {
 		return attachedworkeroutput.StructuredFinalV1{}, ErrProjection
 	}

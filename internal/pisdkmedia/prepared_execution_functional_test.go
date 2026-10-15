@@ -30,7 +30,7 @@ import (
 func TestPreparedPiSameOriginalSupervisor(t *testing.T) {
 	const node = "/opt/homebrew/Cellar/node@24/24.19.0/bin/node"
 	const sdk = "/Volumes/hubdisk/workspace/ai/sessionless/.gitcode/native-build/pi-sdk-6c4f36-catalog-9c40af/source"
-	for _, mode := range []string{"history", "snapshot-tail", "close-during-send", "foreign-model", "foreign-schema", "foreign-headers", "foreign-head", "foreign-ledger", "foreign-file", "forged-physical-cap", "altered-argv", "altered-env", "cancel-before-execute", "denied-physical", "release-failed"} {
+	for _, mode := range []string{"history", "snapshot-tail", "close-during-send", "mutated-final", "foreign-model", "foreign-schema", "foreign-headers", "foreign-head", "foreign-ledger", "foreign-file", "forged-physical-cap", "altered-argv", "altered-env", "cancel-before-execute", "denied-physical", "release-failed"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
 			defer cancel()
@@ -133,6 +133,13 @@ func TestPreparedPiSameOriginalSupervisor(t *testing.T) {
 				t.Fatal(err)
 			}
 			result, runErr := runner.Run(ctx, attachedworkerdaemon.Invocation{Identity: id, Process: process, VerifiedInput: input})
+			if mode == "mutated-final" {
+				observation, ok := result.Process.PiStdioObservationV1()
+				if !ok || len(observation.Final) < 12 {
+					t.Fatal("missing actual original final before mutation")
+				}
+				observation.Final[11] = 'X'
+			}
 			final, finalErr := execution.FinalData(ctx, result, runErr)
 			positive := mode == "history" || mode == "snapshot-tail" || mode == "close-during-send"
 			if positive {
@@ -142,6 +149,10 @@ func TestPreparedPiSameOriginalSupervisor(t *testing.T) {
 				want := []string{"prepare", "pre_issue", "issue", "materialize", "physical_send", "unlocked", "immutable_finalize", "finalize", "release", "clear"}
 				if !reflect.DeepEqual(parent.order, want) {
 					t.Fatalf("owner order=%v want=%v", parent.order, want)
+				}
+			} else if mode == "mutated-final" {
+				if runErr != nil || finalErr == nil {
+					t.Fatal("borrowed final mutation accepted or original process failed")
 				}
 			} else if runErr == nil || finalErr == nil {
 				t.Fatalf("mode=%s invalid original lifecycle made usable final", mode)

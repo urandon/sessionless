@@ -189,14 +189,21 @@ func (s *Supervisor) RunPreparedPi(parent context.Context, invocation PreparedIn
 	binary.BigEndian.PutUint32(frame[5:9], 0)
 	binary.BigEndian.PutUint64(frame[9:17], uint64(len(body)))
 	copy(frame[17:], body)
-	ctx, cancel := context.WithCancel(parent)
+	// Keep exact Materialize owner identity distinct from IO. Source/network
+	// revocation on normal child exit must not discard already-written Final
+	// bytes; the daemon-owned monitor still bounds that drain by original F.
+	ioParent := send.deadline.ioContext()
+	if ioParent == nil || ioParent.Err() != nil {
+		return AttemptResult{}, ErrSupervisorConfig
+	}
+	ctx, cancel := context.WithCancel(ioParent)
 	b := &piStdioBridge{ctx: ctx, cancel: cancel, plan: p, send: send, init: frame, done: make(chan struct{}), digest: sha256.New()}
 	spec := invocation.Process
 	spec.Stdin = nil
 	spec.piStdio = b
 	result, err := s.Run(ctx, spec)
 	b.stopAndJoin() // joins Source and all pipe operations BEFORE borrowed data returns
-	if b.expired.Load() {
+	if b.expired.Load() || send.deadline.expired.Load() {
 		result.Deadline = true
 	}
 	if !b.started || !b.complete || b.failure.Load() {

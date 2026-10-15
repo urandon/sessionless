@@ -37,6 +37,7 @@ type preparedAPIPhysicalSend struct {
 	runner                          *InvocationRunner
 	data                            *PreparedAPIDataV1
 	phaseCutoff                     time.Time
+	deadline                        preparedAPIDeadline
 }
 
 // A separately prepaid cell allows revocation to load the original canceller
@@ -85,6 +86,16 @@ func (send *preparedAPIPhysicalSend) authorizeLocked(body []byte, profile string
 	if err != nil || send.retired.Load() || send.ctx.Err() != nil || cutoff == cutoff.Round(0) || !time.Now().Before(cutoff) {
 		return time.Time{}, ErrCredentialUnavailable
 	}
+	// The genuine original runner always owns a pre-Issue monitor. Do not
+	// delegate arming it to the SDK/transport, or trust a returned "armed" bit.
+	// Private standalone structural tests without a runner confer no producer.
+	if (send.runner != nil || send.deadline.ioContext() != nil) && send.deadline.arm(send, cutoff) != nil {
+		send.revoke()
+		return time.Time{}, ErrCredentialUnavailable
+	}
+	if send.retired.Load() || send.invalid.Load() || send.ctx.Err() != nil || !time.Now().Before(cutoff) {
+		return time.Time{}, ErrCredentialUnavailable
+	}
 	send.authorized = true
 	send.cutoff = cutoff
 	send.failed = false
@@ -95,6 +106,7 @@ func (send *preparedAPIPhysicalSend) retire() time.Time {
 	// Revoke before joining: a Source reply held across executor return must
 	// not publish a usable cutoff, even though custody cannot clear until join.
 	send.revoke()
+	send.deadline.stopAndJoin()
 	send.mu.Lock()
 	defer send.mu.Unlock()
 	send.body = nil
@@ -116,5 +128,8 @@ func (send *preparedAPIPhysicalSend) revoke() {
 	send.retired.Store(true)
 	if c := send.cancel.Load(); c != nil && c.cancel != nil {
 		c.cancel()
+	}
+	if send.invalid.Load() {
+		send.deadline.cancelUse()
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"reflect"
 	"strings"
+	"time"
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkeroutput"
 	"gitcode.com/urandon/sessionless/internal/domain"
@@ -79,6 +80,10 @@ func preparePiResultCustody(id InvocationIdentity, data *PreparedAPIDataV1) (*pi
 	// existing node limit with those source byte caps BEFORE adding; JSONNodes
 	// itself is not given a guessed finite maximum or allowed to wrap3*N.
 	metadata := uint64(reflect.TypeOf(piResultCustody{}).Size()) + uint64(reflect.TypeOf(preparedAPICancel{}).Size())
+	// Timer's exposed Go state, completion channel and callback cell are
+	// prepared here, not at physical send. This is NOT a claim about complete
+	// runtime scheduler/closure/stack heap fit or native qualification.
+	metadata += uint64(reflect.TypeOf(time.Timer{}).Size()) + uint64(reflect.TypeOf(preparedAPICancel{}).Size()) + 256
 	artifacts := 2 * uint64(reflect.TypeOf(attachedworkeroutput.StructuredArtifactV1{}).Size())
 	parseBytes := 4*f + p.Limits.ArtifactTotalBytes + p.Limits.AnswerBytes + artifacts
 	nodes := min(p.Limits.JSONNodes, f) + 2*min(p.Limits.JSONNodes, p.Limits.ArtifactBytes) + 2
@@ -106,7 +111,7 @@ func preparePiResultCustody(id InvocationIdentity, data *PreparedAPIDataV1) (*pi
 		return nil, ErrCredentialUnavailable
 	}
 	work += extra
-	if data.Ledger.Reserve(work, live, nodes) != nil {
+	if data.Ledger.Reserve(work, live, nodes+5) != nil {
 		return nil, ErrCredentialUnavailable
 	}
 	s := &piResultCustody{identity: id, head: data.ParentInput.AcceptedAttempt, profile: p, ledger: data.Ledger, live: live,
@@ -120,6 +125,10 @@ func preparePiResultCustody(id InvocationIdentity, data *PreparedAPIDataV1) (*pi
 		s.requestHash[i] = sha256.Sum256(v)
 	}
 	if !piExecutableMatches(ExecutableDigest(s.requestHash[2]), p.Sources.FinalSchemaDigest) {
+		s.clear()
+		return nil, ErrCredentialUnavailable
+	}
+	if s.send.prepareDeadline() != nil {
 		s.clear()
 		return nil, ErrCredentialUnavailable
 	}

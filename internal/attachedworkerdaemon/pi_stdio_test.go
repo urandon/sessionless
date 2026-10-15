@@ -17,6 +17,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -51,6 +52,15 @@ func piProcessFixture(t *testing.T, mode string) (*Supervisor, *fixtureLauncher,
 	calls := &atomic.Int32{}
 	send := &preparedAPIPhysicalSend{ctx: sendCtx, ownerCtx: ctx, body: []byte(piSyntheticRequest), profile: desc.BackendProfileDigest, authorize: func() (time.Time, error) { calls.Add(1); return time.Now().Add(30 * time.Minute), nil }}
 	send.cancel.Store(&preparedAPICancel{cancel: cancelSend})
+	// This private structural process fixture is not the genuine source parent
+	// or a full allocation qualification. Exercise the same deadline mechanics.
+	if err := send.prepareDeadline(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { send.retire() })
+	if err := send.deadline.bindOwner(ctx); err != nil {
+		t.Fatal(err)
+	}
 	ledger := &apiTestLedger{}
 	plan, err := s.PreparePiStdioV1(p, ledger)
 	if err != nil {
@@ -101,6 +111,102 @@ func TestPiStdioSameSupervisorFragmentedSuccess(t *testing.T) {
 	}
 	if !bytes.Equal(obs.Final, make([]byte, len(obs.Final))) {
 		t.Fatal("Close did not clear borrowed Final")
+	}
+}
+
+type piHeldFinalReader struct {
+	reader           io.Reader
+	remaining        int
+	entered, release chan struct{}
+	ctx              context.Context
+	enteredOnce      sync.Once
+}
+
+func (r *piHeldFinalReader) Read(b []byte) (int, error) {
+	if r.remaining > 0 {
+		n, err := r.reader.Read(b[:min(len(b), r.remaining)])
+		r.remaining -= n
+		return n, err
+	}
+	r.enteredOnce.Do(func() { close(r.entered) })
+	select {
+	case <-r.release:
+		return r.reader.Read(b)
+	case <-r.ctx.Done():
+		return 0, r.ctx.Err()
+	}
+}
+
+func TestPiStdioNormalExitRetainsBoundedFinalDrain(t *testing.T) {
+	for _, name := range []string{"normal exit", "deadline callback", "invalid use"} {
+		t.Run(name, func(t *testing.T) {
+			s, _, in, plan, _, calls, cancel := piProcessFixture(t, "ok")
+			send := in.PhysicalSend.(*preparedAPIPhysicalSend)
+			ioCtx := send.deadline.ioContext()
+			req, err := pisdkphasewire.EncodeFrame(pisdkphasewire.Frame{Kind: pisdkphasewire.PhysicalRequest,
+				BackendProfileDigest: string(in.Process.Stdin), Body: []byte(piSyntheticRequest)}, plan.limits)
+			if err != nil {
+				t.Fatal(err)
+			}
+			entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			var once sync.Once
+			unblock := func() { once.Do(func() { close(release) }) }
+			s.outputReader = func(stream string, r io.Reader) io.Reader {
+				if stream == "stdout" {
+					return &piHeldFinalReader{reader: r, remaining: len(req), entered: entered, release: release, ctx: ioCtx}
+				}
+				return r
+			}
+			var result AttemptResult
+			var runErr error
+			go func() { defer close(done); result, runErr = s.RunPreparedPi(send.ownerCtx, in, plan) }()
+			t.Cleanup(func() { cancel(); unblock(); apiWait(t, done) })
+			apiWait(t, entered)
+			// The child has received UseResult, written its small Final and
+			// exited. Only command.Wait's normal-exit revoke cancels Source;
+			// no elapsed-time guess decides this barrier.
+			apiWait(t, send.ctx.Done())
+			if ioCtx.Err() != nil || send.invalid.Load() {
+				t.Fatal("normal process exit cancelled owned Final drain before F")
+			}
+			select {
+			case <-done:
+				t.Fatal("returned without joining held Final reader")
+			default:
+			}
+			if name == "deadline callback" {
+				// Test-owned callback trigger only, NOT a new production F or
+				// native clock qualification. The pure synctest above proves
+				// exact F timing; this proves expiry closes actual held IO.
+				send.deadline.mu.Lock()
+				if !send.deadline.armed || !send.deadline.timer.Reset(0) {
+					send.deadline.mu.Unlock()
+					t.Fatal("original active monitor absent during owned drain")
+				}
+				send.deadline.mu.Unlock()
+				apiWait(t, ioCtx.Done())
+			} else if name == "invalid use" {
+				(&PreparedAPISendBorrowV1{send: send}).Revoke()
+				apiWait(t, ioCtx.Done())
+			} else {
+				unblock()
+			}
+			apiWait(t, done)
+			obs, observed := result.PiStdioObservationV1()
+			if calls.Load() != 1 || !result.DescendantsReaped || !result.BoundaryReleased {
+				t.Fatalf("Source/process ownership: calls=%d reaped=%v released=%v err=%v", calls.Load(), result.DescendantsReaped, result.BoundaryReleased, runErr)
+			}
+			if name == "normal exit" {
+				if runErr != nil || result.FailureCode != "" || !observed || string(obs.Final) != piSyntheticFinal || !result.CleanupSucceeded {
+					t.Fatalf("normal exit lost actual Final: observed=%v failure=%s cleanup=%v err=%v", observed, result.FailureCode, result.CleanupSucceeded, runErr)
+				}
+			} else if runErr == nil || observed {
+				t.Fatalf("revoked held drain minted observation: observed=%v err=%v", observed, runErr)
+			}
+			if result.Deadline != (name == "deadline callback") {
+				t.Fatalf("deadline classification: name=%s deadline=%v", name, result.Deadline)
+			}
+		})
 	}
 }
 

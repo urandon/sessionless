@@ -350,7 +350,9 @@ func TestPiResultCustodyPreIssueAccountingAndPartition(t *testing.T) {
 	if err != nil {
 		t.Fatal("legal symbolic node cap:", err)
 	}
-	wantNodes := data.ParentRequest.Profile.Limits.StructuredFinalBytes + 2*data.ParentRequest.Profile.Limits.ArtifactBytes + 2
+	// Original parser intersections plus the five prospectively funded monitor
+	// cells. They are not another full profile/node budget.
+	wantNodes := data.ParentRequest.Profile.Limits.StructuredFinalBytes + 2*data.ParentRequest.Profile.Limits.ArtifactBytes + 2 + 5
 	if p.ledger.nodes-beforeNodes != wantNodes {
 		t.Fatal("node reserve wrapped or borrowed an independent full profile pool")
 	}

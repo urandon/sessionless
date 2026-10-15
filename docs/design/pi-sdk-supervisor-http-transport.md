@@ -1,6 +1,6 @@
 # Pi SDK supervisor HTTP transport draft
 
-Version: 0.1.2. Engineering proposal under
+Version: 0.1.3. Engineering proposal under
 [#202](https://gitcode.com/urandon/sessionless/issues/202) and
 [#203](https://gitcode.com/urandon/sessionless/issues/203).
 
@@ -539,6 +539,25 @@ monotonic cutoff F. DNS, TCP, TLS, the sole request write, response reads,
 frame forwarding and supervised process/control lifetime must all be bounded
 by the same earlier original F and cancellation. Preparation creates no
 connection and grants no network effect.
+
+The original daemon send prepares its own stopped deadline monitor before
+Issue on the same ledger. The original successful Source comparison arms it
+once, before publishing F or marking the send authorized. No transport driver
+may supply a deadline, renew it or report an `armed` acknowledgement. Expiry
+withdraws both the original send context and a separately cancellable
+supervisor IO context derived from the same original owner. Normal child exit
+immediately withdraws Source/network use but permits already-written Final
+and EOF to drain under F; it does not cancel this bounded IO context. Actual
+expiry, invalid use and parent cancellation stop the drain. Preserve the exact
+original Materialize context as credential-owner identity. Immutable Finalize,
+Release and resource retirement keep their separate bounded owner context.
+
+Retirement revokes use before joining Source or the timer callback, then drops
+their aliases before releasing the live reservation. Normal disarm is cleanup,
+not an expiry or a new permission. Go's [Timer.Stop](https://pkg.go.dev/time#Timer.Stop)
+does not join an already-started callback; the monitor requires an explicit
+completion join. Its Go metadata reservation does not qualify complete runtime
+timer, scheduler, stack or native heap fit.
 
 Use the exact approved HTTPS host, port443, method and path from the sealed
 profile; reject IP literals, private/special-use resolutions, redirects,

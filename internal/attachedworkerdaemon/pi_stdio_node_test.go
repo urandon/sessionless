@@ -84,6 +84,13 @@ func TestPiStdioNodeSameSupervisor(t *testing.T) {
 		body: []byte(piSyntheticRequest), profile: desc.BackendProfileDigest,
 		authorize: func() (time.Time, error) { calls.Add(1); return time.Now().Add(30 * time.Minute), nil }}
 	send.cancel.Store(&preparedAPICancel{cancel: cancelSend})
+	if err := send.prepareDeadline(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { send.retire() })
+	if err := send.deadline.bindOwner(ctx); err != nil {
+		t.Fatal(err)
+	}
 	ledger := &apiTestLedger{}
 	plan, err := s.PreparePiStdioV1(p, ledger)
 	if err != nil {

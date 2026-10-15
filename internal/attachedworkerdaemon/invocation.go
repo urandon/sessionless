@@ -361,6 +361,9 @@ func (runner *InvocationRunner) runOwnedPreparedAPI(ctx context.Context, invocat
 	// This Go context does not implement the missing hard JS/native bridge.
 	useCtx, cancelUse := context.WithDeadline(ctx, cutoff)
 	defer cancelUse()
+	if slot.send.deadline.bindOwner(useCtx) != nil {
+		return InvocationResult{FailureCode: "api_use_preparation_failed"}, ErrCredentialUnavailable
+	}
 	sendCtx, cancelSend := context.WithCancel(useCtx)
 	defer cancelSend()
 	send := &slot.send

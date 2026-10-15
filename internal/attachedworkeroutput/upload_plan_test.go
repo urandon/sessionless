@@ -74,6 +74,10 @@ func TestAttemptOutputUploadPlanPreservesEmptyAndMaxArtifacts(t *testing.T) {
 	if maximum.Ordinals[0].Metadata.Name != "one.txt" {
 		t.Fatal("plan retained mutable caller metadata slice")
 	}
+	maximumName := uploadTestMetadata(0, strings.Repeat("n", 255), "text/plain", "")
+	if valid, err := NewAttemptOutputUploadPlanV1(uploadTestIdentity(), []UploadArtifactMetadataV1{maximumName}); err != nil || valid.Validate() != nil {
+		t.Fatalf("maximum valid 255-byte name rejected: %v", err)
+	}
 }
 
 func TestNewAttemptOutputUploadPlanRejectsInvalidMetadataBeforeSealing(t *testing.T) {

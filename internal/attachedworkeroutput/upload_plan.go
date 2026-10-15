@@ -113,8 +113,11 @@ func (plan AttemptOutputUploadPlanV1) Validate() error {
 	for i, ordinal := range plan.Ordinals {
 		metadata[i] = ordinal.Metadata
 	}
+	if !validUploadMetadata(metadata[:len(plan.Ordinals)]) {
+		return ErrCandidateInvalid
+	}
 	digest, err := uploadPlanDigest(plan.Identity, metadata[:len(plan.Ordinals)])
-	if !validUploadMetadata(metadata[:len(plan.Ordinals)]) || err != nil || plan.PlanDigest != digest {
+	if err != nil || plan.PlanDigest != digest {
 		return ErrCandidateInvalid
 	}
 	for _, ordinal := range plan.Ordinals {
@@ -219,7 +222,7 @@ func validUploadMetadata(values []UploadArtifactMetadataV1) bool {
 			return false
 		}
 		decodedMD5, err := base64.StdEncoding.DecodeString(value.ContentMD5)
-		if value.Ordinal != uint32(i) || !utf8.ValidString(value.Name) || !structuredArtifactName(value.Name) ||
+		if value.Ordinal != uint32(i) || !validArtifactName(value.Name) || !utf8.ValidString(value.Name) || !structuredArtifactName(value.Name) ||
 			value.MediaType != "text/plain" && value.MediaType != "application/json" ||
 			value.Size == 0 && value.MediaType != "text/plain" ||
 			value.Size < 0 || value.Size > AttemptOutputUploadMaxArtifactBytes || value.Size > AttemptOutputUploadMaxTotalBytes-total ||

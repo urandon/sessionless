@@ -144,6 +144,13 @@ func (store *Store) CreateAttachedWorkerOutputReceipt(
 	for _, artifact := range request.Candidate.Artifacts {
 		record.SourceRefs = append(record.SourceRefs, artifact.Source)
 	}
+	if found && existing.UploadPlan != nil {
+		// Retain the exact original plan/grant states through canonical-copy
+		// retry/finish. The first head transaction already matched the candidate;
+		// this is never a new upload admission or ordinal spend.
+		retained := existing.UploadPlan.Clone()
+		record.UploadPlan = &retained
+	}
 	if found && !sameOutputReceiptPlan(existing, record) {
 		return AttachedWorkerOutputReceiptResult{Status: ports.AttachedWorkerExecutionConflict}, nil
 	}
@@ -342,7 +349,9 @@ func (store *Store) outputReceiptHeadTransaction(
 func sameOutputReceiptCandidate(prior AttachedWorkerOutputReceiptV1, request AttachedWorkerOutputReceiptRequest,
 	fingerprint, observationDigest string, bindingDigest domain.HarnessBindingDigestV2,
 ) bool {
-	if prior.UploadPlan != nil {
+	// Active/settled pre-Put ownership cannot be replaced by ordinary output.
+	// An already bound canonical plan retains the existing exact replay path.
+	if prior.UploadPlan != nil && prior.UploadPlan.Phase != attachedworkeroutput.UploadPlanReceiptBoundV1 {
 		return false
 	}
 	return prior.Nonce == request.Nonce && prior.CandidateFingerprint == fingerprint &&

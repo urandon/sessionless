@@ -221,8 +221,12 @@ attached-worker-prepared-invocation-test: prepare
 .PHONY: attached-worker-output-upload-test
 ATTACHED_WORKER_OUTPUT_UPLOAD_RUN ?= .
 attached-worker-output-upload-test: prepare
-	go test -race -count=1 -shuffle=1792062001 -timeout=2m -run '$(ATTACHED_WORKER_OUTPUT_UPLOAD_RUN)' ./internal/attachedworkeroutput ./internal/ports ./internal/s3store ./internal/ydbstore ./internal/attachedworkerreceipt
-	go test -race -count=3 -shuffle=1792062002 -timeout=2m -run '^(TestAttemptOutputUpload|TestNewAttemptOutputUpload|TestAttachedWorkerOutputObject|TestWorkerOutputSigner|TestReceiptHTTP)' ./internal/attachedworkeroutput ./internal/ports ./internal/s3store ./internal/ydbstore ./internal/attachedworkerreceipt
+	env -u YDB_CONNECTION_STRING -u SESSIONLESS_E2E \
+		SESSIONLESS_OWNED_CURRENT_YDB_GATE=0 SESSIONLESS_OWNED_CURRENT_YDB_DISPOSABLE=0 \
+		go test -race -count=1 -shuffle=1792062001 -timeout=2m -run '$(ATTACHED_WORKER_OUTPUT_UPLOAD_RUN)' ./internal/attachedworkeroutput ./internal/ports ./internal/s3store ./internal/ydbstore ./internal/attachedworkerreceipt
+	env -u YDB_CONNECTION_STRING -u SESSIONLESS_E2E \
+		SESSIONLESS_OWNED_CURRENT_YDB_GATE=0 SESSIONLESS_OWNED_CURRENT_YDB_DISPOSABLE=0 \
+		go test -race -count=3 -shuffle=1792062002 -timeout=2m -run '^(TestAttemptOutputUpload|TestNewAttemptOutputUpload|TestAttachedWorkerOutputObject|TestWorkerOutputSigner|TestReceiptHTTP)' ./internal/attachedworkeroutput ./internal/ports ./internal/s3store ./internal/ydbstore ./internal/attachedworkerreceipt
 
 attached-worker-crash-integration: attached-worker-build
 	SESSIONLESS_ATTACHED_WORKER_BINARY="$(CURDIR)/$(BIN_DIR)/attached-worker" \

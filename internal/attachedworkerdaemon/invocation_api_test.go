@@ -74,6 +74,7 @@ type apiTestParent struct {
 	prepareErr   error
 	mutate       func(*PreparedAPIDataV1)
 	phaseErr     pisdkphasewire.Phase
+	phaseWindow  time.Duration
 	phaseMutate  func(pisdkphasewire.Request, *pisdkphasewire.Reply)
 	cleared      bool
 	ownedInputs  []*VerifiedAttachedInputV1
@@ -133,8 +134,12 @@ func (p *apiTestParent) ObserveOriginalAPIPhase(_ context.Context, request pisdk
 	}
 	checked := time.Now().UTC().Truncate(time.Microsecond)
 	window := time.Duration(request.CallerDeadline.RemainingNanoseconds)
-	if window > 30*time.Second {
-		window = 30 * time.Second
+	cap := p.phaseWindow
+	if cap == 0 {
+		cap = 30 * time.Second // unchanged original fixture default
+	}
+	if window > cap {
+		window = cap
 	}
 	reply := pisdkphasewire.Reply{Status: ports.AttachedWorkerExecutionApplied, AcceptedAttempt: p.data.ParentInput.AcceptedAttempt, AcceptedAttemptRevision: p.data.ParentInput.AcceptedAttempt.Revision, HarnessBindingDigest: request.ExpectedHarnessBindingDigest, AttachedPiAPIInvocationPolicyDigest: request.ExpectedAttachedPiAPIInvocationPolicyDigest, CheckedAt: checked, UseExpiresAt: checked.Add(window)}
 	if p.phaseMutate != nil {

@@ -132,7 +132,7 @@ func TestPreparedAPIPhysicalSendConcurrentEntry(t *testing.T) {
 func TestAPIOwnerPhysicalSendRequiredAndScoped(t *testing.T) {
 	for _, name := range []string{"valid", "missing", "wrong body", "wrong profile", "denied", "wrong mapping", "reentry"} {
 		t.Run(name, func(t *testing.T) {
-			inv, parent, life := apiOwnerFixture(t)
+			inv, parent, life := longLivedAPIOwnerFixture(t)
 			if name == "denied" {
 				parent.phaseErr = pisdkphasewire.PhysicalSend
 			}
@@ -194,19 +194,7 @@ func TestAPIOwnerPhysicalSendRequiredAndScoped(t *testing.T) {
 }
 
 func TestAPIOwnerPhysicalCutoffCannotRenewAtFinalize(t *testing.T) {
-	inv, parent, life := apiOwnerFixture(t)
-	// This compares bounds, not expiry. Every original/phase lifetime exceeds
-	// the enclosing test/CI failure bound, including a lawful scheduler pause.
-	// Re-seal the modified synthetic job instead of weakening source validation.
-	inv.VerifiedInput.Job.Limits.MaxRuntime = time.Hour
-	expiry := time.Now().UTC().Truncate(time.Microsecond).Add(2 * time.Hour)
-	inv.VerifiedInput.AcceptedAttempt.LeaseExpiresAt = expiry
-	inv.VerifiedInput.Job.HarnessBinding.EvidenceExpiresAt = &expiry
-	digest, err := domain.AttachedWorkerJobContextDigestV1(inv.VerifiedInput.Job, inv.VerifiedInput.Manifest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	inv.VerifiedInput.AcceptedAttempt.ContextDigest = digest
+	inv, parent, life := longLivedAPIOwnerFixture(t)
 	const physicalWindow = 30 * time.Minute
 	var sentCutoff time.Time
 	var finalizeRemaining uint64
@@ -246,4 +234,23 @@ func TestAPIOwnerPhysicalCutoffCannotRenewAtFinalize(t *testing.T) {
 	if !result.Succeeded(err) || sentCutoff.IsZero() || finalizeRemaining == 0 || finalizeRemaining > uint64(physicalWindow) {
 		t.Fatalf("physical window renewed: remaining=%d result=%+v err=%v", finalizeRemaining, result, err)
 	}
+}
+
+func longLivedAPIOwnerFixture(t *testing.T) (Invocation, *apiTestParent, *apiTestLifecycle) {
+	t.Helper()
+	inv, parent, life := apiOwnerFixture(t)
+	// This compares bounds, not expiry. Every original/phase lifetime exceeds
+	// the enclosing test/CI failure bound, including a lawful scheduler pause.
+	// Re-seal the modified synthetic job instead of weakening source validation.
+	inv.VerifiedInput.Job.Limits.MaxRuntime = time.Hour
+	expiry := time.Now().UTC().Truncate(time.Microsecond).Add(2 * time.Hour)
+	inv.VerifiedInput.AcceptedAttempt.LeaseExpiresAt = expiry
+	inv.VerifiedInput.Job.HarnessBinding.EvidenceExpiresAt = &expiry
+	digest, err := domain.AttachedWorkerJobContextDigestV1(inv.VerifiedInput.Job, inv.VerifiedInput.Manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inv.VerifiedInput.AcceptedAttempt.ContextDigest = digest
+	parent.phaseWindow = time.Hour
+	return inv, parent, life
 }

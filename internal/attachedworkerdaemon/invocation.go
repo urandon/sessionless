@@ -267,6 +267,12 @@ func (runner *InvocationRunner) runPreparedAPI(ctx context.Context, invocation I
 	// This Go context does not implement the missing hard JS/native bridge.
 	useCtx, cancelUse := context.WithDeadline(ctx, cutoff)
 	defer cancelUse()
+	send := &preparedAPIPhysicalSend{ctx: useCtx, body: data.ParentRequest.Body,
+		profile: data.Issue.HarnessBinding.Backend.BackendProfileDigest,
+		authorize: func() (time.Time, error) {
+			return runner.observeAPIPhase(useCtx, data, pisdkphasewire.PhysicalSend, cutoff)
+		}}
+	defer send.retire()
 	handle, issueErr := runner.apiCredentials.IssueProviderCredential(useCtx, data.Issue)
 	// Even an error accompanied by an actual returned handle retains cleanup
 	// ownership. A zero error handle is not fabricated release evidence.
@@ -303,6 +309,7 @@ func (runner *InvocationRunner) runPreparedAPI(ctx context.Context, invocation I
 	var plan ports.ProviderCredentialMaterializationV1
 	callbacks := 0
 	var processErr error
+	var sendCutoff time.Time
 	materializeErr := runner.apiCredentials.MaterializeProviderCredential(useCtx, handle, func(value ports.ProviderCredentialMaterializationV1, secret []byte) error {
 		callbacks++
 		if callbacks != 1 || len(secret) != 0 || useCtx.Err() != nil || !time.Now().Before(cutoff) || value.Validate() != nil ||
@@ -315,6 +322,7 @@ func (runner *InvocationRunner) runPreparedAPI(ctx context.Context, invocation I
 			return ErrInvocationInvalid
 		}
 		plan = value // independent parent value, never executor-mutated input
+		defer func() { sendCutoff = send.retire() }()
 		// The extra read-root slot was reserved/allocated by the original
 		// parent BEFORE Issue; assignment adds no new independent copy pool.
 		roots := data.ChildProcess.AdditionalReadRoots
@@ -322,18 +330,19 @@ func (runner *InvocationRunner) runPreparedAPI(ctx context.Context, invocation I
 		result.Process, processErr = runner.prepared.RunPrepared(useCtx, PreparedInvocationV1{
 			Identity: invocation.Identity, Process: data.ChildProcess, Credential: handle, Materialization: value,
 			VerifiedInput: data.ChildInput, APIRequest: &data.ChildRequest,
+			PhysicalSend: send,
 		})
 		return processErr
 	})
 	// Genuine synchronous Materialize has now returned/unlocked. Neither its
 	// return nor a nil process error alone proves actual process quiescence.
-	if materializeErr != nil || callbacks != 1 || processErr != nil || !result.Process.DescendantsReaped ||
+	if materializeErr != nil || callbacks != 1 || processErr != nil || sendCutoff.IsZero() || !result.Process.DescendantsReaped ||
 		!result.Process.BoundaryReleased || !result.Process.CleanupSucceeded || result.Process.Cancelled || result.Process.Deadline ||
 		result.Process.ExitCode != 0 || result.Process.FailureCode != "" {
 		result.FailureCode = "api_process_incomplete"
 		return result, ErrCredentialFinalization
 	}
-	finalCutoff, err := runner.observeAPIPhase(useCtx, data, pisdkphasewire.ImmutableFinalize, cutoff)
+	finalCutoff, err := runner.observeAPIPhase(useCtx, data, pisdkphasewire.ImmutableFinalize, sendCutoff)
 	if err != nil || useCtx.Err() != nil || !time.Now().Before(finalCutoff) {
 		result.FailureCode = "api_immutable_finalize_denied"
 		return result, ErrCredentialFinalization

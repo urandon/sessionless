@@ -22,6 +22,16 @@ func currentServerlessSessionPrincipalTx(ctx context.Context, query rowQuery, lo
 		return domain.ErrMembershipDenied
 	}
 	tenant, sessionID, userID := loaded.Run.TenantID, loaded.Run.SessionID, loaded.Job.CredentialOwnerUserID
+	return currentExecutionSessionPrincipalTx(ctx, query, tenant, sessionID, userID, at)
+}
+
+// Admission has an authoritative Run/outbox but no WorkerJob/reservation yet.
+// Reuse only these canonical principal reads, never synthesize an admitted job
+// or borrow managed admission/effect authority to validate its owner.
+func currentExecutionSessionPrincipalTx(ctx context.Context, query rowQuery, tenant domain.TenantID, sessionID domain.SessionID, userID domain.UserID, at time.Time) error {
+	if ctx == nil || ctx.Err() != nil || tenant.Validate() != nil || sessionID.Validate() != nil || userID.Validate() != nil || at.IsZero() {
+		return domain.ErrMembershipDenied
+	}
 	var encoded, creator, status string
 	var sequence uint64
 	var archived sql.NullTime

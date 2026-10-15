@@ -211,6 +211,26 @@ func (store *Store) admitDispatchTx(ctx context.Context, tx *stateTx, request po
 	} else if !found {
 		return fmt.Errorf("attempt %q not found", request.AttemptID)
 	}
+	if outbox.HarnessBinding.AttachedPiAPIInvocationPolicyDigest != "" {
+		// This is the ORIGINAL attached admission, not binder preflight. A
+		// queue-selected epoch cannot keep an expired/revoked API decision
+		// current, including on a cold slot path whose first lookup writes.
+		at, err := store.attachedWorkerTransactionTime(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if outbox.ID != request.OutboxID || outbox.TenantID != tx.tenantID ||
+			run.ID != request.RunID || run.TenantID != tx.tenantID || attempt.ID != request.AttemptID ||
+			outbox.ValidateForAttempt(run, attempt) != nil || run.CancellationRequestedAt != nil || run.Status.Terminal() ||
+			run.CreatedAt.After(at) || run.UpdatedAt.After(at) || attempt.CreatedAt.After(at) || attempt.UpdatedAt.After(at) ||
+			outbox.CreatedAt.After(at) || outbox.UpdatedAt.After(at) || !request.HoldUntil.After(at) {
+			return domain.ErrMembershipDenied
+		}
+		if err := store.currentAttachedPiAPINewWorkTx(ctx, tx, outbox.HarnessBinding, run.TenantID, run.SessionID, outbox.CredentialOwnerUserID, at); err != nil {
+			return err
+		}
+		request.Now = at
+	}
 	var ownedSource domain.AttemptExecutionSourceV1
 	var final *domain.AttemptExecutionAdmissionV1
 	if q, bounded := tx.sqlTx.(*ownedAuthorityQuery); bounded {

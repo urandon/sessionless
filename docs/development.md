@@ -596,9 +596,38 @@ channel barriers, not a live service/provider. Client timeout is an existing
 failure bound, not a new phase permission window; original caller context is
 retained without computing W/L/S/F. Header/body arenas and static equality are
 not complete native/shared-ledger admission or authenticated current-source
-proof. The endpoint has no new server handler, source authorizer or serving
-registration. Original phase/deadline/credential/SDK/custody integration and
+proof. No serving registration is enabled. The Store source and current-policy
+transaction checks described below do not themselves supply the original
+private parent or a qualified native catalog. Original
+phase/deadline/credential/SDK/custody integration and
 the full [Pi profile gates](design/pi-sdk-attached-media-profile.md) remain open.
+
+### Pi owner policy and original transaction checks (default off)
+
+The optional authenticated Web BFF policy service records exact owner-confirmed
+terms as an immutable decision plus a monotone current mapping. Revocation and
+replacement never upgrade an already sealed job to a new mapping. An absent
+qualified native/tariff catalog denies new authorization; API credential
+ingestion or internally matching hashes do not replace owner consent.
+
+Original attached dispatch admission checks the current policy and canonical
+Session/member/participant/deletion inside its transaction, before even a cold
+scheduler-slot write. Direct offer checks precede lease allocation. The original
+phase source additionally binds to the original execution connection, not a
+successor reconnect. New upload admission/ordinal claims, canonical-copy start
+or resume, READY and semantic success recheck their stored original job and
+current policy before new effects. No additional quota or publication ledger
+is created. Failure/cancellation cleanup and exact already committed results
+retain their existing predicates: read-only upload reconciliation and historical
+READY/ACK replay are not new model or data-publication permission.
+
+The ordinary Go suite includes actual Store callers with a synthetic SQL driver
+and catalog, first-write sentinels, a conformance-machine pending terminal,
+revocation/replacement controls, READY commit-loss and restored originals.
+These tests establish caller ordering and fail-closed results, not native YDB
+isolation, installed native/tariff qualification, a real model turn or either
+MVP route's activation. Use `make test` with repository-shared Go caches;
+native integration remains separately gated.
 
 ### Worktrees and Go caches
 

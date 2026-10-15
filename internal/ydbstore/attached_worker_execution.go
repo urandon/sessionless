@@ -186,8 +186,12 @@ func (store *Store) OfferAttachedWorkerAttempt(ctx context.Context, request port
 		return result, err
 	}
 	err = store.Transact(ctx, request.TenantID, func(state ports.StateTx) error {
+		result = ports.AttachedWorkerAttemptResult{}
 		return store.offerAttachedWorkerAttemptTx(ctx, state.(*stateTx), request, &result)
 	})
+	if err != nil {
+		return ports.AttachedWorkerAttemptResult{}, err
+	}
 	return result, err
 }
 
@@ -241,6 +245,17 @@ func (store *Store) offerAttachedWorkerAttemptTx(ctx context.Context, tx *stateT
 	if !attachedWorkerOfferEligible(request, worker, connection, loaded, placement, at, expiresAt) {
 		result.Status = ports.AttachedWorkerExecutionDenied
 		return nil
+	}
+	if loaded.Job.HarnessBinding.AttachedPiAPIInvocationPolicyDigest != "" {
+		if loaded.Run.CancellationRequestedAt != nil || loaded.Run.UpdatedAt.After(at) || loaded.Attempt.UpdatedAt.After(at) ||
+			loaded.Job.CreatedAt.After(at) || worker.UpdatedAt.After(at) || connection.ConnectedAt.After(at) ||
+			connection.ManifestObservedAt.After(at) || connection.LastCheckpointAt.After(at) {
+			result.Status = ports.AttachedWorkerExecutionDenied
+			return nil
+		}
+		if err := store.currentAttachedPiAPINewWorkTx(ctx, tx, loaded.Job.HarnessBinding, loaded.Run.TenantID, loaded.Run.SessionID, loaded.Job.CredentialOwnerUserID, at); err != nil {
+			return err
+		}
 	}
 	protocolConfig, readySnapshot, err := loadAttachedWorkerProtocolAuthorityTx(ctx, tx, worker, connection)
 	if err != nil || readySnapshot.Connection != attachedworkerprotocol.ConnectionReady ||
@@ -1079,6 +1094,7 @@ func (store *Store) CommitAttachedWorkerTerminal(ctx context.Context, request po
 		return result, err
 	}
 	err = store.Transact(ctx, request.TenantID, func(state ports.StateTx) error {
+		result = ports.AttachedWorkerAttemptResult{}
 		tx := state.(*stateTx)
 		member, err := attachedWorkerOwnerAuthorizedTx(ctx, tx, request.OwnerUserID)
 		if err != nil {
@@ -1118,7 +1134,7 @@ func (store *Store) CommitAttachedWorkerTerminal(ctx context.Context, request po
 			if err != nil {
 				return err
 			}
-			if err := materializeAttachedWorkerTerminalTx(ctx, state, tx, attempt, materialization, at); err != nil {
+			if err := store.materializeAttachedWorkerTerminalTx(ctx, state, tx, attempt, materialization, at); err != nil {
 				return err
 			}
 			key := domain.AttachedWorkerAttemptMessageV1{OwnerUserID: attempt.OwnerUserID, WorkerID: attempt.WorkerID, AttemptID: attempt.AttemptID, Direction: domain.AttachedWorkerAttemptPlatformToWorker, AttemptSequence: attempt.PlatformAttemptSequence}
@@ -1174,7 +1190,7 @@ func (store *Store) CommitAttachedWorkerTerminal(ctx context.Context, request po
 		if err != nil {
 			return err
 		}
-		if err := materializeAttachedWorkerTerminalTx(ctx, state, tx, attempt, materialization, at); err != nil {
+		if err := store.materializeAttachedWorkerTerminalTx(ctx, state, tx, attempt, materialization, at); err != nil {
 			return err
 		}
 		ackFrame, post, err := attachedworkerprotocol.BuildTerminalAckTransitionV1(config, snapshot, attachedworkerprotocol.TerminalAckAuthorityV1{NowUnixMicro: at.UnixMicro()})
@@ -1222,6 +1238,9 @@ func (store *Store) CommitAttachedWorkerTerminal(ctx context.Context, request po
 		result = ports.AttachedWorkerAttemptResult{Status: ports.AttachedWorkerExecutionApplied, Attempt: next, Outbound: &message}
 		return nil
 	})
+	if err != nil {
+		return ports.AttachedWorkerAttemptResult{}, err
+	}
 	return result, err
 }
 
@@ -1658,7 +1677,7 @@ func validateAttachedWorkerAttemptFence(request ports.AttachedWorkerAttemptFence
 	return nil
 }
 
-func materializeAttachedWorkerTerminalTx(ctx context.Context, state ports.StateTx, tx *stateTx, attempt domain.AttachedWorkerAttemptV1, materialization ports.AttachedWorkerTerminalMaterialization, at time.Time) error {
+func (store *Store) materializeAttachedWorkerTerminalTx(ctx context.Context, state ports.StateTx, tx *stateTx, attempt domain.AttachedWorkerAttemptV1, materialization ports.AttachedWorkerTerminalMaterialization, at time.Time) error {
 	if err := validateAttachedWorkerTerminalMaterializationStatus(attempt.TerminalStatus, materialization); err != nil {
 		return err
 	}
@@ -1697,6 +1716,58 @@ func materializeAttachedWorkerTerminalTx(ctx context.Context, state ports.StateT
 		}
 		if run.Status.Terminal() {
 			return ErrRunFinalizationConflict
+		}
+		// An existing exact finalization above is historical reconciliation.
+		// Only a NEW success needs today's API/principal decision; failures and
+		// cancellation retain their original control/cleanup predicates below.
+		job, found, err := readJSON[domain.WorkerJob](ctx, tx.sqlTx,
+			`SELECT payload FROM worker_jobs WHERE tenant_id=$1 AND run_id=$2`, tx.tenantID, run.ID)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return ErrAttachedWorkerAttemptConflict
+		}
+		if job.HarnessBinding.AttachedPiAPIInvocationPolicyDigest != "" {
+			worker, workerFound, err := readAttachedWorkerTx(ctx, tx, attempt.OwnerUserID, attempt.WorkerID)
+			if err != nil {
+				return err
+			}
+			connection, connectionFound, err := readAttachedWorkerConnectionTx(ctx, tx, attempt.OwnerUserID, attempt.WorkerID)
+			if err != nil {
+				return err
+			}
+			lease, leaseFound, err := readCanonicalLeaseHeadTx(ctx, tx, run.ID)
+			if err != nil {
+				return err
+			}
+			if !workerFound || !connectionFound || !leaseFound || !attachedWorkerTerminalCommitAuthorityCurrent(worker, connection, attempt) ||
+				worker.UpdatedAt.After(at) || connection.ConnectedAt.After(at) || connection.ManifestObservedAt.After(at) || connection.LastCheckpointAt.After(at) ||
+				connection.CapabilityDigest != attempt.CapabilityDigest || lease.ValidateForAttempt(run, canonicalAttempt) != nil ||
+				lease.ID != attempt.LeaseID || lease.WorkerID != string(attempt.WorkerID) || canonicalAttempt.WorkerID != lease.WorkerID ||
+				lease.FenceToken != attempt.LeaseGeneration || !lease.ExpiresAt.Equal(attempt.LeaseExpiresAt) || lease.AcquiredAt.After(at) || !at.Before(lease.ExpiresAt) {
+				return domain.ErrMembershipDenied
+			}
+			input, found, err := readJSON[domain.ArtifactManifest](ctx, tx.sqlTx,
+				`SELECT payload FROM artifact_manifests WHERE tenant_id=$1 AND artifact_manifest_id=$2`, tx.tenantID, job.InputManifestID)
+			if err != nil {
+				return err
+			}
+			loaded := ports.WorkerJobState{Run: run, Job: job, Attempt: canonicalAttempt, Reservation: reservation, InputManifest: input}
+			contextDigest, contextErr := domain.AttachedWorkerJobContextDigestV1(job, input)
+			if !found || validateLoadedWorkerJob(loaded) != nil || contextErr != nil || contextDigest != attempt.ContextDigest ||
+				run.Status != domain.RunRunning || run.CancellationRequestedAt != nil || canonicalAttempt.Status != domain.AttemptRunning ||
+				run.UpdatedAt.After(at) || canonicalAttempt.UpdatedAt.After(at) || job.CreatedAt.After(at) ||
+				job.CredentialOwnerUserID != attempt.OwnerUserID || job.AttemptID != attempt.AttemptID || job.ReservationID != attempt.ReservationID ||
+				job.ExecutionPlacementV2.Kind != domain.ExecutionPlacementAttachedWorker || job.ExecutionPlacementV2.OwnerUserID != attempt.OwnerUserID ||
+				job.ExecutionPlacementV2.WorkerID != attempt.WorkerID || job.ExecutionPlacementV2.CapabilityDigest != attempt.CapabilityDigest ||
+				job.ExecutionPlacementV2.PolicyDigest != attempt.PolicyDigest || attempt.ExecutionConnectionID != attempt.ConnectionID ||
+				attempt.ExecutionConnectionGeneration != attempt.ConnectionGeneration {
+				return domain.ErrMembershipDenied
+			}
+			if err := store.currentAttachedPiAPINewWorkTx(ctx, tx, job.HarnessBinding, run.TenantID, run.SessionID, job.CredentialOwnerUserID, at); err != nil {
+				return err
+			}
 		}
 		return completeWorkerSuccessTx(ctx, state, tx, run, canonicalAttempt, reservation, attempt.LeaseID, attempt.LeaseGeneration, at, completion.Manifest, completion.Usage, nil, false,
 			func(run domain.Run) error {

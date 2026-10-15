@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"time"
 
@@ -87,6 +88,14 @@ func (store *Store) ClaimAttachedWorkerOutputUpload(ctx context.Context, request
 		}
 		if !authorized {
 			return nil
+		}
+		// A new ordinal claim is an irreversible pre-Put effect, unlike the
+		// read-only reconciliation caller of the same ordinary scope loader.
+		if err := store.currentAttachedPiAPIOutputTx(ctx, tx, auth, scope.job, scope.at); err != nil {
+			if errors.Is(err, domain.ErrMembershipDenied) {
+				return nil
+			}
+			return err
 		}
 		required := scope.job.HarnessBinding.Backend.ProviderContractKind != domain.ProviderContractCredentiallessFixtureV1
 		if prior.CredentialRequired != required || prior.Observation.ValidateFor(domain.AttachedWorkerTerminalSucceeded, required) != nil {

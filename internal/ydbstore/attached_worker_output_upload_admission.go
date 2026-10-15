@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkeroutput"
@@ -77,6 +78,12 @@ func (store *Store) AdmitAttachedWorkerOutputUpload(ctx context.Context, request
 		}
 		if !authorized {
 			return nil
+		}
+		if err := store.currentAttachedPiAPIOutputTx(ctx, tx, auth, scope.job, scope.at); err != nil {
+			if errors.Is(err, domain.ErrMembershipDenied) {
+				return nil
+			}
+			return err
 		}
 		job, attempt, connection, at := scope.job, scope.attempt, scope.connection, scope.at
 		bindingDigest := request.HarnessBindingDigest

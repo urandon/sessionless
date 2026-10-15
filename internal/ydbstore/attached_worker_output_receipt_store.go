@@ -195,7 +195,11 @@ func (store *Store) outputReceiptHeadTransaction(
 	status = ports.AttachedWorkerExecutionDenied
 	auth := request.Authorization
 	err = store.Transact(ctx, auth.TenantID, func(state ports.StateTx) error {
+		status = ports.AttachedWorkerExecutionDenied
 		*existing, *found = AttachedWorkerOutputReceiptV1{}, false
+		if prepareAt != nil {
+			*prepareAt = time.Time{}
+		}
 		if ownsCopy != nil {
 			*ownsCopy = false
 		}
@@ -261,6 +265,18 @@ func (store *Store) outputReceiptHeadTransaction(
 		prior, priorFound, err := readAttachedWorkerOutputReceiptTx(ctx, tx, auth.RunID, auth.OwnerUserID, auth.WorkerID, auth.AttemptID, auth.LeaseGeneration)
 		if err != nil {
 			return err
+		}
+		// An exact READY receipt is historical reconciliation. An absent or
+		// pending receipt may start/resume a new canonical-copy effect instead,
+		// and must observe current original policy/principal in this callback.
+		if (!priorFound || !prior.Ready) && request.Candidate.Status == domain.AttachedWorkerTerminalSucceeded {
+			if err := store.currentAttachedPiAPIOutputTx(ctx, tx, auth, job, at); err != nil {
+				if errors.Is(err, domain.ErrMembershipDenied) {
+					status = ports.AttachedWorkerExecutionFenced
+					return nil
+				}
+				return err
+			}
 		}
 		if priorFound {
 			if !sameOutputReceiptCandidate(prior, request, fingerprint, observationDigest, bindingDigest) {
@@ -341,6 +357,16 @@ func (store *Store) outputReceiptHeadTransaction(
 		status = ports.AttachedWorkerExecutionApplied
 		return nil
 	})
+	if err != nil {
+		status = ports.AttachedWorkerExecutionDenied
+		*existing, *found = AttachedWorkerOutputReceiptV1{}, false
+		if prepareAt != nil {
+			*prepareAt = time.Time{}
+		}
+		if ownsCopy != nil {
+			*ownsCopy = false
+		}
+	}
 	return status, err
 }
 
@@ -372,6 +398,7 @@ func (store *Store) finishAttachedWorkerOutputReceipt(ctx context.Context,
 ) (result AttachedWorkerOutputReceiptResult, err error) {
 	auth := request.Authorization
 	err = store.Transact(ctx, auth.TenantID, func(state ports.StateTx) error {
+		result = AttachedWorkerOutputReceiptResult{}
 		tx := state.(*stateTx)
 		member, err := attachedWorkerOwnerAuthorizedTx(ctx, tx, auth.OwnerUserID)
 		if err != nil {
@@ -426,7 +453,7 @@ func (store *Store) finishAttachedWorkerOutputReceipt(ctx context.Context,
 		if err != nil {
 			return err
 		}
-		if !found || !sameOutputReceiptPlan(prior, planned) || !prior.CopyInProgress {
+		if !found || !sameOutputReceiptPlan(prior, planned) {
 			result.Status = ports.AttachedWorkerExecutionConflict
 			return nil
 		}
@@ -434,9 +461,22 @@ func (store *Store) finishAttachedWorkerOutputReceipt(ctx context.Context,
 			result = AttachedWorkerOutputReceiptResult{Status: ports.AttachedWorkerExecutionReplayed, Receipt: prior}
 			return nil
 		}
+		if !prior.CopyInProgress {
+			result.Status = ports.AttachedWorkerExecutionConflict
+			return nil
+		}
 		if !attachedWorkerOutputReceiptAuthorized(auth, planned.Status, at, worker, connection, attempt) {
 			result.Status = ports.AttachedWorkerExecutionFenced
 			return nil
+		}
+		if planned.Status == domain.AttachedWorkerTerminalSucceeded {
+			if err := store.currentAttachedPiAPIOutputTx(ctx, tx, auth, job, at); err != nil {
+				if errors.Is(err, domain.ErrMembershipDenied) {
+					result.Status = ports.AttachedWorkerExecutionFenced
+					return nil
+				}
+				return err
+			}
 		}
 		planned.Ready = true
 		planned.CopyInProgress = false
@@ -454,6 +494,9 @@ func (store *Store) finishAttachedWorkerOutputReceipt(ctx context.Context,
 		result = AttachedWorkerOutputReceiptResult{Status: ports.AttachedWorkerExecutionApplied, Receipt: planned}
 		return nil
 	})
+	if err != nil {
+		return AttachedWorkerOutputReceiptResult{}, err
+	}
 	return result, err
 }
 

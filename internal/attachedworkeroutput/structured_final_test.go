@@ -52,7 +52,7 @@ func TestStructuredFinalPreservesProviderBytesAndDistinctDigests(t *testing.T) {
 }
 
 func TestStructuredFinalAnswerOnlyDoesNotInventArtifact(t *testing.T) {
-	for _, raw := range []string{`{"answer":"ready","artifacts":[]}`} {
+	for _, raw := range []string{`{"answer":"ready"}`, `{"answer":"ready","artifacts":[]}`} {
 		result, err := ParseStructuredFinalV1(context.Background(), []byte(raw), structuredLimits(), &structuredBudget{})
 		if err != nil || len(result.Artifacts) != 0 {
 			t.Errorf("answer-only got artifacts/error: %v", err)
@@ -62,7 +62,6 @@ func TestStructuredFinalAnswerOnlyDoesNotInventArtifact(t *testing.T) {
 
 func TestStructuredFinalWholeDenials(t *testing.T) {
 	for _, raw := range []string{
-		`{"answer":"ready"}`,
 		`{"answer":null}`, `{"answer":12}`, `{"answer":"ok","answer":"other"}`, `{"answer":"ok","\u0061nswer":"other"}`, `{"answer":"ok","unexpected":false}`,
 		`{"answer":"ok","artifacts":null}`, `{"answer":"\ud800"}`, `{"answer":"\udc00"}`, `{"answer":"ok"} {}`,
 		`{"answer":"ok","artifacts":[{"name":"a","media_type":"text/plain","content":null}]}`,

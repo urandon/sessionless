@@ -160,7 +160,9 @@ func ParseStructuredFinalV1(ctx context.Context, raw []byte, limits domain.Attac
 		}
 	}
 	end, err := d.Token()
-	if err != nil || end != json.Delim('}') || !answerSeen || !artifactsSeen || ctx.Err() != nil {
+	// #200's accepted DATA contract permits absent artifacts for answer-only
+	// turns. The strict provider emission schema still requests explicit [].
+	if err != nil || end != json.Delim('}') || !answerSeen || ctx.Err() != nil {
 		return deny()
 	}
 	if _, err := d.Token(); err != io.EOF {

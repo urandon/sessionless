@@ -18,12 +18,26 @@ import (
 
 type deliveryDrainRead func(context.Context, runRef) (domain.TelegramDeliveryOutbox, uint64, error)
 
+type deliveryDrainKind uint8
+
+const (
+	canonicalDeliveryDrain deliveryDrainKind = iota
+	inlineCommandDeliveryDrain
+)
+
 // Terminal Run state commits before asynchronous frontend materialization.
 // Observe the same Run's sent delivery AND removal of its projection records;
 // neither a missing delivery nor an empty queue alone establishes completion.
 func awaitTelegramDeliveryDrain(ctx context.Context, interval time.Duration, runs []runRef, read deliveryDrainRead) error {
+	return awaitTelegramDeliveryDrainKind(ctx, interval, runs, read, canonicalDeliveryDrain)
+}
+
+func awaitTelegramDeliveryDrainKind(ctx context.Context, interval time.Duration, runs []runRef, read deliveryDrainRead, kind deliveryDrainKind) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if kind != canonicalDeliveryDrain && kind != inlineCommandDeliveryDrain {
+		return fmt.Errorf("unknown delivery drain kind %d", kind)
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -40,9 +54,15 @@ func awaitTelegramDeliveryDrain(ctx context.Context, interval time.Duration, run
 			if err != nil {
 				return fmt.Errorf("run %s delivery drain: %w", run.RunID, err)
 			}
-			if delivery.TenantID != run.TenantID || delivery.RunID != run.RunID ||
-				delivery.Projection == nil || delivery.Projection.SessionID != run.SessionID {
+			if delivery.TenantID != run.TenantID || delivery.RunID != run.RunID {
 				return fmt.Errorf("run %s delivery drain: foreign or noncanonical delivery", run.RunID)
+			}
+			if kind == canonicalDeliveryDrain {
+				if delivery.Projection == nil || delivery.Projection.SessionID != run.SessionID {
+					return fmt.Errorf("run %s delivery drain: foreign or noncanonical delivery", run.RunID)
+				}
+			} else if delivery.Projection != nil || strings.TrimSpace(delivery.Text) == "" {
+				return fmt.Errorf("run %s delivery drain: expected inline command text without a projection", run.RunID)
 			}
 			observations = append(observations, fmt.Sprintf("run=%s delivery=%s pending=%d", run.RunID, delivery.Status, pending))
 			if delivery.Status != domain.DeliverySent || pending != 0 {
@@ -137,6 +157,46 @@ func TestAwaitTelegramDeliveryDrainAllRuns(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+}
+
+func TestAwaitTelegramDeliveryDrainInlineCommand(t *testing.T) {
+	run := runRef{TenantID: "tenant-a", RunID: "new-command", SessionID: "new-session"}
+	delivery := domain.TelegramDeliveryOutbox{
+		TenantID: run.TenantID, RunID: run.RunID, Status: domain.DeliverySent,
+		Text: "A new session was created and this Telegram chat now points to it.",
+	}
+	err := awaitTelegramDeliveryDrainKind(context.Background(), time.Second, []runRef{run},
+		func(context.Context, runRef) (domain.TelegramDeliveryOutbox, uint64, error) {
+			return delivery, 0, nil
+		}, inlineCommandDeliveryDrain)
+	if err != nil {
+		t.Fatalf("valid inline /new delivery did not drain: %v", err)
+	}
+}
+
+func TestAwaitTelegramDeliveryDrainRejectsWrongKind(t *testing.T) {
+	run := runRef{TenantID: "tenant-a", RunID: "run-a", SessionID: "session-a"}
+	for _, tc := range []struct {
+		name     string
+		kind     deliveryDrainKind
+		delivery domain.TelegramDeliveryOutbox
+	}{
+		{name: "inline cannot satisfy canonical", kind: canonicalDeliveryDrain, delivery: domain.TelegramDeliveryOutbox{TenantID: run.TenantID, RunID: run.RunID, Status: domain.DeliverySent, Text: "command reply"}},
+		{name: "canonical cannot satisfy inline", kind: inlineCommandDeliveryDrain, delivery: drainFixture(run, domain.DeliverySent)},
+		{name: "empty inline payload", kind: inlineCommandDeliveryDrain, delivery: domain.TelegramDeliveryOutbox{TenantID: run.TenantID, RunID: run.RunID, Status: domain.DeliverySent}},
+		{name: "foreign inline run", kind: inlineCommandDeliveryDrain, delivery: domain.TelegramDeliveryOutbox{TenantID: run.TenantID, RunID: "other", Status: domain.DeliverySent, Text: "reply"}},
+		{name: "foreign inline tenant", kind: inlineCommandDeliveryDrain, delivery: domain.TelegramDeliveryOutbox{TenantID: "other", RunID: run.RunID, Status: domain.DeliverySent, Text: "reply"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := awaitTelegramDeliveryDrainKind(context.Background(), time.Second, []runRef{run},
+				func(context.Context, runRef) (domain.TelegramDeliveryOutbox, uint64, error) {
+					return tc.delivery, 0, nil
+				}, tc.kind)
+			if err == nil {
+				t.Fatal("wrong delivery kind or association unexpectedly completed")
+			}
+		})
+	}
 }
 
 func TestAwaitTelegramDeliveryDrainPreservesReadFailure(t *testing.T) {

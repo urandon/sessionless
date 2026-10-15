@@ -333,9 +333,19 @@ func (slice *localSlice) contextHistoryArtifact(ref runRef) []byte {
 
 func (slice *localSlice) waitTelegramDeliveryDrain(runs ...runRef) {
 	slice.t.Helper()
+	slice.waitTelegramDeliveryDrainKind(canonicalDeliveryDrain, runs...)
+}
+
+func (slice *localSlice) waitInlineTelegramCommandDeliveryDrain(run runRef) {
+	slice.t.Helper()
+	slice.waitTelegramDeliveryDrainKind(inlineCommandDeliveryDrain, run)
+}
+
+func (slice *localSlice) waitTelegramDeliveryDrainKind(kind deliveryDrainKind, runs ...runRef) {
+	slice.t.Helper()
 	ctx, cancel := context.WithTimeout(slice.ctx, 35*time.Second)
 	defer cancel()
-	err := awaitTelegramDeliveryDrain(ctx, 100*time.Millisecond, runs,
+	err := awaitTelegramDeliveryDrainKind(ctx, 100*time.Millisecond, runs,
 		func(ctx context.Context, run runRef) (domain.TelegramDeliveryOutbox, uint64, error) {
 			delivery, err := slice.readDeliveryForRun(ctx, run)
 			if err != nil {
@@ -348,7 +358,7 @@ func (slice *localSlice) waitTelegramDeliveryDrain(runs ...runRef) {
 				run.TenantID, run.RunID, domain.FrontendTelegram,
 			).Scan(&pending)
 			return delivery, pending, err
-		})
+		}, kind)
 	if err != nil {
 		slice.t.Fatalf("Telegram delivery drain for runs %+v: %v", runs, err)
 	}

@@ -96,8 +96,10 @@ authorization.
 A canonical header block starts with a big-endian uint16 pair count. Each pair
 is `u16(name length) || lowercase ASCII name || u32(value length) || value`.
 Names are in ascending ASCII order, unique, and have no zero-length value.
-Values are exact visible ASCII from the SDK's validated header snapshot;
-CR/LF, other controls and non-ASCII bytes deny. All lengths count bytes.
+Values are exact printable ASCII from the SDK's validated header snapshot;
+internal spaces are allowed (including the SDK user-agent), but leading or
+trailing whitespace, CR/LF, other controls and non-ASCII bytes deny. All
+lengths count bytes.
 The request block contains exactly the eleven existing allowed SDK headers
 other than `authorization`, with the same pinned values from the original
 request projection. It includes no `host`, content-length, connection or URL
@@ -401,6 +403,20 @@ image cohorts within the existing 1MiB seal/frame and other MIN bounds. No old
 SPU2 wire totals can be borrowed for these extra frames. The wire magic is
 selected by a newly committed native/profile artifact; existing SPU2 profiles
 must never execute this grammar under unchanged commitments.
+
+The leaf [SPU3 wire package](../../internal/pisdkhttpwire/frame.go) owns only
+header-first structural validation, caller-buffer encoding, borrowed bounded
+decode views, directional wire accounting and ordered byte-stream checks.
+Pipe readers use `BeginHeader`, then `PreflightMetadata`, then `AcceptBody`:
+order and nested request-header length are rejected before body assembly.
+`Accept` validates an already-owned typed frame and is not a pre-read gate.
+Decoded views must not be changed or cleared until all consumers join. Its
+sequence hash compares the actual concatenated part bytes with Start and End;
+its child EOF check does not prove real HTTP EOF or process quiescence. Prepare
+its fixed state and all buffers on the original ledger before Issue. This
+package supplies no HMAC/key access, semantic response-header admission,
+quarantine approval, Source permission, resource-fit certificate or serving
+registration. The original owner must provide each of those independently.
 
 ## Physical connection and deadlines
 

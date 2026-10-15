@@ -71,90 +71,15 @@ func (store *Store) AdmitAttachedWorkerOutputUpload(ctx context.Context, request
 		// success, and never call an external signer inside this callback.
 		result = AttachedWorkerOutputUploadAdmissionResultV1{Status: ports.AttachedWorkerExecutionDenied}
 		tx := state.(*stateTx)
-		member, err := attachedWorkerOwnerAuthorizedTx(ctx, tx, auth.OwnerUserID)
+		scope, authorized, err := store.readAttachedWorkerOutputUploadScopeTx(ctx, tx, request)
 		if err != nil {
 			return err
 		}
-		if !member {
+		if !authorized {
 			return nil
 		}
-		at, err := store.attachedWorkerTransactionTime(ctx, tx)
-		if err != nil {
-			return err
-		}
-		worker, workerFound, err := readAttachedWorkerTx(ctx, tx, auth.OwnerUserID, auth.WorkerID)
-		if err != nil {
-			return err
-		}
-		connection, connectionFound, err := readAttachedWorkerConnectionTx(ctx, tx, auth.OwnerUserID, auth.WorkerID)
-		if err != nil {
-			return err
-		}
-		attempt, attemptFound, err := readAttachedWorkerAttemptTx(ctx, tx, auth.OwnerUserID, auth.WorkerID)
-		if err != nil {
-			return err
-		}
-		if !workerFound || !connectionFound || !attemptFound ||
-			!attachedWorkerOutputReceiptAuthorized(auth, domain.AttachedWorkerTerminalSucceeded, at, worker, connection, attempt) {
-			return nil
-		}
-		_, snapshot, err := loadAttachedWorkerProtocolAuthorityTx(ctx, tx, worker, connection)
-		if err != nil {
-			return err
-		}
-		if snapshot.Manifest == nil || !attachedWorkerManifestHasFeature(*snapshot.Manifest, attachedworkerprotocol.FeatureOutputReceipt) || attempt.CapabilityDigest != connection.CapabilityDigest {
-			return nil
-		}
-		job, found, err := readJSON[domain.WorkerJob](ctx, tx.sqlTx, `SELECT payload FROM worker_jobs WHERE tenant_id=$1 AND run_id=$2`, tx.tenantID, auth.RunID)
-		if err != nil {
-			return err
-		}
-		if !found {
-			return nil
-		}
-		run, found, err := tx.GetRun(ctx, auth.RunID)
-		if err != nil {
-			return err
-		}
-		if !found || run.Status != domain.RunRunning || job.ValidateForRun(run) != nil ||
-			job.SessionID != request.SessionID || job.AttemptID != auth.AttemptID || job.ReservationID != attempt.ReservationID ||
-			job.CredentialOwnerUserID != auth.OwnerUserID || job.ExecutionPlacementV2.Kind != domain.ExecutionPlacementAttachedWorker ||
-			job.ExecutionPlacementV2.OwnerUserID != auth.OwnerUserID || job.ExecutionPlacementV2.WorkerID != auth.WorkerID ||
-			job.ExecutionPlacementV2.CapabilityDigest != auth.CapabilityDigest || job.ExecutionPlacementV2.PolicyDigest != auth.PolicyDigest ||
-			!domain.IsAttachedPiSDKNativeDescriptorV1(job.HarnessBinding.Backend) || job.HarnessBinding.Backend.BackendProfileDigest != request.ProfileDigest ||
-			!uploadMetadataWithinJobLimits(request.Artifacts, job.Limits) {
-			return nil
-		}
-		bindingDigest, err := job.HarnessBinding.Digest()
-		if err != nil || bindingDigest != request.HarnessBindingDigest {
-			return nil
-		}
-		manifest, found, err := readJSON[domain.ArtifactManifest](ctx, tx.sqlTx,
-			`SELECT payload FROM artifact_manifests WHERE tenant_id=$1 AND artifact_manifest_id=$2`, tx.tenantID, job.InputManifestID)
-		if err != nil {
-			return err
-		}
-		if !found || manifest.ValidateForRun(run) != nil {
-			return nil
-		}
-		contextDigest, err := domain.AttachedWorkerJobContextDigestV1(job, manifest)
-		if err != nil || contextDigest != auth.ContextDigest {
-			return nil
-		}
-		session, found, err := readSessionTx(ctx, tx, job.SessionID)
-		if err != nil {
-			return err
-		}
-		if !found || session.Validate() != nil || session.TenantID != auth.TenantID || session.Status != domain.SessionActive {
-			return nil
-		}
-		// Read the same deletion key that Request/Start/Complete use. Its
-		// absence plus our pending receipt insertion must serialize together.
-		if _, deleting, err := readSessionDeletionTx(ctx, tx, job.SessionID); err != nil {
-			return err
-		} else if deleting {
-			return nil
-		}
+		job, attempt, connection, at := scope.job, scope.attempt, scope.connection, scope.at
+		bindingDigest := request.HarnessBindingDigest
 		credentialRequired := job.HarnessBinding.Backend.ProviderContractKind != domain.ProviderContractCredentiallessFixtureV1
 		if request.Observation.ValidateFor(domain.AttachedWorkerTerminalSucceeded, credentialRequired) != nil {
 			return nil
@@ -249,4 +174,103 @@ func uploadMetadataWithinJobLimits(artifacts []attachedworkeroutput.UploadArtifa
 		total += uint64(artifact.Size)
 	}
 	return true
+}
+
+// Ordinary current execution/deletion scope shared by pending admission and
+// irreversible claim. Protocol snapshots and descriptor hashes are NOT full
+// live Source/provider authority or privately retained native-profile proof.
+type attachedWorkerOutputUploadScope struct {
+	job        domain.WorkerJob
+	attempt    domain.AttachedWorkerAttemptV1
+	connection domain.AttachedWorkerConnection
+	at         time.Time
+}
+
+func (store *Store) readAttachedWorkerOutputUploadScopeTx(ctx context.Context, tx *stateTx, request AttachedWorkerOutputUploadAdmissionV1) (attachedWorkerOutputUploadScope, bool, error) {
+	auth := request.Authorization
+	member, err := attachedWorkerOwnerAuthorizedTx(ctx, tx, auth.OwnerUserID)
+	if err != nil {
+		return attachedWorkerOutputUploadScope{}, false, err
+	}
+	if !member {
+		return attachedWorkerOutputUploadScope{}, false, nil
+	}
+	at, err := store.attachedWorkerTransactionTime(ctx, tx)
+	if err != nil {
+		return attachedWorkerOutputUploadScope{}, false, err
+	}
+	worker, workerFound, err := readAttachedWorkerTx(ctx, tx, auth.OwnerUserID, auth.WorkerID)
+	if err != nil {
+		return attachedWorkerOutputUploadScope{}, false, err
+	}
+	connection, connectionFound, err := readAttachedWorkerConnectionTx(ctx, tx, auth.OwnerUserID, auth.WorkerID)
+	if err != nil {
+		return attachedWorkerOutputUploadScope{}, false, err
+	}
+	attempt, attemptFound, err := readAttachedWorkerAttemptTx(ctx, tx, auth.OwnerUserID, auth.WorkerID)
+	if err != nil {
+		return attachedWorkerOutputUploadScope{}, false, err
+	}
+	if !workerFound || !connectionFound || !attemptFound ||
+		!attachedWorkerOutputReceiptAuthorized(auth, domain.AttachedWorkerTerminalSucceeded, at, worker, connection, attempt) {
+		return attachedWorkerOutputUploadScope{}, false, nil
+	}
+	_, snapshot, err := loadAttachedWorkerProtocolAuthorityTx(ctx, tx, worker, connection)
+	if err != nil {
+		return attachedWorkerOutputUploadScope{}, false, err
+	}
+	if snapshot.Manifest == nil || !attachedWorkerManifestHasFeature(*snapshot.Manifest, attachedworkerprotocol.FeatureOutputReceipt) || attempt.CapabilityDigest != connection.CapabilityDigest {
+		return attachedWorkerOutputUploadScope{}, false, nil
+	}
+	job, found, err := readJSON[domain.WorkerJob](ctx, tx.sqlTx, `SELECT payload FROM worker_jobs WHERE tenant_id=$1 AND run_id=$2`, tx.tenantID, auth.RunID)
+	if err != nil {
+		return attachedWorkerOutputUploadScope{}, false, err
+	}
+	if !found {
+		return attachedWorkerOutputUploadScope{}, false, nil
+	}
+	run, found, err := tx.GetRun(ctx, auth.RunID)
+	if err != nil {
+		return attachedWorkerOutputUploadScope{}, false, err
+	}
+	if !found || run.Status != domain.RunRunning || job.ValidateForRun(run) != nil ||
+		job.SessionID != request.SessionID || job.AttemptID != auth.AttemptID || job.ReservationID != attempt.ReservationID ||
+		job.CredentialOwnerUserID != auth.OwnerUserID || job.ExecutionPlacementV2.Kind != domain.ExecutionPlacementAttachedWorker ||
+		job.ExecutionPlacementV2.OwnerUserID != auth.OwnerUserID || job.ExecutionPlacementV2.WorkerID != auth.WorkerID ||
+		job.ExecutionPlacementV2.CapabilityDigest != auth.CapabilityDigest || job.ExecutionPlacementV2.PolicyDigest != auth.PolicyDigest ||
+		!domain.IsAttachedPiSDKNativeDescriptorV1(job.HarnessBinding.Backend) || job.HarnessBinding.Backend.BackendProfileDigest != request.ProfileDigest ||
+		!uploadMetadataWithinJobLimits(request.Artifacts, job.Limits) {
+		return attachedWorkerOutputUploadScope{}, false, nil
+	}
+	bindingDigest, err := job.HarnessBinding.Digest()
+	if err != nil || bindingDigest != request.HarnessBindingDigest {
+		return attachedWorkerOutputUploadScope{}, false, nil
+	}
+	manifest, found, err := readJSON[domain.ArtifactManifest](ctx, tx.sqlTx,
+		`SELECT payload FROM artifact_manifests WHERE tenant_id=$1 AND artifact_manifest_id=$2`, tx.tenantID, job.InputManifestID)
+	if err != nil {
+		return attachedWorkerOutputUploadScope{}, false, err
+	}
+	if !found || manifest.ValidateForRun(run) != nil {
+		return attachedWorkerOutputUploadScope{}, false, nil
+	}
+	contextDigest, err := domain.AttachedWorkerJobContextDigestV1(job, manifest)
+	if err != nil || contextDigest != auth.ContextDigest {
+		return attachedWorkerOutputUploadScope{}, false, nil
+	}
+	session, found, err := readSessionTx(ctx, tx, job.SessionID)
+	if err != nil {
+		return attachedWorkerOutputUploadScope{}, false, err
+	}
+	if !found || session.Validate() != nil || session.TenantID != auth.TenantID || session.Status != domain.SessionActive {
+		return attachedWorkerOutputUploadScope{}, false, nil
+	}
+	// Read the same deletion key that Request/Start/Complete use. Its
+	// absence plus our pending receipt insertion must serialize together.
+	if _, deleting, err := readSessionDeletionTx(ctx, tx, job.SessionID); err != nil {
+		return attachedWorkerOutputUploadScope{}, false, err
+	} else if deleting {
+		return attachedWorkerOutputUploadScope{}, false, nil
+	}
+	return attachedWorkerOutputUploadScope{job: job, attempt: attempt, connection: connection, at: at}, true, nil
 }

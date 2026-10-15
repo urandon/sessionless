@@ -599,7 +599,7 @@
     {
       "table": "attached_worker_output_receipts",
       "migration": "00101_create_attached_worker_output_receipts.sql",
-      "role": "Per-attempt canonical receipt and typed pre-Put upload custody. Admission reuses the existing key and transactionally checks current authority/Session deletion before inserting its pending subrecord; this is not a body claim, additional table, native-fit grant or public result.",
+      "role": "Per-attempt canonical receipt and typed pre-Put upload custody. Admission and irreversible ordinal claim reuse the existing key and ordinary current execution/Session deletion transaction read set. Claim persists unissued-to-write-pending without reissue; neither method grants signing, full Source/provider/profile authority, native fit or a public result. No additional table.",
       "primaryKey": [
         "tenant_id",
         "run_id",
@@ -628,16 +628,18 @@
           "paths": [
             "internal/ydbstore/attached_worker_output_receipt_store.go",
             "internal/ydbstore/attached_worker_output_upload_admission.go",
+            "internal/ydbstore/attached_worker_output_upload_claim.go",
             "internal/ydbstore/session_lifecycle.go"
           ],
-          "total": 3
+          "total": 4
         },
         "writers": {
           "paths": [
             "internal/ydbstore/attached_worker_output_receipt_store.go",
-            "internal/ydbstore/attached_worker_output_upload_admission.go"
+            "internal/ydbstore/attached_worker_output_upload_admission.go",
+            "internal/ydbstore/attached_worker_output_upload_claim.go"
           ],
-          "total": 2
+          "total": 3
         }
       },
       "entityGroup": "attached-worker",

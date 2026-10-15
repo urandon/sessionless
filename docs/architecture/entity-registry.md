@@ -50,10 +50,15 @@ settlement preserves exact verified source refs without publishing output or
 reopening send rights. The private admission method checks current membership,
 worker/connection/head, pinned job/profile and Session deletion in the same
 transaction as pending-row insertion. It has no signer or body sink and does
-not reset an existing plan's cutoff or spent ordinals. Its native serialization
-is not yet proven. Structural validation is not original-writer evidence:
-authenticated control registration, irreversible claim, the private exporter,
-actual request join and native deletion races remain incomplete.
+not reset an existing plan's cutoff or spent ordinals. The claim method reuses
+that ordinary read set and serializes a one-way unissued-to-write-pending update
+in the same row. A duplicate claim cannot reissue a grant; transaction retries
+retain the first selected deadline or tighten it, and an outer transaction
+error discards any apparent callback success. Neither method has a signer or
+body sink. Native serialization is not yet proven. Structural validation is
+not original-writer or full Source/provider/profile authority: authenticated
+control registration, effect-authorized signing, the private exporter, actual
+request join and native deletion races remain incomplete.
 
 ## Source and rollout boundary
 

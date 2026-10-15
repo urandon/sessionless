@@ -32,7 +32,9 @@ type PiInputAcquisitionV1 struct {
 	closed                 bool
 	requestIssued          bool
 	sourceStarted          bool
+	sourceOwner            SealedInputSource // actual one-shot reader, identity only; never wire authority
 	materializationStarted bool
+	preparationStarted     bool
 	input                  *attachedworkerdaemon.VerifiedAttachedInputV1
 	inputBytes             int
 }
@@ -142,16 +144,45 @@ func (a *PiInputAcquisitionV1) matchesRequestLocked(request MaterializationReque
 
 // BeginSourceRead spends the single original HTTP acquisition before copies
 // or Do. A failure, ambiguity or exhausted budget never restores this slot.
-func (a *PiInputAcquisitionV1) BeginSourceRead(request MaterializationRequestV1) error {
+func (a *PiInputAcquisitionV1) BeginSourceRead(request MaterializationRequestV1, source SealedInputSource) error {
 	if a == nil {
 		return ErrInvalidAuthority
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if !a.matchesRequestLocked(request) || a.sourceStarted {
+	if !a.matchesRequestLocked(request) || a.sourceStarted || source == nil || reflect.ValueOf(source).Kind() != reflect.Pointer || reflect.ValueOf(source).IsNil() {
 		return ErrInvalidAuthority
 	}
 	a.sourceStarted = true
+	a.sourceOwner = source
+	return nil
+}
+
+// MatchesOriginalSource compares the concrete reader captured at the actual
+// first read. The private Session factory supplies its own ClientSource; no
+// wrapper/token/bearer or matching metadata substitutes for pointer identity.
+// This is custody association DATA, not authenticated source/currentness proof.
+func (a *PiInputAcquisitionV1) MatchesOriginalSource(source SealedInputSource) bool {
+	if a == nil || source == nil || reflect.ValueOf(source).Kind() != reflect.Pointer || reflect.ValueOf(source).IsNil() {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return !a.closed && a.ctx.Err() == nil && a.sourceStarted && a.sourceOwner == source
+}
+
+// BeginPreparation spends this moved original input once, before another
+// owner clones it or compiles a request. Failure never replenishes the slot.
+func (a *PiInputAcquisitionV1) BeginPreparation(input *attachedworkerdaemon.VerifiedAttachedInputV1) error {
+	if a == nil {
+		return ErrInvalidAuthority
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.closed || a.ctx.Err() != nil || a.preparationStarted || !a.sourceStarted || a.sourceOwner == nil || !a.materializationStarted || input == nil || input != a.input {
+		return ErrInvalidAuthority
+	}
+	a.preparationStarted = true
 	return nil
 }
 
@@ -184,6 +215,7 @@ func (a *PiInputAcquisitionV1) Clear() {
 	clear(a.request.Attempt.PolicyDigest)
 	a.request = MaterializationRequestV1{}
 	a.input = nil
+	a.sourceOwner = nil
 }
 
 // The accepted active request outlives Run, including ambiguous Terminal/ACK.

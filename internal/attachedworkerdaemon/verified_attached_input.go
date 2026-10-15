@@ -62,8 +62,11 @@ type verifiedArtifactCopy struct {
 func (input *VerifiedAttachedInputV1) copyShape() verifiedAttachedCopy {
 	value := verifiedAttachedCopy{AcceptedAttempt: input.AcceptedAttempt, Job: input.Job,
 		Manifest: input.Manifest, Context: input.Context, CanonicalContext: input.CanonicalContext}
-	for _, artifact := range input.Artifacts {
-		value.Artifacts = append(value.Artifacts, verifiedArtifactCopy{Name: artifact.Name, Body: artifact.Body})
+	if len(input.Artifacts) != 0 {
+		value.Artifacts = make([]verifiedArtifactCopy, len(input.Artifacts))
+	}
+	for i, artifact := range input.Artifacts {
+		value.Artifacts[i] = verifiedArtifactCopy{Name: artifact.Name, Body: artifact.Body}
 	}
 	return value
 }
@@ -98,8 +101,11 @@ func (input *VerifiedAttachedInputV1) Clone() (*VerifiedAttachedInputV1, error) 
 	}
 	result := &VerifiedAttachedInputV1{AcceptedAttempt: value.AcceptedAttempt, Job: value.Job,
 		Manifest: value.Manifest, Context: value.Context, CanonicalContext: value.CanonicalContext}
-	for _, artifact := range value.Artifacts {
-		result.Artifacts = append(result.Artifacts, VerifiedAttachedArtifactV1{Name: artifact.Name, Body: artifact.Body})
+	if len(value.Artifacts) != 0 {
+		result.Artifacts = make([]VerifiedAttachedArtifactV1, len(value.Artifacts))
+	}
+	for i, artifact := range value.Artifacts {
+		result.Artifacts[i] = VerifiedAttachedArtifactV1{Name: artifact.Name, Body: artifact.Body}
 	}
 	return result, nil
 }

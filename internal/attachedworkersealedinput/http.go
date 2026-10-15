@@ -126,7 +126,7 @@ func (source *ClientSource) Load(ctx context.Context, request attachedworkerdaem
 		// Logical payload accounting is not net/http/encoding/json heap fit.
 		bearerBytes := uint64(len(source.bearer))
 		headerBytes := uint64(len("AuthorizationBearer Content-Typeapplication/jsonAcceptapplication/json"))
-		if acquisition.BeginSourceRead(request) != nil || bearerBytes > attachedworkertransport.ConnectionBearerMaxBytes ||
+		if acquisition.BeginSourceRead(request, source) != nil || bearerBytes > attachedworkertransport.ConnectionBearerMaxBytes ||
 			acquisition.Reserve(3*bearerBytes+headerBytes+3*maxRequestBytes+2*uint64(arenaBytes)+uint64(len(source.endpoint)),
 				3*bearerBytes+headerBytes+2*maxRequestBytes+uint64(arenaBytes)+uint64(len(source.endpoint)), 0) != nil {
 			source.mu.Unlock()

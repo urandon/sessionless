@@ -670,6 +670,43 @@ genuine native-qualified private parent, SDK transport or exporter. The full
 profile, source-currentness, output and activation gates remain required;
 neither constructor nor a synthetic local test enables a worker profile.
 
+### Connected Pi preparation and retirement (default off)
+
+`attachedworkersealedinput.PiPreparedOwnerV1` composes the original acquired
+input with the real Go request projection, independent parent/child DATA
+partitions, credential-file plan, Init plan and prepared supervisor stdio.
+The acquisition captures the concrete authenticated Session reader at its
+first read. Another Session factory with identical origin or binding cannot
+substitute for that reader, and the moved input has one preparation slot.
+This association proves local custody, not fresh source or provider authority.
+
+All invocation-owned input graphs, request buffers and process arrays use the
+same original ledger. Collection counts and a traversal reservation precede
+clone validation; byte/copy/node and retained-buffer reservations precede
+their allocations. Parent and child retain the complete canonical history,
+artifacts and original images in independent copies. The shared runtime-owned
+credential filesystem is borrowed, not recreated or closed per invocation.
+Preparing its immutable file plan does not read a key or issue credentials.
+
+The composition deliberately returns an owned partial record together with
+`pisdkmedia.ErrMissingProducer`, even after every Go preparation stage succeeds.
+There is no installed native/model/complete-context fit, egress or conservative
+safety-slack producer yet. No structural profile, synthetic budget, successful
+preparation or future Applied phase reply may replace that qualification.
+Its phase observer and process-run arm therefore also deny. The ordinary
+stack does not select this composition; it is not a runnable Pi profile.
+
+The original API invocation runner retires complete and partial preparations
+on rejection, before phase authorization, Issue or process launch. Retirement
+uses one bounded cleanup context, joins prepared execution before clearing its
+buffers, removes transferred aliases, and retires only this preparation's live
+debit. It preserves caller input, source/control reservations and any later
+runner/output debit; accumulated copy work and node usage are never refunded.
+Credential-free Go tests exercise the real acquisition/preparation/retirement
+composition with a test-owned TLS source and a launcher that must never run.
+They do not prove native SDK execution, full allocation fit, a provider turn,
+output export/receipt/ACK, activation or the complete MVP lifecycle.
+
 ### Worktrees and Go caches
 
 `make` resolves the repository's Git common directory and shares

@@ -41,6 +41,16 @@ type PreparedPiStdioV1 struct {
 func (*PreparedPiStdioV1) String() string     { return "PreparedPiStdioV1{data:[redacted]}" }
 func (p *PreparedPiStdioV1) GoString() string { return p.String() }
 
+// PreparedProcessTimeoutV1 exposes the actual configured process bound as
+// DATA. The original owner anchors it to original entry, never preparation end.
+// This neither starts a timer nor attests the launcher/native implementation.
+func (s *Supervisor) PreparedProcessTimeoutV1() time.Duration {
+	if s == nil {
+		return 0
+	}
+	return s.timeout
+}
+
 // PreparePiStdioV1 does not manufacture the still-missing genuine full producer.
 // These are conservative Go payload/copy reservations, not heap/SDK/native/pipe
 // bounds. The original full prospective producer/ledger/profile is required

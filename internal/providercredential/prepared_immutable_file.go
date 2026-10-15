@@ -3,6 +3,7 @@ package providercredential
 import (
 	"context"
 	"path/filepath"
+	"reflect"
 	"sync/atomic"
 	"time"
 
@@ -41,6 +42,25 @@ type immutableAPIFileUse struct {
 	file        *credentiallifecycle.PinnedSecretFile
 	fingerprint domain.CredentialFingerprint
 	active      atomic.Bool
+}
+
+// UsesPreparedFileSystemV1 identifies the explicitly runtime-owned namespace.
+// It does not create/close it, inspect keys or authorize an invocation. A
+// prepared composition must not silently construct a second namespace owner.
+func (s *InvocationService) UsesPreparedFileSystemV1(files *credentiallifecycle.PinnedSecretFileSystem) bool {
+	if s == nil || files == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.files == files
+}
+
+// PreparedImmutableAPIFileMetadataBytesV1 is the exact retained Go DATA layout
+// for prospective caller accounting before Prepare. It excludes the borrowed
+// runtime namespace/service and does not certify filesystem/native heap fit.
+func PreparedImmutableAPIFileMetadataBytesV1() uint64 {
+	return uint64(reflect.TypeOf(PreparedImmutableAPIFileV1{}).Size())
 }
 
 // Only the supported single-turn scalar binding is retained. Freeze its sole

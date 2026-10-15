@@ -232,6 +232,18 @@ func (factory *SessionSourceFactory) RequestPiAPIUse(ctx context.Context, reques
 	return reply, err
 }
 
+// OwnsOriginalPiInput checks only the actual reader association captured during
+// Load. It is not a phase/currentness/native-fit grant. In particular another
+// factory with the same origin/binding/bearer cannot replace the original one.
+func (factory *SessionSourceFactory) OwnsOriginalPiInput(a *attachedworkerdaemontransport.PiInputAcquisitionV1) bool {
+	if factory == nil || a == nil {
+		return false
+	}
+	factory.mu.Lock()
+	defer factory.mu.Unlock()
+	return factory.state == sourceOpen && factory.source != nil && factory.phase != nil && a.MatchesOriginalSource(factory.source)
+}
+
 func (factory *SessionSourceFactory) Load(ctx context.Context, request attachedworkerdaemontransport.MaterializationRequestV1) (attachedworkerdaemontransport.SealedInputV1, error) {
 	if factory == nil || ctx == nil || ctx.Err() != nil {
 		return attachedworkerdaemontransport.SealedInputV1{}, ErrInvalid

@@ -688,6 +688,24 @@ artifacts and original images in independent copies. The shared runtime-owned
 credential filesystem is borrowed, not recreated or closed per invocation.
 Preparing its immutable file plan does not read a key or issue credentials.
 
+Preparation also retains a private metadata exchange plan for the SAME original
+Session reader, phase client, acquisition, authorization tuple, binding and
+policy mapping. It prepays all three fixed exchanges on that ledger: canonical
+request encoding, bearer/header/URL payloads, bounded reply plus overflow byte,
+decoded reply strings, comparison work and the original runner's binding hash.
+These are three conservative application-payload cohorts, not reusable arenas
+or a certificate for net/http, TLS, Go allocator or native heap costs.
+
+The plan permits one nonqueueing borrower in fixed `pre_issue`, `physical_send`,
+`immutable_finalize` order. Each slot is spent before encoding or HTTP; a failed
+or ambiguous exchange seals the plan without retry. It checks the exact
+original scope/client before and after the existing single-Do HTTP path. Caller
+W remains the original runner's DATA; linking cancellation and rejecting a later
+deadline cannot create source currentness, S/F or a new duration. Clearing the
+plan cancels and joins an active exchange without closing the shared Session
+client or independently refunding its live partition. The original composite
+retirement owns that debit after all reply consumers join.
+
 The composition deliberately returns an owned partial record together with
 `pisdkmedia.ErrMissingProducer`, even after every Go preparation stage succeeds.
 There is no installed native/model/complete-context fit, egress or conservative

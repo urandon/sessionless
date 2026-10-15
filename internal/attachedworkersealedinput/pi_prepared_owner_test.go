@@ -35,16 +35,17 @@ import (
 // These are deliberately oversized SYNTHETIC logical budgets for four graphs,
 // not installed native/model/heap qualification or permission to serve a model.
 type piOwnerFixture struct {
-	owner     *PiPreparedOwnerV1
-	inv       attachedworkerdaemon.Invocation
-	ctx       context.Context
-	cancel    context.CancelFunc
-	ledger    *codexexec.CanonicalMediaLedgerV1
-	files     *credentiallifecycle.PinnedSecretFileSystem
-	backend   *piOwnerForbiddenBackend
-	launcher  *piOwnerNoLaunch
-	phase     *atomic.Int32
-	newSource func() *SessionSourceFactory
+	owner        *PiPreparedOwnerV1
+	inv          attachedworkerdaemon.Invocation
+	ctx          context.Context
+	cancel       context.CancelFunc
+	ledger       *codexexec.CanonicalMediaLedgerV1
+	files        *credentiallifecycle.PinnedSecretFileSystem
+	backend      *piOwnerForbiddenBackend
+	launcher     *piOwnerNoLaunch
+	phase        *atomic.Int32
+	phaseHandler *atomic.Pointer[http.HandlerFunc]
+	newSource    func() *SessionSourceFactory
 }
 
 type piOwnerForbiddenBackend struct {
@@ -167,9 +168,14 @@ func newPiOwnerFixture(t *testing.T) *piOwnerFixture {
 		t.Fatal("fixture exceeds original full-seal limit")
 	}
 	phase := new(atomic.Int32)
+	phaseHandler := new(atomic.Pointer[http.HandlerFunc])
 	server, hc := piLoopback(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != PathV1 {
 			phase.Add(1)
+			if handler := phaseHandler.Load(); handler != nil {
+				(*handler)(w, r)
+				return
+			}
 			w.WriteHeader(http.StatusForbidden)
 			return
 		}
@@ -251,14 +257,22 @@ func newPiOwnerFixture(t *testing.T) *piOwnerFixture {
 	id := attachedworkerdaemon.InvocationIdentity{TenantID: h.TenantID, OwnerUserID: h.OwnerUserID, WorkerID: h.WorkerID, RunID: h.RunID, AttemptID: h.AttemptID, LeaseID: h.LeaseID, FenceToken: h.LeaseGeneration}
 	proc := attachedworkerdaemon.AttemptSpec{Executable: "/synthetic-never-executed", ExecutableDigest: sha256.Sum256([]byte("synthetic executable")), Arguments: []string{"fixed-entry"}}
 	copy(proc.ExecutableDigest[:], decodeDigest(t, p.Sources.NativeArtifactDigest)) // structural match only, never an installed executable proof
-	return &piOwnerFixture{owner: owner, inv: attachedworkerdaemon.Invocation{Identity: id, Process: proc, VerifiedInput: input.VerifiedInput, InputAcquisition: a}, ctx: ctx, cancel: cancel, ledger: a.OriginalLedger().(*codexexec.CanonicalMediaLedgerV1), files: files, backend: backend, launcher: launcher, phase: phase, newSource: newSource}
+	return &piOwnerFixture{owner: owner, inv: attachedworkerdaemon.Invocation{Identity: id, Process: proc, VerifiedInput: input.VerifiedInput, InputAcquisition: a}, ctx: ctx, cancel: cancel, ledger: a.OriginalLedger().(*codexexec.CanonicalMediaLedgerV1), files: files, backend: backend, launcher: launcher, phase: phase, phaseHandler: phaseHandler, newSource: newSource}
 }
 
 func (f *piOwnerFixture) noEffects(t *testing.T) {
 	t.Helper()
+	f.noCredentialEffects(t)
+	if f.phase.Load() != 0 {
+		t.Fatalf("forbidden phase effects: %d", f.phase.Load())
+	}
+}
+
+func (f *piOwnerFixture) noCredentialEffects(t *testing.T) {
+	t.Helper()
 	b := f.backend
-	if b.plans+b.ids+b.loads+b.reads+b.recovers+f.launcher.calls+int(f.phase.Load()) != 0 {
-		t.Fatalf("forbidden effects: backend=%d/%d/%d/%d/%d launch=%d phase=%d", b.plans, b.ids, b.loads, b.reads, b.recovers, f.launcher.calls, f.phase.Load())
+	if b.plans+b.ids+b.loads+b.reads+b.recovers+f.launcher.calls != 0 {
+		t.Fatalf("forbidden effects: backend=%d/%d/%d/%d/%d launch=%d", b.plans, b.ids, b.loads, b.reads, b.recovers, f.launcher.calls)
 	}
 }
 

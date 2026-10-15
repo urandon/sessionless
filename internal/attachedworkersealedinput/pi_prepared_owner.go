@@ -56,6 +56,7 @@ type piOwnedPreparation struct {
 	requests   [2]attachedworkerdaemon.PreparedAPIRequestV1
 	processes  [2]attachedworkerdaemon.AttemptSpec
 	projection *pisdkmedia.RequestProjectionV1
+	phases     *piPreparedPhases
 	file       *providercredential.PreparedImmutableAPIFileV1
 	init       *pisdkmedia.InitPlanV1
 	execution  *pisdkmedia.PreparedPiExecutionV1
@@ -210,6 +211,9 @@ func (p *PiPreparedOwnerV1) PrepareOriginalAPIInvocation(ctx context.Context, id
 		EnrollmentGeneration: h.EnrollmentGeneration, ConnectionGeneration: h.ConnectionGeneration, RunID: h.RunID, AttemptID: h.AttemptID, AttemptSequence: 1,
 		LeaseID: h.LeaseID, LeaseGeneration: h.LeaseGeneration, FenceToken: h.FenceToken, LeaseExpiresAtUnixMicro: h.LeaseExpiresAt.UnixMicro(), ContextDigest: h.ContextDigest,
 		CapabilityDigest: h.CapabilityDigest, PolicyDigest: h.PolicyDigest, ExpectedAttemptRevision: h.Revision}
+	if err := r.preparePhases(a); err != nil {
+		return data, err
+	}
 	fileMetadata := providercredential.PreparedImmutableAPIFileMetadataBytesV1()
 	// Its fixed binding validation is a subset of the already sealed job. The
 	// real service owns exact retained plan layout; native pathname/allocator
@@ -250,6 +254,27 @@ func (p *PiPreparedOwnerV1) PrepareOriginalAPIInvocation(ctx context.Context, id
 	// Applied reply cannot repair absent local full-input/native admission.
 	// Consequently no phase, Issue or execution is reachable in this version.
 	return data, pisdkmedia.ErrMissingProducer
+}
+
+func (r *piOwnedPreparation) preparePhases(a *attachedworkerdaemontransport.PiInputAcquisitionV1) error {
+	if r.phases != nil {
+		return ErrInvalid
+	}
+	// Hash only the already validated, single-turn binding from the complete
+	// original canonical clone. Fund its temporary JSON/hash walk BEFORE Digest.
+	if r.ledger.Reserve(8*piPhaseBindingBytes, piPhaseBindingBytes, piPhaseBindingBytes) != nil {
+		return ErrUnavailable
+	}
+	defer r.ledger.EndLive(piPhaseBindingBytes)
+	b := r.data.Issue.HarnessBinding
+	digest, err := b.Digest()
+	if err != nil {
+		return ErrInvalid
+	}
+	r.phases, err = r.owner.source.preparePiPhases(a, pisdkphasewire.Request{Version: 1, Authorization: r.data.Authorization,
+		ExpectedHarnessBindingDigest: string(digest), ExpectedAttachedPiAPIInvocationPolicyDigest: string(b.AttachedPiAPIInvocationPolicyDigest),
+		CallerDeadline: pisdkphasewire.CallerDeadline{Version: 1, RemainingNanoseconds: 1}, Phase: pisdkphasewire.PreIssue})
+	return err
 }
 
 func (r *piOwnedPreparation) fundClone(input *attachedworkerdaemon.VerifiedAttachedInputV1) error {
@@ -423,6 +448,9 @@ func (r *piOwnedPreparation) Clear() {
 	if r.cleanupErr != nil {
 		return
 	} // do not clear borrowed buffers under unjoined execution
+	if r.phases != nil {
+		r.phases.clear()
+	}
 	if r.init != nil {
 		r.init.Clear()
 	}
@@ -448,6 +476,7 @@ func (r *piOwnedPreparation) Clear() {
 	}
 	r.inputs, r.requests, r.processes = [2]*attachedworkerdaemon.VerifiedAttachedInputV1{}, [2]attachedworkerdaemon.PreparedAPIRequestV1{}, [2]attachedworkerdaemon.AttemptSpec{}
 	r.file, r.init, r.projection, r.execution = nil, nil, nil, nil
+	r.phases = nil
 	r.data = attachedworkerdaemon.PreparedAPIDataV1{} // drop every transferred buffer alias, not caller data
 	// Synchronous failed stages can reserve before returning nil. After all
 	// actual owned objects are relinquished, retire ONLY the remaining stage

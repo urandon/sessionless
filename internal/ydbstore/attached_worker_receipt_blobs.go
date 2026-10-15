@@ -79,6 +79,12 @@ func (planned *plannedReceiptBlobs) Commit(ctx context.Context) error {
 	for _, item := range planned.items {
 		written, err := planned.upstream.Put(ctx, item.ref.TenantID, item.ref.Key, bytes.NewReader(item.body))
 		if err != nil {
+			if errors.Is(err, ErrAttachedWorkerReceiptPutNotDispatched) {
+				// Only this actual Put branch may attest no dispatch. Every
+				// previous item has already completed exact verification; an
+				// earlier ambiguous result would have returned immediately.
+				return &receiptCopyPutNotDispatchedError{cause: errors.Join(attachedworkeroutput.ErrCandidateInvalid, err)}
+			}
 			return errors.Join(attachedworkeroutput.ErrCandidateInvalid, err)
 		}
 		if written != item.ref {
@@ -104,6 +110,16 @@ func (planned *plannedReceiptBlobs) Commit(ctx context.Context) error {
 
 var _ ports.BlobStore = (*plannedReceiptBlobs)(nil)
 
+// Private stage classification, distinct from an inspectable I/O cause.
+// Open/Read/Close may wrap the same sentinel but cannot mint this outcome.
+type receiptCopyPutNotDispatchedError struct{ cause error }
+
+func (*receiptCopyPutNotDispatchedError) Error() string {
+	return "attached-worker receipt copy Put was not dispatched"
+}
+func (e *receiptCopyPutNotDispatchedError) Unwrap() error { return e.cause }
+
 func receiptCopyPutWasNotDispatched(err error) bool {
-	return errors.Is(err, ErrAttachedWorkerReceiptPutNotDispatched)
+	_, ok := err.(*receiptCopyPutNotDispatchedError)
+	return ok
 }

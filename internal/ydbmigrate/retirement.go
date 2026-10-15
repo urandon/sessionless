@@ -96,7 +96,7 @@ func validateRetirementOperations(files fs.FS, migrations []Migration) error {
 		}
 	}
 	retired := map[string]bool{}
-	operationTarget := regexp.MustCompile("(?i)^(?:CREATE TABLE(?: IF NOT EXISTS)?|ALTER TABLE) `?([a-z][a-z0-9_]*)`?(?: |\\()")
+	operationTarget := regexp.MustCompile("(?i)^(?:CREATE TABLE(?: IF NOT EXISTS)?|ALTER TABLE) (?:`([a-z][a-z0-9_]*)`|([a-z][a-z0-9_]*))(?: |\\()")
 	for _, m := range migrations {
 		statement := up[m.Filename]
 		r, isRetirement := owned[m.Filename]
@@ -104,8 +104,13 @@ func validateRetirementOperations(files fs.FS, migrations []Migration) error {
 			if !allowedSchemaOperation.MatchString(statement) {
 				return fmt.Errorf("%s: unsupported unowned schema operation", m.Filename)
 			}
-			if match := operationTarget.FindStringSubmatch(statement); len(match) > 1 && retired[strings.ToLower(match[1])] {
-				return fmt.Errorf("%s: cannot recreate or ALTER retired table %s", m.Filename, match[1])
+			match := operationTarget.FindStringSubmatch(statement)
+			if len(match) != 3 {
+				return fmt.Errorf("%s: unsupported CREATE/ALTER target syntax", m.Filename)
+			}
+			target := match[1] + match[2]
+			if retired[strings.ToLower(target)] {
+				return fmt.Errorf("%s: cannot recreate or ALTER retired table %s", m.Filename, target)
 			}
 			continue
 		}

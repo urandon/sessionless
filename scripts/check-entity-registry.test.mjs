@@ -184,6 +184,11 @@ test("derives four owned retirements without losing historical lineage", () => {
   assert.deepEqual(added.errors,[]);
   assert.equal(added.tables.size,106);
   assert.equal(added.activeTables.size,102);
+  for(const target of ["runs","`runs`"]){
+    const legitimate=deriveSchema({...sources,"00130_alter_unrelated.sql":`-- +goose Up\nALTER TABLE ${target} ADD COLUMN later_note Utf8;\n-- +goose Down\n`},manifest);
+    assert.deepEqual(legitimate.errors,[],`legitimate unrelated ALTER ${target}`);
+    assert.equal(legitimate.activeTables.size,101);
+  }
 });
 
 test("rejects unsafe retirement partitions, including later ALTER/reactivation",()=>{
@@ -204,6 +209,8 @@ test("rejects unsafe retirement partitions, including later ALTER/reactivation",
     ["duplicate ownership",f=>f.manifest.retirements.push({...f.manifest.retirements[0]}),/duplicate retirement manifest/],
     ["reactivation",f=>f.sources["00130_recreate.sql"]=f.sources["00019_create_lease_expiry.sql"],/duplicate CREATE/],
     ["later ALTER",f=>f.sources["00130_alter.sql"]="-- +goose Up\nALTER TABLE `lease_expiry` ADD COLUMN x Utf8;\n-- +goose Down\n",/cannot ALTER retired/],
+    ["bare later ALTER",f=>f.sources["00130_alter.sql"]="-- +goose Up\nALTER TABLE lease_expiry ADD COLUMN x Utf8;\n-- +goose Down\n",/cannot ALTER retired/],
+    ["unparsed ALTER target",f=>f.sources["00130_alter.sql"]="-- +goose Up\nALTER TABLE namespace.lease_expiry ADD COLUMN x Utf8;\n-- +goose Down\n",/unsupported ALTER target/],
   ]){
     const fixture=retirementFixture();mutate(fixture);
     const schema=deriveSchema(fixture.sources,fixture.manifest);

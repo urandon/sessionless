@@ -139,8 +139,13 @@ export function deriveSchema(migrationSources, manifest = { schema: "sessionless
         continue;
       }
       if (/^ALTER\s+TABLE\b/i.test(normalized)) {
-        const name = normalized.match(/^ALTER TABLE `([a-z][a-z0-9_]*)` /i)?.[1];
-        if (name && retirements.has(name.toLowerCase())) errors.push(`${migration}: cannot ALTER retired table ${name}`);
+        const target = normalized.match(/^ALTER TABLE (?:`([a-z][a-z0-9_]*)`|([a-z][a-z0-9_]*)) /i);
+        if (!target) {
+          errors.push(`${migration}: unsupported ALTER target syntax`);
+          continue;
+        }
+        const name = target[1] ?? target[2];
+        if (retirements.has(name.toLowerCase())) errors.push(`${migration}: cannot ALTER retired table ${name}`);
         alterStatements += 1;
         continue;
       }

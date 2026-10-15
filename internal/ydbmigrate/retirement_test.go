@@ -90,6 +90,12 @@ func TestRetirementMigrationSetRejectsUnsafeDefinitionsBeforeOpen(t *testing.T) 
 		{name: "later ALTER", mutate: func(f fstest.MapFS) {
 			f["00130_alter.sql"] = &fstest.MapFile{Data: []byte("-- +goose Up\nALTER TABLE `lease_expiry` ADD COLUMN extra Utf8;\n-- +goose Down\n")}
 		}, want: "cannot recreate or ALTER"},
+		{name: "bare later ALTER", mutate: func(f fstest.MapFS) {
+			f["00130_alter.sql"] = &fstest.MapFile{Data: []byte("-- +goose Up\nALTER TABLE lease_expiry ADD COLUMN extra Utf8;\n-- +goose Down\n")}
+		}, want: "cannot recreate or ALTER"},
+		{name: "unparsed ALTER target", mutate: func(f fstest.MapFS) {
+			f["00130_alter.sql"] = &fstest.MapFile{Data: []byte("-- +goose Up\nALTER TABLE namespace.lease_expiry ADD COLUMN extra Utf8;\n-- +goose Down\n")}
+		}, want: "unsupported CREATE/ALTER target"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			files := retirementFixture(t)
@@ -97,6 +103,18 @@ func TestRetirementMigrationSetRejectsUnsafeDefinitionsBeforeOpen(t *testing.T) 
 			_, err := LoadMigrations(files)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("LoadMigrations error=%v want fragment%q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestRetirementMigrationSetAllowsUnrelatedALTER(t *testing.T) {
+	for _, target := range []string{"runs", "`runs`"} {
+		t.Run(target, func(t *testing.T) {
+			files := retirementFixture(t)
+			files["00130_alter_unrelated.sql"] = &fstest.MapFile{Data: []byte("-- +goose Up\nALTER TABLE " + target + " ADD COLUMN later_note Utf8;\n-- +goose Down\n")}
+			if _, err := LoadMigrations(files); err != nil {
+				t.Fatalf("legitimate unrelated ALTER %s: %v", target, err)
 			}
 		})
 	}

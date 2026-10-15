@@ -1,6 +1,6 @@
 # Pi SDK supervisor HTTP transport draft
 
-Version: 0.1.1. Engineering proposal under
+Version: 0.1.2. Engineering proposal under
 [#202](https://gitcode.com/urandon/sessionless/issues/202) and
 [#203](https://gitcode.com/urandon/sessionless/issues/203).
 
@@ -14,6 +14,11 @@ governing contract. Its 0.1.4 SPU2 section is a separate transport draft; this
 proposal must receive independent requirements-led acceptance before replacing
 that section or authorizing implementation. It enables no profile, provider
 call, credential access, platform change or rollout.
+
+The fixed HTTP receive subsection permits separate source acceptance of its
+private zero-effect framing parser. That parser produces unapproved DATA;
+it cannot authorize a connection or forward a response. Executable transport
+acceptance still requires the complete sink, semantic guard and fit contracts.
 
 ## Concrete readiness findings
 
@@ -419,6 +424,114 @@ quarantine approval, Source permission, resource-fit certificate or serving
 registration. The original owner must provide each of those independently.
 
 ## Physical connection and deadlines
+
+### Fixed HTTP receive boundary
+
+The HTTP receiver has a deliberately smaller role than the semantic quarantine:
+it removes HTTP framing into prepaid private buffers and proves one complete
+HTTP entity plus connection EOF. Its output is untrusted DATA, not permission
+to replay. It remains inside `providercredential`; no public reader, response
+or approval constructor is added. The semantic guard must subsequently examine
+the retained raw header block and complete entity before any IPC output.
+
+Use a private HTTP/1.1 parser over the original TLS connection, without
+`http.Client`, redirects, proxy selection, connection pooling or retries. Its
+caller supplies the already bounded original use context and fixes the socket
+deadline to F. The parser checks cancellation before and after every read;
+closing the original socket is still required to interrupt a blocked read.
+One read returning no bytes and no error denies rather than spinning.
+Count and process every returned byte before handling a simultaneous EOF.
+Any non-EOF error denies even with positive data. If the original connection
+returns its final entity bytes with EOF, latch that actual EOF; a second
+underlying read is unnecessary once complete framing has also been proved.
+
+Let H be the original `ResponseHeaderBytes` MIN ceiling and R the complete
+`ResponseBodyBytes` ceiling. Require `1 <= H <= 1MiB`, `1 <= R <= 4MiB`, and
+retain the stricter existing wire, response, copy/work and process limits.
+These are additional finite parser bounds, not increases to an inherited
+ceiling. Preparation reserves one H-byte raw-header buffer, one R-byte entity
+buffer, one H-byte canonical replay-header buffer, a fixed 64-entry header
+span array and fixed read/framing scratch. No parser map, string conversion,
+append growth or per-chunk allocation occurs after Issue. Its original owner
+retains the ledger. The private receiver owns three slice headers, borrowed
+context/reader references, the 64-entry span
+array (four uint32 offsets per field), one byte of read scratch, eighteen bytes
+of chunk scratch, counters and a once-only bit. Let M be
+`reflect.TypeOf(piHTTPReceive{}).Size()`, including fixed scratch and spans.
+Reserve `2*H + R + M` live bytes, four allocation nodes and
+`128*H + 4*R + 4*(20*(R+1)) + 1024` cumulative work bytes before allocating
+the state or buffers. Duplicate checks cost at most 64 comparisons per name;
+all names together occupy at most H. Framing reads and chunk-size scans have
+their separate `20*(R+1)` ceiling. Entity bytes enter their prepaid final arena
+directly. Successful reads never replenish credits. Clear all three buffers
+before retiring their live debit, only after original borrowers have joined.
+Check arithmetic before Reserve and test exact/one-short debits. This is a
+payload/layout schedule, not TLS/SDK/native heap or semantic-parser fit.
+
+Admit the exact status-line prefix `HTTP/1.1 200 ` (including the final SP),
+followed by zero or more printable ASCII reason bytes and CRLF. No other
+version or status code matches that prefix. Admit at most 64 headers.
+H includes status, every raw header and the final
+empty line. Header names are nonempty ASCII HTTP tokens; names compare
+case-insensitively, and every duplicate denies, including metadata duplicates.
+Reject whitespace before a colon, folded lines, lone LF, controls, non-ASCII
+values and empty values. Surrounding SP/HTAB trimming is the sole exception to
+control rejection; internal HTAB is not admitted. Keep the original raw bytes
+for subsequent secret checks.
+Token names and case-insensitive comparison use
+[HTTP field syntax](https://www.rfc-editor.org/rfc/rfc9110.html#section-5.1);
+the 64-field ceiling and rejection of all duplicates are stricter local policy.
+
+Require Content-Type to be case-insensitive `text/event-stream`, optionally
+followed by `*(SP) ";" *(SP) "charset=utf-8"`; no spaces surround `=`.
+Outer SP/HTAB is already trimmed. This is a bounded ASCII subset of the native
+SSE admission. Content-Encoding must be absent or exactly `identity`, ignoring
+ASCII case. Deny Trailer, Set-Cookie, Location, Refresh, WWW-Authenticate,
+Proxy-Authenticate, Proxy-Authorization, Upgrade and Content-Disposition.
+Other syntactically valid bounded metadata headers are retained for the raw
+secret scan but never exposed to Pi. Only Content-Type, optional identity
+Content-Encoding and optional Content-Length enter the canonical replay header
+block, in lowercase-name order with original trimmed values. Transfer-Encoding
+and Connection are never forwarded. Connection, if present, must be `close`.
+The canonical block must also fit H; no new header ceiling is invented.
+
+Require exactly one positive canonical decimal Content-Length, or exactly one
+Transfer-Encoding value `chunked`, never both. A length must fit R before any
+entity read. In chunked mode admit one to sixteen ASCII hexadecimal digits,
+without extensions; reject a size exceeding the remaining entity capacity
+before reading its data. Every nonzero chunk has its exact CRLF suffix. A zero
+chunk must be followed immediately by an empty trailer section. The total
+entity must be positive. With at most R nonzero chunks and at most twenty
+framing bytes per chunk including its CRLFs, the finite framing-work ceiling
+is `20 * (R + 1)`; count every framing byte, including the terminating chunk.
+The fixed chunk-size scratch is eighteen bytes. This admits byte-sized HTTP
+chunks without confusing socket fragmentation with chunk boundaries.
+
+After declared length or terminal chunk framing, obtain actual connection EOF
+(from a previous positive read plus EOF, or one additional original read):
+any extra byte, timeout, cancellation or non-EOF error denies. A framed
+body finishing is not itself connection EOF. No response is accepted only
+because a LimitedReader or chunk decoder reports its own synthetic EOF.
+Close-delimited entities, interim statuses, compression and trailers are not
+admitted. These framing decisions follow
+[RFC 9112 sections 6 to 8](https://www.rfc-editor.org/rfc/rfc9112.html#section-6);
+the narrower syntax and metadata policy above are Sessionless choices.
+
+TLS EOF is not a claim that a TLS close-notify was received: the installed Go
+TLS reader also accepts a transport EOF at a TLS record boundary. HTTP framing
+completion must therefore be established independently. The fixed sink uses
+verified TLS and an explicit socket close-on-cancellation callback:
+[HandshakeContext alone stops bounding the connection after the handshake](https://pkg.go.dev/crypto/tls#Conn.HandshakeContext).
+
+Receiver tests must include exact and first-over H/R/work reservations, every
+socket fragmentation including one-byte reads, both framing modes, malformed
+or ambiguous framing, duplicate/forbidden headers, zero-progress reads,
+premature EOF, bytes after framing, positive data accompanied by EOF, context
+cancellation and a held final EOF probe. They must prove that no header/entity
+view escapes on denial. Real TLS/Source/send and semantic-guard tests remain
+separate mandatory consumers; parser fixtures cannot satisfy them.
+
+### Original source and network lifetime
 
 After full request and file-capability verification, consume the original
 `PreparedAPIPhysicalSendV1` at the actual transport boundary. Retain its exact

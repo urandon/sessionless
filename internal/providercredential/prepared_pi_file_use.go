@@ -39,6 +39,8 @@ type preparedPiFileUse struct {
 	auth         *piRequestAuthentication
 	authPrepared bool
 	macAttempted atomic.Bool
+	http         *piHTTPReceive
+	httpPrepared bool
 }
 
 func (PreparedPiFileUseV1) String() string     { return "PreparedPiFileUseV1{private:[redacted]}" }
@@ -256,6 +258,10 @@ func (p *PreparedPiFileUseV1) Close() error {
 		return ErrConsumed
 	}
 	s.use.Store(nil)
+	if s.http != nil {
+		s.http.clear()
+		s.http = nil
+	}
 	if s.auth != nil {
 		clear(s.auth.headers)
 		s.auth = nil

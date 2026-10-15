@@ -21,9 +21,10 @@ const piAuthDomain = "Sessionless/Pi/SPU3/Auth/1\x00"
 var piAuthHeaderNames = [...]string{"accept", "content-type", "user-agent", "x-stainless-arch", "x-stainless-lang", "x-stainless-os", "x-stainless-package-version", "x-stainless-retry-count", "x-stainless-runtime", "x-stainless-runtime-version", "x-stainless-timeout"}
 
 type piRequestAuthentication struct {
-	binding, profile [32]byte
-	endpoint         string
-	headers          []byte
+	binding, profile              [32]byte
+	endpoint                      string
+	headers                       []byte
+	responseHeaders, responseBody uint64
 }
 
 // PrepareRequestAuthenticationV1 seals comparison DATA before original Issue.
@@ -111,7 +112,7 @@ func (p *PreparedPiFileUseV1) PrepareRequestAuthenticationV1(request attachedwor
 	if e != nil {
 		return ErrInvalid
 	}
-	a := &piRequestAuthentication{endpoint: request.Profile.Model.Endpoint}
+	a := &piRequestAuthentication{endpoint: request.Profile.Model.Endpoint, responseHeaders: request.Profile.Limits.ResponseHeaderBytes, responseBody: request.Profile.Limits.ResponseBodyBytes}
 	if _, e = hex.Decode(a.binding[:], []byte(binding)); e != nil {
 		return ErrInvalid
 	}

@@ -44,6 +44,8 @@ type preparedPiFileUse struct {
 	network       atomic.Pointer[piHTTPS]
 	httpsPrepared bool
 	httpBorrow    atomic.Bool // a returned private response owns mu/use.gate
+	responseScan  *piResponseScan
+	scanPrepared  bool
 }
 
 func (PreparedPiFileUseV1) String() string     { return "PreparedPiFileUseV1{private:[redacted]}" }
@@ -270,6 +272,10 @@ func (p *PreparedPiFileUseV1) Close() error {
 		return ErrConsumed
 	}
 	s.use.Store(nil)
+	if s.responseScan != nil {
+		s.responseScan.clear()
+		s.responseScan = nil
+	}
 	if network := s.network.Swap(nil); network != nil {
 		network.clear()
 	}

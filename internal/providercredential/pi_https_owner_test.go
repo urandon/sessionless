@@ -20,6 +20,9 @@ func TestPiHTTPSOriginalFilePreparationAndNoStructuralSource(t *testing.T) {
 			if err := p.PrepareHTTPReceiveV1(request.Profile.Limits.ResponseHeaderBytes, request.Profile.Limits.ResponseBodyBytes); err != nil {
 				t.Fatal(err)
 			}
+			if err := p.prepareResponseScan(); err != nil {
+				t.Fatal(err)
+			}
 			if err := p.prepareHTTPS(bundle); err != nil {
 				t.Fatal(err)
 			}
@@ -79,6 +82,9 @@ func TestPiHTTPSResponseBorrowSameCallbackCloseNeverWaitsOnItself(t *testing.T) 
 	if err := p.PrepareHTTPReceiveV1(request.Profile.Limits.ResponseHeaderBytes, request.Profile.Limits.ResponseBodyBytes); err != nil {
 		t.Fatal(err)
 	}
+	if err := p.prepareResponseScan(); err != nil {
+		t.Fatal(err)
+	}
 	h := issueImmutableAPI(t, s, issue)
 	// Genuine Issue/Materialize and gate; response-borrow mechanics are synthetic,
 	// NOT a claim of Source/TLS/quarantine composition or a serving producer.
@@ -115,6 +121,9 @@ func TestPiHTTPSOriginalMaximumKeyMustFitBeforeIssue(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := p.PrepareHTTPReceiveV1(request.Profile.Limits.ResponseHeaderBytes, request.Profile.Limits.ResponseBodyBytes); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.prepareResponseScan(); err != nil {
 		t.Fatal(err)
 	}
 	bundle, _ := piTLSFixture(t)

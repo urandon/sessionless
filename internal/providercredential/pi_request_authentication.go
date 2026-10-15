@@ -26,6 +26,7 @@ type piRequestAuthentication struct {
 	headers                       []byte
 	requestHeaders                uint64
 	responseHeaders, responseBody uint64
+	responseLimits                domain.AttachedPiSDKNativeLimitsV1
 }
 
 // PrepareRequestAuthenticationV1 seals comparison DATA before original Issue.
@@ -114,6 +115,7 @@ func (p *PreparedPiFileUseV1) PrepareRequestAuthenticationV1(request attachedwor
 		return ErrInvalid
 	}
 	a := &piRequestAuthentication{endpoint: request.Profile.Model.Endpoint, requestHeaders: request.Profile.Limits.RequestHeaderBytes, responseHeaders: request.Profile.Limits.ResponseHeaderBytes, responseBody: request.Profile.Limits.ResponseBodyBytes}
+	a.responseLimits = request.Profile.Limits
 	if _, e = hex.Decode(a.binding[:], []byte(binding)); e != nil {
 		return ErrInvalid
 	}

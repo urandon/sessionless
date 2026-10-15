@@ -20,7 +20,7 @@ func (p *PreparedPiFileUseV1) prepareHTTPS(bundle piHTTPSRootArtifact) error {
 		return ErrConsumed
 	}
 	defer s.mu.Unlock()
-	if s.stopped.Load() || s.httpsPrepared || s.claimed.Load() || s.callback != 0 || s.auth == nil || s.http == nil || s.file == nil || s.file.ctx.Err() != nil {
+	if s.stopped.Load() || s.httpsPrepared || s.claimed.Load() || s.callback != 0 || s.auth == nil || s.http == nil || s.responseScan == nil || s.file == nil || s.file.ctx.Err() != nil {
 		s.abort()
 		return ErrConsumed
 	}
@@ -73,7 +73,7 @@ func (s *preparedPiFileUse) beginHTTPS(frame pisdkhttpwire.Frame) (_ *piHTTPSRes
 		s.abort()
 		return nil, ErrConsumed
 	}
-	if s.stopped.Load() || s.callback != 1 || s.auth == nil || s.file == nil || s.file.ctx.Err() != nil || s.http == nil || s.network.Load() == nil {
+	if s.stopped.Load() || s.callback != 1 || s.auth == nil || s.file == nil || s.file.ctx.Err() != nil || s.http == nil || s.responseScan == nil || s.network.Load() == nil {
 		s.abort()
 		s.mu.Unlock()
 		return nil, ErrConsumed
@@ -120,6 +120,11 @@ func (s *preparedPiFileUse) beginHTTPS(frame pisdkhttpwire.Frame) (_ *piHTTPSRes
 	if e != nil || ctx.Err() != nil || s.stopped.Load() || use.ctx.Err() != nil || !use.active.Load() || s.file.ctx.Err() != nil {
 		return nil, ErrBackend
 	}
+	if e = s.responseScan.scan(ctx, view, use.secret); e != nil || ctx.Err() != nil || s.stopped.Load() || use.ctx.Err() != nil || !use.active.Load() || s.file.ctx.Err() != nil {
+		return nil, ErrDeliveryMismatch
+	}
+	// Grammar/raw/scalar checks are necessary but NOT closed effect/terminal or
+	// exact Pi semantic/signature approval. This borrow remains UNAPPROVED DATA.
 	b.view = view
 	s.httpBorrow.Store(true)
 	return b, nil
@@ -136,6 +141,7 @@ func (b *piHTTPSResponseBorrow) close() {
 		<-b.useDone
 	}
 	b.s.http.clear()
+	b.s.responseScan.clear()
 	b.view = piUnapprovedHTTPView{}
 	b.s.httpBorrow.Store(false)
 	b.use.gate <- struct{}{}

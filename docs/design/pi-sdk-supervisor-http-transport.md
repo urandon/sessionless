@@ -249,6 +249,16 @@ Pi's Responses parser.
 
 ### Actual Pi semantic assemblies
 
+Raw and decoded scalar scans do not cover every Pi-generated string. The
+pinned parser serializes text signatures with `JSON.stringify({v:1,id,phase})`,
+reasoning items with `JSON.stringify(item)`, and reasoning-signature backfill
+with another serialization. A visible-ASCII token such as `id":"A` can be
+absent from the raw response (which may encode `A` as `\u0041`) and individual
+decoded scalars, yet appear in a generated signature. The bootstrap exports
+only the sole text block's text, not these signatures; this example does not
+prove a projected-final leak. Any future forwarding or retention of generated
+signatures still needs the corresponding transformation-aware secret guard.
+
 The secret guard follows the pinned
 `packages/ai/src/api/openai-responses-shared.ts` `processResponsesStream`
 behavior, not a guessed grouping by `content_index` or `item_id`:
@@ -296,6 +306,68 @@ segments and separators in order. Preserve states of overwritten blocks while
 they remain in Pi's output list; no matching state is a profile grant. The
 exact arena, slot lookup, parser-node and work bounds still require their own
 implementation-derived prospective schedule.
+
+### Private parsed response data
+
+The parent scanner constructs a fixed private graph from the complete bounded
+HTTP entity. Grammar and raw/scalar matching are necessary checks, not the
+closed event/effect/terminal policy or Pi semantic approval. Its private nodes
+must pass those remaining checks before replay; scanner success alone never
+authorizes IPC, custody or an eligible runtime. Keep the native guard and real
+Pi parser in place.
+
+Prepare the scanner without caller-supplied limits, arenas or replacement
+ledger. Snapshot the original P limits at request authentication, then allocate
+on the original ledger before Issue. The original file mutex/use gate pins
+the response and actual secret from receive through scan and the returned
+unapproved borrow. Cancellation uses the original Source context. Retirement
+clears the graph and all response/key aliases before releasing the gate and
+retiring its debit, without zeroing the file owner's original secret early.
+
+Scan all three raw domains: original HTTP headers, the complete entity and the
+canonical replay-header block. Lowercasing an admitted header name can create
+a literal match absent from the original raw spelling. Scan every decoded JSON
+key and string independently too. The ASCII-token matcher retains only the
+original borrowed key, a prepaid failure table and bounded matching state;
+it does not join unrelated scalars. Exact cross-event semantic assemblies are
+a separate mandatory consumer of the graph.
+
+Preserve native LF-LF, CR-CR and CRLF-CRLF boundaries. Reset lookbehind after
+each byte-frame boundary, count comment-only frames, and reject an incomplete
+suffix. Separately count dispatched data events: mixed line endings can
+dispatch more than one event inside a byte frame. Enforce raw UTF-8, NUL/BOM
+and field rules, one optional named event, exact named-event/type agreement,
+bounded multiline data, and one complete JSON object per dispatch. Validate
+full JSON grammar, finite numbers, container depth and cumulative key/value
+nodes. Decode into UTF-16 code units so surrogate-pair escapes compare equal
+to the corresponding raw supplementary character while lone surrogates remain
+distinct. Reject duplicate decoded keys before semantic lookup.
+
+Let R/H/E be original response-body/header/event ceilings, K the original file
+maximum, N=`min(JSONNodes,2*R+1)` and V=`min(SSEEvents,R/2+1)`. Admit R at most4MiB,
+H at most1MiB, K at most64KiB and JSONDepth at most32. These physical-count bounds
+do not remove any possible node/event cohort within R. Let M be scanner-state
+size, T node size and D event-record size. Explicit arenas occupy
+`A = M + (N+1)*T + 2*R + E + V*D + 4*K`. Reserve
+`A + 2*R + 96*N + 8192` live bytes, the original ResponseCopyWorkBytes cumulative
+credit and `6 + 3*N` allocation nodes before allocation. This includes two
+R-byte numeric conversion/error-copy allowances and bounded metadata. The
+scanner live sum plus the original receiver's `2*H + R + sizeof(receiver)`
+must fit original ResponseAllocationBytes; unknown fit denies.
+
+Prepay `2*A` work for initialization and exactly one full retirement traversal.
+Runtime debits precede each pass: K for key validation,6K for ordinary matcher
+construction,5 per failure-table fallback; raw matching charges input width
+plus two key probes, UTF-16 stores cost2 bytes and scalar matching reads2-byte
+units. Duplicate-key comparison charges4 bytes per unit, ASCII/UTF-16 equality
+charges3, and member lookup charges16 per visited node. Charge the native frame
+walk, raw UTF-8 pass, twice the frame size for line/colon walks, the complete
+JSON lexical pass, node-size metadata per new node and `3*tokenBytes + 96` per
+numeric conversion. Reuse private JSON scratch by its actual length; never
+clear the full maximum event arena for every short/comment frame. Work and
+counts never reset, and clear is idempotent even before first use. Numeric
+conversion/backend, stack, allocator and complete runtime fit remain separate
+from this logical schedule; no zero-allocation or native qualification follows.
 
 ## Closed duplex protocol
 

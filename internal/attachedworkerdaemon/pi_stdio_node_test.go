@@ -19,6 +19,9 @@ import (
 // Real local Node/stdin/stdout through SAME actual Supervisor.Run. Synthetic
 // profile/Source/opaque Init, no Pi SDK, credentials, provider or platform claim.
 func TestPiStdioNodeSameSupervisor(t *testing.T) {
+	// The prerequisite probe itself must not execute ambient preloads before
+	// the actual Supervisor's replacement environment has been established.
+	t.Setenv("NODE_OPTIONS", "--public-invalid-preload-sentinel")
 	node, err := exec.LookPath("node")
 	if err != nil {
 		t.Fatal("pinned Node prerequisite missing:", err)
@@ -29,7 +32,9 @@ func TestPiStdioNodeSameSupervisor(t *testing.T) {
 	}
 	checkCtx, cancelCheck := context.WithTimeout(t.Context(), 30*time.Second)
 	t.Cleanup(cancelCheck)
-	version, err := exec.CommandContext(checkCtx, node, "--version").Output()
+	probe := exec.CommandContext(checkCtx, node, "--version")
+	probe.Env = []string{}
+	version, err := probe.Output()
 	if err != nil || strings.TrimSpace(string(version)) != "v24.19.0" {
 		t.Fatalf("Node prerequisite version=%q err=%v, want v24.19.0", version, err)
 	}

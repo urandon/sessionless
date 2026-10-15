@@ -119,18 +119,32 @@ for (const mode of ['equal', 'exhausted', 'backwards', 'not-bigint']) {
   });
 }
 
+test('Use magic with high bits never grants a capability', { timeout: 10000 }, async t => {
+  const f = fixture(t), owner = await initialized(f); const pending = owner.authorizePhysicalSend();
+  const raw = use(); for (let i = 0; i < 4; i++) raw[i] |= 128;
+  f.input.write(raw); await assert.rejects(pending); assert.equal(f.channel.signal.aborted, true);
+});
+
+test('zero/malformed backend P denied before any wire write, matching canonical Go codec', { timeout: 10000 }, async t => {
+  for (const p of ['0'.repeat(64), 'A'.repeat(64), 'a'.repeat(63), 'a'.repeat(65)]) {
+    const f = fixture(t); const initial = f.channel.initialize(); f.input.write(frame(1, bytes('x'))); await initial;
+    assert.throws(() => f.channel.bindRequest('full body', p)); assert.equal(f.chunks.length, 0);
+  }
+});
+
 for (const kind of [0, 2, 3, 4, 5, 6]) test(`initial wrong kind ${kind} never reads declared body`, { timeout: 10000 }, async t => {
   const f = fixture(t); const h = frame(kind).subarray(0, 17); h.writeBigUInt64BE((1n << 64n) - 1n, 9);
   const pending = f.channel.initialize(); f.input.write(h);
   await assert.rejects(pending); assert.equal(f.chunks.length, 0);
 });
 
-for (const mode of ['empty', 'first-over', 'bad-magic', 'metadata', 'utf8', 'truncated-header', 'truncated-body']) {
+for (const mode of ['empty', 'first-over', 'bad-magic', 'high-bit-magic', 'metadata', 'utf8', 'truncated-header', 'truncated-body']) {
   test(`Init ${mode} denies`, { timeout: 10000 }, async t => {
     const f = fixture(t); let raw = frame(1, bytes('x'));
     if (mode === 'empty') raw = frame(1);
     if (mode === 'first-over') { raw = raw.subarray(0, 17); raw.writeBigUInt64BE(513n, 9); }
     if (mode === 'bad-magic') raw.write('SPU1');
+    if (mode === 'high-bit-magic') for (let i = 0; i < 4; i++) raw[i] |= 128;
     if (mode === 'metadata') raw.writeUInt32BE(1, 5);
     if (mode === 'utf8') raw = frame(1, Buffer.from([0xff]));
     if (mode === 'truncated-header') raw = raw.subarray(0, 16);

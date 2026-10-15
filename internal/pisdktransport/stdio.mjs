@@ -108,7 +108,7 @@ export function createPiStdioChannel({ input, output, limits, signal, clock = cl
     }
   };
   const inspect = expected => {
-    if (header.toString('ascii', 0, 4) !== 'SPU2') throw denied();
+    if (!exactMagic()) throw denied();
     const kind = header[4], meta = header.readUInt32BE(5), size = header.readBigUInt64BE(9);
     // Direction and expected state checked BEFORE any payload read/allocation.
     if (kind !== expected && kind !== 5) throw denied();
@@ -122,6 +122,9 @@ export function createPiStdioChannel({ input, output, limits, signal, clock = cl
     if (total > BigInt(limits.frame_bytes) || BigInt(meta) + size > BigInt(inputCap - inputBytes)) throw denied();
     return Number(size);
   };
+  // ASCII decoding masks high bits. A canonical binary magic is byte identity,
+  // never a permissive textual decoder (e.g. d3d0d5b2 must NOT mean SPU2).
+  const exactMagic = () => header[0] === 0x53 && header[1] === 0x50 && header[2] === 0x55 && header[3] === 0x32;
   const writeFull = async data => {
     if (data.length > outputCap - outputBytes) throw denied();
     for (let offset = 0; offset < data.length;) {
@@ -164,7 +167,7 @@ export function createPiStdioChannel({ input, output, limits, signal, clock = cl
     try {
       await readFull(header);
       // Once Use is accepted the ONLY possible remaining parent frame is Retire.
-      if (header.toString('ascii', 0, 4) !== 'SPU2' || header[4] !== 5 ||
+      if (!exactMagic() || header[4] !== 5 ||
           header.readUInt32BE(5) !== 0 || header.readBigUInt64BE(9) !== 0n) throw denied();
       stop();
     } catch { if (!closing) stop(); }
@@ -172,7 +175,7 @@ export function createPiStdioChannel({ input, output, limits, signal, clock = cl
   const bindRequest = (originalBody, profileDigest) => {
     try {
       alive();
-      if (state !== 'ready' || typeof profileDigest !== 'string' || !/^[a-f0-9]{64}$/.test(profileDigest)) throw denied();
+      if (state !== 'ready' || typeof profileDigest !== 'string' || !/^[a-f0-9]{64}$/.test(profileDigest) || profileDigest === '0'.repeat(64)) throw denied();
       body = utf8(originalBody, limits.request_body_bytes);
       metadata = Buffer.from(`{"version":1,"phase":"physical_send","backend_profile_digest":"${profileDigest}"}`, 'utf8');
       if (metadata.length !== META) throw denied();

@@ -134,6 +134,7 @@ Run the credential-free Go data/signer/receipt checks with shared Go caches:
 
 ```sh
 make attached-worker-output-upload-test
+make attached-worker-output-control-client-test
 ```
 
 The suite covers closed upload-plan phases, immutable scope/key/digests,
@@ -152,8 +153,18 @@ platform signing, remote conditional writes or native persistence races.
 This is an unfinished #200 implementation stream, not a separately accepted
 helper or enabled media route. The server control returns custody metadata with
 no capability; applied/replayed is not signing or PUT authority. The closed
-wire reserves five RPC shapes, not a completed client schedule or a whole
-HTTP/TLS/native allocation certificate. The real private producer/exporter,
+wire reserves five RPC shapes. The separate control-client check covers a
+per-instance finite schedule (one admit, two original ordinal claims, two
+read-only reconciliations, with failed/lost slots spent), exact original head
+and immutable plan comparison, and test-owned TLS loopback transport. The
+private HTTP factory is shared with the existing Pi phase client: explicit TLS
+and failure/header bounds, no proxy, redirect, compression or pooled/HTTP2
+replay. Existing Pi client checks run alongside the new client checks. Both
+recipes clear native/YDB opt-ins and use shared Go caches; neither launches the
+local stand. These are not a whole HTTP/TLS/native allocation certificate.
+The real private producer/exporter must own exactly one such client and fund
+all its work on the SAME original ledger before Issue; constructing a client
+or returning metadata is not provenance or permission. The real private exporter,
 genuine current Source/profile authorization before signing, complete
 original-ledger/control/deadline envelope,
 single-send transport/alias retirement, canonical receipt/ACK continuation and

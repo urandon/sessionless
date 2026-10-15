@@ -3,13 +3,11 @@ package attachedworkersealedinput
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
-	"time"
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerprotocol"
 	"gitcode.com/urandon/sessionless/internal/attachedworkersession"
@@ -44,50 +42,14 @@ func piEndpoint(endpoint string) (*url.URL, error) {
 	return u, nil
 }
 
-// piHTTPClient keeps explicit caller failure/header/TLS bounds, never installs
-// a phase timeout default. Its fresh private H1-only nonpooled transport cannot
-// take Go1.26's HTTP2 no-cached-connection or reused-connection replay paths.
-// Request.GetBody is separately removed at the actual request boundary.
+// Keep the existing phase/source transport entrypoint and its package error
+// contract. All HTTPS policy lives in the shared factory, not a second copy.
 func piHTTPClient(client *http.Client, hostname string) (*http.Client, *http.Transport, error) {
-	if client == nil || client.Jar != nil || client.Timeout <= 0 || client.Timeout > time.Minute {
+	private, transport, err := attachedworkertransport.NewPrivateControlHTTPClient(client, hostname)
+	if err != nil {
 		return nil, nil, ErrInvalid
 	}
-	t, ok := client.Transport.(*http.Transport)
-	if !ok || t == nil || t.Proxy != nil || t.DialContext == nil || t.DialTLS != nil || t.DialTLSContext != nil ||
-		t.TLSClientConfig == nil || t.TLSClientConfig.InsecureSkipVerify || t.TLSClientConfig.MinVersion < tls.VersionTLS12 ||
-		t.TLSClientConfig.ServerName != "" && t.TLSClientConfig.ServerName != hostname ||
-		t.TLSClientConfig.GetClientCertificate != nil || t.TLSClientConfig.VerifyPeerCertificate != nil || t.TLSClientConfig.VerifyConnection != nil ||
-		t.TLSClientConfig.GetCertificate != nil || t.TLSClientConfig.GetConfigForClient != nil || len(t.TLSClientConfig.Certificates) != 0 ||
-		t.TLSClientConfig.KeyLogWriter != nil || t.TLSClientConfig.Time != nil || t.TLSClientConfig.Rand != nil ||
-		t.TLSClientConfig.EncryptedClientHelloRejectionVerify != nil || t.TLSClientConfig.GetEncryptedClientHelloKeys != nil ||
-		len(t.TLSClientConfig.EncryptedClientHelloConfigList) != 0 || len(t.TLSClientConfig.EncryptedClientHelloKeys) != 0 ||
-		t.TLSClientConfig.MaxVersion != 0 && t.TLSClientConfig.MaxVersion < t.TLSClientConfig.MinVersion ||
-		t.TLSHandshakeTimeout <= 0 || t.TLSHandshakeTimeout > client.Timeout ||
-		t.ResponseHeaderTimeout <= 0 || t.ResponseHeaderTimeout > client.Timeout || t.MaxResponseHeaderBytes <= 0 ||
-		!t.DisableCompression || len(t.TLSNextProto) != 0 || t.GetProxyConnectHeader != nil || len(t.ProxyConnectHeader) != 0 {
-		return nil, nil, ErrInvalid
-	}
-	private := t.Clone()
-	if private.TLSClientConfig.RootCAs != nil {
-		private.TLSClientConfig.RootCAs = private.TLSClientConfig.RootCAs.Clone()
-	}
-	private.TLSClientConfig.CipherSuites = append([]uint16(nil), private.TLSClientConfig.CipherSuites...)
-	private.TLSClientConfig.CurvePreferences = append([]tls.CurveID(nil), private.TLSClientConfig.CurvePreferences...)
-	// No inherited session cache/ticket sharing or alternative TLS credential
-	// discovery; trust roots are copied like the original exchange factory.
-	private.TLSClientConfig.ClientSessionCache = nil
-	private.TLSClientConfig.SessionTicketsDisabled = true
-	private.DisableKeepAlives = true
-	private.DisableCompression = true
-	private.ForceAttemptHTTP2 = false
-	private.Protocols = &http.Protocols{}
-	private.Protocols.SetHTTP1(true)
-	private.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
-	private.TLSClientConfig.NextProtos = []string{"http/1.1"}
-	copyClient := *client
-	copyClient.Transport = private
-	copyClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return &copyClient, private, nil
+	return private, transport, nil
 }
 
 func validPiBinding(b attachedworkersession.ConnectionBindingV1) bool {

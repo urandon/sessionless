@@ -33,8 +33,12 @@ is not a request for another table. The complete physical list remains in JSON.
 The [consumer and durability study](../research/state-storage-and-durability.md)
 records actual joins, default retention, old-index callers and source write
 counts. The [first reduction contract](../design/state-storage-simplification.md#first-reduction-contract)
-does not accept the exploratory Run/Attempt/Lease layout or classify every
-remaining physical table. Unknown owner/retention decisions stay open in #205.
+does not classify every remaining physical table. The separately accepted
+[current lease within Run design](../design/current-execution-slot.md) selects
+seven typed Run columns instead of `lease_heads`, retaining bounded `leases`
+evidence. That replacement is not implemented: the active source inventory
+remains 101 tables, including `lease_heads`. Other Run/Attempt/history and
+owner/retention decisions stay open in #205.
 
 ## Source and rollout boundary
 

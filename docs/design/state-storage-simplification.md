@@ -1,8 +1,12 @@
 # State storage simplification
 
-Version: 0.2. Status: proposed first index-retirement design; Run/Attempt/Lease
-layout remains exploratory. Owning task:
+Version: 0.2. Status: accepted first index-retirement design. Owning task:
 [#205](https://gitcode.com/urandon/sessionless/issues/205).
+
+The separate [current lease within Run contract](current-execution-slot.md)
+selects the next bounded layout reduction. Broader Run/Attempt/Lease history
+and retention decisions remain exploratory; neither contract accepts them
+as a group.
 
 Keep accepted conversation content and the smallest state that prevents
 incorrect external effects durable. Keep intermediate execution detail only as

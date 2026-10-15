@@ -22,6 +22,30 @@ assert.ok(admitted.remaining.copy_bytes>0&&admitted.remaining.json_nodes>=0);
 let denied=0;
 const bad=(b,l=limits,s=signal)=>{assert.throws(()=>decodePreparedInit(b,l,s),{message:'pi_init_denied'});denied++;};
 const original=JSON.parse(raw);
+// INIT203-R01: identical node count and the original full body, with only
+// one model/config scalar changed. This must not rely on cap exhaustion.
+{
+  const v=JSON.parse(raw);
+  v.model.compat.supportsExplicitPromptCacheMode=!v.model.compat.supportsExplicitPromptCacheMode;
+  bad(Buffer.from(JSON.stringify(v)));
+}
+{
+  const v=JSON.parse(raw);v.temperature=v.temperature===1?2:1;bad(Buffer.from(JSON.stringify(v)));
+}
+if(original.model.reasoning){
+  const v=JSON.parse(raw);v.reasoning_effort=v.reasoning_effort==='low'?'high':'low';bad(Buffer.from(JSON.stringify(v)));
+}
+if(original.reasoning_effort!==null){
+  const v=JSON.parse(raw);v.reasoning_summary=v.reasoning_summary==='detailed'?'brief':'detailed';bad(Buffer.from(JSON.stringify(v)));
+}
+// Optional malformed bodies get SHORTER/fewer nodes, so a missing semantic
+// check cannot be hidden by the exact original request/Init partition.
+for(const key of ['prompt_cache_options','reasoning','include','temperature']){
+  const v=JSON.parse(raw),r=JSON.parse(v.expected_body);
+  if(!Object.hasOwn(r,key))continue;
+  delete r[key];v.expected_body=JSON.stringify(r);bad(Buffer.from(JSON.stringify(v)));
+  const w=JSON.parse(raw),q=JSON.parse(w.expected_body);q[key]=null;w.expected_body=JSON.stringify(q);bad(Buffer.from(JSON.stringify(w)));
+}
 for(const key of Object.keys(original)){
   const changed=JSON.parse(raw);delete changed[key];bad(Buffer.from(JSON.stringify(changed)));
 }

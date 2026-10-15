@@ -40,12 +40,46 @@ func TestCompleteInitPinnedNodeOriginalCohort(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, snapshot := range []bool{false, true} {
-		t.Run(map[bool]string{false: "history", true: "snapshot-tail"}[snapshot], func(t *testing.T) {
+	for _, mode := range []string{"history", "snapshot-tail", "explicit-options", "default-summary", "null-off", "explicit-off", "cache-omitted", "nonreasoning", "provider-copilot", "provider-xai"} {
+		t.Run(mode, func(t *testing.T) {
 			cfg := initFixtureConfig(t)
-			p, _ := initFixtureProjection(t, cfg, snapshot)
+			model := initFixtureModel
+			switch mode {
+			case "explicit-options", "default-summary":
+				effort := "low"
+				cfg.ReasoningEffort = &effort
+				if mode == "explicit-options" {
+					summary := "detailed"
+					temperature := float64(1)
+					cfg.ReasoningSummary = &summary
+					cfg.Temperature = &temperature
+				}
+			case "null-off", "explicit-off":
+				cfg.Model.ThinkingOffPresent = true
+				off := "null"
+				if mode == "explicit-off" {
+					value := "none"
+					cfg.Model.ThinkingOff = &value
+					off = `"none"`
+				}
+				model = strings.Replace(model, `{"id"`, `{"thinkingLevelMap":{"off":`+off+`},"id"`, 1)
+			case "cache-omitted":
+				cfg.Model.SupportsExplicitPromptCacheMode = false
+				model = strings.Replace(model, `"supportsExplicitPromptCacheMode":true`, `"supportsExplicitPromptCacheMode":false`, 1)
+			case "nonreasoning":
+				cfg.Model.Reasoning = false
+				model = strings.Replace(model, `"reasoning":true`, `"reasoning":false`, 1)
+			case "provider-copilot", "provider-xai":
+				provider := "xai"
+				if mode == "provider-copilot" {
+					provider = "github-copilot"
+				}
+				cfg.Model.Provider = provider
+				model = strings.Replace(model, `"provider":"openai"`, `"provider":"`+provider+`"`, 1)
+			}
+			p, _ := initFixtureProjection(t, cfg, mode == "snapshot-tail")
 			fs := initFixtureFS(t)
-			plan, err := PrepareInitV1(t.Context(), p, []byte(initFixtureModel), 1000, fs, "api-key")
+			plan, err := PrepareInitV1(t.Context(), p, []byte(model), 1000, fs, "api-key")
 			if err != nil {
 				t.Fatal("prepare:", err)
 			}

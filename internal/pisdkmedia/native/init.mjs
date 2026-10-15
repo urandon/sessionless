@@ -117,6 +117,34 @@ function validateModel(m,p,maxOutput) {
   }
 }
 
+// Exact conditional relations of the original Go writeBody/reasoningData and
+// pinned standard provider. This checks the ONE retained body, never emits or
+// stringifies another expected body. All visits use the existing semantic
+// partition already reserved before Issue; no new full-P budget or defaults
+// from ambient settings/catalog are introduced.
+function validateRequestOptions(init,request) {
+  const expect=(key,present,check)=>{
+    if(own(request,key)!==present||(present&&!check(request[key])))deny();
+  };
+  expect('temperature',init.temperature!==null,v=>Number.isSafeInteger(v)&&v===init.temperature);
+  expect('prompt_cache_options',init.model.compat?.supportsExplicitPromptCacheMode===true,
+    v=>exact(v,['mode'])&&v.mode==='explicit');
+  let effort='',summary='',hasSummary=false,include=false;
+  if(init.model.reasoning){
+    if(init.reasoning_effort!==null){
+      effort=init.reasoning_effort;
+      summary=init.reasoning_summary===null?'auto':init.reasoning_summary;
+      hasSummary=true;include=true;
+    }else if(init.model.provider!=='github-copilot'){
+      const mapping=init.model.thinkingLevelMap;
+      effort=mapping&&own(mapping,'off')?(mapping.off===null?'':mapping.off):'none';
+    }
+    include=include||init.model.provider==='xai';
+  }
+  expect('reasoning',effort!=='',v=>exact(v,hasSummary?['effort','summary']:['effort'])&&v.effort===effort&&(!hasSummary||v.summary===summary));
+  expect('include',include,v=>Array.isArray(v)&&v.length===1&&v[0]==='reasoning.encrypted_content');
+}
+
 // The channel already admitted the SPU2 header and UTF8 body envelope. Repeat
 // UTF8 here for standalone/private use; no JSON.parse before strict full grammar
 // and prospective source/decoded-payload/node reservations. No budget restarts.
@@ -172,6 +200,7 @@ export function decodePreparedInit(raw,limits,signal) {
       request.max_output_tokens!==init.max_output_tokens||request.tool_choice!=='none'||request.truncation!=='disabled'||
       !exact(request.text,['format'])||!exact(request.text.format,['type','name','schema','strict'])||request.text.format.type!=='json_schema'||
       request.text.format.name!==init.schema_name||request.text.format.strict!==true||!equal(request.text.format.schema,init.schema))deny();
+    validateRequestOptions(init,request);
     if(!Array.isArray(init.messages)||init.messages.length!==1||!exact(init.messages[0],['role','content','timestamp'])||
       init.messages[0].role!=='user'||!Number.isSafeInteger(init.messages[0].timestamp)||init.messages[0].timestamp<0||
       !Array.isArray(init.messages[0].content)||init.messages[0].content.length===0||!Array.isArray(request.input)||request.input.length!==2)deny();

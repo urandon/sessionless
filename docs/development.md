@@ -386,6 +386,29 @@ equivalence, staged accounting, byte/node/depth first-over cases and builtin
 `JSON.stringify` differential goldens. No credential, SDK import/constructor,
 provider call, native YDB process or network is needed for these checks.
 
+`PrepareInitV1` extends that **same** ledger before Issue. Its closed Init
+contains the complete original typed messages/timestamps/images, the one emitted
+expected body, canonical P and its domain-separated digest, explicit selected
+model/catalog DATA (including fractional costs/tiers), schema, options and eleven
+nonsecret headers. Caller config pointers/slices are not retained. The exact
+immutable filesystem gives the future credential locator's byte bound without
+creating a key/file; its worst JSON escaping and the final arena are reserved
+before Issue. Only the original owned immutable Materialize file may fill the
+once-spent final slot. Finalize/Release remain with the original parent handle.
+
+The private SDK-free `native/init.mjs` reuses the existing strict JSON grammar,
+rejects duplicate decoded keys/unknown fields/invalid UTF8/types/limits, checks
+complete body/message/image/schema consistency and freezes its independently
+parsed DATA. Outer Init, nested P and expected-body parsing share one prospectively
+reserved copy/node partition, not new full-P pools. Logical payload bounds are
+not V8/native-object, SDK, timer/platform or provider eligibility measurements.
+`TestCompleteInitPinnedNodeOriginalCohort` drives that actual decoder with both
+original history/snapshot-tail cohorts and malformed controls, under the same
+pinned Node and replacement empty environment. It does not import any SDK,
+read a credential or run adjacent opt-in functional/native tests. The final
+delayed-bootstrap/sole-runner and actual Source/native fit integration still
+must consume these mechanics; this source boundary is not an activated adapter.
+
 No production Pi final-schema literal is supplied by this component; generic
 schema-data tests do not select the strict final/custody contract owned by #200.
 Missing genuine model/compat/header/source-owned profile, tokenizer/output-clamp

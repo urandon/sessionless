@@ -24,7 +24,7 @@ const (
 	// Six bytes per UTF-8 byte covers JSON escaping; fixed source/behavior
 	// strings and numbers fit the per-key 128-byte value/framing allowance.
 	// This is metadata, never a native input/request/process resource ceiling.
-	attachedPiSDKCanonicalMaxBytesV1 = 88*(64+128) + 19*64 + 6*(4*128+256+attachedPiSDKEndpointMaxBytesV1)
+	AttachedPiSDKCanonicalMaxBytesV1 = 88*(64+128) + 19*64 + 6*(4*128+256+attachedPiSDKEndpointMaxBytesV1)
 )
 
 // AttachedPiSDKNativeProfileV1 is the sole canonical native P preimage.
@@ -211,7 +211,7 @@ func EncodeAttachedPiSDKNativeProfileV1(p AttachedPiSDKNativeProfileV1) ([]byte,
 		return nil, err
 	}
 	raw, err := json.Marshal(attachedPiSDKCanonicalV1{p, attachedPiSDKInheritedMedia()})
-	if err != nil || len(raw) > attachedPiSDKCanonicalMaxBytesV1 {
+	if err != nil || len(raw) > AttachedPiSDKCanonicalMaxBytesV1 {
 		return nil, attachedPiSDKProfileError("codec", "cannot encode bounded canonical P")
 	}
 	return raw, nil
@@ -222,7 +222,7 @@ func EncodeAttachedPiSDKNativeProfileV1(p AttachedPiSDKNativeProfileV1) ([]byte,
 // Every failure returns a zero profile, never a partially validated value.
 func DecodeAttachedPiSDKNativeProfileV1(raw []byte) (AttachedPiSDKNativeProfileV1, error) {
 	zero := AttachedPiSDKNativeProfileV1{}
-	if len(raw) == 0 || len(raw) > attachedPiSDKCanonicalMaxBytesV1 || !utf8.Valid(raw) {
+	if len(raw) == 0 || len(raw) > AttachedPiSDKCanonicalMaxBytesV1 || !utf8.Valid(raw) {
 		return zero, attachedPiSDKProfileError("codec", "requires bounded canonical UTF-8 P")
 	}
 	var v attachedPiSDKCanonicalV1

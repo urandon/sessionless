@@ -63,6 +63,27 @@ func (filesystem *PinnedSecretFileSystem) CreateImmutable(fileName string, secre
 	return &PinnedSecretFile{RootDir: pinned.public.RootDir, FilePath: pinned.public.AuthFile, pinned: pinned, owner: filesystem}, nil
 }
 
+// ImmutableFilePathBound reports the exact future path BYTE length for this
+// live immutable namespace and filename before any credential is issued or
+// file is created. The per-service random root already exists; only the fixed
+// hex invocation suffix is still unknown. This is sizing DATA, not a current
+// owner/Source/credential/file-integrity/native-fit capability. The real
+// Materialize consumer must still validate its actual original locator and
+// unchanged namespace, within the same prospectively funded Init reservation.
+func (filesystem *PinnedSecretFileSystem) ImmutableFilePathBound(ctx context.Context, fileName string) (uint64, error) {
+	if filesystem == nil || ctx == nil || ctx.Err() != nil || domain.ValidateOpaqueID("credential.materialization.file_name", fileName) != nil || filepath.Base(fileName) != fileName || fileName == "." || fileName == ".." {
+		return 0, ErrCredentialMaterialization
+	}
+	filesystem.mu.Lock()
+	defer filesystem.mu.Unlock()
+	if filesystem.filesystem == nil || filesystem.verifyAncestry() != nil || ctx.Err() != nil {
+		return 0, ErrCredentialMaterialization
+	}
+	// Exactly the SAME naming constants used by mkdirInvocation/createNamedMode.
+	// No PATH_MAX guess, new random directory/file, key read or path placeholder.
+	return uint64(len(filesystem.filesystem.rootPath)) + 1 + uint64(len(invocationPrefix)) + 2*invocationRandomBytes + 1 + uint64(len(fileName)), nil
+}
+
 func captureImmutable(pinned *pinnedMaterialization, creator *os.File, secret []byte, maxBytes int64) error {
 	identity := &immutableSecretFile{fingerprint: domain.FingerprintCredential(secret)}
 	if creator == nil || unix.Fstat(pinned.fileFD, &identity.file) != nil || unix.Fstat(pinned.dirFD, &identity.directory) != nil || !privateDirectory(identity.directory) || !privateRegular(identity.file) || identity.file.Size != int64(len(secret)) {

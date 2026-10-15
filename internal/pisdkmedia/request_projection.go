@@ -44,12 +44,49 @@ type RequestAccountingV1 struct {
 	ResponseAllocationBytes, ResponseCopyWorkBytes, ResponseJSONNodes, EchoBytes, EchoNodes uint64
 }
 type RequestProjectionV1 struct {
+	ctx        context.Context
 	body       []byte
 	data       *codexexec.CanonicalMediaDataV1
 	ledger     *codexexec.CanonicalMediaLedgerV1
 	accounting RequestAccountingV1
 	bodyDigest [32]byte
 	live       uint64
+	// Scalars are immutable Go strings/values, not caller pointer/slice aliases.
+	// The parsed schema already belongs to this projection's funded parse.
+	config requestSnapshotV1
+}
+
+type requestSnapshotV1 struct {
+	profile                                            domain.AttachedPiSDKNativeProfileV1
+	model                                              ModelDataV1
+	system, schemaName, schemaDigest                   string
+	maxOutput, credentialMax                           uint64
+	headers                                            [11]HeaderDataV1
+	schema                                             *wireValue
+	effort, summary, thinking                          string
+	hasEffort, hasSummary, hasThinking, hasTemperature bool
+	temperature                                        float64
+}
+
+func snapshotRequest(c RequestDataV1, schema *wireValue) requestSnapshotV1 {
+	s := requestSnapshotV1{profile: *c.Profile, model: *c.Model, system: c.SystemPrompt,
+		schemaName: c.FinalSchemaName, schemaDigest: c.FinalSchemaSourceDigest,
+		maxOutput: c.MaxOutputTokens, credentialMax: c.CredentialMaxBytes, schema: schema}
+	copy(s.headers[:], c.Headers)
+	s.model.ThinkingOff = nil
+	if c.Model.ThinkingOff != nil {
+		s.thinking, s.hasThinking = *c.Model.ThinkingOff, true
+	}
+	if c.ReasoningEffort != nil {
+		s.effort, s.hasEffort = *c.ReasoningEffort, true
+	}
+	if c.ReasoningSummary != nil {
+		s.summary, s.hasSummary = *c.ReasoningSummary, true
+	}
+	if c.Temperature != nil {
+		s.temperature, s.hasTemperature = *c.Temperature, true
+	}
+	return s
 }
 
 func (RequestProjectionV1) String() string     { return "RequestProjectionV1{data:[redacted]}" }
@@ -584,5 +621,5 @@ func CompileOriginalRequestV1(ctx context.Context, identity attachedworkerdaemon
 		return nil, ErrProjection
 	}
 	keep = true
-	return &RequestProjectionV1{body: emit.out, data: data, ledger: ledger, bodyDigest: sha256.Sum256(emit.out), live: work, accounting: RequestAccountingV1{Before: before, After: ledger.Accounting(), BodyBytes: measure.bytes, BodyUTF16: measure.units, BodyNodes: measure.nodes, TypedBlocks: blocks, HeaderBytes: headers, GoValidationCeiling: 96 << 20, ResponseAllocationBytes: a, ResponseCopyWorkBytes: d, ResponseJSONNodes: downNodes, EchoBytes: echo, EchoNodes: echoNodes}}, nil
+	return &RequestProjectionV1{ctx: ctx, body: emit.out, data: data, ledger: ledger, bodyDigest: sha256.Sum256(emit.out), live: work, config: snapshotRequest(c, schema), accounting: RequestAccountingV1{Before: before, After: ledger.Accounting(), BodyBytes: measure.bytes, BodyUTF16: measure.units, BodyNodes: measure.nodes, TypedBlocks: blocks, HeaderBytes: headers, GoValidationCeiling: 96 << 20, ResponseAllocationBytes: a, ResponseCopyWorkBytes: d, ResponseJSONNodes: downNodes, EchoBytes: echo, EchoNodes: echoNodes}}, nil
 }

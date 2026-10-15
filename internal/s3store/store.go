@@ -61,6 +61,10 @@ type Store struct {
 	bucket         string
 	maxObjectBytes int64
 	now            func() time.Time
+	// Worker-output signing retains only explicit server configuration. Invalid
+	// or absent values disable that distinct path, not the existing browser API.
+	workerOutputOrigin    string
+	workerOutputPathStyle bool
 }
 
 type s3ObjectAPI interface {
@@ -123,6 +127,8 @@ func New(ctx context.Context, config Config) (*Store, error) {
 		config.MaxObjectBytes = defaultMaxObjectBytes
 	}
 	store := &Store{bucket: config.Bucket, maxObjectBytes: config.MaxObjectBytes, now: time.Now}
+	store.workerOutputOrigin = workerOutputOrigin(config.Endpoint)
+	store.workerOutputPathStyle = config.ForcePathStyle
 	if config.IAMMetadataCredentials || config.IAMToken != "" {
 		if strings.TrimSpace(config.Endpoint) == "" {
 			return nil, fmt.Errorf("S3 endpoint is required for IAM metadata credentials")

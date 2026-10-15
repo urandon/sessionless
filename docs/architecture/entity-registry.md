@@ -40,6 +40,17 @@ evidence. That replacement is not implemented: the active source inventory
 remains 101 tables, including `lease_heads`. Other Run/Attempt/history and
 owner/retention decisions stay open in #205.
 
+The [#200 output-custody implementation](https://gitcode.com/urandon/sessionless/issues/200)
+reuses the existing per-attempt `attached_worker_output_receipts` row/key for a
+closed upload-plan subrecord rather than introducing a new upload table.
+Its active, receipt-bound and settled-abandoned variants are distinct from
+canonical READY. An issued, ambiguous source-write grant remains spent and
+blocks deletion; a planned key is not an observed object. Noncanonical
+settlement preserves exact verified source refs without publishing output or
+reopening send rights. Structural validation is not original-writer evidence:
+the authenticated pre-Put transaction, private exporter, actual request join and
+native deletion races still require their own implementation and verification.
+
 ## Source and rollout boundary
 
 The [compatible code step](https://gitcode.com/urandon/sessionless/issues/206)

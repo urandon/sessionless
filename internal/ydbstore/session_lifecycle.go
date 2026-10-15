@@ -511,7 +511,7 @@ func (store *Store) BuildSessionDeletionInventory(
 			return inventory, err
 		}
 		for _, receipt := range receipts {
-			if !receipt.Ready {
+			if !attachedWorkerReceiptAllowsDeletion(receipt) {
 				return inventory, domain.ValidationError{Field: "session_deletion.receipts", Reason: "pending attached-worker output receipt blocks exact-object inventory"}
 			}
 			if err := addRow(); err != nil {
@@ -821,7 +821,7 @@ func ensureNoPendingAttachedWorkerReceiptsTx(ctx context.Context, tx *stateTx, s
 	total := uint64(len(runIDs))
 	for _, runID := range runIDs {
 		rows, err := tx.sqlTx.QueryContext(ctx,
-			`SELECT payload FROM attached_worker_output_receipts
+			`SELECT owner_user_id,worker_id,attempt_id,lease_generation,canonical_digest,candidate_fingerprint,created_at,payload FROM attached_worker_output_receipts
 			 WHERE tenant_id=$1 AND run_id=$2 LIMIT $3`, tx.tenantID, runID, maxSessionDeletionRows-total+1)
 		if err != nil {
 			return err
@@ -833,7 +833,13 @@ func ensureNoPendingAttachedWorkerReceiptsTx(ctx context.Context, tx *stateTx, s
 				return domain.ValidationError{Field: "session_deletion.receipts", Reason: "exceeds the hard deletion bound"}
 			}
 			var payload string
-			if err := rows.Scan(&payload); err != nil {
+			var owner domain.UserID
+			var worker domain.AttachedWorkerID
+			var attempt domain.AttemptID
+			var generation uint64
+			var canonicalDigest, fingerprint string
+			var createdAt time.Time
+			if err := rows.Scan(&owner, &worker, &attempt, &generation, &canonicalDigest, &fingerprint, &createdAt, &payload); err != nil {
 				rows.Close()
 				return err
 			}
@@ -842,7 +848,11 @@ func ensureNoPendingAttachedWorkerReceiptsTx(ctx context.Context, tx *stateTx, s
 				rows.Close()
 				return err
 			}
-			if !receipt.Ready {
+			if err := validateAttachedWorkerReceiptIndex(receipt, tx.tenantID, runID, owner, worker, attempt, generation, canonicalDigest, fingerprint, createdAt); err != nil {
+				rows.Close()
+				return err
+			}
+			if !attachedWorkerReceiptAllowsDeletion(receipt) {
 				rows.Close()
 				return domain.ValidationError{Field: "session_deletion.receipts", Reason: "pending attached-worker output receipt blocks deletion"}
 			}

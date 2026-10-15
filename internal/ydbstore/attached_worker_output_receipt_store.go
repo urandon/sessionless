@@ -40,6 +40,9 @@ type AttachedWorkerOutputReceiptV1 struct {
 	Materialization      ports.AttachedWorkerTerminalMaterialization  `json:"materialization"`
 	SourceRefs           []domain.BlobRef                             `json:"source_refs,omitempty"`
 	CreatedAt            time.Time                                    `json:"created_at"`
+	// Private typed custody, never the public receipt projection. Active and
+	// abandoned plans are noncanonical; only receipt_bound may carry READY.
+	UploadPlan *attachedworkeroutput.AttemptOutputUploadPlanV1 `json:"upload_plan,omitempty"`
 }
 
 type AttachedWorkerOutputReceiptResult struct {
@@ -253,6 +256,13 @@ func (store *Store) outputReceiptHeadTransaction(
 			return err
 		}
 		if priorFound {
+			// Ordinary failure/answer-only Create must not replace pre-Put
+			// custody, reset consumed ordinals or bypass source verification.
+			// The upload-specific transaction will own the exact bind operation.
+			if prior.UploadPlan != nil {
+				status = ports.AttachedWorkerExecutionConflict
+				return nil
+			}
 			if prior.Nonce != request.Nonce || prior.CandidateFingerprint != fingerprint ||
 				prior.ObservationDigest != observationDigest || prior.Status != request.Candidate.Status ||
 				prior.HarnessBindingDigest != bindingDigest ||
@@ -470,11 +480,13 @@ func readAttachedWorkerOutputReceiptTx(ctx context.Context, tx *stateTx, run dom
 	worker domain.AttachedWorkerID, attempt domain.AttemptID, generation uint64,
 ) (record AttachedWorkerOutputReceiptV1, found bool, err error) {
 	var payload string
+	var canonicalDigest, fingerprint string
+	var createdAt time.Time
 	err = tx.sqlTx.QueryRowContext(ctx,
-		`SELECT payload FROM attached_worker_output_receipts
+		`SELECT canonical_digest,candidate_fingerprint,created_at,payload FROM attached_worker_output_receipts
 		 WHERE tenant_id=$1 AND run_id=$2 AND owner_user_id=$3 AND worker_id=$4 AND attempt_id=$5 AND lease_generation=$6`,
 		tx.tenantID, run, owner, worker, attempt, generation,
-	).Scan(&payload)
+	).Scan(&canonicalDigest, &fingerprint, &createdAt, &payload)
 	if errors.Is(err, sql.ErrNoRows) {
 		return record, false, nil
 	}
@@ -484,10 +496,21 @@ func readAttachedWorkerOutputReceiptTx(ctx context.Context, tx *stateTx, run dom
 	if err := json.Unmarshal([]byte(payload), &record); err != nil {
 		return record, false, err
 	}
-	if err := validateAttachedWorkerReceiptRecord(record, tx.tenantID, run, owner, worker, attempt, generation); err != nil {
+	if err := validateAttachedWorkerReceiptIndex(record, tx.tenantID, run, owner, worker, attempt, generation, canonicalDigest, fingerprint, createdAt); err != nil {
 		return AttachedWorkerOutputReceiptV1{}, false, err
 	}
 	return record, true, nil
+}
+
+func validateAttachedWorkerReceiptIndex(record AttachedWorkerOutputReceiptV1, tenant domain.TenantID, run domain.RunID,
+	owner domain.UserID, worker domain.AttachedWorkerID, attempt domain.AttemptID, generation uint64,
+	canonicalDigest, fingerprint string, createdAt time.Time,
+) error {
+	if string(record.CanonicalDigest) != canonicalDigest || record.CandidateFingerprint != fingerprint ||
+		!record.CreatedAt.Equal(canonicalAttachedWorkerTime(createdAt)) {
+		return ErrAttachedWorkerAttemptConflict
+	}
+	return validateAttachedWorkerReceiptRecord(record, tenant, run, owner, worker, attempt, generation)
 }
 
 func validateAttachedWorkerReceiptRecord(record AttachedWorkerOutputReceiptV1, tenant domain.TenantID, run domain.RunID,
@@ -497,13 +520,39 @@ func validateAttachedWorkerReceiptRecord(record AttachedWorkerOutputReceiptV1, t
 		record.Binding.TenantID != tenant || record.Binding.RunID != run || record.Binding.OwnerUserID != owner ||
 		record.Binding.WorkerID != worker || record.Binding.AttemptID != attempt ||
 		record.Binding.LeaseGeneration != generation || record.Binding.PresentedSecretDigest != "" ||
-		record.Nonce.Validate() != nil || record.CanonicalDigest.Validate() != nil ||
+		record.Nonce.Validate() != nil ||
 		record.HarnessBindingDigest.Validate() != nil ||
 		record.Observation.ValidateFor(record.Status, record.CredentialRequired) != nil {
 		return ErrAttachedWorkerAttemptConflict
 	}
 	observationDigest, err := record.Observation.Digest()
-	if err != nil || observationDigest != record.ObservationDigest || len(record.CandidateFingerprint) != 64 {
+	if err != nil || observationDigest != record.ObservationDigest {
+		return ErrAttachedWorkerAttemptConflict
+	}
+	if record.UploadPlan != nil {
+		plan := record.UploadPlan
+		if plan.Validate() != nil || record.Status != domain.AttachedWorkerTerminalSucceeded ||
+			plan.Identity.Nonce != record.Nonce || plan.Identity.HarnessBindingDigest != record.HarnessBindingDigest ||
+			!sameReceiptBinding(record.Binding, plan.Identity.Binding) || !plan.Identity.CreatedAt.Equal(record.CreatedAt) {
+			return ErrAttachedWorkerAttemptConflict
+		}
+		if plan.Phase != attachedworkeroutput.UploadPlanReceiptBoundV1 {
+			if record.Ready || record.CopyInProgress || record.CanonicalDigest != "" || record.CandidateFingerprint != "" ||
+				record.Materialization != (ports.AttachedWorkerTerminalMaterialization{}) || len(record.SourceRefs) != 0 {
+				return ErrAttachedWorkerAttemptConflict
+			}
+			return nil
+		}
+		if len(record.SourceRefs) != len(plan.Ordinals) {
+			return ErrAttachedWorkerAttemptConflict
+		}
+		for i, ordinal := range plan.Ordinals {
+			if ordinal.Source == nil || *ordinal.Source != record.SourceRefs[i] {
+				return ErrAttachedWorkerAttemptConflict
+			}
+		}
+	}
+	if record.CanonicalDigest.Validate() != nil || len(record.CandidateFingerprint) != 64 {
 		return ErrAttachedWorkerAttemptConflict
 	}
 	for _, ref := range record.SourceRefs {
@@ -522,7 +571,7 @@ func (store *Store) listRunOutputReceipts(ctx context.Context, tenant domain.Ten
 	run domain.RunID, limit uint64,
 ) ([]AttachedWorkerOutputReceiptV1, error) {
 	rows, err := store.db.QueryContext(ctx,
-		`SELECT owner_user_id,worker_id,attempt_id,lease_generation,payload
+		`SELECT owner_user_id,worker_id,attempt_id,lease_generation,canonical_digest,candidate_fingerprint,created_at,payload
 		 FROM attached_worker_output_receipts WHERE tenant_id=$1 AND run_id=$2
 		 ORDER BY owner_user_id,worker_id,attempt_id,lease_generation LIMIT $3`, tenant, run, limit)
 	if err != nil {
@@ -536,14 +585,16 @@ func (store *Store) listRunOutputReceipts(ctx context.Context, tenant domain.Ten
 		var attempt domain.AttemptID
 		var generation uint64
 		var payload string
-		if err := rows.Scan(&owner, &worker, &attempt, &generation, &payload); err != nil {
+		var canonicalDigest, fingerprint string
+		var createdAt time.Time
+		if err := rows.Scan(&owner, &worker, &attempt, &generation, &canonicalDigest, &fingerprint, &createdAt, &payload); err != nil {
 			return nil, err
 		}
 		var record AttachedWorkerOutputReceiptV1
 		if err := json.Unmarshal([]byte(payload), &record); err != nil {
 			return nil, err
 		}
-		if err := validateAttachedWorkerReceiptRecord(record, tenant, run, owner, worker, attempt, generation); err != nil {
+		if err := validateAttachedWorkerReceiptIndex(record, tenant, run, owner, worker, attempt, generation, canonicalDigest, fingerprint, createdAt); err != nil {
 			return nil, err
 		}
 		receipts = append(receipts, record)
@@ -553,6 +604,14 @@ func (store *Store) listRunOutputReceipts(ctx context.Context, tenant domain.Ten
 
 func attachedWorkerReceiptObjectRefs(record AttachedWorkerOutputReceiptV1) []domain.BlobRef {
 	refs := append([]domain.BlobRef(nil), record.SourceRefs...)
+	if record.UploadPlan != nil && record.UploadPlan.Phase != attachedworkeroutput.UploadPlanReceiptBoundV1 {
+		for _, ordinal := range record.UploadPlan.Ordinals {
+			// Planned destinations are NOT objects or deletion evidence.
+			if ordinal.State == attachedworkeroutput.UploadOrdinalSourceVerifiedV1 && ordinal.Source != nil {
+				refs = append(refs, *ordinal.Source)
+			}
+		}
+	}
 	if record.Materialization.Completion != nil {
 		for _, artifact := range record.Materialization.Completion.Manifest.Artifacts {
 			refs = append(refs, artifact.Blob)
@@ -569,6 +628,10 @@ func attachedWorkerReceiptObjectRefs(record AttachedWorkerOutputReceiptV1) []dom
 }
 
 func insertAttachedWorkerOutputReceiptTx(ctx context.Context, tx *stateTx, record AttachedWorkerOutputReceiptV1) error {
+	if err := validateAttachedWorkerReceiptRecord(record, record.Binding.TenantID, record.Binding.RunID,
+		record.Binding.OwnerUserID, record.Binding.WorkerID, record.Binding.AttemptID, record.Binding.LeaseGeneration); err != nil {
+		return err
+	}
 	encoded, err := json.Marshal(record)
 	if err != nil {
 		return err
@@ -583,6 +646,21 @@ func insertAttachedWorkerOutputReceiptTx(ctx context.Context, tx *stateTx, recor
 		record.CandidateFingerprint, record.CreatedAt, string(encoded),
 	)
 	return err
+}
+
+// PublicReceipt removes private pre-Put custody from a canonical wire result.
+// It is a projection, not validation, authorization, settlement or READY.
+func (record AttachedWorkerOutputReceiptV1) PublicReceipt() AttachedWorkerOutputReceiptV1 {
+	record.UploadPlan = nil
+	return record
+}
+
+func attachedWorkerReceiptAllowsDeletion(record AttachedWorkerOutputReceiptV1) bool {
+	a := record.Binding
+	if validateAttachedWorkerReceiptRecord(record, a.TenantID, a.RunID, a.OwnerUserID, a.WorkerID, a.AttemptID, a.LeaseGeneration) != nil {
+		return false
+	}
+	return record.Ready || record.UploadPlan != nil && record.UploadPlan.Phase == attachedworkeroutput.UploadPlanSettledAbandonedV1
 }
 
 func receiptBindingWithoutBearer(value ports.AttachedWorkerSealedInputAuthorization) ports.AttachedWorkerSealedInputAuthorization {

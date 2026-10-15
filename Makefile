@@ -218,6 +218,11 @@ attached-worker-prepared-invocation-test: prepare
 	go test -race -count=1 ./internal/attachedworkerdaemon ./internal/codexexec
 	go test -race -count=20 -shuffle=on -run '^TestPrepared' ./internal/attachedworkerdaemon ./internal/codexexec
 
+.PHONY: attached-worker-output-upload-test
+attached-worker-output-upload-test: prepare
+	go test -race -count=1 -shuffle=1792062001 -timeout=2m ./internal/attachedworkeroutput ./internal/ports ./internal/s3store ./internal/ydbstore ./internal/attachedworkerreceipt
+	go test -race -count=3 -shuffle=1792062002 -timeout=2m -run '^(TestAttemptOutputUpload|TestNewAttemptOutputUpload|TestAttachedWorkerOutputObject|TestWorkerOutputSigner|TestReceiptHTTP)' ./internal/attachedworkeroutput ./internal/ports ./internal/s3store ./internal/ydbstore ./internal/attachedworkerreceipt
+
 attached-worker-crash-integration: attached-worker-build
 	SESSIONLESS_ATTACHED_WORKER_BINARY="$(CURDIR)/$(BIN_DIR)/attached-worker" \
 		go test -race -count=3 -shuffle=on -run '^TestActivatedServeCrashRestartCheckpoint$$' ./cmd/attached-worker

@@ -49,6 +49,7 @@ func Handler(service *Service) http.Handler {
 			http.Error(writer, http.StatusText(status), status)
 			return
 		}
+		result.Receipt = result.Receipt.PublicReceipt()
 		payload, err := json.Marshal(result)
 		if err != nil || len(payload) > maxResponseBytes {
 			http.Error(writer, "unavailable", http.StatusServiceUnavailable)

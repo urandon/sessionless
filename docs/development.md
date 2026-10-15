@@ -128,6 +128,30 @@ operator-only schema, reset, deployment-lock, and Web bootstrap commands. The
 Makefile is the authoritative component inventory; documentation deliberately
 does not duplicate a count that drifts as slices are added.
 
+### Attempt-output upload checks (default off)
+
+Run the credential-free Go data/signer/receipt checks with shared Go caches:
+
+```sh
+make attached-worker-output-upload-test
+```
+
+The suite covers closed upload-plan phases, immutable scope/key/digests,
+irreversible ordinal spending, noncanonical deletion inventory and a separate
+worker-output conditional-object signer. The signer uses explicit server-owned
+HTTPS storage configuration, exact metadata/checksum/precondition binding and
+the original fixed cutoff; it does not reuse a browser upload grant. Fake
+AWS/IAM signing responses test bounded parsing and fail-closed drift, not actual
+platform signing, remote conditional writes or native persistence races.
+
+This is an unfinished #200 implementation stream, not a separately accepted
+helper or enabled media route. The real private producer/exporter, authenticated
+pre-first-Put admission/claim, complete original-ledger/control/deadline envelope,
+single-send transport/alias retirement, canonical receipt/ACK continuation and
+normal #201 download path remain necessary. Unknown writes cannot be settled by
+expiry/readback, a config flag or a caller-populated Boolean. No local YDB,
+SDK/model/provider, credentials or cloud operation is enabled by this command.
+
 ### Offline attached transport experiment preparation
 
 The [#129 Phase-0 plan](attached-worker-transport-experiment.md) prepares

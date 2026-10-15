@@ -599,7 +599,7 @@
     {
       "table": "attached_worker_output_receipts",
       "migration": "00101_create_attached_worker_output_receipts.sql",
-      "role": "Attached-worker identity, transport, or execution state.",
+      "role": "Per-attempt canonical receipt and typed pre-Put upload custody. The bounded upload subrecord reuses the existing key; it is not an additional table, currentness grant or public result.",
       "primaryKey": [
         "tenant_id",
         "run_id",

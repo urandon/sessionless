@@ -980,6 +980,14 @@ does not scan their legacy tables; its lifecycle marker does not prove this
 separate ready/expiry handoff. No environment operation is authorized by a
 source or unit-test pass.
 
+`make ready-expiry-repair` plans or applies one authorized ready/expiry v2
+metadata repair from retained source records. It does not perform a batch
+backfill or repeat an external effect. Follow
+[the operator procedure](ready-expiry-repair.md) for exact selectors, source and
+output limits, deletion fences and ambiguous-commit handling.
+`make ready-expiry-repair-test` runs offline CLI/store race tests without opening
+a database.
+
 Local defaults use `YDB_ANONYMOUS_CREDENTIALS=1`. Cloud deployments use the
 YDB environment credential chain and metadata credentials; do not place access
 tokens in the connection string or command line.

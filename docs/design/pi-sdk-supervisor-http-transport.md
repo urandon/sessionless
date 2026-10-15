@@ -674,6 +674,89 @@ platform isolation, private custody or the complete prepared producer.
 
 ## Physical connection and deadlines
 
+### Private HTTPS socket ownership
+
+The original file consumer retains its mutex and genuine active use gate from
+the canonical HMAC/file comparison through Source, network receive and whole
+response quarantine. Its opaque send's `AuthorizeNetworkUse` performs the same
+irreversible transition as `Authorize`, returning the exact revocable Source
+context and original F under the original send mutex. Calling either method
+again burns use rather than obtaining another Source reply. Normal process exit
+withdraws this network context while the distinct supervisor IO context permits
+an already-started Final to drain under F.
+
+Before Source, validate the sealed sink construction, not a connected peer.
+DNS, TCP and TLS begin only after Source returns F. Resolve the exact hostname
+once, admit at most eight addresses and reject the whole set if any address is
+private, special-use, mapped, scoped or outside the admitted global allocation.
+Select the lowest canonical numeric address and dial that literal at port443
+once. A failed first address never falls through to another address. No proxy,
+redirect, pool, Happy Eyeballs or application retry is involved.
+
+Socket publication and withdrawal share one lock, never held over blocking IO.
+Withdrawal closes the actual socket before waiting for Source, gates or IO;
+a dial result arriving after withdrawal is closed without publication. Set the
+socket deadline to F and use the original Source context for DNS, dial, TLS and
+response reads. The transport does not arm a replacement timer. A cancellation
+callback closes the descriptor and is explicitly joined before returning.
+
+Verify the exact sealed hostname with an explicit private CA pool, TLS1.2 or
+TLS1.3 and negotiated `http/1.1`. No insecure verifier, client certificate,
+session cache, renegotiation or alternate protocol is admitted. Only after peer
+and ALPN verification may the original file owner place its visible ASCII
+Bearer token in the prepaid request arena. The fixed request uses POST, the
+sealed path/Host, all eleven exact canonical SDK headers, Content-Length,
+Connection close and identity encoding. One application Write sends the entire
+request; a short or failed write burns use. Zero the secret-bearing arena on
+every outcome. TLS record fragmentation is not an additional application send.
+The inherited `RequestHeaderBytes` ceiling still counts every SDK header as
+`nameBytes + valueBytes + 4`, including the complete authorization value.
+Before Issue, prove this total fits with the sealed maximum key size; recheck
+the actual key/header total before Source. Parent-owned Host/framing fields
+have their separate finite request-arena bound and cannot raise the SDK limit.
+
+The private receive borrow retains both original locks after framed EOF. Its
+response remains unapproved DATA until the full semantic/secret guard succeeds;
+it has no replay or producer-custody method. Retirement revokes Source, closes
+the descriptor, joins cancellation callbacks and clears response buffers before
+releasing the gate. Never clear root DER, response arenas or live reservations
+while a borrower still owns them.
+An active callback closing its own returned response borrow must first receive
+`ErrConsumed` from public recipe Close, without waiting on its retained mutex or
+refunding live memory; after the borrow and callback join, retirement may finish.
+
+### Explicit CA artifact
+
+Do not use host trust or `SystemCertPool` for this profile: Unix root loading
+honors `SSL_CERT_FILE` and `SSL_CERT_DIR`. Select one source-owned immutable CA
+artifact through the concrete egress/runtime policy, including its exact digest,
+certificate list and pinned parser/backend/toolchain resource qualification.
+No caller-supplied pool, digest or synthetic CA qualifies a serving profile.
+
+The bounded private root recipe admits one to four self-signed CA certificates,
+each at most8192 DER bytes. Reject empty, malformed, duplicate, trailing or extra
+material. Its SHA256 transcript is ASCII `Sessionless/Pi/HTTPS/Roots/1`, one zero
+byte, the one-byte certificate count, then each four-byte big-endian DER length
+and its exact DER bytes in manifest order. Copy the bounded DER into private
+ownership, parse each certificate before Issue, require CA/basic constraints
+and certificate-signing use, verify its self-signature and add the parsed
+certificate to `x509.NewCertPool`. Do not use `AppendCertsFromPEM`: it silently
+skips invalid material and installs lazy parsing closures. Keep this pool and
+its DER immutable until all transport borrowers join. An explicit non-system
+pool isolates the trust decision; it does not imply that Go performs no internal
+system-pool metadata lookup on Darwin.
+
+Let B be total DER bytes and W be `body + canonicalHeaders + 2*endpoint +
+keyLimit + 1024`, with body/headers each at most1MiB, endpoint at most2048 bytes
+and keyLimit at most64KiB. Before allocating the private socket state, roots or
+request arena, reserve `W + 64*B + 65536 + sizeof(piHTTPS)` live bytes,
+`8*W + 128*B + 4*B*B` cumulative work and `4*certificateCount + 8` nodes.
+The private file owner retains this debit until its callback and response
+borrowers join. These application-layout and parser-work reservations do not
+qualify DNS internals, TLS handshake/verification allocation or complete native
+fit. An installed source-selected CA/backend manifest remains mandatory;
+mechanics tests with a synthetic CA leave the actual producer disabled.
+
 ### Fixed HTTP receive boundary
 
 The HTTP receiver has a deliberately smaller role than the semantic quarantine:

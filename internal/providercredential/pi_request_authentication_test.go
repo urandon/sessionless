@@ -117,9 +117,12 @@ func piAuthProfileFixture(t *testing.T) domain.AttachedPiSDKNativeProfileV1 {
 	return p
 }
 
-func piAuthOwnerFixture(t *testing.T) (*InvocationService, *fakeSecretStore, ports.ProviderCredentialIssueRequestV1, *PreparedPiFileUseV1, *piFileLedger, attachedworkerdaemon.PreparedAPIRequestV1) {
+func piAuthOwnerFixture(t *testing.T, keyLimit ...int64) (*InvocationService, *fakeSecretStore, ports.ProviderCredentialIssueRequestV1, *PreparedPiFileUseV1, *piFileLedger, attachedworkerdaemon.PreparedAPIRequestV1) {
 	t.Helper()
 	s, _, secrets, issue, _ := immutableAPIInvocationFixture(t, domain.ProviderCredentialDeliveryFileV1)
+	if len(keyLimit) != 0 {
+		s.maxBytes = keyLimit[0] // test-owned source limit, BEFORE immutable preparation
+	}
 	p := piAuthProfileFixture(t)
 	d, err := p.Descriptor()
 	if err != nil {

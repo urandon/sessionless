@@ -32,9 +32,63 @@ func TestAPISendBorrowRejectsStructuralAndZero(t *testing.T) {
 	}
 	for _, b := range []*PreparedAPISendBorrowV1{nil, {}} {
 		b.Revoke()
+		if ctx, cutoff, err := b.AuthorizeNetworkUse(); err == nil || ctx != nil || !cutoff.IsZero() {
+			t.Fatal("zero borrow returned network lifetime")
+		}
 		if cutoff, err := b.Authorize(); err == nil || !cutoff.IsZero() {
 			t.Fatalf("zero borrow authorized: cutoff=%v err=%v", cutoff, err)
 		}
+	}
+}
+
+func TestAPISendBorrowNetworkContextAndSingleSource(t *testing.T) {
+	for _, mode := range []string{"network then normal exit", "ordinary then network", "network then ordinary", "Source error", "revoked during Source"} {
+		t.Run(mode, func(t *testing.T) {
+			send := deadlineTestSend(t, t.Context())
+			send.body, send.profile, send.bound = []byte("original"), "profile", true
+			calls := 0
+			f := time.Now().Add(time.Hour)
+			send.authorize = func() (time.Time, error) {
+				calls++
+				if mode == "Source error" {
+					return f, ErrCredentialUnavailable
+				}
+				if mode == "revoked during Source" {
+					send.revoke()
+				}
+				return f, nil
+			}
+			b := &PreparedAPISendBorrowV1{send: send}
+			ioCtx := send.deadline.ioContext()
+			if mode == "ordinary then network" {
+				if cutoff, err := b.Authorize(); err != nil || cutoff != f {
+					t.Fatal("ordinary original Source", err)
+				}
+			}
+			ctx, cutoff, err := b.AuthorizeNetworkUse()
+			if mode == "Source error" || mode == "revoked during Source" || mode == "ordinary then network" {
+				if err == nil || ctx != nil || !cutoff.IsZero() || send.ctx.Err() == nil {
+					t.Fatal("failed Source/reentry returned a usable lifetime", err)
+				}
+			} else {
+				if err != nil || ctx != send.ctx || ctx == ioCtx || cutoff != f || !send.deadline.armed || send.deadline.cutoff != f {
+					t.Fatal("network lifetime is not exact original armed Source", err)
+				}
+				if mode == "network then normal exit" {
+					send.revoke()
+					if ctx.Err() == nil || ioCtx.Err() != nil {
+						t.Error("normal exit failed to withdraw network or cancelled Final drain")
+					}
+				} else {
+					if _, err := b.Authorize(); err == nil || ctx.Err() == nil || ioCtx.Err() == nil {
+						t.Error("ordinary reentry renewed Source or left network/drain live")
+					}
+				}
+			}
+			if calls != 1 {
+				t.Errorf("Source calls=%d want exactly1", calls)
+			}
+		})
 	}
 }
 

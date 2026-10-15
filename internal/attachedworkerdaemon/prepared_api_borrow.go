@@ -56,22 +56,38 @@ func sameOriginalAPIContext(a, b context.Context) bool {
 
 // Authorize consumes the SAME original Source authorization. No caller body,
 // callback, reset, fresh deadline or replacement ledger enters this method.
-// The fixed transport must still validate HMAC/file/body and its fixed TLS sink
-// before calling it; this borrow alone establishes none of those properties.
+// The fixed transport validates HMAC/file/body and its sealed sink construction
+// before calling it. Actual DNS/TCP/TLS follows Source, under F; verified peer
+// identity must precede any secret write. This borrow proves none of that IO.
 func (b *PreparedAPISendBorrowV1) Authorize() (time.Time, error) {
+	_, cutoff, err := b.AuthorizeNetworkUse()
+	return cutoff, err
+}
+
+// AuthorizeNetworkUse consumes the SAME once-only transition as Authorize.
+// The returned context is the original revocable Source/network context, not
+// the supervisor's separate bounded Final-drain context. It is cancellation
+// DATA, not a replacement send grant, caller-selected deadline or eligibility.
+func (b *PreparedAPISendBorrowV1) AuthorizeNetworkUse() (context.Context, time.Time, error) {
 	if b == nil || b.send == nil {
-		return time.Time{}, ErrCredentialUnavailable
+		return nil, time.Time{}, ErrCredentialUnavailable
 	}
 	send := b.send
 	if !send.mu.TryLock() {
 		b.Revoke()
-		return time.Time{}, ErrCredentialUnavailable
+		return nil, time.Time{}, ErrCredentialUnavailable
 	}
 	defer send.mu.Unlock()
 	if !send.bound {
-		return time.Time{}, ErrCredentialUnavailable
+		return nil, time.Time{}, ErrCredentialUnavailable
 	}
-	return send.authorizeLocked(send.body, send.profile)
+	cutoff, err := send.authorizeLocked(send.body, send.profile)
+	if err != nil {
+		send.invalid.Store(true)
+		send.revoke()
+		return nil, time.Time{}, err
+	}
+	return send.ctx, cutoff, nil
 }
 
 // Revoke is deliberately nonblocking. Cleanup calls it BEFORE joining any

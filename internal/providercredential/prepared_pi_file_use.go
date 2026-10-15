@@ -23,24 +23,27 @@ import (
 type PreparedPiFileUseV1 struct{ state *preparedPiFileUse }
 
 type preparedPiFileUse struct {
-	mu           sync.Mutex
-	file         *PreparedImmutableAPIFileV1
-	ledger       attachedworkerdaemon.PreparedAPILedgerV1
-	body         []byte
-	bodyHash     [sha256.Size]byte
-	profile      string
-	nonce        [32]byte
-	live         uint64
-	claimed      atomic.Bool
-	stopped      atomic.Bool
-	use          atomic.Pointer[immutableAPIFileUse]
-	clearErr     error
-	callback     uint8 // under mu:0 not started,1 active,2 joined/zeroed/unlocked
-	auth         *piRequestAuthentication
-	authPrepared bool
-	macAttempted atomic.Bool
-	http         *piHTTPReceive
-	httpPrepared bool
+	mu            sync.Mutex
+	file          *PreparedImmutableAPIFileV1
+	ledger        attachedworkerdaemon.PreparedAPILedgerV1
+	body          []byte
+	bodyHash      [sha256.Size]byte
+	profile       string
+	nonce         [32]byte
+	live          uint64
+	claimed       atomic.Bool
+	stopped       atomic.Bool
+	use           atomic.Pointer[immutableAPIFileUse]
+	clearErr      error
+	callback      uint8 // under mu:0 not started,1 active,2 joined/zeroed/unlocked
+	auth          *piRequestAuthentication
+	authPrepared  bool
+	macAttempted  atomic.Bool
+	http          *piHTTPReceive
+	httpPrepared  bool
+	network       atomic.Pointer[piHTTPS]
+	httpsPrepared bool
+	httpBorrow    atomic.Bool // a returned private response owns mu/use.gate
 }
 
 func (PreparedPiFileUseV1) String() string     { return "PreparedPiFileUseV1{private:[redacted]}" }
@@ -116,8 +119,8 @@ func (p *PreparedPiFileUseV1) Nonce() [32]byte {
 // and plan are locators/comparisons only. The daemon binder receives the actual
 // original owner's context/handle/plan, never those caller values as authority.
 // A bind spends this recipe even on denial, but never calls Source or performs
-// network IO. A future fixed transport must verify HMAC/file/request/TLS before
-// consuming the private retained send; no public Authorize/Exchange exists here.
+// network IO. A fixed transport verifies HMAC/file/request/sink construction
+// before consuming the original send; DNS/TCP/TLS then runs under its F.
 func (p *PreparedPiFileUseV1) BindMaterialized(ctx context.Context, handle ports.ProviderInvocationCredentialV1, plan ports.ProviderCredentialMaterializationV1,
 	sender attachedworkerdaemon.PreparedAPIPhysicalSendV1) error {
 	succeeded := false
@@ -221,6 +224,9 @@ func (s *preparedPiFileUse) abort() {
 			send.Revoke()
 		}
 	}
+	if network := s.network.Load(); network != nil {
+		network.withdraw()
+	}
 }
 
 func (s *preparedPiFileUse) beginCallback() bool {
@@ -250,6 +256,12 @@ func (p *PreparedPiFileUseV1) Close() error {
 	}
 	s := p.state
 	s.abort()
+	// A response borrow deliberately retains mu across its return to the SAME
+	// Materialize callback. Never make that callback wait for its own borrow.
+	// No aliases/debit can be cleared until the borrow closes and callback joins.
+	if s.httpBorrow.Load() {
+		return ErrConsumed
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	// Never wait for the callback while called inside that callback. Cancellation
@@ -258,6 +270,9 @@ func (p *PreparedPiFileUseV1) Close() error {
 		return ErrConsumed
 	}
 	s.use.Store(nil)
+	if network := s.network.Swap(nil); network != nil {
+		network.clear()
+	}
 	if s.http != nil {
 		s.http.clear()
 		s.http = nil

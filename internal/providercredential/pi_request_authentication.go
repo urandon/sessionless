@@ -24,6 +24,7 @@ type piRequestAuthentication struct {
 	binding, profile              [32]byte
 	endpoint                      string
 	headers                       []byte
+	requestHeaders                uint64
 	responseHeaders, responseBody uint64
 }
 
@@ -112,7 +113,7 @@ func (p *PreparedPiFileUseV1) PrepareRequestAuthenticationV1(request attachedwor
 	if e != nil {
 		return ErrInvalid
 	}
-	a := &piRequestAuthentication{endpoint: request.Profile.Model.Endpoint, responseHeaders: request.Profile.Limits.ResponseHeaderBytes, responseBody: request.Profile.Limits.ResponseBodyBytes}
+	a := &piRequestAuthentication{endpoint: request.Profile.Model.Endpoint, requestHeaders: request.Profile.Limits.RequestHeaderBytes, responseHeaders: request.Profile.Limits.ResponseHeaderBytes, responseBody: request.Profile.Limits.ResponseBodyBytes}
 	if _, e = hex.Decode(a.binding[:], []byte(binding)); e != nil {
 		return ErrInvalid
 	}
@@ -284,6 +285,13 @@ func (s *preparedPiFileUse) compareRequestMAC(frame pisdkhttpwire.Frame) (err er
 		return ErrConsumed
 	}
 	defer func() { use.gate <- struct{}{} }()
+	return s.compareRequestMACLocked(use, frame)
+}
+
+// The concrete file-owned network consumer retains BOTH s.mu and the genuine
+// use.gate while calling this helper, Source, TLS, receive and quarantine.
+// A successful comparison is never a transferable authorization witness.
+func (s *preparedPiFileUse) compareRequestMACLocked(use *immutableAPIFileUse, frame pisdkhttpwire.Frame) error {
 	f := s.file
 	if !use.active.Load() || use.ctx.Err() != nil || use.prepared != f || use.binding != f.binding || use.files != f.files ||
 		use.file == nil || !f.service.clock.Now().Before(use.handle.ExpiresAt) ||

@@ -571,6 +571,52 @@ actual EOF, cancellation and original F expiry. A test-owned process may prove
 these pipe mechanics; only the genuine source-selected driver and qualified
 SDK/profile can supply actual provider, semantic and native evidence.
 
+### Private coordinator core
+
+The private [coordinator](../../internal/attachedworkerdaemon/pi_http_coordinator.go)
+implements the structural state kernel without doing IO or accepting a driver
+implementation. Its read and write completion arguments are unqualified DATA.
+It constructs no public lease, Source permission or observation stamp. The
+original Supervisor must supply actual pipe provenance, fixed reader/writer
+ownership, cancellation and process joins before this kernel can be used for
+producer evidence.
+
+The kernel retains separate request and outbound arenas of `FrameBytes` each
+and a Final arena of `FinalBytes`. One fixed 21-byte input record holds a header
+and Pull metadata. A first-byte reservation fixes kind, index and prerequisite
+write epoch until that input completes; completing the prerequisite does not
+replace a partially received header. Both metadata admission and successful
+write completion call the same pending-control commit operation. A committed
+Pull becomes one credit; another prefix denies until the next Part consumes it.
+Final body admission waits for End commit. A nil driver return neither supplies
+Final/EOF nor stops the reader.
+
+Before allocating these arenas, debit the original ledger once. Let `F` be
+FrameBytes, `L` FinalBytes, `W` the maximum combined directional wire bytes and
+`E` maximum frame count from SPU3 accounting. Let `M` be the coordinator's Go
+object size plus Sequence wrapper/private state and its 512-byte SHA allowance.
+The private kernel reserves `2F + L + M` live bytes, seven logical allocation
+nodes, and `64W + 8F + 4L + 256E + M` byte-visits of work. The work bound covers
+snapshot/alias scans, validation, encoding/decoding, preflight and commit,
+hashing, zeroing and the first failed header. It does not replenish any other
+owner's pool or increase process/profile caps. A full profile must still fit
+the combined existing ledger, including the real reader's scratch and signals.
+
+Sequence accounting assumes the source-audited official Go 1.26.8 standard
+SHA256 constructor on Darwin/Linux amd64/arm64. Exclude alternate crypto build
+backends before creating the hash; check the funded fixed digest shape after
+construction only as drift defense. The runtime version/type check is not
+installed-artifact provenance or full allocator/native qualification.
+
+The kernel pins each borrowed outbound snapshot until its matching completion,
+the actual request until driver/subordinate-borrower return, and all input
+storage until reader return. Retirement first aborts and refuses to clear or
+refund beneath any such owner. Only live bytes are refunded. The kernel has no
+notification channels or blocking waits: the real pipe binding must separately
+fund its fixed signals and use condition rechecks, distinct reader/writer
+wakeups and broadcast cancellation. Structural event tests do not prove that
+future notification or actual-pipe implementation.
+
 ## Physical connection and deadlines
 
 ### Fixed HTTP receive boundary

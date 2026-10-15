@@ -23,19 +23,22 @@ import (
 type PreparedPiFileUseV1 struct{ state *preparedPiFileUse }
 
 type preparedPiFileUse struct {
-	mu       sync.Mutex
-	file     *PreparedImmutableAPIFileV1
-	ledger   attachedworkerdaemon.PreparedAPILedgerV1
-	body     []byte
-	bodyHash [sha256.Size]byte
-	profile  string
-	nonce    [32]byte
-	live     uint64
-	claimed  atomic.Bool
-	stopped  atomic.Bool
-	use      atomic.Pointer[immutableAPIFileUse]
-	clearErr error
-	callback uint8 // under mu:0 not started,1 active,2 joined/zeroed/unlocked
+	mu           sync.Mutex
+	file         *PreparedImmutableAPIFileV1
+	ledger       attachedworkerdaemon.PreparedAPILedgerV1
+	body         []byte
+	bodyHash     [sha256.Size]byte
+	profile      string
+	nonce        [32]byte
+	live         uint64
+	claimed      atomic.Bool
+	stopped      atomic.Bool
+	use          atomic.Pointer[immutableAPIFileUse]
+	clearErr     error
+	callback     uint8 // under mu:0 not started,1 active,2 joined/zeroed/unlocked
+	auth         *piRequestAuthentication
+	authPrepared bool
+	macAttempted atomic.Bool
 }
 
 func (PreparedPiFileUseV1) String() string     { return "PreparedPiFileUseV1{private:[redacted]}" }
@@ -253,6 +256,10 @@ func (p *PreparedPiFileUseV1) Close() error {
 		return ErrConsumed
 	}
 	s.use.Store(nil)
+	if s.auth != nil {
+		clear(s.auth.headers)
+		s.auth = nil
+	}
 	if s.file != nil {
 		f := s.file
 		f.service.mu.Lock()

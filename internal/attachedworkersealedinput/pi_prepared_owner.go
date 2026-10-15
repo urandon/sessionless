@@ -230,6 +230,9 @@ func (p *PiPreparedOwnerV1) PrepareOriginalAPIInvocation(ctx context.Context, id
 	if err != nil {
 		return data, err
 	}
+	if err := r.fileUse.PrepareRequestAuthenticationV1(data.ParentRequest); err != nil {
+		return data, err
+	}
 	r.init, err = pisdkmedia.PrepareInitV1(ctx, projection, p.config.ModelJSON, p.config.TimeoutMilliseconds, r.file)
 	if err != nil {
 		return data, err

@@ -7,6 +7,11 @@ import (
 	"testing"
 )
 
+func TestAuthenticationSourceHasStableDigestAndIndependentCopies(t *testing.T) {
+	t.Parallel()
+	checkModuleSource(t, "authentication.mjs", AuthenticationSource)
+}
+
 func TestFramingSourceHasStableDigestAndIndependentCopies(t *testing.T) {
 	t.Parallel()
 	checkModuleSource(t, "framing.mjs", FramingSource)

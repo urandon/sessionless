@@ -8,8 +8,12 @@ import (
 	"encoding/hex"
 )
 
-//go:embed framing.mjs response.mjs policy.mjs request.mjs stdio.mjs
+//go:embed framing.mjs response.mjs policy.mjs request.mjs stdio.mjs authentication.mjs
 var modules embed.FS
+
+// AuthenticationSource is SPU3 byte encoding DATA only. It is deliberately not
+// imported by the existing SPU2 request owner or selected as a runnable driver.
+func AuthenticationSource() ([]byte, string) { return moduleSource("authentication.mjs") }
 
 // FramingSource returns independent bytes and their digest for the trusted
 // supervisor's asset binding. This byte framer is not an effect/frame policy,

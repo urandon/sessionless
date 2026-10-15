@@ -497,6 +497,9 @@ Release and successful `RetireOriginalAPIStaging` on the original retirement
 context. The trusted parent must retire its actual owned resources; an arbitrary
 nil-error callback is not production provenance. Void `Custody.Clear` only
 relinquishes input buffers and cannot prove staging cleanup.
+Returned preparation resources also need retirement when admission validation
+rejects them, including an original deadline expiring after preparation. This
+does not authorize clearing caller-aliased buffers or restarting cleanup grace.
 
 Receipt retries use the original owner's retained immutable result and never
 rerun the provider. Foreign identity, replaced public result flags and incomplete

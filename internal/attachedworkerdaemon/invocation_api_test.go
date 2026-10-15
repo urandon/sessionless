@@ -72,6 +72,7 @@ type apiTestParent struct {
 	retirement   apiTestRetirement
 	order        []string
 	prepareErr   error
+	returnedErr  error // partial owned preparation plus error, distinct from nil-record failure
 	mutate       func(*PreparedAPIDataV1)
 	phaseErr     pisdkphasewire.Phase
 	phaseWindow  time.Duration
@@ -129,7 +130,7 @@ func (p *apiTestParent) PrepareOriginalAPIInvocation(ctx context.Context, id Inv
 	if p.mutate != nil {
 		p.mutate(p.data)
 	}
-	return p.data, nil
+	return p.data, p.returnedErr
 }
 func (p *apiTestParent) ObserveOriginalAPIPhase(_ context.Context, request pisdkphasewire.Request) (pisdkphasewire.Reply, error) {
 	p.order = append(p.order, string(request.Phase))

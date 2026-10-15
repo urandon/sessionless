@@ -353,6 +353,179 @@ func TestPiResultCustodyPreIssueAccountingAndPartition(t *testing.T) {
 	}
 }
 
+// These are original-clock expiry/ownership tests, not process/SDK tests. The
+// deadline channel is the expiry oracle (never a readiness sleep). Real Go
+// monotonic samples are necessary here: wall-only fake samples would instead
+// trigger the unrelated original provenance rejection. Staging is a test-owned
+// file retained privately by the parent, never a cleanup path taken from DATA.
+type piReturnedRetirementContext struct {
+	ctx   context.Context
+	calls int
+}
+
+func (r *piReturnedRetirementContext) Context() (context.Context, error) {
+	r.calls++
+	return r.ctx, nil
+}
+
+type piNilRetirementContext struct{ context.Context }
+
+func TestPiResultCustodyEarlyReturnedRecordRetirement(t *testing.T) {
+	for _, mode := range []string{"expired-original", "expired-cleanup-failed", "partial-record-error", "nil-retirement", "typed-nil-retirement", "nil-context", "typed-nil-context", "caller-alias"} {
+		t.Run(mode, func(t *testing.T) {
+			inv, parent, life := apiOwnerFixture(t)
+			ctx, cancel := context.WithTimeout(t.Context(), time.Hour)
+			t.Cleanup(cancel)
+			parent.retirement.selected, parent.retirement.cancel = context.WithTimeout(context.Background(), 2*time.Hour)
+			originalRetirement := parent.retirement.selected
+			stageDir := filepath.Join(t.TempDir(), "owned-staging")
+			stageFile := filepath.Join(stageDir, "public-fixture.txt")
+			var retireCalls, clearCalls, executeCalls int
+			var cleanupContext context.Context
+			malformedContext := &piReturnedRetirementContext{}
+			var events []string
+			callerHash := sha256.Sum256(inv.VerifiedInput.Context)
+			if mode == "partial-record-error" || mode == "nil-context" || mode == "typed-nil-context" {
+				parent.returnedErr = ErrInvocationInvalid
+			}
+			parent.mutate = func(data *PreparedAPIDataV1) {
+				if err := os.Mkdir(stageDir, 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(stageFile, []byte("public owned staging"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				switch mode {
+				case "expired-original", "expired-cleanup-failed":
+					// Select this exact process bound ONCE inside the original
+					// preparation, then actually exhaust it before returning owned
+					// data. Caller and original retirement remain independently live.
+					expiry, stop := context.WithDeadline(ctx, time.Now().Add(time.Millisecond))
+					defer stop()
+					data.ProcessDeadline, _ = expiry.Deadline()
+					<-expiry.Done()
+					if !errors.Is(expiry.Err(), context.DeadlineExceeded) || time.Now().Before(data.ProcessDeadline) {
+						t.Fatal("original process bound did not actually expire")
+					}
+				case "nil-retirement":
+					data.Retirement = nil
+				case "typed-nil-retirement":
+					var missing *apiTestRetirement
+					data.Retirement = missing
+				case "nil-context":
+					data.Retirement = malformedContext
+				case "typed-nil-context":
+					var missing *piNilRetirementContext
+					malformedContext.ctx = missing
+					data.Retirement = malformedContext
+				case "caller-alias":
+					data.ParentInput = inv.VerifiedInput
+				}
+			}
+			parent.retireStage = func(retirement context.Context, id InvocationIdentity, data *PreparedAPIDataV1) error {
+				retireCalls++
+				cleanupContext = retirement
+				events = append(events, "retire")
+				if id != inv.Identity || data != parent.data {
+					return ErrInvocationInvalid
+				}
+				if mode == "nil-retirement" || mode == "typed-nil-retirement" || mode == "nil-context" || mode == "typed-nil-context" {
+					if retirement != nil {
+						t.Error("missing original retirement replaced with new context")
+					}
+					return ErrInvocationInvalid
+				}
+				if retirement != originalRetirement || retirement.Err() != nil {
+					return ErrInvocationInvalid
+				}
+				if mode == "expired-cleanup-failed" {
+					return ErrInvocationInvalid
+				}
+				if err := os.Remove(stageFile); err != nil {
+					return err
+				}
+				return os.Remove(stageDir)
+			}
+			parent.afterClear = func() { clearCalls++; events = append(events, "clear") }
+			runner, err := NewPreparedAPIInvocationRunner(preparedExecutorFunc(func(context.Context, PreparedInvocationV1) (AttemptResult, error) {
+				executeCalls++
+				return AttemptResult{}, nil
+			}), life, parent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, runErr := runner.Run(ctx, inv)
+			if runErr == nil || executeCalls != 0 || life.handle.HandleID != "" || life.releaseCount != 0 || result.CredentialReleaseRequired {
+				t.Fatalf("%s crossed Issue/executor: result=%+v err=%v calls=%d order=%v", mode, result, runErr, executeCalls, parent.order)
+			}
+			if retireCalls != 1 {
+				t.Fatalf("%s actual staging retirement calls=%d, want1 before buffer Clear; events=%v", mode, retireCalls, events)
+			}
+			wantClear := 1
+			if mode == "caller-alias" {
+				wantClear = 0
+			}
+			if clearCalls != wantClear || parent.cleared != (wantClear == 1) {
+				t.Fatalf("%s Clear=%d want%d events=%v", mode, clearCalls, wantClear, events)
+			}
+			wantEvents := []string{"retire"}
+			if wantClear == 1 {
+				wantEvents = append(wantEvents, "clear")
+			}
+			if !reflect.DeepEqual(events, wantEvents) {
+				t.Fatalf("%s cleanup order=%v want%v", mode, events, wantEvents)
+			}
+			if sha256.Sum256(inv.VerifiedInput.Context) != callerHash {
+				t.Fatal("caller-aliased buffers were cleared")
+			}
+			failed := mode == "expired-cleanup-failed" || mode == "nil-retirement" || mode == "typed-nil-retirement" || mode == "nil-context" || mode == "typed-nil-context"
+			_, statErr := os.Stat(stageFile)
+			if failed && statErr != nil || !failed && !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("%s real staging residual=%v cleanupFailed=%t", mode, statErr, failed)
+			}
+			if (runner.Close(ctx) != nil) != failed {
+				t.Fatalf("%s Close did not preserve actual cleanup outcome", mode)
+			}
+			if mode == "nil-retirement" || mode == "typed-nil-retirement" {
+				if cleanupContext != nil || parent.retirement.calls != 0 {
+					t.Fatal("typed-nil original retirement invoked/replaced")
+				}
+			} else if mode == "nil-context" || mode == "typed-nil-context" {
+				if cleanupContext != nil || malformedContext.calls != 1 || parent.retirement.calls != 0 {
+					t.Fatal("malformed original context was invoked or renewed")
+				}
+			} else if cleanupContext != originalRetirement || parent.retirement.calls != 1 {
+				t.Fatal("original once-selected retirement identity/count changed")
+			}
+		})
+	}
+}
+
+func TestPiResultCustodyNilPreparationHasNoRetirement(t *testing.T) {
+	inv, parent, life := apiOwnerFixture(t)
+	parent.prepareErr = ErrInvocationInvalid
+	retired := 0
+	parent.retireStage = func(context.Context, InvocationIdentity, *PreparedAPIDataV1) error {
+		retired++
+		return ErrInvocationInvalid
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Hour)
+	t.Cleanup(cancel)
+	runner, err := NewPreparedAPIInvocationRunner(preparedExecutorFunc(func(context.Context, PreparedInvocationV1) (AttemptResult, error) {
+		t.Fatal("nil preparation executed")
+		return AttemptResult{}, nil
+	}), life, parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.Run(ctx, inv); err == nil || retired != 0 || parent.cleared || life.releaseCount != 0 {
+		t.Fatal("nil/no-resource preparation fabricated retirement or execution")
+	}
+	if err := runner.Close(ctx); err != nil {
+		t.Fatal("nil/no-resource preparation poisoned clean closure:", err)
+	}
+}
+
 func TestPiCustodyHelperProcess(t *testing.T) {
 	if os.Getenv(helperEnabled) != "1" {
 		return

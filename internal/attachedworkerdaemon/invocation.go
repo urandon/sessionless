@@ -275,18 +275,28 @@ func (runner *InvocationRunner) runOwnedPreparedAPI(ctx context.Context, invocat
 	// Prepare funds StageA/B/C and transfers independent owned originals plus
 	// child copies. The subscription Clone path is deliberately not used here.
 	data, err := runner.apiParent.PrepareOriginalAPIInvocation(ctx, invocation.Identity, invocation.VerifiedInput, invocation.Process)
+	var slot *piResultCustody
+	var handle ports.ProviderInvocationCredentialV1
+	var bufferCustody interface{ Clear() }
+	if data != nil {
+		// A returned record transfers its ORIGINAL resource retirement even
+		// with an error or expired/ineligible DATA. This trusted parent must
+		// retire its privately owned resource set, never delete DTO-selected
+		// paths. Eligibility and permission to clear caller buffers are separate.
+		defer func() {
+			if bufferCustody != nil {
+				defer bufferCustody.Clear()
+			}
+			runner.retirePiResources(invocation.Identity, data, handle, slot, &result, &runErr)
+		}()
+	}
 	callerIndependent, partitionsIndependent := apiMutableOwnership(data, invocation)
 	if callerIndependent && !nilPreparedAPIDependency(data.Custody) {
-		defer data.Custody.Clear()
+		bufferCustody = data.Custody
 	}
 	if err != nil || data == nil || !partitionsIndependent || data.validateOriginal(invocation, ctx) != nil {
 		return InvocationResult{FailureCode: "api_preparation_failed"}, ErrCredentialUnavailable
 	}
-	var slot *piResultCustody
-	var handle ports.ProviderInvocationCredentialV1
-	// The valid original parent also owns pre-Issue staging. Always retire it,
-	// including preparation-budget/phase/Issue failure, not only nonzero handles.
-	defer func() { runner.retirePiResources(invocation.Identity, data, handle, slot, &result, &runErr) }()
 	// This owner reserves its entire pending/final/receipt payload partition on
 	// the SAME accumulated ledger before allocation or Issue. It is not native
 	// fit, and cannot substitute for the missing genuine full parent admission.

@@ -225,8 +225,14 @@ func (r *InvocationRunner) beginPiInvocation(ctx context.Context, id InvocationI
 
 func (r *InvocationRunner) retirePiResources(id InvocationIdentity, data *PreparedAPIDataV1, handle ports.ProviderInvocationCredentialV1,
 	s *piResultCustody, result *InvocationResult, runErr *error) {
-	retirement, err := data.Retirement.Context()
-	valid := err == nil && retirement != nil && retirement.Done() != nil
+	var retirement context.Context
+	var err error
+	if data == nil || nilPreparedAPIDependency(data.Retirement) {
+		err = ErrInvocationInvalid
+	} else {
+		retirement, err = data.Retirement.Context()
+	}
+	valid := err == nil && !nilPreparedAPIDependency(retirement) && retirement.Done() != nil
 	if valid {
 		deadline, ok := retirement.Deadline()
 		valid = ok && deadline != deadline.Round(0)

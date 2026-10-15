@@ -54,8 +54,11 @@ not reset an existing plan's cutoff or spent ordinals. The claim method reuses
 that ordinary read set and serializes a one-way unissued-to-write-pending update
 in the same row. A duplicate claim cannot reissue a grant; transaction retries
 retain the first selected deadline or tighten it, and an outer transaction
-error discards any apparent callback success. Neither method has a signer or
-body sink. Native serialization is not yet proven. Structural validation is
+error discards any apparent callback success. Read-only reconciliation rechecks
+the same ordinary scope, nonce and original producer/final digests, preserves
+spent states and never turns expiry into settlement or deletion permission.
+None of these methods has a signer or body sink. Native serialization is not
+yet proven. Structural validation is
 not original-writer or full Source/provider/profile authority: authenticated
 control registration, effect-authorized signing, the private exporter, actual
 request join and native deletion races remain incomplete.

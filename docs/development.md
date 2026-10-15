@@ -138,15 +138,24 @@ make attached-worker-output-upload-test
 
 The suite covers closed upload-plan phases, immutable scope/key/digests,
 irreversible ordinal spending, noncanonical deletion inventory and a separate
-worker-output conditional-object signer. The signer uses explicit server-owned
+worker-output conditional-object signer. The bounded upload-control wire and
+unregistered HTTP adapter use the actual connection bearer binder and the
+existing admission/claim/read-only-reconciliation methods. HTTP integration
+tests use synthetic store results; they are not executed YDB transactions or
+current Source/provider authorization. Reconciliation cannot refund a claim or
+infer writer quiescence from expiry. The signer uses explicit server-owned
 HTTPS storage configuration, exact metadata/checksum/precondition binding and
 the original fixed cutoff; it does not reuse a browser upload grant. Fake
 AWS/IAM signing responses test bounded parsing and fail-closed drift, not actual
 platform signing, remote conditional writes or native persistence races.
 
 This is an unfinished #200 implementation stream, not a separately accepted
-helper or enabled media route. The real private producer/exporter, authenticated
-pre-first-Put admission/claim, complete original-ledger/control/deadline envelope,
+helper or enabled media route. The server control returns custody metadata with
+no capability; applied/replayed is not signing or PUT authority. The closed
+wire reserves five RPC shapes, not a completed client schedule or a whole
+HTTP/TLS/native allocation certificate. The real private producer/exporter,
+genuine current Source/profile authorization before signing, complete
+original-ledger/control/deadline envelope,
 single-send transport/alias retirement, canonical receipt/ACK continuation and
 normal #201 download path remain necessary. Unknown writes cannot be settled by
 expiry/readback, a config flag or a caller-populated Boolean. No local YDB,

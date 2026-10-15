@@ -112,9 +112,9 @@ func (daemon *Daemon) Run(parent context.Context) error {
 		pollCtx, pollCancel := context.WithCancel(parent)
 		daemon.setPollCancel(pollCancel)
 		invocation, available, err := daemon.source.Next(pollCtx)
-		pollCancel()
-		daemon.setPollCancel(nil)
 		if err != nil {
+			daemon.setPollCancel(nil)
+			pollCancel()
 			invocation.VerifiedInput.Clear()
 			if daemon.draining() || parent.Err() != nil {
 				return nil
@@ -122,6 +122,8 @@ func (daemon *Daemon) Run(parent context.Context) error {
 			return err
 		}
 		if !available {
+			daemon.setPollCancel(nil)
+			pollCancel()
 			invocation.VerifiedInput.Clear()
 			if !daemon.waitIdle(parent) {
 				return nil
@@ -129,21 +131,26 @@ func (daemon *Daemon) Run(parent context.Context) error {
 			continue
 		}
 		if invocation.Validate() != nil {
+			daemon.setPollCancel(nil)
+			pollCancel()
 			invocation.VerifiedInput.Clear()
 			return ErrInvocationInvalid
 		}
-		if !daemon.beginAttempt(invocation.Identity) {
+		if !daemon.beginAttempt(invocation.Identity, pollCancel) {
+			daemon.setPollCancel(nil)
+			pollCancel()
 			invocation.VerifiedInput.Clear()
 			return nil
 		}
-		attemptCtx, attemptCancel := context.WithCancel(parent)
-		daemon.setActiveCancel(attemptCancel)
-		result, runErr := daemon.runner.Run(attemptCtx, invocation)
-		// Run is synchronous: the runner no longer borrows these source-owned
-		// buffers. Keep the independent identity for the existing terminal owner.
-		invocation.VerifiedInput.Clear()
-		attemptCancel()
-		daemon.setActiveCancel(nil)
+		result, runErr := func() (InvocationResult, error) {
+			// The original acquisition context carries elapsed materialization
+			// and caller deadline into the SAME runner. Retire its source-owned
+			// buffers after synchronous Run returns, then cancel, never before.
+			defer daemon.setActiveCancel(nil)
+			defer pollCancel()
+			defer invocation.VerifiedInput.Clear()
+			return daemon.runner.Run(pollCtx, invocation)
+		}()
 		reportCtx, reportCancel := context.WithTimeout(context.WithoutCancel(parent), daemon.config.ReportGrace)
 		reportErr := daemon.sink.Complete(reportCtx, invocation.Identity, result, runErr)
 		reportCancel()
@@ -278,14 +285,19 @@ func (daemon *Daemon) setPollCancel(cancel context.CancelFunc) {
 	}
 }
 
-func (daemon *Daemon) beginAttempt(identity InvocationIdentity) bool {
+func (daemon *Daemon) beginAttempt(identity InvocationIdentity, cancel context.CancelFunc) bool {
 	daemon.mu.Lock()
 	defer daemon.mu.Unlock()
-	if daemon.state != DaemonRunning || daemon.active {
+	if daemon.state != DaemonRunning || daemon.active || cancel == nil {
 		return false
 	}
 	daemon.active = true
 	daemon.activeID = identity
+	// Admission and cancellation ownership move together. Drain sees either
+	// the pending acquisition cancel, or an accepted active attempt which it
+	// must leave running; CancelActive never sees an accepted install gap.
+	daemon.pollCancel = nil
+	daemon.activeCancel = cancel
 	daemon.activeCancelIssued = false
 	daemon.accepted++
 	daemon.publishLocked()

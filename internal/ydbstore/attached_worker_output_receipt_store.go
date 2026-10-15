@@ -170,7 +170,7 @@ func (store *Store) CreateAttachedWorkerOutputReceipt(
 		return result, ErrAttachedWorkerReceiptCopyInProgress
 	}
 	if err := planned.Commit(ctx); err != nil {
-		if errors.Is(err, ErrAttachedWorkerReceiptPutNotDispatched) {
+		if receiptCopyPutWasNotDispatched(err) {
 			return result, errors.Join(err, store.releaseAttachedWorkerReceiptCopy(ctx, record))
 		}
 		return result, err

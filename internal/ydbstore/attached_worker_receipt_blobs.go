@@ -103,3 +103,7 @@ func (planned *plannedReceiptBlobs) Commit(ctx context.Context) error {
 }
 
 var _ ports.BlobStore = (*plannedReceiptBlobs)(nil)
+
+func receiptCopyPutWasNotDispatched(err error) bool {
+	return errors.Is(err, ErrAttachedWorkerReceiptPutNotDispatched)
+}

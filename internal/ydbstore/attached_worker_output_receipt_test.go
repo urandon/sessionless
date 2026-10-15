@@ -64,6 +64,9 @@ func TestAttemptOutputUploadEmptyCanonicalObjectRejectsInvalidAndCorrupt(t *test
 			if !errors.Is(err, attachedworkeroutput.ErrCandidateInvalid) || upstream.puts != 1 {
 				t.Fatalf("invalid empty commit: mode=%s puts=%d err=%v", name, upstream.puts, err)
 			}
+			if receiptCopyPutWasNotDispatched(err) {
+				t.Errorf("ambiguous Put or verification failure must retain copy ownership: mode=%s err=%v", name, err)
+			}
 			if name == "put error" && !errors.Is(err, cause) {
 				t.Fatalf("lost original Put error: %v", err)
 			}
@@ -145,6 +148,45 @@ func TestAttemptOutputUploadEmptyTextMaterializeUsesActualPlanner(t *testing.T) 
 	}
 }
 
+func TestAttemptOutputUploadCopyReleaseRequiresActualPutStage(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, mode string
+		putAt      int
+		want       bool
+	}{
+		{name: "first Put proven not dispatched", mode: "put error", putAt: 1, want: true},
+		{name: "later Put after previous exact verified copy", mode: "put error", putAt: 2, want: true},
+		{name: "Open wraps same sentinel", mode: "open error"},
+		{name: "Read wraps same sentinel", mode: "readback error"},
+		{name: "Close wraps same sentinel", mode: "close error"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cause := errors.Join(errors.New("test-owned I/O cause"), ErrAttachedWorkerReceiptPutNotDispatched)
+			upstream := &receiptEmptyObjectTestStore{mode: tc.mode, cause: cause, failPutAt: tc.putAt}
+			planned := &plannedReceiptBlobs{upstream: upstream}
+			for _, key := range []string{"tenants/tenant-a/first", "tenants/tenant-a/second"} {
+				if _, err := planned.Put(t.Context(), "tenant-a", key, bytes.NewReader(nil)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err := planned.Commit(t.Context())
+			if !errors.Is(err, cause) || !errors.Is(err, ErrAttachedWorkerReceiptPutNotDispatched) {
+				t.Fatalf("original wrapped I/O cause must remain inspectable: mode=%s err=%v", tc.mode, err)
+			}
+			// This is the exact decision used by Create after actual Commit,
+			// not a manufactured native transaction or cleanup receipt.
+			if got := receiptCopyPutWasNotDispatched(err); got != tc.want {
+				t.Errorf("copy release classification: mode=%s puts=%d opens=%d got=%t want=%t err=%v", tc.mode, upstream.puts, upstream.opens, got, tc.want, err)
+			}
+			wantPuts := max(1, tc.putAt)
+			if upstream.puts != wantPuts {
+				t.Errorf("unexpected Put replay: got=%d want=%d", upstream.puts, wantPuts)
+			}
+		})
+	}
+}
+
 // Test-owned in-memory sink. No provider, storage service or database is used.
 type receiptEmptyObjectTestStore struct {
 	puts, opens int
@@ -152,6 +194,7 @@ type receiptEmptyObjectTestStore struct {
 	cause       error
 	ref         domain.BlobRef
 	values      map[string][]byte
+	failPutAt   int
 }
 
 func (s *receiptEmptyObjectTestStore) Put(_ context.Context, tenant domain.TenantID, key string, body io.Reader) (domain.BlobRef, error) {
@@ -160,7 +203,7 @@ func (s *receiptEmptyObjectTestStore) Put(_ context.Context, tenant domain.Tenan
 	if err != nil || len(content) > 1024 {
 		return domain.BlobRef{}, attachedworkeroutput.ErrCandidateInvalid
 	}
-	if s.mode == "put error" {
+	if s.mode == "put error" && (s.failPutAt == 0 || s.puts == s.failPutAt) {
 		return domain.BlobRef{}, s.cause
 	}
 	digest := sha256.Sum256(content)

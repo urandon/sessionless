@@ -373,8 +373,10 @@ func (p *executionTestParent) RetireOriginalAPIStaging(ctx context.Context, id a
 		return errors.New("synthetic staging retirement owner mismatch")
 	}
 	h := data.ParentInput.AcceptedAttempt
+	// InvocationIdentity carries the canonical numeric lease fence; the
+	// protocol FenceToken is its separately derived opaque string, not a number.
 	if id.TenantID != h.TenantID || id.OwnerUserID != h.OwnerUserID || id.WorkerID != h.WorkerID ||
-		id.RunID != h.RunID || id.AttemptID != h.AttemptID || id.LeaseID != h.LeaseID || id.FenceToken != uint64(h.FenceToken) {
+		id.RunID != h.RunID || id.AttemptID != h.AttemptID || id.LeaseID != h.LeaseID || id.FenceToken != h.LeaseGeneration {
 		return errors.New("synthetic staging retirement invocation mismatch")
 	}
 	if p.life.path != "" {

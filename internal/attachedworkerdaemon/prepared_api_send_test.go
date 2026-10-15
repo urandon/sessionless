@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/pisdkphasewire"
 )
 
@@ -194,16 +195,35 @@ func TestAPIOwnerPhysicalSendRequiredAndScoped(t *testing.T) {
 
 func TestAPIOwnerPhysicalCutoffCannotRenewAtFinalize(t *testing.T) {
 	inv, parent, life := apiOwnerFixture(t)
+	// This compares bounds, not expiry. Every original/phase lifetime exceeds
+	// the enclosing test/CI failure bound, including a lawful scheduler pause.
+	// Re-seal the modified synthetic job instead of weakening source validation.
+	inv.VerifiedInput.Job.Limits.MaxRuntime = time.Hour
+	expiry := time.Now().UTC().Truncate(time.Microsecond).Add(2 * time.Hour)
+	inv.VerifiedInput.AcceptedAttempt.LeaseExpiresAt = expiry
+	inv.VerifiedInput.Job.HarnessBinding.EvidenceExpiresAt = &expiry
+	digest, err := domain.AttachedWorkerJobContextDigestV1(inv.VerifiedInput.Job, inv.VerifiedInput.Manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inv.VerifiedInput.AcceptedAttempt.ContextDigest = digest
+	const physicalWindow = 30 * time.Minute
 	var sentCutoff time.Time
 	var finalizeRemaining uint64
 	parent.phaseMutate = func(request pisdkphasewire.Request, reply *pisdkphasewire.Reply) {
 		switch request.Phase {
+		case pisdkphasewire.PreIssue:
+			reply.UseExpiresAt = reply.CheckedAt.Add(time.Hour)
 		case pisdkphasewire.PhysicalSend:
 			// A shorter genuine server interval is represented only by this
 			// synthetic source. No expiry/sleep decides this test's outcome.
-			reply.UseExpiresAt = reply.CheckedAt.Add(10 * time.Second)
+			reply.UseExpiresAt = reply.CheckedAt.Add(physicalWindow)
 		case pisdkphasewire.ImmutableFinalize:
 			finalizeRemaining = request.CallerDeadline.RemainingNanoseconds
+			reply.UseExpiresAt = reply.CheckedAt.Add(physicalWindow)
+		}
+		if remaining := time.Duration(request.CallerDeadline.RemainingNanoseconds); reply.UseExpiresAt.Sub(reply.CheckedAt) > remaining {
+			reply.UseExpiresAt = reply.CheckedAt.Add(remaining)
 		}
 	}
 	runner, err := NewPreparedAPIInvocationRunner(preparedExecutorFunc(func(ctx context.Context, input PreparedInvocationV1) (AttemptResult, error) {
@@ -220,10 +240,10 @@ func TestAPIOwnerPhysicalCutoffCannotRenewAtFinalize(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
 	defer cancel()
 	result, err := runner.Run(ctx, inv)
-	if !result.Succeeded(err) || sentCutoff.IsZero() || finalizeRemaining == 0 || finalizeRemaining > uint64(10*time.Second) {
+	if !result.Succeeded(err) || sentCutoff.IsZero() || finalizeRemaining == 0 || finalizeRemaining > uint64(physicalWindow) {
 		t.Fatalf("physical window renewed: remaining=%d result=%+v err=%v", finalizeRemaining, result, err)
 	}
 }

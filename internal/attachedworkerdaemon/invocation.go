@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"reflect"
+	"sync"
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
@@ -131,13 +132,21 @@ type InvocationRunnerConfig struct {
 }
 
 type InvocationRunner struct {
-	process        ProcessRunner
-	prepared       PreparedProcessRunner
-	credentials    ports.CredentialLifecycle
-	grace          time.Duration
-	apiCredentials ports.ProviderResourceCredentialLifecycleV1
-	apiFinalizer   ports.ProviderCredentialImmutableFileFinalizerV1
-	apiParent      PreparedAPIParentV1
+	process         ProcessRunner
+	prepared        PreparedProcessRunner
+	credentials     ports.CredentialLifecycle
+	grace           time.Duration
+	apiCredentials  ports.ProviderResourceCredentialLifecycleV1
+	apiFinalizer    ports.ProviderCredentialImmutableFileFinalizerV1
+	apiParent       PreparedAPIParentV1
+	piMu            sync.Mutex
+	piSlot          *piResultCustody
+	piRunning       bool
+	piClosed        bool
+	piCleanupFailed bool
+	piLast          InvocationIdentity
+	piDone          chan struct{}
+	piCancel        context.CancelFunc
 }
 
 func NewInvocationRunner(
@@ -249,16 +258,55 @@ func (runner *InvocationRunner) runPreparedAPI(ctx context.Context, invocation I
 		invocation.VerifiedInput == nil || !invocation.VerifiedInput.bounded() {
 		return result, ErrInvocationInvalid
 	}
+	ctx, finish, err := runner.beginPiInvocation(ctx, invocation.Identity)
+	if err != nil {
+		return result, err
+	}
+	returned := false
+	defer func() { finish(result, runErr, returned) }()
+	// The owned call must return through ALL of its cleanup defers. A panic or
+	// Goexit in Release/staging/buffer relinquishment cannot mint completion.
+	result, runErr = runner.runOwnedPreparedAPI(ctx, invocation)
+	returned = true
+	return result, runErr
+}
+
+func (runner *InvocationRunner) runOwnedPreparedAPI(ctx context.Context, invocation Invocation) (result InvocationResult, runErr error) {
 	// Prepare funds StageA/B/C and transfers independent owned originals plus
 	// child copies. The subscription Clone path is deliberately not used here.
 	data, err := runner.apiParent.PrepareOriginalAPIInvocation(ctx, invocation.Identity, invocation.VerifiedInput, invocation.Process)
+	var slot *piResultCustody
+	var handle ports.ProviderInvocationCredentialV1
+	var bufferCustody interface{ Clear() }
+	if data != nil {
+		// A returned record transfers its ORIGINAL resource retirement even
+		// with an error or expired/ineligible DATA. This trusted parent must
+		// retire its privately owned resource set, never delete DTO-selected
+		// paths. Eligibility and permission to clear caller buffers are separate.
+		defer func() {
+			if bufferCustody != nil {
+				defer bufferCustody.Clear()
+			}
+			runner.retirePiResources(invocation.Identity, data, handle, slot, &result, &runErr)
+		}()
+	}
 	callerIndependent, partitionsIndependent := apiMutableOwnership(data, invocation)
 	if callerIndependent && !nilPreparedAPIDependency(data.Custody) {
-		defer data.Custody.Clear()
+		bufferCustody = data.Custody
 	}
 	if err != nil || data == nil || !partitionsIndependent || data.validateOriginal(invocation, ctx) != nil {
 		return InvocationResult{FailureCode: "api_preparation_failed"}, ErrCredentialUnavailable
 	}
+	// This owner reserves its entire pending/final/receipt payload partition on
+	// the SAME accumulated ledger before allocation or Issue. It is not native
+	// fit, and cannot substitute for the missing genuine full parent admission.
+	slot, err = preparePiResultCustody(invocation.Identity, data)
+	if err != nil {
+		return InvocationResult{FailureCode: "api_output_preparation_failed"}, ErrCredentialUnavailable
+	}
+	runner.piMu.Lock()
+	runner.piSlot = slot
+	runner.piMu.Unlock()
 	cutoff, err := runner.observeAPIPhase(ctx, data, pisdkphasewire.PreIssue, time.Time{})
 	if err != nil || ctx.Err() != nil || !time.Now().Before(cutoff) {
 		return InvocationResult{FailureCode: "api_pre_issue_failed"}, ErrCredentialUnavailable
@@ -276,34 +324,13 @@ func (runner *InvocationRunner) runPreparedAPI(ctx context.Context, invocation I
 		}}
 	defer send.retire()
 	issueStarted := time.Now()
-	handle, issueErr := runner.apiCredentials.IssueProviderCredential(useCtx, data.Issue)
+	slot.issued = true // irreversible attempt, even an ambiguous zero handle
+	var issueErr error
+	handle, issueErr = runner.apiCredentials.IssueProviderCredential(useCtx, data.Issue)
 	// Even an error accompanied by an actual returned handle retains cleanup
 	// ownership. A zero error handle is not fabricated release evidence.
 	if handle != (ports.ProviderInvocationCredentialV1{}) {
 		result.CredentialReleaseRequired = true
-		defer func() {
-			retirement, retirementErr := data.Retirement.Context()
-			validRetirement := retirementErr == nil && retirement != nil && retirement.Done() != nil
-			// This is the original owner's once-selected applicable cutoff, not
-			// fresh runner.grace or model-use permission. Expiry still attempts
-			// Release using the genuine original context and records its error.
-			if validRetirement {
-				deadline, ok := retirement.Deadline()
-				validRetirement = ok && deadline != deadline.Round(0)
-			}
-			// A malformed trusted owner cannot convert an unbounded Background
-			// context into cleanup. Still attempt the exact acquired handle with
-			// nil (canonical invalid context), never invent a replacement timer.
-			if !validRetirement {
-				retirement = nil
-			}
-			releaseErr := runner.apiCredentials.ReleaseProviderCredential(retirement, handle)
-			result.CredentialReleased = validRetirement && releaseErr == nil
-			if releaseErr != nil || !validRetirement {
-				result.FailureCode = "credential_release_failed"
-				runErr = errors.Join(runErr, ErrCredentialFinalization)
-			}
-		}()
 	}
 	if issueErr != nil || handle.Validate() != nil || !apiHandleMatches(handle, data.Issue) {
 		result.FailureCode = "credential_handle_mismatch"
@@ -336,8 +363,12 @@ func (runner *InvocationRunner) runPreparedAPI(ctx context.Context, invocation I
 			PhysicalSend: send,
 			Ledger:       data.Ledger, apiIssueStarted: issueStarted,
 		})
+		// Raw capture only, never a completed/frozen witness before callback
+		// unlock, Finalize, Release and the actual staging operation above.
+		slot.capture(result.Process, send, data, handle, plan)
 		return processErr
 	})
+	slot.callbackReturned = true
 	// Genuine synchronous Materialize has now returned/unlocked. Neither its
 	// return nor a nil process error alone proves actual process quiescence.
 	if materializeErr != nil || callbacks != 1 || processErr != nil || sendCutoff.IsZero() || !result.Process.DescendantsReaped ||
@@ -357,6 +388,7 @@ func (runner *InvocationRunner) runPreparedAPI(ctx context.Context, invocation I
 		result.FailureCode = "credential_finalize_failed"
 		return result, ErrCredentialFinalization
 	}
+	slot.fileFinalized = true
 	return result, nil
 }
 

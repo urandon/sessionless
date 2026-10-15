@@ -118,8 +118,23 @@ func (v PreparedAPIDataV1) GoString() string { return v.String() }
 // ordinary constructors/materializers remain API-denying. Synthetic local
 // collaborators qualify orchestration only, never serving/source/S/hard-F.
 type PreparedAPIParentV1 interface {
+	// Every nonnil returned record transfers SAME-parent staging retirement,
+	// even when accompanied by an error or later found ineligible/expired.
+	// This does not transfer permission to Clear caller-aliased buffers. The
+	// parent must retain private resource ownership, not derive cleanup from
+	// paths in an unvalidated record. With a nil record it retains cleanup.
 	PrepareOriginalAPIInvocation(context.Context, InvocationIdentity, *VerifiedAttachedInputV1, AttemptSpec) (*PreparedAPIDataV1, error)
 	ObserveOriginalAPIPhase(context.Context, pisdkphasewire.Request) (pisdkphasewire.Reply, error)
+	// RetireOriginalAPIStaging invokes the SAME original preparation's actual
+	// resource owner after any acquired credential's Release attempt, or on
+	// pre-Issue rejection, using its once-selected original
+	// retirement context. Clear only relinquishes buffers and is NOT this proof.
+	// A nil error from arbitrary DI is not provenance: the fixed trusted parent
+	// must own the exact data/resources (including a proven empty resource set).
+	// Missing/malformed retirement receives nil context, fails closed, and may
+	// not mint a fresh grace; the parent must report unresolved resource cleanup.
+	// No shipped production parent currently implements that complete contract.
+	RetireOriginalAPIStaging(context.Context, InvocationIdentity, *PreparedAPIDataV1) error
 }
 
 func nilPreparedAPIDependency(value any) bool {

@@ -30,7 +30,7 @@ import (
 func TestPreparedPiSameOriginalSupervisor(t *testing.T) {
 	const node = "/opt/homebrew/Cellar/node@24/24.19.0/bin/node"
 	const sdk = "/Volumes/hubdisk/workspace/ai/sessionless/.gitcode/native-build/pi-sdk-6c4f36-catalog-9c40af/source"
-	for _, mode := range []string{"history", "snapshot-tail", "close-during-send", "mutated-final", "foreign-model", "foreign-schema", "foreign-headers", "foreign-head", "foreign-ledger", "foreign-file", "forged-physical-cap", "altered-argv", "altered-env", "cancel-before-execute", "denied-physical", "release-failed"} {
+	for _, mode := range []string{"history", "snapshot-tail", "close-during-send", "mutated-final", "foreign-model", "foreign-schema", "foreign-headers", "foreign-head", "foreign-ledger", "foreign-file", "forged-physical-cap", "altered-argv", "altered-env", "cancel-before-execute", "denied-physical", "release-failed", "staging-cleanup-failed"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
 			defer cancel()
@@ -121,7 +121,7 @@ func TestPreparedPiSameOriginalSupervisor(t *testing.T) {
 			}()
 			retirement, stopRetirement := context.WithTimeout(context.Background(), 2*time.Hour)
 			defer stopRetirement()
-			parent := &executionTestParent{request: expected, process: process, issue: credentials.request, ledger: ledger, retirement: retirement, execution: execution, deny: mode == "denied-physical", closeDuring: mode == "close-during-send"}
+			parent := &executionTestParent{request: expected, process: process, issue: credentials.request, ledger: ledger, retirement: retirement, execution: execution, deny: mode == "denied-physical", closeDuring: mode == "close-during-send", cleanupFailed: mode == "staging-cleanup-failed"}
 			life := &executionTestLifecycle{initCredentials: credentials, order: &parent.order, releaseFailed: mode == "release-failed"}
 			parent.life = life
 			executor := &executionTestMutator{execution: execution, mode: mode, badModel: bytes.Clone(model), badSchema: bytes.Clone(cfg.FinalSchema), badHeaders: bytes.Clone(headers.out), badLedger: fixtureLedger(t, cfg.Profile.Limits), cancel: cancel}
@@ -146,9 +146,44 @@ func TestPreparedPiSameOriginalSupervisor(t *testing.T) {
 				if !result.Succeeded(runErr) || finalErr != nil || final.Answer != "native entry answer" || len(final.Artifacts) != 0 {
 					t.Fatalf("same owner result: run=%v final=%v failure=%s process=%v launches=%d order=%v prepared=%v accounting=%+v remaining=%+v", runErr, finalErr, result.FailureCode, result.Process, launcher.launches, parent.order, parent.data != nil, ledger.Accounting(), ledger.Remaining())
 				}
-				want := []string{"prepare", "pre_issue", "issue", "materialize", "physical_send", "unlocked", "immutable_finalize", "finalize", "release", "clear"}
+				want := []string{"prepare", "pre_issue", "issue", "materialize", "physical_send", "unlocked", "immutable_finalize", "finalize", "release", "staging_cleanup", "clear"}
 				if !reflect.DeepEqual(parent.order, want) {
 					t.Fatalf("owner order=%v want=%v", parent.order, want)
+				}
+				// This result comes from the real original InvocationService,
+				// SAME Supervisor and genuine SDK with fake HTTP/Source only.
+				// It is private local custody proof, not a server receipt/ACK.
+				candidate, err := runner.ReceiptCandidate(id, result, runErr, domain.AttachedWorkerTerminalSucceeded)
+				if err != nil || candidate.Summary != final.Answer || len(candidate.Artifacts) != 0 {
+					t.Fatalf("actual original private candidate: err=%v", err)
+				}
+				repeated, err := runner.ReceiptCandidate(id, result, runErr, domain.AttachedWorkerTerminalSucceeded)
+				if err != nil || !reflect.DeepEqual(repeated, candidate) {
+					t.Fatal("private candidate changed on local receipt retry")
+				}
+				forged := result
+				forged.CredentialReleased = false
+				if _, err := runner.ReceiptCandidate(id, forged, nil, domain.AttachedWorkerTerminalSucceeded); err == nil {
+					t.Fatal("caller-replaced cleanup result accepted")
+				}
+				foreign := id
+				foreign.AttemptID += "-foreign"
+				if _, err := runner.ReceiptCandidate(foreign, result, nil, domain.AttachedWorkerTerminalSucceeded); err == nil {
+					t.Fatal("foreign invocation obtained original private candidate")
+				}
+				if _, err := runner.Run(ctx, attachedworkerdaemon.Invocation{Identity: id, Process: process, VerifiedInput: input}); err == nil {
+					t.Fatal("pending private output permitted another original invocation")
+				}
+				if runner.RetireReceipt(foreign) == nil {
+					t.Fatal("foreign invocation retired original private output")
+				}
+				// Exercise only local owner retirement here. Transport journal,
+				// remote publication and exact TerminalAck belong to #201.
+				if err := runner.RetireReceipt(id); err != nil {
+					t.Fatal("local private output retirement:", err)
+				}
+				if err := runner.Close(ctx); err != nil {
+					t.Fatal("retired private owner close:", err)
 				}
 			} else if mode == "mutated-final" {
 				if runErr != nil || finalErr == nil {
@@ -156,6 +191,13 @@ func TestPreparedPiSameOriginalSupervisor(t *testing.T) {
 				}
 			} else if runErr == nil || finalErr == nil {
 				t.Fatalf("mode=%s invalid original lifecycle made usable final", mode)
+			}
+			if mode == "release-failed" || mode == "staging-cleanup-failed" {
+				forged := result
+				forged.CredentialReleased, forged.FailureCode = true, ""
+				if _, err := runner.ReceiptCandidate(id, forged, nil, domain.AttachedWorkerTerminalSucceeded); err == nil {
+					t.Fatal("public flags replaced actual failed original cleanup")
+				}
 			}
 			if life.issues != 1 || life.materializes != 1 || life.releases != 1 || life.active {
 				t.Fatalf("lifecycle counters issue=%d materialize=%d release=%d active=%v", life.issues, life.materializes, life.releases, life.active)
@@ -266,6 +308,7 @@ type executionTestParent struct {
 	order                     []string
 	deny                      bool
 	closeDuring, closeBlocked bool
+	cleanupFailed             bool
 	clonePayload              uint64
 }
 
@@ -321,6 +364,32 @@ func (p *executionTestParent) PrepareOriginalAPIInvocation(ctx context.Context, 
 	return p.data, nil
 }
 func (p *executionTestParent) Context() (context.Context, error) { return p.retirement, nil }
+func (p *executionTestParent) RetireOriginalAPIStaging(ctx context.Context, id attachedworkerdaemon.InvocationIdentity, data *attachedworkerdaemon.PreparedAPIDataV1) error {
+	// This closed synthetic parent creates no filesystem staging beyond the
+	// actual InvocationService credential file. Verify that same owner has
+	// released it; Clear below only relinquishes funded input buffers.
+	if ctx == nil || ctx != p.retirement || ctx.Err() != nil || data == nil || data != p.data ||
+		data.ParentInput == nil || p.life == nil || p.life.active {
+		return errors.New("synthetic staging retirement owner mismatch")
+	}
+	h := data.ParentInput.AcceptedAttempt
+	// InvocationIdentity carries the canonical numeric lease fence; the
+	// protocol FenceToken is its separately derived opaque string, not a number.
+	if id.TenantID != h.TenantID || id.OwnerUserID != h.OwnerUserID || id.WorkerID != h.WorkerID ||
+		id.RunID != h.RunID || id.AttemptID != h.AttemptID || id.LeaseID != h.LeaseID || id.FenceToken != h.LeaseGeneration {
+		return errors.New("synthetic staging retirement invocation mismatch")
+	}
+	if p.life.path != "" {
+		if _, err := os.Lstat(p.life.path); !os.IsNotExist(err) || p.life.releases != 1 {
+			return errors.New("actual credential file not retired before staging cleanup")
+		}
+	}
+	p.order = append(p.order, "staging_cleanup")
+	if p.cleanupFailed {
+		return errors.New("synthetic staging retirement failure after actual Release")
+	}
+	return nil
+}
 func (p *executionTestParent) Clear() {
 	p.order = append(p.order, "clear")
 	if p.data == nil {

@@ -487,6 +487,27 @@ through `FinalData` and `Close`, then clear its originals. FinalData is one-shot
 strict parsed DATA gated by this actual observation and successful result DATA,
 not private finalization/custody evidence manufactured from public flags.
 
+The same API `InvocationRunner` separately owns a private pending-result slot;
+`FinalData` is not its authority. A genuine supervisor observation must belong
+to that exact original send, plan, head, profile, schema and accumulated ledger.
+Private result storage is funded before Issue. Capturing raw data before borrowed
+buffers clear is not a completed producer: immutable result eligibility follows
+actual process/pipe joins, callback unlock, fresh immutable Finalize, unconditional
+Release and successful `RetireOriginalAPIStaging` on the original retirement
+context. The trusted parent must retire its actual owned resources; an arbitrary
+nil-error callback is not production provenance. Void `Custody.Clear` only
+relinquishes input buffers and cannot prove staging cleanup.
+
+Receipt retries use the original owner's retained immutable result and never
+rerun the provider. Foreign identity, replaced public result flags and incomplete
+cleanup cannot create a candidate. Declared text/JSON artifact contents remain
+private; their success receipt is denied until the genuine bounded pre-Put
+capability, upload and custody implementation exists. They are not silently
+omitted or converted into fabricated object references. Local owner retirement
+tests are not the authenticated journal/TerminalAck join required by #201.
+The genuine full parent and ordinary Stack/preflight Pi selection remain required;
+this private custody work does not enable a serving profile or complete #200.
+
 With the existing exact local SDK/Node prerequisites only,
 `go test -tags=pi_sdk_functional -race -count=1 -run
 '^TestPreparedPiSameOriginalSupervisor$' -timeout=150s ./internal/pisdkmedia`
@@ -495,7 +516,9 @@ concrete executor, Supervisor, credential service and genuine Pi/standard SDK.
 History/snapshot-tail, postvalidation model/schema/header/head/ledger/file/argv/
 environment substitution, forged public send, callback cancellation, Source
 denial, Close during active send, post-run raw-final mutation and failed Release
-are distinct controls.
+are distinct controls. Staging retirement failure and private result identity,
+retry, no-second-Run and local retirement checks cover the same real credential
+service composition; a synthetic parent still does not prove Source/native fit.
 Source transactions, OS isolation and HTTP remain explicit synthetic test
 collaborators; a passing test does not establish a serving profile or egress.
 Ordinary `TestPreparedPiExecutionBeforeIssueOwnershipAndDenials` launches nothing

@@ -17,6 +17,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/pisdkphasewire"
+	"gitcode.com/urandon/sessionless/internal/ports"
 )
 
 // PreparedPiStdioV1 owns prospectively funded GO payload buffers only. It is
@@ -34,6 +35,7 @@ type PreparedPiStdioV1 struct {
 	final          []byte
 	state          atomic.Uint32 // 0 prepared, 1 running, 2 returned, 3 cleared
 	preparedAt     time.Time
+	observation    *PiStdioObservationV1 // allocated/funded BEFORE Issue
 }
 
 func (*PreparedPiStdioV1) String() string     { return "PreparedPiStdioV1{data:[redacted]}" }
@@ -72,12 +74,13 @@ func (s *Supervisor) PreparePiStdioV1(p domain.AttachedPiSDKNativeProfileV1, led
 	// decoded Final overlap. Fixed header/use bytes are included prospectively.
 	// 8F+6B+6L+2048 conservatively covers app copies/scans/hash/compare, not
 	// native allocations. All terms <=1MiB so these uint64 sums cannot overflow.
-	live := 2*frame + l.RequestBodyBytes + l.FinalBodyBytes + 64 + 43
-	work := 8*frame + 6*l.RequestBodyBytes + 6*l.FinalBodyBytes + 2048
+	metadata := uint64(reflect.TypeOf(PiStdioObservationV1{}).Size()) + uint64(reflect.TypeOf(piObservationStamp{}).Size())
+	live := 2*frame + l.RequestBodyBytes + l.FinalBodyBytes + 64 + 43 + metadata
+	work := 8*frame + 6*l.RequestBodyBytes + 6*l.FinalBodyBytes + 2048 + metadata
 	if ledger.Reserve(work, live, pisdkphasewire.ChildMetadataNodes) != nil {
 		return nil, ErrSupervisorConfig
 	}
-	plan := &PreparedPiStdioV1{owner: s, profile: p, limits: l, ledger: ledger, live: live, init: make([]byte, int(frame)), assembly: make([]byte, int(frame))}
+	plan := &PreparedPiStdioV1{owner: s, profile: p, limits: l, ledger: ledger, live: live, init: make([]byte, int(frame)), assembly: make([]byte, int(frame)), observation: &PiStdioObservationV1{stamp: &piObservationStamp{}}}
 	plan.preparedAt = time.Now() // AFTER reservation and both arena allocations
 	return plan, nil
 }
@@ -104,6 +107,10 @@ func (p *PreparedPiStdioV1) Close() error {
 	p.init = nil
 	p.assembly = nil
 	p.final = nil
+	if p.observation != nil {
+		p.observation.send, p.observation.ledger = nil, nil
+		p.observation.credential, p.observation.materialization = ports.ProviderInvocationCredentialV1{}, ports.ProviderCredentialMaterializationV1{}
+	}
 	return p.ledger.EndLive(p.live)
 }
 
@@ -114,7 +121,24 @@ type PiStdioObservationV1 struct {
 	StdoutDigest [sha256.Size]byte
 	FinalDigest  [sha256.Size]byte
 	Final        []byte
+	stamp        *piObservationStamp
+	// Only SAME RunPreparedPi fills this private original association after
+	// actual process/pump joins. The public DATA accessor strips it. No plan,
+	// input, credential path or key is retained through output custody.
+	send            *preparedAPIPhysicalSend
+	identity        InvocationIdentity
+	head            domain.AttachedWorkerAttemptV1
+	profile         domain.AttachedPiSDKNativeProfileV1
+	ledger          PreparedAPILedgerV1
+	requestHash     [4][sha256.Size]byte
+	credential      ports.ProviderInvocationCredentialV1
+	materialization ports.ProviderCredentialMaterializationV1
 }
+
+// Nonzero-sized private identity allocated by the real Supervisor plan BEFORE
+// Issue. It carries no context, buffer, credential or capability and has no
+// public constructor/accessor. It only identifies that actual observation.
+type piObservationStamp struct{ identity byte }
 
 func (PiStdioObservationV1) String() string     { return "PiStdioObservationV1{data:[redacted]}" }
 func (p PiStdioObservationV1) GoString() string { return p.String() }
@@ -122,7 +146,7 @@ func (r AttemptResult) PiStdioObservationV1() (PiStdioObservationV1, bool) {
 	if r.piStdio == nil {
 		return PiStdioObservationV1{}, false
 	}
-	return *r.piStdio, true
+	return PiStdioObservationV1{StdoutDigest: r.piStdio.StdoutDigest, FinalDigest: r.piStdio.FinalDigest, Final: r.piStdio.Final}, true
 }
 
 // RunPreparedPi executes through SAME Run, not another process/credential owner.
@@ -175,7 +199,18 @@ func (s *Supervisor) RunPreparedPi(parent context.Context, invocation PreparedIn
 		!result.DescendantsReaped || !result.BoundaryReleased || !result.CleanupSucceeded {
 		return result, err
 	}
-	observation := &PiStdioObservationV1{Final: p.final, FinalDigest: sha256.Sum256(p.final)}
+	observation := p.observation
+	observation.Final, observation.FinalDigest = p.final, sha256.Sum256(p.final)
+	if invocation.VerifiedInput != nil && len(invocation.APIRequest.Model) > 0 && len(invocation.APIRequest.Schema) > 0 && len(invocation.APIRequest.Headers) > 0 &&
+		uint64(len(invocation.APIRequest.Model)) <= p.profile.Limits.NativeRequestBytes && uint64(len(invocation.APIRequest.Schema)) <= p.profile.Limits.NativeRequestBytes &&
+		uint64(len(invocation.APIRequest.Headers)) <= p.profile.Limits.RequestHeaderBytes {
+		observation.send, observation.identity, observation.head = send, invocation.Identity, invocation.VerifiedInput.AcceptedAttempt
+		observation.profile, observation.ledger = p.profile, invocation.Ledger
+		observation.credential, observation.materialization = invocation.Credential, invocation.Materialization
+		for i, v := range [][]byte{invocation.APIRequest.Body, invocation.APIRequest.Model, invocation.APIRequest.Schema, invocation.APIRequest.Headers} {
+			observation.requestHash[i] = sha256.Sum256(v)
+		}
+	}
 	b.digest.Sum(observation.StdoutDigest[:0])
 	result.piStdio = observation
 	return result, nil

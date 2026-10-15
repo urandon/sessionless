@@ -79,6 +79,9 @@ type apiTestParent struct {
 	cleared      bool
 	ownedInputs  []*VerifiedAttachedInputV1
 	ownedBuffers [][]byte
+	ownedLive    uint64
+	retireStage  func(context.Context, InvocationIdentity, *PreparedAPIDataV1) error
+	afterClear   func()
 }
 
 func (p *apiTestParent) PrepareOriginalAPIInvocation(ctx context.Context, id InvocationIdentity, input *VerifiedAttachedInputV1, process AttemptSpec) (*PreparedAPIDataV1, error) {
@@ -91,6 +94,7 @@ func (p *apiTestParent) PrepareOriginalAPIInvocation(ctx context.Context, id Inv
 	if err := p.ledger.Reserve(8*maxVerifiedAttachedInputBytes, 8*maxVerifiedAttachedInputBytes, 1000); err != nil {
 		return nil, err
 	}
+	p.ownedLive = 8 * maxVerifiedAttachedInputBytes
 	a, err := input.Clone()
 	if err != nil {
 		return nil, err
@@ -160,7 +164,23 @@ func (p *apiTestParent) Clear() {
 	}
 	clear(p.data.ParentProcess.Stdin)
 	clear(p.data.ChildProcess.Stdin)
-	_ = p.ledger.EndLive(p.ledger.live) // live-only relinquishment; cumulative stays
+	_ = p.ledger.EndLive(p.ownedLive) // never retire another output/stdio owner's live bytes
+	p.ownedLive = 0
+	if p.afterClear != nil {
+		p.afterClear()
+	}
+}
+
+func (p *apiTestParent) RetireOriginalAPIStaging(ctx context.Context, id InvocationIdentity, data *PreparedAPIDataV1) error {
+	if p.retireStage != nil {
+		return p.retireStage(ctx, id, data)
+	}
+	// This synthetic parent owns buffers only; the credential owner separately
+	// owns its file. This is not production nil-error provenance.
+	if ctx == nil || ctx.Err() != nil || ctx != p.retirement.selected || data != p.data || id.RunID != data.Issue.HarnessBinding.RunID {
+		return ErrInvocationInvalid
+	}
+	return nil
 }
 
 type apiTestLifecycle struct {
@@ -392,8 +412,8 @@ func TestAPIOwnerSameRunnerOrderAndOwnedMutationIsolation(t *testing.T) {
 	if _, err := os.Lstat(life.plan.FilePath); !errors.Is(err, os.ErrNotExist) {
 		t.Error("actual credential file survived successful Release")
 	}
-	if parent.ledger.copy == 0 || parent.ledger.nodes == 0 || parent.ledger.live != 0 {
-		t.Error("shared cumulative debit/live ownership lost")
+	if parent.ledger.copy == 0 || parent.ledger.nodes == 0 || parent.ledger.live == 0 {
+		t.Error("independent output custody reservation was not retained")
 	}
 }
 

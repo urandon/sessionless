@@ -120,6 +120,13 @@ func (v PreparedAPIDataV1) GoString() string { return v.String() }
 type PreparedAPIParentV1 interface {
 	PrepareOriginalAPIInvocation(context.Context, InvocationIdentity, *VerifiedAttachedInputV1, AttemptSpec) (*PreparedAPIDataV1, error)
 	ObserveOriginalAPIPhase(context.Context, pisdkphasewire.Request) (pisdkphasewire.Reply, error)
+	// RetireOriginalAPIStaging invokes the SAME original preparation's actual
+	// resource owner after credential Release, using its once-selected original
+	// retirement context. Clear only relinquishes buffers and is NOT this proof.
+	// A nil error from arbitrary DI is not provenance: the fixed trusted parent
+	// must own the exact data/resources (including a proven empty resource set).
+	// No shipped production parent currently implements that complete contract.
+	RetireOriginalAPIStaging(context.Context, InvocationIdentity, *PreparedAPIDataV1) error
 }
 
 func nilPreparedAPIDependency(value any) bool {

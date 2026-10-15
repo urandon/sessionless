@@ -1,11 +1,13 @@
 # Pi SDK attached media profile
 
-Version: 0.1.3, 2026-10-13.
+Version: 0.1.4, native supervisor transport draft.
 Owner: [#202](https://gitcode.com/urandon/sessionless/issues/202), under
 [#72](https://gitcode.com/urandon/sessionless/issues/72).
-Status: engineering contract accepted under agreed-MVP delegation following
-independent requirements-led review. Publication and implementation remain
-separate; no eligible runtime profile or activation is created by this document.
+Status: the 0.1.3 engineering contract remains accepted under agreed-MVP
+delegation. The private native supervisor transport section is an engineering
+elaboration pending independent requirements-led review. Publication and
+implementation remain separate; no eligible runtime profile or activation is
+created by this document.
 Version 0.1.2 adds the accepted attached API authority and spending contract.
 Version 0.1.3 explicitly amends its previously undefined `CallerDeadline`
 representation to distributed server/parent enforcement, without assuming
@@ -578,6 +580,185 @@ unknown tariffs and genuine restored controls. Mapping replacement must deny
 new use without upgrading old jobs or preventing committed historical ACK.
 Retain complete original canonical/media, cancellation/failure/control,
 subscription and managed cohorts, not smaller guard-only fixtures.
+
+## Private native supervisor transport
+
+This proposed elaboration completes the local transport choice; it does not
+change the authenticated Source operation, owner/resource authority, native
+media promise or rollout requirements above. Keep the real Pi loop, provider,
+SDK request construction and parser. A parent authorization callback alone is
+not this executable transport or actual-sink deadline enforcement.
+
+### Same supervisor, duplex standard streams
+
+Extend the existing `Supervisor` through one explicitly selected private Pi
+prepared arm. Preserve the ordinary static-stdin path, replacement environment,
+exact executable/argv attestation, output limits and original teardown/result
+ownership. The parent, not the launcher or child, owns protocol parsing and
+authorization. The launcher's command must still arrive with no stdin/stdout
+overrides and zero `ExtraFiles`; attach the reviewed streams only after the
+existing command and inner-workload attestation checks.
+
+Use framed duplex stdin/stdout, not a second runner, network sidecar, listening
+socket, inherited descriptor or launcher-supplied callback. This also preserves
+the distinction between an outer OCI attach client and the attested inner
+workload: an extra descriptor on the client is not proof of an inner channel.
+The OCI launcher already selects attached interactive standard input; its
+actual framing/EOF/backpressure behavior still needs qualification.
+
+The initial private input contains only the already funded canonical/native
+projection, immutable profile/config and original credential-file locator.
+It contains no API key, bearer, lifecycle port, upload capability or source
+selector. File reading must retain the original file-only/immutable Finalize
+contract. Do not discover HOME, settings, OAuth, catalog, plugins or sessions.
+The initialization frame is data, not an admission/fit/authority certificate.
+
+### One closed process protocol
+
+Define one canonical private transport version `SPU2`; do not accept a legacy
+magic/alias or infer a version from a partial frame. The existing non-serving
+`SPU1` helpers are a predecessor, not a second production protocol to support.
+The header remains 17 bytes: four-byte magic, one kind byte, big-endian uint32
+metadata length, then big-endian uint64 body length. Inspect and bound the
+header before allocating/reading either declared region. No resynchronization,
+line scanning, trailing data, retry or frame search follows malformed input.
+
+| Kind | Direction and exact content |
+| --- | --- |
+| 1, initialize | Parent to child; zero metadata; complete bounded private input body, once. |
+| 2, physical request | Child to parent; the existing closed 129-byte version1 `physical_send`/backend-profile metadata; complete original request UTF-8 body, once. |
+| 3, use result | Parent to child; exactly nine metadata bytes: status0 or1, then big-endian uint64 remaining nanoseconds; zero body. Denial is status0/remaining0; success requires status1/remaining1..MaxInt64. No other combination. |
+| 4, structured final | Child to parent; zero metadata; exact provider-authored strict structured-final UTF-8 bytes, once after successful use. |
+| 5, retire | Parent to child; zero metadata/body; at most once, always revokes model use and never starts cleanup permission. |
+
+Only the initial frame can precede SDK construction. The child may request
+physical use only at the trusted sole fetch hook after full actual SDK
+method/endpoint/auth/header/body comparison. The zero-argument native parent
+seam is valid only because this immutable guard established equality of the
+complete actual body with the captured admitted body before calling it; it
+must not be exported to extensions or callable through another native route.
+Transmit that complete equal body, not a digest, Boolean or smaller fixture.
+Go independently compares it with its original parent-owned body/profile
+before its one irreversible, measured `physical_send` Source RPC.
+
+Go validates the full actual Source reply/head/revision/binding/M and derives
+the original monotonic F exactly as above. The private child does not need a
+second copy of remote authorization JSON: its fixed use result is only the
+remaining local allowance from that same parent, not a reusable Source token.
+The authenticated HTTPS response and its existing complete grammar/caps remain
+unchanged. Never make another Source RPC to construct the child result.
+
+Unknown kinds, wrong direction/order, repeated request/use/final, use before
+initialize, final before accepted use, short reads/writes, overflow, invalid
+UTF-8 or extra stdout bytes fail the invocation. A denial cannot become a final
+or be followed by another send. EOF is completion only after the expected
+final and actual successful process quiescence; otherwise it is ambiguity or
+failure. Stderr remains separately bounded and discarded/redacted, not another
+protocol or artifact-discovery channel.
+
+### Cross-process monotonic allowance without shared epochs
+
+Do not serialize Go `time.Time`, assume equal clock epochs or start a fresh
+duration on receipt. Retain the original Go F and all original contexts. In
+the child, sample monotonic `s` immediately before writing the request header,
+including all subsequent request writes, parent comparison/Source work,
+response writes, reads and scheduling in the same measured exchange.
+
+After the same Source RPC has completed and F has been checked, the parent
+samples its monotonic `q` immediately before encoding the use result. Send
+exact positive `N = F - q` in nanoseconds, after checking original cancellation
+and non-saturated arithmetic. Any work after q consumes N; a blocked write
+does not permit a new sample, replenishment or second response. An exhausted
+allowance returns denial or closes the channel, never a successful zero.
+
+The child samples monotonic `r` only after receiving the entire valid result.
+With exact integer nanoseconds, derive `J = r + (N - (r - s)) = s + N`, only if
+elapsed is nonnegative and the subtraction is strictly positive. Relative to
+the actual event order, s precedes q, hence J is no later than the parent's F;
+the complete IPC round trip is conservatively subtracted, not just the read
+time. This proof is conditional on conservative duration comparison for the
+pinned Go/Node/platform, including rounding and suspend, not matching epochs
+or merely two APIs named monotonic. If the child can underestimate the relevant
+parent elapsed interval, an unadjusted N is not sufficient. A proven finite
+conversion-error bound must conservatively reduce N before encoding, without
+overflow or a default guessed tolerance; unknown error makes use ineligible.
+The parent's original declared safety slack is already included in F; do not
+invent or waive it through the child protocol.
+
+The pinned [Node API](https://github.com/nodejs/node/blob/v24.19.0/doc/api/process.md#processhrtimebigint)
+provides integer nanosecond readings, with its
+[binding](https://github.com/nodejs/node/blob/v24.19.0/src/node_process_methods.cc)
+delegating to libuv. On Darwin, pinned
+[libuv](https://github.com/nodejs/node/blob/v24.19.0/deps/uv/src/unix/darwin.c)
+uses mach_continuous_time, whereas inspected local-parent
+[Go1.26.8 arm64](https://github.com/golang/go/blob/go1.26.8/src/runtime/sys_darwin_arm64.s)
+uses mach_absolute_time with
+[timebase conversion](https://github.com/golang/go/blob/go1.26.8/src/runtime/sys_darwin.go).
+[Apple's declaration](https://github.com/apple-oss-distributions/xnu/blob/main/osfmk/mach/mach_time.h)
+distinguishes continuous time by advancement during sleep. Thus do not assume
+identical suspend behavior. The child's extra elapsed sleep is conservative
+for this transfer, subject to exact conversion bounds; it does not establish
+the original parent's Source-RPC elapsed/provenance contract during suspend.
+That original clock/retirement obligation and actual executable provenance
+remain independently required. These source observations are not a measured
+Darwin or OCI profile and authorize no host sleep or provider test.
+
+The child retains J once, links the original invocation/retirement signal,
+and synchronously checks cancellation and monotonic now before the actual
+physical fetch. Its `assertUsable` returns synchronous undefined only; a
+Promise, late callback, old timer, newly anchored timeout or assertion Boolean
+is not permission. The native fetch owner immediately rechecks its signals
+after that assertion. Expiry/retire aborts the same request/stream; neither
+abort nor an ambiguous response permits another send.
+
+Independently tighten the same supervised process/control lifetime to the
+retained Go F; do not rely solely on a child timer firing during a blocked
+event loop. Close/revoke IPC on cancellation, expiry, protocol violation or
+executor return, and join its owned readers/writers before parent data clears.
+An already authorized in-flight network effect retains the original ambiguity
+rules: process stop is not remote rollback. Original bounded retirement and
+Release still run on failure; grace time never becomes model-use permission.
+
+### Whole-envelope accounting and final custody
+
+Every frame, initialization serialization, complete request comparison/copy,
+pipe buffer and final capture must be funded prospectively by the same
+original ledger before Issue. Apply the minimum of the immutable profile and
+all inherited frame/stdout/event/final/1MiB transport bounds; do not raise a
+limit or drop history to accommodate duplicate representations. Unknown full
+fit denies before Issue. A small protocol helper test is not that fit proof.
+
+For initialization body I, physical request body B and final body L, the
+complete successful exchange including one retire is at most
+`I + B + L + 223` application IPC bytes: initialize17, request146, use26,
+final17 and retire17. Child stdout is `B + L + 163`; parent stdin is
+`I + 60`. These are wire counts only. They neither certify Go/V8/native heap,
+JSON nodes, live/cumulative copies or parser/SDK allocations, nor justify
+reusing the SPU1 allocation totals. Publish the actual complete producer/copy
+ledger and maximum legitimate original cohorts before profile registration.
+
+The supervisor owns all counters, parse state and observations. Preserve the
+complete stdout digest separately from the extracted final digest. Only the
+trusted same-run prepared producer may bind the extracted final to actual
+process/quiescence, profile/schema and credential finalization evidence for
+#200. Caller-written stdout/flags, a copied JSON result, a directory scan or a
+successful use result alone cannot mint that private producer carrier. Final
+receipt/READY/semantic publication checks and #201 downloads stay unchanged.
+
+No network permission follows from duplex stdio. The shipped OCI launcher
+still declares NetworkDenied and uses network none. Do not flip that assertion,
+borrow a host fetch/proxy, or claim an executable real-provider profile from
+credential-free IPC tests. Separately reviewed actual-platform provider egress
+remains required; until it exists this implementation remains default-off.
+
+Required causal controls include full-history/snapshot-tail/two-original-image
+requests; header-first maximum and overflow; every direction/order/reentry
+failure; partial/stalled writes/reads and cancellation/late result; deliberately
+different monotonic epochs; elapsed time exhausting N; delayed actual use;
+parent F exhaustion while a child timer cannot run; no state or budget reset;
+real process exit/descendant/reader join; strict final/private producer and
+original Finalize/unconditional Release. Tests must not pretend that synthetic
+source/time/platform data is the missing genuine conformance evidence.
 
 ## Verification and implementation handoff
 

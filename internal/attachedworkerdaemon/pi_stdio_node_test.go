@@ -80,9 +80,10 @@ func TestPiStdioNodeSameSupervisor(t *testing.T) {
 	sendCtx, cancelSend := context.WithCancel(ctx)
 	t.Cleanup(cancelSend)
 	var calls atomic.Int32
-	send := &preparedAPIPhysicalSend{ctx: sendCtx, ownerCtx: ctx, cancel: cancelSend,
+	send := &preparedAPIPhysicalSend{ctx: sendCtx, ownerCtx: ctx,
 		body: []byte(piSyntheticRequest), profile: desc.BackendProfileDigest,
 		authorize: func() (time.Time, error) { calls.Add(1); return time.Now().Add(30 * time.Minute), nil }}
+	send.cancel.Store(&preparedAPICancel{cancel: cancelSend})
 	ledger := &apiTestLedger{}
 	plan, err := s.PreparePiStdioV1(p, ledger)
 	if err != nil {

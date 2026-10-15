@@ -352,6 +352,7 @@ func (runner *InvocationRunner) runOwnedPreparedAPI(ctx context.Context, invocat
 	runner.piMu.Lock()
 	runner.piSlot = slot
 	runner.piMu.Unlock()
+	defer slot.send.retire()
 	cutoff, err := runner.observeAPIPhase(ctx, data, pisdkphasewire.PreIssue, time.Time{})
 	if err != nil || ctx.Err() != nil || !time.Now().Before(cutoff) {
 		return InvocationResult{FailureCode: "api_pre_issue_failed"}, ErrCredentialUnavailable
@@ -362,12 +363,11 @@ func (runner *InvocationRunner) runOwnedPreparedAPI(ctx context.Context, invocat
 	defer cancelUse()
 	sendCtx, cancelSend := context.WithCancel(useCtx)
 	defer cancelSend()
-	send := &preparedAPIPhysicalSend{ctx: sendCtx, ownerCtx: useCtx, cancel: cancelSend, body: data.ParentRequest.Body,
-		profile: data.Issue.HarnessBinding.Backend.BackendProfileDigest,
-		authorize: func() (time.Time, error) {
-			return runner.observeAPIPhase(sendCtx, data, pisdkphasewire.PhysicalSend, cutoff)
-		}}
-	defer send.retire()
+	send := &slot.send
+	send.ctx, send.ownerCtx = sendCtx, useCtx
+	send.cancel.Store(&preparedAPICancel{cancel: cancelSend})
+	send.body, send.profile = data.ParentRequest.Body, data.Issue.HarnessBinding.Backend.BackendProfileDigest
+	send.runner, send.phaseCutoff = runner, cutoff
 	issueStarted := time.Now()
 	slot.issued = true // irreversible attempt, even an ambiguous zero handle
 	var issueErr error
@@ -381,13 +381,18 @@ func (runner *InvocationRunner) runOwnedPreparedAPI(ctx context.Context, invocat
 		result.FailureCode = "credential_handle_mismatch"
 		return result, ErrCredentialUnavailable
 	}
+	if send.sealHandle(handle) != nil {
+		return result, ErrCredentialUnavailable
+	}
 	var plan ports.ProviderCredentialMaterializationV1
 	callbacks := 0
 	var processErr error
 	var sendCutoff time.Time
 	materializeErr := runner.apiCredentials.MaterializeProviderCredential(useCtx, handle, func(value ports.ProviderCredentialMaterializationV1, secret []byte) error {
 		callbacks++
-		if callbacks != 1 || len(secret) != 0 || useCtx.Err() != nil || !time.Now().Before(cutoff) || value.Validate() != nil ||
+		if callbacks != 1 || len(secret) != 0 || useCtx.Err() != nil || !time.Now().Before(cutoff) ||
+			uint64(len(value.RootDir)) > data.ParentRequest.Profile.Limits.ProcessFrameBytes ||
+			uint64(len(value.FilePath)) > data.ParentRequest.Profile.Limits.ProcessFrameBytes || value.Validate() != nil ||
 			value.Kind != domain.ProviderCredentialDeliveryFileV1 || data.ChildProcess.credentialWriteFile != "" {
 			return ErrInvocationInvalid
 		}
@@ -397,6 +402,9 @@ func (runner *InvocationRunner) runOwnedPreparedAPI(ctx context.Context, invocat
 			return ErrInvocationInvalid
 		}
 		plan = value // independent parent value, never executor-mutated input
+		if send.sealPlan(value) != nil {
+			return ErrInvocationInvalid
+		}
 		defer func() { sendCutoff = send.retire() }()
 		// The extra read-root slot was reserved/allocated by the original
 		// parent BEFORE Issue; assignment adds no new independent copy pool.

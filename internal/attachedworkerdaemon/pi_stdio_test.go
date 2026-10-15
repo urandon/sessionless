@@ -49,7 +49,8 @@ func piProcessFixture(t *testing.T, mode string) (*Supervisor, *fixtureLauncher,
 	sendCtx, cancelSend := context.WithCancel(ctx)
 	t.Cleanup(cancelSend)
 	calls := &atomic.Int32{}
-	send := &preparedAPIPhysicalSend{ctx: sendCtx, ownerCtx: ctx, cancel: cancelSend, body: []byte(piSyntheticRequest), profile: desc.BackendProfileDigest, authorize: func() (time.Time, error) { calls.Add(1); return time.Now().Add(30 * time.Minute), nil }}
+	send := &preparedAPIPhysicalSend{ctx: sendCtx, ownerCtx: ctx, body: []byte(piSyntheticRequest), profile: desc.BackendProfileDigest, authorize: func() (time.Time, error) { calls.Add(1); return time.Now().Add(30 * time.Minute), nil }}
+	send.cancel.Store(&preparedAPICancel{cancel: cancelSend})
 	ledger := &apiTestLedger{}
 	plan, err := s.PreparePiStdioV1(p, ledger)
 	if err != nil {
@@ -340,7 +341,9 @@ func TestPiStdioOriginalCutoffNoRenewalAndTimerJoin(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		sourceCtx, cancelSource := context.WithCancel(ctx)
-		b := &piStdioBridge{ctx: ctx, cancel: cancel, send: &preparedAPIPhysicalSend{ctx: sourceCtx, cancel: cancelSource}, processDeadline: monoStart.Add(90 * time.Minute), clock: func() time.Time { return monoStart.Add(time.Since(fakeStart)) }}
+		send := &preparedAPIPhysicalSend{ctx: sourceCtx}
+		send.cancel.Store(&preparedAPICancel{cancel: cancelSource})
+		b := &piStdioBridge{ctx: ctx, cancel: cancel, send: send, processDeadline: monoStart.Add(90 * time.Minute), clock: func() time.Time { return monoStart.Add(time.Since(fakeStart)) }}
 		t.Cleanup(b.stopAndJoin)
 		original := monoStart.Add(30 * time.Minute)
 		n, err := b.arm(original)

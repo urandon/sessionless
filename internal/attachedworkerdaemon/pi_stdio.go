@@ -171,7 +171,7 @@ func (s *Supervisor) RunPreparedPi(parent context.Context, invocation PreparedIn
 	if s == nil || parent == nil || parent.Err() != nil || p == nil || p.owner != s || invocation.APIRequest == nil ||
 		p.profile != invocation.APIRequest.Profile || !samePiLedger(p.ledger, invocation.Ledger) ||
 		p.preparedAt == p.preparedAt.Round(0) || invocation.apiIssueStarted == invocation.apiIssueStarted.Round(0) || p.preparedAt.After(invocation.apiIssueStarted) ||
-		!ok || send == nil || send.cancel == nil || !samePiPointer(parent, send.ownerCtx) ||
+		!ok || send == nil || send.cancel.Load() == nil || !samePiPointer(parent, send.ownerCtx) ||
 		len(invocation.Process.Stdin) == 0 || uint64(len(invocation.Process.Stdin)) > p.limits.InitializeBodyBytes ||
 		len(invocation.APIRequest.Body) == 0 || uint64(len(invocation.APIRequest.Body)) > p.limits.RequestBodyBytes ||
 		!bytes.Equal(invocation.APIRequest.Body, send.body) || !piExecutableMatches(invocation.Process.ExecutableDigest, p.profile.Sources.NativeArtifactDigest) || !p.state.CompareAndSwap(0, 1) {

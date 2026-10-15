@@ -9,6 +9,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkeroutput"
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/pisdkphasewire"
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
 
@@ -17,6 +18,7 @@ import (
 // frozen. Declared artifact contents are retained, never converted to BlobRefs
 // or silently omitted while #200's upload/custody implementation is absent.
 type piResultCustody struct {
+	send        preparedAPIPhysicalSend // prepaid SAME original owner, not a post-Issue allocation
 	identity    InvocationIdentity
 	head        domain.AttachedWorkerAttemptV1
 	profile     domain.AttachedPiSDKNativeProfileV1
@@ -66,7 +68,8 @@ func preparePiResultCustody(id InvocationIdentity, data *PreparedAPIDataV1) (*pi
 	}
 	p := data.ParentRequest.Profile
 	f := p.Limits.StructuredFinalBytes
-	if p.Validate() != nil || f == 0 || f > 128<<10 || f > p.Limits.RawFinalBytes {
+	if p.Validate() != nil || f == 0 || f > 128<<10 || f > p.Limits.RawFinalBytes ||
+		p.Limits.ProcessFrameBytes > pisdkphasewire.TransportMaxFrameBytes {
 		return nil, ErrCredentialUnavailable
 	}
 	// Parser's explicit debits:4F decoded/decoder appearances, at most the
@@ -75,7 +78,7 @@ func preparePiResultCustody(id InvocationIdentity, data *PreparedAPIDataV1) (*pi
 	// Each lexical node consumes at least one original byte. Intersect the
 	// existing node limit with those source byte caps BEFORE adding; JSONNodes
 	// itself is not given a guessed finite maximum or allowed to wrap3*N.
-	metadata := uint64(reflect.TypeOf(piResultCustody{}).Size())
+	metadata := uint64(reflect.TypeOf(piResultCustody{}).Size()) + uint64(reflect.TypeOf(preparedAPICancel{}).Size())
 	artifacts := 2 * uint64(reflect.TypeOf(attachedworkeroutput.StructuredArtifactV1{}).Size())
 	parseBytes := 4*f + p.Limits.ArtifactTotalBytes + p.Limits.AnswerBytes + artifacts
 	nodes := min(p.Limits.JSONNodes, f) + 2*min(p.Limits.JSONNodes, p.Limits.ArtifactBytes) + 2
@@ -95,11 +98,21 @@ func preparePiResultCustody(id InvocationIdentity, data *PreparedAPIDataV1) (*pi
 		return nil, ErrCredentialUnavailable
 	}
 	work += comparison // fixed-schema and digest comparison
+	// One binder comparison and one physical authorization body/profile scan;
+	// fixed scalar IDs plus at most four original-frame-sized path comparisons.
+	// This funds Go state/comparison work only, not HTTP/native qualification.
+	extra := 2*uint64(len(data.ParentRequest.Body)) + 128 + 16384 + 4*p.Limits.ProcessFrameBytes
+	if extra > ^uint64(0)-work {
+		return nil, ErrCredentialUnavailable
+	}
+	work += extra
 	if data.Ledger.Reserve(work, live, nodes) != nil {
 		return nil, ErrCredentialUnavailable
 	}
 	s := &piResultCustody{identity: id, head: data.ParentInput.AcceptedAttempt, profile: p, ledger: data.Ledger, live: live,
 		raw: make([]byte, int(f)), parse: piResultParsePartition{copy: parseBytes, live: parseBytes, nodes: nodes}}
+	s.send.identity, s.send.ledger, s.send.data = id, data.Ledger, data
+	s.send.borrow.send = &s.send
 	// Existing DATA-only API orchestration with a different schema may still
 	// exercise its lifecycle, but it can NEVER mint this private producer.
 	s.canonicalSchema = canonicalPiFinalSchema(data.ParentRequest.Schema)
@@ -180,6 +193,7 @@ func (s *piResultCustody) clear() error {
 	if s.clearErr != nil {
 		return s.clearErr
 	} // never relabel failed relinquishment clean on retry
+	s.send.retire() // join/drop its original borrows before their live reservation
 	clear(s.raw)
 	s.raw, s.final, s.candidate, s.stamp = nil, attachedworkeroutput.StructuredFinalV1{}, attachedworkeroutput.Candidate{}, nil
 	if s.live == 0 {

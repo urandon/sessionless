@@ -103,10 +103,15 @@ type PreparedAPIRetirementV1 interface {
 // allocation, including the process projection. No runner-side Clone/stringify
 // replenishes that ledger. A real source-derived implementation is absent.
 type PreparedAPIDataV1 struct {
-	Issue                                                      ports.ProviderCredentialIssueRequestV1       `json:"-"`
-	ParentInput, ChildInput                                    *VerifiedAttachedInputV1                     `json:"-"`
-	ParentRequest, ChildRequest                                PreparedAPIRequestV1                         `json:"-"`
-	ParentProcess, ChildProcess                                AttemptSpec                                  `json:"-"`
+	Issue                       ports.ProviderCredentialIssueRequestV1 `json:"-"`
+	ParentInput, ChildInput     *VerifiedAttachedInputV1               `json:"-"`
+	ParentRequest, ChildRequest PreparedAPIRequestV1                   `json:"-"`
+	ParentProcess, ChildProcess AttemptSpec                            `json:"-"`
+	// InitArguments is the exact ten already-funded decimal values emitted by
+	// the SAME Init plan before Issue. Original Invocation.Process is the pinned
+	// manifest prefix with empty stdin; both owned processes append only these
+	// values. This DATA does not certify a native artifact, SDK or allocation fit.
+	InitArguments                                              [10]string                                   `json:"-"`
 	Authorization                                              ports.AttachedWorkerSealedInputAuthorization `json:"-"`
 	Entry, CallerDeadline, InvocationDeadline, ProcessDeadline time.Time                                    `json:"-"`
 	SafetySlack                                                time.Duration                                `json:"-"`

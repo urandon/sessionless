@@ -97,6 +97,7 @@ func TestPreparedPiSameOriginalSupervisor(t *testing.T) {
 			writeExecutionHeaders(&headers, projection.config.headers)
 			expected := attachedworkerdaemon.PreparedAPIRequestV1{Profile: *cfg.Profile, Body: projection.Body(), Model: model, Schema: cfg.FinalSchema, Headers: headers.out}
 			args := []string{"--permission", "--allow-fs-read=" + root, "--allow-fs-read=" + sdk, "--allow-fs-read=" + credentials.root, "--no-addons", "--disable-proto=throw", filepath.Join(root, "internal/pisdkmedia/native/entry_fake_transport.mjs")}
+			original := attachedworkerdaemon.AttemptSpec{Executable: node, ExecutableDigest: nodeDigest, Arguments: append([]string(nil), args...), Environment: []attachedworkerdaemon.EnvironmentVariable{{Name: "PI_OFFLINE", Value: "1"}}}
 			values := init.EntryArguments()
 			args = append(args, values[:]...)
 			process := attachedworkerdaemon.AttemptSpec{Executable: node, ExecutableDigest: nodeDigest, Arguments: args, Environment: []attachedworkerdaemon.EnvironmentVariable{{Name: "PI_OFFLINE", Value: "1"}}}
@@ -132,7 +133,7 @@ func TestPreparedPiSameOriginalSupervisor(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, runErr := runner.Run(ctx, attachedworkerdaemon.Invocation{Identity: id, Process: process, VerifiedInput: input})
+			result, runErr := runner.Run(ctx, attachedworkerdaemon.Invocation{Identity: id, Process: original, VerifiedInput: input})
 			if mode == "mutated-final" {
 				observation, ok := result.Process.PiStdioObservationV1()
 				if !ok || len(observation.Final) < 12 {
@@ -326,7 +327,7 @@ func (p *executionTestParent) PrepareOriginalAPIInvocation(ctx context.Context, 
 	for _, v := range [][]byte{p.request.Body, p.request.Model, p.request.Schema, p.request.Headers} {
 		p.clonePayload += 2 * uint64(len(v))
 	}
-	p.clonePayload += 64 * uint64(len(process.Arguments)+len(process.Environment)+len(process.AdditionalReadRoots)+1)
+	p.clonePayload += 64 * uint64(len(p.process.Arguments)+len(p.process.Environment)+len(p.process.AdditionalReadRoots)+1)
 	if err := p.ledger.Reserve(p.clonePayload, p.clonePayload, 4096); err != nil {
 		return nil, err
 	}
@@ -348,7 +349,7 @@ func (p *executionTestParent) PrepareOriginalAPIInvocation(ctx context.Context, 
 		return v
 	}
 	cloneProcess := func() attachedworkerdaemon.AttemptSpec {
-		v := process
+		v := p.process
 		v.Arguments = append([]string(nil), v.Arguments...)
 		v.Environment = append([]attachedworkerdaemon.EnvironmentVariable(nil), v.Environment...)
 		v.AdditionalReadRoots = append([]string(nil), v.AdditionalReadRoots...)
@@ -359,7 +360,7 @@ func (p *executionTestParent) PrepareOriginalAPIInvocation(ctx context.Context, 
 	h := a.AcceptedAttempt
 	entry := time.Now()
 	deadline, _ := ctx.Deadline()
-	p.data = &attachedworkerdaemon.PreparedAPIDataV1{Issue: p.issue, ParentInput: a, ChildInput: b, ParentRequest: cloneReq(), ChildRequest: cloneReq(), ParentProcess: cloneProcess(), ChildProcess: child, Entry: entry, CallerDeadline: deadline, InvocationDeadline: deadline, ProcessDeadline: deadline, SafetySlack: time.Nanosecond, Ledger: p.ledger, Retirement: p, Custody: p,
+	p.data = &attachedworkerdaemon.PreparedAPIDataV1{Issue: p.issue, ParentInput: a, ChildInput: b, ParentRequest: cloneReq(), ChildRequest: cloneReq(), ParentProcess: cloneProcess(), ChildProcess: child, InitArguments: p.execution.init.EntryArguments(), Entry: entry, CallerDeadline: deadline, InvocationDeadline: deadline, ProcessDeadline: deadline, SafetySlack: time.Nanosecond, Ledger: p.ledger, Retirement: p, Custody: p,
 		Authorization: ports.AttachedWorkerSealedInputAuthorization{TenantID: h.TenantID, OwnerUserID: h.OwnerUserID, WorkerID: h.WorkerID, ConnectionID: h.ConnectionID, EnrollmentGeneration: h.EnrollmentGeneration, ConnectionGeneration: h.ConnectionGeneration, RunID: h.RunID, AttemptID: h.AttemptID, AttemptSequence: 1, LeaseID: h.LeaseID, LeaseGeneration: h.LeaseGeneration, FenceToken: h.FenceToken, LeaseExpiresAtUnixMicro: h.LeaseExpiresAt.UnixMicro(), ContextDigest: h.ContextDigest, CapabilityDigest: h.CapabilityDigest, PolicyDigest: h.PolicyDigest, ExpectedAttemptRevision: h.Revision}}
 	return p.data, nil
 }

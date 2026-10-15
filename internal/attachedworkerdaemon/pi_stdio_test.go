@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -117,7 +118,8 @@ func TestPiStdioInsideOriginalAPICredentialOwnerNotPublication(t *testing.T) {
 	inv.Process.ExecutableDigest = digest
 	inv.Process.Arguments = []string{"-test.run=^TestPiStdioHelperProcess$"}
 	inv.Process.Environment = []EnvironmentVariable{{Name: helperEnabled, Value: "1"}, {Name: helperMode, Value: "ok"}}
-	inv.Process.Stdin = []byte(desc.BackendProfileDigest)
+	inv.Process.Stdin = nil
+	var fixtureInit []byte
 	inv.VerifiedInput.Job.HarnessBinding.Backend = desc
 	contextDigest, err := domain.AttachedWorkerJobContextDigestV1(inv.VerifiedInput.Job, inv.VerifiedInput.Manifest)
 	if err != nil {
@@ -129,6 +131,11 @@ func TestPiStdioInsideOriginalAPICredentialOwnerNotPublication(t *testing.T) {
 	parent.mutate = func(data *PreparedAPIDataV1) {
 		data.ParentRequest.Body = []byte(piSyntheticRequest)
 		data.ChildRequest.Body = bytes.Clone(data.ParentRequest.Body)
+		data.InitArguments[9] = strconv.Itoa(len(data.ParentRequest.Body))
+		data.ParentProcess.Arguments[len(data.ParentProcess.Arguments)-1] = data.InitArguments[9]
+		data.ChildProcess.Arguments[len(data.ChildProcess.Arguments)-1] = data.InitArguments[9]
+		fixtureInit = []byte(desc.BackendProfileDigest)
+		parent.ownedBuffers = append(parent.ownedBuffers, fixtureInit)
 		parent.ownedBuffers = append(parent.ownedBuffers, data.ParentRequest.Body, data.ChildRequest.Body)
 		var planErr error
 		plan, planErr = s.PreparePiStdioV1(parent.profile, data.Ledger)
@@ -145,6 +152,7 @@ func TestPiStdioInsideOriginalAPICredentialOwnerNotPublication(t *testing.T) {
 		// Exact owned synthetic file root only; fixture launcher is NOT a real
 		// filesystem/egress profile and child does not read this marker file.
 		s.allowedReadRoots = []string{filepath.Dir(input.Materialization.RootDir)}
+		input.Process.Stdin = fixtureInit // borrowed pre-Issue synthetic Init
 		result, runErr := s.RunPreparedPi(ctx, input, plan)
 		obs, ok := result.PiStdioObservationV1()
 		observed = ok && string(obs.Final) == piSyntheticFinal

@@ -488,7 +488,7 @@ func (data *PreparedAPIDataV1) validateOriginal(invocation Invocation, ctx conte
 		!apiInputsIndependent(data.ParentInput, data.ChildInput) || !apiInputsIndependent(data.ParentInput, invocation.VerifiedInput) || !apiInputsIndependent(data.ChildInput, invocation.VerifiedInput) ||
 		data.ParentInput.validateAPIRequest(invocation.Identity, data.Issue) != nil || data.ChildInput.validateAPIRequest(invocation.Identity, data.Issue) != nil ||
 		!reflect.DeepEqual(data.ParentInput, invocation.VerifiedInput) || !reflect.DeepEqual(data.ChildInput, data.ParentInput) ||
-		!reflect.DeepEqual(data.ParentProcess, invocation.Process) || !apiProcessesIndependent(data.ParentProcess, data.ChildProcess) ||
+		!data.matchesOriginalAPIProcess(invocation.Process) || !apiProcessesIndependent(data.ParentProcess, data.ChildProcess) ||
 		!apiProcessesIndependent(data.ParentProcess, invocation.Process) || !apiProcessesIndependent(data.ChildProcess, invocation.Process) ||
 		data.ParentProcess.credentialWriteFile != "" || data.ChildProcess.credentialWriteFile != "" {
 		return ErrInvocationInvalid
@@ -540,6 +540,48 @@ func (data *PreparedAPIDataV1) validateOriginal(invocation Invocation, ctx conte
 		return ErrInvocationInvalid
 	}
 	return nil
+}
+
+// The original stack/adapter pins the complete fixed manifest prefix, not the
+// per-input Init values. Preserve every original process field and append
+// exactly the SAME plan's ten funded values. In particular this is NOT a loose
+// prefix match, an alternate legacy full-argv arm, or permission to add Node
+// flags, a different script, environment, executable or stdin after admission.
+// All comparison work belongs to the original parent's prospective ledger.
+func (data *PreparedAPIDataV1) matchesOriginalAPIProcess(original AttemptSpec) bool {
+	p := data.ParentProcess
+	l := data.ParentRequest.Profile.Limits
+	if len(original.Stdin) != 0 || len(p.Stdin) != 0 || len(original.Arguments) == 0 ||
+		len(p.Arguments) < len(data.InitArguments) || len(p.Arguments)-len(data.InitArguments) != len(original.Arguments) || l.ProcessFrameBytes < 147 {
+		return false
+	}
+	var values [10]uint64
+	for i, want := range data.InitArguments {
+		// Positive canonical decimal, bounded to the native safe-integer domain.
+		// Length admission precedes the byte walk; no parse/string allocation.
+		if len(want) == 0 || len(want) > 16 || want[0] == '0' {
+			return false
+		}
+		var value uint64
+		for j := range len(want) {
+			if want[j] < '0' || want[j] > '9' {
+				return false
+			}
+			value = value*10 + uint64(want[j]-'0')
+		}
+		if value > 9007199254740991 || p.Arguments[len(original.Arguments)+i] != want {
+			return false
+		}
+		values[i] = value
+	}
+	if values[0] != l.ProcessFrameBytes-17 || values[1] != min(l.NativeRequestBytes, l.ProcessFrameBytes-146) ||
+		values[2] != min(l.StructuredFinalBytes, l.RawFinalBytes, l.ProcessFrameBytes-17) || values[3] != l.ProcessFrameBytes ||
+		values[4] > values[0] || values[5] > l.PreSendAllocationBytes || values[6] > l.JSONNodes ||
+		values[7] != l.JSONDepth || values[8] > domain.AttachedPiSDKCanonicalMaxBytesV1 || values[9] != uint64(len(data.ParentRequest.Body)) {
+		return false
+	}
+	p.Arguments = p.Arguments[:len(original.Arguments)]
+	return reflect.DeepEqual(p, original)
 }
 
 func apiProcessesIndependent(a, b AttemptSpec) bool {

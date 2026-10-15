@@ -652,6 +652,16 @@ context, entry anchor or ledger is rejected before credential Issue. Temporary
 HTTP/materialization contexts do not replace the original invocation lifetime.
 Source reading and materialization are each single-use, including failures.
 
+The original process keeps the exact manifest-pinned executable, argv prefix,
+environment and read roots, with empty stdin. The API parent appends exactly
+the ten already-funded values from the same Init plan to independent owned
+parent/child argv; no optional full-argv or suffix-only matching is accepted.
+The runner checks the complete prefix and all other process fields before
+Issue, together with canonical positive decimal values and their inherited
+profile limits. The child differs only by the reserved credential read-root
+slot. Matching this DATA is not evidence of genuine Init or native fit; the
+fixed trusted composition must supply those independently.
+
 Input cleanup waits for the actual borrower or late materializer to return.
 The active request's digest buffers remain charged through ambiguous terminal
 acknowledgement and retire only with the original exact ACK and active slot.

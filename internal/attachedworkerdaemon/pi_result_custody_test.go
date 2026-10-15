@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -42,7 +43,10 @@ func piCustodyFixture(t *testing.T, mode string, mutate func(*AttemptResult), re
 	inv.Process.Executable, inv.Process.ExecutableDigest = exe, digest
 	inv.Process.Arguments = []string{"-test.run=^TestPiCustodyHelperProcess$"}
 	inv.Process.Environment = []EnvironmentVariable{{Name: helperEnabled, Value: "1"}, {Name: helperMode, Value: mode}}
-	inv.Process.Stdin = []byte(desc.BackendProfileDigest)
+	inv.Process.Stdin = nil
+	// The helper's public synthetic Init is prepared/funded by its fixture
+	// parent, not smuggled through the original API invocation's empty stdin.
+	var fixtureInit []byte
 	inv.VerifiedInput.Job.HarnessBinding.Backend = desc
 	contextHash, err := domain.AttachedWorkerJobContextDigestV1(inv.VerifiedInput.Job, inv.VerifiedInput.Manifest)
 	if err != nil {
@@ -54,6 +58,11 @@ func piCustodyFixture(t *testing.T, mode string, mutate func(*AttemptResult), re
 	parent.mutate = func(data *PreparedAPIDataV1) {
 		data.ParentRequest.Body, data.ChildRequest.Body = []byte(piSyntheticRequest), []byte(piSyntheticRequest)
 		data.ParentRequest.Schema, data.ChildRequest.Schema = []byte(attachedworkeroutput.StructuredFinalSchemaV1), []byte(attachedworkeroutput.StructuredFinalSchemaV1)
+		data.InitArguments[9] = strconv.Itoa(len(data.ParentRequest.Body))
+		data.ParentProcess.Arguments[len(data.ParentProcess.Arguments)-1] = data.InitArguments[9]
+		data.ChildProcess.Arguments[len(data.ChildProcess.Arguments)-1] = data.InitArguments[9]
+		fixtureInit = []byte(desc.BackendProfileDigest)
+		parent.ownedBuffers = append(parent.ownedBuffers, fixtureInit)
 		parent.ownedBuffers = append(parent.ownedBuffers, data.ParentRequest.Body, data.ChildRequest.Body, data.ParentRequest.Schema, data.ChildRequest.Schema)
 		plan, err = s.PreparePiStdioV1(parent.profile, data.Ledger)
 		if err != nil {
@@ -82,6 +91,7 @@ func piCustodyFixture(t *testing.T, mode string, mutate func(*AttemptResult), re
 	}
 	runner, err := NewPreparedAPIInvocationRunner(preparedExecutorFunc(func(ctx context.Context, input PreparedInvocationV1) (AttemptResult, error) {
 		s.allowedReadRoots = []string{filepath.Dir(input.Materialization.RootDir)}
+		input.Process.Stdin = fixtureInit // borrowed already-funded synthetic Init
 		result, runErr := s.RunPreparedPi(ctx, input, plan)
 		if mutate != nil {
 			mutate(&result)

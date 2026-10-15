@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -119,12 +120,21 @@ func (p *apiTestParent) PrepareOriginalAPIInvocation(ctx context.Context, id Inv
 	p.ownedBuffers = [][]byte{body, model, schema, headers, copyRequest.Body, copyRequest.Model, copyRequest.Schema, copyRequest.Headers}
 	parentProcess := cloneAttemptSpec(process)
 	childProcess := cloneAttemptSpec(process)
+	// Synthetic logical argv controls only, not native/SDK qualification. The
+	// original invocation keeps just its pinned prefix, as the real adapter does.
+	limits := p.profile.Limits
+	var initArguments [10]string
+	for i, value := range [10]uint64{limits.ProcessFrameBytes - 17, min(limits.NativeRequestBytes, limits.ProcessFrameBytes-146), min(limits.StructuredFinalBytes, limits.RawFinalBytes, limits.ProcessFrameBytes-17), limits.ProcessFrameBytes, 700, 600, 500, limits.JSONDepth, 300, uint64(len(body))} {
+		initArguments[i] = strconv.FormatUint(value, 10)
+	}
+	parentProcess.Arguments = append(parentProcess.Arguments, initArguments[:]...)
+	childProcess.Arguments = append(childProcess.Arguments, initArguments[:]...)
 	childProcess.AdditionalReadRoots = append(childProcess.AdditionalReadRoots, "")
 	head := input.AcceptedAttempt
 	deadline, _ := ctx.Deadline()
 	entry := time.Now()
 	p.data = &PreparedAPIDataV1{Issue: ports.ProviderCredentialIssueRequestV1{HarnessBinding: a.Job.HarnessBinding, WorkerID: string(id.WorkerID), LeaseID: id.LeaseID, LeaseFence: id.FenceToken, ExpiresAt: head.LeaseExpiresAt.Add(-time.Minute)},
-		ParentInput: a, ChildInput: b, ParentRequest: request, ChildRequest: copyRequest, ParentProcess: parentProcess, ChildProcess: childProcess,
+		ParentInput: a, ChildInput: b, ParentRequest: request, ChildRequest: copyRequest, ParentProcess: parentProcess, ChildProcess: childProcess, InitArguments: initArguments,
 		Entry: entry, CallerDeadline: deadline, InvocationDeadline: entry.Add(a.Job.Limits.MaxRuntime), ProcessDeadline: entry.Add(a.Job.Limits.MaxRuntime), SafetySlack: time.Nanosecond, Ledger: &p.ledger, Retirement: &p.retirement, Custody: p,
 		Authorization: ports.AttachedWorkerSealedInputAuthorization{TenantID: head.TenantID, OwnerUserID: head.OwnerUserID, WorkerID: head.WorkerID, ConnectionID: head.ConnectionID, EnrollmentGeneration: head.EnrollmentGeneration, ConnectionGeneration: head.ConnectionGeneration, RunID: head.RunID, AttemptID: head.AttemptID, AttemptSequence: 1, LeaseID: head.LeaseID, LeaseGeneration: head.LeaseGeneration, FenceToken: head.FenceToken, LeaseExpiresAtUnixMicro: head.LeaseExpiresAt.UnixMicro(), ContextDigest: head.ContextDigest, CapabilityDigest: head.CapabilityDigest, PolicyDigest: head.PolicyDigest, ExpectedAttemptRevision: head.Revision}}
 	if p.mutate != nil {
@@ -311,7 +321,7 @@ func apiOwnerFixture(t *testing.T) (Invocation, *apiTestParent, *apiTestLifecycl
 	inv := validPreparedCredentialInvocation(t)
 	inv.Credential = nil
 	inv.Process.Arguments = []string{"original-fixture-argument"}
-	inv.Process.Stdin = []byte("original fixture stdin")
+	inv.Process.Stdin = nil // the original Pi API arm never carries synthetic stdin
 	p := apiOwnerProfile(t, inv.Process.ExecutableDigest)
 	v := inv.VerifiedInput
 	head := &v.AcceptedAttempt

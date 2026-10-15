@@ -88,8 +88,9 @@ func NewReceiptSessionSourceFactory(endpoint, receiptEndpoint string, client *ht
 // NewPiPhaseSessionSourceFactory explicitly composes input, receipt and phase
 // metadata for the SAME accepted Session/bearer/origin. Existing constructors
 // and normal composition are unchanged. There is no server operation/issuer or
-// driver/credential/profile activation here; the BoundMaterializer API path
-// remains unsupported and all original currentness/deadline gates remain open.
+// driver/credential/profile activation here; canonical API input additionally
+// requires the explicit NewPiBoundMaterializer arm. Full private-parent/native
+// qualification and the original currentness/deadline gates remain required.
 func NewPiPhaseSessionSourceFactory(endpoint, receiptEndpoint, phaseEndpoint string, client *http.Client, delegate attachedworkersession.ExchangeFactory) (*SessionSourceFactory, error) {
 	phaseURL, err := piEndpoint(phaseEndpoint)
 	if err != nil {

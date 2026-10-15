@@ -56,6 +56,7 @@ type Config struct {
 	RunExplanations            ports.RunExplanationRatedReadStoreV1
 	AttachedWorkers            AttachedWorkerReadService
 	AttachedWorkerControls     AttachedWorkerControlService
+	AttachedPiAPIPolicies      AttachedPiAPIOwnerPolicyService
 	IDs                        ports.IDGenerator
 	Clock                      ports.Clock
 	Random                     io.Reader
@@ -245,6 +246,11 @@ func (handler *Handler) routes() {
 		handler.mux.HandleFunc("POST "+webcontract.RouteAttachedWorkerActionPlan, handler.planAttachedWorkerAction)
 		handler.mux.HandleFunc("POST "+webcontract.RouteAttachedWorkerActionApply, handler.applyAttachedWorkerAction)
 		handler.mux.HandleFunc("GET "+webcontract.RouteAttachedWorkerAction, handler.getAttachedWorkerAction)
+	}
+	if handler.config.AttachedPiAPIPolicies != nil {
+		handler.mux.HandleFunc("POST "+webcontract.RouteAttachedPiAPIPolicyRead, handler.readAttachedPiAPIPolicy)
+		handler.mux.HandleFunc("POST "+webcontract.RouteAttachedPiAPIPolicyConfirm, handler.confirmAttachedPiAPIPolicy)
+		handler.mux.HandleFunc("POST "+webcontract.RouteAttachedPiAPIPolicyRevoke, handler.revokeAttachedPiAPIPolicy)
 	}
 }
 

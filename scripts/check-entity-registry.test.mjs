@@ -170,8 +170,8 @@ test("derives four owned retirements without losing historical lineage", () => {
   assert.deepEqual(manifest.retirements.map(r=>r.table).sort(), ["dispatch_ready","lease_expiry","quota_expiry","telegram_delivery_ready"]);
   const schema=deriveSchema(sources,manifest);
   assert.deepEqual(schema.errors,[]);
-  assert.equal(schema.tables.size,105);
-  assert.equal(schema.activeTables.size,101);
+  assert.equal(schema.tables.size,106);
+  assert.equal(schema.activeTables.size,102);
   assert.equal(schema.dropStatements,4);
   for(const r of manifest.retirements){
     assert.equal(schema.tables.get(r.table).migration,r.createMigration);
@@ -179,15 +179,15 @@ test("derives four owned retirements without losing historical lineage", () => {
     assert.equal(schema.activeTables.get(r.successor).migration,r.successorMigration);
     assert.deepEqual(schema.retirements.get(r.table),{migration:r.migration,successor:r.successor});
   }
-  const unrelated="00130_new_entity.sql";
+  const unrelated="00131_new_entity.sql";
   const added=deriveSchema({...sources,[unrelated]:created.replaceAll("tenant_records","unrelated_entity")},manifest);
   assert.deepEqual(added.errors,[]);
-  assert.equal(added.tables.size,106);
-  assert.equal(added.activeTables.size,102);
+  assert.equal(added.tables.size,107);
+  assert.equal(added.activeTables.size,103);
   for(const target of ["runs","`runs`"]){
-    const legitimate=deriveSchema({...sources,"00130_alter_unrelated.sql":`-- +goose Up\nALTER TABLE ${target} ADD COLUMN later_note Utf8;\n-- +goose Down\n`},manifest);
+    const legitimate=deriveSchema({...sources,"00131_alter_unrelated.sql":`-- +goose Up\nALTER TABLE ${target} ADD COLUMN later_note Utf8;\n-- +goose Down\n`},manifest);
     assert.deepEqual(legitimate.errors,[],`legitimate unrelated ALTER ${target}`);
-    assert.equal(legitimate.activeTables.size,101);
+    assert.equal(legitimate.activeTables.size,102);
   }
 });
 

@@ -47,6 +47,7 @@ type Options struct {
 	OwnedProxyPublicationVerifier      ports.OwnedProxyPublicationVerifierV1
 	OwnedOperationResidualCustody      ports.OwnedOperationResidualCustodyV1
 	OwnedProviderPriceCustody          ports.OwnedProviderPriceCustodyV1
+	AttachedPiAPIPolicyCatalog         ports.AttachedPiAPIPolicyCatalogV1
 }
 
 type Store struct {
@@ -66,6 +67,7 @@ type Store struct {
 	ownedProxyPublicationVerifier      ports.OwnedProxyPublicationVerifierV1
 	ownedOperationResidualCustody      ports.OwnedOperationResidualCustodyV1
 	ownedProviderPriceCustody          ports.OwnedProviderPriceCustodyV1
+	attachedPiAPIPolicyCatalog         ports.AttachedPiAPIPolicyCatalogV1
 }
 
 func New(db *sql.DB, options Options) (*Store, error) {
@@ -103,6 +105,7 @@ func New(db *sql.DB, options Options) (*Store, error) {
 		ownedProxyPublicationVerifier:      options.OwnedProxyPublicationVerifier,
 		ownedOperationResidualCustody:      options.OwnedOperationResidualCustody,
 		ownedProviderPriceCustody:          options.OwnedProviderPriceCustody,
+		attachedPiAPIPolicyCatalog:         options.AttachedPiAPIPolicyCatalog,
 	}, nil
 }
 

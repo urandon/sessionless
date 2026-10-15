@@ -2,7 +2,7 @@
 
 The [entity registry](entity-registry.json) maps physical application tables to
 their creation migrations, observed keys, schema retention and source consumers.
-The v2 registry keeps **105 historical CREATE records** and derives **101
+The v2 registry keeps **106 historical CREATE records** and derives **102
 effective active tables** after four forward retirement definitions. These are
 source-layout counts, not an assertion about any retained deployment.
 Logical state and durability decisions are specified in the
@@ -37,7 +37,7 @@ does not classify every remaining physical table. The separately accepted
 [current lease within Run design](../design/current-execution-slot.md) selects
 seven typed Run columns instead of `lease_heads`, retaining bounded `leases`
 evidence. That replacement is not implemented: the active source inventory
-remains 101 tables, including `lease_heads`. Other Run/Attempt/history and
+remains 102 tables, including `lease_heads`. Other Run/Attempt/history and
 owner/retention decisions stay open in #205.
 
 The [#200 output-custody implementation](https://gitcode.com/urandon/sessionless/issues/200)
@@ -63,6 +63,32 @@ not original-writer or full Source/provider/profile authority: authenticated
 control registration, effect-authorized signing, the private exporter, actual
 request join and native deletion races remain incomplete.
 
+## Attached Pi API owner decisions
+
+`attached_pi_api_policy_v1` is one owner/resource/model/data-class namespace,
+not a table per Run, attempt, permission check or operational observation.
+It stores immutable authenticated owner decisions and a monotone current
+mapping/revocation head atomically. Historical decision replay never rewrites
+that head. The locator deliberately excludes resource generation and native P:
+a replacement for the same lane must invalidate the old mapping rather than
+leave it independently current. Current use also rechecks membership security
+version, exact active API resource revision/generation, and the authoritative
+server-selected native/evidence/tariff catalog.
+
+Existing storage cannot safely substitute this narrow authority: the managed
+`owned_agent_profile_current_v1` contract is restricted to its managed/public
+profile lifecycle; web-search consent belongs to an individual attempt parent;
+provider credential metadata authorizes credential ownership, not an owner's
+confirmed model spending terms; generic Web audit has TTL and no current CAS
+head. The new namespace therefore retains two record kinds (decision and head),
+no extra proposal/index/table, and no default TTL that could revive permission.
+It is not a balance, monetary reservation, quota or effect ledger.
+
+The source migration is not an applied migration or live permission. No
+genuinely qualified installed Pi native/evidence/full-context tariff catalog is
+supplied by this implementation. Its absence denies new offers/decisions/use;
+structural P/E/T consistency, config flags and receipt hashes do not replace it.
+
 ## Source and rollout boundary
 
 The [compatible code step](https://gitcode.com/urandon/sessionless/issues/206)
@@ -71,7 +97,7 @@ lease-expiry reader. Normal bootstrap backfills lifecycle indexes only; it no
 longer copies the four legacy ready/expiry tables. The four legacy CREATE
 records and optional historical reset ownership remain. The ordered retirement
 definitions now remove those four tables from the effective source schema;
-the registry still covers every one of the 105 historical CREATE tables.
+the registry still covers every one of the 106 historical CREATE tables.
 
 Before deploying v2-only code with retained work, complete ready/expiry v2
 backfill and exact tuple verification using the compatible dual-writing

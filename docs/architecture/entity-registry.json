@@ -2,9 +2,24 @@
   "schema": "sessionless-ydb-entity-registry/v2",
   "sourceDirectory": "migrations/ydb",
   "observedKeyScopeNote": "Primary-key columns are structural observations only; they do not establish authenticated tenant or owner authorization.",
-  "recordCount": 105,
-  "activeTableCount": 101,
+  "recordCount": 106,
+  "activeTableCount": 102,
   "records": [
+    {
+      "table": "attached_pi_api_policy_v1",
+      "migration": "00130_create_attached_pi_api_policy_v1.sql",
+      "role": "One owner/model authority namespace containing immutable authenticated Pi API owner decisions and a monotone current mapping/revocation head; not per-run state, monetary balance, quota, or effect ledger.",
+      "primaryKey": ["tenant_id", "owner_user_id", "locator_digest", "record_key"],
+      "observedKeyScope": {"basis": "primary_key", "columns": ["tenant_id", "owner_user_id", "locator_digest", "record_key"]},
+      "retention": {"kind": "unknown", "statement": "No schema TTL. Immutable owner decisions and revocation heads remain while original jobs/receipts can refer to them. Expiry never revives a mapping; retirement needs a separate reviewed retention contract."},
+      "knownRefs": {
+        "readers": {"paths": ["internal/ydbstore/attached_pi_api_policy.go"], "total": 1},
+        "writers": {"paths": ["internal/ydbstore/attached_pi_api_policy.go"], "total": 1}
+      },
+      "entityGroup": "owner-resource-authority",
+      "durabilityReview": "reviewed",
+      "proposedDisposition": "keep"
+    },
     {
       "table": "actors",
       "migration": "00002_create_actors.sql",

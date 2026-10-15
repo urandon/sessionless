@@ -58,6 +58,7 @@ type piOwnedPreparation struct {
 	projection *pisdkmedia.RequestProjectionV1
 	phases     *piPreparedPhases
 	file       *providercredential.PreparedImmutableAPIFileV1
+	fileUse    *providercredential.PreparedPiFileUseV1
 	init       *pisdkmedia.InitPlanV1
 	execution  *pisdkmedia.PreparedPiExecutionV1
 	original   context.Context
@@ -222,6 +223,10 @@ func (p *PiPreparedOwnerV1) PrepareOriginalAPIInvocation(ctx context.Context, id
 		return data, ErrUnavailable
 	}
 	r.file, err = p.credentials.PrepareImmutableAPIFileV1(ctx, data.Issue, p.config.CredentialFileName, int64(p.config.Request.CredentialMaxBytes))
+	if err != nil {
+		return data, err
+	}
+	r.fileUse, err = r.file.PreparePiFileUseV1(ledger, data.ParentRequest.Body, b.Backend.BackendProfileDigest)
 	if err != nil {
 		return data, err
 	}
@@ -448,6 +453,13 @@ func (r *piOwnedPreparation) Clear() {
 	if r.cleanupErr != nil {
 		return
 	} // do not clear borrowed buffers under unjoined execution
+	if r.fileUse != nil {
+		r.cleanupErr = r.fileUse.Close()
+		if r.cleanupErr != nil {
+			return
+		}
+		r.fileUse = nil
+	}
 	if r.phases != nil {
 		r.phases.clear()
 	}

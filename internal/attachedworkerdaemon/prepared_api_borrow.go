@@ -84,6 +84,16 @@ func (b *PreparedAPISendBorrowV1) Revoke() {
 	}
 }
 
+// RevokePreparedAPISendV1 only withdraws the original concrete send. It grants
+// nothing and lets a file-consumer comparison failure burn the supplied attempt
+// even when a foreign locator prevented resolving its private Materialize use.
+func RevokePreparedAPISendV1(sender PreparedAPIPhysicalSendV1) {
+	if send, ok := sender.(*preparedAPIPhysicalSend); ok && send != nil {
+		send.invalid.Store(true)
+		send.revoke()
+	}
+}
+
 func (send *preparedAPIPhysicalSend) sealHandle(handle ports.ProviderInvocationCredentialV1) error {
 	send.mu.Lock()
 	defer send.mu.Unlock()

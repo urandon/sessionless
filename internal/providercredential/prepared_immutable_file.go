@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemon"
 	"gitcode.com/urandon/sessionless/internal/credentiallifecycle"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
@@ -17,24 +18,30 @@ import (
 // object nor plaintext, and cannot issue, finalize, release or authorize use.
 // A zero value is invalid. It is not a wire DTO or a Source/native-fit grant.
 type PreparedImmutableAPIFileV1 struct {
-	ctx       context.Context
-	service   *InvocationService
-	files     *credentiallifecycle.PinnedSecretFileSystem
-	scope     ports.ProviderInvocationCredentialV1 // exact expected tuple except not-yet-issued HandleID
-	binding   preparedAPIFileBinding
-	fileName  string
-	maxBytes  int64
-	pathBytes uint64
+	ctx        context.Context
+	service    *InvocationService
+	files      *credentiallifecycle.PinnedSecretFileSystem
+	scope      ports.ProviderInvocationCredentialV1 // exact expected tuple except not-yet-issued HandleID
+	binding    preparedAPIFileBinding
+	fileName   string
+	maxBytes   int64
+	pathBytes  uint64
+	piPrepared atomic.Bool
 }
 
-func (PreparedImmutableAPIFileV1) String() string {
+func (*PreparedImmutableAPIFileV1) String() string {
 	return "PreparedImmutableAPIFileV1{scope:[redacted]}"
 }
-func (p PreparedImmutableAPIFileV1) GoString() string { return p.String() }
+func (p *PreparedImmutableAPIFileV1) GoString() string { return p.String() }
 
 type immutableAPIFileUse struct {
 	gate        chan struct{}
 	ctx         context.Context
+	ownerCtx    context.Context             // exact original synchronous Materialize context
+	cancel      context.CancelFunc          // immutable after publication; cancellation precedes join
+	secret      []byte                      // borrows the original verified read, never callback/IPC data
+	prepared    *PreparedImmutableAPIFileV1 // selected by the actual original Issue
+	send        atomic.Pointer[attachedworkerdaemon.PreparedAPISendBorrowV1]
 	handle      ports.ProviderInvocationCredentialV1
 	binding     preparedAPIFileBinding
 	plan        ports.ProviderCredentialMaterializationV1
@@ -43,6 +50,9 @@ type immutableAPIFileUse struct {
 	fingerprint domain.CredentialFingerprint
 	active      atomic.Bool
 }
+
+func (*immutableAPIFileUse) String() string     { return "immutableAPIFileUse{private:[redacted]}" }
+func (u *immutableAPIFileUse) GoString() string { return u.String() }
 
 // UsesPreparedFileSystemV1 identifies the explicitly runtime-owned namespace.
 // It does not create/close it, inspect keys or authorize an invocation. A
@@ -178,6 +188,9 @@ func (p *PreparedImmutableAPIFileV1) VerifyMaterialized(ctx context.Context, han
 		return ErrConsumed
 	}
 	if p.files.VerifyImmutable(ctx, use.file, use.fingerprint, p.maxBytes) != nil {
+		if !use.active.Load() || use.ctx.Err() != nil || ctx.Err() != nil || p.ctx.Err() != nil {
+			return ErrExpired
+		}
 		return ErrDeliveryMismatch
 	}
 	if !use.active.Load() || use.ctx.Err() != nil || p.ctx.Err() != nil || ctx.Err() != nil || !p.service.clock.Now().Before(handle.ExpiresAt) {

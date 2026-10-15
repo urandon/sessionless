@@ -31,16 +31,17 @@ type InvocationConfig struct {
 }
 
 type InvocationService struct {
-	clock    ports.Clock
-	ids      ports.IDGenerator
-	root     string
-	maxBytes int64
-	planner  ports.ProviderCredentialDeliveryPlannerV1
-	bindings ports.ProviderCredentialBindingStore
-	secrets  ports.ProviderCredentialSecretStore
-	files    *credentiallifecycle.PinnedSecretFileSystem
-	mu       sync.Mutex
-	handles  map[string]*providerInvocationState
+	clock           ports.Clock
+	ids             ports.IDGenerator
+	root            string
+	maxBytes        int64
+	planner         ports.ProviderCredentialDeliveryPlannerV1
+	bindings        ports.ProviderCredentialBindingStore
+	secrets         ports.ProviderCredentialSecretStore
+	files           *credentiallifecycle.PinnedSecretFileSystem
+	mu              sync.Mutex
+	handles         map[string]*providerInvocationState
+	preparedPiFiles map[ports.ProviderInvocationCredentialV1]*preparedPiFileUse
 }
 
 type providerInvocationState struct {
@@ -61,7 +62,8 @@ type providerInvocationState struct {
 	finalized         bool
 	// Published only during the synchronous API file consumer. Verification
 	// borrows this record without reentering the already-held state mutex.
-	fileUse atomic.Pointer[immutableAPIFileUse]
+	fileUse   atomic.Pointer[immutableAPIFileUse]
+	piFileUse *preparedPiFileUse
 }
 
 func NewInvocationService(config InvocationConfig, planner ports.ProviderCredentialDeliveryPlannerV1, bindings ports.ProviderCredentialBindingStore, secrets ports.ProviderCredentialSecretStore) (*InvocationService, error) {
@@ -136,7 +138,15 @@ func (service *InvocationService) IssueProviderCredential(ctx context.Context, r
 	if _, exists := service.handles[handle.HandleID]; exists {
 		return ports.ProviderInvocationCredentialV1{}, ErrBackend
 	}
-	service.handles[handle.HandleID] = &providerInvocationState{handle: handle, template: template, preparedBinding: snapshotAPIFileBinding(request.HarnessBinding)}
+	scope := handle
+	scope.HandleID = ""
+	preparedPi := service.preparedPiFiles[scope]
+	if preparedPi != nil && (preparedPi.file == nil || preparedPi.file.binding != snapshotAPIFileBinding(request.HarnessBinding) ||
+		template.Kind != domain.ProviderCredentialDeliveryFileV1 || template.FileName != preparedPi.file.fileName) {
+		return ports.ProviderInvocationCredentialV1{}, ErrDeliveryMismatch
+	}
+	delete(service.preparedPiFiles, scope)
+	service.handles[handle.HandleID] = &providerInvocationState{handle: handle, template: template, preparedBinding: snapshotAPIFileBinding(request.HarnessBinding), piFileUse: preparedPi}
 	return handle, nil
 }
 
@@ -151,7 +161,14 @@ func (service *InvocationService) MaterializeProviderCredential(ctx context.Cont
 		return ErrNotFound
 	}
 	state.mu.Lock()
-	defer state.mu.Unlock()
+	var piUse *preparedPiFileUse
+	defer func() {
+		state.mu.Unlock()
+		// Last defer: original secret zeroing and all use-gate joins are done.
+		if piUse != nil {
+			piUse.finishCallback()
+		}
+	}()
 	if state.handle != handle || state.revoked || state.released {
 		return ErrNotFound
 	}
@@ -162,6 +179,13 @@ func (service *InvocationService) MaterializeProviderCredential(ctx context.Cont
 		return ErrExpired
 	}
 	state.consumed = true
+	if state.piFileUse != nil {
+		piUse = state.piFileUse
+		if !piUse.beginCallback() {
+			piUse = nil
+			return ErrConsumed
+		}
+	}
 
 	locator := ports.ProviderCredentialLocatorV1{TenantID: handle.TenantID, OwnerUserID: handle.OwnerUserID, ResourceKind: handle.ProviderResource.Kind, ResourceID: handle.ProviderResource.ResourceID}
 	binding, found, err := service.bindings.LoadProviderCredential(ctx, locator)
@@ -191,9 +215,14 @@ func (service *InvocationService) MaterializeProviderCredential(ctx context.Cont
 		callbackSecret = nil
 	}
 	if handle.ProviderResource.Kind == domain.ProviderResourceAPIAccountV1 && plan.Kind == domain.ProviderCredentialDeliveryFileV1 {
-		use := &immutableAPIFileUse{ctx: ctx, handle: handle, binding: state.preparedBinding, plan: plan, files: service.files,
+		ioCtx, cancelIO := context.WithCancel(ctx)
+		use := &immutableAPIFileUse{ctx: ioCtx, ownerCtx: ctx, cancel: cancelIO, secret: secret, handle: handle, binding: state.preparedBinding, plan: plan, files: service.files,
 			file: state.file, fingerprint: binding.SecretFingerprint, gate: make(chan struct{}, 1)}
 		use.gate <- struct{}{}
+		if piUse != nil {
+			use.prepared = piUse.file
+			piUse.use.Store(use)
+		}
 		use.active.Store(true)
 		state.fileUse.Store(use)
 		defer func() {
@@ -203,8 +232,23 @@ func (service *InvocationService) MaterializeProviderCredential(ctx context.Cont
 			// before callback return. Join the already-running verifier next.
 			use.active.Store(false)
 			state.fileUse.Store(nil)
+			use.cancel()
+			if send := use.send.Load(); send != nil {
+				send.Revoke()
+			}
 			<-use.gate
+			// Catch a binding installed while cancellation raced its last check.
+			// It could not become eligible after ctx cancellation, but must still
+			// relinquish the exact original send before secret zeroing/unlock.
+			if send := use.send.Swap(nil); send != nil {
+				send.Revoke()
+			}
+			use.secret = nil
 		}()
+		if piUse != nil && piUse.stopped.Load() {
+			use.cancel()
+			return ErrConsumed
+		}
 	}
 	if err := consume(plan, callbackSecret); err != nil {
 		return ErrBackend

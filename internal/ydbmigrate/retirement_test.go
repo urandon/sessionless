@@ -1,6 +1,7 @@
 package ydbmigrate
 
 import (
+	"fmt"
 	"io/fs"
 	"strings"
 	"testing"
@@ -26,14 +27,30 @@ func retirementFixture(t *testing.T) fstest.MapFS {
 	return files
 }
 
+// Derive a genuinely later fixture version from the unmodified complete source
+// set. Fixed130 stopped exercising retirement guards once real130 was added.
+func nextRetirementFixtureVersion(t *testing.T) int64 {
+	t.Helper()
+	migrations, err := LoadMigrations(retirementFixture(t))
+	if err != nil || len(migrations) == 0 {
+		t.Fatalf("load original migration fixture: count=%d err=%v", len(migrations), err)
+	}
+	return migrations[len(migrations)-1].Version + 1
+}
+
 func TestRetirementMigrationSetPreservesHistoryAndOwnsFourDrops(t *testing.T) {
 	files := retirementFixture(t)
 	migrations, err := LoadMigrations(files)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 129 {
-		t.Fatalf("migration count=%d want129", len(migrations))
+	if len(migrations) != len(files) {
+		t.Fatalf("loaded migration count=%d want complete source count=%d", len(migrations), len(files))
+	}
+	for _, m := range migrations {
+		if _, found := files[m.Filename]; !found {
+			t.Fatalf("loader invented migration %q", m.Filename)
+		}
 	}
 	definitions, err := retirementDefinitions()
 	if err != nil {
@@ -53,6 +70,7 @@ func TestRetirementMigrationSetPreservesHistoryAndOwnsFourDrops(t *testing.T) {
 
 func TestRetirementMigrationSetRejectsUnsafeDefinitionsBeforeOpen(t *testing.T) {
 	const first = "00126_retire_lease_expiry.sql"
+	next := nextRetirementFixtureVersion(t)
 	for _, tc := range []struct {
 		name   string
 		mutate func(fstest.MapFS)
@@ -82,19 +100,19 @@ func TestRetirementMigrationSetRejectsUnsafeDefinitionsBeforeOpen(t *testing.T) 
 		{name: "missing CREATE", mutate: func(f fstest.MapFS) { delete(f, "00019_create_lease_expiry.sql") }, want: "CREATE lineage"},
 		{name: "missing baseline", mutate: func(f fstest.MapFS) { delete(f, "00125_add_owned_operation_residual.sql") }, want: "missing predecessor"},
 		{name: "early wrong filename", mutate: func(f fstest.MapFS) { f["00018_retire_lease_expiry.sql"] = f[first]; delete(f, first) }, want: "duplicate migration version"},
-		{name: "duplicate", mutate: func(f fstest.MapFS) { f["00130_duplicate_drop.sql"] = f[first] }, want: "unowned schema operation"},
+		{name: "duplicate", mutate: func(f fstest.MapFS) { f[fmt.Sprintf("%05d_duplicate_drop.sql", next)] = f[first] }, want: "unowned schema operation"},
 		{name: "duplicate version", mutate: func(f fstest.MapFS) { f["00126_collision.sql"] = f[first] }, want: "duplicate migration version"},
 		{name: "reactivation", mutate: func(f fstest.MapFS) {
-			f["00130_recreate.sql"] = &fstest.MapFile{Data: []byte("-- +goose Up\nCREATE TABLE IF NOT EXISTS `lease_expiry` (id Utf8, PRIMARY KEY(id));\n-- +goose Down\n")}
+			f[fmt.Sprintf("%05d_recreate.sql", next)] = &fstest.MapFile{Data: []byte("-- +goose Up\nCREATE TABLE IF NOT EXISTS `lease_expiry` (id Utf8, PRIMARY KEY(id));\n-- +goose Down\n")}
 		}, want: "cannot recreate"},
 		{name: "later ALTER", mutate: func(f fstest.MapFS) {
-			f["00130_alter.sql"] = &fstest.MapFile{Data: []byte("-- +goose Up\nALTER TABLE `lease_expiry` ADD COLUMN extra Utf8;\n-- +goose Down\n")}
+			f[fmt.Sprintf("%05d_alter.sql", next)] = &fstest.MapFile{Data: []byte("-- +goose Up\nALTER TABLE `lease_expiry` ADD COLUMN extra Utf8;\n-- +goose Down\n")}
 		}, want: "cannot recreate or ALTER"},
 		{name: "bare later ALTER", mutate: func(f fstest.MapFS) {
-			f["00130_alter.sql"] = &fstest.MapFile{Data: []byte("-- +goose Up\nALTER TABLE lease_expiry ADD COLUMN extra Utf8;\n-- +goose Down\n")}
+			f[fmt.Sprintf("%05d_alter.sql", next)] = &fstest.MapFile{Data: []byte("-- +goose Up\nALTER TABLE lease_expiry ADD COLUMN extra Utf8;\n-- +goose Down\n")}
 		}, want: "cannot recreate or ALTER"},
 		{name: "unparsed ALTER target", mutate: func(f fstest.MapFS) {
-			f["00130_alter.sql"] = &fstest.MapFile{Data: []byte("-- +goose Up\nALTER TABLE namespace.lease_expiry ADD COLUMN extra Utf8;\n-- +goose Down\n")}
+			f[fmt.Sprintf("%05d_alter.sql", next)] = &fstest.MapFile{Data: []byte("-- +goose Up\nALTER TABLE namespace.lease_expiry ADD COLUMN extra Utf8;\n-- +goose Down\n")}
 		}, want: "unsupported CREATE/ALTER target"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -109,10 +127,11 @@ func TestRetirementMigrationSetRejectsUnsafeDefinitionsBeforeOpen(t *testing.T) 
 }
 
 func TestRetirementMigrationSetAllowsUnrelatedALTER(t *testing.T) {
+	next := nextRetirementFixtureVersion(t)
 	for _, target := range []string{"runs", "`runs`"} {
 		t.Run(target, func(t *testing.T) {
 			files := retirementFixture(t)
-			files["00130_alter_unrelated.sql"] = &fstest.MapFile{Data: []byte("-- +goose Up\nALTER TABLE " + target + " ADD COLUMN later_note Utf8;\n-- +goose Down\n")}
+			files[fmt.Sprintf("%05d_alter_unrelated.sql", next)] = &fstest.MapFile{Data: []byte("-- +goose Up\nALTER TABLE " + target + " ADD COLUMN later_note Utf8;\n-- +goose Down\n")}
 			if _, err := LoadMigrations(files); err != nil {
 				t.Fatalf("legitimate unrelated ALTER %s: %v", target, err)
 			}

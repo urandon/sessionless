@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 
 	"gitcode.com/urandon/sessionless/internal/credentiallifecycle"
 	"gitcode.com/urandon/sessionless/internal/domain"
@@ -23,6 +24,10 @@ type InvocationConfig struct {
 	IDs            ports.IDGenerator
 	ScratchRoot    string
 	MaxSecretBytes int64
+	// An explicit prepared composition may own the canonical namespace and
+	// close it only after all original lifecycle consumers/handles have joined.
+	// ScratchRoot must then be empty; no second filesystem is constructed.
+	FileSystem *credentiallifecycle.PinnedSecretFileSystem
 }
 
 type InvocationService struct {
@@ -39,13 +44,14 @@ type InvocationService struct {
 }
 
 type providerInvocationState struct {
-	mu       sync.Mutex
-	handle   ports.ProviderInvocationCredentialV1
-	template ports.ProviderCredentialDeliveryTemplateV1
-	file     *credentiallifecycle.PinnedSecretFile
-	consumed bool
-	revoked  bool
-	released bool
+	mu              sync.Mutex
+	handle          ports.ProviderInvocationCredentialV1
+	preparedBinding preparedAPIFileBinding
+	template        ports.ProviderCredentialDeliveryTemplateV1
+	file            *credentiallifecycle.PinnedSecretFile
+	consumed        bool
+	revoked         bool
+	released        bool
 	// These values describe local immutable materialization, not owner, Run or
 	// remote-phase permission. CandidateMutationID is only mutation metadata.
 	binding           domain.ProviderCredentialBindingV1
@@ -53,6 +59,9 @@ type providerInvocationState struct {
 	callbackSucceeded bool
 	finalizeAttempted bool
 	finalized         bool
+	// Published only during the synchronous API file consumer. Verification
+	// borrows this record without reentering the already-held state mutex.
+	fileUse atomic.Pointer[immutableAPIFileUse]
 }
 
 func NewInvocationService(config InvocationConfig, planner ports.ProviderCredentialDeliveryPlannerV1, bindings ports.ProviderCredentialBindingStore, secrets ports.ProviderCredentialSecretStore) (*InvocationService, error) {
@@ -65,7 +74,10 @@ func NewInvocationService(config InvocationConfig, planner ports.ProviderCredent
 	if config.MaxSecretBytes < 1 || config.MaxSecretBytes > 64<<10 {
 		return nil, errors.New("provider credential invocation byte bound is invalid")
 	}
-	return &InvocationService{clock: config.Clock, ids: config.IDs, root: config.ScratchRoot, maxBytes: config.MaxSecretBytes, planner: planner, bindings: bindings, secrets: secrets, handles: make(map[string]*providerInvocationState)}, nil
+	if config.FileSystem != nil && config.ScratchRoot != "" {
+		return nil, errors.New("provider credential namespace must have one owner")
+	}
+	return &InvocationService{clock: config.Clock, ids: config.IDs, root: config.ScratchRoot, files: config.FileSystem, maxBytes: config.MaxSecretBytes, planner: planner, bindings: bindings, secrets: secrets, handles: make(map[string]*providerInvocationState)}, nil
 }
 
 func (service *InvocationService) IssueProviderCredential(ctx context.Context, request ports.ProviderCredentialIssueRequestV1) (ports.ProviderInvocationCredentialV1, error) {
@@ -124,7 +136,7 @@ func (service *InvocationService) IssueProviderCredential(ctx context.Context, r
 	if _, exists := service.handles[handle.HandleID]; exists {
 		return ports.ProviderInvocationCredentialV1{}, ErrBackend
 	}
-	service.handles[handle.HandleID] = &providerInvocationState{handle: handle, template: template}
+	service.handles[handle.HandleID] = &providerInvocationState{handle: handle, template: template, preparedBinding: snapshotAPIFileBinding(request.HarnessBinding)}
 	return handle, nil
 }
 
@@ -177,6 +189,22 @@ func (service *InvocationService) MaterializeProviderCredential(ctx context.Cont
 	callbackSecret := secret
 	if plan.Kind == domain.ProviderCredentialDeliveryFileV1 {
 		callbackSecret = nil
+	}
+	if handle.ProviderResource.Kind == domain.ProviderResourceAPIAccountV1 && plan.Kind == domain.ProviderCredentialDeliveryFileV1 {
+		use := &immutableAPIFileUse{ctx: ctx, handle: handle, binding: state.preparedBinding, plan: plan, files: service.files,
+			file: state.file, fingerprint: binding.SecretFingerprint, gate: make(chan struct{}, 1)}
+		use.gate <- struct{}{}
+		use.active.Store(true)
+		state.fileUse.Store(use)
+		defer func() {
+			// Join any in-progress local verifier before the callback's file
+			// custody can pass to Finalize/Release. Also runs after a panic.
+			// Revoke first, including verifiers that captured the pointer just
+			// before callback return. Join the already-running verifier next.
+			use.active.Store(false)
+			state.fileUse.Store(nil)
+			<-use.gate
+		}()
 	}
 	if err := consume(plan, callbackSecret); err != nil {
 		return ErrBackend

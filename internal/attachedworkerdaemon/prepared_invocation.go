@@ -22,6 +22,9 @@ type PreparedInvocationV1 struct {
 	Materialization ports.ProviderCredentialMaterializationV1 `json:"-"`
 	VerifiedInput   *VerifiedAttachedInputV1                  `json:"-"`
 	APIRequest      *PreparedAPIRequestV1                     `json:"-"`
+	PhysicalSend    PreparedAPIPhysicalSendV1                 `json:"-"`
+	Ledger          PreparedAPILedgerV1                       `json:"-"`
+	apiIssueStarted time.Time                                 // parent-only original Issue boundary, never wire data
 }
 
 func (PreparedInvocationV1) String() string {
@@ -37,6 +40,16 @@ func (invocation PreparedInvocationV1) GoString() string { return invocation.Str
 // input staging and semantic output collection remain its explicit contracts.
 type PreparedProcessRunner interface {
 	RunPrepared(context.Context, PreparedInvocationV1) (AttemptResult, error)
+}
+
+// PreparedAPIPhysicalSendV1 is private parent-side supervision, not a child
+// wire grant or a substitute for the genuine Source. The executor must submit
+// the complete physical request and recheck the returned original monotonic
+// cutoff at the actual send. It receives neither a bearer nor a lifecycle port.
+// A future native IPC adapter must preserve this boundary, not serialize a Go
+// deadline or treat this interface alone as hard native enforcement.
+type PreparedAPIPhysicalSendV1 interface {
+	Authorize(body []byte, backendProfileDigest string) (time.Time, error)
 }
 
 // NewPreparedInvocationRunner selects an explicit executor instead of the

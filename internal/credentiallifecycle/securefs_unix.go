@@ -19,6 +19,7 @@ import (
 
 const (
 	invocationPrefix          = "invocation-"
+	invocationRandomBytes     = 16
 	authFilename              = "auth.json"
 	maxRecoveredProviderRoots = 256
 )
@@ -310,7 +311,7 @@ func (filesystem *secureCredentialFS) createNamedMode(fileName string, secret []
 
 func (filesystem *secureCredentialFS) mkdirInvocation() (string, error) {
 	for attempt := 0; attempt < 16; attempt++ {
-		var random [16]byte
+		var random [invocationRandomBytes]byte
 		if _, err := io.ReadFull(rand.Reader, random[:]); err != nil {
 			return "", ErrCredentialMaterialization
 		}

@@ -174,7 +174,11 @@ function request(value, schema, cap) {
 // Whole strict grammar before JSON.parse. Only decoded KEY strings and number
 // token slices are materialized; each copy is charged before creation. No new
 // expected body is stringified, and no tree budget is restarted at parse.
-function grammar(text, limits, charge, maxNodes) {
+export function inspectJSONGrammar(text, limits, charge, maxNodes) {
+  // Shared private entry, not a public unbounded JSON scanner. Each caller
+  // funds charge() on its original ledger and admits the UTF8 source first.
+  if (typeof text !== 'string' || !positive(limits?.native_request_bytes) || text.length > limits.native_request_bytes ||
+      !positive(limits?.json_depth) || !positive(maxNodes) || typeof charge !== 'function') deny();
   let at = 0; let nodes = 0;
   const stack = [];
   const node = () => { if (++nodes > maxNodes) deny(); };
@@ -326,7 +330,7 @@ export function createPhysicalFetchOwner(options) {
     const Ndown = subtract(limits.json_nodes, Jrequest, echoCount.nodes);
     if (A <= multiply(E, 2) || X > A || D <= sum(multiply(B, 2), E) || !positive(Ndown) || echoCount.nodes > Ndown) deny();
     remainingParseNodes = subtract(Jrequest, full.nodes, schema.nodes);
-    bodyNodes = grammar(expected.body, limits, charge, remainingParseNodes);
+    bodyNodes = inspectJSONGrammar(expected.body, limits, charge, remainingParseNodes);
     if (bodyNodes !== full.nodes) deny();
     downstream = Object.freeze({ ...limits, response_allocation_bytes: A, response_copy_work_bytes: D, json_nodes: Ndown });
     Object.freeze(limits);

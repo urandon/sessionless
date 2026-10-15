@@ -38,6 +38,9 @@ type wireParser struct {
 	at                               int
 	depth, nodes, maxDepth, maxNodes uint64
 	ledger                           *codexexec.CanonicalMediaLedgerV1
+	// Only the closed selected-model DATA reader enables this. Request/schema
+	// integers retain their original exact/safe grammar, including exponent denial.
+	modelNumbers bool
 }
 
 func checkedAdd(values ...uint64) (uint64, error) {
@@ -312,7 +315,40 @@ func (p *wireParser) value() (*wireValue, error) {
 		}
 	}
 	if p.at < len(p.b) && (p.b[p.at] == '.' || p.b[p.at] == 'e' || p.b[p.at] == 'E') {
-		return nil, ErrMissingProducer
+		if !p.modelNumbers {
+			return nil, ErrMissingProducer
+		}
+		if p.b[p.at] == '.' {
+			p.at++
+			digits := p.at
+			for p.at < len(p.b) && p.b[p.at] >= '0' && p.b[p.at] <= '9' {
+				p.at++
+			}
+			if p.at == digits {
+				return nil, ErrProjection
+			}
+		}
+		if p.at < len(p.b) && (p.b[p.at] == 'e' || p.b[p.at] == 'E') {
+			p.at++
+			if p.at < len(p.b) && (p.b[p.at] == '+' || p.b[p.at] == '-') {
+				p.at++
+			}
+			digits := p.at
+			for p.at < len(p.b) && p.b[p.at] >= '0' && p.b[p.at] <= '9' {
+				p.at++
+			}
+			if p.at == digits {
+				return nil, ErrProjection
+			}
+		}
+		// Source token strings are covered by the model parse's four byte
+		// appearances. Only finite non-negative model costs may consume them.
+		text := string(p.b[start:p.at])
+		n, e := strconv.ParseFloat(text, 64)
+		if e != nil || math.IsNaN(n) || math.IsInf(n, 0) {
+			return nil, ErrProjection
+		}
+		return &wireValue{kind: 'r', text: text}, nil
 	}
 	if p.at-start > 17 {
 		return nil, ErrProjection
@@ -531,6 +567,9 @@ func (w *wireWriter) value(v *wireValue) {
 		w.quote("", v.raw)
 	case 'n':
 		w.integer(v.number)
+	case 'r':
+		w.node()
+		w.literal(v.text)
 	case 'b':
 		w.node()
 		if v.boolean {

@@ -74,6 +74,7 @@ type apiTestParent struct {
 	prepareErr   error
 	mutate       func(*PreparedAPIDataV1)
 	phaseErr     pisdkphasewire.Phase
+	phaseWindow  time.Duration
 	phaseMutate  func(pisdkphasewire.Request, *pisdkphasewire.Reply)
 	cleared      bool
 	ownedInputs  []*VerifiedAttachedInputV1
@@ -133,8 +134,12 @@ func (p *apiTestParent) ObserveOriginalAPIPhase(_ context.Context, request pisdk
 	}
 	checked := time.Now().UTC().Truncate(time.Microsecond)
 	window := time.Duration(request.CallerDeadline.RemainingNanoseconds)
-	if window > 30*time.Second {
-		window = 30 * time.Second
+	cap := p.phaseWindow
+	if cap == 0 {
+		cap = 30 * time.Second // unchanged original fixture default
+	}
+	if window > cap {
+		window = cap
 	}
 	reply := pisdkphasewire.Reply{Status: ports.AttachedWorkerExecutionApplied, AcceptedAttempt: p.data.ParentInput.AcceptedAttempt, AcceptedAttemptRevision: p.data.ParentInput.AcceptedAttempt.Revision, HarnessBindingDigest: request.ExpectedHarnessBindingDigest, AttachedPiAPIInvocationPolicyDigest: request.ExpectedAttachedPiAPIInvocationPolicyDigest, CheckedAt: checked, UseExpiresAt: checked.Add(window)}
 	if p.phaseMutate != nil {
@@ -356,6 +361,9 @@ func TestAPIOwnerSameRunnerOrderAndOwnedMutationIsolation(t *testing.T) {
 		if d, ok := ctx.Deadline(); !ok || !d.Before(parent.data.CallerDeadline) {
 			t.Error("original F was not retained on executor context")
 		}
+		if err := authorizeSyntheticAPISend(input); err != nil {
+			return AttemptResult{}, err
+		}
 		borrowed = input.APIRequest.Body
 		input.APIRequest.Body[0] = '!'
 		input.VerifiedInput.Context[0] = '!'
@@ -368,7 +376,7 @@ func TestAPIOwnerSameRunnerOrderAndOwnedMutationIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := runner.Run(ctx, inv)
-	want := []string{"prepare", "pre_issue", "issue", "materialize", "execute", "unlocked", "immutable_finalize", "finalize", "release"}
+	want := []string{"prepare", "pre_issue", "issue", "materialize", "execute", "physical_send", "unlocked", "immutable_finalize", "finalize", "release"}
 	if !reflect.DeepEqual(parent.order, want) {
 		t.Errorf("order=%v want=%v", parent.order, want)
 	}
@@ -401,7 +409,10 @@ func TestAPIOwnerReceiverCanonicalExpiry(t *testing.T) {
 	life.mutateHandle = func(h *ports.ProviderInvocationCredentialV1) {
 		h.ExpiresAt = h.ExpiresAt.UTC().Truncate(time.Microsecond)
 	}
-	runner, err := NewPreparedAPIInvocationRunner(preparedExecutorFunc(func(context.Context, PreparedInvocationV1) (AttemptResult, error) {
+	runner, err := NewPreparedAPIInvocationRunner(preparedExecutorFunc(func(_ context.Context, input PreparedInvocationV1) (AttemptResult, error) {
+		if err := authorizeSyntheticAPISend(input); err != nil {
+			return AttemptResult{}, err
+		}
 		return AttemptResult{DescendantsReaped: true, BoundaryReleased: true, CleanupSucceeded: true}, nil
 	}), life, parent)
 	if err != nil {
@@ -482,6 +493,9 @@ func TestAPIOwnerIndependentMetadataMutation(t *testing.T) {
 	inv.VerifiedInput.AcceptedAttempt.ContextDigest = digest
 	originalExpiry := *inv.VerifiedInput.Job.HarnessBinding.EvidenceExpiresAt
 	runner, err := NewPreparedAPIInvocationRunner(preparedExecutorFunc(func(_ context.Context, input PreparedInvocationV1) (AttemptResult, error) {
+		if err := authorizeSyntheticAPISend(input); err != nil {
+			return AttemptResult{}, err
+		}
 		*input.VerifiedInput.Job.HarnessBinding.EvidenceExpiresAt = time.Time{}
 		input.VerifiedInput.Job.AllowedMCPServers[0] = "child-only"
 		if *parent.data.ParentInput.Job.HarnessBinding.EvidenceExpiresAt != originalExpiry || parent.data.ParentInput.Job.AllowedMCPServers[0] != "synthetic-opaque-mcp" {
@@ -702,8 +716,11 @@ func TestAPIOwnerPostIssueFailuresAlwaysAttemptRelease(t *testing.T) {
 			case "invalid retirement":
 				parent.retirement.invalid = true
 			}
-			runner, err := NewPreparedAPIInvocationRunner(preparedExecutorFunc(func(context.Context, PreparedInvocationV1) (AttemptResult, error) {
+			runner, err := NewPreparedAPIInvocationRunner(preparedExecutorFunc(func(_ context.Context, input PreparedInvocationV1) (AttemptResult, error) {
 				parent.order = append(parent.order, "execute")
+				if err := authorizeSyntheticAPISend(input); err != nil {
+					return AttemptResult{}, err
+				}
 				if name == "model cancelled" {
 					cancel()
 				}
@@ -800,9 +817,12 @@ func TestAPIOwnerFreshPhaseAfterExternalRevocation(t *testing.T) {
 	unblock := func() { once.Do(func() { close(resume) }) }
 	var result InvocationResult
 	var runErr error
-	runner, err := NewPreparedAPIInvocationRunner(preparedExecutorFunc(func(context.Context, PreparedInvocationV1) (AttemptResult, error) {
+	runner, err := NewPreparedAPIInvocationRunner(preparedExecutorFunc(func(_ context.Context, input PreparedInvocationV1) (AttemptResult, error) {
 		close(entered)
 		<-resume
+		if err := authorizeSyntheticAPISend(input); err != nil {
+			return AttemptResult{}, err
+		}
 		return AttemptResult{DescendantsReaped: true, BoundaryReleased: true, CleanupSucceeded: true}, nil
 	}), life, parent)
 	if err != nil {
@@ -833,9 +853,12 @@ func TestAPIOwnerWaitsForCallbackReturnBeforeFinalize(t *testing.T) {
 	unblock := func() { once.Do(func() { close(resume) }) }
 	var result InvocationResult
 	var runErr error
-	runner, err := NewPreparedAPIInvocationRunner(preparedExecutorFunc(func(context.Context, PreparedInvocationV1) (AttemptResult, error) {
+	runner, err := NewPreparedAPIInvocationRunner(preparedExecutorFunc(func(_ context.Context, input PreparedInvocationV1) (AttemptResult, error) {
 		close(entered)
 		<-resume
+		if err := authorizeSyntheticAPISend(input); err != nil {
+			return AttemptResult{}, err
+		}
 		return AttemptResult{DescendantsReaped: true, BoundaryReleased: true, CleanupSucceeded: true}, nil
 	}), life, parent)
 	if err != nil {
@@ -868,4 +891,17 @@ func apiWait(t *testing.T, ch <-chan struct{}) {
 			t.Fatal("owned API fixture did not complete")
 		}
 	}
+}
+
+// Only synthetic SAME-parent orchestration, never a native physical send or
+// genuine Source/fit proof. Real executors must recheck at the actual sink.
+func authorizeSyntheticAPISend(input PreparedInvocationV1) error {
+	if input.PhysicalSend == nil || input.APIRequest == nil || input.VerifiedInput == nil {
+		return ErrInvocationInvalid
+	}
+	cutoff, err := input.PhysicalSend.Authorize(input.APIRequest.Body, input.VerifiedInput.Job.HarnessBinding.Backend.BackendProfileDigest)
+	if err != nil || !time.Now().Before(cutoff) {
+		return ErrCredentialUnavailable
+	}
+	return nil
 }

@@ -277,7 +277,7 @@ func TestAttachedPiSDKProfileStrictCodecAndZeroFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	cases := map[string][]byte{
-		"empty": nil, "over_cap": bytes.Repeat([]byte{'x'}, attachedPiSDKCanonicalMaxBytesV1+1), "invalid_utf8": {0xff}, "trailing": append(append([]byte{}, raw...), []byte("{}")...), "whitespace": append([]byte(" "), raw...),
+		"empty": nil, "over_cap": bytes.Repeat([]byte{'x'}, AttachedPiSDKCanonicalMaxBytesV1+1), "invalid_utf8": {0xff}, "trailing": append(append([]byte{}, raw...), []byte("{}")...), "whitespace": append([]byte(" "), raw...),
 		"profile_null": []byte(`{"profile":null,"inherited_media":null}`), "partial": []byte(`{"profile":{"version":1}}`), "duplicate": bytes.Replace(raw, []byte(`"version":1`), []byte(`"version":1,"version":1`), 1), "nested_duplicate": bytes.Replace(raw, []byte(`"sdk_retries":0`), []byte(`"sdk_retries":0,"sdk_retries":0`), 1),
 		"alias": bytes.Replace(raw, []byte(`"native_protocol_version"`), []byte(`"Native_Protocol_Version"`), 1), "null_zero": bytes.Replace(raw, []byte(`"sdk_retries":0`), []byte(`"sdk_retries":null`), 1), "omitted_zero": bytes.Replace(raw, []byte(`"sdk_retries":0,`), nil, 1), "null_false": bytes.Replace(raw, []byte(`"discovery":false`), []byte(`"discovery":null`), 1), "omitted_false": bytes.Replace(raw, []byte(`,"discovery":false`), nil, 1), "wrong_media": bytes.Replace(raw, []byte(`"image_count":2`), []byte(`"image_count":1`), 1), "raw_profile": mustPiSDKProfileJSON(t, p),
 	}
@@ -404,8 +404,8 @@ func TestAttachedPiSDKProfileMaxMetadataBound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("maximum legal structural metadata: %v", err)
 	}
-	if len(raw) > attachedPiSDKCanonicalMaxBytesV1 {
-		t.Fatalf("metadata bytes=%d bound=%d", len(raw), attachedPiSDKCanonicalMaxBytesV1)
+	if len(raw) > AttachedPiSDKCanonicalMaxBytesV1 {
+		t.Fatalf("metadata bytes=%d bound=%d", len(raw), AttachedPiSDKCanonicalMaxBytesV1)
 	}
 	// Independently inventory the wire shape used by the bound derivation. A
 	// future field addition must update the auditable schema budget, not silently

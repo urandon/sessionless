@@ -16,6 +16,9 @@ func (*PinnedSecretFileSystem) CreateImmutable(string, []byte, int64) (*PinnedSe
 func (*PinnedSecretFileSystem) VerifyImmutable(context.Context, *PinnedSecretFile, domain.CredentialFingerprint, int64) error {
 	return ErrCredentialMaterialization
 }
+func (*PinnedSecretFileSystem) ImmutableFilePathBound(context.Context, string) (uint64, error) {
+	return 0, ErrCredentialMaterialization
+}
 func (*PinnedSecretFileSystem) closedResult(*pinnedMaterialization) error {
 	return ErrCredentialMaterialization
 }

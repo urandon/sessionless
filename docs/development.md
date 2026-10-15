@@ -284,21 +284,76 @@ canonical phase request, seven-key applied/one-key denied reply, original
 31-field attempt head and exact seconds/nanoseconds time representation. Its
 ordered byte grammar rejects unknown, reordered, escaped and noncanonical
 fields before bounded owned copies. Encoding premeasures one exact allocation.
-SPU1 inspection validates the first 17 bytes and checked lengths before body
-allocation; complete raw UTF-8 bodies are preserved without JSON normalization.
+The private process-frame codec accepts only canonical SPU2, replacing its
+non-serving SPU1 predecessor without aliases. Header inspection validates all
+17 bytes, explicit per-kind/body/frame bounds, platform-safe totals and fixed
+sender direction before payload allocation. A future stream owner must reject
+the wrong peer at this preflight. Complete UTF-8 Init, physical-request and
+final bodies remain byte-exact; use metadata is binary status plus uint64
+relative nanoseconds, not a Source reply or serialized Go clock. Complete-frame
+decoding is not an actual duplex stream pump or an Init/final schema validator.
 
 Run the focused package with the pinned Go toolchain and repository-shared
 caches, using `go test -race -count=1 -shuffle=on ./internal/pisdkphasewire`.
 These ordinary unit tests are also included by `make test`. Tests distinguish
 conservative syntax ceilings from constructor-backed structural fixtures.
 
-The package reports combined logical copy/node accounting, not reservations,
-native memory/GC bounds or serving limits. A positive symbolic body limit,
-decoded applied reply or exact tuple/body comparison grants nothing. There is
+The process-frame helper reports only checked successful wire totals, including
+one retire: parent stdin I+60, child stdout B+L+163, total I+B+L+223 for positive
+actual Init/request/final byte lengths. These are not the predecessor's logical
+copy/node totals, reservations, native/GC bounds or serving limits. The complete
+original producer/copy/node ledger must still be established before Issue.
+Explicit structural caps, a decoded applied reply or exact byte comparison grant nothing. There is
 no source/HTTP/IPC pump, runner, credential or provider registration. Authentic
 same-RPC/current-owner phase production, source-owned full pre-Issue projection,
 shared/native fit, original deadline/cutoff bridge and cross-language parity
 remain required by the [Pi profile](design/pi-sdk-attached-media-profile.md).
+
+### Prepared Pi duplex checks (default-off)
+
+The explicit `Supervisor.PreparePiStdioV1` / `RunPreparedPi` library arm uses
+the same validated Supervisor process lifecycle and SPU2, not a second runner.
+Its Go arenas are reserved on the original ledger before the original API
+Issue boundary; a different ledger, late plan, substituted model-use context
+or executable/profile mismatch denies before launch. The original complete
+Init must still come from a qualified producer; an opaque UTF-8 fixture does
+not implement that producer or certify full native fit.
+
+One owned pump serializes Init/use and assembles child request/final frames
+after expected-peer/order/header preflight. It retains the original Go F,
+subtracts elapsed work before the one relative reply, and cancels/force-stops
+the same supervised attempt rather than granting model time during TERM grace.
+All pump/Source/timer work joins before return. Source-call cancellation is
+separate from the original immutable-Finalize/retirement context. Actual stdout
+count/digest and separately extracted final DATA do not mint a #200 producer,
+READY receipt or credential-finalization result.
+
+The focused ordinary process checks are
+`go test -race -count=1 -shuffle=on -run '^TestPiStdio' ./internal/attachedworkerdaemon`.
+They use synthetic Source/profile/Init and a local test executable, including
+fragmentation, exact maximum request, first-over, malformed/order failures,
+held Source/init-write cancellation and the original API file lifecycle.
+They are not Pi SDK/native clock/egress proof. Real Init/schema/all-copy ledger,
+same-JS guarded fetch/clock conversion, private final custody and genuine
+Source/admission/READY/terminal remain required before serving registration.
+
+The private Node child half in `internal/pisdktransport/stdio.mjs` speaks the
+same SPU2 over owned standard streams. `make pi-sdk-transport-test` includes
+credential-free child/actual-fetch-guard controls: full original body/P, exact
+BigInt nanoseconds, full IPC elapsed subtraction, delayed actual-use assertion,
+one-shot failure, Retire/EOF, fragmented/backpressured streams and cancellation.
+Its fixed arena and bounded wire copies are not a full native allocation or
+clock-fit certificate. Disposal joins actual pending writes before clearing
+borrowed payloads; a nonconforming injected writer is not made quiescent by
+detaching a timeout. Successful Final is still DATA, not a private producer.
+
+The ordinary `TestPiStdioNodeSameSupervisor` also runs the actual pinned Node
+24.19.0 process through the same Supervisor and canonical Go codec, with an
+empty replacement environment and exact module-only Node filesystem permission.
+This uses a synthetic Source/profile/opaque Init and no SDK/model/key/network;
+it is not real platform isolation, closed Init/bootstrap, full native fit or
+provider eligibility. The full Init producer and genuine Pi bootstrap linkage
+remain unfinished, rather than being inferred from the transport tests.
 
 ### Complete Pi request-data producer checks (non-serving)
 
@@ -344,8 +399,109 @@ equivalence, staged accounting, byte/node/depth first-over cases and builtin
 `JSON.stringify` differential goldens. No credential, SDK import/constructor,
 provider call, native YDB process or network is needed for these checks.
 
-No production Pi final-schema literal is supplied by this component; generic
-schema-data tests do not select the strict final/custody contract owned by #200.
+`PrepareInitV1` extends that **same** ledger before Issue. Its closed Init
+contains the complete original typed messages/timestamps/images, the one emitted
+expected body, canonical P and its domain-separated digest, explicit selected
+model/catalog DATA (including fractional costs/tiers), schema, options and eleven
+nonsecret headers. Caller config pointers/slices are not retained. The exact
+immutable filesystem gives the future credential locator's byte bound without
+creating a key/file; its worst JSON escaping and the final arena are reserved
+before Issue. The canonical Init API consumes a concrete
+`providercredential.PreparedImmutableAPIFileV1`, prepared by the SAME
+`InvocationService` from its original Issue request and namespace, rather than
+requiring an inaccessible private file object or caller fingerprint.
+Only the exact handle/materialization inside its active synchronous file-only
+callback may fill the once-spent slot; canonical invocation/resource scope is
+compared before Init preparation. No direct-file legacy entry point remains.
+Finalize/Release remain with the original parent handle.
+
+The service publishes a private original-file record only during that callback.
+Its single-verifier gate avoids reentering the already-held per-handle mutex,
+rejects concurrent/reentrant verification rather than queuing, revokes on every
+callback return/error/panic and joins an existing verifier before unlocking.
+The authentic immutable descriptor/namespace/fingerprint verifier still runs;
+no planner/binding/secret backend is queried to resolve this bridge. This local
+record grants no Source/currentness or spending permission. An explicit trusted
+composition may supply its existing `PinnedSecretFileSystem` in InvocationConfig
+instead of ScratchRoot (never both), and closes it only after all consumers and
+original handles have joined/released. Local tests exercise real
+Issue/Materialize/Finalize/Release with a public literal and isolated fake stores;
+they do not borrow a real configured account or subscription.
+
+The private SDK-free `native/init.mjs` reuses the existing strict JSON grammar,
+rejects duplicate decoded keys/unknown fields/invalid UTF8/types/limits, checks
+complete body/message/image/schema consistency and freezes its independently
+parsed DATA. Outer Init, nested P and expected-body parsing share one prospectively
+reserved copy/node partition, not new full-P pools. Logical payload bounds are
+not V8/native-object, SDK, timer/platform or provider eligibility measurements.
+`TestCompleteInitPinnedNodeOriginalCohort` drives that actual decoder with both
+original history/snapshot-tail cohorts and malformed controls, under the same
+pinned Node and replacement empty environment. It does not import any SDK,
+read a real credential or run adjacent opt-in functional/native tests. The final
+delayed-bootstrap/sole-runner and actual Source/native fit integration still
+must consume these mechanics; this source boundary is not an activated adapter.
+
+The private `native/entry.mjs` consumes complete Init over SPU2 before reading
+the one file-only immutable API delivery or importing the fixed genuine Pi SDK
+graph. Ten closed decimal arguments are prepared and payload-funded before
+Issue from the same original ledger; no JSON config graph, Source selector,
+credential, refreshed deadline or caller-selected module is passed in argv.
+The bounded reader requires a canonical regular single-link owner-only file,
+checks identity before/after bounded reads, rejects non-visible-ASCII bytes and
+clears its raw buffer on exit. These checks do not replace native read-only
+isolation, immutable parent verification, heap bounds or provider-only egress.
+Fake-transport harness assets are test-only, not embedded runner assets.
+
+`go test -race -count=3 -shuffle=on -run '^TestPreparedEntrySDKFreeControls$'
+./internal/pisdkmedia` tests SDK-free entry import, malformed Init before any
+file/SDK/HTTP effect, closed arguments and file-reader rejection controls in an
+isolated namespace with no SDK/account tree. Ordinary package tests also check
+prospective argv/reader payload accounting and ownership. With the existing
+exact local Pi build and pinned Node prerequisites only, the explicit command
+`go test -tags=pi_sdk_functional -race -count=1 -run
+'^TestPreparedPiNativeStdioEntry$' -timeout=110s ./internal/pisdkmedia` exercises
+real lifecycle file delivery, complete original history/snapshot-tail/two-image
+Init, SPU2, genuine Pi/standard Responses SDK/parser and exact structured final.
+Only a public noncredential literal, synthetic parent allowance and fake HTTP
+sink are used; it performs no account discovery, model call, install or rebuild.
+The strict parsed final is DATA, not the private same-run custody carrier owned
+by #200. Direct-child testing and file checks do not certify Source/native fit
+or the full production composition.
+
+`PreparePiExecutionV1` implements the existing `PreparedProcessRunner` seam,
+not another invocation/credential owner. The original complete producer prepares
+the request/Init, exact expected request metadata and process argv, then this
+component's original-ledger stdio plan and independent process snapshot before
+Issue. During the existing synchronous Materialize callback, it verifies the
+same head/profile/body/model/schema/headers/ledger/argv/environment, fills only
+the concrete original Init locator, and invokes the same `Supervisor.RunPreparedPi`
+with the original private physical-send capability and owner context. A public
+`Authorize` implementation is not an alternative capability. All failures spend
+the executor; Close cannot clear active process/collection buffers or rearm it.
+
+The original InvocationRunner still owns callback unlock, immutable-finalize
+phase, actual Finalize and independent Release. Its independently owned
+parent/child data copies may be cleared at return; the original full producer
+must retain the separate borrowed request/Init and this executor's observation
+through `FinalData` and `Close`, then clear its originals. FinalData is one-shot
+strict parsed DATA gated by this actual observation and successful result DATA,
+not private finalization/custody evidence manufactured from public flags.
+
+With the existing exact local SDK/Node prerequisites only,
+`go test -tags=pi_sdk_functional -race -count=1 -run
+'^TestPreparedPiSameOriginalSupervisor$' -timeout=150s ./internal/pisdkmedia`
+exercises the NEW connection through the actual original InvocationRunner,
+concrete executor, Supervisor, credential service and genuine Pi/standard SDK.
+History/snapshot-tail, postvalidation model/schema/header/head/ledger/file/argv/
+environment substitution, forged public send, callback cancellation, Source
+denial, Close during active send, post-run raw-final mutation and failed Release
+are distinct controls.
+Source transactions, OS isolation and HTTP remain explicit synthetic test
+collaborators; a passing test does not establish a serving profile or egress.
+Ordinary `TestPreparedPiExecutionBeforeIssueOwnershipAndDenials` launches nothing
+and checks pre-Issue association, independent metadata, exact live cleanup and
+combined first-over denial on the original ledger.
+
 Missing genuine model/compat/header/source-owned profile, tokenizer/output-clamp
 and full native-fit evidence, currentness, original S/hard cutoff, credential
 cleanup and genuine standard SDK composition remain unavailable. Ordinary

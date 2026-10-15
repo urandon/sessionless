@@ -133,6 +133,26 @@ func TestMaterializeServerOwnsCanonicalSuccessAndVerifiesArtifact(t *testing.T) 
 	}
 }
 
+func TestAttemptOutputUploadMaterializePreservesDeclaredEmptyText(t *testing.T) {
+	loaded, blobs, lease, at := outputFixture(t)
+	source, err := blobs.Put(t.Context(), loaded.Run.TenantID, candidatePrefix(loaded)+"empty", bytes.NewReader(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := Candidate{Status: domain.AttachedWorkerTerminalSucceeded, Summary: "An empty file was requested.", Artifacts: []ArtifactCandidate{{Name: "empty.txt", MediaType: "text/plain", Source: source}}}
+	result, err := Materialize(t.Context(), blobs, loaded, lease, 7, candidate, at)
+	if err != nil || result.Completion == nil || len(result.Completion.Manifest.Artifacts) != 1 {
+		t.Fatalf("declared empty text was lost: completion=%+v err=%v", result.Completion, err)
+	}
+	artifact := result.Completion.Manifest.Artifacts[0]
+	if artifact.Name != "empty.txt" || artifact.MediaType != "text/plain" || artifact.Blob.Size != 0 || artifact.Blob.SHA256 != source.SHA256 || artifact.Blob.Key == source.Key {
+		t.Fatalf("empty artifact did not retain semantic bytes and server canonical key: %+v", artifact)
+	}
+	if content, exists := blobs.values[artifact.Blob.Key]; !exists || len(content) != 0 {
+		t.Fatalf("empty canonical object is not present: exists=%t bytes=%d", exists, len(content))
+	}
+}
+
 func TestMaterializeRejectsForeignAndCorruptArtifactBeforeCanonicalWrite(t *testing.T) {
 	loaded, blobs, lease, at := outputFixture(t)
 	source, err := blobs.Put(context.Background(), loaded.Run.TenantID, candidatePrefix(loaded)+"artifact-a", strings.NewReader("original"))

@@ -32,7 +32,10 @@ type plannedReceiptObject struct {
 
 func (planned *plannedReceiptBlobs) Put(_ context.Context, tenant domain.TenantID, key string, body io.Reader) (domain.BlobRef, error) {
 	content, err := io.ReadAll(io.LimitReader(body, maxPlannedReceiptBytes-planned.total+1))
-	if err != nil || len(content) == 0 || planned.total+int64(len(content)) > maxPlannedReceiptBytes {
+	// Zero bytes is a valid declared text artifact. It still needs a planned
+	// reference before remote Put and exact readback verification in Commit;
+	// an empty body is not a missing object or permission to skip custody.
+	if err != nil || planned.total+int64(len(content)) > maxPlannedReceiptBytes {
 		return domain.BlobRef{}, attachedworkeroutput.ErrCandidateInvalid
 	}
 	digest := sha256.Sum256(content)

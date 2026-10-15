@@ -2,7 +2,11 @@ package ydbstore
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"io"
 	"testing"
 	"time"
 
@@ -11,13 +15,98 @@ import (
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
 
-func TestPlannedReceiptBlobsRejectsEmptyCanonicalObjectBeforeRemotePut(t *testing.T) {
+func TestAttemptOutputUploadEmptyCanonicalObjectPlannedBeforeRemotePut(t *testing.T) {
 	t.Parallel()
-	planned := &plannedReceiptBlobs{}
-	_, err := planned.Put(t.Context(), "tenant-a", "sessions/session-a/empty", bytes.NewReader(nil))
-	if !errors.Is(err, attachedworkeroutput.ErrCandidateInvalid) || len(planned.items) != 0 {
-		t.Fatalf("empty canonical object planned: items=%d err=%v", len(planned.items), err)
+	upstream := &receiptEmptyObjectTestStore{}
+	planned := &plannedReceiptBlobs{upstream: upstream}
+	digest := sha256.Sum256(nil)
+	want := domain.BlobRef{TenantID: "tenant-a", Key: "tenants/tenant-a/sessions/session-a/runs/run-a/artifacts/sha256/" + hex.EncodeToString(digest[:]), SHA256: hex.EncodeToString(digest[:])}
+	ref, err := planned.Put(t.Context(), want.TenantID, want.Key, bytes.NewReader(nil))
+	if err != nil || ref != want || len(planned.items) != 1 || planned.total != 0 || upstream.puts != 0 {
+		t.Fatalf("empty object must be planned without remote I/O: ref=%+v items=%d bytes=%d puts=%d err=%v", ref, len(planned.items), planned.total, upstream.puts, err)
 	}
+	if replay, err := planned.Put(t.Context(), want.TenantID, want.Key, bytes.NewReader(nil)); err != nil || replay != want || len(planned.items) != 1 {
+		t.Fatalf("same empty object plan must deduplicate: ref=%+v items=%d err=%v", replay, len(planned.items), err)
+	}
+	reader, err := planned.Open(t.Context(), want.TenantID, want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, readErr := io.ReadAll(reader)
+	closeErr := reader.Close()
+	if readErr != nil || closeErr != nil || len(body) != 0 || upstream.opens != 0 {
+		t.Fatalf("planned empty read: bytes=%d opens=%d read=%v close=%v", len(body), upstream.opens, readErr, closeErr)
+	}
+	if err := planned.Commit(t.Context()); err != nil || upstream.puts != 1 || upstream.opens != 1 || upstream.ref != want {
+		t.Fatalf("commit empty object with verified readback: ref=%+v puts=%d opens=%d err=%v", upstream.ref, upstream.puts, upstream.opens, err)
+	}
+}
+
+func TestAttemptOutputUploadEmptyCanonicalObjectRejectsInvalidAndCorrupt(t *testing.T) {
+	t.Parallel()
+	t.Run("foreign key", func(t *testing.T) {
+		planned := &plannedReceiptBlobs{}
+		_, err := planned.Put(t.Context(), "tenant-a", "tenants/tenant-b/empty", bytes.NewReader(nil))
+		if !errors.Is(err, attachedworkeroutput.ErrCandidateInvalid) || len(planned.items) != 0 {
+			t.Fatalf("invalid empty ref accepted: items=%d err=%v", len(planned.items), err)
+		}
+	})
+	for _, name := range []string{"wrong returned ref", "nonempty readback", "put error"} {
+		t.Run(name, func(t *testing.T) {
+			cause := errors.New("test-owned object failure")
+			upstream := &receiptEmptyObjectTestStore{mode: name, cause: cause}
+			planned := &plannedReceiptBlobs{upstream: upstream}
+			if _, err := planned.Put(t.Context(), "tenant-a", "tenants/tenant-a/empty", bytes.NewReader(nil)); err != nil {
+				t.Fatal(err)
+			}
+			err := planned.Commit(t.Context())
+			if !errors.Is(err, attachedworkeroutput.ErrCandidateInvalid) || upstream.puts != 1 {
+				t.Fatalf("invalid empty commit: mode=%s puts=%d err=%v", name, upstream.puts, err)
+			}
+			if name == "put error" && !errors.Is(err, cause) {
+				t.Fatalf("lost original Put error: %v", err)
+			}
+		})
+	}
+}
+
+// Test-owned in-memory sink. No provider, storage service or database is used.
+type receiptEmptyObjectTestStore struct {
+	puts, opens int
+	mode        string
+	cause       error
+	ref         domain.BlobRef
+}
+
+func (s *receiptEmptyObjectTestStore) Put(_ context.Context, tenant domain.TenantID, key string, body io.Reader) (domain.BlobRef, error) {
+	s.puts++
+	content, err := io.ReadAll(io.LimitReader(body, 2))
+	if err != nil || len(content) != 0 {
+		return domain.BlobRef{}, attachedworkeroutput.ErrCandidateInvalid
+	}
+	if s.mode == "put error" {
+		return domain.BlobRef{}, s.cause
+	}
+	digest := sha256.Sum256(content)
+	s.ref = domain.BlobRef{TenantID: tenant, Key: key, SHA256: hex.EncodeToString(digest[:])}
+	ref := s.ref
+	if s.mode == "wrong returned ref" {
+		ref.Key += "-wrong"
+	}
+	return ref, nil
+}
+
+func (s *receiptEmptyObjectTestStore) Open(_ context.Context, _ domain.TenantID, _ domain.BlobRef) (io.ReadCloser, error) {
+	s.opens++
+	var content []byte
+	if s.mode == "nonempty readback" {
+		content = []byte("x")
+	}
+	return io.NopCloser(bytes.NewReader(content)), nil
+}
+
+func (*receiptEmptyObjectTestStore) Delete(context.Context, domain.TenantID, domain.BlobRef) error {
+	return attachedworkeroutput.ErrCandidateInvalid
 }
 
 func TestAttachedWorkerOutputReceiptStatusAdmissible(t *testing.T) {

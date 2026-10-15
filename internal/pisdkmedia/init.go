@@ -22,10 +22,11 @@ import (
 // Child decode/SDK accounting remains a separate required consumer of this
 // reservation; this Go producer alone cannot make a profile eligible.
 type InitAccountingV1 struct {
-	Before, After                                           codexexec.CanonicalMediaAccountingV1
-	PrefixBytes, MaximumBodyBytes, FilePathBytes, JSONNodes uint64
-	GoArenaBytes, GoEmissionBytes, GoValidationBytes        uint64
-	ChildCopyBytes, ChildJSONNodes                          uint64
+	Before, After                                              codexexec.CanonicalMediaAccountingV1
+	PrefixBytes, MaximumBodyBytes, FilePathBytes, JSONNodes    uint64
+	GoArenaBytes, GoEmissionBytes, GoValidationBytes           uint64
+	ChildCopyBytes, ChildJSONNodes                             uint64
+	EntryArgumentBytes, BootstrapCopyBytes, BootstrapLiveBytes uint64
 }
 
 // Decoder partition of the original reservation, never a new full-P pool.
@@ -54,6 +55,7 @@ type InitPlanV1 struct {
 	live                     uint64
 	spent                    bool
 	decodeLimits             InitDecodeLimitsV1
+	entryArguments           [10]string
 }
 
 func (InitPlanV1) String() string     { return "InitPlanV1{data:[redacted]}" }
@@ -69,6 +71,16 @@ func (p *InitPlanV1) DecodeLimits() InitDecodeLimitsV1 {
 		return InitDecodeLimitsV1{}
 	}
 	return p.decodeLimits
+}
+
+// EntryArguments returns ten already-funded decimal control values by value.
+// It never serializes a key, input, profile grant or new deadline; allocation
+// occurred in PrepareInit BEFORE original Issue, not in RunPrepared.
+func (p *InitPlanV1) EntryArguments() [10]string {
+	if p == nil || p.ctx == nil || p.ctx.Err() != nil {
+		return [10]string{}
+	}
+	return p.entryArguments
 }
 
 // MaterializedBody accepts the original lifecycle's exact handle and callback
@@ -401,7 +413,7 @@ func PrepareInitV1(ctx context.Context, request *RequestProjectionV1, modelJSON 
 		return nil, ErrProjection
 	}
 	s, l := request.config, request.config.profile.Limits
-	if timeoutMs == 0 || timeoutMs > 2147483647 || l.ProcessFrameBytes <= 17 || l.ProcessFrameBytes > 1<<20 || l.CanonicalInputBytes == 0 ||
+	if timeoutMs == 0 || timeoutMs > 2147483647 || l.ProcessFrameBytes < 147 || l.ProcessFrameBytes > 1<<20 || l.CanonicalInputBytes == 0 ||
 		len(modelJSON) == 0 || s.system == "" || uint64(len(modelJSON)) > l.ProcessFrameBytes-17 || uint64(len(request.body)) != request.accounting.BodyBytes ||
 		s.credentialMax == 0 || s.credentialMax > math.MaxInt64 || s.profile.Validate() != nil {
 		return nil, ErrMissingProducer
@@ -520,11 +532,39 @@ func PrepareInitV1(ctx context.Context, request *RequestProjectionV1, modelJSON 
 	if e != nil {
 		return nil, ErrProjection
 	}
-	work, e := checkedAdd(maximum, maximum, childCopy)
-	live, e2 := checkedAdd(maximum, childCopy)
+	argumentValues := [10]uint64{l.ProcessFrameBytes - 17, min(l.NativeRequestBytes, l.ProcessFrameBytes-146),
+		min(l.StructuredFinalBytes, l.RawFinalBytes, l.ProcessFrameBytes-17), l.ProcessFrameBytes,
+		maximum, childCopy, childNodes, l.JSONDepth, uint64(len(profileJSON)), uint64(len(request.body))}
+	var argumentBytes uint64
+	for _, value := range argumentValues {
+		if value == 0 || value > 9007199254740991 {
+			return nil, ErrProjection
+		}
+		argumentBytes++
+		for n := value; n >= 10; n /= 10 {
+			argumentBytes++
+		}
+	}
+	// New entry-owned payload appearances: bounded file buffer+ASCII key and
+	// Bearer value/validation visits. Header/model/message trees are borrowed,
+	// not cloned into another full-P pool. Fixed graph/SDK/native costs remain
+	// separate original qualification; these numbers are logical payload only.
+	bootstrapCopy, e := checkedMul(s.credentialMax, 8)
+	bootstrapLive, e2 := checkedMul(s.credentialMax, 4)
+	if e != nil || e2 != nil {
+		return nil, ErrProjection
+	}
+	bootstrapCopy += 128 + 6*pathBytes // two canonical realpath strings and bounded pathname visits
+	bootstrapLive += 128 + 2*pathBytes
+	work, e := checkedAdd(maximum, maximum, childCopy, 2*argumentBytes, bootstrapCopy)
+	live, e2 := checkedAdd(maximum, childCopy, argumentBytes, bootstrapLive)
 	nodes, e3 := checkedAdd(m.nodes+1, childNodes)
 	if e != nil || e2 != nil || e3 != nil || request.ledger.Reserve(work, live, nodes) != nil {
 		return nil, ErrProjection
+	}
+	var entryArguments [10]string
+	for i, value := range argumentValues {
+		entryArguments[i] = strconv.FormatUint(value, 10)
 	}
 	w := wireWriter{out: make([]byte, 0, int(maximum)), cap: maximum, maxDepth: l.JSONDepth, maxNodes: l.JSONNodes}
 	writeInitPrefix(&w, s, profileJSON, profileDigest, model, messages, request.body, timeoutMs)
@@ -538,7 +578,8 @@ func PrepareInitV1(ctx context.Context, request *RequestProjectionV1, modelJSON 
 	after := request.ledger.Accounting()
 	after.LiveBytes -= transientLive // retired by the deferred cleanup before return
 	return &InitPlanV1{ctx: request.ctx, credentialFile: credentialFile, credentialMax: s.credentialMax, pathBytes: pathBytes, ledger: request.ledger,
-		wire: w.out, prefixLen: len(w.out), prefixDigest: sha256.Sum256(w.out), live: live,
+		entryArguments: entryArguments,
+		wire:           w.out, prefixLen: len(w.out), prefixDigest: sha256.Sum256(w.out), live: live,
 		decodeLimits: InitDecodeLimitsV1{BodyBytes: maximum, CopyBytes: childCopy, JSONNodes: childNodes, JSONDepth: l.JSONDepth, ProfileBytes: uint64(len(profileJSON)), RequestBytes: uint64(len(request.body))},
-		accounting:   InitAccountingV1{Before: before, After: after, PrefixBytes: m.bytes, MaximumBodyBytes: maximum, FilePathBytes: pathBytes, JSONNodes: m.nodes + 1, GoArenaBytes: maximum, GoEmissionBytes: maximum, GoValidationBytes: validation, ChildCopyBytes: childCopy, ChildJSONNodes: childNodes}}, nil
+		accounting:   InitAccountingV1{Before: before, After: after, PrefixBytes: m.bytes, MaximumBodyBytes: maximum, FilePathBytes: pathBytes, JSONNodes: m.nodes + 1, GoArenaBytes: maximum, GoEmissionBytes: maximum, GoValidationBytes: validation, ChildCopyBytes: childCopy, ChildJSONNodes: childNodes, EntryArgumentBytes: argumentBytes, BootstrapCopyBytes: bootstrapCopy, BootstrapLiveBytes: bootstrapLive}}, nil
 }

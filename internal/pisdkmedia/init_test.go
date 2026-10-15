@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -12,6 +13,45 @@ import (
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
+
+func TestCompleteInitEntryArgumentsFundedAndOwned(t *testing.T) {
+	cfg := initFixtureConfig(t)
+	p, ledger := initFixtureProjection(t, cfg, false)
+	c := initFixtureCredentials(t, p)
+	before := ledger.Accounting()
+	plan, err := PrepareInitV1(t.Context(), p, []byte(initFixtureModel), 1000, c.source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(plan.Clear)
+	a, args, limits := plan.Accounting(), plan.EntryArguments(), plan.DecodeLimits()
+	l := cfg.Profile.Limits
+	want := [10]uint64{l.ProcessFrameBytes - 17, min(l.NativeRequestBytes, l.ProcessFrameBytes-146),
+		min(l.StructuredFinalBytes, l.RawFinalBytes, l.ProcessFrameBytes-17), l.ProcessFrameBytes,
+		limits.BodyBytes, limits.CopyBytes, limits.JSONNodes, limits.JSONDepth, limits.ProfileBytes, limits.RequestBytes}
+	var digits uint64
+	for i, text := range args {
+		v, err := strconv.ParseUint(text, 10, 64)
+		if err != nil || v != want[i] || strconv.FormatUint(v, 10) != text {
+			t.Fatalf("argument %d got %q want %d: %v", i, text, want[i], err)
+		}
+		digits += uint64(len(text))
+	}
+	if a.EntryArgumentBytes != digits || a.BootstrapCopyBytes != 8*cfg.CredentialMaxBytes+128+6*a.FilePathBytes ||
+		a.BootstrapLiveBytes != 4*cfg.CredentialMaxBytes+128+2*a.FilePathBytes ||
+		a.After.CopyBytes-before.CopyBytes < a.ChildCopyBytes+2*digits+a.BootstrapCopyBytes || a.After != ledger.Accounting() {
+		t.Fatalf("entry payloads not included prospectively in original ledger: %+v", a)
+	}
+	args[0] = "caller mutation"
+	if plan.EntryArguments()[0] != strconv.FormatUint(want[0], 10) {
+		t.Fatal("arguments alias caller array")
+	}
+	copyBeforeClear := ledger.Accounting().CopyBytes
+	plan.Clear()
+	if plan.EntryArguments() != [10]string{} || ledger.Accounting().CopyBytes != copyBeforeClear {
+		t.Fatal("clear retained arguments or refunded cumulative work")
+	}
+}
 
 // This is explicit STRUCTURAL test data, not a model/profile source, serving
 // value, runtime fit, key, provider or activation. It never imports an SDK.

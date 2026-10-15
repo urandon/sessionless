@@ -428,8 +428,33 @@ read a real credential or run adjacent opt-in functional/native tests. The final
 delayed-bootstrap/sole-runner and actual Source/native fit integration still
 must consume these mechanics; this source boundary is not an activated adapter.
 
-No production Pi final-schema literal is supplied by this component; generic
-schema-data tests do not select the strict final/custody contract owned by #200.
+The private `native/entry.mjs` consumes complete Init over SPU2 before reading
+the one file-only immutable API delivery or importing the fixed genuine Pi SDK
+graph. Ten closed decimal arguments are prepared and payload-funded before
+Issue from the same original ledger; no JSON config graph, Source selector,
+credential, refreshed deadline or caller-selected module is passed in argv.
+The bounded reader requires a canonical regular single-link owner-only file,
+checks identity before/after bounded reads, rejects non-visible-ASCII bytes and
+clears its raw buffer on exit. These checks do not replace native read-only
+isolation, immutable parent verification, heap bounds or provider-only egress.
+Fake-transport harness assets are test-only, not embedded runner assets.
+
+`go test -race -count=3 -shuffle=on -run '^TestPreparedEntrySDKFreeControls$'
+./internal/pisdkmedia` tests SDK-free entry import, malformed Init before any
+file/SDK/HTTP effect, closed arguments and file-reader rejection controls in an
+isolated namespace with no SDK/account tree. Ordinary package tests also check
+prospective argv/reader payload accounting and ownership. With the existing
+exact local Pi build and pinned Node prerequisites only, the explicit command
+`go test -tags=pi_sdk_functional -race -count=1 -run
+'^TestPreparedPiNativeStdioEntry$' -timeout=110s ./internal/pisdkmedia` exercises
+real lifecycle file delivery, complete original history/snapshot-tail/two-image
+Init, SPU2, genuine Pi/standard Responses SDK/parser and exact structured final.
+Only a public noncredential literal, synthetic parent allowance and fake HTTP
+sink are used; it performs no account discovery, model call, install or rebuild.
+The strict parsed final is DATA, not the private same-run custody carrier owned
+by #200. The sole production Supervisor/Source/final producer join is still
+required; neither direct-child testing nor file checks certify that join.
+
 Missing genuine model/compat/header/source-owned profile, tokenizer/output-clamp
 and full native-fit evidence, currentness, original S/hard cutoff, credential
 cleanup and genuine standard SDK composition remain unavailable. Ordinary

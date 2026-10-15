@@ -127,15 +127,17 @@ func (c *initCredentials) consume(t *testing.T, fn func(ports.ProviderInvocation
 		}
 	})
 	var plan ports.ProviderCredentialMaterializationV1
+	var callbackErr error
 	err = c.service.MaterializeProviderCredential(t.Context(), h, func(v ports.ProviderCredentialMaterializationV1, secret []byte) error {
 		plan = v
 		if len(secret) != 0 {
 			t.Error("file-only consumer received plaintext")
 		}
-		return fn(h, v)
+		callbackErr = fn(h, v)
+		return callbackErr
 	})
 	if err != nil {
-		t.Fatal("original Materialize:", err)
+		t.Fatal("original Materialize:", err, "public-literal test callback:", callbackErr)
 	}
 	if err = c.source.VerifyMaterialized(t.Context(), h, plan); err == nil {
 		t.Error("retired callback remained valid")

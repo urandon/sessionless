@@ -8,11 +8,13 @@ import (
 	"crypto/sha256"
 	"math"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemon"
 	"gitcode.com/urandon/sessionless/internal/codexexec"
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/ports"
 )
 
 type ModelDataV1 struct {
@@ -54,6 +56,11 @@ type RequestProjectionV1 struct {
 	// Scalars are immutable Go strings/values, not caller pointer/slice aliases.
 	// The parsed schema already belongs to this projection's funded parse.
 	config requestSnapshotV1
+	// Immutable original canonical invocation/resource comparison scope. No
+	// handle/expiry is minted here; the actual lifecycle still issues it later.
+	scope                 ports.ProviderInvocationCredentialV1
+	binding               domain.HarnessBindingV2
+	bindingEvidenceExpiry time.Time
 }
 
 type requestSnapshotV1 struct {
@@ -429,7 +436,8 @@ func CompileOriginalRequestV1(ctx context.Context, identity attachedworkerdaemon
 		}
 		return nil, e
 	}
-	if input == nil || uint64(len(input.Job.HarnessBinding.ModelID)) > l.NativeRequestBytes || uint64(len(input.Job.HarnessBinding.ModelVendorID)) > l.NativeRequestBytes || c.Model.ID != input.Job.HarnessBinding.ModelID || c.Profile.Model.ModelVendorID == "" || c.Profile.Model.ModelVendorID != input.Job.HarnessBinding.ModelVendorID {
+	if input == nil || input.Job.HarnessBinding.Profile != domain.HarnessExecutionSingleTurnV2 || input.Job.HarnessBinding.AgentLoopPolicy != nil ||
+		uint64(len(input.Job.HarnessBinding.ModelID)) > l.NativeRequestBytes || uint64(len(input.Job.HarnessBinding.ModelVendorID)) > l.NativeRequestBytes || c.Model.ID != input.Job.HarnessBinding.ModelID || c.Profile.Model.ModelVendorID == "" || c.Profile.Model.ModelVendorID != input.Job.HarnessBinding.ModelVendorID {
 		return nil, ErrProjection
 	}
 	headers, h, e := nonsecretHeaders(c, l)
@@ -621,5 +629,15 @@ func CompileOriginalRequestV1(ctx context.Context, identity attachedworkerdaemon
 		return nil, ErrProjection
 	}
 	keep = true
-	return &RequestProjectionV1{ctx: ctx, body: emit.out, data: data, ledger: ledger, bodyDigest: sha256.Sum256(emit.out), live: work, config: snapshotRequest(c, schema), accounting: RequestAccountingV1{Before: before, After: ledger.Accounting(), BodyBytes: measure.bytes, BodyUTF16: measure.units, BodyNodes: measure.nodes, TypedBlocks: blocks, HeaderBytes: headers, GoValidationCeiling: 96 << 20, ResponseAllocationBytes: a, ResponseCopyWorkBytes: d, ResponseJSONNodes: downNodes, EchoBytes: echo, EchoNodes: echoNodes}}, nil
+	binding := input.Job.HarnessBinding
+	var bindingEvidenceExpiry time.Time
+	if binding.EvidenceExpiresAt != nil {
+		bindingEvidenceExpiry = binding.EvidenceExpiresAt.UTC()
+	}
+	binding.EvidenceExpiresAt = nil
+	return &RequestProjectionV1{ctx: ctx, body: emit.out, data: data, ledger: ledger, bodyDigest: sha256.Sum256(emit.out), live: work, config: snapshotRequest(c, schema),
+		binding: binding, bindingEvidenceExpiry: bindingEvidenceExpiry,
+		scope: ports.ProviderInvocationCredentialV1{TenantID: identity.TenantID, OwnerUserID: identity.OwnerUserID, RunID: identity.RunID, AttemptID: identity.AttemptID,
+			WorkerID: string(identity.WorkerID), LeaseID: identity.LeaseID, LeaseFence: identity.FenceToken, ProviderResource: input.Job.HarnessBinding.Resource},
+		accounting: RequestAccountingV1{Before: before, After: ledger.Accounting(), BodyBytes: measure.bytes, BodyUTF16: measure.units, BodyNodes: measure.nodes, TypedBlocks: blocks, HeaderBytes: headers, GoValidationCeiling: 96 << 20, ResponseAllocationBytes: a, ResponseCopyWorkBytes: d, ResponseJSONNodes: downNodes, EchoBytes: echo, EchoNodes: echoNodes}}, nil
 }

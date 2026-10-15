@@ -11,8 +11,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"gitcode.com/urandon/sessionless/internal/domain"
 )
 
 func TestCompleteInitPinnedNodeOriginalCohort(t *testing.T) {
@@ -78,21 +76,13 @@ func TestCompleteInitPinnedNodeOriginalCohort(t *testing.T) {
 				model = strings.Replace(model, `"provider":"openai"`, `"provider":"`+provider+`"`, 1)
 			}
 			p, _ := initFixtureProjection(t, cfg, mode == "snapshot-tail")
-			fs := initFixtureFS(t)
-			plan, err := PrepareInitV1(t.Context(), p, []byte(model), 1000, fs, "api-key")
+			credentials := initFixtureCredentials(t, p)
+			plan, err := PrepareInitV1(t.Context(), p, []byte(model), 1000, credentials.source)
 			if err != nil {
 				t.Fatal("prepare:", err)
 			}
 			t.Cleanup(plan.Clear)
-			literal := []byte("PUBLIC-NONCREDENTIAL-NODE-INIT-CONTROL")
-			file, err := fs.CreateImmutable("api-key", literal, 128)
-			if err != nil {
-				t.Fatal(err)
-			}
-			wire, err := plan.MaterializedBody(t.Context(), file, domain.FingerprintCredential(literal))
-			if err != nil {
-				t.Fatal("original locator:", err)
-			}
+			wire, _ := credentials.initBody(t, plan)
 			bounds, err := json.Marshal(plan.DecodeLimits())
 			if err != nil {
 				t.Fatal(err)

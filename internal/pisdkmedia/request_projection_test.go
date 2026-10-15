@@ -66,6 +66,10 @@ func fixtureImage(t *testing.T, mime string, w, h int) []byte {
 // Complete synthetic original carrier, not production/native/source authority.
 // Uses the real canonical snapshot/tail/association validators; no second parser.
 func fixtureInput(t *testing.T, snapshot bool) (attachedworkerdaemon.InvocationIdentity, *attachedworkerdaemon.VerifiedAttachedInputV1) {
+	return fixtureInputResource(t, snapshot, false)
+}
+
+func fixtureInputResource(t *testing.T, snapshot, api bool) (attachedworkerdaemon.InvocationIdentity, *attachedworkerdaemon.VerifiedAttachedInputV1) {
 	t.Helper()
 	now := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
 	expires := now.Add(time.Hour)
@@ -79,6 +83,11 @@ func fixtureInput(t *testing.T, snapshot bool) (attachedworkerdaemon.InvocationI
 		Backend:       domain.HarnessBackendDescriptorV1{HarnessKind: domain.HarnessKindSessionlessV1, HarnessVersion: "1", BackendKind: domain.HarnessBackendCodexExecV1, ArtifactKind: domain.HarnessArtifactExecutableV1, ArtifactDigest: strings.Repeat("1", 64), NativeProtocolVersion: "codex-jsonl.v1", BackendProfileDigest: strings.Repeat("2", 64), ProviderContractKind: domain.ProviderContractInvocationV1, CredentialDeliveryKind: domain.ProviderCredentialDeliveryFileV1},
 		Resource:      domain.ProviderResourceBindingV1{Kind: domain.ProviderResourceSubscriptionV1, ResourceID: "subscription-body", OwnerUserID: identity.OwnerUserID, Revision: 3, CredentialMode: domain.ProviderCredentialInvocationV1, CredentialGeneration: 7},
 		ModelVendorID: "openai", ModelID: "synthetic", InputDataClass: domain.ProviderDataPrivateV1, ProviderCatalogDigest: strings.Repeat("1", 64), ProviderRouteDigest: strings.Repeat("2", 64), PrivacyPolicyDigest: strings.Repeat("3", 64), CapabilityEvidenceDigest: strings.Repeat("4", 64), EffectivePolicyDigest: strings.Repeat("5", 64), ExecutionPlacementDigest: string(pd), EvidenceExpiresAt: &expires}
+	if api {
+		binding.Resource.Kind, binding.Resource.ResourceID = domain.ProviderResourceAPIAccountV1, "api-account-body"
+		binding.Backend.BackendKind = domain.HarnessBackendDirectOpenRouterV1
+		binding.Backend.NativeProtocolVersion = "openrouter-http.v1"
+	}
 	job := domain.WorkerJob{TenantID: identity.TenantID, RunID: identity.RunID, AttemptID: identity.AttemptID, SessionID: "session-body", TriggerEventID: "event-body-4", ReservationID: "reservation-body", InputManifestID: "manifest-body", CredentialOwnerUserID: identity.OwnerUserID, ExecutionPlacementV2: place, HarnessBinding: binding, ContextWindow: &domain.SessionContextWindow{ThroughSequence: 4}, Limits: domain.ProductLimits{MaxTenantQueueDepth: 1, MaxActiveRuns: 1, MaxRuntime: time.Minute, MaxTurns: 1, MaxInputBytes: 1 << 20, MaxContextBytes: 1 << 20, MaxContextEvents: 10, MaxArtifacts: 10, MaxToolEvents: 10, MaxToolEventBytes: 4096}}
 	manifest := domain.ArtifactManifest{ID: job.InputManifestID, TenantID: job.TenantID, RunID: job.RunID, CreatedAt: now}
 	proof := &sessioncontext.CanonicalProof{Input: domain.SessionContextInput{TenantID: job.TenantID, SessionID: job.SessionID}}

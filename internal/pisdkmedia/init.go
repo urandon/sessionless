@@ -12,8 +12,9 @@ import (
 	"unicode/utf8"
 
 	"gitcode.com/urandon/sessionless/internal/codexexec"
-	"gitcode.com/urandon/sessionless/internal/credentiallifecycle"
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/providercredential"
 )
 
 // InitAccountingV1 is logical payload accounting in the SAME request ledger.
@@ -43,8 +44,7 @@ type InitDecodeLimitsV1 struct {
 // Clear. No constructor here enables a registration or constructs any SDK.
 type InitPlanV1 struct {
 	ctx                      context.Context
-	filesystem               *credentiallifecycle.PinnedSecretFileSystem
-	fileName                 string
+	credentialFile           *providercredential.PreparedImmutableAPIFileV1
 	credentialMax, pathBytes uint64
 	ledger                   *codexexec.CanonicalMediaLedgerV1
 	wire                     []byte
@@ -71,27 +71,27 @@ func (p *InitPlanV1) DecodeLimits() InitDecodeLimitsV1 {
 	return p.decodeLimits
 }
 
-// MaterializedBody accepts only an original immutable file owned by the SAME
-// filesystem. Its descriptor/namespace/fingerprint verifier, not string-prefix
-// equality, establishes file custody. It does not Finalize/Release; those stay
+// MaterializedBody accepts the original lifecycle's exact handle and callback
+// materialization, not a caller-created private file or fingerprint. Its SAME
+// owner verifies active custody and descriptors. It does not Finalize/Release; those stay
 // with the acquired parent handle AFTER the Materialize callback has unlocked.
 // The once-spent result borrows this arena; never clear before actual consumers
 // join. Even a failed call spends this plan, rather than permitting a retry.
-func (p *InitPlanV1) MaterializedBody(ctx context.Context, file *credentiallifecycle.PinnedSecretFile, fingerprint domain.CredentialFingerprint) ([]byte, error) {
+func (p *InitPlanV1) MaterializedBody(ctx context.Context, handle ports.ProviderInvocationCredentialV1, materialization ports.ProviderCredentialMaterializationV1) ([]byte, error) {
 	if p == nil || p.spent {
 		return nil, ErrProjection
 	}
 	p.spent = true
-	if ctx == nil || ctx.Err() != nil || p.ctx == nil || p.ctx.Err() != nil || p.filesystem == nil || file == nil ||
-		uint64(len(file.FilePath)) != p.pathBytes || filepath.Base(file.FilePath) != p.fileName ||
-		!filepath.IsAbs(file.FilePath) || filepath.Clean(file.FilePath) != file.FilePath ||
-		!utf8.ValidString(file.FilePath) || sha256.Sum256(p.wire[:p.prefixLen]) != p.prefixDigest ||
-		p.filesystem.VerifyImmutable(ctx, file, fingerprint, int64(p.credentialMax)) != nil {
+	if ctx == nil || ctx.Err() != nil || p.ctx == nil || p.ctx.Err() != nil || p.credentialFile == nil ||
+		uint64(len(materialization.FilePath)) != p.pathBytes ||
+		!filepath.IsAbs(materialization.FilePath) || filepath.Clean(materialization.FilePath) != materialization.FilePath ||
+		!utf8.ValidString(materialization.FilePath) || sha256.Sum256(p.wire[:p.prefixLen]) != p.prefixDigest ||
+		p.credentialFile.VerifyMaterialized(ctx, handle, materialization) != nil {
 		return nil, ErrProjection
 	}
 	w := wireWriter{out: p.wire[:p.prefixLen], bytes: uint64(p.prefixLen), cap: p.accounting.MaximumBodyBytes,
 		maxDepth: 1, maxNodes: 1}
-	w.quote(file.FilePath, nil)
+	w.quote(materialization.FilePath, nil)
 	w.literal("}")
 	if w.err != nil || ctx.Err() != nil || p.ctx.Err() != nil {
 		return nil, ErrProjection
@@ -390,8 +390,14 @@ func writeInitPrefix(w *wireWriter, s requestSnapshotV1, pJSON []byte, digest st
 // It returns no partial plan. Failed stages retain cumulative work charges;
 // only retired, actually owned payload may reduce live bytes. A real runner
 // still owes child/SDK/native/clock/Source/final/egress qualification.
-func PrepareInitV1(ctx context.Context, request *RequestProjectionV1, modelJSON []byte, timeoutMs uint64, filesystem *credentiallifecycle.PinnedSecretFileSystem, fileName string) (*InitPlanV1, error) {
-	if ctx == nil || ctx.Err() != nil || request == nil || request.ctx == nil || request.ctx.Err() != nil || request.data == nil || request.ledger == nil || filesystem == nil {
+func PrepareInitV1(ctx context.Context, request *RequestProjectionV1, modelJSON []byte, timeoutMs uint64, credentialFile *providercredential.PreparedImmutableAPIFileV1) (*InitPlanV1, error) {
+	if ctx == nil || ctx.Err() != nil || request == nil || request.ctx == nil || request.ctx.Err() != nil || request.data == nil || request.ledger == nil || credentialFile == nil {
+		return nil, ErrProjection
+	}
+	scope := credentialFile.Scope()
+	scope.ExpiresAt = request.scope.ExpiresAt // compare original tuple; expiry stays with Issue/parent
+	if scope != request.scope || scope.ProviderResource.Kind != domain.ProviderResourceAPIAccountV1 ||
+		!credentialFile.MatchesOriginalBinding(request.binding, request.bindingEvidenceExpiry) {
 		return nil, ErrProjection
 	}
 	s, l := request.config, request.config.profile.Limits
@@ -400,7 +406,7 @@ func PrepareInitV1(ctx context.Context, request *RequestProjectionV1, modelJSON 
 		s.credentialMax == 0 || s.credentialMax > math.MaxInt64 || s.profile.Validate() != nil {
 		return nil, ErrMissingProducer
 	}
-	pathBytes, e := filesystem.ImmutableFilePathBound(ctx, fileName)
+	pathBytes, e := credentialFile.FilePathBound(ctx, s.credentialMax)
 	if e != nil || pathBytes == 0 || pathBytes > (l.ProcessFrameBytes-17)/6 {
 		return nil, ErrProjection
 	}
@@ -531,7 +537,7 @@ func PrepareInitV1(ctx context.Context, request *RequestProjectionV1, modelJSON 
 	// prefix. Their exact reserved logical live appearances retire here.
 	after := request.ledger.Accounting()
 	after.LiveBytes -= transientLive // retired by the deferred cleanup before return
-	return &InitPlanV1{ctx: request.ctx, filesystem: filesystem, fileName: fileName, credentialMax: s.credentialMax, pathBytes: pathBytes, ledger: request.ledger,
+	return &InitPlanV1{ctx: request.ctx, credentialFile: credentialFile, credentialMax: s.credentialMax, pathBytes: pathBytes, ledger: request.ledger,
 		wire: w.out, prefixLen: len(w.out), prefixDigest: sha256.Sum256(w.out), live: live,
 		decodeLimits: InitDecodeLimitsV1{BodyBytes: maximum, CopyBytes: childCopy, JSONNodes: childNodes, JSONDepth: l.JSONDepth, ProfileBytes: uint64(len(profileJSON)), RequestBytes: uint64(len(request.body))},
 		accounting:   InitAccountingV1{Before: before, After: after, PrefixBytes: m.bytes, MaximumBodyBytes: maximum, FilePathBytes: pathBytes, JSONNodes: m.nodes + 1, GoArenaBytes: maximum, GoEmissionBytes: maximum, GoValidationBytes: validation, ChildCopyBytes: childCopy, ChildJSONNodes: childNodes}}, nil

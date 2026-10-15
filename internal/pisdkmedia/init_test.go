@@ -4,15 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
 	"gitcode.com/urandon/sessionless/internal/codexexec"
-	"gitcode.com/urandon/sessionless/internal/credentiallifecycle"
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/ports"
 )
 
 // This is explicit STRUCTURAL test data, not a model/profile source, serving
@@ -51,34 +49,9 @@ func initFixtureConfig(t *testing.T) RequestDataV1 {
 
 const initFixtureModel = `{"id":"synthetic","name":"structural init fixture","api":"openai-responses","provider":"openai","baseUrl":"https://synthetic.invalid","reasoning":true,"input":["text","image"],"cost":{"input":0.125,"output":1.5,"cacheRead":1.25e-2,"cacheWrite":0,"tiers":[{"inputTokensAbove":1000,"input":0.5,"output":2.5,"cacheRead":0.1,"cacheWrite":0}]},"contextWindow":65536,"maxTokens":100,"compat":{"supportsDeveloperRole":true,"supportsExplicitPromptCacheMode":true}}`
 
-func initFixtureFS(t *testing.T) *credentiallifecycle.PinnedSecretFileSystem {
-	t.Helper()
-	root, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = os.Chmod(root, 0700); err != nil {
-		t.Fatal(err)
-	}
-	root = filepath.Join(root, "unicode-é-quote\"-backslash\\")
-	if err = os.Mkdir(root, 0700); err != nil {
-		t.Fatal(err)
-	}
-	fs, err := credentiallifecycle.NewPinnedSecretFileSystem(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := fs.Close(); err != nil {
-			t.Error("owned fixture filesystem:", err)
-		}
-	})
-	return fs
-}
-
 func initFixtureProjection(t *testing.T, c RequestDataV1, snapshot bool) (*RequestProjectionV1, *codexexec.CanonicalMediaLedgerV1) {
 	t.Helper()
-	id, input := fixtureInput(t, snapshot)
+	id, input := fixtureInputResource(t, snapshot, true)
 	ledger := fixtureLedger(t, c.Profile.Limits)
 	p, err := CompileOriginalRequestV1(t.Context(), id, input, c, ledger)
 	if err != nil {
@@ -104,9 +77,9 @@ func TestCompleteInitOriginalHistoryImagesSchemaAndBody(t *testing.T) {
 			cfg.Model.ID = "caller-mutated"
 			cfg.Headers[0].Value = "caller-mutated"
 			clear(cfg.FinalSchema)
-			fs := initFixtureFS(t)
+			credentials := initFixtureCredentials(t, p)
 			before := ledger.Accounting()
-			plan, err := PrepareInitV1(t.Context(), p, []byte(initFixtureModel), 1000, fs, "api-key")
+			plan, err := PrepareInitV1(t.Context(), p, []byte(initFixtureModel), 1000, credentials.source)
 			if err != nil {
 				t.Fatal("complete pre-Issue Init:", err)
 			}
@@ -114,16 +87,8 @@ func TestCompleteInitOriginalHistoryImagesSchemaAndBody(t *testing.T) {
 			if plan.Accounting().Before != before || plan.Accounting().After != ledger.Accounting() || ledger.Accounting().CopyBytes <= before.CopyBytes {
 				t.Fatalf("same cumulative ledger: before=%+v plan=%+v actual=%+v", before, plan.Accounting(), ledger.Accounting())
 			}
-			literal := []byte("PUBLIC-NONCREDENTIAL-INIT-CONTROL")
-			file, err := fs.CreateImmutable("api-key", literal, 128)
-			if err != nil {
-				t.Fatal(err)
-			}
-			wire, err := plan.MaterializedBody(t.Context(), file, domain.FingerprintCredential(literal))
-			if err != nil {
-				t.Fatal("actual immutable locator:", err)
-			}
-			if bytes.Contains(wire, literal) || len(wire)+17 > 1<<20 || uint64(len(wire)) > plan.Accounting().MaximumBodyBytes {
+			wire, materialization := credentials.initBody(t, plan)
+			if bytes.Contains(wire, []byte(initPublicLiteral)) || len(wire)+17 > 1<<20 || uint64(len(wire)) > plan.Accounting().MaximumBodyBytes {
 				t.Fatal("credential leak/actual frame bound")
 			}
 			var decoded struct {
@@ -145,7 +110,7 @@ func TestCompleteInitOriginalHistoryImagesSchemaAndBody(t *testing.T) {
 			if err = json.Unmarshal(wire, &decoded); err != nil {
 				t.Fatal("complete wire JSON:", err)
 			}
-			if decoded.Version != 1 || decoded.Model.ID != "synthetic" || decoded.Model.Cost.Input != 0.125 || decoded.Model.Cost.CacheRead != 0.0125 || decoded.Path != file.FilePath || decoded.Headers[0][1] != "application/json" || !bytes.Equal([]byte(decoded.Body), originalBody) || !reflect.DeepEqual(decoded.Messages, originalMessages) {
+			if decoded.Version != 1 || decoded.Model.ID != "synthetic" || decoded.Model.Cost.Input != 0.125 || decoded.Model.Cost.CacheRead != 0.0125 || decoded.Path != materialization.FilePath || decoded.Headers[0][1] != "application/json" || !bytes.Equal([]byte(decoded.Body), originalBody) || !reflect.DeepEqual(decoded.Messages, originalMessages) {
 				t.Fatal("complete original content/cost/ownership/byte identity mismatch")
 			}
 			if _, err = domain.DecodeAttachedPiSDKNativeProfileV1([]byte(decoded.ProfileJSON)); err != nil {
@@ -167,7 +132,7 @@ func TestCompleteInitOriginalHistoryImagesSchemaAndBody(t *testing.T) {
 			if images != 2 {
 				t.Fatalf("two originals lost: %d", images)
 			}
-			if _, err = plan.MaterializedBody(t.Context(), file, domain.FingerprintCredential(literal)); err == nil {
+			if _, err = plan.MaterializedBody(t.Context(), ports.ProviderInvocationCredentialV1{}, materialization); err == nil {
 				t.Fatal("second materialization accepted")
 			}
 			copyBefore := ledger.Accounting().CopyBytes
@@ -187,7 +152,7 @@ func TestCompleteInitInvalidSourceModelAndPrerequisitesDeny(t *testing.T) {
 				cfg.Profile.Limits.ProcessFrameBytes = 128
 			}
 			p, ledger := initFixtureProjection(t, cfg, false)
-			fs := initFixtureFS(t)
+			fs := initFixtureCredentials(t, p).source
 			model := initFixtureModel
 			timeout := uint64(1000)
 			ctx := t.Context()
@@ -230,7 +195,7 @@ func TestCompleteInitInvalidSourceModelAndPrerequisitesDeny(t *testing.T) {
 				p.Body()[0] = '!'
 			}
 			before := ledger.Accounting()
-			plan, err := PrepareInitV1(ctx, p, []byte(model), timeout, fs, "api-key")
+			plan, err := PrepareInitV1(ctx, p, []byte(model), timeout, fs)
 			if err == nil || plan != nil {
 				t.Fatalf("mode=%s partial/invalid plan err=%v", mode, err)
 			}
@@ -244,32 +209,30 @@ func TestCompleteInitInvalidSourceModelAndPrerequisitesDeny(t *testing.T) {
 func TestCompleteInitCombinedOriginalLedgerAndForeignFileDeny(t *testing.T) {
 	cfg := initFixtureConfig(t)
 	p, ledger := initFixtureProjection(t, cfg, false)
-	fs := initFixtureFS(t)
+	fs := initFixtureCredentials(t, p).source
 	// Other lawful accumulated work leaves too little for Init; no fresh pool.
 	left := ledger.Remaining().CopyBytes
 	if err := ledger.Reserve(left-1, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	before := ledger.Accounting()
-	if plan, err := PrepareInitV1(t.Context(), p, []byte(initFixtureModel), 1000, fs, "api-key"); err == nil || plan != nil || ledger.Accounting() != before {
+	if plan, err := PrepareInitV1(t.Context(), p, []byte(initFixtureModel), 1000, fs); err == nil || plan != nil || ledger.Accounting() != before {
 		t.Fatal("joint first overflow accepted/reset/partial reserve")
 	}
 	p2, _ := initFixtureProjection(t, initFixtureConfig(t), false)
-	plan, err := PrepareInitV1(t.Context(), p2, []byte(initFixtureModel), 1000, fs, "api-key")
+	plan, err := PrepareInitV1(t.Context(), p2, []byte(initFixtureModel), 1000, fs)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(plan.Clear)
-	other := initFixtureFS(t)
-	literal := []byte("PUBLIC-NONCREDENTIAL-FOREIGN-CONTROL")
-	foreign, err := other.CreateImmutable("api-key", literal, 128)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if body, err := plan.MaterializedBody(t.Context(), foreign, domain.FingerprintCredential(literal)); err == nil || body != nil {
-		t.Fatal("foreign immutable filesystem capability accepted")
-	}
-	if body, err := new(InitPlanV1).MaterializedBody(t.Context(), foreign, domain.FingerprintCredential(literal)); err == nil || body != nil {
-		t.Fatal("zero plan accepted")
-	}
+	other := initFixtureCredentials(t, p2)
+	other.consume(t, func(handle ports.ProviderInvocationCredentialV1, value ports.ProviderCredentialMaterializationV1) error {
+		if body, err := plan.MaterializedBody(t.Context(), handle, value); err == nil || body != nil {
+			t.Error("foreign lifecycle/file accepted")
+		}
+		if body, err := new(InitPlanV1).MaterializedBody(t.Context(), handle, value); err == nil || body != nil {
+			t.Error("zero plan accepted")
+		}
+		return nil
+	})
 }

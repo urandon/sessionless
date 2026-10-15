@@ -393,8 +393,27 @@ model/catalog DATA (including fractional costs/tiers), schema, options and eleve
 nonsecret headers. Caller config pointers/slices are not retained. The exact
 immutable filesystem gives the future credential locator's byte bound without
 creating a key/file; its worst JSON escaping and the final arena are reserved
-before Issue. Only the original owned immutable Materialize file may fill the
-once-spent final slot. Finalize/Release remain with the original parent handle.
+before Issue. The canonical Init API consumes a concrete
+`providercredential.PreparedImmutableAPIFileV1`, prepared by the SAME
+`InvocationService` from its original Issue request and namespace, rather than
+requiring an inaccessible private file object or caller fingerprint.
+Only the exact handle/materialization inside its active synchronous file-only
+callback may fill the once-spent slot; canonical invocation/resource scope is
+compared before Init preparation. No direct-file legacy entry point remains.
+Finalize/Release remain with the original parent handle.
+
+The service publishes a private original-file record only during that callback.
+Its single-verifier gate avoids reentering the already-held per-handle mutex,
+rejects concurrent/reentrant verification rather than queuing, revokes on every
+callback return/error/panic and joins an existing verifier before unlocking.
+The authentic immutable descriptor/namespace/fingerprint verifier still runs;
+no planner/binding/secret backend is queried to resolve this bridge. This local
+record grants no Source/currentness or spending permission. An explicit trusted
+composition may supply its existing `PinnedSecretFileSystem` in InvocationConfig
+instead of ScratchRoot (never both), and closes it only after all consumers and
+original handles have joined/released. Local tests exercise real
+Issue/Materialize/Finalize/Release with a public literal and isolated fake stores;
+they do not borrow a real configured account or subscription.
 
 The private SDK-free `native/init.mjs` reuses the existing strict JSON grammar,
 rejects duplicate decoded keys/unknown fields/invalid UTF8/types/limits, checks
@@ -405,7 +424,7 @@ not V8/native-object, SDK, timer/platform or provider eligibility measurements.
 `TestCompleteInitPinnedNodeOriginalCohort` drives that actual decoder with both
 original history/snapshot-tail cohorts and malformed controls, under the same
 pinned Node and replacement empty environment. It does not import any SDK,
-read a credential or run adjacent opt-in functional/native tests. The final
+read a real credential or run adjacent opt-in functional/native tests. The final
 delayed-bootstrap/sole-runner and actual Source/native fit integration still
 must consume these mechanics; this source boundary is not an activated adapter.
 

@@ -599,7 +599,7 @@
     {
       "table": "attached_worker_output_receipts",
       "migration": "00101_create_attached_worker_output_receipts.sql",
-      "role": "Per-attempt canonical receipt and typed pre-Put upload custody. The bounded upload subrecord reuses the existing key; it is not an additional table, currentness grant or public result.",
+      "role": "Per-attempt canonical receipt and typed pre-Put upload custody. Admission reuses the existing key and transactionally checks current authority/Session deletion before inserting its pending subrecord; this is not a body claim, additional table, native-fit grant or public result.",
       "primaryKey": [
         "tenant_id",
         "run_id",
@@ -627,15 +627,17 @@
         "readers": {
           "paths": [
             "internal/ydbstore/attached_worker_output_receipt_store.go",
+            "internal/ydbstore/attached_worker_output_upload_admission.go",
             "internal/ydbstore/session_lifecycle.go"
           ],
-          "total": 2
+          "total": 3
         },
         "writers": {
           "paths": [
-            "internal/ydbstore/attached_worker_output_receipt_store.go"
+            "internal/ydbstore/attached_worker_output_receipt_store.go",
+            "internal/ydbstore/attached_worker_output_upload_admission.go"
           ],
-          "total": 1
+          "total": 2
         }
       },
       "entityGroup": "attached-worker",

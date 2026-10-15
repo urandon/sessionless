@@ -47,9 +47,13 @@ Its active, receipt-bound and settled-abandoned variants are distinct from
 canonical READY. An issued, ambiguous source-write grant remains spent and
 blocks deletion; a planned key is not an observed object. Noncanonical
 settlement preserves exact verified source refs without publishing output or
-reopening send rights. Structural validation is not original-writer evidence:
-the authenticated pre-Put transaction, private exporter, actual request join and
-native deletion races still require their own implementation and verification.
+reopening send rights. The private admission method checks current membership,
+worker/connection/head, pinned job/profile and Session deletion in the same
+transaction as pending-row insertion. It has no signer or body sink and does
+not reset an existing plan's cutoff or spent ordinals. Its native serialization
+is not yet proven. Structural validation is not original-writer evidence:
+authenticated control registration, irreversible claim, the private exporter,
+actual request join and native deletion races remain incomplete.
 
 ## Source and rollout boundary
 

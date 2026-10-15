@@ -55,6 +55,19 @@ subscription credentials into this repository.
 
 ## Fast path
 
+### Entity registry and state storage
+
+Maintain the [entity registry](architecture/entity-registry.md) when table,
+primary-key, consumer or retention decisions change. It separates observed
+physical schema from the logical durability decisions in
+[state storage simplification](design/state-storage-simplification.md).
+Run `make entity-registry-check` and `make entity-registry-test`; both also run
+through `make docs-check`. These commands read source migrations and registry
+metadata only. They neither connect to YDB nor authorize schema application.
+Reports and unresolved reduction decisions belong in
+[#205](https://gitcode.com/urandon/sessionless/issues/205), not migration comments
+or the original task description.
+
 ### Attached execution composition (default off)
 
 The normal Web BFF can use the existing attached scheduler admission path with
@@ -1114,7 +1127,31 @@ real deployment or authorize old writers to remain active during cutover.
 and contract drift as JSON. The bucketed ready/expiry expand/backfill/cutover
 procedure is documented in
 [ydb-partitioning.md](ydb-partitioning.md). `make partition-backfill` is a
-deployment migration command, not a normal serving operation.
+deployment migration command for lifecycle indexes, not a normal serving
+operation. Before deploying v2-only ready/expiry code with retained work, use
+the compatible dual-writing predecessor pinned in
+[#206 execution comments](https://gitcode.com/urandon/sessionless/issues/206)
+to backfill those four projections and verify their tuples. The current command
+does not scan their legacy tables; its lifecycle marker does not prove this
+separate ready/expiry handoff. No environment operation is authorized by a
+source or unit-test pass.
+
+`make ready-expiry-repair` plans or applies one authorized ready/expiry v2
+metadata repair from retained source records. It does not perform a batch
+backfill or repeat an external effect. Follow
+[the operator procedure](ready-expiry-repair.md) for exact selectors, source and
+output limits, deletion fences and ambiguous-commit handling.
+`make ready-expiry-repair-test` runs offline CLI/store race tests without opening
+a database.
+
+Pending migrations 00126–00129 retire exactly four legacy discovery indexes.
+`make migrate-local` applies pending destructive definitions; it is not an
+inventory-only command. Retained environments must satisfy the
+[coverage/drain and rollback requirements](../migrations/ydb/README.md#legacy-readyexpiry-retirement)
+and have separate environment-operation authority first. The repository-only
+`make ready-expiry-retirement-ydb-gate` executes existing/missing four-table
+controls only in explicitly authorized disposable GitHub CI. Local author
+validation compiles that integration package without executing it.
 
 Local defaults use `YDB_ANONYMOUS_CREDENTIALS=1`. Cloud deployments use the
 YDB environment credential chain and metadata credentials; do not place access

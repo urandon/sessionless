@@ -128,6 +128,15 @@ func newNativeManagedAdmissionGraph(t *testing.T) nativeManagedAdmissionGraph {
 
 var nativeManagedAdmissionEffectTables = []string{"worker_jobs", "quota_reservations", "quota_expiry", "quota_expiry_v2", "subscription_scheduler_slots", "tenant_scheduler_counters", "run_explanation_heads_v1", "audit_events"}
 
+// Physical legacy tables remain during compatible code rollout, but successful
+// admission and replay must not populate their retired discovery projections.
+func nativeManagedAdmissionCommittedCount(table string) uint64 {
+	if table == "quota_expiry" {
+		return 0
+	}
+	return 1
+}
+
 func (g nativeManagedAdmissionGraph) requireCount(t *testing.T, table string, want uint64) {
 	t.Helper()
 	var got uint64
@@ -161,7 +170,7 @@ func (g nativeManagedAdmissionGraph) requireCommittedGraph(t *testing.T, result 
 		t.Fatalf("actual managed admission result=%+v", result)
 	}
 	for _, table := range nativeManagedAdmissionEffectTables {
-		g.requireCount(t, table, 1)
+		g.requireCount(t, table, nativeManagedAdmissionCommittedCount(table))
 	}
 	run, found, err := readJSON[domain.Run](g.ctx, g.f.store.db, `SELECT payload FROM runs WHERE tenant_id=$1 AND run_id=$2`, g.run.TenantID, g.run.ID)
 	if err != nil || !found || run.Status != domain.RunQueued || run.Validate() != nil || run.CreatedAt != g.run.CreatedAt || run.UpdatedAt.Before(g.run.UpdatedAt) {
@@ -183,7 +192,6 @@ func (g nativeManagedAdmissionGraph) requireCommittedGraph(t *testing.T, result 
 		query string
 		args  []any
 	}{
-		{`SELECT run_id,subscription_connection_id FROM quota_expiry WHERE tenant_id=$1 AND expires_at=$2 AND quota_reservation_id=$3`, []any{g.run.TenantID, reservation.ExpiresAt, reservation.ID}},
 		{`SELECT run_id,subscription_connection_id FROM quota_expiry_v2 WHERE shard_bucket=$1 AND expires_at=$2 AND tenant_id=$3 AND quota_reservation_id=$4`, []any{bucket, reservation.ExpiresAt, g.run.TenantID, reservation.ID}},
 	} {
 		var runID domain.RunID
@@ -270,7 +278,7 @@ func TestOwnedManagedAdmissionGraphYDBCompleteAndReplay(t *testing.T) {
 		t.Error("replay rewrote canonical payloads/head, slot/counters, or audit timestamps/metadata")
 	}
 	for _, table := range nativeManagedAdmissionEffectTables {
-		g.requireCount(t, table, 1)
+		g.requireCount(t, table, nativeManagedAdmissionCommittedCount(table))
 	}
 	// Readback alone cannot observe a same-value UPSERT. The strict driver test
 	// separately asserts zero Exec calls; native replay proves immutable state.

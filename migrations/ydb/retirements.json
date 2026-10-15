@@ -1,0 +1,9 @@
+{
+  "schema": "sessionless-ydb-retirements/v1",
+  "retirements": [
+    {"table":"lease_expiry","createMigration":"00019_create_lease_expiry.sql","successor":"lease_expiry_v2","successorMigration":"00023_create_lease_expiry_v2.sql","migration":"00126_retire_lease_expiry.sql","afterVersion":125},
+    {"table":"dispatch_ready","createMigration":"00020_create_dispatch_ready.sql","successor":"dispatch_ready_v2","successorMigration":"00024_create_dispatch_ready_v2.sql","migration":"00127_retire_dispatch_ready.sql","afterVersion":125},
+    {"table":"quota_expiry","createMigration":"00022_create_quota_expiry.sql","successor":"quota_expiry_v2","successorMigration":"00026_create_quota_expiry_v2.sql","migration":"00128_retire_quota_expiry.sql","afterVersion":125},
+    {"table":"telegram_delivery_ready","createMigration":"00021_create_telegram_delivery_ready.sql","successor":"telegram_delivery_ready_v2","successorMigration":"00025_create_telegram_delivery_ready_v2.sql","migration":"00129_retire_telegram_delivery_ready.sql","afterVersion":125}
+  ]
+}

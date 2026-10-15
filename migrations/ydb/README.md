@@ -1,5 +1,10 @@
 # YDB migrations
 
+> Migrations 00126–00129 execute destructive retirement of exactly four legacy
+> discovery indexes. Before applying them to retained data, complete the
+> [retirement rollout prerequisites](#legacy-readyexpiry-retirement). Source
+> acceptance or a successful disposable CI run is not rollout authorization.
+
 The application owns its YDB tables. Terraform may provision a database and
 IAM bindings, but it must not manage the tables in this directory.
 
@@ -7,6 +12,19 @@ The ordered SQL files are embedded into `schema-migrate` and executed through
 the Goose library. Every file contains exactly one idempotent schema operation.
 YDB does not support transactional DDL, so grouping multiple operations into
 one migration would make crash recovery ambiguous.
+
+## Entity and durability registry
+
+Maintain the [application entity registry](../../docs/architecture/entity-registry.md)
+alongside table, primary-key, consumer and retention changes. It distinguishes
+physical schema observations from reviewed logical-state decisions. New tables
+must justify separate storage against reuse of authoritative records or indexes.
+Run `make entity-registry-check` and `make entity-registry-test`; both are part
+of `make docs-check` and read source files without connecting to YDB.
+The [state storage simplification design](../../docs/design/state-storage-simplification.md)
+is a draft, not migration or table-retirement authority. Reports and reduction
+decisions belong in [#205](https://gitcode.com/urandon/sessionless/issues/205)
+comments. Baseline compaction in #174 is separate from actual schema reduction.
 
 ## Baseline freeze
 
@@ -127,6 +145,21 @@ make partition-backfill
 make cloud-app-reset-plan
 make cloud-app-reset
 ```
+
+`make partition-backfill` populates lifecycle indexes and their cutover markers.
+It no longer copies the four legacy ready/expiry tables. Before deploying the
+compatible v2-only code with retained work, use the dual-writing predecessor
+pinned in [#206 execution comments](https://gitcode.com/urandon/sessionless/issues/206)
+for that separate ready/expiry backfill, tuple verification and reader/writer
+drain. Historical legacy CREATE migrations and optional reset ownership remain;
+the registry covers 105 CREATE records and 101 effective active tables after the
+four declared forward DROPs. Application is separately authorized.
+
+For a single authorized missing v2 tuple, use
+[`make ready-expiry-repair`](../../docs/ready-expiry-repair.md). This bounded
+operator command validates retained sources and Session deletion fences in the
+same transaction. It is not a migration or replacement for the four-family
+upgrade backfill; ambiguous metadata completion never grants external replay.
 
 Both commands require `YDB_CONNECTION_STRING`. Authentication is selected by
 the official YDB environment credential chain:
@@ -345,6 +378,61 @@ When a migration fails:
 Do not delete or manually advance `sessionless_goose_versions`,
 `schema_migration_checksums`, or `schema_migration_lock` without a reviewed
 incident procedure.
+
+## Legacy ready/expiry retirement
+
+The complete ordered source has 129 SQL operations: 105 historical CREATEs,
+20 ALTERs and four retirement DROPs. Its intended effective application layout
+has 101 tables. Migration-runner bookkeeping is not an application entity, and
+source counts are not a census of a retained environment.
+
+| Forward operation | Retired legacy table | Retained successor |
+| --- | --- | --- |
+| `00126_retire_lease_expiry.sql` | `lease_expiry` | `lease_expiry_v2` |
+| `00127_retire_dispatch_ready.sql` | `dispatch_ready` | `dispatch_ready_v2` |
+| `00128_retire_quota_expiry.sql` | `quota_expiry` | `quota_expiry_v2` |
+| `00129_retire_telegram_delivery_ready.sql` | `telegram_delivery_ready` | `telegram_delivery_ready_v2` |
+
+The canonical [source declaration](retirements.json) binds each DROP to its
+original and successor CREATE and the compatible schema predecessor. The
+registry checker and migration loader validate it before any database opening
+or Goose operation. The declaration is not a deployment marker, drain receipt,
+runtime permission or another durable ledger. Original CREATE/ALTER files and
+their applied checksums remain unchanged; each new file owns exactly one
+`DROP TABLE IF EXISTS` and a comment-only Down section.
+
+Before retained-data application, follow the
+[accepted upgrade/rollback contract](../../docs/design/state-storage-simplification.md#upgrade-retained-data-and-rollback):
+
+1. Preserve the compatible dual-writing predecessor while completing all-four
+   v2 tuple coverage verification. An existing lifecycle marker does not prove
+   coverage; the bounded operator repair does not certify a complete backfill.
+2. Inventory/drain actual old readers and writers over the configured maximum
+   lease/retry observation window; do not substitute a source default duration.
+3. Use the v2-only source delivered by #206. Verify retained sources, canonical
+   useful output and effect/custody fences, then obtain exact environment and
+   migration-operation authorization before invoking the migrator. It applies
+   these embedded pending DROPs automatically; `make migrate-local` is not a
+   read-only inventory command.
+4. Before retirement, rolling back old binaries still requires their discovery
+   coverage. After retirement, keep forward v2-only code or reconstruct the old
+   schema and its metadata before restoring a dual-writing binary. Neither
+   path replays unknown model/upload effects. Never edit applied CREATE history
+   or manually advance migration receipts to simulate completion.
+
+Partition inspection still describes the physical v2 successors with 16 buckets;
+old logical labels are not table reads. Reset's four old-name entries are
+optional historical cleanup (`IF EXISTS`), not active-schema membership or an
+expanded reset grant. Ordinary tests now require successful native inventory
+proof of absence, not SQL errors treated as empty tables.
+
+The separate `make ready-expiry-retirement-ydb-gate` is restricted to the
+explicitly authorized disposable GitHub CI partition. It recreates/seeds only
+these four owned old indexes, applies their exact DROP definitions, repeats
+them when absent and compares preserved v2/source tuples and complete table
+ownership. It does not reset the database, call a model or prove deployed drain.
+Local author validation is offline source/model tests and integration compilation
+only. A successful CI run certifies its disposable fixture, not a shared rollout.
 
 References:
 

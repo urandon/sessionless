@@ -333,26 +333,33 @@ func (slice *localSlice) contextHistoryArtifact(ref runRef) []byte {
 
 func (slice *localSlice) waitTelegramDeliveryDrain(runs ...runRef) {
 	slice.t.Helper()
-	deadline := time.Now().Add(35 * time.Second)
-	for {
-		complete := true
-		for _, run := range runs {
-			if slice.deliveryForRun(run).Status != domain.DeliverySent {
-				complete = false
+	slice.waitTelegramDeliveryDrainKind(canonicalDeliveryDrain, runs...)
+}
+
+func (slice *localSlice) waitInlineTelegramCommandDeliveryDrain(run runRef) {
+	slice.t.Helper()
+	slice.waitTelegramDeliveryDrainKind(inlineCommandDeliveryDrain, run)
+}
+
+func (slice *localSlice) waitTelegramDeliveryDrainKind(kind deliveryDrainKind, runs ...runRef) {
+	slice.t.Helper()
+	ctx, cancel := context.WithTimeout(slice.ctx, 35*time.Second)
+	defer cancel()
+	err := awaitTelegramDeliveryDrainKind(ctx, 100*time.Millisecond, runs,
+		func(ctx context.Context, run runRef) (domain.TelegramDeliveryOutbox, uint64, error) {
+			delivery, err := slice.readDeliveryForRun(ctx, run)
+			if err != nil {
+				return delivery, 0, err
 			}
-			if pending := slice.countRunRows(run,
+			var pending uint64
+			err = slice.db.QueryRowContext(ctx,
 				`SELECT COUNT(*) FROM frontend_projections_by_run
-				 WHERE tenant_id = $1 AND run_id = $2`,
-			); pending != 0 {
-				complete = false
-			}
-		}
-		if complete {
-			return
-		}
-		if time.Now().After(deadline) {
-			slice.t.Fatalf("Telegram delivery drain did not complete for runs %+v", runs)
-		}
-		time.Sleep(100 * time.Millisecond)
+				 WHERE tenant_id = $1 AND run_id = $2 AND frontend = $3`,
+				run.TenantID, run.RunID, domain.FrontendTelegram,
+			).Scan(&pending)
+			return delivery, pending, err
+		}, kind)
+	if err != nil {
+		slice.t.Fatalf("Telegram delivery drain for runs %+v: %v", runs, err)
 	}
 }

@@ -50,7 +50,10 @@ func TestOperationalTTLPreservationAndResumableSessionDeletion(t *testing.T) {
 		sameTenantChat:  {"sendMessage": 3, "sendDocument": documents},
 		crossTenantChat: {"sendMessage": 1, "sendDocument": crossDocuments},
 	})
-	slice.waitTelegramDeliveryDrain(target, newSession, sentinel, crossTenant)
+	slice.waitTelegramDeliveryDrain(target, sentinel, crossTenant)
+	// /new is a control-plane command with an inline reply, not a worker's
+	// canonical-event projection. Both delivery kinds must drain before TTL.
+	slice.waitInlineTelegramCommandDeliveryDrain(newSession)
 	slice.ensureCanonicalSnapshot(target)
 	if target.TenantID != sentinel.TenantID || target.TenantID == crossTenant.TenantID {
 		t.Fatalf("sentinel tenant layout is invalid: target=%s same=%s cross=%s", target.TenantID, sentinel.TenantID, crossTenant.TenantID)

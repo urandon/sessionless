@@ -717,13 +717,6 @@ func (store *Store) ClaimLease(
 				return err
 			}
 			if _, err := tx.sqlTx.ExecContext(ctx,
-				`DELETE FROM lease_expiry
-				 WHERE tenant_id = $1 AND expires_at = $2 AND run_id = $3`,
-				claim.TenantID, expiresAt, claim.RunID,
-			); err != nil {
-				return err
-			}
-			if _, err := tx.sqlTx.ExecContext(ctx,
 				`DELETE FROM lease_expiry_v2
 				 WHERE shard_bucket = $1 AND expires_at = $2
 				 AND tenant_id = $3 AND run_id = $4`,
@@ -1107,44 +1100,6 @@ func (store *Store) ListExpiredLeasesByBucket(
 		result = append(result, item)
 	}
 	return result, rows.Err()
-}
-
-// ListExpiredLeases uses the tenant/time primary-key range; it never scans
-// payloads or another tenant's rows.
-func (store *Store) ListExpiredLeases(
-	ctx context.Context,
-	tenantID domain.TenantID,
-	before time.Time,
-	limit uint64,
-) (result []ExpiredLease, err error) {
-	if limit == 0 {
-		return nil, domain.ValidationError{Field: "lease expiry limit", Reason: "must be positive"}
-	}
-	err = store.Transact(ctx, tenantID, func(state ports.StateTx) error {
-		tx := state.(*stateTx)
-		rows, err := tx.sqlTx.QueryContext(ctx,
-			`SELECT run_id, lease_id, fence_token, expires_at
-			 FROM lease_expiry
-			 WHERE tenant_id = $1 AND expires_at <= $2
-			 ORDER BY expires_at, run_id
-			 LIMIT $3`,
-			tenantID, before, limit,
-		)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var item ExpiredLease
-			if err := rows.Scan(&item.RunID, &item.LeaseID, &item.Fence, &item.ExpiresAt); err != nil {
-				return err
-			}
-			item.TenantID = tenantID
-			result = append(result, item)
-		}
-		return rows.Err()
-	})
-	return result, err
 }
 
 type CompletedRun struct {

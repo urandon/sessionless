@@ -7,7 +7,7 @@ SESSIONLESS_GO_CACHE_ROOT ?= $(if $(GIT_COMMON_DIR),$(GIT_COMMON_DIR)/sessionles
 GO_CACHE_DIR := $(SESSIONLESS_GO_CACHE_ROOT)/go-build
 GO_MOD_CACHE_DIR := $(SESSIONLESS_GO_CACHE_ROOT)/go-mod
 GO_TMP_DIR := $(CURDIR)/.build/tmp
-COMPONENTS := control-api web-bff reconciler telegram-sender telegram-fake oidc-fake worker-runtime attached-worker attached-worker-admin schema-migrate schema-inspect schema-backfill preprod-reset deployment-lock registry-gc release-notes github-release web-bootstrap session-delete
+COMPONENTS := control-api web-bff reconciler telegram-sender telegram-fake oidc-fake worker-runtime attached-worker attached-worker-admin schema-migrate schema-inspect schema-backfill ready-expiry-repair preprod-reset deployment-lock registry-gc release-notes github-release web-bootstrap session-delete
 GO_PACKAGE_PATTERNS := ./cmd/... ./internal/... ./migrations/...
 WEB_DIR := web
 WEB_BUILD_DIR := $(WEB_DIR)/build
@@ -28,7 +28,7 @@ LDFLAGS := -s -w \
 .PHONY: help prepare go-cache-status go-cache-clean go-cache-policy-test tools web-tools go-package-layout generate fmt fmt-check lint test build dockerless-build attached-worker-build attached-worker-package-test attached-worker-crash-integration attached-worker-active-crash-integration attached-worker-security-gate attached-worker-security-ydb-gate attached-worker-joined-provider-ydb-gate attached-worker-native-integration attached-worker-rootless-integration docs-check readme-visual-preview web-install web-openapi-check web-check web-build web-stage web-ci web-browser-install web-browser-test integration ydb-integration local-integration e2e-local e2e-local-dockerless attached-worker-oci-integration attached-worker-oci-linux-rootless-ci provider-conformance provider-conformance-fuzz ci image-publication-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test dockerless-stand-policy-test budget-policy-test web-deployment-policy-test terraform-ci cloudflare-edge-ci \
 	cloud-web-smoke cloud-web-smoke-test attached-worker-experiment-plan attached-worker-experiment-test \
 	serverless-egress-conformance \
-	compose-config images dev-up dev-seed migrate-local migration-status partition-status partition-backfill cloud-app-reset-plan cloud-app-reset session-delete-request session-delete-plan session-delete session-hold session-release-hold \
+	compose-config images dev-up dev-seed migrate-local migration-status partition-status partition-backfill ready-expiry-repair ready-expiry-repair-test cloud-app-reset-plan cloud-app-reset session-delete-request session-delete-plan session-delete session-hold session-release-hold \
 	worker-once web-bootstrap dev-down dev-reset dockerless-up dockerless-status dockerless-worker-once dockerless-logs dockerless-down repowise-install repowise-index repowise-update repowise-status repowise-doctor repowise-mcp repowise-mcp-smoke repowise-evaluate repowise-stop repowise-uninstall-plan repowise-uninstall repowise-policy-test clean
 
 help:
@@ -88,7 +88,9 @@ help:
 		'make migrate-local  apply embedded YDB migrations' \
 		'make migration-status inspect Goose and checksum state' \
 		'make partition-status inspect physical keys and partition settings as JSON' \
-		'make partition-backfill copy legacy ready/expiry and lifecycle-index rows, then mark cutover' \
+		'make partition-backfill populate lifecycle indexes and mark their cutover' \
+		'make ready-expiry-repair ARGS="..." plan/apply metadata repair for one authorized exact locator' \
+		'make ready-expiry-repair-test run offline operator CLI/store race tests; no database startup' \
 		'make cloud-app-reset-plan inspect the exact guarded cloud-dev reset target' \
 		'make cloud-app-reset execute the typed-confirmed cloud-dev application reset' \
 		'make session-delete-request record an owner-authorized deletion request' \
@@ -256,7 +258,14 @@ attached-worker-rootless-integration: attached-worker-build
 	SESSIONLESS_ROOTLESS_ACTIVATION_INTEGRATION=1 SESSIONLESS_ATTACHED_WORKER_BINARY="$(CURDIR)/$(BIN_DIR)/attached-worker" \
 		go test -race -count=1 -timeout=22m -run '^TestActivatedRootlessServiceAcceptsSyntheticAttempt$$' ./cmd/attached-worker
 
-docs-check:
+.PHONY: entity-registry-check entity-registry-test
+entity-registry-check:
+	@node ./scripts/check-entity-registry.mjs
+
+entity-registry-test:
+	@node --test ./scripts/check-entity-registry.test.mjs
+
+docs-check: entity-registry-check entity-registry-test
 	@node ./scripts/check-markdown-links.mjs
 
 readme-visual-preview: web-build
@@ -297,6 +306,14 @@ integration: prepare
 
 ydb-integration: prepare
 	go test -race -tags=ydbintegration ./test/ydbintegration/...
+
+.PHONY: ready-expiry-retirement-ydb-gate
+# Explicit destructive test partition: only four owned old-index tables in
+# disposable GitHub CI; this does not start a DB or grant rollout authority.
+ready-expiry-retirement-ydb-gate: prepare
+	@test "$(GITHUB_ACTIONS)" = true || { echo 'requires disposable GitHub CI'; exit 1; }
+	SESSIONLESS_READY_EXPIRY_RETIREMENT_CI=1 go test -race -count=1 -timeout=5m -v -tags=ydbintegration \
+		-run '^TestReadyExpiryRetirementYDBExistingAndMissing$$' ./test/ydbintegration
 
 .PHONY: run-explanation-ydb-gate
 RUN_EXPLANATION_YDB_COUNT ?= 3
@@ -471,6 +488,15 @@ partition-status: prepare
 
 partition-backfill: prepare
 	go run ./cmd/schema-backfill
+
+ready-expiry-repair: prepare
+	go run ./cmd/ready-expiry-repair $(ARGS)
+
+ready-expiry-repair-test: prepare fmt-check
+	env -u YDB_CONNECTION_STRING \
+		SESSIONLESS_OWNED_CURRENT_YDB_GATE=0 SESSIONLESS_OWNED_CURRENT_YDB_DISPOSABLE=0 \
+		GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off GONOPROXY=none GOVCS='*:off' \
+		go test -race -count=1 -shuffle=on -timeout=90s ./cmd/ready-expiry-repair ./internal/ydbstore
 
 cloud-app-reset-plan: prepare
 	@./scripts/cloud-app-reset.sh plan

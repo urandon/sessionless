@@ -435,13 +435,6 @@ func (tx *stateTx) PutLease(ctx context.Context, lease domain.Lease) error {
 			return err
 		}
 		if _, err := tx.sqlTx.ExecContext(ctx,
-			`DELETE FROM lease_expiry
-			 WHERE tenant_id = $1 AND expires_at = $2 AND run_id = $3`,
-			previous.TenantID, previous.ExpiresAt, previous.RunID,
-		); err != nil {
-			return err
-		}
-		if _, err := tx.sqlTx.ExecContext(ctx,
 			`DELETE FROM lease_expiry_v2
 			 WHERE shard_bucket = $1 AND expires_at = $2
 			 AND tenant_id = $3 AND run_id = $4`,
@@ -458,15 +451,6 @@ func (tx *stateTx) PutLease(ctx context.Context, lease domain.Lease) error {
 		lease.TenantID, lease.ID, lease.RunID, lease.AttemptID, lease.WorkerID,
 		lease.FenceToken, lease.AcquiredAt, lease.ExpiresAt,
 		lease.ExpiresAt.Add(tx.store.operationalRetention), payload,
-	)
-	if err != nil {
-		return err
-	}
-	_, err = tx.sqlTx.ExecContext(ctx,
-		`UPSERT INTO lease_expiry
-		 (tenant_id, expires_at, run_id, lease_id, fence_token)
-		 VALUES ($1, $2, $3, $4, $5)`,
-		lease.TenantID, lease.ExpiresAt, lease.RunID, lease.ID, lease.FenceToken,
 	)
 	if err != nil {
 		return err
@@ -548,13 +532,6 @@ func (tx *stateTx) PutQuotaReservation(
 			return err
 		}
 		if _, err := tx.sqlTx.ExecContext(ctx,
-			`DELETE FROM quota_expiry
-			 WHERE tenant_id = $1 AND expires_at = $2 AND quota_reservation_id = $3`,
-			previous.TenantID, previous.ExpiresAt, previous.ID,
-		); err != nil {
-			return err
-		}
-		if _, err := tx.sqlTx.ExecContext(ctx,
 			`DELETE FROM quota_expiry_v2
 			 WHERE shard_bucket = $1 AND expires_at = $2
 			 AND tenant_id = $3 AND quota_reservation_id = $4`,
@@ -574,16 +551,6 @@ func (tx *stateTx) PutQuotaReservation(
 		reservation.ExpiresAt.Add(tx.store.operationalRetention), payload,
 	)
 	if err != nil || reservation.Status != domain.ReservationHeld {
-		return err
-	}
-	_, err = tx.sqlTx.ExecContext(ctx,
-		`UPSERT INTO quota_expiry
-		 (tenant_id, expires_at, quota_reservation_id, run_id, subscription_connection_id)
-		 VALUES ($1, $2, $3, $4, $5)`,
-		reservation.TenantID, reservation.ExpiresAt, reservation.ID,
-		reservation.RunID, reservation.SubscriptionConnectionID,
-	)
-	if err != nil {
 		return err
 	}
 	_, err = tx.sqlTx.ExecContext(ctx,
@@ -764,13 +731,6 @@ func (tx *stateTx) PutDispatchOutbox(
 		return err
 	}
 	if _, err := tx.sqlTx.ExecContext(ctx,
-		`DELETE FROM dispatch_ready
-		 WHERE tenant_id = $1 AND available_at = $2 AND dispatch_outbox_id = $3`,
-		outbox.TenantID, outbox.CreatedAt, outbox.ID,
-	); err != nil {
-		return err
-	}
-	if _, err := tx.sqlTx.ExecContext(ctx,
 		`DELETE FROM dispatch_ready_v2
 		 WHERE shard_bucket = $1 AND available_at = $2
 		 AND tenant_id = $3 AND dispatch_outbox_id = $4`,
@@ -788,15 +748,6 @@ func (tx *stateTx) PutDispatchOutbox(
 		outbox.UpdatedAt.Add(tx.store.operationalRetention), payload,
 	)
 	if err != nil || outbox.Status != domain.DispatchPending {
-		return err
-	}
-	_, err = tx.sqlTx.ExecContext(ctx,
-		`UPSERT INTO dispatch_ready
-		 (tenant_id, available_at, dispatch_outbox_id, run_id, attempt_id)
-		 VALUES ($1, $2, $3, $4, $5)`,
-		outbox.TenantID, outbox.CreatedAt, outbox.ID, outbox.RunID, outbox.AttemptID,
-	)
-	if err != nil {
 		return err
 	}
 	_, err = tx.sqlTx.ExecContext(ctx,
@@ -846,13 +797,6 @@ func (tx *stateTx) PutTelegramDeliveryOutbox(
 			}
 		}
 		previousAvailableAt := telegramDeliveryAvailableAt(previous)
-		if _, err := tx.sqlTx.ExecContext(ctx,
-			`DELETE FROM telegram_delivery_ready
-			 WHERE tenant_id = $1 AND available_at = $2 AND telegram_delivery_id = $3`,
-			previous.TenantID, previousAvailableAt, previous.ID,
-		); err != nil {
-			return err
-		}
 		previousBucket, err := ydbpartition.BucketV1(string(previous.ID))
 		if err != nil {
 			return err
@@ -892,15 +836,6 @@ func (tx *stateTx) PutTelegramDeliveryOutbox(
 		return nil
 	}
 	availableAt := telegramDeliveryAvailableAt(outbox)
-	_, err = tx.sqlTx.ExecContext(ctx,
-		`UPSERT INTO telegram_delivery_ready
-		 (tenant_id, available_at, telegram_delivery_id, run_id)
-		 VALUES ($1, $2, $3, $4)`,
-		outbox.TenantID, availableAt, outbox.ID, outbox.RunID,
-	)
-	if err != nil {
-		return err
-	}
 	_, err = tx.sqlTx.ExecContext(ctx,
 		`UPSERT INTO telegram_delivery_ready_v2
 		 (shard_bucket, available_at, tenant_id, telegram_delivery_id, run_id)

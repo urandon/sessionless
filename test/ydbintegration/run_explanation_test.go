@@ -95,7 +95,7 @@ func newExplanationYDBFixture(t *testing.T) explanationYDBFixture {
 	t.Cleanup(func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		for _, table := range []string{"run_explanation_heads_v1", "attempts", "runs", "runs_by_session", "run_idempotency", "sessions", "session_participants", "session_displays", "dispatch_outbox", "dispatch_ready", "dispatch_ready_v2", "artifact_manifests", "artifact_manifests_by_run", "subscription_connections", "subscription_scheduler_slots", "tenant_scheduler_counters", "quota_reservations", "quota_expiry", "quota_expiry_v2", "worker_jobs", "leases", "lease_heads", "lease_expiry", "lease_expiry_v2", "run_finalizations", "session_events", "session_event_idempotency", "session_deletions", "tenant_memberships", "tenants", "audit_events"} {
+		for _, table := range []string{"run_explanation_heads_v1", "attempts", "runs", "runs_by_session", "run_idempotency", "sessions", "session_participants", "session_displays", "dispatch_outbox", "dispatch_ready_v2", "artifact_manifests", "artifact_manifests_by_run", "subscription_connections", "subscription_scheduler_slots", "tenant_scheduler_counters", "quota_reservations", "quota_expiry_v2", "worker_jobs", "leases", "lease_heads", "lease_expiry_v2", "run_finalizations", "session_events", "session_event_idempotency", "session_deletions", "tenant_memberships", "tenants", "audit_events"} {
 			if _, err := client.DB.ExecContext(cleanupCtx, "DELETE FROM "+table+" WHERE tenant_id=$1", tenant); err != nil {
 				t.Errorf("cleanup %s unique tenant: %v", table, err)
 			}

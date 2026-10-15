@@ -280,6 +280,7 @@ type parser struct {
 	b                  []byte
 	i, nodes, maxNodes int
 	ok, owned          bool
+	hasCapability      bool // structural class only, never a grant
 }
 
 func (p *parser) node() {
@@ -683,6 +684,7 @@ func parseReply(p *parser) Reply {
 		p.node()
 		p.lit("null")
 	} else {
+		p.hasCapability = true
 		c := parseCapability(p)
 		if p.owned && p.ok {
 			owned := c
@@ -714,12 +716,12 @@ func DecodeReply(b []byte) (Reply, error) {
 	}
 	pre := parser{b: b, ok: true, maxNodes: ReplyNodes}
 	parseReply(&pre)
-	if !pre.ok || pre.i != len(b) {
+	if !pre.ok || pre.i != len(b) || !pre.hasCapability && len(b) > ReplyWithoutCapabilityMaxBytes {
 		return Reply{}, ErrInvalid
 	}
 	p := parser{b: b, ok: true, owned: true, maxNodes: ReplyNodes}
 	r := parseReply(&p)
-	if !p.ok || p.i != len(b) || !validReply(r) || r.Capability == nil && len(b) > ReplyWithoutCapabilityMaxBytes {
+	if !p.ok || p.i != len(b) || !validReply(r) {
 		return Reply{}, ErrInvalid
 	}
 	return r, nil

@@ -175,9 +175,12 @@ func TestAttemptOutputUploadServiceRejectsForeignOrUnavailableSnapshot(t *testin
 		"wrong nonce":      func(s *controlStoreFixture) { s.result.Plan.Identity.Nonce = "other-nonce" },
 		"wrong revision":   func(s *controlStoreFixture) { s.result.AcceptedAttempt.Revision++ },
 		"wrong head owner": func(s *controlStoreFixture) { s.result.AcceptedAttempt.OwnerUserID = "other-owner" },
-		"cancelled head":   func(s *controlStoreFixture) { s.result.AcceptedAttempt.CancelRevision = 1 },
-		"expired":          func(s *controlStoreFixture) { s.result.CheckedAt = s.result.Plan.Identity.ExpiresAt },
-		"unknown commit":   func(s *controlStoreFixture) { s.err = errors.New("private backend details must not leak") },
+		"cancelled head": func(s *controlStoreFixture) {
+			s.result.AcceptedAttempt.CancelRevision = 1
+			s.result.AcceptedAttempt.CancelDeadline = s.result.AcceptedAttempt.LeaseExpiresAt
+		},
+		"expired":        func(s *controlStoreFixture) { s.result.CheckedAt = s.result.Plan.Identity.ExpiresAt },
+		"unknown commit": func(s *controlStoreFixture) { s.err = errors.New("private backend details must not leak") },
 	} {
 		t.Run(name, func(t *testing.T) {
 			service, store, bearer, request := controlFixture(t)

@@ -23,6 +23,8 @@ type PreparedInvocationV1 struct {
 	VerifiedInput   *VerifiedAttachedInputV1                  `json:"-"`
 	APIRequest      *PreparedAPIRequestV1                     `json:"-"`
 	PhysicalSend    PreparedAPIPhysicalSendV1                 `json:"-"`
+	Ledger          PreparedAPILedgerV1                       `json:"-"`
+	apiIssueStarted time.Time                                 // parent-only original Issue boundary, never wire data
 }
 
 func (PreparedInvocationV1) String() string {

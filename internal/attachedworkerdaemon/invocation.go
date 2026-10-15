@@ -267,12 +267,15 @@ func (runner *InvocationRunner) runPreparedAPI(ctx context.Context, invocation I
 	// This Go context does not implement the missing hard JS/native bridge.
 	useCtx, cancelUse := context.WithDeadline(ctx, cutoff)
 	defer cancelUse()
-	send := &preparedAPIPhysicalSend{ctx: useCtx, body: data.ParentRequest.Body,
+	sendCtx, cancelSend := context.WithCancel(useCtx)
+	defer cancelSend()
+	send := &preparedAPIPhysicalSend{ctx: sendCtx, ownerCtx: useCtx, cancel: cancelSend, body: data.ParentRequest.Body,
 		profile: data.Issue.HarnessBinding.Backend.BackendProfileDigest,
 		authorize: func() (time.Time, error) {
-			return runner.observeAPIPhase(useCtx, data, pisdkphasewire.PhysicalSend, cutoff)
+			return runner.observeAPIPhase(sendCtx, data, pisdkphasewire.PhysicalSend, cutoff)
 		}}
 	defer send.retire()
+	issueStarted := time.Now()
 	handle, issueErr := runner.apiCredentials.IssueProviderCredential(useCtx, data.Issue)
 	// Even an error accompanied by an actual returned handle retains cleanup
 	// ownership. A zero error handle is not fabricated release evidence.
@@ -331,6 +334,7 @@ func (runner *InvocationRunner) runPreparedAPI(ctx context.Context, invocation I
 			Identity: invocation.Identity, Process: data.ChildProcess, Credential: handle, Materialization: value,
 			VerifiedInput: data.ChildInput, APIRequest: &data.ChildRequest,
 			PhysicalSend: send,
+			Ledger:       data.Ledger, apiIssueStarted: issueStarted,
 		})
 		return processErr
 	})

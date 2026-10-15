@@ -296,6 +296,34 @@ same-RPC/current-owner phase production, source-owned full pre-Issue projection,
 shared/native fit, original deadline/cutoff bridge and cross-language parity
 remain required by the [Pi profile](design/pi-sdk-attached-media-profile.md).
 
+### Prepared Pi duplex checks (default-off)
+
+The explicit `Supervisor.PreparePiStdioV1` / `RunPreparedPi` library arm uses
+the same validated Supervisor process lifecycle and SPU2, not a second runner.
+Its Go arenas are reserved on the original ledger before the original API
+Issue boundary; a different ledger, late plan, substituted model-use context
+or executable/profile mismatch denies before launch. The original complete
+Init must still come from a qualified producer; an opaque UTF-8 fixture does
+not implement that producer or certify full native fit.
+
+One owned pump serializes Init/use and assembles child request/final frames
+after expected-peer/order/header preflight. It retains the original Go F,
+subtracts elapsed work before the one relative reply, and cancels/force-stops
+the same supervised attempt rather than granting model time during TERM grace.
+All pump/Source/timer work joins before return. Source-call cancellation is
+separate from the original immutable-Finalize/retirement context. Actual stdout
+count/digest and separately extracted final DATA do not mint a #200 producer,
+READY receipt or credential-finalization result.
+
+The focused ordinary process checks are
+`go test -race -count=1 -shuffle=on -run '^TestPiStdio' ./internal/attachedworkerdaemon`.
+They use synthetic Source/profile/Init and a local test executable, including
+fragmentation, exact maximum request, first-over, malformed/order failures,
+held Source/init-write cancellation and the original API file lifecycle.
+They are not Pi SDK/native clock/egress proof. Real Init/schema/all-copy ledger,
+same-JS guarded fetch/clock conversion, private final custody and genuine
+Source/admission/READY/terminal remain required before serving registration.
+
 ### Complete Pi request-data producer checks (non-serving)
 
 `internal/pisdkmedia` projects the original canonical snapshot plus tail through

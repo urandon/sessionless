@@ -14,6 +14,8 @@ import (
 type preparedAPIPhysicalSend struct {
 	mu         sync.Mutex
 	ctx        context.Context
+	ownerCtx   context.Context // original outer model-use context, distinct from revocable Source call
+	cancel     context.CancelFunc
 	body       []byte
 	profile    string
 	authorize  func() (time.Time, error)
@@ -58,7 +60,7 @@ func (send *preparedAPIPhysicalSend) Authorize(body []byte, profile string) (tim
 func (send *preparedAPIPhysicalSend) retire() time.Time {
 	// Revoke before joining: a Source reply held across executor return must
 	// not publish a usable cutoff, even though custody cannot clear until join.
-	send.retired.Store(true)
+	send.revoke()
 	send.mu.Lock()
 	defer send.mu.Unlock()
 	send.body = nil
@@ -67,4 +69,14 @@ func (send *preparedAPIPhysicalSend) retire() time.Time {
 		return time.Time{}
 	}
 	return send.cutoff
+}
+
+// Revoke model use before joining an outstanding Source call. The cancellation
+// only tightens this SAME original phase context; it never cancels the distinct
+// immutable-Finalize/retirement owner or creates a fresh deadline.
+func (send *preparedAPIPhysicalSend) revoke() {
+	send.retired.Store(true)
+	if send.cancel != nil {
+		send.cancel()
+	}
 }

@@ -9,15 +9,51 @@ const REQUIRED_STRINGS = [
   "proposedDisposition",
 ];
 
-export function deriveSchema(migrationSources) {
+export function deriveSchema(migrationSources, manifest = { schema: "sessionless-ydb-retirements/v1", retirements: [] }) {
   const tables = new Map();
+  const activeTables = new Map();
+  const retirements = new Map();
   const duplicates = [];
   const errors = [];
   let createStatements = 0;
   let alterStatements = 0;
   let alterOnlyMigrations = 0;
+  let dropStatements = 0;
+  const owned = new Map();
+  const ownedTables = new Set();
+  if (manifest?.schema !== "sessionless-ydb-retirements/v1" || !Array.isArray(manifest.retirements)) {
+    errors.push("unsupported retirement manifest");
+  } else {
+    for (const r of manifest.retirements) {
+      const fields = ["table", "createMigration", "successor", "successorMigration", "migration", "afterVersion"];
+      if (!r || Object.keys(r).sort().join() !== fields.sort().join() ||
+          ![r.table, r.successor].every(x => typeof x === "string" && /^[a-z][a-z0-9_]*$/.test(x)) ||
+          ![r.createMigration, r.successorMigration, r.migration].every(x => typeof x === "string" && /^\d+_[a-z0-9_]+\.sql$/.test(x)) ||
+          r.table === r.successor || !Number.isSafeInteger(r.afterVersion) || r.afterVersion <= 0 ||
+          owned.has(r.migration) || ownedTables.has(r.table)) {
+        errors.push("invalid/duplicate retirement manifest identity");
+        continue;
+      }
+      owned.set(r.migration, r);
+      ownedTables.add(r.table);
+    }
+  }
+  const versions = new Map();
+  const ordered = [];
+  for (const [migration, source] of Object.entries(migrationSources)) {
+    const name = migration.match(/^(\d+)_[a-z0-9_]+\.sql$/);
+    if (!name || BigInt(name[1]) <= 0n) {
+      errors.push(`${migration}: invalid migration filename/version`);
+      continue;
+    }
+    const version = BigInt(name[1]);
+    if (versions.has(version)) errors.push(`${migration}: duplicate migration version ${version}`);
+    versions.set(version, migration);
+    ordered.push({ migration, source, version });
+  }
+  ordered.sort((a, b) => a.version < b.version ? -1 : a.version > b.version ? 1 : a.migration.localeCompare(b.migration));
 
-  for (const [migration, source] of Object.entries(migrationSources).sort(([a], [b]) => a.localeCompare(b))) {
+  for (const { migration, source, version } of ordered) {
     let section = "";
     let sawUp = false;
     let upLines = [];
@@ -57,7 +93,29 @@ export function deriveSchema(migrationSources) {
         continue;
       }
       if (/^DROP\b/i.test(normalized)) {
-        errors.push(`${migration}: unsupported DROP operation`);
+        const r = owned.get(migration);
+        const match = normalized.match(/^DROP TABLE IF EXISTS `([a-z][a-z0-9_]*)`$/i);
+        const down = source.split(/--\s*\+goose\s+Down\s*\r?\n/i)[1];
+        const executableDown = down?.split(/\r?\n/).map(line => line.split("--")[0].trim()).filter(Boolean).join(" ");
+        if (!r || !match || match[1] !== r.table || statements.length !== 1 || down === undefined || executableDown) {
+          errors.push(`${migration}: unsupported DROP operation; expected one owned idempotent DROP and comment-only Down`);
+          continue;
+        }
+        if (version <= BigInt(r.afterVersion) || !versions.has(BigInt(r.afterVersion)) ||
+            tables.get(r.table)?.migration !== r.createMigration ||
+            activeTables.get(r.successor)?.migration !== r.successorMigration ||
+            !activeTables.has(r.table)) {
+          errors.push(`${migration}: missing/early/duplicate retirement or CREATE/successor lineage mismatch`);
+          continue;
+        }
+        activeTables.delete(r.table);
+        retirements.set(r.table, { migration, successor: r.successor });
+        dropStatements += 1;
+        continue;
+      }
+
+      if (owned.has(migration)) {
+        errors.push(`${migration}: declared retirement is not its exact DROP operation`);
         continue;
       }
 
@@ -72,6 +130,7 @@ export function deriveSchema(migrationSources) {
         createStatements += 1;
         if (tables.has(table)) duplicates.push(table);
         tables.set(table, { migration, primaryKey });
+        activeTables.set(table, { migration, primaryKey });
         continue;
       }
 
@@ -80,22 +139,27 @@ export function deriveSchema(migrationSources) {
         continue;
       }
       if (/^ALTER\s+TABLE\b/i.test(normalized)) {
+        const name = normalized.match(/^ALTER TABLE `([a-z][a-z0-9_]*)` /i)?.[1];
+        if (name && retirements.has(name.toLowerCase())) errors.push(`${migration}: cannot ALTER retired table ${name}`);
         alterStatements += 1;
         continue;
       }
-      errors.push(`${migration}: unsupported executable Up statement (expected one CREATE TABLE IF NOT EXISTS or ALTER TABLE)`);
+      errors.push(`${migration}: unsupported executable Up statement (expected owned CREATE/ALTER/DROP)`);
     }
     if (statements.length === 1 && /^ALTER\s+TABLE\b/i.test(statements[0].replace(/\s+/g, " "))) {
       alterOnlyMigrations += 1;
     }
   }
+  for (const r of owned.values()) {
+    if (retirements.get(r.table)?.migration !== r.migration) errors.push(`${r.table}: missing declared retirement ${r.migration}`);
+  }
 
-  return { tables, duplicates, errors, createStatements, alterStatements, alterOnlyMigrations };
+  return { tables, activeTables, retirements, duplicates, errors, createStatements, alterStatements, alterOnlyMigrations, dropStatements };
 }
 
 export function validateRegistry(registry, schema, fileExists = () => true) {
   const errors = [...(schema.errors ?? [])];
-  if (!registry || registry.schema !== "sessionless-ydb-entity-registry/v1") {
+  if (!registry || registry.schema !== "sessionless-ydb-entity-registry/v2") {
     errors.push("unsupported or missing registry schema");
   }
   if (!Array.isArray(registry?.records)) {
@@ -104,6 +168,9 @@ export function validateRegistry(registry, schema, fileExists = () => true) {
   }
   if (registry.recordCount !== registry.records.length) {
     errors.push(`recordCount ${registry.recordCount} does not match records length ${registry.records.length}`);
+  }
+  if (registry.activeTableCount !== schema.activeTables.size) {
+    errors.push(`activeTableCount ${registry.activeTableCount} does not match effective schema ${schema.activeTables.size}`);
   }
 
   const seen = new Set();
@@ -115,6 +182,9 @@ export function validateRegistry(registry, schema, fileExists = () => true) {
     }
     if (seen.has(table)) errors.push(`duplicate registry entry: ${table}`);
     seen.add(table);
+    if (JSON.stringify(record.retirement ?? null) !== JSON.stringify(schema.retirements.get(table) ?? null)) {
+      errors.push(`${table}: retirement metadata does not match ordered source`);
+    }
 
     const actual = schema.tables.get(table);
     if (!actual) errors.push(`registry table is not created by a migration: ${table}`);
@@ -194,7 +264,8 @@ function main() {
       .map((name) => [name, fs.readFileSync(path.join(migrationDir, name), "utf8")]),
   );
   const registry = JSON.parse(fs.readFileSync(registryPath, "utf8"));
-  const schema = deriveSchema(migrationSources);
+  const manifest = JSON.parse(fs.readFileSync(path.join(migrationDir, "retirements.json"), "utf8"));
+  const schema = deriveSchema(migrationSources, manifest);
   const errors = validateRegistry(
     registry,
     schema,
@@ -202,7 +273,7 @@ function main() {
   );
 
   console.log(
-    `entity registry: ${schema.tables.size} CREATE TABLE entries; ${schema.alterStatements} ALTER statements; ${schema.alterOnlyMigrations} ALTER-only migrations`,
+    `entity registry: ${schema.tables.size} historical CREATE entries; ${schema.activeTables.size} effective active tables; ${schema.dropStatements} owned DROP operations; ${schema.alterStatements} ALTER-only migrations`,
   );
   if (errors.length) {
     for (const error of errors) console.error(`- ${error}`);

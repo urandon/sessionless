@@ -988,6 +988,15 @@ output limits, deletion fences and ambiguous-commit handling.
 `make ready-expiry-repair-test` runs offline CLI/store race tests without opening
 a database.
 
+Pending migrations 00126–00129 retire exactly four legacy discovery indexes.
+`make migrate-local` applies pending destructive definitions; it is not an
+inventory-only command. Retained environments must satisfy the
+[coverage/drain and rollback requirements](../migrations/ydb/README.md#legacy-readyexpiry-retirement)
+and have separate environment-operation authority first. The repository-only
+`make ready-expiry-retirement-ydb-gate` executes existing/missing four-table
+controls only in explicitly authorized disposable GitHub CI. Local author
+validation compiles that integration package without executing it.
+
 Local defaults use `YDB_ANONYMOUS_CREDENTIALS=1`. Cloud deployments use the
 YDB environment credential chain and metadata credentials; do not place access
 tokens in the connection string or command line.

@@ -276,6 +276,9 @@ func LoadMigrations(files fs.FS) ([]Migration, error) {
 	sort.Slice(migrations, func(left, right int) bool {
 		return migrations[left].Version < migrations[right].Version
 	})
+	if err := validateRetirementOperations(files, migrations); err != nil {
+		return nil, err
+	}
 	return migrations, nil
 }
 

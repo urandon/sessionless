@@ -307,6 +307,14 @@ integration: prepare
 ydb-integration: prepare
 	go test -race -tags=ydbintegration ./test/ydbintegration/...
 
+.PHONY: ready-expiry-retirement-ydb-gate
+# Explicit destructive test partition: only four owned old-index tables in
+# disposable GitHub CI; this does not start a DB or grant rollout authority.
+ready-expiry-retirement-ydb-gate: prepare
+	@test "$(GITHUB_ACTIONS)" = true || { echo 'requires disposable GitHub CI'; exit 1; }
+	SESSIONLESS_READY_EXPIRY_RETIREMENT_CI=1 go test -race -count=1 -timeout=5m -v -tags=ydbintegration \
+		-run '^TestReadyExpiryRetirementYDBExistingAndMissing$$' ./test/ydbintegration
+
 .PHONY: run-explanation-ydb-gate
 RUN_EXPLANATION_YDB_COUNT ?= 3
 # Suite allowance covers additive native fixtures; each resource still has its

@@ -242,7 +242,7 @@ func TestConcurrentDuplicateTelegramUpdateCreatesOneRunAndOutbox(t *testing.T) {
 	assertCount(t, client, "runs", tenantID, 1)
 	assertCount(t, client, "attempts", tenantID, 1)
 	assertCount(t, client, "dispatch_outbox", tenantID, 1)
-	assertCount(t, client, "dispatch_ready", tenantID, 0)
+	assertRetiredReadyExpiryAbsent(t, client)
 	assertCount(t, client, "dispatch_ready_v2", tenantID, 1)
 	assertCount(t, client, "telegram_updates", tenantID, 1)
 	assertCount(t, client, "artifact_manifests", tenantID, 1)
@@ -413,7 +413,7 @@ func TestConcurrentLeaseClaimHasExactlyOneWinner(t *testing.T) {
 		t.Fatalf("winners=%d held=%d, want exactly one of each", winners, held)
 	}
 	assertCount(t, client, "lease_heads", tenantID, 1)
-	assertCount(t, client, "lease_expiry", tenantID, 0)
+	assertRetiredReadyExpiryAbsent(t, client)
 	assertCount(t, client, "lease_expiry_v2", tenantID, 1)
 	queryCtx, queryCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer queryCancel()
@@ -497,7 +497,7 @@ func TestConcurrentLeaseClaimHasExactlyOneWinner(t *testing.T) {
 	if reclaimed.FenceToken != winningFence+1 || reclaimed.WorkerID != "worker-recovered" {
 		t.Fatalf("reclaimed lease = %+v, previous fence = %d", reclaimed, winningFence)
 	}
-	assertCount(t, client, "lease_expiry", tenantID, 0)
+	assertRetiredReadyExpiryAbsent(t, client)
 	assertCount(t, client, "lease_expiry_v2", tenantID, 1)
 }
 
@@ -919,7 +919,7 @@ func TestWorkerLifecycleCommitsResultAndClearsLeaseIndexes(t *testing.T) {
 	}
 	assertCount(t, client, "worker_jobs", tenantID, 1)
 	assertCount(t, client, "lease_heads", tenantID, 0)
-	assertCount(t, client, "lease_expiry", tenantID, 0)
+	assertRetiredReadyExpiryAbsent(t, client)
 	assertCount(t, client, "lease_expiry_v2", tenantID, 0)
 	assertCount(t, client, "telegram_delivery_outbox", tenantID, 1)
 	assertCount(t, client, "substrate_execution_evidence", tenantID, 1)
@@ -1005,9 +1005,9 @@ func TestQuotaAndDeliveryWriteOnlyBucketedReadyTables(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertCount(t, client, "quota_expiry", tenantID, 0)
+	assertRetiredReadyExpiryAbsent(t, client)
 	assertCount(t, client, "quota_expiry_v2", tenantID, 1)
-	assertCount(t, client, "telegram_delivery_ready", tenantID, 0)
+	assertRetiredReadyExpiryAbsent(t, client)
 	assertCount(t, client, "telegram_delivery_ready_v2", tenantID, 1)
 	bucket, err := ydbpartition.BucketV1(string(delivery.ID))
 	if err != nil {
@@ -1035,7 +1035,7 @@ func TestQuotaAndDeliveryWriteOnlyBucketedReadyTables(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	assertCount(t, client, "telegram_delivery_ready", tenantID, 0)
+	assertRetiredReadyExpiryAbsent(t, client)
 	assertCount(t, client, "telegram_delivery_ready_v2", tenantID, 1)
 	readyAfterRetry, err := store.ListReadyTelegramDeliveries(
 		context.Background(), bucket, now.Add(3*time.Minute), 10,

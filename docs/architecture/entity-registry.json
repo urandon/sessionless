@@ -1,8 +1,9 @@
 {
-  "schema": "sessionless-ydb-entity-registry/v1",
+  "schema": "sessionless-ydb-entity-registry/v2",
   "sourceDirectory": "migrations/ydb",
   "observedKeyScopeNote": "Primary-key columns are structural observations only; they do not establish authenticated tenant or owner authorization.",
   "recordCount": 105,
+  "activeTableCount": 101,
   "records": [
     {
       "table": "actors",
@@ -1403,8 +1404,9 @@
     },
     {
       "table": "dispatch_ready",
+      "retirement": {"migration":"00127_retire_dispatch_ready.sql","successor":"dispatch_ready_v2"},
       "migration": "00020_create_dispatch_ready.sql",
-      "role": "Legacy ready/expiry projection retained in physical schema, immutable history and reset ownership; no serving SQL readers or writers after the compatible v2-only code step.",
+      "role": "Historical CREATE lineage and optional reset-cleanup ownership. The declared forward operation retires this projection from the effective source schema; retained deployment application remains separately authorized.",
       "primaryKey": [
         "tenant_id",
         "available_at",
@@ -1966,8 +1968,9 @@
     },
     {
       "table": "lease_expiry",
+      "retirement": {"migration":"00126_retire_lease_expiry.sql","successor":"lease_expiry_v2"},
       "migration": "00019_create_lease_expiry.sql",
-      "role": "Legacy ready/expiry projection retained in physical schema, immutable history and reset ownership; no serving SQL readers or writers after the compatible v2-only code step.",
+      "role": "Historical CREATE lineage and optional reset-cleanup ownership. The declared forward operation retires this projection from the effective source schema; retained deployment application remains separately authorized.",
       "primaryKey": [
         "tenant_id",
         "expires_at",
@@ -2520,8 +2523,9 @@
     },
     {
       "table": "quota_expiry",
+      "retirement": {"migration":"00128_retire_quota_expiry.sql","successor":"quota_expiry_v2"},
       "migration": "00022_create_quota_expiry.sql",
-      "role": "Legacy ready/expiry projection retained in physical schema, immutable history and reset ownership; no serving SQL readers or writers after the compatible v2-only code step.",
+      "role": "Historical CREATE lineage and optional reset-cleanup ownership. The declared forward operation retires this projection from the effective source schema; retained deployment application remains separately authorized.",
       "primaryKey": [
         "tenant_id",
         "expires_at",
@@ -3757,8 +3761,9 @@
     },
     {
       "table": "telegram_delivery_ready",
+      "retirement": {"migration":"00129_retire_telegram_delivery_ready.sql","successor":"telegram_delivery_ready_v2"},
       "migration": "00021_create_telegram_delivery_ready.sql",
-      "role": "Legacy ready/expiry projection retained in physical schema, immutable history and reset ownership; no serving SQL readers or writers after the compatible v2-only code step.",
+      "role": "Historical CREATE lineage and optional reset-cleanup ownership. The declared forward operation retires this projection from the effective source schema; retained deployment application remains separately authorized.",
       "primaryKey": [
         "tenant_id",
         "available_at",

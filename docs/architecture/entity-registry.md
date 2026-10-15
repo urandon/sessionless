@@ -2,6 +2,9 @@
 
 The [entity registry](entity-registry.json) maps physical application tables to
 their creation migrations, observed keys, schema retention and source consumers.
+The v2 registry keeps **105 historical CREATE records** and derives **101
+effective active tables** after four forward retirement definitions. These are
+source-layout counts, not an assertion about any retained deployment.
 Logical state and durability decisions are specified in the
 [state storage simplification design](../design/state-storage-simplification.md).
 The owning [issue #205](https://gitcode.com/urandon/sessionless/issues/205) holds
@@ -25,7 +28,7 @@ is not a request for another table. The complete physical list remains in JSON.
 | Current execution | `attempts`, `lease_heads`, `leases`, `worker_jobs` | Current owner/fence/expiry and admitted input remain transactional; a merged layout needs replacement of existing joins. |
 | Historical execution detail | Historical `attempts`/`leases`, `checkpoints`, diagnostics | Evaluate bounded retention, derived views or ephemeral progress separately from current execution. No blanket permanent-history requirement. |
 | Irreversible effect and output custody | `attempt_effect_reservations`, reconciliation evidence, `attached_worker_output_receipts` | Retain exact accepted/ambiguous effect identity and custody until owning reconciliation/retention permits retirement. |
-| Ready and expiry discovery | `lease_expiry`, `dispatch_ready`, `quota_expiry`, `telegram_delivery_ready` and their `_v2` counterparts | Single v2 serving projection per family; retain legacy physical/history/reset ownership until the linked retirement contract permits removal. |
+| Ready and expiry discovery | Four `_v2` tables; historical lineage for `lease_expiry`, `dispatch_ready`, `quota_expiry`, `telegram_delivery_ready` | Single v2 serving projection per family. Legacy entries remain as historical CREATE and optional reset-cleanup ownership, not active tables. |
 
 The [consumer and durability study](../research/state-storage-and-durability.md)
 records actual joins, default retention, old-index callers and source write
@@ -39,8 +42,9 @@ The [compatible code step](https://gitcode.com/urandon/sessionless/issues/206)
 removes unversioned ready/expiry writes, ordinary cleanup and the unused tenant
 lease-expiry reader. Normal bootstrap backfills lifecycle indexes only; it no
 longer copies the four legacy ready/expiry tables. The four legacy CREATE
-records and reset ownership remain: source write reduction is not physical
-table removal, and the registry still covers 105 CREATE tables.
+records and optional historical reset ownership remain. The ordered retirement
+definitions now remove those four tables from the effective source schema;
+the registry still covers every one of the 105 historical CREATE tables.
 
 Before deploying v2-only code with retained work, complete ready/expiry v2
 backfill and exact tuple verification using the compatible dual-writing
@@ -112,9 +116,15 @@ make entity-registry-check
 make entity-registry-test
 ```
 
-The checker derives CREATE names and keys from the repository's migration
-format and rejects missing, extra, duplicate or mismatched entries and invalid
-source paths. It is not a general SQL parser, deployed-schema census,
+The checker derives historical CREATE names/keys and the effective active set
+in numeric migration order. The canonical
+[retirement declaration](../../migrations/ydb/retirements.json) binds exactly four
+owned old tables, their original/successor CREATEs and DROP files; the migration
+loader consumes the same declaration before opening YDB. Missing, duplicate,
+foreign, early, no-IF/extra-statement DROP, subsequent reactivation/ALTER,
+registry active/history drift and invalid source references fail closed.
+The four original CREATE mappings are not deleted. A retired record's
+`retirement` field must match the ordered source exactly. It is not a general SQL parser, deployed-schema census,
 authorization verifier or proof of retention/call-graph correctness. A static
 pass cannot authorize a database reset or table deletion.
 

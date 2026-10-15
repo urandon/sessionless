@@ -87,6 +87,26 @@ func TestPoliciesCoverLogicalTablesOnce(t *testing.T) {
 	}
 }
 
+func TestRetirementInspectionUsesOnlyRetainedPhysicalIndexes(t *testing.T) {
+	want := map[string]string{"lease_expiry": "lease_expiry_v2", "dispatch_ready": "dispatch_ready_v2", "quota_expiry": "quota_expiry_v2", "telegram_delivery_ready": "telegram_delivery_ready_v2"}
+	for _, p := range Policies() {
+		if physical, ok := want[p.LogicalName]; ok {
+			if p.PhysicalTable != physical || p.Class != ClassGlobalReady || !p.Bucketed {
+				t.Errorf("retained inspection policy=%#v wantphysical%s bucketed global-ready", p, physical)
+			}
+			delete(want, p.LogicalName)
+		}
+		for _, old := range []string{"lease_expiry", "dispatch_ready", "quota_expiry", "telegram_delivery_ready"} {
+			if p.PhysicalTable == old {
+				t.Errorf("inspection still describes retired physical table %s", old)
+			}
+		}
+	}
+	if len(want) != 0 || BucketCountV1 != 16 {
+		t.Fatalf("missing retained policies=%v buckets=%d want16", want, BucketCountV1)
+	}
+}
+
 func TestCanonicalSessionIndexesRemainBoundedAndTenantScoped(t *testing.T) {
 	want := map[string][]string{
 		"sessions":                         {"tenant_id", "session_id"},

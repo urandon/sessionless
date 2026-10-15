@@ -35,7 +35,6 @@ func TestAdmissionCostV2YDBCutover(t *testing.T) {
 	// inventory before replacing any receipt; this is a disposable DB proof.
 	for _, table := range []string{
 		"dispatch_outbox", "worker_jobs", "attempt_effect_reservations",
-		"lease_expiry", "dispatch_ready", "telegram_delivery_ready", "quota_expiry",
 		"artifact_manifests", "frontend_bindings", "frontend_projection_outbox",
 		"telegram_delivery_outbox", "checkpoints",
 	} {

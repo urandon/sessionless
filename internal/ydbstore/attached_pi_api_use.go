@@ -57,6 +57,12 @@ func (store *Store) AuthorizeAttachedWorkerPiAPIUse(ctx context.Context, auth po
 		if err != nil || !found {
 			return err
 		}
+		// Reconnect may legitimately rebind a claimed head to a new control
+		// connection. It does not transfer the original execution Session or
+		// authorize a new Pi invocation/phase under that successor bearer.
+		if head.ExecutionConnectionID != auth.ConnectionID || head.ExecutionConnectionGeneration != auth.ConnectionGeneration {
+			return nil
+		}
 		if !attachedWorkerSealedInputAuthorized(auth, at, worker, connection, head) || head.Validate() != nil || connection.CapabilityDigest != auth.CapabilityDigest ||
 			head.CancelRevision != 0 || !head.CancelDeadline.IsZero() || head.TerminalSequence != 0 || head.TerminalStatus != "" || head.TerminalEvidenceDigest != "" ||
 			head.CreatedAt.After(at) || head.UpdatedAt.After(at) || worker.UpdatedAt.After(at) || connection.ConnectedAt.After(at) ||

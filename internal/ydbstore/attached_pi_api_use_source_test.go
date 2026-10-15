@@ -348,6 +348,70 @@ func TestPiAPIUseSourceConfirmThenAllThreePhases(t *testing.T) {
 	}
 }
 
+func TestPiAPIUseSourceReconnectCannotReplaceOriginalExecutionConnection(t *testing.T) {
+	g := newPiUseSourceFixture(t)
+	phases := []string{"pre_issue", "physical_send", "immutable_finalize"}
+	for _, phase := range phases {
+		g.requireApplied(t, phase)
+	}
+	originalWorker, originalConnection, originalHead, originalAuth := g.worker, g.connection, g.head, g.auth
+	// A coherent current reconnect advances transport/auth authority, not the
+	// accepted attempt's original execution-connection identity. The original
+	// job, lease, fence, binding, context, caller allowance and expiry remain.
+	g.worker.ConnectionGeneration++
+	g.worker.Revision++
+	g.connection.ID = "synthetic-reconnected-connection"
+	g.connection.ConnectionGeneration = g.worker.ConnectionGeneration
+	g.connection.ActivationChallengeID = "synthetic-reconnect-challenge"
+	g.connection.Revision++
+	g.connection.SecretDigest = domain.DigestAttachedWorkerConnectionSecret([]byte("synthetic-reconnected-phase"))
+	g.head.ConnectionID = g.connection.ID
+	g.head.ConnectionGeneration = g.connection.ConnectionGeneration
+	g.head.Revision++
+	g.auth.ConnectionID = g.connection.ID
+	g.auth.ConnectionGeneration = g.connection.ConnectionGeneration
+	g.auth.PresentedSecretDigest = g.connection.SecretDigest
+	g.auth.ExpectedAttemptRevision = g.head.Revision
+	g.syncOriginalRows(t)
+	for name, err := range map[string]error{
+		"worker": g.worker.Validate(), "connection": g.connection.Validate(), "head": g.head.Validate(),
+		"authorization": validateAttachedWorkerSealedInputAuthorization(g.auth),
+	} {
+		if err != nil {
+			t.Fatalf("coherent reconnect %s: %v", name, err)
+		}
+	}
+	if !attachedWorkerSealedInputAuthorized(g.auth, g.at, g.worker, g.connection, g.head) ||
+		!piAPIOriginalJobMatches(g.loaded, g.lease, g.head, g.auth, g.binding, g.decision.MappingDigest, g.at) ||
+		g.connection.CapabilityDigest != g.auth.CapabilityDigest {
+		t.Fatal("reconnect must pass the broad current transport/original-job predicates")
+	}
+	if g.head.ExecutionConnectionID != originalHead.ExecutionConnectionID ||
+		g.head.ExecutionConnectionGeneration != originalHead.ExecutionConnectionGeneration ||
+		g.head.ExecutionConnectionID == g.auth.ConnectionID || g.head.ExecutionConnectionGeneration == g.auth.ConnectionGeneration {
+		t.Fatal("reconnect did not preserve a distinct original execution connection")
+	}
+	beforeWrites := g.sql.writes
+	for _, phase := range phases {
+		beforeTx := g.sql.transactions
+		got, err := g.use(phase)
+		if err != nil || g.sql.transactions != beforeTx+1 || g.sql.active {
+			t.Fatalf("phase=%s reconnect denial must use the actual source callback: %v", phase, err)
+		}
+		piUseRequireDenied(t, got)
+	}
+	if g.sql.writes != beforeWrites || g.sql.writeAttempts != 0 {
+		t.Fatal("reconnected source attempted mutation")
+	}
+	// Restore the synthetic original snapshot as a positive control, without
+	// rewriting any production decision or reconstructing execution authority.
+	g.worker, g.connection, g.head, g.auth = originalWorker, originalConnection, originalHead, originalAuth
+	g.syncOriginalRows(t)
+	for _, phase := range phases {
+		g.requireApplied(t, phase)
+	}
+}
+
 func TestPiAPIUseSourceRejectsChangedCanonicalAuthority(t *testing.T) {
 	for _, mode := range []string{"api_generation", "membership_version", "session_deletion", "participant_removed", "original_context", "head_revision", "head_cancel", "run_cancel", "attempt_worker", "connection_capability", "future_worker", "future_checkpoint", "missing_catalog"} {
 		t.Run(mode, func(t *testing.T) {

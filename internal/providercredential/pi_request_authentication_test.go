@@ -300,6 +300,7 @@ func TestPiRequestAuthenticationExactFunding(t *testing.T) {
 			retained := uint64(len(r.Headers)+128) + uint64(reflect.TypeOf(piRequestAuthentication{}).Size()) + 20480
 			temporary := uint64(1<<20) + 4*domain.AttachedPiSDKCanonicalMaxBytesV1 + 16*uint64(len(r.Headers)) + 16384
 			work := 8*temporary + 4*uint64(len(r.Body)) + 8*uint64(p.state.file.maxBytes)
+			work += 8 * uint64(len(r.Model)+len(r.Schema)+len(r.Headers)) // frozen original metadata commitments
 			l.maxCopy = beforeCopy + work
 			l.maxLive = beforeLive + retained + temporary
 			l.maxNodes = beforeNodes + 1

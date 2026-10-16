@@ -27,6 +27,9 @@ type piRequestAuthentication struct {
 	requestHeaders                uint64
 	responseHeaders, responseBody uint64
 	responseLimits                domain.AttachedPiSDKNativeLimitsV1
+	sourceProfile                 domain.AttachedPiSDKNativeProfileV1 // frozen original pre-Issue value, not caller-selected replay policy
+	sourceHashes                  [4][32]byte
+	sourceLengths                 [4]int
 }
 
 // PrepareRequestAuthenticationV1 seals comparison DATA before original Issue.
@@ -72,6 +75,13 @@ func (p *PreparedPiFileUseV1) PrepareRequestAuthenticationV1(request attachedwor
 	live := capacity + metadata + 16384 + 4096
 	scratch := uint64(1<<20) + 4*domain.AttachedPiSDKCanonicalMaxBytesV1 + 16*uint64(len(request.Headers)) + 16384
 	work := 8*scratch + 4*uint64(len(s.body)) + 8*uint64(f.maxBytes)
+	for _, n := range [3]int{len(request.Model), len(request.Schema), len(request.Headers)} {
+		if uint64(n) > (^uint64(0)-work)/8 {
+			s.abort()
+			return ErrInvalid
+		}
+		work += 8 * uint64(n)
+	}
 	if s.ledger.Reserve(work, live+scratch, 1) != nil {
 		s.abort()
 		return ErrInvalid
@@ -114,8 +124,10 @@ func (p *PreparedPiFileUseV1) PrepareRequestAuthenticationV1(request attachedwor
 	if e != nil {
 		return ErrInvalid
 	}
-	a := &piRequestAuthentication{endpoint: request.Profile.Model.Endpoint, requestHeaders: request.Profile.Limits.RequestHeaderBytes, responseHeaders: request.Profile.Limits.ResponseHeaderBytes, responseBody: request.Profile.Limits.ResponseBodyBytes}
+	a := &piRequestAuthentication{endpoint: request.Profile.Model.Endpoint, requestHeaders: request.Profile.Limits.RequestHeaderBytes, responseHeaders: request.Profile.Limits.ResponseHeaderBytes, responseBody: request.Profile.Limits.ResponseBodyBytes, sourceProfile: request.Profile}
 	a.responseLimits = request.Profile.Limits
+	a.sourceLengths = [4]int{len(request.Body), len(request.Model), len(request.Schema), len(request.Headers)}
+	a.sourceHashes = [4][32]byte{sha256.Sum256(request.Body), sha256.Sum256(request.Model), sha256.Sum256(request.Schema), sha256.Sum256(request.Headers)}
 	if _, e = hex.Decode(a.binding[:], []byte(binding)); e != nil {
 		return ErrInvalid
 	}

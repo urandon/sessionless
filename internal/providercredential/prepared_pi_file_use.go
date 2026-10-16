@@ -11,6 +11,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemon"
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/pisdkhttpwire"
 	"gitcode.com/urandon/sessionless/internal/pisdkphasewire"
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
@@ -23,30 +24,34 @@ import (
 type PreparedPiFileUseV1 struct{ state *preparedPiFileUse }
 
 type preparedPiFileUse struct {
-	mu            sync.Mutex
-	file          *PreparedImmutableAPIFileV1
-	ledger        attachedworkerdaemon.PreparedAPILedgerV1
-	body          []byte
-	bodyHash      [sha256.Size]byte
-	profile       string
-	nonce         [32]byte
-	live          uint64
-	claimed       atomic.Bool
-	stopped       atomic.Bool
-	use           atomic.Pointer[immutableAPIFileUse]
-	clearErr      error
-	callback      uint8 // under mu:0 not started,1 active,2 joined/zeroed/unlocked
-	auth          *piRequestAuthentication
-	authPrepared  bool
-	macAttempted  atomic.Bool
-	http          *piHTTPReceive
-	httpPrepared  bool
-	network       atomic.Pointer[piHTTPS]
-	httpsPrepared bool
-	httpBorrow    atomic.Bool // a returned private response owns mu/use.gate
-	responseScan  *piResponseScan
-	expected      *piResponseExpected
-	scanPrepared  bool
+	mu               sync.Mutex
+	file             *PreparedImmutableAPIFileV1
+	ledger           attachedworkerdaemon.PreparedAPILedgerV1
+	body             []byte
+	bodyHash         [sha256.Size]byte
+	profile          string
+	nonce            [32]byte
+	live             uint64
+	claimed          atomic.Bool
+	stopped          atomic.Bool
+	use              atomic.Pointer[immutableAPIFileUse]
+	clearErr         error
+	callback         uint8 // under mu:0 not started,1 active,2 joined/zeroed/unlocked
+	auth             *piRequestAuthentication
+	authPrepared     bool
+	macAttempted     atomic.Bool
+	http             *piHTTPReceive
+	httpPrepared     bool
+	network          atomic.Pointer[piHTTPS]
+	httpsPrepared    bool
+	httpBorrow       atomic.Bool // a returned private response owns mu/use.gate
+	responseScan     *piResponseScan
+	expected         *piResponseExpected
+	scanPrepared     bool
+	ioPrepared       bool
+	ioPlan           *attachedworkerdaemon.PreparedPiHTTPStdioV1
+	ioChunk          uint64
+	afterReplayWrite func(pisdkhttpwire.Kind, context.Context) // private test-only completed-write barrier, never an approval
 }
 
 func (PreparedPiFileUseV1) String() string     { return "PreparedPiFileUseV1{private:[redacted]}" }
@@ -272,6 +277,14 @@ func (p *PreparedPiFileUseV1) Close() error {
 	if s.callback == 1 {
 		return ErrConsumed
 	}
+	if s.ioPlan != nil {
+		if err := s.ioPlan.Close(); err != nil {
+			return err
+		}
+		s.ioPlan = nil
+	}
+	s.afterReplayWrite = nil
+	s.ioChunk = 0
 	s.use.Store(nil)
 	if s.responseScan != nil {
 		s.responseScan.clear()

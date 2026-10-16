@@ -143,9 +143,38 @@ func (b *piHTTPSResponseBorrow) close() {
 		return
 	}
 	b.s.abort() // revoke Source and close socket before any gate/alias release
+	b.joinUseStop()
+	b.releaseResponse()
+}
+
+func (b *piHTTPSResponseBorrow) joinUseStop() {
 	if b.stopUse != nil && !b.stopUse() {
 		<-b.useDone
 	}
+}
+
+// Only the private fixed replay driver calls this AFTER a nil, committed End
+// write. Normal child exit may already have withdrawn b.ctx (Source/network),
+// while the original Supervisor IO/F context still admits Final drain. Do not
+// abort that drain or manufacture another permission from this local cleanup.
+func (b *piHTTPSResponseBorrow) finishReplay() error {
+	if b == nil || !b.closed.CompareAndSwap(false, true) {
+		return ErrConsumed
+	}
+	b.joinUseStop()
+	var err error
+	if b.s.stopped.Load() || b.use.ctx.Err() != nil || !b.use.active.Load() || b.s.file.ctx.Err() != nil {
+		b.s.abort()
+		err = ErrConsumed
+	}
+	b.releaseResponse()
+	return err
+}
+
+// The caller has consumed the shared closed latch and joined any cancellation
+// callback. Response borrows end here; only the original file owner zeroes its
+// key, after the entire synchronous Materialize callback/process has joined.
+func (b *piHTTPSResponseBorrow) releaseResponse() {
 	b.s.http.clear()
 	b.s.responseScan.clear()
 	if b.s.expected != nil {

@@ -58,6 +58,7 @@ type piHTTPStdio struct {
 	clearErr                                  error
 	retireMu                                  sync.Mutex
 	afterWrite                                func(pisdkhttpwire.Kind) // test-only completed syscall barrier; never an approval
+	afterRequest                              func()                   // test-only admission barrier; held through borrowed-frame validation
 }
 
 type piHTTPIO struct{ owner *piHTTPStdio }
@@ -87,14 +88,22 @@ func measurePiHTTPStdio(l pisdkhttpwire.Limits) (piHTTPCoordinatorBudget, error)
 
 func preparePiHTTPStdio(s *Supervisor, l pisdkhttpwire.Limits, ledger PreparedAPILedgerV1,
 	send *preparedAPIPhysicalSend, init pisdkhttpwire.Frame, driver func(context.Context, *piHTTPIO) error) (*piHTTPStdio, error) {
-	b, err := measurePiHTTPStdio(l)
-	if err != nil || s == nil || send == nil || driver == nil || !samePiLedger(ledger, send.ledger) ||
-		send.ownerCtx == nil || send.ownerCtx.Err() != nil ||
-		!pisdkhttpwire.SequencePreparationSupported() || init.Kind != pisdkhttpwire.Initialize {
-		return nil, ErrSupervisorConfig
+	p, err := preparePiHTTPStdioPlan(s, l, ledger, driver)
+	if err != nil {
+		return nil, err
 	}
-	ioParent := send.deadline.ioContext()
-	if ioParent == nil || ioParent.Err() != nil {
+	if err := p.bind(send, init); err != nil {
+		return nil, errors.Join(err, p.clear())
+	}
+	return p, nil
+}
+
+// Reserve every payload arena and fixed signal before Issue. The genuine send,
+// its IO context and Materialize's exact Init do not exist yet at this point.
+func preparePiHTTPStdioPlan(s *Supervisor, l pisdkhttpwire.Limits, ledger PreparedAPILedgerV1,
+	driver func(context.Context, *piHTTPIO) error) (*piHTTPStdio, error) {
+	b, err := measurePiHTTPStdio(l)
+	if err != nil || s == nil || driver == nil || nilPreparedAPIDependency(ledger) || !pisdkhttpwire.SequencePreparationSupported() {
 		return nil, ErrSupervisorConfig
 	}
 	if ledger.Reserve(b.Work, b.Live, b.Nodes) != nil {
@@ -104,18 +113,35 @@ func preparePiHTTPStdio(s *Supervisor, l pisdkhttpwire.Limits, ledger PreparedAP
 	if err != nil {
 		return nil, errors.Join(err, ledger.EndLive(b.Live))
 	}
-	ticket, raw, err := core.beginWrite(init) // pre-Issue immutable Init snapshot
-	if err != nil {
-		return nil, errors.Join(err, core.clear(), ledger.EndLive(b.Live))
-	}
-	ctx, cancel := context.WithCancel(ioParent)
-	_ = ctx.Done() // create the cancellation signal BEFORE Issue
-	p := &piHTTPStdio{owner: s, send: send, ledger: ledger, core: core, ctx: ctx, cancel: cancel,
-		driver: driver, live: b.Live, initTicket: ticket, initWire: raw, digest: sha256.New(),
+	p := &piHTTPStdio{owner: s, ledger: ledger, core: core,
+		driver: driver, live: b.Live, digest: sha256.New(),
 		done: make(chan struct{}), readerDone: make(chan struct{}), watchDone: make(chan struct{}), requestReady: make(chan struct{}),
 		creditWake: make(chan struct{}, 1), endWake: make(chan struct{}, 1), writeWake: make(chan struct{}, 1)}
 	p.lease.owner = p
 	return p, nil
+}
+
+// bind has one caller under the owning plan's once-only Run admission. It
+// snapshots the now-materialized Init into the already-funded outbound arena.
+// Only fixed context bookkeeping is created here, never a new payload pool or
+// Source deadline. The original send still owns the pre-Issue deadline monitor.
+func (b *piHTTPStdio) bind(send *preparedAPIPhysicalSend, init pisdkhttpwire.Frame) error {
+	if b == nil || b.send != nil || b.ctx != nil || send == nil || !samePiLedger(b.ledger, send.ledger) ||
+		send.ownerCtx == nil || send.ownerCtx.Err() != nil || init.Kind != pisdkhttpwire.Initialize {
+		return ErrSupervisorConfig
+	}
+	ioParent := send.deadline.ioContext()
+	if ioParent == nil || ioParent.Err() != nil {
+		return ErrSupervisorConfig
+	}
+	ticket, raw, err := b.core.beginWrite(init)
+	if err != nil {
+		return err
+	}
+	b.initTicket, b.initWire, b.send = ticket, raw, send
+	b.ctx, b.cancel = context.WithCancel(ioParent)
+	_ = b.ctx.Done()
+	return nil
 }
 
 func piHTTPWake(ch chan struct{}) {
@@ -129,7 +155,9 @@ func piHTTPWake(ch chan struct{}) {
 // No sync.Once is consumed on nil descriptors: any later attach closes its
 // actual descriptors immediately. Never hold this lock during IO or a join.
 func (b *piHTTPStdio) stopIO() {
-	b.cancel()
+	if b.cancel != nil {
+		b.cancel()
+	}
 	b.core.abort()
 	b.ioMu.Lock()
 	b.stopped = true
@@ -261,6 +289,10 @@ func (b *piHTTPStdio) pump() {
 }
 
 func (v *piHTTPIO) request() (pisdkhttpwire.Frame, [32]byte, error) {
+	return v.requestChecked(nil)
+}
+
+func (v *piHTTPIO) requestChecked(expected *preparedPiHTTPState) (pisdkhttpwire.Frame, [32]byte, error) {
 	if v == nil || v.owner == nil {
 		return pisdkhttpwire.Frame{}, [32]byte{}, ErrSupervisorConfig
 	}
@@ -278,6 +310,19 @@ func (v *piHTTPIO) request() (pisdkhttpwire.Frame, [32]byte, error) {
 	f, err := b.core.borrowRequest()
 	if err != nil {
 		b.fail()
+		return pisdkhttpwire.Frame{}, [32]byte{}, err
+	}
+	if b.afterRequest != nil {
+		b.afterRequest()
+	}
+	if b.ctx.Err() != nil {
+		return pisdkhttpwire.Frame{}, [32]byte{}, ErrSupervisorConfig
+	}
+	// Keep admission until every wrapper-owned payload read finishes. Pump's
+	// deactivation must join this check before completion permits retirement.
+	if expected != nil && (f.Profile != expected.profileSHA || len(f.Body) != expected.requestLen[0] || sha256.Sum256(f.Body) != expected.requestSHA[0]) {
+		b.fail()
+		return pisdkhttpwire.Frame{}, [32]byte{}, ErrSupervisorConfig
 	}
 	return f, b.requestDigest, err
 }
@@ -459,7 +504,9 @@ func (b *piHTTPStdio) stopAndJoin(grace time.Duration) bool {
 	started := b.started
 	b.ioMu.Unlock()
 	if !started {
-		_ = b.core.completeWrite(b.initTicket, 0, ErrSupervisorConfig)
+		if b.initTicket.owner != nil {
+			_ = b.core.completeWrite(b.initTicket, 0, ErrSupervisorConfig)
+		}
 		b.initWire = nil
 		return true
 	}

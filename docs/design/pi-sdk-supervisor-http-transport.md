@@ -584,6 +584,20 @@ read against the committed Initialize state, not rejected against a pending
 parent write. The control reader remains active after admitting that Fetch and
 before the driver can begin Source/network use.
 
+Preparation reserves the arenas, hashes and fixed signals before Issue. The
+original send is created later by InvocationRunner; its owner context follows
+the pre-Issue Source check, and the exact credential locator arrives only in
+Materialize. Perform one late bind inside that original callback, snapshotting
+the materialized Init into the prepaid arena. Do not fabricate an early send or
+locator, allocate another payload pool, or create a replacement Source timer.
+
+The cross-package API consists of an opaque prepared mechanics plan and an
+opaque IO lease. Their private fields retain the original association; Go
+interfaces or callback types do not attest the source implementation. A trusted
+callback in this mechanics API cannot register a serving producer or approve a
+provider response. The genuine source factory fixes the concrete file driver
+privately, without a caller override.
+
 The lease has a daemon-private constructor and shared once-only state. It binds
 the exact supervisor, pre-Issue plan, original send, owner context, identity,
 credential/materialization, ledger, P and Init. Zero, foreign, copied/replayed

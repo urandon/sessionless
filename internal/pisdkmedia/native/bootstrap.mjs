@@ -4,7 +4,7 @@
 // before supervising this private entrypoint; this module grants no eligibility.
 import { Buffer } from 'node:buffer';
 import { createFixedBootstrapResources } from '../../pisdkbootstrap/resources.mjs';
-import { createPhysicalFetchOwner } from '../../pisdktransport/request.mjs';
+import { createPhysicalFetchOwner, createSupervisedFetchOwner } from '../../pisdktransport/request.mjs';
 import { createFixedRequestContract } from './request_contract.mjs';
 
 const denied = () => new Error('prepared Pi invocation denied');
@@ -23,7 +23,13 @@ function equalJSON(left, right) {
 // from canonical Go validation, not arbitrary public SDK options. The exact
 // prospective allocation/context certificate is a prerequisite at the Go
 // pre-Issue boundary; onPayload cannot retroactively certify those allocations.
-export async function runPreparedPi({ profile, messages, cwd, agentDir, apiKey, signal, parentUse, physicalFetch }) {
+export function runPreparedPi(options) { return runFixedPi(options, createPhysicalFetchOwner); }
+
+// Separate native entry/path. No SPU2 Use result, alias or fallback; a new
+// transport/artifact commitment is required before production selection.
+export function runPreparedPiHTTP(options) { return runFixedPi(options, createSupervisedFetchOwner); }
+
+async function runFixedPi({ profile, messages, cwd, agentDir, apiKey, signal, parentUse, physicalFetch }, makeBoundary) {
   // Consume before any await/preflight: failure and concurrent/repeated calls
   // cannot create a second in-memory session or renew this process's permit.
   if (invocationClaimed) throw denied();
@@ -53,8 +59,9 @@ export async function runPreparedPi({ profile, messages, cwd, agentDir, apiKey, 
     // does not parse/stringify a second expected body or invent a full-P pool.
     const fixedPayload = createFixedRequestContract({ limits: profile.requestContractLimits, expectedRequest: expected });
     stage = 'physical-boundary';
-    boundary = createPhysicalFetchOwner({ limits: profile.limits, admittedRequest: profile.admittedRequest,
-      originalSignal: signal, parentUse, physicalFetch });
+    const boundaryOptions = { limits: profile.limits, admittedRequest: profile.admittedRequest, originalSignal: signal, physicalFetch };
+    if (makeBoundary === createPhysicalFetchOwner) boundaryOptions.parentUse = parentUse;
+    boundary = makeBoundary(boundaryOptions);
     // Fixed genuine SDK graph, never a caller-selected module or factory. The
     // private SPU2 entry admits complete Init and reads its one owned file
     // before calling this function. Merely importing bootstrap imports no SDK.

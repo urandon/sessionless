@@ -13,7 +13,7 @@ import (
 // driver registration. The genuine prepared owner must bind every digest and
 // the original compiled SDK/platform before constructing/launching the child.
 //
-//go:embed native/bootstrap.mjs native/credential_file.mjs native/entry.mjs native/request_contract.mjs
+//go:embed native/bootstrap.mjs native/credential_file.mjs native/entry.mjs native/request_contract.mjs native/http_entry.mjs
 var nativeAssets embed.FS
 
 type nativeAsset struct {
@@ -45,6 +45,29 @@ func fixedNativeAssets() []nativeAsset {
 		{"internal/pisdktransport/response.mjs", pisdktransport.ResponseSource},
 		{"internal/pisdktransport/policy.mjs", pisdktransport.PolicySource},
 		{"internal/pisdktransport/request.mjs", pisdktransport.RequestSource},
+	} {
+		body, digest := source.read()
+		out = append(out, nativeAsset{path: source.path, body: body, digest: digest})
+	}
+	return out
+}
+
+// Explicit separate asset closure. No old SPU2 artifact/profile is silently
+// promoted, and no source factory/registration selects this unqualified entry.
+func fixedHTTPNativeAssets() []nativeAsset {
+	out := fixedNativeAssets()
+	body, err := nativeAssets.ReadFile("native/http_entry.mjs")
+	if err != nil {
+		panic("selected embedded HTTP entry missing")
+	}
+	digest := sha256.Sum256(body)
+	out = append(out, nativeAsset{path: "internal/pisdkmedia/native/http_entry.mjs", body: body, digest: hex.EncodeToString(digest[:])})
+	for _, source := range []struct {
+		path string
+		read func() ([]byte, string)
+	}{
+		{"internal/pisdktransport/http_stdio.mjs", pisdktransport.HTTPStdioSource},
+		{"internal/pisdktransport/authentication.mjs", pisdktransport.AuthenticationSource},
 	} {
 		body, digest := source.read()
 		out = append(out, nativeAsset{path: source.path, body: body, digest: digest})

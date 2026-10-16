@@ -256,14 +256,28 @@ export function inspectJSONGrammar(text, limits, charge, maxNodes) {
 }
 
 export function createPhysicalFetchOwner(options) {
+  return createFetchOwner(options, false);
+}
+
+// SPU3 never accepts or fabricates SPU2's zero-argument Use result. Its fixed
+// stdio HTTP sink sends the final authenticated request; ONLY the original Go
+// owner authorizes Source/network use. Both routes retain the same SDK request
+// snapshot and bounded response/parser guards, not a second model client.
+export function createSupervisedFetchOwner(options) {
+  return createFetchOwner(options, true);
+}
+
+function createFetchOwner(options, supervised) {
   let expected; let limits; let downstream; let policy; let originalSignal; let parentUse; let physicalFetch;
   let headers; let remainingR; let remainingParseNodes; let bodyNodes;
   try {
-    if (!closed(options, ['limits', 'admittedRequest', 'originalSignal', 'parentUse', 'physicalFetch'])) deny();
-    originalSignal = data(options, 'originalSignal'); parentUse = data(options, 'parentUse'); physicalFetch = data(options, 'physicalFetch');
+    if (!closed(options, supervised ? ['limits', 'admittedRequest', 'originalSignal', 'physicalFetch'] :
+      ['limits', 'admittedRequest', 'originalSignal', 'parentUse', 'physicalFetch'])) deny();
+    originalSignal = data(options, 'originalSignal');
+    parentUse = supervised ? undefined : data(options, 'parentUse'); physicalFetch = data(options, 'physicalFetch');
     if (!(originalSignal instanceof AbortSignal) || originalSignal.aborted ||
-        !closed(parentUse, ['authorizePhysicalSend']) || !Object.isFrozen(parentUse) ||
-        typeof data(parentUse, 'authorizePhysicalSend') !== 'function' || typeof physicalFetch !== 'function') deny();
+        (!supervised && (!closed(parentUse, ['authorizePhysicalSend']) || !Object.isFrozen(parentUse) ||
+        typeof data(parentUse, 'authorizePhysicalSend') !== 'function')) || typeof physicalFetch !== 'function') deny();
     const source = data(options, 'limits');
     if (!closed(source, needed, limitNames) || !Object.isFrozen(source)) deny();
     limits = Object.create(null);
@@ -393,6 +407,16 @@ export function createPhysicalFetchOwner(options) {
     } catch { stop(fail('pi_physical_response_denied')); }
   };
   const ignoreAssertionResult = () => {};
+  const startTransport = () => {
+    alive([originalSignal, sdkSignal, useSignal, controller.signal]);
+    const result = physicalFetch.call(undefined, snapshot.url, {
+      method: snapshot.method, headers: snapshot.headers, body: snapshot.body,
+      redirect: 'error', signal: controller.signal,
+    });
+    snapshot = undefined; physicalFetch = undefined;
+    if (!(result instanceof Promise)) { if (result instanceof Response) cancelRaw(result); deny(); }
+    Promise.prototype.then.call(result, onResponse, onTransportDenied);
+  };
   const onAuthorization = (use) => {
     if (closedState) return;
     try {
@@ -407,13 +431,7 @@ export function createPhysicalFetchOwner(options) {
       }
       if (assertion !== undefined) deny(); // synchronous undefined ONLY, never await permission
       alive([originalSignal, sdkSignal, useSignal, controller.signal]); // immediate POST-assert recheck
-      const result = physicalFetch.call(undefined, snapshot.url, {
-        method: snapshot.method, headers: snapshot.headers, body: snapshot.body,
-        redirect: 'error', signal: controller.signal,
-      });
-      snapshot = undefined; physicalFetch = undefined;
-      if (!(result instanceof Promise)) { if (result instanceof Response) cancelRaw(result); deny(); }
-      Promise.prototype.then.call(result, onResponse, onTransportDenied);
+      startTransport();
     } catch { stop(fail('pi_physical_parent_denied')); }
   };
   const fetch = (url, init) => {
@@ -447,10 +465,15 @@ export function createPhysicalFetchOwner(options) {
         controller = new AbortController();
         link(originalSignal); link(sdkSignal); link(controller.signal);
         alive([originalSignal, sdkSignal, controller.signal]);
-        const authorization = parentUse.authorizePhysicalSend.call(parentUse); // ZERO args, NON-authority seam
-        parentUse = undefined;
-        if (!(authorization instanceof Promise)) deny();
-        Promise.prototype.then.call(authorization, onAuthorization, onParentDenied);
+        if (supervised) {
+          useSignal = controller.signal; // cancellation only; NOT Source permission
+          startTransport();
+        } else {
+          const authorization = parentUse.authorizePhysicalSend.call(parentUse); // ZERO args, NON-authority seam
+          parentUse = undefined;
+          if (!(authorization instanceof Promise)) deny();
+          Promise.prototype.then.call(authorization, onAuthorization, onParentDenied);
+        }
       } catch { stop(fail('pi_physical_request_denied')); }
     });
   };

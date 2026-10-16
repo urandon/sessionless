@@ -444,10 +444,12 @@ ci: pi-sdk-transport-test pi-sdk-body-producer-test
 .PHONY: pi-sdk-body-producer-test
 pi-sdk-body-producer-test: prepare
 	@node --permission --allow-fs-read="$(CURDIR)/internal/pisdkmedia/native" --no-addons --disable-proto=throw internal/pisdkmedia/native/request_contract.test.mjs
+	@node --permission --allow-fs-read="$(CURDIR)/internal/pisdkmedia/native" --allow-fs-read="$(CURDIR)/internal/pisdktransport" --allow-fs-read="$(CURDIR)/internal/pisdkbootstrap" --no-addons --disable-proto=throw internal/pisdkmedia/native/http_entry.test.mjs
 PI_SDK_TRANSPORT_TEST_COUNT ?= 1
 
 pi-sdk-transport-test: prepare
 	@node --permission --allow-fs-read="$(CURDIR)/internal/pisdktransport" --no-addons --disable-proto=throw internal/pisdktransport/authentication.test.mjs
+	@node --permission --allow-fs-read="$(CURDIR)/internal/pisdktransport" --no-addons --disable-proto=throw internal/pisdktransport/http_stdio.test.mjs
 	@node --permission --allow-fs-read="$(CURDIR)/internal/pisdktransport" --no-addons --disable-proto=throw internal/pisdktransport/stdio.test.mjs
 	@node --permission --allow-fs-read="$(CURDIR)/internal/pisdktransport" --no-addons --disable-proto=throw internal/pisdktransport/framing.test.mjs
 	@node --permission --allow-fs-read="$(CURDIR)/internal/pisdktransport" --no-addons --disable-proto=throw internal/pisdktransport/response.test.mjs

@@ -37,6 +37,11 @@ func TestStdioSourceHasStableDigestAndIndependentCopies(t *testing.T) {
 	checkModuleSource(t, "stdio.mjs", StdioSource)
 }
 
+func TestHTTPStdioSourceHasStableDigestAndIndependentCopies(t *testing.T) {
+	t.Parallel()
+	checkModuleSource(t, "http_stdio.mjs", HTTPStdioSource)
+}
+
 func checkModuleSource(t *testing.T, path string, source func() ([]byte, string)) {
 	t.Helper()
 	wantBytes, err := modules.ReadFile(path)

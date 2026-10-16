@@ -8,7 +8,7 @@ import (
 	"encoding/hex"
 )
 
-//go:embed framing.mjs response.mjs policy.mjs request.mjs stdio.mjs authentication.mjs
+//go:embed framing.mjs response.mjs policy.mjs request.mjs stdio.mjs authentication.mjs http_stdio.mjs
 var modules embed.FS
 
 // AuthenticationSource is SPU3 byte encoding DATA only. It is deliberately not
@@ -51,6 +51,10 @@ func RequestSource() ([]byte, string) {
 func StdioSource() ([]byte, string) {
 	return moduleSource("stdio.mjs")
 }
+
+// HTTPStdioSource is a separate SPU3 child asset, not a SPU2 upgrade or a
+// source-selected native artifact. Its original owner remains default-off.
+func HTTPStdioSource() ([]byte, string) { return moduleSource("http_stdio.mjs") }
 
 func moduleSource(name string) ([]byte, string) {
 	data, err := modules.ReadFile(name)

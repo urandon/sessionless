@@ -49,7 +49,7 @@ The feature-disabled first #81 Codex backend slice is described in
 [codex-exec-adapter.md](codex-exec-adapter.md). It promotes the bounded JSONL
 lifecycle, stdin privacy, exact artifact/argv, and credential-generation gates
 without wiring provider execution or replacing the future Sessionless-owned
-Codex/OpenCode/Pi registry.
+Codex/OpenCode/direct registry.
 
 The AW-06a owner-facing observability and control contract is described in
 [attached-worker-ux.md](attached-worker-ux.md). It projects AW-01 through AW-05

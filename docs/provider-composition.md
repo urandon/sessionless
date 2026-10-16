@@ -2,7 +2,7 @@
 
 MVP direction changed on 2026-10-10: [the delivery plan](mvp-delivery-plan.md)
 requires both an attached ready-made harness and managed execution without a
-user host. The five registrations
+user host. The four registrations
 described below remain disabled implementation evidence. [#175](https://gitcode.com/urandon/sessionless/issues/175)
 owns the missing normal worker composition and exact low-cost provider profile.
 OpenCode Zen is not an existing OpenRouter registration: compatible wire shape
@@ -13,20 +13,22 @@ not imply the OpenCode CLI runs in cloud. #90/#92 retain platform/rollout gates;
 compaction, useful constrained MCP and web search before linked implementation.
 A tool-free API registration alone does not implement that agent minimum.
 
-`internal/providercomposition` is the closed composition boundary for the five
+`internal/providercomposition` is the closed composition boundary for the four
 reviewed native provider adapters below the Sessionless-owned harness registry:
 
 - Codex exec with an owner-local subscription credential;
 - Codex over OpenRouter;
 - OpenCode over OpenRouter;
-- Pi over OpenRouter;
 - the native direct OpenRouter reference backend.
 
-The V1 registry factory accepts only five explicitly constructed, already
-pinned driver
-instances and an injected clock. It does not inspect the environment, discover
-installed binaries, choose profiles, construct process or HTTP boundaries, or
-select a default backend. Missing dependencies and enabled profiles fail the
+Pi is no longer a registered backend. Its SDK and CLI/RPC experiments are
+preserved in the [retirement record](development.md#retired-pi-experiment-record-historical-only),
+not available as selectable routes or fallbacks.
+
+The V1 registry factory accepts only four explicitly constructed, already
+pinned driver instances and an injected clock. It does not inspect the
+environment, discover installed binaries, choose profiles, construct process
+or HTTP boundaries, or select a default backend. Missing dependencies and enabled profiles fail the
 composition before a registry is returned. The Codex subscription driver has a
 separate exact constructor that composes the immutable accepted-attempt snapshot
 and prepared Go supervisor; it still performs no discovery or activation.

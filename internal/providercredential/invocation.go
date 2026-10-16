@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"sync/atomic"
 
 	"gitcode.com/urandon/sessionless/internal/credentiallifecycle"
 	"gitcode.com/urandon/sessionless/internal/domain"
@@ -44,24 +43,13 @@ type InvocationService struct {
 }
 
 type providerInvocationState struct {
-	mu              sync.Mutex
-	handle          ports.ProviderInvocationCredentialV1
-	preparedBinding preparedAPIFileBinding
-	template        ports.ProviderCredentialDeliveryTemplateV1
-	file            *credentiallifecycle.PinnedSecretFile
-	consumed        bool
-	revoked         bool
-	released        bool
-	// These values describe local immutable materialization, not owner, Run or
-	// remote-phase permission. CandidateMutationID is only mutation metadata.
-	binding           domain.ProviderCredentialBindingV1
-	plan              ports.ProviderCredentialMaterializationV1
-	callbackSucceeded bool
-	finalizeAttempted bool
-	finalized         bool
-	// Published only during the synchronous API file consumer. Verification
-	// borrows this record without reentering the already-held state mutex.
-	fileUse atomic.Pointer[immutableAPIFileUse]
+	mu       sync.Mutex
+	handle   ports.ProviderInvocationCredentialV1
+	template ports.ProviderCredentialDeliveryTemplateV1
+	file     *credentiallifecycle.PinnedSecretFile
+	consumed bool
+	revoked  bool
+	released bool
 }
 
 func NewInvocationService(config InvocationConfig, planner ports.ProviderCredentialDeliveryPlannerV1, bindings ports.ProviderCredentialBindingStore, secrets ports.ProviderCredentialSecretStore) (*InvocationService, error) {
@@ -136,7 +124,7 @@ func (service *InvocationService) IssueProviderCredential(ctx context.Context, r
 	if _, exists := service.handles[handle.HandleID]; exists {
 		return ports.ProviderInvocationCredentialV1{}, ErrBackend
 	}
-	service.handles[handle.HandleID] = &providerInvocationState{handle: handle, template: template, preparedBinding: snapshotAPIFileBinding(request.HarnessBinding)}
+	service.handles[handle.HandleID] = &providerInvocationState{handle: handle, template: template}
 	return handle, nil
 }
 
@@ -183,129 +171,12 @@ func (service *InvocationService) MaterializeProviderCredential(ctx context.Cont
 	if err != nil {
 		return err
 	}
-	if handle.ProviderResource.Kind == domain.ProviderResourceAPIAccountV1 && plan.Kind == domain.ProviderCredentialDeliveryFileV1 {
-		state.binding, state.plan = binding, plan
-	}
 	callbackSecret := secret
 	if plan.Kind == domain.ProviderCredentialDeliveryFileV1 {
 		callbackSecret = nil
 	}
-	if handle.ProviderResource.Kind == domain.ProviderResourceAPIAccountV1 && plan.Kind == domain.ProviderCredentialDeliveryFileV1 {
-		use := &immutableAPIFileUse{ctx: ctx, handle: handle, binding: state.preparedBinding, plan: plan, files: service.files,
-			file: state.file, fingerprint: binding.SecretFingerprint, gate: make(chan struct{}, 1)}
-		use.gate <- struct{}{}
-		use.active.Store(true)
-		state.fileUse.Store(use)
-		defer func() {
-			// Join any in-progress local verifier before the callback's file
-			// custody can pass to Finalize/Release. Also runs after a panic.
-			// Revoke first, including verifiers that captured the pointer just
-			// before callback return. Join the already-running verifier next.
-			use.active.Store(false)
-			state.fileUse.Store(nil)
-			<-use.gate
-		}()
-	}
 	if err := consume(plan, callbackSecret); err != nil {
 		return ErrBackend
-	}
-	state.callbackSucceeded = true
-	return nil
-}
-
-// FinalizeProviderCredentialFile verifies local immutable integrity only.
-// The last binding read is a current-generation snapshot, not an atomic FS/DB
-// observation or a fresh remote immutable_finalize/owner/head authorization.
-func (service *InvocationService) FinalizeProviderCredentialFile(ctx context.Context, handle ports.ProviderInvocationCredentialV1, plan ports.ProviderCredentialMaterializationV1) error {
-	if ctx == nil || handle.Validate() != nil || plan.Validate() != nil {
-		return ErrInvalid
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	service.mu.Lock()
-	state, found := service.handles[handle.HandleID]
-	// The original handle is immutable. Compare its complete tuple before
-	// checking busy state so a foreign tuple cannot observe callback activity.
-	if !found || state.handle != handle {
-		service.mu.Unlock()
-		return ErrNotFound
-	}
-	service.mu.Unlock()
-	if !state.mu.TryLock() {
-		return ErrConsumed
-	}
-	defer state.mu.Unlock()
-	if handle.ProviderResource.Kind != domain.ProviderResourceAPIAccountV1 || state.template.Kind != domain.ProviderCredentialDeliveryFileV1 || plan != state.plan {
-		return ErrDeliveryMismatch
-	}
-	if state.revoked || state.released || !state.callbackSucceeded || state.file == nil {
-		return ErrNotFound
-	}
-	if state.finalizeAttempted {
-		return ErrConsumed
-	}
-	// Every begun attempt is irreversible, including cancelled, stale or
-	// ambiguous work. A failure cannot be retried or become cached permission.
-	state.finalizeAttempted = true
-	if err := service.immutableFinalizeLive(ctx, handle); err != nil {
-		return err
-	}
-	if err := service.immutableFinalizeCurrentBinding(ctx, state); err != nil {
-		return err
-	}
-	if err := service.immutableFinalizeLive(ctx, handle); err != nil {
-		return err
-	}
-	// Lock order: per-handle state -> provider wrapper -> pinned file. No
-	// lifecycle reentry or remote callback occurs while these locks are held.
-	err := service.files.VerifyImmutable(ctx, state.file, state.binding.SecretFingerprint, service.maxBytes)
-	if liveErr := service.immutableFinalizeLive(ctx, handle); liveErr != nil {
-		return liveErr
-	}
-	if err != nil {
-		return ErrDeliveryMismatch
-	}
-	if err := service.immutableFinalizeCurrentBinding(ctx, state); err != nil {
-		return err
-	}
-	if err := service.immutableFinalizeLive(ctx, handle); err != nil {
-		return err
-	}
-	state.finalized = true
-	return nil
-}
-
-func (service *InvocationService) immutableFinalizeLive(ctx context.Context, handle ports.ProviderInvocationCredentialV1) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if !service.clock.Now().UTC().Before(handle.ExpiresAt) {
-		return ErrExpired
-	}
-	return nil
-}
-
-func (service *InvocationService) immutableFinalizeCurrentBinding(ctx context.Context, state *providerInvocationState) error {
-	if err := service.immutableFinalizeLive(ctx, state.handle); err != nil {
-		return err
-	}
-	locator := ports.ProviderCredentialLocatorV1{TenantID: state.handle.TenantID, OwnerUserID: state.handle.OwnerUserID, ResourceKind: state.handle.ProviderResource.Kind, ResourceID: state.handle.ProviderResource.ResourceID}
-	current, found, err := service.bindings.LoadProviderCredential(ctx, locator)
-	if liveErr := service.immutableFinalizeLive(ctx, state.handle); liveErr != nil {
-		return liveErr
-	}
-	if err != nil {
-		return ErrBackend
-	}
-	if !found || !providerCredentialBindingMatchesResource(current, state.handle.ProviderResource) || !current.UpdatedAt.Equal(state.binding.UpdatedAt) {
-		return ErrNotFound
-	}
-	// Compare every actual canonical field, using instant equality for time
-	// rather than representation equality (location/monotonic metadata).
-	current.UpdatedAt = state.binding.UpdatedAt
-	if current != state.binding {
-		return ErrNotFound
 	}
 	return nil
 }
@@ -340,7 +211,7 @@ func (service *InvocationService) ReleaseProviderCredential(ctx context.Context,
 		return nil
 	}
 	// The stored handle is immutable. Compare its entire tuple before
-	// disclosing per-handle contention, just as immutable Finalize does.
+	// disclosing per-handle contention.
 	if state.handle != handle {
 		return ErrNotFound
 	}
@@ -483,5 +354,4 @@ func providerCredentialBindingMatchesResource(binding domain.ProviderCredentialB
 }
 
 var _ ports.ProviderResourceCredentialLifecycleV1 = (*InvocationService)(nil)
-var _ ports.ProviderCredentialImmutableFileFinalizerV1 = (*InvocationService)(nil)
 var _ ports.ProviderCredentialInvocationRevokerV1 = (*InvocationService)(nil)

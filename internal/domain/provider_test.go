@@ -104,3 +104,21 @@ func TestHarnessBindingCloneOwnsOptionalEvidenceTime(t *testing.T) {
 		t.Fatal("clone retained optional evidence-time alias")
 	}
 }
+
+func TestHarnessBindingRetiredPiBackendRejected(t *testing.T) {
+	t.Parallel()
+	binding := deterministicManagedAuthority(t, "tenant-1", "user-1", "run-1", "attempt-1", time.Unix(10, 0).UTC()).HarnessBinding
+	if err := binding.Validate(); err != nil {
+		t.Fatalf("control binding: %v", err)
+	}
+	binding.Backend.BackendKind = domain.HarnessBackendKindV1("pi")
+	if err := binding.Backend.Validate(); err == nil {
+		t.Error("retired Pi backend descriptor accepted")
+	}
+	if err := binding.Validate(); err == nil {
+		t.Error("binding accepted retired Pi backend")
+	}
+	if digest, err := binding.Digest(); err == nil || digest != "" {
+		t.Errorf("retired Pi binding digest = %q, %v; want empty digest and validation error", digest, err)
+	}
+}

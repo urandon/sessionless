@@ -12,7 +12,6 @@ import (
 	"gitcode.com/urandon/sessionless/internal/directopenrouter"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/opencodeopenrouter"
-	"gitcode.com/urandon/sessionless/internal/piopenrouter"
 	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 )
 
@@ -25,11 +24,10 @@ type DependenciesV1 struct {
 	CodexSubscription *codexexec.Driver
 	CodexOpenRouter   *codexopenrouter.Driver
 	OpenCode          *opencodeopenrouter.Driver
-	Pi                *piopenrouter.Driver
 	Direct            *directopenrouter.Driver
 }
 
-// NewDisabledRegistryV1 constructs the closed five-backend registry. Every
+// NewDisabledRegistryV1 constructs the closed four-backend registry. Every
 // registration remains disabled; an exact cancellation can still route to its
 // matching driver so teardown is possible without authorizing new execution.
 func NewDisabledRegistryV1(now func() time.Time, dependencies DependenciesV1) (*sessionlessharness.Registry, error) {
@@ -49,7 +47,7 @@ func NewDisabledRegistryV1(now func() time.Time, dependencies DependenciesV1) (*
 
 func registrationsV1(dependencies DependenciesV1) ([]sessionlessharness.Registration, error) {
 	if dependencies.CodexSubscription == nil || dependencies.CodexOpenRouter == nil ||
-		dependencies.OpenCode == nil || dependencies.Pi == nil || dependencies.Direct == nil {
+		dependencies.OpenCode == nil || dependencies.Direct == nil {
 		return nil, ErrContract
 	}
 	builders := []struct {
@@ -64,9 +62,6 @@ func registrationsV1(dependencies DependenciesV1) ([]sessionlessharness.Registra
 		}},
 		{kind: domain.HarnessBackendOpenCodeV1, build: func() (sessionlessharness.Registration, error) {
 			return opencodeopenrouter.DisabledRegistrationV1(dependencies.OpenCode)
-		}},
-		{kind: domain.HarnessBackendPiV1, build: func() (sessionlessharness.Registration, error) {
-			return piopenrouter.DisabledRegistrationV1(dependencies.Pi)
 		}},
 		{kind: domain.HarnessBackendDirectOpenRouterV1, build: func() (sessionlessharness.Registration, error) {
 			return directopenrouter.DisabledRegistrationV1(dependencies.Direct)

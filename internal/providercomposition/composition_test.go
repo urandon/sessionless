@@ -14,7 +14,6 @@ import (
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/harnessconformance"
 	"gitcode.com/urandon/sessionless/internal/opencodeopenrouter"
-	"gitcode.com/urandon/sessionless/internal/piopenrouter"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 )
@@ -29,11 +28,10 @@ func TestNewDisabledRegistryV1RejectsIncompleteOrEnabledDependencies(t *testing.
 		dependencies DependenciesV1
 	}{
 		{name: "nil clock", dependencies: complete.dependencies()},
-		{name: "missing codex subscription", now: fixedClock, dependencies: DependenciesV1{CodexOpenRouter: complete.codex, OpenCode: complete.openCode, Pi: complete.pi, Direct: complete.direct}},
-		{name: "missing codex openrouter", now: fixedClock, dependencies: DependenciesV1{CodexSubscription: complete.subscription, OpenCode: complete.openCode, Pi: complete.pi, Direct: complete.direct}},
-		{name: "missing opencode", now: fixedClock, dependencies: DependenciesV1{CodexSubscription: complete.subscription, CodexOpenRouter: complete.codex, Pi: complete.pi, Direct: complete.direct}},
-		{name: "missing pi", now: fixedClock, dependencies: DependenciesV1{CodexSubscription: complete.subscription, CodexOpenRouter: complete.codex, OpenCode: complete.openCode, Direct: complete.direct}},
-		{name: "missing direct", now: fixedClock, dependencies: DependenciesV1{CodexSubscription: complete.subscription, CodexOpenRouter: complete.codex, OpenCode: complete.openCode, Pi: complete.pi}},
+		{name: "missing codex subscription", now: fixedClock, dependencies: DependenciesV1{CodexOpenRouter: complete.codex, OpenCode: complete.openCode, Direct: complete.direct}},
+		{name: "missing codex openrouter", now: fixedClock, dependencies: DependenciesV1{CodexSubscription: complete.subscription, OpenCode: complete.openCode, Direct: complete.direct}},
+		{name: "missing opencode", now: fixedClock, dependencies: DependenciesV1{CodexSubscription: complete.subscription, CodexOpenRouter: complete.codex, Direct: complete.direct}},
+		{name: "missing direct", now: fixedClock, dependencies: DependenciesV1{CodexSubscription: complete.subscription, CodexOpenRouter: complete.codex, OpenCode: complete.openCode}},
 		{name: "enabled profiles", now: fixedClock, dependencies: newDriverSet(t, true).dependencies()},
 	}
 	for _, testCase := range tests {
@@ -52,14 +50,13 @@ func TestDisabledRegistrationsAreExactUniqueAndOrderIndependent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("registrationsV1() error = %v", err)
 	}
-	if len(registrations) != 5 {
-		t.Fatalf("registration count = %d, want 5", len(registrations))
+	if len(registrations) != 4 {
+		t.Fatalf("registration count = %d, want 4", len(registrations))
 	}
 	wantKinds := []domain.HarnessBackendKindV1{
 		domain.HarnessBackendCodexExecV1,
 		domain.HarnessBackendCodexOpenRouterV1,
 		domain.HarnessBackendOpenCodeV1,
-		domain.HarnessBackendPiV1,
 		domain.HarnessBackendDirectOpenRouterV1,
 	}
 	seen := make(map[domain.HarnessBackendDescriptorV1]struct{}, len(registrations))
@@ -181,9 +178,25 @@ func TestCancelRoutesOnlyToExactMatchingDisabledBackend(t *testing.T) {
 	}
 }
 
+func TestRetiredPiBackendIsNotSelected(t *testing.T) {
+	drivers := newDriverSet(t, false)
+	registry, err := NewDisabledRegistryV1(fixedClock, drivers.dependencies())
+	if err != nil {
+		t.Fatalf("NewDisabledRegistryV1() error = %v", err)
+	}
+	identity := validIdentity(t, drivers.direct.DescriptorV1())
+	identity.HarnessBinding.Backend.BackendKind = domain.HarnessBackendKindV1("pi")
+	if err := registry.Preflight(context.Background(), identity); err == nil {
+		t.Fatal("Preflight(retired pi backend) succeeded")
+	}
+	if effects := drivers.effects(); effects != (effectCounts{}) {
+		t.Fatalf("retired pi backend caused driver effects: %+v", effects)
+	}
+}
+
 func TestDisabledCompositionCannotClaimNativeProtocolSupport(t *testing.T) {
 	drivers := newDriverSet(t, false)
-	observers := []harnessconformance.BackendProtocolObserver{drivers.subscription, drivers.codex, drivers.openCode, drivers.pi, drivers.direct}
+	observers := []harnessconformance.BackendProtocolObserver{drivers.subscription, drivers.codex, drivers.openCode, drivers.direct}
 	for index, observer := range observers {
 		if state := observer.BackendProtocolState(); state != harnessconformance.BackendProtocolUnsupportedV1 {
 			t.Errorf("observer %d state = %q, want %q", index, state, harnessconformance.BackendProtocolUnsupportedV1)
@@ -197,11 +210,9 @@ type driverSet struct {
 	subscriptionBoundary  *subscriptionBoundary
 	codex                 *codexopenrouter.Driver
 	openCode              *opencodeopenrouter.Driver
-	pi                    *piopenrouter.Driver
 	direct                *directopenrouter.Driver
 	codexBoundary         *codexBoundary
 	openBoundary          *openCodeBoundary
-	piBoundary            *piBoundary
 	directBoundary        *directBoundary
 }
 
@@ -212,7 +223,6 @@ func newDriverSet(t *testing.T, enabled bool) driverSet {
 		subscriptionBoundary:  &subscriptionBoundary{},
 		codexBoundary:         &codexBoundary{},
 		openBoundary:          &openCodeBoundary{},
-		piBoundary:            &piBoundary{},
 		directBoundary:        &directBoundary{},
 	}
 	var err error
@@ -237,13 +247,6 @@ func newDriverSet(t *testing.T, enabled bool) driverSet {
 	if err != nil {
 		t.Fatalf("NewDriver(opencode) error = %v", err)
 	}
-	set.pi, err = piopenrouter.NewDriver(piopenrouter.ProfileV1{
-		Enabled: enabled, Executable: "/sessionless/bin/pi", ExecutableVersion: "1.0.0",
-		ExecutableDigest: executableDigest(3), SourceRevision: piopenrouter.PiSourceRevisionV1, ProviderTimeoutMS: 60_000,
-	}, set.piBoundary)
-	if err != nil {
-		t.Fatalf("NewDriver(pi) error = %v", err)
-	}
 	set.direct, err = directopenrouter.NewDriver(directopenrouter.ProfileV1{
 		Enabled: enabled, RequestTimeoutMS: 60_000, MaxCompletionTokens: 8_192,
 	}, set.directBoundary)
@@ -256,26 +259,25 @@ func newDriverSet(t *testing.T, enabled bool) driverSet {
 func (set driverSet) dependencies() DependenciesV1 {
 	return DependenciesV1{
 		CodexSubscription: set.subscription, CodexOpenRouter: set.codex,
-		OpenCode: set.openCode, Pi: set.pi, Direct: set.direct,
+		OpenCode: set.openCode, Direct: set.direct,
 	}
 }
 
 func (set driverSet) descriptors() []domain.HarnessBackendDescriptorV1 {
 	return []domain.HarnessBackendDescriptorV1{
-		set.subscription.DescriptorV1(),
-		set.codex.DescriptorV1(), set.openCode.DescriptorV1(), set.pi.DescriptorV1(), set.direct.DescriptorV1(),
+		set.subscription.DescriptorV1(), set.codex.DescriptorV1(), set.openCode.DescriptorV1(), set.direct.DescriptorV1(),
 	}
 }
 
 type effectCounts struct{ runs, invokes, cancels int }
 
-type backendCancelCounts struct{ subscription, codex, openCode, pi, direct int }
+type backendCancelCounts struct{ subscription, codex, openCode, direct int }
 
 func (set driverSet) effects() effectCounts {
 	return effectCounts{
-		runs:    set.subscriptionBoundary.runs + set.codexBoundary.runs + set.openBoundary.runs + set.piBoundary.runs,
+		runs:    set.subscriptionBoundary.runs + set.codexBoundary.runs + set.openBoundary.runs,
 		invokes: set.directBoundary.invokes,
-		cancels: set.subscriptionBoundary.cancels + set.codexBoundary.cancels + set.openBoundary.cancels + set.piBoundary.cancels + set.directBoundary.cancels,
+		cancels: set.subscriptionBoundary.cancels + set.codexBoundary.cancels + set.openBoundary.cancels + set.directBoundary.cancels,
 	}
 }
 
@@ -283,7 +285,7 @@ func (set driverSet) cancelCounts() backendCancelCounts {
 	return backendCancelCounts{
 		subscription: set.subscriptionBoundary.cancels,
 		codex:        set.codexBoundary.cancels, openCode: set.openBoundary.cancels,
-		pi: set.piBoundary.cancels, direct: set.directBoundary.cancels,
+		direct: set.directBoundary.cancels,
 	}
 }
 
@@ -297,8 +299,6 @@ func requireOnlyCancelIncrement(t *testing.T, kind domain.HarnessBackendKindV1, 
 		want.codex++
 	case domain.HarnessBackendOpenCodeV1:
 		want.openCode++
-	case domain.HarnessBackendPiV1:
-		want.pi++
 	case domain.HarnessBackendDirectOpenRouterV1:
 		want.direct++
 	default:
@@ -462,17 +462,6 @@ func (boundary *openCodeBoundary) Run(context.Context, opencodeopenrouter.Proces
 	return opencodeopenrouter.ProcessResultV1{}, errors.New("unexpected process run")
 }
 func (boundary *openCodeBoundary) Cancel(context.Context, ports.ExecutionIdentity) error {
-	boundary.cancels++
-	return nil
-}
-
-type piBoundary struct{ runs, cancels int }
-
-func (boundary *piBoundary) Run(context.Context, piopenrouter.ProcessInvocationV1) (piopenrouter.ProcessResultV1, error) {
-	boundary.runs++
-	return piopenrouter.ProcessResultV1{}, errors.New("unexpected process run")
-}
-func (boundary *piBoundary) Cancel(context.Context, ports.ExecutionIdentity) error {
 	boundary.cancels++
 	return nil
 }

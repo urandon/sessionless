@@ -26,14 +26,13 @@ binding to distinct backends such as:
 - `codex_exec_subscription_v1`;
 - `codex_exec_openrouter_v1`;
 - `opencode_openrouter_v1`;
-- `pi_openrouter_v1`;
 - a future Sessionless minimal-agent `direct_openrouter_v1`.
 
 There is no mid-attempt fallback among them. A Codex subscription and an
 OpenRouter API resource are different billing, credential, policy, and data
 egress authorities even if the selected model family overlaps.
 
-Codex, OpenCode, and Pi integrate at the process/RPC backend layer. A direct
+Codex and OpenCode integrate at the process/backend layer. A direct
 OpenRouter call belongs at a narrower provider port used by a Sessionless-owned
 agent loop. “OpenAI-compatible” describes a wire family only; it does not make
 route policy, privacy, quota, cost, errors, or actual provider evidence

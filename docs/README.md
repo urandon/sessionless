@@ -122,7 +122,9 @@ Detailed engineering contracts:
 - [Compute choice context evidence (#142, draft)](design/compute-choice-context-evidence.md)
 - [Owned harness current authority (#189, draft)](design/owned-harness-current-authority.md)
 - [Attached receipt canonical material verification (#142)](design/attached-receipt-material.md)
-- [Pi SDK attached media profile (#202, engineering design)](design/pi-sdk-attached-media-profile.md)
+- [Attached harness media and artifact design](design/attached-harness-media-and-artifacts.md)
+
+Pi-specific work was retired by [#213](https://gitcode.com/urandon/sessionless/issues/213); [#203](https://gitcode.com/urandon/sessionless/issues/203) was cancelled and is not delivered. Historical implementation refs remain available as `codex/archive-pi-main` (`fc47a5809e5411e517b77e48fd0e34cad83779d1`) and `codex/archive-pi-sdk-experiment` (`6a8f25c3e7b2a18e78bdc931d77e935543a49d0b`). They are not active product routes.
 
 The [research index](research/README.md) separates evidence and open decisions
 from committed runtime contracts. It covers:

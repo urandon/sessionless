@@ -47,12 +47,16 @@ Documentation lookup alone does not satisfy general search. Arbitrary shell,
 model-generated code execution, full-page fetch/browser, generalized plugins,
 memory and subagents remain outside this minimum.
 
-One ready-made attached harness suffices; #133 selects Codex as the existing
-activation candidate. Codex/OpenCode/Pi are not all required. A replacement needs
-an explicitly reviewed bounded task and acceptance mapping. Native cloud coding
-agent processes remain disabled until their own evidence passes. Shared harness
-contracts may be reused on user hosts with different platform launch artifacts,
-not one binary that runs unchanged on macOS and Linux.
+One ready-made attached harness suffices; #133 selects Codex as the attached
+activation candidate. Other harnesses are not implicit alternatives: changing
+the selected route requires an explicitly reviewed bounded task and acceptance
+mapping. Pi-specific work was retired under [#213](https://gitcode.com/urandon/sessionless/issues/213);
+[#203](https://gitcode.com/urandon/sessionless/issues/203) was cancelled and is
+not delivered. Historical code is linked from the
+[retirement record](development.md#retired-pi-experiment-record-historical-only).
+Native cloud coding-agent processes remain disabled until their own evidence
+passes. Shared harness contracts may be reused on user hosts with different
+platform launch artifacts, not one binary that runs unchanged on macOS and Linux.
 
 ### Cheap/free model and input policy
 
@@ -116,6 +120,10 @@ messengers, exhaustive recovery simulations and the full #144/#145 roadmap are
 not hidden launch gates. The [UX roadmap](product-ux-roadmap.md) remains separate.
 
 ## What is proved versus what is still missing
+
+The two MVP tracks and their text/file/image, tools, compaction, MCP and search
+requirements remain in scope. The Pi retirement removes one implementation
+experiment; it does not reduce either product track or establish #203 delivery.
 
 - #30–#33 implement local Web BFF/API/UI. #171/#173 deliver selected Yandex
   login/smoke fixtures (MR !151/!152). #34 is closed after its independently

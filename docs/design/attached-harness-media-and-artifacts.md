@@ -7,6 +7,8 @@ Consumers: [#13](https://gitcode.com/urandon/sessionless/issues/13) and
 [#35](https://gitcode.com/urandon/sessionless/issues/35).
 Status: independently reviewed engineering design accepted under the agreed-MVP
 delegation; implementation, profile registration and activation remain separate.
+The Pi comparison below is historical research, not an active route proposal;
+see the [retirement record](../development.md#retired-pi-experiment-record-historical-only).
 
 The attached MVP route must use the contents of admitted files and images and
 return useful, durable answers and artifacts. Extend the prepared Codex path
@@ -25,14 +27,16 @@ a filename, OCR, or a summary of an image.
 ## Research and candidate selection
 
 The [source comparison](https://gitcode.com/urandon/sessionless/issues/198#note_193228300)
-pins official Codex, OpenCode and Pi sources. Source versions establish input
-and event surfaces, not released artifact or model/platform conformance.
+records pinned Codex, OpenCode and Pi source versions. These establish input
+and event surfaces, not released artifact or model/platform conformance. Only
+Codex is the current #133 attached activation candidate; the Pi row is retained
+as historical competitor research, not as a selectable or fallback route.
 
 | Candidate | Relevant surface | Decision for this profile |
 | --- | --- | --- |
 | [Codex f5420174](https://github.com/openai/codex/tree/f5420174dafba153913a3e697f89002c338dfd7e) | CLI images become LocalImage; final AgentMessage is text; output-schema shapes a structured final. Local image read failure produces a placeholder. | Extend the existing prepared integration, conditionally on exact released artifact/schema/image/tool conformance. Validate usable images before launch; a placeholder is not successful media consumption. |
 | [OpenCode 3a31c4ea](https://github.com/anomalyco/opencode/tree/3a31c4ea801915c0b050df4b3842997ea62b6e93) | File parts and image/PDF reads; write tool creates files. Native export contains session/messages. | Retain as an alternative, not a silent replacement for #133. A new prepared adapter, confinement and authentic export composition would be necessary. |
-| [Pi 6c4f3602](https://github.com/earendil-works/pi/tree/6c4f360264397c59801f6da2bdac13e3b1fcbe91) | RPC has typed images; CLI files become text/images. Native transcript exports and filesystem writes are distinct. Retry defaults enabled. | Retain as an alternative needing prepared integration, retry-off proof and scoped exports. No automatic route or adapter fallback. |
+| [Pi 6c4f3602](https://github.com/earendil-works/pi/tree/6c4f360264397c59801f6da2bdac13e3b1fcbe91) | RPC has typed images; CLI files become text/images. Native transcript exports and filesystem writes are distinct. Retry defaults enabled. | Historical research only. Retired by #213; not an active alternative, selectable route, or fallback. |
 
 Use the smallest Codex extension that needs no model-selected filesystem write:
 read-only native image input, bounded text-file material, and an explicitly

@@ -153,7 +153,6 @@ type AttemptSpec struct {
 	// bounded outer client and the launcher's exact inner-workload attestation.
 	Stdin               []byte `json:"-"`
 	credentialWriteFile string
-	piStdio             *piStdioBridge // explicit private prepared arm; never LaunchSpec/wire
 }
 
 func (spec AttemptSpec) String() string {
@@ -181,7 +180,6 @@ type AttemptResult struct {
 	IsolationProfile  string
 	BoundaryReleased  bool
 	CleanupSucceeded  bool
-	piStdio           *PiStdioObservationV1 // actual local data only, not a producer carrier
 }
 
 func (result AttemptResult) String() string {
@@ -277,7 +275,6 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 	var stdout, stderr *boundedBuffer
 	var stdoutDone, stderrDone <-chan struct{}
 	var stdoutReader, stdoutWriter, stderrReader, stderrWriter *os.File
-	var stdinReader, stdinWriter *os.File
 	var violation chan string
 	stdoutComplete, stderrComplete := true, true
 	processExitFailed := false
@@ -336,9 +333,6 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 		// (or force-closed after a reader timeout), then the attempt root is
 		// cleaned and observed output is snapshotted.
 		var readerErr error
-		if stdinReader != nil {
-			_ = stdinReader.Close()
-		}
 		stdoutComplete, readerErr = finishOutputReader(stdoutDone, stdoutReader, supervisor.grace, "stdout")
 		if readerErr != nil {
 			err = errors.Join(err, readerErr)
@@ -352,9 +346,6 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 		}
 		if stderrWriter != nil {
 			_ = stderrWriter.Close()
-		}
-		if stdinWriter != nil {
-			_ = stdinWriter.Close()
 		}
 		if violation != nil {
 			select {
@@ -418,13 +409,7 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 		!equalStrings(attested.Arguments, launch.Arguments) {
 		return result, ErrSupervisorConfig
 	}
-	if spec.piStdio != nil {
-		stdinReader, stdinWriter, err = os.Pipe()
-		if err != nil {
-			return result, ErrSupervisorConfig
-		}
-		command.Stdin = stdinReader
-	} else if len(spec.Stdin) != 0 {
+	if len(spec.Stdin) != 0 {
 		command.Stdin = bytes.NewReader(spec.Stdin)
 	}
 	configureProcessGroup(command)
@@ -449,16 +434,10 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 		return result, errors.New("start attached worker harness")
 	}
 	startedAt = time.Now()
-	if stdinReader != nil {
-		_ = stdinReader.Close()
-	}
 	_ = stdoutWriter.Close()
 	_ = stderrWriter.Close()
 	processGroupID := command.Process.Pid
-	stdout = &boundedBuffer{limit: supervisor.maxStdout, discard: spec.piStdio != nil}
-	if spec.piStdio != nil {
-		stdout.limit = min(stdout.limit, int(spec.piStdio.plan.profile.Limits.ProcessStdoutBytes))
-	}
+	stdout = &boundedBuffer{limit: supervisor.maxStdout}
 	stderr = &boundedBuffer{limit: supervisor.maxStderr, discard: true}
 	violation = make(chan string, 2)
 	stdoutSource, stderrSource := io.Reader(stdoutReader), io.Reader(stderrReader)
@@ -466,11 +445,7 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 		stdoutSource = supervisor.outputReader("stdout", stdoutSource)
 		stderrSource = supervisor.outputReader("stderr", stderrSource)
 	}
-	if spec.piStdio != nil {
-		stdoutDone = spec.piStdio.start(stdoutSource, stdoutReader, stdinWriter, stdout, violation, startedAt.Add(supervisor.timeout))
-	} else {
-		stdoutDone = copyBounded(stdoutSource, stdout, violation, "stdout_limit_exceeded")
-	}
+	stdoutDone = copyBounded(stdoutSource, stdout, violation, "stdout_limit_exceeded")
 	stderrDone = copyBounded(stderrSource, stderr, violation, "stderr_limit_exceeded")
 	if supervisor.outputDone != nil {
 		supervisor.outputDone("stdout", stdoutDone)
@@ -485,9 +460,6 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 	select {
 	case waitErr = <-waited:
 		processWaited = true
-		if spec.piStdio != nil {
-			spec.piStdio.send.revoke()
-		}
 	case result.FailureCode = <-violation:
 	case <-parent.Done():
 		if errors.Is(parent.Err(), context.DeadlineExceeded) {
@@ -499,15 +471,7 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 		result.Deadline = true
 	}
 	if !processWaited {
-		if spec.piStdio != nil {
-			// Model use is over: do not grant the ordinary TERM grace as more
-			// model time, especially when the workload outlives its OCI client.
-			spec.piStdio.revoke()
-			result.KillSent = signalProcessGroup(processGroupID, processKill) == nil
-			_ = callBoundary(supervisor.grace, boundary.ForceStop)
-		} else {
-			result.TermSent = signalProcessGroup(processGroupID, processTerminate) == nil
-		}
+		result.TermSent = signalProcessGroup(processGroupID, processTerminate) == nil
 		waitErr, processWaited = waitProcess(waited, supervisor.grace)
 		if !processWaited {
 			result.KillSent = signalProcessGroup(processGroupID, processKill) == nil
@@ -627,9 +591,6 @@ func inspectBoundary(boundary IsolationBoundary, timeout time.Duration) (bool, e
 }
 
 func (supervisor *Supervisor) validateAttemptSpec(spec AttemptSpec) error {
-	if spec.piStdio != nil && (len(spec.Stdin) != 0 || spec.piStdio.plan == nil || spec.piStdio.plan.owner != supervisor) {
-		return ErrSupervisorConfig
-	}
 	canonical, err := validateRegularPath(spec.Executable)
 	if err != nil || canonical != spec.Executable || spec.ExecutableDigest == (ExecutableDigest{}) {
 		return ErrSupervisorConfig

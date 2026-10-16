@@ -83,9 +83,6 @@ func TestPreparedInvocationSharesTheExistingCredentialOwner(t *testing.T) {
 			var err error
 			if prepared {
 				runner, err = NewPreparedInvocationRunner(InvocationRunnerConfig{}, preparedExecutorFunc(func(_ context.Context, input PreparedInvocationV1) (AttemptResult, error) {
-					if input.PhysicalSend != nil {
-						t.Error("subscription invocation acquired API physical-send authority")
-					}
 					if input.Identity != invocation.Identity || input.Credential.OwnerUserID != invocation.Identity.OwnerUserID ||
 						input.Credential.ProviderResource != invocation.Credential.IssueRequest.ProviderResource ||
 						input.Credential.LeaseFence != invocation.Identity.FenceToken ||

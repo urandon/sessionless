@@ -242,16 +242,6 @@ type ProviderResourceCredentialLifecycleV1 interface {
 	ReleaseProviderCredential(context.Context, ProviderInvocationCredentialV1) error
 }
 
-// ProviderCredentialImmutableFileFinalizerV1 is a separate, one-shot local
-// API-account/file integrity capability. Nil proves only unchanged owned file
-// integrity and the original current credential-generation snapshot. It does
-// not authorize remote use, owner spending, process success or publication.
-// The synchronous Materialize consumer must have returned and unlocked first;
-// Release is still required independently, including after failed Finalize.
-type ProviderCredentialImmutableFileFinalizerV1 interface {
-	FinalizeProviderCredentialFile(context.Context, ProviderInvocationCredentialV1, ProviderCredentialMaterializationV1) error
-}
-
 type ProviderCredentialInvocationRevokerV1 interface {
 	// FenceProviderCredentialInvocations waits for active local consumers from
 	// every generation lower than beforeGeneration and prevents their later

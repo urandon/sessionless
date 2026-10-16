@@ -20,7 +20,6 @@ import (
 	"gitcode.com/urandon/sessionless/internal/attachedworkerprotocol"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerreconnect"
 	"gitcode.com/urandon/sessionless/internal/domain"
-	"gitcode.com/urandon/sessionless/internal/pisdkphasewire"
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
 
@@ -720,46 +719,6 @@ func (service *Service) AuthorizeSealedInputBearer(
 		return ports.AttachedWorkerSealedInputAuthorizationResult{}, ErrTransportUnauthorized
 	}
 	return result, nil
-}
-
-// AuthorizePiAPIUseBearer uses the original connection bearer and the exact
-// closed phase decoder. No caller receipt/profile/secret digest is an issuer.
-// The current source snapshot and its timestamps come from the SAME store call.
-func (service *Service) AuthorizePiAPIUseBearer(ctx context.Context, rawBearer []byte, request pisdkphasewire.Request) (pisdkphasewire.Reply, error) {
-	denied := pisdkphasewire.Reply{Status: ports.AttachedWorkerExecutionDenied}
-	if service == nil || service.store == nil || ctx == nil || ctx.Err() != nil {
-		return denied, ErrTransportUnauthorized
-	}
-	// Encoding enforces every original canonical scalar/phase/head constraint;
-	// the HTTP boundary additionally uses the exact strict decoder before here.
-	if _, err := pisdkphasewire.EncodeRequest(request); err != nil {
-		return denied, ErrTransportUnauthorized
-	}
-	auth, err := service.BindOutputReceiptBearer(rawBearer, request.Authorization)
-	if err != nil {
-		return denied, ErrTransportUnauthorized
-	}
-	source, ok := service.store.(ports.AttachedWorkerPiAPIUseAuthorizerV1)
-	if !ok {
-		return denied, ErrTransportConfig
-	}
-	result, err := source.AuthorizeAttachedWorkerPiAPIUse(ctx, auth,
-		domain.HarnessBindingDigestV2(request.ExpectedHarnessBindingDigest),
-		domain.AttachedPiAPIInvocationPolicyMappingDigestV1(request.ExpectedAttachedPiAPIInvocationPolicyDigest),
-		request.CallerDeadline.RemainingNanoseconds, string(request.Phase))
-	if err != nil {
-		return denied, ErrTransportBackend
-	}
-	reply := pisdkphasewire.Reply{Status: result.Status, AcceptedAttempt: result.AcceptedAttempt,
-		AcceptedAttemptRevision: result.AcceptedAttemptRevision, HarnessBindingDigest: string(result.HarnessBindingDigest),
-		AttachedPiAPIInvocationPolicyDigest: string(result.AttachedPiAPIInvocationPolicyDigest), CheckedAt: result.CheckedAt, UseExpiresAt: result.UseExpiresAt}
-	if result.Status != ports.AttachedWorkerExecutionApplied {
-		return denied, nil
-	}
-	if pisdkphasewire.CompareReply(request, reply) != nil {
-		return denied, ErrTransportUnauthorized
-	}
-	return reply, nil
 }
 
 // BindOutputReceiptBearer derives the secret digest from the authenticated

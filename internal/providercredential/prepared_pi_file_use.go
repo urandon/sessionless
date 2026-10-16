@@ -45,6 +45,7 @@ type preparedPiFileUse struct {
 	httpsPrepared bool
 	httpBorrow    atomic.Bool // a returned private response owns mu/use.gate
 	responseScan  *piResponseScan
+	expected      *piResponseExpected
 	scanPrepared  bool
 }
 
@@ -275,6 +276,10 @@ func (p *PreparedPiFileUseV1) Close() error {
 	if s.responseScan != nil {
 		s.responseScan.clear()
 		s.responseScan = nil
+	}
+	if s.expected != nil {
+		s.expected.graph.clear()
+		s.expected = nil
 	}
 	if network := s.network.Swap(nil); network != nil {
 		network.clear()

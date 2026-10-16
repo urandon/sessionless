@@ -14,8 +14,8 @@ import (
 )
 
 // Private parsed DATA, NOT an allow predicate, replay grant or Pi parser. The
-// closed native effect/echo policy must still run on these nodes before ANY
-// response bytes enter IPC. Semantic scanning is also reject-only, not approval.
+// closed policy and semantic consumers run on these nodes while the same owner
+// retains its file/use gate. None is a serving, replay or producer witness.
 type piResponseNode struct {
 	kind             byte // o/a/s/d/t/f/n; object keys are separate s nodes
 	key, child, next int32
@@ -25,6 +25,7 @@ type piResponseNode struct {
 
 type piResponseEvent struct {
 	root             int32
+	frame            uint32
 	nameFrom, nameTo uint32
 	named            bool
 	slot             piResponseSlot // at most one new Pi output block per event
@@ -37,6 +38,9 @@ type piResponseScan struct {
 	data                 []byte
 	events               []piResponseEvent
 	failure              []uint32
+	identities           []piResponseIdentity
+	identityN, retainedN uint32
+	responseID           int32
 	nodeN, textN, eventN uint32
 	frames, work, live   uint64
 	maxNodes, maxEvents  uint64
@@ -45,6 +49,7 @@ type piResponseScan struct {
 	spent                atomic.Bool
 	parsed               atomic.Bool
 	semanticSpent        atomic.Bool
+	policySpent          atomic.Bool
 	denied               bool
 	erased               atomic.Bool
 }
@@ -63,25 +68,26 @@ func newPiResponseScan(ledger attachedworkerdaemon.PreparedAPILedgerV1, l domain
 	metadata := uint64(reflect.TypeOf(piResponseScan{}).Size())
 	nodeBytes := (n + 1) * uint64(reflect.TypeOf(piResponseNode{}).Size())
 	eventBytes := events * uint64(reflect.TypeOf(piResponseEvent{}).Size())
+	identityBytes := n * uint64(reflect.TypeOf(piResponseIdentity{}).Size())
 	// All decoded strings together use at most R UTF16 units. Number conversion
 	// strings/errors reserve TWO R-byte copies (conversion+NumError.Num clone)
 	// and96*N metadata bytes in this
 	// conservative logical schedule. No general JSON map/tree is materialized.
 	// Runtime allocator/stack/strconv backend fit is separate, NOT attested here.
-	live := metadata + nodeBytes + 2*r + e + eventBytes + 4*keyMax + 2*r + 96*n + 8192
+	live := metadata + nodeBytes + 2*r + e + eventBytes + identityBytes + 4*keyMax + 2*r + 96*n + 8192
 	// Initialization and ONE complete retirement traversal are prepaid before
 	// allocation. Retirement still runs after cancellation without new credit.
-	arenaBytes := metadata + nodeBytes + 2*r + e + eventBytes + 4*keyMax
+	arenaBytes := metadata + nodeBytes + 2*r + e + eventBytes + identityBytes + 4*keyMax
 	initialWork := 2 * arenaBytes
 	httpLive := 2*h + r + uint64(reflect.TypeOf(piHTTPReceive{}).Size())
 	if live > l.ResponseAllocationBytes || httpLive > l.ResponseAllocationBytes-live || initialWork > l.ResponseCopyWorkBytes {
 		return nil, ErrInvalid
 	}
-	if ledger.Reserve(l.ResponseCopyWorkBytes, live, 6+3*n+events) != nil {
+	if ledger.Reserve(l.ResponseCopyWorkBytes, live, 7+4*n+events) != nil {
 		return nil, ErrInvalid
 	}
 	return &piResponseScan{limits: l, nodes: make([]piResponseNode, int(n+1)), text: make([]uint16, int(r)), data: make([]byte, int(e)),
-		events: make([]piResponseEvent, int(events)), failure: make([]uint32, int(keyMax)), live: live, work: initialWork, maxNodes: n, maxEvents: events}, nil
+		events: make([]piResponseEvent, int(events)), identities: make([]piResponseIdentity, int(n)), failure: make([]uint32, int(keyMax)), live: live, work: initialWork, maxNodes: n, maxEvents: events}, nil
 }
 
 func (q *piResponseScan) spend(n uint64) bool {
@@ -164,7 +170,7 @@ func (q *piResponseScan) scanString(from, to uint32) bool {
 
 // scan parses complete framing DATA only. It intentionally does NOT accept
 // event/effect shapes, validate terminal state or authorize replay. The future
-// exact closed policy must consume the private graph before use. The retained
+// exact closed policy consumes the private graph before semantic checking. The retained
 // key/context/response aliases require the SAME original file-use gate until
 // that policy and semantic scan join, then clear before releasing its live debit.
 func (q *piResponseScan) scan(ctx context.Context, view piUnapprovedHTTPView, key []byte) (err error) {
@@ -244,7 +250,7 @@ func (q *piResponseScan) frame(start, end int) error {
 		if q.denied {
 			return ErrInvalid
 		}
-		q.events[q.eventN] = piResponseEvent{root: root, named: named, nameFrom: nameFrom, nameTo: nameTo}
+		q.events[q.eventN] = piResponseEvent{root: root, frame: uint32(q.frames), named: named, nameFrom: nameFrom, nameTo: nameTo}
 		q.eventN++
 		used, lines, named = 0, 0, false
 		return nil
@@ -311,6 +317,7 @@ func (q *piResponseScan) frame(start, end int) error {
 func (q *piResponseScan) clear() {
 	q.spent.Store(true)
 	q.semanticSpent.Store(true)
+	q.policySpent.Store(true)
 	if !q.erased.CompareAndSwap(false, true) {
 		return
 	}
@@ -319,6 +326,8 @@ func (q *piResponseScan) clear() {
 	clear(q.data)
 	clear(q.events)
 	clear(q.failure)
+	clear(q.identities)
+	q.responseID = 0
 	q.ctx, q.raw, q.key = nil, nil, nil
 	// Work/counts are not replenished; spent remains irreversible.
 }
@@ -364,6 +373,10 @@ type piResponseJSON struct {
 	raw   []byte
 	at    int
 	depth uint64
+	// ONLY the private pre-Issue projection parser sets this. Response parsing
+	// defaults to credential scanning; no caller or provider selects this mode.
+	trustedExpected  bool
+	omitInputStrings bool
 }
 
 func (p *piResponseJSON) ws() {
@@ -399,7 +412,13 @@ func piResponseHex(c byte) (uint16, bool) {
 	}
 	return 0, false
 }
-func (p *piResponseJSON) quoted() (int32, error) {
+func (p *piResponseJSON) stringUnit(c uint16, keep bool) bool {
+	if !keep {
+		return p.q.spend(2)
+	}
+	return p.unit(c)
+}
+func (p *piResponseJSON) quoted(keep bool) (int32, error) {
 	if p.at >= len(p.raw) || p.raw[p.at] != '"' {
 		return 0, ErrInvalid
 	}
@@ -414,7 +433,7 @@ func (p *piResponseJSON) quoted() (int32, error) {
 		p.at++
 		if c == '"' {
 			p.q.nodes[i].to = p.q.textN
-			if !p.q.scanString(p.q.nodes[i].from, p.q.textN) {
+			if !p.trustedExpected && !p.q.scanString(p.q.nodes[i].from, p.q.textN) {
 				return 0, ErrDeliveryMismatch
 			}
 			return i, nil
@@ -457,11 +476,11 @@ func (p *piResponseJSON) quoted() (int32, error) {
 			default:
 				return 0, ErrInvalid
 			}
-			if !p.unit(v) {
+			if !p.stringUnit(v, keep) {
 				return 0, ErrInvalid
 			}
 		} else if c < utf8.RuneSelf {
-			if !p.unit(uint16(c)) {
+			if !p.stringUnit(uint16(c), keep) {
 				return 0, ErrInvalid
 			}
 		} else {
@@ -473,10 +492,10 @@ func (p *piResponseJSON) quoted() (int32, error) {
 			p.at += size
 			if r > 0xffff {
 				a, b := utf16.EncodeRune(r)
-				if !p.unit(uint16(a)) || !p.unit(uint16(b)) {
+				if !p.stringUnit(uint16(a), keep) || !p.stringUnit(uint16(b), keep) {
 					return 0, ErrInvalid
 				}
-			} else if !p.unit(uint16(r)) {
+			} else if !p.stringUnit(uint16(r), keep) {
 				return 0, ErrInvalid
 			}
 		}
@@ -520,7 +539,7 @@ func (p *piResponseJSON) value() (int32, error) {
 	}
 	c := p.raw[p.at]
 	if c == '"' {
-		return p.quoted()
+		return p.quoted(!p.omitInputStrings)
 	}
 	if c == '{' || c == '[' {
 		p.depth++
@@ -547,7 +566,7 @@ func (p *piResponseJSON) value() (int32, error) {
 			p.ws()
 			var key int32
 			if c == '{' {
-				key, err = p.quoted()
+				key, err = p.quoted(true)
 				if err != nil {
 					return 0, err
 				}
@@ -562,7 +581,12 @@ func (p *piResponseJSON) value() (int32, error) {
 				}
 				p.at++
 			}
+			omit := p.omitInputStrings
+			if p.trustedExpected && p.depth == 1 && p.q.equalsBytes(key, []byte("input")) {
+				p.omitInputStrings = true
+			}
 			child, e := p.value()
+			p.omitInputStrings = omit
 			if e != nil {
 				return 0, e
 			}

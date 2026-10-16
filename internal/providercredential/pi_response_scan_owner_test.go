@@ -26,7 +26,7 @@ func TestPiResponseScanSealedOriginalLimitsAndFileBorrowRetirement(t *testing.T)
 		t.Fatal(err)
 	}
 	q := p.state.responseScan
-	if q.limits != original || l.copy != beforeCopy+original.ResponseCopyWorkBytes || secrets.readCalls != 0 || len(s.handles) != 0 {
+	if q.limits != original || l.copy != beforeCopy+2*original.ResponseCopyWorkBytes || p.state.expected == nil || secrets.readCalls != 0 || len(s.handles) != 0 {
 		t.Fatal("preparation replaced original limits/ledger or touched credential lifecycle")
 	}
 	reserved := l.live
@@ -42,12 +42,18 @@ func TestPiResponseScanSealedOriginalLimitsAndFileBorrowRetirement(t *testing.T)
 		b := &piHTTPSResponseBorrow{s: p.state, use: use, ctx: use.ctx}
 		p.state.httpBorrow.Store(true)
 		defer b.close()
-		view, err := p.state.http.receive(use.ctx, strings.NewReader(piHTTPFixture("data: {\"a\":\"ordinary\"}\n\n", false)))
+		view, err := p.state.http.receive(use.ctx, strings.NewReader(piHTTPFixture(piPolicyBody(t, piPolicyTerminal()), false)))
 		if err != nil {
 			t.Fatal(err)
 		}
 		if err := q.scan(use.ctx, view, use.secret); err != nil {
 			t.Fatal(err)
+		}
+		if err := q.checkResponsePolicy(p.state.expected); err != nil {
+			t.Fatal("same-owner closed policy", err)
+		}
+		if err := q.scanPiSemantics(); err != nil {
+			t.Fatal("same-owner Pi assembly guard", err)
 		}
 		if q.textN == 0 || len(q.key) == 0 || &q.key[0] != &use.secret[0] {
 			t.Fatal("scanner lost same original secret borrow or copied it")
@@ -56,7 +62,7 @@ func TestPiResponseScanSealedOriginalLimitsAndFileBorrowRetirement(t *testing.T)
 			t.Fatal("active response retirement refunded/cleared instead of revoking", err)
 		}
 		b.close()
-		if !piScanZero(q) || l.live != reserved || len(use.secret) == 0 || use.secret[0] == 0 {
+		if !piScanZero(q) || !piScanZero(p.state.expected.graph) || l.live != reserved || len(use.secret) == 0 || use.secret[0] == 0 {
 			t.Fatal("scanner retirement failed or stole original secret/debit ownership")
 		}
 		return nil

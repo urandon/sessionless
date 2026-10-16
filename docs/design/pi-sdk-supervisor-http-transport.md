@@ -320,10 +320,9 @@ These logical charges do not attest the real Pi heap or native backend fit.
 
 The parent scanner constructs a fixed private graph from the complete bounded
 HTTP entity. Grammar and raw/scalar matching are necessary checks, not the
-closed event/effect/terminal policy. A separate private, single-use consumer
-checks the exact Pi text/thinking assemblies on its graph before returning the
-unapproved HTTP borrow. Its nodes must pass the remaining closed policy before
-replay; grammar or semantic-scanner success alone never
+closed event/effect/terminal policy. Separate private, single-use consumers run
+the closed policy, then exact Pi text/thinking assemblies on the graph before
+returning the unapproved HTTP borrow. Grammar, policy or semantic-scanner success never
 authorizes IPC, custody or an eligible runtime. Keep the native guard and real
 Pi parser in place.
 
@@ -359,11 +358,13 @@ Let R/H/E be original response-body/header/event ceilings, K the original file
 maximum, N=`min(JSONNodes,2*R+1)` and V=`min(SSEEvents,R/2+1)`. Admit R at most4MiB,
 H at most1MiB, K at most64KiB and JSONDepth at most32. These physical-count bounds
 do not remove any possible node/event cohort within R. Let M be scanner-state
-size, T node size and D event-record size. Explicit arenas occupy
-`A = M + (N+1)*T + 2*R + E + V*D + 4*K`. Reserve
+size, T node size, D event-record size and I historical-identity record size.
+Explicit arenas occupy
+`A = M + (N+1)*T + 2*R + E + V*D + N*I + 4*K`. Reserve
 `A + 2*R + 96*N + 8192` live bytes, the original ResponseCopyWorkBytes cumulative
-credit and `6 + 3*N + V` allocation nodes before allocation. The additional V
-funds possible retained semantic blocks inside the event arena. This includes two
+credit and `7 + 4*N + V` allocation nodes before allocation. The additional V
+funds possible retained semantic blocks inside the event arena; N funds the
+historical-identity array. This includes two
 R-byte numeric conversion/error-copy allowances and bounded metadata. The
 scanner live sum plus the original receiver's `2*H + R + sizeof(receiver)`
 must fit original ResponseAllocationBytes; unknown fit denies.
@@ -381,6 +382,60 @@ clear the full maximum event arena for every short/comment frame. Work and
 counts never reset, and clear is idempotent even before first use. Numeric
 conversion/backend, stack, allocator and complete runtime fit remain separate
 from this logical schedule; no zero-allocation or native qualification follows.
+
+### Closed response policy and original expectations
+
+Prepare expected echo data only from the same owner's sealed body and digest,
+under its original registry lock before Issue. There is no caller-supplied
+expected request, replacement ledger or post-Issue preparation. The fixed
+native request contract admits model/input/stream/store/max_output_tokens,
+temperature/tool_choice/reasoning/include/prompt_cache_options/truncation/text;
+it is narrower than the generic transport's optional echo whitelist. Parse the
+whole original body with strict grammar, finite numbers, depth and decoded-key
+uniqueness, including skipped input values. Validate input string escapes and
+UTF-8 without retaining their payload; retain all keys/nodes needed to detect
+nested duplicates. Expected data never substitutes for native input/schema
+validation or source provenance.
+
+For B original request bytes and Q=`min(JSONNodes,2*B+1)`, expected graph arenas
+occupy `X = M + (Q+1)*T + 2*B`. Reserve
+`sizeof(expected)+8192+X+2*B+96*Q+8192` live bytes, one original
+ResponseCopyWorkBytes credit and `4+3*Q` nodes on the same global ledger before
+allocation. Require this live footprint to fit original PreSendAllocationBytes.
+Prepay `2*X+2*B` for one initialization/retirement and UTF-8/hash passes; parsing
+and configuration checks debit the remaining reserved work. Original request
+bytes remain borrowed, are not reserialized, and are never cleared by the
+expected graph. Both expected and response reservations must fit the original
+global ledger together; a second-stage failure retains the first arena's debit
+until owner retirement. These are prospective logical schedules, not complete
+shared-profile/native/backend fit evidence.
+
+Match the existing native policy's closed lifecycle/item/part/delta shapes,
+including optional/null distinctions, original request echoes and neutral
+defaults. Structural equality preserves exact UTF-16 strings, JS Number values,
+array order and object-key-insensitive comparison. Admit only message/reasoning
+items; tools, errors, failed and future variants deny. Usage counters are safe
+nonnegative integers: check sum overflow before addition, cached+write against
+input and reasoning against output.
+
+Keep one stable response ID and historical ID-to-kind/index plus
+index-to-canonical-ID bindings until retirement, independently of Pi's active
+slots. Reuse the first decoded ID node instead of retaining a second string.
+Each response-ID/identity/index fact consumes a node in the same cumulative
+grammar-plus-history count. Charge32 bytes before each history record read or
+new fact,4 bytes per UTF-16 comparison unit,32 per structural equality node,
+32 per closed-object child and256 fixed state bytes per event; member and
+scalar comparisons retain the scanner's existing costs. All counters and
+matching credit remain cumulative after DATA parsing.
+
+Require one completed/incomplete terminal at the last dispatched event and in
+the last byte-frame, after the receiver has established actual HTTP EOF. Mixed
+line endings can dispatch multiple events inside one frame: trailing comments
+inside the terminal frame are allowed, but any later frame, even comment-only,
+denies. Do not invent a created-first or monotonic-sequence gate: native policy
+requires sequence_number to be a safe nonnegative integer, not monotonic.
+Failure clears response, expected and identity aliases before any live refund;
+only the original callback owner eventually zeroes its credential.
 
 ## Closed duplex protocol
 

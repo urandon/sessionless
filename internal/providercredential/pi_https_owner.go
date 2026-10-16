@@ -20,7 +20,7 @@ func (p *PreparedPiFileUseV1) prepareHTTPS(bundle piHTTPSRootArtifact) error {
 		return ErrConsumed
 	}
 	defer s.mu.Unlock()
-	if s.stopped.Load() || s.httpsPrepared || s.claimed.Load() || s.callback != 0 || s.auth == nil || s.http == nil || s.responseScan == nil || s.file == nil || s.file.ctx.Err() != nil {
+	if s.stopped.Load() || s.httpsPrepared || s.claimed.Load() || s.callback != 0 || s.auth == nil || s.http == nil || s.responseScan == nil || s.expected == nil || s.file == nil || s.file.ctx.Err() != nil {
 		s.abort()
 		return ErrConsumed
 	}
@@ -49,9 +49,9 @@ func (p *PreparedPiFileUseV1) prepareHTTPS(bundle piHTTPSRootArtifact) error {
 }
 
 // A private borrow retains s.mu AND the original use gate after full receive.
-// Its DATA has not passed semantic/secret quarantine and cannot be replayed or
-// converted to producer custody. The future concrete guard must run here while
-// that SAME borrow pins the original secret. No public response is returned.
+// Raw/scalar, closed-policy and Pi-assembly checks run while this SAME borrow
+// pins the original secret. It cannot be replayed or converted to producer
+// custody; the qualified source/SDK/replay consumer is still absent.
 type piHTTPSResponseBorrow struct {
 	s       *preparedPiFileUse
 	use     *immutableAPIFileUse
@@ -73,7 +73,7 @@ func (s *preparedPiFileUse) beginHTTPS(frame pisdkhttpwire.Frame) (_ *piHTTPSRes
 		s.abort()
 		return nil, ErrConsumed
 	}
-	if s.stopped.Load() || s.callback != 1 || s.auth == nil || s.file == nil || s.file.ctx.Err() != nil || s.http == nil || s.responseScan == nil || s.network.Load() == nil {
+	if s.stopped.Load() || s.callback != 1 || s.auth == nil || s.file == nil || s.file.ctx.Err() != nil || s.http == nil || s.responseScan == nil || s.expected == nil || s.network.Load() == nil {
 		s.abort()
 		s.mu.Unlock()
 		return nil, ErrConsumed
@@ -123,11 +123,14 @@ func (s *preparedPiFileUse) beginHTTPS(frame pisdkhttpwire.Frame) (_ *piHTTPSRes
 	if e = s.responseScan.scan(ctx, view, use.secret); e != nil || ctx.Err() != nil || s.stopped.Load() || use.ctx.Err() != nil || !use.active.Load() || s.file.ctx.Err() != nil {
 		return nil, ErrDeliveryMismatch
 	}
+	if e = s.responseScan.checkResponsePolicy(s.expected); e != nil || ctx.Err() != nil || s.stopped.Load() || use.ctx.Err() != nil || !use.active.Load() || s.file.ctx.Err() != nil {
+		return nil, ErrDeliveryMismatch
+	}
 	if e = s.responseScan.scanPiSemantics(); e != nil || ctx.Err() != nil || s.stopped.Load() || use.ctx.Err() != nil || !use.active.Load() || s.file.ctx.Err() != nil {
 		return nil, ErrDeliveryMismatch
 	}
-	// Grammar/raw/scalar/assembly checks are necessary but NOT closed effect,
-	// request-echo, identity or terminal approval. Borrow remains UNAPPROVED DATA.
+	// This remains private DATA, not a serving/profile/custody or replay witness.
+	// Real native guard/parser and complete source/SDK composition are required.
 	b.view = view
 	s.httpBorrow.Store(true)
 	return b, nil
@@ -145,6 +148,9 @@ func (b *piHTTPSResponseBorrow) close() {
 	}
 	b.s.http.clear()
 	b.s.responseScan.clear()
+	if b.s.expected != nil {
+		b.s.expected.graph.clear()
+	}
 	b.view = piUnapprovedHTTPView{}
 	b.s.httpBorrow.Store(false)
 	b.use.gate <- struct{}{}

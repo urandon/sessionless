@@ -64,6 +64,14 @@ func piScanZero(q *piResponseScan) bool {
 			return false
 		}
 	}
+	for _, c := range q.identities {
+		if c != (piResponseIdentity{}) {
+			return false
+		}
+	}
+	if q.responseID != 0 {
+		return false
+	}
 	return bytes.Equal(q.data, make([]byte, len(q.data)))
 }
 
@@ -266,10 +274,10 @@ func TestPiResponseScanProspectiveFunding(t *testing.T) {
 	l := piScanLimits()
 	n := l.JSONNodes
 	events := l.SSEEvents
-	live := uint64(reflect.TypeOf(piResponseScan{}).Size()) + (n+1)*uint64(reflect.TypeOf(piResponseNode{}).Size()) + 4*l.ResponseBodyBytes + l.SSEEventBytes + events*uint64(reflect.TypeOf(piResponseEvent{}).Size()) + 4*64 + 96*n + 8192
+	live := uint64(reflect.TypeOf(piResponseScan{}).Size()) + (n+1)*uint64(reflect.TypeOf(piResponseNode{}).Size()) + 4*l.ResponseBodyBytes + l.SSEEventBytes + events*uint64(reflect.TypeOf(piResponseEvent{}).Size()) + n*uint64(reflect.TypeOf(piResponseIdentity{}).Size()) + 4*64 + 96*n + 8192
 	for _, mode := range []string{"exact", "work short", "live short", "nodes short", "allocation exact", "allocation short"} {
 		t.Run(mode, func(t *testing.T) {
-			credit := &piFileLedger{maxCopy: l.ResponseCopyWorkBytes, maxLive: live, maxNodes: 6 + 3*n + events}
+			credit := &piFileLedger{maxCopy: l.ResponseCopyWorkBytes, maxLive: live, maxNodes: 7 + 4*n + events}
 			limits := l
 			switch mode {
 			case "work short":
@@ -291,11 +299,11 @@ func TestPiResponseScanProspectiveFunding(t *testing.T) {
 				}
 				return
 			}
-			if err != nil || q.live != live || credit.copy != l.ResponseCopyWorkBytes || credit.nodes != 6+3*n+events {
+			if err != nil || q.live != live || credit.copy != l.ResponseCopyWorkBytes || credit.nodes != 7+4*n+events {
 				t.Fatal("exact budget", err)
 			}
 			q.clear()
-			if credit.EndLive(live) != nil || credit.live != 0 || credit.copy != l.ResponseCopyWorkBytes || credit.nodes != 6+3*n+events {
+			if credit.EndLive(live) != nil || credit.live != 0 || credit.copy != l.ResponseCopyWorkBytes || credit.nodes != 7+4*n+events {
 				t.Fatal("retirement replenished cumulative work/nodes")
 			}
 		})
@@ -345,7 +353,7 @@ func TestPiResponseScanIndependentCommentWorkOracle(t *testing.T) {
 	// init+ONE retirement of every explicit arena; key validation K+table6K;
 	// raw H/Hc/R (input+2 key comparisons); framer R; UTF8 R; line+colon2R.
 	// Comments have no decoded UTF16/JSON work and this key has no fallbacks.
-	arena := uint64(reflect.TypeOf(piResponseScan{}).Size()) + (l.JSONNodes+1)*uint64(reflect.TypeOf(piResponseNode{}).Size()) + 2*l.ResponseBodyBytes + l.SSEEventBytes + l.SSEEvents*uint64(reflect.TypeOf(piResponseEvent{}).Size()) + 4*64
+	arena := uint64(reflect.TypeOf(piResponseScan{}).Size()) + (l.JSONNodes+1)*uint64(reflect.TypeOf(piResponseNode{}).Size()) + 2*l.ResponseBodyBytes + l.SSEEventBytes + l.SSEEvents*uint64(reflect.TypeOf(piResponseEvent{}).Size()) + l.JSONNodes*uint64(reflect.TypeOf(piResponseIdentity{}).Size()) + 4*64
 	const key = "~"
 	work := 2*arena + 7*uint64(len(key)) + 3*uint64(len(view.rawHeaders)+len(view.headers)) + 7*uint64(len(body))
 	for _, short := range []bool{false, true} {

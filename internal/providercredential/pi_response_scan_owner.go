@@ -1,8 +1,8 @@
 package providercredential
 
 // No caller limits/arena/ledger replacement: use the original sealed P and
-// immutable file maximum before Issue. This prepares parsed DATA only; serving
-// eligibility and the remaining closed policy/semantic guard are unchanged.
+// immutable file maximum before Issue. This prepares private parsing/guard DATA
+// plus its source-bound expected request; it never qualifies a serving profile.
 func (p *PreparedPiFileUseV1) prepareResponseScan() error {
 	if p == nil || p.state == nil {
 		return ErrInvalid
@@ -32,6 +32,15 @@ func (p *PreparedPiFileUseV1) prepareResponseScan() error {
 	}
 	s.responseScan = scan
 	s.live += scan.live
+	expected, err := newPiResponseExpected(f.ctx, s.ledger, s.auth.responseLimits, s.body, s.bodyHash)
+	if expected != nil {
+		s.expected = expected
+		s.live += expected.live
+	}
+	if err != nil {
+		s.abort()
+		return err
+	}
 	if s.stopped.Load() || f.ctx.Err() != nil {
 		s.abort()
 		return ErrConsumed

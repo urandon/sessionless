@@ -117,6 +117,8 @@ func piAuthProfileFixture(t *testing.T) domain.AttachedPiSDKNativeProfileV1 {
 	return p
 }
 
+const piPolicyFixtureRequest = `{"model":"stealth-ox-alpha","input":[{"role":"user","content":[{"type":"input_text","text":"fixture"}]}],"stream":true,"store":false,"max_output_tokens":1024,"tool_choice":"none","truncation":"disabled","text":{"format":{"type":"json_schema","name":"fixture","schema":{"type":"object","properties":{},"additionalProperties":false},"strict":true}}}`
+
 func piAuthOwnerFixture(t *testing.T, keyLimit ...int64) (*InvocationService, *fakeSecretStore, ports.ProviderCredentialIssueRequestV1, *PreparedPiFileUseV1, *piFileLedger, attachedworkerdaemon.PreparedAPIRequestV1) {
 	t.Helper()
 	s, _, secrets, issue, _ := immutableAPIInvocationFixture(t, domain.ProviderCredentialDeliveryFileV1)
@@ -132,7 +134,7 @@ func piAuthOwnerFixture(t *testing.T, keyLimit ...int64) (*InvocationService, *f
 	issue.HarnessBinding.AttachedPiAPIInvocationPolicyDigest = domain.AttachedPiAPIInvocationPolicyMappingDigestV1(strings.Repeat("b", 64))
 	f := prepareFileFixture(t, s, issue)
 	l := newPiFileLedger()
-	r := attachedworkerdaemon.PreparedAPIRequestV1{Profile: p, Body: []byte(`{"fixture":true}`), Headers: []byte(piAuthFixtureHeaders)}
+	r := attachedworkerdaemon.PreparedAPIRequestV1{Profile: p, Body: []byte(piPolicyFixtureRequest), Headers: []byte(piAuthFixtureHeaders)}
 	recipe, err := f.PreparePiFileUseV1(l, r.Body, d.BackendProfileDigest)
 	if err != nil {
 		t.Fatal(err)
@@ -163,7 +165,7 @@ func TestPiRequestAuthenticationOriginalFileOwner(t *testing.T) {
 				marker := []byte("synthetic-immutable-api-marker")
 				frame := pisdkhttpwire.Frame{Kind: pisdkhttpwire.FetchRequest, Profile: a.profile, Headers: bytes.Clone(a.headers), Body: bytes.Clone(request.Body)}
 				frame.MAC = piRequestMAC(marker, p.Nonce(), a.binding, a.profile, a.endpoint, frame.Headers, frame.Body)
-				limits := pisdkhttpwire.Limits{FrameBytes: 4096, InitializeBytes: 128, RequestBytes: 256, FinalBytes: 128, RequestHeaderBytes: 512, ResponseHeaderBytes: 128, ResponseBytes: 64, ResponseChunkBytes: 7, ParentBytes: 4 << 20, ChildBytes: 16 << 20, Frames: 4096}
+				limits := pisdkhttpwire.Limits{FrameBytes: 4096, InitializeBytes: 128, RequestBytes: uint64(len(request.Body)), FinalBytes: 128, RequestHeaderBytes: 512, ResponseHeaderBytes: 128, ResponseBytes: 64, ResponseChunkBytes: 7, ParentBytes: 4 << 20, ChildBytes: 16 << 20, Frames: 4096}
 				wire := make([]byte, 4096)
 				n, err := pisdkhttpwire.EncodeInto(wire, frame, limits)
 				if err != nil {

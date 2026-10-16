@@ -56,6 +56,33 @@ not one binary that runs unchanged on macOS and Linux.
 
 ### Cheap/free model and input policy
 
+The local demo must support an **already running, owner-supplied inference
+endpoint without paid OpenRouter usage**. [#212](https://gitcode.com/urandon/sessionless/issues/212)
+owns the bounded design delta, shared OpenAI-compatible HTTP provider path and
+local-development recipe. The owner starts the model server; Sessionless
+connects using explicit trusted endpoint/model/protocol/authentication settings,
+including no authentication where the local profile permits it. Ollama,
+llama.cpp and vLLM are candidate servers, not additional agent harnesses or three
+mandatory live-proof targets. One explicitly selected compatible server/model
+is enough for the first local demonstration.
+
+Reuse #105's research, but do not make the native Ollama daemon/model-management
+or federation chain #114–#119 a prerequisite for connecting to an existing
+endpoint. Pi SDK, model downloads and an OpenRouter account are not dependencies
+of this local provider path. Accept the bounded contract/design delta before
+implementation; verify actual wire, streaming, tool/structured-output and
+modality capabilities instead of assuming all compatible endpoints are equal.
+Endpoint configuration belongs to the operator and actual execution placement,
+not a model response or an arbitrary browser-supplied URL. No implicit provider
+fallback or paid calls are allowed.
+
+This is an early **local-demo** delivery slice feeding #190/#191 and the local
+composition work in #175/#35, not a replacement for the full managed or attached
+MVP outcomes. A model on the owner's machine does not prove the managed-cloud
+promise of requiring no user host; no tunnel, public exposure or cloud access
+to that endpoint is implied. Actual model calls wait for the owner's selected
+endpoint and a finite local-run manifest; task registration grants no live use.
+
 One pinned real model profile for each selected route is enough.
 [OpenCode Zen](https://opencode.ai/docs/zen/) Big Pickle remains only a candidate
 for a free synthetic/public **text** smoke, not the accepted managed agent or
@@ -140,6 +167,11 @@ not hidden launch gates. The [UX roadmap](product-ux-roadmap.md) remains separat
   Successful login/session creation does not supply a real execution resource.
   #175 owns explicit managed entitlement/profile admission and normal dispatch;
   no fake attached-worker entity or manual per-run database surgery is needed.
+- #105 supplies local-inference research, not an implemented local provider.
+  #212 now owns the owner-run OpenAI-compatible endpoint path for the unpaid
+  local demo. The existing OpenRouter-specific adapter is not configurable
+  local endpoint support, and the heavier native Ollama #114–#119 work remains
+  separate. No local-model or full-agent demonstration is claimed by this plan.
 
 ## Actionable remaining work
 
@@ -164,6 +196,7 @@ not an additional MVP release requirement.
 | Owner | Concrete actions | Exit evidence |
 | --- | --- | --- |
 | #177/#178/#179 and bounded #94 research → #180 design | Reuse accepted !160 package 0.2.1 and source findings; resolve newly uncovered questions in bounded tasks rather than reopening completed acceptance | #180 is closed after primary engineering acceptance under delegation; research/design and green docs CI do not implement the agent |
+| #212 local demo provider | Reuse #105/#51 findings; accept the bounded endpoint/resource/wire design delta, implement shared configured HTTP invocation and document connection to the owner's already running server; feed #190/#191 and local #175/#35 composition | One selected compatible local model, explicit optional/no-auth profile, bounded fixtures and independently reviewed exact-head CI; real smoke only after endpoint/run admission. No OpenRouter spend, Pi SDK, model downloads or daemon/federation prerequisite; not full-agent or managed-cloud acceptance |
 | #176 agent implementation | Deliver the existing linked #189–#197 checklist in predecessor order: policy/budgets, provider session, loop/exports, compaction, useful MCP, web-search grants, exact-query consent, citations and joined conformance | Every child retains scope, predecessors, labels/milestone, tests/review/exact-head CI; registration is not delivery and all nine implementation outcomes remain open |
 | #90 platform | Execute its bounded synthetic cloud-dev manifest; measure cold/warm isolation, erasure, egress, lease/redelivery and cost; keep no-go explicit | Exact immutable platform/profile and go/conditional/no-go. No real key/user payload required for this spike |
 | #175 managed profile | Join implemented #176 agent capabilities with one real provider/model/auth/data/capability tuple, entitlement and normal Web/control/worker dispatch/result flow; account for files/images and durable outputs | Reviewed implementation, exact-profile tool/egress/cost compatibility and deterministic negatives/exact CI; no user host dependency. Registration or a single tool-free call does not activate |
@@ -256,6 +289,9 @@ gantt
 
 ## Pilot checklist
 
+- [ ] Local demo can connect to the owner's already running model via #212
+      without a paid router; selected capabilities are proved, and local smoke
+      is not counted as managed-cloud or full-agent acceptance.
 - [ ] Independent Web login and audited invitation/bootstrap, without bot setup.
 - [ ] Fresh owner enrolls one supported attached harness/resource and obtains
       a real durable WebUI answer; transport verdict and per-resource rollback.

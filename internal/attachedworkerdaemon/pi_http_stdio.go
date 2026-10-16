@@ -533,20 +533,20 @@ func waitProcessSignal(done <-chan struct{}, grace time.Duration) (bool, error) 
 
 func (b *piHTTPStdio) clear() error {
 	if !b.retireMu.TryLock() {
-		return ErrSupervisorConfig
+		return ErrPiHTTPRetirementPending
 	}
 	defer b.retireMu.Unlock()
 	for {
 		state := b.state.Load()
 		if state == 1 {
 			b.stopIO()
-			return ErrSupervisorConfig
+			return ErrPiHTTPRetirementPending
 		}
 		if state == 3 {
 			return b.clearErr
 		}
 		if state != 0 && state != 2 {
-			return ErrSupervisorConfig
+			return ErrPiHTTPRetirementPending
 		}
 		if b.state.CompareAndSwap(state, 4) {
 			break
@@ -554,11 +554,19 @@ func (b *piHTTPStdio) clear() error {
 	}
 	if !b.stopAndJoin(b.owner.grace) {
 		b.state.Store(2) // Run already returned, but actual borrowers still own live state
-		return ErrSupervisorConfig
+		return ErrPiHTTPRetirementPending
 	}
 	if err := b.core.clear(); err != nil {
-		b.state.Store(2)
-		return err
+		b.core.mu.Lock()
+		retired := b.core.cleared
+		b.core.mu.Unlock()
+		if retired {
+			b.clearErr = err
+			b.state.Store(3) // terminal coordinator accounting error
+			return err
+		}
+		b.state.Store(2) // still borrowed; no accounting attempted
+		return errors.Join(ErrPiHTTPRetirementPending, err)
 	}
 	b.driver, b.digest, b.send = nil, nil, nil
 	// owner is immutable: retained *lease/copies reject on atomic lifecycle,

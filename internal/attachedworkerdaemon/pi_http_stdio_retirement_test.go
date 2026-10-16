@@ -5,6 +5,7 @@ package attachedworkerdaemon
 import (
 	"bytes"
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -39,12 +40,15 @@ func TestPiHTTPStdioUnjoinedDriverRetainsOwnedBudget(t *testing.T) {
 	if runErr == nil || result.CleanupSucceeded || result.piStdio != nil || b.complete {
 		t.Fatalf("unjoined borrower declared clean: %+v err=%v", result, runErr)
 	}
-	if err := b.clear(); err == nil || ledger.live != live || !bytes.Equal(b.core.requestFrame.Body, request) {
+	plan := &PreparedPiHTTPStdioV1{preparedPiHTTPState: &preparedPiHTTPState{bridge: b, ledger: ledger}}
+	plan.state.Store(2) // actual Run returned above; driver still owns its borrow
+	copyPlan := *plan
+	if err := copyPlan.Close(); !errors.Is(err, ErrPiHTTPRetirementPending) || ledger.live != live || !bytes.Equal(b.core.requestFrame.Body, request) {
 		t.Fatal("cleanup timeout cleared/refunded an unjoined request borrower")
 	}
 	unblock()
 	apiWait(t, b.done)
-	if err := b.clear(); err != nil || ledger.live != 0 {
+	if err := plan.Close(); err != nil || ledger.live != 0 {
 		t.Fatalf("actual postjoin retirement failed: live=%d err=%v", ledger.live, err)
 	}
 }

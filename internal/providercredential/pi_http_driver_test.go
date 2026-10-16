@@ -118,8 +118,9 @@ func (p *piDriverParent) PrepareOriginalAPIInvocation(ctx context.Context, id da
 	child.Environment = append([]daemon.EnvironmentVariable(nil), process.Environment...)
 	child.AdditionalReadRoots = []string{""}
 	l := p.request.Profile.Limits
-	var args [10]string
-	for i, n := range [10]uint64{l.ProcessFrameBytes - 17, min(l.NativeRequestBytes, l.ProcessFrameBytes-146), min(l.RawFinalBytes, l.StructuredFinalBytes, l.ProcessFrameBytes-17), l.ProcessFrameBytes, 700, 600, 500, l.JSONDepth, 300, uint64(len(p.request.Body))} {
+	var args [17]string
+	for i, n := range [17]uint64{l.ProcessFrameBytes, l.ProcessFrameBytes - 113, min(l.NativeRequestBytes, l.ProcessFrameBytes-85-l.RequestHeaderBytes), min(l.RawFinalBytes, l.StructuredFinalBytes, l.ProcessFrameBytes-17),
+		l.RequestHeaderBytes, l.ResponseHeaderBytes, l.ResponseBodyBytes, l.ResponseChunkBytes, 4 << 20, l.ProcessStdoutBytes, l.ProcessEvents, 700, 600, 500, l.JSONDepth, 300, uint64(len(p.request.Body))} {
 		args[i] = strconv.FormatUint(n, 10)
 	}
 	parent.Arguments = append(parent.Arguments, args[:]...)
@@ -129,7 +130,7 @@ func (p *piDriverParent) PrepareOriginalAPIInvocation(ctx context.Context, id da
 	deadline, _ := ctx.Deadline()
 	ownedIssue := p.issue
 	ownedIssue.HarnessBinding = a.Job.HarnessBinding // original optional expiry pointer must not alias caller partition
-	p.data = &daemon.PreparedAPIDataV1{Issue: ownedIssue, ParentInput: a, ChildInput: b, ParentRequest: clone(p.request), ChildRequest: clone(p.request), ParentProcess: parent, ChildProcess: child, InitArguments: args,
+	p.data = &daemon.PreparedAPIDataV1{Issue: ownedIssue, ParentInput: a, ChildInput: b, ParentRequest: clone(p.request), ChildRequest: clone(p.request), ParentProcess: parent, ChildProcess: child, HTTPInitArguments: args,
 		Entry: entry, CallerDeadline: deadline, InvocationDeadline: entry.Add(v.Job.Limits.MaxRuntime), ProcessDeadline: entry.Add(v.Job.Limits.MaxRuntime), SafetySlack: time.Nanosecond, Ledger: p.ledger, Retirement: p, Custody: p,
 		Authorization: ports.AttachedWorkerSealedInputAuthorization{TenantID: head.TenantID, OwnerUserID: head.OwnerUserID, WorkerID: head.WorkerID, ConnectionID: head.ConnectionID,
 			EnrollmentGeneration: head.EnrollmentGeneration, ConnectionGeneration: head.ConnectionGeneration, RunID: head.RunID, AttemptID: head.AttemptID, AttemptSequence: 1, LeaseID: head.LeaseID,
@@ -161,7 +162,7 @@ func (p *piDriverParent) PrepareOriginalAPIInvocation(ctx context.Context, id da
 	}
 	p.preparePeer(p.recipe.state.network.Load()) // private fake DNS/local TLS ONLY
 	p.stage = "plan"
-	p.plan, err = p.recipe.PrepareHTTPIOV1(p.supervisor, p.data.ParentRequest)
+	p.plan, err = p.recipe.PrepareHTTPIOV1(p.supervisor, p.data.ParentRequest, f, p.ledger)
 	if err == nil {
 		p.stage = "prepared"
 	}

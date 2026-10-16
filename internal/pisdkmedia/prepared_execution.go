@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"reflect"
 	"sync/atomic"
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemon"
@@ -19,19 +20,24 @@ import (
 // have joined. Full Source/native/argv/fit admission still belongs to that
 // producer; this disconnected default-off component supplies none of it.
 type PreparedPiExecutionV1 struct {
-	supervisor      *attachedworkerdaemon.Supervisor
+	*preparedExecutionSnapshot
+	supervisor  *attachedworkerdaemon.Supervisor
+	init        *InitPlanV1
+	stdio       *attachedworkerdaemon.PreparedPiStdioV1
+	arguments   [10]string
+	observation attachedworkerdaemon.PiStdioObservationV1
+	state       atomic.Uint32 // 0 prepared, 1 running, 2 returned, 3 closed, 4 collecting, 5 collected
+}
+
+// Shared immutable process/request DATA, not a transport arm or execution owner.
+type preparedExecutionSnapshot struct {
 	request         *RequestProjectionV1
-	init            *InitPlanV1
-	stdio           *attachedworkerdaemon.PreparedPiStdioV1
 	profile         domain.AttachedPiSDKNativeProfileV1
-	arguments       [10]string
 	bodyDigest      [sha256.Size]byte
 	metadataDigests [3][sha256.Size]byte
 	metadataSizes   [3]int
 	process         attachedworkerdaemon.AttemptSpec
 	live            uint64
-	observation     attachedworkerdaemon.PiStdioObservationV1
-	state           atomic.Uint32 // 0 prepared, 1 running, 2 returned, 3 closed, 4 collecting, 5 collected
 }
 
 var _ attachedworkerdaemon.PreparedProcessRunner = (*PreparedPiExecutionV1)(nil)
@@ -40,14 +46,30 @@ func (*PreparedPiExecutionV1) String() string     { return "PreparedPiExecutionV
 func (p *PreparedPiExecutionV1) GoString() string { return p.String() }
 
 func PreparePiExecutionV1(s *attachedworkerdaemon.Supervisor, request *RequestProjectionV1, init *InitPlanV1, expected attachedworkerdaemon.PreparedAPIRequestV1, process attachedworkerdaemon.AttemptSpec) (*PreparedPiExecutionV1, error) {
-	if s == nil || request == nil || init == nil || init.http || request.ctx == nil || request.ctx.Err() != nil || init.request != request ||
-		init.spent || init.ledger != request.ledger || request.ledger == nil || init.credentialFile == nil || len(request.body) == 0 ||
-		len(process.Stdin) != 0 || len(process.Arguments) < 10 || expected.Profile != request.config.profile || len(expected.Body) != len(request.body) {
+	if s == nil || init == nil || init.http {
 		return nil, ErrProjection
 	}
 	args := init.EntryArguments()
+	metadata, err := prepareExecutionSnapshot(request, init, args[:], expected, process)
+	if err != nil {
+		return nil, err
+	}
+	stdio, err := s.PreparePiStdioV1(request.config.profile, request.ledger)
+	if err != nil {
+		_ = metadata.clear()
+		return nil, err
+	}
+	return &PreparedPiExecutionV1{preparedExecutionSnapshot: metadata, supervisor: s, init: init, stdio: stdio, arguments: args}, nil
+}
+
+func prepareExecutionSnapshot(request *RequestProjectionV1, init *InitPlanV1, args []string, expected attachedworkerdaemon.PreparedAPIRequestV1, process attachedworkerdaemon.AttemptSpec) (*preparedExecutionSnapshot, error) {
+	if request == nil || init == nil || request.ctx == nil || request.ctx.Err() != nil || init.request != request ||
+		init.spent || init.ledger != request.ledger || request.ledger == nil || init.credentialFile == nil || len(request.body) == 0 ||
+		len(process.Stdin) != 0 || len(args) == 0 || len(process.Arguments) < len(args) || expected.Profile != request.config.profile || len(expected.Body) != len(request.body) {
+		return nil, ErrProjection
+	}
 	for i, value := range args {
-		if process.Arguments[len(process.Arguments)-10+i] != value {
+		if process.Arguments[len(process.Arguments)-len(args)+i] != value {
 			return nil, ErrProjection
 		}
 	}
@@ -112,7 +134,7 @@ func PreparePiExecutionV1(s *attachedworkerdaemon.Supervisor, request *RequestPr
 	if measure.err != nil {
 		return nil, ErrProjection
 	}
-	live := 64*count + 512
+	live := 64*count + 512 + uint64(reflect.TypeOf(preparedExecutionSnapshot{}).Size())
 	work := 4*uint64(len(request.body)) + 2*argumentBytes + 4*processBytes + 4*uint64(len(expected.Model)+len(expected.Schema)+len(expected.Headers)) + 2*measure.bytes + 2*l.StructuredFinalBytes
 	// Extra executor comparisons/hash visits are prospectively funded in the
 	// original cumulative ledger. No new payload arena or native-fit claim.
@@ -137,13 +159,8 @@ func PreparePiExecutionV1(s *attachedworkerdaemon.Supervisor, request *RequestPr
 	process.Arguments = append([]string(nil), process.Arguments...)
 	process.Environment = append([]attachedworkerdaemon.EnvironmentVariable(nil), process.Environment...)
 	process.AdditionalReadRoots = append([]string(nil), process.AdditionalReadRoots...)
-	stdio, err := s.PreparePiStdioV1(request.config.profile, request.ledger)
-	if err != nil {
-		return nil, err
-	}
 	keep = true
-	return &PreparedPiExecutionV1{supervisor: s, request: request, init: init, stdio: stdio,
-		profile: request.config.profile, arguments: args, bodyDigest: request.bodyDigest, process: process, live: live,
+	return &preparedExecutionSnapshot{request: request, profile: request.config.profile, bodyDigest: request.bodyDigest, process: process, live: live,
 		metadataDigests: [3][sha256.Size]byte{sha256.Sum256(expected.Model), sha256.Sum256(expected.Schema), sha256.Sum256(expected.Headers)},
 		metadataSizes:   [3]int{len(expected.Model), len(expected.Schema), len(expected.Headers)}}, nil
 }
@@ -208,7 +225,7 @@ func (p *PreparedPiExecutionV1) RunPrepared(ctx context.Context, in attachedwork
 	return result, err
 }
 
-func (p *PreparedPiExecutionV1) sameProcess(v attachedworkerdaemon.AttemptSpec, root string) bool {
+func (p *preparedExecutionSnapshot) sameProcess(v attachedworkerdaemon.AttemptSpec, root string) bool {
 	w := p.process
 	if v.Executable != w.Executable || v.ExecutableDigest != w.ExecutableDigest || len(v.Arguments) != len(w.Arguments) ||
 		len(v.Environment) != len(w.Environment) || len(v.AdditionalReadRoots) != len(w.AdditionalReadRoots)+1 ||
@@ -281,8 +298,14 @@ func (p *PreparedPiExecutionV1) Close() error {
 		return err
 	}
 	p.observation = attachedworkerdaemon.PiStdioObservationV1{}
+	return p.preparedExecutionSnapshot.clear()
+}
+
+func (p *preparedExecutionSnapshot) clear() error {
 	clear(p.process.Arguments)
 	clear(p.process.Environment)
 	clear(p.process.AdditionalReadRoots)
-	return p.request.ledger.EndLive(p.live)
+	live := p.live
+	p.live = 0
+	return p.request.ledger.EndLive(live)
 }

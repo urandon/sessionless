@@ -15,6 +15,11 @@ import (
 	"gitcode.com/urandon/sessionless/internal/pisdkhttpwire"
 )
 
+// ErrPiHTTPRetirementPending means actual borrowers have not joined. No debit
+// was retired by this pending step; retry cleanup only after their real join.
+// Accounting failures are distinct terminal errors, never this sentinel.
+var ErrPiHTTPRetirementPending = errors.New("Pi HTTP retirement has active borrowers")
+
 // PiHTTPIOLeaseV1 is nonsecret process IO, NOT provider or source authority.
 // Only the actual Supervisor pump constructs an active lease. Copies share its
 // one-shot state. A trusted driver must join every borrower before returning.
@@ -84,6 +89,7 @@ type preparedPiHTTPState struct {
 	state      atomic.Uint32 // prepared0, binding/running1, returned2, closed3
 	live       uint64
 	ledger     PreparedAPILedgerV1
+	clearErr   error
 }
 
 func (*PreparedPiHTTPStdioV1) String() string     { return "PreparedPiHTTPStdioV1{private:[redacted]}" }
@@ -264,21 +270,27 @@ func (p *PreparedPiHTTPStdioV1) Close() error {
 	for {
 		state := p.state.Load()
 		if state == 3 {
-			return nil
+			return p.clearErr
 		}
 		if state != 0 && state != 2 {
-			return ErrSupervisorConfig
+			return ErrPiHTTPRetirementPending
 		}
 		if p.state.CompareAndSwap(state, 1) {
 			break
 		}
 	}
 	if err := p.bridge.clear(); err != nil {
-		p.state.Store(2) // preserve debit/aliases until actual borrowers join
+		if errors.Is(err, ErrPiHTTPRetirementPending) {
+			p.state.Store(2) // preserve debit/aliases until actual borrowers join
+		} else {
+			p.clearErr = err
+			p.state.Store(3)
+		}
 		return err
 	}
 	if err := p.ledger.EndLive(p.live); err != nil {
-		p.state.Store(2)
+		p.clearErr = err
+		p.state.Store(3) // never retry a failed debit against later owners
 		return err
 	}
 	p.profile, p.identity = domain.AttachedPiSDKNativeProfileV1{}, InvocationIdentity{}

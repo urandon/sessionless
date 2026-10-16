@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/pisdkhttpwire"
 	"gitcode.com/urandon/sessionless/internal/pisdkphasewire"
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
@@ -555,13 +556,17 @@ func (data *PreparedAPIDataV1) validateOriginal(invocation Invocation, ctx conte
 
 // The original stack/adapter pins the complete fixed manifest prefix, not the
 // per-input Init values. Preserve every original process field and append
-// exactly the SAME plan's ten funded values. In particular this is NOT a loose
+// exactly the SAME plan's explicitly selected SPU2 or SPU3 funded values.
+// In particular this is NOT a loose
 // prefix match, an alternate legacy full-argv arm, or permission to add Node
 // flags, a different script, environment, executable or stdin after admission.
 // All comparison work belongs to the original parent's prospective ledger.
 func (data *PreparedAPIDataV1) matchesOriginalAPIProcess(original AttemptSpec) bool {
 	p := data.ParentProcess
 	l := data.ParentRequest.Profile.Limits
+	if data.HTTPInitArguments != [17]string{} {
+		return data.InitArguments == [10]string{} && data.matchesOriginalHTTPProcess(original)
+	}
 	if len(original.Stdin) != 0 || len(p.Stdin) != 0 || len(original.Arguments) == 0 ||
 		len(p.Arguments) < len(data.InitArguments) || len(p.Arguments)-len(data.InitArguments) != len(original.Arguments) || l.ProcessFrameBytes < 147 {
 		return false
@@ -589,6 +594,52 @@ func (data *PreparedAPIDataV1) matchesOriginalAPIProcess(original AttemptSpec) b
 		values[2] != min(l.StructuredFinalBytes, l.RawFinalBytes, l.ProcessFrameBytes-17) || values[3] != l.ProcessFrameBytes ||
 		values[4] > values[0] || values[5] > l.PreSendAllocationBytes || values[6] > l.JSONNodes ||
 		values[7] != l.JSONDepth || values[8] > domain.AttachedPiSDKCanonicalMaxBytesV1 || values[9] != uint64(len(data.ParentRequest.Body)) {
+		return false
+	}
+	p.Arguments = p.Arguments[:len(original.Arguments)]
+	return reflect.DeepEqual(p, original)
+}
+
+func (data *PreparedAPIDataV1) matchesOriginalHTTPProcess(original AttemptSpec) bool {
+	p := data.ParentProcess
+	l := data.ParentRequest.Profile.Limits
+	if len(original.Stdin) != 0 || len(p.Stdin) != 0 || len(original.Arguments) == 0 ||
+		len(p.Arguments) != len(original.Arguments)+17 || l.ProcessFrameBytes < 114 || l.RequestHeaderBytes > l.ProcessFrameBytes-85 {
+		return false
+	}
+	w := pisdkhttpwire.Limits{FrameBytes: l.ProcessFrameBytes, InitializeBytes: l.ProcessFrameBytes - 113,
+		RequestBytes: min(l.NativeRequestBytes, l.ProcessFrameBytes-85-l.RequestHeaderBytes), FinalBytes: min(l.RawFinalBytes, l.StructuredFinalBytes, l.ProcessFrameBytes-17),
+		RequestHeaderBytes: l.RequestHeaderBytes, ResponseHeaderBytes: l.ResponseHeaderBytes, ResponseBytes: l.ResponseBodyBytes, ResponseChunkBytes: l.ResponseChunkBytes,
+		ParentBytes: maxSupervisorStdinBytes, ChildBytes: l.ProcessStdoutBytes, Frames: l.ProcessEvents}
+	if _, err := pisdkhttpwire.Measure(w); err != nil {
+		return false
+	}
+	var values [17]uint64
+	for i, want := range data.HTTPInitArguments {
+		if len(want) == 0 || len(want) > 16 || want[0] == '0' || p.Arguments[len(original.Arguments)+i] != want {
+			return false
+		}
+		var n uint64
+		for j := range len(want) {
+			if want[j] < '0' || want[j] > '9' {
+				return false
+			}
+			n = n*10 + uint64(want[j]-'0')
+		}
+		if n > 9007199254740991 {
+			return false
+		}
+		values[i] = n
+	}
+	want := [11]uint64{w.FrameBytes, w.InitializeBytes, w.RequestBytes, w.FinalBytes, w.RequestHeaderBytes, w.ResponseHeaderBytes,
+		w.ResponseBytes, w.ResponseChunkBytes, w.ParentBytes, w.ChildBytes, w.Frames}
+	for i, n := range want {
+		if values[i] != n {
+			return false
+		}
+	}
+	if values[11] > w.InitializeBytes || values[12] > l.PreSendAllocationBytes || values[13] > l.JSONNodes || values[14] != l.JSONDepth ||
+		values[15] > domain.AttachedPiSDKCanonicalMaxBytesV1 || values[16] != uint64(len(data.ParentRequest.Body)) {
 		return false
 	}
 	p.Arguments = p.Arguments[:len(original.Arguments)]

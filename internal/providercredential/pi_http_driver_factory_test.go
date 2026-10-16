@@ -49,9 +49,10 @@ func piDriverFactoryFixture(t *testing.T, roots bool) (*PreparedPiFileUseV1, *pi
 }
 
 func TestPiHTTPDriverFactoryOriginalCommitmentsAndNoOverrides(t *testing.T) {
-	for _, mode := range []string{"exact", "body", "model", "schema", "headers", "profile", "missing private roots", "copied second factory"} {
+	for _, mode := range []string{"exact", "body", "model", "schema", "headers", "profile", "missing private roots", "copied second factory", "foreign file", "foreign ledger"} {
 		t.Run(mode, func(t *testing.T) {
 			p, l, s, r, secrets := piDriverFactoryFixture(t, mode != "missing private roots")
+			file, ledger := p.state.file, l
 			switch mode {
 			case "body":
 				r.Body = bytes.Clone(r.Body)
@@ -67,8 +68,12 @@ func TestPiHTTPDriverFactoryOriginalCommitmentsAndNoOverrides(t *testing.T) {
 				r.Headers[0] ^= 1
 			case "profile":
 				r.Profile.Model.ModelID = "foreign"
+			case "foreign file":
+				file = &PreparedImmutableAPIFileV1{}
+			case "foreign ledger":
+				ledger = &piFileLedger{}
 			}
-			plan, err := p.PrepareHTTPIOV1(s, r)
+			plan, err := p.PrepareHTTPIOV1(s, r, file, ledger)
 			valid := mode == "exact" || mode == "copied second factory"
 			if (err == nil) != valid || (plan != nil) != valid {
 				t.Fatal("factory commitment mismatch", mode, err)
@@ -81,7 +86,7 @@ func TestPiHTTPDriverFactoryOriginalCommitmentsAndNoOverrides(t *testing.T) {
 			}
 			if mode == "copied second factory" {
 				copyRecipe := *p
-				if second, err := copyRecipe.PrepareHTTPIOV1(s, r); err == nil || second != nil || !p.state.stopped.Load() {
+				if second, err := copyRecipe.PrepareHTTPIOV1(s, r, p.state.file, l); err == nil || second != nil || !p.state.stopped.Load() {
 					t.Fatal("copied factory revived original scope", err)
 				}
 			}
@@ -96,7 +101,7 @@ func TestPiHTTPDriverFactoryOriginalCommitmentsAndNoOverrides(t *testing.T) {
 func TestPiHTTPDriverFactoryExactGlobalBudgetAndOneShort(t *testing.T) {
 	p, l, s, r, _ := piDriverFactoryFixture(t, true)
 	c, v, n := l.copy, l.live, l.nodes
-	if _, err := p.PrepareHTTPIOV1(s, r); err != nil {
+	if _, err := p.PrepareHTTPIOV1(s, r, p.state.file, l); err != nil {
 		t.Fatal(err)
 	}
 	dc, dv, dn := l.copy-c, l.live-v, l.nodes-n
@@ -117,7 +122,7 @@ func TestPiHTTPDriverFactoryExactGlobalBudgetAndOneShort(t *testing.T) {
 			case "nodes one short":
 				l.maxNodes--
 			}
-			plan, err := p.PrepareHTTPIOV1(s, r)
+			plan, err := p.PrepareHTTPIOV1(s, r, p.state.file, l)
 			if (err == nil) != (mode == "exact") || (plan != nil) != (mode == "exact") {
 				t.Fatal("global budget admission", mode, err)
 			}
@@ -183,7 +188,7 @@ func TestPiHTTPDriverReplayPartitionFundedBeforeComparison(t *testing.T) {
 		}
 		// With exactly the driver partition the subsequent daemon partition must
 		// fail; one byte short must fail before any driver work is admitted.
-		if plan, err := p.PrepareHTTPIOV1(s, r); err == nil || plan != nil {
+		if plan, err := p.PrepareHTTPIOV1(s, r, p.state.file, l); err == nil || plan != nil {
 			t.Fatal("unfunded subsequent daemon partition accepted", err)
 		}
 		want := before + work

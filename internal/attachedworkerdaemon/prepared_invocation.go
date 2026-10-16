@@ -111,7 +111,11 @@ type PreparedAPIDataV1 struct {
 	// the SAME Init plan before Issue. Original Invocation.Process is the pinned
 	// manifest prefix with empty stdin; both owned processes append only these
 	// values. This DATA does not certify a native artifact, SDK or allocation fit.
-	InitArguments                                              [10]string                                   `json:"-"`
+	InitArguments [10]string `json:"-"`
+	// HTTPInitArguments is the distinct SPU3 arm. Exactly one argument array
+	// may be present; the original manifest prefix remains exact in either arm.
+	// Neither arm grants installed artifact/native/source qualification.
+	HTTPInitArguments                                          [17]string                                   `json:"-"`
 	Authorization                                              ports.AttachedWorkerSealedInputAuthorization `json:"-"`
 	Entry, CallerDeadline, InvocationDeadline, ProcessDeadline time.Time                                    `json:"-"`
 	SafetySlack                                                time.Duration                                `json:"-"`

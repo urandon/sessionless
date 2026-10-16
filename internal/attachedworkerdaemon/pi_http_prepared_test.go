@@ -20,6 +20,55 @@ import (
 	"gitcode.com/urandon/sessionless/internal/pisdkhttpwire"
 )
 
+type piHTTPFailNthRetirement struct {
+	PreparedAPILedgerV1
+	attempts, failAt int
+	err              error
+}
+
+func (l *piHTTPFailNthRetirement) EndLive(n uint64) error {
+	l.attempts++
+	if l.failAt != 0 && l.attempts == l.failAt {
+		return l.err
+	}
+	return l.PreparedAPILedgerV1.EndLive(n)
+}
+
+func TestPreparedPiHTTPAccountingFailureCannotRefundLaterOwner(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		failAt int
+	}{{"coordinator", 1}, {"bridge", 2}, {"wrapper", 3}} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, inv, parent, _ := piHTTPOriginalPlanFixture(t, "ok")
+			ctx, cancel := context.WithTimeout(t.Context(), time.Hour)
+			t.Cleanup(cancel)
+			data, err := parent.PrepareOriginalAPIInvocation(ctx, inv.Identity, inv.VerifiedInput, inv.Process, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := errors.New("test-owned retirement accounting failure")
+			ledger := &piHTTPFailNthRetirement{PreparedAPILedgerV1: data.Ledger, err: want}
+			plan, err := s.PreparePiHTTPStdioV1(inv.Identity, data.ParentRequest, ledger, [32]byte{1}, [32]byte{2}, func(context.Context, *PiHTTPIOLeaseV1) error { return nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			ledger.attempts, ledger.failAt = 0, tc.failAt
+			if err := plan.Close(); !errors.Is(err, want) || errors.Is(err, ErrPiHTTPRetirementPending) {
+				t.Fatal("accounting failure lost or became retryable", err)
+			}
+			if err := ledger.Reserve(0, 193, 0); err != nil {
+				t.Fatal(err)
+			}
+			before, calls := parent.ledger.live, ledger.attempts
+			copyPlan := *plan
+			if err := copyPlan.Close(); !errors.Is(err, want) || ledger.attempts != calls || parent.ledger.live != before {
+				t.Fatal("accounting retry debited later owner", err, ledger.attempts, calls, parent.ledger.live, before)
+			}
+		})
+	}
+}
+
 // Original InvocationRunner and real Supervisor pipes, with synthetic parent,
 // credential lifecycle, Go child and trusted driver. Never Pi SDK, real provider,
 // production isolation, genuine file quarantine or #200 producer qualification.

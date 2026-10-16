@@ -28,7 +28,8 @@ func piPreparedPhaseFixture(t *testing.T) (*piOwnerFixture, *piOwnedPreparation,
 	f := newPiOwnerFixture(t)
 	d, err := f.owner.PrepareOriginalAPIInvocation(f.ctx, f.inv.Identity, f.inv.VerifiedInput, f.inv.Process, f.inv.InputAcquisition)
 	r := f.owner.current
-	if !errors.Is(err, pisdkmedia.ErrMissingProducer) || d == nil || r == nil || r.phases == nil || r.execution == nil {
+	if !errors.Is(err, pisdkmedia.ErrMissingProducer) || d == nil || r == nil || r.phases == nil || r.init == nil || r.execution != nil ||
+		d.InitArguments != [10]string{} || d.HTTPInitArguments == [17]string{} {
 		t.Fatalf("actual preparation did not retain phase plan: data=%t owned=%t err=%v", d != nil, r != nil, err)
 	}
 	return f, r, d

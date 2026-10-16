@@ -55,6 +55,13 @@ func TestPreparedPiSameOriginalSupervisor(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg := initFixtureConfig(t)
+			// This is original-lifecycle orchestration, not selected native/global
+			// fit. The later private output/receipt partition is also prospective:
+			// the old64MiB fixture already denies before Issue on parent d422b50.
+			// Declare an explicit larger structural WORK allowance before compiling
+			// any input/profile; never refill a ledger or raise inherited frame,
+			// canonical/media/output caps. Actual real-profile fit remains open.
+			cfg.Profile.Limits.PreSendAllocationBytes = 128 << 20
 			cfg.FinalSchema = []byte(attachedworkeroutput.StructuredFinalSchemaV1)
 			schema := sha256.Sum256(cfg.FinalSchema)
 			cfg.FinalSchemaSourceDigest = hex.EncodeToString(schema[:])

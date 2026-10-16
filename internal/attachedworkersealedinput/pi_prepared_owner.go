@@ -59,8 +59,8 @@ type piOwnedPreparation struct {
 	phases     *piPreparedPhases
 	file       *providercredential.PreparedImmutableAPIFileV1
 	fileUse    *providercredential.PreparedPiFileUseV1
-	init       *pisdkmedia.InitPlanV1
-	execution  *pisdkmedia.PreparedPiExecutionV1
+	init       *pisdkmedia.HTTPInitPlanV1
+	execution  *pisdkmedia.PreparedPiHTTPExecutionV1
 	original   context.Context
 	grace      time.Duration
 	mu         sync.Mutex
@@ -236,7 +236,7 @@ func (p *PiPreparedOwnerV1) PrepareOriginalAPIInvocation(ctx context.Context, id
 	if err := r.fileUse.PrepareHTTPReceiveV1(data.ParentRequest.Profile.Limits.ResponseHeaderBytes, data.ParentRequest.Profile.Limits.ResponseBodyBytes); err != nil {
 		return data, err
 	}
-	r.init, err = pisdkmedia.PrepareInitV1(ctx, projection, p.config.ModelJSON, p.config.TimeoutMilliseconds, r.file)
+	r.init, err = pisdkmedia.PrepareHTTPInitV1(ctx, projection, p.config.ModelJSON, p.config.TimeoutMilliseconds, r.file)
 	if err != nil {
 		return data, err
 	}
@@ -248,14 +248,17 @@ func (p *PiPreparedOwnerV1) PrepareOriginalAPIInvocation(ctx context.Context, id
 		}
 		r.processes[i] = v
 	}
-	data.ParentProcess, data.ChildProcess, data.InitArguments = r.processes[0], r.processes[1], args
-	r.execution, err = pisdkmedia.PreparePiExecutionV1(p.supervisor, projection, r.init, data.ParentRequest, data.ParentProcess)
-	if err != nil {
-		return data, err
-	}
+	data.ParentProcess, data.ChildProcess, data.HTTPInitArguments = r.processes[0], r.processes[1], args
 	data.Entry, data.CallerDeadline = entry, originalDeadline
 	data.InvocationDeadline = entry.Add(r.inputs[0].Job.Limits.MaxRuntime)
 	data.ProcessDeadline = entry.Add(p.supervisor.PreparedProcessTimeoutV1())
+	r.execution, err = pisdkmedia.PreparePiHTTPExecutionV1(p.supervisor, projection, r.init, r.fileUse, data.ParentRequest, data.ParentProcess)
+	if err != nil {
+		// Installed private HTTPS selection is deliberately absent. Return
+		// owned partial staging for the original runner's real retirement,
+		// never an alternate root, driver or a synthetic eligibility grant.
+		return data, errors.Join(pisdkmedia.ErrMissingProducer, err)
+	}
 	if ctx.Err() != nil || original.Err() != nil || !p.source.OwnsOriginalPiInput(a) {
 		return data, ErrUnavailable
 	}
@@ -345,9 +348,9 @@ func (r *piOwnedPreparation) fundClone(input *attachedworkerdaemon.VerifiedAttac
 	return r.ledger.Reserve((6*e+14)*l+arrays, 8*l+h+24*(e+t+1)+arrays, 3*l)
 }
 
-func (r *piOwnedPreparation) copyProcess(original attachedworkerdaemon.AttemptSpec, args [10]string, child bool) (attachedworkerdaemon.AttemptSpec, error) {
+func (r *piOwnedPreparation) copyProcess(original attachedworkerdaemon.AttemptSpec, args [17]string, child bool) (attachedworkerdaemon.AttemptSpec, error) {
 	l := r.owner.config.Request.Profile.Limits
-	count := uint64(len(original.Arguments)) + uint64(len(original.Environment)) + uint64(len(original.AdditionalReadRoots)) + 11
+	count := uint64(len(original.Arguments)) + uint64(len(original.Environment)) + uint64(len(original.AdditionalReadRoots)) + 18
 	if count > l.JSONNodes || len(original.Arguments) == 0 {
 		return attachedworkerdaemon.AttemptSpec{}, ErrInvalid
 	}
@@ -386,7 +389,7 @@ func (r *piOwnedPreparation) copyProcess(original attachedworkerdaemon.AttemptSp
 		return attachedworkerdaemon.AttemptSpec{}, ErrUnavailable
 	}
 	v := original
-	v.Arguments = make([]string, len(original.Arguments)+10)
+	v.Arguments = make([]string, len(original.Arguments)+17)
 	copy(v.Arguments, original.Arguments)
 	copy(v.Arguments[len(original.Arguments):], args[:])
 	v.Environment = append([]attachedworkerdaemon.EnvironmentVariable(nil), original.Environment...)
@@ -470,7 +473,10 @@ func (r *piOwnedPreparation) Clear() {
 		r.phases.clear()
 	}
 	if r.init != nil {
-		r.init.Clear()
+		r.cleanupErr = r.init.Close()
+		if r.cleanupErr != nil {
+			return
+		}
 	}
 	if r.projection != nil {
 		r.projection.Clear()

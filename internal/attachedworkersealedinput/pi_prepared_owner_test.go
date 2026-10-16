@@ -282,7 +282,7 @@ func TestPiPreparedOwnerOriginalPipelineMissingProducerAndRetirement(t *testing.
 	original := bytes.Clone(f.inv.VerifiedInput.Context)
 	d, err := f.owner.PrepareOriginalAPIInvocation(f.ctx, f.inv.Identity, f.inv.VerifiedInput, f.inv.Process, f.inv.InputAcquisition)
 	r := f.owner.current
-	if !errors.Is(err, pisdkmedia.ErrMissingProducer) || d == nil || r == nil || r.projection == nil || r.file == nil || r.init == nil || r.execution == nil {
+	if !errors.Is(err, pisdkmedia.ErrMissingProducer) || d == nil || r == nil || r.projection == nil || r.file == nil || r.init == nil || r.execution != nil {
 		if r == nil {
 			t.Fatalf("incomplete actual pipeline: data=%t owned=false err=%v", d != nil, err)
 		}
@@ -309,8 +309,8 @@ func TestPiPreparedOwnerOriginalPipelineMissingProducerAndRetirement(t *testing.
 	}
 	args := r.init.EntryArguments()
 	want := append([]string{"fixed-entry"}, args[:]...)
-	if d.InitArguments != args || !reflect.DeepEqual(d.ParentProcess.Arguments, want) || !reflect.DeepEqual(d.ChildProcess.Arguments, want) || len(d.ChildProcess.AdditionalReadRoots) != 1 {
-		t.Fatal("exact original argv prefix/ten funded arguments lost")
+	if d.InitArguments != [10]string{} || d.HTTPInitArguments != args || !reflect.DeepEqual(d.ParentProcess.Arguments, want) || !reflect.DeepEqual(d.ChildProcess.Arguments, want) || len(d.ChildProcess.AdditionalReadRoots) != 1 {
+		t.Fatal("exact original argv prefix/separate seventeen funded HTTP arguments lost")
 	}
 	d.ParentInput.Context[0] ^= 1
 	d.ParentInput.Artifacts[0].Body[0] ^= 1

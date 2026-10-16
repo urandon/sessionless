@@ -19,13 +19,15 @@ import (
 // and entire Materialize callback/process join before Close, just as for Init.
 type HTTPInitPlanV1 struct{ state *httpInitState }
 type httpInitState struct {
-	mu       sync.Mutex
-	base     *InitPlanV1
-	ledger   *codexexec.CanonicalMediaLedgerV1
-	metadata uint64
-	closed   bool
-	closeErr error
-	emitted  atomic.Bool
+	mu                sync.Mutex
+	base              *InitPlanV1
+	ledger            *codexexec.CanonicalMediaLedgerV1
+	metadata          uint64
+	closed            bool
+	closeErr          error
+	executionClaimed  bool
+	executionBorrowed bool
+	emitted           atomic.Bool
 }
 
 func (HTTPInitPlanV1) String() string     { return "HTTPInitPlanV1{data:[redacted]}" }
@@ -184,6 +186,9 @@ func (p *HTTPInitPlanV1) Close() error {
 		return ErrProjection
 	}
 	defer s.mu.Unlock()
+	if s.executionBorrowed {
+		return ErrProjection
+	}
 	if s.closed {
 		return s.closeErr
 	}

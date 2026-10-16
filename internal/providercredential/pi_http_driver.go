@@ -16,7 +16,8 @@ import (
 // The private installed HTTPS policy must already be prepared; no production
 // source factory currently selects it, so this does not clear MissingProducer.
 // The returned opaque plan remains mechanics DATA, never #200 custody.
-func (p *PreparedPiFileUseV1) PrepareHTTPIOV1(supervisor *attachedworkerdaemon.Supervisor, request attachedworkerdaemon.PreparedAPIRequestV1) (*attachedworkerdaemon.PreparedPiHTTPStdioV1, error) {
+func (p *PreparedPiFileUseV1) PrepareHTTPIOV1(supervisor *attachedworkerdaemon.Supervisor, request attachedworkerdaemon.PreparedAPIRequestV1,
+	file *PreparedImmutableAPIFileV1, ledger attachedworkerdaemon.PreparedAPILedgerV1) (*attachedworkerdaemon.PreparedPiHTTPStdioV1, error) {
 	if p == nil || p.state == nil {
 		return nil, ErrInvalid
 	}
@@ -26,7 +27,8 @@ func (p *PreparedPiFileUseV1) PrepareHTTPIOV1(supervisor *attachedworkerdaemon.S
 		return nil, ErrConsumed
 	}
 	defer s.mu.Unlock()
-	if s.stopped.Load() || s.ioPrepared || s.claimed.Load() || s.callback != 0 || s.auth == nil || s.http == nil || s.responseScan == nil || s.expected == nil || s.network.Load() == nil || s.file == nil || s.file.ctx.Err() != nil {
+	if s.stopped.Load() || s.ioPrepared || s.claimed.Load() || s.callback != 0 || s.auth == nil || s.http == nil || s.responseScan == nil || s.expected == nil || s.network.Load() == nil || s.file == nil || s.file.ctx.Err() != nil ||
+		file != s.file || nilPiLedger(ledger) || ledger != s.ledger {
 		s.abort()
 		return nil, ErrConsumed
 	}

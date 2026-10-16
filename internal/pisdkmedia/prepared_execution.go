@@ -40,7 +40,7 @@ func (*PreparedPiExecutionV1) String() string     { return "PreparedPiExecutionV
 func (p *PreparedPiExecutionV1) GoString() string { return p.String() }
 
 func PreparePiExecutionV1(s *attachedworkerdaemon.Supervisor, request *RequestProjectionV1, init *InitPlanV1, expected attachedworkerdaemon.PreparedAPIRequestV1, process attachedworkerdaemon.AttemptSpec) (*PreparedPiExecutionV1, error) {
-	if s == nil || request == nil || init == nil || request.ctx == nil || request.ctx.Err() != nil || init.request != request ||
+	if s == nil || request == nil || init == nil || init.http || request.ctx == nil || request.ctx.Err() != nil || init.request != request ||
 		init.spent || init.ledger != request.ledger || request.ledger == nil || init.credentialFile == nil || len(request.body) == 0 ||
 		len(process.Stdin) != 0 || len(process.Arguments) < 10 || expected.Profile != request.config.profile || len(expected.Body) != len(request.body) {
 		return nil, ErrProjection

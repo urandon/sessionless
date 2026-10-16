@@ -16,7 +16,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -51,12 +50,16 @@ func TestPreparedPiNativeHTTPStdioEntry(t *testing.T) {
 				model := strings.Replace(initFixtureModel, `"supportsExplicitPromptCacheMode":true`, `"supportsExplicitPromptCacheMode":false`, 1)
 				projection, ledger := initFixtureProjection(t, cfg, snapshot)
 				credentials := initFixtureCredentials(t, projection)
-				plan, err := PrepareInitV1(t.Context(), projection, []byte(model), 30000, credentials.source)
+				plan, err := PrepareHTTPInitV1(t.Context(), projection, []byte(model), 30000, credentials.source)
 				if err != nil {
 					t.Fatal(err)
 				}
-				t.Cleanup(plan.Clear)
-				v, d := cfg.Profile.Limits, plan.DecodeLimits()
+				t.Cleanup(func() {
+					if err := plan.Close(); err != nil {
+						t.Error(err)
+					}
+				})
+				v := cfg.Profile.Limits
 				l := pisdkhttpwire.Limits{FrameBytes: v.ProcessFrameBytes, InitializeBytes: v.ProcessFrameBytes - 113,
 					RequestBytes: min(v.NativeRequestBytes, v.ProcessFrameBytes-85-v.RequestHeaderBytes), FinalBytes: min(v.StructuredFinalBytes, v.RawFinalBytes, v.ProcessFrameBytes-17),
 					RequestHeaderBytes: v.RequestHeaderBytes, ResponseHeaderBytes: v.ResponseHeaderBytes, ResponseBytes: v.ResponseBodyBytes, ResponseChunkBytes: v.ResponseChunkBytes,
@@ -65,28 +68,10 @@ func TestPreparedPiNativeHTTPStdioEntry(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				// Synthetic TEST-owned partition before Issue, not the absent complete
-				// production native/SDK certificate or a new full-P ledger.
-				live := 3*l.FrameBytes + 2*l.ResponseBytes + 2*l.ResponseHeaderBytes + 65536
-				// Charge logical byte appearances independently from simultaneous
-				// arena capacity: Init copy/UTF8, request+MAC passes, response/hash/
-				// stream passes, headers and finite frame/control work. The existing
-				// Init plan already owns strict decoding, not another full-P pool.
-				work := 4*l.InitializeBytes + 8*l.RequestBytes + 8*l.ResponseBytes + 8*l.ResponseHeaderBytes + 1024*accounting.Frames + 65536
-				if err := ledger.Reserve(work, live, 4096); err != nil {
-					t.Fatalf("test-owned HTTP partition work=%d live=%d, original remaining=%+v: %v", work, live, ledger.Remaining(), err)
-				}
-				t.Cleanup(func() {
-					if err := ledger.EndLive(live); err != nil {
-						t.Error(err)
-					}
-				})
-				values := []uint64{l.FrameBytes, l.InitializeBytes, l.RequestBytes, l.FinalBytes, l.RequestHeaderBytes, l.ResponseHeaderBytes, l.ResponseBytes, l.ResponseChunkBytes, l.ParentBytes, l.ChildBytes, l.Frames,
-					l.InitializeBytes, d.CopyBytes, d.JSONNodes, d.JSONDepth, d.ProfileBytes, d.RequestBytes}
-				args := make([]string, len(values))
-				for i, n := range values {
-					args[i] = strconv.FormatUint(n, 10)
-				}
+				// Real original-plan arguments and decoder partition, prepared before
+				// Issue, not manually formatted synthetic controls or a full-frame
+				// replacement of the original decoder's actual funded maximum.
+				args := plan.EntryArguments()
 				root, err := filepath.EvalSymlinks(t.TempDir())
 				if err != nil {
 					t.Fatal(err)
@@ -122,7 +107,7 @@ func TestPreparedPiNativeHTTPStdioEntry(t *testing.T) {
 					ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
 					defer cancel()
 					commandArgs := []string{"--permission", "--allow-fs-read=" + root, "--allow-fs-read=" + sdkSource, "--allow-fs-read=" + materialization.RootDir, "--no-addons", "--disable-proto=throw", filepath.Join(root, "internal/pisdkmedia/native/http_entry.mjs")}
-					cmd := exec.CommandContext(ctx, node, append(commandArgs, args...)...)
+					cmd := exec.CommandContext(ctx, node, append(commandArgs, args[:]...)...)
 					cmd.Dir = root
 					cmd.Env = []string{"PI_OFFLINE=1", "NO_COLOR=1"}
 					cmd.WaitDelay = 3 * time.Second

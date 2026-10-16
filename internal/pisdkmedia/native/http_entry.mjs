@@ -40,7 +40,7 @@ export async function runPreparedPiHTTPStdio({input,output,signal,channelLimits,
     channelLimits.request_header_bytes!==l.request_header_bytes||channelLimits.response_header_bytes!==l.response_header_bytes||
     channelLimits.response_body_bytes!==l.response_body_bytes||channelLimits.response_chunk_bytes!==l.response_chunk_bytes||
     channelLimits.parent_bytes!==4<<20||channelLimits.child_bytes!==l.process_stdout_bytes||channelLimits.frames!==l.process_events||
-    decodeLimits.body_bytes!==channelLimits.initialize_body_bytes)throw denied();
+    decodeLimits.body_bytes>channelLimits.initialize_body_bytes||raw.length+113>l.process_frame_bytes)throw denied();
   stage='credential-file';key=await readPreparedCredentialFile(init.credential_file,init.credential_max_bytes,channel.signal);
   const headers=Object.freeze([...init.headers,Object.freeze(['authorization','Bearer '+key])]);
   boundary=channel.bindRequest(Object.freeze({endpoint:profile.model.endpoint,profileDigest:init.profile_digest,headers,body:init.expected_body}));

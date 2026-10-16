@@ -13,6 +13,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/codexexec"
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/pisdkhttpwire"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/providercredential"
 )
@@ -58,6 +59,8 @@ type InitPlanV1 struct {
 	spent                    bool
 	decodeLimits             InitDecodeLimitsV1
 	entryArguments           [10]string
+	httpArguments            [17]string
+	http                     bool
 }
 
 func (InitPlanV1) String() string     { return "InitPlanV1{data:[redacted]}" }
@@ -79,7 +82,7 @@ func (p *InitPlanV1) DecodeLimits() InitDecodeLimitsV1 {
 // It never serializes a key, input, profile grant or new deadline; allocation
 // occurred in PrepareInit BEFORE original Issue, not in RunPrepared.
 func (p *InitPlanV1) EntryArguments() [10]string {
-	if p == nil || p.ctx == nil || p.ctx.Err() != nil {
+	if p == nil || p.http || p.ctx == nil || p.ctx.Err() != nil {
 		return [10]string{}
 	}
 	return p.entryArguments
@@ -92,6 +95,13 @@ func (p *InitPlanV1) EntryArguments() [10]string {
 // The once-spent result borrows this arena; never clear before actual consumers
 // join. Even a failed call spends this plan, rather than permitting a retry.
 func (p *InitPlanV1) MaterializedBody(ctx context.Context, handle ports.ProviderInvocationCredentialV1, materialization ports.ProviderCredentialMaterializationV1) ([]byte, error) {
+	if p == nil || p.http {
+		return nil, ErrProjection
+	}
+	return p.materializedBody(ctx, handle, materialization)
+}
+
+func (p *InitPlanV1) materializedBody(ctx context.Context, handle ports.ProviderInvocationCredentialV1, materialization ports.ProviderCredentialMaterializationV1) ([]byte, error) {
 	if p == nil || p.spent {
 		return nil, ErrProjection
 	}
@@ -115,16 +125,24 @@ func (p *InitPlanV1) MaterializedBody(ctx context.Context, handle ports.Provider
 }
 
 func (p *InitPlanV1) Clear() {
+	_ = p.clear()
+}
+
+// clear retires the arena once even when ledger accounting is already broken.
+// The HTTP owner preserves the error; the established SPU2 void API is unchanged.
+func (p *InitPlanV1) clear() error {
 	if p == nil {
-		return
+		return nil
 	}
 	clear(p.wire[:cap(p.wire)])
-	if p.ledger != nil {
-		_ = p.ledger.EndLive(p.live)
-	}
+	ledger, live := p.ledger, p.live
 	*p = InitPlanV1{}
 	// Cleared plans cannot become reusable empty constructors.
 	p.spent = true
+	if ledger != nil {
+		return ledger.EndLive(live)
+	}
+	return nil
 }
 
 func field(v *wireValue, name string) *wireValue {
@@ -405,6 +423,10 @@ func writeInitPrefix(w *wireWriter, s requestSnapshotV1, pJSON []byte, digest st
 // only retired, actually owned payload may reduce live bytes. A real runner
 // still owes child/SDK/native/clock/Source/final/egress qualification.
 func PrepareInitV1(ctx context.Context, request *RequestProjectionV1, modelJSON []byte, timeoutMs uint64, credentialFile *providercredential.PreparedImmutableAPIFileV1) (*InitPlanV1, error) {
+	return prepareInit(ctx, request, modelJSON, timeoutMs, credentialFile, false)
+}
+
+func prepareInit(ctx context.Context, request *RequestProjectionV1, modelJSON []byte, timeoutMs uint64, credentialFile *providercredential.PreparedImmutableAPIFileV1, http bool) (*InitPlanV1, error) {
 	if ctx == nil || ctx.Err() != nil || request == nil || request.ctx == nil || request.ctx.Err() != nil || request.data == nil || request.ledger == nil || credentialFile == nil {
 		return nil, ErrProjection
 	}
@@ -415,13 +437,29 @@ func PrepareInitV1(ctx context.Context, request *RequestProjectionV1, modelJSON 
 		return nil, ErrProjection
 	}
 	s, l := request.config, request.config.profile.Limits
-	if timeoutMs == 0 || timeoutMs > 2147483647 || l.ProcessFrameBytes < 147 || l.ProcessFrameBytes > 1<<20 || l.CanonicalInputBytes == 0 ||
+	framing := uint64(17)
+	minimumFrame := uint64(147)
+	if http {
+		framing, minimumFrame = 113, 114
+	}
+	if timeoutMs == 0 || timeoutMs > 2147483647 || l.ProcessFrameBytes < minimumFrame || l.ProcessFrameBytes > 1<<20 || l.CanonicalInputBytes == 0 ||
 		len(modelJSON) == 0 || s.system == "" || uint64(len(modelJSON)) > l.ProcessFrameBytes-17 || uint64(len(request.body)) != request.accounting.BodyBytes ||
 		s.credentialMax == 0 || s.credentialMax > math.MaxInt64 || s.profile.Validate() != nil {
 		return nil, ErrMissingProducer
 	}
+	var httpWire pisdkhttpwire.Accounting
+	if http {
+		wire, err := httpInitWireLimits(l)
+		if err != nil {
+			return nil, err
+		}
+		httpWire, err = pisdkhttpwire.Measure(wire)
+		if err != nil {
+			return nil, ErrProjection
+		}
+	}
 	pathBytes, e := credentialFile.FilePathBound(ctx, s.credentialMax)
-	if e != nil || pathBytes == 0 || pathBytes > (l.ProcessFrameBytes-17)/6 {
+	if e != nil || pathBytes == 0 || pathBytes > (l.ProcessFrameBytes-framing)/6 {
 		return nil, ErrProjection
 	}
 	if s.headers[10].Value != strconv.FormatFloat(float64(timeoutMs)/1000, 'f', -1, 64) {
@@ -489,7 +527,7 @@ func PrepareInitV1(ctx context.Context, request *RequestProjectionV1, modelJSON 
 		return nil, ErrProjection
 	}
 	profileNodes, _ := schemaStats(profileTree)
-	m := wireWriter{cap: l.ProcessFrameBytes - 17, maxDepth: l.JSONDepth, maxNodes: l.JSONNodes}
+	m := wireWriter{cap: l.ProcessFrameBytes - framing, maxDepth: l.JSONDepth, maxNodes: l.JSONNodes}
 	writeInitPrefix(&m, s, profileJSON, profileDigest, model, messages, request.body, timeoutMs)
 	if m.err != nil || m.depth != 1 {
 		return nil, ErrProjection
@@ -499,7 +537,7 @@ func PrepareInitV1(ctx context.Context, request *RequestProjectionV1, modelJSON 
 		return nil, e
 	}
 	maximum, e := checkedAdd(m.bytes, pathEncoded, 3) // quote + closing quote + object
-	if e != nil || maximum > l.ProcessFrameBytes-17 || maximum > math.MaxInt || ctx.Err() != nil {
+	if e != nil || maximum > l.ProcessFrameBytes-framing || maximum > math.MaxInt || ctx.Err() != nil {
 		return nil, ErrProjection
 	}
 	// Stage C reserves this exact arena capacity and one emission before make.
@@ -534,11 +572,21 @@ func PrepareInitV1(ctx context.Context, request *RequestProjectionV1, modelJSON 
 	if e != nil {
 		return nil, ErrProjection
 	}
-	argumentValues := [10]uint64{l.ProcessFrameBytes - 17, min(l.NativeRequestBytes, l.ProcessFrameBytes-146),
-		min(l.StructuredFinalBytes, l.RawFinalBytes, l.ProcessFrameBytes-17), l.ProcessFrameBytes,
-		maximum, childCopy, childNodes, l.JSONDepth, uint64(len(profileJSON)), uint64(len(request.body))}
+	var argumentValues [17]uint64
+	argumentCount := 10
+	if http {
+		wire, _ := httpInitWireLimits(l) // already checked using only frozen P
+		argumentValues = [17]uint64{wire.FrameBytes, wire.InitializeBytes, wire.RequestBytes, wire.FinalBytes,
+			wire.RequestHeaderBytes, wire.ResponseHeaderBytes, wire.ResponseBytes, wire.ResponseChunkBytes, wire.ParentBytes, wire.ChildBytes, wire.Frames,
+			maximum, childCopy, childNodes, l.JSONDepth, uint64(len(profileJSON)), uint64(len(request.body))}
+		argumentCount = 17
+	} else {
+		argumentValues = [17]uint64{l.ProcessFrameBytes - 17, min(l.NativeRequestBytes, l.ProcessFrameBytes-146),
+			min(l.StructuredFinalBytes, l.RawFinalBytes, l.ProcessFrameBytes-17), l.ProcessFrameBytes,
+			maximum, childCopy, childNodes, l.JSONDepth, uint64(len(profileJSON)), uint64(len(request.body))}
+	}
 	var argumentBytes uint64
-	for _, value := range argumentValues {
+	for _, value := range argumentValues[:argumentCount] {
 		if value == 0 || value > 9007199254740991 {
 			return nil, ErrProjection
 		}
@@ -561,12 +609,26 @@ func PrepareInitV1(ctx context.Context, request *RequestProjectionV1, modelJSON 
 	work, e := checkedAdd(maximum, maximum, childCopy, 2*argumentBytes, bootstrapCopy, uint64(len(modelJSON)))
 	live, e2 := checkedAdd(maximum, childCopy, argumentBytes, bootstrapLive)
 	nodes, e3 := checkedAdd(m.nodes+1, childNodes)
+	if http && e == nil && e2 == nil && e3 == nil {
+		// Logical SPU3 payload appearances and fixed signal counts only. The
+		// existing Init decoder owns childCopy/childNodes; do NOT reset those
+		// from full P. Runtime Promise/object/SDK/TLS/native heap fit is absent.
+		hw, hl, hn := httpInitTransportPartition(l, httpWire)
+		work, e = checkedAdd(work, hw)
+		live, e2 = checkedAdd(live, hl)
+		nodes, e3 = checkedAdd(nodes, hn)
+	}
 	if e != nil || e2 != nil || e3 != nil || request.ledger.Reserve(work, live, nodes) != nil {
 		return nil, ErrProjection
 	}
 	var entryArguments [10]string
-	for i, value := range argumentValues {
-		entryArguments[i] = strconv.FormatUint(value, 10)
+	var httpArguments [17]string
+	for i, value := range argumentValues[:argumentCount] {
+		if http {
+			httpArguments[i] = strconv.FormatUint(value, 10)
+		} else {
+			entryArguments[i] = strconv.FormatUint(value, 10)
+		}
 	}
 	w := wireWriter{out: make([]byte, 0, int(maximum)), cap: maximum, maxDepth: l.JSONDepth, maxNodes: l.JSONNodes}
 	writeInitPrefix(&w, s, profileJSON, profileDigest, model, messages, request.body, timeoutMs)
@@ -580,8 +642,8 @@ func PrepareInitV1(ctx context.Context, request *RequestProjectionV1, modelJSON 
 	after := request.ledger.Accounting()
 	after.LiveBytes -= transientLive // retired by the deferred cleanup before return
 	return &InitPlanV1{ctx: request.ctx, request: request, credentialFile: credentialFile, credentialMax: s.credentialMax, pathBytes: pathBytes, ledger: request.ledger,
-		entryArguments: entryArguments,
-		wire:           w.out, prefixLen: len(w.out), prefixDigest: sha256.Sum256(w.out), modelDigest: sha256.Sum256(modelJSON), live: live,
+		entryArguments: entryArguments, httpArguments: httpArguments, http: http,
+		wire: w.out, prefixLen: len(w.out), prefixDigest: sha256.Sum256(w.out), modelDigest: sha256.Sum256(modelJSON), live: live,
 		decodeLimits: InitDecodeLimitsV1{BodyBytes: maximum, CopyBytes: childCopy, JSONNodes: childNodes, JSONDepth: l.JSONDepth, ProfileBytes: uint64(len(profileJSON)), RequestBytes: uint64(len(request.body))},
 		accounting:   InitAccountingV1{Before: before, After: after, PrefixBytes: m.bytes, MaximumBodyBytes: maximum, FilePathBytes: pathBytes, JSONNodes: m.nodes + 1, GoArenaBytes: maximum, GoEmissionBytes: maximum, GoValidationBytes: validation, ChildCopyBytes: childCopy, ChildJSONNodes: childNodes, EntryArgumentBytes: argumentBytes, BootstrapCopyBytes: bootstrapCopy, BootstrapLiveBytes: bootstrapLive}}, nil
 }

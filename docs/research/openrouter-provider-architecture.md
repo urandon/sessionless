@@ -5,8 +5,16 @@ Research date: 2026-08-25
 Tracks: [#51](https://gitcode.com/urandon/sessionless/issues/51), proposed
 PR-05 in [AI resources and federation](ai-resources-and-federation.md)
 
-Status: implementation-ready design; no credential accepted and no provider
-request made
+Status: historical research/design; no credential accepted and no provider
+request made.
+
+Pi-specific canary, adapter and implementation recommendations below are
+superseded by [#213](https://gitcode.com/urandon/sessionless/issues/213).
+Pi is not a registered backend or an active implementation/enablement path;
+its comparison remains research evidence only. Historical code is preserved in
+the [retirement record](../development.md#retired-pi-experiment-record-historical-only).
+Use the [provider composition](../provider-composition.md) and
+[MVP delivery plan](../mvp-delivery-plan.md) for active routes and task ordering.
 
 ## Decision
 

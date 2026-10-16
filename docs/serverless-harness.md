@@ -62,7 +62,7 @@ portfolio:
 - fresh invocation state for every attempt, with a fresh child process for
   child-process profiles, bounded output, and mandatory cleanup evidence.
 
-Codex, OpenCode, and Pi remain feature-disabled on this cloud substrate until
+Codex and OpenCode remain feature-disabled on this cloud substrate until
 the same spike proves descendant cleanup, warm-instance erasure, exact egress,
 and credential custody for their native processes. They may not inherit a
 weaker profile because they passed provider protocol conformance. AW-05 attached
@@ -773,7 +773,7 @@ state is competitor evidence, never Sessionless durable authority.
 | Repository and reviewed revision | Implementation evidence | Sessionless conclusion |
 |---|---|---|
 | [OpenAI Codex `f5420174`](https://github.com/openai/codex/tree/f5420174dafba153913a3e697f89002c338dfd7e) | The official [`app-server` protocol](https://github.com/openai/codex/blob/f5420174dafba153913a3e697f89002c338dfd7e/codex-rs/app-server/README.md) separates thread/turn/item, exposes binary-version-specific generated schemas, uses a required initialize handshake, bounded queues, explicit interrupt, and stdio JSONL as the supported local transport. The same broad API also contains unsandboxed shell/process operations, while sandbox and approval settings remain Codex-owned turn configuration. | Keep Codex as one closed, method-allowlisted backend below the Sessionless harness registry. Pin binary artifact, protocol/schema and profile; never promote Codex thread IDs, approvals, persistence, model fallback, native retries, or telemetry into canonical attempt authority. |
-| [Earendil Works Pi `6c4f3602`](https://github.com/earendil-works/pi/tree/6c4f360264397c59801f6da2bdac13e3b1fcbe91) | Pi exposes a multi-provider API/runtime and typed telemetry. Its [RPC surface](https://github.com/earendil-works/pi/blob/6c4f360264397c59801f6da2bdac13e3b1fcbe91/packages/coding-agent/docs/rpc.md) is correlated JSONL with streaming events; prompt acknowledgement is acceptance, while later failure is an event. Its [security contract](https://github.com/earendil-works/pi/blob/6c4f360264397c59801f6da2bdac13e3b1fcbe91/packages/coding-agent/docs/security.md) explicitly says project trust is not a sandbox. The [custom-provider surface](https://github.com/earendil-works/pi/blob/6c4f360264397c59801f6da2bdac13e3b1fcbe91/packages/coding-agent/docs/custom-provider.md) supports native providers, proxy/base-URL overrides, OpenAI-compatible transports, OAuth, and OpenRouter-specific compatibility. | Pi RPC is the likely closed subprocess boundary, but use one admitted prompt plus abort only; keep its queues/sessions/catalog/fallback outside authority. Provider selection, credentials, isolation, route evidence, and retries stay server-sealed, and Pi remains disabled until the outer isolation profile proves every gate. |
+| [Earendil Works Pi `6c4f3602`](https://github.com/earendil-works/pi/tree/6c4f360264397c59801f6da2bdac13e3b1fcbe91) | Pi exposes a multi-provider API/runtime and typed telemetry. Its [RPC surface](https://github.com/earendil-works/pi/blob/6c4f360264397c59801f6da2bdac13e3b1fcbe91/packages/coding-agent/docs/rpc.md) is correlated JSONL with streaming events; prompt acknowledgement is acceptance, while later failure is an event. Its [security contract](https://github.com/earendil-works/pi/blob/6c4f360264397c59801f6da2bdac13e3b1fcbe91/packages/coding-agent/docs/security.md) explicitly says project trust is not a sandbox. The [custom-provider surface](https://github.com/earendil-works/pi/blob/6c4f360264397c59801f6da2bdac13e3b1fcbe91/packages/coding-agent/docs/custom-provider.md) supports native providers, proxy/base-URL overrides, OpenAI-compatible transports, OAuth, and OpenRouter-specific compatibility. | Historical comparator only: Pi integration is retired; see the [retirement record](development.md#retired-pi-experiment-record-historical-only). Its RPC/native sessions are not a current Sessionless backend or planned enablement path. |
 | [codeaashu Claude Code mirror `6a259091`](https://github.com/codeaashu/claude-code/tree/6a2590911df240ff5ea56aa355696cfb94d128cb) | The mirror documents centralized per-tool permission checks, bridge transports, remote-session control, MCP, worktree/same-directory spawn modes, and teardown. However its own `README` and `LICENSE` describe leaked Anthropic proprietary source and mark it unlicensed. It is not an official Anthropic source. | Treat only as low-trust architectural orientation. Do not copy, build, redistribute, or derive implementation from it; verify any product claim against official Anthropic documentation before it can affect a decision or contract. |
 
 Research clone receipt (updated 2026-09-04):
@@ -1017,7 +1017,7 @@ labels, and milestone `MVP — Provider & harness (#13)`.
      timeout/concurrency/cost, cancellation, lost response, and ambiguous
      completion measurements.
 5. **PR-03e — Backend composition**
-   - feature-disabled Codex/OpenCode/Pi/direct registrations below the outer
+   - feature-disabled Codex/OpenCode/direct registrations below the outer
      harness; every native adapter must pass #84 before enablement.
 6. **PR-03f — Cloud-dev two-owner E2E and rollout gates**
    - owner/resource denial before effects, exact routing/no fallback,

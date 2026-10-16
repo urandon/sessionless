@@ -138,29 +138,6 @@ type AttachedWorkerSealedInputAuthorizer interface {
 	AuthorizeAttachedWorkerSealedInput(context.Context, AttachedWorkerSealedInputAuthorization) (AttachedWorkerSealedInputAuthorizationResult, error)
 }
 
-// This result is produced only by the actual same-transaction current-source
-// authorizer. Its metadata is not a local send grant: the genuine original
-// owner still checks the matching invocation/RPC, retained monotonic L/R/S/F
-// and the actual same-controller physical boundary without renewing a permit.
-type AttachedWorkerPiAPIUseResultV1 struct {
-	Status                              AttachedWorkerExecutionStatus
-	AcceptedAttempt                     domain.AttachedWorkerAttemptV1
-	AcceptedAttemptRevision             uint64
-	HarnessBindingDigest                domain.HarnessBindingDigestV2
-	AttachedPiAPIInvocationPolicyDigest domain.AttachedPiAPIInvocationPolicyMappingDigestV1
-	CheckedAt, UseExpiresAt             time.Time
-}
-
-// Scalar arguments preserve the existing closed phase wire contract without
-// adding an alternative public DTO, token, new source issuer or Boolean permit.
-// The bearer transport derives PresentedSecretDigest; the store reads actual
-// Job/Run/Attempt/Lease, principal and current API/P-E-T-R-M in ONE transaction.
-type AttachedWorkerPiAPIUseAuthorizerV1 interface {
-	AuthorizeAttachedWorkerPiAPIUse(context.Context, AttachedWorkerSealedInputAuthorization,
-		domain.HarnessBindingDigestV2, domain.AttachedPiAPIInvocationPolicyMappingDigestV1,
-		uint64, string) (AttachedWorkerPiAPIUseResultV1, error)
-}
-
 type AttachedWorkerAttemptResult struct {
 	Status   AttachedWorkerExecutionStatus
 	Attempt  domain.AttachedWorkerAttemptV1

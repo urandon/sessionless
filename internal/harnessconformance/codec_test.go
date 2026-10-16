@@ -27,6 +27,10 @@ func TestFixtureCodecRoundTripAndStrictRejection(t *testing.T) {
 	duplicate := bytes.Replace(encoded, []byte(`"version":1`), []byte(`"version":1,"version":1`), 1)
 	caseCollision := bytes.Replace(encoded, []byte(`"version":1`), []byte(`"version":1,"Version":1`), 1)
 	unknown := bytes.Replace(encoded, []byte(`"fixture_id":`), []byte(`"unknown_field":1,"fixture_id":`), 1)
+	retiredPiPolicy := bytes.Replace(encoded, []byte(`"binding":{`), []byte(`"binding":{"attached_pi_api_invocation_policy_digest":"`+strings.Repeat("a", 64)+`",`), 1)
+	if bytes.Equal(retiredPiPolicy, encoded) {
+		t.Fatal("canonical fixture must contain the binding object")
+	}
 	nullValue := bytes.Replace(encoded, []byte(`"fixture_id":"openrouter-ox-alpha-public"`), []byte(`"fixture_id":null`), 1)
 	noncanonicalNumber := bytes.Replace(encoded, []byte(`"version":1`), []byte(`"version":1e0`), 1)
 	tooDeep := []byte(strings.Repeat(`{"a":`, maxJSONDepth+1) + `0` + strings.Repeat(`}`, maxJSONDepth+1))
@@ -45,6 +49,7 @@ func TestFixtureCodecRoundTripAndStrictRejection(t *testing.T) {
 		"noncanonical number": noncanonicalNumber, "depth": tooDeep, "array": tooManyItems, "string": tooLongString,
 		"invalid utf8": invalidUTF8, "total bytes": bytes.Repeat([]byte(" "), MaxFixtureBytes+1),
 		"legacy admission cost": legacyCost,
+		"retired pi policy":     retiredPiPolicy,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := DecodeFixtureV1(candidate); !errors.Is(err, ErrInvalidFixture) {

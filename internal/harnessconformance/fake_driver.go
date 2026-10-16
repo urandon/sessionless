@@ -80,7 +80,7 @@ func (recorder *SideEffectRecorder) increment(update func(*SideEffectsV1)) {
 }
 
 // FixtureDriver proves the provider-neutral registry contract only. It is not
-// evidence that a Codex, OpenCode, Pi, or OpenRouter native protocol adapter
+// evidence that a Codex, OpenCode, or OpenRouter native protocol adapter
 // exists or conforms.
 type FixtureDriver struct {
 	binding    domain.HarnessBindingV2

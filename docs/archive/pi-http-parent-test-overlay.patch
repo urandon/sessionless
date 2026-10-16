@@ -1,0 +1,664 @@
+--- a/internal/attachedworkerdaemon/invocation.go
++++ b/internal/attachedworkerdaemon/invocation.go
+@@ -11,7 +11,6 @@
+ 	"time"
+ 
+ 	"gitcode.com/urandon/sessionless/internal/domain"
+-	"gitcode.com/urandon/sessionless/internal/pisdkhttpwire"
+ 	"gitcode.com/urandon/sessionless/internal/pisdkphasewire"
+ 	"gitcode.com/urandon/sessionless/internal/ports"
+ )
+@@ -556,17 +555,13 @@
+ 
+ // The original stack/adapter pins the complete fixed manifest prefix, not the
+ // per-input Init values. Preserve every original process field and append
+-// exactly the SAME plan's explicitly selected SPU2 or SPU3 funded values.
+-// In particular this is NOT a loose
++// exactly the SAME plan's ten funded values. In particular this is NOT a loose
+ // prefix match, an alternate legacy full-argv arm, or permission to add Node
+ // flags, a different script, environment, executable or stdin after admission.
+ // All comparison work belongs to the original parent's prospective ledger.
+ func (data *PreparedAPIDataV1) matchesOriginalAPIProcess(original AttemptSpec) bool {
+ 	p := data.ParentProcess
+ 	l := data.ParentRequest.Profile.Limits
+-	if data.HTTPInitArguments != [17]string{} {
+-		return data.InitArguments == [10]string{} && data.matchesOriginalHTTPProcess(original)
+-	}
+ 	if len(original.Stdin) != 0 || len(p.Stdin) != 0 || len(original.Arguments) == 0 ||
+ 		len(p.Arguments) < len(data.InitArguments) || len(p.Arguments)-len(data.InitArguments) != len(original.Arguments) || l.ProcessFrameBytes < 147 {
+ 		return false
+@@ -600,52 +595,6 @@
+ 	return reflect.DeepEqual(p, original)
+ }
+ 
+-func (data *PreparedAPIDataV1) matchesOriginalHTTPProcess(original AttemptSpec) bool {
+-	p := data.ParentProcess
+-	l := data.ParentRequest.Profile.Limits
+-	if len(original.Stdin) != 0 || len(p.Stdin) != 0 || len(original.Arguments) == 0 ||
+-		len(p.Arguments) != len(original.Arguments)+17 || l.ProcessFrameBytes < 114 || l.RequestHeaderBytes > l.ProcessFrameBytes-85 {
+-		return false
+-	}
+-	w := pisdkhttpwire.Limits{FrameBytes: l.ProcessFrameBytes, InitializeBytes: l.ProcessFrameBytes - 113,
+-		RequestBytes: min(l.NativeRequestBytes, l.ProcessFrameBytes-85-l.RequestHeaderBytes), FinalBytes: min(l.RawFinalBytes, l.StructuredFinalBytes, l.ProcessFrameBytes-17),
+-		RequestHeaderBytes: l.RequestHeaderBytes, ResponseHeaderBytes: l.ResponseHeaderBytes, ResponseBytes: l.ResponseBodyBytes, ResponseChunkBytes: l.ResponseChunkBytes,
+-		ParentBytes: maxSupervisorStdinBytes, ChildBytes: l.ProcessStdoutBytes, Frames: l.ProcessEvents}
+-	if _, err := pisdkhttpwire.Measure(w); err != nil {
+-		return false
+-	}
+-	var values [17]uint64
+-	for i, want := range data.HTTPInitArguments {
+-		if len(want) == 0 || len(want) > 16 || want[0] == '0' || p.Arguments[len(original.Arguments)+i] != want {
+-			return false
+-		}
+-		var n uint64
+-		for j := range len(want) {
+-			if want[j] < '0' || want[j] > '9' {
+-				return false
+-			}
+-			n = n*10 + uint64(want[j]-'0')
+-		}
+-		if n > 9007199254740991 {
+-			return false
+-		}
+-		values[i] = n
+-	}
+-	want := [11]uint64{w.FrameBytes, w.InitializeBytes, w.RequestBytes, w.FinalBytes, w.RequestHeaderBytes, w.ResponseHeaderBytes,
+-		w.ResponseBytes, w.ResponseChunkBytes, w.ParentBytes, w.ChildBytes, w.Frames}
+-	for i, n := range want {
+-		if values[i] != n {
+-			return false
+-		}
+-	}
+-	if values[11] > w.InitializeBytes || values[12] > l.PreSendAllocationBytes || values[13] > l.JSONNodes || values[14] != l.JSONDepth ||
+-		values[15] > domain.AttachedPiSDKCanonicalMaxBytesV1 || values[16] != uint64(len(data.ParentRequest.Body)) {
+-		return false
+-	}
+-	p.Arguments = p.Arguments[:len(original.Arguments)]
+-	return reflect.DeepEqual(p, original)
+-}
+-
+ func apiProcessesIndependent(a, b AttemptSpec) bool {
+ 	if apiBytesOverlap(a.Stdin, b.Stdin) {
+ 		return false
+--- a/internal/attachedworkerdaemon/pi_http_prepared_test.go
++++ b/internal/attachedworkerdaemon/pi_http_prepared_test.go
+@@ -20,55 +20,6 @@
+ 	"gitcode.com/urandon/sessionless/internal/pisdkhttpwire"
+ )
+ 
+-type piHTTPFailNthRetirement struct {
+-	PreparedAPILedgerV1
+-	attempts, failAt int
+-	err              error
+-}
+-
+-func (l *piHTTPFailNthRetirement) EndLive(n uint64) error {
+-	l.attempts++
+-	if l.failAt != 0 && l.attempts == l.failAt {
+-		return l.err
+-	}
+-	return l.PreparedAPILedgerV1.EndLive(n)
+-}
+-
+-func TestPreparedPiHTTPAccountingFailureCannotRefundLaterOwner(t *testing.T) {
+-	for _, tc := range []struct {
+-		name   string
+-		failAt int
+-	}{{"coordinator", 1}, {"bridge", 2}, {"wrapper", 3}} {
+-		t.Run(tc.name, func(t *testing.T) {
+-			s, inv, parent, _ := piHTTPOriginalPlanFixture(t, "ok")
+-			ctx, cancel := context.WithTimeout(t.Context(), time.Hour)
+-			t.Cleanup(cancel)
+-			data, err := parent.PrepareOriginalAPIInvocation(ctx, inv.Identity, inv.VerifiedInput, inv.Process, nil)
+-			if err != nil {
+-				t.Fatal(err)
+-			}
+-			want := errors.New("test-owned retirement accounting failure")
+-			ledger := &piHTTPFailNthRetirement{PreparedAPILedgerV1: data.Ledger, err: want}
+-			plan, err := s.PreparePiHTTPStdioV1(inv.Identity, data.ParentRequest, ledger, [32]byte{1}, [32]byte{2}, func(context.Context, *PiHTTPIOLeaseV1) error { return nil })
+-			if err != nil {
+-				t.Fatal(err)
+-			}
+-			ledger.attempts, ledger.failAt = 0, tc.failAt
+-			if err := plan.Close(); !errors.Is(err, want) || errors.Is(err, ErrPiHTTPRetirementPending) {
+-				t.Fatal("accounting failure lost or became retryable", err)
+-			}
+-			if err := ledger.Reserve(0, 193, 0); err != nil {
+-				t.Fatal(err)
+-			}
+-			before, calls := parent.ledger.live, ledger.attempts
+-			copyPlan := *plan
+-			if err := copyPlan.Close(); !errors.Is(err, want) || ledger.attempts != calls || parent.ledger.live != before {
+-				t.Fatal("accounting retry debited later owner", err, ledger.attempts, calls, parent.ledger.live, before)
+-			}
+-		})
+-	}
+-}
+-
+ // Original InvocationRunner and real Supervisor pipes, with synthetic parent,
+ // credential lifecycle, Go child and trusted driver. Never Pi SDK, real provider,
+ // production isolation, genuine file quarantine or #200 producer qualification.
+--- a/internal/attachedworkerdaemon/pi_http_stdio.go
++++ b/internal/attachedworkerdaemon/pi_http_stdio.go
+@@ -533,20 +533,20 @@
+ 
+ func (b *piHTTPStdio) clear() error {
+ 	if !b.retireMu.TryLock() {
+-		return ErrPiHTTPRetirementPending
++		return ErrSupervisorConfig
+ 	}
+ 	defer b.retireMu.Unlock()
+ 	for {
+ 		state := b.state.Load()
+ 		if state == 1 {
+ 			b.stopIO()
+-			return ErrPiHTTPRetirementPending
++			return ErrSupervisorConfig
+ 		}
+ 		if state == 3 {
+ 			return b.clearErr
+ 		}
+ 		if state != 0 && state != 2 {
+-			return ErrPiHTTPRetirementPending
++			return ErrSupervisorConfig
+ 		}
+ 		if b.state.CompareAndSwap(state, 4) {
+ 			break
+@@ -554,19 +554,11 @@
+ 	}
+ 	if !b.stopAndJoin(b.owner.grace) {
+ 		b.state.Store(2) // Run already returned, but actual borrowers still own live state
+-		return ErrPiHTTPRetirementPending
++		return ErrSupervisorConfig
+ 	}
+ 	if err := b.core.clear(); err != nil {
+-		b.core.mu.Lock()
+-		retired := b.core.cleared
+-		b.core.mu.Unlock()
+-		if retired {
+-			b.clearErr = err
+-			b.state.Store(3) // terminal coordinator accounting error
+-			return err
+-		}
+-		b.state.Store(2) // still borrowed; no accounting attempted
+-		return errors.Join(ErrPiHTTPRetirementPending, err)
++		b.state.Store(2)
++		return err
+ 	}
+ 	b.driver, b.digest, b.send = nil, nil, nil
+ 	// owner is immutable: retained *lease/copies reject on atomic lifecycle,
+--- a/internal/attachedworkerdaemon/pi_http_prepared.go
++++ b/internal/attachedworkerdaemon/pi_http_prepared.go
+@@ -14,11 +14,6 @@
+ 	"gitcode.com/urandon/sessionless/internal/domain"
+ 	"gitcode.com/urandon/sessionless/internal/pisdkhttpwire"
+ )
+-
+-// ErrPiHTTPRetirementPending means actual borrowers have not joined. No debit
+-// was retired by this pending step; retry cleanup only after their real join.
+-// Accounting failures are distinct terminal errors, never this sentinel.
+-var ErrPiHTTPRetirementPending = errors.New("Pi HTTP retirement has active borrowers")
+ 
+ // PiHTTPIOLeaseV1 is nonsecret process IO, NOT provider or source authority.
+ // Only the actual Supervisor pump constructs an active lease. Copies share its
+@@ -89,7 +84,6 @@
+ 	state      atomic.Uint32 // prepared0, binding/running1, returned2, closed3
+ 	live       uint64
+ 	ledger     PreparedAPILedgerV1
+-	clearErr   error
+ }
+ 
+ func (*PreparedPiHTTPStdioV1) String() string     { return "PreparedPiHTTPStdioV1{private:[redacted]}" }
+@@ -270,27 +264,21 @@
+ 	for {
+ 		state := p.state.Load()
+ 		if state == 3 {
+-			return p.clearErr
++			return nil
+ 		}
+ 		if state != 0 && state != 2 {
+-			return ErrPiHTTPRetirementPending
++			return ErrSupervisorConfig
+ 		}
+ 		if p.state.CompareAndSwap(state, 1) {
+ 			break
+ 		}
+ 	}
+ 	if err := p.bridge.clear(); err != nil {
+-		if errors.Is(err, ErrPiHTTPRetirementPending) {
+-			p.state.Store(2) // preserve debit/aliases until actual borrowers join
+-		} else {
+-			p.clearErr = err
+-			p.state.Store(3)
+-		}
++		p.state.Store(2) // preserve debit/aliases until actual borrowers join
+ 		return err
+ 	}
+ 	if err := p.ledger.EndLive(p.live); err != nil {
+-		p.clearErr = err
+-		p.state.Store(3) // never retry a failed debit against later owners
++		p.state.Store(2)
+ 		return err
+ 	}
+ 	p.profile, p.identity = domain.AttachedPiSDKNativeProfileV1{}, InvocationIdentity{}
+--- a/internal/attachedworkerdaemon/prepared_invocation.go
++++ b/internal/attachedworkerdaemon/prepared_invocation.go
+@@ -111,11 +111,7 @@
+ 	// the SAME Init plan before Issue. Original Invocation.Process is the pinned
+ 	// manifest prefix with empty stdin; both owned processes append only these
+ 	// values. This DATA does not certify a native artifact, SDK or allocation fit.
+-	InitArguments [10]string `json:"-"`
+-	// HTTPInitArguments is the distinct SPU3 arm. Exactly one argument array
+-	// may be present; the original manifest prefix remains exact in either arm.
+-	// Neither arm grants installed artifact/native/source qualification.
+-	HTTPInitArguments                                          [17]string                                   `json:"-"`
++	InitArguments                                              [10]string                                   `json:"-"`
+ 	Authorization                                              ports.AttachedWorkerSealedInputAuthorization `json:"-"`
+ 	Entry, CallerDeadline, InvocationDeadline, ProcessDeadline time.Time                                    `json:"-"`
+ 	SafetySlack                                                time.Duration                                `json:"-"`
+--- a/internal/attachedworkerdaemon/pi_http_stdio_retirement_test.go
++++ b/internal/attachedworkerdaemon/pi_http_stdio_retirement_test.go
+@@ -5,7 +5,6 @@
+ import (
+ 	"bytes"
+ 	"context"
+-	"errors"
+ 	"sync"
+ 	"sync/atomic"
+ 	"testing"
+@@ -40,15 +39,12 @@
+ 	if runErr == nil || result.CleanupSucceeded || result.piStdio != nil || b.complete {
+ 		t.Fatalf("unjoined borrower declared clean: %+v err=%v", result, runErr)
+ 	}
+-	plan := &PreparedPiHTTPStdioV1{preparedPiHTTPState: &preparedPiHTTPState{bridge: b, ledger: ledger}}
+-	plan.state.Store(2) // actual Run returned above; driver still owns its borrow
+-	copyPlan := *plan
+-	if err := copyPlan.Close(); !errors.Is(err, ErrPiHTTPRetirementPending) || ledger.live != live || !bytes.Equal(b.core.requestFrame.Body, request) {
++	if err := b.clear(); err == nil || ledger.live != live || !bytes.Equal(b.core.requestFrame.Body, request) {
+ 		t.Fatal("cleanup timeout cleared/refunded an unjoined request borrower")
+ 	}
+ 	unblock()
+ 	apiWait(t, b.done)
+-	if err := plan.Close(); err != nil || ledger.live != 0 {
++	if err := b.clear(); err != nil || ledger.live != 0 {
+ 		t.Fatalf("actual postjoin retirement failed: live=%d err=%v", ledger.live, err)
+ 	}
+ }
+--- a/internal/pisdkmedia/http_init.go
++++ b/internal/pisdkmedia/http_init.go
+@@ -19,15 +19,13 @@
+ // and entire Materialize callback/process join before Close, just as for Init.
+ type HTTPInitPlanV1 struct{ state *httpInitState }
+ type httpInitState struct {
+-	mu                sync.Mutex
+-	base              *InitPlanV1
+-	ledger            *codexexec.CanonicalMediaLedgerV1
+-	metadata          uint64
+-	closed            bool
+-	closeErr          error
+-	executionClaimed  bool
+-	executionBorrowed bool
+-	emitted           atomic.Bool
++	mu       sync.Mutex
++	base     *InitPlanV1
++	ledger   *codexexec.CanonicalMediaLedgerV1
++	metadata uint64
++	closed   bool
++	closeErr error
++	emitted  atomic.Bool
+ }
+ 
+ func (HTTPInitPlanV1) String() string     { return "HTTPInitPlanV1{data:[redacted]}" }
+@@ -186,9 +184,6 @@
+ 		return ErrProjection
+ 	}
+ 	defer s.mu.Unlock()
+-	if s.executionBorrowed {
+-		return ErrProjection
+-	}
+ 	if s.closed {
+ 		return s.closeErr
+ 	}
+--- a/internal/pisdkmedia/prepared_execution.go
++++ b/internal/pisdkmedia/prepared_execution.go
+@@ -5,7 +5,6 @@
+ 	"context"
+ 	"crypto/sha256"
+ 	"encoding/hex"
+-	"reflect"
+ 	"sync/atomic"
+ 
+ 	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemon"
+@@ -20,24 +19,19 @@
+ // have joined. Full Source/native/argv/fit admission still belongs to that
+ // producer; this disconnected default-off component supplies none of it.
+ type PreparedPiExecutionV1 struct {
+-	*preparedExecutionSnapshot
+-	supervisor  *attachedworkerdaemon.Supervisor
+-	init        *InitPlanV1
+-	stdio       *attachedworkerdaemon.PreparedPiStdioV1
+-	arguments   [10]string
+-	observation attachedworkerdaemon.PiStdioObservationV1
+-	state       atomic.Uint32 // 0 prepared, 1 running, 2 returned, 3 closed, 4 collecting, 5 collected
+-}
+-
+-// Shared immutable process/request DATA, not a transport arm or execution owner.
+-type preparedExecutionSnapshot struct {
++	supervisor      *attachedworkerdaemon.Supervisor
+ 	request         *RequestProjectionV1
++	init            *InitPlanV1
++	stdio           *attachedworkerdaemon.PreparedPiStdioV1
+ 	profile         domain.AttachedPiSDKNativeProfileV1
++	arguments       [10]string
+ 	bodyDigest      [sha256.Size]byte
+ 	metadataDigests [3][sha256.Size]byte
+ 	metadataSizes   [3]int
+ 	process         attachedworkerdaemon.AttemptSpec
+ 	live            uint64
++	observation     attachedworkerdaemon.PiStdioObservationV1
++	state           atomic.Uint32 // 0 prepared, 1 running, 2 returned, 3 closed, 4 collecting, 5 collected
+ }
+ 
+ var _ attachedworkerdaemon.PreparedProcessRunner = (*PreparedPiExecutionV1)(nil)
+@@ -46,30 +40,14 @@
+ func (p *PreparedPiExecutionV1) GoString() string { return p.String() }
+ 
+ func PreparePiExecutionV1(s *attachedworkerdaemon.Supervisor, request *RequestProjectionV1, init *InitPlanV1, expected attachedworkerdaemon.PreparedAPIRequestV1, process attachedworkerdaemon.AttemptSpec) (*PreparedPiExecutionV1, error) {
+-	if s == nil || init == nil || init.http {
+-		return nil, ErrProjection
+-	}
+-	args := init.EntryArguments()
+-	metadata, err := prepareExecutionSnapshot(request, init, args[:], expected, process)
+-	if err != nil {
+-		return nil, err
+-	}
+-	stdio, err := s.PreparePiStdioV1(request.config.profile, request.ledger)
+-	if err != nil {
+-		_ = metadata.clear()
+-		return nil, err
+-	}
+-	return &PreparedPiExecutionV1{preparedExecutionSnapshot: metadata, supervisor: s, init: init, stdio: stdio, arguments: args}, nil
+-}
+-
+-func prepareExecutionSnapshot(request *RequestProjectionV1, init *InitPlanV1, args []string, expected attachedworkerdaemon.PreparedAPIRequestV1, process attachedworkerdaemon.AttemptSpec) (*preparedExecutionSnapshot, error) {
+-	if request == nil || init == nil || request.ctx == nil || request.ctx.Err() != nil || init.request != request ||
++	if s == nil || request == nil || init == nil || init.http || request.ctx == nil || request.ctx.Err() != nil || init.request != request ||
+ 		init.spent || init.ledger != request.ledger || request.ledger == nil || init.credentialFile == nil || len(request.body) == 0 ||
+-		len(process.Stdin) != 0 || len(args) == 0 || len(process.Arguments) < len(args) || expected.Profile != request.config.profile || len(expected.Body) != len(request.body) {
++		len(process.Stdin) != 0 || len(process.Arguments) < 10 || expected.Profile != request.config.profile || len(expected.Body) != len(request.body) {
+ 		return nil, ErrProjection
+ 	}
++	args := init.EntryArguments()
+ 	for i, value := range args {
+-		if process.Arguments[len(process.Arguments)-len(args)+i] != value {
++		if process.Arguments[len(process.Arguments)-10+i] != value {
+ 			return nil, ErrProjection
+ 		}
+ 	}
+@@ -134,7 +112,7 @@
+ 	if measure.err != nil {
+ 		return nil, ErrProjection
+ 	}
+-	live := 64*count + 512 + uint64(reflect.TypeOf(preparedExecutionSnapshot{}).Size())
++	live := 64*count + 512
+ 	work := 4*uint64(len(request.body)) + 2*argumentBytes + 4*processBytes + 4*uint64(len(expected.Model)+len(expected.Schema)+len(expected.Headers)) + 2*measure.bytes + 2*l.StructuredFinalBytes
+ 	// Extra executor comparisons/hash visits are prospectively funded in the
+ 	// original cumulative ledger. No new payload arena or native-fit claim.
+@@ -159,8 +137,13 @@
+ 	process.Arguments = append([]string(nil), process.Arguments...)
+ 	process.Environment = append([]attachedworkerdaemon.EnvironmentVariable(nil), process.Environment...)
+ 	process.AdditionalReadRoots = append([]string(nil), process.AdditionalReadRoots...)
++	stdio, err := s.PreparePiStdioV1(request.config.profile, request.ledger)
++	if err != nil {
++		return nil, err
++	}
+ 	keep = true
+-	return &preparedExecutionSnapshot{request: request, profile: request.config.profile, bodyDigest: request.bodyDigest, process: process, live: live,
++	return &PreparedPiExecutionV1{supervisor: s, request: request, init: init, stdio: stdio,
++		profile: request.config.profile, arguments: args, bodyDigest: request.bodyDigest, process: process, live: live,
+ 		metadataDigests: [3][sha256.Size]byte{sha256.Sum256(expected.Model), sha256.Sum256(expected.Schema), sha256.Sum256(expected.Headers)},
+ 		metadataSizes:   [3]int{len(expected.Model), len(expected.Schema), len(expected.Headers)}}, nil
+ }
+@@ -225,7 +208,7 @@
+ 	return result, err
+ }
+ 
+-func (p *preparedExecutionSnapshot) sameProcess(v attachedworkerdaemon.AttemptSpec, root string) bool {
++func (p *PreparedPiExecutionV1) sameProcess(v attachedworkerdaemon.AttemptSpec, root string) bool {
+ 	w := p.process
+ 	if v.Executable != w.Executable || v.ExecutableDigest != w.ExecutableDigest || len(v.Arguments) != len(w.Arguments) ||
+ 		len(v.Environment) != len(w.Environment) || len(v.AdditionalReadRoots) != len(w.AdditionalReadRoots)+1 ||
+@@ -298,14 +281,8 @@
+ 		return err
+ 	}
+ 	p.observation = attachedworkerdaemon.PiStdioObservationV1{}
+-	return p.preparedExecutionSnapshot.clear()
+-}
+-
+-func (p *preparedExecutionSnapshot) clear() error {
+ 	clear(p.process.Arguments)
+ 	clear(p.process.Environment)
+ 	clear(p.process.AdditionalReadRoots)
+-	live := p.live
+-	p.live = 0
+-	return p.request.ledger.EndLive(live)
++	return p.request.ledger.EndLive(p.live)
+ }
+--- a/internal/attachedworkersealedinput/pi_prepared_owner_test.go
++++ b/internal/attachedworkersealedinput/pi_prepared_owner_test.go
+@@ -282,7 +282,7 @@
+ 	original := bytes.Clone(f.inv.VerifiedInput.Context)
+ 	d, err := f.owner.PrepareOriginalAPIInvocation(f.ctx, f.inv.Identity, f.inv.VerifiedInput, f.inv.Process, f.inv.InputAcquisition)
+ 	r := f.owner.current
+-	if !errors.Is(err, pisdkmedia.ErrMissingProducer) || d == nil || r == nil || r.projection == nil || r.file == nil || r.init == nil || r.execution != nil {
++	if !errors.Is(err, pisdkmedia.ErrMissingProducer) || d == nil || r == nil || r.projection == nil || r.file == nil || r.init == nil || r.execution == nil {
+ 		if r == nil {
+ 			t.Fatalf("incomplete actual pipeline: data=%t owned=false err=%v", d != nil, err)
+ 		}
+@@ -309,8 +309,8 @@
+ 	}
+ 	args := r.init.EntryArguments()
+ 	want := append([]string{"fixed-entry"}, args[:]...)
+-	if d.InitArguments != [10]string{} || d.HTTPInitArguments != args || !reflect.DeepEqual(d.ParentProcess.Arguments, want) || !reflect.DeepEqual(d.ChildProcess.Arguments, want) || len(d.ChildProcess.AdditionalReadRoots) != 1 {
+-		t.Fatal("exact original argv prefix/separate seventeen funded HTTP arguments lost")
++	if d.InitArguments != args || !reflect.DeepEqual(d.ParentProcess.Arguments, want) || !reflect.DeepEqual(d.ChildProcess.Arguments, want) || len(d.ChildProcess.AdditionalReadRoots) != 1 {
++		t.Fatal("exact original argv prefix/ten funded arguments lost")
+ 	}
+ 	d.ParentInput.Context[0] ^= 1
+ 	d.ParentInput.Artifacts[0].Body[0] ^= 1
+--- a/internal/attachedworkersealedinput/pi_prepared_owner.go
++++ b/internal/attachedworkersealedinput/pi_prepared_owner.go
+@@ -59,8 +59,8 @@
+ 	phases     *piPreparedPhases
+ 	file       *providercredential.PreparedImmutableAPIFileV1
+ 	fileUse    *providercredential.PreparedPiFileUseV1
+-	init       *pisdkmedia.HTTPInitPlanV1
+-	execution  *pisdkmedia.PreparedPiHTTPExecutionV1
++	init       *pisdkmedia.InitPlanV1
++	execution  *pisdkmedia.PreparedPiExecutionV1
+ 	original   context.Context
+ 	grace      time.Duration
+ 	mu         sync.Mutex
+@@ -236,7 +236,7 @@
+ 	if err := r.fileUse.PrepareHTTPReceiveV1(data.ParentRequest.Profile.Limits.ResponseHeaderBytes, data.ParentRequest.Profile.Limits.ResponseBodyBytes); err != nil {
+ 		return data, err
+ 	}
+-	r.init, err = pisdkmedia.PrepareHTTPInitV1(ctx, projection, p.config.ModelJSON, p.config.TimeoutMilliseconds, r.file)
++	r.init, err = pisdkmedia.PrepareInitV1(ctx, projection, p.config.ModelJSON, p.config.TimeoutMilliseconds, r.file)
+ 	if err != nil {
+ 		return data, err
+ 	}
+@@ -248,17 +248,14 @@
+ 		}
+ 		r.processes[i] = v
+ 	}
+-	data.ParentProcess, data.ChildProcess, data.HTTPInitArguments = r.processes[0], r.processes[1], args
++	data.ParentProcess, data.ChildProcess, data.InitArguments = r.processes[0], r.processes[1], args
++	r.execution, err = pisdkmedia.PreparePiExecutionV1(p.supervisor, projection, r.init, data.ParentRequest, data.ParentProcess)
++	if err != nil {
++		return data, err
++	}
+ 	data.Entry, data.CallerDeadline = entry, originalDeadline
+ 	data.InvocationDeadline = entry.Add(r.inputs[0].Job.Limits.MaxRuntime)
+ 	data.ProcessDeadline = entry.Add(p.supervisor.PreparedProcessTimeoutV1())
+-	r.execution, err = pisdkmedia.PreparePiHTTPExecutionV1(p.supervisor, projection, r.init, r.fileUse, data.ParentRequest, data.ParentProcess)
+-	if err != nil {
+-		// Installed private HTTPS selection is deliberately absent. Return
+-		// owned partial staging for the original runner's real retirement,
+-		// never an alternate root, driver or a synthetic eligibility grant.
+-		return data, errors.Join(pisdkmedia.ErrMissingProducer, err)
+-	}
+ 	if ctx.Err() != nil || original.Err() != nil || !p.source.OwnsOriginalPiInput(a) {
+ 		return data, ErrUnavailable
+ 	}
+@@ -348,9 +345,9 @@
+ 	return r.ledger.Reserve((6*e+14)*l+arrays, 8*l+h+24*(e+t+1)+arrays, 3*l)
+ }
+ 
+-func (r *piOwnedPreparation) copyProcess(original attachedworkerdaemon.AttemptSpec, args [17]string, child bool) (attachedworkerdaemon.AttemptSpec, error) {
++func (r *piOwnedPreparation) copyProcess(original attachedworkerdaemon.AttemptSpec, args [10]string, child bool) (attachedworkerdaemon.AttemptSpec, error) {
+ 	l := r.owner.config.Request.Profile.Limits
+-	count := uint64(len(original.Arguments)) + uint64(len(original.Environment)) + uint64(len(original.AdditionalReadRoots)) + 18
++	count := uint64(len(original.Arguments)) + uint64(len(original.Environment)) + uint64(len(original.AdditionalReadRoots)) + 11
+ 	if count > l.JSONNodes || len(original.Arguments) == 0 {
+ 		return attachedworkerdaemon.AttemptSpec{}, ErrInvalid
+ 	}
+@@ -389,7 +386,7 @@
+ 		return attachedworkerdaemon.AttemptSpec{}, ErrUnavailable
+ 	}
+ 	v := original
+-	v.Arguments = make([]string, len(original.Arguments)+17)
++	v.Arguments = make([]string, len(original.Arguments)+10)
+ 	copy(v.Arguments, original.Arguments)
+ 	copy(v.Arguments[len(original.Arguments):], args[:])
+ 	v.Environment = append([]attachedworkerdaemon.EnvironmentVariable(nil), original.Environment...)
+@@ -473,10 +470,7 @@
+ 		r.phases.clear()
+ 	}
+ 	if r.init != nil {
+-		r.cleanupErr = r.init.Close()
+-		if r.cleanupErr != nil {
+-			return
+-		}
++		r.init.Clear()
+ 	}
+ 	if r.projection != nil {
+ 		r.projection.Clear()
+--- a/internal/providercredential/pi_http_driver_factory_test.go
++++ b/internal/providercredential/pi_http_driver_factory_test.go
+@@ -49,10 +49,9 @@
+ }
+ 
+ func TestPiHTTPDriverFactoryOriginalCommitmentsAndNoOverrides(t *testing.T) {
+-	for _, mode := range []string{"exact", "body", "model", "schema", "headers", "profile", "missing private roots", "copied second factory", "foreign file", "foreign ledger"} {
++	for _, mode := range []string{"exact", "body", "model", "schema", "headers", "profile", "missing private roots", "copied second factory"} {
+ 		t.Run(mode, func(t *testing.T) {
+ 			p, l, s, r, secrets := piDriverFactoryFixture(t, mode != "missing private roots")
+-			file, ledger := p.state.file, l
+ 			switch mode {
+ 			case "body":
+ 				r.Body = bytes.Clone(r.Body)
+@@ -68,12 +67,8 @@
+ 				r.Headers[0] ^= 1
+ 			case "profile":
+ 				r.Profile.Model.ModelID = "foreign"
+-			case "foreign file":
+-				file = &PreparedImmutableAPIFileV1{}
+-			case "foreign ledger":
+-				ledger = &piFileLedger{}
+ 			}
+-			plan, err := p.PrepareHTTPIOV1(s, r, file, ledger)
++			plan, err := p.PrepareHTTPIOV1(s, r)
+ 			valid := mode == "exact" || mode == "copied second factory"
+ 			if (err == nil) != valid || (plan != nil) != valid {
+ 				t.Fatal("factory commitment mismatch", mode, err)
+@@ -86,7 +81,7 @@
+ 			}
+ 			if mode == "copied second factory" {
+ 				copyRecipe := *p
+-				if second, err := copyRecipe.PrepareHTTPIOV1(s, r, p.state.file, l); err == nil || second != nil || !p.state.stopped.Load() {
++				if second, err := copyRecipe.PrepareHTTPIOV1(s, r); err == nil || second != nil || !p.state.stopped.Load() {
+ 					t.Fatal("copied factory revived original scope", err)
+ 				}
+ 			}
+@@ -101,7 +96,7 @@
+ func TestPiHTTPDriverFactoryExactGlobalBudgetAndOneShort(t *testing.T) {
+ 	p, l, s, r, _ := piDriverFactoryFixture(t, true)
+ 	c, v, n := l.copy, l.live, l.nodes
+-	if _, err := p.PrepareHTTPIOV1(s, r, p.state.file, l); err != nil {
++	if _, err := p.PrepareHTTPIOV1(s, r); err != nil {
+ 		t.Fatal(err)
+ 	}
+ 	dc, dv, dn := l.copy-c, l.live-v, l.nodes-n
+@@ -122,7 +117,7 @@
+ 			case "nodes one short":
+ 				l.maxNodes--
+ 			}
+-			plan, err := p.PrepareHTTPIOV1(s, r, p.state.file, l)
++			plan, err := p.PrepareHTTPIOV1(s, r)
+ 			if (err == nil) != (mode == "exact") || (plan != nil) != (mode == "exact") {
+ 				t.Fatal("global budget admission", mode, err)
+ 			}
+@@ -188,7 +183,7 @@
+ 		}
+ 		// With exactly the driver partition the subsequent daemon partition must
+ 		// fail; one byte short must fail before any driver work is admitted.
+-		if plan, err := p.PrepareHTTPIOV1(s, r, p.state.file, l); err == nil || plan != nil {
++		if plan, err := p.PrepareHTTPIOV1(s, r); err == nil || plan != nil {
+ 			t.Fatal("unfunded subsequent daemon partition accepted", err)
+ 		}
+ 		want := before + work
+--- a/internal/providercredential/pi_http_driver.go
++++ b/internal/providercredential/pi_http_driver.go
+@@ -16,8 +16,7 @@
+ // The private installed HTTPS policy must already be prepared; no production
+ // source factory currently selects it, so this does not clear MissingProducer.
+ // The returned opaque plan remains mechanics DATA, never #200 custody.
+-func (p *PreparedPiFileUseV1) PrepareHTTPIOV1(supervisor *attachedworkerdaemon.Supervisor, request attachedworkerdaemon.PreparedAPIRequestV1,
+-	file *PreparedImmutableAPIFileV1, ledger attachedworkerdaemon.PreparedAPILedgerV1) (*attachedworkerdaemon.PreparedPiHTTPStdioV1, error) {
++func (p *PreparedPiFileUseV1) PrepareHTTPIOV1(supervisor *attachedworkerdaemon.Supervisor, request attachedworkerdaemon.PreparedAPIRequestV1) (*attachedworkerdaemon.PreparedPiHTTPStdioV1, error) {
+ 	if p == nil || p.state == nil {
+ 		return nil, ErrInvalid
+ 	}
+@@ -27,8 +26,7 @@
+ 		return nil, ErrConsumed
+ 	}
+ 	defer s.mu.Unlock()
+-	if s.stopped.Load() || s.ioPrepared || s.claimed.Load() || s.callback != 0 || s.auth == nil || s.http == nil || s.responseScan == nil || s.expected == nil || s.network.Load() == nil || s.file == nil || s.file.ctx.Err() != nil ||
+-		file != s.file || nilPiLedger(ledger) || ledger != s.ledger {
++	if s.stopped.Load() || s.ioPrepared || s.claimed.Load() || s.callback != 0 || s.auth == nil || s.http == nil || s.responseScan == nil || s.expected == nil || s.network.Load() == nil || s.file == nil || s.file.ctx.Err() != nil {
+ 		s.abort()
+ 		return nil, ErrConsumed
+ 	}
+--- a/internal/providercredential/pi_http_driver_test.go
++++ b/internal/providercredential/pi_http_driver_test.go
+@@ -118,9 +118,8 @@
+ 	child.Environment = append([]daemon.EnvironmentVariable(nil), process.Environment...)
+ 	child.AdditionalReadRoots = []string{""}
+ 	l := p.request.Profile.Limits
+-	var args [17]string
+-	for i, n := range [17]uint64{l.ProcessFrameBytes, l.ProcessFrameBytes - 113, min(l.NativeRequestBytes, l.ProcessFrameBytes-85-l.RequestHeaderBytes), min(l.RawFinalBytes, l.StructuredFinalBytes, l.ProcessFrameBytes-17),
+-		l.RequestHeaderBytes, l.ResponseHeaderBytes, l.ResponseBodyBytes, l.ResponseChunkBytes, 4 << 20, l.ProcessStdoutBytes, l.ProcessEvents, 700, 600, 500, l.JSONDepth, 300, uint64(len(p.request.Body))} {
++	var args [10]string
++	for i, n := range [10]uint64{l.ProcessFrameBytes - 17, min(l.NativeRequestBytes, l.ProcessFrameBytes-146), min(l.RawFinalBytes, l.StructuredFinalBytes, l.ProcessFrameBytes-17), l.ProcessFrameBytes, 700, 600, 500, l.JSONDepth, 300, uint64(len(p.request.Body))} {
+ 		args[i] = strconv.FormatUint(n, 10)
+ 	}
+ 	parent.Arguments = append(parent.Arguments, args[:]...)
+@@ -130,7 +129,7 @@
+ 	deadline, _ := ctx.Deadline()
+ 	ownedIssue := p.issue
+ 	ownedIssue.HarnessBinding = a.Job.HarnessBinding // original optional expiry pointer must not alias caller partition
+-	p.data = &daemon.PreparedAPIDataV1{Issue: ownedIssue, ParentInput: a, ChildInput: b, ParentRequest: clone(p.request), ChildRequest: clone(p.request), ParentProcess: parent, ChildProcess: child, HTTPInitArguments: args,
++	p.data = &daemon.PreparedAPIDataV1{Issue: ownedIssue, ParentInput: a, ChildInput: b, ParentRequest: clone(p.request), ChildRequest: clone(p.request), ParentProcess: parent, ChildProcess: child, InitArguments: args,
+ 		Entry: entry, CallerDeadline: deadline, InvocationDeadline: entry.Add(v.Job.Limits.MaxRuntime), ProcessDeadline: entry.Add(v.Job.Limits.MaxRuntime), SafetySlack: time.Nanosecond, Ledger: p.ledger, Retirement: p, Custody: p,
+ 		Authorization: ports.AttachedWorkerSealedInputAuthorization{TenantID: head.TenantID, OwnerUserID: head.OwnerUserID, WorkerID: head.WorkerID, ConnectionID: head.ConnectionID,
+ 			EnrollmentGeneration: head.EnrollmentGeneration, ConnectionGeneration: head.ConnectionGeneration, RunID: head.RunID, AttemptID: head.AttemptID, AttemptSequence: 1, LeaseID: head.LeaseID,
+@@ -162,7 +161,7 @@
+ 	}
+ 	p.preparePeer(p.recipe.state.network.Load()) // private fake DNS/local TLS ONLY
+ 	p.stage = "plan"
+-	p.plan, err = p.recipe.PrepareHTTPIOV1(p.supervisor, p.data.ParentRequest, f, p.ledger)
++	p.plan, err = p.recipe.PrepareHTTPIOV1(p.supervisor, p.data.ParentRequest)
+ 	if err == nil {
+ 		p.stage = "prepared"
+ 	}

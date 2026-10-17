@@ -11,7 +11,7 @@ import (
 const (
 	SubstrateBindingVersionV1              uint32 = 1
 	ServerlessInvocationAuthorityVersionV1 uint32 = 1
-	PreparedAllocationVersionV1            uint32 = 1
+	PreparedAllocationVersionV2            uint32 = 2
 	AttemptEffectReservationVersionV1      uint32 = 1
 	ServerlessProviderEffectSequenceV1     uint64 = 1
 	maxServerlessInvocationV1                     = 24 * time.Hour
@@ -22,7 +22,7 @@ type (
 	SubstrateWorkloadModeV1               string
 	SubstrateBindingDigestV1              string
 	ServerlessInvocationAuthorityDigestV1 string
-	PreparedAllocationDigestV1            string
+	PreparedAllocationDigestV2            string
 	AttemptEffectReservationDigestV1      string
 	ProviderEffectKindV1                  string
 	CostEvidenceStateV1                   string

@@ -165,9 +165,15 @@ func (store *Store) currentOwnedAttemptEffectAuthority(ctx context.Context, q *o
 		return deny()
 	}
 	job := loaded.Job
-	// Initial private test composition supports only the installed credential-
-	// free fixture class; a copied profile cannot enable a paid/live backend.
-	if job.HarnessBinding.Backend.BackendKind != domain.HarnessBackendDeterministicFixtureV1 || job.HarnessBinding.Resource.Kind != domain.ProviderResourceCredentiallessFixtureV1 {
+	// Closed preparation classes only. A local tuple is not approval: the
+	// original authenticated source, Final, installed profile/funding heads,
+	// Session/principal and lease/fence checks below remain mandatory. Public
+	// serving composition and all per-operation send gates remain separate.
+	backend, resource, substrate := job.HarnessBinding.Backend, job.HarnessBinding.Resource, *job.SubstrateBinding
+	fixture := backend.BackendKind == domain.HarnessBackendDeterministicFixtureV1 && resource.Kind == domain.ProviderResourceCredentiallessFixtureV1
+	local := backend.BackendKind == domain.HarnessBackendDirectOpenAICompatibleV1 && backend.ProviderContractKind == domain.ProviderContractConfiguredEndpointV1 &&
+		resource.Kind == domain.ProviderResourceLocalEndpointV1 && substrate.Kind == domain.SubstrateLocalDevelopmentV1 && substrate.WorkloadMode == domain.SubstrateWorkloadInProcessDirectV1
+	if !fixture && !local {
 		return deny()
 	}
 	source, err := domain.DecodeAttemptExecutionSourceV1([]byte(job.OwnedExecutionSourceRecord))

@@ -19,13 +19,13 @@ type preparationOnceDriver struct {
 	failure      error
 }
 
-func (d *preparationOnceDriver) Preflight(ctx context.Context, _ domain.ServerlessInvocationAuthorityV1) (domain.PreparedAllocationV1, error) {
+func (d *preparationOnceDriver) Preflight(ctx context.Context, _ domain.ServerlessInvocationAuthorityV1) (domain.PreparedAllocationV2, error) {
 	if err := ctx.Err(); err != nil {
-		return domain.PreparedAllocationV1{}, err
+		return domain.PreparedAllocationV2{}, err
 	}
 	d.preparations.Add(1)
 	if d.failure != nil {
-		return domain.PreparedAllocationV1{}, d.failure
+		return domain.PreparedAllocationV2{}, d.failure
 	}
 	return d.allocation.Clone(), nil
 }

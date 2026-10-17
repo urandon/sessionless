@@ -24,7 +24,7 @@ type OwnedProxyPublicationV2 struct {
 	LeaseID                    domain.LeaseID
 	FenceToken                 uint64
 	PhysicalInvocationClaimID  string
-	RegisteredAllocationDigest domain.RegisteredAllocationDigestV1
+	RegisteredAllocationDigest domain.RegisteredAllocationDigestV2
 	SourceDigest               string
 	ObservedAt                 time.Time
 	PolicyBody                 []byte
@@ -82,7 +82,7 @@ func (p OwnedProxyPublicationV2) IntentBytes() ([]byte, error) {
 		LeaseID     domain.LeaseID
 		Fence       uint64
 		Claim       string
-		Allocation  domain.RegisteredAllocationDigestV1
+		Allocation  domain.RegisteredAllocationDigestV2
 		Source      string
 		ObservedAt  time.Time
 		Policy      []byte

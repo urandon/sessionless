@@ -30,7 +30,7 @@ type OwnedFixtureCustodyV1 struct {
 	scope            domain.AttemptOperationScopeV1
 	parentDigest     string
 	sourceDigest     string
-	allocationDigest domain.RegisteredAllocationDigestV1
+	allocationDigest domain.RegisteredAllocationDigestV2
 	clock            ports.Clock
 	directory        string
 	key              [32]byte
@@ -41,7 +41,7 @@ type OwnedFixtureCustodyV1 struct {
 	receipt          *ports.OwnedOperationResidualReceiptV1
 }
 
-func NewOwnedFixtureCustodyV1(parent domain.OwnedAttemptEffectParentV1, source domain.AttemptExecutionSourceV1, allocation domain.RegisteredAllocationV1, clock ports.Clock) (*OwnedFixtureCustodyV1, error) {
+func NewOwnedFixtureCustodyV1(parent domain.OwnedAttemptEffectParentV1, source domain.AttemptExecutionSourceV1, allocation domain.RegisteredAllocationV2, clock ports.Clock) (*OwnedFixtureCustodyV1, error) {
 	pd, pe := parent.Digest()
 	sd, se := source.Digest()
 	ad, ae := allocation.Digest()

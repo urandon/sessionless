@@ -346,7 +346,7 @@ type AttemptOperationReservationV1 struct {
 	OperationDigest            AttemptOperationDigestV1           `json:"operation_digest"`
 	ReservedAt                 time.Time                          `json:"reserved_at"`
 	AggregateDebit             AttemptOperationDebitV1            `json:"aggregate_debit"`
-	RegisteredAllocationDigest RegisteredAllocationDigestV1       `json:"registered_allocation_digest"`
+	RegisteredAllocationDigest RegisteredAllocationDigestV2       `json:"registered_allocation_digest"`
 	RegisteredProxyDigest      RegisteredProxyAttestationDigestV2 `json:"registered_proxy_digest"`
 	ComponentAmounts           [4]uint64                          `json:"component_amounts"`
 }

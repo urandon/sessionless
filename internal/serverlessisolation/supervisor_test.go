@@ -24,7 +24,7 @@ import (
 
 type fixtureLauncher struct {
 	mu         sync.Mutex
-	allocation domain.PreparedAllocationV1
+	allocation domain.PreparedAllocationV2
 	events     []string
 	prepares   int
 	residue    ResidueProofV1
@@ -43,7 +43,7 @@ func (*fixtureLauncher) Profile() attachedworkerdaemon.IsolationProfile {
 	}
 }
 
-func (launcher *fixtureLauncher) Preflight(context.Context, domain.ServerlessInvocationAuthorityV1) (domain.PreparedAllocationV1, error) {
+func (launcher *fixtureLauncher) Preflight(context.Context, domain.ServerlessInvocationAuthorityV1) (domain.PreparedAllocationV2, error) {
 	return launcher.allocation.Clone(), nil
 }
 
@@ -367,20 +367,20 @@ func TestPreflightRejectsEveryAttestationSubstitution(t *testing.T) {
 	t.Parallel()
 	fixture := executableFixture(t)
 	prepared, issuer, allocation, now := childPreparedFixture(t, fixture)
-	mutations := map[string]func(*domain.PreparedAllocationV1){
-		"image":         func(value *domain.PreparedAllocationV1) { value.ObservedImageDigest = digestText("wrong-image") },
-		"outer harness": func(value *domain.PreparedAllocationV1) { value.ObservedOuterHarnessDigest = digestText("wrong-outer") },
-		"proxy artifact": func(value *domain.PreparedAllocationV1) {
+	mutations := map[string]func(*domain.PreparedAllocationV2){
+		"image":         func(value *domain.PreparedAllocationV2) { value.ObservedImageDigest = digestText("wrong-image") },
+		"outer harness": func(value *domain.PreparedAllocationV2) { value.ObservedOuterHarnessDigest = digestText("wrong-outer") },
+		"proxy artifact": func(value *domain.PreparedAllocationV2) {
 			value.ObservedProxyArtifactDigest = digestText("wrong-proxy")
 		},
-		"proxy identity": func(value *domain.PreparedAllocationV1) {
+		"proxy identity": func(value *domain.PreparedAllocationV2) {
 			value.ObservedProxyIdentityDigest = digestText("wrong-identity")
 		},
-		"executable": func(value *domain.PreparedAllocationV1) {
+		"executable": func(value *domain.PreparedAllocationV2) {
 			value.ChildProcess.ExecutableDigest = digestText("wrong-executable")
 		},
-		"protocol": func(value *domain.PreparedAllocationV1) { value.ChildProcess.NativeProtocol = "wrong-v1" },
-		"backend profile": func(value *domain.PreparedAllocationV1) {
+		"protocol": func(value *domain.PreparedAllocationV2) { value.ChildProcess.NativeProtocol = "wrong-v1" },
+		"backend profile": func(value *domain.PreparedAllocationV2) {
 			value.ChildProcess.BackendProfileDigest = digestText("wrong-backend")
 		},
 	}
@@ -553,7 +553,7 @@ func TestSupervisorReportsUnconfirmedTaint(t *testing.T) {
 	}
 }
 
-func newFixtureLauncher(allocation domain.PreparedAllocationV1, now time.Time) *fixtureLauncher {
+func newFixtureLauncher(allocation domain.PreparedAllocationV2, now time.Time) *fixtureLauncher {
 	return &fixtureLauncher{
 		allocation: allocation,
 		residue: ResidueProofV1{
@@ -576,7 +576,7 @@ func newFixtureSupervisor(t testing.TB, launcher *fixtureLauncher, issuer *serve
 	return supervisor
 }
 
-func childPreparedFixture(t testing.TB, executable string) (serverlessharness.PreparedInvocation, *serverlessharness.CapabilityIssuer, domain.PreparedAllocationV1, time.Time) {
+func childPreparedFixture(t testing.TB, executable string) (serverlessharness.PreparedInvocation, *serverlessharness.CapabilityIssuer, domain.PreparedAllocationV2, time.Time) {
 	t.Helper()
 	return childPreparedFixtureWithLimits(t, executable, 5*time.Minute, time.Minute, 1<<20, 1<<20)
 }
@@ -588,7 +588,7 @@ func childPreparedFixtureWithLimits(
 	cleanupTimeout time.Duration,
 	stdoutBytes uint64,
 	stderrBytes uint64,
-) (serverlessharness.PreparedInvocation, *serverlessharness.CapabilityIssuer, domain.PreparedAllocationV1, time.Time) {
+) (serverlessharness.PreparedInvocation, *serverlessharness.CapabilityIssuer, domain.PreparedAllocationV2, time.Time) {
 	t.Helper()
 	now := time.Unix(100, 0).UTC()
 	digest, err := attachedworkerdaemon.DigestExecutable(executable)
@@ -674,8 +674,8 @@ func childPreparedFixtureWithLimits(
 	if err != nil {
 		t.Fatal(err)
 	}
-	allocation := domain.PreparedAllocationV1{
-		Version: domain.PreparedAllocationVersionV1, SubstrateBindingDigest: substrateDigest,
+	allocation := domain.PreparedAllocationV2{
+		Version: domain.PreparedAllocationVersionV2, SubstrateBindingDigest: substrateDigest,
 		ObservedImageDigest: substrate.ImageDigest, ObservedOuterHarnessDigest: substrate.OuterHarnessArtifactDigest,
 		ObservedProxyArtifactDigest: substrate.EgressProxyArtifactDigest,
 		ObservedProxyIdentityDigest: substrate.EgressProxyIdentityDigest,

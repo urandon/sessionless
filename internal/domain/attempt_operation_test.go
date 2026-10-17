@@ -31,7 +31,7 @@ func operationReservationFixture(t *testing.T, op domain.AttemptOperationV1) dom
 		debit.ModelCalls = op.Sequence - debit.ToolDispatches
 	}
 	r := domain.AttemptOperationReservationV1{Version: 1, Operation: op, OperationDigest: digest, ReservedAt: op.Deadline.Add(-op.Debit.ActiveDuration), AggregateDebit: debit}
-	r.RegisteredAllocationDigest = domain.RegisteredAllocationDigestV1(strings.Repeat("1", 64))
+	r.RegisteredAllocationDigest = domain.RegisteredAllocationDigestV2(strings.Repeat("1", 64))
 	r.RegisteredProxyDigest = domain.RegisteredProxyAttestationDigestV2(strings.Repeat("2", 64))
 	r.ComponentAmounts[0] = debit.AmountMicrounits
 	if err := r.Validate(); err != nil {

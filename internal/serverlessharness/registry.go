@@ -44,7 +44,7 @@ func (err substrateErrorV1) Code() SubstrateFailureCodeV1 { return err.code }
 // implementation receives only canonical authority or an issuer-authenticated
 // PreparedInvocation and cannot select another backend/provider.
 type ExecutionSubstrateV1 interface {
-	Preflight(context.Context, domain.ServerlessInvocationAuthorityV1) (domain.PreparedAllocationV1, error)
+	Preflight(context.Context, domain.ServerlessInvocationAuthorityV1) (domain.PreparedAllocationV2, error)
 	Execute(context.Context, PreparedInvocation, ports.ExecutionRequest, ports.ExecutionEventSink, ports.HarnessDriver) (ports.ExecutionResult, domain.SubstrateExecutionEvidenceV1, error)
 	Cancel(context.Context, domain.ServerlessInvocationAuthorityV1) (domain.SubstrateOperationObservationV1, error)
 	Reconcile(context.Context, domain.ServerlessInvocationAuthorityV1) (domain.SubstrateOperationObservationV1, error)
@@ -292,20 +292,20 @@ func (reconciliation *preparedReconciliationV1) Reconcile(ctx context.Context) (
 
 // Physical preflight is private: raw structural authority is not permission
 // to allocate. The sole caller burns its authenticated parent right first.
-func (registry *SubstrateRegistryV1) preflight(ctx context.Context, authority domain.ServerlessInvocationAuthorityV1) (domain.PreparedAllocationV1, error) {
+func (registry *SubstrateRegistryV1) preflight(ctx context.Context, authority domain.ServerlessInvocationAuthorityV1) (domain.PreparedAllocationV2, error) {
 	if ctx == nil || ctx.Err() != nil {
-		return domain.PreparedAllocationV1{}, substrateErrorV1{code: SubstrateFailureAuthorityInvalidV1}
+		return domain.PreparedAllocationV2{}, substrateErrorV1{code: SubstrateFailureAuthorityInvalidV1}
 	}
 	registration, _, err := registry.resolve(authority, true)
 	if err != nil {
-		return domain.PreparedAllocationV1{}, err
+		return domain.PreparedAllocationV2{}, err
 	}
 	allocation, err := registration.Driver.Preflight(ctx, authority.Clone())
 	if err != nil {
-		return domain.PreparedAllocationV1{}, substrateErrorV1{code: SubstrateFailurePreflightV1}
+		return domain.PreparedAllocationV2{}, substrateErrorV1{code: SubstrateFailurePreflightV1}
 	}
 	if err := allocation.ValidateForBinding(authority.SubstrateBinding, authority.HarnessBinding.Backend); err != nil {
-		return domain.PreparedAllocationV1{}, substrateErrorV1{code: SubstrateFailureBindingMismatchV1}
+		return domain.PreparedAllocationV2{}, substrateErrorV1{code: SubstrateFailureBindingMismatchV1}
 	}
 	return allocation.Clone(), nil
 }

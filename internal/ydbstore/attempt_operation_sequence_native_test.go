@@ -132,8 +132,8 @@ func testNativeSequentialOperationPricing(t *testing.T, knownFree bool, semantic
 	g, keeper, policy := nativeSequenceGraphPricingLimit(t, knownFree, paidProvider, ceiling)
 	parent, _ := g.persistedParent(t)
 	clock := nativeOperationClock{g.ctx, g.f.store}
-	allocation, err := func() (domain.RegisteredAllocationV1, error) {
-		var value domain.RegisteredAllocationV1
+	allocation, err := func() (domain.RegisteredAllocationV2, error) {
+		var value domain.RegisteredAllocationV2
 		err := g.f.store.ownedAuthorityTx(g.ctx, func(ctx context.Context, q *ownedAuthorityQuery) error {
 			_, p, s, burn, e := g.f.store.operationParent(ctx, q, keeper.scope)
 			if e != nil {

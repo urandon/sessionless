@@ -65,26 +65,26 @@ func (burn *ownedPreparationBurnFixture) snapshot() (bool, int) {
 type ownedPreparationDriverFixture struct {
 	burn       *ownedPreparationBurnFixture
 	authority  domain.ServerlessInvocationAuthorityDigestV1
-	allocation domain.PreparedAllocationV1
+	allocation domain.PreparedAllocationV2
 	calls      atomic.Uint64
 	failure    error
 	before     func()
 	invalid    bool
 }
 
-func (driver *ownedPreparationDriverFixture) Preflight(ctx context.Context, authority domain.ServerlessInvocationAuthorityV1) (domain.PreparedAllocationV1, error) {
+func (driver *ownedPreparationDriverFixture) Preflight(ctx context.Context, authority domain.ServerlessInvocationAuthorityV1) (domain.PreparedAllocationV2, error) {
 	driver.calls.Add(1)
 	burned, _ := driver.burn.snapshot()
 	digest, err := authority.Digest()
 	deadline, bounded := ctx.Deadline()
 	if !burned || err != nil || digest != driver.authority || !bounded || time.Until(deadline) > 31*time.Second || ctx.Err() != nil {
-		return domain.PreparedAllocationV1{}, errors.New("preflight preceded exact durable burn or lacked original bound")
+		return domain.PreparedAllocationV2{}, errors.New("preflight preceded exact durable burn or lacked original bound")
 	}
 	if driver.before != nil {
 		driver.before()
 	}
 	if driver.failure != nil {
-		return domain.PreparedAllocationV1{}, driver.failure
+		return domain.PreparedAllocationV2{}, driver.failure
 	}
 	allocation := driver.allocation.Clone()
 	if driver.invalid {
@@ -93,7 +93,7 @@ func (driver *ownedPreparationDriverFixture) Preflight(ctx context.Context, auth
 	return allocation, nil
 }
 
-func ownedPreparationAuthorityFixture(t testing.TB) (domain.ServerlessInvocationAuthorityV1, domain.AttemptEffectReservationV1, domain.PreparedAllocationV1, time.Time) {
+func ownedPreparationAuthorityFixture(t testing.TB) (domain.ServerlessInvocationAuthorityV1, domain.AttemptEffectReservationV1, domain.PreparedAllocationV2, time.Time) {
 	t.Helper()
 	a, _, allocation, at := capabilityFixture(t)
 	b := &a.HarnessBinding
@@ -146,7 +146,7 @@ func ownedPreparationAuthorityFixture(t testing.TB) (domain.ServerlessInvocation
 	return a, reservation, allocation, at
 }
 
-func resealOwnedPreparationAuthority(t testing.TB, a *domain.ServerlessInvocationAuthorityV1, allocation *domain.PreparedAllocationV1) {
+func resealOwnedPreparationAuthority(t testing.TB, a *domain.ServerlessInvocationAuthorityV1, allocation *domain.PreparedAllocationV2) {
 	t.Helper()
 	cost, err := a.AdmissionCostCeiling.Digest()
 	if err != nil {

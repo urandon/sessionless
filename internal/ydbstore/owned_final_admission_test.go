@@ -119,6 +119,13 @@ func (f *ownedFinalScript) ExecContext(ctx context.Context, statement string, ar
 type ownedFinalPrebuild struct {
 	at      time.Time
 	profile func(*domain.OwnedAgentProfileCurrentV1)
+	sources *ownedFinalSources
+}
+
+// Already sealed inputs must not pass through the synthetic rebinding path.
+type ownedFinalSources struct {
+	profile  domain.OwnedAgentProfileCurrentV1
+	spending [4]domain.AttemptSpendingAuthorizationCurrentV1
 }
 
 func newOwnedFinalScript(t *testing.T, prebuild ...ownedFinalPrebuild) (*Store, *ownedFinalScript, ports.DispatchAdmissionRequest, domain.AttemptExecutionSourceV1) {
@@ -132,6 +139,16 @@ func newOwnedFinalScript(t *testing.T, prebuild ...ownedFinalPrebuild) (*Store, 
 		request.Now, request.HoldUntil = graph.at, graph.at.Add(time.Hour)
 	}
 	r := newOwnedReaderFixtureAt(t, graph.at.UTC(), "-owned-final-script")
+	supplied := len(prebuild) == 1 && prebuild[0].sources != nil
+	if supplied {
+		if prebuild[0].profile != nil {
+			t.Fatal("sealed sources cannot use a profile mutation callback")
+		}
+		r.profile = prebuild[0].sources.profile.Clone()
+		for i, v := range prebuild[0].sources.spending {
+			r.spending[i] = v.Clone()
+		}
+	}
 	var run domain.Run
 	if err := json.Unmarshal([]byte(graph.rows["runs"][0].(string)), &run); err != nil {
 		t.Fatal(err)
@@ -147,17 +164,23 @@ func newOwnedFinalScript(t *testing.T, prebuild ...ownedFinalPrebuild) (*Store, 
 	// Rebind only the synthetic fixture identifiers; this is not a publication
 	// receipt or evidence that any installation/funding source is trusted.
 	r.scope.tenant, r.scope.owner, r.scope.run, r.scope.session, r.scope.attempt = run.TenantID, outbox.CredentialOwnerUserID, run.ID, run.SessionID, attempt.ID
-	r.profile.Locator.TenantID, r.profile.Locator.OwnerUserID = run.TenantID, outbox.CredentialOwnerUserID
-	r.profile.Resource.OwnerUserID = outbox.CredentialOwnerUserID
-	r.profile.CostCeiling.MCPToolCost.TenantID, r.profile.CostCeiling.MCPToolCost.OwnerUserID = run.TenantID, outbox.CredentialOwnerUserID
-	r.profile.CostCeiling.WebSearchCost.TenantID, r.profile.CostCeiling.WebSearchCost.OwnerUserID = run.TenantID, outbox.CredentialOwnerUserID
-	sealedCostDigest, err := r.profile.CostCeiling.Digest()
-	if err != nil {
-		t.Fatal(err)
-	}
-	r.profile.Substrate.AdmissionCostCeilingDigest = sealedCostDigest
-	if len(prebuild) == 1 && prebuild[0].profile != nil {
-		prebuild[0].profile(&r.profile)
+	if supplied {
+		if r.profile.Locator.TenantID != r.scope.tenant || r.profile.Locator.OwnerUserID != r.scope.owner {
+			t.Fatal("sealed profile must already match canonical graph scope")
+		}
+	} else {
+		r.profile.Locator.TenantID, r.profile.Locator.OwnerUserID = run.TenantID, outbox.CredentialOwnerUserID
+		r.profile.Resource.OwnerUserID = outbox.CredentialOwnerUserID
+		r.profile.CostCeiling.MCPToolCost.TenantID, r.profile.CostCeiling.MCPToolCost.OwnerUserID = run.TenantID, outbox.CredentialOwnerUserID
+		r.profile.CostCeiling.WebSearchCost.TenantID, r.profile.CostCeiling.WebSearchCost.OwnerUserID = run.TenantID, outbox.CredentialOwnerUserID
+		sealedCostDigest, err := r.profile.CostCeiling.Digest()
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.profile.Substrate.AdmissionCostCeilingDigest = sealedCostDigest
+		if len(prebuild) == 1 && prebuild[0].profile != nil {
+			prebuild[0].profile(&r.profile)
+		}
 	}
 	digest, err := r.profile.Digest()
 	if err != nil {
@@ -166,10 +189,16 @@ func newOwnedFinalScript(t *testing.T, prebuild ...ownedFinalPrebuild) (*Store, 
 	r.ref = domain.OwnedAgentProfileReferenceV1{Locator: r.profile.Locator, RevocationGeneration: r.profile.RevocationGeneration, Digest: digest}
 	for i := range r.spending {
 		v := &r.spending[i]
-		v.Locator.TenantID, v.Locator.AttemptID = run.TenantID, attempt.ID
-		v.RunID, v.SessionID, v.OwnerUserID = run.ID, run.SessionID, outbox.CredentialOwnerUserID
-		v.SourceProfile = r.ref
-		bindReaderSpendingSource(t, v)
+		if supplied {
+			if v.Locator.TenantID != run.TenantID || v.Locator.AttemptID != attempt.ID || v.RunID != run.ID || v.SessionID != run.SessionID || v.OwnerUserID != outbox.CredentialOwnerUserID || v.SourceProfile != r.ref {
+				t.Fatal("sealed spending must already match canonical graph/profile scope")
+			}
+		} else {
+			v.Locator.TenantID, v.Locator.AttemptID = run.TenantID, attempt.ID
+			v.RunID, v.SessionID, v.OwnerUserID = run.ID, run.SessionID, outbox.CredentialOwnerUserID
+			v.SourceProfile = r.ref
+			bindReaderSpendingSource(t, v)
+		}
 		r.refs[i] = ownedSpendingReference{locator: v.Locator, generation: v.RevocationGeneration}
 		r.refs[i].digest, err = v.Digest()
 		if err != nil {

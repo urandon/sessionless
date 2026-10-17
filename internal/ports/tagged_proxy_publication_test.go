@@ -37,7 +37,7 @@ func taggedProxyPublicationFixture(t *testing.T) ports.OwnedProxyPublicationV2 {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := ports.OwnedProxyPublicationV2{TransportKind: domain.RegisteredProxyTransportPinnedHTTPSV2, OperationSequence: 1, OperationDigest: od, ServiceKind: domain.RegisteredProxyProviderV1, Scope: domain.AttemptExecutionSourceScopeV1{TenantID: "synthetic-tenant", OwnerUserID: "synthetic-owner", SessionID: "synthetic-session", RunID: "synthetic-run", AttemptID: "synthetic-attempt"}, LeaseID: "synthetic-lease", FenceToken: 1, PhysicalInvocationClaimID: "synthetic-claim", RegisteredAllocationDigest: domain.RegisteredAllocationDigestV1(hash), SourceDigest: hash, ObservedAt: at, PolicyBody: pb, AttestationBody: ab, Authenticator: bytes.Repeat([]byte{1}, 32)}
+	p := ports.OwnedProxyPublicationV2{TransportKind: domain.RegisteredProxyTransportPinnedHTTPSV2, OperationSequence: 1, OperationDigest: od, ServiceKind: domain.RegisteredProxyProviderV1, Scope: domain.AttemptExecutionSourceScopeV1{TenantID: "synthetic-tenant", OwnerUserID: "synthetic-owner", SessionID: "synthetic-session", RunID: "synthetic-run", AttemptID: "synthetic-attempt"}, LeaseID: "synthetic-lease", FenceToken: 1, PhysicalInvocationClaimID: "synthetic-claim", RegisteredAllocationDigest: domain.RegisteredAllocationDigestV2(hash), SourceDigest: hash, ObservedAt: at, PolicyBody: pb, AttestationBody: ab, Authenticator: bytes.Repeat([]byte{1}, 32)}
 	p.OperationDeadline = op.Deadline
 	if err := p.Validate(); err != nil {
 		t.Fatalf("scripted HTTPS publication DATA: %v", err)

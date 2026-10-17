@@ -52,7 +52,7 @@ func TestOwnedAllocationPreparationActualProducerObservationOnly(t *testing.T) {
 		t.Fatal("future observation accepted")
 	}
 	second, err := bridge.PrepareAllocationPublication(t.Context(), f.grant)
-	if err == nil || !reflect.DeepEqual(second, ports.OwnedAllocationPublicationV1{}) {
+	if err == nil || !reflect.DeepEqual(second, ports.OwnedAllocationPublicationV2{}) {
 		t.Fatal("replay minted a replacement observation")
 	}
 	copy := p.Clone()
@@ -71,23 +71,23 @@ func TestOwnedAllocationPreparationRejectsForgedOrChangedIntent(t *testing.T) {
 	}
 	for _, change := range []struct {
 		name   string
-		mutate func(*ports.OwnedAllocationPublicationV1)
+		mutate func(*ports.OwnedAllocationPublicationV2)
 	}{
-		{"authenticator", func(p *ports.OwnedAllocationPublicationV1) { p.Authenticator[0] ^= 1 }},
-		{"prepared_digest", func(p *ports.OwnedAllocationPublicationV1) { p.PreparedInvocationDigest = strings.Repeat("a", 64) }},
-		{"supervisor_identity", func(p *ports.OwnedAllocationPublicationV1) { p.AllocationID = "caller-selected-allocation" }},
-		{"generation", func(p *ports.OwnedAllocationPublicationV1) { p.AllocationGeneration++ }},
-		{"original_time", func(p *ports.OwnedAllocationPublicationV1) { p.ObservedAt = p.ObservedAt.Add(time.Microsecond) }},
-		{"expiry", func(p *ports.OwnedAllocationPublicationV1) {
+		{"authenticator", func(p *ports.OwnedAllocationPublicationV2) { p.Authenticator[0] ^= 1 }},
+		{"prepared_digest", func(p *ports.OwnedAllocationPublicationV2) { p.PreparedInvocationDigest = strings.Repeat("a", 64) }},
+		{"supervisor_identity", func(p *ports.OwnedAllocationPublicationV2) { p.AllocationID = "caller-selected-allocation" }},
+		{"generation", func(p *ports.OwnedAllocationPublicationV2) { p.AllocationGeneration++ }},
+		{"original_time", func(p *ports.OwnedAllocationPublicationV2) { p.ObservedAt = p.ObservedAt.Add(time.Microsecond) }},
+		{"expiry", func(p *ports.OwnedAllocationPublicationV2) {
 			p.PreparedInvocationExpiresAt = p.PreparedInvocationExpiresAt.Add(-time.Microsecond)
 		}},
-		{"parent_claim", func(p *ports.OwnedAllocationPublicationV1) {
+		{"parent_claim", func(p *ports.OwnedAllocationPublicationV2) {
 			p.Reservation.PhysicalInvocationClaimID = "replacement-claim"
 		}},
-		{"prepared_observation", func(p *ports.OwnedAllocationPublicationV1) {
+		{"prepared_observation", func(p *ports.OwnedAllocationPublicationV2) {
 			p.Allocation.ObservedProxyIdentityDigest = strings.Repeat("b", 64)
 		}},
-		{"complete_authority", func(p *ports.OwnedAllocationPublicationV1) { p.Authority.Lease.WorkerID = "other-worker" }},
+		{"complete_authority", func(p *ports.OwnedAllocationPublicationV2) { p.Authority.Lease.WorkerID = "other-worker" }},
 	} {
 		t.Run(change.name, func(t *testing.T) {
 			changed := p.Clone()
@@ -122,7 +122,7 @@ func TestOwnedAllocationPreparationRestartAndUnknownBurnRemainClosed(t *testing.
 				if err != nil {
 					t.Fatal(err)
 				}
-			} else if err == nil || !reflect.DeepEqual(p, ports.OwnedAllocationPublicationV1{}) {
+			} else if err == nil || !reflect.DeepEqual(p, ports.OwnedAllocationPublicationV2{}) {
 				t.Fatal("unknown/denied burn leaked publication")
 			}
 			issuer, err := NewCapabilityIssuer(func() time.Time { return f.now }, bytes.NewReader(bytes.Repeat([]byte{29}, 32)))
@@ -142,7 +142,7 @@ func TestOwnedAllocationPreparationRestartAndUnknownBurnRemainClosed(t *testing.
 				t.Fatal(err)
 			}
 			second, err := restarted.PrepareAllocationPublication(t.Context(), grant)
-			if err == nil || !reflect.DeepEqual(second, ports.OwnedAllocationPublicationV1{}) {
+			if err == nil || !reflect.DeepEqual(second, ports.OwnedAllocationPublicationV2{}) {
 				t.Fatal("new key/process minted replacement allocation after burn")
 			}
 			if outcome == "confirmed" && restarted.VerifyOwnedAllocationPublication(p, f.now) == nil {
@@ -156,7 +156,7 @@ func TestOwnedAllocationPreparationConcurrentProducesOneObservation(t *testing.T
 	f, bridge := newOwnedAllocationPreparationFixture(t)
 	start := make(chan struct{})
 	type result struct {
-		p   ports.OwnedAllocationPublicationV1
+		p   ports.OwnedAllocationPublicationV2
 		err error
 	}
 	results := make(chan result, 8)
@@ -178,7 +178,7 @@ func TestOwnedAllocationPreparationConcurrentProducesOneObservation(t *testing.T
 			if bridge.VerifyOwnedAllocationPublication(r.p, f.now) != nil {
 				t.Fatal("concurrent success unauthentic")
 			}
-		} else if !reflect.DeepEqual(r.p, ports.OwnedAllocationPublicationV1{}) {
+		} else if !reflect.DeepEqual(r.p, ports.OwnedAllocationPublicationV2{}) {
 			t.Fatal("loser leaked observation")
 		}
 	}
@@ -197,10 +197,10 @@ func TestOwnedAllocationPreparationConstructorAndNilClosed(t *testing.T) {
 		t.Fatal("missing actual driver accepted")
 	}
 	var absent *BoundedOwnedAllocationPreparationV1
-	if p, err := absent.PrepareAllocationPublication(t.Context(), f.grant); err == nil || !reflect.DeepEqual(p, ports.OwnedAllocationPublicationV1{}) {
+	if p, err := absent.PrepareAllocationPublication(t.Context(), f.grant); err == nil || !reflect.DeepEqual(p, ports.OwnedAllocationPublicationV2{}) {
 		t.Fatal("nil producer accepted")
 	}
-	if absent.VerifyOwnedAllocationPublication(ports.OwnedAllocationPublicationV1{}, f.now) == nil {
+	if absent.VerifyOwnedAllocationPublication(ports.OwnedAllocationPublicationV2{}, f.now) == nil {
 		t.Fatal("nil verifier accepted")
 	}
 }

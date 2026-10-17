@@ -33,22 +33,25 @@ func NewInProcessExecutionSubstrateV1(
 func (substrate *InProcessExecutionSubstrateV1) Preflight(
 	ctx context.Context,
 	authority domain.ServerlessInvocationAuthorityV1,
-) (domain.PreparedAllocationV1, error) {
+) (domain.PreparedAllocationV2, error) {
 	if substrate == nil || substrate.issuer == nil || ctx == nil || ctx.Err() != nil || authority.ValidateAt(substrate.now().UTC()) != nil ||
 		authority.HarnessBinding.Backend != substrate.backend || authority.SubstrateBinding.WorkloadMode != domain.SubstrateWorkloadInProcessDirectV1 {
-		return domain.PreparedAllocationV1{}, errors.New("in-process substrate authority mismatch")
+		return domain.PreparedAllocationV2{}, errors.New("in-process substrate authority mismatch")
 	}
 	binding := authority.SubstrateBinding
+	if binding.Kind == domain.SubstrateLocalDevelopmentV1 {
+		return domain.PreparedAllocationV2{}, errors.New("local execution requires its concrete authenticated runtime producer")
+	}
 	digest, _ := binding.Digest()
-	allocation := domain.PreparedAllocationV1{
-		Version: domain.PreparedAllocationVersionV1, SubstrateBindingDigest: digest,
+	allocation := domain.PreparedAllocationV2{
+		Version: domain.PreparedAllocationVersionV2, SubstrateBindingDigest: digest,
 		ObservedImageDigest: binding.ImageDigest, ObservedOuterHarnessDigest: binding.OuterHarnessArtifactDigest,
 		ObservedProxyArtifactDigest: binding.EgressProxyArtifactDigest, ObservedProxyIdentityDigest: binding.EgressProxyIdentityDigest,
 		WorkloadMode: binding.WorkloadMode,
 		InProcess:    &domain.InProcessAttestationV1{LinkedBackendProfileDigest: substrate.backend.BackendProfileDigest},
 	}
 	if err := allocation.ValidateForBinding(binding, substrate.backend); err != nil {
-		return domain.PreparedAllocationV1{}, err
+		return domain.PreparedAllocationV2{}, err
 	}
 	return allocation, nil
 }
@@ -62,6 +65,9 @@ func (substrate *InProcessExecutionSubstrateV1) Execute(
 ) (ports.ExecutionResult, domain.SubstrateExecutionEvidenceV1, error) {
 	if substrate == nil || substrate.issuer == nil || harness == nil || sink == nil {
 		return ports.ExecutionResult{}, domain.SubstrateExecutionEvidenceV1{}, errors.New("in-process substrate dependencies are missing")
+	}
+	if prepared.Authority().SubstrateBinding.Kind == domain.SubstrateLocalDevelopmentV1 || prepared.Allocation().LocalRuntime != nil {
+		return ports.ExecutionResult{}, domain.SubstrateExecutionEvidenceV1{}, ErrInvalidPreparedInvocation
 	}
 	if err := substrate.issuer.Consume(prepared); err != nil {
 		return ports.ExecutionResult{}, domain.SubstrateExecutionEvidenceV1{}, err
@@ -101,7 +107,7 @@ func (substrate *InProcessExecutionSubstrateV1) observation(
 	authority domain.ServerlessInvocationAuthorityV1,
 	state domain.SubstrateOperationStateV1,
 ) (domain.SubstrateOperationObservationV1, error) {
-	if substrate == nil || substrate.now == nil || authority.Validate() != nil || authority.HarnessBinding.Backend != substrate.backend {
+	if substrate == nil || substrate.now == nil || authority.Validate() != nil || authority.HarnessBinding.Backend != substrate.backend || authority.SubstrateBinding.Kind == domain.SubstrateLocalDevelopmentV1 {
 		return domain.SubstrateOperationObservationV1{}, errors.New("in-process substrate authority mismatch")
 	}
 	authorityDigest, _ := authority.Digest()

@@ -43,22 +43,22 @@ const ownedAllocationRegistrationTransitionSQL = `UPDATE attempt_effect_reservat
  AND allocation_current_digest=$3`
 
 type ownedAllocationSnapshots struct {
-	original, current domain.RegisteredAllocationV1
+	original, current domain.RegisteredAllocationV2
 	intent, previous  string
 }
 
-func (v ownedAllocationSnapshots) receipt(replayed bool) ports.OwnedAllocationRegistrationReceiptV1 {
+func (v ownedAllocationSnapshots) receipt(replayed bool) ports.OwnedAllocationRegistrationReceiptV2 {
 	digest, _ := v.current.Digest()
-	return ports.OwnedAllocationRegistrationReceiptV1{Original: v.original.Clone(), Current: v.current.Clone(), Digest: string(digest), Replayed: replayed}
+	return ports.OwnedAllocationRegistrationReceiptV2{Original: v.original.Clone(), Current: v.current.Clone(), Digest: string(digest), Replayed: replayed}
 }
 
 // Private trusted-producer composition only. The proof verifier authenticates
 // the actual prior preparation observation; neither a caller MAC nor a valid
 // structural allocation is accepted in its place. No physical I/O or execution
 // capability is produced in this retryable callback or by the returned receipt.
-func (store *Store) publishBoundedOwnedAllocation(ctx context.Context, publication ports.OwnedAllocationPublicationV1) (ports.OwnedAllocationRegistrationReceiptV1, error) {
-	deny := func() (ports.OwnedAllocationRegistrationReceiptV1, error) {
-		return ports.OwnedAllocationRegistrationReceiptV1{}, domain.ErrMembershipDenied
+func (store *Store) publishBoundedOwnedAllocation(ctx context.Context, publication ports.OwnedAllocationPublicationV2) (ports.OwnedAllocationRegistrationReceiptV2, error) {
+	deny := func() (ports.OwnedAllocationRegistrationReceiptV2, error) {
+		return ports.OwnedAllocationRegistrationReceiptV2{}, domain.ErrMembershipDenied
 	}
 	if !store.validOwnedAllocationContext(ctx) || store.ownedAllocationPublicationVerifier == nil || publication.Validate() != nil {
 		return deny()
@@ -73,10 +73,10 @@ func (store *Store) publishBoundedOwnedAllocation(ctx context.Context, publicati
 	}
 	r := publication.Reservation
 	request := ownedAllocationParentRequest(r)
-	var receipt ports.OwnedAllocationRegistrationReceiptV1
+	var receipt ports.OwnedAllocationRegistrationReceiptV2
 	var at time.Time
 	err = store.ownedAuthorityTx(ctx, func(ctx context.Context, q *ownedAuthorityQuery) error {
-		receipt, at = ports.OwnedAllocationRegistrationReceiptV1{}, time.Time{}
+		receipt, at = ports.OwnedAllocationRegistrationReceiptV2{}, time.Time{}
 		q.metadataCache = make(map[string]ownedMetadataCacheEntry)
 		parent, source, burnAt, err := store.readOwnedAllocationParent(ctx, q, request)
 		if err != nil || publication.ObservedAt.Before(burnAt) || publication.ObservedAt.After(q.at) || store.ownedAllocationPublicationVerifier.VerifyOwnedAllocationPublication(publication.Clone(), q.at) != nil {
@@ -98,10 +98,17 @@ func (store *Store) publishBoundedOwnedAllocation(ctx context.Context, publicati
 			receipt, at = old.receipt(true), q.at
 			return nil // exact preserved history; no current permission or renewal
 		}
-		if !q.at.Before(parent.PreparationExpiresAt) || store.validateCurrentOwnedAttemptParent(ctx, q, request, parent) != nil {
+		if !q.at.Before(parent.PreparationExpiresAt) || store.validateCurrentOwnedAttemptParent(ctx, q, request, parent) != nil ||
+			store.ownedAllocationPublicationVerifier.VerifyOwnedAllocationPublicationCurrent(publication.Clone(), q.at) != nil {
 			return q.budget.deny()
 		}
 		expires := publication.PreparedInvocationExpiresAt
+		if publication.Allocation.LocalRuntime != nil {
+			expires, err = domain.LocalAllocationActiveDeadlineV2(parent.Authority, parent.Reservation, source)
+			if err != nil {
+				return q.budget.deny()
+			}
+		}
 		for _, limit := range []time.Time{source.ExpiresAt, parent.Authority.Lease.ExpiresAt, parent.Authority.InvocationDeadline, parent.Authority.SubstrateBinding.ProfileEvidenceExpiresAt} {
 			if limit.Before(expires) {
 				expires = limit
@@ -112,11 +119,11 @@ func (store *Store) publishBoundedOwnedAllocation(ctx context.Context, publicati
 				expires = spending.Window.ExpiresAt
 			}
 		}
-		value, err := domain.BuildRegisteredAllocationV1(parent.Authority, parent.Reservation, publication.Allocation, domain.PreparedInvocationDigestV1(publication.PreparedInvocationDigest), publication.PreparedInvocationExpiresAt, source, publication.AllocationID, publication.AllocationGeneration, domain.OwnedAgentAuthorityWindowV1{ObservedAt: publication.ObservedAt, PublishedAt: q.at, ExpiresAt: expires})
+		value, err := domain.BuildRegisteredAllocationV2(parent.Authority, parent.Reservation, publication.Allocation, domain.PreparedInvocationDigestV1(publication.PreparedInvocationDigest), publication.PreparedInvocationExpiresAt, source, publication.AllocationID, publication.AllocationGeneration, domain.OwnedAgentAuthorityWindowV1{ObservedAt: publication.ObservedAt, PublishedAt: q.at, ExpiresAt: expires})
 		if err != nil {
 			return q.budget.deny()
 		}
-		raw, err := domain.EncodeRegisteredAllocationV1(value)
+		raw, err := domain.EncodeRegisteredAllocationV2(value)
 		digest, digestErr := value.Digest()
 		parentDigest, parentErr := parent.Digest()
 		if err != nil || digestErr != nil || parentErr != nil {
@@ -183,9 +190,9 @@ func readOwnedAllocationSnapshots(ctx context.Context, q *ownedAuthorityQuery, p
 	if len(originalRaw) > ownedAuthorityHeadBytes || len(currentRaw) > ownedAuthorityHeadBytes || domain.ValidateSHA256Digest("allocation.intent", intent) != nil {
 		return nil, q.budget.deny()
 	}
-	original, oe := domain.DecodeRegisteredAllocationV1([]byte(originalRaw))
-	current, ce := domain.DecodeRegisteredAllocationV1([]byte(currentRaw))
-	actualIntent, intentErr := ports.OwnedAllocationRegistrationIntentDigestV1(original)
+	original, oe := domain.DecodeRegisteredAllocationV2([]byte(originalRaw))
+	current, ce := domain.DecodeRegisteredAllocationV2([]byte(currentRaw))
+	actualIntent, intentErr := ports.OwnedAllocationRegistrationIntentDigestV2(original)
 	od, ode := original.Digest()
 	cd, cde := current.Digest()
 	if oe != nil || ce != nil || intentErr != nil || actualIntent != intent || ode != nil || cde != nil || string(od) != originalDigest || string(cd) != currentDigest || original.ValidateInitial() != nil || original.Window.ObservedAt.Before(burnAt) || original.Window.PublishedAt.After(q.at) || current.UpdatedAt.After(q.at) || !ownedAllocationOriginalMatches(original, parent, source) {
@@ -193,7 +200,7 @@ func readOwnedAllocationSnapshots(ctx context.Context, q *ownedAuthorityQuery, p
 	}
 	stable := current.Clone()
 	stable.State, stable.RevocationGeneration, stable.UpdatedAt = original.State, original.RevocationGeneration, original.UpdatedAt
-	raw, err := domain.EncodeRegisteredAllocationV1(stable)
+	raw, err := domain.EncodeRegisteredAllocationV2(stable)
 	if err != nil || !bytes.Equal(raw, []byte(originalRaw)) {
 		return nil, q.budget.deny()
 	}
@@ -209,7 +216,7 @@ func readOwnedAllocationSnapshots(ctx context.Context, q *ownedAuthorityQuery, p
 	return &ownedAllocationSnapshots{original: original, current: current, intent: intent, previous: previous}, nil
 }
 
-func ownedAllocationOriginalMatches(v domain.RegisteredAllocationV1, parent domain.OwnedAttemptEffectParentV1, source domain.AttemptExecutionSourceV1) bool {
+func ownedAllocationOriginalMatches(v domain.RegisteredAllocationV2, parent domain.OwnedAttemptEffectParentV1, source domain.AttemptExecutionSourceV1) bool {
 	expected := v.Clone()
 	expected.Scope, expected.Lease, expected.ParentReservation = source.Scope, parent.Authority.Lease, parent.Reservation.Clone()
 	expected.ParentReservationDigest, _ = parent.Reservation.DigestForAuthority(parent.Authority)
@@ -222,21 +229,21 @@ func ownedAllocationOriginalMatches(v domain.RegisteredAllocationV1, parent doma
 		digest, _ := spending.Digest()
 		expected.Spending[i] = domain.RegisteredSpendingReferenceV1{Locator: spending.Locator, RevocationGeneration: spending.RevocationGeneration, Digest: digest, Window: spending.Window.Clone()}
 	}
-	actual, ae := domain.EncodeRegisteredAllocationV1(v)
-	want, we := domain.EncodeRegisteredAllocationV1(expected)
+	actual, ae := domain.EncodeRegisteredAllocationV2(v)
+	want, we := domain.EncodeRegisteredAllocationV2(expected)
 	return ae == nil && we == nil && bytes.Equal(actual, want)
 }
 
 // A historical read authenticates preserved parent/source bytes even after
 // expiry or revocation. current=true additionally joins ALL current canonical
 // authority; neither mode is an executable or renewable capability.
-func (store *Store) observeBoundedOwnedAllocation(ctx context.Context, request ports.ReserveAttemptEffectRequestV1, current bool) (ports.OwnedAllocationRegistrationReceiptV1, error) {
-	var result ports.OwnedAllocationRegistrationReceiptV1
+func (store *Store) observeBoundedOwnedAllocation(ctx context.Context, request ports.ReserveAttemptEffectRequestV1, current bool) (ports.OwnedAllocationRegistrationReceiptV2, error) {
+	var result ports.OwnedAllocationRegistrationReceiptV2
 	if !store.validOwnedAllocationContext(ctx) || request.Validate() != nil {
 		return result, domain.ErrMembershipDenied
 	}
 	err := store.ownedAuthorityTx(ctx, func(ctx context.Context, q *ownedAuthorityQuery) error {
-		result = ports.OwnedAllocationRegistrationReceiptV1{}
+		result = ports.OwnedAllocationRegistrationReceiptV2{}
 		q.metadataCache = make(map[string]ownedMetadataCacheEntry)
 		parent, source, burnAt, err := store.readOwnedAllocationParent(ctx, q, request)
 		if err != nil {
@@ -253,7 +260,7 @@ func (store *Store) observeBoundedOwnedAllocation(ctx context.Context, request p
 		return nil
 	})
 	if err != nil || ctx.Err() != nil {
-		return ports.OwnedAllocationRegistrationReceiptV1{}, domain.ErrMembershipDenied
+		return ports.OwnedAllocationRegistrationReceiptV2{}, domain.ErrMembershipDenied
 	}
 	return result, nil
 }
@@ -262,13 +269,13 @@ func (store *Store) observeBoundedOwnedAllocation(ctx context.Context, request p
 // facts. A lost acknowledgement recovers only its exact prior CAS digest/state;
 // stale requests cannot replace or resurrect an allocation. Retirement remains
 // possible after permission expiry, for reconciliation and shared cleanup.
-func (store *Store) retireBoundedOwnedAllocation(ctx context.Context, request ports.ReserveAttemptEffectRequestV1, expectedDigest string, state domain.RegisteredPreparationStateV1) (ports.OwnedAllocationRegistrationReceiptV1, error) {
-	var result ports.OwnedAllocationRegistrationReceiptV1
+func (store *Store) retireBoundedOwnedAllocation(ctx context.Context, request ports.ReserveAttemptEffectRequestV1, expectedDigest string, state domain.RegisteredPreparationStateV1) (ports.OwnedAllocationRegistrationReceiptV2, error) {
+	var result ports.OwnedAllocationRegistrationReceiptV2
 	if !store.validOwnedAllocationContext(ctx) || request.Validate() != nil || domain.ValidateSHA256Digest("allocation.expected", expectedDigest) != nil || (state != domain.RegisteredPreparationRetiredV1 && state != domain.RegisteredPreparationRevokedV1) {
 		return result, domain.ErrMembershipDenied
 	}
 	err := store.ownedAuthorityTx(ctx, func(ctx context.Context, q *ownedAuthorityQuery) error {
-		result = ports.OwnedAllocationRegistrationReceiptV1{}
+		result = ports.OwnedAllocationRegistrationReceiptV2{}
 		q.metadataCache = make(map[string]ownedMetadataCacheEntry)
 		parent, source, burnAt, err := store.readOwnedAllocationParent(ctx, q, request)
 		if err != nil {
@@ -291,7 +298,7 @@ func (store *Store) retireBoundedOwnedAllocation(ctx context.Context, request po
 		if next.ValidateTransitionFrom(old.current) != nil {
 			return q.budget.deny()
 		}
-		raw, err := domain.EncodeRegisteredAllocationV1(next)
+		raw, err := domain.EncodeRegisteredAllocationV2(next)
 		digest, de := next.Digest()
 		parentDigest, pe := parent.Digest()
 		if err != nil || de != nil || pe != nil {
@@ -309,7 +316,7 @@ func (store *Store) retireBoundedOwnedAllocation(ctx context.Context, request po
 		return nil
 	})
 	if err != nil || ctx.Err() != nil {
-		return ports.OwnedAllocationRegistrationReceiptV1{}, domain.ErrMembershipDenied
+		return ports.OwnedAllocationRegistrationReceiptV2{}, domain.ErrMembershipDenied
 	}
 	return result, nil
 }

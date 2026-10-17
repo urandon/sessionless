@@ -47,16 +47,16 @@ func NewSupervisorV1(config SupervisorConfigV1) (*SupervisorV1, error) {
 func (supervisor *SupervisorV1) Preflight(
 	ctx context.Context,
 	authority domain.ServerlessInvocationAuthorityV1,
-) (domain.PreparedAllocationV1, error) {
+) (domain.PreparedAllocationV2, error) {
 	if supervisor == nil || ctx == nil || ctx.Err() != nil || authority.ValidateAt(supervisor.config.Clock().UTC()) != nil {
-		return domain.PreparedAllocationV1{}, ErrAuthority
+		return domain.PreparedAllocationV2{}, ErrAuthority
 	}
 	allocation, err := supervisor.config.Launcher.Preflight(ctx, authority.Clone())
 	if err != nil {
-		return domain.PreparedAllocationV1{}, ErrAttestation
+		return domain.PreparedAllocationV2{}, ErrAttestation
 	}
 	if err := allocation.ValidateForBinding(authority.SubstrateBinding, authority.HarnessBinding.Backend); err != nil {
-		return domain.PreparedAllocationV1{}, ErrAttestation
+		return domain.PreparedAllocationV2{}, ErrAttestation
 	}
 	return allocation.Clone(), nil
 }

@@ -22,11 +22,11 @@ import (
 type registeredFixture struct {
 	authority         domain.ServerlessInvocationAuthorityV1
 	parent            domain.AttemptEffectReservationV1
-	prepared          domain.PreparedAllocationV1
+	prepared          domain.PreparedAllocationV2
 	preparedDigest    domain.PreparedInvocationDigestV1
 	preparedExpiresAt time.Time
 	source            domain.AttemptExecutionSourceV1
-	allocation        domain.RegisteredAllocationV1
+	allocation        domain.RegisteredAllocationV2
 	proxy             domain.RegisteredProxyAttestationV2
 	at                time.Time
 }
@@ -52,7 +52,7 @@ func registeredAllocationFixture(t testing.TB, child bool) registeredFixture {
 		t.Fatal(err)
 	}
 	sd, _ := pkg.Substrate.Digest()
-	prepared := domain.PreparedAllocationV1{Version: 1, SubstrateBindingDigest: sd, ObservedImageDigest: pkg.Substrate.ImageDigest,
+	prepared := domain.PreparedAllocationV2{Version: domain.PreparedAllocationVersionV2, SubstrateBindingDigest: sd, ObservedImageDigest: pkg.Substrate.ImageDigest,
 		ObservedOuterHarnessDigest: pkg.Substrate.OuterHarnessArtifactDigest, ObservedProxyArtifactDigest: pkg.Substrate.EgressProxyArtifactDigest,
 		ObservedProxyIdentityDigest: pkg.Substrate.EgressProxyIdentityDigest, WorkloadMode: pkg.Substrate.WorkloadMode}
 	if child {
@@ -77,7 +77,7 @@ func registeredAllocationFixture(t testing.TB, child bool) registeredFixture {
 		t.Fatal(err)
 	}
 	window := domain.OwnedAgentAuthorityWindowV1{ObservedAt: at, PublishedAt: at.Add(time.Microsecond), ExpiresAt: at.Add(time.Minute)}
-	allocation, err := domain.BuildRegisteredAllocationV1(a, parent, prepared, capability.Digest(), capability.ExecuteDeadline(), pkg.Source, "actual-scripted-allocation", 11, window)
+	allocation, err := domain.BuildRegisteredAllocationV2(a, parent, prepared, capability.Digest(), capability.ExecuteDeadline(), pkg.Source, "actual-scripted-allocation", 11, window)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +167,7 @@ func TestRegisteredPreparationRejectsOriginalAuthoritySubstitution(t *testing.T)
 				a.HarnessBinding.Profile = domain.HarnessExecutionSingleTurnV2
 				a.HarnessBinding.AgentLoopPolicy = nil
 			}
-			got, err := domain.BuildRegisteredAllocationV1(a, parent, prepared, pd, preparedExpires, source, id, gen, w)
+			got, err := domain.BuildRegisteredAllocationV2(a, parent, prepared, pd, preparedExpires, source, id, gen, w)
 			// A different but domain-valid claim can only construct its OWN
 			// observation; it cannot validate the original registered record.
 			if axis == "claim" {
@@ -179,7 +179,7 @@ func TestRegisteredPreparationRejectsOriginalAuthoritySubstitution(t *testing.T)
 				}
 				return
 			}
-			if err == nil || !reflect.DeepEqual(got, domain.RegisteredAllocationV1{}) {
+			if err == nil || !reflect.DeepEqual(got, domain.RegisteredAllocationV2{}) {
 				t.Fatalf("axis=%s accepted partial/foreign allocation err=%v", axis, err)
 			}
 		})
@@ -194,7 +194,7 @@ func TestRegisteredPreparationRejectsOriginalAuthoritySubstitution(t *testing.T)
 			case "allocation_generation":
 				v.AllocationGeneration++
 			case "allocation_digest":
-				v.RegisteredAllocationDigest = domain.RegisteredAllocationDigestV1(strings.Repeat("f", 64))
+				v.RegisteredAllocationDigest = domain.RegisteredAllocationDigestV2(strings.Repeat("f", 64))
 			case "source":
 				v.SourceDigest = strings.Repeat("f", 64)
 			case "grant":
@@ -280,7 +280,7 @@ func TestRegisteredPreparationBoundedHeadNeverTruncatesPreparedArgv(t *testing.T
 	if err != nil || len(body) <= 32<<10 {
 		t.Fatal("must exercise legitimate prepared body larger than head", err)
 	}
-	raw, err := domain.EncodeRegisteredAllocationV1(f.allocation)
+	raw, err := domain.EncodeRegisteredAllocationV2(f.allocation)
 	if err != nil || len(raw) >= 32<<10 || bytes.Contains(raw, []byte("exact_argv")) {
 		t.Fatal("head embeds/truncates large private argv", err)
 	}
@@ -289,7 +289,7 @@ func TestRegisteredPreparationBoundedHeadNeverTruncatesPreparedArgv(t *testing.T
 	if f.allocation.ValidateForAuthority(f.authority, f.parent, changed, f.preparedDigest, f.preparedExpiresAt, f.source) == nil {
 		t.Fatal("last argv field not sealed by prepared digest")
 	}
-	decoded, err := domain.DecodeRegisteredAllocationV1(raw)
+	decoded, err := domain.DecodeRegisteredAllocationV2(raw)
 	if err != nil || decoded.PreparedAllocationDigest != f.allocation.PreparedAllocationDigest {
 		t.Fatal("bounded head lost original allocation digest", err)
 	}
@@ -305,14 +305,14 @@ func TestRegisteredPreparationStrictCanonicalCodecAndGoldens(t *testing.T) {
 		digest                     func() (string, error)
 		decode                     func([]byte) bool
 	}{
-		{"allocation", "sessionless.registered-allocation.v1", "99f817d3dd802eeea0903f2c4353ff1347cddf481378ba7ae621555f743a580c", "7b721adc3b2d2bc32388f35a5e887cad368ca3fcbb67febb68abd081df29795e", 6303, func() ([]byte, error) { return domain.EncodeRegisteredAllocationV1(f.allocation) }, func() (string, error) { d, e := f.allocation.Digest(); return string(d), e }, func(b []byte) bool {
-			v, e := domain.DecodeRegisteredAllocationV1(b)
-			if e != nil && !reflect.DeepEqual(v, domain.RegisteredAllocationV1{}) {
+		{"allocation", "sessionless.registered-allocation.v2", "414072d16a3b4fe34f5bf77e1a3b8a3e5d3af5a9a7f51a3086bafe644ba24560", "2a462267ed648afa5bbdf521629d933d4a8d73015b643c5f95f254351dc985a3", 6303, func() ([]byte, error) { return domain.EncodeRegisteredAllocationV2(f.allocation) }, func() (string, error) { d, e := f.allocation.Digest(); return string(d), e }, func(b []byte) bool {
+			v, e := domain.DecodeRegisteredAllocationV2(b)
+			if e != nil && !reflect.DeepEqual(v, domain.RegisteredAllocationV2{}) {
 				t.Error("decoder returned partial allocation on error")
 			}
 			return e == nil && reflect.DeepEqual(v, f.allocation)
 		}},
-		{"proxy", "sessionless.registered-proxy-attestation.v2", "12bd91d4a7b3111440c83eabdc031f5cb2cb89b3d51cf492f95bd6053416be62", "73dea7983b21f83d504b0a9598dbc8e6434a0d109539c1a50c32d5884573eced", 1679, func() ([]byte, error) { return domain.EncodeRegisteredProxyAttestationV2(f.proxy) }, func() (string, error) { d, e := f.proxy.Digest(); return string(d), e }, func(b []byte) bool {
+		{"proxy", "sessionless.registered-proxy-attestation.v2", "fa9233e93cbceae30f3bfbeb65f74915b2172d0b30f4800020b0af9b3aaa9180", "0b107e25b04874f8dd895441cd0778b4da1b37f6bd76c98470f95ee78b4fe53f", 1679, func() ([]byte, error) { return domain.EncodeRegisteredProxyAttestationV2(f.proxy) }, func() (string, error) { d, e := f.proxy.Digest(); return string(d), e }, func(b []byte) bool {
 			v, e := domain.DecodeRegisteredProxyAttestationV2(b)
 			if e != nil && !reflect.DeepEqual(v, domain.RegisteredProxyAttestationV2{}) {
 				t.Error("decoder returned partial proxy on error")
@@ -352,10 +352,7 @@ func TestRegisteredPreparationStrictCanonicalCodecAndGoldens(t *testing.T) {
 			if hex.EncodeToString(codecHash[:]) != spec.codecSHA || len(raw) != spec.codecBytes {
 				t.Errorf("literal codec bytes/hash changed: bytes=%d sha256=%x", len(raw), codecHash)
 			}
-			version := []byte(`"version":1`)
-			if spec.name == "proxy" {
-				version = []byte(`"version":2`)
-			}
+			version := []byte(`"version":2`)
 			for _, mutant := range [][]byte{[]byte("null"), []byte("{}"), append([]byte(" "), raw...), append(append([]byte(nil), raw...), raw...), bytes.Replace(raw, version, append(append(bytes.Clone(version), ','), version...), 1), bytes.Replace(raw, version, []byte(`"Version":1`), 1), bytes.Replace(raw, version, []byte(`"version":1.0`), 1), bytes.Replace(raw, version, append(bytes.Clone(version), []byte(`,"unknown":0`)...), 1), bytes.Repeat([]byte("x"), (32<<10)+1), bytes.Replace(raw, []byte(`"scope":`), []byte(`"scope_alias":`), 1)} {
 				if spec.decode(mutant) {
 					t.Fatal("malformed/noncanonical record accepted")
@@ -373,7 +370,7 @@ func TestRegisteredPreparationEveryFieldSealed(t *testing.T) {
 		copy   func() any
 		digest func(any) (string, error)
 	}{
-		{"allocation", func() any { v := f.allocation.Clone(); return &v }, func(v any) (string, error) { d, e := v.(*domain.RegisteredAllocationV1).Digest(); return string(d), e }},
+		{"allocation", func() any { v := f.allocation.Clone(); return &v }, func(v any) (string, error) { d, e := v.(*domain.RegisteredAllocationV2).Digest(); return string(d), e }},
 		{"proxy", func() any { v := f.proxy.Clone(); return &v }, func(v any) (string, error) {
 			d, e := v.(*domain.RegisteredProxyAttestationV2).Digest()
 			return string(d), e
@@ -450,8 +447,8 @@ func TestRegisteredPreparationExactIntegersZonesBodiesAndProviderPolicy(t *testi
 	f := registeredAllocationFixture(t, false)
 	v := f.allocation.Clone()
 	v.AllocationGeneration = math.MaxUint64
-	raw, err := domain.EncodeRegisteredAllocationV1(v)
-	decoded, decodeErr := domain.DecodeRegisteredAllocationV1(raw)
+	raw, err := domain.EncodeRegisteredAllocationV2(v)
+	decoded, decodeErr := domain.DecodeRegisteredAllocationV2(raw)
 	if err != nil || decodeErr != nil || decoded.AllocationGeneration != math.MaxUint64 || !bytes.Contains(raw, []byte(`"allocation_generation":18446744073709551615`)) {
 		t.Fatal("canonical String lost exact uint64", err, decodeErr)
 	}
@@ -506,7 +503,7 @@ func TestRegisteredProxyObservationCannotPredateActualAllocation(t *testing.T) {
 	allocationWindow := f.allocation.Window
 	allocationWindow.ObservedAt = f.at.Add(3 * time.Microsecond)
 	allocationWindow.PublishedAt = f.at.Add(4 * time.Microsecond)
-	allocation, err := domain.BuildRegisteredAllocationV1(f.authority, f.parent, f.prepared, f.preparedDigest, f.preparedExpiresAt, f.source, f.allocation.AllocationID, f.allocation.AllocationGeneration, allocationWindow)
+	allocation, err := domain.BuildRegisteredAllocationV2(f.authority, f.parent, f.prepared, f.preparedDigest, f.preparedExpiresAt, f.source, f.allocation.AllocationID, f.allocation.AllocationGeneration, allocationWindow)
 	if err != nil {
 		t.Fatal("coherent later actual allocation observation", err)
 	}

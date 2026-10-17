@@ -20,7 +20,7 @@ type taggedProducerClock struct{ at time.Time }
 func (c taggedProducerClock) Now() time.Time { return c.at }
 
 type taggedProducerFixture struct {
-	allocation domain.RegisteredAllocationV1
+	allocation domain.RegisteredAllocationV2
 	source     domain.AttemptExecutionSourceV1
 	parent     domain.OwnedAttemptEffectParentV1
 	operation  domain.AttemptOperationV1

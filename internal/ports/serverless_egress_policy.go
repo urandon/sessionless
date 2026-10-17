@@ -67,7 +67,7 @@ func (policy ServerlessEgressPolicyV1) Digest() (string, error) {
 
 func (policy ServerlessEgressPolicyV1) ValidateForAuthority(
 	authority domain.ServerlessInvocationAuthorityV1,
-	allocation domain.PreparedAllocationV1,
+	allocation domain.PreparedAllocationV2,
 	routePolicy domain.ProviderRoutePolicyV1,
 	effectivePolicy domain.ProviderPolicyEvidenceV1,
 	now time.Time,

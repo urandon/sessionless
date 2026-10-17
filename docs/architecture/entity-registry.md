@@ -97,8 +97,23 @@ before-send and history/custody consumers. No new endpoint or observation table
 is needed. Retained V1 rows are not rewritten or promoted into V2 authority;
 their presence blocks unsupported serving/recovery and needs the separately
 authorized [drained format cutover](../serverless-egress.md#owned-observation-format-and-cutover).
-Local observation data alone still cannot satisfy the image-backed allocation
-contract or replace the missing actual retained local connector.
+Local observation data cannot be relabelled as an image-backed allocation or
+replace the actual retained local connector.
+
+Canonical `PreparedAllocationV2` and `RegisteredAllocationV2` preserve the same
+allocation original/current/intent columns in `attempt_effect_reservations`.
+The explicit local runtime body seals the actual executable/installation/host/
+namespace correlations and exact configured owned-IO limits, not an image,
+cgroup or whole-host memory claim. The original short preparation/first-entry
+expiry remains a separate immutable field. A local allocation's active window
+is derived once from original invocation/active/source/funding limits, not
+extended from publication time; image-backed allocations keep their original
+prepared-expiry ceiling. Current joins reproduce the exact original authority.
+The concrete retained producer, entered-capability bit, context, nonce and
+buffer/connection ownership stay process-local. Losing them cannot reconstruct
+execution permission from these rows. No new table, token store or ledger is
+introduced; old V1 allocation records require the same separately authorized
+drained cutover, not reinterpretation or migration-history rewriting.
 
 ## Source and rollout boundary
 

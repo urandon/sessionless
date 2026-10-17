@@ -182,10 +182,10 @@ func (store *Store) PublishOwnedProxy(ctx context.Context, request ports.Reserve
 	return result.Clone(), replayed, nil
 }
 
-func readOwnedProxySnapshot(ctx context.Context, q *ownedAuthorityQuery, parent domain.OwnedAttemptEffectParentV1, source domain.AttemptExecutionSourceV1, allocation domain.RegisteredAllocationV1) (*ownedProxySnapshot, error) {
+func readOwnedProxySnapshot(ctx context.Context, q *ownedAuthorityQuery, parent domain.OwnedAttemptEffectParentV1, source domain.AttemptExecutionSourceV1, allocation domain.RegisteredAllocationV2) (*ownedProxySnapshot, error) {
 	return readOwnedProxySnapshotAt(ctx, q, parent, source, allocation, 1)
 }
-func readOwnedProxySnapshotAt(ctx context.Context, q *ownedAuthorityQuery, parent domain.OwnedAttemptEffectParentV1, source domain.AttemptExecutionSourceV1, allocation domain.RegisteredAllocationV1, sequence uint64) (*ownedProxySnapshot, error) {
+func readOwnedProxySnapshotAt(ctx context.Context, q *ownedAuthorityQuery, parent domain.OwnedAttemptEffectParentV1, source domain.AttemptExecutionSourceV1, allocation domain.RegisteredAllocationV2, sequence uint64) (*ownedProxySnapshot, error) {
 	if sequence == 0 || parent.Authority.HarnessBinding.AgentLoopPolicy == nil || sequence > parent.Authority.HarnessBinding.AgentLoopPolicy.Limits.MaxOperations {
 		return nil, q.budget.deny()
 	}

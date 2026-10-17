@@ -70,6 +70,11 @@ llama.cpp and vLLM are candidate servers, not additional agent harnesses or thre
 mandatory live-proof targets. One explicitly selected compatible server/model
 is enough for the first local demonstration.
 
+The bounded [configured local inference design](design/configured-local-inference.md)
+defines the local resource, HTTP wire, current authority and development-runtime
+changes. Its draft/publication status is separate from implementation and real
+model qualification; it does not activate a provider or cloud profile.
+
 Reuse #105's research, but do not make the native Ollama daemon/model-management
 or federation chain #114–#119 a prerequisite for connecting to an existing
 endpoint. Pi SDK, model downloads and an OpenRouter account are not dependencies

@@ -17,7 +17,8 @@ const ownedProviderPriceBodyBytes = 4 << 10
 // keeper's bytes outside SQL. It is never accepted as caller operation input.
 type ownedProviderPriceEvidence struct {
 	profile domain.OwnedAgentProfileCurrentV1
-	price   domain.ProviderPriceObservationV1
+	price   *domain.ProviderPriceObservationV1
+	local   *ownedLocalInvoiceEvidence
 }
 
 func decodeOwnedProviderPrice(body []byte) (domain.ProviderPriceObservationV1, error) {
@@ -81,6 +82,9 @@ func validateOwnedProviderPrice(price domain.ProviderPriceObservationV1, profile
 }
 
 func (store *Store) readOwnedProviderPriceEvidence(ctx context.Context, profile domain.OwnedAgentProfileCurrentV1) (*ownedProviderPriceEvidence, error) {
+	if profile.Resource.Kind == domain.ProviderResourceLocalEndpointV1 {
+		return store.readOwnedLocalInvoiceEvidence(ctx, profile)
+	}
 	if store.ownedProviderPriceCustody == nil {
 		return nil, domain.ErrMembershipDenied
 	}
@@ -99,7 +103,7 @@ func (store *Store) readOwnedProviderPriceEvidence(ctx context.Context, profile 
 	if err != nil {
 		return nil, domain.ErrMembershipDenied
 	}
-	return &ownedProviderPriceEvidence{profile: profile.Clone(), price: price}, nil
+	return &ownedProviderPriceEvidence{profile: profile.Clone(), price: &price}, nil
 }
 
 func (store *Store) validateOwnedOperationProviderPrice(ctx context.Context, q *ownedAuthorityQuery, op domain.AttemptOperationV1, evidence *ownedProviderPriceEvidence, source domain.AttemptExecutionSourceV1) error {
@@ -111,7 +115,16 @@ func (store *Store) validateOwnedOperationProviderPrice(ctx context.Context, q *
 	if err != nil || digest != source.Profile.Digest {
 		return q.budget.deny()
 	}
-	if _, err := validateOwnedProviderPrice(evidence.price, profile, source.Spending[0], op, q.at); err != nil {
+	if profile.Resource.Kind == domain.ProviderResourceLocalEndpointV1 {
+		if evidence.price != nil || evidence.local == nil || store.validateOwnedLocalInvoiceEvidence(evidence.local, profile, source, op, q.at) != nil {
+			return q.budget.deny()
+		}
+		return nil
+	}
+	if evidence.local != nil || evidence.price == nil {
+		return q.budget.deny()
+	}
+	if _, err := validateOwnedProviderPrice(*evidence.price, profile, source.Spending[0], op, q.at); err != nil {
 		return q.budget.deny()
 	}
 	return nil

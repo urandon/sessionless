@@ -392,6 +392,16 @@ func TestLocalInstallationCompetingSuccessorCannotBypassPredecessor(t *testing.T
 		t.Fatal(err)
 	}
 	one, two := replacementLocalGrant(t, v, g, first, "b"), replacementLocalGrant(t, v, g, first, "c")
+	two.LocalInstallation.Profile.BaseURL = "http://127.0.0.1:11436/v1"
+	two.Profile.Backend.BackendProfileDigest, err = two.LocalInstallation.Profile.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	two.Profile.Locator.BackendProfileDigest = two.Profile.Backend.BackendProfileDigest
+	two = v.install(t, two)
+	if one.Profile.Locator == two.Profile.Locator {
+		t.Fatal("causal predecessor CAS test requires distinct successor locators")
+	}
 	if _, err := s.PublishOwnedProfile(t.Context(), one); err != nil {
 		t.Fatal(err)
 	}
@@ -399,6 +409,14 @@ func TestLocalInstallationCompetingSuccessorCannotBypassPredecessor(t *testing.T
 	got, err := s.PublishOwnedProfile(t.Context(), two)
 	if !errors.Is(err, domain.ErrMembershipDenied) || got.Digest != "" || f.execCalls != writes || len(f.heads) != 2 {
 		t.Fatalf("stale competitor err=%v writes=%d heads=%d", err, f.execCalls-writes, len(f.heads))
+	}
+	loserLocator, err := two.Profile.Locator.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	loserAudit := localInstallationSQLKey([]driver.Value{string(two.Profile.Locator.TenantID), loserLocator, two.Profile.MutationID})
+	if _, exists := f.heads[localInstallationHeadKey(two.Profile)]; exists || f.audits[loserAudit] != nil || len(f.audits) != 3 {
+		t.Fatal("losing distinct successor leaked a head or immutable audit")
 	}
 	// Even a separately authenticated shape cannot overwrite that retained key
 	// through a fresh-publication grant; actual minting remains producer-owned.

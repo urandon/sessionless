@@ -58,6 +58,12 @@ Native cloud coding-agent processes remain disabled until their own evidence
 passes. Shared harness contracts may be reused on user hosts with different
 platform launch artifacts, not one binary that runs unchanged on macOS and Linux.
 
+The [shared external harness boundary design](design/external-harness-boundary.md)
+under [#215](https://gitcode.com/urandon/sessionless/issues/215) specifies the
+conditional external companion and native-container seam. It preserves the
+existing network-none profile and the independent managed Go loop; a design or
+container image is not evidence of native egress/credential eligibility.
+
 ### Cheap/free model and input policy
 
 The local demo must support an **already running, owner-supplied inference

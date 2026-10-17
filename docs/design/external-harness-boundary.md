@@ -1,0 +1,338 @@
+# Shared external harness execution boundary
+
+Version: 0.1.0. Engineering design candidate for
+[#215](https://gitcode.com/urandon/sessionless/issues/215), using the accepted
+[#214 comparison](https://gitcode.com/urandon/sessionless/issues/214#note_194345569).
+Owner: #13; attached delivery: #72/#133; managed delivery: #176/#175.
+
+Run a ready-made harness as a contained native process. Reuse the existing Go
+supervisor, credential lifecycle and canonical result pipeline. Add only the
+external egress companion needed by the selected native client; do not mediate
+its SDK, reconstruct its requests or replace its model client. The managed
+Sessionless agent retains its own Go loop and inference transport.
+
+The first candidate is a tool-free, owner-local Codex exec profile on an
+explicit Linux-rootless installation. It needs one workload container and an
+attempt-scoped trusted host companion, not a standing service or a mandatory
+two-container pod. This architecture is conditional on exact native packaging
+and enforcement proof. No native egress profile is enabled by this document.
+
+## Ownership and trust boundaries
+
+```text
+Sessionless control plane
+  canonical Session, admission, Attempt, lease/fence, durable terminal
+        |
+        | authenticated accepted attempt and bounded canonical input
+        v
+Existing attached coordinator and Go supervisor   [trusted owner host]
+  | credential lifecycle, current authority, output/receipt finalization
+  | controls actual workload and companion lifetime
+  |
+  +-- native egress companion                    [trusted host process]
+  |     exact attempt policy -> DNS/IP filter -> fixed peer connection
+  |                        ^
+  |                        | private attempt Unix socket, opaque TLS bytes
+  +-- OCI workload ------------------------------ [contained process tree]
+        tiny TCP-to-Unix byte relay on container loopback
+        pinned native Codex exec -> its own model client and native loop
+        read-only admitted input; private bounded scratch; exact auth file
+
+Managed Sessionless Go loop -> existing direct provider-session transport
+  shares authority/lifecycle principles, not this native tunnel or CLI loop
+```
+
+The host supervisor and launcher are trusted, as in the existing attached
+threat model. Neither a hostile owner host nor its rootless engine is made
+trustworthy by an attestation digest. The workload gets no host engine socket,
+host network, helper control port, YDB/blob/queue authority or sibling mounts.
+The companion has no authority to allocate attempts, read canonical sessions,
+mint credentials, finalize results or change provider/resource selection.
+
+The socket is a bounded connection capability, not a generic host-filesystem
+mount. Only the exact socket inode is exposed; the parent remains private to
+the trusted host. Socket permissions must work with the exact rootless UID
+mapping without making its parent discoverable to other host users. Inspect
+and prove this relationship; do not grant broader mounts or privileges to make
+an incompatible engine pass.
+
+## Selected topology and alternatives
+
+| Option | Decision |
+| --- | --- |
+| Existing network-none OCI profile unchanged | Keep for its existing use. It grants no native provider egress. |
+| Network-none workload plus explicit Unix conduit to a host companion | Selected Linux-rootless candidate. No workload NIC, direct DNS or alternate route; the one conduit is separately admitted. |
+| Workload with unrestricted NIC and proxy environment | Reject. A native client or descendant can bypass the proxy. |
+| Same-UID helper beside the native process | Not a credential/process boundary. A byte relay may live here only because it holds no secret or host authority. |
+| Separate helper container inside an engine VM | Optional portability successor when the selected host conduit is unavailable. Requires its own socket, lifecycle and resource proof; not an automatic Darwin implementation. |
+| New public broker service, Docker-in-Docker or hosted third-party agent loop | Reject for this slice. No demonstrated need for their authentication, privileges, lifecycle or operational state. |
+
+Docker documents that `network none` leaves container loopback, and that bind
+sources belong to the daemon host, not necessarily the client host. This makes
+the Unix conduit a Linux-host candidate, not proof that a macOS socket works
+through a VM filesystem share. See [none networking](https://docs.docker.com/engine/network/drivers/none/)
+and [bind mounts](https://docs.docker.com/engine/storage/bind-mounts/).
+
+## Minimum versioned contract delta
+
+Preserve `IsolationProfile.Validate`, the existing network-denied launcher and
+all v1 serving paths. Even with `--network none`, a mounted conduit creates
+effective egress: reporting `NetworkDenied=true` would be false. Introduce one
+explicit `IsolationProfileV2` successor with a closed network policy:
+
+- `denied`: no conduit or outbound route, preserving v1 semantics;
+- `native_connect_unix.v1`: the exact selected companion/relay artifacts,
+  original attempt scope, socket identity, policy digest and finite limits.
+
+The successor reuses existing filesystem, process, disk and workload lifecycle
+interfaces. It is selected only by an explicit new profile binding and
+matching constructor. Old constructors reject it; there is no v1-to-v2
+coercion, permissive boolean, legacy decoder or automatic startup selection.
+
+Its launch envelope must explicitly distinguish the native executable from the
+small pinned bootstrap/relay process bundle and the exact Unix socket mount
+from regular read-only input files. V1 `LaunchSpec`/`WorkloadAttestation` cannot
+represent those facts and must reject this profile. The V2 envelope seals every
+bundle member, native argv and mount; no generic writable mount or caller path
+is added to the old read-roots list. The launcher creates the socket and retains
+its original handle/inode; a matching string path is not producer evidence.
+The bootstrap only starts the relay and native child, reports bounded local
+readiness and joins their exits. It owns no model, retry, credential lifecycle,
+output interpretation or attempt state machine. Its identity must not be
+misreported as the Codex executable in the existing single-process attestation.
+
+The reviewed launcher owns both the workload and actual companion handle.
+Preparation installs them atomically from the caller's perspective: any
+failure closes owned connections, stops created processes and removes exact
+owned objects. The returned boundary retains the existing
+`Command`, `AttestedWorkload`, `GracefulStop`, `ForceStop`, `Alive`, `Release`
+responsibilities. `Alive=false` and successful release require both members to
+be quiescent, including relays and accepted connections, not merely outer CLI
+exit. Use the same supervisor execution owner rather than a parallel runner.
+
+The companion is a private Go component launched under that owner. Its factory
+receives the genuine accepted attached Session/Attempt and current authority
+projection, not a caller-authored approval DTO. It seals tenant/owner/resource
+revision/generation, enrollment/connection generation, worker, Run/Attempt,
+lease/fence, reservation/physical claim, artifact/policy and expiry. Keep the
+current attached authority checks at preparation, opening each connection and
+finalization; cancel/fence/revoke observation retires the actual original
+handle. Copying fields or setting a readiness flag cannot mint a handle.
+
+Control remains through the existing supervisor's private Go ownership and
+bounded process lifecycle. Native data uses standard HTTP CONNECT followed by
+opaque bytes. No per-model-call IPC, SDK phase-authorizer, request mirror,
+substituted fetch, TLS interception or second response parser is introduced.
+
+## Native network policy
+
+The first conduit accepts only strict bounded CONNECT to one of the profile's
+explicit provider origins on port 443. The relay supplies no destination or
+policy authority. Reject absolute HTTP requests, SOCKS, arbitrary Unix paths,
+IP-literal targets, userinfo, alternate ports, malformed/ambiguous headers,
+proxy chaining and unsupported protocol upgrades before dialing.
+
+The trusted companion resolves the exact admitted hostname, rejects the whole
+answer set if any address is private, loopback, link-local, metadata, multicast
+or otherwise forbidden, and pins one literal permitted address for that
+connection. Each new connection repeats this check under the same original
+deadline and finite total connection/byte budget. No resolver or route comes
+from ambient proxy environment. DNS, direct-IP/UDP/IPv6 access, alternate
+interfaces, host gateways and other sockets are denied to the workload outside
+the conduit. Missing companion or relay means failure, never direct egress.
+
+The native client owns end-to-end TLS certificate/name validation. The
+companion does not claim a verified TLS peer, encrypted HTTP method/path,
+model, response semantics or exact request/token count. CONNECT and byte limits
+cannot establish those facts. Same-origin requests and encrypted redirects
+are opaque; a new destination still needs a separately permitted CONNECT.
+Do not feed tunnel observations into `ProxyAttestationV1` or #189/#190
+per-operation direct-HTTP authority. Those contracts remain distinct.
+
+For the selected exact native artifact, #133 must qualify its configured
+provider-origin set, TLS validation and native retry/tool limits. No observed
+competitor hostname is a policy allowlist. If a governing model, data, token,
+effect or price policy requires evidence that this native interface cannot
+provide or conservatively bound before execution, the profile is ineligible.
+Do not replace the missing fact with a native log, byte count or optimistic
+budget estimate. In particular, this tunnel does not satisfy the managed
+per-model-operation source/spending contract.
+
+## Credentials and native capabilities
+
+Retain the original prepared runner's single
+`Issue -> Materialize -> Execute -> WriteBack -> Release` sequence. The
+companion receives no personal subscription secret. The selected attached
+Codex process still needs its exact owner-local `auth.json`, under the
+existing generation/revision-fenced lifecycle and exact-file OCI bridge.
+No ambient login, keychain, user HOME, copied provider cache or cloud custody
+is inferred from container placement.
+
+The first profile has no shell, model-controlled filesystem operations, MCP,
+plugins, dynamic dependencies or native search. Input/media and structured
+final semantics remain with [the attached media design](attached-harness-media-and-artifacts.md)
+and #199–201. Enumerate the complete exact native tool set, including read-only
+and implicit tools; a read-only tool that can read the credential is enough to
+make the profile ineligible. Native permission prompts and a single shell flag
+are not tool exclusion. Prove absence at actual effect sinks, including
+image/file helper paths, credential inheritance and unexpected event variants.
+
+If model-controlled descendants are enabled later, the secret must be outside
+their enforced privilege/read/inheritance boundary or the profile is no-go.
+This design does not create that future sandbox. It does not inject credentials
+into end-to-end TLS or silently turn the companion into a model API emulator.
+Managed shell/tool-enabled native CLI remains no-go under the existing
+[credential exclusion](../serverless-harness.md#egress-model).
+
+## Packaging and resource bounds
+
+The installation manifest pins official executable provenance/digest, native
+protocol/schema, model and capability evidence, generated config/argv digest,
+relay/companion digests, OCI image and engine identities, rootless host tuple,
+numeric UID mapping and all read/write roots. A source checkout hash is not a
+released executable pin. No profile may register until the real packaged tuple
+exists and passes conformance. Unsupported flags/config/tool behavior reject
+the artifact rather than falling back to weaker settings.
+
+Use fresh per-attempt environment, input staging and scratch. Keep read-only
+root/input/runtime mounts, no capability/device/daemon grants, no network
+namespace sharing, no inherited config, no global native home/cache/session and
+no invocation-time package/image download. Native resume is disabled. Rootless
+CPU, memory, PID, scratch/file, stdout/stderr/event and total-byte ceilings must
+be inspected and adversarially exercised; a flag accepted by Docker is not
+proof of a delegated cgroup controller. Charge the relay to workload limits
+and bound the companion separately, including goroutines, sockets and buffers.
+
+The existing OCI launcher has memory/PID/disk controls, not verified CPU quota
+or this conduit. Preserve its delivered evidence without claiming it proves
+these new axes. Native stdout/event/media bounds and parser ownership remain
+with the existing Codex/media profile. Do not allocate an unbounded buffer to
+obtain a bounded final answer.
+
+## Lifecycle and failure ordering
+
+```text
+current accepted authority + fresh immutable profile
+  -> consume existing one-use execution reservation
+  -> prepare private companion/socket and contained workload
+  -> inspect exact artifacts, mounts, namespaces, quotas and local readiness
+  -> recheck original authority; start pinned native process
+  -> native CONNECT -> current authority -> fixed bounded peer
+  -> bounded native output or cancel/fence/deadline/error
+  -> deny new connections; close actual sockets; stop whole workload
+  -> verify native/relay/companion quiescence
+  -> exact-file handback; independent bounded WriteBack and Release
+  -> joined output validation/canonical receipt path + residue verification
+  -> success only when all owning finalizers permit it; otherwise taint
+```
+
+Readiness uses owned local acknowledgements and inspection, not provider calls
+or fixed sleeps. It does not reset the original deadline. Cancellation remains
+active during preparation, silent native execution and finalization. Bound
+graceful stop, escalation, reader joins and release separately; forced teardown
+of an outer Docker client is not workload stop. Credential handback follows
+verified workload quiescence; failed writeback must not consume Release's
+independent cleanup window.
+
+The coordinator joins actual connection and workload outcomes with original
+credential and attached receipt owners. Output validation may retain only the
+bounded private candidate; no artifact is uploaded/published until the existing
+#199–201 finalization conditions pass. No new directory harvest, native
+transcript import or stdout pathname becomes canonical authority.
+
+Failures before any possible outbound bytes can report that limited local
+fact. Once bytes may have crossed the tunnel, interruption, lost reply, native
+failure or companion death cannot prove provider non-acceptance. Reconcile the
+existing physical claim; never reopen a tunnel/resume the native session or
+rerun the whole attempt as recovery. Internal native retries must be disabled
+or conservatively covered by a proven accepted envelope; otherwise no-go.
+Closing a socket does not undo an accepted request or prove remote compute
+stopped.
+
+Unknown stop, credential handback, socket drain, residue or removal taints the
+allocation and blocks reuse/canonical success. Reconciliation uses exact
+installation/profile/engine/attempt ownership, not an unscoped process kill,
+volume prune or global container cleanup. No task may stop the user's model
+server, Docker daemon, VM, Shadowrocket or unrelated workloads.
+
+## Durable state and platform eligibility
+
+Use existing Attempt/reservation/fence, credential generation/CAS intents,
+attached receipt/ACK and canonical output records. Companion handles, socket
+identities, byte counters and readiness are process-local. Their loss removes
+permission; it does not reconstruct send authority. No new operational table,
+secret store, scheduler or invocation state machine is needed. A future change
+to existing durable semantics must update the entity registry in its owning
+implementation task.
+
+| Platform | Eligibility for this design |
+| --- | --- |
+| Linux rootless, companion on the engine host | First conditional proof target. Requires actual UID/socket reachability, cgroup controller, no-bypass, native and whole-boundary cleanup evidence. No inherited v1 egress/CPU pass. |
+| Darwin with a Linux engine VM | Not eligible for the Linux host-socket artifact. A VM-local companion/explicit carrier needs separate packaging proof; native macOS filesystem sharing is not a proven Unix transport. Do not install/start Colima or make Docker a Dockerless-stand dependency. |
+| Yandex managed containers | No-go for this native profile until #90 proves an equivalent externally enforced topology and custody. Request suspension/connection loss and the single-image platform contract are not a sidecar/namespace privilege guarantee. Managed own-loop/direct transport continues independently. |
+
+Yandex documents request-driven instance suspension and loss of connections;
+cleanup must complete within the owned runtime lifetime, not rely on a
+background helper after returning the request. See
+[container lifecycle](https://yandex.cloud/en/docs/serverless-containers/concepts/container).
+No new cloud service or cross-cloud migration is implied by this comparison.
+
+## Conformance and implementation handoff
+
+Use deterministic owned fake peers and synthetic marker credentials first.
+Pure parsing, ownership, cancellation and supervisor tests need no daemon or
+model. An engine/native packaging run needs an explicit finite manifest naming
+already available artifacts, engine, roots and cleanup owner. Initial proposed
+caps: at most 20 cases/20 minutes; 60 seconds per case plus 10 seconds cleanup;
+one workload and at most one optional packaging helper container; at most two
+owned peers; workload 1 CPU/512 MiB/64 PIDs/64 MiB scratch, companion 64 MiB;
+1 MiB each-direction traffic per case, 8 MiB total logs and 2 GiB incremental
+disk under the dedicated workspace root. These are proof caps, not measured
+production sizing. An artifact that does not fit fails this manifest; increases
+need an explicit replacement manifest, not hidden retries/downloads.
+
+| Test group | Required evidence |
+| --- | --- |
+| Original authority | Foreign/stale/revoked Session/resource, fence/expiry/cancel and replay deny before launch/open; no caller DTO can mint readiness. |
+| Native compatibility | Exact packaged exec/config/schema, authentic bounded text/media/final flow, complete excluded tool set and fixed native retry policy; fake auth does not qualify real OAuth refresh. |
+| Conduit | No ambient proxy/direct network/DNS/IP/UDP/IPv6/metadata route; socket substitution/sibling connection denied; filtered/rebound DNS, wrong target/TLS name, malformed CONNECT and exhausted budgets fail closed. |
+| Lifecycle | Leader/relay/companion death, detached descendants, partial send/lost reply, fence loss and concurrent cancel; original sockets and actual workload stop; no replay after ambiguity. |
+| Limits and residue | CPU/memory/PID/scratch/output exhaustion, failed inspect/handback/removal, next-attempt marker/socket/credential denial and exact owned-object cleanup. |
+
+The owning implementation checklist is deliberately small:
+
+1. Required selected-profile delta: versioned launcher/supervisor network
+   contract and bounded host companion/byte relay, with original authority,
+   resource/cleanup tests and fail-closed registration. Reuse #77/#88/#106;
+   do not reopen or relabel their network-none delivery.
+2. Required selected-profile proof: pin one real official Codex package and
+   Linux-rootless tuple, qualify native/config/tool/retry and conduit behavior
+   under the finite credential-free gate. Publish go/no-go to #133. Failure
+   remains no-go and must not generate SDK instrumentation or relaxed policy.
+3. Existing delivery owners: #133 activates only an eligible attached profile;
+   #199–201 own media/output integration. #175/#90/#92 own independent managed
+   composition/platform/cloud proof; #176/#191 keep their own loop/exports.
+
+After independent design acceptance, register the first two as real linked
+children under #13 with the exact predecessors and evidence above. No new
+cross-cutting epic is necessary. Darwin portability and tool-enabled native
+profiles are optional follow-up, not extra MVP requirements. #212's configured
+local inference path remains independent: it connects the managed Go client to
+an already running owner endpoint and does not use this native tunnel.
+
+## Source backed reuse
+
+The accepted #214 report contains the full pinned competitor comparison and
+alternatives. Relevant primary mechanism references are Codex
+[proxy routing](https://github.com/openai/codex/blob/f5420174dafba153913a3e697f89002c338dfd7e/codex-rs/linux-sandbox/src/proxy_routing.rs)
+and its [opaque TLS limitations](https://github.com/openai/codex/blob/f5420174dafba153913a3e697f89002c338dfd7e/codex-rs/network-proxy/README.md#security-notes-important),
+OpenCode's [explicit no-sandbox boundary](https://github.com/anomalyco/opencode/blob/3a31c4ea801915c0b050df4b3842997ea62b6e93/SECURITY.md#no-sandbox),
+and Hermes' [container environment](https://github.com/NousResearch/hermes-agent/blob/c80a0a551c7038517456ee0aeb60203ec92aedb6/tools/environments/docker.py).
+Adopt external enforcement and lifecycle separation, not their code, default
+permissions, persistent workspaces or client/proxy protocols wholesale.
+
+Authoritative repository contracts remain [OCI isolation](../attached-worker-oci.md),
+[Codex exec](../codex-exec-adapter.md), [credential lifecycle](../credential-lifecycle.md),
+[managed isolation](../serverless-isolation.md), [direct provider egress](../serverless-egress.md)
+and [attached media/output](attached-harness-media-and-artifacts.md). No proposed
+native profile overrides their existing guarantees or enables real operations.

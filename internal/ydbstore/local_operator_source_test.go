@@ -559,3 +559,148 @@ func TestLocalOperatorFiniteGrantExpiryAndCloneCancellation(t *testing.T) {
 		}
 	})
 }
+
+func registerActualFundingKey(f *localInstallationSQLFixture, g ports.AttemptSpendingPublicationGrantV1) {
+	if f.fundingKeys == nil {
+		f.fundingKeys = make(map[string]bool)
+	}
+	l := g.Authorization.Locator
+	f.fundingKeys[localInstallationSQLKey([]driver.Value{string(l.TenantID), string(l.AttemptID), string(l.ComponentKind), string(l.BillingOwnerUserID)})] = true
+}
+
+// Connect the actual private-file source to the actual Store funding writer;
+// only the serializable storage/retry mechanics are a deterministic SQL model.
+func TestLocalOperatorConnectedFundingPublicationAndStaleSource(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		source, store, f, _, first, _, _, manifest := actualLocalOperatorStore(t)
+		store.attemptSpendingPublicationVerifier = source
+		scope := domain.AttemptExecutionSourceScopeV1{TenantID: first.Profile.Locator.TenantID, OwnerUserID: first.Profile.Locator.OwnerUserID, SessionID: "connected-session", RunID: "connected-run", AttemptID: "connected-attempt"}
+		for _, kind := range []domain.AttemptSpendingComponentKindV1{domain.AttemptSpendingProviderV1, domain.AttemptSpendingSubstrateV1} {
+			grant, err := source.SpendingPublication(t.Context(), scope, kind)
+			if err != nil {
+				t.Fatal(err)
+			}
+			registerActualFundingKey(f, grant)
+			f.at = grant.IssuedAt
+			bad := grant.Clone()
+			bad.Authorization.SessionID = "changed-session"
+			heads, audits, writes := cloneLocalInstallationRows(f.fundingHeads), cloneLocalInstallationRows(f.fundingAudits), f.execCalls
+			denied, err := store.PublishAttemptSpending(t.Context(), bad)
+			if !errors.Is(err, domain.ErrMembershipDenied) || !reflect.DeepEqual(denied, ports.AttemptSpendingPublicationReceiptV1{}) || !reflect.DeepEqual(heads, f.fundingHeads) || !reflect.DeepEqual(audits, f.fundingAudits) || writes != f.execCalls {
+				t.Fatalf("changed source carrier mutated %s funding: %v", kind, err)
+			}
+			beforeQueries := len(f.statements)
+			receipt, err := store.PublishAttemptSpending(t.Context(), grant)
+			if err != nil || receipt.Replayed || receipt.Authorization.SourceKind != domain.AttemptSpendingOwnerLocalSourceV1 {
+				t.Fatalf("actual %s source -> Store funding publication: err=%v replay=%t", kind, err, receipt.Replayed)
+			}
+			joinedProfile := false
+			for _, statement := range f.statements[beforeQueries:] {
+				joinedProfile = joinedProfile || statement == ownedProfileCurrentSQL
+			}
+			if !joinedProfile {
+				t.Fatal("connected funding bypassed exact current profile SQL")
+			}
+			if err := receipt.Authorization.ValidateAgainstProfile(first.Profile, f.at); err != nil {
+				t.Fatalf("published %s source/profile facts: %v", kind, err)
+			}
+			replayWrites := f.execCalls
+			replayed, err := store.PublishAttemptSpending(t.Context(), grant)
+			if err != nil || !replayed.Replayed || replayed.Digest != receipt.Digest || f.execCalls != replayWrites {
+				t.Fatalf("actual %s funding replay changed original row: %v", kind, err)
+			}
+			other, err := source.SpendingPublication(t.Context(), scope, kind)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.PublishAttemptSpending(t.Context(), other); !errors.Is(err, domain.ErrMembershipDenied) || f.execCalls != replayWrites {
+				t.Fatalf("second initial %s allocation became a top-up: %v", kind, err)
+			}
+		}
+		if len(f.fundingHeads) != 2 || len(f.fundingAudits) != 2 {
+			t.Fatalf("provider/substrate funding heads=%d audits=%d", len(f.fundingHeads), len(f.fundingAudits))
+		}
+		for _, kind := range []domain.AttemptSpendingComponentKindV1{domain.AttemptSpendingMCPToolV1, domain.AttemptSpendingWebSearchV1} {
+			if _, err := source.SpendingPublication(t.Context(), scope, kind); !errors.Is(err, domain.ErrMembershipDenied) {
+				t.Fatal("local operator invoice source funded an external service")
+			}
+		}
+		// A genuine but not-yet-published original grant remains authenticated;
+		// replacing its source profile must deny at the actual current SQL join.
+		scope.AttemptID = "unpublished-original-attempt"
+		stale, err := source.SpendingPublication(t.Context(), scope, domain.AttemptSpendingProviderV1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		registerActualFundingKey(f, stale)
+		child, replacement, _, _ := actualLocalReplacement(t, source, first, manifest)
+		store.ownedProfilePublicationVerifier = child
+		f.at = replacement.IssuedAt
+		if _, err := store.PublishOwnedProfile(t.Context(), replacement); err != nil {
+			t.Fatalf("replace actual source before stale funding publication: %v", err)
+		}
+		if source.VerifyAttemptSpendingPublication(stale, f.at) != nil {
+			t.Fatal("stale-source test lost authentic unexpired original provenance")
+		}
+		heads, audits, writes, queries := cloneLocalInstallationRows(f.fundingHeads), cloneLocalInstallationRows(f.fundingAudits), f.execCalls, len(f.statements)
+		got, err := store.PublishAttemptSpending(t.Context(), stale)
+		if !errors.Is(err, domain.ErrMembershipDenied) || !reflect.DeepEqual(got, ports.AttemptSpendingPublicationReceiptV1{}) || !reflect.DeepEqual(heads, f.fundingHeads) || !reflect.DeepEqual(audits, f.fundingAudits) || writes != f.execCalls {
+			t.Fatalf("retired original profile admitted source-backed funding: %v", err)
+		}
+		joinedProfile := false
+		for _, statement := range f.statements[queries:] {
+			joinedProfile = joinedProfile || statement == ownedProfileCurrentSQL
+		}
+		if !joinedProfile {
+			t.Fatal("stale funding denied before exercising required current profile join")
+		}
+	})
+}
+
+func TestLocalOperatorConnectedFundingAtomicRecovery(t *testing.T) {
+	for _, mode := range []string{"ambiguous", "unknown", "rollback", "audit_failure"} {
+		t.Run(mode, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				source, store, f, _, first, _, _, _ := actualLocalOperatorStore(t)
+				store.attemptSpendingPublicationVerifier = source
+				scope := domain.AttemptExecutionSourceScopeV1{TenantID: first.Profile.Locator.TenantID, OwnerUserID: first.Profile.Locator.OwnerUserID, SessionID: "recovery-session", RunID: "recovery-run", AttemptID: "recovery-attempt"}
+				grant, err := source.SpendingPublication(t.Context(), scope, domain.AttemptSpendingProviderV1)
+				if err != nil {
+					t.Fatal(err)
+				}
+				registerActualFundingKey(f, grant)
+				f.at = grant.IssuedAt
+				if mode == "audit_failure" {
+					f.failFundingAudit = true
+				} else {
+					f.commitModes = []string{mode}
+				}
+				receipt, err := store.PublishAttemptSpending(t.Context(), grant)
+				if mode == "audit_failure" {
+					if !errors.Is(err, domain.ErrMembershipDenied) || !reflect.DeepEqual(receipt, ports.AttemptSpendingPublicationReceiptV1{}) || len(f.fundingHeads) != 0 || len(f.fundingAudits) != 0 {
+						t.Fatalf("funding head escaped audit rollback: %v", err)
+					}
+					return
+				}
+				if mode == "unknown" {
+					if !errors.Is(err, domain.ErrMembershipDenied) || !reflect.DeepEqual(receipt, ports.AttemptSpendingPublicationReceiptV1{}) {
+						t.Fatal("unknown funding commit returned speculative success")
+					}
+				} else if err != nil {
+					t.Fatalf("source-backed funding commit recovery %s: %v", mode, err)
+				}
+				if len(f.fundingHeads) != 1 || len(f.fundingAudits) != 1 {
+					t.Fatalf("funding pair not atomic after %s: heads=%d audits=%d", mode, len(f.fundingHeads), len(f.fundingAudits))
+				}
+				if mode == "ambiguous" && !receipt.Replayed {
+					t.Fatal("lost ACK did not recover original funding audit")
+				}
+				heads, audits, writes := cloneLocalInstallationRows(f.fundingHeads), cloneLocalInstallationRows(f.fundingAudits), f.execCalls
+				recovered, err := store.PublishAttemptSpending(t.Context(), grant)
+				if err != nil || !recovered.Replayed || !reflect.DeepEqual(heads, f.fundingHeads) || !reflect.DeepEqual(audits, f.fundingAudits) || f.execCalls != writes {
+					t.Fatalf("exact original funding recovery rewrote source %s: %v", mode, err)
+				}
+			})
+		})
+	}
+}

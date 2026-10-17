@@ -49,7 +49,11 @@ it still requires the exact original active profile/generation/digest at the
 same transactional time. Bearer additionally uses the existing
 `provider_credential_bindings` and credential audit with a positive generation.
 The profile's sealed executable and host/network-namespace installation facts
-are configuration identity, not measured cloud/container isolation.
+are configuration identity, not measured cloud/container isolation. Host
+identity includes the actual kernel boot UUID (Darwin `kern.bootsessionuuid`,
+Linux `/proc/sys/kernel/random/boot_id`), not just hostname/UID. Same-boot process
+restart can resume; reboot or host transfer requires explicit reconciliation
+and requalification, never automatic fresh installation or old-receipt reuse.
 
 Canonical local-profile data alone cannot install or authorize the resource.
 The local publication intent binds the exact configured profile and, for a

@@ -148,4 +148,8 @@ func TestPrivateOperatorRuntimeActualOwnedExecutable(t *testing.T) {
 	if got.WorkerExecutableDigest != hex.EncodeToString(digest[:]) || len(got.LocalHostIdentityDigest) != 64 || len(got.LocalNetworkNamespaceIdentityDigest) != 64 {
 		t.Fatal("runtime inspection did not bind actual executable and host/network identities")
 	}
+	again, err := InspectRuntime(t.Context(), path)
+	if err != nil || again != got {
+		t.Fatal("same actual host boot/executable cannot reproduce original identity")
+	}
 }

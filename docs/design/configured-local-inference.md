@@ -1,6 +1,6 @@
 # Configured local inference for development demos
 
-Version: 0.1.1, engineering draft. Owner:
+Version: 0.1.1, engineering design. Owner:
 [#212](https://gitcode.com/urandon/sessionless/issues/212), under
 [#176](https://gitcode.com/urandon/sessionless/issues/176).
 
@@ -349,26 +349,26 @@ or shared migration is authorized by this design.
 
 Implementation owner is the primary agent, with disjoint bounded implementation
 agents where useful and independent requirements-led review of each exact head.
-After design acceptance, register these necessary delivery boundaries as real
-children of #212 under #176; do not create a redundant epic:
+The necessary delivery boundaries are registered as real children coordinating
+#212 under #176; no additional epic is needed:
 
-1. **Endpoint contracts and bounded HTTP codec**: profile/URL validation,
-   explicit optional/no auth, nonstream complete text/tool normalization,
-   byte/deadline/cancellation/no-retry fixtures. Driver remains disabled until
-   canonical admission/composition is connected.
-2. **Canonical local resource and runtime admission**: new closed variants,
+1. [#216 — canonical local resource and runtime admission](https://gitcode.com/urandon/sessionless/issues/216): new closed variants,
    current profile/resource/credential and owner-local funding source, honest
    executable substrate, exact evidence/registry gates and entity-registry
    updates. Reuse existing records and preserve old OpenRouter/fixture behavior.
-3. **Provider session and local Web demo composition**: connect the accepted
-   codec/resource through #190/#191 and local #175/#35 without bypassing their
+2. [#217 — endpoint contracts and bounded HTTP codec](https://gitcode.com/urandon/sessionless/issues/217): consume #216's canonical contracts;
+   profile/URL validation, explicit optional/no auth, nonstream complete text/tool
+   normalization, actual connector observations and byte/deadline/cancellation/
+   no-retry fixtures. Pure codec work can proceed independently; driver remains
+   disabled until canonical admission/composition is connected.
+3. [#218 — provider session and local Web demo composition](https://gitcode.com/urandon/sessionless/issues/218): connect #216/#217 through #190/#191 and local #175/#35 without bypassing their
    scope. Supply operator configuration/recipe, deterministic normal-path
    text/tool/result/answer and unauthorized/revoke/fence tests; later bounded
    owner-approved real proof. #212 remains open until all its criteria pass.
 
 Children name this design/version, predecessor evidence and concrete exit
-checks. The first can proceed without cloud/sidecar research; the second must
-deliver real current authority, not only extend enums; the third cannot claim
+checks. The first must deliver the current-authority contract and tests, not
+only extend enums; the first two need no cloud/sidecar proof. The third cannot claim
 a full agent from a disconnected transport smoke. Existing #189–#197 still own
 their respective loop/compaction/MCP/search capabilities and integration.
 

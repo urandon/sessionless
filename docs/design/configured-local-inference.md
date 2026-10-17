@@ -1,6 +1,6 @@
 # Configured local inference for development demos
 
-Version: 0.1.1, engineering design. Owner:
+Version: 0.1.2, engineering design. Owner:
 [#212](https://gitcode.com/urandon/sessionless/issues/212), under
 [#176](https://gitcode.com/urandon/sessionless/issues/176).
 
@@ -194,6 +194,73 @@ Cancellation/expiry/failed registration closes the owned preflight socket.
 Each next operation needs its own fresh observation; no socket/observation
 reuse across sequence, attempt or resource generation. Local tags cannot
 authorize cloud/HTTPS or MCP/search routes, and vice versa.
+
+### Concrete connector ownership and composition
+
+Implement the local connector in `internal/localloopback`. It holds the concrete
+`localoperator.Source`, the original
+`serverlessharness.BoundedOwnedAllocationPreparationV1`, the existing operation
+issuer and the concrete `*ydbstore.Store`. This direction keeps network I/O out
+of the persistence adapter and avoids importing Store into the harness/egress
+packages. Do not substitute an injected approval callback or a second Store,
+issuer, invocation ledger or scheduler. The codec remains a pure data package.
+
+The original allocation supplies a private operation resource lease, not a
+caller-created authority DTO. It checks the exact retained Source identity and
+entered allocation, fixes the entire model operation before dialing, and shares
+one bounded preflight slot across connector wrappers. Seal scope, lease/fence,
+physical claim, allocation/source/profile, sequence, request digest/byte count,
+result ceiling, kind and absolute deadline. Claiming that slot is irreversible
+for the operation, including failed/cancelled preflight; another wrapper cannot
+redial the same sequence. A subsequent operation still needs the existing
+durable predecessor/outcome and budget checks. No unbounded operation map is
+required, and losing process-local state never reconstructs send permission.
+
+The lease inherits the original invocation/allocation cancellation and active
+deadline, intersected with the operation and installed Source window. Source
+closure also revokes owned connector I/O through a Source-owned signal; it must
+not cancel the caller's context or close a shared model/worker. Merely checking
+`VerifyEnteredLocalAllocation` once, matching copied digests, or making a fresh
+context with the same nominal deadline is insufficient lifetime ownership.
+
+Construct the noncopyable connector keeper before Store, install it through
+the existing proxy-publication verifier option, then bind that keeper once to
+the concrete Store and allocation bridge. The trusted private compositor must
+check that Store retains this exact keeper, the original operation issuer and
+the original allocation verifier. This is an I/O-free identity check, not an
+authorization grant. Nil, copied, foreign, replacement or repeated bindings
+fail. Assemble the preparation-burn/Store relationship privately before exposing
+the serving composition; do not solve construction order with an arbitrary
+nil-returning authority callback. #218 owns that normal composition.
+
+Dial only the admitted numeric loopback TCP address. Check the actual remote
+address and retain that same socket; preflight writes no HTTP/TLS/application
+bytes. The local policy body is canonical data derived from independent sealed
+endpoint/protocol/auth/connector/host/namespace/limit configuration, with an
+acyclic digest. The fresh observation additionally seals the full profile and
+operation identities. Extend the existing V2 publication body decoder, domain
+builder and Store publication/snapshot readers together; neither HTTPS-shaped
+bodies nor a newly added transport tag alone are a local observation.
+
+Before writing the fixed `/v1/chat/completions` request, irreversibly consume
+the retained socket lease, call the retained Store's
+`AuthorizeAttemptOperationBeforeSend` for its current joins and existing one-use
+capability consumption, then recheck local cancellation/deadline and exact
+payload binding. No earlier publication or identity check is send permission.
+First implementation supports `auth=none` without a secret read or auth header;
+Bearer fails explicitly until the original #190 session owns its proper custody.
+Do not silently ignore a requested Bearer profile.
+
+Every denial, cancellation, expiry and failed/ambiguous registration closes
+owned sockets, joins owned I/O and releases bounded buffers. Historical
+authenticated observations can remain readable after closure but cannot mint a
+fresh socket or capability. Partial writes/lost replies stay reconcile-only;
+there is no reconnect/retry or remote-stop claim. Connected tests use actual
+owned loopback peers and the existing scripted Store transaction fixture to
+prove zero HTTP bytes on denial and exactly one request on success. Keep such
+fixtures in external `ydbstore_test` tests with narrow test-only helpers, not
+production dial/approval injection. Their result is not real YDB, model or
+normal-path demo evidence.
 
 ## Compatibility and capability qualification
 

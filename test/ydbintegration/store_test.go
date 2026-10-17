@@ -1472,8 +1472,8 @@ func successfulSubstrateExecutionEvidence(
 	}
 	authority := effect.Grant.Authority.Clone()
 	substrateDigest, _ := authority.SubstrateBinding.Digest()
-	allocation := domain.PreparedAllocationV1{
-		Version: domain.PreparedAllocationVersionV1, SubstrateBindingDigest: substrateDigest,
+	allocation := domain.PreparedAllocationV2{
+		Version: domain.PreparedAllocationVersionV2, SubstrateBindingDigest: substrateDigest,
 		ObservedImageDigest: authority.SubstrateBinding.ImageDigest, ObservedOuterHarnessDigest: authority.SubstrateBinding.OuterHarnessArtifactDigest,
 		ObservedProxyArtifactDigest: authority.SubstrateBinding.EgressProxyArtifactDigest, ObservedProxyIdentityDigest: authority.SubstrateBinding.EgressProxyIdentityDigest,
 		WorkloadMode: authority.SubstrateBinding.WorkloadMode,

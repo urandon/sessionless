@@ -38,18 +38,36 @@ func (p OwnedProxyPublicationV2) Clone() OwnedProxyPublicationV2 {
 	p.PolicyBody, p.AttestationBody, p.Authenticator = bytes.Clone(p.PolicyBody), bytes.Clone(p.AttestationBody), bytes.Clone(p.Authenticator)
 	return p
 }
-func (p OwnedProxyPublicationV2) Bodies() (ServerlessEgressPolicyV1, ServerlessEgressProxyAttestationV1, error) {
-	var policy ServerlessEgressPolicyV1
-	var attestation ServerlessEgressProxyAttestationV1
-	if p.TransportKind != domain.RegisteredProxyTransportPinnedHTTPSV2 || len(p.PolicyBody) == 0 || len(p.PolicyBody) > 16<<10 || len(p.AttestationBody) == 0 || len(p.AttestationBody) > 16<<10 || json.Unmarshal(p.PolicyBody, &policy) != nil || json.Unmarshal(p.AttestationBody, &attestation) != nil {
-		return policy, attestation, domain.ErrMembershipDenied
+func canonicalProxyBody(raw []byte, value any) bool {
+	if len(raw) == 0 || len(raw) > 16<<10 || json.Unmarshal(raw, value) != nil {
+		return false
 	}
-	pb, _ := json.Marshal(policy)
-	ab, _ := json.Marshal(attestation)
-	if !bytes.Equal(pb, p.PolicyBody) || !bytes.Equal(ab, p.AttestationBody) || attestation.ValidateForPolicy(policy, p.ObservedAt, attestation.ExpiresAt) != nil {
-		return policy, attestation, domain.ErrMembershipDenied
+	expected, err := json.Marshal(value)
+	return err == nil && bytes.Equal(expected, raw)
+}
+func (p OwnedProxyPublicationV2) Bodies() (OwnedProxyBodiesV2, error) {
+	deny := func() (OwnedProxyBodiesV2, error) { return OwnedProxyBodiesV2{}, domain.ErrMembershipDenied }
+	bodies := OwnedProxyBodiesV2{TransportKind: p.TransportKind}
+	switch p.TransportKind {
+	case domain.RegisteredProxyTransportPinnedHTTPSV2:
+		b := new(OwnedPinnedHTTPSBodiesV2)
+		if !canonicalProxyBody(p.PolicyBody, &b.Policy) || !canonicalProxyBody(p.AttestationBody, &b.Attestation) || b.Attestation.ValidateForPolicy(b.Policy, p.ObservedAt, b.Attestation.ExpiresAt) != nil {
+			return deny()
+		}
+		bodies.PinnedHTTPS = b
+	case domain.RegisteredProxyTransportLocalLoopbackHTTPV2:
+		b := new(OwnedLocalLoopbackBodiesV2)
+		if !canonicalProxyBody(p.PolicyBody, &b.Policy) || !canonicalProxyBody(p.AttestationBody, &b.Attestation) || b.Attestation.ValidateForPolicy(b.Policy) != nil || !b.Attestation.ObservedAt.Equal(p.ObservedAt) || p.ServiceKind != domain.RegisteredProxyProviderV1 {
+			return deny()
+		}
+		bodies.LocalLoopback = b
+	default:
+		return deny()
 	}
-	return policy, attestation, nil
+	if bodies.Validate() != nil {
+		return deny()
+	}
+	return bodies, nil
 }
 func (p OwnedProxyPublicationV2) Validate() error {
 	if p.OperationDeadline.IsZero() || p.OperationDeadline.Year() < 1 || p.OperationDeadline.Year() > 9999 || p.OperationDeadline.Nanosecond()%1000 != 0 || !p.OperationDeadline.After(p.ObservedAt) {
@@ -61,8 +79,8 @@ func (p OwnedProxyPublicationV2) Validate() error {
 	if p.Scope.Validate() != nil || p.LeaseID.Validate() != nil || p.FenceToken == 0 || domain.ValidateOpaqueID("proxy_publication.claim", p.PhysicalInvocationClaimID) != nil || p.RegisteredAllocationDigest.Validate() != nil || domain.ValidateSHA256Digest("proxy_publication.source", p.SourceDigest) != nil || p.ObservedAt.IsZero() || p.ObservedAt.Year() < 1 || p.ObservedAt.Year() > 9999 || p.ObservedAt.Nanosecond()%1000 != 0 || len(p.Authenticator) != sha256.Size {
 		return domain.ErrMembershipDenied
 	}
-	_, attestation, err := p.Bodies()
-	if err == nil && p.OperationDeadline.After(attestation.ExpiresAt) {
+	bodies, err := p.Bodies()
+	if err == nil && p.OperationDeadline.After(bodies.ExpiresAt()) {
 		return domain.ErrMembershipDenied
 	}
 	return err

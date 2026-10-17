@@ -1,6 +1,6 @@
 # Configured local inference for development demos
 
-Version: 0.1.1, engineering design. Owner:
+Version: 0.1.3, engineering design. Owner:
 [#212](https://gitcode.com/urandon/sessionless/issues/212), under
 [#176](https://gitcode.com/urandon/sessionless/issues/176).
 
@@ -194,6 +194,87 @@ Cancellation/expiry/failed registration closes the owned preflight socket.
 Each next operation needs its own fresh observation; no socket/observation
 reuse across sequence, attempt or resource generation. Local tags cannot
 authorize cloud/HTTPS or MCP/search routes, and vice versa.
+
+### Concrete connector ownership and composition
+
+Implement the local connector in `internal/localloopback`. It holds the concrete
+`localoperator.Source`, the original
+`serverlessharness.BoundedOwnedAllocationPreparationV1`, the existing operation
+issuer and the concrete `*ydbstore.Store`. This direction keeps network I/O out
+of the persistence adapter and avoids importing Store into the harness/egress
+packages. Do not substitute an injected approval callback or a second Store,
+issuer, invocation ledger or scheduler. The codec remains a pure data package.
+
+The original allocation supplies a private operation resource lease, not a
+caller-created authority DTO. It checks the exact retained Source identity and
+entered allocation, fixes the entire model operation before dialing, and shares
+one bounded preflight slot across connector wrappers. Seal scope, lease/fence,
+physical claim, allocation/source/profile, sequence, request digest/byte count,
+result ceiling, kind and absolute deadline. Claiming that slot is irreversible
+for the operation, including failed/cancelled preflight; another wrapper cannot
+redial the same sequence. A subsequent operation still needs the existing
+durable predecessor/outcome and budget checks. No unbounded operation map is
+required, and losing process-local state never reconstructs send permission.
+
+The lease inherits the original invocation/allocation cancellation and active
+deadline, intersected with the operation and installed Source window. Source
+closure also revokes owned connector I/O through a Source-owned signal; it must
+not cancel the caller's context or close a shared model/worker. Merely checking
+`VerifyEnteredLocalAllocation` once, matching copied digests, or making a fresh
+context with the same nominal deadline is insufficient lifetime ownership.
+
+First construct noncopyable bootstrap metadata fixing the concrete Source,
+preparation issuer and operation issuer. Construct the connector keeper with
+that same bootstrap retained immutably. Its `CreateStore` fixes the actual keeper
+pointer and creates one inert Store. The bootstrap itself implements the concrete
+preparation burn by calling that same Store's existing durable transaction, never
+a forwarding callback or caller-supplied Boolean. Construct the allocation bridge
+with this bootstrap as its burn owner. `Complete` verifies the bridge's original
+Source/issuer/burn identities, installs its verifier and release-publishes one
+immutable Store/bridge/keeper tuple atomically. Until then, all local owned
+preparation/publication/reservation/send paths deny. Abandonment leaves it inert.
+
+This initial installation is a dedicated local constructor seam, not a mutable
+setter on ordinary Store options or an alternate serving authority. Reject nil,
+copied, foreign, repeated or replacement bindings and partially installed owners.
+There is no separate mutable `BindStore` or assertion that keeper binding already
+happened: the keeper resolves `RuntimeFor(self)` on its original bootstrap before
+preflight/send. Only the actual retained keeper can obtain the completed original
+Store/bridge tuple. Bootstrap-backed Store readiness also checks that this exact
+Store is the tuple's Store; copying either object cannot reuse its ready state.
+Identity checks invoke no keeper callback and grant no send permission. They add
+no gates to unrelated existing Store profiles. #217 supplies the closed initial
+composition seam; #218 owns its normal serving integration. Source still is not
+the missing complete effect-source verifier or independent MCP/search custody.
+
+Dial only the admitted numeric loopback TCP address. Check the actual remote
+address and retain that same socket; preflight writes no HTTP/TLS/application
+bytes. The local policy body is canonical data derived from independent sealed
+endpoint/protocol/auth/connector/host/namespace/limit configuration, with an
+acyclic digest. The fresh observation additionally seals the full profile and
+operation identities. Extend the existing V2 publication body decoder, domain
+builder and Store publication/snapshot readers together; neither HTTPS-shaped
+bodies nor a newly added transport tag alone are a local observation.
+
+Before writing the fixed `/v1/chat/completions` request, irreversibly consume
+the retained socket lease, call the retained Store's
+`AuthorizeAttemptOperationBeforeSend` for its current joins and existing one-use
+capability consumption, then recheck local cancellation/deadline and exact
+payload binding. No earlier publication or identity check is send permission.
+First implementation supports `auth=none` without a secret read or auth header;
+Bearer fails explicitly until the original #190 session owns its proper custody.
+Do not silently ignore a requested Bearer profile.
+
+Every denial, cancellation, expiry and failed/ambiguous registration closes
+owned sockets, joins owned I/O and releases bounded buffers. Historical
+authenticated observations can remain readable after closure but cannot mint a
+fresh socket or capability. Partial writes/lost replies stay reconcile-only;
+there is no reconnect/retry or remote-stop claim. Connected tests use actual
+owned loopback peers and the existing scripted Store transaction fixture to
+prove zero HTTP bytes on denial and exactly one request on success. Keep such
+fixtures in external `ydbstore_test` tests with narrow test-only helpers, not
+production dial/approval injection. Their result is not real YDB, model or
+normal-path demo evidence.
 
 ## Compatibility and capability qualification
 

@@ -192,6 +192,9 @@ func (q *ownedAuthorityQuery) canonicalState(store *Store, tenant domain.TenantI
 // speculative outputs on every callback; only a confirmed result may escape.
 // The installed publisher/reserver is intentionally not wired by this slice.
 func (store *Store) ownedAuthorityTx(ctx context.Context, fn func(context.Context, *ownedAuthorityQuery) error) error {
+	if store == nil || !store.localCompositionReady() || store.db == nil || fn == nil {
+		return domain.ErrMembershipDenied
+	}
 	ctx, cancel := ownedAuthorityCallContext(ctx)
 	defer cancel()
 	b := ctx.Value(ownedAuthorityCallContextKey{}).(*ownedAuthorityBudget)

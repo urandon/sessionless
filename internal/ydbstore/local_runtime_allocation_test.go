@@ -106,6 +106,7 @@ func localRuntimeStructuralSpending(t *testing.T, p domain.OwnedAgentProfileCurr
 type localRuntimeActualPrebuild struct {
 	scope         domain.AttemptExecutionSourceScopeV1
 	setupDuration time.Duration
+	sourceParent  context.Context
 }
 
 func newLocalRuntimeActualFixture(t *testing.T, runningExecutable, acceptReceipt bool, prebuild ...localRuntimeActualPrebuild) localRuntimeActualFixture {
@@ -174,8 +175,22 @@ func newLocalRuntimeActualFixture(t *testing.T, runningExecutable, acceptReceipt
 	c.WorkerExecutableDigest, c.LocalHostIdentityDigest, c.LocalNetworkNamespaceIdentityDigest = identity.WorkerExecutableDigest, identity.LocalHostIdentityDigest, identity.LocalNetworkNamespaceIdentityDigest
 	p.Substrate.OuterHarnessArtifactDigest, p.Substrate.LocalHostIdentityDigest, p.Substrate.LocalNetworkNamespaceIdentityDigest = identity.WorkerExecutableDigest, identity.LocalHostIdentityDigest, identity.LocalNetworkNamespaceIdentityDigest
 	p.Substrate.EgressProxyArtifactDigest, p.Substrate.EgressProxyIdentityDigest = identity.WorkerExecutableDigest, connector
+	// Derive independent local policy before installation/source/funding seals.
+	// No socket or fabricated HTTPS facts are needed to freeze its static bytes.
+	policy, err := ports.BuildLocalLoopbackEgressPolicyV1(*c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Substrate.EgressPolicyDigest, err = policy.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
 	writeLocalOperatorManifest(t, root, manifest) // before OpenFresh or any seal
-	source, err := localoperator.OpenFresh(t.Context(), root, executable)
+	sourceParent := t.Context()
+	if len(prebuild) == 1 && prebuild[0].sourceParent != nil {
+		sourceParent = prebuild[0].sourceParent
+	}
+	source, err := localoperator.OpenFresh(sourceParent, root, executable)
 	if err != nil {
 		t.Fatalf("actual private source intake: %v", err)
 	}

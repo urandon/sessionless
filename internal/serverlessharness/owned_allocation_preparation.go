@@ -16,6 +16,7 @@ import (
 // arbitrary observation, proxy attestation, supervisor ID or generic signer.
 // It is a private allocation-registration prerequisite, not an owned runtime.
 type BoundedOwnedAllocationPreparationV1 struct {
+	self        *BoundedOwnedAllocationPreparationV1
 	preparation *BoundedOwnedAttemptPreparationV1
 	driver      *InProcessExecutionSubstrateV1
 	local       *localExecutionAllocationV1

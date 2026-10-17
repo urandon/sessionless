@@ -210,11 +210,11 @@ type OwnedAgentExecutionPackageV1 struct {
 // BuildOwnedAgentExecutionPackageV1 derives the complete acyclic package from
 // ONE current profile and the original four allocations at original issuance,
 // BEFORE a capacity reservation exists, never an independent
-// caller-supplied policy/binding. Initial funding is credential-free fixture
-// only; no fixture string can approve a live/foreign/platform funding source.
+// caller-supplied policy/binding. Each source class must match its exact closed
+// profile tuple; a fixture string never approves a real local installation.
 func BuildOwnedAgentExecutionPackageV1(scope AttemptExecutionSourceScopeV1, profile OwnedAgentProfileCurrentV1, spending [4]AttemptSpendingAuthorizationCurrentV1, at time.Time) (OwnedAgentExecutionPackageV1, error) {
 	denied := func() (OwnedAgentExecutionPackageV1, error) {
-		return OwnedAgentExecutionPackageV1{}, admissionError("source", "requires exact original current fixture sources")
+		return OwnedAgentExecutionPackageV1{}, admissionError("source", "requires exact original current installation sources")
 	}
 	if scope.Validate() != nil || !ownedCurrentTime(at) || profile.ValidateAt(at) != nil ||
 		profile.Locator.TenantID != scope.TenantID || profile.Locator.OwnerUserID != scope.OwnerUserID {
@@ -283,7 +283,7 @@ func ownedProfilePolicy(scope AttemptExecutionSourceScopeV1, profile OwnedAgentP
 
 func ownedProfileBinding(scope AttemptExecutionSourceScopeV1, profile OwnedAgentProfileCurrentV1, policy AgentLoopPolicyV1, placement ExecutionPlacementV2) HarnessBindingV2 {
 	ld, _ := ExecutionPlacementDigest(placement)
-	return HarnessBindingV2{
+	binding := HarnessBindingV2{
 		Version: 2, Profile: HarnessExecutionOwnedAgentV2, AgentLoopPolicy: &policy,
 		TenantID: scope.TenantID, OwnerUserID: scope.OwnerUserID, RunID: scope.RunID, AttemptID: scope.AttemptID,
 		Backend: profile.Backend, Resource: profile.Resource, ModelVendorID: profile.Locator.ModelVendorID, ModelID: profile.Locator.ModelID,
@@ -291,6 +291,14 @@ func ownedProfileBinding(scope AttemptExecutionSourceScopeV1, profile OwnedAgent
 		CapabilityEvidenceDigest: profile.CapabilityEvidenceDigest, PrivacyPolicyDigest: profile.PrivacyPolicyDigest,
 		EffectivePolicyDigest: profile.EffectivePolicyDigest, ExecutionPlacementDigest: string(ld),
 	}
+	if profile.Backend.BackendKind == HarnessBackendDirectOpenAICompatibleV1 && profile.Backend.ProviderContractKind == ProviderContractConfiguredEndpointV1 && profile.Resource.Kind == ProviderResourceLocalEndpointV1 && profile.Substrate.Kind == SubstrateLocalDevelopmentV1 {
+		// The installed profile's original window already intersects its source,
+		// price and substrate evidence. Preserve that bound; local no-auth does
+		// not inherit the fixture's special absence of provider evidence expiry.
+		expiry := profile.Window.ExpiresAt.UTC()
+		binding.EvidenceExpiresAt = &expiry
+	}
+	return binding
 }
 
 // AttemptExecutionAdmissionV1 is the create-once final attachment to the

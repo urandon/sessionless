@@ -60,9 +60,26 @@ rows under one complete intent digest. Replay reads both exact intents and
 retained heads without rewriting either; a partial pair or unknown commit
 returns no usable receipt. These records add no execution permission by
 themselves: fresh IDs and source/terms authentication remain producer-owned.
-Trusted installation/replacement, owner-local funding and tagged connector
-publication remain disabled until their original-producer/CAS/current-source
-contracts pass. Existing head/audit/source/operation tables hold the necessary
+The owner-local source keeper reads an explicitly selected bounded private
+manifest and separate signing key through owner/mode-checked retained file
+descriptors. It mints fresh resource/installation/mutation IDs internally;
+resume requires the original source/key/configuration and exact receipt, and
+cannot create a new head. Replacement additionally requires the predecessor
+keeper and the existing paired CAS. The key, retained declaration bytes and
+pending grants are process-local, not a new database entity or credential row.
+The manifest fingerprint and source reference are nonsecret canonical identity;
+the signing key is distinct from any inference Bearer credential and is never
+serialized into profiles, grants or audits.
+
+`owner_local_installation` spending references this exact installed profile and
+its original finite terms. The keeper can authenticate only the explicitly
+owner-supplied provider/substrate zero invoice; that is not measured zero
+economic cost or a free external-service grant. MCP/search retain independent
+source/price authority and all four current joins remain mandatory. Actual
+declaration bodies do not establish model qualification, independent review or
+execution permission. The complete effect-source producer, tagged connector
+and normal composition remain disabled until their owning contracts pass.
+Existing head/audit/source/operation tables hold the necessary
 facts; no endpoint inventory, zero-generation secret row or operational ledger
 is introduced. Applied migration history and physical table counts do not change.
 

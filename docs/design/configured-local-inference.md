@@ -1,6 +1,6 @@
 # Configured local inference for development demos
 
-Version: 0.1.0, engineering draft. Owner:
+Version: 0.1.1, engineering draft. Owner:
 [#212](https://gitcode.com/urandon/sessionless/issues/212), under
 [#176](https://gitcode.com/urandon/sessionless/issues/176).
 
@@ -86,8 +86,32 @@ resource revision and revocation; do not create a zero-generation credential
 row. In Bearer mode the same transaction additionally matches the current
 credential binding and generation. The current-resource reader receives the
 already verified exact profile reference, never a caller's `approved` flag.
-Changing endpoint, auth mode, owner, model, policy or resource revision invalidates
-the prior profile reference before another effect.
+Changing endpoint, auth mode, model, policy or resource revision must retire
+the prior profile reference before another effect. A new digest/key alone is
+not revocation; owner transfer instead requires a newly authorized resource.
+
+For this first profile, the trusted installer permits one active local profile
+per resource. New installation mints a fresh opaque resource ID; generic profile
+publication cannot create another local head for a caller-chosen existing ID.
+Replacement requires the original installation receipt, exact predecessor
+locator/digest/generation and authenticated operator source. In one bounded
+existing publication transaction, CAS-retire that predecessor into a retained
+tombstone and create the new exact locator, advancing resource/installation
+revision. Both audit records commit with the two heads or neither does.
+The receipt locates authority; the Store verifies the actual current rows and
+source, rather than trusting receipt text as permission.
+
+Serialize replacement through that predecessor CAS: concurrent replacements
+cannot both succeed, and a missing/stale receipt is not a fresh-install bypass.
+On ambiguous commit, read back the exact old/new locators and mutation intents
+before returning an installation receipt. Never resuscitate the old head on
+replay. Current spending/source joins reference the original profile generation,
+so the revoked predecessor denies subsequent reserve/send even while the new
+locator is active. Already accepted effects remain unknown, not undone.
+Installation and replacement are closed trusted producer paths, not arbitrary
+profile UPSERTs or an unbounded resource scan. Losing the installation receipt
+blocks replacement pending explicit reconciliation; it does not authorize
+another active head under the same resource ID.
 
 Use existing profile/publication audit, Attempt source/admission, operation and
 spending records. No endpoint inventory table, credentialless-secret table,
@@ -135,6 +159,41 @@ must attest the facts this profile actually enforces: installed executable,
 fixed connector, memory/body/deadline limits and cleanup of owned buffers/I/O.
 Yandex profiles still require #90/#92; native CLI isolation still belongs to
 #133/#215. Dockerless development does not depend on either container path.
+
+### Registered local connector observation
+
+The existing `OwnedProxyPublicationV1.Bodies` and registered-proxy observation
+assume HTTPS/public-unicast. Do not pass a loopback socket through them as if
+it had DNS/TLS evidence. Introduce canonical tagged successors
+`OwnedProxyPublicationV2` and `RegisteredProxyAttestationV2`, reusing the existing
+registration bodies, current observation storage, original producer keeper and
+reservation references. The explicit kind is `pinned_https.v1` or
+`local_loopback_http.v1`; all serving writers/readers use the successor, without
+an untagged V1 decode fallback. Keep existing HTTPS policy semantics unchanged.
+Historical rows are not rewritten; the implementation specifies an approved
+writer-first/drained cutover and rejects unsupported old serving state.
+
+The local variant seals exact profile/endpoint policy, connector artifact and
+installation identity, literal-address/port digest, original source/allocation,
+tenant/owner/Run/Attempt/lease/fence/physical claim, model operation digest and
+sequence, observation time and exclusive shortest expiry. It records no DNS
+resolution set and no verified TLS; those fields are absent, not fabricated.
+The HTTPS variant still requires its real DNS/pinned-address/TLS observations.
+Policy/body references remain bounded, authorized and content-addressed.
+
+Only the privately installed local connector produces a local observation,
+after it has opened the exact literal socket and checked the actual peer.
+Preflight sends no HTTP request. Its original keeper retains that same
+connection; a recreated socket or copied digest is not its observation.
+Publication authenticates that producer and exact original claim/source in the
+same existing bounded transaction; it does not grant send authority.
+Operation reservation and before-send reread the tagged observation/current
+generation and all original authority, then consume the existing one-use
+capability before the first HTTP request byte on the retained connection.
+Cancellation/expiry/failed registration closes the owned preflight socket.
+Each next operation needs its own fresh observation; no socket/observation
+reuse across sequence, attempt or resource generation. Local tags cannot
+authorize cloud/HTTPS or MCP/search routes, and vice versa.
 
 ## Compatibility and capability qualification
 
@@ -320,3 +379,12 @@ and redaction, denied URL/proxy/redirect/placement and exact effect counters.
 Obtain independent exact-head review, repository docs checks and required CI
 before merging each implementation. Validate source changes against the real
 task, not just tests; a design merge does not activate inference.
+
+Causal authority fixtures must prove that an endpoint/model change creating a
+new locator revokes old reserve/send and spending references, that two competing
+replacements yield one active successor, and that lost-commit recovery cannot
+revive either head. Connector fixtures must deny forged producer, copied
+connection, wrong kind/peer/sequence/source/allocation and expired or revoked
+observations before HTTP bytes; a real owned loopback peer counts zero sends
+for each denial. Neither test family may pass by accepting fake TLS/DNS or
+skipping the existing registered-observation/current-authority joins.

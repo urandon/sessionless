@@ -2,6 +2,7 @@ package ydbstore
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
@@ -29,14 +30,21 @@ type localRuntimeConnectedStore struct {
 // reserve, Store preparation burn, executing-runtime producer and allocation
 // publisher. SQL isolation, external funding declarations and the effect-source
 // verifier remain SCRIPTED; this is not normal composition or native YDB proof.
-func newLocalRuntimeConnectedStore(t *testing.T) localRuntimeConnectedStore {
+func newLocalRuntimeConnectedStore(t *testing.T, sourceParents ...context.Context) localRuntimeConnectedStore {
 	t.Helper()
+	if len(sourceParents) > 1 {
+		t.Fatal("connected fixture accepts at most one original Source parent")
+	}
+	var sourceParent context.Context
+	if len(sourceParents) == 1 {
+		sourceParent = sourceParents[0]
+	}
 	canonical := currentWorkerAuthorityFixture(t)
 	scope := domain.AttemptExecutionSourceScopeV1{TenantID: canonical.Run.TenantID, OwnerUserID: canonical.Job.CredentialOwnerUserID,
 		SessionID: canonical.Run.SessionID, RunID: canonical.Run.ID, AttemptID: canonical.Attempt.ID}
 	// Narrow the synthetic operator's declared setup budget BEFORE installation
 	// so the existing one-minute worker envelope contains a longer active phase.
-	actual := newLocalRuntimeActualFixture(t, true, true, localRuntimeActualPrebuild{scope: scope, setupDuration: 10 * time.Second})
+	actual := newLocalRuntimeActualFixture(t, true, true, localRuntimeActualPrebuild{scope: scope, setupDuration: 10 * time.Second, sourceParent: sourceParent})
 	inputs := &ownedFinalSources{profile: actual.profile, spending: actual.execution.Spending}
 	parent := newOwnedAttemptEffectParentFixture(t, ownedFinalPrebuild{at: actual.at, sources: inputs})
 	if !reflect.DeepEqual(parent.base.reader.profile, actual.profile) || !reflect.DeepEqual(parent.source, actual.execution) {

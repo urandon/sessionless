@@ -49,6 +49,12 @@ func (bridge *BoundedOwnedAllocationPreparationV1) BeginLocalModelOperation(
 	if err != nil || sourceLifetime.Err() != nil {
 		return nil, domain.ErrMembershipDenied
 	}
+	// Do not silently shorten the already frozen canonical operation. A Source
+	// may have an earlier caller deadline than the invocation or installation;
+	// reject that incompatible operation before claiming any preflight resource.
+	if deadline, ok := sourceLifetime.Deadline(); ok && op.Deadline.After(deadline) {
+		return nil, domain.ErrMembershipDenied
+	}
 	ad, err := allocation.Digest()
 	if err != nil {
 		return nil, domain.ErrMembershipDenied

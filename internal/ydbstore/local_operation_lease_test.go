@@ -16,9 +16,9 @@ import (
 // Genuine private-file Source, actual runtime, original Store parent/burn and
 // allocation publication. SQL/current external funding remain scripted. These
 // tests prove local lifetime/once-resource ownership, NOT a connector/send grant.
-func localModelLeaseFixture(t *testing.T) (localRuntimeConnectedStore, domain.RegisteredAllocationV2, domain.AttemptOperationV1) {
+func localModelLeaseFixture(t *testing.T, sourceParents ...context.Context) (localRuntimeConnectedStore, domain.RegisteredAllocationV2, domain.AttemptOperationV1) {
 	t.Helper()
-	f := newLocalRuntimeConnectedStore(t)
+	f := newLocalRuntimeConnectedStore(t, sourceParents...)
 	r, err := f.parent.store.publishBoundedOwnedAllocation(t.Context(), f.publication)
 	if err != nil {
 		t.Fatalf("publish genuine local allocation: %v", err)
@@ -171,6 +171,42 @@ func TestLocalModelOperationLeaseRejectsSubstitutionAndBurnsFailedConsume(t *tes
 		var absent *serverlessharness.LocalModelOperationLeaseV1
 		if absent.Context().Err() != context.Canceled || absent.Consume(op, ad, f.parent.graph.at) == nil {
 			t.Fatal("nil lease remained live")
+		}
+	})
+}
+
+func TestLocalModelOperationLeaseRejectsEarlierSourceParentWithoutRewritingOperation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		deadline := time.Now().Add(2 * time.Second).UTC().Truncate(time.Microsecond)
+		parent, cancel := context.WithDeadline(t.Context(), deadline)
+		t.Cleanup(cancel)
+		f, allocation, op := localModelLeaseFixture(t, parent)
+		original := op.Clone()
+		if !deadline.Before(op.Deadline) {
+			t.Fatal("fixture did not isolate earlier actual Source parent")
+		}
+		if lease, err := f.bridge.BeginLocalModelOperation(f.actual.source, allocation, op, f.parent.graph.at); err == nil || lease != nil {
+			t.Fatal("operation exceeding original Source parent acquired a resource")
+		}
+		if !reflect.DeepEqual(op, original) {
+			t.Fatal("reject rewrote frozen canonical operation")
+		}
+		// Admission must explicitly supply compatible data, not normalize the
+		// original request into a different effect. No preflight was acquired above.
+		contained := op.Clone()
+		contained.Deadline = deadline
+		lease, err := f.bridge.BeginLocalModelOperation(f.actual.source, allocation, contained, f.parent.graph.at)
+		if err != nil {
+			t.Fatalf("explicit contained operation denied: %v", err)
+		}
+		t.Cleanup(func() { _ = lease.Close() })
+		if got, ok := lease.Context().Deadline(); !ok || !got.Equal(deadline) {
+			t.Fatalf("resource deadline got=%v present=%t want=%v", got, ok, deadline)
+		}
+		time.Sleep(time.Until(deadline)) // advance the sole virtual expiry clock
+		synctest.Wait()
+		if lease.Context().Err() == nil || f.actual.ctx.Err() != nil {
+			t.Fatal("earlier Source expiry lost or cancelled independent invocation")
 		}
 	})
 }

@@ -40,6 +40,24 @@ evidence. That replacement is not implemented: the active source inventory
 remains 101 tables, including `lease_heads`. Other Run/Attempt/history and
 owner/retention decisions stay open in #205.
 
+## Configured local resource records
+
+The disabled #216 local-inference contracts reuse
+`owned_agent_profile_current_v1` and its publication audit for the real
+`local_endpoint` resource. No-auth has generation zero and no credential row;
+it still requires the exact original active profile/generation/digest at the
+same transactional time. Bearer additionally uses the existing
+`provider_credential_bindings` and credential audit with a positive generation.
+The profile's sealed executable and host/network-namespace installation facts
+are configuration identity, not measured cloud/container isolation.
+
+Canonical local-profile data alone cannot install or authorize the resource.
+Trusted installation/replacement, owner-local funding and tagged connector
+publication remain disabled until their original-producer/CAS/current-source
+contracts pass. Existing head/audit/source/operation tables hold the necessary
+facts; no endpoint inventory, zero-generation secret row or operational ledger
+is introduced. Applied migration history and physical table counts do not change.
+
 ## Source and rollout boundary
 
 The [compatible code step](https://gitcode.com/urandon/sessionless/issues/206)

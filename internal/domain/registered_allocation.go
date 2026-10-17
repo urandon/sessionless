@@ -83,6 +83,7 @@ func (v RegisteredAllocationV1) Validate() error {
 		return registeredPreparationError("allocation", "requires exact bounded original claim and observation")
 	}
 	if v.Version != 1 || v.Scope.Validate() != nil || validateServerlessLease(v.Lease) != nil || v.ParentReservation.Validate() != nil ||
+		v.Substrate.Kind == SubstrateLocalDevelopmentV1 ||
 		v.ParentReservationDigest.Validate() != nil || v.PreparedInvocationDigest.Validate() != nil || v.PreparedAllocationDigest.Validate() != nil ||
 		v.Backend.Validate() != nil || v.Substrate.Validate() != nil || v.Profile.Validate() != nil ||
 		ValidateOpaqueID("registered_allocation.allocation_id", v.AllocationID) != nil || v.AllocationGeneration == 0 ||

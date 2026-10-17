@@ -72,7 +72,7 @@ func currentServerlessSessionPrincipalTx(ctx context.Context, query rowQuery, lo
 	return nil
 }
 
-func currentServerlessProviderResourceTx(ctx context.Context, query rowQuery, binding domain.HarnessBindingV2, at time.Time) error {
+func currentServerlessProviderResourceTx(ctx context.Context, query rowQuery, binding domain.HarnessBindingV2, originalProfile *domain.OwnedAgentProfileReferenceV1, at time.Time) error {
 	if binding.ValidateAt(at) != nil {
 		return domain.ErrMembershipDenied
 	}
@@ -82,9 +82,41 @@ func currentServerlessProviderResourceTx(ctx context.Context, query rowQuery, bi
 		resource.Kind == domain.ProviderResourceCredentiallessFixtureV1 && resource.CredentialMode == domain.ProviderCredentialNoneV1 && resource.CredentialGeneration == 0 {
 		return nil
 	}
+	if resource.Kind == domain.ProviderResourceLocalEndpointV1 {
+		// This reference comes from the original validated canonical admission,
+		// not a request field. A real no-auth endpoint has a current installed
+		// resource head; absence of a secret must never become the fixture bypass.
+		q, ok := query.(*ownedAuthorityQuery)
+		if !ok || !q.at.Equal(at) || originalProfile == nil || originalProfile.Validate() != nil {
+			return domain.ErrMembershipDenied
+		}
+		l := originalProfile.Locator
+		if l.TenantID != binding.TenantID || l.OwnerUserID != binding.OwnerUserID ||
+			l.BackendProfileDigest != binding.Backend.BackendProfileDigest || l.ResourceKind != resource.Kind || l.ResourceID != resource.ResourceID ||
+			l.ModelVendorID != binding.ModelVendorID || l.ModelID != binding.ModelID || l.InputDataClass != binding.InputDataClass {
+			return domain.ErrMembershipDenied
+		}
+		current, err := readOwnedProfileCurrent(ctx, q, *originalProfile)
+		if err != nil {
+			return err
+		}
+		substrateDigest, digestErr := current.Substrate.Digest()
+		placement, placementErr := domain.ManagedExecutionPlacementV2(string(substrateDigest))
+		placementDigest, projectionErr := domain.ExecutionPlacementDigest(placement)
+		if digestErr != nil || placementErr != nil || projectionErr != nil || binding.ExecutionPlacementDigest != string(placementDigest) ||
+			current.Backend != binding.Backend || current.Resource != resource || current.Substrate.Kind != domain.SubstrateLocalDevelopmentV1 ||
+			current.ProviderCatalogDigest != binding.ProviderCatalogDigest || current.ProviderRouteDigest != binding.ProviderRouteDigest ||
+			current.CapabilityEvidenceDigest != binding.CapabilityEvidenceDigest || current.PrivacyPolicyDigest != binding.PrivacyPolicyDigest || current.EffectivePolicyDigest != binding.EffectivePolicyDigest ||
+			binding.EvidenceExpiresAt == nil || binding.EvidenceExpiresAt.After(current.Window.ExpiresAt) {
+			return domain.ErrMembershipDenied
+		}
+		if resource.CredentialMode == domain.ProviderCredentialNoneV1 {
+			return nil // Actual current profile was read; no credential row exists.
+		}
+	}
 	// Subscription resource authority belongs to its existing connection
 	// lifecycle. It must not be substituted with an API credential row.
-	if resource.Kind != domain.ProviderResourceAPIAccountV1 && resource.Kind != domain.ProviderResourceRouterAccountV1 {
+	if resource.Kind != domain.ProviderResourceAPIAccountV1 && resource.Kind != domain.ProviderResourceRouterAccountV1 && resource.Kind != domain.ProviderResourceLocalEndpointV1 {
 		return domain.ErrMembershipDenied
 	}
 	current, found, err := readProviderCredential(ctx, query, ports.ProviderCredentialLocatorV1{

@@ -224,7 +224,7 @@ func (store *Store) admitDispatchTx(ctx context.Context, tx *stateTx, request po
 				ownedSource.Scope != (domain.AttemptExecutionSourceScopeV1{TenantID: run.TenantID, SessionID: run.SessionID, OwnerUserID: outbox.CredentialOwnerUserID, RunID: run.ID, AttemptID: attempt.ID}) ||
 				ownedSource.ValidateForExecution(outbox.ExecutionPlacementV2, outbox.HarnessBinding, *outbox.SubstrateBinding, *outbox.AdmissionCostCeiling) != nil ||
 				outbox.HarnessBinding.Backend.BackendKind != domain.HarnessBackendDeterministicFixtureV1 ||
-				currentServerlessProviderResourceTx(ctx, q, outbox.HarnessBinding, q.at) != nil {
+				currentServerlessProviderResourceTx(ctx, q, outbox.HarnessBinding, &ownedSource.Profile, q.at) != nil {
 				return q.budget.deny()
 			}
 			if err := readOwnedAdmissionPrincipal(ctx, q, ownedSource.Scope); err != nil {

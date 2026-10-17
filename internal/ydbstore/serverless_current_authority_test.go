@@ -180,7 +180,7 @@ func readCurrentProviderFixture(t *testing.T, f *computeChoiceSourceFixture, bin
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	return f.store.Transact(ctx, binding.TenantID, func(state ports.StateTx) error {
-		return currentServerlessProviderResourceTx(ctx, state.(*stateTx).sqlTx, binding, f.at)
+		return currentServerlessProviderResourceTx(ctx, state.(*stateTx).sqlTx, binding, nil, f.at)
 	})
 }
 

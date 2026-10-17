@@ -21,8 +21,8 @@ func (locator ProviderCredentialLocatorV1) Validate() error {
 	if err := locator.OwnerUserID.Validate(); err != nil {
 		return err
 	}
-	if locator.ResourceKind != domain.ProviderResourceAPIAccountV1 && locator.ResourceKind != domain.ProviderResourceRouterAccountV1 {
-		return domain.ValidationError{Field: "provider_credential.resource_kind", Reason: "must be api_account or router_account"}
+	if locator.ResourceKind != domain.ProviderResourceAPIAccountV1 && locator.ResourceKind != domain.ProviderResourceRouterAccountV1 && locator.ResourceKind != domain.ProviderResourceLocalEndpointV1 {
+		return domain.ValidationError{Field: "provider_credential.resource_kind", Reason: "must be an API, router or local endpoint credential resource"}
 	}
 	return domain.ValidateOpaqueID("provider_credential.resource_id", locator.ResourceID)
 }
@@ -179,8 +179,11 @@ func (request ProviderCredentialIssueRequestV1) Validate() error {
 	if err := request.HarnessBinding.Validate(); err != nil {
 		return err
 	}
-	if request.HarnessBinding.Resource.Kind != domain.ProviderResourceAPIAccountV1 && request.HarnessBinding.Resource.Kind != domain.ProviderResourceRouterAccountV1 {
-		return domain.ValidationError{Field: "provider_credential_issue.resource", Reason: "must be an API or router account"}
+	if request.HarnessBinding.Resource.Kind != domain.ProviderResourceAPIAccountV1 && request.HarnessBinding.Resource.Kind != domain.ProviderResourceRouterAccountV1 && request.HarnessBinding.Resource.Kind != domain.ProviderResourceLocalEndpointV1 {
+		return domain.ValidationError{Field: "provider_credential_issue.resource", Reason: "must be an API, router or local endpoint credential resource"}
+	}
+	if request.HarnessBinding.Resource.CredentialMode != domain.ProviderCredentialInvocationV1 {
+		return domain.ValidationError{Field: "provider_credential_issue.resource", Reason: "none auth has no credential lifecycle"}
 	}
 	if err := domain.ValidateOpaqueID("provider_credential_issue.worker_id", request.WorkerID); err != nil {
 		return err

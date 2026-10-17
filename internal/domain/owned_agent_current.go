@@ -42,7 +42,7 @@ func (v OwnedAgentProfileLocatorV1) Validate() error {
 		return ownedCurrentError("locator.profile", "requires the explicit owned public profile and public data")
 	}
 	switch v.ResourceKind {
-	case ProviderResourceCredentiallessFixtureV1, ProviderResourceSubscriptionV1, ProviderResourceAPIAccountV1, ProviderResourceRouterAccountV1:
+	case ProviderResourceCredentiallessFixtureV1, ProviderResourceSubscriptionV1, ProviderResourceAPIAccountV1, ProviderResourceRouterAccountV1, ProviderResourceLocalEndpointV1:
 	default:
 		return ownedCurrentError("locator.resource_kind", "is unsupported")
 	}
@@ -183,6 +183,13 @@ func (v OwnedAgentProfileCurrentV1) Validate() error {
 	}
 	if err := v.Resource.ValidateForBackend(v.Backend); err != nil {
 		return err
+	}
+	if v.Resource.Kind == ProviderResourceLocalEndpointV1 {
+		if v.Substrate.Kind != SubstrateLocalDevelopmentV1 || v.InstallationID != v.Substrate.LocalInstallationID || v.InstallationRevision != v.Substrate.LocalInstallationRevision {
+			return ownedCurrentError("profile.local_installation", "requires the same explicit local executable installation")
+		}
+	} else if v.Substrate.Kind == SubstrateLocalDevelopmentV1 {
+		return ownedCurrentError("profile.local_installation", "requires the configured local endpoint resource")
 	}
 	// The substrate's outer runner and the model backend are independently
 	// installed artifacts, not aliases of the same executable. The installed

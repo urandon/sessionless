@@ -159,12 +159,16 @@ func (service *InvocationService) MaterializeProviderCredential(ctx context.Cont
 	if !found || !providerCredentialBindingMatchesResource(binding, handle.ProviderResource) {
 		return ErrNotFound
 	}
-	secret, err := service.secrets.ReadProviderCredentialSecret(ctx, binding, service.maxBytes)
+	maxBytes := service.maxBytes
+	if handle.ProviderResource.Kind == domain.ProviderResourceLocalEndpointV1 && maxBytes > domain.ConfiguredInferenceMaxCredentialBytesV1 {
+		maxBytes = domain.ConfiguredInferenceMaxCredentialBytesV1
+	}
+	secret, err := service.secrets.ReadProviderCredentialSecret(ctx, binding, maxBytes)
 	if err != nil {
 		return ErrBackend
 	}
 	defer zero(secret)
-	if len(secret) == 0 || int64(len(secret)) > service.maxBytes || domain.FingerprintCredential(secret) != binding.SecretFingerprint {
+	if len(secret) == 0 || int64(len(secret)) > maxBytes || domain.FingerprintCredential(secret) != binding.SecretFingerprint {
 		return ErrNotFound
 	}
 	plan, err := service.materializationPlanLocked(state, secret)

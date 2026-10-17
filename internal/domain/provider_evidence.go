@@ -41,6 +41,7 @@ const (
 	ProviderBillingAPIAccountV1       ProviderBillingKindV1    = "api_account"
 	ProviderBillingRouterAccountV1    ProviderBillingKindV1    = "router_account"
 	ProviderBillingNoneV1             ProviderBillingKindV1    = "none"
+	ProviderBillingOwnerLocalV1       ProviderBillingKindV1    = "owner_local"
 )
 
 // ProviderEvidenceScopeV1 prevents cross-owner/resource/backend evidence reuse.
@@ -303,7 +304,7 @@ func (value ProviderRoutePolicyV1) Validate() error {
 	seen := map[string]struct{}{}
 	for _, r := range value.Routes {
 		switch r.BackendKind {
-		case HarnessBackendCodexExecV1, HarnessBackendCodexOpenRouterV1, HarnessBackendOpenCodeV1, HarnessBackendDirectOpenRouterV1, HarnessBackendDeterministicFixtureV1:
+		case HarnessBackendCodexExecV1, HarnessBackendCodexOpenRouterV1, HarnessBackendOpenCodeV1, HarnessBackendDirectOpenRouterV1, HarnessBackendDeterministicFixtureV1, HarnessBackendDirectOpenAICompatibleV1:
 		default:
 			return ValidationError{Field: "provider_route_policy.routes.backend_kind", Reason: "is unsupported"}
 		}
@@ -331,7 +332,7 @@ func (value ProviderRoutePolicyV1) Validate() error {
 			return ValidationError{Field: "provider_route_policy.routes.transport_kind", Reason: "is unsupported"}
 		}
 		switch r.BillingKind {
-		case ProviderBillingSubscriptionV1, ProviderBillingAPIAccountV1, ProviderBillingRouterAccountV1, ProviderBillingNoneV1:
+		case ProviderBillingSubscriptionV1, ProviderBillingAPIAccountV1, ProviderBillingRouterAccountV1, ProviderBillingNoneV1, ProviderBillingOwnerLocalV1:
 		default:
 			return ValidationError{Field: "provider_route_policy.routes.billing_kind", Reason: "is unsupported"}
 		}
@@ -345,6 +346,11 @@ func (value ProviderRoutePolicyV1) Validate() error {
 			expectedBilling = ProviderBillingRouterAccountV1
 		case ProviderResourceCredentiallessFixtureV1:
 			expectedBilling = ProviderBillingNoneV1
+		case ProviderResourceLocalEndpointV1:
+			expectedBilling = ProviderBillingOwnerLocalV1
+			if r.BackendKind != HarnessBackendDirectOpenAICompatibleV1 || r.TransportKind != ProviderTransportDirectAPIV1 {
+				return ValidationError{Field: "provider_route_policy.routes", Reason: "local endpoint requires its configured direct API route"}
+			}
 		}
 		if r.BillingKind != expectedBilling || r.BillingAuthority != value.Scope.Resource.ResourceID {
 			return ValidationError{Field: "provider_route_policy.routes.billing_authority", Reason: "must match the scoped resource"}

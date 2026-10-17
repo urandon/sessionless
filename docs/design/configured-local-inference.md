@@ -1,6 +1,6 @@
 # Configured local inference for development demos
 
-Version: 0.1.3, engineering design. Owner:
+Version: 0.1.4, engineering design. Owner:
 [#212](https://gitcode.com/urandon/sessionless/issues/212), under
 [#176](https://gitcode.com/urandon/sessionless/issues/176).
 
@@ -275,6 +275,58 @@ prove zero HTTP bytes on denial and exactly one request on success. Keep such
 fixtures in external `ydbstore_test` tests with narrow test-only helpers, not
 production dial/approval injection. Their result is not real YDB, model or
 normal-path demo evidence.
+
+### Local operation invoice custody
+
+The local installation seals `InvoiceTermsV1` bytes and their SHA256 digest.
+Those are owner-local invoice terms, not an upstream
+`ProviderPriceObservationV1` tariff or its domain-separated digest. Do not
+re-encode a local invoice as a provider tariff, change an installed digest, or
+interpret a missing/unknown tariff as zero to make operation reservation pass.
+
+Extend the existing private operation-price evidence with exactly two exclusive
+variants: standard provider-price evidence and local-invoice evidence. Select
+the local variant only for the exact configured/local/owner-local profile and
+authenticated spending tuple, backed by the original completed local bootstrap.
+Missing or foreign custody denies; never fall back by decoder success. Other
+provider routes preserve their existing price format and quote validation.
+
+The concrete original `localoperator.Source.ReadInvoiceTerms(ctx, profileRef,
+cap)` supplies an owned clone of the retained canonical invoice body from its
+private intake. Require an alive Source, accepted receipt, exact profile
+locator/generation/digest and original configuration/installation. Check the
+original body reference, digest and byte count before cloning; accept only
+positive caps at most 4096 bytes. No file reread, key/manifest export, caller
+terms, public approval DTO, new port, issuer, table or price ledger is needed.
+
+Capture custody outside retryable SQL. Evidence retains the original Source
+lifetime association, not only decoded terms. In the existing bounded
+transaction, rejoin the exact current profile and spending and require the
+original lifetime to remain active. Verify tenant/owner, configured endpoint,
+vendor/model, billing/resource/install/profile identities, currency/revision,
+both owner-supplies declarations, and both invoice amounts equal zero. Match
+the original config terms reference with profile provider-price/provider-terms
+and provider spending price/terms digests. Require explicit known-free invoice
+state, zero admitted provider allowance and zero operation monetary debit;
+all original token/count/byte/time and four-component accounting remain.
+These terms do not fund MCP/search or assert zero hardware/economic cost.
+
+Keep terms issuance and price observation as separate original timestamps:
+they need not be equal. Authoritative transaction time must be contained in
+both original windows and the operation deadline cannot exceed either expiry.
+Preserve original publication-time restrictions rather than rewriting dates.
+Recheck the captured original lifetime on reserve and before-send, and after
+the final current transaction before consuming the capability. Actual Source
+closure additionally cancels the original operation/connection before writing.
+No filesystem/network work occurs in a SQL callback. Historical reads and
+standard free/paid provider evidence keep their existing semantics.
+
+Conformance must join genuine Source/accepted receipt/original invoice custody
+to actual Store reservation and before-send, including different valid original
+timestamps, profile replacement/revocation, foreign/missing/closed custody and
+closure between capture and send. Wrong bodies/refs/model/revision/currency,
+paid or unknown terms, nonzero debit and external-service funding substitutions
+deny. Scripted SQL is labelled separately from native YDB and real-model proof.
 
 ## Compatibility and capability qualification
 

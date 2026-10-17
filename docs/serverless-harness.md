@@ -140,6 +140,78 @@ lease, price or tool-grant authority and does not debit a budget or issue an
 execution capability. Operation reservation and consent persistence remain
 separate #189 obligations; provider custody and the reviewed loop are #190/#191.
 
+## Configured local inference data codec
+
+The [configured local inference design](design/configured-local-inference.md)
+defines the development-only wire. The
+[`configuredinference` package](../internal/configuredinference/contract.go)
+implements pure **data** conversion, not a connector or an enabled backend.
+`FreezeRequestV1(profile, effectiveLimits, request)` validates and freezes the
+canonical profile, explicit positive ceilings no larger than its limits, tool
+schemas and history identities. `Body()` returns an owned byte copy; `Digest()`
+seals the canonical profile digest, every effective limit and the exact wire
+body. `DecodeResponse(body)` uses that same frozen catalog/history. Caller
+mutation cannot replace them. Valid data and digests are not send permission.
+
+The wire fixes `model` to the configured ID, `stream=false`, `n=1` and an explicit
+`max_tokens`. It supports text-only `system`, `user`, `assistant` and `tool`
+messages in their supplied order. An assistant message contains text **or** one
+schema-valid function call; its complete tool result must follow immediately
+with the same call ID. Orphan results, unfinished units, repeated history IDs,
+unknown names and schema drift fail. Images/files, streaming, Responses and
+response formats are not supported or silently converted into text-only work.
+
+Tool parameters must have an object root. Every schema node has one explicit
+`type`; the closed subset is:
+
+| Type | Accepted keywords besides `type` |
+| --- | --- |
+| `object` | Required `properties`, `required`, `additionalProperties:false`; recursive properties; unique required names must exist in the properties. |
+| `string` | Optional nonempty unique string `enum`, `minLength`, `maxLength`. |
+| `number`, `integer` | Optional `minimum`, `maximum`; integer bounds must themselves be integral. |
+| `array` | Required recursive `items` and explicit `minItems`, `maxItems`. |
+| `boolean`, `null` | None. |
+
+Every other keyword is rejected, including dialect declarations, `$ref`,
+definitions, unions/combinators, `pattern`, `format`, defaults and annotations;
+no unsupported constraint is ignored. Property names are nonempty NUL-free UTF-8
+within the argument-byte ceiling. Length/item bounds are unsigned integers;
+string bounds cannot exceed the argument-byte ceiling, and array bounds cannot
+exceed the JSON-member ceiling. Minimums cannot exceed maximums. String schema
+lengths count Unicode code points, while wire/content ceilings count UTF-8 bytes.
+Numeric schema comparisons use exact rationals, not rounded float ordering.
+
+Byte/count/depth checks precede large copied structures and encoding expansion.
+Complete JSON rejects trailing/truncated values, decoded duplicate keys, invalid
+UTF-8 and unpaired UTF-16 surrogate escapes, without Unicode normalization.
+Every array also obeys the member ceiling. Numeric lexemes have at most 128
+bytes and exponent magnitude 324; bare integer magnitudes fit `uint64`. All
+numbers, even ignored metadata, must be finite `float64`-representable without
+underflow to zero; wire counters additionally require exact unsigned decimal
+integers. Unknown metadata is bounded before it can be ignored; unknown
+call/tool/function, URL, delta, media or error-shaped fields fail closed.
+
+A response has one choice at index zero and returns complete final text **or**
+one complete schema-valid function call. Length/filter/refusal/service-error,
+unknown finish and unverified-model stops return no usable text/call. Configured
+and reported model IDs stay separate; only an exact declared response-model ID
+is accepted, and `provider_reported` never means independently verified model
+identity. Structurally valid consistent usage counters are `provider_reported`,
+not measured; absent or malformed usage in otherwise valid JSON is `unknown`,
+not measured zero, a refund or permission for another call. Invalid numeric/JSON
+grammar still rejects the envelope. Hidden reasoning and raw provider errors are
+not exported; errors and diagnostic formatting are content-redacted. `Body()`
+and successful text/call values intentionally expose bounded content to their
+caller, not to a public log or an automatic dispatcher.
+
+This codec performs no I/O, credential custody, current-authority/expiry lookup,
+token estimation, tool dispatch, durable operation or canonical-event write.
+The real composer must prove calibrated context fit and current original
+authority/budgets before sending. Header/deadline enforcement, actual retained
+socket identity, one-use send, cancellation and owned-I/O cleanup require the
+connector/session composition; the codec does not certify these or remote
+compute stop, memory erasure, server compatibility or a working model demo.
+
 ## Proposed provider-neutral runtime contract
 
 These are design-level V1 shapes for PR-03a. Field names are illustrative; the

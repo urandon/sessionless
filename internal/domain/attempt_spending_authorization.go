@@ -12,11 +12,12 @@ import (
 type AttemptSpendingComponentKindV1 string
 
 const (
-	AttemptSpendingProviderV1      AttemptSpendingComponentKindV1 = "provider"
-	AttemptSpendingSubstrateV1     AttemptSpendingComponentKindV1 = "substrate"
-	AttemptSpendingMCPToolV1       AttemptSpendingComponentKindV1 = "mcp_tool"
-	AttemptSpendingWebSearchV1     AttemptSpendingComponentKindV1 = "web_search"
-	AttemptSpendingFixtureSourceV1                                = "fixture_installation"
+	AttemptSpendingProviderV1         AttemptSpendingComponentKindV1 = "provider"
+	AttemptSpendingSubstrateV1        AttemptSpendingComponentKindV1 = "substrate"
+	AttemptSpendingMCPToolV1          AttemptSpendingComponentKindV1 = "mcp_tool"
+	AttemptSpendingWebSearchV1        AttemptSpendingComponentKindV1 = "web_search"
+	AttemptSpendingFixtureSourceV1                                   = "fixture_installation"
+	AttemptSpendingOwnerLocalSourceV1                                = "owner_local_installation"
 )
 
 // This is an exact per-Attempt authorization locator, never an account balance
@@ -109,16 +110,23 @@ func (v AttemptSpendingAuthorizationCurrentV1) Validate() error {
 	if v.Version != OwnedAgentCurrentVersionV1 || v.RevocationGeneration == 0 || v.SourceInstallationRevision == 0 || v.ResourceRevision == 0 || v.ProfileRevision == 0 {
 		return ownedCurrentError("spending.identity", "requires version 1 and positive revisions/generation")
 	}
-	if v.SourceKind != AttemptSpendingFixtureSourceV1 || (v.State != OwnedAgentCurrentActiveV1 && v.State != OwnedAgentCurrentRevokedV1) {
-		return ownedCurrentError("spending.source_state", "requires explicit fixture source and active or revoked state")
+	if (v.SourceKind != AttemptSpendingFixtureSourceV1 && v.SourceKind != AttemptSpendingOwnerLocalSourceV1) || (v.State != OwnedAgentCurrentActiveV1 && v.State != OwnedAgentCurrentRevokedV1) {
+		return ownedCurrentError("spending.source_state", "requires an explicit supported installation source and active or revoked state")
 	}
 	for _, validate := range []func() error{v.Locator.Validate, v.RunID.Validate, v.SessionID.Validate, v.OwnerUserID.Validate, v.SourceProfile.Validate, v.SourceAuthorization.Validate, v.Window.Validate} {
 		if err := validate(); err != nil {
 			return err
 		}
 	}
-	if v.SourceProfile.Locator.TenantID != v.Locator.TenantID || v.SourceProfile.Locator.OwnerUserID != v.OwnerUserID || v.SourceProfile.Locator.ResourceKind != ProviderResourceCredentiallessFixtureV1 {
-		return ownedCurrentError("spending.scope", "must exact-match original tenant/principal and fixture source")
+	expectedResourceKind := ProviderResourceCredentiallessFixtureV1
+	if v.SourceKind == AttemptSpendingOwnerLocalSourceV1 {
+		expectedResourceKind = ProviderResourceLocalEndpointV1
+		if v.Locator.BillingOwnerUserID != v.OwnerUserID {
+			return ownedCurrentError("spending.payer", "owner-local installation cannot authorize a foreign payer")
+		}
+	}
+	if v.SourceProfile.Locator.TenantID != v.Locator.TenantID || v.SourceProfile.Locator.OwnerUserID != v.OwnerUserID || v.SourceProfile.Locator.ResourceKind != expectedResourceKind {
+		return ownedCurrentError("spending.scope", "must exact-match original tenant/principal and source-specific resource kind")
 	}
 	for _, token := range []struct{ name, value string }{{"installation", v.SourceInstallationID}, {"resource_id", v.ResourceID}, {"profile_id", v.ProfileID}, {"price_revision", v.PriceRevision}, {"mutation_id", v.MutationID}} {
 		if err := ValidateOpaqueID("owned_agent_current.spending."+token.name, token.value); err != nil {
@@ -150,7 +158,10 @@ func (v AttemptSpendingAuthorizationCurrentV1) Validate() error {
 		return ownedCurrentError("spending.price_state", "is unsupported")
 	}
 	if v.ResourceGeneration == 0 && v.Locator.ComponentKind != AttemptSpendingProviderV1 {
-		return ownedCurrentError("spending.resource_generation", "zero is exclusive to the credentialless provider fixture")
+		return ownedCurrentError("spending.resource_generation", "zero is exclusive to the provider component of an explicitly credentialless source")
+	}
+	if v.SourceKind == AttemptSpendingOwnerLocalSourceV1 && (v.Locator.ComponentKind == AttemptSpendingProviderV1 || v.Locator.ComponentKind == AttemptSpendingSubstrateV1) && (v.PriceState != ExternalServicePriceKnownFreeV1 || v.MaxAmountMicrounits == nil || *v.MaxAmountMicrounits != 0) {
+		return ownedCurrentError("spending.local_invoice", "local provider and substrate require explicit zero-invoice source terms, not inferred free service access")
 	}
 	source, err := v.SourceCanonicalBytes()
 	if err != nil {
@@ -218,8 +229,27 @@ func (v AttemptSpendingAuthorizationCurrentV1) ValidateAgainstProfile(p OwnedAge
 	if err != nil {
 		return err
 	}
-	if v.SourceProfile.Locator != p.Locator || v.SourceProfile.RevocationGeneration != p.RevocationGeneration || v.SourceProfile.Digest != digest || v.SourceInstallationID != p.InstallationID || v.SourceInstallationRevision != p.InstallationRevision || v.Locator.BillingOwnerUserID != p.BillingOwnerUserID || v.Window.ObservedAt.Before(p.Window.ObservedAt) || v.Window.PublishedAt.Before(p.Window.PublishedAt) || v.Window.ExpiresAt.After(p.Window.ExpiresAt) || p.Backend.BackendKind != HarnessBackendDeterministicFixtureV1 || p.Backend.ProviderContractKind != ProviderContractCredentiallessFixtureV1 || p.Substrate.Kind != SubstrateDeterministicFixtureV1 {
-		return ownedCurrentError("spending.source", "requires the exact original active fixture installation and window")
+	if v.SourceProfile.Locator != p.Locator || v.SourceProfile.RevocationGeneration != p.RevocationGeneration || v.SourceProfile.Digest != digest || v.SourceInstallationID != p.InstallationID || v.SourceInstallationRevision != p.InstallationRevision || v.Locator.BillingOwnerUserID != p.BillingOwnerUserID || v.Window.ObservedAt.Before(p.Window.ObservedAt) || v.Window.PublishedAt.Before(p.Window.PublishedAt) || v.Window.ExpiresAt.After(p.Window.ExpiresAt) {
+		return ownedCurrentError("spending.source", "requires the exact original active installation and window")
+	}
+	switch v.SourceKind {
+	case AttemptSpendingFixtureSourceV1:
+		if p.Backend.BackendKind != HarnessBackendDeterministicFixtureV1 || p.Backend.ProviderContractKind != ProviderContractCredentiallessFixtureV1 || p.Substrate.Kind != SubstrateDeterministicFixtureV1 {
+			return ownedCurrentError("spending.source", "fixture source requires the closed fixture backend and substrate")
+		}
+	case AttemptSpendingOwnerLocalSourceV1:
+		// These are structural correlations, not authentication of the actual
+		// installed operator source, reviewed model or no-invoice terms. The
+		// concrete source owner must verify those bytes before publication; the
+		// Store rereads this exact profile/generation in the current transaction.
+		c := p.CostCeiling
+		if p.Backend.BackendKind != HarnessBackendDirectOpenAICompatibleV1 || p.Backend.ProviderContractKind != ProviderContractConfiguredEndpointV1 || p.Resource.Kind != ProviderResourceLocalEndpointV1 || p.Substrate.Kind != SubstrateLocalDevelopmentV1 || p.Substrate.WorkloadMode != SubstrateWorkloadInProcessDirectV1 ||
+			p.BillingOwnerUserID != p.Locator.OwnerUserID || p.Resource.OwnerUserID != p.BillingOwnerUserID || p.ProviderTermsDigest != p.SubstrateTermsDigest ||
+			c.ProviderPriceState != ProviderPriceKnownFreeV1 || c.SubstratePriceState != CostEvidenceKnownV1 || p.SubstratePriceState != ExternalServicePriceKnownFreeV1 || c.MaxProviderAmountMicrounits == nil || *c.MaxProviderAmountMicrounits != 0 || c.MaxSubstrateAmountMicrounits == nil || *c.MaxSubstrateAmountMicrounits != 0 {
+			return ownedCurrentError("spending.local_source", "requires the exact owner-local configured installation and separately explicit provider/substrate no-invoice terms")
+		}
+	default:
+		return ownedCurrentError("spending.source", "unsupported installation source")
 	}
 	resourceID, resourceRev, resourceGen, profileID, profileRev := p.Resource.ResourceID, p.Resource.Revision, p.Resource.CredentialGeneration, string(p.Locator.Profile), p.ProfileRevision
 	grant, price, terms, priceRevision, amount := p.EffectivePolicyDigest, p.ProviderPriceDigest, p.ProviderTermsDigest, p.CostCeiling.PriceRevision, p.CostCeiling.MaxProviderAmountMicrounits

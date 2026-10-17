@@ -27,6 +27,12 @@ type localInstallationSQLFixture struct {
 	audits, pendingAudit map[string][]driver.Value
 	failAuditNumber      int
 	auditWritesThisTx    int
+	// Optional exact-key funding inventory for connected operator-source tests.
+	// Nil preserves the original profile-only fixture and reader setup.
+	fundingKeys                         map[string]bool
+	failFundingAudit                    bool
+	fundingHeads, pendingFundingHeads   map[string][]driver.Value
+	fundingAudits, pendingFundingAudits map[string][]driver.Value
 }
 
 func localInstallationSQLKey(values []driver.Value) string {
@@ -57,6 +63,7 @@ func (f *localInstallationSQLFixture) BeginTx(_ context.Context, options driver.
 		return nil, errors.New("local installation requires serializable")
 	}
 	f.pendingHeads, f.pendingAudit = cloneLocalInstallationRows(f.heads), cloneLocalInstallationRows(f.audits)
+	f.pendingFundingHeads, f.pendingFundingAudits = cloneLocalInstallationRows(f.fundingHeads), cloneLocalInstallationRows(f.fundingAudits)
 	f.auditWritesThisTx = 0
 	return localInstallationFixtureTx{f}, nil
 }
@@ -72,8 +79,10 @@ func (tx localInstallationFixtureTx) Commit() error {
 	}
 	if mode != "rollback" {
 		f.heads, f.audits = cloneLocalInstallationRows(f.pendingHeads), cloneLocalInstallationRows(f.pendingAudit)
+		f.fundingHeads, f.fundingAudits = cloneLocalInstallationRows(f.pendingFundingHeads), cloneLocalInstallationRows(f.pendingFundingAudits)
 	}
 	f.pendingHeads, f.pendingAudit = nil, nil
+	f.pendingFundingHeads, f.pendingFundingAudits = nil, nil
 	if f.afterCommit != nil {
 		f.afterCommit()
 	}
@@ -88,10 +97,60 @@ func (tx localInstallationFixtureTx) Commit() error {
 func (tx localInstallationFixtureTx) Rollback() error {
 	tx.f.rollbacks++
 	tx.f.pendingHeads, tx.f.pendingAudit = nil, nil
+	tx.f.pendingFundingHeads, tx.f.pendingFundingAudits = nil, nil
 	return nil
 }
 
 func (f *localInstallationSQLFixture) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	if f.fundingKeys != nil && (query == ownedSpendingCurrentSQL || query == spendingAuditSQL) {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		values := localInstallationNamedValues(args)
+		want := 4
+		if query == spendingAuditSQL {
+			want = 5
+		}
+		if len(values) != want || !f.fundingKeys[localInstallationSQLKey(values[:4])] {
+			return nil, errors.New("foreign connected funding lookup")
+		}
+		f.statements = append(f.statements, query)
+		f.arguments = append(f.arguments, append([]driver.NamedValue(nil), args...))
+		rows := f.pendingFundingHeads
+		if query == spendingAuditSQL {
+			rows = f.pendingFundingAudits
+		}
+		row := append([]driver.Value(nil), rows[localInstallationSQLKey(values)]...)
+		for index, value := range row {
+			text, ok := value.(string)
+			if !ok {
+				continue
+			}
+			limit := 161
+			if query == ownedSpendingCurrentSQL {
+				if index == 0 {
+					limit = ownedAuthorityHeadBytes + 1
+				}
+				if index == 3 {
+					limit = 17
+				}
+				if index == 4 {
+					limit = 65
+				}
+			} else {
+				if index == 0 || index == 2 {
+					limit = 65
+				}
+				if index == 1 {
+					limit = ownedAuthorityHeadBytes + 1
+				}
+			}
+			if len(text) > limit {
+				row[index] = text[:limit]
+			}
+		}
+		return &explanationFixtureRows{values: row}, nil
+	}
 	if query != ownedProfileCurrentSQL && query != ownedProfileAuditSQL {
 		return f.ownedCurrentSQLFixture.QueryContext(ctx, query, args)
 	}
@@ -135,6 +194,26 @@ func (f *localInstallationSQLFixture) ExecContext(ctx context.Context, query str
 	f.statements = append(f.statements, query)
 	values := localInstallationNamedValues(args)
 	switch query {
+	case spendingWriteSQL, spendingAuditWriteSQL:
+		want := 15
+		if query == spendingAuditWriteSQL {
+			want = 12
+		}
+		if len(values) != want || !f.fundingKeys[localInstallationSQLKey(values[:4])] {
+			return nil, errors.New("foreign connected funding write")
+		}
+		if query == spendingWriteSQL {
+			f.pendingFundingHeads[localInstallationSQLKey(values[:4])] = append([]driver.Value(nil), values[4:]...)
+		} else {
+			if f.failFundingAudit {
+				return nil, errors.New("injected connected funding audit failure")
+			}
+			key := localInstallationSQLKey(values[:5])
+			if _, exists := f.pendingFundingAudits[key]; exists {
+				return nil, errors.New("duplicate immutable connected funding audit")
+			}
+			f.pendingFundingAudits[key] = append([]driver.Value(nil), values[5:]...)
+		}
 	case ownedProfileWriteSQL:
 		if len(values) != 20 {
 			return nil, errors.New("wrong local installation head arity")

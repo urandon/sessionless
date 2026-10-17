@@ -53,6 +53,29 @@ func TestGeneratorRejectsUnknownKind(t *testing.T) {
 	}
 }
 
+func TestGeneratorSupportsLocalInstallationIDs(t *testing.T) {
+	for _, test := range []struct {
+		kind   ports.IDKind
+		prefix string
+	}{
+		{ports.IDProviderResource, "pvr_"},
+		{ports.IDOwnedInstallation, "oin_"},
+		{ports.IDOwnedPublication, "opb_"},
+	} {
+		t.Run(string(test.kind), func(t *testing.T) {
+			generator := newWithReader(&counterHashReader{})
+			seen := make(map[string]bool)
+			for range 64 {
+				id, err := generator.NewID(t.Context(), test.kind)
+				if err != nil || !strings.HasPrefix(id, test.prefix) || len(id) != len(test.prefix)+26 || domain.ValidateOpaqueID("local_installation.id", id) != nil || seen[id] {
+					t.Fatalf("invalid or duplicate local installation ID kind=%s err=%v", test.kind, err)
+				}
+				seen[id] = true
+			}
+		})
+	}
+}
+
 func TestGeneratorSupportsWebContractIDs(t *testing.T) {
 	generator := newWithReader(&counterHashReader{})
 	invitation, err := generator.NewID(context.Background(), ports.IDTenantInvitation)

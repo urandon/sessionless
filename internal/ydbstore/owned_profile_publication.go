@@ -51,6 +51,11 @@ func (store *Store) PublishOwnedProfile(ctx context.Context, grant ports.OwnedPr
 		if q.at.Before(grant.IssuedAt) || !q.at.Before(grant.ExpiresAt) || store.ownedProfilePublicationVerifier.VerifyOwnedProfilePublication(grant.Clone(), q.at) != nil {
 			return domain.ErrMembershipDenied
 		}
+		if grant.LocalInstallation != nil {
+			var err error
+			pending, err = publishLocalProfileInstallationTx(ctx, q, grant, locatorDigest, intentDigest)
+			return err
+		}
 		prior, found, err := readOwnedProfilePublicationAudit(ctx, q, grant, locatorDigest, intentDigest)
 		if err != nil {
 			return err
@@ -81,20 +86,11 @@ func (store *Store) PublishOwnedProfile(ctx context.Context, grant ports.OwnedPr
 		if next.Validate() != nil || (next.State == domain.OwnedAgentCurrentActiveV1 && next.ValidateAt(q.at) != nil) {
 			return domain.ErrMembershipDenied
 		}
-		raw, err := domain.EncodeOwnedAgentProfileCurrentV1(next)
-		digest, digestErr := next.Digest()
-		if err != nil || digestErr != nil {
-			return domain.ErrMembershipDenied
-		}
-		l := next.Locator
-		if _, err := q.ExecContext(ctx, ownedProfileWriteSQL, l.TenantID, l.OwnerUserID, l.Profile, l.BackendProfileDigest, l.ResourceKind, l.ResourceID, l.ModelVendorID, l.ModelID, l.InputDataClass,
-			string(raw), uint64(next.Version), next.ProfileRevision, next.RevocationGeneration, next.State, digest, next.InstallationID, next.InstallationRevision, next.Window.PublishedAt, next.Window.ExpiresAt, next.UpdatedAt); err != nil {
+		receipt, err := writeOwnedProfilePublicationTx(ctx, q, next, locatorDigest, intentDigest)
+		if err != nil {
 			return err
 		}
-		if _, err := q.ExecContext(ctx, ownedProfileAuditWriteSQL, l.TenantID, locatorDigest, next.MutationID, intentDigest, string(raw), digest, next.RevocationGeneration, q.at); err != nil {
-			return err
-		}
-		pending = ports.OwnedProfilePublicationReceiptV1{Profile: next.Clone(), Digest: digest}
+		pending = receipt
 		return nil
 	})
 	if err != nil {
@@ -105,28 +101,34 @@ func (store *Store) PublishOwnedProfile(ctx context.Context, grant ports.OwnedPr
 }
 
 func readOwnedProfilePublicationAudit(ctx context.Context, q *ownedAuthorityQuery, grant ports.OwnedProfilePublicationGrantV1, locatorDigest, intentDigest string) (ports.OwnedProfilePublicationReceiptV1, bool, error) {
+	return readOwnedProfilePublicationAuditTemplate(ctx, q, grant.Profile, grant.IssuedAt, locatorDigest, intentDigest)
+}
+
+// Reuse the existing immutable audit for each half of an exact paired intent.
+// The caller authenticates the whole transition, never either audit in isolation.
+func readOwnedProfilePublicationAuditTemplate(ctx context.Context, q *ownedAuthorityQuery, template domain.OwnedAgentProfileCurrentV1, issuedAt time.Time, locatorDigest, intentDigest string) (ports.OwnedProfilePublicationReceiptV1, bool, error) {
 	denied := func() (ports.OwnedProfilePublicationReceiptV1, bool, error) {
 		return ports.OwnedProfilePublicationReceiptV1{}, false, domain.ErrMembershipDenied
 	}
 	var intent, raw, digest string
 	var generation uint64
 	var published time.Time
-	row := q.QueryRowContext(ctx, ownedProfileAuditSQL, grant.Profile.Locator.TenantID, locatorDigest, grant.Profile.MutationID)
+	row := q.QueryRowContext(ctx, ownedProfileAuditSQL, template.Locator.TenantID, locatorDigest, template.MutationID)
 	returned, err := scanOwnedCurrentRow(row, &intent, &raw, &digest, &generation, &published)
 	charged := q.budget.materialized(q.callback, returned)
 	if charged == nil && err == sql.ErrNoRows {
 		return ports.OwnedProfilePublicationReceiptV1{}, false, nil
 	}
-	if charged != nil || err != nil || len(raw) > ownedAuthorityHeadBytes || len(digest) != 64 || intent != intentDigest || published.Before(grant.IssuedAt) || published.After(q.at) {
+	if charged != nil || err != nil || len(raw) > ownedAuthorityHeadBytes || len(digest) != 64 || intent != intentDigest || published.Before(issuedAt) || published.After(q.at) {
 		return denied()
 	}
 	p, err := domain.DecodeOwnedAgentProfileCurrentV1([]byte(raw))
 	actual, digestErr := p.Digest()
-	if err != nil || digestErr != nil || actual != digest || p.Locator != grant.Profile.Locator || p.MutationID != grant.Profile.MutationID || p.RevocationGeneration != grant.Profile.RevocationGeneration || generation != p.RevocationGeneration || !published.Equal(p.UpdatedAt) {
+	if err != nil || digestErr != nil || actual != digest || p.Locator != template.Locator || p.MutationID != template.MutationID || p.RevocationGeneration != template.RevocationGeneration || generation != p.RevocationGeneration || !published.Equal(p.UpdatedAt) {
 		return denied()
 	}
 	// Reconstruct the exact original template with its DB-owned timestamps.
-	expected := grant.Profile.Clone()
+	expected := template.Clone()
 	expected.UpdatedAt = published
 	if expected.State == domain.OwnedAgentCurrentActiveV1 {
 		expected.Window.PublishedAt = published
@@ -136,4 +138,21 @@ func readOwnedProfilePublicationAudit(ctx context.Context, q *ownedAuthorityQuer
 		return denied()
 	}
 	return ports.OwnedProfilePublicationReceiptV1{Profile: p.Clone(), Digest: digest, Replayed: true}, true, nil
+}
+
+func writeOwnedProfilePublicationTx(ctx context.Context, q *ownedAuthorityQuery, next domain.OwnedAgentProfileCurrentV1, locatorDigest, intentDigest string) (ports.OwnedProfilePublicationReceiptV1, error) {
+	raw, err := domain.EncodeOwnedAgentProfileCurrentV1(next)
+	digest, digestErr := next.Digest()
+	if err != nil || digestErr != nil {
+		return ports.OwnedProfilePublicationReceiptV1{}, domain.ErrMembershipDenied
+	}
+	l := next.Locator
+	if _, err := q.ExecContext(ctx, ownedProfileWriteSQL, l.TenantID, l.OwnerUserID, l.Profile, l.BackendProfileDigest, l.ResourceKind, l.ResourceID, l.ModelVendorID, l.ModelID, l.InputDataClass,
+		string(raw), uint64(next.Version), next.ProfileRevision, next.RevocationGeneration, next.State, digest, next.InstallationID, next.InstallationRevision, next.Window.PublishedAt, next.Window.ExpiresAt, next.UpdatedAt); err != nil {
+		return ports.OwnedProfilePublicationReceiptV1{}, err
+	}
+	if _, err := q.ExecContext(ctx, ownedProfileAuditWriteSQL, l.TenantID, locatorDigest, next.MutationID, intentDigest, string(raw), digest, next.RevocationGeneration, q.at); err != nil {
+		return ports.OwnedProfilePublicationReceiptV1{}, err
+	}
+	return ports.OwnedProfilePublicationReceiptV1{Profile: next.Clone(), Digest: digest}, nil
 }

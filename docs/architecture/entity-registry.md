@@ -52,6 +52,14 @@ The profile's sealed executable and host/network-namespace installation facts
 are configuration identity, not measured cloud/container isolation.
 
 Canonical local-profile data alone cannot install or authorize the resource.
+The local publication intent binds the exact configured profile and, for a
+replacement, the original predecessor receipt plus a distinct retirement
+mutation. The existing serializable publication writes both locator heads
+(retained predecessor tombstone and absent successor) with both immutable audit
+rows under one complete intent digest. Replay reads both exact intents and
+retained heads without rewriting either; a partial pair or unknown commit
+returns no usable receipt. These records add no execution permission by
+themselves: fresh IDs and source/terms authentication remain producer-owned.
 Trusted installation/replacement, owner-local funding and tagged connector
 publication remain disabled until their original-producer/CAS/current-source
 contracts pass. Existing head/audit/source/operation tables hold the necessary

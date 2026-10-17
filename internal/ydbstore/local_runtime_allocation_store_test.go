@@ -64,6 +64,9 @@ func newLocalRuntimeConnectedStore(t *testing.T, sourceParents ...context.Contex
 		}
 	})
 	parent.store.db = db
+	// The connector consumes the same canonical setup accounting reserved by
+	// the original burn, never a later fixture-inserted accounting record.
+	installOperationIssuer(t, parent)
 	reserved := parent.reserve(t, parent.request)
 	if reserved.Grant == nil || parent.sql.inserts != 1 {
 		t.Fatal("actual Store parent reservation did not create its sole original grant")

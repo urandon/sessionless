@@ -311,8 +311,8 @@ type RegisteredPinnedHTTPSProxyV2 struct {
 }
 
 // RegisteredLocalLoopbackProxyV2 describes local observation DATA only. There
-// is no DNS/TLS/image attestation here. Until the actual local allocation and
-// retained-connector producer exist, ValidateForAllocation rejects this variant.
+// is no DNS/TLS/image attestation here. Structural allocation correlation does
+// not authenticate an actual retained-connector producer or grant a send.
 type RegisteredLocalLoopbackProxyV2 struct {
 	ConfiguredProfileDigest        string `json:"configured_profile_digest"`
 	EndpointPolicy                 string `json:"endpoint_policy"`
@@ -400,7 +400,7 @@ func (v RegisteredProxyAttestationV2) Validate() error {
 		}
 	case RegisteredProxyTransportLocalLoopbackHTTPV2:
 		p := v.LocalLoopback
-		if p == nil || v.PinnedHTTPS != nil || v.ServiceKind != RegisteredProxyProviderV1 || p.EndpointPolicy != ConfiguredInferenceLoopbackPolicyV1 || p.InstallationRevision == 0 || ValidateOpaqueID("registered_proxy.local_installation", p.InstallationID) != nil {
+		if p == nil || v.PinnedHTTPS != nil || v.ServiceKind != RegisteredProxyProviderV1 || p.EndpointPolicy != ConfiguredInferenceLoopbackPolicyV1 || p.InstallationRevision == 0 || ValidateOpaqueID("registered_proxy.local_installation", p.InstallationID) != nil || v.PolicyBody.Bytes > 16<<10 || v.AttestationBody.Bytes > 16<<10 {
 			return registeredPreparationError("proxy.transport", "local loopback requires explicit local provider facts only")
 		}
 		for _, digest := range []string{p.ConfiguredProfileDigest, p.ConnectorArtifactDigest, p.HostIdentityDigest, p.NetworkNamespaceIdentityDigest, p.LiteralPeerDigest} {
@@ -450,6 +450,37 @@ func BuildRegisteredPinnedHTTPSProxyAttestationV2(allocation RegisteredAllocatio
 	return v.Clone(), nil
 }
 
+// BuildRegisteredLocalLoopbackProxyAttestationV2 correlates bounded local
+// observation DATA with the original active local allocation and source. The
+// actual retained connector/peer authentication and current Store joins remain
+// mandatory separately; a successful builder never grants network permission.
+func BuildRegisteredLocalLoopbackProxyAttestationV2(allocation RegisteredAllocationV2, source AttemptExecutionSourceV1, transportDigest, policyDigest string, observation RegisteredLocalLoopbackProxyV2, policyBody, attestationBody OwnedAgentAuthorityBodyRefV1, window OwnedAgentAuthorityWindowV1, sequence uint64, operationDigest AttemptOperationDigestV1) (RegisteredProxyAttestationV2, error) {
+	deny := func() (RegisteredProxyAttestationV2, error) {
+		return RegisteredProxyAttestationV2{}, registeredPreparationError("proxy.local_builder", "requires exact original local runtime, source, policy and contained observation")
+	}
+	sd, err := source.Digest()
+	if err != nil || allocation.ValidateAt(window.PublishedAt) != nil || window.Validate() != nil || allocation.Substrate.Kind != SubstrateLocalDevelopmentV1 || allocation.LocalRuntime == nil ||
+		allocation.SourceDigest != sd || allocation.Scope != source.Scope || window.ObservedAt.Before(allocation.ParentReservation.ReservedAt) || window.ObservedAt.Before(allocation.Window.ObservedAt) || window.ObservedAt.Before(source.IssuedAt) || window.ExpiresAt.After(allocation.Window.ExpiresAt) || window.ExpiresAt.After(source.ExpiresAt) || policyDigest != allocation.Substrate.EgressPolicyDigest {
+		return deny()
+	}
+	runtime := allocation.LocalRuntime
+	if observation.ConfiguredProfileDigest != allocation.Backend.BackendProfileDigest || observation.ConfiguredProfileDigest != runtime.ConfiguredProfileDigest || observation.EndpointPolicy != ConfiguredInferenceLoopbackPolicyV1 ||
+		observation.ConnectorArtifactDigest != allocation.ObservedProxyArtifactDigest || observation.ConnectorArtifactDigest != runtime.WorkerExecutableDigest || observation.InstallationID != runtime.InstallationID || observation.InstallationRevision != runtime.InstallationRevision || observation.HostIdentityDigest != runtime.HostIdentityDigest || observation.NetworkNamespaceIdentityDigest != runtime.NetworkNamespaceIdentityDigest {
+		return deny()
+	}
+	d, err := allocation.Digest()
+	if err != nil {
+		return deny()
+	}
+	v := RegisteredProxyAttestationV2{Version: 2, TransportKind: RegisteredProxyTransportLocalLoopbackHTTPV2, OperationSequence: sequence, OperationDigest: operationDigest, Scope: allocation.Scope, PhysicalInvocationClaimID: allocation.ParentReservation.PhysicalInvocationClaimID,
+		AllocationID: allocation.AllocationID, AllocationGeneration: allocation.AllocationGeneration, RegisteredAllocationDigest: d, SourceDigest: sd, ServiceKind: RegisteredProxyProviderV1, TransportDigest: transportDigest, GrantDigest: source.Spending[0].ScopedGrantDigest,
+		PolicyDigest: policyDigest, LocalLoopback: &observation, PolicyBody: policyBody, AttestationBody: attestationBody, State: RegisteredPreparationActiveV1, RevocationGeneration: 1, Window: window, UpdatedAt: window.PublishedAt}
+	if _, err := EncodeRegisteredProxyAttestationV2(v); err != nil {
+		return RegisteredProxyAttestationV2{}, err
+	}
+	return v.Clone(), nil
+}
+
 // Historical correlation takes the exact retained original active allocation
 // snapshot whose digest this observation sealed, not a later retired/revoked
 // head. It is not a current permission check: fresh execution separately needs
@@ -459,10 +490,16 @@ func (v RegisteredProxyAttestationV2) ValidateForAllocation(allocation Registere
 	if err := v.Validate(); err != nil {
 		return err
 	}
-	if allocation.Substrate.Kind == SubstrateLocalDevelopmentV1 || allocation.LocalRuntime != nil || v.TransportKind != RegisteredProxyTransportPinnedHTTPSV2 || v.PinnedHTTPS == nil {
-		return registeredPreparationError("proxy.local_allocation", "local publication requires its actual allocation successor and retained connector producer")
+	var expected RegisteredProxyAttestationV2
+	var err error
+	switch v.TransportKind {
+	case RegisteredProxyTransportPinnedHTTPSV2:
+		expected, err = BuildRegisteredPinnedHTTPSProxyAttestationV2(allocation, source, v.ServiceKind, v.TransportDigest, v.PolicyDigest, v.PinnedHTTPS.ResolutionSetDigest, v.PolicyBody, v.AttestationBody, v.Window, v.OperationSequence, v.OperationDigest)
+	case RegisteredProxyTransportLocalLoopbackHTTPV2:
+		expected, err = BuildRegisteredLocalLoopbackProxyAttestationV2(allocation, source, v.TransportDigest, v.PolicyDigest, *v.LocalLoopback, v.PolicyBody, v.AttestationBody, v.Window, v.OperationSequence, v.OperationDigest)
+	default:
+		return registeredPreparationError("proxy.transport", "requires an explicit supported transport tag")
 	}
-	expected, err := BuildRegisteredPinnedHTTPSProxyAttestationV2(allocation, source, v.ServiceKind, v.TransportDigest, v.PolicyDigest, v.PinnedHTTPS.ResolutionSetDigest, v.PolicyBody, v.AttestationBody, v.Window, v.OperationSequence, v.OperationDigest)
 	if err != nil {
 		return err
 	}

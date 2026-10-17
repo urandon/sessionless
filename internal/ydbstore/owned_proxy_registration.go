@@ -55,13 +55,11 @@ const ownedOperationProxyRegistrationSQL = `SELECT
 
 type ownedProxySnapshot struct {
 	original, current           domain.RegisteredProxyAttestationV2
-	policy                      ports.ServerlessEgressPolicyV1
-	attestation                 ports.ServerlessEgressProxyAttestationV1
 	policyBody, attestationBody []byte
 }
 
-// PublishOwnedProxy preserves observation produced by an actual original TLS
-// connection. It is not registration by startup or permission to send. The
+// PublishOwnedProxy preserves observation authenticated by the actual original
+// transport producer. It is not registration by startup or permission to send. The
 // ordinary Store has no installed owned source keeper and fails closed.
 func (store *Store) PublishOwnedProxy(ctx context.Context, request ports.ReserveAttemptEffectRequestV1, proof ports.OwnedProxyPublicationV2) (domain.RegisteredProxyAttestationV2, bool, error) {
 	deny := func() (domain.RegisteredProxyAttestationV2, bool, error) {
@@ -71,7 +69,7 @@ func (store *Store) PublishOwnedProxy(ctx context.Context, request ports.Reserve
 		return deny()
 	}
 	proof = proof.Clone()
-	policy, attestation, err := proof.Bodies()
+	bodies, err := proof.Bodies()
 	if err != nil || store.ownedProxyPublicationVerifier.VerifyOwnedProxyPublication(proof.Clone(), proof.ObservedAt) != nil {
 		return deny()
 	}
@@ -94,7 +92,7 @@ func (store *Store) PublishOwnedProxy(ctx context.Context, request ports.Reserve
 		}
 		ad, _ := allocation.original.Digest()
 		sd, _ := source.Digest()
-		pd, _ := policy.Digest()
+		pd, _ := bodies.PolicyDigest()
 		if ad != allocationDigest || sd != sourceDigest || proof.Scope != source.Scope || proof.LeaseID != parent.Reservation.LeaseID || proof.FenceToken != parent.Reservation.FenceToken || proof.PhysicalInvocationClaimID != parent.Reservation.PhysicalInvocationClaimID || observedAt.Before(allocation.original.Window.ObservedAt) || observedAt.After(q.at) || pd != allocation.original.Substrate.EgressPolicyDigest {
 			return q.budget.deny()
 		}
@@ -115,7 +113,7 @@ func (store *Store) PublishOwnedProxy(ctx context.Context, request ports.Reserve
 		if allocation.current.ValidateAt(q.at) != nil || store.validateCurrentOwnedAttemptParent(ctx, q, request, parent) != nil {
 			return q.budget.deny()
 		}
-		if proof.TransportKind != domain.RegisteredProxyTransportPinnedHTTPSV2 || store.ownedProxyPublicationVerifier.VerifyOwnedProxyPublicationCurrent(proof.Clone(), q.at) != nil {
+		if store.ownedProxyPublicationVerifier.VerifyOwnedProxyPublicationCurrent(proof.Clone(), q.at) != nil {
 			return q.budget.deny()
 		}
 		accounting, err := readOwnedAttemptAccounting(ctx, q, parent, source)
@@ -131,7 +129,7 @@ func (store *Store) PublishOwnedProxy(ctx context.Context, request ports.Reserve
 				return q.budget.deny()
 			}
 		}
-		expires := attestation.ExpiresAt.UTC().Truncate(time.Microsecond)
+		expires := bodies.ExpiresAt().UTC().Truncate(time.Microsecond)
 		if proof.OperationDeadline.Before(expires) {
 			expires = proof.OperationDeadline
 		}
@@ -141,10 +139,7 @@ func (store *Store) PublishOwnedProxy(ctx context.Context, request ports.Reserve
 		if !q.at.Before(expires) {
 			return q.budget.deny()
 		}
-		routeBody, _ := json.Marshal(policy.Route)
-		routeSum := sha256.Sum256(routeBody)
-		value, err := domain.BuildRegisteredPinnedHTTPSProxyAttestationV2(allocation.original, source, proof.ServiceKind, hex.EncodeToString(routeSum[:]), pd, attestation.ResolutionSetDigest,
-			ports.OwnedProxyBodyReferenceV1("policy", policyBody), ports.OwnedProxyBodyReferenceV1("attestation", attestationBody),
+		value, err := buildOwnedProxyRecord(bodies, allocation.original, source, proof.ServiceKind, policyBody, attestationBody,
 			domain.OwnedAgentAuthorityWindowV1{ObservedAt: observedAt, PublishedAt: q.at, ExpiresAt: expires}, proof.OperationSequence, proof.OperationDigest)
 		if err != nil {
 			return q.budget.deny()
@@ -226,24 +221,54 @@ func readOwnedProxySnapshotAt(ctx context.Context, q *ownedAuthorityQuery, paren
 	cd, cde := current.Digest()
 	// Initial writer supports no replacement/revocation yet; reject divergent
 	// heads rather than normalizing or reconstructing active permission.
-	if oe != nil || ce != nil || ode != nil || cde != nil || string(od) != originalDigest || string(cd) != currentDigest || originalRaw != currentRaw || original.TransportKind != domain.RegisteredProxyTransportPinnedHTTPSV2 || original.PinnedHTTPS == nil || original.OperationSequence != sequence || original.ValidateInitial() != nil || original.ValidateForAllocation(allocation, source) != nil || original.Window.PublishedAt.After(q.at) {
+	if oe != nil || ce != nil || ode != nil || cde != nil || string(od) != originalDigest || string(cd) != currentDigest || originalRaw != currentRaw || original.OperationSequence != sequence || original.ValidateInitial() != nil || original.ValidateForAllocation(allocation, source) != nil || original.Window.PublishedAt.After(q.at) {
 		return nil, q.budget.deny()
 	}
-	var policy ports.ServerlessEgressPolicyV1
-	var attestation ports.ServerlessEgressProxyAttestationV1
-	if json.Unmarshal([]byte(policyRaw), &policy) != nil || json.Unmarshal([]byte(attestationRaw), &attestation) != nil {
+	// Decode the same closed canonical DATA bodies as the publication path. This
+	// carrier is only a decoder input: it cannot authenticate a producer or grant
+	// current/send authority. Historical reads do not require an open socket.
+	pb, ab := []byte(policyRaw), []byte(attestationRaw)
+	bodies, err := (ports.OwnedProxyPublicationV2{TransportKind: original.TransportKind, ServiceKind: original.ServiceKind, ObservedAt: original.Window.ObservedAt, PolicyBody: pb, AttestationBody: ab}).Bodies()
+	if err != nil {
 		return nil, q.budget.deny()
 	}
-	pb, _ := json.Marshal(policy)
-	ab, _ := json.Marshal(attestation)
-	if !bytes.Equal(pb, []byte(policyRaw)) || !bytes.Equal(ab, []byte(attestationRaw)) || original.PolicyBody != ports.OwnedProxyBodyReferenceV1("policy", pb) || original.AttestationBody != ports.OwnedProxyBodyReferenceV1("attestation", ab) {
+	expected, err := buildOwnedProxyRecord(bodies, allocation, source, original.ServiceKind, pb, ab, original.Window, original.OperationSequence, original.OperationDigest)
+	expectedDigest, de := expected.Digest()
+	if err != nil || de != nil || expectedDigest != od {
 		return nil, q.budget.deny()
 	}
-	pd, pe := policy.Digest()
-	routeBody, _ := json.Marshal(policy.Route)
-	routeSum := sha256.Sum256(routeBody)
-	if pe != nil || original.TransportDigest != hex.EncodeToString(routeSum[:]) || original.PolicyDigest != pd || original.PinnedHTTPS.ResolutionSetDigest != attestation.ResolutionSetDigest || attestation.ValidateForPolicy(policy, original.Window.PublishedAt, attestation.ExpiresAt) != nil || original.Window.ExpiresAt.After(attestation.ExpiresAt) {
-		return nil, q.budget.deny()
+	return &ownedProxySnapshot{original: original, current: current, policyBody: pb, attestationBody: ab}, nil
+}
+
+// One pure DATA mapping is used on write and retained readback. Neither branch
+// supplies producer authentication or current permission; Store owns those
+// independently. Unknown/mixed bodies are denied before selecting a builder.
+func buildOwnedProxyRecord(bodies ports.OwnedProxyBodiesV2, allocation domain.RegisteredAllocationV2, source domain.AttemptExecutionSourceV1, service domain.RegisteredProxyServiceKindV1, policyBody, attestationBody []byte, window domain.OwnedAgentAuthorityWindowV1, sequence uint64, operation domain.AttemptOperationDigestV1) (domain.RegisteredProxyAttestationV2, error) {
+	deny := func() (domain.RegisteredProxyAttestationV2, error) {
+		return domain.RegisteredProxyAttestationV2{}, domain.ErrMembershipDenied
 	}
-	return &ownedProxySnapshot{original, current, policy, attestation, pb, ab}, nil
+	policyDigest, err := bodies.PolicyDigest()
+	if err != nil || !window.PublishedAt.Before(bodies.ExpiresAt()) || window.ExpiresAt.After(bodies.ExpiresAt()) {
+		return deny()
+	}
+	pb, ab := ports.OwnedProxyBodyReferenceV1("policy", policyBody), ports.OwnedProxyBodyReferenceV1("attestation", attestationBody)
+	switch bodies.TransportKind {
+	case domain.RegisteredProxyTransportPinnedHTTPSV2:
+		b := bodies.PinnedHTTPS
+		routeBody, err := json.Marshal(b.Policy.Route)
+		if err != nil || b.Attestation.ValidateForPolicy(b.Policy, window.PublishedAt, b.Attestation.ExpiresAt) != nil {
+			return deny()
+		}
+		sum := sha256.Sum256(routeBody)
+		return domain.BuildRegisteredPinnedHTTPSProxyAttestationV2(allocation, source, service, hex.EncodeToString(sum[:]), policyDigest, b.Attestation.ResolutionSetDigest, pb, ab, window, sequence, operation)
+	case domain.RegisteredProxyTransportLocalLoopbackHTTPV2:
+		b := bodies.LocalLoopback
+		transport, err := b.Policy.TransportDigest()
+		if err != nil || service != domain.RegisteredProxyProviderV1 || !b.Attestation.ObservedAt.Equal(window.ObservedAt) {
+			return deny()
+		}
+		return domain.BuildRegisteredLocalLoopbackProxyAttestationV2(allocation, source, transport, policyDigest, b.Attestation.Observation, pb, ab, window, sequence, operation)
+	default:
+		return deny()
+	}
 }

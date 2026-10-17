@@ -1,9 +1,11 @@
 # Shared external harness execution boundary
 
-Version: 0.1.0. Engineering design candidate for
+Version: 0.1.0. Independently reviewed engineering design for
 [#215](https://gitcode.com/urandon/sessionless/issues/215), using the accepted
 [#214 comparison](https://gitcode.com/urandon/sessionless/issues/214#note_194345569).
 Owner: #13; attached delivery: #72/#133; managed delivery: #176/#175.
+Primary engineering acceptance is limited to this architecture and
+decomposition; implementation and exact-profile activation remain separate.
 
 Run a ready-made harness as a contained native process. Reuse the existing Go
 supervisor, credential lifecycle and canonical result pipeline. Add only the
@@ -301,11 +303,11 @@ need an explicit replacement manifest, not hidden retries/downloads.
 
 The owning implementation checklist is deliberately small:
 
-1. Required selected-profile delta: versioned launcher/supervisor network
+1. [#219 required selected-profile delta](https://gitcode.com/urandon/sessionless/issues/219): versioned launcher/supervisor network
    contract and bounded host companion/byte relay, with original authority,
    resource/cleanup tests and fail-closed registration. Reuse #77/#88/#106;
    do not reopen or relabel their network-none delivery.
-2. Required selected-profile proof: pin one real official Codex package and
+2. [#220 required selected-profile proof](https://gitcode.com/urandon/sessionless/issues/220), after #219: pin one real official Codex package and
    Linux-rootless tuple, qualify native/config/tool/retry and conduit behavior
    under the finite credential-free gate. Publish go/no-go to #133. Failure
    remains no-go and must not generate SDK instrumentation or relaxed policy.
@@ -313,9 +315,9 @@ The owning implementation checklist is deliberately small:
    #199–201 own media/output integration. #175/#90/#92 own independent managed
    composition/platform/cloud proof; #176/#191 keep their own loop/exports.
 
-After independent design acceptance, register the first two as real linked
-children under #13 with the exact predecessors and evidence above. No new
-cross-cutting epic is necessary. Darwin portability and tool-enabled native
+The first two are linked implementation children under #13 with the exact
+predecessors and evidence above. No new cross-cutting epic is necessary.
+Darwin portability and tool-enabled native
 profiles are optional follow-up, not extra MVP requirements. #212's configured
 local inference path remains independent: it connects the managed Go client to
 an already running owner endpoint and does not use this native tunnel.

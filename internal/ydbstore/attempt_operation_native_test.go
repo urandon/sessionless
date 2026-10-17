@@ -109,10 +109,23 @@ func TestOwnedOperationYDBActualTLSRegistrationReservationOneUseAndRecovery(t *t
 	}
 	t.Cleanup(fixture.Close)
 	proxy := fixture.Proxy()
-	if _, err := proxy.Preflight(g.ctx, policy); err != nil {
+	preflight, err := proxy.Preflight(g.ctx, policy)
+	if err != nil {
 		t.Fatalf("actual original TLS handshake: %v", err)
 	}
-	proof, err := proxy.ObserveOwnedProxy(receipt.Original, g.final.Source)
+	// Freeze the operation against actual preflight/allocation bounds BEFORE
+	// observing it. Registration cannot supply or renew any operation field.
+	cost := parent.Authority.AdmissionCostCeiling
+	cd, _ := cost.Digest()
+	deadline := clock.Now().Add(10 * time.Second)
+	for _, expiry := range []time.Time{preflight.ExpiresAt, receipt.Original.Window.ExpiresAt} {
+		if expiry.Before(deadline) {
+			deadline = expiry
+		}
+	}
+	op := domain.AttemptOperationV1{Version: 1, Scope: scope, Sequence: 1, Kind: domain.AttemptOperationModelV1, CallID: "model-call-1", RequestRef: "operation-request-1", RequestDigest: operationBodyDigest(requestBody), Deadline: deadline, CleanupDuration: parent.Authority.HarnessBinding.AgentLoopPolicy.Limits.MaxCleanupDuration,
+		Debit: domain.AttemptOperationDebitV1{Operations: 1, ModelCalls: 1, InputTokens: 1, OutputTokens: 1, BodyBytes: uint64(len(requestBody)) + 512, ResponseBytes: 512, AmountMicrounits: *g.final.Source.Spending[0].MaxAmountMicrounits, ActiveDuration: 10 * time.Second}, RequestBytes: uint64(len(requestBody)), ResultBytes: 512, ContextBytes: 1, Currency: cost.Currency, PriceRevision: cost.PriceRevision, AdmissionCostCeilingDigest: cd}
+	proof, err := proxy.ObserveOwnedProxy(receipt.Original, g.final.Source, op)
 	if err != nil {
 		t.Fatalf("actual TLS producer observation: %v", err)
 	}
@@ -124,20 +137,40 @@ func TestOwnedOperationYDBActualTLSRegistrationReservationOneUseAndRecovery(t *t
 	if fixture.Requests() != 0 {
 		t.Fatal("TLS registration/preflight sent request payload")
 	}
-	cost := parent.Authority.AdmissionCostCeiling
-	cd, _ := cost.Digest()
-	deadline := clock.Now().Add(10 * time.Second)
-	if registered.Window.ExpiresAt.Before(deadline) {
-		deadline = registered.Window.ExpiresAt
+	// Same sequence and identical body are insufficient: the complete frozen
+	// operation (including its debit) belongs to this exact observation.
+	changedDebit := op.Clone()
+	changedDebit.Debit.InputTokens++
+	if changedDebit.ValidateForParent(parent.Authority, parent.Reservation) != nil {
+		t.Fatal("operation-substitution control must remain structurally valid")
 	}
-	op := domain.AttemptOperationV1{Version: 1, Scope: scope, Sequence: 1, Kind: domain.AttemptOperationModelV1, CallID: "model-call-1", RequestRef: "operation-request-1", RequestDigest: operationBodyDigest(requestBody), Deadline: deadline, CleanupDuration: parent.Authority.HarnessBinding.AgentLoopPolicy.Limits.MaxCleanupDuration,
-		Debit: domain.AttemptOperationDebitV1{Operations: 1, ModelCalls: 1, InputTokens: 1, OutputTokens: 1, BodyBytes: uint64(len(requestBody)) + 512, ResponseBytes: 512, AmountMicrounits: *g.final.Source.Spending[0].MaxAmountMicrounits, ActiveDuration: 10 * time.Second}, RequestBytes: uint64(len(requestBody)), ResultBytes: 512, ContextBytes: 1, Currency: cost.Currency, PriceRevision: cost.PriceRevision, AdmissionCostCeilingDigest: cd}
+	if denied, err := g.f.store.ReserveAttemptOperation(g.ctx, ports.ReserveAttemptOperationRequestV1{Operation: changedDebit}); !errors.Is(err, domain.ErrMembershipDenied) || denied.Capability != nil || fixture.Requests() != 0 {
+		t.Fatal("same-body/sequence changed operation bypassed original observation")
+	}
+	g.requireCount(t, "attempt_operations_v1", 0)
+	g.requireCount(t, "attempt_operation_calls_v1", 0)
 	reserved, err := g.f.store.ReserveAttemptOperation(g.ctx, ports.ReserveAttemptOperationRequestV1{Operation: op})
 	if err != nil || reserved.Status != ports.AttemptOperationReservedV1 || reserved.Capability == nil {
 		t.Fatalf("actual atomic current registration/debit reserve: err=%v status=%s", err, reserved.Status)
 	}
 	if reserved.Reservation.ComponentAmounts[1] != *g.final.Source.Spending[1].MaxAmountMicrounits || reserved.Reservation.AggregateDebit.Operations != 1 {
 		t.Fatal("reservation omitted original setup or operation debit")
+	}
+	for _, axis := range []string{"operation", "sequence", "transport", "source"} {
+		changed := registered.Clone()
+		switch axis {
+		case "operation":
+			changed.OperationDigest = domain.AttemptOperationDigestV1(strings.Repeat("8", 64))
+		case "sequence":
+			changed.OperationSequence++
+		case "transport":
+			changed.TransportKind = domain.RegisteredProxyTransportLocalLoopbackHTTPV2
+		case "source":
+			changed.SourceDigest = strings.Repeat("8", 64)
+		}
+		if _, err := proxy.InvokeOwnedOperation(g.ctx, changed, *reserved.Capability, g.f.store, requestBody); err == nil || fixture.Requests() != 0 {
+			t.Fatalf("changed %s observation emitted HTTP", axis)
+		}
 	}
 	// Actual payload tampering cannot consume the valid capability or emit HTTP.
 	if _, err := proxy.InvokeOwnedOperation(g.ctx, registered, *reserved.Capability, g.f.store, []byte(`{"different":true}`)); err == nil || fixture.Requests() != 0 {
@@ -173,7 +206,10 @@ func TestOwnedOperationYDBActualTLSRegistrationReservationOneUseAndRecovery(t *t
 	if _, err := nextFixture.Proxy().Preflight(g.ctx, policy); err != nil {
 		t.Fatal(err)
 	}
-	nextProof, err := nextFixture.Proxy().ObserveOwnedProxy(receipt.Original, g.final.Source)
+	nextOp := op.Clone()
+	nextOp.Sequence, nextOp.CallID = 2, "model-call-2"
+	nextOp.PredecessorObservationDigest, _ = observation.Digest()
+	nextProof, err := nextFixture.Proxy().ObserveOwnedProxy(receipt.Original, g.final.Source, nextOp)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -44,7 +44,7 @@ type Options struct {
 	OwnedAllocationPublicationVerifier ports.OwnedAllocationPublicationVerifierV1
 	AttemptOperationIssuer             ports.AttemptOperationCapabilityIssuerV1
 	AttemptOperationBodies             ports.AttemptOperationBodyStoreV1
-	OwnedProxyPublicationVerifier      ports.OwnedProxyPublicationVerifierV1
+	OwnedProxyPublicationVerifier      ports.OwnedProxyPublicationVerifierV2
 	OwnedOperationResidualCustody      ports.OwnedOperationResidualCustodyV1
 	OwnedProviderPriceCustody          ports.OwnedProviderPriceCustodyV1
 }
@@ -63,7 +63,7 @@ type Store struct {
 	ownedAllocationPublicationVerifier ports.OwnedAllocationPublicationVerifierV1
 	attemptOperationIssuer             ports.AttemptOperationCapabilityIssuerV1
 	attemptOperationBodies             ports.AttemptOperationBodyStoreV1
-	ownedProxyPublicationVerifier      ports.OwnedProxyPublicationVerifierV1
+	ownedProxyPublicationVerifier      ports.OwnedProxyPublicationVerifierV2
 	ownedOperationResidualCustody      ports.OwnedOperationResidualCustodyV1
 	ownedProviderPriceCustody          ports.OwnedProviderPriceCustodyV1
 }

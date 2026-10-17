@@ -87,6 +87,19 @@ Existing head/audit/source/operation tables hold the necessary
 facts; no endpoint inventory, zero-generation secret row or operational ledger
 is introduced. Applied migration history and physical table counts do not change.
 
+Owned connector observations use the canonical tagged
+`RegisteredProxyAttestationV2` record. The first observation still lives in the
+existing `attempt_effect_reservations` original/current/body columns; later
+sequences still use `attempt_operation_proxies_v1`. The table suffix is not a
+record-codec fallback. V2 seals the original operation digest and sequence, with
+exclusive HTTPS versus local-loopback facts, and is reread by reservation,
+before-send and history/custody consumers. No new endpoint or observation table
+is needed. Retained V1 rows are not rewritten or promoted into V2 authority;
+their presence blocks unsupported serving/recovery and needs the separately
+authorized [drained format cutover](../serverless-egress.md#owned-observation-format-and-cutover).
+Local observation data alone still cannot satisfy the image-backed allocation
+contract or replace the missing actual retained local connector.
+
 ## Source and rollout boundary
 
 The [compatible code step](https://gitcode.com/urandon/sessionless/issues/206)

@@ -179,23 +179,17 @@ func testNativeSequentialOperationPricing(t *testing.T, knownFree bool, semantic
 		}
 		t.Cleanup(fixture.Close)
 		proxy := fixture.Proxy()
-		if _, err := proxy.Preflight(g.ctx, policy); err != nil {
-			t.Fatal(err)
-		}
-		proof, err := proxy.ObserveOwnedProxy(allocation, g.final.Source)
+		preflight, err := proxy.Preflight(g.ctx, policy)
 		if err != nil {
 			t.Fatal(err)
-		}
-		g.f.store.ownedProxyPublicationVerifier = proxy
-		registered, replay, err := g.f.store.PublishOwnedProxy(g.ctx, g.request, proof)
-		if err != nil || replay {
-			t.Fatalf("sequence%d authentic proxy publish: %v", sequence, err)
 		}
 		cost := parent.Authority.AdmissionCostCeiling
 		cd, _ := cost.Digest()
 		deadline := clock.Now().Add(10 * time.Second)
-		if registered.Window.ExpiresAt.Before(deadline) {
-			deadline = registered.Window.ExpiresAt
+		for _, expiry := range []time.Time{preflight.ExpiresAt, allocation.Window.ExpiresAt} {
+			if expiry.Before(deadline) {
+				deadline = expiry
+			}
 		}
 		op := domain.AttemptOperationV1{Version: 1, Scope: keeper.scope, Sequence: sequence, Kind: kind, CallID: fmt.Sprintf("model-%d", sequence), RequestRef: requestRef, RequestDigest: operationBodyDigest(requests[index]), Deadline: deadline, CleanupDuration: parent.Authority.HarnessBinding.AgentLoopPolicy.Limits.MaxCleanupDuration, RequestBytes: uint64(len(requests[index])), ResultBytes: 512, ContextBytes: 1, Currency: cost.Currency, PriceRevision: cost.PriceRevision, AdmissionCostCeilingDigest: cd, Debit: domain.AttemptOperationDebitV1{Operations: 1, ModelCalls: 1, InputTokens: 1, OutputTokens: 1, BodyBytes: uint64(len(requests[index])) + 512, ResponseBytes: 512, AmountMicrounits: *g.final.Source.Spending[0].MaxAmountMicrounits, ActiveDuration: 10 * time.Second}}
 		if paidProvider {
@@ -225,15 +219,29 @@ func testNativeSequentialOperationPricing(t *testing.T, knownFree bool, semantic
 			op.Debit.CompactionCalls = 1
 			op.SummaryBytes = 512
 		}
+		proof, err := proxy.ObserveOwnedProxy(allocation, g.final.Source, op)
+		if err != nil {
+			t.Fatal(err)
+		}
+		g.f.store.ownedProxyPublicationVerifier = proxy
+		registered, replay, err := g.f.store.PublishOwnedProxy(g.ctx, g.request, proof)
+		if err != nil || replay {
+			t.Fatalf("sequence%d authentic proxy publish: %v", sequence, err)
+		}
 		if sequence == 1 && semanticCase == "price-controls" {
 			original, before, _ := nativeAccountingBytes(t, g)
+			// These are operation-substitution controls after V2 observation:
+			// changing the quote changes the sealed whole-operation digest and
+			// must deny before pricing. The unchanged-operation rate-custody
+			// mutation below and attempt_operation_price_test.go independently
+			// exercise price authority rather than claiming this earlier denial.
 			for _, amount := range []uint64{0, 1, 20} {
 				changed := op.Clone()
 				changed.Debit.AmountMicrounits = amount
 				denied, err := g.f.store.ReserveAttemptOperation(g.ctx, ports.ReserveAttemptOperationRequestV1{Operation: changed})
 				current, after, _ := nativeAccountingBytes(t, g)
 				if err == nil || denied.Capability != nil || fixture.Requests() != 0 || after != before || current.Amounts != original.Amounts || current.Aggregate.Operations != 0 {
-					t.Fatalf("caller zero/underquote/full-envelope%d changed original debit or sent: err=%v cap=%t sends=%d unchanged=%t", amount, err, denied.Capability != nil, fixture.Requests(), before == after)
+					t.Fatalf("post-observation quote substitution%d changed original debit or sent: err=%v cap=%t sends=%d unchanged=%t", amount, err, denied.Capability != nil, fixture.Requests(), before == after)
 				}
 				g.requireCount(t, "attempt_operations_v1", 0)
 				g.requireCount(t, "attempt_operation_calls_v1", 0)

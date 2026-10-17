@@ -17,7 +17,7 @@ const (
 )
 
 type RegisteredAllocationDigestV1 string
-type RegisteredProxyAttestationDigestV1 string
+type RegisteredProxyAttestationDigestV2 string
 
 // References preserve the exact original four heads, without embedding their
 // bodies or introducing another spending/source authority.
@@ -226,6 +226,33 @@ func DecodeRegisteredAllocationV1(raw []byte) (RegisteredAllocationV1, error) {
 
 type RegisteredProxyServiceKindV1 string
 
+type RegisteredProxyTransportKindV2 string
+
+const (
+	RegisteredProxyTransportPinnedHTTPSV2       RegisteredProxyTransportKindV2 = "pinned_https.v1"
+	RegisteredProxyTransportLocalLoopbackHTTPV2 RegisteredProxyTransportKindV2 = "local_loopback_http.v1"
+)
+
+type RegisteredPinnedHTTPSProxyV2 struct {
+	ResolutionSetDigest string `json:"resolution_set_digest"`
+	ProxyArtifactDigest string `json:"proxy_artifact_digest"`
+	ProxyIdentityDigest string `json:"proxy_identity_digest"`
+}
+
+// RegisteredLocalLoopbackProxyV2 describes local observation DATA only. There
+// is no DNS/TLS/image attestation here. Until the actual local allocation and
+// retained-connector producer exist, ValidateForAllocation rejects this variant.
+type RegisteredLocalLoopbackProxyV2 struct {
+	ConfiguredProfileDigest        string `json:"configured_profile_digest"`
+	EndpointPolicy                 string `json:"endpoint_policy"`
+	ConnectorArtifactDigest        string `json:"connector_artifact_digest"`
+	InstallationID                 string `json:"installation_id"`
+	InstallationRevision           uint64 `json:"installation_revision"`
+	HostIdentityDigest             string `json:"host_identity_digest"`
+	NetworkNamespaceIdentityDigest string `json:"network_namespace_identity_digest"`
+	LiteralPeerDigest              string `json:"literal_peer_digest"`
+}
+
 const (
 	RegisteredProxyProviderV1  RegisteredProxyServiceKindV1 = "provider"
 	RegisteredProxyMCPToolV1   RegisteredProxyServiceKindV1 = "mcp_tool"
@@ -237,35 +264,45 @@ const (
 // and digests are not network policy approval or proof of DNS/TLS enforcement.
 // No URL/endpoint selector or invented parallel endpoint validator lives here.
 // In particular, the MCP/search producer bridge remains unimplemented.
-type RegisteredProxyAttestationV1 struct {
-	Version                    uint32                        `json:"version"`
-	Scope                      AttemptExecutionSourceScopeV1 `json:"scope"`
-	PhysicalInvocationClaimID  string                        `json:"physical_invocation_claim_id"`
-	AllocationID               string                        `json:"allocation_id"`
-	AllocationGeneration       uint64                        `json:"allocation_generation"`
-	RegisteredAllocationDigest RegisteredAllocationDigestV1  `json:"registered_allocation_digest"`
-	SourceDigest               string                        `json:"source_digest"`
-	ServiceKind                RegisteredProxyServiceKindV1  `json:"service_kind"`
-	TransportDigest            string                        `json:"transport_digest"`
-	GrantDigest                string                        `json:"grant_digest"`
-	PolicyDigest               string                        `json:"policy_digest"`
-	ResolutionSetDigest        string                        `json:"resolution_set_digest"`
-	ProxyArtifactDigest        string                        `json:"proxy_artifact_digest"`
-	ProxyIdentityDigest        string                        `json:"proxy_identity_digest"`
-	PolicyBody                 OwnedAgentAuthorityBodyRefV1  `json:"policy_body"`
-	AttestationBody            OwnedAgentAuthorityBodyRefV1  `json:"attestation_body"`
-	State                      RegisteredPreparationStateV1  `json:"state"`
-	RevocationGeneration       uint64                        `json:"revocation_generation"`
-	Window                     OwnedAgentAuthorityWindowV1   `json:"window"`
-	UpdatedAt                  time.Time                     `json:"updated_at"`
+type RegisteredProxyAttestationV2 struct {
+	Version                    uint32                          `json:"version"`
+	TransportKind              RegisteredProxyTransportKindV2  `json:"transport_kind"`
+	OperationSequence          uint64                          `json:"operation_sequence"`
+	OperationDigest            AttemptOperationDigestV1        `json:"operation_digest"`
+	Scope                      AttemptExecutionSourceScopeV1   `json:"scope"`
+	PhysicalInvocationClaimID  string                          `json:"physical_invocation_claim_id"`
+	AllocationID               string                          `json:"allocation_id"`
+	AllocationGeneration       uint64                          `json:"allocation_generation"`
+	RegisteredAllocationDigest RegisteredAllocationDigestV1    `json:"registered_allocation_digest"`
+	SourceDigest               string                          `json:"source_digest"`
+	ServiceKind                RegisteredProxyServiceKindV1    `json:"service_kind"`
+	TransportDigest            string                          `json:"transport_digest"`
+	GrantDigest                string                          `json:"grant_digest"`
+	PolicyDigest               string                          `json:"policy_digest"`
+	PinnedHTTPS                *RegisteredPinnedHTTPSProxyV2   `json:"pinned_https,omitempty"`
+	LocalLoopback              *RegisteredLocalLoopbackProxyV2 `json:"local_loopback,omitempty"`
+	PolicyBody                 OwnedAgentAuthorityBodyRefV1    `json:"policy_body"`
+	AttestationBody            OwnedAgentAuthorityBodyRefV1    `json:"attestation_body"`
+	State                      RegisteredPreparationStateV1    `json:"state"`
+	RevocationGeneration       uint64                          `json:"revocation_generation"`
+	Window                     OwnedAgentAuthorityWindowV1     `json:"window"`
+	UpdatedAt                  time.Time                       `json:"updated_at"`
 }
 
-func (v RegisteredProxyAttestationV1) Clone() RegisteredProxyAttestationV1 {
+func (v RegisteredProxyAttestationV2) Clone() RegisteredProxyAttestationV2 {
 	v.Window, v.UpdatedAt = v.Window.Clone(), v.UpdatedAt.UTC()
+	if v.PinnedHTTPS != nil {
+		value := *v.PinnedHTTPS
+		v.PinnedHTTPS = &value
+	}
+	if v.LocalLoopback != nil {
+		value := *v.LocalLoopback
+		v.LocalLoopback = &value
+	}
 	return v
 }
-func (v RegisteredProxyAttestationV1) Validate() error {
-	if v.Version != 1 || v.Scope.Validate() != nil || ValidateOpaqueID("registered_proxy.claim", v.PhysicalInvocationClaimID) != nil ||
+func (v RegisteredProxyAttestationV2) Validate() error {
+	if v.Version != 2 || v.OperationSequence == 0 || v.OperationSequence > 12 || v.OperationDigest.Validate() != nil || v.Scope.Validate() != nil || ValidateOpaqueID("registered_proxy.claim", v.PhysicalInvocationClaimID) != nil ||
 		ValidateOpaqueID("registered_proxy.allocation_id", v.AllocationID) != nil || v.AllocationGeneration == 0 || v.RegisteredAllocationDigest.Validate() != nil ||
 		v.PolicyBody.Validate() != nil || v.AttestationBody.Validate() != nil || validateRegisteredLifecycle(v.State, v.RevocationGeneration, v.Window, v.UpdatedAt) != nil {
 		return registeredPreparationError("proxy", "requires exact original allocation and bounded observation")
@@ -275,19 +312,42 @@ func (v RegisteredProxyAttestationV1) Validate() error {
 	default:
 		return registeredPreparationError("proxy.service_kind", "is unsupported")
 	}
-	for _, d := range []string{v.SourceDigest, v.TransportDigest, v.GrantDigest, v.PolicyDigest, v.ResolutionSetDigest, v.ProxyArtifactDigest, v.ProxyIdentityDigest} {
+	for _, d := range []string{v.SourceDigest, v.TransportDigest, v.GrantDigest, v.PolicyDigest} {
 		if err := ValidateSHA256Digest("registered_proxy.digest", d); err != nil {
 			return err
 		}
 	}
+	switch v.TransportKind {
+	case RegisteredProxyTransportPinnedHTTPSV2:
+		if v.PinnedHTTPS == nil || v.LocalLoopback != nil {
+			return registeredPreparationError("proxy.transport", "pinned HTTPS requires only its explicit HTTPS observations")
+		}
+		for _, digest := range []string{v.PinnedHTTPS.ResolutionSetDigest, v.PinnedHTTPS.ProxyArtifactDigest, v.PinnedHTTPS.ProxyIdentityDigest} {
+			if err := ValidateSHA256Digest("registered_proxy.pinned_https", digest); err != nil {
+				return err
+			}
+		}
+	case RegisteredProxyTransportLocalLoopbackHTTPV2:
+		p := v.LocalLoopback
+		if p == nil || v.PinnedHTTPS != nil || v.ServiceKind != RegisteredProxyProviderV1 || p.EndpointPolicy != ConfiguredInferenceLoopbackPolicyV1 || p.InstallationRevision == 0 || ValidateOpaqueID("registered_proxy.local_installation", p.InstallationID) != nil {
+			return registeredPreparationError("proxy.transport", "local loopback requires explicit local provider facts only")
+		}
+		for _, digest := range []string{p.ConfiguredProfileDigest, p.ConnectorArtifactDigest, p.HostIdentityDigest, p.NetworkNamespaceIdentityDigest, p.LiteralPeerDigest} {
+			if err := ValidateSHA256Digest("registered_proxy.local_loopback", digest); err != nil {
+				return err
+			}
+		}
+	default:
+		return registeredPreparationError("proxy.transport", "requires an explicit supported transport tag")
+	}
 	return nil
 }
 
-func BuildRegisteredProxyAttestationV1(allocation RegisteredAllocationV1, source AttemptExecutionSourceV1, service RegisteredProxyServiceKindV1, transportDigest, policyDigest, resolutionSetDigest string, policyBody, attestationBody OwnedAgentAuthorityBodyRefV1, window OwnedAgentAuthorityWindowV1) (RegisteredProxyAttestationV1, error) {
+func BuildRegisteredPinnedHTTPSProxyAttestationV2(allocation RegisteredAllocationV1, source AttemptExecutionSourceV1, service RegisteredProxyServiceKindV1, transportDigest, policyDigest, resolutionSetDigest string, policyBody, attestationBody OwnedAgentAuthorityBodyRefV1, window OwnedAgentAuthorityWindowV1, sequence uint64, operationDigest AttemptOperationDigestV1) (RegisteredProxyAttestationV2, error) {
 	sd, err := source.Digest()
 	if err != nil || allocation.ValidateAt(window.PublishedAt) != nil || window.Validate() != nil || allocation.SourceDigest != sd || allocation.Scope != source.Scope ||
 		window.ObservedAt.Before(allocation.ParentReservation.ReservedAt) || window.ObservedAt.Before(allocation.Window.ObservedAt) || window.ExpiresAt.After(allocation.Window.ExpiresAt) {
-		return RegisteredProxyAttestationV1{}, registeredPreparationError("proxy.builder", "requires the active exact original allocation and contained observation")
+		return RegisteredProxyAttestationV2{}, registeredPreparationError("proxy.builder", "requires the active exact original allocation and contained observation")
 	}
 	i := -1
 	switch service {
@@ -299,19 +359,19 @@ func BuildRegisteredProxyAttestationV1(allocation RegisteredAllocationV1, source
 		i = 3
 	}
 	if i < 0 {
-		return RegisteredProxyAttestationV1{}, registeredPreparationError("proxy.service_kind", "is unsupported")
+		return RegisteredProxyAttestationV2{}, registeredPreparationError("proxy.service_kind", "is unsupported")
 	}
 	if service == RegisteredProxyProviderV1 && policyDigest != allocation.Substrate.EgressPolicyDigest {
-		return RegisteredProxyAttestationV1{}, registeredPreparationError("proxy.policy", "requires the existing sealed provider egress policy")
+		return RegisteredProxyAttestationV2{}, registeredPreparationError("proxy.policy", "requires the existing sealed provider egress policy")
 	}
 	d, _ := allocation.Digest()
-	v := RegisteredProxyAttestationV1{Version: 1, Scope: allocation.Scope, PhysicalInvocationClaimID: allocation.ParentReservation.PhysicalInvocationClaimID,
+	v := RegisteredProxyAttestationV2{Version: 2, TransportKind: RegisteredProxyTransportPinnedHTTPSV2, OperationSequence: sequence, OperationDigest: operationDigest, Scope: allocation.Scope, PhysicalInvocationClaimID: allocation.ParentReservation.PhysicalInvocationClaimID,
 		AllocationID: allocation.AllocationID, AllocationGeneration: allocation.AllocationGeneration, RegisteredAllocationDigest: d, SourceDigest: sd,
 		ServiceKind: service, TransportDigest: transportDigest, GrantDigest: source.Spending[i].ScopedGrantDigest,
-		PolicyDigest: policyDigest, ResolutionSetDigest: resolutionSetDigest, ProxyArtifactDigest: allocation.ObservedProxyArtifactDigest, ProxyIdentityDigest: allocation.ObservedProxyIdentityDigest,
+		PolicyDigest: policyDigest, PinnedHTTPS: &RegisteredPinnedHTTPSProxyV2{ResolutionSetDigest: resolutionSetDigest, ProxyArtifactDigest: allocation.ObservedProxyArtifactDigest, ProxyIdentityDigest: allocation.ObservedProxyIdentityDigest},
 		PolicyBody: policyBody, AttestationBody: attestationBody, State: RegisteredPreparationActiveV1, RevocationGeneration: 1, Window: window, UpdatedAt: window.PublishedAt}
-	if _, err := EncodeRegisteredProxyAttestationV1(v); err != nil {
-		return RegisteredProxyAttestationV1{}, err
+	if _, err := EncodeRegisteredProxyAttestationV2(v); err != nil {
+		return RegisteredProxyAttestationV2{}, err
 	}
 	return v.Clone(), nil
 }
@@ -321,71 +381,74 @@ func BuildRegisteredProxyAttestationV1(allocation RegisteredAllocationV1, source
 // head. It is not a current permission check: fresh execution separately needs
 // active unchanged allocation/proxy rows and the complete same-Tx authority.
 // Never normalize a current tombstone into an invented historical snapshot.
-func (v RegisteredProxyAttestationV1) ValidateForAllocation(allocation RegisteredAllocationV1, source AttemptExecutionSourceV1) error {
+func (v RegisteredProxyAttestationV2) ValidateForAllocation(allocation RegisteredAllocationV1, source AttemptExecutionSourceV1) error {
 	if err := v.Validate(); err != nil {
 		return err
 	}
-	expected, err := BuildRegisteredProxyAttestationV1(allocation, source, v.ServiceKind, v.TransportDigest, v.PolicyDigest, v.ResolutionSetDigest, v.PolicyBody, v.AttestationBody, v.Window)
+	if v.TransportKind != RegisteredProxyTransportPinnedHTTPSV2 || v.PinnedHTTPS == nil {
+		return registeredPreparationError("proxy.local_allocation", "local publication requires its actual allocation successor and retained connector producer")
+	}
+	expected, err := BuildRegisteredPinnedHTTPSProxyAttestationV2(allocation, source, v.ServiceKind, v.TransportDigest, v.PolicyDigest, v.PinnedHTTPS.ResolutionSetDigest, v.PolicyBody, v.AttestationBody, v.Window, v.OperationSequence, v.OperationDigest)
 	if err != nil {
 		return err
 	}
 	expected.State, expected.RevocationGeneration, expected.UpdatedAt = v.State, v.RevocationGeneration, v.UpdatedAt
-	left, _ := EncodeRegisteredProxyAttestationV1(expected)
-	right, _ := EncodeRegisteredProxyAttestationV1(v)
+	left, _ := EncodeRegisteredProxyAttestationV2(expected)
+	right, _ := EncodeRegisteredProxyAttestationV2(v)
 	if !bytes.Equal(left, right) {
 		return registeredPreparationError("proxy.correlation", "requires exact allocation, source and scoped service grant")
 	}
 	return nil
 }
-func (v RegisteredProxyAttestationV1) ValidateInitial() error {
+func (v RegisteredProxyAttestationV2) ValidateInitial() error {
 	if err := v.Validate(); err != nil {
 		return err
 	}
 	return validateRegisteredInitial(v.State, v.RevocationGeneration, v.Window, v.UpdatedAt)
 }
-func (v RegisteredProxyAttestationV1) ValidateAt(now time.Time) error {
+func (v RegisteredProxyAttestationV2) ValidateAt(now time.Time) error {
 	if err := v.Validate(); err != nil {
 		return err
 	}
 	return validateRegisteredAt(v.State, v.Window, v.UpdatedAt, now)
 }
-func (v RegisteredProxyAttestationV1) ValidateTransitionFrom(old RegisteredProxyAttestationV1) error {
+func (v RegisteredProxyAttestationV2) ValidateTransitionFrom(old RegisteredProxyAttestationV2) error {
 	if old.Validate() != nil || v.Validate() != nil || validateRegisteredTransition(old.State, v.State, old.RevocationGeneration, v.RevocationGeneration, old.UpdatedAt, v.UpdatedAt) != nil {
 		return registeredPreparationError("proxy.transition", "requires monotonic retirement or revocation")
 	}
 	expected := old.Clone()
 	expected.State, expected.RevocationGeneration, expected.UpdatedAt = v.State, v.RevocationGeneration, v.UpdatedAt
-	left, _ := EncodeRegisteredProxyAttestationV1(expected)
-	right, _ := EncodeRegisteredProxyAttestationV1(v)
+	left, _ := EncodeRegisteredProxyAttestationV2(expected)
+	right, _ := EncodeRegisteredProxyAttestationV2(v)
 	if !bytes.Equal(left, right) {
 		return registeredPreparationError("proxy.transition", "cannot replace the observed endpoint body or widen authority")
 	}
 	return nil
 }
-func (v RegisteredProxyAttestationV1) Digest() (RegisteredProxyAttestationDigestV1, error) {
+func (v RegisteredProxyAttestationV2) Digest() (RegisteredProxyAttestationDigestV2, error) {
 	if err := v.Validate(); err != nil {
 		return "", err
 	}
-	d, err := ownedCurrentDigest("sessionless.registered-proxy-attestation.v1", v.Clone())
-	return RegisteredProxyAttestationDigestV1(d), err
+	d, err := ownedCurrentDigest("sessionless.registered-proxy-attestation.v2", v.Clone())
+	return RegisteredProxyAttestationDigestV2(d), err
 }
-func (v RegisteredProxyAttestationDigestV1) Validate() error {
+func (v RegisteredProxyAttestationDigestV2) Validate() error {
 	return validateSHA256("registered_proxy_attestation_digest", string(v))
 }
-func EncodeRegisteredProxyAttestationV1(v RegisteredProxyAttestationV1) ([]byte, error) {
+func EncodeRegisteredProxyAttestationV2(v RegisteredProxyAttestationV2) ([]byte, error) {
 	if err := v.Validate(); err != nil {
 		return nil, err
 	}
 	return encodeOwnedCurrent(v.Clone())
 }
-func DecodeRegisteredProxyAttestationV1(raw []byte) (RegisteredProxyAttestationV1, error) {
-	var v RegisteredProxyAttestationV1
+func DecodeRegisteredProxyAttestationV2(raw []byte) (RegisteredProxyAttestationV2, error) {
+	var v RegisteredProxyAttestationV2
 	if err := decodeOwnedCurrent(raw, &v); err != nil {
-		return RegisteredProxyAttestationV1{}, err
+		return RegisteredProxyAttestationV2{}, err
 	}
-	expected, err := EncodeRegisteredProxyAttestationV1(v)
+	expected, err := EncodeRegisteredProxyAttestationV2(v)
 	if err != nil || !bytes.Equal(raw, expected) {
-		return RegisteredProxyAttestationV1{}, registeredPreparationError("proxy.codec", "requires exact bounded canonical producer bytes")
+		return RegisteredProxyAttestationV2{}, registeredPreparationError("proxy.codec", "requires exact bounded canonical producer bytes")
 	}
 	return v.Clone(), nil
 }

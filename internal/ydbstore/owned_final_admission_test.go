@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
@@ -113,9 +114,23 @@ func (f *ownedFinalScript) ExecContext(ctx context.Context, statement string, ar
 	return f.managedAdmissionGraphFixture.ExecContext(ctx, statement, args)
 }
 
-func newOwnedFinalScript(t *testing.T) (*Store, *ownedFinalScript, ports.DispatchAdmissionRequest, domain.AttemptExecutionSourceV1) {
+// Optional setup precedes every profile/source/admission seal. Existing
+// scripted tests retain their original clock and profile without this option.
+type ownedFinalPrebuild struct {
+	at      time.Time
+	profile func(*domain.OwnedAgentProfileCurrentV1)
+}
+
+func newOwnedFinalScript(t *testing.T, prebuild ...ownedFinalPrebuild) (*Store, *ownedFinalScript, ports.DispatchAdmissionRequest, domain.AttemptExecutionSourceV1) {
 	t.Helper()
+	if len(prebuild) > 1 {
+		t.Fatal("owned final fixture accepts at most one prebuild option")
+	}
 	store, graph, request := managedGraphFixture(t)
+	if len(prebuild) == 1 && !prebuild[0].at.IsZero() {
+		graph.at = prebuild[0].at.UTC().Truncate(time.Microsecond)
+		request.Now, request.HoldUntil = graph.at, graph.at.Add(time.Hour)
+	}
 	r := newOwnedReaderFixtureAt(t, graph.at.UTC(), "-owned-final-script")
 	var run domain.Run
 	if err := json.Unmarshal([]byte(graph.rows["runs"][0].(string)), &run); err != nil {
@@ -141,6 +156,9 @@ func newOwnedFinalScript(t *testing.T) (*Store, *ownedFinalScript, ports.Dispatc
 		t.Fatal(err)
 	}
 	r.profile.Substrate.AdmissionCostCeilingDigest = sealedCostDigest
+	if len(prebuild) == 1 && prebuild[0].profile != nil {
+		prebuild[0].profile(&r.profile)
+	}
 	digest, err := r.profile.Digest()
 	if err != nil {
 		t.Fatal(err)

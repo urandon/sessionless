@@ -249,9 +249,9 @@ func (tx ownedAttemptEffectParentTx) Rollback() error {
 	return tx.inner.Rollback()
 }
 
-func newOwnedAttemptEffectParentFixture(t *testing.T) *ownedAttemptEffectParentFixture {
+func newOwnedAttemptEffectParentFixture(t *testing.T, prebuild ...ownedFinalPrebuild) *ownedAttemptEffectParentFixture {
 	t.Helper()
-	store, base, _, source := newOwnedFinalScript(t)
+	store, base, _, source := newOwnedFinalScript(t, prebuild...)
 	graph := base.managedAdmissionGraphFixture
 	at := graph.at.UTC()
 	state := currentWorkerAuthorityFixture(t)

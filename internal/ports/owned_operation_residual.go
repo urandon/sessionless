@@ -13,8 +13,8 @@ type OwnedOperationResidualRowV1 struct {
 }
 type OwnedOperationResidualProxyV1 struct {
 	Sequence uint64                              `json:"sequence"`
-	Original domain.RegisteredProxyAttestationV1 `json:"original"`
-	Current  domain.RegisteredProxyAttestationV1 `json:"current"`
+	Original domain.RegisteredProxyAttestationV2 `json:"original"`
+	Current  domain.RegisteredProxyAttestationV2 `json:"current"`
 }
 type OwnedOperationResidualBodyV1 struct {
 	Ref    string `json:"ref"`
@@ -75,7 +75,7 @@ func (v OwnedOperationResidualInventoryV1) IntentBytes() ([]byte, error) {
 	for i, peer := range v.Proxies {
 		original, oe := peer.Original.Digest()
 		current, ce := peer.Current.Digest()
-		if peer.Sequence != uint64(i+1) || oe != nil || ce != nil || original != current || peer.Original.ValidateForAllocation(v.OriginalAllocation, v.Source) != nil {
+		if peer.Sequence != uint64(i+1) || peer.Original.OperationSequence != peer.Sequence || oe != nil || ce != nil || original != current || peer.Original.ValidateForAllocation(v.OriginalAllocation, v.Source) != nil {
 			return nil, domain.ErrMembershipDenied
 		}
 	}
@@ -96,7 +96,7 @@ func (v OwnedOperationResidualInventoryV1) IntentBytes() ([]byte, error) {
 		} else if r.Operation.Kind == domain.AttemptOperationWebSearchV1 {
 			service = domain.RegisteredProxyWebSearchV1
 		}
-		if r.RegisteredProxyDigest != proxyDigest || v.Proxies[i].Original.ServiceKind != service {
+		if r.RegisteredProxyDigest != proxyDigest || v.Proxies[i].Original.ServiceKind != service || v.Proxies[i].Original.OperationDigest != r.OperationDigest {
 			return nil, domain.ErrMembershipDenied
 		}
 		if i > 0 && r.Operation.ValidatePredecessor(v.Operations[i-1].Reservation, v.Operations[i-1].Observation) != nil {

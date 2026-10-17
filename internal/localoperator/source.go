@@ -71,6 +71,7 @@ type Source struct {
 	mu       sync.Mutex
 	self     *Source
 	ctx      context.Context
+	cancel   context.CancelFunc
 	key      *sourceKey
 	closed   bool
 	config   domain.ConfiguredInferenceProfileV1
@@ -223,7 +224,8 @@ func open(ctx context.Context, root, executable string, original *ports.OwnedPro
 	if c.ValidateForOwnedProfile(p) != nil || c.ValidateAt(now) != nil || p.ValidateInitial() != nil {
 		return nil, sourceDenial("profile correlation")
 	}
-	s := &Source{ctx: ctx, key: &sourceKey{bytes: key}, config: c, profile: p, manifest: append([]byte(nil), raw...), bodies: manifest.Evidence, parent: parent}
+	lifetime, cancel := context.WithDeadline(ctx, c.ExpiresAt)
+	s := &Source{ctx: lifetime, cancel: cancel, key: &sourceKey{bytes: key}, config: c, profile: p, manifest: append([]byte(nil), raw...), bodies: manifest.Evidence, parent: parent}
 	s.self = s
 	if original != nil && parent == nil {
 		digest, err := p.Digest()
@@ -359,6 +361,22 @@ func (s *Source) Configuration() (domain.ConfiguredInferenceProfileV1, error) {
 	return s.config.Clone(), nil
 }
 
+// ExecutionLifetime returns this original keeper's retained cancellation signal,
+// bounded by its original installed window and caller-parent lifetime. It is
+// read-only lifetime data, not current authority, a grant or send permission.
+// Close revokes this owned child without cancelling its caller or a shared server.
+func (s *Source) ExecutionLifetime() (context.Context, error) {
+	if s == nil {
+		return nil, ErrDenied
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.aliveLocked() {
+		return nil, ErrDenied
+	}
+	return s.ctx, nil
+}
+
 func (s *Source) Close() error {
 	if s == nil {
 		return nil
@@ -367,6 +385,9 @@ func (s *Source) Close() error {
 	defer s.mu.Unlock()
 	if s.self != s {
 		return ErrDenied
+	}
+	if s.cancel != nil {
+		s.cancel()
 	}
 	if s.key != nil {
 		clear(s.key.bytes[:])

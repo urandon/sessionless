@@ -30,6 +30,8 @@ type localExecutionAllocationV1 struct {
 	lifetime       context.Context
 	activeDeadline time.Time
 	cancel         context.CancelFunc
+	operation      *LocalModelOperationLeaseV1
+	lastSequence   uint64
 }
 
 // NewBoundedOwnedLocalAllocationPreparationV1 fixes the concrete authenticated

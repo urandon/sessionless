@@ -78,7 +78,7 @@ func (event ProviderCredentialAuditEventV1) Validate() error {
 			return err
 		}
 	}
-	if event.ResourceKind != ProviderResourceAPIAccountV1 && event.ResourceKind != ProviderResourceRouterAccountV1 {
+	if event.ResourceKind != ProviderResourceAPIAccountV1 && event.ResourceKind != ProviderResourceRouterAccountV1 && event.ResourceKind != ProviderResourceLocalEndpointV1 {
 		return ValidationError{Field: "provider_credential_audit.resource_kind", Reason: "is unsupported"}
 	}
 	if err := ValidateOpaqueID("provider_credential_audit.resource_id", event.ResourceID); err != nil {
@@ -125,8 +125,8 @@ func (binding ProviderCredentialBindingV1) Validate() error {
 			return err
 		}
 	}
-	if binding.ResourceKind != ProviderResourceAPIAccountV1 && binding.ResourceKind != ProviderResourceRouterAccountV1 {
-		return ValidationError{Field: "provider_credential.resource_kind", Reason: "must be api_account or router_account"}
+	if binding.ResourceKind != ProviderResourceAPIAccountV1 && binding.ResourceKind != ProviderResourceRouterAccountV1 && binding.ResourceKind != ProviderResourceLocalEndpointV1 {
+		return ValidationError{Field: "provider_credential.resource_kind", Reason: "must be an API, router or local endpoint credential resource"}
 	}
 	if err := ValidateOpaqueID("provider_credential.resource_id", binding.ResourceID); err != nil {
 		return err

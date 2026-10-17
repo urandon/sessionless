@@ -166,6 +166,9 @@ func (value PreparedAllocationV1) ValidateForBinding(binding SubstrateBindingV1,
 	if err := binding.Validate(); err != nil {
 		return err
 	}
+	if binding.Kind == SubstrateLocalDevelopmentV1 {
+		return ValidationError{Field: "prepared_allocation", Reason: "local executable observation requires its explicit successor; image-backed V1 cannot attest it"}
+	}
 	if err := backend.Validate(); err != nil {
 		return err
 	}

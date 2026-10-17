@@ -29,11 +29,12 @@ const (
 
 	HarnessKindSessionlessV1 HarnessKindV1 = "sessionless_harness"
 
-	HarnessBackendDeterministicFixtureV1 HarnessBackendKindV1 = "deterministic_fixture"
-	HarnessBackendCodexExecV1            HarnessBackendKindV1 = "codex_exec"
-	HarnessBackendCodexOpenRouterV1      HarnessBackendKindV1 = "codex_exec_openrouter"
-	HarnessBackendOpenCodeV1             HarnessBackendKindV1 = "opencode"
-	HarnessBackendDirectOpenRouterV1     HarnessBackendKindV1 = "direct_openrouter"
+	HarnessBackendDeterministicFixtureV1   HarnessBackendKindV1 = "deterministic_fixture"
+	HarnessBackendCodexExecV1              HarnessBackendKindV1 = "codex_exec"
+	HarnessBackendCodexOpenRouterV1        HarnessBackendKindV1 = "codex_exec_openrouter"
+	HarnessBackendOpenCodeV1               HarnessBackendKindV1 = "opencode"
+	HarnessBackendDirectOpenRouterV1       HarnessBackendKindV1 = "direct_openrouter"
+	HarnessBackendDirectOpenAICompatibleV1 HarnessBackendKindV1 = "direct_openai_compatible"
 
 	HarnessArtifactEmbeddedProfileV1 HarnessArtifactKindV1 = "embedded_profile"
 	HarnessArtifactExecutableV1      HarnessArtifactKindV1 = "executable"
@@ -41,11 +42,13 @@ const (
 
 	ProviderContractCredentiallessFixtureV1 ProviderContractKindV1 = "credentialless_fixture"
 	ProviderContractInvocationV1            ProviderContractKindV1 = "invocation"
+	ProviderContractConfiguredEndpointV1    ProviderContractKindV1 = "configured_endpoint"
 
 	ProviderResourceCredentiallessFixtureV1 ProviderResourceKindV1 = "credentialless_fixture"
 	ProviderResourceSubscriptionV1          ProviderResourceKindV1 = "subscription"
 	ProviderResourceAPIAccountV1            ProviderResourceKindV1 = "api_account"
 	ProviderResourceRouterAccountV1         ProviderResourceKindV1 = "router_account"
+	ProviderResourceLocalEndpointV1         ProviderResourceKindV1 = "local_endpoint"
 
 	ProviderCredentialNoneV1       ProviderCredentialModeV1 = "none"
 	ProviderCredentialInvocationV1 ProviderCredentialModeV1 = "invocation"
@@ -76,7 +79,7 @@ func (descriptor HarnessBackendDescriptorV1) Validate() error {
 		return ValidationError{Field: "harness_binding.backend.harness_kind", Reason: "is unsupported"}
 	}
 	switch descriptor.BackendKind {
-	case HarnessBackendDeterministicFixtureV1, HarnessBackendCodexExecV1, HarnessBackendCodexOpenRouterV1, HarnessBackendOpenCodeV1, HarnessBackendDirectOpenRouterV1:
+	case HarnessBackendDeterministicFixtureV1, HarnessBackendCodexExecV1, HarnessBackendCodexOpenRouterV1, HarnessBackendOpenCodeV1, HarnessBackendDirectOpenRouterV1, HarnessBackendDirectOpenAICompatibleV1:
 	default:
 		return ValidationError{Field: "harness_binding.backend.backend_kind", Reason: "is unsupported"}
 	}
@@ -111,13 +114,19 @@ func (descriptor HarnessBackendDescriptorV1) Validate() error {
 			return ValidationError{Field: "harness_binding.backend.credential_delivery_kind", Reason: "must be none for the credentialless fixture"}
 		}
 	case ProviderContractInvocationV1:
-		if descriptor.BackendKind == HarnessBackendDeterministicFixtureV1 {
-			return ValidationError{Field: "harness_binding.backend", Reason: "deterministic fixture cannot claim the invocation contract"}
+		if descriptor.BackendKind == HarnessBackendDeterministicFixtureV1 || descriptor.BackendKind == HarnessBackendDirectOpenAICompatibleV1 {
+			return ValidationError{Field: "harness_binding.backend", Reason: "backend requires its explicit provider contract"}
 		}
 		switch descriptor.CredentialDeliveryKind {
 		case ProviderCredentialDeliveryFileV1, ProviderCredentialDeliveryEnvironmentV1, ProviderCredentialDeliveryDirectV1:
 		default:
 			return ValidationError{Field: "harness_binding.backend.credential_delivery_kind", Reason: "is unsupported for provider invocation"}
+		}
+	case ProviderContractConfiguredEndpointV1:
+		if descriptor.BackendKind != HarnessBackendDirectOpenAICompatibleV1 || descriptor.ArtifactKind != HarnessArtifactEmbeddedProfileV1 ||
+			descriptor.NativeProtocolVersion != ConfiguredInferenceProtocolChatCompletionsV1 ||
+			(descriptor.CredentialDeliveryKind != ProviderCredentialDeliveryNoneV1 && descriptor.CredentialDeliveryKind != ProviderCredentialDeliveryDirectV1) {
+			return ValidationError{Field: "harness_binding.backend", Reason: "configured endpoint requires the exact embedded Chat Completions backend and none or direct delivery"}
 		}
 	default:
 		return ValidationError{Field: "harness_binding.backend.provider_contract_kind", Reason: "is unsupported"}
@@ -149,11 +158,11 @@ func (resource ProviderResourceBindingV1) Validate() error {
 	}
 	switch resource.CredentialMode {
 	case ProviderCredentialNoneV1:
-		if resource.Kind != ProviderResourceCredentiallessFixtureV1 || resource.CredentialGeneration != 0 {
-			return ValidationError{Field: "harness_binding.resource", Reason: "credentialless mode is restricted to the fixture resource with generation zero"}
+		if (resource.Kind != ProviderResourceCredentiallessFixtureV1 && resource.Kind != ProviderResourceLocalEndpointV1) || resource.CredentialGeneration != 0 {
+			return ValidationError{Field: "harness_binding.resource", Reason: "none requires an explicit fixture or local endpoint with generation zero"}
 		}
 	case ProviderCredentialInvocationV1:
-		if resource.Kind != ProviderResourceSubscriptionV1 && resource.Kind != ProviderResourceAPIAccountV1 && resource.Kind != ProviderResourceRouterAccountV1 {
+		if resource.Kind != ProviderResourceSubscriptionV1 && resource.Kind != ProviderResourceAPIAccountV1 && resource.Kind != ProviderResourceRouterAccountV1 && resource.Kind != ProviderResourceLocalEndpointV1 {
 			return ValidationError{Field: "harness_binding.resource.kind", Reason: "does not support invocation credentials"}
 		}
 		if resource.CredentialGeneration == 0 {
@@ -177,6 +186,17 @@ func (resource ProviderResourceBindingV1) ValidateForBackend(backend HarnessBack
 			return ValidationError{Field: "harness_binding", Reason: "credentialless fixture backend requires the credentialless fixture resource"}
 		}
 		return nil
+	}
+	if backend.ProviderContractKind == ProviderContractConfiguredEndpointV1 {
+		if resource.Kind != ProviderResourceLocalEndpointV1 ||
+			(resource.CredentialMode == ProviderCredentialNoneV1 && backend.CredentialDeliveryKind != ProviderCredentialDeliveryNoneV1) ||
+			(resource.CredentialMode == ProviderCredentialInvocationV1 && backend.CredentialDeliveryKind != ProviderCredentialDeliveryDirectV1) {
+			return ValidationError{Field: "harness_binding", Reason: "configured endpoint requires the exact local resource and matching none or direct credential delivery"}
+		}
+		return nil
+	}
+	if resource.Kind == ProviderResourceLocalEndpointV1 {
+		return ValidationError{Field: "harness_binding", Reason: "local endpoint requires its configured endpoint backend"}
 	}
 	if resource.CredentialMode != ProviderCredentialInvocationV1 {
 		return ValidationError{Field: "harness_binding", Reason: "provider backend requires invocation credentials"}
@@ -277,8 +297,6 @@ func (binding HarnessBindingV2) Validate() error {
 		if binding.EvidenceExpiresAt != nil {
 			return ValidationError{Field: "harness_binding.evidence_expires_at", Reason: "must be absent for the closed credentialless fixture"}
 		}
-	} else if binding.Resource.CredentialMode != ProviderCredentialInvocationV1 {
-		return ValidationError{Field: "harness_binding", Reason: "provider backend requires invocation credentials"}
 	} else if binding.EvidenceExpiresAt == nil {
 		return ValidationError{Field: "harness_binding.evidence_expires_at", Reason: "is required for provider invocation evidence"}
 	}
@@ -348,8 +366,10 @@ func (binding HarnessBindingV2) validateAgentLoopPolicy() error {
 	direct := binding.Backend.BackendKind == HarnessBackendDirectOpenRouterV1 && binding.Backend.ProviderContractKind == ProviderContractInvocationV1 &&
 		binding.Backend.CredentialDeliveryKind == ProviderCredentialDeliveryDirectV1 && binding.Resource.CredentialMode == ProviderCredentialInvocationV1 &&
 		(binding.Resource.Kind == ProviderResourceAPIAccountV1 || binding.Resource.Kind == ProviderResourceRouterAccountV1)
-	if (!fixture && !direct) || binding.InputDataClass != ProviderDataPublicV1 {
-		return ValidationError{Field: "harness_binding.profile", Reason: "owned_agent requires the closed fixture or reviewed direct public-data axes"}
+	configured := binding.Backend.BackendKind == HarnessBackendDirectOpenAICompatibleV1 && binding.Backend.ProviderContractKind == ProviderContractConfiguredEndpointV1 &&
+		binding.Resource.Kind == ProviderResourceLocalEndpointV1 && binding.Resource.ValidateForBackend(binding.Backend) == nil
+	if (!fixture && !direct && !configured) || binding.InputDataClass != ProviderDataPublicV1 {
+		return ValidationError{Field: "harness_binding.profile", Reason: "owned_agent requires the closed fixture or explicit direct public-data axes"}
 	}
 	if policy.TenantID != binding.TenantID || policy.OwnerUserID != binding.OwnerUserID || policy.RunID != binding.RunID || policy.AttemptID != binding.AttemptID ||
 		policy.Backend != binding.Backend || policy.Resource != binding.Resource || policy.ModelVendorID != binding.ModelVendorID || policy.ModelID != binding.ModelID ||

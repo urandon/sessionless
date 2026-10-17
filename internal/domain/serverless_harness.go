@@ -35,6 +35,7 @@ const (
 	SubstrateAzureDynamicSessionV1       SubstrateKindV1 = "azure_dynamic_session"
 	SubstrateManagedSandboxV1            SubstrateKindV1 = "managed_sandbox"
 	SubstrateDeterministicFixtureV1      SubstrateKindV1 = "deterministic_fixture"
+	SubstrateLocalDevelopmentV1          SubstrateKindV1 = "local_development"
 
 	SubstrateWorkloadChildProcessV1    SubstrateWorkloadModeV1 = "child_process"
 	SubstrateWorkloadInProcessDirectV1 SubstrateWorkloadModeV1 = "in_process_direct"
@@ -86,23 +87,29 @@ func (limits SubstrateLimitsV1) Validate() error {
 // SubstrateBindingV1 is one immutable, server-owned runtime profile. It does
 // not select a provider and has no fallback semantics.
 type SubstrateBindingV1 struct {
-	Version                    uint32                       `json:"version"`
-	Kind                       SubstrateKindV1              `json:"kind"`
-	ProfileID                  string                       `json:"profile_id"`
-	ProfileRevision            uint64                       `json:"profile_revision"`
-	ProfileDigest              string                       `json:"profile_digest"`
-	ProfileEvidenceExpiresAt   time.Time                    `json:"profile_evidence_expires_at"`
-	Region                     string                       `json:"region"`
-	ImageDigest                string                       `json:"image_digest"`
-	OuterHarnessArtifactDigest string                       `json:"outer_harness_artifact_digest"`
-	WorkloadMode               SubstrateWorkloadModeV1      `json:"workload_mode"`
-	IsolationProfileDigest     string                       `json:"isolation_profile_digest"`
-	EgressPolicyDigest         string                       `json:"egress_policy_digest"`
-	CleanupPolicyDigest        string                       `json:"cleanup_policy_digest"`
-	EgressProxyArtifactDigest  string                       `json:"egress_proxy_artifact_digest"`
-	EgressProxyIdentityDigest  string                       `json:"egress_proxy_identity_digest"`
-	AdmissionCostCeilingDigest AdmissionCostCeilingDigestV2 `json:"admission_cost_ceiling_digest"`
-	Limits                     SubstrateLimitsV1            `json:"limits"`
+	Version                  uint32          `json:"version"`
+	Kind                     SubstrateKindV1 `json:"kind"`
+	ProfileID                string          `json:"profile_id"`
+	ProfileRevision          uint64          `json:"profile_revision"`
+	ProfileDigest            string          `json:"profile_digest"`
+	ProfileEvidenceExpiresAt time.Time       `json:"profile_evidence_expires_at"`
+	Region                   string          `json:"region"`
+	ImageDigest              string          `json:"image_digest"`
+	// Local identity is explicit and finite; it is not a cloud region, image or
+	// cgroup claim. Zero fields remain omitted for every existing image profile.
+	LocalInstallationID                 string                       `json:"local_installation_id,omitempty"`
+	LocalInstallationRevision           uint64                       `json:"local_installation_revision,omitempty"`
+	LocalHostIdentityDigest             string                       `json:"local_host_identity_digest,omitempty"`
+	LocalNetworkNamespaceIdentityDigest string                       `json:"local_network_namespace_identity_digest,omitempty"`
+	OuterHarnessArtifactDigest          string                       `json:"outer_harness_artifact_digest"`
+	WorkloadMode                        SubstrateWorkloadModeV1      `json:"workload_mode"`
+	IsolationProfileDigest              string                       `json:"isolation_profile_digest"`
+	EgressPolicyDigest                  string                       `json:"egress_policy_digest"`
+	CleanupPolicyDigest                 string                       `json:"cleanup_policy_digest"`
+	EgressProxyArtifactDigest           string                       `json:"egress_proxy_artifact_digest"`
+	EgressProxyIdentityDigest           string                       `json:"egress_proxy_identity_digest"`
+	AdmissionCostCeilingDigest          AdmissionCostCeilingDigestV2 `json:"admission_cost_ceiling_digest"`
+	Limits                              SubstrateLimitsV1            `json:"limits"`
 }
 
 func (value SubstrateBindingV1) Validate() error {
@@ -110,7 +117,7 @@ func (value SubstrateBindingV1) Validate() error {
 		return ValidationError{Field: "substrate_binding.version", Reason: "must equal 1"}
 	}
 	switch value.Kind {
-	case SubstrateYandexServerlessContainerV1, SubstrateCloudRunJobV1, SubstrateAzureDynamicSessionV1, SubstrateManagedSandboxV1, SubstrateDeterministicFixtureV1:
+	case SubstrateYandexServerlessContainerV1, SubstrateCloudRunJobV1, SubstrateAzureDynamicSessionV1, SubstrateManagedSandboxV1, SubstrateDeterministicFixtureV1, SubstrateLocalDevelopmentV1:
 	default:
 		return ValidationError{Field: "substrate_binding.kind", Reason: "is unsupported"}
 	}
@@ -123,11 +130,34 @@ func (value SubstrateBindingV1) Validate() error {
 	if value.ProfileEvidenceExpiresAt.IsZero() {
 		return ValidationError{Field: "substrate_binding.profile_evidence_expires_at", Reason: "must not be zero"}
 	}
-	if err := validateProviderToken("substrate_binding.region", value.Region, 128); err != nil {
-		return err
+	if value.Kind == SubstrateLocalDevelopmentV1 {
+		if value.Region != "" || value.ImageDigest != "" || value.WorkloadMode != SubstrateWorkloadInProcessDirectV1 || value.LocalInstallationRevision == 0 {
+			return ValidationError{Field: "substrate_binding.local_development", Reason: "requires the local executable in-process, positive installation revision and no cloud region or image"}
+		}
+		if err := ValidateOpaqueID("substrate_binding.local_installation_id", value.LocalInstallationID); err != nil {
+			return err
+		}
+		for field, digest := range map[string]string{
+			"local_host_identity_digest":              value.LocalHostIdentityDigest,
+			"local_network_namespace_identity_digest": value.LocalNetworkNamespaceIdentityDigest,
+		} {
+			if err := validateSHA256("substrate_binding."+field, digest); err != nil {
+				return err
+			}
+		}
+	} else {
+		if value.LocalInstallationID != "" || value.LocalInstallationRevision != 0 || value.LocalHostIdentityDigest != "" || value.LocalNetworkNamespaceIdentityDigest != "" {
+			return ValidationError{Field: "substrate_binding.local_development", Reason: "must be absent for image-backed profiles"}
+		}
+		if err := validateProviderToken("substrate_binding.region", value.Region, 128); err != nil {
+			return err
+		}
+		if err := validateSHA256("substrate_binding.image_digest", value.ImageDigest); err != nil {
+			return err
+		}
 	}
 	for field, digest := range map[string]string{
-		"profile_digest": value.ProfileDigest, "image_digest": value.ImageDigest,
+		"profile_digest":                value.ProfileDigest,
 		"outer_harness_artifact_digest": value.OuterHarnessArtifactDigest,
 		"isolation_profile_digest":      value.IsolationProfileDigest, "egress_policy_digest": value.EgressPolicyDigest,
 		"cleanup_policy_digest": value.CleanupPolicyDigest, "egress_proxy_artifact_digest": value.EgressProxyArtifactDigest,
@@ -174,6 +204,14 @@ func (value SubstrateBindingV1) Digest() (SubstrateBindingDigestV1, error) {
 	digest.duration(value.Limits.CleanupTimeout)
 	for _, quantity := range []uint64{value.Limits.CPUMillis, value.Limits.MemoryBytes, value.Limits.ScratchBytes, value.Limits.StdoutBytes, value.Limits.StderrBytes, value.Limits.NativeEventCount, value.Limits.ArtifactBytes} {
 		digest.uint(quantity)
+	}
+	// Preserve every existing profile's transcript. Only the new closed kind
+	// adds installation/host/namespace facts to its digest.
+	if value.Kind == SubstrateLocalDevelopmentV1 {
+		digest.str(value.LocalInstallationID)
+		digest.uint(value.LocalInstallationRevision)
+		digest.str(value.LocalHostIdentityDigest)
+		digest.str(value.LocalNetworkNamespaceIdentityDigest)
 	}
 	return SubstrateBindingDigestV1(digest.sum()), nil
 }

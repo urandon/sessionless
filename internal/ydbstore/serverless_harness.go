@@ -160,7 +160,7 @@ func currentServerlessInvocationAuthorityTx(ctx context.Context, tx *stateTx, re
 		}
 		return domain.ServerlessInvocationAuthorityV1{}, false, err
 	}
-	if err := currentServerlessProviderResourceTx(ctx, tx.sqlTx, loaded.Job.HarnessBinding, at); err != nil {
+	if err := currentServerlessProviderResourceTx(ctx, tx.sqlTx, loaded.Job.HarnessBinding, nil, at); err != nil {
 		if errors.Is(err, domain.ErrMembershipDenied) {
 			return domain.ServerlessInvocationAuthorityV1{}, false, nil
 		}

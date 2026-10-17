@@ -27,7 +27,7 @@ type registeredFixture struct {
 	preparedExpiresAt time.Time
 	source            domain.AttemptExecutionSourceV1
 	allocation        domain.RegisteredAllocationV1
-	proxy             domain.RegisteredProxyAttestationV1
+	proxy             domain.RegisteredProxyAttestationV2
 	at                time.Time
 }
 
@@ -83,8 +83,8 @@ func registeredAllocationFixture(t testing.TB, child bool) registeredFixture {
 	}
 	policyBody := domain.OwnedAgentAuthorityBodyRefV1{Ref: "fixed-proxy-policy", Digest: strings.Repeat("4", 64), Bytes: 123}
 	attestationBody := domain.OwnedAgentAuthorityBodyRefV1{Ref: "actual-scripted-proxy-observation", Digest: strings.Repeat("5", 64), Bytes: 456}
-	proxy, err := domain.BuildRegisteredProxyAttestationV1(allocation, pkg.Source, domain.RegisteredProxyMCPToolV1,
-		strings.Repeat("6", 64), strings.Repeat("7", 64), strings.Repeat("8", 64), policyBody, attestationBody, window)
+	proxy, err := domain.BuildRegisteredPinnedHTTPSProxyAttestationV2(allocation, pkg.Source, domain.RegisteredProxyMCPToolV1,
+		strings.Repeat("6", 64), strings.Repeat("7", 64), strings.Repeat("8", 64), policyBody, attestationBody, window, 1, domain.AttemptOperationDigestV1(strings.Repeat("9", 64)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestRegisteredPreparationRejectsOriginalAuthoritySubstitution(t *testing.T)
 			case "grant":
 				v.GrantDigest = strings.Repeat("f", 64)
 			case "proxy_identity":
-				v.ProxyIdentityDigest = strings.Repeat("f", 64)
+				v.PinnedHTTPS.ProxyIdentityDigest = strings.Repeat("f", 64)
 			case "service":
 				v.ServiceKind = "unknown"
 			case "expired_allocation":
@@ -312,9 +312,9 @@ func TestRegisteredPreparationStrictCanonicalCodecAndGoldens(t *testing.T) {
 			}
 			return e == nil && reflect.DeepEqual(v, f.allocation)
 		}},
-		{"proxy", "sessionless.registered-proxy-attestation.v1", "57f93d9a5839202e4c6dcb2e2901c966763daff0e5a3200261d35f3ff5363e95", "a9289e9cba1ae59c539b9ca97112081136ae46bce6dcbc4be39e6e74c3eb70f9", 1518, func() ([]byte, error) { return domain.EncodeRegisteredProxyAttestationV1(f.proxy) }, func() (string, error) { d, e := f.proxy.Digest(); return string(d), e }, func(b []byte) bool {
-			v, e := domain.DecodeRegisteredProxyAttestationV1(b)
-			if e != nil && !reflect.DeepEqual(v, domain.RegisteredProxyAttestationV1{}) {
+		{"proxy", "sessionless.registered-proxy-attestation.v2", "12bd91d4a7b3111440c83eabdc031f5cb2cb89b3d51cf492f95bd6053416be62", "73dea7983b21f83d504b0a9598dbc8e6434a0d109539c1a50c32d5884573eced", 1679, func() ([]byte, error) { return domain.EncodeRegisteredProxyAttestationV2(f.proxy) }, func() (string, error) { d, e := f.proxy.Digest(); return string(d), e }, func(b []byte) bool {
+			v, e := domain.DecodeRegisteredProxyAttestationV2(b)
+			if e != nil && !reflect.DeepEqual(v, domain.RegisteredProxyAttestationV2{}) {
 				t.Error("decoder returned partial proxy on error")
 			}
 			return e == nil && reflect.DeepEqual(v, f.proxy)
@@ -332,7 +332,7 @@ func TestRegisteredPreparationStrictCanonicalCodecAndGoldens(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			// Independent fixed V1 frame: domain+NUL, uint64BE body length,
+			// Independent versioned frame: domain+NUL, uint64BE body length,
 			// body, then SHA256. No production digest helper is called.
 			h := sha256.New()
 			h.Write([]byte(spec.kind))
@@ -346,13 +346,17 @@ func TestRegisteredPreparationStrictCanonicalCodecAndGoldens(t *testing.T) {
 				t.Fatalf("independent digest got=%s want=%s", got, want)
 			}
 			if got != spec.want {
-				t.Errorf("literal V1 digest got=%s want=%s codec_sha256=%x bytes=%d", got, spec.want, sha256.Sum256(raw), len(raw))
+				t.Errorf("literal versioned digest got=%s want=%s codec_sha256=%x bytes=%d", got, spec.want, sha256.Sum256(raw), len(raw))
 			}
 			codecHash := sha256.Sum256(raw)
 			if hex.EncodeToString(codecHash[:]) != spec.codecSHA || len(raw) != spec.codecBytes {
 				t.Errorf("literal codec bytes/hash changed: bytes=%d sha256=%x", len(raw), codecHash)
 			}
-			for _, mutant := range [][]byte{[]byte("null"), []byte("{}"), append([]byte(" "), raw...), append(append([]byte(nil), raw...), raw...), bytes.Replace(raw, []byte(`"version":1`), []byte(`"version":1,"version":1`), 1), bytes.Replace(raw, []byte(`"version":1`), []byte(`"Version":1`), 1), bytes.Replace(raw, []byte(`"version":1`), []byte(`"version":1.0`), 1), bytes.Replace(raw, []byte(`"version":1`), []byte(`"version":1,"unknown":0`), 1), bytes.Repeat([]byte("x"), (32<<10)+1), bytes.Replace(raw, []byte(`"scope":`), []byte(`"scope_alias":`), 1)} {
+			version := []byte(`"version":1`)
+			if spec.name == "proxy" {
+				version = []byte(`"version":2`)
+			}
+			for _, mutant := range [][]byte{[]byte("null"), []byte("{}"), append([]byte(" "), raw...), append(append([]byte(nil), raw...), raw...), bytes.Replace(raw, version, append(append(bytes.Clone(version), ','), version...), 1), bytes.Replace(raw, version, []byte(`"Version":1`), 1), bytes.Replace(raw, version, []byte(`"version":1.0`), 1), bytes.Replace(raw, version, append(bytes.Clone(version), []byte(`,"unknown":0`)...), 1), bytes.Repeat([]byte("x"), (32<<10)+1), bytes.Replace(raw, []byte(`"scope":`), []byte(`"scope_alias":`), 1)} {
 				if spec.decode(mutant) {
 					t.Fatal("malformed/noncanonical record accepted")
 				}
@@ -371,7 +375,7 @@ func TestRegisteredPreparationEveryFieldSealed(t *testing.T) {
 	}{
 		{"allocation", func() any { v := f.allocation.Clone(); return &v }, func(v any) (string, error) { d, e := v.(*domain.RegisteredAllocationV1).Digest(); return string(d), e }},
 		{"proxy", func() any { v := f.proxy.Clone(); return &v }, func(v any) (string, error) {
-			d, e := v.(*domain.RegisteredProxyAttestationV1).Digest()
+			d, e := v.(*domain.RegisteredProxyAttestationV2).Digest()
 			return string(d), e
 		}},
 	} {
@@ -423,7 +427,11 @@ func TestRegisteredPreparationEveryFieldSealed(t *testing.T) {
 					case reflect.Int64:
 						leaf.SetInt(leaf.Int() + 1)
 					case reflect.Pointer:
-						leaf.SetZero()
+						if leaf.IsNil() {
+							leaf.Set(reflect.New(leaf.Type().Elem()))
+						} else {
+							leaf.SetZero()
+						}
 					default:
 						t.Fatalf("uncovered leaf kind=%s path=%v", leaf.Kind(), path)
 					}
@@ -478,16 +486,16 @@ func TestRegisteredPreparationExactIntegersZonesBodiesAndProviderPolicy(t *testi
 		}
 		body := f.proxy.PolicyBody
 		body.Bytes = 256 << 10
-		proxy, err := domain.BuildRegisteredProxyAttestationV1(f.allocation, f.source, kind, f.proxy.TransportDigest, policyDigest, f.proxy.ResolutionSetDigest, body, f.proxy.AttestationBody, f.proxy.Window)
+		proxy, err := domain.BuildRegisteredPinnedHTTPSProxyAttestationV2(f.allocation, f.source, kind, f.proxy.TransportDigest, policyDigest, f.proxy.PinnedHTTPS.ResolutionSetDigest, body, f.proxy.AttestationBody, f.proxy.Window, f.proxy.OperationSequence, f.proxy.OperationDigest)
 		if err != nil || proxy.ValidateForAllocation(f.allocation, f.source) != nil {
 			t.Fatalf("kind=%s exact grant/body bound denied: %v", kind, err)
 		}
 		body.Bytes++
-		if _, err := domain.BuildRegisteredProxyAttestationV1(f.allocation, f.source, kind, f.proxy.TransportDigest, policyDigest, f.proxy.ResolutionSetDigest, body, f.proxy.AttestationBody, f.proxy.Window); err == nil {
+		if _, err := domain.BuildRegisteredPinnedHTTPSProxyAttestationV2(f.allocation, f.source, kind, f.proxy.TransportDigest, policyDigest, f.proxy.PinnedHTTPS.ResolutionSetDigest, body, f.proxy.AttestationBody, f.proxy.Window, f.proxy.OperationSequence, f.proxy.OperationDigest); err == nil {
 			t.Fatal("oversized immutable policy body accepted")
 		}
 	}
-	if _, err := domain.BuildRegisteredProxyAttestationV1(f.allocation, f.source, domain.RegisteredProxyProviderV1, f.proxy.TransportDigest, strings.Repeat("f", 64), f.proxy.ResolutionSetDigest, f.proxy.PolicyBody, f.proxy.AttestationBody, f.proxy.Window); err == nil {
+	if _, err := domain.BuildRegisteredPinnedHTTPSProxyAttestationV2(f.allocation, f.source, domain.RegisteredProxyProviderV1, f.proxy.TransportDigest, strings.Repeat("f", 64), f.proxy.PinnedHTTPS.ResolutionSetDigest, f.proxy.PolicyBody, f.proxy.AttestationBody, f.proxy.Window, f.proxy.OperationSequence, f.proxy.OperationDigest); err == nil {
 		t.Fatal("provider proxy accepted policy different from sealed substrate")
 	}
 }
@@ -509,9 +517,9 @@ func TestRegisteredProxyObservationCannotPredateActualAllocation(t *testing.T) {
 		if window.ObservedAt.Before(f.parent.ReservedAt) || window.Validate() != nil || allocation.ValidateAt(window.PublishedAt) != nil {
 			t.Fatal("test must isolate allocation observation, not parent/publication/expiry")
 		}
-		proxy, err := domain.BuildRegisteredProxyAttestationV1(allocation, f.source, f.proxy.ServiceKind, f.proxy.TransportDigest, f.proxy.PolicyDigest, f.proxy.ResolutionSetDigest, f.proxy.PolicyBody, f.proxy.AttestationBody, window)
+		proxy, err := domain.BuildRegisteredPinnedHTTPSProxyAttestationV2(allocation, f.source, f.proxy.ServiceKind, f.proxy.TransportDigest, f.proxy.PolicyDigest, f.proxy.PinnedHTTPS.ResolutionSetDigest, f.proxy.PolicyBody, f.proxy.AttestationBody, window, f.proxy.OperationSequence, f.proxy.OperationDigest)
 		if delta < 0 {
-			if err == nil || !reflect.DeepEqual(proxy, domain.RegisteredProxyAttestationV1{}) {
+			if err == nil || !reflect.DeepEqual(proxy, domain.RegisteredProxyAttestationV2{}) {
 				t.Fatal("proxy observation predating actual allocation was attached to it")
 			}
 		} else if err != nil || proxy.ValidateForAllocation(allocation, f.source) != nil {
@@ -538,8 +546,8 @@ func TestRegisteredProxyHistoricalCorrelationRequiresOriginalAllocationSnapshot(
 	if proxy.ValidateForAllocation(retired, f.source) == nil || proxy.ValidateAt(proxy.UpdatedAt) == nil || retired.ValidateAt(retired.UpdatedAt) == nil {
 		t.Fatal("current retired/revoked facts were treated as original active or send permission")
 	}
-	raw, err := domain.EncodeRegisteredProxyAttestationV1(proxy)
-	decoded, decodeErr := domain.DecodeRegisteredProxyAttestationV1(raw)
+	raw, err := domain.EncodeRegisteredProxyAttestationV2(proxy)
+	decoded, decodeErr := domain.DecodeRegisteredProxyAttestationV2(raw)
 	if err != nil || decodeErr != nil || !reflect.DeepEqual(decoded, proxy) {
 		t.Fatal("expired/revoked historical observation became unreadable", err, decodeErr)
 	}

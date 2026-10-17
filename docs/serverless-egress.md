@@ -135,6 +135,63 @@ The restrictions follow the DNS/IP allowlisting and redirect-denial guidance in
 the [OWASP SSRF prevention cheat sheet](https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html)
 and Go's [TLS certificate and name verification contract](https://pkg.go.dev/crypto/tls#Config).
 
+## Owned observation format and cutover
+
+The owned multi-operation path uses `OwnedProxyPublicationV2` and the canonical
+`RegisteredProxyAttestationV2`, not an untagged HTTPS observation. The explicit
+transport kind is `pinned_https.v1` or `local_loopback_http.v1`; mixed or unknown
+variants deny. HTTPS retains its actual DNS, pinned address and TLS facts.
+Local-loopback data has no DNS/TLS fields and cannot authorize HTTPS, cloud,
+MCP or search. Its actual publication remains disabled until the honest local
+allocation successor and retained connector producer are installed.
+
+Construction is acyclic: freeze the complete canonical operation first, observe
+the actual original connection for that operation, register the observation,
+then reserve the operation with that exact registered digest. Operation fields
+and deadlines cannot be reconstructed from a later registration or changed
+after observation. Registration, reserve, before-send and custody/history all
+correlate the same original sequence, whole operation digest, source and
+allocation. The operation itself does not refer back to the observation.
+
+Each publication retry authenticates the complete original producer proof at
+the transaction's authoritative time, without network, filesystem or clock I/O.
+First publication additionally requires the producer's retained connection and
+live original lifetime. Historical signature authentication may survive socket
+close for exact replay/custody, but does not imply readiness or mint send
+permission. Replay never renews time, reconnects, reconstructs a socket or debits
+another operation. The connection owner closes abandoned/failed preflights;
+actual invocation still consumes the one-use connection/capability before bytes.
+
+V2 is a serving-format change, not a schema migration or live deployment:
+
+1. Under a separately admitted rollout, stop new owned-agent admissions and
+   quiesce every old observation writer. Keep the old exact execution/cleanup
+   owners available to finish already admitted work within its original bounds.
+2. Inventory the exact approved profile/tenant/Attempt scope, including first
+   observations, per-sequence observations, operation reservations, accepted
+   unknown outcomes and retained custody. Prove old live work and its cleanup
+   drained; a generic harness cutover marker is not this proof. Missing state
+   never permits blind resend or fabricated completion.
+3. Keep historical V1 rows unchanged. Resolve/reconcile remaining old work under
+   its original owner before enabling V2. An offline pinned old artifact may be
+   used only under the admitted read/reconciliation scope; it cannot be an old
+   live writer, a new-send fallback or an automatic V1-to-V2 converter. V2 serving
+   readers reject unsupported V1 state, including historical recovery/custody;
+   they do not silently discard it or authorize cleanup from a partial decode.
+4. With old writers stopped and the drain verified, install the V2-capable
+   producer/writer before enabling the migrated readers/consumers. Keep profiles
+   disabled until publication, current readback, reserve, before-send, history
+   and residual custody all use the same reviewed V2 artifact. Do not overlap
+   active V1 and V2 operation owners or reinterpret an old row by its table name.
+5. Only the owning rollout may enable a bounded new profile. Record the actual
+   writer/readers, scoped drain evidence and rollback/no-go decision there. If
+   older binaries cannot read V2, rollback must drain/quarantine V2 work rather
+   than re-enable blind V1 writers against it.
+
+The existing first-observation columns and `attempt_operation_proxies_v1`
+canonical String records are sufficient. No applied migration, extra table,
+endpoint registry, marker-as-authority or second operation ledger follows.
+
 ## Credential boundary
 
 The boundary reuses `ports.ProviderResourceCredentialLifecycleV1`; it does not

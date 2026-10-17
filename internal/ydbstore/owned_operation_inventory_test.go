@@ -28,16 +28,16 @@ func ownedResidualInventoryFixture(t *testing.T) ports.OwnedOperationResidualInv
 	retired := a.Clone()
 	retired.State, retired.RevocationGeneration, retired.UpdatedAt = domain.RegisteredPreparationRetiredV1, a.RevocationGeneration+1, a.UpdatedAt.Add(time.Microsecond)
 	hash := strings.Repeat("a", 64)
-	proxy, err := domain.BuildRegisteredProxyAttestationV1(a, f.parent.source, domain.RegisteredProxyProviderV1, hash, a.Substrate.EgressPolicyDigest, hash,
-		domain.OwnedAgentAuthorityBodyRefV1{Ref: "structural-policy", Digest: hash, Bytes: 1}, domain.OwnedAgentAuthorityBodyRefV1{Ref: "structural-attestation", Digest: hash, Bytes: 1}, a.Window)
-	if err != nil {
-		t.Fatal(err)
-	}
 	request, response := []byte(`{"kind":"model","input":"fixture"}`), []byte(`{"version":1,"kind":"model_response","text":"done","calls":[]}`)
 	cost := parent.Authority.AdmissionCostCeiling
 	cd, _ := cost.Digest()
 	op := domain.AttemptOperationV1{Version: 1, Scope: ownedOperationScope(parent), Sequence: 1, Kind: domain.AttemptOperationModelV1, CallID: "inventory-model", RequestRef: "inventory-request", RequestDigest: ports.OwnedFixtureBytesDigestV1(request), Deadline: parent.Reservation.ReservedAt.Add(5 * time.Second), CleanupDuration: parent.Authority.HarnessBinding.AgentLoopPolicy.Limits.MaxCleanupDuration, RequestBytes: uint64(len(request)), ResultBytes: 512, ContextBytes: 1, Currency: cost.Currency, PriceRevision: cost.PriceRevision, AdmissionCostCeilingDigest: cd, Debit: domain.AttemptOperationDebitV1{Operations: 1, ModelCalls: 1, InputTokens: 1, OutputTokens: 1, BodyBytes: uint64(len(request)) + 512, ResponseBytes: 512, AmountMicrounits: *f.parent.source.Spending[0].MaxAmountMicrounits, ActiveDuration: 5 * time.Second}}
 	od, _ := op.Digest()
+	proxy, err := domain.BuildRegisteredPinnedHTTPSProxyAttestationV2(a, f.parent.source, domain.RegisteredProxyProviderV1, hash, a.Substrate.EgressPolicyDigest, hash,
+		domain.OwnedAgentAuthorityBodyRefV1{Ref: "structural-policy", Digest: hash, Bytes: 1}, domain.OwnedAgentAuthorityBodyRefV1{Ref: "structural-attestation", Digest: hash, Bytes: 1}, a.Window, op.Sequence, od)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ad, _ := a.Digest()
 	pd, _ := proxy.Digest()
 	aggregate := op.Debit

@@ -51,6 +51,8 @@ type PinnedHTTPSProxyV1 struct {
 	observedAt                     time.Time
 	publicationAllocation          domain.RegisteredAllocationDigestV1
 	publicationSource              string
+	publicationOperation           domain.AttemptOperationDigestV1
+	publicationDeadline            time.Time
 	publicationKey                 [32]byte
 	publicationScope               domain.AttemptExecutionSourceScopeV1
 	publicationLease               domain.LeaseID

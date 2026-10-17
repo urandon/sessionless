@@ -102,7 +102,7 @@ func (store *Store) operationHistory(ctx context.Context, q *ownedAuthorityQuery
 	}
 	ad, _ := allocation.original.Digest()
 	pd, _ := proxy.original.Digest()
-	if ad != r.RegisteredAllocationDigest || pd != r.RegisteredProxyDigest {
+	if ad != r.RegisteredAllocationDigest || pd != r.RegisteredProxyDigest || proxy.original.OperationSequence != r.Operation.Sequence || proxy.original.OperationDigest != r.OperationDigest {
 		return q.budget.deny()
 	}
 	return nil
@@ -181,6 +181,9 @@ func (store *Store) reserveOwnedOperation(ctx context.Context, op domain.Attempt
 		ad, _ := allocation.original.Digest()
 		pd, _ := proxy.original.Digest()
 		opDigest, _ := op.Digest()
+		if proxy.original.OperationSequence != op.Sequence || proxy.original.OperationDigest != opDigest {
+			return q.budget.deny()
+		}
 		if old != nil {
 			rd, _ := old.reservation.Digest()
 			if old.reservation.OperationDigest != opDigest || old.reservation.RegisteredAllocationDigest != ad || old.reservation.RegisteredProxyDigest != pd || old.reservation.ValidateForParent(parent.Authority, parent.Reservation) != nil || (expected != "" && expected != rd) {
@@ -290,7 +293,7 @@ func (store *Store) AuthorizeAttemptOperationBeforeSend(ctx context.Context, cap
 		}
 		ad, _ := allocation.current.Digest()
 		pd, _ := proxy.current.Digest()
-		if ad != r.RegisteredAllocationDigest || pd != r.RegisteredProxyDigest || op.Deadline.After(proxy.current.Window.ExpiresAt) || op.Deadline.After(allocation.current.Window.ExpiresAt) {
+		if ad != r.RegisteredAllocationDigest || pd != r.RegisteredProxyDigest || proxy.current.OperationSequence != op.Sequence || proxy.current.OperationDigest != r.OperationDigest || op.Deadline.After(proxy.current.Window.ExpiresAt) || op.Deadline.After(allocation.current.Window.ExpiresAt) {
 			return q.budget.deny()
 		}
 		if proxy.current.ServiceKind != ownedOperationProxyService(op.Kind) || store.validateOwnedOperationEvidence(ctx, q, op, evidence, parent, source) != nil {

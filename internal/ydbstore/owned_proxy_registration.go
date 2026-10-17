@@ -54,7 +54,7 @@ const ownedOperationProxyRegistrationSQL = `SELECT
  FROM attempt_operation_proxies_v1 WHERE tenant_id=$1 AND attempt_id=$2 AND sequence=$3`
 
 type ownedProxySnapshot struct {
-	original, current           domain.RegisteredProxyAttestationV1
+	original, current           domain.RegisteredProxyAttestationV2
 	policy                      ports.ServerlessEgressPolicyV1
 	attestation                 ports.ServerlessEgressProxyAttestationV1
 	policyBody, attestationBody []byte
@@ -63,9 +63,9 @@ type ownedProxySnapshot struct {
 // PublishOwnedProxy preserves observation produced by an actual original TLS
 // connection. It is not registration by startup or permission to send. The
 // ordinary Store has no installed owned source keeper and fails closed.
-func (store *Store) PublishOwnedProxy(ctx context.Context, request ports.ReserveAttemptEffectRequestV1, proof ports.OwnedProxyPublicationV1) (domain.RegisteredProxyAttestationV1, bool, error) {
-	deny := func() (domain.RegisteredProxyAttestationV1, bool, error) {
-		return domain.RegisteredProxyAttestationV1{}, false, domain.ErrMembershipDenied
+func (store *Store) PublishOwnedProxy(ctx context.Context, request ports.ReserveAttemptEffectRequestV1, proof ports.OwnedProxyPublicationV2) (domain.RegisteredProxyAttestationV2, bool, error) {
+	deny := func() (domain.RegisteredProxyAttestationV2, bool, error) {
+		return domain.RegisteredProxyAttestationV2{}, false, domain.ErrMembershipDenied
 	}
 	if !store.validOwnedAllocationContext(ctx) || request.Validate() != nil || store.ownedProxyPublicationVerifier == nil || proof.Validate() != nil {
 		return deny()
@@ -76,11 +76,14 @@ func (store *Store) PublishOwnedProxy(ctx context.Context, request ports.Reserve
 		return deny()
 	}
 	allocationDigest, sourceDigest, observedAt, policyBody, attestationBody := proof.RegisteredAllocationDigest, proof.SourceDigest, proof.ObservedAt, proof.PolicyBody, proof.AttestationBody
-	var result domain.RegisteredProxyAttestationV1
+	var result domain.RegisteredProxyAttestationV2
 	var replayed bool
 	err = store.ownedAuthorityTx(ctx, func(ctx context.Context, q *ownedAuthorityQuery) error {
-		result, replayed = domain.RegisteredProxyAttestationV1{}, false
+		result, replayed = domain.RegisteredProxyAttestationV2{}, false
 		q.metadataCache = make(map[string]ownedMetadataCacheEntry)
+		if store.ownedProxyPublicationVerifier.VerifyOwnedProxyPublication(proof.Clone(), q.at) != nil {
+			return q.budget.deny()
+		}
 		parent, source, burnAt, err := store.readOwnedAllocationParent(ctx, q, request)
 		if err != nil {
 			return err
@@ -103,13 +106,16 @@ func (store *Store) PublishOwnedProxy(ctx context.Context, request ports.Reserve
 			return err
 		}
 		if old != nil {
-			if old.original.ServiceKind != proof.ServiceKind || !bytes.Equal(old.policyBody, policyBody) || !bytes.Equal(old.attestationBody, attestationBody) || old.original.Window.ObservedAt != observedAt {
+			if old.original.TransportKind != proof.TransportKind || old.original.OperationSequence != proof.OperationSequence || old.original.OperationDigest != proof.OperationDigest || old.original.ServiceKind != proof.ServiceKind || !bytes.Equal(old.policyBody, policyBody) || !bytes.Equal(old.attestationBody, attestationBody) || old.original.Window.ObservedAt != observedAt {
 				return q.budget.deny()
 			}
 			result, replayed = old.current.Clone(), true
 			return nil // exact retained observation, never new transport or expiry
 		}
 		if allocation.current.ValidateAt(q.at) != nil || store.validateCurrentOwnedAttemptParent(ctx, q, request, parent) != nil {
+			return q.budget.deny()
+		}
+		if proof.TransportKind != domain.RegisteredProxyTransportPinnedHTTPSV2 || store.ownedProxyPublicationVerifier.VerifyOwnedProxyPublicationCurrent(proof.Clone(), q.at) != nil {
 			return q.budget.deny()
 		}
 		accounting, err := readOwnedAttemptAccounting(ctx, q, parent, source)
@@ -126,6 +132,9 @@ func (store *Store) PublishOwnedProxy(ctx context.Context, request ports.Reserve
 			}
 		}
 		expires := attestation.ExpiresAt.UTC().Truncate(time.Microsecond)
+		if proof.OperationDeadline.Before(expires) {
+			expires = proof.OperationDeadline
+		}
 		if allocation.original.Window.ExpiresAt.Before(expires) {
 			expires = allocation.original.Window.ExpiresAt
 		}
@@ -134,13 +143,13 @@ func (store *Store) PublishOwnedProxy(ctx context.Context, request ports.Reserve
 		}
 		routeBody, _ := json.Marshal(policy.Route)
 		routeSum := sha256.Sum256(routeBody)
-		value, err := domain.BuildRegisteredProxyAttestationV1(allocation.original, source, proof.ServiceKind, hex.EncodeToString(routeSum[:]), pd, attestation.ResolutionSetDigest,
+		value, err := domain.BuildRegisteredPinnedHTTPSProxyAttestationV2(allocation.original, source, proof.ServiceKind, hex.EncodeToString(routeSum[:]), pd, attestation.ResolutionSetDigest,
 			ports.OwnedProxyBodyReferenceV1("policy", policyBody), ports.OwnedProxyBodyReferenceV1("attestation", attestationBody),
-			domain.OwnedAgentAuthorityWindowV1{ObservedAt: observedAt, PublishedAt: q.at, ExpiresAt: expires})
+			domain.OwnedAgentAuthorityWindowV1{ObservedAt: observedAt, PublishedAt: q.at, ExpiresAt: expires}, proof.OperationSequence, proof.OperationDigest)
 		if err != nil {
 			return q.budget.deny()
 		}
-		raw, err := domain.EncodeRegisteredProxyAttestationV1(value)
+		raw, err := domain.EncodeRegisteredProxyAttestationV2(value)
 		digest, de := value.Digest()
 		parentDigest, pe := parent.Digest()
 		if err != nil || de != nil || pe != nil {
@@ -208,16 +217,16 @@ func readOwnedProxySnapshotAt(ctx context.Context, q *ownedAuthorityQuery, paren
 	if len(originalRaw) > ownedAuthorityHeadBytes || len(currentRaw) > ownedAuthorityHeadBytes || len(policyRaw) > 16<<10 || len(attestationRaw) > 16<<10 {
 		return nil, q.budget.deny()
 	}
-	original, oe := domain.DecodeRegisteredProxyAttestationV1([]byte(originalRaw))
+	original, oe := domain.DecodeRegisteredProxyAttestationV2([]byte(originalRaw))
 	if sequence > 1 && string(original.ServiceKind) != service {
 		return nil, q.budget.deny()
 	}
-	current, ce := domain.DecodeRegisteredProxyAttestationV1([]byte(currentRaw))
+	current, ce := domain.DecodeRegisteredProxyAttestationV2([]byte(currentRaw))
 	od, ode := original.Digest()
 	cd, cde := current.Digest()
 	// Initial writer supports no replacement/revocation yet; reject divergent
 	// heads rather than normalizing or reconstructing active permission.
-	if oe != nil || ce != nil || ode != nil || cde != nil || string(od) != originalDigest || string(cd) != currentDigest || originalRaw != currentRaw || original.ValidateInitial() != nil || original.ValidateForAllocation(allocation, source) != nil || original.Window.PublishedAt.After(q.at) {
+	if oe != nil || ce != nil || ode != nil || cde != nil || string(od) != originalDigest || string(cd) != currentDigest || originalRaw != currentRaw || original.TransportKind != domain.RegisteredProxyTransportPinnedHTTPSV2 || original.PinnedHTTPS == nil || original.OperationSequence != sequence || original.ValidateInitial() != nil || original.ValidateForAllocation(allocation, source) != nil || original.Window.PublishedAt.After(q.at) {
 		return nil, q.budget.deny()
 	}
 	var policy ports.ServerlessEgressPolicyV1
@@ -233,7 +242,7 @@ func readOwnedProxySnapshotAt(ctx context.Context, q *ownedAuthorityQuery, paren
 	pd, pe := policy.Digest()
 	routeBody, _ := json.Marshal(policy.Route)
 	routeSum := sha256.Sum256(routeBody)
-	if pe != nil || original.TransportDigest != hex.EncodeToString(routeSum[:]) || original.PolicyDigest != pd || original.ResolutionSetDigest != attestation.ResolutionSetDigest || attestation.ValidateForPolicy(policy, original.Window.PublishedAt, attestation.ExpiresAt) != nil || original.Window.ExpiresAt.After(attestation.ExpiresAt) {
+	if pe != nil || original.TransportDigest != hex.EncodeToString(routeSum[:]) || original.PolicyDigest != pd || original.PinnedHTTPS.ResolutionSetDigest != attestation.ResolutionSetDigest || attestation.ValidateForPolicy(policy, original.Window.PublishedAt, attestation.ExpiresAt) != nil || original.Window.ExpiresAt.After(attestation.ExpiresAt) {
 		return nil, q.budget.deny()
 	}
 	return &ownedProxySnapshot{original, current, policy, attestation, pb, ab}, nil

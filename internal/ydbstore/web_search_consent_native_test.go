@@ -92,15 +92,7 @@ func nativeConsentModel(t *testing.T, g nativeOwnedParentGraph, keeper *nativeOp
 	}
 	t.Cleanup(fixture.Close)
 	proxy := fixture.Proxy()
-	if _, err := proxy.Preflight(g.ctx, policy); err != nil {
-		t.Fatal(err)
-	}
-	proof, err := proxy.ObserveOwnedProxy(allocation, g.final.Source)
-	if err != nil {
-		t.Fatal(err)
-	}
-	g.f.store.ownedProxyPublicationVerifier = proxy
-	registered, _, err := g.f.store.PublishOwnedProxy(g.ctx, g.request, proof)
+	preflight, err := proxy.Preflight(g.ctx, policy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,10 +103,21 @@ func nativeConsentModel(t *testing.T, g nativeOwnedParentGraph, keeper *nativeOp
 	cost := parent.Authority.AdmissionCostCeiling
 	cd, _ := cost.Digest()
 	deadline := clock.Now().Add(10 * time.Second)
-	if registered.Window.ExpiresAt.Before(deadline) {
-		deadline = registered.Window.ExpiresAt
+	for _, expiry := range []time.Time{preflight.ExpiresAt, allocation.Window.ExpiresAt} {
+		if expiry.Before(deadline) {
+			deadline = expiry
+		}
 	}
 	op := domain.AttemptOperationV1{Version: 1, Scope: keeper.scope, Sequence: 1, Kind: domain.AttemptOperationModelV1, CallID: "consent-model-call", RequestRef: "consent-model-request", RequestDigest: operationBodyDigest(body), Deadline: deadline, CleanupDuration: parent.Authority.HarnessBinding.AgentLoopPolicy.Limits.MaxCleanupDuration, RequestBytes: uint64(len(body)), ResultBytes: 512, ContextBytes: 1, Currency: cost.Currency, PriceRevision: cost.PriceRevision, AdmissionCostCeilingDigest: cd, Debit: domain.AttemptOperationDebitV1{Operations: 1, ModelCalls: 1, InputTokens: 1, OutputTokens: 1, BodyBytes: uint64(len(body)) + 512, ResponseBytes: 512, AmountMicrounits: *g.final.Source.Spending[0].MaxAmountMicrounits, ActiveDuration: 10 * time.Second}}
+	proof, err := proxy.ObserveOwnedProxy(allocation, g.final.Source, op)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.f.store.ownedProxyPublicationVerifier = proxy
+	registered, _, err := g.f.store.PublishOwnedProxy(g.ctx, g.request, proof)
+	if err != nil {
+		t.Fatal(err)
+	}
 	reserved, err := g.f.store.ReserveAttemptOperation(g.ctx, ports.ReserveAttemptOperationRequestV1{Operation: op})
 	if err != nil || reserved.Capability == nil {
 		t.Fatalf("actual model reserve: %v", err)
@@ -356,22 +359,14 @@ func nativeConsentSearchSend(t *testing.T, g nativeOwnedParentGraph, keeper *nat
 	}
 	t.Cleanup(fixture.Close)
 	proxy := fixture.Proxy()
-	if _, err := proxy.Preflight(g.ctx, policy); err != nil {
-		t.Fatal(err)
-	}
-	proof, err := proxy.ObserveOwnedProxy(allocation, g.final.Source)
+	preflight, err := proxy.Preflight(g.ctx, policy)
 	if err != nil {
 		t.Fatal(err)
-	}
-	g.f.store.ownedProxyPublicationVerifier = proxy
-	registered, _, err := g.f.store.PublishOwnedProxy(g.ctx, g.request, proof)
-	if err != nil {
-		t.Fatal("actual search proxy", err)
 	}
 	cost := parent.Authority.AdmissionCostCeiling
 	cd, _ := cost.Digest()
 	deadline := clock.Now().Add(10 * time.Second)
-	for _, expiry := range []time.Time{registered.Window.ExpiresAt, r.ExpiresAt} {
+	for _, expiry := range []time.Time{preflight.ExpiresAt, allocation.Window.ExpiresAt, r.ExpiresAt} {
 		if expiry.Before(deadline) {
 			deadline = expiry
 		}
@@ -381,6 +376,15 @@ func nativeConsentSearchSend(t *testing.T, g nativeOwnedParentGraph, keeper *nat
 	previous, _ := model.Digest()
 	op := domain.AttemptOperationV1{Version: 1, Scope: keeper.scope, Sequence: 2, Kind: domain.AttemptOperationWebSearchV1, CallID: r.CallID, RequestRef: "consent-search-request", RequestDigest: operationBodyDigest(body), Deadline: deadline, CleanupDuration: parent.Authority.HarnessBinding.AgentLoopPolicy.Limits.MaxCleanupDuration, RequestBytes: uint64(len(body)), ResultBytes: 512, Currency: cost.Currency, PriceRevision: cost.PriceRevision, AdmissionCostCeilingDigest: cd, PredecessorObservationDigest: previous, ModelResponseDigest: model.ResponseDigest, ArgumentsDigest: r.ArgumentsDigest, ToolGrantDigest: r.GrantDigest, ExternalChargeEvidenceDigest: cost.WebSearchCost.PriceEvidenceDigest, QueryDigest: r.QueryDigest, ConsentRequestDigest: string(rd), ConsentDecisionDigest: string(dd), ConsentDecisionRef: string(r.ID), Debit: domain.AttemptOperationDebitV1{Operations: 1, ToolDispatches: 1, WebSearches: 1, BodyBytes: uint64(len(body)) + 512, ResponseBytes: 512, AmountMicrounits: *g.final.Source.Spending[3].MaxAmountMicrounits, ActiveDuration: 10 * time.Second}}
 	binding := domain.WebSearchConsentReceiptBindingV1{Request: r, RequestDigest: rd, DecisionDigest: dd}
+	proof, err := proxy.ObserveOwnedProxy(allocation, g.final.Source, op)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.f.store.ownedProxyPublicationVerifier = proxy
+	registered, _, err := g.f.store.PublishOwnedProxy(g.ctx, g.request, proof)
+	if err != nil {
+		t.Fatal("actual search proxy", err)
+	}
 	before, _, _ := nativeAccountingBytes(t, g)
 	if _, err := g.f.store.ReserveAttemptOperation(g.ctx, ports.ReserveAttemptOperationRequestV1{Operation: op}); !errors.Is(err, domain.ErrMembershipDenied) {
 		t.Fatal("search without typed receipt reserved")

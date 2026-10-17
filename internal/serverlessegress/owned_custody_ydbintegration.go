@@ -22,7 +22,7 @@ import (
 
 type ownedCustodyPeer struct {
 	proxy *PinnedHTTPSProxyV1
-	proof ports.OwnedProxyPublicationV1
+	proof ports.OwnedProxyPublicationV2
 }
 type OwnedFixtureCustodyV1 struct {
 	self             *OwnedFixtureCustodyV1
@@ -122,7 +122,7 @@ func (c *OwnedFixtureCustodyV1) ReadAttemptOperationBody(ctx context.Context, sc
 	}
 	return body, nil
 }
-func (c *OwnedFixtureCustodyV1) AttachOriginalProxy(proxy *PinnedHTTPSProxyV1, proof ports.OwnedProxyPublicationV1) error {
+func (c *OwnedFixtureCustodyV1) AttachOriginalProxy(proxy *PinnedHTTPSProxyV1, proof ports.OwnedProxyPublicationV2) error {
 	if c == nil || c.self != c || proxy == nil || proof.Validate() != nil || proxy.VerifyOwnedProxyPublication(proof, proof.ObservedAt) != nil || proof.Scope.TenantID != c.scope.TenantID || proof.Scope.SessionID != c.scope.SessionID || proof.Scope.OwnerUserID != c.scope.OwnerUserID || proof.Scope.RunID != c.scope.RunID || proof.Scope.AttemptID != c.scope.AttemptID || proof.LeaseID != c.scope.LeaseID || proof.FenceToken != c.scope.FenceToken || proof.PhysicalInvocationClaimID != c.scope.PhysicalInvocationClaimID || proof.RegisteredAllocationDigest != c.allocationDigest || proof.SourceDigest != c.sourceDigest {
 		return domain.ErrMembershipDenied
 	}
@@ -178,7 +178,7 @@ func (c *OwnedFixtureCustodyV1) CloseOwnedOperationNamespace(ctx context.Context
 	}
 	for _, peer := range inventory.Proxies {
 		original, found := c.peers[peer.Sequence]
-		if !found || peer.Original.ServiceKind != original.proof.ServiceKind || peer.Original.RegisteredAllocationDigest != c.allocationDigest || peer.Original.SourceDigest != c.sourceDigest || peer.Original.PolicyBody != ports.OwnedProxyBodyReferenceV1("policy", original.proof.PolicyBody) || peer.Original.AttestationBody != ports.OwnedProxyBodyReferenceV1("attestation", original.proof.AttestationBody) || original.proxy.VerifyOwnedProxyPublication(original.proof, original.proof.ObservedAt) != nil {
+		if !found || peer.Original.TransportKind != original.proof.TransportKind || peer.Original.OperationSequence != peer.Sequence || peer.Original.OperationDigest != original.proof.OperationDigest || peer.Original.ServiceKind != original.proof.ServiceKind || peer.Original.RegisteredAllocationDigest != c.allocationDigest || peer.Original.SourceDigest != c.sourceDigest || peer.Original.PolicyBody != ports.OwnedProxyBodyReferenceV1("policy", original.proof.PolicyBody) || peer.Original.AttestationBody != ports.OwnedProxyBodyReferenceV1("attestation", original.proof.AttestationBody) || original.proxy.VerifyOwnedProxyPublication(original.proof, original.proof.ObservedAt) != nil {
 			return deny()
 		}
 	}

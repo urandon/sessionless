@@ -137,9 +137,9 @@ type ownedAllocationFixture struct {
 	bridge      *serverlessharness.BoundedOwnedAllocationPreparationV1
 }
 
-func newOwnedAllocationFixture(t *testing.T) ownedAllocationFixture {
+func newOwnedAllocationFixture(t *testing.T, prebuild ...ownedFinalPrebuild) ownedAllocationFixture {
 	t.Helper()
-	f := newOwnedAttemptEffectParentFixture(t)
+	f := newOwnedAttemptEffectParentFixture(t, prebuild...)
 	s := &allocationSQLFixture{parent: f.sql}
 	db := sql.OpenDB(allocationConnector{s})
 	db.SetMaxOpenConns(1)

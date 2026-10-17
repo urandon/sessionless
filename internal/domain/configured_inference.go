@@ -270,6 +270,18 @@ func (v ConfiguredInferenceProfileV1) ValidateForBinding(binding HarnessBindingV
 	if err := substrate.ValidateAt(at); err != nil {
 		return err
 	}
+	substrateDigest, err := substrate.Digest()
+	if err != nil {
+		return err
+	}
+	placement, err := ManagedExecutionPlacementV2(string(substrateDigest))
+	if err != nil {
+		return err
+	}
+	placementDigest, err := ExecutionPlacementDigest(placement)
+	if err != nil || binding.ExecutionPlacementDigest != string(placementDigest) {
+		return configuredInferenceError("placement", "binding must name the exact managed local substrate")
+	}
 	digest, err := v.Digest()
 	if err != nil {
 		return err

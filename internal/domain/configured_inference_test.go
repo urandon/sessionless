@@ -258,6 +258,19 @@ func configuredInferenceBindingFixture(t testing.TB, p domain.ConfiguredInferenc
 	s.Kind, s.WorkloadMode, s.ImageDigest, s.Region = domain.SubstrateLocalDevelopmentV1, domain.SubstrateWorkloadInProcessDirectV1, "", ""
 	s.OuterHarnessArtifactDigest, s.LocalInstallationID, s.LocalInstallationRevision = p.WorkerExecutableDigest, p.LocalInstallationID, p.LocalInstallationRevision
 	s.LocalHostIdentityDigest, s.LocalNetworkNamespaceIdentityDigest, s.ProfileEvidenceExpiresAt = p.LocalHostIdentityDigest, p.LocalNetworkNamespaceIdentityDigest, p.ExpiresAt
+	sd, err := s.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	placement, err := domain.ManagedExecutionPlacementV2(string(sd))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pd, err := domain.ExecutionPlacementDigest(placement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.ExecutionPlacementDigest = string(pd)
 	return b, s
 }
 
@@ -281,7 +294,12 @@ func TestConfiguredInferenceBindingAndPlacementAreExact(t *testing.T) {
 		t.Error("bearer file-delivery conversion accepted")
 	}
 	for name, mutate := range map[string]func(*domain.HarnessBindingV2, *domain.SubstrateBindingV1){
-		"model": func(b *domain.HarnessBindingV2, _ *domain.SubstrateBindingV1) { b.ModelID = "different-model" },
+		"binding placement only": func(b *domain.HarnessBindingV2, _ *domain.SubstrateBindingV1) {
+			b.ExecutionPlacementDigest = strings.Repeat("2", 64)
+		},
+		"substrate limits only":  func(_ *domain.HarnessBindingV2, s *domain.SubstrateBindingV1) { s.Limits.ScratchBytes++ },
+		"substrate profile only": func(_ *domain.HarnessBindingV2, s *domain.SubstrateBindingV1) { s.ProfileRevision++ },
+		"model":                  func(b *domain.HarnessBindingV2, _ *domain.SubstrateBindingV1) { b.ModelID = "different-model" },
 		"profile": func(b *domain.HarnessBindingV2, _ *domain.SubstrateBindingV1) {
 			b.Backend.BackendProfileDigest = strings.Repeat("2", 64)
 		},

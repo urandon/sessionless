@@ -146,7 +146,7 @@ func (store *Store) publishBoundedOwnedAllocation(ctx context.Context, publicati
 }
 
 func (store *Store) validOwnedAllocationContext(ctx context.Context) bool {
-	return store != nil && store.db != nil && ctx != nil && ctx.Err() == nil && store.ownedAttemptEffectSourceVerifier != nil
+	return store != nil && store.localCompositionReady() && store.db != nil && ctx != nil && ctx.Err() == nil && store.ownedAttemptEffectSourceVerifier != nil
 }
 
 func ownedAllocationParentRequest(r domain.AttemptEffectReservationV1) ports.ReserveAttemptEffectRequestV1 {

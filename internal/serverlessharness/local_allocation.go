@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"reflect"
 	"sync"
 	"time"
 
@@ -55,7 +56,22 @@ func NewBoundedOwnedLocalAllocationPreparationV1(issuer *CapabilityIssuer, backe
 	local := &localExecutionAllocationV1{source: source, issuer: issuer}
 	local.self = local
 	preparation := &BoundedOwnedAttemptPreparationV1{issuer: issuer, backend: backend, binding: binding, local: local, burn: burn}
-	return &BoundedOwnedAllocationPreparationV1{preparation: preparation, local: local}, nil
+	bridge := &BoundedOwnedAllocationPreparationV1{preparation: preparation, local: local}
+	bridge.self = bridge
+	return bridge, nil
+}
+
+// MatchesLocalComposition checks retained constructor identities only. It
+// calls no supplied method, performs no I/O and grants no execution/send right.
+func (bridge *BoundedOwnedAllocationPreparationV1) MatchesLocalComposition(source *localoperator.Source, issuer *CapabilityIssuer, burn OwnedAttemptPreparationBurnV1) bool {
+	if bridge == nil || bridge.self != bridge || bridge.local == nil || bridge.preparation == nil ||
+		bridge.local.self != bridge.local || source == nil || issuer == nil || bridge.local.source != source ||
+		bridge.local.issuer != issuer || bridge.preparation.issuer != issuer {
+		return false
+	}
+	actual, expected := reflect.ValueOf(bridge.preparation.burn), reflect.ValueOf(burn)
+	return actual.IsValid() && expected.IsValid() && actual.Kind() == reflect.Pointer && expected.Kind() == reflect.Pointer &&
+		!actual.IsNil() && !expected.IsNil() && actual.Type() == expected.Type() && actual.Pointer() == expected.Pointer()
 }
 
 func (l *localExecutionAllocationV1) preflight(setup, invocation context.Context, a domain.ServerlessInvocationAuthorityV1, parent domain.AttemptEffectReservationV1) (domain.PreparedAllocationV2, error) {

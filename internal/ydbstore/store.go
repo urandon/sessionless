@@ -50,6 +50,7 @@ type Options struct {
 }
 
 type Store struct {
+	localBootstrap                     *LocalOwnedStoreBootstrapV1
 	db                                 *sql.DB
 	idempotencyRetention               time.Duration
 	operationalRetention               time.Duration

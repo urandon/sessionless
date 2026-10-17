@@ -1,6 +1,6 @@
 # Configured local inference for development demos
 
-Version: 0.1.2, engineering design. Owner:
+Version: 0.1.3, engineering design. Owner:
 [#212](https://gitcode.com/urandon/sessionless/issues/212), under
 [#176](https://gitcode.com/urandon/sessionless/issues/176).
 
@@ -223,24 +223,29 @@ not cancel the caller's context or close a shared model/worker. Merely checking
 `VerifyEnteredLocalAllocation` once, matching copied digests, or making a fresh
 context with the same nominal deadline is insufficient lifetime ownership.
 
-Construct the noncopyable connector keeper first, then create an inert local
-Store composition with that keeper and the original operation issuer fixed.
-The local Store bootstrap owns a concrete preparation-burn adapter that calls
-that same Store's existing durable burn transaction, never a forwarding callback
-or caller-supplied Boolean. Construct the allocation bridge with that adapter.
-One atomic, one-time initialization then installs the exact allocation verifier
-and binds the keeper to this Store/bridge pair. Until initialization completes,
-all local owned preparation/publication/reservation/send paths deny; the private
-bootstrap is not exposed to serving callers. Abandonment leaves it inert.
+First construct noncopyable bootstrap metadata fixing the concrete Source,
+preparation issuer and operation issuer. Construct the connector keeper with
+that same bootstrap retained immutably. Its `CreateStore` fixes the actual keeper
+pointer and creates one inert Store. The bootstrap itself implements the concrete
+preparation burn by calling that same Store's existing durable transaction, never
+a forwarding callback or caller-supplied Boolean. Construct the allocation bridge
+with this bootstrap as its burn owner. `Complete` verifies the bridge's original
+Source/issuer/burn identities, installs its verifier and release-publishes one
+immutable Store/bridge/keeper tuple atomically. Until then, all local owned
+preparation/publication/reservation/send paths deny. Abandonment leaves it inert.
 
 This initial installation is a dedicated local constructor seam, not a mutable
 setter on ordinary Store options or an alternate serving authority. Reject nil,
 copied, foreign, repeated or replacement bindings and partially installed owners.
-Before exposure, verify Store retains the exact keeper, original operation
-issuer and original allocation verifier; compare their actual retained identity
-without invoking callbacks. This I/O-free check grants no send permission and
-does not add gates to unrelated existing Store profiles. #217 supplies the
-closed initialization seam; #218 owns its normal serving composition.
+There is no separate mutable `BindStore` or assertion that keeper binding already
+happened: the keeper resolves `RuntimeFor(self)` on its original bootstrap before
+preflight/send. Only the actual retained keeper can obtain the completed original
+Store/bridge tuple. Bootstrap-backed Store readiness also checks that this exact
+Store is the tuple's Store; copying either object cannot reuse its ready state.
+Identity checks invoke no keeper callback and grant no send permission. They add
+no gates to unrelated existing Store profiles. #217 supplies the closed initial
+composition seam; #218 owns its normal serving integration. Source still is not
+the missing complete effect-source verifier or independent MCP/search custody.
 
 Dial only the admitted numeric loopback TCP address. Check the actual remote
 address and retain that same socket; preflight writes no HTTP/TLS/application

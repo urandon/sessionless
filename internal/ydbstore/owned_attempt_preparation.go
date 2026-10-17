@@ -69,7 +69,7 @@ func readOwnedPreparationBurnObservation(ctx context.Context, q *ownedAuthorityQ
 // returns false: unknown commit may never authorize a fresh physical preflight.
 // No physical I/O or capability minting occurs in the retryable SQL callback.
 func (store *Store) beginBoundedOwnedAttemptPreparation(ctx context.Context, grant ports.AttemptEffectOwnershipGrantV1) (bool, error) {
-	if store == nil || store.db == nil || ctx == nil || ctx.Err() != nil ||
+	if store == nil || !store.localCompositionReady() || store.db == nil || ctx == nil || ctx.Err() != nil ||
 		store.ownedAttemptEffectSourceVerifier == nil || store.ownedPreparationGrantVerifier == nil ||
 		grant.Validate() != nil || store.ownedPreparationGrantVerifier.VerifyGrant(grant.Clone()) != nil {
 		return false, domain.ErrMembershipDenied

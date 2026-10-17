@@ -22,11 +22,60 @@ type OwnedProfilePublicationGrantV1 struct {
 	IssuedAt           time.Time
 	ExpiresAt          time.Time
 	Authenticator      []byte
+	LocalInstallation  *OwnedLocalInstallationIntentV1 `json:"local_installation,omitempty"`
+}
+
+// OwnedLocalInstallationIntentV1 seals structural local installation facts,
+// not operator approval. The installed-source verifier remains mandatory;
+// neither this carrier nor a predecessor receipt authenticates a source.
+type OwnedLocalInstallationIntentV1 struct {
+	Profile              domain.ConfiguredInferenceProfileV1 `json:"profile"`
+	Predecessor          *OwnedProfilePublicationReceiptV1   `json:"predecessor,omitempty"`
+	RetirementMutationID string                              `json:"retirement_mutation_id"`
+}
+
+func (v OwnedLocalInstallationIntentV1) Clone() OwnedLocalInstallationIntentV1 {
+	v.Profile = v.Profile.Clone()
+	if v.Predecessor != nil {
+		previous := *v.Predecessor
+		previous.Profile = previous.Profile.Clone()
+		v.Predecessor = &previous
+	}
+	return v
+}
+
+// ValidateForProfile cannot prove fresh-ID production, receipt provenance or
+// current predecessor state. The trusted producer and atomic Store join do so.
+func (v OwnedLocalInstallationIntentV1) ValidateForProfile(next domain.OwnedAgentProfileCurrentV1) error {
+	if next.ValidateInitial() != nil || v.Profile.ValidateForOwnedProfile(next) != nil {
+		return domain.ErrMembershipDenied
+	}
+	if v.Predecessor == nil {
+		if v.RetirementMutationID != "" || next.Resource.Revision != 1 || next.ProfileRevision != 1 || next.InstallationRevision != 1 {
+			return domain.ErrMembershipDenied
+		}
+		return nil
+	}
+	old := v.Predecessor.Profile
+	digest, err := old.Digest()
+	if err != nil || digest != v.Predecessor.Digest || old.State != domain.OwnedAgentCurrentActiveV1 || old.Resource.Kind != domain.ProviderResourceLocalEndpointV1 || old.Backend.BackendKind != domain.HarnessBackendDirectOpenAICompatibleV1 || old.Backend.ProviderContractKind != domain.ProviderContractConfiguredEndpointV1 || old.Substrate.Kind != domain.SubstrateLocalDevelopmentV1 ||
+		old.Locator == next.Locator || old.Locator.TenantID != next.Locator.TenantID || old.Locator.OwnerUserID != next.Locator.OwnerUserID || old.Locator.Profile != next.Locator.Profile || old.Resource.ResourceID != next.Resource.ResourceID || old.InstallationID != next.InstallationID ||
+		old.Resource.Revision == math.MaxUint64 || old.ProfileRevision == math.MaxUint64 || old.InstallationRevision == math.MaxUint64 || old.RevocationGeneration == math.MaxUint64 ||
+		next.Resource.Revision != old.Resource.Revision+1 || next.ProfileRevision != old.ProfileRevision+1 || next.InstallationRevision != old.InstallationRevision+1 ||
+		next.UpdatedAt.Before(old.UpdatedAt) || next.MutationID == old.MutationID || next.ReviewReceipt.Digest == old.ReviewReceipt.Digest ||
+		domain.ValidateOpaqueID("local_installation.retirement_mutation_id", v.RetirementMutationID) != nil || v.RetirementMutationID == old.MutationID || v.RetirementMutationID == next.MutationID {
+		return domain.ErrMembershipDenied
+	}
+	return nil
 }
 
 func (g OwnedProfilePublicationGrantV1) Clone() OwnedProfilePublicationGrantV1 {
 	g.Profile = g.Profile.Clone()
 	g.Authenticator = append([]byte(nil), g.Authenticator...)
+	if g.LocalInstallation != nil {
+		local := g.LocalInstallation.Clone()
+		g.LocalInstallation = &local
+	}
 	g.IssuedAt, g.ExpiresAt = g.IssuedAt.UTC(), g.ExpiresAt.UTC()
 	return g
 }
@@ -51,7 +100,15 @@ func (g OwnedProfilePublicationGrantV1) Validate() error {
 	if !g.ExpiresAt.After(g.IssuedAt) || g.ExpiresAt.Sub(g.IssuedAt) > 10*time.Second {
 		return denied
 	}
-	// Closed first publication class: live/platform/foreign funding remains
+	if g.LocalInstallation != nil {
+		if g.ExpectedGeneration != 0 || g.ExpectedDigest != "" || g.LocalInstallation.ValidateForProfile(g.Profile) != nil || g.LocalInstallation.Profile.ValidateAt(g.IssuedAt) != nil || g.ExpiresAt.After(g.Profile.Window.ExpiresAt) {
+			return denied
+		}
+		return nil
+	}
+	// Closed fixture publication class: real local installations require the
+	// explicit sealed intent above. No real source keeper is supplied here.
+	// Other live/platform/foreign funding remains
 	// unsupported even if an injected verifier authenticates an intent.
 	p := g.Profile
 	if p.Backend.BackendKind != domain.HarnessBackendDeterministicFixtureV1 || p.Backend.ProviderContractKind != domain.ProviderContractCredentiallessFixtureV1 || p.Resource.Kind != domain.ProviderResourceCredentiallessFixtureV1 || p.Substrate.Kind != domain.SubstrateDeterministicFixtureV1 {
@@ -71,14 +128,20 @@ func (g OwnedProfilePublicationGrantV1) IntentBytes() ([]byte, error) {
 	if err != nil {
 		return nil, domain.ErrMembershipDenied
 	}
+	var local *OwnedLocalInstallationIntentV1
+	if g.LocalInstallation != nil {
+		value := g.LocalInstallation.Clone()
+		local = &value
+	}
 	return json.Marshal(struct {
-		Kind               string          `json:"kind"`
-		Profile            json.RawMessage `json:"profile"`
-		ExpectedGeneration uint64          `json:"expected_generation"`
-		ExpectedDigest     string          `json:"expected_digest"`
-		IssuedAt           time.Time       `json:"issued_at"`
-		ExpiresAt          time.Time       `json:"expires_at"`
-	}{"sessionless.owned-profile-publication.v1", raw, g.ExpectedGeneration, g.ExpectedDigest, g.IssuedAt.UTC(), g.ExpiresAt.UTC()})
+		Kind               string                          `json:"kind"`
+		Profile            json.RawMessage                 `json:"profile"`
+		ExpectedGeneration uint64                          `json:"expected_generation"`
+		ExpectedDigest     string                          `json:"expected_digest"`
+		IssuedAt           time.Time                       `json:"issued_at"`
+		ExpiresAt          time.Time                       `json:"expires_at"`
+		LocalInstallation  *OwnedLocalInstallationIntentV1 `json:"local_installation,omitempty"`
+	}{"sessionless.owned-profile-publication.v1", raw, g.ExpectedGeneration, g.ExpectedDigest, g.IssuedAt.UTC(), g.ExpiresAt.UTC(), local})
 }
 
 func (g OwnedProfilePublicationGrantV1) IntentDigest() (string, error) {

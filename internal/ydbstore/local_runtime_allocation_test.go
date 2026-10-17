@@ -3,6 +3,9 @@ package ydbstore
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -46,6 +49,7 @@ func (b *localRuntimeActualBurn) count() int {
 
 type localRuntimeActualFixture struct {
 	source    *localoperator.Source
+	profile   domain.OwnedAgentProfileCurrentV1
 	config    domain.ConfiguredInferenceProfileV1
 	authority domain.ServerlessInvocationAuthorityV1
 	parent    domain.AttemptEffectReservationV1
@@ -99,9 +103,54 @@ func localRuntimeStructuralSpending(t *testing.T, p domain.OwnedAgentProfileCurr
 // Real private-file intake, OS executable/host/net observation and Store profile
 // publication over a deterministic SQL model. No native YDB, model, socket or
 // external-service funding/qualification is exercised.
-func newLocalRuntimeActualFixture(t *testing.T, runningExecutable, acceptReceipt bool) localRuntimeActualFixture {
+type localRuntimeActualPrebuild struct {
+	scope         domain.AttemptExecutionSourceScopeV1
+	setupDuration time.Duration
+}
+
+func newLocalRuntimeActualFixture(t *testing.T, runningExecutable, acceptReceipt bool, prebuild ...localRuntimeActualPrebuild) localRuntimeActualFixture {
 	t.Helper()
+	if len(prebuild) > 1 {
+		t.Fatal("actual runtime fixture accepts at most one pre-seal canonical scope")
+	}
 	root, executable, manifest := localOperatorFiles(t)
+	if len(prebuild) == 1 {
+		scope := prebuild[0].scope
+		if err := scope.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		c, p := &manifest.Configuration, &manifest.Profile
+		c.TenantID, c.OwnerUserID, c.Resource.OwnerUserID = scope.TenantID, scope.OwnerUserID, scope.OwnerUserID
+		p.Locator.TenantID, p.Locator.OwnerUserID, p.Resource.OwnerUserID, p.BillingOwnerUserID = scope.TenantID, scope.OwnerUserID, scope.OwnerUserID, scope.OwnerUserID
+		for _, cost := range []*domain.ExternalServiceCostCeilingV1{p.CostCeiling.MCPToolCost, p.CostCeiling.WebSearchCost} {
+			cost.TenantID, cost.OwnerUserID, cost.BillingOwnerUserID = scope.TenantID, scope.OwnerUserID, scope.OwnerUserID
+		}
+		p.Substrate.AdmissionCostCeilingDigest, _ = p.CostCeiling.Digest()
+		manifest.InvoiceTerms.TenantID, manifest.InvoiceTerms.OwnerUserID = scope.TenantID, scope.OwnerUserID
+		raw, err := json.Marshal(manifest.InvoiceTerms)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(raw)
+		ref := domain.OwnedAgentAuthorityBodyRefV1{Ref: c.OperatorTerms.Ref, Digest: hex.EncodeToString(sum[:]), Bytes: uint64(len(raw))}
+		for i := range manifest.Evidence {
+			if manifest.Evidence[i].Reference.Ref == c.OperatorTerms.Ref {
+				manifest.Evidence[i] = localoperator.EvidenceBodyV1{Reference: ref, Body: raw}
+			}
+		}
+		c.OperatorTerms = ref
+		p.ProviderPriceDigest, p.ProviderTermsDigest, p.SubstratePriceDigest, p.SubstrateTermsDigest = ref.Digest, ref.Digest, ref.Digest, ref.Digest
+		if prebuild[0].setupDuration != 0 {
+			if prebuild[0].setupDuration <= 0 || prebuild[0].setupDuration > p.CostCeiling.MaxPreEffectDurationPerDelivery {
+				t.Fatal("pre-seal fixture setup duration may only narrow the original declaration")
+			}
+			p.CostCeiling.MaxPreEffectDurationPerDelivery = prebuild[0].setupDuration
+			p.Substrate.AdmissionCostCeilingDigest, err = p.CostCeiling.Digest()
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 	if runningExecutable {
 		var err error
 		executable, err = os.Executable()
@@ -153,6 +202,9 @@ func newLocalRuntimeActualFixture(t *testing.T, runningExecutable, acceptReceipt
 	}
 	profile := receipt.Profile
 	scope := domain.AttemptExecutionSourceScopeV1{TenantID: profile.Locator.TenantID, OwnerUserID: profile.Locator.OwnerUserID, RunID: "actual-runtime-run", SessionID: "actual-runtime-session", AttemptID: "actual-runtime-attempt"}
+	if len(prebuild) == 1 {
+		scope = prebuild[0].scope
+	}
 	var spending [4]domain.AttemptSpendingAuthorizationCurrentV1
 	for i, kind := range ownedSpendingKinds {
 		if acceptReceipt && i < 2 {
@@ -187,7 +239,7 @@ func newLocalRuntimeActualFixture(t *testing.T, runningExecutable, acceptReceipt
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
-	return localRuntimeActualFixture{source, config, authority, parent, pkg.Source, issuer, grant, ctx, cancel, at}
+	return localRuntimeActualFixture{source: source, profile: profile, config: config, authority: authority, parent: parent, execution: pkg.Source, issuer: issuer, grant: grant, ctx: ctx, cancel: cancel, at: at}
 }
 
 func (f localRuntimeActualFixture) bridge(t *testing.T, burn *localRuntimeActualBurn) *serverlessharness.BoundedOwnedAllocationPreparationV1 {

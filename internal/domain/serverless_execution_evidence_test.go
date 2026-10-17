@@ -1,6 +1,8 @@
 package domain_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"reflect"
@@ -22,6 +24,48 @@ func TestImageExecutionEvidenceCannotAttestLocalAllocation(t *testing.T) {
 	var invalid domain.ValidationError
 	if !errors.As(err, &invalid) || invalid.Field != "substrate_execution_evidence.local" {
 		t.Fatalf("local allocation must reject image/process evidence at the specific boundary, got %v", err)
+	}
+}
+
+func TestPersistedImageExecutionEvidenceCannotAttestLocalAuthority(t *testing.T) {
+	t.Parallel()
+	evidence, imageAuthority, imageReservation, _, _ := validSubstrateEvidence(t)
+	if err := evidence.ValidateForPersistedAuthority(imageAuthority, imageReservation); err != nil {
+		t.Fatalf("unchanged image evidence positive control: %v", err)
+	}
+	f := localRuntimeAllocationFixture(t, false)
+	if err := f.authority.ValidateAt(f.at); err != nil {
+		t.Fatalf("local original authority positive control: %v", err)
+	}
+	if err := f.parent.ValidateForAuthority(f.authority); err != nil {
+		t.Fatalf("local original reservation positive control: %v", err)
+	}
+	// Model a caller-authored persisted V1 body, not a successfully sealed
+	// runtime observation. Its canonical hash is unkeyed and reproducible, so
+	// digest integrity alone must not allow image claims for a local runtime.
+	evidence.InvocationAuthorityDigest, _ = f.authority.Digest()
+	evidence.SubstrateBindingDigest, _ = f.authority.SubstrateBinding.Digest()
+	evidence.AdmissionCostCeilingDigest, _ = f.authority.AdmissionCostCeiling.Digest()
+	evidence.EffectReservationDigest, _ = f.parent.DigestForAuthority(f.authority)
+	evidence.PreparedInvocationDigest = f.preparedDigest
+	evidence.PreparedAllocationDigest, _ = f.prepared.DigestForBinding(f.authority.SubstrateBinding, f.authority.HarnessBinding.Backend)
+	evidence.PhysicalInvocationClaimID = f.parent.PhysicalInvocationClaimID
+	evidence.ProviderEvidence = nil
+	evidence.Egress = domain.SubstrateEgressDeniedV1
+	evidence.FailureCode = domain.SubstrateExecutionFailureEgressDeniedV1
+	evidence.EvidenceDigest = ""
+	raw, err := json.Marshal(evidence.Clone())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := sha256.New()
+	_, _ = hash.Write([]byte("sessionless.substrate-execution-evidence.v1\x00"))
+	_, _ = hash.Write(raw)
+	evidence.EvidenceDigest = domain.SubstrateExecutionEvidenceDigestV1(hex.EncodeToString(hash.Sum(nil)))
+	err = evidence.ValidateForPersistedAuthority(f.authority, f.parent)
+	var invalid domain.ValidationError
+	if !errors.As(err, &invalid) || invalid.Field != "substrate_execution_evidence.local" {
+		t.Fatalf("persisted image evidence with exact local digests must deny at the local boundary, got %v", err)
 	}
 }
 

@@ -191,7 +191,7 @@ func (value SubstrateExecutionEvidenceV1) SealForAuthority(
 	allocation PreparedAllocationV2,
 	preparedDigest PreparedInvocationDigestV1,
 ) (SubstrateExecutionEvidenceV1, error) {
-	if authority.SubstrateBinding.Kind == SubstrateLocalDevelopmentV1 || allocation.LocalRuntime != nil {
+	if allocation.LocalRuntime != nil {
 		return SubstrateExecutionEvidenceV1{}, ValidationError{Field: "substrate_execution_evidence.local", Reason: "image/process evidence V1 cannot attest the owned local runtime"}
 	}
 	if err := authority.Validate(); err != nil {
@@ -232,7 +232,7 @@ func (value SubstrateExecutionEvidenceV1) ValidateForAuthority(
 	allocation PreparedAllocationV2,
 	preparedDigest PreparedInvocationDigestV1,
 ) error {
-	if authority.SubstrateBinding.Kind == SubstrateLocalDevelopmentV1 || allocation.LocalRuntime != nil {
+	if allocation.LocalRuntime != nil {
 		return ValidationError{Field: "substrate_execution_evidence.local", Reason: "image/process evidence V1 cannot attest the owned local runtime"}
 	}
 	if err := authority.Validate(); err != nil {
@@ -342,6 +342,12 @@ func (value SubstrateExecutionEvidenceV1) DigestForAuthority(
 }
 
 func (value SubstrateExecutionEvidenceV1) validateForAuthority(authority ServerlessInvocationAuthorityV1) error {
+	// Every V1 entry point, including persisted-only validation without a
+	// prepared-allocation object, must reject image/process claims for local
+	// execution. A reproducible canonical digest is not runtime attestation.
+	if authority.SubstrateBinding.Kind == SubstrateLocalDevelopmentV1 {
+		return ValidationError{Field: "substrate_execution_evidence.local", Reason: "image/process evidence V1 cannot attest the owned local runtime"}
+	}
 	if value.Version != SubstrateExecutionEvidenceVersionV1 {
 		return ValidationError{Field: "substrate_execution_evidence.version", Reason: "must equal 1"}
 	}

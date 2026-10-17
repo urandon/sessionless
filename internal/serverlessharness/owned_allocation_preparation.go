@@ -11,8 +11,8 @@ import (
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
 
-// BoundedOwnedAllocationPreparationV1 binds ONLY the actual linked credential-
-// free in-process substrate. It never accepts a caller-supplied prepared token,
+// BoundedOwnedAllocationPreparationV1 binds the actual linked fixture substrate
+// or a concrete authenticated local runtime. It never accepts a caller-supplied prepared token,
 // arbitrary observation, proxy attestation, supervisor ID or generic signer.
 // It is a private allocation-registration prerequisite, not an owned runtime.
 type BoundedOwnedAllocationPreparationV1 struct {

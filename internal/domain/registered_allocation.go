@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-const RegisteredAllocationVersionV1 uint32 = 1
+const RegisteredAllocationVersionV2 uint32 = 2
 
 type RegisteredPreparationStateV1 string
 
@@ -16,7 +16,7 @@ const (
 	RegisteredPreparationRevokedV1 RegisteredPreparationStateV1 = "revoked"
 )
 
-type RegisteredAllocationDigestV1 string
+type RegisteredAllocationDigestV2 string
 type RegisteredProxyAttestationDigestV2 string
 
 // References preserve the exact original four heads, without embedding their
@@ -28,13 +28,13 @@ type RegisteredSpendingReferenceV1 struct {
 	Window               OwnedAgentAuthorityWindowV1           `json:"window"`
 }
 
-// RegisteredAllocationV1 is a bounded structural child of the sole original
+// RegisteredAllocationV2 is a bounded structural child of the sole original
 // outer claim. Authentic supervisor publication, current SQL state, installed
 // approval and capability verification remain separate requirements. A valid
 // record cannot enable an unsupported backend or authorize another preparation.
 // PreparedAllocation is sealed by digest, NOT embedded: its legitimate child
 // argv may be 64*4096 bytes and must never be truncated to fit this 32-KiB head.
-type RegisteredAllocationV1 struct {
+type RegisteredAllocationV2 struct {
 	Version                     uint32                           `json:"version"`
 	Scope                       AttemptExecutionSourceScopeV1    `json:"scope"`
 	Lease                       Lease                            `json:"lease"`
@@ -43,7 +43,7 @@ type RegisteredAllocationV1 struct {
 	PreparedInvocationDigest    PreparedInvocationDigestV1       `json:"prepared_invocation_digest"`
 	PreparedInvocationExpiresAt time.Time                        `json:"prepared_invocation_expires_at"`
 	InvocationDeadline          time.Time                        `json:"invocation_deadline"`
-	PreparedAllocationDigest    PreparedAllocationDigestV1       `json:"prepared_allocation_digest"`
+	PreparedAllocationDigest    PreparedAllocationDigestV2       `json:"prepared_allocation_digest"`
 	Backend                     HarnessBackendDescriptorV1       `json:"backend"`
 	Substrate                   SubstrateBindingV1               `json:"substrate"`
 	ObservedImageDigest         string                           `json:"observed_image_digest"`
@@ -51,6 +51,7 @@ type RegisteredAllocationV1 struct {
 	ObservedProxyArtifactDigest string                           `json:"observed_proxy_artifact_digest"`
 	ObservedProxyIdentityDigest string                           `json:"observed_proxy_identity_digest"`
 	WorkloadMode                SubstrateWorkloadModeV1          `json:"workload_mode"`
+	LocalRuntime                *LocalRuntimeAttestationV2       `json:"local_runtime,omitempty"`
 	SourceDigest                string                           `json:"source_digest"`
 	Profile                     OwnedAgentProfileReferenceV1     `json:"profile"`
 	Spending                    [4]RegisteredSpendingReferenceV1 `json:"spending"`
@@ -64,8 +65,12 @@ type RegisteredAllocationV1 struct {
 	UpdatedAt                   time.Time                        `json:"updated_at"`
 }
 
-func (v RegisteredAllocationV1) Clone() RegisteredAllocationV1 {
+func (v RegisteredAllocationV2) Clone() RegisteredAllocationV2 {
 	v.ParentReservation = v.ParentReservation.Clone()
+	if v.LocalRuntime != nil {
+		local := v.LocalRuntime.Clone()
+		v.LocalRuntime = &local
+	}
 	v.Lease.AcquiredAt, v.Lease.ExpiresAt = v.Lease.AcquiredAt.UTC(), v.Lease.ExpiresAt.UTC()
 	v.ParentReservation.ReservedAt = v.ParentReservation.ReservedAt.UTC()
 	v.Substrate.ProfileEvidenceExpiresAt = v.Substrate.ProfileEvidenceExpiresAt.UTC()
@@ -78,12 +83,11 @@ func (v RegisteredAllocationV1) Clone() RegisteredAllocationV1 {
 	return v
 }
 
-func (v RegisteredAllocationV1) Validate() error {
+func (v RegisteredAllocationV2) Validate() error {
 	bad := func() error {
 		return registeredPreparationError("allocation", "requires exact bounded original claim and observation")
 	}
-	if v.Version != 1 || v.Scope.Validate() != nil || validateServerlessLease(v.Lease) != nil || v.ParentReservation.Validate() != nil ||
-		v.Substrate.Kind == SubstrateLocalDevelopmentV1 ||
+	if v.Version != RegisteredAllocationVersionV2 || v.Scope.Validate() != nil || validateServerlessLease(v.Lease) != nil || v.ParentReservation.Validate() != nil ||
 		v.ParentReservationDigest.Validate() != nil || v.PreparedInvocationDigest.Validate() != nil || v.PreparedAllocationDigest.Validate() != nil ||
 		v.Backend.Validate() != nil || v.Substrate.Validate() != nil || v.Profile.Validate() != nil ||
 		ValidateOpaqueID("registered_allocation.allocation_id", v.AllocationID) != nil || v.AllocationGeneration == 0 ||
@@ -100,7 +104,8 @@ func (v RegisteredAllocationV1) Validate() error {
 		p.ReservedAt.Before(l.AcquiredAt) || !p.ReservedAt.Before(l.ExpiresAt) || v.Window.ObservedAt.Before(p.ReservedAt) ||
 		v.Window.ObservedAt.Before(v.SourceIssuedAt) || v.Window.ExpiresAt.After(v.SourceExpiresAt) || v.Window.ExpiresAt.After(l.ExpiresAt) ||
 		v.InvocationDeadline.After(l.ExpiresAt) || !v.InvocationDeadline.After(l.AcquiredAt) || v.PreparedInvocationExpiresAt.After(v.InvocationDeadline) ||
-		!v.PreparedInvocationExpiresAt.After(p.ReservedAt) || v.Window.ExpiresAt.After(v.PreparedInvocationExpiresAt) || v.Window.ExpiresAt.After(v.InvocationDeadline) ||
+		!v.PreparedInvocationExpiresAt.After(p.ReservedAt) || !v.Window.PublishedAt.Before(v.PreparedInvocationExpiresAt) ||
+		(v.Substrate.Kind != SubstrateLocalDevelopmentV1 && v.Window.ExpiresAt.After(v.PreparedInvocationExpiresAt)) || v.Window.ExpiresAt.After(v.InvocationDeadline) ||
 		v.Profile.Locator.TenantID != v.Scope.TenantID || v.Profile.Locator.OwnerUserID != v.Scope.OwnerUserID ||
 		v.Profile.Locator.BackendProfileDigest != v.Backend.BackendProfileDigest {
 		return bad()
@@ -110,6 +115,21 @@ func (v RegisteredAllocationV1) Validate() error {
 		v.ObservedImageDigest != v.Substrate.ImageDigest || v.ObservedOuterHarnessDigest != v.Substrate.OuterHarnessArtifactDigest ||
 		v.ObservedProxyArtifactDigest != v.Substrate.EgressProxyArtifactDigest || v.ObservedProxyIdentityDigest != v.Substrate.EgressProxyIdentityDigest || v.WorkloadMode != v.Substrate.WorkloadMode ||
 		v.Substrate.ValidateAt(v.Window.ObservedAt) != nil || !ownedCurrentTime(v.Substrate.ProfileEvidenceExpiresAt) || v.Window.ExpiresAt.After(v.Substrate.ProfileEvidenceExpiresAt) {
+		return bad()
+	}
+	if v.Substrate.Kind == SubstrateLocalDevelopmentV1 {
+		if v.LocalRuntime == nil || v.ObservedImageDigest != "" || v.WorkloadMode != SubstrateWorkloadInProcessDirectV1 || v.LocalRuntime.ValidateForBinding(v.Substrate, v.Backend) != nil {
+			return bad()
+		}
+		// Unlike image child argv, every local preparation fact is retained.
+		prepared := PreparedAllocationV2{Version: PreparedAllocationVersionV2, SubstrateBindingDigest: sd,
+			ObservedOuterHarnessDigest: v.ObservedOuterHarnessDigest, ObservedProxyArtifactDigest: v.ObservedProxyArtifactDigest,
+			ObservedProxyIdentityDigest: v.ObservedProxyIdentityDigest, WorkloadMode: v.WorkloadMode, LocalRuntime: v.LocalRuntime}
+		digest, err := prepared.DigestForBinding(v.Substrate, v.Backend)
+		if err != nil || digest != v.PreparedAllocationDigest {
+			return bad()
+		}
+	} else if v.LocalRuntime != nil {
 		return bad()
 	}
 	kinds := [4]AttemptSpendingComponentKindV1{AttemptSpendingProviderV1, AttemptSpendingSubstrateV1, AttemptSpendingMCPToolV1, AttemptSpendingWebSearchV1}
@@ -124,102 +144,153 @@ func (v RegisteredAllocationV1) Validate() error {
 	return nil
 }
 
+// LocalAllocationActiveDeadlineV2 derives the one original local allocation
+// lifetime, not a prepared-capability or first-entry deadline. It uses the
+// original parent reservation instant, never registration/retry time. These
+// structural correlations do not authenticate the producer, current SQL heads
+// or first entry; those retain their separate original once-only setup gates.
+func LocalAllocationActiveDeadlineV2(authority ServerlessInvocationAuthorityV1, parent AttemptEffectReservationV1, source AttemptExecutionSourceV1) (time.Time, error) {
+	bad := func() (time.Time, error) {
+		return time.Time{}, registeredPreparationError("allocation.active_deadline", "requires exact original local authority/source and contained finite active bounds")
+	}
+	policy := authority.HarnessBinding.AgentLoopPolicy
+	cost := authority.AdmissionCostCeiling
+	if authority.SubstrateBinding.Kind != SubstrateLocalDevelopmentV1 ||
+		authority.HarnessBinding.Backend.BackendKind != HarnessBackendDirectOpenAICompatibleV1 || authority.HarnessBinding.Backend.ProviderContractKind != ProviderContractConfiguredEndpointV1 ||
+		authority.HarnessBinding.Resource.Kind != ProviderResourceLocalEndpointV1 || policy == nil || cost.MCPToolCost == nil || cost.WebSearchCost == nil ||
+		authority.HarnessBinding.EvidenceExpiresAt == nil || authority.ValidateAt(parent.ReservedAt) != nil || parent.ValidateForAuthority(authority) != nil ||
+		source.ValidateForExecution(authority.ExecutionPlacementV2, authority.HarnessBinding, authority.SubstrateBinding, cost) != nil || source.IssuedAt.After(parent.ReservedAt) {
+		return bad()
+	}
+	deadline := parent.ReservedAt.Add(policy.Limits.MaxActiveDuration)
+	for _, bound := range []time.Time{authority.InvocationDeadline, authority.Lease.ExpiresAt, source.ExpiresAt, authority.SubstrateBinding.ProfileEvidenceExpiresAt,
+		policy.ExpiresAt, *authority.HarnessBinding.EvidenceExpiresAt, cost.PriceExpiresAt, cost.MCPToolCost.PriceExpiresAt, cost.WebSearchCost.PriceExpiresAt} {
+		if bound.Before(deadline) {
+			deadline = bound
+		}
+	}
+	for _, spending := range source.Spending {
+		if spending.ValidateAt(parent.ReservedAt) != nil {
+			return bad()
+		}
+		if spending.Window.ExpiresAt.Before(deadline) {
+			deadline = spending.Window.ExpiresAt
+		}
+	}
+	if !ownedCurrentTime(deadline) || !deadline.After(parent.ReservedAt) {
+		return bad()
+	}
+	return deadline.UTC(), nil
+}
+
 // The caller must supply the EXACT original authenticated prepared capability's
 // digest. A domain type cannot verify its process-local MAC or confirmed commit.
-func BuildRegisteredAllocationV1(authority ServerlessInvocationAuthorityV1, parent AttemptEffectReservationV1, prepared PreparedAllocationV1, preparedDigest PreparedInvocationDigestV1, preparedExpiresAt time.Time, source AttemptExecutionSourceV1, allocationID string, allocationGeneration uint64, window OwnedAgentAuthorityWindowV1) (RegisteredAllocationV1, error) {
+func BuildRegisteredAllocationV2(authority ServerlessInvocationAuthorityV1, parent AttemptEffectReservationV1, prepared PreparedAllocationV2, preparedDigest PreparedInvocationDigestV1, preparedExpiresAt time.Time, source AttemptExecutionSourceV1, allocationID string, allocationGeneration uint64, window OwnedAgentAuthorityWindowV1) (RegisteredAllocationV2, error) {
 	if window.Validate() != nil || authority.ValidateAt(window.ObservedAt) != nil || parent.ValidateForAuthority(authority) != nil ||
 		prepared.ValidateForBinding(authority.SubstrateBinding, authority.HarnessBinding.Backend) != nil || preparedDigest.Validate() != nil ||
-		!ownedCurrentTime(preparedExpiresAt) || preparedExpiresAt.After(authority.InvocationDeadline) || window.ExpiresAt.After(preparedExpiresAt) ||
+		!ownedCurrentTime(preparedExpiresAt) || preparedExpiresAt.After(authority.InvocationDeadline) || !window.PublishedAt.Before(preparedExpiresAt) ||
 		source.ValidateForExecution(authority.ExecutionPlacementV2, authority.HarnessBinding, authority.SubstrateBinding, authority.AdmissionCostCeiling) != nil ||
 		window.ExpiresAt.After(authority.InvocationDeadline) || window.ExpiresAt.After(source.ExpiresAt) {
-		return RegisteredAllocationV1{}, registeredPreparationError("allocation.builder", "requires original owned authority, parent and prepared observation")
+		return RegisteredAllocationV2{}, registeredPreparationError("allocation.builder", "requires original owned authority, parent and prepared observation")
+	}
+	ceiling := preparedExpiresAt
+	if authority.SubstrateBinding.Kind == SubstrateLocalDevelopmentV1 {
+		var err error
+		ceiling, err = LocalAllocationActiveDeadlineV2(authority, parent, source)
+		if err != nil {
+			return RegisteredAllocationV2{}, err
+		}
+	}
+	if window.ExpiresAt.After(ceiling) {
+		return RegisteredAllocationV2{}, registeredPreparationError("allocation.window", "must fit the original active lifetime; image paths retain their original setup cap")
 	}
 	pd, _ := parent.DigestForAuthority(authority)
 	ad, _ := prepared.DigestForBinding(authority.SubstrateBinding, authority.HarnessBinding.Backend)
 	sd, _ := source.Digest()
-	v := RegisteredAllocationV1{Version: 1, Scope: source.Scope, Lease: authority.Lease, ParentReservation: parent.Clone(), ParentReservationDigest: pd,
+	v := RegisteredAllocationV2{Version: RegisteredAllocationVersionV2, Scope: source.Scope, Lease: authority.Lease, ParentReservation: parent.Clone(), ParentReservationDigest: pd,
 		PreparedInvocationDigest: preparedDigest, PreparedAllocationDigest: ad, Backend: authority.HarnessBinding.Backend, Substrate: authority.SubstrateBinding,
 		PreparedInvocationExpiresAt: preparedExpiresAt, InvocationDeadline: authority.InvocationDeadline,
 		ObservedImageDigest: prepared.ObservedImageDigest, ObservedOuterHarnessDigest: prepared.ObservedOuterHarnessDigest,
 		ObservedProxyArtifactDigest: prepared.ObservedProxyArtifactDigest, ObservedProxyIdentityDigest: prepared.ObservedProxyIdentityDigest, WorkloadMode: prepared.WorkloadMode,
+		LocalRuntime: prepared.LocalRuntime,
 		SourceDigest: sd, Profile: source.Profile, SourceIssuedAt: source.IssuedAt, SourceExpiresAt: source.ExpiresAt,
 		AllocationID: allocationID, AllocationGeneration: allocationGeneration, State: RegisteredPreparationActiveV1, RevocationGeneration: 1, Window: window, UpdatedAt: window.PublishedAt}
 	for i, s := range source.Spending {
 		d, _ := s.Digest()
 		v.Spending[i] = RegisteredSpendingReferenceV1{Locator: s.Locator, RevocationGeneration: s.RevocationGeneration, Digest: d, Window: s.Window.Clone()}
 	}
-	if _, err := EncodeRegisteredAllocationV1(v); err != nil {
-		return RegisteredAllocationV1{}, err
+	if _, err := EncodeRegisteredAllocationV2(v); err != nil {
+		return RegisteredAllocationV2{}, err
 	}
 	return v.Clone(), nil
 }
 
-func (v RegisteredAllocationV1) ValidateForAuthority(authority ServerlessInvocationAuthorityV1, parent AttemptEffectReservationV1, prepared PreparedAllocationV1, preparedDigest PreparedInvocationDigestV1, preparedExpiresAt time.Time, source AttemptExecutionSourceV1) error {
+func (v RegisteredAllocationV2) ValidateForAuthority(authority ServerlessInvocationAuthorityV1, parent AttemptEffectReservationV1, prepared PreparedAllocationV2, preparedDigest PreparedInvocationDigestV1, preparedExpiresAt time.Time, source AttemptExecutionSourceV1) error {
 	if err := v.Validate(); err != nil {
 		return err
 	}
-	expected, err := BuildRegisteredAllocationV1(authority, parent, prepared, preparedDigest, preparedExpiresAt, source, v.AllocationID, v.AllocationGeneration, v.Window)
+	expected, err := BuildRegisteredAllocationV2(authority, parent, prepared, preparedDigest, preparedExpiresAt, source, v.AllocationID, v.AllocationGeneration, v.Window)
 	if err != nil {
 		return err
 	}
 	expected.State, expected.RevocationGeneration, expected.UpdatedAt = v.State, v.RevocationGeneration, v.UpdatedAt
-	left, _ := EncodeRegisteredAllocationV1(expected)
-	right, _ := EncodeRegisteredAllocationV1(v)
+	left, _ := EncodeRegisteredAllocationV2(expected)
+	right, _ := EncodeRegisteredAllocationV2(v)
 	if !bytes.Equal(left, right) {
 		return registeredPreparationError("allocation.correlation", "requires every exact original authority and prepared field")
 	}
 	return nil
 }
 
-func (v RegisteredAllocationV1) ValidateInitial() error {
+func (v RegisteredAllocationV2) ValidateInitial() error {
 	if err := v.Validate(); err != nil {
 		return err
 	}
 	return validateRegisteredInitial(v.State, v.RevocationGeneration, v.Window, v.UpdatedAt)
 }
-func (v RegisteredAllocationV1) ValidateAt(now time.Time) error {
+func (v RegisteredAllocationV2) ValidateAt(now time.Time) error {
 	if err := v.Validate(); err != nil {
 		return err
 	}
 	return validateRegisteredAt(v.State, v.Window, v.UpdatedAt, now)
 }
-func (v RegisteredAllocationV1) ValidateTransitionFrom(old RegisteredAllocationV1) error {
+func (v RegisteredAllocationV2) ValidateTransitionFrom(old RegisteredAllocationV2) error {
 	if old.Validate() != nil || v.Validate() != nil || validateRegisteredTransition(old.State, v.State, old.RevocationGeneration, v.RevocationGeneration, old.UpdatedAt, v.UpdatedAt) != nil {
 		return registeredPreparationError("allocation.transition", "requires monotonic retirement or revocation")
 	}
 	expected := old.Clone()
 	expected.State, expected.RevocationGeneration, expected.UpdatedAt = v.State, v.RevocationGeneration, v.UpdatedAt
-	left, _ := EncodeRegisteredAllocationV1(expected)
-	right, _ := EncodeRegisteredAllocationV1(v)
+	left, _ := EncodeRegisteredAllocationV2(expected)
+	right, _ := EncodeRegisteredAllocationV2(v)
 	if !bytes.Equal(left, right) {
 		return registeredPreparationError("allocation.transition", "cannot replace original preparation or widen authority")
 	}
 	return nil
 }
-func (v RegisteredAllocationV1) Digest() (RegisteredAllocationDigestV1, error) {
+func (v RegisteredAllocationV2) Digest() (RegisteredAllocationDigestV2, error) {
 	if err := v.Validate(); err != nil {
 		return "", err
 	}
-	d, err := ownedCurrentDigest("sessionless.registered-allocation.v1", v.Clone())
-	return RegisteredAllocationDigestV1(d), err
+	d, err := ownedCurrentDigest("sessionless.registered-allocation.v2", v.Clone())
+	return RegisteredAllocationDigestV2(d), err
 }
-func (v RegisteredAllocationDigestV1) Validate() error {
+func (v RegisteredAllocationDigestV2) Validate() error {
 	return validateSHA256("registered_allocation_digest", string(v))
 }
-func EncodeRegisteredAllocationV1(v RegisteredAllocationV1) ([]byte, error) {
+func EncodeRegisteredAllocationV2(v RegisteredAllocationV2) ([]byte, error) {
 	if err := v.Validate(); err != nil {
 		return nil, err
 	}
 	return encodeOwnedCurrent(v.Clone())
 }
-func DecodeRegisteredAllocationV1(raw []byte) (RegisteredAllocationV1, error) {
-	var v RegisteredAllocationV1
+func DecodeRegisteredAllocationV2(raw []byte) (RegisteredAllocationV2, error) {
+	var v RegisteredAllocationV2
 	if err := decodeOwnedCurrent(raw, &v); err != nil {
-		return RegisteredAllocationV1{}, err
+		return RegisteredAllocationV2{}, err
 	}
-	expected, err := EncodeRegisteredAllocationV1(v)
+	expected, err := EncodeRegisteredAllocationV2(v)
 	if err != nil || !bytes.Equal(raw, expected) {
-		return RegisteredAllocationV1{}, registeredPreparationError("allocation.codec", "requires exact bounded canonical producer bytes")
+		return RegisteredAllocationV2{}, registeredPreparationError("allocation.codec", "requires exact bounded canonical producer bytes")
 	}
 	return v.Clone(), nil
 }
@@ -273,7 +344,7 @@ type RegisteredProxyAttestationV2 struct {
 	PhysicalInvocationClaimID  string                          `json:"physical_invocation_claim_id"`
 	AllocationID               string                          `json:"allocation_id"`
 	AllocationGeneration       uint64                          `json:"allocation_generation"`
-	RegisteredAllocationDigest RegisteredAllocationDigestV1    `json:"registered_allocation_digest"`
+	RegisteredAllocationDigest RegisteredAllocationDigestV2    `json:"registered_allocation_digest"`
 	SourceDigest               string                          `json:"source_digest"`
 	ServiceKind                RegisteredProxyServiceKindV1    `json:"service_kind"`
 	TransportDigest            string                          `json:"transport_digest"`
@@ -343,7 +414,10 @@ func (v RegisteredProxyAttestationV2) Validate() error {
 	return nil
 }
 
-func BuildRegisteredPinnedHTTPSProxyAttestationV2(allocation RegisteredAllocationV1, source AttemptExecutionSourceV1, service RegisteredProxyServiceKindV1, transportDigest, policyDigest, resolutionSetDigest string, policyBody, attestationBody OwnedAgentAuthorityBodyRefV1, window OwnedAgentAuthorityWindowV1, sequence uint64, operationDigest AttemptOperationDigestV1) (RegisteredProxyAttestationV2, error) {
+func BuildRegisteredPinnedHTTPSProxyAttestationV2(allocation RegisteredAllocationV2, source AttemptExecutionSourceV1, service RegisteredProxyServiceKindV1, transportDigest, policyDigest, resolutionSetDigest string, policyBody, attestationBody OwnedAgentAuthorityBodyRefV1, window OwnedAgentAuthorityWindowV1, sequence uint64, operationDigest AttemptOperationDigestV1) (RegisteredProxyAttestationV2, error) {
+	if allocation.Substrate.Kind == SubstrateLocalDevelopmentV1 || allocation.LocalRuntime != nil {
+		return RegisteredProxyAttestationV2{}, registeredPreparationError("proxy.local_allocation", "HTTPS publication cannot attest a local runtime; its actual retained loopback connector is required")
+	}
 	sd, err := source.Digest()
 	if err != nil || allocation.ValidateAt(window.PublishedAt) != nil || window.Validate() != nil || allocation.SourceDigest != sd || allocation.Scope != source.Scope ||
 		window.ObservedAt.Before(allocation.ParentReservation.ReservedAt) || window.ObservedAt.Before(allocation.Window.ObservedAt) || window.ExpiresAt.After(allocation.Window.ExpiresAt) {
@@ -381,11 +455,11 @@ func BuildRegisteredPinnedHTTPSProxyAttestationV2(allocation RegisteredAllocatio
 // head. It is not a current permission check: fresh execution separately needs
 // active unchanged allocation/proxy rows and the complete same-Tx authority.
 // Never normalize a current tombstone into an invented historical snapshot.
-func (v RegisteredProxyAttestationV2) ValidateForAllocation(allocation RegisteredAllocationV1, source AttemptExecutionSourceV1) error {
+func (v RegisteredProxyAttestationV2) ValidateForAllocation(allocation RegisteredAllocationV2, source AttemptExecutionSourceV1) error {
 	if err := v.Validate(); err != nil {
 		return err
 	}
-	if v.TransportKind != RegisteredProxyTransportPinnedHTTPSV2 || v.PinnedHTTPS == nil {
+	if allocation.Substrate.Kind == SubstrateLocalDevelopmentV1 || allocation.LocalRuntime != nil || v.TransportKind != RegisteredProxyTransportPinnedHTTPSV2 || v.PinnedHTTPS == nil {
 		return registeredPreparationError("proxy.local_allocation", "local publication requires its actual allocation successor and retained connector producer")
 	}
 	expected, err := BuildRegisteredPinnedHTTPSProxyAttestationV2(allocation, source, v.ServiceKind, v.TransportDigest, v.PolicyDigest, v.PinnedHTTPS.ResolutionSetDigest, v.PolicyBody, v.AttestationBody, v.Window, v.OperationSequence, v.OperationDigest)

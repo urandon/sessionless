@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // ServerlessInvocationAuthorityV1 is assembled from canonical state only
 // after the lease is claimed. Queue delivery fields are not authority.
@@ -133,7 +136,46 @@ type InProcessAttestationV1 struct {
 	LinkedBackendProfileDigest string `json:"linked_backend_profile_digest"`
 }
 
-type PreparedAllocationV1 struct {
+// LocalRuntimeAttestationV2 is bounded observation DATA, not proof that a host
+// enforces cgroups/RSS ceilings or that an arbitrary caller is an installer.
+// The actual executable/host/network producer and retained connector remain
+// separate from canonical validation of these exact configured correlations.
+type LocalRuntimeAttestationV2 struct {
+	ConfiguredProfileDigest        string                      `json:"configured_profile_digest"`
+	InstallationID                 string                      `json:"installation_id"`
+	InstallationRevision           uint64                      `json:"installation_revision"`
+	WorkerExecutableDigest         string                      `json:"worker_executable_digest"`
+	HostIdentityDigest             string                      `json:"host_identity_digest"`
+	NetworkNamespaceIdentityDigest string                      `json:"network_namespace_identity_digest"`
+	Limits                         ConfiguredInferenceLimitsV1 `json:"limits"`
+}
+
+func (v LocalRuntimeAttestationV2) Clone() LocalRuntimeAttestationV2 { return v }
+
+func (v LocalRuntimeAttestationV2) ValidateForBinding(binding SubstrateBindingV1, backend HarnessBackendDescriptorV1) error {
+	bad := func() error {
+		return ValidationError{Field: "local_runtime_attestation", Reason: "requires the exact configured local runtime and bounded raw IO"}
+	}
+	if binding.Validate() != nil || backend.Validate() != nil || binding.Kind != SubstrateLocalDevelopmentV1 || binding.WorkloadMode != SubstrateWorkloadInProcessDirectV1 ||
+		backend.BackendKind != HarnessBackendDirectOpenAICompatibleV1 || backend.ProviderContractKind != ProviderContractConfiguredEndpointV1 ||
+		v.ConfiguredProfileDigest != backend.BackendProfileDigest || v.InstallationID != binding.LocalInstallationID || v.InstallationRevision != binding.LocalInstallationRevision ||
+		v.WorkerExecutableDigest != binding.OuterHarnessArtifactDigest || v.HostIdentityDigest != binding.LocalHostIdentityDigest || v.NetworkNamespaceIdentityDigest != binding.LocalNetworkNamespaceIdentityDigest ||
+		v.Limits.Validate() != nil || v.Limits.OperationTimeout > binding.Limits.ExecutionTimeout || v.Limits.CleanupTimeout > binding.Limits.CleanupTimeout {
+		return bad()
+	}
+	// These are raw request/response/header buffer ceilings only, not a claim
+	// about model memory, host process RSS, or enforced container isolation.
+	remaining := binding.Limits.MemoryBytes
+	for _, bytes := range []uint64{v.Limits.RequestBytes, v.Limits.ResponseBytes, v.Limits.ResponseHeaderBytes} {
+		if bytes > remaining {
+			return bad()
+		}
+		remaining -= bytes
+	}
+	return nil
+}
+
+type PreparedAllocationV2 struct {
 	Version                     uint32                     `json:"version"`
 	SubstrateBindingDigest      SubstrateBindingDigestV1   `json:"substrate_binding_digest"`
 	ObservedImageDigest         string                     `json:"observed_image_digest"`
@@ -143,9 +185,10 @@ type PreparedAllocationV1 struct {
 	WorkloadMode                SubstrateWorkloadModeV1    `json:"workload_mode"`
 	ChildProcess                *ChildProcessAttestationV1 `json:"child_process,omitempty"`
 	InProcess                   *InProcessAttestationV1    `json:"in_process,omitempty"`
+	LocalRuntime                *LocalRuntimeAttestationV2 `json:"local_runtime,omitempty"`
 }
 
-func (value PreparedAllocationV1) Clone() PreparedAllocationV1 {
+func (value PreparedAllocationV2) Clone() PreparedAllocationV2 {
 	clone := value
 	if value.ChildProcess != nil {
 		child := *value.ChildProcess
@@ -156,18 +199,19 @@ func (value PreparedAllocationV1) Clone() PreparedAllocationV1 {
 		inProcess := *value.InProcess
 		clone.InProcess = &inProcess
 	}
+	if value.LocalRuntime != nil {
+		local := value.LocalRuntime.Clone()
+		clone.LocalRuntime = &local
+	}
 	return clone
 }
 
-func (value PreparedAllocationV1) ValidateForBinding(binding SubstrateBindingV1, backend HarnessBackendDescriptorV1) error {
-	if value.Version != PreparedAllocationVersionV1 {
-		return ValidationError{Field: "prepared_allocation.version", Reason: "must equal 1"}
+func (value PreparedAllocationV2) ValidateForBinding(binding SubstrateBindingV1, backend HarnessBackendDescriptorV1) error {
+	if value.Version != PreparedAllocationVersionV2 {
+		return ValidationError{Field: "prepared_allocation.version", Reason: "must equal 2"}
 	}
 	if err := binding.Validate(); err != nil {
 		return err
-	}
-	if binding.Kind == SubstrateLocalDevelopmentV1 {
-		return ValidationError{Field: "prepared_allocation", Reason: "local executable observation requires its explicit successor; image-backed V1 cannot attest it"}
 	}
 	if err := backend.Validate(); err != nil {
 		return err
@@ -178,6 +222,15 @@ func (value PreparedAllocationV1) ValidateForBinding(binding SubstrateBindingV1,
 	}
 	if value.SubstrateBindingDigest != bindingDigest || value.ObservedImageDigest != binding.ImageDigest || value.ObservedOuterHarnessDigest != binding.OuterHarnessArtifactDigest || value.ObservedProxyArtifactDigest != binding.EgressProxyArtifactDigest || value.ObservedProxyIdentityDigest != binding.EgressProxyIdentityDigest || value.WorkloadMode != binding.WorkloadMode {
 		return ValidationError{Field: "prepared_allocation", Reason: "must exact-match the sealed substrate and proxy attestation"}
+	}
+	if binding.Kind == SubstrateLocalDevelopmentV1 {
+		if value.LocalRuntime == nil || value.ChildProcess != nil || value.InProcess != nil || value.ObservedImageDigest != "" || value.WorkloadMode != SubstrateWorkloadInProcessDirectV1 {
+			return ValidationError{Field: "prepared_allocation.local_runtime", Reason: "requires exactly the local runtime variant, no image or child/in-process image attestation"}
+		}
+		return value.LocalRuntime.ValidateForBinding(binding, backend)
+	}
+	if value.LocalRuntime != nil {
+		return ValidationError{Field: "prepared_allocation.local_runtime", Reason: "must be absent for every image-backed allocation"}
 	}
 	for field, observed := range map[string]string{
 		"observed_image_digest": value.ObservedImageDigest, "observed_outer_harness_digest": value.ObservedOuterHarnessDigest,
@@ -213,11 +266,11 @@ func (value PreparedAllocationV1) ValidateForBinding(binding SubstrateBindingV1,
 	return nil
 }
 
-func (value PreparedAllocationV1) DigestForBinding(binding SubstrateBindingV1, backend HarnessBackendDescriptorV1) (PreparedAllocationDigestV1, error) {
+func (value PreparedAllocationV2) DigestForBinding(binding SubstrateBindingV1, backend HarnessBackendDescriptorV1) (PreparedAllocationDigestV2, error) {
 	if err := value.ValidateForBinding(binding, backend); err != nil {
 		return "", err
 	}
-	digest := newServerlessDigest("sessionless.prepared-allocation.v1")
+	digest := newServerlessDigest("sessionless.prepared-allocation.v2")
 	digest.uint(uint64(value.Version))
 	for _, field := range []string{string(value.SubstrateBindingDigest), value.ObservedImageDigest, value.ObservedOuterHarnessDigest, value.ObservedProxyArtifactDigest, value.ObservedProxyIdentityDigest, string(value.WorkloadMode)} {
 		digest.str(field)
@@ -240,10 +293,24 @@ func (value PreparedAllocationV1) DigestForBinding(binding SubstrateBindingV1, b
 		digest.uint(1)
 		digest.str(value.InProcess.LinkedBackendProfileDigest)
 	}
-	return PreparedAllocationDigestV1(digest.sum()), nil
+	if value.LocalRuntime == nil {
+		digest.uint(0)
+	} else {
+		digest.uint(1)
+		local := value.LocalRuntime
+		for _, field := range []string{local.ConfiguredProfileDigest, local.InstallationID, local.WorkerExecutableDigest, local.HostIdentityDigest, local.NetworkNamespaceIdentityDigest} {
+			digest.str(field)
+		}
+		digest.uint(local.InstallationRevision)
+		// Canonical struct JSON seals every configured limit, including parser,
+		// tool, token and time bounds, rather than maintaining a partial list.
+		limits, _ := json.Marshal(local.Limits)
+		digest.str(string(limits))
+	}
+	return PreparedAllocationDigestV2(digest.sum()), nil
 }
 
-func (digest PreparedAllocationDigestV1) Validate() error {
+func (digest PreparedAllocationDigestV2) Validate() error {
 	return validateSHA256("prepared_allocation_digest", string(digest))
 }
 

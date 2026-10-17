@@ -157,7 +157,7 @@ func TestLocalSubstrateHasNoInventedImageOrRegion(t *testing.T) {
 	if err := image.Validate(); err == nil {
 		t.Fatal("old image-backed profile accepted missing image")
 	}
-	if err := (domain.PreparedAllocationV1{Version: 1}).ValidateForBinding(s, localContractBinding(t).Backend); err == nil {
+	if err := (domain.PreparedAllocationV2{Version: 1}).ValidateForBinding(s, localContractBinding(t).Backend); err == nil {
 		t.Fatal("old image allocation attested local executable")
 	}
 }

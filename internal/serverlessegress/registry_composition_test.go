@@ -26,13 +26,13 @@ type joinedEgressSubstrate struct {
 	preparedDigests                         []domain.PreparedInvocationDigestV1
 }
 
-func (driver *joinedEgressSubstrate) Preflight(ctx context.Context, authority domain.ServerlessInvocationAuthorityV1) (domain.PreparedAllocationV1, error) {
+func (driver *joinedEgressSubstrate) Preflight(ctx context.Context, authority domain.ServerlessInvocationAuthorityV1) (domain.PreparedAllocationV2, error) {
 	driver.preflights++
 	if err := ctx.Err(); err != nil {
-		return domain.PreparedAllocationV1{}, err
+		return domain.PreparedAllocationV2{}, err
 	}
 	if err := authority.ValidateAt(driver.fixture.clock.Now()); err != nil {
-		return domain.PreparedAllocationV1{}, err
+		return domain.PreparedAllocationV2{}, err
 	}
 	return driver.fixture.request.Prepared.Allocation(), nil
 }

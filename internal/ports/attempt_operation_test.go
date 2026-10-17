@@ -21,7 +21,7 @@ func operationPortFixture(t *testing.T) ports.ReserveAttemptOperationResultV1 {
 		t.Fatal(err)
 	}
 	r := domain.AttemptOperationReservationV1{Version: 1, Operation: op, OperationDigest: digest, ReservedAt: at, AggregateDebit: op.Debit}
-	r.RegisteredAllocationDigest = domain.RegisteredAllocationDigestV1(strings.Repeat("1", 64))
+	r.RegisteredAllocationDigest = domain.RegisteredAllocationDigestV2(strings.Repeat("1", 64))
 	r.RegisteredProxyDigest = domain.RegisteredProxyAttestationDigestV2(strings.Repeat("2", 64))
 	r.ComponentAmounts[0] = op.Debit.AmountMicrounits
 	c := ports.AttemptOperationCapabilityV1{Version: 1, Reservation: r, IssuedAt: at, ExpiresAt: op.Deadline, Authenticator: []byte(strings.Repeat("c", 32))}

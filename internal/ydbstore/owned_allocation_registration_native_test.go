@@ -13,7 +13,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/serverlessharness"
 )
 
-func nativeOwnedAllocationPublication(t *testing.T, g nativeOwnedParentGraph) ports.OwnedAllocationPublicationV1 {
+func nativeOwnedAllocationPublication(t *testing.T, g nativeOwnedParentGraph) ports.OwnedAllocationPublicationV2 {
 	t.Helper()
 	g.f.store.ownedPreparationGrantVerifier = g.issuer
 	created, err := g.f.store.reserveBoundedOwnedAttemptEffect(g.ctx, g.request)
@@ -54,7 +54,7 @@ func TestOwnedAllocationRegistrationYDBConcurrentActualProducerPublicationAndFre
 	storeA, storeB := *g.f.store, *g.f.store
 	start := make(chan struct{})
 	type outcome struct {
-		receipt ports.OwnedAllocationRegistrationReceiptV1
+		receipt ports.OwnedAllocationRegistrationReceiptV2
 		err     error
 	}
 	results := make(chan outcome, 2)

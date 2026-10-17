@@ -16,7 +16,7 @@ import (
 // No arbitrary signer or caller observation enters this producer. Only the
 // original object AFTER its actual TLS handshake issues the sealed carrier.
 // Observation does not claim that durable setup accounting already happened.
-func (p *PinnedHTTPSProxyV1) ObserveOwnedProxy(allocation domain.RegisteredAllocationV1, source domain.AttemptExecutionSourceV1, operation domain.AttemptOperationV1) (ports.OwnedProxyPublicationV2, error) {
+func (p *PinnedHTTPSProxyV1) ObserveOwnedProxy(allocation domain.RegisteredAllocationV2, source domain.AttemptExecutionSourceV1, operation domain.AttemptOperationV1) (ports.OwnedProxyPublicationV2, error) {
 	if p == nil || p.self != p {
 		return ports.OwnedProxyPublicationV2{}, ErrProxyAttestation
 	}

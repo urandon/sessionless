@@ -133,7 +133,7 @@ func (tx allocationTx) Rollback() error { tx.f.pending = nil; return tx.inner.Ro
 type ownedAllocationFixture struct {
 	parent      *ownedAttemptEffectParentFixture
 	sql         *allocationSQLFixture
-	publication ports.OwnedAllocationPublicationV1
+	publication ports.OwnedAllocationPublicationV2
 	bridge      *serverlessharness.BoundedOwnedAllocationPreparationV1
 }
 
@@ -241,7 +241,7 @@ func TestOwnedAllocationRegistrationTerminalUnknownCommitReturnsZeroThenHistory(
 	f := newOwnedAllocationFixture(t)
 	f.parent.graph.commitModes = []string{"ambiguous", "ambiguous", "ambiguous"}
 	got, err := f.parent.store.publishBoundedOwnedAllocation(t.Context(), f.publication)
-	if err == nil || !reflect.DeepEqual(got, ports.OwnedAllocationRegistrationReceiptV1{}) || f.sql.writes != 1 {
+	if err == nil || !reflect.DeepEqual(got, ports.OwnedAllocationRegistrationReceiptV2{}) || f.sql.writes != 1 {
 		t.Fatalf("terminal ambiguous result must be zero: err=%v writes=%d receipt=%+v", err, f.sql.writes, got)
 	}
 	f.parent.graph.commitModes = nil
@@ -378,7 +378,7 @@ func TestOwnedAllocationRegistrationRejectsMalformedAndForeignRows(t *testing.T)
 				v := first.Original.Clone()
 				v.Scope.OwnerUserID = "foreign-owner"
 				v.Profile.Locator.OwnerUserID = "foreign-owner"
-				raw, e := domain.EncodeRegisteredAllocationV1(v)
+				raw, e := domain.EncodeRegisteredAllocationV2(v)
 				if e != nil {
 					t.Fatalf("foreign owner fixture must remain structurally valid, not merely malformed: %v", e)
 				}
@@ -388,7 +388,7 @@ func TestOwnedAllocationRegistrationRejectsMalformedAndForeignRows(t *testing.T)
 			case "resurrected":
 				v := first.Current.Clone()
 				v.RevocationGeneration = 2
-				raw, e := domain.EncodeRegisteredAllocationV1(v)
+				raw, e := domain.EncodeRegisteredAllocationV2(v)
 				if e == nil {
 					f.sql.row[8] = string(raw)
 					d, _ := v.Digest()

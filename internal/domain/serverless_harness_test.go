@@ -194,8 +194,8 @@ func TestPreparedAllocationExactMatchesSealedInProcessProfile(t *testing.T) {
 	t.Parallel()
 	authority, _ := validServerlessInvocationAuthority(t)
 	substrateDigest, _ := authority.SubstrateBinding.Digest()
-	allocation := domain.PreparedAllocationV1{
-		Version: domain.PreparedAllocationVersionV1, SubstrateBindingDigest: substrateDigest,
+	allocation := domain.PreparedAllocationV2{
+		Version: domain.PreparedAllocationVersionV2, SubstrateBindingDigest: substrateDigest,
 		ObservedImageDigest:         authority.SubstrateBinding.ImageDigest,
 		ObservedOuterHarnessDigest:  authority.SubstrateBinding.OuterHarnessArtifactDigest,
 		ObservedProxyArtifactDigest: authority.SubstrateBinding.EgressProxyArtifactDigest,

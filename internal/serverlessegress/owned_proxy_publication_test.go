@@ -25,7 +25,7 @@ func TestOwnedProxyPublicationCannotBeSynthesizedOrSerialized(t *testing.T) {
 	}
 	f := newPinnedTLSFixture(t, "openrouter.ai", true, func(http.ResponseWriter, *http.Request) { t.Error("denied publication sent HTTP") })
 	f.preflight(t)
-	if _, err := f.p.ObserveOwnedProxy(domain.RegisteredAllocationV1{}, domain.AttemptExecutionSourceV1{}, domain.AttemptOperationV1{}); err == nil {
+	if _, err := f.p.ObserveOwnedProxy(domain.RegisteredAllocationV2{}, domain.AttemptExecutionSourceV1{}, domain.AttemptOperationV1{}); err == nil {
 		t.Fatal("actual TLS handshake is not a fabricated allocation/source proof")
 	}
 	if f.requests.Load() != 0 || f.dials.Load() != 1 || f.lookups.Load() != 1 {

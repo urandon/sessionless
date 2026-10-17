@@ -21,7 +21,7 @@ type OwnedAttemptPreparationBurnV1 interface {
 // OwnedAttemptPreflightV1 exposes no model execution, cleanup or endpoint selector.
 // The trusted composer fixes the credential-free fixture driver at construction.
 type OwnedAttemptPreflightV1 interface {
-	Preflight(context.Context, domain.ServerlessInvocationAuthorityV1) (domain.PreparedAllocationV1, error)
+	Preflight(context.Context, domain.ServerlessInvocationAuthorityV1) (domain.PreparedAllocationV2, error)
 }
 
 // BoundedOwnedAttemptPreparationV1 is a private-composition prerequisite, NOT an
@@ -36,6 +36,7 @@ type BoundedOwnedAttemptPreparationV1 struct {
 	backend domain.HarnessBackendDescriptorV1
 	binding domain.SubstrateBindingV1
 	driver  OwnedAttemptPreflightV1
+	local   *localExecutionAllocationV1
 	burn    OwnedAttemptPreparationBurnV1
 }
 
@@ -67,12 +68,12 @@ func (bridge *BoundedOwnedAttemptPreparationV1) Prepare(
 	}
 	grant = grant.Clone()
 	authority := grant.Authority
-	if bridge.issuer.VerifyGrant(grant) != nil || authority.HarnessBinding.Profile != domain.HarnessExecutionOwnedAgentV2 ||
+	fixture := bridge.local == nil && authority.HarnessBinding.Resource.Kind == domain.ProviderResourceCredentiallessFixtureV1 &&
+		authority.HarnessBinding.Resource.CredentialMode == domain.ProviderCredentialNoneV1 && authority.HarnessBinding.Resource.CredentialGeneration == 0
+	local := bridge.local != nil && bridge.local.source.ValidateExecutionBinding(authority, bridge.issuer.clock().UTC()) == nil
+	if bridge.issuer.VerifyGrant(grant) != nil || (!fixture && !local) || authority.HarnessBinding.Profile != domain.HarnessExecutionOwnedAgentV2 ||
 		authority.HarnessBinding.AgentLoopPolicy == nil || authority.HarnessBinding.Backend != bridge.backend ||
-		authority.SubstrateBinding != bridge.binding ||
-		authority.HarnessBinding.Resource.Kind != domain.ProviderResourceCredentiallessFixtureV1 ||
-		authority.HarnessBinding.Resource.CredentialMode != domain.ProviderCredentialNoneV1 ||
-		authority.HarnessBinding.Resource.CredentialGeneration != 0 {
+		authority.SubstrateBinding != bridge.binding {
 		return PreparedInvocation{}, substrateErrorV1{code: SubstrateFailureAuthorityInvalidV1}
 	}
 	// Never restart the original setup envelope at the time of replay. The
@@ -97,18 +98,37 @@ func (bridge *BoundedOwnedAttemptPreparationV1) Prepare(
 	if bounded.Err() != nil || bridge.issuer.VerifyGrant(grant) != nil || !bridge.issuer.clock().UTC().Before(deadline) {
 		return PreparedInvocation{}, substrateErrorV1{code: SubstrateFailureReconcileV1}
 	}
-	allocation, err := bridge.driver.Preflight(bounded, authority.Clone())
+	var allocation domain.PreparedAllocationV2
+	if bridge.local != nil {
+		// The setup context ends when Prepare returns. The retained allocation
+		// instead belongs to the original invocation context and fixed deadline.
+		allocation, err = bridge.local.preflight(bounded, ctx, authority.Clone(), grant.Reservation.Clone())
+	} else {
+		allocation, err = bridge.driver.Preflight(bounded, authority.Clone())
+	}
 	if err != nil || bounded.Err() != nil {
+		if bridge.local != nil {
+			bridge.local.close()
+		}
 		return PreparedInvocation{}, substrateErrorV1{code: SubstrateFailurePreflightV1}
 	}
 	if allocation.ValidateForBinding(bridge.binding, bridge.backend) != nil {
+		if bridge.local != nil {
+			bridge.local.close()
+		}
 		return PreparedInvocation{}, substrateErrorV1{code: SubstrateFailureBindingMismatchV1}
 	}
 	if bridge.issuer.VerifyGrant(grant) != nil || !bridge.issuer.clock().UTC().Before(deadline) {
+		if bridge.local != nil {
+			bridge.local.close()
+		}
 		return PreparedInvocation{}, substrateErrorV1{code: SubstrateFailureExpiredV1}
 	}
 	prepared, err := bridge.issuer.Issue(grant, allocation.Clone())
 	if err != nil {
+		if bridge.local != nil {
+			bridge.local.close()
+		}
 		return PreparedInvocation{}, substrateErrorV1{code: SubstrateFailureAuthorityInvalidV1}
 	}
 	return prepared, nil

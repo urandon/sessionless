@@ -29,8 +29,8 @@ type OwnedOperationResidualInventoryV1 struct {
 	Version            uint32                            `json:"version"`
 	Parent             domain.OwnedAttemptEffectParentV1 `json:"parent"`
 	Source             domain.AttemptExecutionSourceV1   `json:"source"`
-	OriginalAllocation domain.RegisteredAllocationV1     `json:"original_allocation"`
-	RetiredAllocation  domain.RegisteredAllocationV1     `json:"retired_allocation"`
+	OriginalAllocation domain.RegisteredAllocationV2     `json:"original_allocation"`
+	RetiredAllocation  domain.RegisteredAllocationV2     `json:"retired_allocation"`
 	AccountingDigest   string                            `json:"accounting_digest"`
 	AggregateDebit     domain.AttemptOperationDebitV1    `json:"aggregate_debit"`
 	ComponentAmounts   [4]uint64                         `json:"component_amounts"`

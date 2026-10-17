@@ -207,13 +207,15 @@ SubstrateExecutionEvidenceV1 {
   evidence_digest
 }
 
-PreparedAllocationV1 {
+PreparedAllocationV2 {
   exact substrate registry descriptor
   observed image and outer-harness digests
   workload_attestation {
     child_process { inner executable digest, exact argv, native protocol,
                     backend profile digest }
     | in_process_direct { linked backend profile digest }
+    | local_runtime { configured profile, installation/revision,
+                      executable, boot-host, network namespace, IO limits }
   }
   observed proxy artifact and workload-identity digests
 }
@@ -292,7 +294,7 @@ permission to create a new physical claim or repeat a provider effect.
 The prepared invocation is a short-lived, non-durable, non-JSON capability
 with an unexported process-local authenticator. It is issued
 only after exact substrate and harness preflight, the final authority gate, the
-atomic effect-reservation append, and exact `PreparedAllocationV1` attestation.
+atomic effect-reservation append, and exact `PreparedAllocationV2` attestation.
 It binds the winning physical claim to the stored reservation and observed
 allocation. It is not a lifecycle record and cannot be reconstructed from
 caller input or a queue delivery, and no public decoder or constructor exists.
@@ -410,7 +412,7 @@ DispatchOutbox -> YMQ dispatch message
   -> substrate registry preflight, then harness registry preflight
   -> final authority/freshness/cancel/profile gate and atomically append
      the canonical provider-effect reservation
-  -> attest PreparedAllocationV1 and issue the non-durable PreparedInvocationV1
+  -> attest PreparedAllocationV2 and issue the non-durable PreparedInvocationV1
   -> return only its opaque PreparedExecutionV1 operation session to the worker
   -> only the exact reservation owner materializes immutable context/workspace
   -> repeat the final authority/freshness/cancel/attestation gate
@@ -595,13 +597,68 @@ The feature-disabled PR-03b implementation contract and its inherited AW-05
 boundary are documented in
 [serverless-isolation.md](serverless-isolation.md).
 
-`PreparedAllocationV1` separates outer substrate allocation from workload
+`PreparedAllocationV2` separates outer substrate allocation from workload
 attestation. A child-process profile exact-compares the inner executable,
 artifact digest, argv, native protocol and backend profile immediately before
 spawn, following the #81/AW-05 boundary. An `in_process_direct` profile has no
 inner executable and must attest the outer image/binary plus the linked direct
 backend profile; `process=not_applicable` is then the only legal process fact.
 These modes are distinct registry entries and cannot substitute for each other.
+
+### Owned local-development allocation
+
+The canonical V2 prepared and registered allocation records explicitly separate
+image-backed execution from `local_development`. Local execution has exactly a
+`LocalRuntimeAttestationV2`, no image digest, child-process attestation or
+image-backed in-process attestation. Existing image paths retain their exact
+image/outer/backend/proxy checks. The ordinary in-process executor and V1
+image/process terminal evidence explicitly reject the local variant.
+
+`NewBoundedOwnedLocalAllocationPreparationV1` fixes a concrete authenticated
+`localoperator.Source` and reuses the existing preparation owner, capability
+issuer and confirmed durable preparation burn. Only after that burn does its
+private producer inspect this Go process's executable file, boot-scoped host and
+network namespace. A manifest naming some other installed executable is not an
+observation of the executing worker. The linked connector artifact is this
+worker binary; its versioned identity is independently derived from that
+artifact, not copied from the supplied binding. Exact configured IO limits come
+from the authenticated installation. No caller-supplied observation or signer
+can replace that producer.
+
+This is a trusted developer-host Go runtime, not a hostile-host loaded-memory
+attestation, container/cgroup boundary, process-wide RSS/CPU quota or model
+qualification. Configured raw request/response/header limits describe only
+owned IO; the connector and codec must actually enforce them before serving.
+No model-controlled code/shell, worker process, model server or global Go memory
+setting is started, stopped or changed by allocation preparation.
+
+Preparation, first registration and once-only loop entry retain the original
+short setup deadline. Entry consumes the privately retained original prepared
+capability through the existing issuer; no expired capability can enter later.
+The local allocation's distinct immutable active lifetime is intersected from
+the original reservation's active window, invocation, lease, source, policy,
+profile, price and all four spending expiries, never from registration time.
+Already-entered execution may outlive setup but cannot outlive those active
+bounds or treat cleanup allowance as execution time. Image-backed allocation
+lifetime remains capped by its original prepared expiry.
+
+Historical allocation authentication survives closure for reconciliation;
+fresh publication requires the actual retained live producer at transaction DB
+time. File/kernel inspection occurs outside SQL. `Close` retires only this
+owned allocation, never the shared installer or host; normal composition must
+call it on failed/ambiguous registration and on every exit. A failed burn or
+setup cannot prepare again or reconstruct the original handle. Entered-handle
+validation is not database approval: every connector operation still needs
+original/current Store joins and its own one-use capability before HTTP bytes.
+
+These V2 records reuse existing allocation/body/current rows. Their serving
+cutover follows the finite writer-stop, drain, retained-history reconciliation
+and writer-first rules in [egress cutover](serverless-egress.md#owned-observation-format-and-cutover).
+Old V1 allocation bytes are unsupported serving state, not converted or decoded
+as V2; a rollback must not hand V2 records to an old writer. No cutover is
+performed by publishing code. Actual loopback connector, wire codec and normal
+Web composition remain required under #216/#217/#218; this allocation API alone
+does not enable a model or close the local demo.
 
 ### Snapshots and warm pools
 

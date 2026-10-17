@@ -149,7 +149,7 @@ type SubstrateExecutionEvidenceV1 struct {
 	AdmissionCostCeilingDigest AdmissionCostCeilingDigestV2          `json:"admission_cost_ceiling_digest"`
 	PreparedInvocationDigest   PreparedInvocationDigestV1            `json:"prepared_invocation_digest"`
 	EffectReservationDigest    AttemptEffectReservationDigestV1      `json:"effect_reservation_digest"`
-	PreparedAllocationDigest   PreparedAllocationDigestV1            `json:"prepared_allocation_digest"`
+	PreparedAllocationDigest   PreparedAllocationDigestV2            `json:"prepared_allocation_digest"`
 	PhysicalInvocationClaimID  string                                `json:"physical_invocation_claim_id"`
 	Allocation                 SubstrateAllocationStateV1            `json:"allocation"`
 	Process                    SubstrateProcessStateV1               `json:"process"`
@@ -188,9 +188,12 @@ func (value SubstrateExecutionEvidenceV1) Clone() SubstrateExecutionEvidenceV1 {
 func (value SubstrateExecutionEvidenceV1) SealForAuthority(
 	authority ServerlessInvocationAuthorityV1,
 	reservation AttemptEffectReservationV1,
-	allocation PreparedAllocationV1,
+	allocation PreparedAllocationV2,
 	preparedDigest PreparedInvocationDigestV1,
 ) (SubstrateExecutionEvidenceV1, error) {
+	if authority.SubstrateBinding.Kind == SubstrateLocalDevelopmentV1 || allocation.LocalRuntime != nil {
+		return SubstrateExecutionEvidenceV1{}, ValidationError{Field: "substrate_execution_evidence.local", Reason: "image/process evidence V1 cannot attest the owned local runtime"}
+	}
 	if err := authority.Validate(); err != nil {
 		return SubstrateExecutionEvidenceV1{}, err
 	}
@@ -226,9 +229,12 @@ func (value SubstrateExecutionEvidenceV1) SealForAuthority(
 func (value SubstrateExecutionEvidenceV1) ValidateForAuthority(
 	authority ServerlessInvocationAuthorityV1,
 	reservation AttemptEffectReservationV1,
-	allocation PreparedAllocationV1,
+	allocation PreparedAllocationV2,
 	preparedDigest PreparedInvocationDigestV1,
 ) error {
+	if authority.SubstrateBinding.Kind == SubstrateLocalDevelopmentV1 || allocation.LocalRuntime != nil {
+		return ValidationError{Field: "substrate_execution_evidence.local", Reason: "image/process evidence V1 cannot attest the owned local runtime"}
+	}
 	if err := authority.Validate(); err != nil {
 		return err
 	}
@@ -320,7 +326,7 @@ func (value SubstrateExecutionEvidenceV1) ValidateForPersistedAuthority(
 func (value SubstrateExecutionEvidenceV1) DigestForAuthority(
 	authority ServerlessInvocationAuthorityV1,
 	reservation AttemptEffectReservationV1,
-	allocation PreparedAllocationV1,
+	allocation PreparedAllocationV2,
 	preparedDigest PreparedInvocationDigestV1,
 ) (SubstrateExecutionEvidenceDigestV1, error) {
 	copy := value.Clone()

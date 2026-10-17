@@ -315,8 +315,8 @@ func newBoundaryFixture(t *testing.T, delivery domain.ProviderCredentialDelivery
 	if err != nil {
 		t.Fatal(err)
 	}
-	allocation := domain.PreparedAllocationV1{
-		Version: domain.PreparedAllocationVersionV1, SubstrateBindingDigest: substrateDigest,
+	allocation := domain.PreparedAllocationV2{
+		Version: domain.PreparedAllocationVersionV2, SubstrateBindingDigest: substrateDigest,
 		ObservedImageDigest: substrate.ImageDigest, ObservedOuterHarnessDigest: substrate.OuterHarnessArtifactDigest,
 		ObservedProxyArtifactDigest: substrate.EgressProxyArtifactDigest, ObservedProxyIdentityDigest: substrate.EgressProxyIdentityDigest,
 		WorkloadMode: domain.SubstrateWorkloadInProcessDirectV1,

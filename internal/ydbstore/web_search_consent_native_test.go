@@ -71,7 +71,7 @@ func nativeConsentModel(t *testing.T, g nativeOwnedParentGraph, keeper *nativeOp
 	t.Helper()
 	parent, _ := g.persistedParent(t)
 	clock := nativeOperationClock{g.ctx, g.f.store}
-	var allocation domain.RegisteredAllocationV1
+	var allocation domain.RegisteredAllocationV2
 	if err := g.f.store.ownedAuthorityTx(g.ctx, func(ctx context.Context, q *ownedAuthorityQuery) error {
 		_, p, s, burn, err := g.f.store.operationParent(ctx, q, keeper.scope)
 		if err != nil {
@@ -332,7 +332,7 @@ func nativeConsentSearchSend(t *testing.T, g nativeOwnedParentGraph, keeper *nat
 	t.Helper()
 	parent, _ := g.persistedParent(t)
 	clock := nativeOperationClock{g.ctx, g.f.store}
-	var allocation domain.RegisteredAllocationV1
+	var allocation domain.RegisteredAllocationV2
 	if err := g.f.store.ownedAuthorityTx(g.ctx, func(ctx context.Context, q *ownedAuthorityQuery) error {
 		_, p, s, burn, err := g.f.store.operationParent(ctx, q, keeper.scope)
 		if err != nil {

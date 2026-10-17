@@ -49,7 +49,7 @@ type PinnedHTTPSProxyV1 struct {
 	stopLifetime                   func() bool
 	attestation                    ProxyAttestationV1
 	observedAt                     time.Time
-	publicationAllocation          domain.RegisteredAllocationDigestV1
+	publicationAllocation          domain.RegisteredAllocationDigestV2
 	publicationSource              string
 	publicationOperation           domain.AttemptOperationDigestV1
 	publicationDeadline            time.Time

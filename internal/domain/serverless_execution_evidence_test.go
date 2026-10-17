@@ -2,6 +2,7 @@ package domain_test
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -10,7 +11,21 @@ import (
 	"gitcode.com/urandon/sessionless/internal/domain"
 )
 
-func validSubstrateEvidenceInputs(t testing.TB) (domain.ServerlessInvocationAuthorityV1, domain.AttemptEffectReservationV1, domain.PreparedAllocationV1, domain.PreparedInvocationDigestV1) {
+func TestImageExecutionEvidenceCannotAttestLocalAllocation(t *testing.T) {
+	t.Parallel()
+	f := localRuntimeAllocationFixture(t, false)
+	evidence, _, _, _, _ := validSubstrateEvidence(t)
+	if f.authority.ValidateAt(f.at) != nil || f.parent.ValidateForAuthority(f.authority) != nil || f.prepared.ValidateForBinding(f.authority.SubstrateBinding, f.authority.HarnessBinding.Backend) != nil {
+		t.Fatal("local exclusion control must have valid original authority and local preparation")
+	}
+	_, err := evidence.SealForAuthority(f.authority, f.parent, f.prepared, f.preparedDigest)
+	var invalid domain.ValidationError
+	if !errors.As(err, &invalid) || invalid.Field != "substrate_execution_evidence.local" {
+		t.Fatalf("local allocation must reject image/process evidence at the specific boundary, got %v", err)
+	}
+}
+
+func validSubstrateEvidenceInputs(t testing.TB) (domain.ServerlessInvocationAuthorityV1, domain.AttemptEffectReservationV1, domain.PreparedAllocationV2, domain.PreparedInvocationDigestV1) {
 	t.Helper()
 	authority, at := validServerlessInvocationAuthority(t)
 	reservation, err := domain.BuildAttemptEffectReservationV1(authority, "physical-claim-1", nil, at)
@@ -18,8 +33,8 @@ func validSubstrateEvidenceInputs(t testing.TB) (domain.ServerlessInvocationAuth
 		t.Fatal(err)
 	}
 	substrateDigest, _ := authority.SubstrateBinding.Digest()
-	allocation := domain.PreparedAllocationV1{
-		Version: domain.PreparedAllocationVersionV1, SubstrateBindingDigest: substrateDigest,
+	allocation := domain.PreparedAllocationV2{
+		Version: domain.PreparedAllocationVersionV2, SubstrateBindingDigest: substrateDigest,
 		ObservedImageDigest:         authority.SubstrateBinding.ImageDigest,
 		ObservedOuterHarnessDigest:  authority.SubstrateBinding.OuterHarnessArtifactDigest,
 		ObservedProxyArtifactDigest: authority.SubstrateBinding.EgressProxyArtifactDigest,
@@ -66,7 +81,7 @@ func unknownSubstrateResources() []domain.SubstrateResourceObservationV1 {
 	}
 }
 
-func validSubstrateEvidence(t testing.TB) (domain.SubstrateExecutionEvidenceV1, domain.ServerlessInvocationAuthorityV1, domain.AttemptEffectReservationV1, domain.PreparedAllocationV1, domain.PreparedInvocationDigestV1) {
+func validSubstrateEvidence(t testing.TB) (domain.SubstrateExecutionEvidenceV1, domain.ServerlessInvocationAuthorityV1, domain.AttemptEffectReservationV1, domain.PreparedAllocationV2, domain.PreparedInvocationDigestV1) {
 	t.Helper()
 	authority, reservation, allocation, preparedDigest := validSubstrateEvidenceInputs(t)
 	provider := completedProviderEvidence(t, authority.HarnessBinding)
@@ -126,7 +141,7 @@ func TestSubstrateExecutionEvidenceExactBindingAndMutationResistance(t *testing.
 			candidate.EffectReservationDigest = domain.AttemptEffectReservationDigestV1(strings.Repeat("e", 64))
 		},
 		"allocation": func(candidate *domain.SubstrateExecutionEvidenceV1) {
-			candidate.PreparedAllocationDigest = domain.PreparedAllocationDigestV1(strings.Repeat("0", 64))
+			candidate.PreparedAllocationDigest = domain.PreparedAllocationDigestV2(strings.Repeat("0", 64))
 		},
 		"claim": func(candidate *domain.SubstrateExecutionEvidenceV1) {
 			candidate.PhysicalInvocationClaimID = "other-claim"

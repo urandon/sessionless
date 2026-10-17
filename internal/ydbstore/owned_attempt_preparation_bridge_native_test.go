@@ -32,20 +32,20 @@ type nativeOwnedPreparationDriverBridge struct {
 	partial      bool
 }
 
-func (d *nativeOwnedPreparationDriverBridge) Preflight(ctx context.Context, a domain.ServerlessInvocationAuthorityV1) (domain.PreparedAllocationV1, error) {
+func (d *nativeOwnedPreparationDriverBridge) Preflight(ctx context.Context, a domain.ServerlessInvocationAuthorityV1) (domain.PreparedAllocationV2, error) {
 	d.preflights.Add(1)
 	var at time.Time
 	var digest string
 	if err := d.store.db.QueryRowContext(ctx, `SELECT preparation_started_at,preparation_parent_digest FROM attempt_effect_reservations WHERE tenant_id=$1 AND attempt_id=$2 AND kind=$3`,
 		a.Lease.TenantID, a.Lease.AttemptID, domain.ProviderEffectTurnV1).Scan(&at, &digest); err != nil || at.IsZero() || digest != d.parentDigest {
-		return domain.PreparedAllocationV1{}, errors.New("native preflight preceded confirmed original durable burn")
+		return domain.PreparedAllocationV2{}, errors.New("native preflight preceded confirmed original durable burn")
 	}
 	observed, err := d.driver.Preflight(ctx, a)
 	if err != nil {
-		return domain.PreparedAllocationV1{}, err
+		return domain.PreparedAllocationV2{}, err
 	}
 	if d.partial {
-		return domain.PreparedAllocationV1{}, errors.New("test-owned prepared allocation outcome unknown")
+		return domain.PreparedAllocationV2{}, errors.New("test-owned prepared allocation outcome unknown")
 	}
 	return observed, nil
 }

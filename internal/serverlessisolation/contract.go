@@ -38,7 +38,7 @@ type PreparedInvocationGate interface {
 // read a credential, spawn a process, or start network activity.
 type AttestedLauncher interface {
 	attachedworkerdaemon.IsolationLauncher
-	Preflight(context.Context, domain.ServerlessInvocationAuthorityV1) (domain.PreparedAllocationV1, error)
+	Preflight(context.Context, domain.ServerlessInvocationAuthorityV1) (domain.PreparedAllocationV2, error)
 	VerifyResidue(context.Context, ResidueRequestV1) (ResidueProofV1, error)
 	Taint(context.Context, TaintRequestV1) error
 }

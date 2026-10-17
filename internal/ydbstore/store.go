@@ -41,7 +41,7 @@ type Options struct {
 	AttemptSpendingPublicationVerifier ports.AttemptSpendingPublicationVerifierV1
 	OwnedAttemptEffectSourceVerifier   ports.OwnedAttemptEffectSourceVerifierV1
 	OwnedPreparationGrantVerifier      ports.OwnedPreparationGrantVerifierV1
-	OwnedAllocationPublicationVerifier ports.OwnedAllocationPublicationVerifierV1
+	OwnedAllocationPublicationVerifier ports.OwnedAllocationPublicationVerifierV2
 	AttemptOperationIssuer             ports.AttemptOperationCapabilityIssuerV1
 	AttemptOperationBodies             ports.AttemptOperationBodyStoreV1
 	OwnedProxyPublicationVerifier      ports.OwnedProxyPublicationVerifierV2
@@ -60,7 +60,7 @@ type Store struct {
 	attemptSpendingPublicationVerifier ports.AttemptSpendingPublicationVerifierV1
 	ownedAttemptEffectSourceVerifier   ports.OwnedAttemptEffectSourceVerifierV1
 	ownedPreparationGrantVerifier      ports.OwnedPreparationGrantVerifierV1
-	ownedAllocationPublicationVerifier ports.OwnedAllocationPublicationVerifierV1
+	ownedAllocationPublicationVerifier ports.OwnedAllocationPublicationVerifierV2
 	attemptOperationIssuer             ports.AttemptOperationCapabilityIssuerV1
 	attemptOperationBodies             ports.AttemptOperationBodyStoreV1
 	ownedProxyPublicationVerifier      ports.OwnedProxyPublicationVerifierV2

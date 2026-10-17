@@ -180,8 +180,8 @@ func testSubstrateExecutionEvidence(
 	}
 	binding := authority.SubstrateBinding
 	bindingDigest, _ := binding.Digest()
-	allocation := domain.PreparedAllocationV1{
-		Version: domain.PreparedAllocationVersionV1, SubstrateBindingDigest: bindingDigest,
+	allocation := domain.PreparedAllocationV2{
+		Version: domain.PreparedAllocationVersionV2, SubstrateBindingDigest: bindingDigest,
 		ObservedImageDigest: binding.ImageDigest, ObservedOuterHarnessDigest: binding.OuterHarnessArtifactDigest,
 		ObservedProxyArtifactDigest: binding.EgressProxyArtifactDigest, ObservedProxyIdentityDigest: binding.EgressProxyIdentityDigest,
 		WorkloadMode: binding.WorkloadMode,

@@ -39,10 +39,10 @@ type CapabilityIssuer struct {
 type PreparedInvocation struct {
 	authority         domain.ServerlessInvocationAuthorityV1
 	reservation       domain.AttemptEffectReservationV1
-	allocation        domain.PreparedAllocationV1
+	allocation        domain.PreparedAllocationV2
 	authorityDigest   domain.ServerlessInvocationAuthorityDigestV1
 	reservationDigest domain.AttemptEffectReservationDigestV1
-	allocationDigest  domain.PreparedAllocationDigestV1
+	allocationDigest  domain.PreparedAllocationDigestV2
 	costDigest        domain.AdmissionCostCeilingDigestV2
 	issuedAt          time.Time
 	executeDeadline   time.Time
@@ -73,7 +73,7 @@ func NewCapabilityIssuer(clock Clock, entropy io.Reader) (*CapabilityIssuer, err
 
 func (issuer *CapabilityIssuer) Issue(
 	grant ports.AttemptEffectOwnershipGrantV1,
-	allocation domain.PreparedAllocationV1,
+	allocation domain.PreparedAllocationV2,
 ) (PreparedInvocation, error) {
 	if issuer == nil || issuer.clock == nil {
 		return PreparedInvocation{}, ErrInvalidPreparedInvocation
@@ -300,7 +300,7 @@ func (prepared PreparedInvocation) Reservation() domain.AttemptEffectReservation
 	return prepared.reservation.Clone()
 }
 
-func (prepared PreparedInvocation) Allocation() domain.PreparedAllocationV1 {
+func (prepared PreparedInvocation) Allocation() domain.PreparedAllocationV2 {
 	return prepared.allocation.Clone()
 }
 

@@ -11,7 +11,7 @@ import (
 )
 
 type substrateRegistryRecordingDriver struct {
-	allocation     domain.PreparedAllocationV1
+	allocation     domain.PreparedAllocationV2
 	preflightCalls int
 	executeCalls   int
 	cancelCalls    int
@@ -20,7 +20,7 @@ type substrateRegistryRecordingDriver struct {
 
 type substrateRegistryPreparedDriver struct {
 	issuer     *CapabilityIssuer
-	allocation domain.PreparedAllocationV1
+	allocation domain.PreparedAllocationV2
 	effects    int
 }
 
@@ -42,7 +42,7 @@ func (substrateHarnessNoop) Execute(_ context.Context, request ports.ExecutionRe
 }
 func (substrateHarnessNoop) Cancel(context.Context, ports.ExecutionIdentity) error { return nil }
 
-func (driver *substrateRegistryRecordingDriver) Preflight(_ context.Context, _ domain.ServerlessInvocationAuthorityV1) (domain.PreparedAllocationV1, error) {
+func (driver *substrateRegistryRecordingDriver) Preflight(_ context.Context, _ domain.ServerlessInvocationAuthorityV1) (domain.PreparedAllocationV2, error) {
 	driver.preflightCalls++
 	return driver.allocation.Clone(), nil
 }
@@ -62,7 +62,7 @@ func (driver *substrateRegistryRecordingDriver) Reconcile(_ context.Context, aut
 	return substrateRegistryObservation(authority), nil
 }
 
-func (driver *substrateRegistryPreparedDriver) Preflight(_ context.Context, _ domain.ServerlessInvocationAuthorityV1) (domain.PreparedAllocationV1, error) {
+func (driver *substrateRegistryPreparedDriver) Preflight(_ context.Context, _ domain.ServerlessInvocationAuthorityV1) (domain.PreparedAllocationV2, error) {
 	return driver.allocation.Clone(), nil
 }
 

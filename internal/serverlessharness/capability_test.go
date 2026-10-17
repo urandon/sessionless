@@ -14,7 +14,7 @@ import (
 	outerharness "gitcode.com/urandon/sessionless/internal/sessionlessharness"
 )
 
-func capabilityFixture(t testing.TB) (domain.ServerlessInvocationAuthorityV1, domain.AttemptEffectReservationV1, domain.PreparedAllocationV1, time.Time) {
+func capabilityFixture(t testing.TB) (domain.ServerlessInvocationAuthorityV1, domain.AttemptEffectReservationV1, domain.PreparedAllocationV2, time.Time) {
 	t.Helper()
 	at := time.Unix(20, 0).UTC()
 	managed, err := outerharness.NewDeterministicFixtureManagedAuthorityV2("tenant-1", "user-1", "run-1", "attempt-1", "subscription-1", time.Unix(10, 0).UTC())
@@ -33,8 +33,8 @@ func capabilityFixture(t testing.TB) (domain.ServerlessInvocationAuthorityV1, do
 		t.Fatal(err)
 	}
 	substrateDigest, _ := authority.SubstrateBinding.Digest()
-	allocation := domain.PreparedAllocationV1{
-		Version: domain.PreparedAllocationVersionV1, SubstrateBindingDigest: substrateDigest,
+	allocation := domain.PreparedAllocationV2{
+		Version: domain.PreparedAllocationVersionV2, SubstrateBindingDigest: substrateDigest,
 		ObservedImageDigest:         authority.SubstrateBinding.ImageDigest,
 		ObservedOuterHarnessDigest:  authority.SubstrateBinding.OuterHarnessArtifactDigest,
 		ObservedProxyArtifactDigest: authority.SubstrateBinding.EgressProxyArtifactDigest,

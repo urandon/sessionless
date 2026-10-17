@@ -223,15 +223,24 @@ not cancel the caller's context or close a shared model/worker. Merely checking
 `VerifyEnteredLocalAllocation` once, matching copied digests, or making a fresh
 context with the same nominal deadline is insufficient lifetime ownership.
 
-Construct the noncopyable connector keeper before Store, install it through
-the existing proxy-publication verifier option, then bind that keeper once to
-the concrete Store and allocation bridge. The trusted private compositor must
-check that Store retains this exact keeper, the original operation issuer and
-the original allocation verifier. This is an I/O-free identity check, not an
-authorization grant. Nil, copied, foreign, replacement or repeated bindings
-fail. Assemble the preparation-burn/Store relationship privately before exposing
-the serving composition; do not solve construction order with an arbitrary
-nil-returning authority callback. #218 owns that normal composition.
+Construct the noncopyable connector keeper first, then create an inert local
+Store composition with that keeper and the original operation issuer fixed.
+The local Store bootstrap owns a concrete preparation-burn adapter that calls
+that same Store's existing durable burn transaction, never a forwarding callback
+or caller-supplied Boolean. Construct the allocation bridge with that adapter.
+One atomic, one-time initialization then installs the exact allocation verifier
+and binds the keeper to this Store/bridge pair. Until initialization completes,
+all local owned preparation/publication/reservation/send paths deny; the private
+bootstrap is not exposed to serving callers. Abandonment leaves it inert.
+
+This initial installation is a dedicated local constructor seam, not a mutable
+setter on ordinary Store options or an alternate serving authority. Reject nil,
+copied, foreign, repeated or replacement bindings and partially installed owners.
+Before exposure, verify Store retains the exact keeper, original operation
+issuer and original allocation verifier; compare their actual retained identity
+without invoking callbacks. This I/O-free check grants no send permission and
+does not add gates to unrelated existing Store profiles. #217 supplies the
+closed initialization seam; #218 owns its normal serving composition.
 
 Dial only the admitted numeric loopback TCP address. Check the actual remote
 address and retain that same socket; preflight writes no HTTP/TLS/application

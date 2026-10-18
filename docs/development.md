@@ -122,10 +122,11 @@ suites. CI adds Playwright's Linux system dependencies through the same target.
 It sets an explicit 15-minute per-package test deadline for the growing
 Store/worker conformance suites. The Go verification CI job has a separate
 30-minute ceiling for `make ci-core`, including compilation, the race suite,
-builds, integration, egress conformance and policy checks. The unchanged offline
-`attached-worker-security-gate` runs in the existing 25-minute isolated security
-job before YDB startup, without that job's YDB environment variables. Images
-require both jobs. Local/release `make ci` still requires both parts; see
+builds, integration and policy checks. The unchanged offline
+`attached-worker-security-gate` and complete `serverless-egress-conformance` run
+in the existing 25-minute isolated security job before YDB startup, without
+that job's YDB environment variables. Images
+require both jobs. Local/release `make ci` still requires core and both gates; see
 [the partition contract](testing-best-practices.md#cumulative-package-runtime).
 A package pass does not replace unfinished checks, and exact-head CI must
 measure whether the isolated job fits. These are failure ceilings, not synchronization,
@@ -166,6 +167,16 @@ Pi-specific development targets and integration packages were removed under
 `GOCACHE` and `GOMODCACHE` below `.git/sessionless-go-cache` across every
 linked worktree. Go's build cache is content-addressed and safe for concurrent
 Go commands; the module cache is also normally shared by the Go toolchain.
+
+The Make-backed GitHub workflows declare these same absolute checkout-relative
+paths at workflow level, before `setup-go`. Its restore and post-save discover
+paths through `go env GOCACHE` and `go env GOMODCACHE`; Make-only exports do not
+change the action's environment. See the upstream
+[cache path commands](https://github.com/actions/setup-go/blob/v6/src/package-managers.ts)
+and [post-save implementation](https://github.com/actions/setup-go/blob/v6/src/cache-save.ts).
+This aligns cache contents, not measured performance: a cache miss must still
+execute every check and fit the unchanged job bounds. No cache is a correctness
+or readiness requirement; `make go-cache-policy-test` checks path agreement.
 
 `GOTMPDIR`, `.build/bin`, and `.build/dockerless` stay inside each
 worktree. They may contain in-progress files, commit-specific binaries, process

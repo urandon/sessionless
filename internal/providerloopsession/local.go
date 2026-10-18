@@ -250,6 +250,10 @@ func (v *LocalV1) WriteModelRequest(ctx context.Context, limits domain.Configure
 	if err != nil {
 		return operationbody.ReferenceV1{}, ErrSession
 	}
+	if err := s.entry.CheckFirstModelTerminalFit(call); err != nil {
+		s.cancel()
+		return operationbody.ReferenceV1{}, localPreparationError(ErrSession, err)
+	}
 	body := frozen.Body()
 	defer clear(body)
 	ref, err := s.bodies.Write(call, body)
@@ -270,6 +274,15 @@ type ModelResultV1 struct {
 type ModelStepResultV1 struct {
 	Model      ModelResultV1
 	Compaction *ModelResultV1
+}
+
+// A terminal-capacity denial is not context overflow. Preserve that closed
+// classification without exposing underlying authority or storage errors.
+func localPreparationError(base, cause error) error {
+	if errors.Is(cause, ydbstore.ErrTerminalCapacity) {
+		return errors.Join(base, ydbstore.ErrTerminalCapacity)
+	}
+	return base
 }
 
 // RunModelStep prepares the actual full ordinary request through the original
@@ -299,7 +312,7 @@ func (v *LocalV1) RunModelStep(ctx context.Context) (result ModelStepResultV1, e
 	if errors.Is(prepareErr, configuredinference.ErrContextNoFit) {
 		generation, e := s.entry.PrepareCompaction(call)
 		if e != nil {
-			return result, ErrIncomplete
+			return result, localPreparationError(ErrIncomplete, e)
 		}
 		op, e := generation.Operation()
 		if e != nil {
@@ -320,7 +333,7 @@ func (v *LocalV1) RunModelStep(ctx context.Context) (result ModelStepResultV1, e
 		}
 		model, e = generation.PrepareNextModel(call)
 		if e != nil {
-			return result, ErrIncomplete
+			return result, localPreparationError(ErrIncomplete, e)
 		}
 		next, e := model.FrozenRequest()
 		if e != nil || next == nil || next.Digest() != published.Digest() {
@@ -334,7 +347,7 @@ func (v *LocalV1) RunModelStep(ctx context.Context) (result ModelStepResultV1, e
 			return result, ErrIncomplete
 		}
 	} else if prepareErr != nil {
-		return result, ErrIncomplete
+		return result, localPreparationError(ErrIncomplete, prepareErr)
 	}
 	op, e := model.Operation()
 	if e != nil {

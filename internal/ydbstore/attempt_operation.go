@@ -239,6 +239,9 @@ func (store *Store) reserveOwnedOperation(ctx context.Context, op domain.Attempt
 		if expected != "" || allocation.current.ValidateAt(q.at) != nil || proxy.current.ValidateAt(q.at) != nil || op.Deadline.After(proxy.current.Window.ExpiresAt) || op.Deadline.After(allocation.current.Window.ExpiresAt) || store.validateCurrentOwnedAttemptParent(ctx, q, request, parent) != nil {
 			return q.budget.deny()
 		}
+		if err := store.checkLocalGenericTerminalFit(ctx, q, op); err != nil {
+			return err
+		}
 		accounting, err := readOwnedAttemptAccounting(ctx, q, parent, source)
 		if err != nil || accounting == nil || !accounting.SetupReservedAt.Equal(burnAt) {
 			return q.budget.deny()
@@ -342,6 +345,9 @@ func (store *Store) AuthorizeAttemptOperationBeforeSend(ctx context.Context, cap
 		}
 		if proxy.current.ServiceKind != ownedOperationProxyService(op.Kind) || store.validateOwnedOperationEvidence(ctx, q, op, evidence, parent, source) != nil {
 			return q.budget.deny()
+		}
+		if err := store.checkLocalGenericTerminalFit(ctx, q, op); err != nil {
+			return err
 		}
 		if op.Kind == domain.AttemptOperationWebSearchV1 && (evidence == nil || evidence.tool == nil || store.validateOwnedOperationConsent(ctx, q, op, parent, source, nil, *evidence.tool) != nil) {
 			return q.budget.deny()

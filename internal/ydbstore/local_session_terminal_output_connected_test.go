@@ -27,7 +27,18 @@ func TestLocalSessionTerminalOutputConnected(t *testing.T) {
 			session, seed, peer, blobs := newCompactionFactorySession(t, text, limits...)
 			for i := 0; i < steps; i++ {
 				if result, err := session.RunModelStep(t.Context()); err != nil || !result.Model.SendAttempted {
-					t.Fatalf("original step%d err=%v", i, err)
+					peer.mu.Lock()
+					kinds, sizes, failure := append([]string(nil), peer.kinds...), append([]int(nil), peer.sizes...), peer.failure
+					peer.mu.Unlock()
+					blobs.mu.Lock()
+					objects, retained := len(blobs.objects), 0
+					for key := range blobs.objects {
+						if strings.Contains(key, "/derived-context-v1/") {
+							retained++
+						}
+					}
+					blobs.mu.Unlock()
+					t.Fatalf("original step%d err=%v attempted=%t compaction=%t stats=%+v kinds=%v sizes=%v objects=%d retained=%d peer=%s", i, err, result.Model.SendAttempted, result.Compaction != nil, seed.Stats(), kinds, sizes, objects, retained, failure)
 				}
 			}
 			h, err := session.PrepareTerminal(t.Context())

@@ -214,26 +214,58 @@ func (h *LocalTerminalV1) PrepareOutput(ctx context.Context) (_ *LocalPreparedOu
 // value is already bounded domain material. The builder rejects the encoded
 // first-over boundary before copying it into the admitted capsule buffer.
 func encodeLocalTerminalCapsule(scope domain.AttemptOperationScopeV1, profile, frontier string, ops []LocalCompactionOperationV1, derived *domain.RunDerivedContextV1, events []localCapsuleEventV1, manifest domain.ArtifactManifest, cap uint64) ([]byte, error) {
-	if cap == 0 || cap > domain.MaxTerminalCapsuleBytesV1 || len(ops) == 0 || len(ops) > 12 || len(events) == 0 || len(events) > 25 {
-		return nil, domain.ErrMembershipDenied
+	materials := make([]localCapsuleOperationMaterial, len(ops))
+	for i, o := range ops {
+		materials[i] = localCapsuleOperationMaterial{reservation: o.Reservation, observation: o.Observation, normalized: o.Response, bytes: uint64(len(o.Response))}
 	}
-	var body []byte
-	failed := false
-	add := func(raw []byte) {
-		if failed || uint64(len(raw)) > cap-uint64(len(body)) {
-			failed = true
-			return
-		}
-		body = append(body, raw...)
+	sink := localCapsuleSink{limit: cap, emit: true}
+	if err := encodeLocalTerminalCapsuleTo(&sink, scope, profile, frontier, materials, derived, events, 0, manifest); err != nil {
+		clear(sink.body)
+		return nil, err
 	}
-	value := func(v any) {
-		raw, e := json.Marshal(v)
-		if e != nil {
-			failed = true
-			return
-		}
-		add(raw)
+	return sink.body, nil
+}
+
+// Both real encoding and prospective counting traverse this exact closed wire.
+// Prospective lengths are private arithmetic DATA, never signed observations.
+type localCapsuleOperationMaterial struct {
+	reservation domain.AttemptOperationReservationV1
+	observation domain.AttemptOperationObservationV1
+	normalized  []byte
+	bytes       uint64
+}
+type localCapsuleSink struct {
+	limit, size  uint64
+	emit, failed bool
+	body         []byte
+}
+
+func (s *localCapsuleSink) count(n uint64) {
+	if s.failed || n > s.limit-s.size {
+		s.failed = true
+		return
 	}
+	s.size += n
+}
+func (s *localCapsuleSink) add(raw []byte) {
+	s.count(uint64(len(raw)))
+	if s.emit && !s.failed {
+		s.body = append(s.body, raw...)
+	}
+}
+func (s *localCapsuleSink) value(v any) {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		s.failed = true
+		return
+	}
+	s.add(raw)
+}
+func encodeLocalTerminalCapsuleTo(sink *localCapsuleSink, scope domain.AttemptOperationScopeV1, profile, frontier string, ops []localCapsuleOperationMaterial, derived *domain.RunDerivedContextV1, events []localCapsuleEventV1, finalDisplayUpper uint64, manifest domain.ArtifactManifest) error {
+	if sink.limit == 0 || sink.limit > domain.MaxTerminalCapsuleBytesV1 || len(ops) == 0 || len(ops) > 12 || len(events) == 0 || len(events) > 25 || (sink.emit && finalDisplayUpper != 0) {
+		return domain.ErrMembershipDenied
+	}
+	add, value := sink.add, sink.value
 	add([]byte(`{"schema":"sessionless.terminal-custody.v1","scope":`))
 	value(scope)
 	add([]byte(`,"profile_digest":`))
@@ -243,22 +275,26 @@ func encodeLocalTerminalCapsule(scope domain.AttemptOperationScopeV1, profile, f
 	add([]byte(`,"operations":[`))
 	var normalized uint64
 	for i, o := range ops {
-		if len(o.Response) == 0 || len(o.Response) > 64<<10 || uint64(len(o.Response)) > (384<<10)-normalized {
-			failed = true
+		if o.bytes == 0 || o.bytes > 64<<10 || o.bytes > (384<<10)-normalized || (sink.emit && uint64(len(o.normalized)) != o.bytes) {
+			sink.failed = true
 			break
 		}
-		normalized += uint64(len(o.Response))
+		normalized += o.bytes
 		if i > 0 {
 			add([]byte(","))
 		}
 		add([]byte(`{"reservation":`))
-		value(o.Reservation)
+		value(o.reservation)
 		add([]byte(`,"observation":`))
-		value(o.Observation)
+		value(o.observation)
 		add([]byte(`,"normalized_body":`))
-		add(o.Response)
+		if sink.emit {
+			add(o.normalized)
+		} else {
+			sink.count(o.bytes)
+		}
 		projection := "retained_only"
-		if o.Reservation.Operation.Kind == domain.AttemptOperationCompactionV1 {
+		if o.reservation.Operation.Kind == domain.AttemptOperationCompactionV1 {
 			projection = "compaction"
 		}
 		if i == len(ops)-1 {
@@ -277,15 +313,37 @@ func encodeLocalTerminalCapsule(scope domain.AttemptOperationScopeV1, profile, f
 	add([]byte(`],"derived_context":`))
 	value(derived)
 	add([]byte(`,"events":`))
-	value(events)
+	// Keep field order identical to localCapsuleEventV1's canonical JSON. The
+	// private counting arm substitutes only the future escaped display length.
+	add([]byte("["))
+	for i, e := range events {
+		if i > 0 {
+			add([]byte(","))
+		}
+		add([]byte(`{"id":`))
+		value(e.ID)
+		add([]byte(`,"kind":`))
+		value(e.Kind)
+		add([]byte(`,"idempotency_key":`))
+		value(e.IdempotencyKey)
+		add([]byte(`,"payload":`))
+		value(e.Payload)
+		add([]byte(`,"display_text":`))
+		if i == len(events)-1 && finalDisplayUpper != 0 {
+			sink.count(finalDisplayUpper)
+		} else {
+			value(e.DisplayText)
+		}
+		add([]byte("}"))
+	}
+	add([]byte("]"))
 	add([]byte(`,"public_manifest":`))
 	value(manifest)
 	add([]byte("}"))
-	if failed {
-		clear(body)
-		return nil, domain.ErrMembershipDenied
+	if sink.failed {
+		return ErrTerminalCapacity
 	}
-	return body, nil
+	return nil
 }
 
 func (p *LocalPreparedOutputV1) original() bool {

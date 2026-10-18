@@ -344,6 +344,9 @@ func prepareLocalCompactionGenerationLocked(ctx context.Context, originalCaller 
 	if _, err := debitOwnedOperation(state.snapshot.Accounting, op, entry.parent, entry.source, at); err != nil {
 		return deny()
 	}
+	if err := entry.terminalFitSourceLocked(call, nil, source, op, program); err != nil {
+		return nil, err
+	}
 	g := &localCompactionGenerationV1{entry: entry, source: source, frozen: frozen, program: program, fit: fit, price: price, parentRetained: parentRetained}
 	g.self = g
 	if !entry.compactionGeneration.CompareAndSwap(previousGeneration, g) {

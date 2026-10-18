@@ -305,6 +305,9 @@ func (entry *LocalInvocationEntryV1) prepareModelSource(ctx context.Context, ori
 	if err != nil {
 		return deny()
 	}
+	if err := entry.terminalFitSourceLocked(ctx, nil, source, op, nil); err != nil {
+		return nil, err
+	}
 	m := &localPreparedModelV1{entry: entry, source: source, frozen: frozen, fit: fit, price: price}
 	m.self = m
 	if !entry.preparedModel.CompareAndSwap(old, m) {

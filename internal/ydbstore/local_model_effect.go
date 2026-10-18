@@ -90,6 +90,9 @@ func (store *Store) reservePreparedLocalModel(ctx context.Context, op domain.Att
 		if _, err := m.rejoinLocked(ctx, q, localCompactionReserve); err != nil {
 			return err
 		}
+		if err := m.entry.terminalFitSourceLocked(ctx, q, m.source, op, nil); err != nil {
+			return err
+		}
 		parent, source := m.entry.parent, m.entry.source
 		if store.validateOwnedOperationProviderPrice(ctx, q, op, e.price, source) != nil {
 			return q.budget.deny()
@@ -181,6 +184,9 @@ func (store *Store) authorizePreparedLocalModel(ctx context.Context, capability 
 			return q.budget.deny()
 		}
 		if _, err := m.rejoinLocked(ctx, q, localCompactionBeforeSend); err != nil {
+			return err
+		}
+		if err := m.entry.terminalFitSourceLocked(ctx, q, m.source, op, nil); err != nil {
 			return err
 		}
 		if !store.localOperationBudgetAllows(op.Scope, capability.Reservation.AggregateDebit.BodyBytes) {

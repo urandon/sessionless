@@ -132,6 +132,9 @@ func (store *Store) reservePreparedLocalCompaction(ctx context.Context, op domai
 		if _, err := g.rejoinLocked(ctx, q, localCompactionReserve); err != nil {
 			return err
 		}
+		if err := g.entry.terminalFitSourceLocked(ctx, q, g.source, op, g.program); err != nil {
+			return err
+		}
 		parent, execution := g.entry.parent, g.entry.source
 		if store.validateOwnedOperationProviderPrice(ctx, q, op, evidence.price, execution) != nil {
 			return q.budget.deny()
@@ -219,6 +222,9 @@ func (store *Store) authorizePreparedLocalCompaction(ctx context.Context, capabi
 			return q.budget.deny()
 		}
 		if _, err := g.rejoinLocked(ctx, q, localCompactionBeforeSend); err != nil {
+			return err
+		}
+		if err := g.entry.terminalFitSourceLocked(ctx, q, g.source, op, g.program); err != nil {
 			return err
 		}
 		if !store.localOperationBudgetAllows(op.Scope, capability.Reservation.AggregateDebit.BodyBytes) {

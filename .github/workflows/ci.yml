@@ -122,6 +122,11 @@ jobs:
           YDB_CONNECTION_STRING: grpc://localhost:2136/local?go_query_mode=data&go_query_bind=declare,numeric
         run: make run-explanation-ydb-gate
 
+      - name: Prove retained compaction Run SQL with true serializable transactions
+        env:
+          YDB_CONNECTION_STRING: grpc://localhost:2136/local?go_query_mode=data&go_query_bind=declare,numeric
+        run: make retained-compaction-ydb-gate
+
       - name: Prove attached-worker two-owner YDB authority gate
         run: make attached-worker-security-ydb-gate
 

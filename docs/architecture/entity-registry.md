@@ -38,6 +38,17 @@ WebUI explanation projects only its base Run fields within the existing
 8 KiB read budget; that read-only projection must never feed a writer.
 Physical table counts and existing TTLs remain unchanged.
 
+The original operation-body adapter reserves 160 KiB per retained pair before
+generation: at most 32 KiB for the encoded summary artifact and 128 KiB for its
+manifest. At most two pairs share the original aggregate byte allowance and
+I/O gate; copying a handle cannot restore capacity. These process-local slots
+are nonrefundable and are not durable entities or publication authority.
+Uncertain writes disable further writes while preserving reconciliation reads.
+Run inventory registration must commit before either retained PUT; a new
+process cannot reconstruct write ownership from that inventory. Semantic
+summary validation, head publication, terminal custody and Session deletion
+remain separate parts of the retained-object lifecycle.
+
 ## Logical entity groups
 
 The following groups map the first reviewed questions to physical storage.

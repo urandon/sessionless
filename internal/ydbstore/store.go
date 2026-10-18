@@ -340,6 +340,9 @@ func (tx *stateTx) PutRun(ctx context.Context, run domain.Run) error {
 		(found && !domain.EqualRunDerivedContextV1(run.DerivedContext, stored.DerivedContext)) {
 		return domain.ValidationError{Field: "run.derived_context", Reason: "generic writes must preserve existing metadata exactly"}
 	}
+	if (!found && run.TerminalCustody != nil) || (found && !domain.EqualRunTerminalCustodyV1(run.TerminalCustody, stored.TerminalCustody)) {
+		return domain.ValidationError{Field: "run.terminal_custody", Reason: "generic writes must preserve existing metadata exactly"}
+	}
 	if err := invalidateRunExplanationTx(ctx, tx, run); err != nil {
 		return err
 	}

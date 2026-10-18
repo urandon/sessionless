@@ -1,6 +1,6 @@
 # Owned-loop terminal output and retained custody
 
-Version: 0.1.0, independently reviewed engineering contract. Implementation
+Version: 0.1.1, independently reviewed engineering contract. Implementation
 and exact-profile activation remain incomplete and separately verified.
 Owners: [#191](https://gitcode.com/urandon/sessionless/issues/191) canonical
 exports, [#192](https://gitcode.com/urandon/sessionless/issues/192) compaction
@@ -48,8 +48,9 @@ deadlines. Recovered, replayed, ambiguous or foreign results cannot enter.
 A copied DTO or caller Boolean cannot mint the private consumer ownership.
 
 The V2 preparer/Registry/execution/Manager/completion boundary has a closed
-tagged `execution_evidence.v2` contract: exactly one `managed_v1` or `local_v1`
-arm. The managed arm contains the unchanged V1 evidence and follows its current
+tagged `execution_evidence.v2` contract: `version` is 2, `kind` is `managed_v1`
+or `local_v1`, and exactly the corresponding `managed_v1` or `local_v1` member
+is present. The managed arm contains the unchanged V1 evidence and follows its current
 validation and provider-evidence checks. The local arm is admitted only for
 `local_development` plus the authenticated owner-local installation; it cannot
 claim image/process isolation, cloud metering or stopping the owner's model.
@@ -137,14 +138,19 @@ eligible for transfer; this does not waive #191's required tool integration.
 
 ## Run ownership and budgets
 
-Add one optional typed `terminal_custody.v1` metadata value to the existing Run
-payload, adjacent to derived context. It works also for a Run with no
+Add one optional `terminal_custody` member containing typed V1 metadata to the
+existing Run payload, adjacent to derived context. It works also for a Run with no
 compaction. Its exact fields are `version`, `plan`, `correspondence` (optional)
 and `local_evidence` (optional, required only for the local completion arm).
-`plan` contains original scope, capsule BlobRef and frontier digest.
-`correspondence` contains version, capsule digest, terminal assistant event ID,
-ordered canonical event identity digest, complete derived-context digest and
-accounting-disposition digest. It contains neither its own nor the final
+`plan` has exactly `scope`, `capsule` (BlobRef) and `frontier_digest`.
+`correspondence` has exactly `version`, `capsule_digest`,
+`terminal_assistant_event_id`, `canonical_events_digest`,
+`derived_context_digest` and `accounting_disposition_digest`. The event digest
+binds ordered canonical event identities. The derived-context digest hashes
+`sessionless.terminal-derived-context.v1\x00` followed by the canonical JSON
+encoding of the complete validated derived-context value; no compaction is
+canonical JSON `null`, not an omitted or empty substitute.
+Correspondence contains neither its own nor the final
 finalization digest. No response text lives inline in Run metadata.
 
 One dedicated original Store publisher registers the exact plan in its
@@ -164,8 +170,12 @@ correspondence. The common physical Run-write boundary enforces the existing
 complete 32 KiB ceiling before mutation, including later status writes.
 
 The fixed key is `SessionRunObjectPrefix + terminal-custody-v1/ +
-sha256(canonical full operation scope) + /sha256/ + sha256(capsule) + .json`.
-Both hashes use explicit domain-separated versioned encodings. Registration
+scope_hash + /sha256/ + BlobRef.SHA256 + .json`. `scope_hash` is SHA256 of
+`sessionless.terminal-custody-scope.v1\x00` followed by canonical JSON of the
+complete operation scope. The content segment is the raw SHA256 of the exact
+capsule bytes, identical to `BlobRef.SHA256`, following the existing retained
+object-key convention; it is not a second hash of that hash. The fixed versioned
+prefix supplies the object-kind namespace. Registration
 stores that exact reference/size/digest, never an arbitrary caller path.
 The object is not another derived summary/manifest pair and cannot consume or
 reset their two-pair/four-write allocation.

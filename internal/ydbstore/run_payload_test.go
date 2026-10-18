@@ -301,3 +301,200 @@ func TestRunPayloadCommonReaderBoundsAndRejectsUnknownMetadata(t *testing.T) {
 		})
 	}
 }
+
+// Seeded terminal DATA is not a cleanup receipt or authorized finalization.
+// The assertions below exercise the real generic Store read/write boundary.
+func runPayloadTerminalMetadata(t *testing.T, run domain.Run, complete bool) *domain.RunTerminalCustodyV1 {
+	t.Helper()
+	derived := runPayloadMetadata(t, run)
+	scope := derived.Inventory[0].Scope
+	h := strings.Repeat("a", 64)
+	key, err := domain.TerminalCustodyObjectKeyV1(scope, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := &domain.RunTerminalCustodyV1{Version: 1, Plan: domain.TerminalCustodyPlanV1{Scope: scope, Capsule: domain.BlobRef{TenantID: run.TenantID, Key: key, Size: 512, SHA256: h}, FrontierDigest: h}}
+	if complete {
+		d, err := domain.TerminalDerivedContextDigestV1(run.DerivedContext)
+		if err != nil {
+			t.Fatal(err)
+		}
+		v.Correspondence = &domain.TerminalCorrespondenceV1{Version: 1, CapsuleDigest: h, TerminalAssistantEventID: "assistant-test", CanonicalEventsDigest: h, DerivedContextDigest: d, AccountingDispositionDigest: h}
+		e := domain.LocalExecutionEvidenceV1{Version: 1, Scope: scope, ParentDigest: h, SourceDigest: h, ProfileDigest: h, OriginalAllocationDigest: h, RetiredAllocationDigest: strings.Repeat("b", 64), FrontierDigest: h, Capsule: v.Plan.Capsule, ResidualInventoryDigest: h, ResidualReceiptDigest: h, AccountingDispositionDigest: h, StoppedAt: run.CreatedAt, RetiredAt: run.CreatedAt.Add(time.Microsecond), ErasedAt: run.CreatedAt.Add(2 * time.Microsecond)}
+		e.EvidenceDigest, err = e.Digest()
+		if err != nil {
+			t.Fatal(err)
+		}
+		v.LocalEvidence = &e
+	}
+	if err := v.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
+func TestRunPayloadGenericWritersPreserveBothMetadataValues(t *testing.T) {
+	for _, owned := range []bool{false, true} {
+		for _, complete := range []bool{false, true} {
+			store, f, run := runPayloadFixture(t)
+			run.DerivedContext = runPayloadMetadata(t, run)
+			if complete {
+				run.Status = domain.RunSucceeded
+				at := run.UpdatedAt.Add(time.Second)
+				run.UpdatedAt = at
+				run.FinishedAt = &at
+			}
+			run.TerminalCustody = runPayloadTerminalMetadata(t, run, complete)
+			original := run.Clone()
+			ratedFixturePut(t, f.ratedSQLFixture, "runs", run)
+			err := runPayloadTransaction(t, store, run.TenantID, owned, func(ctx context.Context, tx ports.StateTx) error {
+				got, found, err := tx.GetRun(ctx, run.ID)
+				if err != nil || !found {
+					t.Fatalf("get complete Run: found=%t err=%v", found, err)
+				}
+				got.UpdatedAt = got.UpdatedAt.Add(time.Second)
+				if err := tx.PutRun(ctx, got); err != nil {
+					return err
+				}
+				again, found, err := tx.GetRun(ctx, run.ID)
+				if err != nil || !found || !domain.EqualRunDerivedContextV1(original.DerivedContext, again.DerivedContext) || !domain.EqualRunTerminalCustodyV1(original.TerminalCustody, again.TerminalCustody) {
+					t.Fatalf("metadata preservation owned=%t complete=%t: found=%t err=%v", owned, complete, found, err)
+				}
+				got.TerminalCustody.Plan.Capsule.Size++
+				if !domain.EqualRunTerminalCustodyV1(original.TerminalCustody, again.TerminalCustody) {
+					t.Fatal("returned custody aliases prior read")
+				}
+				return nil
+			})
+			if err != nil || f.writes != 3 || f.persistedWrites != 3 {
+				t.Fatalf("owned=%t complete=%t err=%v writes=%d persisted=%d", owned, complete, err, f.writes, f.persistedWrites)
+			}
+		}
+	}
+}
+
+func TestRunPayloadGenericWritersRejectTerminalCustodyChangesBeforeMutation(t *testing.T) {
+	for _, name := range []string{"creation", "addition", "drop", "plan", "correspondence", "local_evidence", "derived"} {
+		t.Run(name, func(t *testing.T) {
+			for _, owned := range []bool{false, true} {
+				store, f, run := runPayloadFixture(t)
+				run.DerivedContext = runPayloadMetadata(t, run)
+				run.Status = domain.RunSucceeded
+				at := run.UpdatedAt.Add(time.Second)
+				run.UpdatedAt = at
+				run.FinishedAt = &at
+				run.TerminalCustody = runPayloadTerminalMetadata(t, run, true)
+				ratedFixturePut(t, f.ratedSQLFixture, "runs", run)
+				switch name {
+				case "creation":
+					f.rows["runs"], f.rows["run_idempotency"] = nil, nil
+					run.DerivedContext = nil
+					run.TerminalCustody.Correspondence.DerivedContextDigest, _ = domain.TerminalDerivedContextDigestV1(nil)
+				case "addition":
+					old := run.Clone()
+					old.TerminalCustody = nil
+					ratedFixturePut(t, f.ratedSQLFixture, "runs", old)
+				case "drop":
+					run.TerminalCustody = nil
+				case "plan":
+					run.TerminalCustody.Plan.Capsule.Size++
+					run.TerminalCustody.LocalEvidence.Capsule = run.TerminalCustody.Plan.Capsule
+					run.TerminalCustody.LocalEvidence.EvidenceDigest, _ = run.TerminalCustody.LocalEvidence.Digest()
+				case "correspondence":
+					run.TerminalCustody.Correspondence.TerminalAssistantEventID = "different-assistant"
+				case "local_evidence":
+					run.TerminalCustody.LocalEvidence.ResidualReceiptDigest = strings.Repeat("d", 64)
+					run.TerminalCustody.LocalEvidence.EvidenceDigest, _ = run.TerminalCustody.LocalEvidence.Digest()
+				case "derived":
+					run.DerivedContext.Head = nil
+					run.TerminalCustody.Correspondence.DerivedContextDigest, _ = domain.TerminalDerivedContextDigestV1(run.DerivedContext)
+				}
+				if err := run.Validate(); err != nil {
+					t.Fatalf("mutation must stay valid DATA to test preservation, case=%s: %v", name, err)
+				}
+				err := runPayloadTransaction(t, store, run.TenantID, owned, func(ctx context.Context, tx ports.StateTx) error { return tx.PutRun(ctx, run) })
+				if err == nil || f.writes != 0 || f.persistedWrites != 0 || f.commits != 0 {
+					t.Fatalf("case=%s owned=%t mutation accepted: err=%v writes=%d persisted=%d commits=%d", name, owned, err, f.writes, f.persistedWrites, f.commits)
+				}
+				for _, statement := range f.statements {
+					if strings.Contains(statement, "run_explanation_heads_v1") {
+						t.Fatal("custody denial occurred after explanation mutation")
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestRunPayloadTerminalCustodyChronologyDeniesBeforeMutation(t *testing.T) {
+	for _, name := range []string{"before_created", "after_finished"} {
+		t.Run(name, func(t *testing.T) {
+			for _, owned := range []bool{false, true} {
+				store, f, run := runPayloadFixture(t)
+				run.Status = domain.RunSucceeded
+				finished := run.UpdatedAt.Add(time.Second)
+				run.UpdatedAt = finished
+				run.FinishedAt = &finished
+				run.TerminalCustody = runPayloadTerminalMetadata(t, run, true)
+				e := run.TerminalCustody.LocalEvidence
+				if name == "before_created" {
+					e.StoppedAt = run.CreatedAt.Add(-time.Microsecond)
+				} else {
+					e.ErasedAt = finished.Add(time.Microsecond)
+				}
+				var err error
+				e.EvidenceDigest, err = e.Digest()
+				if err != nil || e.Validate() != nil || run.TerminalCustody.Validate() != nil {
+					t.Fatalf("valid content/phase order required to isolate Run correlation: %v", err)
+				}
+				body, _ := json.Marshal(run)
+				f.rows["runs"] = []driver.Value{string(body)}
+				err = runPayloadTransaction(t, store, run.TenantID, owned, func(ctx context.Context, tx ports.StateTx) error { _, _, e := tx.GetRun(ctx, run.ID); return e })
+				if err == nil || f.writes != 0 || f.commits != 0 {
+					t.Fatalf("case=%s owned=%t invalid chronology read: err=%v writes=%d commits=%d", name, owned, err, f.writes, f.commits)
+				}
+			}
+		})
+	}
+}
+
+func TestRunPayloadTerminalCustodyReaderAndCodecDenyCorruption(t *testing.T) {
+	for _, name := range []string{"unknown", "alias", "duplicate", "foreign_run", "wrong_status", "full_run_overflow"} {
+		t.Run(name, func(t *testing.T) {
+			for _, owned := range []bool{false, true} {
+				store, f, run := runPayloadFixture(t)
+				run.TerminalCustody = runPayloadTerminalMetadata(t, run, false)
+				body, _ := json.Marshal(run)
+				raw := string(body)
+				switch name {
+				case "unknown":
+					raw = strings.Replace(raw, `"terminal_custody":{`, `"terminal_custody":{"private_future":{},`, 1)
+				case "alias":
+					raw = strings.Replace(raw, `"terminal_custody":`, `"Terminal_Custody":`, 1)
+				case "duplicate":
+					raw = strings.Replace(raw, `"terminal_custody":`, `"terminal_custody":null,"terminal_custody":`, 1)
+				case "foreign_run":
+					run.ID = "foreign-run"
+					body, _ = json.Marshal(run)
+					raw = string(body)
+				case "wrong_status":
+					run.TerminalCustody = runPayloadTerminalMetadata(t, run, true)
+					body, _ = json.Marshal(run)
+					raw = string(body)
+				case "full_run_overflow":
+					raw += strings.Repeat(" ", ownedAuthorityHeadBytes+1-len(raw))
+				}
+				f.rows["runs"] = []driver.Value{raw}
+				err := runPayloadTransaction(t, store, run.TenantID, owned, func(ctx context.Context, tx ports.StateTx) error { _, _, e := tx.GetRun(ctx, run.ID); return e })
+				if err == nil || f.writes != 0 {
+					t.Fatalf("case=%s owned=%t corrupt terminal Run accepted: %v", name, owned, err)
+				}
+			}
+		})
+	}
+	_, _, run := runPayloadFixture(t)
+	run.TerminalCustody = runPayloadTerminalMetadata(t, run, true)
+	if body, err := marshalRunPayload(run); err == nil || body != "" {
+		t.Fatal("central physical codec accepted success custody on non-success Run")
+	}
+}

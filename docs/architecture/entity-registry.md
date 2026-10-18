@@ -38,6 +38,15 @@ WebUI explanation projects only its base Run fields within the existing
 8 KiB read budget; that read-only projection must never feed a writer.
 Physical table counts and existing TTLs remain unchanged.
 
+The same Run payload owns optional typed `terminal_custody` metadata: one
+immutable private capsule plan, including failed/unpublished residue, and
+success-only correspondence/local evidence. Generic writers preserve this
+complete value together with derived inventory/head. The capsule is not a
+public `ArtifactManifest` entry or another derived pair; Session deletion owns
+its exact registered object. Structural validation does not prove original
+upload, stop, retirement or erasure. Their dedicated producer and terminal
+replay seal remain required; no table, TTL or complete 32 KiB Run bound changes.
+
 The original operation-body adapter reserves 160 KiB per retained pair before
 generation: at most 32 KiB for the encoded summary artifact and 128 KiB for its
 manifest. At most two pairs share the original aggregate byte allowance and

@@ -20,15 +20,22 @@ import (
 // Predicted references are DATA: no PUT, registration, cleanup or completion is
 // attested. Only a future same-owner publisher may consume these private bytes.
 type LocalPreparedOutputV1 struct {
-	self      *LocalPreparedOutputV1
-	parent    *LocalTerminalV1
-	mu        *sync.Mutex
-	cleared   bool
-	plan      domain.TerminalCustodyPlanV1
-	manifest  domain.ArtifactManifest
-	drafts    []domain.SessionEventDraft
-	canonical *canonicaloutput.PlanV1
-	capsule   []byte
+	self    *LocalPreparedOutputV1
+	parent  *LocalTerminalV1
+	mu      *sync.Mutex
+	cleared bool
+	// Shared original-owner state under mu. Any publication attempt is burned,
+	// including uncertain registration or storage outcomes; copies cannot retry.
+	publicationAttempted bool
+	publicationActive    bool
+	publicationCancel    context.CancelFunc
+	publicationDone      chan struct{}
+	published            bool
+	plan                 domain.TerminalCustodyPlanV1
+	manifest             domain.ArtifactManifest
+	drafts               []domain.SessionEventDraft
+	canonical            *canonicaloutput.PlanV1
+	capsule              []byte
 }
 
 type localCapsuleEventV1 struct {
@@ -376,11 +383,20 @@ func (p *LocalPreparedOutputV1) Clear() {
 		return
 	}
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.cleared {
-		return
-	}
 	p.cleared = true
+	cancel := p.publicationCancel
+	if !p.publicationActive {
+		p.releaseOutputLocked()
+	}
+	p.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+// Only the actual writer may release live buffers. Clear revokes immediately,
+// but leaves those bytes owned until that writer has actually returned.
+func (p *LocalPreparedOutputV1) releaseOutputLocked() {
 	clear(p.capsule)
 	p.capsule = nil
 	p.canonical.Release()
@@ -388,6 +404,45 @@ func (p *LocalPreparedOutputV1) Clear() {
 	p.drafts = nil
 	clear(p.manifest.Artifacts)
 	p.manifest.Artifacts = nil
+}
+
+// StopAndJoin revokes even an unused original owner. It joins the actual
+// publisher, not a free session gate, and never renews the original terminal
+// deadline. Timeout is not evidence that storage or its borrowed dependencies
+// have stopped; the live writer retains its buffers until actual completion.
+func (p *LocalPreparedOutputV1) StopAndJoin(ctx context.Context) error {
+	if !p.original() || ctx == nil {
+		return domain.ErrMembershipDenied
+	}
+	p.mu.Lock()
+	p.cleared = true
+	cancel, done, active := p.publicationCancel, p.publicationDone, p.publicationActive
+	if !active {
+		p.releaseOutputLocked()
+	}
+	p.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if ctx.Err() != nil {
+		return domain.ErrMembershipDenied
+	}
+	if !active {
+		return nil
+	}
+	call, finish := context.WithDeadline(ctx, p.parent.deadline)
+	defer finish()
+	select {
+	case <-done:
+		return nil
+	case <-call.Done():
+		select {
+		case <-done:
+			return nil
+		default:
+			return domain.ErrMembershipDenied
+		}
+	}
 }
 func (LocalPreparedOutputV1) String() string     { return "LocalPreparedOutputV1{private:[redacted]}" }
 func (p LocalPreparedOutputV1) GoString() string { return p.String() }

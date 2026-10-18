@@ -24,6 +24,7 @@ type terminalOutputState struct {
 	bodyLimit              uint64
 	capsule                outputSlot
 	failure                outputSlot
+	assistantUsed          bool
 }
 
 type outputSlot struct {

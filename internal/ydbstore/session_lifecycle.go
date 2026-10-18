@@ -11,6 +11,7 @@ import (
 	"math"
 	"sort"
 	"time"
+	"unicode/utf8"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
@@ -212,6 +213,11 @@ func (store *Store) RequestSessionDeletion(
 		}
 		if found {
 			if existing.RequestedBy == deletion.RequestedBy && existing.Reason == deletion.Reason {
+				if existing.State != domain.SessionDeletionCompleted {
+					if err := ensureSessionRunsTerminalTx(ctx, tx, deletion.SessionID); err != nil {
+						return err
+					}
+				}
 				result = existing
 				return nil
 			}
@@ -305,12 +311,12 @@ func (store *Store) StartSessionDeletion(
 		if err := ensureNoActiveLegalHoldTx(ctx, tx, sessionID); err != nil {
 			return err
 		}
+		if err := ensureSessionRunsTerminalTx(ctx, tx, sessionID); err != nil {
+			return err
+		}
 		if deletion.State == domain.SessionDeletionDeleting {
 			result = deletion
 			return nil
-		}
-		if err := ensureSessionRunsTerminalTx(ctx, tx, sessionID); err != nil {
-			return err
 		}
 		if err := ensureNoPendingAttachedWorkerReceiptsTx(ctx, tx, sessionID); err != nil {
 			return err
@@ -779,16 +785,28 @@ func ensureNoActiveLegalHoldTx(ctx context.Context, tx *stateTx, sessionID domai
 	return nil
 }
 
-func ensureSessionRunsTerminalTx(ctx context.Context, tx *stateTx, sessionID domain.SessionID) error {
+// The registered plan can outlive a failed Run and an ambiguous remote PUT.
+// Until the original writer reconciliation and sealed-finalizer path exists,
+// no terminal-custody plan is eligible for deletion. Status or caller-supplied
+// correspondence/evidence is not physical writer-stop evidence.
+const sessionDeletionRunsSQL = `SELECT SUBSTRING(CAST(i.run_id AS String),0,161), SUBSTRING(CAST(i.status AS String),0,161), SUBSTRING(CAST(r.payload AS String),0,32769)
+	 FROM runs_by_session AS i LEFT JOIN runs AS r
+	 ON i.tenant_id = r.tenant_id AND i.run_id = r.run_id
+	 WHERE i.tenant_id = $1 AND i.session_id = $2 LIMIT $3`
+
+func ensureSessionRunsTerminalTx(ctx context.Context, tx *stateTx, sessionID domain.SessionID) (err error) {
 	rows, err := tx.sqlTx.QueryContext(ctx,
-		`SELECT run_id, status FROM runs_by_session
-		 WHERE tenant_id = $1 AND session_id = $2 LIMIT $3`,
+		sessionDeletionRunsSQL,
 		tx.tenantID, sessionID, maxSessionDeletionRows+1,
 	)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer func() {
+		if closeErr := rows.Close(); err == nil {
+			err = closeErr
+		}
+	}()
 	var count uint64
 	for rows.Next() {
 		count++
@@ -797,11 +815,23 @@ func ensureSessionRunsTerminalTx(ctx context.Context, tx *stateTx, sessionID dom
 		}
 		var runID domain.RunID
 		var status domain.RunStatus
-		if err := rows.Scan(&runID, &status); err != nil {
+		var payload sql.NullString
+		if err := rows.Scan(&runID, &status, &payload); err != nil {
 			return err
 		}
-		if !status.Terminal() {
+		if runID.Validate() != nil || len(runID) > 160 || len(status) > 160 || !status.Valid() || !status.Terminal() {
 			return domain.ValidationError{Field: "session_deletion.runs", Reason: fmt.Sprintf("run %q is not terminal", runID)}
+		}
+		if !payload.Valid || len(payload.String) > ownedAuthorityHeadBytes || !utf8.ValidString(payload.String) {
+			return domain.ValidationError{Field: "session_deletion.runs", Reason: "missing or oversized canonical Run"}
+		}
+		var run domain.Run
+		if json.Unmarshal([]byte(payload.String), &run) != nil || run.Validate() != nil ||
+			run.ID != runID || run.TenantID != tx.tenantID || run.SessionID != sessionID || run.Status != status {
+			return domain.ValidationError{Field: "session_deletion.runs", Reason: "canonical Run does not match deletion index"}
+		}
+		if run.TerminalCustody != nil {
+			return domain.ValidationError{Field: "session_deletion.terminal_custody", Reason: "registered terminal writer requires original reconciliation before deletion"}
 		}
 	}
 	return rows.Err()

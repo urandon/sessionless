@@ -140,6 +140,50 @@ func (h *PreparedLocalTerminalV1) PrepareOutput(ctx context.Context) (*ydbstore.
 	return output, nil
 }
 
+// PublishOutput transfers only the original composer's prepared buffers. The
+// original Store publisher registers and independently verifies the complete
+// Run postimage before any object write. This is custody, not canonical success
+// or proof of allocation retirement and body erasure.
+func (h *PreparedLocalTerminalV1) PublishOutput(ctx context.Context) error {
+	if h == nil || h.self != h || h.owner == nil || h.entry == nil || ctx == nil || ctx.Err() != nil {
+		return ErrSession
+	}
+	s := h.owner
+	select {
+	case s.gate <- struct{}{}:
+	default:
+		return ErrBusy
+	}
+	defer func() { <-s.gate }()
+	s.mu.Lock()
+	valid := s.terminalOutput == h && !s.closed && s.terminalRequested && !s.runtimeFailed && h.output != nil &&
+		s.caller.Err() == nil && s.ctx.Err() == nil && s.entry != nil && h.source != nil
+	base, output := s.ctx, h.output
+	if s.execution != nil {
+		base = s.execution
+	}
+	s.mu.Unlock()
+	if !valid || base.Err() != nil || !time.Now().Before(h.deadline) {
+		return ErrSession
+	}
+	call, cancel := context.WithDeadline(base, h.deadline)
+	defer cancel()
+	stop := context.AfterFunc(ctx, cancel)
+	defer stop()
+	if ctx.Err() != nil {
+		cancel()
+	}
+	err := output.Publish(call)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err != nil || s.closed || ctx.Err() != nil || call.Err() != nil || s.caller.Err() != nil {
+		s.runtimeFailed = true
+		s.cancel()
+		return ErrSession
+	}
+	return nil
+}
+
 func (*PreparedLocalTerminalV1) String() string     { return "PreparedLocalTerminalV1{private:[redacted]}" }
 func (h *PreparedLocalTerminalV1) GoString() string { return h.String() }
 func (*PreparedLocalTerminalV1) MarshalJSON() ([]byte, error) {

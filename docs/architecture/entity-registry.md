@@ -47,6 +47,17 @@ its exact registered object. Structural validation does not prove original
 upload, stop, retirement or erasure. Their dedicated producer and terminal
 replay seal remain required; no table, TTL or complete 32 KiB Run bound changes.
 
+Until original-writer reconciliation and the sealed finalizer are integrated,
+Session deletion rejects every registered terminal-custody plan, regardless of
+Run status or apparent correspondence/evidence. The existing admission, start
+(including incomplete retries), and completion transactions read the bounded
+canonical Run alongside its deletion index. Each streamed payload is capped at
+32 KiB with an oversize sentinel; the existing 10,000-Run limit permits about
+312.5 MiB total payload transfer, not resident buffering. Missing/inconsistent
+rows and uncertain writers deny deletion; status alone cannot prove that an
+Object Storage PUT cannot complete late. This conservative staging guard is not
+the completed paged writer-join and exact retained-object deletion workflow.
+
 The original operation-body adapter reserves 160 KiB per retained pair before
 generation: at most 32 KiB for the encoded summary artifact and 128 KiB for its
 manifest. At most two pairs share the original aggregate byte allowance and

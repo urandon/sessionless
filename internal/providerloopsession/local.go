@@ -563,7 +563,17 @@ func (v *LocalV1) Close() error {
 			s.mu.Unlock()
 			if terminal != nil && terminal.source != nil {
 				if terminal.output != nil {
+					// A direct call on the original prepared output need not own
+					// s.gate. Join its actual writer as well, under the SAME close
+					// deadline, before releasing any Source-owned buffers.
+					joinCtx, cancel := context.WithDeadline(context.Background(), deadline)
+					joinErr := terminal.output.StopAndJoin(joinCtx)
+					cancel()
 					terminal.output.Clear()
+					if joinErr != nil {
+						s.closeErr = ErrSession
+						return
+					}
 				}
 				terminal.source.Clear()
 			}

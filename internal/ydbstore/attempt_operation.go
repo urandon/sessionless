@@ -31,41 +31,63 @@ type ownedOperationRow struct {
 	observation *domain.AttemptOperationObservationV1
 }
 
-func readOwnedOperation(ctx context.Context, q *ownedAuthorityQuery, op domain.AttemptOperationV1) (*ownedOperationRow, error) {
-	var raw, digest, operationDigest, call, observedRaw, observedDigest string
-	var observationPresent, digestPresent uint64
-	err := q.scanMetadata(ctx, ownedOperationReadSQL, []any{op.Scope.TenantID, op.Scope.AttemptID, op.Sequence}, &raw, &digest, &operationDigest, &call, &observationPresent, &digestPresent, &observedRaw, &observedDigest)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
+// ownedOperationColumns is the bounded persisted representation shared by
+// point reads and complete original-source inventory reads. It grants nothing.
+type ownedOperationColumns struct {
+	raw, digest, operationDigest, call, observedRaw, observedDigest string
+	observationPresent, digestPresent                               uint64
+}
+
+func (c *ownedOperationColumns) destinations() []any {
+	return []any{&c.raw, &c.digest, &c.operationDigest, &c.call, &c.observationPresent, &c.digestPresent, &c.observedRaw, &c.observedDigest}
+}
+
+func (c ownedOperationColumns) decode(q *ownedAuthorityQuery, scope domain.AttemptOperationScopeV1, sequence uint64) (*ownedOperationRow, error) {
 	var r domain.AttemptOperationReservationV1
-	if err != nil || len(raw) > ownedAuthorityHeadBytes || len(observedRaw) > ownedAuthorityHeadBytes || json.Unmarshal([]byte(raw), &r) != nil || r.Validate() != nil {
+	if len(c.raw) > ownedAuthorityHeadBytes || len(c.observedRaw) > ownedAuthorityHeadBytes || json.Unmarshal([]byte(c.raw), &r) != nil || r.Validate() != nil {
 		return nil, q.budget.deny()
 	}
 	canonical, _ := json.Marshal(r)
 	actual, _ := r.Digest()
-	if !bytes.Equal(canonical, []byte(raw)) || string(actual) != digest || string(r.OperationDigest) != operationDigest || r.Operation.Scope.TenantID != op.Scope.TenantID || r.Operation.Scope.AttemptID != op.Scope.AttemptID || r.Operation.Sequence != op.Sequence || r.Operation.CallID != call {
-		return nil, q.budget.deny()
-	}
-	var indexedSequence uint64
-	var indexedDigest string
-	if q.scanMetadata(ctx, ownedOperationCallSQL, []any{r.Operation.Scope.TenantID, r.Operation.Scope.AttemptID, r.Operation.CallID}, &indexedSequence, &indexedDigest) != nil || indexedSequence != r.Operation.Sequence || indexedDigest != operationDigest {
+	if !bytes.Equal(canonical, []byte(c.raw)) || string(actual) != c.digest || string(r.OperationDigest) != c.operationDigest || r.Operation.Scope.TenantID != scope.TenantID || r.Operation.Scope.AttemptID != scope.AttemptID || r.Operation.Sequence != sequence || r.Operation.CallID != c.call {
 		return nil, q.budget.deny()
 	}
 	result := &ownedOperationRow{reservation: r.Clone()}
-	if observationPresent == 0 && digestPresent == 0 && observedRaw == "" && observedDigest == "" {
+	if c.observationPresent == 0 && c.digestPresent == 0 && c.observedRaw == "" && c.observedDigest == "" {
 		return result, nil
 	}
 	var o domain.AttemptOperationObservationV1
-	if observationPresent != 1 || digestPresent != 1 || json.Unmarshal([]byte(observedRaw), &o) != nil || o.ValidateForReservation(r) != nil {
+	if c.observationPresent != 1 || c.digestPresent != 1 || json.Unmarshal([]byte(c.observedRaw), &o) != nil || o.ValidateForReservation(r) != nil {
 		return nil, q.budget.deny()
 	}
 	oc, _ := json.Marshal(o)
 	od, _ := o.Digest()
-	if !bytes.Equal(oc, []byte(observedRaw)) || string(od) != observedDigest || o.ObservedAt.After(q.at) {
+	if !bytes.Equal(oc, []byte(c.observedRaw)) || string(od) != c.observedDigest || o.ObservedAt.After(q.at) {
 		return nil, q.budget.deny()
 	}
 	result.observation = &o
+	return result, nil
+}
+
+func readOwnedOperation(ctx context.Context, q *ownedAuthorityQuery, op domain.AttemptOperationV1) (*ownedOperationRow, error) {
+	var columns ownedOperationColumns
+	err := q.scanMetadata(ctx, ownedOperationReadSQL, []any{op.Scope.TenantID, op.Scope.AttemptID, op.Sequence}, columns.destinations()...)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, q.budget.deny()
+	}
+	result, err := columns.decode(q, op.Scope, op.Sequence)
+	if err != nil {
+		return nil, err
+	}
+	r := result.reservation
+	var indexedSequence uint64
+	var indexedDigest string
+	if q.scanMetadata(ctx, ownedOperationCallSQL, []any{r.Operation.Scope.TenantID, r.Operation.Scope.AttemptID, r.Operation.CallID}, &indexedSequence, &indexedDigest) != nil || indexedSequence != r.Operation.Sequence || indexedDigest != columns.operationDigest {
+		return nil, q.budget.deny()
+	}
 	return result, nil
 }
 

@@ -22,6 +22,7 @@ type LocalRetainedCompactionV1 struct {
 	expected   *domain.RunDerivedContextV1
 	pair       *operationbody.RetainedPairV1
 	claimed    *atomic.Bool
+	source     *LocalCompactionSourceV1
 }
 
 // PrepareRetainedCompaction reserves the nonrefundable encoded upper bounds
@@ -83,6 +84,16 @@ func (h *LocalRetainedCompactionV1) Upload(ctx context.Context, plan domain.Deri
 	call, cancel := ownedAuthorityCallContext(call)
 	defer cancel()
 	store := h.entry.owner.store
+	if h.source != nil {
+		if h.source.self != h.source || h.source.entry != h.entry || h.source.state == nil {
+			return domain.ErrMembershipDenied
+		}
+		h.source.state.mu.Lock()
+		defer h.source.state.mu.Unlock()
+		if h.source.state.cleared || plan.SourceViewDigest != h.source.state.digest {
+			return domain.ErrMembershipDenied
+		}
+	}
 	if observed.Validate() != nil {
 		return domain.ErrMembershipDenied
 	}
@@ -107,17 +118,29 @@ func (h *LocalRetainedCompactionV1) Upload(ctx context.Context, plan domain.Deri
 			return q.budget.deny()
 		}
 		q.metadataCache = make(map[string]ownedMetadataCacheEntry)
-		run, err := h.entry.currentRetainedRun(ctx, q, h.operation)
-		if err != nil || !domain.EqualRunDerivedContextV1(run.DerivedContext, h.expected) || r.ValidateForParent(h.entry.parent.Authority, h.entry.parent.Reservation) != nil || store.operationHistory(ctx, q, r) != nil {
-			return q.budget.deny()
+		var run domain.Run
+		var err error
+		if h.source != nil {
+			// This original source joins the current parent/allocation/Run plus
+			// the COMPLETE inventory, call indices, proxies and accounting once.
+			// It accepts only the exact authenticated single compaction append.
+			run, err = h.source.rejoinRunLocked(ctx, q, &r, &o)
+		} else {
+			run, err = h.entry.currentRetainedRun(ctx, q, h.operation)
+			if err != nil || store.operationHistory(ctx, q, r) != nil {
+				return q.budget.deny()
+			}
+			row, readErr := readOwnedOperation(ctx, q, h.operation)
+			if readErr != nil || row == nil || row.observation == nil {
+				return q.budget.deny()
+			}
+			actualReservation, _ := row.reservation.Digest()
+			actualObservation, _ := row.observation.Digest()
+			if actualReservation != rd || actualObservation != od {
+				return q.budget.deny()
+			}
 		}
-		row, err := readOwnedOperation(ctx, q, h.operation)
-		if err != nil || row == nil || row.observation == nil {
-			return q.budget.deny()
-		}
-		actualReservation, _ := row.reservation.Digest()
-		actualObservation, _ := row.observation.Digest()
-		if actualReservation != rd || actualObservation != od {
+		if err != nil || !domain.EqualRunDerivedContextV1(run.DerivedContext, h.expected) || r.ValidateForParent(h.entry.parent.Authority, h.entry.parent.Reservation) != nil {
 			return q.budget.deny()
 		}
 		if run.DerivedContext == nil {

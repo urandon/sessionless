@@ -57,6 +57,27 @@ type localWorkerState struct {
 
 var _ ports.AttemptEffectStoreV1 = (*localWorkerState)(nil)
 
+// PreflightWorkerJob binds the original installed owner/profile to the actual
+// canonical Job/Final/current sources BEFORE a worker claims any lease. The
+// original Store repeats all authority checks at reserve/entry/send; success
+// here is not a capability and cannot substitute for those joins.
+func (v *LocalV1) PreflightWorkerJob(ctx context.Context, expected ports.WorkerJobState) error {
+	s, call, finish, err := v.begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer finish()
+	if s.started || s.entryRoute != localEntryUnselected || s.bootstrap.PreflightLocalWorkerJob(call, expected) != nil || ctx.Err() != nil || call.Err() != nil {
+		return ErrSession
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || s.callersCanceled() {
+		return ErrSession
+	}
+	return nil
+}
+
 // WorkerState returns the original factory-owned state facade. It does not
 // enable serving, issue grants, or supply V1 substrate execution evidence.
 // A Manager V2 composition must still consume its result with EnterWorkerEffect.

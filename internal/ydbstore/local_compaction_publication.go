@@ -215,7 +215,11 @@ func (g *localCompactionGenerationV1) readRetainedLocked(ctx context.Context, pl
 			return deny()
 		}
 		defer clear(mb)
-		parent, err = compactioncontext.DecodeRetainedV1(g.entry.owner.configuration, *policy, parentPlan, pb, mb, nil)
+		parentPolicy, e := g.source.policyForRetainedPlan(parentPlan)
+		if e != nil {
+			return deny()
+		}
+		parent, err = compactioncontext.DecodeRetainedV1(g.entry.owner.configuration, parentPolicy, parentPlan, pb, mb, nil)
 		if err != nil {
 			return deny()
 		}

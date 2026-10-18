@@ -334,7 +334,7 @@ func DecodeRetainedV1(profile domain.ConfiguredInferenceProfileV1, policy domain
 		return nil, ErrCanonical
 	}
 	for _, row := range m.Cut.Sources {
-		if row.Operation != nil && row.Operation.Reservation.Operation.Sequence >= op.Sequence {
+		if row.Operation != nil && row.Operation.Reservation.Operation.Scope == c.Scope && row.Operation.Reservation.Operation.Sequence >= op.Sequence {
 			return nil, ErrCanonical
 		}
 	}
@@ -346,8 +346,10 @@ func DecodeRetainedV1(profile domain.ConfiguredInferenceProfileV1, policy domain
 			return nil, ErrCanonical
 		}
 	} else {
-		if m.Parent == nil || *m.Parent != parent.plan || m.Closure != parent.manifest.Closure+1 || m.Closure > 2 || c.Generation != 2 || parent.manifest.Core.Generation != 1 ||
-			parent.manifest.Core.Scope != c.Scope || parent.manifest.Core.CompatibilityDigest != c.CompatibilityDigest || parent.plan == plan {
+		sameAttempt := parent.manifest.Core.Scope == c.Scope
+		if m.Parent == nil || *m.Parent != parent.plan || m.Closure != parent.manifest.Closure+1 || m.Closure > 2 || parent.manifest.Core.Generation != 1 ||
+			(sameAttempt && c.Generation != 2) || (!sameAttempt && (c.Generation != 1 || parent.plan.Scope.TenantID != c.Scope.TenantID || parent.plan.Scope.SessionID != c.Scope.SessionID || parent.plan.Scope.OwnerUserID != c.Scope.OwnerUserID || parent.plan.Scope.RunID == c.Scope.RunID)) ||
+			parent.manifest.Core.CompatibilityDigest != c.CompatibilityDigest || parent.plan == plan {
 			return nil, ErrCanonical
 		}
 		currentCovered := make(map[string]bool, len(m.Cut.Covered))
@@ -498,8 +500,9 @@ func validateRetainedCut(c retainedCutV1, scope domain.AttemptOperationScopeV1) 
 			parts[i] = uint8(kind + 1)
 		}
 	}
-	var lastCanonical, lastOperation uint64
-	operationSeen := false
+	var lastCanonical uint64
+	lastOperations := make(map[domain.AttemptOperationScopeV1]uint64)
+	currentOperationSeen := false
 	refs := make([]configuredinference.CompactionReferenceV1, 0, len(c.Sources))
 	for i, row := range c.Sources {
 		if parts[i] == 0 || !retainedValidDigest(row.SourceID) || seen[row.SourceID] || (row.Canonical == nil) == (row.Operation == nil) {
@@ -510,7 +513,7 @@ func validateRetainedCut(c retainedCutV1, scope domain.AttemptOperationScopeV1) 
 		if row.Canonical != nil {
 			e := *row.Canonical
 			key, err := CanonicalSourceKeyV1(e)
-			if err != nil || key != row.SourceID || seenEvents[e.ID] || e.TenantID != scope.TenantID || e.SessionID != scope.SessionID || operationSeen || (lastCanonical == 0 && e.Sequence != 1) || (lastCanonical != 0 && e.Sequence != lastCanonical+1) {
+			if err != nil || key != row.SourceID || seenEvents[e.ID] || e.TenantID != scope.TenantID || e.SessionID != scope.SessionID || currentOperationSeen || (lastCanonical == 0 && e.Sequence != 1) || (lastCanonical != 0 && e.Sequence != lastCanonical+1) {
 				return nil, ErrCanonical
 			}
 			seenEvents[e.ID] = true
@@ -523,14 +526,29 @@ func validateRetainedCut(c retainedCutV1, scope domain.AttemptOperationScopeV1) 
 				return nil, ErrCanonical
 			}
 		} else {
-			operationSeen = true
 			kind = configuredinference.CompactionOperationReferenceV1
 			r, o := row.Operation.Reservation, row.Operation.Observation
+			original := r.Operation.Scope
 			key, err := OperationSourceKeyV1(r, o)
-			if err != nil || key != row.SourceID || r.Operation.Scope != scope || r.Operation.Kind != domain.AttemptOperationModelV1 || o.Outcome != domain.AttemptOperationCompletedV1 || o.Reason != domain.AttemptOperationReasonNoneV1 || o.Usage.ExceedsReservation(r.Operation.Debit) || r.Operation.Sequence <= lastOperation || r.Operation.Sequence >= scopeSequenceLimit || parts[i] == 1 {
+			if err != nil || key != row.SourceID || original.TenantID != scope.TenantID || original.SessionID != scope.SessionID || original.OwnerUserID != scope.OwnerUserID || r.Operation.Kind != domain.AttemptOperationModelV1 || o.Outcome != domain.AttemptOperationCompletedV1 || o.Reason != domain.AttemptOperationReasonNoneV1 || o.Usage.ExceedsReservation(r.Operation.Debit) || r.Operation.Sequence <= lastOperations[original] || r.Operation.Sequence >= scopeSequenceLimit {
 				return nil, ErrCanonical
 			}
-			lastOperation = r.Operation.Sequence
+			if original != scope {
+				anchored := false
+				for _, later := range c.Sources[i+1:] {
+					if later.Canonical != nil && later.Canonical.Kind == domain.SessionEventAssistantMessage && later.Canonical.RunID != nil && *later.Canonical.RunID == original.RunID && !later.Canonical.CreatedAt.Before(o.ObservedAt) {
+						anchored = true
+					}
+				}
+				if !anchored || original.RunID == scope.RunID {
+					return nil, ErrCanonical
+				}
+			} else if parts[i] == 1 {
+				return nil, ErrCanonical
+			} else {
+				currentOperationSeen = true
+			}
+			lastOperations[original] = r.Operation.Sequence
 		}
 		if parts[i] < 3 || (row.Canonical != nil && (row.Canonical.Kind == domain.SessionEventUserMessage || row.Canonical.Kind == domain.SessionEventSystemNotice)) {
 			refs = append(refs, configuredinference.CompactionReferenceV1{SourceID: row.SourceID, Kind: kind})
@@ -544,22 +562,27 @@ func validateRetainedCut(c retainedCutV1, scope domain.AttemptOperationScopeV1) 
 	// original program/source validator's responsibility, not invented here.
 	spans := make(map[domain.RunID]UnitV1)
 	for i, row := range c.Sources {
-		if row.Canonical == nil {
+		var run domain.RunID
+		if row.Canonical != nil {
+			e := row.Canonical
+			if e.Kind != domain.SessionEventAssistantMessage && e.Kind != domain.SessionEventToolCall && e.Kind != domain.SessionEventToolResult {
+				continue
+			}
+			if e.RunID == nil {
+				return nil, ErrCanonical
+			}
+			run = *e.RunID
+		} else if row.Operation.Reservation.Operation.Scope != scope {
+			run = row.Operation.Reservation.Operation.Scope.RunID
+		} else {
 			continue
 		}
-		e := row.Canonical
-		if e.Kind != domain.SessionEventAssistantMessage && e.Kind != domain.SessionEventToolCall && e.Kind != domain.SessionEventToolResult {
-			continue
-		}
-		if e.RunID == nil {
-			return nil, ErrCanonical
-		}
-		span, ok := spans[*e.RunID]
+		span, ok := spans[run]
 		if !ok {
 			span.Start = i
 		}
 		span.End = i + 1
-		spans[*e.RunID] = span
+		spans[run] = span
 	}
 	intervals := make([]UnitV1, 0, len(spans))
 	for _, span := range spans {
@@ -580,7 +603,7 @@ func validateRetainedCut(c retainedCutV1, scope domain.AttemptOperationScopeV1) 
 		}
 		protected := false
 		for _, row := range c.Sources[span.Start:span.End] {
-			if row.Canonical.Kind == domain.SessionEventUserMessage || row.Canonical.Kind == domain.SessionEventSystemNotice {
+			if row.Canonical != nil && (row.Canonical.Kind == domain.SessionEventUserMessage || row.Canonical.Kind == domain.SessionEventSystemNotice) {
 				protected = true
 			}
 		}

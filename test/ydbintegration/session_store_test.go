@@ -19,6 +19,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 	"gitcode.com/urandon/sessionless/internal/ydbpartition"
 	"gitcode.com/urandon/sessionless/internal/ydbstore"
+	"gitcode.com/urandon/sessionless/test/support/aw07native"
 )
 
 const canonicalDigest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -1015,59 +1016,15 @@ func canonicalTerminalDraft(
 	}
 }
 
-func seedCanonicalMembership(
-	t *testing.T,
-	db *sql.DB,
-	tenantID domain.TenantID,
-	userID domain.UserID,
-	at time.Time,
-) {
+func seedCanonicalMembership(t *testing.T, db *sql.DB, tenantID domain.TenantID, userID domain.UserID, at time.Time) {
 	t.Helper()
-	if _, err := db.ExecContext(context.Background(),
-		`UPSERT INTO tenants (tenant_id, status, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4)`,
-		tenantID, "active", at, at,
-	); err != nil {
-		t.Fatal(err)
-	}
-	membership := domain.TenantMembership{
-		TenantID: tenantID, UserID: userID, Role: domain.TenantMembershipOwner,
-		Status: domain.TenantMembershipActive, SecurityVersion: 1, CreatedAt: at, UpdatedAt: at,
-	}
-	payload, err := json.Marshal(membership)
-	if err != nil {
-		t.Fatal(err)
-	}
-	bucket, err := ydbpartition.BucketV1(string(userID))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(context.Background(),
-		`UPSERT INTO tenant_memberships
-		 (user_bucket, user_id, tenant_id, role, status, security_version,
-		  created_at, updated_at, record)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CAST($9 AS JsonDocument))`,
-		bucket, userID, tenantID, membership.Role, membership.Status,
-		membership.SecurityVersion, at, at, string(payload),
-	); err != nil {
-		t.Fatal(err)
-	}
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	aw07native.SeedMembership(t, ctx, db, tenantID, userID, at)
 }
 
-func canonicalSessionFixture(
-	tenantID domain.TenantID,
-	userID domain.UserID,
-	sessionID domain.SessionID,
-	at time.Time,
-) (domain.Session, domain.SessionParticipant) {
-	return domain.Session{
-			ID: sessionID, TenantID: tenantID, CreatedBy: userID,
-			Status: domain.SessionActive, CreatedAt: at, UpdatedAt: at,
-		}, domain.SessionParticipant{
-			TenantID: tenantID, SessionID: sessionID, UserID: userID,
-			Role: domain.SessionParticipantOwner, Status: domain.SessionParticipantActive,
-			CreatedAt: at, UpdatedAt: at,
-		}
+func canonicalSessionFixture(tenantID domain.TenantID, userID domain.UserID, sessionID domain.SessionID, at time.Time) (domain.Session, domain.SessionParticipant) {
+	return aw07native.Session(tenantID, userID, sessionID, at)
 }
 
 func canonicalEventFixture(

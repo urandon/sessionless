@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -25,15 +26,18 @@ import (
 // SCRIPTED DATA, not native SQL, transport, summary fidelity or live compaction.
 type compactionSourceSQL struct {
 	*retainedEntrySQL
-	events        [][]driver.Value
-	snapshot      []driver.Value
-	operations    [][]driver.Value
-	proxies       [][]driver.Value
-	firstProxy    []driver.Value
-	rangeReads    int
-	maxStatements int
-	statements    int
-	failClose     bool
+	events           [][]driver.Value
+	snapshot         []driver.Value
+	operations       [][]driver.Value
+	proxies          [][]driver.Value
+	firstProxy       []driver.Value
+	historyRuns      map[domain.RunID]string // explicit canonical-only legacy DATA
+	historyMarkers   map[domain.RunID][2]string
+	historyManifests map[domain.ArtifactManifestID]string
+	rangeReads       int
+	maxStatements    int
+	statements       int
+	failClose        bool
 }
 type compactionSourceConnector struct{ f *compactionSourceSQL }
 
@@ -50,14 +54,50 @@ func (f *compactionSourceSQL) BeginTx(ctx context.Context, options driver.TxOpti
 }
 func (f *compactionSourceSQL) QueryContext(ctx context.Context, statement string, args []driver.NamedValue) (driver.Rows, error) {
 	f.statements++
-	scopeTenant, scopeSession := domain.TenantID("tenant-test"), domain.SessionID("session-test")
+	var originalJob domain.WorkerJob
+	if len(f.retainedEntrySQL.loopbackOperationSQL.f.parent.graph.rows["worker_jobs"]) != 0 {
+		_ = json.Unmarshal([]byte(f.retainedEntrySQL.loopbackOperationSQL.f.parent.graph.rows["worker_jobs"][0].(string)), &originalJob)
+	}
+	scopeTenant, scopeSession := originalJob.TenantID, originalJob.SessionID
+	if statement == localTerminalHistoryRunsSQL(len(args)-3) {
+		if len(args) < 4 || args[0].Value != string(scopeTenant) || args[1].Value != string(scopeSession) {
+			return nil, errors.New("history discovery exact canonical scope")
+		}
+		cap, ok := args[len(args)-1].Value.(int64)
+		if !ok || cap < 1 || cap > 32769 {
+			return nil, errors.New("history discovery bounded cell")
+		}
+		ids := make([]string, 0, len(args)-3)
+		for _, arg := range args[2 : len(args)-1] {
+			id, ok := arg.Value.(string)
+			if !ok {
+				return nil, errors.New("history exact Run key")
+			}
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		var rows [][]driver.Value
+		for _, id := range ids {
+			if raw, exists := f.historyRuns[domain.RunID(id)]; exists {
+				if int64(len(raw)) > cap {
+					raw = raw[:cap]
+				}
+				marker := f.historyMarkers[domain.RunID(id)]
+				rows = append(rows, []driver.Value{id, raw, marker[0], marker[1]})
+			}
+		}
+		return &compactionSourceRows{rows: rows}, nil
+	}
+	if statement == localTerminalLegacyManifestsSQL(len(args)-2) {
+		return canonicalHistoryManifestRows(scopeTenant, f.historyManifests, args)
+	}
 	var values [][]driver.Value
 	switch statement {
 	case ownedProxyRegistrationSQL:
 		if f.firstProxy == nil {
 			return f.retainedEntrySQL.QueryContext(ctx, statement, args)
 		}
-		if len(args) != 3 || args[0].Value != string(scopeTenant) || args[1].Value != "attempt-test" {
+		if len(args) != 3 || args[0].Value != string(scopeTenant) || args[1].Value != string(originalJob.AttemptID) {
 			return nil, errors.New("source original first proxy exact keys")
 		}
 		return &explanationFixtureRows{values: append([]driver.Value(nil), f.firstProxy...)}, nil
@@ -81,7 +121,7 @@ func (f *compactionSourceSQL) QueryContext(ctx context.Context, statement string
 			values = [][]driver.Value{f.snapshot}
 		}
 	case localCompactionOperationsSQL, localCompactionProxiesSQL:
-		if len(args) != 2 || args[0].Value != string(scopeTenant) || args[1].Value != "attempt-test" {
+		if len(args) != 2 || args[0].Value != string(scopeTenant) || args[1].Value != string(originalJob.AttemptID) {
 			return nil, errors.New("source inventory exact scope")
 		}
 		if statement == localCompactionOperationsSQL {
@@ -278,6 +318,7 @@ func newCompactionSourceFixtureWithPrebuild(t *testing.T, toolHistory bool, preb
 		fixture.events = append(fixture.events, []driver.Value{string(raw)})
 		result.records = append(result.records, sessioncontext.EventPayload{Event: event, Payload: []byte(body)})
 	}
+	seedCanonicalHistoryRuns(t, fixture, run, result.records)
 	if job.ContextWindow.SnapshotVersion != nil {
 		compressed, history, err := sessioncontext.EncodeSnapshot(result.records[:1])
 		if err != nil {
@@ -298,6 +339,88 @@ func newCompactionSourceFixtureWithPrebuild(t *testing.T, toolHistory bool, preb
 		fixture.events = fixture.events[1:]
 	}
 	return result
+}
+
+// Existing tool-heavy rows are explicit canonical V1 DATA, not an owned local
+// producer. Seed the complete matching V1 manifest/seal BEFORE the Store is
+// called; queries never invent missing output or authority. This is not a
+// claim that the fixture executed a managed process or attached worker.
+func seedCanonicalHistoryRuns(t *testing.T, fixture *compactionSourceSQL, current domain.Run, records []sessioncontext.EventPayload) {
+	t.Helper()
+	fixture.historyRuns = make(map[domain.RunID]string)
+	fixture.historyMarkers = make(map[domain.RunID][2]string)
+	fixture.historyManifests = make(map[domain.ArtifactManifestID]string)
+	for _, row := range fixture.events {
+		var e domain.SessionEvent
+		if json.Unmarshal([]byte(row[0].(string)), &e) != nil {
+			t.Fatal("canonical legacy fixture event")
+		}
+		if e.Kind != domain.SessionEventAssistantMessage || e.RunID == nil || *e.RunID == current.ID {
+			continue
+		}
+		legacy := current.Clone()
+		legacy.ID, legacy.TriggerEventID, legacy.IdempotencyKey = *e.RunID, "legacy-trigger", domain.IdempotencyKey("legacy-"+string(*e.RunID))
+		legacy.Status, legacy.UpdatedAt = domain.RunSucceeded, e.CreatedAt
+		finished := e.CreatedAt
+		legacy.StartedAt, legacy.FinishedAt, legacy.CancellationRequestedAt = nil, &finished, nil
+		legacy.DerivedContext, legacy.TerminalCustody = nil, nil
+		if err := legacy.Validate(); err != nil {
+			t.Fatalf("explicit canonical-only legacy Run DATA: %v", err)
+		}
+		raw, err := json.Marshal(legacy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fixture.historyRuns[legacy.ID] = string(raw)
+		drafts, manifestID, err := markerLegacyDraftsData(t, legacy, records)
+		if err != nil {
+			t.Fatalf("complete canonical V1 fixture material: %v", err)
+		}
+		manifest := domain.ArtifactManifest{ID: manifestID, TenantID: legacy.TenantID, RunID: legacy.ID, CreatedAt: legacy.UpdatedAt}
+		if err := manifest.ValidateForRun(legacy); err != nil {
+			t.Fatal(err)
+		}
+		seal, err := runFinalizationDigest(domain.RunSucceeded, &manifest, drafts, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifestRaw, err := json.Marshal(manifest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fixture.historyMarkers[legacy.ID] = [2]string{string(domain.RunSucceeded), seal}
+		fixture.historyManifests[manifestID] = string(manifestRaw)
+	}
+}
+
+func canonicalHistoryManifestRows(tenant domain.TenantID, manifests map[domain.ArtifactManifestID]string, args []driver.NamedValue) (driver.Rows, error) {
+	if len(args) < 3 || args[0].Value != string(tenant) {
+		return nil, errors.New("legacy manifest exact tenant")
+	}
+	cap, ok := args[len(args)-1].Value.(int64)
+	if !ok || cap < 1 || cap > 32769 || (cap+161)*int64(len(args)-1) > 1<<20 {
+		return nil, errors.New("legacy manifest bounded transfer")
+	}
+	var ids []string
+	seen := make(map[string]bool)
+	for _, arg := range args[1 : len(args)-1] {
+		id, ok := arg.Value.(string)
+		if !ok || seen[id] {
+			return nil, errors.New("legacy manifest malformed/duplicate key")
+		}
+		seen[id], ids = true, append(ids, id)
+	}
+	sort.Strings(ids)
+	var rows [][]driver.Value
+	for _, id := range ids {
+		if raw, exists := manifests[domain.ArtifactManifestID(id)]; exists {
+			if int64(len(raw)) > cap {
+				raw = raw[:cap]
+			}
+			rows = append(rows, []driver.Value{id, raw})
+		}
+	}
+	return &compactionSourceRows{rows: rows}, nil
 }
 
 func (f *compactionSourceFixture) seedCompleted(t *testing.T, op domain.AttemptOperationV1, generation uint64, overrun ...bool) (domain.DerivedContextPlanV1, ports.AuthenticatedAttemptOperationObservationV1, []byte, []byte) {
@@ -382,8 +505,10 @@ func TestLocalCompactionSourceOriginalCanonicalToolsAndClear(t *testing.T) {
 		if len(units) != 3 || !units[0].Protected || units[1].Start != 1 || units[1].End != 6 || !units[2].Protected {
 			t.Fatalf("historical paired units/protection: %+v", units)
 		}
-		if f.queries.rangeReads != 2 || f.queries.maxStatements > 32 || f.queries.statements > 32 || f.canonical.opened != f.canonical.closed {
-			t.Fatalf("bounded two-phase reads/close: range=%d statements=%d/%d open/close=%d/%d", f.queries.rangeReads, f.queries.maxStatements, f.queries.statements, f.canonical.opened, f.canonical.closed)
+		// Original capture, pre-history join, then post-materialization join.
+		// A fourth range read is still an unexpected retry/fallback.
+		if f.queries.rangeReads != 3 || f.queries.maxStatements > 32 || f.queries.statements > 32 || f.canonical.opened != f.canonical.closed {
+			t.Fatalf("bounded capture/history joins/close: range=%d statements=%d/%d open/close=%d/%d", f.queries.rangeReads, f.queries.maxStatements, f.queries.statements, f.canonical.opened, f.canonical.closed)
 		}
 		records[0].Payload[0] = '!'
 		if source.Records()[0].Payload[0] == '!' {
@@ -426,8 +551,11 @@ func TestLocalCompactionSourcePinnedSnapshotAndTail(t *testing.T) {
 			t.Fatalf("exact pinned snapshot plus tool-heavy tail: %v", err)
 		}
 		defer s.Clear()
-		if !reflect.DeepEqual(s.Records(), f.records) || f.queries.rangeReads != 2 {
-			t.Fatal("snapshot/tail changed original source or retried fallback")
+		if !reflect.DeepEqual(s.Records(), f.records) {
+			t.Fatal("snapshot/tail changed original canonical source")
+		}
+		if f.queries.rangeReads != 3 {
+			t.Fatalf("capture plus pre/post history joins retried fallback: range reads=%d want=3", f.queries.rangeReads)
 		}
 	})
 	for _, name := range []string{"missing_exact_snapshot", "wrong_pinned_version", "wrong_coverage"} {

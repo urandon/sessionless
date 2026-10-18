@@ -255,6 +255,9 @@ func newOwnedAttemptEffectParentFixture(t *testing.T, prebuild ...ownedFinalPreb
 	graph := base.managedAdmissionGraphFixture
 	at := graph.at.UTC()
 	state := currentWorkerAuthorityFixture(t)
+	if len(prebuild) == 1 && prebuild[0].state != nil {
+		state = *prebuild[0].state
+	}
 	if state.Run.ID != source.Scope.RunID || state.Attempt.ID != source.Scope.AttemptID || state.Run.SessionID != source.Scope.SessionID || state.Job.CredentialOwnerUserID != source.Scope.OwnerUserID {
 		t.Fatalf("owned fixture scope differs from canonical worker rows: state=%+v source=%+v", state.Run, source.Scope)
 	}
@@ -300,6 +303,9 @@ func newOwnedAttemptEffectParentFixture(t *testing.T, prebuild ...ownedFinalPreb
 	request := ports.ReserveAttemptEffectRequestV1{
 		TenantID: state.Run.TenantID, RunID: state.Run.ID, AttemptID: state.Attempt.ID,
 		LeaseID: "owned-effect-lease", FenceToken: 1, PhysicalInvocationClaimID: "owned-effect-claim",
+	}
+	if len(prebuild) == 1 && prebuild[0].state != nil {
+		request.LeaseID, request.PhysicalInvocationClaimID = domain.LeaseID("lease-"+string(state.Run.ID)), "claim-"+string(state.Run.ID)
 	}
 	lease := domain.Lease{ID: request.LeaseID, TenantID: state.Run.TenantID, RunID: state.Run.ID, AttemptID: state.Attempt.ID, WorkerID: state.Attempt.WorkerID, FenceToken: request.FenceToken, AcquiredAt: at, ExpiresAt: at.Add(time.Hour)}
 	leaseRaw, err := marshal(lease)

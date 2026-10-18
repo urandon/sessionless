@@ -3,11 +3,14 @@ package ydbstore
 import (
 	"bytes"
 	"encoding/hex"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
+	"gitcode.com/urandon/sessionless/internal/attachedworkeroutput"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerprotocol"
+	"gitcode.com/urandon/sessionless/internal/canonicaloutput"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
@@ -294,6 +297,88 @@ func TestTerminalMaterializationDigestBindsCanonicalOutput(t *testing.T) {
 	}
 	if _, err := attachedWorkerTerminalMaterializationDigest(domain.AttachedWorkerTerminalFailed, completion); err == nil {
 		t.Fatal("status-substituted materialization was accepted")
+	}
+}
+
+// Real materializer + cooperative immutable bytes, not native YDB, a receipt
+// authorization or a canonical commit. The native test owns that joined proof.
+func TestTerminalMaterializationDigestMatchesOriginalMaterializerCanonicalV1(t *testing.T) {
+	t.Parallel()
+	loaded := currentWorkerAuthorityFixture(t)
+	placement := domain.ExecutionPlacementV2{
+		Version: domain.ExecutionPlacementVersionV2, Kind: domain.ExecutionPlacementAttachedWorker,
+		FallbackPolicy: domain.ExecutionFallbackDenied, OwnerUserID: loaded.Job.CredentialOwnerUserID, WorkerID: "worker-test",
+		CapabilityDigest: domain.DigestAttachedWorkerCapability([]byte("materializer-canonical-capability")),
+		PolicyDigest:     domain.AttachedWorkerPolicyDigest(domain.DigestAttachedWorkerCapability([]byte("materializer-canonical-policy"))),
+	}
+	pd, err := domain.ExecutionPlacementDigest(placement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded.Job.ExecutionPlacementV2 = placement
+	loaded.Job.HarnessBinding.ExecutionPlacementDigest = string(pd)
+	loaded.Job.SubstrateBinding, loaded.Job.AdmissionCostCeiling = nil, nil
+	if err := loaded.Job.ValidateForRun(loaded.Run); err != nil {
+		t.Fatal("original materializer input", err)
+	}
+	blobs := &localEntryBlobs{}
+	t.Cleanup(func() {
+		for _, body := range blobs.objects {
+			clear(body)
+		}
+	})
+	material, err := attachedworkeroutput.Materialize(t.Context(), blobs, loaded, "materializer-lease", 1,
+		attachedworkeroutput.Candidate{Status: domain.AttachedWorkerTerminalSucceeded, Summary: " \noriginal materializer answer\t "}, loaded.Run.CreatedAt.Add(time.Second))
+	if err != nil || material.Completion == nil {
+		t.Fatalf("original Materialize: completion=%t err=%v", material.Completion != nil, err)
+	}
+	completion := material.Completion
+	if completion.Manifest.ValidateForRun(loaded.Run) != nil || completion.Manifest.ID == canonicaloutput.ManifestIDV1(loaded.Run.ID) || len(completion.Events) != 1 || completion.Events[0].ValidateForRun(loaded.Run) != nil || completion.Events[0].DisplayText != "original materializer answer" || completion.SubstrateEvidence != nil {
+		t.Fatal("original materializer did not produce complete distinct-manifest/nil-evidence canonical output")
+	}
+	canonical, err := runFinalizationDigest(domain.RunSucceeded, &completion.Manifest, completion.Events, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := attachedWorkerTerminalMaterializationDigest(domain.AttachedWorkerTerminalSucceeded, material)
+	if err != nil || string(digest) != canonical {
+		t.Fatalf("original receipt commitment must equal canonical V1 seal: equal=%t err=%v", string(digest) == canonical, err)
+	}
+	raw, err := json.Marshal(material)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored ports.AttachedWorkerTerminalMaterialization
+	if err := json.Unmarshal(raw, &restored); err != nil {
+		t.Fatal(err)
+	}
+	roundtrip, err := attachedWorkerTerminalMaterializationDigest(domain.AttachedWorkerTerminalSucceeded, restored)
+	if err != nil || roundtrip != digest {
+		t.Fatalf("serialized complete materialization changed seal: equal=%t err=%v", roundtrip == digest, err)
+	}
+	for _, field := range []string{"event", "manifest"} {
+		t.Run(field, func(t *testing.T) {
+			var changed ports.AttachedWorkerTerminalMaterialization
+			if err := json.Unmarshal(raw, &changed); err != nil {
+				t.Fatal(err)
+			}
+			if field == "event" {
+				changed.Completion.Events[0].DisplayText += " changed"
+			} else {
+				changed.Completion.Manifest.ID += "-changed"
+			}
+			if changed.Completion.Manifest.ValidateForRun(loaded.Run) != nil || changed.Completion.Events[0].ValidateForRun(loaded.Run) != nil {
+				t.Fatal("mutation must remain structurally valid canonical DATA")
+			}
+			got, err := attachedWorkerTerminalMaterializationDigest(domain.AttachedWorkerTerminalSucceeded, changed)
+			other, canonicalErr := runFinalizationDigest(domain.RunSucceeded, &changed.Completion.Manifest, changed.Completion.Events, nil, nil)
+			if err != nil || canonicalErr != nil || string(got) != other || got == digest {
+				t.Fatalf("%s mutation must change the same canonical commitment: sameEncoding=%t changed=%t err=%v canonicalErr=%v", field, string(got) == other, got != digest, err, canonicalErr)
+			}
+		})
+	}
+	if _, err := attachedWorkerTerminalMaterializationDigest(domain.AttachedWorkerTerminalFailed, material); err == nil {
+		t.Fatal("status-substituted success materialization admitted")
 	}
 }
 

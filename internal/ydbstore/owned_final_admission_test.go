@@ -126,6 +126,7 @@ type ownedFinalPrebuild struct {
 	at      time.Time
 	profile func(*domain.OwnedAgentProfileCurrentV1)
 	sources *ownedFinalSources
+	state   *ports.WorkerJobState // canonical DATA declared before any source/admission seal
 }
 
 // Already sealed inputs must not pass through the synthetic rebinding path.
@@ -140,6 +141,22 @@ func newOwnedFinalScript(t *testing.T, prebuild ...ownedFinalPrebuild) (*Store, 
 		t.Fatal("owned final fixture accepts at most one prebuild option")
 	}
 	store, graph, request := managedGraphFixture(t)
+	if len(prebuild) == 1 && prebuild[0].state != nil {
+		s := *prebuild[0].state
+		var outbox domain.DispatchOutbox
+		if json.Unmarshal([]byte(graph.rows["dispatch_outbox"][0].(string)), &outbox) != nil {
+			t.Fatal("pre-intake dispatch template")
+		}
+		run, attempt := s.Run.Clone(), s.Attempt
+		run.Status, attempt.Status, attempt.WorkerID = domain.RunCreated, domain.AttemptCreated, ""
+		outbox.ID, outbox.TenantID, outbox.RunID, outbox.AttemptID = domain.DispatchOutboxID("dispatch-"+string(run.ID)), run.TenantID, run.ID, attempt.ID
+		outbox.InputManifestID, outbox.ContextSnapshot, outbox.CredentialOwnerUserID = s.Job.InputManifestID, s.Job.ContextSnapshot, s.Job.CredentialOwnerUserID
+		outbox.CreatedAt, outbox.UpdatedAt = run.CreatedAt, run.CreatedAt
+		for table, value := range map[string]any{"runs": run, "attempts": attempt, "dispatch_outbox": outbox} {
+			ratedFixturePut(t, graph.ratedSQLFixture, table, value)
+		}
+		request.TenantID, request.RunID, request.AttemptID, request.OutboxID, request.ReservationID = run.TenantID, run.ID, attempt.ID, outbox.ID, s.Reservation.ID
+	}
 	if len(prebuild) == 1 && !prebuild[0].at.IsZero() {
 		graph.at = prebuild[0].at.UTC().Truncate(time.Microsecond)
 		request.Now, request.HoldUntil = graph.at, graph.at.Add(time.Hour)
@@ -241,6 +258,9 @@ func newOwnedFinalScript(t *testing.T, prebuild ...ownedFinalPrebuild) (*Store, 
 	graph.rows["quota_reservations"], graph.rows["worker_jobs"] = nil, nil
 	// The exact principal row is independently scripted from canonical records.
 	seed := currentWorkerAuthorityFixture(t)
+	if len(prebuild) == 1 && prebuild[0].state != nil {
+		seed = *prebuild[0].state
+	}
 	script := &ownedFinalScript{managedAdmissionGraphFixture: graph, reader: r, seedJob: seed.Job, seedReservation: seed.Reservation}
 	sess := domain.Session{ID: run.SessionID, TenantID: run.TenantID, CreatedBy: outbox.CredentialOwnerUserID, Status: domain.SessionActive, CreatedAt: run.CreatedAt, UpdatedAt: run.CreatedAt}
 	member := domain.TenantMembership{TenantID: run.TenantID, UserID: outbox.CredentialOwnerUserID, Role: domain.TenantMembershipOwner, Status: domain.TenantMembershipActive, SecurityVersion: 1, CreatedAt: run.CreatedAt, UpdatedAt: run.CreatedAt}

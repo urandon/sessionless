@@ -28,7 +28,7 @@ const summarizerInstructionsV1 = `Return exactly one sessionless.compaction-summ
 // admitted policy, current Source or permission to call a model.
 func CompactionPolicyDigestV1() string {
 	return sourceKey("compiled_bundle", InstructionVersionV1, ordinaryInstructionsV1, summarizerInstructionsV1,
-		configuredinference.CompactionSummarySchemaV1, "history_frames.v1", "source_keys.v1", "complete_prefix_keep_last_unit.v1", "protected_originals_once.v1")
+		configuredinference.CompactionSummarySchemaV1, "history_frames.v1", "source_keys.v1", "complete_prefix_keep_last_unit.v1", "protected_originals_once.v1", "terminal_sealed_history.v1")
 }
 
 // CompletedOperationV1 is historical DATA; the original Store must authenticate
@@ -80,6 +80,7 @@ type GenerationV1 struct {
 	cut                   uint32
 	canonicalDigest       string
 	parentPlan            *domain.DerivedContextPlanV1
+	closure               uint32
 }
 
 func (GenerationV1) String() string               { return "CompactionGenerationV1{content:[redacted]}" }
@@ -141,7 +142,7 @@ type generationSourceV1 struct {
 // validation. Only their view selection differs; neither accepts a caller
 // prompt, native transcript, fit assertion or restored effect permission.
 func buildGenerationSourceV1(profile domain.ConfiguredInferenceProfileV1, limits domain.ConfiguredInferenceLimitsV1, policy domain.AgentLoopPolicyV1,
-	sourceDigest string, records []sessioncontext.EventPayload, operations []CompletedOperationV1, parent *ParentV1, tools []configuredinference.ToolV1) (*generationSourceV1, error) {
+	sourceDigest string, records []sessioncontext.EventPayload, operations []CompletedOperationV1, parent *ParentV1, tools []configuredinference.ToolV1, history []HistoricalRunV1) (*generationSourceV1, error) {
 	if profile.Validate() != nil || limits.Validate() != nil || policy.Validate() != nil || domain.ValidateSHA256Digest("compaction.source", sourceDigest) != nil ||
 		policy.InstructionVersion != InstructionVersionV1 || policy.CompactionPolicyDigest != CompactionPolicyDigestV1() ||
 		policy.TenantID != profile.TenantID || policy.OwnerUserID != profile.OwnerUserID || policy.ModelVendorID != profile.ModelVendorID || policy.ModelID != profile.ModelID ||
@@ -188,18 +189,34 @@ func buildGenerationSourceV1(profile domain.ConfiguredInferenceProfileV1, limits
 		}
 		ownedTools = append(ownedTools, configuredinference.ToolV1{Name: tool.Name, Description: tool.Description, Parameters: bytes.Clone(tool.Parameters)})
 	}
-	units := view.Units()
+	canonicalUnits := view.Units()
 	frames := make([]historicalFrameV1, 0, len(records)+len(operations))
 	sources := make([]retainedSourceV1, 0, len(records)+len(operations))
 	protectedIndex := make(map[int]bool)
-	for _, unit := range units {
-		if unit.Protected {
-			for i := unit.Start; i < unit.End; i++ {
-				protectedIndex[i] = true
-			}
-		}
+	if len(history) > len(records) {
+		return nil, ErrCanonical
 	}
-	for _, record := range records {
+	byAnchor := make(map[domain.SessionEventID]HistoricalRunV1, len(history))
+	for _, old := range history {
+		if _, exists := byAnchor[old.Anchor]; exists || old.Scope.RunID == policy.RunID {
+			return nil, ErrCanonical
+		}
+		byAnchor[old.Anchor] = old
+	}
+	starts := make([]int, len(records)+1)
+	for index, record := range records {
+		starts[index] = len(frames)
+		if old, ok := byAnchor[record.Event.ID]; ok {
+			if record.Event.Kind != domain.SessionEventAssistantMessage || record.Event.RunID == nil || *record.Event.RunID != old.Scope.RunID {
+				return nil, ErrCanonical
+			}
+			f, r, err := historicalFrames(profile, old, record.Event.SessionID)
+			if err != nil {
+				return nil, err
+			}
+			frames, sources = append(frames, f...), append(sources, r...)
+			delete(byAnchor, record.Event.ID)
+		}
 		if record.Event.Kind == domain.SessionEventUserMessage {
 			var envelope struct {
 				Attachments []json.RawMessage `json:"attachments"`
@@ -231,22 +248,39 @@ func buildGenerationSourceV1(profile domain.ConfiguredInferenceProfileV1, limits
 		}
 		sources = append(sources, retainedSourceV1{SourceID: key, Canonical: &event})
 	}
+	if len(byAnchor) != 0 {
+		return nil, ErrCanonical
+	}
+	starts[len(records)] = len(frames)
+	units := make([]UnitV1, 0, len(canonicalUnits)+len(operations))
+	for _, unit := range canonicalUnits {
+		mapped := UnitV1{Start: starts[unit.Start], End: starts[unit.End], Protected: unit.Protected}
+		units = append(units, mapped)
+		if mapped.Protected {
+			for i := mapped.Start; i < mapped.End; i++ {
+				protectedIndex[i] = true
+			}
+		}
+	}
 	compatibility := sourceKey("compatibility", pd, CompactionPolicyDigestV1())
 	var covered = make(map[string]bool)
 	generation := uint64(1)
 	var parentPlans []domain.DerivedContextPlanV1
 	if parent != nil {
-		if parent.Plan.Validate() != nil || parent.Plan.Generation < 1 || parent.Plan.Generation > 2 || len(parent.PriorPlans) != int(parent.Plan.Generation-1) || parent.CompatibilityDigest != compatibility || len(parent.CoveredSourceIDs) == 0 || len(parent.CoveredSourceIDs) > 4096 || len(parent.Summary) == 0 || len(parent.Summary) > configuredinference.MaxCompactionSummaryBytesV1 {
+		if parent.Plan.Validate() != nil || len(parent.PriorPlans) > 1 || parent.CompatibilityDigest != compatibility || len(parent.CoveredSourceIDs) == 0 || len(parent.CoveredSourceIDs) > 4096 || len(parent.Summary) == 0 || len(parent.Summary) > configuredinference.MaxCompactionSummaryBytesV1 {
 			return nil, ErrCanonical
 		}
 		parentPlans = append(parentPlans, parent.PriorPlans...)
 		parentPlans = append(parentPlans, parent.Plan)
 		for i, plan := range parentPlans {
-			if plan.Validate() != nil || plan.Scope != parent.Plan.Scope || plan.Generation != uint64(i+1) || (i > 0 && plan.OperationSequence <= parentPlans[i-1].OperationSequence) {
+			if plan.Validate() != nil || plan.Scope.TenantID != profile.TenantID || plan.Scope.OwnerUserID != profile.OwnerUserID || plan.Scope.SessionID != records[0].Event.SessionID ||
+				(i == 0 && plan.Generation != 1) || (i > 0 && ((plan.Scope == parentPlans[i-1].Scope && (plan.Generation != parentPlans[i-1].Generation+1 || plan.OperationSequence <= parentPlans[i-1].OperationSequence)) || (plan.Scope != parentPlans[i-1].Scope && plan.Generation != 1))) {
 				return nil, ErrCanonical
 			}
 		}
-		generation = parent.Plan.Generation + 1
+		if parent.Plan.Scope.RunID == policy.RunID && parent.Plan.Scope.AttemptID == policy.AttemptID {
+			generation = parent.Plan.Generation + 1
+		}
 		for _, id := range parent.CoveredSourceIDs {
 			if covered[id] || domain.ValidateSHA256Digest("parent.source", id) != nil {
 				return nil, ErrCanonical
@@ -254,7 +288,31 @@ func buildGenerationSourceV1(profile domain.ConfiguredInferenceProfileV1, limits
 			covered[id] = true
 		}
 	}
-	compactions := 0
+	matchedPlans := make(map[int]bool, 2)
+	matchCompaction := func(r domain.AttemptOperationReservationV1, o domain.AttemptOperationObservationV1, text string) bool {
+		rd, _ := r.Digest()
+		od, _ := o.Digest()
+		for i, plan := range parentPlans {
+			if plan.Scope == r.Operation.Scope && plan.OperationSequence == r.Operation.Sequence && plan.ReservationDigest == rd && plan.ObservationDigest == od && plan.NormalizedResponseDigest == o.ResponseDigest {
+				if matchedPlans[i] || (i == len(parentPlans)-1 && !bytes.Equal([]byte(text), parent.Summary)) {
+					return false
+				}
+				matchedPlans[i] = true
+				return true
+			}
+		}
+		return false
+	}
+	for _, old := range history {
+		for _, item := range old.Operations {
+			if item.Reservation.Operation.Kind == domain.AttemptOperationCompactionV1 {
+				response, err := configuredinference.DecodeRetainedNormalizedDataV1(profile, item.Reservation, item.Observation, item.Normalized)
+				if err != nil || !matchCompaction(item.Reservation, item.Observation, response.Text) {
+					return nil, ErrCanonical
+				}
+			}
+		}
+	}
 	for i, op := range operations {
 		r, o := op.Reservation, op.Observation
 		if r.Validate() != nil || o.ValidateForReservation(r) != nil || o.Outcome != domain.AttemptOperationCompletedV1 || o.Reason != domain.AttemptOperationReasonNoneV1 || o.Usage.ExceedsReservation(r.Operation.Debit) || r.Operation.Sequence != uint64(i+1) ||
@@ -277,15 +335,7 @@ func buildGenerationSourceV1(profile domain.ConfiguredInferenceProfileV1, limits
 			return nil, ErrCanonical
 		}
 		if r.Operation.Kind == domain.AttemptOperationCompactionV1 {
-			compactions++
-			rd, _ := r.Digest()
-			od, _ := o.Digest()
-			if parent == nil || compactions > len(parentPlans) {
-				return nil, ErrCanonical
-			}
-			plan := parentPlans[compactions-1]
-			if plan.Scope != r.Operation.Scope || plan.OperationSequence != r.Operation.Sequence || plan.ReservationDigest != rd || plan.ObservationDigest != od || plan.NormalizedResponseDigest != o.ResponseDigest ||
-				(compactions == len(parentPlans) && !bytes.Equal([]byte(decoded.Text), parent.Summary)) {
+			if !matchCompaction(r, o, decoded.Text) {
 				return nil, ErrCanonical
 			}
 			continue
@@ -302,11 +352,11 @@ func buildGenerationSourceV1(profile domain.ConfiguredInferenceProfileV1, limits
 		sources = append(sources, retainedSourceV1{SourceID: key, Operation: &retainedOperationV1{Reservation: r.Clone(), Observation: o.Clone()}})
 		units = append(units, UnitV1{Start: start, End: start + 1})
 	}
-	if compactions != len(parentPlans) || len(units) == 0 {
+	if len(matchedPlans) != len(parentPlans) || len(units) == 0 {
 		return nil, ErrCanonical
 	}
 	p := &GenerationV1{profile: profile.Clone(), limits: limits, source: sourceDigest, compatibility: compatibility, generation: generation, tools: ownedTools,
-		policy: policy.Clone(), sources: sources, canonicalDigest: view.Digest()}
+		policy: policy.Clone(), sources: sources, canonicalDigest: view.Digest(), closure: uint32(len(parentPlans) + 1)}
 	if parent != nil {
 		value := parent.Plan
 		p.parentPlan = &value
@@ -319,15 +369,22 @@ func buildGenerationSourceV1(profile domain.ConfiguredInferenceProfileV1, limits
 // current base supports tool-heavy CANONICAL history and completed tool-free
 // model operations; real current tool continuations remain #191's typed join.
 func BuildGenerationV1(profile domain.ConfiguredInferenceProfileV1, limits domain.ConfiguredInferenceLimitsV1, policy domain.AgentLoopPolicyV1,
-	sourceDigest string, records []sessioncontext.EventPayload, operations []CompletedOperationV1, parent *ParentV1, tools []configuredinference.ToolV1) (*GenerationV1, error) {
-	s, err := buildGenerationSourceV1(profile, limits, policy, sourceDigest, records, operations, parent, tools)
+	sourceDigest string, records []sessioncontext.EventPayload, operations []CompletedOperationV1, parent *ParentV1, tools []configuredinference.ToolV1, history ...[]HistoricalRunV1) (*GenerationV1, error) {
+	if len(history) > 1 {
+		return nil, ErrCanonical
+	}
+	var old []HistoricalRunV1
+	if len(history) == 1 {
+		old = history[0]
+	}
+	s, err := buildGenerationSourceV1(profile, limits, policy, sourceDigest, records, operations, parent, tools, old)
 	if err != nil {
 		return nil, err
 	}
 	p := s.program
 	frames, units, protectedIndex, covered := s.frames, s.units, s.protectedIndex, s.covered
 	limits = p.limits
-	if p.generation > 2 || len(units) < 2 {
+	if p.generation > 2 || p.closure > 2 || len(units) < 2 {
 		return nil, ErrCanonical
 	}
 	cut := units[len(units)-1].Start

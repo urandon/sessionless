@@ -190,7 +190,7 @@ func (entry *LocalInvocationEntryV1) capturedRetainedParent(ctx context.Context,
 		if g != nil || required != nil {
 			return nil, domain.ErrMembershipDenied
 		}
-		return nil, nil
+		return source.historicalParent(), nil
 	}
 	if metadata.Head == nil || g == nil || (required != nil && required != g) || g.self != g || g.source == nil || g.source.state == nil {
 		return nil, domain.ErrMembershipDenied
@@ -222,18 +222,10 @@ func (entry *LocalInvocationEntryV1) prepareModelSource(ctx context.Context, ori
 	if source.state.cleared || source.state.view == nil {
 		return deny()
 	}
-	retained, err := entry.capturedRetainedParent(ctx, source, required)
-	if err != nil {
-		return deny()
-	}
-	var parent *compactioncontext.ParentV1
-	if retained != nil {
-		parent = retained.Parent()
-	}
 	store := entry.owner.store
 	var at time.Time
 	var profile domain.OwnedAgentProfileCurrentV1
-	err = store.ownedAuthorityTx(ctx, func(ctx context.Context, q *ownedAuthorityQuery) error {
+	err := store.ownedAuthorityTx(ctx, func(ctx context.Context, q *ownedAuthorityQuery) error {
 		if _, err := source.rejoinRunLocked(ctx, q, nil, nil); err != nil {
 			return err
 		}
@@ -244,6 +236,21 @@ func (entry *LocalInvocationEntryV1) prepareModelSource(ctx context.Context, ori
 	})
 	if err != nil || ctx.Err() != nil {
 		return deny()
+	}
+	if source.materializeHistoryLocked(ctx) != nil {
+		return deny()
+	}
+	source.state.digest, err = entry.compactionSourceDigest(source.state.snapshot, source.state.view.Digest(), source.state.history.commitmentV1())
+	if err != nil {
+		return deny()
+	}
+	retained, err := entry.capturedRetainedParent(ctx, source, required)
+	if err != nil {
+		return deny()
+	}
+	var parent *compactioncontext.ParentV1
+	if retained != nil {
+		parent = retained.Parent()
 	}
 	price, err := store.readOwnedProviderPriceEvidence(ctx, profile)
 	if err != nil || price == nil || price.local == nil || price.price != nil {
@@ -287,7 +294,7 @@ func (entry *LocalInvocationEntryV1) prepareModelSource(ctx context.Context, ori
 	if chargeOwnedAuthorityBody(ctx, bytes+configuredinference.MaxContextCalibrationBytesV1) != nil {
 		return deny()
 	}
-	frozen, err := compactioncontext.BuildOrdinaryV1(configuration, effective, *policy, source.state.digest, records, operations, parent, nil)
+	frozen, err := compactioncontext.BuildOrdinaryV1(configuration, effective, *policy, source.state.digest, records, operations, parent, nil, source.state.history.runs)
 	if err != nil {
 		if errors.Is(err, configuredinference.ErrContextNoFit) {
 			return nil, configuredinference.ErrContextNoFit
@@ -428,6 +435,9 @@ func (m *localPreparedModelV1) rejoinLocked(ctx context.Context, q *ownedAuthori
 	}
 	if !reflect.DeepEqual(current, expected) {
 		return domain.Run{}, q.budget.deny()
+	}
+	if err := m.source.rejoinHistoryLocked(ctx, q); err != nil {
+		return domain.Run{}, err
 	}
 	return run, nil
 }

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strings"
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
@@ -19,6 +20,28 @@ import (
 )
 
 var ErrRunFinalizationConflict = errors.New("run finalization conflict")
+
+const localFinalizationPrefixV2 = "local_v2:"
+
+// Storage discriminator only. The V1 digest and the raw V2 hash stay unchanged.
+func encodeLocalFinalizationMarkerV2(digest string) (string, error) {
+	if domain.ValidateSHA256Digest("finalization", digest) != nil {
+		return "", ErrRunFinalizationConflict
+	}
+	return localFinalizationPrefixV2 + digest, nil
+}
+
+func decodeLocalFinalizationMarkerV2(marker string) (string, error) {
+	if len(marker) != 73 || !strings.HasPrefix(marker, localFinalizationPrefixV2) || domain.ValidateSHA256Digest("finalization", marker[9:]) != nil {
+		return "", ErrRunFinalizationConflict
+	}
+	return marker[9:], nil
+}
+
+func isLocalFinalizationMarkerV2(marker string) bool {
+	_, err := decodeLocalFinalizationMarkerV2(marker)
+	return err == nil
+}
 
 type finalizationEventIdentity struct {
 	ID             domain.SessionEventID   `json:"id"`

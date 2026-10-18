@@ -12,8 +12,15 @@ import (
 // override or smaller fit probe is used. Source.FitContext must then fit THIS
 // frozen request under the original remaining operation ceilings.
 func BuildOrdinaryV1(profile domain.ConfiguredInferenceProfileV1, limits domain.ConfiguredInferenceLimitsV1, policy domain.AgentLoopPolicyV1,
-	sourceDigest string, records []sessioncontext.EventPayload, operations []CompletedOperationV1, parent *ParentV1, tools []configuredinference.ToolV1) (*configuredinference.FrozenRequestV1, error) {
-	s, err := buildGenerationSourceV1(profile, limits, policy, sourceDigest, records, operations, parent, tools)
+	sourceDigest string, records []sessioncontext.EventPayload, operations []CompletedOperationV1, parent *ParentV1, tools []configuredinference.ToolV1, history ...[]HistoricalRunV1) (*configuredinference.FrozenRequestV1, error) {
+	if len(history) > 1 {
+		return nil, ErrCanonical
+	}
+	var old []HistoricalRunV1
+	if len(history) == 1 {
+		old = history[0]
+	}
+	s, err := buildGenerationSourceV1(profile, limits, policy, sourceDigest, records, operations, parent, tools, old)
 	if err != nil {
 		return nil, err
 	}

@@ -14,6 +14,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/ydbclient"
 	"gitcode.com/urandon/sessionless/internal/ydbstore"
+	"gitcode.com/urandon/sessionless/test/support/aw07native"
 )
 
 // This is a real YDB transaction test, not an owner-aware fake. Both workers
@@ -305,63 +306,8 @@ func aw07ClaimedInputWithPayloadAndBinding(t *testing.T, store *ydbstore.Store, 
 	contextBody, artifactBody []byte, amendBinding func(*domain.HarnessBindingV2),
 ) aw07ClaimedAuthorization {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	offer := attachedWorkerOfferForDrainWithPayloadAndBinding(t, store, client, worker, connection, now, suffix, contextBody, artifactBody, amendBinding)
-	batch, err := attachedworkerprotocol.DecodeBatchV1(offer.Outbound.Payload)
-	if err != nil || len(batch.Frames) != 1 || batch.Frames[0].LeaseOffer == nil {
-		t.Fatalf("decode owner %s offer: frames=%d err=%v", suffix, len(batch.Frames), err)
-	}
-	connection, found, err := store.LoadAttachedWorkerConnection(ctx, worker.TenantID, worker.OwnerUserID, worker.ID)
-	if err != nil || !found {
-		t.Fatalf("load owner %s connection: found=%t err=%v", suffix, found, err)
-	}
-	offerFrame := batch.Frames[0]
-	claimFrame := attachedworkerprotocol.FrameV1{
-		Version:   offerFrame.Version,
-		MessageID: attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionWorkerToPlatform, connection.WorkerSequence+1),
-		WorkerID:  string(worker.ID), EnrollmentGeneration: connection.EnrollmentGeneration,
-		ConnectionGeneration: connection.ConnectionGeneration, Sequence: connection.WorkerSequence + 1,
-		Ack: offerFrame.Sequence, Kind: attachedworkerprotocol.MessageLeaseClaim,
-		LeaseClaim: &attachedworkerprotocol.LeaseClaimV1{Binding: offerFrame.LeaseOffer.Binding, AttemptSequence: 1},
-	}
-	claim, err := store.ExchangeAttachedWorkerAttempt(ctx, ports.AttachedWorkerAttemptExchange{
-		TenantID: worker.TenantID, OwnerUserID: worker.OwnerUserID, WorkerID: worker.ID,
-		ConnectionID: connection.ID, AttemptID: offer.Attempt.AttemptID,
-		LeaseGeneration: offer.Attempt.LeaseGeneration, PresentedSecretDigest: secret,
-		InboundFrame: claimFrame,
-	})
-	if err != nil || claim.Status != ports.AttachedWorkerExecutionApplied ||
-		claim.Attempt.State != domain.AttachedWorkerAttemptClaimed || claim.Outbound == nil {
-		t.Fatalf("claim owner %s: result=%+v err=%v", suffix, claim, err)
-	}
-	acceptedBatch, err := attachedworkerprotocol.DecodeBatchV1(claim.Outbound.Payload)
-	if err != nil || len(acceptedBatch.Frames) != 1 || acceptedBatch.Frames[0].LeaseAccepted == nil {
-		t.Fatalf("decode owner %s accepted claim: frames=%d err=%v", suffix, len(acceptedBatch.Frames), err)
-	}
-	request := ports.AttachedWorkerSealedInputAuthorization{
-		TenantID: worker.TenantID, OwnerUserID: worker.OwnerUserID, WorkerID: worker.ID,
-		ConnectionID: connection.ID, PresentedSecretDigest: secret,
-		EnrollmentGeneration: connection.EnrollmentGeneration,
-		ConnectionGeneration: connection.ConnectionGeneration,
-		RunID:                offer.Attempt.RunID, AttemptID: offer.Attempt.AttemptID, AttemptSequence: 1,
-		LeaseID: offer.Attempt.LeaseID, LeaseGeneration: offer.Attempt.LeaseGeneration,
-		FenceToken:              offer.Attempt.FenceToken,
-		LeaseExpiresAtUnixMicro: offer.Attempt.LeaseExpiresAt.UnixMicro(),
-		ContextDigest:           offer.Attempt.ContextDigest,
-		CapabilityDigest:        offer.Attempt.CapabilityDigest,
-		PolicyDigest:            offer.Attempt.PolicyDigest,
-	}
-	authorized, err := store.AuthorizeAttachedWorkerSealedInput(ctx, request)
-	if err != nil || authorized.Status != ports.AttachedWorkerExecutionApplied ||
-		authorized.AttemptRevision != claim.Attempt.Revision || authorized.Attempt != claim.Attempt || !authorized.Matches(request) {
-		t.Fatalf("authorize owner %s claimed head: result=%+v err=%v", suffix, authorized, err)
-	}
-	return aw07ClaimedAuthorization{
-		request: request, revision: authorized.AttemptRevision, attempt: claim.Attempt,
-		binding: offerFrame.LeaseOffer.Binding, accepted: acceptedBatch.Frames[0],
-		nextWorkerSequence: claimFrame.Sequence + 1,
-	}
+	claimed := aw07native.Claim(t, store, client.DB, worker, connection, secret, aw07native.OfferOptions{Suffix: suffix, At: now, ContextBody: contextBody, ArtifactBody: artifactBody, AmendBinding: amendBinding})
+	return aw07ClaimedAuthorization{request: claimed.Request, revision: claimed.Revision, attempt: claimed.Attempt, binding: claimed.Binding, accepted: claimed.Accepted, nextWorkerSequence: claimed.NextWorkerSequence}
 }
 
 func aw07Revoke(t *testing.T, store *ydbstore.Store, ctx context.Context, worker domain.AttachedWorker) {

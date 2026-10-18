@@ -163,6 +163,13 @@ type LocalTerminalPublicationSessionConnectedSeed struct {
 func NewLocalTerminalPublicationSessionConnectedSeed(t *testing.T, endpoint string, blobs ports.BlobStore, limits ...LocalCompactionConnectedLimits) *LocalTerminalPublicationSessionConnectedSeed {
 	t.Helper()
 	s := NewLocalCompactionSessionConnectedSeed(t, endpoint, blobs, limits...)
+	return terminalPublicationSessionSeed(t, s)
+}
+
+// Install only scripted SQL before the actual factory consumes this seed. In
+// particular, a fresh Run keeps its own Source, issuer and scope unchanged.
+func terminalPublicationSessionSeed(t *testing.T, s *LocalSessionConnectedSeed) *LocalTerminalPublicationSessionConnectedSeed {
+	t.Helper()
 	db, f := installTerminalPublicationSQL(t, s.compaction)
 	s.DB = db
 	return &LocalTerminalPublicationSessionConnectedSeed{LocalSessionConnectedSeed: s, publication: f}
@@ -181,6 +188,21 @@ func (s *LocalTerminalPublicationSessionConnectedSeed) TerminalPublicationCounts
 	s.publication.mu.Lock()
 	defer s.publication.mu.Unlock()
 	return s.publication.writes, s.publication.commits, s.publication.readbacks
+}
+
+// Observe the fixture's original stored canonical input, never reverse-engineer
+// expected identities or payload references from the candidate HTTP request.
+func (s *LocalTerminalPublicationSessionConnectedSeed) CanonicalSourceEvents(t *testing.T) []domain.SessionEvent {
+	t.Helper()
+	var events []domain.SessionEvent
+	for _, row := range s.compaction.events {
+		var event domain.SessionEvent
+		if len(row) != 1 || json.Unmarshal([]byte(row[0].(string)), &event) != nil || event.Validate() != nil {
+			t.Fatal("original stored canonical event")
+		}
+		events = append(events, event)
+	}
+	return events
 }
 
 func terminalPublicationFixture(t *testing.T) (*compactionSourceFixture, *terminalPublicationSQL, *LocalPreparedOutputV1) {

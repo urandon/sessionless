@@ -19,18 +19,18 @@ import (
 // alternate paths, missing per-field caps or a non-point selector. It simulates
 // these documented JSON_VALUE semantics; it is not a substitute for real YDB.
 const explanationExpectedRunProjectionSQL = `SELECT
- SUBSTRING(JSON_VALUE(payload,"strict $.id" RETURNING Utf8 ERROR ON EMPTY ERROR ON ERROR),0,161),
- SUBSTRING(JSON_VALUE(payload,"strict $.tenant_id" RETURNING Utf8 ERROR ON EMPTY ERROR ON ERROR),0,161),
- SUBSTRING(JSON_VALUE(payload,"strict $.session_id" RETURNING Utf8 ERROR ON EMPTY ERROR ON ERROR),0,161),
- SUBSTRING(JSON_VALUE(payload,"strict $.trigger_event_id" RETURNING Utf8 ERROR ON EMPTY ERROR ON ERROR),0,161),
- SUBSTRING(JSON_VALUE(payload,"strict $.subscription_connection_id" RETURNING Utf8 ERROR ON EMPTY ERROR ON ERROR),0,161),
- SUBSTRING(JSON_VALUE(payload,"strict $.status" RETURNING Utf8 ERROR ON EMPTY ERROR ON ERROR),0,33),
- SUBSTRING(JSON_VALUE(payload,"strict $.idempotency_key" RETURNING Utf8 ERROR ON EMPTY ERROR ON ERROR),0,161),
- CASE WHEN JSON_VALUE(payload,"$.cancellation_requested_at.type()" RETURNING Utf8 NULL ON EMPTY ERROR ON ERROR)="null" THEN CAST(NULL AS Utf8) ELSE SUBSTRING(JSON_VALUE(payload,"$.cancellation_requested_at" RETURNING Utf8 NULL ON EMPTY ERROR ON ERROR),0,36) END,
- CASE WHEN JSON_VALUE(payload,"$.started_at.type()" RETURNING Utf8 NULL ON EMPTY ERROR ON ERROR)="null" THEN CAST(NULL AS Utf8) ELSE SUBSTRING(JSON_VALUE(payload,"$.started_at" RETURNING Utf8 NULL ON EMPTY ERROR ON ERROR),0,36) END,
- CASE WHEN JSON_VALUE(payload,"$.finished_at.type()" RETURNING Utf8 NULL ON EMPTY ERROR ON ERROR)="null" THEN CAST(NULL AS Utf8) ELSE SUBSTRING(JSON_VALUE(payload,"$.finished_at" RETURNING Utf8 NULL ON EMPTY ERROR ON ERROR),0,36) END,
- SUBSTRING(JSON_VALUE(payload,"strict $.created_at" RETURNING Utf8 ERROR ON EMPTY ERROR ON ERROR),0,36),
- SUBSTRING(JSON_VALUE(payload,"strict $.updated_at" RETURNING Utf8 ERROR ON EMPTY ERROR ON ERROR),0,36)
+ SUBSTRING(CAST(JSON_VALUE(payload,"strict $.id" RETURNING Utf8 ERROR ON EMPTY ERROR ON ERROR) AS String),0,161),
+ SUBSTRING(CAST(JSON_VALUE(payload,"strict $.tenant_id" RETURNING Utf8 ERROR ON EMPTY ERROR ON ERROR) AS String),0,161),
+ SUBSTRING(CAST(JSON_VALUE(payload,"strict $.session_id" RETURNING Utf8 ERROR ON EMPTY ERROR ON ERROR) AS String),0,161),
+ SUBSTRING(CAST(JSON_VALUE(payload,"strict $.trigger_event_id" RETURNING Utf8 ERROR ON EMPTY ERROR ON ERROR) AS String),0,161),
+ SUBSTRING(CAST(JSON_VALUE(payload,"strict $.subscription_connection_id" RETURNING Utf8 ERROR ON EMPTY ERROR ON ERROR) AS String),0,161),
+ SUBSTRING(CAST(JSON_VALUE(payload,"strict $.status" RETURNING Utf8 ERROR ON EMPTY ERROR ON ERROR) AS String),0,33),
+ SUBSTRING(CAST(JSON_VALUE(payload,"strict $.idempotency_key" RETURNING Utf8 ERROR ON EMPTY ERROR ON ERROR) AS String),0,161),
+ CASE WHEN JSON_VALUE(payload,"$.cancellation_requested_at.type()" RETURNING Utf8 NULL ON EMPTY ERROR ON ERROR)="null" THEN CAST(NULL AS String) ELSE SUBSTRING(CAST(JSON_VALUE(payload,"$.cancellation_requested_at" RETURNING Utf8 NULL ON EMPTY ERROR ON ERROR) AS String),0,36) END,
+ CASE WHEN JSON_VALUE(payload,"$.started_at.type()" RETURNING Utf8 NULL ON EMPTY ERROR ON ERROR)="null" THEN CAST(NULL AS String) ELSE SUBSTRING(CAST(JSON_VALUE(payload,"$.started_at" RETURNING Utf8 NULL ON EMPTY ERROR ON ERROR) AS String),0,36) END,
+ CASE WHEN JSON_VALUE(payload,"$.finished_at.type()" RETURNING Utf8 NULL ON EMPTY ERROR ON ERROR)="null" THEN CAST(NULL AS String) ELSE SUBSTRING(CAST(JSON_VALUE(payload,"$.finished_at" RETURNING Utf8 NULL ON EMPTY ERROR ON ERROR) AS String),0,36) END,
+ SUBSTRING(CAST(JSON_VALUE(payload,"strict $.created_at" RETURNING Utf8 ERROR ON EMPTY ERROR ON ERROR) AS String),0,36),
+ SUBSTRING(CAST(JSON_VALUE(payload,"strict $.updated_at" RETURNING Utf8 ERROR ON EMPTY ERROR ON ERROR) AS String),0,36)
  FROM runs WHERE tenant_id=$1 AND run_id=$2`
 
 func explanationRunProjectionRows(query string, args []driver.NamedValue, row []driver.Value) (driver.Rows, error) {
@@ -72,9 +72,8 @@ func explanationRunProjectionRows(query string, args []driver.NamedValue, row []
 		} else if i >= 7 {
 			limit = 36
 		}
-		runes := []rune(scalar)
-		if len(runes) > limit {
-			scalar = string(runes[:limit])
+		if len(scalar) > limit {
+			scalar = scalar[:limit]
 		}
 		values[i] = scalar
 	}
@@ -289,6 +288,7 @@ func TestRunExplanationProjectionFixtureRejectsUnboundedOrWrongSQL(t *testing.T)
 		`SELECT SUBSTRING(CAST(payload AS String),0,8193) FROM runs WHERE tenant_id=$1 AND run_id=$2`,
 		strings.Replace(explanationExpectedRunProjectionSQL, ",0,161)", ",0,160)", 1),
 		strings.Replace(explanationExpectedRunProjectionSQL, "strict $.id", "$.id", 1),
+		strings.Replace(explanationExpectedRunProjectionSQL, `CAST(JSON_VALUE(payload,"strict $.id" RETURNING Utf8 ERROR ON EMPTY ERROR ON ERROR) AS String)`, `JSON_VALUE(payload,"strict $.id" RETURNING Utf8 ERROR ON EMPTY ERROR ON ERROR)`, 1),
 	} {
 		if _, err := explanationRunProjectionRows(query, args, f.rows["runs"]); err == nil {
 			t.Fatal("fixture accepted alternate/unbounded Run projection")

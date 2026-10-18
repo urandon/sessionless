@@ -13,9 +13,10 @@ func validString(s string, limit uint64, empty bool) bool {
 }
 
 type bodyBuilder struct {
-	b      []byte
-	limit  uint64
-	failed bool
+	b            []byte
+	limit        uint64
+	failed       bool
+	sizeExceeded bool
 }
 
 func (b *bodyBuilder) add(s string) {
@@ -24,6 +25,7 @@ func (b *bodyBuilder) add(s string) {
 	}
 	if uint64(len(s)) > b.limit-uint64(len(b.b)) {
 		b.failed = true
+		b.sizeExceeded = true
 		return
 	}
 	b.b = append(b.b, s...)
@@ -34,6 +36,7 @@ func (b *bodyBuilder) raw(s []byte) {
 	}
 	if uint64(len(s)) > b.limit-uint64(len(b.b)) {
 		b.failed = true
+		b.sizeExceeded = true
 		return
 	}
 	b.b = append(b.b, s...)
@@ -58,11 +61,13 @@ func (b *bodyBuilder) text(s string) {
 		}
 		if n > b.limit-uint64(len(b.b)) {
 			b.failed = true
+			b.sizeExceeded = true
 			return
 		}
 	}
 	if n > b.limit-uint64(len(b.b)) {
 		b.failed = true
+		b.sizeExceeded = true
 		return
 	}
 	raw, err := json.Marshal(s)
@@ -84,31 +89,58 @@ func FreezeRequestV1(profile domain.ConfiguredInferenceProfileV1, effective doma
 	if len(request.Tools) > 0 && profile.Capabilities.ToolCalls != domain.ProviderEvidenceSupportedV1 {
 		return nil, ErrContract
 	}
-	// This lower bound on the eventual wire must fit BEFORE schema decoding or
-	// allocating copied catalog/history data. Escaping and structural overhead
-	// are checked exactly by bodyBuilder before each bounded string allocation.
-	total := uint64(len(profile.ModelID))
-	add := func(n int) bool {
-		if uint64(n) > effective.RequestBytes-total {
-			return false
-		}
-		total += uint64(n)
-		return true
-	}
-	if total > effective.RequestBytes {
-		return nil, ErrContract
-	}
-	for _, tool := range request.Tools {
-		if !add(len(tool.Name)) || !add(len(tool.Description)) || !add(len(tool.Parameters)) {
-			return nil, ErrContract
-		}
+	// Establish the generated envelope's structural admissibility BEFORE a
+	// size-only verdict. Message strings are values at depth four; native calls
+	// reach depth seven. Tool parameters start at depth five, not at a new root.
+	rootMembers, wireDepth := uint64(5), uint64(4)
+	if len(request.Tools) > 0 {
+		rootMembers++
+		wireDepth = 5
 	}
 	for _, message := range request.Messages {
-		if !add(len(message.Text)) || !add(len(message.ToolCallID)) {
-			return nil, ErrContract
+		if message.Call != nil {
+			wireDepth = 7
 		}
-		if message.Call != nil && (!add(len(message.Call.ID)) || !add(len(message.Call.Name)) || !add(len(message.Call.Arguments))) {
-			return nil, ErrContract
+	}
+	if effective.JSONDepth < wireDepth || effective.JSONMembers < rootMembers || uint64(len(request.Messages)) > effective.JSONMembers || uint64(len(request.Tools)) > effective.JSONMembers {
+		return nil, ErrContract
+	}
+	// Bound the catalog BEFORE schema decoding. An oversized unvalidated catalog
+	// is not a verified no-fit. Message content remains borrowed during semantic
+	// validation; do not allocate a partial wire when the lower bound is too big.
+	catalogRemaining := effective.RequestBytes
+	for _, tool := range request.Tools {
+		for _, n := range []int{len(tool.Name), len(tool.Description), len(tool.Parameters)} {
+			if uint64(n) > catalogRemaining {
+				return nil, ErrContract
+			}
+			catalogRemaining -= uint64(n)
+		}
+	}
+	total := uint64(len(profile.ModelID))
+	lowerBoundExceeded := total > effective.RequestBytes
+	add := func(n int) {
+		if lowerBoundExceeded {
+			return
+		}
+		if uint64(n) > effective.RequestBytes-total {
+			lowerBoundExceeded = true
+			return
+		}
+		total += uint64(n)
+	}
+	for _, tool := range request.Tools {
+		add(len(tool.Name))
+		add(len(tool.Description))
+		add(len(tool.Parameters))
+	}
+	for _, message := range request.Messages {
+		add(len(message.Text))
+		add(len(message.ToolCallID))
+		if message.Call != nil {
+			add(len(message.Call.ID))
+			add(len(message.Call.Name))
+			add(len(message.Call.Arguments))
 		}
 	}
 	f := &FrozenRequestV1{profile: profile.Clone(), limits: effective, tools: make(map[string]*schemaV1), priorIDs: make(map[string]struct{})}
@@ -116,7 +148,7 @@ func FreezeRequestV1(profile domain.ConfiguredInferenceProfileV1, effective doma
 		if !validString(tool.Name, effective.ToolNameBytes, false) || !validString(tool.Description, effective.RequestBytes, true) || f.tools[tool.Name] != nil {
 			return nil, ErrContract
 		}
-		v, err := strictJSON(tool.Parameters, effective.RequestBytes, effective.JSONDepth, effective.JSONMembers)
+		v, err := strictJSON(tool.Parameters, effective.RequestBytes, effective.JSONDepth-4, effective.JSONMembers)
 		if err != nil {
 			return nil, ErrContract
 		}
@@ -164,6 +196,9 @@ func FreezeRequestV1(profile domain.ConfiguredInferenceProfileV1, effective doma
 	}
 	if pending != nil {
 		return nil, ErrContract
+	}
+	if lowerBoundExceeded {
+		return nil, ErrRequestBytes
 	}
 	b := bodyBuilder{limit: effective.RequestBytes}
 	b.add(`{"model":`)
@@ -216,6 +251,9 @@ func FreezeRequestV1(profile domain.ConfiguredInferenceProfileV1, effective doma
 	b.add("}")
 	if b.failed {
 		clear(b.b)
+		if b.sizeExceeded {
+			return nil, ErrRequestBytes
+		}
 		return nil, ErrContract
 	}
 	if _, err := strictJSON(b.b, effective.RequestBytes, effective.JSONDepth, effective.JSONMembers); err != nil {

@@ -50,31 +50,32 @@ type LocalConfigV1 struct {
 // observation grant, body adapter or permission callback enters this session.
 type LocalV1 struct{ state *localState }
 type localState struct {
-	mu                         sync.Mutex
-	gate                       chan struct{}
-	ctx                        context.Context
-	caller                     context.Context
-	cancel                     context.CancelFunc
-	stopSource                 func() bool
-	stopEntryCaller            func() bool
-	entryCancel                context.CancelFunc
-	executionCancel            context.CancelFunc
-	execution                  context.Context
-	profile                    domain.ConfiguredInferenceProfileV1
-	bootstrap                  *ydbstore.LocalOwnedStoreBootstrapV1
-	store                      *ydbstore.Store
-	bridge                     *serverlessharness.BoundedOwnedAllocationPreparationV1
-	keeper                     *localloopback.KeeperV1
-	issuer                     *serverlessharness.OperationCapabilityIssuer
-	blobs                      ports.BlobStore
-	entry                      *ydbstore.LocalInvocationEntryV1
-	parent                     domain.OwnedAttemptEffectParentV1
-	source                     domain.AttemptExecutionSourceV1
-	allocation                 domain.RegisteredAllocationV2
-	bodies                     *operationbody.StoreV1
-	started, attempted, closed bool
-	closeOnce                  sync.Once
-	closeErr                   error
+	mu                            sync.Mutex
+	gate                          chan struct{}
+	ctx                           context.Context
+	caller                        context.Context
+	cancel                        context.CancelFunc
+	stopSource                    func() bool
+	stopEntryCaller               func() bool
+	entryCancel                   context.CancelFunc
+	executionCancel               context.CancelFunc
+	execution                     context.Context
+	profile                       domain.ConfiguredInferenceProfileV1
+	bootstrap                     *ydbstore.LocalOwnedStoreBootstrapV1
+	store                         *ydbstore.Store
+	bridge                        *serverlessharness.BoundedOwnedAllocationPreparationV1
+	keeper                        *localloopback.KeeperV1
+	issuer                        *serverlessharness.OperationCapabilityIssuer
+	blobs                         ports.BlobStore
+	entry                         *ydbstore.LocalInvocationEntryV1
+	parent                        domain.OwnedAttemptEffectParentV1
+	source                        domain.AttemptExecutionSourceV1
+	allocation                    domain.RegisteredAllocationV2
+	bodies                        *operationbody.StoreV1
+	started, attempted, closed    bool
+	runtimeStarted, runtimeFailed bool
+	closeOnce                     sync.Once
+	closeErr                      error
 }
 
 // NewLocalV1 constructs inert owners only. There is no SQL, socket, provider or
@@ -261,10 +262,91 @@ type ModelResultV1 struct {
 	Observation   ports.AuthenticatedAttemptOperationObservationV1
 }
 
-// InvokeFirstModel is deliberately explicit: the real typed seq>1 lineage is
-// not implemented by this increment. It rejects successors BEFORE any new
-// socket/publication/reservation. Do not advertise this as the completed
-// multi-operation ProviderLoopSession, tool dispatch or canonical finalizer.
+// ModelStepResultV1 keeps the optional compaction observation distinct from the
+// actual MODEL result. A summarizer response is never an assistant answer.
+type ModelStepResultV1 struct {
+	Model      ModelResultV1
+	Compaction *ModelResultV1
+}
+
+// RunModelStep prepares the actual full ordinary request through the original
+// entry. Only a classified context-no-fit may start one compaction, followed by
+// publication and a MODEL prepared from the actual committed retained head.
+// All effects use the same Store, issuer, body custody, allocation and keeper.
+// It is a bounded step, not a tool loop, canonical finalizer or serving switch.
+func (v *LocalV1) RunModelStep(ctx context.Context) (result ModelStepResultV1, err error) {
+	s, call, finish, err := v.begin(ctx)
+	if err != nil {
+		return result, err
+	}
+	defer finish()
+	if s.entry == nil || s.runtimeFailed || (s.attempted && !s.runtimeStarted) {
+		return result, ErrSession
+	}
+	s.attempted, s.runtimeStarted = true, true
+	defer func() {
+		if err != nil {
+			// An ambiguous or partial step cannot be retried through a wrapper
+			// copy. Independent observation reconciliation never dispatches.
+			s.runtimeFailed = true
+			s.cancel()
+		}
+	}()
+	model, prepareErr := s.entry.PrepareModel(call)
+	if errors.Is(prepareErr, configuredinference.ErrContextNoFit) {
+		generation, e := s.entry.PrepareCompaction(call)
+		if e != nil {
+			return result, ErrIncomplete
+		}
+		op, e := generation.Operation()
+		if e != nil {
+			return result, ErrIncomplete
+		}
+		frozen, e := generation.FrozenRequest()
+		if e != nil {
+			return result, ErrIncomplete
+		}
+		compaction, e := s.invokeFrozen(ctx, call, op, frozen)
+		result.Compaction = &compaction
+		if e != nil {
+			return result, e
+		}
+		published, e := generation.Publish(call)
+		if e != nil || published == nil {
+			return result, ErrIncomplete
+		}
+		model, e = generation.PrepareNextModel(call)
+		if e != nil {
+			return result, ErrIncomplete
+		}
+		next, e := model.FrozenRequest()
+		if e != nil || next == nil || next.Digest() != published.Digest() {
+			return result, ErrIncomplete
+		}
+		expected, actual := published.Body(), next.Body()
+		equal := bytes.Equal(expected, actual)
+		clear(expected)
+		clear(actual)
+		if !equal {
+			return result, ErrIncomplete
+		}
+	} else if prepareErr != nil {
+		return result, ErrIncomplete
+	}
+	op, e := model.Operation()
+	if e != nil {
+		return result, ErrIncomplete
+	}
+	frozen, e := model.FrozenRequest()
+	if e != nil {
+		return result, ErrIncomplete
+	}
+	result.Model, err = s.invokeFrozen(ctx, call, op, frozen)
+	return result, err
+}
+
+// InvokeFirstModel preserves the legacy explicit first-operation contract.
+// It cannot be mixed with entry-prepared steps or accept caller-made successors.
 func (v *LocalV1) InvokeFirstModel(ctx context.Context, operation domain.AttemptOperationV1, limits domain.ConfiguredInferenceLimitsV1, request configuredinference.RequestV1) (result ModelResultV1, err error) {
 	s, call, finish, err := v.begin(ctx)
 	if err != nil {
@@ -284,6 +366,19 @@ func (v *LocalV1) InvokeFirstModel(ctx context.Context, operation domain.Attempt
 	if err != nil {
 		return result, ErrSession
 	}
+	return s.invokeFrozen(ctx, call, op, frozen)
+}
+
+// This is the existing physical transport sequence, not an injected sender or
+// new approval path. Store Reserve and BeforeSend still require their own exact
+// original prepared holder for every runtime operation.
+func (s *localState) invokeFrozen(caller, call context.Context, operation domain.AttemptOperationV1, frozen *configuredinference.FrozenRequestV1) (result ModelResultV1, err error) {
+	op := operation.Clone()
+	if frozen == nil || op.ValidateForParent(s.parent.Authority, s.parent.Reservation) != nil ||
+		op.Scope.SessionID != s.source.Scope.SessionID || op.Deadline.After(s.allocation.Window.ExpiresAt) ||
+		(op.Kind != domain.AttemptOperationModelV1 && op.Kind != domain.AttemptOperationCompactionV1) {
+		return result, ErrSession
+	}
 	payload := frozen.Body()
 	defer clear(payload)
 	sum := sha256.Sum256(payload)
@@ -300,7 +395,7 @@ func (v *LocalV1) InvokeFirstModel(ctx context.Context, operation domain.Attempt
 		return result, ErrSession
 	}
 	// Do not silently shorten the immutable operation for a shorter caller.
-	if d, ok := ctx.Deadline(); ok && d.Before(op.Deadline) {
+	if d, ok := caller.Deadline(); ok && d.Before(op.Deadline) {
 		return result, ErrSession
 	}
 	conn, err := s.keeper.Preflight(call, s.allocation, s.source, op, payload)
@@ -443,7 +538,9 @@ func (v *LocalV1) Close() error {
 	return s.closeErr
 }
 
-func (*LocalV1) String() string          { return "LocalProviderSessionV1{private:[redacted]}" }
-func (v *LocalV1) GoString() string      { return v.String() }
-func (ModelResultV1) String() string     { return "LocalModelResultV1{private:[redacted]}" }
-func (v ModelResultV1) GoString() string { return v.String() }
+func (*LocalV1) String() string              { return "LocalProviderSessionV1{private:[redacted]}" }
+func (v *LocalV1) GoString() string          { return v.String() }
+func (ModelResultV1) String() string         { return "LocalModelResultV1{private:[redacted]}" }
+func (v ModelResultV1) GoString() string     { return v.String() }
+func (ModelStepResultV1) String() string     { return "LocalModelStepResultV1{private:[redacted]}" }
+func (v ModelStepResultV1) GoString() string { return v.String() }

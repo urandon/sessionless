@@ -23,6 +23,15 @@ type LocalRetainedCompactionV1 struct {
 	pair       *operationbody.RetainedPairV1
 	claimed    *atomic.Bool
 	source     *LocalCompactionSourceV1
+	uploaded   atomic.Pointer[localRetainedUploadV1]
+}
+
+// Captured only after confirmed registration and both original pair writes /
+// bounded readbacks succeed. A planned pair or committed inventory is not this
+// process-local fact, and this fact alone cannot authorize head publication.
+type localRetainedUploadV1 struct {
+	plan      domain.DerivedContextPlanV1
+	postimage domain.RunDerivedContextV1
 }
 
 // PrepareRetainedCompaction reserves the nonrefundable encoded upper bounds
@@ -110,6 +119,7 @@ func (h *LocalRetainedCompactionV1) Upload(ctx context.Context, plan domain.Deri
 		return domain.ErrMembershipDenied
 	}
 	registrationAttempted := false
+	var postimage *domain.RunDerivedContextV1
 	err = store.ownedAuthorityTx(call, func(ctx context.Context, q *ownedAuthorityQuery) error {
 		// SDK read/serialization retries before a write remain bounded. Once
 		// registration was attempted, even a nonpersisted lost commit cannot
@@ -117,6 +127,7 @@ func (h *LocalRetainedCompactionV1) Upload(ctx context.Context, plan domain.Deri
 		if registrationAttempted {
 			return q.budget.deny()
 		}
+		postimage = nil
 		q.metadataCache = make(map[string]ownedMetadataCacheEntry)
 		var run domain.Run
 		var err error
@@ -160,6 +171,8 @@ func (h *LocalRetainedCompactionV1) Upload(ctx context.Context, plan domain.Deri
 		if err != nil {
 			return q.budget.deny()
 		}
+		value := run.DerivedContext.Clone()
+		postimage = &value
 		// Serializable current read + payload-only update is the private CAS.
 		// Base status/timestamps and the complete old inventory/head are retained.
 		registrationAttempted = true
@@ -173,9 +186,10 @@ func (h *LocalRetainedCompactionV1) Upload(ctx context.Context, plan domain.Deri
 	if err != nil || life.Err() != nil || h.entry.invocationContext.Err() != nil || call.Err() != nil {
 		return domain.ErrMembershipDenied
 	}
-	if h.pair.Write(call, plan, summary, manifest) != nil {
+	if postimage == nil || h.pair.Write(call, plan, summary, manifest) != nil {
 		return domain.ErrMembershipDenied
 	}
+	h.uploaded.Store(&localRetainedUploadV1{plan: plan, postimage: postimage.Clone()})
 	return nil
 }
 
@@ -220,24 +234,13 @@ func (entry *LocalInvocationEntryV1) currentRetainedRun(ctx context.Context, q *
 }
 
 func (entry *LocalInvocationEntryV1) retainedContext(ctx context.Context, op domain.AttemptOperationV1) (context.Context, func(), error) {
-	if !entry.original() || ctx == nil || ctx.Err() != nil || entry.invocationContext == nil || entry.invocationContext.Err() != nil {
+	root, finishRoot, err := entry.localCompactionLifetimeContext(ctx)
+	if err != nil {
 		return nil, nil, domain.ErrMembershipDenied
 	}
-	life, err := entry.owner.source.ExecutionLifetime()
-	if err != nil || life.Err() != nil {
-		return nil, nil, domain.ErrMembershipDenied
-	}
-	deadline := op.Deadline
-	for _, original := range []context.Context{life, entry.invocationContext} {
-		if end, ok := original.Deadline(); ok && end.Before(deadline) {
-			deadline = end
-		}
-	}
-	call, cancel := context.WithDeadline(ctx, deadline)
-	stopSource := context.AfterFunc(life, cancel)
-	stopInvocation := context.AfterFunc(entry.invocationContext, cancel)
-	finish := func() { stopSource(); stopInvocation(); cancel() }
-	if life.Err() != nil || entry.invocationContext.Err() != nil || call.Err() != nil {
+	call, cancel := context.WithDeadline(root, op.Deadline)
+	finish := func() { cancel(); finishRoot() }
+	if call.Err() != nil {
 		finish()
 		return nil, nil, domain.ErrMembershipDenied
 	}

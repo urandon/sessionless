@@ -3,6 +3,7 @@ package ydbstore
 import (
 	"context"
 	"reflect"
+	"sync"
 	"sync/atomic"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
@@ -42,11 +43,16 @@ type LocalInvocationEntryV1 struct {
 	bodies            *operationbody.StoreV1
 	canonicalBlobs    ports.BlobStore
 	invocationContext context.Context
+	// Copies retain the same one-use slot; only original() may consume it.
+	// Keep the no-copy atomic in its own allocation, not in this identity DTO.
+	compactionGeneration *atomic.Pointer[localCompactionGenerationV1]
+	preparedModel        *atomic.Pointer[localPreparedModelV1]
+	preparationMu        *sync.Mutex
 }
 
 func (entry *LocalInvocationEntryV1) original() bool {
 	return entry != nil && entry.self == entry && entry.owner != nil && entry.owner.self == entry.owner &&
-		entry.owner.entry.Load() == entry && entry.owner.bodySlot != nil && entry.bodies != nil && entry.owner.bodySlot.bodies.Load() == entry.bodies
+		entry.owner.entry.Load() == entry && entry.owner.bodySlot != nil && entry.bodies != nil && entry.owner.bodySlot.bodies.Load() == entry.bodies && entry.compactionGeneration != nil && entry.preparedModel != nil && entry.preparationMu != nil
 }
 func (entry *LocalInvocationEntryV1) Parent() (domain.OwnedAttemptEffectParentV1, error) {
 	if !entry.original() {
@@ -160,7 +166,7 @@ func (b *LocalOwnedStoreBootstrapV1) StartLocalInvocation(ctx context.Context, r
 	if e != nil || lifetime.Err() != nil || ctx.Err() != nil {
 		return nil, domain.ErrMembershipDenied
 	}
-	entry := &LocalInvocationEntryV1{owner: b, parent: parent.Clone(), source: source.Clone(), allocation: registered.Current.Clone(), bodies: bodies, canonicalBlobs: blobs, invocationContext: ctx}
+	entry := &LocalInvocationEntryV1{owner: b, parent: parent.Clone(), source: source.Clone(), allocation: registered.Current.Clone(), bodies: bodies, canonicalBlobs: blobs, invocationContext: ctx, compactionGeneration: new(atomic.Pointer[localCompactionGenerationV1]), preparedModel: new(atomic.Pointer[localPreparedModelV1]), preparationMu: new(sync.Mutex)}
 	entry.self = entry
 	if !b.bodySlot.bodies.CompareAndSwap(nil, bodies) {
 		return nil, domain.ErrMembershipDenied

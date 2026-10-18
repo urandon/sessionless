@@ -50,7 +50,12 @@ func newLocalBootstrapFixtureWithPrebuild(t *testing.T, prebuild localRuntimeAct
 	prebuild.scope, prebuild.setupDuration = scope, 10*time.Second
 	actual := newLocalRuntimeActualFixture(t, true, true, prebuild)
 	parent := newOwnedAttemptEffectParentFixture(t, ownedFinalPrebuild{at: actual.at, sources: &ownedFinalSources{profile: actual.profile, spending: actual.execution.Spending}})
-	issuer, err := serverlessharness.NewOperationCapabilityIssuer(func() time.Time { return parent.graph.at }, strings.NewReader(strings.Repeat("B", 32)), 16)
+	issuer, err := serverlessharness.NewOperationCapabilityIssuer(func() time.Time {
+		if prebuild.operationClockBarrier != nil {
+			prebuild.operationClockBarrier()
+		}
+		return parent.graph.at
+	}, strings.NewReader(strings.Repeat("B", 32)), 16)
 	if err != nil {
 		t.Fatal(err)
 	}

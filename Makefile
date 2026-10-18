@@ -180,7 +180,7 @@ lint: prepare go-package-layout
 	go vet $(GO_PACKAGE_PATTERNS)
 
 test: prepare fmt-check lint
-	go test -race $(GO_PACKAGE_PATTERNS)
+	go test -race -timeout=15m $(GO_PACKAGE_PATTERNS)
 
 build: prepare web-stage
 	@mkdir -p $(BIN_DIR)

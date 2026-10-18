@@ -11,12 +11,17 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"hash"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 )
 
 var ErrContract = errors.New("configured inference codec contract is invalid")
+
+// ErrRequestBytes identifies size exhaustion while rendering an otherwise
+// validated request. It remains a contract error, not token-fit evidence.
+var ErrRequestBytes = fmt.Errorf("%w: validated request exceeds wire byte limit", ErrContract)
 
 type RoleV1 string
 

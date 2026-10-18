@@ -16,6 +16,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"gitcode.com/urandon/sessionless/internal/compactioncontext"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/localoperator"
 	"gitcode.com/urandon/sessionless/internal/ports"
@@ -109,6 +110,7 @@ type localRuntimeActualPrebuild struct {
 	sourceParent          context.Context
 	endpoint              string
 	laterPriceObservation bool
+	compiledCompaction    bool // closed synthetic declaration, installed BEFORE Source intake
 }
 
 func newLocalRuntimeActualFixture(t *testing.T, runningExecutable, acceptReceipt bool, prebuild ...localRuntimeActualPrebuild) localRuntimeActualFixture {
@@ -193,6 +195,18 @@ func newLocalRuntimeActualFixture(t *testing.T, runningExecutable, acceptReceipt
 		t.Fatal(err)
 	}
 	c, p := &manifest.Configuration, &manifest.Profile
+	if len(prebuild) == 1 && prebuild[0].compiledCompaction {
+		p.InstructionVersion, p.CompactionPolicyDigest = compactioncontext.InstructionVersionV1, compactioncontext.CompactionPolicyDigestV1()
+		// Synthetic BODY proves software wiring, never a qualified real model.
+		raw, err := json.Marshal(map[string]any{"version": 1, "algorithm": "utf8_affine.v1", "input_domain": "chat_completions_text.v1", "tenant_id": c.TenantID, "owner_user_id": c.OwnerUserID, "model_vendor_id": c.ModelVendorID, "model_id": c.ModelID, "response_model_ids": c.ResponseModelIDs, "server_id": c.ServerID, "server_version": c.ServerVersion, "protocol": c.NativeProtocolVersion, "chat_template_digest": c.ChatTemplateDigest, "estimator_version": c.TokenEstimatorVersion, "capability_evidence_digest": c.CapabilityEvidence.Digest, "model_window_tokens": c.ModelWindowTokens, "max_wire_bytes": c.Limits.RequestBytes, "max_messages": c.Limits.Messages, "max_tools": c.Limits.Tools, "byte_numerator": 1, "byte_denominator": 1, "fixed_tokens": 1, "message_tokens": 1, "tool_tokens": 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(raw)
+		c.CalibrationDigest = hex.EncodeToString(sum[:])
+		p.CalibrationDigest = c.CalibrationDigest
+		manifest.Evidence = append(manifest.Evidence, localoperator.EvidenceBodyV1{Reference: domain.OwnedAgentAuthorityBodyRefV1{Ref: "synthetic-compiled-calibration", Digest: c.CalibrationDigest, Bytes: uint64(len(raw))}, Body: raw})
+	}
 	c.WorkerExecutableDigest, c.LocalHostIdentityDigest, c.LocalNetworkNamespaceIdentityDigest = identity.WorkerExecutableDigest, identity.LocalHostIdentityDigest, identity.LocalNetworkNamespaceIdentityDigest
 	p.Substrate.OuterHarnessArtifactDigest, p.Substrate.LocalHostIdentityDigest, p.Substrate.LocalNetworkNamespaceIdentityDigest = identity.WorkerExecutableDigest, identity.LocalHostIdentityDigest, identity.LocalNetworkNamespaceIdentityDigest
 	p.Substrate.EgressProxyArtifactDigest, p.Substrate.EgressProxyIdentityDigest = identity.WorkerExecutableDigest, connector

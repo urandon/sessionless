@@ -181,7 +181,12 @@ type compactionSourceFixture struct {
 
 func newCompactionSourceFixture(t *testing.T, toolHistory bool, pinned ...bool) *compactionSourceFixture {
 	t.Helper()
-	f := newLocalBootstrapFixture(t)
+	return newCompactionSourceFixtureWithPrebuild(t, toolHistory, localRuntimeActualPrebuild{}, pinned...)
+}
+
+func newCompactionSourceFixtureWithPrebuild(t *testing.T, toolHistory bool, prebuild localRuntimeActualPrebuild, pinned ...bool) *compactionSourceFixture {
+	t.Helper()
+	f := newLocalBootstrapFixtureWithPrebuild(t, prebuild)
 	fixture := &compactionSourceSQL{retainedEntrySQL: &retainedEntrySQL{loopbackOperationSQL: &loopbackOperationSQL{localProxySQL: &localProxySQL{allocationConn: allocationConn{&allocationSQLFixture{parent: f.parent.sql}}}}}}
 	db := sql.OpenDB(compactionSourceConnector{fixture})
 	db.SetMaxOpenConns(1)

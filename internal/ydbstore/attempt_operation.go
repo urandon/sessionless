@@ -165,6 +165,9 @@ func (store *Store) ReserveAttemptOperation(ctx context.Context, request ports.R
 	if err != nil {
 		return ports.ReserveAttemptOperationResultV1{}, domain.ErrMembershipDenied
 	}
+	if evidence.compaction != nil {
+		return store.reservePreparedLocalCompaction(ctx, op, evidence)
+	}
 	return store.reserveOwnedOperation(ctx, op, false, "", evidence, request.ConsentReceipt)
 }
 
@@ -298,6 +301,9 @@ func (store *Store) AuthorizeAttemptOperationBeforeSend(ctx context.Context, cap
 	evidence, prepareErr := store.prepareOwnedOperationEvidence(ctx, op)
 	if prepareErr != nil {
 		return domain.ErrMembershipDenied
+	}
+	if evidence.compaction != nil {
+		return store.authorizePreparedLocalCompaction(ctx, capability, evidence)
 	}
 	err := store.ownedAuthorityTx(ctx, func(ctx context.Context, q *ownedAuthorityQuery) error {
 		q.metadataCache = make(map[string]ownedMetadataCacheEntry)
@@ -435,5 +441,12 @@ func (store *Store) ReadAttemptOperationObservation(ctx context.Context, grant p
 	if ctx.Err() != nil {
 		return ports.AuthenticatedAttemptOperationObservationV1{}, domain.ErrMembershipDenied
 	}
-	return store.attemptOperationIssuer.AuthenticateAttemptOperationObservation(grant.Clone(), observation)
+	authenticated, err := store.attemptOperationIssuer.AuthenticateAttemptOperationObservation(grant.Clone(), observation)
+	if err == nil {
+		store.rememberLocalCompactionObservation(ctx, authenticated)
+	}
+	if ctx.Err() != nil {
+		return ports.AuthenticatedAttemptOperationObservationV1{}, domain.ErrMembershipDenied
+	}
+	return authenticated, err
 }

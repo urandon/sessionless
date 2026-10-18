@@ -93,10 +93,12 @@ func (f *retainedEntrySQL) ExecContext(ctx context.Context, statement string, ar
 
 type retainedEntryBlobs struct {
 	localEntryBlobs
-	sql          *retainedEntrySQL
-	retainedPuts int
-	premature    bool
-	ambiguous    bool
+	sql               *retainedEntrySQL
+	retainedPuts      int
+	premature         bool
+	ambiguous         bool
+	ambiguousOrdinary bool                  // owned fake: persist a normal body, then lose its PUT acknowledgement
+	beforeOrdinary    func(context.Context) // owned deterministic barrier before any ordinary storage write
 }
 
 func (b *retainedEntryBlobs) Put(ctx context.Context, tenant domain.TenantID, key string, raw io.Reader) (domain.BlobRef, error) {
@@ -108,7 +110,15 @@ func (b *retainedEntryBlobs) Put(ctx context.Context, tenant domain.TenantID, ke
 			return domain.BlobRef{}, errors.New("PUT preceded confirmed registration")
 		}
 	}
+	if !retained && b.beforeOrdinary != nil {
+		barrier := b.beforeOrdinary
+		b.beforeOrdinary = nil
+		barrier(ctx)
+	}
 	ref, err := b.localEntryBlobs.Put(ctx, tenant, key, raw)
+	if !retained && b.ambiguousOrdinary {
+		return domain.BlobRef{}, errors.New("owned ambiguous ordinary PUT")
+	}
 	if retained && b.ambiguous {
 		return domain.BlobRef{}, errors.New("owned ambiguous PUT")
 	}

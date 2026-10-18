@@ -2,10 +2,18 @@ package ydbstore
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"reflect"
+	"sync/atomic"
+	"time"
 
+	"gitcode.com/urandon/sessionless/internal/compactioncontext"
 	"gitcode.com/urandon/sessionless/internal/configuredinference"
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/operationbody"
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
 
@@ -22,11 +30,11 @@ const (
 	localCompactionPostRegistration
 )
 
-// No production constructor is exposed yet: the eventual constructor MUST
-// rebuild the compiled generation from the original source, compare its exact
-// frozen request, and execute OriginalSource.FitContext before claiming the
-// entry slot. A frozen request, these fields, or a successful join is not such
-// preparation and cannot enter the existing Store effect path by itself.
+// The private constructor rebuilds from original source bytes and executes the
+// original calibration. The original Store consumes this owner for its prepared
+// reserve/before-send/completed phases. Fields other than immutable
+// entry/source/self are read or filled under source.mu;
+// the slot may hold an incomplete, permanently denied failure tombstone.
 type localCompactionGenerationV1 struct {
 	self      *localCompactionGenerationV1
 	entry     *LocalInvocationEntryV1
@@ -34,9 +42,269 @@ type localCompactionGenerationV1 struct {
 	retained  *LocalRetainedCompactionV1
 	frozen    *configuredinference.FrozenRequestV1
 	operation domain.AttemptOperationV1
+	program   *compactioncontext.GenerationV1
+	fit       configuredinference.ContextFitV1
+	price     *ownedProviderPriceEvidence
 	// Completion fields are private and accessed under source.state.mu.
-	reservation domain.AttemptOperationReservationV1
-	observation ports.AuthenticatedAttemptOperationObservationV1
+	reservationAttempted bool
+	reservation          domain.AttemptOperationReservationV1
+	observation          ports.AuthenticatedAttemptOperationObservationV1
+}
+
+// localCompactionLifetimeContext is context composition, not permission. Its
+// parent is the ORIGINAL Source lifetime so Source revocation synchronously
+// cancels all standard context children before Close returns. Independent
+// caller/invocation cancellation is also joined, with direct initial checks.
+// Caller values, including the existing logical-call budget, survive without
+// borrowing the caller's cancellation identity.
+func (entry *LocalInvocationEntryV1) localCompactionLifetimeContext(ctx context.Context) (context.Context, func(), error) {
+	if !entry.original() || ctx == nil || ctx.Err() != nil || entry.invocationContext == nil || entry.invocationContext.Err() != nil {
+		return nil, nil, domain.ErrMembershipDenied
+	}
+	life, err := entry.owner.source.ExecutionLifetime()
+	if err != nil || life.Err() != nil {
+		return nil, nil, domain.ErrMembershipDenied
+	}
+	deadline, bounded := life.Deadline()
+	for _, original := range []context.Context{ctx, entry.invocationContext} {
+		if end, ok := original.Deadline(); ok && (!bounded || end.Before(deadline)) {
+			deadline, bounded = end, true
+		}
+	}
+	var call context.Context
+	var cancel context.CancelFunc
+	parent := localCompactionCallerValues{Context: life, caller: context.WithoutCancel(ctx)}
+	if bounded {
+		call, cancel = context.WithDeadline(parent, deadline)
+	} else {
+		call, cancel = context.WithCancel(parent)
+	}
+	stopCaller := context.AfterFunc(ctx, cancel)
+	stopInvocation := context.AfterFunc(entry.invocationContext, cancel)
+	finish := func() { stopCaller(); stopInvocation(); cancel() }
+	if ctx.Err() != nil || life.Err() != nil || entry.invocationContext.Err() != nil || call.Err() != nil {
+		finish()
+		return nil, nil, domain.ErrMembershipDenied
+	}
+	return call, finish, nil
+}
+
+// WithoutCancel masks the caller's private cancelCtx key. Falling back to the
+// embedded Source for that key keeps its Value/Done identity coherent, so the
+// standard context child is synchronously canceled by Source revocation.
+type localCompactionCallerValues struct {
+	context.Context
+	caller context.Context
+}
+
+func (c localCompactionCallerValues) Value(key any) any {
+	if value := c.caller.Value(key); value != nil {
+		return value
+	}
+	return c.Context.Value(key)
+}
+
+// prepareLocalCompactionGeneration is deliberately private and generation-one
+// only while retained-parent/head consumption is being joined. It cannot accept
+// a caller request/catalog/policy/calibration/parent/fit, reserve an operation,
+// open a transport or authorize a send. Unknown/failed preparation cannot reset
+// the original entry slot. This is not the complete two-generation #192 path.
+func prepareLocalCompactionGeneration(ctx context.Context, source *LocalCompactionSourceV1) (*localCompactionGenerationV1, error) {
+	deny := func() (*localCompactionGenerationV1, error) { return nil, domain.ErrMembershipDenied }
+	if ctx == nil || ctx.Err() != nil || source == nil || source.self != source || source.state == nil || source.entry == nil || !source.entry.original() {
+		return deny()
+	}
+	source.state.mu.Lock()
+	defer source.state.mu.Unlock()
+	entry, state := source.entry, source.state
+	if state.cleared || state.view == nil || state.digest == "" || entry.compactionGeneration.Load() != nil || state.snapshot.Job.Run.DerivedContext != nil {
+		return deny()
+	}
+	policy := entry.parent.Authority.HarnessBinding.AgentLoopPolicy
+	if policy == nil || policy.Validate() != nil {
+		return deny()
+	}
+	// There is no current native-catalog owner in this base. Never silently drop
+	// a captured catalog or treat a prior compaction as an ordinary message.
+	operations := make([]compactioncontext.CompletedOperationV1, len(state.operations))
+	for i, operation := range state.operations {
+		var request struct {
+			Tools []json.RawMessage `json:"tools"`
+		}
+		if operation.Reservation.Operation.Kind != domain.AttemptOperationModelV1 || json.Unmarshal(operation.Request, &request) != nil || len(request.Tools) != 0 {
+			return deny()
+		}
+		operations[i] = compactioncontext.CompletedOperationV1{Reservation: operation.Reservation, Observation: operation.Observation, Request: operation.Request, Response: operation.Response}
+	}
+	root, finishRoot, err := entry.localCompactionLifetimeContext(ctx)
+	if err != nil {
+		return deny()
+	}
+	defer finishRoot()
+	call, finish, err := entry.retainedContext(root, entry.compactionSourceControl())
+	if err != nil {
+		return deny()
+	}
+	defer finish()
+	call, cancel := ownedAuthorityCallContext(call)
+	defer cancel()
+	store := entry.owner.store
+	var at time.Time
+	var currentProfile domain.OwnedAgentProfileCurrentV1
+	err = store.ownedAuthorityTx(call, func(ctx context.Context, q *ownedAuthorityQuery) error {
+		at, currentProfile = time.Time{}, domain.OwnedAgentProfileCurrentV1{}
+		if _, err := source.rejoinRunLocked(ctx, q, nil, nil); err != nil {
+			return err
+		}
+		var err error
+		currentProfile, err = readOwnedProfileCurrent(ctx, q, entry.source.Profile)
+		if err != nil {
+			return err
+		}
+		at = q.at
+		return nil
+	})
+	if err != nil || call.Err() != nil {
+		return deny()
+	}
+	price, err := store.readOwnedProviderPriceEvidence(call, currentProfile)
+	if err != nil || price == nil || price.local == nil || price.price != nil {
+		return deny()
+	}
+	configuration := entry.owner.configuration
+	limits, used := policy.Limits, state.snapshot.Accounting.Aggregate
+	if used.Operations >= limits.MaxOperations || used.ModelCalls >= limits.MaxModelCalls || used.CompactionCalls != 0 || used.InputTokens >= limits.MaxAggregateInputTokens || used.OutputTokens >= limits.MaxAggregateOutputTokens || used.BodyBytes >= limits.MaxAggregateBodyBytes || used.ActiveDuration >= limits.MaxActiveDuration {
+		return deny()
+	}
+	effective := configuration.Limits
+	effective.MaxInputTokens = min(effective.MaxInputTokens, limits.MaxInputTokensPerCall, limits.MaxAggregateInputTokens-used.InputTokens)
+	effective.MaxOutputTokens = min(effective.MaxOutputTokens, limits.MaxOutputTokensPerCall, limits.MaxAggregateOutputTokens-used.OutputTokens)
+	records := state.view.Records()
+	defer func() {
+		for i := range records {
+			clear(records[i].Payload)
+		}
+	}()
+	var bodyBytes uint64
+	for _, record := range records {
+		bodyBytes += uint64(len(record.Payload))
+	}
+	for _, operation := range operations {
+		bodyBytes += uint64(len(operation.Request) + len(operation.Response))
+	}
+	if chargeOwnedAuthorityBody(call, bodyBytes+configuredinference.MaxContextCalibrationBytesV1) != nil {
+		return deny()
+	}
+	program, err := compactioncontext.BuildGenerationV1(configuration, effective, *policy, state.digest, records, operations, nil, nil)
+	if err != nil {
+		if errors.Is(err, configuredinference.ErrContextNoFit) {
+			return nil, configuredinference.ErrContextNoFit
+		}
+		return deny()
+	}
+	if program.Number() != 1 || program.SourceDigest() != state.digest {
+		return deny()
+	}
+	frozen := program.FrozenRequest()
+	fit, err := entry.owner.source.FitContext(frozen, configuredinference.ContextFitCeilingsV1{InputTokens: effective.MaxInputTokens, OutputTokens: effective.MaxOutputTokens, TotalTokens: configuration.ModelWindowTokens})
+	if err != nil {
+		if errors.Is(err, configuredinference.ErrContextNoFit) {
+			return nil, configuredinference.ErrContextNoFit
+		}
+		return deny()
+	}
+	body := frozen.Body()
+	defer clear(body)
+	if chargeOwnedAuthorityBody(call, uint64(len(body))) != nil {
+		return deny()
+	}
+	duration := min(limits.MaxNetworkOperationDuration, configuration.Limits.OperationTimeout, limits.MaxActiveDuration-used.ActiveDuration)
+	deadline := at.Add(duration)
+	for _, original := range []time.Time{entry.parent.Authority.InvocationDeadline, entry.parent.Authority.Lease.ExpiresAt, policy.ExpiresAt, entry.parent.Authority.AdmissionCostCeiling.PriceExpiresAt, entry.parent.Reservation.ReservedAt.Add(limits.MaxActiveDuration), entry.allocation.Window.ExpiresAt, configuration.ExpiresAt} {
+		if original.Before(deadline) {
+			deadline = original
+		}
+	}
+	lifetime, err := entry.owner.source.ExecutionLifetime()
+	if err != nil {
+		return deny()
+	}
+	for _, original := range []context.Context{lifetime, entry.invocationContext} {
+		if end, ok := original.Deadline(); ok && end.Before(deadline) {
+			deadline = end
+		}
+	}
+	if end, ok := ctx.Deadline(); ok && end.Before(deadline) {
+		return deny()
+	} // never silently shorten the immutable operation for an independent caller
+	if !deadline.After(at) {
+		return deny()
+	}
+	duration = deadline.Sub(at)
+	sum := sha256.Sum256(body)
+	costDigest, err := entry.parent.Authority.AdmissionCostCeiling.Digest()
+	if err != nil {
+		return deny()
+	}
+	op := domain.AttemptOperationV1{Version: 1, Scope: ownedOperationScope(entry.parent), Sequence: used.Operations + 1, Kind: domain.AttemptOperationCompactionV1, CallID: "compaction-" + state.digest[:24] + "-1", RequestRef: "pending-compaction-body", RequestDigest: hex.EncodeToString(sum[:]), RequestBytes: uint64(len(body)), ResultBytes: min(uint64(64<<10), configuration.Limits.ResponseBytes), ContextBytes: uint64(len(body)), SummaryBytes: min(uint64(16<<10), limits.MaxSummaryBytes), Currency: entry.parent.Authority.AdmissionCostCeiling.Currency, PriceRevision: entry.parent.Authority.AdmissionCostCeiling.PriceRevision, AdmissionCostCeilingDigest: costDigest, Deadline: deadline, CleanupDuration: limits.MaxCleanupDuration}
+	if len(operations) != 0 {
+		op.PredecessorObservationDigest, err = operations[len(operations)-1].Observation.Digest()
+		if err != nil {
+			return deny()
+		}
+	}
+	op.Debit = domain.AttemptOperationDebitV1{Operations: 1, ModelCalls: 1, CompactionCalls: 1, InputTokens: fit.InputUpperBound, OutputTokens: fit.OutputReserve, BodyBytes: op.RequestBytes + op.ResultBytes + operationbody.RetainedPairBytesV1, ResponseBytes: op.ResultBytes, ActiveDuration: duration}
+	if op.ValidateForParent(entry.parent.Authority, entry.parent.Reservation) != nil || op.Debit.BodyBytes > limits.MaxAggregateBodyBytes-used.BodyBytes || store.validateOwnedLocalInvoiceEvidence(price.local, currentProfile, entry.source, op, at) != nil {
+		return deny()
+	}
+	if _, err := debitOwnedOperation(state.snapshot.Accounting, op, entry.parent, entry.source, at); err != nil {
+		return deny()
+	}
+	g := &localCompactionGenerationV1{entry: entry, source: source, frozen: frozen, program: program, fit: fit, price: price}
+	g.self = g
+	if !entry.compactionGeneration.CompareAndSwap(nil, g) {
+		return deny()
+	}
+	// No reset on any failure, including ambiguous body writes or pair failure.
+	// Future effect lookup MUST acquire source.state.mu before reading this
+	// partial handle; retained stays nil until complete confirmed preparation.
+	ref, err := entry.bodies.Write(call, body)
+	if err != nil || call.Err() != nil || ref.Digest != op.RequestDigest || ref.Bytes != op.RequestBytes {
+		return deny()
+	}
+	op.RequestRef = ref.Ref
+	if op.ValidateForParent(entry.parent.Authority, entry.parent.Reservation) != nil {
+		return deny()
+	}
+	g.operation = op
+	err = store.ownedAuthorityTx(call, func(ctx context.Context, q *ownedAuthorityQuery) error {
+		run, err := source.rejoinRunLocked(ctx, q, nil, nil)
+		if err != nil {
+			return err
+		}
+		// The complete SECOND-join Run is the expected metadata source. This
+		// initial private path requires absent inventory AND head, not a caller
+		// nil value or a post-read assumption about a previous Run snapshot.
+		if run.DerivedContext != nil {
+			return q.budget.deny()
+		}
+		if !q.at.Before(op.Deadline) || store.validateOwnedOperationProviderPrice(ctx, q, op, price, entry.source) != nil {
+			return q.budget.deny()
+		}
+		_, err = debitOwnedOperation(state.snapshot.Accounting, op, entry.parent, entry.source, q.at)
+		return err
+	})
+	if err != nil || call.Err() != nil || !store.operationEvidenceLifetimeCurrent(&ownedOperationEvidence{price: price}) {
+		return deny()
+	}
+	retained := &LocalRetainedCompactionV1{entry: entry, operation: op, generation: 1, claimed: new(atomic.Bool), source: source}
+	retained.pair, err = entry.bodies.ReserveRetainedPair(call, op.Sequence, 1)
+	if err != nil || call.Err() != nil || lifetime.Err() != nil || entry.invocationContext.Err() != nil || !store.operationEvidenceLifetimeCurrent(&ownedOperationEvidence{price: price}) {
+		return deny()
+	}
+	retained.self = retained
+	g.retained = retained
+	return g, nil
 }
 
 func (g *localCompactionGenerationV1) originalForPhase(entry *LocalInvocationEntryV1, phase localCompactionGenerationPhase) bool {

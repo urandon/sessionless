@@ -24,9 +24,13 @@ type ownedOperationEvidence struct {
 	observation domain.AttemptOperationObservationV1
 	tool        *ownedFixtureToolEvidence
 	price       *ownedProviderPriceEvidence
+	compaction  *localCompactionGenerationV1
 }
 
 func (store *Store) prepareOwnedOperationEvidence(ctx context.Context, op domain.AttemptOperationV1) (*ownedOperationEvidence, error) {
+	if evidence, handled, err := store.prepareLocalCompactionEvidence(ctx, op); handled {
+		return evidence, err
+	}
 	body, err := store.readOwnedOperationBody(ctx, op.Scope, op.RequestRef, op.RequestDigest, op.RequestBytes, 1<<20)
 	if err != nil {
 		return nil, err

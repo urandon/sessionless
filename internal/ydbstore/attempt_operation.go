@@ -235,7 +235,7 @@ func (store *Store) reserveOwnedOperation(ctx context.Context, op domain.Attempt
 		candidate, fresh, at = value.Clone(), true, q.at
 		return nil
 	})
-	if err != nil || ctx.Err() != nil {
+	if err != nil || ctx.Err() != nil || !store.operationEvidenceLifetimeCurrent(evidence) {
 		return ports.ReserveAttemptOperationResultV1{}, domain.ErrMembershipDenied
 	}
 	return store.operationResult(candidate, at, fresh)
@@ -314,7 +314,7 @@ func (store *Store) AuthorizeAttemptOperationBeforeSend(ctx context.Context, cap
 		}
 		return nil
 	})
-	if err != nil || ctx.Err() != nil || store.attemptOperationIssuer.ConsumeAttemptOperationCapability(capability) != nil {
+	if err != nil || ctx.Err() != nil || !store.operationEvidenceLifetimeCurrent(evidence) || store.attemptOperationIssuer.ConsumeAttemptOperationCapability(capability) != nil {
 		return domain.ErrMembershipDenied
 	}
 	return nil

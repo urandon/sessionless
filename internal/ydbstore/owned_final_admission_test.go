@@ -65,6 +65,12 @@ func (tx ownedFinalScriptTx) Rollback() error {
 func (f *ownedFinalScript) QueryContext(ctx context.Context, statement string, args []driver.NamedValue) (driver.Rows, error) {
 	flat := func(values ...driver.Value) driver.Rows { return &explanationFixtureRows{values: values} }
 	switch statement {
+	case ownedProfileCurrentSQL:
+		// The operation-price path point-reads the SAME head as the joined
+		// admission snapshot. Reuse its original exact-key reader, not a new
+		// fabricated profile or a permissive unknown-query fallback.
+		f.recordQuery(statement, args)
+		return f.reader.driver.QueryContext(ctx, statement, args)
 	case ownedAdmissionSourcesJoinSQL:
 		f.recordQuery(statement, args)
 		values := append([]driver.Value(nil), f.reader.driver.profileRow...)

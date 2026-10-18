@@ -104,9 +104,11 @@ func localRuntimeStructuralSpending(t *testing.T, p domain.OwnedAgentProfileCurr
 // publication over a deterministic SQL model. No native YDB, model, socket or
 // external-service funding/qualification is exercised.
 type localRuntimeActualPrebuild struct {
-	scope         domain.AttemptExecutionSourceScopeV1
-	setupDuration time.Duration
-	sourceParent  context.Context
+	scope                 domain.AttemptExecutionSourceScopeV1
+	setupDuration         time.Duration
+	sourceParent          context.Context
+	endpoint              string
+	laterPriceObservation bool
 }
 
 func newLocalRuntimeActualFixture(t *testing.T, runningExecutable, acceptReceipt bool, prebuild ...localRuntimeActualPrebuild) localRuntimeActualFixture {
@@ -121,6 +123,12 @@ func newLocalRuntimeActualFixture(t *testing.T, runningExecutable, acceptReceipt
 			t.Fatal(err)
 		}
 		c, p := &manifest.Configuration, &manifest.Profile
+		if prebuild[0].endpoint != "" {
+			if err := domain.ValidateConfiguredInferenceEndpointV1(prebuild[0].endpoint); err != nil {
+				t.Fatal(err)
+			}
+			c.BaseURL, manifest.InvoiceTerms.BaseURL = prebuild[0].endpoint, prebuild[0].endpoint
+		}
 		c.TenantID, c.OwnerUserID, c.Resource.OwnerUserID = scope.TenantID, scope.OwnerUserID, scope.OwnerUserID
 		p.Locator.TenantID, p.Locator.OwnerUserID, p.Resource.OwnerUserID, p.BillingOwnerUserID = scope.TenantID, scope.OwnerUserID, scope.OwnerUserID, scope.OwnerUserID
 		for _, cost := range []*domain.ExternalServiceCostCeilingV1{p.CostCeiling.MCPToolCost, p.CostCeiling.WebSearchCost} {
@@ -146,6 +154,19 @@ func newLocalRuntimeActualFixture(t *testing.T, runningExecutable, acceptReceipt
 				t.Fatal("pre-seal fixture setup duration may only narrow the original declaration")
 			}
 			p.CostCeiling.MaxPreEffectDurationPerDelivery = prebuild[0].setupDuration
+			p.Substrate.AdmissionCostCeilingDigest, err = p.CostCeiling.Digest()
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		if prebuild[0].laterPriceObservation {
+			// Narrow the executable interval inside the independently declared
+			// MCP/search intervals, while preserving a distinct invoice start.
+			p.CostCeiling.PriceObservedAt = c.IssuedAt.Add(time.Second)
+			// The structural profile is observed inside its new price interval.
+			// Source will assign the real publication time at original intake.
+			p.Window.ObservedAt = p.CostCeiling.PriceObservedAt
+			p.Window.PublishedAt, p.UpdatedAt = p.Window.ObservedAt, p.Window.ObservedAt
 			p.Substrate.AdmissionCostCeilingDigest, err = p.CostCeiling.Digest()
 			if err != nil {
 				t.Fatal(err)

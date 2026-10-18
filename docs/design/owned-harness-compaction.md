@@ -97,13 +97,28 @@ alternate decoder or permission to use a native checkpoint. A different Attempt
 cannot adopt an unprojected head or resume its original execution.
 
 Only the original Store's dedicated compaction publisher may replace this
-field. Ordinary Run creation requires an absent head; every generic Run update
-must preserve the exact retained head, including cancellation and terminal
-writers. The publisher reads the current Run in its owned transaction, compares
+field. Ordinary Run creation requires absent derived metadata; every generic
+Run update must preserve the complete derived metadata, including its head,
+inventory and correspondence, on cancellation and terminal writes. The
+publisher reads the current Run in its owned transaction, compares
 the expected previous head and source digest, validates the new typed value and
 serializes the complete preserved Run. It cannot trust a caller-populated Run
 field, a Boolean approval or an unchecked `PutRun` UPSERT. The full Run payload
 must still fit the existing 32 KiB owned-authority read bound.
+
+Enforce that encoded 32 KiB ceiling at the common physical Run-write boundary,
+including ordinary status and terminal updates, not only when constructing a
+head. The existing [WebUI explanation reader](../../internal/ydbstore/run_explanation.go)
+reads the entire Run through an 8 KiB bound. Before enabling derived metadata,
+replace that read with a closed typed SQL projection of its required base Run
+fields before transfer, excluding derived metadata. Do not fetch the full
+payload and strip it in Go, truncate it or pass this read-only projection back
+to a Run writer. Preserve its existing per-row,
+query and response budgets; do not expose the summary or raise those budgets
+to accommodate storage metadata. Verify the actual bounded SQL projection and
+WebUI explanation with a valid Run between 8 and 32 KiB, and reject oversized
+physical writes before any mutation. Passing a smaller synthetic Run alone
+does not establish compatibility.
 
 Canonical finalization adds a bounded terminal correspondence to this same
 Run-owned metadata, atomically with the canonical append. For every operational
@@ -125,6 +140,18 @@ An incomplete or unprojected correspondence denies reuse; the original claim
 and any accepted-unknown effects remain reconcile-only.
 
 ### Publication authority and object budgets
+
+The same Run-owned metadata keeps at most two planned summary/manifest pairs,
+independently of its current head. These slots include failed or unpublished
+plans and do not reset for a replacement Attempt. After generation and exact
+encoding, register each pair's references, digests and sizes transactionally
+under the original Store's current authority and expected metadata, before
+any retained PUT. Unknown registration means no PUT. The head publisher must
+match and preserve this inventory; a parentless replacement cannot hide older
+objects. Registration is cleanup/identity data, not execution or upload
+authority. A restarted process cannot reconstruct the original adapter's
+one-use write ownership or retry an ambiguous PUT; reconcile exact objects or
+stop. Complete metadata must fit the 32 KiB Run ceiling before any mutation.
 
 Persist the generation's normalized response and its authenticated completed
 operation observation before publishing a derived head. Copy the validated
@@ -201,7 +228,7 @@ synthetic calibration fixtures prove software wiring, not real-model fit or
 quality. Missing fit capability produces a pre-send denial.
 
 1. Reserve the compaction operation under the current Attempt, generate once, validate the structured response and persist its complete operation observation.
-2. Copy the validated structured summary to its retained artifact and write its manifest; read back both and verify their digests and source closure. Atomically publish the derived reference under the same lease/fence and expected source-view digest. Unreferenced uploads cannot become the active context; retiring original operation bodies additionally requires verified terminal custody of the retained closure.
+2. Register the exact encoded summary/manifest pair in the bounded Run inventory before either retained PUT. Copy the validated summary to its retained artifact and write its manifest; read back both and verify their digests and source closure. Atomically publish the derived reference while preserving the inventory under the same lease/fence and expected source-view digest. Unreferenced uploads cannot become the active context; retiring original operation bodies additionally requires verified terminal custody of the retained closure.
 3. Re-read current authority/cancellation before publication. Reject changed source, model/policy, owner grant or fence. A cancelled, expired, failed or unknown operation cannot publish a new view.
 4. Rebuild the resulting view from authoritative instructions/task, the published summary and original suffix. Verify complete-unit continuity, no duplicated coverage, exact digests and actual fit before another model operation.
 
@@ -225,7 +252,7 @@ Credential-free fixtures use fake clocks, scripted summaries and reserve/send/pe
 | Summary error/empty/length-stop/cancel/budget | No publication, no hidden generation retry, all physical attempts accounted or unknown |
 | Wrong owner/source/hash/parent/model/policy | No view installation or grant restoration; published pointer remains unchanged |
 | Blob/store failure and fresh Run reuse | Atomic publication, verified terminal mapping and no operational/canonical duplication |
-| Retained summary custody and cleanup | Verified copy before original-body disposal; original namespace fully absent after close; fresh Run works without erased bodies; bounded retained closure removed with Session |
+| Retained summary custody and cleanup | Register both bounded pairs before PUT; failed/parentless replacement cannot hide residue; no ambiguous PUT retry; verified copy before original-body disposal; fresh Run works without erased bodies; original namespace and Session-retained closure fully removed by their respective owners |
 | Constraint/fact/task fidelity | Scripted expected facts and IDs preserved; a malicious summary cannot change tool authorization |
 
 Separately authorized live evaluation under [#63](../research/harness-neutral-evaluation.md) must measure useful task completion after repeated compaction, constraint preservation, factual omissions/hallucinations and artifact/citation continuity. Also record token reduction, auxiliary spend and latency independently. Passing scripted fixtures or a smaller prompt does not establish live quality. A profile that loses mandatory task constraints is not enabled merely because its safety checks pass.

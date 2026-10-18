@@ -328,8 +328,14 @@ func (store *Store) RecordAttemptOperationObservation(ctx context.Context, reque
 	}
 	r := request.Observation.Reservation.Clone()
 	o := request.Observation.Observation.Clone()
-	if o.Outcome == domain.AttemptOperationCompletedV1 && store.validateOperationBody(ctx, r.Operation.Scope, o.ResponseRef, o.ResponseDigest, o.ResponseBytes) != nil {
-		return domain.ErrMembershipDenied
+	if o.Outcome == domain.AttemptOperationCompletedV1 {
+		if store.localNormalizedModelSuccess(r.Operation, o) {
+			if store.validateLocalNormalizedModel(ctx, r.Operation, o) != nil {
+				return domain.ErrMembershipDenied
+			}
+		} else if store.validateOperationBody(ctx, r.Operation.Scope, o.ResponseRef, o.ResponseDigest, o.ResponseBytes) != nil {
+			return domain.ErrMembershipDenied
+		}
 	}
 	return store.ownedAuthorityTx(ctx, func(ctx context.Context, q *ownedAuthorityQuery) error {
 		q.metadataCache = make(map[string]ownedMetadataCacheEntry)
@@ -399,6 +405,12 @@ func (store *Store) ReadAttemptOperationObservation(ctx context.Context, grant p
 		return nil
 	})
 	if err != nil || ctx.Err() != nil {
+		return ports.AuthenticatedAttemptOperationObservationV1{}, domain.ErrMembershipDenied
+	}
+	if store.localNormalizedModelSuccess(grant.Reservation.Operation, observation) && store.validateLocalNormalizedModel(ctx, grant.Reservation.Operation, observation) != nil {
+		return ports.AuthenticatedAttemptOperationObservationV1{}, domain.ErrMembershipDenied
+	}
+	if ctx.Err() != nil {
 		return ports.AuthenticatedAttemptOperationObservationV1{}, domain.ErrMembershipDenied
 	}
 	return store.attemptOperationIssuer.AuthenticateAttemptOperationObservation(grant.Clone(), observation)

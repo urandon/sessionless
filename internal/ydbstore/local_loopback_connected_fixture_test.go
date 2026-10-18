@@ -26,6 +26,7 @@ type loopbackOperationSQL struct {
 	*localProxySQL
 	operation, pendingOperation, call, pendingCall []driver.Value
 	operationWrites, callWrites                    int
+	observationWrites                              int
 }
 type loopbackOperationConnector struct{ f *loopbackOperationSQL }
 type loopbackOperationDriver struct{ f *loopbackOperationSQL }
@@ -87,6 +88,7 @@ func (f *loopbackOperationSQL) QueryContext(ctx context.Context, s string, args 
 
 const loopbackOperationInsertSQL = `INSERT INTO attempt_operations_v1 (tenant_id,attempt_id,sequence,record,digest,operation_digest,call_id) VALUES ($1,$2,$3,$4,$5,$6,$7)`
 const loopbackCallInsertSQL = `INSERT INTO attempt_operation_calls_v1 (tenant_id,attempt_id,call_id,sequence,operation_digest) VALUES ($1,$2,$3,$4,$5)`
+const loopbackObservationUpdateSQL = `UPDATE attempt_operations_v1 SET observation_record=$1,observation_digest=$2 WHERE tenant_id=$3 AND attempt_id=$4 AND sequence=$5 AND digest=$6 AND observation_record IS NULL AND observation_digest IS NULL`
 
 func (f *loopbackOperationSQL) ExecContext(ctx context.Context, s string, args []driver.NamedValue) (driver.Result, error) {
 	switch s {
@@ -114,6 +116,28 @@ func (f *loopbackOperationSQL) ExecContext(ctx context.Context, s string, args [
 		}
 		f.pendingCall = []driver.Value{args[3].Value, args[4].Value}
 		f.callWrites++
+	case loopbackObservationUpdateSQL:
+		row := f.operation
+		if f.pendingOperation != nil {
+			row = f.pendingOperation
+		}
+		if len(args) != 6 || len(row) != 8 || row[4] != uint64(0) || row[5] != uint64(0) || row[6] != "" || row[7] != "" {
+			return nil, errors.New("connected observation CAS requires exact unobserved original row")
+		}
+		var reservation domain.AttemptOperationReservationV1
+		var observation domain.AttemptOperationObservationV1
+		if json.Unmarshal([]byte(row[0].(string)), &reservation) != nil || json.Unmarshal([]byte(args[0].Value.(string)), &observation) != nil || observation.ValidateForReservation(reservation) != nil {
+			return nil, errors.New("connected observation CAS has invalid original reservation/observation")
+		}
+		digest, _ := observation.Digest()
+		canonical, _ := json.Marshal(observation)
+		if string(canonical) != args[0].Value || string(digest) != args[1].Value || args[2].Value != string(reservation.Operation.Scope.TenantID) || args[3].Value != string(reservation.Operation.Scope.AttemptID) || args[4].Value != int64(reservation.Operation.Sequence) || args[5].Value != row[1] {
+			return nil, errors.New("connected observation CAS crossed original identity/digest")
+		}
+		f.pendingOperation = append([]driver.Value(nil), row...)
+		f.pendingOperation[4], f.pendingOperation[5] = uint64(1), uint64(1)
+		f.pendingOperation[6], f.pendingOperation[7] = args[0].Value, args[1].Value
+		f.observationWrites++
 	default:
 		if strings.Contains(s, "attempt_operations_v1") || strings.Contains(s, "attempt_operation_calls_v1") {
 			return nil, errors.New("unmodeled connected operation write")
@@ -174,6 +198,8 @@ type LocalLoopbackConnectedFixture struct {
 	store              *Store
 	bridge             *serverlessharness.BoundedOwnedAllocationPreparationV1
 	body               *loopbackOperationBody
+	operationBodies    *operationbody.StoreV1
+	observationGrant   ports.AttemptOperationObservationGrantV1
 	payload            []byte
 	sourceCloseCommits int
 	sourceCloseFired   bool
@@ -243,6 +269,7 @@ func (f *LocalLoopbackConnectedFixture) complete(t *testing.T, keeper ports.Owne
 			t.Fatalf("production body write/readback before original Store setup: %v", err)
 		}
 		requestRef, bodyReader = reference.Ref, adapter
+		f.operationBodies = adapter
 	}
 	store, e := f.Bootstrap.CreateStore(db, Options{OwnedAttemptEffectSourceVerifier: f.parent.verifier, OwnedProfilePublicationVerifier: f.Source, AttemptOperationBodies: bodyReader}, keeper)
 	if e != nil {
@@ -370,7 +397,87 @@ func (f *LocalLoopbackConnectedFixture) RegisterAndReserve(t *testing.T, proof p
 		_, priceErr := f.store.prepareOwnedOperationEvidence(ctx, f.Operation)
 		t.Fatalf("connected real Store operation reservation: err=%v capability=%t evidence=%v", e, r.Capability != nil, priceErr)
 	}
+	if r.ObservationGrant.Validate() != nil {
+		t.Fatal("connected actual operation reserve omitted its original observation grant")
+	}
+	f.observationGrant = r.ObservationGrant.Clone()
 	return registered, r.Capability.Clone()
+}
+
+// Select a larger normalized DATA slot before freezing the whole operation for
+// preflight/publication. Existing 512-byte connected fixtures remain unchanged.
+func (f *LocalLoopbackConnectedFixture) UseNormalizedModelResultBound(t *testing.T) {
+	t.Helper()
+	if f.operationBodies == nil || f.sql.operation != nil || f.sql.row != nil {
+		t.Fatal("normalized slot must use original production body custody before proxy/operation reservation")
+	}
+	f.Operation.ResultBytes = 4096
+	f.Operation.Debit.BodyBytes = f.Operation.RequestBytes + 4096
+	f.Operation.Debit.ResponseBytes = 4096
+	if err := f.Operation.ValidateForParent(f.parent.parent.Authority, f.parent.parent.Reservation); err != nil {
+		t.Fatalf("normalized slot exceeds original admitted parent: %v", err)
+	}
+}
+
+func (f *LocalLoopbackConnectedFixture) WriteOperationBody(t *testing.T, body []byte) operationbody.ReferenceV1 {
+	t.Helper()
+	if f.operationBodies == nil {
+		t.Fatal("normalized response needs the original concrete production body adapter")
+	}
+	ref, err := f.operationBodies.Write(f.Context, body)
+	if err != nil {
+		t.Fatalf("production response body custody: %v", err)
+	}
+	return ref
+}
+
+// This calls the SAME actual issuer with the observation grant returned by the
+// real Store reservation. It authenticates DATA, not a caller approval callback.
+func (f *LocalLoopbackConnectedFixture) AuthenticateCompletedModelObservation(t *testing.T, ref operationbody.ReferenceV1, usage domain.AttemptOperationUsageV1) ports.AuthenticatedAttemptOperationObservationV1 {
+	t.Helper()
+	if f.observationGrant.Validate() != nil {
+		t.Fatal("missing actual original observation grant")
+	}
+	at := time.Now().UTC().Truncate(time.Microsecond)
+	f.parent.graph.at = at
+	reservation := f.observationGrant.Reservation
+	digest, err := reservation.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := domain.AttemptOperationObservationV1{Version: 1, OperationDigest: reservation.OperationDigest, ReservationDigest: digest,
+		Outcome: domain.AttemptOperationCompletedV1, Reason: domain.AttemptOperationReasonNoneV1,
+		ResponseRef: ref.Ref, ResponseDigest: ref.Digest, ResponseBytes: ref.Bytes, ObservedAt: at, Usage: usage.Clone()}
+	authenticated, err := f.OperationIssuer.AuthenticateAttemptOperationObservation(f.observationGrant.Clone(), o)
+	if err != nil {
+		t.Fatalf("same original issuer observation authentication: %v", err)
+	}
+	return authenticated
+}
+
+func (f *LocalLoopbackConnectedFixture) RecordAuthenticatedModelObservation(t *testing.T, observation ports.AuthenticatedAttemptOperationObservationV1) error {
+	t.Helper()
+	f.parent.graph.at = time.Now().UTC().Truncate(time.Microsecond)
+	return f.store.RecordAttemptOperationObservation(f.Context, ports.RecordAttemptOperationObservationRequestV1{ObservationGrant: f.observationGrant.Clone(), Observation: observation.Clone()})
+}
+
+func (f *LocalLoopbackConnectedFixture) ReadOriginalModelObservation(t *testing.T) (ports.AuthenticatedAttemptOperationObservationV1, error) {
+	t.Helper()
+	f.parent.graph.at = time.Now().UTC().Truncate(time.Microsecond)
+	return f.store.ReadAttemptOperationObservation(f.Context, f.observationGrant.Clone())
+}
+
+func (f *LocalLoopbackConnectedFixture) AssertObservationWrites(t *testing.T, want int) {
+	t.Helper()
+	if f.sql.observationWrites != want {
+		t.Fatalf("observation SQL writes=%d, want %d", f.sql.observationWrites, want)
+	}
+}
+
+func (f *LocalLoopbackConnectedFixture) ReserveOriginalOperationAgain(t *testing.T) (ports.ReserveAttemptOperationResultV1, error) {
+	t.Helper()
+	f.parent.graph.at = time.Now().UTC().Truncate(time.Microsecond)
+	return f.store.ReserveAttemptOperation(f.Context, ports.ReserveAttemptOperationRequestV1{Operation: f.Operation.Clone()})
 }
 func (f *LocalLoopbackConnectedFixture) AssertSingleOriginalWrites(t *testing.T) {
 	t.Helper()

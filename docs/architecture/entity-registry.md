@@ -138,6 +138,15 @@ objects and stop new writes; this source step performs no deletion or retention
 cutover and issues no residual-cleanup receipt. See the
 [scoped body contract](../design/owned-agent-harness-minimum.md#scoped-operation-body-storage).
 
+Configured model successes use a bounded normalized body in that same namespace
+and the existing observation reference/digest/size, not another response table.
+Its immutable profile/request/effective-limits fields are DATA; the local
+bootstrap's private original configuration clone is ephemeral decoding state,
+not another current-authority registry. Record and authenticated read verify
+the body and its exact usage correlation. No new retention/deletion semantics
+or table are introduced; see the
+[normalized body contract](../design/owned-agent-harness-minimum.md#normalized-successful-model-bodies).
+
 ## Source and rollout boundary
 
 The [compatible code step](https://gitcode.com/urandon/sessionless/issues/206)

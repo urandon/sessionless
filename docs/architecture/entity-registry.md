@@ -147,6 +147,13 @@ the body and its exact usage correlation. No new retention/deletion semantics
 or table are introduced; see the
 [normalized body contract](../design/owned-agent-harness-minimum.md#normalized-successful-model-bodies).
 
+The local invocation's constructor-ordering bridge is one process-local closed
+reader attached to the original bootstrap, armed once with a body adapter derived
+from the confirmed existing parent reservation. It adds no persisted entity,
+approval registry, scheduler or quota ledger. Entry/source/adapter object identity
+is not current permission or canonical retirement/disposal evidence; see the
+[construction contract](../design/owned-agent-harness-minimum.md#local-invocation-construction-and-first-model-composition).
+
 ## Source and rollout boundary
 
 The [compatible code step](https://gitcode.com/urandon/sessionless/issues/206)

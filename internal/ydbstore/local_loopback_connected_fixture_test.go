@@ -27,6 +27,8 @@ type loopbackOperationSQL struct {
 	operation, pendingOperation, call, pendingCall []driver.Value
 	operationWrites, callWrites                    int
 	observationWrites                              int
+	// Explicit factory/real-network test arm; old fixtures retain fixed time.
+	sampleWallClock bool
 }
 type loopbackOperationConnector struct{ f *loopbackOperationSQL }
 type loopbackOperationDriver struct{ f *loopbackOperationSQL }
@@ -47,6 +49,9 @@ func (f *loopbackOperationSQL) BeginTx(ctx context.Context, o driver.TxOptions) 
 	return loopbackOperationTx{tx, f}, nil
 }
 func (f *loopbackOperationSQL) QueryContext(ctx context.Context, s string, args []driver.NamedValue) (driver.Rows, error) {
+	if f.sampleWallClock && s == "SELECT CurrentUtcTimestamp()" {
+		f.f.parent.graph.at = time.Now().UTC().Truncate(time.Microsecond)
+	}
 	switch s {
 	case ownedOperationReadSQL, ownedOperationCallSQL:
 		f.f.parent.base.recordQuery(s, args)

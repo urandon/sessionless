@@ -119,6 +119,13 @@ gated `make web-browser-install` installs pinned Chromium, and
 suites. CI adds Playwright's Linux system dependencies through the same target.
 
 `make test` checks formatting, runs `go vet`, unit tests, and the race detector.
+It sets an explicit 15-minute per-package test deadline for the growing
+Store/worker conformance suites; the Go verification CI job remains bounded to
+20 minutes. This is a failure ceiling, not synchronization or permission to
+retry. Diagnose a timeout using the exact source, goroutine stacks and bounded
+test timings before changing a deadline; the test listed at expiry may have
+just started after earlier serial work. Individual I/O and cleanup operations
+keep their own tighter bounds, and no tests or race checks are excluded.
 The repository-wide rules for deterministic clocks, isolation, cleanup,
 diagnostics, repeated execution, and exact-commit CI evidence are in
 [testing-best-practices.md](testing-best-practices.md).

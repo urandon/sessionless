@@ -1,6 +1,7 @@
 # Writer-aware deletion of retained loop history
 
-Version: 0.1.0 draft, not accepted or implemented.
+Version: 0.1.0, independently reviewed engineering design. Primary acceptance
+covers this contract/decomposition only, not implementation or rollout.
 Owner: [#221](https://gitcode.com/urandon/sessionless/issues/221), a narrow
 [#192](https://gitcode.com/urandon/sessionless/issues/192) obligation under
 [#176](https://gitcode.com/urandon/sessionless/issues/176). Reuse the existing
@@ -213,11 +214,13 @@ of those runtime semantics by itself.
 
 ## Handoff and decisive evidence
 
-One linked implementation child is sufficient: jointly deliver trusted capture,
+[One implementation child, #222](https://gitcode.com/urandon/sessionless/issues/222),
+jointly delivers trusted capture,
 complete reconstructable inventory, exact prepared-scope retirement, Service
 post-Start/resume ordering, constructor wiring and entity-registry updates.
 Do not merge a guard relaxation before the complete path is reviewed/tested.
-Publish that real child in #192/#176 after independent design acceptance.
+The owning #192/#176 checklist tracks this child; source publication and its
+predecessor integration remain required before implementation acceptance.
 
 Tests must start from genuine zero- and two-compaction producers/Complete,
 not handwritten status/evidence. Assert capsule/all-pairs/dependency/notice

@@ -9,7 +9,7 @@ exports, [#192](https://gitcode.com/urandon/sessionless/issues/192) compaction
 custody/reuse and [#212](https://gitcode.com/urandon/sessionless/issues/212)
 local composition. Parent [#176](https://gitcode.com/urandon/sessionless/issues/176).
 The [writer-aware deletion delta](retained-history-deletion.md) specifies the
-narrow #221 successor; it remains a draft until separately accepted.
+independently reviewed narrow #221 successor; implementation belongs to #222.
 This clarifies the producer and lifecycle assumptions in
 [compaction](owned-harness-compaction.md) and
 [configured local inference](configured-local-inference.md); it does not

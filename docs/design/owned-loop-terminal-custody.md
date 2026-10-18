@@ -147,7 +147,14 @@ accounting-disposition digest. It contains neither its own nor the final
 finalization digest. No response text lives inline in Run metadata.
 
 One dedicated original Store publisher registers the exact plan in its
-transaction BEFORE PUT. One immutable slot per Run includes failed/unpublished
+transaction BEFORE PUT. Its call-wide irreversible first-write-attempt guard
+is claimed before the first physical mutation and survives SDK transaction
+callback retries. No second mutation attempt is allowed through that owner.
+Only unambiguously confirmed commit plus exact readback permits the original
+one-use uploader to proceed. Unknown registration means no PUT, even if a later
+callback/read observes an identical plan or the first write never persisted.
+Later reconciliation can discover cleanup identity, not upload authority.
+One immutable slot per Run includes failed/unpublished
 plans; a replacement Attempt cannot reset it or spend another upload. A
 conflicting replacement stops explicitly rather than deleting old residue or
 retrying an uncertain PUT. Generic Run writers preserve this complete value
@@ -220,10 +227,34 @@ event payloads retain their existing independent event-count/byte limits.
 The private completion owner may finish cleanup after caller/Source cancellation
 but cannot renew the deadline, restore execution or claim canonical success.
 Cancellation visible at the terminal transaction uses the existing cancelled
-outcome. Lease expiry/loss prevents a first success commit; retained planned
-objects remain owned reconciliation/deletion residues. Before and during
-erasure, current Session deletion state must be coordinated with the existing
-deletion fence so no terminal PUT/append races after deletion admission.
+outcome. The capsule above is a SUCCESS candidate only. Late cancellation or
+failure never rewrites it, commits its assistant drafts or installs success
+correspondence. Its registered plan and derived inventory remain cleanup
+residues; `correspondence` and `local_evidence` stay absent. The existing
+failure/cancellation composer prepares exactly one bounded SystemNotice and
+uses the original failure transaction, sealing the preserved planned metadata
+but asserting neither successful transfer/reuse nor unverified cleanup.
+Reserve this separate bounded notice capacity under existing canonical-output
+limits before execution; it is not another capsule or an extra assistant.
+The original cleanup owner still joins/retires/reconciles its actual work;
+failure to finish cleanup is reported honestly and cannot authorize reuse.
+Lease expiry/loss prevents a first success commit; retained planned objects
+remain owned reconciliation/deletion residues.
+
+Session deletion coordinates registration, physical writes and writer join:
+the existing Session deletion-admission transaction fences new registrations,
+execution and terminal appends, then pages every owning Run/registered plan.
+It cancels and joins the ORIGINAL admitted writers before deleting their exact
+objects. Registration and deletion admission serialize on that same Session
+fence. A pre-PUT status check alone is insufficient. Original PUT owners must
+recheck the fence at I/O admission, remain registered until actual join and
+never retry after ambiguous registration or upload. Lost/unknown writer state
+or an ambiguous in-flight PUT keeps deletion incomplete/reconcile-only until
+its exact physical commit or non-effect is established. Expiry, a cancelled
+HTTP request or an absent object alone cannot prove no later write. No success
+receipt may be inferred from a caller's writer-stopped flag. This narrow
+writer/plan join belongs to the existing paged deletion workflow, not a new
+upload service, table or general upload-management release gate.
 
 ## Accounting, digest order and recovery
 
@@ -246,10 +277,22 @@ without its `evidence_digest`; seal the complete Run metadata, both derived
 inventory/head and terminal custody, in the existing replay digest. The capsule
 contains neither a future cleanup receipt nor its own/finalization digest.
 
+Historical verification is explicitly seal-attested digest-only for the
+cleanup receipt and accounting disposition. Their original bounded material
+is verified by the private original producer BEFORE the first commit; their
+digests, not their complete material/signatures, are retained in local evidence
+and correspondence. Original reservations/observations in the capsule retain
+the usage/debit facts needed for context/provenance. A later reader does not
+recreate an erased receipt, independently re-run its MAC verification or claim
+that a digest itself proves physical deletion or measured cost. The successful
+canonical terminal seal attests that original verification occurred.
+
 Exact lost-ACK replay recomputes that seal from retained capsule, persisted
 terminal metadata and existing marker, without reading erased bodies or
 requiring an expired Source/Attempt to become active. A changed/missing capsule,
-head, event, manifest, disposition or cleanup receipt conflicts. Before a first
+head, event, manifest or recorded receipt/disposition DIGEST conflicts; absence
+of the original private receipt after commit is expected, not permission to
+reconstruct it. Before a first
 commit, missing original private ownership cannot be reconstructed from those
 records; leave the effect reconcile-only, not a fabricated success.
 

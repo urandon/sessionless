@@ -409,11 +409,15 @@ func (p *GenerationV1) Rebuild(summary []byte) (*configuredinference.FrozenReque
 	if _, e := p.ValidateSummary(summary); e != nil {
 		return nil, e
 	}
-	text, e := marshalHistoryV1("sessionless.history.v1", p.protected, p.suffix, string(summary), p.limits.RequestBytes)
+	return p.successorRequestV1(string(summary))
+}
+
+func (p *GenerationV1) successorRequestV1(summary string) (*configuredinference.FrozenRequestV1, error) {
+	text, e := marshalHistoryV1("sessionless.history.v1", p.protected, p.suffix, summary, p.limits.RequestBytes)
 	if e != nil {
 		return nil, e
 	}
-	request := configuredinference.RequestV1{Messages: []configuredinference.MessageV1{{Role: configuredinference.RoleSystemV1, Text: ordinaryInstructionsV1}, {Role: configuredinference.RoleUserV1, Text: text}}, Tools: p.tools, MaxOutputTokens: min(uint64(2048), p.limits.MaxOutputTokens)}
+	request := configuredinference.RequestV1{Messages: []configuredinference.MessageV1{{Role: configuredinference.RoleSystemV1, Text: ordinaryInstructionsV1}, {Role: configuredinference.RoleUserV1, Text: text}}, Tools: p.tools, MaxOutputTokens: p.SuccessorOutputReserve()}
 	return configuredinference.FreezeRequestV1(p.profile, p.limits, request)
 }
 

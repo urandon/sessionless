@@ -171,6 +171,11 @@ func (store *Store) ReserveAttemptOperation(ctx context.Context, request ports.R
 	if evidence.compaction != nil {
 		return store.reservePreparedLocalCompaction(ctx, op, evidence)
 	}
+	unlock, err := store.lockLocalGenericMutation(ctx, op.Scope)
+	if err != nil {
+		return ports.ReserveAttemptOperationResultV1{}, domain.ErrMembershipDenied
+	}
+	defer unlock()
 	return store.reserveOwnedOperation(ctx, op, false, "", evidence, request.ConsentReceipt)
 }
 
@@ -234,12 +239,15 @@ func (store *Store) reserveOwnedOperation(ctx context.Context, op domain.Attempt
 		if expected != "" || allocation.current.ValidateAt(q.at) != nil || proxy.current.ValidateAt(q.at) != nil || op.Deadline.After(proxy.current.Window.ExpiresAt) || op.Deadline.After(allocation.current.Window.ExpiresAt) || store.validateCurrentOwnedAttemptParent(ctx, q, request, parent) != nil {
 			return q.budget.deny()
 		}
+		if err := store.checkLocalGenericTerminalFit(ctx, q, op); err != nil {
+			return err
+		}
 		accounting, err := readOwnedAttemptAccounting(ctx, q, parent, source)
 		if err != nil || accounting == nil || !accounting.SetupReservedAt.Equal(burnAt) {
 			return q.budget.deny()
 		}
 		next, err := debitOwnedOperation(*accounting, op, parent, source, q.at)
-		if err != nil {
+		if err != nil || !store.localOperationBudgetAllows(op.Scope, next.Aggregate.BodyBytes) {
 			return q.budget.deny()
 		}
 		value := domain.AttemptOperationReservationV1{Version: 1, Operation: op.Clone(), OperationDigest: opDigest, ReservedAt: q.at, AggregateDebit: next.Aggregate, RegisteredAllocationDigest: ad, RegisteredProxyDigest: pd, ComponentAmounts: next.Amounts}
@@ -311,7 +319,12 @@ func (store *Store) AuthorizeAttemptOperationBeforeSend(ctx context.Context, cap
 	if evidence.compaction != nil {
 		return store.authorizePreparedLocalCompaction(ctx, capability, evidence)
 	}
-	err := store.ownedAuthorityTx(ctx, func(ctx context.Context, q *ownedAuthorityQuery) error {
+	unlock, err := store.lockLocalGenericMutation(ctx, op.Scope)
+	if err != nil {
+		return domain.ErrMembershipDenied
+	}
+	defer unlock()
+	err = store.ownedAuthorityTx(ctx, func(ctx context.Context, q *ownedAuthorityQuery) error {
 		q.metadataCache = make(map[string]ownedMetadataCacheEntry)
 		request, parent, source, burnAt, err := store.operationParent(ctx, q, op.Scope)
 		if err != nil || r.ValidateForParent(parent.Authority, parent.Reservation) != nil || op.Scope.SessionID != parent.Scope.SessionID || !q.at.Before(capability.ExpiresAt) || q.at.Before(capability.IssuedAt) || store.validateCurrentOwnedAttemptParent(ctx, q, request, parent) != nil {
@@ -333,6 +346,9 @@ func (store *Store) AuthorizeAttemptOperationBeforeSend(ctx context.Context, cap
 		if proxy.current.ServiceKind != ownedOperationProxyService(op.Kind) || store.validateOwnedOperationEvidence(ctx, q, op, evidence, parent, source) != nil {
 			return q.budget.deny()
 		}
+		if err := store.checkLocalGenericTerminalFit(ctx, q, op); err != nil {
+			return err
+		}
 		if op.Kind == domain.AttemptOperationWebSearchV1 && (evidence == nil || evidence.tool == nil || store.validateOwnedOperationConsent(ctx, q, op, parent, source, nil, *evidence.tool) != nil) {
 			return q.budget.deny()
 		}
@@ -343,7 +359,7 @@ func (store *Store) AuthorizeAttemptOperationBeforeSend(ctx context.Context, cap
 		digest, _ := r.Digest()
 		actualDigest, _ := actual.reservation.Digest()
 		accounting, err := readOwnedAttemptAccounting(ctx, q, parent, source)
-		if err != nil || accounting == nil || digest != actualDigest || accounting.Aggregate != r.AggregateDebit || accounting.Amounts != r.ComponentAmounts || !accounting.SetupReservedAt.Equal(burnAt) {
+		if err != nil || accounting == nil || digest != actualDigest || accounting.Aggregate != r.AggregateDebit || accounting.Amounts != r.ComponentAmounts || !accounting.SetupReservedAt.Equal(burnAt) || !store.localOperationBudgetAllows(op.Scope, accounting.Aggregate.BodyBytes) {
 			return q.budget.deny()
 		}
 		return nil

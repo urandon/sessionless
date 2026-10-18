@@ -118,8 +118,11 @@ func prepareLocalCompactionGeneration(ctx context.Context, source *LocalCompacti
 	if source == nil || source.entry == nil || !source.entry.original() {
 		return nil, domain.ErrMembershipDenied
 	}
-	source.entry.preparationMu.Lock()
-	defer source.entry.preparationMu.Unlock()
+	unlock, err := source.entry.beginLocalMutation(ctx)
+	if err != nil {
+		return nil, domain.ErrMembershipDenied
+	}
+	defer unlock()
 	return prepareLocalCompactionGenerationLocked(ctx, ctx, source)
 }
 
@@ -127,8 +130,11 @@ func (entry *LocalInvocationEntryV1) PrepareCompaction(ctx context.Context) (*lo
 	if !entry.original() {
 		return nil, domain.ErrMembershipDenied
 	}
-	entry.preparationMu.Lock()
-	defer entry.preparationMu.Unlock()
+	unlock, err := entry.beginLocalMutation(ctx)
+	if err != nil {
+		return nil, domain.ErrMembershipDenied
+	}
+	defer unlock()
 	call, finish, err := entry.localCompactionLifetimeContext(ctx)
 	if err != nil {
 		return nil, err
@@ -250,6 +256,7 @@ func prepareLocalCompactionGenerationLocked(ctx context.Context, originalCaller 
 	}
 	configuration := entry.owner.configuration
 	limits, used := policy.Limits, state.snapshot.Accounting.Aggregate
+	limits.MaxAggregateBodyBytes = min(limits.MaxAggregateBodyBytes, entry.localOperationBodyLimit())
 	if used.Operations >= limits.MaxOperations || used.ModelCalls >= limits.MaxModelCalls || used.CompactionCalls >= limits.MaxCompactionCalls || (parent == nil && used.CompactionCalls != 0) || (parent != nil && used.CompactionCalls != 1) || used.InputTokens >= limits.MaxAggregateInputTokens || used.OutputTokens >= limits.MaxAggregateOutputTokens || used.BodyBytes >= limits.MaxAggregateBodyBytes || used.ActiveDuration >= limits.MaxActiveDuration {
 		return deny()
 	}
@@ -336,6 +343,9 @@ func prepareLocalCompactionGenerationLocked(ctx context.Context, originalCaller 
 	}
 	if _, err := debitOwnedOperation(state.snapshot.Accounting, op, entry.parent, entry.source, at); err != nil {
 		return deny()
+	}
+	if err := entry.terminalFitSourceLocked(call, nil, source, op, program); err != nil {
+		return nil, err
 	}
 	g := &localCompactionGenerationV1{entry: entry, source: source, frozen: frozen, program: program, fit: fit, price: price, parentRetained: parentRetained}
 	g.self = g

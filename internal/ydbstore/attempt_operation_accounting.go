@@ -116,13 +116,19 @@ func reserveOwnedSetupAccounting(ctx context.Context, q *ownedAuthorityQuery, pa
 	// Reserve immutable original grant custody before physical preparation, in
 	// the SAME aggregate body budget. Actual canonical grant bytes are <=4 KiB
 	// each; this conservative reservation introduces no parallel metadata ledger.
-	for _, cost := range []*domain.ExternalServiceCostCeilingV1{parent.Authority.AdmissionCostCeiling.MCPToolCost, parent.Authority.AdmissionCostCeiling.WebSearchCost} {
-		if cost != nil {
-			value.Aggregate.BodyBytes += 4 << 10
-		}
-	}
+	value.Aggregate.BodyBytes = ownedSetupBodyBytes(parent)
 	value.Amounts[1] = *source.Spending[1].MaxAmountMicrounits
 	return writeOwnedAttemptAccounting(ctx, q, parent, source, value)
+}
+
+func ownedSetupBodyBytes(parent domain.OwnedAttemptEffectParentV1) uint64 {
+	var bytes uint64
+	for _, cost := range []*domain.ExternalServiceCostCeilingV1{parent.Authority.AdmissionCostCeiling.MCPToolCost, parent.Authority.AdmissionCostCeiling.WebSearchCost} {
+		if cost != nil {
+			bytes += 4 << 10
+		}
+	}
+	return bytes
 }
 
 func debitOwnedOperation(value ownedAttemptAccounting, operation domain.AttemptOperationV1, parent domain.OwnedAttemptEffectParentV1, source domain.AttemptExecutionSourceV1, at time.Time) (ownedAttemptAccounting, error) {

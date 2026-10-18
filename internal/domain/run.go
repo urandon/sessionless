@@ -1,6 +1,10 @@
 package domain
 
-import "time"
+import (
+	"bytes"
+	"encoding/json"
+	"time"
+)
 
 type RunStatus string
 
@@ -68,6 +72,7 @@ type Run struct {
 	CreatedAt                time.Time                `json:"created_at"`
 	UpdatedAt                time.Time                `json:"updated_at"`
 	DerivedContext           *RunDerivedContextV1     `json:"derived_context,omitempty"`
+	TerminalCustody          *RunTerminalCustodyV1    `json:"terminal_custody,omitempty"`
 }
 
 func (run Run) Clone() Run {
@@ -83,6 +88,10 @@ func (run Run) Clone() Run {
 	if run.DerivedContext != nil {
 		value := run.DerivedContext.Clone()
 		run.DerivedContext = &value
+	}
+	if run.TerminalCustody != nil {
+		value := run.TerminalCustody.Clone()
+		run.TerminalCustody = &value
 	}
 	return run
 }
@@ -129,8 +138,28 @@ func (run Run) Validate() error {
 		return ValidationError{Field: "run.finished_at", Reason: "is allowed only for a terminal run"}
 	}
 	if run.DerivedContext != nil {
-		return run.DerivedContext.ValidateForRun(run)
+		if err := run.DerivedContext.ValidateForRun(run); err != nil {
+			return err
+		}
 	}
+	if run.TerminalCustody != nil {
+		return run.TerminalCustody.ValidateForRun(run)
+	}
+	return nil
+}
+
+func (run *Run) UnmarshalJSON(body []byte) error {
+	if run == nil || len(body) == 0 || len(body) > 32<<10 || terminalJSONPreflight(body, "run") != nil {
+		return ValidationError{Field: "run", Reason: "requires closed bounded canonical fields"}
+	}
+	type plain Run
+	var value plain
+	d := json.NewDecoder(bytes.NewReader(body))
+	d.DisallowUnknownFields()
+	if d.Decode(&value) != nil {
+		return ValidationError{Field: "run", Reason: "requires closed bounded canonical fields"}
+	}
+	*run = Run(value)
 	return nil
 }
 

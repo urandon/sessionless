@@ -76,6 +76,9 @@ type localState struct {
 	runtimeStarted, runtimeFailed bool
 	closeOnce                     sync.Once
 	closeErr                      error
+	terminalRequested             bool
+	terminalDeadline              time.Time
+	terminalOutput                *PreparedLocalTerminalV1
 }
 
 // NewLocalV1 constructs inert owners only. There is no SQL, socket, provider or
@@ -153,7 +156,7 @@ func (v *LocalV1) begin(ctx context.Context) (*localState, context.Context, func
 	if s.execution != nil {
 		base = s.execution
 	}
-	closed := s.closed || s.caller.Err() != nil || base.Err() != nil
+	closed := s.closed || s.terminalRequested || s.caller.Err() != nil || base.Err() != nil
 	s.mu.Unlock()
 	if closed {
 		<-s.gate
@@ -247,6 +250,10 @@ func (v *LocalV1) WriteModelRequest(ctx context.Context, limits domain.Configure
 	if err != nil {
 		return operationbody.ReferenceV1{}, ErrSession
 	}
+	if err := s.entry.CheckFirstModelTerminalFit(call); err != nil {
+		s.cancel()
+		return operationbody.ReferenceV1{}, localPreparationError(ErrSession, err)
+	}
 	body := frozen.Body()
 	defer clear(body)
 	ref, err := s.bodies.Write(call, body)
@@ -267,6 +274,15 @@ type ModelResultV1 struct {
 type ModelStepResultV1 struct {
 	Model      ModelResultV1
 	Compaction *ModelResultV1
+}
+
+// A terminal-capacity denial is not context overflow. Preserve that closed
+// classification without exposing underlying authority or storage errors.
+func localPreparationError(base, cause error) error {
+	if errors.Is(cause, ydbstore.ErrTerminalCapacity) {
+		return errors.Join(base, ydbstore.ErrTerminalCapacity)
+	}
+	return base
 }
 
 // RunModelStep prepares the actual full ordinary request through the original
@@ -296,7 +312,7 @@ func (v *LocalV1) RunModelStep(ctx context.Context) (result ModelStepResultV1, e
 	if errors.Is(prepareErr, configuredinference.ErrContextNoFit) {
 		generation, e := s.entry.PrepareCompaction(call)
 		if e != nil {
-			return result, ErrIncomplete
+			return result, localPreparationError(ErrIncomplete, e)
 		}
 		op, e := generation.Operation()
 		if e != nil {
@@ -317,7 +333,7 @@ func (v *LocalV1) RunModelStep(ctx context.Context) (result ModelStepResultV1, e
 		}
 		model, e = generation.PrepareNextModel(call)
 		if e != nil {
-			return result, ErrIncomplete
+			return result, localPreparationError(ErrIncomplete, e)
 		}
 		next, e := model.FrozenRequest()
 		if e != nil || next == nil || next.Digest() != published.Digest() {
@@ -331,7 +347,7 @@ func (v *LocalV1) RunModelStep(ctx context.Context) (result ModelStepResultV1, e
 			return result, ErrIncomplete
 		}
 	} else if prepareErr != nil {
-		return result, ErrIncomplete
+		return result, localPreparationError(ErrIncomplete, prepareErr)
 	}
 	op, e := model.Operation()
 	if e != nil {
@@ -500,13 +516,17 @@ func (v *LocalV1) Close() error {
 	s.closeOnce.Do(func() {
 		// One original close window covers both the owned keeper and gate join;
 		// waiting on the keeper must not restart the session cleanup allowance.
-		timer := time.NewTimer(min(s.profile.Limits.CleanupTimeout, 30*time.Second))
-		defer timer.Stop()
+		deadline := time.Now().Add(min(s.profile.Limits.CleanupTimeout, 30*time.Second))
 		s.mu.Lock()
+		if !s.terminalDeadline.IsZero() && s.terminalDeadline.Before(deadline) {
+			deadline = s.terminalDeadline
+		}
 		s.closed = true
 		s.cancel()
 		entryCancel, stopEntry, executionCancel := s.entryCancel, s.stopEntryCaller, s.executionCancel
 		s.mu.Unlock()
+		timer := time.NewTimer(max(time.Until(deadline), 0))
+		defer timer.Stop()
 		if entryCancel != nil {
 			entryCancel()
 		}
@@ -523,15 +543,39 @@ func (v *LocalV1) Close() error {
 		if s.bridge.Close() != nil {
 			s.closeErr = ErrSession
 		}
+		joined := false
 		select {
 		case s.gate <- struct{}{}:
 			<-s.gate
+			joined = true
 		case <-timer.C:
 			select {
 			case s.gate <- struct{}{}:
 				<-s.gate
+				joined = true
 			default:
 				s.closeErr = ErrSession
+			}
+		}
+		if joined {
+			s.mu.Lock()
+			terminal := s.terminalOutput
+			s.mu.Unlock()
+			if terminal != nil && terminal.source != nil {
+				if terminal.output != nil {
+					// A direct call on the original prepared output need not own
+					// s.gate. Join its actual writer as well, under the SAME close
+					// deadline, before releasing any Source-owned buffers.
+					joinCtx, cancel := context.WithDeadline(context.Background(), deadline)
+					joinErr := terminal.output.StopAndJoin(joinCtx)
+					cancel()
+					terminal.output.Clear()
+					if joinErr != nil {
+						s.closeErr = ErrSession
+						return
+					}
+				}
+				terminal.source.Clear()
 			}
 		}
 	})

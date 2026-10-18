@@ -646,27 +646,9 @@ func TestBoundedOwnedAttemptEffectRollbackAndLostAcknowledgementDoNotLeakSpecula
 			} else {
 				f.graph.commitModes = []string{"ambiguous", ""}
 			}
-			result := f.reserve(t, f.request)
-			wantStatus := ports.AttemptEffectOwnedV1
-			if mode == "committed_lost_ack" {
-				wantStatus = ports.AttemptEffectReplayedV1
-			}
-			if result.Status != wantStatus {
-				t.Fatalf("retry-resolved result=%+v", result)
-			}
-			if result.Grant == nil || result.ObservationGrant != nil || f.sql.activeTransactions != 0 || f.issuer.calls != 1 || f.issuer.premature != 0 {
-				t.Fatalf("retry speculative-grant fence result=%+v active=%d grants=%d premature=%d", result, f.sql.activeTransactions, f.issuer.calls, f.issuer.premature)
-			}
-			wantInserts := 1
-			if mode == "rollback_then_commit" {
-				wantInserts = 2 // First callback attempted an INSERT that its rollback discarded.
-			}
-			if f.graph.commits != 2 || f.sql.parentRow == nil || f.sql.inserts != wantInserts {
-				t.Fatalf("retry transaction state commits=%d parent=%t inserts=%d want=%d", f.graph.commits, f.sql.parentRow != nil, f.sql.inserts, wantInserts)
-			}
-			stored, err := domain.DecodeOwnedAttemptEffectParentV1([]byte(f.sql.parentRow[13].(string)))
-			if err != nil || !reflect.DeepEqual(result.Reservation, stored.Reservation) || !result.Grant.GrantExpiresAt.Equal(stored.PreparationExpiresAt) {
-				t.Fatalf("retry result changed original parent/deadline: reservation=%+v stored=%+v expiry=%s original=%s err=%v", result.Reservation, stored.Reservation, result.Grant.GrantExpiresAt, stored.PreparationExpiresAt, err)
+			f.deny(t, f.request)
+			if f.sql.activeTransactions != 0 || f.issuer.calls != 0 || f.issuer.premature != 0 || f.sql.inserts != 1 || f.graph.commits != 1 || (f.sql.parentRow != nil) != (mode == "committed_lost_ack") {
+				t.Fatalf("uncertain write retried or minted grants: active=%d grants=%d inserts=%d commits=%d persisted=%t", f.sql.activeTransactions, f.issuer.calls, f.sql.inserts, f.graph.commits, f.sql.parentRow != nil)
 			}
 		})
 	}
@@ -679,7 +661,7 @@ func TestBoundedOwnedAttemptEffectUnresolvedRetriesReturnZeroWithoutGrants(t *te
 		inserts int
 		parent  bool
 	}{
-		{name: "three_rollbacks", mode: "rollback", inserts: 3},
+		{name: "three_rollbacks", mode: "rollback", inserts: 1},
 		{name: "three_ambiguous_commits", mode: "ambiguous", inserts: 1, parent: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -689,7 +671,7 @@ func TestBoundedOwnedAttemptEffectUnresolvedRetriesReturnZeroWithoutGrants(t *te
 			if err == nil || !reflect.DeepEqual(result, ports.ReserveAttemptEffectResultV1{}) {
 				t.Fatalf("unresolved transaction result must be fully zero: result=%+v err=%v", result, err)
 			}
-			if f.graph.commits != 3 || f.sql.inserts != test.inserts || (f.sql.parentRow != nil) != test.parent || f.sql.activeTransactions != 0 || f.issuer.calls != 0 || f.issuer.premature != 0 {
+			if f.graph.commits != 1 || f.sql.inserts != test.inserts || (f.sql.parentRow != nil) != test.parent || f.sql.activeTransactions != 0 || f.issuer.calls != 0 || f.issuer.premature != 0 {
 				t.Fatalf("unresolved transaction leaked grants/state: commits=%d inserts=%d parent=%t active=%d grants=%d premature=%d", f.graph.commits, f.sql.inserts, f.sql.parentRow != nil, f.sql.activeTransactions, f.issuer.calls, f.issuer.premature)
 			}
 		})

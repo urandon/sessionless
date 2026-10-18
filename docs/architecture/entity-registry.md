@@ -38,6 +38,44 @@ WebUI explanation projects only its base Run fields within the existing
 8 KiB read budget; that read-only projection must never feed a writer.
 Physical table counts and existing TTLs remain unchanged.
 
+The same Run payload owns optional typed `terminal_custody` metadata: one
+immutable private capsule plan, including failed/unpublished residue, and
+success-only correspondence/local evidence. Generic writers preserve this
+complete value together with derived inventory/head. The capsule is not a
+public `ArtifactManifest` entry or another derived pair; Session deletion owns
+its exact registered object. Structural validation does not prove original
+upload, stop, retirement or erasure. Their dedicated producer and terminal
+replay seal remain required; no table, TTL or complete 32 KiB Run bound changes.
+
+The local completion successor uses that same Run and the existing
+`substrate_execution_evidence` row, with explicitly tagged V2 evidence; it does
+not reinterpret managed V1 rows or add an execution table. Its full original
+debit/components and reported-or-unknown usage remain reserved, not refunded
+or presented as measured cost. The canonical finalization transaction owns
+the Run/Attempt/quota, event, manifest, evidence and replay marker together.
+
+Before fencing the ordinary body namespace, the original cleanup owner also
+uploads one deterministic prepaid cancellation SystemNotice body. This object
+is separate from the success capsule's event list. The owning registered Run
+must retain its exact cancellation reference for deletion/reconciliation even
+when success commits or no terminal event commits. Late cancellation selects
+only that notice, never assistant drafts or success correspondence/evidence.
+The fixed cancelled notice cannot represent another failure. The conservative
+deletion guard below remains until the complete writer-join/inventory path
+enumerates these residues; this staging integration does not claim deletion
+readiness, fresh-Run reconstruction or normal-worker activation.
+
+Until original-writer reconciliation and the sealed finalizer are integrated,
+Session deletion rejects every registered terminal-custody plan, regardless of
+Run status or apparent correspondence/evidence. The existing admission, start
+(including incomplete retries), and completion transactions read the bounded
+canonical Run alongside its deletion index. Each streamed payload is capped at
+32 KiB with an oversize sentinel; the existing 10,000-Run limit permits about
+312.5 MiB total payload transfer, not resident buffering. Missing/inconsistent
+rows and uncertain writers deny deletion; status alone cannot prove that an
+Object Storage PUT cannot complete late. This conservative staging guard is not
+the completed paged writer-join and exact retained-object deletion workflow.
+
 The original operation-body adapter reserves 160 KiB per retained pair before
 generation: at most 32 KiB for the encoded summary artifact and 128 KiB for its
 manifest. At most two pairs share the original aggregate byte allowance and
@@ -168,8 +206,25 @@ there is no body index table, transcript or durable adapter accounting. The
 complete claim scope separates object namespaces and every read rechecks exact
 size/hash. Local adapter write counters bound physical I/O only and cannot
 restore Store quota after reconstruction. Ambiguous writes retain possible
-objects and stop new writes; this source step performs no deletion or retention
-cutover and issues no residual-cleanup receipt. See the
+objects and stop new writes. The original adapter additionally keeps at most
+24 distinct attempted ordinary references in process memory, before each PUT,
+including bodies not referenced by a durable operation. Its one-use cleanup
+fences the same shared I/O gate, verifies all known bodies and deletes only
+those exact references under one original deadline. An ambiguous PUT blocks
+erasure even if the object currently appears absent. Exact absence requires
+an explicit storage capability; S3 uses one bounded, non-redirecting HEAD and
+accepts only an authenticated not-found response, not arbitrary read errors.
+This inventory and its opaque original-owner receipt are not another table,
+quota ledger or durable proof after process loss.
+
+The original local terminal owner joins its actual keeper/lease and allocation,
+uses the existing allocation retirement CAS, authenticates the historical
+Run/frontier and retained capsule/canonical/derived objects, then invokes that
+physical erasure. Its private cleanup record does not claim measured usage,
+canonical terminal success or Session-deletion readiness. The canonical
+finalizer, V2 accounting disposition and post-erasure restore remain separate
+integration requirements; the conservative Session-deletion guard above stays
+in force. No new durable entity or applied migration is added. See the
 [scoped body contract](../design/owned-agent-harness-minimum.md#scoped-operation-body-storage).
 
 Configured model successes use a bounded normalized body in that same namespace

@@ -4,14 +4,11 @@ package domain
 
 import (
 	"fmt"
-	"regexp"
 	"strconv"
 	"strings"
 )
 
 const maxOpaqueIDLength = 160
-
-var opaqueIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]*$`)
 
 type (
 	TenantID                 string
@@ -94,8 +91,15 @@ func ValidateOpaqueID(field, value string) error {
 	if len(value) > maxOpaqueIDLength {
 		return ValidationError{Field: field, Reason: fmt.Sprintf("must not exceed %d bytes", maxOpaqueIDLength)}
 	}
-	if !opaqueIDPattern.MatchString(value) {
-		return ValidationError{Field: field, Reason: "must use only ASCII letters, digits, dot, underscore, colon, or dash"}
+	// This is the same closed ASCII grammar as
+	// ^[A-Za-z0-9][A-Za-z0-9._:-]*$, without invoking the regexp engine on
+	// every identity in a repeatedly validated authority tree.
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		alphanumeric := c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9'
+		if !alphanumeric && (i == 0 || c != '.' && c != '_' && c != ':' && c != '-') {
+			return ValidationError{Field: field, Reason: "must use only ASCII letters, digits, dot, underscore, colon, or dash"}
+		}
 	}
 	return nil
 }

@@ -29,6 +29,14 @@ type ownedOperationEvidence struct {
 }
 
 func (store *Store) prepareOwnedOperationEvidence(ctx context.Context, op domain.AttemptOperationV1) (*ownedOperationEvidence, error) {
+	// A sealed local entry is a handled denial, even when no prepared MODEL or
+	// generation exists. Never fall back to fixture/generic evidence grammar.
+	if store != nil && store.localBootstrap != nil {
+		entry := store.localBootstrap.entry.Load()
+		if entry.original() && entry.terminal.Load() != nil {
+			return nil, domain.ErrMembershipDenied
+		}
+	}
 	if evidence, handled, err := store.prepareLocalModelEvidence(ctx, op); handled {
 		return evidence, err
 	}

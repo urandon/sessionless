@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"time"
 
@@ -57,6 +58,50 @@ func runFinalizationDigest(
 	}
 	digest := sha256.Sum256(payload)
 	return hex.EncodeToString(digest[:]), nil
+}
+
+// The explicit successor seals COMPLETE retained metadata and tagged evidence.
+// The delivered managed/attached V1 digest above remains byte-for-byte intact.
+// This is unkeyed DATA integrity, not first-commit execution/cleanup authority.
+func runFinalizationDigestV2(
+	status domain.RunStatus,
+	manifest *domain.ArtifactManifest,
+	events []domain.SessionEventDraft,
+	evidence *domain.ExecutionEvidenceV2,
+	derived *domain.RunDerivedContextV1,
+	custody *domain.RunTerminalCustodyV1,
+) (string, error) {
+	if custody == nil || custody.Validate() != nil {
+		return "", domain.ErrMembershipDenied
+	}
+	if status == domain.RunSucceeded {
+		if evidence == nil || evidence.Version != 2 || evidence.Kind != domain.ExecutionEvidenceLocalV1 || evidence.LocalV1 == nil || evidence.ManagedV1 != nil || evidence.LocalV1.Validate() != nil || custody.LocalEvidence == nil || !reflect.DeepEqual(*custody.LocalEvidence, *evidence.LocalV1) {
+			return "", domain.ErrMembershipDenied
+		}
+	} else if status != domain.RunCancelled || evidence != nil || custody.Correspondence != nil || custody.LocalEvidence != nil {
+		return "", domain.ErrMembershipDenied
+	}
+	if derived != nil && derived.Validate() != nil {
+		return "", domain.ErrMembershipDenied
+	}
+	base, err := runFinalizationDigest(status, manifest, events, nil, nil)
+	if err != nil {
+		return "", err
+	}
+	body, err := json.Marshal(struct {
+		Version  uint32                       `json:"version"`
+		Base     string                       `json:"canonical_digest"`
+		Evidence *domain.ExecutionEvidenceV2  `json:"execution_evidence"`
+		Derived  *domain.RunDerivedContextV1  `json:"derived_context"`
+		Custody  *domain.RunTerminalCustodyV1 `json:"terminal_custody"`
+	}{2, base, evidence, derived, custody})
+	if err != nil || len(body) > 3*ownedAuthorityHeadBytes {
+		return "", domain.ErrMembershipDenied
+	}
+	h := sha256.New()
+	_, _ = h.Write([]byte("sessionless.run-finalization.v2\x00"))
+	_, _ = h.Write(body)
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func reconciliationEvidenceDigest(value *domain.AttemptEffectReconciliationEvidenceV1) *domain.AttemptEffectReconciliationEvidenceDigestV1 {

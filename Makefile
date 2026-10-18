@@ -180,7 +180,10 @@ lint: prepare go-package-layout
 	go vet $(GO_PACKAGE_PATTERNS)
 
 test: prepare fmt-check lint
-	go test -race -timeout=15m $(GO_PACKAGE_PATTERNS)
+	# Complementary selections over ALL packages preserve the entire test corpus.
+	# Keep expensive connected-session scenarios out of the ordinary binary budget.
+	go test -race -timeout=15m -skip='^TestLocalSession' $(GO_PACKAGE_PATTERNS)
+	go test -race -timeout=15m -run='^TestLocalSession' $(GO_PACKAGE_PATTERNS)
 
 build: prepare web-stage
 	@mkdir -p $(BIN_DIR)

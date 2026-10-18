@@ -31,6 +31,18 @@ type LocalOwnedStoreBootstrapV1 struct {
 	bodySlot      *localOperationBodySlot
 	startClaimed  atomic.Bool
 	entry         atomic.Pointer[LocalInvocationEntryV1]
+	// Installed only by this original Store's confirmed fresh reserve. The
+	// external result is DATA; neither its mutable Status nor a valid grant
+	// creates this one-use ownership. b.mu protects the single pending slot.
+	pendingStart    *localFreshReservationV1
+	reserveFinished bool
+}
+
+type localFreshReservationV1 struct {
+	invocation context.Context
+	request    ports.ReserveAttemptEffectRequestV1
+	result     ports.ReserveAttemptEffectResultV1
+	tuple      *localOwnedStoreTupleV1
 }
 
 type localOwnedStoreTupleV1 struct {

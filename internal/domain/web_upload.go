@@ -2,7 +2,6 @@ package domain
 
 import (
 	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"path"
@@ -202,9 +201,16 @@ func (intent *UploadIntent) Claim(messageKey IdempotencyKey, at time.Time) error
 }
 
 func validateSHA256(field, value string) error {
-	digest, err := hex.DecodeString(value)
-	if err != nil || len(digest) != 32 || value != strings.ToLower(value) {
+	if len(value) != 64 {
 		return ValidationError{Field: field, Reason: "must be a lowercase 64-character SHA-256 digest"}
+	}
+	// Validate the canonical encoding directly; decoding 32 bytes and making
+	// a lowercase copy adds no information to this fixed ASCII contract.
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return ValidationError{Field: field, Reason: "must be a lowercase 64-character SHA-256 digest"}
+		}
 	}
 	return nil
 }

@@ -71,7 +71,17 @@ func (store *Store) readOwnedLocalInvoiceEvidence(ctx context.Context, profile d
 // This pure current check uses original DB time, never filesystem/network I/O
 // or a supplied approval callback. Zero means invoice only, not economic cost.
 func (store *Store) validateOwnedLocalInvoiceEvidence(e *ownedLocalInvoiceEvidence, p domain.OwnedAgentProfileCurrentV1, source domain.AttemptExecutionSourceV1, op domain.AttemptOperationV1, at time.Time) error {
-	if !store.localInvoiceLifetimeCurrent(e) || p.ValidateAt(at) != nil || source.Validate() != nil || e.configuration.ValidateAt(at) != nil || e.configuration.ValidateForOwnedProfile(p) != nil {
+	if !store.localInvoiceLifetimeCurrent(e) {
+		return domain.ErrMembershipDenied
+	}
+	return validateOwnedLocalInvoiceContent(e, p, source, op, at)
+}
+
+// Historical content only. The caller must retain the ORIGINAL privately
+// captured association; matching public terms alone never create that owner.
+// Active callers above retain their unchanged Source/lifetime check.
+func validateOwnedLocalInvoiceContent(e *ownedLocalInvoiceEvidence, p domain.OwnedAgentProfileCurrentV1, source domain.AttemptExecutionSourceV1, op domain.AttemptOperationV1, at time.Time) error {
+	if e == nil || p.ValidateAt(at) != nil || source.Validate() != nil || e.configuration.ValidateAt(at) != nil || e.configuration.ValidateForOwnedProfile(p) != nil {
 		return domain.ErrMembershipDenied
 	}
 	t, c, spending := e.terms, p.CostCeiling, source.Spending[0]

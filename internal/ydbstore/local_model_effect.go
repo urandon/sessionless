@@ -28,6 +28,11 @@ func (store *Store) prepareLocalModelEvidence(ctx context.Context, op domain.Att
 	if m.source == nil || m.source.state == nil {
 		return nil, true, domain.ErrMembershipDenied
 	}
+	unlock, err := m.entry.beginLocalMutation(ctx)
+	if err != nil {
+		return nil, true, domain.ErrMembershipDenied
+	}
+	defer unlock()
 	m.source.state.mu.Lock()
 	defer m.source.state.mu.Unlock()
 	if ctx.Err() != nil || !m.originalForPhase(m.entry, localCompactionReserve) || !reflect.DeepEqual(m.operation, op) {
@@ -57,6 +62,11 @@ func (store *Store) reservePreparedLocalModel(ctx context.Context, op domain.Att
 	if m == nil || m.source == nil || m.source.state == nil {
 		return deny()
 	}
+	unlock, err := m.entry.beginLocalMutation(ctx)
+	if err != nil {
+		return deny()
+	}
+	defer unlock()
 	m.source.state.mu.Lock()
 	defer m.source.state.mu.Unlock()
 	if ctx.Err() != nil || !m.originalForPhase(m.entry, localCompactionReserve) || !reflect.DeepEqual(m.operation, op) || m.reservationAttempted || m.reservation.Version != 0 {
@@ -80,6 +90,9 @@ func (store *Store) reservePreparedLocalModel(ctx context.Context, op domain.Att
 		if _, err := m.rejoinLocked(ctx, q, localCompactionReserve); err != nil {
 			return err
 		}
+		if err := m.entry.terminalFitSourceLocked(ctx, q, m.source, op, nil); err != nil {
+			return err
+		}
 		parent, source := m.entry.parent, m.entry.source
 		if store.validateOwnedOperationProviderPrice(ctx, q, op, e.price, source) != nil {
 			return q.budget.deny()
@@ -101,7 +114,7 @@ func (store *Store) reservePreparedLocalModel(ctx context.Context, op domain.Att
 			return q.budget.deny()
 		}
 		next, err := debitOwnedOperation(m.source.state.snapshot.Accounting, op, parent, source, q.at)
-		if err != nil {
+		if err != nil || !store.localOperationBudgetAllows(op.Scope, next.Aggregate.BodyBytes) {
 			return q.budget.deny()
 		}
 		ad, _ := allocation.original.Digest()
@@ -147,6 +160,11 @@ func (store *Store) authorizePreparedLocalModel(ctx context.Context, capability 
 	if m == nil || m.source == nil || m.source.state == nil {
 		return domain.ErrMembershipDenied
 	}
+	unlock, err := m.entry.beginLocalMutation(ctx)
+	if err != nil {
+		return domain.ErrMembershipDenied
+	}
+	defer unlock()
 	m.source.state.mu.Lock()
 	defer m.source.state.mu.Unlock()
 	op := capability.Reservation.Operation
@@ -167,6 +185,12 @@ func (store *Store) authorizePreparedLocalModel(ctx context.Context, capability 
 		}
 		if _, err := m.rejoinLocked(ctx, q, localCompactionBeforeSend); err != nil {
 			return err
+		}
+		if err := m.entry.terminalFitSourceLocked(ctx, q, m.source, op, nil); err != nil {
+			return err
+		}
+		if !store.localOperationBudgetAllows(op.Scope, capability.Reservation.AggregateDebit.BodyBytes) {
+			return q.budget.deny()
 		}
 		parent, source := m.entry.parent, m.entry.source
 		if store.validateOwnedOperationProviderPrice(ctx, q, op, e.price, source) != nil {

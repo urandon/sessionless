@@ -42,6 +42,9 @@ func (s *StoreV1) ReserveRetainedPair(ctx context.Context, operationSequence, ge
 	if st.retainedCount > 0 && operationSequence <= st.retained[st.retainedCount-1].sequence {
 		return nil, ErrBody
 	}
+	if st.terminal != nil && !st.terminal.reserveArtifacts(2, RetainedPairBytesV1) {
+		return nil, ErrBody
+	}
 	slot := &st.retained[st.retainedCount]
 	*slot = retainedSlot{sequence: operationSequence, generation: generation}
 	st.retainedCount++

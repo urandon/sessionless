@@ -8,7 +8,6 @@ import (
 	cryptorand "crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"gitcode.com/urandon/sessionless/internal/canonicaloutput"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/outboxwake"
 	"gitcode.com/urandon/sessionless/internal/ports"
@@ -479,7 +479,7 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 			ID:       outboxwake.TelegramDeliveryID(loaded.Run.ID),
 			TenantID: loaded.Run.TenantID, RunID: loaded.Run.ID,
 			Chat: loaded.Job.DeliveryChat, ReplyToMessageID: loaded.Job.ReplyToMessageID,
-			Text: normalizedSummary(result.Summary), ArtifactManifestID: &manifest.ID,
+			Text: canonicaloutput.NormalizedSummary(result.Summary), ArtifactManifestID: &manifest.ID,
 			Status:         domain.DeliveryPending,
 			IdempotencyKey: domain.IdempotencyKey(stableID("delivery", string(loaded.Run.ID))),
 			CreatedAt:      finishedAt, UpdatedAt: finishedAt,
@@ -1068,7 +1068,7 @@ func (manager *Manager) uploadOutputs(
 	outputs []ports.ExecutionOutput,
 ) (domain.ArtifactManifest, error) {
 	manifest := domain.ArtifactManifest{
-		ID:       domain.ArtifactManifestID(stableID("art", string(loaded.Run.ID))),
+		ID:       canonicaloutput.ManifestIDV1(loaded.Run.ID),
 		TenantID: loaded.Run.TenantID, RunID: loaded.Run.ID,
 		CreatedAt: manager.clock.Now().UTC(),
 	}
@@ -1118,31 +1118,6 @@ func (manager *Manager) uploadOutputs(
 	return manifest, manifest.ValidateForRun(loaded.Run)
 }
 
-type assistantEventEnvelope struct {
-	Schema             string                    `json:"schema"`
-	Summary            string                    `json:"summary"`
-	ArtifactManifestID domain.ArtifactManifestID `json:"artifact_manifest_id"`
-}
-
-type toolEventEnvelope struct {
-	Schema   string          `json:"schema"`
-	CallID   string          `json:"call_id"`
-	ToolName string          `json:"tool_name"`
-	Content  json.RawMessage `json:"content"`
-}
-
-type failureEventEnvelope struct {
-	Schema    string `json:"schema"`
-	Code      string `json:"code"`
-	Cancelled bool   `json:"cancelled"`
-}
-
-type preparedToolEvent struct {
-	Kind    domain.SessionEventKind
-	CallID  string
-	Payload []byte
-}
-
 func (manager *Manager) canonicalCompletionEvents(
 	ctx context.Context,
 	loaded ports.WorkerJobState,
@@ -1150,6 +1125,11 @@ func (manager *Manager) canonicalCompletionEvents(
 	manifest domain.ArtifactManifest,
 	at time.Time,
 ) ([]domain.SessionEventDraft, *ports.CanonicalEventMaterialSetV1, error) {
+	plan, err := canonicaloutput.EncodeCompletionV1(loaded.Run.ID, loaded.Job.Limits, result, manifest.ID)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer plan.Release()
 	materials := ports.NewCanonicalEventMaterialSetV1()
 	success := false
 	defer func() {
@@ -1157,80 +1137,19 @@ func (manager *Manager) canonicalCompletionEvents(
 			materials.Release()
 		}
 	}()
-	maxToolEvents, maxToolEventBytes := loaded.Job.Limits.EffectiveToolEventLimits()
-	if uint64(len(result.ToolEvents)) > uint64(maxToolEvents) {
-		return nil, nil, domain.ValidationError{
-			Field: "execution_result.tool_events", Reason: "exceeds the admitted event count limit",
-		}
-	}
-	prepared := make([]preparedToolEvent, 0, len(result.ToolEvents))
-	var rawBytes, encodedBytes uint64
-	for _, tool := range result.ToolEvents {
-		if uint64(len(tool.Payload)) > maxToolEventBytes-rawBytes {
-			return nil, nil, domain.ValidationError{
-				Field: "execution_result.tool_events", Reason: "exceeds the admitted byte limit",
-			}
-		}
-		rawBytes += uint64(len(tool.Payload))
-		if tool.Kind != domain.SessionEventToolCall && tool.Kind != domain.SessionEventToolResult {
-			return nil, nil, domain.ValidationError{Field: "execution_tool_event.kind", Reason: "must be tool_call or tool_result"}
-		}
-		if strings.TrimSpace(tool.CallID) == "" || strings.TrimSpace(tool.ToolName) == "" {
-			return nil, nil, domain.ValidationError{Field: "execution_tool_event", Reason: "requires call and tool names"}
-		}
-		if !json.Valid(tool.Payload) {
-			return nil, nil, domain.ValidationError{Field: "execution_tool_event.payload", Reason: "must be valid JSON"}
-		}
-		payload, err := json.Marshal(toolEventEnvelope{
-			Schema: "sessionless.tool-event.v1", CallID: tool.CallID,
-			ToolName: tool.ToolName, Content: json.RawMessage(tool.Payload),
-		})
-		if err != nil {
-			return nil, nil, err
-		}
-		defer clear(payload)
-		if uint64(len(payload)) > maxToolEventBytes-encodedBytes {
-			return nil, nil, domain.ValidationError{
-				Field: "execution_result.tool_events", Reason: "exceeds the admitted byte limit",
-			}
-		}
-		encodedBytes += uint64(len(payload))
-		prepared = append(prepared, preparedToolEvent{
-			Kind: tool.Kind, CallID: tool.CallID, Payload: payload,
-		})
-	}
-	events := make([]domain.SessionEventDraft, 0, len(result.ToolEvents)+1)
-	for index, tool := range prepared {
-		eventID := domain.SessionEventID(stableID(
-			"evt", string(loaded.Run.ID), fmt.Sprintf("tool-%04d", index+1),
-			string(tool.Kind), tool.CallID,
-		))
-		draft, material, err := manager.putCanonicalEventDraft(ctx, loaded, eventID, tool.Kind, tool.Payload, at)
+	encoded := plan.Events()
+	events := make([]domain.SessionEventDraft, 0, len(encoded))
+	for _, event := range encoded {
+		draft, material, err := manager.putCanonicalEventDraft(ctx, loaded, event.ID, event.Kind, event.Payload, at)
 		if err != nil {
 			return nil, nil, err
 		}
 		materials.Adopt(draft.ID, material)
+		draft.DisplayText = event.DisplayText
 		events = append(events, draft)
 	}
-	payload, err := json.Marshal(assistantEventEnvelope{
-		Schema:  "sessionless.assistant-message.v1",
-		Summary: normalizedSummary(result.Summary), ArtifactManifestID: manifest.ID,
-	})
-	if err != nil {
-		return nil, nil, err
-	}
-	defer clear(payload)
-	eventID := domain.SessionEventID(stableID("evt", string(loaded.Run.ID), "assistant"))
-	draft, material, err := manager.putCanonicalEventDraft(
-		ctx, loaded, eventID, domain.SessionEventAssistantMessage, payload, at,
-	)
-	if err != nil {
-		return nil, nil, err
-	}
-	materials.Adopt(draft.ID, material)
-	draft.DisplayText = normalizedSummary(result.Summary)
 	success = true
-	return append(events, draft), materials, nil
+	return events, materials, nil
 }
 
 func (manager *Manager) canonicalFailureEvents(
@@ -1240,16 +1159,13 @@ func (manager *Manager) canonicalFailureEvents(
 	code string,
 	at time.Time,
 ) ([]domain.SessionEventDraft, *ports.CanonicalEventMaterialSetV1, error) {
-	payload, err := json.Marshal(failureEventEnvelope{
-		Schema: "sessionless.run-terminal-notice.v1", Code: code, Cancelled: cancelled,
-	})
+	event, err := canonicaloutput.EncodeFailureV1(loaded.Run.ID, cancelled, code)
 	if err != nil {
 		return nil, nil, err
 	}
-	defer clear(payload)
-	eventID := domain.SessionEventID(stableID("evt", string(loaded.Run.ID), "terminal-notice"))
+	defer clear(event.Payload)
 	draft, material, err := manager.putCanonicalEventDraft(
-		ctx, loaded, eventID, domain.SessionEventSystemNotice, payload, at,
+		ctx, loaded, event.ID, event.Kind, event.Payload, at,
 	)
 	if err != nil {
 		return nil, nil, err
@@ -1267,28 +1183,7 @@ func (manager *Manager) putCanonicalEventDraft(
 	payload []byte,
 	at time.Time,
 ) (domain.SessionEventDraft, *sessionmaterial.PreparedV1, error) {
-	digest := digestHex(payload)
-	key := domain.SessionEventObjectPrefix(
-		loaded.Run.TenantID, loaded.Run.SessionID, eventID,
-	) + "payloads/sha256/" + digest + ".json"
-	ref, err := manager.blobs.Put(ctx, loaded.Run.TenantID, key, bytes.NewReader(payload))
-	if err != nil {
-		return domain.SessionEventDraft{}, nil, err
-	}
-	if err := sessionmaterial.ValidateStoredPayloadV1(loaded.Run.TenantID, key, ref, payload); err != nil {
-		return domain.SessionEventDraft{}, nil, err
-	}
-	draft := domain.SessionEventDraft{
-		ID: eventID, Kind: kind,
-		IdempotencyKey: domain.IdempotencyKey(stableID(
-			"evtkey", string(loaded.Run.ID), string(eventID),
-		)),
-		Payload: ref, CreatedAt: at,
-	}
-	if err := draft.ValidateForRun(loaded.Run); err != nil {
-		return domain.SessionEventDraft{}, nil, err
-	}
-	return draft, ports.PrepareCanonicalDraftV1(loaded.Run, draft, payload), nil
+	return canonicaloutput.PutEventDraftV1(ctx, manager.blobs, loaded.Run, eventID, kind, payload, at)
 }
 
 func (manager *Manager) finishFailure(
@@ -1582,14 +1477,6 @@ func checkpointSequence(checkpoint *domain.Checkpoint) uint64 {
 		return 0
 	}
 	return checkpoint.Sequence
-}
-
-func normalizedSummary(summary string) string {
-	summary = strings.TrimSpace(summary)
-	if summary == "" {
-		return "Run completed."
-	}
-	return summary
 }
 
 var _ ports.ExecutionEventSink = (*eventSink)(nil)

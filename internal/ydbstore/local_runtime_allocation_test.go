@@ -105,15 +105,18 @@ func localRuntimeStructuralSpending(t *testing.T, p domain.OwnedAgentProfileCurr
 // publication over a deterministic SQL model. No native YDB, model, socket or
 // external-service funding/qualification is exercised.
 type localRuntimeActualPrebuild struct {
-	scope                                        domain.AttemptExecutionSourceScopeV1
-	setupDuration                                time.Duration
-	sourceParent                                 context.Context
-	endpoint                                     string
-	laterPriceObservation                        bool
-	compiledCompaction                           bool // closed synthetic declaration, installed BEFORE Source intake
-	inputTokens, outputTokens, modelWindowTokens uint64
-	networkOperation                             time.Duration
-	operationClockBarrier                        func() // synchronization in the ORIGINAL issuer, never approval
+	scope                                                   domain.AttemptExecutionSourceScopeV1
+	setupDuration                                           time.Duration
+	sourceParent                                            context.Context
+	endpoint                                                string
+	laterPriceObservation                                   bool
+	compiledCompaction                                      bool // closed synthetic declaration, installed BEFORE Source intake
+	inputTokens, outputTokens, modelWindowTokens            uint64
+	networkOperation                                        time.Duration
+	bodyBytes, artifactBytes                                uint64 // closed pre-intake narrowing only
+	modelCalls, aggregateInputTokens, aggregateOutputTokens uint64 // closed pre-intake narrowing only
+	finalTextBytes, responseBytes                           uint64 // closed pre-intake format narrowing only
+	operationClockBarrier                                   func() // synchronization in the ORIGINAL issuer, never approval
 }
 
 func newLocalRuntimeActualFixture(t *testing.T, runningExecutable, acceptReceipt bool, prebuild ...localRuntimeActualPrebuild) localRuntimeActualFixture {
@@ -128,6 +131,27 @@ func newLocalRuntimeActualFixture(t *testing.T, runningExecutable, acceptReceipt
 			t.Fatal(err)
 		}
 		c, p := &manifest.Configuration, &manifest.Profile
+		for _, quantity := range []struct {
+			value uint64
+			limit *uint64
+		}{{prebuild[0].finalTextBytes, &c.Limits.FinalTextBytes}, {prebuild[0].responseBytes, &c.Limits.ResponseBytes}} {
+			if quantity.value != 0 {
+				if quantity.value > *quantity.limit {
+					t.Fatal("pre-intake format may only narrow")
+				}
+				*quantity.limit = quantity.value
+			}
+		}
+		if prebuild[0].responseBytes != 0 {
+			// ConfiguredInferenceLimits requires both per-value limits to fit
+			// ResponseBytes. Narrow dependencies only BEFORE original intake;
+			// an explicit incompatible final-text declaration remains invalid.
+			c.Limits.ToolArgumentsBytes = min(c.Limits.ToolArgumentsBytes, c.Limits.ResponseBytes)
+			p.Limits.MaxToolArgumentBytes = min(p.Limits.MaxToolArgumentBytes, c.Limits.ToolArgumentsBytes)
+			if prebuild[0].finalTextBytes == 0 {
+				c.Limits.FinalTextBytes = min(c.Limits.FinalTextBytes, c.Limits.ResponseBytes)
+			}
+		}
 		for _, limit := range []struct {
 			value              uint64
 			configured, policy *uint64
@@ -142,8 +166,38 @@ func newLocalRuntimeActualFixture(t *testing.T, runningExecutable, acceptReceipt
 		// The independent aggregate declaration must still fit its narrowed
 		// per-call ceiling. This only removes pre-intake capacity; it never
 		// changes a published Source or grants additional capacity.
+		if n := prebuild[0].modelCalls; n != 0 {
+			if n > p.Limits.MaxModelCalls {
+				t.Fatal("pre-intake model calls may only narrow")
+			}
+			p.Limits.MaxModelCalls = n
+			p.Limits.MaxCompactionCalls = min(p.Limits.MaxCompactionCalls, n)
+			p.Limits.MaxOperations = min(p.Limits.MaxOperations, n+p.Limits.MaxToolDispatches)
+		}
 		p.Limits.MaxAggregateInputTokens = min(p.Limits.MaxAggregateInputTokens, p.Limits.MaxInputTokensPerCall*p.Limits.MaxModelCalls)
 		p.Limits.MaxAggregateOutputTokens = min(p.Limits.MaxAggregateOutputTokens, p.Limits.MaxOutputTokensPerCall*p.Limits.MaxModelCalls)
+		for _, quantity := range []struct {
+			value uint64
+			limit *uint64
+		}{{prebuild[0].aggregateInputTokens, &p.Limits.MaxAggregateInputTokens}, {prebuild[0].aggregateOutputTokens, &p.Limits.MaxAggregateOutputTokens}} {
+			if quantity.value != 0 {
+				if quantity.value > *quantity.limit {
+					t.Fatal("pre-intake aggregate tokens may only narrow")
+				}
+				*quantity.limit = quantity.value
+			}
+		}
+		for _, quantity := range []struct {
+			value uint64
+			limit *uint64
+		}{{prebuild[0].bodyBytes, &p.Limits.MaxAggregateBodyBytes}, {prebuild[0].artifactBytes, &p.Substrate.Limits.ArtifactBytes}} {
+			if quantity.value != 0 {
+				if quantity.value > *quantity.limit {
+					t.Fatal("pre-intake body/artifact declaration may only narrow")
+				}
+				*quantity.limit = quantity.value
+			}
+		}
 		if n := prebuild[0].modelWindowTokens; n != 0 {
 			if n > c.ModelWindowTokens {
 				t.Fatal("pre-intake window may only narrow")

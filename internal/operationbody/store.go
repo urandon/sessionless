@@ -42,12 +42,15 @@ type bodyState struct {
 	blobs                ports.BlobStore
 	active               chan struct{}
 	timeout              time.Duration
+	cleanupTimeout       time.Duration
 	maxWrites, maxBytes  uint64
 	writes, chargedBytes uint64
 	writeFailed          bool
 	maxRetainedPairs     uint64
 	retainedCount        uint64
 	retained             [2]retainedSlot
+	terminal             *terminalOutputState
+	namespace            namespaceState
 }
 
 var _ ports.AttemptOperationBodyStoreV1 = (*StoreV1)(nil)
@@ -70,7 +73,7 @@ func NewV1(scope domain.AttemptOperationScopeV1, limits domain.AgentLoopLimitsV1
 	}
 	timeout := min(10*time.Second, limits.MaxNetworkOperationDuration)
 	return &StoreV1{state: &bodyState{scope: scope, prefix: prefix, blobs: blobs, active: make(chan struct{}, 1),
-		timeout: timeout, maxWrites: 2 * limits.MaxOperations, maxBytes: limits.MaxAggregateBodyBytes,
+		timeout: timeout, cleanupTimeout: limits.MaxCleanupDuration, maxWrites: 2 * limits.MaxOperations, maxBytes: limits.MaxAggregateBodyBytes,
 		maxRetainedPairs: limits.MaxCompactionCalls}}, nil
 }
 
@@ -89,7 +92,7 @@ func (s *StoreV1) begin(ctx context.Context) (context.Context, func(), error) {
 	}
 	call, cancel := context.WithTimeout(ctx, st.timeout)
 	finish := func() { cancel(); <-st.active }
-	if call.Err() != nil {
+	if call.Err() != nil || st.namespace.fenced {
 		finish()
 		return nil, nil, ErrBody
 	}
@@ -122,7 +125,10 @@ func (s *StoreV1) Write(ctx context.Context, body []byte) (ReferenceV1, error) {
 	digest := hex.EncodeToString(sum[:])
 	ref := ReferenceV1{Ref: "opbody-v1." + strconv.FormatUint(size, 10) + "." + digest, Digest: digest, Bytes: size}
 	expected := st.blobRef(ref)
-	if call.Err() != nil {
+	// Keep the exact predicted ordinary key even when PUT/readback fails or no
+	// durable operation ever references it. This is bounded physical inventory,
+	// not a quota ledger, registration or permission to erase.
+	if !st.namespace.remember(expected, st.maxWrites) || call.Err() != nil {
 		return ReferenceV1{}, ErrBody
 	}
 	actual, err := st.blobs.Put(call, st.scope.TenantID, expected.Key, bytes.NewReader(sealed))

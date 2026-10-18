@@ -111,8 +111,11 @@ func (entry *LocalInvocationEntryV1) PrepareModel(ctx context.Context) (*localPr
 	if !entry.original() {
 		return nil, domain.ErrMembershipDenied
 	}
-	entry.preparationMu.Lock()
-	defer entry.preparationMu.Unlock()
+	unlock, err := entry.beginLocalMutation(ctx)
+	if err != nil {
+		return nil, domain.ErrMembershipDenied
+	}
+	defer unlock()
 	call, finish, err := entry.localCompactionLifetimeContext(ctx)
 	if err != nil {
 		return nil, err
@@ -139,8 +142,11 @@ func (g *localCompactionGenerationV1) PrepareNextModel(ctx context.Context) (*lo
 		return nil, domain.ErrMembershipDenied
 	}
 	entry := g.entry
-	entry.preparationMu.Lock()
-	defer entry.preparationMu.Unlock()
+	unlock, err := entry.beginLocalMutation(ctx)
+	if err != nil {
+		return nil, domain.ErrMembershipDenied
+	}
+	defer unlock()
 	call, finish, err := entry.localCompactionLifetimeContext(ctx)
 	if err != nil {
 		return nil, err
@@ -249,6 +255,7 @@ func (entry *LocalInvocationEntryV1) prepareModelSource(ctx context.Context, ori
 	}
 	used := source.state.snapshot.Accounting.Aggregate
 	limits := policy.Limits
+	limits.MaxAggregateBodyBytes = min(limits.MaxAggregateBodyBytes, entry.localOperationBodyLimit())
 	configuration := entry.owner.configuration
 	if used.Operations >= limits.MaxOperations || used.ModelCalls >= limits.MaxModelCalls || used.InputTokens >= limits.MaxAggregateInputTokens || used.OutputTokens >= limits.MaxAggregateOutputTokens || used.BodyBytes >= limits.MaxAggregateBodyBytes || used.ActiveDuration >= limits.MaxActiveDuration {
 		return deny()
@@ -298,6 +305,9 @@ func (entry *LocalInvocationEntryV1) prepareModelSource(ctx context.Context, ori
 	if err != nil {
 		return deny()
 	}
+	if err := entry.terminalFitSourceLocked(ctx, nil, source, op, nil); err != nil {
+		return nil, err
+	}
 	m := &localPreparedModelV1{entry: entry, source: source, frozen: frozen, fit: fit, price: price}
 	m.self = m
 	if !entry.preparedModel.CompareAndSwap(old, m) {
@@ -320,8 +330,11 @@ func (entry *LocalInvocationEntryV1) prepareModelSource(ctx context.Context, ori
 		if !q.at.Before(op.Deadline) || store.validateOwnedOperationProviderPrice(ctx, q, op, price, entry.source) != nil {
 			return q.budget.deny()
 		}
-		_, err := debitOwnedOperation(source.state.snapshot.Accounting, op, entry.parent, entry.source, q.at)
-		return err
+		next, err := debitOwnedOperation(source.state.snapshot.Accounting, op, entry.parent, entry.source, q.at)
+		if err != nil || !store.localOperationBudgetAllows(op.Scope, next.Aggregate.BodyBytes) {
+			return q.budget.deny()
+		}
+		return nil
 	})
 	if err != nil || ctx.Err() != nil || !store.operationEvidenceLifetimeCurrent(&ownedOperationEvidence{price: price}) {
 		return deny()
@@ -335,6 +348,10 @@ func (entry *LocalInvocationEntryV1) localPreparedModelOperation(ctx context.Con
 	configuration := entry.owner.configuration
 	used := source.state.snapshot.Accounting.Aggregate
 	limits := policy.Limits
+	limits.MaxAggregateBodyBytes = min(limits.MaxAggregateBodyBytes, entry.localOperationBodyLimit())
+	if used.BodyBytes >= limits.MaxAggregateBodyBytes {
+		return domain.AttemptOperationV1{}, domain.ErrMembershipDenied
+	}
 	duration := min(limits.MaxNetworkOperationDuration, configuration.Limits.OperationTimeout, limits.MaxActiveDuration-used.ActiveDuration)
 	deadline := at.Add(duration)
 	for _, end := range []time.Time{entry.parent.Authority.InvocationDeadline, entry.parent.Authority.Lease.ExpiresAt, policy.ExpiresAt, entry.parent.Authority.AdmissionCostCeiling.PriceExpiresAt, entry.parent.Reservation.ReservedAt.Add(limits.MaxActiveDuration), entry.allocation.Window.ExpiresAt, configuration.ExpiresAt} {

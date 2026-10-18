@@ -50,6 +50,11 @@ type KeeperV1 struct {
 	key                        [32]byte
 	active                     *ConnectionV1
 	closed                     bool
+	terminalDeadline           time.Time
+	terminalEligible           bool
+	terminalJoined             bool
+	terminalTainted            bool
+	terminalSealed             chan struct{}
 }
 
 type ConnectionV1 struct {
@@ -94,7 +99,7 @@ func NewKeeperV1(source *localoperator.Source, issuer *serverlessharness.Operati
 	if err != nil || lifetime.Err() != nil {
 		return nil, domain.ErrMembershipDenied
 	}
-	k := &KeeperV1{source: source, sourceLifetime: lifetime, issuer: issuer, bootstrap: bootstrap, config: c.Clone(), policy: p, configDigest: cd, policyDigest: pd}
+	k := &KeeperV1{source: source, sourceLifetime: lifetime, issuer: issuer, bootstrap: bootstrap, config: c.Clone(), policy: p, configDigest: cd, policyDigest: pd, terminalSealed: make(chan struct{})}
 	if _, err = rand.Read(k.key[:]); err != nil {
 		clear(k.key[:])
 		return nil, domain.ErrMembershipDenied
@@ -248,9 +253,11 @@ func (k *KeeperV1) Preflight(ctx context.Context, allocation domain.RegisteredAl
 	}
 	intent, _ := pub.IntentBytes()
 	pub.Authenticator = k.authenticate(intent)
+	k.mu.Lock()
 	c.mu.Lock()
-	if c.closed || c.ctx.Err() != nil || k.sourceLifetime.Err() != nil {
+	if k.closed || k.active != c || c.closed || c.ctx.Err() != nil || k.sourceLifetime.Err() != nil {
 		c.mu.Unlock()
+		k.mu.Unlock()
 		_ = tcp.Close()
 		return nil, domain.ErrMembershipDenied
 	}
@@ -258,6 +265,7 @@ func (k *KeeperV1) Preflight(ctx context.Context, allocation domain.RegisteredAl
 	c.publication = pub
 	c.ready = true
 	c.mu.Unlock()
+	k.mu.Unlock()
 	return c, nil
 }
 
@@ -318,9 +326,11 @@ func (c *ConnectionV1) Publication() (ports.OwnedProxyPublicationV2, error) {
 	if c == nil || c.self != c {
 		return ports.OwnedProxyPublicationV2{}, domain.ErrMembershipDenied
 	}
+	c.keeper.mu.Lock()
+	defer c.keeper.mu.Unlock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closed || c.used || !c.ready || c.ctx.Err() != nil || c.keeper.sourceLifetime.Err() != nil {
+	if c.keeper.closed || c.keeper.active != c || c.closed || c.used || !c.ready || c.ctx.Err() != nil || c.keeper.sourceLifetime.Err() != nil {
 		return ports.OwnedProxyPublicationV2{}, domain.ErrMembershipDenied
 	}
 	return c.publication.Clone(), nil
@@ -330,15 +340,18 @@ func (c *ConnectionV1) Invoke(ctx context.Context, registered domain.RegisteredP
 	if c == nil || c.self != c {
 		return result, domain.ErrMembershipDenied
 	}
+	c.keeper.mu.Lock()
 	c.mu.Lock()
-	if c.closed || c.used || !c.ready || c.conn == nil || c.ctx.Err() != nil || c.keeper.sourceLifetime.Err() != nil {
+	if c.keeper.closed || c.keeper.active != c || c.closed || c.used || !c.ready || c.conn == nil || c.ctx.Err() != nil || c.keeper.sourceLifetime.Err() != nil {
 		c.mu.Unlock()
+		c.keeper.mu.Unlock()
 		return result, domain.ErrMembershipDenied
 	}
 	// Even failed first invocation cannot be retried. A denied concurrent copy
 	// does not close or interfere with the already-owning invocation.
 	c.used = true
 	c.mu.Unlock()
+	c.keeper.mu.Unlock()
 	defer func() {
 		close(c.invokeDone)
 		if cleanupErr := c.Close(); cleanupErr != nil && err == nil {
@@ -383,6 +396,14 @@ func (c *ConnectionV1) Invoke(ctx context.Context, registered domain.RegisteredP
 	// The socket/lease has been irreversibly consumed before the sole concrete
 	// Store's current joins and one-use capability consumption. Never bypass it.
 	if c.store.AuthorizeAttemptOperationBeforeSend(c.ctx, cap) != nil || c.ctx.Err() != nil || c.keeper.sourceLifetime.Err() != nil || ctx.Err() != nil || !time.Now().Before(c.operation.Deadline) {
+		return result, domain.ErrMembershipDenied
+	}
+	// Admission closure is not an I/O join: an invocation already past this
+	// check may still be in flight until the original monitor joins it.
+	c.keeper.mu.Lock()
+	sealed := c.keeper.closed
+	c.keeper.mu.Unlock()
+	if sealed {
 		return result, domain.ErrMembershipDenied
 	}
 	result.SendAttempted = true
@@ -459,14 +480,48 @@ func (c *ConnectionV1) Close() error {
 	if c.self != c || c.cancel == nil || c.cleanupDone == nil || c.cleanupTimeout <= 0 {
 		return domain.ErrMembershipDenied
 	}
+	deadline := time.Now().Add(c.cleanupTimeout)
+	if c.keeper != nil {
+		c.keeper.mu.Lock()
+		if d := c.keeper.terminalDeadline; !d.IsZero() && d.Before(deadline) {
+			deadline = d
+		}
+		c.keeper.mu.Unlock()
+	}
+	return c.closeUntil(context.Background(), deadline)
+}
+
+func (c *ConnectionV1) closeUntil(ctx context.Context, deadline time.Time) error {
 	c.cancel()
-	timer := time.NewTimer(c.cleanupTimeout)
+	var sealed <-chan struct{}
+	if c.keeper != nil {
+		c.keeper.mu.Lock()
+		sealed = c.keeper.terminalSealed
+		if d := c.keeper.terminalDeadline; !d.IsZero() {
+			deadline = minTime(deadline, d)
+			sealed = nil
+		}
+		c.keeper.mu.Unlock()
+	}
+	timer := time.NewTimer(max(time.Until(deadline), 0))
 	defer timer.Stop()
-	select {
-	case <-c.cleanupDone:
-		return c.closeAfterWait(false)
-	case <-timer.C:
-		return c.closeAfterWait(true)
+	for {
+		select {
+		case <-c.cleanupDone:
+			return c.closeAfterWait(false)
+		case <-timer.C:
+			return c.closeAfterWait(true)
+		case <-ctx.Done():
+			return c.closeAfterWait(true)
+		case <-sealed:
+			// Wake preexisting ordinary Close waiters once. Never rebase their
+			// original operation deadline or poll an already closed channel.
+			sealed = nil
+			c.keeper.mu.Lock()
+			deadline = minTime(deadline, c.keeper.terminalDeadline)
+			c.keeper.mu.Unlock()
+			timer.Reset(max(time.Until(deadline), 0))
+		}
 	}
 }
 
@@ -501,6 +556,11 @@ func (k *KeeperV1) Close() error {
 		return domain.ErrMembershipDenied
 	}
 	k.mu.Lock()
+	terminal := !k.terminalDeadline.IsZero()
+	if terminal {
+		k.mu.Unlock()
+		return k.StopAndJoinTerminal(context.Background())
+	}
 	k.closed = true
 	c := k.active
 	k.mu.Unlock()
@@ -508,6 +568,84 @@ func (k *KeeperV1) Close() error {
 		return c.Close()
 	}
 	return nil
+}
+
+// SealTerminal closes original transport admission irreversibly. A successful
+// idle seal is not a stop, retirement, custody or Store-mutation receipt.
+// An active/previously closed owner remains ineligible even after it drains.
+func (k *KeeperV1) SealTerminal(deadline time.Time) error {
+	if k == nil || k.self != k || k.source == nil || k.bootstrap == nil || k.sourceLifetime == nil || k.terminalSealed == nil {
+		return domain.ErrMembershipDenied
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if !k.terminalDeadline.IsZero() {
+		if !deadline.Equal(k.terminalDeadline) || !k.terminalEligible || k.terminalTainted {
+			return domain.ErrMembershipDenied
+		}
+		return nil
+	}
+	now := time.Now()
+	limit := min(k.config.Limits.CleanupTimeout, k.policy.Limits.CleanupTimeout, 30*time.Second)
+	if k.active != nil {
+		limit = min(limit, k.active.cleanupTimeout)
+	}
+	if limit <= 0 || deadline.IsZero() || !deadline.After(now) || deadline.After(now.Add(limit)) {
+		return domain.ErrMembershipDenied
+	}
+	k.terminalDeadline = deadline
+	k.terminalEligible = !k.closed && k.active == nil && k.sourceLifetime.Err() == nil
+	k.closed = true
+	close(k.terminalSealed)
+	if !k.terminalEligible {
+		return domain.ErrMembershipDenied
+	}
+	return nil
+}
+
+// StopAndJoinTerminal cancels only owned transport work and observes its real
+// monitor join. It never renews the original absolute terminal deadline, and
+// successful failure-cleanup cannot repair an ineligible seal.
+func (k *KeeperV1) StopAndJoinTerminal(ctx context.Context) error {
+	if k == nil || k.self != k || ctx == nil {
+		return domain.ErrMembershipDenied
+	}
+	k.mu.Lock()
+	deadline, c := k.terminalDeadline, k.active
+	if deadline.IsZero() || k.terminalTainted {
+		k.mu.Unlock()
+		return domain.ErrMembershipDenied
+	}
+	if k.terminalJoined {
+		k.mu.Unlock()
+		return nil
+	}
+	k.mu.Unlock()
+	var err error
+	if c != nil {
+		deadline = minTime(deadline, time.Now().Add(c.cleanupTimeout))
+		err = c.closeUntil(ctx, deadline)
+	} else if ctx.Err() != nil || !time.Now().Before(deadline) {
+		err = domain.ErrMembershipDenied
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if err != nil {
+		k.terminalTainted = true
+		return domain.ErrMembershipDenied
+	}
+	if k.terminalTainted {
+		return domain.ErrMembershipDenied
+	}
+	k.terminalJoined = true
+	return nil
+}
+
+func minTime(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return a
+	}
+	return b
 }
 func (*KeeperV1) String() string         { return "KeeperV1{private:[redacted]}" }
 func (k *KeeperV1) GoString() string     { return k.String() }

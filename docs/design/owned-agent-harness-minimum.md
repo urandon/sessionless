@@ -1,6 +1,6 @@
 # Sessionless owned agent harness minimum
 
-Version: 0.2.1, accepted engineering design, 2026-10-10. Design owner: [#180](https://gitcode.com/urandon/sessionless/issues/180); implementation parent: [#176](https://gitcode.com/urandon/sessionless/issues/176). The exact package at `42139dfb5cefb266adb77f221c0743b53cfb5217` received independent original-goal review, exact-head CI and guarded merge in [!160](https://gitcode.com/urandon/sessionless/pull/160), under the owner's agreed-MVP engineering delegation. The linked implementation checklist is registered in #176. No additional manual human PR sign-off is required; unresolved findings and exact-head verification remain gates. Engineering acceptance does not enable a provider, MCP connection or cloud profile.
+Version: 0.2.2, engineering clarification. Design owner: [#180](https://gitcode.com/urandon/sessionless/issues/180); implementation parent: [#176](https://gitcode.com/urandon/sessionless/issues/176). The accepted 0.2.1 package at `42139dfb5cefb266adb77f221c0743b53cfb5217` received independent original-goal review, exact-head CI and guarded merge in [!160](https://gitcode.com/urandon/sessionless/pull/160), under the owner's agreed-MVP engineering delegation. Version 0.2.2 makes only the provider-usage continuation clarification below for [#190](https://gitcode.com/urandon/sessionless/issues/190), which records its independent engineering review and implementation evidence. The linked implementation checklist is registered in #176. No additional manual human PR sign-off is required; unresolved findings and exact-head verification remain gates. Engineering acceptance does not enable a provider, MCP connection or cloud profile.
 
 ## Decision and scope
 
@@ -73,6 +73,66 @@ Reuse ExecutionRequest identity, immutable ContextSnapshot/ContextWindow, InputA
 Normalized operational observations use a version, stable operation sequence, tool call correlation, policy/source digests and timestamps. ExecutionEvent checkpoints are locators for this evidence, not evidence of completion themselves. Canonical user/assistant/tool facts are projected once by the existing store; compaction is a derived context artifact, not a new human message or a rewritten transcript. No hidden chain-of-thought, credentials, private transport errors or workspace paths enter canonical/public progress.
 
 Outputs retain the existing artifact-manifest pipeline. Usage separates observed from estimated/unknown per physical operation; aggregate successful responses do not erase failed or compaction spend. Unknown is not zero. Provider outcome, tool outcome, cancellation, cleanup and canonical terminal commit remain independent facts. Existing ProviderExecutionEvidenceV1 is not silently reinterpreted as a multi-call proof: add a reviewed loop observation linked to each operation and use the existing typed substrate evidence only for its established assertions.
+
+### Provider-usage provenance and conservative continuation
+
+A complete known model response and a measured bill are different facts. The
+configured-inference codec reports provider-supplied token counts; it does not
+independently measure them or the billed amount. Preserve these counts as
+`provider_reported` in the existing `AttemptOperationUsageV1` observation, never
+as `observed`. The reported arm requires at least one token metric and excludes
+an amount; `observed` retains its existing partial measured metrics, and
+`unknown` retains no numbers. No new table, transcript or accounting ledger is
+introduced. The observation digest authenticates the provenance as well as the
+numbers. Existing observation shapes and digests are unchanged.
+
+Decode token components independently: a missing or malformed total/other
+component must not erase a valid reported input/output count and hide a known
+overrun. Preserve every valid nonnegative integer component with reported
+provenance; omit invalid/absent components rather than infer zero. Retain a
+reported total only when both components exist and their checked sum matches.
+No valid component means unknown usage. A manually supplied projection claiming
+an inconsistent total is invalid, not a source of authority.
+
+For model and compaction operations only, usage may be unknown, partially
+measured or provider-reported without making a complete response's outcome
+unknown. Continuation still requires the exact authenticated, durable completed
+predecessor with no error reason, validated bounded response/lineage and all
+original current-authority, policy, price, context-fit and remaining-budget
+checks. A missing response, accepted-outcome-unknown effect, service/protocol
+error, absent persistence or observed/reported metric above its reservation
+stops continuation. An overrun remains recordable evidence, not a reason to
+discard the observation. Provider reports cannot supply missing admission,
+token-fit or price evidence.
+
+This continuation rule relies on the existing Store reserving the full proven
+worst-case token/cost debit before each send. The complete debit remains in the
+aggregate even when later usage is absent or smaller: no refund, top-up,
+additional call or budget recalculation follows from a report. In particular,
+unknown money does not become zero money. A route unable to prove a conservative
+per-call bound remains ineligible before its first send. A provider report may
+stop work conservatively but never grants authority or reduces a reservation.
+
+Eligibility branches on the completed predecessor's kind, not the proposed
+next operation: a known model response can admit a tool under its own exact
+call/grant checks, while a completed tool/search predecessor retains its
+existing measured-amount requirement before any continuation. This clarification
+does not change external-service billing or grant rules.
+Cleanup, retention/disposal and final success keep their separate evidence
+requirements; permission to continue is not proof of settled billing or safe
+physical deletion. In particular, the residual-disposal inventory's measured
+billing requirement remains unchanged; newly representable provider reports do
+not qualify that route or claim final export/cleanup readiness. Its integration
+with conservative reservations remains explicit work for #191. The existing
+fixture-only body/lineage parser remains
+fixture-only until #190/#191 deliver their real normalized path. This change
+alone does not complete either task or enable a profile.
+
+Verification must cover absent/partial/reported metrics, each token/money
+overrun, forged provenance/unknown numbers, known versus unknown/error outcomes,
+immutable observation correlation, unchanged aggregate debits, unchanged tool
+gates and independent cleanup/disposal semantics. Preserve existing one-shot
+and fixture behavior without manufacturing measurements.
 
 ## Initial finite ceilings
 

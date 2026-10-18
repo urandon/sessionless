@@ -115,6 +115,18 @@ execution permission from these rows. No new table, token store or ledger is
 introduced; old V1 allocation records require the same separately authorized
 drained cutover, not reinterpretation or migration-history rewriting.
 
+Provider token reports use the existing `attempt_operations_v1` immutable
+observation JSON and digest, with explicit `provider_reported` provenance rather
+than claiming measured usage. Existing `observed`/`unknown` record encodings are
+unchanged. No reported money, refund, new column, ledger or migration is added.
+Known model/compaction outcome may continue with unmeasured usage only under the
+existing full worst-case reservation and all original authority/lineage checks;
+reported or measured overruns stop work without discarding their evidence.
+Completed tool/search predecessors retain their measured-money gate. Residual
+disposal/retention and finalization remain separately owned; this continuation
+rule does not qualify their measured-usage requirements or retire any facts.
+See the [provider-usage clarification](../design/owned-agent-harness-minimum.md#provider-usage-provenance-and-conservative-continuation).
+
 ## Source and rollout boundary
 
 The [compatible code step](https://gitcode.com/urandon/sessionless/issues/206)

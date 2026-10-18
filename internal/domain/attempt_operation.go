@@ -37,6 +37,7 @@ const (
 	AttemptOperationReasonWorkerLostV1       AttemptOperationReasonV1     = "worker_lost"
 	AttemptOperationUsageUnknownV1           AttemptOperationUsageStateV1 = "unknown"
 	AttemptOperationUsageObservedV1          AttemptOperationUsageStateV1 = "observed"
+	AttemptOperationUsageProviderReportedV1  AttemptOperationUsageStateV1 = "provider_reported"
 )
 
 // AttemptOperationScopeV1 identifies a child of the original physical claim.
@@ -425,9 +426,10 @@ func (v AttemptOperationReservationV1) Digest() (AttemptOperationReservationDige
 // it must not be rejected simply to hide a billing/usage overrun.
 type AttemptOperationUsageV1 struct {
 	State AttemptOperationUsageStateV1 `json:"state"`
-	// Each present metric is measured; nil is explicitly unknown, never zero.
-	// Observed permits partial reports so known overruns cannot be discarded
-	// merely because another metric (for example billed amount) is absent.
+	// Observed metrics are measured; provider_reported token metrics retain
+	// their unverified provenance and cannot include a billed amount. Nil is
+	// unknown, never zero. Partial metrics retain known overruns even when
+	// another metric (for example billed amount) is absent.
 	InputTokens      *uint64 `json:"input_tokens,omitempty"`
 	OutputTokens     *uint64 `json:"output_tokens,omitempty"`
 	AmountMicrounits *uint64 `json:"amount_microunits,omitempty"`
@@ -446,7 +448,19 @@ func (v AttemptOperationUsageV1) Validate() error {
 	if v.State == AttemptOperationUsageObservedV1 && (v.InputTokens != nil || v.OutputTokens != nil || v.AmountMicrounits != nil) {
 		return nil
 	}
-	return operationError("observation.usage", "requires at least one measured metric or wholly absent unknown metrics")
+	if v.State == AttemptOperationUsageProviderReportedV1 && v.AmountMicrounits == nil && (v.InputTokens != nil || v.OutputTokens != nil) {
+		return nil
+	}
+	return operationError("observation.usage", "requires measured metrics, provider-reported tokens without money, or wholly absent unknown metrics")
+}
+
+// ExceedsReservation compares present metrics only. Callers must validate the
+// usage separately. Neither a smaller report nor absent metrics refund this
+// immutable worst-case debit or establish permission to continue.
+func (v AttemptOperationUsageV1) ExceedsReservation(d AttemptOperationDebitV1) bool {
+	return (v.InputTokens != nil && *v.InputTokens > d.InputTokens) ||
+		(v.OutputTokens != nil && *v.OutputTokens > d.OutputTokens) ||
+		(v.AmountMicrounits != nil && *v.AmountMicrounits > d.AmountMicrounits)
 }
 
 type AttemptOperationObservationV1 struct {
@@ -515,6 +529,9 @@ func (v AttemptOperationObservationV1) ValidateForReservation(r AttemptOperation
 	if v.OperationDigest != r.OperationDigest || v.ReservationDigest != digest || v.ObservedAt.Before(r.ReservedAt) || v.ResponseBytes > r.Operation.ResultBytes {
 		return operationError("observation.correlation", "must exact-match the bounded immutable reservation")
 	}
+	if v.Usage.State == AttemptOperationUsageProviderReportedV1 && r.Operation.Kind != AttemptOperationModelV1 && r.Operation.Kind != AttemptOperationCompactionV1 {
+		return operationError("observation.usage", "provider-reported token usage is exclusive to model and compaction operations")
+	}
 	return nil
 }
 func (v AttemptOperationObservationV1) Digest() (AttemptOperationObservationDigestV1, error) {
@@ -538,10 +555,8 @@ func (v AttemptOperationV1) ValidatePredecessor(r AttemptOperationReservationV1,
 	if v.Scope != r.Operation.Scope || v.Sequence != r.Operation.Sequence+1 || v.PredecessorObservationDigest != digest || o.Outcome != AttemptOperationCompletedV1 {
 		return operationError("predecessor", "requires the exact known durable prior operation in the same claim")
 	}
-	if (o.Usage.InputTokens != nil && *o.Usage.InputTokens > r.Operation.Debit.InputTokens) ||
-		(o.Usage.OutputTokens != nil && *o.Usage.OutputTokens > r.Operation.Debit.OutputTokens) ||
-		(o.Usage.AmountMicrounits != nil && *o.Usage.AmountMicrounits > r.Operation.Debit.AmountMicrounits) {
-		return operationError("predecessor.usage", "observed overrun stops further effects")
+	if o.Usage.ExceedsReservation(r.Operation.Debit) {
+		return operationError("predecessor.usage", "measured or provider-reported overrun stops further effects")
 	}
 	if v.Kind == AttemptOperationMCPToolV1 || v.Kind == AttemptOperationWebSearchV1 {
 		if r.Operation.Kind != AttemptOperationModelV1 || v.ModelResponseDigest != o.ResponseDigest {

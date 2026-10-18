@@ -187,13 +187,17 @@ func (store *Store) readOwnedOperationBody(ctx context.Context, scope domain.Att
 }
 
 func ownedObservationAllowsSuccessor(r domain.AttemptOperationReservationV1, o domain.AttemptOperationObservationV1) bool {
-	if o.ValidateForReservation(r) != nil || o.Outcome != domain.AttemptOperationCompletedV1 || o.Reason != domain.AttemptOperationReasonNoneV1 || o.Usage.State != domain.AttemptOperationUsageObservedV1 || o.Usage.AmountMicrounits == nil || *o.Usage.AmountMicrounits > r.Operation.Debit.AmountMicrounits {
+	if o.ValidateForReservation(r) != nil || o.Outcome != domain.AttemptOperationCompletedV1 || o.Reason != domain.AttemptOperationReasonNoneV1 || o.Usage.ExceedsReservation(r.Operation.Debit) {
 		return false
 	}
 	if r.Operation.Kind == domain.AttemptOperationModelV1 || r.Operation.Kind == domain.AttemptOperationCompactionV1 {
-		return o.Usage.InputTokens != nil && o.Usage.OutputTokens != nil && *o.Usage.InputTokens <= r.Operation.Debit.InputTokens && *o.Usage.OutputTokens <= r.Operation.Debit.OutputTokens
+		// Known completed outcome is distinct from unknown/reported usage.
+		// The Store retains the full pre-send worst-case debit; no report can
+		// refund it. This predicate is not token-fit, lineage, current authority,
+		// settled billing, final success or residual-disposal evidence.
+		return true
 	}
-	return true
+	return o.Usage.State == domain.AttemptOperationUsageObservedV1 && o.Usage.AmountMicrounits != nil
 }
 
 func ownedToolCost(parent domain.OwnedAttemptEffectParentV1, kind domain.AttemptOperationKindV1) *domain.ExternalServiceCostCeilingV1 {

@@ -431,8 +431,21 @@ func parseUsage(v any) UsageV1 {
 	a, aOK := uintValue(m["prompt_tokens"])
 	b, bOK := uintValue(m["completion_tokens"])
 	total, totalOK := uintValue(m["total_tokens"])
-	if !aOK || !bOK || !totalOK || a > ^uint64(0)-b || a+b != total {
+	if !aOK && !bOK {
 		return unknown
 	}
-	return UsageV1{Provenance: UsageProviderReportedV1, InputTokens: &a, OutputTokens: &b, TotalTokens: &total}
+	// Retain each independently valid provider report. Missing/invalid totals
+	// or another unknown metric must not erase a known token overrun. The
+	// fields remain unverified reports; an absent metric is never inferred zero.
+	usage := UsageV1{Provenance: UsageProviderReportedV1}
+	if aOK {
+		usage.InputTokens = &a
+	}
+	if bOK {
+		usage.OutputTokens = &b
+	}
+	if aOK && bOK && totalOK && a <= ^uint64(0)-b && a+b == total {
+		usage.TotalTokens = &total
+	}
+	return usage
 }

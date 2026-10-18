@@ -79,8 +79,9 @@ const (
 	UsageProviderReportedV1 UsageProvenanceV1 = "provider_reported"
 )
 
-// UsageV1 is an unverified provider report, NOT domain.AttemptOperationUsageV1's
-// measured observation, an independent token count, a refund, or another budget.
+// UsageV1 is an unverified provider report, NOT a measured observation,
+// independent token count, refund or another budget. OperationUsage preserves
+// its explicit provenance in the durable domain record without upgrading it.
 type UsageV1 struct {
 	Provenance   UsageProvenanceV1
 	InputTokens  *uint64

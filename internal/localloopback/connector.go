@@ -54,6 +54,7 @@ type KeeperV1 struct {
 	terminalEligible           bool
 	terminalJoined             bool
 	terminalTainted            bool
+	terminalSealed             chan struct{}
 }
 
 type ConnectionV1 struct {
@@ -98,7 +99,7 @@ func NewKeeperV1(source *localoperator.Source, issuer *serverlessharness.Operati
 	if err != nil || lifetime.Err() != nil {
 		return nil, domain.ErrMembershipDenied
 	}
-	k := &KeeperV1{source: source, sourceLifetime: lifetime, issuer: issuer, bootstrap: bootstrap, config: c.Clone(), policy: p, configDigest: cd, policyDigest: pd}
+	k := &KeeperV1{source: source, sourceLifetime: lifetime, issuer: issuer, bootstrap: bootstrap, config: c.Clone(), policy: p, configDigest: cd, policyDigest: pd, terminalSealed: make(chan struct{})}
 	if _, err = rand.Read(k.key[:]); err != nil {
 		clear(k.key[:])
 		return nil, domain.ErrMembershipDenied
@@ -492,15 +493,35 @@ func (c *ConnectionV1) Close() error {
 
 func (c *ConnectionV1) closeUntil(ctx context.Context, deadline time.Time) error {
 	c.cancel()
+	var sealed <-chan struct{}
+	if c.keeper != nil {
+		c.keeper.mu.Lock()
+		sealed = c.keeper.terminalSealed
+		if d := c.keeper.terminalDeadline; !d.IsZero() {
+			deadline = minTime(deadline, d)
+			sealed = nil
+		}
+		c.keeper.mu.Unlock()
+	}
 	timer := time.NewTimer(max(time.Until(deadline), 0))
 	defer timer.Stop()
-	select {
-	case <-c.cleanupDone:
-		return c.closeAfterWait(false)
-	case <-timer.C:
-		return c.closeAfterWait(true)
-	case <-ctx.Done():
-		return c.closeAfterWait(true)
+	for {
+		select {
+		case <-c.cleanupDone:
+			return c.closeAfterWait(false)
+		case <-timer.C:
+			return c.closeAfterWait(true)
+		case <-ctx.Done():
+			return c.closeAfterWait(true)
+		case <-sealed:
+			// Wake preexisting ordinary Close waiters once. Never rebase their
+			// original operation deadline or poll an already closed channel.
+			sealed = nil
+			c.keeper.mu.Lock()
+			deadline = minTime(deadline, c.keeper.terminalDeadline)
+			c.keeper.mu.Unlock()
+			timer.Reset(max(time.Until(deadline), 0))
+		}
 	}
 }
 
@@ -553,7 +574,7 @@ func (k *KeeperV1) Close() error {
 // idle seal is not a stop, retirement, custody or Store-mutation receipt.
 // An active/previously closed owner remains ineligible even after it drains.
 func (k *KeeperV1) SealTerminal(deadline time.Time) error {
-	if k == nil || k.self != k || k.source == nil || k.bootstrap == nil || k.sourceLifetime == nil {
+	if k == nil || k.self != k || k.source == nil || k.bootstrap == nil || k.sourceLifetime == nil || k.terminalSealed == nil {
 		return domain.ErrMembershipDenied
 	}
 	k.mu.Lock()
@@ -575,6 +596,7 @@ func (k *KeeperV1) SealTerminal(deadline time.Time) error {
 	k.terminalDeadline = deadline
 	k.terminalEligible = !k.closed && k.active == nil && k.sourceLifetime.Err() == nil
 	k.closed = true
+	close(k.terminalSealed)
 	if !k.terminalEligible {
 		return domain.ErrMembershipDenied
 	}

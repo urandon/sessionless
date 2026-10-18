@@ -88,8 +88,13 @@ func TestLocalLoopbackTerminalConnectedJoinsActualInvoke(t *testing.T) {
 	select {
 	case <-entered:
 	case <-timer.C:
-		t.Fatal("owned peer did not observe original request")
+		select {
+		case <-entered:
+		default:
+			t.Fatal("owned peer did not observe original request")
+		}
 	}
+	timer.Stop()
 	d := time.Now().Add(config.Limits.CleanupTimeout / 2)
 	if err := copied.SealTerminal(d); !errors.Is(err, domain.ErrMembershipDenied) {
 		t.Fatalf("copied keeper sealed original owner: %v", err)
@@ -103,13 +108,20 @@ func TestLocalLoopbackTerminalConnectedJoinsActualInvoke(t *testing.T) {
 	if err := k.StopAndJoinTerminal(t.Context()); err != nil {
 		t.Fatalf("actual blocked socket/Invoke/monitor did not join: %v", err)
 	}
+	var got outcome
+	outcomeTimer := time.NewTimer(10 * time.Second)
+	defer outcomeTimer.Stop()
 	select {
-	case got := <-done:
-		if !errors.Is(got.err, domain.ErrMembershipDenied) || !got.result.SendAttempted || len(got.result.Body) != 0 {
-			t.Fatalf("stopped actual read claimed completed response: attempted=%v err=%v", got.result.SendAttempted, got.err)
+	case got = <-done:
+	case <-outcomeTimer.C:
+		select {
+		case got = <-done:
+		default:
+			t.Fatal("actual Invoke did not return after its monitor joined")
 		}
-	case <-timer.C:
-		t.Fatal("actual Invoke did not return after its monitor joined")
+	}
+	if !errors.Is(got.err, domain.ErrMembershipDenied) || !got.result.SendAttempted || len(got.result.Body) != 0 {
+		t.Fatalf("stopped actual read claimed completed response: attempted=%v err=%v", got.result.SendAttempted, got.err)
 	}
 	if err := k.SealTerminal(d); !errors.Is(err, domain.ErrMembershipDenied) {
 		t.Fatal("actual invoked/drained frontier became eligible")

@@ -661,6 +661,11 @@ func (s *LocalCompactionSourceV1) PrepareRetainedCompaction(ctx context.Context,
 	if s == nil || s.self != s || s.state == nil || s.entry == nil {
 		return nil, domain.ErrMembershipDenied
 	}
+	unlock, err := s.entry.beginLocalMutation(ctx)
+	if err != nil {
+		return nil, domain.ErrMembershipDenied
+	}
+	defer unlock()
 	s.state.mu.Lock()
 	defer s.state.mu.Unlock()
 	if s.state.cleared || op.Scope != ownedOperationScope(s.entry.parent) || op.Sequence != s.state.snapshot.Accounting.Aggregate.Operations+1 {
@@ -676,7 +681,7 @@ func (s *LocalCompactionSourceV1) PrepareRetainedCompaction(ctx context.Context,
 	if s.entry.owner.store.ownedAuthorityTx(call, func(ctx context.Context, q *ownedAuthorityQuery) error { return s.rejoinLocked(ctx, q, nil, nil) }) != nil {
 		return nil, domain.ErrMembershipDenied
 	}
-	h, err := s.entry.PrepareRetainedCompaction(call, op, generation)
+	h, err := s.entry.prepareRetainedCompactionLocked(call, op, generation)
 	if err != nil {
 		return nil, err
 	}

@@ -38,6 +38,16 @@ type localRetainedUploadV1 struct {
 // before generation. It does not admit a compaction call or relax the current
 // runner's eligibility checks; those remain separately required.
 func (entry *LocalInvocationEntryV1) PrepareRetainedCompaction(ctx context.Context, operation domain.AttemptOperationV1, generation uint64) (*LocalRetainedCompactionV1, error) {
+	unlock, err := entry.beginLocalMutation(ctx)
+	if err != nil {
+		return nil, domain.ErrMembershipDenied
+	}
+	defer unlock()
+	return entry.prepareRetainedCompactionLocked(ctx, operation, generation)
+}
+
+// Caller holds the original entry mutation barrier.
+func (entry *LocalInvocationEntryV1) prepareRetainedCompactionLocked(ctx context.Context, operation domain.AttemptOperationV1, generation uint64) (*LocalRetainedCompactionV1, error) {
 	if !entry.original() || operation.Kind != domain.AttemptOperationCompactionV1 || operation.Scope != ownedOperationScope(entry.parent) || operation.ValidateForParent(entry.parent.Authority, entry.parent.Reservation) != nil || generation < 1 || generation > 2 || operation.Debit.BodyBytes-operation.RequestBytes-operation.ResultBytes < operationbody.RetainedPairBytesV1 {
 		return nil, domain.ErrMembershipDenied
 	}
@@ -82,6 +92,20 @@ func (entry *LocalInvocationEntryV1) PrepareRetainedCompaction(ctx context.Conte
 // source closure, terminal custody or an active derived head. Unknown commit or
 // PUT is terminal for this handle; an ordinary Run writer cannot replace it.
 func (h *LocalRetainedCompactionV1) Upload(ctx context.Context, plan domain.DerivedContextPlanV1, observed ports.AuthenticatedAttemptOperationObservationV1, summary, manifest []byte) error {
+	if h == nil || h.entry == nil {
+		return domain.ErrMembershipDenied
+	}
+	unlock, err := h.entry.beginLocalMutation(ctx)
+	if err != nil {
+		return domain.ErrMembershipDenied
+	}
+	defer unlock()
+	return h.uploadLocked(ctx, plan, observed, summary, manifest)
+}
+
+// Caller holds the SAME original entry mutation barrier across registration,
+// physical PUT/readback and all original retained accounting.
+func (h *LocalRetainedCompactionV1) uploadLocked(ctx context.Context, plan domain.DerivedContextPlanV1, observed ports.AuthenticatedAttemptOperationObservationV1, summary, manifest []byte) error {
 	if h == nil || h.self != h || h.entry == nil || !h.entry.original() || h.pair == nil || h.claimed == nil || !h.claimed.CompareAndSwap(false, true) {
 		return domain.ErrMembershipDenied
 	}

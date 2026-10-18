@@ -118,8 +118,11 @@ func prepareLocalCompactionGeneration(ctx context.Context, source *LocalCompacti
 	if source == nil || source.entry == nil || !source.entry.original() {
 		return nil, domain.ErrMembershipDenied
 	}
-	source.entry.preparationMu.Lock()
-	defer source.entry.preparationMu.Unlock()
+	unlock, err := source.entry.beginLocalMutation(ctx)
+	if err != nil {
+		return nil, domain.ErrMembershipDenied
+	}
+	defer unlock()
 	return prepareLocalCompactionGenerationLocked(ctx, ctx, source)
 }
 
@@ -127,8 +130,11 @@ func (entry *LocalInvocationEntryV1) PrepareCompaction(ctx context.Context) (*lo
 	if !entry.original() {
 		return nil, domain.ErrMembershipDenied
 	}
-	entry.preparationMu.Lock()
-	defer entry.preparationMu.Unlock()
+	unlock, err := entry.beginLocalMutation(ctx)
+	if err != nil {
+		return nil, domain.ErrMembershipDenied
+	}
+	defer unlock()
 	call, finish, err := entry.localCompactionLifetimeContext(ctx)
 	if err != nil {
 		return nil, err

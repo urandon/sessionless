@@ -27,6 +27,11 @@ func publishLocalCompaction(ctx context.Context, g *localCompactionGenerationV1)
 	if ctx == nil || ctx.Err() != nil || g == nil || g.source == nil || g.source.state == nil {
 		return nil, domain.ErrMembershipDenied
 	}
+	unlock, err := g.entry.beginLocalMutation(ctx)
+	if err != nil {
+		return nil, domain.ErrMembershipDenied
+	}
+	defer unlock()
 	call, finish, err := g.entry.retainedContext(ctx, g.operation)
 	if err != nil {
 		return nil, domain.ErrMembershipDenied
@@ -54,7 +59,7 @@ func publishLocalCompaction(ctx context.Context, g *localCompactionGenerationV1)
 	defer clear(summary)
 	defer clear(manifest)
 	if chargeOwnedAuthorityBody(call, uint64(len(summary)+len(manifest))) != nil ||
-		g.retained.Upload(call, retained.Plan(), observed, summary, manifest) != nil {
+		g.retained.uploadLocked(call, retained.Plan(), observed, summary, manifest) != nil {
 		return nil, domain.ErrMembershipDenied
 	}
 	g.source.state.mu.Lock()
@@ -266,6 +271,11 @@ func readPublishedLocalCompaction(ctx context.Context, g *localCompactionGenerat
 	if ctx == nil || ctx.Err() != nil || g == nil || g.source == nil || g.source.state == nil {
 		return nil, domain.ErrMembershipDenied
 	}
+	unlock, err := g.entry.beginLocalMutation(ctx)
+	if err != nil {
+		return nil, domain.ErrMembershipDenied
+	}
+	defer unlock()
 	call, finish, err := g.entry.retainedContext(ctx, g.operation)
 	if err != nil {
 		return nil, domain.ErrMembershipDenied

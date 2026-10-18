@@ -49,6 +49,11 @@ func (store *Store) prepareLocalCompactionEvidence(ctx context.Context, op domai
 	if g.source == nil || g.source.state == nil {
 		return nil, true, domain.ErrMembershipDenied
 	}
+	unlock, err := g.entry.beginLocalMutation(ctx)
+	if err != nil {
+		return nil, true, domain.ErrMembershipDenied
+	}
+	defer unlock()
 	g.source.state.mu.Lock()
 	defer g.source.state.mu.Unlock()
 	if ctx.Err() != nil || !store.preparedLocalCompactionLocked(g, op) {
@@ -82,15 +87,20 @@ func (store *Store) lockLocalCompactionEffect(ctx context.Context, evidence *own
 	if g.source == nil || g.source.state == nil {
 		return nil, domain.ErrMembershipDenied
 	}
+	unlock, err := g.entry.beginLocalMutation(ctx)
+	if err != nil {
+		return nil, domain.ErrMembershipDenied
+	}
 	g.source.state.mu.Lock()
 	if ctx.Err() != nil || !store.preparedLocalCompactionLocked(g, op) ||
 		(phase != localCompactionReserve && phase != localCompactionBeforeSend) ||
 		(phase == localCompactionReserve && (g.reservation.Version != 0 || g.reservationAttempted)) ||
 		(phase == localCompactionBeforeSend && (g.reservation.Validate() != nil || !reflect.DeepEqual(g.reservation.Operation, op))) {
 		g.source.state.mu.Unlock()
+		unlock()
 		return nil, domain.ErrMembershipDenied
 	}
-	return g.source.state.mu.Unlock, nil
+	return func() { g.source.state.mu.Unlock(); unlock() }, nil
 }
 
 // This is the prepared arm of the SAME Store port, issuer and accounting, not

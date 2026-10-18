@@ -171,6 +171,11 @@ func (store *Store) ReserveAttemptOperation(ctx context.Context, request ports.R
 	if evidence.compaction != nil {
 		return store.reservePreparedLocalCompaction(ctx, op, evidence)
 	}
+	unlock, err := store.lockLocalGenericMutation(ctx, op.Scope)
+	if err != nil {
+		return ports.ReserveAttemptOperationResultV1{}, domain.ErrMembershipDenied
+	}
+	defer unlock()
 	return store.reserveOwnedOperation(ctx, op, false, "", evidence, request.ConsentReceipt)
 }
 
@@ -311,7 +316,12 @@ func (store *Store) AuthorizeAttemptOperationBeforeSend(ctx context.Context, cap
 	if evidence.compaction != nil {
 		return store.authorizePreparedLocalCompaction(ctx, capability, evidence)
 	}
-	err := store.ownedAuthorityTx(ctx, func(ctx context.Context, q *ownedAuthorityQuery) error {
+	unlock, err := store.lockLocalGenericMutation(ctx, op.Scope)
+	if err != nil {
+		return domain.ErrMembershipDenied
+	}
+	defer unlock()
+	err = store.ownedAuthorityTx(ctx, func(ctx context.Context, q *ownedAuthorityQuery) error {
 		q.metadataCache = make(map[string]ownedMetadataCacheEntry)
 		request, parent, source, burnAt, err := store.operationParent(ctx, q, op.Scope)
 		if err != nil || r.ValidateForParent(parent.Authority, parent.Reservation) != nil || op.Scope.SessionID != parent.Scope.SessionID || !q.at.Before(capability.ExpiresAt) || q.at.Before(capability.IssuedAt) || store.validateCurrentOwnedAttemptParent(ctx, q, request, parent) != nil {

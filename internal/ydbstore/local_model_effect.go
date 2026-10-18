@@ -28,6 +28,11 @@ func (store *Store) prepareLocalModelEvidence(ctx context.Context, op domain.Att
 	if m.source == nil || m.source.state == nil {
 		return nil, true, domain.ErrMembershipDenied
 	}
+	unlock, err := m.entry.beginLocalMutation(ctx)
+	if err != nil {
+		return nil, true, domain.ErrMembershipDenied
+	}
+	defer unlock()
 	m.source.state.mu.Lock()
 	defer m.source.state.mu.Unlock()
 	if ctx.Err() != nil || !m.originalForPhase(m.entry, localCompactionReserve) || !reflect.DeepEqual(m.operation, op) {
@@ -57,6 +62,11 @@ func (store *Store) reservePreparedLocalModel(ctx context.Context, op domain.Att
 	if m == nil || m.source == nil || m.source.state == nil {
 		return deny()
 	}
+	unlock, err := m.entry.beginLocalMutation(ctx)
+	if err != nil {
+		return deny()
+	}
+	defer unlock()
 	m.source.state.mu.Lock()
 	defer m.source.state.mu.Unlock()
 	if ctx.Err() != nil || !m.originalForPhase(m.entry, localCompactionReserve) || !reflect.DeepEqual(m.operation, op) || m.reservationAttempted || m.reservation.Version != 0 {
@@ -147,6 +157,11 @@ func (store *Store) authorizePreparedLocalModel(ctx context.Context, capability 
 	if m == nil || m.source == nil || m.source.state == nil {
 		return domain.ErrMembershipDenied
 	}
+	unlock, err := m.entry.beginLocalMutation(ctx)
+	if err != nil {
+		return domain.ErrMembershipDenied
+	}
+	defer unlock()
 	m.source.state.mu.Lock()
 	defer m.source.state.mu.Unlock()
 	op := capability.Reservation.Operation

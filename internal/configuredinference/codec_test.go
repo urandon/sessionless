@@ -365,7 +365,7 @@ func TestConfiguredCodecFinishModelUsageAndRedaction(t *testing.T) {
 		}
 	}
 	good := string(responseWire("model-local", "stop", "answer", nil))
-	for _, usage := range []string{`null`, `{}`, `{"prompt_tokens":-1,"completion_tokens":2,"total_tokens":1}`, `{"prompt_tokens":1.5,"completion_tokens":2,"total_tokens":3.5}`, `{"prompt_tokens":1,"completion_tokens":2,"total_tokens":4}`, `"malformed"`} {
+	for _, usage := range []string{`null`, `{}`, `{"prompt_tokens":-1,"completion_tokens":"bad","total_tokens":1}`, `"malformed"`} {
 		var obj map[string]json.RawMessage
 		_ = json.Unmarshal([]byte(good), &obj)
 		obj["usage"] = json.RawMessage(usage)
@@ -373,6 +373,23 @@ func TestConfiguredCodecFinishModelUsageAndRedaction(t *testing.T) {
 		out, err := f.DecodeResponse(raw)
 		if err != nil || out.Usage.Provenance != UsageUnknownV1 || out.Usage.InputTokens != nil || out.Usage.OutputTokens != nil || out.Usage.TotalTokens != nil || out.Text != "answer" {
 			t.Fatalf("malformed usage was measured/zero or broke complete response: %v", err)
+		}
+	}
+	for _, tc := range []struct {
+		raw           string
+		input, output *uint64
+	}{
+		{`{"prompt_tokens":-1,"completion_tokens":2,"total_tokens":1}`, nil, usageCount(2)},
+		{`{"prompt_tokens":1.5,"completion_tokens":2,"total_tokens":3.5}`, nil, usageCount(2)},
+		{`{"prompt_tokens":1,"completion_tokens":2,"total_tokens":4}`, usageCount(1), usageCount(2)},
+	} {
+		var obj map[string]json.RawMessage
+		_ = json.Unmarshal([]byte(good), &obj)
+		obj["usage"] = json.RawMessage(tc.raw)
+		raw, _ := json.Marshal(obj)
+		out, err := f.DecodeResponse(raw)
+		if err != nil || out.Text != "answer" || out.Usage.Provenance != UsageProviderReportedV1 || !reflect.DeepEqual(out.Usage.InputTokens, tc.input) || !reflect.DeepEqual(out.Usage.OutputTokens, tc.output) || out.Usage.TotalTokens != nil {
+			t.Fatalf("malformed summary hid valid reported components: %v", err)
 		}
 	}
 	marker := "PRIVATE_REASONING_TOKEN"

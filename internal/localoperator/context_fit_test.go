@@ -277,3 +277,96 @@ func TestSourceContextFitExclusiveExpiry(t *testing.T) {
 		}
 	})
 }
+
+// Full encoded summary, not merely its prose field. Synthetic calibration here
+// proves the original retained-body computation, not real output qualification.
+func encodedFitSummary(t *testing.T, size int) string {
+	t.Helper()
+	const prefix = `{"schema":"sessionless.compaction-summary.v1","task":[{"text":"`
+	const suffix = `","source_ids":["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]}],"constraints":[],"facts":[],"unresolved":[],"artifacts":[],"omissions":[]}`
+	if size < len(prefix)+len(suffix)+1 {
+		t.Fatal("summary fixture size below framing")
+	}
+	text := prefix + strings.Repeat("x", size-len(prefix)-len(suffix)) + suffix
+	if len(text) != size || !json.Valid([]byte(text)) {
+		t.Fatal("complete encoded summary fixture")
+	}
+	return text
+}
+
+func TestSourceCompactionSummaryBoundExactEncodedBoundary(t *testing.T) {
+	root, exe, _ := sourceFitFiles(t)
+	s := openFitSource(t, t.Context(), root, exe)
+	// ceil(1358 * 3/2) + 11 = 2048. The JSON framing counts too.
+	text := encodedFitSummary(t, 1358)
+	if got, err := s.BoundCompactionSummary(text); err != nil || got != 2048 {
+		t.Fatalf("encoded inclusive boundary got=%d want=2048 err=%v", got, err)
+	}
+	if got, err := s.BoundCompactionSummary(encodedFitSummary(t, 1359)); !errors.Is(err, configuredinference.ErrContextNoFit) || got != 0 {
+		t.Fatalf("encoded one-byte over bound got=%d err=%v", got, err)
+	}
+	for _, invalid := range []string{"", string([]byte{0xff}), strings.Repeat("x", (16<<10)+1)} {
+		if got, err := s.BoundCompactionSummary(invalid); !errors.Is(err, localoperator.ErrDenied) || got != 0 {
+			t.Fatalf("invalid summary bytes=%d got=%d err=%v", len(invalid), got, err)
+		}
+	}
+}
+
+func TestSourceCompactionSummaryBoundOriginalBodyAndLifetime(t *testing.T) {
+	root, exe, _ := sourceFitFiles(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	s := openFitSource(t, ctx, root, exe)
+	// As in the context-fit identity test, copy before the first Source method
+	// so the deliberately rejected object does not copy an already-used mutex.
+	copied := new(localoperator.Source)
+	reflect.ValueOf(copied).Elem().Set(reflect.ValueOf(s).Elem())
+	text := encodedFitSummary(t, 1358)
+	for _, source := range []*localoperator.Source{nil, new(localoperator.Source), copied} {
+		if got, err := source.BoundCompactionSummary(text); !errors.Is(err, localoperator.ErrDenied) || got != 0 {
+			t.Fatalf("non-original summary source got=%d err=%v", got, err)
+		}
+	}
+	if got, err := s.BoundCompactionSummary(text); err != nil || got != 2048 {
+		t.Fatalf("original after rejected copy got=%d err=%v", got, err)
+	}
+	cancel()
+	if got, err := s.BoundCompactionSummary(text); !errors.Is(err, localoperator.ErrDenied) || got != 0 {
+		t.Fatalf("cancelled summary source got=%d err=%v", got, err)
+	}
+	root2, exe2, _ := sourceFitFiles(t)
+	s2 := openFitSource(t, t.Context(), root2, exe2)
+	if err := s2.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s2.BoundCompactionSummary(text); !errors.Is(err, localoperator.ErrDenied) || got != 0 {
+		t.Fatalf("closed summary source got=%d err=%v", got, err)
+	}
+	root3, exe3, manifest := sourceFitFiles(t)
+	manifest.Evidence = manifest.Evidence[:3]
+	writeFitManifest(t, root3, manifest)
+	s3 := openFitSource(t, t.Context(), root3, exe3)
+	if got, err := s3.BoundCompactionSummary(encodedFitSummary(t, 1359)); !errors.Is(err, localoperator.ErrDenied) || got != 0 {
+		t.Fatalf("missing actual body became genuine no-fit got=%d err=%v", got, err)
+	}
+}
+
+func TestSourceCompactionSummaryBoundExclusiveExpiry(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		root, exe, _ := sourceFitFiles(t)
+		s := openFitSource(t, t.Context(), root, exe)
+		text := encodedFitSummary(t, 1358)
+		if got, err := s.BoundCompactionSummary(text); err != nil || got != 2048 {
+			t.Fatalf("live summary source got=%d err=%v", got, err)
+		}
+		p, err := s.Configuration()
+		if err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(time.Until(p.ExpiresAt)) // sole virtual clock reaches exclusive expiry
+		synctest.Wait()
+		if got, err := s.BoundCompactionSummary(text); !errors.Is(err, localoperator.ErrDenied) || got != 0 {
+			t.Fatalf("expired summary source got=%d err=%v", got, err)
+		}
+	})
+}

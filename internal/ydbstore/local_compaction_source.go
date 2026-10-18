@@ -266,6 +266,17 @@ func (entry *LocalInvocationEntryV1) compactionSourceControl() domain.AttemptOpe
 }
 
 func (entry *LocalInvocationEntryV1) readCompactionSnapshot(ctx context.Context, q *ownedAuthorityQuery) (localCompactionSnapshot, error) {
+	return entry.readCompactionGenerationSnapshot(ctx, q, nil, localCompactionCapture)
+}
+
+func (entry *LocalInvocationEntryV1) readCompactionGenerationSnapshot(ctx context.Context, q *ownedAuthorityQuery, generation *localCompactionGenerationV1, phase localCompactionGenerationPhase) (localCompactionSnapshot, error) {
+	if phase == localCompactionCapture {
+		if generation != nil {
+			return localCompactionSnapshot{}, q.budget.deny()
+		}
+	} else if generation == nil || !generation.originalForPhase(entry, phase) {
+		return localCompactionSnapshot{}, q.budget.deny()
+	}
 	var v localCompactionSnapshot
 	deny := func() (localCompactionSnapshot, error) { return localCompactionSnapshot{}, q.budget.deny() }
 	if q.metadataCache == nil {
@@ -328,18 +339,18 @@ func (entry *LocalInvocationEntryV1) readCompactionSnapshot(ctx context.Context,
 		return deny()
 	}
 	v.Accounting = *accounting
-	v.Operations, err = entry.readCompactionOperations(ctx, q, *accounting)
+	v.Operations, err = entry.readCompactionGenerationOperations(ctx, q, *accounting, generation, phase)
 	if err != nil {
 		return deny()
 	}
-	v.ProxyDigests, err = entry.readCompactionProxies(ctx, q, v.Operations)
+	v.ProxyDigests, err = entry.readCompactionGenerationProxies(ctx, q, v.Operations, generation, phase)
 	if err != nil {
 		return deny()
 	}
 	return v, nil
 }
 
-func (entry *LocalInvocationEntryV1) readCompactionOperations(ctx context.Context, q *ownedAuthorityQuery, accounting ownedAttemptAccounting) ([]ownedOperationRow, error) {
+func (entry *LocalInvocationEntryV1) readCompactionGenerationOperations(ctx context.Context, q *ownedAuthorityQuery, accounting ownedAttemptAccounting, generation *localCompactionGenerationV1, phase localCompactionGenerationPhase) ([]ownedOperationRow, error) {
 	scope := ownedOperationScope(entry.parent)
 	rows, err := q.QueryContext(ctx, localCompactionOperationsSQL, scope.TenantID, scope.AttemptID)
 	if err != nil {
@@ -366,17 +377,30 @@ func (entry *LocalInvocationEntryV1) readCompactionOperations(ctx context.Contex
 			return nil, q.budget.deny()
 		}
 		row, e := columns.decode(q, scope, sequence)
-		if e != nil || row == nil || row.observation == nil || row.reservation.Operation.Scope != scope || row.reservation.ValidateForParent(entry.parent.Authority, entry.parent.Reservation) != nil || indexedSequence != sequence || indexedDigest != columns.operationDigest || !ownedObservationAllowsSuccessor(row.reservation, *row.observation) || row.reservation.Operation.PredecessorObservationDigest != predecessor || row.reservation.ReservedAt.Before(baseline.UpdatedAt) {
+		if e != nil || row == nil || row.reservation.Operation.Scope != scope || row.reservation.ValidateForParent(entry.parent.Authority, entry.parent.Reservation) != nil || indexedSequence != sequence || indexedDigest != columns.operationDigest || row.reservation.Operation.PredecessorObservationDigest != predecessor || row.reservation.ReservedAt.Before(baseline.UpdatedAt) {
 			return nil, q.budget.deny()
 		}
-		if len(result) > 0 && row.reservation.ReservedAt.Before(result[len(result)-1].observation.ObservedAt) {
+		pending := generation != nil && phase == localCompactionBeforeSend && sequence == generation.operation.Sequence
+		if pending {
+			if row.observation != nil || !reflect.DeepEqual(row.reservation.Operation, generation.operation) {
+				return nil, q.budget.deny()
+			}
+		} else if row.observation == nil || !ownedObservationAllowsSuccessor(row.reservation, *row.observation) {
 			return nil, q.budget.deny()
+		}
+		if len(result) > 0 {
+			previous := result[len(result)-1].observation
+			if previous == nil || row.reservation.ReservedAt.Before(previous.ObservedAt) {
+				return nil, q.budget.deny()
+			}
 		}
 		baseline, e = debitOwnedOperation(baseline, row.reservation.Operation, entry.parent, entry.source, row.reservation.ReservedAt)
 		if e != nil || baseline.Aggregate != row.reservation.AggregateDebit || baseline.Amounts != row.reservation.ComponentAmounts {
 			return nil, q.budget.deny()
 		}
-		predecessor, _ = row.observation.Digest()
+		if row.observation != nil {
+			predecessor, _ = row.observation.Digest()
+		}
 		result = append(result, *row)
 	}
 	if rows.Err() != nil || rows.Close() != nil || uint64(len(result)) != accounting.Aggregate.Operations || !reflect.DeepEqual(baseline, accounting) {
@@ -385,17 +409,32 @@ func (entry *LocalInvocationEntryV1) readCompactionOperations(ctx context.Contex
 	return result, nil
 }
 
-func (entry *LocalInvocationEntryV1) readCompactionProxies(ctx context.Context, q *ownedAuthorityQuery, operations []ownedOperationRow) ([]domain.RegisteredProxyAttestationDigestV2, error) {
+func (entry *LocalInvocationEntryV1) readCompactionGenerationProxies(ctx context.Context, q *ownedAuthorityQuery, operations []ownedOperationRow, generation *localCompactionGenerationV1, phase localCompactionGenerationPhase) ([]domain.RegisteredProxyAttestationDigestV2, error) {
 	var result []domain.RegisteredProxyAttestationDigestV2
+	future := generation != nil && phase == localCompactionReserve
+	count := len(operations)
+	if future {
+		count++
+	}
 	p, err := readOwnedProxySnapshotAt(ctx, q, entry.parent, entry.source, entry.allocation, 1)
-	if err != nil || (len(operations) == 0 && p != nil) {
+	if err != nil || (count == 0 && p != nil) {
 		return nil, q.budget.deny()
 	}
-	if len(operations) > 0 {
+	if count > 0 {
 		if err != nil || p == nil {
 			return nil, q.budget.deny()
 		}
-		d, err := entry.compactionProxyDigest(p, operations[0])
+		var d domain.RegisteredProxyAttestationDigestV2
+		if len(operations) == 0 {
+			d, err = generation.futureProxyDigest(q, p)
+		} else {
+			if generation != nil && generation.operation.Sequence == 1 {
+				if _, err := generation.futureProxyDigest(q, p); err != nil {
+					return nil, err
+				}
+			}
+			d, err = entry.compactionProxyDigest(p, operations[0])
+		}
 		if err != nil {
 			return nil, q.budget.deny()
 		}
@@ -411,20 +450,30 @@ func (entry *LocalInvocationEntryV1) readCompactionProxies(ctx context.Context, 
 		var columns ownedProxyColumns
 		dest := append([]any{&sequence}, columns.destinations(2)...)
 		n, e := scanOwnedCurrentRow(rows, dest...)
-		if q.budget.materialized(q.callback, n) != nil || e != nil || sequence != uint64(len(result))+1 || sequence <= 1 || sequence > uint64(len(operations)) {
+		if q.budget.materialized(q.callback, n) != nil || e != nil || sequence != uint64(len(result))+1 || sequence <= 1 || sequence > uint64(count) {
 			return nil, q.budget.deny()
 		}
 		p, e := columns.decode(q, entry.parent, entry.source, entry.allocation, sequence)
 		if e != nil || p == nil {
 			return nil, q.budget.deny()
 		}
-		d, e := entry.compactionProxyDigest(p, operations[sequence-1])
+		var d domain.RegisteredProxyAttestationDigestV2
+		if future && sequence == generation.operation.Sequence {
+			d, e = generation.futureProxyDigest(q, p)
+		} else {
+			if generation != nil && sequence == generation.operation.Sequence {
+				if _, err := generation.futureProxyDigest(q, p); err != nil {
+					return nil, err
+				}
+			}
+			d, e = entry.compactionProxyDigest(p, operations[sequence-1])
+		}
 		if e != nil {
 			return nil, q.budget.deny()
 		}
 		result = append(result, d)
 	}
-	if rows.Err() != nil || rows.Close() != nil || len(result) != len(operations) {
+	if rows.Err() != nil || rows.Close() != nil || len(result) != count {
 		return nil, q.budget.deny()
 	}
 	return result, nil

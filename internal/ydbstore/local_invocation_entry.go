@@ -34,14 +34,15 @@ func (slot *localOperationBodySlot) ReadAttemptOperationBody(ctx context.Context
 // capability/current-state assertion. Accessors remain historical after Source
 // retirement; new effects still require the entered bridge and current Store.
 type LocalInvocationEntryV1 struct {
-	self              *LocalInvocationEntryV1
-	owner             *LocalOwnedStoreBootstrapV1
-	parent            domain.OwnedAttemptEffectParentV1
-	source            domain.AttemptExecutionSourceV1
-	allocation        domain.RegisteredAllocationV2
-	bodies            *operationbody.StoreV1
-	canonicalBlobs    ports.BlobStore
-	invocationContext context.Context
+	self                 *LocalInvocationEntryV1
+	owner                *LocalOwnedStoreBootstrapV1
+	parent               domain.OwnedAttemptEffectParentV1
+	source               domain.AttemptExecutionSourceV1
+	allocation           domain.RegisteredAllocationV2
+	bodies               *operationbody.StoreV1
+	canonicalBlobs       ports.BlobStore
+	invocationContext    context.Context
+	compactionGeneration atomic.Pointer[localCompactionGenerationV1]
 }
 
 func (entry *LocalInvocationEntryV1) original() bool {

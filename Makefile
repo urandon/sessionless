@@ -323,6 +323,14 @@ run-explanation-ydb-gate: prepare
 	SESSIONLESS_RUN_EXPLANATION_YDB_GATE=1 go test -race -count=$(RUN_EXPLANATION_YDB_COUNT) -shuffle=on -timeout=10m -tags=ydbintegration \
 		-run '^TestRunExplanationYDB' ./test/ydbintegration
 
+.PHONY: retained-compaction-ydb-gate
+# Existing disposable CI database only; no local DB startup or profile activation.
+retained-compaction-ydb-gate: prepare
+	@test "$(GITHUB_ACTIONS)" = true || { echo 'requires disposable GitHub CI'; exit 1; }
+	SESSIONLESS_OWNED_CURRENT_YDB_GATE=1 SESSIONLESS_OWNED_CURRENT_YDB_DISPOSABLE=1 \
+		go test -race -count=3 -shuffle=on -timeout=5m \
+		-run '^TestLocalRetainedCompactionYDB' ./internal/ydbstore
+
 .PHONY: admission-cost-ydb-gate
 admission-cost-ydb-gate: prepare
 	SESSIONLESS_RUN_EXPLANATION_YDB_GATE=1 go test -race -count=3 -shuffle=on -timeout=5m -tags=ydbintegration \

@@ -45,6 +45,9 @@ type bodyState struct {
 	maxWrites, maxBytes  uint64
 	writes, chargedBytes uint64
 	writeFailed          bool
+	maxRetainedPairs     uint64
+	retainedCount        uint64
+	retained             [2]retainedSlot
 }
 
 var _ ports.AttemptOperationBodyStoreV1 = (*StoreV1)(nil)
@@ -67,7 +70,8 @@ func NewV1(scope domain.AttemptOperationScopeV1, limits domain.AgentLoopLimitsV1
 	}
 	timeout := min(10*time.Second, limits.MaxNetworkOperationDuration)
 	return &StoreV1{state: &bodyState{scope: scope, prefix: prefix, blobs: blobs, active: make(chan struct{}, 1),
-		timeout: timeout, maxWrites: 2 * limits.MaxOperations, maxBytes: limits.MaxAggregateBodyBytes}}, nil
+		timeout: timeout, maxWrites: 2 * limits.MaxOperations, maxBytes: limits.MaxAggregateBodyBytes,
+		maxRetainedPairs: limits.MaxCompactionCalls}}, nil
 }
 
 // begin fails rather than queuing behind active I/O. BlobStore and its readers

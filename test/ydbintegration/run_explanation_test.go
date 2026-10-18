@@ -162,7 +162,7 @@ func TestRunExplanationYDBSelectedReadPlansArePointBounded(t *testing.T) {
 	}{
 		{table: "web_sessions", query: `SELECT SUBSTRING(CAST(record AS String),0,8193) FROM web_sessions WHERE shard_bucket=$1 AND session_digest=$2`, args: []any{uint32(0), domain.DigestSecret("explanation-plan")}},
 		{table: "tenant_memberships", query: `SELECT SUBSTRING(CAST(record AS String),0,8193) FROM tenant_memberships WHERE user_bucket=$1 AND user_id=$2 AND tenant_id=$3`, args: []any{uint32(0), "plan-user", "plan-tenant"}},
-		{table: "runs", query: `SELECT SUBSTRING(CAST(payload AS String),0,8193) FROM runs WHERE tenant_id=$1 AND run_id=$2`, args: []any{"plan-tenant", "plan-run"}},
+		{table: "runs", query: explanationRunProjectionPlanSQL, args: []any{"plan-tenant", "plan-run"}},
 		{table: "sessions", query: `SELECT SUBSTRING(CAST(record AS String),0,8193) FROM sessions WHERE tenant_id=$1 AND session_id=$2`, args: []any{"plan-tenant", "plan-session"}},
 		{table: "session_participants", query: `SELECT SUBSTRING(CAST(record AS String),0,8193) FROM session_participants WHERE tenant_id=$1 AND session_id=$2 AND user_id=$3`, args: []any{"plan-tenant", "plan-session", "plan-user"}},
 		{table: "run_explanation_heads_v1", query: `SELECT SUBSTRING(CAST(record AS String),0,8193) FROM run_explanation_heads_v1 WHERE tenant_id=$1 AND run_id=$2`, args: []any{"plan-tenant", "plan-run"}},

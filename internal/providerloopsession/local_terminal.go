@@ -60,7 +60,10 @@ func (v *LocalV1) PrepareTerminal(ctx context.Context) (_ *PreparedLocalTerminal
 	// Even a busy/failed entry must close transport admission irreversibly.
 	// An active Keeper seal remains failure-only, even after it later drains.
 	sealErr := s.keeper.SealTerminal(deadline)
-	if claimErr != nil || sealErr != nil || call.Err() != nil || ctx.Err() != nil {
+	s.mu.Lock()
+	callerCanceled := s.callersCanceled()
+	s.mu.Unlock()
+	if claimErr != nil || sealErr != nil || call.Err() != nil || ctx.Err() != nil || callerCanceled {
 		return nil, ErrSession
 	}
 	source, e := entry.Capture(call)
@@ -69,7 +72,7 @@ func (v *LocalV1) PrepareTerminal(ctx context.Context) (_ *PreparedLocalTerminal
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed || call.Err() != nil || ctx.Err() != nil || s.terminalOutput != nil {
+	if s.closed || s.callersCanceled() || call.Err() != nil || ctx.Err() != nil || s.terminalOutput != nil {
 		source.Clear()
 		return nil, ErrSession
 	}
@@ -109,7 +112,7 @@ func (h *PreparedLocalTerminalV1) PrepareOutput(ctx context.Context) (*ydbstore.
 	defer func() { <-s.gate }()
 	s.mu.Lock()
 	valid := s.terminalOutput == h && !s.closed && s.terminalRequested && !s.runtimeFailed && h.output == nil &&
-		s.caller.Err() == nil && s.ctx.Err() == nil && s.entry != nil && h.source != nil
+		!s.callersCanceled() && s.ctx.Err() == nil && s.entry != nil && h.source != nil
 	base := s.ctx
 	if s.execution != nil {
 		base = s.execution
@@ -128,7 +131,7 @@ func (h *PreparedLocalTerminalV1) PrepareOutput(ctx context.Context) (*ydbstore.
 	output, err := h.entry.PrepareOutput(call)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err != nil || output == nil || s.closed || s.caller.Err() != nil || ctx.Err() != nil || call.Err() != nil {
+	if err != nil || output == nil || s.closed || s.callersCanceled() || ctx.Err() != nil || call.Err() != nil {
 		if output != nil {
 			output.Clear()
 		}
@@ -157,7 +160,7 @@ func (h *PreparedLocalTerminalV1) PublishOutput(ctx context.Context) error {
 	defer func() { <-s.gate }()
 	s.mu.Lock()
 	valid := s.terminalOutput == h && !s.closed && s.terminalRequested && !s.runtimeFailed && h.output != nil &&
-		s.caller.Err() == nil && s.ctx.Err() == nil && s.entry != nil && h.source != nil
+		!s.callersCanceled() && s.ctx.Err() == nil && s.entry != nil && h.source != nil
 	base, output := s.ctx, h.output
 	if s.execution != nil {
 		base = s.execution
@@ -176,7 +179,7 @@ func (h *PreparedLocalTerminalV1) PublishOutput(ctx context.Context) error {
 	err := output.Publish(call)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err != nil || s.closed || ctx.Err() != nil || call.Err() != nil || s.caller.Err() != nil {
+	if err != nil || s.closed || ctx.Err() != nil || call.Err() != nil || s.callersCanceled() {
 		s.runtimeFailed = true
 		s.cancel()
 		return ErrSession

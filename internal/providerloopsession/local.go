@@ -58,6 +58,11 @@ type localState struct {
 	stopSource                    func() bool
 	stopEntryCaller               func() bool
 	entryCancel                   context.CancelFunc
+	entryContext                  context.Context
+	entryCaller                   context.Context
+	entryHandoffCaller            context.Context
+	entryRoute                    localEntryRoute
+	workerState                   *localWorkerState
 	executionCancel               context.CancelFunc
 	execution                     context.Context
 	profile                       domain.ConfiguredInferenceProfileV1
@@ -82,7 +87,8 @@ type localState struct {
 }
 
 // NewLocalV1 constructs inert owners only. There is no SQL, socket, provider or
-// credential call. Each actual parent is reserved by Start on this SAME Store.
+// credential call. Start and the single-invocation worker facade reserve each
+// actual parent through the SAME original bootstrap and Store.
 func NewLocalV1(ctx context.Context, c LocalConfigV1) (*LocalV1, error) {
 	if ctx == nil || ctx.Err() != nil || c.Source == nil || c.DB == nil || c.Blobs == nil ||
 		c.StoreOptions.AttemptOperationBodies != nil || c.StoreOptions.OwnedOperationResidualCustody != nil {
@@ -156,7 +162,7 @@ func (v *LocalV1) begin(ctx context.Context) (*localState, context.Context, func
 	if s.execution != nil {
 		base = s.execution
 	}
-	closed := s.closed || s.terminalRequested || s.caller.Err() != nil || base.Err() != nil
+	closed := s.closed || s.terminalRequested || s.callersCanceled() || base.Err() != nil
 	s.mu.Unlock()
 	if closed {
 		<-s.gate
@@ -183,54 +189,21 @@ func (v *LocalV1) Start(ctx context.Context, request ports.ReserveAttemptEffectR
 		return domain.OwnedAttemptEffectParentV1{}, err
 	}
 	defer finish()
-	if s.started {
+	if s.started || s.entryRoute != localEntryUnselected {
 		return domain.OwnedAttemptEffectParentV1{}, ErrSession
 	}
+	s.entryRoute = localEntryDirect
 	s.started = true
-	// The preparation retains this context for the allocation. It must NOT be
-	// the short begin-call context canceled by finish when Start returns.
-	entryCtx, entryCancel := context.WithCancel(s.ctx)
-	if deadline, ok := ctx.Deadline(); ok {
-		entryCancel()
-		entryCtx, entryCancel = context.WithDeadline(s.ctx, deadline)
-	}
-	stopCaller := context.AfterFunc(ctx, entryCancel)
-	if ctx.Err() != nil {
-		entryCancel()
-	}
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		entryCancel()
-		stopCaller()
+	entryCtx, err := s.retainEntryContext(ctx)
+	if err != nil {
 		return domain.OwnedAttemptEffectParentV1{}, ErrSession
 	}
-	s.entryCancel, s.stopEntryCaller = entryCancel, stopCaller
-	s.mu.Unlock()
 	entry, err := s.bootstrap.StartLocalInvocation(entryCtx, request, s.blobs)
 	if err != nil {
 		s.cancel()
 		return domain.OwnedAttemptEffectParentV1{}, ErrSession
 	}
-	parent, pe := entry.Parent()
-	source, se := entry.Source()
-	allocation, ae := entry.Allocation()
-	bodies, be := entry.Bodies()
-	if pe != nil || se != nil || ae != nil || be != nil || bodies == nil || call.Err() != nil {
-		s.cancel()
-		return domain.OwnedAttemptEffectParentV1{}, ErrSession
-	}
-	execution, executionCancel := context.WithDeadline(entryCtx, allocation.Window.ExpiresAt)
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		executionCancel()
-		return domain.OwnedAttemptEffectParentV1{}, ErrSession
-	}
-	s.execution, s.executionCancel = execution, executionCancel
-	s.mu.Unlock()
-	s.entry, s.parent, s.source, s.allocation, s.bodies = entry, parent.Clone(), source.Clone(), allocation.Clone(), bodies
-	return parent.Clone(), nil
+	return s.installEntry(ctx, call, entry)
 }
 
 // WriteModelRequest freezes the configured route's own codec and writes DATA

@@ -120,9 +120,15 @@ suites. CI adds Playwright's Linux system dependencies through the same target.
 
 `make test` checks formatting, runs `go vet`, unit tests, and the race detector.
 It sets an explicit 15-minute per-package test deadline for the growing
-Store/worker conformance suites; the Go verification CI job remains bounded to
-20 minutes. This is a failure ceiling, not synchronization or permission to
-retry. Diagnose a timeout using the exact source, goroutine stacks and bounded
+Store/worker conformance suites. The Go verification CI job has a separate
+30-minute ceiling for the serial `make ci` contract, including compilation,
+the race suite, builds, integration, security/conformance stress and policy
+checks. A measured run passed the Store package but reached the previous
+20-minute job ceiling during later egress stress; a package pass does not
+replace the unfinished checks. These are failure ceilings, not synchronization,
+correctness guarantees or permission to retry. Diagnose any further timeout
+at its actual stage rather than automatically increasing the ceiling again.
+Use the exact source, goroutine stacks and bounded
 test timings before changing a deadline; the test listed at expiry may have
 just started after earlier serial work. Individual I/O and cleanup operations
 keep their own tighter bounds, and no tests or race checks are excluded.

@@ -244,7 +244,7 @@ func (store *Store) reserveOwnedOperation(ctx context.Context, op domain.Attempt
 			return q.budget.deny()
 		}
 		next, err := debitOwnedOperation(*accounting, op, parent, source, q.at)
-		if err != nil {
+		if err != nil || !store.localOperationBudgetAllows(op.Scope, next.Aggregate.BodyBytes) {
 			return q.budget.deny()
 		}
 		value := domain.AttemptOperationReservationV1{Version: 1, Operation: op.Clone(), OperationDigest: opDigest, ReservedAt: q.at, AggregateDebit: next.Aggregate, RegisteredAllocationDigest: ad, RegisteredProxyDigest: pd, ComponentAmounts: next.Amounts}
@@ -353,7 +353,7 @@ func (store *Store) AuthorizeAttemptOperationBeforeSend(ctx context.Context, cap
 		digest, _ := r.Digest()
 		actualDigest, _ := actual.reservation.Digest()
 		accounting, err := readOwnedAttemptAccounting(ctx, q, parent, source)
-		if err != nil || accounting == nil || digest != actualDigest || accounting.Aggregate != r.AggregateDebit || accounting.Amounts != r.ComponentAmounts || !accounting.SetupReservedAt.Equal(burnAt) {
+		if err != nil || accounting == nil || digest != actualDigest || accounting.Aggregate != r.AggregateDebit || accounting.Amounts != r.ComponentAmounts || !accounting.SetupReservedAt.Equal(burnAt) || !store.localOperationBudgetAllows(op.Scope, accounting.Aggregate.BodyBytes) {
 			return q.budget.deny()
 		}
 		return nil

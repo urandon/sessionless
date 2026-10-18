@@ -159,7 +159,7 @@ func (g *localCompactionGenerationV1) completedRetainedLocked(ctx context.Contex
 		return deny()
 	}
 	accounting, err := debitOwnedOperation(g.source.state.snapshot.Accounting, op, g.entry.parent, g.entry.source, g.reservation.ReservedAt)
-	if err != nil || accounting.Aggregate.InputTokens >= policy.Limits.MaxAggregateInputTokens || accounting.Aggregate.OutputTokens >= policy.Limits.MaxAggregateOutputTokens || accounting.Aggregate.Operations >= policy.Limits.MaxOperations || accounting.Aggregate.ModelCalls >= policy.Limits.MaxModelCalls || accounting.Aggregate.ActiveDuration >= policy.Limits.MaxActiveDuration || accounting.Aggregate.BodyBytes >= policy.Limits.MaxAggregateBodyBytes {
+	if err != nil || accounting.Aggregate.InputTokens >= policy.Limits.MaxAggregateInputTokens || accounting.Aggregate.OutputTokens >= policy.Limits.MaxAggregateOutputTokens || accounting.Aggregate.Operations >= policy.Limits.MaxOperations || accounting.Aggregate.ModelCalls >= policy.Limits.MaxModelCalls || accounting.Aggregate.ActiveDuration >= policy.Limits.MaxActiveDuration || accounting.Aggregate.BodyBytes >= g.entry.localOperationBodyLimit() {
 		return deny()
 	}
 	next, err := g.program.Rebuild(summary)

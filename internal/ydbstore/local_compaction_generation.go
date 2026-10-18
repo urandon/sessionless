@@ -256,6 +256,7 @@ func prepareLocalCompactionGenerationLocked(ctx context.Context, originalCaller 
 	}
 	configuration := entry.owner.configuration
 	limits, used := policy.Limits, state.snapshot.Accounting.Aggregate
+	limits.MaxAggregateBodyBytes = min(limits.MaxAggregateBodyBytes, entry.localOperationBodyLimit())
 	if used.Operations >= limits.MaxOperations || used.ModelCalls >= limits.MaxModelCalls || used.CompactionCalls >= limits.MaxCompactionCalls || (parent == nil && used.CompactionCalls != 0) || (parent != nil && used.CompactionCalls != 1) || used.InputTokens >= limits.MaxAggregateInputTokens || used.OutputTokens >= limits.MaxAggregateOutputTokens || used.BodyBytes >= limits.MaxAggregateBodyBytes || used.ActiveDuration >= limits.MaxActiveDuration {
 		return deny()
 	}

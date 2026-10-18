@@ -549,6 +549,9 @@ func (v *LocalV1) Close() error {
 			terminal := s.terminalOutput
 			s.mu.Unlock()
 			if terminal != nil && terminal.source != nil {
+				if terminal.output != nil {
+					terminal.output.Clear()
+				}
 				terminal.source.Clear()
 			}
 		}

@@ -111,7 +111,7 @@ func (store *Store) reservePreparedLocalModel(ctx context.Context, op domain.Att
 			return q.budget.deny()
 		}
 		next, err := debitOwnedOperation(m.source.state.snapshot.Accounting, op, parent, source, q.at)
-		if err != nil {
+		if err != nil || !store.localOperationBudgetAllows(op.Scope, next.Aggregate.BodyBytes) {
 			return q.budget.deny()
 		}
 		ad, _ := allocation.original.Digest()
@@ -182,6 +182,9 @@ func (store *Store) authorizePreparedLocalModel(ctx context.Context, capability 
 		}
 		if _, err := m.rejoinLocked(ctx, q, localCompactionBeforeSend); err != nil {
 			return err
+		}
+		if !store.localOperationBudgetAllows(op.Scope, capability.Reservation.AggregateDebit.BodyBytes) {
+			return q.budget.deny()
 		}
 		parent, source := m.entry.parent, m.entry.source
 		if store.validateOwnedOperationProviderPrice(ctx, q, op, e.price, source) != nil {

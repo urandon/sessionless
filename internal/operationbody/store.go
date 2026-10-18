@@ -48,6 +48,7 @@ type bodyState struct {
 	maxRetainedPairs     uint64
 	retainedCount        uint64
 	retained             [2]retainedSlot
+	terminal             *terminalOutputState
 }
 
 var _ ports.AttemptOperationBodyStoreV1 = (*StoreV1)(nil)

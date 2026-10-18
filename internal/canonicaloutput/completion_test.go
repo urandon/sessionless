@@ -196,6 +196,10 @@ func TestOriginalUploaderIdentityAndFailures(t *testing.T) {
 			}
 			t.Cleanup(plan.Release)
 			event := plan.Events()[0]
+			predicted, err := canonicaloutput.PlanEventDraftV1(run, event.ID, event.Kind, event.Payload, at)
+			if err != nil {
+				t.Fatal("pure original draft planning", err)
+			}
 			blobs := &outputBlobs{failure: tc.failure, corrupt: tc.corrupt}
 			draft, material, err := canonicaloutput.PutEventDraftV1(t.Context(), blobs, run, event.ID, event.Kind, event.Payload, at)
 			if material != nil {
@@ -214,6 +218,9 @@ func TestOriginalUploaderIdentityAndFailures(t *testing.T) {
 			wantKey := domain.SessionEventObjectPrefix(run.TenantID, run.SessionID, event.ID) + "payloads/sha256/" + hex.EncodeToString(sum[:]) + ".json"
 			if err != nil || material == nil || draft.ID != event.ID || draft.Kind != event.Kind || draft.IdempotencyKey != "evtkey_81f542e1977540d42b22f1ef84331523" || draft.Payload.Key != wantKey || blobs.key != wantKey || !bytes.Equal(blobs.body, event.Payload) {
 				t.Fatalf("original publisher contract changed: draft=%s material=%t err=%v", draft.ID, material != nil, err)
+			}
+			if draft != predicted {
+				t.Fatal("uploader drifted from its original pure plan")
 			}
 		})
 	}

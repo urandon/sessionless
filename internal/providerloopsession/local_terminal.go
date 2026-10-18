@@ -18,6 +18,7 @@ type PreparedLocalTerminalV1 struct {
 	entry    *ydbstore.LocalTerminalV1
 	source   *ydbstore.LocalCompactionSourceV1
 	deadline time.Time
+	output   *ydbstore.LocalPreparedOutputV1
 }
 
 // PrepareTerminal freezes the SAME session/entry and seals its original idle
@@ -90,6 +91,53 @@ func (h *PreparedLocalTerminalV1) Deadline() (time.Time, error) {
 		return time.Time{}, ErrSession
 	}
 	return h.deadline, nil
+}
+
+// PrepareOutput consumes only this original frozen session. It cannot re-open
+// begin/effect admission or accept a caller's summary/frontier. Planned DATA is
+// not publication or completed evidence. The original session owns buffer join.
+func (h *PreparedLocalTerminalV1) PrepareOutput(ctx context.Context) (*ydbstore.LocalPreparedOutputV1, error) {
+	if h == nil || h.self != h || h.owner == nil || h.entry == nil || ctx == nil || ctx.Err() != nil {
+		return nil, ErrSession
+	}
+	s := h.owner
+	select {
+	case s.gate <- struct{}{}:
+	default:
+		return nil, ErrBusy
+	}
+	defer func() { <-s.gate }()
+	s.mu.Lock()
+	valid := s.terminalOutput == h && !s.closed && s.terminalRequested && !s.runtimeFailed && h.output == nil &&
+		s.caller.Err() == nil && s.ctx.Err() == nil && s.entry != nil && h.source != nil
+	base := s.ctx
+	if s.execution != nil {
+		base = s.execution
+	}
+	s.mu.Unlock()
+	if !valid || base.Err() != nil || !time.Now().Before(h.deadline) {
+		return nil, ErrSession
+	}
+	call, cancel := context.WithDeadline(base, h.deadline)
+	defer cancel()
+	stop := context.AfterFunc(ctx, cancel)
+	defer stop()
+	if ctx.Err() != nil {
+		cancel()
+	}
+	output, err := h.entry.PrepareOutput(call)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err != nil || output == nil || s.closed || s.caller.Err() != nil || ctx.Err() != nil || call.Err() != nil {
+		if output != nil {
+			output.Clear()
+		}
+		s.runtimeFailed = true
+		s.cancel()
+		return nil, ErrSession
+	}
+	h.output = output
+	return output, nil
 }
 
 func (*PreparedLocalTerminalV1) String() string     { return "PreparedLocalTerminalV1{private:[redacted]}" }

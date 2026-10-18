@@ -162,21 +162,37 @@ func EncodeFailureV1(runID domain.RunID, cancelled bool, code string) (EventV1, 
 // attest immutable readback/operation provenance. An owned terminal producer
 // must establish those independently before erasing original material.
 func PutEventDraftV1(ctx context.Context, blobs ports.BlobStore, run domain.Run, eventID domain.SessionEventID, kind domain.SessionEventKind, payload []byte, at time.Time) (domain.SessionEventDraft, *sessionmaterial.PreparedV1, error) {
-	sum := sha256.Sum256(payload)
-	key := domain.SessionEventObjectPrefix(run.TenantID, run.SessionID, eventID) + "payloads/sha256/" + hex.EncodeToString(sum[:]) + ".json"
-	ref, err := blobs.Put(ctx, run.TenantID, key, bytes.NewReader(payload))
+	draft, err := PlanEventDraftV1(run, eventID, kind, payload, at)
 	if err != nil {
 		return domain.SessionEventDraft{}, nil, err
 	}
-	if err := sessionmaterial.ValidateStoredPayloadV1(run.TenantID, key, ref, payload); err != nil {
+	ref, err := blobs.Put(ctx, run.TenantID, draft.Payload.Key, bytes.NewReader(payload))
+	if err != nil {
 		return domain.SessionEventDraft{}, nil, err
 	}
-	draft := domain.SessionEventDraft{ID: eventID, Kind: kind,
-		IdempotencyKey: domain.IdempotencyKey(stableID("evtkey", string(run.ID), string(eventID))), Payload: ref, CreatedAt: at}
-	if err := draft.ValidateForRun(run); err != nil {
+	if err := sessionmaterial.ValidateStoredPayloadV1(run.TenantID, draft.Payload.Key, ref, payload); err != nil {
 		return domain.SessionEventDraft{}, nil, err
 	}
 	return draft, ports.PrepareCanonicalDraftV1(run, draft, payload), nil
+}
+
+// PlanEventDraftV1 is the SAME canonical identity/key encoding without I/O.
+// A predicted reference is DATA, never evidence of upload or immutable custody.
+func PlanEventDraftV1(run domain.Run, eventID domain.SessionEventID, kind domain.SessionEventKind, payload []byte, at time.Time) (domain.SessionEventDraft, error) {
+	sum := sha256.Sum256(payload)
+	key := domain.SessionEventObjectPrefix(run.TenantID, run.SessionID, eventID) + "payloads/sha256/" + hex.EncodeToString(sum[:]) + ".json"
+	ref := domain.BlobRef{TenantID: run.TenantID, Key: key, Size: int64(len(payload)), SHA256: hex.EncodeToString(sum[:])}
+	draft := domain.SessionEventDraft{ID: eventID, Kind: kind,
+		IdempotencyKey: domain.IdempotencyKey(stableID("evtkey", string(run.ID), string(eventID))), Payload: ref, CreatedAt: at}
+	if err := draft.ValidateForRun(run); err != nil {
+		return domain.SessionEventDraft{}, err
+	}
+	return draft, nil
+}
+
+// ManifestIDV1 is the original worker's stable public output manifest identity.
+func ManifestIDV1(runID domain.RunID) domain.ArtifactManifestID {
+	return domain.ArtifactManifestID(stableID("art", string(runID)))
 }
 
 func NormalizedSummary(summary string) string {

@@ -113,6 +113,7 @@ type localRuntimeActualPrebuild struct {
 	compiledCompaction                           bool // closed synthetic declaration, installed BEFORE Source intake
 	inputTokens, outputTokens, modelWindowTokens uint64
 	networkOperation                             time.Duration
+	bodyBytes, artifactBytes                     uint64 // closed pre-intake narrowing only
 	operationClockBarrier                        func() // synchronization in the ORIGINAL issuer, never approval
 }
 
@@ -144,6 +145,17 @@ func newLocalRuntimeActualFixture(t *testing.T, runningExecutable, acceptReceipt
 		// changes a published Source or grants additional capacity.
 		p.Limits.MaxAggregateInputTokens = min(p.Limits.MaxAggregateInputTokens, p.Limits.MaxInputTokensPerCall*p.Limits.MaxModelCalls)
 		p.Limits.MaxAggregateOutputTokens = min(p.Limits.MaxAggregateOutputTokens, p.Limits.MaxOutputTokensPerCall*p.Limits.MaxModelCalls)
+		for _, quantity := range []struct {
+			value uint64
+			limit *uint64
+		}{{prebuild[0].bodyBytes, &p.Limits.MaxAggregateBodyBytes}, {prebuild[0].artifactBytes, &p.Substrate.Limits.ArtifactBytes}} {
+			if quantity.value != 0 {
+				if quantity.value > *quantity.limit {
+					t.Fatal("pre-intake body/artifact declaration may only narrow")
+				}
+				*quantity.limit = quantity.value
+			}
+		}
 		if n := prebuild[0].modelWindowTokens; n != 0 {
 			if n > c.ModelWindowTokens {
 				t.Fatal("pre-intake window may only narrow")

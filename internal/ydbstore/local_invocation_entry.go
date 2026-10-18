@@ -41,6 +41,7 @@ type LocalInvocationEntryV1 struct {
 	source            domain.AttemptExecutionSourceV1
 	allocation        domain.RegisteredAllocationV2
 	bodies            *operationbody.StoreV1
+	terminalOutputs   *operationbody.TerminalOutputV1
 	canonicalBlobs    ports.BlobStore
 	invocationContext context.Context
 	// Copies retain the same one-use slot; only original() may consume it.
@@ -216,6 +217,7 @@ func (b *LocalOwnedStoreBootstrapV1) EnterLocalWorkerEffect(ctx context.Context,
 	grant := reserved.Grant.Clone()
 	var parent domain.OwnedAttemptEffectParentV1
 	var source domain.AttemptExecutionSourceV1
+	var outputLimits domain.ProductLimits
 	err = tuple.store.ownedAuthorityTx(ctx, func(ctx context.Context, q *ownedAuthorityQuery) error {
 		parent, source = domain.OwnedAttemptEffectParentV1{}, domain.AttemptExecutionSourceV1{}
 		q.metadataCache = make(map[string]ownedMetadataCacheEntry)
@@ -237,6 +239,11 @@ func (b *LocalOwnedStoreBootstrapV1) EnterLocalWorkerEffect(ctx context.Context,
 		if e != nil || burned {
 			return q.budget.deny()
 		}
+		loaded, e := loadOwnedEffectWorkerJob(ctx, q, request)
+		if e != nil {
+			return q.budget.deny()
+		}
+		outputLimits = loaded.Job.Limits
 		parent, source = original.Clone(), final.Source.Clone()
 		return nil
 	})
@@ -245,6 +252,10 @@ func (b *LocalOwnedStoreBootstrapV1) EnterLocalWorkerEffect(ctx context.Context,
 	}
 	bodies, err := operationbody.NewV1(ownedOperationScope(parent), parent.Authority.HarnessBinding.AgentLoopPolicy.Limits, blobs)
 	if err != nil {
+		return nil, domain.ErrMembershipDenied
+	}
+	terminalOutputs, err := bodies.AdmitTerminalOutput(ctx, outputLimits, parent.Authority.SubstrateBinding.Limits)
+	if err != nil || ctx.Err() != nil || terminalOutputs.OperationBodyLimit() <= ownedSetupBodyBytes(parent) {
 		return nil, domain.ErrMembershipDenied
 	}
 	publication, err := tuple.bridge.PrepareAllocationPublication(ctx, grant)
@@ -267,7 +278,7 @@ func (b *LocalOwnedStoreBootstrapV1) EnterLocalWorkerEffect(ctx context.Context,
 	if e != nil || lifetime.Err() != nil || ctx.Err() != nil {
 		return nil, domain.ErrMembershipDenied
 	}
-	entry := &LocalInvocationEntryV1{owner: b, parent: parent.Clone(), source: source.Clone(), allocation: registered.Current.Clone(), bodies: bodies, canonicalBlobs: blobs, invocationContext: ctx, compactionGeneration: new(atomic.Pointer[localCompactionGenerationV1]), preparedModel: new(atomic.Pointer[localPreparedModelV1]), preparationMu: new(sync.Mutex), terminal: new(atomic.Pointer[LocalTerminalV1])}
+	entry := &LocalInvocationEntryV1{owner: b, parent: parent.Clone(), source: source.Clone(), allocation: registered.Current.Clone(), bodies: bodies, terminalOutputs: terminalOutputs, canonicalBlobs: blobs, invocationContext: ctx, compactionGeneration: new(atomic.Pointer[localCompactionGenerationV1]), preparedModel: new(atomic.Pointer[localPreparedModelV1]), preparationMu: new(sync.Mutex), terminal: new(atomic.Pointer[LocalTerminalV1])}
 	entry.self = entry
 	if !b.bodySlot.bodies.CompareAndSwap(nil, bodies) {
 		return nil, domain.ErrMembershipDenied

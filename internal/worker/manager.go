@@ -1068,7 +1068,7 @@ func (manager *Manager) uploadOutputs(
 	outputs []ports.ExecutionOutput,
 ) (domain.ArtifactManifest, error) {
 	manifest := domain.ArtifactManifest{
-		ID:       domain.ArtifactManifestID(stableID("art", string(loaded.Run.ID))),
+		ID:       canonicaloutput.ManifestIDV1(loaded.Run.ID),
 		TenantID: loaded.Run.TenantID, RunID: loaded.Run.ID,
 		CreatedAt: manager.clock.Now().UTC(),
 	}

@@ -18,6 +18,11 @@ type LocalTerminalV1 struct {
 	deadline time.Time
 	failed   atomic.Bool
 	captured atomic.Bool
+	// Guarded by the SAME entry preparation barrier. Only Capture installs this
+	// original source; a caller's matching DATA cannot replace it for planning.
+	source          *LocalCompactionSourceV1
+	outputAttempted bool
+	output          *LocalPreparedOutputV1
 }
 
 // One original barrier covers preparation, reservation/authorization and
@@ -135,6 +140,7 @@ func (h *LocalTerminalV1) Capture(ctx context.Context) (*LocalCompactionSourceV1
 		h.failed.Store(true)
 		return nil, domain.ErrMembershipDenied
 	}
+	h.source = source
 	return source, nil
 }
 

@@ -6,9 +6,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
-	"crypto/rand"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"testing"
@@ -19,6 +17,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/ydbclient"
 	"gitcode.com/urandon/sessionless/internal/ydbstore"
+	"gitcode.com/urandon/sessionless/test/support/aw07native"
 )
 
 func TestAttachedWorkerDrainIsDurableReplayableAndOwnerScoped(t *testing.T) {
@@ -741,92 +740,14 @@ func readyAttachedWorkerForDrain(t *testing.T, suffix string) (*ydbstore.Store, 
 
 func readyAttachedWorkerForDrainWithIdentity(t *testing.T, suffix string, tenantID domain.TenantID, workerID domain.AttachedWorkerID, features ...attachedworkerprotocol.ProtocolFeatureV1) (*ydbstore.Store, *ydbclient.Client, domain.AttachedWorker, domain.AttachedWorkerConnection, domain.AttachedWorkerConnectionSecretDigest, ed25519.PrivateKey, []byte, time.Time) {
 	t.Helper()
-	suffix = attachedWorkerDrainTestSuffix(t, suffix)
 	store, client := openStore(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	t.Cleanup(cancel)
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	if tenantID == "" {
-		tenantID = domain.TenantID(uniqueID("tenant-worker-" + suffix))
-	}
-	ownerID := domain.UserID(uniqueID("owner-worker-" + suffix))
-	seedCanonicalMembership(t, client.DB, tenantID, ownerID, now)
-	enrollment, createAudit := attachedWorkerEnrollmentFixture(suffix, tenantID, ownerID, now.Add(-time.Second))
-	// This helper establishes a ready worker before the scenario under test;
-	// enrollment expiry is not the assertion and must outlive a slow CI run.
-	enrollment.ExpiresAt = now.Add(30 * time.Minute)
-	if workerID != "" {
-		enrollment.WorkerID = workerID
-		createAudit.WorkerID = workerID
-	}
-	if err := store.CreateAttachedWorkerEnrollment(ctx, enrollment, createAudit); err != nil {
-		t.Fatal(err)
-	}
-	privateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x71}, ed25519.SeedSize))
-	claim := attachedWorkerClaimFixture(enrollment, 0x71)
-	claim.IdentityPublicKey = append([]byte(nil), privateKey.Public().(ed25519.PublicKey)...)
-	claimed, err := store.ClaimAttachedWorkerEnrollment(ctx, claim)
-	if err != nil || claimed.Status != ports.AttachedWorkerClaimed {
-		t.Fatalf("claim = %#v, %v", claimed, err)
-	}
-	worker := claimed.Worker
-	challenge, err := store.CreateAttachedWorkerAttachChallenge(ctx, attachedWorkerChallengeCreateFixture(worker, suffix))
-	if err != nil {
-		t.Fatal(err)
-	}
-	channelBytes := bytes.Repeat([]byte{0x72}, 32)
-	canonicalManifest, capabilityDigest, attachedSnapshot, readySnapshot, manifestSignature := attachedWorkerProtocolSnapshotFixture(t, worker, challenge, privateKey, channelBytes, features...)
-	// Keep the synthetic bearer recoverable by the transport-level integration
-	// test while still unique to this test-owned worker scope.
-	secretBytes := sha256.Sum256([]byte("drain-race-bearer-" + string(ownerID)))
-	secretDigest := domain.DigestAttachedWorkerConnectionSecret(secretBytes[:])
-	activated, err := store.ActivateAttachedWorkerConnection(ctx, ports.AttachedWorkerConnectionActivation{
-		TenantID: tenantID, OwnerUserID: ownerID, WorkerID: worker.ID, ChallengeID: challenge.ID,
-		Purpose: domain.AttachedWorkerAttachInitial, ExpectedChallengeRevision: challenge.Revision,
-		ExpectedWorkerRevision: worker.Revision, ExpectedEnrollmentGeneration: worker.EnrollmentGeneration,
-		ExpectedConnectionGeneration: worker.ConnectionGeneration,
-		PresentedWorkerNonceDigest:   challenge.WorkerNonceDigest, PresentedPlatformNonceDigest: challenge.PlatformNonceDigest,
-		ConnectionSecretDigest: secretDigest, ChannelBinding: domain.NewAttachedWorkerChannelBinding(channelBytes),
-		ExpectedCapabilityDigest: capabilityDigest, ProtocolSnapshot: attachedSnapshot, AuthTTL: time.Hour,
-	})
-	if err != nil || activated.Status != ports.AttachedWorkerConnectionActivated {
-		t.Fatalf("activate = %#v, %v", activated, err)
-	}
-	worker, found, err := store.LoadAttachedWorker(ctx, tenantID, ownerID, worker.ID)
-	if err != nil || !found {
-		t.Fatalf("worker after activation = %#v found=%t err=%v", worker, found, err)
-	}
-	accepted, err := store.AcceptAttachedWorkerManifest(ctx, ports.AttachedWorkerManifestAcceptance{
-		TenantID: tenantID, OwnerUserID: ownerID, WorkerID: worker.ID,
-		ConnectionID: activated.Connection.ID, ConnectionGeneration: activated.Connection.ConnectionGeneration,
-		ExpectedConnectionRevision: activated.Connection.Revision, ExpectedWorkerRevision: worker.Revision,
-		PresentedSecretDigest: secretDigest,
-		Capability: ports.AttachedWorkerCapabilityTarget{
-			ManifestRevision: 1, Digest: capabilityDigest, ProtocolVersion: challenge.SelectedProtocolVersion,
-			IdentityKeyDigest: domain.DigestAttachedWorkerIdentityKey(worker.IdentityPublicKey),
-			CanonicalManifest: canonicalManifest, ManifestPayload: attachedWorkerManifestPayloadFixture(t, readySnapshot),
-			Signature: manifestSignature,
-		},
-		PlatformSequence: 2, WorkerSequence: 3, PlatformAck: 2, WorkerAck: 2,
-		ProtocolSnapshot: readySnapshot, PresenceTTL: 10 * time.Minute,
-	})
-	if err != nil || accepted.Status != ports.AttachedWorkerConnectionAuthorized {
-		t.Fatalf("manifest = %#v, %v", accepted, err)
-	}
-	worker, found, err = store.LoadAttachedWorker(ctx, tenantID, ownerID, worker.ID)
-	if err != nil || !found {
-		t.Fatalf("ready worker = %#v found=%t err=%v", worker, found, err)
-	}
-	return store, client, worker, accepted.Connection, secretDigest, privateKey, canonicalManifest, now
+	ready := aw07native.Ready(t, store, client.DB, aw07native.ReadyOptions{Suffix: suffix, TenantID: tenantID, WorkerID: workerID, Features: features})
+	return store, client, ready.Worker, ready.Connection, ready.SecretDigest, ready.PrivateKey, ready.CanonicalManifest, ready.At
 }
 
 func attachedWorkerDrainTestSuffix(t *testing.T, prefix string) string {
 	t.Helper()
-	var entropy [8]byte
-	if _, err := rand.Read(entropy[:]); err != nil {
-		t.Fatal(err)
-	}
-	return prefix + "-" + hex.EncodeToString(entropy[:])
+	return aw07native.UniqueSuffix(t, prefix)
 }
 
 func attachedWorkerOfferForDrain(t *testing.T, store *ydbstore.Store, client *ydbclient.Client, worker domain.AttachedWorker, connection domain.AttachedWorkerConnection, now time.Time, suffix string) ports.AttachedWorkerAttemptResult {
@@ -840,141 +761,14 @@ func attachedWorkerOfferForDrainWithPayload(t *testing.T, store *ydbstore.Store,
 
 func attachedWorkerOfferForDrainWithPayloadAndBinding(t *testing.T, store *ydbstore.Store, client *ydbclient.Client, worker domain.AttachedWorker, connection domain.AttachedWorkerConnection, now time.Time, suffix string, contextBody, artifactBody []byte, amendBinding func(*domain.HarnessBindingV2), maxRuntime ...time.Duration) ports.AttachedWorkerAttemptResult {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	runID := "run-drain-" + suffix
-	updateDigest := sha256.Sum256([]byte(suffix))
-	// YDB JsonDocument round-trips small decimal IDs without exponent notation;
-	// larger 64-bit values are serialized as floats and cannot decode to int64.
-	updateID := int64(binary.BigEndian.Uint32(updateDigest[:4]))
-	ingress := ingressFixture(worker.TenantID, runID, updateID, now)
-	if contextBody != nil {
-		digest := sha256.Sum256(contextBody)
-		ingress.Dispatch.ContextSnapshot.Size = int64(len(contextBody))
-		ingress.Dispatch.ContextSnapshot.SHA256 = hex.EncodeToString(digest[:])
-	}
-	if artifactBody != nil {
-		digest := sha256.Sum256(artifactBody)
-		ingress.InputManifest.Artifacts = []domain.Artifact{{
-			Name: "owner-artifact", MediaType: "text/plain",
-			Blob: domain.BlobRef{
-				TenantID: worker.TenantID,
-				Key:      domain.SessionObjectPrefix(worker.TenantID, ingress.Run.SessionID) + "attached-worker/" + suffix,
-				Size:     int64(len(artifactBody)), SHA256: hex.EncodeToString(digest[:]),
-			},
-		}}
-	}
-	// Keep subscription authority distinct when two owners share one tenant.
-	// The generic ingress fixture derives this ID only from the tenant.
-	ingress.Run.SubscriptionConnectionID = domain.SubscriptionConnectionID("subscription-" + suffix)
-	policyDigest := domain.AttachedWorkerPolicyDigest(domain.DigestAttachedWorkerCapability([]byte("policy-" + suffix)))
-	placement := domain.ExecutionPlacementV2{
-		Version: domain.ExecutionPlacementVersionV2, Kind: domain.ExecutionPlacementAttachedWorker,
-		FallbackPolicy: domain.ExecutionFallbackDenied, OwnerUserID: worker.OwnerUserID, WorkerID: worker.ID,
-		CapabilityDigest: connection.CapabilityDigest, PolicyDigest: policyDigest,
-	}
-	placementDigest, err := domain.ExecutionPlacementDigest(placement)
-	if err != nil {
-		t.Fatal(err)
-	}
-	binding := ingress.Dispatch.HarnessBinding
-	binding.OwnerUserID = worker.OwnerUserID
-	binding.Resource.OwnerUserID = worker.OwnerUserID
-	binding.ExecutionPlacementDigest = string(placementDigest)
-	if amendBinding != nil {
-		amendBinding(&binding)
-	}
-	if err := binding.ValidateForScope(worker.TenantID, worker.OwnerUserID, ingress.Run.ID, ingress.Attempt.ID, placement); err != nil {
-		t.Fatalf("owner %s test binding: %v", suffix, err)
-	}
-	ingress.Dispatch.ExecutionPlacementV2 = placement
-	ingress.Dispatch.HarnessBinding = binding
-	ingress.Dispatch.SubstrateBinding = nil
-	ingress.Dispatch.AdmissionCostCeiling = nil
-	ingress.Dispatch.CredentialOwnerUserID = worker.OwnerUserID
-	if _, err := client.DB.ExecContext(ctx,
-		`INSERT INTO subscription_connections
-		 (tenant_id, subscription_connection_id, actor_id, provider, credential_ref,
-		  entitlement_state, quota_state, observed_at, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-		worker.TenantID, ingress.Run.SubscriptionConnectionID, worker.OwnerUserID, "codex", "",
-		domain.EntitlementActive, domain.ProviderQuotaAvailable, now, now, now,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.IngestTelegram(ctx, ingress); err != nil {
-		t.Fatal(err)
-	}
-	session, owner := canonicalSessionFixture(worker.TenantID, worker.OwnerUserID, ingress.Run.SessionID, now)
-	if err := store.CreateSession(ctx, session, owner); err != nil {
-		t.Fatal(err)
-	}
-	limits := domain.ProductLimits{
-		MaxTenantQueueDepth: 8, MaxActiveRuns: 1, MaxRuntime: 5 * time.Minute,
-		MaxTurns: 8, MaxInputBytes: 1 << 20, MaxContextBytes: 1 << 20,
-		MaxContextEvents: 64, MaxArtifacts: 8, MaxToolEvents: 16, MaxToolEventBytes: 1 << 18,
-	}
 	if len(maxRuntime) > 1 {
 		t.Fatal("at most one maxRuntime override is allowed")
 	}
+	options := aw07native.OfferOptions{Suffix: suffix, At: now, ContextBody: contextBody, ArtifactBody: artifactBody, AmendBinding: amendBinding}
 	if len(maxRuntime) == 1 {
-		limits.MaxRuntime = maxRuntime[0]
+		options.MaxRuntime = &maxRuntime[0]
 	}
-	reservation := domain.QuotaReservation{
-		ID: domain.QuotaReservationID("reservation-" + runID), TenantID: worker.TenantID, RunID: ingress.Run.ID,
-		SubscriptionConnectionID: ingress.Run.SubscriptionConnectionID, Status: domain.ReservationHeld,
-		CapacityUnits: 1, HeldAt: now, ExpiresAt: now.Add(30 * time.Minute), UpdatedAt: now,
-	}
-	job := domain.WorkerJob{
-		TenantID: worker.TenantID, RunID: ingress.Run.ID, SessionID: ingress.Run.SessionID,
-		TriggerEventID: ingress.Run.TriggerEventID, AttemptID: ingress.Attempt.ID, ReservationID: reservation.ID,
-		InputManifestID: ingress.InputManifest.ID, ContextSnapshot: ingress.Dispatch.ContextSnapshot,
-		CredentialOwnerUserID: worker.OwnerUserID, ExecutionPlacementV2: placement, HarnessBinding: binding,
-		Limits: limits, DeliveryChat: ingress.Dispatch.DeliveryChat, ReplyToMessageID: ingress.Dispatch.ReplyToMessageID,
-		CreatedAt: now,
-	}
-	err = store.Transact(ctx, worker.TenantID, func(tx ports.StateTx) error {
-		run, found, getErr := tx.GetRun(ctx, ingress.Run.ID)
-		if getErr != nil || !found {
-			return getErr
-		}
-		run.Status, run.UpdatedAt = domain.RunQueued, now
-		attempt, found, getErr := tx.GetAttempt(ctx, ingress.Attempt.ID)
-		if getErr != nil || !found {
-			return getErr
-		}
-		attempt.Status, attempt.UpdatedAt = domain.AttemptCreated, now
-		if err := tx.PutRun(ctx, run); err != nil {
-			return err
-		}
-		if err := tx.PutAttempt(ctx, attempt); err != nil {
-			return err
-		}
-		if err := tx.PutQuotaReservation(ctx, reservation); err != nil {
-			return err
-		}
-		return tx.PutWorkerJob(ctx, job)
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	leaseTTL, err := domain.AttachedWorkerLeaseTTLForLimitsV1(limits)
-	if err != nil {
-		t.Fatal(err)
-	}
-	leaseID, err := domain.NewAttachedWorkerLeaseIDV1(worker.TenantID, ingress.Run.ID, ingress.Attempt.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	offer, err := store.OfferAttachedWorkerAttempt(ctx, ports.AttachedWorkerAttemptOffer{
-		TenantID: worker.TenantID, OwnerUserID: worker.OwnerUserID, WorkerID: worker.ID,
-		RunID: ingress.Run.ID, AttemptID: ingress.Attempt.ID, ReservationID: reservation.ID,
-		LeaseID: leaseID, LeaseTTL: leaseTTL,
-	})
-	if err != nil || offer.Status != ports.AttachedWorkerExecutionApplied || offer.Outbound == nil {
-		t.Fatalf("offer = %#v, %v", offer, err)
-	}
-	return offer
+	return aw07native.Offer(t, store, client.DB, worker, connection, options)
 }
 
 func attachedWorkerFailureForDrain(

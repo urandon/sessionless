@@ -12,6 +12,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/test/support/aw07native"
 )
 
 func TestAttachedWorkerEnrollmentClaimIsAtomicAndFailClosed(t *testing.T) {
@@ -343,39 +344,12 @@ func TestAttachedWorkerCASRevocationOwnerScopeAndBoundedPagination(t *testing.T)
 	}
 }
 
-func attachedWorkerEnrollmentFixture(
-	suffix string,
-	tenantID domain.TenantID,
-	ownerID domain.UserID,
-	createdAt time.Time,
-) (domain.AttachedWorkerEnrollment, domain.AttachedWorkerAuditEvent) {
-	enrollment := domain.AttachedWorkerEnrollment{
-		TenantID: tenantID, OwnerUserID: ownerID,
-		ID:          domain.AttachedWorkerEnrollmentID(uniqueID("worker-enrollment-" + suffix)),
-		WorkerID:    domain.AttachedWorkerID(uniqueID("worker-" + suffix)),
-		DisplayName: "worker " + suffix, Audience: "worker://sessionless/test",
-		BootstrapDigest: domain.DigestWorkerBootstrap([]byte("bootstrap-" + suffix)),
-		CreatedAt:       createdAt, ExpiresAt: createdAt.Add(time.Minute), RetainUntil: createdAt.Add(time.Hour),
-		Revision: 1,
-	}
-	audit := domain.AttachedWorkerAuditEvent{
-		Version:  domain.AttachedWorkerAuditEventVersionV1,
-		TenantID: tenantID, OwnerUserID: ownerID, WorkerID: enrollment.WorkerID, EnrollmentID: enrollment.ID,
-		Action: domain.AttachedWorkerAuditEnrollmentCreated, OccurredAt: createdAt,
-	}
-	return enrollment, audit
+func attachedWorkerEnrollmentFixture(suffix string, tenantID domain.TenantID, ownerID domain.UserID, createdAt time.Time) (domain.AttachedWorkerEnrollment, domain.AttachedWorkerAuditEvent) {
+	return aw07native.Enrollment(suffix, tenantID, ownerID, createdAt)
 }
 
-func attachedWorkerClaimFixture(
-	enrollment domain.AttachedWorkerEnrollment,
-	keyByte byte,
-) ports.AttachedWorkerClaimMutation {
-	return ports.AttachedWorkerClaimMutation{
-		TenantID: enrollment.TenantID, OwnerUserID: enrollment.OwnerUserID, EnrollmentID: enrollment.ID,
-		ExpectedEnrollmentRevision: enrollment.Revision, PresentedAudience: enrollment.Audience,
-		PresentedDigest:   enrollment.BootstrapDigest,
-		IdentityPublicKey: bytes.Repeat([]byte{keyByte}, ed25519.PublicKeySize),
-	}
+func attachedWorkerClaimFixture(enrollment domain.AttachedWorkerEnrollment, keyByte byte) ports.AttachedWorkerClaimMutation {
+	return aw07native.EnrollmentClaim(enrollment, keyByte)
 }
 
 func attachedWorkerMutationAudit(

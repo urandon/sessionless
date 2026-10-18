@@ -24,6 +24,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/ydbpartition"
 	"gitcode.com/urandon/sessionless/internal/ydbstore"
 	ydbmigrations "gitcode.com/urandon/sessionless/migrations/ydb"
+	"gitcode.com/urandon/sessionless/test/support/aw07native"
 )
 
 var idSequence atomic.Uint64
@@ -1549,58 +1550,12 @@ func requireConnectionString(t *testing.T) string {
 	return value
 }
 
-func ingressFixture(
-	tenantID domain.TenantID,
-	runID string,
-	updateID int64,
-	now time.Time,
-) ydbstore.TelegramIngress {
-	authority := mustManagedAuthorityV2(
-		panicTestingT{}, tenantID, "user-fixture", domain.RunID(runID), domain.AttemptID("attempt-"+runID),
-		domain.SubscriptionConnectionID("subscription-"+string(tenantID)), now,
-	)
-	run := domain.Run{
-		ID:                       domain.RunID(runID),
-		TenantID:                 tenantID,
-		SessionID:                domain.SessionID("session-" + runID),
-		TriggerEventID:           domain.SessionEventID("event-" + runID),
-		SubscriptionConnectionID: domain.SubscriptionConnectionID("subscription-" + string(tenantID)),
-		Status:                   domain.RunCreated,
-		IdempotencyKey:           domain.IdempotencyKey(fmt.Sprintf("telegram-%s-%d", tenantID, updateID)),
-		CreatedAt:                now,
-		UpdatedAt:                now,
+func ingressFixture(tenantID domain.TenantID, runID string, updateID int64, now time.Time) ydbstore.TelegramIngress {
+	ingress, err := aw07native.Ingress(tenantID, runID, updateID, now)
+	if err != nil {
+		panic(err.Error())
 	}
-	attempt := domain.Attempt{
-		ID: domain.AttemptID("attempt-" + runID), TenantID: tenantID, RunID: run.ID,
-		Number: 1, Status: domain.AttemptCreated, CreatedAt: now, UpdatedAt: now,
-	}
-	dispatch := domain.DispatchOutbox{
-		ID: domain.DispatchOutboxID("dispatch-" + runID), TenantID: tenantID,
-		RunID: run.ID, AttemptID: attempt.ID, Status: domain.DispatchPending,
-		InputManifestID:       domain.ArtifactManifestID("manifest-" + runID),
-		ExecutionPlacementV2:  authority.ExecutionPlacementV2,
-		HarnessBinding:        authority.HarnessBinding,
-		SubstrateBinding:      cloneSubstrateBindingForIntegration(authority.SubstrateBinding),
-		AdmissionCostCeiling:  cloneAdmissionCostForIntegration(authority.AdmissionCostCeiling),
-		CredentialOwnerUserID: "user-fixture",
-		ContextSnapshot: domain.BlobRef{
-			TenantID: tenantID, Key: "tenants/" + string(tenantID) + "/context/" + runID,
-			Size: 1, SHA256: strings.Repeat("0", 64),
-		},
-		DeliveryChat:     domain.TelegramChatRef{TenantID: tenantID, ChatID: 442211},
-		ReplyToMessageID: updateID,
-		IdempotencyKey:   domain.IdempotencyKey("dispatch-key-" + runID),
-		CreatedAt:        now, UpdatedAt: now,
-	}
-	manifest := domain.ArtifactManifest{
-		ID: domain.ArtifactManifestID("manifest-" + runID), TenantID: tenantID,
-		RunID: run.ID, CreatedAt: now,
-	}
-	return ydbstore.TelegramIngress{
-		TenantID: tenantID, SourceID: "telegram-bot-primary", UpdateID: updateID,
-		ExpireAt: now.Add(24 * time.Hour), Run: run, Attempt: attempt,
-		InputManifest: manifest, Dispatch: dispatch,
-	}
+	return ingress
 }
 
 type testingFataler interface {

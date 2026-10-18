@@ -7,8 +7,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/hex"
-	"encoding/json"
-	"slices"
 	"testing"
 	"time"
 
@@ -16,6 +14,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/ydbpartition"
+	"gitcode.com/urandon/sessionless/test/support/aw07native"
 )
 
 func TestAttachedWorkerTransportTwoPhaseAttachAuthorizationAndExpiry(t *testing.T) {
@@ -442,134 +441,21 @@ func TestAttachedWorkerTransportRevocationCleansStalePresenceExpiry(t *testing.T
 }
 
 func attachedWorkerChallengeCreateFixture(worker domain.AttachedWorker, suffix string) ports.AttachedWorkerChallengeCreate {
-	workerNonce, platformNonce := bytes.Repeat([]byte{0x61}, 32), bytes.Repeat([]byte{0x71}, 32)
-	if suffix == "reconnect" {
-		workerNonce, platformNonce = bytes.Repeat([]byte{0x62}, 32), bytes.Repeat([]byte{0x72}, 32)
-	}
-	return ports.AttachedWorkerChallengeCreate{
-		TenantID: worker.TenantID, OwnerUserID: worker.OwnerUserID, WorkerID: worker.ID,
-		ChallengeID:  domain.AttachedWorkerChallengeID(uniqueID("challenge-" + suffix)),
-		ConnectionID: domain.AttachedWorkerConnectionID(uniqueID("connection-" + suffix)),
-		Purpose:      domain.AttachedWorkerAttachInitial, Audience: "worker://sessionless/test",
-		ExpectedWorkerRevision: worker.Revision, ExpectedEnrollmentGeneration: worker.EnrollmentGeneration,
-		ExpectedConnectionGeneration: worker.ConnectionGeneration,
-		WorkerProtocolMinimum:        1, WorkerProtocolMaximum: 1, WorkerProtocolVersions: []uint32{1},
-		PlatformProtocolMinimum: 1, PlatformProtocolMaximum: 1, PlatformProtocolVersions: []uint32{1},
-		SelectedProtocolVersion: 1,
-		WorkerNonceDigest:       domain.DigestAttachedWorkerChallenge(workerNonce),
-		PlatformNonceDigest:     domain.DigestAttachedWorkerChallenge(platformNonce),
-		Lifetime:                time.Minute, Retention: time.Hour,
-	}
+	return aw07native.Challenge(worker, suffix)
 }
 
-func attachedWorkerProtocolSnapshotFixture(
-	t *testing.T,
-	worker domain.AttachedWorker,
-	challenge domain.AttachedWorkerAttachChallenge,
-	privateKey ed25519.PrivateKey,
-	channelBinding []byte,
-	features ...attachedworkerprotocol.ProtocolFeatureV1,
-) ([]byte, domain.AttachedWorkerCapabilityDigest, []byte, []byte, []byte) {
+func attachedWorkerProtocolSnapshotFixture(t *testing.T, worker domain.AttachedWorker, challenge domain.AttachedWorkerAttachChallenge, privateKey ed25519.PrivateKey, channelBinding []byte, features ...attachedworkerprotocol.ProtocolFeatureV1) ([]byte, domain.AttachedWorkerCapabilityDigest, []byte, []byte, []byte) {
 	t.Helper()
-	offer := attachedworkerprotocol.VersionOfferV1{
-		Window:    attachedworkerprotocol.VersionWindow{Minimum: 1, Maximum: 1},
-		Supported: []attachedworkerprotocol.ProtocolVersion{1},
-	}
-	manifest := attachedWorkerCapabilityManifestFixture(worker, offer)
-	manifest.Features = append(manifest.Features, features...)
-	slices.Sort(manifest.Features)
-	canonicalManifest, err := attachedworkerprotocol.CanonicalManifestBytesV1(manifest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	protocolDigest, err := attachedworkerprotocol.ManifestDigestV1(manifest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	capabilityDigest := domain.AttachedWorkerCapabilityDigest(hex.EncodeToString(protocolDigest))
-	auth := attachedworkerprotocol.AuthContextV1{
-		TenantID: string(worker.TenantID), OwnerUserID: string(worker.OwnerUserID), WorkerID: string(worker.ID),
-		IdentityPublicKey: append([]byte(nil), worker.IdentityPublicKey...), EnrollmentGeneration: worker.EnrollmentGeneration,
-		ConnectionGeneration: challenge.TargetConnectionGeneration, Version: 1, ChannelBinding: append([]byte(nil), channelBinding...),
-	}
-	workerNonce, platformNonce := bytes.Repeat([]byte{0x61}, 32), bytes.Repeat([]byte{0x71}, 32)
-	attach := attachedworkerprotocol.FrameV1{
-		Version: 1, MessageID: attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionWorkerToPlatform, 2),
-		WorkerID: string(worker.ID), EnrollmentGeneration: worker.EnrollmentGeneration,
-		ConnectionGeneration: challenge.TargetConnectionGeneration, Sequence: 2, Ack: 1, Kind: attachedworkerprotocol.MessageAttach,
-		Attach: &attachedworkerprotocol.AttachV1{WorkerOffer: offer, PlatformOffer: offer, SelectedVersion: 1,
-			WorkerNonce: workerNonce, PlatformNonce: platformNonce, CapabilityDigest: protocolDigest},
-	}
-	if err := attachedworkerprotocol.SignAttachV1(privateKey, auth, &attach); err != nil {
-		t.Fatal(err)
-	}
-	accepted := attachedworkerprotocol.FrameV1{
-		Version: 1, MessageID: attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionPlatformToWorker, 2),
-		WorkerID: string(worker.ID), EnrollmentGeneration: worker.EnrollmentGeneration,
-		ConnectionGeneration: challenge.TargetConnectionGeneration, Sequence: 2, Ack: 2, Kind: attachedworkerprotocol.MessageAttachAccepted,
-		AttachAccepted: &attachedworkerprotocol.AttachAcceptedV1{WorkerOffer: offer, PlatformOffer: offer, SelectedVersion: 1,
-			WorkerNonce: workerNonce, PlatformNonce: platformNonce, CapabilityDigest: protocolDigest},
-	}
-	config := attachedworkerprotocol.MachineConfig{Auth: auth, WorkerOffer: offer, PlatformOffer: offer, ImplementedVersions: []attachedworkerprotocol.ProtocolVersion{1}}
-	attached, err := attachedworkerprotocol.BuildInitialAttachSnapshotV1(config, attach, accepted)
-	if err != nil {
-		t.Fatal(err)
-	}
-	attachedBytes, err := attachedworkerprotocol.EncodeMachineSnapshotV1(attached)
-	if err != nil {
-		t.Fatal(err)
-	}
-	manifestFrame := attachedworkerprotocol.FrameV1{
-		Version: 1, MessageID: attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionWorkerToPlatform, 3),
-		WorkerID: string(worker.ID), EnrollmentGeneration: worker.EnrollmentGeneration,
-		ConnectionGeneration: challenge.TargetConnectionGeneration, Sequence: 3, Ack: 2, Kind: attachedworkerprotocol.MessageManifest,
-		Manifest: &attachedworkerprotocol.ManifestV1{Manifest: manifest, Digest: protocolDigest},
-	}
-	if err := attachedworkerprotocol.SignManifestV1(privateKey, auth, &manifestFrame); err != nil {
-		t.Fatal(err)
-	}
-	ready, err := attachedworkerprotocol.ApplyMachineFrameV1(config, attached, attachedworkerprotocol.DirectionWorkerToPlatform, manifestFrame, time.Now().UnixMicro())
-	if err != nil {
-		t.Fatal(err)
-	}
-	readyBytes, err := attachedworkerprotocol.EncodeMachineSnapshotV1(ready)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return canonicalManifest, capabilityDigest, attachedBytes, readyBytes, append([]byte(nil), manifestFrame.Manifest.Signature...)
+	return aw07native.ProtocolSnapshot(t, worker, challenge, privateKey, channelBinding, features...)
 }
 
 func attachedWorkerManifestPayloadFixture(t *testing.T, snapshotBytes []byte) []byte {
 	t.Helper()
-	snapshot, err := attachedworkerprotocol.DecodeMachineSnapshotV1(snapshotBytes)
-	if err != nil || snapshot.Manifest == nil {
-		t.Fatalf("decode signed manifest snapshot: %v", err)
-	}
-	payload, err := json.Marshal(snapshot.Manifest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return payload
+	return aw07native.ManifestPayload(t, snapshotBytes)
 }
 
 func attachedWorkerCapabilityManifestFixture(worker domain.AttachedWorker, offer attachedworkerprotocol.VersionOfferV1) attachedworkerprotocol.CapabilityManifestV1 {
-	return attachedworkerprotocol.CapabilityManifestV1{
-		WorkerID: string(worker.ID), EnrollmentGeneration: worker.EnrollmentGeneration, Revision: 1, ProtocolOffer: offer,
-		OperatingSystem: "linux", Architecture: "amd64", BuildID: "integration-build", HarnessName: "fixture",
-		HarnessVersion: "1", HarnessSurface: attachedworkerprotocol.HarnessSurfaceSessionTurn,
-		HarnessExecutableDigest: bytes.Repeat([]byte{0x73}, 32),
-		IsolationEvidence: []attachedworkerprotocol.IsolationEvidenceV1{
-			attachedworkerprotocol.IsolationFilesystemBoundary,
-			attachedworkerprotocol.IsolationNetworkBoundary,
-			attachedworkerprotocol.IsolationProcessBoundary,
-		},
-		Features: []attachedworkerprotocol.ProtocolFeatureV1{
-			attachedworkerprotocol.FeatureCancellation,
-			attachedworkerprotocol.FeatureProgress,
-			attachedworkerprotocol.FeatureReconnect,
-		},
-		MaxConcurrentAttempts: 1,
-	}
+	return aw07native.CapabilityManifest(worker, offer)
 }
 
 func attachedWorkerReconnectProtocolSnapshotFixture(

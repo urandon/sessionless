@@ -23,6 +23,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/serverlessharness"
 	"gitcode.com/urandon/sessionless/internal/sessioncontext"
 	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
+	"gitcode.com/urandon/sessionless/internal/sessionmaterial"
 )
 
 // This is a database/sql storage model, not native SQL/isolation evidence or a
@@ -238,6 +239,14 @@ func (f *managedV1HistorySQL) QueryContext(ctx context.Context, statement string
 		return row(string(f.job.Run.ID), string(f.job.Attempt.ID), string(record.Reservation.PhysicalInvocationClaimID), f.state.EvidenceDigest, f.state.EvidenceRecord, f.effect, int64(0))
 	}
 	switch flat {
+	case "SELECT sequence, event_id FROM session_event_idempotency WHERE tenant_id = $1 AND session_id = $2 AND idempotency_key = $3":
+		if len(args) != 3 || args[0].Value != string(f.job.Run.TenantID) || args[1].Value != string(f.job.Run.SessionID) {
+			return nil, errors.New("original user prefix exact index scope")
+		}
+		if v, found := f.state.eventIndex[args[2].Value.(string)]; found {
+			return row(v...)
+		}
+		return empty()
 	case "SELECT CurrentUtcTimestamp()":
 		return row(f.at)
 	case "SELECT run_id FROM run_idempotency WHERE tenant_id = $1 AND idempotency_key = $2":
@@ -345,15 +354,128 @@ func (s *managedHistorySink) Emit(ctx context.Context, e ports.ExecutionEvent) e
 	return nil
 }
 
-func TestManagedV1OriginalExecutionFinalizerHistoricalReader(t *testing.T) {
+type managedV1HistoryProducer struct {
+	store    *Store
+	sql      *managedV1HistorySQL
+	ctx      context.Context
+	terminal domain.Run
+	manifest domain.ArtifactManifest
+	records  []sessioncontext.EventPayload
+	lease    domain.Lease
+}
+
+// Closed test-only snapshot of observed COMMITTED storage. No producer Store,
+// issuer, prepared execution, active lease or grant crosses into a new Source.
+type ManagedV1CommittedHistory struct {
+	run     domain.Run
+	session domain.Session
+	events  []domain.SessionEvent
+	archive *LocalFreshRunHistorySQLFixture
+}
+
+func NewManagedV1CommittedHistory(t *testing.T, name string, blobs ports.BlobStore) *ManagedV1CommittedHistory {
+	t.Helper()
+	p := produceManagedV1History(t, name, blobs)
+	f := p.sql
+	var effect attemptEffectRecordV1
+	if decodeOwnedEffectCanonicalJSON(f.effect, &effect) != nil || effect.validate() != nil || len(f.rows["run_explanation_heads_v1"]) != 1 {
+		t.Fatal("original committed managed locator/effect missing")
+	}
+	raw, err := json.Marshal(p.terminal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := json.Marshal(p.manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &LocalFreshRunHistorySQLFixture{tenant: p.terminal.TenantID, session: p.terminal.SessionID,
+		runs: map[domain.RunID]string{p.terminal.ID: string(raw)}, markers: map[domain.RunID][2]string{p.terminal.ID: {f.state.FinalStatus, f.state.FinalDigest}},
+		manifests: map[domain.ArtifactManifestID]string{p.manifest.ID: string(manifest)}, details: make(map[domain.AttemptID][]driver.Value), DetailReads: make(map[domain.RunID]int),
+		identities:     map[domain.AttemptID]freshRunHistoryIdentity{f.job.Attempt.ID: {run: p.terminal.ID, lease: p.lease.ID, claim: effect.Reservation.PhysicalInvocationClaimID, manifest: p.manifest.ID}},
+		legacyHeads:    map[domain.RunID]string{p.terminal.ID: f.rows["run_explanation_heads_v1"][0].(string)},
+		legacyEvidence: map[domain.AttemptID][]driver.Value{f.job.Attempt.ID: {string(p.terminal.ID), string(f.job.Attempt.ID), effect.Reservation.PhysicalInvocationClaimID, f.state.EvidenceDigest, f.state.EvidenceRecord, f.effect, int64(0)}},
+	}
+	v := &ManagedV1CommittedHistory{run: p.terminal.Clone(), session: f.state.Session, archive: a}
+	for _, record := range p.records {
+		v.events = append(v.events, record.Event)
+	}
+	if len(v.events) != 2 || v.events[0].Sequence != 1 || v.events[1].Sequence != 2 || v.session.LastEventSequence != 2 || p.terminal.TerminalCustody != nil || p.terminal.DerivedContext != nil {
+		t.Fatal("managed original complete canonical window")
+	}
+	return v
+}
+
+func (v *ManagedV1CommittedHistory) Run() domain.Run { return v.run.Clone() }
+
+func NewFreshRunAfterManagedV1Seed(t *testing.T, installation *LocalSessionConnectedSeed, committed *ManagedV1CommittedHistory, blobs ports.BlobStore, name string) (*LocalTerminalPublicationSessionConnectedSeed, *LocalFreshRunHistorySQLFixture, *LocalTerminalCompletionSQLFixture) {
+	t.Helper()
+	if committed == nil || committed.archive == nil {
+		t.Fatal("genuine committed managed producer required")
+	}
+	a := committed.archive
+	h := &LocalFreshRunHistorySQLFixture{tenant: a.tenant, session: a.session, runs: make(map[domain.RunID]string), details: make(map[domain.AttemptID][]driver.Value), markers: make(map[domain.RunID][2]string), manifests: make(map[domain.ArtifactManifestID]string), identities: make(map[domain.AttemptID]freshRunHistoryIdentity), DetailReads: make(map[domain.RunID]int), legacyHeads: make(map[domain.RunID]string), legacyEvidence: make(map[domain.AttemptID][]driver.Value)}
+	for k, v := range a.runs {
+		h.runs[k] = v
+	}
+	for k, v := range a.markers {
+		h.markers[k] = v
+	}
+	for k, v := range a.manifests {
+		h.manifests[k] = v
+	}
+	for k, v := range a.identities {
+		h.identities[k] = v
+	}
+	for k, v := range a.legacyHeads {
+		h.legacyHeads[k] = v
+	}
+	for k, v := range a.legacyEvidence {
+		h.legacyEvidence[k] = append([]driver.Value(nil), v...)
+	}
+	seed, history, completion := newFreshRunFromCommittedHistory(t, installation, committed.session, append([]domain.SessionEvent(nil), committed.events...), h, blobs, name)
+	if committed.session.CreatedBy == seed.Scope.OwnerUserID || seed.parent.base.session[1] != string(committed.session.CreatedBy) ||
+		completion.state.Session.CreatedBy != committed.session.CreatedBy {
+		t.Fatal("managed history must preserve its actual noncaller creator and matching current scalar")
+	}
+	return seed, history, completion
+}
+
+// The reused original producer writes its own locator, effect, evidence and
+// finalization. Names and canonical user input are fixed BEFORE any authority
+// is constructed; no sealed output is rekeyed for a later consumer.
+func produceManagedV1History(t *testing.T, name string, blobs ports.BlobStore) *managedV1HistoryProducer {
+	t.Helper()
 	principal, job := currentSessionAccessFixture(t)
+	principal.session.LastEventSequence = 0
+	job.Run.ID, job.Run.TriggerEventID, job.Run.IdempotencyKey = domain.RunID(name+"-run"), domain.SessionEventID(name+"-user"), domain.IdempotencyKey(name+"-ingress")
+	job.Attempt.ID, job.Attempt.RunID = domain.AttemptID(name+"-attempt"), job.Run.ID
+	job.Reservation.ID, job.Reservation.RunID = domain.QuotaReservationID(name+"-reservation"), job.Run.ID
+	job.InputManifest.ID, job.InputManifest.RunID = domain.ArtifactManifestID(name+"-input"), job.Run.ID
+	job.Job.RunID, job.Job.TriggerEventID, job.Job.AttemptID, job.Job.ReservationID, job.Job.InputManifestID = job.Run.ID, job.Run.TriggerEventID, job.Attempt.ID, job.Reservation.ID, job.InputManifest.ID
+	authority, err := sessionlessharness.NewDeterministicFixtureManagedAuthorityV2(job.Run.TenantID, job.Job.CredentialOwnerUserID, job.Run.ID, job.Attempt.ID, job.Run.SubscriptionConnectionID, job.Run.CreatedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job.Job.ExecutionPlacementV2, job.Job.HarnessBinding = authority.ExecutionPlacementV2, authority.HarnessBinding
+	job.Job.SubstrateBinding, job.Job.AdmissionCostCeiling = &authority.SubstrateBinding, &authority.AdmissionCostCeiling
+	if err := validateLoadedWorkerJob(job); err != nil {
+		t.Fatal("original distinct managed input", err)
+	}
 	_, base, _ := canonicalFixture(t)
+	for table, value := range map[string]any{"runs": job.Run, "attempts": job.Attempt, "worker_jobs": job.Job, "quota_reservations": job.Reservation, "artifact_manifests": job.InputManifest} {
+		raw, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		base.rows[table] = []driver.Value{string(raw)}
+	}
 	f := &managedV1HistorySQL{canonicalBudgetFixture: base, principal: principal, job: job, counters: []driver.Value{int64(0), int64(1)}, state: LocalTerminalCompletionSnapshot{
 		Session: principal.session, LeasePresent: true, CountersPresent: true, ActiveRuns: 1,
 		material: map[string][]driver.Value{}, eventIndex: map[string][]driver.Value{}, eventRecords: map[string]string{},
 	}}
 	f.at = principal.at
-	f.lease = domain.Lease{ID: "managed-v1-history-lease", TenantID: job.Run.TenantID, RunID: job.Run.ID, AttemptID: job.Attempt.ID, WorkerID: job.Attempt.WorkerID, FenceToken: 1, AcquiredAt: job.Run.CreatedAt, ExpiresAt: f.at.Add(time.Minute)}
+	f.lease = domain.Lease{ID: domain.LeaseID(name + "-lease"), TenantID: job.Run.TenantID, RunID: job.Run.ID, AttemptID: job.Attempt.ID, WorkerID: job.Attempt.WorkerID, FenceToken: 1, AcquiredAt: job.Run.CreatedAt, ExpiresAt: f.at.Add(time.Minute)}
 	if err := f.lease.ValidateForAttempt(job.Run, job.Attempt); err != nil {
 		t.Fatal(err)
 	}
@@ -374,13 +496,42 @@ func TestManagedV1OriginalExecutionFinalizerHistoricalReader(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	t.Cleanup(cancel)
+	// Declare/store the complete original prefix before reserve/execution. The
+	// old direct reader needed only finalizer events; a fresh Source needs 1..N.
+	prefixBody := []byte(`{"version":1,"text":"original managed task and constraints"}`)
+	prefixRef, err := blobs.Put(ctx, job.Run.TenantID, domain.SessionEventObjectPrefix(job.Run.TenantID, job.Run.SessionID, job.Run.TriggerEventID)+"message.json", bytes.NewReader(prefixBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	user := job.Job.CredentialOwnerUserID
+	prefix := domain.SessionEvent{ID: job.Run.TriggerEventID, TenantID: job.Run.TenantID, SessionID: job.Run.SessionID, Sequence: 1, Kind: domain.SessionEventUserMessage, AuthorUserID: &user, IdempotencyKey: domain.IdempotencyKey(name + "-user-key"), Payload: prefixRef, CreatedAt: job.Run.CreatedAt}
+	if prefix.Validate() != nil {
+		t.Fatal("original managed canonical user prefix")
+	}
+	preparedPrefix, err := sessionmaterial.PrepareV1(prefix, prefixBody, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(preparedPrefix.Release)
+	if created, err := store.AppendPreparedSessionEventV1(ctx, prefix, preparedPrefix); err != nil || !created {
+		t.Fatal("original canonical prefix writer before execution", created, err, f.lastSQL)
+	}
+	var storedPrefix domain.SessionEvent
+	if json.Unmarshal([]byte(f.state.eventRecords[string(prefix.ID)]), &storedPrefix) != nil || !reflect.DeepEqual(storedPrefix, prefix) || f.state.Session.LastEventSequence != 1 || len(f.state.material["current"]) == 0 {
+		t.Fatal("original prefix not persisted before managed execution")
+	}
+	// Events is the fixture's current append-batch recorder, not storage. Its
+	// durable eventRecords/eventIndex/material remain untouched for finalization.
+	f.state.Events = nil
+	principal.session = f.state.Session
+	syncCurrentAccessRows(t, principal, job)
 	// Use the original admission projection writer, not a fabricated locator.
 	if err := store.Transact(ctx, job.Run.TenantID, func(state ports.StateTx) error {
 		return selectExplanationTx(ctx, state.(*stateTx), job.Run, job.Attempt, job.Job.ExecutionPlacementV2, f.at)
 	}); err != nil {
 		t.Fatalf("original selection writer: %v SQL=%s", err, f.lastSQL)
 	}
-	owned, err := store.ReserveAttemptEffect(ctx, ports.ReserveAttemptEffectRequestV1{TenantID: job.Run.TenantID, RunID: job.Run.ID, AttemptID: job.Attempt.ID, LeaseID: f.lease.ID, FenceToken: f.lease.FenceToken, PhysicalInvocationClaimID: "managed-v1-history-original-claim"})
+	owned, err := store.ReserveAttemptEffect(ctx, ports.ReserveAttemptEffectRequestV1{TenantID: job.Run.TenantID, RunID: job.Run.ID, AttemptID: job.Attempt.ID, LeaseID: f.lease.ID, FenceToken: f.lease.FenceToken, PhysicalInvocationClaimID: name + "-original-claim"})
 	if err != nil || owned.Status != ports.AttemptEffectOwnedV1 || owned.Grant == nil {
 		t.Fatalf("public fresh reserve: status=%s err=%v SQL=%s", owned.Status, err, f.lastSQL)
 	}
@@ -418,7 +569,6 @@ func TestManagedV1OriginalExecutionFinalizerHistoricalReader(t *testing.T) {
 	if err != nil || sink.calls != 1 || len(result.Outputs) != 1 || result.ProviderEvidence == nil {
 		t.Fatalf("actual in-process execution: err=%v events=%d outputs=%d", err, sink.calls, len(result.Outputs))
 	}
-	blobs := &localEntryBlobs{}
 	manifest := domain.ArtifactManifest{ID: canonicaloutput.ManifestIDV1(job.Run.ID), TenantID: job.Run.TenantID, RunID: job.Run.ID, CreatedAt: f.at}
 	// The real harness file is retained unchanged. This is a bounded storage
 	// fixture, not a claim that private Manager.uploadOutputs was exercised.
@@ -475,9 +625,18 @@ func TestManagedV1OriginalExecutionFinalizerHistoricalReader(t *testing.T) {
 	if json.Unmarshal([]byte(f.rows["runs"][0].(string)), &terminal) != nil || terminal.Status != domain.RunSucceeded {
 		t.Fatal("actual terminal Run missing")
 	}
-	var records []sessioncontext.EventPayload
+	records := []sessioncontext.EventPayload{{Event: storedPrefix, Payload: bytes.Clone(prefixBody)}}
 	for _, event := range f.state.Events {
-		records = append(records, sessioncontext.EventPayload{Event: event, Payload: bytes.Clone(blobs.objects[event.Payload.Key])})
+		r, err := blobs.Open(ctx, event.TenantID, event.Payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, readErr := io.ReadAll(io.LimitReader(r, event.Payload.Size+1))
+		closeErr := r.Close()
+		if readErr != nil || closeErr != nil || int64(len(body)) != event.Payload.Size {
+			t.Fatal("actual managed canonical readback", readErr, closeErr)
+		}
+		records = append(records, sessioncontext.EventPayload{Event: event, Payload: body})
 	}
 	t.Cleanup(func() {
 		for _, record := range records {
@@ -488,9 +647,17 @@ func TestManagedV1OriginalExecutionFinalizerHistoricalReader(t *testing.T) {
 	// rows before the first positive read, retaining only historical facts.
 	delete(f.rows, "attempts")
 	delete(f.rows, "worker_jobs")
+	lease := f.lease
 	f.lease = domain.Lease{}
 	f.state.LeasePresent = false
 	f.historyOnly = true
+	return &managedV1HistoryProducer{store: store, sql: f, ctx: ctx, terminal: terminal, manifest: manifest, records: records, lease: lease}
+}
+
+func TestManagedV1OriginalExecutionFinalizerHistoricalReader(t *testing.T) {
+	blobs := &localEntryBlobs{}
+	produced := produceManagedV1History(t, "managed-v1-history", blobs)
+	store, f, ctx, terminal, manifest, records := produced.store, produced.sql, produced.ctx, produced.terminal, produced.manifest, produced.records
 	beforeWrites, beforeBlobs := f.state.Mutations, blobs.calls
 	read := func() error {
 		return store.ownedAuthorityTx(ctx, func(call context.Context, q *ownedAuthorityQuery) error {

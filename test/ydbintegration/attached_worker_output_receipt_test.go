@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http/httptest"
 	"reflect"
@@ -26,6 +27,299 @@ import (
 	"gitcode.com/urandon/sessionless/internal/ydbpartition"
 	"gitcode.com/urandon/sessionless/internal/ydbstore"
 )
+
+// A terminal-index-only mutation is not a terminal canonical Run. Temporarily
+// use the original canonical writer for both representations so these tests
+// reach the pending-receipt barrier rather than an earlier consistency guard.
+// Restore the exact original before the caller releases any blocked writer.
+func aw07PendingReceiptDeletionBarrier(
+	ctx context.Context, store *ydbstore.Store, db *sql.DB,
+	runID domain.RunID, status domain.RunStatus, deletion domain.SessionDeletion,
+) (err error) {
+	var at time.Time
+	if err := db.QueryRowContext(ctx, `SELECT CurrentUtcTimestamp()`).Scan(&at); err != nil {
+		return fmt.Errorf("sample terminal fixture database clock: %w", err)
+	}
+	if at.IsZero() {
+		return errors.New("terminal fixture database clock is zero")
+	}
+	return aw07PendingReceiptDeletionBarrierAt(ctx, store, runID, status, deletion, at.UTC())
+}
+
+// TEST ONLY seam for deterministic transaction-fault coverage. Native callers
+// above still obtain the timestamp from their actual database. No permission,
+// receipt, state implementation or hook is added to production.
+type aw07DeletionFixtureStore interface {
+	ports.StateStore
+	RequestSessionDeletion(context.Context, domain.SessionDeletion) (domain.SessionDeletion, error)
+}
+
+func aw07PendingReceiptDeletionBarrierAt(ctx context.Context, store aw07DeletionFixtureStore, runID domain.RunID, status domain.RunStatus, deletion domain.SessionDeletion, at time.Time) (err error) {
+	var original, terminal domain.Run
+	captured := false
+	// A Put may commit before its ACK is lost. Arm restoration before the
+	// transaction, retaining its FIRST exact images across every callback retry.
+	defer func() {
+		if !captured {
+			return
+		}
+		cleanup, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		restoreErr := store.Transact(cleanup, deletion.TenantID, func(tx ports.StateTx) error {
+			current, found, err := tx.GetRun(cleanup, runID)
+			if err != nil {
+				return err
+			}
+			if !found {
+				return errors.New("temporary canonical Run changed; refusing to overwrite another writer")
+			}
+			switch {
+			case reflect.DeepEqual(current, original):
+				return nil // Includes a restore whose ACK was lost.
+			case reflect.DeepEqual(current, terminal):
+				return tx.PutRun(cleanup, original)
+			default:
+				return errors.New("temporary canonical Run changed; refusing to overwrite another writer")
+			}
+		})
+		if restoreErr != nil {
+			err = errors.Join(err, fmt.Errorf("restore original canonical Run and deletion index: %w", restoreErr))
+		}
+	}()
+	if err := store.Transact(ctx, deletion.TenantID, func(tx ports.StateTx) error {
+		run, found, err := tx.GetRun(ctx, runID)
+		if err != nil {
+			return err
+		}
+		if !found || run.ID != runID || run.TenantID != deletion.TenantID || run.SessionID != deletion.SessionID {
+			return errors.New("terminal deletion fixture requires the original canonical Run scope")
+		}
+		if !captured {
+			if run.Status != domain.RunRunning {
+				return errors.New("terminal deletion fixture requires the original running canonical Run")
+			}
+			candidate := run.Clone()
+			if err := candidate.Transition(status, at); err != nil {
+				return err
+			}
+			original, terminal, captured = run.Clone(), candidate, true
+		}
+		switch {
+		case reflect.DeepEqual(run, original):
+			return tx.PutRun(ctx, terminal)
+		case reflect.DeepEqual(run, terminal):
+			return nil // Exact committed temporary postimage on callback retry.
+		default:
+			return errors.New("temporary canonical Run changed during setup; refusing to overwrite another writer")
+		}
+	}); err != nil {
+		return fmt.Errorf("temporarily mark canonical Run and deletion index terminal: %w", err)
+	}
+	if _, err := store.RequestSessionDeletion(ctx, deletion); err == nil {
+		return errors.New("deletion unexpectedly accepted despite a pending attached-worker output receipt")
+	} else if !strings.Contains(err.Error(), "pending attached-worker output receipt") {
+		return fmt.Errorf("deletion did not reach the pending attached-worker output receipt barrier: %w", err)
+	}
+	return nil
+}
+
+// These tests execute the actual native fixture core without a database. The
+// narrow fake models transaction commit/ACK outcomes, not runtime authority or
+// attached-worker evidence. Unsupported StateTx methods are never provided.
+type aw07DeletionFixtureFaultStore struct {
+	run                           domain.Run
+	index                         domain.RunStatus
+	expectedTerminal              domain.Run
+	mode                          string
+	tenant                        domain.TenantID
+	transactions, puts, deletions int
+	cleanupContexts               []context.Context
+	foreign                       *domain.Run
+	cancel                        context.CancelFunc
+	cleanupWasLive                bool
+}
+
+type aw07DeletionFixtureFaultTx struct {
+	ports.StateTx
+	store   *aw07DeletionFixtureFaultStore
+	pending *domain.Run
+}
+
+func (tx *aw07DeletionFixtureFaultTx) GetRun(ctx context.Context, id domain.RunID) (domain.Run, bool, error) {
+	if ctx.Err() != nil {
+		return domain.Run{}, false, ctx.Err()
+	}
+	if id != tx.store.run.ID {
+		return domain.Run{}, false, nil
+	}
+	if tx.pending != nil {
+		return tx.pending.Clone(), true, nil
+	}
+	return tx.store.run.Clone(), true, nil
+}
+func (tx *aw07DeletionFixtureFaultTx) PutRun(ctx context.Context, run domain.Run) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if run.Validate() != nil || run.ID != tx.store.run.ID || run.TenantID != tx.store.tenant {
+		return errors.New("fixture core attempted invalid/foreign Run write")
+	}
+	tx.store.puts++
+	value := run.Clone()
+	tx.pending = &value
+	return nil
+}
+func (f *aw07DeletionFixtureFaultStore) Transact(ctx context.Context, tenant domain.TenantID, fn func(ports.StateTx) error) error {
+	f.transactions++
+	if tenant != f.tenant || ctx == nil || ctx.Err() != nil {
+		return errors.New("fixture core transaction context/scope")
+	}
+	if f.transactions > 1 {
+		f.cleanupContexts = append(f.cleanupContexts, ctx)
+		f.cleanupWasLive = ctx.Err() == nil
+	}
+	invoke := func() error {
+		tx := &aw07DeletionFixtureFaultTx{store: f}
+		if err := fn(tx); err != nil {
+			return err
+		}
+		if tx.pending != nil {
+			f.run = tx.pending.Clone()
+			f.index = tx.pending.Status
+		}
+		return nil
+	}
+	if f.transactions == 1 && f.mode == "pre_commit_failure" {
+		tx := &aw07DeletionFixtureFaultTx{store: f}
+		if err := fn(tx); err != nil {
+			return err
+		}
+		return errors.New("scripted transaction failed without persistence")
+	}
+	if err := invoke(); err != nil {
+		return err
+	}
+	if f.transactions == 1 {
+		switch f.mode {
+		case "lost_ack_persisted":
+			return errors.New("scripted persisted commit ACK lost")
+		case "lost_ack_callback_retry":
+			return invoke()
+		case "cancel_after_persist":
+			f.cancel()
+			return ctx.Err()
+		case "foreign_setup_retry":
+			f.run = f.foreign.Clone()
+			f.index = f.foreign.Status
+			return invoke()
+		}
+	}
+	if f.transactions == 2 && f.mode == "restore_ack_callback_retry" {
+		return invoke()
+	}
+	return nil
+}
+func (f *aw07DeletionFixtureFaultStore) RequestSessionDeletion(ctx context.Context, d domain.SessionDeletion) (domain.SessionDeletion, error) {
+	if ctx.Err() != nil {
+		return domain.SessionDeletion{}, ctx.Err()
+	}
+	f.deletions++
+	if !reflect.DeepEqual(f.run, f.expectedTerminal) || f.index != f.expectedTerminal.Status {
+		return domain.SessionDeletion{}, errors.New("fixture deletion did not see matching terminal canonical Run and index")
+	}
+	if f.foreign != nil {
+		f.run = f.foreign.Clone()
+		f.index = f.foreign.Status
+	}
+	switch f.mode {
+	case "deletion_success":
+		return d, nil
+	case "wrong_barrier":
+		return domain.SessionDeletion{}, errors.New("different canonical admission failure")
+	case "deletion_error":
+		return domain.SessionDeletion{}, errors.New("scripted deletion storage error")
+	}
+	return domain.SessionDeletion{}, errors.New("pending attached-worker output receipt")
+}
+
+func TestAW07PendingReceiptDeletionBarrierFaults(t *testing.T) {
+	for _, scenario := range []struct {
+		name      string
+		wantErr   bool
+		deletions int
+	}{
+		{name: "success", deletions: 1},
+		{name: "pre_commit_failure", wantErr: true},
+		{name: "lost_ack_persisted", wantErr: true},
+		{name: "lost_ack_callback_retry", deletions: 1},
+		{name: "restore_ack_callback_retry", deletions: 1},
+		{name: "foreign_postimage", wantErr: true, deletions: 1},
+		{name: "foreign_setup_retry", wantErr: true},
+		{name: "foreign_setup", wantErr: true},
+		{name: "cancel_after_persist", wantErr: true},
+		{name: "deletion_success", wantErr: true, deletions: 1},
+		{name: "wrong_barrier", wantErr: true, deletions: 1},
+		{name: "deletion_error", wantErr: true, deletions: 1},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			at := time.Date(2026, time.October, 18, 12, 0, 0, 0, time.UTC)
+			original := domain.Run{ID: "fixture-run", TenantID: "fixture-tenant", SessionID: "fixture-session", TriggerEventID: "fixture-event", SubscriptionConnectionID: "fixture-subscription", Status: domain.RunRunning, IdempotencyKey: "fixture-idempotency", CreatedAt: at.Add(-time.Minute), UpdatedAt: at.Add(-time.Second)}
+			if err := original.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			f := &aw07DeletionFixtureFaultStore{run: original.Clone(), index: original.Status, mode: scenario.name, tenant: original.TenantID}
+			f.expectedTerminal = original.Clone()
+			if err := f.expectedTerminal.Transition(domain.RunSucceeded, at); err != nil {
+				t.Fatal(err)
+			}
+			want := original.Clone()
+			if scenario.name == "foreign_postimage" || scenario.name == "foreign_setup_retry" || scenario.name == "foreign_setup" {
+				foreign := original.Clone()
+				foreign.UpdatedAt = at.Add(time.Second)
+				if err := foreign.Transition(domain.RunFailed, at.Add(time.Second)); err != nil {
+					t.Fatal(err)
+				}
+				f.foreign = &foreign
+				want = foreign.Clone()
+				if scenario.name == "foreign_setup" {
+					f.run = foreign.Clone()
+					f.index = foreign.Status
+				}
+			}
+			call, cancel := context.WithCancel(t.Context())
+			t.Cleanup(cancel)
+			f.cancel = cancel
+			deletion := domain.SessionDeletion{TenantID: original.TenantID, SessionID: original.SessionID, RequestedBy: "fixture-owner", Reason: "pending receipt barrier", State: domain.SessionDeletionRequested, RequestedAt: at}
+			err := aw07PendingReceiptDeletionBarrierAt(call, f, original.ID, domain.RunSucceeded, deletion, at)
+			if (err != nil) != scenario.wantErr {
+				t.Errorf("transaction scenario=%s err=%v wantErr=%t", scenario.name, err, scenario.wantErr)
+			}
+			if !reflect.DeepEqual(f.run, want) {
+				t.Errorf("fixture left or overwrote canonical Run: scenario=%s gotStatus=%s gotUpdated=%s wantStatus=%s wantUpdated=%s transactions=%d puts=%d err=%v", scenario.name, f.run.Status, f.run.UpdatedAt, want.Status, want.UpdatedAt, f.transactions, f.puts, err)
+			}
+			if f.index != want.Status {
+				t.Errorf("deletion index=%s want=%s scenario=%s", f.index, want.Status, scenario.name)
+			}
+			if f.deletions != scenario.deletions {
+				t.Errorf("deletion calls=%d want=%d scenario=%s", f.deletions, scenario.deletions, scenario.name)
+			}
+			if scenario.name == "foreign_setup" && f.puts != 0 {
+				t.Errorf("foreign setup was overwritten: puts=%d", f.puts)
+			}
+			if (scenario.name == "foreign_postimage" || scenario.name == "foreign_setup_retry") && f.puts != 1 {
+				t.Errorf("foreign postimage was overwritten: puts=%d want=1", f.puts)
+			}
+			if scenario.name == "cancel_after_persist" && (!f.cleanupWasLive || call.Err() == nil) {
+				t.Error("cancelled caller did not use independent live restoration")
+			}
+			for _, ctx := range f.cleanupContexts {
+				if _, ok := ctx.Deadline(); !ok {
+					t.Error("restoration context lacks finite deadline")
+				}
+			}
+		})
+	}
+}
 
 func setAW07MembershipStatus(t *testing.T, db *sql.DB, tenant domain.TenantID, owner domain.UserID,
 	status domain.TenantMembershipStatus, version uint64, createdAt time.Time,
@@ -76,8 +370,10 @@ type failReceiptBlobs struct {
 
 type lateReceiptBlobs struct {
 	ports.BlobStore
-	release chan struct{}
-	done    chan error
+	release   chan struct{}
+	done      chan error
+	started   chan struct{}
+	startOnce sync.Once
 }
 
 func (blobs *lateReceiptBlobs) Put(ctx context.Context, tenant domain.TenantID, key string, body io.Reader) (domain.BlobRef, error) {
@@ -85,6 +381,7 @@ func (blobs *lateReceiptBlobs) Put(ctx context.Context, tenant domain.TenantID, 
 	if err != nil {
 		return domain.BlobRef{}, err
 	}
+	blobs.startOnce.Do(func() { close(blobs.started) })
 	go func() {
 		<-blobs.release
 		_, putErr := blobs.BlobStore.Put(context.WithoutCancel(ctx), tenant, key, bytes.NewReader(content))
@@ -308,72 +605,76 @@ func TestAW07ReceiptTwoOwnerCanonicalTerminalAndReplay(t *testing.T) {
 	// released ownership. A second writer while Put is held could otherwise
 	// race deletion after the first writer marks the receipt ready.
 	blocked := &blockingReceiptBlobs{BlobStore: blobs, entered: make(chan struct{}), release: make(chan struct{})}
-	defer func() {
-		select {
-		case <-blocked.release:
-		default:
-			close(blocked.release)
-		}
-	}()
+	var releaseCopyOnce sync.Once
+	releaseCopy := func() { releaseCopyOnce.Do(func() { close(blocked.release) }) }
 	type copyOutcome struct {
 		result ydbstore.AttachedWorkerOutputReceiptResult
 		err    error
 	}
 	copyDone := make(chan copyOutcome, 1)
+	copyCtx, cancelCopy := context.WithCancel(ctx)
+	copyJoined := false
+	defer func() {
+		cancelCopy()
+		releaseCopy()
+		if copyJoined {
+			return
+		}
+		cleanup, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		select {
+		case <-copyDone:
+		case <-cleanup.Done():
+			select {
+			case <-copyDone:
+			default:
+				t.Error("blocked receipt writer did not join during bounded cleanup")
+			}
+		}
+	}()
 	go func() {
-		result, err := aStore.CreateAttachedWorkerOutputReceipt(ctx, blocked, request)
+		result, err := aStore.CreateAttachedWorkerOutputReceipt(copyCtx, blocked, request)
 		copyDone <- copyOutcome{result: result, err: err}
 	}()
 	select {
 	case <-blocked.entered:
 	case <-ctx.Done():
-		close(blocked.release)
-		t.Fatalf("canonical copy never started: %v", ctx.Err())
+		select {
+		case <-blocked.entered:
+		default:
+			t.Fatalf("canonical copy never started: %v", ctx.Err())
+		}
 	}
 	if _, err := aStore.CreateAttachedWorkerOutputReceipt(ctx, blobs, request); !errors.Is(err, ydbstore.ErrAttachedWorkerReceiptCopyInProgress) {
-		close(blocked.release)
 		t.Fatalf("concurrent exact retry was allowed to copy: %v", err)
 	}
 	if _, copied := blobs.values[pendingReceipt.Materialization.Completion.Events[0].Payload.Key]; copied {
-		close(blocked.release)
 		t.Fatal("duplicate request copied canonical object before the active writer settled")
 	}
-	// Model a run that has just become terminal while the non-transactional
-	// copy is still blocked. Deletion must inspect the pending receipt, not
-	// merely rely on the normal active-run guard. Restore the test fixture's
-	// run index before allowing the receipt writer to finish.
-	if _, err := aClient.DB.ExecContext(ctx,
-		`UPDATE runs_by_session SET status=$1 WHERE tenant_id=$2 AND session_id=$3 AND run_id=$4`,
-		domain.RunSucceeded, a.request.TenantID, loaded.Job.SessionID, a.request.RunID,
-	); err != nil {
-		close(blocked.release)
-		t.Fatalf("mark run terminal for deletion race: %v", err)
-	}
+	// Model canonical terminal state while the non-transactional copy is
+	// blocked, then restore both Run and index before the writer can finish.
 	deletion := domain.SessionDeletion{
 		TenantID: a.request.TenantID, SessionID: loaded.Job.SessionID,
 		RequestedBy: a.request.OwnerUserID, Reason: "receipt copy race",
 		State: domain.SessionDeletionRequested, RequestedAt: aNow.Add(time.Second),
 	}
-	if _, err := aStore.RequestSessionDeletion(ctx, deletion); err == nil ||
-		!strings.Contains(err.Error(), "pending attached-worker output receipt") {
-		close(blocked.release)
+	if err := aw07PendingReceiptDeletionBarrier(ctx, aStore, aClient.DB, a.request.RunID, domain.RunSucceeded, deletion); err != nil {
 		t.Fatalf("deletion escaped the in-flight receipt barrier: %v", err)
 	}
-	if _, err := aClient.DB.ExecContext(ctx,
-		`UPDATE runs_by_session SET status=$1 WHERE tenant_id=$2 AND session_id=$3 AND run_id=$4`,
-		domain.RunRunning, a.request.TenantID, loaded.Job.SessionID, a.request.RunID,
-	); err != nil {
-		close(blocked.release)
-		t.Fatalf("restore active run after deletion race: %v", err)
-	}
-	close(blocked.release)
+	releaseCopy()
+	var outcome copyOutcome
 	select {
-	case outcome := <-copyDone:
-		if outcome.err != nil || outcome.result.Status != ports.AttachedWorkerExecutionApplied || !outcome.result.Receipt.Ready {
-			t.Fatalf("single copy writer did not commit ready receipt: %+v err=%v", outcome.result, outcome.err)
-		}
+	case outcome = <-copyDone:
 	case <-ctx.Done():
-		t.Fatalf("single copy writer did not settle: %v", ctx.Err())
+		select {
+		case outcome = <-copyDone:
+		default:
+			t.Fatalf("single copy writer did not settle: %v", ctx.Err())
+		}
+	}
+	copyJoined = true
+	if outcome.err != nil || outcome.result.Status != ports.AttachedWorkerExecutionApplied || !outcome.result.Receipt.Ready {
+		t.Fatalf("single copy writer did not commit ready receipt: %+v err=%v", outcome.result, outcome.err)
 	}
 	commitment, err := publisher.Publish(ctx, submission)
 	if err != nil || commitment.Status != domain.AttachedWorkerTerminalSucceeded {
@@ -721,12 +1022,35 @@ func TestAW07AmbiguousReceiptCopyKeepsDeletionFailClosed(t *testing.T) {
 		t.Fatalf("load failed-copy job: found=%t err=%v", found, err)
 	}
 	blobs := newSessionAPITestBlobs()
-	late := &lateReceiptBlobs{BlobStore: blobs, release: make(chan struct{}), done: make(chan error, 1)}
+	late := &lateReceiptBlobs{BlobStore: blobs, release: make(chan struct{}), done: make(chan error, 1), started: make(chan struct{})}
+	var releaseLateOnce sync.Once
+	releaseLate := func() { releaseLateOnce.Do(func() { close(late.release) }) }
+	lateJoined := false
 	defer func() {
+		releaseLate()
+		if lateJoined {
+			return
+		}
 		select {
-		case <-late.release:
+		case <-late.started:
 		default:
-			close(late.release)
+			return // No remote writer was acquired.
+		}
+		cleanup, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		var putErr error
+		select {
+		case putErr = <-late.done:
+		case <-cleanup.Done():
+			select {
+			case putErr = <-late.done:
+			default:
+				t.Error("late remote receipt writer did not join during bounded cleanup")
+				return
+			}
+		}
+		if putErr != nil {
+			t.Errorf("late remote receipt writer failed during cleanup: %v", putErr)
 		}
 	}()
 	request := ydbstore.AttachedWorkerOutputReceiptRequest{
@@ -759,35 +1083,33 @@ func TestAW07AmbiguousReceiptCopyKeepsDeletionFailClosed(t *testing.T) {
 		result.Status != ports.AttachedWorkerExecutionFenced {
 		t.Fatalf("revoked exact retry was not fenced: result=%+v err=%v", result, err)
 	}
-	if _, err := client.DB.ExecContext(ctx,
-		`UPDATE runs_by_session SET status=$1 WHERE tenant_id=$2 AND session_id=$3 AND run_id=$4`,
-		domain.RunFailed, claimed.request.TenantID, loaded.Job.SessionID, claimed.request.RunID,
-	); err != nil {
-		t.Fatalf("mark abandoned run terminal for deletion: %v", err)
-	}
 	deletion := domain.SessionDeletion{
 		TenantID: claimed.request.TenantID, SessionID: loaded.Job.SessionID,
 		RequestedBy: claimed.request.OwnerUserID, Reason: "failed receipt copy after revocation",
 		State: domain.SessionDeletionRequested, RequestedAt: now.Add(time.Second),
 	}
-	if _, err := store.RequestSessionDeletion(ctx, deletion); err == nil ||
-		!strings.Contains(err.Error(), "pending attached-worker output receipt") {
+	if err := aw07PendingReceiptDeletionBarrier(ctx, store, client.DB, claimed.request.RunID, domain.RunFailed, deletion); err != nil {
 		t.Fatalf("deletion escaped an ambiguous remote write: %v", err)
 	}
-	close(late.release)
+	releaseLate()
+	var lateErr error
 	select {
-	case err := <-late.done:
-		if err != nil {
-			t.Fatalf("late remote write failed: %v", err)
-		}
+	case lateErr = <-late.done:
 	case <-ctx.Done():
-		t.Fatalf("late remote write did not settle: %v", ctx.Err())
+		select {
+		case lateErr = <-late.done:
+		default:
+			t.Fatalf("late remote write did not settle: %v", ctx.Err())
+		}
+	}
+	lateJoined = true
+	if lateErr != nil {
+		t.Fatalf("late remote write failed: %v", lateErr)
 	}
 	if _, copied := blobs.values[pending.Materialization.Completion.Events[0].Payload.Key]; !copied {
 		t.Fatal("fixture did not complete the remote write after the local failure")
 	}
-	if _, err := store.RequestSessionDeletion(ctx, deletion); err == nil ||
-		!strings.Contains(err.Error(), "pending attached-worker output receipt") {
+	if err := aw07PendingReceiptDeletionBarrier(ctx, store, client.DB, claimed.request.RunID, domain.RunFailed, deletion); err != nil {
 		t.Fatalf("late write released the deletion barrier without a quiescence proof: %v", err)
 	}
 }

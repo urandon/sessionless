@@ -16,17 +16,17 @@ import (
 	"gitcode.com/urandon/sessionless/internal/sessionlessharness"
 )
 
-// The legacy reader uses its original SQL spelling, not the bounded owned
-// executor's whitelist. Only these five canonical worker-state point reads are
+// The legacy reader uses its actual SQL spelling, including the common bounded
+// Run point read. Only these five canonical worker-state point reads are
 // supplied; any downstream principal/resource/lease query fails the test.
 type legacyProfileQueryFixture struct{ *ownedFinalScript }
 
 var legacyProfileWorkerReads = map[string]string{
-	"SELECT payload FROM runs WHERE tenant_id = $1 AND run_id = $2":                         "runs",
-	"SELECT payload FROM worker_jobs WHERE tenant_id=$1 AND run_id=$2":                      "worker_jobs",
-	"SELECT payload FROM attempts WHERE tenant_id = $1 AND attempt_id = $2":                 "attempts",
-	"SELECT payload FROM quota_reservations WHERE tenant_id=$1 AND quota_reservation_id=$2": "quota_reservations",
-	"SELECT payload FROM artifact_manifests WHERE tenant_id=$1 AND artifact_manifest_id=$2": "artifact_manifests",
+	"SELECT SUBSTRING(CAST(payload AS String),0,32769) FROM runs WHERE tenant_id = $1 AND run_id = $2": "runs",
+	"SELECT payload FROM worker_jobs WHERE tenant_id=$1 AND run_id=$2":                                 "worker_jobs",
+	"SELECT payload FROM attempts WHERE tenant_id = $1 AND attempt_id = $2":                            "attempts",
+	"SELECT payload FROM quota_reservations WHERE tenant_id=$1 AND quota_reservation_id=$2":            "quota_reservations",
+	"SELECT payload FROM artifact_manifests WHERE tenant_id=$1 AND artifact_manifest_id=$2":            "artifact_manifests",
 }
 
 func (f *legacyProfileQueryFixture) Connect(context.Context) (driver.Conn, error) { return f, nil }

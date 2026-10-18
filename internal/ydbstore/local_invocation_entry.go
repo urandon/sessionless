@@ -40,6 +40,7 @@ type LocalInvocationEntryV1 struct {
 	source            domain.AttemptExecutionSourceV1
 	allocation        domain.RegisteredAllocationV2
 	bodies            *operationbody.StoreV1
+	canonicalBlobs    ports.BlobStore
 	invocationContext context.Context
 }
 
@@ -159,7 +160,7 @@ func (b *LocalOwnedStoreBootstrapV1) StartLocalInvocation(ctx context.Context, r
 	if e != nil || lifetime.Err() != nil || ctx.Err() != nil {
 		return nil, domain.ErrMembershipDenied
 	}
-	entry := &LocalInvocationEntryV1{owner: b, parent: parent.Clone(), source: source.Clone(), allocation: registered.Current.Clone(), bodies: bodies, invocationContext: ctx}
+	entry := &LocalInvocationEntryV1{owner: b, parent: parent.Clone(), source: source.Clone(), allocation: registered.Current.Clone(), bodies: bodies, canonicalBlobs: blobs, invocationContext: ctx}
 	entry.self = entry
 	if !b.bodySlot.bodies.CompareAndSwap(nil, bodies) {
 		return nil, domain.ErrMembershipDenied

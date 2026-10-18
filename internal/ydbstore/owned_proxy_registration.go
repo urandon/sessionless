@@ -58,6 +58,20 @@ type ownedProxySnapshot struct {
 	policyBody, attestationBody []byte
 }
 
+type ownedProxyColumns struct {
+	flags                                                                             [6]uint64
+	originalRaw, originalDigest, currentRaw, currentDigest, policyRaw, attestationRaw string
+	service                                                                           string
+}
+
+func (c *ownedProxyColumns) destinations(sequence uint64) []any {
+	dest := []any{&c.flags[0], &c.flags[1], &c.flags[2], &c.flags[3], &c.flags[4], &c.flags[5], &c.originalRaw, &c.originalDigest, &c.currentRaw, &c.currentDigest, &c.policyRaw, &c.attestationRaw}
+	if sequence > 1 {
+		dest = append(dest, &c.service)
+	}
+	return dest
+}
+
 // PublishOwnedProxy preserves observation authenticated by the actual original
 // transport producer. It is not registration by startup or permission to send. The
 // ordinary Store has no installed owned source keeper and fails closed.
@@ -184,23 +198,25 @@ func readOwnedProxySnapshotAt(ctx context.Context, q *ownedAuthorityQuery, paren
 	if sequence == 0 || parent.Authority.HarnessBinding.AgentLoopPolicy == nil || sequence > parent.Authority.HarnessBinding.AgentLoopPolicy.Limits.MaxOperations {
 		return nil, q.budget.deny()
 	}
-	var flags [6]uint64
-	var originalRaw, originalDigest, currentRaw, currentDigest, policyRaw, attestationRaw string
+	var columns ownedProxyColumns
 	r := parent.Reservation
 	query, args := ownedProxyRegistrationSQL, []any{r.TenantID, r.AttemptID, r.Kind}
-	dest := []any{&flags[0], &flags[1], &flags[2], &flags[3], &flags[4], &flags[5], &originalRaw, &originalDigest, &currentRaw, &currentDigest, &policyRaw, &attestationRaw}
-	var service string
 	if sequence > 1 {
 		query, args = ownedOperationProxyRegistrationSQL, []any{r.TenantID, r.AttemptID, sequence}
-		dest = append(dest, &service)
 	}
-	err := q.scanMetadata(ctx, query, args, dest...)
+	err := q.scanMetadata(ctx, query, args, columns.destinations(sequence)...)
 	if err == sql.ErrNoRows && sequence > 1 {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, q.budget.deny()
 	}
+	return columns.decode(q, parent, source, allocation, sequence)
+}
+
+func (c ownedProxyColumns) decode(q *ownedAuthorityQuery, parent domain.OwnedAttemptEffectParentV1, source domain.AttemptExecutionSourceV1, allocation domain.RegisteredAllocationV2, sequence uint64) (*ownedProxySnapshot, error) {
+	flags := c.flags
+	originalRaw, originalDigest, currentRaw, currentDigest, policyRaw, attestationRaw, service := c.originalRaw, c.originalDigest, c.currentRaw, c.currentDigest, c.policyRaw, c.attestationRaw, c.service
 	if flags == [6]uint64{} && originalRaw == "" && originalDigest == "" && currentRaw == "" && currentDigest == "" && policyRaw == "" && attestationRaw == "" {
 		return nil, nil
 	}

@@ -22,6 +22,7 @@ import (
 // a sentinel row detect overflow; neither fallback nor partial history is valid.
 const localCompactionSnapshotSQL = `SELECT SUBSTRING(CAST(record AS String),0,8193) FROM session_snapshots
  WHERE tenant_id=$1 AND session_id=$2 AND version=$3`
+
 // YDB Substring's length is Uint32, while the shared SQL argument bridge binds
 // Go uint64 bounds as Uint64. The producer caps this value at 8193 before SQL;
 // keep the cast at the physical query rather than relying on implicit narrowing.

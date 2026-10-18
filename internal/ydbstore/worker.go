@@ -486,11 +486,65 @@ func completeWorkerSuccessTx(
 	requireSubstrateEvidence bool,
 	finalize func(domain.Run) error,
 ) error {
+	// Preserve the delivered V1/attached entry points. Local completion never
+	// enters through their nil-evidence/attached branch.
+	authority := workerSuccessAuthority{kind: workerSuccessManagedV1, managed: substrateEvidence}
+	if !requireSubstrateEvidence && substrateEvidence == nil {
+		authority.kind = workerSuccessAttached
+	}
+	return completeWorkerSuccessWithAuthorityTx(ctx, state, tx, run, attempt, reservation,
+		leaseID, fence, at, manifest, usage, authority, finalize)
+}
+
+type workerSuccessKind uint8
+
+const (
+	workerSuccessManagedV1 workerSuccessKind = iota + 1
+	workerSuccessAttached
+	workerSuccessLocalV2
+)
+
+// Closed private composition, not a caller-supplied verifier or a switch to
+// disable evidence. Only the original local completion producer creates local.
+type workerSuccessAuthority struct {
+	kind    workerSuccessKind
+	managed *domain.SubstrateExecutionEvidenceV1
+	local   *localTerminalCompletionV2
+}
+
+func completeWorkerSuccessWithAuthorityTx(
+	ctx context.Context,
+	state ports.StateTx,
+	tx *stateTx,
+	run domain.Run,
+	attempt domain.Attempt,
+	reservation domain.QuotaReservation,
+	leaseID domain.LeaseID,
+	fence uint64,
+	at time.Time,
+	manifest domain.ArtifactManifest,
+	usage []domain.UsageObservation,
+	authority workerSuccessAuthority,
+	finalize func(domain.Run) error,
+) error {
 	if err := requireLeaseOwnership(ctx, tx, run.ID, leaseID, fence, at); err != nil {
 		return err
 	}
-	if requireSubstrateEvidence && substrateEvidence == nil {
-		return domain.ValidationError{Field: "worker_completion.substrate_evidence", Reason: "must not be nil for managed execution"}
+	switch authority.kind {
+	case workerSuccessManagedV1:
+		if authority.managed == nil || authority.local != nil {
+			return domain.ValidationError{Field: "worker_completion.substrate_evidence", Reason: "must not be nil for managed execution"}
+		}
+	case workerSuccessAttached:
+		if authority.managed != nil || authority.local != nil {
+			return domain.ErrMembershipDenied
+		}
+	case workerSuccessLocalV2:
+		if authority.managed != nil || authority.local == nil || authority.local.validateFirstCommit(tx.store, run, attempt, reservation) != nil {
+			return domain.ErrMembershipDenied
+		}
+	default:
+		return domain.ErrMembershipDenied
 	}
 	if err := run.Transition(domain.RunSucceeded, at); err != nil {
 		return err
@@ -501,8 +555,19 @@ func completeWorkerSuccessTx(
 	if err := reservation.Transition(domain.ReservationCommitted, at); err != nil {
 		return err
 	}
-	if err := state.PutRun(ctx, run); err != nil {
-		return err
+	if authority.local != nil {
+		var err error
+		run, err = authority.local.terminalRun(run)
+		if err != nil {
+			return err
+		}
+		if err := authority.local.putRun(ctx, tx, run); err != nil {
+			return err
+		}
+	} else {
+		if err := state.PutRun(ctx, run); err != nil {
+			return err
+		}
 	}
 	if err := state.PutAttempt(ctx, attempt); err != nil {
 		return err
@@ -518,8 +583,13 @@ func completeWorkerSuccessTx(
 	if err := state.PutArtifactManifest(ctx, manifest); err != nil {
 		return err
 	}
-	if substrateEvidence != nil {
-		if err := putSubstrateExecutionEvidenceTx(ctx, tx, run, attempt, *substrateEvidence, at); err != nil {
+	if authority.managed != nil {
+		if err := putSubstrateExecutionEvidenceTx(ctx, tx, run, attempt, *authority.managed, at); err != nil {
+			return err
+		}
+	}
+	if authority.local != nil {
+		if err := authority.local.putEvidence(ctx, tx, run, attempt, at); err != nil {
 			return err
 		}
 	}

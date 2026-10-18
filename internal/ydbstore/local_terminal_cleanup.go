@@ -138,6 +138,15 @@ func (p *LocalPreparedOutputV1) FinishCleanup(ctx context.Context) (_ *LocalTerm
 	if p.verifyCleanupRetained(call) != nil || call.Err() != nil {
 		return deny()
 	}
+	// Preupload the original fixed cancellation notice BEFORE the irreversible
+	// ordinary namespace fence. Registered custody owns this deterministic Run
+	// reference even if no terminal event is eventually committed. It is NOT
+	// a success-capsule event and cannot describe a non-cancellation failure.
+	if p.accounting == nil || p.cancellation.Kind != domain.SessionEventSystemNotice ||
+		chargeOwnedAuthorityBody(call, 3*uint64(len(p.cancellationBody))) != nil ||
+		h.entry.terminalOutputs.WriteFailureNotice(call, p.cancellation, p.cancellationBody) != nil || call.Err() != nil {
+		return deny()
+	}
 	// All callback/retry/materialization capacity is spent BEFORE destructive
 	// I/O. A lost retirement ACK can honestly exhaust the shared three callbacks;
 	// it must then stop here rather than acquire a new budget and erase anyway.

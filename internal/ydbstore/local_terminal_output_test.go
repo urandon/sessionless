@@ -25,6 +25,8 @@ type terminalOutputCloseSQL struct {
 	base             driver.Connector
 	mu               sync.Mutex
 	reads            int
+	targetStatement  string
+	targetRead       int
 	close            func() error
 	fired, cancelled bool
 	closeErr         error
@@ -52,9 +54,16 @@ func (c *terminalOutputCloseConn) QueryContext(ctx context.Context, statement st
 	rows, err := c.Conn.(driver.QueryerContext).QueryContext(ctx, statement, args)
 	c.owner.mu.Lock()
 	defer c.owner.mu.Unlock()
-	if err == nil && statement == localCompactionOperationsSQL {
+	target, targetRead := c.owner.targetStatement, c.owner.targetRead
+	if target == "" {
+		target = localCompactionOperationsSQL
+	}
+	if targetRead == 0 {
+		targetRead = 2
+	}
+	if err == nil && statement == target {
 		c.owner.reads++
-		if c.owner.reads == 2 {
+		if c.owner.reads == targetRead {
 			c.owner.fired = true
 			if c.owner.close != nil {
 				c.owner.closeErr = c.owner.close()

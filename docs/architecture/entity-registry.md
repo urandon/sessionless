@@ -47,6 +47,24 @@ its exact registered object. Structural validation does not prove original
 upload, stop, retirement or erasure. Their dedicated producer and terminal
 replay seal remain required; no table, TTL or complete 32 KiB Run bound changes.
 
+The local completion successor uses that same Run and the existing
+`substrate_execution_evidence` row, with explicitly tagged V2 evidence; it does
+not reinterpret managed V1 rows or add an execution table. Its full original
+debit/components and reported-or-unknown usage remain reserved, not refunded
+or presented as measured cost. The canonical finalization transaction owns
+the Run/Attempt/quota, event, manifest, evidence and replay marker together.
+
+Before fencing the ordinary body namespace, the original cleanup owner also
+uploads one deterministic prepaid cancellation SystemNotice body. This object
+is separate from the success capsule's event list. The owning registered Run
+must retain its exact cancellation reference for deletion/reconciliation even
+when success commits or no terminal event commits. Late cancellation selects
+only that notice, never assistant drafts or success correspondence/evidence.
+The fixed cancelled notice cannot represent another failure. The conservative
+deletion guard below remains until the complete writer-join/inventory path
+enumerates these residues; this staging integration does not claim deletion
+readiness, fresh-Run reconstruction or normal-worker activation.
+
 Until original-writer reconciliation and the sealed finalizer are integrated,
 Session deletion rejects every registered terminal-custody plan, regardless of
 Run status or apparent correspondence/evidence. The existing admission, start

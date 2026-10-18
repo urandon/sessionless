@@ -343,6 +343,17 @@ func (tx *stateTx) PutRun(ctx context.Context, run domain.Run) error {
 	if (!found && run.TerminalCustody != nil) || (found && !domain.EqualRunTerminalCustodyV1(run.TerminalCustody, stored.TerminalCustody)) {
 		return domain.ValidationError{Field: "run.terminal_custody", Reason: "generic writes must preserve existing metadata exactly"}
 	}
+	return putCanonicalRunPayloadTx(ctx, tx, run, payload)
+}
+
+// One physical Run/index writer. Generic PutRun retains its exact metadata
+// preservation checks above; the private original terminal producer is the
+// only additional caller. Both must validate and encode the COMPLETE bounded
+// Run before this function or any other transaction mutation.
+func putCanonicalRunPayloadTx(ctx context.Context, tx *stateTx, run domain.Run, payload string) error {
+	if tx == nil || run.TenantID != tx.tenantID || len(payload) == 0 || len(payload) > ownedAuthorityHeadBytes {
+		return domain.ErrMembershipDenied
+	}
 	if err := invalidateRunExplanationTx(ctx, tx, run); err != nil {
 		return err
 	}
@@ -364,7 +375,7 @@ func (tx *stateTx) PutRun(ctx context.Context, run domain.Run) error {
 	); err != nil {
 		return err
 	}
-	_, err = tx.sqlTx.ExecContext(ctx,
+	_, err := tx.sqlTx.ExecContext(ctx,
 		`UPSERT INTO run_idempotency
 		 (tenant_id, idempotency_key, run_id, created_at, expire_at)
 		 VALUES ($1, $2, $3, $4, $5)`,

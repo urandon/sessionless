@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"gitcode.com/urandon/sessionless/internal/canonicaloutput"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/providerloopsession"
 	"gitcode.com/urandon/sessionless/internal/ydbstore"
@@ -123,6 +124,19 @@ func TestLocalSessionTerminalCleanupConnected(t *testing.T) {
 				}
 			}
 			blobs.mu.Unlock()
+			// The original prepaid cancellation slot is uploaded before erasure,
+			// outside the ordinary namespace. Assert its EXACT deterministic bytes
+			// in addition to preserving every already published retained object.
+			notice, err := canonicaloutput.EncodeFailureV1(before.ID, true, "cancelled")
+			if err != nil {
+				t.Fatal(err)
+			}
+			noticeDraft, err := canonicaloutput.PlanEventDraftV1(before, notice.ID, notice.Kind, notice.Payload, before.UpdatedAt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			retained[string(before.TenantID)+"\x00"+noticeDraft.Payload.Key] = bytes.Clone(notice.Payload)
+			clear(notice.Payload)
 			if ordinary == 0 {
 				t.Fatal("no original physical bodies")
 			}

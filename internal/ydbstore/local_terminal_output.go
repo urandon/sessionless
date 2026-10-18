@@ -34,6 +34,10 @@ type LocalPreparedOutputV1 struct {
 	publicationRun       domain.Run
 	cleanupAttempted     bool
 	cleanup              *LocalTerminalCleanupV1
+	completion           *localTerminalCompletionV2
+	accounting           *localTerminalAccountingV2
+	cancellation         domain.SessionEventDraft
+	cancellationBody     []byte
 	plan                 domain.TerminalCustodyPlanV1
 	manifest             domain.ArtifactManifest
 	drafts               []domain.SessionEventDraft
@@ -91,10 +95,17 @@ func (h *LocalTerminalV1) PrepareOutput(ctx context.Context) (_ *LocalPreparedOu
 	}
 	store := h.entry.owner.store
 	var run domain.Run
+	var genericProfile domain.OwnedAgentProfileCurrentV1
 	var at time.Time
 	if store.ownedAuthorityTx(call, func(ctx context.Context, q *ownedAuthorityQuery) error {
 		var e error
 		run, e = s.rejoinRunLocked(ctx, q, nil, nil)
+		if e == nil && h.entry.preparedModel.Load() == nil {
+			// The exported original entry also supports the generic seq1 path.
+			// Capture the exact INSTALLED profile in this existing current join;
+			// the short-lived setup publication template is not that profile.
+			genericProfile, e = readOwnedProfileCurrent(ctx, q, h.entry.source.Profile)
+		}
 		at = q.at
 		return e
 	}) != nil || run.Status != domain.RunRunning || run.CancellationRequestedAt != nil || run.TerminalCustody != nil {
@@ -213,7 +224,30 @@ func (h *LocalTerminalV1) PrepareOutput(ctx context.Context) (_ *LocalPreparedOu
 	if plan.Validate() != nil {
 		return deny()
 	}
-	p := &LocalPreparedOutputV1{parent: h, mu: new(sync.Mutex), plan: plan, manifest: manifest, drafts: drafts, canonical: encoded, capsule: body}
+	accounting, e := prepareLocalTerminalAccounting(call, h, at, genericProfile)
+	if e != nil {
+		return deny()
+	}
+	notice, e := canonicaloutput.EncodeFailureV1(run.ID, true, "cancelled")
+	if e != nil || uint64(len(notice.Payload)) > h.entry.terminalOutputs.FailureNoticeLimit() {
+		clear(notice.Payload)
+		return deny()
+	}
+	cancellation, e := canonicaloutput.PlanEventDraftV1(run, notice.ID, notice.Kind, notice.Payload, at)
+	if e != nil {
+		clear(notice.Payload)
+		return deny()
+	}
+	// Accounting performs another original current join. Original caller and
+	// invocation cancellation may precede delayed AfterFunc delivery, so their
+	// direct lifetimes must still be checked AFTER that join, not only before it.
+	life, lifeErr = h.entry.owner.source.ExecutionLifetime()
+	if ctx.Err() != nil || call.Err() != nil || h.entry.invocationContext.Err() != nil || lifeErr != nil || life.Err() != nil {
+		clear(notice.Payload)
+		return deny()
+	}
+	p := &LocalPreparedOutputV1{parent: h, mu: new(sync.Mutex), plan: plan, manifest: manifest, drafts: drafts, canonical: encoded, capsule: body,
+		accounting: accounting, cancellation: cancellation, cancellationBody: notice.Payload}
 	p.self = p
 	h.output = p
 	success = true
@@ -407,6 +441,8 @@ func (p *LocalPreparedOutputV1) releaseOutputLocked() {
 	p.drafts = nil
 	clear(p.manifest.Artifacts)
 	p.manifest.Artifacts = nil
+	clear(p.cancellationBody)
+	p.cancellationBody = nil
 }
 
 // StopAndJoin revokes even an unused original owner. It joins the actual

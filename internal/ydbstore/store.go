@@ -257,10 +257,7 @@ func (tx *stateTx) GetRun(ctx context.Context, id domain.RunID) (domain.Run, boo
 	if err := id.Validate(); err != nil {
 		return domain.Run{}, false, err
 	}
-	return readJSON[domain.Run](ctx, tx.sqlTx,
-		`SELECT payload FROM runs WHERE tenant_id = $1 AND run_id = $2`,
-		tx.tenantID, id,
-	)
+	return readRunPayload(ctx, tx.sqlTx, tx.tenantID, id)
 }
 
 func (tx *stateTx) FindRunByIdempotencyKey(
@@ -292,11 +289,15 @@ func (tx *stateTx) PutRun(ctx context.Context, run domain.Run) error {
 	if err := run.Validate(); err != nil {
 		return err
 	}
+	run = run.Clone()
+	payload, err := marshalRunPayload(run)
+	if err != nil {
+		return err
+	}
 	if err := ensureSessionWritableTx(ctx, tx, run.SessionID); err != nil {
 		return err
 	}
 	var existing string
-	var err error
 	if q, ok := tx.sqlTx.(*ownedAuthorityQuery); ok {
 		returned, scanErr := scanOwnedCurrentRow(q.QueryRowContext(ctx,
 			`SELECT SUBSTRING(CAST(run_id AS String),0,161) FROM run_idempotency
@@ -332,11 +333,14 @@ func (tx *stateTx) PutRun(ctx context.Context, run domain.Run) error {
 		!stored.CreatedAt.Equal(run.CreatedAt)) {
 		return domain.ValidationError{Field: "run", Reason: "immutable identity fields cannot change"}
 	}
-	if err := invalidateRunExplanationTx(ctx, tx, run); err != nil {
-		return err
+	// Generic creation cannot mint derived context, and ordinary status/cancel/
+	// terminal writes cannot replace or drop any part of the stored inventory.
+	// A dedicated current-authority publisher must own a later replacement.
+	if (!found && run.DerivedContext != nil) ||
+		(found && !domain.EqualRunDerivedContextV1(run.DerivedContext, stored.DerivedContext)) {
+		return domain.ValidationError{Field: "run.derived_context", Reason: "generic writes must preserve existing metadata exactly"}
 	}
-	payload, err := marshal(run)
-	if err != nil {
+	if err := invalidateRunExplanationTx(ctx, tx, run); err != nil {
 		return err
 	}
 	if _, err := tx.sqlTx.ExecContext(ctx,

@@ -17,9 +17,11 @@ lifecycle or transaction reason, not one table for every state or proof.
 
 The [derived-compaction design](../design/owned-harness-compaction.md#durable-head-and-terminal-correspondence)
 selects one bounded typed head and terminal correspondence in existing Run JSON,
-with immutable summary/manifest bodies in scoped object storage. This is an
-unimplemented payload extension, not a new table or applied schema change.
-Attempt/checkpoint TTL cannot own fresh-Run context retention. The dedicated
+with immutable summary/manifest bodies in scoped object storage. The typed
+head/inventory codec and generic Run writer preserve this storage envelope;
+the dedicated publisher, terminal correspondence and retained-object lifecycle
+still require their owning implementation. There is no new table or applied
+schema change. Attempt/checkpoint TTL cannot own fresh-Run context retention. The dedicated
 publisher must preserve current-authority/CAS checks; generic Run writers must
 preserve the head exactly, and canonical finalization must seal its terminal
 mapping into the existing replay digest. Session deletion owns the bounded
@@ -31,9 +33,10 @@ send, retry or reconstructed write authority. Generic writers preserve the
 complete metadata. Each producing Run retains its pairs until Session deletion;
 head replacement does not require a reference-count table or unsafe early
 garbage collection. Common Run writes enforce the complete 32 KiB payload
-ceiling; the WebUI explanation must project only its base Run fields within
-the existing 8 KiB read budget before this metadata is enabled. Physical table
-counts and existing TTLs remain unchanged.
+ceiling, and common point reads reject larger payloads before decoding. The
+WebUI explanation projects only its base Run fields within the existing
+8 KiB read budget; that read-only projection must never feed a writer.
+Physical table counts and existing TTLs remain unchanged.
 
 ## Logical entity groups
 

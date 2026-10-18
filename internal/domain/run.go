@@ -67,6 +67,24 @@ type Run struct {
 	FinishedAt               *time.Time               `json:"finished_at,omitempty"`
 	CreatedAt                time.Time                `json:"created_at"`
 	UpdatedAt                time.Time                `json:"updated_at"`
+	DerivedContext           *RunDerivedContextV1     `json:"derived_context,omitempty"`
+}
+
+func (run Run) Clone() Run {
+	for _, pair := range []struct {
+		source *time.Time
+		target **time.Time
+	}{{run.CancellationRequestedAt, &run.CancellationRequestedAt}, {run.StartedAt, &run.StartedAt}, {run.FinishedAt, &run.FinishedAt}} {
+		if pair.source != nil {
+			value := *pair.source
+			*pair.target = &value
+		}
+	}
+	if run.DerivedContext != nil {
+		value := run.DerivedContext.Clone()
+		run.DerivedContext = &value
+	}
+	return run
 }
 
 func (run Run) Validate() error {
@@ -109,6 +127,9 @@ func (run Run) Validate() error {
 		}
 	} else if run.FinishedAt != nil {
 		return ValidationError{Field: "run.finished_at", Reason: "is allowed only for a terminal run"}
+	}
+	if run.DerivedContext != nil {
+		return run.DerivedContext.ValidateForRun(run)
 	}
 	return nil
 }

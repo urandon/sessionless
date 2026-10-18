@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"gitcode.com/urandon/sessionless/internal/canonicaloutput"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/localoperator"
 	"gitcode.com/urandon/sessionless/internal/ports"
@@ -27,6 +26,8 @@ type LocalFreshRunHistorySQLFixture struct {
 	details                    map[domain.AttemptID][]driver.Value
 	markers                    map[domain.RunID][2]string
 	manifests                  map[domain.ArtifactManifestID]string
+	identities                 map[domain.AttemptID]freshRunHistoryIdentity
+	DetailReads                map[domain.RunID]int
 	tenant                     domain.TenantID
 	session                    domain.SessionID
 	oldRun                     domain.RunID
@@ -38,6 +39,14 @@ type LocalFreshRunHistorySQLFixture struct {
 	DiscoveryChanges           int
 	changeLegacyAfterDetail    bool
 	LegacyChanges              int
+}
+
+// Immutable storage locators only, never the prior Source/issuer/owner.
+type freshRunHistoryIdentity struct {
+	run      domain.RunID
+	lease    domain.LeaseID
+	claim    string
+	manifest domain.ArtifactManifestID
 }
 
 type freshRunHistoryConnector struct {
@@ -93,7 +102,7 @@ func (c *freshRunHistoryConn) QueryContext(ctx context.Context, s string, a []dr
 					raw = raw[:cap]
 				}
 				marker := f.markers[domain.RunID(id)]
-				rows = append(rows, []driver.Value{id, raw, marker[0], marker[1]})
+				rows = append(rows, []driver.Value{id, raw, marker[0][:min(len(marker[0]), 33)], marker[1][:min(len(marker[1]), 74)]})
 			}
 		}
 		f.HistoryReads++
@@ -103,11 +112,17 @@ func (c *freshRunHistoryConn) QueryContext(ctx context.Context, s string, a []dr
 		return canonicalHistoryManifestRows(f.tenant, f.manifests, a)
 	}
 	if s == localTerminalHistorySQL {
-		if len(a) != 4 || a[0].Value != string(f.tenant) || a[2].Value != string(domain.ProviderEffectTurnV1) || a[3].Value != string(canonicaloutput.ManifestIDV1(f.oldRun)) {
+		if len(a) != 4 || ctx.Err() != nil || a[0].Value != string(f.tenant) || a[2].Value != string(domain.ProviderEffectTurnV1) {
 			return nil, errors.New("fresh immutable terminal exact keys")
 		}
-		row := f.details[domain.AttemptID(a[1].Value.(string))]
+		attempt, ok := a[1].Value.(string)
+		identity, found := f.identities[domain.AttemptID(attempt)]
+		if !ok || !found || a[3].Value != string(identity.manifest) {
+			return nil, errors.New("fresh immutable terminal attempt/manifest association")
+		}
+		row := f.details[domain.AttemptID(attempt)]
 		f.HistoryReads++
+		f.DetailReads[identity.run]++
 		original := append([]driver.Value(nil), row...)
 		if f.changeDiscoveryAfterDetail {
 			if len(original) != 11 || f.markers[f.oldRun][1] != original[7] {
@@ -168,9 +183,11 @@ func (c *freshRunHistoryConn) QueryContext(ctx context.Context, s string, a []dr
 	// a convenient copied old fixture. New Run's own rows still use production.
 	if strings.Contains(s, "FROM attempts") || strings.Contains(s, "FROM worker_jobs") || strings.Contains(s, "FROM lease_heads") || strings.Contains(s, "FROM leases") {
 		for _, arg := range a {
-			if arg.Value == string(f.oldRun) || arg.Value == string(f.oldAttempt) || arg.Value == string(f.oldLease) || arg.Value == f.oldClaim {
-				f.TTLReads++
-				return nil, errors.New("old TTL state is gone")
+			for attempt, identity := range f.identities {
+				if arg.Value == string(identity.run) || arg.Value == string(attempt) || arg.Value == string(identity.lease) || arg.Value == identity.claim {
+					f.TTLReads++
+					return nil, errors.New("old TTL state is gone")
+				}
 			}
 		}
 	}
@@ -180,10 +197,10 @@ func (c *freshRunHistoryConn) QueryContext(ctx context.Context, s string, a []dr
 // NewFreshRunAfterTerminalSeed opens the unchanged private installation through
 // its real OpenExisting API. All new scope/funding/canonical rows are declared
 // BEFORE the caller constructs NewLocalV1; no producer or fit result is injected.
-func NewFreshRunAfterTerminalSeed(t *testing.T, old *LocalTerminalPublicationSessionConnectedSeed, completed *LocalTerminalCompletionSQLFixture, blobs ports.BlobStore) (*LocalSessionConnectedSeed, *LocalFreshRunHistorySQLFixture) {
+func NewFreshRunAfterTerminalSeed(t *testing.T, old *LocalTerminalPublicationSessionConnectedSeed, completed *LocalTerminalCompletionSQLFixture, blobs ports.BlobStore, name string, previous *LocalFreshRunHistorySQLFixture) (*LocalTerminalPublicationSessionConnectedSeed, *LocalFreshRunHistorySQLFixture, *LocalTerminalCompletionSQLFixture) {
 	t.Helper()
 	oldState := completed.Snapshot(t)
-	if oldState.Run.Status != domain.RunSucceeded || oldState.Run.TerminalCustody == nil || len(oldState.Events) != 1 {
+	if name == "" || completed.cleanup.seed != old || oldState.Run.Status != domain.RunSucceeded || oldState.Finalizations != 1 || oldState.Run.TerminalCustody == nil || len(oldState.Events) != 1 {
 		t.Fatal("genuine successful producing Run required")
 	}
 	source, err := localoperator.OpenExisting(t.Context(), old.installationRoot, old.executable, old.receipt)
@@ -198,12 +215,12 @@ func NewFreshRunAfterTerminalSeed(t *testing.T, old *LocalTerminalPublicationSes
 	profile := old.receipt.Profile.Clone()
 	state := currentWorkerAuthorityFixture(t)
 	at := time.Now().UTC().Truncate(time.Microsecond)
-	state.Run.ID, state.Run.IdempotencyKey, state.Run.TriggerEventID = "fresh-run", "fresh-idempotency", "fresh-user"
+	state.Run.ID, state.Run.IdempotencyKey, state.Run.TriggerEventID = domain.RunID(name+"-run"), domain.IdempotencyKey(name+"-idempotency"), domain.SessionEventID(name+"-user")
 	state.Run.CreatedAt, state.Run.UpdatedAt = at, at
-	state.Job.RunID, state.Job.TriggerEventID, state.Job.AttemptID, state.Job.ReservationID, state.Job.InputManifestID = "fresh-run", "fresh-user", "fresh-attempt", "fresh-reservation", "fresh-input-manifest"
-	state.Attempt.ID, state.Attempt.RunID, state.Attempt.CreatedAt, state.Attempt.UpdatedAt = "fresh-attempt", "fresh-run", at, at
-	state.Reservation.ID, state.Reservation.RunID, state.Reservation.HeldAt, state.Reservation.UpdatedAt, state.Reservation.ExpiresAt = "fresh-reservation", "fresh-run", at, at, at.Add(time.Hour)
-	state.InputManifest.ID, state.InputManifest.RunID, state.InputManifest.CreatedAt = "fresh-input-manifest", "fresh-run", at
+	state.Job.RunID, state.Job.TriggerEventID, state.Job.AttemptID, state.Job.ReservationID, state.Job.InputManifestID = state.Run.ID, state.Run.TriggerEventID, domain.AttemptID(name+"-attempt"), domain.QuotaReservationID(name+"-reservation"), domain.ArtifactManifestID(name+"-input-manifest")
+	state.Attempt.ID, state.Attempt.RunID, state.Attempt.CreatedAt, state.Attempt.UpdatedAt = state.Job.AttemptID, state.Run.ID, at, at
+	state.Reservation.ID, state.Reservation.RunID, state.Reservation.HeldAt, state.Reservation.UpdatedAt, state.Reservation.ExpiresAt = state.Job.ReservationID, state.Run.ID, at, at, at.Add(time.Hour)
+	state.InputManifest.ID, state.InputManifest.RunID, state.InputManifest.CreatedAt = state.Job.InputManifestID, state.Run.ID, at
 	scope := domain.AttemptExecutionSourceScopeV1{TenantID: state.Run.TenantID, SessionID: state.Run.SessionID, OwnerUserID: state.Job.CredentialOwnerUserID, RunID: state.Run.ID, AttemptID: state.Attempt.ID}
 	var spending [4]domain.AttemptSpendingAuthorizationCurrentV1
 	for i, kind := range ownedSpendingKinds {
@@ -246,7 +263,7 @@ func NewFreshRunAfterTerminalSeed(t *testing.T, old *LocalTerminalPublicationSes
 		t.Fatal(err)
 	}
 	author := scope.OwnerUserID
-	event := domain.SessionEvent{ID: state.Run.TriggerEventID, TenantID: scope.TenantID, SessionID: scope.SessionID, Sequence: anchor.Sequence + 1, Kind: domain.SessionEventUserMessage, AuthorUserID: &author, IdempotencyKey: "fresh-user-key", Payload: ref, CreatedAt: at}
+	event := domain.SessionEvent{ID: state.Run.TriggerEventID, TenantID: scope.TenantID, SessionID: scope.SessionID, Sequence: anchor.Sequence + 1, Kind: domain.SessionEventUserMessage, AuthorUserID: &author, IdempotencyKey: domain.IdempotencyKey(name + "-user-key"), Payload: ref, CreatedAt: at}
 	if event.Validate() != nil {
 		t.Fatal("new original user ingress")
 	}
@@ -265,6 +282,28 @@ func NewFreshRunAfterTerminalSeed(t *testing.T, old *LocalTerminalPublicationSes
 	history := &LocalFreshRunHistorySQLFixture{tenant: scope.TenantID, session: scope.SessionID, oldRun: oldState.Run.ID, oldAttempt: oldState.Attempt.ID, oldLease: old.Request.LeaseID, oldClaim: old.Request.PhysicalInvocationClaimID, runs: map[domain.RunID]string{oldState.Run.ID: string(oldRaw)}, details: map[domain.AttemptID][]driver.Value{oldState.Attempt.ID: {parentRow[13], parentRow[14], admissionRow[0], admissionRow[1], oldState.EvidenceRecord, oldState.EvidenceDigest, oldState.FinalStatus, oldState.FinalDigest, string(manifestRaw), accountingRow[2], accountingRow[3]}}}
 	history.markers = map[domain.RunID][2]string{oldState.Run.ID: {oldState.FinalStatus, oldState.FinalDigest}}
 	history.manifests = map[domain.ArtifactManifestID]string{oldState.Manifest.ID: string(manifestRaw)}
+	history.identities = map[domain.AttemptID]freshRunHistoryIdentity{oldState.Attempt.ID: {run: oldState.Run.ID, lease: old.Request.LeaseID, claim: old.Request.PhysicalInvocationClaimID, manifest: oldState.Manifest.ID}}
+	history.DetailReads = make(map[domain.RunID]int)
+	if previous != nil {
+		if previous.tenant != scope.TenantID || previous.session != scope.SessionID || len(previous.identities) != 1 || previous.runs[oldState.Run.ID] != "" {
+			t.Fatal("fresh chain requires exactly one distinct earlier committed producing Run")
+		}
+		for id, raw := range previous.runs {
+			history.runs[id] = raw
+		}
+		for id, row := range previous.details {
+			history.details[id] = append([]driver.Value(nil), row...)
+		}
+		for id, marker := range previous.markers {
+			history.markers[id] = marker
+		}
+		for id, raw := range previous.manifests {
+			history.manifests[id] = raw
+		}
+		for id, identity := range previous.identities {
+			history.identities[id] = identity
+		}
+	}
 	for id, raw := range old.compaction.historyRuns {
 		history.runs[id] = raw
 		history.markers[id] = old.compaction.historyMarkers[id]
@@ -272,14 +311,19 @@ func NewFreshRunAfterTerminalSeed(t *testing.T, old *LocalTerminalPublicationSes
 	for id, raw := range old.compaction.historyManifests {
 		history.manifests[id] = raw
 	}
-	db := sql.OpenDB(freshRunHistoryConnector{base: compactionPublicationConnector{engine}, history: history})
+	seed := terminalPublicationSessionSeed(t, &LocalSessionConnectedSeed{Source: source, Options: Options{OwnedAttemptEffectSourceVerifier: parent.verifier, OwnedProfilePublicationVerifier: source}, Prepare: parent.issuer.issuer, Operate: operate, Backend: parent.parent.Authority.HarnessBinding.Backend, Substrate: parent.parent.Authority.SubstrateBinding, Request: parent.request, Profile: cfg, Scope: scope, parent: parent, sql: operationSQL, compaction: engine, installationRoot: old.installationRoot, executable: old.executable, receipt: old.receipt})
+	completion := seed.InstallTerminalCompletionSQL(t)
+	// All original terminal writers are installed first. Historical reads are
+	// the final outer connector, so completing B cannot discard A's snapshots.
+	db := sql.OpenDB(freshRunHistoryConnector{base: terminalCompletionConnector{f: completion}, history: history})
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() {
 		if e := db.Close(); e != nil {
 			t.Error(e)
 		}
 	})
-	return &LocalSessionConnectedSeed{Source: source, DB: db, Options: Options{OwnedAttemptEffectSourceVerifier: parent.verifier, OwnedProfilePublicationVerifier: source}, Prepare: parent.issuer.issuer, Operate: operate, Backend: parent.parent.Authority.HarnessBinding.Backend, Substrate: parent.parent.Authority.SubstrateBinding, Request: parent.request, Profile: cfg, Scope: scope, parent: parent, sql: operationSQL, compaction: engine, installationRoot: old.installationRoot, executable: old.executable, receipt: old.receipt}, history
+	seed.DB = db
+	return seed, history, completion
 }
 
 func (f *LocalFreshRunHistorySQLFixture) Corrupt(t *testing.T, kind string) {

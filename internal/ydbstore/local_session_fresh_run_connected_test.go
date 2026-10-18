@@ -179,7 +179,7 @@ func TestLocalSessionFreshRunAfterErasureConnected(t *testing.T) {
 			// Reuse only immutable STORAGE and original installation files. This
 			// wrapper intentionally has no terminal writer/old seed callbacks.
 			freshBlobs := &freshRunBlobs{BlobStore: blobs.sessionCompactionBlobs, oldRun: prior.Run.ID}
-			fresh, historySQL := ydbstore.NewFreshRunAfterTerminalSeed(t, old, completeSQL, freshBlobs)
+			fresh, historySQL, _ := ydbstore.NewFreshRunAfterTerminalSeed(t, old, completeSQL, freshBlobs, "fresh", nil)
 			if scenario.fault != "" {
 				historySQL.Corrupt(t, scenario.fault)
 			}

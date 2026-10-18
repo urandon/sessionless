@@ -105,12 +105,15 @@ func localRuntimeStructuralSpending(t *testing.T, p domain.OwnedAgentProfileCurr
 // publication over a deterministic SQL model. No native YDB, model, socket or
 // external-service funding/qualification is exercised.
 type localRuntimeActualPrebuild struct {
-	scope                 domain.AttemptExecutionSourceScopeV1
-	setupDuration         time.Duration
-	sourceParent          context.Context
-	endpoint              string
-	laterPriceObservation bool
-	compiledCompaction    bool // closed synthetic declaration, installed BEFORE Source intake
+	scope                                        domain.AttemptExecutionSourceScopeV1
+	setupDuration                                time.Duration
+	sourceParent                                 context.Context
+	endpoint                                     string
+	laterPriceObservation                        bool
+	compiledCompaction                           bool // closed synthetic declaration, installed BEFORE Source intake
+	inputTokens, outputTokens, modelWindowTokens uint64
+	networkOperation                             time.Duration
+	operationClockBarrier                        func() // synchronization in the ORIGINAL issuer, never approval
 }
 
 func newLocalRuntimeActualFixture(t *testing.T, runningExecutable, acceptReceipt bool, prebuild ...localRuntimeActualPrebuild) localRuntimeActualFixture {
@@ -125,6 +128,37 @@ func newLocalRuntimeActualFixture(t *testing.T, runningExecutable, acceptReceipt
 			t.Fatal(err)
 		}
 		c, p := &manifest.Configuration, &manifest.Profile
+		for _, limit := range []struct {
+			value              uint64
+			configured, policy *uint64
+		}{{prebuild[0].inputTokens, &c.Limits.MaxInputTokens, &p.Limits.MaxInputTokensPerCall}, {prebuild[0].outputTokens, &c.Limits.MaxOutputTokens, &p.Limits.MaxOutputTokensPerCall}} {
+			if limit.value != 0 {
+				if limit.value > *limit.configured || limit.value > *limit.policy {
+					t.Fatal("pre-intake profile limit may only narrow")
+				}
+				*limit.configured, *limit.policy = limit.value, limit.value
+			}
+		}
+		// The independent aggregate declaration must still fit its narrowed
+		// per-call ceiling. This only removes pre-intake capacity; it never
+		// changes a published Source or grants additional capacity.
+		p.Limits.MaxAggregateInputTokens = min(p.Limits.MaxAggregateInputTokens, p.Limits.MaxInputTokensPerCall*p.Limits.MaxModelCalls)
+		p.Limits.MaxAggregateOutputTokens = min(p.Limits.MaxAggregateOutputTokens, p.Limits.MaxOutputTokensPerCall*p.Limits.MaxModelCalls)
+		if n := prebuild[0].modelWindowTokens; n != 0 {
+			if n > c.ModelWindowTokens {
+				t.Fatal("pre-intake window may only narrow")
+			}
+			c.ModelWindowTokens, p.ModelWindowTokens = n, n
+		}
+		if d := prebuild[0].networkOperation; d != 0 {
+			if d < 0 || d > c.Limits.OperationTimeout || d > p.Limits.MaxNetworkOperationDuration {
+				t.Fatal("pre-intake operation duration may only narrow")
+			}
+			c.Limits.OperationTimeout, p.Limits.MaxNetworkOperationDuration = d, d
+		}
+		if err := p.Limits.Validate(); err != nil {
+			t.Fatalf("pre-intake narrowed policy limits: %v", err)
+		}
 		if prebuild[0].endpoint != "" {
 			if err := domain.ValidateConfiguredInferenceEndpointV1(prebuild[0].endpoint); err != nil {
 				t.Fatal(err)

@@ -21,10 +21,12 @@ import (
 // production code. No keeper preflight/socket/model/head/real YDB is claimed.
 type compactionEffectSQL struct {
 	*compactionSourceSQL
-	pending          []driver.Value
-	pendingIndexed   bool
-	writes, lostAcks int
-	loseCommit       string // persist or rollback, one retryable lost acknowledgement
+	pending           []driver.Value
+	pendingProxy      []driver.Value
+	pendingIndexed    bool
+	writes, lostAcks  int
+	observationWrites int
+	loseCommit        string // persist or rollback, one retryable lost acknowledgement
 }
 type compactionEffectConnector struct{ f *compactionEffectSQL }
 
@@ -46,6 +48,7 @@ func (f *compactionEffectSQL) BeginTx(ctx context.Context, o driver.TxOptions) (
 		return nil, err
 	}
 	f.pending, f.pendingIndexed = nil, false
+	f.pendingProxy = nil
 	return &compactionEffectTx{Tx: tx, f: f, accounting: append([]driver.Value(nil), f.f.parent.accountingRow...)}, nil
 }
 func (tx *compactionEffectTx) Commit() error {
@@ -60,6 +63,13 @@ func (tx *compactionEffectTx) Commit() error {
 		return err
 	}
 	tx.done = true
+	if f.firstProxy == nil && f.row != nil {
+		f.firstProxy = append([]driver.Value(nil), f.row...)
+	}
+	if f.pendingProxy != nil {
+		f.proxies = append(f.proxies, append([]driver.Value(nil), f.pendingProxy...))
+		f.pendingProxy = nil
+	}
 	if f.pending != nil {
 		var r domain.AttemptOperationReservationV1
 		if json.Unmarshal([]byte(f.pending[0].(string)), &r) != nil || !f.pendingIndexed {
@@ -86,6 +96,7 @@ func (tx *compactionEffectTx) Commit() error {
 func (tx *compactionEffectTx) Rollback() error {
 	if !tx.done {
 		tx.f.pending = nil
+		tx.f.pendingProxy = nil
 		tx.f.pendingIndexed = false
 		tx.f.f.parent.accountingRow = append([]driver.Value(nil), tx.accounting...)
 	}
@@ -93,6 +104,26 @@ func (tx *compactionEffectTx) Rollback() error {
 	return tx.Tx.Rollback()
 }
 func (f *compactionEffectSQL) QueryContext(ctx context.Context, s string, args []driver.NamedValue) (driver.Rows, error) {
+	if s == ownedOperationProxyRegistrationSQL {
+		f.statements++
+		if len(args) != 3 {
+			return nil, errors.New("owned exact proxy point keys")
+		}
+		rows := append([][]driver.Value(nil), f.proxies...)
+		if f.pendingProxy != nil {
+			rows = append(rows, f.pendingProxy)
+		}
+		for _, row := range rows {
+			var proxy domain.RegisteredProxyAttestationV2
+			if len(row) != 14 || json.Unmarshal([]byte(row[7].(string)), &proxy) != nil {
+				return nil, errors.New("owned proxy point DATA")
+			}
+			if args[0].Value == string(proxy.Scope.TenantID) && args[1].Value == string(proxy.Scope.AttemptID) && args[2].Value == int64(proxy.OperationSequence) {
+				return &explanationFixtureRows{values: append([]driver.Value(nil), row[1:]...)}, nil
+			}
+		}
+		return &explanationFixtureRows{}, nil
+	}
 	if s != ownedOperationReadSQL && s != ownedOperationCallSQL {
 		return f.compactionSourceSQL.QueryContext(ctx, s, args)
 	}
@@ -133,6 +164,23 @@ func (f *compactionEffectSQL) QueryContext(ctx context.Context, s string, args [
 	return &explanationFixtureRows{}, nil
 }
 func (f *compactionEffectSQL) ExecContext(ctx context.Context, s string, args []driver.NamedValue) (driver.Result, error) {
+	if s == `INSERT INTO attempt_operation_proxies_v1 (tenant_id,attempt_id,sequence,service_kind,original_record,original_digest,current_record,current_digest,policy_body,attestation_body) VALUES ($1,$2,$3,$4,$5,$6,$5,$6,$7,$8)` {
+		f.statements++
+		if len(args) != 8 || f.pendingProxy != nil {
+			return nil, errors.New("owned proxy fresh INSERT")
+		}
+		var proxy domain.RegisteredProxyAttestationV2
+		if json.Unmarshal([]byte(args[4].Value.(string)), &proxy) != nil || args[0].Value != string(proxy.Scope.TenantID) || args[1].Value != string(proxy.Scope.AttemptID) || args[2].Value != int64(proxy.OperationSequence) || args[3].Value != string(proxy.ServiceKind) {
+			return nil, errors.New("owned proxy exact INSERT identity")
+		}
+		for _, old := range f.proxies {
+			if old[0] == proxy.OperationSequence {
+				return nil, errors.New("owned duplicate proxy INSERT")
+			}
+		}
+		f.pendingProxy = []driver.Value{proxy.OperationSequence, uint64(1), uint64(1), uint64(1), uint64(1), uint64(1), uint64(1), args[4].Value, args[5].Value, args[4].Value, args[5].Value, args[6].Value, args[7].Value, args[3].Value}
+		return driver.RowsAffected(1), nil
+	}
 	if s == loopbackObservationUpdateSQL {
 		f.statements++
 		if len(args) != 6 || f.pending != nil {
@@ -158,6 +206,7 @@ func (f *compactionEffectSQL) ExecContext(ctx context.Context, s string, args []
 			f.pending = append([]driver.Value(nil), row[1:9]...)
 			f.pendingIndexed = true
 			f.pending[4], f.pending[5], f.pending[6], f.pending[7] = uint64(1), uint64(1), args[0].Value, args[1].Value
+			f.observationWrites++
 			return driver.RowsAffected(1), nil
 		}
 		return nil, errors.New("owned observation missing reservation")
@@ -192,7 +241,11 @@ func (f *compactionEffectSQL) ExecContext(ctx context.Context, s string, args []
 
 func installCompactionFutureProxy(t *testing.T, f *compactionSourceFixture, g *localCompactionGenerationV1) {
 	t.Helper()
-	op, at := g.operation, f.parent.graph.at
+	installPreparedFutureProxy(t, f, g.operation)
+}
+func installPreparedFutureProxy(t *testing.T, f *compactionSourceFixture, op domain.AttemptOperationV1) {
+	t.Helper()
+	at := f.parent.graph.at
 	policy, err := ports.BuildLocalLoopbackEgressPolicyV1(f.actual.config)
 	if err != nil {
 		t.Fatal(err)

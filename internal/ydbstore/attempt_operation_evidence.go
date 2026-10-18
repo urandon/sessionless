@@ -25,9 +25,13 @@ type ownedOperationEvidence struct {
 	tool        *ownedFixtureToolEvidence
 	price       *ownedProviderPriceEvidence
 	compaction  *localCompactionGenerationV1
+	model       *localPreparedModelV1
 }
 
 func (store *Store) prepareOwnedOperationEvidence(ctx context.Context, op domain.AttemptOperationV1) (*ownedOperationEvidence, error) {
+	if evidence, handled, err := store.prepareLocalModelEvidence(ctx, op); handled {
+		return evidence, err
+	}
 	if evidence, handled, err := store.prepareLocalCompactionEvidence(ctx, op); handled {
 		return evidence, err
 	}

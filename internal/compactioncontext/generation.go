@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strconv"
 
 	"gitcode.com/urandon/sessionless/internal/configuredinference"
@@ -43,8 +44,10 @@ type CompletedOperationV1 struct {
 // does not certify object custody, successful upload, current head or freshness.
 type ParentV1 struct {
 	Plan                domain.DerivedContextPlanV1
+	PriorPlans          []domain.DerivedContextPlanV1
 	Summary             []byte
 	CoveredSourceIDs    []string
+	ProtectedSourceIDs  []string
 	CompatibilityDigest string
 }
 
@@ -126,12 +129,19 @@ func (p *GenerationV1) ValidateSummary(body []byte) (*configuredinference.Compac
 	return configuredinference.DecodeCompactionSummaryV1(body, p.references)
 }
 
-// BuildGenerationV1 renders actual admitted source DATA, never a caller prompt
-// override. Media without a qualified encoding is explicitly unsupported. The
-// current base supports tool-heavy CANONICAL history and completed tool-free
-// model operations; real current tool continuations remain #191's typed join.
-func BuildGenerationV1(profile domain.ConfiguredInferenceProfileV1, limits domain.ConfiguredInferenceLimitsV1, policy domain.AgentLoopPolicyV1,
-	sourceDigest string, records []sessioncontext.EventPayload, operations []CompletedOperationV1, parent *ParentV1, tools []configuredinference.ToolV1) (*GenerationV1, error) {
+type generationSourceV1 struct {
+	program        *GenerationV1
+	frames         []historicalFrameV1
+	units          []UnitV1
+	protectedIndex map[int]bool
+	covered        map[string]bool
+}
+
+// Ordinary and compaction requests share exact source/profile/operation
+// validation. Only their view selection differs; neither accepts a caller
+// prompt, native transcript, fit assertion or restored effect permission.
+func buildGenerationSourceV1(profile domain.ConfiguredInferenceProfileV1, limits domain.ConfiguredInferenceLimitsV1, policy domain.AgentLoopPolicyV1,
+	sourceDigest string, records []sessioncontext.EventPayload, operations []CompletedOperationV1, parent *ParentV1, tools []configuredinference.ToolV1) (*generationSourceV1, error) {
 	if profile.Validate() != nil || limits.Validate() != nil || policy.Validate() != nil || domain.ValidateSHA256Digest("compaction.source", sourceDigest) != nil ||
 		policy.InstructionVersion != InstructionVersionV1 || policy.CompactionPolicyDigest != CompactionPolicyDigestV1() ||
 		policy.TenantID != profile.TenantID || policy.OwnerUserID != profile.OwnerUserID || policy.ModelVendorID != profile.ModelVendorID || policy.ModelID != profile.ModelID ||
@@ -224,11 +234,19 @@ func BuildGenerationV1(profile domain.ConfiguredInferenceProfileV1, limits domai
 	compatibility := sourceKey("compatibility", pd, CompactionPolicyDigestV1())
 	var covered = make(map[string]bool)
 	generation := uint64(1)
+	var parentPlans []domain.DerivedContextPlanV1
 	if parent != nil {
-		if parent.Plan.Validate() != nil || parent.Plan.Generation != 1 || parent.CompatibilityDigest != compatibility || len(parent.CoveredSourceIDs) == 0 || len(parent.CoveredSourceIDs) > 4096 || len(parent.Summary) == 0 || len(parent.Summary) > configuredinference.MaxCompactionSummaryBytesV1 {
+		if parent.Plan.Validate() != nil || parent.Plan.Generation < 1 || parent.Plan.Generation > 2 || len(parent.PriorPlans) != int(parent.Plan.Generation-1) || parent.CompatibilityDigest != compatibility || len(parent.CoveredSourceIDs) == 0 || len(parent.CoveredSourceIDs) > 4096 || len(parent.Summary) == 0 || len(parent.Summary) > configuredinference.MaxCompactionSummaryBytesV1 {
 			return nil, ErrCanonical
 		}
-		generation = 2
+		parentPlans = append(parentPlans, parent.PriorPlans...)
+		parentPlans = append(parentPlans, parent.Plan)
+		for i, plan := range parentPlans {
+			if plan.Validate() != nil || plan.Scope != parent.Plan.Scope || plan.Generation != uint64(i+1) || (i > 0 && plan.OperationSequence <= parentPlans[i-1].OperationSequence) {
+				return nil, ErrCanonical
+			}
+		}
+		generation = parent.Plan.Generation + 1
 		for _, id := range parent.CoveredSourceIDs {
 			if covered[id] || domain.ValidateSHA256Digest("parent.source", id) != nil {
 				return nil, ErrCanonical
@@ -254,14 +272,20 @@ func BuildGenerationV1(profile domain.ConfiguredInferenceProfileV1, limits domai
 			return nil, ErrCanonical
 		}
 		decoded, e := configuredinference.DecodeNormalizedResponseBodyV1(profile, op.Request, op.Response, r.Operation.Kind)
-		if e != nil || decoded.Call != nil || decoded.Stop != configuredinference.StopFinalV1 {
+		usage, usageErr := decoded.Usage.OperationUsage()
+		if e != nil || usageErr != nil || decoded.Call != nil || decoded.Stop != configuredinference.StopFinalV1 || !reflect.DeepEqual(usage, o.Usage) {
 			return nil, ErrCanonical
 		}
 		if r.Operation.Kind == domain.AttemptOperationCompactionV1 {
 			compactions++
 			rd, _ := r.Digest()
 			od, _ := o.Digest()
-			if parent == nil || compactions != 1 || parent.Plan.Scope != r.Operation.Scope || parent.Plan.OperationSequence != r.Operation.Sequence || parent.Plan.ReservationDigest != rd || parent.Plan.ObservationDigest != od || parent.Plan.NormalizedResponseDigest != o.ResponseDigest || !bytes.Equal([]byte(decoded.Text), parent.Summary) {
+			if parent == nil || compactions > len(parentPlans) {
+				return nil, ErrCanonical
+			}
+			plan := parentPlans[compactions-1]
+			if plan.Scope != r.Operation.Scope || plan.OperationSequence != r.Operation.Sequence || plan.ReservationDigest != rd || plan.ObservationDigest != od || plan.NormalizedResponseDigest != o.ResponseDigest ||
+				(compactions == len(parentPlans) && !bytes.Equal([]byte(decoded.Text), parent.Summary)) {
 				return nil, ErrCanonical
 			}
 			continue
@@ -278,19 +302,39 @@ func BuildGenerationV1(profile domain.ConfiguredInferenceProfileV1, limits domai
 		sources = append(sources, retainedSourceV1{SourceID: key, Operation: &retainedOperationV1{Reservation: r.Clone(), Observation: o.Clone()}})
 		units = append(units, UnitV1{Start: start, End: start + 1})
 	}
-	if (parent != nil && compactions != 1) || len(units) < 2 {
+	if compactions != len(parentPlans) || len(units) == 0 {
+		return nil, ErrCanonical
+	}
+	p := &GenerationV1{profile: profile.Clone(), limits: limits, source: sourceDigest, compatibility: compatibility, generation: generation, tools: ownedTools,
+		policy: policy.Clone(), sources: sources, canonicalDigest: view.Digest()}
+	if parent != nil {
+		value := parent.Plan
+		p.parentPlan = &value
+	}
+	return &generationSourceV1{program: p, frames: frames, units: units, protectedIndex: protectedIndex, covered: covered}, nil
+}
+
+// BuildGenerationV1 renders actual admitted source DATA, never a caller prompt
+// override. Media without a qualified encoding is explicitly unsupported. The
+// current base supports tool-heavy CANONICAL history and completed tool-free
+// model operations; real current tool continuations remain #191's typed join.
+func BuildGenerationV1(profile domain.ConfiguredInferenceProfileV1, limits domain.ConfiguredInferenceLimitsV1, policy domain.AgentLoopPolicyV1,
+	sourceDigest string, records []sessioncontext.EventPayload, operations []CompletedOperationV1, parent *ParentV1, tools []configuredinference.ToolV1) (*GenerationV1, error) {
+	s, err := buildGenerationSourceV1(profile, limits, policy, sourceDigest, records, operations, parent, tools)
+	if err != nil {
+		return nil, err
+	}
+	p := s.program
+	frames, units, protectedIndex, covered := s.frames, s.units, s.protectedIndex, s.covered
+	limits = p.limits
+	if p.generation > 2 || len(units) < 2 {
 		return nil, ErrCanonical
 	}
 	cut := units[len(units)-1].Start
 	if cut < 1 || cut >= len(frames) {
 		return nil, ErrCanonical
 	}
-	p := &GenerationV1{profile: profile.Clone(), limits: limits, source: sourceDigest, compatibility: compatibility, generation: generation, tools: ownedTools,
-		policy: policy.Clone(), sources: sources, cut: uint32(cut), canonicalDigest: view.Digest()}
-	if parent != nil {
-		value := parent.Plan
-		p.parentPlan = &value
-	}
+	p.cut = uint32(cut)
 	var eligible, allProtected []historicalFrameV1
 	newCoverage := 0
 	known := make(map[string]bool, len(frames))

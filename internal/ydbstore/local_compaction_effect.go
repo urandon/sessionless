@@ -98,6 +98,7 @@ func (store *Store) lockLocalCompactionEffect(ctx context.Context, evidence *own
 // reuse that transaction's validated preimage instead of repeating the generic
 // parent/history reads and overflowing its unchanged 32-statement ceiling.
 func (store *Store) reservePreparedLocalCompaction(ctx context.Context, op domain.AttemptOperationV1, evidence *ownedOperationEvidence) (ports.ReserveAttemptOperationResultV1, error) {
+	caller := ctx
 	unlock, err := store.lockLocalCompactionEffect(ctx, evidence, op, localCompactionReserve)
 	if err != nil {
 		return ports.ReserveAttemptOperationResultV1{}, domain.ErrMembershipDenied
@@ -175,9 +176,12 @@ func (store *Store) reservePreparedLocalCompaction(ctx context.Context, op domai
 		return ports.ReserveAttemptOperationResultV1{}, domain.ErrMembershipDenied
 	}
 	result, err := store.operationResult(candidate, at, true)
-	if err == nil {
-		g.reservation = candidate.Clone()
+	// Minting can block inside the ORIGINAL issuer. A confirmed debit remains
+	// consumed, but late cancellation cannot install or return fresh authority.
+	if err != nil || caller.Err() != nil || ctx.Err() != nil || g.entry.invocationContext.Err() != nil || !store.operationEvidenceLifetimeCurrent(evidence) {
+		return ports.ReserveAttemptOperationResultV1{}, domain.ErrMembershipDenied
 	}
+	g.reservation = candidate.Clone()
 	return result, err
 }
 
@@ -194,6 +198,7 @@ func (store *Store) authorizePreparedLocalCompaction(ctx context.Context, capabi
 		return domain.ErrMembershipDenied
 	}
 	defer finish()
+	caller := ctx
 	ctx = call
 	if !reflect.DeepEqual(capability.Reservation, g.reservation) {
 		return domain.ErrMembershipDenied
@@ -225,7 +230,12 @@ func (store *Store) authorizePreparedLocalCompaction(ctx context.Context, capabi
 		}
 		return nil
 	})
-	if err != nil || ctx.Err() != nil || !store.operationEvidenceLifetimeCurrent(evidence) || store.attemptOperationIssuer.ConsumeAttemptOperationCapability(capability) != nil {
+	if err != nil || caller.Err() != nil || ctx.Err() != nil || !store.operationEvidenceLifetimeCurrent(evidence) || store.attemptOperationIssuer.ConsumeAttemptOperationCapability(capability) != nil {
+		return domain.ErrMembershipDenied
+	}
+	// A consumed capability is never refunded, including cancellation while
+	// Consume was blocked in the original issuer.
+	if caller.Err() != nil || ctx.Err() != nil || g.entry.invocationContext.Err() != nil || !store.operationEvidenceLifetimeCurrent(evidence) {
 		return domain.ErrMembershipDenied
 	}
 	return nil

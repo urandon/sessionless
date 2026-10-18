@@ -114,7 +114,7 @@ func (g *localCompactionGenerationV1) completedRetainedLocked(ctx context.Contex
 	deny := func() (*compactioncontext.RetainedV1, *configuredinference.FrozenRequestV1, error) {
 		return nil, nil, domain.ErrMembershipDenied
 	}
-	if ctx.Err() != nil || !g.originalForPhase(g.entry, localCompactionCompleted) || g.program.Number() != 1 {
+	if ctx.Err() != nil || !g.originalForPhase(g.entry, localCompactionCompleted) || g.program.Number() < 1 || g.program.Number() > 2 {
 		return deny()
 	}
 	op, observation := g.operation, g.observation.Observation
@@ -169,7 +169,7 @@ func (g *localCompactionGenerationV1) completedRetainedLocked(ctx context.Contex
 	if err != nil || ctx.Err() != nil {
 		return deny()
 	}
-	retained, err := g.program.BuildRetainedV1(compactioncontext.RetainedEvidenceV1{Reservation: g.reservation, Observation: observation, Summary: summary, GenerationFit: fit, NextFit: nextFit, SummaryTokenUpperBound: bound})
+	retained, err := g.program.BuildRetainedV1(compactioncontext.RetainedEvidenceV1{Reservation: g.reservation, Observation: observation, Summary: summary, GenerationFit: fit, NextFit: nextFit, SummaryTokenUpperBound: bound, Parent: g.parentRetained})
 	if err != nil || ctx.Err() != nil {
 		return deny()
 	}
@@ -197,7 +197,25 @@ func (g *localCompactionGenerationV1) readRetainedLocked(ctx context.Context, pl
 	if policy == nil {
 		return deny()
 	}
-	decoded, err := compactioncontext.DecodeRetainedV1(g.entry.owner.configuration, *policy, plan, summary, manifest, nil)
+	var parent *compactioncontext.RetainedV1
+	if g.parentRetained != nil {
+		parentPlan := g.parentRetained.Plan()
+		pb, err := g.entry.readCompactionBlob(ctx, parentPlan.Summary, 32<<10)
+		if err != nil {
+			return deny()
+		}
+		defer clear(pb)
+		mb, err := g.entry.readCompactionBlob(ctx, parentPlan.Manifest, 128<<10)
+		if err != nil {
+			return deny()
+		}
+		defer clear(mb)
+		parent, err = compactioncontext.DecodeRetainedV1(g.entry.owner.configuration, *policy, parentPlan, pb, mb, nil)
+		if err != nil {
+			return deny()
+		}
+	}
+	decoded, err := compactioncontext.DecodeRetainedV1(g.entry.owner.configuration, *policy, plan, summary, manifest, parent)
 	if err != nil || decoded.ValidateForGeneration(g.program) != nil {
 		return deny()
 	}

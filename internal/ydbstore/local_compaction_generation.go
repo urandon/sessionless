@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -52,6 +53,7 @@ type localCompactionGenerationV1 struct {
 	observation          ports.AuthenticatedAttemptOperationObservationV1
 	publicationAttempted bool
 	publication          *localCompactionPublicationV1
+	parentRetained       *compactioncontext.RetainedV1
 }
 
 // localCompactionLifetimeContext is context composition, not permission. Its
@@ -107,12 +109,66 @@ func (c localCompactionCallerValues) Value(key any) any {
 	return c.Context.Value(key)
 }
 
-// prepareLocalCompactionGeneration is deliberately private and generation-one
-// only while retained-parent/head consumption is being joined. It cannot accept
+// prepareLocalCompactionGeneration is deliberately private. It cannot accept
 // a caller request/catalog/policy/calibration/parent/fit, reserve an operation,
 // open a transport or authorize a send. Unknown/failed preparation cannot reset
-// the original entry slot. This is not the complete two-generation #192 path.
+// the original entry slot. A replacement requires the exact original published
+// predecessor and a newly captured complete current operation frontier.
 func prepareLocalCompactionGeneration(ctx context.Context, source *LocalCompactionSourceV1) (*localCompactionGenerationV1, error) {
+	if source == nil || source.entry == nil || !source.entry.original() {
+		return nil, domain.ErrMembershipDenied
+	}
+	source.entry.preparationMu.Lock()
+	defer source.entry.preparationMu.Unlock()
+	return prepareLocalCompactionGenerationLocked(ctx, ctx, source)
+}
+
+func (entry *LocalInvocationEntryV1) PrepareCompaction(ctx context.Context) (*localCompactionGenerationV1, error) {
+	if !entry.original() {
+		return nil, domain.ErrMembershipDenied
+	}
+	entry.preparationMu.Lock()
+	defer entry.preparationMu.Unlock()
+	call, finish, err := entry.localCompactionLifetimeContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer finish()
+	call, cancel := ownedAuthorityCallContext(call)
+	defer cancel()
+	source, err := entry.captureCompactionSource(call, localSourcePreparation)
+	if err != nil {
+		return nil, err
+	}
+	g, err := prepareLocalCompactionGenerationLocked(call, ctx, source)
+	if err != nil {
+		source.Clear()
+	}
+	return g, err
+}
+
+func (g *localCompactionGenerationV1) Operation() (domain.AttemptOperationV1, error) {
+	if g == nil || g.source == nil || g.source.state == nil {
+		return domain.AttemptOperationV1{}, domain.ErrMembershipDenied
+	}
+	g.source.state.mu.Lock()
+	defer g.source.state.mu.Unlock()
+	if !g.originalForPhase(g.entry, localCompactionReserve) {
+		return domain.AttemptOperationV1{}, domain.ErrMembershipDenied
+	}
+	return g.operation.Clone(), nil
+}
+func (g *localCompactionGenerationV1) FrozenRequest() (*configuredinference.FrozenRequestV1, error) {
+	if _, err := g.Operation(); err != nil {
+		return nil, err
+	}
+	return g.frozen, nil
+}
+func (g *localCompactionGenerationV1) Publish(ctx context.Context) (*configuredinference.FrozenRequestV1, error) {
+	return publishLocalCompaction(ctx, g)
+}
+
+func prepareLocalCompactionGenerationLocked(ctx context.Context, originalCaller context.Context, source *LocalCompactionSourceV1) (*localCompactionGenerationV1, error) {
 	deny := func() (*localCompactionGenerationV1, error) { return nil, domain.ErrMembershipDenied }
 	if ctx == nil || ctx.Err() != nil || source == nil || source.self != source || source.state == nil || source.entry == nil || !source.entry.original() {
 		return deny()
@@ -120,7 +176,25 @@ func prepareLocalCompactionGeneration(ctx context.Context, source *LocalCompacti
 	source.state.mu.Lock()
 	defer source.state.mu.Unlock()
 	entry, state := source.entry, source.state
-	if state.cleared || state.view == nil || state.digest == "" || entry.compactionGeneration.Load() != nil || state.snapshot.Job.Run.DerivedContext != nil {
+	if state.cleared || state.view == nil || state.digest == "" {
+		return deny()
+	}
+	if _, ready := entry.completedModelPreparation(); !ready {
+		return deny()
+	}
+	previousGeneration := entry.compactionGeneration.Load()
+	parentRetained, err := entry.capturedRetainedParent(ctx, source, nil)
+	if err != nil {
+		return deny()
+	}
+	var parent *compactioncontext.ParentV1
+	if parentRetained != nil {
+		parent = parentRetained.Parent()
+		if parent.Plan.Generation != 1 {
+			return deny()
+		}
+	}
+	if state.snapshot.Job.Run.DerivedContext != nil && len(state.snapshot.Job.Run.DerivedContext.Inventory) >= 2 {
 		return deny()
 	}
 	policy := entry.parent.Authority.HarnessBinding.AgentLoopPolicy
@@ -134,7 +208,7 @@ func prepareLocalCompactionGeneration(ctx context.Context, source *LocalCompacti
 		var request struct {
 			Tools []json.RawMessage `json:"tools"`
 		}
-		if operation.Reservation.Operation.Kind != domain.AttemptOperationModelV1 || json.Unmarshal(operation.Request, &request) != nil || len(request.Tools) != 0 {
+		if (operation.Reservation.Operation.Kind != domain.AttemptOperationModelV1 && (operation.Reservation.Operation.Kind != domain.AttemptOperationCompactionV1 || parent == nil)) || json.Unmarshal(operation.Request, &request) != nil || len(request.Tools) != 0 {
 			return deny()
 		}
 		operations[i] = compactioncontext.CompletedOperationV1{Reservation: operation.Reservation, Observation: operation.Observation, Request: operation.Request, Response: operation.Response}
@@ -176,7 +250,7 @@ func prepareLocalCompactionGeneration(ctx context.Context, source *LocalCompacti
 	}
 	configuration := entry.owner.configuration
 	limits, used := policy.Limits, state.snapshot.Accounting.Aggregate
-	if used.Operations >= limits.MaxOperations || used.ModelCalls >= limits.MaxModelCalls || used.CompactionCalls != 0 || used.InputTokens >= limits.MaxAggregateInputTokens || used.OutputTokens >= limits.MaxAggregateOutputTokens || used.BodyBytes >= limits.MaxAggregateBodyBytes || used.ActiveDuration >= limits.MaxActiveDuration {
+	if used.Operations >= limits.MaxOperations || used.ModelCalls >= limits.MaxModelCalls || used.CompactionCalls >= limits.MaxCompactionCalls || (parent == nil && used.CompactionCalls != 0) || (parent != nil && used.CompactionCalls != 1) || used.InputTokens >= limits.MaxAggregateInputTokens || used.OutputTokens >= limits.MaxAggregateOutputTokens || used.BodyBytes >= limits.MaxAggregateBodyBytes || used.ActiveDuration >= limits.MaxActiveDuration {
 		return deny()
 	}
 	effective := configuration.Limits
@@ -198,14 +272,14 @@ func prepareLocalCompactionGeneration(ctx context.Context, source *LocalCompacti
 	if chargeOwnedAuthorityBody(call, bodyBytes+configuredinference.MaxContextCalibrationBytesV1) != nil {
 		return deny()
 	}
-	program, err := compactioncontext.BuildGenerationV1(configuration, effective, *policy, state.digest, records, operations, nil, nil)
+	program, err := compactioncontext.BuildGenerationV1(configuration, effective, *policy, state.digest, records, operations, parent, nil)
 	if err != nil {
 		if errors.Is(err, configuredinference.ErrContextNoFit) {
 			return nil, configuredinference.ErrContextNoFit
 		}
 		return deny()
 	}
-	if program.Number() != 1 || program.SourceDigest() != state.digest {
+	if program.Number() != used.CompactionCalls+1 || program.SourceDigest() != state.digest {
 		return deny()
 	}
 	frozen := program.FrozenRequest()
@@ -237,7 +311,7 @@ func prepareLocalCompactionGeneration(ctx context.Context, source *LocalCompacti
 			deadline = end
 		}
 	}
-	if end, ok := ctx.Deadline(); ok && end.Before(deadline) {
+	if end, ok := originalCaller.Deadline(); ok && end.Before(deadline) {
 		return deny()
 	} // never silently shorten the immutable operation for an independent caller
 	if !deadline.After(at) {
@@ -249,7 +323,7 @@ func prepareLocalCompactionGeneration(ctx context.Context, source *LocalCompacti
 	if err != nil {
 		return deny()
 	}
-	op := domain.AttemptOperationV1{Version: 1, Scope: ownedOperationScope(entry.parent), Sequence: used.Operations + 1, Kind: domain.AttemptOperationCompactionV1, CallID: "compaction-" + state.digest[:24] + "-1", RequestRef: "pending-compaction-body", RequestDigest: hex.EncodeToString(sum[:]), RequestBytes: uint64(len(body)), ResultBytes: min(uint64(64<<10), configuration.Limits.ResponseBytes), ContextBytes: uint64(len(body)), SummaryBytes: min(uint64(16<<10), limits.MaxSummaryBytes), Currency: entry.parent.Authority.AdmissionCostCeiling.Currency, PriceRevision: entry.parent.Authority.AdmissionCostCeiling.PriceRevision, AdmissionCostCeilingDigest: costDigest, Deadline: deadline, CleanupDuration: limits.MaxCleanupDuration}
+	op := domain.AttemptOperationV1{Version: 1, Scope: ownedOperationScope(entry.parent), Sequence: used.Operations + 1, Kind: domain.AttemptOperationCompactionV1, CallID: "compaction-" + state.digest[:24] + "-" + strconv.FormatUint(program.Number(), 10), RequestRef: "pending-compaction-body", RequestDigest: hex.EncodeToString(sum[:]), RequestBytes: uint64(len(body)), ResultBytes: min(uint64(64<<10), configuration.Limits.ResponseBytes), ContextBytes: uint64(len(body)), SummaryBytes: min(uint64(16<<10), limits.MaxSummaryBytes), Currency: entry.parent.Authority.AdmissionCostCeiling.Currency, PriceRevision: entry.parent.Authority.AdmissionCostCeiling.PriceRevision, AdmissionCostCeilingDigest: costDigest, Deadline: deadline, CleanupDuration: limits.MaxCleanupDuration}
 	if len(operations) != 0 {
 		op.PredecessorObservationDigest, err = operations[len(operations)-1].Observation.Digest()
 		if err != nil {
@@ -263,9 +337,9 @@ func prepareLocalCompactionGeneration(ctx context.Context, source *LocalCompacti
 	if _, err := debitOwnedOperation(state.snapshot.Accounting, op, entry.parent, entry.source, at); err != nil {
 		return deny()
 	}
-	g := &localCompactionGenerationV1{entry: entry, source: source, frozen: frozen, program: program, fit: fit, price: price}
+	g := &localCompactionGenerationV1{entry: entry, source: source, frozen: frozen, program: program, fit: fit, price: price, parentRetained: parentRetained}
 	g.self = g
-	if !entry.compactionGeneration.CompareAndSwap(nil, g) {
+	if !entry.compactionGeneration.CompareAndSwap(previousGeneration, g) {
 		return deny()
 	}
 	// No reset on any failure, including ambiguous body writes or pair failure.
@@ -280,16 +354,21 @@ func prepareLocalCompactionGeneration(ctx context.Context, source *LocalCompacti
 		return deny()
 	}
 	g.operation = op
+	var expected *domain.RunDerivedContextV1
 	err = store.ownedAuthorityTx(call, func(ctx context.Context, q *ownedAuthorityQuery) error {
 		run, err := source.rejoinRunLocked(ctx, q, nil, nil)
 		if err != nil {
 			return err
 		}
 		// The complete SECOND-join Run is the expected metadata source. This
-		// initial private path requires absent inventory AND head, not a caller
-		// nil value or a post-read assumption about a previous Run snapshot.
-		if run.DerivedContext != nil {
+		// value must equal the complete captured metadata, including any original
+		// retained predecessor, rather than a caller-supplied expected value.
+		if !domain.EqualRunDerivedContextV1(run.DerivedContext, state.snapshot.Job.Run.DerivedContext) {
 			return q.budget.deny()
+		}
+		if run.DerivedContext != nil {
+			value := run.DerivedContext.Clone()
+			expected = &value
 		}
 		if !q.at.Before(op.Deadline) || store.validateOwnedOperationProviderPrice(ctx, q, op, price, entry.source) != nil {
 			return q.budget.deny()
@@ -300,8 +379,8 @@ func prepareLocalCompactionGeneration(ctx context.Context, source *LocalCompacti
 	if err != nil || call.Err() != nil || !store.operationEvidenceLifetimeCurrent(&ownedOperationEvidence{price: price}) {
 		return deny()
 	}
-	retained := &LocalRetainedCompactionV1{entry: entry, operation: op, generation: 1, claimed: new(atomic.Bool), source: source}
-	retained.pair, err = entry.bodies.ReserveRetainedPair(call, op.Sequence, 1)
+	retained := &LocalRetainedCompactionV1{entry: entry, operation: op, generation: program.Number(), claimed: new(atomic.Bool), source: source, expected: expected}
+	retained.pair, err = entry.bodies.ReserveRetainedPair(call, op.Sequence, program.Number())
 	if err != nil || call.Err() != nil || lifetime.Err() != nil || entry.invocationContext.Err() != nil || !store.operationEvidenceLifetimeCurrent(&ownedOperationEvidence{price: price}) {
 		return deny()
 	}
@@ -351,7 +430,7 @@ func (g *localCompactionGenerationV1) rejoinLocked(ctx context.Context, q *owned
 	if g == nil || !g.originalForPhase(g.entry, phase) {
 		return domain.Run{}, q.budget.deny()
 	}
-	current, err := g.entry.readCompactionGenerationSnapshot(ctx, q, g, phase)
+	current, err := g.entry.readLocalPreparedSnapshot(ctx, q, localSnapshotOwner{generation: g}, phase)
 	if err != nil {
 		return domain.Run{}, q.budget.deny()
 	}

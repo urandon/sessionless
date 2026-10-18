@@ -185,6 +185,23 @@ func (s *LocalCompactionSourceV1) Clear() {
 // SQL metadata is captured, actual original immutable bytes are verified outside
 // SQL, then ALL captured metadata/frontier is rejoined before returning.
 func (entry *LocalInvocationEntryV1) CaptureCompactionSource(ctx context.Context) (*LocalCompactionSourceV1, error) {
+	return entry.captureCompactionSource(ctx, localSourceStandalone)
+}
+
+type localSourceCapturePurpose uint8
+
+const (
+	localSourceStandalone localSourceCapturePurpose = iota
+	localSourcePreparation
+)
+
+// Preparation's original factory owns the two subsequent current joins. Its
+// materialized source is private until that factory completes; sharing this
+// first read avoids a fourth callback or a reset of the logical-call budget.
+func (entry *LocalInvocationEntryV1) captureCompactionSource(ctx context.Context, purpose localSourceCapturePurpose) (*LocalCompactionSourceV1, error) {
+	if purpose != localSourceStandalone && purpose != localSourcePreparation {
+		return nil, domain.ErrMembershipDenied
+	}
 	if !entry.original() || entry.canonicalBlobs == nil {
 		return nil, domain.ErrMembershipDenied
 	}
@@ -253,7 +270,9 @@ func (entry *LocalInvocationEntryV1) CaptureCompactionSource(ctx context.Context
 	if err != nil {
 		return nil, domain.ErrMembershipDenied
 	}
-	err = entry.owner.store.ownedAuthorityTx(call, func(ctx context.Context, q *ownedAuthorityQuery) error { return result.rejoinLocked(ctx, q, nil, nil) })
+	if purpose == localSourceStandalone {
+		err = entry.owner.store.ownedAuthorityTx(call, func(ctx context.Context, q *ownedAuthorityQuery) error { return result.rejoinLocked(ctx, q, nil, nil) })
+	}
 	if err != nil || call.Err() != nil {
 		return nil, domain.ErrMembershipDenied
 	}
@@ -266,15 +285,15 @@ func (entry *LocalInvocationEntryV1) compactionSourceControl() domain.AttemptOpe
 }
 
 func (entry *LocalInvocationEntryV1) readCompactionSnapshot(ctx context.Context, q *ownedAuthorityQuery) (localCompactionSnapshot, error) {
-	return entry.readCompactionGenerationSnapshot(ctx, q, nil, localCompactionCapture)
+	return entry.readLocalPreparedSnapshot(ctx, q, localSnapshotOwner{}, localCompactionCapture)
 }
 
-func (entry *LocalInvocationEntryV1) readCompactionGenerationSnapshot(ctx context.Context, q *ownedAuthorityQuery, generation *localCompactionGenerationV1, phase localCompactionGenerationPhase) (localCompactionSnapshot, error) {
+func (entry *LocalInvocationEntryV1) readLocalPreparedSnapshot(ctx context.Context, q *ownedAuthorityQuery, owner localSnapshotOwner, phase localCompactionGenerationPhase) (localCompactionSnapshot, error) {
 	if phase == localCompactionCapture {
-		if generation != nil {
+		if owner.generation != nil || owner.model != nil {
 			return localCompactionSnapshot{}, q.budget.deny()
 		}
-	} else if generation == nil || !generation.originalForPhase(entry, phase) {
+	} else if !owner.original(entry, phase) {
 		return localCompactionSnapshot{}, q.budget.deny()
 	}
 	var v localCompactionSnapshot
@@ -339,18 +358,18 @@ func (entry *LocalInvocationEntryV1) readCompactionGenerationSnapshot(ctx contex
 		return deny()
 	}
 	v.Accounting = *accounting
-	v.Operations, err = entry.readCompactionGenerationOperations(ctx, q, *accounting, generation, phase)
+	v.Operations, err = entry.readLocalPreparedOperations(ctx, q, *accounting, owner, phase)
 	if err != nil {
 		return deny()
 	}
-	v.ProxyDigests, err = entry.readCompactionGenerationProxies(ctx, q, v.Operations, generation, phase)
+	v.ProxyDigests, err = entry.readLocalPreparedProxies(ctx, q, v.Operations, owner, phase)
 	if err != nil {
 		return deny()
 	}
 	return v, nil
 }
 
-func (entry *LocalInvocationEntryV1) readCompactionGenerationOperations(ctx context.Context, q *ownedAuthorityQuery, accounting ownedAttemptAccounting, generation *localCompactionGenerationV1, phase localCompactionGenerationPhase) ([]ownedOperationRow, error) {
+func (entry *LocalInvocationEntryV1) readLocalPreparedOperations(ctx context.Context, q *ownedAuthorityQuery, accounting ownedAttemptAccounting, owner localSnapshotOwner, phase localCompactionGenerationPhase) ([]ownedOperationRow, error) {
 	scope := ownedOperationScope(entry.parent)
 	rows, err := q.QueryContext(ctx, localCompactionOperationsSQL, scope.TenantID, scope.AttemptID)
 	if err != nil {
@@ -380,9 +399,9 @@ func (entry *LocalInvocationEntryV1) readCompactionGenerationOperations(ctx cont
 		if e != nil || row == nil || row.reservation.Operation.Scope != scope || row.reservation.ValidateForParent(entry.parent.Authority, entry.parent.Reservation) != nil || indexedSequence != sequence || indexedDigest != columns.operationDigest || row.reservation.Operation.PredecessorObservationDigest != predecessor || row.reservation.ReservedAt.Before(baseline.UpdatedAt) {
 			return nil, q.budget.deny()
 		}
-		pending := generation != nil && phase == localCompactionBeforeSend && sequence == generation.operation.Sequence
+		pending := owner.present() && phase == localCompactionBeforeSend && sequence == owner.operation().Sequence
 		if pending {
-			if row.observation != nil || !reflect.DeepEqual(row.reservation.Operation, generation.operation) {
+			if row.observation != nil || !reflect.DeepEqual(row.reservation.Operation, owner.operation()) {
 				return nil, q.budget.deny()
 			}
 		} else if row.observation == nil || !ownedObservationAllowsSuccessor(row.reservation, *row.observation) {
@@ -409,9 +428,9 @@ func (entry *LocalInvocationEntryV1) readCompactionGenerationOperations(ctx cont
 	return result, nil
 }
 
-func (entry *LocalInvocationEntryV1) readCompactionGenerationProxies(ctx context.Context, q *ownedAuthorityQuery, operations []ownedOperationRow, generation *localCompactionGenerationV1, phase localCompactionGenerationPhase) ([]domain.RegisteredProxyAttestationDigestV2, error) {
+func (entry *LocalInvocationEntryV1) readLocalPreparedProxies(ctx context.Context, q *ownedAuthorityQuery, operations []ownedOperationRow, owner localSnapshotOwner, phase localCompactionGenerationPhase) ([]domain.RegisteredProxyAttestationDigestV2, error) {
 	var result []domain.RegisteredProxyAttestationDigestV2
-	future := generation != nil && phase == localCompactionReserve
+	future := owner.present() && phase == localCompactionReserve
 	count := len(operations)
 	if future {
 		count++
@@ -426,10 +445,10 @@ func (entry *LocalInvocationEntryV1) readCompactionGenerationProxies(ctx context
 		}
 		var d domain.RegisteredProxyAttestationDigestV2
 		if len(operations) == 0 {
-			d, err = generation.futureProxyDigest(q, p)
+			d, err = owner.futureProxyDigest(q, p)
 		} else {
-			if generation != nil && generation.operation.Sequence == 1 {
-				if _, err := generation.futureProxyDigest(q, p); err != nil {
+			if owner.present() && owner.operation().Sequence == 1 {
+				if _, err := owner.futureProxyDigest(q, p); err != nil {
 					return nil, err
 				}
 			}
@@ -458,11 +477,11 @@ func (entry *LocalInvocationEntryV1) readCompactionGenerationProxies(ctx context
 			return nil, q.budget.deny()
 		}
 		var d domain.RegisteredProxyAttestationDigestV2
-		if future && sequence == generation.operation.Sequence {
-			d, e = generation.futureProxyDigest(q, p)
+		if future && sequence == owner.operation().Sequence {
+			d, e = owner.futureProxyDigest(q, p)
 		} else {
-			if generation != nil && sequence == generation.operation.Sequence {
-				if _, err := generation.futureProxyDigest(q, p); err != nil {
+			if owner.present() && sequence == owner.operation().Sequence {
+				if _, err := owner.futureProxyDigest(q, p); err != nil {
 					return nil, err
 				}
 			}

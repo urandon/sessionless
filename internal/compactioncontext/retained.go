@@ -155,7 +155,14 @@ func (v *RetainedV1) Parent() *ParentV1 {
 	for _, index := range v.manifest.Cut.Covered {
 		ids = append(ids, v.manifest.Cut.Sources[index].SourceID)
 	}
-	return &ParentV1{Plan: v.plan, Summary: v.SummaryText(), CoveredSourceIDs: ids, CompatibilityDigest: v.manifest.Core.CompatibilityDigest}
+	parent := &ParentV1{Plan: v.plan, Summary: v.SummaryText(), CoveredSourceIDs: ids, CompatibilityDigest: v.manifest.Core.CompatibilityDigest}
+	if v.manifest.Parent != nil {
+		parent.PriorPlans = []domain.DerivedContextPlanV1{*v.manifest.Parent}
+	}
+	for _, index := range v.manifest.Cut.Protected {
+		parent.ProtectedSourceIDs = append(parent.ProtectedSourceIDs, v.manifest.Cut.Sources[index].SourceID)
+	}
+	return parent
 }
 
 func retainedDigest(body []byte) string { h := sha256.Sum256(body); return hex.EncodeToString(h[:]) }

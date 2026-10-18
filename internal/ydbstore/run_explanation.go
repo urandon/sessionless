@@ -185,7 +185,7 @@ func readExplanationResource(ctx context.Context, tx *stateTx, userID domain.Use
 	tenantID := tx.tenantID
 	// #4 canonical Run, #5 exact Session, #6 current participation. Target
 	// inaccessible and absent cases deliberately use one opaque error.
-	run, found, err := readExplanationJSON[domain.Run](ctx, query, `SELECT SUBSTRING(CAST(payload AS String),0,8193) FROM runs WHERE tenant_id=$1 AND run_id=$2`, tenantID, runID)
+	run, found, err := readExplanationRun(ctx, query, tenantID, runID)
 	if err != nil {
 		return result, err
 	}

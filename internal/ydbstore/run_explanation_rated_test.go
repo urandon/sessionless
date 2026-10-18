@@ -107,6 +107,12 @@ func (f *ratedSQLFixture) QueryContext(ctx context.Context, statement string, ar
 		}
 		return &explanationFixtureRows{values: f.slots[key]}, nil
 	}
+	if strings.Contains(statement, "FROM runs ") {
+		if f.failTable == "runs" {
+			return nil, errors.New("fixture backend read failed")
+		}
+		return explanationRunProjectionRows(statement, args, f.rows["runs"])
+	}
 	for table, row := range f.rows {
 		if strings.Contains(statement, "FROM "+table+" ") {
 			if table == f.failTable {

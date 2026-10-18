@@ -62,11 +62,14 @@ func (tx explanationFixtureTx) Commit() error {
 	return nil
 }
 func (explanationFixtureTx) Rollback() error { return nil }
-func (f *explanationSQLFixture) QueryContext(ctx context.Context, query string, _ []driver.NamedValue) (driver.Rows, error) {
+func (f *explanationSQLFixture) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	f.queries = append(f.queries, query)
 	_, f.deadline = ctx.Deadline()
 	if strings.Contains(query, "CurrentUtcTimestamp") {
 		return &explanationFixtureRows{values: f.rows["clock"]}, nil
+	}
+	if strings.Contains(query, "FROM runs ") {
+		return explanationRunProjectionRows(query, args, f.rows["runs"])
 	}
 	for table, value := range f.rows {
 		if strings.Contains(query, "FROM "+table+" ") {

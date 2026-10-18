@@ -34,20 +34,22 @@ func (slot *localOperationBodySlot) ReadAttemptOperationBody(ctx context.Context
 // capability/current-state assertion. Accessors remain historical after Source
 // retirement; new effects still require the entered bridge and current Store.
 type LocalInvocationEntryV1 struct {
-	self                 *LocalInvocationEntryV1
-	owner                *LocalOwnedStoreBootstrapV1
-	parent               domain.OwnedAttemptEffectParentV1
-	source               domain.AttemptExecutionSourceV1
-	allocation           domain.RegisteredAllocationV2
-	bodies               *operationbody.StoreV1
-	canonicalBlobs       ports.BlobStore
-	invocationContext    context.Context
-	compactionGeneration atomic.Pointer[localCompactionGenerationV1]
+	self              *LocalInvocationEntryV1
+	owner             *LocalOwnedStoreBootstrapV1
+	parent            domain.OwnedAttemptEffectParentV1
+	source            domain.AttemptExecutionSourceV1
+	allocation        domain.RegisteredAllocationV2
+	bodies            *operationbody.StoreV1
+	canonicalBlobs    ports.BlobStore
+	invocationContext context.Context
+	// Copies retain the same one-use slot; only original() may consume it.
+	// Keep the no-copy atomic in its own allocation, not in this identity DTO.
+	compactionGeneration *atomic.Pointer[localCompactionGenerationV1]
 }
 
 func (entry *LocalInvocationEntryV1) original() bool {
 	return entry != nil && entry.self == entry && entry.owner != nil && entry.owner.self == entry.owner &&
-		entry.owner.entry.Load() == entry && entry.owner.bodySlot != nil && entry.bodies != nil && entry.owner.bodySlot.bodies.Load() == entry.bodies
+		entry.owner.entry.Load() == entry && entry.owner.bodySlot != nil && entry.bodies != nil && entry.owner.bodySlot.bodies.Load() == entry.bodies && entry.compactionGeneration != nil
 }
 func (entry *LocalInvocationEntryV1) Parent() (domain.OwnedAttemptEffectParentV1, error) {
 	if !entry.original() {
@@ -161,7 +163,7 @@ func (b *LocalOwnedStoreBootstrapV1) StartLocalInvocation(ctx context.Context, r
 	if e != nil || lifetime.Err() != nil || ctx.Err() != nil {
 		return nil, domain.ErrMembershipDenied
 	}
-	entry := &LocalInvocationEntryV1{owner: b, parent: parent.Clone(), source: source.Clone(), allocation: registered.Current.Clone(), bodies: bodies, canonicalBlobs: blobs, invocationContext: ctx}
+	entry := &LocalInvocationEntryV1{owner: b, parent: parent.Clone(), source: source.Clone(), allocation: registered.Current.Clone(), bodies: bodies, canonicalBlobs: blobs, invocationContext: ctx, compactionGeneration: new(atomic.Pointer[localCompactionGenerationV1])}
 	entry.self = entry
 	if !b.bodySlot.bodies.CompareAndSwap(nil, bodies) {
 		return nil, domain.ErrMembershipDenied

@@ -74,6 +74,87 @@ func TestExecuteResumesAfterObjectDeleteFailure(t *testing.T) {
 	}
 }
 
+func TestExecuteRevalidatesInventoryAfterStart(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		start func(*fakeLifecycleStore)
+	}{
+		{
+			name: "changed_object_identity",
+			start: func(store *fakeLifecycleStore) {
+				// Keep a valid inventory and identical counts/bytes. Only the
+				// exact immutable object identity changes at the Start boundary.
+				store.inventory.Objects = append([]domain.BlobRef(nil), store.inventory.Objects...)
+				store.inventory.Objects[0].SHA256 = strings.Repeat("3", 64)
+			},
+		},
+		{
+			name: "post_start_inventory_unavailable",
+			start: func(store *fakeLifecycleStore) {
+				store.inventoryErr = errors.New("injected post-Start inventory read failure")
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service, store, blobs := fixture(t)
+			plan, err := service.Plan(context.Background(), "tenant-a", "session-a")
+			if err != nil {
+				t.Fatalf("initial exact inventory: %v", err)
+			}
+			store.afterStart = test.start
+			_, err = service.Execute(context.Background(), "tenant-a", "session-a", plan.Confirmation, time.Unix(20, 0).UTC())
+			if err == nil {
+				t.Error("Execute accepted a stale pre-Start inventory after the authoritative Start changed it")
+			}
+			if store.starts != 1 || store.deletion.State != domain.SessionDeletionDeleting {
+				t.Errorf("Start boundary not reached once: starts=%d state=%s", store.starts, store.deletion.State)
+			}
+			if len(blobs.deleted) != 0 || store.completions != 0 {
+				t.Errorf("effects after invalid post-Start inventory: deletes=%v completions=%d, want none", blobs.deleted, store.completions)
+			}
+		})
+	}
+}
+
+func TestExecuteResumesWithFreshServiceWithoutBlobReads(t *testing.T) {
+	service, store, blobs := fixture(t)
+	plan, err := service.Plan(context.Background(), "tenant-a", "session-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	blobs.failOnce = "tenants/tenant-a/sessions/session-a/b"
+	if _, err := service.Execute(context.Background(), "tenant-a", "session-a", plan.Confirmation, time.Unix(20, 0).UTC()); err == nil {
+		t.Fatal("first Execute did not expose the injected partial deletion failure")
+	}
+	if store.deletion.State != domain.SessionDeletionDeleting || store.completions != 0 {
+		t.Fatalf("partial deletion lost restart state: state=%s completions=%d", store.deletion.State, store.completions)
+	}
+	// A new coordinator can use only the existing durable store inventory.
+	// Blob Open and Put panic in this fixture, so neither can be used to resume.
+	restarted, err := New(store, blobs, 100, 100)
+	if err != nil {
+		t.Fatalf("fresh Service: %v", err)
+	}
+	completed, err := restarted.Execute(context.Background(), "tenant-a", "session-a", plan.Confirmation, time.Unix(21, 0).UTC())
+	if err != nil {
+		t.Fatalf("resume exact original inventory: %v", err)
+	}
+	if completed.State != domain.SessionDeletionCompleted || store.completions != 1 || completed.DeletedObjects != 2 || completed.DeletedBytes != 7 {
+		t.Fatalf("resumed completion=%+v completions=%d", completed, store.completions)
+	}
+	want := []string{"tenants/tenant-a/sessions/session-a/a", "tenants/tenant-a/sessions/session-a/a", "tenants/tenant-a/sessions/session-a/b"}
+	if !reflect.DeepEqual(blobs.deleted, want) {
+		t.Fatalf("restart exact deletes=%v, want %v", blobs.deleted, want)
+	}
+	before := append([]string(nil), blobs.deleted...)
+	if _, err := restarted.Execute(context.Background(), "tenant-a", "session-a", plan.Confirmation, time.Unix(22, 0).UTC()); err != nil {
+		t.Fatalf("completed tombstone replay: %v", err)
+	}
+	if !reflect.DeepEqual(blobs.deleted, before) || store.completions != 1 || store.starts != 2 {
+		t.Fatalf("completed replay repeated effects: deletes=%v starts=%d completions=%d", blobs.deleted, store.starts, store.completions)
+	}
+}
+
 func fixture(t *testing.T) (*Service, *fakeLifecycleStore, *fakeBlobStore) {
 	t.Helper()
 	requestedAt := time.Unix(10, 0).UTC()
@@ -99,10 +180,12 @@ func fixture(t *testing.T) (*Service, *fakeLifecycleStore, *fakeBlobStore) {
 }
 
 type fakeLifecycleStore struct {
-	deletion    domain.SessionDeletion
-	inventory   domain.SessionDeletionInventory
-	starts      int
-	completions int
+	deletion     domain.SessionDeletion
+	inventory    domain.SessionDeletionInventory
+	starts       int
+	completions  int
+	afterStart   func(*fakeLifecycleStore)
+	inventoryErr error
 }
 
 func (store *fakeLifecycleStore) PutSessionLegalHold(context.Context, domain.SessionLegalHold) (domain.SessionLegalHold, error) {
@@ -125,10 +208,13 @@ func (store *fakeLifecycleStore) StartSessionDeletion(_ context.Context, _ domai
 	if err := store.deletion.Start(at); err != nil {
 		return domain.SessionDeletion{}, err
 	}
+	if store.afterStart != nil {
+		store.afterStart(store)
+	}
 	return store.deletion, nil
 }
 func (store *fakeLifecycleStore) BuildSessionDeletionInventory(context.Context, domain.TenantID, domain.SessionID, uint64, uint64) (domain.SessionDeletionInventory, error) {
-	return store.inventory, nil
+	return store.inventory, store.inventoryErr
 }
 func (store *fakeLifecycleStore) CompleteSessionDeletion(_ context.Context, _ domain.TenantID, _ domain.SessionID, at time.Time, objects, bytes uint64) (domain.SessionDeletion, error) {
 	store.completions++

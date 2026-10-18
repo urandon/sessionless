@@ -234,10 +234,26 @@ func (s *LocalCompactionSourceV1) rejoinHistoryLocked(ctx context.Context, q *ow
 }
 
 func (entry *LocalInvocationEntryV1) readTerminalHistorySnapshot(ctx context.Context, q *ownedAuthorityQuery, run domain.Run, anchor domain.SessionEvent) (localTerminalHistorySnapshot, error) {
+	// Keep the original consumer's foreign-owner denial before any historical
+	// SQL read. The shared DATA reader has no current entry ownership itself.
+	if run.TerminalCustody == nil || run.TerminalCustody.Plan.Scope.OwnerUserID != entry.parent.Scope.OwnerUserID {
+		return localTerminalHistorySnapshot{}, q.budget.deny()
+	}
+	v, err := readHistoricalTerminalSnapshot(ctx, q, run, anchor)
+	profile, fe := entry.owner.configuration.Digest()
+	if err != nil || fe != nil || v.Run.TerminalCustody.Plan.Scope.OwnerUserID != entry.parent.Scope.OwnerUserID || v.Evidence.LocalV1.ProfileDigest != profile {
+		return localTerminalHistorySnapshot{}, q.budget.deny()
+	}
+	return v, nil
+}
+
+// Immutable producer validation shared with deletion. Current Source/profile
+// authorization remains in the original consumer above, never reactivated here.
+func readHistoricalTerminalSnapshot(ctx context.Context, q *ownedAuthorityQuery, run domain.Run, anchor domain.SessionEvent) (localTerminalHistorySnapshot, error) {
 	deny := func() (localTerminalHistorySnapshot, error) { return localTerminalHistorySnapshot{}, q.budget.deny() }
 	custody := run.TerminalCustody
 	if run.Validate() != nil || run.Status != domain.RunSucceeded || run.CancellationRequestedAt != nil || custody == nil || custody.Correspondence == nil || custody.LocalEvidence == nil ||
-		custody.Plan.Scope.OwnerUserID != entry.parent.Scope.OwnerUserID || custody.Correspondence.TerminalAssistantEventID != anchor.ID || run.FinishedAt == nil || !run.FinishedAt.Equal(run.UpdatedAt) || run.UpdatedAt.After(q.at) {
+		custody.Correspondence.TerminalAssistantEventID != anchor.ID || run.FinishedAt == nil || !run.FinishedAt.Equal(run.UpdatedAt) || run.UpdatedAt.After(q.at) {
 		return deny()
 	}
 	scope := custody.Plan.Scope
@@ -261,12 +277,11 @@ func (entry *LocalInvocationEntryV1) readTerminalHistorySnapshot(ctx context.Con
 	ad, ae := v.Admission.Digest()
 	sd, se := v.Admission.Source.Digest()
 	_, actualAccounting, ce := accountingBytes(v.Accounting)
-	profile, fe := entry.owner.configuration.Digest()
-	if pe != nil || ae != nil || se != nil || ce != nil || fe != nil || pd != parentDigest || ad != admissionDigest || actualAccounting != accountingDigest ||
+	if pe != nil || ae != nil || se != nil || ce != nil || pd != parentDigest || ad != admissionDigest || actualAccounting != accountingDigest ||
 		v.Parent.ValidateForAdmission(v.Admission) != nil || ownedOperationScope(v.Parent) != scope || v.Accounting.validate(v.Parent, v.Admission.Source, q.at) != nil ||
 		status != string(domain.RunSucceeded) || !isLocalFinalizationMarkerV2(seal) || v.Manifest.ValidateForRun(run) != nil || v.Manifest.ID != canonicaloutput.ManifestIDV1(run.ID) ||
 		v.Evidence.Version != 2 || v.Evidence.Kind != domain.ExecutionEvidenceLocalV1 || v.Evidence.ManagedV1 != nil || v.Evidence.LocalV1 == nil || v.Evidence.LocalV1.Validate() != nil ||
-		!reflect.DeepEqual(v.Evidence.LocalV1, custody.LocalEvidence) || evidenceDigest != custody.LocalEvidence.EvidenceDigest || custody.LocalEvidence.ParentDigest != pd || custody.LocalEvidence.SourceDigest != sd || custody.LocalEvidence.ProfileDigest != profile {
+		!reflect.DeepEqual(v.Evidence.LocalV1, custody.LocalEvidence) || evidenceDigest != custody.LocalEvidence.EvidenceDigest || custody.LocalEvidence.ParentDigest != pd || custody.LocalEvidence.SourceDigest != sd || custody.LocalEvidence.ProfileDigest != v.Parent.Authority.HarnessBinding.Backend.BackendProfileDigest {
 		return deny()
 	}
 	return v, nil

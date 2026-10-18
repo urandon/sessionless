@@ -127,6 +127,17 @@ disposal/retention and finalization remain separately owned; this continuation
 rule does not qualify their measured-usage requirements or retire any facts.
 See the [provider-usage clarification](../design/owned-agent-harness-minimum.md#provider-usage-provenance-and-conservative-continuation).
 
+Operation bodies reuse BlobStore objects under the existing session/run prefix,
+with `attempt-operations-v1/<full-scope-digest>/opbody-v1.<bytes>.<sha256>` keys.
+The canonical operation rows retain their existing reference/digest/size fields;
+there is no body index table, transcript or durable adapter accounting. The
+complete claim scope separates object namespaces and every read rechecks exact
+size/hash. Local adapter write counters bound physical I/O only and cannot
+restore Store quota after reconstruction. Ambiguous writes retain possible
+objects and stop new writes; this source step performs no deletion or retention
+cutover and issues no residual-cleanup receipt. See the
+[scoped body contract](../design/owned-agent-harness-minimum.md#scoped-operation-body-storage).
+
 ## Source and rollout boundary
 
 The [compatible code step](https://gitcode.com/urandon/sessionless/issues/206)

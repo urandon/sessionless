@@ -1,6 +1,6 @@
 # Sessionless owned agent harness minimum
 
-Version: 0.2.2, engineering clarification. Design owner: [#180](https://gitcode.com/urandon/sessionless/issues/180); implementation parent: [#176](https://gitcode.com/urandon/sessionless/issues/176). The accepted 0.2.1 package at `42139dfb5cefb266adb77f221c0743b53cfb5217` received independent original-goal review, exact-head CI and guarded merge in [!160](https://gitcode.com/urandon/sessionless/pull/160), under the owner's agreed-MVP engineering delegation. Version 0.2.2 makes only the provider-usage continuation clarification below for [#190](https://gitcode.com/urandon/sessionless/issues/190), which records its independent engineering review and implementation evidence. The linked implementation checklist is registered in #176. No additional manual human PR sign-off is required; unresolved findings and exact-head verification remain gates. Engineering acceptance does not enable a provider, MCP connection or cloud profile.
+Version: 0.2.3, engineering clarifications. Design owner: [#180](https://gitcode.com/urandon/sessionless/issues/180); implementation parent: [#176](https://gitcode.com/urandon/sessionless/issues/176). The accepted 0.2.1 package at `42139dfb5cefb266adb77f221c0743b53cfb5217` received independent original-goal review, exact-head CI and guarded merge in [!160](https://gitcode.com/urandon/sessionless/pull/160), under the owner's agreed-MVP engineering delegation. Version 0.2.2 clarifies provider-usage continuation; 0.2.3 specifies the bounded operation-body adapter below for [#190](https://gitcode.com/urandon/sessionless/issues/190), which records independent engineering review and implementation evidence. Neither increment completes the provider session or its normal product composition. The linked implementation checklist is registered in #176. No additional manual human PR sign-off is required; unresolved findings and exact-head verification remain gates. Engineering acceptance does not enable a provider, MCP connection or cloud profile.
 
 ## Decision and scope
 
@@ -63,6 +63,54 @@ The existing outer reservation still decides the sole physical claimant. Before 
 A lost store response may be reconciled by exact reservation identity/digest; this can recover the append result but never repeats a network dispatch. A crash after reservation is conservatively unknown unless trusted transport evidence proves otherwise. A fresh physical delivery is reconcile-only under the existing rule. MVP does not resume model/tool execution after a worker restart, including when its native checkpoint claims completion. A later explicit Run is not a mechanism for replaying the unresolved operation.
 
 Persist a validated model response before reserving its tool, and persist a validated tool result before model continuation. On persistence failure, stop; do not feed an undurable result back to the model. Stored content is revalidated and owner-authorized before use. Bounds include rows, bodies and result manifests, so durability is not an unbounded logging channel.
+
+### Scoped operation-body storage
+
+Use the existing `ports.BlobStore` through one concrete `operationbody.StoreV1`
+adapter fixed to the complete original operation scope and admitted loop
+limits. Constructor validation is DATA validation, not admission or a send
+capability. The eventual trusted composer installs the same adapter for the
+provider session and `AttemptOperationBodyStoreV1`; the model and tools receive
+neither handle. Setting an unrelated residual custody must not silently replace
+this reader. Canonical state and quota remain with the existing Attempt Store.
+
+Bodies use the existing session/run object prefix followed by
+`attempt-operations-v1/`, a domain-separated SHA256 of the full canonical scope,
+and one opaque `opbody-v1.<bytes>.<sha256>` reference. Size is positive canonical
+decimal; hash is lowercase raw SHA256, not the configured-codec request digest.
+No URL, path, caller prefix, padded decimal or alternate reference is accepted.
+Reject non-normalized scope-derived keys rather than cleaning them into another
+identity. The scope digest binds owner, session, run, attempt, lease/fence,
+physical claim, reservation, invocation, binding and policy, not just tenant.
+
+Reserve physical write capacity before copying/writing: at most two bodies per
+admitted maximum operation and the admitted aggregate body-byte ceiling.
+Attempts consume this local bound without refunds, including failures; it is
+not another durable budget or proof that a fresh adapter can resume execution.
+One fail-fast gate covers synchronous I/O and is shared by wrapper copies.
+Caller cancellation and the shorter of ten seconds and the policy network
+duration bound each call. BlobStore/readers must cooperate with context and
+synchronous Close; do not abandon goroutines to claim bounded completion.
+
+Write one nonempty private copy with no adapter retry, verify the exact returned
+tenant/key/size/hash, then independently read back bounded bytes and require
+exact size/hash and successful Close before publishing the reference. Clear the
+private write/readback copies. Any uncertainty in that write disables further
+writes on the instance, without deleting a possibly accepted object. Reads may
+still reconcile DATA: require exact original scope and canonical reference,
+cap before Open, and recheck actual size/hash, context and Close on every read.
+Return fresh caller-owned bytes only; no retained body/object map is needed.
+
+The underlying BlobStore is not create-only/WORM. Content addressing plus
+verification detects replacement; it does not prove physical immutability,
+absence or erasure. This adapter adds no table, transcript, automatic Delete,
+credential custody or residual-disposal receipt. The session owns active
+lifetime/current-authority checks and joins its synchronous calls. Owning
+retention/finalization and separately authenticated cleanup remain unchanged.
+Requests are stored before reservation and normalized responses before complete
+observation; an ambiguous PUT or failed verification stops, never replays the
+provider. Real session/lineage and normal Web composition remain #190/#191/#218
+work, not outcomes established by this adapter alone.
 
 Failed backend exports are untrusted. The worker queries authenticated subordinate observations tied to the exact parent effect/claim; the error registry must not blindly forward arbitrary ToolEvents. Failed terminal projection can record a tool_call plus a tool_result whose explicit outcome is `accepted_outcome_unknown`, with no fabricated service response or success payload. This is a Sessionless observation of the effect, not a claim that the remote tool replied. Unresolved effects still prohibit continuation and compaction. The terminal reducer verifies exact operation coverage and suppresses duplicate canonical events.
 

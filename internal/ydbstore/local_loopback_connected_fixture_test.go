@@ -14,6 +14,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/configuredinference"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/localoperator"
+	"gitcode.com/urandon/sessionless/internal/operationbody"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/serverlessharness"
 )
@@ -202,6 +203,22 @@ func NewLocalLoopbackConnectedFixture(t *testing.T, endpoint string) *LocalLoopb
 }
 func (f *LocalLoopbackConnectedFixture) Complete(t *testing.T, keeper ports.OwnedProxyPublicationVerifierV2) {
 	t.Helper()
+	f.complete(t, keeper, nil)
+}
+
+// CompleteWithBlobStore selects the real production body adapter explicitly.
+// Only storage bytes are fake; scope/limits come from the ORIGINAL admitted
+// parent, and the same concrete adapter is retained by the original Store.
+func (f *LocalLoopbackConnectedFixture) CompleteWithBlobStore(t *testing.T, keeper ports.OwnedProxyPublicationVerifierV2, blobs ports.BlobStore) {
+	t.Helper()
+	if blobs == nil {
+		t.Fatal("connected production-body arm needs explicit owned blob storage")
+	}
+	f.complete(t, keeper, blobs)
+}
+
+func (f *LocalLoopbackConnectedFixture) complete(t *testing.T, keeper ports.OwnedProxyPublicationVerifierV2, blobs ports.BlobStore) {
+	t.Helper()
 	f.sql = &loopbackOperationSQL{localProxySQL: &localProxySQL{allocationConn: allocationConn{&allocationSQLFixture{parent: f.parent.sql}}}}
 	db := sql.OpenDB(loopbackOperationConnector{f.sql})
 	db.SetMaxOpenConns(1)
@@ -210,10 +227,29 @@ func (f *LocalLoopbackConnectedFixture) Complete(t *testing.T, keeper ports.Owne
 			t.Error(e)
 		}
 	})
-	f.body = &loopbackOperationBody{scope: ownedOperationScope(f.parent.parent), ref: "connected-local-request", body: bytes.Clone(f.payload)}
-	store, e := f.Bootstrap.CreateStore(db, Options{OwnedAttemptEffectSourceVerifier: f.parent.verifier, OwnedProfilePublicationVerifier: f.Source, AttemptOperationBodies: f.body}, keeper)
+	scope := ownedOperationScope(f.parent.parent)
+	requestRef := "connected-local-request"
+	var bodyReader ports.AttemptOperationBodyStoreV1
+	if blobs == nil {
+		f.body = &loopbackOperationBody{scope: scope, ref: requestRef, body: bytes.Clone(f.payload)}
+		bodyReader = f.body
+	} else {
+		adapter, err := operationbody.NewV1(scope, f.parent.parent.Authority.HarnessBinding.AgentLoopPolicy.Limits, blobs)
+		if err != nil {
+			t.Fatalf("original scoped production body adapter: %v", err)
+		}
+		reference, err := adapter.Write(f.Context, f.payload)
+		if err != nil || reference.Digest != ports.OwnedFixtureBytesDigestV1(f.payload) || reference.Bytes != uint64(len(f.payload)) {
+			t.Fatalf("production body write/readback before original Store setup: %v", err)
+		}
+		requestRef, bodyReader = reference.Ref, adapter
+	}
+	store, e := f.Bootstrap.CreateStore(db, Options{OwnedAttemptEffectSourceVerifier: f.parent.verifier, OwnedProfilePublicationVerifier: f.Source, AttemptOperationBodies: bodyReader}, keeper)
 	if e != nil {
 		t.Fatal(e)
+	}
+	if store.attemptOperationBodies != bodyReader {
+		t.Fatal("original Store replaced production body custody")
 	}
 	f.store, f.parent.store = store, store
 	bridge, e := serverlessharness.NewBoundedOwnedLocalAllocationPreparationV1(f.parent.issuer.issuer, f.parent.parent.Authority.HarnessBinding.Backend, f.parent.parent.Authority.SubstrateBinding, f.Source, f.Bootstrap)
@@ -255,7 +291,7 @@ func (f *LocalLoopbackConnectedFixture) Complete(t *testing.T, keeper ports.Owne
 	if e != nil {
 		t.Fatal(e)
 	}
-	f.Operation = domain.AttemptOperationV1{Version: 1, Scope: f.body.scope, Sequence: 1, Kind: domain.AttemptOperationModelV1, CallID: "connected-local-model", RequestRef: f.body.ref, RequestDigest: ports.OwnedFixtureBytesDigestV1(f.payload), Deadline: deadline, CleanupDuration: f.actual.config.Limits.CleanupTimeout, RequestBytes: uint64(len(f.payload)), ResultBytes: 512, ContextBytes: 1, Currency: cost.Currency, PriceRevision: cost.PriceRevision, AdmissionCostCeilingDigest: cd, Debit: domain.AttemptOperationDebitV1{Operations: 1, ModelCalls: 1, InputTokens: 1, OutputTokens: 1, BodyBytes: uint64(len(f.payload)) + 512, ResponseBytes: 512, ActiveDuration: duration}}
+	f.Operation = domain.AttemptOperationV1{Version: 1, Scope: scope, Sequence: 1, Kind: domain.AttemptOperationModelV1, CallID: "connected-local-model", RequestRef: requestRef, RequestDigest: ports.OwnedFixtureBytesDigestV1(f.payload), Deadline: deadline, CleanupDuration: f.actual.config.Limits.CleanupTimeout, RequestBytes: uint64(len(f.payload)), ResultBytes: 512, ContextBytes: 1, Currency: cost.Currency, PriceRevision: cost.PriceRevision, AdmissionCostCeilingDigest: cd, Debit: domain.AttemptOperationDebitV1{Operations: 1, ModelCalls: 1, InputTokens: 1, OutputTokens: 1, BodyBytes: uint64(len(f.payload)) + 512, ResponseBytes: 512, ActiveDuration: duration}}
 	if e = f.Operation.ValidateForParent(f.parent.parent.Authority, f.parent.parent.Reservation); e != nil {
 		t.Fatalf("connected immutable model operation: %v", e)
 	}

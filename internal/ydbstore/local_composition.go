@@ -28,6 +28,9 @@ type LocalOwnedStoreBootstrapV1 struct {
 	store         *Store
 	keeper        ports.OwnedProxyPublicationVerifierV2
 	ready         atomic.Pointer[localOwnedStoreTupleV1]
+	bodySlot      *localOperationBodySlot
+	startClaimed  atomic.Bool
+	entry         atomic.Pointer[LocalInvocationEntryV1]
 }
 
 type localOwnedStoreTupleV1 struct {
@@ -84,12 +87,20 @@ func (b *LocalOwnedStoreBootstrapV1) CreateStore(db *sql.DB, options Options, ke
 	}
 	options.AttemptEffectGrantIssuer, options.OwnedPreparationGrantVerifier = b.prepare, b.prepare
 	options.AttemptOperationIssuer, options.OwnedProxyPublicationVerifier = b.operate, keeper
+	var bodySlot *localOperationBodySlot
+	if options.AttemptOperationBodies == nil && options.OwnedOperationResidualCustody == nil {
+		bodySlot = &localOperationBodySlot{owner: b}
+		options.AttemptOperationBodies = bodySlot
+	}
 	store, err := New(db, options) // constructor only; no SQL or supplied methods
-	if err != nil {
+	if err != nil || (bodySlot != nil && store.attemptOperationBodies != bodySlot) {
+		if err == nil {
+			err = domain.ErrMembershipDenied
+		}
 		return nil, err
 	}
 	store.localBootstrap = b
-	b.store, b.keeper = store, keeper
+	b.store, b.keeper, b.bodySlot = store, keeper, bodySlot
 	return store, nil
 }
 

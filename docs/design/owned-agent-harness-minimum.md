@@ -1,6 +1,6 @@
 # Sessionless owned agent harness minimum
 
-Version: 0.2.4, engineering clarifications. Design owner: [#180](https://gitcode.com/urandon/sessionless/issues/180); implementation parent: [#176](https://gitcode.com/urandon/sessionless/issues/176). The accepted 0.2.1 package at `42139dfb5cefb266adb77f221c0743b53cfb5217` received independent original-goal review, exact-head CI and guarded merge in [!160](https://gitcode.com/urandon/sessionless/pull/160), under the owner's agreed-MVP engineering delegation. Version 0.2.2 clarifies provider-usage continuation; 0.2.3 specifies bounded operation-body storage; 0.2.4 defines successful normalized model bodies and their Store correlation below. [#190](https://gitcode.com/urandon/sessionless/issues/190) records independent engineering review and implementation evidence. These increments do not complete the provider session or its normal product composition. The linked implementation checklist is registered in #176. No additional manual human PR sign-off is required; unresolved findings and exact-head verification remain gates. Engineering acceptance does not enable a provider, MCP connection or cloud profile.
+Version: 0.2.5, engineering clarifications. Design owner: [#180](https://gitcode.com/urandon/sessionless/issues/180); implementation parent: [#176](https://gitcode.com/urandon/sessionless/issues/176). The accepted 0.2.1 package at `42139dfb5cefb266adb77f221c0743b53cfb5217` received independent original-goal review, exact-head CI and guarded merge in [!160](https://gitcode.com/urandon/sessionless/pull/160), under the owner's agreed-MVP engineering delegation. Version 0.2.2 clarifies provider-usage continuation; 0.2.3 specifies bounded operation-body storage; 0.2.4 defines normalized model bodies and Store correlation; 0.2.5 specifies local invocation construction and first-model composition. [#190](https://gitcode.com/urandon/sessionless/issues/190) records independent engineering review and implementation evidence. These increments do not complete the provider session or its normal product composition. The linked implementation checklist is registered in #176. No additional manual human PR sign-off is required; unresolved findings and exact-head verification remain gates. Engineering acceptance does not enable a provider, MCP connection or cloud profile.
 
 ## Decision and scope
 
@@ -227,6 +227,50 @@ fixture-only until its real typed successor is implemented; normalized calls
 alone cannot dispatch MCP/search. ProviderLoopSession, continuation, compaction,
 final export and normal Web composition remain separate #190/#191/#192/#218
 work. No real profile or new external operation is enabled by this contract.
+
+### Local invocation construction and first-model composition
+
+The scoped body adapter requires the genuine parent reservation digest. Do not
+preconstruct a supposed parent, create a second Store or add a public body setter
+to break constructor ordering. The local bootstrap installs one fixed, initially
+closed body reader when no body/custody owner is supplied. Its sole start claims
+ownership before effects, reserves the real parent on that same Store, joins
+its original grant and persisted Final/source, and derives scope/limits there.
+Only then create the adapter, perform the existing burn/preparation/publication
+and consume the original prepared invocation once. Arm the fixed reader exactly
+once with that same adapter. Preserve preinstalled body/residual-custody profiles;
+the new start rejects them rather than silently replacing their owner.
+
+Replay, ambiguous commit or partial failure does not permit a new start. A
+losing start cannot close the winner. Keep canonical receipts on failure;
+closing a local bridge is not canonical retirement or disposal evidence. The
+returned private original entry exposes historical cloned DATA and its actual
+body adapter, not a caller-constructible approval or fresh send permission.
+
+The concrete local session factory owns its bootstrap, Store, bridge and keeper;
+it borrows the original Source and DB without closing them. A shared fail-fast
+gate serializes copied wrappers. Entry retains an invocation context that is
+not canceled when the start method returns. Intersect Source, original caller,
+allocation and operation lifetimes without renewing them. Close cancels before
+joining I/O, under one original cleanup window, and reports uncertain joins.
+
+The first-model composition freezes the configured request, persists it through
+the original adapter, then performs real preflight/publication/reservation and
+Store before-send authorization. Normalize and persist the reply, authenticate
+with the original observation grant, and record/read back through the same
+Store. Unknown/undurable outcomes do not become usable durable successes or
+another send. Noauth accepts no credential lifecycle and performs zero credential
+calls. The genuine one-materialization credential branch remains required.
+
+Until the real typed continuation contract is implemented, reject sequence >1
+before acquiring another socket, publication or reservation. This explicit
+first-model increment is not the completed multi-operation ProviderLoopSession,
+agent loop, compaction, tool grant, canonical finalizer or normal Web demo.
+Full execution-source authenticity, all applicable real funding and executed
+calibrated token fit remain normal-composer prerequisites; scripted verifiers
+and installation declarations do not supply those proofs. Existing real serving
+profiles stay disabled. No daemon, model, key or cloud action follows from
+constructing or merging this component.
 
 ## Initial finite ceilings
 

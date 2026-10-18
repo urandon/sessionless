@@ -1,6 +1,7 @@
 # Owned-loop terminal output and retained custody
 
-Version: 0.1.0, proposed engineering contract, not yet accepted or implemented.
+Version: 0.1.0, independently reviewed engineering contract. Implementation
+and exact-profile activation remain incomplete and separately verified.
 Owners: [#191](https://gitcode.com/urandon/sessionless/issues/191) canonical
 exports, [#192](https://gitcode.com/urandon/sessionless/issues/192) compaction
 custody/reuse and [#212](https://gitcode.com/urandon/sessionless/issues/212)

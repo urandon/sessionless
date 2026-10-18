@@ -4,9 +4,9 @@ Version: 0.2.3. Design scope: [#178](https://gitcode.com/urandon/sessionless/iss
 
 ## Selected approach
 
-The [terminal producer and custody clarification](owned-loop-terminal-custody.md)
-is a proposed successor for the concrete output/lifecycle gaps; it is not yet
-accepted engineering design or implemented terminal evidence.
+The [terminal producer and custody contract](owned-loop-terminal-custody.md)
+clarifies the concrete output/lifecycle gaps. Engineering design acceptance
+does not establish implementation or verified terminal evidence.
 
 Use one bounded summary generation over older complete units, then retain an exact original suffix. Trusted instructions/current policy and the latest user task remain outside lossy text. A summary is untrusted derived data with provenance, never canonical history, credentials or execution authority. On overflow that cannot be safely compacted, stop explicitly rather than silently delete a protected unit.
 

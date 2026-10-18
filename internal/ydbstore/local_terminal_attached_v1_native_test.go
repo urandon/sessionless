@@ -156,8 +156,29 @@ func TestLocalRetainedCompactionYDBAttachedV1OriginalFinalizerHistory(t *testing
 	check := func(t *testing.T) {
 		t.Helper()
 		v, err := read()
-		if err != nil || !reflect.DeepEqual(v.Run, run) || !reflect.DeepEqual(v.Manifest, completion.Manifest) || len(v.Events) != 1 || v.Events[0].ID != completion.Events[0].ID || v.Marker != beforeReplay.Marker || v.NilEvidenceSeal != v.Marker || v.Marker == string(created.Receipt.CanonicalDigest) || v.UsesEvidence {
-			t.Fatalf("original persisted attached V1 classification: err=%v markerLen=%d usesEvidence=%t events=%d", err, len(v.Marker), v.UsesEvidence, len(v.Events))
+		if err != nil {
+			t.Fatalf("original persisted attached V1 classification: %v", err)
+		}
+		if !reflect.DeepEqual(v.Run, run) {
+			t.Fatal("historical Run differs from the actual persisted canonical Run")
+		}
+		if !reflect.DeepEqual(v.Manifest, completion.Manifest) {
+			t.Fatalf("historical manifest differs from original materialization: idEqual=%t createdEqual=%t artifactsEqual=%t", v.Manifest.ID == completion.Manifest.ID, v.Manifest.CreatedAt.Equal(completion.Manifest.CreatedAt), reflect.DeepEqual(v.Manifest.Artifacts, completion.Manifest.Artifacts))
+		}
+		if len(v.Events) != 1 {
+			t.Fatalf("historical canonical event count=%d, want 1", len(v.Events))
+		}
+		if v.Events[0].ID != completion.Events[0].ID {
+			t.Fatal("historical event identity differs from original materialization")
+		}
+		// AW07 deliberately signs the SAME canonical V1 commitment. The receipt
+		// is not a separate-domain digest; both original writers use the same
+		// status/manifest/ordered-event identity encoding.
+		if v.Marker != beforeReplay.Marker || v.NilEvidenceSeal != v.Marker || v.Marker != string(created.Receipt.CanonicalDigest) {
+			t.Fatalf("original attached receipt/stored marker/recomputed V1 seal differ: storedEqual=%t nilSealEqual=%t receiptEqual=%t markerLen=%d", v.Marker == beforeReplay.Marker, v.NilEvidenceSeal == v.Marker, v.Marker == string(created.Receipt.CanonicalDigest), len(v.Marker))
+		}
+		if v.UsesEvidence {
+			t.Fatal("attached nil-evidence V1 classifier used managed evidence")
 		}
 		if blobs.writes() != beforeWrites {
 			t.Fatal("historical classification replayed object effects")

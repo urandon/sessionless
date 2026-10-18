@@ -162,6 +162,29 @@ fuzz execution bounded in CI. See Go's official
 [fuzzing documentation](https://go.dev/doc/security/fuzz/) and
 [tutorial](https://go.dev/doc/tutorial/fuzz/).
 
+### Cumulative package runtime
+
+Go's `-timeout` bounds the complete test binary, not each individual test. An
+expanded connected suite can exhaust that cumulative budget while the last
+reported test has only just started. Do not call that test hung or flaky from
+its name in the timeout report; inspect elapsed execution and actual evidence.
+
+`make test` uses two complementary selections over the same complete package
+patterns: `-skip='^TestLocalSession'`, then `-run='^TestLocalSession'`. Both retain
+the race detector and the existing 15-minute per-binary bound. This separates
+connected-session work without dropping tests, their subtests, examples or fuzz
+seed corpora, or shortening scenarios. Both commands must cover all packages:
+matching test names exist outside the state-store package as well. Keep ordinary
+sequential Make recipe lines so failure of either command fails the target.
+
+Preserve this complement if changing the selector. Do not introduce a second
+unrelated filter, ignored failure, `-short`, wider timeout or hidden test skip
+to obtain a green result. Package initialization runs separately; cross-test
+process-state dependencies are not supported. Record fresh execution of both
+halves with caching disabled or in clean exact-head CI. The CI job's overall
+30-minute budget is unchanged and still needs actual verification. See the Go
+command's [`-run`, `-skip` and `-timeout` contracts](https://pkg.go.dev/cmd/go#hdr-Testing_flags).
+
 ## Review checklist
 
 Before accepting a test change, verify:

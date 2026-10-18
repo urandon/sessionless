@@ -4,6 +4,10 @@ Version: 0.2.3. Design scope: [#178](https://gitcode.com/urandon/sessionless/iss
 
 ## Selected approach
 
+The [terminal producer and custody clarification](owned-loop-terminal-custody.md)
+is a proposed successor for the concrete output/lifecycle gaps; it is not yet
+accepted engineering design or implemented terminal evidence.
+
 Use one bounded summary generation over older complete units, then retain an exact original suffix. Trusted instructions/current policy and the latest user task remain outside lossy text. A summary is untrusted derived data with provenance, never canonical history, credentials or execution authority. On overflow that cannot be safely compacted, stop explicitly rather than silently delete a protected unit.
 
 This consumes [accepted #178 research v0.3.1](https://gitcode.com/urandon/sessionless/issues/178#note_192990497). Pinned comparators: Codex `f5420174dafba153913a3e697f89002c338dfd7e`, OpenCode `3a31c4ea801915c0b050df4b3842997ea62b6e93`, Pi `6c4f360264397c59801f6da2bdac13e3b1fcbe91`. The receipt owns their exact source references and limitations. Adopt portable summary plus suffix; reject canonical mutation, arbitrary oldest-input deletion and hidden auxiliary retries. Defer split-turn multi-summary optimization and provider-native opaque compaction to separately accepted profiles.

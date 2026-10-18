@@ -28,6 +28,7 @@ const (
 	localCompactionBeforeSend
 	localCompactionCompleted
 	localCompactionPostRegistration
+	localCompactionPublished
 )
 
 // The private constructor rebuilds from original source bytes and executes the
@@ -49,6 +50,8 @@ type localCompactionGenerationV1 struct {
 	reservationAttempted bool
 	reservation          domain.AttemptOperationReservationV1
 	observation          ports.AuthenticatedAttemptOperationObservationV1
+	publicationAttempted bool
+	publication          *localCompactionPublicationV1
 }
 
 // localCompactionLifetimeContext is context composition, not permission. Its
@@ -316,7 +319,10 @@ func (g *localCompactionGenerationV1) originalForPhase(entry *LocalInvocationEnt
 		return true
 	case localCompactionBeforeSend:
 		return g.reservation.ValidateForParent(entry.parent.Authority, entry.parent.Reservation) == nil && reflect.DeepEqual(g.reservation.Operation, g.operation)
-	case localCompactionCompleted, localCompactionPostRegistration:
+	case localCompactionCompleted, localCompactionPostRegistration, localCompactionPublished:
+		if phase == localCompactionPublished && (g.publication == nil || g.publication.plan.Validate() != nil || g.publication.postimage.Validate() != nil) {
+			return false
+		}
 		return g.observation.Validate() == nil && reflect.DeepEqual(g.observation.Reservation, g.reservation) && reflect.DeepEqual(g.reservation.Operation, g.operation) && ownedObservationAllowsSuccessor(g.reservation, g.observation.Observation) && entry.owner.store.attemptOperationIssuer.VerifyAttemptOperationObservation(g.observation.Clone()) == nil
 	default:
 		return false
@@ -351,9 +357,19 @@ func (g *localCompactionGenerationV1) rejoinLocked(ctx context.Context, q *owned
 	}
 	expected := g.source.state.snapshot
 	joinedRun := current.Job.Run.Clone()
-	if phase == localCompactionPostRegistration {
+	if phase == localCompactionPostRegistration || phase == localCompactionPublished {
 		uploaded := g.retained.uploaded.Load()
-		if uploaded == nil || uploaded.plan.SourceViewDigest != g.source.state.digest || uploaded.plan.Scope != g.operation.Scope || uploaded.plan.OperationSequence != g.operation.Sequence || uploaded.plan.Generation != g.retained.generation || !domain.EqualRunDerivedContextV1(current.Job.Run.DerivedContext, &uploaded.postimage) {
+		if uploaded == nil || uploaded.plan.SourceViewDigest != g.source.state.digest || uploaded.plan.Scope != g.operation.Scope || uploaded.plan.OperationSequence != g.operation.Sequence || uploaded.plan.Generation != g.retained.generation {
+			return domain.Run{}, q.budget.deny()
+		}
+		postimage := &uploaded.postimage
+		if phase == localCompactionPublished {
+			if !reflect.DeepEqual(g.publication.plan, uploaded.plan) {
+				return domain.Run{}, q.budget.deny()
+			}
+			postimage = &g.publication.postimage
+		}
+		if !domain.EqualRunDerivedContextV1(current.Job.Run.DerivedContext, postimage) {
 			return domain.Run{}, q.budget.deny()
 		}
 		current.Job.Run.DerivedContext = expected.Job.Run.DerivedContext

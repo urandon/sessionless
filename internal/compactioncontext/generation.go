@@ -72,6 +72,11 @@ type GenerationV1 struct {
 	source, compatibility string
 	generation            uint64
 	tools                 []configuredinference.ToolV1
+	policy                domain.AgentLoopPolicyV1
+	sources               []retainedSourceV1
+	cut                   uint32
+	canonicalDigest       string
+	parentPlan            *domain.DerivedContextPlanV1
 }
 
 func (GenerationV1) String() string               { return "CompactionGenerationV1{content:[redacted]}" }
@@ -175,6 +180,7 @@ func BuildGenerationV1(profile domain.ConfiguredInferenceProfileV1, limits domai
 	}
 	units := view.Units()
 	frames := make([]historicalFrameV1, 0, len(records)+len(operations))
+	sources := make([]retainedSourceV1, 0, len(records)+len(operations))
 	protectedIndex := make(map[int]bool)
 	for _, unit := range units {
 		if unit.Protected {
@@ -204,6 +210,16 @@ func BuildGenerationV1(profile domain.ConfiguredInferenceProfileV1, limits domai
 			frame.RunID = string(*record.Event.RunID)
 		}
 		frames = append(frames, frame)
+		event := record.Event
+		if event.AuthorUserID != nil {
+			value := *event.AuthorUserID
+			event.AuthorUserID = &value
+		}
+		if event.RunID != nil {
+			value := *event.RunID
+			event.RunID = &value
+		}
+		sources = append(sources, retainedSourceV1{SourceID: key, Canonical: &event})
 	}
 	compatibility := sourceKey("compatibility", pd, CompactionPolicyDigestV1())
 	var covered = make(map[string]bool)
@@ -259,6 +275,7 @@ func BuildGenerationV1(profile domain.ConfiguredInferenceProfileV1, limits domai
 		}
 		start := len(frames)
 		frames = append(frames, historicalFrameV1{Kind: "operation", SourceID: key, Role: "assistant_message", RunID: string(r.Operation.Scope.RunID), Sequence: r.Operation.Sequence, Payload: decoded.Text, Digest: o.ResponseDigest})
+		sources = append(sources, retainedSourceV1{SourceID: key, Operation: &retainedOperationV1{Reservation: r.Clone(), Observation: o.Clone()}})
 		units = append(units, UnitV1{Start: start, End: start + 1})
 	}
 	if (parent != nil && compactions != 1) || len(units) < 2 {
@@ -268,7 +285,12 @@ func BuildGenerationV1(profile domain.ConfiguredInferenceProfileV1, limits domai
 	if cut < 1 || cut >= len(frames) {
 		return nil, ErrCanonical
 	}
-	p := &GenerationV1{profile: profile.Clone(), limits: limits, source: sourceDigest, compatibility: compatibility, generation: generation, tools: ownedTools}
+	p := &GenerationV1{profile: profile.Clone(), limits: limits, source: sourceDigest, compatibility: compatibility, generation: generation, tools: ownedTools,
+		policy: policy.Clone(), sources: sources, cut: uint32(cut), canonicalDigest: view.Digest()}
+	if parent != nil {
+		value := parent.Plan
+		p.parentPlan = &value
+	}
 	var eligible, allProtected []historicalFrameV1
 	newCoverage := 0
 	known := make(map[string]bool, len(frames))

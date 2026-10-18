@@ -234,24 +234,13 @@ func (entry *LocalInvocationEntryV1) currentRetainedRun(ctx context.Context, q *
 }
 
 func (entry *LocalInvocationEntryV1) retainedContext(ctx context.Context, op domain.AttemptOperationV1) (context.Context, func(), error) {
-	if !entry.original() || ctx == nil || ctx.Err() != nil || entry.invocationContext == nil || entry.invocationContext.Err() != nil {
+	root, finishRoot, err := entry.localCompactionLifetimeContext(ctx)
+	if err != nil {
 		return nil, nil, domain.ErrMembershipDenied
 	}
-	life, err := entry.owner.source.ExecutionLifetime()
-	if err != nil || life.Err() != nil {
-		return nil, nil, domain.ErrMembershipDenied
-	}
-	deadline := op.Deadline
-	for _, original := range []context.Context{life, entry.invocationContext} {
-		if end, ok := original.Deadline(); ok && end.Before(deadline) {
-			deadline = end
-		}
-	}
-	call, cancel := context.WithDeadline(ctx, deadline)
-	stopSource := context.AfterFunc(life, cancel)
-	stopInvocation := context.AfterFunc(entry.invocationContext, cancel)
-	finish := func() { stopSource(); stopInvocation(); cancel() }
-	if life.Err() != nil || entry.invocationContext.Err() != nil || call.Err() != nil {
+	call, cancel := context.WithDeadline(root, op.Deadline)
+	finish := func() { cancel(); finishRoot() }
+	if call.Err() != nil {
 		finish()
 		return nil, nil, domain.ErrMembershipDenied
 	}

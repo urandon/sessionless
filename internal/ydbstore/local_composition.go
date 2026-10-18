@@ -23,9 +23,11 @@ type LocalOwnedStoreBootstrapV1 struct {
 	source  *localoperator.Source
 	prepare *serverlessharness.CapabilityIssuer
 	operate *serverlessharness.OperationCapabilityIssuer
-	store   *Store
-	keeper  ports.OwnedProxyPublicationVerifierV2
-	ready   atomic.Pointer[localOwnedStoreTupleV1]
+	// Immutable decoding DATA from the original source, not current permission.
+	configuration domain.ConfiguredInferenceProfileV1
+	store         *Store
+	keeper        ports.OwnedProxyPublicationVerifierV2
+	ready         atomic.Pointer[localOwnedStoreTupleV1]
 }
 
 type localOwnedStoreTupleV1 struct {
@@ -42,7 +44,7 @@ func NewLocalOwnedStoreBootstrapV1(source *localoperator.Source, prepare *server
 	if err != nil || c.Auth != domain.ConfiguredInferenceAuthNoneV1 {
 		return nil, domain.ErrMembershipDenied
 	}
-	b := &LocalOwnedStoreBootstrapV1{source: source, prepare: prepare, operate: operate}
+	b := &LocalOwnedStoreBootstrapV1{source: source, prepare: prepare, operate: operate, configuration: c.Clone()}
 	b.self = b
 	return b, nil
 }

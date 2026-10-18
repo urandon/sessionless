@@ -1,6 +1,6 @@
 # Sessionless owned agent harness minimum
 
-Version: 0.2.3, engineering clarifications. Design owner: [#180](https://gitcode.com/urandon/sessionless/issues/180); implementation parent: [#176](https://gitcode.com/urandon/sessionless/issues/176). The accepted 0.2.1 package at `42139dfb5cefb266adb77f221c0743b53cfb5217` received independent original-goal review, exact-head CI and guarded merge in [!160](https://gitcode.com/urandon/sessionless/pull/160), under the owner's agreed-MVP engineering delegation. Version 0.2.2 clarifies provider-usage continuation; 0.2.3 specifies the bounded operation-body adapter below for [#190](https://gitcode.com/urandon/sessionless/issues/190), which records independent engineering review and implementation evidence. Neither increment completes the provider session or its normal product composition. The linked implementation checklist is registered in #176. No additional manual human PR sign-off is required; unresolved findings and exact-head verification remain gates. Engineering acceptance does not enable a provider, MCP connection or cloud profile.
+Version: 0.2.4, engineering clarifications. Design owner: [#180](https://gitcode.com/urandon/sessionless/issues/180); implementation parent: [#176](https://gitcode.com/urandon/sessionless/issues/176). The accepted 0.2.1 package at `42139dfb5cefb266adb77f221c0743b53cfb5217` received independent original-goal review, exact-head CI and guarded merge in [!160](https://gitcode.com/urandon/sessionless/pull/160), under the owner's agreed-MVP engineering delegation. Version 0.2.2 clarifies provider-usage continuation; 0.2.3 specifies bounded operation-body storage; 0.2.4 defines successful normalized model bodies and their Store correlation below. [#190](https://gitcode.com/urandon/sessionless/issues/190) records independent engineering review and implementation evidence. These increments do not complete the provider session or its normal product composition. The linked implementation checklist is registered in #176. No additional manual human PR sign-off is required; unresolved findings and exact-head verification remain gates. Engineering acceptance does not enable a provider, MCP connection or cloud profile.
 
 ## Decision and scope
 
@@ -181,6 +181,52 @@ overrun, forged provenance/unknown numbers, known versus unknown/error outcomes,
 immutable observation correlation, unchanged aggregate debits, unchanged tool
 gates and independent cleanup/disposal semantics. Preserve existing one-shot
 and fixture behavior without manufacturing measurements.
+
+### Normalized successful model bodies
+
+For the configured inference route, construct a versioned normalized body only
+through the original `FrozenRequestV1` response decoder. Keep successful final
+text or one complete validated call, the allowed reported model and truthful
+unknown/provider-reported usage. Refusal, length, service/transport errors,
+unsupported finishes and unverified models cannot become successful normalized
+results. Compaction accepts only final text up to 16 KiB; this is not the derived
+summary manifest or restore authority owned by #192.
+
+The closed body binds the full configured-profile digest, **raw original request
+SHA256**, operation kind and explicit effective codec limits. Those limits may
+be narrower than the profile and are not recoverable from wire bytes alone.
+Do not substitute the codec's domain-separated request digest for the raw hash.
+Stored DATA is validated against the exact original request, preserving original
+schema bytes/whitespace, message roles and complete history units, schema/name/
+argument constraints and already used call IDs. Reject duplicate or unknown
+fields, invalid Unicode/numbers, trailing data, unsupported depth/member counts
+and noncanonical normalized encodings. A tool name is DATA, never a route or
+grant. Do not retain raw provider metadata, hidden reasoning or headers here.
+
+The normalized wrapper, including limits and escaping overhead, must fit the
+operation's reserved `ResultBytes` and the 64 KiB normalized-body cap. Its slot
+is distinct from the HTTP response ceiling. The same verified body adapter
+writes it before authenticated complete observation. No unknown/report metric
+becomes a measurement or zero-priced bill, and a known overrun remains recordable
+while independently denying continuation.
+
+For the actual local bootstrap, retain a private clone of the original Source
+configuration as immutable decoding DATA. This is not a current-authority
+projection, cannot open a connection and remains usable for historical decoding
+after Source retirement. Successful local model observations revalidate original
+request/body/profile/kind and exact usage both before record and authenticated
+read; Blob I/O remains outside retryable SQL callbacks. Existing grant,
+reservation/history joins and immutable observation CAS remain authoritative.
+`completed + service_error` and unknown/error paths retain their existing honest
+shape; they are not promoted to successful results.
+
+This representation neither proves a real provider replied nor authorizes a
+successor. The original trusted transport/session and authenticated observation
+own that evidence. The existing fixture continuation/tool grammar stays
+fixture-only until its real typed successor is implemented; normalized calls
+alone cannot dispatch MCP/search. ProviderLoopSession, continuation, compaction,
+final export and normal Web composition remain separate #190/#191/#192/#218
+work. No real profile or new external operation is enabled by this contract.
 
 ## Initial finite ceilings
 

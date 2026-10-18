@@ -31,6 +31,9 @@ type LocalPreparedOutputV1 struct {
 	publicationCancel    context.CancelFunc
 	publicationDone      chan struct{}
 	published            bool
+	publicationRun       domain.Run
+	cleanupAttempted     bool
+	cleanup              *LocalTerminalCleanupV1
 	plan                 domain.TerminalCustodyPlanV1
 	manifest             domain.ArtifactManifest
 	drafts               []domain.SessionEventDraft

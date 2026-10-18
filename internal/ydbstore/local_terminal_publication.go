@@ -149,6 +149,7 @@ func (p *LocalPreparedOutputV1) Publish(ctx context.Context) (err error) {
 		return deny()
 	}
 	p.published = true
+	p.publicationRun = postimage.Clone()
 	p.mu.Unlock()
 	return nil
 }

@@ -188,8 +188,25 @@ there is no body index table, transcript or durable adapter accounting. The
 complete claim scope separates object namespaces and every read rechecks exact
 size/hash. Local adapter write counters bound physical I/O only and cannot
 restore Store quota after reconstruction. Ambiguous writes retain possible
-objects and stop new writes; this source step performs no deletion or retention
-cutover and issues no residual-cleanup receipt. See the
+objects and stop new writes. The original adapter additionally keeps at most
+24 distinct attempted ordinary references in process memory, before each PUT,
+including bodies not referenced by a durable operation. Its one-use cleanup
+fences the same shared I/O gate, verifies all known bodies and deletes only
+those exact references under one original deadline. An ambiguous PUT blocks
+erasure even if the object currently appears absent. Exact absence requires
+an explicit storage capability; S3 uses one bounded, non-redirecting HEAD and
+accepts only an authenticated not-found response, not arbitrary read errors.
+This inventory and its opaque original-owner receipt are not another table,
+quota ledger or durable proof after process loss.
+
+The original local terminal owner joins its actual keeper/lease and allocation,
+uses the existing allocation retirement CAS, authenticates the historical
+Run/frontier and retained capsule/canonical/derived objects, then invokes that
+physical erasure. Its private cleanup record does not claim measured usage,
+canonical terminal success or Session-deletion readiness. The canonical
+finalizer, V2 accounting disposition and post-erasure restore remain separate
+integration requirements; the conservative Session-deletion guard above stays
+in force. No new durable entity or applied migration is added. See the
 [scoped body contract](../design/owned-agent-harness-minimum.md#scoped-operation-body-storage).
 
 Configured model successes use a bounded normalized body in that same namespace

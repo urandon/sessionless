@@ -184,6 +184,37 @@ func (h *PreparedLocalTerminalV1) PublishOutput(ctx context.Context) error {
 	return nil
 }
 
+// FinishCleanup continues only this original prepared publication. It does not
+// depend on active Source/caller permission, renew h.deadline or close borrowed
+// resources. The same original Store performs actual stop/retire/custody/erase;
+// the returned private record is not canonical completion or serving evidence.
+func (h *PreparedLocalTerminalV1) FinishCleanup(ctx context.Context) (*ydbstore.LocalTerminalCleanupV1, error) {
+	if h == nil || h.self != h || h.owner == nil || h.entry == nil || ctx == nil || ctx.Err() != nil {
+		return nil, ErrSession
+	}
+	s := h.owner
+	select {
+	case s.gate <- struct{}{}:
+	default:
+		return nil, ErrBusy
+	}
+	defer func() { <-s.gate }()
+	s.mu.Lock()
+	valid := s.terminalOutput == h && !s.closed && s.terminalRequested && h.output != nil && h.source != nil
+	output := h.output
+	s.mu.Unlock()
+	if !valid || !time.Now().Before(h.deadline) {
+		return nil, ErrSession
+	}
+	call, cancel := context.WithDeadline(ctx, h.deadline)
+	defer cancel()
+	result, err := output.FinishCleanup(call)
+	if err != nil || result == nil {
+		return nil, ErrSession
+	}
+	return result, nil
+}
+
 func (*PreparedLocalTerminalV1) String() string     { return "PreparedLocalTerminalV1{private:[redacted]}" }
 func (h *PreparedLocalTerminalV1) GoString() string { return h.String() }
 func (*PreparedLocalTerminalV1) MarshalJSON() ([]byte, error) {

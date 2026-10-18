@@ -296,7 +296,6 @@ func (entry *LocalInvocationEntryV1) readLocalPreparedSnapshot(ctx context.Conte
 	} else if !owner.original(entry, phase) {
 		return localCompactionSnapshot{}, q.budget.deny()
 	}
-	var v localCompactionSnapshot
 	deny := func() (localCompactionSnapshot, error) { return localCompactionSnapshot{}, q.budget.deny() }
 	if q.metadataCache == nil {
 		q.metadataCache = make(map[string]ownedMetadataCacheEntry)
@@ -304,6 +303,15 @@ func (entry *LocalInvocationEntryV1) readLocalPreparedSnapshot(ctx context.Conte
 	if _, err := entry.currentRetainedRun(ctx, q, entry.compactionSourceControl()); err != nil {
 		return deny()
 	}
+	return entry.readLocalPreparedSnapshotBody(ctx, q, owner, phase)
+}
+
+// Shared bounded canonical DATA reader. Its only callers first establish
+// either the unchanged active path or the original private cleanup owner with
+// exact historical allocation correspondence. No caller-selectable bypass.
+func (entry *LocalInvocationEntryV1) readLocalPreparedSnapshotBody(ctx context.Context, q *ownedAuthorityQuery, owner localSnapshotOwner, phase localCompactionGenerationPhase) (localCompactionSnapshot, error) {
+	var v localCompactionSnapshot
+	deny := func() (localCompactionSnapshot, error) { return localCompactionSnapshot{}, q.budget.deny() }
 	job, err := loadOwnedEffectWorkerJob(ctx, q, operationParentRequest(ownedOperationScope(entry.parent)))
 	if err != nil {
 		return deny()

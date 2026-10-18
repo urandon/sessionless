@@ -37,7 +37,7 @@ jobs:
         run: npm install --global npm@11.17.0
 
       - name: Run repository CI contract
-        run: make ci
+        run: make ci-core
 
   web-browser:
     name: Web browser and accessibility
@@ -158,6 +158,9 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
+
+      - name: Run offline attached-worker security contract
+        run: env -u YDB_CONNECTION_STRING -u YDB_ANONYMOUS_CREDENTIALS make attached-worker-security-gate
 
       - name: Start pinned YDB Local
         run: |

@@ -385,7 +385,15 @@ provider-conformance-fuzz: prepare
 	go test -run='^$$' -fuzz=FuzzOpenCodeJSONLParserNeverCommitsMalformedTerminal -fuzztime=2s ./internal/opencodeopenrouter
 	go test -run='^$$' -fuzz=FuzzResponseParserNeverCommitsMalformedTerminal -fuzztime=2s ./internal/directopenrouter
 
-ci: docs-check cloud-web-smoke-test web-ci generate test build integration attached-worker-security-gate serverless-egress-conformance image-publication-test image-build-inputs-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test dockerless-stand-policy-test go-cache-policy-test
+# Keep local and release verification complete. GitHub CI runs the unchanged
+# offline security gate in its existing isolated security job instead.
+.PHONY: ci-core ci-partition-test
+ci: ci-core attached-worker-security-gate
+
+ci-core: docs-check cloud-web-smoke-test web-ci generate test build integration serverless-egress-conformance image-publication-test image-build-inputs-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test dockerless-stand-policy-test go-cache-policy-test ci-partition-test
+
+ci-partition-test:
+	node --test scripts/test-ci-partition.mjs
 
 image-publication-test:
 	@./scripts/test-image-publication.sh

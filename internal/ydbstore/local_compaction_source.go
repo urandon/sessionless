@@ -83,6 +83,7 @@ type localCompactionSourceState struct {
 	cleared    bool
 	view       *compactioncontext.ViewV1
 	operations []LocalCompactionOperationV1
+	history    *localTerminalHistoryV1
 	snapshot   localCompactionSnapshot
 	digest     string
 }
@@ -177,6 +178,8 @@ func (s *LocalCompactionSourceV1) Clear() {
 		clear(s.state.operations[i].Response)
 	}
 	s.state.operations = nil
+	s.state.history.clear()
+	s.state.history = nil
 	s.state.snapshot = localCompactionSnapshot{}
 	s.state.digest = ""
 }
@@ -266,12 +269,23 @@ func (entry *LocalInvocationEntryV1) captureCompactionSource(ctx context.Context
 			return nil, domain.ErrMembershipDenied
 		}
 	}
-	state.digest, err = entry.compactionSourceDigest(snapshot, view.Digest())
+	// Provisional capture identity only. Every serving/final source hash below
+	// requires the fully joined typed local+legacy commitment.
+	state.digest, err = entry.compactionSourceDigest(snapshot, view.Digest(), localTerminalHistoryCommitmentV1{Version: 1})
 	if err != nil {
 		return nil, domain.ErrMembershipDenied
 	}
 	if purpose == localSourceStandalone {
 		err = entry.owner.store.ownedAuthorityTx(call, func(ctx context.Context, q *ownedAuthorityQuery) error { return result.rejoinLocked(ctx, q, nil, nil) })
+		if err == nil {
+			err = result.materializeHistoryLocked(call)
+		}
+		if err == nil {
+			state.digest, err = entry.compactionSourceDigest(snapshot, view.Digest(), state.history.commitmentV1())
+		}
+		if err == nil {
+			err = entry.owner.store.ownedAuthorityTx(call, func(ctx context.Context, q *ownedAuthorityQuery) error { return result.rejoinLocked(ctx, q, nil, nil) })
+		}
 	}
 	if err != nil || call.Err() != nil {
 		return nil, domain.ErrMembershipDenied
@@ -581,7 +595,10 @@ func (entry *LocalInvocationEntryV1) readCompactionBlob(ctx context.Context, ref
 	return body, nil
 }
 
-func (entry *LocalInvocationEntryV1) compactionSourceDigest(snapshot localCompactionSnapshot, canonical string) (string, error) {
+func (entry *LocalInvocationEntryV1) compactionSourceDigest(snapshot localCompactionSnapshot, canonical string, history localTerminalHistoryCommitmentV1) (string, error) {
+	if history.Version != 1 || len(history.Local) > 4096 || len(history.Legacy) > 4096-len(history.Local) {
+		return "", domain.ErrMembershipDenied
+	}
 	// Explicit typed preimage includes original scope/policy/instruction/model,
 	// complete Run metadata, job/manifest, exact event references and full durable
 	// reservation/observation/proxy frontier. No caller's digest is accepted.
@@ -597,8 +614,9 @@ func (entry *LocalInvocationEntryV1) compactionSourceDigest(snapshot localCompac
 		Observations []domain.AttemptOperationObservationV1
 		Proxies      []domain.RegisteredProxyAttestationDigestV2
 		Canonical    string
-	}{Version: 1, Scope: ownedOperationScope(entry.parent), Policy: entry.parent.Authority.HarnessBinding.AgentLoopPolicy, Profile: entry.owner.configuration, Job: snapshot.Job, Input: snapshot.Input, Accounting: snapshot.Accounting, Reservations: compactionReservations(snapshot.Operations), Observations: compactionObservations(snapshot.Operations), Proxies: snapshot.ProxyDigests, Canonical: canonical})
-	if err != nil {
+		History      localTerminalHistoryCommitmentV1
+	}{Version: 1, Scope: ownedOperationScope(entry.parent), Policy: entry.parent.Authority.HarnessBinding.AgentLoopPolicy, Profile: entry.owner.configuration, Job: snapshot.Job, Input: snapshot.Input, Accounting: snapshot.Accounting, Reservations: compactionReservations(snapshot.Operations), Observations: compactionObservations(snapshot.Operations), Proxies: snapshot.ProxyDigests, Canonical: canonical, History: history})
+	if err != nil || uint64(len(raw)) > ownedAuthorityMaxBytes {
 		return "", domain.ErrMembershipDenied
 	}
 	defer clear(raw)
@@ -661,6 +679,9 @@ func (s *LocalCompactionSourceV1) rejoinRunLocked(ctx context.Context, q *ownedA
 	}
 	if !reflect.DeepEqual(current, expected) {
 		return domain.Run{}, q.budget.deny()
+	}
+	if err := s.rejoinHistoryLocked(ctx, q); err != nil {
+		return domain.Run{}, err
 	}
 	return current.Job.Run.Clone(), nil
 }

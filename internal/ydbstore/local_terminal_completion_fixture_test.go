@@ -770,10 +770,30 @@ func (c *terminalCompletionConn) ExecContext(ctx context.Context, statement stri
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
+	if err := applyTerminalCompletionWrite(&c.f.state, c.f.cleanup.seed.parent.graph.rows, &c.f.cleanup.seed.parent.graph.counters, terminalCompletionLocalV2, statement, args); err != nil {
+		return nil, err
+	}
+	return c.terminalCleanupConn.ExecContext(ctx, statement, args)
+}
+
+// One strict storage model for the existing canonical writer, not another
+// execution/finalization authority. The producing test factory chooses the
+// on-disk format; no callback or caller approval enters production.
+type terminalCompletionFormat uint8
+
+const (
+	terminalCompletionLocalV2 terminalCompletionFormat = iota + 1
+	terminalCompletionManagedV1
+)
+
+func applyTerminalCompletionWrite(state *LocalTerminalCompletionSnapshot, rows map[string][]driver.Value, counters *[]driver.Value, format terminalCompletionFormat, statement string, args []driver.NamedValue) error {
+	if state == nil || rows == nil || counters == nil || (format != terminalCompletionLocalV2 && format != terminalCompletionManagedV1) {
+		return errors.New("invalid canonical fixture storage host")
+	}
 	flat := completionSQL(statement)
 	n, ok := terminalCompletionWrites[flat]
 	if !ok || len(args) != n {
-		return nil, fmt.Errorf("unmodeled exact canonical SQL: %s (args=%d)", flat, len(args))
+		return fmt.Errorf("unmodeled exact canonical SQL: %s (args=%d)", flat, len(args))
 	}
 	val := func(i int) driver.Value { return args[i].Value }
 	decode := func(i int, target any) error {
@@ -783,61 +803,85 @@ func (c *terminalCompletionConn) ExecContext(ctx context.Context, statement stri
 		}
 		return json.Unmarshal([]byte(s), target)
 	}
-	f := c.f
+	f := struct {
+		state *LocalTerminalCompletionSnapshot
+	}{state}
 	switch {
 	case strings.HasPrefix(flat, "INSERT INTO substrate_execution_evidence "):
-		var v domain.ExecutionEvidenceV2
-		if decode(6, &v) != nil || v.LocalV1 == nil || v.LocalV1.Validate() != nil || v.LocalV1.EvidenceDigest != val(4) || f.state.EvidenceRecord != "" {
-			return nil, errors.New("invalid or duplicate local V2 evidence")
+		if f.state.EvidenceRecord != "" {
+			return errors.New("duplicate terminal evidence")
+		}
+		if format == terminalCompletionLocalV2 {
+			var v domain.ExecutionEvidenceV2
+			if decode(6, &v) != nil || v.LocalV1 == nil || v.LocalV1.Validate() != nil || v.LocalV1.EvidenceDigest != val(4) {
+				return errors.New("invalid local V2 evidence")
+			}
+		} else {
+			var v domain.SubstrateExecutionEvidenceV1
+			if decode(6, &v) != nil || v.Version != 1 || string(v.EvidenceDigest) != val(4) {
+				return errors.New("invalid managed V1 evidence storage")
+			}
 		}
 		f.state.EvidenceRecord = val(6).(string)
 		f.state.EvidenceDigest = val(4).(string)
 	case strings.HasPrefix(flat, "UPSERT INTO runs "):
 		var v domain.Run
 		if decode(8, &v) != nil || v.Validate() != nil {
-			return nil, errors.New("invalid terminal Run")
+			return errors.New("invalid terminal Run")
 		}
+		rows["runs"] = []driver.Value{val(8)}
 	case strings.HasPrefix(flat, "UPSERT INTO attempts "):
 		var v domain.Attempt
 		if decode(9, &v) != nil {
-			return nil, errors.New("invalid terminal Attempt")
+			return errors.New("invalid terminal Attempt")
 		}
-		f.cleanup.seed.parent.graph.rows["attempts"] = []driver.Value{val(9)}
+		rows["attempts"] = []driver.Value{val(9)}
+	case strings.HasPrefix(flat, "UPSERT INTO quota_reservations "):
+		rows["quota_reservations"] = []driver.Value{val(9)}
+	case strings.HasPrefix(flat, "UPSERT INTO run_explanation_heads_v1 "):
+		rows["run_explanation_heads_v1"] = []driver.Value{val(3)}
 	case strings.HasPrefix(flat, "UPSERT INTO artifact_manifests "):
 		if decode(4, &f.state.Manifest) != nil {
-			return nil, errors.New("invalid terminal Manifest")
+			return errors.New("invalid terminal Manifest")
 		}
 	case strings.HasPrefix(flat, "INSERT INTO session_events "):
 		var v domain.SessionEvent
 		if decode(10, &v) != nil || v.Validate() != nil || v.Sequence != f.state.Session.LastEventSequence+uint64(len(f.state.Events))+1 {
-			return nil, errors.New("invalid/duplicate canonical event")
+			return errors.New("invalid/duplicate canonical event")
 		}
 		f.state.Events = append(f.state.Events, v)
 		if _, exists := f.state.eventRecords[string(v.ID)]; exists {
-			return nil, errors.New("duplicate canonical event key")
+			return errors.New("duplicate canonical event key")
 		}
 		f.state.eventRecords[string(v.ID)] = val(10).(string)
 	case strings.HasPrefix(flat, "INSERT INTO session_event_idempotency "):
 		key := val(2).(string)
 		if _, exists := f.state.eventIndex[key]; exists {
-			return nil, errors.New("duplicate canonical idempotency key")
+			return errors.New("duplicate canonical idempotency key")
 		}
 		f.state.eventIndex[key] = []driver.Value{val(3), val(4)}
 	case strings.HasPrefix(flat, "INSERT INTO session_material_boundaries_v1 "):
 		key := fmt.Sprint(val(2))
 		if _, exists := f.state.material[key]; exists {
-			return nil, errors.New("duplicate immutable material boundary")
+			return errors.New("duplicate immutable material boundary")
 		}
 		f.state.material[key] = []driver.Value{val(7), val(3), val(4), val(0), val(1), val(5), val(6)}
 	case strings.HasPrefix(flat, "UPSERT INTO session_material_current_v1 "):
 		f.state.material["current"] = []driver.Value{val(6), val(2), val(3), val(0), val(1), val(4), val(5)}
 	case strings.HasPrefix(flat, "UPDATE sessions "):
 		if decode(4, &f.state.Session) != nil || f.state.Session.Validate() != nil {
-			return nil, errors.New("invalid terminal Session")
+			return errors.New("invalid terminal Session")
 		}
 	case strings.HasPrefix(flat, "INSERT INTO run_finalizations "):
 		if f.state.Finalizations != 0 {
-			return nil, errors.New("duplicate finalization")
+			return errors.New("duplicate finalization")
+		}
+		if format == terminalCompletionLocalV2 {
+			if _, err := decodeLocalFinalizationMarkerV2(val(3).(string)); err != nil || (val(2) != string(domain.RunSucceeded) && val(2) != string(domain.RunCancelled)) {
+				return errors.New("local completion requires exact tagged success/cancellation marker")
+			}
+		} else if domain.ValidateSHA256Digest("fixture.v1.marker", val(3).(string)) != nil {
+			return errors.New("managed V1 marker must retain the original raw encoding")
 		}
 		f.state.Finalizations++
 		f.state.FinalStatus = val(2).(string)
@@ -847,17 +891,17 @@ func (c *terminalCompletionConn) ExecContext(ctx context.Context, statement stri
 	case strings.HasPrefix(flat, "UPDATE tenant_scheduler_counters "):
 		f.state.ActiveRuns = uint32(val(1).(int64))
 		f.state.CountersPresent = true
-		f.cleanup.seed.parent.graph.counters = []driver.Value{val(0), val(1)}
+		*counters = []driver.Value{val(0), val(1)}
 	case strings.HasPrefix(flat, "INSERT INTO tenant_scheduler_counters "):
 		if f.state.CountersPresent {
-			return nil, errors.New("duplicate canonical scheduler counters")
+			return errors.New("duplicate canonical scheduler counters")
 		}
 		f.state.CountersPresent, f.state.ActiveRuns = true, uint32(val(2).(int64))
-		f.cleanup.seed.parent.graph.counters = []driver.Value{val(1), val(2)}
+		*counters = []driver.Value{val(1), val(2)}
 	case strings.HasPrefix(flat, "UPSERT INTO subscription_scheduler_slots "):
 		f.state.ActiveRun = val(3).(string)
 		f.state.ActiveReservation = val(4).(string)
 	}
 	f.state.Mutations++
-	return c.terminalCleanupConn.ExecContext(ctx, statement, args)
+	return nil
 }

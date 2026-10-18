@@ -1,7 +1,9 @@
 # Owned-loop terminal output and retained custody
 
-Version: 0.1.1, independently reviewed engineering contract. Implementation
-and exact-profile activation remain incomplete and separately verified.
+Version: 0.1.2, independently reviewed engineering contract, including the
+finalization-format discriminator and positive historical V1 verification below.
+Engineering acceptance is separate from publication, implementation and
+exact-profile activation; those remain separately verified.
 Owners: [#191](https://gitcode.com/urandon/sessionless/issues/191) canonical
 exports, [#192](https://gitcode.com/urandon/sessionless/issues/192) compaction
 custody/reuse and [#212](https://gitcode.com/urandon/sessionless/issues/212)
@@ -316,6 +318,78 @@ its canonical projection or reviving old sends. Resolve dependencies directly
 to original producing Runs, not recursive borrowed-capsule chains. The entire
 derived summary closure still has at most two generations across Runs; local
 generation numbering never resets that traversal bound.
+
+### Finalization format and positive historical verification
+
+An absent optional Run member cannot distinguish legacy canonical history from
+damaged local custody. In particular, a local Run with no compaction has no
+`derived_context` member to expose an omitted `terminal_custody`. The historical
+reader must establish the producing format positively, before selecting either
+the retained-local path or the ordinary canonical-only path.
+
+Keep the managed/attached V1 digest and writer bytes unchanged. The explicit
+local V2 writer stores `local_v2:<digest>` in the existing
+`run_finalizations.content_digest` Utf8 cell, where `<digest>` is the unchanged
+domain-separated V2 seal: exactly 64 lowercase hexadecimal characters. The
+stored value is exactly 73 ASCII bytes. Local success, cancellation and exact
+lost-ACK replay require this one encoding; no untagged-local decoder, automatic
+upgrade or V1 fallback exists. Bound every local marker reader, including replay
+and new historical joins, to 74 bytes including the overflow sentinel.
+Oversize, unknown versions, malformed tags or digests,
+missing marker and status mismatch deny. No schema migration or additional
+record, operational state machine or execution capability is introduced.
+
+For every producing Run discovered in the admitted canonical window:
+
+1. Rejoin the exact tenant/Session/Run and finalization marker under the existing
+   bounded authority query. A tagged local marker requires complete matching
+   local terminal custody even for zero-compaction Runs. Untagged V1 plus any
+   local custody/derived metadata is inconsistent and denies.
+2. The local branch verifies the unchanged raw V2 seal, exact retained capsule,
+   canonical projection, original durable admission/evidence/accounting and
+   full retained closure. A marker grants no send, cleanup or replay authority.
+3. The V1 branch requires positive equality with the unchanged V1 finalization
+   digest, not merely a 64-character marker. Reconstruct its ordered finalization
+   event identities from complete admitted canonical material for that Run.
+   Validate the original supported assistant/tool payload codecs and references;
+   assistant `DisplayText` is its exact stored summary and tool display is empty,
+   matching the original composers. Obtain the manifest identity from the
+   validated assistant payload, then point-read and validate that manifest.
+   Do not guess the worker manifest-ID recipe: attached output has its own
+   existing identity. Never truncate, omit events or normalize stored text to
+   make a seal match. Incomplete windows or unsupported codecs deny explicitly.
+4. First test the real V1 nil-evidence form, which supports original attached
+   and deterministic completion. If it does not match, the existing bounded
+   `run_explanation_heads_v1` point record may supply `SelectedAttemptID` only
+   as a locator for one existing `substrate_execution_evidence` point read.
+   Verify the evidence's own closed V1 codec, digest and tenant/Run/Attempt
+   correspondence and recompute the V1 seal including its actual evidence
+   digest. The explanation projection, placement and selected ID confer no
+   authority and cannot substitute for final seal equality. Do not query old
+   TTL Attempt, WorkerJob or lease rows or scan a tenant for a matching digest.
+   Pre-cutover managed history without a usable locator/evidence is explicitly
+   unsupported by this first reader, not silently reclassified or erased.
+5. Retain and compare the complete bounded classification postimage on the
+   existing source rejoin, including Run, marker and any manifest/evidence
+   facts. Legacy canonical material remains canonical exactly once; it does
+   not gain retained-operation provenance. Local material is not silently
+   dropped when its metadata or format is absent. Clearing the old owner or
+   expiring its operational state cannot change either result.
+
+Stripping `local_v2:` leaves a raw V2 hash, not a valid V1 finalization seal;
+the positive V1 branch must reject it. These are unkeyed DATA-integrity checks,
+not protection from an attacker coherently rewriting every record and hash.
+Old untagged experimental local V2 rows remain unsupported. Profiles are still
+disabled; this draft grants no backfill, migration application or live use.
+
+Decisive checks are genuine zero-compaction and two-generation local producers
+followed by actual stop/erasure/new Run; omitted custody for both; stripped,
+missing, malformed, unknown and oversized marker; tagged success/cancel/lost-ACK
+replay; genuine attached and managed V1 canonical positives and evidence/manifest
+corruption negatives; exact 73-byte acceptance and 74-byte overflow denial.
+All historical corruption denials occur before new model/tool/proxy effects.
+The separate A1 → B local-generation-1/global-closure-2 → B terminal/erasure → C
+proof remains mandatory; this format clarification does not complete it.
 
 Session deletion pages owning Runs and enumerates each registered capsule and
 both planned summary/manifest pairs, including failed/unpublished plans, plus

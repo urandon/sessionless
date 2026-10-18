@@ -45,6 +45,7 @@ type viewState struct {
 	records []sessioncontext.EventPayload
 	units   []UnitV1
 	digest  string
+	bytes   uint64
 	live    bool
 }
 
@@ -183,7 +184,19 @@ func BuildCanonicalV1(input []sessioncontext.EventPayload, maxBytes, maxEvents u
 		_, _ = hash.Write([]byte{flag})
 	}
 	owned = true
-	return &ViewV1{state: &viewState{records: records, units: units, digest: hex.EncodeToString(hash.Sum(nil)), live: true}}, nil
+	return &ViewV1{state: &viewState{records: records, units: units, digest: hex.EncodeToString(hash.Sum(nil)), bytes: maxBytes - encodedRemaining, live: true}}, nil
+}
+
+// Bytes is the exact canonical JSONL size validated at construction. It lets
+// the original reader charge a bounded clone before allocating it; no fit or
+// source-authority assertion follows from this DATA size.
+func (view *ViewV1) Bytes() uint64 {
+	if view == nil || view.state == nil {
+		return 0
+	}
+	view.state.mu.RLock()
+	defer view.state.mu.RUnlock()
+	return view.state.bytes
 }
 
 func (view *ViewV1) Digest() string {
@@ -225,6 +238,7 @@ func (view *ViewV1) Clear() {
 	clearRecords(view.state.records)
 	view.state.records, view.state.units = nil, nil
 	view.state.digest = ""
+	view.state.bytes = 0
 	view.state.live = false
 }
 

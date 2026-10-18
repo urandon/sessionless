@@ -13,25 +13,28 @@ import (
 	"gitcode.com/urandon/sessionless/internal/localoperator"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/serverlessharness"
+	"gitcode.com/urandon/sessionless/internal/sessioncontext"
 )
 
 // TEST ONLY: raw constructor dependencies, not an existing Store/bootstrap,
 // parent reservation, body adapter or approval. SQL, external funding and the
 // complete effect-source verifier remain SCRIPTED, not normal activation proof.
 type LocalSessionConnectedSeed struct {
-	Source     *localoperator.Source
-	DB         *sql.DB
-	Options    Options
-	Prepare    *serverlessharness.CapabilityIssuer
-	Operate    *serverlessharness.OperationCapabilityIssuer
-	Backend    domain.HarnessBackendDescriptorV1
-	Substrate  domain.SubstrateBindingV1
-	Request    ports.ReserveAttemptEffectRequestV1
-	Profile    domain.ConfiguredInferenceProfileV1
-	Scope      domain.AttemptExecutionSourceScopeV1
-	parent     *ownedAttemptEffectParentFixture
-	sql        *loopbackOperationSQL
-	compaction *compactionPublicationSQL
+	Source                       *localoperator.Source
+	DB                           *sql.DB
+	Options                      Options
+	Prepare                      *serverlessharness.CapabilityIssuer
+	Operate                      *serverlessharness.OperationCapabilityIssuer
+	Backend                      domain.HarnessBackendDescriptorV1
+	Substrate                    domain.SubstrateBindingV1
+	Request                      ports.ReserveAttemptEffectRequestV1
+	Profile                      domain.ConfiguredInferenceProfileV1
+	Scope                        domain.AttemptExecutionSourceScopeV1
+	parent                       *ownedAttemptEffectParentFixture
+	sql                          *loopbackOperationSQL
+	compaction                   *compactionPublicationSQL
+	installationRoot, executable string
+	receipt                      ports.OwnedProfilePublicationReceiptV1
 }
 
 func NewLocalSessionConnectedSeed(t *testing.T, endpoint string) *LocalSessionConnectedSeed {
@@ -58,7 +61,7 @@ func newLocalSessionConnectedSeed(t *testing.T, endpoint string, compiled bool, 
 			t.Error(err)
 		}
 	})
-	return &LocalSessionConnectedSeed{Source: actual.source, DB: db,
+	return &LocalSessionConnectedSeed{installationRoot: actual.installationRoot, executable: actual.executable, receipt: actual.receipt, Source: actual.source, DB: db,
 		Options: Options{OwnedAttemptEffectSourceVerifier: parent.verifier, OwnedProfilePublicationVerifier: actual.source},
 		Prepare: parent.issuer.issuer, Operate: operate, Backend: parent.parent.Authority.HarnessBinding.Backend,
 		Substrate: parent.parent.Authority.SubstrateBinding, Request: parent.request, Profile: actual.config.Clone(), Scope: scope,
@@ -100,6 +103,7 @@ func NewLocalCompactionSessionConnectedSeed(t *testing.T, endpoint string, blobs
 	}
 	job.ContextWindow = &domain.SessionContextWindow{ThroughSequence: 7}
 	ratedFixturePut(t, s.parent.graph.ratedSQLFixture, "worker_jobs", job)
+	var historyRecords []sessioncontext.EventPayload
 	for i := 1; i <= 7; i++ {
 		kind := domain.SessionEventUserMessage
 		body := `{"version":1,"text":"original task with constraints"}`
@@ -144,7 +148,9 @@ func NewLocalCompactionSessionConnectedSeed(t *testing.T, endpoint string, blobs
 		}
 		raw, _ := json.Marshal(event)
 		queries.events = append(queries.events, []driver.Value{string(raw)})
+		historyRecords = append(historyRecords, sessioncontext.EventPayload{Event: event, Payload: []byte(body)})
 	}
+	seedCanonicalHistoryRuns(t, queries, run, historyRecords)
 	return s
 }
 

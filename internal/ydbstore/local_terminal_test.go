@@ -137,8 +137,9 @@ func TestLocalTerminalCapturesActualCompletedFrontierOnce(t *testing.T) {
 			t.Fatal("terminal capture substituted or omitted original normalized material")
 		}
 		budget := ctx.Value(ownedAuthorityCallContextKey{}).(*ownedAuthorityBudget)
-		if budget.failed || budget.callbacks != 2 || engine.maxStatements > 32 {
-			t.Fatalf("terminal capture reset snapshot budget: callbacks=%d statements=%d", budget.callbacks, engine.maxStatements)
+		// Capture and both history joins spend the SAME original logical call.
+		if budget.failed || budget.callbacks != 3 || budget.statements == 0 || budget.statements > ownedAuthorityMaxTotalStatements || budget.bytes == 0 || budget.bytes > ownedAuthorityMaxBytes || budget.writes != 0 || engine.maxStatements > 32 {
+			t.Fatalf("terminal capture reset/exceeded original budget: callbacks=%d total statements=%d bytes=%d writes=%d per-callback max=%d", budget.callbacks, budget.statements, budget.bytes, budget.writes, engine.maxStatements)
 		}
 		if again, err := h.Capture(context.Background()); again != nil || err == nil {
 			t.Fatal("copied caller context renewed capture")
@@ -154,6 +155,15 @@ func TestLocalTerminalCapturesActualCompletedFrontierOnce(t *testing.T) {
 		}
 		if _, err := f.entry.Source(); err != nil {
 			t.Fatal("historical source disabled", err)
+		}
+		beforeStatements := budget.statements
+		called := false
+		err = f.entry.owner.store.ownedAuthorityTx(ctx, func(context.Context, *ownedAuthorityQuery) error {
+			called = true
+			return nil
+		})
+		if !errors.Is(err, domain.ErrMembershipDenied) || called || budget.callbacks != 3 || budget.statements != beforeStatements {
+			t.Fatalf("fourth callback escaped original aggregate budget: err=%v called=%t callbacks=%d statements=%d/%d", err, called, budget.callbacks, budget.statements, beforeStatements)
 		}
 	})
 }

@@ -189,17 +189,6 @@ func prepareLocalCompactionGenerationLocked(ctx context.Context, originalCaller 
 		return deny()
 	}
 	previousGeneration := entry.compactionGeneration.Load()
-	parentRetained, err := entry.capturedRetainedParent(ctx, source, nil)
-	if err != nil {
-		return deny()
-	}
-	var parent *compactioncontext.ParentV1
-	if parentRetained != nil {
-		parent = parentRetained.Parent()
-		if parent.Plan.Generation != 1 {
-			return deny()
-		}
-	}
 	if state.snapshot.Job.Run.DerivedContext != nil && len(state.snapshot.Job.Run.DerivedContext.Inventory) >= 2 {
 		return deny()
 	}
@@ -214,7 +203,7 @@ func prepareLocalCompactionGenerationLocked(ctx context.Context, originalCaller 
 		var request struct {
 			Tools []json.RawMessage `json:"tools"`
 		}
-		if (operation.Reservation.Operation.Kind != domain.AttemptOperationModelV1 && (operation.Reservation.Operation.Kind != domain.AttemptOperationCompactionV1 || parent == nil)) || json.Unmarshal(operation.Request, &request) != nil || len(request.Tools) != 0 {
+		if (operation.Reservation.Operation.Kind != domain.AttemptOperationModelV1 && operation.Reservation.Operation.Kind != domain.AttemptOperationCompactionV1) || json.Unmarshal(operation.Request, &request) != nil || len(request.Tools) != 0 {
 			return deny()
 		}
 		operations[i] = compactioncontext.CompletedOperationV1{Reservation: operation.Reservation, Observation: operation.Observation, Request: operation.Request, Response: operation.Response}
@@ -250,6 +239,24 @@ func prepareLocalCompactionGenerationLocked(ctx context.Context, originalCaller 
 	if err != nil || call.Err() != nil {
 		return deny()
 	}
+	if source.materializeHistoryLocked(call) != nil {
+		return deny()
+	}
+	state.digest, err = entry.compactionSourceDigest(state.snapshot, state.view.Digest(), state.history.commitmentV1())
+	if err != nil {
+		return deny()
+	}
+	parentRetained, err := entry.capturedRetainedParent(call, source, nil)
+	if err != nil {
+		return deny()
+	}
+	var parent *compactioncontext.ParentV1
+	if parentRetained != nil {
+		parent = parentRetained.Parent()
+		if len(parent.PriorPlans) != 0 {
+			return deny()
+		}
+	}
 	price, err := store.readOwnedProviderPriceEvidence(call, currentProfile)
 	if err != nil || price == nil || price.local == nil || price.price != nil {
 		return deny()
@@ -257,7 +264,8 @@ func prepareLocalCompactionGenerationLocked(ctx context.Context, originalCaller 
 	configuration := entry.owner.configuration
 	limits, used := policy.Limits, state.snapshot.Accounting.Aggregate
 	limits.MaxAggregateBodyBytes = min(limits.MaxAggregateBodyBytes, entry.localOperationBodyLimit())
-	if used.Operations >= limits.MaxOperations || used.ModelCalls >= limits.MaxModelCalls || used.CompactionCalls >= limits.MaxCompactionCalls || (parent == nil && used.CompactionCalls != 0) || (parent != nil && used.CompactionCalls != 1) || used.InputTokens >= limits.MaxAggregateInputTokens || used.OutputTokens >= limits.MaxAggregateOutputTokens || used.BodyBytes >= limits.MaxAggregateBodyBytes || used.ActiveDuration >= limits.MaxActiveDuration {
+	parentCurrent := parent != nil && parent.Plan.Scope == ownedOperationScope(entry.parent)
+	if used.Operations >= limits.MaxOperations || used.ModelCalls >= limits.MaxModelCalls || used.CompactionCalls >= limits.MaxCompactionCalls || (!parentCurrent && used.CompactionCalls != 0) || (parentCurrent && used.CompactionCalls != 1) || used.InputTokens >= limits.MaxAggregateInputTokens || used.OutputTokens >= limits.MaxAggregateOutputTokens || used.BodyBytes >= limits.MaxAggregateBodyBytes || used.ActiveDuration >= limits.MaxActiveDuration {
 		return deny()
 	}
 	effective := configuration.Limits
@@ -279,7 +287,7 @@ func prepareLocalCompactionGenerationLocked(ctx context.Context, originalCaller 
 	if chargeOwnedAuthorityBody(call, bodyBytes+configuredinference.MaxContextCalibrationBytesV1) != nil {
 		return deny()
 	}
-	program, err := compactioncontext.BuildGenerationV1(configuration, effective, *policy, state.digest, records, operations, parent, nil)
+	program, err := compactioncontext.BuildGenerationV1(configuration, effective, *policy, state.digest, records, operations, parent, nil, state.history.runs)
 	if err != nil {
 		if errors.Is(err, configuredinference.ErrContextNoFit) {
 			return nil, configuredinference.ErrContextNoFit
@@ -496,6 +504,9 @@ func (g *localCompactionGenerationV1) rejoinLocked(ctx context.Context, q *owned
 	}
 	if !reflect.DeepEqual(current, expected) {
 		return domain.Run{}, q.budget.deny()
+	}
+	if err := g.source.rejoinHistoryLocked(ctx, q); err != nil {
+		return domain.Run{}, err
 	}
 	return joinedRun, nil
 }

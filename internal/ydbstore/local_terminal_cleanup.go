@@ -215,7 +215,10 @@ func (p *LocalPreparedOutputV1) verifyCleanupRetained(ctx context.Context) error
 	if policy == nil {
 		return domain.ErrMembershipDenied
 	}
-	var previous *compactioncontext.RetainedV1
+	previous, err := p.parent.source.reloadHistoricalParent(ctx)
+	if err != nil {
+		return domain.ErrMembershipDenied
+	}
 	var last string
 	for _, plan := range metadata.Inventory {
 		summary, e := p.parent.entry.readCompactionBlob(ctx, plan.Summary, 32<<10)

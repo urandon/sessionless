@@ -49,17 +49,19 @@ func (b *localRuntimeActualBurn) count() int {
 }
 
 type localRuntimeActualFixture struct {
-	source    *localoperator.Source
-	profile   domain.OwnedAgentProfileCurrentV1
-	config    domain.ConfiguredInferenceProfileV1
-	authority domain.ServerlessInvocationAuthorityV1
-	parent    domain.AttemptEffectReservationV1
-	execution domain.AttemptExecutionSourceV1
-	issuer    *serverlessharness.CapabilityIssuer
-	grant     ports.AttemptEffectOwnershipGrantV1
-	ctx       context.Context
-	cancel    context.CancelFunc
-	at        time.Time
+	installationRoot, executable string
+	receipt                      ports.OwnedProfilePublicationReceiptV1
+	source                       *localoperator.Source
+	profile                      domain.OwnedAgentProfileCurrentV1
+	config                       domain.ConfiguredInferenceProfileV1
+	authority                    domain.ServerlessInvocationAuthorityV1
+	parent                       domain.AttemptEffectReservationV1
+	execution                    domain.AttemptExecutionSourceV1
+	issuer                       *serverlessharness.CapabilityIssuer
+	grant                        ports.AttemptEffectOwnershipGrantV1
+	ctx                          context.Context
+	cancel                       context.CancelFunc
+	at                           time.Time
 }
 
 // Independent MCP/search rows below are synthetic canonical DATA, not funding
@@ -377,7 +379,7 @@ func newLocalRuntimeActualFixture(t *testing.T, runningExecutable, acceptReceipt
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
-	return localRuntimeActualFixture{source: source, profile: profile, config: config, authority: authority, parent: parent, execution: pkg.Source, issuer: issuer, grant: grant, ctx: ctx, cancel: cancel, at: at}
+	return localRuntimeActualFixture{installationRoot: root, executable: executable, receipt: receipt, source: source, profile: profile, config: config, authority: authority, parent: parent, execution: pkg.Source, issuer: issuer, grant: grant, ctx: ctx, cancel: cancel, at: at}
 }
 
 func (f localRuntimeActualFixture) bridge(t *testing.T, burn *localRuntimeActualBurn) *serverlessharness.BoundedOwnedAllocationPreparationV1 {

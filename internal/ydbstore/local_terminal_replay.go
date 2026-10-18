@@ -139,7 +139,7 @@ func (c *localTerminalCompletionV2) readRetained(ctx context.Context) (_ *ports.
 	return materials, nil
 }
 
-const localTerminalMarkerSQL = `SELECT SUBSTRING(CAST(terminal_status AS String),0,33),SUBSTRING(CAST(content_digest AS String),0,65)
+const localTerminalMarkerSQL = `SELECT SUBSTRING(CAST(terminal_status AS String),0,33),SUBSTRING(CAST(content_digest AS String),0,74)
  FROM run_finalizations WHERE tenant_id=$1 AND run_id=$2`
 
 // One primary-index join, not two point reads per event. The input is the
@@ -178,7 +178,11 @@ func (c *localTerminalCompletionV2) observeReplay(ctx context.Context, q *ownedA
 		}
 		return false, nil
 	}
-	if err != nil || len(status) > 32 || len(digest) != 64 || status != string(run.Status) || run.FinishedAt == nil || !run.FinishedAt.Equal(run.UpdatedAt) {
+	if err != nil || len(status) > 32 || status != string(run.Status) || run.FinishedAt == nil || !run.FinishedAt.Equal(run.UpdatedAt) {
+		return conflict()
+	}
+	digest, err = decodeLocalFinalizationMarkerV2(digest)
+	if err != nil {
 		return conflict()
 	}
 	base := run.Clone()

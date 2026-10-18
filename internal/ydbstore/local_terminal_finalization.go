@@ -103,12 +103,20 @@ func (c *localTerminalCompletionV2) firstCommit(ctx context.Context, q *ownedAut
 		if err != nil {
 			return err
 		}
+		digest, err = encodeLocalFinalizationMarkerV2(digest)
+		if err != nil {
+			return err
+		}
 		return failWorkerTx(ctx, tx, tx, job.Run, job.Attempt, job.Reservation, domain.RunCancelled, domain.AttemptCancelled,
 			lease, fence, q.at, "cancelled", nil, func(run domain.Run) error {
 				return appendCanonicalFinalizationTx(ctx, tx, run, domain.RunCancelled, digest, drafts, materials, q.at, canonicalFailureNotice("cancelled", true))
 			})
 	}
 	digest, err := runFinalizationDigestV2(domain.RunSucceeded, &c.manifest, c.drafts, &c.evidence, c.run.DerivedContext, &c.custody)
+	if err != nil {
+		return err
+	}
+	digest, err = encodeLocalFinalizationMarkerV2(digest)
 	if err != nil {
 		return err
 	}

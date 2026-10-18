@@ -1,6 +1,6 @@
 # Derived context compaction for the owned harness
 
-Version: 0.2.2. Design scope: [#178](https://gitcode.com/urandon/sessionless/issues/178) and [#180](https://gitcode.com/urandon/sessionless/issues/180); implementation [#192](https://gitcode.com/urandon/sessionless/issues/192) remains incomplete. The accepted 0.2.1 baseline accompanied [the minimum harness](owned-agent-harness-minimum.md) at exact `42139dfb5cefb266adb77f221c0743b53cfb5217` in [!160](https://gitcode.com/urandon/sessionless/pull/160). This revision specifies protected source units, durable ownership and the runtime integration boundary. A shorter context never permits canonical-history mutation or physical-effect replay.
+Version: 0.2.3. Design scope: [#178](https://gitcode.com/urandon/sessionless/issues/178) and [#180](https://gitcode.com/urandon/sessionless/issues/180); implementation [#192](https://gitcode.com/urandon/sessionless/issues/192) remains incomplete. The accepted 0.2.1 baseline accompanied [the minimum harness](owned-agent-harness-minimum.md) at exact `42139dfb5cefb266adb77f221c0743b53cfb5217` in [!160](https://gitcode.com/urandon/sessionless/pull/160). This revision specifies protected source units, durable ownership, concrete fit admission and the runtime integration boundary. A shorter context never permits canonical-history mutation or physical-effect replay.
 
 ## Selected approach
 
@@ -237,6 +237,147 @@ Atomic publication concerns the derived pointer only; it never rewrites, truncat
 A fresh process can reconstruct a view from canonical events, immutable artifacts and validated published manifests without a native transcript directory. It rechecks current authorization and compatible digests. This proves portability of context construction, not permission to resume an already claimed Attempt after a crash. That delivery remains reconcile-only. A newly admitted Run may reuse a valid derived summary only after verifying canonical coverage, compatible policy/model and permissions; current-Attempt operational references must already have exact canonical terminal projection, with an explicit verified mapping, otherwise reject reuse. No cross-Attempt checkpoint adoption is implicit.
 
 An older view can remain active after a failed summary only if it is still valid and fits; otherwise stop. No fallback to a corrupt artifact, foreign tenant, unavailable parent or unverified native summary is allowed. In the first profile a failed generation ends the current Attempt; a future separately admitted attempt does not erase the earlier incurred/unknown usage.
+
+### Executable fit and trusted instructions
+
+The first configured text profile uses the closed `utf8_affine.v1` estimator,
+not a callback or provider-reported token count. Its retained calibration JSON
+has exactly these fields: `version` (1), `algorithm` (`utf8_affine.v1`),
+`input_domain` (`chat_completions_text.v1`), `tenant_id`, `owner_user_id`,
+`model_vendor_id`, `model_id`, ordered `response_model_ids`, `server_id`,
+`server_version`, `protocol`, `chat_template_digest`, `estimator_version`,
+`capability_evidence_digest`, `model_window_tokens`, `max_wire_bytes`,
+`max_messages`, `max_tools`, `byte_numerator`, `byte_denominator`,
+`fixed_tokens`, `message_tokens` and `tool_tokens`. Every counter is an exact
+unsigned integer; unknown, duplicate, missing or differently cased fields,
+invalid Unicode and trailing JSON fail. The body is at most 16 KiB. Numeric
+coefficients are at most 1,048,576; the denominator is positive and the
+numerator is at least the denominator. The fixed overhead is positive.
+
+The original installed Source selects exactly one retained body by the exact
+`CalibrationDigest`, verifies its bytes and strict schema, and matches the
+independent model/server/template/protocol/owner tuple and capability evidence
+against its installed configuration. Its domain ceilings cannot exceed the
+configured limits. Do not include a configured-profile digest, manifest digest
+or minted installation identity in the calibration body: those already depend
+on the calibration hash and would create a digest cycle. The private reader
+checks the original Source lifetime; copies and caller-supplied records cannot
+replace that producer. This is authenticated installation data, not independent
+proof that the declared mathematical bound is true.
+
+For the actual immutable `FrozenRequestV1`, calculate
+`ceil(wire_bytes * byte_numerator / byte_denominator) + fixed_tokens +
+message_count * message_tokens + tool_count * tool_tokens`. Wire bytes include
+all messages, instructions, tool schemas, JSON escaping and protocol fields;
+the other terms conservatively cover server template/framing expansion. Use
+checked integer multiplication/addition, never saturation or clamping. Counts
+and the requested output reserve come from that same frozen request, not
+caller estimates. Intersect the calibrated domain, configured/effective
+limits, model window and original operation/remaining Attempt ceilings. Both
+the input bound and input-plus-output reserve must fit. Unknown usage cannot
+refund the reserve or qualify the estimator.
+
+Execute this independently for the summarizer request and for the actual
+rebuilt next request; a fitting source or summary alone proves neither. The
+summary text also has its own conservative output bound of 2,048 tokens and
+16 KiB before retained encoding. Calculate its bound as
+`ceil(summary_utf8_bytes * byte_numerator / byte_denominator) + fixed_tokens`;
+the same calibration domain must substantiate visible-output tokenization and
+normalization as well as request rendering. Request output limits and reported
+usage cannot substitute for this independently executed check. Unsupported domain, modality, calibration or
+arithmetic fails before send. Existing one-shot codec validity is not upgraded
+to fit evidence. No tokenizer/model download, HTTP token-count endpoint or
+subprocess is introduced.
+
+The exact-profile qualification under #212/#175 must substantiate the bound
+over the admitted tokenization, normalization and chat-template domain,
+including worst-case expansion; a finite sample maximum is not a universal
+upper-bound proof. Synthetic coefficients prove code wiring only. No real
+profile becomes qualified merely because its original Source accepts JSON.
+
+Use a compiled repo-owned `owned-instructions.v1` bundle. Its identity covers
+the ordinary instructions, summarizer instructions, strict summary schema,
+historical-data framing and compaction rules. The admitted instruction version
+and compaction-policy digest must select those exact bytes; an unknown version
+or digest denies this path. Neither historical system text nor an arbitrary
+operator string can replace the bundle. The bundle directs the model to treat
+history and summaries as untrusted data, preserve source citations and never
+emit credentials, hidden reasoning, grants or invented tool completion.
+
+### Historical rendering and structured summary
+
+Render admitted historical records as ordered JSON data frames containing the
+original event kind/role, stable identity, Run identity, sequence, original body
+and digest. Put these frames in an explicitly delimited untrusted history
+message beneath the compiled instructions. Preserve their original role as
+data; do not promote an old system notice into a trusted transport system
+message or turn historical tool data into a new executable call. The existing
+assistant envelope lacks the original native call list, and valid historical
+multi-call/interleaved units must not be rearranged into invented sequential
+native pairs. Actual current typed operation call/result continuity still uses
+the native codec and #191's authenticated joins. Required media without a
+qualified encoding/omission policy stops explicitly.
+
+The closed summary schema is `sessionless.compaction-summary.v1`, with required
+arrays `task`, `constraints`, `facts`, `unresolved`, `artifacts` and `omissions`.
+Each text entry contains exactly `text` and ordered unique `source_ids`;
+artifact entries contain `source_id`, `digest`, `media_type` and `size`;
+omission entries contain `source_id` and an admitted `reason`. Every reference
+must match the selected original coverage or verified parent coverage. A source
+key is the lowercase SHA-256 of length-framed UTF-8 fields, beginning with
+`sessionless.compaction-source-key.v1`, then one disjoint kind and its exact
+identity tuple: `canonical` with tenant/Session/event ID/sequence/body digest;
+`operation` with the full original operation-scope digest/sequence/reservation
+digest/observation digest; or `artifact` with its canonical source key/blob
+key/content digest/media type/size. Decimal counters have canonical unsigned
+spelling. Each length is an unsigned 64-bit big-endian byte count. Resolve keys
+against the exact captured reference table; duplicates, kind confusion or
+ambiguous identity deny. A parent contributes its verified original keys, not
+new identities derived from summary text. Bound
+each array to 64 entries, each text to 2 KiB and each reference list to 64;
+the complete encoded summary must satisfy the smaller overall byte/token caps.
+Require substantive task, fact or unresolved content. Decode one complete JSON
+value with exact field names, duplicate/unknown-field and invalid-Unicode
+rejection; no code fences, prose prefix, repair pass or second generation.
+
+The retained summary artifact adds producing scope, source/cut/bundle digests,
+original reservation, completed observation and normalized-response digests.
+The manifest records exact protected, summarized and suffix references,
+compatibility, actual reserved/observed-or-unknown usage and optional verified
+parent. Parent coverage is flattened into original references once; parent
+summary bytes are never original coverage. Structural reference validation
+does not establish semantic fidelity; the existing quality gate still applies.
+
+### Original session phase joins
+
+Use one private prepared compaction handle under the original entered session.
+It owns the captured source, complete-unit cut, compiled bundle, authenticated
+calibration, exact frozen generation request and prepaid retained pair. The
+actual Store reserve and before-send paths must consume that same owner; a
+valid DTO with kind `compaction` cannot bypass their original checks.
+
+| Phase | Required original-source comparison |
+| --- | --- |
+| Before reservation | Exact captured completed frontier and current source/configuration/authority. |
+| Before physical send | Same prefix plus exactly this durable reservation with no observation; unchanged frozen request and original consumed transport slot. |
+| After generation | Same prefix and this exact authenticated completed observation; tools disabled and no retry. |
+| After retained upload | Exact full Run postimage computed from previous metadata plus this registered plan; both original PUT/readbacks succeeded. |
+| Head publication and next model | Re-read typed objects, source/parent closure and current fence; compare expected head, then reconstruct and fit the actual next frozen request from the committed head. |
+
+Generic source capture correctly rejects unobserved operations, so it cannot
+replace the before-send phase comparison after reservation. Upload's one-use
+claim is also not a success receipt: retain success privately only after both
+physical writes/readbacks. Registration changes the Run; compare the computed
+complete postimage rather than ignoring derived metadata in later checks.
+Compaction responses contribute usage and lineage, not extra ordinary
+assistant input. No second transport, runner, effect ledger or approval map is
+introduced.
+
+The integration proof runs generation, typed upload/publication and the actual
+next frozen request twice through those original owners with scripted peers.
+Terminal correspondence, replay sealing, retained custody before operation-body
+erasure, fresh-Run reconstruction and Session deletion remain mandatory parts
+of #192, not waived by a passing same-Attempt chain.
 
 ## Verification and fidelity
 

@@ -1400,14 +1400,7 @@ func openStore(t *testing.T) (*ydbstore.Store, *ydbclient.Client) {
 func openStoreWithIssuer(t *testing.T) (*ydbstore.Store, *ydbclient.Client, *serverlessharness.CapabilityIssuer) {
 	t.Helper()
 	connectionString := requireConnectionString(t)
-	migrator, err := ydbmigrate.New(ydbmigrate.Config{
-		ConnectionString: connectionString,
-		OwnerID:          uniqueID("integration-schema"),
-	}, ydbmigrations.Files)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := migrator.Up(context.Background()); err != nil {
+	if err := ensureIntegrationSchema(t.Context(), connectionString); err != nil {
 		t.Fatal(err)
 	}
 	client, err := ydbclient.Open(context.Background(), connectionString)

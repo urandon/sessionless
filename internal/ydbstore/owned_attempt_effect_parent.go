@@ -50,8 +50,14 @@ func (store *Store) reserveBoundedOwnedAttemptEffect(ctx context.Context, reques
 	var candidate domain.OwnedAttemptEffectParentV1
 	var status ports.AttemptEffectReservationStatusV1
 	var at time.Time
+	writeAttempted := false
 	err := store.ownedAuthorityTx(ctx, func(ctx context.Context, q *ownedAuthorityQuery) error {
 		candidate, status, at = domain.OwnedAttemptEffectParentV1{}, "", time.Time{}
+		// An attempted INSERT whose ACK was lost cannot become a fresh
+		// reservation on a transaction callback retry, even if it did not persist.
+		if writeAttempted {
+			return q.budget.deny()
+		}
 		q.metadataCache = make(map[string]ownedMetadataCacheEntry)
 		parent, err := readOwnedAttemptEffectParent(ctx, q, request)
 		if err != nil {
@@ -96,6 +102,7 @@ func (store *Store) reserveBoundedOwnedAttemptEffect(ctx context.Context, reques
 			return q.budget.deny()
 		}
 		r := value.Reservation
+		writeAttempted = true
 		_, err = q.ExecContext(ctx, `INSERT INTO attempt_effect_reservations
  (tenant_id,attempt_id,kind,run_id,lease_id,fence_token,physical_invocation_claim_id,effect_sequence,invocation_authority_digest,reserved_at,owned_record,owned_digest)
  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, r.TenantID, r.AttemptID, r.Kind, r.RunID, r.LeaseID, r.FenceToken, r.PhysicalInvocationClaimID, r.EffectSequence, r.InvocationAuthorityDigest, r.ReservedAt, string(raw), digest)
@@ -105,7 +112,7 @@ func (store *Store) reserveBoundedOwnedAttemptEffect(ctx context.Context, reques
 		candidate, status, at = value.Clone(), ports.AttemptEffectOwnedV1, q.at
 		return nil
 	})
-	if err != nil {
+	if err != nil || ctx.Err() != nil {
 		return ports.ReserveAttemptEffectResultV1{}, domain.ErrMembershipDenied
 	}
 	result := ports.ReserveAttemptEffectResultV1{Status: status, Reservation: candidate.Reservation.Clone()}
@@ -122,8 +129,46 @@ func (store *Store) reserveBoundedOwnedAttemptEffect(ctx context.Context, reques
 		}
 		result.Grant = &grant
 	}
-	if result.Validate() != nil {
+	if result.Validate() != nil || ctx.Err() != nil {
 		return ports.ReserveAttemptEffectResultV1{}, domain.ErrMembershipDenied
+	}
+	return result, nil
+}
+
+// Observation never creates a missing reservation or recovers preparation
+// ownership. In particular, a previous uncertain INSERT cannot be retried here.
+func (store *Store) observeBoundedOwnedAttemptEffect(ctx context.Context, request ports.ReserveAttemptEffectRequestV1) (ports.ReserveAttemptEffectResultV1, error) {
+	deny := func() (ports.ReserveAttemptEffectResultV1, error) {
+		return ports.ReserveAttemptEffectResultV1{}, domain.ErrMembershipDenied
+	}
+	if store == nil || store.db == nil || ctx == nil || ctx.Err() != nil || request.Validate() != nil || store.attemptEffectGrantIssuer == nil || store.ownedAttemptEffectSourceVerifier == nil {
+		return deny()
+	}
+	var parent domain.OwnedAttemptEffectParentV1
+	var at time.Time
+	err := store.ownedAuthorityTx(ctx, func(ctx context.Context, q *ownedAuthorityQuery) error {
+		parent, at = domain.OwnedAttemptEffectParentV1{}, time.Time{}
+		original, err := readOwnedAttemptEffectParent(ctx, q, request)
+		if err != nil || original == nil || original.Reservation.ReservedAt.After(q.at) || !attemptEffectRequestMatchesRecord(request, attemptEffectRecordV1{Authority: original.Authority, Reservation: original.Reservation}) {
+			return q.budget.deny()
+		}
+		final, err := readOwnedAdmission(ctx, q, original.Scope)
+		if err != nil || final == nil || original.ValidateForAdmission(*final) != nil || store.ownedAttemptEffectSourceVerifier.VerifyOwnedAttemptEffectSource(final.Source.Clone()) != nil {
+			return q.budget.deny()
+		}
+		parent, at = original.Clone(), q.at
+		return nil
+	})
+	if err != nil || ctx.Err() != nil {
+		return deny()
+	}
+	grant, err := store.mintAttemptEffectObservationGrant(attemptEffectRecordV1{Authority: parent.Authority, Reservation: parent.Reservation}, at)
+	if err != nil || ctx.Err() != nil {
+		return deny()
+	}
+	result := ports.ReserveAttemptEffectResultV1{Status: ports.AttemptEffectReconcileOnlyV1, Reservation: parent.Reservation.Clone(), ObservationGrant: &grant}
+	if result.Validate() != nil {
+		return deny()
 	}
 	return result, nil
 }

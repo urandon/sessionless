@@ -98,18 +98,118 @@ func (b *LocalOwnedStoreBootstrapV1) StartLocalInvocation(ctx context.Context, r
 			return nil, domain.ErrMembershipDenied
 		}
 	}
+	reserved, err := b.ReserveLocalWorkerEffect(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	return b.EnterLocalWorkerEffect(ctx, reserved, blobs)
+}
+
+// ReserveLocalWorkerEffect is the original owned worker effect port. It does
+// not change generic Store.ReserveAttemptEffect or infer a serving registration.
+// The same bootstrap's direct Start and factory-owned worker facade use it.
+func (b *LocalOwnedStoreBootstrapV1) ReserveLocalWorkerEffect(ctx context.Context, request ports.ReserveAttemptEffectRequestV1) (ports.ReserveAttemptEffectResultV1, error) {
+	deny := func() (ports.ReserveAttemptEffectResultV1, error) {
+		return ports.ReserveAttemptEffectResultV1{}, domain.ErrMembershipDenied
+	}
+	if b == nil || b.self != b || ctx == nil || ctx.Err() != nil || request.Validate() != nil {
+		return deny()
+	}
 	tuple := b.ready.Load()
-	if tuple == nil || tuple.store == nil || tuple.store.localBootstrap != b || tuple.bridge == nil || b.bodySlot == nil || tuple.store.attemptOperationBodies != b.bodySlot || !b.startClaimed.CompareAndSwap(false, true) {
+	if tuple == nil || tuple.store == nil || tuple.store.localBootstrap != b || tuple.bridge == nil || b.bodySlot == nil || tuple.store.attemptOperationBodies != b.bodySlot {
+		return deny()
+	}
+	if !b.startClaimed.CompareAndSwap(false, true) {
+		b.mu.Lock()
+		finished := b.reserveFinished
+		b.mu.Unlock()
+		if !finished {
+			return deny()
+		}
+		return tuple.store.observeBoundedOwnedAttemptEffect(ctx, request)
+	}
+	defer func() { b.mu.Lock(); b.reserveFinished = true; b.mu.Unlock() }()
+	reserved, err := tuple.store.reserveBoundedOwnedAttemptEffect(ctx, request)
+	if err != nil || reserved.Validate() != nil || ctx.Err() != nil {
+		return deny()
+	}
+	if reserved.Status != ports.AttemptEffectOwnedV1 {
+		return tuple.store.observeBoundedOwnedAttemptEffect(ctx, request)
+	}
+	if reserved.Grant == nil || b.prepare.VerifyGrant(reserved.Grant.Clone()) != nil {
+		return deny()
+	}
+	lifetime, err := b.source.ExecutionLifetime()
+	if err != nil || lifetime.Err() != nil || ctx.Err() != nil {
+		return deny()
+	}
+	if request.UpstreamIdempotencyKeyDigest != nil {
+		value := *request.UpstreamIdempotencyKeyDigest
+		request.UpstreamIdempotencyKeyDigest = &value
+	}
+	copy := cloneLocalFreshResult(reserved)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.ready.Load() != tuple || b.pendingStart != nil || b.entry.Load() != nil || ctx.Err() != nil || lifetime.Err() != nil {
+		return deny()
+	}
+	b.pendingStart = &localFreshReservationV1{invocation: ctx, request: request, result: copy, tuple: tuple}
+	return cloneLocalFreshResult(copy), nil
+}
+
+func cloneLocalFreshResult(v ports.ReserveAttemptEffectResultV1) ports.ReserveAttemptEffectResultV1 {
+	v.Reservation = v.Reservation.Clone()
+	if v.Grant != nil {
+		c := v.Grant.Clone()
+		v.Grant = &c
+	}
+	if v.ObservationGrant != nil {
+		c := v.ObservationGrant.Clone()
+		v.ObservationGrant = &c
+	}
+	return v
+}
+
+// EnterLocalWorkerEffect consumes private confirmed freshness, never caller
+// Status. A losing/copy caller has no cleanup ownership over a winning entry.
+func (b *LocalOwnedStoreBootstrapV1) EnterLocalWorkerEffect(ctx context.Context, reserved ports.ReserveAttemptEffectResultV1, blobs ports.BlobStore) (_ *LocalInvocationEntryV1, err error) {
+	if b == nil || b.self != b || ctx == nil || ctx.Err() != nil || blobs == nil || reserved.Validate() != nil {
+		return nil, domain.ErrMembershipDenied
+	}
+	value := reflect.ValueOf(blobs)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		if value.IsNil() {
+			return nil, domain.ErrMembershipDenied
+		}
+	}
+	b.mu.Lock()
+	pending := b.pendingStart
+	if pending == nil || pending.tuple != b.ready.Load() || !reflect.DeepEqual(pending.result, reserved) {
+		b.mu.Unlock()
+		return nil, domain.ErrMembershipDenied
+	}
+	b.pendingStart = nil // irreversible BEFORE grant consumption, burn or preflight
+	b.mu.Unlock()
+	tuple, request := pending.tuple, pending.request
+	if tuple == nil || tuple.store == nil || tuple.store.localBootstrap != b || tuple.bridge == nil || b.bodySlot == nil || tuple.store.attemptOperationBodies != b.bodySlot {
 		return nil, domain.ErrMembershipDenied
 	}
 	succeeded := false
+	var finishInvocation func()
 	defer func() {
 		if !succeeded {
+			if finishInvocation != nil {
+				finishInvocation()
+			}
 			_ = tuple.bridge.Close()
 		}
 	}()
-	reserved, err := tuple.store.reserveBoundedOwnedAttemptEffect(ctx, request)
-	if err != nil || ctx.Err() != nil || reserved.Status != ports.AttemptEffectOwnedV1 || reserved.Grant == nil || reserved.Validate() != nil || b.prepare.VerifyGrant(reserved.Grant.Clone()) != nil {
+	ctx, finishInvocation, err = b.localWorkerInvocationContext(pending.invocation, ctx)
+	if err != nil {
+		return nil, domain.ErrMembershipDenied
+	}
+	if ctx.Err() != nil || reserved.Status != ports.AttemptEffectOwnedV1 || reserved.Grant == nil || b.prepare.VerifyGrant(reserved.Grant.Clone()) != nil {
 		return nil, domain.ErrMembershipDenied
 	}
 	grant := reserved.Grant.Clone()
@@ -174,4 +274,43 @@ func (b *LocalOwnedStoreBootstrapV1) StartLocalInvocation(ctx context.Context, r
 	b.entry.Store(entry)
 	succeeded = true
 	return entry, nil
+}
+
+// Retain the ORIGINAL reserve invocation, not a setup-only child or a later
+// handoff's renewed lifetime. Direct Start already passes its retained entry
+// context. Standard context propagation cancels its descendants synchronously;
+// Source and the independent handoff also narrow this context and its deadline.
+func (b *LocalOwnedStoreBootstrapV1) localWorkerInvocationContext(original, handoff context.Context) (context.Context, func(), error) {
+	if original == nil || handoff == nil || original.Err() != nil || handoff.Err() != nil {
+		return nil, nil, domain.ErrMembershipDenied
+	}
+	life, err := b.source.ExecutionLifetime()
+	if err != nil || life.Err() != nil {
+		return nil, nil, domain.ErrMembershipDenied
+	}
+	deadline, bounded := original.Deadline()
+	for _, ctx := range []context.Context{life, handoff} {
+		if end, ok := ctx.Deadline(); ok && (!bounded || end.Before(deadline)) {
+			deadline, bounded = end, true
+		}
+	}
+	parent := localCompactionCallerValues{Context: original, caller: context.WithoutCancel(handoff)}
+	var call context.Context
+	var cancel context.CancelFunc
+	if bounded {
+		call, cancel = context.WithDeadline(parent, deadline)
+	} else {
+		call, cancel = context.WithCancel(parent)
+	}
+	stopSource := context.AfterFunc(life, cancel)
+	stopHandoff := context.AfterFunc(handoff, cancel)
+	finish := func() { stopSource(); stopHandoff(); cancel() }
+	// A winning entry retains this context; release its hooks when the original
+	// invocation, Source, handoff or absolute deadline ends, not on Start return.
+	context.AfterFunc(call, func() { stopSource(); stopHandoff() })
+	if original.Err() != nil || handoff.Err() != nil || life.Err() != nil || call.Err() != nil {
+		finish()
+		return nil, nil, domain.ErrMembershipDenied
+	}
+	return call, finish, nil
 }

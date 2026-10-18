@@ -187,9 +187,10 @@ command's [`-run`, `-skip` and `-timeout` contracts](https://pkg.go.dev/cmd/go#h
 
 GitHub's Go verification job runs `make ci-core`; the unchanged offline
 `attached-worker-security-gate`, including both crash/restart prerequisites,
-runs in the existing isolated YDB security job before that job starts YDB.
+and the complete unchanged `serverless-egress-conformance` target run in the
+existing isolated YDB security job before that job starts YDB.
 That offline step removes the job's YDB connection and credential environment
-variables. Local and release `make ci` still require both parts. Images require
+variables. Local and release `make ci` still require core and both gates. Images require
 both jobs, and `make ci-partition-test` checks the partition's static coverage.
 The 25-minute isolated-job bound is unchanged: actual exact-head CI must prove
 the relocated checks and native gates fit; the partition alone is not proof.

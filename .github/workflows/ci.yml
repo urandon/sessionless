@@ -7,6 +7,11 @@ on:
 permissions:
   contents: read
 
+# setup-go restore and post-save must use the same paths as Make.
+env:
+  GOCACHE: ${{ github.workspace }}/.git/sessionless-go-cache/go-build
+  GOMODCACHE: ${{ github.workspace }}/.git/sessionless-go-cache/go-mod
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -159,8 +164,8 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
-      - name: Run offline attached-worker security contract
-        run: env -u YDB_CONNECTION_STRING -u YDB_ANONYMOUS_CREDENTIALS make attached-worker-security-gate
+      - name: Run offline worker and egress security contracts
+        run: env -u YDB_CONNECTION_STRING -u YDB_ANONYMOUS_CREDENTIALS make attached-worker-security-gate serverless-egress-conformance
 
       - name: Start pinned YDB Local
         run: |

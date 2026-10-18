@@ -11,6 +11,11 @@ on:
 permissions:
   contents: read
 
+# setup-go restore and post-save must use the same paths as Make.
+env:
+  GOCACHE: ${{ github.workspace }}/.git/sessionless-go-cache/go-build
+  GOMODCACHE: ${{ github.workspace }}/.git/sessionless-go-cache/go-mod
+
 jobs:
   native:
     name: ${{ matrix.os }} test-owned user service

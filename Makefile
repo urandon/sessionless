@@ -386,11 +386,11 @@ provider-conformance-fuzz: prepare
 	go test -run='^$$' -fuzz=FuzzResponseParserNeverCommitsMalformedTerminal -fuzztime=2s ./internal/directopenrouter
 
 # Keep local and release verification complete. GitHub CI runs the unchanged
-# offline security gate in its existing isolated security job instead.
+# offline worker and egress gates in its existing isolated security job instead.
 .PHONY: ci-core ci-partition-test
-ci: ci-core attached-worker-security-gate
+ci: ci-core attached-worker-security-gate serverless-egress-conformance
 
-ci-core: docs-check cloud-web-smoke-test web-ci generate test build integration serverless-egress-conformance image-publication-test image-build-inputs-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test dockerless-stand-policy-test go-cache-policy-test ci-partition-test
+ci-core: docs-check cloud-web-smoke-test web-ci generate test build integration image-publication-test image-build-inputs-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test dockerless-stand-policy-test go-cache-policy-test ci-partition-test
 
 ci-partition-test:
 	node --test scripts/test-ci-partition.mjs

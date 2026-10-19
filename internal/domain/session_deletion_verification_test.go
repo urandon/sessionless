@@ -76,9 +76,10 @@ func TestRetainedDeletionVerificationClosedEncoding(t *testing.T) {
 	for _, test := range []struct{ name, body string }{
 		{name: "extra", body: strings.TrimSuffix(string(raw), "}") + `,"extra":true}`},
 		{name: "duplicate", body: strings.TrimSuffix(string(raw), "}") + `,"schema":"sessionless.retained-deletion.v1"}`},
+		{name: "escaped_duplicate", body: strings.TrimSuffix(string(raw), "}") + `,"sch\u0065ma":"sessionless.retained-deletion.v1"}`},
 		{name: "alias", body: strings.Replace(string(raw), `"schema":`, `"Schema":`, 1)},
 		{name: "missing", body: strings.Replace(string(raw), `"verified_runs":1,`, "", 1)},
-		{name: "trailing", body: string(raw) + "\n"},
+		{name: "trailing_value", body: string(raw) + "\nnull"},
 		{name: "oversize", body: strings.Repeat(" ", MaxRetainedDeletionVerificationBytesV1) + string(raw)},
 		{name: "null", body: "null"},
 	} {
@@ -88,6 +89,33 @@ func TestRetainedDeletionVerificationClosedEncoding(t *testing.T) {
 			// strips outer framing whitespace before invoking UnmarshalJSON.
 			if err := candidate.UnmarshalJSON([]byte(test.body)); err == nil {
 				t.Fatalf("noncanonical/invalid capture DATA accepted: %s", test.name)
+			}
+		})
+	}
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &members); err != nil {
+		t.Fatal(err)
+	}
+	for key := range members {
+		t.Run("required_"+key, func(t *testing.T) {
+			for _, null := range []bool{false, true} {
+				copy := make(map[string]json.RawMessage, len(members))
+				for name, value := range members {
+					copy[name] = value
+				}
+				if null {
+					copy[key] = json.RawMessage("null")
+				} else {
+					delete(copy, key)
+				}
+				body, err := json.Marshal(copy)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var candidate RetainedDeletionVerificationV1
+				if err := candidate.UnmarshalJSON(body); err == nil {
+					t.Errorf("required field %s accepted missing/null substitution: null=%t", key, null)
+				}
 			}
 		})
 	}
@@ -108,5 +136,48 @@ func TestRetainedDeletionVerificationRequestAndInventoryBinding(t *testing.T) {
 	i.Objects[0].SHA256 = strings.Repeat("3", 64)
 	if err := d.RetainedVerification.ValidateInventory(d, i); err == nil {
 		t.Fatal("capture accepted changed object identity with identical counts/bytes")
+	}
+}
+
+func TestRetainedDeletionVerificationStorageMemberOrder(t *testing.T) {
+	d, inventory := retainedDeletionData(t)
+	raw, err := json.Marshal(d.RetainedVerification)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// JsonDocument does not preserve a Go struct's member order. RawMessage
+	// keeps integer/time representations intact while map encoding reorders
+	// keys, without inventing a different capture or authority.
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &members); err != nil {
+		t.Fatal(err)
+	}
+	reordered, err := json.Marshal(members)
+	if err != nil || string(reordered) == string(raw) {
+		t.Fatalf("storage-order counterexample not established: err=%v", err)
+	}
+	var restored RetainedDeletionVerificationV1
+	if err := json.Unmarshal(reordered, &restored); err != nil || restored != *d.RetainedVerification {
+		t.Fatalf("same closed capture with storage member order rejected: err=%v got=%+v", err, restored)
+	}
+	outer, err := json.Marshal(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	members = nil // Unmarshal into a non-nil map otherwise retains inner keys.
+	if err := json.Unmarshal(outer, &members); err != nil {
+		t.Fatal(err)
+	}
+	members["retained_verification"] = reordered
+	stored, err := json.Marshal(members)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deletion SessionDeletion
+	if err := json.Unmarshal(stored, &deletion); err != nil || deletion.Validate() != nil || deletion.RetainedVerification == nil {
+		t.Fatalf("stored tombstone roundtrip: err=%v deletion=%+v", err, deletion)
+	}
+	if err := deletion.RetainedVerification.ValidateInventory(deletion, inventory); err != nil {
+		t.Fatalf("storage-order roundtrip changed original request/inventory binding: %v", err)
 	}
 }

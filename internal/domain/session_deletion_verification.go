@@ -107,7 +107,7 @@ func (v RetainedDeletionVerificationV1) ValidateInventory(d SessionDeletion, i S
 }
 
 func (v *RetainedDeletionVerificationV1) UnmarshalJSON(body []byte) error {
-	if v == nil || len(body) == 0 || len(body) > MaxRetainedDeletionVerificationBytesV1 || !terminalJSONUnicodeValid(body) {
+	if v == nil || len(body) == 0 || len(body) > MaxRetainedDeletionVerificationBytesV1 || terminalJSONPreflight(body, "retained_verification") != nil {
 		return retainedDeletionError()
 	}
 	type plain RetainedDeletionVerificationV1
@@ -117,12 +117,9 @@ func (v *RetainedDeletionVerificationV1) UnmarshalJSON(body []byte) error {
 	if d.Decode(&p) != nil || RetainedDeletionVerificationV1(p).validate() != nil {
 		return retainedDeletionError()
 	}
-	canonical, err := json.Marshal(p)
-	// One canonical closed encoding rejects duplicates, aliases, missing fields
-	// and trailing data before accepting any caller-owned result.
-	if err != nil || !bytes.Equal(canonical, body) {
-		return retainedDeletionError()
-	}
+	// JsonDocument may reorder members and whitespace. The preflight checks
+	// the exact closed field set, duplicates, non-null scalars and full EOF;
+	// typed decoding preserves integers without depending on storage order.
 	*v = RetainedDeletionVerificationV1(p)
 	return nil
 }

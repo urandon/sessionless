@@ -322,8 +322,8 @@ func terminalJSONValue(d *json.Decoder, shape string) error {
 		return ownedExecutionEvidenceError()
 	}
 	delim, container := t.(json.Delim)
-	if shape == "scalar" {
-		if container {
+	if shape == "scalar" || shape == "required_scalar" {
+		if container || (shape == "required_scalar" && t == nil) {
 			return ownedExecutionEvidenceError()
 		}
 		return nil
@@ -381,11 +381,19 @@ func terminalJSONValue(d *json.Decoder, shape string) error {
 	if e != nil || end != json.Delim('}') {
 		return ownedExecutionEvidenceError()
 	}
+	if shape == "retained_verification" && len(seen) != 11 {
+		return ownedExecutionEvidenceError()
+	}
 	return nil
 }
 
 func terminalJSONMember(shape, key string) string {
 	switch shape {
+	case "retained_verification":
+		switch key {
+		case "schema", "tenant_id", "session_id", "request_digest", "metadata_digest", "inventory_digest", "rows", "objects", "bytes", "verified_runs", "verified_at":
+			return "required_scalar"
+		}
 	case "run":
 		switch key {
 		case "id", "tenant_id", "session_id", "trigger_event_id", "subscription_connection_id", "status", "idempotency_key", "cancellation_requested_at", "started_at", "finished_at", "created_at", "updated_at":

@@ -121,15 +121,21 @@ suites. CI adds Playwright's Linux system dependencies through the same target.
 `make test` checks formatting, runs `go vet`, unit tests, and the race detector.
 It sets an explicit 15-minute per-package test deadline for the growing
 Store/worker conformance suites. The Go verification CI job has a separate
-30-minute ceiling for `make ci-core`, including compilation, the race suite,
-builds, integration and policy checks. The unchanged offline
+30-minute ceiling for `make ci-core`, including compilation, ordinary race tests,
+builds, integration and policy checks. A parallel 30-minute `go-connected` job
+runs the complementary `make test-connected` selection over all packages.
+Local `make test` runs ordinary and connected selections sequentially, even
+under `make -j`. Both retain the race detector and 15-minute per-binary bounds.
+YDB, isolated-security, local-stand and Terraform join both Go jobs. The unchanged offline
 `attached-worker-security-gate` and complete `serverless-egress-conformance` run
 in the existing 25-minute isolated security job before YDB startup, without
-that job's YDB environment variables. Images
-require both jobs. Local/release `make ci` still requires core and both gates; see
+that job's YDB environment variables. All nine CI jobs remain required; images
+retain all their original dependencies plus `go-connected`. Local/release
+`make ci` still requires core, connected tests and both offline gates; see
 [the partition contract](testing-best-practices.md#cumulative-package-runtime).
 A package pass does not replace unfinished checks, and exact-head CI must
-measure whether the isolated job fits. These are failure ceilings, not synchronization,
+measure whether the parallel and isolated jobs fit, including a cold cache miss.
+No cache hit is a gate or a substitute for checks. These are failure ceilings, not synchronization,
 correctness guarantees or permission to retry. Diagnose any further timeout
 at its actual stage rather than automatically increasing the ceiling again.
 Use the exact source, goroutine stacks and bounded
@@ -846,7 +852,7 @@ expanding the webhook/control-plane attack surface.
 
 GitCode is the source of truth for branches and merge requests. Its push mirror
 replicates every commit to `github.com/urandon/sessionless`, where GitHub Actions
-runs the full CI contract across `make ci-core` and the isolated security job,
+runs the full CI contract across `make ci-core`, `make test-connected` and the isolated security job,
 then `make image-reproducibility-test`, for every mirrored branch or tag push.
 The workflow is `.github/workflows/ci.yml`; a GitHub pull request is not required.
 

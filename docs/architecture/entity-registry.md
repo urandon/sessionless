@@ -10,6 +10,13 @@ Logical state and durability decisions are specified in the
 The owning [issue #205](https://gitcode.com/urandon/sessionless/issues/205) holds
 the report, problem register, review findings and implementation decisions.
 
+An authenticated exact-query consent view is transient private data derived
+from the existing consent state and its immutable scoped argument body. It has
+no new row, table, TTL, cache, approval registry or custody owner. The original
+consent transaction owns decisions; the existing Session deletion inventory
+continues to own their argument objects. A browser view grants no search send
+or replay authority and is never part of public execution evidence.
+
 An entity is not a table. A canonical Session may have several rebuildable
 lookup projections; a current execution record may contain several bounded
 operational fields. Separate physical storage requires a concrete access,

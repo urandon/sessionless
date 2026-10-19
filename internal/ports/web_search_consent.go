@@ -51,6 +51,35 @@ type ReadWebSearchConsentRequestV1 struct {
 	WebSessionDigest domain.SecretDigest
 }
 
+// ReadPrivateWebSearchConsentRequestV1 carries browser selectors, never a
+// tenant or an authenticated principal. The same Store callback resolves the
+// current Web session's active tenant before looking up the exact intent.
+type ReadPrivateWebSearchConsentRequestV1 struct {
+	SessionID        domain.SessionID
+	RunID            domain.RunID
+	AttemptID        domain.AttemptID
+	RequestID        domain.WebSearchConsentRequestIDV1
+	WebSessionDigest domain.SecretDigest
+}
+
+func (value ReadPrivateWebSearchConsentRequestV1) Validate() error {
+	for _, validate := range []func() error{value.SessionID.Validate, value.RunID.Validate, value.AttemptID.Validate, value.RequestID.Validate} {
+		if err := validate(); err != nil {
+			return err
+		}
+	}
+	return value.WebSessionDigest.Validate("web_search_consent.web_session_digest")
+}
+
+// WebSearchConsentPrivateViewV1 is an internal, actor-authorized disclosure,
+// not a browser DTO or dispatch authority. The transport must strip private
+// state metadata. Query is the exact decoded UTF-8 value of the immutable
+// arguments, checked before a fresh current-authority transaction confirms it.
+type WebSearchConsentPrivateViewV1 struct {
+	State domain.WebSearchConsentStateV1
+	Query string
+}
+
 func (value ReadWebSearchConsentRequestV1) Validate() error {
 	if err := value.Locator.Validate(); err != nil {
 		return err

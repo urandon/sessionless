@@ -309,6 +309,48 @@ user or a target user with any different external identity is rejected without
 a partial grant. This does not implement privileged account linking. Leave
 both optional variables empty to retain the existing-identity mode.
 
+## Exact-query search consent
+
+The optional `SearchConsents` composition mounts a private GET/POST route at
+`/api/web/v1/sessions/{session_id}/runs/{run_id}/attempts/{attempt_id}/search-consents/{request_id}`.
+It is absent by default; defining this transport does not enable search or
+supply pending-request discovery, an original worker, a model or a credential.
+The owning implementation is [#195](https://gitcode.com/urandon/sessionless/issues/195).
+
+GET accepts only the first-party cookie and path selectors, with no body or
+query parameters. It does not use the generic Web authorization method that
+refreshes idle activity. The existing consent Store derives the active tenant
+from the cookie's current Web session, authenticates the initiating user and
+participation before reading private material, and rechecks the same immutable
+intent and all current authority after the body reads. Original argument size,
+SHA and exact decoded-query digest must match. Grant and argument reads occur
+outside SQL under the same ten-second, three-callback and four-MiB logical
+budget; no helper resets it. The private response includes only request ID,
+revision, status, original expiry and exact query, within eight KiB including
+JSON escaping. It has no blob locator, claim, payer, grant or receipt metadata.
+
+POST uses the existing cookie/header CSRF equality, exact Origin and mutation
+audit rules. Only `expected_revision: 1` and explicit `approve`/`deny` are accepted;
+unknown, duplicate, case-aliased fields and trailing JSON are rejected, with a
+512-byte body ceiling. The original consent transaction revalidates stored
+CSRF, actor and current claim/resource windows and owns immutable decision CAS.
+The response is only a bounded state summary, never query text or a transferable
+receipt. A user mutation can refresh Web-session idle activity under the normal
+mutation contract; it cannot extend the consent, lease or execution deadline.
+The logical request context is bounded to ten seconds; net/http ingress uses
+the matching read deadline where supported, while unsupported wrappers retain
+the Web server's existing fifteen-second body-read bound. No goroutine races an
+arbitrary borrowed reader, and a late body cannot cause a decision.
+
+Both responses are `no-store`, without ETags. Queries and private state never
+enter route parameters, public Run explanations, request logs or public errors.
+Approval is necessary but not sufficient for a search: the original operation
+reserve and immediate before-send gate must independently revalidate the stored
+receipt and all current authority. The complete feature additionally needs
+authenticated pending-request discovery, accessible memory-only UI and bounded
+waiting in the original worker claim. Fixture-only producer authority is not
+an authentic model/search producer or permission to activate a profile.
+
 ## Verification
 
 Credential-free unit tests cover the complete local authorization-code flow,

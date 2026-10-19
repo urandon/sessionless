@@ -3,6 +3,7 @@ package ydbstore
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
@@ -110,54 +111,110 @@ func (store *Store) CreateWebSearchConsent(ctx context.Context, input ports.Crea
 // Materialize only an actor-authorized immutable intent before the keeper read;
 // a later transaction still reauthenticates actor/current authority and exact
 // intent. This first read cannot approve or dispatch anything.
-func (store *Store) readOwnedConsentIntent(ctx context.Context, input ports.ReadWebSearchConsentRequestV1) (domain.WebSearchConsentRequestV1, error) {
+func (store *Store) readOwnedConsentIntent(ctx context.Context, input ports.ReadWebSearchConsentRequestV1, private *ports.ReadPrivateWebSearchConsentRequestV1) (domain.WebSearchConsentRequestV1, ports.ReadWebSearchConsentRequestV1, error) {
 	var result domain.WebSearchConsentRequestV1
+	resolved := input
 	err := store.ownedAuthorityTx(ctx, func(ctx context.Context, q *ownedAuthorityQuery) error {
 		result = domain.WebSearchConsentRequestV1{}
+		resolved = input
 		q.metadataCache = make(map[string]ownedMetadataCacheEntry)
-		parent, source, err := store.ownedConsentParent(ctx, q, input.Locator)
+		if private != nil {
+			// Only this current cookie row supplies the tenant. No browser
+			// tenant selector, activity refresh, or standalone auth transaction.
+			bucket, err := webBucket(string(private.WebSessionDigest))
+			if err != nil {
+				return q.budget.deny()
+			}
+			raw, err := q.readMetadata(ctx, `SELECT SUBSTRING(CAST(record AS String),0,32769) FROM web_sessions WHERE shard_bucket=$1 AND session_digest=$2`, ownedAuthorityHeadBytes, bucket, private.WebSessionDigest)
+			var session domain.WebSession
+			if err != nil || decodeOwnedEffectCanonicalJSON(raw, &session) != nil || session.Validate() != nil || session.SessionDigest != private.WebSessionDigest {
+				return q.budget.deny()
+			}
+			resolved = ports.ReadWebSearchConsentRequestV1{
+				Locator:          ports.WebSearchConsentLocatorV1{TenantID: session.ActiveTenantID, SessionID: private.SessionID, RunID: private.RunID, AttemptID: private.AttemptID, RequestID: private.RequestID},
+				WebSessionDigest: private.WebSessionDigest,
+			}
+		}
+		parent, source, err := store.ownedConsentParent(ctx, q, resolved.Locator)
 		if err != nil || readOwnedAdmissionPrincipal(ctx, q, source.Scope) != nil {
 			return q.budget.deny()
 		}
 		states, err := readOwnedConsentStates(ctx, q, parent)
-		state, found := findOwnedConsent(states, input.Locator.RequestID)
-		if err != nil || !found || input.Locator.ValidateForRequest(state.Request) != nil || state.Request.InitiatingUserID != source.Scope.OwnerUserID {
+		state, found := findOwnedConsent(states, resolved.Locator.RequestID)
+		if err != nil || !found || resolved.Locator.ValidateForRequest(state.Request) != nil || state.Request.InitiatingUserID != source.Scope.OwnerUserID {
 			return q.budget.deny()
 		}
 		a := domain.WebSearchConsentAuthorityV1{InitiatingUserID: source.Scope.OwnerUserID}
-		if loadOwnedConsentActor(ctx, q, state.Request, input.WebSessionDigest, &a) != nil {
+		if loadOwnedConsentActor(ctx, q, state.Request, resolved.WebSessionDigest, &a) != nil {
 			return q.budget.deny()
 		}
 		result = state.Request
 		return nil
 	})
-	return result, err
+	return result, resolved, err
 }
 
 func (store *Store) ReadWebSearchConsent(ctx context.Context, input ports.ReadWebSearchConsentRequestV1) (domain.WebSearchConsentStateV1, error) {
-	return store.readOrDecideOwnedConsent(ctx, input, nil)
+	view, err := store.readOrDecideOwnedConsent(ctx, input, nil, nil)
+	return view.State, err
+}
+
+// ReadPrivateWebSearchConsent discloses only the original actor's immutable
+// query after the same read owner confirms current authority. It neither
+// refreshes browser activity nor returns a dispatch capability.
+func (store *Store) ReadPrivateWebSearchConsent(ctx context.Context, input ports.ReadPrivateWebSearchConsentRequestV1) (ports.WebSearchConsentPrivateViewV1, error) {
+	return store.readOrDecideOwnedConsent(ctx, ports.ReadWebSearchConsentRequestV1{}, nil, &input)
 }
 
 func (store *Store) DecideWebSearchConsent(ctx context.Context, input ports.DecideWebSearchConsentRequestV1) (domain.WebSearchConsentStateV1, error) {
 	if input.Validate() != nil {
 		return domain.WebSearchConsentStateV1{}, domain.ErrMembershipDenied
 	}
-	return store.readOrDecideOwnedConsent(ctx, ports.ReadWebSearchConsentRequestV1{Locator: input.Locator, WebSessionDigest: input.WebSessionDigest}, &input)
+	view, err := store.readOrDecideOwnedConsent(ctx, ports.ReadWebSearchConsentRequestV1{Locator: input.Locator, WebSessionDigest: input.WebSessionDigest}, &input, nil)
+	return view.State, err
 }
 
-func (store *Store) readOrDecideOwnedConsent(ctx context.Context, input ports.ReadWebSearchConsentRequestV1, decision *ports.DecideWebSearchConsentRequestV1) (domain.WebSearchConsentStateV1, error) {
-	if !store.validOwnedAllocationContext(ctx) || store.attemptOperationBodies == nil || input.Validate() != nil {
-		return domain.WebSearchConsentStateV1{}, domain.ErrMembershipDenied
+func (store *Store) readOrDecideOwnedConsent(ctx context.Context, input ports.ReadWebSearchConsentRequestV1, decision *ports.DecideWebSearchConsentRequestV1, private *ports.ReadPrivateWebSearchConsentRequestV1) (ports.WebSearchConsentPrivateViewV1, error) {
+	validInput := input.Validate() == nil
+	if private != nil {
+		validInput = private.Validate() == nil && decision == nil
+	}
+	if !store.validOwnedAllocationContext(ctx) || store.attemptOperationBodies == nil || !validInput {
+		return ports.WebSearchConsentPrivateViewV1{}, domain.ErrMembershipDenied
 	}
 	ctx, cancel := ownedConsentContext(ctx)
 	defer cancel()
-	intent, err := store.readOwnedConsentIntent(ctx, input)
+	intent, resolved, err := store.readOwnedConsentIntent(ctx, input, private)
 	if err != nil {
-		return domain.WebSearchConsentStateV1{}, domain.ErrMembershipDenied
+		return ports.WebSearchConsentPrivateViewV1{}, domain.ErrMembershipDenied
+	}
+	input = resolved
+	if private != nil && chargeOwnedAuthorityBody(ctx, 2*(4<<10)) != nil {
+		// Reserve the keeper's bounded grant body and our owned clone BEFORE
+		// either materializes. This is a logical body budget, not a heap-fit
+		// certificate or permission to activate the missing search producer.
+		return ports.WebSearchConsentPrivateViewV1{}, domain.ErrMembershipDenied
 	}
 	grant, err := store.readOwnedConsentGrant(ctx, intent)
 	if err != nil {
-		return domain.WebSearchConsentStateV1{}, domain.ErrMembershipDenied
+		return ports.WebSearchConsentPrivateViewV1{}, domain.ErrMembershipDenied
+	}
+	var arguments []byte
+	if private != nil {
+		size := uint64(intent.Arguments.Size) // validated immutable intent: 1..4096
+		// The keeper body, owned clone and eventual query copy are bounded by
+		// the exact original body size, and share the original metadata pool.
+		if chargeOwnedAuthorityBody(ctx, 3*size) != nil {
+			return ports.WebSearchConsentPrivateViewV1{}, domain.ErrMembershipDenied
+		}
+		arguments, err = store.readOwnedOperationBody(ctx, ownedConsentOperationScope(intent.Scope), intent.Arguments.Key, intent.ArgumentsDigest, size, size)
+		if err != nil {
+			return ports.WebSearchConsentPrivateViewV1{}, domain.ErrMembershipDenied
+		}
+		defer clear(arguments)
+		if intent.ValidateArguments(arguments) != nil {
+			return ports.WebSearchConsentPrivateViewV1{}, domain.ErrMembershipDenied
+		}
 	}
 	var result domain.WebSearchConsentStateV1
 	err = store.ownedAuthorityTx(ctx, func(ctx context.Context, q *ownedAuthorityQuery) error {
@@ -207,7 +264,20 @@ func (store *Store) readOrDecideOwnedConsent(ctx context.Context, input ports.Re
 		return nil
 	})
 	if err != nil || ctx.Err() != nil {
-		return domain.WebSearchConsentStateV1{}, domain.ErrMembershipDenied
+		return ports.WebSearchConsentPrivateViewV1{}, domain.ErrMembershipDenied
 	}
-	return result, nil
+	view := ports.WebSearchConsentPrivateViewV1{State: result}
+	if private != nil {
+		// Only a confirmed final transaction may release decoded query bytes.
+		// The strict original argument validator ran BEFORE that transaction;
+		// this decode only extracts its exact, unnormalized query DATA.
+		var decoded struct {
+			Query string `json:"query"`
+		}
+		if json.Unmarshal(arguments, &decoded) != nil || ctx.Err() != nil {
+			return ports.WebSearchConsentPrivateViewV1{}, domain.ErrMembershipDenied
+		}
+		view.Query = decoded.Query
+	}
+	return view, nil
 }

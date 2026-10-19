@@ -54,6 +54,7 @@ type Config struct {
 	Sessions                   *sessionapi.Service
 	API                        *webapi.Service
 	RunExplanations            ports.RunExplanationRatedReadStoreV1
+	SearchConsents             WebSearchConsentService
 	AttachedWorkers            AttachedWorkerReadService
 	AttachedWorkerControls     AttachedWorkerControlService
 	IDs                        ports.IDGenerator
@@ -70,6 +71,14 @@ type AttachedWorkerReadService interface {
 	List(context.Context, domain.TenantID, domain.UserID, domain.AttachedWorkerID, uint64) (attachedworkerux.AttachedWorkerListV1, error)
 	Get(context.Context, domain.TenantID, domain.UserID, domain.AttachedWorkerID) (attachedworkerux.AttachedWorkerUXReadModelV1, error)
 	Diagnostics(context.Context, domain.TenantID, domain.UserID, domain.AttachedWorkerID) (attachedworkerux.AttachedWorkerDiagnosticsV1, error)
+}
+
+// WebSearchConsentService exposes only the original consent owner's private
+// read and immutable decision operations. It cannot create a search request,
+// reserve money, mint an egress capability or resume an execution claim.
+type WebSearchConsentService interface {
+	ReadPrivateWebSearchConsent(context.Context, ports.ReadPrivateWebSearchConsentRequestV1) (ports.WebSearchConsentPrivateViewV1, error)
+	DecideWebSearchConsent(context.Context, ports.DecideWebSearchConsentRequestV1) (domain.WebSearchConsentStateV1, error)
 }
 
 type AttachedWorkerControlService interface {
@@ -240,6 +249,10 @@ func (handler *Handler) routes() {
 	}
 	if handler.config.RunExplanations != nil {
 		handler.mux.HandleFunc("GET "+webcontract.RouteRunExplanation, handler.getRunExplanation)
+	}
+	if handler.config.SearchConsents != nil {
+		handler.mux.HandleFunc("GET "+webcontract.RouteSearchConsent, handler.getSearchConsent)
+		handler.mux.HandleFunc("POST "+webcontract.RouteSearchConsent, handler.decideSearchConsent)
 	}
 	if handler.config.AttachedWorkerControls != nil {
 		handler.mux.HandleFunc("POST "+webcontract.RouteAttachedWorkerActionPlan, handler.planAttachedWorkerAction)
@@ -1576,6 +1589,8 @@ type statusRecorder struct {
 	http.ResponseWriter
 	status int
 }
+
+func (recorder *statusRecorder) Unwrap() http.ResponseWriter { return recorder.ResponseWriter }
 
 func (recorder *statusRecorder) WriteHeader(status int) {
 	recorder.status = status

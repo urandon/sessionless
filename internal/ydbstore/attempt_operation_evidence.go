@@ -29,6 +29,12 @@ type ownedOperationEvidence struct {
 }
 
 func (store *Store) prepareOwnedOperationEvidence(ctx context.Context, op domain.AttemptOperationV1) (*ownedOperationEvidence, error) {
+	// The closed new search encoding has no installed authentic producer yet.
+	// Deny before local/fixture routing or any body/SQL materialization; neither
+	// plain arm DATA nor retained history may become fresh dispatch evidence.
+	if op.SearchWire != nil {
+		return nil, domain.ErrMembershipDenied
+	}
 	// A sealed local entry is a handled denial, even when no prepared MODEL or
 	// generation exists. Never fall back to fixture/generic evidence grammar.
 	if store != nil && store.localBootstrap != nil {

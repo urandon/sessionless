@@ -1,10 +1,11 @@
 # Bounded web search for the owned harness
 
-Version: 0.2.2, engineering amendment candidate. Predecessor 0.2.1 is the
-accepted engineering design. Owners: [#94](https://gitcode.com/urandon/sessionless/issues/94),
+Version: 0.2.3, search-wire integration amendment candidate. Predecessor 0.2.2
+is the independently reviewed request/result data prefix in !247; its exact
+source remains frozen separately. Owners: [#94](https://gitcode.com/urandon/sessionless/issues/94),
 [#179](https://gitcode.com/urandon/sessionless/issues/179),
 [#180](https://gitcode.com/urandon/sessionless/issues/180); implementation #176.
-The predecessor was accepted with [the minimum harness](owned-agent-harness-minimum.md) at exact
+Version 0.2.1 was accepted with [the minimum harness](owned-agent-harness-minimum.md) at exact
 `42139dfb5cefb266adb77f221c0743b53cfb5217` in independently reviewed and CI-verified
 [!160](https://gitcode.com/urandon/sessionless/pull/160), under the owner's
 agreed-MVP engineering delegation. [#194](https://gitcode.com/urandon/sessionless/issues/194)
@@ -182,6 +183,67 @@ continuation result. Until that original integration and the consent bridge are
 proved, registration stays off. Reader byte limits do not prove cancellation of
 an arbitrary blocking reader: the actual attested HTTP owner must enforce the
 original remaining deadline and cancellation without a detached read goroutine.
+
+### Closed search-wire encoding and original Store integration
+
+Use one optional `search_wire` arm on the existing operation envelope, not a
+parallel operation ledger or a replacement for its physical claim. Its own
+version is 1 and its API profile is exactly `tavily.search.basic.v1`; it requires
+`arguments_bytes` and the frozen compiler artifact digest. The argument count
+is positive and at most 4 KiB; the physical request is positive and at most
+8 KiB. The original policy compares its tool-argument ceiling to the argument
+count, while physical bytes remain charged with the normalized result to the
+same aggregate body reservation. This arm is exclusive to `web_search`.
+
+An absent arm remains the original V1 representation, limits and digest. Omit
+the nil field completely: preserve all existing field order, operation digest
+domain, reservation and observation bytes and historical identities. Unknown
+arm versions/profiles, partial arms, explicit null in a canonical stored record,
+kind substitutions, duplicate/aliased/extra fields and trailing JSON deny.
+Clone the pointer-owned arm deeply through operations, reservations and grants;
+a caller must not mutate a sealed capability through a shared pointer. An old
+reader cannot accept the new arm by dropping it: exact canonical re-marshalling
+must reject the changed representation. Deploy reader support and drain old
+readers before activating any new writer; this document authorizes neither.
+
+The Tavily producer must require this arm even for a small request. Neither
+absence of the arm nor equality of digests selects a legacy fixture fallback.
+Before reserve and send, the original Store must authenticate the complete
+durable MODEL call, canonical initiating-task identity and exact consent
+argument blob; their actual byte count must match `arguments_bytes`. Recompile
+those exact arguments with the authenticated grant/profile/compiler and compare
+every physical byte, digest and size. Public Binding/grant/result structs and
+retained DATA decoders are not dispatch provenance.
+
+The structured grant's domain-separated semantic digest is distinct from its
+serialized body's raw SHA256. Original publisher-owned custody must authenticate
+both the scoped locator/body commitment and the semantic digest against the
+existing Source/profile/search spending component. Do not reuse the fixture
+grant locator or introduce another current-grant table. Recheck the original
+parent, resource/revocation/consent, price/terms/payer, allocation/proxy and
+approved receipt in the existing reserve and before-send transactions. If the
+authentic producer is absent, the new arm denies before generic fixture routing,
+debit, capability issuance or send. Historical decoding is not fresh admission.
+
+Per-call charging and result continuation require that same original producer.
+Authenticate the 10,000-microunit call reservation against the selected tariff,
+then debit the existing search component and aggregate counters, at most 20,000
+across two searches. Do not merely relax the old full-component debit, infer
+the tariff from a compiler constant, refund lower reports or fabricate money.
+A future search-only successor rule requires an authenticated known-price
+ceiling, a known durable normalized result and unchanged worst-case debit.
+Provider-reported credits and unknown USD remain separate from reservation;
+unknown effects, overruns and missing provenance prohibit continuation. Existing
+MCP and legacy fixture successor/accounting semantics remain unchanged.
+
+Verify golden original V1 JSON/digests, new closed-arm round trips, deep-copy
+isolation, valid arguments whose wire exceeds 4 KiB, consent argument-size
+correlation and zero-effect denial without the original producer. Mixed-history
+recovery, retained tool pairs/capsules and deletion must use the same strict
+reader before a successful search turn is claimed. The current text-only
+terminal path cannot be called tool-compatible merely because an operation
+decodes. A versioned reader/denial foundation is a prerequisite, not completion
+of the required consent → reserve → HTTP → durable result → model answer path.
 
 Search results are data only. Citation URLs grant no network capability and are
 not followed, DNS-probed or downloaded by this tool. Fetch/open/find, authentication,

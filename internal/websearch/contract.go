@@ -45,10 +45,12 @@ type HTTPMetadataV1 struct {
 }
 
 // ValidateOperation checks DATA correlation only, never approval or freshness.
-// A valid 4KiB argument object can compile to >4KiB physical wire; the existing
-// tool-operation cap is deliberately NOT bypassed or silently shrunk here.
+// Tavily always requires its explicit search-wire arm, including small bodies.
+// Legacy argument-sized tool requests retain their original 4KiB cap; this
+// DATA association never selects a fixture fallback or authorizes dispatch.
 func (f *FrozenRequestV1) ValidateOperation(op domain.AttemptOperationV1) error {
 	if f == nil || op.Validate() != nil || op.Kind != domain.AttemptOperationWebSearchV1 || op.Scope != f.binding.Scope || op.Sequence != f.binding.Sequence || op.CallID != f.binding.CallID ||
+		op.SearchWire == nil || op.SearchWire.Version != 1 || op.SearchWire.APIProfile != domain.WebSearchAPIProfileV1 || op.SearchWire.ArgumentsBytes != uint64(len(f.arguments)) || op.SearchWire.CompilerArtifactDigest != f.grant.AdapterArtifactDigest ||
 		op.ModelResponseDigest != f.binding.ModelResponseDigest || op.ArgumentsDigest != f.argumentsDigest || op.QueryDigest != f.queryDigest || op.ToolGrantDigest != f.grantDigest || op.RequestDigest != f.wireDigest || op.RequestBytes != uint64(len(f.wire)) ||
 		op.Debit.AmountMicrounits != f.grant.PerCallReservationMicrounits || op.Currency != f.grant.Currency || op.PriceRevision != f.binding.ParentPriceRevision || op.AdmissionCostCeilingDigest != f.binding.ParentCostCeilingDigestV2 || op.ExternalChargeEvidenceDigest != f.grant.PriceEvidenceDigest ||
 		!op.Deadline.After(f.compiledAt) || op.Deadline.After(f.validUntil) || op.Debit.ActiveDuration > 15*time.Second {
@@ -63,7 +65,8 @@ func (f *FrozenRequestV1) ValidateOperation(op domain.AttemptOperationV1) error 
 
 // BindOperationV1 completes the DATA association AFTER the exact physical wire
 // has been compiled and its digest sealed in the operation (no digest cycle).
-// It cannot issue, reserve, approve, debit or send. Current V1's 4KiB cap remains.
+// It cannot issue, reserve, approve, debit or send. Original legacy V1 limits
+// remain unchanged; authentic new-arm producer/Store integration is required.
 func (f *FrozenRequestV1) BindOperationV1(op domain.AttemptOperationV1) (*FrozenRequestV1, error) {
 	if f.ValidateOperation(op) != nil {
 		return nil, ErrOperationCompatibility

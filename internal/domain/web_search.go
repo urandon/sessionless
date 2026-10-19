@@ -21,8 +21,8 @@ const (
 	WebSearchCredentialAudienceV1 = "tavily.search"
 	WebSearchArgumentsBytesV1     = 4 << 10
 	WebSearchQueryBytesV1         = 1024
-	// Physical-wire DATA cap, not an amendment to AttemptOperationV1's current
-	// 4KiB tool RequestBytes contract. Integration must reject that mismatch.
+	// Physical-wire cap for the explicitly versioned search-wire arm. Absent
+	// that arm, the original operation retains its 4KiB tool request ceiling.
 	WebSearchWireBytesV1     = 8 << 10
 	WebSearchResponseBytesV1 = 256 << 10
 	WebSearchResultBytesV1   = 24 << 10

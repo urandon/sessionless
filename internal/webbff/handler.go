@@ -77,6 +77,7 @@ type AttachedWorkerReadService interface {
 // read and immutable decision operations. It cannot create a search request,
 // reserve money, mint an egress capability or resume an execution claim.
 type WebSearchConsentService interface {
+	DiscoverPrivateWebSearchConsent(context.Context, ports.DiscoverPrivateWebSearchConsentRequestV1) (*ports.WebSearchConsentPendingV1, error)
 	ReadPrivateWebSearchConsent(context.Context, ports.ReadPrivateWebSearchConsentRequestV1) (ports.WebSearchConsentPrivateViewV1, error)
 	DecideWebSearchConsent(context.Context, ports.DecideWebSearchConsentRequestV1) (domain.WebSearchConsentStateV1, error)
 }
@@ -252,6 +253,7 @@ func (handler *Handler) routes() {
 	}
 	if handler.config.SearchConsents != nil {
 		handler.mux.HandleFunc("GET "+webcontract.RouteSearchConsent, handler.getSearchConsent)
+		handler.mux.HandleFunc("GET "+webcontract.RouteSearchConsentCurrent, handler.getCurrentSearchConsent)
 		handler.mux.HandleFunc("POST "+webcontract.RouteSearchConsent, handler.decideSearchConsent)
 	}
 	if handler.config.AttachedWorkerControls != nil {

@@ -2,6 +2,7 @@ package ports
 
 import (
 	"context"
+	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 )
@@ -78,6 +79,32 @@ func (value ReadPrivateWebSearchConsentRequestV1) Validate() error {
 type WebSearchConsentPrivateViewV1 struct {
 	State domain.WebSearchConsentStateV1
 	Query string
+}
+
+// Discovery is a private current-Run lookup, not query disclosure. The current
+// Web session supplies the tenant/principal; a browser cannot select either.
+type DiscoverPrivateWebSearchConsentRequestV1 struct {
+	SessionID        domain.SessionID
+	RunID            domain.RunID
+	WebSessionDigest domain.SecretDigest
+}
+
+func (value DiscoverPrivateWebSearchConsentRequestV1) Validate() error {
+	if err := value.SessionID.Validate(); err != nil {
+		return err
+	}
+	if err := value.RunID.Validate(); err != nil {
+		return err
+	}
+	return value.WebSessionDigest.Validate("web_search_consent.web_session_digest")
+}
+
+// WebSearchConsentPendingV1 contains selectors and a display-only deadline.
+// It carries no query, argument/grant digest, receipt or send authority. A nil
+// result with no error means authenticated absence, never an ignored denial.
+type WebSearchConsentPendingV1 struct {
+	Locator   WebSearchConsentLocatorV1
+	ExpiresAt time.Time
 }
 
 func (value ReadWebSearchConsentRequestV1) Validate() error {

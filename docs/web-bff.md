@@ -314,7 +314,7 @@ both optional variables empty to retain the existing-identity mode.
 The optional `SearchConsents` composition mounts a private GET/POST route at
 `/api/web/v1/sessions/{session_id}/runs/{run_id}/attempts/{attempt_id}/search-consents/{request_id}`.
 It is absent by default; defining this transport does not enable search or
-supply pending-request discovery, an original worker, a model or a credential.
+supply an original worker, a model or a credential.
 The owning implementation is [#195](https://gitcode.com/urandon/sessionless/issues/195).
 
 GET accepts only the first-party cookie and path selectors, with no body or
@@ -342,13 +342,44 @@ the matching read deadline where supported, while unsupported wrappers retain
 the Web server's existing fifteen-second body-read bound. No goroutine races an
 arbitrary borrowed reader, and a late body cannot cause a decision.
 
-Both responses are `no-store`, without ETags. Queries and private state never
+Cookie-only discovery at
+`GET /api/web/v1/sessions/{session_id}/runs/{run_id}/search-consents/current`
+authenticates the current Web session, membership and Session participation,
+then correlates the canonical Run and current Job/Attempt/source with the existing
+bounded consent projection in one transaction. It returns only Session/Run and
+an optional opaque Attempt/request selector and original expiry, within two KiB.
+Explicit missing Job/parent/projection or no current pending request is
+authenticated absence; malformed, foreign, revoked or failed reads remain errors.
+Discovery never reads the grant/query body, refreshes idle activity or changes
+state. Exact query disclosure still requires the separate private read above.
+
+The optional browser build flag `VITE_SEARCH_CONSENT_ENABLED=true` adds a
+canonical-Run review button to Session view; it defaults off and does not compose
+the production BFF service or search producer. The nonmodal, keyboard-accessible
+panel escapes exact query text without Markdown/links, requires explicit approve
+or deny, and restores focus on close. Query and decision context stay in memory;
+hide, unmount, identity/tenant/session/run change, permission loss and expiry
+clear or fence obsolete reads and mutations. Closing does not undo a committed
+decision. A failed POST remains unconfirmed: canonical readback may confirm it,
+and only an explicit identical-choice retry can write again.
+
+The browser has a nonrenewable 120-second Run review budget from first opening,
+at most 24 polling rounds/48 total GETs (including discovery, exact reads and
+lost-response recovery) and four explicit POST attempts. Reads are one-flight,
+at least five seconds apart between rounds, each HTTP request bounded to ten
+seconds. The current request's shorter expiry disables its decisions; a second
+request can still be discovered inside the original Run review budget. A bounded
+50-scope memory map preserves counters across close/reopen/scope switches and
+fails closed at capacity rather than evicting and renewing them. Browser bounds
+never replace server claim/grant/policy/lease/cost authority.
+
+All responses are `no-store`, without ETags. Queries and private state never
 enter route parameters, public Run explanations, request logs or public errors.
 Approval is necessary but not sufficient for a search: the original operation
 reserve and immediate before-send gate must independently revalidate the stored
 receipt and all current authority. The complete feature additionally needs
-authenticated pending-request discovery, accessible memory-only UI and bounded
-waiting in the original worker claim. Fixture-only producer authority is not
+bounded waiting in the original worker claim and genuine producer/runtime
+composition. Fixture-only producer authority is not
 an authentic model/search producer or permission to activate a profile.
 
 ## Verification

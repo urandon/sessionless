@@ -3,11 +3,31 @@ package ydbstore
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
+
+// Exact bounded private cookie-row loader shared by discovery and query reads.
+// It never refreshes browser activity; current actor checks stay in the same
+// callback as the owning canonical Session/Run/consent lookup.
+func readOwnedConsentWebSession(ctx context.Context, q *ownedAuthorityQuery, digest domain.SecretDigest) (domain.WebSession, error) {
+	if digest.Validate("web_search_consent.web_session_digest") != nil {
+		return domain.WebSession{}, q.budget.deny()
+	}
+	bucket, err := webBucket(string(digest))
+	if err != nil {
+		return domain.WebSession{}, q.budget.deny()
+	}
+	raw, err := q.readMetadata(ctx, `SELECT SUBSTRING(CAST(record AS String),0,32769) FROM web_sessions WHERE shard_bucket=$1 AND session_digest=$2`, ownedAuthorityHeadBytes, bucket, digest)
+	var session domain.WebSession
+	if err != nil || decodeOwnedEffectCanonicalJSON(raw, &session) != nil || session.Validate() != nil || session.SessionDigest != digest {
+		return domain.WebSession{}, q.budget.deny()
+	}
+	return session, nil
+}
 
 func consentLocator(r domain.WebSearchConsentRequestV1) ports.WebSearchConsentLocatorV1 {
 	return ports.WebSearchConsentLocatorV1{TenantID: r.Scope.TenantID, SessionID: r.Scope.SessionID, RunID: r.Scope.RunID, AttemptID: r.Scope.AttemptID, RequestID: r.ID}
@@ -121,13 +141,8 @@ func (store *Store) readOwnedConsentIntent(ctx context.Context, input ports.Read
 		if private != nil {
 			// Only this current cookie row supplies the tenant. No browser
 			// tenant selector, activity refresh, or standalone auth transaction.
-			bucket, err := webBucket(string(private.WebSessionDigest))
+			session, err := readOwnedConsentWebSession(ctx, q, private.WebSessionDigest)
 			if err != nil {
-				return q.budget.deny()
-			}
-			raw, err := q.readMetadata(ctx, `SELECT SUBSTRING(CAST(record AS String),0,32769) FROM web_sessions WHERE shard_bucket=$1 AND session_digest=$2`, ownedAuthorityHeadBytes, bucket, private.WebSessionDigest)
-			var session domain.WebSession
-			if err != nil || decodeOwnedEffectCanonicalJSON(raw, &session) != nil || session.Validate() != nil || session.SessionDigest != private.WebSessionDigest {
 				return q.budget.deny()
 			}
 			resolved = ports.ReadWebSearchConsentRequestV1{
@@ -164,6 +179,88 @@ func (store *Store) ReadWebSearchConsent(ctx context.Context, input ports.ReadWe
 // refreshes browser activity nor returns a dispatch capability.
 func (store *Store) ReadPrivateWebSearchConsent(ctx context.Context, input ports.ReadPrivateWebSearchConsentRequestV1) (ports.WebSearchConsentPrivateViewV1, error) {
 	return store.readOrDecideOwnedConsent(ctx, ports.ReadWebSearchConsentRequestV1{}, nil, &input)
+}
+
+// DiscoverPrivateWebSearchConsent returns an opaque pending selector, never
+// query text or a decision/send capability. All reads share one canonical
+// transaction and its original callback/statement/metadata/time budget.
+func (store *Store) DiscoverPrivateWebSearchConsent(ctx context.Context, input ports.DiscoverPrivateWebSearchConsentRequestV1) (*ports.WebSearchConsentPendingV1, error) {
+	if !store.validOwnedAllocationContext(ctx) || input.Validate() != nil {
+		return nil, domain.ErrMembershipDenied
+	}
+	ctx, cancel := ownedConsentContext(ctx)
+	defer cancel()
+	var result *ports.WebSearchConsentPendingV1
+	err := store.ownedAuthorityTx(ctx, func(ctx context.Context, q *ownedAuthorityQuery) error {
+		result = nil // never retain a speculative callback result across retry
+		q.metadataCache = make(map[string]ownedMetadataCacheEntry)
+		web, err := readOwnedConsentWebSession(ctx, q, input.WebSessionDigest)
+		if err != nil {
+			return err
+		}
+		membership, _, err := readOwnedSessionPrincipal(ctx, q, web.ActiveTenantID, input.SessionID, web.UserID)
+		if err != nil || q.at.Before(web.LastSeenAt) || web.Authorize(membership, domain.TenantPermissionWrite, q.at) != nil {
+			return q.budget.deny()
+		}
+		raw, err := q.readCanonicalJSON(ctx, "SELECT payload FROM runs WHERE tenant_id = $1 AND run_id = $2", web.ActiveTenantID, input.RunID)
+		var run domain.Run
+		if err != nil || decodeOwnedEffectCanonicalJSON(raw, &run) != nil || run.Validate() != nil || run.TenantID != web.ActiveTenantID || run.ID != input.RunID || run.SessionID != input.SessionID || run.CreatedAt.After(q.at) || run.UpdatedAt.After(q.at) || run.StartedAt != nil && run.StartedAt.After(q.at) || run.FinishedAt != nil && run.FinishedAt.After(q.at) {
+			return q.budget.deny()
+		}
+		if run.Status != domain.RunRunning || run.CancellationRequestedAt != nil {
+			return nil // authenticated queued/terminal/stopped Run, not a new claim
+		}
+		raw, err = q.readCanonicalJSON(ctx, "SELECT payload FROM worker_jobs WHERE tenant_id=$1 AND run_id=$2", web.ActiveTenantID, input.RunID)
+		if err == sql.ErrNoRows {
+			return nil // explicit absence AFTER current Session/Run/actor checks
+		}
+		var job domain.WorkerJob
+		if err != nil || decodeOwnedEffectCanonicalJSON(raw, &job) != nil || job.ValidateForRun(run) != nil || job.CredentialOwnerUserID != web.UserID || job.CreatedAt.After(q.at) {
+			return q.budget.deny()
+		}
+		// The scalar attempt_id is not a binding. Select only from the closed
+		// canonical payload, then verify original parent/Source/current joins.
+		parent, err := readOwnedAttemptEffectParent(ctx, q, ports.ReserveAttemptEffectRequestV1{TenantID: web.ActiveTenantID, AttemptID: job.AttemptID})
+		if err != nil {
+			return err
+		}
+		if parent == nil {
+			return nil // actual parent absence; malformed/legacy parents deny above
+		}
+		if parent.Scope.TenantID != web.ActiveTenantID || parent.Scope.SessionID != input.SessionID || parent.Scope.RunID != input.RunID || parent.Scope.AttemptID != job.AttemptID || parent.Scope.OwnerUserID != web.UserID || store.validateCurrentOwnedAttemptParent(ctx, q, ownedAllocationParentRequest(parent.Reservation), *parent) != nil {
+			return q.budget.deny()
+		}
+		states, err := readOwnedConsentStates(ctx, q, *parent)
+		if err != nil {
+			return err
+		}
+		if states == nil {
+			return nil
+		}
+		for _, state := range states.States { // closed projection: at most two rows
+			if state.Request.InitiatingUserID != web.UserID {
+				return q.budget.deny()
+			}
+			if state.Status != domain.WebSearchConsentPendingV1 {
+				continue
+			}
+			if q.at.Before(state.Request.CreatedAt) || state.Request.GrantDigest != parent.Authority.HarnessBinding.AgentLoopPolicy.WebSearchGrantDigest {
+				return q.budget.deny()
+			}
+			if !q.at.Before(state.Request.ExpiresAt) {
+				continue // expired intent is not actionable; no stop/decision is written
+			}
+			if result != nil {
+				return q.budget.deny()
+			}
+			result = &ports.WebSearchConsentPendingV1{Locator: consentLocator(state.Request), ExpiresAt: state.Request.ExpiresAt}
+		}
+		return nil
+	})
+	if err != nil || ctx.Err() != nil {
+		return nil, domain.ErrMembershipDenied
+	}
+	return result, nil
 }
 
 func (store *Store) DecideWebSearchConsent(ctx context.Context, input ports.DecideWebSearchConsentRequestV1) (domain.WebSearchConsentStateV1, error) {

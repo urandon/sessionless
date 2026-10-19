@@ -20,9 +20,102 @@ import (
 const searchConsentHTTPPath = "/api/web/v1/sessions/search-session/runs/search-run/attempts/search-attempt/search-consents/search-request"
 
 type searchConsentHTTPStore struct {
-	view   ports.WebSearchConsentPrivateViewV1
-	read   func(context.Context, ports.ReadPrivateWebSearchConsentRequestV1) (ports.WebSearchConsentPrivateViewV1, error)
-	decide func(context.Context, ports.DecideWebSearchConsentRequestV1) (domain.WebSearchConsentStateV1, error)
+	discover func(context.Context, ports.DiscoverPrivateWebSearchConsentRequestV1) (*ports.WebSearchConsentPendingV1, error)
+	view     ports.WebSearchConsentPrivateViewV1
+	read     func(context.Context, ports.ReadPrivateWebSearchConsentRequestV1) (ports.WebSearchConsentPrivateViewV1, error)
+	decide   func(context.Context, ports.DecideWebSearchConsentRequestV1) (domain.WebSearchConsentStateV1, error)
+}
+
+func (s *searchConsentHTTPStore) DiscoverPrivateWebSearchConsent(ctx context.Context, r ports.DiscoverPrivateWebSearchConsentRequestV1) (*ports.WebSearchConsentPendingV1, error) {
+	if s.discover != nil {
+		return s.discover(ctx, r)
+	}
+	return nil, nil
+}
+
+func TestSearchConsentHTTPDiscoveryPrivateOpaqueOrAuthenticatedAbsence(t *testing.T) {
+	for _, absent := range []bool{false, true} {
+		t.Run(map[bool]string{false: "pending", true: "none"}[absent], func(t *testing.T) {
+			h, store, auth, cookie, _ := searchConsentHTTPFixture(t, true)
+			calls := 0
+			store.discover = func(ctx context.Context, r ports.DiscoverPrivateWebSearchConsentRequestV1) (*ports.WebSearchConsentPendingV1, error) {
+				calls++
+				if r.SessionID != "search-session" || r.RunID != "search-run" || r.WebSessionDigest != domain.DigestSecret(cookie.Value) {
+					t.Fatal("discovery did not preserve cookie-only scope")
+				}
+				if _, ok := ctx.Deadline(); !ok {
+					t.Fatal("unbounded discovery")
+				}
+				if absent {
+					return nil, nil
+				}
+				rq := store.view.State.Request
+				return &ports.WebSearchConsentPendingV1{Locator: ports.WebSearchConsentLocatorV1{TenantID: rq.Scope.TenantID, SessionID: rq.Scope.SessionID, RunID: rq.Scope.RunID, AttemptID: rq.Scope.AttemptID, RequestID: rq.ID}, ExpiresAt: rq.ExpiresAt}, nil
+			}
+			r := httptest.NewRequest(http.MethodGet, "https://web.dev.sessionless.triborg.dev/api/web/v1/sessions/search-session/runs/search-run/search-consents/current", nil)
+			r.AddCookie(cookie)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if w.Code != 200 || calls != 1 || auth.authorizations != 0 || w.Header().Get("Cache-Control") != "no-store" || w.Header().Get("ETag") != "" || w.Body.Len() > 2048 {
+				t.Fatalf("discovery status=%d calls=%d authrefresh=%d", w.Code, calls, auth.authorizations)
+			}
+			var value webcontract.SearchConsentDiscoveryV1
+			if err := json.Unmarshal(w.Body.Bytes(), &value); err != nil || value.SessionID != "search-session" || value.RunID != "search-run" || (value.Pending == nil) != absent {
+				t.Fatalf("bad opaque response err=%v", err)
+			}
+			for _, private := range []string{store.view.Query, "ten_alpha", "private-claim", store.view.State.Request.ArgumentsDigest, "query", "receipt"} {
+				if strings.Contains(w.Body.String(), private) {
+					t.Fatal("discovery leaked private authority/query")
+				}
+			}
+		})
+	}
+}
+
+func TestSearchConsentHTTPDiscoveryRejectsMalformedAndUnauthorizedRequests(t *testing.T) {
+	for _, name := range []string{"head", "query", "empty-query", "body", "bearer-only", "foreign-locator", "cancelled", "disabled"} {
+		t.Run(name, func(t *testing.T) {
+			h, store, auth, cookie, _ := searchConsentHTTPFixture(t, name != "disabled")
+			calls := 0
+			store.discover = func(context.Context, ports.DiscoverPrivateWebSearchConsentRequestV1) (*ports.WebSearchConsentPendingV1, error) {
+				calls++
+				return &ports.WebSearchConsentPendingV1{Locator: ports.WebSearchConsentLocatorV1{TenantID: "ten_alpha", SessionID: "foreign-session", RunID: "search-run", AttemptID: "attempt", RequestID: "request"}, ExpiresAt: bffTestTime}, nil
+			}
+			r := httptest.NewRequest(http.MethodGet, "https://web.dev.sessionless.triborg.dev/api/web/v1/sessions/search-session/runs/search-run/search-consents/current", nil)
+			r.AddCookie(cookie)
+			want := 400
+			switch name {
+			case "head":
+				r.Method = http.MethodHead
+				want = 405
+			case "query":
+				r.URL.RawQuery = "actor=other"
+			case "empty-query":
+				r.URL.ForceQuery = true
+			case "body":
+				r.Body = unreadExplanationBody{}
+				r.ContentLength = -1
+			case "bearer-only":
+				r.Header.Del("Cookie")
+				r.Header.Set("Authorization", "Bearer ignored")
+				want = 401
+			case "foreign-locator":
+				want = 503
+			case "cancelled":
+				ctx, cancel := context.WithCancel(r.Context())
+				cancel()
+				r = r.WithContext(ctx)
+				want = 503
+			case "disabled":
+				want = 404
+			}
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if w.Code != want || auth.authorizations != 0 || name != "foreign-locator" && calls != 0 || strings.Contains(w.Body.String(), "foreign-session") {
+				t.Fatalf("discovery status=%d want=%d canonical_calls=%d activity_refreshes=%d", w.Code, want, calls, auth.authorizations)
+			}
+		})
+	}
 }
 
 func (s *searchConsentHTTPStore) ReadPrivateWebSearchConsent(ctx context.Context, r ports.ReadPrivateWebSearchConsentRequestV1) (ports.WebSearchConsentPrivateViewV1, error) {

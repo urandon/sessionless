@@ -3,6 +3,27 @@
   "info": { "title": "Sessionless canonical Web API", "version": "1.0.0" },
   "servers": [{ "url": "/" }],
   "paths": {
+    "/api/web/v1/sessions/{session_id}/runs/{run_id}/search-consents/current": {
+      "get": {
+        "operationId": "discoverSearchConsent",
+        "parameters": [
+          { "$ref": "#/components/parameters/SessionID" },
+          { "$ref": "#/components/parameters/RunID" }
+        ],
+        "description": "Default-off cookie-only private discovery. One current canonical Session/Run/actor read, no idle activity refresh, query parameters, body or query disclosure. Returns an opaque pending selector or authenticated absence; errors are never absence. Encoded response at most 2048 bytes, no-store, no ETag. Not a decision or dispatch capability.",
+        "responses": {
+          "200": {
+            "description": "Current private selector or authenticated absence",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SearchConsentDiscoveryV1" }
+              }
+            }
+          },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
     "/api/web/v1/sessions/{session_id}/runs/{run_id}/attempts/{attempt_id}/search-consents/{request_id}": {
       "parameters": [
         { "$ref": "#/components/parameters/SessionID" },
@@ -12,7 +33,7 @@
       ],
       "get": {
         "operationId": "getSearchConsent",
-        "description": "Default-off private exact-query view. First-party cookie only; tenant/actor are resolved in the original Store without activity refresh. No query parameters or body. Encoded response at most 8192 bytes, no-store, no ETag. Discovery and worker wait are separate prerequisites; this view is not approval or egress authority.",
+        "description": "Default-off private exact-query view. First-party cookie only; tenant/actor are resolved in the original Store without activity refresh. No query parameters or body. Encoded response at most 8192 bytes, no-store, no ETag. Discovery supplies opaque selectors only; worker wait remains separate. This view is not approval or egress authority.",
         "responses": {
           "200": {
             "description": "Original query after current actor and resource-authority revalidation",
@@ -579,6 +600,25 @@
       }
     },
     "schemas": {
+      "SearchConsentDiscoveryV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["session_id", "run_id"],
+        "properties": {
+          "session_id": { "type": "string" },
+          "run_id": { "type": "string" },
+          "pending": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["attempt_id", "request_id", "expires_at"],
+            "properties": {
+              "attempt_id": { "type": "string", "maxLength": 160 },
+              "request_id": { "type": "string", "maxLength": 160 },
+              "expires_at": { "type": "string", "format": "date-time" }
+            }
+          }
+        }
+      },
       "SearchConsentSummaryV1": {
         "type": "object",
         "additionalProperties": false,

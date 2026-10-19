@@ -7,6 +7,20 @@ import (
 )
 
 const RouteSearchConsent = "/api/web/v1/sessions/{session_id}/runs/{run_id}/attempts/{attempt_id}/search-consents/{request_id}"
+const RouteSearchConsentCurrent = "/api/web/v1/sessions/{session_id}/runs/{run_id}/search-consents/current"
+
+// Opaque actor-private discovery only; no exact query or authority metadata.
+type SearchConsentPendingV1 struct {
+	AttemptID domain.AttemptID                   `json:"attempt_id"`
+	RequestID domain.WebSearchConsentRequestIDV1 `json:"request_id"`
+	ExpiresAt time.Time                          `json:"expires_at"`
+}
+
+type SearchConsentDiscoveryV1 struct {
+	SessionID domain.SessionID        `json:"session_id"`
+	RunID     domain.RunID            `json:"run_id"`
+	Pending   *SearchConsentPendingV1 `json:"pending,omitempty"`
+}
 
 // SearchConsentSummaryV1 is private browser state, never an execution receipt
 // or a grant. In particular no blob, query digest, claim or payer is exposed.

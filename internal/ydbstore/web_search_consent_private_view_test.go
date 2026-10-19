@@ -40,6 +40,11 @@ type privateConsentViewFixture struct {
 	pendingState           *domain.WebSearchConsentStateV1
 	decisionWrites         int
 	legacyGrantOnly        bool // observe old Read/Decide without adding argument I/O
+	jobAbsent              bool
+	parentAbsent           bool
+	consentAbsent          bool
+	consentStates          []domain.WebSearchConsentStateV1
+	consentRowOverride     []driver.Value
 }
 
 type privateConsentViewConnector struct{ f *privateConsentViewFixture }
@@ -102,6 +107,11 @@ func (c privateConsentViewConn) QueryContext(ctx context.Context, statement stri
 	f := c.f
 	parent := f.allocation.parent
 	var row []driver.Value
+	jobSQL, _, _ := ownedCanonicalJSONSelect("SELECT payload FROM worker_jobs WHERE tenant_id=$1 AND run_id=$2")
+	if statement == jobSQL && f.jobAbsent || statement == ownedAttemptEffectParentSQL && f.parentAbsent {
+		parent.base.recordQuery(statement, args)
+		return &explanationFixtureRows{}, nil
+	}
 	switch statement {
 	case privateConsentWebSessionSQL:
 		bucket, _ := webBucket(string(f.web.SessionDigest))
@@ -118,12 +128,24 @@ func (c privateConsentViewConn) QueryContext(ctx context.Context, statement stri
 		if len(args) != 3 || args[0].Value != string(r.TenantID) || args[1].Value != string(r.AttemptID) || args[2].Value != string(r.Kind) {
 			return nil, errors.New("private-view fixture rejects foreign consent selector")
 		}
+		if f.consentAbsent {
+			parent.base.recordQuery(statement, args)
+			return &explanationFixtureRows{values: []driver.Value{uint64(0), uint64(0), "", ""}}, nil
+		}
+		if f.consentRowOverride != nil {
+			parent.base.recordQuery(statement, args)
+			return &explanationFixtureRows{values: append([]driver.Value(nil), f.consentRowOverride...)}, nil
+		}
 		pd, _ := parent.parent.Digest()
 		state := f.state
 		if f.pendingState != nil {
 			state = f.pendingState.Clone()
 		}
-		raw, digest, err := ownedConsentBytes(ownedConsentStates{Version: 1, ParentDigest: pd, States: []domain.WebSearchConsentStateV1{state}}, parent.parent, parent.graph.at)
+		states := []domain.WebSearchConsentStateV1{state}
+		if f.consentStates != nil {
+			states = f.consentStates
+		}
+		raw, digest, err := ownedConsentBytes(ownedConsentStates{Version: 1, ParentDigest: pd, States: states}, parent.parent, parent.graph.at)
 		if err != nil {
 			return nil, err
 		}

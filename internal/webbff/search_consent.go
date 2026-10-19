@@ -40,6 +40,55 @@ func consentSummary(state domain.WebSearchConsentStateV1) webcontract.SearchCons
 	return webcontract.SearchConsentSummaryV1{RequestID: state.Request.ID, Revision: state.Revision, Status: state.Status, ExpiresAt: state.Request.ExpiresAt}
 }
 
+func (h *Handler) getCurrentSearchConsent(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), searchConsentTimeout)
+	defer cancel()
+	r = r.WithContext(ctx)
+	if ctx.Err() != nil {
+		h.writeConsentError(w, r, ctx.Err())
+		return
+	}
+	if r.URL.RawQuery != "" || r.URL.ForceQuery || r.ContentLength != 0 || r.Body != nil && r.Body != http.NoBody {
+		h.writeFailure(w, r, webcontract.ErrorInvalidRequest, "The request is invalid.")
+		return
+	}
+	cookie, err := r.Cookie(webcontract.SessionCookieName)
+	if err != nil || cookie.Value == "" {
+		h.writeError(w, r, domain.ErrWebSessionRevoked)
+		return
+	}
+	input := ports.DiscoverPrivateWebSearchConsentRequestV1{SessionID: domain.SessionID(r.PathValue("session_id")), RunID: domain.RunID(r.PathValue("run_id")), WebSessionDigest: domain.DigestSecret(cookie.Value)}
+	if input.Validate() != nil {
+		h.writeFailure(w, r, webcontract.ErrorInvalidRequest, "The request is invalid.")
+		return
+	}
+	// Cookie-only canonical discovery performs its own current actor/Session/Run
+	// authorization without the activity-refreshing generic BFF auth operation.
+	pending, err := h.config.SearchConsents.DiscoverPrivateWebSearchConsent(ctx, input)
+	if ctx.Err() != nil {
+		h.writeConsentError(w, r, ctx.Err())
+		return
+	}
+	if err != nil {
+		h.writeConsentError(w, r, err)
+		return
+	}
+	view := webcontract.SearchConsentDiscoveryV1{SessionID: input.SessionID, RunID: input.RunID}
+	if pending != nil {
+		if pending.Locator.Validate() != nil || pending.Locator.SessionID != input.SessionID || pending.Locator.RunID != input.RunID || pending.ExpiresAt.IsZero() {
+			h.writeConsentError(w, r, errors.New("invalid private consent discovery"))
+			return
+		}
+		view.Pending = &webcontract.SearchConsentPendingV1{AttemptID: pending.Locator.AttemptID, RequestID: pending.Locator.RequestID, ExpiresAt: pending.ExpiresAt}
+	}
+	h.writeBoundedJSON(w, r, view, 2<<10)
+}
+
 func (h *Handler) getSearchConsent(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)

@@ -1,9 +1,10 @@
 # Bounded web search for the owned harness
 
-Version: 0.2.1, accepted engineering design, 2026-10-10. Owners: [#94](https://gitcode.com/urandon/sessionless/issues/94),
+Version: 0.2.2, engineering amendment candidate. Predecessor 0.2.1 is the
+accepted engineering design. Owners: [#94](https://gitcode.com/urandon/sessionless/issues/94),
 [#179](https://gitcode.com/urandon/sessionless/issues/179),
 [#180](https://gitcode.com/urandon/sessionless/issues/180); implementation #176.
-Accepted with [the minimum harness](owned-agent-harness-minimum.md) at exact
+The predecessor was accepted with [the minimum harness](owned-agent-harness-minimum.md) at exact
 `42139dfb5cefb266adb77f221c0743b53cfb5217` in independently reviewed and CI-verified
 [!160](https://gitcode.com/urandon/sessionless/pull/160), under the owner's
 agreed-MVP engineering delegation. [#194](https://gitcode.com/urandon/sessionless/issues/194)
@@ -130,6 +131,57 @@ images/favicon false, auto_parameters false, and explicit domain/date/language
 options supported by the accepted schema. Request usage metadata where supported.
 Do not activate extract/crawl/map/research endpoints. Unsupported filters fail
 preflight, never disappear from the request. Profile/schema drift stops enablement.
+
+### Distinct argument and physical-request commitments
+
+Model arguments and the search-service POST body are not interchangeable.
+Retain the exact original argument bytes, their digest and byte count, and the
+digest of the exact decoded UTF-8 query approved through existing consent.
+Compile the fixed reviewed profile into a separate immutable JSON body; commit
+its actual bytes, digest and size. Fixed options, JSON escaping and encoding
+must participate in that physical commitment. A profile/compiler identity also
+belongs in the frozen correlation. No credential bytes enter either body.
+
+The model argument limit remains 4 KiB and the decoded query limit remains
+1,024 bytes. The fixed body may exceed 4 KiB for otherwise valid escaped input.
+Use a separate hard **8 KiB physical search-request ceiling**, verified against
+the actual compiler output and the maximum admitted argument shapes. The worst
+JSON string expansion is six bytes per query byte; the fixed profile overhead
+must separately be proved below 2 KiB, with the actual smaller bound recorded.
+Do not truncate, rewrite or narrow legitimate model arguments merely to satisfy
+the old argument-sized request assumption. This ceiling is not an increase to
+the aggregate Attempt body budget: charge the actual physical request plus
+reserved normalized result within the existing 1 MiB aggregate and all shorter
+admitted limits. The 24 KiB result, 256 KiB response, one POST, 15-second-or-shorter
+window, two searches/four tools and monetary ceilings remain unchanged.
+
+Current AttemptOperationV1 and fixture evidence assume argument-sized tool
+requests, including equality between argument and request commitments. They
+cannot authorize this production body by relabeling it as a fixture or weakening
+those checks. Before dispatch integration, define and independently review an
+explicit versioned search-wire arm in the original operation/evidence and
+before-send pipeline. It must verify the authentic complete model call and
+4 KiB argument bound separately, recompile the frozen profile, compare every
+physical byte/digest/length and charge it to the original reservation. Consent
+continues to approve the exact original arguments/query, not replacement bytes.
+The new search encoding's ArgumentsBytes must match the authentic durable model
+call and consent blob. RequestBytes/RequestDigest describe only the encoded
+body, not headers or TLS/RPC framing. The policy compares ArgumentsBytes with
+MaxToolArgumentBytes and physical bytes with the separate search profile cap.
+Preserve existing immutable operation identities and historical reconciliation;
+no silent reinterpretation or generic MCP/provider limit change is permitted.
+Keep the exact original V1 representation and digest for retained records: an
+extra required field would change strict re-marshalling and historical digests.
+Unknown encodings fail closed; do not infer ArgumentsBytes from RequestBytes or
+reconstruct erased material to grant another send. Retained pair, recovery and
+deletion readers must be covered by the versioned integration's tests.
+
+The pure compiler/decoder and typed grant/result are data, not send authority,
+current resource or price approval, authenticated observations or a durable
+continuation result. Until that original integration and the consent bridge are
+proved, registration stays off. Reader byte limits do not prove cancellation of
+an arbitrary blocking reader: the actual attested HTTP owner must enforce the
+original remaining deadline and cancellation without a detached read goroutine.
 
 Search results are data only. Citation URLs grant no network capability and are
 not followed, DNS-probed or downloaded by this tool. Fetch/open/find, authentication,

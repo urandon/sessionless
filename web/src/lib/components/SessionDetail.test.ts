@@ -435,6 +435,45 @@ describe('SessionDetail explanation lifecycle', () => {
     ).not.toBeInTheDocument();
   });
 
+  it('keeps an in-flight approval unconfirmed across close/reopen, without offering denial', async () => {
+    let now = consentTime;
+    const pending = barrier<{
+      request_id: string;
+      revision: number;
+      status: 'approved';
+      expires_at: string;
+    }>();
+    const client = withSearch({ decideSearchConsent: vi.fn().mockReturnValue(pending.promise) });
+    render(SessionDetail, {
+      client,
+      sessionId: 'ses-1',
+      searchConsentEnabled: true,
+      explanationNow: () => now,
+    });
+    const trigger = await screen.findByRole('button', { name: 'Review web search' });
+    await fireEvent.click(trigger);
+    await fireEvent.click(await screen.findByRole('button', { name: 'Approve this exact query' }));
+    await waitFor(() => expect(client.decideSearchConsent).toHaveBeenCalledOnce());
+    await fireEvent.click(screen.getByRole('button', { name: 'Close search consent' }));
+    now += 5000;
+    await fireEvent.click(trigger);
+    expect(
+      await screen.findByRole('button', { name: 'Retry the same approval' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Deny this search' })).not.toBeInTheDocument();
+    expect(client.decideSearchConsent).toHaveBeenCalledOnce();
+    pending.resolve({
+      request_id: 'request-1',
+      revision: 2,
+      status: 'approved',
+      expires_at: consentView.expires_at,
+    });
+    await pending.promise;
+    await tick();
+    expect(screen.queryByText(/Approval was recorded/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry the same approval' })).toBeInTheDocument();
+  });
+
   it('keeps default builds free of the drawer and additional identity reads', async () => {
     const client = withRun();
     render(SessionDetail, { client, sessionId: 'ses-1' });

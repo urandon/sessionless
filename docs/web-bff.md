@@ -362,6 +362,11 @@ hide, unmount, identity/tenant/session/run change, permission loss and expiry
 clear or fence obsolete reads and mutations. Closing does not undo a committed
 decision. A failed POST remains unconfirmed: canonical readback may confirm it,
 and only an explicit identical-choice retry can write again.
+Opaque unresolved POST identity and choice stay in the bounded scope budget
+across close/reopen and scope switches, independently of cleared query text.
+A pending read does not prove the earlier POST cannot still commit; opposite
+choices remain unavailable until a canonical terminal read resolves it or the
+original request expires. No query or receipt is retained in that budget.
 
 The browser has a nonrenewable 120-second Run review budget from first opening,
 at most 24 polling rounds/48 total GETs (including discovery, exact reads and

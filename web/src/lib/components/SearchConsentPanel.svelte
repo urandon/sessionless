@@ -99,7 +99,7 @@
         >Approve this exact query</button
       >
     </div>
-  {:else if consentState.phase === 'unconfirmed' && consentState.retryChoice}
+  {:else if consentState.phase === 'unconfirmed' && consentState.retryChoice && visibleQuery !== undefined}
     <button type="button" class="button" onclick={() => onDecide(consentState.retryChoice!)}
       >Retry the same {consentState.retryChoice === 'approve' ? 'approval' : 'denial'}</button
     >

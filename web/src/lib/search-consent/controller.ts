@@ -54,6 +54,9 @@ interface Budget {
   rounds: number;
   gets: number;
   posts: number;
+  // Opaque unresolved write identity, never query text or a receipt. Display
+  // disposal must not turn an ambiguous decision into permission to switch it.
+  unresolved?: { locator: SearchConsentLocator; choice: SearchConsentChoice; expiresAt: string };
 }
 
 // Volatile browser state only. The original worker/Store deadlines and current
@@ -131,8 +134,17 @@ export class SearchConsentController {
     budget.rounds++;
     budget.next = this.#options.now() + 5000;
     const scope = { ...this.#scope! };
-    const retryChoice = this.#state.retryChoice;
-    const pinned = this.#locator ? { ...this.#locator } : undefined;
+    const unresolved = budget.unresolved;
+    if (unresolved && this.#options.now() >= Date.parse(unresolved.expiresAt)) {
+      delete budget.unresolved;
+      this.#discard();
+      this.#state.phase = 'stopped';
+      this.#publish();
+      return Promise.resolve();
+    }
+    const retryChoice = unresolved?.choice;
+    const pinned = unresolved ? { ...unresolved.locator } : undefined;
+    if (retryChoice) this.#state.retryChoice = retryChoice;
     return this.#start('loading', async (generation, signal) => {
       if (retryChoice && pinned) {
         // An ambiguous decision stays tied to its exact request. Discovery of
@@ -140,8 +152,8 @@ export class SearchConsentController {
         this.#get(budget);
         const current = await this.#options.read(pinned, signal);
         if (!this.#current(generation)) return;
-        if (current.expires_at !== this.#state.view?.expires_at)
-          throw new TypeError('Consent changed.');
+        if (current.expires_at !== unresolved!.expiresAt) throw new TypeError('Consent changed.');
+        this.#locator = pinned;
         this.#accept(current, pinned, retryChoice);
         return;
       }
@@ -203,6 +215,7 @@ export class SearchConsentController {
       return Promise.resolve();
     }
     budget.posts++;
+    budget.unresolved = { locator: { ...locator }, choice, expiresAt: value.expires_at };
     return this.#start('submitting', async (generation, signal) => {
       try {
         const response = await this.#options.decide(locator, choice, signal);
@@ -214,6 +227,7 @@ export class SearchConsentController {
         )
           throw new TypeError('Decision not confirmed.');
         this.#state = { phase: confirmed.status, nextPollAt: budget.next };
+        delete budget.unresolved;
       } catch (error) {
         if (!this.#current(generation)) return;
         if (this.#permissionLoss(error)) {
@@ -270,7 +284,7 @@ export class SearchConsentController {
       } catch (error) {
         if (!this.#current(generation)) return;
         if (this.#permissionLoss(error)) this.#deny();
-        else if (this.#state.retryChoice && this.#state.view) this.#state.phase = 'unconfirmed';
+        else if (this.#state.retryChoice) this.#state.phase = 'unconfirmed';
         else this.#state = { phase: 'error', nextPollAt: this.#budget!.next };
       } finally {
         if (this.#current(generation)) {
@@ -298,6 +312,7 @@ export class SearchConsentController {
     retryChoice?: SearchConsentChoice,
   ): void {
     validateConsentSummary(value, locator.requestId, true);
+    if (value.status !== 'pending') delete this.#budget!.unresolved;
     const phase =
       value.status === 'pending'
         ? this.#options.now() < Date.parse(value.expires_at)

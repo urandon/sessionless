@@ -52,6 +52,51 @@ function fixture() {
 }
 
 describe('search consent lifecycle', () => {
+  it.each(['hide', 'scope', 'failed-response'] as const)(
+    'retains ambiguous decision identity across %s and reopening',
+    async (lifecycle) => {
+      const f = fixture(),
+        pending = barrier<{
+          request_id: string;
+          revision: number;
+          status: 'approved';
+          expires_at: string;
+        }>();
+      await f.controller.refresh();
+      if (lifecycle === 'failed-response')
+        f.decide.mockRejectedValue(new ApiError('temporarily_unavailable', 'unknown', 503));
+      else f.decide.mockReturnValue(pending.promise);
+      const first = f.controller.decide('approve');
+      await Promise.resolve();
+      if (lifecycle === 'failed-response') await first;
+      if (lifecycle === 'scope') {
+        f.controller.setScope({ ...scope, runId: 'run-other' });
+        f.controller.setScope(scope);
+      } else {
+        f.controller.setVisible(false);
+        f.controller.setVisible(true);
+      }
+      f.advance(5000);
+      await f.controller.refresh();
+      expect(f.controller.snapshot()).toMatchObject({
+        phase: 'unconfirmed',
+        retryChoice: 'approve',
+      });
+      await f.controller.decide('deny');
+      expect(f.decide).toHaveBeenCalledTimes(1);
+      if (lifecycle !== 'failed-response') {
+        pending.resolve({
+          request_id: 'request-1',
+          revision: 2,
+          status: 'approved',
+          expires_at: view.expires_at,
+        });
+        await first;
+        expect(f.controller.snapshot().phase).toBe('unconfirmed');
+      }
+    },
+  );
+
   it('discovers only in canonical scope and displays the exact private read', async () => {
     const f = fixture();
     await f.controller.refresh();

@@ -580,6 +580,11 @@ func ownedCurrentChangeLeaf(t testing.TB, value reflect.Value, path []int) strin
 func TestOwnedCurrentEveryFieldIsSealed(t *testing.T) {
 	t.Parallel()
 	p, _ := ownedCurrentProfileFixture(t)
+	// Exercise optional presence and every nested leaf with valid DATA. A nil
+	// pointer changed to nil would be a no-op, not a sealing counterexample.
+	body := resourceGrantRaw(t, resourceGrantFixture())
+	sum := sha256.Sum256(body)
+	p.WebSearchResourceGrant = &domain.WebSearchResourceGrantBodyV2{Version: 2, Body: domain.OwnedAgentAuthorityBodyRefV1{Ref: "original-search-grant", Digest: hex.EncodeToString(sum[:]), Bytes: uint64(len(body))}}
 	v := ownedSpendingFixture(t, p, domain.AttemptSpendingWebSearchV1)
 	for _, spec := range []struct {
 		name   string

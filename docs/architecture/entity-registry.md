@@ -31,15 +31,25 @@ or retained-history deletion: those original consumers stay fail-closed until
 their genuine integration is proved. See the
 [argument-custody contract](../design/owned-harness-web-search.md#original-owner-argument-custody).
 
-The proposed genuine search resource-grant reference belongs in the existing
+The genuine search resource-grant reference belongs in the existing
 installed profile as one optional explicitly versioned body-reference arm. Its
 original operator source owns immutable bytes and authentic publication; raw
 body SHA is distinct from the semantic resource-grant digest. Invocation scope
 already belongs to the existing policy, spending/source, parent and operation
 records, not another grant table or per-Attempt profile rewrite. Old nil-arm
-profile bytes remain unchanged; this design is not implemented publication or
-runtime authority. See the
+profile bytes remain unchanged. Source publication alone supplies neither
+current database authority nor runtime dispatch permission. See the
 [resource-grant contract](../design/owned-harness-web-search.md#reusable-resource-grant-and-original-invocation-scope).
+
+`OwnerLocalSearchExpenditureV2` and closed owner-accepted price/terms snapshots
+are nonsecret declarations within the same private installation manifest and
+bounded original Source holder. They are not new YDB records, a payer registry,
+an approval map or a balance. The original source files/key and exact publication
+receipt authenticate reconstruction; a copied body reference cannot reconstruct
+the keeper. Accepted evidence identities do not prove vendor credit, current
+tariffs or legal interpretation. Source/config/profile/grant/expenditure/snapshot
+and invocation limits bound use; existing per-Attempt spending/current/audit
+records retain the durable allocation facts and no-top-up fence.
 
 An entity is not a table. A canonical Session may have several rebuildable
 lookup projections; a current execution record may contain several bounded

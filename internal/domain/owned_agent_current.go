@@ -123,45 +123,50 @@ func (v OwnedAgentAuthorityWindowV1) ValidateAt(now time.Time) error {
 }
 
 type OwnedAgentProfileCurrentV1 struct {
-	Version                  uint32                       `json:"version"`
-	Locator                  OwnedAgentProfileLocatorV1   `json:"locator"`
-	ProfileRevision          uint64                       `json:"profile_revision"`
-	RevocationGeneration     uint64                       `json:"revocation_generation"`
-	State                    OwnedAgentCurrentStateV1     `json:"state"`
-	Backend                  HarnessBackendDescriptorV1   `json:"backend"`
-	Resource                 ProviderResourceBindingV1    `json:"resource"`
-	Substrate                SubstrateBindingV1           `json:"substrate"`
-	InstallationID           string                       `json:"installation_id"`
-	InstallationRevision     uint64                       `json:"installation_revision"`
-	InstalledManifest        OwnedAgentAuthorityBodyRefV1 `json:"installed_manifest"`
-	ReviewReceipt            OwnedAgentAuthorityBodyRefV1 `json:"review_receipt"`
-	ProviderCatalogDigest    string                       `json:"provider_catalog_digest"`
-	ProviderRouteDigest      string                       `json:"provider_route_digest"`
-	CapabilityEvidenceDigest string                       `json:"capability_evidence_digest"`
-	PrivacyPolicyDigest      string                       `json:"privacy_policy_digest"`
-	EffectivePolicyDigest    string                       `json:"effective_policy_digest"`
-	ProviderPriceDigest      string                       `json:"provider_price_digest"`
-	ProviderTermsDigest      string                       `json:"provider_terms_digest"`
-	SubstratePriceDigest     string                       `json:"substrate_price_digest"`
-	SubstrateTermsDigest     string                       `json:"substrate_terms_digest"`
-	SubstratePriceState      ExternalServicePriceStateV1  `json:"substrate_price_state"`
-	BillingOwnerUserID       UserID                       `json:"billing_owner_user_id"`
-	InputModalities          []AgentInputModalityV1       `json:"input_modalities"`
-	ModelWindowTokens        uint64                       `json:"model_window_tokens"`
-	TokenEstimatorVersion    string                       `json:"token_estimator_version"`
-	CalibrationDigest        string                       `json:"calibration_digest"`
-	InstructionVersion       string                       `json:"instruction_version"`
-	CompactionPolicyDigest   string                       `json:"compaction_policy_digest"`
-	MCPToolGrantDigest       string                       `json:"mcp_tool_grant_digest"`
-	WebSearchGrantDigest     string                       `json:"web_search_grant_digest"`
-	Limits                   AgentLoopLimitsV1            `json:"limits"`
-	CostCeiling              AdmissionCostCeilingV2       `json:"cost_ceiling"`
-	Window                   OwnedAgentAuthorityWindowV1  `json:"window"`
-	UpdatedAt                time.Time                    `json:"updated_at"`
-	MutationID               string                       `json:"mutation_id"`
+	Version                  uint32                        `json:"version"`
+	Locator                  OwnedAgentProfileLocatorV1    `json:"locator"`
+	ProfileRevision          uint64                        `json:"profile_revision"`
+	RevocationGeneration     uint64                        `json:"revocation_generation"`
+	State                    OwnedAgentCurrentStateV1      `json:"state"`
+	Backend                  HarnessBackendDescriptorV1    `json:"backend"`
+	Resource                 ProviderResourceBindingV1     `json:"resource"`
+	Substrate                SubstrateBindingV1            `json:"substrate"`
+	InstallationID           string                        `json:"installation_id"`
+	InstallationRevision     uint64                        `json:"installation_revision"`
+	InstalledManifest        OwnedAgentAuthorityBodyRefV1  `json:"installed_manifest"`
+	ReviewReceipt            OwnedAgentAuthorityBodyRefV1  `json:"review_receipt"`
+	ProviderCatalogDigest    string                        `json:"provider_catalog_digest"`
+	ProviderRouteDigest      string                        `json:"provider_route_digest"`
+	CapabilityEvidenceDigest string                        `json:"capability_evidence_digest"`
+	PrivacyPolicyDigest      string                        `json:"privacy_policy_digest"`
+	EffectivePolicyDigest    string                        `json:"effective_policy_digest"`
+	ProviderPriceDigest      string                        `json:"provider_price_digest"`
+	ProviderTermsDigest      string                        `json:"provider_terms_digest"`
+	SubstratePriceDigest     string                        `json:"substrate_price_digest"`
+	SubstrateTermsDigest     string                        `json:"substrate_terms_digest"`
+	SubstratePriceState      ExternalServicePriceStateV1   `json:"substrate_price_state"`
+	BillingOwnerUserID       UserID                        `json:"billing_owner_user_id"`
+	InputModalities          []AgentInputModalityV1        `json:"input_modalities"`
+	ModelWindowTokens        uint64                        `json:"model_window_tokens"`
+	TokenEstimatorVersion    string                        `json:"token_estimator_version"`
+	CalibrationDigest        string                        `json:"calibration_digest"`
+	InstructionVersion       string                        `json:"instruction_version"`
+	CompactionPolicyDigest   string                        `json:"compaction_policy_digest"`
+	MCPToolGrantDigest       string                        `json:"mcp_tool_grant_digest"`
+	WebSearchGrantDigest     string                        `json:"web_search_grant_digest"`
+	WebSearchResourceGrant   *WebSearchResourceGrantBodyV2 `json:"web_search_resource_grant,omitempty"`
+	Limits                   AgentLoopLimitsV1             `json:"limits"`
+	CostCeiling              AdmissionCostCeilingV2        `json:"cost_ceiling"`
+	Window                   OwnedAgentAuthorityWindowV1   `json:"window"`
+	UpdatedAt                time.Time                     `json:"updated_at"`
+	MutationID               string                        `json:"mutation_id"`
 }
 
 func (v OwnedAgentProfileCurrentV1) Clone() OwnedAgentProfileCurrentV1 {
+	if v.WebSearchResourceGrant != nil {
+		body := *v.WebSearchResourceGrant
+		v.WebSearchResourceGrant = &body
+	}
 	v.InputModalities = append([]AgentInputModalityV1(nil), v.InputModalities...)
 	v.CostCeiling = v.CostCeiling.Clone()
 	v.Substrate.ProfileEvidenceExpiresAt = v.Substrate.ProfileEvidenceExpiresAt.UTC()
@@ -170,6 +175,9 @@ func (v OwnedAgentProfileCurrentV1) Clone() OwnedAgentProfileCurrentV1 {
 }
 
 func (v OwnedAgentProfileCurrentV1) Validate() error {
+	if v.WebSearchResourceGrant != nil && v.WebSearchResourceGrant.Validate() != nil {
+		return ownedCurrentError("profile.web_search_resource_grant", "requires the closed original V2 body reference")
+	}
 	if v.Version != OwnedAgentCurrentVersionV1 || v.ProfileRevision == 0 || v.RevocationGeneration == 0 || v.InstallationRevision == 0 {
 		return ownedCurrentError("profile.identity", "requires version 1 and positive revisions/generation")
 	}

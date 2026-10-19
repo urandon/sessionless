@@ -179,10 +179,15 @@ fmt-check:
 lint: prepare go-package-layout
 	go vet $(GO_PACKAGE_PATTERNS)
 
-test: prepare fmt-check lint
-	# Complementary selections over ALL packages preserve the entire test corpus.
-	# Keep expensive connected-session scenarios out of the ordinary binary budget.
+test:
+	$(MAKE) test-ordinary
+	$(MAKE) test-connected
+
+.PHONY: test-ordinary test-connected
+test-ordinary: prepare fmt-check lint
 	go test -race -timeout=15m -skip='^TestLocalSession' $(GO_PACKAGE_PATTERNS)
+
+test-connected: prepare
 	go test -race -timeout=15m -run='^TestLocalSession' $(GO_PACKAGE_PATTERNS)
 
 build: prepare web-stage
@@ -388,9 +393,9 @@ provider-conformance-fuzz: prepare
 # Keep local and release verification complete. GitHub CI runs the unchanged
 # offline worker and egress gates in its existing isolated security job instead.
 .PHONY: ci-core ci-partition-test
-ci: ci-core attached-worker-security-gate serverless-egress-conformance
+ci: ci-core test-connected attached-worker-security-gate serverless-egress-conformance
 
-ci-core: docs-check cloud-web-smoke-test web-ci generate test build integration image-publication-test image-build-inputs-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test dockerless-stand-policy-test go-cache-policy-test ci-partition-test
+ci-core: docs-check cloud-web-smoke-test web-ci generate test-ordinary build integration image-publication-test image-build-inputs-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test dockerless-stand-policy-test go-cache-policy-test ci-partition-test
 
 ci-partition-test:
 	node --test scripts/test-ci-partition.mjs

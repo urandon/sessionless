@@ -1,6 +1,8 @@
 # Bounded web search for the owned harness
 
-Version: 0.2.3, search-wire integration amendment candidate. Predecessor 0.2.2
+Version: 0.2.4, original-owner argument-custody amendment candidate. Predecessor 0.2.3
+defines the search-wire integration; this amendment preserves that contract.
+Predecessor 0.2.2
 is the independently reviewed request/result data prefix in !247; its exact
 source remains frozen separately. Owners: [#94](https://gitcode.com/urandon/sessionless/issues/94),
 [#179](https://gitcode.com/urandon/sessionless/issues/179),
@@ -115,6 +117,73 @@ that gate yields zero sends; revocation after a possible send follows the existi
 outcome-unknown and no-replay rules, not a remote-rollback promise. Only a known,
 durable result allows model continuation. Arbitrary bounded model-generated
 public queries remain supported; there is no static-query substitute.
+
+### Original-owner argument custody
+
+The consent argument `BlobRef` remains in its original Attempt namespace. It
+must be produced and read by the same scoped operation-body owner that owns
+ordinary request/result bytes; a map fixture or an arbitrary BlobStore reader
+is not integration evidence. Add one closed physical-key arm:
+
+```text
+<SessionRunObjectPrefix>attempts/<AttemptID>/consent-arguments-v1/<scope-hash>/consent-args-v1.<size>.<sha256>
+```
+
+Derive the hash from the exact original operation scope using the existing
+`sessionless.operation-body-scope.v1` domain and canonical JSON bytes. The
+constructor chooses the complete key; callers supply only nonempty bytes,
+at most 4 KiB. The parser accepts only the exact original scope, canonical
+positive decimal size and lowercase SHA256. Reject aliases, traversal,
+foreign Attempt/hash, malformed metadata and arbitrary historical paths;
+never normalize a path or fall back to a broad prefix reader. Existing
+ordinary relative references and physical keys remain byte-for-byte unchanged.
+
+Both arms share the original Store state, synchronous I/O gate, caller context,
+operation deadline, sticky uncertain-write latch, prospective physical write
+and byte charges, and bounded inventory. Charge and remember the actual
+predicted `BlobRef` before copying or PUT; failed or ambiguous PUT/readback
+does not refund capacity or disappear from the inventory. Consent arguments
+consume the existing policy-derived `2 × MaxOperations` write ceiling, at most
+24 keys, and the same aggregate body allowance. These are joint ceilings:
+12 distinct request/result pairs plus two argument bodies cannot all fit.
+The producer must reserve existing capacity or reject before effects; neither
+an extra ledger nor a larger limit follows from this amendment.
+
+The existing body reader may distinguish only the ordinary reference and this
+exact closed consent key. The existing installed reader slot keeps its original
+owner; no additional reader injection or reconstructed capability is needed.
+Verify actual bytes, size and raw digest on each read. Consent metadata alone
+does not authenticate the MODEL call, grant, initiating actor or current claim.
+
+Physical cleanup prevalidates every inventoried object across both arms before
+the first delete, then verifies deletion and absence under the one original
+retained cleanup deadline. Preserve the namespace-anchor digest based on the
+ordinary prefix: it identifies the original scope owner, not an exhaustive
+prefix scan. The existing ordered physical-inventory digest commits every
+exact body key and metadata, including unreferenced attempted writes. Returned
+inventory copies and the original opaque erasure receipt remain unchanged.
+
+Residual V2 may validate either exact physical arm, while operation request and
+response references still resolve only through the ordinary arm. Every consent
+argument must match its exact inventoried body. Preserve all ordinary V1/V2
+serialization and digest goldens; an additive key arm does not reinterpret old
+records. Deploy compatible readers before enabling any writer: old readers
+reject new-arm inventories rather than silently accepting them.
+
+This custody repair does not complete the worker loop. The actual producer must
+also charge argument storage in the original durable accounting, retain real
+consent states in terminal residuals, and join the original finalizer and
+historical deletion verification. Until that integration is proved, existing
+MODEL/compaction-only terminal and deletion paths must continue to deny
+unsupported consent-bearing completion. Do not relax a prepared-writer guard
+or manufacture consent/erasure evidence to obtain a success.
+
+Required controlled proofs cover real owner write → private Store read → mixed
+inventory → cleanup; unchanged ordinary goldens; cross-scope and cap rejection;
+shared copy/concurrency gates; combined count/byte exhaustion; uncertain PUT,
+failed/late readback and Close; mixed cleanup failure before any delete; strict
+ordinary operation lookup; and unchanged unsupported terminal/deletion denial.
+No table, migration, credential, live call or runtime activation is introduced.
 
 ## Adapter and network boundary
 

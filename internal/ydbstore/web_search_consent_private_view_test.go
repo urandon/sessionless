@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/operationbody"
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
 
@@ -26,8 +27,11 @@ type privateConsentViewFixture struct {
 	web        domain.WebSession
 	input      ports.ReadPrivateWebSearchConsentRequestV1
 	bodies     map[string][]byte
-	grantRef   string
-	query      string
+	// Only argument custody is real in this fixture; grant provenance remains
+	// the explicitly scripted fixture profile above, not a search producer.
+	argumentBodies *operationbody.StoreV1
+	grantRef       string
+	query          string
 
 	commits, commitErrorAt int
 	intentBytes            uint64
@@ -225,6 +229,9 @@ func (f *privateConsentViewFixture) ReadAttemptOperationBody(ctx context.Context
 	}
 	f.budget, f.lastReadBytes = b, charged
 	f.reads, f.readCaps = append(f.reads, ref), append(f.readCaps, cap)
+	if f.argumentBodies != nil && ref != f.grantRef {
+		return f.argumentBodies.ReadAttemptOperationBody(ctx, scope, ref, cap)
+	}
 	body, found := f.bodies[ref]
 	if !found {
 		return nil, errors.New("private-view keeper has no exact immutable body")
@@ -318,6 +325,55 @@ func TestPrivateWebSearchConsentViewExactQueryAndOriginalBudget(t *testing.T) {
 	b := ctx.Value(ownedAuthorityCallContextKey{}).(*ownedAuthorityBudget)
 	if f.budget != b || b.callbacks != 2 || b.statements > 64 || b.bytes > ownedAuthorityMaxBytes || f.commits != 2 || !reflect.DeepEqual(f.reads, []string{f.grantRef, f.state.Request.Arguments.Key}) || !bytes.Equal(before, f.bodies[f.state.Request.Arguments.Key]) || f.web != web || f.allocation.parent.graph.writes != writes {
 		t.Fatalf("view changed custody/activity/budget: callbacks=%d statements=%d bytes=%d commits=%d reads=%v writes=%d/%d", b.callbacks, b.statements, b.bytes, f.commits, f.reads, f.allocation.parent.graph.writes, writes)
+	}
+}
+
+func TestPrivateWebSearchConsentViewActualArgumentCustody(t *testing.T) {
+	for _, name := range []string{"exact-query", "foreign-scope-hash", "corrupt-object", "missing-object"} {
+		t.Run(name, func(t *testing.T) {
+			f := newPrivateConsentViewFixture(t)
+			args := bytes.Clone(f.bodies[f.state.Request.Arguments.Key])
+			blobs := &localEntryBlobs{}
+			scope := ownedConsentOperationScope(f.state.Request.Scope)
+			bodies, err := operationbody.NewV1(scope, f.allocation.parent.parent.Authority.HarnessBinding.AgentLoopPolicy.Limits, blobs)
+			if err != nil {
+				t.Fatal("construct original argument owner", err)
+			}
+			ref, err := bodies.WriteConsentArguments(t.Context(), args)
+			if err != nil {
+				t.Fatal("actual consent argument write/readback", err)
+			}
+			delete(f.bodies, f.state.Request.Arguments.Key)
+			f.state.Request.Arguments, f.argumentBodies = ref, bodies
+			switch name {
+			case "foreign-scope-hash":
+				foreign := scope
+				foreign.PhysicalInvocationClaimID = "another-claim"
+				other, e := operationbody.NewV1(foreign, f.allocation.parent.parent.Authority.HarnessBinding.AgentLoopPolicy.Limits, blobs)
+				if e != nil {
+					t.Fatal(e)
+				}
+				f.state.Request.Arguments, e = other.WriteConsentArguments(t.Context(), args)
+				if e != nil {
+					t.Fatal(e)
+				}
+			case "corrupt-object":
+				blobs.objects[ref.Key][0] ^= 1
+			case "missing-object":
+				delete(blobs.objects, ref.Key)
+			}
+			got, err := f.read(t, t.Context())
+			if name == "exact-query" {
+				if err != nil || got.Query != f.query || !reflect.DeepEqual(got.State, f.state) {
+					t.Fatalf("actual owner→Store private view: err=%v query=%q", err, got.Query)
+				}
+			} else if !errors.Is(err, domain.ErrMembershipDenied) || !reflect.DeepEqual(got, ports.WebSearchConsentPrivateViewV1{}) {
+				t.Fatalf("%s disclosed unverified argument: err=%v view=%+v", name, err, got)
+			}
+			if len(f.reads) != 2 || f.reads[1] != f.state.Request.Arguments.Key || f.readCaps[1] != uint64(f.state.Request.Arguments.Size) || f.readCaps[1] > 4096 {
+				t.Fatalf("actual argument bridge not exercised: reads=%v caps=%v", f.reads, f.readCaps)
+			}
+		})
 	}
 }
 

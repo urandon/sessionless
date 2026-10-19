@@ -14,7 +14,7 @@ import (
 )
 
 // The existing policy bounds MaxOperations to twelve. This inventory records
-// attempted ordinary content keys, not retained/public output or another quota.
+// attempted ordinary/consent keys, not retained/public output or another quota.
 type namespaceState struct {
 	bodies                 [24]domain.BlobRef
 	count                  uint64
@@ -98,7 +98,7 @@ func (r *NamespaceErasureV1) GoString() string { return r.String() }
 // CloseOperationNamespace is for the original trusted terminal producer AFTER
 // it independently proves stop/join, retained custody and durable retirement.
 // The physical holder accepts no caller inventory/path/approval. It deletes
-// only its own known ordinary keys. All calls are synchronous under the same
+// only its own known ordinary/consent keys. All calls are synchronous under the same
 // adapter gate and one retained absolute deadline, never a per-object timeout.
 //
 // A failed attempt is irreversible. Its exact inventory remains in this state
@@ -138,11 +138,16 @@ func (t *TerminalOutputV1) CloseOperationNamespace(ctx context.Context) (*Namesp
 	var total uint64
 	for i := uint64(0); i < n.count; i++ {
 		ref := n.bodies[i]
-		if !strings.HasPrefix(ref.Key, st.prefix) {
-			return nil, ErrBody
+		var expected domain.BlobRef
+		var e error
+		if strings.HasPrefix(ref.Key, st.prefix) {
+			var parsed ReferenceV1
+			parsed, e = parseReference(ref.Key[len(st.prefix):], st.maxBytes)
+			expected = st.blobRef(parsed)
+		} else {
+			expected, e = domain.ParseAttemptOperationConsentArgumentsRefV1(st.scope, ref.Key, st.maxBytes)
 		}
-		parsed, e := parseReference(ref.Key[len(st.prefix):], st.maxBytes)
-		if e != nil || st.blobRef(parsed) != ref || uint64(ref.Size) > st.maxBytes-total {
+		if e != nil || expected != ref || uint64(ref.Size) > st.maxBytes-total {
 			return nil, ErrBody
 		}
 		total += uint64(ref.Size)

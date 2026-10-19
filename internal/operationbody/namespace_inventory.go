@@ -2,7 +2,7 @@ package operationbody
 
 import "gitcode.com/urandon/sessionless/internal/domain"
 
-// Bodies returns immutable DATA copies of every ordinary key attempted by this
+// Bodies returns immutable DATA copies of every ordinary/consent key attempted by this
 // original adapter before its successful fence/erasure. It includes unreserved
 // writes, excludes retained/output objects, and grants no deletion authority.
 func (r *NamespaceErasureV1) Bodies() ([]domain.BlobRef, error) {

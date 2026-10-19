@@ -7,7 +7,6 @@ import (
 	"math"
 	"reflect"
 	"strconv"
-	"strings"
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
@@ -196,12 +195,15 @@ func (v OwnedOperationResidualInventoryV2) Validate() error {
 	prefix := domain.SessionRunObjectPrefix(scope.TenantID, scope.SessionID, scope.RunID) + "attempt-operations-v1/" + hex.EncodeToString(ns[:]) + "/"
 	var total uint64
 	for index, b := range v.Bodies {
-		if b.Validate() != nil || b.TenantID != scope.TenantID || b.Size <= 0 || uint64(b.Size) > (1<<20)-total || !strings.HasPrefix(b.Key, prefix) {
+		if b.Validate() != nil || b.TenantID != scope.TenantID || b.Size <= 0 || uint64(b.Size) > (1<<20)-total {
 			return domain.ErrMembershipDenied
 		}
 		total += uint64(b.Size)
 		if b.Key != prefix+"opbody-v1."+strconv.FormatInt(b.Size, 10)+"."+b.SHA256 {
-			return domain.ErrMembershipDenied
+			ref, err := domain.ParseAttemptOperationConsentArgumentsRefV1(scope, b.Key, uint64(b.Size))
+			if err != nil || ref != b {
+				return domain.ErrMembershipDenied
+			}
 		}
 		for j := 0; j < index; j++ {
 			if v.Bodies[j].Key == b.Key {

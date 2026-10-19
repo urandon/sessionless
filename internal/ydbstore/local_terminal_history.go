@@ -234,10 +234,26 @@ func (s *LocalCompactionSourceV1) rejoinHistoryLocked(ctx context.Context, q *ow
 }
 
 func (entry *LocalInvocationEntryV1) readTerminalHistorySnapshot(ctx context.Context, q *ownedAuthorityQuery, run domain.Run, anchor domain.SessionEvent) (localTerminalHistorySnapshot, error) {
+	// Keep the original consumer's foreign-owner denial before any historical
+	// SQL read. The shared DATA reader has no current entry ownership itself.
+	if run.TerminalCustody == nil || run.TerminalCustody.Plan.Scope.OwnerUserID != entry.parent.Scope.OwnerUserID {
+		return localTerminalHistorySnapshot{}, q.budget.deny()
+	}
+	v, err := readHistoricalTerminalSnapshot(ctx, q, run, anchor)
+	profile, fe := entry.owner.configuration.Digest()
+	if err != nil || fe != nil || v.Run.TerminalCustody.Plan.Scope.OwnerUserID != entry.parent.Scope.OwnerUserID || v.Evidence.LocalV1.ProfileDigest != profile {
+		return localTerminalHistorySnapshot{}, q.budget.deny()
+	}
+	return v, nil
+}
+
+// Immutable producer validation shared with deletion. Current Source/profile
+// authorization remains in the original consumer above, never reactivated here.
+func readHistoricalTerminalSnapshot(ctx context.Context, q *ownedAuthorityQuery, run domain.Run, anchor domain.SessionEvent) (localTerminalHistorySnapshot, error) {
 	deny := func() (localTerminalHistorySnapshot, error) { return localTerminalHistorySnapshot{}, q.budget.deny() }
 	custody := run.TerminalCustody
 	if run.Validate() != nil || run.Status != domain.RunSucceeded || run.CancellationRequestedAt != nil || custody == nil || custody.Correspondence == nil || custody.LocalEvidence == nil ||
-		custody.Plan.Scope.OwnerUserID != entry.parent.Scope.OwnerUserID || custody.Correspondence.TerminalAssistantEventID != anchor.ID || run.FinishedAt == nil || !run.FinishedAt.Equal(run.UpdatedAt) || run.UpdatedAt.After(q.at) {
+		custody.Correspondence.TerminalAssistantEventID != anchor.ID || run.FinishedAt == nil || !run.FinishedAt.Equal(run.UpdatedAt) || run.UpdatedAt.After(q.at) {
 		return deny()
 	}
 	scope := custody.Plan.Scope
@@ -261,12 +277,11 @@ func (entry *LocalInvocationEntryV1) readTerminalHistorySnapshot(ctx context.Con
 	ad, ae := v.Admission.Digest()
 	sd, se := v.Admission.Source.Digest()
 	_, actualAccounting, ce := accountingBytes(v.Accounting)
-	profile, fe := entry.owner.configuration.Digest()
-	if pe != nil || ae != nil || se != nil || ce != nil || fe != nil || pd != parentDigest || ad != admissionDigest || actualAccounting != accountingDigest ||
+	if pe != nil || ae != nil || se != nil || ce != nil || pd != parentDigest || ad != admissionDigest || actualAccounting != accountingDigest ||
 		v.Parent.ValidateForAdmission(v.Admission) != nil || ownedOperationScope(v.Parent) != scope || v.Accounting.validate(v.Parent, v.Admission.Source, q.at) != nil ||
 		status != string(domain.RunSucceeded) || !isLocalFinalizationMarkerV2(seal) || v.Manifest.ValidateForRun(run) != nil || v.Manifest.ID != canonicaloutput.ManifestIDV1(run.ID) ||
 		v.Evidence.Version != 2 || v.Evidence.Kind != domain.ExecutionEvidenceLocalV1 || v.Evidence.ManagedV1 != nil || v.Evidence.LocalV1 == nil || v.Evidence.LocalV1.Validate() != nil ||
-		!reflect.DeepEqual(v.Evidence.LocalV1, custody.LocalEvidence) || evidenceDigest != custody.LocalEvidence.EvidenceDigest || custody.LocalEvidence.ParentDigest != pd || custody.LocalEvidence.SourceDigest != sd || custody.LocalEvidence.ProfileDigest != profile {
+		!reflect.DeepEqual(v.Evidence.LocalV1, custody.LocalEvidence) || evidenceDigest != custody.LocalEvidence.EvidenceDigest || custody.LocalEvidence.ParentDigest != pd || custody.LocalEvidence.SourceDigest != sd || custody.LocalEvidence.ProfileDigest != v.Parent.Authority.HarnessBinding.Backend.BackendProfileDigest {
 		return deny()
 	}
 	return v, nil
@@ -329,7 +344,30 @@ func (s *LocalCompactionSourceV1) materializeHistoryLocked(ctx context.Context) 
 }
 
 func (s *LocalCompactionSourceV1) validateHistoricalCapsule(ctx context.Context, v localTerminalHistorySnapshot, capsule localRetainedTerminalCapsuleV1) error {
+	// The serving historical consumer STILL requires its original current
+	// profile and canonical view. Only the shared DATA validator can omit the
+	// current profile; doing so does not construct a Source or grant reuse.
+	if chargeOwnedAuthorityBody(ctx, s.state.view.Bytes()) != nil {
+		return domain.ErrMembershipDenied
+	}
+	records := s.state.view.Records()
+	defer func() {
+		for i := range records {
+			clear(records[i].Payload)
+		}
+	}()
+	return validateHistoricalCapsuleData(v, capsule, records, &s.entry.owner.configuration)
+}
+
+// DATA-only validation of the exact original producer seal and accounting.
+// A nil current profile uses the sealed historical codec, not active execution
+// authorization. The deletion caller must independently join every durable
+// owner and actual immutable body before this result can become useful.
+func validateHistoricalCapsuleData(v localTerminalHistorySnapshot, capsule localRetainedTerminalCapsuleV1, records []sessioncontext.EventPayload, profile *domain.ConfiguredInferenceProfileV1) error {
 	run, custody := v.Run, v.Run.TerminalCustody
+	if run.Validate() != nil || run.Status != domain.RunSucceeded || run.CancellationRequestedAt != nil || custody == nil || custody.Correspondence == nil || custody.LocalEvidence == nil {
+		return domain.ErrMembershipDenied
+	}
 	if capsule.Schema != "sessionless.terminal-custody.v1" || capsule.CodecVersion != 1 || capsule.Scope != custody.Plan.Scope || capsule.ProfileDigest != custody.LocalEvidence.ProfileDigest || capsule.FrontierDigest != custody.Plan.FrontierDigest ||
 		!domain.EqualRunDerivedContextV1(capsule.DerivedContext, run.DerivedContext) || !reflect.DeepEqual(capsule.PublicManifest, v.Manifest) || len(capsule.Events) != 1 || len(capsule.Operations) == 0 || len(capsule.Operations) > 12 || uint64(len(capsule.Operations)) != v.Accounting.Aggregate.Operations {
 		return domain.ErrMembershipDenied
@@ -361,9 +399,19 @@ func (s *LocalCompactionSourceV1) validateHistoricalCapsule(ctx context.Context,
 			return domain.ErrMembershipDenied
 		}
 		normalized += uint64(len(item.NormalizedBody))
-		response, err := configuredinference.DecodeRetainedNormalizedDataV1(s.entry.owner.configuration, r, o, item.NormalizedBody)
-		if err != nil || response.Call != nil || response.Stop != configuredinference.StopFinalV1 {
-			return domain.ErrMembershipDenied
+		var text string
+		if profile == nil {
+			response, err := configuredinference.DecodeSealedRetainedTextV1(capsule.ProfileDigest, r, o, item.NormalizedBody)
+			if err != nil {
+				return domain.ErrMembershipDenied
+			}
+			text = response.Text
+		} else {
+			response, err := configuredinference.DecodeRetainedNormalizedDataV1(*profile, r, o, item.NormalizedBody)
+			if err != nil || response.Call != nil || response.Stop != configuredinference.StopFinalV1 {
+				return domain.ErrMembershipDenied
+			}
+			text = response.Text
 		}
 		expected := "retained_only"
 		if r.Operation.Kind == domain.AttemptOperationCompactionV1 {
@@ -374,21 +422,23 @@ func (s *LocalCompactionSourceV1) validateHistoricalCapsule(ctx context.Context,
 			if r.Operation.Kind != domain.AttemptOperationModelV1 || len(item.EventIDs) != 1 || item.EventIDs[0] != a.ID {
 				return domain.ErrMembershipDenied
 			}
-			// Original canonical payload was already hash-verified by ProjectCanonical.
-			if chargeOwnedAuthorityBody(ctx, s.state.view.Bytes()) != nil {
-				return domain.ErrMembershipDenied
-			}
-			for _, record := range s.state.view.Records() {
+			// The serving caller hash-verifies these through ProjectCanonical;
+			// deletion must read the same exact canonical BlobRef itself.
+			matched := false
+			for _, record := range records {
 				if record.Event.ID == a.ID {
 					var payload struct {
 						Summary            string                    `json:"summary"`
 						ArtifactManifestID domain.ArtifactManifestID `json:"artifact_manifest_id"`
 					}
-					if json.Unmarshal(record.Payload, &payload) != nil || payload.Summary != canonicaloutput.NormalizedSummary(response.Text) || payload.ArtifactManifestID != v.Manifest.ID {
+					if matched || !reflect.DeepEqual(record.Event, a) || json.Unmarshal(record.Payload, &payload) != nil || payload.Summary != canonicaloutput.NormalizedSummary(text) || payload.ArtifactManifestID != v.Manifest.ID {
 						return domain.ErrMembershipDenied
 					}
+					matched = true
 				}
-				clear(record.Payload)
+			}
+			if !matched {
+				return domain.ErrMembershipDenied
 			}
 		} else if len(item.EventIDs) != 0 {
 			return domain.ErrMembershipDenied
@@ -396,6 +446,7 @@ func (s *LocalCompactionSourceV1) validateHistoricalCapsule(ctx context.Context,
 		if item.Projection != expected {
 			return domain.ErrMembershipDenied
 		}
+		var err error
 		accounting, err = debitOwnedOperation(accounting, r.Operation, v.Parent, v.Admission.Source, r.ReservedAt)
 		if err != nil || accounting.Aggregate != r.AggregateDebit || accounting.Amounts != r.ComponentAmounts {
 			return domain.ErrMembershipDenied

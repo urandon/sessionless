@@ -3043,7 +3043,7 @@
     {
       "table": "session_deletions",
       "migration": "00061_create_session_deletions.sql",
-      "role": "Session lifecycle, API idempotency, or materialized display state.",
+      "role": "Canonical Session deletion fence and surviving audit tombstone. Optional bounded retained_verification binds original request, full metadata and exact SQL-owned inventory; no new table or caller deletion capability.",
       "primaryKey": [
         "tenant_id",
         "session_id"
@@ -3066,15 +3066,18 @@
             "internal/ydbstore/owned_authority_canonical.go",
             "internal/ydbstore/ready_expiry_repair.go",
             "internal/ydbstore/serverless_current_authority.go",
-            "internal/ydbstore/session_lifecycle.go"
+            "internal/ydbstore/session_lifecycle.go",
+            "internal/ydbstore/session_deletion_capture.go",
+            "internal/ydbstore/session_deletion_verified.go"
           ],
-          "total": 5
+          "total": 7
         },
         "writers": {
           "paths": [
-            "internal/ydbstore/session_lifecycle.go"
+            "internal/ydbstore/session_lifecycle.go",
+            "internal/ydbstore/session_deletion_verified.go"
           ],
-          "total": 1
+          "total": 2
         }
       },
       "entityGroup": "session-lifecycle",

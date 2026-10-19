@@ -7,6 +7,37 @@ import (
 	"gitcode.com/urandon/sessionless/internal/domain"
 )
 
+// SealedRetainedTextV1 is historical DATA, not a dispatch-capable ResponseV1.
+// The original model allow-list, calibration and profile-relative effective
+// limits were verified before erasure and are attested by the terminal seal.
+type SealedRetainedTextV1 struct{ Text string }
+
+// DecodeSealedRetainedTextV1 checks the closed original normalized encoding and
+// exact original reservation/observation/profile identity without reconstructing
+// the expired installation. The caller MUST verify the original terminal seal.
+// Unsupported tool material is denied, never converted to a model response.
+func DecodeSealedRetainedTextV1(profileDigest string, r domain.AttemptOperationReservationV1, o domain.AttemptOperationObservationV1, body []byte) (SealedRetainedTextV1, error) {
+	op := r.Operation
+	if domain.ValidateSHA256Digest("retained.profile", profileDigest) != nil || r.Validate() != nil || o.ValidateForReservation(r) != nil || o.Outcome != domain.AttemptOperationCompletedV1 || o.Reason != domain.AttemptOperationReasonNoneV1 || o.Usage.ExceedsReservation(op.Debit) || (op.Kind != domain.AttemptOperationModelV1 && op.Kind != domain.AttemptOperationCompactionV1) || len(body) == 0 || uint64(len(body)) > normalizedBodyLimitV1 || o.ResponseBytes != uint64(len(body)) || o.ResponseDigest != rawDigest(body) {
+		return SealedRetainedTextV1{}, ErrContract
+	}
+	if _, err := strictJSON(body, normalizedBodyLimitV1, 64, 4096); err != nil {
+		return SealedRetainedTextV1{}, ErrContract
+	}
+	var v normalizedBodyV1
+	if json.Unmarshal(body, &v) != nil || v.Version != 1 || v.Kind != "configured_model_response" || v.ProfileDigest != profileDigest || v.OperationKind != op.Kind || v.RequestDigest != op.RequestDigest || v.Limits.Validate() != nil || op.RequestBytes > v.Limits.RequestBytes || v.Stop != StopFinalV1 || v.Call != nil || !validString(v.Text, v.Limits.FinalTextBytes, false) || !validString(v.ReportedModel, 256, false) || v.Usage.Validate() != nil || v.Usage.AmountMicrounits != nil || (v.Usage.State != domain.AttemptOperationUsageUnknownV1 && v.Usage.State != domain.AttemptOperationUsageProviderReportedV1) || (op.Kind == domain.AttemptOperationCompactionV1 && (len(v.Text) > 16<<10 || uint64(len(v.Text)) > op.SummaryBytes)) {
+		return SealedRetainedTextV1{}, ErrContract
+	}
+	actual, _ := json.Marshal(v.Usage)
+	expected, _ := json.Marshal(o.Usage)
+	canonical, err := encodeNormalizedBodyV1(v, normalizedBodyLimitV1)
+	defer clear(canonical)
+	if err != nil || !bytes.Equal(actual, expected) || !bytes.Equal(canonical, body) {
+		return SealedRetainedTextV1{}, ErrContract
+	}
+	return SealedRetainedTextV1{Text: v.Text}, nil
+}
+
 // DecodeRetainedNormalizedDataV1 reads the existing normalized representation
 // after the original request has been erased. It verifies bounded DATA joins,
 // not the observation's issuer, original schema/history, current permission or

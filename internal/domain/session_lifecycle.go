@@ -27,16 +27,17 @@ func (state SessionDeletionState) Valid() bool {
 // SessionDeletion is the durable tombstone and audit boundary for destructive
 // canonical-session removal. It intentionally survives completion.
 type SessionDeletion struct {
-	TenantID       TenantID             `json:"tenant_id"`
-	SessionID      SessionID            `json:"session_id"`
-	RequestedBy    UserID               `json:"requested_by"`
-	Reason         string               `json:"reason"`
-	State          SessionDeletionState `json:"state"`
-	RequestedAt    time.Time            `json:"requested_at"`
-	StartedAt      *time.Time           `json:"started_at,omitempty"`
-	CompletedAt    *time.Time           `json:"completed_at,omitempty"`
-	DeletedObjects uint64               `json:"deleted_objects"`
-	DeletedBytes   uint64               `json:"deleted_bytes"`
+	TenantID             TenantID                        `json:"tenant_id"`
+	SessionID            SessionID                       `json:"session_id"`
+	RequestedBy          UserID                          `json:"requested_by"`
+	Reason               string                          `json:"reason"`
+	State                SessionDeletionState            `json:"state"`
+	RequestedAt          time.Time                       `json:"requested_at"`
+	StartedAt            *time.Time                      `json:"started_at,omitempty"`
+	CompletedAt          *time.Time                      `json:"completed_at,omitempty"`
+	DeletedObjects       uint64                          `json:"deleted_objects"`
+	DeletedBytes         uint64                          `json:"deleted_bytes"`
+	RetainedVerification *RetainedDeletionVerificationV1 `json:"retained_verification,omitempty"`
 }
 
 func (deletion SessionDeletion) Validate() error {
@@ -57,6 +58,9 @@ func (deletion SessionDeletion) Validate() error {
 	}
 	if deletion.RequestedAt.IsZero() {
 		return ValidationError{Field: "session_deletion.requested_at", Reason: "must not be zero"}
+	}
+	if deletion.RetainedVerification != nil && deletion.RetainedVerification.ValidateForDeletion(deletion) != nil {
+		return retainedDeletionError()
 	}
 	switch deletion.State {
 	case SessionDeletionRequested:
@@ -204,6 +208,7 @@ type SessionDeletionInventory struct {
 	OwnedAdmissionRows   uint64    `json:"owned_admission_rows"`
 	BindingRows          uint64    `json:"binding_rows"`
 	ProjectionRows       uint64    `json:"projection_rows"`
+	RetainedRows         uint64    `json:"retained_rows,omitempty"`
 	RunIDs               []RunID   `json:"run_ids"`
 	TotalBytes           uint64    `json:"total_bytes"`
 }

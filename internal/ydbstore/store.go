@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -33,6 +34,9 @@ const harnessBindingCutoverID = "harness-binding-v2-empty-cutover"
 const managedExecutionAuthorityV2CutoverID = "managed-execution-authority-v2-empty-cutover"
 
 type Options struct {
+	// SessionDeletionBlobReader is installed by the trusted application, never
+	// supplied by a deletion request. Nil preserves retained-deletion denial.
+	SessionDeletionBlobReader          SessionDeletionBlobReader
 	IdempotencyRetention               time.Duration
 	OperationalRetention               time.Duration
 	WebSessionIdleTTL                  time.Duration
@@ -50,6 +54,7 @@ type Options struct {
 }
 
 type Store struct {
+	sessionDeletionBlobReader          SessionDeletionBlobReader
 	localBootstrap                     *LocalOwnedStoreBootstrapV1
 	db                                 *sql.DB
 	idempotencyRetention               time.Duration
@@ -88,6 +93,7 @@ func New(db *sql.DB, options Options) (*Store, error) {
 		options.AttemptOperationBodies = options.OwnedOperationResidualCustody
 	}
 	return &Store{
+		sessionDeletionBlobReader:          options.SessionDeletionBlobReader,
 		db:                                 db,
 		idempotencyRetention:               options.IdempotencyRetention,
 		operationalRetention:               options.OperationalRetention,
@@ -105,6 +111,12 @@ func New(db *sql.DB, options Options) (*Store, error) {
 		ownedOperationResidualCustody:      options.OwnedOperationResidualCustody,
 		ownedProviderPriceCustody:          options.OwnedProviderPriceCustody,
 	}, nil
+}
+
+// SessionDeletionBlobReader exposes immutable reads only; it cannot upload,
+// delete, issue receipts or reconstruct an execution/cleanup owner.
+type SessionDeletionBlobReader interface {
+	Open(context.Context, domain.TenantID, domain.BlobRef) (io.ReadCloser, error)
 }
 
 // RequireExecutionPlacementCutover is the serving startup gate for the first

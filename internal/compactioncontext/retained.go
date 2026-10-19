@@ -292,7 +292,26 @@ func strictRetained(body []byte, limit int, dst any) error {
 // DATA dependency; the original reader must verify its head and entire closure.
 func DecodeRetainedV1(profile domain.ConfiguredInferenceProfileV1, policy domain.AgentLoopPolicyV1, plan domain.DerivedContextPlanV1,
 	summaryArtifact, manifest []byte, parent *RetainedV1) (*RetainedV1, error) {
-	if profile.Validate() != nil || policy.Validate() != nil || plan.Validate() != nil ||
+	if profile.Validate() != nil {
+		return nil, ErrCanonical
+	}
+	pd, _ := profile.Digest()
+	return decodeRetainedV1(&profile, pd, policy, plan, summaryArtifact, manifest, parent)
+}
+
+// DecodeSealedRetainedV1 is historical DATA-only. Original full profile/model
+// window/calibration qualification is seal-attested, not independently restored.
+// Durable original policy constraints and the complete encoded closure remain
+// validated. A successful decode grants neither reuse fit nor publication.
+func DecodeSealedRetainedV1(profileDigest string, policy domain.AgentLoopPolicyV1, plan domain.DerivedContextPlanV1, summaryArtifact, manifest []byte, parent *RetainedV1) (*RetainedV1, error) {
+	if !retainedValidDigest(profileDigest) || policy.Backend.BackendProfileDigest != profileDigest {
+		return nil, ErrCanonical
+	}
+	return decodeRetainedV1(nil, profileDigest, policy, plan, summaryArtifact, manifest, parent)
+}
+
+func decodeRetainedV1(profile *domain.ConfiguredInferenceProfileV1, pd string, policy domain.AgentLoopPolicyV1, plan domain.DerivedContextPlanV1, summaryArtifact, manifest []byte, parent *RetainedV1) (*RetainedV1, error) {
+	if policy.Validate() != nil || plan.Validate() != nil ||
 		len(summaryArtifact) > MaxRetainedSummaryBytesV1 || len(manifest) > MaxRetainedManifestBytesV1 ||
 		!retainedBodyMatches(plan.Summary, summaryArtifact) || !retainedBodyMatches(plan.Manifest, manifest) {
 		return nil, ErrCanonical
@@ -306,7 +325,6 @@ func DecodeRetainedV1(profile domain.ConfiguredInferenceProfileV1, policy domain
 	c := m.Core
 	r, o := m.Reservation, m.Observation
 	op := r.Operation
-	pd, _ := profile.Digest()
 	policyDigest, _ := policy.Digest()
 	rd, re := r.Digest()
 	od, oe := o.Digest()
@@ -314,17 +332,23 @@ func DecodeRetainedV1(profile domain.ConfiguredInferenceProfileV1, policy domain
 		c.ReservationDigest != plan.ReservationDigest || c.ObservationDigest != plan.ObservationDigest || c.NormalizedResponseDigest != plan.NormalizedResponseDigest || c.SourceViewDigest != plan.SourceViewDigest ||
 		re != nil || oe != nil || rd != c.ReservationDigest || od != c.ObservationDigest || r.Validate() != nil || o.ValidateForReservation(r) != nil ||
 		op.Scope != c.Scope || op.Sequence != c.OperationSequence || op.Kind != domain.AttemptOperationCompactionV1 || o.Outcome != domain.AttemptOperationCompletedV1 || o.Reason != domain.AttemptOperationReasonNoneV1 || o.Usage.ExceedsReservation(op.Debit) ||
-		o.ResponseDigest != c.NormalizedResponseDigest || op.Scope.AgentLoopPolicyDigest != policyDigest || op.Scope.TenantID != profile.TenantID || op.Scope.OwnerUserID != profile.OwnerUserID || op.Scope.RunID != policy.RunID || op.Scope.AttemptID != policy.AttemptID ||
-		c.ProfileDigest != pd || c.PolicyDigest != string(policyDigest) || !retainedPolicyMatches(profile, policy) || c.BundleDigest != CompactionPolicyDigestV1() || policy.InstructionVersion != InstructionVersionV1 || policy.CompactionPolicyDigest != c.BundleDigest ||
-		c.CompatibilityDigest != sourceKey("compatibility", pd, c.BundleDigest) || c.CalibrationDigest != profile.CalibrationDigest || c.SummaryDigest != retainedDigest(s.Summary) ||
+		o.ResponseDigest != c.NormalizedResponseDigest || op.Scope.AgentLoopPolicyDigest != policyDigest || op.Scope.TenantID != policy.TenantID || op.Scope.OwnerUserID != policy.OwnerUserID || op.Scope.RunID != policy.RunID || op.Scope.AttemptID != policy.AttemptID ||
+		c.ProfileDigest != pd || c.PolicyDigest != string(policyDigest) || (profile != nil && !retainedPolicyMatches(*profile, policy)) || c.BundleDigest != CompactionPolicyDigestV1() || policy.InstructionVersion != InstructionVersionV1 || policy.CompactionPolicyDigest != c.BundleDigest ||
+		c.CompatibilityDigest != sourceKey("compatibility", pd, c.BundleDigest) || !retainedValidDigest(c.CalibrationDigest) || (profile != nil && c.CalibrationDigest != profile.CalibrationDigest) || c.SummaryDigest != retainedDigest(s.Summary) ||
 		!retainedValidDigest(c.SourceViewDigest) || !retainedValidDigest(c.CanonicalDigest) || !retainedValidDigest(c.NormalizedResponseDigest) ||
 		len(s.Summary) == 0 || uint64(len(s.Summary)) > min(uint64(configuredinference.MaxCompactionSummaryBytesV1), op.SummaryBytes, policy.Limits.MaxSummaryBytes) ||
 		c.SummaryTokenUpperBound <= uint64(len(s.Summary)) || c.SummaryTokenUpperBound > min(uint64(2048), op.Debit.OutputTokens, policy.Limits.MaxOutputTokensPerCall) ||
 		r.AggregateDebit.ValidateForPolicy(policy) != nil {
 		return nil, ErrCanonical
 	}
-	if !retainedFitValid(m.GenerationFit, profile, policy) || m.GenerationFit.RequestDigest != c.GenerationRequestDigest || m.GenerationFit.InputUpperBound != op.Debit.InputTokens || m.GenerationFit.OutputReserve != op.Debit.OutputTokens ||
-		!retainedFitValid(m.NextFit, profile, policy) || m.NextFit.RequestDigest != c.NextRequestDigest {
+	fitValid := func(f retainedFitV1) bool {
+		if profile != nil {
+			return retainedFitValid(f, *profile, policy)
+		}
+		return retainedValidDigest(f.RequestDigest) && f.CalibrationDigest == c.CalibrationDigest && f.InputUpperBound > 0 && f.InputUpperBound <= policy.Limits.MaxInputTokensPerCall && f.OutputReserve > 0 && f.OutputReserve <= policy.Limits.MaxOutputTokensPerCall && f.InputUpperBound <= math.MaxUint64-f.OutputReserve && f.TotalUpperBound == f.InputUpperBound+f.OutputReserve && f.TotalUpperBound <= 1<<20
+	}
+	if !fitValid(m.GenerationFit) || m.GenerationFit.RequestDigest != c.GenerationRequestDigest || m.GenerationFit.InputUpperBound != op.Debit.InputTokens || m.GenerationFit.OutputReserve != op.Debit.OutputTokens ||
+		!fitValid(m.NextFit) || m.NextFit.RequestDigest != c.NextRequestDigest {
 		return nil, ErrCanonical
 	}
 	refs, err := validateRetainedCut(m.Cut, c.Scope)
@@ -367,6 +391,34 @@ func DecodeRetainedV1(profile domain.ConfiguredInferenceProfileV1, policy domain
 		}
 	}
 	return &RetainedV1{plan: plan, summaryBody: bytes.Clone(summaryArtifact), manifestBody: bytes.Clone(manifest), summary: s, manifest: m}, nil
+}
+
+// DependenciesV1 returns copies of exact original owning references, not
+// deletion permission. A deletion verifier resolves each against SQL ownership.
+func (v *RetainedV1) DependenciesV1() ([]domain.SessionEvent, []domain.DerivedContextPlanV1) {
+	if v == nil {
+		return nil, nil
+	}
+	var events []domain.SessionEvent
+	for _, r := range v.manifest.Cut.Sources {
+		if r.Canonical != nil {
+			e := *r.Canonical
+			if e.RunID != nil {
+				id := *e.RunID
+				e.RunID = &id
+			}
+			if e.AuthorUserID != nil {
+				id := *e.AuthorUserID
+				e.AuthorUserID = &id
+			}
+			events = append(events, e)
+		}
+	}
+	var plans []domain.DerivedContextPlanV1
+	if v.manifest.Parent != nil {
+		plans = append(plans, *v.manifest.Parent)
+	}
+	return events, plans
 }
 
 func retainedBodyMatches(ref domain.BlobRef, body []byte) bool {

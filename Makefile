@@ -188,7 +188,8 @@ test-ordinary: prepare fmt-check lint
 	go test -race -timeout=15m -skip='^TestLocalSession' $(GO_PACKAGE_PATTERNS)
 
 test-connected: prepare
-	go test -race -timeout=15m -run='^TestLocalSession' $(GO_PACKAGE_PATTERNS)
+	go test -race -count=1 -timeout=15m -run='^TestLocalSessionTerminal' $(GO_PACKAGE_PATTERNS)
+	go test -race -count=1 -timeout=15m -run='^TestLocalSession' -skip='^TestLocalSessionTerminal' $(GO_PACKAGE_PATTERNS)
 
 build: prepare web-stage
 	@mkdir -p $(BIN_DIR)

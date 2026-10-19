@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,6 +33,10 @@ func run() error {
 	case "request", "plan", "execute", "hold", "release-hold":
 	default:
 		return fmt.Errorf("unknown session lifecycle operation %q", mode)
+	}
+	retainedEnabled, err := retainedDeletionEnabled(os.Getenv("SESSION_DELETE_RETAINED_HISTORY_ENABLED"))
+	if err != nil {
+		return err
 	}
 	tenantID := domain.TenantID(strings.TrimSpace(os.Getenv("SESSION_DELETE_TENANT_ID")))
 	sessionID := domain.SessionID(strings.TrimSpace(os.Getenv("SESSION_DELETE_SESSION_ID")))
@@ -91,6 +96,19 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("open Object Storage: %w", err)
 	}
+	if retainedEnabled {
+		// Request/hold do not acquire Object Storage. For plan/execute, pin the
+		// same installed storage to a new immutable execution Store, not a
+		// verifier supplied by an individual deletion request.
+		options, err := retainedDeletionOptions(retainedEnabled, blobs)
+		if err != nil {
+			return err
+		}
+		store, err = ydbstore.New(client.DB, options)
+		if err != nil {
+			return err
+		}
+	}
 	service, err := sessionlifecycle.New(store, blobs, 0, 0)
 	if err != nil {
 		return err
@@ -109,6 +127,27 @@ func run() error {
 		ctx, tenantID, sessionID, os.Getenv("CONFIRM_SESSION_DELETE"), now,
 	)
 	return writeResult(deletion, err)
+}
+
+func retainedDeletionEnabled(raw string) (bool, error) {
+	if raw == "" {
+		return false, nil
+	}
+	enabled, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, errors.New("SESSION_DELETE_RETAINED_HISTORY_ENABLED must be a boolean")
+	}
+	return enabled, nil
+}
+
+func retainedDeletionOptions(enabled bool, reader ydbstore.SessionDeletionBlobReader) (ydbstore.Options, error) {
+	if !enabled {
+		return ydbstore.Options{}, nil
+	}
+	if reader == nil {
+		return ydbstore.Options{}, errors.New("retained history deletion requires a configured immutable blob reader")
+	}
+	return ydbstore.Options{SessionDeletionBlobReader: reader}, nil
 }
 
 func writeResult(value any, err error) error {

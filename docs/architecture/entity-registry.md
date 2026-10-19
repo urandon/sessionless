@@ -61,20 +61,32 @@ must retain its exact cancellation reference for deletion/reconciliation even
 when success commits or no terminal event commits. Late cancellation selects
 only that notice, never assistant drafts or success correspondence/evidence.
 The fixed cancelled notice cannot represent another failure. The conservative
-deletion guard below remains until the complete writer-join/inventory path
-enumerates these residues; this staging integration does not claim deletion
-readiness, fresh-Run reconstruction or normal-worker activation.
+deletion inventory must include these residues, not just visible output or the
+selected retained Head. Their registration does not prove stopped writers.
 
-Until original-writer reconciliation and the sealed finalizer are integrated,
-Session deletion rejects every registered terminal-custody plan, regardless of
-Run status or apparent correspondence/evidence. The existing admission, start
-(including incomplete retries), and completion transactions read the bounded
-canonical Run alongside its deletion index. Each streamed payload is capped at
-32 KiB with an oversize sentinel; the existing 10,000-Run limit permits about
-312.5 MiB total payload transfer, not resident buffering. Missing/inconsistent
-rows and uncertain writers deny deletion; status alone cannot prove that an
-Object Storage PUT cannot complete late. This conservative staging guard is not
-the completed paged writer-join and exact retained-object deletion workflow.
+The [writer-aware deletion contract](../design/retained-history-deletion.md)
+reuses `session_deletions.record` for one content-free, at most 2 KiB
+`retained_verification` commitment. It binds the immutable original request,
+full SQL postimages/ranges and exact reconstructable object inventory; it is
+not a new table, upload capability, scheduler or per-object delete ledger.
+The tombstone and commitment survive completion for bounded audit evidence.
+Current principal/membership and legal hold remain separate live checks.
+
+The bounded table/postimage catalog is in
+[`session_deletion_capture_sql.go`](../../internal/ydbstore/session_deletion_capture_sql.go);
+[`session_deletion_capture.go`](../../internal/ydbstore/session_deletion_capture.go)
+joins existing owners and rejects absent/foreign/mismatched scalar and JSON
+facts. Original per-Run verification work and historical writer/body checks
+remain transient, not additional persistent entities. Trusted lifecycle
+composition in
+[`session_deletion_verified.go`](../../internal/ydbstore/session_deletion_verified.go)
+may install a commitment only after successful body verification and final
+SQL rejoin; retries reconstruct it from SQL without resurrecting deleted
+bodies or granting fresh effects. Exactly proven admission/parent/operation
+scopes retire in the same canonical completion transaction, not at Plan or
+Request. Uncertain writers remain blocked. Neither status nor Object Storage
+absence proves that an earlier PUT cannot complete late. See the
+[explicit operator opt-in](../session-lifecycle.md#retained-successful-local-loop-history).
 
 The original operation-body adapter reserves 160 KiB per retained pair before
 generation: at most 32 KiB for the encoded summary artifact and 128 KiB for its

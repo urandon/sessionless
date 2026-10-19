@@ -100,6 +100,20 @@ func (service *Service) Execute(
 	if deletion.State == domain.SessionDeletionCompleted {
 		return deletion, nil
 	}
+	// Start installs the trusted retained capture and can race an earlier Plan.
+	// Never perform physical I/O from that pre-admission inventory.
+	plan, err = service.Plan(ctx, tenantID, sessionID)
+	if err != nil {
+		return domain.SessionDeletion{}, err
+	}
+	if plan.Deletion.State != domain.SessionDeletionDeleting || confirmation != plan.Confirmation {
+		return domain.SessionDeletion{}, fmt.Errorf("post-start session deletion inventory does not match the original confirmation")
+	}
+	if capture := plan.Deletion.RetainedVerification; capture != nil {
+		if err := capture.ValidateInventory(plan.Deletion, plan.Inventory); err != nil {
+			return domain.SessionDeletion{}, err
+		}
+	}
 	for _, ref := range plan.Inventory.Objects {
 		if err := service.blobs.Delete(ctx, tenantID, ref); err != nil {
 			return domain.SessionDeletion{}, fmt.Errorf("delete exact session object %q: %w", ref.Key, err)

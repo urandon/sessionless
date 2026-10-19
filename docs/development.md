@@ -121,11 +121,21 @@ suites. CI adds Playwright's Linux system dependencies through the same target.
 `make test` checks formatting, runs `go vet`, unit tests, and the race detector.
 It sets an explicit 15-minute per-package test deadline for the growing
 Store/worker conformance suites. The Go verification CI job has a separate
-30-minute ceiling for the serial `make ci` contract, including compilation,
-the race suite, builds, integration, security/conformance stress and policy
-checks. A measured run passed the Store package but reached the previous
-20-minute job ceiling during later egress stress; a package pass does not
-replace the unfinished checks. These are failure ceilings, not synchronization,
+30-minute ceiling for `make ci-core`, including compilation, ordinary race tests,
+builds, integration and policy checks. A parallel 30-minute `go-connected` job
+runs the complementary `make test-connected` selection over all packages.
+Local `make test` runs ordinary and connected selections sequentially, even
+under `make -j`. Both retain the race detector and 15-minute per-binary bounds.
+YDB, isolated-security, local-stand and Terraform join both Go jobs. The unchanged offline
+`attached-worker-security-gate` and complete `serverless-egress-conformance` run
+in the existing 25-minute isolated security job before YDB startup, without
+that job's YDB environment variables. All nine CI jobs remain required; images
+retain all their original dependencies plus `go-connected`. Local/release
+`make ci` still requires core, connected tests and both offline gates; see
+[the partition contract](testing-best-practices.md#cumulative-package-runtime).
+A package pass does not replace unfinished checks, and exact-head CI must
+measure whether the parallel and isolated jobs fit, including a cold cache miss.
+No cache hit is a gate or a substitute for checks. These are failure ceilings, not synchronization,
 correctness guarantees or permission to retry. Diagnose any further timeout
 at its actual stage rather than automatically increasing the ceiling again.
 Use the exact source, goroutine stacks and bounded
@@ -163,6 +173,16 @@ Pi-specific development targets and integration packages were removed under
 `GOCACHE` and `GOMODCACHE` below `.git/sessionless-go-cache` across every
 linked worktree. Go's build cache is content-addressed and safe for concurrent
 Go commands; the module cache is also normally shared by the Go toolchain.
+
+The Make-backed GitHub workflows declare these same absolute checkout-relative
+paths at workflow level, before `setup-go`. Its restore and post-save discover
+paths through `go env GOCACHE` and `go env GOMODCACHE`; Make-only exports do not
+change the action's environment. See the upstream
+[cache path commands](https://github.com/actions/setup-go/blob/v6/src/package-managers.ts)
+and [post-save implementation](https://github.com/actions/setup-go/blob/v6/src/cache-save.ts).
+This aligns cache contents, not measured performance: a cache miss must still
+execute every check and fit the unchanged job bounds. No cache is a correctness
+or readiness requirement; `make go-cache-policy-test` checks path agreement.
 
 `GOTMPDIR`, `.build/bin`, and `.build/dockerless` stay inside each
 worktree. They may contain in-progress files, commit-specific binaries, process
@@ -832,8 +852,9 @@ expanding the webhook/control-plane attack surface.
 
 GitCode is the source of truth for branches and merge requests. Its push mirror
 replicates every commit to `github.com/urandon/sessionless`, where GitHub Actions
-runs `make ci` and `make images` for every mirrored branch or tag push. The
-workflow is `.github/workflows/ci.yml`; a GitHub pull request is not required.
+runs the full CI contract across `make ci-core`, `make test-connected` and the isolated security job,
+then `make image-reproducibility-test`, for every mirrored branch or tag push.
+The workflow is `.github/workflows/ci.yml`; a GitHub pull request is not required.
 
 Ordinary branch and `main` CI never requests a GitHub OIDC token and never
 contacts Yandex Container Registry. It still builds every runtime image twice

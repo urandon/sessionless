@@ -15,6 +15,8 @@ const required = `docs-check cloud-web-smoke-test web-ci generate test-ordinary 
   image-publish-policy-test registry-gc-policy-test release-policy-test
   local-stand-policy-test dockerless-stand-policy-test go-cache-policy-test`.split(/\s+/);
 const words = (value) => value.trim() ? value.trim().split(/\s+/).sort() : [];
+const connectedTerminal = "go test -race -count=1 -timeout=15m -run='^TestLocalSessionTerminal' $(GO_PACKAGE_PATTERNS)";
+const connectedOther = "go test -race -count=1 -timeout=15m -run='^TestLocalSession' -skip='^TestLocalSessionTerminal' $(GO_PACKAGE_PATTERNS)";
 function recipe(make, name) {
   const matches = [...make.matchAll(new RegExp(`^${name}:[^\\n]*\\n((?:\\t[^\\n]*\\n)*)`, 'gm'))];
   assert.equal(matches.length, 1, `unique ${name} recipe`);
@@ -44,7 +46,7 @@ function verify({ make, ci, release }) {
   assert.deepEqual(target(make, 'test-connected'), ['prepare'], 'connected preparation');
   assert.match(make, /^GO_PACKAGE_PATTERNS := \.\/cmd\/\.\.\. \.\/internal\/\.\.\. \.\/migrations\/\.\.\.$/m, 'complete Go corpus');
   assert.equal(recipe(make, 'test-ordinary'), "go test -race -timeout=15m -skip='^TestLocalSession' $(GO_PACKAGE_PATTERNS)", 'exact ordinary command');
-  assert.equal(recipe(make, 'test-connected'), "go test -race -timeout=15m -run='^TestLocalSession' $(GO_PACKAGE_PATTERNS)", 'exact connected command');
+  assert.equal(recipe(make, 'test-connected'), `${connectedTerminal}\n\t${connectedOther}`, 'exact sequential connected partition');
   assert.deepEqual(target(make, 'attached-worker-security-gate'),
     words('attached-worker-crash-integration attached-worker-active-crash-integration'));
   assert.equal(recipe(make, 'ci-partition-test'), 'node --test scripts/test-ci-partition.mjs\n\tnode --test scripts/test-ci-ydb-readiness.mjs');
@@ -92,6 +94,21 @@ function verify({ make, ci, release }) {
 }
 
 test('local, release and mirrored CI retain the complete partition', () => verify(original));
+test('connected selectors are disjoint and cover the original complete prefix', () => {
+  for (const name of [
+    'TestLocalSession', 'TestLocalSessionTerminal',
+    'TestLocalSessionTerminalCleanupStorageFaultsConnected',
+    'TestLocalSessionRetainedDeletionConnected',
+    'TestLocalSessionWorkerPreflightOriginalPositiveReadOnly',
+    'TestLocalSessionFutureFamily', 'TestOther', 'ExampleLocalSession', 'FuzzLocalSession',
+  ]) {
+    const allConnected = /^TestLocalSession/.test(name);
+    const terminal = /^TestLocalSessionTerminal/.test(name);
+    const other = allConnected && !terminal;
+    assert.equal(Number(terminal) + Number(other), Number(allConnected), name);
+    assert.equal(Number(!allConnected) + Number(terminal) + Number(other), 1, name);
+  }
+});
 const mutations = [
   ['missing core check', 'make', 'ci-core: docs-check ', 'ci-core: '],
   ['missing local security', 'make', 'ci: ci-core test-connected attached-worker-security-gate serverless-egress-conformance', 'ci: ci-core test-connected serverless-egress-conformance'],
@@ -116,10 +133,13 @@ const mutations = [
   ['incomplete package roots', 'make', './cmd/... ./internal/... ./migrations/...', './internal/...', /complete Go corpus/],
   ['lost ordinary race', 'make', "go test -race -timeout=15m -skip=", "go test -timeout=15m -skip=", /exact ordinary command/],
   ['changed ordinary selector', 'make', "-skip='^TestLocalSession'", "-skip='^TestLocal'", /exact ordinary command/],
-  ['lost connected race', 'make', "go test -race -timeout=15m -run='^TestLocalSession'", "go test -timeout=15m -run='^TestLocalSession'", /exact connected command/],
-  ['wider connected binary bound', 'make', "-timeout=15m -run='^TestLocalSession'", "-timeout=30m -run='^TestLocalSession'", /exact connected command/],
-  ['incomplete connected corpus', 'make', "-run='^TestLocalSession' $(GO_PACKAGE_PATTERNS)", "-run='^TestLocalSession' ./internal/ydbstore", /exact connected command/],
-  ['extra connected filter', 'make', "-run='^TestLocalSession' $(GO_PACKAGE_PATTERNS)", "-run='^TestLocalSession' -short $(GO_PACKAGE_PATTERNS)", /exact connected command/],
+  ['missing terminal half', 'make', `\t${connectedTerminal}\n`, '', /exact sequential connected partition/],
+  ['missing other half', 'make', `\t${connectedOther}\n`, '', /exact sequential connected partition/],
+  ['overlapping connected halves', 'make', connectedOther, connectedOther.replace(" -skip='^TestLocalSessionTerminal'", ''), /exact sequential connected partition/],
+  ['gap in terminal half', 'make', connectedTerminal, connectedTerminal.replace("^TestLocalSessionTerminal", '^TestLocalSessionTerminalCleanup'), /exact sequential connected partition/],
+  ['gap in other half', 'make', connectedOther, connectedOther.replace("-skip='^TestLocalSessionTerminal'", "-skip='^TestLocalSession'"), /exact sequential connected partition/],
+  ['reversed connected halves', 'make', `${connectedTerminal}\n\t${connectedOther}`, `${connectedOther}\n\t${connectedTerminal}`, /exact sequential connected partition/],
+  ['parallel connected halves', 'make', connectedTerminal, `${connectedTerminal} &`, /exact sequential connected partition/],
   ['missing connected job', 'ci', '  go-connected:\n', '  removed-connected:\n', /unique go-connected job/],
   ['serialized connected job', 'ci', '  go-connected:\n', '  go-connected:\n    needs: verify\n', /connected is parallel/],
   ['wrong connected target', 'ci', 'run: make test-connected\n', 'run: make test-ordinary\n', /complete connected invocation/],
@@ -131,6 +151,16 @@ const mutations = [
   ['liveness replaces SQL health', 'ci', 'run: bash scripts/wait-ci-ydb.sh sessionless-ydb', 'run: curl http://localhost:8765/monitoring/cluster', /ydb SQL\/storage readiness/],
   ['wrong readiness owner', 'ci', 'run: bash scripts/wait-ci-ydb.sh sessionless-security-ydb', 'run: bash scripts/wait-ci-ydb.sh sessionless-ydb', /ydb-security-isolated SQL\/storage readiness/],
 ];
+for (const [half, command] of [['terminal', connectedTerminal], ['other', connectedOther]]) {
+  for (const [name, mutate] of [
+    ['lost race', value => value.replace(' -race', '')],
+    ['cached results', value => value.replace(' -count=1', '')],
+    ['wider binary bound', value => value.replace('-timeout=15m', '-timeout=30m')],
+    ['incomplete corpus', value => value.replace('$(GO_PACKAGE_PATTERNS)', './internal/ydbstore')],
+    ['extra filter', value => value.replace(' $(GO_PACKAGE_PATTERNS)', ' -short $(GO_PACKAGE_PATTERNS)')],
+    ['ignored failure', value => `${value} || true`],
+  ]) mutations.push([`${half} ${name}`, 'make', command, mutate(command), /exact sequential connected partition/]);
+}
 for (const name of ['ydb', 'ydb-security-isolated', 'local-stand', 'terraform']) {
   mutations.push([`${name} loses connected join`, 'ci',
     `  ${name}:\n${job(original.ci, name)}`,

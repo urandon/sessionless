@@ -170,26 +170,31 @@ reported test has only just started. Do not call that test hung or flaky from
 its name in the timeout report; inspect elapsed execution and actual evidence.
 
 `make test` calls `test-ordinary` then `test-connected` using sequential recursive
-Make recipe lines, including under `make -j`. These targets use two complementary selections over the same complete package
-patterns: `-skip='^TestLocalSession'`, then `-run='^TestLocalSession'`. Both retain
-the race detector and the existing 15-minute per-binary bound. This separates
-connected-session work without dropping tests, their subtests, examples or fuzz
-seed corpora, or shortening scenarios. Both commands must cover all packages:
-matching test names exist outside the state-store package as well. Keep ordinary
-sequential Make recipe lines so failure of either command fails the target.
+Make recipe lines, including under `make -j`. The ordinary selection is
+`-skip='^TestLocalSession'`. Connected work uses two sequential uncached
+executions: `-run='^TestLocalSessionTerminal'`, then
+`-run='^TestLocalSession' -skip='^TestLocalSessionTerminal'`. The connected
+selections are disjoint and together cover the original complete
+`^TestLocalSession` prefix. All three retain the race detector and the existing
+15-minute per-binary bound. They do not drop tests, subtests, examples or fuzz
+seed corpora or shorten scenarios. Every execution covers the same complete
+package patterns: matching names exist outside the state-store package too.
+Keep ordinary sequential recipe lines: a failure stops the target before its
+next execution, including under `make -j`; do not background either half.
 Formatting, vet and package-layout checks remain prerequisites of the ordinary part.
 
 Preserve this complement if changing the selector. Do not introduce a second
 unrelated filter, ignored failure, `-short`, wider timeout or hidden test skip
 to obtain a green result. Package initialization runs separately; cross-test
-process-state dependencies are not supported. Record fresh execution of both
-halves with caching disabled or in clean exact-head CI. The CI job's overall
+process-state dependencies are not supported. Record fresh execution of all
+selections; both connected executions explicitly disable result caching. The CI job's overall
 30-minute budget is unchanged and still needs actual verification. See the Go
 command's [`-run`, `-skip` and `-timeout` contracts](https://pkg.go.dev/cmd/go#hdr-Testing_flags).
 
 GitHub CI has nine required jobs. Its Go verification job runs `make ci-core`,
-including `test-ordinary`; a parallel 30-minute `go-connected` job runs
-`make test-connected` over the same full package patterns. It needs no Web build:
+including `test-ordinary`; a parallel 30-minute `go-connected` job runs the two
+sequential executions of `make test-connected` over the same full package
+patterns. It needs no Web build:
 the committed embed placeholder suffices for compilation. Neither job requires
 a cache hit. The existing YDB, isolated-security, local-stand and Terraform jobs
 join both Go jobs, preserving their original complete-unit-test predecessor.

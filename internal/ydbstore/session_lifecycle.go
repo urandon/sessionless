@@ -344,6 +344,13 @@ func (store *Store) BuildSessionDeletionInventory(
 	maxRows uint64,
 	maxObjects uint64,
 ) (domain.SessionDeletionInventory, error) {
+	return buildSessionDeletionInventory(ctx, &sessionDeletionInventoryQuery{query: store.db}, tenantID, sessionID, maxRows, maxObjects)
+}
+
+// The SAME query-backed inventory is used with the installed DB for Plan and
+// with the original SQL transaction for destructive rejoin. It must never open
+// a nested Store transaction or perform blob I/O.
+func buildSessionDeletionInventory(ctx context.Context, store *sessionDeletionInventoryQuery, tenantID domain.TenantID, sessionID domain.SessionID, maxRows, maxObjects uint64) (domain.SessionDeletionInventory, error) {
 	inventory := domain.SessionDeletionInventory{TenantID: tenantID, SessionID: sessionID}
 	if err := tenantID.Validate(); err != nil {
 		return inventory, err
@@ -449,7 +456,7 @@ func (store *Store) BuildSessionDeletionInventory(
 		{`SELECT sequence FROM session_material_boundaries_v1 WHERE tenant_id=$1 AND session_id=$2 ORDER BY sequence ASC LIMIT $3`, &inventory.MaterialBoundaryRows},
 		{`SELECT snapshot_version FROM session_snapshot_material_v1 WHERE tenant_id=$1 AND session_id=$2 ORDER BY snapshot_version ASC LIMIT $3`, &inventory.MaterialSnapshotRows},
 	} {
-		count, err := countSessionMaterialRows(ctx, store.db, material.statement, tenantID, sessionID, maxRows-rowsUsed)
+		count, err := store.countSessionMaterialRows(ctx, material.statement, tenantID, sessionID, maxRows-rowsUsed)
 		if err != nil {
 			return inventory, err
 		}
@@ -496,7 +503,7 @@ func (store *Store) BuildSessionDeletionInventory(
 	if err != nil {
 		return inventory, err
 	}
-	admissions, err := listOwnedSessionAdmissionKeys(ctx, store.db, tenantID, sessionID, maxRows-rowsUsed)
+	admissions, err := listOwnedSessionAdmissionKeys(ctx, store.query, tenantID, sessionID, maxRows-rowsUsed)
 	if err != nil {
 		return inventory, err
 	}
@@ -560,7 +567,7 @@ func (store *Store) BuildSessionDeletionInventory(
 			if err := addRow(); err != nil {
 				return inventory, err
 			}
-			delivery, found, err := readLifecycleDelivery(ctx, store.db, tenantID, runID, deliveryID)
+			delivery, found, err := readLifecycleDelivery(ctx, store.query, tenantID, runID, deliveryID)
 			if err != nil {
 				return inventory, err
 			}
@@ -582,7 +589,7 @@ func (store *Store) BuildSessionDeletionInventory(
 			if err := addRow(); err != nil {
 				return inventory, err
 			}
-			checkpoint, found, err := readLifecycleCheckpoint(ctx, store.db, tenantID, runID, checkpointID)
+			checkpoint, found, err := readLifecycleCheckpoint(ctx, store.query, tenantID, runID, checkpointID)
 			if err != nil {
 				return inventory, err
 			}
@@ -634,6 +641,7 @@ func (store *Store) CompleteSessionDeletion(
 	if !found {
 		return result, fmt.Errorf("deletion for session %q not found", sessionID)
 	}
+	var expectedInventory *domain.SessionDeletionInventory
 	if stored.State != domain.SessionDeletionCompleted {
 		inventory, err := store.BuildSessionDeletionInventory(
 			ctx, tenantID, sessionID, maxSessionDeletionRows, maxSessionDeletionRows,
@@ -644,6 +652,7 @@ func (store *Store) CompleteSessionDeletion(
 		if deletedObjects != uint64(len(inventory.Objects)) || deletedBytes != inventory.TotalBytes {
 			return result, domain.ValidationError{Field: "session_deletion.completion", Reason: "does not match the durable exact-object inventory"}
 		}
+		expectedInventory = &inventory
 	}
 	err = store.Transact(ctx, tenantID, func(state ports.StateTx) error {
 		tx := state.(*stateTx)
@@ -668,6 +677,12 @@ func (store *Store) CompleteSessionDeletion(
 			return err
 		}
 		if err := ensureNoPendingAttachedWorkerReceiptsTx(ctx, tx, sessionID); err != nil {
+			return err
+		}
+		if expectedInventory == nil {
+			return ErrSessionLifecycleConflict
+		}
+		if err := rejoinSessionDeletionInventoryTx(ctx, tx, *expectedInventory); err != nil {
 			return err
 		}
 		if err := deleteSessionRowsTx(ctx, tx, sessionID); err != nil {

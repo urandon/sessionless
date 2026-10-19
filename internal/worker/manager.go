@@ -21,6 +21,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/outboxwake"
 	"gitcode.com/urandon/sessionless/internal/ports"
+	"gitcode.com/urandon/sessionless/internal/providerloopsession"
 	"gitcode.com/urandon/sessionless/internal/queuecontract"
 	"gitcode.com/urandon/sessionless/internal/serverlessharness"
 	"gitcode.com/urandon/sessionless/internal/sessionmaterial"
@@ -42,8 +43,11 @@ type Config struct {
 	CredentialFinalizeGrace time.Duration
 	CredentialLifecycle     ports.CredentialLifecycle
 	ExecutionPreparer       serverlessharness.ExecutionPreparerV1
-	PhysicalClaimGenerator  PhysicalClaimGenerator
-	ScratchRemoveAll        func(string) error
+	// LocalOwnedSession explicitly selects the original, single-invocation
+	// local V2 owner. It is mutually exclusive with the managed V1 drivers.
+	LocalOwnedSession      *providerloopsession.LocalV1
+	PhysicalClaimGenerator PhysicalClaimGenerator
+	ScratchRemoveAll       func(string) error
 }
 
 type PhysicalClaimGenerator func(context.Context) (string, error)
@@ -142,9 +146,18 @@ func New(
 		return nil, err
 	}
 	config.ScratchRoot = root
-	if clock == nil || queue == nil || state == nil || blobs == nil || harness == nil ||
-		config.DeliveryWakePublisher == nil || config.ProjectionWakePublisher == nil || config.ExecutionPreparer == nil {
+	if clock == nil || queue == nil || state == nil || blobs == nil ||
+		config.DeliveryWakePublisher == nil || config.ProjectionWakePublisher == nil {
 		return nil, fmt.Errorf("worker dependencies must not be nil")
+	}
+	if config.LocalOwnedSession != nil {
+		original, err := config.LocalOwnedSession.WorkerState()
+		if err != nil || original != state || harness != nil || config.ExecutionPreparer != nil ||
+			config.CredentialMode != CredentialDisabled || config.CredentialLifecycle != nil {
+			return nil, errors.New("local worker requires its original session state and no managed V1 driver or credentials")
+		}
+	} else if harness == nil || config.ExecutionPreparer == nil {
+		return nil, errors.New("managed worker dependencies must not be nil")
 	}
 	effects, ok := state.(ports.AttemptEffectStoreV1)
 	if !ok {
@@ -203,8 +216,14 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 		}
 		return OutcomeDuplicate, nil
 	}
-	if err := manager.harness.Preflight(ctx, executionIdentityForJob(loaded.Job)); err != nil {
-		return manager.retry(ctx, message, err)
+	if manager.config.LocalOwnedSession != nil {
+		if err := manager.config.LocalOwnedSession.PreflightWorkerJob(ctx, loaded); err != nil {
+			return manager.retry(ctx, message, err)
+		}
+	} else {
+		if err := manager.harness.Preflight(ctx, executionIdentityForJob(loaded.Job)); err != nil {
+			return manager.retry(ctx, message, err)
+		}
 	}
 	if err := manager.validateProviderCredentialPlan(loaded.Job.HarnessBinding); err != nil {
 		return manager.retry(ctx, message, err)
@@ -228,6 +247,9 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 		return manager.retry(ctx, message, err)
 	}
 	if err := validateLoadedWorkerJob(loaded); err != nil {
+		if manager.config.LocalOwnedSession != nil {
+			return manager.retry(ctx, message, err)
+		}
 		return manager.finishFailure(ctx, message, loaded, lease, false, "invalid_worker_job")
 	}
 	cancelled, err := manager.state.CancellationRequested(
@@ -237,6 +259,9 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 		return manager.retry(ctx, message, err)
 	}
 	if cancelled {
+		if manager.config.LocalOwnedSession != nil {
+			return manager.retry(ctx, message, context.Canceled)
+		}
 		return manager.finishFailure(ctx, message, loaded, lease, true, "cancelled_before_start")
 	}
 	physicalClaimID, err := manager.config.PhysicalClaimGenerator(ctx)
@@ -254,6 +279,11 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 		return manager.retry(ctx, message, err)
 	}
 	if effect.Status == ports.AttemptEffectReconcileOnlyV1 {
+		if manager.config.LocalOwnedSession != nil {
+			// A restarted/replayed local reservation cannot restore the private
+			// entered owner, dispatch or manufacture managed V1 evidence.
+			return manager.retry(ctx, message, errors.New("local worker effect requires original-owner reconciliation"))
+		}
 		reconciliation, err := manager.preparer.PrepareReconciliation(ctx, effect)
 		if err != nil {
 			return manager.retry(ctx, message, err)
@@ -273,6 +303,9 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 			return manager.retry(ctx, message, err)
 		}
 		return manager.retry(ctx, message, attemptEffectReconcilePendingError{evidence: evidence})
+	}
+	if manager.config.LocalOwnedSession != nil {
+		return manager.runLocalOwned(ctx, message, loaded, lease, effect)
 	}
 	execution, err := manager.preparer.PrepareExecution(ctx, effect)
 	if err != nil {

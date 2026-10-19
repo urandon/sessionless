@@ -4,6 +4,46 @@
  */
 
 export interface paths {
+    "/api/web/v1/sessions/{session_id}/runs/{run_id}/search-consents/current": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Default-off cookie-only private discovery. One current canonical Session/Run/actor read, no idle activity refresh, query parameters, body or query disclosure. Returns an opaque pending selector or authenticated absence; errors are never absence. Encoded response at most 2048 bytes, no-store, no ETag. Not a decision or dispatch capability. */
+        get: operations["discoverSearchConsent"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/web/v1/sessions/{session_id}/runs/{run_id}/attempts/{attempt_id}/search-consents/{request_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: components["parameters"]["SessionID"];
+                run_id: components["parameters"]["RunID"];
+                attempt_id: string;
+                request_id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Default-off private exact-query view. First-party cookie only; tenant/actor are resolved in the original Store without activity refresh. No query parameters or body. Encoded response at most 8192 bytes, no-store, no ETag. Discovery supplies opaque selectors only; worker wait remains separate. This view is not approval or egress authority. */
+        get: operations["getSearchConsent"];
+        put?: never;
+        /** @description Default-off immutable decision CAS using established cookie/header CSRF equality and exact Origin. Store rechecks current actor, stored CSRF, original claim and all original windows. No query or receipt is returned. Identical retries recover the original decision, never a send capability. Body at most 512 bytes; exact keys/casing, no duplicates or trailing values. */
+        post: operations["decideSearchConsent"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/web/v1/me": {
         parameters: {
             query?: never;
@@ -377,6 +417,40 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        SearchConsentDiscoveryV1: {
+            session_id: string;
+            run_id: string;
+            pending?: {
+                attempt_id: string;
+                request_id: string;
+                /** Format: date-time */
+                expires_at: string;
+            };
+        };
+        SearchConsentSummaryV1: {
+            request_id: string;
+            revision: number;
+            /** @enum {string} */
+            status: "pending" | "approved" | "denied" | "expired" | "cancelled" | "revoked" | "reconcile_only";
+            /** Format: date-time */
+            expires_at: string;
+        };
+        SearchConsentViewV1: {
+            request_id: string;
+            revision: number;
+            /** @enum {string} */
+            status: "pending" | "approved" | "denied" | "expired" | "cancelled" | "revoked" | "reconcile_only";
+            /** Format: date-time */
+            expires_at: string;
+            /** @description Exact decoded query, at most 1024 UTF-8 bytes; private browser memory only, not public execution evidence. */
+            query: string;
+        };
+        DecideSearchConsentV1: {
+            /** @constant */
+            expected_revision: 1;
+            /** @enum {string} */
+            choice: "approve" | "deny";
+        };
         /** @description Unmounted compute-choice contract. Shape is not authorization, eligibility, reservation or execution. Producer reauthorizes and joins all current evidence. Encoded response is limited to 16384 UTF-8 bytes including JSON escaping. */
         ComputeChoicesPageV1: {
             /** @constant */
@@ -1087,6 +1161,86 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    discoverSearchConsent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: components["parameters"]["SessionID"];
+                run_id: components["parameters"]["RunID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current private selector or authenticated absence */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SearchConsentDiscoveryV1"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getSearchConsent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: components["parameters"]["SessionID"];
+                run_id: components["parameters"]["RunID"];
+                attempt_id: string;
+                request_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Original query after current actor and resource-authority revalidation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SearchConsentViewV1"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    decideSearchConsent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: components["parameters"]["SessionID"];
+                run_id: components["parameters"]["RunID"];
+                attempt_id: string;
+                request_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DecideSearchConsentV1"];
+            };
+        };
+        responses: {
+            /** @description Confirmed original immutable decision summary, no dispatch authority */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SearchConsentSummaryV1"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     getIdentity: {
         parameters: {
             query?: never;

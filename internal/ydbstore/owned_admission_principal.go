@@ -27,25 +27,39 @@ func readOwnedAdmissionPrincipal(ctx context.Context, q *ownedAuthorityQuery, sc
 	if scope.Validate() != nil {
 		return q.budget.deny()
 	}
-	bucket, err := webBucket(string(scope.OwnerUserID))
+	_, _, err := readOwnedSessionPrincipal(ctx, q, scope.TenantID, scope.SessionID, scope.OwnerUserID)
+	return err
+}
+
+// The original canonical Session/member/participant check also serves private
+// browser reads before a Job/Attempt exists. These records are same-callback
+// DATA, not an execution grant or a substitute source/admission scope.
+func readOwnedSessionPrincipal(ctx context.Context, q *ownedAuthorityQuery, tenantID domain.TenantID, sessionID domain.SessionID, userID domain.UserID) (domain.TenantMembership, domain.SessionParticipant, error) {
+	deny := func() (domain.TenantMembership, domain.SessionParticipant, error) {
+		return domain.TenantMembership{}, domain.SessionParticipant{}, q.budget.deny()
+	}
+	if tenantID.Validate() != nil || sessionID.Validate() != nil || userID.Validate() != nil {
+		return deny()
+	}
+	bucket, err := webBucket(string(userID))
 	if err != nil {
-		return q.budget.deny()
+		return deny()
 	}
 	var sessionRaw, creator, sessionStatus, memberRaw, memberRole, memberStatus, participantRaw, participantRole, participantStatus string
 	var sequence, archived, version, deletion uint64
-	err = q.scanMetadata(ctx, ownedAdmissionPrincipalSQL, []any{scope.TenantID, scope.SessionID, scope.OwnerUserID, bucket},
+	err = q.scanMetadata(ctx, ownedAdmissionPrincipalSQL, []any{tenantID, sessionID, userID, bucket},
 		&sessionRaw, &creator, &sessionStatus, &sequence, &archived, &memberRaw, &memberRole, &memberStatus, &version, &participantRaw, &participantRole, &participantStatus, &deletion)
 	if err != nil || archived != 0 || deletion != 0 || len(creator) > 160 || len(sessionStatus) > 160 || len(memberRole) > 160 || len(memberStatus) > 160 || len(participantRole) > 160 || len(participantStatus) > 160 {
-		return q.budget.deny()
+		return deny()
 	}
 	var s domain.Session
 	var m domain.TenantMembership
 	var p domain.SessionParticipant
 	if decodeCurrentExecutionRecord(sessionRaw, &s, computeChoiceSessionFields) != nil || s.Validate() != nil ||
-		s.TenantID != scope.TenantID || s.ID != scope.SessionID || string(s.CreatedBy) != creator || string(s.Status) != sessionStatus || s.LastEventSequence != sequence || s.ArchivedAt != nil || s.Status != domain.SessionActive || s.UpdatedAt.After(q.at) ||
-		decodeCurrentExecutionRecord(memberRaw, &m, computeChoiceMembershipFields) != nil || string(m.Role) != memberRole || string(m.Status) != memberStatus || m.SecurityVersion != version || m.UpdatedAt.After(q.at) || m.Authorize(scope.OwnerUserID, scope.TenantID, domain.TenantPermissionWrite) != nil ||
-		decodeCurrentExecutionRecord(participantRaw, &p, computeChoiceParticipantFields) != nil || string(p.Role) != participantRole || string(p.Status) != participantStatus || p.UpdatedAt.After(q.at) || p.Authorize(scope.TenantID, scope.SessionID, scope.OwnerUserID, true) != nil {
-		return q.budget.deny()
+		s.TenantID != tenantID || s.ID != sessionID || string(s.CreatedBy) != creator || string(s.Status) != sessionStatus || s.LastEventSequence != sequence || s.ArchivedAt != nil || s.Status != domain.SessionActive || s.UpdatedAt.After(q.at) ||
+		decodeCurrentExecutionRecord(memberRaw, &m, computeChoiceMembershipFields) != nil || string(m.Role) != memberRole || string(m.Status) != memberStatus || m.SecurityVersion != version || m.UpdatedAt.After(q.at) || m.Authorize(userID, tenantID, domain.TenantPermissionWrite) != nil ||
+		decodeCurrentExecutionRecord(participantRaw, &p, computeChoiceParticipantFields) != nil || string(p.Role) != participantRole || string(p.Status) != participantStatus || p.UpdatedAt.After(q.at) || p.Authorize(tenantID, sessionID, userID, true) != nil {
+		return deny()
 	}
 	// These exact canonical facts have already been charged and validated.
 	// Seed ONLY the same callback's existing point cache, never permission state.
@@ -54,16 +68,16 @@ func readOwnedAdmissionPrincipal(ctx context.Context, q *ownedAuthorityQuery, sc
 		args           []any
 		absent         bool
 	}{
-		{"SELECT record FROM sessions WHERE tenant_id = $1 AND session_id = $2", sessionRaw, []any{scope.TenantID, scope.SessionID}, false},
-		{"SELECT record FROM session_deletions WHERE tenant_id = $1 AND session_id = $2", "", []any{scope.TenantID, scope.SessionID}, true},
+		{"SELECT record FROM sessions WHERE tenant_id = $1 AND session_id = $2", sessionRaw, []any{tenantID, sessionID}, false},
+		{"SELECT record FROM session_deletions WHERE tenant_id = $1 AND session_id = $2", "", []any{tenantID, sessionID}, true},
 	} {
 		statement, limit, ok := ownedCanonicalJSONSelect(item.statement)
 		if !ok || len(item.raw) > limit {
-			return q.budget.deny()
+			return deny()
 		}
 		args, err := json.Marshal(item.args)
 		if err != nil {
-			return q.budget.deny()
+			return deny()
 		}
 		var absent error
 		if item.absent {
@@ -71,5 +85,5 @@ func readOwnedAdmissionPrincipal(ctx context.Context, q *ownedAuthorityQuery, sc
 		}
 		q.cacheMetadata(statement+"\n"+string(args), statement, item.raw, absent)
 	}
-	return nil
+	return m, p, nil
 }

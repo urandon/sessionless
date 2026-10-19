@@ -18,6 +18,9 @@
   export interface SessionDetailApi {
     getIdentity: CanonicalApiClient['getIdentity'];
     getRunExplanation: CanonicalApiClient['getRunExplanation'];
+    discoverSearchConsent?: CanonicalApiClient['discoverSearchConsent'];
+    getSearchConsent?: CanonicalApiClient['getSearchConsent'];
+    decideSearchConsent?: CanonicalApiClient['decideSearchConsent'];
     getSession: CanonicalApiClient['getSession'];
     listEvents: CanonicalApiClient['listEvents'];
     listRuns: CanonicalApiClient['listRuns'];
@@ -53,6 +56,8 @@
 
   import { ApiError } from '$lib/api/client';
   import RunExplanationDrawer from './RunExplanationDrawer.svelte';
+  import SearchConsentPanel from './SearchConsentPanel.svelte';
+  import { SearchConsentController, type SearchConsentState } from '$lib/search-consent/controller';
   import {
     RunExplanationController,
     type RunExplanationState,
@@ -67,6 +72,7 @@
     downloadCapabilityFn = downloadCapability,
     explanationNow = Date.now,
     explanationEnabled = import.meta.env.VITE_RUN_EXPLANATION_ENABLED === 'true',
+    searchConsentEnabled = import.meta.env.VITE_SEARCH_CONSENT_ENABLED === 'true',
   }: {
     client: SessionDetailApi;
     sessionId: string;
@@ -75,6 +81,7 @@
     downloadCapabilityFn?: typeof downloadCapability;
     explanationNow?: () => number;
     explanationEnabled?: boolean;
+    searchConsentEnabled?: boolean;
   } = $props();
 
   const maxEvents = 100;
@@ -115,6 +122,10 @@
   let explanationRunId = $state<string>();
   let explanationController: RunExplanationController | undefined;
   let explanationTrigger: HTMLButtonElement | undefined;
+  let consentState = $state<SearchConsentState>({ phase: 'idle', nextPollAt: 0 });
+  let consentRunId = $state<string>();
+  let consentController = $state.raw<SearchConsentController>();
+  let consentTrigger: HTMLButtonElement | undefined;
   let identityAbort: AbortController | undefined;
   let identityGeneration = 0;
   let lastIdentityScope: { webIdentity: string; tenantId: string } | undefined;
@@ -142,6 +153,29 @@
         now: explanationNow,
       });
     explanationController?.setVisible(false);
+    if (
+      searchConsentEnabled &&
+      client.discoverSearchConsent &&
+      client.getSearchConsent &&
+      client.decideSearchConsent
+    ) {
+      consentController = new SearchConsentController({
+        now: explanationNow,
+        discover: (sessionId, runId, signal) =>
+          client.discoverSearchConsent!(sessionId, runId, signal),
+        read: (locator, signal) => client.getSearchConsent!(locator, signal),
+        decide: (locator, choice, signal) => client.decideSearchConsent!(locator, choice, signal),
+      });
+      consentController.setVisible(false);
+    }
+    const unsubscribeConsent = consentController?.subscribe((state) => {
+      consentState = state;
+      if (state.phase === 'permission-lost') {
+        identity = undefined;
+        identityGeneration += 1;
+        identityAbort?.abort();
+      }
+    });
     const unsubscribe = explanationController?.subscribe((state) => {
       explanationState = state;
       if (state.phase === 'permission-lost') {
@@ -158,14 +192,15 @@
         identityAbort?.abort();
         identity = undefined;
         closeExplanation(false);
+        closeConsent(false);
       } else {
         // Ordinary auth lifecycle, not a drawer-open probe or explanation poll.
-        if (explanationEnabled) void refreshIdentity();
+        if (explanationEnabled || searchConsentEnabled) void refreshIdentity();
         if (view === 'ready') schedulePoll(0);
       }
     };
     document.addEventListener('visibilitychange', visibility);
-    if (explanationEnabled) void refreshIdentity();
+    if (explanationEnabled || searchConsentEnabled) void refreshIdentity();
     void loadInitial();
     return () => {
       alive = false;
@@ -174,6 +209,8 @@
       identityAbort?.abort();
       unsubscribe?.();
       explanationController?.dispose();
+      unsubscribeConsent?.();
+      consentController?.dispose();
       document.removeEventListener('visibilitychange', visibility);
       clearPoll();
       abortController?.abort();
@@ -317,6 +354,8 @@
       if (!nextScope || changed) {
         closeExplanation(false);
         explanationController?.setScope(undefined);
+        closeConsent(false);
+        consentController?.setScope(undefined);
       }
       identity = nextScope ? next : undefined;
       if (nextScope) lastIdentityScope = nextScope;
@@ -335,6 +374,8 @@
       identity = undefined;
       closeExplanation(false);
       explanationController?.setScope(undefined);
+      closeConsent(false);
+      consentController?.setScope(undefined);
       if (isReadPermissionLoss(error)) discardReadAccess(error);
     }
   }
@@ -350,6 +391,8 @@
     identity = undefined;
     closeExplanation(false);
     explanationController?.setScope(undefined);
+    closeConsent(false);
+    consentController?.setScope(undefined);
     clearPoll();
     abortController?.abort();
     clearPrivateState();
@@ -408,6 +451,33 @@
       else conversationHeading?.focus();
     }
     explanationTrigger = undefined;
+  }
+
+  function openConsent(runId: string, trigger: HTMLButtonElement): void {
+    if (
+      !searchConsentEnabled ||
+      !consentController ||
+      !identityScope ||
+      !canWrite ||
+      document.hidden
+    )
+      return;
+    consentTrigger = trigger;
+    consentRunId = runId;
+    consentController.setScope({ ...identityScope, sessionId, runId });
+    consentController.setVisible(true);
+    void consentController.refresh();
+  }
+
+  function closeConsent(restoreFocus = true): void {
+    consentRunId = undefined;
+    consentController?.setVisible(false);
+    if (restoreFocus) {
+      if (consentTrigger?.isConnected && !consentTrigger.disabled) consentTrigger.focus();
+      else if (composer?.isConnected && !composer.disabled) composer.focus();
+      else conversationHeading?.focus();
+    }
+    consentTrigger = undefined;
   }
 
   function restartPolling(): void {
@@ -971,6 +1041,17 @@
                   >Explain run</button
                 >
               {/if}
+              {#if searchConsentEnabled && consentController && canWrite && explanationRun(event)}
+                <button
+                  class="button quiet"
+                  type="button"
+                  disabled={!identityScope}
+                  aria-expanded={consentRunId === explanationRun(event)}
+                  aria-controls={consentRunId ? 'search-consent-panel' : undefined}
+                  onclick={(click) => openConsent(explanationRun(event)!, click.currentTarget)}
+                  >Review web search</button
+                >
+              {/if}
             </li>
           {/each}
         </ol>
@@ -985,6 +1066,15 @@
         refreshDisabled={!identityScope ||
           explanationState.phase === 'loading' ||
           explanationState.phase === 'permission-lost'}
+      />
+    {/if}
+
+    {#if consentRunId}
+      <SearchConsentPanel
+        state={consentState}
+        onClose={() => closeConsent()}
+        onRefresh={() => void consentController?.refresh()}
+        onDecide={(choice) => void consentController?.decide(choice)}
       />
     {/if}
 

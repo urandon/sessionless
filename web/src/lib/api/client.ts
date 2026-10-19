@@ -1,5 +1,14 @@
 import type { components } from './generated';
 import { parseRunExplanationText } from '../run-explanation/validate';
+import {
+  validateConsentDiscovery,
+  validateConsentSummary,
+  type SearchConsentDiscovery,
+  type SearchConsentLocator,
+  type SearchConsentChoice,
+  type SearchConsentView,
+  type SearchConsentSummary,
+} from '../search-consent/contract';
 
 type Schemas = components['schemas'];
 
@@ -299,6 +308,109 @@ export class CanonicalApiClient {
     }
   }
 
+  async discoverSearchConsent(
+    sessionId: string,
+    runId: string,
+    signal?: AbortSignal,
+  ): Promise<SearchConsentDiscovery> {
+    return validateConsentDiscovery(
+      await this.#privateConsent(
+        `/api/web/v1/sessions/${selector(sessionId)}/runs/${selector(runId)}/search-consents/current`,
+        undefined,
+        signal,
+      ),
+      sessionId,
+      runId,
+    );
+  }
+
+  async getSearchConsent(
+    locator: SearchConsentLocator,
+    signal?: AbortSignal,
+  ): Promise<SearchConsentView> {
+    return validateConsentSummary(
+      await this.#privateConsent(consentPath(locator), undefined, signal),
+      locator.requestId,
+      true,
+    ) as SearchConsentView;
+  }
+
+  async decideSearchConsent(
+    locator: SearchConsentLocator,
+    choice: SearchConsentChoice,
+    signal?: AbortSignal,
+  ): Promise<SearchConsentSummary> {
+    if (choice !== 'approve' && choice !== 'deny') throw new TypeError('Invalid consent choice.');
+    return validateConsentSummary(
+      await this.#privateConsent(consentPath(locator), choice, signal),
+      locator.requestId,
+    ) as SearchConsentSummary;
+  }
+
+  // No private query/error body is retained outside the caller's memory-only
+  // state. This route has its own small success bound, no cache/ETag and a finite
+  // transport deadline; generic error parsing must never reflect server text.
+  async #privateConsent(
+    path: string,
+    choice?: SearchConsentChoice,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    if (signal?.aborted) throw new DOMException('Request aborted.', 'AbortError');
+    const abort = new AbortController();
+    const cancel = () => abort.abort();
+    signal?.addEventListener('abort', cancel, { once: true });
+    const timer = setTimeout(cancel, 10000);
+    const headers = new Headers({ Accept: 'application/json' });
+    try {
+      if (choice) {
+        const csrf = this.#readCSRFToken();
+        if (!csrf) throw new ApiError('csrf_failed', 'Please reload the page and try again.', 403);
+        headers.set(csrfHeaderName, csrf);
+        headers.set('Content-Type', 'application/json');
+      }
+      const response = await this.#fetch(path, {
+        method: choice ? 'POST' : 'GET',
+        credentials: 'same-origin',
+        cache: 'no-store',
+        redirect: 'error',
+        referrerPolicy: 'no-referrer',
+        headers,
+        signal: abort.signal,
+        ...(choice ? { body: JSON.stringify({ expected_revision: 1, choice }) } : {}),
+      });
+      if (response.status !== 200) {
+        void response.body?.cancel().catch(() => undefined);
+        throw new ApiError(
+          response.status === 401
+            ? 'unauthenticated'
+            : response.status === 403
+              ? 'access_denied'
+              : response.status === 404
+                ? 'not_found'
+                : response.status === 409
+                  ? 'conflict'
+                  : response.status === 429
+                    ? 'rate_limited'
+                    : 'temporarily_unavailable',
+          'Search consent is unavailable.',
+          response.status,
+          undefined,
+          finiteRetryAfter(response.headers, this.#now()),
+        );
+      }
+      const body = await readBoundedText(response, 8192, abort.signal);
+      if (abort.signal.aborted) throw new Error('Private read deadline.');
+      return JSON.parse(body) as unknown;
+    } catch (error) {
+      if (signal?.aborted) throw new DOMException('Request aborted.', 'AbortError');
+      if (error instanceof ApiError) throw error;
+      throw new ApiError('temporarily_unavailable', 'Search consent is unavailable.', 503);
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', cancel);
+    }
+  }
+
   getAttachmentCapability(
     sessionId: string,
     sequence: number,
@@ -396,6 +508,10 @@ export class CanonicalApiClient {
     if (!response.ok && response.status !== 304) throw await parsePublicError(response);
     return response;
   }
+}
+
+function consentPath(locator: SearchConsentLocator): string {
+  return `/api/web/v1/sessions/${selector(locator.sessionId)}/runs/${selector(locator.runId)}/attempts/${selector(locator.attemptId)}/search-consents/${selector(locator.requestId)}`;
 }
 
 function readCSRFCookie(): string | undefined {

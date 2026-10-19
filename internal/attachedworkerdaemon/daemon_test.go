@@ -6,6 +6,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
@@ -416,22 +417,82 @@ func TestDaemonShutdownCancelsActiveAttemptWithinBound(t *testing.T) {
 }
 
 func TestDaemonCancelActiveRequiresExactIdentityAndIsIdempotent(t *testing.T) {
+	synctest.Test(t, testDaemonCancelActiveRequiresExactIdentityAndIsIdempotent)
+}
+
+func testDaemonCancelActiveRequiresExactIdentityAndIsIdempotent(t *testing.T) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
 	source := &channelSource{invocations: make(chan Invocation, 1), calls: make(chan struct{}, 8)}
 	runner := &cancelBarrierRunner{
 		started: make(chan InvocationIdentity, 1), cancelled: make(chan struct{}), release: make(chan struct{}),
 	}
 	sink := &recordingSink{done: make(chan struct{}, 1)}
-	daemon, err := NewDaemon(DaemonConfig{ShutdownGrace: time.Second}, source, runner, sink)
+	reportRelease := make(chan struct{})
+	var runnerOnce, reportOnce sync.Once
+	releaseRunner := func() { runnerOnce.Do(func() { close(runner.release) }) }
+	releaseReport := func() { reportOnce.Do(func() { close(reportRelease) }) }
+	// The sink notification deliberately precedes return. It cannot prove that
+	// Run has called finishAttempt; keep this interleaving deterministic.
+	barrierSink := ownedCarrierSinkFunc(func(call context.Context, id InvocationIdentity, result InvocationResult, runErr error) error {
+		if err := sink.Complete(call, id, result, runErr); err != nil {
+			return err
+		}
+		select {
+		case <-reportRelease:
+			return nil
+		case <-call.Done():
+			return call.Err()
+		}
+	})
+	daemon, err := NewDaemon(DaemonConfig{ShutdownGrace: time.Second}, source, runner, barrierSink)
 	if err != nil {
 		t.Fatal(err)
 	}
 	invocation := validDaemonInvocation("attempt-exact")
 	source.invocations <- invocation
 	runDone := make(chan error, 1)
-	go func() { runDone <- daemon.Run(context.Background()) }()
-	if started := <-runner.started; started != invocation.Identity {
+	go func() { runDone <- daemon.Run(ctx) }()
+	joined := false
+	t.Cleanup(func() {
+		cancel()
+		releaseRunner()
+		releaseReport()
+		if !joined {
+			select {
+			case <-runDone:
+			case <-time.After(5 * time.Second):
+				select {
+				case <-runDone:
+				default:
+					t.Error("test-owned daemon did not join after cancellation")
+				}
+			}
+		}
+	})
+	waitSignal := func(ch <-chan struct{}, phase string) {
+		t.Helper()
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			select {
+			case <-ch:
+			default:
+				t.Fatalf("%s: %v", phase, ctx.Err())
+			}
+		}
+	}
+	var started InvocationIdentity
+	select {
+	case started = <-runner.started:
+	case <-ctx.Done():
+		t.Fatalf("runner start: %v", ctx.Err())
+	}
+	if started != invocation.Identity {
 		t.Fatalf("started identity=%+v want=%+v", started, invocation.Identity)
 	}
+	waitSignal(source.calls, "first poll entered")
 	mismatch := invocation.Identity
 	mismatch.AttemptID = "attempt-replacement"
 	if err := daemon.CancelActive(context.Background(), mismatch); !errors.Is(err, ErrActiveAttemptMismatch) {
@@ -445,19 +506,40 @@ func TestDaemonCancelActiveRequiresExactIdentityAndIsIdempotent(t *testing.T) {
 	if err := daemon.CancelActive(context.Background(), invocation.Identity); err != nil {
 		t.Fatalf("exact cancel error=%v", err)
 	}
-	<-runner.cancelled
+	waitSignal(runner.cancelled, "exact cancellation observed")
 	if err := daemon.CancelActive(context.Background(), invocation.Identity); err != nil {
 		t.Fatalf("exact replay error=%v", err)
 	}
-	close(runner.release)
-	<-sink.done
+	releaseRunner()
+	waitSignal(sink.done, "sink notification")
+	// Complete is still held: receipt notification must not be mistaken for
+	// finishAttempt. The accepted cancellation remains idempotent here.
+	if err := daemon.CancelActive(ctx, invocation.Identity); err != nil {
+		t.Fatalf("exact replay while reporting error=%v", err)
+	}
+	if status := daemon.Status(); !status.Active || status.Completed != 0 {
+		t.Fatalf("sink notification prematurely completed attempt: %+v", status)
+	}
+	releaseReport()
+	// The first poll was consumed above. This next poll can start only after
+	// finishAttempt, while the daemon is still running (before Drain).
+	waitSignal(source.calls, "next poll after attempt completion")
+	if status := daemon.Status(); status.State != DaemonRunning || status.Active || status.Completed != 1 {
+		t.Fatalf("next poll did not observe the completed active attempt: %+v", status)
+	}
 	if err := daemon.CancelActive(context.Background(), invocation.Identity); !errors.Is(err, ErrActiveAttemptMissing) {
 		t.Fatalf("completed cancel error=%v", err)
 	}
-	if err := daemon.Drain(context.Background()); err != nil {
+	if err := daemon.Drain(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := <-runDone; err != nil {
+	select {
+	case err = <-runDone:
+		joined = true
+	case <-ctx.Done():
+		t.Fatalf("daemon join after drain: %v", ctx.Err())
+	}
+	if err != nil {
 		t.Fatal(err)
 	}
 }

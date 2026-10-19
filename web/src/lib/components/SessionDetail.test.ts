@@ -284,6 +284,196 @@ describe('SessionDetail', () => {
 });
 
 describe('SessionDetail explanation lifecycle', () => {
+  const consentTime = Date.parse('2026-10-20T00:00:00Z');
+  const consentView = {
+    request_id: 'request-1',
+    revision: 1 as const,
+    status: 'pending' as const,
+    expires_at: new Date(consentTime + 60000).toISOString(),
+    query: ' <script>private query</script>\nhttps://not-a-link.example/ ',
+  };
+  function withSearch(overrides: Partial<SessionDetailApi> = {}): SessionDetailApi {
+    return withRun({
+      discoverSearchConsent: vi.fn().mockResolvedValue({
+        session_id: 'ses-1',
+        run_id: 'run-1',
+        pending: {
+          attempt_id: 'attempt-1',
+          request_id: 'request-1',
+          expires_at: consentView.expires_at,
+        },
+      }),
+      getSearchConsent: vi.fn().mockResolvedValue(consentView),
+      decideSearchConsent: vi.fn().mockResolvedValue({
+        request_id: 'request-1',
+        revision: 2,
+        status: 'approved',
+        expires_at: consentView.expires_at,
+      }),
+      ...overrides,
+    });
+  }
+
+  it('joins real Session run discovery to an escaped exact query, explicit approval and safe focus return', async () => {
+    const client = withSearch();
+    render(SessionDetail, {
+      client,
+      sessionId: 'ses-1',
+      searchConsentEnabled: true,
+      explanationNow: () => consentTime,
+    });
+    const trigger = await screen.findByRole('button', { name: 'Review web search' });
+    await fireEvent.click(trigger);
+    const query = await screen.findByText(/<script>private query<\/script>/);
+    expect(query.tagName).toBe('PRE');
+    expect(query.textContent).toBe(consentView.query);
+    expect(document.querySelector('script')).toBeNull();
+    expect(query.querySelector('a')).toBeNull();
+    expect(client.discoverSearchConsent).toHaveBeenCalledWith(
+      'ses-1',
+      'run-1',
+      expect.any(AbortSignal),
+    );
+    expect(client.getSearchConsent).toHaveBeenCalledWith(
+      { sessionId: 'ses-1', runId: 'run-1', attemptId: 'attempt-1', requestId: 'request-1' },
+      expect.any(AbortSignal),
+    );
+    expect(client.decideSearchConsent).not.toHaveBeenCalled();
+    expect(screen.getByRole('heading', { name: 'Web search consent' })).toHaveFocus();
+    await fireEvent.click(screen.getByRole('button', { name: 'Approve this exact query' }));
+    await waitFor(() =>
+      expect(screen.queryByText(/<script>private query<\/script>/)).not.toBeInTheDocument(),
+    );
+    expect(client.decideSearchConsent).toHaveBeenCalledWith(
+      { sessionId: 'ses-1', runId: 'run-1', attemptId: 'attempt-1', requestId: 'request-1' },
+      'approve',
+      expect.any(AbortSignal),
+    );
+    expect(screen.getByText(/Approval was recorded/)).toBeInTheDocument();
+    await fireEvent.keyDown(screen.getByRole('heading', { name: 'Web search consent' }), {
+      key: 'Escape',
+    });
+    expect(screen.queryByRole('heading', { name: 'Web search consent' })).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
+
+  it('recovers a lost decision response in the integrated view without a second write', async () => {
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce(consentView)
+      .mockResolvedValue({ ...consentView, status: 'approved', revision: 2 });
+    const client = withSearch({
+      getSearchConsent: read,
+      decideSearchConsent: vi
+        .fn()
+        .mockRejectedValue(new ApiError('temporarily_unavailable', 'private error', 503)),
+    });
+    render(SessionDetail, {
+      client,
+      sessionId: 'ses-1',
+      searchConsentEnabled: true,
+      explanationNow: () => consentTime,
+    });
+    await fireEvent.click(await screen.findByRole('button', { name: 'Review web search' }));
+    await fireEvent.click(await screen.findByRole('button', { name: 'Approve this exact query' }));
+    expect(await screen.findByText(/Approval was recorded/)).toBeInTheDocument();
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(client.decideSearchConsent).toHaveBeenCalledOnce();
+    expect(screen.queryByText('private error')).not.toBeInTheDocument();
+  });
+
+  it('fences an unresolved POST on close and never reports a late success', async () => {
+    const pending = barrier<{
+      request_id: string;
+      revision: number;
+      status: 'approved';
+      expires_at: string;
+    }>();
+    const client = withSearch({ decideSearchConsent: vi.fn().mockReturnValue(pending.promise) });
+    render(SessionDetail, {
+      client,
+      sessionId: 'ses-1',
+      searchConsentEnabled: true,
+      explanationNow: () => consentTime,
+    });
+    await fireEvent.click(await screen.findByRole('button', { name: 'Review web search' }));
+    await fireEvent.click(await screen.findByRole('button', { name: 'Approve this exact query' }));
+    await waitFor(() => expect(client.decideSearchConsent).toHaveBeenCalledOnce());
+    await fireEvent.click(screen.getByRole('button', { name: 'Close search consent' }));
+    const call = vi.mocked(client.decideSearchConsent!).mock.calls[0];
+    expect(call?.[2]?.aborted).toBe(true);
+    pending.resolve({
+      request_id: 'request-1',
+      revision: 2,
+      status: 'approved',
+      expires_at: consentView.expires_at,
+    });
+    await pending.promise;
+    await tick();
+    expect(screen.queryByText(/Approval was recorded/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/<script>private query<\/script>/)).not.toBeInTheDocument();
+  });
+
+  it('removes action eligibility on consent permission loss without restoring stale identity', async () => {
+    const client = withSearch({
+      getSearchConsent: vi
+        .fn()
+        .mockRejectedValue(new ApiError('access_denied', 'private error', 403)),
+    });
+    render(SessionDetail, {
+      client,
+      sessionId: 'ses-1',
+      searchConsentEnabled: true,
+      explanationNow: () => consentTime,
+    });
+    await fireEvent.click(await screen.findByRole('button', { name: 'Review web search' }));
+    expect(await screen.findByText(/Access was lost/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Review web search' })).toBeDisabled();
+    expect(client.decideSearchConsent).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole('button', { name: 'Approve this exact query' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('keeps an in-flight approval unconfirmed across close/reopen, without offering denial', async () => {
+    let now = consentTime;
+    const pending = barrier<{
+      request_id: string;
+      revision: number;
+      status: 'approved';
+      expires_at: string;
+    }>();
+    const client = withSearch({ decideSearchConsent: vi.fn().mockReturnValue(pending.promise) });
+    render(SessionDetail, {
+      client,
+      sessionId: 'ses-1',
+      searchConsentEnabled: true,
+      explanationNow: () => now,
+    });
+    const trigger = await screen.findByRole('button', { name: 'Review web search' });
+    await fireEvent.click(trigger);
+    await fireEvent.click(await screen.findByRole('button', { name: 'Approve this exact query' }));
+    await waitFor(() => expect(client.decideSearchConsent).toHaveBeenCalledOnce());
+    await fireEvent.click(screen.getByRole('button', { name: 'Close search consent' }));
+    now += 5000;
+    await fireEvent.click(trigger);
+    expect(
+      await screen.findByRole('button', { name: 'Retry the same approval' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Deny this search' })).not.toBeInTheDocument();
+    expect(client.decideSearchConsent).toHaveBeenCalledOnce();
+    pending.resolve({
+      request_id: 'request-1',
+      revision: 2,
+      status: 'approved',
+      expires_at: consentView.expires_at,
+    });
+    await pending.promise;
+    await tick();
+    expect(screen.queryByText(/Approval was recorded/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry the same approval' })).toBeInTheDocument();
+  });
+
   it('keeps default builds free of the drawer and additional identity reads', async () => {
     const client = withRun();
     render(SessionDetail, { client, sessionId: 'ses-1' });

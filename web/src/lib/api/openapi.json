@@ -3,6 +3,73 @@
   "info": { "title": "Sessionless canonical Web API", "version": "1.0.0" },
   "servers": [{ "url": "/" }],
   "paths": {
+    "/api/web/v1/sessions/{session_id}/runs/{run_id}/search-consents/current": {
+      "get": {
+        "operationId": "discoverSearchConsent",
+        "parameters": [
+          { "$ref": "#/components/parameters/SessionID" },
+          { "$ref": "#/components/parameters/RunID" }
+        ],
+        "description": "Default-off cookie-only private discovery. One current canonical Session/Run/actor read, no idle activity refresh, query parameters, body or query disclosure. Returns an opaque pending selector or authenticated absence; errors are never absence. Encoded response at most 2048 bytes, no-store, no ETag. Not a decision or dispatch capability.",
+        "responses": {
+          "200": {
+            "description": "Current private selector or authenticated absence",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SearchConsentDiscoveryV1" }
+              }
+            }
+          },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/web/v1/sessions/{session_id}/runs/{run_id}/attempts/{attempt_id}/search-consents/{request_id}": {
+      "parameters": [
+        { "$ref": "#/components/parameters/SessionID" },
+        { "$ref": "#/components/parameters/RunID" },
+        { "name": "attempt_id", "in": "path", "required": true, "schema": { "type": "string" } },
+        { "name": "request_id", "in": "path", "required": true, "schema": { "type": "string" } }
+      ],
+      "get": {
+        "operationId": "getSearchConsent",
+        "description": "Default-off private exact-query view. First-party cookie only; tenant/actor are resolved in the original Store without activity refresh. No query parameters or body. Encoded response at most 8192 bytes, no-store, no ETag. Discovery supplies opaque selectors only; worker wait remains separate. This view is not approval or egress authority.",
+        "responses": {
+          "200": {
+            "description": "Original query after current actor and resource-authority revalidation",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SearchConsentViewV1" }
+              }
+            }
+          },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      },
+      "post": {
+        "operationId": "decideSearchConsent",
+        "description": "Default-off immutable decision CAS using established cookie/header CSRF equality and exact Origin. Store rechecks current actor, stored CSRF, original claim and all original windows. No query or receipt is returned. Identical retries recover the original decision, never a send capability. Body at most 512 bytes; exact keys/casing, no duplicates or trailing values.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/DecideSearchConsentV1" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Confirmed original immutable decision summary, no dispatch authority",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SearchConsentSummaryV1" }
+              }
+            }
+          },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
     "/api/web/v1/me": {
       "get": {
         "operationId": "getIdentity",
@@ -533,6 +600,84 @@
       }
     },
     "schemas": {
+      "SearchConsentDiscoveryV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["session_id", "run_id"],
+        "properties": {
+          "session_id": { "type": "string" },
+          "run_id": { "type": "string" },
+          "pending": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["attempt_id", "request_id", "expires_at"],
+            "properties": {
+              "attempt_id": { "type": "string", "maxLength": 160 },
+              "request_id": { "type": "string", "maxLength": 160 },
+              "expires_at": { "type": "string", "format": "date-time" }
+            }
+          }
+        }
+      },
+      "SearchConsentSummaryV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["request_id", "revision", "status", "expires_at"],
+        "properties": {
+          "request_id": { "type": "string" },
+          "revision": { "type": "integer", "minimum": 1, "maximum": 3 },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "approved",
+              "denied",
+              "expired",
+              "cancelled",
+              "revoked",
+              "reconcile_only"
+            ]
+          },
+          "expires_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "SearchConsentViewV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["request_id", "revision", "status", "expires_at", "query"],
+        "properties": {
+          "request_id": { "type": "string" },
+          "revision": { "type": "integer", "minimum": 1, "maximum": 3 },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "approved",
+              "denied",
+              "expired",
+              "cancelled",
+              "revoked",
+              "reconcile_only"
+            ]
+          },
+          "expires_at": { "type": "string", "format": "date-time" },
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "description": "Exact decoded query, at most 1024 UTF-8 bytes; private browser memory only, not public execution evidence."
+          }
+        }
+      },
+      "DecideSearchConsentV1": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["expected_revision", "choice"],
+        "properties": {
+          "expected_revision": { "type": "integer", "const": 1 },
+          "choice": { "type": "string", "enum": ["approve", "deny"] }
+        }
+      },
       "ComputeChoicesPageV1": {
         "description": "Unmounted compute-choice contract. Shape is not authorization, eligibility, reservation or execution. Producer reauthorizes and joins all current evidence. Encoded response is limited to 16384 UTF-8 bytes including JSON escaping.",
         "type": "object",

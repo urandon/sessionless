@@ -2,6 +2,7 @@ package ports
 
 import (
 	"context"
+	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 )
@@ -49,6 +50,61 @@ type CreateWebSearchConsentRequestV1 struct {
 type ReadWebSearchConsentRequestV1 struct {
 	Locator          WebSearchConsentLocatorV1
 	WebSessionDigest domain.SecretDigest
+}
+
+// ReadPrivateWebSearchConsentRequestV1 carries browser selectors, never a
+// tenant or an authenticated principal. The same Store callback resolves the
+// current Web session's active tenant before looking up the exact intent.
+type ReadPrivateWebSearchConsentRequestV1 struct {
+	SessionID        domain.SessionID
+	RunID            domain.RunID
+	AttemptID        domain.AttemptID
+	RequestID        domain.WebSearchConsentRequestIDV1
+	WebSessionDigest domain.SecretDigest
+}
+
+func (value ReadPrivateWebSearchConsentRequestV1) Validate() error {
+	for _, validate := range []func() error{value.SessionID.Validate, value.RunID.Validate, value.AttemptID.Validate, value.RequestID.Validate} {
+		if err := validate(); err != nil {
+			return err
+		}
+	}
+	return value.WebSessionDigest.Validate("web_search_consent.web_session_digest")
+}
+
+// WebSearchConsentPrivateViewV1 is an internal, actor-authorized disclosure,
+// not a browser DTO or dispatch authority. The transport must strip private
+// state metadata. Query is the exact decoded UTF-8 value of the immutable
+// arguments, checked before a fresh current-authority transaction confirms it.
+type WebSearchConsentPrivateViewV1 struct {
+	State domain.WebSearchConsentStateV1
+	Query string
+}
+
+// Discovery is a private current-Run lookup, not query disclosure. The current
+// Web session supplies the tenant/principal; a browser cannot select either.
+type DiscoverPrivateWebSearchConsentRequestV1 struct {
+	SessionID        domain.SessionID
+	RunID            domain.RunID
+	WebSessionDigest domain.SecretDigest
+}
+
+func (value DiscoverPrivateWebSearchConsentRequestV1) Validate() error {
+	if err := value.SessionID.Validate(); err != nil {
+		return err
+	}
+	if err := value.RunID.Validate(); err != nil {
+		return err
+	}
+	return value.WebSessionDigest.Validate("web_search_consent.web_session_digest")
+}
+
+// WebSearchConsentPendingV1 contains selectors and a display-only deadline.
+// It carries no query, argument/grant digest, receipt or send authority. A nil
+// result with no error means authenticated absence, never an ignored denial.
+type WebSearchConsentPendingV1 struct {
+	Locator   WebSearchConsentLocatorV1
+	ExpiresAt time.Time
 }
 
 func (value ReadWebSearchConsentRequestV1) Validate() error {

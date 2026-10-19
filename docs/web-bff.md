@@ -309,6 +309,84 @@ user or a target user with any different external identity is rejected without
 a partial grant. This does not implement privileged account linking. Leave
 both optional variables empty to retain the existing-identity mode.
 
+## Exact-query search consent
+
+The optional `SearchConsents` composition mounts a private GET/POST route at
+`/api/web/v1/sessions/{session_id}/runs/{run_id}/attempts/{attempt_id}/search-consents/{request_id}`.
+It is absent by default; defining this transport does not enable search or
+supply an original worker, a model or a credential.
+The owning implementation is [#195](https://gitcode.com/urandon/sessionless/issues/195).
+
+GET accepts only the first-party cookie and path selectors, with no body or
+query parameters. It does not use the generic Web authorization method that
+refreshes idle activity. The existing consent Store derives the active tenant
+from the cookie's current Web session, authenticates the initiating user and
+participation before reading private material, and rechecks the same immutable
+intent and all current authority after the body reads. Original argument size,
+SHA and exact decoded-query digest must match. Grant and argument reads occur
+outside SQL under the same ten-second, three-callback and four-MiB logical
+budget; no helper resets it. The private response includes only request ID,
+revision, status, original expiry and exact query, within eight KiB including
+JSON escaping. It has no blob locator, claim, payer, grant or receipt metadata.
+
+POST uses the existing cookie/header CSRF equality, exact Origin and mutation
+audit rules. Only `expected_revision: 1` and explicit `approve`/`deny` are accepted;
+unknown, duplicate, case-aliased fields and trailing JSON are rejected, with a
+512-byte body ceiling. The original consent transaction revalidates stored
+CSRF, actor and current claim/resource windows and owns immutable decision CAS.
+The response is only a bounded state summary, never query text or a transferable
+receipt. A user mutation can refresh Web-session idle activity under the normal
+mutation contract; it cannot extend the consent, lease or execution deadline.
+The logical request context is bounded to ten seconds; net/http ingress uses
+the matching read deadline where supported, while unsupported wrappers retain
+the Web server's existing fifteen-second body-read bound. No goroutine races an
+arbitrary borrowed reader, and a late body cannot cause a decision.
+
+Cookie-only discovery at
+`GET /api/web/v1/sessions/{session_id}/runs/{run_id}/search-consents/current`
+authenticates the current Web session, membership and Session participation,
+then correlates the canonical Run and current Job/Attempt/source with the existing
+bounded consent projection in one transaction. It returns only Session/Run and
+an optional opaque Attempt/request selector and original expiry, within two KiB.
+Explicit missing Job/parent/projection or no current pending request is
+authenticated absence; malformed, foreign, revoked or failed reads remain errors.
+Discovery never reads the grant/query body, refreshes idle activity or changes
+state. Exact query disclosure still requires the separate private read above.
+
+The optional browser build flag `VITE_SEARCH_CONSENT_ENABLED=true` adds a
+canonical-Run review button to Session view; it defaults off and does not compose
+the production BFF service or search producer. The nonmodal, keyboard-accessible
+panel escapes exact query text without Markdown/links, requires explicit approve
+or deny, and restores focus on close. Query and decision context stay in memory;
+hide, unmount, identity/tenant/session/run change, permission loss and expiry
+clear or fence obsolete reads and mutations. Closing does not undo a committed
+decision. A failed POST remains unconfirmed: canonical readback may confirm it,
+and only an explicit identical-choice retry can write again.
+Opaque unresolved POST identity and choice stay in the bounded scope budget
+across close/reopen and scope switches, independently of cleared query text.
+A pending read does not prove the earlier POST cannot still commit; opposite
+choices remain unavailable until a canonical terminal read resolves it or the
+original request expires. No query or receipt is retained in that budget.
+
+The browser has a nonrenewable 120-second Run review budget from first opening,
+at most 24 polling rounds/48 total GETs (including discovery, exact reads and
+lost-response recovery) and four explicit POST attempts. Reads are one-flight,
+at least five seconds apart between rounds, each HTTP request bounded to ten
+seconds. The current request's shorter expiry disables its decisions; a second
+request can still be discovered inside the original Run review budget. A bounded
+50-scope memory map preserves counters across close/reopen/scope switches and
+fails closed at capacity rather than evicting and renewing them. Browser bounds
+never replace server claim/grant/policy/lease/cost authority.
+
+All responses are `no-store`, without ETags. Queries and private state never
+enter route parameters, public Run explanations, request logs or public errors.
+Approval is necessary but not sufficient for a search: the original operation
+reserve and immediate before-send gate must independently revalidate the stored
+receipt and all current authority. The complete feature additionally needs
+bounded waiting in the original worker claim and genuine producer/runtime
+composition. Fixture-only producer authority is not
+an authentic model/search producer or permission to activate a profile.
+
 ## Verification
 
 Credential-free unit tests cover the complete local authorization-code flow,

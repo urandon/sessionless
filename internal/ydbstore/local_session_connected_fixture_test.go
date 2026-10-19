@@ -184,3 +184,77 @@ func (s *LocalSessionConnectedSeed) PersistedObservation(t *testing.T) domain.At
 	}
 	return o.Clone()
 }
+
+// TEST ONLY canonical DATA; no private entry, grant or approval is returned.
+// Declare the canonical frontend projection BEFORE NewLocalV1. This does not
+// assert a real Web ingress delivery and changes no source/funding seal.
+func (s *LocalSessionConnectedSeed) DeclareWorkerPreflightWebOrigin(t *testing.T) {
+	t.Helper()
+	v := s.WorkerPreflightState(t)
+	v.Job.Origin = &domain.FrontendEventOrigin{BindingID: "preflight-web-binding", BindingRevision: 1, Frontend: domain.FrontendWeb,
+		ExternalConversationID: string(v.Run.SessionID), ExternalEventID: string(v.Run.TriggerEventID)}
+	v.Job.DeliveryChat, v.Job.ReplyToMessageID = domain.TelegramChatRef{}, 0
+	if err := validateLoadedWorkerJob(v); err != nil {
+		t.Fatal("canonical Web-origin job projection", err)
+	}
+	ratedFixturePut(t, s.parent.graph.ratedSQLFixture, "worker_jobs", v.Job)
+}
+
+func (s *LocalSessionConnectedSeed) WorkerPreflightState(t *testing.T) ports.WorkerJobState {
+	t.Helper()
+	f := s.parent.graph.ratedSQLFixture
+	v := ports.WorkerJobState{Run: ratedFixtureRecord[domain.Run](t, f, "runs"), Job: ratedFixtureRecord[domain.WorkerJob](t, f, "worker_jobs"),
+		Attempt: ratedFixtureRecord[domain.Attempt](t, f, "attempts"), Reservation: ratedFixtureRecord[domain.QuotaReservation](t, f, "quota_reservations"),
+		InputManifest: ratedFixtureRecord[domain.ArtifactManifest](t, f, "artifact_manifests")}
+	if err := validateLoadedWorkerJob(v); err != nil {
+		t.Fatal("original preflight rows", err)
+	}
+	return v
+}
+
+type LocalWorkerPreflightReads struct{ Final, Principal, Sources, Verifier, Lease, Writes int }
+
+func (s *LocalSessionConnectedSeed) WorkerPreflightReads() LocalWorkerPreflightReads {
+	v := LocalWorkerPreflightReads{Verifier: s.parent.verifier.calls, Lease: s.parent.sql.leaseReads, Writes: s.parent.graph.writes}
+	for _, statement := range s.parent.graph.statements {
+		switch statement {
+		case ownedAdmissionSQL:
+			v.Final++
+		case ownedAdmissionPrincipalSQL:
+			v.Principal++
+		case ownedAdmissionSourcesJoinSQL:
+			v.Sources++
+		}
+	}
+	return v
+}
+
+// Freeze only the scripted DATABASE clock after the real Source publications.
+// This does not alter Source/caller time or lifetime. Tests use a relative
+// current-row timestamp against this exact authority sample, without sleeps.
+func (s *LocalSessionConnectedSeed) FreezeWorkerPreflightDBClock() time.Time {
+	s.sql.sampleWallClock = false
+	s.parent.graph.at = time.Now().UTC().Truncate(time.Microsecond)
+	return s.parent.graph.at
+}
+
+func (s *LocalSessionConnectedSeed) SetWorkerPreflightTimestamp(t *testing.T, kind string, at time.Time) {
+	t.Helper()
+	v := s.WorkerPreflightState(t)
+	var table string
+	var record any
+	switch kind {
+	case "run":
+		v.Run.UpdatedAt, table, record = at, "runs", &v.Run
+	case "attempt":
+		v.Attempt.UpdatedAt, table, record = at, "attempts", &v.Attempt
+	case "reservation":
+		v.Reservation.UpdatedAt, table, record = at, "quota_reservations", &v.Reservation
+	default:
+		t.Fatal("unknown preflight timestamp mutant", kind)
+	}
+	if err := validateLoadedWorkerJob(v); err != nil {
+		t.Fatal("timestamp mutant must remain structurally valid", kind, err)
+	}
+	ratedFixturePut(t, s.parent.graph.ratedSQLFixture, table, record)
+}

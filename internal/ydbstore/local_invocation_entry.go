@@ -292,6 +292,27 @@ func (b *LocalOwnedStoreBootstrapV1) EnterLocalWorkerEffect(ctx context.Context,
 // handoff's renewed lifetime. Direct Start already passes its retained entry
 // context. Standard context propagation cancels its descendants synchronously;
 // Source and the independent handoff also narrow this context and its deadline.
+type localWorkerCallerContext struct {
+	context.Context
+	cancel  context.CancelFunc
+	callers [3]context.Context
+}
+
+func (c localWorkerCallerContext) Err() error {
+	if err := c.Context.Err(); err != nil {
+		return err
+	}
+	for _, caller := range c.callers {
+		if caller.Err() != nil {
+			// Never return a fabricated Err with a live Done channel. Cancel
+			// only this original standard context; cleanup has its own owner.
+			c.cancel()
+			break
+		}
+	}
+	return c.Context.Err()
+}
+
 func (b *LocalOwnedStoreBootstrapV1) localWorkerInvocationContext(original, handoff context.Context) (context.Context, func(), error) {
 	if original == nil || handoff == nil || original.Err() != nil || handoff.Err() != nil {
 		return nil, nil, domain.ErrMembershipDenied
@@ -324,5 +345,8 @@ func (b *LocalOwnedStoreBootstrapV1) localWorkerInvocationContext(original, hand
 		finish()
 		return nil, nil, domain.ErrMembershipDenied
 	}
-	return call, finish, nil
+	// The explicit entry.invocationContext.Err gates sample the fixed raw
+	// lifetime chain even when cancellation callbacks have not run. Standard
+	// child contexts still use the original call's cancellation identity.
+	return localWorkerCallerContext{Context: call, cancel: cancel, callers: [3]context.Context{original, handoff, life}}, finish, nil
 }

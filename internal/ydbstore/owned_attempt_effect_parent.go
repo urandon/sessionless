@@ -281,15 +281,21 @@ func readOwnedAttemptEffectLease(ctx context.Context, q *ownedAuthorityQuery, re
 }
 
 func loadOwnedEffectWorkerJob(ctx context.Context, q *ownedAuthorityQuery, request ports.ReserveAttemptEffectRequestV1) (ports.WorkerJobState, error) {
+	return loadOwnedWorkerJob(ctx, q, request.TenantID, request.RunID, request.AttemptID)
+}
+
+// The pre-lease worker join has locators, not a fabricated lease/effect claim.
+// Both callers consume the same bounded canonical row decoder.
+func loadOwnedWorkerJob(ctx context.Context, q *ownedAuthorityQuery, tenantID domain.TenantID, runID domain.RunID, attemptID domain.AttemptID) (ports.WorkerJobState, error) {
 	var v ports.WorkerJobState
 	for _, item := range []struct {
 		statement string
 		args      []any
 		target    any
 	}{
-		{"SELECT payload FROM runs WHERE tenant_id = $1 AND run_id = $2", []any{request.TenantID, request.RunID}, &v.Run},
-		{"SELECT payload FROM worker_jobs WHERE tenant_id=$1 AND run_id=$2", []any{request.TenantID, request.RunID}, &v.Job},
-		{"SELECT payload FROM attempts WHERE tenant_id = $1 AND attempt_id = $2", []any{request.TenantID, request.AttemptID}, &v.Attempt},
+		{"SELECT payload FROM runs WHERE tenant_id = $1 AND run_id = $2", []any{tenantID, runID}, &v.Run},
+		{"SELECT payload FROM worker_jobs WHERE tenant_id=$1 AND run_id=$2", []any{tenantID, runID}, &v.Job},
+		{"SELECT payload FROM attempts WHERE tenant_id = $1 AND attempt_id = $2", []any{tenantID, attemptID}, &v.Attempt},
 	} {
 		raw, err := q.readCanonicalJSON(ctx, item.statement, item.args...)
 		if err != nil || decodeOwnedEffectCanonicalJSON(raw, item.target) != nil {
@@ -301,15 +307,15 @@ func loadOwnedEffectWorkerJob(ctx context.Context, q *ownedAuthorityQuery, reque
 		args      []any
 		target    any
 	}{
-		{"SELECT payload FROM quota_reservations WHERE tenant_id=$1 AND quota_reservation_id=$2", []any{request.TenantID, v.Job.ReservationID}, &v.Reservation},
-		{"SELECT payload FROM artifact_manifests WHERE tenant_id=$1 AND artifact_manifest_id=$2", []any{request.TenantID, v.Job.InputManifestID}, &v.InputManifest},
+		{"SELECT payload FROM quota_reservations WHERE tenant_id=$1 AND quota_reservation_id=$2", []any{tenantID, v.Job.ReservationID}, &v.Reservation},
+		{"SELECT payload FROM artifact_manifests WHERE tenant_id=$1 AND artifact_manifest_id=$2", []any{tenantID, v.Job.InputManifestID}, &v.InputManifest},
 	} {
 		raw, err := q.readCanonicalJSON(ctx, item.statement, item.args...)
 		if err != nil || decodeOwnedEffectCanonicalJSON(raw, item.target) != nil {
 			return ports.WorkerJobState{}, q.budget.deny()
 		}
 	}
-	if v.Run.TenantID != request.TenantID || v.Run.ID != request.RunID || v.Job.AttemptID != request.AttemptID || v.InputManifest.CreatedAt.After(q.at) ||
+	if v.Run.TenantID != tenantID || v.Run.ID != runID || v.Job.AttemptID != attemptID || v.InputManifest.CreatedAt.After(q.at) ||
 		(v.Run.StartedAt != nil && v.Run.StartedAt.After(q.at)) || validateLoadedWorkerJob(v) != nil {
 		return ports.WorkerJobState{}, q.budget.deny()
 	}

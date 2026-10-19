@@ -37,6 +37,17 @@ func readRetainedDeletionProducer(ctx context.Context, q *ownedAuthorityQuery, r
 	if err != nil || v.Evidence.ValidateForPersistedAuthority(v.Parent.Authority, v.Parent.Reservation) != nil {
 		return deny()
 	}
+	// The historical compact join is not enough for retirement: also validate
+	// every original physical parent/admission scalar through their canonical
+	// readers, without consulting an expired current Source/profile verifier.
+	parent, err := readOwnedAttemptEffectParent(ctx, q, ownedAllocationParentRequest(v.Parent.Reservation))
+	if err != nil || parent == nil || !reflect.DeepEqual(*parent, v.Parent) {
+		return deny()
+	}
+	admission, err := readOwnedAdmission(ctx, q, v.Parent.Scope)
+	if err != nil || admission == nil || !reflect.DeepEqual(*admission, v.Admission) {
+		return deny()
+	}
 	burned, at, err := readOwnedPreparationBurnObservation(ctx, q, v.Parent)
 	if err != nil || !burned {
 		return deny()

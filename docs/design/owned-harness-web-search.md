@@ -138,6 +138,46 @@ source-envelope bytes. Reusing a resource grant across legitimate new Runs is
 not replay permission, a shared unlimited balance, a top-up or renewed authority.
 No body field or codec invents vendor price verification or actual funding.
 
+The existing generic evidence list and review-receipt presence check are not
+such an expenditure authorization. For the first owner-local publisher, require
+one explicit `OwnerLocalSearchExpenditureV2` declaration in the authenticated
+private installation manifest. It binds version 2, tenant, owner and billing
+owner (the same owner for this bounded local path), search resource/revisions,
+V2 grant semantic digest and exact grant-body reference, exact accepted price/
+terms evidence references, USD currency,
+10,000-microunit per-call and 20,000-microunit per-Attempt authorized reservation ceilings,
+and original issuance/absolute expiry. The source authenticates and retains all
+referenced bytes, validates the closed declaration and acceptance correspondence,
+and matches the actual current installed profile before issuing spending.
+Presence of arbitrary review bytes or a `known_paid` string is insufficient.
+This declaration is the owner's reviewed expenditure acceptance; do not add a
+second free-form approval receipt and treat its mere presence as review.
+The existing manifest/source commitment owns this declaration; no new approval
+map, payer registry or balance is introduced. Unsupported different-payer or
+missing/unknown evidence denies this publisher rather than synthesizing consent.
+
+Price/terms evidence uses closed owner-accepted snapshot records: exact provider
+and API profile, declared source origin, observation/absolute expiry, and a
+bounded immutable payload reference with raw SHA and length. Price also binds
+the exact price revision, USD/request unit and a positive accepted tariff no
+greater than the 10,000-microunit reservation. Terms binds the grant's data-policy
+digest and credential audience. Retain and verify the exact referenced snapshot
+bytes within the existing total installation/evidence bounds; no external fetch
+or new storage allowance follows. Origin and observation are operator-attested
+metadata, not proof of a current HTTP response, vendor signature or legal
+interpretation. The original private intake authenticates the operator's
+acceptance and exact evidence identities; live qualification separately checks
+that the selected service still matches the frozen profile and accepted terms.
+
+This proves an original owner's finite expenditure authorization and the
+identity of accepted price/terms evidence, not vendor prepaid balance, account
+credit or the final invoice. Keep that evidence confidence explicit. Actual
+usage remains measured/reported/unknown under the existing accounting rules;
+unknown vendor cost is not zero, and lower reports do not refund the original
+reservation. Other managed/platform-funded publishers need their own existing
+authenticated billing source; a local declaration does not authorize cloud
+funding or consumer-subscription sharing.
+
 New producer, consent creation/read/reconciliation and reserve/before-send
 materialization must consume the same original V2 grant owner and strict body
 commitment. No synthetic `owned-fixture-grant-*` lookup, caller-authored grant

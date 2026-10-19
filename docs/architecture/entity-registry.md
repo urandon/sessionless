@@ -229,6 +229,18 @@ accepts only an authenticated not-found response, not arbitrary read errors.
 This inventory and its opaque original-owner receipt are not another table,
 quota ledger or durable proof after process loss.
 
+The bounded search compiler introduces scoped `WebSearchGrantV1` and
+`WebSearchResultV1` data, not new tables or a search-owned transcript. Frozen
+argument/wire buffers and decoder state are process-local and reconstruct no
+send permission. Once the original publisher/operation integration is delivered,
+grant custody is correctness-critical authority data, while exact arguments,
+physical request and normalized result use the existing authorized operation
+body/observation references and retention/deletion closure. A retained hash or
+serialized result is not authenticated observation or continuation authority;
+lost or erased source cannot be recovered by searching again. The current
+data-only codec publishes no records and changes no table, TTL or migration.
+See the [search contract](../design/owned-harness-web-search.md#distinct-argument-and-physical-request-commitments).
+
 The original local terminal owner joins its actual keeper/lease and allocation,
 uses the existing allocation retirement CAS, authenticates the historical
 Run/frontier and retained capsule/canonical/derived objects, then invokes that

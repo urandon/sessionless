@@ -44,7 +44,8 @@ func searchOperation(f *FrozenRequestV1) domain.AttemptOperationV1 {
 		PredecessorObservationDigest: domain.AttemptOperationObservationDigestV1(d), ModelResponseDigest: d, ArgumentsDigest: f.argumentsDigest, QueryDigest: f.queryDigest, ToolGrantDigest: f.grantDigest,
 		ConsentRequestDigest: d, ConsentDecisionDigest: d, ConsentDecisionRef: "decision-a", Deadline: deadline, CleanupDuration: time.Second,
 		Debit:        domain.AttemptOperationDebitV1{Operations: 1, ToolDispatches: 1, WebSearches: 1, BodyBytes: uint64(len(f.wire)) + domain.WebSearchResultBytesV1, ResponseBytes: domain.WebSearchResponseBytesV1, AmountMicrounits: 10000, ActiveDuration: 15 * time.Second},
-		RequestBytes: uint64(len(f.wire)), ResultBytes: domain.WebSearchResultBytesV1, Currency: "USD", PriceRevision: f.binding.ParentPriceRevision, AdmissionCostCeilingDigest: f.binding.ParentCostCeilingDigestV2, ExternalChargeEvidenceDigest: f.grant.PriceEvidenceDigest}
+		RequestBytes: uint64(len(f.wire)), ResultBytes: domain.WebSearchResultBytesV1, Currency: "USD", PriceRevision: f.binding.ParentPriceRevision, AdmissionCostCeilingDigest: f.binding.ParentCostCeilingDigestV2, ExternalChargeEvidenceDigest: f.grant.PriceEvidenceDigest,
+		SearchWire: &domain.AttemptOperationSearchWireV1{Version: 1, APIProfile: domain.WebSearchAPIProfileV1, ArgumentsBytes: uint64(len(f.arguments)), CompilerArtifactDigest: f.grant.AdapterArtifactDigest}}
 }
 func boundSearch(t *testing.T) *FrozenRequestV1 {
 	t.Helper()
@@ -116,7 +117,9 @@ func TestWebSearchRequestPhysicalWireBudgetAndV1Mismatch(t *testing.T) {
 	if len(f.wire) <= 4096 || len(f.wire) > 8192 {
 		t.Fatalf("distinct physical bound not exercised: args=%d wire=%d", len(args), len(f.wire))
 	}
-	if _, e := f.BindOperationV1(searchOperation(f)); e != ErrOperationCompatibility {
+	legacy := searchOperation(f)
+	legacy.SearchWire = nil
+	if _, e := f.BindOperationV1(legacy); e != ErrOperationCompatibility {
 		t.Fatalf("old operation cap silently bypassed: err=%v", e)
 	}
 	empty := compileSearch(t, []byte(`{"query":"x"}`))

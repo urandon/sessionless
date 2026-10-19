@@ -251,6 +251,14 @@ lost or erased source cannot be recovered by searching again. The current
 data-only codec publishes no records and changes no table, TTL or migration.
 See the [search contract](../design/owned-harness-web-search.md#distinct-argument-and-physical-request-commitments).
 
+The optional `AttemptOperationSearchWireV1` encoding belongs inside the existing
+`attempt_operations_v1` reservation record and its original digest/call index;
+argument size and compiler/profile commitments are not a new grant or ledger.
+It adds no row, object reference, TTL or deletion owner. Nil-arm historical bytes
+stay unchanged; strict readers do not turn retained data into send permission.
+Until the authentic search producer is installed, the original Store denies
+fresh new-arm reserve/send before generic evidence materialization or effects.
+
 The original local terminal owner joins its actual keeper/lease and allocation,
 uses the existing allocation retirement CAS, authenticates the historical
 Run/frontier and retained capsule/canonical/derived objects, then invokes that

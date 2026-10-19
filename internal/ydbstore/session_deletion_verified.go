@@ -69,7 +69,7 @@ func (store *Store) startRetainedSessionDeletion(ctx context.Context, tenant dom
 			if e != nil || !found || de != nil || digest != key.RunDigest || !owned || key.Sequence == 0 || anchor.Sequence != key.Sequence {
 				return domain.ErrMembershipDenied
 			}
-			writer, e = readRetainedDeletionWriter(query.run.ctx, query.run.query, run, anchor, original.attemptRows[key.Attempt])
+			writer, e = readRetainedDeletionWriter(w.statementContext(query.run.ctx), query.run.query, run, anchor, original.attemptRows[key.Attempt])
 			return e
 		})
 		if err != nil {
@@ -138,7 +138,9 @@ func (store *Store) retainedSessionDeletionInventory(ctx context.Context, tenant
 }
 
 // This is a bounded DATA-only routing read, never destructive admission. Use
-// the existing indexed/legacy identity union, then bounded canonical Run rows.
+// the existing Run identity index, then bounded canonical Run rows. This Run
+// index predates the optional lifecycle-side-index backfill; strict retained
+// metadata capture still requires that backfill, ordinary V1 deletion does not.
 // Unknown/missing rows deny, rather than falling back to an incomplete Plan.
 func (store *Store) sessionDeletionContainsCustody(ctx context.Context, tenant domain.TenantID, session domain.SessionID) (bool, error) {
 	legacy := &sessionDeletionInventoryQuery{query: store.db}

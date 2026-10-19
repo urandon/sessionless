@@ -300,9 +300,15 @@ func (store *Store) StartSessionDeletion(
 		return result, readErr
 	}
 	if exists && stored.State != domain.SessionDeletionCompleted && (store.sessionDeletionBlobReader != nil || stored.RetainedVerification != nil) {
-		retained, retainedErr := store.startRetainedSessionDeletion(ctx, tenantID, sessionID)
-		if !errors.Is(retainedErr, errNoRetainedDeletionRuns) {
-			return retained, retainedErr
+		retained := stored.RetainedVerification != nil
+		if !retained {
+			retained, err = store.sessionDeletionContainsCustody(ctx, tenantID, sessionID)
+			if err != nil {
+				return result, err
+			}
+		}
+		if retained {
+			return store.startRetainedSessionDeletion(ctx, tenantID, sessionID)
 		}
 	}
 	err = store.Transact(ctx, tenantID, func(state ports.StateTx) error {

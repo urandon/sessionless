@@ -6,6 +6,7 @@ import (
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -22,6 +23,10 @@ type terminalDeletionSQL struct {
 	deletion          *domain.SessionDeletion
 	guards, mutations int
 	failClose         bool
+	backfillNotReady  bool
+	allowStart        bool
+	routingIDs        [][]driver.Value
+	canonicalRun      string
 }
 type terminalDeletionConn struct{ f *terminalDeletionSQL }
 
@@ -37,8 +42,21 @@ func (c *terminalDeletionConn) Begin() (driver.Tx, error) { return ownedAdmissio
 func (c *terminalDeletionConn) BeginTx(context.Context, driver.TxOptions) (driver.Tx, error) {
 	return ownedAdmissionJoinTx{}, nil
 }
-func (c *terminalDeletionConn) ExecContext(context.Context, string, []driver.NamedValue) (driver.Result, error) {
+func (c *terminalDeletionConn) ExecContext(_ context.Context, statement string, args []driver.NamedValue) (driver.Result, error) {
 	c.f.mutations++
+	if c.f.allowStart {
+		if strings.Contains(statement, "UPSERT INTO session_deletions") && len(args) == 7 {
+			var d domain.SessionDeletion
+			if err := json.Unmarshal([]byte(args[6].Value.(string)), &d); err != nil {
+				return nil, err
+			}
+			c.f.deletion = &d
+			return driver.RowsAffected(1), nil
+		}
+		if strings.Contains(statement, "UPSERT INTO audit_events") {
+			return driver.RowsAffected(1), nil
+		}
+	}
 	return nil, errors.New("unexpected deletion mutation")
 }
 func (c *terminalDeletionConn) QueryContext(_ context.Context, statement string, args []driver.NamedValue) (driver.Rows, error) {
@@ -57,7 +75,19 @@ func (c *terminalDeletionConn) QueryContext(_ context.Context, statement string,
 		return &compactionSourceRows{rows: [][]driver.Value{{string(raw)}}}, nil
 	}
 	if strings.Contains(statement, "FROM session_lifecycle_backfill_state") {
+		if c.f.backfillNotReady {
+			return &compactionSourceRows{}, nil
+		}
 		return &compactionSourceRows{rows: [][]driver.Value{{time.Date(2026, 10, 18, 0, 0, 0, 0, time.UTC)}}}, nil
+	}
+	if strings.HasPrefix(statement, "SELECT run_id FROM runs_by_session") {
+		return &compactionSourceRows{rows: c.f.routingIDs}, nil
+	}
+	if strings.HasPrefix(statement, "SELECT SUBSTRING(CAST(payload AS String),0,32769) FROM runs ") {
+		if c.f.canonicalRun == "" {
+			return &compactionSourceRows{}, nil
+		}
+		return &compactionSourceRows{rows: [][]driver.Value{{c.f.canonicalRun}}}, nil
 	}
 	// The inventory is deliberately empty to isolate the final transaction's
 	// guard. It is not exact-object inventory or physical erasure evidence.
@@ -67,6 +97,50 @@ func (c *terminalDeletionConn) QueryContext(_ context.Context, statement string,
 		}
 	}
 	return nil, errors.New("unexpected lifecycle query: " + statement)
+}
+
+func TestLocalTerminalDeletionReaderPreservesLegacyStart(t *testing.T) {
+	for _, deleting := range []bool{false, true} {
+		for _, readerEnabled := range []bool{false, true} {
+			for _, ready := range []bool{false, true} {
+				name := fmt.Sprintf("deleting_%t/reader_%t/backfill_%t", deleting, readerEnabled, ready)
+				t.Run(name, func(t *testing.T) {
+					at := time.Date(2026, 10, 18, 0, 0, 0, 0, time.UTC)
+					d := domain.SessionDeletion{TenantID: "tenant-test", SessionID: "session-test", RequestedBy: "user-test", Reason: "legacy Start with optional read-only reader", State: domain.SessionDeletionRequested, RequestedAt: at}
+					if deleting && d.Start(at.Add(time.Second)) != nil {
+						t.Fatal("legacy fixture Start")
+					}
+					f := &terminalDeletionSQL{deletion: &d, backfillNotReady: !ready, allowStart: true}
+					store := terminalDeletionStore(t, f)
+					reader := &deletionReadFixture{}
+					if readerEnabled {
+						store.sessionDeletionBlobReader = reader
+					}
+					got, err := store.StartSessionDeletion(t.Context(), d.TenantID, d.SessionID, at.Add(2*time.Second))
+					wantWrites := 2
+					if deleting {
+						wantWrites = 0
+					}
+					if err != nil || got.State != domain.SessionDeletionDeleting || got.RetainedVerification != nil || f.guards != 1 || f.mutations != wantWrites || reader.opens != 0 {
+						t.Fatalf("legacy route changed: err=%v state=%s guards=%d writes=%d opens=%d", err, got.State, f.guards, f.mutations, reader.opens)
+					}
+				})
+			}
+		}
+	}
+	for _, raw := range []string{"", "{}"} {
+		t.Run("unknown_canonical_"+raw, func(t *testing.T) {
+			at := time.Date(2026, 10, 18, 0, 0, 0, 0, time.UTC)
+			d := domain.SessionDeletion{TenantID: "tenant-test", SessionID: "session-test", RequestedBy: "user-test", Reason: "unknown routing denies", State: domain.SessionDeletionRequested, RequestedAt: at}
+			f := &terminalDeletionSQL{deletion: &d, allowStart: true, routingIDs: [][]driver.Value{{"unknown-run"}}, canonicalRun: raw}
+			store := terminalDeletionStore(t, f)
+			reader := &deletionReadFixture{}
+			store.sessionDeletionBlobReader = reader
+			if _, err := store.StartSessionDeletion(t.Context(), d.TenantID, d.SessionID, at.Add(time.Second)); err == nil || f.mutations != 0 || f.guards != 0 || reader.opens != 0 {
+				t.Fatal("unknown routing fell through to legacy", err, f.mutations, f.guards, reader.opens)
+			}
+		})
+	}
 }
 func terminalDeletionStore(t *testing.T, f *terminalDeletionSQL) *Store {
 	t.Helper()
@@ -191,16 +265,25 @@ func TestLocalTerminalDeletionGuardsActualLifecycleRetries(t *testing.T) {
 			store := terminalDeletionStore(t, f)
 			before := deletion
 			var err error
+			var requested domain.SessionDeletion
 			switch {
 			case strings.HasPrefix(phase, "request"):
 				request := deletion
 				request.State = domain.SessionDeletionRequested
 				request.StartedAt = nil
-				_, err = store.RequestSessionDeletion(t.Context(), request)
+				requested, err = store.RequestSessionDeletion(t.Context(), request)
 			case strings.HasPrefix(phase, "start"):
 				_, err = store.StartSessionDeletion(t.Context(), run.TenantID, run.SessionID, run.UpdatedAt)
 			default:
 				_, err = store.CompleteSessionDeletion(t.Context(), run.TenantID, run.SessionID, run.UpdatedAt, 0, 0)
+			}
+			if strings.HasPrefix(phase, "request") {
+				// Request installs/returns only the existing terminal Session fence.
+				// Unknown custody still grants no body proof, capture or Delete.
+				if err != nil || !reflect.DeepEqual(requested, before) || f.guards != 1 || f.mutations != 0 || !reflect.DeepEqual(deletion, before) {
+					t.Fatalf("phase=%s terminal-only fence err=%v queries=%d mutations=%d result=%+v", phase, err, f.guards, f.mutations, requested)
+				}
+				return
 			}
 			var validation domain.ValidationError
 			if !errors.As(err, &validation) || validation.Field != "session_deletion.terminal_custody" || f.guards != 1 || f.mutations != 0 || !reflect.DeepEqual(deletion, before) {

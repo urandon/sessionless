@@ -180,3 +180,88 @@ func TestRetainedDeletionWorkFirstCaptureCommitDeadline(t *testing.T) {
 		})
 	}
 }
+
+type retainedDeletionStatementValue struct{}
+type retainedDeletionHeldStatement struct {
+	retainedDeletionHeldCommit
+	statementContext chan context.Context
+}
+
+func (f *retainedDeletionHeldStatement) Connect(context.Context) (driver.Conn, error) { return f, nil }
+func (f *retainedDeletionHeldStatement) QueryContext(ctx context.Context, s string, args []driver.NamedValue) (driver.Rows, error) {
+	if s == `SELECT CurrentUtcTimestamp()` {
+		return f.retainedDeletionHeldCommit.QueryContext(ctx, s, args)
+	}
+	if s != "held query" {
+		return nil, errors.New("unexpected held statement")
+	}
+	f.statementContext <- ctx
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+func (f *retainedDeletionHeldStatement) ExecContext(ctx context.Context, s string, _ []driver.NamedValue) (driver.Result, error) {
+	if s != "held exec" {
+		return nil, errors.New("unexpected held write")
+	}
+	f.statementContext <- ctx
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestRetainedDeletionWorkCommonStatementCancellation(t *testing.T) {
+	for _, operation := range []string{"query", "exec", "row"} {
+		t.Run(operation, func(t *testing.T) {
+			func() {
+				f := &retainedDeletionHeldStatement{statementContext: make(chan context.Context, 1)}
+				db := sql.OpenDB(f)
+				defer db.Close()
+				outer, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				w := newRetainedDeletionWork(outer)
+				defer w.close()
+				done := make(chan error, 1)
+				go func() {
+					done <- w.transaction(&Store{db: db}, "tenant-capture", func(tx *stateTx, _ time.Time) error {
+						if err := w.admitRuns([]domain.RunID{"run-a"}); err != nil {
+							return err
+						}
+						if _, err := w.forRun("run-a"); err != nil {
+							return err
+						}
+						statement := context.WithValue(outer, retainedDeletionStatementValue{}, "original value")
+						switch operation {
+						case "query":
+							_, err := tx.sqlTx.QueryContext(statement, "held query")
+							return err
+						case "row":
+							var value string
+							return tx.sqlTx.QueryRowContext(statement, "held query").Scan(&value)
+						default:
+							_, err := tx.sqlTx.ExecContext(statement, "held exec")
+							return err
+						}
+					})
+				}()
+				statement := <-f.statementContext
+				if statement.Value(retainedDeletionStatementValue{}) != "original value" || statement.Err() != nil {
+					t.Fatal("statement values/lifetime lost before original deadline")
+				}
+				// Explicitly cancel the admitted ORIGINAL Run. The separate
+				// synctest Commit test proves its deadline triggers this same
+				// cancellation relay. No sleep decides the result here.
+				w.runs["run-a"].cancel()
+				select {
+				case <-statement.Done():
+				case <-time.After(5 * time.Second): // Deadlock watchdog, not an elapsed-time assertion.
+					cancel()
+					<-done
+					t.Fatal("original Run cancellation did not cancel in-flight common SQL statement")
+				}
+				cancel()
+				if err := <-done; err == nil {
+					t.Fatal("cancelled statement accepted")
+				}
+			}()
+		})
+	}
+}

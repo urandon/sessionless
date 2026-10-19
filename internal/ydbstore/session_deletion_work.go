@@ -14,15 +14,17 @@ import (
 // budgets survive metadata capture, historical writer/body validation and the
 // final Start transaction. No active Source, lease or send authority is made.
 type retainedDeletionWork struct {
-	ctx          context.Context
-	runs         map[domain.RunID]*retainedDeletionRunWork
-	readBudget   *deletionCaptureReadBudget
-	originalRuns []domain.RunID
-	admitted     bool
-	tx           *sql.Tx
-	at           time.Time
-	txCancel     context.CancelFunc
-	txStops      []func() bool
+	ctx              context.Context
+	runs             map[domain.RunID]*retainedDeletionRunWork
+	readBudget       *deletionCaptureReadBudget
+	originalRuns     []domain.RunID
+	admitted         bool
+	tx               *sql.Tx
+	at               time.Time
+	txCancel         context.CancelFunc
+	txStops          []func() bool
+	txContext        context.Context
+	statementCleanup []func()
 }
 type retainedDeletionRunWork struct {
 	ctx    context.Context
@@ -35,6 +37,10 @@ func newRetainedDeletionWork(ctx context.Context) *retainedDeletionWork {
 	return &retainedDeletionWork{ctx: ctx, runs: map[domain.RunID]*retainedDeletionRunWork{}, readBudget: &deletionCaptureReadBudget{ceiling: ownedAuthorityMaxBytes}}
 }
 func (w *retainedDeletionWork) close() {
+	for _, cleanup := range w.statementCleanup {
+		cleanup()
+	}
+	w.statementCleanup = nil
 	for _, run := range w.runs {
 		run.cancel()
 	}
@@ -62,13 +68,16 @@ func (w *retainedDeletionWork) admitRuns(ids []domain.RunID) error {
 
 // Query relay binds the SQL operation itself to the original 10-second Run
 // context. Merely checking a timeout after an unbounded DB call is insufficient.
-type retainedDeletionRunQuery struct{ run *retainedDeletionRunWork }
-
-func (q *retainedDeletionRunQuery) QueryContext(_ context.Context, s string, args ...any) (*sql.Rows, error) {
-	return q.run.query.QueryContext(q.run.ctx, s, args...)
+type retainedDeletionRunQuery struct {
+	run  *retainedDeletionRunWork
+	work *retainedDeletionWork
 }
-func (q *retainedDeletionRunQuery) QueryRowContext(_ context.Context, s string, args ...any) *sql.Row {
-	return q.run.query.QueryRowContext(q.run.ctx, s, args...)
+
+func (q *retainedDeletionRunQuery) QueryContext(ctx context.Context, s string, args ...any) (*sql.Rows, error) {
+	return q.run.query.QueryContext(q.work.statementContext(ctx, q.run.ctx), s, args...)
+}
+func (q *retainedDeletionRunQuery) QueryRowContext(ctx context.Context, s string, args ...any) *sql.Row {
+	return q.run.query.QueryRowContext(q.work.statementContext(ctx, q.run.ctx), s, args...)
 }
 func (q *retainedDeletionRunQuery) ExecContext(context.Context, string, ...any) (sql.Result, error) {
 	return nil, domain.ErrMembershipDenied
@@ -114,7 +123,64 @@ func (w *retainedDeletionWork) forRun(id domain.RunID) (*retainedDeletionRunQuer
 			return nil, domain.ErrMembershipDenied
 		}
 	}
-	return &retainedDeletionRunQuery{run: run}, nil
+	return &retainedDeletionRunQuery{run: run, work: w}, nil
+}
+
+// Keep the statement's values and tighter cancellation/deadline, but also bind
+// every in-flight SQL operation to the SAME transaction lifetime. BeginTx's
+// context alone does not cancel an already-dispatched driver Query/Exec.
+// Cleanup waits until the transaction ends: QueryRow.Scan and streamed Rows
+// must not lose their context immediately after QueryContext returns.
+func (w *retainedDeletionWork) statementContext(ctx context.Context, lifetimes ...context.Context) context.Context {
+	lifetimes = append(lifetimes, w.txContext)
+	var earliest time.Time
+	for _, lifetime := range lifetimes {
+		if lifetime == nil {
+			continue
+		}
+		if deadline, ok := lifetime.Deadline(); ok && (earliest.IsZero() || deadline.Before(earliest)) {
+			earliest = deadline
+		}
+	}
+	var linked context.Context
+	var cancel context.CancelFunc
+	if earliest.IsZero() {
+		linked, cancel = context.WithCancel(ctx)
+	} else {
+		linked, cancel = context.WithDeadline(ctx, earliest)
+	}
+	var stops []func() bool
+	for _, lifetime := range lifetimes {
+		if lifetime == nil {
+			continue
+		}
+		stops = append(stops, context.AfterFunc(lifetime, cancel))
+		if lifetime.Err() != nil {
+			cancel()
+		}
+	}
+	w.statementCleanup = append(w.statementCleanup, func() {
+		for _, stop := range stops {
+			stop()
+		}
+		cancel()
+	})
+	return linked
+}
+
+type retainedDeletionTxQuery struct {
+	tx   *sql.Tx
+	work *retainedDeletionWork
+}
+
+func (q *retainedDeletionTxQuery) QueryContext(ctx context.Context, s string, args ...any) (*sql.Rows, error) {
+	return q.tx.QueryContext(q.work.statementContext(ctx), s, args...)
+}
+func (q *retainedDeletionTxQuery) QueryRowContext(ctx context.Context, s string, args ...any) *sql.Row {
+	return q.tx.QueryRowContext(q.work.statementContext(ctx), s, args...)
+}
+func (q *retainedDeletionTxQuery) ExecContext(ctx context.Context, s string, args ...any) (sql.Result, error) {
+	return q.tx.ExecContext(q.work.statementContext(ctx), s, args...)
 }
 
 func (w *retainedDeletionWork) finishSQL() error {
@@ -144,6 +210,11 @@ func (w *retainedDeletionWork) transaction(store *Store, tenant domain.TenantID,
 	txctx, txcancel := context.WithCancel(w.ctx)
 	w.txCancel = txcancel
 	defer func() {
+		for _, cleanup := range w.statementCleanup {
+			cleanup()
+		}
+		w.statementCleanup = nil
+		w.txContext = nil
 		for _, stop := range w.txStops {
 			stop()
 		}
@@ -162,6 +233,7 @@ func (w *retainedDeletionWork) transaction(store *Store, tenant domain.TenantID,
 		txctx, cancel = context.WithDeadline(txctx, earliest)
 		defer cancel()
 	}
+	w.txContext = txctx
 	tx, err := store.db.BeginTx(txctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
 		return err
@@ -177,7 +249,7 @@ func (w *retainedDeletionWork) transaction(store *Store, tenant domain.TenantID,
 			_ = w.finishSQL()
 		}
 	}()
-	err = fn(&stateTx{store: store, sqlTx: tx, tenantID: tenant}, w.at)
+	err = fn(&stateTx{store: store, sqlTx: &retainedDeletionTxQuery{tx: tx, work: w}, tenantID: tenant}, w.at)
 	finished := w.finishSQL()
 	if err != nil {
 		return err

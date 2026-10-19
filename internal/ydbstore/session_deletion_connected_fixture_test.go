@@ -2,6 +2,7 @@ package ydbstore
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
@@ -25,15 +26,18 @@ import (
 // Scalars project the original writer fixtures' durable values; no successful
 // marker, receipt, original allocation, reservation or evidence is invented.
 type retainedDeletionGraphFixture struct {
-	base         driver.Connector
-	tables       map[string][]map[string]driver.Value
-	request      domain.SessionDeletion
-	lastSQL      string
-	membership   string
-	writes       int
-	hold         *domain.SessionLegalHold
-	requested    bool
-	lostStartACK bool
+	base            driver.Connector
+	tables          map[string][]map[string]driver.Value
+	request         domain.SessionDeletion
+	lastSQL         string
+	membership      string
+	writes          int
+	hold            *domain.SessionLegalHold
+	requested       bool
+	lostStartACK    bool
+	lostCompleteACK bool
+	heldUnprepared  chan context.Context
+	rollbackDone    chan struct{}
 }
 
 func newRetainedDeletionGraphFixture(t *testing.T, seed *LocalTerminalPublicationSessionConnectedSeed, completed *LocalTerminalCompletionSQLFixture) *retainedDeletionGraphFixture {
@@ -264,7 +268,11 @@ func (tx *retainedDeletionGraphTx) Rollback() error {
 	tx.f.requested = tx.requested
 	tx.f.writes = tx.writes
 	tx.f.tables = tx.rows
-	return tx.Tx.Rollback()
+	err := tx.Tx.Rollback()
+	if tx.f.rollbackDone != nil {
+		close(tx.f.rollbackDone)
+	}
+	return err
 }
 func (tx *retainedDeletionGraphTx) Commit() error {
 	e := tx.Tx.Commit()
@@ -277,6 +285,10 @@ func (tx *retainedDeletionGraphTx) Commit() error {
 	if e == nil && tx.f.lostStartACK && tx.request.State == domain.SessionDeletionRequested && tx.f.request.State == domain.SessionDeletionDeleting {
 		tx.f.lostStartACK = false
 		return errors.New("controlled durable Start lost commit acknowledgement")
+	}
+	if e == nil && tx.f.lostCompleteACK && tx.request.State == domain.SessionDeletionDeleting && tx.f.request.State == domain.SessionDeletionCompleted {
+		tx.f.lostCompleteACK = false
+		return errors.New("controlled durable Complete lost commit acknowledgement")
 	}
 	return e
 }
@@ -363,6 +375,17 @@ func (c *retainedDeletionGraphConn) QueryContext(ctx context.Context, s string, 
 	}
 	result := func(values [][]driver.Value, columns int) (driver.Rows, error) {
 		return &retainedDeletionWriterRows{rows: values, columns: columns}, nil
+	}
+	if f.heldUnprepared != nil && strings.Contains(s, "web_search_consent_record IS NOT NULL") {
+		if len(args) != 3 || args[1].Value != "extra-prepared-attempt" {
+			return nil, errors.New("held actual unprepared parent exact key")
+		}
+		f.heldUnprepared <- ctx
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	if rows, handled, err := f.originalRows(s, args); handled {
+		return rows, err
 	}
 	if completionSQL(s) == completionSQL(`SELECT record FROM session_deletions WHERE tenant_id = $1 AND session_id = $2`) {
 		if !f.requested {
@@ -454,6 +477,9 @@ func (c *retainedDeletionGraphConn) QueryContext(ctx context.Context, s string, 
 		return result([][]driver.Value{{string(b)}}, 1)
 	}
 	if s == `SELECT completed_at FROM session_lifecycle_backfill_state WHERE backfill_id = $1` {
+		if len(f.tables["session_lifecycle_backfill_state"]) == 0 {
+			return result(nil, 1)
+		}
 		return result([][]driver.Value{{f.tables["session_lifecycle_backfill_state"][0]["completed_at"]}}, 1)
 	}
 	for table, spec := range deletionCaptureSpecs {
@@ -778,6 +804,9 @@ func (b *retainedDeletionServiceBlobs) Delete(ctx context.Context, tenant domain
 func inspectGenuineRetainedDeletionService(t *testing.T, seed *LocalTerminalPublicationSessionConnectedSeed, completed *LocalTerminalCompletionSQLFixture, reader SessionDeletionBlobReader, mode string) error {
 	t.Helper()
 	f := newRetainedDeletionGraphFixture(t, seed, completed)
+	if mode == "service_unprepared_cancel" {
+		return inspectRetainedDeletionOtherAdmissionCancellation(t, f, seed)
+	}
 	f.requested = false
 	db := sql.OpenDB(f)
 	db.SetMaxOpenConns(1)
@@ -793,6 +822,20 @@ func inspectGenuineRetainedDeletionService(t *testing.T, seed *LocalTerminalPubl
 	if !f.requested || f.request.State != domain.SessionDeletionRequested || f.request.RetainedVerification != nil {
 		t.Fatal("public Request granted physical eligibility")
 	}
+	negative := strings.HasPrefix(mode, "service_corrupt_") || mode == "service_extra_prepared" || mode == "service_backfill_missing"
+	switch mode {
+	case "service_corrupt_evidence":
+		f.tables["substrate_execution_evidence"][0]["evidence_digest"] = strings.Repeat("f", 64)
+	case "service_corrupt_accounting":
+		f.tables["attempt_effect_reservations"][0]["operation_accounting_digest"] = strings.Repeat("f", 64)
+	case "service_corrupt_allocation":
+		f.tables["attempt_effect_reservations"][0]["allocation_current_digest"] = strings.Repeat("f", 64)
+	case "service_extra_prepared":
+		f.addPreparedAttempt(t)
+	case "service_backfill_missing":
+		f.tables["session_lifecycle_backfill_state"] = nil
+	}
+	requestWrites := f.writes
 	blobs := &retainedDeletionServiceBlobs{reader: probe, failAt: 2, deleted: map[string]bool{}}
 	service, e := sessionlifecycle.New(store, blobs, 0, 0)
 	if e != nil {
@@ -800,6 +843,12 @@ func inspectGenuineRetainedDeletionService(t *testing.T, seed *LocalTerminalPubl
 	}
 	plan, e := service.Plan(t.Context(), seed.Scope.TenantID, seed.Scope.SessionID)
 	if e != nil {
+		if negative {
+			if f.writes != requestWrites || f.request.State != domain.SessionDeletionRequested || blobs.deletes != 0 || probe.opened != 0 {
+				t.Fatal("invalid original Plan had effects")
+			}
+			return e
+		}
 		return fmt.Errorf("genuine public Plan query=%s: %w", f.lastSQL, e)
 	}
 	if len(plan.Inventory.Objects) < 2 {
@@ -809,6 +858,12 @@ func inspectGenuineRetainedDeletionService(t *testing.T, seed *LocalTerminalPubl
 		f.lostStartACK = true
 	}
 	_, e = service.Execute(t.Context(), seed.Scope.TenantID, seed.Scope.SessionID, plan.Confirmation, time.Now().UTC())
+	if negative {
+		if e == nil || f.writes != requestWrites || f.request.State != domain.SessionDeletionRequested || blobs.deletes != 0 || blobs.puts != 0 {
+			t.Fatal("invalid original writer received Start/Delete", mode, e)
+		}
+		return e
+	}
 	if mode == "service_no_reader" {
 		if e == nil || blobs.deletes != 0 || probe.opened != 0 || f.request.State != domain.SessionDeletionRequested {
 			t.Fatal("nil reader activated retained deletion")
@@ -837,7 +892,20 @@ func inspectGenuineRetainedDeletionService(t *testing.T, seed *LocalTerminalPubl
 	if e != nil {
 		return e
 	}
+	if mode == "service_complete_lost_ack" {
+		f.lostCompleteACK = true
+	}
 	got, e := resumed.Execute(t.Context(), seed.Scope.TenantID, seed.Scope.SessionID, plan.Confirmation, time.Now().UTC())
+	if mode == "service_complete_lost_ack" {
+		if e == nil || f.request.State != domain.SessionDeletionCompleted || f.request.RetainedVerification == nil || *f.request.RetainedVerification != original || probe.opened != opened || blobs.puts != 0 {
+			t.Fatal("durable Complete lost-ACK boundary missing", e)
+		}
+		writes, deletes := f.writes, blobs.deletes
+		got, e = resumed.Execute(t.Context(), seed.Scope.TenantID, seed.Scope.SessionID, plan.Confirmation, time.Now().UTC())
+		if f.writes != writes || blobs.deletes != deletes {
+			t.Fatal("lost Complete ACK replay repeated effects")
+		}
+	}
 	if e != nil {
 		return fmt.Errorf("genuine fresh Store/Service SQL-only resume query=%s: %w", f.lastSQL, e)
 	}
@@ -849,5 +917,148 @@ func inspectGenuineRetainedDeletionService(t *testing.T, seed *LocalTerminalPubl
 			t.Fatal("canonical Complete retained original rows", table, len(rows))
 		}
 	}
+	writes, deletes := f.writes, blobs.deletes
+	replayed, e := fresh.CompleteSessionDeletion(t.Context(), seed.Scope.TenantID, seed.Scope.SessionID, time.Now().UTC(), original.Objects, original.Bytes)
+	if e != nil || !reflect.DeepEqual(replayed, got) || f.writes != writes || blobs.deletes != deletes || probe.opened != opened {
+		t.Fatal("exact completed replay changed effects/capture", e)
+	}
+	if _, e := fresh.CompleteSessionDeletion(t.Context(), seed.Scope.TenantID, seed.Scope.SessionID, time.Now().UTC(), original.Objects+1, original.Bytes); e == nil || f.writes != writes {
+		t.Fatal("completed replay accepted changed counters", e)
+	}
 	return nil
+}
+
+func inspectRetainedDeletionOtherAdmissionCancellation(t *testing.T, f *retainedDeletionGraphFixture, seed *LocalTerminalPublicationSessionConnectedSeed) error {
+	t.Helper()
+	db := sql.OpenDB(f)
+	db.SetMaxOpenConns(1)
+	defer db.Close()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	w := newRetainedDeletionWork(ctx)
+	defer w.close()
+	var capture *sessionDeletionCapture
+	if e := w.transaction(&Store{db: db}, seed.Scope.TenantID, func(tx *stateTx, _ time.Time) error {
+		var e error
+		capture, e = buildRetainedDeletionCaptureWithWork(ctx, tx, seed.Scope.SessionID, w)
+		return e
+	}); e != nil {
+		t.Fatal("original genuine capture for focused parent consumer", e)
+	}
+	// Focused consumer control, NOT a full lifecycle/equality approval. Keep
+	// fixture validation on the test goroutine; Fatal must not strand a driver.
+	f.addOtherAttempt(t, false)
+	capture.admissions = append(capture.admissions, ownedSessionAdmissionKey{attempt: "extra-prepared-attempt", run: seed.Scope.RunID})
+	f.rollbackDone = make(chan struct{})
+	held := make(chan context.Context, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- w.transaction(&Store{db: db}, seed.Scope.TenantID, func(tx *stateTx, _ time.Time) error {
+			f.heldUnprepared = held
+			return validateRetainedDeletionOtherAdmissions(ctx, tx, w, capture, map[domain.AttemptID]domain.RunID{seed.Scope.AttemptID: seed.Scope.RunID})
+		})
+	}()
+	var statement context.Context
+	select {
+	case statement = <-held:
+	case e := <-done:
+		t.Fatal("actual nonselected admission did not reach unprepared parent SQL", e)
+	case <-time.After(5 * time.Second):
+		cancel()
+		<-done
+		t.Fatal("actual parent SQL dispatch watchdog")
+	}
+	w.runs[seed.Scope.RunID].cancel()
+	select {
+	case <-statement.Done():
+	case <-time.After(5 * time.Second):
+		cancel()
+		<-done
+		t.Fatal("actual nonselected parent SQL escaped original Run cancellation")
+	}
+	e := <-done
+	// Tx.Rollback may already be owned by database/sql's awaitDone goroutine;
+	// our callback returning is not evidence its fake postimage restore ended.
+	<-f.rollbackDone
+	if e == nil || f.writes != 0 || f.request.State != domain.SessionDeletionRequested {
+		t.Fatal("cancelled other admission accepted/mutated", e)
+	}
+	return e
+}
+
+// A second structurally valid canonical owner/admission and genuinely prepared
+// parent DATA, not a dangling reverse key or an invented successful V2 seal.
+// It must block deletion of the first writer; no preparation/send is executed.
+func (f *retainedDeletionGraphFixture) addPreparedAttempt(t *testing.T) {
+	f.addOtherAttempt(t, true)
+}
+func (f *retainedDeletionGraphFixture) addOtherAttempt(t *testing.T, prepared bool) {
+	t.Helper()
+	original := f.tables["attempt_execution_admissions_v1"][0]
+	var a domain.AttemptExecutionAdmissionV1
+	if json.Unmarshal([]byte(original["record"].(string)), &a) != nil {
+		t.Fatal("original typed admission")
+	}
+	a.Source.Scope.AttemptID = "extra-prepared-attempt"
+	p, e := domain.DecodeOwnedAttemptEffectParentV1([]byte(f.tables["attempt_effect_reservations"][0]["owned_record"].(string)))
+	if e != nil {
+		t.Fatal(e)
+	}
+	authority := p.Authority.Clone()
+	authority.Lease.AttemptID = a.Source.Scope.AttemptID
+	authority.HarnessBinding.AttemptID = a.Source.Scope.AttemptID
+	authority.HarnessBinding.AgentLoopPolicy.AttemptID = a.Source.Scope.AttemptID
+	a.Source.AgentLoopPolicyDigest, e = authority.HarnessBinding.AgentLoopPolicy.Digest()
+	if e != nil {
+		t.Fatal(e)
+	}
+	a.Source.HarnessBindingDigest, e = authority.HarnessBinding.Digest()
+	if e != nil {
+		t.Fatal(e)
+	}
+	for i := range a.Source.Spending {
+		a.Source.Spending[i].Locator.AttemptID = a.Source.Scope.AttemptID
+		body, e := a.Source.Spending[i].SourceCanonicalBytes()
+		if e != nil {
+			t.Fatal(e)
+		}
+		sum := sha256.Sum256(body)
+		a.Source.Spending[i].SourceAuthorization.Bytes = uint64(len(body))
+		a.Source.Spending[i].SourceAuthorization.Digest = fmt.Sprintf("%x", sum)
+	}
+	if a.Validate() != nil {
+		t.Fatal("extra canonical admission shape")
+	}
+	raw, e := domain.EncodeAttemptExecutionAdmissionV1(a)
+	if e != nil {
+		t.Fatal(e)
+	}
+	digest, e := a.Digest()
+	if e != nil {
+		t.Fatal(e)
+	}
+	row := map[string]driver.Value{}
+	for k, v := range original {
+		row[k] = v
+	}
+	row["attempt_id"], row["record"], row["digest"] = string(a.Source.Scope.AttemptID), string(raw), digest
+	f.tables["attempt_execution_admissions_v1"] = append(f.tables["attempt_execution_admissions_v1"], row)
+	f.tables["attempt_execution_admissions_by_session_v1"] = append(f.tables["attempt_execution_admissions_by_session_v1"], map[string]driver.Value{"tenant_id": row["tenant_id"], "session_id": row["session_id"], "attempt_id": row["attempt_id"], "run_id": row["run_id"]})
+	if !prepared {
+		return
+	}
+	p, e = domain.BuildOwnedAttemptEffectParentV1(a, authority, "extra-prepared-claim", nil, p.Reservation.ReservedAt)
+	if e != nil || p.ValidateForAdmission(a) != nil {
+		t.Fatal("extra original prepared parent shape", e)
+	}
+	parentRaw, e := domain.EncodeOwnedAttemptEffectParentV1(p)
+	if e != nil {
+		t.Fatal(e)
+	}
+	parentDigest, e := p.Digest()
+	if e != nil {
+		t.Fatal(e)
+	}
+	r := p.Reservation
+	f.tables["attempt_effect_reservations"] = append(f.tables["attempt_effect_reservations"], map[string]driver.Value{"tenant_id": string(r.TenantID), "attempt_id": string(r.AttemptID), "kind": string(r.Kind), "run_id": string(r.RunID), "lease_id": string(r.LeaseID), "fence_token": int64(r.FenceToken), "physical_invocation_claim_id": r.PhysicalInvocationClaimID, "effect_sequence": int64(r.EffectSequence), "invocation_authority_digest": string(r.InvocationAuthorityDigest), "reserved_at": r.ReservedAt, "owned_record": string(parentRaw), "owned_digest": parentDigest, "preparation_started_at": r.ReservedAt, "preparation_parent_digest": parentDigest})
 }

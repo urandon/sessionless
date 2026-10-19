@@ -9,8 +9,9 @@ import (
 )
 
 // Actual original MODEL/compaction/Publish/cleanup/Complete, followed by the
-// historical body reader with the producer Source and session closed. This is
-// NOT Start/Delete/resume coverage: destructive lifecycle guards stay closed.
+// public Request/Plan/Start/exact fake Delete/fresh-Store resume/Complete with
+// the original producer Source closed. SQL/blob stores are controlled fakes,
+// not native YDB or actual physical data deletion evidence.
 func TestLocalSessionRetainedDeletionHistoricalBodiesConnected(t *testing.T) {
 	for _, mode := range []string{"A0", "A2"} {
 		t.Run(mode, func(t *testing.T) {
@@ -44,14 +45,14 @@ func TestLocalSessionRetainedDeletionHistoricalBodiesConnected(t *testing.T) {
 				t.Fatal("close original Source", err)
 			}
 			mutations := []string{"positive", "capture_positive", "start_positive", "start_changed_metadata", "start_lost_membership", "start_new_hold", "start_foreign_admission", "resume_changed_metadata", "complete_changed_index", "complete_extra_child", "missing_anchor_owner", "mismatched_anchor_owner", "changed_seal", "writer_positive", "writer_extra_counts", "writer_extra_call", "writer_changed_call", "writer_query_error", "writer_close_error", "writer_capsule_mismatch"}
-			mutations = append(mutations, "service_positive", "service_lost_ack", "service_no_reader")
+			mutations = append(mutations, "service_positive", "service_lost_ack", "service_complete_lost_ack", "service_no_reader", "service_corrupt_evidence", "service_corrupt_accounting", "service_corrupt_allocation", "service_extra_prepared", "service_backfill_missing", "service_unprepared_cancel")
 			if mode == "A2" {
 				mutations = append(mutations, "missing_retained_owner")
 			}
 			for _, mutation := range mutations {
 				t.Run(mutation, func(t *testing.T) {
 					refs, err := ydbstore.InspectRetainedDeletionBodiesV1(t, seed, completed, blobs, mutation)
-					if mutation != "positive" && mutation != "writer_positive" && mutation != "capture_positive" && mutation != "start_positive" && mutation != "service_positive" && mutation != "service_lost_ack" {
+					if mutation != "positive" && mutation != "writer_positive" && mutation != "capture_positive" && mutation != "start_positive" && mutation != "service_positive" && mutation != "service_lost_ack" && mutation != "service_complete_lost_ack" {
 						if err == nil || len(refs) != 0 {
 							t.Fatal("changed original DATA accepted", mutation, err)
 						}

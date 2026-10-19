@@ -249,11 +249,12 @@ func validateRetainedDeletionOtherAdmissions(ctx context.Context, tx *stateTx, w
 		if e != nil || !found || original.Source.Scope.TenantID != tx.tenantID || original.Source.Scope.SessionID != c.inventory.SessionID || original.Source.Scope.RunID != key.run || original.Source.Scope.AttemptID != key.attempt {
 			return domain.ErrMembershipDenied
 		}
-		a, e := readOwnedAdmission(query.run.ctx, query.run.query, original.Source.Scope)
+		runctx := w.statementContext(query.run.ctx)
+		a, e := readOwnedAdmission(runctx, query.run.query, original.Source.Scope)
 		if e != nil || a == nil {
 			return domain.ErrMembershipDenied
 		}
-		if e := validateRetainedDeletionUnpreparedParent(ctx, query.run.query, *a); e != nil {
+		if e := validateRetainedDeletionUnpreparedParent(runctx, query.run.query, *a); e != nil {
 			return e
 		}
 	}

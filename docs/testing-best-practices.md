@@ -206,6 +206,23 @@ both parallel 30-minute jobs and the relocated checks/native gates fit on a cold
 cache miss; the partition alone is not proof. No previous-head CI qualifies a
 changed graph.
 
+The two standalone YDB jobs wait on the pinned container's SQL/storage-backed
+healthcheck before either migration invocation. HTTP monitoring alone is not
+database readiness. The read-only `scripts/wait-ci-ydb.sh` observer accepts only
+the two exact CI-owned container names and the expected healthcheck command;
+unknown/unhealthy/exited/inspect failure is fatal. Readiness has a 90-second and
+90-poll ceiling, each inspect at most 3 seconds within that original budget;
+failure diagnostics get independent bounded 5-second inspect/log calls. It does
+not retry migrations or widen the 25-minute jobs. Deterministic fake-command
+policy tests run through `make ci-partition-test`; actual exact-head CI still
+must prove the real image becomes ready and both native gates pass.
+
+The pinned [YDB 25.3.1.25 healthcheck](https://github.com/ydb-platform/ydb/blob/8187ce049bed9e63a5ec04769da2d83dd237c08a/.github/docker/files/health_check)
+checks SQL, scheme access and a create/drop pair under its own `.sys_health`
+path; its [Dockerfile](https://github.com/ydb-platform/ydb/blob/8187ce049bed9e63a5ec04769da2d83dd237c08a/.github/docker/Dockerfile)
+defines the expected command. The observer invokes neither healthcheck nor DDL:
+it only observes the image's existing Docker health state.
+
 ## Review checklist
 
 Before accepting a test change, verify:

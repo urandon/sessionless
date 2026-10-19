@@ -1,8 +1,13 @@
 # Configured local inference for development demos
 
-Version: 0.1.4, engineering design. Owner:
+Version: 0.1.5, engineering design. Owner:
 [#212](https://gitcode.com/urandon/sessionless/issues/212), under
 [#176](https://gitcode.com/urandon/sessionless/issues/176).
+
+The [queued runtime addendum](#queued-runtime-composition) defines implementation
+work under #218. Design acceptance does not establish that the implementation
+exists, grant operator, credential or live-run authority, or mark an
+implementation checkbox complete.
 
 Connect the Sessionless-owned agent to an inference server the operator has
 already started. Use one bounded Go HTTP adapter with an explicit endpoint,
@@ -521,3 +526,321 @@ connection, wrong kind/peer/sequence/source/allocation and expired or revoked
 observations before HTTP bytes; a real owned loopback peer counts zero sends
 for each denial. Neither test family may pass by accepting fake TLS/DNS or
 skipping the existing registered-observation/current-authority joins.
+
+## Queued runtime composition
+
+This addendum closes the serving composition gap, not by adding another harness
+or weakening a guard. Reuse the [#189 current-authority contract](owned-harness-current-authority.md),
+#190 original provider-session lifetime, [#193 MCP contract](owned-harness-tools-mcp.md)
+and [#194 search contract](owned-harness-web-search.md). The managed minimum
+continues to require MCP, general web search, durable tool continuation and
+compaction; a disabled-tool/text-only profile cannot substitute for it.
+Local development remains one qualification environment, not fulfillment of the
+separate managed-cloud or attached-worker release proof.
+
+### Existing seams and missing producers
+
+The source audit for this addendum uses main `f31ff93`. Names in the right column
+are required deltas, not claims that a runtime already supplies them.
+
+| Existing canonical seam | Required composition delta |
+| --- | --- |
+| [Source intake and receipt](../../internal/localoperator/source.go), [runtime observation](../../internal/localoperator/execution_runtime.go) | Retain the genuine private-file Source, accepted original profile receipt, invoice and bounded evidence bodies; add complete component-specific source authentication below. |
+| [Spending producer](../../internal/localoperator/funding.go), [publisher](../../internal/ydbstore/attempt_spending_publication.go) | Main authenticates provider/substrate only. Add real MCP and search provenance, exact original-head recovery and no top-up, using the existing four spending records/audits. |
+| [OwnedAttemptEffectSourceVerifierV1](../../internal/ports/owned_attempt_effect_source.go) | Supply its concrete installation-backed implementation; existing scripted implementations are not production provenance. |
+| [HarnessBinder / authority validation](../../internal/ports/canonical_ingress.go), [canonical ingress](../../internal/sessioningress/service.go) | Add the trusted configured-local owned binder and an exact configured tuple in managed authority validation; the current non-subscription branch permits only a deterministic fixture. |
+| [Execution package builder](../../internal/domain/attempt_execution_admission.go) | Use its acyclic derivation from the authenticated published profile/four snapshots. The builder is pure data validation, not approval. |
+| [Existing scheduler](../../internal/ydbstore/scheduler.go) | Join the configured arm to the same bounded owned admission callback; it currently requires the deterministic backend and has no public owned serving route. |
+| [Run](../../internal/domain/run.go), [quota](../../internal/domain/quota.go), [slot](../../internal/domain/scheduling.go), [scheduler policy](../../internal/scheduler/policy.go) | Add the closed no-subscription association and complete admission/release/index contract below. Existing validators, physical slot and expiry readers require actual subscription identity; changing a binder alone cannot supply local capacity. |
+| [LocalV1 factory](../../internal/providerloopsession/local.go), [pre-lease facade](../../internal/providerloopsession/local_worker_entry.go), [preflight](../../internal/ydbstore/local_worker_preflight.go) | Create one original inert session/Store/bootstrap/keeper tuple per Manager invocation, before its read-only preflight; do not reuse a consumed session. |
+| [Worker command](../../cmd/worker-runtime/main.go) | Install this opt-in composition, retaining deterministic/default-off behavior. The existing HTTP batch reuses one Manager across up to ten messages; the local arm must construct/close its invocation owners per message. |
+
+Non-rejected #193 work contains a real private-intake MCP funding candidate
+(`internal/localoperator/mcp_funding.go`, `service_evidence.go` in
+`internal/mcpadmission`, and the MCP branch of `funding.go`). It retains an
+independent grant, price/terms reports and their actual source-document bytes.
+It is unmerged work, not an available main API or a complete four-component
+verifier. Reuse only after its own review/integration. The rejected #193
+`local_prepared_model.go` / `local_model_effect.go` changes are not approved by
+this design and must not be reimplemented under another name to evade that
+boundary.
+
+### Complete Source authentication, not a permission callback
+
+Keep one concrete `localoperator.Source` per authenticated installation. Its
+existing `ManifestV1.Evidence` / `EvidenceBodyV1`, private source key and accepted
+`OwnedProfilePublicationReceiptV1` remain the custody format. Do not add a
+secret file format, per-Run approval map or exported signing/approval API.
+Extend its private component readers, publication verification and the existing
+`VerifyOwnedAttemptEffectSource(AttemptExecutionSourceV1)` interface together:
+
+1. Authenticate the original Source identity, exact retained manifest/config,
+   receipt profile locator/generation/digest and installation/owner/payer.
+   Correlate the original configured endpoint/backend/substrate, worker artifact,
+   capability/review evidence and complete canonical profile, not just a MAC.
+2. Authenticate every component's `SourceCanonicalBytes`, body length/hash and
+   domain-separated source authenticator against those retained originals.
+   Revalidate its exact scope, profile, price/terms, known amount, currency,
+   resource/revisions and original windows. DB-assigned publication/update
+   stamps and monotonic revocation fields are not source-signed declaration
+   fields; current physical scalars/digests must still match in the Store.
+3. Verify exactly four ordered snapshots and the complete package digests using
+   the canonical source/package validation. No omitted component, fixture source,
+   arbitrary current head, caller quote or copied body reference is accepted.
+
+| Component | Authentic retained basis and required separation |
+| --- | --- |
+| `provider` | Original `InvoiceTermsV1`, exact configured model/endpoint and explicit owner-supplied model; zero local invoice only. Preserve the existing invoice source-authenticator domain. |
+| `substrate` | The same explicitly owner-supplied host invoice, exact original executable/installation/substrate; independently scoped substrate envelope. This says nothing about economic cost or external services. |
+| `mcp_tool` | Actual bounded `MCPToolGrantV1`, independent `MCPPriceEvidenceV1` / `MCPTermsEvidenceV1` reports and their retained original service documents, as developed under #193. The MCP-specific source-authenticator domain cannot accept invoice or search bytes. |
+| `web_search` | Actual typed search grant required by #194 plus separately retained price and terms interpretations of the exact search service/profile and original independent documents. Bind the existing `ExternalServiceCostCeilingV1` search kind, grant/resource/revisions, payer/currency, known finite price state/amount and original windows. A distinct search source-authenticator domain must reject MCP/invoice substitutions. |
+
+Search-specific grant/report decoding and trusted producer are **missing**, not
+implied by the generic [external cost shape](../../internal/domain/external_service_cost.go)
+or consent codecs. Implement them under #194 and feed their bounded nonsecret
+bodies through the existing Source evidence custody. The reports must bind
+the exact grant, original source URL/body hash/size, observation and exclusive
+expiry; price additionally binds revision/currency/state/finite amount, terms
+the public-data/use/consent boundary. URLs are provenance data, never something
+Source or a SQL retry fetches. A renamed grant/report is not its independent
+source document. One actual document may support both reports, but local
+invoice bytes cannot support either external-service claim. Preserve existing
+manifest/body caps; an unsupported oversized declaration denies rather than
+raising them implicitly.
+
+Private file intake proves which declaration and bytes the operator installed;
+it does not prove that a URL is official, a tariff is accurate, terms permit the
+use, a service is free, a model is qualified or a live schema is unchanged.
+Independent research/review must substantiate those external facts before
+enablement; separately authorized qualification supplies actual service/model
+observations. Unknown is not zero. This design neither selects a new search
+provider nor turns the proposed Tavily quote into current funding authority.
+
+All verifier work is bounded and I/O-free on every Store retry. Historical
+source authentication may use original issuance/publication times after their
+windows have elapsed; it never treats that as current permission or revives a
+closed Source's execution lifetime. Executable permission still requires the
+actual current DB-time joins. `ExecutionLifetime` cancellation remains attached
+to every invocation and owned I/O; matching old bytes cannot recreate it.
+
+### Trusted binder, original issuance and queued admission
+
+The binder is installed trusted composition, not a new HTTP configuration API.
+It receives only server-derived `HarnessBindingRequest` actor/Session and stable
+planned Run/Attempt IDs from `sessioningress.Service`. It borrows the one exact
+installed Source/receipt and canonical Store; browser/model/queue fields cannot
+select a different endpoint, payer, source, grant or profile.
+
+Before a first package is emitted, use existing `PublishOwnedProfile` /
+`Source.AcceptReceipt` installation results and `Source.SpendingPublication` /
+`PublishAttemptSpending` for its four actual components. Add the minimum bounded
+typed point-read/recovery seam over the existing profile and four spending
+heads/audits: original locator, full physical-scalar/record/digest correlation,
+source authentication, original scope and DB timestamp, never a scan or a
+public "approve package" method. Neither `Configuration()` nor a receipt alone
+is current-state proof.
+
+An existing component is read back exactly, never reissued with another mutation
+or extended window. If initial publication is partial, missing components may
+be published only within the already fixed original envelope, capped by the
+earliest retained component/source deadline; an ambiguous result first requires
+exact readback. Conflicting, revoked, expired, foreign or unverifiable history
+denies. Retain an incomplete publication for the existing lifecycle; do not
+replace it, top up amounts or create another Attempt merely to recover.
+
+After all four heads are confirmed in one bounded current snapshot, the maximum
+original profile/component DB publication time is the package's deterministic
+logical issuance; expiry is the minimum original window. Neither calculation
+proves a producer event or authenticates an opaque grant/receipt. Call
+`BuildOwnedAgentExecutionPackageV1` with that logical issuance only after the
+concrete Source has authenticated every preserved original component body,
+source/installation association and receipt. It performs pure derivation, not
+fresh signing or spending issuance. Retry wall time cannot renew the package.
+Before canonical commit this is only a candidate, not a recovered committed
+Source. After commit, recover the exact original Source String from canonical
+outbox/Job/Final history; never rebuild missing committed history from current
+heads or digests. Lost original source/key/receipt association denies.
+Recheck current validity against the snapshot's DB time before returning
+`ExecutionAuthorityV2`; no capacity or operation capability exists yet.
+On an already committed frontend delivery, existing `LookupBound` wins before
+binder/publication and returns the original result.
+
+Ingress `ReceivedAt` / `CommittedAt` describe the canonical user event, not a
+funding clock; they can precede these publication timestamps. The exact owned
+configured arm of `ManagedExecutionAuthorityV2.ValidateForScope` must validate
+the original package's structural time correlations at its sealed issuance,
+not backdate funding or rewrite event timestamps to satisfy `At`. Fresh validity
+comes from explicit source/current joins at authoritative DB time, not a browser
+time or an out-of-transaction approval. Add those bounded original profile/four
+spending and concrete source checks to the SAME existing canonical commit
+transaction for this arm, alongside the actual writable frontend
+binding/revision/Session/source-scope join. Its DB observation is distinct from
+the preserved event timestamp; both must retain their real meaning. Store the
+exact authenticated source String on the existing outbox. A switched binding,
+foreign Session, revoked source or elapsed window denies atomically. Preserve
+all legacy validation branches; no observation field or receipt becomes a
+standalone permission carrier.
+
+Select the configured owned scheduler route only from trusted startup plus the
+actual stored closed tuple: owned profile, `direct_openai_compatible`,
+`configured_endpoint`, `local_endpoint`, `owner_local`, `local_development` and
+explicit supported auth. Queue bytes alone cannot enable it. The same existing
+bounded callback must authenticate Source and rejoin
+`readOwnedAdmissionPrincipal`, `readOwnedAdmissionSources` and current provider
+resource before its original slot/quota/Run/Job/Final/reverse-index/outbox writes.
+There is no second admission or manual per-Run SQL. Final attaches the actual
+reservation and DB admission time without rebuilding Source. Exact replay
+preserves that original hold; unknown/failed commits return no candidate.
+Measure the complete graph within the unchanged 10s / three callbacks /
+32 statements per callback / 96 total / 4 MiB bounds, not a new helper budget.
+
+### Local resource capacity without a fabricated subscription
+
+The local arm needs a closed tagged capacity association, not an empty or
+invented `SubscriptionConnectionID` accepted by a weakened validator. Its local
+variant contains version, `kind=local_endpoint`, tenant, owner and the actual
+opaque resource ID minted by the original installation Source. Derive it only
+from the authenticated profile/source, never frontend input. This is a stable
+capacity identity across profile replacement; original profile/resource
+revisions and spending generations remain separately bound by Source/Final.
+The subscription variant still names an actual subscription connection. A
+local association and a subscription identity are mutually exclusive; mixed,
+unknown, foreign or missing association denies.
+
+The local association has exactly these canonical JSON fields, in this fixed
+producer order: `version`, `kind`, `tenant_id`, `owner_id`, `resource_id`.
+`version` is integer `1`; `kind` is exactly `local_endpoint`. Validate tenant,
+owner and resource with the existing [opaque identity validators](../../internal/domain/identity.go):
+nonempty, at most 160 bytes, ASCII `[A-Za-z0-9][A-Za-z0-9._:-]*`.
+Use the [existing canonical domain codec convention](../../internal/domain/owned_agent_current_codec.go):
+closed typed encoding, existing record cap, unknown/trailing/duplicate/missing
+field rejection and exact byte-for-byte encode/decode roundtrip. No alternate
+field order, whitespace, numeric form, null or case alias is accepted.
+The association digest is lowercase SHA256 of those exact canonical bytes;
+the physical local capacity key is exactly `local-v1/` followed by that
+64-character digest. Persist and compare the original bytes and digest, not
+only the derived key. Its tag/hash is a bounded lookup address, never authority.
+
+Extend the existing Run and QuotaReservation canonical shapes/immutability and
+physical-scalar checks to carry that local association while their subscription
+field is absent. Match Run, reservation, stored outbox/Job source and Final on
+the same tenant/owner/resource; do not infer an association from an empty field
+or substitute the subscription field with a resource ID. Update ingress request
+validation, worker loaded-state/authority checks, bounded Run projections,
+usage observations and expiry candidates to preserve the same explicit arm.
+Local usage remains local/provider-reported or unknown, not a fabricated
+subscription entitlement/quota observation. Genuine subscription records retain
+their existing identity and validation semantics.
+
+There is a real storage delta, not a configuration-only solution:
+[Run](../../migrations/ydb/00007_create_runs.sql) and
+[reservation](../../migrations/ydb/00013_create_quota_reservations.sql) payloads
+can retain the new association, but the
+[slot table](../../migrations/ydb/00039_create_subscription_scheduler_slots.sql)
+has only a subscription-labelled primary key and no local identity record;
+the [expiry index](../../migrations/ydb/00026_create_quota_expiry_v2.sql) also
+projects only subscription identity. Add a nullable canonical local-association
+`local_capacity_association String` and `local_capacity_digest Utf8` to these
+two existing tables through a new reviewed migration. Local rows require both
+non-NULL, the complete strict canonical record, matching digest/derived key and
+exact tenant/owner/resource correlation to the actual Run/Quota/source.
+Both columns NULL select the genuine legacy subscription arm, which must still
+validate its real subscription identity and owning records. One NULL, unknown
+kind, malformed/noncanonical bytes, key/digest mismatch or conflicting owner
+denies; there is no decoder fallback to another arm.
+
+For the LOCAL arm only, the SQL adapter uses the historically named slot PK
+and expiry `subscription_connection_id` column as the physical capacity lookup
+address above. It is never assigned to a domain `SubscriptionConnectionID`;
+Run/Quota subscription fields remain absent. These physical columns are `Utf8`,
+so the 73-byte ASCII key fits their schema and existing bounded scalar reads.
+Its slash is deliberately outside the domain subscription identity grammar.
+Actual legacy keys/rows remain byte-for-byte unchanged, without retyping or
+backfilling them into local records. Any collision with an existing real legacy
+row, or with different full local bytes/ownership, denies the local transition;
+never overwrite, repair or reinterpret the conflicting row. Every slot/expiry
+read/write/release must project both local columns and validate the complete
+selected arm against Run/Quota, not route solely from the key prefix.
+Update the entity registry, slot/scalar readers/writers, quota-expiry
+producer/list/consumer, retention inventory and every relevant projection
+together; no new table, index traversal, ledger or scheduler is introduced.
+Before enabling local writers, drain old control/worker/reconciler executors
+that do not implement this exact arm. Applying the additive migration alone
+does not establish runtime compatibility; an old expiry reader must never be
+allowed to cast the new address into subscription authority. Updated executors
+reject unsupported local records rather than treating them as subscriptions.
+
+Inside the SAME bounded admission callback, rejoin the actual current local
+installation/profile, four funding heads, writable principal and original
+resource identity. These establish local readiness, not `EntitlementActive`
+or a made-up `ProviderQuotaAvailable`. Add the exact local alternative to the
+existing `scheduler.Snapshot` / `Evaluate` path: one held reservation per local
+resource, unchanged tenant queue/active limits, workload limits and counted
+capacity unit. Busy, revoked, expired, unknown or unsupported sources deny;
+no subscription row/read is required. Source loss cannot silently grant a slot.
+Create the same reservation, expiry projection, slot ownership, counters,
+Run/Job/Final and outbox state atomically. Exact lost-ACK recovery requires the
+same association, active Run/reservation, original Job/Final/hold and source;
+it writes no replacement and never renews the deadline or increments counters.
+
+Extend existing `finishWorkerScheduling` and `ExpireQuotaReservation`, not a
+local cleanup loop. In the canonical terminal transaction, success transitions
+held capacity to committed; failure/cancellation transitions it to released.
+Clear only the slot owned by the exact original Run/reservation and association,
+remove its exact expiry key and update queue/active counters once. Neither
+release nor replay requires an active subscription or renewed local funding;
+they authenticate retained original ownership and the existing terminal/fence
+authority. Recompute an empty slot's readiness from current local authority,
+or leave it non-ready if unavailable/revoked; clearing capacity never enables
+new work by itself. A foreign/mismatched slot denies atomically without touching
+its owner or counters. Finalization replay after lost ACK returns the original
+terminal result with no second release/decrement/refund or effect capability.
+
+Queued hold expiry uses the existing indexed candidate and same transaction:
+match its explicit association to the original reservation/Run/slot, transition
+only an expired held reservation, remove its exact expiry projection and undo
+only its managed queued count. Pre-lease cancellation uses the same owned
+release, including an explicit no-hold no-op before admission. Running or
+possibly active/unknown effects are not released by this queued TTL path;
+retain existing reconciliation/cleanup/terminal authority before scheduling
+capacity is reusable. Revocation cannot strand a known terminal release or
+reopen an unknown invocation. Fresh Store/process recovery reads these exact
+records; it never recreates a missing hold, funds a replacement or repeats I/O.
+
+### Installation borrow versus invocation ownership
+
+| Lifetime | Ownership boundary |
+| --- | --- |
+| Installation | Trusted startup opens the original Source and accepted receipt, fixed executable/host/namespace and four service/funding declarations. Control/worker processes use `OpenExisting` for that same original installation where necessary, never `OpenFresh` per message. DB/blob clients are borrowed; replacement retains the existing predecessor CAS. |
+| One queue delivery / `Manager.RunOnce` | Construct fresh preparation/operation issuers and inert `NewLocalV1` with that Source and concrete verifier. Its factory owns the original Store/bootstrap/bridge/keeper tuple and `WorkerState()` facade; no allocation, SQL or socket is created by construction. Supply that same session and facade to one Manager. |
+| Claimed invocation | Manager alone receives/loads, calls read-only `PreflightWorkerJob`, claims/starts the lease, reserves the sole original effect and enters it. Only then may the original session prepare/register and run the model/tool/result loop. No second claim, preparer, registry driver or permission callback is introduced. |
+| Completion | Use the original durable response/tool/compaction bodies, output finalizer, cleanup/reconciliation, delivery wake and ACK. Close/join the invocation owners on every exit before advancing the batch; do not close the borrowed Source/DB or stop the operator's model server. |
+
+Every HTTP-trigger message, including the second message in one batch, gets a
+distinct session/keeper/issuers and Manager. Cancellation links invocation,
+original Source, lease/fence and shorter component windows; retry/refresh cannot
+extend any of them. Duplicates and worker loss use the existing durable
+reconciliation/no-replay path, never a reconstructed process capability or new
+socket to repeat an uncertain MODEL/tool operation. Default deterministic and
+attached paths keep their own exact registration/ownership behavior.
+
+### #218 implementation and evidence checklist
+
+Keep these as linked implementation checks under existing
+[#218](https://gitcode.com/urandon/sessionless/issues/218), coordinating its
+existing predecessors; no additional enabling epic or manual routine owner
+design gate is introduced:
+
+- [ ] #218 with [#193](https://gitcode.com/urandon/sessionless/issues/193) and [#194](https://gitcode.com/urandon/sessionless/issues/194): reviewed real MCP/search custody and four-component Source verifier/publication/recovery. Prove cross-component substitutions, unknown/forged prices, foreign/expired sources, closure and malformed bodies deny without effects.
+- [ ] #218 with [#189](https://gitcode.com/urandon/sessionless/issues/189): trusted binder, exact authority-validation and existing bounded scheduler route. Prove original four snapshots/issuance, complete atomic writes, retry/partial publication/lost ACK, current revocation and binding-switch denials; no renewed funding/hold.
+- [ ] #218: genuine canonical local Run with **no subscription row** reaches admission, uses one local resource slot and the original finite hold, then releases through success/failure/cancel/queued expiry and fresh-Store/lost-ACK recovery. Assert zero subscription queries, exact-once counters/expiry removal, unchanged original hold, and collision/foreign/mixed/revoked/unknown-source denials. Cover canonical association/key goldens and byte mutations, malformed/missing/wrong tags, a colliding legacy row with unchanged bytes, genuine legacy release untouched, two Runs racing for one resource, replacement while an old hold exists, a foreign slot, repeated completion/expiry and running-unknown TTL non-release; prove the additive physical contract and old-runtime drain before enabling local writers.
+- [ ] #218 with [#190](https://gitcode.com/urandon/sessionless/issues/190) and [#191](https://gitcode.com/urandon/sessionless/issues/191): fresh per-message runtime ownership and actual normal queued Manager entry, then complete durable tool/result/model/finalizer integration. Do not substitute an already-running lease fixture or repeated one-shot invocations.
+- [ ] #218 with [#175](https://gitcode.com/urandon/sessionless/issues/175): credential-free joined fixture starts at authenticated canonical Web ingress **before** admission/lease, observes the queued state and actual claim, then model → authorized MCP/search result → continuation → canonical durable answer. Refresh/login reads must show the same answer/citations. Include two-message batch isolation, two owners, revoke/fence/expiry/cancel/unknown-outcome and zero-replay controls; qualify compaction/media through their existing tasks.
+- [ ] #218 / #212: independent exact-artifact review, Node docs checks, proportionate race/repeat checks and exact-head CI, then an honest operator recipe. Scripted SQL, owned fake HTTP and browser fixtures remain labelled separately from native YDB, real model/service and cloud evidence. Separately authorized operator qualification/real WebUI proof is still required, not implied by merging this design.
+
+No real source/key files, endpoints, service catalog or tariff have been read or
+qualified by this addendum. Concrete external funding/terms and exact service
+qualification remain evidence to obtain, not values to invent. If an accepted
+candidate cannot meet the existing no-paid-upstream envelope or service policy,
+report that specific choice for resolution; do not disable required tools, spend
+money, change provider or broaden data disclosure silently.

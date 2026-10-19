@@ -61,6 +61,69 @@ test "$override_build_cache" = "$override_root/go-build" ||
 test "$override_module_cache" = "$override_root/go-mod" ||
 	fail "overridden GOMODCACHE = $override_module_cache"
 
+# This deliberately recognizes the repository's small workflow-level env shape,
+# not arbitrary YAML. Step-local or late GITHUB_ENV exports cannot configure
+# setup-go's restore and post-save as well as the Make child process.
+workflow_cache_paths() (
+	workflow=$1
+	declarations=$(awk '
+		/^jobs:/ { exit }
+		/^env:$/ { in_env = 1; next }
+		in_env && /^[^ #]/ { in_env = 0 }
+		in_env && /^  (GOCACHE|GOMODCACHE): / { print }
+	' "$workflow")
+	expected='  GOCACHE: ${{ github.workspace }}/.git/sessionless-go-cache/go-build
+  GOMODCACHE: ${{ github.workspace }}/.git/sessionless-go-cache/go-mod'
+	test "$declarations" = "$expected" || exit 1
+	# Reject job/step overrides of either action path as well.
+	count=$(awk '/^[[:space:]]+(GOCACHE|GOMODCACHE):/ { n++ } END { print n+0 }' "$workflow")
+	test "$count" = 2 || exit 1
+	printf '%s\n' "$declarations" | while IFS= read -r declaration; do
+		name=${declaration%%:*}
+		name=${name#  }
+		value=${declaration#*: }
+		suffix=${value#'${{ github.workspace }}'}
+		printf '%s=%s%s\n' "$name" "$fixture" "$suffix"
+	done
+)
+
+for workflow in ci release attached-worker-native-service attached-worker-oci-rootless; do
+	action_paths=$(workflow_cache_paths "$repo_root/.github/workflows/$workflow.yml") ||
+		fail "$workflow does not configure both setup-go cache paths at workflow level"
+	test "$(printf '%s\n' "$action_paths" | field GOCACHE)" = "$main_build_cache" ||
+		fail "$workflow action and Make build cache paths differ"
+	test "$(printf '%s\n' "$action_paths" | field GOMODCACHE)" = "$main_module_cache" ||
+		fail "$workflow action and Make module cache paths differ"
+done
+
+# Mutate real workflow input: each independent defect must be rejected by the
+# same checker that accepts all four real declarations, without running Go.
+for mutation in missing-build missing-module wrong-root wrong-suffix step-only late-export override; do
+	mutant=$test_root/workflow-$mutation.yml
+	awk -v mutation="$mutation" '
+		/^env:$/ && (mutation == "step-only" || mutation == "late-export") { next }
+		/^  GOCACHE:/ && mutation == "missing-build" { next }
+		/^  GOMODCACHE:/ && mutation == "missing-module" { next }
+		/^  (GOCACHE|GOMODCACHE):/ {
+			if (mutation == "late-export") { next }
+			if (mutation == "step-only") { print "      " $0; next }
+			if (mutation == "wrong-root") { sub("sessionless-go-cache", "other-cache") }
+			if (mutation == "wrong-suffix") { sub("go-build", "wrong-build") }
+		}
+		{ print }
+		END {
+			if (mutation == "late-export") {
+				print "      - run: echo GOCACHE=/tmp/late >> $GITHUB_ENV"
+				print "      - run: echo GOMODCACHE=/tmp/late >> $GITHUB_ENV"
+			}
+			if (mutation == "override") { print "        GOCACHE: /tmp/override" }
+		}
+	' "$repo_root/.github/workflows/ci.yml" >"$mutant"
+	if workflow_cache_paths "$mutant" >"$test_root/mutant-paths"; then
+		fail "workflow cache checker accepted $mutation"
+	fi
+done
+
 shared_root=$fixture/.git/sessionless-go-cache
 mkdir -p "$shared_root" "$linked/.build" "$test_root/unrelated"
 : >"$shared_root/sentinel"

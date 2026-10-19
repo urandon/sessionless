@@ -1,6 +1,8 @@
 # Bounded web search for the owned harness
 
-Version: 0.2.4, original-owner argument-custody amendment candidate. Predecessor 0.2.3
+Version: 0.2.5, reusable resource-grant amendment candidate. Predecessor 0.2.4
+defines original-owner argument custody; this amendment preserves that contract.
+Predecessor 0.2.3
 defines the search-wire integration; this amendment preserves that contract.
 Predecessor 0.2.2
 is the independently reviewed request/result data prefix in !247; its exact
@@ -62,6 +64,160 @@ to transmit private queries. A narrower profile must enumerate domains and
 independently filter each result using hostname equality or dot-boundary
 subdomain matching, never string suffix/substring matching. Required date filters
 use a separately admitted dated profile and observed dates, never prompt claims.
+
+### Reusable resource grant and original invocation scope
+
+The existing `WebSearchGrantV1` is invocation-scoped DATA: its semantic digest
+includes Run and Attempt. It cannot also be the constant grant identity in a
+reusable installed profile. The existing profile-to-policy producer copies the
+profile's digest into each freshly scoped policy, and spending publication
+requires that same digest. Replacing a decoder, reconstructing a body reference
+or republishing the global profile for every claim does not resolve this
+contract mismatch. Preserve retained V1 bytes and identities; do not silently
+remove scope fields or treat an old digest as a reusable grant.
+These constraints follow the original
+[grant](../../internal/domain/web_search.go),
+[installed profile](../../internal/domain/owned_agent_current.go),
+[profile-to-policy producer](../../internal/domain/attempt_execution_admission.go)
+and [spending correlation](../../internal/domain/attempt_spending_authorization.go),
+not an assumption that a new generic grant service is required.
+
+For the genuine producer, introduce one explicit `WebSearchResourceGrantV2`.
+It is reusable nonsecret authorization DATA for the exact tenant, resource
+owner, billing owner, resource/revision/revocation and reviewed search profile.
+Retain the V1 service, fixed endpoint/method, credential reference/audience,
+data/schema/compiler identities, price/terms/currency, per-call and per-Attempt
+ceilings, consent revision and original issuance/expiry. It contains no Session,
+Run, Attempt, completed policy or binding digest. Its semantic digest uses a
+new `sessionless.web-search-resource-grant.v2` domain, not V1's digest domain.
+The distinct version is mandatory; never infer it from a digest or failed parse.
+
+The invocation-bound child already exists: the original scoped
+`AgentLoopPolicyV1`, Attempt spending publication, execution Source, parent
+reservation and subordinate operation. Bind the V2 resource-grant digest in
+their existing grant fields. These original records bind the actual Session,
+Run/Attempt, physical claim/lease/fence, completed authority/binding, current
+actor, durable MODEL call and exact consent. Do not add another invocation-grant
+DTO, approval registry or parallel spending/dispatch owner. A resource grant by
+itself never authorizes an invocation, a monetary debit or a send.
+For this explicitly tagged V2 path, `ExternalServiceCostCeilingV1.ScopedGrantDigest`
+means the grant's tenant/owner/payer/resource/revision scope; the enclosing
+original policy and spending/source envelopes supply invocation scope. Update
+that contract and its consumers explicitly, not as a blanket reinterpretation
+of old V1 records. Consent, operation and normalized result all retain the same
+verified semantic resource-grant digest plus their own exact invocation scope.
+
+Use an optional, explicitly versioned `web_search_resource_grant` body-reference
+arm in the existing installed profile. Its version is 2 and its body uses the
+existing `OwnedAgentAuthorityBodyRefV1` shape: opaque locator, raw SHA256 and
+exact byte count. It must identify the original operator-held immutable grant
+bytes; it is not an Object Storage path selected by a caller. Authenticate this
+reference together with the installed profile, its publication intent and
+original source evidence. The strictly decoded body's semantic digest must
+equal both the profile's existing `WebSearchGrantDigest` and search cost's
+`ScopedGrantDigest`. Retain the distinction between raw body SHA and semantic
+grant identity. Do not overload spending's `SourceAuthorization`: it commits
+the original invocation-specific source envelope, not this grant body.
+
+The body has a hard 8 KiB ceiling within the existing authority materialization
+budget, not an additional Attempt operation-body allowance. Freeze the closed
+V2 schema with canonical integers, identifiers, fixed strings, microsecond UTC
+times and lowercase digests. Prove its maximum valid encoding fits this cap
+before enabling a writer. Reject unknown/duplicate/aliased fields, explicit
+null, noncanonical bytes, trailing input and unsupported versions. Reuse the
+original bounded immutable-source reader/owner and prospective metadata charges;
+add no third operation-body key arm or arbitrary historical blob reader.
+Copies and a matching locator cannot reconstruct publisher ownership.
+
+The original operator source must retain and authenticate the exact grant body
+and explicit search payer/price/terms/funding evidence before initial spending
+publication. Provider/substrate local no-invoice terms cannot authorize paid
+Tavily. Each invocation still requires the original publisher's authenticated
+finite search spending component, current profile/resource and exact original
+source-envelope bytes. Reusing a resource grant across legitimate new Runs is
+not replay permission, a shared unlimited balance, a top-up or renewed authority.
+No body field or codec invents vendor price verification or actual funding.
+
+The existing generic evidence list and review-receipt presence check are not
+such an expenditure authorization. For the first owner-local publisher, require
+one explicit `OwnerLocalSearchExpenditureV2` declaration in the authenticated
+private installation manifest. It binds version 2, tenant, owner and billing
+owner (the same owner for this bounded local path), search resource/revisions,
+V2 grant semantic digest and exact grant-body reference, exact accepted price/
+terms evidence references, USD currency,
+10,000-microunit per-call and 20,000-microunit per-Attempt authorized reservation ceilings,
+and original issuance/absolute expiry. The source authenticates and retains all
+referenced bytes, validates the closed declaration and acceptance correspondence,
+and matches the actual current installed profile before issuing spending.
+Presence of arbitrary review bytes or a `known_paid` string is insufficient.
+This declaration is the owner's reviewed expenditure acceptance; do not add a
+second free-form approval receipt and treat its mere presence as review.
+The existing manifest/source commitment owns this declaration; no new approval
+map, payer registry or balance is introduced. Unsupported different-payer or
+missing/unknown evidence denies this publisher rather than synthesizing consent.
+
+Price/terms evidence uses closed owner-accepted snapshot records: exact provider
+and API profile, declared source origin, observation/absolute expiry, and a
+bounded immutable payload reference with raw SHA and length. Price also binds
+the exact price revision, USD/request unit and a positive accepted tariff no
+greater than the 10,000-microunit reservation. Terms binds the grant's data-policy
+digest and credential audience. Retain and verify the exact referenced snapshot
+bytes within the existing total installation/evidence bounds; no external fetch
+or new storage allowance follows. Origin and observation are operator-attested
+metadata, not proof of a current HTTP response, vendor signature or legal
+interpretation. The original private intake authenticates the operator's
+acceptance and exact evidence identities; live qualification separately checks
+that the selected service still matches the frozen profile and accepted terms.
+
+This proves an original owner's finite expenditure authorization and the
+identity of accepted price/terms evidence, not vendor prepaid balance, account
+credit or the final invoice. Keep that evidence confidence explicit. Actual
+usage remains measured/reported/unknown under the existing accounting rules;
+unknown vendor cost is not zero, and lower reports do not refund the original
+reservation. Other managed/platform-funded publishers need their own existing
+authenticated billing source; a local declaration does not authorize cloud
+funding or consumer-subscription sharing.
+
+New producer, consent creation/read/reconciliation and reserve/before-send
+materialization must consume the same original V2 grant owner and strict body
+commitment. No synthetic `owned-fixture-grant-*` lookup, caller-authored grant
+DTO or fallback to V1 may serve that path. Authenticate current profile/source,
+resource/revocation/consent, actor, payer, price and allocation at the original
+transactional gates after out-of-SQL body reads. All original absolute windows
+remain minima; a resource's longer expiry never renews the 120-second claim.
+
+The V2 compiler binds this resource grant to the original invocation binding
+and exact argument bytes. A fresh explicit compiler identity distinguishes it
+from the retained invocation-grant V1 DATA compiler. Preserve V1 encodings and
+goldens without adapting them into fresh V2 dispatch. The service's fixed Basic
+wire/options, argument/request/result caps and original search-wire operation
+arm need not acquire a second wire protocol: their compiler/profile commitments
+must authenticate the selected V2 implementation. Normalized result scope and
+source IDs remain bound to the original operation.
+
+Old profiles omit the new body-reference arm completely and retain their exact
+JSON/digest bytes; explicit null is not equivalent to absence. Readers must
+recognize and validate V2 before any writer or live profile is enabled. An
+absent arm, old fixture grant or unknown version cannot select the genuine
+producer. Historical V1 decoding remains DATA-only, not a compatibility send
+route. No additional record, migration, table or billing authority is added by this
+design amendment; implementation and rollout remain separate.
+
+Verification must prove that two different Attempts use one unchanged installed
+resource profile but obtain distinct original scoped policies, source/spending
+envelopes, consent and operations. Cross-Attempt substitution must deny at the
+original reserve/send gates. Cover raw/semantic digest confusion, forged body
+reference, foreign tenant/owner/payer/resource, revoked generation, price drift,
+shorter expiry, ambiguous publication, malformed/oversized bodies, exact old
+goldens and zero-effect denial without the actual source owner. The existing
+compiler/fixture positives cannot substitute for this two-Attempt integration.
+
+Implementation stays in #194 with #195/#191 consumers: strict V2 resource/body
+contract; original profile/source publication and custody; genuine spending and
+current-authority joins; compiler/consent/reserve/egress integration; then durable
+result/continuation and historical accounting/deletion. Keep these as an explicit
+execution checklist in the owning issue, not a rewrite of its assignment or a
+new generalized grants epic. Both MVP routes and separate live gates remain.
 
 Public task classification and permission to request search consent are frozen
 admission facts, not approval of an unknown future query. The first profile uses

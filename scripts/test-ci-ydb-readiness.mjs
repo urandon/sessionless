@@ -87,6 +87,15 @@ test('a hanging inspect has its own finite deadline', (t) => {
   assert.equal(r.status, 1);
   assert.match(r.stderr, /inspect failed or exceeded/);
 });
+test('expired original deadline rejects even healthy state before readiness inspect', (t) => {
+  const before = 'started=$SECONDS';
+  assert.ok(source.includes(before));
+  const r = run(t, [health('healthy')], { source: source.replace(before, 'started=$((SECONDS - 90))') });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /90-second readiness deadline exhausted/);
+  assert.equal(r.calls.filter((a) => a[0] === 'inspect' && a[2] !== '{{json .State}}').length, 0);
+  assert.doesNotMatch(r.stdout, /is ready/);
+});
 test('persistent starting exhausts the finite poll budget, never migrates', (t) => {
   const r = run(t, [health('starting')]);
   assert.equal(r.status, 1);

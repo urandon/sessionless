@@ -46,6 +46,9 @@ func (v ReserveAttemptOperationRequestV1) Validate() error {
 		return err
 	}
 	r := v.ConsentReceipt.Request
+	if v.Operation.SearchWire != nil && uint64(r.Arguments.Size) != v.Operation.SearchWire.ArgumentsBytes {
+		return operationPortError("reserve.consent_receipt", "requires the exact original argument count for the search-wire encoding")
+	}
 	s := v.Operation.Scope
 	expected := domain.WebSearchConsentScopeV1{TenantID: s.TenantID, SessionID: s.SessionID, OwnerUserID: s.OwnerUserID, RunID: s.RunID, AttemptID: s.AttemptID, LeaseID: s.LeaseID, FenceToken: s.FenceToken, PhysicalInvocationClaimID: s.PhysicalInvocationClaimID, EffectReservationDigest: string(s.EffectReservationDigest), InvocationAuthorityDigest: string(s.InvocationAuthorityDigest), HarnessBindingDigest: string(s.HarnessBindingDigest), PolicyDigest: string(s.AgentLoopPolicyDigest)}
 	if r.Scope != expected || r.ModelResponseDigest != v.Operation.ModelResponseDigest || r.CallID != v.Operation.CallID || r.ArgumentsDigest != v.Operation.ArgumentsDigest || r.QueryDigest != v.Operation.QueryDigest || r.GrantDigest != v.Operation.ToolGrantDigest || string(v.ConsentReceipt.RequestDigest) != v.Operation.ConsentRequestDigest || string(v.ConsentReceipt.DecisionDigest) != v.Operation.ConsentDecisionDigest || v.Operation.Deadline.After(r.ExpiresAt) {

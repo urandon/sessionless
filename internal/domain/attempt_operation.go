@@ -193,13 +193,21 @@ type AttemptOperationV1 struct {
 	PriceRevision                string                              `json:"price_revision"`
 	AdmissionCostCeilingDigest   AdmissionCostCeilingDigestV2        `json:"admission_cost_ceiling_digest"`
 	ExternalChargeEvidenceDigest string                              `json:"external_charge_evidence_digest"`
+	SearchWire                   *AttemptOperationSearchWireV1       `json:"search_wire,omitempty"`
 }
 
 func BuildAttemptOperationV1(v AttemptOperationV1) (AttemptOperationV1, error) {
 	v = v.Clone()
 	return v, v.Validate()
 }
-func (v AttemptOperationV1) Clone() AttemptOperationV1 { v.Deadline = v.Deadline.UTC(); return v }
+func (v AttemptOperationV1) Clone() AttemptOperationV1 {
+	v.Deadline = v.Deadline.UTC()
+	if v.SearchWire != nil {
+		arm := *v.SearchWire
+		v.SearchWire = &arm
+	}
+	return v
+}
 
 func (v AttemptOperationV1) Validate() error {
 	if v.Version != AttemptOperationVersionV1 || v.Sequence == 0 || v.Sequence > 12 {
@@ -207,6 +215,11 @@ func (v AttemptOperationV1) Validate() error {
 	}
 	if err := v.Scope.Validate(); err != nil {
 		return err
+	}
+	if v.SearchWire != nil {
+		if v.Kind != AttemptOperationWebSearchV1 || v.SearchWire.Validate() != nil || v.RequestBytes > WebSearchWireBytesV1 {
+			return operationError("search_wire", "requires a complete search-only encoding and bounded physical request")
+		}
 	}
 	for name, id := range map[string]string{"call_id": v.CallID, "request_ref": v.RequestRef} {
 		if err := ValidateOpaqueID("attempt_operation."+name, id); err != nil {
@@ -243,7 +256,7 @@ func (v AttemptOperationV1) Validate() error {
 	}
 	tool := v.Kind == AttemptOperationMCPToolV1 || v.Kind == AttemptOperationWebSearchV1
 	if tool {
-		if v.Debit.ModelCalls != 0 || v.Debit.CompactionCalls != 0 || v.Debit.ToolDispatches != 1 || v.Debit.InputTokens != 0 || v.Debit.OutputTokens != 0 || v.RequestBytes > 4<<10 || v.ResultBytes > 64<<10 || v.ContextBytes != 0 || v.SummaryBytes != 0 || v.Sequence == 1 {
+		if v.Debit.ModelCalls != 0 || v.Debit.CompactionCalls != 0 || v.Debit.ToolDispatches != 1 || v.Debit.InputTokens != 0 || v.Debit.OutputTokens != 0 || v.toolArgumentBytes() > 4<<10 || v.ResultBytes > 64<<10 || v.ContextBytes != 0 || v.SummaryBytes != 0 || v.Sequence == 1 {
 			return operationError("tool", "requires one bounded tool dispatch with independent price evidence")
 		}
 		for name, digest := range map[string]string{"model_response_digest": v.ModelResponseDigest, "arguments_digest": v.ArgumentsDigest, "tool_grant_digest": v.ToolGrantDigest, "external_charge_evidence_digest": v.ExternalChargeEvidenceDigest} {
@@ -318,7 +331,7 @@ func (v AttemptOperationV1) ValidateForParent(a ServerlessInvocationAuthorityV1,
 		if component == nil || component.MaxAmountMicrounits == nil || component.PriceState == ExternalServicePriceUnknownV1 || v.Debit.AmountMicrounits > *component.MaxAmountMicrounits || (v.Debit.AmountMicrounits == 0 && component.PriceState != ExternalServicePriceKnownFreeV1) {
 			return operationError("tool.price", "zero requires an explicitly evidenced known-free completed component; unknown never means zero")
 		}
-		if v.ToolGrantDigest != expected || v.RequestBytes > p.Limits.MaxToolArgumentBytes || v.ResultBytes > p.Limits.MaxToolResultBytes {
+		if v.ToolGrantDigest != expected || v.toolArgumentBytes() > p.Limits.MaxToolArgumentBytes || v.ResultBytes > p.Limits.MaxToolResultBytes {
 			return operationError("tool", "must bind the exact completed grant and tool ceilings")
 		}
 	}

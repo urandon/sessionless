@@ -330,6 +330,14 @@ func TestAttemptOperationDigestIsolationAndEveryField(t *testing.T) {
 				} else {
 					v.Debit.AmountMicrounits++
 				}
+			case reflect.Ptr:
+				if name != "SearchWire" {
+					t.Fatalf("uncovered pointer field %s", name)
+				}
+				v.SearchWire = &domain.AttemptOperationSearchWireV1{Version: 1, APIProfile: domain.WebSearchAPIProfileV1, ArgumentsBytes: 1, CompilerArtifactDigest: strings.Repeat("a", 64)}
+				if _, err := v.Digest(); err != nil {
+					t.Fatalf("new arm mutation must remain structurally valid: %v", err)
+				}
 			default:
 				t.Fatalf("uncovered field %s", name)
 			}

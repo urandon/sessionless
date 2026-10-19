@@ -114,16 +114,7 @@ jobs:
             "ydbplatform/local-ydb:${YDB_LOCAL_IMAGE_VERSION}"
 
       - name: Wait for YDB Local
-        run: |
-          for attempt in $(seq 1 90); do
-            if curl --fail --silent --show-error \
-              http://localhost:8765/monitoring/cluster >/dev/null; then
-              exit 0
-            fi
-            sleep 1
-          done
-          docker logs sessionless-ydb
-          exit 1
+        run: bash scripts/wait-ci-ydb.sh sessionless-ydb
 
       - name: Apply schema twice
         run: |
@@ -195,16 +186,7 @@ jobs:
             "ydbplatform/local-ydb:${YDB_LOCAL_IMAGE_VERSION}"
 
       - name: Wait for YDB Local
-        run: |
-          for attempt in $(seq 1 90); do
-            if curl --fail --silent --show-error \
-              http://localhost:8765/monitoring/cluster >/dev/null; then
-              exit 0
-            fi
-            sleep 1
-          done
-          docker logs sessionless-security-ydb
-          exit 1
+        run: bash scripts/wait-ci-ydb.sh sessionless-security-ydb
 
       - name: Apply schema twice
         run: |

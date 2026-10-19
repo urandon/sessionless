@@ -47,7 +47,7 @@ function verify({ make, ci, release }) {
   assert.equal(recipe(make, 'test-connected'), "go test -race -timeout=15m -run='^TestLocalSession' $(GO_PACKAGE_PATTERNS)", 'exact connected command');
   assert.deepEqual(target(make, 'attached-worker-security-gate'),
     words('attached-worker-crash-integration attached-worker-active-crash-integration'));
-  assert.match(make, /^ci-partition-test:\n\tnode --test scripts\/test-ci-partition\.mjs$/m);
+  assert.equal(recipe(make, 'ci-partition-test'), 'node --test scripts/test-ci-partition.mjs\n\tnode --test scripts/test-ci-ydb-readiness.mjs');
   const core = job(ci, 'verify');
   const connected = job(ci, 'go-connected');
   const security = job(ci, 'ydb-security-isolated');
@@ -64,6 +64,13 @@ function verify({ make, ci, release }) {
   assert.match(security, /^    timeout-minutes: 25$/m);
   for (const name of ['ydb', 'ydb-security-isolated', 'local-stand', 'terraform']) {
     assert.match(job(ci, name), /^    needs: \[verify, go-connected\]$/m, `${name} joins both Go jobs`);
+  }
+  for (const [name, container] of [['ydb', 'sessionless-ydb'], ['ydb-security-isolated', 'sessionless-security-ydb']]) {
+    const text = job(ci, name);
+    assert.equal(step(text, 'Wait for YDB Local'), `run: bash scripts/wait-ci-ydb.sh ${container}`, `${name} SQL/storage readiness`);
+    assert.ok(text.indexOf('Start pinned YDB Local') < text.indexOf('Wait for YDB Local'));
+    assert.ok(text.indexOf('Wait for YDB Local') < text.indexOf('Apply schema twice'));
+    assert.equal(step(text, 'Apply schema twice'), 'run: |\n          make migrate-local\n          make migrate-local', `${name} no migration retry`);
   }
   assert.equal(step(core, 'Run repository CI contract'), 'run: make ci-core');
   const offlineName = 'Run offline worker and egress security contracts';
@@ -120,6 +127,9 @@ const mutations = [
   ['ignored connected command', 'ci', 'run: make test-connected\n', 'run: make test-connected || true\n', /complete connected invocation/],
   ['connected gains write permission', 'ci', '  go-connected:\n', '  go-connected:\n    permissions:\n      contents: write\n', /connected is parallel/],
   ['image loses connected', 'ci', '      - go-connected\n', ''],
+  ['removed readiness policy', 'make', '\tnode --test scripts/test-ci-ydb-readiness.mjs\n', ''],
+  ['liveness replaces SQL health', 'ci', 'run: bash scripts/wait-ci-ydb.sh sessionless-ydb', 'run: curl http://localhost:8765/monitoring/cluster', /ydb SQL\/storage readiness/],
+  ['wrong readiness owner', 'ci', 'run: bash scripts/wait-ci-ydb.sh sessionless-security-ydb', 'run: bash scripts/wait-ci-ydb.sh sessionless-ydb', /ydb-security-isolated SQL\/storage readiness/],
 ];
 for (const name of ['ydb', 'ydb-security-isolated', 'local-stand', 'terraform']) {
   mutations.push([`${name} loses connected join`, 'ci',

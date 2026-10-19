@@ -399,6 +399,7 @@ ci-core: docs-check cloud-web-smoke-test web-ci generate test-ordinary build int
 
 ci-partition-test:
 	node --test scripts/test-ci-partition.mjs
+	node --test scripts/test-ci-ydb-readiness.mjs
 
 image-publication-test:
 	@./scripts/test-image-publication.sh

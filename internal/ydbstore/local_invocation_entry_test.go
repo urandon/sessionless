@@ -122,6 +122,15 @@ func TestLocalInvocationEntryConstructorPrearmAndOriginalOwnership(t *testing.T)
 		if err != nil || !bytes.Equal(read, payload) {
 			t.Fatalf("fixed reader does not use SAME actual adapter/scope: %v", err)
 		}
+		arguments := []byte(`{"query":"public compiler documentation"}`)
+		argumentRef, err := bodies.WriteConsentArguments(t.Context(), arguments)
+		if err != nil {
+			t.Fatal("original entry consent argument custody", err)
+		}
+		argumentRead, err := reader.ReadAttemptOperationBody(t.Context(), ownedOperationScope(parent), argumentRef.Key, 4096)
+		if err != nil || !bytes.Equal(argumentRead, arguments) || f.store.attemptOperationBodies != reader || f.bootstrap.bodySlot.bodies.Load() != bodies {
+			t.Fatalf("consent key did not traverse the unchanged original installed slot: %v", err)
+		}
 		foreign := ownedOperationScope(parent)
 		foreign.OwnerUserID = "foreign-owner"
 		before := blobs.calls

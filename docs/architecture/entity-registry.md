@@ -20,6 +20,17 @@ Private pending discovery point-reads the existing canonical Session, Run and
 Job/Attempt mapping plus the same bounded consent projection. It stores no
 discovery index or Run lifecycle field and exposes no query/body reference.
 
+Consent argument objects use one closed, versioned key arm within the original
+operation-body owner's Attempt scope. They share its I/O gate, prospective
+write/byte charges and physical inventory; they are not a second store, ledger
+or erasure authority. Ordinary keys and namespace/inventory digest formulas
+remain unchanged. The joint policy-derived ceiling stays at most 24 keys, so
+the producer must reject an unrepresentable sequence before effects. Physical
+custody compatibility alone does not establish consent-aware terminal accounting
+or retained-history deletion: those original consumers stay fail-closed until
+their genuine integration is proved. See the
+[argument-custody contract](../design/owned-harness-web-search.md#original-owner-argument-custody).
+
 An entity is not a table. A canonical Session may have several rebuildable
 lookup projections; a current execution record may contain several bounded
 operational fields. Separate physical storage requires a concrete access,

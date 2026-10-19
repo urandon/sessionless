@@ -116,6 +116,52 @@ exact objects are safe to delete again. `deleting` is the irreversible phase:
 a new legal hold is rejected after it starts, so holds must be established
 while the deletion is still `requested`.
 
+### Retained successful local loop history
+
+Creating a request fences the Session; it does not prove that a previous writer
+has stopped and grants no object deletion. Retained local V2 success requires
+the [writer-aware verification contract](design/retained-history-deletion.md).
+Status, a marker, an expired lease or a stopped process alone is insufficient.
+Unknown, failed, ambiguous, orphan or extra prepared writer scopes remain
+blocked rather than being treated as cleanup permission.
+
+For a separately authorized retained-history operation, explicitly set
+`SESSION_DELETE_RETAINED_HISTORY_ENABLED=true` for the operator command. The
+default is false; malformed values fail before opening clients. For plan and
+execute, this installs the configured Object Storage reader in the execution
+Store's constructor and gives the same storage installation to the Service.
+Requests cannot supply a verifier, capture, hash override or approval object.
+Request and hold commands do not acquire Object Storage.
+
+Start captures bounded original SQL facts, checks actual immutable bodies
+outside SQL, and rejoins the complete metadata, request and current owner/hold
+in the final transaction. Only then can it store a closed, content-free
+`retained_verification` of at most 2 KiB in the existing deletion record and
+enter `deleting`. Original Run budgets span those phases; creating another
+callback, Store or retry cannot renew them. Failure leaves no permission for
+the Service to delete an object.
+
+The exact inventory includes the capsule, every registered retained pair,
+canonical owned references and the original deterministic cancellation notice,
+not merely public artifacts or the selected Head. Dependencies must resolve to
+same-Session SQL owners; blob contents cannot add arbitrary deletion targets.
+The Service re-plans after Start and checks the original typed confirmation
+and stored commitment before the first or resumed exact Delete.
+
+Once `deleting` is committed, a fresh Store reconstructs that same inventory
+from retained SQL and compares the original commitment. It does not need to
+reopen possibly deleted bodies, upload anything, revive Source credentials or
+refresh the capture. Leave ownership rows intact until atomic completion;
+only exactly verified writer scopes can retire with canonical rows in that
+transaction. A new hold is forbidden while deleting, but revocation or changed
+metadata still stops work for explicit reconciliation. Never edit a tombstone
+or substitute an inventory to force progress.
+
+The opt-in configures a capability; it is not authorization to run deletion in
+an environment. Keep the ticket, exact target, typed confirmation and normal
+operator permission checks above. Controlled fixtures are not native YDB or
+physical Object Storage erasure evidence.
+
 The local composed gate deletes one exact object, injects an interruption,
 verifies that the durable plan and confirmation are unchanged, and then proves
 that retry completes without changing same-tenant or cross-tenant sentinel

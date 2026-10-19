@@ -214,7 +214,7 @@ func (store *Store) RequestSessionDeletion(
 		if found {
 			if existing.RequestedBy == deletion.RequestedBy && existing.Reason == deletion.Reason {
 				if existing.State != domain.SessionDeletionCompleted {
-					if err := ensureSessionRunsTerminalTx(ctx, tx, deletion.SessionID); err != nil {
+					if err := ensureSessionRunsTerminalPolicyTx(ctx, tx, deletion.SessionID, true); err != nil {
 						return err
 					}
 				}
@@ -244,7 +244,7 @@ func (store *Store) RequestSessionDeletion(
 		if heldBefore && hold.ReleasedAt != nil && deletion.RequestedAt.Before(*hold.ReleasedAt) {
 			return domain.ValidationError{Field: "session_deletion.requested_at", Reason: "must not precede the legal-hold release"}
 		}
-		if err := ensureSessionRunsTerminalTx(ctx, tx, deletion.SessionID); err != nil {
+		if err := ensureSessionRunsTerminalPolicyTx(ctx, tx, deletion.SessionID, true); err != nil {
 			return err
 		}
 		if err := ensureNoPendingAttachedWorkerReceiptsTx(ctx, tx, deletion.SessionID); err != nil {
@@ -295,6 +295,16 @@ func (store *Store) StartSessionDeletion(
 	if at.IsZero() {
 		return result, domain.ValidationError{Field: "session_deletion.started_at", Reason: "must not be zero"}
 	}
+	stored, exists, readErr := store.GetSessionDeletion(ctx, tenantID, sessionID)
+	if readErr != nil {
+		return result, readErr
+	}
+	if exists && stored.State != domain.SessionDeletionCompleted && (store.sessionDeletionBlobReader != nil || stored.RetainedVerification != nil) {
+		retained, retainedErr := store.startRetainedSessionDeletion(ctx, tenantID, sessionID)
+		if !errors.Is(retainedErr, errNoRetainedDeletionRuns) {
+			return retained, retainedErr
+		}
+	}
 	err = store.Transact(ctx, tenantID, func(state ports.StateTx) error {
 		tx := state.(*stateTx)
 		deletion, found, err := readSessionDeletionTx(ctx, tx, sessionID)
@@ -344,6 +354,25 @@ func (store *Store) BuildSessionDeletionInventory(
 	maxRows uint64,
 	maxObjects uint64,
 ) (domain.SessionDeletionInventory, error) {
+	if tenantID.Validate() != nil || sessionID.Validate() != nil || maxRows == 0 || maxRows > maxSessionDeletionRows || maxObjects == 0 || maxObjects > maxSessionDeletionRows {
+		return domain.SessionDeletionInventory{}, domain.ErrMembershipDenied
+	}
+	stored, found, e := store.GetSessionDeletion(ctx, tenantID, sessionID)
+	if e != nil {
+		return domain.SessionDeletionInventory{}, e
+	}
+	if found && stored.State != domain.SessionDeletionCompleted {
+		retained := stored.RetainedVerification != nil
+		if !retained {
+			retained, e = store.sessionDeletionContainsCustody(ctx, tenantID, sessionID)
+			if e != nil {
+				return domain.SessionDeletionInventory{}, e
+			}
+		}
+		if retained {
+			return store.retainedSessionDeletionInventory(ctx, tenantID, sessionID, maxRows, maxObjects)
+		}
+	}
 	return buildSessionDeletionInventory(ctx, &sessionDeletionInventoryQuery{query: store.db}, tenantID, sessionID, maxRows, maxObjects)
 }
 
@@ -641,6 +670,9 @@ func (store *Store) CompleteSessionDeletion(
 	if !found {
 		return result, fmt.Errorf("deletion for session %q not found", sessionID)
 	}
+	if stored.RetainedVerification != nil && stored.State != domain.SessionDeletionCompleted {
+		return store.completeRetainedSessionDeletion(ctx, tenantID, sessionID, deletedObjects, deletedBytes)
+	}
 	var expectedInventory *domain.SessionDeletionInventory
 	if stored.State != domain.SessionDeletionCompleted {
 		inventory, err := store.BuildSessionDeletionInventory(
@@ -810,6 +842,10 @@ const sessionDeletionRunsSQL = `SELECT SUBSTRING(CAST(i.run_id AS String),0,161)
 	 WHERE i.tenant_id = $1 AND i.session_id = $2 LIMIT $3`
 
 func ensureSessionRunsTerminalTx(ctx context.Context, tx *stateTx, sessionID domain.SessionID) (err error) {
+	return ensureSessionRunsTerminalPolicyTx(ctx, tx, sessionID, false)
+}
+
+func ensureSessionRunsTerminalPolicyTx(ctx context.Context, tx *stateTx, sessionID domain.SessionID, requestOnly bool) (err error) {
 	rows, err := tx.sqlTx.QueryContext(ctx,
 		sessionDeletionRunsSQL,
 		tx.tenantID, sessionID, maxSessionDeletionRows+1,
@@ -845,7 +881,7 @@ func ensureSessionRunsTerminalTx(ctx context.Context, tx *stateTx, sessionID dom
 			run.ID != runID || run.TenantID != tx.tenantID || run.SessionID != sessionID || run.Status != status {
 			return domain.ValidationError{Field: "session_deletion.runs", Reason: "canonical Run does not match deletion index"}
 		}
-		if run.TerminalCustody != nil {
+		if run.TerminalCustody != nil && !requestOnly {
 			return domain.ValidationError{Field: "session_deletion.terminal_custody", Reason: "registered terminal writer requires original reconciliation before deletion"}
 		}
 	}

@@ -29,15 +29,17 @@ type retainedDeletionRunKey struct {
 	RunDigest string
 }
 type sessionDeletionCapture struct {
-	deletion   domain.SessionDeletion
-	inventory  domain.SessionDeletionInventory
-	metadata   string
-	rows       uint64
-	ownership  retainedDeletionOwnershipData
-	runs       []retainedDeletionRunKey
-	admissions []ownedSessionAdmissionKey
-	scopes     []deletionCaptureScope
+	deletion    domain.SessionDeletion
+	inventory   domain.SessionDeletionInventory
+	metadata    string
+	rows        uint64
+	ownership   retainedDeletionOwnershipData
+	runs        []retainedDeletionRunKey
+	admissions  []ownedSessionAdmissionKey
+	scopes      []deletionCaptureScope
+	attemptRows map[domain.AttemptID]retainedDeletionAttemptRows
 }
+type retainedDeletionAttemptRows struct{ parents, evidence, operations, calls, proxies, reconciliation uint64 }
 
 // A graph contains only bounded identities, references and row digests, never
 // every Run payload or object body. Scopes come exclusively from original SQL
@@ -51,6 +53,7 @@ type deletionCaptureGraph struct {
 	required         map[string]bool
 	expected         map[string]map[string]json.RawMessage
 	optionalExpected map[string]bool
+	work             *retainedDeletionWork
 }
 
 // This is prospective DATA work accounting, not a retained-deletion approval
@@ -177,6 +180,15 @@ func deletionRunDigest(run domain.Run) (string, error) {
 }
 
 func (g *deletionCaptureGraph) addRun(ctx context.Context, tenant domain.TenantID, session domain.SessionID, id domain.RunID) error {
+	previousQuery := g.query
+	if g.work != nil {
+		runQuery, err := g.work.forRun(id)
+		if err != nil {
+			return err
+		}
+		g.query = &deletionCaptureQuery{query: runQuery, budget: previousQuery.(*deletionCaptureQuery).budget}
+		defer func() { g.query = previousQuery }()
+	}
 	run, found, err := readDeletionCaptureJSON[domain.Run](ctx, g.query, "runs", "payload", tenant, id)
 	if err != nil || !found || run.Validate() != nil || run.TenantID != tenant || run.SessionID != session || run.ID != id {
 		return domain.ErrMembershipDenied
@@ -386,7 +398,16 @@ func captureScopeKey(scope deletionCaptureScope) []deletionCaptureCell {
 // Pure SQL-owned graph construction. It establishes no successful writer or
 // body proof; requested unknown writers may have a Plan but cannot get Start.
 func buildRetainedDeletionCapture(ctx context.Context, tx *stateTx, sessionID domain.SessionID) (*sessionDeletionCapture, error) {
+	return buildRetainedDeletionCaptureWithWork(ctx, tx, sessionID, nil)
+}
+func buildRetainedDeletionCaptureWithWork(ctx context.Context, tx *stateTx, sessionID domain.SessionID, work *retainedDeletionWork) (*sessionDeletionCapture, error) {
 	q := newDeletionCaptureQuery(tx.sqlTx)
+	if work != nil {
+		if work.tx == nil {
+			return nil, domain.ErrMembershipDenied
+		}
+		q.budget = work.readBudget
+	}
 	var rawRequest string
 	err := q.QueryRowContext(ctx, `SELECT SUBSTRING(CAST(record AS String),0,32769) FROM session_deletions WHERE tenant_id=$1 AND session_id=$2`, tx.tenantID, sessionID).Scan(&rawRequest)
 	if err != nil || chargeDeletionCaptureSQL(q, uint64(len(rawRequest))) != nil || len(rawRequest) > ownedAuthorityHeadBytes {
@@ -415,15 +436,21 @@ func buildRetainedDeletionCapture(ctx context.Context, tx *stateTx, sessionID do
 	for i, v := range identities {
 		ids[i] = domain.RunID(v[0])
 	}
-	if err := q.budget.admitOriginalRuns(uint64(len(ids))); err != nil {
-		return nil, err
+	var admitErr error
+	if work != nil {
+		admitErr = work.admitRuns(ids)
+	} else {
+		admitErr = q.budget.admitOriginalRuns(uint64(len(ids)))
+	}
+	if admitErr != nil {
+		return nil, admitErr
 	}
 	inventory := domain.SessionDeletionInventory{TenantID: tx.tenantID, SessionID: sessionID, RunIDs: ids}
 	ownership, err := newRetainedDeletionOwnershipData(tx.tenantID, sessionID)
 	if err != nil {
 		return nil, err
 	}
-	g := &deletionCaptureGraph{sessionDeletionCapture: &sessionDeletionCapture{deletion: d, inventory: inventory, ownership: ownership}, query: q, seen: map[string]bool{}, objects: map[string]domain.BlobRef{}, runDigests: map[domain.RunID]string{}, required: map[string]bool{}, expected: map[string]map[string]json.RawMessage{}, optionalExpected: map[string]bool{}}
+	g := &deletionCaptureGraph{sessionDeletionCapture: &sessionDeletionCapture{deletion: d, inventory: inventory, ownership: ownership, attemptRows: map[domain.AttemptID]retainedDeletionAttemptRows{}}, query: q, seen: map[string]bool{}, objects: map[string]domain.BlobRef{}, runDigests: map[domain.RunID]string{}, required: map[string]bool{}, expected: map[string]map[string]json.RawMessage{}, optionalExpected: map[string]bool{}, work: work}
 	for _, table := range []string{"sessions", "session_events", "session_snapshots", "session_participants", "session_displays", "session_event_idempotency", "session_material_current_v1", "session_material_boundaries_v1", "session_snapshot_material_v1", "frontend_bindings_by_session", "frontend_projections_by_session", "runs_by_session", "attempt_execution_admissions_by_session_v1"} {
 		if err := g.add(table, tx.tenantID, sessionID); err != nil {
 			return nil, err
@@ -486,6 +513,9 @@ func buildRetainedDeletionCapture(ctx context.Context, tx *stateTx, sessionID do
 	// additionally charged to the original per-Run verifier during eligibility;
 	// no decoder or I/O below can reset that logical budget.
 	maxBytes := q.budget.ceiling
+	if work != nil {
+		maxBytes = (uint64(len(inventory.RunIDs)) + 1) * ownedAuthorityMaxBytes
+	}
 	g.metadata, g.rows, err = captureDeletionMetadata(ctx, g.scopes, maxBytes)
 	if err != nil {
 		return nil, err
@@ -633,6 +663,12 @@ func deletionCaptureJSONRows[T any](ctx context.Context, q stateSQLExecutor, sta
 
 func chargeDeletionCaptureSQL(q stateSQLExecutor, n uint64) error {
 	if capture, ok := q.(*deletionCaptureQuery); ok {
+		if run, ok := capture.query.(*retainedDeletionRunQuery); ok {
+			if capture.budget.charge(0) != nil {
+				return domain.ErrMembershipDenied
+			}
+			return run.run.budget.materialized(run.run.query.callback, n)
+		}
 		if err := capture.budget.charge(n); err != nil {
 			return err
 		}
@@ -781,7 +817,17 @@ func (g *deletionCaptureGraph) addAdmissionScopes(ctx context.Context, tenant do
 		// range for EVERY reverse admission, not just Run.TerminalCustody's
 		// selected Attempt. Unknown kinds cannot hide behind a point query.
 		for _, table := range []string{"attempt_execution_admissions_v1", "attempt_effect_reservations", "substrate_execution_evidence", "attempt_operations_v1", "attempt_operation_calls_v1", "attempt_operation_proxies_v1", "attempt_effect_reconciliation_evidence"} {
-			if err := g.add(table, tenant, key.attempt); err != nil {
+			original := g.query
+			if g.work != nil {
+				runQuery, e := g.work.forRun(key.run)
+				if e != nil {
+					return e
+				}
+				g.query = &deletionCaptureQuery{query: runQuery, budget: original.(*deletionCaptureQuery).budget}
+			}
+			err := g.add(table, tenant, key.attempt)
+			g.query = original
+			if err != nil {
 				return err
 			}
 		}
@@ -796,6 +842,31 @@ func (g *deletionCaptureGraph) observeRow(spec *deletionCaptureSpec, cells []del
 	byName := make(map[string]deletionCaptureCell, len(cells))
 	for i, c := range spec.columns {
 		byName[c.name] = cells[i]
+	}
+	if cell, ok := byName["attempt_id"]; ok && cell.Present {
+		var attempt domain.AttemptID
+		if json.Unmarshal(cell.Value, &attempt) != nil {
+			return domain.ErrMembershipDenied
+		}
+		if g.attemptRows == nil {
+			g.attemptRows = map[domain.AttemptID]retainedDeletionAttemptRows{}
+		}
+		counts := g.attemptRows[attempt]
+		switch spec.table {
+		case "attempt_effect_reservations":
+			counts.parents++
+		case "substrate_execution_evidence":
+			counts.evidence++
+		case "attempt_operations_v1":
+			counts.operations++
+		case "attempt_operation_calls_v1":
+			counts.calls++
+		case "attempt_operation_proxies_v1":
+			counts.proxies++
+		case "attempt_effect_reconciliation_evidence":
+			counts.reconciliation++
+		}
+		g.attemptRows[attempt] = counts
 	}
 	key := make([]deletionCaptureCell, len(spec.keys))
 	for i, k := range spec.keys {

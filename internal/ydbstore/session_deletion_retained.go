@@ -220,6 +220,10 @@ func readRetainedDeletionBlob(ctx context.Context, reader SessionDeletionBlobRea
 // The SQL verifier must first authenticate snapshot including the tagged seal,
 // original allocation/burn and complete accounting, then rejoin after this I/O.
 func verifyRetainedDeletionBodies(ctx context.Context, reader SessionDeletionBlobReader, snapshot localTerminalHistorySnapshot, ownership retainedDeletionOwnershipData, previous *compactioncontext.RetainedV1) (*compactioncontext.RetainedV1, error) {
+	return verifyRetainedDeletionBodiesWithWriter(ctx, reader, snapshot, ownership, previous, nil)
+}
+
+func verifyRetainedDeletionBodiesWithWriter(ctx context.Context, reader SessionDeletionBlobReader, snapshot localTerminalHistorySnapshot, ownership retainedDeletionOwnershipData, previous *compactioncontext.RetainedV1, writer *retainedDeletionWriterData) (*compactioncontext.RetainedV1, error) {
 	deny := func() (*compactioncontext.RetainedV1, error) { return nil, domain.ErrMembershipDenied }
 	run := snapshot.Run
 	if run.Validate() != nil || run.Status != domain.RunSucceeded || run.CancellationRequestedAt != nil || run.TerminalCustody == nil || run.TerminalCustody.LocalEvidence == nil || run.TerminalCustody.Correspondence == nil || !isLocalFinalizationMarkerV2(snapshot.Seal) || !reflect.DeepEqual(ownership.events[snapshot.Anchor.ID], snapshot.Anchor) || (previous != nil && !ownership.contains(previous)) {
@@ -242,6 +246,11 @@ func verifyRetainedDeletionBodies(ctx context.Context, reader SessionDeletionBlo
 			clear(capsule.Operations[i].NormalizedBody)
 		}
 	}()
+	// The trusted deletion path joins the ACTUAL capsule operation chain to
+	// every original persisted reservation/observation, not only to its totals.
+	if writer != nil && (!reflect.DeepEqual(writer.producer.terminal, snapshot) || !writer.matchesCapsule(capsule)) {
+		return deny()
+	}
 	ops := make([]LocalCompactionOperationV1, len(capsule.Operations))
 	for i, item := range capsule.Operations {
 		ops[i] = LocalCompactionOperationV1{Reservation: item.Reservation, Observation: item.Observation, Response: item.NormalizedBody}

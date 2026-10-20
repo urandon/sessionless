@@ -218,7 +218,7 @@ func TestLocalInvocationEntryConcurrentStartFailFast(t *testing.T) {
 }
 
 func TestLocalInvocationEntryFailureReplayAndAmbiguityNeverRearm(t *testing.T) {
-	for _, name := range []string{"foreign-request", "existing-parent-replay", "source-verifier-denied", "terminal-ambiguous", "cancel-after-reserve"} {
+	for _, name := range []string{"foreign-request", "existing-parent-replay", "source-closed", "terminal-ambiguous", "cancel-after-reserve"} {
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				f := newLocalBootstrapFixture(t)
@@ -231,12 +231,18 @@ func TestLocalInvocationEntryFailureReplayAndAmbiguityNeverRearm(t *testing.T) {
 					request.TenantID = "foreign-tenant"
 				case "existing-parent-replay":
 					f.parent.reserve(t, f.parent.request)
-				case "source-verifier-denied":
-					f.parent.verifier.reject = true
+				case "source-closed":
+					if err := f.actual.source.Close(); err != nil {
+						t.Fatal(err)
+					}
 				case "terminal-ambiguous":
 					f.parent.graph.commitModes = []string{"ambiguous", "ambiguous", "ambiguous"}
 				case "cancel-after-reserve":
 					f.parent.graph.afterCommit = func() { f.parent.graph.afterCommit = nil; cancel() }
+				}
+				_, sourceBefore := f.actual.source.Configuration()
+				if (sourceBefore != nil) != (name == "source-closed") {
+					t.Fatalf("source availability setup does not match %s: %v", name, sourceBefore)
 				}
 				blobs := &localEntryBlobs{}
 				entry, err := f.bootstrap.StartLocalInvocation(ctx, request, blobs)
@@ -246,8 +252,8 @@ func TestLocalInvocationEntryFailureReplayAndAmbiguityNeverRearm(t *testing.T) {
 				}
 				entry, err = f.bootstrap.StartLocalInvocation(f.actual.ctx, f.parent.request, blobs)
 				assertLocalEntryDenied(t, entry, err)
-				if _, err := f.actual.source.Configuration(); err != nil {
-					t.Fatal("failed original start closed caller-owned Source")
+				if _, sourceAfter := f.actual.source.Configuration(); !errors.Is(sourceAfter, sourceBefore) {
+					t.Fatalf("failed original start changed caller-owned Source availability: before=%v after=%v", sourceBefore, sourceAfter)
 				}
 			})
 		})
@@ -284,7 +290,7 @@ func TestLocalInvocationEntryMissingCopiedAndPreinstalledBodiesDeny(t *testing.T
 			t.Fatal(err)
 		}
 		preinstalled := &loopbackOperationBody{}
-		store, err := other.CreateStore(f.store.db, Options{OwnedAttemptEffectSourceVerifier: f.parent.verifier, OwnedProfilePublicationVerifier: f.actual.source, AttemptOperationBodies: preinstalled}, f.keeper)
+		store, err := other.CreateStore(f.store.db, Options{OwnedAttemptEffectSourceVerifier: f.actual.source, OwnedProfilePublicationVerifier: f.actual.source, AttemptOperationBodies: preinstalled}, f.keeper)
 		if err != nil || store.attemptOperationBodies != preinstalled || other.bodySlot != nil {
 			t.Fatalf("preinstalled reader path changed: %v", err)
 		}
@@ -312,7 +318,7 @@ func TestLocalInvocationEntryPreservesResidualOnlyConstructor(t *testing.T) {
 			t.Fatal(err)
 		}
 		original := &localEntryResidualReader{}
-		store, err := other.CreateStore(f.store.db, Options{OwnedAttemptEffectSourceVerifier: f.parent.verifier,
+		store, err := other.CreateStore(f.store.db, Options{OwnedAttemptEffectSourceVerifier: f.actual.source,
 			OwnedProfilePublicationVerifier: f.actual.source, OwnedOperationResidualCustody: original}, f.keeper)
 		if err != nil || store.attemptOperationBodies != original || store.ownedOperationResidualCustody != original || other.bodySlot != nil {
 			t.Fatalf("existing residual-only constructor changed: %v", err)

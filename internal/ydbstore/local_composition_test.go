@@ -36,8 +36,9 @@ type localBootstrapFixture struct {
 }
 
 // Genuine private-file Source and real preparation/operation issuers, canonical
-// Store reserve/burn and actual runtime. SQL/effect-source/external funding are
-// scripted; the deliberately denying keeper is NOT connector/network evidence.
+// Store reserve/burn and actual runtime. All four original funding publications
+// and effect-source authentication are real; SQL mechanics and independent
+// service documents are synthetic. The denying keeper is NOT network evidence.
 func newLocalBootstrapFixture(t *testing.T) localBootstrapFixture {
 	t.Helper()
 	return newLocalBootstrapFixtureWithPrebuild(t, localRuntimeActualPrebuild{})
@@ -48,6 +49,7 @@ func newLocalBootstrapFixtureWithPrebuild(t *testing.T, prebuild localRuntimeAct
 	state := currentWorkerAuthorityFixture(t)
 	scope := domain.AttemptExecutionSourceScopeV1{TenantID: state.Run.TenantID, OwnerUserID: state.Job.CredentialOwnerUserID, SessionID: state.Run.SessionID, RunID: state.Run.ID, AttemptID: state.Attempt.ID}
 	prebuild.scope, prebuild.setupDuration = scope, 10*time.Second
+	prebuild.authenticFunding = true
 	actual := newLocalRuntimeActualFixture(t, true, true, prebuild)
 	parent := newOwnedAttemptEffectParentFixture(t, ownedFinalPrebuild{at: actual.at, sources: &ownedFinalSources{profile: actual.profile, spending: actual.execution.Spending}})
 	issuer, err := serverlessharness.NewOperationCapabilityIssuer(func() time.Time {
@@ -72,7 +74,7 @@ func newLocalBootstrapFixtureWithPrebuild(t *testing.T, prebuild localRuntimeAct
 		}
 	})
 	keeper := &localBootstrapDenyKeeper{identity: 1}
-	store, err := b.CreateStore(db, Options{OwnedAttemptEffectSourceVerifier: parent.verifier, OwnedProfilePublicationVerifier: actual.source}, keeper)
+	store, err := b.CreateStore(db, Options{OwnedAttemptEffectSourceVerifier: actual.source, OwnedProfilePublicationVerifier: actual.source}, keeper)
 	if err != nil {
 		t.Fatal(err)
 	}

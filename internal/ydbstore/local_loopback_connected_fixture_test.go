@@ -214,7 +214,7 @@ func NewLocalLoopbackConnectedFixture(t *testing.T, endpoint string) *LocalLoopb
 	t.Helper()
 	state := currentWorkerAuthorityFixture(t)
 	scope := domain.AttemptExecutionSourceScopeV1{TenantID: state.Run.TenantID, OwnerUserID: state.Job.CredentialOwnerUserID, SessionID: state.Run.SessionID, RunID: state.Run.ID, AttemptID: state.Attempt.ID}
-	actual := newLocalRuntimeActualFixture(t, true, true, localRuntimeActualPrebuild{scope: scope, setupDuration: 10 * time.Second, endpoint: endpoint})
+	actual := newLocalRuntimeActualFixture(t, true, true, localRuntimeActualPrebuild{authenticFunding: true, scope: scope, setupDuration: 10 * time.Second, endpoint: endpoint})
 	p := newOwnedAttemptEffectParentFixture(t, ownedFinalPrebuild{at: actual.at, sources: &ownedFinalSources{profile: actual.profile, spending: actual.execution.Spending}})
 	issuer, e := serverlessharness.NewOperationCapabilityIssuer(func() time.Time { return p.graph.at }, strings.NewReader(strings.Repeat("C", 32)), 16)
 	if e != nil {
@@ -276,7 +276,7 @@ func (f *LocalLoopbackConnectedFixture) complete(t *testing.T, keeper ports.Owne
 		requestRef, bodyReader = reference.Ref, adapter
 		f.operationBodies = adapter
 	}
-	store, e := f.Bootstrap.CreateStore(db, Options{OwnedAttemptEffectSourceVerifier: f.parent.verifier, OwnedProfilePublicationVerifier: f.Source, AttemptOperationBodies: bodyReader}, keeper)
+	store, e := f.Bootstrap.CreateStore(db, Options{OwnedAttemptEffectSourceVerifier: f.Source, OwnedProfilePublicationVerifier: f.Source, AttemptOperationBodies: bodyReader}, keeper)
 	if e != nil {
 		t.Fatal(e)
 	}

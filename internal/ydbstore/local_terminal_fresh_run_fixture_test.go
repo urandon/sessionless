@@ -279,18 +279,9 @@ func newFreshRunFromCommittedHistory(t *testing.T, installation *LocalSessionCon
 	state.Reservation.ID, state.Reservation.RunID, state.Reservation.HeldAt, state.Reservation.UpdatedAt, state.Reservation.ExpiresAt = state.Job.ReservationID, state.Run.ID, at, at, at.Add(time.Hour)
 	state.InputManifest.ID, state.InputManifest.RunID, state.InputManifest.CreatedAt = state.Job.InputManifestID, state.Run.ID, at
 	scope := domain.AttemptExecutionSourceScopeV1{TenantID: state.Run.TenantID, SessionID: state.Run.SessionID, OwnerUserID: state.Job.CredentialOwnerUserID, RunID: state.Run.ID, AttemptID: state.Attempt.ID}
-	var spending [4]domain.AttemptSpendingAuthorizationCurrentV1
-	for i, kind := range ownedSpendingKinds {
-		if i < 2 {
-			grant, e := source.SpendingPublication(t.Context(), scope, kind)
-			if e != nil {
-				t.Fatal(e)
-			}
-			spending[i] = grant.Authorization
-		} else {
-			spending[i] = localRuntimeStructuralSpending(t, profile, scope, kind)
-		}
-	}
+	fundingStore, fundingSQL := localSourceRecoveredFundingStore(t, source, installation.receipt)
+	packageV1 := localSourcePublishPackage(t, source, fundingStore, fundingSQL, installation.receipt, scope)
+	spending := packageV1.Source.Spending
 	// Actual Source publication observes its own wall clock. Sample the SAME
 	// authority only after all genuine grants exist, so their ObservedAt cannot
 	// be in the future of the parent/current snapshot. Earlier canonical Run
@@ -357,7 +348,7 @@ func newFreshRunFromCommittedHistory(t *testing.T, installation *LocalSessionCon
 		member.UpdatedAt.After(at) || participant.UpdatedAt.After(at) {
 		t.Fatal("fresh current membership/participation projection")
 	}
-	seed := terminalPublicationSessionSeed(t, &LocalSessionConnectedSeed{Source: source, Options: Options{OwnedAttemptEffectSourceVerifier: parent.verifier, OwnedProfilePublicationVerifier: source}, Prepare: parent.issuer.issuer, Operate: operate, Backend: parent.parent.Authority.HarnessBinding.Backend, Substrate: parent.parent.Authority.SubstrateBinding, Request: parent.request, Profile: cfg, Scope: scope, parent: parent, sql: operationSQL, compaction: engine, installationRoot: installation.installationRoot, executable: installation.executable, receipt: installation.receipt})
+	seed := terminalPublicationSessionSeed(t, &LocalSessionConnectedSeed{Source: source, Options: Options{OwnedAttemptEffectSourceVerifier: source, OwnedProfilePublicationVerifier: source}, Prepare: parent.issuer.issuer, Operate: operate, Backend: parent.parent.Authority.HarnessBinding.Backend, Substrate: parent.parent.Authority.SubstrateBinding, Request: parent.request, Profile: cfg, Scope: scope, parent: parent, sql: operationSQL, compaction: engine, installationRoot: installation.installationRoot, executable: installation.executable, receipt: installation.receipt})
 	completion := seed.InstallTerminalCompletionSQL(t)
 	db := sql.OpenDB(freshRunHistoryConnector{base: terminalCompletionConnector{f: completion}, history: history})
 	db.SetMaxOpenConns(1)

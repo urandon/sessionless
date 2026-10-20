@@ -13,7 +13,8 @@ import (
 
 // SpendingPublication derives one original local invoice authorization or an
 // explicitly accepted search expenditure envelope. Provider/substrate retain
-// their original no-invoice source; MCP remains unsupported. Search is never
+// their original no-invoice source; MCP uses its independent retained service
+// grant, reports and documents. Search is never
 // inferred from those zero terms. There is no balance or per-run map.
 func (s *Source) SpendingPublication(ctx context.Context, scope domain.AttemptExecutionSourceScopeV1, component domain.AttemptSpendingComponentKindV1) (ports.AttemptSpendingPublicationGrantV1, error) {
 	zero := ports.AttemptSpendingPublicationGrantV1{}
@@ -22,7 +23,7 @@ func (s *Source) SpendingPublication(ctx context.Context, scope domain.AttemptEx
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.aliveLocked() || s.receipt == nil || (component != domain.AttemptSpendingProviderV1 && component != domain.AttemptSpendingSubstrateV1 && component != domain.AttemptSpendingWebSearchV1) {
+	if !s.aliveLocked() || s.receipt == nil || (component != domain.AttemptSpendingProviderV1 && component != domain.AttemptSpendingSubstrateV1 && component != domain.AttemptSpendingMCPToolV1 && component != domain.AttemptSpendingWebSearchV1) {
 		return zero, ErrDenied
 	}
 	p := s.receipt.Profile
@@ -68,6 +69,21 @@ func (s *Source) SpendingPublication(ctx context.Context, scope domain.AttemptEx
 		v.MaxAmountMicrounits = &amount
 		v.Window.ExpiresAt = searchEnd
 	}
+	sourceKind, sourcePrefix := "invoice-source", "local-invoice-"
+	if component == domain.AttemptSpendingMCPToolV1 {
+		cost, end, err := s.mcpFundingLocked(now)
+		if err != nil {
+			return zero, ErrDenied
+		}
+		v.ResourceID, v.ResourceRevision, v.ResourceGeneration = cost.ResourceID, cost.ResourceRevision, cost.RevocationGeneration
+		v.ProfileID, v.ProfileRevision, v.ScopedGrantDigest = cost.ProfileID, cost.ProfileRevision, cost.ScopedGrantDigest
+		v.Currency, v.PriceRevision, v.PriceEvidenceDigest, v.TermsEvidenceDigest = cost.Currency, cost.PriceRevision, cost.PriceEvidenceDigest, cost.TermsEvidenceDigest
+		v.PriceState, v.MaxAmountMicrounits = cost.PriceState, cost.MaxAmountMicrounits
+		if end.Before(v.Window.ExpiresAt) {
+			v.Window.ExpiresAt = end
+		}
+		sourceKind, sourcePrefix = "mcp-source", "local-mcp-"
+	}
 	// Bound the original Attempt envelope; a later call cannot top up an existing
 	// row, and the Store independently CAS-rejects a second initial publication.
 	end := now.Add(p.Limits.MaxActiveDuration + p.Limits.MaxCleanupDuration)
@@ -78,7 +94,7 @@ func (s *Source) SpendingPublication(ctx context.Context, scope domain.AttemptEx
 	if err != nil {
 		return zero, ErrDenied
 	}
-	v.SourceAuthorization = domain.OwnedAgentAuthorityBodyRefV1{Ref: "local-invoice-" + hex.EncodeToString(s.mac("invoice-source", raw)), Digest: hash(raw), Bytes: uint64(len(raw))}
+	v.SourceAuthorization = domain.OwnedAgentAuthorityBodyRefV1{Ref: sourcePrefix + hex.EncodeToString(s.mac(sourceKind, raw)), Digest: hash(raw), Bytes: uint64(len(raw))}
 	if v.ValidateAgainstProfile(p, now) != nil {
 		return zero, ErrDenied
 	}
@@ -111,7 +127,7 @@ func (s *Source) VerifyAttemptSpendingPublication(g ports.AttemptSpendingPublica
 		return ErrDenied
 	}
 	v := g.Authorization
-	if v.SourceKind != domain.AttemptSpendingOwnerLocalSourceV1 || (v.Locator.ComponentKind != domain.AttemptSpendingProviderV1 && v.Locator.ComponentKind != domain.AttemptSpendingSubstrateV1 && v.Locator.ComponentKind != domain.AttemptSpendingWebSearchV1) || v.ValidateAgainstProfile(s.receipt.Profile, g.IssuedAt) != nil || s.config.ValidateAt(g.IssuedAt) != nil {
+	if v.SourceKind != domain.AttemptSpendingOwnerLocalSourceV1 || (v.Locator.ComponentKind != domain.AttemptSpendingProviderV1 && v.Locator.ComponentKind != domain.AttemptSpendingSubstrateV1 && v.Locator.ComponentKind != domain.AttemptSpendingMCPToolV1 && v.Locator.ComponentKind != domain.AttemptSpendingWebSearchV1) || v.ValidateAgainstProfile(s.receipt.Profile, g.IssuedAt) != nil || s.config.ValidateAt(g.IssuedAt) != nil {
 		return ErrDenied
 	}
 	if v.Locator.ComponentKind == domain.AttemptSpendingWebSearchV1 {
@@ -120,8 +136,16 @@ func (s *Source) VerifyAttemptSpendingPublication(g ports.AttemptSpendingPublica
 			return ErrDenied
 		}
 	}
+	sourceKind, sourcePrefix := "invoice-source", "local-invoice-"
+	if v.Locator.ComponentKind == domain.AttemptSpendingMCPToolV1 {
+		_, end, err := s.mcpFundingLocked(g.IssuedAt)
+		if err != nil || !at.Before(end) || v.Window.ExpiresAt.After(end) || g.ExpiresAt.After(end) {
+			return ErrDenied
+		}
+		sourceKind, sourcePrefix = "mcp-source", "local-mcp-"
+	}
 	raw, err := v.SourceCanonicalBytes()
-	if err != nil || v.SourceAuthorization.Ref != "local-invoice-"+hex.EncodeToString(s.mac("invoice-source", raw)) {
+	if err != nil || v.SourceAuthorization.Ref != sourcePrefix+hex.EncodeToString(s.mac(sourceKind, raw)) {
 		return ErrDenied
 	}
 	intent, err := g.IntentBytes()

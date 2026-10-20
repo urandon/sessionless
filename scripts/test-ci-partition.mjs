@@ -20,7 +20,8 @@ const connectedOther = "go test -race -count=1 -timeout=15m -run='^TestLocalSess
 const ordinary = [
   "go test -race -count=1 -timeout=15m -skip='^(TestLocal|TestOwned|TestPrivate)' $(GO_PACKAGE_PATTERNS)",
   "go test -race -count=1 -timeout=15m -run='^(TestOwned|TestPrivate)' $(GO_PACKAGE_PATTERNS)",
-  "go test -race -count=1 -timeout=15m -run='^TestLocal' -skip='^TestLocalSession' $(GO_PACKAGE_PATTERNS)",
+  "go test -race -count=1 -timeout=15m -run='^TestLocalCompaction' $(GO_PACKAGE_PATTERNS)",
+  "go test -race -count=1 -timeout=15m -run='^TestLocal' -skip='^TestLocal(Session|Compaction)' $(GO_PACKAGE_PATTERNS)",
 ];
 function recipe(make, name) {
   const matches = [...make.matchAll(new RegExp(`^${name}:[^\\n]*\\n((?:\\t[^\\n]*\\n)*)`, 'gm'))];
@@ -117,15 +118,20 @@ test('connected selectors are disjoint and cover the original complete prefix', 
 test('ordinary selectors and connected selectors partition the complete test-name corpus', () => {
   const names = [
     'TestOrdinary', 'TestOtherFutureFamily', 'TestLocal', 'TestLocalFutureFamily',
+    'TestLocalCompaction', 'TestLocalCompactionSourceDenies',
+    'TestLocalCompactionFutureFamily', 'TestLocalPreparedModelTwoCompactionsOriginalChain',
     'TestOwned', 'TestOwnedFutureFamily', 'TestPrivate', 'TestPrivateFutureFamily',
     'TestLocalSession', 'TestLocalSessionFutureFamily', 'TestLocalSessionTerminal',
-    'Example', 'ExampleLocalSession', 'Fuzz', 'FuzzPrivateBytes',
+    'TestLocalSessionCompaction', 'TestLocalSessionTerminalCompaction',
+    'Example', 'ExampleLocalSession', 'ExampleLocalCompaction', 'Fuzz', 'FuzzPrivateBytes',
+    'FuzzLocalCompaction',
   ];
   for (const name of names) {
     const selected = [
       !/^(?:TestLocal|TestOwned|TestPrivate)/.test(name),
       /^Test(?:Owned|Private)/.test(name),
-      /^TestLocal/.test(name) && !/^TestLocalSession/.test(name),
+      /^TestLocalCompaction/.test(name),
+      /^TestLocal/.test(name) && !/^TestLocal(Session|Compaction)/.test(name),
       /^TestLocalSessionTerminal/.test(name),
       /^TestLocalSession/.test(name) && !/^TestLocalSessionTerminal/.test(name),
     ];
@@ -157,6 +163,7 @@ const mutations = [
   ['missing ordinary first partition', 'make', `${ordinary[0]}\n\t`, '', /exact sequential ordinary partition/],
   ['missing ordinary second partition', 'make', `\t${ordinary[1]}\n`, '', /exact sequential ordinary partition/],
   ['missing ordinary third partition', 'make', `\t${ordinary[2]}`, '', /exact sequential ordinary partition/],
+  ['missing ordinary fourth partition', 'make', `\t${ordinary[3]}\n`, '', /exact sequential ordinary partition/],
   ['reversed ordinary partitions', 'make', ordinary.join('\n\t'), [...ordinary].reverse().join('\n\t'), /exact sequential ordinary partition/],
   ['background ordinary partition', 'make', ordinary[0], `${ordinary[0]} &`, /exact sequential ordinary partition/],
   ['lost ordinary race', 'make', ordinary[0], ordinary[0].replace(' -race', ''), /exact sequential ordinary partition/],
@@ -164,9 +171,11 @@ const mutations = [
   ['wider ordinary binary timeout', 'make', ordinary[2], ordinary[2].replace('-timeout=15m', '-timeout=30m'), /exact sequential ordinary partition/],
   ['incomplete ordinary package corpus', 'make', ordinary[0], ordinary[0].replace('$(GO_PACKAGE_PATTERNS)', './internal/ydbstore'), /exact sequential ordinary partition/],
   ['short ordinary suite', 'make', ordinary[1], ordinary[1].replace(' $(GO_PACKAGE_PATTERNS)', ' -short $(GO_PACKAGE_PATTERNS)'), /exact sequential ordinary partition/],
-  ['extra ordinary selector', 'make', ordinary[2], ordinary[2].replace(" -skip='^TestLocalSession'", " -skip='^TestLocalSession' -run='^TestLocal'"), /exact sequential ordinary partition/],
+  ['extra ordinary selector', 'make', ordinary[3], ordinary[3].replace(" -skip='^TestLocal(Session|Compaction)'", " -skip='^TestLocal(Session|Compaction)' -run='^TestLocal'"), /exact sequential ordinary partition/],
   ['ignored ordinary failure', 'make', ordinary[1], `${ordinary[1]} || true`, /exact sequential ordinary partition/],
-  ['gap in ordinary selectors', 'make', ordinary[2], ordinary[2].replace("-skip='^TestLocalSession'", "-skip='^TestLocal'"), /exact sequential ordinary partition/],
+  ['gap in ordinary selectors', 'make', ordinary[3], ordinary[3].replace("-skip='^TestLocal(Session|Compaction)'", "-skip='^TestLocal'"), /exact sequential ordinary partition/],
+  ['compaction gap', 'make', ordinary[2], ordinary[2].replace("^TestLocalCompaction", "^TestLocalCompactionSource"), /exact sequential ordinary partition/],
+  ['compaction overlaps remainder', 'make', ordinary[3], ordinary[3].replace("-skip='^TestLocal(Session|Compaction)'", "-skip='^TestLocalSession'"), /exact sequential ordinary partition/],
   ['overlap in ordinary selectors', 'make', ordinary[0], ordinary[0].replace("-skip='^(TestLocal|TestOwned|TestPrivate)'", "-skip='^(TestOwned|TestPrivate)'"), /exact sequential ordinary partition/],
   ['missing terminal half', 'make', `\t${connectedTerminal}\n`, '', /exact sequential connected partition/],
   ['missing other half', 'make', `\t${connectedOther}\n`, '', /exact sequential connected partition/],
@@ -203,11 +212,13 @@ for (const [index, command] of ordinary.entries()) {
     ? command.replace('TestLocal|TestOwned|TestPrivate', 'TestLocal|TestOwned')
     : index === 1
       ? command.replace('TestOwned|TestPrivate', 'TestOwned')
-      : command.replace("-run='^TestLocal'", "-run='^TestLocalSession'");
+      : index === 2
+        ? command.replace("-run='^TestLocalCompaction'", "-run='^TestLocalCompactionSource'")
+        : command.replace("-run='^TestLocal'", "-run='^TestLocalSession'");
   mutations.push([`ordinary ${index + 1} selector gap`, 'make', command, narrowed, /exact sequential ordinary partition/]);
 }
-mutations.push(['ordinary third selector overlap', 'make', ordinary[2],
-  ordinary[2].replace("-skip='^TestLocalSession'", "-skip='^TestLocalSessionTerminal'"),
+mutations.push(['ordinary fourth selector overlap', 'make', ordinary[3],
+  ordinary[3].replace("-skip='^TestLocal(Session|Compaction)'", "-skip='^TestLocalSessionTerminal'"),
   /exact sequential ordinary partition/]);
 for (const [half, command] of [['terminal', connectedTerminal], ['other', connectedOther]]) {
   for (const [name, mutate] of [

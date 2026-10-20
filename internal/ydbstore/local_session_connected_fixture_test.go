@@ -213,10 +213,10 @@ func (s *LocalSessionConnectedSeed) WorkerPreflightState(t *testing.T) ports.Wor
 	return v
 }
 
-type LocalWorkerPreflightReads struct{ Final, Principal, Sources, Verifier, Lease, Writes int }
+type LocalWorkerPreflightReads struct{ Final, Principal, Sources, Lease, Writes int }
 
 func (s *LocalSessionConnectedSeed) WorkerPreflightReads() LocalWorkerPreflightReads {
-	v := LocalWorkerPreflightReads{Verifier: s.parent.verifier.calls, Lease: s.parent.sql.leaseReads, Writes: s.parent.graph.writes}
+	v := LocalWorkerPreflightReads{Lease: s.parent.sql.leaseReads, Writes: s.parent.graph.writes}
 	for _, statement := range s.parent.graph.statements {
 		switch statement {
 		case ownedAdmissionSQL:

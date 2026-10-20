@@ -170,17 +170,20 @@ reported test has only just started. Do not call that test hung or flaky from
 its name in the timeout report; inspect elapsed execution and actual evidence.
 
 `make test` calls `test-ordinary` then `test-connected` using sequential recursive
-Make recipe lines, including under `make -j`. The ordinary target now uses three
+Make recipe lines, including under `make -j`. The ordinary target now uses four
 sequential uncached executions over the complete package patterns: first it
 skips `TestLocal`, `TestOwned`, and `TestPrivate` prefixes; next it selects the
-complete `TestOwned` and `TestPrivate` prefixes; finally it selects the complete
-`TestLocal` prefix while skipping `TestLocalSession`. This keeps the ordinary
+complete `TestOwned` and `TestPrivate` prefixes; next it selects the complete
+`TestLocalCompaction` prefix; finally it selects the remaining `TestLocal` prefix
+while skipping `TestLocal(Session|Compaction)`. The two local selections are
+disjoint and together cover the original complete non-session local prefix,
+including future families through the remainder. This keeps the ordinary
 test names, examples, and fuzz seed corpora in the first execution, and gives
 each prefixed family exactly one execution. Connected work uses two sequential
 uncached executions: `-run='^TestLocalSessionTerminal'`, then
 `-run='^TestLocalSession' -skip='^TestLocalSessionTerminal'`. The connected
 selections are disjoint and together cover the original complete
-`^TestLocalSession` prefix. All five executions retain the race detector,
+`^TestLocalSession` prefix. All six executions retain the race detector,
 `-count=1`, and the existing 15-minute per-binary bound. They do not drop tests,
 subtests, examples or fuzz seed corpora or shorten scenarios. Every execution
 covers the same complete package patterns: matching names exist outside the

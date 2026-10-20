@@ -18,8 +18,10 @@ import (
 )
 
 // Real original Source, runtime, issuers, Store, codec/body adapter and owned
-// TCP peer; SQL, external funding/effect-source verification and blob STORAGE
-// remain SCRIPTED. No native YDB, actual model or complete loop is claimed.
+// TCP peer and genuine original Source/funding authentication. SQL and blob
+// STORAGE remain SCRIPTED; external service documents are synthetic owned
+// declarations. No native YDB, actual model, live service funding or complete
+// loop is claimed.
 func connectedNormalizedModel(t *testing.T) (*ydbstore.LocalLoopbackConnectedFixture, *connectedOperationBlobs, []byte, domain.AttemptOperationUsageV1) {
 	t.Helper()
 	peer := newLocalLoopbackPeer(t, true)
@@ -99,12 +101,63 @@ func TestLocalNormalizedModelConnectedRecordReadAndHistoricalSourceClose(t *test
 	if puts, opens, closes, deletes := blobs.counts(); puts != 2 || opens < 5 || opens != closes || deletes != 0 {
 		t.Fatalf("request/response custody or replay rewrote bodies: put=%d open=%d close=%d delete=%d", puts, opens, closes, deletes)
 	}
+	profile, err := f.Source.Configuration()
+	if err != nil {
+		t.Fatalf("capture original decoding DATA before Source destruction: %v", err)
+	}
+	originalRequest := f.Payload()
+	originalOperation := f.Operation.Clone()
+	originalObservation := authenticated.Observation.Clone()
+	if originalOperation.RequestDigest == originalObservation.ResponseDigest || originalObservation.Usage.InputTokens == nil {
+		t.Fatal("retained DATA controls require distinct original request/response hashes and reported input usage")
+	}
 	if err := f.Source.Close(); err != nil {
 		t.Fatal(err)
 	}
+	// Retained decoding DATA survives retirement; it is not a replacement for
+	// authentication by the now-destroyed original installation Source.
+	if err := f.ValidateRetainedNormalizedModelData(t, originalOperation, originalObservation); err != nil {
+		t.Fatalf("original bootstrap lost retained normalized DATA decoding: %v", err)
+	}
+	decoded, err := configuredinference.DecodeNormalizedResponseBodyV1(profile, originalRequest, body, originalOperation.Kind)
+	if err != nil || decoded.Stop != configuredinference.StopFinalV1 || decoded.Text != "owned peer result" || decoded.Call != nil {
+		t.Fatalf("retained normalized DATA changed after Source destruction: stop=%s text=%q err=%v", decoded.Stop, decoded.Text, err)
+	}
+	decodedUsage, err := decoded.Usage.OperationUsage()
+	if err != nil || !reflect.DeepEqual(decodedUsage, originalObservation.Usage) {
+		t.Fatalf("retained normalized DATA lost exact original usage: got=%+v want=%+v err=%v", decodedUsage, originalObservation.Usage, err)
+	}
+	wrongRequest := originalOperation.Clone()
+	wrongRequest.RequestDigest = originalObservation.ResponseDigest
+	wrongBody := originalObservation.Clone()
+	wrongBody.ResponseDigest = originalOperation.RequestDigest
+	wrongUsage := originalObservation.Clone()
+	(*wrongUsage.Usage.InputTokens)++
+	for _, tc := range []struct {
+		name        string
+		operation   domain.AttemptOperationV1
+		observation domain.AttemptOperationObservationV1
+	}{
+		{name: "request-digest-substitution", operation: wrongRequest, observation: originalObservation},
+		{name: "body-digest-substitution", operation: originalOperation, observation: wrongBody},
+		{name: "usage-substitution", operation: originalOperation, observation: wrongUsage},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := f.ValidateRetainedNormalizedModelData(t, tc.operation, tc.observation); !errors.Is(err, domain.ErrMembershipDenied) {
+				t.Fatalf("retained DATA accepted %s: %v", tc.name, err)
+			}
+		})
+	}
+	if err := f.ValidateRetainedNormalizedModelData(t, originalOperation, originalObservation); err != nil {
+		t.Fatalf("negative DATA controls mutated the retained original: %v", err)
+	}
+	beforePuts, beforeOpens, beforeCloses, beforeDeletes := blobs.counts()
 	read, err = f.ReadOriginalModelObservation(t)
-	if err != nil || !reflect.DeepEqual(read, authenticated) {
-		t.Fatalf("retired Source lost authenticated historical normalized DATA: %v", err)
+	if !errors.Is(err, domain.ErrMembershipDenied) || !reflect.DeepEqual(read, ports.AuthenticatedAttemptOperationObservationV1{}) {
+		t.Fatalf("destroyed Source authenticated a fresh observation read: result=%+v err=%v", read, err)
+	}
+	if puts, opens, closes, deletes := blobs.counts(); puts != beforePuts || opens != beforeOpens || closes != beforeCloses || deletes != beforeDeletes {
+		t.Fatalf("closed-Source authenticated-read denial touched bodies: put=%d/%d open=%d/%d close=%d/%d delete=%d/%d", puts, beforePuts, opens, beforeOpens, closes, beforeCloses, deletes, beforeDeletes)
 	}
 	if _, err := f.Source.Configuration(); err == nil {
 		t.Fatal("closed actual Source still exported current configuration")
@@ -118,8 +171,8 @@ func TestLocalNormalizedModelConnectedRecordReadAndHistoricalSourceClose(t *test
 		t.Fatal("historical result minted another physical send capability")
 	}
 	f.AssertObservationWrites(t, 1)
-	if puts, _, _, deletes := blobs.counts(); puts != 2 || deletes != 0 {
-		t.Fatal("historical normalized read wrote or deleted operation bodies")
+	if puts, opens, closes, deletes := blobs.counts(); puts != 2 || opens != closes || deletes != 0 {
+		t.Fatalf("retained DATA validation/closed-Source denials changed body custody: put=%d open=%d close=%d delete=%d", puts, opens, closes, deletes)
 	}
 }
 

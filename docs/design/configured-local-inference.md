@@ -1,6 +1,6 @@
 # Configured local inference for development demos
 
-Version: 0.1.5, engineering design. Owner:
+Version: 0.1.6, engineering design. Owner:
 [#212](https://gitcode.com/urandon/sessionless/issues/212), under
 [#176](https://gitcode.com/urandon/sessionless/issues/176).
 
@@ -272,8 +272,14 @@ Do not silently ignore a requested Bearer profile.
 
 Every denial, cancellation, expiry and failed/ambiguous registration closes
 owned sockets, joins owned I/O and releases bounded buffers. Historical
-authenticated observations can remain readable after closure but cannot mint a
-fresh socket or capability. Partial writes/lost replies stay reconcile-only;
+authenticated observations can remain readable after connector/socket closure
+while the original grant, reservation/history and Source authentication still
+hold; they cannot mint a fresh socket or capability. Explicit installation
+`Source.Close` destroys its key and lifetime: immutable retained configuration,
+request and body remain usable for structural historical decoding, not for a
+new authenticated Store read through that destroyed Source. This does not
+delete stored results or replace the separate canonical Session history owner.
+Partial writes/lost replies stay reconcile-only;
 there is no reconnect/retry or remote-stop claim. Connected tests use actual
 owned loopback peers and the existing scripted Store transaction fixture to
 prove zero HTTP bytes on denial and exactly one request on success. Keep such

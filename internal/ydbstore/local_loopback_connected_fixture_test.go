@@ -472,6 +472,18 @@ func (f *LocalLoopbackConnectedFixture) ReadOriginalModelObservation(t *testing.
 	return f.store.ReadAttemptOperationObservation(f.Context, f.observationGrant.Clone())
 }
 
+// ValidateRetainedNormalizedModelData exposes only the existing private DATA
+// validator to this connected test. It uses the original bootstrap configuration
+// clone and body adapter, but authenticates no Source, grant or observation and
+// grants no effect/continuation permission.
+func (f *LocalLoopbackConnectedFixture) ValidateRetainedNormalizedModelData(t *testing.T, op domain.AttemptOperationV1, observation domain.AttemptOperationObservationV1) error {
+	t.Helper()
+	if f.store == nil || f.Bootstrap == nil || f.store.localBootstrap != f.Bootstrap || f.operationBodies == nil {
+		t.Fatal("retained normalized DATA validation requires the original Store/bootstrap/body adapter")
+	}
+	return f.store.validateLocalNormalizedModel(f.Context, op.Clone(), observation.Clone())
+}
+
 func (f *LocalLoopbackConnectedFixture) AssertObservationWrites(t *testing.T, want int) {
 	t.Helper()
 	if f.sql.observationWrites != want {

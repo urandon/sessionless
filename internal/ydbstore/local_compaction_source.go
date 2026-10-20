@@ -10,6 +10,7 @@ import (
 	"io"
 	"reflect"
 	"sync"
+	"time"
 
 	"gitcode.com/urandon/sessionless/internal/compactioncontext"
 	"gitcode.com/urandon/sessionless/internal/configuredinference"
@@ -303,21 +304,33 @@ func (entry *LocalInvocationEntryV1) readCompactionSnapshot(ctx context.Context,
 }
 
 func (entry *LocalInvocationEntryV1) readLocalPreparedSnapshot(ctx context.Context, q *ownedAuthorityQuery, owner localSnapshotOwner, phase localCompactionGenerationPhase) (localCompactionSnapshot, error) {
+	snapshot, _, err := entry.readLocalPreparedSnapshotWithBurn(ctx, q, owner, phase)
+	return snapshot, err
+}
+
+func (entry *LocalInvocationEntryV1) readLocalPreparedSnapshotWithBurn(ctx context.Context, q *ownedAuthorityQuery, owner localSnapshotOwner, phase localCompactionGenerationPhase) (localCompactionSnapshot, time.Time, error) {
 	if phase == localCompactionCapture {
 		if owner.generation != nil || owner.model != nil {
-			return localCompactionSnapshot{}, q.budget.deny()
+			return localCompactionSnapshot{}, time.Time{}, q.budget.deny()
 		}
 	} else if !owner.original(entry, phase) {
-		return localCompactionSnapshot{}, q.budget.deny()
+		return localCompactionSnapshot{}, time.Time{}, q.budget.deny()
 	}
-	deny := func() (localCompactionSnapshot, error) { return localCompactionSnapshot{}, q.budget.deny() }
+	deny := func() (localCompactionSnapshot, time.Time, error) {
+		return localCompactionSnapshot{}, time.Time{}, q.budget.deny()
+	}
 	if q.metadataCache == nil {
 		q.metadataCache = make(map[string]ownedMetadataCacheEntry)
 	}
-	if _, err := entry.currentRetainedRun(ctx, q, entry.compactionSourceControl()); err != nil {
+	_, burn, err := entry.currentRetainedRunWithBurn(ctx, q, entry.compactionSourceControl())
+	if err != nil {
 		return deny()
 	}
-	return entry.readLocalPreparedSnapshotBody(ctx, q, owner, phase)
+	snapshot, err := entry.readLocalPreparedSnapshotBody(ctx, q, owner, phase)
+	if err != nil {
+		return localCompactionSnapshot{}, time.Time{}, err
+	}
+	return snapshot, burn, nil
 }
 
 // Shared bounded canonical DATA reader. Its only callers first establish
@@ -651,17 +664,22 @@ func (s *LocalCompactionSourceV1) rejoinLocked(ctx context.Context, q *ownedAuth
 // The source-bound uploader consumes this SAME joined Run and full inventory,
 // rather than performing another nested parent/operationHistory point path.
 func (s *LocalCompactionSourceV1) rejoinRunLocked(ctx context.Context, q *ownedAuthorityQuery, appended *domain.AttemptOperationReservationV1, observed *domain.AttemptOperationObservationV1) (domain.Run, error) {
+	run, _, err := s.rejoinRunWithBurnLocked(ctx, q, appended, observed)
+	return run, err
+}
+
+func (s *LocalCompactionSourceV1) rejoinRunWithBurnLocked(ctx context.Context, q *ownedAuthorityQuery, appended *domain.AttemptOperationReservationV1, observed *domain.AttemptOperationObservationV1) (domain.Run, time.Time, error) {
 	if s == nil || s.self != s || s.entry == nil || !s.entry.original() || s.state == nil || s.state.cleared {
-		return domain.Run{}, q.budget.deny()
+		return domain.Run{}, time.Time{}, q.budget.deny()
 	}
-	current, err := s.entry.readCompactionSnapshot(ctx, q)
+	current, burn, err := s.entry.readLocalPreparedSnapshotWithBurn(ctx, q, localSnapshotOwner{}, localCompactionCapture)
 	if err != nil {
-		return domain.Run{}, q.budget.deny()
+		return domain.Run{}, time.Time{}, q.budget.deny()
 	}
 	expected := s.state.snapshot
 	if appended != nil {
 		if observed == nil || appended.Operation.Kind != domain.AttemptOperationCompactionV1 || appended.Operation.Sequence != expected.Accounting.Aggregate.Operations+1 || len(current.Operations) != len(expected.Operations)+1 || !reflect.DeepEqual(current.Operations[len(current.Operations)-1].reservation, *appended) || !reflect.DeepEqual(*current.Operations[len(current.Operations)-1].observation, *observed) {
-			return domain.Run{}, q.budget.deny()
+			return domain.Run{}, time.Time{}, q.budget.deny()
 		}
 		current.Operations = current.Operations[:len(current.Operations)-1]
 		current.ProxyDigests = current.ProxyDigests[:len(current.ProxyDigests)-1]
@@ -673,17 +691,17 @@ func (s *LocalCompactionSourceV1) rejoinRunLocked(ctx context.Context, q *ownedA
 		// independently checked against ALL durable operations above.
 		next, e := debitOwnedOperation(expected.Accounting, appended.Operation, s.entry.parent, s.entry.source, appended.ReservedAt)
 		if e != nil || !reflect.DeepEqual(next, current.Accounting) {
-			return domain.Run{}, q.budget.deny()
+			return domain.Run{}, time.Time{}, q.budget.deny()
 		}
 		current.Accounting = expected.Accounting
 	}
 	if !reflect.DeepEqual(current, expected) {
-		return domain.Run{}, q.budget.deny()
+		return domain.Run{}, time.Time{}, q.budget.deny()
 	}
 	if err := s.rejoinHistoryLocked(ctx, q); err != nil {
-		return domain.Run{}, err
+		return domain.Run{}, time.Time{}, err
 	}
-	return current.Job.Run.Clone(), nil
+	return current.Job.Run.Clone(), burn, nil
 }
 
 func (s *LocalCompactionSourceV1) PrepareRetainedCompaction(ctx context.Context, op domain.AttemptOperationV1, generation uint64) (*LocalRetainedCompactionV1, error) {

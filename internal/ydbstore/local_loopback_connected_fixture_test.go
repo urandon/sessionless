@@ -214,7 +214,7 @@ func NewLocalLoopbackConnectedFixture(t *testing.T, endpoint string) *LocalLoopb
 	t.Helper()
 	state := currentWorkerAuthorityFixture(t)
 	scope := domain.AttemptExecutionSourceScopeV1{TenantID: state.Run.TenantID, OwnerUserID: state.Job.CredentialOwnerUserID, SessionID: state.Run.SessionID, RunID: state.Run.ID, AttemptID: state.Attempt.ID}
-	actual := newLocalRuntimeActualFixture(t, true, true, localRuntimeActualPrebuild{scope: scope, setupDuration: 10 * time.Second, endpoint: endpoint})
+	actual := newLocalRuntimeActualFixture(t, true, true, localRuntimeActualPrebuild{authenticFunding: true, scope: scope, setupDuration: 10 * time.Second, endpoint: endpoint})
 	p := newOwnedAttemptEffectParentFixture(t, ownedFinalPrebuild{at: actual.at, sources: &ownedFinalSources{profile: actual.profile, spending: actual.execution.Spending}})
 	issuer, e := serverlessharness.NewOperationCapabilityIssuer(func() time.Time { return p.graph.at }, strings.NewReader(strings.Repeat("C", 32)), 16)
 	if e != nil {
@@ -276,7 +276,7 @@ func (f *LocalLoopbackConnectedFixture) complete(t *testing.T, keeper ports.Owne
 		requestRef, bodyReader = reference.Ref, adapter
 		f.operationBodies = adapter
 	}
-	store, e := f.Bootstrap.CreateStore(db, Options{OwnedAttemptEffectSourceVerifier: f.parent.verifier, OwnedProfilePublicationVerifier: f.Source, AttemptOperationBodies: bodyReader}, keeper)
+	store, e := f.Bootstrap.CreateStore(db, Options{OwnedAttemptEffectSourceVerifier: f.Source, OwnedProfilePublicationVerifier: f.Source, AttemptOperationBodies: bodyReader}, keeper)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -470,6 +470,18 @@ func (f *LocalLoopbackConnectedFixture) ReadOriginalModelObservation(t *testing.
 	t.Helper()
 	f.parent.graph.at = time.Now().UTC().Truncate(time.Microsecond)
 	return f.store.ReadAttemptOperationObservation(f.Context, f.observationGrant.Clone())
+}
+
+// ValidateRetainedNormalizedModelData exposes only the existing private DATA
+// validator to this connected test. It uses the original bootstrap configuration
+// clone and body adapter, but authenticates no Source, grant or observation and
+// grants no effect/continuation permission.
+func (f *LocalLoopbackConnectedFixture) ValidateRetainedNormalizedModelData(t *testing.T, op domain.AttemptOperationV1, observation domain.AttemptOperationObservationV1) error {
+	t.Helper()
+	if f.store == nil || f.Bootstrap == nil || f.store.localBootstrap != f.Bootstrap || f.operationBodies == nil {
+		t.Fatal("retained normalized DATA validation requires the original Store/bootstrap/body adapter")
+	}
+	return f.store.validateLocalNormalizedModel(f.Context, op.Clone(), observation.Clone())
 }
 
 func (f *LocalLoopbackConnectedFixture) AssertObservationWrites(t *testing.T, want int) {

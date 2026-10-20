@@ -12,6 +12,9 @@ const (
 	ConfiguredInferenceProtocolChatCompletionsV1 string = "openai-chat-completions.v1"
 	ConfiguredInferenceLoopbackPolicyV1                 = "local_loopback_http.v1"
 	ConfiguredInferenceMaxCredentialBytesV1      int64  = 4096
+	// ConfiguredToolSchemaValidatorV1 names the existing closed DATA schema
+	// contract; it is not an artifact digest, qualification or dispatch grant.
+	ConfiguredToolSchemaValidatorV1 = "sessionless.closed-tool-schema.v1"
 )
 
 type ConfiguredInferenceAuthV1 string

@@ -97,9 +97,11 @@ func (h *LocalTerminalV1) PrepareOutput(ctx context.Context) (_ *LocalPreparedOu
 	var run domain.Run
 	var genericProfile domain.OwnedAgentProfileCurrentV1
 	var at time.Time
+	var originalBurn time.Time
 	if store.ownedAuthorityTx(call, func(ctx context.Context, q *ownedAuthorityQuery) error {
+		originalBurn = time.Time{} // discard every speculative callback result
 		var e error
-		run, e = s.rejoinRunLocked(ctx, q, nil, nil)
+		run, originalBurn, e = s.rejoinRunWithBurnLocked(ctx, q, nil, nil)
 		if e == nil && h.entry.preparedModel.Load() == nil {
 			// The exported original entry also supports the generic seq1 path.
 			// Capture the exact INSTALLED profile in this existing current join;
@@ -242,13 +244,14 @@ func (h *LocalTerminalV1) PrepareOutput(ctx context.Context) (_ *LocalPreparedOu
 	// invocation cancellation may precede delayed AfterFunc delivery, so their
 	// direct lifetimes must still be checked AFTER that join, not only before it.
 	life, lifeErr = h.entry.owner.source.ExecutionLifetime()
-	if ctx.Err() != nil || call.Err() != nil || h.entry.invocationContext.Err() != nil || lifeErr != nil || life.Err() != nil {
+	if ctx.Err() != nil || call.Err() != nil || h.entry.invocationContext.Err() != nil || lifeErr != nil || life.Err() != nil || originalBurn.IsZero() || !originalBurn.Equal(s.state.snapshot.Accounting.SetupReservedAt) {
 		clear(notice.Payload)
 		return deny()
 	}
 	p := &LocalPreparedOutputV1{parent: h, mu: new(sync.Mutex), plan: plan, manifest: manifest, drafts: drafts, canonical: encoded, capsule: body,
 		accounting: accounting, cancellation: cancellation, cancellationBody: notice.Payload}
 	p.self = p
+	h.burn = originalBurn
 	h.output = p
 	success = true
 	return p, nil

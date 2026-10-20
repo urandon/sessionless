@@ -107,6 +107,7 @@ func localRuntimeStructuralSpending(t *testing.T, p domain.OwnedAgentProfileCurr
 // publication over a deterministic SQL model. No native YDB, model, socket or
 // external-service funding/qualification is exercised.
 type localRuntimeActualPrebuild struct {
+	authenticFunding                                        bool // genuine Source + Store four-component publication, never live service evidence
 	scope                                                   domain.AttemptExecutionSourceScopeV1
 	setupDuration                                           time.Duration
 	sourceParent                                            context.Context
@@ -310,6 +311,27 @@ func newLocalRuntimeActualFixture(t *testing.T, runningExecutable, acceptReceipt
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(prebuild) == 1 && prebuild[0].authenticFunding {
+		if !acceptReceipt {
+			t.Fatal("genuine funding needs the original accepted profile receipt")
+		}
+		observed, expires := p.CostCeiling.PriceObservedAt, p.CostCeiling.PriceExpiresAt
+		localSearchDeclaration(t, &manifest)
+		localSourceMCPDeclaration(t, &manifest)
+		// The installed external documents have a narrower original interval
+		// than some structural fixture defaults. Preserve a later observation,
+		// but never restore a wider outer window around those service reports.
+		if p.CostCeiling.PriceObservedAt.Before(observed) {
+			p.CostCeiling.PriceObservedAt = observed
+		}
+		if p.CostCeiling.PriceExpiresAt.After(expires) {
+			p.CostCeiling.PriceExpiresAt = expires
+		}
+		p.Substrate.AdmissionCostCeilingDigest, err = p.CostCeiling.Digest()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 	writeLocalOperatorManifest(t, root, manifest) // before OpenFresh or any seal
 	sourceParent := t.Context()
 	if len(prebuild) == 1 && prebuild[0].sourceParent != nil {
@@ -327,6 +349,7 @@ func newLocalRuntimeActualFixture(t *testing.T, runningExecutable, acceptReceipt
 	store, sqlFixture, _, _ := newLocalInstallationFixture(t)
 	sqlFixture.at = publication.IssuedAt
 	store.ownedProfilePublicationVerifier = source
+	store.attemptSpendingPublicationVerifier = source
 	receipt, err := store.PublishOwnedProfile(t.Context(), publication)
 	if err != nil {
 		t.Fatalf("actual source -> Store profile receipt (scripted SQL): %v", err)
@@ -347,12 +370,21 @@ func newLocalRuntimeActualFixture(t *testing.T, runningExecutable, acceptReceipt
 	}
 	var spending [4]domain.AttemptSpendingAuthorizationCurrentV1
 	for i, kind := range ownedSpendingKinds {
-		if acceptReceipt && i < 2 {
+		if acceptReceipt && (i < 2 || (len(prebuild) == 1 && prebuild[0].authenticFunding)) {
 			grant, err := source.SpendingPublication(t.Context(), scope, kind)
 			if err != nil || source.VerifyAttemptSpendingPublication(grant, grant.IssuedAt) != nil {
 				t.Fatalf("genuine retained-source %s invoice: %v", kind, err)
 			}
 			spending[i] = grant.Authorization
+			if len(prebuild) == 1 && prebuild[0].authenticFunding {
+				registerActualFundingKey(sqlFixture, grant)
+				sqlFixture.at = grant.IssuedAt
+				r, err := store.PublishAttemptSpending(t.Context(), grant)
+				if err != nil {
+					t.Fatalf("original Store genuine %s publication: %v", kind, err)
+				}
+				spending[i] = r.Authorization
+			}
 		} else {
 			spending[i] = localRuntimeStructuralSpending(t, profile, scope, kind)
 		}

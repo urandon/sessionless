@@ -280,7 +280,11 @@ func (s *Source) aliveLocked() bool {
 	if s == nil || s.self != s || s.closed || s.key == nil {
 		return false
 	}
-	if s.ctx.Err() != nil {
+	// Context cancellation may be dispatched after its retained deadline.
+	// Historical DATA authentication must not extend this original lifetime,
+	// including when its parent supplied the shorter bound.
+	deadline, bounded := s.ctx.Deadline()
+	if s.ctx.Err() != nil || (bounded && !time.Now().Before(deadline)) {
 		clear(s.key.bytes[:])
 		s.closed = true
 		return false

@@ -13,8 +13,8 @@ import (
 	"gitcode.com/urandon/sessionless/internal/ydbstore"
 )
 
-// The original Source/factory/Store/current reader is real. SQL, full source
-// verification and external funding are SCRIPTED, not runtime qualification.
+// The original Source/factory/Store/current reader and funding authentication
+// are real. SQL and service declarations are synthetic, not runtime qualification.
 // No lease/effect/body/model/terminal operation is invoked by these tests.
 func newWorkerPreflightSession(t *testing.T, caller context.Context, cancelAtSources bool) (*providerloopsession.LocalV1, *ydbstore.LocalSessionConnectedSeed, *connectedOperationBlobs, *workerPreflightQueryHook) {
 	t.Helper()
@@ -69,7 +69,7 @@ func TestLocalSessionWorkerPreflightOriginalPositiveReadOnly(t *testing.T) {
 		}
 	}
 	after := seed.WorkerPreflightReads()
-	if after.Final-before.Final != 2 || after.Principal-before.Principal != 2 || after.Sources-before.Sources != 2 || after.Verifier-before.Verifier != 2 {
+	if after.Final-before.Final != 2 || after.Principal-before.Principal != 2 || after.Sources-before.Sources != 2 {
 		t.Fatalf("repeat did not perform actual current joins: before=%+v after=%+v", before, after)
 	}
 	if !reflect.DeepEqual(expected, seed.WorkerPreflightState(t)) {
@@ -128,7 +128,7 @@ func TestLocalSessionWorkerPreflightAuthorityTimestamps(t *testing.T) {
 				before := seed.WorkerPreflightReads()
 				err := session.PreflightWorkerJob(t.Context(), expected)
 				after := seed.WorkerPreflightReads()
-				if after.Final-before.Final != 1 || after.Sources-before.Sources != 1 || after.Verifier-before.Verifier != 1 {
+				if after.Final-before.Final != 1 || after.Principal-before.Principal != 1 || after.Sources-before.Sources != 1 {
 					t.Fatalf("timestamp mutant was masked before original Final/current reads: before=%+v after=%+v", before, after)
 				}
 				assertPreflightNoEffects(t, seed, blobs, before)

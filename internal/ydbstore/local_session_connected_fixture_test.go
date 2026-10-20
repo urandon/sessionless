@@ -17,8 +17,9 @@ import (
 )
 
 // TEST ONLY: raw constructor dependencies, not an existing Store/bootstrap,
-// parent reservation, body adapter or approval. SQL, external funding and the
-// complete effect-source verifier remain SCRIPTED, not normal activation proof.
+// parent reservation, body adapter or approval. Funding/authentication use the
+// original Source and Store; SQL and service declarations remain synthetic,
+// not normal activation or live service proof.
 type LocalSessionConnectedSeed struct {
 	Source                       *localoperator.Source
 	DB                           *sql.DB
@@ -46,7 +47,7 @@ func newLocalSessionConnectedSeed(t *testing.T, endpoint string, compiled bool, 
 	state := currentWorkerAuthorityFixture(t)
 	scope := domain.AttemptExecutionSourceScopeV1{TenantID: state.Run.TenantID, OwnerUserID: state.Job.CredentialOwnerUserID,
 		SessionID: state.Run.SessionID, RunID: state.Run.ID, AttemptID: state.Attempt.ID}
-	actual := newLocalRuntimeActualFixture(t, true, true, localRuntimeActualPrebuild{scope: scope, endpoint: endpoint, compiledCompaction: compiled, inputTokens: limits.InputTokens, outputTokens: limits.OutputTokens, modelWindowTokens: limits.ModelWindowTokens, networkOperation: limits.NetworkOperation})
+	actual := newLocalRuntimeActualFixture(t, true, true, localRuntimeActualPrebuild{authenticFunding: true, scope: scope, endpoint: endpoint, compiledCompaction: compiled, inputTokens: limits.InputTokens, outputTokens: limits.OutputTokens, modelWindowTokens: limits.ModelWindowTokens, networkOperation: limits.NetworkOperation})
 	parent := newOwnedAttemptEffectParentFixture(t, ownedFinalPrebuild{at: actual.at,
 		sources: &ownedFinalSources{profile: actual.profile, spending: actual.execution.Spending}})
 	operate, err := serverlessharness.NewOperationCapabilityIssuer(func() time.Time { return time.Now().UTC().Truncate(time.Microsecond) }, strings.NewReader(strings.Repeat("S", 32)), 16)
@@ -62,7 +63,7 @@ func newLocalSessionConnectedSeed(t *testing.T, endpoint string, compiled bool, 
 		}
 	})
 	return &LocalSessionConnectedSeed{installationRoot: actual.installationRoot, executable: actual.executable, receipt: actual.receipt, Source: actual.source, DB: db,
-		Options: Options{OwnedAttemptEffectSourceVerifier: parent.verifier, OwnedProfilePublicationVerifier: actual.source},
+		Options: Options{OwnedAttemptEffectSourceVerifier: actual.source, OwnedProfilePublicationVerifier: actual.source},
 		Prepare: parent.issuer.issuer, Operate: operate, Backend: parent.parent.Authority.HarnessBinding.Backend,
 		Substrate: parent.parent.Authority.SubstrateBinding, Request: parent.request, Profile: actual.config.Clone(), Scope: scope,
 		parent: parent, sql: fixture}
@@ -212,10 +213,10 @@ func (s *LocalSessionConnectedSeed) WorkerPreflightState(t *testing.T) ports.Wor
 	return v
 }
 
-type LocalWorkerPreflightReads struct{ Final, Principal, Sources, Verifier, Lease, Writes int }
+type LocalWorkerPreflightReads struct{ Final, Principal, Sources, Lease, Writes int }
 
 func (s *LocalSessionConnectedSeed) WorkerPreflightReads() LocalWorkerPreflightReads {
-	v := LocalWorkerPreflightReads{Verifier: s.parent.verifier.calls, Lease: s.parent.sql.leaseReads, Writes: s.parent.graph.writes}
+	v := LocalWorkerPreflightReads{Lease: s.parent.sql.leaseReads, Writes: s.parent.graph.writes}
 	for _, statement := range s.parent.graph.statements {
 		switch statement {
 		case ownedAdmissionSQL:

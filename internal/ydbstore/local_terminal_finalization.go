@@ -37,7 +37,7 @@ func (c *localTerminalCompletionV2) rejoinFirst(ctx context.Context, q *ownedAut
 		return deny()
 	}
 	q.metadataCache = make(map[string]ownedMetadataCacheEntry)
-	parent, source, burn, e := entry.owner.store.readOwnedAllocationParent(ctx, q, ownedAllocationParentRequest(entry.parent.Reservation))
+	parent, source, burn, e := p.originalTerminalParent(ctx, q)
 	if e != nil || !reflect.DeepEqual(parent, entry.parent) || !reflect.DeepEqual(source, entry.source) {
 		return deny()
 	}

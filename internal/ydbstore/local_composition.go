@@ -77,14 +77,15 @@ func sameLocalOwnerPointer(a, b any) bool {
 
 // CreateStore creates exactly one inert Store, with original owners fixed.
 // Nil owner options may select those explicit constructor owners; foreign
-// preinstalled owners are rejected, never silently replaced. Source is not a
-// substitute for the complete effect-source verifier or other service custody.
+// preinstalled owners are rejected, never silently replaced. The original
+// Source supplies its complete source verifier, not current SQL/send approval.
 func (b *LocalOwnedStoreBootstrapV1) CreateStore(db *sql.DB, options Options, keeper ports.OwnedProxyPublicationVerifierV2) (*Store, error) {
 	if b == nil || b.self != b || db == nil || !sameLocalOwnerPointer(keeper, keeper) ||
-		options.OwnedAllocationPublicationVerifier != nil || options.OwnedAttemptEffectSourceVerifier == nil {
+		options.OwnedAllocationPublicationVerifier != nil {
 		return nil, domain.ErrMembershipDenied
 	}
 	for _, pair := range [][2]any{
+		{options.OwnedAttemptEffectSourceVerifier, b.source},
 		{options.AttemptEffectGrantIssuer, b.prepare}, {options.OwnedPreparationGrantVerifier, b.prepare},
 		{options.AttemptOperationIssuer, b.operate}, {options.OwnedProxyPublicationVerifier, keeper},
 	} {
@@ -98,6 +99,7 @@ func (b *LocalOwnedStoreBootstrapV1) CreateStore(db *sql.DB, options Options, ke
 		return nil, domain.ErrMembershipDenied
 	}
 	options.AttemptEffectGrantIssuer, options.OwnedPreparationGrantVerifier = b.prepare, b.prepare
+	options.OwnedAttemptEffectSourceVerifier = b.source
 	options.AttemptOperationIssuer, options.OwnedProxyPublicationVerifier = b.operate, keeper
 	var bodySlot *localOperationBodySlot
 	if options.AttemptOperationBodies == nil && options.OwnedOperationResidualCustody == nil {

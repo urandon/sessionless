@@ -21,9 +21,8 @@ import (
 // model execution, account credit or legal/HTTP evidence. The real original
 // private-file Source and Store publication code are connected below; only
 // serializable SQL/commit mechanics use the existing local installation model.
-func localSearchOperatorStore(t *testing.T) (*localoperator.Source, *Store, *localInstallationSQLFixture, ports.OwnedProfilePublicationReceiptV1, localoperator.ManifestV1) {
+func localSearchDeclaration(t *testing.T, m *localoperator.ManifestV1) {
 	t.Helper()
-	root, executable, m := localOperatorFiles(t)
 	body := func(id string, value any) localoperator.EvidenceBodyV1 {
 		t.Helper()
 		raw, err := json.Marshal(value)
@@ -85,6 +84,15 @@ func localSearchOperatorStore(t *testing.T) (*localoperator.Source, *Store, *loc
 		GrantDigest: semantic, GrantBody: grantBody.Reference, PriceEvidence: price.Reference, TermsEvidence: terms.Reference, Currency: "USD",
 		PerCallReservationMicrounits: 10000, AggregateReservationMicrounits: 20000, IssuedAt: at, ExpiresAt: end}
 	m.Evidence = append(m.Evidence, pricePayload, termsPayload, price, terms, grantBody)
+}
+
+func localSearchOperatorStore(t *testing.T, amendments ...func(*localoperator.ManifestV1)) (*localoperator.Source, *Store, *localInstallationSQLFixture, ports.OwnedProfilePublicationReceiptV1, localoperator.ManifestV1) {
+	t.Helper()
+	root, executable, m := localOperatorFiles(t)
+	localSearchDeclaration(t, &m)
+	for _, amend := range amendments {
+		amend(&m)
+	}
 	writeLocalOperatorManifest(t, root, m)
 	source, err := localoperator.OpenFresh(t.Context(), root, executable)
 	if err != nil {

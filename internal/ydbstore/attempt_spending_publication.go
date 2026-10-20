@@ -79,26 +79,40 @@ func (store *Store) PublishAttemptSpending(ctx context.Context, grant ports.Atte
 		if next.Validate() != nil {
 			return domain.ErrMembershipDenied
 		}
-		raw, err := domain.EncodeAttemptSpendingAuthorizationCurrentV1(next)
-		digest, digestErr := next.Digest()
-		if err != nil || digestErr != nil {
-			return domain.ErrMembershipDenied
-		}
-		l := next.Locator
-		if _, err := q.ExecContext(ctx, spendingWriteSQL, l.TenantID, l.AttemptID, l.ComponentKind, l.BillingOwnerUserID, string(raw), uint64(next.Version), next.RevocationGeneration, next.State, digest, next.RunID, next.SessionID, next.OwnerUserID, next.Window.PublishedAt, next.Window.ExpiresAt, next.UpdatedAt); err != nil {
-			return err
-		}
-		if _, err := q.ExecContext(ctx, spendingAuditWriteSQL, l.TenantID, l.AttemptID, l.ComponentKind, l.BillingOwnerUserID, next.MutationID, intentDigest, string(raw), digest, next.RevocationGeneration, q.at, next.RunID, next.SessionID); err != nil {
-			return err
-		}
-		pending = ports.AttemptSpendingPublicationReceiptV1{Authorization: next.Clone(), Digest: digest}
-		return nil
+		pending, err = writeAttemptSpendingPostimageTx(ctx, q, next, intentDigest)
+		return err
 	})
 	if err != nil {
 		return denied()
 	}
 	pending.Authorization = pending.Authorization.Clone()
 	return pending, nil
+}
+
+// Exact existing head/audit writer, not an issuer or permission check. Callers
+// authenticate the SAME original grant, current profile and initial absence or
+// transition in THIS callback before composing this body. Recovery can thus
+// materialize several missing components without nested public transactions.
+func writeAttemptSpendingPostimageTx(ctx context.Context, q *ownedAuthorityQuery, next domain.AttemptSpendingAuthorizationCurrentV1, intentDigest string) (ports.AttemptSpendingPublicationReceiptV1, error) {
+	deny := func() (ports.AttemptSpendingPublicationReceiptV1, error) {
+		return ports.AttemptSpendingPublicationReceiptV1{}, q.budget.deny()
+	}
+	if next.Validate() != nil || !next.UpdatedAt.Equal(q.at) || domain.ValidateSHA256Digest("spending.intent", intentDigest) != nil {
+		return deny()
+	}
+	raw, err := domain.EncodeAttemptSpendingAuthorizationCurrentV1(next)
+	digest, digestErr := next.Digest()
+	if err != nil || digestErr != nil {
+		return deny()
+	}
+	l := next.Locator
+	if _, err := q.ExecContext(ctx, spendingWriteSQL, l.TenantID, l.AttemptID, l.ComponentKind, l.BillingOwnerUserID, string(raw), uint64(next.Version), next.RevocationGeneration, next.State, digest, next.RunID, next.SessionID, next.OwnerUserID, next.Window.PublishedAt, next.Window.ExpiresAt, next.UpdatedAt); err != nil {
+		return ports.AttemptSpendingPublicationReceiptV1{}, err
+	}
+	if _, err := q.ExecContext(ctx, spendingAuditWriteSQL, l.TenantID, l.AttemptID, l.ComponentKind, l.BillingOwnerUserID, next.MutationID, intentDigest, string(raw), digest, next.RevocationGeneration, q.at, next.RunID, next.SessionID); err != nil {
+		return ports.AttemptSpendingPublicationReceiptV1{}, err
+	}
+	return ports.AttemptSpendingPublicationReceiptV1{Authorization: next.Clone(), Digest: digest}, nil
 }
 
 func readSpendingPublicationAudit(ctx context.Context, q *ownedAuthorityQuery, grant ports.AttemptSpendingPublicationGrantV1, intentDigest string) (ports.AttemptSpendingPublicationReceiptV1, bool, error) {

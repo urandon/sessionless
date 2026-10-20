@@ -170,17 +170,24 @@ reported test has only just started. Do not call that test hung or flaky from
 its name in the timeout report; inspect elapsed execution and actual evidence.
 
 `make test` calls `test-ordinary` then `test-connected` using sequential recursive
-Make recipe lines, including under `make -j`. The ordinary selection is
-`-skip='^TestLocalSession'`. Connected work uses two sequential uncached
-executions: `-run='^TestLocalSessionTerminal'`, then
+Make recipe lines, including under `make -j`. The ordinary target now uses three
+sequential uncached executions over the complete package patterns: first it
+skips `TestLocal`, `TestOwned`, and `TestPrivate` prefixes; next it selects the
+complete `TestOwned` and `TestPrivate` prefixes; finally it selects the complete
+`TestLocal` prefix while skipping `TestLocalSession`. This keeps the ordinary
+test names, examples, and fuzz seed corpora in the first execution, and gives
+each prefixed family exactly one execution. Connected work uses two sequential
+uncached executions: `-run='^TestLocalSessionTerminal'`, then
 `-run='^TestLocalSession' -skip='^TestLocalSessionTerminal'`. The connected
 selections are disjoint and together cover the original complete
-`^TestLocalSession` prefix. All three retain the race detector and the existing
-15-minute per-binary bound. They do not drop tests, subtests, examples or fuzz
-seed corpora or shorten scenarios. Every execution covers the same complete
-package patterns: matching names exist outside the state-store package too.
-Keep ordinary sequential recipe lines: a failure stops the target before its
-next execution, including under `make -j`; do not background either half.
+`^TestLocalSession` prefix. All five executions retain the race detector,
+`-count=1`, and the existing 15-minute per-binary bound. They do not drop tests,
+subtests, examples or fuzz seed corpora or shorten scenarios. Every execution
+covers the same complete package patterns: matching names exist outside the
+state-store package too.
+Keep all ordinary and connected commands as sequential recipe lines: a failure
+stops the target before its next execution, including under `make -j`; do not
+background any partition.
 Formatting, vet and package-layout checks remain prerequisites of the ordinary part.
 
 Preserve this complement if changing the selector. Do not introduce a second

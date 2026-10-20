@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"sync/atomic"
+	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/operationbody"
@@ -228,33 +229,40 @@ func localRetainedBytes(ref domain.BlobRef, body []byte) bool {
 }
 
 func (entry *LocalInvocationEntryV1) currentRetainedRun(ctx context.Context, q *ownedAuthorityQuery, op domain.AttemptOperationV1) (domain.Run, error) {
+	run, _, err := entry.currentRetainedRunWithBurn(ctx, q, op)
+	return run, err
+}
+
+// The exact burn is observation DATA from the existing authenticated join,
+// returned without another query, callback, lifetime or mutable authority cache.
+func (entry *LocalInvocationEntryV1) currentRetainedRunWithBurn(ctx context.Context, q *ownedAuthorityQuery, op domain.AttemptOperationV1) (domain.Run, time.Time, error) {
 	store := entry.owner.store
 	request, parent, source, burn, err := store.operationParent(ctx, q, op.Scope)
 	if err != nil {
-		return domain.Run{}, q.budget.deny()
+		return domain.Run{}, time.Time{}, q.budget.deny()
 	}
 	pd, pe := parent.Digest()
 	ed, ee := entry.parent.Digest()
 	sd, se := source.Digest()
 	es, ese := entry.source.Digest()
 	if pe != nil || ee != nil || se != nil || ese != nil || pd != ed || sd != es || !q.at.Before(op.Deadline) || store.validateCurrentOwnedAttemptParent(ctx, q, request, parent) != nil {
-		return domain.Run{}, q.budget.deny()
+		return domain.Run{}, time.Time{}, q.budget.deny()
 	}
 	allocation, err := readOwnedAllocationSnapshots(ctx, q, parent, source, burn)
 	if err != nil || allocation == nil || allocation.current.LocalRuntime == nil || allocation.current.ValidateAt(q.at) != nil || op.Deadline.After(allocation.current.Window.ExpiresAt) {
-		return domain.Run{}, q.budget.deny()
+		return domain.Run{}, time.Time{}, q.budget.deny()
 	}
 	actual, ae := allocation.original.Digest()
 	original, oe := entry.allocation.Digest()
 	tuple := entry.owner.ready.Load()
 	if ae != nil || oe != nil || actual != original || tuple == nil || tuple.store != store || tuple.bridge.VerifyEnteredLocalAllocation(entry.allocation, q.at) != nil {
-		return domain.Run{}, q.budget.deny()
+		return domain.Run{}, time.Time{}, q.budget.deny()
 	}
 	run, found, err := readRunPayload(ctx, q, op.Scope.TenantID, op.Scope.RunID)
 	if err != nil || !found || run.Validate() != nil || run.ID != op.Scope.RunID || run.TenantID != op.Scope.TenantID || run.SessionID != op.Scope.SessionID || run.CancellationRequestedAt != nil || run.Status != domain.RunRunning {
-		return domain.Run{}, q.budget.deny()
+		return domain.Run{}, time.Time{}, q.budget.deny()
 	}
-	return run.Clone(), nil
+	return run.Clone(), burn, nil
 }
 
 func (entry *LocalInvocationEntryV1) retainedContext(ctx context.Context, op domain.AttemptOperationV1) (context.Context, func(), error) {

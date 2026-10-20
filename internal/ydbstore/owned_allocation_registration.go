@@ -154,22 +154,35 @@ func ownedAllocationParentRequest(r domain.AttemptEffectReservationV1) ports.Res
 }
 
 func (store *Store) readOwnedAllocationParent(ctx context.Context, q *ownedAuthorityQuery, request ports.ReserveAttemptEffectRequestV1) (domain.OwnedAttemptEffectParentV1, domain.AttemptExecutionSourceV1, time.Time, error) {
-	deny := func() (domain.OwnedAttemptEffectParentV1, domain.AttemptExecutionSourceV1, time.Time, error) {
+	parent, source, err := readOwnedAllocationParentData(ctx, q, request)
+	if err != nil || store.ownedAttemptEffectSourceVerifier == nil || store.ownedAttemptEffectSourceVerifier.VerifyOwnedAttemptEffectSource(source.Clone()) != nil {
 		return domain.OwnedAttemptEffectParentV1{}, domain.AttemptExecutionSourceV1{}, time.Time{}, q.budget.deny()
+	}
+	burned, burnAt, err := readOwnedPreparationBurnObservation(ctx, q, parent)
+	if err != nil || !burned {
+		return domain.OwnedAttemptEffectParentV1{}, domain.AttemptExecutionSourceV1{}, time.Time{}, q.budget.deny()
+	}
+	return parent, source, burnAt, nil
+}
+
+// Bounded canonical DATA only. The strict wrapper above still authenticates the
+// original Source before reading its preparation burn. The sole other caller is
+// the private already-captured/published terminal owner, which instead requires
+// exact correspondence with that owner's original parent/source/burn. This
+// helper alone grants neither fresh work nor historical authentication.
+func readOwnedAllocationParentData(ctx context.Context, q *ownedAuthorityQuery, request ports.ReserveAttemptEffectRequestV1) (domain.OwnedAttemptEffectParentV1, domain.AttemptExecutionSourceV1, error) {
+	deny := func() (domain.OwnedAttemptEffectParentV1, domain.AttemptExecutionSourceV1, error) {
+		return domain.OwnedAttemptEffectParentV1{}, domain.AttemptExecutionSourceV1{}, q.budget.deny()
 	}
 	parent, err := readOwnedAttemptEffectParent(ctx, q, request)
 	if err != nil || parent == nil || parent.Reservation.ReservedAt.After(q.at) || parent.Reservation.PhysicalInvocationClaimID != request.PhysicalInvocationClaimID || !attemptEffectRequestMatchesRecord(request, attemptEffectRecordV1{Authority: parent.Authority, Reservation: parent.Reservation}) {
 		return deny()
 	}
 	final, err := readOwnedAdmission(ctx, q, parent.Scope)
-	if err != nil || final == nil || parent.ValidateForAdmission(*final) != nil || store.ownedAttemptEffectSourceVerifier.VerifyOwnedAttemptEffectSource(final.Source.Clone()) != nil {
+	if err != nil || final == nil || parent.ValidateForAdmission(*final) != nil {
 		return deny()
 	}
-	burned, burnAt, err := readOwnedPreparationBurnObservation(ctx, q, *parent)
-	if err != nil || !burned {
-		return deny()
-	}
-	return parent.Clone(), final.Source.Clone(), burnAt, nil
+	return parent.Clone(), final.Source.Clone(), nil
 }
 
 func readOwnedAllocationSnapshots(ctx context.Context, q *ownedAuthorityQuery, parent domain.OwnedAttemptEffectParentV1, source domain.AttemptExecutionSourceV1, burnAt time.Time) (*ownedAllocationSnapshots, error) {
@@ -282,41 +295,52 @@ func (store *Store) retireBoundedOwnedAllocation(ctx context.Context, request po
 			return err
 		}
 		old, err := readOwnedAllocationSnapshots(ctx, q, parent, source, burnAt)
-		if err != nil || old == nil {
-			return q.budget.deny()
-		}
-		if old.current.State == state && old.previous == expectedDigest {
-			result = old.receipt(true)
-			return nil
-		}
-		currentDigest, err := old.current.Digest()
-		if err != nil || string(currentDigest) != expectedDigest {
-			return q.budget.deny()
-		}
-		next := old.current.Clone()
-		next.State, next.RevocationGeneration, next.UpdatedAt = state, next.RevocationGeneration+1, q.at
-		if next.ValidateTransitionFrom(old.current) != nil {
-			return q.budget.deny()
-		}
-		raw, err := domain.EncodeRegisteredAllocationV2(next)
-		digest, de := next.Digest()
-		parentDigest, pe := parent.Digest()
-		if err != nil || de != nil || pe != nil {
-			return q.budget.deny()
-		}
-		r := parent.Reservation
-		if _, err := q.ExecContext(ctx, ownedAllocationRegistrationTransitionSQL, string(raw), string(digest), expectedDigest, r.TenantID, r.AttemptID, r.Kind, parentDigest); err != nil {
+		if err != nil {
 			return err
 		}
-		actual, err := readOwnedAllocationSnapshots(ctx, q, parent, source, burnAt)
-		if err != nil || actual == nil || actual.receipt(false).Digest != string(digest) || actual.previous != expectedDigest {
-			return q.budget.deny()
-		}
-		result = actual.receipt(false)
-		return nil
+		result, err = retireOwnedAllocationSnapshotsTx(ctx, q, parent, source, burnAt, old, expectedDigest, state)
+		return err
 	})
 	if err != nil || ctx.Err() != nil {
 		return ports.OwnedAllocationRegistrationReceiptV2{}, domain.ErrMembershipDenied
 	}
 	return result, nil
+}
+
+// SAME unchanged CAS/readback transition, used only after either the strict
+// Source-authenticated parent or the private original terminal parent rejoin.
+func retireOwnedAllocationSnapshotsTx(ctx context.Context, q *ownedAuthorityQuery, parent domain.OwnedAttemptEffectParentV1, source domain.AttemptExecutionSourceV1, burnAt time.Time, old *ownedAllocationSnapshots, expectedDigest string, state domain.RegisteredPreparationStateV1) (ports.OwnedAllocationRegistrationReceiptV2, error) {
+	deny := func() (ports.OwnedAllocationRegistrationReceiptV2, error) {
+		return ports.OwnedAllocationRegistrationReceiptV2{}, q.budget.deny()
+	}
+	if old == nil || (state != domain.RegisteredPreparationRetiredV1 && state != domain.RegisteredPreparationRevokedV1) {
+		return deny()
+	}
+	if old.current.State == state && old.previous == expectedDigest {
+		return old.receipt(true), nil
+	}
+	currentDigest, err := old.current.Digest()
+	if err != nil || string(currentDigest) != expectedDigest {
+		return deny()
+	}
+	next := old.current.Clone()
+	next.State, next.RevocationGeneration, next.UpdatedAt = state, next.RevocationGeneration+1, q.at
+	if next.ValidateTransitionFrom(old.current) != nil {
+		return deny()
+	}
+	raw, err := domain.EncodeRegisteredAllocationV2(next)
+	digest, de := next.Digest()
+	parentDigest, pe := parent.Digest()
+	if err != nil || de != nil || pe != nil {
+		return deny()
+	}
+	r := parent.Reservation
+	if _, err := q.ExecContext(ctx, ownedAllocationRegistrationTransitionSQL, string(raw), string(digest), expectedDigest, r.TenantID, r.AttemptID, r.Kind, parentDigest); err != nil {
+		return ports.OwnedAllocationRegistrationReceiptV2{}, err
+	}
+	actual, err := readOwnedAllocationSnapshots(ctx, q, parent, source, burnAt)
+	if err != nil || actual == nil || actual.receipt(false).Digest != string(digest) || actual.previous != expectedDigest {
+		return deny()
+	}
+	return actual.receipt(false), nil
 }

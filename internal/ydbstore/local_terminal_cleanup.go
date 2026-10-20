@@ -99,11 +99,7 @@ func (p *LocalPreparedOutputV1) FinishCleanup(ctx context.Context) (_ *LocalTerm
 	if s.state.cleared || s.state.view == nil || p.publicationRun.TerminalCustody == nil || p.publicationRun.TerminalCustody.Plan != p.plan {
 		return deny()
 	}
-	original, oe := h.entry.allocation.Digest()
-	if oe != nil {
-		return deny()
-	}
-	retired, re := tuple.store.retireBoundedOwnedAllocation(call, ownedAllocationParentRequest(h.entry.parent.Reservation), string(original), domain.RegisteredPreparationRetiredV1)
+	retired, re := p.retireOriginalTerminalAllocation(call)
 	if re != nil || retired.Current.State != domain.RegisteredPreparationRetiredV1 || !reflect.DeepEqual(retired.Original, h.entry.allocation) || retired.Current.ValidateTransitionFrom(h.entry.allocation) != nil || call.Err() != nil {
 		return deny()
 	}
@@ -173,7 +169,7 @@ func (p *LocalPreparedOutputV1) rejoinCleanupLocked(ctx context.Context, q *owne
 	h := p.parent
 	entry := h.entry
 	store := entry.owner.store
-	parent, source, burn, e := store.readOwnedAllocationParent(ctx, q, ownedAllocationParentRequest(entry.parent.Reservation))
+	parent, source, burn, e := p.originalTerminalParent(ctx, q)
 	if e != nil || !reflect.DeepEqual(parent, entry.parent) || !reflect.DeepEqual(source, entry.source) {
 		return q.budget.deny()
 	}

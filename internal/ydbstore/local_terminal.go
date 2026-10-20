@@ -16,6 +16,10 @@ type LocalTerminalV1 struct {
 	self     *LocalTerminalV1
 	entry    *LocalInvocationEntryV1
 	deadline time.Time
+	// Exact preparation burn observed in PrepareOutput's original authenticated
+	// callback; installed only after that whole preparation succeeds. Not a
+	// caller timestamp, renewed lifetime or lazily reconstructed history fact.
+	burn     time.Time
 	failed   atomic.Bool
 	captured atomic.Bool
 	// Guarded by the SAME entry preparation barrier. Only Capture installs this

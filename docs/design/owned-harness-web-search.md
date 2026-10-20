@@ -1,6 +1,8 @@
 # Bounded web search for the owned harness
 
-Version: 0.2.5, reusable resource-grant amendment candidate. Predecessor 0.2.4
+Version: 0.2.6, original-grant consumption and historical-stop amendment candidate.
+Predecessor 0.2.5 defines reusable resource-grant custody; this amendment
+preserves that contract. Predecessor 0.2.4
 defines original-owner argument custody; this amendment preserves that contract.
 Predecessor 0.2.3
 defines the search-wire integration; this amendment preserves that contract.
@@ -178,8 +180,8 @@ reservation. Other managed/platform-funded publishers need their own existing
 authenticated billing source; a local declaration does not authorize cloud
 funding or consumer-subscription sharing.
 
-New producer, consent creation/read/reconciliation and reserve/before-send
-materialization must consume the same original V2 grant owner and strict body
+New producer, consent creation/read/current-authority reconciliation and
+reserve/before-send materialization must consume the same original V2 grant owner and strict body
 commitment. No synthetic `owned-fixture-grant-*` lookup, caller-authored grant
 DTO or fallback to V1 may serve that path. Authenticate current profile/source,
 resource/revocation/consent, actor, payer, price and allocation at the original
@@ -229,6 +231,42 @@ decision. If this UX or public-data proof is unavailable, the tool is disabled
 for that task. Regex or model assertions cannot authorize private transmission.
 
 ## Query consent within the existing claim
+
+### Historical stop without another grant archive
+
+Current read, private-query disclosure, approval, reserve and before-send must
+materialize the original authenticated grant and rejoin the actual current
+profile, spending, actor and invocation facts. A closed/expired Source or failed
+body read denies those actions; no fixture or retained-request fallback grants
+current permission.
+
+Monotonic reconciliation is a different operation. Its existing immutable
+request already commits the grant semantic digest, consent/revocation revisions
+and absolute request expiry. Successful creation must have bounded that expiry
+by the original grant and all invocation/cost windows. The authenticated original
+parent/admission and stored consent projection retain the scope and identities.
+Do not add another full grant copy, expiry field, approval registry or table
+solely to stop a request after the grant keeper has retired.
+
+Select a stop-only path before any grant-body I/O. Authenticate the original
+parent/admission Source and retained request/decision, then read actual canonical
+Run/Attempt/lease, membership/participation, profile/spending and allocation
+facts within the existing call budget. Original-source authentication still
+must succeed; this path does not bypass a failed verifier. An already stopped
+exact-revision retry returns the retained evidence without rewriting it. For an
+active request, record only a cancellation, claim loss, observed canonical
+revocation or expiry supported by those facts. DB time at or beyond the sealed
+request expiry is sufficient for expiry; do not invent an unavailable original
+grant expiry or extend any retained deadline.
+
+A keeper read error or early Source Close alone is not proof of a canonical
+revocation, cancellation or expiry. With healthy canonical heads and an unexpired
+request, such an observation cannot manufacture a stop, approval or send. This
+is an explicitly selected negative-only transaction, never a fallback after a
+current-authority loader has set its sticky denial. Request and decision bytes,
+digests and original receipt remain unchanged across a permitted stop/CAS retry.
+Controlled stored-parent/MODEL fixtures prove this transaction, not an authentic
+production MODEL producer or full worker continuation.
 
 Proposed `WebSearchConsentRequestV1` is a trusted pending decision in the existing
 Attempt effect store, not a model instruction or another scheduler. It binds

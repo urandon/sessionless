@@ -16,37 +16,17 @@ var _ ports.WebSearchConsentStoreV1 = (*Store)(nil)
 // missing rows or reopen a stop. No current-permission loader's sticky denial
 // is ignored to manufacture a successful stop transaction.
 func (store *Store) ReconcileWebSearchConsent(ctx context.Context, input ports.ReconcileWebSearchConsentRequestV1) (domain.WebSearchConsentStateV1, error) {
-	if !store.validOwnedAllocationContext(ctx) || store.attemptOperationBodies == nil || input.Validate() != nil {
+	if !store.validOwnedAllocationContext(ctx) || input.Validate() != nil {
 		return domain.WebSearchConsentStateV1{}, domain.ErrMembershipDenied
 	}
 	ctx, cancel := ownedConsentContext(ctx)
 	defer cancel()
-	var intent domain.WebSearchConsentRequestV1
-	err := store.ownedAuthorityTx(ctx, func(ctx context.Context, q *ownedAuthorityQuery) error {
-		intent = domain.WebSearchConsentRequestV1{}
-		parent, _, err := store.ownedConsentParent(ctx, q, input.Locator)
-		if err != nil {
-			return err
-		}
-		states, err := readOwnedConsentStates(ctx, q, parent)
-		state, found := findOwnedConsent(states, input.Locator.RequestID)
-		if err != nil || !found || input.Locator.ValidateForRequest(state.Request) != nil {
-			return q.budget.deny()
-		}
-		intent = state.Request
-		return nil
-	})
-	if err != nil {
-		return domain.WebSearchConsentStateV1{}, domain.ErrMembershipDenied
-	}
-	// Original immutable actual grant bytes may be expired; parsing is not a
-	// current-permission check. Their original expiry is kept, never renewed.
-	grant, err := store.readOwnedConsentGrant(ctx, intent)
-	if err != nil {
-		return domain.WebSearchConsentStateV1{}, domain.ErrMembershipDenied
-	}
+	// Select the negative-only transaction before any grant-body I/O. The
+	// immutable request already seals its grant identity and original expiry;
+	// only actual canonical stop facts may change its status. This path never
+	// catches or ignores a current-authority loader's sticky denial.
 	var result domain.WebSearchConsentStateV1
-	err = store.ownedAuthorityTx(ctx, func(ctx context.Context, q *ownedAuthorityQuery) error {
+	err := store.ownedAuthorityTx(ctx, func(ctx context.Context, q *ownedAuthorityQuery) error {
 		result = domain.WebSearchConsentStateV1{}
 		q.metadataCache = make(map[string]ownedMetadataCacheEntry)
 		parent, source, err := store.ownedConsentParent(ctx, q, input.Locator)
@@ -55,9 +35,7 @@ func (store *Store) ReconcileWebSearchConsent(ctx context.Context, input ports.R
 		}
 		states, err := readOwnedConsentStates(ctx, q, parent)
 		state, found := findOwnedConsent(states, input.Locator.RequestID)
-		want, _ := intent.Digest()
-		got, _ := state.Request.Digest()
-		if err != nil || !found || got != want || state.Request.InitiatingUserID != source.Scope.OwnerUserID {
+		if err != nil || !found || input.Locator.ValidateForRequest(state.Request) != nil || state.Request.InitiatingUserID != source.Scope.OwnerUserID {
 			return q.budget.deny()
 		}
 		if state.Status != domain.WebSearchConsentPendingV1 && state.Status != domain.WebSearchConsentApprovedV1 {
@@ -71,7 +49,7 @@ func (store *Store) ReconcileWebSearchConsent(ctx context.Context, input ports.R
 		if state.Revision != input.ExpectedRevision {
 			return q.budget.deny()
 		}
-		a, revoked, err := store.loadOwnedConsentStopAuthority(ctx, q, parent, source, state, grant)
+		a, revoked, err := store.loadOwnedConsentStopAuthority(ctx, q, parent, source, state)
 		if err != nil {
 			return err
 		}
@@ -109,16 +87,19 @@ func (store *Store) ReconcileWebSearchConsent(ctx context.Context, input ports.R
 	return result, nil
 }
 
-func (store *Store) loadOwnedConsentStopAuthority(ctx context.Context, q *ownedAuthorityQuery, parent domain.OwnedAttemptEffectParentV1, source domain.AttemptExecutionSourceV1, state domain.WebSearchConsentStateV1, grant ports.OwnedFixtureToolGrantV1) (domain.WebSearchConsentAuthorityV1, bool, error) {
+func (store *Store) loadOwnedConsentStopAuthority(ctx context.Context, q *ownedAuthorityQuery, parent domain.OwnedAttemptEffectParentV1, source domain.AttemptExecutionSourceV1, state domain.WebSearchConsentStateV1) (domain.WebSearchConsentAuthorityV1, bool, error) {
 	deny := func() (domain.WebSearchConsentAuthorityV1, bool, error) {
 		return domain.WebSearchConsentAuthorityV1{}, false, q.budget.deny()
 	}
 	r := state.Request
 	cost := parent.Authority.AdmissionCostCeiling.WebSearchCost
-	if r.Scope != ownedConsentScope(parent) || cost == nil || grant.ValidateForCost(*cost, r.GrantDigest, cost.PriceObservedAt) != nil || grant.TenantID != r.Scope.TenantID || grant.OwnerUserID != r.Scope.OwnerUserID || grant.ConsentRevision != r.ConsentRevision || grant.RevocationGeneration != r.RevocationGeneration || grant.Kind != domain.ExternalServiceWebSearchV1 {
+	if r.Scope != ownedConsentScope(parent) || cost == nil || cost.ValidateAt(r.CreatedAt) != nil || cost.Kind != domain.ExternalServiceWebSearchV1 || cost.TenantID != r.Scope.TenantID || cost.OwnerUserID != r.Scope.OwnerUserID || cost.ScopedGrantDigest != r.GrantDigest || cost.RevocationGeneration != r.RevocationGeneration || r.ExpiresAt.After(cost.PriceExpiresAt) || r.ExpiresAt.After(parent.Authority.HarnessBinding.AgentLoopPolicy.ExpiresAt) {
 		return deny()
 	}
-	a := domain.WebSearchConsentAuthorityV1{Scope: r.Scope, InitiatingUserID: source.Scope.OwnerUserID, GrantDigest: r.GrantDigest, ConsentRevision: grant.ConsentRevision, RevocationGeneration: grant.RevocationGeneration, DataClass: parent.Authority.HarnessBinding.InputDataClass, ClaimState: domain.WebSearchConsentClaimActiveV1, InvocationDeadline: parent.Authority.InvocationDeadline, ActiveDeadline: parent.Authority.Lease.AcquiredAt.Add(parent.Authority.HarnessBinding.AgentLoopPolicy.Limits.MaxActiveDuration), GrantExpiresAt: grant.ExpiresAt, PolicyExpiresAt: parent.Authority.HarnessBinding.AgentLoopPolicy.ExpiresAt, PriceExpiresAt: cost.PriceExpiresAt}
+	// These are retained identity facts for StopWebSearchConsentV1 ONLY, not
+	// evidence of current grant validity. Original request expiry was bounded
+	// at creation; no unavailable grant expiry is invented or renewed here.
+	a := domain.WebSearchConsentAuthorityV1{Scope: r.Scope, InitiatingUserID: source.Scope.OwnerUserID, GrantDigest: r.GrantDigest, ConsentRevision: r.ConsentRevision, RevocationGeneration: r.RevocationGeneration, DataClass: parent.Authority.HarnessBinding.InputDataClass, ClaimState: domain.WebSearchConsentClaimActiveV1, InvocationDeadline: parent.Authority.InvocationDeadline, ActiveDeadline: parent.Authority.Lease.AcquiredAt.Add(parent.Authority.HarnessBinding.AgentLoopPolicy.Limits.MaxActiveDuration), PolicyExpiresAt: parent.Authority.HarnessBinding.AgentLoopPolicy.ExpiresAt, PriceExpiresAt: cost.PriceExpiresAt}
 	for _, row := range []struct {
 		query  string
 		args   []any

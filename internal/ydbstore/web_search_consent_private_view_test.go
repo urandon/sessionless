@@ -121,6 +121,23 @@ func (c privateConsentViewConn) QueryContext(ctx context.Context, statement stri
 		return &explanationFixtureRows{}, nil
 	}
 	switch statement {
+	case ownedSpendingCurrentSQL:
+		// Stop reconciliation point-reads the same exact original spending
+		// heads as admission's joined read; retain the existing key validator.
+		parent.base.recordQuery(statement, args)
+		return parent.base.reader.driver.QueryContext(ctx, statement, args)
+	case `SELECT SUBSTRING(CAST(payload AS String),0,32769) FROM leases WHERE tenant_id=$1 AND lease_id=$2`:
+		if len(args) != 2 || args[0].Value != string(parent.parent.Scope.TenantID) || args[1].Value != string(parent.parent.Reservation.LeaseID) {
+			return nil, errors.New("consent fixture rejects foreign retained lease selector")
+		}
+		// The original fixture's canonical lease payload, not a reconstructed
+		// grant or a separate model of current lease authority.
+		row = []driver.Value{parent.sql.leaseRow[16]}
+	case `SELECT SUBSTRING(CAST(lease_id AS String),0,161),SUBSTRING(CAST(attempt_id AS String),0,161),SUBSTRING(CAST(worker_id AS String),0,161),fence_token,expires_at,updated_at FROM lease_heads WHERE tenant_id=$1 AND run_id=$2`:
+		if len(args) != 2 || args[0].Value != string(parent.parent.Scope.TenantID) || args[1].Value != string(parent.parent.Scope.RunID) {
+			return nil, errors.New("consent fixture rejects foreign current lease-head selector")
+		}
+		row = append([]driver.Value(nil), parent.sql.leaseRow[2:8]...)
 	case privateConsentWebSessionSQL:
 		bucket, _ := webBucket(string(f.web.SessionDigest))
 		if len(args) != 2 || args[0].Value != int64(bucket) || args[1].Value != string(f.web.SessionDigest) {

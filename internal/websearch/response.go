@@ -23,8 +23,17 @@ import (
 // enforcement therefore remains with the required owned transport integration.
 // Only identity encoding is supported: encoded and decompressed bytes coincide.
 func (f *FrozenRequestV1) DecodeResponseV1(ctx context.Context, meta HTTPMetadataV1, r io.Reader, retrievedAt time.Time) (domain.WebSearchResultV1, error) {
+	if f == nil || f.binding.validate(f.grant) != nil {
+		return domain.WebSearchResultV1{}, ErrContract
+	}
+	return f.dataView().decodeResponse(ctx, meta, r, retrievedAt)
+}
+
+// decodeResponse is the sole Basic response codec shared by both explicit
+// grant/compiler generations. The wrapper has checked its own grant scope.
+func (f frozenRequestData) decodeResponse(ctx context.Context, meta HTTPMetadataV1, r io.Reader, retrievedAt time.Time) (domain.WebSearchResultV1, error) {
 	zero := domain.WebSearchResultV1{}
-	if f == nil || ctx == nil || ctx.Err() != nil || r == nil || f.binding.validate(f.grant) != nil || f.binding.OperationDigest.Validate() != nil || f.operationDeadline.IsZero() || retrievedAt.IsZero() || retrievedAt.Before(f.compiledAt) || !retrievedAt.Before(f.operationDeadline) || !retrievedAt.Before(f.validUntil) || meta.StatusCode < 200 || meta.StatusCode > 599 {
+	if ctx == nil || ctx.Err() != nil || r == nil || f.binding.OperationDigest.Validate() != nil || f.operationDeadline.IsZero() || retrievedAt.IsZero() || retrievedAt.Before(f.compiledAt) || !retrievedAt.Before(f.operationDeadline) || !retrievedAt.Before(f.validUntil) || meta.StatusCode < 200 || meta.StatusCode > 599 {
 		return zero, ErrContract
 	}
 	contentType, params, e := mime.ParseMediaType(meta.ContentType)
@@ -70,7 +79,7 @@ func (f *FrozenRequestV1) DecodeResponseV1(ctx context.Context, meta HTTPMetadat
 		return zero, ErrResponse
 	}
 	result := domain.WebSearchResultV1{Version: 1, Scope: f.binding.Scope, OperationDigest: f.binding.OperationDigest, Sequence: f.binding.Sequence, CallID: f.binding.CallID,
-		ProfileRevision: f.grant.ProfileRevision, GrantDigest: f.grantDigest, QueryDigest: f.queryDigest, WireRequestDigest: f.wireDigest, RawResponseDigest: digest(raw[:n]), Provider: "tavily",
+		ProfileRevision: f.facts.profileRevision, GrantDigest: f.grantDigest, QueryDigest: f.queryDigest, WireRequestDigest: f.wireDigest, RawResponseDigest: digest(raw[:n]), Provider: "tavily",
 		RetrievedAt: retrievedAt, Outcome: "known_empty", Usage: domain.WebSearchUsageV1{State: "unknown"}, Sources: []domain.WebSearchSourceV1{}, Warnings: []domain.WebSearchWarningV1{}}
 	if query, exists := root["query"]; exists {
 		if query != f.query {

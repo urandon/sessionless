@@ -17,6 +17,21 @@ import (
 // grant, reports and documents. Search is never
 // inferred from those zero terms. There is no balance or per-run map.
 func (s *Source) SpendingPublication(ctx context.Context, scope domain.AttemptExecutionSourceScopeV1, component domain.AttemptSpendingComponentKindV1) (ports.AttemptSpendingPublicationGrantV1, error) {
+	return s.spendingPublication(ctx, scope, component, time.Time{})
+}
+
+// SpendingPublicationBefore uses the SAME trusted original issuer, allowing
+// only an earlier exclusive envelope end. It cannot renew an existing row;
+// the Store must first prove this component absent and retain the original
+// earliest window. The cap is applied BEFORE either original MAC is produced.
+func (s *Source) SpendingPublicationBefore(ctx context.Context, scope domain.AttemptExecutionSourceScopeV1, component domain.AttemptSpendingComponentKindV1, end time.Time) (ports.AttemptSpendingPublicationGrantV1, error) {
+	if end.IsZero() || end.Year() < 1 || end.Year() > 9999 || end.Nanosecond()%1000 != 0 {
+		return ports.AttemptSpendingPublicationGrantV1{}, ErrDenied
+	}
+	return s.spendingPublication(ctx, scope, component, end.UTC())
+}
+
+func (s *Source) spendingPublication(ctx context.Context, scope domain.AttemptExecutionSourceScopeV1, component domain.AttemptSpendingComponentKindV1, originalEnd time.Time) (ports.AttemptSpendingPublicationGrantV1, error) {
 	zero := ports.AttemptSpendingPublicationGrantV1{}
 	if s == nil || ctx == nil || ctx.Err() != nil || scope.Validate() != nil {
 		return zero, ErrDenied
@@ -30,6 +45,24 @@ func (s *Source) SpendingPublication(ctx context.Context, scope domain.AttemptEx
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	if p.ValidateAt(now) != nil || s.config.ValidateAt(now) != nil || scope.TenantID != p.Locator.TenantID || scope.OwnerUserID != p.Locator.OwnerUserID {
 		return zero, ErrDenied
+	}
+	if !originalEnd.IsZero() {
+		// This recovery issuer serves a complete four-component package. Bound
+		// its first missing grant by BOTH retained service windows before MAC
+		// production, so a later component cannot reveal an earlier ceiling.
+		_, mcpEnd, err := s.mcpFundingLocked(now)
+		if err != nil {
+			return zero, ErrDenied
+		}
+		searchEnd, err := s.searchWindowLocked(p, now)
+		if err != nil {
+			return zero, ErrDenied
+		}
+		for _, limit := range []time.Time{mcpEnd, searchEnd} {
+			if limit.Before(originalEnd) {
+				originalEnd = limit
+			}
+		}
 	}
 	var searchEnd time.Time
 	if component == domain.AttemptSpendingWebSearchV1 {
@@ -89,6 +122,14 @@ func (s *Source) SpendingPublication(ctx context.Context, scope domain.AttemptEx
 	end := now.Add(p.Limits.MaxActiveDuration + p.Limits.MaxCleanupDuration)
 	if end.Before(v.Window.ExpiresAt) {
 		v.Window.ExpiresAt = end
+	}
+	if !originalEnd.IsZero() {
+		if !originalEnd.After(now) {
+			return zero, ErrDenied
+		}
+		if originalEnd.Before(v.Window.ExpiresAt) {
+			v.Window.ExpiresAt = originalEnd
+		}
 	}
 	raw, err := v.SourceCanonicalBytes()
 	if err != nil {

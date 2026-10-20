@@ -51,6 +51,7 @@ type Options struct {
 	OwnedProxyPublicationVerifier      ports.OwnedProxyPublicationVerifierV2
 	OwnedOperationResidualCustody      ports.OwnedOperationResidualCustodyV1
 	OwnedProviderPriceCustody          ports.OwnedProviderPriceCustodyV1
+	OwnedWebSearchResourceGrantCustody ports.OwnedWebSearchResourceGrantCustodyV2
 }
 
 type Store struct {
@@ -72,6 +73,7 @@ type Store struct {
 	ownedProxyPublicationVerifier      ports.OwnedProxyPublicationVerifierV2
 	ownedOperationResidualCustody      ports.OwnedOperationResidualCustodyV1
 	ownedProviderPriceCustody          ports.OwnedProviderPriceCustodyV1
+	ownedWebSearchResourceGrantCustody ports.OwnedWebSearchResourceGrantCustodyV2
 }
 
 func New(db *sql.DB, options Options) (*Store, error) {
@@ -110,6 +112,7 @@ func New(db *sql.DB, options Options) (*Store, error) {
 		ownedProxyPublicationVerifier:      options.OwnedProxyPublicationVerifier,
 		ownedOperationResidualCustody:      options.OwnedOperationResidualCustody,
 		ownedProviderPriceCustody:          options.OwnedProviderPriceCustody,
+		ownedWebSearchResourceGrantCustody: options.OwnedWebSearchResourceGrantCustody,
 	}, nil
 }
 

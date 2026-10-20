@@ -56,11 +56,18 @@ func (store *Store) readOwnedConsentGrant(ctx context.Context, r domain.WebSearc
 // Source.Scope.OwnerUserID/Job.CredentialOwnerUserID. This does NOT introduce a
 // resource-owner fallback or claim support for a federated different initiator.
 func (store *Store) ownedConsentCurrentAuthority(ctx context.Context, q *ownedAuthorityQuery, parent domain.OwnedAttemptEffectParentV1, source domain.AttemptExecutionSourceV1, r domain.WebSearchConsentRequestV1, grant ports.OwnedFixtureToolGrantV1) (domain.WebSearchConsentAuthorityV1, error) {
+	return store.ownedConsentCurrentAuthorityData(ctx, q, parent, source, r, ownedCurrentConsentGrant{fixture: &grant})
+}
+
+// One current SQL gate serves both explicit evidence grammars. Neither a
+// structural resource grant nor the fixture wrapper can bypass this owner.
+func (store *Store) ownedConsentCurrentAuthorityData(ctx context.Context, q *ownedAuthorityQuery, parent domain.OwnedAttemptEffectParentV1, source domain.AttemptExecutionSourceV1, r domain.WebSearchConsentRequestV1, grant ownedCurrentConsentGrant) (domain.WebSearchConsentAuthorityV1, error) {
 	deny := func() (domain.WebSearchConsentAuthorityV1, error) {
 		return domain.WebSearchConsentAuthorityV1{}, q.budget.deny()
 	}
 	cost := parent.Authority.AdmissionCostCeiling.WebSearchCost
-	if source.Validate() != nil || r.Scope != ownedConsentScope(parent) || source.Scope.OwnerUserID != r.InitiatingUserID || cost == nil || grant.Kind != domain.ExternalServiceWebSearchV1 || grant.ConsentRevision != r.ConsentRevision || grant.RevocationGeneration != r.RevocationGeneration || grant.ValidateForCost(*cost, r.GrantDigest, q.at) != nil {
+	consentRevision, revocationGeneration, grantExpiry, grantErr := grant.validate(parent, source, r, q.at)
+	if source.Validate() != nil || r.Scope != ownedConsentScope(parent) || source.Scope.OwnerUserID != r.InitiatingUserID || cost == nil || grantErr != nil {
 		return deny()
 	}
 	request := ownedAllocationParentRequest(parent.Reservation)
@@ -85,10 +92,10 @@ func (store *Store) ownedConsentCurrentAuthority(ctx context.Context, q *ownedAu
 	}
 	policy := parent.Authority.HarnessBinding.AgentLoopPolicy
 	a := domain.WebSearchConsentAuthorityV1{Scope: ownedConsentScope(parent), Run: loaded.Run, Attempt: loaded.Attempt, Lease: lease,
-		InitiatingUserID: source.Scope.OwnerUserID, GrantDigest: r.GrantDigest, ConsentRevision: grant.ConsentRevision, RevocationGeneration: grant.RevocationGeneration,
+		InitiatingUserID: source.Scope.OwnerUserID, GrantDigest: r.GrantDigest, ConsentRevision: consentRevision, RevocationGeneration: revocationGeneration,
 		DataClass: parent.Authority.HarnessBinding.InputDataClass, ClaimState: domain.WebSearchConsentClaimActiveV1,
 		InvocationDeadline: parent.Authority.InvocationDeadline, ActiveDeadline: parent.Authority.Lease.AcquiredAt.Add(policy.Limits.MaxActiveDuration),
-		GrantExpiresAt: grant.ExpiresAt, PolicyExpiresAt: policy.ExpiresAt, PriceExpiresAt: cost.PriceExpiresAt, AllocationExpiresAt: allocation.current.Window.ExpiresAt}
+		GrantExpiresAt: grantExpiry, PolicyExpiresAt: policy.ExpiresAt, PriceExpiresAt: cost.PriceExpiresAt, AllocationExpiresAt: allocation.current.Window.ExpiresAt}
 	// Never extend a receipt from a later heartbeat or renewed allocation.
 	if original := allocation.original.Window.ExpiresAt; original.Before(a.AllocationExpiresAt) {
 		a.AllocationExpiresAt = original

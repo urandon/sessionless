@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
@@ -131,11 +132,17 @@ func (store *Store) CreateWebSearchConsent(ctx context.Context, input ports.Crea
 // Materialize only an actor-authorized immutable intent before the keeper read;
 // a later transaction still reauthenticates actor/current authority and exact
 // intent. This first read cannot approve or dispatch anything.
-func (store *Store) readOwnedConsentIntent(ctx context.Context, input ports.ReadWebSearchConsentRequestV1, private *ports.ReadPrivateWebSearchConsentRequestV1) (domain.WebSearchConsentRequestV1, ports.ReadWebSearchConsentRequestV1, error) {
-	var result domain.WebSearchConsentRequestV1
+type ownedConsentIntent struct {
+	request    domain.WebSearchConsentRequestV1
+	profile    domain.OwnedAgentProfileCurrentV1
+	observedAt time.Time
+}
+
+func (store *Store) readOwnedConsentIntent(ctx context.Context, input ports.ReadWebSearchConsentRequestV1, private *ports.ReadPrivateWebSearchConsentRequestV1) (ownedConsentIntent, ports.ReadWebSearchConsentRequestV1, error) {
+	var result ownedConsentIntent
 	resolved := input
 	err := store.ownedAuthorityTx(ctx, func(ctx context.Context, q *ownedAuthorityQuery) error {
-		result = domain.WebSearchConsentRequestV1{}
+		result = ownedConsentIntent{}
 		resolved = input
 		q.metadataCache = make(map[string]ownedMetadataCacheEntry)
 		if private != nil {
@@ -163,7 +170,14 @@ func (store *Store) readOwnedConsentIntent(ctx context.Context, input ports.Read
 		if loadOwnedConsentActor(ctx, q, state.Request, resolved.WebSessionDigest, &a) != nil {
 			return q.budget.deny()
 		}
-		result = state.Request
+		profile, err := readOwnedProfileCurrent(ctx, q, source.Profile)
+		if err != nil || profile.WebSearchGrantDigest != state.Request.GrantDigest || profile.CostCeiling.WebSearchCost == nil || profile.CostCeiling.WebSearchCost.ScopedGrantDigest != state.Request.GrantDigest || state.Request.GrantDigest != parent.Authority.HarnessBinding.AgentLoopPolicy.WebSearchGrantDigest {
+			return q.budget.deny()
+		}
+		if profile.WebSearchResourceGrant == nil && parent.Authority.HarnessBinding.Backend.BackendKind != domain.HarnessBackendDeterministicFixtureV1 {
+			return q.budget.deny()
+		}
+		result = ownedConsentIntent{request: state.Request, profile: profile, observedAt: q.at}
 		return nil
 	})
 	return result, resolved, err
@@ -281,18 +295,13 @@ func (store *Store) readOrDecideOwnedConsent(ctx context.Context, input ports.Re
 	}
 	ctx, cancel := ownedConsentContext(ctx)
 	defer cancel()
-	intent, resolved, err := store.readOwnedConsentIntent(ctx, input, private)
+	selected, resolved, err := store.readOwnedConsentIntent(ctx, input, private)
 	if err != nil {
 		return ports.WebSearchConsentPrivateViewV1{}, domain.ErrMembershipDenied
 	}
 	input = resolved
-	if private != nil && chargeOwnedAuthorityBody(ctx, 2*(4<<10)) != nil {
-		// Reserve the keeper's bounded grant body and our owned clone BEFORE
-		// either materializes. This is a logical body budget, not a heap-fit
-		// certificate or permission to activate the missing search producer.
-		return ports.WebSearchConsentPrivateViewV1{}, domain.ErrMembershipDenied
-	}
-	grant, err := store.readOwnedConsentGrant(ctx, intent)
+	intent := selected.request
+	grant, err := store.readOwnedCurrentConsentGrant(ctx, intent, selected.profile, selected.observedAt, private != nil)
 	if err != nil {
 		return ports.WebSearchConsentPrivateViewV1{}, domain.ErrMembershipDenied
 	}
@@ -313,6 +322,9 @@ func (store *Store) readOrDecideOwnedConsent(ctx context.Context, input ports.Re
 			return ports.WebSearchConsentPrivateViewV1{}, domain.ErrMembershipDenied
 		}
 	}
+	if ctx.Err() != nil || !grant.sourceOpen() {
+		return ports.WebSearchConsentPrivateViewV1{}, domain.ErrMembershipDenied
+	}
 	var result domain.WebSearchConsentStateV1
 	err = store.ownedAuthorityTx(ctx, func(ctx context.Context, q *ownedAuthorityQuery) error {
 		result = domain.WebSearchConsentStateV1{}
@@ -328,7 +340,7 @@ func (store *Store) readOrDecideOwnedConsent(ctx context.Context, input ports.Re
 		if err != nil || !found || got != want || input.Locator.ValidateForRequest(state.Request) != nil {
 			return q.budget.deny()
 		}
-		a, err := store.ownedConsentCurrentAuthority(ctx, q, parent, source, state.Request, grant)
+		a, err := store.ownedConsentCurrentAuthorityData(ctx, q, parent, source, state.Request, grant)
 		if err != nil || loadOwnedConsentActor(ctx, q, state.Request, input.WebSessionDigest, &a) != nil {
 			return q.budget.deny()
 		}
@@ -360,7 +372,7 @@ func (store *Store) readOrDecideOwnedConsent(ctx context.Context, input ports.Re
 		}
 		return nil
 	})
-	if err != nil || ctx.Err() != nil {
+	if err != nil || ctx.Err() != nil || !grant.sourceOpen() {
 		return ports.WebSearchConsentPrivateViewV1{}, domain.ErrMembershipDenied
 	}
 	view := ports.WebSearchConsentPrivateViewV1{State: result}
@@ -371,10 +383,13 @@ func (store *Store) readOrDecideOwnedConsent(ctx context.Context, input ports.Re
 		var decoded struct {
 			Query string `json:"query"`
 		}
-		if json.Unmarshal(arguments, &decoded) != nil || ctx.Err() != nil {
+		if json.Unmarshal(arguments, &decoded) != nil || ctx.Err() != nil || !grant.sourceOpen() {
 			return ports.WebSearchConsentPrivateViewV1{}, domain.ErrMembershipDenied
 		}
 		view.Query = decoded.Query
+	}
+	if ctx.Err() != nil || !grant.sourceOpen() {
+		return ports.WebSearchConsentPrivateViewV1{}, domain.ErrMembershipDenied
 	}
 	return view, nil
 }

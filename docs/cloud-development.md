@@ -804,25 +804,18 @@ a rebuild. A login-start redirect alone is not rollback proof for a real account
 
 ## Follow-up monitoring and operational checks (#19)
 
-Issue #19 configures and tests external Monitoring alerts before release. Its
-inventory includes:
+Issue #19 covers exercised Web/control, canonical YDB, queues/DLQs, storage and
+both selected execution routes. Telegram/Cloudflare-specific monitoring remains
+deferred unless an exercised deployment actually uses those components.
+The [cloud development alert design](design/cloud-dev-alerts.md) defines the
+coverage, explicit instrumentation gaps, sparse-traffic policy and finite
+failure/recovery notification proof. Design acceptance is not activation.
 
-- Cloudflare Worker 5xx/exception rate and Yandex handoff failures;
-- control API 5xx rate and latency;
-- Web gateway request count, 4xx/5xx rate and latency;
-- Web BFF invocation count, execution duration/errors, cold-start latency and concurrency saturation;
-- trigger errors, retry growth, and DLQ message count;
-- container execution errors, timeout, and concurrency saturation;
-- YDB throttling, RU consumption, storage, and transaction errors;
-- Object Storage request/byte volume and capacity, plus Web capability failures;
-- Web Lockbox/KMS access failures and Cloud Logging ingestion/retention;
-- Telegram delivery terminal failures.
-
-Link alert IDs and the budget ID in the private deployment record. The
-Terraform provider currently exposes monitoring dashboards but not alert
-resources, so a successful Terraform apply alone is not proof that alerts
-exist. Validate them with the Monitoring API/console and execute one test alert
-before accepting the environment.
+Keep alert/channel IDs, contacts and deployment bindings in the private operator
+record. Use a documented supported control surface, such as the Monitoring
+console; generic API wording is not proof of an Alert-create REST/CLI contract.
+A Terraform apply or channel-test button does not prove rule-triggered operator
+receipt, positive recovery or absence of idle pages.
 
 ## Safe destroy
 

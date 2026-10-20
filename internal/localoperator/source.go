@@ -56,12 +56,13 @@ type InvoiceTermsV1 struct {
 // fingerprint, so resume cannot silently rotate it. OriginalSource and installed
 // manifest references are derived from the actual retained manifest bytes.
 type ManifestV1 struct {
-	Version        uint32                              `json:"version"`
-	KeyFingerprint string                              `json:"key_fingerprint"`
-	Configuration  domain.ConfiguredInferenceProfileV1 `json:"configuration"`
-	Profile        domain.OwnedAgentProfileCurrentV1   `json:"profile"`
-	InvoiceTerms   InvoiceTermsV1                      `json:"invoice_terms"`
-	Evidence       []EvidenceBodyV1                    `json:"evidence"`
+	Version           uint32                              `json:"version"`
+	KeyFingerprint    string                              `json:"key_fingerprint"`
+	Configuration     domain.ConfiguredInferenceProfileV1 `json:"configuration"`
+	Profile           domain.OwnedAgentProfileCurrentV1   `json:"profile"`
+	InvoiceTerms      InvoiceTermsV1                      `json:"invoice_terms"`
+	Evidence          []EvidenceBodyV1                    `json:"evidence"`
+	SearchExpenditure *OwnerLocalSearchExpenditureV2      `json:"search_expenditure,omitempty"`
 }
 
 // Source has one immutable installed declaration, not a registry or per-Attempt
@@ -80,6 +81,7 @@ type Source struct {
 	bodies   []EvidenceBodyV1
 	grant    *ports.OwnedProfilePublicationGrantV1
 	receipt  *ports.OwnedProfilePublicationReceiptV1
+	search   *searchAcceptance
 	parent   *Source // original authenticated keeper while replacement is pending
 }
 
@@ -224,8 +226,12 @@ func open(ctx context.Context, root, executable string, original *ports.OwnedPro
 	if c.ValidateForOwnedProfile(p) != nil || c.ValidateAt(now) != nil || p.ValidateInitial() != nil {
 		return nil, sourceDenial("profile correlation")
 	}
+	search, err := acceptSearchEvidence(manifest, p, now)
+	if err != nil {
+		return nil, sourceDenial("search expenditure")
+	}
 	lifetime, cancel := context.WithDeadline(ctx, c.ExpiresAt)
-	s := &Source{ctx: lifetime, cancel: cancel, key: &sourceKey{bytes: key}, config: c, profile: p, manifest: append([]byte(nil), raw...), bodies: manifest.Evidence, parent: parent}
+	s := &Source{ctx: lifetime, cancel: cancel, key: &sourceKey{bytes: key}, config: c, profile: p, manifest: append([]byte(nil), raw...), bodies: manifest.Evidence, search: search, parent: parent}
 	s.self = s
 	if original != nil && parent == nil {
 		digest, err := p.Digest()
@@ -240,6 +246,9 @@ func open(ctx context.Context, root, executable string, original *ports.OwnedPro
 	expires := now.Add(10 * time.Second)
 	if p.Window.ExpiresAt.Before(expires) {
 		expires = p.Window.ExpiresAt
+	}
+	if search != nil && search.end.Before(expires) {
+		expires = search.end
 	}
 	g := ports.OwnedProfilePublicationGrantV1{Profile: p.Clone(), IssuedAt: now, ExpiresAt: expires, Authenticator: make([]byte, 32), LocalInstallation: &ports.OwnedLocalInstallationIntentV1{Profile: c.Clone()}}
 	if parent != nil {
@@ -395,6 +404,7 @@ func (s *Source) Close() error {
 	s.closed = true
 	s.grant = nil
 	s.receipt = nil
+	s.search = nil
 	s.manifest = nil
 	s.bodies = nil
 	return nil

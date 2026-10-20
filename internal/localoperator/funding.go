@@ -11,10 +11,10 @@ import (
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
 
-// SpendingPublication derives one original local invoice authorization. It
-// deliberately cannot issue MCP/search funding: those require their own real
-// scoped source and price, even though the canonical package still requires all
-// four independently current components. There is no balance or per-run map.
+// SpendingPublication derives one original local invoice authorization or an
+// explicitly accepted search expenditure envelope. Provider/substrate retain
+// their original no-invoice source; MCP remains unsupported. Search is never
+// inferred from those zero terms. There is no balance or per-run map.
 func (s *Source) SpendingPublication(ctx context.Context, scope domain.AttemptExecutionSourceScopeV1, component domain.AttemptSpendingComponentKindV1) (ports.AttemptSpendingPublicationGrantV1, error) {
 	zero := ports.AttemptSpendingPublicationGrantV1{}
 	if s == nil || ctx == nil || ctx.Err() != nil || scope.Validate() != nil {
@@ -22,13 +22,21 @@ func (s *Source) SpendingPublication(ctx context.Context, scope domain.AttemptEx
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.aliveLocked() || s.receipt == nil || (component != domain.AttemptSpendingProviderV1 && component != domain.AttemptSpendingSubstrateV1) {
+	if !s.aliveLocked() || s.receipt == nil || (component != domain.AttemptSpendingProviderV1 && component != domain.AttemptSpendingSubstrateV1 && component != domain.AttemptSpendingWebSearchV1) {
 		return zero, ErrDenied
 	}
 	p := s.receipt.Profile
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	if p.ValidateAt(now) != nil || s.config.ValidateAt(now) != nil || scope.TenantID != p.Locator.TenantID || scope.OwnerUserID != p.Locator.OwnerUserID {
 		return zero, ErrDenied
+	}
+	var searchEnd time.Time
+	if component == domain.AttemptSpendingWebSearchV1 {
+		var err error
+		searchEnd, err = s.searchWindowLocked(p, now)
+		if err != nil {
+			return zero, ErrDenied
+		}
 	}
 	mutation, err := idgen.New().NewID(ctx, ports.IDOwnedPublication)
 	if err != nil {
@@ -49,6 +57,16 @@ func (s *Source) SpendingPublication(ctx context.Context, scope domain.AttemptEx
 		v.ResourceID, v.ResourceRevision, v.ResourceGeneration = p.Substrate.ProfileID, p.Substrate.ProfileRevision, p.RevocationGeneration
 		v.ProfileID, v.ProfileRevision = p.Substrate.ProfileID, p.Substrate.ProfileRevision
 		v.ScopedGrantDigest, v.PriceEvidenceDigest, v.TermsEvidenceDigest = p.Substrate.ProfileDigest, p.SubstratePriceDigest, p.SubstrateTermsDigest
+	}
+	if component == domain.AttemptSpendingWebSearchV1 {
+		c := p.CostCeiling.WebSearchCost // authenticated retained acceptance above
+		v.ResourceID, v.ResourceRevision, v.ResourceGeneration = c.ResourceID, c.ResourceRevision, c.RevocationGeneration
+		v.ProfileID, v.ProfileRevision = c.ProfileID, c.ProfileRevision
+		v.ScopedGrantDigest, v.PriceRevision, v.PriceEvidenceDigest, v.TermsEvidenceDigest = c.ScopedGrantDigest, c.PriceRevision, c.PriceEvidenceDigest, c.TermsEvidenceDigest
+		v.PriceState = domain.ExternalServicePriceKnownPaidV1
+		amount := s.search.expenditure.AggregateReservationMicrounits
+		v.MaxAmountMicrounits = &amount
+		v.Window.ExpiresAt = searchEnd
 	}
 	// Bound the original Attempt envelope; a later call cannot top up an existing
 	// row, and the Store independently CAS-rejects a second initial publication.
@@ -74,6 +92,9 @@ func (s *Source) SpendingPublication(ctx context.Context, scope domain.AttemptEx
 		return zero, ErrDenied
 	}
 	g.Authenticator = s.mac("spending-publication", intent)
+	if ctx.Err() != nil || !s.aliveLocked() {
+		return zero, ErrDenied
+	}
 	return g, nil
 }
 
@@ -90,8 +111,14 @@ func (s *Source) VerifyAttemptSpendingPublication(g ports.AttemptSpendingPublica
 		return ErrDenied
 	}
 	v := g.Authorization
-	if v.SourceKind != domain.AttemptSpendingOwnerLocalSourceV1 || (v.Locator.ComponentKind != domain.AttemptSpendingProviderV1 && v.Locator.ComponentKind != domain.AttemptSpendingSubstrateV1) || v.ValidateAgainstProfile(s.receipt.Profile, g.IssuedAt) != nil || s.config.ValidateAt(g.IssuedAt) != nil {
+	if v.SourceKind != domain.AttemptSpendingOwnerLocalSourceV1 || (v.Locator.ComponentKind != domain.AttemptSpendingProviderV1 && v.Locator.ComponentKind != domain.AttemptSpendingSubstrateV1 && v.Locator.ComponentKind != domain.AttemptSpendingWebSearchV1) || v.ValidateAgainstProfile(s.receipt.Profile, g.IssuedAt) != nil || s.config.ValidateAt(g.IssuedAt) != nil {
 		return ErrDenied
+	}
+	if v.Locator.ComponentKind == domain.AttemptSpendingWebSearchV1 {
+		end, err := s.searchWindowLocked(s.receipt.Profile, g.IssuedAt)
+		if err != nil || !at.Before(end) || v.Window.ExpiresAt.After(end) || g.ExpiresAt.After(end) {
+			return ErrDenied
+		}
 	}
 	raw, err := v.SourceCanonicalBytes()
 	if err != nil || v.SourceAuthorization.Ref != "local-invoice-"+hex.EncodeToString(s.mac("invoice-source", raw)) {
@@ -99,6 +126,9 @@ func (s *Source) VerifyAttemptSpendingPublication(g ports.AttemptSpendingPublica
 	}
 	intent, err := g.IntentBytes()
 	if err != nil || !hmac.Equal(g.Authenticator, s.mac("spending-publication", intent)) {
+		return ErrDenied
+	}
+	if !s.aliveLocked() {
 		return ErrDenied
 	}
 	return nil

@@ -41,6 +41,7 @@ type privateConsentViewFixture struct {
 	lastReadBytes          uint64
 	bodyFault              func(context.Context, string)
 	afterCommit            func()
+	beforeBegin            func()
 	pendingState           *domain.WebSearchConsentStateV1
 	decisionWrites         int
 	legacyGrantOnly        bool // observe old Read/Decide without adding argument I/O
@@ -69,6 +70,9 @@ func (c privateConsentViewConnector) Driver() driver.Driver {
 	return allocationDriver{c.f.allocation.sql}
 }
 func (c privateConsentViewConn) BeginTx(ctx context.Context, options driver.TxOptions) (driver.Tx, error) {
+	if c.f.beforeBegin != nil {
+		c.f.beforeBegin()
+	}
 	tx, err := c.allocationConn.BeginTx(ctx, options)
 	if err != nil {
 		return nil, err
@@ -242,7 +246,11 @@ func (f *privateConsentViewFixture) ReadAttemptOperationBody(ctx context.Context
 	return body, nil // borrowed immutable bytes; the Store must not mutate them
 }
 
-func newPrivateConsentViewFixture(t *testing.T) *privateConsentViewFixture {
+// An optional setup changes only pre-seal profile/grant DATA. Default setup
+// retains the original fixture bytes; this is not a genuine MODEL producer.
+type privateConsentGrantSetup func(*testing.T, *domain.OwnedAgentProfileCurrentV1) ([]byte, string, uint64, uint64)
+
+func newPrivateConsentViewFixture(t *testing.T, setup ...privateConsentGrantSetup) *privateConsentViewFixture {
 	t.Helper()
 	// Freeze the synthetic grant before any profile/source/parent seal. Reuse
 	// the existing fixture's scope and source setup, not post-seal rebinding.
@@ -255,6 +263,14 @@ func newPrivateConsentViewFixture(t *testing.T) *privateConsentViewFixture {
 		t.Fatal("private-view synthetic grant prerequisite", err)
 	}
 	gd := ownedConsentTestHash(grantBody)
+	consentRevision, revocationGeneration := uint64(1), uint64(1)
+	if len(setup) > 1 {
+		t.Fatal("one closed pre-seal grant setup is supported")
+	}
+	if len(setup) == 1 {
+		grantBody, gd, consentRevision, revocationGeneration = setup[0](t, &p)
+		cost = p.CostCeiling.WebSearchCost
+	}
 	p.WebSearchGrantDigest, cost.ScopedGrantDigest = gd, gd
 	p.Substrate.AdmissionCostCeilingDigest, err = p.CostCeiling.Digest()
 	if err != nil {
@@ -270,6 +286,10 @@ func newPrivateConsentViewFixture(t *testing.T) *privateConsentViewFixture {
 		v.SourceProfile.Digest = pd
 		if v.Locator.ComponentKind == domain.AttemptSpendingWebSearchV1 {
 			v.ScopedGrantDigest = gd
+			v.ResourceID, v.ResourceRevision, v.ResourceGeneration = cost.ResourceID, cost.ResourceRevision, cost.RevocationGeneration
+			v.ProfileID, v.ProfileRevision = cost.ProfileID, cost.ProfileRevision
+			v.PriceRevision, v.PriceEvidenceDigest, v.TermsEvidenceDigest = cost.PriceRevision, cost.PriceEvidenceDigest, cost.TermsEvidenceDigest
+			v.PriceState, v.MaxAmountMicrounits = cost.PriceState, cost.Clone().MaxAmountMicrounits
 		}
 		bindReaderSpendingSource(t, &v)
 		sources.spending[i] = v
@@ -288,7 +308,7 @@ func newPrivateConsentViewFixture(t *testing.T) *privateConsentViewFixture {
 	}
 	at := a.parent.graph.at
 	scope := ownedConsentScope(a.parent.parent)
-	r := domain.WebSearchConsentRequestV1{Version: 1, ID: "private-view-consent", Scope: scope, InitiatingUserID: scope.OwnerUserID, ModelResponseDigest: strings.Repeat("6", 64), CallID: "private-view-call", ArgumentsDigest: ownedConsentTestHash(args), QueryDigest: ownedConsentTestHash([]byte(query)), GrantDigest: gd, ConsentRevision: 1, RevocationGeneration: 1, Arguments: domain.BlobRef{TenantID: scope.TenantID, Key: domain.SessionRunObjectPrefix(scope.TenantID, scope.SessionID, scope.RunID) + "attempts/" + string(scope.AttemptID) + "/consent/private.json", Size: int64(len(args)), SHA256: ownedConsentTestHash(args)}, CreatedAt: at, ExpiresAt: at.Add(time.Second)}
+	r := domain.WebSearchConsentRequestV1{Version: 1, ID: "private-view-consent", Scope: scope, InitiatingUserID: scope.OwnerUserID, ModelResponseDigest: strings.Repeat("6", 64), CallID: "private-view-call", ArgumentsDigest: ownedConsentTestHash(args), QueryDigest: ownedConsentTestHash([]byte(query)), GrantDigest: gd, ConsentRevision: consentRevision, RevocationGeneration: revocationGeneration, Arguments: domain.BlobRef{TenantID: scope.TenantID, Key: domain.SessionRunObjectPrefix(scope.TenantID, scope.SessionID, scope.RunID) + "attempts/" + string(scope.AttemptID) + "/consent/private.json", Size: int64(len(args)), SHA256: ownedConsentTestHash(args)}, CreatedAt: at, ExpiresAt: at.Add(time.Second)}
 	if err := r.ValidateArguments(args); err != nil {
 		t.Fatal("private-view exact argument prerequisite", err)
 	}

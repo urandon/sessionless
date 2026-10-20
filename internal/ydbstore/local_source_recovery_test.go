@@ -129,6 +129,7 @@ func assertOriginalRecoveryNoWrites(t *testing.T, f *originalLocalRecoveryFixtur
 }
 
 func TestLocalSourceRecoveryExpiredGrantOriginalHistory(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		f := newOriginalLocalRecoveryFixture(t, 4)
 		want := f.packageFromOriginalRows(t)
@@ -159,6 +160,7 @@ func TestLocalSourceRecoveryExpiredGrantOriginalHistory(t *testing.T) {
 }
 
 func TestLocalSourceRecoveryOpenExistingWithoutPublicationGrant(t *testing.T) {
+	t.Parallel()
 	for _, count := range []int{0, 2, 4} {
 		t.Run(string(rune('0'+count)), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -212,6 +214,7 @@ func TestLocalSourceRecoveryOpenExistingWithoutPublicationGrant(t *testing.T) {
 }
 
 func TestLocalSourceRecoveryReceiptMaterializationBoundary(t *testing.T) {
+	t.Parallel()
 	for _, fault := range []string{"four-modalities", "nested-price-revision", "exhausted-bytes", "sticky-bytes", "valid-owned-clone"} {
 		t.Run(fault, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -269,6 +272,7 @@ func TestLocalSourceRecoveryReceiptMaterializationBoundary(t *testing.T) {
 }
 
 func TestLocalSourceRecoveryPartialMaterializationOriginalEnvelope(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		f := newOriginalLocalRecoveryFixture(t, 2)
 		originalHeads, originalAudits := cloneLocalInstallationRows(f.sql.fundingHeads), cloneLocalInstallationRows(f.sql.fundingAudits)
@@ -318,6 +322,7 @@ func TestLocalSourceRecoveryPartialMaterializationOriginalEnvelope(t *testing.T)
 }
 
 func TestLocalSourceRecoveryUnknownCommitReadbackNoReissue(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		f := newOriginalLocalRecoveryFixture(t, 2)
 		recovery := requireOriginalLocalSourceRecovery(t, f.store)
@@ -338,6 +343,7 @@ func TestLocalSourceRecoveryUnknownCommitReadbackNoReissue(t *testing.T) {
 }
 
 func TestLocalSourceRecoveryCorruptOrRetiredHistoryDenies(t *testing.T) {
+	t.Parallel()
 	for _, fault := range []string{"head-scalar", "audit-digest", "audit-missing", "audit-scope", "profile-audit-missing", "profile-audit-digest", "current-component-revoked", "current-profile-revoked", "source-closed", "foreign-source", "copied-source", "receipt-digest", "foreign-scope"} {
 		t.Run(fault, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -416,6 +422,7 @@ func TestLocalSourceRecoveryCorruptOrRetiredHistoryDenies(t *testing.T) {
 }
 
 func TestLocalSourceRecoverySourceCloseDuringReadDiscardsCandidate(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		f := newOriginalLocalRecoveryFixture(t, 4)
 		recovery := requireOriginalLocalSourceRecovery(t, f.store)
@@ -430,6 +437,7 @@ func TestLocalSourceRecoverySourceCloseDuringReadDiscardsCandidate(t *testing.T)
 }
 
 func TestLocalSourceRecoverySharesOriginalBudget(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []string{"two-callbacks-consumed", "sticky-byte-exhaustion", "statement-exhaustion", "original-deadline-expired", "caller-cancelled"} {
 		t.Run(scenario, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -484,6 +492,7 @@ func TestLocalSourceRecoverySharesOriginalBudget(t *testing.T) {
 // original mutation keys. A well-formed opaque intent hash here is DATA only;
 // this assertion does not prove its original grant preimage/authentication.
 func TestLocalSourceRecoveryOriginalAuditContainsExactPostimage(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		f := newOriginalLocalRecoveryFixture(t, 4)
 		for _, v := range f.rows {
@@ -501,6 +510,7 @@ func TestLocalSourceRecoveryOriginalAuditContainsExactPostimage(t *testing.T) {
 type wrappedOriginalLocalRecoverySource struct{ *localoperator.Source }
 
 func TestLocalSourceRecoveryRequiresInstalledOriginalPublishers(t *testing.T) {
+	t.Parallel()
 	for _, fault := range []string{"profile-nil", "spending-nil", "profile-wrapper", "spending-wrapper", "profile-copy", "spending-copy", "profile-foreign", "spending-foreign"} {
 		t.Run(fault, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -542,6 +552,7 @@ func TestLocalSourceRecoveryRequiresInstalledOriginalPublishers(t *testing.T) {
 }
 
 func TestLocalSourceRecoveryAllMissingMeasuredBoundedGraph(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"normal", "persisted-retry", "rollback-retry"} {
 		t.Run(mode, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -590,6 +601,7 @@ func TestLocalSourceRecoveryAllMissingMeasuredBoundedGraph(t *testing.T) {
 }
 
 func TestLocalSourceRecoveryOriginalCapAndLaterDBPublication(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"later-publication", "original-cap-expired"} {
 		t.Run(mode, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -634,6 +646,7 @@ func TestLocalSourceRecoveryOriginalCapAndLaterDBPublication(t *testing.T) {
 }
 
 func TestLocalSourceRecoveryPrivateHelperNeverCreatesBudget(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		f := newOriginalLocalRecoveryFixture(t, 4)
 		life, err := f.source.ExecutionLifetime()
@@ -649,6 +662,7 @@ func TestLocalSourceRecoveryPrivateHelperNeverCreatesBudget(t *testing.T) {
 }
 
 func TestLocalSourceRecoveryRejoinsBetweenPhases(t *testing.T) {
+	t.Parallel()
 	for _, fault := range []string{"source-close", "current-revoke", "scope-MAC-substitution"} {
 		t.Run(fault, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -700,6 +714,7 @@ func TestLocalSourceRecoveryRejoinsBetweenPhases(t *testing.T) {
 }
 
 func TestLocalSourceRecoveryWriteCommitCancellationDiscardsCandidate(t *testing.T) {
+	t.Parallel()
 	for _, fault := range []string{"source-close", "caller-cancelled"} {
 		t.Run(fault, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -731,6 +746,7 @@ func TestLocalSourceRecoveryWriteCommitCancellationDiscardsCandidate(t *testing.
 }
 
 func TestLocalSourceRecoveryConcurrentOriginalPublicationDeniesReplacement(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		f := newOriginalLocalRecoveryFixture(t, 3)
 		recovery := requireOriginalLocalSourceRecovery(t, f.store)

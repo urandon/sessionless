@@ -80,6 +80,7 @@ func TestLocalTerminalParentPublishedOwnerSurvivesSourceCloseOnly(t *testing.T) 
 func TestLocalTerminalParentOriginalOwnerAndExactFacts(t *testing.T) {
 	for _, fault := range []string{"copied-output", "copied-terminal", "foreign-entry", "unentered", "not-published", "cleared", "missing-capture", "missing-burn", "changed-burn", "changed-parent", "changed-source", "changed-plan", "changed-frontier", "expired-deadline"} {
 		t.Run(fault, func(t *testing.T) {
+			t.Parallel()
 			synctest.Test(t, func(t *testing.T) {
 				f, sql, p := originalStoppedTerminalParentFixture(t)
 				if err := readOriginalStoppedTerminalParent(t, f, p); err != nil {

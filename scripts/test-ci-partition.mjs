@@ -17,6 +17,11 @@ const required = `docs-check cloud-web-smoke-test web-ci generate test-ordinary 
 const words = (value) => value.trim() ? value.trim().split(/\s+/).sort() : [];
 const connectedTerminal = "go test -race -count=1 -timeout=15m -run='^TestLocalSessionTerminal' $(GO_PACKAGE_PATTERNS)";
 const connectedOther = "go test -race -count=1 -timeout=15m -run='^TestLocalSession' -skip='^TestLocalSessionTerminal' $(GO_PACKAGE_PATTERNS)";
+const ordinary = [
+  "go test -race -count=1 -timeout=15m -skip='^(TestLocal|TestOwned|TestPrivate)' $(GO_PACKAGE_PATTERNS)",
+  "go test -race -count=1 -timeout=15m -run='^(TestOwned|TestPrivate)' $(GO_PACKAGE_PATTERNS)",
+  "go test -race -count=1 -timeout=15m -run='^TestLocal' -skip='^TestLocalSession' $(GO_PACKAGE_PATTERNS)",
+];
 function recipe(make, name) {
   const matches = [...make.matchAll(new RegExp(`^${name}:[^\\n]*\\n((?:\\t[^\\n]*\\n)*)`, 'gm'))];
   assert.equal(matches.length, 1, `unique ${name} recipe`);
@@ -45,7 +50,7 @@ function verify({ make, ci, release }) {
   assert.deepEqual(target(make, 'test-ordinary'), words('prepare fmt-check lint'), 'ordinary preparation');
   assert.deepEqual(target(make, 'test-connected'), ['prepare'], 'connected preparation');
   assert.match(make, /^GO_PACKAGE_PATTERNS := \.\/cmd\/\.\.\. \.\/internal\/\.\.\. \.\/migrations\/\.\.\.$/m, 'complete Go corpus');
-  assert.equal(recipe(make, 'test-ordinary'), "go test -race -timeout=15m -skip='^TestLocalSession' $(GO_PACKAGE_PATTERNS)", 'exact ordinary command');
+  assert.equal(recipe(make, 'test-ordinary'), ordinary.join('\n\t'), 'exact sequential ordinary partition');
   assert.equal(recipe(make, 'test-connected'), `${connectedTerminal}\n\t${connectedOther}`, 'exact sequential connected partition');
   assert.deepEqual(target(make, 'attached-worker-security-gate'),
     words('attached-worker-crash-integration attached-worker-active-crash-integration'));
@@ -109,6 +114,24 @@ test('connected selectors are disjoint and cover the original complete prefix', 
     assert.equal(Number(!allConnected) + Number(terminal) + Number(other), 1, name);
   }
 });
+test('ordinary selectors and connected selectors partition the complete test-name corpus', () => {
+  const names = [
+    'TestOrdinary', 'TestOtherFutureFamily', 'TestLocal', 'TestLocalFutureFamily',
+    'TestOwned', 'TestOwnedFutureFamily', 'TestPrivate', 'TestPrivateFutureFamily',
+    'TestLocalSession', 'TestLocalSessionFutureFamily', 'TestLocalSessionTerminal',
+    'Example', 'ExampleLocalSession', 'Fuzz', 'FuzzPrivateBytes',
+  ];
+  for (const name of names) {
+    const selected = [
+      !/^(?:TestLocal|TestOwned|TestPrivate)/.test(name),
+      /^Test(?:Owned|Private)/.test(name),
+      /^TestLocal/.test(name) && !/^TestLocalSession/.test(name),
+      /^TestLocalSessionTerminal/.test(name),
+      /^TestLocalSession/.test(name) && !/^TestLocalSessionTerminal/.test(name),
+    ];
+    assert.equal(selected.filter(Boolean).length, 1, `${name} selected exactly once`);
+  }
+});
 const mutations = [
   ['missing core check', 'make', 'ci-core: docs-check ', 'ci-core: '],
   ['missing local security', 'make', 'ci: ci-core test-connected attached-worker-security-gate serverless-egress-conformance', 'ci: ci-core test-connected serverless-egress-conformance'],
@@ -131,8 +154,20 @@ const mutations = [
   ['reversed local test', 'make', '\t$(MAKE) test-ordinary\n\t$(MAKE) test-connected\n', '\t$(MAKE) test-connected\n\t$(MAKE) test-ordinary\n', /sequential complete local test/],
   ['missing ordinary formatting', 'make', 'test-ordinary: prepare fmt-check lint', 'test-ordinary: prepare lint', /ordinary preparation/],
   ['incomplete package roots', 'make', './cmd/... ./internal/... ./migrations/...', './internal/...', /complete Go corpus/],
-  ['lost ordinary race', 'make', "go test -race -timeout=15m -skip=", "go test -timeout=15m -skip=", /exact ordinary command/],
-  ['changed ordinary selector', 'make', "-skip='^TestLocalSession'", "-skip='^TestLocal'", /exact ordinary command/],
+  ['missing ordinary first partition', 'make', `${ordinary[0]}\n\t`, '', /exact sequential ordinary partition/],
+  ['missing ordinary second partition', 'make', `\t${ordinary[1]}\n`, '', /exact sequential ordinary partition/],
+  ['missing ordinary third partition', 'make', `\t${ordinary[2]}`, '', /exact sequential ordinary partition/],
+  ['reversed ordinary partitions', 'make', ordinary.join('\n\t'), [...ordinary].reverse().join('\n\t'), /exact sequential ordinary partition/],
+  ['background ordinary partition', 'make', ordinary[0], `${ordinary[0]} &`, /exact sequential ordinary partition/],
+  ['lost ordinary race', 'make', ordinary[0], ordinary[0].replace(' -race', ''), /exact sequential ordinary partition/],
+  ['cached ordinary results', 'make', ordinary[1], ordinary[1].replace(' -count=1', ''), /exact sequential ordinary partition/],
+  ['wider ordinary binary timeout', 'make', ordinary[2], ordinary[2].replace('-timeout=15m', '-timeout=30m'), /exact sequential ordinary partition/],
+  ['incomplete ordinary package corpus', 'make', ordinary[0], ordinary[0].replace('$(GO_PACKAGE_PATTERNS)', './internal/ydbstore'), /exact sequential ordinary partition/],
+  ['short ordinary suite', 'make', ordinary[1], ordinary[1].replace(' $(GO_PACKAGE_PATTERNS)', ' -short $(GO_PACKAGE_PATTERNS)'), /exact sequential ordinary partition/],
+  ['extra ordinary selector', 'make', ordinary[2], ordinary[2].replace(" -skip='^TestLocalSession'", " -skip='^TestLocalSession' -run='^TestLocal'"), /exact sequential ordinary partition/],
+  ['ignored ordinary failure', 'make', ordinary[1], `${ordinary[1]} || true`, /exact sequential ordinary partition/],
+  ['gap in ordinary selectors', 'make', ordinary[2], ordinary[2].replace("-skip='^TestLocalSession'", "-skip='^TestLocal'"), /exact sequential ordinary partition/],
+  ['overlap in ordinary selectors', 'make', ordinary[0], ordinary[0].replace("-skip='^(TestLocal|TestOwned|TestPrivate)'", "-skip='^(TestOwned|TestPrivate)'"), /exact sequential ordinary partition/],
   ['missing terminal half', 'make', `\t${connectedTerminal}\n`, '', /exact sequential connected partition/],
   ['missing other half', 'make', `\t${connectedOther}\n`, '', /exact sequential connected partition/],
   ['overlapping connected halves', 'make', connectedOther, connectedOther.replace(" -skip='^TestLocalSessionTerminal'", ''), /exact sequential connected partition/],
@@ -151,6 +186,29 @@ const mutations = [
   ['liveness replaces SQL health', 'ci', 'run: bash scripts/wait-ci-ydb.sh sessionless-ydb', 'run: curl http://localhost:8765/monitoring/cluster', /ydb SQL\/storage readiness/],
   ['wrong readiness owner', 'ci', 'run: bash scripts/wait-ci-ydb.sh sessionless-security-ydb', 'run: bash scripts/wait-ci-ydb.sh sessionless-ydb', /ydb-security-isolated SQL\/storage readiness/],
 ];
+for (const [index, command] of ordinary.entries()) {
+  for (const [name, mutate] of [
+    ['background command', value => `${value} &`],
+    ['lost race', value => value.replace(' -race', '')],
+    ['cached results', value => value.replace(' -count=1', '')],
+    ['wider binary timeout', value => value.replace('-timeout=15m', '-timeout=30m')],
+    ['incomplete package corpus', value => value.replace('$(GO_PACKAGE_PATTERNS)', './internal/ydbstore')],
+    ['short suite', value => value.replace(' $(GO_PACKAGE_PATTERNS)', ' -short $(GO_PACKAGE_PATTERNS)')],
+    ['extra selector', value => value.replace(' $(GO_PACKAGE_PATTERNS)', " -run='^TestOther' $(GO_PACKAGE_PATTERNS)")],
+    ['ignored failure', value => `${value} || true`],
+  ]) mutations.push([`ordinary ${index + 1} ${name}`, 'make', command, mutate(command), /exact sequential ordinary partition/]);
+}
+for (const [index, command] of ordinary.entries()) {
+  const narrowed = index === 0
+    ? command.replace('TestLocal|TestOwned|TestPrivate', 'TestLocal|TestOwned')
+    : index === 1
+      ? command.replace('TestOwned|TestPrivate', 'TestOwned')
+      : command.replace("-run='^TestLocal'", "-run='^TestLocalSession'");
+  mutations.push([`ordinary ${index + 1} selector gap`, 'make', command, narrowed, /exact sequential ordinary partition/]);
+}
+mutations.push(['ordinary third selector overlap', 'make', ordinary[2],
+  ordinary[2].replace("-skip='^TestLocalSession'", "-skip='^TestLocalSessionTerminal'"),
+  /exact sequential ordinary partition/]);
 for (const [half, command] of [['terminal', connectedTerminal], ['other', connectedOther]]) {
   for (const [name, mutate] of [
     ['lost race', value => value.replace(' -race', '')],

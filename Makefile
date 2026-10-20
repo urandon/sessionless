@@ -185,7 +185,9 @@ test:
 
 .PHONY: test-ordinary test-connected
 test-ordinary: prepare fmt-check lint
-	go test -race -timeout=15m -skip='^TestLocalSession' $(GO_PACKAGE_PATTERNS)
+	go test -race -count=1 -timeout=15m -skip='^(TestLocal|TestOwned|TestPrivate)' $(GO_PACKAGE_PATTERNS)
+	go test -race -count=1 -timeout=15m -run='^(TestOwned|TestPrivate)' $(GO_PACKAGE_PATTERNS)
+	go test -race -count=1 -timeout=15m -run='^TestLocal' -skip='^TestLocalSession' $(GO_PACKAGE_PATTERNS)
 
 test-connected: prepare
 	go test -race -count=1 -timeout=15m -run='^TestLocalSessionTerminal' $(GO_PACKAGE_PATTERNS)

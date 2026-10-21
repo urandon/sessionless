@@ -287,6 +287,18 @@ still require implementation and the separate exact-profile proof. No shipped
 profile selects this constructor, and this boundary cannot mint managed
 per-model-operation attestations.
 
+The contained `nativeharnessrelay` library is the separate byte-only bridge from
+an actual fixed IPv4-loopback listener to one explicit mounted Unix socket. It
+does not parse CONNECT, select provider destinations or consult proxy settings.
+Its reported address is only a local readiness observation, never Session or
+socket authority. Connections and both byte directions share finite aggregate
+limits and the original deadline; fixed-size copy loops preserve opaque bytes
+without unaccounted `ReaderFrom`/`WriterTo` shortcuts. Any unknown connection
+close outcome retires the relay. Closing joins accepted connections and both
+copy directions; an incomplete join cannot certify cleanup. Pure in-memory
+tests use controlled time, not actual TCP listeners or engine proof. This
+library has no shipped bootstrap/launcher wiring or qualified native artifact.
+
 ## Why production remains disabled
 
 The separate [attached media and artifact design](design/attached-harness-media-and-artifacts.md)

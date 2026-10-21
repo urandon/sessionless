@@ -353,6 +353,13 @@ func (supervisor *Supervisor) run(parent context.Context, spec AttemptSpec, nati
 	boundaryTeardownAttempted := false
 	boundaryTeardownSucceeded := true
 	defer func() {
+		if native != nil && (!boundaryTeardownSucceeded || !boundaryReleased || !nativeSocketClean || !stdoutComplete || !stderrComplete) {
+			// V2 may still own a live/unknown container and its exact credential
+			// stage. Removing this root would silently discard that custody.
+			result.CleanupSucceeded = false
+			err = errors.Join(err, errors.New("retain native attempt root after unknown cleanup"))
+			return
+		}
 		cleanupErr := cleanupAttemptRoot(supervisor.root, attemptRoot)
 		rootCleaned = cleanupErr == nil
 		result.CleanupSucceeded = rootCleaned && boundaryTeardownSucceeded && boundaryReleased && stdoutComplete && stderrComplete && nativeSocketClean

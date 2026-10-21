@@ -281,10 +281,10 @@ window. Unknown cleanup remains a failure, not permission to replay or reuse.
 
 Owned-fake tests use genuine attached admission, actual Unix sockets, in-memory
 TCP peers and bounded helper processes. They do not qualify a native Codex
-package or OCI isolation. The Linux-rootless launcher, UID/socket mapping,
-enforced resource ceilings and native tool/retry behavior still require
-implementation and the separate exact-profile proof. The contained helpers
-below do not deliver that integration. No shipped
+package or OCI isolation. The explicit Linux-rootless launcher below supplies
+the disabled source integration; actual UID/socket mapping, enforced resource
+ceilings and native tool/retry behavior still require the separate exact-profile
+proof. No shipped
 profile selects this constructor, and this boundary cannot mint managed
 per-model-operation attestations.
 
@@ -298,7 +298,7 @@ without unaccounted `ReaderFrom`/`WriterTo` shortcuts. Any unknown connection
 close outcome retires the relay. Closing joins accepted connections and both
 copy directions; an incomplete join cannot certify cleanup. Pure in-memory
 tests use controlled time, not actual TCP listeners or engine proof. This
-library has no shipped launcher wiring or qualified native artifact.
+library has no shipped foreground wiring or qualified native artifact.
 
 The disabled `native-harness-helper` candidate has only `bootstrap` and `relay`
 modes. Its canonical argv is compiled from the existing `NativeLaunchV2` and
@@ -313,6 +313,32 @@ child's exit retires the pair; TERM/escalation and both Wait operations share
 one independent cleanup ceiling. Unknown joins fail. This is contained process
 plumbing, not a second agent loop, credential owner or proof of container
 quiescence. No shipped launcher or foreground selects this helper.
+
+The separate `attachedworkeroci.NewNativeLauncher` is an explicit, unselected
+V2 integration. It accepts only a Linux rootless engine socket owned by the
+same non-root host user and the container UID/GID `0:0` tuple. V1 constructors
+still reject zero IDs and retain their original network-denied behavior. V2
+mounts only the original owner-only Unix socket, never its private parent,
+alongside the pinned read-only native/bootstrap/relay artifacts. The host
+companion is not mounted. Bootstrap identity and argv remain distinct from
+native workload attestation.
+
+The launcher captures the supervisor's original absolute active deadline before
+the preparation context is canceled. A fresh container environment carries that
+value; the outer engine command retains its original environment. Exact inspect
+checks include the fixed one-CPU period/quota and existing memory, PID, scratch,
+namespace, mount and privilege restrictions. Accepted flags and fake inspect
+results are not proof of delegated controllers or real workload quiescence.
+The exact packaged Linux-rootless tuple must still pass #220 before #133 may
+activate it; this constructor does not register a profile or select a provider.
+
+Once V2 creation may have happened, failed preparation returns its original
+partial owner for the supervisor's existing bounded cleanup. Until exact inspect
+accepts the returned identity, cleanup uses the original generated container
+name, not an unverified ID. A partial preparation cannot start or hand back a
+credential stage. Unknown stop, removal or release keeps the stage and private
+attempt root with a persistent failed-cleanup result; it does not authorize
+retry or allocation reuse. V1's existing cleanup contract is unchanged.
 
 ## Why production remains disabled
 

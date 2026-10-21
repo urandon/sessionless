@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"sort"
@@ -30,10 +31,11 @@ const (
 )
 
 var (
-	ErrIsolationUnsupported = errors.New("attached worker isolation is unsupported")
-	ErrSupervisorConfig     = errors.New("attached worker supervisor configuration is invalid")
-	ErrExecutableChanged    = errors.New("attached worker harness executable digest changed")
-	environmentNamePattern  = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
+	ErrIsolationUnsupported  = errors.New("attached worker isolation is unsupported")
+	ErrSupervisorConfig      = errors.New("attached worker supervisor configuration is invalid")
+	ErrExecutableChanged     = errors.New("attached worker harness executable digest changed")
+	errNativeCleanupDeadline = errors.New("attached worker native cleanup deadline exceeded")
+	environmentNamePattern   = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
 )
 
 // IsolationProfile is trusted only after its concrete Launcher implementation
@@ -196,6 +198,8 @@ func (result AttemptResult) GoString() string { return result.String() }
 type Supervisor struct {
 	root             string
 	launcher         IsolationLauncher
+	nativeLauncher   IsolationLauncherV2
+	nativeProfile    IsolationProfileV2
 	outputReader     func(string, io.Reader) io.Reader
 	outputDone       func(string, <-chan struct{})
 	profileName      string
@@ -218,6 +222,10 @@ func NewSupervisor(config SupervisorConfig) (*Supervisor, error) {
 	if profile.Validate() != nil {
 		return nil, ErrIsolationUnsupported
 	}
+	return newSupervisor(config, profile.Name)
+}
+
+func newSupervisor(config SupervisorConfig, profileName string) (*Supervisor, error) {
 	root, err := validateDirectoryPath(config.ScratchRoot)
 	if err != nil {
 		return nil, ErrSupervisorConfig
@@ -264,13 +272,34 @@ func NewSupervisor(config SupervisorConfig) (*Supervisor, error) {
 	}
 	sort.Strings(allowedReadRoots)
 	return &Supervisor{
-		root: root, launcher: config.Launcher, profileName: profile.Name, timeout: config.Timeout,
+		root: root, launcher: config.Launcher, profileName: profileName, timeout: config.Timeout,
 		grace: config.TerminationGrace, maxStdout: config.MaxStdoutBytes,
 		maxStderr: config.MaxStderrBytes, allowedEnv: allowed, allowedReadRoots: allowedReadRoots,
 	}, nil
 }
 
 func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (result AttemptResult, err error) {
+	if supervisor == nil || supervisor.launcher == nil || supervisor.nativeLauncher != nil {
+		return AttemptResult{}, ErrIsolationUnsupported
+	}
+	return supervisor.run(parent, spec, nil, nil)
+}
+
+func (supervisor *Supervisor) run(parent context.Context, spec AttemptSpec, native *NativeLaunchV2, conduit NativeConduitV2) (result AttemptResult, err error) {
+	if parent == nil || parent.Err() != nil {
+		return AttemptResult{}, ErrSupervisorConfig
+	}
+	// Only V2 changes the original active/cleanup timing contract. Its active
+	// deadline starts before preparation and is never restarted at process Start.
+	cleanupBound := func() time.Duration { return supervisor.grace }
+	var nativeCleanup *nativeCleanupWindow
+	if native != nil {
+		active, cancel := context.WithTimeout(parent, min(supervisor.timeout, native.Limits.Active))
+		defer cancel()
+		parent = active
+		nativeCleanup = nativeCleanupBudget(native.Limits.Cleanup, supervisor.grace)
+		cleanupBound = nativeCleanup.remaining
+	}
 	var command *exec.Cmd
 	var stdout, stderr *boundedBuffer
 	var stdoutDone, stderrDone <-chan struct{}
@@ -279,7 +308,14 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 	stdoutComplete, stderrComplete := true, true
 	processExitFailed := false
 	var startedAt time.Time
+	nativeSocketClean := true
 	defer func() {
+		// A late nil boundary return cannot win against the original total
+		// cleanup deadline and certify this allocation as reusable.
+		if nativeCleanup != nil && nativeCleanup.expired() {
+			result.CleanupSucceeded = false
+			err = errors.Join(err, errNativeCleanupDeadline)
+		}
 		// Boundary release, bounded reader cleanup, pipe close, and attempt-root
 		// cleanup all finish before this final observed-output snapshot.
 		if stdout != nil {
@@ -300,9 +336,6 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 			result.IsolationProfile = supervisor.profileName
 		}
 	}()
-	if parent == nil || parent.Err() != nil {
-		return AttemptResult{}, ErrSupervisorConfig
-	}
 	if err := supervisor.validateAttemptSpec(spec); err != nil {
 		return AttemptResult{}, err
 	}
@@ -322,7 +355,7 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 	defer func() {
 		cleanupErr := cleanupAttemptRoot(supervisor.root, attemptRoot)
 		rootCleaned = cleanupErr == nil
-		result.CleanupSucceeded = rootCleaned && boundaryTeardownSucceeded && boundaryReleased && stdoutComplete && stderrComplete
+		result.CleanupSucceeded = rootCleaned && boundaryTeardownSucceeded && boundaryReleased && stdoutComplete && stderrComplete && nativeSocketClean
 		if err == nil && cleanupErr != nil {
 			err = cleanupErr
 		}
@@ -333,11 +366,11 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 		// (or force-closed after a reader timeout), then the attempt root is
 		// cleaned and observed output is snapshotted.
 		var readerErr error
-		stdoutComplete, readerErr = finishOutputReader(stdoutDone, stdoutReader, supervisor.grace, "stdout")
+		stdoutComplete, readerErr = finishOutputReaderWithBudget(stdoutDone, stdoutReader, cleanupBound, "stdout")
 		if readerErr != nil {
 			err = errors.Join(err, readerErr)
 		}
-		stderrComplete, readerErr = finishOutputReader(stderrDone, stderrReader, supervisor.grace, "stderr")
+		stderrComplete, readerErr = finishOutputReaderWithBudget(stderrDone, stderrReader, cleanupBound, "stderr")
 		if readerErr != nil {
 			err = errors.Join(err, readerErr)
 		}
@@ -374,19 +407,58 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 		launch.WriteFiles = []string{spec.credentialWriteFile}
 	}
 	prepareCtx, cancelPrepare := context.WithTimeout(parent, supervisor.timeout)
-	boundary, err := supervisor.launcher.Prepare(prepareCtx, launch)
+	var boundary IsolationBoundary
+	var nativeSocket *NativeSocketV2
+	if native == nil {
+		boundary, err = supervisor.launcher.Prepare(prepareCtx, launch)
+	} else {
+		for _, artifact := range []NativeArtifactV2{native.Bootstrap, native.Relay, native.Companion} {
+			actual, digestErr := DigestExecutable(artifact.Executable)
+			if digestErr != nil || actual != artifact.Digest {
+				cancelPrepare()
+				return result, ErrExecutableChanged
+			}
+		}
+		nativeSocket, err = newNativeSocketV2(attemptRoot, native.ScopeDigest, native.PolicyDigest)
+		if err == nil {
+			defer func() {
+				if closeErr := nativeSocket.close(); closeErr != nil {
+					nativeSocketClean = false
+					err = errors.Join(err, ErrSupervisorConfig)
+				}
+			}()
+			defer func() {
+				if stopErr := callBoundary(cleanupBound(), conduit.Stop); stopErr != nil {
+					nativeSocketClean = false
+					err = errors.Join(err, errors.New("stop native companion"))
+				}
+			}()
+			if err = conduit.Start(parent, nativeSocket); err != nil {
+				cancelPrepare()
+				return result, ErrSupervisorConfig
+			}
+			var b IsolationBoundaryV2
+			b, err = supervisor.nativeLauncher.PrepareV2(prepareCtx, LaunchEnvelopeV2{Workload: launch, Native: native.Clone(), Socket: nativeSocket})
+			if b != nil {
+				boundary = &nativeBoundaryV2{IsolationBoundaryV2: b, conduit: conduit}
+			}
+		}
+	}
 	cancelPrepare()
-	if err != nil || boundary == nil {
+	if boundary == nil {
 		return result, ErrSupervisorConfig
 	}
+	// A failed Prepare may still return its original partially-created owner.
+	// Retain it through the SAME cleanup observer, including failed teardown or
+	// Release; never discard it and let root cleanup certify success instead.
 	boundaryReleased = false
 	boundaryTeardownSucceeded = false
 	defer func() {
 		if !boundaryTeardownAttempted {
 			boundaryTeardownAttempted = true
-			boundaryTeardownSucceeded = teardownIsolationBoundary(boundary, supervisor.grace) == nil
+			boundaryTeardownSucceeded = teardownIsolationBoundaryWithBudget(boundary, cleanupBound) == nil
 		}
-		releaseErr := callBoundary(supervisor.grace, boundary.Release)
+		releaseErr := callBoundary(cleanupBound(), boundary.Release)
 		boundaryReleased = releaseErr == nil
 		result.BoundaryReleased = boundaryReleased
 		result.CleanupSucceeded = rootCleaned && boundaryTeardownSucceeded && boundaryReleased
@@ -397,8 +469,26 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 			err = errors.Join(err, errors.New("release attached worker isolation boundary"))
 		}
 	}()
+	if err != nil {
+		if native != nil && parent.Err() != nil {
+			result.Deadline = errors.Is(parent.Err(), context.DeadlineExceeded)
+			result.Cancelled = errors.Is(parent.Err(), context.Canceled)
+		}
+		return result, ErrSupervisorConfig
+	}
 	command = boundary.Command()
 	attested := boundary.AttestedWorkload()
+	if native != nil {
+		b, ok := boundary.(*nativeBoundaryV2)
+		if !ok {
+			return result, ErrSupervisorConfig
+		}
+		observation := b.AttestedWorkloadV2()
+		if observation.Socket != nativeSocket || !nativeSocket.original() || !reflect.DeepEqual(observation.Bundle, *native) {
+			return result, ErrSupervisorConfig
+		}
+		attested = observation.Native
+	}
 	if command == nil || command.Dir != launch.Directory ||
 		!filepath.IsAbs(command.Path) || len(command.Args) == 0 || command.Args[0] != command.Path ||
 		!equalStrings(command.Env, launch.Environment) || command.Stdin != nil ||
@@ -427,7 +517,22 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 	if err != nil || actualDigest != spec.ExecutableDigest {
 		return result, ErrExecutableChanged
 	}
+	if native != nil {
+		if !nativeSocket.original() {
+			return result, ErrSupervisorConfig
+		}
+		for _, artifact := range []NativeArtifactV2{native.Bootstrap, native.Relay, native.Companion} {
+			actual, e := DigestExecutable(artifact.Executable)
+			if e != nil || actual != artifact.Digest {
+				return result, ErrExecutableChanged
+			}
+		}
+	}
 	if parent.Err() != nil {
+		if native != nil {
+			result.Deadline = errors.Is(parent.Err(), context.DeadlineExceeded)
+			result.Cancelled = errors.Is(parent.Err(), context.Canceled)
+		}
 		return result, parent.Err()
 	}
 	if err := command.Start(); err != nil {
@@ -472,10 +577,10 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 	}
 	if !processWaited {
 		result.TermSent = signalProcessGroup(processGroupID, processTerminate) == nil
-		waitErr, processWaited = waitProcess(waited, supervisor.grace)
+		waitErr, processWaited = waitProcess(waited, cleanupBound())
 		if !processWaited {
 			result.KillSent = signalProcessGroup(processGroupID, processKill) == nil
-			waitErr, processWaited = waitProcess(waited, supervisor.grace)
+			waitErr, processWaited = waitProcess(waited, cleanupBound())
 			if !processWaited {
 				_ = signalProcessGroup(processGroupID, processKill)
 				return result, errors.New("attached worker harness survived kill")
@@ -490,7 +595,7 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 		if signalProcessGroup(processGroupID, processTerminate) == nil {
 			result.TermSent = true
 		}
-		gone, waitErr := waitProcessGroupGone(processGroupID, supervisor.grace)
+		gone, waitErr := waitProcessGroupGone(processGroupID, cleanupBound())
 		if waitErr != nil {
 			return result, waitErr
 		}
@@ -498,14 +603,14 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 			if signalProcessGroup(processGroupID, processKill) == nil {
 				result.KillSent = true
 			}
-			gone, waitErr = waitProcessGroupGone(processGroupID, supervisor.grace)
+			gone, waitErr = waitProcessGroupGone(processGroupID, cleanupBound())
 			if waitErr != nil || !gone {
 				return result, errors.New("attached worker descendants survived teardown")
 			}
 		}
 	}
 	boundaryTeardownAttempted = true
-	if err := teardownIsolationBoundary(boundary, supervisor.grace); err != nil {
+	if err := teardownIsolationBoundaryWithBudget(boundary, cleanupBound); err != nil {
 		return result, err
 	}
 	boundaryTeardownSucceeded = true
@@ -514,11 +619,11 @@ func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (res
 	return result, nil
 }
 
-func teardownIsolationBoundary(boundary IsolationBoundary, timeout time.Duration) error {
-	alive, err := inspectBoundary(boundary, timeout)
+func teardownIsolationBoundaryWithBudget(boundary IsolationBoundary, bound func() time.Duration) error {
+	alive, err := inspectBoundary(boundary, bound())
 	if err != nil {
-		forceErr := callBoundary(timeout, boundary.ForceStop)
-		stillAlive, verifyErr := inspectBoundary(boundary, timeout)
+		forceErr := callBoundary(bound(), boundary.ForceStop)
+		stillAlive, verifyErr := inspectBoundary(boundary, bound())
 		if forceErr != nil || verifyErr != nil || stillAlive {
 			return errors.New("attached worker isolation boundary cleanup failed")
 		}
@@ -527,11 +632,11 @@ func teardownIsolationBoundary(boundary IsolationBoundary, timeout time.Duration
 	if !alive {
 		return nil
 	}
-	gracefulErr := callBoundary(timeout, boundary.GracefulStop)
-	alive, err = inspectBoundary(boundary, timeout)
+	gracefulErr := callBoundary(bound(), boundary.GracefulStop)
+	alive, err = inspectBoundary(boundary, bound())
 	if err != nil {
-		forceErr := callBoundary(timeout, boundary.ForceStop)
-		stillAlive, verifyErr := inspectBoundary(boundary, timeout)
+		forceErr := callBoundary(bound(), boundary.ForceStop)
+		stillAlive, verifyErr := inspectBoundary(boundary, bound())
 		if forceErr != nil || verifyErr != nil || stillAlive {
 			return errors.New("attached worker isolation boundary cleanup failed")
 		}
@@ -543,8 +648,8 @@ func teardownIsolationBoundary(boundary IsolationBoundary, timeout time.Duration
 		}
 		return nil
 	}
-	forceErr := callBoundary(timeout, boundary.ForceStop)
-	alive, err = inspectBoundary(boundary, timeout)
+	forceErr := callBoundary(bound(), boundary.ForceStop)
+	alive, err = inspectBoundary(boundary, bound())
 	if err != nil {
 		return errors.New("inspect attached worker isolation boundary")
 	}
@@ -832,6 +937,11 @@ func copyBounded(reader io.Reader, writer io.Writer, violation chan<- string, co
 }
 
 func waitProcess(waited <-chan error, bound time.Duration) (error, bool) {
+	select {
+	case err := <-waited:
+		return err, true
+	default:
+	}
 	timer := time.NewTimer(bound)
 	defer timer.Stop()
 	select {
@@ -864,6 +974,11 @@ func waitProcessGroupGone(processGroupID int, bound time.Duration) (bool, error)
 }
 
 func waitChannel(done <-chan struct{}, bound time.Duration) bool {
+	select {
+	case <-done:
+		return true
+	default:
+	}
 	timer := time.NewTimer(bound)
 	defer timer.Stop()
 	select {
@@ -875,13 +990,17 @@ func waitChannel(done <-chan struct{}, bound time.Duration) bool {
 }
 
 func finishOutputReader(done <-chan struct{}, reader *os.File, bound time.Duration, stream string) (bool, error) {
+	return finishOutputReaderWithBudget(done, reader, func() time.Duration { return bound }, stream)
+}
+
+func finishOutputReaderWithBudget(done <-chan struct{}, reader *os.File, bound func() time.Duration, stream string) (bool, error) {
 	if done == nil {
 		if reader != nil {
 			_ = reader.Close()
 		}
 		return true, nil
 	}
-	if waitChannel(done, bound) {
+	if waitChannel(done, bound()) {
 		if reader != nil {
 			_ = reader.Close()
 		}
@@ -892,7 +1011,7 @@ func finishOutputReader(done <-chan struct{}, reader *os.File, bound time.Durati
 	if reader != nil {
 		_ = reader.Close()
 	}
-	if !waitChannel(done, bound) {
+	if !waitChannel(done, bound()) {
 		return false, fmt.Errorf("attached worker %s reader timeout (survived pipe close)", stream)
 	}
 	return false, fmt.Errorf("attached worker %s reader timeout", stream)

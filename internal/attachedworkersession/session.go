@@ -575,6 +575,7 @@ func (connector *Connector) connect(ctx context.Context, input ConnectInputV1) (
 		retryJitter: &exchangeRetryJitter{state: connector.config.retrySeed}, retryWait: connector.config.retryWait,
 		manifestRevision: nextManifest.Revision, manifestUpdatedAt: nextManifest.UpdatedAt,
 	}
+	session.nativeIdentity, session.nativeFresh = session, true
 	session.operationGate <- struct{}{}
 	if err := ctx.Err(); err != nil {
 		_ = session.abandon()
@@ -612,6 +613,9 @@ func (connector *Connector) connect(ctx context.Context, input ConnectInputV1) (
 }
 
 type Session struct {
+	nativeIdentity      *Session
+	nativeFresh         bool
+	nativeAttempt       *NativeAttemptV2
 	mu                  sync.Mutex
 	observationMu       sync.Mutex
 	state               State
@@ -1032,6 +1036,7 @@ func (session *Session) exchangeOnce(
 			session.state = StateFenced
 			session.failureCode = "revoked"
 		}
+		session.invalidateNativeLocked()
 	}
 	session.mu.Unlock()
 	return response, nil
@@ -1141,6 +1146,7 @@ func (session *Session) abandon() error {
 	session.machineConfig = attachedworkerprotocol.MachineConfig{}
 	session.now = nil
 	session.state = StateClosed
+	session.invalidateNativeLocked()
 	session.mu.Unlock()
 	var closeErr error
 	if closer, ok := exchange.(interface{ Close() error }); ok {
@@ -1216,6 +1222,7 @@ func (session *Session) fail(state State, code string) {
 	if session.state != StateClosed {
 		session.state = state
 		session.failureCode = code
+		session.invalidateNativeLocked()
 	}
 	session.mu.Unlock()
 }

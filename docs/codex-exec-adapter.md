@@ -255,6 +255,38 @@ File/image output, real artifact/platform/egress evidence and live activation
 remain separate unfinished gates. This text-only library delivery is neither
 real-provider rollout nor completion of #133 or the MVP.
 
+## Disabled native CONNECT boundary
+
+The explicit V2 constructor reuses the original prepared boundary, authenticated
+attached Session and supervisor. It binds the actual accepted attempt and
+resource to one private companion and original Unix-listener handle. The
+admitted install-policy digest covers the origin allowlist, artifact bundle,
+arguments, socket destination and finite limits. A copied Session, substituted
+socket or changed install policy cannot supply that authority. Reconnect does
+not restore native permission; reconnect-capable activation is not delivered.
+
+The companion accepts strict bounded HTTPS CONNECT, validates the complete DNS
+answer as public IPv4, dials one pinned literal address and checks its actual
+peer. It forwards opaque bytes, including bytes prefetched while reading the
+CONNECT header. It neither intercepts TLS nor rebuilds model requests, reads
+credentials or claims provider acceptance, model identity or token usage.
+
+Connections and both traffic directions share non-renewable aggregate budgets.
+Fixed relay buffers and bounded connection concurrency constrain this component;
+they are not proof of a whole-process memory, CPU or rootless-engine ceiling.
+The supervisor's original active context bounds preparation and network work.
+Companion failure cancels the native workload; cancellation closes original
+sockets. Stop, release and reader joins share the independent aggregate cleanup
+window. Unknown cleanup remains a failure, not permission to replay or reuse.
+
+Owned-fake tests use genuine attached admission, actual Unix sockets, in-memory
+TCP peers and bounded helper processes. They do not qualify a native Codex
+package or OCI isolation. The actual bootstrap/relay, Linux-rootless launcher,
+UID/socket mapping, enforced resource ceilings and native tool/retry behavior
+still require implementation and the separate exact-profile proof. No shipped
+profile selects this constructor, and this boundary cannot mint managed
+per-model-operation attestations.
+
 ## Why production remains disabled
 
 The separate [attached media and artifact design](design/attached-harness-media-and-artifacts.md)

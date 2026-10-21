@@ -8,6 +8,7 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -40,6 +41,27 @@ func newNativeConstructorFixture(t *testing.T) nativeConstructorFixture {
 }
 
 func newNativeConstructorFixtureWithExecutable(t *testing.T, path string) nativeConstructorFixture {
+	return newNativeConstructorFixtureWithCompanion(t, path, nil)
+}
+
+func nativeHostArtifact(t *testing.T) attachedworkerdaemon.NativeArtifactV2 {
+	t.Helper()
+	path, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err = filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := attachedworkerdaemon.DigestExecutable(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return attachedworkerdaemon.NativeArtifactV2{Executable: path, Digest: digest}
+}
+
+func newNativeConstructorFixtureWithCompanion(t *testing.T, path string, companion *attachedworkerdaemon.NativeArtifactV2) nativeConstructorFixture {
 	t.Helper()
 	root := canonicalTempDir(t)
 	if path == "" {
@@ -53,8 +75,12 @@ func newNativeConstructorFixtureWithExecutable(t *testing.T, path string) native
 		t.Fatal(err)
 	}
 	artifact := attachedworkerdaemon.NativeArtifactV2{Executable: path, Digest: digest}
-	bundle := attachedworkerdaemon.NativeLaunchV2{Version: 2, Bootstrap: artifact, Relay: artifact, Companion: artifact,
-		BootstrapArguments: []string{"bootstrap"}, RelayArguments: []string{"relay"}, CompanionArguments: []string{"companion"}, SocketDestination: "/run/native.sock",
+	host := nativeHostArtifact(t)
+	if companion != nil {
+		host = *companion
+	}
+	bundle := attachedworkerdaemon.NativeLaunchV2{Version: 2, Bootstrap: artifact, Relay: artifact, Companion: host,
+		BootstrapArguments: []string{"bootstrap"}, RelayArguments: []string{"relay"}, SocketDestination: "/run/native.sock",
 		ProviderHosts: []string{"provider.example"},
 		Limits:        attachedworkerdaemon.NativeConduitLimitsV2{Connections: 2, InboundBytes: 64 << 10, OutboundBytes: 64 << 10, CompanionMemoryBytes: 1 << 20, CompanionGoroutines: 8, Active: 10 * time.Second, Cleanup: time.Second}}
 	policy, err := bundle.InstallPolicyDigestV2()
@@ -330,6 +356,85 @@ func TestNativeConduitOriginalConstructorEntry(t *testing.T) {
 }
 
 type fakeNativeEntry struct{ n int }
+
+func TestNativeCompanionBindsActualHostExecutable(t *testing.T) {
+	host := nativeHostArtifact(t)
+	identity, err := verifyNativeCompanionHost(host)
+	if err != nil || !nativeCompanionHostCurrent(host, identity) {
+		t.Fatalf("genuine host rejected: %v", err)
+	}
+	for _, kind := range []string{"unrelated-file", "same-byte-copy", "wrong-digest"} {
+		t.Run(kind, func(t *testing.T) {
+			bad := host
+			if kind == "wrong-digest" {
+				bad.Digest[0] ^= 1
+			} else {
+				bad.Executable = filepath.Join(canonicalTempDir(t), "not-the-running-host")
+				if kind == "same-byte-copy" {
+					input, err := os.Open(host.Executable)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer input.Close()
+					output, err := os.OpenFile(bad.Executable, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0700)
+					if err != nil {
+						t.Fatal(err)
+					}
+					_, copyErr := io.Copy(output, input)
+					closeErr := output.Close()
+					if copyErr != nil || closeErr != nil {
+						t.Fatalf("copy fixture: %v %v", copyErr, closeErr)
+					}
+				} else if err := os.WriteFile(bad.Executable, []byte("inert unrelated executable"), 0700); err != nil {
+					t.Fatal(err)
+				}
+				bad.Digest, err = attachedworkerdaemon.DigestExecutable(bad.Executable)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if kind == "same-byte-copy" && bad.Digest != host.Digest {
+					t.Fatal("copy differs from host")
+				}
+			}
+			// Rebuild the genuine Session/claim/policy around bad: rejection
+			// must not come merely from a mismatched policy digest.
+			f := newNativeConstructorFixtureWithCompanion(t, "", &bad)
+			if _, err := NewNativePreparedProcessBoundaryV2(t.Context(), f.config, f.session, f.input, f.bundle); err == nil {
+				t.Fatalf("accepted %s as actual companion", kind)
+			}
+		})
+	}
+	path := filepath.Join(canonicalTempDir(t), "foreign-identity")
+	if err := os.WriteFile(path, []byte("foreign"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	foreign, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nativeCompanionHostCurrent(host, foreign) {
+		t.Fatal("foreign captured identity accepted")
+	}
+}
+
+func TestNativeCompanionHostChangeDoesNotRetireOriginalEntry(t *testing.T) {
+	f := newNativeConstructorFixture(t)
+	original, err := NewNativePreparedProcessBoundaryV2(t.Context(), f.config, f.session, f.input, f.bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := f.bundle.Clone()
+	bad.Companion.Digest[0] ^= 1
+	if _, err := NewNativePreparedProcessBoundaryV2(t.Context(), f.config, f.session, f.input, bad); err == nil {
+		t.Fatal("wrong companion joined original entry")
+	}
+	if original.native.child.Current() != nil {
+		t.Fatal("rejected constructor retired original entry")
+	}
+	if !nativeCompanionHostCurrent(original.native.bundle.Companion, original.native.hostIdentity) {
+		t.Fatal("original host identity lost")
+	}
+}
 
 func (*fakeNativeEntry) NativePreparedEntryIdentityV2() { panic("passive marker cannot approve") }
 func TestNativeConduitConstructorRejectsForeignEntry(t *testing.T) {

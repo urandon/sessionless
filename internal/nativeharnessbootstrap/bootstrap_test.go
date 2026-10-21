@@ -26,7 +26,7 @@ func contract() (attachedworkerdaemon.LaunchSpec, attachedworkerdaemon.NativeLau
 	d := attachedworkerdaemon.ExecutableDigest{1}
 	a := attachedworkerdaemon.NativeArtifactV2{Executable: "/owned/helper", Digest: d}
 	return attachedworkerdaemon.LaunchSpec{Executable: "/owned/native", ExecutableDigest: d, Arguments: []string{"literal argument", "$not-a-shell"}}, attachedworkerdaemon.NativeLaunchV2{
-		Version: 2, Bootstrap: a, Relay: a, Companion: a, CompanionArguments: []string{"companion"}, SocketDestination: "/owned/session.sock", ProviderHosts: []string{"api.openai.com"},
+		Version: 2, Bootstrap: a, Relay: a, Companion: a, SocketDestination: "/owned/session.sock", ProviderHosts: []string{"api.openai.com"},
 		Limits: attachedworkerdaemon.NativeConduitLimitsV2{Connections: 2, InboundBytes: 128, OutboundBytes: 129, Active: 3 * time.Second, Cleanup: time.Second, CompanionMemoryBytes: 1, CompanionGoroutines: 1},
 	}
 }

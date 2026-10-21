@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"os"
 	"sync"
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemon"
@@ -17,19 +18,24 @@ import (
 // predicate or another execution reservation. Only the existing prepared
 // boundary's consumed entry may invoke it. No shipped profile constructs it.
 type nativeConduitOwner struct {
-	self       *nativeConduitOwner
-	child      *attachedworkersession.NativeAttemptV2
-	authority  AuthorityV1
-	bundle     attachedworkerdaemon.NativeLaunchV2
-	supervisor *attachedworkerdaemon.Supervisor
-	attempt    domain.AttachedWorkerAttemptV1
-	mu         sync.Mutex
-	companion  *nativeCompanion
+	self         *nativeConduitOwner
+	child        *attachedworkersession.NativeAttemptV2
+	authority    AuthorityV1
+	bundle       attachedworkerdaemon.NativeLaunchV2
+	supervisor   *attachedworkerdaemon.Supervisor
+	attempt      domain.AttachedWorkerAttemptV1
+	mu           sync.Mutex
+	companion    *nativeCompanion
+	hostIdentity os.FileInfo
 }
 
 func newNativeConduitOwner(ctx context.Context, session *attachedworkersession.Session, input *attachedworkerdaemon.VerifiedAttachedInputV1,
 	authority AuthorityV1, supervisor *attachedworkerdaemon.Supervisor, bundle attachedworkerdaemon.NativeLaunchV2) (*nativeConduitOwner, error) {
 	if ctx == nil || ctx.Err() != nil || session == nil || input == nil || authority.Validate() != nil || supervisor == nil || !supervisor.NativeV2() {
+		return nil, ErrContract
+	}
+	hostIdentity, err := verifyNativeCompanionHost(bundle.Companion)
+	if err != nil {
 		return nil, ErrContract
 	}
 	a := input.AcceptedAttempt
@@ -68,7 +74,7 @@ func newNativeConduitOwner(ctx context.Context, session *attachedworkersession.S
 	if err != nil {
 		return nil, ErrAuthorityUnavailable
 	}
-	v := &nativeConduitOwner{child: child, authority: authority, bundle: bundle.Clone(), supervisor: supervisor, attempt: a}
+	v := &nativeConduitOwner{child: child, authority: authority, bundle: bundle.Clone(), supervisor: supervisor, attempt: a, hostIdentity: hostIdentity}
 	v.self = v
 	return v, nil
 }

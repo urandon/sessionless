@@ -66,7 +66,7 @@ func Arguments(workload attachedworkerdaemon.LaunchSpec, bundle attachedworkerda
 		!pathValid(bundle.SocketDestination) || len(bundle.SocketDestination) > 100 || l.Connections == 0 || l.Connections > 8 ||
 		l.InboundBytes == 0 || l.InboundBytes > 64<<20 || l.OutboundBytes == 0 || l.OutboundBytes > 64<<20 ||
 		l.Active <= 0 || l.Active > time.Minute || l.Cleanup <= 0 || l.Cleanup > 30*time.Second ||
-		l.CompanionMemoryBytes == 0 || l.CompanionGoroutines == 0 || !argsValid(workload.Arguments) || !argsValid(bundle.CompanionArguments) {
+		l.CompanionMemoryBytes == 0 || l.CompanionGoroutines == 0 || !argsValid(workload.Arguments) {
 		return nil, nil, ErrConfig
 	}
 	for _, a := range []attachedworkerdaemon.NativeArtifactV2{bundle.Bootstrap, bundle.Relay, bundle.Companion, {Executable: workload.Executable, Digest: workload.ExecutableDigest}} {

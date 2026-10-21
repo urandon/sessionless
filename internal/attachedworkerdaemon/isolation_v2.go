@@ -47,14 +47,14 @@ type NativeArtifactV2 struct {
 // NativeLaunchV2 is a frozen install envelope, not accepted-attempt authority.
 // The native process remains distinct from every pinned bootstrap/relay member.
 type NativeLaunchV2 struct {
-	Version                                                uint32
-	Bootstrap, Relay, Companion                            NativeArtifactV2
-	BootstrapArguments, RelayArguments, CompanionArguments []string
-	SocketDestination                                      string
-	ProviderHosts                                          []string
-	ScopeDigest                                            ExecutableDigest
-	PolicyDigest                                           ExecutableDigest
-	Limits                                                 NativeConduitLimitsV2
+	Version                            uint32
+	Bootstrap, Relay, Companion        NativeArtifactV2
+	BootstrapArguments, RelayArguments []string
+	SocketDestination                  string
+	ProviderHosts                      []string
+	ScopeDigest                        ExecutableDigest
+	PolicyDigest                       ExecutableDigest
+	Limits                             NativeConduitLimitsV2
 }
 
 type NativeConduitLimitsV2 struct {
@@ -90,7 +90,6 @@ func (b *nativeCleanupWindow) expired() bool {
 func (v NativeLaunchV2) Clone() NativeLaunchV2 {
 	v.BootstrapArguments = append([]string(nil), v.BootstrapArguments...)
 	v.RelayArguments = append([]string(nil), v.RelayArguments...)
-	v.CompanionArguments = append([]string(nil), v.CompanionArguments...)
 	v.ProviderHosts = append([]string(nil), v.ProviderHosts...)
 	return v
 }
@@ -133,7 +132,7 @@ func (v NativeLaunchV2) validateInstall() error {
 			return ErrSupervisorConfig
 		}
 	}
-	for _, args := range [][]string{v.BootstrapArguments, v.RelayArguments, v.CompanionArguments} {
+	for _, args := range [][]string{v.BootstrapArguments, v.RelayArguments} {
 		if len(args) == 0 || len(args) > 128 {
 			return ErrSupervisorConfig
 		}

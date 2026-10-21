@@ -10,7 +10,7 @@ const original = {
   ci: read('.github/workflows/ci.yml'),
   release: read('.github/workflows/release.yml'),
 };
-const required = `docs-check cloud-web-smoke-test web-ci generate test-ordinary build integration
+const required = `docs-check cloud-web-smoke-test observability-config-check web-ci generate test-ordinary build integration
   image-publication-test image-build-inputs-test
   image-publish-policy-test registry-gc-policy-test release-policy-test
   local-stand-policy-test dockerless-stand-policy-test go-cache-policy-test`.split(/\s+/);
@@ -45,7 +45,10 @@ function step(jobText, name) {
 }
 function verify({ make, ci, release }) {
   assert.deepEqual(target(make, 'ci'), words('ci-core test-connected attached-worker-security-gate serverless-egress-conformance'));
-  assert.deepEqual(target(make, 'ci-core'), [...required, 'ci-partition-test'].sort());
+  assert.deepEqual(target(make, 'ci-core'), [...required, 'ci-partition-test'].sort(), 'complete core prerequisites');
+  assert.deepEqual(target(make, 'observability-config-check'), ['prepare'], 'offline YAML preparation');
+  assert.equal(recipe(make, 'observability-config-check'),
+    'go run ./cmd/observability-config validate --root "$(OBSERVABILITY_CONFIG_ROOT)" --profile "$(OBSERVABILITY_PROFILE)"', 'offline YAML catalog check');
   assert.deepEqual(target(make, 'test'), [], 'test must sequence, not parallelize prerequisites');
   assert.equal(recipe(make, 'test'), '$(MAKE) test-ordinary\n\t$(MAKE) test-connected', 'sequential complete local test');
   assert.deepEqual(target(make, 'test-ordinary'), words('prepare fmt-check lint'), 'ordinary preparation');
@@ -140,6 +143,8 @@ test('ordinary selectors and connected selectors partition the complete test-nam
 });
 const mutations = [
   ['missing core check', 'make', 'ci-core: docs-check ', 'ci-core: '],
+  ['missing YAML catalog check', 'make', 'cloud-web-smoke-test observability-config-check web-ci', 'cloud-web-smoke-test web-ci', /complete core prerequisites/],
+  ['wrong YAML operation', 'make', 'go run ./cmd/observability-config validate --root', 'go run ./cmd/observability-config render --root', /offline YAML catalog check/],
   ['missing local security', 'make', 'ci: ci-core test-connected attached-worker-security-gate serverless-egress-conformance', 'ci: ci-core test-connected serverless-egress-conformance'],
   ['missing local egress', 'make', 'ci: ci-core test-connected attached-worker-security-gate serverless-egress-conformance', 'ci: ci-core test-connected attached-worker-security-gate'],
   ['missing crash prerequisite', 'make', 'attached-worker-security-gate: attached-worker-crash-integration ', 'attached-worker-security-gate: '],

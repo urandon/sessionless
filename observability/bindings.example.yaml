@@ -1,0 +1,19 @@
+# EXAMPLE ONLY: deliberately incomplete and expired. Not a deployment input.
+# Copy outside public Git to an owner-only file before filling real values under
+# separately scoped #228 authority. Never commit real IDs or recipients.
+schema_version: 1
+bindings:
+  revision: replace-with-reviewed-revision
+  folder_id: REPLACE_WITH_PRIVATE_FOLDER_ID
+  queries:
+    - id: web_requests
+      observed_at: "2000-01-01T00:00:00Z"
+      metric_type: DGAUGE
+      unit: requests_per_second
+      labels:
+        service: serverless-apigateway
+        name: api_gateway.requests_count_per_second
+        gateway: REPLACE_WITH_PRIVATE_GATEWAY_ID
+      qualifications: []
+  # Every selected query needs its own fresh exact binding; this one-entry
+  # illustration intentionally cannot export the complete cloud-dev profile.

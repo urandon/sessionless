@@ -1,0 +1,38 @@
+schema_version: 1
+profile:
+  id: cloud-dev
+  dashboard_ref: sessionless_overview
+  # Query selection is not cloud activation. Without an explicit private binding
+  # and fresh ownership receipt, render produces a non-deployable preview only.
+  enabled_queries:
+    - web_requests
+    - control_requests
+    - web_invocations
+    - dispatch_messages
+    - dispatch_dlq_messages
+    - scheduler_messages
+    - scheduler_dlq_messages
+    - delivery_messages
+    - delivery_dlq_messages
+    - database_bytes
+    - bucket_bytes
+  enabled_alerts: []
+  channel_refs: [operator_primary]
+  runbook_refs:
+    - deployment
+    - web_ingress
+    - web_semantics
+    - canonical_progress
+    - managed_route
+    - attached_route
+    - queue_backlog
+    - queue_dlq
+    - ydb_capacity
+    - bucket_capacity
+    - telemetry_gap
+  max_leaf_rules: 12
+  max_semantic_series: 24
+  max_read_values: 2000000
+  max_series_per_load: 30
+  max_points_per_series: 60
+  auto_refresh: false

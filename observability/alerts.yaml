@@ -1,0 +1,76 @@
+# Rules are desired policy, not activated resources. The dev profile selects no
+# real alerts before #228 binds selectors, supported surface and a confirmed channel.
+schema_version: 1
+alerts:
+  - id: dispatch_dlq_occupied
+    query_ref: dispatch_dlq_messages
+    class: queue
+    condition: {aggregation: max, operator: gt, value: 0, unit: messages, window: 10m}
+    evaluation_delay: 5m
+    demand: nonzero_occurrence
+    freshness: 5m
+    no_data: {no_matching_metrics: no_data, no_points: no_data}
+    notifications: {channel_refs: [operator_primary], states: [alarm], repeat: false}
+    recovery: manual_positive_evidence
+    owner: deployment_operator
+    runbook_ref: queue_dlq
+  - id: scheduler_dlq_occupied
+    query_ref: scheduler_dlq_messages
+    class: queue
+    condition: {aggregation: max, operator: gt, value: 0, unit: messages, window: 10m}
+    evaluation_delay: 5m
+    demand: nonzero_occurrence
+    freshness: 5m
+    no_data: {no_matching_metrics: no_data, no_points: no_data}
+    notifications: {channel_refs: [operator_primary], states: [alarm], repeat: false}
+    recovery: manual_positive_evidence
+    owner: deployment_operator
+    runbook_ref: queue_dlq
+  - id: delivery_dlq_occupied
+    query_ref: delivery_dlq_messages
+    class: queue
+    condition: {aggregation: max, operator: gt, value: 0, unit: messages, window: 10m}
+    evaluation_delay: 5m
+    demand: nonzero_occurrence
+    freshness: 5m
+    no_data: {no_matching_metrics: no_data, no_points: no_data}
+    notifications: {channel_refs: [operator_primary], states: [alarm], repeat: false}
+    recovery: manual_positive_evidence
+    owner: deployment_operator
+    runbook_ref: queue_dlq
+  - id: managed_canonical_unknown
+    query_ref: managed_unknown
+    class: semantic
+    condition: {aggregation: max, operator: gt, value: 0, unit: events, window: 10m}
+    evaluation_delay: 5m
+    demand: expected_work
+    freshness: 5m
+    no_data: {no_matching_metrics: no_data, no_points: no_data}
+    notifications: {channel_refs: [operator_primary], states: [alarm], repeat: false}
+    recovery: manual_positive_evidence
+    owner: deployment_operator
+    runbook_ref: canonical_progress
+  - id: attached_canonical_unknown
+    query_ref: attached_unknown
+    class: semantic
+    condition: {aggregation: max, operator: gt, value: 0, unit: events, window: 10m}
+    evaluation_delay: 5m
+    demand: expected_work
+    freshness: 5m
+    no_data: {no_matching_metrics: no_data, no_points: no_data}
+    notifications: {channel_refs: [operator_primary], states: [alarm], repeat: false}
+    recovery: manual_positive_evidence
+    owner: deployment_operator
+    runbook_ref: canonical_progress
+  - id: unexpected_login_failure
+    query_ref: web_auth_failure
+    class: semantic
+    condition: {aggregation: max, operator: gt, value: 0, unit: events, window: 10m}
+    evaluation_delay: 5m
+    demand: nonzero_occurrence
+    freshness: 5m
+    no_data: {no_matching_metrics: no_data, no_points: no_data}
+    notifications: {channel_refs: [operator_primary], states: [alarm], repeat: false}
+    recovery: manual_positive_evidence
+    owner: deployment_operator
+    runbook_ref: web_semantics

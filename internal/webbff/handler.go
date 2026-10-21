@@ -24,6 +24,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/attachedworkerux"
 	"gitcode.com/urandon/sessionless/internal/buildinfo"
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/opssignal"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/sessionapi"
 	"gitcode.com/urandon/sessionless/internal/telegramoidc"
@@ -42,6 +43,7 @@ const (
 )
 
 type Config struct {
+	OpsSignals                 opssignal.Sink
 	BaseURL                    string
 	RedirectURI                string
 	ObjectStorageOrigin        string
@@ -188,6 +190,7 @@ func validateObjectStorageOrigin(raw string, allowLoopbackHTTP bool) (string, er
 func (handler *Handler) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 	requestID, err := handler.secret("req_", 16)
 	if err != nil {
+		handler.observeFailure(request.Context(), opssignal.WebAuthFailure, opssignal.AuthStart, opssignal.Unexpected, err)
 		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
 		return
 	}
@@ -422,6 +425,7 @@ func (handler *Handler) listSessions(w http.ResponseWriter, request *http.Reques
 		query.Status, query.Cursor, query.Limit,
 	)
 	if err != nil {
+		handler.observeFailure(request.Context(), opssignal.WebSessionFailure, opssignal.SessionRead, opssignal.Store, err)
 		handler.writeError(w, request, err)
 		return
 	}
@@ -452,6 +456,7 @@ func (handler *Handler) createSession(w http.ResponseWriter, request *http.Reque
 		request.Context(), authorization.Session.ActiveTenantID, authorization.Session.UserID, input.IdempotencyKey,
 	)
 	if err != nil {
+		handler.observeFailure(request.Context(), opssignal.WebSessionFailure, opssignal.SessionWrite, opssignal.Store, err)
 		handler.writeError(w, request, err)
 		return
 	}
@@ -476,6 +481,7 @@ func (handler *Handler) getSession(w http.ResponseWriter, request *http.Request)
 		domain.SessionID(request.PathValue("session_id")),
 	)
 	if err != nil {
+		handler.observeFailure(request.Context(), opssignal.WebSessionFailure, opssignal.SessionRead, opssignal.Store, err)
 		handler.writeError(w, request, err)
 		return
 	}
@@ -515,6 +521,7 @@ func (handler *Handler) listSessionEvents(w http.ResponseWriter, request *http.R
 		)
 	}
 	if err != nil {
+		handler.observeFailure(request.Context(), opssignal.WebSessionFailure, opssignal.SessionRead, opssignal.Store, err)
 		handler.writeError(w, request, err)
 		return
 	}
@@ -545,6 +552,7 @@ func (handler *Handler) listSessionRuns(w http.ResponseWriter, request *http.Req
 		domain.SessionID(request.PathValue("session_id")), query.Cursor, query.Limit,
 	)
 	if err != nil {
+		handler.observeFailure(request.Context(), opssignal.WebSessionFailure, opssignal.SessionRead, opssignal.Store, err)
 		handler.writeError(w, request, err)
 		return
 	}
@@ -577,6 +585,7 @@ func (handler *Handler) bindFrontend(w http.ResponseWriter, request *http.Reques
 		input.Frontend, input.ExternalConversationID, input.SessionID, input.ExpectedRevision,
 	)
 	if err != nil {
+		handler.observeFailure(request.Context(), opssignal.WebSessionFailure, opssignal.SessionWrite, opssignal.Store, err)
 		handler.writeError(w, request, err)
 		return
 	}
@@ -610,6 +619,7 @@ func (handler *Handler) setSessionArchived(w http.ResponseWriter, request *http.
 		domain.SessionID(request.PathValue("session_id")), input.Archived, input.IdempotencyKey,
 	)
 	if err != nil {
+		handler.observeFailure(request.Context(), opssignal.WebSessionFailure, opssignal.SessionWrite, opssignal.Store, err)
 		handler.writeError(w, request, err)
 		return
 	}
@@ -891,6 +901,7 @@ func (handler *Handler) loginCallback(w http.ResponseWriter, request *http.Reque
 		request.Context(), domain.DigestSecret(callback.State), bindingCookie.Value, now,
 	)
 	if err != nil {
+		handler.observeFailure(request.Context(), opssignal.WebAuthFailure, opssignal.AuthChallenge, opssignal.Store, err)
 		handler.writeCallbackFailure(w, request, "login_challenge_rejected", nil, "")
 		return
 	}
@@ -904,11 +915,13 @@ func (handler *Handler) loginCallback(w http.ResponseWriter, request *http.Reque
 	}
 	verifiedSubject, err := handler.exchangeLogin(request.Context(), callback.Code, challenge, now)
 	if err != nil || verifiedSubject.Validate() != nil || verifiedSubject.Provider != handler.loginProvider() {
+		handler.observeFailure(request.Context(), opssignal.WebAuthFailure, opssignal.AuthProvider, opssignal.Provider, err)
 		handler.writeCallbackFailure(w, request, "provider_verification_failed", nil, "")
 		return
 	}
 	candidate, err := handler.config.IDs.NewID(request.Context(), ports.IDUser)
 	if err != nil {
+		handler.observeFailure(request.Context(), opssignal.WebAuthFailure, opssignal.AuthIdentity, opssignal.Unexpected, err)
 		handler.writeCallbackFailure(w, request, "user_id_generation_failed", &verifiedSubject, "")
 		return
 	}
@@ -918,6 +931,7 @@ func (handler *Handler) loginCallback(w http.ResponseWriter, request *http.Reque
 		domain.UserID(candidate), now,
 	)
 	if err != nil {
+		handler.observeFailure(request.Context(), opssignal.WebAuthFailure, opssignal.AuthIdentity, opssignal.Store, err)
 		handler.writeCallbackFailure(w, request, "identity_resolution_failed", &verifiedSubject, "")
 		return
 	}
@@ -932,14 +946,17 @@ func (handler *Handler) loginCallback(w http.ResponseWriter, request *http.Reque
 	}
 	rawSession, rawCSRF, session, err := handler.newSession(identity, memberships[0], now)
 	if err != nil {
+		handler.observeFailure(request.Context(), opssignal.WebAuthFailure, opssignal.AuthSession, opssignal.Unexpected, err)
 		handler.writeCallbackFailure(w, request, "session_generation_failed", &identity.Subject, identity.UserID)
 		return
 	}
 	if err := handler.config.Store.CreateWebSession(request.Context(), session); err != nil {
+		handler.observeFailure(request.Context(), opssignal.WebAuthFailure, opssignal.AuthSession, opssignal.Store, err)
 		handler.writeCallbackFailure(w, request, "session_persistence_failed", &identity.Subject, identity.UserID)
 		return
 	}
 	handler.setSessionCookies(w, rawSession, rawCSRF)
+	opssignal.Emit(request.Context(), handler.config.OpsSignals, opssignal.WebAuthSuccess, opssignal.AuthSession, opssignal.None)
 	w.Header().Set("Location", challenge.RedirectPath)
 	w.WriteHeader(http.StatusSeeOther)
 }
@@ -1063,6 +1080,7 @@ func (handler *Handler) switchTenant(w http.ResponseWriter, request *http.Reques
 		request.Context(), authorization.Session.SessionDigest, next, selection.TenantID, now,
 	)
 	if err != nil {
+		handler.observeFailure(request.Context(), opssignal.WebAuthFailure, opssignal.AuthSession, opssignal.Store, err)
 		handler.writeError(w, request, err)
 		return
 	}
@@ -1084,6 +1102,7 @@ func (handler *Handler) logout(w http.ResponseWriter, request *http.Request) {
 	if err := handler.config.Store.RevokeWebSession(
 		request.Context(), authorization.Session.SessionDigest, handler.config.Clock.Now().UTC(),
 	); err != nil {
+		handler.observeFailure(request.Context(), opssignal.WebAuthFailure, opssignal.AuthSession, opssignal.Store, err)
 		handler.writeError(w, request, err)
 		return
 	}
@@ -1097,9 +1116,11 @@ func (handler *Handler) authorize(request *http.Request, permission domain.Tenan
 	if err != nil || cookie.Value == "" {
 		return ports.WebAuthorization{}, domain.ErrWebSessionRevoked
 	}
-	return handler.config.Store.AuthorizeWebSession(
+	authorization, err := handler.config.Store.AuthorizeWebSession(
 		request.Context(), domain.DigestSecret(cookie.Value), permission, handler.config.Clock.Now().UTC(),
 	)
+	handler.observeFailure(request.Context(), opssignal.WebAuthFailure, opssignal.AuthSession, opssignal.Store, err)
+	return authorization, err
 }
 
 func (handler *Handler) authorizeMutation(request *http.Request, permission domain.TenantPermission) (ports.WebAuthorization, error) {
@@ -1126,6 +1147,7 @@ func (handler *Handler) rejectCSRF(request *http.Request, authorization ports.We
 		&authorization.Session.AuthenticatedSubject, authorization.Session.ActiveTenantID,
 		authorization.Session.UserID, authorization.Session.MembershipSecurityVersion)
 	if err := handler.config.Store.RecordWebSecurityEvent(request.Context(), event); err != nil {
+		handler.observeFailure(request.Context(), opssignal.WebAuthFailure, opssignal.AuthSession, opssignal.Store, err)
 		return err
 	}
 	return errCSRF
@@ -1134,6 +1156,7 @@ func (handler *Handler) rejectCSRF(request *http.Request, authorization ports.We
 func (handler *Handler) activeMemberships(ctx context.Context, userID domain.UserID) ([]domain.TenantMembership, error) {
 	memberships, err := handler.config.Store.ListTenantMemberships(ctx, userID, maxMemberships)
 	if err != nil {
+		handler.observeFailure(ctx, opssignal.WebAuthFailure, opssignal.AuthMembership, opssignal.Store, err)
 		return nil, err
 	}
 	active := memberships[:0]
@@ -1259,6 +1282,14 @@ func (handler *Handler) writeLoginError(
 	subject *domain.ExternalSubject,
 	userID domain.UserID,
 ) {
+	stage, class := opssignal.AuthStart, opssignal.Unexpected
+	switch reason {
+	case "challenge_persistence_failed":
+		stage, class = opssignal.AuthChallenge, opssignal.Store
+	case "provider_authorization_failed":
+		stage, class = opssignal.AuthProvider, opssignal.Provider
+	}
+	handler.observeFailure(request.Context(), opssignal.WebAuthFailure, stage, class, err)
 	if auditErr := handler.recordLoginFailure(request, reason, subject, userID); auditErr != nil {
 		handler.writeFailure(w, request, webcontract.ErrorTemporarilyUnavailable, "The service is temporarily unavailable.")
 		return
@@ -1319,7 +1350,9 @@ func (handler *Handler) recordLoginFailure(
 	userID domain.UserID,
 ) error {
 	event := handler.securityEvent(request, domain.WebSecurityLoginFailed, reason, subject, "", userID, 0)
-	return handler.config.Store.RecordWebSecurityEvent(request.Context(), event)
+	err := handler.config.Store.RecordWebSecurityEvent(request.Context(), event)
+	handler.observeFailure(request.Context(), opssignal.WebAuthFailure, opssignal.AuthSession, opssignal.Store, err)
+	return err
 }
 
 func (handler *Handler) securityEvent(

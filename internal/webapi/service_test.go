@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/opssignal"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/sessionapi"
 	"gitcode.com/urandon/sessionless/internal/sessioningress"
@@ -450,7 +451,7 @@ func newHarness(t *testing.T) *harness {
 	return newHarnessWithBinder(t, sessionlessharness.NewDeterministicFixtureBinderV1())
 }
 
-func newHarnessWithBinder(t *testing.T, binder ports.HarnessBinder) *harness {
+func newHarnessWithBinder(t *testing.T, binder ports.HarnessBinder, signals ...opssignal.Sink) *harness {
 	t.Helper()
 	backend := newFakeBackend()
 	blobs := &fakeBlobs{values: make(map[string][]byte)}
@@ -468,9 +469,11 @@ func newHarnessWithBinder(t *testing.T, binder ports.HarnessBinder) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := webapi.New(webapi.Config{
-		IDKey: bytes.Repeat([]byte("w"), 32), MaxUploadBytes: 1024,
-	}, sessions, ingress, backend, backend, objects, clock)
+	config := webapi.Config{IDKey: bytes.Repeat([]byte("w"), 32), MaxUploadBytes: 1024}
+	if len(signals) != 0 {
+		config.OpsSignals = signals[0]
+	}
+	service, err := webapi.New(config, sessions, ingress, backend, backend, objects, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -515,20 +518,24 @@ type fixedClock struct{}
 func (fixedClock) Now() time.Time { return testNow }
 
 type fakeBackend struct {
-	sessions      map[domain.SessionID]domain.Session
-	owners        map[domain.SessionID]domain.UserID
-	bindings      map[domain.FrontendBindingID]domain.FrontendBinding
-	intents       map[domain.UploadIntentID]domain.UploadIntent
-	uploadKeys    map[domain.IdempotencyKey]domain.UploadIntentID
-	results       map[string]ports.CanonicalUserEventResult
-	resultDigests map[string]string
-	events        []domain.SessionEvent
-	runs          map[domain.RunID]ports.RunRecord
-	manifests     map[domain.ArtifactManifestID]domain.ArtifactManifest
-	commits       []ports.CanonicalUserEventCommit
-	lastCommit    ports.WebUploadCommitRequest
-	connections   []ports.ComputeConnectionState
-	resolveCalls  int
+	canonicalCommitErr error
+	uploadCreateErr    error
+	uploadCommitErr    error
+	artifactErr        error
+	sessions           map[domain.SessionID]domain.Session
+	owners             map[domain.SessionID]domain.UserID
+	bindings           map[domain.FrontendBindingID]domain.FrontendBinding
+	intents            map[domain.UploadIntentID]domain.UploadIntent
+	uploadKeys         map[domain.IdempotencyKey]domain.UploadIntentID
+	results            map[string]ports.CanonicalUserEventResult
+	resultDigests      map[string]string
+	events             []domain.SessionEvent
+	runs               map[domain.RunID]ports.RunRecord
+	manifests          map[domain.ArtifactManifestID]domain.ArtifactManifest
+	commits            []ports.CanonicalUserEventCommit
+	lastCommit         ports.WebUploadCommitRequest
+	connections        []ports.ComputeConnectionState
+	resolveCalls       int
 }
 
 func newFakeBackend() *fakeBackend {
@@ -556,6 +563,9 @@ func (store *fakeBackend) authorized(tenant domain.TenantID, user domain.UserID,
 }
 
 func (store *fakeBackend) CreateWebUploadIntent(_ context.Context, request ports.WebUploadCreateRequest) (domain.UploadIntent, bool, error) {
+	if store.uploadCreateErr != nil {
+		return domain.UploadIntent{}, false, store.uploadCreateErr
+	}
 	if id, found := store.uploadKeys[request.IdempotencyKey]; found {
 		return store.intents[id], false, nil
 	}
@@ -568,6 +578,9 @@ func (store *fakeBackend) CreateWebUploadIntent(_ context.Context, request ports
 }
 
 func (store *fakeBackend) CommitWebUploadIntent(_ context.Context, request ports.WebUploadCommitRequest) (domain.UploadIntent, error) {
+	if store.uploadCommitErr != nil {
+		return domain.UploadIntent{}, store.uploadCommitErr
+	}
 	store.lastCommit = request
 	intent, found := store.intents[request.UploadID]
 	if !found || intent.TenantID != request.TenantID || intent.UserID != request.UserID ||
@@ -618,6 +631,9 @@ func (store *fakeBackend) GetRunForUser(_ context.Context, tenant domain.TenantI
 }
 
 func (store *fakeBackend) GetRunArtifactForUser(_ context.Context, request ports.WebRunArtifactRequest) (ports.WebRunArtifact, bool, error) {
+	if store.artifactErr != nil {
+		return ports.WebRunArtifact{}, false, store.artifactErr
+	}
 	run, found := store.runs[request.RunID]
 	if !found || run.Run.TenantID != request.TenantID || run.Run.SessionID != request.SessionID {
 		return ports.WebRunArtifact{}, false, nil
@@ -663,6 +679,9 @@ func (store *fakeBackend) LookupCanonicalUserEvent(_ context.Context, request po
 }
 
 func (store *fakeBackend) CommitCanonicalUserEvent(_ context.Context, request ports.CanonicalUserEventCommit) (ports.CanonicalUserEventResult, error) {
+	if store.canonicalCommitErr != nil {
+		return ports.CanonicalUserEventResult{}, store.canonicalCommitErr
+	}
 	key := string(request.BindingID) + "/" + string(request.IdempotencyKey)
 	if result, found := store.results[key]; found {
 		if request.MutationDigest != "" && store.resultDigests[key] != request.MutationDigest {
@@ -736,10 +755,13 @@ func (store *fakeBackend) CreateAndSwitchFrontendSession(context.Context, ports.
 }
 
 type fakeObjects struct {
-	metadata   map[string]ports.ObjectMetadata
-	uploads    []ports.UploadCapabilityRequest
-	promotions []ports.PromoteObjectRequest
-	downloads  []domain.BlobRef
+	uploadErr   error
+	statErr     error
+	downloadErr error
+	metadata    map[string]ports.ObjectMetadata
+	uploads     []ports.UploadCapabilityRequest
+	promotions  []ports.PromoteObjectRequest
+	downloads   []domain.BlobRef
 }
 
 func (store *fakeObjects) put(key, mediaType string, payload []byte, etag string) {
@@ -751,6 +773,9 @@ func (store *fakeObjects) put(key, mediaType string, payload []byte, etag string
 }
 
 func (store *fakeObjects) PresignUpload(_ context.Context, request ports.UploadCapabilityRequest) (ports.ObjectCapability, error) {
+	if store.uploadErr != nil {
+		return ports.ObjectCapability{}, store.uploadErr
+	}
 	store.uploads = append(store.uploads, request)
 	return ports.ObjectCapability{
 		Method: "PUT", URL: "https://objects.invalid/" + request.ObjectKey,
@@ -759,6 +784,9 @@ func (store *fakeObjects) PresignUpload(_ context.Context, request ports.UploadC
 }
 
 func (store *fakeObjects) StatObject(_ context.Context, tenant domain.TenantID, key string) (ports.ObjectMetadata, error) {
+	if store.statErr != nil {
+		return ports.ObjectMetadata{}, store.statErr
+	}
 	metadata, found := store.metadata[key]
 	if !found || metadata.Blob.TenantID != tenant {
 		return ports.ObjectMetadata{}, webapi.ErrResourceUnavailable
@@ -785,6 +813,9 @@ func (store *fakeObjects) PromoteObject(_ context.Context, request ports.Promote
 }
 
 func (store *fakeObjects) PresignDownload(_ context.Context, tenant domain.TenantID, ref domain.BlobRef, expires time.Duration) (ports.ObjectCapability, error) {
+	if store.downloadErr != nil {
+		return ports.ObjectCapability{}, store.downloadErr
+	}
 	metadata, found := store.metadata[ref.Key]
 	if !found || tenant != ref.TenantID || metadata.Blob != ref {
 		return ports.ObjectCapability{}, webapi.ErrResourceUnavailable

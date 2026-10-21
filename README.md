@@ -90,6 +90,8 @@ release gates and explicit configuration are satisfied.
 
 ## Find your path
 
+- **Operational signals:** see the [content-free signal contract](docs/operational-signals.md)
+  and `make ops-signal-test` for offline boundary verification.
 - **User or evaluator:** start with the [local product flow](docs/local-e2e.md).
 - **Operator:** use the [local stand](docs/local-development-stand.md), then the
   [cloud-development runbook](docs/cloud-development.md). `make cloud-web-smoke-test`

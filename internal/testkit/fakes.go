@@ -169,6 +169,8 @@ type NoMessageError struct{}
 
 func (*NoMessageError) Error() string { return "no queue message available" }
 
+func (*NoMessageError) Is(target error) bool { return target == ports.ErrQueueEmpty }
+
 var (
 	_ ports.Clock       = (*FakeClock)(nil)
 	_ ports.IDGenerator = (*SequenceIDGenerator)(nil)

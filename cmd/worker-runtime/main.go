@@ -13,6 +13,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/deterministicharness"
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/opssignal"
 	"gitcode.com/urandon/sessionless/internal/outboxwake"
 	"gitcode.com/urandon/sessionless/internal/portlog"
 	"gitcode.com/urandon/sessionless/internal/ports"
@@ -33,6 +34,7 @@ func (systemClock) Now() time.Time { return time.Now() }
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	signals := opssignal.NewWriter(os.Stdout)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -51,7 +53,7 @@ func main() {
 		logger.Error("create delivery wake queue", "error", err)
 		os.Exit(1)
 	}
-	deliveryWakePublisher, err := outboxwake.NewPublisher(deliveryWakeQueue)
+	deliveryWakePublisher, err := outboxwake.NewPublisher(deliveryWakeQueue, signals)
 	if err != nil {
 		logger.Error("create delivery wake publisher", "error", err)
 		os.Exit(1)
@@ -157,7 +159,7 @@ func main() {
 	}
 	newManager := func(queue ports.Queue) (*worker.Manager, error) {
 		return worker.New(
-			managerConfig, systemClock{}, portlog.NewQueue(logger, "worker-runtime", queue),
+			managerConfig, systemClock{}, portlog.NewQueue(logger, "worker-runtime", queue, signals),
 			state, blobs, harnessRegistry,
 		)
 	}
@@ -182,7 +184,7 @@ func main() {
 					outcomes = append(outcomes, outcome)
 				}
 				return map[string]any{"processed": len(outcomes), "outcomes": outcomes}, nil
-			},
+			}, signals,
 		)
 		if err != nil {
 			logger.Error("worker trigger server stopped", "error", err)

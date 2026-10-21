@@ -4,7 +4,6 @@ package sqsqueue
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -21,7 +20,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/queuecontract"
 )
 
-var ErrNoMessage = errors.New("queue contains no visible message")
+var ErrNoMessage = ports.ErrQueueEmpty
 
 type Config struct {
 	Endpoint        string

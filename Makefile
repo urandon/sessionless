@@ -43,6 +43,7 @@ help:
 		'make observability-config-check validate offline YAML observability policy (no cloud calls)' \
 		'make observability-config-render render a private, non-deployable preview by default' \
 		'make observability-config-test run focused offline parser/export/drift tests' \
+		'make ops-signal-test verify content-free operational boundaries offline' \
 		'make tools          validate every pinned developer tool' \
 		'make docs-check     validate local Markdown links, anchors, images, and discoverability' \
 		'make readme-visual-preview serve the built WebUI with a read-only deterministic fixture' \
@@ -427,6 +428,13 @@ observability-config-test: prepare
 
 observability-config-fuzz: prepare
 	go test -run='^$$' -fuzz=FuzzDecodeYAML -fuzztime=2s -parallel=1 ./internal/observabilityconfig
+
+OPS_SIGNAL_PACKAGES := ./internal/opssignal ./internal/portlog ./internal/outboxwake ./internal/serverlesshttp ./internal/scheduler ./internal/sessioningress ./internal/sessionapi ./internal/webapi ./internal/webbff ./internal/yandexoauth ./internal/telegramoidc ./internal/sqsqueue ./internal/yandextriggers
+.PHONY: ops-signal-test
+ops-signal-test: prepare
+	go vet $(OPS_SIGNAL_PACKAGES)
+	go test -race -count=1 -timeout=3m $(OPS_SIGNAL_PACKAGES)
+	go test -race -count=20 -shuffle=on -timeout=3m -run='^TestOps' $(OPS_SIGNAL_PACKAGES)
 
 ci-partition-test:
 	node --test scripts/test-ci-partition.mjs

@@ -16,6 +16,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/buildinfo"
 	"gitcode.com/urandon/sessionless/internal/controlapi"
 	"gitcode.com/urandon/sessionless/internal/idgen"
+	"gitcode.com/urandon/sessionless/internal/opssignal"
 	"gitcode.com/urandon/sessionless/internal/outboxwake"
 	"gitcode.com/urandon/sessionless/internal/s3store"
 	"gitcode.com/urandon/sessionless/internal/sessioningress"
@@ -150,6 +151,7 @@ func buildHandler(
 func buildTelegramWebhook(ctx context.Context, logger *slog.Logger, webhookSecret string,
 	state *ydbstore.Store, blobs *s3store.Store,
 ) (http.Handler, error) {
+	signals := opssignal.NewWriter(os.Stdout)
 	identityKey := []byte(os.Getenv("TELEGRAM_IDENTITY_HMAC_KEY"))
 	identity, err := telegramingress.NewIdentityResolver(identityKey)
 	if err != nil {
@@ -178,11 +180,11 @@ func buildTelegramWebhook(ctx context.Context, logger *slog.Logger, webhookSecre
 	if err != nil {
 		return nil, fmt.Errorf("open delivery wake queue: %w", err)
 	}
-	dispatchWakePublisher, err := outboxwake.NewPublisher(dispatchWakeQueue)
+	dispatchWakePublisher, err := outboxwake.NewPublisher(dispatchWakeQueue, signals)
 	if err != nil {
 		return nil, err
 	}
-	deliveryWakePublisher, err := outboxwake.NewPublisher(deliveryWakeQueue)
+	deliveryWakePublisher, err := outboxwake.NewPublisher(deliveryWakeQueue, signals)
 	if err != nil {
 		return nil, err
 	}

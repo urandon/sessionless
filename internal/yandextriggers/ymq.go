@@ -17,9 +17,9 @@ import (
 )
 
 var (
-	ErrNoMessage         = errors.New("trigger batch contains no remaining messages")
-	ErrRetryInvocation   = errors.New("trigger invocation must be retried")
-	ErrDeadLetterPending = errors.New("message must be retried until YMQ redrive moves it to the DLQ")
+	ErrNoMessage         = ports.ErrTriggerQueueEmpty
+	ErrRetryInvocation   = ports.ErrQueueRetryRequested
+	ErrDeadLetterPending = ports.ErrQueueRedrivePending
 )
 
 type ymqEvent struct {

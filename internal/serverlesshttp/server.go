@@ -11,11 +11,19 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/opssignal"
+	"gitcode.com/urandon/sessionless/internal/ports"
 )
 
 type RunFunc func(context.Context, *http.Request) (any, error)
 
-func NewHandler(logger *slog.Logger, run RunFunc) http.Handler {
+func NewHandler(logger *slog.Logger, run RunFunc, signals ...opssignal.Sink) http.Handler {
+	var sink opssignal.Sink
+	if len(signals) != 0 {
+		sink = signals[0]
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -23,6 +31,9 @@ func NewHandler(logger *slog.Logger, run RunFunc) http.Handler {
 	mux.HandleFunc("POST /", func(w http.ResponseWriter, request *http.Request) {
 		result, err := run(request.Context(), request)
 		if err != nil {
+			if !expectedInvocationOutcome(err) {
+				opssignal.Emit(request.Context(), sink, opssignal.ControlQueueFailure, opssignal.Ingress, opssignal.Unexpected)
+			}
 			logger.Error(
 				"serverless trigger invocation failed",
 				"request_id", request.Header.Get("X-Request-Id"),
@@ -40,13 +51,21 @@ func NewHandler(logger *slog.Logger, run RunFunc) http.Handler {
 	return mux
 }
 
-func Serve(ctx context.Context, address string, logger *slog.Logger, run RunFunc) error {
+func expectedInvocationOutcome(err error) bool {
+	if ports.IsQueueControlFlow(err) || errors.Is(err, domain.ErrMembershipDenied) {
+		return true
+	}
+	kind, ok := domain.ClassifyError(err)
+	return ok && (kind == domain.ErrorQuotaBlocked || kind == domain.ErrorPolicyDenied || kind == domain.ErrorReauthRequired)
+}
+
+func Serve(ctx context.Context, address string, logger *slog.Logger, run RunFunc, signals ...opssignal.Sink) error {
 	if address == "" {
 		return fmt.Errorf("serverless HTTP address is required")
 	}
 	server := &http.Server{
 		Addr:              address,
-		Handler:           NewHandler(logger, run),
+		Handler:           NewHandler(logger, run, signals...),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	done := make(chan struct{})

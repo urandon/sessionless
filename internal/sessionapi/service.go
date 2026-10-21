@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/opssignal"
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
 
@@ -31,6 +32,7 @@ const (
 var ErrSessionUnavailable = errors.New("session is unavailable")
 
 type Config struct {
+	OpsSignals   opssignal.Sink
 	CursorKey    []byte
 	IDKey        []byte
 	MaxPageSize  uint32
@@ -38,6 +40,7 @@ type Config struct {
 }
 
 type Service struct {
+	opsSignals   opssignal.Sink
 	store        ports.SessionAPIStore
 	blobs        ports.BlobStore
 	clock        ports.Clock
@@ -74,7 +77,8 @@ func New(config Config, store ports.SessionAPIStore, blobs ports.BlobStore, cloc
 		config.MaxEventSize = defaultMaxEventSize
 	}
 	return &Service{
-		store: store, blobs: blobs, clock: clock,
+		opsSignals: config.OpsSignals,
+		store:      store, blobs: blobs, clock: clock,
 		cursorKey: append([]byte(nil), config.CursorKey...), idKey: append([]byte(nil), config.IDKey...),
 		maxPageSize: config.MaxPageSize, maxEventSize: config.MaxEventSize,
 	}, nil
@@ -119,6 +123,23 @@ func (service *Service) Get(
 ) (ports.SessionRecord, error) {
 	record, found, err := service.store.GetSessionForUser(ctx, tenantID, userID, sessionID, false)
 	if errors.Is(err, domain.ErrMembershipDenied) || !found {
+		// Preserve the public not-found mask. Only this owner can observe an
+		// unexpected store error hidden by !found; callers must not double count
+		// the returned unavailable sentinel. No telemetry error changes admission.
+		var validation domain.ValidationError
+		kind, classified := domain.ClassifyError(err)
+		expected := errors.Is(err, domain.ErrMembershipDenied) || errors.As(err, &validation) ||
+			(classified && (kind == domain.ErrorQuotaBlocked || kind == domain.ErrorPolicyDenied || kind == domain.ErrorReauthRequired))
+		if err != nil && !expected {
+			class := opssignal.Store
+			if errors.Is(err, context.Canceled) {
+				class = opssignal.Canceled
+			}
+			if errors.Is(err, context.DeadlineExceeded) {
+				class = opssignal.DeadlineExceeded
+			}
+			opssignal.Emit(ctx, service.opsSignals, opssignal.WebSessionFailure, opssignal.SessionRead, class)
+		}
 		return ports.SessionRecord{}, ErrSessionUnavailable
 	}
 	if err != nil {

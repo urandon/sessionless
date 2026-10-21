@@ -438,6 +438,7 @@ web-secret-load-test:
 
 web-deployment-policy-test:
 	@./scripts/test-web-deployment-policy.sh
+	@node --test scripts/test-web-deployment-plan-policy.mjs
 
 cloud-web-smoke-test:
 	@node --test scripts/test-cloud-web-smoke.mjs

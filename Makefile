@@ -40,6 +40,9 @@ help:
 		'make go-cache-status show shared Go cache and worktree-local output paths' \
 		'make go-cache-clean  remove the repository-shared Go cache after builds stop' \
 		'make go-cache-policy-test validate shared-cache and worktree isolation' \
+		'make observability-config-check validate offline YAML observability policy (no cloud calls)' \
+		'make observability-config-render render a private, non-deployable preview by default' \
+		'make observability-config-test run focused offline parser/export/drift tests' \
 		'make tools          validate every pinned developer tool' \
 		'make docs-check     validate local Markdown links, anchors, images, and discoverability' \
 		'make readme-visual-preview serve the built WebUI with a read-only deterministic fixture' \
@@ -399,7 +402,31 @@ provider-conformance-fuzz: prepare
 .PHONY: ci-core ci-partition-test
 ci: ci-core test-connected attached-worker-security-gate serverless-egress-conformance
 
-ci-core: docs-check cloud-web-smoke-test web-ci generate test-ordinary build integration image-publication-test image-build-inputs-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test dockerless-stand-policy-test go-cache-policy-test ci-partition-test
+ci-core: docs-check cloud-web-smoke-test observability-config-check web-ci generate test-ordinary build integration image-publication-test image-build-inputs-test image-publish-policy-test registry-gc-policy-test release-policy-test local-stand-policy-test dockerless-stand-policy-test go-cache-policy-test ci-partition-test
+
+# Offline development tool, deliberately excluded from deployed COMPONENTS.
+# Real bindings/ownership receipts are operator-private inputs, never CI defaults.
+OBSERVABILITY_CONFIG_ROOT ?= observability
+OBSERVABILITY_PROFILE ?= cloud-dev
+OBSERVABILITY_OUTPUT ?= $(CURDIR)/.build/observability-preview
+OBSERVABILITY_SCHEMA_OUTPUT ?= $(CURDIR)/.build/observability-schema
+.PHONY: observability-config-check observability-config-render observability-config-schema observability-config-test observability-config-fuzz
+observability-config-check: prepare
+	go run ./cmd/observability-config validate --root "$(OBSERVABILITY_CONFIG_ROOT)" --profile "$(OBSERVABILITY_PROFILE)"
+
+observability-config-render: prepare
+	go run ./cmd/observability-config render --root "$(OBSERVABILITY_CONFIG_ROOT)" --profile "$(OBSERVABILITY_PROFILE)" --out "$(OBSERVABILITY_OUTPUT)"
+
+observability-config-schema: prepare
+	go run ./cmd/observability-config schema --out "$(OBSERVABILITY_SCHEMA_OUTPUT)"
+
+observability-config-test: prepare
+	go vet ./internal/observabilityconfig ./cmd/observability-config
+	go test -race -count=1 -timeout=2m ./internal/observabilityconfig ./cmd/observability-config
+	go test -race -count=20 -shuffle=on -timeout=3m ./internal/observabilityconfig ./cmd/observability-config
+
+observability-config-fuzz: prepare
+	go test -run='^$$' -fuzz=FuzzDecodeYAML -fuzztime=2s -parallel=1 ./internal/observabilityconfig
 
 ci-partition-test:
 	node --test scripts/test-ci-partition.mjs

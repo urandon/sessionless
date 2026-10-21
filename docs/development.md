@@ -167,6 +167,25 @@ No measured cost or approved execution manifest is supplied by this target.
 Pi-specific development targets and integration packages were removed under
 [#213](https://gitcode.com/urandon/sessionless/issues/213). [#203](https://gitcode.com/urandon/sessionless/issues/203) was cancelled, not delivered. The original snapshots remain recoverable at `codex/archive-pi-main` (`fc47a5809e5411e517b77e48fd0e34cad83779d1`) and `codex/archive-pi-sdk-experiment` (`6a8f25c3e7b2a18e78bdc931d77e935543a49d0b`); these refs are historical evidence, not active workflows. Local inference endpoint support is tracked separately in [#212](https://gitcode.com/urandon/sessionless/issues/212).
 
+### Offline observability configuration
+
+The [native observability YAML/runbook](cloud-dev-observability.md) owns the
+configuration format, safe export and separately authorized rollout procedure.
+These developer commands use the repository-shared Go caches and no cloud client:
+
+```sh
+make observability-config-check
+make observability-config-render
+make observability-config-schema
+make observability-config-test
+make observability-config-fuzz
+```
+
+The render default is a non-deployable preview under `.build`, with no private
+bindings, recipient data, credentials, Terraform plan/apply or notifications.
+The helper is not a deployed runtime component. The complete ordinary Go suites
+still cover its packages; `ci-core` also validates the checked-in YAML catalog.
+
 ### Worktrees and Go caches
 
 `make` resolves the repository's Git common directory and shares

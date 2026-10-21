@@ -1,0 +1,13 @@
+# EXAMPLE ONLY: stale and explicitly unqualified, never permission to create.
+# Actual complete List evidence, sole ownership and optional import snapshot
+# belong in an owner-only private file, not this example or public CI artifacts.
+schema_version: 1
+ownership:
+  folder_id: REPLACE_WITH_PRIVATE_FOLDER_ID
+  name: sessionless-cloud-dev-overview
+  observed_at: "2000-01-01T00:00:00Z"
+  complete: false
+  sole_owner: false
+  existing: []
+  import_id: ""
+  snapshot_sha256: ""

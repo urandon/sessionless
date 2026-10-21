@@ -1,0 +1,56 @@
+schema_version: 1
+dashboards:
+  - id: sessionless_overview
+    name: sessionless-cloud-dev-overview
+    title: Sessionless cloud-dev operator overview
+    sections:
+      - id: deployment
+        title: Deployment and selected profiles
+        panels:
+          - id: selected_profile
+            title: Dated configuration is not live health
+            gap: Refresh the private deployment manifest. Deterministic fixtures do not qualify either real MVP route. Disabled or unexercised is unknown, not green.
+            runbook_ref: deployment
+      - id: web_control
+        title: Web and control plane
+        panels:
+          - {id: web_requests, title: Web request activity, query_ref: web_requests, runbook_ref: web_ingress}
+          - {id: control_requests, title: Control request activity, query_ref: control_requests, runbook_ref: web_ingress}
+          - {id: web_invocations, title: Web invocation activity, query_ref: web_invocations, runbook_ref: web_ingress}
+          - id: web_semantics
+            title: Login and upload outcomes are not HTTP status
+            gap: Application signals and the Monium bridge require their own implementation and qualification. Capability issuance does not prove object download.
+            runbook_ref: web_semantics
+      - id: canonical_progress
+        title: Canonical progress and publication
+        panels:
+          - id: canonical_gap
+            title: Original deadlines and durable terminal outcome
+            gap: Use existing authorized Run and Attempt diagnostics. Broker ACK, successful invocation and missing telemetry do not prove canonical completion. No aggregate overdue observer is qualified here.
+            runbook_ref: canonical_progress
+      - id: execution_routes
+        title: Separate managed and attached execution
+        panels:
+          - id: managed_gap
+            title: Managed execution
+            gap: Real profile is not qualified by the deterministic worker. Publication, cleanup and canonical outcome remain separate. No automatic fallback.
+            runbook_ref: managed_route
+          - id: attached_gap
+            title: Attached execution
+            gap: Selected host and transport freshness require the existing authorized diagnostics. An idle unselected host must not page. Worker terminal is not canonical commit.
+            runbook_ref: attached_route
+      - id: dependencies
+        title: Dependencies and telemetry freshness
+        panels:
+          - {id: dispatch_messages, title: Dispatch backlog, query_ref: dispatch_messages, runbook_ref: queue_backlog}
+          - {id: dispatch_dlq, title: Dispatch DLQ occupancy, query_ref: dispatch_dlq_messages, runbook_ref: queue_dlq}
+          - {id: scheduler_messages, title: Scheduler wake backlog, query_ref: scheduler_messages, runbook_ref: queue_backlog}
+          - {id: scheduler_dlq, title: Scheduler wake DLQ, query_ref: scheduler_dlq_messages, runbook_ref: queue_dlq}
+          - {id: delivery_messages, title: Delivery wake backlog, query_ref: delivery_messages, runbook_ref: queue_backlog}
+          - {id: delivery_dlq, title: Delivery wake DLQ, query_ref: delivery_dlq_messages, runbook_ref: queue_dlq}
+          - {id: database_bytes, title: YDB logical size - not quota utilization, query_ref: database_bytes, runbook_ref: ydb_capacity}
+          - {id: bucket_bytes, title: Bucket total bytes - All only, query_ref: bucket_bytes, runbook_ref: bucket_capacity}
+          - id: remaining_gaps
+            title: Explicit qualification gaps
+            gap: Paused triggers, queue attributes and age, histogram counts, compatible RU and storage limits, direct bucket GET failures and upload cleanup predicates are not established by these charts. NoData never means zero or recovered.
+            runbook_ref: telemetry_gap

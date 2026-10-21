@@ -1,0 +1,250 @@
+# Policy, not live health: VERIFIED refers to the dated #223 query receipt.
+# Private binding values never belong in this file.
+schema_version: 1
+queries:
+  - id: web_requests
+    source: native
+    service: serverless-apigateway
+    metric: api_gateway.requests_count_per_second
+    metric_type: DGAUGE
+    unit: requests_per_second
+    aggregation: max
+    series_aggregation: sum
+    evidence: VERIFIED
+    label_keys: [service, name, gateway]
+    qualifications: []
+    max_series: 1
+    sparse: true
+    freshness: last_observed
+  - id: control_requests
+    source: native
+    service: serverless-apigateway
+    metric: api_gateway.requests_count_per_second
+    metric_type: DGAUGE
+    unit: requests_per_second
+    aggregation: max
+    series_aggregation: sum
+    evidence: VERIFIED
+    label_keys: [service, name, gateway]
+    qualifications: []
+    max_series: 1
+    sparse: true
+    freshness: last_observed
+  - id: web_invocations
+    source: native
+    service: serverless-containers
+    metric: serverless.containers.started_per_second
+    metric_type: DGAUGE
+    unit: invocations_per_second
+    aggregation: max
+    series_aggregation: none
+    evidence: VERIFIED
+    label_keys: [service, name, container, revision]
+    qualifications: []
+    max_series: 1
+    sparse: true
+    freshness: last_observed
+  - id: dispatch_messages
+    source: native
+    service: message-queue
+    metric: queue.messages.stored_count
+    metric_type: DGAUGE
+    unit: messages
+    aggregation: max
+    series_aggregation: none
+    evidence: VERIFIED
+    label_keys: [service, name, queue]
+    qualifications: []
+    max_series: 1
+    sparse: false
+    freshness: 5m
+  - id: dispatch_dlq_messages
+    source: native
+    service: message-queue
+    metric: queue.messages.stored_count
+    metric_type: DGAUGE
+    unit: messages
+    aggregation: max
+    series_aggregation: none
+    evidence: VERIFIED
+    label_keys: [service, name, queue]
+    qualifications: []
+    max_series: 1
+    sparse: false
+    freshness: 5m
+  - id: scheduler_messages
+    source: native
+    service: message-queue
+    metric: queue.messages.stored_count
+    metric_type: DGAUGE
+    unit: messages
+    aggregation: max
+    series_aggregation: none
+    evidence: VERIFIED
+    label_keys: [service, name, queue]
+    qualifications: []
+    max_series: 1
+    sparse: false
+    freshness: 5m
+  - id: scheduler_dlq_messages
+    source: native
+    service: message-queue
+    metric: queue.messages.stored_count
+    metric_type: DGAUGE
+    unit: messages
+    aggregation: max
+    series_aggregation: none
+    evidence: VERIFIED
+    label_keys: [service, name, queue]
+    qualifications: []
+    max_series: 1
+    sparse: false
+    freshness: 5m
+  - id: delivery_messages
+    source: native
+    service: message-queue
+    metric: queue.messages.stored_count
+    metric_type: DGAUGE
+    unit: messages
+    aggregation: max
+    series_aggregation: none
+    evidence: VERIFIED
+    label_keys: [service, name, queue]
+    qualifications: []
+    max_series: 1
+    sparse: false
+    freshness: 5m
+  - id: delivery_dlq_messages
+    source: native
+    service: message-queue
+    metric: queue.messages.stored_count
+    metric_type: DGAUGE
+    unit: messages
+    aggregation: max
+    series_aggregation: none
+    evidence: VERIFIED
+    label_keys: [service, name, queue]
+    qualifications: []
+    max_series: 1
+    sparse: false
+    freshness: 5m
+  - id: database_bytes
+    source: native
+    service: ydb
+    metric: database_size
+    metric_type: DGAUGE
+    unit: bytes
+    aggregation: max
+    series_aggregation: none
+    evidence: VERIFIED
+    label_keys: [service, name, resource_type, resource_id, location_id]
+    fixed_labels: {resource_type: database.serverless}
+    qualifications: []
+    max_series: 1
+    sparse: false
+    freshness: 5m
+  - id: bucket_bytes
+    source: native
+    service: storage
+    metric: space_usage
+    metric_type: DGAUGE
+    unit: bytes
+    aggregation: max
+    series_aggregation: none
+    evidence: VERIFIED
+    label_keys: [service, name, resource_type, resource_id, storage_type]
+    fixed_labels: {resource_type: bucket, storage_type: All}
+    qualifications: []
+    max_series: 1
+    sparse: false
+    freshness: 5m
+
+  # Families below are not qualified live rules. Do not turn catalog presence
+  # or HTTP success into latency, capacity or canonical-outcome coverage.
+  - id: web_errors
+    source: native
+    service: serverless-apigateway
+    metric: api_gateway.errors_count_per_second
+    metric_type: DGAUGE
+    unit: requests_per_second
+    aggregation: max
+    series_aggregation: none
+    evidence: PROPOSED
+    label_keys: [service, name, gateway, code]
+    qualifications: []
+    max_series: 1
+    sparse: true
+    freshness: last_observed
+  - id: web_latency
+    source: native
+    service: serverless-apigateway
+    metric: api_gateway.requests_latency_milliseconds
+    metric_type: DGAUGE
+    unit: milliseconds
+    aggregation: p95
+    series_aggregation: none
+    evidence: PROPOSED
+    label_keys: [service, name, gateway, bin]
+    qualifications: [histogram_count]
+    max_series: 20
+    sparse: true
+    freshness: last_observed
+  - id: dispatch_age
+    source: native
+    service: message-queue
+    metric: queue.messages.oldest_age_milliseconds
+    metric_type: DGAUGE
+    unit: seconds # legacy name is misleading; the vendor unit is seconds
+    aggregation: max
+    series_aggregation: none
+    evidence: PROPOSED
+    label_keys: [service, name, queue]
+    qualifications: [queue_attributes]
+    max_series: 1
+    sparse: true
+    freshness: last_observed
+  - id: managed_unknown
+    source: semantic
+    service: logging_aggregates
+    metric: ops_signal_v1
+    metric_type: DGAUGE
+    unit: events
+    aggregation: max
+    series_aggregation: none
+    evidence: PROPOSED
+    label_keys: [project, cluster, service, name, signal_id]
+    fixed_labels: {signal_id: managed.canonical_unknown}
+    qualifications: [semantic_bridge]
+    max_series: 1
+    sparse: true
+    freshness: last_observed
+  - id: attached_unknown
+    source: semantic
+    service: logging_aggregates
+    metric: ops_signal_v1
+    metric_type: DGAUGE
+    unit: events
+    aggregation: max
+    series_aggregation: none
+    evidence: PROPOSED
+    label_keys: [project, cluster, service, name, signal_id]
+    fixed_labels: {signal_id: attached.canonical_unknown}
+    qualifications: [semantic_bridge]
+    max_series: 1
+    sparse: true
+    freshness: last_observed
+  - id: web_auth_failure
+    source: semantic
+    service: logging_aggregates
+    metric: ops_signal_v1
+    metric_type: DGAUGE
+    unit: events
+    aggregation: max
+    series_aggregation: none
+    evidence: PROPOSED
+    label_keys: [project, cluster, service, name, signal_id]
+    fixed_labels: {signal_id: web.auth_failure}
+    qualifications: [semantic_bridge]
+    max_series: 1
+    sparse: true
+    freshness: last_observed

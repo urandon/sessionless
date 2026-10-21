@@ -281,9 +281,10 @@ window. Unknown cleanup remains a failure, not permission to replay or reuse.
 
 Owned-fake tests use genuine attached admission, actual Unix sockets, in-memory
 TCP peers and bounded helper processes. They do not qualify a native Codex
-package or OCI isolation. The actual bootstrap/relay, Linux-rootless launcher,
-UID/socket mapping, enforced resource ceilings and native tool/retry behavior
-still require implementation and the separate exact-profile proof. No shipped
+package or OCI isolation. The Linux-rootless launcher, UID/socket mapping,
+enforced resource ceilings and native tool/retry behavior still require
+implementation and the separate exact-profile proof. The contained helpers
+below do not deliver that integration. No shipped
 profile selects this constructor, and this boundary cannot mint managed
 per-model-operation attestations.
 
@@ -297,7 +298,21 @@ without unaccounted `ReaderFrom`/`WriterTo` shortcuts. Any unknown connection
 close outcome retires the relay. Closing joins accepted connections and both
 copy directions; an incomplete join cannot certify cleanup. Pure in-memory
 tests use controlled time, not actual TCP listeners or engine proof. This
-library has no shipped bootstrap/launcher wiring or qualified native artifact.
+library has no shipped launcher wiring or qualified native artifact.
+
+The disabled `native-harness-helper` candidate has only `bootstrap` and `relay`
+modes. Its canonical argv is compiled from the existing `NativeLaunchV2` and
+`LaunchSpec`, not another editable manifest. Bootstrap starts the pinned relay,
+waits for one bounded private pipe acknowledgement and EOF, then starts the
+pinned native executable. Native stdin/stdout/stderr pass through directly;
+the readiness descriptor is not handed to native. Relay receives no credential
+environment; native receives only the explicit replacement environment and
+loopback HTTP(S) proxy settings, not ambient proxy bypasses. The original
+absolute active deadline includes startup/readiness. Cancellation or either
+child's exit retires the pair; TERM/escalation and both Wait operations share
+one independent cleanup ceiling. Unknown joins fail. This is contained process
+plumbing, not a second agent loop, credential owner or proof of container
+quiescence. No shipped launcher or foreground selects this helper.
 
 ## Why production remains disabled
 

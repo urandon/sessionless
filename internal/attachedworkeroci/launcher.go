@@ -28,7 +28,10 @@ import (
 )
 
 const (
-	profileName = "sessionless.oci.docker.v1"
+	profileName       = "sessionless.oci.docker.v1"
+	nativeProfileName = "sessionless.oci.docker.native-connect.v2"
+	nativeCPUPeriod   = int64(100000)
+	nativeCPUQuota    = int64(100000)
 
 	profileLabel      = "dev.sessionless.attached-worker.profile"
 	installationLabel = "dev.sessionless.attached-worker.installation"
@@ -174,6 +177,12 @@ func NewLauncher(ctx context.Context, config Config) (*Launcher, error) {
 	if err := ValidateDeclarativeConfig(config); err != nil {
 		return nil, err
 	}
+	return newLauncherValidated(ctx, config)
+}
+
+// Both explicit constructors validate their closed UID/profile contract first.
+// This private backend initializer grants no profile selection or fallback.
+func newLauncherValidated(ctx context.Context, config Config) (*Launcher, error) {
 	dockerPath, err := verifyPinnedExecutable(config.DockerPath, config.DockerSHA256)
 	if err != nil || dockerPath != config.DockerPath {
 		return nil, ErrConfig
@@ -225,10 +234,17 @@ func NewLauncher(ctx context.Context, config Config) (*Launcher, error) {
 // contacting an engine. Callers must separately prove pinned artifacts and
 // host/boundary compatibility before treating the configuration as usable.
 func ValidateDeclarativeConfig(config Config) error {
+	if config.UserID == 0 || config.GroupID == 0 {
+		return ErrConfig
+	}
+	return validateDeclarativeCommon(config)
+}
+
+func validateDeclarativeCommon(config Config) error {
 	if !canonicalAbsolutePath(config.DockerPath) || !validSHA256(config.DockerSHA256) || !canonicalAbsolutePath(config.CLIConfigDir) ||
 		!validUnixHost(config.Host) || !validEngineID(config.EngineID) ||
 		!installationIDPattern.MatchString(config.InstallationID) || !validPinnedImage(config.Image) ||
-		config.UserID == 0 || config.GroupID == 0 || config.DiskBytes < minimumDiskBytes ||
+		config.DiskBytes < minimumDiskBytes ||
 		config.CredentialFileBytes <= 0 || config.CredentialFileBytes+sharedMemoryBytes >= config.DiskBytes ||
 		config.MemoryBytes < minimumMemory || config.PIDsLimit < minimumPIDs || config.PIDsLimit > maximumPIDs ||
 		config.StopSeconds < 0 || config.StopSeconds > 30 {
@@ -251,10 +267,20 @@ func (launcher *Launcher) Profile() attachedworkerdaemon.IsolationProfile {
 }
 
 func (launcher *Launcher) Prepare(ctx context.Context, spec attachedworkerdaemon.LaunchSpec) (attachedworkerdaemon.IsolationBoundary, error) {
+	prepared, err := launcher.prepareContainer(ctx, spec, spec, nil)
+	if prepared == nil {
+		return nil, err
+	}
+	return prepared, err
+}
+
+// inner differs only for the closed V2 bootstrap contract; workload always
+// remains the original native executable, staging and outer process contract.
+func (launcher *Launcher) prepareContainer(ctx context.Context, workload, spec attachedworkerdaemon.LaunchSpec, native *attachedworkerdaemon.LaunchEnvelopeV2) (*boundary, error) {
 	if launcher == nil || ctx == nil || ctx.Err() != nil {
 		return nil, ErrConfig
 	}
-	validated, err := validateLaunchSpec(spec)
+	validated, err := validateLaunchSpec(workload)
 	if err != nil {
 		return nil, err
 	}
@@ -275,38 +301,53 @@ func (launcher *Launcher) Prepare(ctx context.Context, spec attachedworkerdaemon
 			_ = staged.remove()
 		}
 	}()
-	arguments := launcher.createArguments(name, spec, validated, staged)
-	stdout, _, err := launcher.client.run(ctx, spec.Directory, spec.Environment, arguments...)
+	arguments, err := launcher.createArgumentsForEnvelope(name, spec, validated, staged, native)
 	if err != nil {
+		return nil, err
+	}
+	owner := &boundary{
+		client: launcher.client, id: name,
+		commandDirectory: workload.Directory, commandEnvironment: append([]string(nil), workload.Environment...),
+		attestation: attachedworkerdaemon.WorkloadAttestation{Executable: workload.Executable, ExecutableDigest: workload.ExecutableDigest, Arguments: append([]string(nil), workload.Arguments...)},
+		stage:       staged, stopSeconds: launcher.stopSeconds, native: native != nil,
+	}
+	if native != nil {
+		stageOwned = false
+	}
+	stdout, _, err := launcher.client.run(ctx, workload.Directory, workload.Environment, arguments...)
+	if err != nil {
+		if native != nil {
+			return owner, ErrBoundary
+		}
 		launcher.removeAfterFailedPrepare(name)
 		return nil, ErrBoundary
 	}
 	id := strings.TrimSpace(string(stdout))
 	if !validContainerID(id) {
+		if native != nil {
+			return owner, ErrBoundary
+		}
 		launcher.removeAfterFailedPrepare(name)
 		return nil, ErrBoundary
 	}
-	cleanup := true
+	cleanup := native == nil
 	defer func() {
 		if cleanup {
 			launcher.removeAfterFailedPrepare(name)
 		}
 	}()
-	if err := launcher.verifyContainer(ctx, id, name, spec, validated, staged); err != nil {
+	if err := launcher.verifyContainerForEnvelope(ctx, id, name, spec, validated, staged, native); err != nil {
+		if native != nil {
+			return owner, err
+		}
 		return nil, err
 	}
 	cleanup = false
 	stageOwned = false
-	return &boundary{
-		client: launcher.client, id: id,
-		commandDirectory: spec.Directory, commandEnvironment: append([]string(nil), spec.Environment...),
-		commandArguments: []string{"container", "start", "--attach", "--interactive", id},
-		attestation: attachedworkerdaemon.WorkloadAttestation{
-			Executable: spec.Executable, ExecutableDigest: spec.ExecutableDigest,
-			Arguments: append([]string(nil), spec.Arguments...),
-		},
-		stage: staged, stopSeconds: launcher.stopSeconds,
-	}, nil
+	owner.id = id
+	owner.commandArguments = []string{"container", "start", "--attach", "--interactive", id}
+	owner.nativePrepared = native != nil
+	return owner, nil
 }
 
 func (launcher *Launcher) removeAfterFailedPrepare(reference string) {
@@ -392,6 +433,11 @@ func validateLaunchSpec(spec attachedworkerdaemon.LaunchSpec) (validatedLaunch, 
 }
 
 func (launcher *Launcher) createArguments(name string, spec attachedworkerdaemon.LaunchSpec, validated validatedLaunch, staged *credentialStage) []string {
+	arguments, _ := launcher.createArgumentsForEnvelope(name, spec, validated, staged, nil)
+	return arguments
+}
+
+func (launcher *Launcher) createArgumentsForEnvelope(name string, spec attachedworkerdaemon.LaunchSpec, validated validatedLaunch, staged *credentialStage, native *attachedworkerdaemon.LaunchEnvelopeV2) ([]string, error) {
 	scratchBytes := launcher.diskBytes - launcher.credentialFileBytes - sharedMemoryBytes
 	userID, groupID, _ := strings.Cut(launcher.user, ":")
 	arguments := []string{
@@ -403,13 +449,28 @@ func (launcher *Launcher) createArguments(name string, spec attachedworkerdaemon
 		"--shm-size", strconv.FormatInt(sharedMemoryBytes, 10), "--log-driver", "none", "--restart", "no",
 		"--stop-signal", "SIGTERM", "--stop-timeout", strconv.Itoa(launcher.stopSeconds),
 		"--init", "--user", launcher.user, "--workdir", spec.Directory,
-		"--label", profileLabel + "=" + profileName,
+		"--label", profileLabel + "=" + envelopeProfile(native),
 		"--label", installationLabel + "=" + launcher.installationID,
 		"--label", engineLabel + "=" + launcher.engineID,
 		"--ulimit", fmt.Sprintf("fsize=%d:%d", launcher.credentialFileBytes, launcher.credentialFileBytes),
 		"--tmpfs", fmt.Sprintf("%s:rw,nosuid,nodev,noexec,size=%d,mode=0700,uid=%s,gid=%s", validated.attemptRoot, scratchBytes, userID, groupID),
 	}
 	arguments = append(arguments, "--mount", bindMount(spec.Executable, spec.Executable, true))
+	if native != nil {
+		arguments = append(arguments, "--cpu-period", strconv.FormatInt(nativeCPUPeriod, 10), "--cpu-quota", strconv.FormatInt(nativeCPUQuota, 10))
+		seen := map[string]bool{spec.Executable: true}
+		for _, path := range []string{native.Workload.Executable, native.Native.Relay.Executable} {
+			if !seen[path] {
+				arguments = append(arguments, "--mount", bindMount(path, path, true))
+				seen[path] = true
+			}
+		}
+		source, err := native.Socket.Path()
+		if err != nil {
+			return nil, ErrConfig
+		}
+		arguments = append(arguments, "--mount", bindMount(source, native.Native.SocketDestination, true))
+	}
 	for _, root := range validated.readRoots {
 		if root == validated.attemptRoot {
 			continue
@@ -421,11 +482,21 @@ func (launcher *Launcher) createArguments(name string, spec attachedworkerdaemon
 	}
 	for _, variable := range spec.Environment {
 		name, _, _ := strings.Cut(variable, "=")
+		if native != nil {
+			name = variable
+		}
 		arguments = append(arguments, "--env", name)
 	}
 	arguments = append(arguments, "--entrypoint", spec.Executable, launcher.image)
 	arguments = append(arguments, spec.Arguments...)
-	return arguments
+	return arguments, nil
+}
+
+func envelopeProfile(native *attachedworkerdaemon.LaunchEnvelopeV2) string {
+	if native != nil {
+		return nativeProfileName
+	}
+	return profileName
 }
 
 func bindMount(source, target string, readOnly bool) string {
@@ -543,6 +614,8 @@ type containerResponse struct {
 		PidsLimit       int64             `json:"PidsLimit"`
 		Memory          int64             `json:"Memory"`
 		MemorySwap      int64             `json:"MemorySwap"`
+		CPUPeriod       int64             `json:"CpuPeriod"`
+		CPUQuota        int64             `json:"CpuQuota"`
 		ShmSize         int64             `json:"ShmSize"`
 		Tmpfs           map[string]string `json:"Tmpfs"`
 		Init            *bool             `json:"Init"`
@@ -566,6 +639,10 @@ type containerResponse struct {
 }
 
 func (launcher *Launcher) verifyContainer(ctx context.Context, id, name string, spec attachedworkerdaemon.LaunchSpec, validated validatedLaunch, staged *credentialStage) error {
+	return launcher.verifyContainerForEnvelope(ctx, id, name, spec, validated, staged, nil)
+}
+
+func (launcher *Launcher) verifyContainerForEnvelope(ctx context.Context, id, name string, spec attachedworkerdaemon.LaunchSpec, validated validatedLaunch, staged *credentialStage, native *attachedworkerdaemon.LaunchEnvelopeV2) error {
 	var inspected containerResponse
 	if err := launcher.client.runJSON(ctx, &inspected, "container", "inspect", "--format", "{{json .}}", id); err != nil {
 		return ErrBoundary
@@ -592,8 +669,9 @@ func (launcher *Launcher) verifyContainer(ctx context.Context, id, name string, 
 		inspected.HostConfig.LogConfig.Type != "none" || inspected.HostConfig.RestartPolicy.Name != "no" ||
 		inspected.HostConfig.Init == nil || !*inspected.HostConfig.Init ||
 		len(inspected.HostConfig.Tmpfs) != 1 || !exactTmpfs(tmpfs, scratchBytes, launcher.user) ||
-		!exactLabels(inspected.Config.Labels, launcher.engineID, launcher.installationID) ||
-		!exactMounts(inspected.Mounts, spec, validated, staged) {
+		!exactLabelsForProfile(inspected.Config.Labels, launcher.engineID, launcher.installationID, envelopeProfile(native)) ||
+		!exactMountsForEnvelope(inspected.Mounts, spec, validated, staged, native) ||
+		(native != nil && (inspected.HostConfig.CPUPeriod != nativeCPUPeriod || inspected.HostConfig.CPUQuota != nativeCPUQuota)) {
 		return ErrUnsupported
 	}
 	return nil
@@ -628,19 +706,27 @@ func exactUlimits(values []ulimitConfig, fileBytes int64) bool {
 }
 
 func exactLabels(labels map[string]string, engineID, installationID string) bool {
-	return len(labels) == 3 && labels[profileLabel] == profileName &&
+	return exactLabelsForProfile(labels, engineID, installationID, profileName)
+}
+
+func exactLabelsForProfile(labels map[string]string, engineID, installationID, profile string) bool {
+	return len(labels) == 3 && labels[profileLabel] == profile &&
 		labels[installationLabel] == installationID && labels[engineLabel] == engineID
 }
 
 // Reconcile removes only containers owned by this exact installation and
 // pinned engine. It is intended for startup before the daemon admits work.
 func (launcher *Launcher) Reconcile(ctx context.Context) (int, error) {
+	return launcher.reconcileProfile(ctx, profileName)
+}
+
+func (launcher *Launcher) reconcileProfile(ctx context.Context, profile string) (int, error) {
 	if launcher == nil || ctx == nil || ctx.Err() != nil {
 		return 0, ErrConfig
 	}
 	stdout, _, err := launcher.client.run(ctx, launcher.client.directory, nil,
 		"container", "ls", "--all", "--quiet",
-		"--filter", "label="+profileLabel+"="+profileName,
+		"--filter", "label="+profileLabel+"="+profile,
 		"--filter", "label="+installationLabel+"="+launcher.installationID,
 		"--filter", "label="+engineLabel+"="+launcher.engineID)
 	if err != nil {
@@ -665,7 +751,7 @@ func (launcher *Launcher) Reconcile(ctx context.Context) (int, error) {
 		var inspected containerResponse
 		if err := launcher.client.runJSON(ctx, &inspected, "container", "inspect", "--format", "{{json .}}", id); err != nil ||
 			inspected.ID != id || !validOwnedContainerName(inspected.Name) ||
-			!exactLabels(inspected.Config.Labels, launcher.engineID, launcher.installationID) {
+			!exactLabelsForProfile(inspected.Config.Labels, launcher.engineID, launcher.installationID, profile) {
 			return 0, ErrBoundary
 		}
 	}
@@ -699,8 +785,27 @@ func exactMounts(mounts []struct {
 	Destination string `json:"Destination"`
 	RW          bool   `json:"RW"`
 }, spec attachedworkerdaemon.LaunchSpec, validated validatedLaunch, staged *credentialStage) bool {
+	return exactMountsForEnvelope(mounts, spec, validated, staged, nil)
+}
+
+func exactMountsForEnvelope(mounts []struct {
+	Type        string `json:"Type"`
+	Source      string `json:"Source"`
+	Destination string `json:"Destination"`
+	RW          bool   `json:"RW"`
+}, spec attachedworkerdaemon.LaunchSpec, validated validatedLaunch, staged *credentialStage, native *attachedworkerdaemon.LaunchEnvelopeV2) bool {
 	expected := map[string]expectedMount{
 		spec.Executable: {typeName: "bind", source: spec.Executable},
+	}
+	if native != nil {
+		for _, path := range []string{native.Workload.Executable, native.Native.Relay.Executable} {
+			expected[path] = expectedMount{typeName: "bind", source: path}
+		}
+		source, err := native.Socket.Path()
+		if err != nil {
+			return false
+		}
+		expected[native.Native.SocketDestination] = expectedMount{typeName: "bind", source: source}
 	}
 	for _, root := range validated.readRoots {
 		if root != validated.attemptRoot {
@@ -739,13 +844,16 @@ type boundary struct {
 	attestation        attachedworkerdaemon.WorkloadAttestation
 	stage              *credentialStage
 	stopSeconds        int
-	releaseMu          sync.Mutex
-	released           bool
-	releaseError       error
+	// Only the closed V2 preparation sets these facts. A partial owner keeps
+	// its original random name, cannot start, and can never hand back a stage.
+	native, nativePrepared bool
+	releaseMu              sync.Mutex
+	released               bool
+	releaseError           error
 }
 
 func (boundary *boundary) Command() *exec.Cmd {
-	if boundary == nil {
+	if boundary == nil || (boundary.native && !boundary.nativePrepared) {
 		return nil
 	}
 	return boundary.client.command(boundary.commandDirectory, boundary.commandEnvironment, boundary.commandArguments...)
@@ -791,6 +899,30 @@ func (boundary *boundary) Release(ctx context.Context) error {
 		return boundary.releaseError
 	}
 	boundary.released = true
+	if boundary.native {
+		// Keep original stage custody whenever quiescence/removal is unknown.
+		// Do not enter V1's best-effort stage removal after an ambiguous stop.
+		alive, inspectErr := boundary.Alive(ctx)
+		quiescent := inspectErr == nil && !alive
+		_, _, removeErr := boundary.client.run(ctx, boundary.client.directory, nil, "container", "rm", "--force", "--volumes", boundary.id)
+		if !quiescent || removeErr != nil {
+			boundary.releaseError = ErrBoundary
+			return boundary.releaseError
+		}
+		if boundary.stage != nil {
+			if boundary.nativePrepared {
+				if err := boundary.stage.commit(); err != nil {
+					boundary.releaseError = err
+					return err
+				}
+			}
+			if err := boundary.stage.remove(); err != nil {
+				boundary.releaseError = err
+				return err
+			}
+		}
+		return nil
+	}
 	var failures []error
 	if boundary.stage != nil {
 		alive, inspectErr := boundary.Alive(ctx)

@@ -395,5 +395,10 @@ func (b *nativeBoundaryV2) Alive(ctx context.Context) (bool, error) {
 	return alive || b.conduit.Alive(), err
 }
 func (b *nativeBoundaryV2) Release(ctx context.Context) error {
-	return errors.Join(b.conduit.Stop(ctx), b.IsolationBoundaryV2.Release(ctx))
+	// A joined companion can still report an unknown Close outcome. Preserve
+	// that taint before entering credential handback or releasing stage custody.
+	if err := b.conduit.Stop(ctx); err != nil {
+		return err
+	}
+	return b.IsolationBoundaryV2.Release(ctx)
 }

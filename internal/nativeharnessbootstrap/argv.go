@@ -25,6 +25,21 @@ var (
 
 const deadlineName = "SESSIONLESS_NATIVE_DEADLINE_UNIX_NS"
 
+// BootstrapEnvironment serializes the launcher's captured original deadline.
+// It is a replacement environment builder, not an authority or readiness proof.
+// The outer engine command must retain its original workload environment.
+func BootstrapEnvironment(base []string, deadline time.Time) ([]string, error) {
+	if deadline.IsZero() {
+		return nil, ErrConfig
+	}
+	values := append(append([]string(nil), base...), deadlineName+"="+strconv.FormatInt(deadline.UnixNano(), 10))
+	selected, _, err := environment(values)
+	if err != nil {
+		return nil, err
+	}
+	return append(selected, deadlineName+"="+strconv.FormatInt(deadline.UnixNano(), 10)), nil
+}
+
 type program struct {
 	path   string
 	digest attachedworkerdaemon.ExecutableDigest

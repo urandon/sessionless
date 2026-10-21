@@ -115,6 +115,32 @@ func TestEnvironmentIsReplacementNotInheritance(t *testing.T) {
 	}
 }
 
+func TestBootstrapEnvironmentKeepsCapturedDeadlineAndCallerBase(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		deadline := time.Now().Add(3 * time.Second)
+		base, _, err := environment(explicitEnvironment(deadline))
+		if err != nil {
+			t.Fatal(err)
+		}
+		original := slices.Clone(base)
+		time.Sleep(time.Second) // Logical preparation cost, not synchronization.
+		built, err := BootstrapEnvironment(base, deadline)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, value, err := environment(built)
+		if err != nil || value != strconv.FormatInt(deadline.UnixNano(), 10) || !slices.Equal(base, original) {
+			t.Fatalf("captured deadline/base changed: %q %v", value, err)
+		}
+		if _, err := BootstrapEnvironment(built, deadline); err == nil {
+			t.Fatal("caller-authored duplicate control variable accepted")
+		}
+		if _, err := BootstrapEnvironment(base, time.Time{}); err == nil {
+			t.Fatal("missing deadline accepted")
+		}
+	})
+}
+
 func TestOriginalDeadlineNeverRenews(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		original := time.Now().Add(3 * time.Second)

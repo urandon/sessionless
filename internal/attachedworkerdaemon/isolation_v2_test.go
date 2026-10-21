@@ -82,6 +82,16 @@ type nativeBudgetLauncher struct {
 // A passive, inert lifecycle fixture; it grants no network or Session authority.
 type nativeBudgetConduit struct{}
 
+type deadlineCaptureConduit struct{ original time.Time }
+
+func (c *deadlineCaptureConduit) Start(ctx context.Context, socket *NativeSocketV2) error {
+	c.original, _ = ctx.Deadline()
+	_, err := socket.Path()
+	return err
+}
+func (*deadlineCaptureConduit) Stop(context.Context) error { return nil }
+func (*deadlineCaptureConduit) Alive() bool                { return false }
+
 func (*nativeBudgetConduit) Start(_ context.Context, socket *NativeSocketV2) error {
 	_, err := socket.Path()
 	return err
@@ -95,6 +105,74 @@ func (*nativeBudgetLauncher) ProfileV2() IsolationProfileV2 {
 }
 func (l *nativeBudgetLauncher) PrepareV2(ctx context.Context, envelope LaunchEnvelopeV2) (IsolationBoundaryV2, error) {
 	return l.prepare(ctx, envelope)
+}
+
+func TestNativePrepareDeadlineEqualsOriginalActiveAndSurvivesSerialization(t *testing.T) {
+	launcher := &nativeBudgetLauncher{}
+	supervisor, spec, bundle := nativeBudgetFixture(t, launcher, 3*time.Second)
+	conduit := &deadlineCaptureConduit{}
+	var captured time.Time
+	var preparation context.Context
+	launcher.prepare = func(ctx context.Context, _ LaunchEnvelopeV2) (IsolationBoundaryV2, error) {
+		preparation = ctx
+		captured, _ = ctx.Deadline()
+		return nil, errors.New("owned fixture stops before process start")
+	}
+	parent, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	_, err := supervisor.RunNativeV2(parent, spec, bundle, conduit)
+	if err == nil || preparation == nil || captured.IsZero() || !captured.Equal(conduit.original) {
+		t.Fatalf("prepare=%v original=%v result=%v", captured, conduit.original, err)
+	}
+	if preparation.Err() != context.Canceled || parent.Err() != nil {
+		t.Fatalf("prepare cancel escaped to original caller: prepare=%v parent=%v", preparation.Err(), parent.Err())
+	}
+	// A value captured before cancelPrepare remains the exact original numeric
+	// deadline; storing the transient context would instead store cancellation.
+	if captured.UnixNano() != conduit.original.UnixNano() {
+		t.Fatal("serialized original deadline changed")
+	}
+}
+
+func TestNativeUnknownBoundaryCleanupRetainsAttemptRoot(t *testing.T) {
+	for _, mode := range []string{"release", "stop"} {
+		t.Run(mode, func(t *testing.T) {
+			launcher := &nativeBudgetLauncher{}
+			supervisor, spec, bundle := nativeBudgetFixture(t, launcher, 3*time.Second)
+			var root, marker string
+			launcher.prepare = func(ctx context.Context, e LaunchEnvelopeV2) (IsolationBoundaryV2, error) {
+				root = e.Workload.WriteRoots[0]
+				marker = filepath.Join(root, "synthetic-retained-stage")
+				if err := os.WriteFile(marker, []byte("synthetic private stage"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				base, err := (&fixtureLauncher{}).Prepare(ctx, e.Workload)
+				if err != nil {
+					return nil, err
+				}
+				b := &nativeBudgetBoundary{fixtureBoundary: base.(*fixtureBoundary), envelope: e}
+				if mode == "release" {
+					b.release = func(context.Context) error { return errors.New("unknown fake release") }
+				} else {
+					b.alive = func(context.Context) (bool, error) { return true, nil }
+					b.graceful = func(context.Context) error { return errors.New("unknown fake stop") }
+					b.force = b.graceful
+				}
+				return b, errors.New("owned fixture stops before process Start")
+			}
+			result, err := supervisor.RunNativeV2(t.Context(), spec, bundle, &nativeBudgetConduit{})
+			if err == nil || result.CleanupSucceeded {
+				t.Fatalf("unknown %s cleanup succeeded: %+v %v", mode, result, err)
+			}
+			if _, err := os.Stat(root); err != nil {
+				t.Fatalf("lost original attempt-root custody: %v", err)
+			}
+			raw, err := os.ReadFile(marker)
+			if err != nil || string(raw) != "synthetic private stage" {
+				t.Fatalf("unknown cleanup removed original stage: %q %v", raw, err)
+			}
+		})
+	}
 }
 
 func nativeBudgetFixture(t *testing.T, launcher *nativeBudgetLauncher, timeout time.Duration) (*Supervisor, AttemptSpec, NativeLaunchV2) {

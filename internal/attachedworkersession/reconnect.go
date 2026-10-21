@@ -472,6 +472,8 @@ func newOwnedSession(
 		retryJitter: &exchangeRetryJitter{state: connector.config.retrySeed}, retryWait: connector.config.retryWait,
 		manifestRevision: manifest.Revision, manifestUpdatedAt: manifest.UpdatedAt,
 	}
+	// Reconnect restores observation/reconciliation, never a native send owner.
+	session.nativeIdentity = session
 	session.operationGate <- struct{}{}
 	return session
 }

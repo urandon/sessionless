@@ -56,13 +56,15 @@ type preparedObservation struct {
 // or releases a credential. Exact cancellation and terminal observation are
 // arbitrated under one lock so they cannot both report success.
 type PreparedProcessBoundaryV1 struct {
-	supervisor  *attachedworkerdaemon.Supervisor
-	authority   AuthorityV1
-	executable  string
-	digest      attachedworkerdaemon.ExecutableDigest
-	arguments   []string
-	now         func() time.Time
-	mediaConfig *MediaConfigV1
+	supervisor     *attachedworkerdaemon.Supervisor
+	authority      AuthorityV1
+	executable     string
+	digest         attachedworkerdaemon.ExecutableDigest
+	arguments      []string
+	now            func() time.Time
+	mediaConfig    *MediaConfigV1
+	native         *nativeConduitOwner
+	nativeIdentity *PreparedProcessBoundaryV1
 
 	mu       sync.Mutex
 	consumed bool
@@ -70,6 +72,13 @@ type PreparedProcessBoundaryV1 struct {
 }
 
 func NewPreparedProcessBoundaryV1(config PreparedProcessBoundaryConfigV1) (*PreparedProcessBoundaryV1, error) {
+	if config.Supervisor != nil && config.Supervisor.NativeV2() {
+		return nil, ErrContract
+	}
+	return newPreparedProcessBoundary(config)
+}
+
+func newPreparedProcessBoundary(config PreparedProcessBoundaryConfigV1) (*PreparedProcessBoundaryV1, error) {
 	if config.Supervisor == nil || config.Authority.Validate() != nil || !filepath.IsAbs(config.Executable) ||
 		filepath.Clean(config.Executable) != config.Executable ||
 		config.ExecutableDigest == (attachedworkerdaemon.ExecutableDigest{}) || len(config.Arguments) == 0 {
@@ -96,7 +105,8 @@ func NewPreparedProcessBoundaryV1(config PreparedProcessBoundaryConfigV1) (*Prep
 }
 
 func (boundary *PreparedProcessBoundaryV1) Run(ctx context.Context, invocation ProcessInvocationV1) (result ProcessResultV1, runErr error) {
-	if boundary == nil || ctx == nil || ctx.Err() != nil || boundary.validateInvocation(invocation) != nil {
+	if boundary == nil || (boundary.native != nil && boundary.nativeIdentity != boundary) ||
+		ctx == nil || ctx.Err() != nil || boundary.validateInvocation(invocation) != nil {
 		return ProcessResultV1{}, ErrProcessBoundaryUnavailable
 	}
 	runCtx, cancel := context.WithCancel(ctx)
@@ -171,15 +181,27 @@ func (boundary *PreparedProcessBoundaryV1) Run(ctx context.Context, invocation P
 		return ProcessResultV1{}, ErrProcessBoundaryUnavailable
 	}
 	expiryCtx, cancelExpiry := context.WithDeadline(runCtx, deadline)
-	actual, runErr := boundary.supervisor.Run(expiryCtx, prepared)
+	var actual attachedworkerdaemon.AttemptResult
+	if boundary.native == nil {
+		actual, runErr = boundary.supervisor.Run(expiryCtx, prepared)
+	} else {
+		actual, runErr = boundary.native.run(expiryCtx, prepared, invocation)
+	}
 	observed = &actual
 	cancelExpiry()
 	result = mapPreparedProcessResult(invocation, actual)
+	if boundary.native != nil {
+		// Opaque native bytes/exit cannot certify one physical model effect or
+		// direct-operation fencing. Existing V1 semantic acceptance must deny.
+		result.ProviderEffects = 0
+		result.ProviderEffectFenceSatisfied = false
+	}
 	return result, runErr
 }
 
 func (boundary *PreparedProcessBoundaryV1) Cancel(ctx context.Context, authority AuthorityV1) error {
-	if boundary == nil || ctx == nil || ctx.Err() != nil || authority.Validate() != nil || authority != boundary.authority {
+	if boundary == nil || (boundary.native != nil && boundary.nativeIdentity != boundary) ||
+		ctx == nil || ctx.Err() != nil || authority.Validate() != nil || authority != boundary.authority {
 		return ErrProcessBoundaryUnavailable
 	}
 	boundary.mu.Lock()

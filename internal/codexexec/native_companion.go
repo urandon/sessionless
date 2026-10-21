@@ -75,6 +75,10 @@ func (v *nativeConduitOwner) newCompanion(ctx context.Context, deps nativeCompan
 	if _, bounded := ctx.Deadline(); !bounded {
 		return nil, errNativeConduitAuthority
 	}
+	identity, err := verifyNativeCompanionHost(v.bundle.Companion)
+	if err != nil || !sameNativeCompanionHost(v.hostIdentity, identity) {
+		return nil, errNativeConduitAuthority
+	}
 	policy, err := v.bundle.InstallPolicyDigestV2()
 	limits := v.bundle.Limits
 	if err != nil || policy != v.bundle.PolicyDigest || limits.Connections > 32 ||
@@ -112,7 +116,8 @@ func (v *nativeConduitOwner) newCompanion(ctx context.Context, deps nativeCompan
 }
 
 func (c *nativeCompanion) current() bool {
-	if c == nil || c.self != c || c.owner == nil || c.owner.self != c.owner || c.ctx.Err() != nil {
+	if c == nil || c.self != c || c.owner == nil || c.owner.self != c.owner || c.ctx.Err() != nil ||
+		!nativeCompanionHostCurrent(c.owner.bundle.Companion, c.owner.hostIdentity) {
 		return false
 	}
 	c.mu.Lock()

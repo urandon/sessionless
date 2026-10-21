@@ -211,7 +211,7 @@ func nativeBudgetFixture(t *testing.T, launcher *nativeBudgetLauncher, timeout t
 		Environment: []EnvironmentVariable{{Name: helperEnabled, Value: "1"}, {Name: helperMode, Value: "protocol-terminal"}}}
 	artifact := NativeArtifactV2{Executable: executable, Digest: digest}
 	bundle := NativeLaunchV2{Version: 2, Bootstrap: artifact, Relay: artifact, Companion: artifact,
-		BootstrapArguments: []string{"bootstrap"}, RelayArguments: []string{"relay"}, CompanionArguments: []string{"companion"},
+		BootstrapArguments: []string{"bootstrap"}, RelayArguments: []string{"relay"},
 		SocketDestination: "/conduit", ProviderHosts: []string{"provider.example"}, ScopeDigest: digest, PolicyDigest: digest,
 		Limits: NativeConduitLimitsV2{Connections: 1, InboundBytes: 1024, OutboundBytes: 1024,
 			CompanionMemoryBytes: 1024, CompanionGoroutines: 1, Active: time.Second, Cleanup: time.Second}}

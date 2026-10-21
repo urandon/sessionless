@@ -271,6 +271,16 @@ peer. It forwards opaque bytes, including bytes prefetched while reading the
 CONNECT header. It neither intercepts TLS nor rebuilds model requests, reads
 credentials or claims provider acceptance, model identity or token usage.
 
+The companion is in-process Go code: its admitted artifact is the actual host
+executable, not an independently launched program with fictional argv. The
+private factory verifies its canonical locator, original file identity and
+digest. Linux hashes the opened `/proc/self/exe` handle and checks the admitted
+file is that same running inode; each connection rechecks captured identity.
+Unrelated files and same-byte copies cannot stand in for it. Other-platform
+source fixtures do not establish Linux serving eligibility. The unshipped V2
+envelope has no companion argv field or legacy alias; host argv is not copied
+into policy material.
+
 Connections and both traffic directions share non-renewable aggregate budgets.
 Fixed relay buffers and bounded connection concurrency constrain this component;
 they are not proof of a whole-process memory, CPU or rootless-engine ceiling.

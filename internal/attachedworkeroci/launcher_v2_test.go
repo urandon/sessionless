@@ -181,7 +181,7 @@ func nativeBundle(t *testing.T, f fixture) attachedworkerdaemon.NativeLaunchV2 {
 		t.Fatal(err)
 	}
 	artifact := attachedworkerdaemon.NativeArtifactV2{Executable: helper, Digest: digest}
-	b := attachedworkerdaemon.NativeLaunchV2{Version: 2, Bootstrap: artifact, Relay: artifact, Companion: artifact, CompanionArguments: []string{"inert-host-companion"}, SocketDestination: "/conduit/native.sock", ProviderHosts: []string{"api.openai.com"}, ScopeDigest: f.spec.ExecutableDigest,
+	b := attachedworkerdaemon.NativeLaunchV2{Version: 2, Bootstrap: artifact, Relay: artifact, Companion: artifact, SocketDestination: "/conduit/native.sock", ProviderHosts: []string{"api.openai.com"}, ScopeDigest: f.spec.ExecutableDigest,
 		Limits: attachedworkerdaemon.NativeConduitLimitsV2{Connections: 2, InboundBytes: 1024, OutboundBytes: 1024, CompanionMemoryBytes: 64 << 20, CompanionGoroutines: 4, Active: 30 * time.Second, Cleanup: time.Second}}
 	b.BootstrapArguments, b.RelayArguments, err = nativeharnessbootstrap.Arguments(f.spec, b)
 	if err != nil {

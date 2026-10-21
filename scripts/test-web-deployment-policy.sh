@@ -56,11 +56,18 @@ require_literal "$terraform_wrapper" 'CLOUD_DEV_IMAGE_TFVARS is required for eve
 if [ "${1:-}" = "--plan-json" ] && [ "$#" -eq 2 ]; then
   # Inspect Terraform's actual mocked target expansion. Source checks alone
   # cannot prove that a module dependency is absent from the execution graph.
+  # Count terminal runs, not starting/running/teardown progress events:
+  # https://developer.hashicorp.com/terraform/internals/machine-readable-ui#test-run
+  # Keep the address binding inside its own predicate: jq 1.8 changed `as`
+  # precedence against binary operators, unlike jq 1.7's Term-only binding.
+  # https://github.com/jqlang/jq/blob/jq-1.8.1/NEWS.md#language-changes
   jq -e -s '
-    [.[] | select(.type == "test_run" and .test_run.run == "foundation_bootstrap_without_web_payload" and .test_run.status == "pass")] as $bootstrap |
+    [.[] | select(.type == "test_run" and .test_run.run == "foundation_bootstrap_without_web_payload" and .test_run.progress == "complete")] as $bootstrap |
     [.[] | select(.type == "test_plan" and .["@testrun"] == "isolated_web_rollout")] as $plans |
     ($bootstrap | length) == 1 and
+    $bootstrap[0].test_run.status == "pass" and
     ($plans | length) == 1 and
+    (
     ($plans[0].test_plan.resource_changes | map(.address)) as $addresses |
     all([
       "module.web.yandex_serverless_container.web",
@@ -80,6 +87,7 @@ if [ "${1:-}" = "--plan-json" ] && [ "$#" -eq 2 ]; then
        contains("yandex_container_repository_") or
        contains("yandex_container_repository.runtime") or
        contains("yandex_iam_service_account_static_access_key.queue_provisioner")) | not)
+    )
   ' "$2" >/dev/null || {
     printf '%s\n' 'targeted Web plan must retain every runtime permission and exclude publication/GC and unrelated runtime graphs' >&2
     exit 1

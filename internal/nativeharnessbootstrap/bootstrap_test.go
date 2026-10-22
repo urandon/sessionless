@@ -195,6 +195,9 @@ func TestOwnedBootstrapProcess(t *testing.T) {
 		fail()
 	}
 	if role == "native" {
+		if slices.Contains(a[5:], "--execution-descriptor-json") || slices.Contains(a[5:], "bootstrap-v3") {
+			fail()
+		}
 		proxy := "http://127.0.0.1:31217"
 		for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
 			if os.Getenv(key) != proxy {
@@ -322,6 +325,11 @@ type fixture struct {
 
 func newFixture(t *testing.T, relayMode, nativeMode string) *fixture {
 	t.Helper()
+	return newFixtureWithRun(t, relayMode, nativeMode, nil, nil)
+}
+
+func newFixtureWithRun(t *testing.T, relayMode, nativeMode string, configure func(*fixture), run func(context.Context, *fixture) error) *fixture {
+	t.Helper()
 	dir := t.TempDir()
 	exe, err := os.Executable()
 	if err != nil {
@@ -403,7 +411,16 @@ func newFixture(t *testing.T, relayMode, nativeMode string) *fixture {
 	})
 	f.deadline = time.Now().Add(3 * time.Second)
 	f.env = explicitEnvironment(f.deadline)
-	go func() { f.result <- Run(ctx, f.args, f.env, f.in, f.out, f.errout) }()
+	if configure != nil {
+		configure(f)
+	}
+	go func() {
+		if run == nil {
+			f.result <- Run(ctx, f.args, f.env, f.in, f.out, f.errout)
+		} else {
+			f.result <- run(ctx, f)
+		}
+	}()
 	return f
 }
 

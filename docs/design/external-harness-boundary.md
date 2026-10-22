@@ -1,6 +1,6 @@
 # Shared external harness execution boundary
 
-Version: 0.3.0 candidate. The 0.1.0 architecture is the independently reviewed engineering design for
+Version: 0.4.0 candidate. The 0.1.0 architecture is the independently reviewed engineering design for
 [#215](https://gitcode.com/urandon/sessionless/issues/215), using the accepted
 [#214 comparison](https://gitcode.com/urandon/sessionless/issues/214#note_194345569).
 Owner: #13; attached delivery: #72/#133; managed delivery: #176/#175.
@@ -306,6 +306,127 @@ wrong-binding/config mutation/failure/cancel/cleanup/no-replay tests, independen
 original-goal exact-source review and required exact-head CI. Then qualify and
 activate only the exact admitted resource/platform under its own authority.
 Config-only registration, a source factory or green fixtures are not the demo.
+
+## Original input binding with fixed workload paths
+
+`NativeProfileV2` needs an explicit `NativeLaunchV3` input-binding successor;
+the already delivered V2 launch/install contract remains unchanged. This is
+not a new worker, scheduler, process runner or agent-side model transport.
+The same original Session child, prepared consumed entry and supervisor run
+retain authority, cancellation, conduit, stop/release and credential ownership.
+
+The concrete incompatibility is visible in current source:
+`nativeharnessbootstrap.Arguments` embeds the entire native argv in the
+bootstrap, `NativeLaunchV2.InstallPolicyDigestV2` seals it, and the OCI launcher
+requires byte-exact equality against the actual command. Appending fresh
+host-stage `--image` paths or a random catalog pathname cannot preserve the
+already accepted installation policy. Removing argv from the V2 hash,
+normalizing arbitrary strings, rehashing a changed bundle against itself, or
+sharing predictable host staging directories is not a solution.
+
+### Installation versus execution binding
+
+The immutable V3 installation has fixed **workload-visible** read-only slots:
+`/sessionless/profile/models.json`, `/sessionless/profile/output.schema.json`,
+and at most two `/sessionless/input/image-01.png`/`.jpg` and `image-02.png`/`.jpg`
+slots. Only the selected suffix exists. These are container paths, not stable
+or shared host directories. Original source staging remains fresh, private
+and random under its existing held-directory ownership.
+
+Seal the exact catalog/schema bytes, generated CLI configuration, executable,
+helpers, platform/resource bounds and all seven permitted full native commands:
+no image; one PNG; one JPEG; PNG/PNG; PNG/JPEG; JPEG/PNG; JPEG/JPEG. Each command
+has the exact fixed paths and image order. This is a finite list of exact argv
+vectors, not an arbitrary substitution language. Canonical text/JSON file
+contents remain in the already verified prompt; they do not create more mount
+slots. Keep existing argument count/length/encoding ceilings, including the
+complete generated bootstrap/relay argv, and reject installation overflow.
+Fixed TOML inline-table overrides may compact the generated settings; never
+drop feature/provider exclusions to make an oversized argv fit.
+
+After the original consumed entry, derive the selected variant only from the
+original verified canonical input and `mediaStage.verifyImages()`: exact count,
+ordered media types, original digests and held no-follow file/directory
+identities. Derive a separate execution binding inside that owner from the
+already accepted scope/manifest, installation digest, selected exact command,
+ordered original associations, actual frozen catalog/schema bytes and finite
+source-to-destination mappings. The execution digest is evidence of that
+derivation; it is not caller approval, a replacement policy or a second claim.
+
+The explicit runtime carrier is a strict, canonical JSON
+`NativeExecutionDescriptorV3` scalar, at most 4 KiB, supplied to the bootstrap
+as one `--execution-descriptor-json` value. The original prepared owner produces
+it, not the caller. Its closed fields contain version 3, the accepted
+scope/manifest association digest, installation digest, selected variant index,
+and each selected image's slot ordinal, byte size and SHA-256 in canonical
+order, plus the frozen catalog/schema sizes and digests. Slot paths and suffixes
+are derived from the sealed variant; the descriptor accepts no arbitrary host
+or workload pathname. Host source/inode associations remain in the original
+owner and launcher mapping attestation, not in native argv or the descriptor.
+Each mapped file has a positive size of at most 1 MiB: the existing original
+image cap, and a finite engineering cap for each frozen catalog/schema. These
+are input-file bounds, not native prepared, context, wire or allocation facts.
+
+Installation seals the static bootstrap/relay command, environment and this
+exact carrier schema and bounds, together with the seven native vectors. It
+does not seal the per-execution descriptor values as installation facts.
+V3 execution attestation instead seals the actual complete bootstrap command,
+including the canonical descriptor, selected exact native vector and original
+source-to-destination mappings. The launcher verifies this command and carrier
+against the original association before create/start. This explicit V3
+static/runtime separation is not normalization or removal of a V2 hash check.
+The descriptor is not an extra mount, generic substitution template, new claim
+or authority; the bootstrap consumes it and does not pass it to the native
+child. Unknown/duplicate fields, noncanonical encoding, wrong count/order,
+missing/extra carrier, size overflow or association mismatch deny execution.
+
+The original connected Session child and its bound prepared entry must retain
+this exact execution association through the existing conduit/supervisor call.
+Copied DTOs, a caller-provided matching hash or a factory predicate cannot
+replace the original child. Attempt mismatch, another original stage, a
+different selected vector or resource/profile drift deny before create/start
+and retain the consumed claim. Scope, source identity and policy digests are
+distinct; none is inferred from a successful socket connection.
+
+### Bounded read-only mappings and repeat verification
+
+V3 adds only the four possible read-only files above: two originals and the
+frozen catalog/schema. It does not accept arbitrary mount destinations,
+directory trees, writable aliases, credentials, executable replacements or
+model-supplied paths. Verify canonical absolute host source locators,
+owner/mode/regular-file/no-follow identity, size/hash and allowed destination;
+source locators alone are not authority. Forbid overlap with native socket,
+credentials, executable/helper, private scratch or another destination.
+
+The launcher rechecks the exact installation/variant and original file
+associations before create/start and attests the resulting bounded mappings,
+not merely the unmounted argv. The existing bootstrap parses the attested
+descriptor and performs a bounded pre-exec size/hash check of every actual
+mounted image in selected slot order and of the frozen catalog/schema.
+Original held-owner/inode provenance, inspected read-only source/destination
+mappings and mounted-byte integrity are three distinct checks; the last
+does not establish the first two. Replacement, missing/unreadable/extra files, suffix/order drift or
+inspection failure prevent native exec. It never parses a model request,
+intercepts the SDK, handles provider credentials or grants a new network path.
+Actual source-to-destination file mounts replace the old same-path read-root
+assumption only for this explicit V3 constructor; V1/V2 remain unchanged.
+
+Native `auth.json` remains the independently fenced exact writeback file in
+the existing credential home, never a copied config or an input mount. All
+existing credential issue/materialization/drain/writeback/release checks,
+input inode cleanup and original outer receipt ownership still apply. An
+unknown stop or mount/file handback prevents success and retains custody;
+neither failed verification nor receipt loss permits a new native invocation.
+
+Before publication, controlled fake tests must demonstrate all seven vectors,
+unchanged install identity across fresh original stages, different execution
+associations, every wrong/foreign/copied/substituted mapping and config mutation,
+descriptor omission/substitution/order/digest/encoding/limit violations,
+argument limits, actual launcher/inspect/bootstrap handoff and cancel/failure
+cleanup under the original owner. A constructor-only positive or source hash
+is not acceptance. Exact released native/config/media and actual platform
+proof remain separate activation requirements; this input binding does not
+prove image context fit or create a governing policy grant.
 
 ## Packaging and resource bounds
 

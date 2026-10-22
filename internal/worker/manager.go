@@ -19,6 +19,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/canonicaloutput"
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/opssignal"
 	"gitcode.com/urandon/sessionless/internal/outboxwake"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/providerloopsession"
@@ -48,6 +49,7 @@ type Config struct {
 	LocalOwnedSession      *providerloopsession.LocalV1
 	PhysicalClaimGenerator PhysicalClaimGenerator
 	ScratchRemoveAll       func(string) error
+	OpsSignals             opssignal.Sink
 }
 
 type PhysicalClaimGenerator func(context.Context) (string, error)
@@ -197,6 +199,7 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 		return manager.deadLetter(ctx, message, "worker_job_not_found")
 	}
 	if loaded.Run.Status.Terminal() {
+		manager.observeManagedReadback(ctx, loaded, message.Envelope.TenantID, runID, loaded.Job.AttemptID, true, nil)
 		if loaded.Job.Origin != nil {
 			if err := manager.config.ProjectionWakePublisher.PublishFrontendProjectionWake(
 				ctx, loaded.Run.TenantID, loaded.Run.ID, manager.clock.Now().UTC(),
@@ -326,6 +329,11 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 		}
 		if workDir != "" {
 			stopResult.cleanupErr = manager.cleanupInvocationDir(workDir)
+			// A failed scratch cleanup is a real negative observation. A nil
+			// scratch result does not prove allocation/namespace cleanup.
+			if managedCanonicalJob(loaded) {
+				manager.observeManagedFailure(ctx, ctx, opssignal.ManagedCleanupFailure, opssignal.Cleanup, stopResult.cleanupErr)
+			}
 			workDir = ""
 		}
 		activeStopped = true
@@ -433,6 +441,9 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 		if cancelErr == nil && cancelled {
 			return manager.finishFailure(context.Background(), message, loaded, lease, true, "cancelled")
 		}
+		if managedCanonicalJob(loaded) {
+			manager.observeManagedFailure(ctx, executionCtx, opssignal.ManagedExecutionFailure, opssignal.Execution, err)
+		}
 		var classified *domain.ClassifiedError
 		if errors.As(err, &classified) && classified.Retryable() {
 			return manager.retry(ctx, message, err)
@@ -449,6 +460,9 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 	}
 	manifest, err := manager.uploadOutputs(executionCtx, loaded, workDir, result.Outputs)
 	if err != nil {
+		if managedCanonicalJob(loaded) {
+			manager.observeManagedFailure(ctx, executionCtx, opssignal.ManagedPublicationFailure, opssignal.Publication, err)
+		}
 		if stopped := stopActiveInvocation(); stopped.Failed() {
 			return manager.handleActiveStop(message, loaded, lease, stopped)
 		}
@@ -467,6 +481,9 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 			executionCtx, loaded, result, manifest, finishedAt,
 		)
 		if err != nil {
+			if managedCanonicalJob(loaded) {
+				manager.observeManagedFailure(ctx, executionCtx, opssignal.ManagedPublicationFailure, opssignal.Publication, err)
+			}
 			if stopped := stopActiveInvocation(); stopped.Failed() {
 				return manager.handleActiveStop(message, loaded, lease, stopped)
 			}
@@ -500,6 +517,9 @@ func (manager *Manager) RunOnce(ctx context.Context) (Outcome, error) {
 			LeaseID: lease.ID, Fence: lease.FenceToken, At: finishedAt,
 			Manifest: manifest, Events: events, PreparedEvents: eventMaterials, SubstrateEvidence: &substrateEvidence,
 		}); err != nil {
+			if managedCanonicalJob(loaded) {
+				manager.observeManagedUnknown(ctx, err)
+			}
 			return manager.retry(ctx, message, err)
 		}
 		if err := manager.config.ProjectionWakePublisher.PublishFrontendProjectionWake(

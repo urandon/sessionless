@@ -44,6 +44,7 @@ help:
 		'make observability-config-render render a private, non-deployable preview by default' \
 		'make observability-config-test run focused offline parser/export/drift tests' \
 		'make ops-signal-test verify content-free operational boundaries offline' \
+		'make ops-signal-unit-test run the smaller isolated operational-signal suites' \
 		'make tools          validate every pinned developer tool' \
 		'make docs-check     validate local Markdown links, anchors, images, and discoverability' \
 		'make readme-visual-preview serve the built WebUI with a read-only deterministic fixture' \
@@ -429,9 +430,13 @@ observability-config-test: prepare
 observability-config-fuzz: prepare
 	go test -run='^$$' -fuzz=FuzzDecodeYAML -fuzztime=2s -parallel=1 ./internal/observabilityconfig
 
-OPS_SIGNAL_PACKAGES := ./internal/opssignal ./internal/portlog ./internal/outboxwake ./internal/serverlesshttp ./internal/scheduler ./internal/sessioningress ./internal/sessionapi ./internal/webapi ./internal/webbff ./internal/yandexoauth ./internal/telegramoidc ./internal/sqsqueue ./internal/yandextriggers
-.PHONY: ops-signal-test
-ops-signal-test: prepare
+OPS_SIGNAL_PACKAGES := ./internal/opssignal ./internal/portlog ./internal/outboxwake ./internal/serverlesshttp ./internal/scheduler ./internal/sessioningress ./internal/sessionapi ./internal/webapi ./internal/webbff ./internal/yandexoauth ./internal/telegramoidc ./internal/sqsqueue ./internal/yandextriggers ./internal/worker ./internal/attachedworkertransport ./internal/attachedworkerreceipt ./internal/controlapi ./cmd/control-api ./cmd/worker-runtime
+.PHONY: ops-signal-test ops-signal-unit-test
+ops-signal-test: ops-signal-unit-test
+	go test -race -count=1 -timeout=3m -run='^TestLocalSessionManagerCompletionConnected$$' ./internal/ydbstore
+	go test -race -count=2 -shuffle=on -timeout=3m -run='^TestLocalSessionManagerCompletionConnected$$' ./internal/ydbstore
+
+ops-signal-unit-test: prepare
 	go vet $(OPS_SIGNAL_PACKAGES)
 	go test -race -count=1 -timeout=3m $(OPS_SIGNAL_PACKAGES)
 	go test -race -count=20 -shuffle=on -timeout=3m -run='^TestOps' $(OPS_SIGNAL_PACKAGES)

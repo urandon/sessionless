@@ -59,8 +59,9 @@ func (manager *Manager) observeManagedDeadline(parent, authority context.Context
 	// An original owner can intentionally collapse an expired call to a
 	// membership refusal. The positively observed authority expiration takes
 	// precedence; an active-context refusal still produces no outage event.
-	if (authority != nil && errors.Is(authority.Err(), context.DeadlineExceeded)) ||
-		(!managedExpectedDenial(err) && errors.Is(err, context.DeadlineExceeded)) {
+	// A raw nested timeout does not prove this authority expired: the manager
+	// retries such errors while its original execution context is still live.
+	if authority != nil && errors.Is(authority.Err(), context.DeadlineExceeded) {
 		opssignal.Emit(parent, manager.config.OpsSignals, opssignal.ManagedDeadlineExceeded, opssignal.OriginalDeadline, opssignal.DeadlineExceeded)
 		return true
 	}

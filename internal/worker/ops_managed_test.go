@@ -312,6 +312,8 @@ type managedOpsDeadlineHarness struct {
 	calls        int
 	cancels      int
 	deadline     time.Time
+	authority    context.Context
+	rawTimeout   bool
 	collapse     bool
 	cancelParent context.CancelFunc
 }
@@ -322,6 +324,10 @@ func (*managedOpsDeadlineHarness) Preflight(context.Context, ports.ExecutionIden
 func (h *managedOpsDeadlineHarness) Execute(ctx context.Context, _ ports.ExecutionRequest, _ ports.ExecutionEventSink) (ports.ExecutionResult, error) {
 	h.calls++
 	h.deadline, _ = ctx.Deadline()
+	h.authority = ctx
+	if h.rawTimeout {
+		return ports.ExecutionResult{}, context.DeadlineExceeded
+	}
 	<-ctx.Done()
 	if h.cancelParent != nil {
 		h.cancelParent()
@@ -334,6 +340,43 @@ func (h *managedOpsDeadlineHarness) Execute(ctx context.Context, _ ports.Executi
 func (h *managedOpsDeadlineHarness) Cancel(context.Context, ports.ExecutionIdentity) error {
 	h.cancels++
 	return nil
+}
+
+func TestOpsManagedRawTimeoutWithLiveAuthorityAtActualRunOnce(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		blobs, state, queue, loaded := managedOpsFixture(t)
+		loaded.Job.Limits.MaxRuntime = time.Minute
+		state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
+		parent, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		parentDeadline, _ := parent.Deadline()
+		harness := &managedOpsDeadlineHarness{rawTimeout: true}
+		sink := &managedOpsSink{err: errors.New("drop nested timeout observation"), observe: func(got context.Context, r opssignal.Record) {
+			if got != harness.authority || got.Err() != nil {
+				t.Errorf("nested timeout observation replaced or expired original authority: same=%t err=%v", got == harness.authority, got.Err())
+			}
+			if r.Stage != opssignal.Execution || r.ErrorClass != opssignal.Unexpected || r.DeadlineState != opssignal.Within {
+				t.Errorf("nested timeout observation metadata: got=%+v", r)
+			}
+		}}
+		m := newManagedOpsManager(t, worker.Config{OpsSignals: sink}, queue, state, blobs, harness)
+		publishWorkerMessage(t, parent, queue, loaded.Run.TenantID, loaded.Run.ID)
+		started := time.Now()
+		outcome, err := m.RunOnce(parent)
+		if err != nil || outcome != worker.OutcomeRetried || state.failures != 0 || state.completions != 0 {
+			t.Fatalf("nested timeout business retry changed: outcome=%s err=%v failures=%d completions=%d", outcome, err, state.failures, state.completions)
+		}
+		if harness.calls != 1 || harness.cancels != 1 || state.loads != 1 || len(state.effects) != 1 {
+			t.Fatalf("nested timeout observation added effect/read/reservation: sends=%d cancels=%d loads=%d effects=%d", harness.calls, harness.cancels, state.loads, len(state.effects))
+		}
+		if want := started.Add(loaded.Job.Limits.MaxRuntime); harness.deadline != want {
+			t.Errorf("original execution deadline changed: got=%v want=%v", harness.deadline, want)
+		}
+		if after, _ := parent.Deadline(); after != parentDeadline || parent.Err() != nil {
+			t.Errorf("nested timeout altered original parent: deadline=%v want=%v err=%v", after, parentDeadline, parent.Err())
+		}
+		assertManagedSignals(t, sink, opssignal.ManagedExecutionFailure)
+	})
 }
 
 func TestOpsManagedOriginalRuntimeDeadlineAtActualRunOnce(t *testing.T) {

@@ -21,6 +21,7 @@ type AuthorityResolverV1 interface {
 type ProcessInvocationV1 struct {
 	media                          *mediaInput
 	mediaStage                     *preparedHistory
+	nativeStageV2                  *nativeInputStageV2
 	Authority                      AuthorityV1                               `json:"-"`
 	Identity                       ports.ExecutionIdentity                   `json:"-"`
 	Credential                     ports.ProviderInvocationCredentialV1      `json:"-"`

@@ -109,6 +109,30 @@ func TestNativeInstallV3IsDistinctStableAndScopeIndependent(t *testing.T) {
 	}
 }
 
+func TestNativeInstallV3SealsDerivedFullProfileIdentity(t *testing.T) {
+	v := installV3Fixture(t)
+	unqualified, err := v.InstallPolicyDigestV3()
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.StaticProfileDigest = ExecutableDigest{9}
+	qualified, err := v.InstallPolicyDigestV3()
+	if err != nil || qualified == unqualified {
+		t.Fatalf("full effective profile did not affect install identity: %v", err)
+	}
+	v.ScopeDigest = ExecutableDigest{7}
+	v.PolicyDigest = ExecutableDigest{8}
+	again, err := v.InstallPolicyDigestV3()
+	if err != nil || again != qualified {
+		t.Fatalf("runtime scope/derived policy polluted static identity: %v", err)
+	}
+	v.StaticProfileDigest[0]++
+	changed, err := v.InstallPolicyDigestV3()
+	if err != nil || changed == qualified {
+		t.Fatalf("changed full effective profile reused install identity: %v", err)
+	}
+}
+
 func TestNativeInstallV3CloneDoesNotAlias(t *testing.T) {
 	v := installV3Fixture(t)
 	clone := v.Clone()

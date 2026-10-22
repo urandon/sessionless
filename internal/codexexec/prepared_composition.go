@@ -10,6 +10,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemon"
 	"gitcode.com/urandon/sessionless/internal/attachedworkeroutput"
+	"gitcode.com/urandon/sessionless/internal/attachedworkersession"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/sessioncontext"
@@ -20,17 +21,21 @@ import (
 // sole InvocationRunner owns the credential lifecycle.
 // One pending/finalized slot is kept until exact receipt retirement or Close.
 type PreparedAttachedWorkerRunnerV1 struct {
-	config        Config
-	mediaConfig   *MediaConfigV1
-	scratch       string
-	supervisor    *attachedworkerdaemon.Supervisor
-	outer         *attachedworkerdaemon.InvocationRunner
-	mu            sync.Mutex
-	slot          *preparedResultSlot
-	last          attachedworkerdaemon.InvocationIdentity
-	closed        bool
-	preparing     bool
-	preparingDone chan struct{}
+	config           Config
+	mediaConfig      *MediaConfigV1
+	nativeConfigV2   *NativePreparedConfigV2
+	nativeProfileV2  *nativeFrozenProfileV2
+	nativeSessionV2  *attachedworkersession.Session
+	nativeIdentityV2 *PreparedAttachedWorkerRunnerV1
+	scratch          string
+	supervisor       *attachedworkerdaemon.Supervisor
+	outer            *attachedworkerdaemon.InvocationRunner
+	mu               sync.Mutex
+	slot             *preparedResultSlot
+	last             attachedworkerdaemon.InvocationIdentity
+	closed           bool
+	preparing        bool
+	preparingDone    chan struct{}
 }
 
 type preparedResultSlot struct {
@@ -77,18 +82,20 @@ func (owner *PreparedAttachedWorkerRunnerV1) String() string {
 func (owner *PreparedAttachedWorkerRunnerV1) GoString() string { return owner.String() }
 
 func (owner *PreparedAttachedWorkerRunnerV1) Run(ctx context.Context, invocation attachedworkerdaemon.Invocation) (attachedworkerdaemon.InvocationResult, error) {
-	if owner == nil || ctx == nil || ctx.Err() != nil {
+	if owner == nil || owner.nativeConfigV2 != nil && owner.nativeIdentityV2 != owner || ctx == nil || ctx.Err() != nil {
 		return attachedworkerdaemon.InvocationResult{}, ErrContract
 	}
-	if owner.mediaConfig != nil {
+	var nativeSession *attachedworkersession.Session
+	if owner.mediaConfig != nil || owner.nativeConfigV2 != nil {
 		// One owner may hold only one media preflight/decoder/copy set. Reject
 		// concurrent/replayed calls before source projection or deep allocation.
 		owner.mu.Lock()
-		if owner.closed || owner.preparing || owner.slot != nil || owner.last == invocation.Identity {
+		if owner.closed || owner.preparing || owner.slot != nil || owner.last == invocation.Identity || owner.nativeConfigV2 != nil && owner.nativeSessionV2 == nil {
 			owner.mu.Unlock()
 			return attachedworkerdaemon.InvocationResult{}, ErrProcessAlreadyConsumed
 		}
 		owner.preparing = true
+		nativeSession = owner.nativeSessionV2
 		owner.preparingDone = make(chan struct{})
 		owner.mu.Unlock()
 		defer func() {
@@ -109,9 +116,27 @@ func (owner *PreparedAttachedWorkerRunnerV1) Run(ctx context.Context, invocation
 	}
 	defer input.Clear()
 	job := input.Job
+	if owner.nativeConfigV2 != nil {
+		deadline, err := acceptedNativeRuntimeDeadlineV2(input, owner.nativeNowV2())
+		if err != nil {
+			return attachedworkerdaemon.InvocationResult{}, err
+		}
+		var stopRuntime context.CancelFunc
+		ctx, stopRuntime = context.WithDeadline(ctx, deadline)
+		defer stopRuntime()
+	}
 	var media *mediaInput
-	if owner.mediaConfig != nil {
-		descriptor, descriptorErr := owner.mediaConfig.DescriptorV1()
+	if owner.mediaConfig != nil || owner.nativeConfigV2 != nil {
+		var descriptor domain.HarnessBackendDescriptorV1
+		var descriptorErr error
+		if owner.nativeConfigV2 != nil {
+			descriptor = owner.nativeProfileV2.descriptor
+			if validateNativeEnvelopeEvidenceV2(owner.nativeProfileV2, owner.nativeConfigV2.Evidence, job.HarnessBinding, owner.nativeNowV2()) != nil || verifyNativeArtifactsV2(ctx, owner.nativeProfileV2) != nil {
+				return attachedworkerdaemon.InvocationResult{}, ErrContract
+			}
+		} else {
+			descriptor, descriptorErr = owner.mediaConfig.DescriptorV1()
+		}
 		if !owner.config.Enabled || descriptorErr != nil || descriptor != job.HarnessBinding.Backend || !preparedIngressEnvelope(input) {
 			return attachedworkerdaemon.InvocationResult{}, ErrContract
 		}
@@ -120,22 +145,34 @@ func (owner *PreparedAttachedWorkerRunnerV1) Run(ctx context.Context, invocation
 			return attachedworkerdaemon.InvocationResult{}, err
 		}
 		defer media.clear()
-		if err = owner.mediaConfig.eligibility(); err != nil {
+		if owner.mediaConfig != nil {
+			err = owner.mediaConfig.eligibility()
+		}
+		if err != nil {
 			return attachedworkerdaemon.InvocationResult{}, err
 		}
 	}
 	// Unsupported authority-bearing material is rejected, never stripped.
+	arguments := processArguments(owner.config.Model)
+	if owner.nativeConfigV2 != nil {
+		arguments = owner.nativeProfileV2.launch.NativeArguments[0]
+	}
 	if job.ContextWindow == nil || input.CanonicalContext == nil || (media == nil && !preparedTextEnvelope(input)) ||
 		job.WorkspaceSnapshot != nil || job.SkillBundle != nil || len(job.AllowedMCPServers) != 0 ||
 		invocation.Process.Executable != owner.config.Executable || invocation.Process.ExecutableDigest != owner.config.ExecutableDigest ||
-		!sameStrings(invocation.Process.Arguments, processArguments(owner.config.Model)) {
+		!sameStrings(invocation.Process.Arguments, arguments) {
 		return attachedworkerdaemon.InvocationResult{}, ErrContract
 	}
-	driver, err := NewPreparedAttachedWorkerDriverV1(owner.config, input.AcceptedAttempt, job.HarnessBinding.Resource, owner.supervisor)
+	var driver *Driver
+	if owner.nativeConfigV2 != nil {
+		driver, err = owner.nativeDriverV2(ctx, input, nativeSession)
+	} else {
+		driver, err = NewPreparedAttachedWorkerDriverV1(owner.config, input.AcceptedAttempt, job.HarnessBinding.Resource, owner.supervisor)
+	}
 	if err != nil {
 		return attachedworkerdaemon.InvocationResult{}, err
 	}
-	if media != nil {
+	if media != nil && owner.mediaConfig != nil {
 		driver.mediaConfig = owner.mediaConfig
 		driver.descriptor, err = owner.mediaConfig.DescriptorV1()
 		if err != nil {
@@ -164,6 +201,14 @@ func (owner *PreparedAttachedWorkerRunnerV1) Run(ctx context.Context, invocation
 			return attachedworkerdaemon.InvocationResult{}, errors.Join(err, stage.remove())
 		}
 		driver.media, driver.mediaStage = media, stage
+		if driver.nativeProfileV2 != nil {
+			nativeStage, stageErr := stageNativeInputV2(stage, media, driver.nativeProfileV2)
+			if stageErr != nil {
+				return attachedworkerdaemon.InvocationResult{}, errors.Join(stageErr, stage.remove())
+			}
+			boundary := driver.boundary.(*PreparedProcessBoundaryV1)
+			boundary.native.stageV2 = nativeStage
+		}
 	}
 	prompt, err := driver.compilePrompt(request)
 	zeroBytes(prompt)
@@ -263,7 +308,7 @@ func (executor *preparedExecutor) RunPrepared(ctx context.Context, prepared atta
 	if original == nil || !concrete || original.boundary != boundary || original.authority != boundary.authority {
 		return attachedworkerdaemon.AttemptResult{}, errors.Join(err, ErrContract)
 	}
-	if owner.mediaConfig != nil && (original.mediaAssociation != slot.mediaAssociation || original.mediaProfileDigest != request.HarnessBinding.Backend.BackendProfileDigest) {
+	if (owner.mediaConfig != nil || owner.nativeConfigV2 != nil) && (original.mediaAssociation != slot.mediaAssociation || original.mediaProfileDigest != request.HarnessBinding.Backend.BackendProfileDigest) {
 		return attachedworkerdaemon.AttemptResult{}, errors.Join(err, ErrContract)
 	}
 	owner.mu.Lock()
@@ -280,6 +325,9 @@ func (owner *PreparedAttachedWorkerRunnerV1) ReceiptCandidate(identity attachedw
 	if owner == nil {
 		return attachedworkeroutput.Candidate{}, ErrContract
 	}
+	if owner.nativeConfigV2 != nil && owner.nativeIdentityV2 != owner {
+		return attachedworkeroutput.Candidate{}, ErrContract
+	}
 	owner.mu.Lock()
 	defer owner.mu.Unlock()
 	slot := owner.slot
@@ -290,6 +338,9 @@ func (owner *PreparedAttachedWorkerRunnerV1) ReceiptCandidate(identity attachedw
 	candidate := attachedworkeroutput.Candidate{Status: status}
 	switch status {
 	case domain.AttachedWorkerTerminalSucceeded:
+		if slot.original.nativeFinalV2 != nil && len(slot.original.nativeFinalV2.artifacts) != 0 {
+			return attachedworkeroutput.Candidate{}, ErrContract
+		}
 		if !result.Succeeded(runErr) || slot.semantic.ProviderEvidence == nil || slot.semantic.ProviderEvidence.FinishClass != domain.ProviderFinishCompletedV1 ||
 			!utf8.ValidString(slot.semantic.Summary) || slot.semantic.Summary == "" || utf8.RuneCountInString(slot.semantic.Summary) > 32_000 {
 			return attachedworkeroutput.Candidate{}, ErrContract
@@ -331,7 +382,7 @@ func (owner *PreparedAttachedWorkerRunnerV1) ReceiptCandidate(identity attachedw
 // RetireReceipt relinquishes only the original finalized slot after the
 // adapter has received the exact ACK and retired its durable journal entry.
 func (owner *PreparedAttachedWorkerRunnerV1) RetireReceipt(identity attachedworkerdaemon.InvocationIdentity) error {
-	if owner == nil {
+	if owner == nil || owner.nativeConfigV2 != nil && owner.nativeIdentityV2 != owner {
 		return ErrContract
 	}
 	owner.mu.Lock()
@@ -339,14 +390,25 @@ func (owner *PreparedAttachedWorkerRunnerV1) RetireReceipt(identity attachedwork
 	if owner.slot == nil || owner.slot.identity != identity || !owner.slot.finalized || !owner.slot.candidateBuilt {
 		return ErrContract
 	}
+	if err := owner.clearSlotLocked(); err != nil {
+		return err
+	}
 	owner.last = identity
-	owner.clearSlotLocked()
 	return nil
 }
 
-func (owner *PreparedAttachedWorkerRunnerV1) clearSlotLocked() {
+func (owner *PreparedAttachedWorkerRunnerV1) clearSlotLocked() error {
 	if owner.slot != nil {
+		if history := owner.slot.stage; history != nil && history.nativeV2 != nil {
+			native := history.nativeV2
+			// Failed handback cannot relinquish the only retained owner merely
+			// because Close was requested. The consumed slot remains unavailable.
+			if !owner.slot.stageClean || native.self != native || native.history != history || native.dispatched && !native.quiesced {
+				return ErrContract
+			}
+		}
 		if owner.slot.original != nil {
+			owner.slot.original.nativeFinalV2.clear()
 			zeroBytes(owner.slot.original.protocol.final)
 		}
 		owner.slot.semantic = ports.ExecutionResult{}
@@ -357,10 +419,11 @@ func (owner *PreparedAttachedWorkerRunnerV1) clearSlotLocked() {
 		owner.slot.cancel = nil
 		owner.slot = nil
 	}
+	return nil
 }
 
 func (owner *PreparedAttachedWorkerRunnerV1) Close(ctx context.Context) error {
-	if owner == nil || ctx == nil {
+	if owner == nil || owner.nativeConfigV2 != nil && owner.nativeIdentityV2 != owner || ctx == nil {
 		return ErrContract
 	}
 	owner.mu.Lock()
@@ -380,8 +443,11 @@ func (owner *PreparedAttachedWorkerRunnerV1) Close(ctx context.Context) error {
 		return nil
 	}
 	if slot.finalized {
-		owner.clearSlotLocked()
+		clearErr := owner.clearSlotLocked()
 		owner.mu.Unlock()
+		if clearErr != nil {
+			return clearErr
+		}
 		if mediaDone != nil {
 			select {
 			case <-mediaDone:
@@ -400,7 +466,9 @@ func (owner *PreparedAttachedWorkerRunnerV1) Close(ctx context.Context) error {
 	owner.mu.Unlock()
 	select {
 	case <-done:
-		return nil
+		owner.mu.Lock()
+		defer owner.mu.Unlock()
+		return owner.clearSlotLocked()
 	case <-ctx.Done():
 		return ctx.Err()
 	}

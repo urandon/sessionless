@@ -240,6 +240,16 @@ func ValidateDeclarativeConfig(config Config) error {
 	return validateDeclarativeCommon(config)
 }
 
+// ValidateNativeDeclarativeConfigV3 is the separate, non-executing native
+// contract. Namespace root is exact, never permission for host root. The real
+// launcher must still verify the same-user rootless engine and UID mapping.
+func ValidateNativeDeclarativeConfigV3(config Config) error {
+	if config.UserID != 0 || config.GroupID != 0 || config.Boundary != BoundaryLinuxRootless {
+		return ErrConfig
+	}
+	return validateDeclarativeCommon(config)
+}
+
 func validateDeclarativeCommon(config Config) error {
 	if !canonicalAbsolutePath(config.DockerPath) || !validSHA256(config.DockerSHA256) || !canonicalAbsolutePath(config.CLIConfigDir) ||
 		!validUnixHost(config.Host) || !validEngineID(config.EngineID) ||

@@ -19,6 +19,7 @@ rule:
   window: 2m
   evaluation_delay: 1m
   freshness: 3m
+  noise_suppression: false
   no_data:
     no_matching_metrics: no_data
     no_points: no_data

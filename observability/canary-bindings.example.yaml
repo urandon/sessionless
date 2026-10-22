@@ -20,5 +20,6 @@ bindings:
     channel_scope_confirmed: false
     one_confirmed_recipient: false
     no_default_severity_subscription: false
-    notification_states_checked: false
-    repeat_checked: false
+# Actual sent states and repeat belong to the future alert's notification
+# attachment, not this existing-channel preflight. Render marks them pending;
+# persisted rule readback is required before any breach sample.

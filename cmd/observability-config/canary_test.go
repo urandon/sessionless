@@ -41,6 +41,9 @@ func TestCanaryOfflineCLIAndSchema(t *testing.T) {
 		if !bytes.Contains(data, []byte("PLAN_ONLY_NO_LIVE_AUTHORITY")) {
 			t.Errorf("artifact %s lacks authority limit", name)
 		}
+		if !bytes.Contains(data, []byte("PENDING_RULE_READBACK")) {
+			t.Errorf("artifact %s pretends actual notification controls were read", name)
+		}
 	}
 	entries, err := os.ReadDir(out)
 	if err != nil {
@@ -146,7 +149,7 @@ func TestCanaryBoundCLIPrivateOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(console, []byte("fixture-push")) || !bytes.Contains(console, []byte("PLAN_ONLY")) {
+	if !bytes.Contains(console, []byte("fixture-push")) || !bytes.Contains(console, []byte("PLAN_ONLY")) || !bytes.Contains(console, []byte("PENDING_RULE_READBACK")) {
 		t.Error("private output lost target or plan-only limit")
 	}
 	if err := os.Chmod(private, 0644); err != nil {

@@ -8,15 +8,16 @@ import (
 )
 
 type CanaryMetadata struct {
-	SchemaVersion    int    `json:"schema_version"`
-	GeneratorVersion string `json:"generator_version"`
-	InputSHA256      string `json:"input_sha256"`
-	BindingRevision  string `json:"binding_revision"`
-	BindingSHA256    string `json:"binding_sha256"`
-	EvaluatedAt      string `json:"evaluated_at"`
-	Mode             string `json:"mode"`
-	Authority        string `json:"authority"`
-	Evidence         string `json:"evidence"`
+	SchemaVersion                  int    `json:"schema_version"`
+	GeneratorVersion               string `json:"generator_version"`
+	InputSHA256                    string `json:"input_sha256"`
+	BindingRevision                string `json:"binding_revision"`
+	BindingSHA256                  string `json:"binding_sha256"`
+	EvaluatedAt                    string `json:"evaluated_at"`
+	Mode                           string `json:"mode"`
+	Authority                      string `json:"authority"`
+	Evidence                       string `json:"evidence"`
+	ActualRuleNotificationControls string `json:"actual_rule_notification_controls"`
 }
 type CanaryIdentity struct {
 	FolderID  string `json:"folder_id"`
@@ -87,7 +88,7 @@ func RenderCanary(c *CanaryDocument, b *CanaryBindingsDocument, now time.Time) (
 	if err != nil {
 		return nil, err
 	}
-	meta := CanaryMetadata{SchemaVersion: 1, GeneratorVersion: CanaryGeneratorVersion, InputSHA256: inputDigest, Mode: "unbound_plan", Authority: "PLAN_ONLY_NO_LIVE_AUTHORITY", Evidence: "planned_not_observed"}
+	meta := CanaryMetadata{SchemaVersion: 1, GeneratorVersion: CanaryGeneratorVersion, InputSHA256: inputDigest, Mode: "unbound_plan", Authority: "PLAN_ONLY_NO_LIVE_AUTHORITY", Evidence: "planned_not_observed", ActualRuleNotificationControls: "PENDING_RULE_READBACK"}
 	var identity *CanaryIdentity
 	var bindingCopy *CanaryBindings
 	if b != nil {
@@ -108,35 +109,37 @@ func RenderCanary(c *CanaryDocument, b *CanaryBindingsDocument, now time.Time) (
 	console := CanaryConsole{Metadata: meta, Status: "PLAN_ONLY_REQUIRES_SUPPORTED_SURFACE_READBACK_AND_AUTHORITY", Metric: normalized.Metric, Rule: normalized.Rule, Identity: identity, ClearMessage: "Synthetic test metric condition cleared; not application or canonical Run recovery.", Checklist: []string{
 		"Use only the supported native console; this sheet is not a CRUD request or executable policy.",
 		"Private preflight fields are operator assertions, not independently acquired cloud observations.",
-		"Before arming, inspect/read back exact target, fresh collision/ownership, one existing Cloud push recipient, no default severity subscription, states and repeat policy; any channel correction requires separate exact authority.",
-		"Read back Maximum >0.5, 2m window, 1m delay, one series, no gap filling, and both missing-series and missing-points NoData.",
+		"Before arming, inspect/read back exact target, fresh collision/ownership, one existing Cloud push recipient and no default severity subscription; any channel correction requires separate exact authority.",
+		"Actual rule notification controls remain PENDING_RULE_READBACK: sent states and repeat are configured on the test alert's notification attachment, not the existing channel edit form. Desired states are Alarm and OK only, repeat off and noise suppression off; persist/read back these settings before the first breach write.",
+		"Explicitly set/read back Maximum >0.5 (not All values), 2m window, 1m delay, one series, Maximum downsampling, no gap filling, and both missing-series and missing-points NoData. Do not retain Default (Manual), Auto/default fill or infer safety from unchecked noise suppression alone.",
 		"NoData or stale success must not establish OK; fresh zero samples and the delayed MAX window must establish clear.",
-		"Immediately before arming and again before breach, require fresh zero in the delayed evaluation window and native normal; configuration delay that loses freshness stops the attempt without extra unbudgeted samples.",
+		"Immediately before Create/arming use the unsaved form's Check result to require fresh zero and calculated native normal; immediately before breach recheck persisted native normal and fresh zero. Configuration delay that loses freshness stops the attempt without extra unbudgeted samples.",
 		"Initial OK consumes the notification budget; no escalation, idle NoData page or periodic renotification.",
 		"Freeze absolute phase deadlines and admitted IAM, tariff and supported controls before separately authorized live execution.",
 		"Use exactly the same bound metric identity for baseline, reads, rule and sample instructions; never broaden a selector.",
 	}}
 	actions := []string{
-		"Obtain separate exact live authority; inspect target, complete rule/series collisions, sole ownership, existing channel controls and admitted incremental cost at most five RUB including native push pricing; unknown price is not free.",
+		"Obtain separate exact live authority; inspect target, complete rule/series collisions, sole ownership and existing channel controls. Admit the published-tariff incremental estimate within five RUB; native push's estimated zero delivery charge is an inference from listed billable components, not an invoice or guarantee.",
 		"Write up to the allocated fresh zero samples, separated by exactly one minute; advance immediately once the normal baseline is established, do not wait out the phase budget.",
-		"Configure/read back only the owned rule with notifications unarmed; immediately before arming require fresh zero and native normal, then arm only the intended existing channel and account for any initial OK. If the supported surface cannot inspect normal without notification effects, stop for revised authority.",
-		"Immediately before the first breach write, recheck fresh zero and native normal; then write up to the allocated benign one samples and observe the exact query, rule Alarm and operator push receipt.",
+		"Prepare the unsaved exact test-alert form. In its Notifications table select only the intended existing channel, Alarm/OK states and repeat off; keep noise suppression off. Inspect the default-methods banner and resolve effective routing so no extra default channel is armed. Explicitly set Maximum, no gap filling and both NoData policies, then use Check result for fresh zero/calculated native normal immediately before separately authorized Create/arming. Account for any initial OK. After saving, read back the exact persisted rule and attachment settings; unsupported controls, uncertain save or drift stops the attempt without a blind retry.",
+		"Before the first breach write, require exact persisted attachment readback (Alarm/OK only, repeat off, noise suppression off, intended channel only), then immediately recheck fresh zero and native normal; only then write up to the allocated benign one samples and observe the exact query, rule Alarm and operator push receipt.",
 		"Write up to the allocated fresh zero samples; wait for breach to leave the delayed MAX window, then observe native clear and recovery receipt.",
 		"Stop all test writes and observe the full twenty-minute idle interval without an idle notification; NoData is not OK.",
-		"Disable only owned test notifications/rule under exact authority; read back final state and preserve incomplete stages and private receipts.",
+		"Stop owned test notifications through the actually supported exact-rule controls under separate authority and read back final state; preserve incomplete stages and private receipts. Keep the shared channel unchanged. A mute or detached notification route does not stop rule evaluation billing; record the retained leaf's disposition without inventing a delete/disable API.",
 	}
 	observations := []string{
 		"Fresh scoped assertions, supported controls, cost/IAM admission and approved absolute deadlines; otherwise incomplete.",
 		"Exactly one zero series with a point no older than three minutes and usable in the delayed evaluation window; matching series with no points is not a baseline.",
-		"Actual configuration readback matches this sheet, fresh zero/native normal immediately precedes arming, and initial OK is accounted; desired-vs-desired is not a readback.",
-		"Fresh zero/native normal immediately precedes breach, then fresh threshold breach, actual native Alarm and human receipt; vendor status alone is insufficient.",
+		"Unsaved Check result establishes fresh zero/native normal immediately before arming; saved rule/attachment readback matches this sheet and initial OK is accounted. Desired-vs-desired is not a persisted readback.",
+		"Exact saved rule notification controls are read back before the first breach; fresh zero/native normal immediately precedes breach, then fresh threshold breach, actual native Alarm and human receipt. Vendor status alone is insufficient.",
 		"Fresh zero after delayed-window clearance, native metric-clear state and human recovery receipt; no semantic recovery claim.",
 		"Full idle observation with no writes, no idle page and explicit missing-series/no-points disposition.",
-		"Owned test disabled and read back, writer stopped, no unrelated changes; queued messages may still arrive.",
+		"Owned test notifications stopped and read back, writer stopped, no unrelated changes; queued messages may still arrive. Any retained evaluated leaf and continuing billing are explicitly recorded.",
 	}
 	plan := CanaryPlan{Metadata: meta, Identity: identity, Budget: normalized.Budget, TimingSemantics: "Upper duration budgets, not scheduled starts: advance immediately on required observations; only idle requires its full twenty minutes. Cumulative duration budgets are latest aggregate accounting bounds, not instructions to wait.", Phases: []CanaryPlanPhase{}, StopConditions: []string{
 		"Stop as incomplete on any missing or ambiguous write acknowledgement; never blindly retry an uncertain effect.",
 		"Stop on wrong scope, extra series or recipient, selector expansion, stale clear, missing operator receipt, unavailable controls or concurrent editor.",
+		"Stop incomplete on unsupported rule-attachment controls, uncertain Create/save or persisted settings drift; no breach before saved readback and no blind save retry. Use only separately authorized owned cleanup.",
 		"Stop before any aggregate write/read/value/planned-notification/time bound is exhausted or tariff/credential/budget uncertainty appears.",
 		"Reserve all remaining idle and cleanup time; missing evidence never extends a phase or the absolute experiment deadline.",
 		"If configuration or waiting consumes baseline freshness before arming or breach, stop incomplete or revise the plan within the original write/time caps; do not silently add refresh samples or restart the budget.",

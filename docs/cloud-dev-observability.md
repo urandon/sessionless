@@ -112,6 +112,15 @@ scope/collision/channel assertions remain assertions, not a tool-acquired live
 receipt. Missing nonce/destination cannot become an ambient or wildcard target.
 The already-confirmed logical channel is `operator_primary`; contacts and device
 tokens do not belong in these artifacts. No second channel is created.
+Actual sent states and repeat are configured on the test alert's notification
+attachment, not the existing channel form. They are deliberately absent from
+private preflight and exported as `PENDING_RULE_READBACK`; otherwise a not-yet
+created rule would require a fictional completed readback before plan rendering.
+Desired Alarm/OK-only, repeat-off and `noise_suppression: false` policy remains
+strictly validated. These are desired settings, not existing-channel facts.
+In the unsaved alert form inspect the Notifications table's method/status/repeat
+and the default-methods banner; explicitly set both NoData cases, Maximum and
+no gap filling rather than retaining Default/Manual, Auto or All-values defaults.
 Channel IDs are bounded opaque private data: the tool does not infer the
 provider's ID grammar or ownership from a prefix. The operator's explicit
 `channel_scope_confirmed` assertion records the exact-project readback; it is
@@ -120,7 +129,11 @@ not independent scope verification by the renderer.
 Phase durations are upper budgets, not scheduled waits. Advance immediately
 on the required observation, except the full twenty-minute idle. Fresh zero and
 native normal must be rechecked immediately before arming and again before
-breach. If configuration consumes baseline freshness, stop or revise within the
+breach. Use the supported unsaved **Check result** before separately authorized
+**Create**; actual persisted rule/attachment readback is mandatory before the
+first breach. A saved-unarmed workflow is not assumed. Unsupported controls,
+uncertain save or drift stop incomplete without a blind retry. If configuration
+consumes baseline freshness, stop or revise within the
 original write/time limits; do not silently add refresh samples. Generated
 cumulative duration budgets provide latest aggregate accounting bounds, not
 scheduled start offsets.
@@ -145,6 +158,17 @@ explicit execution-gate limitations. A later experiment needs exact supported
 surface/readback, current tariff/push cost/IAM qualification, ownership checks,
 operator-ready window and separate finite authority. No dummy VERIFIED source
 or fabricated dashboard ownership is required merely to export this plan.
+Published Russia tariff components give approximately 0.0791 RUB incremental
+for twelve custom values, ten thousand API-read values and one leaf evaluated
+for ninety minutes. Native push's zero incremental delivery estimate is an
+inference from [Monium's listed chargeable components](https://yandex.cloud/ru/docs/monium/pricing),
+not a verified invoice or another notification service's tariff; no advance
+account-charge proof is required to prepare this bounded estimate. Actual live
+scope and material tariff changes still require budget admission. If cleanup
+only detaches notifications or mutes the test, evaluation billing can continue
+(about 1.08 RUB per thirty days for one leaf). Record that retained lifetime
+until actual removal or a supported evaluation-disable control is proven;
+neither deletion nor a fictional disable API is authorized here.
 
 The CLI supports explicit offline inputs:
 

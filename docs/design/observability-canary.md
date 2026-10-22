@@ -57,8 +57,14 @@ there is no documented native alert/channel CRUD adapter in this implementation.
 - Alarm and OK are the only planned notification states; no periodic repeats,
   default-severity subscription, escalation or idle NoData notification. Initial
   OK is included in the notification budget, not silently assumed suppressed.
+  Desired `noise_suppression: false` prevents transition coalescing for this
+  bounded test; an unchecked UI default is not a persisted settings receipt.
   Inspect/read back the existing channel's actual policies before arming;
   any correction needs its own exact shared-channel write authority.
+  Sent statuses and repeat belong to the test alert's notification attachment,
+  not the existing channel's edit form. Actual values remain
+  `PENDING_RULE_READBACK` in every offline export; they are not preconditions
+  to rendering a plan for a rule that does not yet exist.
 
 ## Private planned binding and output
 
@@ -95,13 +101,23 @@ The generated plan describes actors, concrete observations and stop conditions:
 2. Up to four fresh baseline zero samples, exactly a minute apart; observe
    the expected native series and a qualified normal predicate, then advance
    immediately. The phase duration is an upper budget, not a required wait.
-3. Configure/read back the one owned rule with notifications unarmed and both
-   NoData policies. Immediately before arming require fresh zero usable in the
-   delayed evaluation window and native normal, then arm the intended channel
-   only; baseline/arming/initial OK are explicit observations. If the supported
-   surface cannot inspect normal without notification effects, stop for revised
-   authority rather than inventing an unsupported workflow.
-4. Immediately before breach recheck fresh zero and native normal. Up to four
+3. Prepare the unsaved exact test-alert form with both NoData policies and the
+   intended existing channel's attachment: Alarm/OK only, repeat off. Use the
+   documented **Check result** before **Create** to inspect fresh zero usable
+   in the delayed evaluation window and calculated native normal. Separately
+   authorized Create/arming may emit the budgeted initial OK. Read back the
+   persisted exact rule, channel and notification settings after saving; an
+   unsupported control, uncertain save or drift stops incomplete with no blind
+   retry and only separately authorized owned cleanup. A saved-unarmed creation
+   workflow is not assumed or required.
+   The unsaved form exposes method/status/repeat in its Notifications table and
+   noise suppression separately. Inspect its default-methods banner as well as
+   explicit rows: no extra effective destination may be armed. Set both absence
+   policies explicitly to NoData (not Default/Manual), Maximum condition and
+   downsampling, no gap filling, and noise suppression off; do not accept the
+   form's Auto/All-values/fill defaults as this reviewed policy.
+4. Before the first breach require that saved attachment readback, then
+   immediately recheck fresh zero and persisted native normal. Up to four
    breach samples, exactly a minute apart; bounded query confirms
    condition, native Alarm, then actual operator push receipt.
 5. Up to four fresh clear samples, exactly a minute apart; wait for the breach
@@ -174,7 +190,27 @@ review; it is not owner review or authorization to send a notification.
   include native mobile push, default-level subscriptions and periodic repeats.
 
 These vendor contracts are not deployed capability/IAM receipts. The known
-write/read/leaf-evaluation tariff components are small at this bounded volume,
-but native push pricing/applicability and actual account charging still need
-qualification before claiming the entire experiment fits five RUB. Do not
-substitute another notification service's price or silently assume free push.
+Monium Russia tariff gives an incremental estimate of approximately 0.0791 RUB:
+12 custom values at 0.32 RUB/million, 10,000 API-read values at 7.686 RUB/million,
+and one evaluated leaf for ninety minutes at 1.5 RUB/1000 leaf-hours. Estimated
+native Cloud push delivery is zero incremental RUB, an explicit inference from
+the published chargeable-component list (SMS and calls, not native push); this
+is not an invoice, contractual guarantee or another notification service's
+tariff. A bounded estimate does not require impossible advance proof of actual
+account charges. The five-RUB ceiling still requires exact later live authority
+and stops on material tariff/scope changes; it is not enforced billing.
+
+The [channel creation instructions](https://yandex.cloud/ru/docs/monium/operations/alert/create-channel)
+place statuses/repeat in the alert after the channel exists. The
+[alert creation instructions](https://yandex.cloud/ru/docs/monium/operations/alert/create-alert)
+document unsaved **Check result** before **Create**. These are the adopted
+supported pre-arm checks, not a request to find missing channel-form fields.
+
+Notification cleanup does not imply stopping evaluation. A detached route or
+[exact-rule mute](https://yandex.cloud/ru/docs/monium/alerts/mutes) may suppress
+delivery while the leaf keeps evaluating and billing; a finite mute expires.
+Under the published rate one retained evaluated leaf costs approximately
+1.08 RUB per thirty days. Record that separate lifetime/disposition until the
+leaf is actually removed or an evaluation-disable operation is proven through
+the supported surface. No delete API, permanent mute or evaluation-disable
+control is invented or silently authorized by this plan.

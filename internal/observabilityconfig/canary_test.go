@@ -20,7 +20,7 @@ func testCanary(t *testing.T) *CanaryDocument {
 	return c
 }
 func testCanaryBindings() *CanaryBindingsDocument {
-	return &CanaryBindingsDocument{SchemaVersion: 1, Bindings: CanaryBindings{Revision: "fixture-v1", FolderID: "fixturefolder", ProjectID: "folder__fixturefolder", ChannelID: "folder__fixturefolder_fixture-push", Instance: "0123456789abcdef0123456789abcdef", Preflight: CanaryPreflight{ObservedAt: "2026-01-01T12:00:00Z", SoleOwner: true, CompleteRuleList: true, CompleteSeriesList: true, CloudPush: true, ChannelScopeConfirmed: true, OneConfirmedRecipient: true, NoDefaultSeveritySubscription: true, NotificationStatesChecked: true, RepeatChecked: true}}}
+	return &CanaryBindingsDocument{SchemaVersion: 1, Bindings: CanaryBindings{Revision: "fixture-v1", FolderID: "fixturefolder", ProjectID: "folder__fixturefolder", ChannelID: "folder__fixturefolder_fixture-push", Instance: "0123456789abcdef0123456789abcdef", Preflight: CanaryPreflight{ObservedAt: "2026-01-01T12:00:00Z", SoleOwner: true, CompleteRuleList: true, CompleteSeriesList: true, CloudPush: true, ChannelScopeConfirmed: true, OneConfirmedRecipient: true, NoDefaultSeveritySubscription: true}}}
 }
 func canaryNow(t *testing.T) time.Time {
 	t.Helper()
@@ -56,6 +56,7 @@ func TestCanaryClosedPolicyRejections(t *testing.T) {
 		{"window", func(c *CanaryDocument) { c.Rule.Window = "10m" }},
 		{"delay", func(c *CanaryDocument) { c.Rule.EvaluationDelay = "0s" }},
 		{"freshness", func(c *CanaryDocument) { c.Rule.Freshness = "1h" }},
+		{"noise_suppression", func(c *CanaryDocument) { c.Rule.NoiseSuppression = true }},
 		{"missing_series_zero", func(c *CanaryDocument) { c.Rule.NoData.NoMatchingMetrics = "ok" }},
 		{"missing_points_zero", func(c *CanaryDocument) { c.Rule.NoData.NoPoints = "ok" }},
 		{"repeat", func(c *CanaryDocument) { c.Rule.Notifications.Repeat = true }},
@@ -166,8 +167,6 @@ func TestCanaryPrivateBindingAdmission(t *testing.T) {
 		{"wrong_method", func(b *CanaryBindingsDocument) { b.Bindings.Preflight.CloudPush = false }},
 		{"recipient_unconfirmed", func(b *CanaryBindingsDocument) { b.Bindings.Preflight.OneConfirmedRecipient = false }},
 		{"default_subscription", func(b *CanaryBindingsDocument) { b.Bindings.Preflight.NoDefaultSeveritySubscription = false }},
-		{"states_unchecked", func(b *CanaryBindingsDocument) { b.Bindings.Preflight.NotificationStatesChecked = false }},
-		{"repeat_unchecked", func(b *CanaryBindingsDocument) { b.Bindings.Preflight.RepeatChecked = false }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -223,6 +222,9 @@ func TestCanaryDeterministicPlanAndPrivateIdentity(t *testing.T) {
 	if one.Envelope.Metadata.Authority != "PLAN_ONLY_NO_LIVE_AUTHORITY" || one.Envelope.Metadata.Evidence != "planned_not_observed" || one.Envelope.Metadata.GeneratorVersion == GeneratorVersion {
 		t.Error("canary became a production or live qualification")
 	}
+	if one.Envelope.Metadata.ActualRuleNotificationControls != "PENDING_RULE_READBACK" || one.Console.Metadata.ActualRuleNotificationControls != "PENDING_RULE_READBACK" || one.Plan.Metadata.ActualRuleNotificationControls != "PENDING_RULE_READBACK" || u.Envelope.Metadata.ActualRuleNotificationControls != "PENDING_RULE_READBACK" {
+		t.Error("honestly pending actual rule controls not preserved in both plan modes")
+	}
 	id := one.Console.Identity
 	if id == nil || id.Instance != b.Bindings.Instance || !strings.HasSuffix(id.RuleName, b.Bindings.Instance) || !strings.Contains(id.Selector, b.Bindings.Instance) || one.Plan.Identity.Selector != id.Selector {
 		t.Fatal("rule/read/sample identity drift")
@@ -269,8 +271,14 @@ func TestCanaryObservationDrivenTimingAndOpaqueChannel(t *testing.T) {
 		}
 	}
 	arming, breach := plan.Plan.Phases[2], plan.Plan.Phases[3]
-	if !strings.Contains(arming.RequiredObservation, "fresh zero/native normal immediately precedes arming") || !strings.Contains(breach.RequiredObservation, "Fresh zero/native normal immediately precedes breach") {
+	if !strings.Contains(arming.RequiredObservation, "fresh zero/native normal immediately before arming") || !strings.Contains(breach.RequiredObservation, "fresh zero/native normal immediately precedes breach") {
 		t.Error("fresh baseline/native normal gates lost across configuration")
+	}
+	if !strings.Contains(arming.Action, "unsaved exact test-alert form") || !strings.Contains(arming.Action, "Check result") || !strings.Contains(arming.Action, "persisted rule and attachment settings") || !strings.Contains(breach.Action, "Before the first breach write, require exact persisted attachment readback") {
+		t.Error("supported unsaved baseline check and post-save attachment readback gate missing")
+	}
+	if strings.Contains(arming.Action, "notifications unarmed") {
+		t.Error("unsupported saved-unarmed workflow retained")
 	}
 	joined := strings.Join(plan.Plan.StopConditions, " ")
 	if !strings.Contains(joined, "configuration or waiting consumes baseline freshness") || !strings.Contains(joined, "do not silently add refresh samples or restart the budget") {
@@ -304,6 +312,13 @@ func TestCanaryPrivateFilesAndExampleNotAdmitted(t *testing.T) {
 	}
 	if _, err := RenderCanary(testCanary(t), b, canaryNow(t)); err == nil {
 		t.Error("deliberately incomplete example admitted")
+	}
+	for _, field := range []string{"notification_states_checked", "repeat_checked"} {
+		var obsolete CanaryBindingsDocument
+		changed := append(append([]byte{}, data...), []byte("\n    "+field+": true\n")...)
+		if err := Decode(changed, &obsolete); err == nil {
+			t.Errorf("obsolete fake channel preflight %s accepted", field)
+		}
 	}
 	if err := os.Chmod(path, 0644); err != nil {
 		t.Fatal(err)

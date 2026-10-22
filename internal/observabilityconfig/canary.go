@@ -25,15 +25,16 @@ type CanaryMetric struct {
 	GapFilling         string `yaml:"gap_filling" json:"gap_filling"`
 }
 type CanaryRule struct {
-	Aggregation     string        `yaml:"aggregation" json:"aggregation"`
-	Operator        string        `yaml:"operator" json:"operator"`
-	Threshold       float64       `yaml:"threshold" json:"threshold"`
-	Window          string        `yaml:"window" json:"window"`
-	EvaluationDelay string        `yaml:"evaluation_delay" json:"evaluation_delay"`
-	Freshness       string        `yaml:"freshness" json:"freshness"`
-	NoData          NoData        `yaml:"no_data" json:"no_data"`
-	Notifications   Notifications `yaml:"notifications" json:"notifications"`
-	Recovery        string        `yaml:"recovery" json:"recovery"`
+	Aggregation      string        `yaml:"aggregation" json:"aggregation"`
+	Operator         string        `yaml:"operator" json:"operator"`
+	Threshold        float64       `yaml:"threshold" json:"threshold"`
+	Window           string        `yaml:"window" json:"window"`
+	EvaluationDelay  string        `yaml:"evaluation_delay" json:"evaluation_delay"`
+	Freshness        string        `yaml:"freshness" json:"freshness"`
+	NoiseSuppression bool          `yaml:"noise_suppression" json:"noise_suppression"`
+	NoData           NoData        `yaml:"no_data" json:"no_data"`
+	Notifications    Notifications `yaml:"notifications" json:"notifications"`
+	Recovery         string        `yaml:"recovery" json:"recovery"`
 }
 type CanaryBudget struct {
 	MetricWrites            int     `yaml:"metric_writes" json:"metric_writes"`
@@ -77,8 +78,6 @@ type CanaryPreflight struct {
 	ChannelScopeConfirmed         bool   `yaml:"channel_scope_confirmed" json:"channel_scope_confirmed"`
 	OneConfirmedRecipient         bool   `yaml:"one_confirmed_recipient" json:"one_confirmed_recipient"`
 	NoDefaultSeveritySubscription bool   `yaml:"no_default_severity_subscription" json:"no_default_severity_subscription"`
-	NotificationStatesChecked     bool   `yaml:"notification_states_checked" json:"notification_states_checked"`
-	RepeatChecked                 bool   `yaml:"repeat_checked" json:"repeat_checked"`
 }
 type CanaryBindings struct {
 	Revision  string          `yaml:"revision" json:"revision"`
@@ -121,7 +120,7 @@ func (c *CanaryDocument) Validate() error {
 	if m.Service != "custom" || m.Name != "sessionless_obs228_canary" || m.MetricType != "DGAUGE" || m.Unit != "dimensionless" || m.InstanceLabel != "instance" || m.MaxSeries != 1 || m.MaxPointsPerSeries != 60 || m.GapFilling != "none" {
 		return errors.New("closed synthetic metric required")
 	}
-	if r.Aggregation != "max" || r.Operator != "gt" || r.Threshold != 0.5 || r.Window != "2m" || r.EvaluationDelay != "1m" || r.Freshness != "3m" || r.NoData.NoMatchingMetrics != "no_data" || r.NoData.NoPoints != "no_data" || r.Notifications.Repeat || !sameSet(r.Notifications.ChannelRefs, []string{"operator_primary"}) || !sameSet(r.Notifications.States, []string{"alarm", "ok"}) || r.Recovery != "synthetic_metric_clear_only" {
+	if r.Aggregation != "max" || r.Operator != "gt" || r.Threshold != 0.5 || r.Window != "2m" || r.EvaluationDelay != "1m" || r.Freshness != "3m" || r.NoiseSuppression || r.NoData.NoMatchingMetrics != "no_data" || r.NoData.NoPoints != "no_data" || r.Notifications.Repeat || !sameSet(r.Notifications.ChannelRefs, []string{"operator_primary"}) || !sameSet(r.Notifications.States, []string{"alarm", "ok"}) || r.Recovery != "synthetic_metric_clear_only" {
 		return errors.New("closed synthetic rule and notification policy required")
 	}
 	if b.MetricWrites < 1 || b.MetricWrites > 12 || b.ReadRequests < 1 || b.ReadRequests > 40 || b.ReturnedValues < 1 || b.ReturnedValues > 10000 || b.PlannedNotifications < 1 || b.PlannedNotifications > 4 || !(b.EstimatedIncrementalRUB > 0 && b.EstimatedIncrementalRUB <= 5) || b.WallTime != "90m" {
@@ -189,7 +188,7 @@ func validateCanaryBindings(doc *CanaryBindingsDocument, now time.Time) error {
 		return errors.New("private synthetic target identity rejected")
 	}
 	p := b.Preflight
-	if !freshTimestamp(p.ObservedAt, now, time.Hour) || !p.SoleOwner || !p.CompleteRuleList || !p.CompleteSeriesList || p.RuleCollision || p.SeriesCollision || !p.CloudPush || !p.ChannelScopeConfirmed || !p.OneConfirmedRecipient || !p.NoDefaultSeveritySubscription || !p.NotificationStatesChecked || !p.RepeatChecked {
+	if !freshTimestamp(p.ObservedAt, now, time.Hour) || !p.SoleOwner || !p.CompleteRuleList || !p.CompleteSeriesList || p.RuleCollision || p.SeriesCollision || !p.CloudPush || !p.ChannelScopeConfirmed || !p.OneConfirmedRecipient || !p.NoDefaultSeveritySubscription {
 		return errors.New("fresh complete collision-free operator canary assertions required")
 	}
 	return nil

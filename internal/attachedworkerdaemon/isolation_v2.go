@@ -154,16 +154,18 @@ func (v NativeLaunchV2) validateInstall() error {
 // Only its original listener admits connections for the sealed attempt policy;
 // the trusted companion still checks current Session authority for each one.
 type NativeSocketV2 struct {
-	self            *NativeSocketV2
-	mu              sync.Mutex
-	listener        *net.UnixListener
-	file            *os.File
-	path, directory string
-	identity        os.FileInfo
-	fdIdentity      os.FileInfo
-	closed          bool
-	acceptStopped   bool
-	scope, policy   ExecutableDigest
+	self              *NativeSocketV2
+	mu                sync.Mutex
+	listener          *net.UnixListener
+	file              *os.File
+	path, directory   string
+	identity          os.FileInfo
+	fdIdentity        os.FileInfo
+	closed            bool
+	acceptStopped     bool
+	scope, policy     ExecutableDigest
+	executionV3       *NativeExecutionV3
+	executionDigestV3 ExecutableDigest
 }
 
 func newNativeSocketV2(root string, scope, policy ExecutableDigest) (*NativeSocketV2, error) {
@@ -371,7 +373,9 @@ func (v *Supervisor) RunNativeV2(ctx context.Context, spec AttemptSpec, bundle N
 		return AttemptResult{}, ErrIsolationUnsupported
 	}
 	frozen := bundle.Clone()
-	return v.run(ctx, spec, &frozen, companion)
+	plan := &nativeLaunchPlan{v2: &frozen, Bootstrap: frozen.Bootstrap, Relay: frozen.Relay, Companion: frozen.Companion,
+		ScopeDigest: frozen.ScopeDigest, PolicyDigest: frozen.PolicyDigest, Limits: frozen.Limits}
+	return v.run(ctx, spec, plan, companion)
 }
 
 // This adapter is private lifecycle reuse only. It deliberately has no usable

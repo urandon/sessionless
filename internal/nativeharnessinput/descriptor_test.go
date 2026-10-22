@@ -64,6 +64,37 @@ func TestDescriptorSevenVariants(t *testing.T) {
 	}
 }
 
+func TestImagePathsAreFixedFreshAndBounded(t *testing.T) {
+	for variant := uint32(0); variant < 7; variant++ {
+		paths, err := ImagePaths(variant)
+		if err != nil {
+			t.Fatalf("variant%d: %v", variant, err)
+		}
+		slots, err := Slots(testDescriptor(variant))
+		if err != nil || len(paths) != len(slots)-2 {
+			t.Fatalf("paths=%q slots=%+v error=%v", paths, slots, err)
+		}
+		for i, path := range paths {
+			if path != slots[i+2].Path {
+				t.Fatalf("variant%d path%d=%q slot=%q", variant, i, path, slots[i+2].Path)
+			}
+		}
+		if len(paths) != 0 {
+			original := paths[0]
+			paths[0] = "/caller-mutated"
+			fresh, _ := ImagePaths(variant)
+			if fresh[0] != original {
+				t.Fatal("image path derivation aliases caller slice")
+			}
+		}
+	}
+	for _, variant := range []uint32{7, ^uint32(0)} {
+		if _, err := ImagePaths(variant); !errors.Is(err, ErrDescriptor) {
+			t.Fatalf("invalid variant%d: %v", variant, err)
+		}
+	}
+}
+
 func TestDescriptorRejectsInvalidValues(t *testing.T) {
 	cases := []struct {
 		name   string

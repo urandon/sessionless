@@ -200,6 +200,8 @@ type Supervisor struct {
 	launcher         IsolationLauncher
 	nativeLauncher   IsolationLauncherV2
 	nativeProfile    IsolationProfileV2
+	nativeLauncherV3 IsolationLauncherV3
+	nativeProfileV3  IsolationProfileV3
 	outputReader     func(string, io.Reader) io.Reader
 	outputDone       func(string, <-chan struct{})
 	profileName      string
@@ -279,13 +281,13 @@ func newSupervisor(config SupervisorConfig, profileName string) (*Supervisor, er
 }
 
 func (supervisor *Supervisor) Run(parent context.Context, spec AttemptSpec) (result AttemptResult, err error) {
-	if supervisor == nil || supervisor.launcher == nil || supervisor.nativeLauncher != nil {
+	if supervisor == nil || supervisor.launcher == nil || supervisor.nativeLauncher != nil || supervisor.nativeLauncherV3 != nil {
 		return AttemptResult{}, ErrIsolationUnsupported
 	}
 	return supervisor.run(parent, spec, nil, nil)
 }
 
-func (supervisor *Supervisor) run(parent context.Context, spec AttemptSpec, native *NativeLaunchV2, conduit NativeConduitV2) (result AttemptResult, err error) {
+func (supervisor *Supervisor) run(parent context.Context, spec AttemptSpec, native *nativeLaunchPlan, conduit NativeConduitV2) (result AttemptResult, err error) {
 	if parent == nil || parent.Err() != nil {
 		return AttemptResult{}, ErrSupervisorConfig
 	}
@@ -426,7 +428,11 @@ func (supervisor *Supervisor) run(parent context.Context, spec AttemptSpec, nati
 				return result, ErrExecutableChanged
 			}
 		}
-		nativeSocket, err = newNativeSocketV2(attemptRoot, native.ScopeDigest, native.PolicyDigest)
+		if native.v3 != nil {
+			nativeSocket, err = newNativeSocketV3(attemptRoot, native.ScopeDigest, native.PolicyDigest, native.execution)
+		} else {
+			nativeSocket, err = newNativeSocketV2(attemptRoot, native.ScopeDigest, native.PolicyDigest)
+		}
 		if err == nil {
 			defer func() {
 				if closeErr := nativeSocket.close(); closeErr != nil {
@@ -444,10 +450,20 @@ func (supervisor *Supervisor) run(parent context.Context, spec AttemptSpec, nati
 				cancelPrepare()
 				return result, ErrSupervisorConfig
 			}
-			var b IsolationBoundaryV2
-			b, err = supervisor.nativeLauncher.PrepareV2(prepareCtx, LaunchEnvelopeV2{Workload: launch, Native: native.Clone(), Socket: nativeSocket})
-			if b != nil {
-				boundary = &nativeBoundaryV2{IsolationBoundaryV2: b, conduit: conduit}
+			if native.v2 != nil {
+				var b IsolationBoundaryV2
+				b, err = supervisor.nativeLauncher.PrepareV2(prepareCtx, LaunchEnvelopeV2{Workload: launch, Native: native.v2.Clone(), Socket: nativeSocket})
+				if b != nil {
+					boundary = &nativeBoundaryV2{IsolationBoundaryV2: b, conduit: conduit}
+				}
+			} else {
+				var b IsolationBoundaryV3
+				if err = native.execution.ValidateV3(prepareCtx, *native.v3); err == nil {
+					b, err = supervisor.nativeLauncherV3.PrepareV3(prepareCtx, LaunchEnvelopeV3{Workload: launch, Native: native.v3.Clone(), Execution: native.execution, Socket: nativeSocket})
+				}
+				if b != nil {
+					boundary = &nativeBoundaryV3{IsolationBoundaryV3: b, conduit: conduit}
+				}
 			}
 		}
 	}
@@ -485,13 +501,23 @@ func (supervisor *Supervisor) run(parent context.Context, spec AttemptSpec, nati
 	}
 	command = boundary.Command()
 	attested := boundary.AttestedWorkload()
-	if native != nil {
+	if native != nil && native.v2 != nil {
 		b, ok := boundary.(*nativeBoundaryV2)
 		if !ok {
 			return result, ErrSupervisorConfig
 		}
 		observation := b.AttestedWorkloadV2()
-		if observation.Socket != nativeSocket || !nativeSocket.original() || !reflect.DeepEqual(observation.Bundle, *native) {
+		if observation.Socket != nativeSocket || !nativeSocket.original() || !reflect.DeepEqual(observation.Bundle, *native.v2) {
+			return result, ErrSupervisorConfig
+		}
+		attested = observation.Native
+	} else if native != nil {
+		b, ok := boundary.(*nativeBoundaryV3)
+		if !ok {
+			return result, ErrSupervisorConfig
+		}
+		observation := b.AttestedWorkloadV3()
+		if observation.Socket != nativeSocket || !nativeSocket.MatchesExecutionV3(native.execution) || !reflect.DeepEqual(observation.Bundle, *native.v3) || observation.Execution != native.execution || observation.ExecutionDigest != native.execution.DigestV3() || native.execution.ValidateV3(parent, *native.v3) != nil {
 			return result, ErrSupervisorConfig
 		}
 		attested = observation.Native
@@ -533,6 +559,9 @@ func (supervisor *Supervisor) run(parent context.Context, spec AttemptSpec, nati
 			if e != nil || actual != artifact.Digest {
 				return result, ErrExecutableChanged
 			}
+		}
+		if native.v3 != nil && (!nativeSocket.MatchesExecutionV3(native.execution) || native.execution.ValidateV3(parent, *native.v3) != nil) {
+			return result, ErrSupervisorConfig
 		}
 	}
 	if parent.Err() != nil {

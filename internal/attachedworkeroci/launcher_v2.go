@@ -112,7 +112,8 @@ func (l *NativeLauncher) PrepareV2(ctx context.Context, envelope attachedworkerd
 	if !time.Now().Before(deadline) || ctx.Err() != nil {
 		return nil, ErrConfig
 	}
-	b, err := l.base.prepareContainer(ctx, envelope.Workload, inner, &envelope)
+	container := &nativeContainerEnvelope{workload: envelope.Workload, relay: envelope.Native.Relay, socket: envelope.Socket, socketDestination: envelope.Native.SocketDestination, profile: nativeProfileName}
+	b, err := l.base.prepareContainer(ctx, envelope.Workload, inner, container)
 	if b == nil {
 		return nil, err
 	}

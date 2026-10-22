@@ -77,7 +77,7 @@ type PreparedProcessBoundaryV1 struct {
 }
 
 func NewPreparedProcessBoundaryV1(config PreparedProcessBoundaryConfigV1) (*PreparedProcessBoundaryV1, error) {
-	if config.Supervisor != nil && config.Supervisor.NativeV2() {
+	if config.Supervisor != nil && (config.Supervisor.NativeV2() || config.Supervisor.NativeV3()) {
 		return nil, ErrContract
 	}
 	return newPreparedProcessBoundary(config)

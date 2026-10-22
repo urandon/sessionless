@@ -122,10 +122,23 @@ func Slots(d NativeExecutionDescriptorV3) ([]SlotV3, error) {
 		{RelativePath: "sessionless/profile/models.json", Path: "/sessionless/profile/models.json", Size: d.Catalog.Size, SHA256: d.Catalog.SHA256},
 		{RelativePath: "sessionless/profile/output.schema.json", Path: "/sessionless/profile/output.schema.json", Size: d.Schema.Size, SHA256: d.Schema.SHA256},
 	}
-	for i, suffix := range variants[d.Variant] {
-		relative := "sessionless/input/image-0" + string(rune('1'+i)) + "." + suffix
+	paths, _ := ImagePaths(d.Variant) // Validate above has checked the variant.
+	for i, path := range paths {
 		image := d.Images[i]
-		result = append(result, SlotV3{RelativePath: relative, Path: "/" + relative, Ordinal: image.Ordinal, Size: image.Size, SHA256: image.SHA256})
+		result = append(result, SlotV3{RelativePath: path[1:], Path: path, Ordinal: image.Ordinal, Size: image.Size, SHA256: image.SHA256})
 	}
 	return result, nil
+}
+
+// ImagePaths derives a fresh ordered path vector from the seven fixed variants.
+// It accepts no caller path or substitution and conveys no execution authority.
+func ImagePaths(variant uint32) ([]string, error) {
+	if variant >= uint32(len(variants)) {
+		return nil, ErrDescriptor
+	}
+	paths := make([]string, 0, len(variants[variant]))
+	for i, suffix := range variants[variant] {
+		paths = append(paths, "/sessionless/input/image-0"+string(rune('1'+i))+"."+suffix)
+	}
+	return paths, nil
 }

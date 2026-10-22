@@ -38,20 +38,21 @@ type CanaryConsole struct {
 	Checklist    []string        `json:"checklist"`
 }
 type CanaryPlanPhase struct {
-	Allocation          CanaryPhase `json:"allocation"`
-	Actor               string      `json:"actor"`
-	StartOffset         string      `json:"start_offset"`
-	DeadlineOffset      string      `json:"deadline_offset"`
-	Action              string      `json:"action"`
-	RequiredObservation string      `json:"required_observation"`
+	Allocation               CanaryPhase `json:"allocation"`
+	Actor                    string      `json:"actor"`
+	CumulativeDurationBudget string      `json:"cumulative_duration_budget"`
+	AdvancePolicy            string      `json:"advance_policy"`
+	Action                   string      `json:"action"`
+	RequiredObservation      string      `json:"required_observation"`
 }
 type CanaryPlan struct {
-	Metadata       CanaryMetadata    `json:"metadata"`
-	Identity       *CanaryIdentity   `json:"identity,omitempty"`
-	Budget         CanaryBudget      `json:"budget"`
-	Phases         []CanaryPlanPhase `json:"phases"`
-	StopConditions []string          `json:"stop_conditions"`
-	Limitations    []string          `json:"limitations"`
+	Metadata        CanaryMetadata    `json:"metadata"`
+	Identity        *CanaryIdentity   `json:"identity,omitempty"`
+	Budget          CanaryBudget      `json:"budget"`
+	TimingSemantics string            `json:"timing_semantics"`
+	Phases          []CanaryPlanPhase `json:"phases"`
+	StopConditions  []string          `json:"stop_conditions"`
+	Limitations     []string          `json:"limitations"`
 }
 type CanaryEnvelope struct {
 	Metadata CanaryMetadata  `json:"metadata"`
@@ -110,33 +111,35 @@ func RenderCanary(c *CanaryDocument, b *CanaryBindingsDocument, now time.Time) (
 		"Before arming, inspect/read back exact target, fresh collision/ownership, one existing Cloud push recipient, no default severity subscription, states and repeat policy; any channel correction requires separate exact authority.",
 		"Read back Maximum >0.5, 2m window, 1m delay, one series, no gap filling, and both missing-series and missing-points NoData.",
 		"NoData or stale success must not establish OK; fresh zero samples and the delayed MAX window must establish clear.",
+		"Immediately before arming and again before breach, require fresh zero in the delayed evaluation window and native normal; configuration delay that loses freshness stops the attempt without extra unbudgeted samples.",
 		"Initial OK consumes the notification budget; no escalation, idle NoData page or periodic renotification.",
 		"Freeze absolute phase deadlines and admitted IAM, tariff and supported controls before separately authorized live execution.",
 		"Use exactly the same bound metric identity for baseline, reads, rule and sample instructions; never broaden a selector.",
 	}}
 	actions := []string{
 		"Obtain separate exact live authority; inspect target, complete rule/series collisions, sole ownership, existing channel controls and admitted incremental cost at most five RUB including native push pricing; unknown price is not free.",
-		"Write up to the allocated fresh zero samples, separated by at least min_sample_spacing; stop unless baseline is established.",
-		"Configure and read back only the new owned test rule with the intended existing channel; account for any initial OK.",
-		"Write up to the allocated benign one samples; observe the exact query, rule Alarm and operator push receipt.",
+		"Write up to the allocated fresh zero samples, separated by exactly one minute; advance immediately once the normal baseline is established, do not wait out the phase budget.",
+		"Configure/read back only the owned rule with notifications unarmed; immediately before arming require fresh zero and native normal, then arm only the intended existing channel and account for any initial OK. If the supported surface cannot inspect normal without notification effects, stop for revised authority.",
+		"Immediately before the first breach write, recheck fresh zero and native normal; then write up to the allocated benign one samples and observe the exact query, rule Alarm and operator push receipt.",
 		"Write up to the allocated fresh zero samples; wait for breach to leave the delayed MAX window, then observe native clear and recovery receipt.",
 		"Stop all test writes and observe the full twenty-minute idle interval without an idle notification; NoData is not OK.",
 		"Disable only owned test notifications/rule under exact authority; read back final state and preserve incomplete stages and private receipts.",
 	}
 	observations := []string{
 		"Fresh scoped assertions, supported controls, cost/IAM admission and approved absolute deadlines; otherwise incomplete.",
-		"Exactly one fresh synthetic series at zero; matching series with no points is not a baseline.",
-		"Actual configuration readback matches this generated sheet; desired-vs-desired comparison is not a readback.",
-		"Fresh threshold breach, actual native Alarm and human receipt; vendor delivery status alone is insufficient.",
+		"Exactly one zero series with a point no older than three minutes and usable in the delayed evaluation window; matching series with no points is not a baseline.",
+		"Actual configuration readback matches this sheet, fresh zero/native normal immediately precedes arming, and initial OK is accounted; desired-vs-desired is not a readback.",
+		"Fresh zero/native normal immediately precedes breach, then fresh threshold breach, actual native Alarm and human receipt; vendor status alone is insufficient.",
 		"Fresh zero after delayed-window clearance, native metric-clear state and human recovery receipt; no semantic recovery claim.",
 		"Full idle observation with no writes, no idle page and explicit missing-series/no-points disposition.",
 		"Owned test disabled and read back, writer stopped, no unrelated changes; queued messages may still arrive.",
 	}
-	plan := CanaryPlan{Metadata: meta, Identity: identity, Budget: normalized.Budget, Phases: []CanaryPlanPhase{}, StopConditions: []string{
+	plan := CanaryPlan{Metadata: meta, Identity: identity, Budget: normalized.Budget, TimingSemantics: "Upper duration budgets, not scheduled starts: advance immediately on required observations; only idle requires its full twenty minutes. Cumulative duration budgets are latest aggregate accounting bounds, not instructions to wait.", Phases: []CanaryPlanPhase{}, StopConditions: []string{
 		"Stop as incomplete on any missing or ambiguous write acknowledgement; never blindly retry an uncertain effect.",
 		"Stop on wrong scope, extra series or recipient, selector expansion, stale clear, missing operator receipt, unavailable controls or concurrent editor.",
 		"Stop before any aggregate write/read/value/planned-notification/time bound is exhausted or tariff/credential/budget uncertainty appears.",
 		"Reserve all remaining idle and cleanup time; missing evidence never extends a phase or the absolute experiment deadline.",
+		"If configuration or waiting consumes baseline freshness before arming or breach, stop incomplete or revise the plan within the original write/time caps; do not silently add refresh samples or restart the budget.",
 		"No user material, raw logs, model/tool call, application probe, shared-resource fault, redrive, IAM grant or new credential.",
 	}, Limitations: []string{
 		"PLAN_ONLY: no writer payload, executor, cloud client, credential discovery, Terraform or activation authority.",
@@ -153,7 +156,11 @@ func RenderCanary(c *CanaryDocument, b *CanaryBindingsDocument, now time.Time) (
 		if oneOf(p.ID, "preflight", "arming", "cleanup") {
 			actor = "authorized_operator"
 		}
-		plan.Phases = append(plan.Phases, CanaryPlanPhase{Allocation: p, Actor: actor, StartOffset: offset.String(), DeadlineOffset: (offset + d).String(), Action: actions[i], RequiredObservation: observations[i]})
+		advance := "immediately_on_required_observation_within_upper_budget"
+		if p.ID == "idle" {
+			advance = "only_after_full_twenty_minute_idle_observation"
+		}
+		plan.Phases = append(plan.Phases, CanaryPlanPhase{Allocation: p, Actor: actor, CumulativeDurationBudget: (offset + d).String(), AdvancePolicy: advance, Action: actions[i], RequiredObservation: observations[i]})
 		offset += d
 	}
 	return &CanaryBundle{Envelope: CanaryEnvelope{Metadata: meta, Policy: normalized, Bindings: bindingCopy}, Console: console, Plan: plan}, nil

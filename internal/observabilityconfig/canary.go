@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // CanaryGeneratorVersion is separate from the production dashboard generator.
@@ -73,6 +74,7 @@ type CanaryPreflight struct {
 	RuleCollision                 bool   `yaml:"rule_collision" json:"rule_collision"`
 	SeriesCollision               bool   `yaml:"series_collision" json:"series_collision"`
 	CloudPush                     bool   `yaml:"cloud_push" json:"cloud_push"`
+	ChannelScopeConfirmed         bool   `yaml:"channel_scope_confirmed" json:"channel_scope_confirmed"`
 	OneConfirmedRecipient         bool   `yaml:"one_confirmed_recipient" json:"one_confirmed_recipient"`
 	NoDefaultSeveritySubscription bool   `yaml:"no_default_severity_subscription" json:"no_default_severity_subscription"`
 	NotificationStatesChecked     bool   `yaml:"notification_states_checked" json:"notification_states_checked"`
@@ -180,20 +182,25 @@ func validateCanaryBindings(doc *CanaryBindingsDocument, now time.Time) error {
 		return errors.New("explicit canary binding and validation time required")
 	}
 	b := doc.Bindings
-	if !identifier.MatchString(b.Revision) || !canaryFolder.MatchString(b.FolderID) || b.ProjectID != "folder__"+b.FolderID || !strings.HasPrefix(b.ChannelID, b.ProjectID+"_") || !identifier.MatchString(strings.TrimPrefix(b.ChannelID, b.ProjectID+"_")) || !canaryNonce.MatchString(b.Instance) {
+	// The observed native channel prefix is not a documented provider ID grammar.
+	// Treat this as opaque local data; scope is a separate operator assertion.
+	channelSafe := len(b.ChannelID) <= 256 && safePrivateValue(b.ChannelID) && strings.IndexFunc(b.ChannelID, func(r rune) bool { return unicode.IsControl(r) || unicode.IsSpace(r) }) < 0
+	if !identifier.MatchString(b.Revision) || !canaryFolder.MatchString(b.FolderID) || b.ProjectID != "folder__"+b.FolderID || !channelSafe || !canaryNonce.MatchString(b.Instance) {
 		return errors.New("private synthetic target identity rejected")
 	}
 	p := b.Preflight
-	if !freshTimestamp(p.ObservedAt, now, time.Hour) || !p.SoleOwner || !p.CompleteRuleList || !p.CompleteSeriesList || p.RuleCollision || p.SeriesCollision || !p.CloudPush || !p.OneConfirmedRecipient || !p.NoDefaultSeveritySubscription || !p.NotificationStatesChecked || !p.RepeatChecked {
+	if !freshTimestamp(p.ObservedAt, now, time.Hour) || !p.SoleOwner || !p.CompleteRuleList || !p.CompleteSeriesList || p.RuleCollision || p.SeriesCollision || !p.CloudPush || !p.ChannelScopeConfirmed || !p.OneConfirmedRecipient || !p.NoDefaultSeveritySubscription || !p.NotificationStatesChecked || !p.RepeatChecked {
 		return errors.New("fresh complete collision-free operator canary assertions required")
 	}
 	return nil
 }
 
 func CanarySchemas() map[string]any {
-	out := map[string]any{"canary": shapeSchema(reflect.TypeOf(CanaryDocument{})), "canary-bindings": shapeSchema(reflect.TypeOf(CanaryBindingsDocument{}))}
-	for _, schema := range out {
+	out := map[string]any{}
+	for name, typ := range map[string]reflect.Type{"canary": reflect.TypeOf(CanaryDocument{}), "canary-bindings": reflect.TypeOf(CanaryBindingsDocument{})} {
+		schema := shapeSchema(typ)
 		schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
+		out[name] = schema
 	}
 	return out
 }

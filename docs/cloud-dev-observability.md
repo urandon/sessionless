@@ -112,6 +112,18 @@ scope/collision/channel assertions remain assertions, not a tool-acquired live
 receipt. Missing nonce/destination cannot become an ambient or wildcard target.
 The already-confirmed logical channel is `operator_primary`; contacts and device
 tokens do not belong in these artifacts. No second channel is created.
+Channel IDs are bounded opaque private data: the tool does not infer the
+provider's ID grammar or ownership from a prefix. The operator's explicit
+`channel_scope_confirmed` assertion records the exact-project readback; it is
+not independent scope verification by the renderer.
+
+Phase durations are upper budgets, not scheduled waits. Advance immediately
+on the required observation, except the full twenty-minute idle. Fresh zero and
+native normal must be rechecked immediately before arming and again before
+breach. If configuration consumes baseline freshness, stop or revise within the
+original write/time limits; do not silently add refresh samples. Generated
+cumulative duration budgets provide latest aggregate accounting bounds, not
+scheduled start offsets.
 
 Outputs `canary-normalized.json`, `canary-console.json` and `canary-plan.json`
 come mechanically from the same YAML and explicit bindings. They identify a

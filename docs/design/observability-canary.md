@@ -67,6 +67,10 @@ folder-scoped Monium project, channel identity, synthetic nonce and dated
 operator assertions: native push/one confirmed recipient/no default severity
 subscription/sole experiment owner/complete collision preflight with no conflicting
 rule or series. Do not include credentials, contact values or device identifiers.
+Channel IDs are bounded opaque private values, not an inferred provider grammar
+based on one observed prefix. An explicit `channel_scope_confirmed` operator
+assertion joins the actual existing channel readback to this exact project;
+the parser does not discover or independently verify that scope.
 Missing, stale, future, mismatched, permissive or symlinked private input fails.
 Example binding is deliberately incomplete/expired and not live admission.
 
@@ -88,13 +92,19 @@ The generated plan describes actors, concrete observations and stop conditions:
 
 1. Fresh scoped ownership/collision/channel/configuration and cost checks;
    exact later authority required before any live action.
-2. Up to four fresh baseline zero samples, at least a minute apart; observe
-   the expected native series and a qualified normal predicate before breach.
-3. Configure/read back the one owned rule with both NoData policies and the
-   intended channel only; baseline/arming/initial OK are explicit observations.
-4. Up to four breach samples, at least a minute apart; bounded query confirms
+2. Up to four fresh baseline zero samples, exactly a minute apart; observe
+   the expected native series and a qualified normal predicate, then advance
+   immediately. The phase duration is an upper budget, not a required wait.
+3. Configure/read back the one owned rule with notifications unarmed and both
+   NoData policies. Immediately before arming require fresh zero usable in the
+   delayed evaluation window and native normal, then arm the intended channel
+   only; baseline/arming/initial OK are explicit observations. If the supported
+   surface cannot inspect normal without notification effects, stop for revised
+   authority rather than inventing an unsupported workflow.
+4. Immediately before breach recheck fresh zero and native normal. Up to four
+   breach samples, exactly a minute apart; bounded query confirms
    condition, native Alarm, then actual operator push receipt.
-5. Up to four fresh clear samples, at least a minute apart; wait for the breach
+5. Up to four fresh clear samples, exactly a minute apart; wait for the breach
    to leave the delayed MAX window, query/native clear and recovery receipt.
 6. Stop writer, observe twenty minutes of idle without an idle page, then
    disable owned test notifications/rule and read back bounded cleanup.
@@ -105,7 +115,14 @@ notifications including any initial OK, ninety minutes including twenty-minute
 idle and cleanup, estimated incremental spend at most five RUB. Sum per-phase
 allocations and waits; do not multiply these ceilings by number of phases.
 Reserve idle/cleanup before starting; missing evidence never extends the clock
-or triggers a retry. Missing/ambiguous write acknowledgement, unexpected extra
+or triggers a retry. All phase durations are upper budgets; advance immediately
+when observations allow, except the genuine twenty-minute idle observation.
+Generated cumulative duration budgets are latest aggregate accounting bounds,
+not scheduled phase starts. A point older than three minutes or absent from
+the delayed evaluation window is not a fresh baseline. If configuration consumes
+that freshness before arming or breach, stop incomplete or revise within the
+original write/time caps; never silently add refresh samples or restart budgets.
+Missing/ambiguous write acknowledgement, unexpected extra
 series/recipient, stale clear, budget/tariff uncertainty, wrong scope, no operator
 receipt or unavailable controls stops the experiment as incomplete.
 

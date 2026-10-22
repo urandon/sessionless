@@ -20,7 +20,7 @@ func testCanary(t *testing.T) *CanaryDocument {
 	return c
 }
 func testCanaryBindings() *CanaryBindingsDocument {
-	return &CanaryBindingsDocument{SchemaVersion: 1, Bindings: CanaryBindings{Revision: "fixture-v1", FolderID: "fixturefolder", ProjectID: "folder__fixturefolder", ChannelID: "folder__fixturefolder_fixture-push", Instance: "0123456789abcdef0123456789abcdef", Preflight: CanaryPreflight{ObservedAt: "2026-01-01T12:00:00Z", SoleOwner: true, CompleteRuleList: true, CompleteSeriesList: true, CloudPush: true, OneConfirmedRecipient: true, NoDefaultSeveritySubscription: true, NotificationStatesChecked: true, RepeatChecked: true}}}
+	return &CanaryBindingsDocument{SchemaVersion: 1, Bindings: CanaryBindings{Revision: "fixture-v1", FolderID: "fixturefolder", ProjectID: "folder__fixturefolder", ChannelID: "folder__fixturefolder_fixture-push", Instance: "0123456789abcdef0123456789abcdef", Preflight: CanaryPreflight{ObservedAt: "2026-01-01T12:00:00Z", SoleOwner: true, CompleteRuleList: true, CompleteSeriesList: true, CloudPush: true, ChannelScopeConfirmed: true, OneConfirmedRecipient: true, NoDefaultSeveritySubscription: true, NotificationStatesChecked: true, RepeatChecked: true}}}
 }
 func canaryNow(t *testing.T) time.Time {
 	t.Helper()
@@ -144,8 +144,11 @@ func TestCanaryPrivateBindingAdmission(t *testing.T) {
 		{"revision", func(b *CanaryBindingsDocument) { b.Bindings.Revision = "secret=private-sentinel" }},
 		{"folder", func(b *CanaryBindingsDocument) { b.Bindings.FolderID = "folder*" }},
 		{"project", func(b *CanaryBindingsDocument) { b.Bindings.ProjectID = "folder__other" }},
-		{"channel_scope", func(b *CanaryBindingsDocument) { b.Bindings.ChannelID = "folder__other_fixture-push" }},
+		{"channel_scope_unconfirmed", func(b *CanaryBindingsDocument) { b.Bindings.Preflight.ChannelScopeConfirmed = false }},
 		{"channel_suffix", func(b *CanaryBindingsDocument) { b.Bindings.ChannelID += "*" }},
+		{"channel_empty", func(b *CanaryBindingsDocument) { b.Bindings.ChannelID = "" }},
+		{"channel_oversized", func(b *CanaryBindingsDocument) { b.Bindings.ChannelID = strings.Repeat("x", 257) }},
+		{"channel_whitespace", func(b *CanaryBindingsDocument) { b.Bindings.ChannelID = "opaque channel" }},
 		{"nonce_upper", func(b *CanaryBindingsDocument) { b.Bindings.Instance = strings.Repeat("A", 32) }},
 		{"nonce_short", func(b *CanaryBindingsDocument) { b.Bindings.Instance = "aabb" }},
 		{"nonce_injection", func(b *CanaryBindingsDocument) { b.Bindings.Instance = "\"}*" }},
@@ -224,7 +227,7 @@ func TestCanaryDeterministicPlanAndPrivateIdentity(t *testing.T) {
 	if id == nil || id.Instance != b.Bindings.Instance || !strings.HasSuffix(id.RuleName, b.Bindings.Instance) || !strings.Contains(id.Selector, b.Bindings.Instance) || one.Plan.Identity.Selector != id.Selector {
 		t.Fatal("rule/read/sample identity drift")
 	}
-	if one.Plan.Phases[5].Allocation.Duration != "20m" || one.Plan.Phases[6].DeadlineOffset != "1h30m0s" {
+	if one.Plan.Phases[5].Allocation.Duration != "20m" || one.Plan.Phases[6].CumulativeDurationBudget != "1h30m0s" {
 		t.Error("idle/cleanup reservation lost")
 	}
 	if one.Plan.Phases[2].Allocation.PlannedNotifications != 1 || !strings.Contains(one.Console.ClearMessage, "not application") {
@@ -239,6 +242,49 @@ func TestCanaryDeterministicPlanAndPrivateIdentity(t *testing.T) {
 	}
 	if bytes.Contains(x, []byte("terraform")) || bytes.Contains(x, []byte("Bearer ")) {
 		t.Error("unexpected executable resource or credential")
+	}
+}
+
+func TestCanaryObservationDrivenTimingAndOpaqueChannel(t *testing.T) {
+	t.Parallel()
+	b := testCanaryBindings()
+	b.Bindings.ChannelID = "push-method-v2:ABC.DEF"
+	plan, err := RenderCanary(testCanary(t), b, canaryNow(t))
+	if err != nil {
+		t.Fatalf("opaque safe channel with explicit scope assertion: %v", err)
+	}
+	if plan.Console.Identity.ChannelID != b.Bindings.ChannelID {
+		t.Error("opaque channel identity changed")
+	}
+	if !strings.Contains(plan.Plan.TimingSemantics, "not scheduled starts") {
+		t.Error("duration budget presented as scheduled waits")
+	}
+	for _, p := range plan.Plan.Phases {
+		want := "immediately_on_required_observation_within_upper_budget"
+		if p.Allocation.ID == "idle" {
+			want = "only_after_full_twenty_minute_idle_observation"
+		}
+		if p.AdvancePolicy != want {
+			t.Errorf("phase %s advance=%q want=%q", p.Allocation.ID, p.AdvancePolicy, want)
+		}
+	}
+	arming, breach := plan.Plan.Phases[2], plan.Plan.Phases[3]
+	if !strings.Contains(arming.RequiredObservation, "fresh zero/native normal immediately precedes arming") || !strings.Contains(breach.RequiredObservation, "Fresh zero/native normal immediately precedes breach") {
+		t.Error("fresh baseline/native normal gates lost across configuration")
+	}
+	joined := strings.Join(plan.Plan.StopConditions, " ")
+	if !strings.Contains(joined, "configuration or waiting consumes baseline freshness") || !strings.Contains(joined, "do not silently add refresh samples or restart the budget") {
+		t.Error("configuration freshness exhaustion not fail-closed within original caps")
+	}
+	raw, err := Encode(plan.Plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte(`"start_offset"`)) || bytes.Contains(raw, []byte(`"deadline_offset"`)) {
+		t.Error("generated plan retains scheduled-looking starts")
+	}
+	if plan.Plan.Phases[5].Allocation.Duration != "20m" || plan.Plan.Phases[6].CumulativeDurationBudget != "1h30m0s" || plan.Plan.Budget.MetricWrites != 12 {
+		t.Error("timing fix widened original idle/time/write limits")
 	}
 }
 

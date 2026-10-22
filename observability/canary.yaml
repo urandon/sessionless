@@ -35,6 +35,8 @@ budget:
   wall_time: 90m
   estimated_incremental_rub: 5
 phases:
+  # Durations are upper budgets, not scheduled starts or mandatory waits.
+  # Advance immediately on observations except the full twenty-minute idle.
   - id: preflight
     duration: 10m
     max_samples: 0

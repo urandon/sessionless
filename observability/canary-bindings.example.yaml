@@ -17,6 +17,7 @@ bindings:
     rule_collision: true
     series_collision: true
     cloud_push: false
+    channel_scope_confirmed: false
     one_confirmed_recipient: false
     no_default_severity_subscription: false
     notification_states_checked: false

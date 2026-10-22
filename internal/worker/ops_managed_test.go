@@ -309,9 +309,11 @@ func TestOpsManagedDelayedSinkPreservesOriginalContextAndNoExtraEffects(t *testi
 }
 
 type managedOpsDeadlineHarness struct {
-	calls    int
-	cancels  int
-	deadline time.Time
+	calls        int
+	cancels      int
+	deadline     time.Time
+	collapse     bool
+	cancelParent context.CancelFunc
 }
 
 func (*managedOpsDeadlineHarness) Preflight(context.Context, ports.ExecutionIdentity) error {
@@ -321,6 +323,12 @@ func (h *managedOpsDeadlineHarness) Execute(ctx context.Context, _ ports.Executi
 	h.calls++
 	h.deadline, _ = ctx.Deadline()
 	<-ctx.Done()
+	if h.cancelParent != nil {
+		h.cancelParent()
+	}
+	if h.collapse {
+		return ports.ExecutionResult{}, domain.ErrMembershipDenied
+	}
 	return ports.ExecutionResult{}, ctx.Err()
 }
 func (h *managedOpsDeadlineHarness) Cancel(context.Context, ports.ExecutionIdentity) error {
@@ -332,41 +340,58 @@ func TestOpsManagedOriginalRuntimeDeadlineAtActualRunOnce(t *testing.T) {
 	// All timers, contexts and goroutines live in the same synthetic-time
 	// bubble. The harness waits for the original execution context, not a test
 	// sleep or fabricated deadline error. SQL, model and cloud calls are absent.
-	synctest.Test(t, func(t *testing.T) {
-		blobs, state, queue, loaded := managedOpsFixture(t)
-		loaded.Job.Limits.MaxRuntime = time.Minute
-		state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
-		parent, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-		defer cancel()
-		parentDeadline, ok := parent.Deadline()
-		if !ok {
-			t.Fatal("fixture parent deadline missing")
-		}
-		sink := &managedOpsSink{err: errors.New("drop deadline observation"), observe: func(got context.Context, r opssignal.Record) {
-			if got != parent {
-				t.Error("deadline observation detached or replaced the original parent")
-			}
-			if r.Stage != opssignal.OriginalDeadline || r.ErrorClass != opssignal.DeadlineExceeded || r.DeadlineState != opssignal.Within {
-				t.Errorf("deadline observation metadata: got=%+v", r)
-			}
-		}}
-		harness := &managedOpsDeadlineHarness{}
-		m := newManagedOpsManager(t, worker.Config{OpsSignals: sink}, queue, state, blobs, harness)
-		publishWorkerMessage(t, parent, queue, loaded.Run.TenantID, loaded.Run.ID)
-		started := time.Now()
-		outcome, err := m.RunOnce(parent)
-		if err != nil || outcome != worker.OutcomeFailed || state.failures != 1 || state.completions != 0 {
-			t.Fatalf("actual original-timeout business outcome: outcome=%s err=%v failures=%d completions=%d", outcome, err, state.failures, state.completions)
-		}
-		if harness.calls != 1 || harness.cancels != 1 || state.loads != 1 || len(state.effects) != 1 {
-			t.Fatalf("deadline observation added effect/read/reservation: sends=%d cancels=%d loads=%d effects=%d", harness.calls, harness.cancels, state.loads, len(state.effects))
-		}
-		if want := started.Add(loaded.Job.Limits.MaxRuntime); harness.deadline != want {
-			t.Errorf("original execution deadline changed: got=%v want=%v", harness.deadline, want)
-		}
-		if after, _ := parent.Deadline(); after != parentDeadline || parent.Err() != nil {
-			t.Errorf("parent deadline/lifetime altered: got_deadline=%v want=%v err=%v", after, parentDeadline, parent.Err())
-		}
-		assertManagedSignals(t, sink, opssignal.ManagedDeadlineExceeded)
-	})
+	for _, mode := range []string{"deadline_error", "collapsed_membership", "canceled_parent_drops"} {
+		t.Run(mode, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				blobs, state, queue, loaded := managedOpsFixture(t)
+				loaded.Job.Limits.MaxRuntime = time.Minute
+				state.jobs[jobKey(loaded.Run.TenantID, loaded.Run.ID)] = loaded
+				parent, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+				defer cancel()
+				parentDeadline, ok := parent.Deadline()
+				if !ok {
+					t.Fatal("fixture parent deadline missing")
+				}
+				sink := &managedOpsSink{err: errors.New("drop deadline observation"), observe: func(got context.Context, r opssignal.Record) {
+					if got != parent {
+						t.Error("deadline observation detached or replaced the original parent")
+					}
+					if r.Stage != opssignal.OriginalDeadline || r.ErrorClass != opssignal.DeadlineExceeded || r.DeadlineState != opssignal.Within {
+						t.Errorf("deadline observation metadata: got=%+v", r)
+					}
+				}}
+				harness := &managedOpsDeadlineHarness{collapse: mode != "deadline_error"}
+				if mode == "canceled_parent_drops" {
+					harness.cancelParent = cancel
+				}
+				m := newManagedOpsManager(t, worker.Config{OpsSignals: sink}, queue, state, blobs, harness)
+				publishWorkerMessage(t, parent, queue, loaded.Run.TenantID, loaded.Run.ID)
+				started := time.Now()
+				outcome, err := m.RunOnce(parent)
+				if err != nil || outcome != worker.OutcomeFailed || state.failures != 1 || state.completions != 0 {
+					t.Fatalf("actual original-timeout business outcome: outcome=%s err=%v failures=%d completions=%d", outcome, err, state.failures, state.completions)
+				}
+				if harness.calls != 1 || harness.cancels != 1 || state.loads != 1 || len(state.effects) != 1 {
+					t.Fatalf("deadline observation added effect/read/reservation: sends=%d cancels=%d loads=%d effects=%d", harness.calls, harness.cancels, state.loads, len(state.effects))
+				}
+				if want := started.Add(loaded.Job.Limits.MaxRuntime); harness.deadline != want {
+					t.Errorf("original execution deadline changed: got=%v want=%v", harness.deadline, want)
+				}
+				if after, _ := parent.Deadline(); after != parentDeadline {
+					t.Errorf("parent deadline/lifetime altered: got_deadline=%v want=%v err=%v", after, parentDeadline, parent.Err())
+				}
+				if mode == "canceled_parent_drops" {
+					if !errors.Is(parent.Err(), context.Canceled) {
+						t.Fatalf("original parent cancellation not preserved: %v", parent.Err())
+					}
+					assertManagedSignals(t, sink)
+				} else {
+					if parent.Err() != nil {
+						t.Fatalf("original parent expired before its deadline: %v", parent.Err())
+					}
+					assertManagedSignals(t, sink, opssignal.ManagedDeadlineExceeded)
+				}
+			})
+		})
+	}
 }

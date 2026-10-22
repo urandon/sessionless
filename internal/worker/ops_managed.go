@@ -33,10 +33,13 @@ func managedExpectedDenial(err error) bool {
 // deadline_state describes that parent, while OriginalDeadline identifies the
 // child authority's actually observed expiration. A canceled parent drops it.
 func (manager *Manager) observeManagedFailure(parent, authority context.Context, signal opssignal.SignalID, stage opssignal.Stage, err error) {
-	if err == nil || managedExpectedDenial(err) {
+	if err == nil {
 		return
 	}
 	if manager.observeManagedDeadline(parent, authority, err) {
+		return
+	}
+	if managedExpectedDenial(err) {
 		return
 	}
 	if authority != nil && authority.Err() != nil {
@@ -50,10 +53,14 @@ func (manager *Manager) observeManagedFailure(parent, authority context.Context,
 // This predicate permits deadline-only observations at prepublication stages
 // where a collapsed owner refusal must not be called an execution/I/O outage.
 func (manager *Manager) observeManagedDeadline(parent, authority context.Context, err error) bool {
-	if err == nil || managedExpectedDenial(err) {
+	if err == nil {
 		return false
 	}
-	if errors.Is(err, context.DeadlineExceeded) || (authority != nil && errors.Is(authority.Err(), context.DeadlineExceeded)) {
+	// An original owner can intentionally collapse an expired call to a
+	// membership refusal. The positively observed authority expiration takes
+	// precedence; an active-context refusal still produces no outage event.
+	if (authority != nil && errors.Is(authority.Err(), context.DeadlineExceeded)) ||
+		(!managedExpectedDenial(err) && errors.Is(err, context.DeadlineExceeded)) {
 		opssignal.Emit(parent, manager.config.OpsSignals, opssignal.ManagedDeadlineExceeded, opssignal.OriginalDeadline, opssignal.DeadlineExceeded)
 		return true
 	}

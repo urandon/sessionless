@@ -31,7 +31,7 @@ func (v *LocalV1) PrepareTerminal(ctx context.Context) (_ *PreparedLocalTerminal
 		return nil, err
 	}
 	defer finish()
-	if s.entry == nil || !s.runtimeStarted || s.runtimeFailed {
+	if s.entry == nil || !s.runtimeStarted || s.runtimeFailed || (s.credentialed && !s.credentialReleased) {
 		return nil, ErrSession
 	}
 	s.mu.Lock()

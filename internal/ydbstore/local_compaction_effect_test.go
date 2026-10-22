@@ -53,6 +53,7 @@ func (f *compactionEffectSQL) BeginTx(ctx context.Context, o driver.TxOptions) (
 }
 func (tx *compactionEffectTx) Commit() error {
 	f := tx.f
+	reservationCommit := f.pending != nil && len(f.pending) == 8 && f.pending[4] == uint64(0) && f.pending[5] == uint64(0)
 	if f.pending != nil && f.loseCommit == "rollback" {
 		f.loseCommit = ""
 		f.lostAcks++
@@ -85,6 +86,9 @@ func (tx *compactionEffectTx) Commit() error {
 			return errors.New("owned operation gap")
 		}
 		f.pending = nil
+		if reservationCommit {
+			f.compactionSourceSQL.retainedEntrySQL.loopbackOperationSQL.runAfterOperationReservationCommit()
+		}
 		if f.loseCommit == "persist" {
 			f.loseCommit = ""
 			f.lostAcks++

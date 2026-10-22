@@ -367,10 +367,24 @@ func readProviderCredential(
 	var resourceRevision, credentialGeneration uint64
 	var candidateMutationID, state, secretRef, fingerprint, record string
 	var updatedAt time.Time
-	err := query.QueryRowContext(ctx,
+	row := query.QueryRowContext(ctx,
 		providerCredentialReadSQL,
 		locator.TenantID, locator.OwnerUserID, locator.ResourceKind, locator.ResourceID,
-	).Scan(&resourceRevision, &credentialGeneration, &candidateMutationID, &state, &secretRef, &fingerprint, &updatedAt, &record)
+	)
+	destinations := []any{&resourceRevision, &credentialGeneration, &candidateMutationID, &state, &secretRef, &fingerprint, &updatedAt, &record}
+	var err error
+	if q, ok := query.(*ownedAuthorityQuery); ok {
+		// This resource join is part of the caller's original bounded authority
+		// transaction. Charge every physical scalar, even malformed projections,
+		// before interpreting it; never create a second metadata allowance.
+		returned, scanErr := scanOwnedCurrentRow(row, destinations...)
+		if chargeErr := q.budget.materialized(q.callback, returned); chargeErr != nil {
+			return domain.ProviderCredentialBindingV1{}, false, chargeErr
+		}
+		err = scanErr
+	} else {
+		err = row.Scan(destinations...)
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.ProviderCredentialBindingV1{}, false, nil
 	}

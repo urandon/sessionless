@@ -235,6 +235,14 @@ func (store *Store) currentOwnedAttemptEffectAuthority(ctx context.Context, q *o
 	if _, err := readOwnedAdmissionSources(ctx, q, source); err != nil {
 		return deny()
 	}
+	// Materialization authenticates acquisition, not later effects. The explicit
+	// local credentialed arm must rejoin the SAME canonical resource generation
+	// in every original parent/operation transaction, including BeforeSend.
+	// Noauth retains its existing installed-profile path and zero key reads.
+	if local && resource.CredentialMode == domain.ProviderCredentialInvocationV1 &&
+		currentServerlessProviderResourceTx(ctx, q, job.HarnessBinding, &source.Profile, q.at) != nil {
+		return deny()
+	}
 	lease, err := readOwnedAttemptEffectLease(ctx, q, request)
 	if err != nil || validateCurrentServerlessLease(loaded, lease, request, q.at) != nil || loaded.Reservation.Status != domain.ReservationHeld || !loaded.Reservation.ExpiresAt.After(q.at) || loaded.Reservation.UpdatedAt.After(q.at) {
 		return deny()

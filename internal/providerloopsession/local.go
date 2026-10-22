@@ -84,29 +84,51 @@ type localState struct {
 	terminalRequested             bool
 	terminalDeadline              time.Time
 	terminalOutput                *PreparedLocalTerminalV1
+	credentialed                  bool
+	credentialReleased            bool
 }
 
 // NewLocalV1 constructs inert owners only. There is no SQL, socket, provider or
 // credential call. Start and the single-invocation worker facade reserve each
 // actual parent through the SAME original bootstrap and Store.
 func NewLocalV1(ctx context.Context, c LocalConfigV1) (*LocalV1, error) {
+	return newLocalSession(ctx, c, false)
+}
+
+// Only the two closed constructors select this arm. No secret or caller engine
+// callback enters the shared no-secret session/Store/operation implementation.
+func newLocalSession(ctx context.Context, c LocalConfigV1, credentialed bool) (*LocalV1, error) {
 	if ctx == nil || ctx.Err() != nil || c.Source == nil || c.DB == nil || c.Blobs == nil ||
 		c.StoreOptions.AttemptOperationBodies != nil || c.StoreOptions.OwnedOperationResidualCustody != nil {
 		return nil, ErrSession
 	}
 	p, err := c.Source.Configuration()
-	if err != nil || p.Auth != domain.ConfiguredInferenceAuthNoneV1 {
+	wantAuth := domain.ConfiguredInferenceAuthNoneV1
+	if credentialed {
+		wantAuth = domain.ConfiguredInferenceAuthBearerV1
+	}
+	if err != nil || p.Auth != wantAuth {
 		return nil, ErrSession
 	}
 	lifetime, err := c.Source.ExecutionLifetime()
 	if err != nil || lifetime.Err() != nil {
 		return nil, ErrSession
 	}
-	b, err := ydbstore.NewLocalOwnedStoreBootstrapV1(c.Source, c.Prepare, c.Operate)
+	var b *ydbstore.LocalOwnedStoreBootstrapV1
+	if credentialed {
+		b, err = ydbstore.NewCredentialedLocalOwnedStoreBootstrapV1(c.Source, c.Prepare, c.Operate)
+	} else {
+		b, err = ydbstore.NewLocalOwnedStoreBootstrapV1(c.Source, c.Prepare, c.Operate)
+	}
 	if err != nil {
 		return nil, ErrSession
 	}
-	k, err := localloopback.NewKeeperV1(c.Source, c.Operate, b)
+	var k *localloopback.KeeperV1
+	if credentialed {
+		k, err = localloopback.NewCredentialedKeeperV1(c.Source, c.Operate, b)
+	} else {
+		k, err = localloopback.NewKeeperV1(c.Source, c.Operate, b)
+	}
 	if err != nil {
 		return nil, ErrSession
 	}
@@ -133,7 +155,7 @@ func NewLocalV1(ctx context.Context, c LocalConfigV1) (*LocalV1, error) {
 		call, cancel = context.WithDeadline(lifetime, deadline)
 	}
 	s := &localState{gate: make(chan struct{}, 1), ctx: call, caller: ctx, cancel: cancel, profile: p.Clone(),
-		bootstrap: b, store: store, bridge: bridge, keeper: k, issuer: c.Operate, blobs: c.Blobs}
+		bootstrap: b, store: store, bridge: bridge, keeper: k, issuer: c.Operate, blobs: c.Blobs, credentialed: credentialed}
 	s.stopSource = context.AfterFunc(ctx, cancel)
 	if ctx.Err() != nil || lifetime.Err() != nil || call.Err() != nil {
 		cancel()
@@ -269,6 +291,15 @@ func (v *LocalV1) RunModelStep(ctx context.Context) (result ModelStepResultV1, e
 		return result, err
 	}
 	defer finish()
+	if s.credentialed {
+		return result, ErrSession
+	}
+	return s.runModelStep(ctx, call)
+}
+
+// Shared fixed finite engine; it has no credential parameter or arbitrary
+// callback. The caller owns the original session gate for its entire execution.
+func (s *localState) runModelStep(ctx, call context.Context) (result ModelStepResultV1, err error) {
 	if s.entry == nil || s.runtimeFailed || (s.attempted && !s.runtimeStarted) {
 		return result, ErrSession
 	}

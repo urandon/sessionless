@@ -26,11 +26,41 @@ import (
 type jsonScanner struct {
 	b                 []byte
 	i, depth, members int
+	documentNumbers   bool
 }
 
 // ErrInvalid reports malformed JSON or an exceeded admission limit. It never
 // includes wire content, keys or peer-provided error text.
 var ErrInvalid = errors.New("invalid bounded JSON")
+
+// ValidateDocument validates original JSON content without converting numbers
+// to machine values or allocating a decoded value tree. Unlike protocol Parse,
+// its numeric range is the JSON grammar's range, bounded only by byteLimit.
+// Unicode, duplicate decoded keys, depth and per-container member limits remain
+// strict. Use Parse instead for control records and finite numeric counters.
+func ValidateDocument(b []byte, byteLimit, depth, members uint64) error {
+	if len(b) == 0 || uint64(len(b)) > byteLimit || !utf8.Valid(b) {
+		return ErrInvalid
+	}
+	if depth > uint64(len(b)) {
+		depth = uint64(len(b))
+	}
+	if depth > 64 {
+		depth = 64
+	}
+	if members > uint64(len(b)) {
+		members = uint64(len(b))
+	}
+	s := jsonScanner{b: b, depth: int(depth), members: int(members), documentNumbers: true}
+	if !s.value(1) {
+		return ErrInvalid
+	}
+	s.space()
+	if s.i != len(b) {
+		return ErrInvalid
+	}
+	return nil
+}
 
 // Parse checks lexical limits before decoding a tree. Depth counts the root as
 // one; members bounds each individual object or array, not the aggregate tree.
@@ -273,13 +303,18 @@ func (s *jsonScanner) number() bool {
 		if !s.digits() {
 			return false
 		}
-		exponent := 0
-		for _, digit := range s.b[exponentStart:s.i] {
-			exponent = exponent*10 + int(digit-'0')
-			if exponent > 324 {
-				return false
+		if !s.documentNumbers {
+			exponent := 0
+			for _, digit := range s.b[exponentStart:s.i] {
+				exponent = exponent*10 + int(digit-'0')
+				if exponent > 324 {
+					return false
+				}
 			}
 		}
+	}
+	if s.documentNumbers {
+		return true
 	}
 	if s.i-start > 128 {
 		return false

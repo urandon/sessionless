@@ -68,6 +68,9 @@ type RuntimeBoundary string
 const (
 	BoundaryDarwinVM      RuntimeBoundary = "darwin-vm"
 	BoundaryLinuxRootless RuntimeBoundary = "linux-rootless"
+	// A disjoint installed contract: only an explicit native V3 composition
+	// may lower namespace 0:0 to the owner-mapped Linux-rootless topology.
+	BoundaryLinuxRootlessNativeV3 RuntimeBoundary = "linux-rootless-native-v3"
 )
 
 // OCIConfigV1 mirrors only explicit, operator-owned launcher inputs. It does
@@ -360,6 +363,14 @@ func validateOrigin(value string) error {
 }
 
 func validateOCI(config OCIConfigV1) error {
+	if config.Boundary == BoundaryLinuxRootlessNativeV3 {
+		native := toLauncherConfig(config)
+		native.Boundary = attachedworkeroci.BoundaryLinuxRootless
+		if !hexDigestPattern.MatchString(config.DockerSHA256) || config.StopSeconds == 0 || attachedworkeroci.ValidateNativeDeclarativeConfigV3(native) != nil {
+			return ErrInvalidState
+		}
+		return nil
+	}
 	if !hexDigestPattern.MatchString(config.DockerSHA256) || config.StopSeconds == 0 ||
 		attachedworkeroci.ValidateDeclarativeConfig(toLauncherConfig(config)) != nil {
 		return ErrInvalidState

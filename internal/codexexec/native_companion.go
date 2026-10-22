@@ -75,13 +75,15 @@ func (v *nativeConduitOwner) newCompanion(ctx context.Context, deps nativeCompan
 	if _, bounded := ctx.Deadline(); !bounded {
 		return nil, errNativeConduitAuthority
 	}
-	identity, err := verifyNativeCompanionHost(v.bundle.Companion)
+	if v.currentEnvelopeV2(ctx, v.nativeNowV2()) != nil {
+		return nil, errNativeConduitAuthority
+	}
+	identity, err := verifyNativeCompanionHost(v.conduitCompanion())
 	if err != nil || !sameNativeCompanionHost(v.hostIdentity, identity) {
 		return nil, errNativeConduitAuthority
 	}
-	policy, err := v.bundle.InstallPolicyDigestV2()
-	limits := v.bundle.Limits
-	if err != nil || policy != v.bundle.PolicyDigest || limits.Connections > 32 ||
+	limits := v.conduitLimits()
+	if !v.conduitPolicyValid() || limits.Connections > 32 ||
 		limits.InboundBytes > 64<<20 || limits.OutboundBytes > 64<<20 ||
 		limits.CompanionGoroutines < 3*limits.Connections+2 ||
 		limits.CompanionMemoryBytes < limits.Connections*(4*nativeConduitBuffer+nativeconnect.MaxHeaderBytes) {
@@ -117,7 +119,7 @@ func (v *nativeConduitOwner) newCompanion(ctx context.Context, deps nativeCompan
 
 func (c *nativeCompanion) current() bool {
 	if c == nil || c.self != c || c.owner == nil || c.owner.self != c.owner || c.ctx.Err() != nil ||
-		!nativeCompanionHostCurrent(c.owner.bundle.Companion, c.owner.hostIdentity) {
+		!nativeCompanionHostCurrent(c.owner.conduitCompanion(), c.owner.hostIdentity) {
 		return false
 	}
 	c.mu.Lock()
@@ -130,12 +132,15 @@ func (c *nativeCompanion) Start(active context.Context, socket *attachedworkerda
 	if !c.current() || socket == nil || active == nil || active.Err() != nil {
 		return errNativeConduitAuthority
 	}
+	if c.owner.currentEnvelopeV2(active, c.owner.nativeNowV2()) != nil {
+		return errNativeConduitAuthority
+	}
 	deadline, bounded := active.Deadline()
 	ownerDeadline, ownerBounded := c.ctx.Deadline()
 	if !bounded || !ownerBounded || deadline.After(ownerDeadline) {
 		return errNativeConduitAuthority
 	}
-	if !socket.MatchesPolicyV2(c.owner.bundle.ScopeDigest, c.owner.bundle.PolicyDigest) {
+	if !c.owner.conduitSocketMatches(socket) {
 		return errNativeConduitAuthority
 	}
 	c.mu.Lock()
@@ -192,7 +197,7 @@ func (c *nativeCompanion) Start(active context.Context, socket *attachedworkerda
 func (c *nativeCompanion) admit(conn net.Conn) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.stopping || c.ctx.Err() != nil || c.active == nil || c.active.Err() != nil || c.used >= c.owner.bundle.Limits.Connections {
+	if c.stopping || c.ctx.Err() != nil || c.active == nil || c.active.Err() != nil || c.used >= c.owner.conduitLimits().Connections {
 		return false
 	}
 	c.used++ // consumed before parsing or DNS; rejected connections never refund
@@ -230,6 +235,9 @@ func (c *nativeCompanion) tunnel(client net.Conn) error {
 	if active == nil || active.Err() != nil {
 		return errNativeConduitAuthority
 	}
+	if c.owner.currentEnvelopeV2(active, c.owner.nativeNowV2()) != nil {
+		return errNativeConduitAuthority
+	}
 	// A slow CONNECT cannot occupy its slot for the whole native turn. This
 	// tighter handshake bound never renews the original execution lifetime.
 	headerDeadline := time.Now().Add(5 * time.Second)
@@ -241,7 +249,7 @@ func (c *nativeCompanion) tunnel(client net.Conn) error {
 	}
 	meter := &nativeMeteredConn{Conn: client, owner: c}
 	reader := bufio.NewReaderSize(meter, nativeconnect.MaxHeaderBytes)
-	host, err := nativeconnect.ReadCONNECT(reader, c.owner.bundle.ProviderHosts)
+	host, err := nativeconnect.ReadCONNECT(reader, c.owner.conduitHosts())
 	if err != nil {
 		return errNativeConduitPolicy
 	}

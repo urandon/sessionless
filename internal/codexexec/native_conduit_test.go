@@ -67,6 +67,14 @@ func newNativeConstructorFixtureWithCompanion(t *testing.T, path string, compani
 }
 
 func newNativeConstructorFixtureAt(t *testing.T, path string, companion *attachedworkerdaemon.NativeArtifactV2, now time.Time) nativeConstructorFixture {
+	return newNativeConstructorFixtureAtProfile(t, path, companion, now, nil)
+}
+
+func newNativeConstructorFixtureAtProfile(t *testing.T, path string, companion *attachedworkerdaemon.NativeArtifactV2, now time.Time, native *NativePreparedConfigV2) nativeConstructorFixture {
+	return newNativeConstructorFixtureAtProfileMedia(t, path, companion, now, native, false)
+}
+
+func newNativeConstructorFixtureAtProfileMedia(t *testing.T, path string, companion *attachedworkerdaemon.NativeArtifactV2, now time.Time, native *NativePreparedConfigV2, media bool, setup ...func(*attachedworkerdaemon.VerifiedAttachedInputV1)) nativeConstructorFixture {
 	t.Helper()
 	root := canonicalTempDir(t)
 	if path == "" {
@@ -92,6 +100,14 @@ func newNativeConstructorFixtureAt(t *testing.T, path string, companion *attache
 	if err != nil {
 		t.Fatal(err)
 	}
+	var nativeProfile *nativeFrozenProfileV2
+	if native != nil {
+		nativeProfile, err = freezeNativeProfileV2(native.Profile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		policy = nativeProfile.launch.PolicyDigest
+	}
 	configDir := filepath.Join(root, "engine-config")
 	if err := os.Mkdir(configDir, 0700); err != nil {
 		t.Fatal(err)
@@ -109,6 +125,10 @@ func newNativeConstructorFixtureAt(t *testing.T, path string, companion *attache
 		Lifecycle: attachedworkerlocal.LifecycleActive, CreatedAt: now, UpdatedAt: now}
 	if runtime.GOOS == "darwin" {
 		manifest.OCI.Boundary = attachedworkerlocal.BoundaryDarwinVM
+	}
+	if nativeProfile != nil {
+		manifest.OCI = native.Profile.Platform
+		manifest.Harness.Arguments = append([]string(nil), nativeProfile.launch.NativeArguments[0]...)
 	}
 	store, err := attachedworkerlocal.NewStore(filepath.Join(root, "state"), func() time.Time { return now })
 	if err != nil {
@@ -150,11 +170,40 @@ func newNativeConstructorFixtureAt(t *testing.T, path string, companion *attache
 		t.Fatal(err)
 	}
 	request.HarnessBinding.ExecutionPlacementDigest = string(placementDigest)
+	if nativeProfile != nil {
+		request.HarnessBinding.Backend = nativeProfile.descriptor
+		request.HarnessBinding.ModelID = native.Profile.Backend.Model
+		nativeJoinedEvidenceV2(t, nativeProfile, &native.Evidence, &request.HarnessBinding, now)
+	}
 	authority.ConnectionID = snapshot.ConnectionID
 	authority.EnrollmentGeneration = snapshot.EnrollmentGeneration
 	authority.ConnectionGeneration = snapshot.ConnectionGeneration
 	authority.CapabilityDigest = snapshot.CapabilityDigest
 	input := preparedOwnerTypedInput(t, request, authority)
+	if media {
+		projected := canonicalMediaFixture(t, false)
+		projected.AcceptedAttempt = input.AcceptedAttempt
+		projected.Job.HarnessBinding = input.Job.HarnessBinding.Clone()
+		projected.Job.ExecutionPlacementV2 = input.Job.ExecutionPlacementV2
+		projected.Job.ReservationID = input.Job.ReservationID
+		projected.AcceptedAttempt.ContextDigest, err = domain.AttachedWorkerJobContextDigestV1(projected.Job, projected.Manifest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		input = projected
+	}
+	if nativeProfile != nil {
+		// The actual process tests use their one sampled wall clock, not the
+		// historical driver fixture's unrelated fixed creation timestamp.
+		input.AcceptedAttempt.CreatedAt, input.AcceptedAttempt.UpdatedAt = now, now
+	}
+	for _, configure := range setup {
+		configure(input)
+	}
+	input.AcceptedAttempt.ContextDigest, err = domain.AttachedWorkerJobContextDigestV1(input.Job, input.Manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
 	authority.ContextDigest = input.AcceptedAttempt.ContextDigest
 	peer.binding = attachedworkerprotocol.AttemptBindingV1{RunID: string(authority.RunID), AttemptID: string(authority.AttemptID), LeaseID: string(authority.LeaseID),
 		LeaseGeneration: authority.LeaseGeneration, FenceToken: string(authority.FenceToken), ExpiresAtUnixMicro: authority.LeaseExpiresAt.UnixMicro(),
@@ -165,13 +214,20 @@ func newNativeConstructorFixtureAt(t *testing.T, path string, companion *attache
 	if _, err := session.ExchangeAction(context.Background(), attachedworkersession.ActionV1{LeaseClaim: &attachedworkerprotocol.LeaseClaimV1{Binding: peer.binding, AttemptSequence: 1}}); err != nil {
 		t.Fatal(err)
 	}
-	supervisor, err := attachedworkerdaemon.NewSupervisorV2(attachedworkerdaemon.SupervisorConfigV2{Base: attachedworkerdaemon.SupervisorConfig{
-		ScratchRoot: canonicalTempDir(t), Timeout: 10 * time.Second, TerminationGrace: time.Second, MaxStdoutBytes: 4096, MaxStderrBytes: 4096}, Launcher: &nativeConstructorLauncher{}})
-	if err != nil {
-		t.Fatal(err)
+	var supervisor *attachedworkerdaemon.Supervisor
+	if nativeProfile == nil {
+		supervisor, err = attachedworkerdaemon.NewSupervisorV2(attachedworkerdaemon.SupervisorConfigV2{Base: attachedworkerdaemon.SupervisorConfig{
+			ScratchRoot: canonicalTempDir(t), Timeout: 10 * time.Second, TerminationGrace: time.Second, MaxStdoutBytes: 4096, MaxStderrBytes: 4096}, Launcher: &nativeConstructorLauncher{}})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	arguments := []string{"--native"}
+	if nativeProfile != nil {
+		arguments = nativeProfile.launch.NativeArguments[0]
 	}
 	return nativeConstructorFixture{session: session, input: input, config: PreparedProcessBoundaryConfigV1{Supervisor: supervisor, Authority: authority,
-		Executable: path, ExecutableDigest: digest, Arguments: []string{"--native"}, Now: func() time.Time { return now }},
+		Executable: path, ExecutableDigest: digest, Arguments: arguments, Now: func() time.Time { return now }},
 		bundle: bundle}
 }
 

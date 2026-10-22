@@ -30,6 +30,10 @@ type NativeLaunchV3 struct {
 	RelayArguments                        []string
 	Catalog, Schema                       nativeharnessinput.FileV3
 	ScopeDigest, PolicyDigest             ExecutableDigest
+	// The full native profile producer derives this from actual config/env,
+	// model, platform and bounds before computing InstallPolicyDigestV3.
+	// A zero value is only an unqualified lower-level launch contract.
+	StaticProfileDigest ExecutableDigest
 }
 
 func (v NativeLaunchV3) Clone() NativeLaunchV3 {

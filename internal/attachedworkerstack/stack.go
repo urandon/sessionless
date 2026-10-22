@@ -42,7 +42,10 @@ type Config struct {
 	// Nil preserves the ordinary stack. Shipped configurations remain nil.
 	PreparedCodex *codexexec.Config
 	// Separate explicit media selection; never inferred from input presence.
-	PreparedCodexMedia      *codexexec.MediaConfigV1
+	PreparedCodexMedia *codexexec.MediaConfigV1
+	// Native selection requires NewNativeV3; ordinary New rejects it before
+	// engine access. No shipped configuration selects this profile.
+	PreparedCodexNative     *codexexec.NativePreparedConfigV2
 	ScratchRoot             string
 	Timeout                 time.Duration
 	TerminationGrace        time.Duration
@@ -80,6 +83,7 @@ type Stack struct {
 	runner          attachedworkerdaemon.Runner
 	evidence        EvidenceV1
 	prepared        *codexexec.PreparedAttachedWorkerRunnerV1
+	nativePrepared  bool
 	scope           preparedStackScope
 	connection      *attachedworkersession.Session
 	boundID         domain.AttachedWorkerConnectionID
@@ -141,6 +145,12 @@ func (stack *Stack) BindPreparedConnection(session *attachedworkersession.Sessio
 	snapshot := session.Snapshot()
 	if !stack.validPreparedConnection(snapshot) {
 		return ErrReconciliationRequired
+	}
+	if stack.nativePrepared {
+		// Pass the actual Connector owner, never its snapshot or a new Session.
+		if err := stack.prepared.BindNativeSessionV2(session); err != nil {
+			return errors.Join(ErrReconciliationRequired, err)
+		}
 	}
 	stack.connection = session
 	stack.boundID, stack.boundCapability = snapshot.ConnectionID, snapshot.CapabilityDigest
@@ -222,6 +232,9 @@ func newStack(
 	credentials ports.CredentialLifecycle,
 	deps dependencies,
 ) (*Stack, error) {
+	if config.PreparedCodexNative != nil || manifest.OCI.Boundary == attachedworkerlocal.BoundaryLinuxRootlessNativeV3 {
+		return nil, ErrInvalidConfiguration
+	}
 	manifest.Harness.Arguments = slices.Clone(manifest.Harness.Arguments)
 	if config.PreparedCodex != nil && config.PreparedCodexMedia != nil {
 		return nil, ErrInvalidConfiguration

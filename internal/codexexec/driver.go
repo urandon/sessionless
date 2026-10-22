@@ -27,14 +27,15 @@ var completedCheckpointV1 = []byte(`{"schema":"sessionless.codex-exec-checkpoint
 // invocation credential and cannot issue a second credential behind the
 // canonical worker's back.
 type Driver struct {
-	config      Config
-	descriptor  domain.HarnessBackendDescriptorV1
-	authority   AuthorityResolverV1
-	boundary    ProcessBoundaryV1
-	now         func() time.Time
-	mediaConfig *MediaConfigV1
-	media       *mediaInput
-	mediaStage  *preparedHistory
+	config          Config
+	descriptor      domain.HarnessBackendDescriptorV1
+	authority       AuthorityResolverV1
+	boundary        ProcessBoundaryV1
+	now             func() time.Time
+	mediaConfig     *MediaConfigV1
+	media           *mediaInput
+	mediaStage      *preparedHistory
+	nativeProfileV2 *nativeFrozenProfileV2
 }
 
 func NewDriver(config Config, authority AuthorityResolverV1, boundary ProcessBoundaryV1) (*Driver, error) {
@@ -126,6 +127,12 @@ func (driver *Driver) execute(ctx context.Context, request ports.ExecutionReques
 		invocation.media = driver.media
 		invocation.mediaStage = driver.mediaStage
 	}
+	if driver.nativeProfileV2 != nil {
+		invocation.Arguments = append([]string(nil), driver.nativeProfileV2.launch.NativeArguments[0]...)
+		if driver.mediaStage != nil {
+			invocation.nativeStageV2 = driver.mediaStage.nativeV2
+		}
+	}
 	process, runErr := driver.boundary.Run(ctx, invocation)
 	if original != nil {
 		*original = process.original
@@ -143,7 +150,30 @@ func (driver *Driver) execute(ctx context.Context, request ports.ExecutionReques
 	}
 	zeroBytes(process.Stdout)
 	defer zeroBytes(parsed.Final)
-	evidence, terminalErr := reduceDriverEvidence(request.HarnessBinding, parsed, process, runErr)
+	var evidence domain.ProviderExecutionEvidenceV1
+	var terminalErr error
+	var nativeFinal *nativeStructuredFinalV2
+	if driver.nativeProfileV2 != nil {
+		boundary, concrete := driver.boundary.(*PreparedProcessBoundaryV1)
+		if !concrete || boundary.native == nil || boundary.native.profileV2 != driver.nativeProfileV2 {
+			return ports.ExecutionResult{}, driverError(domain.ErrorTerminal, sessionlessharness.FailureHarnessBackendFailed)
+		}
+		var reduced nativeReduction
+		reduced, terminalErr = boundary.reduceNativeResult(request.HarnessBinding, process)
+		defer zeroBytes(reduced.final)
+		evidence = reduced.evidence
+		if terminalErr == nil {
+			terminalErr = boundary.native.evidenceV2.ValidateExecutionEvidence(request.HarnessBinding, evidence)
+		}
+		if terminalErr == nil && evidence.FinishClass == domain.ProviderFinishCompletedV1 {
+			nativeFinal, terminalErr = boundary.structuredNativeFinalV2(process.original, reduced.final)
+			if terminalErr == nil {
+				process.original.nativeFinalV2 = nativeFinal
+			}
+		}
+	} else {
+		evidence, terminalErr = reduceDriverEvidence(request.HarnessBinding, parsed, process, runErr)
+	}
 	if terminalErr != nil {
 		return ports.ExecutionResult{}, driverError(domain.ErrorTerminal, sessionlessharness.FailureHarnessBackendFailed)
 	}
@@ -152,6 +182,15 @@ func (driver *Driver) execute(ctx context.Context, request ports.ExecutionReques
 		return result, driverError(domain.ErrorTerminal, sessionlessharness.FailureHarnessBackendFailed)
 	}
 	result.Summary = string(parsed.Final)
+	if nativeFinal != nil {
+		result.Summary = nativeFinal.answer
+		if len(nativeFinal.artifacts) != 0 {
+			// Typed bytes remain in the original private result. Until #200's
+			// authenticated output transport joins this owner, never publish an
+			// answer-only success that silently discards requested artifacts.
+			return result, driverError(domain.ErrorTerminal, sessionlessharness.FailureHarnessBackendFailed)
+		}
+	}
 	if err := sink.Emit(ctx, ports.ExecutionEvent{
 		Sequence: 1, Boundary: "codex.turn_completed",
 		CheckpointState: append([]byte(nil), completedCheckpointV1...),
@@ -163,6 +202,13 @@ func (driver *Driver) execute(ctx context.Context, request ports.ExecutionReques
 }
 
 func (driver *Driver) compilePrompt(request ports.ExecutionRequest) ([]byte, error) {
+	if driver.nativeProfileV2 != nil {
+		if driver.media == nil || driver.mediaStage == nil || driver.mediaStage.path != request.WorkDir || driver.mediaStage.nativeV2 == nil ||
+			driver.mediaStage.nativeV2.verify(context.Background(), driver.nativeProfileV2, driver.media) != nil {
+			return nil, ErrContract
+		}
+		return append([]byte(nil), driver.media.prompt...), nil
+	}
 	if driver.mediaConfig == nil {
 		return compileCanonicalPrompt(request)
 	}

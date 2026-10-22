@@ -1,13 +1,17 @@
 # Shared external harness execution boundary
 
-Version: 0.4.0 candidate. The 0.1.0 architecture is the independently reviewed engineering design for
+Version: 0.5.0. The 0.1.0 architecture is the independently reviewed engineering design for
 [#215](https://gitcode.com/urandon/sessionless/issues/215), using the accepted
 [#214 comparison](https://gitcode.com/urandon/sessionless/issues/214#note_194345569).
 Owner: #13; attached delivery: #72/#133; managed delivery: #176/#175.
 Primary engineering acceptance is limited to this architecture and
 decomposition; implementation and exact-profile activation remain separate.
-The selected-profile integration delta below requires its own engineering
-review; it does not retroactively qualify a serving artifact.
+The selected-profile integration delta below is independently reviewed and
+accepted as bounded, disabled engineering work under #133. It names weaker
+native-envelope guarantees explicitly, not as V1 equivalence or satisfaction
+of the original #199 criteria. Governing policy admission, complete artifacts
+and actual native/serving-profile qualification remain separate; no serving
+artifact is retroactively qualified or activated.
 
 Run a ready-made harness as a contained native process. Reuse the existing Go
 supervisor, credential lifecycle and canonical result pipeline. Add only the
@@ -333,6 +337,28 @@ slots. Only the selected suffix exists. These are container paths, not stable
 or shared host directories. Original source staging remains fresh, private
 and random under its existing held-directory ownership.
 
+For the explicit native V2 profile, the generated final schema requires both
+`answer` and `artifacts`; an empty array is the answer-only wire representation.
+The pinned native [turn builder](https://github.com/openai/codex/blob/092d3acd6bec3e3a14bdc7e7a2810ab628ab759d/codex-rs/core/src/session/turn.rs#L1586)
+uses strict output outside Guardian, and OpenAI's [strict-schema contract](https://developers.openai.com/api/docs/guides/structured-outputs)
+requires every declared property. Do not generate an optional native property
+or accept a different host shape as a compatibility fallback. This preserves
+answer-only product behavior without inventing files. Host validation retains
+the accepted 128 KiB encoded final, 32 KiB UTF-8 answer, 32000-rune, two 32 KiB
+artifacts/64 KiB aggregate and depth32 ceilings, separately from the larger
+input and raw-protocol limits. These bounds are part of the frozen profile.
+Source/schema checks are not evidence of actual native/provider qualification.
+
+Native execution inherits the admitted job runtime from the original accepted
+offer's creation time, not a fresh window at launch. Preparation/Issue consume
+that same window; caller, credential, evidence, lease and installed process
+deadlines may only tighten it. The lease's separate finalization allowance does
+not extend model execution. Original WriteBack/Release keep their existing
+independent bounded finalization ownership. After actual stop/release and before
+the original native child retires, sample the full evidence/current OAuth
+eligibility under the same unextended active deadline. Lost eligibility denies
+success without erasing observed acceptance, refunding consumption or replaying.
+
 Seal the exact catalog/schema bytes, generated CLI configuration, executable,
 helpers, platform/resource bounds and all seven permitted full native commands:
 no image; one PNG; one JPEG; PNG/PNG; PNG/JPEG; JPEG/PNG; JPEG/JPEG. Each command
@@ -427,6 +453,67 @@ cleanup under the original owner. A constructor-only positive or source hash
 is not acceptance. Exact released native/config/media and actual platform
 proof remain separate activation requirements; this input binding does not
 prove image context fit or create a governing policy grant.
+
+## Explicit installed native profile and admission composition
+
+This engineering delta completes the proposed carrier for `NativeProfileV2`;
+it is not profile qualification or activation. It requires independent review
+with the coherent #133 composition before acceptance.
+
+The existing manifest's OCI boundary discriminant gains the separate value
+`linux-rootless-native-v3`. Only that value admits exact namespace UID/GID
+`0:0`, matching the owner-mapped rootless socket topology. Existing boundary
+values continue to require nonzero UID and GID. Mixed pairs and unknown
+discriminants deny. Ordinary V1 Stack/launcher constructors reject the native
+variant before engine access; only the explicit native composition lowers it
+to the underlying Linux-rootless launcher. Never rewrite the installed
+manifest or silently replace UID fields. Actual non-root host, same-owner
+rootless engine and UID/socket proof remain required.
+
+Derive the static profile identity from actual generated configuration,
+catalog, schema, seven commands, fixed replacement-environment ABI, model and
+declared context/reserve, original manifest platform discriminant and every
+OCI field, numeric media/protocol/conduit bounds and closed policy semantics.
+`NativeLaunchV3.StaticProfileDigest` carries this derived identity into its
+installation digest. It is not a caller approval hash. Zero identifies only
+an unqualified lower-level contract, never an eligible full profile. No
+activated V3 tuple is upgraded in place; a changed installation identity needs
+its own exact-profile evidence. Activation and injected clock are not identity.
+An output reserve is not an unsupported native max-output-token setting or
+proof of context fit.
+
+The full existing `ProviderEvidenceBundleV1` is frozen beside the static
+profile and matched against the server-sealed job binding before Issue.
+Putting that whole bundle inside its own descriptor would create a digest
+cycle: every evidence scope already contains the descriptor. Validate exact
+scope/model/resource, all six evidence digests and policy references, data
+class and minimum expiry; future observations or stale evidence deny. A hash
+match or generic conditional verdict alone grants nothing.
+
+The closed policy identity `OAI-SUB-NATIVE-ENVELOPE-V2`, revision 1, names only
+the reviewed owner-local, tool-free, one-consumed-invocation envelope. Native
+context fit, transformed representation/allocation bounds, internal sampling
+count, actual encrypted route, usage and price/cost remain unknown. The
+matching policy permits those named unknowns, with unknown route and denied
+fallback; it does not erase known-route or exact per-operation requirements.
+Privacy and data-class requirements remain unchanged. Existing canonical
+credential metadata must still be active, unrevoked, exact owner/tenant/resource
+generation, OpenAI/ChatGPT OAuth file delivery before the original lifecycle
+issues anything. This reads metadata, not secrets, and adds no permission ledger.
+
+Generated files and original images belong to existing `preparedHistory`.
+Keep original held directories, readonly file FDs and inode identities; do
+not adopt a copied owner or supplied readset. Only the original consumed entry
+derives its one V3 execution readset. After actual supervisor dispatch, unknown
+handback retains the original stage and handles; Close or receipt retirement
+must not discard that custody. Genuine complete cleanup permits the original
+bounded removal. No new reservation, runner or durable entity follows.
+
+The implementation handoff remains #133's checklist: explicit full profile
+and original Session/prepared/Stack selection; native result and structured
+artifacts through original output/receipt/ACK; then exact native/media/platform/
+OAuth proof and separately authorized activation. Profile hashing and staging
+unit tests alone do not complete these integration items.
 
 ## Packaging and resource bounds
 

@@ -3,6 +3,7 @@ package codexexec
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"os"
 	"path/filepath"
@@ -54,6 +55,8 @@ type preparedObservation struct {
 	binding            domain.HarnessBindingV2
 	protocol           parseResult
 	runErr             error
+	nativeFinalV2      *nativeStructuredFinalV2
+	rawFinalDigestV2   [32]byte
 }
 
 // PreparedProcessBoundaryV1 runs at most one exact prepared Codex process for
@@ -111,7 +114,7 @@ func newPreparedProcessBoundary(config PreparedProcessBoundaryConfigV1) (*Prepar
 
 func (boundary *PreparedProcessBoundaryV1) Run(ctx context.Context, invocation ProcessInvocationV1) (result ProcessResultV1, runErr error) {
 	if boundary == nil || (boundary.native != nil && boundary.nativeIdentity != boundary) ||
-		ctx == nil || ctx.Err() != nil || boundary.validateInvocation(invocation) != nil {
+		ctx == nil || ctx.Err() != nil || boundary.validateInvocation(ctx, invocation) != nil {
 		return ProcessResultV1{}, ErrProcessBoundaryUnavailable
 	}
 	runCtx, cancel := context.WithCancel(ctx)
@@ -145,6 +148,9 @@ func (boundary *PreparedProcessBoundaryV1) Run(ctx context.Context, invocation P
 			observation := &preparedObservation{boundary: boundary, authority: invocation.Authority,
 				binding: invocation.Identity.HarnessBinding.Clone(), protocol: protocol, runErr: runErr}
 			observation.self = observation
+			if len(protocol.final) != 0 {
+				observation.rawFinalDigestV2 = sha256.Sum256(protocol.final)
+			}
 			if boundary.native != nil {
 				observation.native = boundary.native
 			}
@@ -175,7 +181,20 @@ func (boundary *PreparedProcessBoundaryV1) Run(ctx context.Context, invocation P
 		}},
 		Stdin: append([]byte(nil), invocation.Stdin...),
 	}
-	if invocation.media != nil {
+	defer zeroBytes(spec.Stdin)
+	if boundary.native != nil && boundary.native.bundleV3 != nil {
+		// The existing latch above is already consumed. No supplied readset
+		// reaches the launcher: derive it from this original private stage.
+		execution, err := invocation.nativeStageV2.execution(runCtx, *boundary.native.bundleV3)
+		if err != nil {
+			return ProcessResultV1{}, ErrProcessBoundaryUnavailable
+		}
+		boundary.native.executionV3 = execution
+		// ArgumentsV3 is the bootstrap's runtime descriptor carrier. The same
+		// supervisor still receives the exact selected native command; only its
+		// V3 launcher lowers that command into the bootstrap/relay process.
+		spec.Arguments = append([]string(nil), boundary.native.bundleV3.NativeArguments[execution.DescriptorV3().Variant]...)
+	} else if invocation.media != nil {
 		// Only the owner-created private original stage can expand native argv;
 		// the installed static command, cwd, replacement environment and the
 		// supervisor's one actual process stay unchanged.
@@ -186,7 +205,6 @@ func (boundary *PreparedProcessBoundaryV1) Run(ctx context.Context, invocation P
 		spec.Arguments = append(spec.Arguments, "-")
 		spec.AdditionalReadRoots = []string{invocation.mediaStage.path}
 	}
-	defer zeroBytes(spec.Stdin)
 	prepared, err := attachedworkerdaemon.BindPreparedCredential(
 		spec, invocation.CredentialMaterialization.RootDir,
 		invocation.CredentialMaterialization.FilePath,
@@ -259,8 +277,17 @@ func (boundary *PreparedProcessBoundaryV1) finish(active *activePreparedProcess)
 	return active.cancelled
 }
 
-func (boundary *PreparedProcessBoundaryV1) validateInvocation(invocation ProcessInvocationV1) error {
-	if boundary.mediaConfig != nil {
+func (boundary *PreparedProcessBoundaryV1) validateInvocation(ctx context.Context, invocation ProcessInvocationV1) error {
+	if boundary.native != nil && boundary.native.bundleV3 != nil {
+		native := boundary.native
+		if boundary.mediaConfig != nil || native.profileV2 == nil || invocation.Identity.HarnessBinding.Backend != native.profileV2.descriptor ||
+			invocation.media == nil || invocation.mediaStage == nil || invocation.nativeStageV2 == nil || native.stageV2 != invocation.nativeStageV2 ||
+			invocation.mediaStage.nativeV2 != invocation.nativeStageV2 || invocation.mediaStage.path != invocation.WorkDir ||
+			!bytes.Equal(invocation.Stdin, invocation.media.prompt) || invocation.nativeStageV2.verify(ctx, native.profileV2, invocation.media) != nil ||
+			native.currentEnvelopeV2(ctx, boundary.now().UTC()) != nil {
+			return ErrContract
+		}
+	} else if boundary.mediaConfig != nil {
 		descriptor, err := boundary.mediaConfig.DescriptorV1()
 		if err != nil || boundary.mediaConfig.eligibility() != nil || invocation.Identity.HarnessBinding.Backend != descriptor || invocation.media == nil || invocation.mediaStage == nil || invocation.mediaStage.path != invocation.WorkDir || !bytes.Equal(invocation.Stdin, invocation.media.prompt) || invocation.mediaStage.verifyImages(invocation.media) != nil {
 			return ErrContract
@@ -301,6 +328,14 @@ func (boundary *PreparedProcessBoundaryV1) authorityDeadline(invocation ProcessI
 		return time.Time{}, ErrContract
 	}
 	notAfter := invocation.Authority.LeaseExpiresAt.UTC()
+	if boundary.native != nil && boundary.native.bundleV3 != nil {
+		if boundary.native.runtimeDeadlineV2.IsZero() {
+			return time.Time{}, ErrContract
+		}
+		if boundary.native.runtimeDeadlineV2.Before(notAfter) {
+			notAfter = boundary.native.runtimeDeadlineV2
+		}
+	}
 	if credentialExpiry := invocation.Credential.ExpiresAt.UTC(); credentialExpiry.Before(notAfter) {
 		notAfter = credentialExpiry
 	}

@@ -6,8 +6,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"sync"
+	"time"
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemon"
 	"gitcode.com/urandon/sessionless/internal/attachedworkersession"
@@ -27,6 +29,17 @@ type nativeConduitOwner struct {
 	mu           sync.Mutex
 	companion    *nativeCompanion
 	hostIdentity os.FileInfo
+	// V3 is selected only by the explicit full-profile constructor. It retains
+	// the same child, prepared consumed entry, companion and counters.
+	profileV2            *nativeFrozenProfileV2
+	bundleV3             *attachedworkerdaemon.NativeLaunchV3
+	evidenceV2           domain.ProviderEvidenceBundleV1
+	credentialBindingsV2 NativeCredentialBindingReaderV2
+	stageV2              *nativeInputStageV2
+	executionV3          *attachedworkerdaemon.NativeExecutionV3
+	bindingV2            domain.HarnessBindingV2
+	nowV2                func() time.Time
+	runtimeDeadlineV2    time.Time
 }
 
 func newNativeConduitOwner(ctx context.Context, session *attachedworkersession.Session, input *attachedworkerdaemon.VerifiedAttachedInputV1,
@@ -87,7 +100,7 @@ func (v *nativeConduitOwner) run(ctx context.Context, spec attachedworkerdaemon.
 	if err != nil {
 		return attachedworkerdaemon.AttemptResult{}, ErrAuthorityUnavailable
 	}
-	call, cancel := context.WithTimeout(ctx, v.bundle.Limits.Active)
+	call, cancel := context.WithTimeout(ctx, v.conduitLimits().Active)
 	stop := context.AfterFunc(life, cancel)
 	// The original prepared entry retires the child after its terminal
 	// cancellation/current-authority arbitration. Retiring here would make a
@@ -102,5 +115,24 @@ func (v *nativeConduitOwner) run(ctx context.Context, spec attachedworkerdaemon.
 	}
 	// The supervisor owns the same companion through preparation, stop and
 	// release, inside its original aggregate cleanup window.
+	if v.bundleV3 != nil {
+		if v.stageV2 == nil || v.executionV3 == nil || v.executionV3.ValidateV3(companion.ctx, *v.bundleV3) != nil ||
+			v.currentEnvelopeV2(companion.ctx, v.nativeNowV2()) != nil {
+			return attachedworkerdaemon.AttemptResult{}, ErrContract
+		}
+		v.stageV2.dispatched = true
+		actual, runErr := v.supervisor.RunNativeV3(companion.ctx, spec, *v.bundleV3, v.executionV3, companion)
+		v.stageV2.quiesced = actual.DescendantsReaped && actual.BoundaryReleased && actual.CleanupSucceeded
+		// Sample full eligibility after the actual original stop/release, while
+		// the SAME active/caller/job deadline still bounds the metadata read.
+		// No fresh timeout, child or grant is created. A lost entitlement cannot
+		// publish success; acceptance stays unknown/observed, consumption stays.
+		if runErr == nil {
+			if err := v.currentEnvelopeV2(call, v.nativeNowV2()); err != nil {
+				runErr = errors.Join(ErrAuthorityUnavailable, err)
+			}
+		}
+		return actual, runErr
+	}
 	return v.supervisor.RunNativeV2(companion.ctx, spec, v.bundle, companion)
 }

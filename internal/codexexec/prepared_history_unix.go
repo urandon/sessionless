@@ -14,10 +14,12 @@ import (
 // preparedHistory owns exactly one fresh directory, one child and one file.
 // Cleanup uses held directory FDs and never recursively removes caller paths.
 type preparedHistory struct {
+	self                                           *preparedHistory
 	root, work, context                            int
 	name, path                                     string
 	workIdentity, contextIdentity, historyIdentity *unix.Stat_t
 	images                                         []preparedImage
+	nativeV2                                       *nativeInputStageV2
 }
 
 func stagePreparedHistory(root string, body []byte) (*preparedHistory, error) {
@@ -38,6 +40,7 @@ func stagePreparedHistory(root string, body []byte) (*preparedHistory, error) {
 		return nil, ErrContract
 	}
 	stage := &preparedHistory{root: rootFD, work: -1, context: -1, name: "codex-history-" + rand.Text()}
+	stage.self = stage
 	stage.path = filepath.Join(root, stage.name)
 	if unix.Mkdirat(rootFD, stage.name, 0o700) != nil {
 		_ = unix.Close(rootFD)
@@ -82,6 +85,11 @@ func stagePreparedHistory(root string, body []byte) (*preparedHistory, error) {
 }
 
 func (stage *preparedHistory) remove() error {
+	// Unknown native handback retains the complete original directory and all
+	// input handles. A timeout/error is not successful cleanup evidence.
+	if stage != nil && stage.nativeV2 != nil && (stage.nativeV2.self != stage.nativeV2 || stage.nativeV2.history != stage || stage.nativeV2.dispatched && !stage.nativeV2.quiesced) {
+		return ErrContract
+	}
 	if stage == nil || stage.root < 0 {
 		return nil
 	}
@@ -98,6 +106,9 @@ func (stage *preparedHistory) remove() error {
 		}
 	}
 	if stage.context >= 0 {
+		if stage.nativeV2 != nil {
+			result = errors.Join(result, stage.nativeV2.remove())
+		}
 		result = errors.Join(result, stage.removeImages())
 		remove(stage.context, "history.jsonl", 0, stage.historyIdentity)
 		_ = unix.Close(stage.context)

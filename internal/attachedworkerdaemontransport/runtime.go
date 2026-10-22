@@ -131,6 +131,9 @@ func ConnectPinnedForegroundRuntime(
 			return concreteInitialConnectPort{connector: connector}, nil
 		},
 		func(ctx context.Context, manifest attachedworkerlocal.ManifestV1, config attachedworkerstack.Config, credentials ports.CredentialLifecycle) (attachedworkerdaemon.Runner, error) {
+			if config.PreparedCodexNative != nil {
+				return attachedworkerstack.NewNativeV3(ctx, manifest, config, credentials)
+			}
 			return attachedworkerstack.New(ctx, manifest, config, credentials)
 		})
 }
@@ -159,7 +162,7 @@ func connectPinnedForegroundRuntime(
 	if err != nil {
 		return nil, err
 	}
-	if stackConfig.PreparedCodex != nil || stackConfig.PreparedCodexMedia != nil {
+	if stackConfig.PreparedCodex != nil || stackConfig.PreparedCodexMedia != nil || stackConfig.PreparedCodexNative != nil {
 		if err := installPreparedReceipt(&adapterConfig, input.CapabilityManifest, runner); err != nil {
 			return nil, err
 		}
@@ -185,6 +188,19 @@ func pinnedRuntimePreflight(
 	if credentials == nil || newStack == nil {
 		return nil, nil, ErrInvalidConfiguration
 	}
+	selected := 0
+	if stackConfig.PreparedCodex != nil {
+		selected++
+	}
+	if stackConfig.PreparedCodexMedia != nil {
+		selected++
+	}
+	if stackConfig.PreparedCodexNative != nil {
+		selected++
+	}
+	if selected > 1 {
+		return nil, nil, ErrInvalidConfiguration
+	}
 	stackConfig.AllowedEnvironmentNames = slices.Clone(stackConfig.AllowedEnvironmentNames)
 	stackConfig.AllowedReadRoots = slices.Clone(stackConfig.AllowedReadRoots)
 	if stackConfig.PreparedCodex != nil {
@@ -194,6 +210,20 @@ func pinnedRuntimePreflight(
 	if stackConfig.PreparedCodexMedia != nil {
 		media := stackConfig.PreparedCodexMedia.Clone()
 		stackConfig.PreparedCodexMedia = &media
+	}
+	if stackConfig.PreparedCodexNative != nil {
+		native, err := stackConfig.PreparedCodexNative.Clone()
+		if err != nil {
+			return nil, nil, ErrInvalidConfiguration
+		}
+		arguments, err := native.Profile.ArgumentsV2()
+		if err != nil || !native.Profile.Backend.Enabled || profile.Executable != native.Profile.Backend.Executable ||
+			profile.ExecutableDigest != native.Profile.Backend.ExecutableDigest || !slices.Equal(profile.Arguments, arguments) || len(profile.Environment) != 0 ||
+			capability.OperatingSystem != native.Profile.OperatingSystem || capability.Architecture != native.Profile.Architecture ||
+			capability.HarnessVersion != native.Profile.Backend.ExecutableVersion {
+			return nil, nil, ErrInvalidAuthority
+		}
+		stackConfig.PreparedCodexNative = &native
 	}
 	// The selected capability and the local invocation profile must already
 	// agree before acquiring the local lease or constructing a connector.
@@ -452,6 +482,9 @@ func ReconnectPinnedForegroundRuntime(
 			return concreteReconnectPort{connector: connector}, nil
 		},
 		func(ctx context.Context, manifest attachedworkerlocal.ManifestV1, config attachedworkerstack.Config, credentials ports.CredentialLifecycle) (attachedworkerdaemon.Runner, error) {
+			if config.PreparedCodexNative != nil {
+				return attachedworkerstack.NewNativeV3(ctx, manifest, config, credentials)
+			}
 			return attachedworkerstack.New(ctx, manifest, config, credentials)
 		})
 }
@@ -483,7 +516,7 @@ func reconnectPinnedForegroundRuntime(
 	if err != nil {
 		return nil, err
 	}
-	if stackConfig.PreparedCodex != nil || stackConfig.PreparedCodexMedia != nil {
+	if stackConfig.PreparedCodex != nil || stackConfig.PreparedCodexMedia != nil || stackConfig.PreparedCodexNative != nil {
 		if err := installPreparedReceipt(&adapterConfig, input.CapabilityManifest, runner); err != nil {
 			return nil, err
 		}

@@ -22,7 +22,7 @@ import (
 type NativeLauncher struct{ base *Launcher }
 
 func NewNativeLauncher(ctx context.Context, config Config) (*NativeLauncher, error) {
-	if ctx == nil || ctx.Err() != nil || validateDeclarativeCommon(config) != nil || config.UserID != 0 || config.GroupID != 0 || config.Boundary != BoundaryLinuxRootless || os.Geteuid() == 0 || os.Getegid() == 0 {
+	if ctx == nil || ctx.Err() != nil || ValidateNativeDeclarativeConfigV3(config) != nil || os.Geteuid() == 0 || os.Getegid() == 0 {
 		return nil, ErrConfig
 	}
 	hostOS := config.hostOS

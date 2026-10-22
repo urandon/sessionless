@@ -276,7 +276,7 @@ func (launcher *Launcher) Prepare(ctx context.Context, spec attachedworkerdaemon
 
 // inner differs only for the closed V2 bootstrap contract; workload always
 // remains the original native executable, staging and outer process contract.
-func (launcher *Launcher) prepareContainer(ctx context.Context, workload, spec attachedworkerdaemon.LaunchSpec, native *attachedworkerdaemon.LaunchEnvelopeV2) (*boundary, error) {
+func (launcher *Launcher) prepareContainer(ctx context.Context, workload, spec attachedworkerdaemon.LaunchSpec, native *nativeContainerEnvelope) (*boundary, error) {
 	if launcher == nil || ctx == nil || ctx.Err() != nil {
 		return nil, ErrConfig
 	}
@@ -437,7 +437,7 @@ func (launcher *Launcher) createArguments(name string, spec attachedworkerdaemon
 	return arguments
 }
 
-func (launcher *Launcher) createArgumentsForEnvelope(name string, spec attachedworkerdaemon.LaunchSpec, validated validatedLaunch, staged *credentialStage, native *attachedworkerdaemon.LaunchEnvelopeV2) ([]string, error) {
+func (launcher *Launcher) createArgumentsForEnvelope(name string, spec attachedworkerdaemon.LaunchSpec, validated validatedLaunch, staged *credentialStage, native *nativeContainerEnvelope) ([]string, error) {
 	scratchBytes := launcher.diskBytes - launcher.credentialFileBytes - sharedMemoryBytes
 	userID, groupID, _ := strings.Cut(launcher.user, ":")
 	arguments := []string{
@@ -459,17 +459,20 @@ func (launcher *Launcher) createArgumentsForEnvelope(name string, spec attachedw
 	if native != nil {
 		arguments = append(arguments, "--cpu-period", strconv.FormatInt(nativeCPUPeriod, 10), "--cpu-quota", strconv.FormatInt(nativeCPUQuota, 10))
 		seen := map[string]bool{spec.Executable: true}
-		for _, path := range []string{native.Workload.Executable, native.Native.Relay.Executable} {
+		for _, path := range []string{native.workload.Executable, native.relay.Executable} {
 			if !seen[path] {
 				arguments = append(arguments, "--mount", bindMount(path, path, true))
 				seen[path] = true
 			}
 		}
-		source, err := native.Socket.Path()
+		source, err := native.socket.Path()
 		if err != nil {
 			return nil, ErrConfig
 		}
-		arguments = append(arguments, "--mount", bindMount(source, native.Native.SocketDestination, true))
+		arguments = append(arguments, "--mount", bindMount(source, native.socketDestination, true))
+		for _, mapping := range native.inputs {
+			arguments = append(arguments, "--mount", bindMount(mapping.Source, mapping.Destination, true))
+		}
 	}
 	for _, root := range validated.readRoots {
 		if root == validated.attemptRoot {
@@ -492,9 +495,9 @@ func (launcher *Launcher) createArgumentsForEnvelope(name string, spec attachedw
 	return arguments, nil
 }
 
-func envelopeProfile(native *attachedworkerdaemon.LaunchEnvelopeV2) string {
+func envelopeProfile(native *nativeContainerEnvelope) string {
 	if native != nil {
-		return nativeProfileName
+		return native.profile
 	}
 	return profileName
 }
@@ -642,7 +645,7 @@ func (launcher *Launcher) verifyContainer(ctx context.Context, id, name string, 
 	return launcher.verifyContainerForEnvelope(ctx, id, name, spec, validated, staged, nil)
 }
 
-func (launcher *Launcher) verifyContainerForEnvelope(ctx context.Context, id, name string, spec attachedworkerdaemon.LaunchSpec, validated validatedLaunch, staged *credentialStage, native *attachedworkerdaemon.LaunchEnvelopeV2) error {
+func (launcher *Launcher) verifyContainerForEnvelope(ctx context.Context, id, name string, spec attachedworkerdaemon.LaunchSpec, validated validatedLaunch, staged *credentialStage, native *nativeContainerEnvelope) error {
 	var inspected containerResponse
 	if err := launcher.client.runJSON(ctx, &inspected, "container", "inspect", "--format", "{{json .}}", id); err != nil {
 		return ErrBoundary
@@ -793,19 +796,25 @@ func exactMountsForEnvelope(mounts []struct {
 	Source      string `json:"Source"`
 	Destination string `json:"Destination"`
 	RW          bool   `json:"RW"`
-}, spec attachedworkerdaemon.LaunchSpec, validated validatedLaunch, staged *credentialStage, native *attachedworkerdaemon.LaunchEnvelopeV2) bool {
+}, spec attachedworkerdaemon.LaunchSpec, validated validatedLaunch, staged *credentialStage, native *nativeContainerEnvelope) bool {
 	expected := map[string]expectedMount{
 		spec.Executable: {typeName: "bind", source: spec.Executable},
 	}
 	if native != nil {
-		for _, path := range []string{native.Workload.Executable, native.Native.Relay.Executable} {
+		for _, path := range []string{native.workload.Executable, native.relay.Executable} {
 			expected[path] = expectedMount{typeName: "bind", source: path}
 		}
-		source, err := native.Socket.Path()
+		source, err := native.socket.Path()
 		if err != nil {
 			return false
 		}
-		expected[native.Native.SocketDestination] = expectedMount{typeName: "bind", source: source}
+		expected[native.socketDestination] = expectedMount{typeName: "bind", source: source}
+		for _, mapping := range native.inputs {
+			if _, exists := expected[mapping.Destination]; exists {
+				return false
+			}
+			expected[mapping.Destination] = expectedMount{typeName: "bind", source: mapping.Source}
+		}
 	}
 	for _, root := range validated.readRoots {
 		if root != validated.attemptRoot {

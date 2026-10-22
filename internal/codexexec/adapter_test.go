@@ -156,6 +156,22 @@ func TestAdapterClassifiesLifecycleWithoutRetryHint(t *testing.T) {
 	}
 }
 
+func TestAdapterFailedTurnCannotBecomeACompletedResult(t *testing.T) {
+	stdout := codexAcceptedJSONL() +
+		`{"type":"item.completed","item":{"type":"agent_message","text":"partial private text"}}` + "\n" + failedTurnJSONL
+	runner := &fixtureInvocationRunner{result: attachedworkerdaemon.InvocationResult{
+		Process: attachedworkerdaemon.AttemptResult{
+			DescendantsReaped: true, CleanupSucceeded: true, BoundaryReleased: true,
+			Stdout: []byte(stdout),
+		}, CredentialGeneration: 8,
+	}}
+	result, err := mustAdapter(t, runner, true).Run(context.Background(), validRequest(t))
+	if err != nil || result.Lifecycle != LifecycleAmbiguous || !result.Accepted || result.NativeTerminal ||
+		result.FailureCode != "codex_turn_failed" || len(result.FinalCandidate) != 0 || runner.calls != 1 {
+		t.Fatalf("failed native turn became successful/replayed: result=%+v calls=%d err=%v", result, runner.calls, err)
+	}
+}
+
 func TestAdapterSealsInstructionBeforeLongRunningInvocation(t *testing.T) {
 	request := validRequest(t)
 	baseline := request

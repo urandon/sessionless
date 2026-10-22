@@ -1,0 +1,96 @@
+# Offline desired policy only. No cloud client, sample writer or activation.
+schema_version: 1
+kind: synthetic_metric_canary
+id: obs228
+evidence: planned_not_observed
+metric:
+  service: custom
+  name: sessionless_obs228_canary
+  metric_type: DGAUGE
+  unit: dimensionless
+  instance_label: instance
+  max_series: 1
+  max_points_per_series: 60
+  gap_filling: none
+rule:
+  aggregation: max
+  operator: gt
+  threshold: 0.5
+  window: 2m
+  evaluation_delay: 1m
+  freshness: 3m
+  noise_suppression: false
+  no_data:
+    no_matching_metrics: no_data
+    no_points: no_data
+  notifications:
+    channel_refs: [operator_primary]
+    states: [alarm, ok]
+    repeat: false
+  recovery: synthetic_metric_clear_only
+budget:
+  metric_writes: 12
+  read_requests: 40
+  returned_values: 10000
+  planned_notifications: 4
+  wall_time: 90m
+  estimated_incremental_rub: 5
+phases:
+  # Durations are upper budgets, not scheduled starts or mandatory waits.
+  # Advance immediately on observations except the full twenty-minute idle.
+  - id: preflight
+    duration: 10m
+    max_samples: 0
+    sample_value: 0
+    min_sample_spacing: 0s
+    read_requests: 8
+    returned_values: 0
+    planned_notifications: 0
+  - id: baseline
+    duration: 10m
+    max_samples: 4
+    sample_value: 0
+    min_sample_spacing: 1m
+    read_requests: 6
+    returned_values: 1500
+    planned_notifications: 0
+  - id: arming
+    duration: 10m
+    max_samples: 0
+    sample_value: 0
+    min_sample_spacing: 0s
+    read_requests: 6
+    returned_values: 0
+    planned_notifications: 1
+  - id: breach
+    duration: 15m
+    max_samples: 4
+    sample_value: 1
+    min_sample_spacing: 1m
+    read_requests: 7
+    returned_values: 3000
+    planned_notifications: 1
+  - id: clear
+    duration: 15m
+    max_samples: 4
+    sample_value: 0
+    min_sample_spacing: 1m
+    read_requests: 7
+    returned_values: 3000
+    planned_notifications: 1
+  - id: idle
+    duration: 20m
+    max_samples: 0
+    sample_value: 0
+    min_sample_spacing: 0s
+    read_requests: 4
+    returned_values: 2000
+    planned_notifications: 0
+  - id: cleanup
+    duration: 10m
+    max_samples: 0
+    sample_value: 0
+    min_sample_spacing: 0s
+    read_requests: 2
+    returned_values: 500
+    planned_notifications: 0

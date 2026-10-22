@@ -1,0 +1,25 @@
+# Deliberately invalid/incomplete/expired; never a live admission or credential.
+# Fill a separately authorized owner-only copy outside Git. Assertions are not
+# independently acquired cloud evidence. Generate the nonce independently of
+# all tenant/user/Session/Run/Attempt identifiers; do not hash those identifiers.
+schema_version: 1
+bindings:
+  revision: example-not-admitted
+  folder_id: ""
+  project_id: ""
+  channel_id: ""
+  instance: ""
+  preflight:
+    observed_at: "2000-01-01T00:00:00Z"
+    sole_owner: false
+    complete_rule_list: false
+    complete_series_list: false
+    rule_collision: true
+    series_collision: true
+    cloud_push: false
+    channel_scope_confirmed: false
+    one_confirmed_recipient: false
+    no_default_severity_subscription: false
+# Actual sent states and repeat belong to the future alert's notification
+# attachment, not this existing-channel preflight. Render marks them pending;
+# persisted rule readback is required before any breach sample.

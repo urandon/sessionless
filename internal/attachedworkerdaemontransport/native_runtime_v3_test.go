@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -111,6 +112,9 @@ func TestNativeRuntimeV3FreezesCompleteSelectionBeforeConnection(t *testing.T) {
 	original.Evidence.Privacy.AllowedDataClasses[0] = domain.ProviderDataPublicV1
 	original.Evidence.Policy.AllowedDataClasses[0] = domain.ProviderDataPublicV1
 	original.InlineOutputV2 = false
+	if !runner.inlineOutputV2 {
+		t.Fatal("caller mutation changed frozen preflight output selection")
+	}
 	if runner.ready() {
 		t.Fatal("runner acquired authority before lease-held preflight")
 	}
@@ -142,6 +146,62 @@ func TestNativeRuntimeV3InlineOutputRequiresNegotiatedReceipt(t *testing.T) {
 				t.Fatal("inline transport selected without both receipt features")
 			}
 		})
+	}
+}
+
+// These are configuration/preflight controls, not native execution evidence.
+// A valid mode must reach the original lease-held preflight on both paths;
+// missing output transport must be rejected before constructing a Connector.
+func TestNativeRuntimeV3InlineOutputInitialReconnectPreflight(t *testing.T) {
+	for _, reconnect := range []bool{false, true} {
+		for _, publisher := range []bool{false, true} {
+			name := map[bool]string{false: "initial", true: "reconnect"}[reconnect] + "/" + map[bool]string{false: "missing-publisher", true: "valid"}[publisher]
+			t.Run(name, func(t *testing.T) {
+				f, initial, input, config := nativeRuntimeFixtureV3(t)
+				config.PreparedCodexNative.InlineOutputV2 = true
+				input.CapabilityManifest.Features = []attachedworkerprotocol.ProtocolFeatureV1{attachedworkerprotocol.FeatureCancellation, attachedworkerprotocol.FeatureInlineOutputV2, attachedworkerprotocol.FeatureOutputReceipt}
+				nativeRuntimeResealV3(t, f, &input)
+				f.config.CapabilityManifest = &input.CapabilityManifest
+				f.config.ReceiptPublisher = &receiptPublisherFixture{}
+				if publisher {
+					f.config.InlineReceiptPublisher = &inlinePublisherFixtureV2{}
+				}
+				stop := errors.New("owned fixture stops in lease-held preflight")
+				stacks, connectors := 0, 0
+				factory := func(context.Context, attachedworkerlocal.ManifestV1, attachedworkerstack.Config, ports.CredentialLifecycle) (attachedworkerdaemon.Runner, error) {
+					stacks++
+					return nil, stop
+				}
+				var runtime *ForegroundRuntime
+				var err error
+				calls, network := 0, 0
+				if reconnect {
+					port := &pinnedReconnectPort{fakeReconnectPort: &fakeReconnectPort{}, manifest: initial.manifest}
+					runtime, err = reconnectPinnedForegroundRuntime(t.Context(), nil, nil, nil, attachedworkersession.Config{}, attachedworkersession.ReconnectInputV1{CapabilityManifest: input.CapabilityManifest}, f.materializer, f.config, cadenceConfig(true), config, unusedInitialCredentials{}, initialRuntimeConfig(),
+						func(_ *attachedworkerlocal.Store, _ attachedworkersession.BootstrapPort, _ attachedworkersession.ExchangeFactory, c attachedworkersession.Config) (reconnectPort, error) {
+							connectors++
+							port.preflight = c.RuntimePreflight
+							return port, nil
+						}, factory)
+					calls, network = port.calls, port.networkCalls
+				} else {
+					runtime, err = connectPinnedForegroundRuntime(t.Context(), nil, nil, nil, attachedworkersession.Config{}, input, f.materializer, f.config, cadenceConfig(true), config, unusedInitialCredentials{}, initialRuntimeConfig(),
+						func(_ *attachedworkerlocal.Store, _ attachedworkersession.BootstrapPort, _ attachedworkersession.ExchangeFactory, c attachedworkersession.Config) (initialConnectPort, error) {
+							connectors++
+							initial.preflight = c.RuntimePreflight
+							return initial, nil
+						}, factory)
+					calls, network = initial.calls, initial.networkCalls
+				}
+				want := 0
+				if publisher {
+					want = 1
+				}
+				if runtime != nil || connectors != want || calls != want || stacks != want || network != 0 || publisher && !errors.Is(err, stop) || !publisher && !errors.Is(err, ErrInvalidConfiguration) {
+					t.Fatalf("%s: err=%v runtime=%t connectors=%d calls=%d stacks=%d network=%d, want preflight counts=%d and no network", name, err, runtime != nil, connectors, calls, stacks, network, want)
+				}
+			})
+		}
 	}
 }
 

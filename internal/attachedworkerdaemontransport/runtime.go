@@ -168,12 +168,6 @@ func connectPinnedForegroundRuntime(
 			return nil, err
 		}
 	}
-	if stackConfig.PreparedCodexNative != nil && stackConfig.PreparedCodexNative.InlineOutputV2 {
-		if adapterConfig.InlineReceiptPublisher == nil {
-			return nil, ErrInvalidConfiguration
-		}
-		adapterConfig.preparedInlineV2 = true
-	}
 	sessionConfig.RuntimePreflight = preflight
 	connector, err := newConnector(store, bootstrap, exchange, sessionConfig)
 	if err != nil {
@@ -249,6 +243,7 @@ func pinnedRuntimePreflight(
 	}
 	capabilityExecutableDigest := slices.Clone(capability.HarnessExecutableDigest)
 	profile = cloneProfile(profile)
+	inlineOutputV2 := stackConfig.PreparedCodexNative != nil && stackConfig.PreparedCodexNative.InlineOutputV2
 	var runner attachedworkerdaemon.Runner
 	preflight := func(ctx context.Context, manifest attachedworkerlocal.ManifestV1) error {
 		if !profileMatchesManifest(profile, manifest) ||
@@ -265,20 +260,27 @@ func pinnedRuntimePreflight(
 		runner = pinned
 		return nil
 	}
-	return preflight, &preflightRunner{current: &runner}, nil
+	return preflight, &preflightRunner{current: &runner, inlineOutputV2: inlineOutputV2}, nil
 }
 
 // preflightRunner only exists so local configuration can be validated before
 // Connect. It never dispatches unless the lease-held preflight installed a
 // fully verified runner. A failed preflight cannot leave process authority.
-type preflightRunner struct{ current *attachedworkerdaemon.Runner }
+type preflightRunner struct {
+	current        *attachedworkerdaemon.Runner
+	inlineOutputV2 bool // Frozen with the exact stack configuration, not caller state.
+}
 
 func installPreparedReceipt(config *Config, capability attachedworkerprotocol.CapabilityManifestV1, runner *preflightRunner) error {
-	if config.ReceiptCandidate != nil || config.ReceiptPublisher == nil || !slices.Contains(capability.Features, attachedworkerprotocol.FeatureOutputReceipt) {
+	if runner == nil || config.ReceiptCandidate != nil || config.ReceiptPublisher == nil || !slices.Contains(capability.Features, attachedworkerprotocol.FeatureOutputReceipt) {
+		return ErrInvalidConfiguration
+	}
+	if runner.inlineOutputV2 && (config.InlineReceiptPublisher == nil || !slices.Contains(capability.Features, attachedworkerprotocol.FeatureInlineOutputV2)) {
 		return ErrInvalidConfiguration
 	}
 	config.ReceiptCandidate = runner.receiptCandidate
 	config.preparedReceipt = runner
+	config.preparedInlineV2 = runner.inlineOutputV2
 	return nil
 }
 func (runner *preflightRunner) preparedStack() (*attachedworkerstack.Stack, error) {

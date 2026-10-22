@@ -10,6 +10,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/attachedworkersealedinput"
 	"gitcode.com/urandon/sessionless/internal/attachedworkertransport"
 	"gitcode.com/urandon/sessionless/internal/idgen"
+	"gitcode.com/urandon/sessionless/internal/opssignal"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/ydbstore"
 )
@@ -19,11 +20,18 @@ import (
 // sealed-input composition is credentialless; test-provider constructors are
 // deliberately not available here, and real provider activation remains #133.
 func AttachedWorkerOptions(audience string, state *ydbstore.Store, blobs ports.BlobStore) (Options, error) {
+	return AttachedWorkerOptionsWithSignals(audience, state, blobs, nil)
+}
+
+// AttachedWorkerOptionsWithSignals shares the process-owned best-effort sink.
+// Observations do not activate a worker profile or acquire new dependencies.
+func AttachedWorkerOptionsWithSignals(audience string, state *ydbstore.Store, blobs ports.BlobStore, signals opssignal.Sink) (Options, error) {
 	if state == nil || blobs == nil {
 		return Options{}, fmt.Errorf("attached worker control dependencies are required")
 	}
 	service, err := attachedworkertransport.NewReceiptFinalizingService(attachedworkertransport.ServiceConfig{
-		IDs: idgen.New(), Audience: audience,
+		OpsSignals: signals,
+		IDs:        idgen.New(), Audience: audience,
 		PlatformOffer: attachedworkerprotocol.VersionOfferV1{
 			Window:    attachedworkerprotocol.VersionWindow{Minimum: 1, Maximum: 1},
 			Supported: []attachedworkerprotocol.ProtocolVersion{attachedworkerprotocol.ProtocolVersionV1},
@@ -52,7 +60,7 @@ func AttachedWorkerOptions(audience string, state *ydbstore.Store, blobs ports.B
 	if err != nil {
 		return Options{}, err
 	}
-	receipt, err := attachedworkerreceipt.NewService(service, state, blobs)
+	receipt, err := attachedworkerreceipt.NewServiceWithOpsSignals(service, state, blobs, signals)
 	if err != nil {
 		return Options{}, err
 	}

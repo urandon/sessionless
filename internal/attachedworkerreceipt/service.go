@@ -7,6 +7,9 @@ import (
 	"context"
 	"errors"
 
+	"gitcode.com/urandon/sessionless/internal/attachedworkeroutput"
+	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/opssignal"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/ydbstore"
 )
@@ -30,16 +33,23 @@ type ReceiptStore interface {
 }
 
 type Service struct {
-	binder BearerBinder
-	store  ReceiptStore
-	blobs  ports.BlobStore
+	opsSignals opssignal.Sink
+	binder     BearerBinder
+	store      ReceiptStore
+	blobs      ports.BlobStore
 }
 
 func NewService(binder BearerBinder, store ReceiptStore, blobs ports.BlobStore) (*Service, error) {
+	return NewServiceWithOpsSignals(binder, store, blobs, nil)
+}
+
+// NewServiceWithOpsSignals preserves the original publication boundary; a nil
+// sink is a no-op and an observation failure never changes the receipt result.
+func NewServiceWithOpsSignals(binder BearerBinder, store ReceiptStore, blobs ports.BlobStore, signals opssignal.Sink) (*Service, error) {
 	if binder == nil || store == nil || blobs == nil {
 		return nil, ErrInvalid
 	}
-	return &Service{binder: binder, store: store, blobs: blobs}, nil
+	return &Service{binder: binder, store: store, blobs: blobs, opsSignals: signals}, nil
 }
 
 func (service *Service) Create(ctx context.Context, bearer []byte, request ydbstore.AttachedWorkerOutputReceiptRequest) (ydbstore.AttachedWorkerOutputReceiptResult, error) {
@@ -53,6 +63,15 @@ func (service *Service) Create(ctx context.Context, bearer []byte, request ydbst
 	request.Authorization = bound
 	result, err := service.store.CreateAttachedWorkerOutputReceipt(ctx, service.blobs, request)
 	if err != nil {
+		var validation domain.ValidationError
+		var validationPointer *domain.ValidationError
+		kind, classified := domain.ClassifyError(err)
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, domain.ErrMembershipDenied) && !errors.As(err, &validation) && !errors.As(err, &validationPointer) && !errors.Is(err, attachedworkeroutput.ErrCandidateInvalid) &&
+			!errors.Is(err, ydbstore.ErrAttachedWorkerReceiptCopyInProgress) &&
+			!errors.Is(err, ydbstore.ErrAttachedWorkerAttemptConflict) &&
+			!(classified && (kind == domain.ErrorPolicyDenied || kind == domain.ErrorQuotaBlocked || kind == domain.ErrorReauthRequired)) {
+			opssignal.Emit(ctx, service.opsSignals, opssignal.AttachedPublicationFailure, opssignal.Publication, opssignal.Unexpected)
+		}
 		return ydbstore.AttachedWorkerOutputReceiptResult{}, ErrUnavailable
 	}
 	switch result.Status {

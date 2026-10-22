@@ -1,7 +1,9 @@
 # Content-free operational signals
 
 [#226](https://gitcode.com/urandon/sessionless/issues/226) implements the Web,
-queue and wake portion of the accepted
+queue and wake portion, and
+[#227](https://gitcode.com/urandon/sessionless/issues/227) joins the execution
+owners described below to the accepted
 [cloud-dev observability design v0.1.1](https://gitcode.com/urandon/sessionless/wiki/Cloud-Dev-Observability-Design.md).
 It does not provision metrics, alerts, notifications or Cloud Logging resources.
 
@@ -69,11 +71,11 @@ the subsequent direct browser-to-bucket GET; GET failures remain explicitly
 uncovered until [#228](https://gitcode.com/urandon/sessionless/issues/228) qualifies
 native coverage under [#19](https://gitcode.com/urandon/sessionless/issues/19).
 
-The seven managed and seven attached slots are a shared immutable vocabulary for
-[#227](https://gitcode.com/urandon/sessionless/issues/227), not implemented route
-observations here. Their future owner must prove actual canonical/publication,
-cleanup, deadline and unknown-state predicates without a second poller or replay
-authority. A successful ACK, offer or dispatch is not canonical execution success.
+The [execution owner matrix](execution-operational-signals.md) distinguishes
+implemented hooks from unavailable predicates and unqualified profiles. Its
+seven managed and seven attached slots reuse the same immutable vocabulary;
+not every slot has a qualified emitting owner. A successful ACK, offer or
+dispatch is not canonical execution success.
 Both execution routes remain required for MVP; Telegram rollout remains deferred.
 
 `make ops-signal-test` verifies the local contract and deterministic injected

@@ -189,15 +189,22 @@ still cover its packages; `ci-core` also validates the checked-in YAML catalog.
 ### Content-free operational observations
 
 The [operational signal contract](operational-signals.md) describes the closed
-`ops_signal_v1` vocabulary and actual Web/queue owners. To verify the offline
+`ops_signal_v1` vocabulary and actual Web/queue owners. The
+[execution owner matrix](execution-operational-signals.md) separates qualified
+managed/attached hooks from unavailable predicates and inactive profiles. To verify the offline
 schema, privacy, error classification and unchanged business outcomes:
 
 ```sh
 make ops-signal-test
+# Smaller isolated suites, without the scripted SQL/loopback connected fixture:
+make ops-signal-unit-test
 ```
 
 The target uses the shared Go caches, deterministic injected sinks and ordinary
 race/shuffle checks. It starts no database, container, cloud client or provider.
+Isolated signal cases repeat 20 times; the concrete local-owner fixture runs
+once and twice shuffled within the same three-minute per-command bound. That
+fixture uses scripted SQL and a test-owned loopback HTTP peer, not a YDB service.
 All packages remain in the ordinary CI test selection; this target is a focused
 developer entrypoint, not an alternative release gate.
 

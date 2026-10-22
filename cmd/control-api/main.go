@@ -130,14 +130,15 @@ func buildHandler(
 		return nil, func() {}, fmt.Errorf("open object storage: %w", err)
 	}
 	options := controlapi.Options{}
+	signals := opssignal.NewWriter(os.Stdout)
 	if attached.enabled {
-		options, err = controlapi.AttachedWorkerOptions(attached.audience, state, blobs)
+		options, err = controlapi.AttachedWorkerOptionsWithSignals(attached.audience, state, blobs, signals)
 		if err != nil {
 			return nil, func() {}, err
 		}
 	}
 	if webhookSecret != "" {
-		options.TelegramWebhook, err = buildTelegramWebhook(ctx, logger, webhookSecret, state, blobs)
+		options.TelegramWebhook, err = buildTelegramWebhook(ctx, logger, webhookSecret, state, blobs, signals)
 		if err != nil {
 			return nil, func() {}, err
 		}
@@ -149,9 +150,8 @@ func buildHandler(
 // Telegram alone owns its bot identity and queues. Attached-only startup
 // neither reads nor validates that optional frontend's configuration.
 func buildTelegramWebhook(ctx context.Context, logger *slog.Logger, webhookSecret string,
-	state *ydbstore.Store, blobs *s3store.Store,
+	state *ydbstore.Store, blobs *s3store.Store, signals opssignal.Sink,
 ) (http.Handler, error) {
-	signals := opssignal.NewWriter(os.Stdout)
 	identityKey := []byte(os.Getenv("TELEGRAM_IDENTITY_HMAC_KEY"))
 	identity, err := telegramingress.NewIdentityResolver(identityKey)
 	if err != nil {

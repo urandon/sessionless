@@ -20,6 +20,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/attachedworkerprotocol"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerreconnect"
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/opssignal"
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
 
@@ -42,6 +43,7 @@ var (
 )
 
 type ServiceConfig struct {
+	OpsSignals          opssignal.Sink
 	IDs                 ports.IDGenerator
 	Random              io.Reader
 	Audience            string
@@ -70,6 +72,7 @@ type DrainBroker interface {
 }
 
 type Service struct {
+	opsSignals         opssignal.Sink
 	ids                ports.IDGenerator
 	random             io.Reader
 	audience           string
@@ -105,7 +108,8 @@ func NewService(config ServiceConfig, store ports.AttachedWorkerTransportStore, 
 		config.Random = rand.Reader
 	}
 	service := &Service{
-		ids: config.IDs, random: config.Random, audience: config.Audience,
+		opsSignals: config.OpsSignals,
+		ids:        config.IDs, random: config.Random, audience: config.Audience,
 		platformOffer: cloneOffer(config.PlatformOffer), implemented: append([]attachedworkerprotocol.ProtocolVersion(nil), config.ImplementedVersions...),
 		challengeLifetime: config.ChallengeLifetime, challengeRetention: config.ChallengeRetention,
 		presenceTTL: config.PresenceTTL, authTTL: config.AuthTTL, checkpointInterval: config.CheckpointInterval,
@@ -753,6 +757,7 @@ func (service *Service) exchange(ctx context.Context, bearer ConnectionBearer, b
 	}
 	connection, found, err := service.store.LoadAttachedWorkerConnection(ctx, bearer.tenantID, bearer.ownerUserID, bearer.workerID)
 	if err != nil {
+		service.observeTransportFailure(ctx, err)
 		return nil, ErrTransportBackend
 	}
 	if !found || connection.Validate() != nil || connection.ID != bearer.connectionID ||
@@ -1013,6 +1018,7 @@ func (service *Service) exchangeAttemptFrame(ctx context.Context, bearer Connect
 		PresentedSecretDigest: bearer.secret.Digest(), InboundFrame: frame,
 	})
 	if err != nil {
+		service.observeTransportFailure(ctx, err)
 		return nil, ErrTransportBackend
 	}
 	if result.Status != ports.AttachedWorkerExecutionApplied && result.Status != ports.AttachedWorkerExecutionReplayed {
@@ -1029,6 +1035,7 @@ func (service *Service) exchangeAttemptFrame(ctx context.Context, bearer Connect
 				EvidenceDigest: domain.AttachedWorkerTerminalEvidenceDigest(hex.EncodeToString(frame.Terminal.EvidenceDigest)),
 			},
 		})
+		service.observeTerminalCommit(ctx, bearer, connection, frame, committed, commitErr)
 		if commitErr != nil || committed.Status != ports.AttachedWorkerExecutionApplied &&
 			committed.Status != ports.AttachedWorkerExecutionReplayed {
 			return nil, ErrTransportBackend

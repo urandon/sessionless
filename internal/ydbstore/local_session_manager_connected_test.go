@@ -13,6 +13,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/deterministicharness"
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/opssignal"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/providerloopsession"
 	"gitcode.com/urandon/sessionless/internal/queuecontract"
@@ -77,6 +78,32 @@ type localManagerClock struct{}
 
 func (localManagerClock) Now() time.Time { return time.Now().UTC().Truncate(time.Microsecond) }
 
+// The sink deliberately fails after recording: telemetry delivery cannot alter
+// the actual original cleanup, canonical transaction or queue decision.
+type localManagerOpsSink struct {
+	mu      sync.Mutex
+	records []opssignal.Record
+}
+
+func (sink *localManagerOpsSink) Observe(_ context.Context, record opssignal.Record) error {
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	sink.records = append(sink.records, record)
+	return errors.New("discarded observation")
+}
+
+func (sink *localManagerOpsSink) count(signal opssignal.SignalID) int {
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	count := 0
+	for _, record := range sink.records {
+		if record.SignalID == signal {
+			count++
+		}
+	}
+	return count
+}
+
 // A real Context/AfterFunc parent, not a worker callback or permission. With no
 // parent Values, Go uses this public AfterFunc contract for cancellation wiring.
 // Once armed inside physical cleanup, stopping the execution child's original
@@ -117,7 +144,7 @@ func (c *localManagerCaller) observeExecutionCancellation() {
 // SQL/source verification/funding/storage are fixtures; this is NOT Web ingress,
 // browser/re-login, a typed tool loop, native YDB, real-model or cloud proof.
 func TestLocalSessionManagerCompletionConnected(t *testing.T) {
-	for _, mode := range []string{"success", "late_cancel", "watchdog_cancel_during_cleanup", "delete_failure", "lost_terminal_ack"} {
+	for _, mode := range []string{"success", "late_cancel", "watchdog_cancel_during_cleanup", "delete_failure", "lost_terminal_ack", "lost_terminal_ack_rollback"} {
 		t.Run(mode, func(t *testing.T) {
 			peer := &sessionCompactionPeer{modelText: "original manager answer"}
 			server := httptest.NewUnstartedServer(peer)
@@ -167,6 +194,9 @@ func TestLocalSessionManagerCompletionConnected(t *testing.T) {
 			if mode == "lost_terminal_ack" {
 				fixture.LoseNextCompletionACK(t, "ambiguous")
 			}
+			if mode == "lost_terminal_ack_rollback" {
+				fixture.LoseNextCompletionACK(t, "rollback")
+			}
 			session, err := providerloopsession.NewLocalV1(t.Context(), providerloopsession.LocalConfigV1{Source: seed.Source, DB: seed.DB, StoreOptions: seed.Options, Prepare: seed.Prepare, Operate: seed.Operate, Backend: seed.Backend, Substrate: seed.Substrate, Blobs: blobs})
 			if err != nil {
 				t.Fatal("original local factory", err)
@@ -188,7 +218,9 @@ func TestLocalSessionManagerCompletionConnected(t *testing.T) {
 				return nil
 			}
 			var observed error
+			signals := &localManagerOpsSink{}
 			configuration := worker.Config{ScratchRoot: t.TempDir(), WorkerID: seed.WorkerPreflightState(t).Attempt.WorkerID, LeaseTTL: time.Hour, LeaseWatchdogInterval: 20 * time.Minute, LocalOwnedSession: session, DeliveryWakePublisher: q, ProjectionWakePublisher: q, PhysicalClaimGenerator: func(context.Context) (string, error) { return seed.Request.PhysicalInvocationClaimID, nil }, RetryObserver: func(err error) { observed = err }}
+			configuration.OpsSignals = signals
 			if watchdogCaller != nil {
 				configuration.LeaseWatchdogInterval = time.Millisecond
 			}
@@ -218,6 +250,9 @@ func TestLocalSessionManagerCompletionConnected(t *testing.T) {
 			outcome, err := manager.RunOnce(caller)
 			got := fixture.Snapshot(t)
 			if mode == "delete_failure" {
+				if signals.count(opssignal.ManagedCleanupFailure) != 1 || signals.count(opssignal.ManagedCleanupSuccess) != 0 || signals.count(opssignal.ManagedCanonicalSuccess) != 0 {
+					t.Fatal("partial cleanup emitted false success or lost failure", signals.records)
+				}
 				stats := seed.Stats()
 				blobs.cleanupMu.Lock()
 				deletes := blobs.deletes
@@ -249,8 +284,15 @@ func TestLocalSessionManagerCompletionConnected(t *testing.T) {
 			if (mode == "late_cancel" || mode == "watchdog_cancel_during_cleanup") && (got.Events[0].Kind != domain.SessionEventSystemNotice || got.Run.TerminalCustody.LocalEvidence != nil) {
 				t.Fatal("late cancellation published candidate assistant/local evidence")
 			}
-			if mode == "lost_terminal_ack" && got.LostACKs != 1 {
+			if strings.HasPrefix(mode, "lost_terminal_ack") && got.LostACKs != 1 {
 				t.Fatal("fault missed actual terminal commit")
+			}
+			wantSuccess := 1
+			if wantStatus == domain.RunCancelled {
+				wantSuccess = 0
+			}
+			if signals.count(opssignal.ManagedCleanupSuccess) != 1 || signals.count(opssignal.ManagedCanonicalSuccess) != wantSuccess || signals.count(opssignal.ManagedCanonicalUnknown) != 0 || signals.count(opssignal.ManagedCleanupFailure) != 0 {
+				t.Fatal("observations differ from actual terminal/cleanup readback", signals.records)
 			}
 			statsBeforeReplay := seed.Stats()
 			if statsBeforeReplay.Parent != 1 || statsBeforeReplay.Burn != 1 || statsBeforeReplay.Operation != 1 || statsBeforeReplay.Observation != 1 {

@@ -145,6 +145,11 @@ func (boundary *PreparedProcessBoundaryV1) Run(ctx context.Context, invocation P
 				result.original.mediaProfileDigest = invocation.Identity.HarnessBinding.Backend.BackendProfileDigest
 			}
 		}
+		if boundary.native != nil {
+			// Retire this original child only after finish sampled its authority.
+			// The consumed latch is deliberately retained on every outcome.
+			_ = boundary.native.child.Close()
+		}
 		cancel()
 	}()
 
@@ -229,6 +234,9 @@ func (boundary *PreparedProcessBoundaryV1) finish(active *activePreparedProcess)
 		return false
 	}
 	if !active.finished {
+		if boundary.native != nil && (boundary.native.child == nil || boundary.native.child.Current() != nil) {
+			active.cancelled = true
+		}
 		// Normal daemon cancellation arrives through this original context,
 		// including after natural process exit while real teardown is held.
 		// It must settle under the same mutex as explicit Cancel and finish.

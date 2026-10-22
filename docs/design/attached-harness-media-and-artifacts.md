@@ -1,6 +1,6 @@
 # Attached harness media and artifact delivery
 
-Version: 0.2.0 candidate; the independently accepted V1 contract is retained below.
+Version: 0.3.0; the independently accepted V1 contract is retained below.
 Owner: [#198](https://gitcode.com/urandon/sessionless/issues/198), under
 [#72](https://gitcode.com/urandon/sessionless/issues/72).
 Consumers: [#13](https://gitcode.com/urandon/sessionless/issues/13) and
@@ -362,6 +362,162 @@ and qualification; it is not closed against unimplemented V1 criteria. Any
 governing policy or actual platform that cannot support this envelope remains
 explicit no-go. A different paid/live budget, weaker privacy/authorization or
 reduced product modality requires the owner's separate decision.
+
+## Inline worker output transport V2
+
+For the bounded text/JSON cohort, send the two artifact bodies directly to the
+authenticated control plane. Do not first upload worker source objects and
+then copy them. This removes a physical write phase and its orphan objects;
+it does not remove write custody. The existing receipt owner must durably
+record exact canonical write ownership before any Object Storage Put.
+
+The source-object V1 contract above remains unchanged. V2 is explicit in the
+endpoint, negotiated profile and receipt payload. It must not fabricate a V1
+canonical digest/materialization before bodies exist, create in-memory fake
+BlobRefs, use browser grants, or grant the worker unrestricted BlobStore access.
+
+### Preparation and one body submission
+
+Preparation carries the authenticated connection/attempt scope, nonce, exact
+accepted head and reservation/lease/fence, resource/profile/schema/final
+digests, original process observation, answer, and ordered artifact
+name/type/size/SHA256 declarations. The server rechecks membership, current
+connection generations, worker/attempt, cancellation/deletion, resource and
+profile eligibility with one authoritative transaction time. The answer and
+declarations form an immutable plan; the capability is bound to that plan and
+an original expiry, not a new execution grant.
+
+The body endpoint uses one fixed versioned media type and one exact-length
+byte stream: artifact 1 followed by artifact 2. The admitted sizes define
+their boundaries. There are no multipart filenames, delimiters, base64 or
+model-controlled destination URLs. Require exact Content-Length, content
+type, declared count/order and every size/hash; reject trailing or missing
+bytes as a whole. A single HTTP request still spends up to two artifact-body
+sends. Burn their entire declared budget before starting it, including failed
+or ambiguous transmission. Never create a new nonce/capability to evade a burn.
+
+The server atomically consumes the one body submission identity before it
+reads content. A duplicate/concurrent request cannot acquire that identity.
+Reserve bounded memory before reading, then validate complete original UTF-8
+text/JSON bytes without numeric conversion or reserialization. No partial body
+may reach materialization. A lost response permits only bounded exact-plan
+metadata reconciliation, not another body send.
+
+For an answer with no artifacts, Prepare performs the same claim and
+canonical-plan promotion without a body request. It consumes zero artifact
+sends, not a replayable empty-body POST. Its answer still enters canonical
+write custody before the first Put. A lost Prepare response uses the one
+read-only reconciliation request, identified by the original nonce and plan
+fingerprint. It may return READY or the original still-unconsumed capability
+only after fresh eligibility checks; it cannot replace an expired/consumed
+capability, extend its deadline or repeat canonical writes. Reconciliation
+after a lost body response returns status/READY only, never body authority.
+
+### Receipt custody stages
+
+Use the existing attached_worker_output_receipts owner and primary key, with
+an explicit V2 payload and stage-specific invariants. Do not add a table or
+parallel invocation lifecycle. Denormalized columns must agree with the V2
+stage; an absent canonical digest is not a fabricated valid digest.
+
+| Stage | Meaning and permitted transition |
+| --- | --- |
+| prepared | Exact authenticated plan/expiry registered; no body identity consumed and no canonical write authority issued. One atomic claim may advance it. |
+| body_claimed | The sole body submission and its planned send budget are irreversibly consumed. Content is bounded memory only. No object write is permitted. |
+| canonical_copying | Exact verified bytes have produced the server canonical plan. Its complete refs, digest and sole copy owner are durable before the first physical Put. Lost/ambiguous Put retains this barrier. |
+| ready | Original canonical writes and reread/hash checks completed; immutable canonical receipt is available to the existing finalizer/TerminalAck path. |
+| retired_without_writes | A transaction proved no canonical write authority was issued and irrevocably fenced every later plan promotion. It never grants another body submission or model invocation. |
+
+Preparation, claim, promotion and pre-copy retirement serialize with the
+existing deletion owner. A body-reader crash leaves consumption durable.
+Claim and canonical-plan promotion each repeat the full current membership,
+connection/attempt/fence, cancellation, resource/profile and original expiry
+checks transactionally; Prepare eligibility is not authority for a later Put.
+Before READY, repeat those checks again. Revocation or expiry during body
+reading prevents promotion, not merely publication. A failed check after a
+write may be in flight retains its canonical custody barrier.
+Retirement may handle prepared/body_claimed only if the same transaction
+proves no canonical plan/copy authority was issued and fences late promotion.
+A late handler then fails its stage comparison before any Put. Neither expiry
+nor client disconnect alone proves this. Once canonical_copying is committed,
+only the existing definitive writer/custody disposition may clear its barrier;
+object absence, timeout and CopyInProgress=false are not quiescence evidence.
+
+Update every receipt reader, replay path, finalizer, deletion guard and
+inventory consumer explicitly for V2. Unknown or malformed versions/stages
+deny. A pending V2 cannot decode as a defaulted V1. Inventory must account for
+all planned canonical refs, including unpublished/failed writes; retired
+pre-copy records contain no fictional source-object refs.
+
+### Canonical materialization and retirement
+
+Factor a narrowly typed verified-byte source into the existing Materialize
+core. The inline source supplies original bounded bytes and exact declared
+identity, not a claimed storage object. Preserve full tenant/attempt scope,
+size/hash verification, server-selected immutable keys/IDs, canonical copy and
+canonical reread verification. Do not serialize transient input bodies or
+pseudo-source refs in durable receipts or deletion inventory.
+
+Only the original private completed native witness can request export, after
+actual workload quiescence, outer WriteBack/Release and staging cleanup.
+Keep the original semantic bytes and candidate/journal identity through exact
+TerminalAck and journal retirement or an independently authorized definitive
+disposition. READY makes the result available but does not retire those bytes.
+The child receives neither capability nor transport credentials.
+The existing fenced finalizer remains the only product publisher. READY/ACK
+loss uses metadata-only recovery; journal loss fences/reconciles and never
+regenerates model output or resends bodies.
+
+### Complete transport bounds
+
+Content remains at most two 32 KiB artifacts/64 KiB total, with the original
+128 KiB encoded-final and 32 KiB answer ceilings unchanged. V2 preparation JSON
+has its own 256 KiB ceiling including escaping, scope and observation; it is
+not stored in the inherited 128 KiB receipt journal. V2 response/control
+records are compact identity/status/canonical-digest records of at most 32 KiB,
+not copies of the answer or canonical materialization.
+
+The existing checkpoint owner stores an explicit V2 compact commitment of at
+most 32 KiB: exact attempt/plan/final/answer digests, ordered artifact
+names/types/sizes/hashes, original expiry, irreversible prepare/body burn and
+READY/TerminalAck identity. It does not duplicate Prepare JSON, answer or
+artifact bodies. The original private result retains semantic bytes until
+retirement; after restart/loss, the commitment permits metadata reconciliation
+only, not body regeneration/resend. An absent/corrupt commitment fences the
+attempt. V1 checkpoint decoding and its 128 KiB ceiling remain unchanged.
+
+The raw body is exactly its declared content length and at most 64 KiB;
+headers are at most 8 KiB. Per attempt, allow at most one encoded control
+buffer and one read buffer of 256 KiB each, one decoded plan of at most
+96 KiB of retained string/byte content, original final at most 128 KiB, and
+artifact content at most 64 KiB. Bound the sum of owned payload buffers to
+1 MiB before allocation; do not retain duplicate request/response bodies.
+Fixed schema/member bounds and the existing process memory boundary account
+for container/runtime overhead; this is not a claim of exact Go heap size.
+Maximum-valid escaping, names and scope must fit these representations without
+truncation or reduction of the admitted semantic maxima.
+
+One original window of at most 15 seconds, tightened by every
+earlier caller/run/lease/resource deadline, covers preparation, submission and
+bounded reconciliation. No phase resets it. Enforce the minimum of these and
+existing transport/product limits before allocation or sending.
+
+Disable redirects, body rewind and hidden retry behavior; do not inherit the
+V1 receipt client's exact-metadata retry loop for bodies. At most one Prepare,
+one body request and one read-only reconciliation belong to this window.
+After READY, the existing immutable journal/ACK recovery remains metadata-only
+and does not renew body authority. Logs/receipts expose no content, bearer or
+capability secret.
+
+Implementation under #200 must prove concurrent claims; crash before/after
+claim and canonical-plan commit; slow/late body versus deletion; exact maximum
+framing; invalid Unicode/JSON/hash/order; revoke/expiry during reading; lost
+body response and ambiguous canonical Put; pre-copy retirement versus late
+promotion; maximum-case escaped answer/journal/control representation;
+answer-only and lost Prepare reconciliation; READY/ACK loss with zero
+provider/body replay. Persistence authority
+requires native transactional evidence in addition to controlled fake tests.
+This V2 delta does not complete or activate #133/#199/#200/#220.
 
 ## Retrieval and verification
 

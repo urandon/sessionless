@@ -131,7 +131,16 @@ func (driver *Driver) execute(ctx context.Context, request ports.ExecutionReques
 		*original = process.original
 	}
 	zeroBytes(invocation.Stdin)
-	parsed := ParseProtocolV1(process.Stdout)
+	var parsed ProtocolResultV1
+	if boundary, concrete := driver.boundary.(*PreparedProcessBoundaryV1); concrete && process.original != nil &&
+		process.original.self == process.original && process.original.boundary == boundary && process.original.authority == authority {
+		parsed = protocolResultV1(process.original.protocol)
+	} else {
+		parsed = ParseProtocolV1(process.Stdout)
+	}
+	if process.original != nil {
+		defer zeroBytes(process.original.protocol.final)
+	}
 	zeroBytes(process.Stdout)
 	defer zeroBytes(parsed.Final)
 	evidence, terminalErr := reduceDriverEvidence(request.HarnessBinding, parsed, process, runErr)

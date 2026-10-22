@@ -48,6 +48,11 @@ type ProtocolResultV1 struct {
 // granting provider, credential, routing, retry, or scheduling authority.
 func ParseProtocolV1(value []byte) ProtocolResultV1 {
 	parsed := parseJSONL(value)
+	defer zeroBytes(parsed.final)
+	return protocolResultV1(parsed)
+}
+
+func protocolResultV1(parsed parseResult) ProtocolResultV1 {
 	return ProtocolResultV1{
 		Accepted: parsed.accepted, Terminal: parsed.terminal,
 		ProtocolDrift: parsed.protocolDrift, TerminalDrift: parsed.terminalDrift,

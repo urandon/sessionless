@@ -89,7 +89,10 @@ func (v *nativeConduitOwner) run(ctx context.Context, spec attachedworkerdaemon.
 	}
 	call, cancel := context.WithTimeout(ctx, v.bundle.Limits.Active)
 	stop := context.AfterFunc(life, cancel)
-	defer func() { stop(); cancel(); _ = v.child.Close() }()
+	// The original prepared entry retires the child after its terminal
+	// cancellation/current-authority arbitration. Retiring here would make a
+	// normal return indistinguishable from authority lost before completion.
+	defer func() { stop(); cancel() }()
 	if life.Err() != nil || v.child.Current() != nil {
 		return attachedworkerdaemon.AttemptResult{}, ErrAuthorityUnavailable
 	}

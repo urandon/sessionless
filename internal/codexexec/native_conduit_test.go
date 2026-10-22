@@ -63,6 +63,11 @@ func nativeHostArtifact(t *testing.T) attachedworkerdaemon.NativeArtifactV2 {
 
 func newNativeConstructorFixtureWithCompanion(t *testing.T, path string, companion *attachedworkerdaemon.NativeArtifactV2) nativeConstructorFixture {
 	t.Helper()
+	return newNativeConstructorFixtureAt(t, path, companion, driverNow)
+}
+
+func newNativeConstructorFixtureAt(t *testing.T, path string, companion *attachedworkerdaemon.NativeArtifactV2, now time.Time) nativeConstructorFixture {
+	t.Helper()
 	root := canonicalTempDir(t)
 	if path == "" {
 		path = filepath.Join(root, "inert-native")
@@ -101,11 +106,11 @@ func newNativeConstructorFixtureWithCompanion(t *testing.T, path string, compani
 			Image: "registry.example/worker@sha256:" + strings.Repeat("b", 64), UserID: 1000, GroupID: 1000, DiskBytes: 1 << 30, CredentialFileBytes: 1024,
 			MemoryBytes: 64 << 20, PIDsLimit: 64, StopSeconds: 10},
 		Harness:   attachedworkerlocal.HarnessConfigV1{Executable: path, SHA256: fmt.Sprintf("%x", digest), Arguments: []string{"--native"}},
-		Lifecycle: attachedworkerlocal.LifecycleActive, CreatedAt: driverNow, UpdatedAt: driverNow}
+		Lifecycle: attachedworkerlocal.LifecycleActive, CreatedAt: now, UpdatedAt: now}
 	if runtime.GOOS == "darwin" {
 		manifest.OCI.Boundary = attachedworkerlocal.BoundaryDarwinVM
 	}
-	store, err := attachedworkerlocal.NewStore(filepath.Join(root, "state"), func() time.Time { return driverNow })
+	store, err := attachedworkerlocal.NewStore(filepath.Join(root, "state"), func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +118,7 @@ func newNativeConstructorFixtureWithCompanion(t *testing.T, path string, compani
 		OwnerUserID: manifest.OwnerUserID, WorkerID: manifest.WorkerID, EnrollmentGeneration: 1, IdentityPrivateKey: private}); err != nil {
 		t.Fatal(err)
 	}
-	peer := &nativeConstructorPeer{public: public}
+	peer := &nativeConstructorPeer{public: public, now: now}
 	offer := attachedworkerprotocol.VersionOfferV1{Window: attachedworkerprotocol.VersionWindow{Minimum: 1, Maximum: 1}, Supported: []attachedworkerprotocol.ProtocolVersion{1}}
 	capability := attachedworkerprotocol.CapabilityManifestV1{WorkerID: string(manifest.WorkerID), EnrollmentGeneration: 1, Revision: 1, ProtocolOffer: offer,
 		OperatingSystem: runtime.GOOS, Architecture: runtime.GOARCH, BuildID: "native-fixture", HarnessName: "codex", HarnessVersion: "1",
@@ -122,7 +127,7 @@ func newNativeConstructorFixtureWithCompanion(t *testing.T, path string, compani
 		Features:          []attachedworkerprotocol.ProtocolFeatureV1{attachedworkerprotocol.FeatureCancellation, attachedworkerprotocol.FeatureProgress, attachedworkerprotocol.FeatureReconnect}, MaxConcurrentAttempts: 1}
 	connector, err := attachedworkersession.New(store, peer, peer, attachedworkersession.Config{Audience: "sessionless:attached-worker:v1", WorkerOffer: offer,
 		ImplementedVersions: []attachedworkerprotocol.ProtocolVersion{1}, OperationTimeout: time.Second,
-		Random: bytes.NewReader(append(bytes.Repeat([]byte{0x41}, 32), bytes.Repeat([]byte{0x42}, 32)...)), Now: func() time.Time { return driverNow }})
+		Random: bytes.NewReader(append(bytes.Repeat([]byte{0x41}, 32), bytes.Repeat([]byte{0x42}, 32)...)), Now: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +141,7 @@ func newNativeConstructorFixtureWithCompanion(t *testing.T, path string, compani
 		}
 	})
 	snapshot := session.Snapshot()
-	request, authority := validDriverRequest(t)
+	request, authority := validDriverRequestAt(t, now)
 	request.ExecutionPlacementV2.PolicyDigest = domain.AttachedWorkerPolicyDigest(hex.EncodeToString(policy[:]))
 	authority.PolicyDigest = request.ExecutionPlacementV2.PolicyDigest
 	request.ExecutionPlacementV2.CapabilityDigest = snapshot.CapabilityDigest
@@ -154,7 +159,7 @@ func newNativeConstructorFixtureWithCompanion(t *testing.T, path string, compani
 	peer.binding = attachedworkerprotocol.AttemptBindingV1{RunID: string(authority.RunID), AttemptID: string(authority.AttemptID), LeaseID: string(authority.LeaseID),
 		LeaseGeneration: authority.LeaseGeneration, FenceToken: string(authority.FenceToken), ExpiresAtUnixMicro: authority.LeaseExpiresAt.UnixMicro(),
 		ContextDigest: nativeDecodeHex(t, string(authority.ContextDigest)), CapabilityDigest: nativeDecodeHex(t, string(authority.CapabilityDigest)), PolicyDigest: nativeDecodeHex(t, string(authority.PolicyDigest))}
-	if _, err := session.ExchangeAction(context.Background(), attachedworkersession.ActionV1{Heartbeat: &attachedworkerprotocol.HeartbeatV1{ObservedAtUnixMicro: driverNow.UnixMicro(), Available: true}}); err != nil {
+	if _, err := session.ExchangeAction(context.Background(), attachedworkersession.ActionV1{Heartbeat: &attachedworkerprotocol.HeartbeatV1{ObservedAtUnixMicro: now.UnixMicro(), Available: true}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := session.ExchangeAction(context.Background(), attachedworkersession.ActionV1{LeaseClaim: &attachedworkerprotocol.LeaseClaimV1{Binding: peer.binding, AttemptSequence: 1}}); err != nil {
@@ -166,7 +171,7 @@ func newNativeConstructorFixtureWithCompanion(t *testing.T, path string, compani
 		t.Fatal(err)
 	}
 	return nativeConstructorFixture{session: session, input: input, config: PreparedProcessBoundaryConfigV1{Supervisor: supervisor, Authority: authority,
-		Executable: path, ExecutableDigest: digest, Arguments: []string{"--native"}, Now: func() time.Time { return driverNow }},
+		Executable: path, ExecutableDigest: digest, Arguments: []string{"--native"}, Now: func() time.Time { return now }},
 		bundle: bundle}
 }
 
@@ -189,6 +194,7 @@ func (*nativeConstructorLauncher) PrepareV2(context.Context, attachedworkerdaemo
 }
 
 type nativeConstructorPeer struct {
+	now        time.Time
 	public     ed25519.PublicKey
 	challenge  domain.AttachedWorkerAttachChallenge
 	binding    attachedworkerprotocol.AttemptBindingV1
@@ -208,7 +214,7 @@ func (p *nativeConstructorPeer) IssueChallenge(_ context.Context, in attachedwor
 		Purpose: in.Purpose, Audience: in.ExpectedAudience, ExpectedWorkerRevision: in.ExpectedWorkerRevision, ExpectedEnrollmentGeneration: in.Hello.EnrollmentGeneration,
 		ExpectedConnectionGeneration: in.Hello.ConnectionGeneration - 1, TargetConnectionGeneration: in.Hello.ConnectionGeneration,
 		WorkerProtocolMinimum: 1, WorkerProtocolMaximum: 1, WorkerProtocolVersions: []uint32{1}, PlatformProtocolMinimum: 1, PlatformProtocolMaximum: 1, PlatformProtocolVersions: []uint32{1}, SelectedProtocolVersion: 1,
-		WorkerNonceDigest: domain.DigestAttachedWorkerChallenge(in.Hello.Hello.WorkerNonce), PlatformNonceDigest: domain.DigestAttachedWorkerChallenge(nonce), CreatedAt: driverNow, ExpiresAt: driverNow.Add(time.Minute), RetainUntil: driverNow.Add(time.Hour), Revision: 1}
+		WorkerNonceDigest: domain.DigestAttachedWorkerChallenge(in.Hello.Hello.WorkerNonce), PlatformNonceDigest: domain.DigestAttachedWorkerChallenge(nonce), CreatedAt: p.now, ExpiresAt: p.now.Add(time.Minute), RetainUntil: p.now.Add(time.Hour), Revision: 1}
 	return &attachedworkerhttp.ChallengeResponseV1{Challenge: p.challenge, Frame: attachedworkerprotocol.FrameV1{Version: 1, MessageID: attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionPlatformToWorker, 1), WorkerID: in.Hello.WorkerID,
 		EnrollmentGeneration: in.Hello.EnrollmentGeneration, ConnectionGeneration: in.Hello.ConnectionGeneration, Sequence: 1, Ack: 1, Kind: attachedworkerprotocol.MessageChallenge,
 		Challenge: &attachedworkerprotocol.ChallengeV1{WorkerOffer: in.Hello.Hello.Offer, PlatformOffer: in.Hello.Hello.Offer, SelectedVersion: 1, WorkerNonce: in.Hello.Hello.WorkerNonce, PlatformNonce: nonce}}}, nil
@@ -227,7 +233,7 @@ func (p *nativeConstructorPeer) Activate(_ context.Context, in attachedworkerhtt
 	return &attachedworkerhttp.ActivateResponseV1{Connection: attachedworkerhttp.ActivateConnectionV1{TenantID: p.challenge.TenantID, OwnerUserID: p.challenge.OwnerUserID, WorkerID: p.challenge.WorkerID, ID: p.challenge.ConnectionID,
 		ActivationChallengeID: p.challenge.ID, EnrollmentGeneration: in.Attach.EnrollmentGeneration, ConnectionGeneration: in.Attach.ConnectionGeneration, ProtocolVersion: 1,
 		CapabilityDigest: domain.AttachedWorkerCapabilityDigest(fmt.Sprintf("%x", in.Attach.Attach.CapabilityDigest)), SecretDigest: in.ConnectionSecret.Digest(), ChannelBinding: channel,
-		State: domain.AttachedWorkerConnectionAttaching, PlatformSequence: 2, WorkerSequence: 2, PlatformAck: 2, WorkerAck: 1, ConnectedAt: driverNow.Add(time.Minute), AuthExpiresAt: driverNow.Add(time.Hour), Revision: 1},
+		State: domain.AttachedWorkerConnectionAttaching, PlatformSequence: 2, WorkerSequence: 2, PlatformAck: 2, WorkerAck: 1, ConnectedAt: p.now.Add(time.Minute), AuthExpiresAt: p.now.Add(time.Hour), Revision: 1},
 		Accepted: attachedworkerprotocol.FrameV1{Version: 1, MessageID: attachedworkerprotocol.MessageIDV1(attachedworkerprotocol.DirectionPlatformToWorker, 2), WorkerID: in.Attach.WorkerID, EnrollmentGeneration: in.Attach.EnrollmentGeneration,
 			ConnectionGeneration: in.Attach.ConnectionGeneration, Sequence: 2, Ack: 2, Kind: attachedworkerprotocol.MessageAttachAccepted, AttachAccepted: &attachedworkerprotocol.AttachAcceptedV1{
 				WorkerOffer: in.Attach.Attach.WorkerOffer, PlatformOffer: in.Attach.Attach.PlatformOffer, SelectedVersion: 1, WorkerNonce: in.Attach.Attach.WorkerNonce, PlatformNonce: in.Attach.Attach.PlatformNonce, CapabilityDigest: in.Attach.Attach.CapabilityDigest}}}, nil

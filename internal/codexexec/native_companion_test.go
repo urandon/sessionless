@@ -497,6 +497,7 @@ func startCompanionProcess(t *testing.T, timeout time.Duration, deps nativeCompa
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = entry.native.child.Close() })
 	parent, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	c, err := entry.native.newCompanion(parent, deps)
 	if err != nil {

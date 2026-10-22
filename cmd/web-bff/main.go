@@ -19,6 +19,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/buildinfo"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/idgen"
+	"gitcode.com/urandon/sessionless/internal/opssignal"
 	"gitcode.com/urandon/sessionless/internal/outboxwake"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/s3store"
@@ -82,6 +83,8 @@ func webListenAddress() string {
 }
 
 func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(), error) {
+	// One bounded content-free carrier, independent of legacy correlation logs.
+	signals := opssignal.NewWriter(os.Stdout)
 	baseURL := os.Getenv("WEB_BASE_URL")
 	environment := envOrDefault("SESSIONLESS_ENVIRONMENT", "cloud-dev")
 	allowLocal := environment == "local"
@@ -147,8 +150,9 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 		return nil, func() {}, fmt.Errorf("open web BFF object storage: %w", err)
 	}
 	sessions, err := sessionapi.New(sessionapi.Config{
-		CursorKey: []byte(os.Getenv("SESSION_API_CURSOR_HMAC_KEY")),
-		IDKey:     []byte(os.Getenv("SESSION_API_ID_HMAC_KEY")),
+		OpsSignals: signals,
+		CursorKey:  []byte(os.Getenv("SESSION_API_CURSOR_HMAC_KEY")),
+		IDKey:      []byte(os.Getenv("SESSION_API_ID_HMAC_KEY")),
 	}, store, blobs, systemClock{})
 	if err != nil {
 		closeYDB()
@@ -168,7 +172,7 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 		closeYDB()
 		return nil, func() {}, fmt.Errorf("open web scheduler wake queue: %w", err)
 	}
-	dispatchWakePublisher, err := outboxwake.NewPublisher(dispatchWakeQueue)
+	dispatchWakePublisher, err := outboxwake.NewPublisher(dispatchWakeQueue, signals)
 	if err != nil {
 		closeYDB()
 		return nil, func() {}, err
@@ -190,6 +194,7 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 		return nil, func() {}, err
 	}
 	api, err := webapi.New(webapi.Config{
+		OpsSignals:        signals,
 		IDKey:             identityKey,
 		MaxUploadBytes:    maxUploadBytes,
 		AllowedMCPServers: envCSV("WEB_ALLOWED_MCP_SERVERS"),
@@ -224,7 +229,8 @@ func buildHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func(
 		return nil, func() {}, err
 	}
 	backend, err := webbff.New(webbff.Config{
-		BaseURL: baseURL, RedirectURI: login.redirectURI,
+		OpsSignals: signals,
+		BaseURL:    baseURL, RedirectURI: login.redirectURI,
 		ObjectStorageOrigin:        os.Getenv("WEB_OBJECT_STORAGE_ORIGIN"),
 		AllowLoopbackObjectStorage: allowLocal,
 		OIDCPolicy:                 login.policy, Provider: login.oidc,

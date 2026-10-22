@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"gitcode.com/urandon/sessionless/internal/opssignal"
 	"gitcode.com/urandon/sessionless/internal/portlog"
 	"gitcode.com/urandon/sessionless/internal/s3store"
 	"gitcode.com/urandon/sessionless/internal/serverlesshttp"
@@ -28,6 +29,7 @@ func (systemClock) Now() time.Time { return time.Now() }
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	signals := opssignal.NewWriter(os.Stdout)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -88,7 +90,7 @@ func main() {
 					}
 					results := make([]telegramdelivery.WakeResult, 0, wakeQueue.Remaining())
 					for wakeQueue.Remaining() > 0 {
-						result, runErr := sender.RunWake(invocationCtx, wakeQueue)
+						result, runErr := sender.RunWake(invocationCtx, portlog.NewQueue(logger, "telegram-sender", wakeQueue, signals))
 						if runErr != nil {
 							return nil, runErr
 						}
@@ -104,7 +106,7 @@ func main() {
 				default:
 					return nil, fmt.Errorf("unsupported trigger path %q", request.URL.Path)
 				}
-			},
+			}, signals,
 		)
 		if err != nil {
 			logger.Error("Telegram sender trigger server stopped", "error", err)
@@ -130,7 +132,7 @@ func main() {
 		logger.Info("Telegram delivery startup recovery completed", "processed", processed)
 	}
 	for {
-		result, runErr := sender.RunWake(ctx, wakeQueue)
+		result, runErr := sender.RunWake(ctx, portlog.NewQueue(logger, "telegram-sender", wakeQueue, signals))
 		if errors.Is(runErr, sqsqueue.ErrNoMessage) {
 			continue
 		}

@@ -36,6 +36,10 @@ const (
 
 var ErrProviderResponse = errors.New("Telegram OIDC provider response is invalid")
 
+// ErrProviderUnavailable preserves fail-closed response compatibility while
+// exposing only a finite transport/service category to operational observers.
+var ErrProviderUnavailable = fmt.Errorf("%w: provider unavailable", ErrProviderResponse)
+
 type Config struct {
 	Issuer                string
 	AuthorizationEndpoint string
@@ -147,19 +151,21 @@ func (provider *Provider) ExchangeAndVerify(
 	httpRequest.SetBasicAuth(provider.config.ClientID, provider.config.ClientSecret)
 	response, err := provider.client.Do(httpRequest)
 	if err != nil {
-		return domain.OIDCIdentityClaims{}, fmt.Errorf("%w: token exchange failed", ErrProviderResponse)
+		return domain.OIDCIdentityClaims{}, ErrProviderUnavailable
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxProviderResponseBytes))
-		return domain.OIDCIdentityClaims{}, fmt.Errorf("%w: token endpoint status %d", ErrProviderResponse, response.StatusCode)
+		if expectedOAuthRejection(response.StatusCode, response.Body) {
+			return domain.OIDCIdentityClaims{}, ErrProviderResponse
+		}
+		return domain.OIDCIdentityClaims{}, ErrProviderUnavailable
 	}
 	var tokens struct {
 		IDToken string `json:"id_token"`
 	}
 	decoder := json.NewDecoder(io.LimitReader(response.Body, maxProviderResponseBytes))
 	if err := decoder.Decode(&tokens); err != nil || tokens.IDToken == "" {
-		return domain.OIDCIdentityClaims{}, ErrProviderResponse
+		return domain.OIDCIdentityClaims{}, ErrProviderUnavailable
 	}
 	claims, err := provider.verifyIDToken(ctx, tokens.IDToken, request.Now)
 	if err != nil {
@@ -194,6 +200,9 @@ func (provider *Provider) verifyIDToken(
 		return provider.signingKey(ctx, kid, now)
 	})
 	if err != nil || token == nil || !token.Valid {
+		if errors.Is(err, ErrProviderUnavailable) {
+			return domain.OIDCIdentityClaims{}, ErrProviderUnavailable
+		}
 		return domain.OIDCIdentityClaims{}, fmt.Errorf("%w: ID token verification failed", ErrProviderResponse)
 	}
 	if claims.IssuedAt == nil || claims.ExpiresAt == nil {
@@ -230,11 +239,11 @@ func (provider *Provider) refreshKeys(ctx context.Context, now time.Time) error 
 	}
 	response, err := provider.client.Do(request)
 	if err != nil {
-		return fmt.Errorf("%w: JWKS fetch failed", ErrProviderResponse)
+		return ErrProviderUnavailable
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("%w: JWKS endpoint status %d", ErrProviderResponse, response.StatusCode)
+		return ErrProviderUnavailable
 	}
 	var document struct {
 		Keys []struct {
@@ -247,7 +256,7 @@ func (provider *Provider) refreshKeys(ctx context.Context, now time.Time) error 
 		} `json:"keys"`
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, maxProviderResponseBytes)).Decode(&document); err != nil {
-		return ErrProviderResponse
+		return ErrProviderUnavailable
 	}
 	keys := make(map[string]any)
 	for _, encoded := range document.Keys {
@@ -261,7 +270,7 @@ func (provider *Provider) refreshKeys(ctx context.Context, now time.Time) error 
 		keys[encoded.KID] = key
 	}
 	if len(keys) == 0 {
-		return ErrProviderResponse
+		return ErrProviderUnavailable
 	}
 	provider.keys.keys = keys
 	provider.keys.expiresAt = now.Add(provider.config.JWKSCacheTTL)
@@ -319,6 +328,52 @@ func validateConfig(config Config) error {
 		return errors.New("Telegram OIDC client ID must be the numeric BotFather client ID")
 	}
 	return nil
+}
+
+// expectedOAuthRejection admits only explicit, bounded authorization-code
+// rejections. Client authentication/configuration failures and malformed or
+// unknown responses are operational failures, not user admission denials.
+func expectedOAuthRejection(status int, reader io.Reader) bool {
+	body, err := io.ReadAll(io.LimitReader(reader, maxProviderResponseBytes+1))
+	if err != nil || len(body) > maxProviderResponseBytes || status != http.StatusBadRequest {
+		return false
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(body)))
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		return false
+	}
+	seen := make(map[string]struct{})
+	var code string
+	for decoder.More() {
+		key, err := decoder.Token()
+		if err != nil {
+			return false
+		}
+		name, ok := key.(string)
+		if !ok {
+			return false
+		}
+		if _, duplicate := seen[name]; duplicate {
+			return false
+		}
+		seen[name] = struct{}{}
+		var value json.RawMessage
+		if decoder.Decode(&value) != nil {
+			return false
+		}
+		if name == "error" && json.Unmarshal(value, &code) != nil {
+			return false
+		}
+	}
+	if end, err := decoder.Token(); err != nil || end != json.Delim('}') {
+		return false
+	}
+	var extra any
+	if decoder.Decode(&extra) != io.EOF {
+		return false
+	}
+	return code == "invalid_grant" || code == "access_denied"
 }
 
 var _ ports.OIDCProvider = (*Provider)(nil)

@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/opssignal"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/queuecontract"
 	"gitcode.com/urandon/sessionless/internal/ydbpartition"
@@ -22,6 +24,7 @@ type Config struct {
 	DefaultWorkload      domain.WorkloadShape
 	SnapshotMaintainer   SnapshotMaintainer
 	SnapshotObserver     func(error)
+	OpsSignals           opssignal.Sink
 }
 
 type SnapshotMaintainer interface {
@@ -81,7 +84,8 @@ func NewDispatcher(
 
 // RunWake resolves one payload-free wake hint with a tenant/outbox point read.
 // Missing and already-terminal outboxes are successful idempotent no-ops.
-func (dispatcher *Dispatcher) RunWake(ctx context.Context, wakeQueue ports.Queue) (WakeResult, error) {
+func (dispatcher *Dispatcher) RunWake(ctx context.Context, wakeQueue ports.Queue) (result WakeResult, runErr error) {
+	defer func() { dispatcher.observeFailure(ctx, runErr) }()
 	message, err := wakeQueue.Receive(ctx)
 	if err != nil {
 		return WakeResult{}, err
@@ -145,9 +149,9 @@ func (dispatcher *Dispatcher) RunWake(ctx context.Context, wakeQueue ports.Queue
 	return WakeResult{Outcome: dispatchOutcome(admission.Delivery), Code: admission.Code}, nil
 }
 
-func (dispatcher *Dispatcher) RunOnce(ctx context.Context) (PassResult, error) {
+func (dispatcher *Dispatcher) RunOnce(ctx context.Context) (result PassResult, runErr error) {
+	defer func() { dispatcher.observeFailure(ctx, runErr) }()
 	now := dispatcher.clock.Now().UTC()
-	var result PassResult
 	for bucket := uint32(0); bucket < ydbpartition.BucketCountV1; bucket++ {
 		ready, err := dispatcher.store.ListReadyDispatches(
 			ctx, bucket, now, dispatcher.config.BatchSize,
@@ -191,6 +195,19 @@ func (dispatcher *Dispatcher) RunOnce(ctx context.Context) (PassResult, error) {
 		}
 	}
 	return result, nil
+}
+
+func (dispatcher *Dispatcher) observeFailure(ctx context.Context, err error) {
+	// Non-admission/parking are successful decisions, not infrastructure
+	// failures. Queue control-flow errors are filtered by the same finite
+	// predicate as the queue decorator; payloads never become attributes.
+	if err == nil || ports.IsQueueControlFlow(err) || errors.Is(err, domain.ErrMembershipDenied) {
+		return
+	}
+	if kind, ok := domain.ClassifyError(err); ok && (kind == domain.ErrorQuotaBlocked || kind == domain.ErrorPolicyDenied || kind == domain.ErrorReauthRequired) {
+		return
+	}
+	opssignal.Emit(ctx, dispatcher.config.OpsSignals, opssignal.ControlDispatchFailure, opssignal.Dispatch, opssignal.Unexpected)
 }
 
 func (dispatcher *Dispatcher) dispatchCandidate(

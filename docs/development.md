@@ -186,6 +186,21 @@ bindings, recipient data, credentials, Terraform plan/apply or notifications.
 The helper is not a deployed runtime component. The complete ordinary Go suites
 still cover its packages; `ci-core` also validates the checked-in YAML catalog.
 
+### Content-free operational observations
+
+The [operational signal contract](operational-signals.md) describes the closed
+`ops_signal_v1` vocabulary and actual Web/queue owners. To verify the offline
+schema, privacy, error classification and unchanged business outcomes:
+
+```sh
+make ops-signal-test
+```
+
+The target uses the shared Go caches, deterministic injected sinks and ordinary
+race/shuffle checks. It starts no database, container, cloud client or provider.
+All packages remain in the ordinary CI test selection; this target is a focused
+developer entrypoint, not an alternative release gate.
+
 ### Worktrees and Go caches
 
 `make` resolves the repository's Git common directory and shares

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/opssignal"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/sessionapi"
 	"gitcode.com/urandon/sessionless/internal/sessioningress"
@@ -33,6 +34,7 @@ var (
 )
 
 type Config struct {
+	OpsSignals        opssignal.Sink
 	IDKey             []byte
 	UploadTTL         time.Duration
 	CapabilityTTL     time.Duration
@@ -43,6 +45,7 @@ type Config struct {
 }
 
 type Service struct {
+	opsSignals        opssignal.Sink
 	sessions          *sessionapi.Service
 	ingress           *sessioningress.Service
 	uploads           ports.WebUploadStore
@@ -97,7 +100,8 @@ func New(
 		config.AllowedMediaTypes = defaultMediaTypes()
 	}
 	return &Service{
-		sessions: sessions, ingress: ingress, uploads: uploads, resources: resources,
+		opsSignals: config.OpsSignals,
+		sessions:   sessions, ingress: ingress, uploads: uploads, resources: resources,
 		objects: objects, clock: clock, idKey: append([]byte(nil), config.IDKey...),
 		uploadTTL: config.UploadTTL, capabilityTTL: config.CapabilityTTL,
 		downloadTTL: config.DownloadTTL, maxUploadBytes: config.MaxUploadBytes,
@@ -138,6 +142,7 @@ func (service *Service) CreateUpload(
 		Intent: intent, IdempotencyKey: request.IdempotencyKey,
 	})
 	if err != nil {
+		service.observeFailure(ctx, opssignal.WebUploadFailure, opssignal.UploadIntent, opssignal.Store, err)
 		return webcontract.UploadIntentResponse{}, false, err
 	}
 	remaining := stored.ExpiresAt.Sub(now)
@@ -158,6 +163,7 @@ func (service *Service) CreateUpload(
 		ExpiresIn:  remaining,
 	})
 	if err != nil {
+		service.observeFailure(ctx, opssignal.WebUploadFailure, opssignal.UploadPresign, opssignal.ObjectStore, err)
 		return webcontract.UploadIntentResponse{}, false, err
 	}
 	return webcontract.UploadIntentResponse{
@@ -179,12 +185,15 @@ func (service *Service) CommitUpload(
 		ctx, tenantID, domain.UploadIntentObjectPrefix(tenantID, uploadID)+"object",
 	)
 	if err != nil {
+		service.observeFailure(ctx, opssignal.WebUploadFailure, opssignal.UploadStat, opssignal.ObjectStore, err)
 		return domain.UploadIntent{}, err
 	}
-	return service.uploads.CommitWebUploadIntent(ctx, ports.WebUploadCommitRequest{
+	intent, err := service.uploads.CommitWebUploadIntent(ctx, ports.WebUploadCommitRequest{
 		TenantID: tenantID, UserID: userID, UploadID: uploadID,
 		Observed: metadata, At: service.clock.Now().UTC(),
 	})
+	service.observeFailure(ctx, opssignal.WebUploadFailure, opssignal.UploadCommit, opssignal.Store, err)
+	return intent, err
 }
 
 func (service *Service) SubmitMessage(
@@ -204,6 +213,7 @@ func (service *Service) SubmitMessage(
 		ctx, tenantID, userID, domain.FrontendWeb, string(sessionID), sessionID, 0,
 	)
 	if err != nil {
+		service.observeFailure(ctx, opssignal.WebSessionFailure, opssignal.MessageCommit, opssignal.Store, err)
 		return webcontract.CreateMessageResponse{}, err
 	}
 	now := service.clock.Now().UTC()
@@ -221,9 +231,11 @@ func (service *Service) SubmitMessage(
 		AllowedMCPServers: append([]string(nil), service.allowedMCPServers...),
 	}
 	if existing, found, err := service.ingress.LookupBound(ctx, input); err != nil {
+		service.observeFailure(ctx, opssignal.WebSessionFailure, opssignal.MessageCommit, opssignal.Store, err)
 		return webcontract.CreateMessageResponse{}, err
 	} else if found {
 		run, runFound, err := service.resources.GetRunForUser(ctx, tenantID, userID, existing.RunID)
+		service.observeFailure(ctx, opssignal.WebSessionFailure, opssignal.MessageCommit, opssignal.Store, err)
 		if errors.Is(err, domain.ErrMembershipDenied) || !runFound {
 			return webcontract.CreateMessageResponse{}, ErrResourceUnavailable
 		}
@@ -239,6 +251,7 @@ func (service *Service) SubmitMessage(
 		ctx, ports.ComputeConnectionResolveRequest{TenantID: tenantID, UserID: userID, SessionID: sessionID},
 	)
 	if err != nil {
+		service.observeFailure(ctx, opssignal.WebSessionFailure, opssignal.MessageCommit, opssignal.Store, err)
 		return webcontract.CreateMessageResponse{}, err
 	}
 	if len(connections) != 1 {
@@ -252,6 +265,7 @@ func (service *Service) SubmitMessage(
 			UploadIDs: request.UploadIDs, MessageIdempotencyKey: request.IdempotencyKey, At: now,
 		})
 		if err != nil {
+			service.observeFailure(ctx, opssignal.WebSessionFailure, opssignal.MessageCommit, opssignal.Store, err)
 			return webcontract.CreateMessageResponse{}, err
 		}
 	}
@@ -265,6 +279,7 @@ func (service *Service) SubmitMessage(
 		}
 		current, err := service.objects.StatObject(ctx, tenantID, intent.ObjectKey)
 		if err != nil {
+			service.observeFailure(ctx, opssignal.WebUploadFailure, opssignal.UploadStat, opssignal.ObjectStore, err)
 			return webcontract.CreateMessageResponse{}, err
 		}
 		if current.Blob != *intent.ObservedBlob || current.MediaType != intent.ObservedMediaType ||
@@ -280,6 +295,7 @@ func (service *Service) SubmitMessage(
 			FinalKey: finalKey, MediaType: intent.MediaType,
 		})
 		if err != nil {
+			service.observeFailure(ctx, opssignal.WebSessionFailure, opssignal.MessageCommit, opssignal.ObjectStore, err)
 			return webcontract.CreateMessageResponse{}, err
 		}
 		if ref.Size != intent.ExpectedSize || ref.SHA256 != intent.ExpectedSHA256 {
@@ -291,6 +307,7 @@ func (service *Service) SubmitMessage(
 	}
 	result, err := service.ingress.IngestBound(ctx, input)
 	if err != nil {
+		service.observeFailure(ctx, opssignal.WebSessionFailure, opssignal.MessageCommit, opssignal.Store, err)
 		return webcontract.CreateMessageResponse{}, err
 	}
 	return messageResponse(result, webcontract.ComputeConnection{
@@ -317,6 +334,7 @@ func (service *Service) ComputeStatus(
 			TenantID: tenantID, UserID: userID, SessionID: sessionID,
 		},
 	)
+	service.observeFailure(ctx, opssignal.WebSessionFailure, opssignal.SessionRead, opssignal.Store, err)
 	if errors.Is(err, domain.ErrMembershipDenied) {
 		return webcontract.ComputeStatusResponse{}, ErrResourceUnavailable
 	}
@@ -369,6 +387,7 @@ func (service *Service) GetRun(
 	runID domain.RunID,
 ) (ports.RunRecord, error) {
 	record, found, err := service.resources.GetRunForUser(ctx, tenantID, userID, runID)
+	service.observeFailure(ctx, opssignal.WebSessionFailure, opssignal.SessionRead, opssignal.Store, err)
 	if errors.Is(err, domain.ErrMembershipDenied) || !found {
 		return ports.RunRecord{}, ErrResourceUnavailable
 	}
@@ -388,6 +407,7 @@ func (service *Service) DownloadAttachment(
 	}
 	page, err := service.sessions.HistoryAfter(ctx, tenantID, userID, sessionID, sequence-1, 1)
 	if err != nil {
+		service.observeFailure(ctx, opssignal.WebArtifactAccessFailure, opssignal.AttachmentCapability, opssignal.Store, err)
 		return ports.ObjectCapability{}, err
 	}
 	if len(page.Items) != 1 || page.Items[0].Event.Sequence != sequence {
@@ -398,14 +418,21 @@ func (service *Service) DownloadAttachment(
 			Blob domain.BlobRef `json:"blob"`
 		} `json:"attachments"`
 	}
-	if err := json.Unmarshal(page.Items[0].Payload, &envelope); err != nil || int(index) >= len(envelope.Attachments) {
+	if err := json.Unmarshal(page.Items[0].Payload, &envelope); err != nil {
+		opssignal.Emit(ctx, service.opsSignals, opssignal.WebArtifactAccessFailure, opssignal.AttachmentCapability, opssignal.Unexpected)
+		return ports.ObjectCapability{}, ErrResourceUnavailable
+	}
+	if int(index) >= len(envelope.Attachments) {
 		return ports.ObjectCapability{}, ErrResourceUnavailable
 	}
 	ref := envelope.Attachments[index].Blob
 	if err := domain.ValidateSessionEventBlob(tenantID, sessionID, page.Items[0].Event.ID, ref); err != nil {
+		opssignal.Emit(ctx, service.opsSignals, opssignal.WebArtifactAccessFailure, opssignal.AttachmentCapability, opssignal.Unexpected)
 		return ports.ObjectCapability{}, err
 	}
-	return service.objects.PresignDownload(ctx, tenantID, ref, service.downloadTTL)
+	capability, err := service.objects.PresignDownload(ctx, tenantID, ref, service.downloadTTL)
+	service.observeFailure(ctx, opssignal.WebArtifactAccessFailure, opssignal.AttachmentCapability, opssignal.ObjectStore, err)
+	return capability, err
 }
 
 func (service *Service) DownloadRunArtifact(
@@ -421,6 +448,7 @@ func (service *Service) DownloadRunArtifact(
 		TenantID: tenantID, UserID: userID, SessionID: sessionID,
 		RunID: runID, ManifestID: manifestID, Index: index,
 	})
+	service.observeFailure(ctx, opssignal.WebArtifactAccessFailure, opssignal.ArtifactCapability, opssignal.Store, err)
 	if errors.Is(err, domain.ErrMembershipDenied) || !found {
 		return webcontract.ArtifactCapabilityResponse{}, ErrResourceUnavailable
 	}
@@ -429,6 +457,7 @@ func (service *Service) DownloadRunArtifact(
 	}
 	capability, err := service.objects.PresignDownload(ctx, tenantID, artifact.Blob, service.downloadTTL)
 	if err != nil {
+		service.observeFailure(ctx, opssignal.WebArtifactAccessFailure, opssignal.ArtifactCapability, opssignal.ObjectStore, err)
 		return webcontract.ArtifactCapabilityResponse{}, err
 	}
 	return webcontract.ArtifactCapabilityResponse{

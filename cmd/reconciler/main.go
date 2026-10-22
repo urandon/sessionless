@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/opssignal"
 	"gitcode.com/urandon/sessionless/internal/portlog"
 	"gitcode.com/urandon/sessionless/internal/s3store"
 	"gitcode.com/urandon/sessionless/internal/scheduler"
@@ -30,6 +31,7 @@ func (systemClock) Now() time.Time { return time.Now() }
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	signals := opssignal.NewWriter(os.Stdout)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -115,6 +117,7 @@ func main() {
 	}
 	dispatcher, err := scheduler.NewDispatcher(
 		scheduler.Config{
+			OpsSignals:           signals,
 			BatchSize:            uint64(envUint("SCHEDULER_BATCH_SIZE", 25)),
 			ReservationTTL:       envDuration("SCHEDULER_RESERVATION_TTL", 5*time.Minute),
 			WakeRetryDelay:       envDuration("SCHEDULER_WAKE_RETRY_DELAY", time.Second),
@@ -134,7 +137,7 @@ func main() {
 		},
 		systemClock{},
 		state,
-		portlog.NewQueue(logger, "reconciler", queue),
+		portlog.NewQueue(logger, "reconciler", queue, signals),
 	)
 	if err != nil {
 		logger.Error("create scheduler", "error", err)
@@ -152,7 +155,7 @@ func main() {
 					}
 					results := make([]scheduler.WakeResult, 0, wakeQueue.Remaining())
 					for wakeQueue.Remaining() > 0 {
-						result, runErr := dispatcher.RunWake(invocationCtx, wakeQueue)
+						result, runErr := dispatcher.RunWake(invocationCtx, portlog.NewQueue(logger, "reconciler", wakeQueue, signals))
 						if runErr != nil {
 							return nil, runErr
 						}
@@ -168,7 +171,7 @@ func main() {
 				default:
 					return nil, fmt.Errorf("unsupported trigger path %q", request.URL.Path)
 				}
-			},
+			}, signals,
 		)
 		if err != nil {
 			logger.Error("reconciler trigger server stopped", "error", err)
@@ -194,7 +197,7 @@ func main() {
 		logger.Info("scheduler startup recovery completed", "considered", result.Considered, "expired", result.Expired)
 	}
 	for {
-		result, runErr := dispatcher.RunWake(ctx, wakeQueue)
+		result, runErr := dispatcher.RunWake(ctx, portlog.NewQueue(logger, "reconciler", wakeQueue, signals))
 		if errors.Is(runErr, sqsqueue.ErrNoMessage) {
 			continue
 		}

@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -28,6 +29,11 @@ const (
 )
 
 var ErrProviderResponse = errors.New("Yandex authentication could not be verified")
+
+// ErrProviderUnavailable distinguishes transport/service failure without
+// retaining response bodies, URLs or credentials. Existing admission callers
+// still see ErrProviderResponse and fail closed.
+var ErrProviderUnavailable = fmt.Errorf("%w: provider unavailable", ErrProviderResponse)
 
 type Config struct {
 	ClientID              string
@@ -121,12 +127,12 @@ func (p *Provider) ExchangeAndVerify(ctx context.Context, request ports.OAuthTok
 	r.SetBasicAuth(p.config.ClientID, p.config.ClientSecret)
 	values, err := p.jsonResponse(r)
 	if err != nil {
-		return domain.ExternalSubject{}, ErrProviderResponse
+		return domain.ExternalSubject{}, err
 	}
 	var access, kind string
 	var expires int64
 	if json.Unmarshal(values["access_token"], &access) != nil || access == "" || len(access) > 8192 || strings.ContainsAny(access, "\r\n\t ") || json.Unmarshal(values["token_type"], &kind) != nil || !strings.EqualFold(kind, "bearer") || json.Unmarshal(values["expires_in"], &expires) != nil || expires <= 0 {
-		return domain.ExternalSubject{}, ErrProviderResponse
+		return domain.ExternalSubject{}, ErrProviderUnavailable
 	}
 	u, _ := url.Parse(p.config.InfoEndpoint)
 	u.RawQuery = "format=json"
@@ -137,7 +143,7 @@ func (p *Provider) ExchangeAndVerify(ctx context.Context, request ports.OAuthTok
 	r.Header.Set("Authorization", "OAuth "+access)
 	values, err = p.jsonResponse(r)
 	if err != nil {
-		return domain.ExternalSubject{}, ErrProviderResponse
+		return domain.ExternalSubject{}, err
 	}
 	var id, clientID string
 	if json.Unmarshal(values["id"], &id) != nil || json.Unmarshal(values["client_id"], &clientID) != nil || subtle.ConstantTimeCompare([]byte(clientID), []byte(p.config.ClientID)) != 1 || id == "" || len(id) > 160 || id[0] == '0' {
@@ -159,51 +165,99 @@ func (p *Provider) jsonResponse(r *http.Request) (map[string]json.RawMessage, er
 	r.Header.Set("Accept", "application/json")
 	response, err := p.client.Do(r)
 	if err != nil {
-		return nil, ErrProviderResponse
+		return nil, ErrProviderUnavailable
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxResponseBytes))
-		return nil, ErrProviderResponse
+		if r.Method == http.MethodPost && r.URL.String() == p.config.TokenEndpoint && expectedOAuthRejection(response.StatusCode, response.Body) {
+			return nil, ErrProviderResponse
+		}
+		return nil, ErrProviderUnavailable
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
 	if err != nil || len(body) > maxResponseBytes {
-		return nil, ErrProviderResponse
+		return nil, ErrProviderUnavailable
 	}
 	// Reject duplicate security-bearing fields and trailing documents. Optional
 	// profile fields are not projected and never cross the identity boundary.
 	d := json.NewDecoder(strings.NewReader(string(body)))
 	token, err := d.Token()
 	if err != nil || token != json.Delim('{') {
-		return nil, ErrProviderResponse
+		return nil, ErrProviderUnavailable
 	}
 	values := make(map[string]json.RawMessage)
 	for d.More() {
 		key, err := d.Token()
 		if err != nil {
-			return nil, ErrProviderResponse
+			return nil, ErrProviderUnavailable
 		}
 		name, ok := key.(string)
 		if !ok {
-			return nil, ErrProviderResponse
+			return nil, ErrProviderUnavailable
 		}
 		if _, exists := values[name]; exists {
-			return nil, ErrProviderResponse
+			return nil, ErrProviderUnavailable
 		}
 		var value json.RawMessage
 		if d.Decode(&value) != nil {
-			return nil, ErrProviderResponse
+			return nil, ErrProviderUnavailable
 		}
 		values[name] = value
 	}
 	if end, err := d.Token(); err != nil || end != json.Delim('}') {
-		return nil, ErrProviderResponse
+		return nil, ErrProviderUnavailable
 	}
 	var extra any
 	if err := d.Decode(&extra); err != io.EOF {
-		return nil, ErrProviderResponse
+		return nil, ErrProviderUnavailable
 	}
 	return values, nil
+}
+
+// expectedOAuthRejection admits only explicit, bounded authorization-code
+// rejections. Client authentication/configuration failures and malformed or
+// unknown responses are operational failures, not user admission denials.
+func expectedOAuthRejection(status int, reader io.Reader) bool {
+	body, err := io.ReadAll(io.LimitReader(reader, maxResponseBytes+1))
+	if err != nil || len(body) > maxResponseBytes || status != http.StatusBadRequest {
+		return false
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(body)))
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		return false
+	}
+	seen := make(map[string]struct{})
+	var code string
+	for decoder.More() {
+		key, err := decoder.Token()
+		if err != nil {
+			return false
+		}
+		name, ok := key.(string)
+		if !ok {
+			return false
+		}
+		if _, duplicate := seen[name]; duplicate {
+			return false
+		}
+		seen[name] = struct{}{}
+		var value json.RawMessage
+		if decoder.Decode(&value) != nil {
+			return false
+		}
+		if name == "error" && json.Unmarshal(value, &code) != nil {
+			return false
+		}
+	}
+	if end, err := decoder.Token(); err != nil || end != json.Delim('}') {
+		return false
+	}
+	var extra any
+	if decoder.Decode(&extra) != io.EOF {
+		return false
+	}
+	return code == "invalid_grant" || code == "access_denied"
 }
 
 var _ ports.OAuthIdentityProvider = (*Provider)(nil)

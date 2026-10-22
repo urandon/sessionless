@@ -9,17 +9,25 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/opssignal"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/queuecontract"
 )
 
-type Publisher struct{ queue ports.Queue }
+type Publisher struct {
+	queue ports.Queue
+	ops   opssignal.Sink
+}
 
-func NewPublisher(queue ports.Queue) (*Publisher, error) {
+func NewPublisher(queue ports.Queue, signals ...opssignal.Sink) (*Publisher, error) {
 	if queue == nil {
 		return nil, fmt.Errorf("outbox wake queue must not be nil")
 	}
-	return &Publisher{queue: queue}, nil
+	var sink opssignal.Sink
+	if len(signals) != 0 {
+		sink = signals[0]
+	}
+	return &Publisher{queue: queue, ops: sink}, nil
 }
 
 func (publisher *Publisher) PublishDispatchWake(
@@ -68,10 +76,16 @@ func (publisher *Publisher) publish(
 	if at.IsZero() {
 		return domain.ValidationError{Field: "wake.enqueued_at", Reason: "must not be zero"}
 	}
-	return publisher.queue.Publish(ctx, queuecontract.Envelope{
+	err := publisher.queue.Publish(ctx, queuecontract.Envelope{
 		Schema: queuecontract.SchemaV1, MessageID: wakeMessageID(kind, tenantID, subjectID),
 		Kind: kind, TenantID: tenantID, SubjectID: subjectID, EnqueuedAt: at.UTC(),
 	})
+	if err != nil {
+		// This reports a lost hint, never loss of the already committed outbox.
+		// Callers retain their existing post-commit success/recovery policy.
+		opssignal.Emit(ctx, publisher.ops, opssignal.ControlWakeDeferred, opssignal.WakePublish, opssignal.Queue)
+	}
+	return err
 }
 
 // Legacy Telegram ingress derives operational outbox IDs from the run so a

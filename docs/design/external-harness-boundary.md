@@ -1,11 +1,13 @@
 # Shared external harness execution boundary
 
-Version: 0.1.0. Independently reviewed engineering design for
+Version: 0.2.0 candidate. The 0.1.0 architecture is the independently reviewed engineering design for
 [#215](https://gitcode.com/urandon/sessionless/issues/215), using the accepted
 [#214 comparison](https://gitcode.com/urandon/sessionless/issues/214#note_194345569).
 Owner: #13; attached delivery: #72/#133; managed delivery: #176/#175.
 Primary engineering acceptance is limited to this architecture and
 decomposition; implementation and exact-profile activation remain separate.
+The selected-profile integration delta below requires its own engineering
+review; it does not retroactively qualify a serving artifact.
 
 Run a ready-made harness as a contained native process. Reuse the existing Go
 supervisor, credential lifecycle and canonical result pipeline. Add only the
@@ -185,6 +187,114 @@ This design does not create that future sandbox. It does not inject credentials
 into end-to-end TLS or silently turn the companion into a model API emulator.
 Managed shell/tool-enabled native CLI remains no-go under the existing
 [credential exclusion](../serverless-harness.md#egress-model).
+
+## Selected Codex profile integration
+
+The implementation owner is [#133](https://gitcode.com/urandon/sessionless/issues/133),
+consuming [#220's released-artifact findings](https://gitcode.com/urandon/sessionless/issues/220#note_195175490).
+Use an explicit `NativeProfileV2` successor through the existing prepared
+pipeline. Preserve the old `Config`, descriptor, constructors, direct-effect
+checks and unqualified `MediaConfigV1` denial. Do not select native semantics
+from process exit, attachments, a reachable socket or ambient installation.
+
+### Immutable installation and actual configuration
+
+The first native candidate is stock Codex 0.162.1, associated with official
+[source 092d3acd](https://github.com/openai/codex/tree/092d3acd6bec3e3a14bdc7e7a2810ab628ab759d).
+The investigated Linux musl executable has SHA-256
+`628e35487d888a28f0427fc37501da529dd3d81fcbad7a2c3421c1e8670d92e1`.
+These identify the research candidate, not an activated package or a verified
+release signature. A different executable requires its own exact-profile proof.
+
+The native descriptor and existing install-policy identity must seal the actual
+bounded generated configuration/catalog bytes, argv and environment, selected
+model/metadata and context evidence, media policy, conduit/artifact identities,
+platform and numeric limits. Derive digests from the actual frozen bytes; a
+caller-provided matching digest is not execution authority. Exclude the local
+activation toggle from identity so cancellation survives disabling admission.
+
+Stage the selected non-secret config/catalog read-only under the original
+attempt's private custody and verify their original file identities before
+launch. Use only the pinned executable's supported explicit configuration
+surface. The V1 command's `--ignore-user-config` must not silently discard the
+selected generated config. Seal the effective argv and paths with those bytes;
+no user HOME/config, live model discovery, package download, fallback provider,
+or caller-supplied per-run config override. `auth.json` remains the separately
+fenced credential file owned by the existing outer lifecycle, not a config copy.
+
+The selected configuration must suppress all native tools and implicit helpers,
+including Goals and image-view helpers. The investigated native default allowed
+Goals, and `features.unbounded_connection_retries` bypassed ordinary provider
+retry zero. Both need explicit disabled values in the effective pinned profile;
+provider retry settings alone are insufficient. Include all remaining supported
+tool/feature exclusions and static catalog fields in the same identity and
+effect-sink conformance. Do not transplant the credential-free fake provider's
+`requires_openai_auth=false` into the owner-local subscription profile.
+
+### One original execution and result owner
+
+Extend the existing `PreparedAttachedWorkerRunnerV1`/Stack selection explicitly,
+not with another invocation runner or a generic factory callback. It must borrow
+the actual connected Session's `NativeAttemptV2` from the original verified
+input, use `NewNativePreparedProcessBoundaryV2` and retain `BindPreparedEntryV2`.
+The existing consumed latch, cancellation arbitration and sole
+Issue -> Materialize -> Execute -> WriteBack -> Release remain authoritative.
+An accepted-attempt DTO copy or caller predicate cannot replace that Session.
+
+Native reduction must be a separate branch selected by the immutable successor
+binding. Retain genuine private observations from that exact boundary and
+native child through stop/finalization; fake public process flags cannot create
+a receipt. A successful bounded native turn needs the authentic final result,
+clean exit, original authority at the existing completion arbitration, complete
+workload/relay/companion stop, cleanup and credential quiescence. The outer
+runner's actual WriteBack/Release and original receipt/finalizer still decide
+canonical success. Lost current authority or unknown cleanup denies success.
+
+Do not set V1 `ProviderEffects=1` or its direct-effect fence for this branch.
+One consumed native invocation is not one model request: H3/H4 demonstrated a
+second native sampling request after a rejected tool call. Preserve existing
+unknown route/usage evidence and conditional policy verdict. If the governing
+policy needs an unavailable model/route/token/price/per-operation fact, native
+execution is ineligible; tunnel traffic is not that fact.
+
+Recognize a valid native `turn.failed` without setting successful `Terminal`.
+Discard partial final bytes; reject any later frame. An error notification or
+lost reply alone is not a definitive failed-turn witness. Keep that distinction
+private in the original result owner if needed for a failure receipt; no new
+public scheduler/lifecycle authority. No failure, lost reply or failed receipt
+can reopen the consumed claim or automatically repeat the native invocation.
+
+### Required media and implementation acceptance
+
+The successor must retain the existing canonical text/JSON and PNG/JPEG cohort,
+source order/digest associations, finite original-byte/pixel/context preflight,
+private staging, actual `--image` input and trusted structured-result serializer.
+It must not relabel a text-only milestone as attached MVP delivery. Reuse the
+existing validators and receipt candidate; do not harvest the native directory.
+
+Do not make `MediaConfigV1.eligibility()` unconditional or simulate the absent
+SDK preparation/request hook. The successor's media policy must instead name
+the supported exact-native preparation/catalog settings and externally
+enforceable process/traffic/resource envelope. Preserve original image bytes
+and canonical associations separately from native derivation. Sufficient model
+context fit must be conservatively proven for the admitted complete cohort;
+byte or pixel ceilings alone are not token evidence. A policy requiring a
+semantic pre-send guarantee that this interface cannot provide remains no-go.
+Do not shrink the required cohort or intercept the SDK to manufacture it.
+
+H7 proves one tiny exact PNG transport and disabled `view_image`, not maximum
+cohorts, JPEG/resize/context behavior or useful vision comprehension. Qualify
+those against the actual generated profile, original supervisor and receipt
+pipeline before activation. The owner-accepted research VM is useful native
+evidence; it does not add a product VM backend or prove the serving OCI tuple.
+
+The #133 execution checklist owns one coherent implementation: frozen effective
+profile -> original Session/prepared owner -> honest native reduction and
+canonical media -> existing output/receipt/ACK. First run bounded offline
+wrong-binding/config mutation/failure/cancel/cleanup/no-replay tests, independent
+original-goal exact-source review and required exact-head CI. Then qualify and
+activate only the exact admitted resource/platform under its own authority.
+Config-only registration, a source factory or green fixtures are not the demo.
 
 ## Packaging and resource bounds
 

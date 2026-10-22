@@ -1,6 +1,6 @@
 # Attached harness media and artifact delivery
 
-Version: 0.1.1, 2026-10-12.
+Version: 0.2.0 candidate; the independently accepted V1 contract is retained below.
 Owner: [#198](https://gitcode.com/urandon/sessionless/issues/198), under
 [#72](https://gitcode.com/urandon/sessionless/issues/72).
 Consumers: [#13](https://gitcode.com/urandon/sessionless/issues/13) and
@@ -285,6 +285,83 @@ decodes before resizing, so a small prepared image does not bound the original
 allocation. Enforce limits before allocation/sensitive sinks, with an excess
 detection byte where appropriate. Maximum valid cases must fit with race
 instrumentation and the declared platform memory/time/disk envelope.
+
+## Native envelope successor
+
+This section proposes `CODEX-NATIVE-ENVELOPE-V2` for the explicit
+`NativeProfileV2` composition in [#133](https://gitcode.com/urandon/sessionless/issues/133).
+It is a reviewed-contract candidate, not an activated profile or an assertion
+that V1 has passed. The V1 descriptor, constructors, conformance manifest and
+`MediaConfigV1.eligibility()` denial remain intact. V2 is never inferred from
+an attachment or enabled as a fallback for a rejected V1 job.
+
+The [exact released-source findings](https://gitcode.com/urandon/sessionless/issues/220#note_195175490)
+explain why the earlier internal-preparation assumptions must not be reported
+as implemented for stock Codex 0.162.1. Its context estimator explicitly gives
+a [coarse lower bound](https://github.com/openai/codex/blob/092d3acd6bec3e3a14bdc7e7a2810ab628ab759d/codex-rs/core/src/context_manager/history.rs#L647),
+not a context-fit upper bound. Native image handling reads
+[metadata before decoding](https://github.com/openai/codex/blob/092d3acd6bec3e3a14bdc7e7a2810ab628ab759d/codex-rs/utils/image/src/lib.rs#L140)
+and re-encodes into a [growing buffer](https://github.com/openai/codex/blob/092d3acd6bec3e3a14bdc7e7a2810ab628ab759d/codex-rs/utils/image/src/lib.rs#L374).
+Neither an original 1 MiB compressed image nor a 4-bytes-per-pixel calculation
+proves the proposed 2 MiB prepared ceiling or total native memory.
+
+V2 replaces those unimplemented engineering assumptions with explicitly named,
+externally enforceable guarantees. It does **not** certify the old guarantees
+using a larger number or rename a process OOM limit as pre-allocation proof.
+
+| V1 proposition | V2 enforceable contract | Required evidence / denial |
+| --- | --- | --- |
+| Original contents and ordered associations | Unchanged original text/JSON/PNG/JPEG bytes, canonical event/sequence/ordinal/digest and native image slots. Preserve two text files, two images and the 3000-by-1000 resize cohort. | Existing authenticated projection, source/hash checks, bounded original validator, exact-file staging; authentic model-visible order and useful vision conformance. Placeholder or missing input denies. |
+| Original decoded RGBA and every native allocation are known before allocation | Host validation remains sequential and reserves its own 96 MiB validation envelope before Go decoding, including 16-bit/scratch allowance. Native decoder/metadata/cache/scratch allocations are not attested individually. The isolated native process is subject to verified whole-workload limits instead. | Source review of host validator plus real native memory/CPU/PID/disk/deadline enforcement and whole-workload cleanup. Pixel ceilings are not an ICC/EXIF decompression bound. Limit failure cannot publish success or authorize replay. |
+| Prepared image is at most 2 MiB before serialization/send | Native High/DetailBased configuration remains pinned; prepared encoding and individual plaintext request sizes are unobserved. Enforce an aggregate each-direction conduit budget, including framing, and a process-memory ceiling. | Exact launcher/companion/relay identity and adversarial byte/memory-limit proof. An eventual cutoff is not proof that no earlier bytes crossed or that an individual request fit a plaintext ceiling. Policy requiring that stronger fact denies before Issue. |
+| Complete context fits before the provider effect | Context fit, native token count, internal sampling count and actual route remain unknown unless separately established for the exact selected model/interface. No byte-to-token or patch-to-token substitution. | The admitted governing policy must explicitly permit this named unknown envelope. A policy requiring exact fit, token/price/per-operation facts or an observed route remains no-go. Context overflow is a bounded failure, never permission to drop original input or resume/repeat the invocation. |
+| A successful native process establishes product delivery | Only a valid same-run final with genuine current-authority/stop/cleanup evidence may reach the existing outer WriteBack/Release, structured serializer, finalizer and receipt/ACK. | Useful text/file/image and maximum-cohort proof against the actual profile. Exit0, a path, green fixtures or a conditional evidence DTO alone cannot activate it. |
+
+Original validation, process limits and traffic limits are separate budgets;
+none silently increases the admitted job/product/transport limits. Proposed
+first native qualification ceilings are one CPU, 1 GiB workload memory, 64 PIDs,
+64 MiB private scratch, 60 seconds active and 10 seconds aggregate cleanup,
+and 64 MiB in each conduit direction across at most eight connections. The
+host companion has its independently pinned finite memory/goroutine bounds.
+Use the minimum of these ceilings, the existing installation and the earlier
+lease/caller/run/resource authority. These are candidate proof limits, not
+permission to run an experiment or measured production sizing; an environment
+that cannot enforce them is ineligible. The original input and structured
+final/artifact ceilings above remain unchanged. Unknown native transformed
+size is not zero and is not charged to a fictitious per-model byte counter.
+
+Admission must consume the existing immutable provider evidence bundle and
+already verified job/resource binding. Validate their exact backend/model,
+tenant/owner/resource revision, all referenced digests and minimum freshness;
+the policy identity/revision must be the reviewed policy for this named native
+envelope and permitted data class. Its capability/route evidence must retain
+the actual unknowns. Merely finding `conditional` or a caller-supplied matching
+digest is insufficient. Structural bundle validation does not replace current
+resource eligibility or original Session/lease/fence authority. No new table,
+approval flag, local grant, effect counter or alternate credential lifecycle
+is created. Do not repurpose a V1 policy or erase an admitted known route to
+make V2 appear eligible.
+
+The effective native settings are generated and frozen as explicit CLI
+overrides, with the pinned read-only catalog staged separately. Stock
+`--ignore-user-config` also excludes owned CODEX_HOME/config.toml; it does not
+exclude system/project/managed layers, which the contained filesystem must
+keep absent or immutable. A frozen non-built-in provider ID with literal name
+`OpenAI`, Responses, `requires_openai_auth=true`, retry zero and websockets off
+preserves native subscription routing; built-in-provider overrides are ignored
+by the [native merge](https://github.com/openai/codex/blob/092d3acd6bec3e3a14bdc7e7a2810ab628ab759d/codex-rs/model-provider-info/src/lib.rs#L694).
+Retain OAuth-only owner-local admission, no API-key/provider fallback, explicit
+Goals/unbounded-retry/tool/helper exclusions and no ambient credentials/config.
+Do not transfer the research fake's authentication settings into this profile.
+
+This successor changes engineering guarantees, not the two-track MVP promise.
+It retains useful files/images, native effect/tool exclusion, original custody,
+one consumed invocation, unknown-outcome no-replay, and canonical durable
+results. The owning #199 checklist remains open for actual V2 implementation
+and qualification; it is not closed against unimplemented V1 criteria. Any
+governing policy or actual platform that cannot support this envelope remains
+explicit no-go. A different paid/live budget, weaker privacy/authorization or
+reduced product modality requires the owner's separate decision.
 
 ## Retrieval and verification
 

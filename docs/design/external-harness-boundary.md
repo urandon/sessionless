@@ -1,6 +1,6 @@
 # Shared external harness execution boundary
 
-Version: 0.2.0 candidate. The 0.1.0 architecture is the independently reviewed engineering design for
+Version: 0.3.0 candidate. The 0.1.0 architecture is the independently reviewed engineering design for
 [#215](https://gitcode.com/urandon/sessionless/issues/215), using the accepted
 [#214 comparison](https://gitcode.com/urandon/sessionless/issues/214#note_194345569).
 Owner: #13; attached delivery: #72/#133; managed delivery: #176/#175.
@@ -273,20 +273,25 @@ It must not relabel a text-only milestone as attached MVP delivery. Reuse the
 existing validators and receipt candidate; do not harvest the native directory.
 
 Do not make `MediaConfigV1.eligibility()` unconditional or simulate the absent
-SDK preparation/request hook. The successor's media policy must instead name
-the supported exact-native preparation/catalog settings and externally
-enforceable process/traffic/resource envelope. Preserve original image bytes
-and canonical associations separately from native derivation. The existing
-media design's model-visible association, complete-cohort context fit and
-prepared/wire/allocation bounds remain mandatory before their respective
-sensitive allocation/send sinks; they are not optional policy additions.
-Conservative input preflight backed by the exact released preparation algorithm,
-frozen model metadata and native conformance may prove those obligations without
-an SDK hook. Runtime memory/traffic ceilings are additional enforcement, not
-substitutes for those pre-sink guarantees. Byte/pixel ceilings alone are not
-token evidence. If any mandatory bound or association cannot be proven and
-enforced for this interface, the selected profile remains no-go. Do not shrink
-the required cohort or intercept the SDK to manufacture it.
+SDK preparation/request hook. The explicitly different native successor uses
+the [native envelope media contract](attached-harness-media-and-artifacts.md#native-envelope-successor)
+below, rather than claiming to implement V1's unproved internal preparation,
+allocation and exact context-fit assumptions. Original bytes, canonical
+model-visible associations, bounded pre-Issue validation and the required
+PNG/JPEG/resize cohort remain mandatory. No silent limit increase, SDK hook,
+caller approval boolean or text-only MVP substitution is permitted.
+
+Exact native internal allocations, prepared representation sizes and context
+fit remain unknown where the released interface does not prove them. Finite
+process/traffic ceilings enforce only their actual external boundary; they do
+not retrospectively certify those internal facts. A selected profile is
+eligible only when the existing governing resource/policy evidence permits
+this explicitly named unknown envelope. If it instead requires exact
+context/token/price/per-operation or before-send prepared-byte facts, deny
+before Issue. `conditional` in an output DTO is not such policy permission.
+The immutable admitted evidence bundle and its exact binding, scope, expiry,
+policy identity and unknown-capability conditions must be checked; no new
+reservation, approval ledger or mutable worker-local grant is introduced.
 
 H7 proves one tiny exact PNG transport and disabled `view_image`, not maximum
 cohorts, JPEG/resize/context behavior or useful vision comprehension. Qualify

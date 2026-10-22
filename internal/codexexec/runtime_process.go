@@ -44,11 +44,16 @@ type activePreparedProcess struct {
 }
 
 type preparedObservation struct {
+	self               *preparedObservation
 	boundary           *PreparedProcessBoundaryV1
 	authority          AuthorityV1
 	process            attachedworkerdaemon.AttemptResult
 	mediaAssociation   [32]byte
 	mediaProfileDigest string
+	native             *nativeConduitOwner
+	binding            domain.HarnessBindingV2
+	protocol           parseResult
+	runErr             error
 }
 
 // PreparedProcessBoundaryV1 runs at most one exact prepared Codex process for
@@ -127,6 +132,7 @@ func (boundary *PreparedProcessBoundaryV1) Run(ctx context.Context, invocation P
 		boundary.mu.Unlock()
 	}
 	var observed *attachedworkerdaemon.AttemptResult
+	var protocol parseResult
 	defer func() {
 		if boundary.finish(active) {
 			result.Cancelled = true
@@ -136,10 +142,17 @@ func (boundary *PreparedProcessBoundaryV1) Run(ctx context.Context, invocation P
 			runErr = errors.Join(runErr, context.Canceled)
 		}
 		if observed != nil {
-			// Raw protocol bytes are owned by the semantic reducer, not this witness.
+			observation := &preparedObservation{boundary: boundary, authority: invocation.Authority,
+				binding: invocation.Identity.HarnessBinding.Clone(), protocol: protocol, runErr: runErr}
+			observation.self = observation
+			if boundary.native != nil {
+				observation.native = boundary.native
+			}
+			// The witness keeps only the bounded parsed candidate, not raw frames.
 			zeroBytes(observed.Stdout)
 			observed.Stdout = nil
-			result.original = &preparedObservation{boundary: boundary, authority: invocation.Authority, process: *observed}
+			observation.process = *observed
+			result.original = observation
 			if invocation.media != nil {
 				result.original.mediaAssociation = invocation.media.associationDigest
 				result.original.mediaProfileDigest = invocation.Identity.HarnessBinding.Backend.BackendProfileDigest
@@ -194,13 +207,8 @@ func (boundary *PreparedProcessBoundaryV1) Run(ctx context.Context, invocation P
 	}
 	observed = &actual
 	cancelExpiry()
-	result = mapPreparedProcessResult(invocation, actual)
-	if boundary.native != nil {
-		// Opaque native bytes/exit cannot certify one physical model effect or
-		// direct-operation fencing. Existing V1 semantic acceptance must deny.
-		result.ProviderEffects = 0
-		result.ProviderEffectFenceSatisfied = false
-	}
+	protocol = parseJSONL(actual.Stdout)
+	result = mapPreparedProcessResult(invocation, actual, boundary.native != nil, protocol)
 	return result, runErr
 }
 
@@ -337,18 +345,16 @@ func sameStrings(left, right []string) bool {
 	return true
 }
 
-func mapPreparedProcessResult(invocation ProcessInvocationV1, observed attachedworkerdaemon.AttemptResult) ProcessResultV1 {
+func mapPreparedProcessResult(invocation ProcessInvocationV1, observed attachedworkerdaemon.AttemptResult, native bool, parsed parseResult) ProcessResultV1 {
 	limitExceeded := observed.StdoutBytes > invocation.MaxStdoutBytes || observed.StderrBytes > invocation.MaxStderrBytes ||
 		observed.FailureCode == "stdout_limit_exceeded" || observed.FailureCode == "stderr_limit_exceeded"
 	stdout := append([]byte(nil), observed.Stdout...)
 	providerEffects := uint64(0)
-	if !limitExceeded {
-		parsed := ParseProtocolV1(stdout)
-		if parsed.Accepted {
+	if !limitExceeded && !native {
+		if parsed.accepted {
 			providerEffects = 1
 		}
-		zeroBytes(parsed.Final)
-	} else {
+	} else if limitExceeded {
 		zeroBytes(stdout)
 		stdout = nil
 	}
@@ -362,7 +368,7 @@ func mapPreparedProcessResult(invocation ProcessInvocationV1, observed attachedw
 		// Run's boundary-local one-shot latch consumed this exact immutable
 		// reservation before supervisor preparation. The numeric limit is only
 		// the matching invocation contract, not the fence by itself.
-		ProviderEffectFenceSatisfied: invocation.Authority.ReservationID.Validate() == nil &&
+		ProviderEffectFenceSatisfied: !native && invocation.Authority.ReservationID.Validate() == nil &&
 			invocation.RequireProviderEffectFence && invocation.MaxProviderEffects == maxProviderEffectsV1,
 		ProviderEffects: providerEffects, FailureCode: observed.FailureCode, Stdout: stdout,
 	}

@@ -301,12 +301,23 @@ func (owner *PreparedAttachedWorkerRunnerV1) ReceiptCandidate(identity attachedw
 		}
 		candidate.FailureCode = "codex_exec_cancelled"
 	case domain.AttachedWorkerTerminalFailed:
-		// A known completed provider turn may fail outer finalization. Unknown
-		// provider outcomes remain reconciliation-only, never replay authority.
-		if runErr == nil || slot.semantic.ProviderEvidence == nil || slot.semantic.ProviderEvidence.FinishClass != domain.ProviderFinishCompletedV1 {
+		// Only the original private parse can distinguish a valid failed
+		// terminal from an error notice or lost reply. Public evidence strings
+		// are insufficient. Both paths still require the exact outer result
+		// and successful cleanup above; neither reopens execution authority.
+		if runErr == nil || slot.semantic.ProviderEvidence == nil {
 			return attachedworkeroutput.Candidate{}, ErrContract
 		}
-		candidate.FailureCode = "codex_exec_finalization_failed"
+		if slot.semantic.ProviderEvidence.FinishClass == domain.ProviderFinishCompletedV1 {
+			candidate.FailureCode = "codex_exec_finalization_failed"
+		} else if slot.original.self == slot.original && slot.original.protocol.failedTerminal &&
+			!slot.original.protocol.protocolDrift && !slot.original.protocol.terminalDrift &&
+			slot.semantic.ProviderEvidence.FinishClass == domain.ProviderFinishFailedV1 &&
+			slot.semantic.ProviderEvidence.FailureCode == domain.ProviderExecutionFailureProviderFailedV1 {
+			candidate.FailureCode = "codex_exec_provider_failed"
+		} else {
+			return attachedworkeroutput.Candidate{}, ErrContract
+		}
 	default:
 		return attachedworkeroutput.Candidate{}, ErrContract
 	}
@@ -335,6 +346,9 @@ func (owner *PreparedAttachedWorkerRunnerV1) RetireReceipt(identity attachedwork
 
 func (owner *PreparedAttachedWorkerRunnerV1) clearSlotLocked() {
 	if owner.slot != nil {
+		if owner.slot.original != nil {
+			zeroBytes(owner.slot.original.protocol.final)
+		}
 		owner.slot.semantic = ports.ExecutionResult{}
 		owner.slot.candidate = attachedworkeroutput.Candidate{}
 		owner.slot.original = nil

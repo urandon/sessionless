@@ -284,6 +284,11 @@ func mustDriverWithResolver(
 
 func validDriverRequest(t *testing.T) (ports.ExecutionRequest, AuthorityV1) {
 	t.Helper()
+	return validDriverRequestAt(t, driverNow)
+}
+
+func validDriverRequestAt(t *testing.T, now time.Time) (ports.ExecutionRequest, AuthorityV1) {
+	t.Helper()
 	workDir := t.TempDir()
 	contextDir := filepath.Join(workDir, "context")
 	if err := os.Mkdir(contextDir, 0o700); err != nil {
@@ -301,7 +306,7 @@ func validDriverRequest(t *testing.T) (ports.ExecutionRequest, AuthorityV1) {
 			Key:      domain.SessionEventObjectPrefix("tenant-a", "session-a", "event-a") + "message.json",
 			Size:     int64(len(payload)), SHA256: hex.EncodeToString(payloadDigest[:]),
 		},
-		CreatedAt: driverNow.Add(-time.Minute),
+		CreatedAt: now.Add(-time.Minute),
 	}
 	history, err := sessioncontext.EncodeRecord(event, payload)
 	if err != nil {
@@ -322,7 +327,7 @@ func validDriverRequest(t *testing.T) (ports.ExecutionRequest, AuthorityV1) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expires := driverNow.Add(time.Hour)
+	expires := now.Add(time.Hour)
 	resource := domain.ProviderResourceBindingV1{
 		Kind:       domain.ProviderResourceSubscriptionV1,
 		ResourceID: "subscription-a", OwnerUserID: "owner-a", Revision: 3,
@@ -359,7 +364,7 @@ func validDriverRequest(t *testing.T) (ports.ExecutionRequest, AuthorityV1) {
 			HandleID: "credential-a", TenantID: "tenant-a", OwnerUserID: "owner-a",
 			RunID: "run-a", AttemptID: "attempt-a", WorkerID: "worker-a",
 			LeaseID: "lease-a", LeaseFence: 5, ProviderResource: resource,
-			ExpiresAt: driverNow.Add(30 * time.Minute),
+			ExpiresAt: now.Add(30 * time.Minute),
 		},
 		CredentialMaterialization: ports.ProviderCredentialMaterializationV1{
 			Kind:    domain.ProviderCredentialDeliveryFileV1,

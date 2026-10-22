@@ -71,6 +71,69 @@ the deployed component/image list. The ordinary Go suites cover its packages;
 `ci-core` also validates the checked-in configuration. No cloud credential is a
 test dependency. All real rules in the initial `cloud-dev` profile are disabled.
 
+### Isolated synthetic canary
+
+[#228](https://gitcode.com/urandon/sessionless/issues/228) also needs a finite
+platform alert-to-operator proof. Its [accepted engineering design](design/observability-canary.md)
+uses a separate closed [canary manifest](../observability/canary.yaml), not a
+custom-service exception in production `Config.Validate`. It has one synthetic
+dimensionless DGAUGE, fixed metric namespace and one private experiment nonce;
+there are no tenant/session/run identifiers or arbitrary labels. Both missing
+series and missing points are NoData; no idle notification or periodic repeat.
+Normal → breach → fresh clear → idle describes metric-condition recovery only,
+never canonical/application recovery or coverage of both real execution paths.
+
+```sh
+make observability-config-check
+make observability-canary-render
+make observability-canary-schema
+```
+
+`observability-config-check` validates both the normal catalog and canary YAML;
+the focused parser/export tests cover both. Canary render defaults to the new
+private directory `.build/observability-canary-plan`, schema export to
+`.build/observability-canary-schema`. Override `OBSERVABILITY_CANARY_INPUT`,
+`OBSERVABILITY_CANARY_OUTPUT` or `OBSERVABILITY_CANARY_SCHEMA_OUTPUT` explicitly
+for another source/export; no existing reviewed output is overwritten.
+
+The dedicated CLI operations are:
+
+```sh
+go run ./cmd/observability-config canary-validate --input observability/canary.yaml
+go run ./cmd/observability-config canary-render --input observability/canary.yaml --out .build/observability-canary-plan
+go run ./cmd/observability-config canary-schema --out .build/observability-canary-schema
+```
+
+An explicit bound planning render additionally accepts `--bindings` with an
+owner-only private YAML and `--now` with the exact RFC3339 evaluation instant.
+The [example binding](../observability/canary-bindings.example.yaml) is
+deliberately incomplete/expired, not an admission input. Fresh operator
+scope/collision/channel assertions remain assertions, not a tool-acquired live
+receipt. Missing nonce/destination cannot become an ambient or wildcard target.
+The already-confirmed logical channel is `operator_primary`; contacts and device
+tokens do not belong in these artifacts. No second channel is created.
+
+Outputs `canary-normalized.json`, `canary-console.json` and `canary-plan.json`
+come mechanically from the same YAML and explicit bindings. They identify a
+separate generator version, schema, input digest, private binding revision and
+PLAN_ONLY authority. Both bound and unbound exports are inert: no Terraform,
+writer payload, credential acquisition, API call, notification or apply.
+`canary-schema` exports the closed policy and private-binding structural
+schemas. Production schema version/export/`compare` behavior is unchanged;
+ordinary `compare` rejects canary envelopes instead of inventing live MATCH.
+
+The plan accounts for the aggregate twelve one-point writes, forty read
+requests, ten thousand returned values, four planned notifications including
+initial OK, ninety minutes including twenty-minute idle/cleanup, and at most
+five RUB estimated incremental spend. These are planned ceilings, not a runtime
+enforcer, guaranteed provider notification cap or verified bill. MAX recovery
+requires the breach to leave its delayed window plus fresh clear observations.
+UI-internal polling, delivery retries/duplicates and missing receipts stay
+explicit execution-gate limitations. A later experiment needs exact supported
+surface/readback, current tariff/push cost/IAM qualification, ownership checks,
+operator-ready window and separate finite authority. No dummy VERIFIED source
+or fabricated dashboard ownership is required merely to export this plan.
+
 The CLI supports explicit offline inputs:
 
 ```sh

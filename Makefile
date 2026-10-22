@@ -43,6 +43,8 @@ help:
 		'make observability-config-check validate offline YAML observability policy (no cloud calls)' \
 		'make observability-config-render render a private, non-deployable preview by default' \
 		'make observability-config-test run focused offline parser/export/drift tests' \
+		'make observability-canary-render export the offline synthetic canary plan; never sends' \
+		'make observability-canary-schema export closed canary policy and binding schemas' \
 		'make ops-signal-test verify content-free operational boundaries offline' \
 		'make ops-signal-unit-test run the smaller isolated operational-signal suites' \
 		'make tools          validate every pinned developer tool' \
@@ -412,15 +414,25 @@ OBSERVABILITY_CONFIG_ROOT ?= observability
 OBSERVABILITY_PROFILE ?= cloud-dev
 OBSERVABILITY_OUTPUT ?= $(CURDIR)/.build/observability-preview
 OBSERVABILITY_SCHEMA_OUTPUT ?= $(CURDIR)/.build/observability-schema
-.PHONY: observability-config-check observability-config-render observability-config-schema observability-config-test observability-config-fuzz
+OBSERVABILITY_CANARY_INPUT ?= observability/canary.yaml
+OBSERVABILITY_CANARY_OUTPUT ?= $(CURDIR)/.build/observability-canary-plan
+OBSERVABILITY_CANARY_SCHEMA_OUTPUT ?= $(CURDIR)/.build/observability-canary-schema
+.PHONY: observability-config-check observability-config-render observability-config-schema observability-config-test observability-config-fuzz observability-canary-render observability-canary-schema
 observability-config-check: prepare
 	go run ./cmd/observability-config validate --root "$(OBSERVABILITY_CONFIG_ROOT)" --profile "$(OBSERVABILITY_PROFILE)"
+	go run ./cmd/observability-config canary-validate --input "$(OBSERVABILITY_CANARY_INPUT)"
 
 observability-config-render: prepare
 	go run ./cmd/observability-config render --root "$(OBSERVABILITY_CONFIG_ROOT)" --profile "$(OBSERVABILITY_PROFILE)" --out "$(OBSERVABILITY_OUTPUT)"
 
 observability-config-schema: prepare
 	go run ./cmd/observability-config schema --out "$(OBSERVABILITY_SCHEMA_OUTPUT)"
+
+observability-canary-render: prepare
+	go run ./cmd/observability-config canary-render --input "$(OBSERVABILITY_CANARY_INPUT)" --out "$(OBSERVABILITY_CANARY_OUTPUT)"
+
+observability-canary-schema: prepare
+	go run ./cmd/observability-config canary-schema --out "$(OBSERVABILITY_CANARY_SCHEMA_OUTPUT)"
 
 observability-config-test: prepare
 	go vet ./internal/observabilityconfig ./cmd/observability-config
@@ -429,6 +441,7 @@ observability-config-test: prepare
 
 observability-config-fuzz: prepare
 	go test -run='^$$' -fuzz=FuzzDecodeYAML -fuzztime=2s -parallel=1 ./internal/observabilityconfig
+	go test -run='^$$' -fuzz=FuzzCanaryDecode -fuzztime=2s -parallel=1 ./internal/observabilityconfig
 
 OPS_SIGNAL_PACKAGES := ./internal/opssignal ./internal/portlog ./internal/outboxwake ./internal/serverlesshttp ./internal/scheduler ./internal/sessioningress ./internal/sessionapi ./internal/webapi ./internal/webbff ./internal/yandexoauth ./internal/telegramoidc ./internal/sqsqueue ./internal/yandextriggers ./internal/worker ./internal/attachedworkertransport ./internal/attachedworkerreceipt ./internal/controlapi ./cmd/control-api ./cmd/worker-runtime
 .PHONY: ops-signal-test ops-signal-unit-test

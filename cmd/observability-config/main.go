@@ -23,6 +23,9 @@ func main() {
 // run reports only redacted status; private artifacts are exclusively created in
 // an owner-only directory. It neither discovers credentials nor contacts a cloud.
 func run(args []string, stdout io.Writer) error {
+	if len(args) > 0 && (args[0] == "canary-validate" || args[0] == "canary-render" || args[0] == "canary-schema") {
+		return runCanary(args, stdout)
+	}
 	if len(args) == 0 {
 		return errors.New("choose validate, render, compare or schema")
 	}

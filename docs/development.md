@@ -179,12 +179,23 @@ make observability-config-render
 make observability-config-schema
 make observability-config-test
 make observability-config-fuzz
+make observability-canary-render
+make observability-canary-schema
 ```
 
 The render default is a non-deployable preview under `.build`, with no private
 bindings, recipient data, credentials, Terraform plan/apply or notifications.
 The helper is not a deployed runtime component. The complete ordinary Go suites
 still cover its packages; `ci-core` also validates the checked-in YAML catalog.
+
+The [isolated synthetic canary](design/observability-canary.md) has its own
+strict YAML manifest, separate from the production dashboard/profile validator.
+`observability-config-check` validates both sources. Canary render/schema use
+new owner-only directories selected by `OBSERVABILITY_CANARY_OUTPUT` and
+`OBSERVABILITY_CANARY_SCHEMA_OUTPUT`; the input is `OBSERVABILITY_CANARY_INPUT`.
+Outputs are offline PLAN_ONLY console/experiment sheets, not a writer or live
+permission. No Terraform, device/recipient data, API key or cloud access is
+needed for an unbound render. Normal `cloud-dev` alert selection is unchanged.
 
 ### Content-free operational observations
 

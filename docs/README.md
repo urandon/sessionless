@@ -39,6 +39,7 @@ and link to it.
 - [Local development stand](local-development-stand.md)
 - [Cloud development environment](cloud-development.md)
 - [Native observability YAML and operator runbook](cloud-dev-observability.md)
+- [Offline synthetic observability canary](design/observability-canary.md)
 - [Attached transport experiment preparation (#129)](attached-worker-transport-experiment.md)
 - [Web BFF and Telegram OIDC](web-bff.md)
 - [YDB state store](ydb-state-store.md)

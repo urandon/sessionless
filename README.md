@@ -121,6 +121,10 @@ The complete goal-oriented index is in [docs/README.md](docs/README.md); the
 component inventory and command map live in
 [docs/components.md](docs/components.md).
 
+The [offline observability tooling](docs/cloud-dev-observability.md) validates
+YAML and prepares operator sheets, including an isolated synthetic canary.
+It never configures cloud resources or sends notifications.
+
 ## Contributing and review
 
 Changes are reviewed against deterministic local gates and mirrored exact-SHA

@@ -27,15 +27,16 @@ var completedCheckpointV1 = []byte(`{"schema":"sessionless.codex-exec-checkpoint
 // invocation credential and cannot issue a second credential behind the
 // canonical worker's back.
 type Driver struct {
-	config          Config
-	descriptor      domain.HarnessBackendDescriptorV1
-	authority       AuthorityResolverV1
-	boundary        ProcessBoundaryV1
-	now             func() time.Time
-	mediaConfig     *MediaConfigV1
-	media           *mediaInput
-	mediaStage      *preparedHistory
-	nativeProfileV2 *nativeFrozenProfileV2
+	config               Config
+	descriptor           domain.HarnessBackendDescriptorV1
+	authority            AuthorityResolverV1
+	boundary             ProcessBoundaryV1
+	now                  func() time.Time
+	mediaConfig          *MediaConfigV1
+	media                *mediaInput
+	mediaStage           *preparedHistory
+	nativeProfileV2      *nativeFrozenProfileV2
+	nativeInlineOutputV2 bool
 }
 
 func NewDriver(config Config, authority AuthorityResolverV1, boundary ProcessBoundaryV1) (*Driver, error) {
@@ -184,9 +185,9 @@ func (driver *Driver) execute(ctx context.Context, request ports.ExecutionReques
 	result.Summary = string(parsed.Final)
 	if nativeFinal != nil {
 		result.Summary = nativeFinal.answer
-		if len(nativeFinal.artifacts) != 0 {
+		if len(nativeFinal.artifacts) != 0 && !driver.nativeInlineOutputV2 {
 			// Typed bytes remain in the original private result. Until #200's
-			// authenticated output transport joins this owner, never publish an
+			// explicitly selected output transport joins this owner, never publish an
 			// answer-only success that silently discards requested artifacts.
 			return result, driverError(domain.ErrorTerminal, sessionlessharness.FailureHarnessBackendFailed)
 		}

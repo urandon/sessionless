@@ -216,6 +216,10 @@ func pinnedRuntimePreflight(
 		if err != nil {
 			return nil, nil, ErrInvalidConfiguration
 		}
+		if native.InlineOutputV2 && (!slices.Contains(capability.Features, attachedworkerprotocol.FeatureInlineOutputV2) ||
+			!slices.Contains(capability.Features, attachedworkerprotocol.FeatureOutputReceipt)) {
+			return nil, nil, ErrInvalidConfiguration
+		}
 		arguments, err := native.Profile.ArgumentsV2()
 		if err != nil || !native.Profile.Backend.Enabled || profile.Executable != native.Profile.Backend.Executable ||
 			profile.ExecutableDigest != native.Profile.Backend.ExecutableDigest || !slices.Equal(profile.Arguments, arguments) || len(profile.Environment) != 0 ||

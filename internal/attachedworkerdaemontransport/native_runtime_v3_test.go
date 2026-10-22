@@ -91,6 +91,10 @@ func (nativeRuntimeMetadataV3) LoadCredentialBinding(context.Context, domain.Ten
 func TestNativeRuntimeV3FreezesCompleteSelectionBeforeConnection(t *testing.T) {
 	f, port, input, config := nativeRuntimeFixtureV3(t)
 	original := config.PreparedCodexNative
+	original.InlineOutputV2 = true
+	input.CapabilityManifest.Features = append(input.CapabilityManifest.Features, attachedworkerprotocol.FeatureInlineOutputV2, attachedworkerprotocol.FeatureOutputReceipt)
+	slices.Sort(input.CapabilityManifest.Features)
+	nativeRuntimeResealV3(t, f, &input)
 	var selected *codexexec.NativePreparedConfigV2
 	preflight, runner, err := pinnedRuntimePreflight(input.CapabilityManifest, f.config.Profile, config, unusedInitialCredentials{},
 		func(_ context.Context, _ attachedworkerlocal.ManifestV1, c attachedworkerstack.Config, _ ports.CredentialLifecycle) (attachedworkerdaemon.Runner, error) {
@@ -106,6 +110,7 @@ func TestNativeRuntimeV3FreezesCompleteSelectionBeforeConnection(t *testing.T) {
 	original.Evidence.Catalog.Models[0].ModelID = "changed-catalog"
 	original.Evidence.Privacy.AllowedDataClasses[0] = domain.ProviderDataPublicV1
 	original.Evidence.Policy.AllowedDataClasses[0] = domain.ProviderDataPublicV1
+	original.InlineOutputV2 = false
 	if runner.ready() {
 		t.Fatal("runner acquired authority before lease-held preflight")
 	}
@@ -114,6 +119,29 @@ func TestNativeRuntimeV3FreezesCompleteSelectionBeforeConnection(t *testing.T) {
 	}
 	if selected == nil || selected == original || selected.Profile.Backend.Model != "native-transport-model" || selected.Profile.Launch.ProviderHosts[0] != "auth.openai.com" || selected.Profile.Platform.EngineID != "native-transport-engine" || selected.Evidence.Catalog.Models[0].ModelID != "native-transport-model" || selected.Evidence.Privacy.AllowedDataClasses[0] != domain.ProviderDataPrivateV1 || selected.Evidence.Policy.AllowedDataClasses[0] != domain.ProviderDataPrivateV1 {
 		t.Fatal("caller mutation changed frozen native selection or evidence")
+	}
+	if !selected.InlineOutputV2 {
+		t.Fatal("caller mutation changed frozen output transport selection")
+	}
+}
+
+func TestNativeRuntimeV3InlineOutputRequiresNegotiatedReceipt(t *testing.T) {
+	for _, omit := range []attachedworkerprotocol.ProtocolFeatureV1{attachedworkerprotocol.FeatureInlineOutputV2, attachedworkerprotocol.FeatureOutputReceipt} {
+		t.Run(string(omit), func(t *testing.T) {
+			f, _, input, config := nativeRuntimeFixtureV3(t)
+			config.PreparedCodexNative.InlineOutputV2 = true
+			input.CapabilityManifest.Features = []attachedworkerprotocol.ProtocolFeatureV1{attachedworkerprotocol.FeatureCancellation, attachedworkerprotocol.FeatureInlineOutputV2, attachedworkerprotocol.FeatureOutputReceipt}
+			input.CapabilityManifest.Features = slices.DeleteFunc(input.CapabilityManifest.Features, func(feature attachedworkerprotocol.ProtocolFeatureV1) bool { return feature == omit })
+			nativeRuntimeResealV3(t, f, &input)
+			preflight, runner, err := pinnedRuntimePreflight(input.CapabilityManifest, f.config.Profile, config, unusedInitialCredentials{},
+				func(context.Context, attachedworkerlocal.ManifestV1, attachedworkerstack.Config, ports.CredentialLifecycle) (attachedworkerdaemon.Runner, error) {
+					t.Fatal("missing negotiation reached stack construction")
+					return nil, ErrInvalidConfiguration
+				})
+			if err == nil || preflight != nil || runner != nil {
+				t.Fatal("inline transport selected without both receipt features")
+			}
+		})
 	}
 }
 

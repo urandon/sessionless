@@ -6,6 +6,7 @@ import (
 	"errors"
 	"reflect"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemon"
@@ -42,11 +43,15 @@ type preparedResultSlot struct {
 	identity                              attachedworkerdaemon.InvocationIdentity
 	driver                                *Driver
 	request                               ports.ExecutionRequest
+	accepted                              domain.AttachedWorkerAttemptV1
+	callerDeadline                        time.Time
+	credentialDeadline                    time.Time
 	stage                                 *preparedHistory
 	media                                 *mediaInput
 	mediaAssociation                      [32]byte
 	semantic                              ports.ExecutionResult
 	candidate                             attachedworkeroutput.Candidate
+	inline                                *NativeInlineOutputV2
 	original                              *preparedObservation
 	result                                attachedworkerdaemon.InvocationResult
 	runErr                                error
@@ -216,7 +221,8 @@ func (owner *PreparedAttachedWorkerRunnerV1) Run(ctx context.Context, invocation
 		return attachedworkerdaemon.InvocationResult{}, errors.Join(err, stage.remove())
 	}
 	runCtx, cancel := context.WithCancel(ctx)
-	slot := &preparedResultSlot{identity: invocation.Identity, driver: driver, request: request, stage: stage, media: media, cancel: cancel, done: make(chan struct{})}
+	slot := &preparedResultSlot{identity: invocation.Identity, driver: driver, request: request, accepted: input.AcceptedAttempt, stage: stage, media: media, cancel: cancel, done: make(chan struct{})}
+	slot.callerDeadline, _ = runCtx.Deadline()
 	if media != nil {
 		slot.mediaAssociation = media.associationDigest
 	}
@@ -296,6 +302,7 @@ func (executor *preparedExecutor) RunPrepared(ctx context.Context, prepared atta
 		return attachedworkerdaemon.AttemptResult{}, ErrContract
 	}
 	request, driver := slot.request, slot.driver
+	slot.credentialDeadline = prepared.Credential.ExpiresAt
 	owner.mu.Unlock()
 	if prepared.VerifiedInput.ValidateFor(prepared.Identity) != nil {
 		return attachedworkerdaemon.AttemptResult{}, ErrContract
@@ -415,6 +422,11 @@ func (owner *PreparedAttachedWorkerRunnerV1) clearSlotLocked() error {
 		owner.slot.candidate = attachedworkeroutput.Candidate{}
 		owner.slot.original = nil
 		owner.slot.request = ports.ExecutionRequest{}
+		owner.slot.accepted = domain.AttachedWorkerAttemptV1{}
+		if owner.slot.inline != nil {
+			owner.slot.inline.candidate = attachedworkeroutput.InlineCandidateV2{}
+			owner.slot.inline.producer = attachedworkeroutput.InlineProducerBindingV2{}
+		}
 		owner.slot.driver = nil
 		owner.slot.cancel = nil
 		owner.slot = nil

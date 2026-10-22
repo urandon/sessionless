@@ -37,6 +37,19 @@ type InlineArtifactV2 struct {
 	SHA256    string `json:"sha256"`
 }
 
+// InlineProducerBindingV2 is declaration metadata, not a producer witness.
+// Only the original completed native owner can supply it to its protected
+// transport composition after process, credential and staging cleanup.
+type InlineProducerBindingV2 struct {
+	SessionID            domain.SessionID              `json:"session_id"`
+	HarnessBindingDigest domain.HarnessBindingDigestV2 `json:"harness_binding_digest"`
+	ReservationID        domain.QuotaReservationID     `json:"reservation_id"`
+	AcceptedAt           time.Time                     `json:"accepted_at"`
+	SchemaDigest         string                        `json:"schema_digest"`
+	FinalDigest          string                        `json:"final_digest"`
+	AnswerDigest         string                        `json:"answer_digest"`
+}
+
 // VerifiedInlineV2 owns a private copy of a fully checked concatenated body.
 // This proves content integrity only. The receipt owner must authenticate the
 // original attempt and durably acquire canonical-copy custody before Put.

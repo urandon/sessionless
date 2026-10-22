@@ -559,14 +559,14 @@ func buildSessionDeletionInventory(ctx context.Context, store *sessionDeletionIn
 			return inventory, err
 		}
 		for _, receipt := range receipts {
-			if !receipt.Ready {
+			if !receipt.deletionSettled() {
 				return inventory, domain.ValidationError{Field: "session_deletion.receipts", Reason: "pending attached-worker output receipt blocks exact-object inventory"}
 			}
 			if err := addRow(); err != nil {
 				return inventory, err
 			}
 			inventory.ReceiptRows++
-			for _, ref := range attachedWorkerReceiptObjectRefs(receipt) {
+			for _, ref := range receipt.objectRefs() {
 				if err := addObject(ref); err != nil {
 					return inventory, err
 				}
@@ -906,6 +906,7 @@ func ensureNoPendingAttachedWorkerReceiptsTx(ctx context.Context, tx *stateTx, s
 	// Count both run-index reads and receipt rows against one transaction-wide
 	// bound; a per-run limit would permit quadratic scans.
 	total := uint64(len(runIDs))
+	var beforeWrites []AttachedWorkerOutputReceiptV2
 	for _, runID := range runIDs {
 		rows, err := tx.sqlTx.QueryContext(ctx,
 			`SELECT payload FROM attached_worker_output_receipts
@@ -924,12 +925,21 @@ func ensureNoPendingAttachedWorkerReceiptsTx(ctx context.Context, tx *stateTx, s
 				rows.Close()
 				return err
 			}
-			var receipt AttachedWorkerOutputReceiptV1
-			if err := json.Unmarshal([]byte(payload), &receipt); err != nil {
+			receipt, err := decodeAttachedWorkerReceiptEnvelope([]byte(payload))
+			if err != nil {
 				rows.Close()
 				return err
 			}
-			if !receipt.Ready {
+			binding := receipt.binding()
+			if receipt.validateIdentity(tx.tenantID, runID, binding.OwnerUserID, binding.WorkerID, binding.AttemptID, binding.LeaseGeneration) != nil {
+				rows.Close()
+				return domain.ErrMembershipDenied
+			}
+			if receipt.v2 != nil && (receipt.v2.Stage == InlinePreparedV2 || receipt.v2.Stage == InlineBodyClaimedV2) {
+				beforeWrites = append(beforeWrites, *receipt.v2)
+				continue
+			}
+			if !receipt.deletionSettled() {
 				rows.Close()
 				return domain.ValidationError{Field: "session_deletion.receipts", Reason: "pending attached-worker output receipt blocks deletion"}
 			}
@@ -939,6 +949,13 @@ func ensureNoPendingAttachedWorkerReceiptsTx(ctx context.Context, tx *stateTx, s
 			return err
 		}
 		rows.Close()
+	}
+	// Complete every bounded SELECT before writing through the same SQL
+	// transaction. Serializable row reads fence any concurrent plan promotion.
+	for _, receipt := range beforeWrites {
+		if _, err := retireInlineReceiptBeforeWritesTxV2(ctx, tx, receipt); err != nil {
+			return err
+		}
 	}
 	return nil
 }

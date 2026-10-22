@@ -469,6 +469,19 @@ func (store *Store) releaseAttachedWorkerReceiptCopy(ctx context.Context, planne
 func readAttachedWorkerOutputReceiptTx(ctx context.Context, tx *stateTx, run domain.RunID, owner domain.UserID,
 	worker domain.AttachedWorkerID, attempt domain.AttemptID, generation uint64,
 ) (record AttachedWorkerOutputReceiptV1, found bool, err error) {
+	envelope, found, err := readAttachedWorkerReceiptEnvelopeTx(ctx, tx, run, owner, worker, attempt, generation)
+	if err != nil || !found {
+		return record, found, err
+	}
+	if envelope.v1 == nil {
+		return record, false, ErrAttachedWorkerAttemptConflict
+	}
+	return *envelope.v1, true, nil
+}
+
+func readAttachedWorkerReceiptEnvelopeTx(ctx context.Context, tx *stateTx, run domain.RunID, owner domain.UserID,
+	worker domain.AttachedWorkerID, attempt domain.AttemptID, generation uint64,
+) (record attachedWorkerReceiptEnvelope, found bool, err error) {
 	var payload string
 	err = tx.sqlTx.QueryRowContext(ctx,
 		`SELECT payload FROM attached_worker_output_receipts
@@ -481,11 +494,12 @@ func readAttachedWorkerOutputReceiptTx(ctx context.Context, tx *stateTx, run dom
 	if err != nil {
 		return record, false, err
 	}
-	if err := json.Unmarshal([]byte(payload), &record); err != nil {
+	record, err = decodeAttachedWorkerReceiptEnvelope([]byte(payload))
+	if err != nil {
 		return record, false, err
 	}
-	if err := validateAttachedWorkerReceiptRecord(record, tx.tenantID, run, owner, worker, attempt, generation); err != nil {
-		return AttachedWorkerOutputReceiptV1{}, false, err
+	if err := record.validateIdentity(tx.tenantID, run, owner, worker, attempt, generation); err != nil {
+		return attachedWorkerReceiptEnvelope{}, false, err
 	}
 	return record, true, nil
 }
@@ -520,7 +534,7 @@ func validateAttachedWorkerReceiptRecord(record AttachedWorkerOutputReceiptV1, t
 
 func (store *Store) listRunOutputReceipts(ctx context.Context, tenant domain.TenantID,
 	run domain.RunID, limit uint64,
-) ([]AttachedWorkerOutputReceiptV1, error) {
+) ([]attachedWorkerReceiptEnvelope, error) {
 	rows, err := store.db.QueryContext(ctx,
 		`SELECT owner_user_id,worker_id,attempt_id,lease_generation,payload
 		 FROM attached_worker_output_receipts WHERE tenant_id=$1 AND run_id=$2
@@ -529,7 +543,7 @@ func (store *Store) listRunOutputReceipts(ctx context.Context, tenant domain.Ten
 		return nil, err
 	}
 	defer rows.Close()
-	var receipts []AttachedWorkerOutputReceiptV1
+	var receipts []attachedWorkerReceiptEnvelope
 	for rows.Next() {
 		var owner domain.UserID
 		var worker domain.AttachedWorkerID
@@ -539,11 +553,11 @@ func (store *Store) listRunOutputReceipts(ctx context.Context, tenant domain.Ten
 		if err := rows.Scan(&owner, &worker, &attempt, &generation, &payload); err != nil {
 			return nil, err
 		}
-		var record AttachedWorkerOutputReceiptV1
-		if err := json.Unmarshal([]byte(payload), &record); err != nil {
+		record, err := decodeAttachedWorkerReceiptEnvelope([]byte(payload))
+		if err != nil {
 			return nil, err
 		}
-		if err := validateAttachedWorkerReceiptRecord(record, tenant, run, owner, worker, attempt, generation); err != nil {
+		if err := record.validateIdentity(tenant, run, owner, worker, attempt, generation); err != nil {
 			return nil, err
 		}
 		receipts = append(receipts, record)
@@ -553,19 +567,7 @@ func (store *Store) listRunOutputReceipts(ctx context.Context, tenant domain.Ten
 
 func attachedWorkerReceiptObjectRefs(record AttachedWorkerOutputReceiptV1) []domain.BlobRef {
 	refs := append([]domain.BlobRef(nil), record.SourceRefs...)
-	if record.Materialization.Completion != nil {
-		for _, artifact := range record.Materialization.Completion.Manifest.Artifacts {
-			refs = append(refs, artifact.Blob)
-		}
-		for _, event := range record.Materialization.Completion.Events {
-			refs = append(refs, event.Payload)
-		}
-	} else if record.Materialization.Failure != nil {
-		for _, event := range record.Materialization.Failure.Events {
-			refs = append(refs, event.Payload)
-		}
-	}
-	return refs
+	return append(refs, receiptMaterializationObjectRefs(record.Materialization)...)
 }
 
 func insertAttachedWorkerOutputReceiptTx(ctx context.Context, tx *stateTx, record AttachedWorkerOutputReceiptV1) error {
@@ -666,9 +668,13 @@ func resolveAttachedWorkerTerminalMaterializationTx(ctx context.Context, tx *sta
 	if supplied.Completion != nil || supplied.Failure != nil {
 		return ports.AttachedWorkerTerminalMaterialization{}, ErrAttachedWorkerAttemptConflict
 	}
-	receipt, found, err := readAttachedWorkerOutputReceiptTx(ctx, tx, attempt.RunID, attempt.OwnerUserID, attempt.WorkerID, attempt.AttemptID, attempt.LeaseGeneration)
-	if err != nil || !found || !receipt.Ready {
+	envelope, found, err := readAttachedWorkerReceiptEnvelopeTx(ctx, tx, attempt.RunID, attempt.OwnerUserID, attempt.WorkerID, attempt.AttemptID, attempt.LeaseGeneration)
+	if err != nil || !found || !envelope.ready() {
 		return ports.AttachedWorkerTerminalMaterialization{}, ErrAttachedWorkerAttemptConflict
+	}
+	receipt, err := envelope.canonical()
+	if err != nil {
+		return ports.AttachedWorkerTerminalMaterialization{}, err
 	}
 	binding := receipt.Binding
 	if binding.TenantID != attempt.TenantID || binding.OwnerUserID != attempt.OwnerUserID ||

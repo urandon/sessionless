@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerdaemon"
+	"gitcode.com/urandon/sessionless/internal/nativeharnessinput"
 	"gitcode.com/urandon/sessionless/internal/nativeharnessrelay"
 )
 
@@ -28,6 +29,13 @@ func Run(ctx context.Context, args, env []string, stdin, stdout, stderr *os.File
 	switch args[0] {
 	case "bootstrap":
 		return runBootstrap(ctx, args, env, stdin, stdout, stderr)
+	case "bootstrap-v3":
+		root, err := os.OpenRoot("/")
+		if err != nil {
+			return ErrConfig
+		}
+		defer root.Close()
+		return runBootstrapV3(ctx, args, env, stdin, stdout, stderr, root)
 	case "relay":
 		return runRelay(ctx, args, env)
 	default:
@@ -206,6 +214,24 @@ func runBootstrap(ctx context.Context, args, env []string, stdin, stdout, stderr
 	if err != nil {
 		return err
 	}
+	return runBootstrapPlan(ctx, p, env, stdin, stdout, stderr, nil, nil)
+}
+
+// The public V3 entry always uses the workload root. A test-owned os.Root lets
+// controlled fixtures exercise this exact parser/verifier/child lifecycle
+// without granting tests host-root writes or claiming actual OCI mount proof.
+func runBootstrapV3(ctx context.Context, args, env []string, stdin, stdout, stderr *os.File, root *os.Root) error {
+	if stdin == nil || stdout == nil || stderr == nil || root == nil {
+		return ErrConfig
+	}
+	p, descriptor, err := parseBootstrapV3(args)
+	if err != nil {
+		return err
+	}
+	return runBootstrapPlan(ctx, p, env, stdin, stdout, stderr, root, &descriptor)
+}
+
+func runBootstrapPlan(ctx context.Context, p bootstrapPlan, env []string, stdin, stdout, stderr *os.File, root *os.Root, descriptor *nativeharnessinput.NativeExecutionDescriptorV3) (result error) {
 	base, value, err := environment(env)
 	if err != nil {
 		return err
@@ -215,6 +241,9 @@ func runBootstrap(ctx context.Context, args, env []string, stdin, stdout, stderr
 		return err
 	}
 	defer cancel()
+	if descriptor != nil && nativeharnessinput.VerifyMounted(active, root, *descriptor) != nil {
+		return ErrConfig
+	}
 	deadline, _ := active.Deadline()
 	reader, writer, err := os.Pipe()
 	if err != nil {
@@ -280,6 +309,9 @@ func runBootstrap(ctx context.Context, args, env []string, stdin, stdout, stderr
 	nativeEnv := append(base, "HTTP_PROXY="+proxy, "HTTPS_PROXY="+proxy, "http_proxy="+proxy, "https_proxy="+proxy)
 	if !live(active) {
 		return errors.Join(ErrLifecycle, active.Err())
+	}
+	if descriptor != nil && nativeharnessinput.VerifyMounted(active, root, *descriptor) != nil {
+		return ErrConfig
 	}
 	native, err = startChild(active, p.native, nativeEnv, stdin, stdout, stderr, nil)
 	if err != nil {

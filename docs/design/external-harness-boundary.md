@@ -363,6 +363,9 @@ order, plus the frozen catalog/schema sizes and digests. Slot paths and suffixes
 are derived from the sealed variant; the descriptor accepts no arbitrary host
 or workload pathname. Host source/inode associations remain in the original
 owner and launcher mapping attestation, not in native argv or the descriptor.
+Each mapped file has a positive size of at most 1 MiB: the existing original
+image cap, and a finite engineering cap for each frozen catalog/schema. These
+are input-file bounds, not native prepared, context, wire or allocation facts.
 
 Installation seals the static bootstrap/relay command, environment and this
 exact carrier schema and bounds, together with the seven native vectors. It

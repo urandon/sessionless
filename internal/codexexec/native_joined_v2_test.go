@@ -454,6 +454,8 @@ func TestNativeJoinedV2StructuredOutputDesignBounds(t *testing.T) {
 		{"artifact-bytes", encode("bounded answer", `"`+strings.Repeat("x", 32<<10)+`"`)},
 		{"artifact-depth", encode("bounded answer", strings.Repeat("[", 33)+"0"+strings.Repeat("]", 33))},
 		{"encoded-final", `{"answer":"bounded answer","artifacts":[]` + strings.Repeat(" ", 128<<10) + `}`},
+		{"answer-lone-surrogate", `{"answer":"\ud800","artifacts":[]}`},
+		{"artifact-lone-surrogate", encode("bounded answer", `"\ud800"`)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r, invocation, _, _, _ := nativeJoinedFixtureV2(t, tc.raw)

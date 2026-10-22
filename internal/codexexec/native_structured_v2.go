@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"gitcode.com/urandon/sessionless/internal/nativeharnessinput"
+	"gitcode.com/urandon/sessionless/internal/strictjson"
 )
 
 // These output ceilings are distinct from the larger input-file and raw
@@ -53,7 +54,8 @@ func (boundary *PreparedProcessBoundaryV1) structuredNativeFinalV2(original *pre
 		original.binding.Backend != boundary.native.profileV2.descriptor || original.runErr != nil || original.process.ExitCode != 0 || original.process.FailureCode != "" ||
 		original.process.Cancelled || original.process.Deadline || !original.process.DescendantsReaped || !original.process.BoundaryReleased || !original.process.CleanupSucceeded ||
 		!original.protocol.terminal || original.protocol.protocolDrift || original.protocol.terminalDrift || original.protocol.failedTerminal ||
-		len(raw) == 0 || len(raw) > nativeFinalBytesV2 || !utf8.Valid(raw) || original.rawFinalDigestV2 != sha256.Sum256(raw) || !strictJSONObject(raw) {
+		len(raw) == 0 || len(raw) > nativeFinalBytesV2 || !utf8.Valid(raw) || original.rawFinalDigestV2 != sha256.Sum256(raw) ||
+		strictjson.ValidateDocument(raw, nativeFinalBytesV2, 32, nativeFinalBytesV2) != nil {
 		return nil, ErrContract
 	}
 	var fields map[string]json.RawMessage
@@ -125,13 +127,7 @@ func (boundary *PreparedProcessBoundaryV1) structuredNativeFinalV2(original *pre
 }
 
 func nativeArtifactJSONV2(body []byte) bool {
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.UseNumber()
-	if !scanJSONValue(decoder, 1) {
-		return false
-	}
-	_, err := decoder.Token()
-	return err == io.EOF
+	return strictjson.ValidateDocument(body, nativeArtifactBytesV2, 32, nativeArtifactBytesV2) == nil
 }
 
 func nativeArtifactNameV2(name string) bool {

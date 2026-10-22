@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"gitcode.com/urandon/sessionless/internal/attachedworkeroutput"
 	"gitcode.com/urandon/sessionless/internal/strictjson"
-	"gitcode.com/urandon/sessionless/internal/ydbstore"
 )
 
 const (
@@ -80,7 +80,7 @@ func HandlerInlineV2(service *InlineServiceV2) http.Handler {
 			inlineHTTPErrorV2(w, ErrInvalid)
 			return
 		}
-		var result ydbstore.AttachedWorkerInlineResultV2
+		var result attachedworkeroutput.AttachedWorkerInlineResultV2
 		var err error
 		if r.URL.Path == PathInlineBodyV2 {
 			metadata, single := inlineOneHeaderV2(r.Header, InlineRequestHeaderV2)
@@ -90,7 +90,7 @@ func HandlerInlineV2(service *InlineServiceV2) http.Handler {
 			}
 			raw, decodeErr := base64.RawStdEncoding.Strict().DecodeString(metadata)
 			defer clear(raw)
-			var input ydbstore.AttachedWorkerInlineBodyV2
+			var input attachedworkeroutput.AttachedWorkerInlineBodyV2
 			if decodeErr != nil || base64.RawStdEncoding.EncodeToString(raw) != metadata || !inlineDecodeV2(raw, maxInlineControlBytesV2, &input) {
 				inlineHTTPErrorV2(w, ErrInvalid)
 				return
@@ -147,7 +147,7 @@ func HandlerInlineV2(service *InlineServiceV2) http.Handler {
 				return
 			}
 			if r.URL.Path == PathInlinePrepareV2 {
-				var input ydbstore.AttachedWorkerInlinePrepareV2
+				var input attachedworkeroutput.AttachedWorkerInlinePrepareV2
 				if !inlineDecodeV2(raw, int(limit), &input) {
 					inlineHTTPErrorV2(w, ErrInvalid)
 					return
@@ -171,7 +171,7 @@ func HandlerInlineV2(service *InlineServiceV2) http.Handler {
 				}
 				result, err = service.Prepare(ctx, bearer, input)
 			} else {
-				var input ydbstore.AttachedWorkerInlineReconcileV2
+				var input attachedworkeroutput.AttachedWorkerInlineReconcileV2
 				if !inlineDecodeV2(raw, int(limit), &input) {
 					inlineHTTPErrorV2(w, ErrInvalid)
 					return
@@ -282,7 +282,7 @@ func inlineContentLengthV2(r *http.Request) bool {
 	return ok && value == strconv.FormatInt(r.ContentLength, 10)
 }
 
-func inlineResponseV2(r ydbstore.AttachedWorkerInlineResultV2) bool {
+func inlineResponseV2(r attachedworkeroutput.AttachedWorkerInlineResultV2) bool {
 	if r.Version != 2 || r.Nonce.Validate() != nil || !inlineHexV2(r.Fingerprint) || r.ExpiresAt.IsZero() {
 		return false
 	}
@@ -290,11 +290,11 @@ func inlineResponseV2(r ydbstore.AttachedWorkerInlineResultV2) bool {
 		return false
 	}
 	switch r.Stage {
-	case ydbstore.InlinePreparedV2:
+	case attachedworkeroutput.InlinePreparedV2:
 		return r.CanonicalDigest == ""
-	case ydbstore.InlineBodyClaimedV2, ydbstore.InlineRetiredWithoutWritesV2:
+	case attachedworkeroutput.InlineBodyClaimedV2, attachedworkeroutput.InlineRetiredWithoutWritesV2:
 		return r.Capability == "" && r.CanonicalDigest == ""
-	case ydbstore.InlineCanonicalCopyingV2, ydbstore.InlineReadyV2:
+	case attachedworkeroutput.InlineCanonicalCopyingV2, attachedworkeroutput.InlineReadyV2:
 		return r.Capability == "" && inlineHexV2(string(r.CanonicalDigest))
 	default:
 		return false

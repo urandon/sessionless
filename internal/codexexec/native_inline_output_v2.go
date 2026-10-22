@@ -149,6 +149,17 @@ func (v *NativeInlineOutputV2) Declaration() (attachedworkeroutput.InlineCandida
 	return candidate, v.producer, v.expires, nil
 }
 
+// CheckCurrent rechecks the original receipt-only scope immediately before a
+// fresh export phase. It never reopens the already closed execution child.
+func (v *NativeInlineOutputV2) CheckCurrent(ctx context.Context) error {
+	if v == nil || v.owner == nil {
+		return ErrContract
+	}
+	v.owner.mu.Lock()
+	defer v.owner.mu.Unlock()
+	return v.currentLocked(ctx)
+}
+
 // OpenBody irreversibly burns the single original body stream before returning
 // it. The caller must FIRST seal the immutable compact journal/send commitment.
 // Close/error/lost response never permits opening another stream. No allocation

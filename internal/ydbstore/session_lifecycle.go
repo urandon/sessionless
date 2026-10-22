@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"gitcode.com/urandon/sessionless/internal/attachedworkeroutput"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/ydbpartition"
@@ -935,7 +936,7 @@ func ensureNoPendingAttachedWorkerReceiptsTx(ctx context.Context, tx *stateTx, s
 				rows.Close()
 				return domain.ErrMembershipDenied
 			}
-			if receipt.v2 != nil && (receipt.v2.Stage == InlinePreparedV2 || receipt.v2.Stage == InlineBodyClaimedV2) {
+			if receipt.v2 != nil && (receipt.v2.Stage == attachedworkeroutput.InlinePreparedV2 || receipt.v2.Stage == attachedworkeroutput.InlineBodyClaimedV2) {
 				beforeWrites = append(beforeWrites, *receipt.v2)
 				continue
 			}

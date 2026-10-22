@@ -14,6 +14,40 @@ import (
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
 
+func TestInlineWireV2PersistedFingerprintGolden(t *testing.T) {
+	accepted := time.Date(2026, 10, 23, 8, 9, 10, 123456789, time.UTC)
+	auth := ports.AttachedWorkerSealedInputAuthorization{TenantID: "wire-tenant", OwnerUserID: "wire-owner", WorkerID: "wire-worker", ConnectionID: "wire-connection", PresentedSecretDigest: "private-not-hashed", EnrollmentGeneration: 2, ConnectionGeneration: 3, RunID: "wire-run", AttemptID: "wire-attempt", AttemptSequence: 1, LeaseID: "wire-lease", LeaseGeneration: 4, FenceToken: domain.AttachedWorkerFenceToken(strings.Repeat("a", 64)), LeaseExpiresAtUnixMicro: accepted.Add(time.Minute).UnixMicro(), ContextDigest: domain.AttachedWorkerContextDigest(strings.Repeat("b", 64)), CapabilityDigest: domain.AttachedWorkerCapabilityDigest(strings.Repeat("c", 64)), PolicyDigest: domain.AttachedWorkerPolicyDigest(strings.Repeat("d", 64)), ExpectedAttemptRevision: 99}
+	request := attachedworkeroutput.AttachedWorkerInlinePrepareV2{Version: 2, Authorization: auth, Nonce: "wire-nonce", Candidate: attachedworkeroutput.InlineCandidateV2{Summary: "Original <answer>\nёж", Artifacts: []attachedworkeroutput.InlineArtifactV2{{Name: "report.json", MediaType: "application/json", Size: 19, SHA256: strings.Repeat("e", 64)}}}, Producer: attachedworkeroutput.InlineProducerBindingV2{SessionID: "wire-session", HarnessBindingDigest: domain.HarnessBindingDigestV2(strings.Repeat("f", 64)), ReservationID: "wire-reservation", AcceptedAt: accepted, SchemaDigest: strings.Repeat("1", 64), FinalDigest: strings.Repeat("2", 64), AnswerDigest: strings.Repeat("3", 64)}, Observation: attachedworkeroutput.ProcessObservationV1{Version: 1, DescendantsReaped: true, BoundaryReleased: true, CleanupSucceeded: true, CredentialReleaseRequired: true, CredentialReleased: true}, ExpiresAt: accepted.Add(12 * time.Second)}
+	got, err := attachedworkeroutput.InlineOutputRequestFingerprintV2(request)
+	if err != nil {
+		t.Fatalf("original pure request fingerprint: %v", err)
+	}
+	const golden = "5ef970779c1f4288003dcba05b48ecf393a665c86d76376a940f866dc3b95bc3"
+	if got != golden {
+		t.Fatalf("relocated request fingerprint=%s want original persisted vector=%s", got, golden)
+	}
+	observation, err := request.Observation.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := AttachedWorkerOutputReceiptV2{Binding: receiptBindingWithoutBearer(auth), Nonce: request.Nonce, Candidate: request.Candidate, Producer: request.Producer, ObservationDigest: observation, CredentialRequired: true, ExpiresAt: request.ExpiresAt}
+	persisted, err := inlineReceiptPlanFingerprintV2(record)
+	if err != nil || persisted != got {
+		t.Fatalf("persisted=%s request=%s err=%v", persisted, got, err)
+	}
+	request.Authorization.PresentedSecretDigest = "different-private-not-hashed"
+	request.Authorization.ExpectedAttemptRevision = 100
+	withoutSecret, err := attachedworkeroutput.InlineOutputRequestFingerprintV2(request)
+	if err != nil || withoutSecret != got || auth.PresentedSecretDigest != "private-not-hashed" || auth.ExpectedAttemptRevision != 99 {
+		t.Fatalf("bearer/revision omission or value-copy invariant failed: hash=%s original=%s err=%v", withoutSecret, got, err)
+	}
+	request.Authorization.RunID = "different-wire-run"
+	changed, err := attachedworkeroutput.InlineOutputRequestFingerprintV2(request)
+	if err != nil || changed == got {
+		t.Fatalf("changed stable scope hash=%s original=%s err=%v", changed, got, err)
+	}
+}
+
 func inlineReceiptFixtureV2(t *testing.T) (AttachedWorkerOutputReceiptV2, ports.WorkerJobState, []byte) {
 	t.Helper()
 	loaded := currentWorkerAuthorityFixture(t)
@@ -53,7 +87,7 @@ func inlineReceiptFixtureV2(t *testing.T) (AttachedWorkerOutputReceiptV2, ports.
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := AttachedWorkerOutputReceiptV2{Version: 2, Stage: InlinePreparedV2, Binding: auth, Nonce: "inline-nonce",
+	r := AttachedWorkerOutputReceiptV2{Version: 2, Stage: attachedworkeroutput.InlinePreparedV2, Binding: auth, Nonce: "inline-nonce",
 		Candidate: attachedworkeroutput.InlineCandidateV2{Summary: "Useful answer", Artifacts: []attachedworkeroutput.InlineArtifactV2{{Name: "report.json", MediaType: "application/json", Size: uint64(len(content)), SHA256: hex.EncodeToString(hash[:])}}},
 		Producer: attachedworkeroutput.InlineProducerBindingV2{SessionID: loaded.Run.SessionID, HarnessBindingDigest: harness, ReservationID: loaded.Job.ReservationID, AcceptedAt: loaded.Run.CreatedAt,
 			SchemaDigest: strings.Repeat("a", 64), FinalDigest: strings.Repeat("b", 64), AnswerDigest: hex.EncodeToString(answer[:])}, Observation: observation, ObservationDigest: od,
@@ -93,7 +127,7 @@ func inlineCanonicalFixtureV2(t *testing.T) AttachedWorkerOutputReceiptV2 {
 		t.Fatal(err)
 	}
 	material.EvidenceDigest = digest
-	r.Stage, r.BodyClaimID, r.CopyOwnerID = InlineCanonicalCopyingV2, strings.Repeat("c", 64), strings.Repeat("d", 64)
+	r.Stage, r.BodyClaimID, r.CopyOwnerID = attachedworkeroutput.InlineCanonicalCopyingV2, strings.Repeat("c", 64), strings.Repeat("d", 64)
 	r.CanonicalDigest, r.Materialization = digest, material
 	return r
 }
@@ -101,12 +135,12 @@ func inlineCanonicalFixtureV2(t *testing.T) AttachedWorkerOutputReceiptV2 {
 func TestInlineReceiptStagesKeepCanonicalOwnershipDistinct(t *testing.T) {
 	prepared, _, _ := inlineReceiptFixtureV2(t)
 	claimed := prepared
-	claimed.Stage, claimed.BodyClaimID = InlineBodyClaimedV2, strings.Repeat("c", 64)
+	claimed.Stage, claimed.BodyClaimID = attachedworkeroutput.InlineBodyClaimedV2, strings.Repeat("c", 64)
 	retired := claimed
-	retired.Stage = InlineRetiredWithoutWritesV2
+	retired.Stage = attachedworkeroutput.InlineRetiredWithoutWritesV2
 	copying := inlineCanonicalFixtureV2(t)
 	ready := copying
-	ready.Stage = InlineReadyV2
+	ready.Stage = attachedworkeroutput.InlineReadyV2
 	for _, r := range []AttachedWorkerOutputReceiptV2{prepared, claimed, copying, ready, retired} {
 		t.Run(string(r.Stage), func(t *testing.T) {
 			if err := validateInlineFixtureV2(r); err != nil {
@@ -120,21 +154,21 @@ func TestInlineReceiptStagesKeepCanonicalOwnershipDistinct(t *testing.T) {
 			if err != nil || envelope.v2 == nil || envelope.v1 != nil {
 				t.Fatalf("V2 confused with V1: err=%v", err)
 			}
-			if envelope.ready() != (r.Stage == InlineReadyV2) || envelope.deletionSettled() != (r.Stage == InlineReadyV2 || r.Stage == InlineRetiredWithoutWritesV2) {
+			if envelope.ready() != (r.Stage == attachedworkeroutput.InlineReadyV2) || envelope.deletionSettled() != (r.Stage == attachedworkeroutput.InlineReadyV2 || r.Stage == attachedworkeroutput.InlineRetiredWithoutWritesV2) {
 				t.Error("stage changed publication/deletion permission")
 			}
 			canonical, err := envelope.canonical()
-			if r.Stage == InlineReadyV2 {
+			if r.Stage == attachedworkeroutput.InlineReadyV2 {
 				if err != nil || canonical.CanonicalDigest != r.CanonicalDigest || len(envelope.objectRefs()) != 2 {
 					t.Errorf("READY lost canonical result: %v", err)
 				}
 			} else if !errors.Is(err, ErrAttachedWorkerAttemptConflict) {
 				t.Errorf("nonREADY acquired canonical publisher view: %v", err)
 			}
-			if r.Stage == InlineCanonicalCopyingV2 && len(envelope.objectRefs()) != 2 {
+			if r.Stage == attachedworkeroutput.InlineCanonicalCopyingV2 && len(envelope.objectRefs()) != 2 {
 				t.Error("ambiguous copying lost planned artifact/event inventory")
 			}
-			if (r.Stage == InlinePreparedV2 || r.Stage == InlineBodyClaimedV2 || r.Stage == InlineRetiredWithoutWritesV2) && len(envelope.objectRefs()) != 0 {
+			if (r.Stage == attachedworkeroutput.InlinePreparedV2 || r.Stage == attachedworkeroutput.InlineBodyClaimedV2 || r.Stage == attachedworkeroutput.InlineRetiredWithoutWritesV2) && len(envelope.objectRefs()) != 0 {
 				t.Error("precopy acquired fictional storage refs")
 			}
 		})
@@ -161,7 +195,7 @@ func TestInlineReceiptRejectsMalformedStageAndPlan(t *testing.T) {
 		}},
 		{"revision persisted", func(r *AttachedWorkerOutputReceiptV2) { r.Binding.ExpectedAttemptRevision = 9 }},
 		{"retired fake plan", func(r *AttachedWorkerOutputReceiptV2) {
-			r.Stage = InlineRetiredWithoutWritesV2
+			r.Stage = attachedworkeroutput.InlineRetiredWithoutWritesV2
 			r.CopyOwnerID = strings.Repeat("d", 64)
 		}},
 	} {
@@ -240,12 +274,12 @@ func TestInlineReceiptVersionAndCapabilityDoNotAliasV1(t *testing.T) {
 
 func TestInlineReceiptDeletionScalarProjectionV2(t *testing.T) {
 	r, _, _ := inlineReceiptFixtureV2(t)
-	for _, stage := range []AttachedWorkerInlineStageV2{InlinePreparedV2, InlineBodyClaimedV2, InlineRetiredWithoutWritesV2, InlineCanonicalCopyingV2, InlineReadyV2} {
+	for _, stage := range []attachedworkeroutput.AttachedWorkerInlineStageV2{attachedworkeroutput.InlinePreparedV2, attachedworkeroutput.InlineBodyClaimedV2, attachedworkeroutput.InlineRetiredWithoutWritesV2, attachedworkeroutput.InlineCanonicalCopyingV2, attachedworkeroutput.InlineReadyV2} {
 		t.Run(string(stage), func(t *testing.T) {
 			candidate := r
-			if stage == InlineCanonicalCopyingV2 || stage == InlineReadyV2 {
+			if stage == attachedworkeroutput.InlineCanonicalCopyingV2 || stage == attachedworkeroutput.InlineReadyV2 {
 				candidate = inlineCanonicalFixtureV2(t)
-			} else if stage != InlinePreparedV2 {
+			} else if stage != attachedworkeroutput.InlinePreparedV2 {
 				candidate.BodyClaimID = strings.Repeat("c", 64)
 			}
 			candidate.Stage = stage

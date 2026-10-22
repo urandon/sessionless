@@ -63,6 +63,9 @@ func TestNativeInlineOutputV2OriginalCompletedOwner(t *testing.T) {
 	if canonical.Artifacts[0].Name != "data.json" {
 		t.Fatal("metadata alias changed private plan")
 	}
+	if err := v.CheckCurrent(context.Background()); err != nil {
+		t.Fatalf("original receipt scope after execution child close: %v", err)
+	}
 	body, size, err := v.OpenBody(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -96,6 +99,9 @@ func TestNativeInlineOutputV2OriginalCompletedOwner(t *testing.T) {
 	}
 	if err := r.RetireReceipt(invocation.Identity); err != nil {
 		t.Fatal(err)
+	}
+	if err := v.CheckCurrent(context.Background()); err == nil {
+		t.Fatal("retired original result retained current receipt authority")
 	}
 	if len(f.artifacts) != 0 || !bytes.Equal(retained, make([]byte, len(retained))) {
 		t.Fatal("retirement did not clear owned semantic bytes")
@@ -244,6 +250,9 @@ func TestNativeInlineOutputV2AnswerOnlyAndCopiedCarrier(t *testing.T) {
 	copied := *v // carrier has no mutex; identity guard must reject a copied value
 	if _, _, _, err := copied.Declaration(); err == nil {
 		t.Fatal("copied producer accepted")
+	}
+	if err := copied.CheckCurrent(context.Background()); err == nil {
+		t.Fatal("copied producer acquired current receipt authority")
 	}
 	if strings.Contains(fmt.Sprintf("%+v", v), "answer only") {
 		t.Fatal("producer logging disclosed content")

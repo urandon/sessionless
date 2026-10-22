@@ -21,22 +21,22 @@ import (
 // No caller obtains write permission from these wire values alone. Each
 // transition joins the existing membership/connection/attempt/deletion owner
 // at its authoritative transaction time before the next irreversible effect.
-func (store *Store) PrepareAttachedWorkerInlineOutput(ctx context.Context, blobs ports.BlobStore, request AttachedWorkerInlinePrepareV2) (AttachedWorkerInlineResultV2, error) {
+func (store *Store) PrepareAttachedWorkerInlineOutput(ctx context.Context, blobs ports.BlobStore, request attachedworkeroutput.AttachedWorkerInlinePrepareV2) (attachedworkeroutput.AttachedWorkerInlineResultV2, error) {
 	if store == nil || blobs == nil || ctx == nil || ctx.Err() != nil || request.Version != 2 ||
 		validateAttachedWorkerSealedInputAuthorization(request.Authorization) != nil || request.Nonce.Validate() != nil || request.Candidate.Validate() != nil {
-		return AttachedWorkerInlineResultV2{}, attachedworkeroutput.ErrCandidateInvalid
+		return attachedworkeroutput.AttachedWorkerInlineResultV2{}, attachedworkeroutput.ErrCandidateInvalid
 	}
 	ctx, cancel := boundedInlineExportContextV2(ctx, request.ExpiresAt)
 	defer cancel()
 	observation, err := request.Observation.Digest()
 	if err != nil {
-		return AttachedWorkerInlineResultV2{}, err
+		return attachedworkeroutput.AttachedWorkerInlineResultV2{}, err
 	}
-	fingerprint, err := InlineOutputRequestFingerprintV2(request)
+	fingerprint, err := attachedworkeroutput.InlineOutputRequestFingerprintV2(request)
 	if err != nil {
-		return AttachedWorkerInlineResultV2{}, err
+		return attachedworkeroutput.AttachedWorkerInlineResultV2{}, err
 	}
-	r := AttachedWorkerOutputReceiptV2{Version: 2, Stage: InlinePreparedV2, Binding: receiptBindingWithoutBearer(request.Authorization),
+	r := AttachedWorkerOutputReceiptV2{Version: 2, Stage: attachedworkeroutput.InlinePreparedV2, Binding: receiptBindingWithoutBearer(request.Authorization),
 		Nonce: request.Nonce, CandidateFingerprint: fingerprint, Candidate: request.Candidate, Producer: request.Producer,
 		Observation: request.Observation, ObservationDigest: observation, CredentialRequired: request.Observation.CredentialReleaseRequired, ExpiresAt: request.ExpiresAt}
 	err = store.Transact(ctx, r.Binding.TenantID, func(state ports.StateTx) error {
@@ -62,32 +62,32 @@ func (store *Store) PrepareAttachedWorkerInlineOutput(ctx context.Context, blobs
 		return writeInlineReceiptTxV2(ctx, tx, r, true)
 	})
 	if err != nil {
-		return AttachedWorkerInlineResultV2{}, err
+		return attachedworkeroutput.AttachedWorkerInlineResultV2{}, err
 	}
 	if len(r.Candidate.Artifacts) == 0 {
 		// No empty-body POST, no source object and no special alternate
 		// publisher: answer-only enters the same claim/copy/READY path.
-		body := AttachedWorkerInlineBodyV2{Version: 2, Authorization: request.Authorization, Nonce: r.Nonce, Fingerprint: r.CandidateFingerprint,
+		body := attachedworkeroutput.AttachedWorkerInlineBodyV2{Version: 2, Authorization: request.Authorization, Nonce: r.Nonce, Fingerprint: r.CandidateFingerprint,
 			Capability: inlineOutputCapabilityV2(request.Authorization, r), ExpiresAt: r.ExpiresAt}
 		return store.submitInlineOutputV2(ctx, blobs, body, 0, nil, true)
 	}
 	return inlineOutputResultV2(r, inlineOutputCapabilityV2(request.Authorization, r)), nil
 }
 
-func (store *Store) SubmitAttachedWorkerInlineOutput(ctx context.Context, blobs ports.BlobStore, request AttachedWorkerInlineBodyV2, length int64, body io.Reader) (AttachedWorkerInlineResultV2, error) {
+func (store *Store) SubmitAttachedWorkerInlineOutput(ctx context.Context, blobs ports.BlobStore, request attachedworkeroutput.AttachedWorkerInlineBodyV2, length int64, body io.Reader) (attachedworkeroutput.AttachedWorkerInlineResultV2, error) {
 	return store.submitInlineOutputV2(ctx, blobs, request, length, body, false)
 }
 
-func (store *Store) submitInlineOutputV2(ctx context.Context, blobs ports.BlobStore, request AttachedWorkerInlineBodyV2, length int64, body io.Reader, answerOnly bool) (AttachedWorkerInlineResultV2, error) {
+func (store *Store) submitInlineOutputV2(ctx context.Context, blobs ports.BlobStore, request attachedworkeroutput.AttachedWorkerInlineBodyV2, length int64, body io.Reader, answerOnly bool) (attachedworkeroutput.AttachedWorkerInlineResultV2, error) {
 	if store == nil || blobs == nil || ctx == nil || ctx.Err() != nil || request.Version != 2 ||
 		validateAttachedWorkerSealedInputAuthorization(request.Authorization) != nil || length < 0 || length > attachedworkeroutput.MaxInlineTotalBytesV2 || (!answerOnly && (length == 0 || body == nil)) {
-		return AttachedWorkerInlineResultV2{}, attachedworkeroutput.ErrCandidateInvalid
+		return attachedworkeroutput.AttachedWorkerInlineResultV2{}, attachedworkeroutput.ErrCandidateInvalid
 	}
 	ctx, cancelExport := boundedInlineExportContextV2(ctx, request.ExpiresAt)
 	defer cancelExport()
 	claim, err := newInlineWriteIdentityV2()
 	if err != nil {
-		return AttachedWorkerInlineResultV2{}, err
+		return attachedworkeroutput.AttachedWorkerInlineResultV2{}, err
 	}
 	var r AttachedWorkerOutputReceiptV2
 	var loaded ports.WorkerJobState
@@ -101,7 +101,7 @@ func (store *Store) submitInlineOutputV2(ctx context.Context, blobs ports.BlobSt
 			return ErrAttachedWorkerAttemptConflict
 		}
 		r = *record.v2
-		if !inlineBodyMatchesV2(request, r) || r.Stage != InlinePreparedV2 || !hmac.Equal([]byte(request.Capability), []byte(inlineOutputCapabilityV2(request.Authorization, r))) {
+		if !inlineBodyMatchesV2(request, r) || r.Stage != attachedworkeroutput.InlinePreparedV2 || !hmac.Equal([]byte(request.Capability), []byte(inlineOutputCapabilityV2(request.Authorization, r))) {
 			return ErrAttachedWorkerAttemptConflict
 		}
 		var expected uint64
@@ -115,11 +115,11 @@ func (store *Store) submitInlineOutputV2(ctx context.Context, blobs ports.BlobSt
 		if err != nil {
 			return err
 		}
-		r.Stage, r.BodyClaimID = InlineBodyClaimedV2, claim
+		r.Stage, r.BodyClaimID = attachedworkeroutput.InlineBodyClaimedV2, claim
 		return writeInlineReceiptTxV2(ctx, tx, r, false)
 	})
 	if err != nil {
-		return AttachedWorkerInlineResultV2{}, err
+		return attachedworkeroutput.AttachedWorkerInlineResultV2{}, err
 	}
 	// Do not read a single byte before the durable one-shot identity is owned.
 	// Failure/ambiguity after this point never frees or replaces that identity.
@@ -130,60 +130,60 @@ func (store *Store) submitInlineOutputV2(ctx context.Context, blobs ports.BlobSt
 		content, err = io.ReadAll(io.LimitReader(body, length+1))
 		defer clear(content)
 		if err != nil || int64(len(content)) != length || bounded.Err() != nil {
-			return AttachedWorkerInlineResultV2{}, attachedworkeroutput.ErrCandidateInvalid
+			return attachedworkeroutput.AttachedWorkerInlineResultV2{}, attachedworkeroutput.ErrCandidateInvalid
 		}
 	}
 	verified, err := attachedworkeroutput.VerifyInlineV2(r.Candidate, content)
 	if err != nil {
-		return AttachedWorkerInlineResultV2{}, err
+		return attachedworkeroutput.AttachedWorkerInlineResultV2{}, err
 	}
 	defer verified.Clear()
 	planned := &plannedReceiptBlobs{upstream: blobs}
 	materialization, err := attachedworkeroutput.MaterializeInlineV2(bounded, planned, loaded, r.Binding.LeaseID, r.Binding.LeaseGeneration, verified, r.CreatedAt)
 	if err != nil {
-		return AttachedWorkerInlineResultV2{}, err
+		return attachedworkeroutput.AttachedWorkerInlineResultV2{}, err
 	}
 	// The fixed cohort is at most 64KiB artifact bytes and a bounded escaped
 	// answer event. This cap is independent of V1's much larger source cohort.
 	if planned.total > 320<<10 {
-		return AttachedWorkerInlineResultV2{}, attachedworkeroutput.ErrCandidateInvalid
+		return attachedworkeroutput.AttachedWorkerInlineResultV2{}, attachedworkeroutput.ErrCandidateInvalid
 	}
 	digest, err := attachedWorkerTerminalMaterializationDigest(domain.AttachedWorkerTerminalSucceeded, materialization)
 	if err != nil {
-		return AttachedWorkerInlineResultV2{}, err
+		return attachedworkeroutput.AttachedWorkerInlineResultV2{}, err
 	}
 	materialization.EvidenceDigest = digest
 	copyOwner, err := newInlineWriteIdentityV2()
 	if err != nil {
-		return AttachedWorkerInlineResultV2{}, err
+		return attachedworkeroutput.AttachedWorkerInlineResultV2{}, err
 	}
 	prepared := r
-	prepared.Stage, prepared.CopyOwnerID = InlineCanonicalCopyingV2, copyOwner
+	prepared.Stage, prepared.CopyOwnerID = attachedworkeroutput.InlineCanonicalCopyingV2, copyOwner
 	prepared.Materialization, prepared.CanonicalDigest = materialization, digest
 	err = store.transitionInlineReceiptV2(bounded, request.Authorization, r, prepared)
 	if err != nil {
-		return AttachedWorkerInlineResultV2{}, err
+		return attachedworkeroutput.AttachedWorkerInlineResultV2{}, err
 	}
 	// All canonical refs and the sole physical writer are durable now. Never
 	// retry Commit or clear custody from a Put error/expiry/object absence.
 	if err = planned.Commit(bounded); err != nil {
-		return AttachedWorkerInlineResultV2{}, err
+		return attachedworkeroutput.AttachedWorkerInlineResultV2{}, err
 	}
 	ready := prepared
-	ready.Stage = InlineReadyV2
+	ready.Stage = attachedworkeroutput.InlineReadyV2
 	if err = store.transitionInlineReceiptV2(bounded, request.Authorization, prepared, ready); err != nil {
-		return AttachedWorkerInlineResultV2{}, err
+		return attachedworkeroutput.AttachedWorkerInlineResultV2{}, err
 	}
 	return inlineOutputResultV2(ready, ""), nil
 }
 
-func (store *Store) ReconcileAttachedWorkerInlineOutput(ctx context.Context, request AttachedWorkerInlineReconcileV2) (AttachedWorkerInlineResultV2, error) {
+func (store *Store) ReconcileAttachedWorkerInlineOutput(ctx context.Context, request attachedworkeroutput.AttachedWorkerInlineReconcileV2) (attachedworkeroutput.AttachedWorkerInlineResultV2, error) {
 	if store == nil || ctx == nil || ctx.Err() != nil || request.Version != 2 || validateAttachedWorkerSealedInputAuthorization(request.Authorization) != nil {
-		return AttachedWorkerInlineResultV2{}, attachedworkeroutput.ErrCandidateInvalid
+		return attachedworkeroutput.AttachedWorkerInlineResultV2{}, attachedworkeroutput.ErrCandidateInvalid
 	}
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	var result AttachedWorkerInlineResultV2
+	var result attachedworkeroutput.AttachedWorkerInlineResultV2
 	err := store.Transact(ctx, request.Authorization.TenantID, func(state ports.StateTx) error {
 		tx := state.(*stateTx)
 		envelope, found, err := readAttachedWorkerReceiptEnvelopeTx(ctx, tx, request.Authorization.RunID, request.Authorization.OwnerUserID, request.Authorization.WorkerID, request.Authorization.AttemptID, request.Authorization.LeaseGeneration)
@@ -197,12 +197,12 @@ func (store *Store) ReconcileAttachedWorkerInlineOutput(ctx context.Context, req
 		if r.Nonce != request.Nonce || r.CandidateFingerprint != request.Fingerprint || !sameReceiptBinding(r.Binding, request.Authorization) {
 			return ErrAttachedWorkerAttemptConflict
 		}
-		_, _, err = store.inlineOutputAuthorityTxV2(ctx, tx, request.Authorization, r, r.Stage == InlineReadyV2)
+		_, _, err = store.inlineOutputAuthorityTxV2(ctx, tx, request.Authorization, r, r.Stage == attachedworkeroutput.InlineReadyV2)
 		if err != nil {
 			return err
 		}
 		capability := ""
-		if r.Stage == InlinePreparedV2 && !request.BodySendBurned && len(r.Candidate.Artifacts) > 0 {
+		if r.Stage == attachedworkeroutput.InlinePreparedV2 && !request.BodySendBurned && len(r.Candidate.Artifacts) > 0 {
 			capability = inlineOutputCapabilityV2(request.Authorization, r)
 		}
 		result = inlineOutputResultV2(r, capability)
@@ -229,7 +229,7 @@ func (store *Store) transitionInlineReceiptV2(ctx context.Context, auth ports.At
 			return err
 		}
 		if !found || r.v2 == nil || !sameInlineReceiptV2(*r.v2, prior) ||
-			!(prior.Stage == InlineBodyClaimedV2 && next.Stage == InlineCanonicalCopyingV2 || prior.Stage == InlineCanonicalCopyingV2 && next.Stage == InlineReadyV2) {
+			!(prior.Stage == attachedworkeroutput.InlineBodyClaimedV2 && next.Stage == attachedworkeroutput.InlineCanonicalCopyingV2 || prior.Stage == attachedworkeroutput.InlineCanonicalCopyingV2 && next.Stage == attachedworkeroutput.InlineReadyV2) {
 			return ErrAttachedWorkerAttemptConflict
 		}
 		if _, _, err = store.inlineOutputAuthorityTxV2(ctx, tx, auth, prior, false); err != nil {
@@ -243,12 +243,12 @@ func (store *Store) transitionInlineReceiptV2(ctx context.Context, auth ports.At
 	})
 }
 
-func inlineBodyMatchesV2(request AttachedWorkerInlineBodyV2, r AttachedWorkerOutputReceiptV2) bool {
+func inlineBodyMatchesV2(request attachedworkeroutput.AttachedWorkerInlineBodyV2, r AttachedWorkerOutputReceiptV2) bool {
 	return request.Nonce == r.Nonce && request.Fingerprint == r.CandidateFingerprint && request.ExpiresAt.Equal(r.ExpiresAt) && sameReceiptBinding(r.Binding, request.Authorization)
 }
 
-func inlineOutputResultV2(r AttachedWorkerOutputReceiptV2, capability string) AttachedWorkerInlineResultV2 {
-	return AttachedWorkerInlineResultV2{Version: 2, Stage: r.Stage, Nonce: r.Nonce, Fingerprint: r.CandidateFingerprint, Capability: capability, ExpiresAt: r.ExpiresAt, CanonicalDigest: r.CanonicalDigest}
+func inlineOutputResultV2(r AttachedWorkerOutputReceiptV2, capability string) attachedworkeroutput.AttachedWorkerInlineResultV2 {
+	return attachedworkeroutput.AttachedWorkerInlineResultV2{Version: 2, Stage: r.Stage, Nonce: r.Nonce, Fingerprint: r.CandidateFingerprint, Capability: capability, ExpiresAt: r.ExpiresAt, CanonicalDigest: r.CanonicalDigest}
 }
 
 func inlineOutputCapabilityV2(auth ports.AttachedWorkerSealedInputAuthorization, r AttachedWorkerOutputReceiptV2) string {
@@ -293,14 +293,14 @@ func writeInlineReceiptTxV2(ctx context.Context, tx *stateTx, r AttachedWorkerOu
 // every late body-reader promotion. Expiry/disconnect/object absence are not
 // used as evidence. Canonical-copying or malformed rows cannot take this path.
 func retireInlineReceiptBeforeWritesTxV2(ctx context.Context, tx *stateTx, r AttachedWorkerOutputReceiptV2) (attachedWorkerReceiptEnvelope, error) {
-	if r.Stage != InlinePreparedV2 && r.Stage != InlineBodyClaimedV2 || !inlineReceiptWithoutCanonicalPlanV2(r) || r.CopyOwnerID != "" {
+	if r.Stage != attachedworkeroutput.InlinePreparedV2 && r.Stage != attachedworkeroutput.InlineBodyClaimedV2 || !inlineReceiptWithoutCanonicalPlanV2(r) || r.CopyOwnerID != "" {
 		return attachedWorkerReceiptEnvelope{}, ErrAttachedWorkerAttemptConflict
 	}
 	a := r.Binding
 	if (attachedWorkerReceiptEnvelope{v2: &r}).validateIdentity(tx.tenantID, a.RunID, a.OwnerUserID, a.WorkerID, a.AttemptID, a.LeaseGeneration) != nil {
 		return attachedWorkerReceiptEnvelope{}, ErrAttachedWorkerAttemptConflict
 	}
-	r.Stage = InlineRetiredWithoutWritesV2
+	r.Stage = attachedworkeroutput.InlineRetiredWithoutWritesV2
 	if err := writeInlineReceiptTxV2(ctx, tx, r, false); err != nil {
 		return attachedWorkerReceiptEnvelope{}, err
 	}

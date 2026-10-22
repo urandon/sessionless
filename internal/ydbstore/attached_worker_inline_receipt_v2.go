@@ -13,91 +13,28 @@ import (
 	"gitcode.com/urandon/sessionless/internal/strictjson"
 )
 
-// Inline receipt stages belong to the existing output-receipt custody owner,
-// not to the invocation scheduler or native process lifecycle.
-type AttachedWorkerInlineStageV2 string
-
-const (
-	InlinePreparedV2              AttachedWorkerInlineStageV2 = "prepared"
-	InlineBodyClaimedV2           AttachedWorkerInlineStageV2 = "body_claimed"
-	InlineCanonicalCopyingV2      AttachedWorkerInlineStageV2 = "canonical_copying"
-	InlineReadyV2                 AttachedWorkerInlineStageV2 = "ready"
-	InlineRetiredWithoutWritesV2  AttachedWorkerInlineStageV2 = "retired_without_writes"
-	maxInlineReceiptRecordBytesV2                             = 512 << 10
-)
-
-type AttachedWorkerInlinePrepareV2 struct {
-	Version       uint32                                       `json:"version"`
-	Authorization ports.AttachedWorkerSealedInputAuthorization `json:"authorization"`
-	Nonce         domain.IdempotencyKey                        `json:"nonce"`
-	Candidate     attachedworkeroutput.InlineCandidateV2       `json:"candidate"`
-	Producer      attachedworkeroutput.InlineProducerBindingV2 `json:"producer"`
-	Observation   attachedworkeroutput.ProcessObservationV1    `json:"observation"`
-	ExpiresAt     time.Time                                    `json:"expires_at"`
-}
-
-type AttachedWorkerInlineBodyV2 struct {
-	Version       uint32                                       `json:"version"`
-	Authorization ports.AttachedWorkerSealedInputAuthorization `json:"authorization"`
-	Nonce         domain.IdempotencyKey                        `json:"nonce"`
-	Fingerprint   string                                       `json:"fingerprint"`
-	Capability    string                                       `json:"capability"`
-	ExpiresAt     time.Time                                    `json:"expires_at"`
-}
-
-type AttachedWorkerInlineReconcileV2 struct {
-	Version       uint32                                       `json:"version"`
-	Authorization ports.AttachedWorkerSealedInputAuthorization `json:"authorization"`
-	Nonce         domain.IdempotencyKey                        `json:"nonce"`
-	Fingerprint   string                                       `json:"fingerprint"`
-	// This bit is part of the immutable one-shot client commitment. Recovery
-	// after a body send must not return body authority, even if it was lost.
-	BodySendBurned bool `json:"body_send_burned"`
-}
-
-// A compact response never transports answer/body/materialization copies.
-type AttachedWorkerInlineResultV2 struct {
-	Version         uint32                                      `json:"version"`
-	Stage           AttachedWorkerInlineStageV2                 `json:"stage"`
-	Nonce           domain.IdempotencyKey                       `json:"nonce"`
-	Fingerprint     string                                      `json:"fingerprint"`
-	Capability      string                                      `json:"capability"`
-	ExpiresAt       time.Time                                   `json:"expires_at"`
-	CanonicalDigest domain.AttachedWorkerTerminalEvidenceDigest `json:"canonical_digest"`
-}
-
-func InlineOutputRequestFingerprintV2(request AttachedWorkerInlinePrepareV2) (string, error) {
-	observation, err := request.Observation.Digest()
-	if err != nil {
-		return "", err
-	}
-	return inlineReceiptPlanFingerprintV2(AttachedWorkerOutputReceiptV2{
-		Binding: receiptBindingWithoutBearer(request.Authorization), Nonce: request.Nonce, Candidate: request.Candidate,
-		Producer: request.Producer, ObservationDigest: observation,
-		CredentialRequired: request.Observation.CredentialReleaseRequired, ExpiresAt: request.ExpiresAt,
-	})
-}
+const maxInlineReceiptRecordBytesV2 = 512 << 10
 
 // AttachedWorkerOutputReceiptV2 has no Ready/CopyInProgress booleans and no
 // pseudo source refs. CanonicalDigest is empty until the actual canonical plan
 // exists. Its denormalized SQL column must carry the same empty/real value.
 type AttachedWorkerOutputReceiptV2 struct {
-	Version              uint32                                       `json:"version"`
-	Stage                AttachedWorkerInlineStageV2                  `json:"stage"`
-	Binding              ports.AttachedWorkerSealedInputAuthorization `json:"binding"`
-	Nonce                domain.IdempotencyKey                        `json:"nonce"`
-	CandidateFingerprint string                                       `json:"candidate_fingerprint"`
-	Candidate            attachedworkeroutput.InlineCandidateV2       `json:"candidate"`
-	Producer             attachedworkeroutput.InlineProducerBindingV2 `json:"producer"`
-	Observation          attachedworkeroutput.ProcessObservationV1    `json:"observation"`
-	ObservationDigest    string                                       `json:"observation_digest"`
-	CredentialRequired   bool                                         `json:"credential_required"`
-	BodyClaimID          string                                       `json:"body_claim_id"`
-	CopyOwnerID          string                                       `json:"copy_owner_id"`
-	CanonicalDigest      domain.AttachedWorkerTerminalEvidenceDigest  `json:"canonical_digest"`
-	Materialization      ports.AttachedWorkerTerminalMaterialization  `json:"materialization"`
-	CreatedAt            time.Time                                    `json:"created_at"`
-	ExpiresAt            time.Time                                    `json:"expires_at"`
+	Version              uint32                                           `json:"version"`
+	Stage                attachedworkeroutput.AttachedWorkerInlineStageV2 `json:"stage"`
+	Binding              ports.AttachedWorkerSealedInputAuthorization     `json:"binding"`
+	Nonce                domain.IdempotencyKey                            `json:"nonce"`
+	CandidateFingerprint string                                           `json:"candidate_fingerprint"`
+	Candidate            attachedworkeroutput.InlineCandidateV2           `json:"candidate"`
+	Producer             attachedworkeroutput.InlineProducerBindingV2     `json:"producer"`
+	Observation          attachedworkeroutput.ProcessObservationV1        `json:"observation"`
+	ObservationDigest    string                                           `json:"observation_digest"`
+	CredentialRequired   bool                                             `json:"credential_required"`
+	BodyClaimID          string                                           `json:"body_claim_id"`
+	CopyOwnerID          string                                           `json:"copy_owner_id"`
+	CanonicalDigest      domain.AttachedWorkerTerminalEvidenceDigest      `json:"canonical_digest"`
+	Materialization      ports.AttachedWorkerTerminalMaterialization      `json:"materialization"`
+	CreatedAt            time.Time                                        `json:"created_at"`
+	ExpiresAt            time.Time                                        `json:"expires_at"`
 }
 
 // Version dispatch is explicit before any old V1 reader or default field can
@@ -209,19 +146,19 @@ func (record attachedWorkerReceiptEnvelope) validateIdentity(tenant domain.Tenan
 		return ErrAttachedWorkerAttemptConflict
 	}
 	switch r.Stage {
-	case InlinePreparedV2:
+	case attachedworkeroutput.InlinePreparedV2:
 		if r.BodyClaimID != "" || r.CopyOwnerID != "" || !inlineReceiptWithoutCanonicalPlanV2(*r) {
 			return ErrAttachedWorkerAttemptConflict
 		}
-	case InlineBodyClaimedV2:
+	case attachedworkeroutput.InlineBodyClaimedV2:
 		if domain.HarnessBindingDigestV2(r.BodyClaimID).Validate() != nil || r.CopyOwnerID != "" || !inlineReceiptWithoutCanonicalPlanV2(*r) {
 			return ErrAttachedWorkerAttemptConflict
 		}
-	case InlineRetiredWithoutWritesV2:
+	case attachedworkeroutput.InlineRetiredWithoutWritesV2:
 		if r.BodyClaimID != "" && domain.HarnessBindingDigestV2(r.BodyClaimID).Validate() != nil || r.CopyOwnerID != "" || !inlineReceiptWithoutCanonicalPlanV2(*r) {
 			return ErrAttachedWorkerAttemptConflict
 		}
-	case InlineCanonicalCopyingV2, InlineReadyV2:
+	case attachedworkeroutput.InlineCanonicalCopyingV2, attachedworkeroutput.InlineReadyV2:
 		if domain.HarnessBindingDigestV2(r.BodyClaimID).Validate() != nil || domain.HarnessBindingDigestV2(r.CopyOwnerID).Validate() != nil {
 			return ErrAttachedWorkerAttemptConflict
 		}
@@ -269,11 +206,11 @@ func inlineReceiptWithoutCanonicalPlanV2(r AttachedWorkerOutputReceiptV2) bool {
 }
 
 func (record attachedWorkerReceiptEnvelope) ready() bool {
-	return record.v1 != nil && record.v2 == nil && record.v1.Ready || record.v2 != nil && record.v1 == nil && record.v2.Stage == InlineReadyV2
+	return record.v1 != nil && record.v2 == nil && record.v1.Ready || record.v2 != nil && record.v1 == nil && record.v2.Stage == attachedworkeroutput.InlineReadyV2
 }
 
 func (record attachedWorkerReceiptEnvelope) deletionSettled() bool {
-	return record.ready() || record.v2 != nil && record.v1 == nil && record.v2.Stage == InlineRetiredWithoutWritesV2
+	return record.ready() || record.v2 != nil && record.v1 == nil && record.v2.Stage == attachedworkeroutput.InlineRetiredWithoutWritesV2
 }
 
 func (record attachedWorkerReceiptEnvelope) objectRefs() []domain.BlobRef {

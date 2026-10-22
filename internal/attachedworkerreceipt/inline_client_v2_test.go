@@ -19,7 +19,6 @@ import (
 	"gitcode.com/urandon/sessionless/internal/attachedworkeroutput"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
-	"gitcode.com/urandon/sessionless/internal/ydbstore"
 )
 
 type inlineClientRoundTripV2 func(*http.Request) (*http.Response, error)
@@ -93,28 +92,28 @@ func (b *inlineClientOriginalBodyV2) Read(p []byte) (int, error) {
 }
 func (b *inlineClientOriginalBodyV2) Close() error { b.closes++; return nil }
 
-func inlineClientFixtureV2(t *testing.T, body []byte) (ydbstore.AttachedWorkerInlinePrepareV2, ydbstore.AttachedWorkerInlineBodyV2, ydbstore.AttachedWorkerInlineReconcileV2) {
+func inlineClientFixtureV2(t *testing.T, body []byte) (attachedworkeroutput.AttachedWorkerInlinePrepareV2, attachedworkeroutput.AttachedWorkerInlineBodyV2, attachedworkeroutput.AttachedWorkerInlineReconcileV2) {
 	t.Helper()
 	expires := time.Now().Add(12 * time.Second)
 	hash := sha256.Sum256(body)
 	answer := sha256.Sum256([]byte("Private answer"))
-	prepare := ydbstore.AttachedWorkerInlinePrepareV2{
+	prepare := attachedworkeroutput.AttachedWorkerInlinePrepareV2{
 		Version: 2, Authorization: ports.AttachedWorkerSealedInputAuthorization{OwnerUserID: "owner-client"}, Nonce: "inline-client-nonce",
 		Candidate:   attachedworkeroutput.InlineCandidateV2{Summary: "Private answer", Artifacts: []attachedworkeroutput.InlineArtifactV2{{Name: "report.json", MediaType: "application/json", Size: uint64(len(body)), SHA256: hex.EncodeToString(hash[:])}}},
 		Observation: attachedworkeroutput.ProcessObservationV1{Version: 1, DescendantsReaped: true, BoundaryReleased: true, CleanupSucceeded: true}, ExpiresAt: expires,
 		Producer: attachedworkeroutput.InlineProducerBindingV2{SessionID: "client-session", ReservationID: "client-reservation", HarnessBindingDigest: domain.HarnessBindingDigestV2(strings.Repeat("a", 64)), AcceptedAt: time.Now().Add(-time.Second), SchemaDigest: strings.Repeat("b", 64), FinalDigest: strings.Repeat("c", 64), AnswerDigest: hex.EncodeToString(answer[:])},
 	}
-	fp, err := ydbstore.InlineOutputRequestFingerprintV2(prepare)
+	fp, err := attachedworkeroutput.InlineOutputRequestFingerprintV2(prepare)
 	if err != nil {
 		t.Fatalf("fixture fingerprint: %v", err)
 	}
-	submit := ydbstore.AttachedWorkerInlineBodyV2{Version: 2, Authorization: prepare.Authorization, Nonce: prepare.Nonce, Fingerprint: fp, Capability: strings.Repeat("d", 64), ExpiresAt: expires}
-	reconcile := ydbstore.AttachedWorkerInlineReconcileV2{Version: 2, Authorization: prepare.Authorization, Nonce: prepare.Nonce, Fingerprint: fp, BodySendBurned: true}
+	submit := attachedworkeroutput.AttachedWorkerInlineBodyV2{Version: 2, Authorization: prepare.Authorization, Nonce: prepare.Nonce, Fingerprint: fp, Capability: strings.Repeat("d", 64), ExpiresAt: expires}
+	reconcile := attachedworkeroutput.AttachedWorkerInlineReconcileV2{Version: 2, Authorization: prepare.Authorization, Nonce: prepare.Nonce, Fingerprint: fp, BodySendBurned: true}
 	return prepare, submit, reconcile
 }
 
-func inlineClientResultV2(submit ydbstore.AttachedWorkerInlineBodyV2) ydbstore.AttachedWorkerInlineResultV2 {
-	return ydbstore.AttachedWorkerInlineResultV2{Version: 2, Stage: ydbstore.InlineReadyV2, Nonce: submit.Nonce, Fingerprint: submit.Fingerprint, ExpiresAt: submit.ExpiresAt, CanonicalDigest: domain.AttachedWorkerTerminalEvidenceDigest(strings.Repeat("e", 64))}
+func inlineClientResultV2(submit attachedworkeroutput.AttachedWorkerInlineBodyV2) attachedworkeroutput.AttachedWorkerInlineResultV2 {
+	return attachedworkeroutput.AttachedWorkerInlineResultV2{Version: 2, Stage: attachedworkeroutput.InlineReadyV2, Nonce: submit.Nonce, Fingerprint: submit.Fingerprint, ExpiresAt: submit.ExpiresAt, CanonicalDigest: domain.AttachedWorkerTerminalEvidenceDigest(strings.Repeat("e", 64))}
 }
 
 func inlineClientMarshalV2(t *testing.T, v any) []byte {
@@ -204,7 +203,7 @@ func TestInlineClientV2OneExchangeFixedFramingAndOriginalBytes(t *testing.T) {
 					responseBody = body
 					return response, nil
 				})
-				var result ydbstore.AttachedWorkerInlineResultV2
+				var result attachedworkeroutput.AttachedWorkerInlineResultV2
 				var err error
 				switch path {
 				case PathInlinePrepareV2:
@@ -214,7 +213,7 @@ func TestInlineClientV2OneExchangeFixedFramingAndOriginalBytes(t *testing.T) {
 				case PathInlineReconcileV2:
 					result, err = client.Reconcile(ctx, reconcile)
 				}
-				if err != nil || result.Stage != ydbstore.InlineReadyV2 || calls != 1 || responseBody.closes != 1 || len(client.active) != 0 {
+				if err != nil || result.Stage != attachedworkeroutput.InlineReadyV2 || calls != 1 || responseBody.closes != 1 || len(client.active) != 0 {
 					t.Fatalf("exchange result stage=%s err=%v calls=%d response-closes=%d active=%d", result.Stage, err, calls, responseBody.closes, len(client.active))
 				}
 			})
@@ -278,7 +277,7 @@ func TestInlineClientV2EarlierExpiryAndExpiredReadyReconciliation(t *testing.T) 
 				expiry := time.Now().Add(3 * time.Second)
 				prepare.ExpiresAt = expiry
 				submit.ExpiresAt = expiry
-				submit.Fingerprint, _ = ydbstore.InlineOutputRequestFingerprintV2(prepare)
+				submit.Fingerprint, _ = attachedworkeroutput.InlineOutputRequestFingerprintV2(prepare)
 				reconcile.Fingerprint = submit.Fingerprint
 				ctx := inlineClientContextV2(t)
 				want := expiry
@@ -411,7 +410,7 @@ func TestInlineClientV2CapabilityNeverReturnsAfterBodyBurn(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				_, submit, reconcile := inlineClientFixtureV2(t, []byte("{}"))
 				result := inlineClientResultV2(submit)
-				result.Stage = ydbstore.InlinePreparedV2
+				result.Stage = attachedworkeroutput.InlinePreparedV2
 				result.CanonicalDigest = ""
 				result.Capability = submit.Capability
 				client := inlineClientNewV2(t, func(r *http.Request) (*http.Response, error) {
@@ -419,7 +418,7 @@ func TestInlineClientV2CapabilityNeverReturnsAfterBodyBurn(t *testing.T) {
 					response, _ := inlineClientResponseV2(inlineClientMarshalV2(t, result))
 					return response, nil
 				})
-				var actual ydbstore.AttachedWorkerInlineResultV2
+				var actual attachedworkeroutput.AttachedWorkerInlineResultV2
 				var err error
 				if path == PathInlineBodyV2 {
 					actual, err = client.Submit(inlineClientContextV2(t), submit, 2, strings.NewReader("{}"))
@@ -441,7 +440,7 @@ func TestInlineClientV2PreparedCapabilityRequiresUnburnedUnexpiredResponse(t *te
 				prepare, submit, reconcile := inlineClientFixtureV2(t, []byte("{}"))
 				reconcile.BodySendBurned = false
 				result := inlineClientResultV2(submit)
-				result.Stage = ydbstore.InlinePreparedV2
+				result.Stage = attachedworkeroutput.InlinePreparedV2
 				result.CanonicalDigest = ""
 				result.Capability = submit.Capability
 				if name == "expired-capability" {
@@ -452,7 +451,7 @@ func TestInlineClientV2PreparedCapabilityRequiresUnburnedUnexpiredResponse(t *te
 					response, _ := inlineClientResponseV2(inlineClientMarshalV2(t, result))
 					return response, nil
 				})
-				var actual ydbstore.AttachedWorkerInlineResultV2
+				var actual attachedworkeroutput.AttachedWorkerInlineResultV2
 				var err error
 				if name == "prepare" {
 					actual, err = client.Prepare(inlineClientContextV2(t), prepare)
@@ -513,7 +512,7 @@ func TestInlineClientV2MaximumBodyAndEscapedPrepare(t *testing.T) {
 		answer := sha256.Sum256([]byte(prepare.Candidate.Summary))
 		prepare.Producer.AnswerDigest = hex.EncodeToString(answer[:])
 		prepare.Candidate.Artifacts = []attachedworkeroutput.InlineArtifactV2{{Name: "a.txt", MediaType: "text/plain", Size: 32 << 10, SHA256: strings.Repeat("a", 64)}, {Name: "b.txt", MediaType: "text/plain", Size: 32 << 10, SHA256: strings.Repeat("b", 64)}}
-		submit.Fingerprint, _ = ydbstore.InlineOutputRequestFingerprintV2(prepare)
+		submit.Fingerprint, _ = attachedworkeroutput.InlineOutputRequestFingerprintV2(prepare)
 		calls := 0
 		client := inlineClientNewV2(t, func(r *http.Request) (*http.Response, error) {
 			calls++

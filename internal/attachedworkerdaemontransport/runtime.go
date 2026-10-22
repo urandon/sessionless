@@ -15,6 +15,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/attachedworkersession"
 	"gitcode.com/urandon/sessionless/internal/attachedworkerstack"
 	"gitcode.com/urandon/sessionless/internal/attachedworkertransport"
+	"gitcode.com/urandon/sessionless/internal/codexexec"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
@@ -167,6 +168,12 @@ func connectPinnedForegroundRuntime(
 			return nil, err
 		}
 	}
+	if stackConfig.PreparedCodexNative != nil && stackConfig.PreparedCodexNative.InlineOutputV2 {
+		if adapterConfig.InlineReceiptPublisher == nil {
+			return nil, ErrInvalidConfiguration
+		}
+		adapterConfig.preparedInlineV2 = true
+	}
 	sessionConfig.RuntimePreflight = preflight
 	connector, err := newConnector(store, bootstrap, exchange, sessionConfig)
 	if err != nil {
@@ -297,6 +304,14 @@ func (runner *preflightRunner) retireReceipt(identity attachedworkerdaemon.Invoc
 		return err
 	}
 	return stack.RetireReceipt(identity)
+}
+
+func (runner *preflightRunner) inlineReceiptCandidate(ctx context.Context, identity attachedworkerdaemon.InvocationIdentity, result attachedworkerdaemon.InvocationResult, runErr error) (*codexexec.NativeInlineOutputV2, error) {
+	stack, err := runner.preparedStack()
+	if err != nil {
+		return nil, err
+	}
+	return stack.InlineReceiptCandidate(ctx, identity, result, runErr)
 }
 func (runner *preflightRunner) closePrepared(ctx context.Context) error {
 	if !runner.ready() {

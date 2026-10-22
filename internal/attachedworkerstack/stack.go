@@ -116,6 +116,15 @@ func (stack *Stack) RetireReceipt(identity attachedworkerdaemon.InvocationIdenti
 	}
 	return stack.prepared.RetireReceipt(identity)
 }
+
+// InlineReceiptCandidate forwards only to the original prepared owner. Public
+// declarations or another Runner cannot install a native output witness.
+func (stack *Stack) InlineReceiptCandidate(ctx context.Context, identity attachedworkerdaemon.InvocationIdentity, result attachedworkerdaemon.InvocationResult, runErr error) (*codexexec.NativeInlineOutputV2, error) {
+	if stack == nil || stack.prepared == nil || !stack.nativePrepared {
+		return nil, ErrInvalidConfiguration
+	}
+	return stack.prepared.InlineReceiptCandidate(ctx, identity, result, runErr)
+}
 func (stack *Stack) Close(ctx context.Context) error {
 	if stack == nil {
 		return ErrInvalidConfiguration

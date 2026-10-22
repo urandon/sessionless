@@ -15,6 +15,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"gitcode.com/urandon/sessionless/internal/attachedworkeroutput"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
 	"gitcode.com/urandon/sessionless/internal/ydbstore"
@@ -27,7 +28,7 @@ type inlineStoreFixtureV2 struct {
 	read     bool
 	observed []byte
 	err      error
-	result   ydbstore.AttachedWorkerInlineResultV2
+	result   attachedworkeroutput.AttachedWorkerInlineResultV2
 	deadline time.Time
 }
 
@@ -38,25 +39,25 @@ func (s *inlineStoreFixtureV2) authorize(auth ports.AttachedWorkerSealedInputAut
 	}
 	return s.err
 }
-func (s *inlineStoreFixtureV2) PrepareAttachedWorkerInlineOutput(ctx context.Context, _ ports.BlobStore, r ydbstore.AttachedWorkerInlinePrepareV2) (ydbstore.AttachedWorkerInlineResultV2, error) {
+func (s *inlineStoreFixtureV2) PrepareAttachedWorkerInlineOutput(ctx context.Context, _ ports.BlobStore, r attachedworkeroutput.AttachedWorkerInlinePrepareV2) (attachedworkeroutput.AttachedWorkerInlineResultV2, error) {
 	s.deadline, _ = ctx.Deadline()
 	return s.result, s.authorize(r.Authorization)
 }
-func (s *inlineStoreFixtureV2) ReconcileAttachedWorkerInlineOutput(ctx context.Context, r ydbstore.AttachedWorkerInlineReconcileV2) (ydbstore.AttachedWorkerInlineResultV2, error) {
+func (s *inlineStoreFixtureV2) ReconcileAttachedWorkerInlineOutput(ctx context.Context, r attachedworkeroutput.AttachedWorkerInlineReconcileV2) (attachedworkeroutput.AttachedWorkerInlineResultV2, error) {
 	s.deadline, _ = ctx.Deadline()
 	return s.result, s.authorize(r.Authorization)
 }
-func (s *inlineStoreFixtureV2) SubmitAttachedWorkerInlineOutput(ctx context.Context, _ ports.BlobStore, r ydbstore.AttachedWorkerInlineBodyV2, length int64, body io.Reader) (ydbstore.AttachedWorkerInlineResultV2, error) {
+func (s *inlineStoreFixtureV2) SubmitAttachedWorkerInlineOutput(ctx context.Context, _ ports.BlobStore, r attachedworkeroutput.AttachedWorkerInlineBodyV2, length int64, body io.Reader) (attachedworkeroutput.AttachedWorkerInlineResultV2, error) {
 	s.deadline, _ = ctx.Deadline()
 	if err := s.authorize(r.Authorization); err != nil {
-		return ydbstore.AttachedWorkerInlineResultV2{}, err
+		return attachedworkeroutput.AttachedWorkerInlineResultV2{}, err
 	}
 	s.claimed = true
 	if s.read {
 		var err error
 		s.observed, err = io.ReadAll(body)
 		if err != nil || int64(len(s.observed)) != length {
-			return ydbstore.AttachedWorkerInlineResultV2{}, ydbstore.ErrAttachedWorkerAttemptConflict
+			return attachedworkeroutput.AttachedWorkerInlineResultV2{}, ydbstore.ErrAttachedWorkerAttemptConflict
 		}
 	}
 	return s.result, nil
@@ -179,7 +180,7 @@ func TestInlineV2UnsupportedWriteDeadlineAbortsWithoutEffects(t *testing.T) {
 
 func TestInlineV2FlushFailureAbortsWithoutFallbackWrite(t *testing.T) {
 	service, store := inlineFixtureV2(t)
-	raw := inlineMarshalV2(t, ydbstore.AttachedWorkerInlinePrepareV2{Version: 2, Authorization: inlineAuthV2(), ExpiresAt: time.Unix(2_000_000_000, 0).UTC()})
+	raw := inlineMarshalV2(t, attachedworkeroutput.AttachedWorkerInlinePrepareV2{Version: 2, Authorization: inlineAuthV2(), ExpiresAt: time.Unix(2_000_000_000, 0).UTC()})
 	writer := &inlineDeadlineWriterV2{ResponseRecorder: httptest.NewRecorder(), flushErr: errors.New("private flush error")}
 	inlineExpectAbortV2(t, func() {
 		HandlerInlineV2(service).ServeHTTP(writer, inlineControlRequestV2(t, PathInlinePrepareV2, raw))
@@ -209,19 +210,19 @@ func TestInlineV2ResponseWriteDeadlineCoversSameWindow(t *testing.T) {
 				service, store := inlineFixtureV2(t)
 				start := time.Now()
 				expected := start.Add(15 * time.Second)
-				prepare := ydbstore.AttachedWorkerInlinePrepareV2{Version: 2, Authorization: inlineAuthV2(), ExpiresAt: time.Unix(2_000_000_000, 0).UTC()}
+				prepare := attachedworkeroutput.AttachedWorkerInlinePrepareV2{Version: 2, Authorization: inlineAuthV2(), ExpiresAt: time.Unix(2_000_000_000, 0).UTC()}
 				if tc.path == PathInlinePrepareV2 && tc.expiry > 0 {
 					prepare.ExpiresAt = start.Add(tc.expiry)
 					expected = prepare.ExpiresAt
 				}
 				var input any = prepare
 				if tc.path == PathInlineReconcileV2 {
-					input = ydbstore.AttachedWorkerInlineReconcileV2{Version: 2, Authorization: inlineAuthV2()}
+					input = attachedworkeroutput.AttachedWorkerInlineReconcileV2{Version: 2, Authorization: inlineAuthV2()}
 				}
 				request := inlineControlRequestV2(t, tc.path, inlineMarshalV2(t, input))
 				if tc.path == PathInlineBodyV2 {
 					request = inlineBodyRequestV2(t, []byte("content"))
-					body := ydbstore.AttachedWorkerInlineBodyV2{Version: 2, Authorization: inlineAuthV2(), ExpiresAt: start.Add(tc.expiry)}
+					body := attachedworkeroutput.AttachedWorkerInlineBodyV2{Version: 2, Authorization: inlineAuthV2(), ExpiresAt: start.Add(tc.expiry)}
 					request.Header.Set(InlineRequestHeaderV2, base64.RawStdEncoding.EncodeToString(inlineMarshalV2(t, body)))
 					expected = body.ExpiresAt
 				}
@@ -309,7 +310,7 @@ func TestInlineV2RetainsDeadlinesAndOriginalPanic(t *testing.T) {
 			if panics {
 				service.binder = &inlinePanicBinderV2{failure: original}
 			}
-			raw := inlineMarshalV2(t, ydbstore.AttachedWorkerInlinePrepareV2{Version: 2, Authorization: inlineAuthV2(), ExpiresAt: time.Unix(2_000_000_000, 0).UTC()})
+			raw := inlineMarshalV2(t, attachedworkeroutput.AttachedWorkerInlinePrepareV2{Version: 2, Authorization: inlineAuthV2(), ExpiresAt: time.Unix(2_000_000_000, 0).UTC()})
 			writer := &inlineDeadlineWriterV2{ResponseRecorder: httptest.NewRecorder()}
 			var failure any
 			func() {
@@ -361,9 +362,9 @@ func TestInlineV2ControlDeadlinePrecedesEveryReadAndReachesStore(t *testing.T) {
 			t.Run(path+"/earlier-parent-"+strconv.FormatBool(earlierParent), func(t *testing.T) {
 				synctest.Test(t, func(t *testing.T) {
 					service, store := inlineFixtureV2(t)
-					var input any = ydbstore.AttachedWorkerInlinePrepareV2{Version: 2, Authorization: inlineAuthV2(), ExpiresAt: time.Unix(2_000_000_000, 0).UTC()}
+					var input any = attachedworkeroutput.AttachedWorkerInlinePrepareV2{Version: 2, Authorization: inlineAuthV2(), ExpiresAt: time.Unix(2_000_000_000, 0).UTC()}
 					if path == PathInlineReconcileV2 {
-						input = ydbstore.AttachedWorkerInlineReconcileV2{Version: 2, Authorization: inlineAuthV2()}
+						input = attachedworkeroutput.AttachedWorkerInlineReconcileV2{Version: 2, Authorization: inlineAuthV2()}
 					}
 					raw := inlineMarshalV2(t, input)
 					request := inlineControlRequestV2(t, path, raw)
@@ -393,8 +394,8 @@ func TestInlineV2ControlDeadlinePrecedesEveryReadAndReachesStore(t *testing.T) {
 func inlineFixtureV2(t *testing.T) (*InlineServiceV2, *inlineStoreFixtureV2) {
 	t.Helper()
 	binder := &receiptBinderFixture{}
-	store := &inlineStoreFixtureV2{binder: binder, result: ydbstore.AttachedWorkerInlineResultV2{
-		Version: 2, Stage: ydbstore.InlineReadyV2, Nonce: "inline-test-nonce", Fingerprint: strings.Repeat("a", 64), CanonicalDigest: domain.AttachedWorkerTerminalEvidenceDigest(strings.Repeat("b", 64)), ExpiresAt: time.Unix(2_000_000_000, 0).UTC(),
+	store := &inlineStoreFixtureV2{binder: binder, result: attachedworkeroutput.AttachedWorkerInlineResultV2{
+		Version: 2, Stage: attachedworkeroutput.InlineReadyV2, Nonce: "inline-test-nonce", Fingerprint: strings.Repeat("a", 64), CanonicalDigest: domain.AttachedWorkerTerminalEvidenceDigest(strings.Repeat("b", 64)), ExpiresAt: time.Unix(2_000_000_000, 0).UTC(),
 	}}
 	service, err := NewInlineServiceV2(binder, store, receiptBlobFixture{})
 	if err != nil {
@@ -419,7 +420,7 @@ func inlineBodyRequestV2(t *testing.T, content []byte) *http.Request {
 	request := httptest.NewRequest(http.MethodPost, PathInlineBodyV2, bytes.NewReader(content))
 	request.Header.Set("Authorization", "Bearer bound-bearer")
 	request.Header.Set("Content-Type", InlineBodyMediaTypeV2)
-	request.Header.Set(InlineRequestHeaderV2, base64.RawStdEncoding.EncodeToString(inlineMarshalV2(t, ydbstore.AttachedWorkerInlineBodyV2{Version: 2, Authorization: inlineAuthV2(), Nonce: "inline-test-nonce", Fingerprint: strings.Repeat("a", 64), Capability: strings.Repeat("c", 64), ExpiresAt: time.Unix(2_000_000_000, 0).UTC()})))
+	request.Header.Set(InlineRequestHeaderV2, base64.RawStdEncoding.EncodeToString(inlineMarshalV2(t, attachedworkeroutput.AttachedWorkerInlineBodyV2{Version: 2, Authorization: inlineAuthV2(), Nonce: "inline-test-nonce", Fingerprint: strings.Repeat("a", 64), Capability: strings.Repeat("c", 64), ExpiresAt: time.Unix(2_000_000_000, 0).UTC()})))
 	return request
 }
 func inlineControlRequestV2(t *testing.T, path string, raw []byte) *http.Request {
@@ -561,7 +562,7 @@ func TestInlineV2ExactLengthCheckedAfterClaim(t *testing.T) {
 }
 
 func TestInlineV2ClosedCanonicalControl(t *testing.T) {
-	base := inlineMarshalV2(t, ydbstore.AttachedWorkerInlineReconcileV2{Version: 2, Authorization: inlineAuthV2(), Nonce: "inline-test-nonce", Fingerprint: strings.Repeat("a", 64)})
+	base := inlineMarshalV2(t, attachedworkeroutput.AttachedWorkerInlineReconcileV2{Version: 2, Authorization: inlineAuthV2(), Nonce: "inline-test-nonce", Fingerprint: strings.Repeat("a", 64)})
 	for _, tc := range []struct {
 		name string
 		raw  []byte
@@ -601,7 +602,7 @@ func TestInlineV2PrepareBoundAndCompactResponse(t *testing.T) {
 	for _, size := range []int{maxInlinePrepareBytesV2, maxInlinePrepareBytesV2 + 1} {
 		t.Run(stringSizeV2(size), func(t *testing.T) {
 			service, store := inlineFixtureV2(t)
-			input := ydbstore.AttachedWorkerInlinePrepareV2{Version: 2, Authorization: inlineAuthV2(), ExpiresAt: time.Unix(2_000_000_000, 0).UTC()}
+			input := attachedworkeroutput.AttachedWorkerInlinePrepareV2{Version: 2, Authorization: inlineAuthV2(), ExpiresAt: time.Unix(2_000_000_000, 0).UTC()}
 			base := inlineMarshalV2(t, input)
 			input.Candidate.Summary = strings.Repeat("x", size-len(base))
 			raw := inlineMarshalV2(t, input)
@@ -640,9 +641,9 @@ func TestInlineV2PrepareBoundAndCompactResponse(t *testing.T) {
 			case "canonical-digest":
 				store.result.CanonicalDigest = domain.AttachedWorkerTerminalEvidenceDigest(private)
 			case "stage":
-				store.result.Stage = ydbstore.AttachedWorkerInlineStageV2(private)
+				store.result.Stage = attachedworkeroutput.AttachedWorkerInlineStageV2(private)
 			}
-			raw := inlineMarshalV2(t, ydbstore.AttachedWorkerInlinePrepareV2{Version: 2, Authorization: inlineAuthV2(), ExpiresAt: time.Unix(2_000_000_000, 0).UTC()})
+			raw := inlineMarshalV2(t, attachedworkeroutput.AttachedWorkerInlinePrepareV2{Version: 2, Authorization: inlineAuthV2(), ExpiresAt: time.Unix(2_000_000_000, 0).UTC()})
 			writer := &inlineDeadlineWriterV2{ResponseRecorder: httptest.NewRecorder()}
 			HandlerInlineV2(service).ServeHTTP(writer, inlineControlRequestV2(t, PathInlinePrepareV2, raw))
 			if writer.Code != http.StatusServiceUnavailable || writer.Body.Len() > maxInlineControlBytesV2 || strings.Contains(writer.Body.String(), "private-payload") {
@@ -663,7 +664,7 @@ func TestInlineV2BodyReadDeadlineIsRequiredAndTightened(t *testing.T) {
 		t.Fatalf("unsupported deadline response-bytes/flushed/calls/reads=%d/%v/%d/%d", unsupported.Body.Len(), unsupported.Flushed, store.calls, reader.reads)
 	}
 	deadline := time.Now().Add(time.Hour) // a failure bound, not an authorization clock.
-	metadata := ydbstore.AttachedWorkerInlineBodyV2{Version: 2, Authorization: inlineAuthV2(), ExpiresAt: deadline}
+	metadata := attachedworkeroutput.AttachedWorkerInlineBodyV2{Version: 2, Authorization: inlineAuthV2(), ExpiresAt: deadline}
 	request = inlineBodyRequestV2(t, []byte("content"))
 	request.Header.Set(InlineRequestHeaderV2, base64.RawStdEncoding.EncodeToString(inlineMarshalV2(t, metadata)))
 	parentDeadline := time.Now().Add(10 * time.Second)
@@ -679,15 +680,15 @@ func TestInlineV2BodyReadDeadlineIsRequiredAndTightened(t *testing.T) {
 
 func TestInlineV2NeverReturnsBodyAuthorityAfterBurn(t *testing.T) {
 	service, store := inlineFixtureV2(t)
-	store.result.Stage = ydbstore.InlinePreparedV2
+	store.result.Stage = attachedworkeroutput.InlinePreparedV2
 	store.result.CanonicalDigest = ""
 	store.result.Capability = strings.Repeat("c", 64)
-	request := ydbstore.AttachedWorkerInlineReconcileV2{Version: 2, Authorization: inlineAuthV2(), BodySendBurned: true}
+	request := attachedworkeroutput.AttachedWorkerInlineReconcileV2{Version: 2, Authorization: inlineAuthV2(), BodySendBurned: true}
 	result, err := service.Reconcile(context.Background(), []byte("bound-bearer"), request)
 	if !errors.Is(err, ErrUnavailable) || result.Capability != "" {
 		t.Fatalf("burned reconcile result=%+v err=%v", result, err)
 	}
-	body := ydbstore.AttachedWorkerInlineBodyV2{Version: 2, Authorization: inlineAuthV2(), ExpiresAt: time.Unix(2_000_000_000, 0)}
+	body := attachedworkeroutput.AttachedWorkerInlineBodyV2{Version: 2, Authorization: inlineAuthV2(), ExpiresAt: time.Unix(2_000_000_000, 0)}
 	result, err = service.Submit(context.Background(), []byte("bound-bearer"), body, 1, strings.NewReader("x"))
 	if !errors.Is(err, ErrUnavailable) || result.Capability != "" {
 		t.Fatalf("submit capability result=%+v err=%v", result, err)
@@ -697,16 +698,18 @@ func TestInlineV2NeverReturnsBodyAuthorityAfterBurn(t *testing.T) {
 func TestInlineV2BodyMetadataAndDeadlineFailBeforeRead(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
-		mutate func(*ydbstore.AttachedWorkerInlineBodyV2)
+		mutate func(*attachedworkeroutput.AttachedWorkerInlineBodyV2)
 	}{
-		{"zero-expiry", func(r *ydbstore.AttachedWorkerInlineBodyV2) { r.ExpiresAt = time.Time{} }},
-		{"expired", func(r *ydbstore.AttachedWorkerInlineBodyV2) { r.ExpiresAt = time.Unix(1, 0) }},
-		{"v1", func(r *ydbstore.AttachedWorkerInlineBodyV2) { r.Version = 1 }},
-		{"supplied-digest", func(r *ydbstore.AttachedWorkerInlineBodyV2) { r.Authorization.PresentedSecretDigest = "caller-secret" }},
+		{"zero-expiry", func(r *attachedworkeroutput.AttachedWorkerInlineBodyV2) { r.ExpiresAt = time.Time{} }},
+		{"expired", func(r *attachedworkeroutput.AttachedWorkerInlineBodyV2) { r.ExpiresAt = time.Unix(1, 0) }},
+		{"v1", func(r *attachedworkeroutput.AttachedWorkerInlineBodyV2) { r.Version = 1 }},
+		{"supplied-digest", func(r *attachedworkeroutput.AttachedWorkerInlineBodyV2) {
+			r.Authorization.PresentedSecretDigest = "caller-secret"
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			service, store := inlineFixtureV2(t)
-			input := ydbstore.AttachedWorkerInlineBodyV2{Version: 2, Authorization: inlineAuthV2(), ExpiresAt: time.Unix(2_000_000_000, 0)}
+			input := attachedworkeroutput.AttachedWorkerInlineBodyV2{Version: 2, Authorization: inlineAuthV2(), ExpiresAt: time.Unix(2_000_000_000, 0)}
 			tc.mutate(&input)
 			request := inlineBodyRequestV2(t, []byte("content"))
 			request.Header.Set(InlineRequestHeaderV2, base64.RawStdEncoding.EncodeToString(inlineMarshalV2(t, input)))
@@ -722,7 +725,7 @@ func TestInlineV2BodyMetadataAndDeadlineFailBeforeRead(t *testing.T) {
 	service, store := inlineFixtureV2(t)
 	request := inlineBodyRequestV2(t, []byte("content"))
 	expiry := time.Now().Add(10 * time.Second)
-	input := ydbstore.AttachedWorkerInlineBodyV2{Version: 2, Authorization: inlineAuthV2(), ExpiresAt: expiry}
+	input := attachedworkeroutput.AttachedWorkerInlineBodyV2{Version: 2, Authorization: inlineAuthV2(), ExpiresAt: expiry}
 	request.Header.Set(InlineRequestHeaderV2, base64.RawStdEncoding.EncodeToString(inlineMarshalV2(t, input)))
 	writer := &inlineDeadlineWriterV2{ResponseRecorder: httptest.NewRecorder()}
 	HandlerInlineV2(service).ServeHTTP(writer, request)
@@ -736,9 +739,9 @@ func TestInlineV2UnsupportedReadDeadlineNeverReadsAnyEndpoint(t *testing.T) {
 		for _, rejected := range []bool{false, true} {
 			t.Run(path+"/rejected-"+strconv.FormatBool(rejected), func(t *testing.T) {
 				service, store := inlineFixtureV2(t)
-				var input any = ydbstore.AttachedWorkerInlinePrepareV2{Version: 2, Authorization: inlineAuthV2(), ExpiresAt: time.Unix(2_000_000_000, 0).UTC()}
+				var input any = attachedworkeroutput.AttachedWorkerInlinePrepareV2{Version: 2, Authorization: inlineAuthV2(), ExpiresAt: time.Unix(2_000_000_000, 0).UTC()}
 				if path == PathInlineReconcileV2 {
-					input = ydbstore.AttachedWorkerInlineReconcileV2{Version: 2, Authorization: inlineAuthV2()}
+					input = attachedworkeroutput.AttachedWorkerInlineReconcileV2{Version: 2, Authorization: inlineAuthV2()}
 				}
 				raw := inlineMarshalV2(t, input)
 				request := inlineControlRequestV2(t, path, raw)
@@ -766,7 +769,7 @@ func TestInlineV2ClearsOwnedBearerAndResponseBuffers(t *testing.T) {
 	service, store := inlineFixtureV2(t)
 	binder := &inlineRetainingBinderV2{base: store.binder}
 	service.binder = binder
-	raw := inlineMarshalV2(t, ydbstore.AttachedWorkerInlinePrepareV2{Version: 2, Authorization: inlineAuthV2(), ExpiresAt: time.Unix(2_000_000_000, 0).UTC()})
+	raw := inlineMarshalV2(t, attachedworkeroutput.AttachedWorkerInlinePrepareV2{Version: 2, Authorization: inlineAuthV2(), ExpiresAt: time.Unix(2_000_000_000, 0).UTC()})
 	original := bytes.Clone(raw)
 	writer := &inlinePayloadWriterV2{inlineDeadlineWriterV2: &inlineDeadlineWriterV2{ResponseRecorder: httptest.NewRecorder()}}
 	HandlerInlineV2(service).ServeHTTP(writer, inlineControlRequestV2(t, PathInlinePrepareV2, raw))
@@ -788,7 +791,7 @@ func TestInlineV2HeaderLimitIncludesAllHeaders(t *testing.T) {
 	for _, extra := range []int{0, 1} {
 		t.Run(strconv.Itoa(extra), func(t *testing.T) {
 			service, store := inlineFixtureV2(t)
-			raw := inlineMarshalV2(t, ydbstore.AttachedWorkerInlinePrepareV2{Version: 2, Authorization: inlineAuthV2(), ExpiresAt: time.Unix(2_000_000_000, 0).UTC()})
+			raw := inlineMarshalV2(t, attachedworkeroutput.AttachedWorkerInlinePrepareV2{Version: 2, Authorization: inlineAuthV2(), ExpiresAt: time.Unix(2_000_000_000, 0).UTC()})
 			request := inlineControlRequestV2(t, PathInlinePrepareV2, raw)
 			used := len("Host: ") + len(request.Host) + 4
 			for key, values := range request.Header {

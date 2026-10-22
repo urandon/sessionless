@@ -14,9 +14,9 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"gitcode.com/urandon/sessionless/internal/attachedworkeroutput"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/ports"
-	"gitcode.com/urandon/sessionless/internal/ydbstore"
 )
 
 // InlineClientV2 is only a fixed-origin, one-exchange wire adapter. The caller
@@ -156,47 +156,47 @@ type inlineClientExpectedV2 struct {
 	noPrepared   bool
 }
 
-func (c *InlineClientV2) Prepare(ctx context.Context, input ydbstore.AttachedWorkerInlinePrepareV2) (ydbstore.AttachedWorkerInlineResultV2, error) {
+func (c *InlineClientV2) Prepare(ctx context.Context, input attachedworkeroutput.AttachedWorkerInlinePrepareV2) (attachedworkeroutput.AttachedWorkerInlineResultV2, error) {
 	deadline, err := inlineClientDeadlineV2(ctx, input.ExpiresAt, true)
 	if err != nil || !inlineClientScopeV2(input.Version, input.Authorization, input.Nonce) || input.Candidate.Validate() != nil ||
 		input.Observation.ValidateFor(domain.AttachedWorkerTerminalSucceeded, input.Observation.CredentialReleaseRequired) != nil ||
 		!inlineClientStringsV2(string(input.Producer.SessionID), string(input.Producer.ReservationID), string(input.Producer.HarnessBindingDigest), input.Producer.SchemaDigest, input.Producer.FinalDigest, input.Producer.AnswerDigest) {
-		return ydbstore.AttachedWorkerInlineResultV2{}, ErrInvalid
+		return attachedworkeroutput.AttachedWorkerInlineResultV2{}, ErrInvalid
 	}
-	fingerprint, err := ydbstore.InlineOutputRequestFingerprintV2(input)
+	fingerprint, err := attachedworkeroutput.InlineOutputRequestFingerprintV2(input)
 	if err != nil {
-		return ydbstore.AttachedWorkerInlineResultV2{}, ErrInvalid
+		return attachedworkeroutput.AttachedWorkerInlineResultV2{}, ErrInvalid
 	}
 	encoded, err := json.Marshal(input)
 	defer clear(encoded)
 	if err != nil || len(encoded) > maxInlinePrepareBytesV2 {
-		return ydbstore.AttachedWorkerInlineResultV2{}, ErrInvalid
+		return attachedworkeroutput.AttachedWorkerInlineResultV2{}, ErrInvalid
 	}
 	return c.exchange(ctx, deadline, PathInlinePrepareV2, encoded, nil, 0, nil, inlineClientExpectedV2{nonce: input.Nonce, fingerprint: fingerprint, expiry: input.ExpiresAt})
 }
 
-func (c *InlineClientV2) Submit(ctx context.Context, input ydbstore.AttachedWorkerInlineBodyV2, length int64, body io.Reader) (ydbstore.AttachedWorkerInlineResultV2, error) {
+func (c *InlineClientV2) Submit(ctx context.Context, input attachedworkeroutput.AttachedWorkerInlineBodyV2, length int64, body io.Reader) (attachedworkeroutput.AttachedWorkerInlineResultV2, error) {
 	deadline, err := inlineClientDeadlineV2(ctx, input.ExpiresAt, true)
 	if err != nil || !inlineClientScopeV2(input.Version, input.Authorization, input.Nonce) || !inlineHexV2(input.Fingerprint) || !inlineHexV2(input.Capability) || length <= 0 || length > maxInlineBodyBytesV2 || body == nil {
-		return ydbstore.AttachedWorkerInlineResultV2{}, ErrInvalid
+		return attachedworkeroutput.AttachedWorkerInlineResultV2{}, ErrInvalid
 	}
 	metadata, err := json.Marshal(input)
 	defer clear(metadata)
 	if err != nil || len(metadata) > maxInlineControlBytesV2 {
-		return ydbstore.AttachedWorkerInlineResultV2{}, ErrInvalid
+		return attachedworkeroutput.AttachedWorkerInlineResultV2{}, ErrInvalid
 	}
 	return c.exchange(ctx, deadline, PathInlineBodyV2, nil, body, length, metadata, inlineClientExpectedV2{nonce: input.Nonce, fingerprint: input.Fingerprint, expiry: input.ExpiresAt, noCapability: true, noPrepared: true})
 }
 
-func (c *InlineClientV2) Reconcile(ctx context.Context, input ydbstore.AttachedWorkerInlineReconcileV2) (ydbstore.AttachedWorkerInlineResultV2, error) {
+func (c *InlineClientV2) Reconcile(ctx context.Context, input attachedworkeroutput.AttachedWorkerInlineReconcileV2) (attachedworkeroutput.AttachedWorkerInlineResultV2, error) {
 	deadline, err := inlineClientDeadlineV2(ctx, time.Time{}, false)
 	if err != nil || !inlineClientScopeV2(input.Version, input.Authorization, input.Nonce) || !inlineHexV2(input.Fingerprint) {
-		return ydbstore.AttachedWorkerInlineResultV2{}, ErrInvalid
+		return attachedworkeroutput.AttachedWorkerInlineResultV2{}, ErrInvalid
 	}
 	encoded, err := json.Marshal(input)
 	defer clear(encoded)
 	if err != nil || len(encoded) > maxInlineControlBytesV2 {
-		return ydbstore.AttachedWorkerInlineResultV2{}, ErrInvalid
+		return attachedworkeroutput.AttachedWorkerInlineResultV2{}, ErrInvalid
 	}
 	// The caller's immutable journal, not this stateless wire adapter, compares
 	// Reconcile's returned expiry with its commitment. READY may be expired.
@@ -216,7 +216,7 @@ func inlineClientScopeV2(version uint32, a ports.AttachedWorkerSealedInputAuthor
 	return version == 2 && nonce.Validate() == nil && a.PresentedSecretDigest == "" && inlineClientStringsV2(string(a.TenantID), string(a.OwnerUserID), string(a.WorkerID), string(a.ConnectionID), string(a.RunID), string(a.AttemptID), string(a.LeaseID), string(a.FenceToken), string(a.ContextDigest), string(a.CapabilityDigest), string(a.PolicyDigest))
 }
 
-func (c *InlineClientV2) exchange(parent context.Context, deadline time.Time, path string, encoded []byte, body io.Reader, length int64, metadata []byte, expected inlineClientExpectedV2) (result ydbstore.AttachedWorkerInlineResultV2, err error) {
+func (c *InlineClientV2) exchange(parent context.Context, deadline time.Time, path string, encoded []byte, body io.Reader, length int64, metadata []byte, expected inlineClientExpectedV2) (result attachedworkeroutput.AttachedWorkerInlineResultV2, err error) {
 	ctx, bearer, finish, err := c.begin(parent, deadline)
 	if err != nil {
 		return result, err
@@ -252,7 +252,7 @@ func (c *InlineClientV2) exchange(parent context.Context, deadline time.Time, pa
 	if response != nil && response.Body != nil {
 		defer func() {
 			if response.Body.Close() != nil || ctx.Err() != nil {
-				result = ydbstore.AttachedWorkerInlineResultV2{}
+				result = attachedworkeroutput.AttachedWorkerInlineResultV2{}
 				err = ErrUnavailable
 			}
 		}()
@@ -280,9 +280,9 @@ func (c *InlineClientV2) exchange(parent context.Context, deadline time.Time, pa
 		return result, ErrUnavailable
 	}
 	if !inlineDecodeV2(raw, maxInlineControlBytesV2, &result) || !inlineResponseV2(result) || result.Nonce != expected.nonce || result.Fingerprint != expected.fingerprint ||
-		!expected.expiry.IsZero() && !result.ExpiresAt.Equal(expected.expiry) || expected.noCapability && result.Capability != "" || expected.noPrepared && result.Stage == ydbstore.InlinePreparedV2 ||
+		!expected.expiry.IsZero() && !result.ExpiresAt.Equal(expected.expiry) || expected.noCapability && result.Capability != "" || expected.noPrepared && result.Stage == attachedworkeroutput.InlinePreparedV2 ||
 		result.Capability != "" && !result.ExpiresAt.After(time.Now()) {
-		return ydbstore.AttachedWorkerInlineResultV2{}, ErrUnavailable
+		return attachedworkeroutput.AttachedWorkerInlineResultV2{}, ErrUnavailable
 	}
 	return result, nil
 }

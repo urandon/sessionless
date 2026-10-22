@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"gitcode.com/urandon/sessionless/internal/attachedworkerreceipt"
 	"gitcode.com/urandon/sessionless/internal/buildinfo"
 )
 
@@ -112,4 +113,42 @@ func TestOutputReceiptRouteIsDefaultOffAndExplicitlyInjected(t *testing.T) {
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewJSONHandler(io.Discard, nil))
+}
+
+func TestInlineOutputV2RoutesAreExplicitAndDefaultOff(t *testing.T) {
+	t.Parallel()
+	paths := []string{attachedworkerreceipt.PathInlinePrepareV2, attachedworkerreceipt.PathInlineBodyV2, attachedworkerreceipt.PathInlineReconcileV2}
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			for _, method := range []string{http.MethodPost, http.MethodGet} {
+				recorder := httptest.NewRecorder()
+				NewHandler(discardLogger(), buildinfo.Current("test")).ServeHTTP(recorder, httptest.NewRequest(method, path, nil))
+				if recorder.Code != http.StatusNotFound {
+					t.Fatalf("default %s %s status=%d", method, path, recorder.Code)
+				}
+			}
+			calls := 0
+			handler := NewHandlerWithOptions(discardLogger(), buildinfo.Current("test"), Options{AttachedWorkerInlineOutputV2: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				if r.URL.Path != path {
+					t.Errorf("route path changed: %s", r.URL.Path)
+				}
+				w.WriteHeader(http.StatusNoContent)
+			})})
+			for _, method := range []string{http.MethodPost, http.MethodGet, http.MethodPut} {
+				recorder := httptest.NewRecorder()
+				handler.ServeHTTP(recorder, httptest.NewRequest(method, path, nil))
+				want := http.StatusNotFound
+				if method == http.MethodPost {
+					want = http.StatusNoContent
+				}
+				if recorder.Code != want {
+					t.Fatalf("injected %s %s status=%d want%d", method, path, recorder.Code, want)
+				}
+			}
+			if calls != 1 {
+				t.Fatalf("handler calls=%d want1", calls)
+			}
+		})
+	}
 }

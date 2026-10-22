@@ -353,6 +353,30 @@ ordered original associations, actual frozen catalog/schema bytes and finite
 source-to-destination mappings. The execution digest is evidence of that
 derivation; it is not caller approval, a replacement policy or a second claim.
 
+The explicit runtime carrier is a strict, canonical JSON
+`NativeExecutionDescriptorV3` scalar, at most 4 KiB, supplied to the bootstrap
+as one `--execution-descriptor-json` value. The original prepared owner produces
+it, not the caller. Its closed fields contain version 3, the accepted
+scope/manifest association digest, installation digest, selected variant index,
+and each selected image's slot ordinal, byte size and SHA-256 in canonical
+order, plus the frozen catalog/schema sizes and digests. Slot paths and suffixes
+are derived from the sealed variant; the descriptor accepts no arbitrary host
+or workload pathname. Host source/inode associations remain in the original
+owner and launcher mapping attestation, not in native argv or the descriptor.
+
+Installation seals the static bootstrap/relay command, environment and this
+exact carrier schema and bounds, together with the seven native vectors. It
+does not seal the per-execution descriptor values as installation facts.
+V3 execution attestation instead seals the actual complete bootstrap command,
+including the canonical descriptor, selected exact native vector and original
+source-to-destination mappings. The launcher verifies this command and carrier
+against the original association before create/start. This explicit V3
+static/runtime separation is not normalization or removal of a V2 hash check.
+The descriptor is not an extra mount, generic substitution template, new claim
+or authority; the bootstrap consumes it and does not pass it to the native
+child. Unknown/duplicate fields, noncanonical encoding, wrong count/order,
+missing/extra carrier, size overflow or association mismatch deny execution.
+
 The original connected Session child and its bound prepared entry must retain
 this exact execution association through the existing conduit/supervisor call.
 Copied DTOs, a caller-provided matching hash or a factory predicate cannot
@@ -373,9 +397,12 @@ credentials, executable/helper, private scratch or another destination.
 
 The launcher rechecks the exact installation/variant and original file
 associations before create/start and attests the resulting bounded mappings,
-not merely the unmounted argv. The existing bootstrap performs a bounded
-pre-exec check of the actual mounted read-only files and frozen config/schema
-digests. Replacement, missing/unreadable/extra files, suffix/order drift or
+not merely the unmounted argv. The existing bootstrap parses the attested
+descriptor and performs a bounded pre-exec size/hash check of every actual
+mounted image in selected slot order and of the frozen catalog/schema.
+Original held-owner/inode provenance, inspected read-only source/destination
+mappings and mounted-byte integrity are three distinct checks; the last
+does not establish the first two. Replacement, missing/unreadable/extra files, suffix/order drift or
 inspection failure prevent native exec. It never parses a model request,
 intercepts the SDK, handles provider credentials or grants a new network path.
 Actual source-to-destination file mounts replace the old same-path read-root
@@ -391,6 +418,7 @@ neither failed verification nor receipt loss permits a new native invocation.
 Before publication, controlled fake tests must demonstrate all seven vectors,
 unchanged install identity across fresh original stages, different execution
 associations, every wrong/foreign/copied/substituted mapping and config mutation,
+descriptor omission/substitution/order/digest/encoding/limit violations,
 argument limits, actual launcher/inspect/bootstrap handoff and cancel/failure
 cleanup under the original owner. A constructor-only positive or source hash
 is not acceptance. Exact released native/config/media and actual platform

@@ -502,6 +502,16 @@ not enable Codex, OpenCode, or direct OpenRouter. Pi conformance is no longer an
 active gate; see the retirement note above. A generic fake result reports native backend protocol as
 `skipped`, even when its exact registry tuple passes.
 
+The closed Codex JSONL parser recognizes a well-formed `turn.failed` only
+after `turn.started`. It validates the error object without publishing its
+private message, discards any partial final candidate and rejects every later
+frame. `ProtocolResultV1.Terminal` continues to mean a successful turn with a
+final candidate: a native failed turn has `Terminal=false` and a failure code.
+The prepared driver maps this to provider failure, never a completed result or
+checkpoint; the legacy adapter retains its conservative accepted/ambiguous
+classification. Neither result grants replay authority. This grammar support
+does not enable a native profile or attest its model effects.
+
 Deployment-aware cleanup of those immutable registry images is a separate,
 fenced operational workflow. Its evidence bridge, dry-run/delete controls, and
 audit reports are documented in [registry-gc.md](registry-gc.md). Never replace

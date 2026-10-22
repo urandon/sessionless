@@ -1,6 +1,7 @@
 package codexexec
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -191,6 +192,9 @@ func TestDriverMapsLifecycleWithoutRetryingAcceptedWork(t *testing.T) {
 	}{
 		{name: "pre acceptance", stdout: `{"type":"thread.started"}` + "\n", acceptance: domain.ProviderAcceptancePreAcceptanceV1, finish: domain.ProviderFinishFailedV1, failure: domain.ProviderExecutionFailurePreAcceptanceV1},
 		{name: "accepted unknown", stdout: codexAcceptedJSONL(), acceptance: domain.ProviderAcceptanceAcceptedV1, finish: domain.ProviderFinishUnknownV1, failure: domain.ProviderExecutionFailureAcceptedUnknownV1},
+		{name: "native failed turn", stdout: codexAcceptedJSONL() + `{"type":"error","message":"synthetic failure"}` + "\n" + failedTurnJSONL, mutate: func(result *ProcessResultV1) { result.ExitCode = 1 }, runErr: errors.New("native exit status 1"), acceptance: domain.ProviderAcceptanceAcceptedV1, finish: domain.ProviderFinishFailedV1, failure: domain.ProviderExecutionFailureProviderFailedV1},
+		{name: "failed turn despite exit zero", stdout: codexAcceptedJSONL() + failedTurnJSONL, acceptance: domain.ProviderAcceptanceAcceptedV1, finish: domain.ProviderFinishFailedV1, failure: domain.ProviderExecutionFailureProviderFailedV1},
+		{name: "completion after failed turn", stdout: codexAcceptedJSONL() + failedTurnJSONL + `{"type":"turn.completed"}` + "\n", acceptance: domain.ProviderAcceptanceAcceptedV1, finish: domain.ProviderFinishFailedV1, failure: domain.ProviderExecutionFailureProtocolDriftV1},
 		{name: "cancelled", stdout: codexAcceptedJSONL(), mutate: func(result *ProcessResultV1) { result.Cancelled = true }, acceptance: domain.ProviderAcceptanceAcceptedV1, finish: domain.ProviderFinishCancelledV1, failure: domain.ProviderExecutionFailureCancelledV1},
 		{name: "protocol drift", stdout: successfulJSONL + `{"type":"turn.completed"}` + "\n", acceptance: domain.ProviderAcceptanceAcceptedV1, finish: domain.ProviderFinishFailedV1, failure: domain.ProviderExecutionFailureProtocolDriftV1},
 		{name: "credential quiescence", stdout: successfulJSONL, mutate: func(result *ProcessResultV1) { result.CredentialStateQuiesced = false }, acceptance: domain.ProviderAcceptanceAcceptedV1, finish: domain.ProviderFinishFailedV1, failure: domain.ProviderExecutionFailureCredentialFinalizeV1},
@@ -206,7 +210,8 @@ func TestDriverMapsLifecycleWithoutRetryingAcceptedWork(t *testing.T) {
 			}
 			boundary := &fixtureProcessBoundary{result: process, runErr: testCase.runErr}
 			driver := mustDriver(t, true, authority, boundary)
-			result, err := driver.Execute(context.Background(), request, &fixtureEventSink{})
+			sink := &fixtureEventSink{}
+			result, err := driver.Execute(context.Background(), request, sink)
 			if err == nil || result.ProviderEvidence == nil {
 				t.Fatalf("result=%+v err=%v", result, err)
 			}
@@ -214,6 +219,12 @@ func TestDriverMapsLifecycleWithoutRetryingAcceptedWork(t *testing.T) {
 			if evidence.AcceptanceClass != testCase.acceptance || evidence.FinishClass != testCase.finish ||
 				evidence.FailureCode != testCase.failure || boundary.runs != 1 {
 				t.Fatalf("evidence=%+v runs=%d", evidence, boundary.runs)
+			}
+			if result.Summary != "" || len(sink.events) != 0 {
+				t.Fatalf("failed execution published success: summary=%q events=%+v", result.Summary, sink.events)
+			}
+			if !bytes.Equal(boundary.result.Stdout, make([]byte, len(boundary.result.Stdout))) {
+				t.Fatal("raw failed provider output survived reduction")
 			}
 		})
 	}

@@ -19,19 +19,22 @@ const (
 )
 
 type parseResult struct {
-	accepted      bool
-	terminal      bool
-	protocolDrift bool
-	terminalDrift bool
-	eventCount    int
-	stdoutBytes   int
-	failureCode   string
-	final         []byte
+	accepted       bool
+	terminal       bool
+	failedTerminal bool
+	protocolDrift  bool
+	terminalDrift  bool
+	eventCount     int
+	stdoutBytes    int
+	failureCode    string
+	final          []byte
 }
 
 // ProtocolResultV1 is the content-bounded Codex exec lifecycle shared by the
 // subscription and OpenRouter profiles. Final is invocation-private output;
 // callers must clear raw provider frames after parsing and never log this value.
+// Terminal means a successful turn with a final candidate, not merely an ended
+// native stream. A supported turn.failed retains Terminal=false and FailureCode.
 type ProtocolResultV1 struct {
 	Accepted      bool
 	Terminal      bool
@@ -53,8 +56,9 @@ func ParseProtocolV1(value []byte) ProtocolResultV1 {
 }
 
 type eventEnvelope struct {
-	Type string          `json:"type"`
-	Item json.RawMessage `json:"item"`
+	Type  string          `json:"type"`
+	Item  json.RawMessage `json:"item"`
+	Error json.RawMessage `json:"error"`
 }
 
 type eventItem struct {
@@ -88,7 +92,7 @@ func parseJSONL(value []byte) parseResult {
 			if result.eventCount > maxJSONLEvents {
 				return result.fail("event_count_exceeded", result.terminal)
 			}
-			if result.terminal {
+			if result.terminal || result.failedTerminal {
 				return result.fail("event_after_terminal", true)
 			}
 			if !strictJSONObject(line) {
@@ -149,6 +153,24 @@ func parseJSONL(value []byte) parseResult {
 					return result.fail("terminal_after_error", true)
 				}
 				result.terminal = true
+			case "turn.failed":
+				if !result.accepted {
+					return result.fail("turn_failed_before_acceptance", false)
+				}
+				var failure struct {
+					Message string `json:"message"`
+				}
+				if !strictJSONObject(envelope.Error) || json.Unmarshal(envelope.Error, &failure) != nil || failure.Message == "" {
+					return result.fail("invalid_failed_turn", false)
+				}
+				if result.failureCode == "" {
+					result.failureCode = "codex_turn_failed"
+				}
+				// Close the stream without making a failed turn committable. Neither
+				// partial text nor an exit code of zero can promote it to success.
+				zeroBytes(result.final)
+				result.final = nil
+				result.failedTerminal = true
 			case "error":
 				if result.failureCode == "" {
 					result.failureCode = "codex_error_event"
@@ -171,7 +193,7 @@ func (result parseResult) fail(code string, terminalDrift bool) parseResult {
 		result.failureCode = code
 	}
 	result.protocolDrift = true
-	result.terminalDrift = result.terminalDrift || terminalDrift || result.terminal
+	result.terminalDrift = result.terminalDrift || terminalDrift || result.terminal || result.failedTerminal
 	return result
 }
 

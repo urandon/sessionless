@@ -64,6 +64,76 @@ func TestParseJSONLBoundsFinalAndLine(t *testing.T) {
 	}
 }
 
+// These failure envelopes reproduce the credential-free native 0.162.1
+// unauthorized, interrupted-stream and TLS-mismatch probes from #220. Their
+// private messages are deliberately replaced; only the event shape is relevant.
+const failedTurnJSONL = `{"type":"turn.failed","error":{"message":"synthetic provider failure"}}` + "\n"
+
+func TestParseJSONLFailedTurn(t *testing.T) {
+	accepted := codexAcceptedJSONL()
+	errorEvent := `{"type":"error","message":"synthetic provider failure"}` + "\n"
+	finalItem := `{"type":"item.completed","item":{"type":"agent_message","text":"not a success"}}` + "\n"
+	tests := []struct {
+		name          string
+		value         string
+		accepted      bool
+		drift         bool
+		terminalDrift bool
+		failure       string
+	}{
+		{name: "native error then failed", value: accepted + errorEvent + failedTurnJSONL, accepted: true, failure: "codex_error_event"},
+		{name: "failed without notification", value: accepted + failedTurnJSONL, accepted: true, failure: "codex_turn_failed"},
+		{name: "partial final then failed", value: accepted + finalItem + failedTurnJSONL, accepted: true, failure: "codex_turn_failed"},
+		{name: "failure before thread", value: failedTurnJSONL, drift: true, failure: "turn_failed_before_acceptance"},
+		{name: "failure before turn", value: `{"type":"thread.started"}` + "\n" + failedTurnJSONL, drift: true, failure: "turn_failed_before_acceptance"},
+		{name: "missing error", value: accepted + `{"type":"turn.failed"}` + "\n", accepted: true, drift: true, failure: "invalid_failed_turn"},
+		{name: "null error", value: accepted + `{"type":"turn.failed","error":null}` + "\n", accepted: true, drift: true, failure: "invalid_failed_turn"},
+		{name: "string error", value: accepted + `{"type":"turn.failed","error":"failure"}` + "\n", accepted: true, drift: true, failure: "invalid_failed_turn"},
+		{name: "missing message", value: accepted + `{"type":"turn.failed","error":{}}` + "\n", accepted: true, drift: true, failure: "invalid_failed_turn"},
+		{name: "empty message", value: accepted + `{"type":"turn.failed","error":{"message":""}}` + "\n", accepted: true, drift: true, failure: "invalid_failed_turn"},
+		{name: "typed message", value: accepted + `{"type":"turn.failed","error":{"message":1}}` + "\n", accepted: true, drift: true, failure: "invalid_failed_turn"},
+		{name: "duplicate error key", value: accepted + `{"type":"turn.failed","error":{"message":"a","Message":"b"}}` + "\n", accepted: true, drift: true, failure: "invalid_jsonl_event"},
+		{name: "notification alone", value: accepted + errorEvent, accepted: true, failure: "codex_error_event"},
+		{name: "success after notification", value: accepted + errorEvent + finalItem + `{"type":"turn.completed"}` + "\n", accepted: true, drift: true, terminalDrift: true, failure: "codex_error_event"},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			result := ParseProtocolV1([]byte(testCase.value))
+			if result.Accepted != testCase.accepted || result.Terminal ||
+				result.ProtocolDrift != testCase.drift || result.TerminalDrift != testCase.terminalDrift ||
+				result.FailureCode != testCase.failure {
+				t.Fatalf("ParseProtocolV1() = %+v, want accepted=%t success=false drift=%t terminalDrift=%t failure=%q", result, testCase.accepted, testCase.drift, testCase.terminalDrift, testCase.failure)
+			}
+			if !testCase.drift && strings.Contains(testCase.value, `"type":"turn.failed"`) && len(result.Final) != 0 {
+				t.Fatalf("failed turn retained final candidate: %q", result.Final)
+			}
+		})
+	}
+}
+
+func TestParseJSONLRejectsEveryFrameAfterFailedTurn(t *testing.T) {
+	for _, testCase := range []struct{ name, frame string }{
+		{name: "completed", frame: `{"type":"turn.completed"}` + "\n"},
+		{name: "final item", frame: `{"type":"item.completed","item":{"type":"agent_message","text":"late"}}` + "\n"},
+		{name: "effect item", frame: `{"type":"item.started","item":{"type":"command_execution"}}` + "\n"},
+		{name: "duplicate failed", frame: failedTurnJSONL},
+		{name: "turn started", frame: `{"type":"turn.started"}` + "\n"},
+		{name: "error", frame: `{"type":"error","message":"late"}` + "\n"},
+		{name: "malformed", frame: "{\n"},
+		{name: "empty", frame: "\n"},
+		{name: "unterminated", frame: "unterminated"},
+		{name: "oversized", frame: strings.Repeat("x", maxJSONLLineBytes+1) + "\n"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			result := ParseProtocolV1([]byte(codexAcceptedJSONL() + failedTurnJSONL + testCase.frame))
+			if !result.Accepted || result.Terminal || !result.ProtocolDrift || !result.TerminalDrift ||
+				result.FailureCode != "codex_turn_failed" || len(result.Final) != 0 {
+				t.Fatalf("post-failure frame accepted or lost failure state: %+v", result)
+			}
+		})
+	}
+}
+
 func TestParseProtocolV1SharesTheClosedParserWithoutAliasingInput(t *testing.T) {
 	input := []byte(successfulJSONL)
 	result := ParseProtocolV1(input)
@@ -93,6 +163,8 @@ func FuzzCodexJSONLParserNeverCommitsMalformedTerminal(f *testing.F) {
 	f.Add([]byte(successfulJSONL))
 	f.Add([]byte(`{"type":"thread.started"}` + "\n" + `{"type":"turn.started"}` + "\n"))
 	f.Add([]byte(`{"type":"provider.secret_event"}` + "\n"))
+	f.Add([]byte(codexAcceptedJSONL() + failedTurnJSONL))
+	f.Add([]byte(codexAcceptedJSONL() + failedTurnJSONL + successfulJSONL))
 	f.Fuzz(func(t *testing.T, value []byte) {
 		result := ParseProtocolV1(value)
 		if result.Terminal && !result.Accepted {

@@ -478,13 +478,32 @@ records are compact identity/status/canonical-digest records of at most 32 KiB,
 not copies of the answer or canonical materialization.
 
 The existing checkpoint owner stores an explicit V2 compact commitment of at
-most 32 KiB: exact attempt/plan/final/answer digests, ordered artifact
-names/types/sizes/hashes, original expiry, irreversible prepare/body burn and
-READY/TerminalAck identity. It does not duplicate Prepare JSON, answer or
-artifact bodies. The original private result retains semantic bytes until
-retirement; after restart/loss, the commitment permits metadata reconciliation
-only, not body regeneration/resend. An absent/corrupt commitment fences the
-attempt. V1 checkpoint decoding and its 128 KiB ceiling remain unchanged.
+most 32 KiB, including its local outer envelope and base64 framing. Its
+immutable plan contains the exact attempt/plan/final/answer digests, ordered
+artifact names/types/sizes/hashes, original expiry and terminal sequence
+identity. It does not duplicate Prepare JSON, answer or artifact bodies.
+
+Keep monotonic progress beside that immutable plan in the same file and
+runtime lease: reserve Prepare before its call, irreversibly burn body and
+reconciliation attempts before their calls, then record the received READY
+digest and verified TerminalAck. Advance exactly one fact and revision at a
+time using compare-and-swap against the complete prior record. An identical
+already-committed observation returns no new send token. Never replace the
+plan, reset a burn or change a recorded canonical digest. In particular, the
+initial seal cannot truthfully contain a READY digest that has not arrived;
+an immutable seal alone cannot distinguish an unused reconciliation from a
+reconciliation whose response was lost.
+
+The original private result retains semantic bytes until exact retirement.
+Successful idempotent sealing does not mint live Prepare/body tokens. After
+restart or loss, use an explicitly supported metadata-only recovery path or
+leave the attempt fenced; never reconstruct those tokens or regenerate/resend
+bodies. An absent or corrupt commitment also fences the attempt. Both the
+explicit V2 retirement API and legacy retirement dispatch require the V2 ACK
+progress before removing a versioned record. That bit is local metadata, not
+proof of a real ACK: the original adapter must still verify its full exact
+terminal identity. V1's unversioned immutable submission and 128 KiB payload
+ceiling remain unchanged.
 
 The raw body is exactly its declared content length and at most 64 KiB;
 headers are at most 8 KiB. Per attempt, allow at most one encoded control
@@ -505,7 +524,7 @@ existing transport/product limits before allocation or sending.
 Disable redirects, body rewind and hidden retry behavior; do not inherit the
 V1 receipt client's exact-metadata retry loop for bodies. At most one Prepare,
 one body request and one read-only reconciliation belong to this window.
-After READY, the existing immutable journal/ACK recovery remains metadata-only
+After READY, recovery against the original journal plan remains metadata-only
 and does not renew body authority. Logs/receipts expose no content, bearer or
 capability secret.
 

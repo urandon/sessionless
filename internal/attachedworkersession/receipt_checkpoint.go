@@ -8,12 +8,57 @@ import (
 	"errors"
 
 	"gitcode.com/urandon/sessionless/internal/attachedworkerlocal"
+	"gitcode.com/urandon/sessionless/internal/attachedworkeroutput"
 )
 
 type receiptCheckpointLease interface {
 	PersistReceiptCheckpoint(context.Context, attachedworkerlocal.ReceiptCheckpointV1) error
 	LoadReceiptCheckpoint(context.Context) (attachedworkerlocal.ReceiptCheckpointV1, error)
 	RetireReceiptCheckpoint(context.Context, attachedworkerlocal.ReceiptCheckpointV1) error
+}
+
+type inlineReceiptCheckpointLeaseV2 interface {
+	PersistInlineReceiptCheckpointV2(context.Context, attachedworkerlocal.ReceiptCheckpointV1) error
+	AdvanceInlineReceiptCheckpointV2(context.Context, attachedworkerlocal.ReceiptCheckpointV1, attachedworkerlocal.ReceiptCheckpointV1) (bool, error)
+}
+
+// SealInlineReceiptSubmissionV2 seals only an initial compact commitment. Its
+// immutable plan reserves the whole original export; private live-only tokens,
+// not successful idempotent sealing, decide whether a first send may occur.
+func (session *Session) SealInlineReceiptSubmissionV2(ctx context.Context, payload []byte) error {
+	value, err := attachedworkeroutput.DecodeInlineCheckpointV2(payload)
+	if err != nil || value.Progress.Revision != 1 {
+		return ErrInvalidConfiguration
+	}
+	_, err = session.changeReceiptCheckpoint(ctx, payload, nil, false, true)
+	return err
+}
+
+// AdvanceInlineReceiptSubmissionV2 changes only monotonic progress attached to
+// the exact initial plan. A false result is recovery evidence, never a fresh
+// Prepare/body/reconcile token. Ambiguous failure remains fenced.
+func (session *Session) AdvanceInlineReceiptSubmissionV2(ctx context.Context, previous, next []byte) (bool, error) {
+	before, err := attachedworkeroutput.DecodeInlineCheckpointV2(previous)
+	if err != nil {
+		return false, ErrInvalidConfiguration
+	}
+	after, err := attachedworkeroutput.DecodeInlineCheckpointV2(next)
+	if err != nil || after.AdvanceFrom(before) != nil {
+		return false, ErrInvalidConfiguration
+	}
+	return session.changeReceiptCheckpoint(ctx, next, previous, false, true)
+}
+
+// RetireInlineReceiptSubmissionV2 accepts only a compact record whose ACK fact
+// was durably recorded. The original adapter must have verified that exact ACK;
+// this metadata bit is not itself product or terminal authority.
+func (session *Session) RetireInlineReceiptSubmissionV2(ctx context.Context, payload []byte) error {
+	value, err := attachedworkeroutput.DecodeInlineCheckpointV2(payload)
+	if err != nil || !value.Progress.TerminalAcked {
+		return ErrInvalidConfiguration
+	}
+	_, err = session.changeReceiptCheckpoint(ctx, payload, nil, true, true)
+	return err
 }
 
 // SealReceiptSubmission stores the exact bounded post-run submission through
@@ -30,34 +75,39 @@ func (session *Session) RetireReceiptSubmission(ctx context.Context, payload []b
 }
 
 func (session *Session) withReceiptCheckpoint(ctx context.Context, payload []byte, retire bool) error {
+	_, err := session.changeReceiptCheckpoint(ctx, payload, nil, retire, false)
+	return err
+}
+
+func (session *Session) changeReceiptCheckpoint(ctx context.Context, payload, previous []byte, retire, inlineV2 bool) (bool, error) {
 	if session == nil || ctx == nil || ctx.Err() != nil || len(payload) == 0 || len(payload) > 128<<10 {
-		return ErrInvalidConfiguration
+		return false, ErrInvalidConfiguration
 	}
 	if err := session.acquire(ctx); err != nil {
-		return err
+		return false, err
 	}
 	defer session.release()
 	snapshot := session.Snapshot()
 	if snapshot.State != StateReady || snapshot.ConnectionID.Validate() != nil {
-		return ErrSessionFenced
+		return false, ErrSessionFenced
 	}
 	session.mu.Lock()
 	lease, revision := session.lease, session.manifestRevision
 	session.mu.Unlock()
 	journal, ok := lease.(receiptCheckpointLease)
 	if !ok || revision == 0 {
-		return ErrReconciliationRequired
+		return false, ErrReconciliationRequired
 	}
 	local, err := lease.LoadSnapshot(ctx)
 	if err != nil {
-		return errors.Join(ErrReconciliationRequired, err)
+		return false, errors.Join(ErrReconciliationRequired, err)
 	}
 	manifest := local.Manifest
 	if manifest.Revision != revision || manifest.TenantID != snapshot.TenantID ||
 		manifest.OwnerUserID != snapshot.OwnerUserID || manifest.WorkerID != snapshot.WorkerID ||
 		manifest.EnrollmentGeneration != snapshot.EnrollmentGeneration ||
 		manifest.ConnectionGeneration != snapshot.ConnectionGeneration {
-		return ErrReconciliationRequired
+		return false, ErrReconciliationRequired
 	}
 	digest := sha256.Sum256(payload)
 	checkpoint := attachedworkerlocal.ReceiptCheckpointV1{
@@ -70,8 +120,39 @@ func (session *Session) withReceiptCheckpoint(ctx context.Context, payload []byt
 		PayloadSHA256:        hex.EncodeToString(digest[:]), Payload: bytes.Clone(payload),
 	}
 	defer clearBytes(checkpoint.Payload)
-	if retire {
-		return journal.RetireReceiptCheckpoint(ctx, checkpoint)
+	if inlineV2 {
+		value, err := attachedworkeroutput.DecodeInlineCheckpointV2(payload)
+		if err != nil {
+			return false, ErrInvalidConfiguration
+		}
+		a := value.Plan.Authorization
+		if a.TenantID != snapshot.TenantID || a.OwnerUserID != snapshot.OwnerUserID || a.WorkerID != snapshot.WorkerID ||
+			a.ConnectionID != snapshot.ConnectionID || a.EnrollmentGeneration != snapshot.EnrollmentGeneration || a.ConnectionGeneration != snapshot.ConnectionGeneration ||
+			a.CapabilityDigest != snapshot.CapabilityDigest {
+			return false, ErrSessionFenced
+		}
 	}
-	return journal.PersistReceiptCheckpoint(ctx, checkpoint)
+	if previous != nil {
+		advance, ok := lease.(inlineReceiptCheckpointLeaseV2)
+		if !ok {
+			return false, ErrReconciliationRequired
+		}
+		expected := checkpoint
+		expected.Payload = bytes.Clone(previous)
+		defer clearBytes(expected.Payload)
+		digest := sha256.Sum256(previous)
+		expected.PayloadSHA256 = hex.EncodeToString(digest[:])
+		return advance.AdvanceInlineReceiptCheckpointV2(ctx, expected, checkpoint)
+	}
+	if retire {
+		return false, journal.RetireReceiptCheckpoint(ctx, checkpoint)
+	}
+	if inlineV2 {
+		inline, ok := lease.(inlineReceiptCheckpointLeaseV2)
+		if !ok {
+			return false, ErrReconciliationRequired
+		}
+		return false, inline.PersistInlineReceiptCheckpointV2(ctx, checkpoint)
+	}
+	return false, journal.PersistReceiptCheckpoint(ctx, checkpoint)
 }

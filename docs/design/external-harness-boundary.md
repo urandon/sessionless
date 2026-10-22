@@ -251,7 +251,7 @@ runner's actual WriteBack/Release and original receipt/finalizer still decide
 canonical success. Lost current authority or unknown cleanup denies success.
 
 Do not set V1 `ProviderEffects=1` or its direct-effect fence for this branch.
-One consumed native invocation is not one model request: H3/H4 demonstrated a
+One consumed native invocation is not one model request: H4/H7 demonstrated a
 second native sampling request after a rejected tool call. Preserve existing
 unknown route/usage evidence and conditional policy verdict. If the governing
 policy needs an unavailable model/route/token/price/per-operation fact, native
@@ -276,11 +276,17 @@ Do not make `MediaConfigV1.eligibility()` unconditional or simulate the absent
 SDK preparation/request hook. The successor's media policy must instead name
 the supported exact-native preparation/catalog settings and externally
 enforceable process/traffic/resource envelope. Preserve original image bytes
-and canonical associations separately from native derivation. Sufficient model
-context fit must be conservatively proven for the admitted complete cohort;
-byte or pixel ceilings alone are not token evidence. A policy requiring a
-semantic pre-send guarantee that this interface cannot provide remains no-go.
-Do not shrink the required cohort or intercept the SDK to manufacture it.
+and canonical associations separately from native derivation. The existing
+media design's model-visible association, complete-cohort context fit and
+prepared/wire/allocation bounds remain mandatory before their respective
+sensitive allocation/send sinks; they are not optional policy additions.
+Conservative input preflight backed by the exact released preparation algorithm,
+frozen model metadata and native conformance may prove those obligations without
+an SDK hook. Runtime memory/traffic ceilings are additional enforcement, not
+substitutes for those pre-sink guarantees. Byte/pixel ceilings alone are not
+token evidence. If any mandatory bound or association cannot be proven and
+enforced for this interface, the selected profile remains no-go. Do not shrink
+the required cohort or intercept the SDK to manufacture it.
 
 H7 proves one tiny exact PNG transport and disabled `view_image`, not maximum
 cohorts, JPEG/resize/context behavior or useful vision comprehension. Qualify

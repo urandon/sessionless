@@ -79,6 +79,17 @@ func (p NativeProfileV2) DescriptorV2() (domain.HarnessBackendDescriptorV1, erro
 	return v.descriptor, nil
 }
 
+// PolicyDigestV2 returns the canonical installation policy identity used by
+// the native accepted-attempt check. It is declarative metadata for profile
+// registration, not an attempt scope, credential binding or activation grant.
+func (p NativeProfileV2) PolicyDigestV2() (domain.AttachedWorkerPolicyDigest, error) {
+	v, err := freezeNativeProfileV2(p)
+	if err != nil {
+		return "", err
+	}
+	return domain.AttachedWorkerPolicyDigest(hex.EncodeToString(v.launch.PolicyDigest[:])), nil
+}
+
 // ArgumentsV2 is the zero-image installed command. The original consumed owner
 // alone selects one of its seven sealed variants from verified canonical media.
 func (p NativeProfileV2) ArgumentsV2() ([]string, error) {

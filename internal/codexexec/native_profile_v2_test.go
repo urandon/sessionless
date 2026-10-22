@@ -77,6 +77,40 @@ func TestNativeProfileV2DerivesDistinctStaticAndInstallIdentity(t *testing.T) {
 	}
 }
 
+func TestNativeProfileV2PolicyDigestIsCanonicalMetadata(t *testing.T) {
+	p := nativeProfileFixtureV2(t)
+	frozen, err := freezeNativeProfileV2(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf("%x", frozen.launch.PolicyDigest)
+	got, err := p.PolicyDigestV2()
+	if err != nil || got.Validate() != nil || string(got) != want {
+		t.Fatalf("canonical policy digest=%s want=%s err=%v", got, want, err)
+	}
+	if p.Launch.PolicyDigest != (attachedworkerdaemon.ExecutableDigest{}) || p.Launch.ScopeDigest != (attachedworkerdaemon.ExecutableDigest{}) || len(p.Launch.NativeArguments[0]) != 0 {
+		t.Fatal("metadata accessor modified original profile or invented runtime scope")
+	}
+	other := p.Clone()
+	other.Backend.Enabled = !other.Backend.Enabled
+	other.Backend.Now = func() time.Time { return time.Unix(1, 0) }
+	if next, err := other.PolicyDigestV2(); err != nil || next != got {
+		t.Fatalf("activation or clock changed installation identity: %v", err)
+	}
+	other = p.Clone()
+	other.Backend.Model = "other-model"
+	if next, err := other.PolicyDigestV2(); err != nil || next == got {
+		t.Fatalf("changed model did not change policy identity: %v", err)
+	}
+	other.Launch.ScopeDigest[0] = 1
+	if next, err := other.PolicyDigestV2(); !errors.Is(err, ErrContract) || next != "" {
+		t.Fatalf("caller runtime scope accepted: digest=%s err=%v", next, err)
+	}
+	if next, err := (NativeProfileV2{}).PolicyDigestV2(); !errors.Is(err, ErrContract) || next != "" {
+		t.Fatalf("invalid installation emitted policy identity: digest=%s err=%v", next, err)
+	}
+}
+
 func TestNativeProfileV2SealsEffectivePlatformAndBounds(t *testing.T) {
 	p := nativeProfileFixtureV2(t)
 	want, err := freezeNativeProfileV2(p)

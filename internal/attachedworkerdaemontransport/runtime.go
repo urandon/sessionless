@@ -326,14 +326,6 @@ func (runner *preflightRunner) closePrepared(ctx context.Context) error {
 	return stack.Close(ctx)
 }
 
-func (runner *preflightRunner) bindPrepared(session *attachedworkersession.Session) error {
-	stack, err := runner.preparedStack()
-	if err != nil {
-		return err
-	}
-	return stack.BindPreparedConnection(session)
-}
-
 func (runner *preflightRunner) ready() bool {
 	return runner != nil && runner.current != nil && *runner.current != nil
 }
@@ -416,15 +408,6 @@ func connectForegroundRuntime(
 	}
 	if _, err := adapter.readySnapshot(); err != nil {
 		return cleanup(errors.Join(ErrReconciliationRequired, err))
-	}
-	if adapterConfig.preparedReceipt != nil {
-		original, ok := session.(*attachedworkersession.Session)
-		if !ok {
-			return cleanup(ErrReconciliationRequired)
-		}
-		if err := adapterConfig.preparedReceipt.bindPrepared(original); err != nil {
-			return cleanup(errors.Join(ErrReconciliationRequired, err))
-		}
 	}
 	source, err := NewPreparedCadencedSource(adapter, preparedPoll)
 	if err != nil {
@@ -558,15 +541,6 @@ func reconnectPinnedForegroundRuntime(
 	}
 	if !runner.ready() || ctx.Err() != nil {
 		return cleanup(errors.Join(ErrReconciliationRequired, ctx.Err()))
-	}
-	if adapterConfig.preparedReceipt != nil {
-		original, ok := cadence.session.(*attachedworkersession.Session)
-		if !ok {
-			return cleanup(ErrReconciliationRequired)
-		}
-		if err := adapterConfig.preparedReceipt.bindPrepared(original); err != nil {
-			return cleanup(errors.Join(ErrReconciliationRequired, err))
-		}
 	}
 	runtime, err := NewForegroundRuntime(cadence, runner, config)
 	if err != nil {

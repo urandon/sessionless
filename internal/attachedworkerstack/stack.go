@@ -20,6 +20,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/attachedworkerlocal"
 	"gitcode.com/urandon/sessionless/internal/attachedworkeroci"
 	"gitcode.com/urandon/sessionless/internal/attachedworkeroutput"
+	"gitcode.com/urandon/sessionless/internal/attachedworkerprotocol"
 	"gitcode.com/urandon/sessionless/internal/attachedworkersession"
 	"gitcode.com/urandon/sessionless/internal/codexexec"
 	"gitcode.com/urandon/sessionless/internal/domain"
@@ -79,17 +80,22 @@ func (evidence EvidenceV1) GoString() string { return evidence.String() }
 // wrapper rejects any invocation whose executable, digest, or argv differs
 // from the exact installed manifest.
 type Stack struct {
-	mu              sync.Mutex
-	runner          attachedworkerdaemon.Runner
-	evidence        EvidenceV1
-	prepared        *codexexec.PreparedAttachedWorkerRunnerV1
-	nativePrepared  bool
-	scope           preparedStackScope
-	connection      *attachedworkersession.Session
-	boundID         domain.AttachedWorkerConnectionID
-	boundCapability domain.AttachedWorkerCapabilityDigest
-	now             func() time.Time
-	closed          bool
+	mu                      sync.Mutex
+	runner                  attachedworkerdaemon.Runner
+	evidence                EvidenceV1
+	prepared                *codexexec.PreparedAttachedWorkerRunnerV1
+	nativePrepared          bool
+	inlineOutputV2          bool
+	allowedEnvironmentNames []string
+	nativeOperatingSystem   string
+	nativeArchitecture      string
+	nativeHarnessVersion    string
+	scope                   preparedStackScope
+	connection              *attachedworkersession.Session
+	boundID                 domain.AttachedWorkerConnectionID
+	boundCapability         domain.AttachedWorkerCapabilityDigest
+	now                     func() time.Time
+	closed                  bool
 }
 
 type preparedStackScope struct {
@@ -103,6 +109,33 @@ func (stack *Stack) String() string {
 	return fmt.Sprintf("Stack{evidence:%s private:[redacted]}", stack.Evidence())
 }
 func (stack *Stack) GoString() string { return stack.String() }
+
+// PreparedInlineOutputV2 validates the exact frozen invocation profile and
+// returns its output transport selection. This is configuration metadata, not
+// a result witness: only InlineReceiptCandidate can export the original result.
+func (stack *Stack) PreparedInlineOutputV2(executable string, digest attachedworkerdaemon.ExecutableDigest, arguments []string, environment []attachedworkerdaemon.EnvironmentVariable, capability attachedworkerprotocol.CapabilityManifestV1) (bool, error) {
+	if stack == nil {
+		return false, ErrInvalidConfiguration
+	}
+	stack.mu.Lock()
+	defer stack.mu.Unlock()
+	pinned, ok := stack.runner.(*pinnedRunner)
+	if stack.closed || stack.prepared == nil || !ok || pinned.delegate != stack.prepared ||
+		pinned.executable != executable || pinned.digest != digest || !slices.Equal(pinned.arguments, arguments) ||
+		!slices.Equal(capability.HarnessExecutableDigest, pinned.digest[:]) {
+		return false, ErrInvocationMismatch
+	}
+	if stack.nativePrepared && (len(environment) != 0 || capability.OperatingSystem != stack.nativeOperatingSystem ||
+		capability.Architecture != stack.nativeArchitecture || capability.HarnessVersion != stack.nativeHarnessVersion) {
+		return false, ErrInvocationMismatch
+	}
+	for _, variable := range environment {
+		if !slices.Contains(stack.allowedEnvironmentNames, variable.Name) {
+			return false, ErrInvocationMismatch
+		}
+	}
+	return stack.inlineOutputV2, nil
+}
 
 func (stack *Stack) ReceiptCandidate(identity attachedworkerdaemon.InvocationIdentity, result attachedworkerdaemon.InvocationResult, err error, status domain.AttachedWorkerTerminalStatus) (attachedworkeroutput.Candidate, error) {
 	if stack == nil || stack.prepared == nil {
@@ -372,7 +405,7 @@ func newStack(
 	if config.PreparedCodexMedia != nil && config.PreparedCodexMedia.Backend.Now != nil {
 		clock = config.PreparedCodexMedia.Backend.Now
 	}
-	return &Stack{runner: pinned, prepared: prepared, now: clock, scope: preparedStackScope{tenant: manifest.TenantID, owner: manifest.OwnerUserID,
+	return &Stack{runner: pinned, prepared: prepared, allowedEnvironmentNames: slices.Clone(config.AllowedEnvironmentNames), now: clock, scope: preparedStackScope{tenant: manifest.TenantID, owner: manifest.OwnerUserID,
 		worker: manifest.WorkerID, enrollment: manifest.EnrollmentGeneration, connection: manifest.ConnectionGeneration}, evidence: EvidenceV1{
 		Version: evidenceVersionV1, ManifestRevision: manifest.Revision, Boundary: manifest.OCI.Boundary,
 		IsolationProfile: profile.Name, ReconciledResidue: residue,

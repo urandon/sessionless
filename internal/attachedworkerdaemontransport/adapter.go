@@ -222,6 +222,25 @@ type Adapter struct {
 }
 
 func New(session SessionPort, materializer Materializer, config Config) (*Adapter, error) {
+	if config.preparedReceipt != nil {
+		original, ok := session.(*attachedworkersession.Session)
+		if !ok || original == nil {
+			return nil, ErrInvalidConfiguration
+		}
+		stack, err := config.preparedReceipt.preparedStack()
+		if err != nil {
+			return nil, err
+		}
+		// The lease-held preflight owns this private configuration. Rebuild
+		// the post-connect adapter from the same concrete Stack, deriving its
+		// frozen mode again rather than copying a caller assertion.
+		config.ReceiptCandidate, config.preparedReceipt, config.preparedInlineV2 = nil, nil, false
+		return NewPreparedAdapter(original, materializer, config, stack)
+	}
+	return newAdapter(session, materializer, config)
+}
+
+func newAdapter(session SessionPort, materializer Materializer, config Config) (*Adapter, error) {
 	if session == nil || materializer == nil {
 		return nil, ErrInvalidConfiguration
 	}

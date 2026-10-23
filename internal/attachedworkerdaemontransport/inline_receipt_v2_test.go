@@ -10,6 +10,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"gitcode.com/urandon/sessionless/internal/attachedworkerlocal"
 	"gitcode.com/urandon/sessionless/internal/attachedworkeroutput"
 	"gitcode.com/urandon/sessionless/internal/attachedworkersession"
 	"gitcode.com/urandon/sessionless/internal/domain"
@@ -24,6 +25,7 @@ type inlineJournalFixtureV2 struct {
 	advances, retires         int
 	applied                   bool
 	err                       error
+	retirementFails           bool
 	cancelCallerBeforeAdvance context.CancelFunc
 }
 
@@ -59,6 +61,9 @@ func (j *inlineJournalFixtureV2) RetireInlineReceiptSubmissionV2(_ context.Conte
 	v, err := attachedworkeroutput.DecodeInlineCheckpointV2(payload)
 	if err != nil || !v.Progress.TerminalAcked || !bytes.Equal(j.payload, payload) {
 		return ErrReconciliationRequired
+	}
+	if j.retirementFails {
+		return attachedworkerlocal.ErrStateAmbiguous
 	}
 	clear(j.payload)
 	j.payload = nil
@@ -213,6 +218,39 @@ func TestInlineReceiptV2LostPrepareReconcilesOnceAndRetiresAfterAck(t *testing.T
 		}
 		if err := a.ackInlineReceiptV2(context.Background(), &activeAttempt{inline: state}); err != nil || journal.retires != 1 {
 			t.Fatal("repeated observed retirement performed another removal")
+		}
+	})
+}
+
+// Compositional metadata/CAS leaf only: ackInlineReceiptV2 is called after an
+// assumed observed ACK, not through a genuine producer/Session ACK join. The
+// real file unlink/fsync ambiguity is covered separately in attachedworkerlocal.
+func TestInlineReceiptV2AckRetirementFailureDoesNotMarkRetired(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, state, journal, publisher := inlineMetadataFixtureV2(t)
+		ctx := context.Background()
+		originalPlan := state.checkpoint.PlanSHA256
+		// Establish READY through the existing leaf validator/CAS, without any
+		// Prepare/body/reconcile request or synthesized native output witness.
+		if evidence, err := a.resolveInlineReceiptV2(ctx, state, publisher.response); err != nil || len(evidence) != 32 {
+			t.Fatalf("establish READY metadata: evidence=%d err=%v", len(evidence), err)
+		}
+		journal.retirementFails = true
+		active := &activeAttempt{inline: state}
+		if err := a.ackInlineReceiptV2(ctx, active); !errors.Is(err, attachedworkerlocal.ErrStateAmbiguous) {
+			t.Fatalf("retirement failure did not remain explicit: %v", err)
+		}
+		observed, err := attachedworkeroutput.DecodeInlineCheckpointV2(journal.payload)
+		if err != nil || !observed.Progress.TerminalAcked || observed.Progress != state.checkpoint.Progress || observed.PlanSHA256 != originalPlan || state.retired || journal.advances != 2 || journal.retires != 1 {
+			t.Fatalf("failed removal lost observed ACK or marked retirement: progress=%+v retired=%v advances=%d retires=%d err=%v", state.checkpoint.Progress, state.retired, journal.advances, journal.retires, err)
+		}
+		retained := bytes.Clone(journal.payload)
+		defer clear(retained)
+		if err := a.ackInlineReceiptV2(ctx, active); !errors.Is(err, attachedworkerlocal.ErrStateAmbiguous) || state.retired || journal.advances != 2 || journal.retires != 2 || !bytes.Equal(journal.payload, retained) {
+			t.Fatalf("observed ACK retry reminted CAS/retirement: retired=%v advances=%d retires=%d err=%v", state.retired, journal.advances, journal.retires, err)
+		}
+		if publisher.prepares != 0 || publisher.bodies != 0 || publisher.reconciles != 0 || len(journal.actions) != 0 || journal.receiptRetired {
+			t.Fatalf("retirement leaf dispatched another effect: prepare/body/reconcile=%d/%d/%d protocol-actions=%d legacy-retired=%v", publisher.prepares, publisher.bodies, publisher.reconciles, len(journal.actions), journal.receiptRetired)
 		}
 	})
 }

@@ -283,6 +283,73 @@ func TestInlineReceiptCheckpointV2AmbiguousSyncDoesNotGrantTransition(t *testing
 	}
 }
 
+// This is a real RuntimeLease/file durability leaf, not evidence of a native
+// producer or an authenticated Session ACK. Its ACK bit is metadata advanced
+// through the real CAS history solely to reach the retirement boundary.
+func TestInlineReceiptCheckpointV2AmbiguousRemovalIsNotRetirement(t *testing.T) {
+	store, lease, initial, value := inlineCheckpointFixtureV2(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if err := lease.PersistInlineReceiptCheckpointV2(ctx, initial); err != nil {
+		t.Fatalf("seal original checkpoint: %v", err)
+	}
+	previous := initial
+	for _, progress := range []attachedworkeroutput.InlineReceiptProgressV2{
+		{Revision: 2, PrepareBurned: true, BodyBurned: true},
+		{Revision: 3, PrepareBurned: true, BodyBurned: true, CanonicalDigest: domain.AttachedWorkerTerminalEvidenceDigest(strings.Repeat("a", 64))},
+		{Revision: 4, PrepareBurned: true, BodyBurned: true, CanonicalDigest: domain.AttachedWorkerTerminalEvidenceDigest(strings.Repeat("a", 64)), TerminalAcked: true},
+	} {
+		value.Progress = progress
+		next := inlineCheckpointRecordV2(t, initial, value)
+		if applied, err := lease.AdvanceInlineReceiptCheckpointV2(ctx, previous, next); err != nil || !applied {
+			t.Fatalf("establish retirement progress revision=%d applied=%v err=%v", progress.Revision, applied, err)
+		}
+		previous = next
+	}
+	acked := previous
+	loaded, err := lease.LoadReceiptCheckpoint(ctx)
+	if err != nil || !bytes.Equal(loaded.Payload, acked.Payload) {
+		t.Fatalf("fully ACKed metadata was not persisted before fault: %v", err)
+	}
+	// Install the existing private fault only after every seal/CAS has finished.
+	// The one failed sync must observe removeDurable's physical unlink first;
+	// no write/rename or unrelated file operation receives this injected error.
+	syncs, unlinkedAtSync := 0, false
+	store.syncRootOverride = func() error {
+		syncs++
+		_, statErr := os.Stat(store.path(ReceiptCheckpointFileName))
+		unlinkedAtSync = errors.Is(statErr, os.ErrNotExist)
+		return ErrLocalIO
+	}
+	t.Cleanup(func() { store.syncRootOverride = nil })
+	if err := lease.RetireReceiptCheckpoint(ctx, acked); !errors.Is(err, ErrStateAmbiguous) {
+		t.Fatalf("post-unlink directory sync failure reported retirement success: %v", err)
+	}
+	if syncs != 1 || !unlinkedAtSync {
+		t.Fatalf("fault did not isolate post-unlink sync: syncs=%d unlinked=%v", syncs, unlinkedAtSync)
+	}
+	if _, err := lease.LoadReceiptCheckpoint(ctx); !errors.Is(err, ErrStateMissing) {
+		t.Fatalf("expected physical absence after ambiguous unlink: %v", err)
+	}
+	if err := lease.RetireReceiptCheckpoint(ctx, acked); !errors.Is(err, ErrStateConflict) || syncs != 1 {
+		t.Fatalf("missing-file retry manufactured durable retirement: err=%v syncs=%d", err, syncs)
+	}
+	store.syncRootOverride = nil
+	if err := lease.RetireReceiptCheckpoint(ctx, acked); !errors.Is(err, ErrStateConflict) {
+		t.Fatalf("restored sync converted physical absence to retirement success: %v", err)
+	}
+	// Absence is not a newly won body-send CAS token or permission to recreate
+	// the original checkpoint. Replays must still require an exact prior row.
+	body := value
+	body.Progress = attachedworkeroutput.InlineReceiptProgressV2{Revision: 2, PrepareBurned: true, BodyBurned: true}
+	if applied, err := lease.AdvanceInlineReceiptCheckpointV2(ctx, initial, inlineCheckpointRecordV2(t, initial, body)); applied || !errors.Is(err, ErrStateConflict) {
+		t.Fatalf("physical absence reminted original CAS transition: applied=%v err=%v", applied, err)
+	}
+	if _, err := lease.LoadReceiptCheckpoint(ctx); !errors.Is(err, ErrStateMissing) {
+		t.Fatalf("denied replay recreated checkpoint: %v", err)
+	}
+}
+
 func TestInlineReceiptCheckpointV2MaximumOuterEnvelope(t *testing.T) {
 	store, lease, initial, _ := inlineCheckpointFixtureV2(t, true)
 	if err := lease.PersistInlineReceiptCheckpointV2(context.Background(), initial); err != nil {

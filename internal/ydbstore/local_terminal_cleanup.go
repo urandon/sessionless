@@ -8,7 +8,6 @@ import (
 	"reflect"
 	"time"
 
-	"gitcode.com/urandon/sessionless/internal/compactioncontext"
 	"gitcode.com/urandon/sessionless/internal/domain"
 	"gitcode.com/urandon/sessionless/internal/operationbody"
 	"gitcode.com/urandon/sessionless/internal/ports"
@@ -138,7 +137,10 @@ func (p *LocalPreparedOutputV1) FinishCleanup(ctx context.Context) (_ *LocalTerm
 	// ordinary namespace fence. Registered custody owns this deterministic Run
 	// reference even if no terminal event is eventually committed. It is NOT
 	// a success-capsule event and cannot describe a non-cancellation failure.
-	if p.accounting == nil || p.cancellation.Kind != domain.SessionEventSystemNotice ||
+	if _, err := p.accountingRows(); err != nil {
+		return deny()
+	}
+	if p.cancellation.Kind != domain.SessionEventSystemNotice ||
 		chargeOwnedAuthorityBody(call, 3*uint64(len(p.cancellationBody))) != nil ||
 		h.entry.terminalOutputs.WriteFailureNotice(call, p.cancellation, p.cancellationBody) != nil || call.Err() != nil {
 		return deny()
@@ -226,7 +228,7 @@ func (p *LocalPreparedOutputV1) verifyCleanupRetained(ctx context.Context) error
 			clear(summary)
 			return domain.ErrMembershipDenied
 		}
-		decoded, e := compactioncontext.DecodeRetainedV1(p.parent.entry.owner.configuration, *policy, plan, summary, manifest, previous)
+		decoded, e := decodeLocalRetainedGeneration(&p.parent.entry.owner.configuration, "", *policy, plan, summary, manifest, previous)
 		clear(summary)
 		clear(manifest)
 		if e != nil {

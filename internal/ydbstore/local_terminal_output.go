@@ -36,6 +36,8 @@ type LocalPreparedOutputV1 struct {
 	cleanup              *LocalTerminalCleanupV1
 	completion           *localTerminalCompletionV2
 	accounting           *localTerminalAccountingV2
+	accountingV3         *localTerminalAccountingV3
+	capsuleVersion       uint32
 	cancellation         domain.SessionEventDraft
 	cancellationBody     []byte
 	plan                 domain.TerminalCustodyPlanV1
@@ -130,13 +132,17 @@ func (h *LocalTerminalV1) PrepareOutput(ctx context.Context) (_ *LocalPreparedOu
 	}
 	var normalized uint64
 	var answer string
+	hasMCP := false
+	for _, item := range ops {
+		hasMCP = hasMCP || item.Reservation.Operation.Kind == domain.AttemptOperationMCPToolV1
+	}
 	for i, o := range ops {
 		op := o.Reservation.Operation
 		row := s.state.snapshot.Operations[i]
 		if row.observation == nil || !reflect.DeepEqual(o.Reservation, row.reservation) || !reflect.DeepEqual(o.Observation, *row.observation) ||
 			op.Scope != scope || op.Sequence != uint64(i+1) || o.Reservation.ValidateForParent(h.entry.parent.Authority, h.entry.parent.Reservation) != nil ||
 			o.Observation.ValidateForReservation(o.Reservation) != nil || o.Observation.Outcome != domain.AttemptOperationCompletedV1 ||
-			(op.Kind != domain.AttemptOperationModelV1 && op.Kind != domain.AttemptOperationCompactionV1) || len(o.Response) == 0 || len(o.Response) > 64<<10 ||
+			(op.Kind != domain.AttemptOperationModelV1 && op.Kind != domain.AttemptOperationCompactionV1 && op.Kind != domain.AttemptOperationMCPToolV1) || len(o.Response) == 0 || len(o.Response) > 64<<10 ||
 			uint64(len(o.Response)) > (384<<10)-normalized || uint64(len(o.Response)) != o.Observation.ResponseBytes || uint64(len(o.Request)) != op.RequestBytes {
 			return deny()
 		}
@@ -144,6 +150,15 @@ func (h *LocalTerminalV1) PrepareOutput(ctx context.Context) (_ *LocalPreparedOu
 		rs, ss := sha256.Sum256(o.Request), sha256.Sum256(o.Response)
 		if hex.EncodeToString(rs[:]) != op.RequestDigest || hex.EncodeToString(ss[:]) != o.Observation.ResponseDigest {
 			return deny()
+		}
+		if hasMCP {
+			// Exact issuer/private MCP witness classification, not a relaxed
+			// generic measured-money predicate. Current Source/Store joins above
+			// and below independently revalidate retained financial authority.
+			if !h.entry.originalObservationAllowsSuccessor(o.Reservation, o.Observation) {
+				return deny()
+			}
+			continue
 		}
 		decoded, e := configuredinference.DecodeNormalizedResponseBodyV1(profile, o.Request, o.Response, op.Kind)
 		if e != nil || decoded.Stop != configuredinference.StopFinalV1 || decoded.Call != nil {
@@ -169,7 +184,12 @@ func (h *LocalTerminalV1) PrepareOutput(ctx context.Context) (_ *LocalPreparedOu
 	if manifest.ValidateForRun(run) != nil {
 		return deny()
 	}
-	encoded, e := canonicaloutput.EncodeCompletionV1(run.ID, s.state.snapshot.Job.Job.Limits, ports.ExecutionResult{Summary: answer}, manifest.ID)
+	var encoded *canonicaloutput.PlanV1
+	if hasMCP {
+		encoded, e = buildLocalCanonicalPlanV2(run, s.state.snapshot.Job.Job.Limits, pd, &profile, ops, manifest.ID)
+	} else {
+		encoded, e = canonicaloutput.EncodeCompletionV1(run.ID, s.state.snapshot.Job.Job.Limits, ports.ExecutionResult{Summary: answer}, manifest.ID)
+	}
 	if e != nil {
 		return deny()
 	}
@@ -180,7 +200,7 @@ func (h *LocalTerminalV1) PrepareOutput(ctx context.Context) (_ *LocalPreparedOu
 		}
 	}()
 	events := encoded.Events()
-	if len(events) != 1 || len(events) > 25 || events[0].Kind != domain.SessionEventAssistantMessage {
+	if len(events) == 0 || len(events) > 9 || events[len(events)-1].Kind != domain.SessionEventAssistantMessage || !hasMCP && len(events) != 1 || hasMCP && (len(events) < 3 || len(events)%2 != 1) {
 		return deny()
 	}
 	drafts := make([]domain.SessionEventDraft, len(events))
@@ -194,8 +214,26 @@ func (h *LocalTerminalV1) PrepareOutput(ctx context.Context) (_ *LocalPreparedOu
 		drafts[i] = draft
 		identities[i] = localCapsuleEventV1{ID: draft.ID, Kind: draft.Kind, IdempotencyKey: draft.IdempotencyKey, Payload: draft.Payload, DisplayText: draft.DisplayText}
 	}
-	body, e := encodeLocalTerminalCapsule(scope, pd, s.state.digest, ops, run.DerivedContext, identities, manifest, cap)
+	var accounting *localTerminalAccountingV2
+	var accountingV3 *localTerminalAccountingV3
+	var body []byte
+	if hasMCP {
+		accountingV3, e = prepareLocalTerminalAccountingV3(call, h, at)
+		if e != nil {
+			return deny()
+		}
+		materials := make([]localCapsuleOperationMaterial, len(ops))
+		for i, item := range ops {
+			materials[i] = localCapsuleOperationMaterial{reservation: item.Reservation, observation: item.Observation, normalized: item.Response, bytes: uint64(len(item.Response))}
+		}
+		sink := localCapsuleSink{limit: cap, emit: true}
+		e = encodeLocalTerminalCapsuleV2To(&sink, scope, pd, s.state.digest, materials, run.DerivedContext, identities, 0, manifest, accountingV3.disposition)
+		body = sink.body
+	} else {
+		body, e = encodeLocalTerminalCapsule(scope, pd, s.state.digest, ops, run.DerivedContext, identities, manifest, cap)
+	}
 	if e != nil {
+		clear(body)
 		return deny()
 	}
 	defer func() {
@@ -226,9 +264,11 @@ func (h *LocalTerminalV1) PrepareOutput(ctx context.Context) (_ *LocalPreparedOu
 	if plan.Validate() != nil {
 		return deny()
 	}
-	accounting, e := prepareLocalTerminalAccounting(call, h, at, genericProfile)
-	if e != nil {
-		return deny()
+	if !hasMCP {
+		accounting, e = prepareLocalTerminalAccounting(call, h, at, genericProfile)
+		if e != nil {
+			return deny()
+		}
 	}
 	notice, e := canonicaloutput.EncodeFailureV1(run.ID, true, "cancelled")
 	if e != nil || uint64(len(notice.Payload)) > h.entry.terminalOutputs.FailureNoticeLimit() {
@@ -249,7 +289,10 @@ func (h *LocalTerminalV1) PrepareOutput(ctx context.Context) (_ *LocalPreparedOu
 		return deny()
 	}
 	p := &LocalPreparedOutputV1{parent: h, mu: new(sync.Mutex), plan: plan, manifest: manifest, drafts: drafts, canonical: encoded, capsule: body,
-		accounting: accounting, cancellation: cancellation, cancellationBody: notice.Payload}
+		accounting: accounting, accountingV3: accountingV3, capsuleVersion: 1, cancellation: cancellation, cancellationBody: notice.Payload}
+	if hasMCP {
+		p.capsuleVersion = 2
+	}
 	p.self = p
 	h.burn = originalBurn
 	h.output = p
@@ -309,15 +352,30 @@ func (s *localCapsuleSink) value(v any) {
 	s.add(raw)
 }
 func encodeLocalTerminalCapsuleTo(sink *localCapsuleSink, scope domain.AttemptOperationScopeV1, profile, frontier string, ops []localCapsuleOperationMaterial, derived *domain.RunDerivedContextV1, events []localCapsuleEventV1, finalDisplayUpper uint64, manifest domain.ArtifactManifest) error {
+	return encodeLocalTerminalCapsuleVersionTo(sink, scope, profile, frontier, ops, derived, events, finalDisplayUpper, manifest, 1, nil, nil)
+}
+
+func encodeLocalTerminalCapsuleVersionTo(sink *localCapsuleSink, scope domain.AttemptOperationScopeV1, profile, frontier string, ops []localCapsuleOperationMaterial, derived *domain.RunDerivedContextV1, events []localCapsuleEventV1, finalDisplayUpper uint64, manifest domain.ArtifactManifest, version uint32, projections []localCapsuleProjectionV2, accounting *ports.OwnedOperationAccountingDispositionV3) error {
 	if sink.limit == 0 || sink.limit > domain.MaxTerminalCapsuleBytesV1 || len(ops) == 0 || len(ops) > 12 || len(events) == 0 || len(events) > 25 || (sink.emit && finalDisplayUpper != 0) {
 		return domain.ErrMembershipDenied
 	}
+	if version != 1 && version != 2 || version == 1 && (projections != nil || accounting != nil) || version == 2 && (len(projections) != len(ops) || accounting == nil || accounting.Version != 3 || len(accounting.Operations) != len(ops)) {
+		return domain.ErrMembershipDenied
+	}
 	add, value := sink.add, sink.value
-	add([]byte(`{"schema":"sessionless.terminal-custody.v1","scope":`))
+	add([]byte(`{"schema":`))
+	if version == 1 {
+		value("sessionless.terminal-custody.v1")
+	} else {
+		value("sessionless.terminal-custody.v2")
+	}
+	add([]byte(`,"scope":`))
 	value(scope)
 	add([]byte(`,"profile_digest":`))
 	value(profile)
-	add([]byte(`,"codec_version":1,"frontier_digest":`))
+	add([]byte(`,"codec_version":`))
+	value(version)
+	add([]byte(`,"frontier_digest":`))
 	value(frontier)
 	add([]byte(`,"operations":[`))
 	var normalized uint64
@@ -347,10 +405,15 @@ func encodeLocalTerminalCapsuleTo(sink *localCapsuleSink, scope domain.AttemptOp
 		if i == len(ops)-1 && o.reservation.Operation.Kind != domain.AttemptOperationMCPToolV1 {
 			projection = "assistant"
 		}
+		if version == 2 {
+			projection = projections[i].kind
+		}
 		add([]byte(`,"projection":`))
 		value(projection)
 		add([]byte(`,"event_ids":`))
-		if projection == "assistant" {
+		if version == 2 {
+			value(projections[i].events)
+		} else if projection == "assistant" {
 			value([]domain.SessionEventID{events[len(events)-1].ID})
 		} else {
 			add([]byte("[]"))
@@ -386,6 +449,10 @@ func encodeLocalTerminalCapsuleTo(sink *localCapsuleSink, scope domain.AttemptOp
 	add([]byte("]"))
 	add([]byte(`,"public_manifest":`))
 	value(manifest)
+	if version == 2 {
+		add([]byte(`,"accounting_disposition":`))
+		value(accounting)
+	}
 	add([]byte("}"))
 	if sink.failed {
 		return ErrTerminalCapacity

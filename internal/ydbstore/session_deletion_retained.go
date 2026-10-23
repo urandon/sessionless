@@ -172,7 +172,16 @@ func (v retainedDeletionOwnershipData) contains(dependency *compactioncontext.Re
 	if err != nil || v.plans[digest] != plan {
 		return false
 	}
-	events, plans := dependency.DependenciesV1()
+	var events []domain.SessionEvent
+	var plans []domain.DerivedContextPlanV1
+	switch dependency.CodecVersion() {
+	case 1:
+		events, plans = dependency.DependenciesV1()
+	case 2:
+		events, plans = dependency.DependenciesV2()
+	default:
+		return false
+	}
 	for _, event := range events {
 		if !reflect.DeepEqual(v.events[event.ID], event) {
 			return false
@@ -237,6 +246,9 @@ func verifyRetainedDeletionBodiesWithWriter(ctx context.Context, reader SessionD
 	if chargeOwnedAuthorityBody(ctx, uint64(len(body))) != nil {
 		return deny()
 	}
+	if terminalCapsuleSchema(body) == "sessionless.terminal-custody.v2" {
+		return verifyRetainedDeletionBodiesV2(ctx, reader, snapshot, ownership, previous, writer, body)
+	}
 	var capsule localRetainedTerminalCapsuleV1
 	if decodeOwnedEffectCanonicalJSON(string(body), &capsule) != nil {
 		return deny()
@@ -272,6 +284,12 @@ func verifyRetainedDeletionBodiesWithWriter(ctx context.Context, reader SessionD
 	if validateHistoricalCapsuleData(snapshot, capsule, []sessioncontext.EventPayload{{Event: snapshot.Anchor, Payload: payload}}, nil) != nil {
 		return deny()
 	}
+	return verifyRetainedDeletionDerived(ctx, reader, snapshot, ownership, previous, capsule.ProfileDigest)
+}
+
+func verifyRetainedDeletionDerived(ctx context.Context, reader SessionDeletionBlobReader, snapshot localTerminalHistorySnapshot, ownership retainedDeletionOwnershipData, previous *compactioncontext.RetainedV1, profileDigest string) (*compactioncontext.RetainedV1, error) {
+	deny := func() (*compactioncontext.RetainedV1, error) { return nil, domain.ErrMembershipDenied }
+	run := snapshot.Run
 	if run.DerivedContext == nil {
 		return previous, nil
 	}
@@ -298,7 +316,7 @@ func verifyRetainedDeletionBodiesWithWriter(ctx context.Context, reader SessionD
 			clear(manifest)
 			return deny()
 		}
-		decoded, err := compactioncontext.DecodeSealedRetainedV1(capsule.ProfileDigest, *policy, plan, summary, manifest, previous)
+		decoded, err := decodeLocalRetainedGeneration(nil, profileDigest, *policy, plan, summary, manifest, previous)
 		clear(summary)
 		clear(manifest)
 		if err != nil || !ownership.contains(decoded) {

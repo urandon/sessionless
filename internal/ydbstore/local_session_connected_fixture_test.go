@@ -64,7 +64,7 @@ func newLocalSessionConnectedSeedWithAuth(t *testing.T, endpoint string, compile
 	state := currentWorkerAuthorityFixture(t)
 	scope := domain.AttemptExecutionSourceScopeV1{TenantID: state.Run.TenantID, OwnerUserID: state.Job.CredentialOwnerUserID,
 		SessionID: state.Run.SessionID, RunID: state.Run.ID, AttemptID: state.Attempt.ID}
-	actual := newLocalRuntimeActualFixture(t, true, true, localRuntimeActualPrebuild{authenticFunding: true, scope: scope, endpoint: endpoint, compiledCompaction: compiled, mcpModelDescription: limits.MCPModelDescription, inputTokens: limits.InputTokens, outputTokens: limits.OutputTokens, modelWindowTokens: limits.ModelWindowTokens, networkOperation: limits.NetworkOperation, cleanupTimeout: limits.CleanupTimeout, auth: auth})
+	actual := newLocalRuntimeActualFixture(t, true, true, localRuntimeActualPrebuild{authenticFunding: true, scope: scope, endpoint: endpoint, compiledCompaction: compiled, mcpModelDescription: limits.MCPModelDescription, mcpSyntheticPriceMicrounits: limits.MCPSyntheticPriceMicrounits, inputTokens: limits.InputTokens, outputTokens: limits.OutputTokens, modelWindowTokens: limits.ModelWindowTokens, networkOperation: limits.NetworkOperation, cleanupTimeout: limits.CleanupTimeout, auth: auth})
 	parent := newOwnedAttemptEffectParentFixture(t, ownedFinalPrebuild{at: actual.at,
 		sources: &ownedFinalSources{profile: actual.profile, spending: actual.execution.Spending}})
 	operate, err := serverlessharness.NewOperationCapabilityIssuer(func() time.Time { return time.Now().UTC().Truncate(time.Microsecond) }, strings.NewReader(strings.Repeat("S", 32)), 16)
@@ -166,7 +166,8 @@ func (s *LocalSessionConnectedSeed) ArmProviderCredentialRevocationAfterOperatio
 type LocalCompactionConnectedLimits struct {
 	InputTokens, OutputTokens, ModelWindowTokens uint64
 	NetworkOperation, CleanupTimeout             time.Duration
-	MCPModelDescription                          string // bounded original grant declaration, never patched after Source intake
+	MCPModelDescription                          string  // bounded original grant declaration, never patched after Source intake
+	MCPSyntheticPriceMicrounits                  *uint64 // independent finite test-only price, before Source intake; nil preserves paid30 fixture
 }
 
 // LocalCompactionFixtureRequests is calibration DATA only, never a source,

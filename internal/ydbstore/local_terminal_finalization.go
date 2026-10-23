@@ -136,10 +136,10 @@ func (c *localTerminalCompletionV2) validateFirstCommit(store *Store, run domain
 	p.mu.Lock()
 	live := p.completion == c && p.cleanup == c.cleanup && !p.cleared && p.published && !p.parent.failed.Load()
 	p.mu.Unlock()
-	if !live || p.accounting == nil || p.parent.entry.terminalOutputs.VerifyNamespaceErasure(c.cleanup.erasure) != nil {
+	if !live || p.parent.entry.terminalOutputs.VerifyNamespaceErasure(c.cleanup.erasure) != nil {
 		return domain.ErrMembershipDenied
 	}
-	digest, err := p.accounting.Digest()
+	digest, err := p.accountingDigest()
 	if err != nil || digest != c.evidence.LocalV1.AccountingDispositionDigest {
 		return domain.ErrMembershipDenied
 	}

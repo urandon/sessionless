@@ -24,6 +24,10 @@ func BuildOrdinaryV1(profile domain.ConfiguredInferenceProfileV1, limits domain.
 	if err != nil {
 		return nil, err
 	}
+	return buildOrdinarySourceV1(s, parent)
+}
+
+func buildOrdinarySourceV1(s *generationSourceV1, parent *ParentV1) (*configuredinference.FrozenRequestV1, error) {
 	p := s.program
 	frames := make([]historicalFrameV1, 0, len(s.frames))
 	var protected []historicalFrameV1
@@ -87,7 +91,7 @@ func BuildOrdinaryV1(profile domain.ConfiguredInferenceProfileV1, limits domain.
 	if err != nil {
 		return nil, err
 	}
-	frozen, err := configuredinference.FreezeRequestV1(profile, p.limits, configuredinference.RequestV1{
+	frozen, err := configuredinference.FreezeRequestV1(p.profile, p.limits, configuredinference.RequestV1{
 		Messages: []configuredinference.MessageV1{{Role: configuredinference.RoleSystemV1, Text: ordinaryInstructionsV1}, {Role: configuredinference.RoleUserV1, Text: text}},
 		Tools:    p.tools, MaxOutputTokens: min(uint64(2048), p.limits.MaxOutputTokens),
 	})

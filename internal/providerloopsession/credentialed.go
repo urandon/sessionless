@@ -52,8 +52,9 @@ func NewCredentialedV1(ctx context.Context, c CredentialedConfigV1) (*Credential
 // materialization. It returns the original secret-free terminal owner only
 // AFTER actual transport disposal and credential Release. Canonical success
 // still requires that owner's original output/cleanup/transactional completion.
-// The typed MCP increment remains incomplete: unknown service money stops
-// continuation; it is not the separately required qualified agent loop.
+// Original typed MCP continuation keeps unknown service money and its complete
+// reservation unchanged. Real profile qualification and managed MVP acceptance
+// remain separate from this bounded source implementation.
 func (v *CredentialedV1) Run(ctx context.Context, request ports.ReserveAttemptEffectRequestV1) (result ModelStepResultV1, terminal *PreparedLocalTerminalV1, err error) {
 	if v == nil || v.state == nil || ctx == nil || ctx.Err() != nil || !v.state.claimed.CompareAndSwap(false, true) {
 		return result, nil, ErrSession

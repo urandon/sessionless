@@ -211,6 +211,11 @@ func (v *LocalV1) Start(ctx context.Context, request ports.ReserveAttemptEffectR
 		return domain.OwnedAttemptEffectParentV1{}, err
 	}
 	defer finish()
+	return s.startLocal(ctx, call, request)
+}
+
+// Caller owns the original session gate, including a whole noauth run.
+func (s *localState) startLocal(ctx, call context.Context, request ports.ReserveAttemptEffectRequestV1) (domain.OwnedAttemptEffectParentV1, error) {
 	if s.started || s.entryRoute != localEntryUnselected {
 		return domain.OwnedAttemptEffectParentV1{}, ErrSession
 	}

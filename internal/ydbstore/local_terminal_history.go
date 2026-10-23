@@ -47,6 +47,7 @@ type localTerminalHistoryV1 struct {
 	snapshots []localTerminalHistorySnapshot
 	legacy    []localTerminalLegacySnapshot
 	runs      []compactioncontext.HistoricalRunV1
+	runsV2    []compactioncontext.HistoricalRunV2
 	parents   []*compactioncontext.RetainedV1
 }
 
@@ -89,7 +90,13 @@ func (h *localTerminalHistoryV1) clear() {
 			clear(op.Normalized)
 		}
 	}
+	for _, run := range h.runsV2 {
+		for _, op := range run.Operations {
+			clear(op.Normalized)
+		}
+	}
 	h.snapshots, h.legacy, h.runs, h.parents = nil, nil, nil, nil
+	h.runsV2 = nil
 }
 
 // The source owns view and history under its original mutex. The first call is
@@ -208,13 +215,13 @@ func (s *LocalCompactionSourceV1) rejoinHistoryLocked(ctx context.Context, q *ow
 		if trigger == 0 || trigger >= event.Sequence {
 			return q.budget.deny()
 		}
-		// No guessed ordering across concurrently appended user/system DATA.
-		// The original canonical boundary and terminal anchor delimit this
-		// first supported producing segment exactly.
-		for _, original := range records {
-			if original.Event.Sequence > trigger && original.Event.Sequence < event.Sequence {
-				return q.budget.deny()
-			}
+		// Only the bounded same-Run tool-call/result prefix may occur between
+		// the original trigger and final assistant. This is a shape check, not
+		// acceptance of historical DATA: materializeHistoryLocked subsequently
+		// binds every event and payload to the exact sealed capsule/accounting.
+		// User/system/foreign-Run interleaving remains denied.
+		if !localHistoricalCanonicalSegment(run, event, trigger, records) {
+			return q.budget.deny()
 		}
 		v, err := s.entry.readTerminalHistorySnapshot(ctx, q, run, event)
 		if err != nil {
@@ -292,7 +299,7 @@ func (s *LocalCompactionSourceV1) materializeHistoryLocked(ctx context.Context) 
 		return domain.ErrMembershipDenied
 	}
 	h := s.state.history
-	if len(h.runs) != 0 || len(h.snapshots) == 0 {
+	if len(h.runs)+len(h.runsV2) != 0 || len(h.snapshots) == 0 {
 		return nil
 	}
 	var previous *compactioncontext.RetainedV1
@@ -304,6 +311,26 @@ func (s *LocalCompactionSourceV1) materializeHistoryLocked(ctx context.Context) 
 		if chargeOwnedAuthorityBody(ctx, uint64(len(body))) != nil {
 			clear(body)
 			return domain.ErrMembershipDenied
+		}
+		if terminalCapsuleSchema(body) == "sessionless.terminal-custody.v2" {
+			capsule, err := decodeLocalTerminalCapsuleV2(body)
+			if err == nil {
+				err = chargeOwnedAuthorityBody(ctx, uint64(len(body)))
+			}
+			clear(body)
+			if err != nil || s.validateHistoricalCapsuleV2(ctx, snapshot, capsule) != nil {
+				return domain.ErrMembershipDenied
+			}
+			h.runsV2 = append(h.runsV2, historicalCapsuleRunV2(capsule, snapshot.Anchor.ID))
+			parent, err := s.readHistoricalDerived(ctx, snapshot, previous)
+			if err != nil {
+				return err
+			}
+			h.parents = append(h.parents, parent)
+			if parent != nil {
+				previous = parent
+			}
+			continue
 		}
 		var capsule localRetainedTerminalCapsuleV1
 		err = decodeOwnedEffectCanonicalJSON(string(body), &capsule)
@@ -481,7 +508,7 @@ func (s *LocalCompactionSourceV1) readHistoricalDerived(ctx context.Context, v l
 			clear(summary)
 			return nil, err
 		}
-		decoded, err := compactioncontext.DecodeRetainedV1(s.entry.owner.configuration, *v.Parent.Authority.HarnessBinding.AgentLoopPolicy, plan, summary, manifest, previous)
+		decoded, err := decodeLocalRetainedGeneration(&s.entry.owner.configuration, "", *v.Parent.Authority.HarnessBinding.AgentLoopPolicy, plan, summary, manifest, previous)
 		clear(summary)
 		clear(manifest)
 		if err != nil {

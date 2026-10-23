@@ -122,53 +122,7 @@ func prepareLocalTerminalAccounting(ctx context.Context, h *LocalTerminalV1, at 
 	if !reflect.DeepEqual(baseline, accounting) || d.ValidateFor(entry.parent, entry.source) != nil {
 		return deny()
 	}
-	var proxies []ports.OwnedOperationResidualProxyV1
-	e = store.ownedAuthorityTx(ctx, func(ctx context.Context, q *ownedAuthorityQuery) error {
-		proxies = nil
-		if _, e := s.rejoinRunLocked(ctx, q, nil, nil); e != nil {
-			return e
-		}
-		first, e := readOwnedProxySnapshotAt(ctx, q, entry.parent, entry.source, entry.allocation, 1)
-		if e != nil || first == nil {
-			return q.budget.deny()
-		}
-		appendProxy := func(p *ownedProxySnapshot, seq uint64) error {
-			if seq != uint64(len(proxies)+1) || seq > uint64(len(rows)) {
-				return q.budget.deny()
-			}
-			pd, e := entry.compactionProxyDigest(p, s.state.snapshot.Operations[seq-1])
-			if e != nil || pd != s.state.snapshot.ProxyDigests[seq-1] {
-				return q.budget.deny()
-			}
-			proxies = append(proxies, ports.OwnedOperationResidualProxyV1{Sequence: seq, Original: p.original.Clone(), Current: p.current.Clone()})
-			return nil
-		}
-		if appendProxy(first, 1) != nil {
-			return q.budget.deny()
-		}
-		result, e := q.QueryContext(ctx, localCompactionProxiesSQL, entry.parent.Scope.TenantID, entry.parent.Reservation.AttemptID)
-		if e != nil {
-			return q.budget.deny()
-		}
-		defer result.Close()
-		for result.Next() {
-			var seq uint64
-			var columns ownedProxyColumns
-			dest := append([]any{&seq}, columns.destinations(2)...)
-			n, e := scanOwnedCurrentRow(result, dest...)
-			if q.budget.materialized(q.callback, n) != nil || e != nil || seq <= 1 || seq > uint64(len(rows)) {
-				return q.budget.deny()
-			}
-			p, e := columns.decode(q, entry.parent, entry.source, entry.allocation, seq)
-			if e != nil || p == nil || appendProxy(p, seq) != nil {
-				return q.budget.deny()
-			}
-		}
-		if result.Err() != nil || result.Close() != nil || len(proxies) != len(rows) {
-			return q.budget.deny()
-		}
-		return nil
-	})
+	proxies, e := readLocalTerminalAccountingProxies(ctx, h, len(rows))
 	if e != nil || ctx.Err() != nil || !store.localInvoiceLifetimeCurrent(price.local) {
 		return deny()
 	}

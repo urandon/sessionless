@@ -95,6 +95,22 @@ debit/components and reported-or-unknown usage remain reserved, not refunded
 or presented as measured cost. The canonical finalization transaction owns
 the Run/Attempt/quota, event, manifest, evidence and replay marker together.
 
+The original public-MCP continuation uses an explicit terminal capsule V2 and
+accounting/residual V3 within these same immutable objects and rows. Its capsule
+retains the complete UNKNOWN/full-reserved disposition and exact operation to
+canonical tool-call/result/assistant event mapping; a digest alone is not a
+replacement for those retained facts. Old capsule V1 and accounting/residual V2
+remain strict, without cross-version decode fallback. Current execution still
+requires the original private Source/Store funding witness on every admission
+join. Historical restore and deletion authenticate the original terminal seal,
+V3 financial parent/accounting correspondence and all actual canonical bodies;
+their bounded SQL candidate collection cannot recreate financial or dispatch
+authority. Retained compaction V2 preserves operation citation provenance at
+canonical pair rows without emitting the same pair twice. No new table, TTL,
+financial settlement store, namespace-erasure shortcut or larger Run/body/event
+ceiling is introduced. See the [versioned contract](../design/mcp-conservative-continuation.md)
+for implementation and separate live-profile acceptance requirements.
+
 Before fencing the ordinary body namespace, the original cleanup owner also
 uploads one deterministic prepaid cancellation SystemNotice body. This object
 is separate from the success capsule's event list. The owning registered Run

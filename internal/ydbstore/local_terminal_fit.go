@@ -193,6 +193,16 @@ func (entry *LocalInvocationEntryV1) terminalFitSourceLocked(ctx context.Context
 			return domain.ErrMembershipDenied
 		}
 		pendingForMCP := op.Kind == domain.AttemptOperationMCPToolV1 && i == len(source.state.operations)-1 && decoded.Stop == configuredinference.StopToolV1 && decoded.Call != nil
+		completedMCP := false
+		if decoded.Stop == configuredinference.StopToolV1 && decoded.Call != nil && i+1 < len(source.state.operations) {
+			next := source.state.operations[i+1]
+			if next.Reservation.Operation.Kind == domain.AttemptOperationMCPToolV1 {
+				result, e := mcpadmission.DecodeSealedToolResultDataV1(next.Reservation, next.Observation, next.Response)
+				args := sha256.Sum256(decoded.Call.Arguments)
+				completedMCP = e == nil && !result.IsError() && decoded.Call.ID == result.CallID() && decoded.Call.Name == result.Name() && hex.EncodeToString(args[:]) == result.ArgumentsDigest() && o.Observation.ResponseDigest == result.ModelResponseDigest() &&
+					result.ValidateConfiguredCallV1(entry.owner.configuration, o.Reservation, o.Observation, o.Request, o.Response) == nil && entry.originalObservationAllowsSuccessor(next.Reservation, next.Observation)
+			}
+		}
 		if pendingForMCP {
 			argsDigest := sha256.Sum256(decoded.Call.Arguments)
 			responseDigest := o.Observation.ResponseDigest
@@ -201,11 +211,14 @@ func (entry *LocalInvocationEntryV1) terminalFitSourceLocked(ctx context.Context
 			if !matched {
 				return domain.ErrMembershipDenied
 			}
-		} else if decoded.Stop != configuredinference.StopFinalV1 || decoded.Call != nil {
+		} else if !completedMCP && (decoded.Stop != configuredinference.StopFinalV1 || decoded.Call != nil) {
 			if decoded.Call != nil {
 				clear(decoded.Call.Arguments)
 			}
 			return domain.ErrMembershipDenied
+		}
+		if completedMCP {
+			clear(decoded.Call.Arguments)
 		}
 	}
 	if op.Kind == domain.AttemptOperationCompactionV1 {
@@ -220,7 +233,24 @@ func (entry *LocalInvocationEntryV1) terminalFitSourceLocked(ctx context.Context
 	if chargeLocalTerminalFit(ctx, q, entry.terminalOutputs.CapsuleLimit()+ownedAuthorityHeadBytes) != nil {
 		return domain.ErrMembershipDenied
 	}
-	_, err = localTerminalProspectiveBytes(source.state.snapshot.Job.Run, pd, source.state.operations, op, entry.owner.configuration.Limits.ResponseBytes, entry.terminalOutputs.CapsuleLimit())
+	if localTerminalNeedsV2(source.state.operations, op) {
+		// The V2 counter decodes the original bodies again to derive exact
+		// canonical pairs. Charge that additional bounded materialization to
+		// the SAME callback/call budget; never reset it for prospective work.
+		for _, item := range source.state.operations {
+			if chargeLocalTerminalFit(ctx, q, uint64(len(item.Request)+len(item.Response))) != nil {
+				return domain.ErrMembershipDenied
+			}
+		}
+		if op.Kind == domain.AttemptOperationMCPToolV1 {
+			if err := entry.terminalMCPSuccessorBudgetV2(ctx, source, op); err != nil {
+				return err
+			}
+		}
+		_, err = localTerminalProspectiveBytesV2(source.state.snapshot.Job.Run, source.state.snapshot.Job.Job.Limits, pd, entry.owner.configuration, entry.source, source.state.operations, op, entry.owner.configuration.Limits.ResponseBytes, entry.terminalOutputs.CapsuleLimit())
+	} else {
+		_, err = localTerminalProspectiveBytes(source.state.snapshot.Job.Run, pd, source.state.operations, op, entry.owner.configuration.Limits.ResponseBytes, entry.terminalOutputs.CapsuleLimit())
+	}
 	return err
 }
 

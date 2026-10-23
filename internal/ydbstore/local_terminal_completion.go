@@ -57,18 +57,14 @@ func prepareLocalTerminalCompletion(r *LocalTerminalCleanupV1) (*localTerminalCo
 	}
 	p := r.owner
 	h := p.parent
-	if p.cleared || p.cleanup != r || p.accounting == nil || h.failed.Load() || h.source == nil || h.source.state == nil || h.source.state.cleared || !p.published || h.entry.terminalOutputs.VerifyNamespaceErasure(r.erasure) != nil {
+	if p.cleared || p.cleanup != r || h.failed.Load() || h.source == nil || h.source.state == nil || h.source.state.cleared || !p.published || h.entry.terminalOutputs.VerifyNamespaceErasure(r.erasure) != nil {
 		return nil, domain.ErrMembershipDenied
 	}
-	residual, err := p.accounting.Residual(r.allocation.Current, r.erasure)
+	inventory, err := p.residualDigest(r.allocation.Current, r.erasure)
 	if err != nil {
 		return nil, err
 	}
-	inventory, err := residual.Digest()
-	if err != nil {
-		return nil, err
-	}
-	accounting, err := p.accounting.Digest()
+	accounting, err := p.accountingDigest()
 	if err != nil {
 		return nil, err
 	}

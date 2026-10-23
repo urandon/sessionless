@@ -269,6 +269,7 @@ type ModelResultV1 struct {
 type ModelStepResultV1 struct {
 	Model      ModelResultV1
 	Compaction *ModelResultV1
+	Tool       *ModelResultV1
 }
 
 // A terminal-capacity denial is not context overflow. Preserve that closed

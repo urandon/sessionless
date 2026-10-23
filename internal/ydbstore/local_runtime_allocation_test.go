@@ -114,7 +114,8 @@ type localRuntimeActualPrebuild struct {
 	sourceParent                                            context.Context
 	endpoint                                                string
 	laterPriceObservation                                   bool
-	compiledCompaction                                      bool // closed synthetic declaration, installed BEFORE Source intake
+	compiledCompaction                                      bool   // closed synthetic declaration, installed BEFORE Source intake
+	mcpModelDescription                                     string // optional bounded public tool prose, installed BEFORE all grant/policy/source seals
 	inputTokens, outputTokens, modelWindowTokens            uint64
 	networkOperation, cleanupTimeout                        time.Duration
 	bodyBytes, artifactBytes                                uint64 // closed pre-intake narrowing only
@@ -324,7 +325,11 @@ func newLocalRuntimeActualFixture(t *testing.T, runningExecutable, acceptReceipt
 		}
 		observed, expires := p.CostCeiling.PriceObservedAt, p.CostCeiling.PriceExpiresAt
 		localSearchDeclaration(t, &manifest)
-		localSourceMCPDeclaration(t, &manifest)
+		if prebuild[0].mcpModelDescription != "" {
+			localSourceMCPDeclaration(t, &manifest, prebuild[0].mcpModelDescription)
+		} else {
+			localSourceMCPDeclaration(t, &manifest)
+		}
 		// The installed external documents have a narrower original interval
 		// than some structural fixture defaults. Preserve a later observation,
 		// but never restore a wider outer window around those service reports.

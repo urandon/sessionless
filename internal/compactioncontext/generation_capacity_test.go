@@ -2,6 +2,7 @@ package compactioncontext_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -9,6 +10,57 @@ import (
 	"gitcode.com/urandon/sessionless/internal/compactioncontext"
 	"gitcode.com/urandon/sessionless/internal/configuredinference"
 )
+
+func TestGenerationSuccessorCapacityIncludesOriginalToolCatalog(t *testing.T) {
+	c, p := generationFixture(t)
+	tools := []configuredinference.ToolV1{{Name: "lookup", Description: strings.Repeat("bounded public tool description ", 16), Parameters: []byte(`{"type":"object","properties":{"query":{"type":"string","minLength":1,"maxLength":30}},"required":["query"],"additionalProperties":false}`)}}
+	g, err := compactioncontext.BuildGenerationV1(c, c.Limits, p, strings.Repeat("1", 64), generationRecords(t), nil, nil, tools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	minimum, err := g.MinimumSuccessorRequest()
+	if err != nil {
+		t.Fatalf("original tool catalog prevented minimum successor calculation: %v", err)
+	}
+	var wire struct {
+		Tools []struct {
+			Type     string `json:"type"`
+			Function struct {
+				Name        string          `json:"name"`
+				Description string          `json:"description"`
+				Parameters  json.RawMessage `json:"parameters"`
+			} `json:"function"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(minimum.Body(), &wire); err != nil || len(wire.Tools) != 1 || wire.Tools[0].Function.Name != tools[0].Name || wire.Tools[0].Function.Description != tools[0].Description {
+		t.Fatalf("minimum lost exact original tool catalog: count=%d err=%v", len(wire.Tools), err)
+	}
+	without, err := compactioncontext.BuildGenerationV1(c, c.Limits, p, strings.Repeat("1", 64), generationRecords(t), nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := without.MinimumSuccessorRequest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(minimum.Body()) <= len(plain.Body())+len(tools[0].Description) {
+		t.Fatal("tool catalog did not consume the actual successor byte budget")
+	}
+	bound, err := g.SuccessorRequestUpperBytes(configuredinference.MaxCompactionSummaryBytesV1, c.Limits.RequestBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual, err := g.Rebuild(generationSummary(t, g))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bound < uint64(len(actual.Body())) {
+		t.Fatalf("catalog-bearing actual successor bytes=%d exceed bound=%d", len(actual.Body()), bound)
+	}
+	if _, err := g.SuccessorRequestUpperBytes(configuredinference.MaxCompactionSummaryBytesV1, uint64(len(minimum.Body())-1)); !errors.Is(err, configuredinference.ErrContextNoFit) {
+		t.Fatalf("minimum catalog bytes bypassed smaller ceiling: %v", err)
+	}
+}
 
 func TestGenerationSuccessorMinimumRequiresTypedSummary(t *testing.T) {
 	c, p := generationFixture(t)

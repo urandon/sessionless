@@ -38,30 +38,33 @@ type ResultV1 struct {
 }
 
 type KeeperV1 struct {
-	mu                         sync.Mutex
-	self                       *KeeperV1
-	source                     *localoperator.Source
-	sourceLifetime             context.Context
-	issuer                     *serverlessharness.OperationCapabilityIssuer
-	bootstrap                  *ydbstore.LocalOwnedStoreBootstrapV1
-	config                     domain.ConfiguredInferenceProfileV1
-	policy                     ports.LocalLoopbackEgressPolicyV1
-	configDigest, policyDigest string
-	key                        [32]byte
-	active                     *ConnectionV1
-	closed                     bool
-	terminalDeadline           time.Time
-	terminalEligible           bool
-	terminalJoined             bool
-	terminalTainted            bool
-	terminalSealed             chan struct{}
-	credentialed               bool
-	credentialScopeUsed        bool
-	credentialEnded            bool
-	credentialTainted          bool
-	credentialDeadline         time.Time
-	credentialSealed           chan struct{}
-	credentialScope            *credentialScopeV1
+	mu                               sync.Mutex
+	self                             *KeeperV1
+	source                           *localoperator.Source
+	sourceLifetime                   context.Context
+	issuer                           *serverlessharness.OperationCapabilityIssuer
+	bootstrap                        *ydbstore.LocalOwnedStoreBootstrapV1
+	config                           domain.ConfiguredInferenceProfileV1
+	policy                           ports.LocalLoopbackEgressPolicyV1
+	configDigest, policyDigest       string
+	key                              [32]byte
+	active                           *ConnectionV1
+	closed                           bool
+	terminalDeadline                 time.Time
+	terminalEligible                 bool
+	terminalJoined                   bool
+	terminalTainted                  bool
+	terminalSealed                   chan struct{}
+	credentialed                     bool
+	credentialScopeUsed              bool
+	credentialEnded                  bool
+	credentialTainted                bool
+	credentialDeadline               time.Time
+	credentialSealed                 chan struct{}
+	credentialScope                  *credentialScopeV1
+	mcpMessages, mcpFrames, mcpBytes uint64
+	mcpCatalogConsumed               bool
+	mcpDeps                          mcpHTTPSDependencies
 }
 
 type ConnectionV1 struct {
@@ -75,7 +78,8 @@ type ConnectionV1 struct {
 	operation                              domain.AttemptOperationV1
 	publication                            ports.OwnedProxyPublicationV2
 	payload, request                       []byte
-	conn                                   *net.TCPConn
+	conn                                   net.Conn
+	mcp                                    *mcpConnectionV1
 	ctx                                    context.Context
 	cancel                                 context.CancelFunc
 	stopCaller                             func() bool
@@ -173,8 +177,12 @@ func literalAddress(baseURL string) (network, address string, ip net.IP, port in
 }
 
 func operationMatches(op domain.AttemptOperationV1, a domain.RegisteredAllocationV2, s domain.AttemptExecutionSourceV1) bool {
+	return (op.Kind == domain.AttemptOperationModelV1 || op.Kind == domain.AttemptOperationCompactionV1) && operationScopeMatches(op, a, s)
+}
+
+func operationScopeMatches(op domain.AttemptOperationV1, a domain.RegisteredAllocationV2, s domain.AttemptExecutionSourceV1) bool {
 	x := op.Scope
-	return (op.Kind == domain.AttemptOperationModelV1 || op.Kind == domain.AttemptOperationCompactionV1) && x.TenantID == s.Scope.TenantID && x.OwnerUserID == s.Scope.OwnerUserID && x.SessionID == s.Scope.SessionID && x.RunID == s.Scope.RunID && x.AttemptID == s.Scope.AttemptID && x.LeaseID == a.Lease.ID && x.FenceToken == a.Lease.FenceToken && x.PhysicalInvocationClaimID == a.ParentReservation.PhysicalInvocationClaimID && x.EffectReservationDigest == a.ParentReservationDigest && x.InvocationAuthorityDigest == a.ParentReservation.InvocationAuthorityDigest && x.HarnessBindingDigest == s.HarnessBindingDigest && x.AgentLoopPolicyDigest == s.AgentLoopPolicyDigest
+	return x.TenantID == s.Scope.TenantID && x.OwnerUserID == s.Scope.OwnerUserID && x.SessionID == s.Scope.SessionID && x.RunID == s.Scope.RunID && x.AttemptID == s.Scope.AttemptID && x.LeaseID == a.Lease.ID && x.FenceToken == a.Lease.FenceToken && x.PhysicalInvocationClaimID == a.ParentReservation.PhysicalInvocationClaimID && x.EffectReservationDigest == a.ParentReservationDigest && x.InvocationAuthorityDigest == a.ParentReservation.InvocationAuthorityDigest && x.HarnessBindingDigest == s.HarnessBindingDigest && x.AgentLoopPolicyDigest == s.AgentLoopPolicyDigest
 }
 
 func (k *KeeperV1) Preflight(ctx context.Context, allocation domain.RegisteredAllocationV2, source domain.AttemptExecutionSourceV1, operation domain.AttemptOperationV1, payload []byte) (_ *ConnectionV1, err error) {
@@ -312,6 +320,9 @@ func (k *KeeperV1) authenticate(intent []byte) []byte {
 // Historical authentication deliberately survives Close and later operations.
 // It never samples a clock, touches a socket, or claims current permission.
 func (k *KeeperV1) VerifyOwnedProxyPublication(pub ports.OwnedProxyPublicationV2, at time.Time) error {
+	if pub.TransportKind == domain.RegisteredProxyTransportLocalPublicMCPHTTPSV1 {
+		return k.verifyMCPPublication(pub, at)
+	}
 	if k == nil || k.self != k || pub.Validate() != nil || pub.TransportKind != domain.RegisteredProxyTransportLocalLoopbackHTTPV2 || at.Before(pub.ObservedAt) {
 		return domain.ErrMembershipDenied
 	}
@@ -366,6 +377,9 @@ func (c *ConnectionV1) Publication() (ports.OwnedProxyPublicationV2, error) {
 }
 
 func (c *ConnectionV1) Invoke(ctx context.Context, registered domain.RegisteredProxyAttestationV2, capability ports.AttemptOperationCapabilityV1, payload []byte) (result ResultV1, err error) {
+	if c != nil && c.mcp != nil {
+		return c.invokeMCP(ctx, registered, capability, payload)
+	}
 	if c == nil || c.self != c {
 		return result, domain.ErrMembershipDenied
 	}

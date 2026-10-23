@@ -3,6 +3,7 @@ package ydbstore_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"reflect"
@@ -314,8 +315,27 @@ func TestLocalSessionCredentialedConnectedOneBearerModel(t *testing.T) {
 	if got := seed.Stats(); got.Parent != before.Parent+1 || got.Burn != before.Burn+1 || got.Allocation != before.Allocation+1 || got.Operation != before.Operation+1 || got.Call != before.Call+1 || got.Observation != before.Observation+1 {
 		t.Fatal("credentialed model did not consume one original reservation and durable operation")
 	}
-	if got := peer.waitResult(t); got.err != nil || got.request == nil || got.request.Header.Get("Authorization") != "Bearer "+string(secret) || len(got.extra) != 0 {
+	got := peer.waitResult(t)
+	if got.err != nil || got.request == nil || got.request.Header.Get("Authorization") != "Bearer "+string(secret) || len(got.extra) != 0 {
 		t.Fatal("owned local endpoint did not observe the one synthetic Bearer-authorized request")
+	}
+	var modelRequest struct {
+		Tools []struct {
+			Type     string `json:"type"`
+			Function struct {
+				Name        string          `json:"name"`
+				Description string          `json:"description"`
+				Parameters  json.RawMessage `json:"parameters"`
+			} `json:"function"`
+		} `json:"tools"`
+	}
+	if json.Unmarshal(got.body, &modelRequest) != nil || len(modelRequest.Tools) != 1 {
+		t.Fatalf("first MODEL request did not carry the one source-installed MCP tool: tools=%d", len(modelRequest.Tools))
+	}
+	tool := modelRequest.Tools[0]
+	if tool.Type != "function" || tool.Function.Name != "search_openai_docs" || tool.Function.Description != "synthetic installed docs lookup" ||
+		!bytes.Equal(bytes.TrimSpace(tool.Function.Parameters), []byte(`{"additionalProperties":false,"properties":{"query":{"maxLength":30,"minLength":1,"type":"string"}},"required":["query"],"type":"object"}`)) {
+		t.Fatalf("first MODEL request tool differs from the exact retained Source grant: type=%q name=%q description=%q schema=%s", tool.Type, tool.Function.Name, tool.Function.Description, tool.Function.Parameters)
 	}
 	if seed.ProviderCredentialReadCount() < 2 {
 		t.Fatalf("Issue and Materialize did not each reread the exact current credential binding row: reads=%d", seed.ProviderCredentialReadCount())

@@ -61,6 +61,14 @@ func (p OwnedProxyPublicationV2) Bodies() (OwnedProxyBodiesV2, error) {
 			return deny()
 		}
 		bodies.LocalLoopback = b
+	case domain.RegisteredProxyTransportLocalPublicMCPHTTPSV1:
+		b := new(OwnedLocalPublicMCPHTTPSBodiesV1)
+		if !canonicalProxyBody(p.PolicyBody, &b.Policy) || !canonicalProxyBody(p.AttestationBody, &b.Attestation) ||
+			b.Attestation.ValidateForPolicy(b.Policy, p.ObservedAt, b.Attestation.ExpiresAt) != nil ||
+			!b.Attestation.ObservedAt.Equal(p.ObservedAt) || p.ServiceKind != domain.RegisteredProxyMCPToolV1 {
+			return deny()
+		}
+		bodies.LocalPublicMCPHTTPS = b
 	default:
 		return deny()
 	}

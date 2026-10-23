@@ -1,0 +1,6 @@
+{
+  "Replace": {
+    "internal/localloopback/mcp_offline_fixture.go": "internal/localloopback/testdata/mcp_offline_fixture.go.txt",
+    "internal/providerloopsession/mcp_offline_fixture.go": "internal/providerloopsession/testdata/mcp_offline_fixture.go.txt"
+  }
+}

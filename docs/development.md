@@ -507,6 +507,35 @@ into normal Web/control/worker flow, including admitted file/image processing.
 rollout. This scope correction does not enable runtime, authorize live calls or
 import ambient credentials.
 
+The local credentialed session's typed-MCP increment derives its MODEL tool
+schema and one prepared tools/call only from the original retained grant and
+durable normalized MODEL response. Call/result pairs are atomic historical
+context units. The separate original-keeper HTTPS arm implements a deliberately
+closed stateless POST subset: initialize, initialized notification, one exact
+catalog and one gated tools/call. It denies session IDs, GET/DELETE, reconnect,
+resumption and authentication instead of improvising those protocols. Provider
+Bearer bytes are never included in MCP requests. This is source infrastructure,
+not the complete #193 client or proof that the public endpoint supports it.
+
+The current transport has no authoritative measured MCP billing channel. A
+known parsed result is retained with unknown service usage and stops the Attempt;
+an installed known-free declaration does not become an observed zero bill or
+authorize a second MODEL. This increment alone does not pass the joined
+MODEL/tool/MODEL, canonical WebUI, cloud-isolation or live-qualification gates of
+#190/#191. No public service/model calls or profile activation are required by
+the offline DATA/authority regression tests.
+
+`make test-mcp-offline` checks the joined original Source/Store/keeper path
+against test-owned loopback MODEL and TLS MCP peers. It adds exactly two
+build-tagged fixture files through [a fixed Go overlay](../test/mcp-offline-overlay.json)
+to reach private instance-scoped DNS/dial/root dependencies before session start;
+it does not replace production files, ownership checks, Store, issuer or send
+authority. Normal packages are separately built without the overlay. Synthetic
+DNS/IP and certificate identities are offline test inputs, not real public
+endpoint or network-isolation attestation. The gate runs under race/shuffle in
+`make test-connected` and the required connected CI job. It makes no public
+traffic, reads no credentials, and does not activate a profile.
+
 For a Dockerless, credential-free check of the prepared authority-to-egress
 seam, run:
 

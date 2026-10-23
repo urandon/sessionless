@@ -2,6 +2,8 @@ package ydbstore
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"math"
@@ -12,6 +14,7 @@ import (
 	"gitcode.com/urandon/sessionless/internal/compactioncontext"
 	"gitcode.com/urandon/sessionless/internal/configuredinference"
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/mcpadmission"
 	"gitcode.com/urandon/sessionless/internal/operationbody"
 	"gitcode.com/urandon/sessionless/internal/ports"
 )
@@ -81,7 +84,8 @@ func localTerminalDerivedUpper(run domain.Run, op domain.AttemptOperationV1) (*d
 // same json.Marshal string escaping as configuredinference's normalized codec,
 // so its encoded string cannot exceed the containing normalized body's bytes.
 func localTerminalProspectiveBytes(run domain.Run, profile string, ops []LocalCompactionOperationV1, op domain.AttemptOperationV1, followResultBytes, cap uint64) (uint64, error) {
-	if len(ops) >= 12 || op.Sequence != uint64(len(ops)+1) || (op.Kind != domain.AttemptOperationModelV1 && op.Kind != domain.AttemptOperationCompactionV1) {
+	needsSuccessor := op.Kind == domain.AttemptOperationCompactionV1 || op.Kind == domain.AttemptOperationMCPToolV1
+	if len(ops) >= 12 || (needsSuccessor && len(ops) >= 11) || op.Sequence != uint64(len(ops)+1) || (op.Kind != domain.AttemptOperationModelV1 && op.Kind != domain.AttemptOperationCompactionV1 && op.Kind != domain.AttemptOperationMCPToolV1) {
 		return 0, domain.ErrMembershipDenied
 	}
 	materials := make([]localCapsuleOperationMaterial, 0, len(ops)+2)
@@ -93,9 +97,11 @@ func localTerminalProspectiveBytes(run domain.Run, profile string, ops []LocalCo
 		return 0, ErrTerminalCapacity
 	}
 	materials = append(materials, localTerminalFutureMaterial(op, n))
-	if op.Kind == domain.AttemptOperationCompactionV1 {
+	if needsSuccessor {
 		follow := op.Clone()
 		follow.Kind, follow.Sequence, follow.CallID = domain.AttemptOperationModelV1, op.Sequence+1, "model-"+strings.Repeat("0", 24)
+		follow.ModelResponseDigest, follow.ArgumentsDigest, follow.ToolGrantDigest, follow.ExternalChargeEvidenceDigest = "", "", "", ""
+		follow.QueryDigest, follow.ConsentRequestDigest, follow.ConsentDecisionDigest, follow.ConsentDecisionRef = "", "", "", ""
 		follow.PredecessorObservationDigest = domain.AttemptOperationObservationDigestV1(strings.Repeat("0", 64))
 		n = min(followResultBytes, uint64(64<<10))
 		if n == 0 {
@@ -169,12 +175,33 @@ func (entry *LocalInvocationEntryV1) terminalFitSourceLocked(ctx context.Context
 	if !entry.original() || source == nil || source.self != source || source.entry != entry || source.state == nil || source.state.cleared || entry.terminalOutputs == nil {
 		return domain.ErrMembershipDenied
 	}
-	for _, o := range source.state.operations {
+	for i, o := range source.state.operations {
 		if chargeLocalTerminalFit(ctx, q, uint64(len(o.Request)+len(o.Response))) != nil {
 			return domain.ErrMembershipDenied
 		}
+		if o.Reservation.Operation.Kind == domain.AttemptOperationMCPToolV1 {
+			if _, err := mcpadmission.DecodeSealedToolResultDataV1(o.Reservation, o.Observation, o.Response); err != nil {
+				return domain.ErrMembershipDenied
+			}
+			continue
+		}
 		decoded, err := configuredinference.DecodeNormalizedResponseBodyV1(entry.owner.configuration, o.Request, o.Response, o.Reservation.Operation.Kind)
-		if err != nil || decoded.Stop != configuredinference.StopFinalV1 || decoded.Call != nil {
+		if err != nil {
+			if decoded.Call != nil {
+				clear(decoded.Call.Arguments)
+			}
+			return domain.ErrMembershipDenied
+		}
+		pendingForMCP := op.Kind == domain.AttemptOperationMCPToolV1 && i == len(source.state.operations)-1 && decoded.Stop == configuredinference.StopToolV1 && decoded.Call != nil
+		if pendingForMCP {
+			argsDigest := sha256.Sum256(decoded.Call.Arguments)
+			responseDigest := o.Observation.ResponseDigest
+			matched := decoded.Call.ID == op.CallID && hex.EncodeToString(argsDigest[:]) == op.ArgumentsDigest && responseDigest == op.ModelResponseDigest
+			clear(decoded.Call.Arguments)
+			if !matched {
+				return domain.ErrMembershipDenied
+			}
+		} else if decoded.Stop != configuredinference.StopFinalV1 || decoded.Call != nil {
 			if decoded.Call != nil {
 				clear(decoded.Call.Arguments)
 			}

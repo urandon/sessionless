@@ -34,14 +34,30 @@ func (bridge *BoundedOwnedAllocationPreparationV1) BeginLocalModelOperation(
 	source *localoperator.Source, allocation domain.RegisteredAllocationV2,
 	op domain.AttemptOperationV1, at time.Time,
 ) (*LocalModelOperationLeaseV1, error) {
+	if op.Kind != domain.AttemptOperationModelV1 && op.Kind != domain.AttemptOperationCompactionV1 {
+		return nil, domain.ErrMembershipDenied
+	}
+	return bridge.beginLocalOperation(source, allocation, op, at)
+}
+
+// BeginLocalMCPProtocolOperation retains the same one-way original resource
+// slot, not the MODEL loopback route. Only the separate concrete HTTPS producer
+// can publish the matching MCP observation; the Store still gates tools/call.
+func (bridge *BoundedOwnedAllocationPreparationV1) BeginLocalMCPProtocolOperation(source *localoperator.Source, allocation domain.RegisteredAllocationV2, op domain.AttemptOperationV1, at time.Time) (*LocalModelOperationLeaseV1, error) {
+	if op.Kind != domain.AttemptOperationMCPToolV1 {
+		return nil, domain.ErrMembershipDenied
+	}
+	return bridge.beginLocalOperation(source, allocation, op, at)
+}
+
+func (bridge *BoundedOwnedAllocationPreparationV1) beginLocalOperation(source *localoperator.Source, allocation domain.RegisteredAllocationV2, op domain.AttemptOperationV1, at time.Time) (*LocalModelOperationLeaseV1, error) {
 	if bridge == nil || bridge.local == nil || source == nil || bridge.local.source != source ||
 		bridge.VerifyEnteredLocalAllocation(allocation, at) != nil {
 		return nil, domain.ErrMembershipDenied
 	}
 	l := bridge.local
 	op = op.Clone()
-	if (op.Kind != domain.AttemptOperationModelV1 && op.Kind != domain.AttemptOperationCompactionV1) ||
-		op.Scope.SessionID != allocation.Scope.SessionID || op.ValidateForParent(l.capability.Authority(), l.capability.Reservation()) != nil ||
+	if op.Scope.SessionID != allocation.Scope.SessionID || op.ValidateForParent(l.capability.Authority(), l.capability.Reservation()) != nil ||
 		op.Deadline.After(allocation.Window.ExpiresAt) || !at.Before(op.Deadline) {
 		return nil, domain.ErrMembershipDenied
 	}

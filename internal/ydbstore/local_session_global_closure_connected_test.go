@@ -360,7 +360,7 @@ func TestLocalSessionGlobalClosureAcrossErasedRunsConnected(t *testing.T) {
 	for i, wire := range wires {
 		var req globalClosureWire
 		decodeGlobalClosureJSON(t, wire, &req)
-		if req.Model != cSeed.Profile.ModelID || req.Stream || req.N != 1 || req.MaxTokens == 0 || len(req.Tools) != 0 || len(req.Messages) != 2 || req.Messages[0].Role != "system" || req.Messages[1].Role != "user" {
+		if req.Model != cSeed.Profile.ModelID || req.Stream || req.N != 1 || req.MaxTokens == 0 || len(req.Messages) != 2 || req.Messages[0].Role != "system" || req.Messages[1].Role != "user" {
 			t.Fatal("actual chain request framing", i)
 		}
 		var history globalClosureHistory
@@ -371,6 +371,13 @@ func TestLocalSessionGlobalClosureAcrossErasedRunsConnected(t *testing.T) {
 		}
 		if history.Schema != want {
 			t.Fatal("actual call sequence", i, history.Schema, want)
+		}
+		if want == "sessionless.compaction-input.v1" {
+			if len(req.Tools) != 0 {
+				t.Fatal("compaction request must not expose tools", i)
+			}
+		} else {
+			assertInstalledModelTools(t, req.Tools)
 		}
 		if i == 6 {
 			assertGlobalClosureWire(t, history, bManifest, bPlan, []globalClosureCapsule{aCapsule, bCapsule}, bState, cSeed, raw)

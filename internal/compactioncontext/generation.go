@@ -13,6 +13,7 @@ import (
 
 	"gitcode.com/urandon/sessionless/internal/configuredinference"
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/mcpadmission"
 	"gitcode.com/urandon/sessionless/internal/sessioncontext"
 )
 
@@ -313,9 +314,13 @@ func buildGenerationSourceV1(profile domain.ConfiguredInferenceProfileV1, limits
 			}
 		}
 	}
+	var pending *configuredinference.FunctionCallV1
+	var pendingObservation domain.AttemptOperationObservationV1
+	pendingStart := -1
+	usedCalls := make(map[string]bool)
 	for i, op := range operations {
 		r, o := op.Reservation, op.Observation
-		if r.Validate() != nil || o.ValidateForReservation(r) != nil || o.Outcome != domain.AttemptOperationCompletedV1 || o.Reason != domain.AttemptOperationReasonNoneV1 || o.Usage.ExceedsReservation(r.Operation.Debit) || r.Operation.Sequence != uint64(i+1) ||
+		if r.Validate() != nil || o.ValidateForReservation(r) != nil || o.Outcome != domain.AttemptOperationCompletedV1 || o.Usage.ExceedsReservation(r.Operation.Debit) || r.Operation.Sequence != uint64(i+1) ||
 			r.Operation.Scope.AgentLoopPolicyDigest != policyDigest ||
 			r.Operation.Scope.TenantID != profile.TenantID || r.Operation.Scope.OwnerUserID != profile.OwnerUserID || r.Operation.Scope.RunID != policy.RunID || r.Operation.Scope.AttemptID != policy.AttemptID ||
 			r.Operation.Scope.SessionID != records[0].Event.SessionID || (i > 0 && r.Operation.Scope != operations[0].Reservation.Operation.Scope) ||
@@ -329,13 +334,31 @@ func buildGenerationSourceV1(profile domain.ConfiguredInferenceProfileV1, limits
 		if hex.EncodeToString(requestHash[:]) != r.Operation.RequestDigest || hex.EncodeToString(responseHash[:]) != o.ResponseDigest {
 			return nil, ErrCanonical
 		}
+		if r.Operation.Kind == domain.AttemptOperationMCPToolV1 {
+			result, err := mcpadmission.DecodeSealedToolResultDataV1(r, o, op.Response)
+			if err != nil || pending == nil || i == 0 || r.Operation.ToolGrantDigest != policy.MCPToolGrantDigest || result.ValidateConfiguredCallV1(profile, operations[i-1].Reservation, operations[i-1].Observation, operations[i-1].Request, operations[i-1].Response) != nil || !toolUsageContinuable(o) || !toolPairMatches(pending, pendingObservation, result) {
+				return nil, ErrCanonical
+			}
+			key, err := OperationSourceKeyV1(r, o)
+			if err != nil {
+				return nil, err
+			}
+			frames = append(frames, historicalFrameV1{Kind: "operation", SourceID: key, Role: "tool_result", RunID: string(r.Operation.Scope.RunID), Sequence: r.Operation.Sequence, Payload: toolResultPayload(result), Digest: o.ResponseDigest})
+			sources = append(sources, retainedSourceV1{SourceID: key, Operation: &retainedOperationV1{Reservation: r.Clone(), Observation: o.Clone()}})
+			units = append(units, UnitV1{Start: pendingStart, End: len(frames)})
+			pending = nil
+			continue
+		}
+		if pending != nil || o.Reason != domain.AttemptOperationReasonNoneV1 {
+			return nil, ErrCanonical
+		}
 		decoded, e := configuredinference.DecodeNormalizedResponseBodyV1(profile, op.Request, op.Response, r.Operation.Kind)
 		usage, usageErr := decoded.Usage.OperationUsage()
-		if e != nil || usageErr != nil || decoded.Call != nil || decoded.Stop != configuredinference.StopFinalV1 || !reflect.DeepEqual(usage, o.Usage) {
+		if e != nil || usageErr != nil || !reflect.DeepEqual(usage, o.Usage) || (decoded.Stop != configuredinference.StopFinalV1 && (decoded.Stop != configuredinference.StopToolV1 || decoded.Call == nil)) {
 			return nil, ErrCanonical
 		}
 		if r.Operation.Kind == domain.AttemptOperationCompactionV1 {
-			if !matchCompaction(r, o, decoded.Text) {
+			if decoded.Call != nil || !matchCompaction(r, o, decoded.Text) {
 				return nil, ErrCanonical
 			}
 			continue
@@ -348,11 +371,22 @@ func buildGenerationSourceV1(profile domain.ConfiguredInferenceProfileV1, limits
 			return nil, e
 		}
 		start := len(frames)
-		frames = append(frames, historicalFrameV1{Kind: "operation", SourceID: key, Role: "assistant_message", RunID: string(r.Operation.Scope.RunID), Sequence: r.Operation.Sequence, Payload: decoded.Text, Digest: o.ResponseDigest})
+		role, payload := "assistant_message", decoded.Text
+		if decoded.Call != nil {
+			if usedCalls[decoded.Call.ID] {
+				return nil, ErrCanonical
+			}
+			usedCalls[decoded.Call.ID] = true
+			pending, pendingObservation, pendingStart = decoded.Call, o, start
+			role, payload = "tool_call", toolCallPayload(decoded.Call)
+		}
+		frames = append(frames, historicalFrameV1{Kind: "operation", SourceID: key, Role: role, RunID: string(r.Operation.Scope.RunID), Sequence: r.Operation.Sequence, Payload: payload, Digest: o.ResponseDigest})
 		sources = append(sources, retainedSourceV1{SourceID: key, Operation: &retainedOperationV1{Reservation: r.Clone(), Observation: o.Clone()}})
-		units = append(units, UnitV1{Start: start, End: start + 1})
+		if pending == nil {
+			units = append(units, UnitV1{Start: start, End: start + 1})
+		}
 	}
-	if len(matchedPlans) != len(parentPlans) || len(units) == 0 {
+	if pending != nil || len(matchedPlans) != len(parentPlans) || len(units) == 0 {
 		return nil, ErrCanonical
 	}
 	p := &GenerationV1{profile: profile.Clone(), limits: limits, source: sourceDigest, compatibility: compatibility, generation: generation, tools: ownedTools,
@@ -366,8 +400,8 @@ func buildGenerationSourceV1(profile domain.ConfiguredInferenceProfileV1, limits
 
 // BuildGenerationV1 renders actual admitted source DATA, never a caller prompt
 // override. Media without a qualified encoding is explicitly unsupported. The
-// current base supports tool-heavy CANONICAL history and completed tool-free
-// model operations; real current tool continuations remain #191's typed join.
+// Current MODEL-call/MCP-result pairs are validated together and retained as
+// atomic historical DATA units; these values never restore dispatch authority.
 func BuildGenerationV1(profile domain.ConfiguredInferenceProfileV1, limits domain.ConfiguredInferenceLimitsV1, policy domain.AgentLoopPolicyV1,
 	sourceDigest string, records []sessioncontext.EventPayload, operations []CompletedOperationV1, parent *ParentV1, tools []configuredinference.ToolV1, history ...[]HistoricalRunV1) (*GenerationV1, error) {
 	if len(history) > 1 {

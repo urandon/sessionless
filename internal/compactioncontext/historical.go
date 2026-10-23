@@ -3,6 +3,7 @@ package compactioncontext
 import (
 	"gitcode.com/urandon/sessionless/internal/configuredinference"
 	"gitcode.com/urandon/sessionless/internal/domain"
+	"gitcode.com/urandon/sessionless/internal/mcpadmission"
 )
 
 // HistoricalRunV1 is request-free retained DATA. Only the original Store may
@@ -29,25 +30,46 @@ func historicalFrames(profile domain.ConfiguredInferenceProfileV1, run Historica
 	var frames []historicalFrameV1
 	var sources []retainedSourceV1
 	var previous *HistoricalOperationV1
+	var pending *configuredinference.FunctionCallV1
+	var modelObservation domain.AttemptOperationObservationV1
+	usedCalls := make(map[string]bool)
 	for i, item := range run.Operations {
 		r, o := item.Reservation, item.Observation
 		if r.Operation.Scope != run.Scope || r.Operation.Sequence != uint64(i+1) || o.Usage.ExceedsReservation(r.Operation.Debit) ||
 			(i > 0 && r.Operation.ValidatePredecessor(previous.Reservation, previous.Observation) != nil) {
 			return nil, nil, ErrCanonical
 		}
+		if r.Operation.Kind == domain.AttemptOperationMCPToolV1 {
+			result, err := mcpadmission.DecodeSealedToolResultDataV1(r, o, item.Normalized)
+			if err != nil || pending == nil || i == len(run.Operations)-1 || item.Projection != "retained_only" || !toolUsageContinuable(o) || !toolPairMatches(pending, modelObservation, result) {
+				return nil, nil, ErrCanonical
+			}
+			key, err := OperationSourceKeyV1(r, o)
+			if err != nil {
+				return nil, nil, err
+			}
+			frames = append(frames, historicalFrameV1{Kind: "operation", SourceID: key, Role: "tool_result", RunID: string(run.Scope.RunID), Sequence: r.Operation.Sequence, Payload: toolResultPayload(result), Digest: o.ResponseDigest})
+			sources = append(sources, retainedSourceV1{SourceID: key, Operation: &retainedOperationV1{Reservation: r.Clone(), Observation: o.Clone()}})
+			pending = nil
+			previous = &run.Operations[i]
+			continue
+		}
+		if pending != nil {
+			return nil, nil, ErrCanonical
+		}
 		response, err := configuredinference.DecodeRetainedNormalizedDataV1(profile, r, o, item.Normalized)
-		if err != nil || response.Call != nil || response.Stop != configuredinference.StopFinalV1 {
+		if err != nil || (response.Stop != configuredinference.StopFinalV1 && (response.Stop != configuredinference.StopToolV1 || response.Call == nil)) {
 			return nil, nil, ErrCanonical
 		}
 		previous = &run.Operations[i]
 		switch {
 		case i == len(run.Operations)-1:
-			if item.Projection != "assistant" || r.Operation.Kind != domain.AttemptOperationModelV1 {
+			if item.Projection != "assistant" || r.Operation.Kind != domain.AttemptOperationModelV1 || response.Call != nil {
 				return nil, nil, ErrCanonical
 			}
 			// Its exact canonical projection is already present at run.Anchor.
 		case r.Operation.Kind == domain.AttemptOperationCompactionV1:
-			if item.Projection != "compaction" {
+			if item.Projection != "compaction" || response.Call != nil {
 				return nil, nil, ErrCanonical
 			}
 		case r.Operation.Kind == domain.AttemptOperationModelV1:
@@ -58,11 +80,23 @@ func historicalFrames(profile domain.ConfiguredInferenceProfileV1, run Historica
 			if err != nil {
 				return nil, nil, err
 			}
-			frames = append(frames, historicalFrameV1{Kind: "operation", SourceID: key, Role: "assistant_message", RunID: string(run.Scope.RunID), Sequence: r.Operation.Sequence, Payload: response.Text, Digest: o.ResponseDigest})
+			role, payload := "assistant_message", response.Text
+			if response.Call != nil {
+				if usedCalls[response.Call.ID] {
+					return nil, nil, ErrCanonical
+				}
+				usedCalls[response.Call.ID] = true
+				pending, modelObservation = response.Call, o
+				role, payload = "tool_call", toolCallPayload(response.Call)
+			}
+			frames = append(frames, historicalFrameV1{Kind: "operation", SourceID: key, Role: role, RunID: string(run.Scope.RunID), Sequence: r.Operation.Sequence, Payload: payload, Digest: o.ResponseDigest})
 			sources = append(sources, retainedSourceV1{SourceID: key, Operation: &retainedOperationV1{Reservation: r.Clone(), Observation: o.Clone()}})
 		default:
 			return nil, nil, ErrCanonical
 		}
+	}
+	if pending != nil {
+		return nil, nil, ErrCanonical
 	}
 	return frames, sources, nil
 }

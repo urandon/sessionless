@@ -1,0 +1,31 @@
+//go:build sessionless_mcp_offline
+
+package localloopback
+
+import (
+	"context"
+	"crypto/x509"
+	"net"
+	"net/netip"
+
+	"gitcode.com/urandon/sessionless/internal/domain"
+)
+
+// ConfigureMCPOfflineNetwork exists ONLY in the explicit additive Go overlay
+// test binary. It substitutes DNS/dial/root observations, never Store authority,
+// prepared operations, grants, publication authentication or BeforeSend gates.
+func (k *KeeperV1) ConfigureMCPOfflineNetwork(lookup func(context.Context, string) ([]netip.Addr, error), dial func(context.Context, string, string) (net.Conn, error), roots *x509.CertPool) error {
+	if k == nil || k.self != k || lookup == nil || dial == nil || roots == nil {
+		return domain.ErrMembershipDenied
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if !k.credentialed || k.closed || k.active != nil || k.credentialScopeUsed || k.credentialScope != nil || k.credentialEnded || k.mcpCatalogConsumed || k.sourceLifetime == nil || k.sourceLifetime.Err() != nil || k.mcpDeps.lookup != nil || k.mcpDeps.dial != nil || k.mcpDeps.roots != nil {
+		return domain.ErrMembershipDenied
+	}
+	if _, _, e := k.bootstrap.RuntimeFor(k); e != nil {
+		return domain.ErrMembershipDenied
+	}
+	k.mcpDeps = mcpHTTPSDependencies{lookup: lookup, dial: dial, roots: roots.Clone()}
+	return nil
+}

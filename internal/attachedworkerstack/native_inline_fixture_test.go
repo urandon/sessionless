@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,6 +37,67 @@ const nativeInlineFixtureFinal = `{"answer":"two requested files","artifacts":[{
 // NativeInlineFaultV2ForTest selects only these closed peer/lifecycle faults. It cannot
 // replace the Stack, producer, runner, profile, admission or current predicate.
 type NativeInlineFaultV2ForTest uint8
+
+func nativeInlineQuarantine(t *testing.T, scratch string) string {
+	t.Helper()
+	// testing.T.TempDir may live under GOTMPDIR on another mount. Born empty
+	// beside the exact owned scratch, this quarantine shares its filesystem;
+	// it is not a copy/delete fallback after a failed Rename.
+	root, err := os.MkdirTemp(filepath.Dir(scratch), "niq-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		// Collect the whole fixed synthetic tree before deleting anything.
+		// Never follow links or recursively purge on a validation/budget error.
+		var entries []string
+		err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if len(entries) >= 32 || !entry.IsDir() && !entry.Type().IsRegular() {
+				return errors.New("synthetic quarantine exceeds fixed entry/type bounds")
+			}
+			entries = append(entries, path)
+			return nil
+		})
+		if err != nil {
+			t.Errorf("validate exact synthetic quarantine before removal: %v", err)
+			return
+		}
+		for i := len(entries) - 1; i >= 0; i-- {
+			if err := os.Remove(entries[i]); err != nil {
+				t.Errorf("remove validated synthetic quarantine entry: %v", err)
+				return
+			}
+		}
+	})
+	return root
+}
+
+func TestNativeInlineQuarantineSharesActualScratchParent(t *testing.T) {
+	// testing.T may already have cached its TempDir base before the fixture
+	// chooses a short scratch root on a different mount. Directory topology,
+	// not a lucky same-device local machine, must guarantee atomic relocation.
+	cached := t.TempDir()
+	parent := filepath.Join(cached, "separate-scratch-parent")
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	scratch, err := os.MkdirTemp(parent, "ni-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Remove(scratch); err != nil {
+			t.Error(err)
+		}
+	})
+	quarantine := nativeInlineQuarantine(t, scratch)
+	if filepath.Dir(quarantine) != filepath.Dir(scratch) || quarantine == scratch {
+		t.Fatalf("quarantine does not share original scratch parent: quarantine=%s scratch=%s", quarantine, scratch)
+	}
+}
 
 const (
 	NativeInlineHeldACKV2ForTest NativeInlineFaultV2ForTest = iota
@@ -418,9 +480,6 @@ func NewNativeInlineFixtureV2ForTest(t *testing.T, fault NativeInlineFaultV2ForT
 	// A short owned scratch root keeps real Unix socket names below sun_path's
 	// limit, matching the existing native joined fixture. Remove only this root
 	// after the actual Stack has cleaned its exact owned children.
-	// Register quarantine's ordinary test-directory cleanup first, so it runs
-	// after owner shutdown, any proven fixture-only relocation, and fallback.
-	quarantine := t.TempDir()
 	shortRoot, err := os.MkdirTemp("", "ni-")
 	if err != nil {
 		t.Fatal(err)
@@ -435,6 +494,7 @@ func NewNativeInlineFixtureV2ForTest(t *testing.T, fault NativeInlineFaultV2ForT
 			t.Errorf("owned native scratch residue: %v", err)
 		}
 	})
+	quarantine := nativeInlineQuarantine(t, ownedShortRoot)
 	shortRoot, err = filepath.EvalSymlinks(shortRoot)
 	if err != nil {
 		t.Fatal(err)
